@@ -164,6 +164,86 @@ def _synonym_tables_matching_query(
     return matched
 
 
+async def _query_synonym_tables(
+    cache_mgr: Any,
+    db_id: str,
+    parsed: dict[str, Any],
+    query_targets: list[str],
+    app_config: AppConfig,
+) -> set[str]:
+    """이번 질의와 매칭된 유사어의 테이블(소문자 bare명)을 구한다 — 질의의 테이블 신호(D-051).
+
+    2-2 allowed_tables 동적 보완과 테이블 선택 생략 판정(plans/119 Q-5)이 같은 값을 쓴다.
+    예외는 호출부가 처리한다(보완 실패 경고 · 생략 판정 불가 시 LLM 선택).
+    """
+    db_syns = await cache_mgr.get_synonyms(db_id)
+    _match_text = (
+        (parsed.get("original_query", "") or "")
+        + " "
+        + " ".join(query_targets or [])
+    ).lower()
+    # E5-3: 보완 상한을 config에서 읽는다(모듈 상수 하드코딩 대체, 기본 15).
+    # E5-1: fuzzy 플래그 ON 시 유연 근사 매칭 병행(기본 OFF → 정확 부분어만).
+    # E5-4: semantic 플래그 ON 시 임베딩 의미 검색을 계단 마지막 단으로 병행(D-084).
+    _syn_cfg = app_config.synonym
+    return _synonym_tables_matching_query(
+        db_syns,
+        _match_text,
+        cap=_syn_cfg.max_synonym_supplement_tables,
+        fuzzy=_syn_cfg.fuzzy_match,
+        min_score=_syn_cfg.match_confidence_min,
+        semantic=_syn_cfg.semantic_match,
+        semantic_min=_syn_cfg.semantic_confidence_min,
+    )
+
+
+def _table_select_skip_enabled(app_config: AppConfig) -> bool:
+    """테이블 선택 LLM 생략 플래그(plans/119 Q-5)가 **명시적으로** 켜졌는지 본다.
+
+    설정 객체를 목으로 대체한 호출부에서 속성 접근이 참 값을 흉내 내지 않도록 `is True`로 판정한다.
+    """
+    text2sql = getattr(app_config, "text2sql", None)
+    return getattr(text2sql, "schema_table_select_skip_enabled", False) is True
+
+
+def _declared_tables_if_signal_inside(
+    manual_profile: dict[str, Any] | None,
+    full_schema: SchemaInfo,
+    query_syn_tables: set[str],
+) -> list[str] | None:
+    """질의의 테이블 신호가 프로필 선언 집합 안이면 그 집합(스키마 실명)을 돌려준다(plans/119 Q-5).
+
+    근거: 비알람 의도에서 2-2의 최종 집합은 ``선언 집합 ∪ (LLM 선택 ∩ 신호 테이블)``이다 —
+    보충 대상이 프로필 테이블뿐이고(plans/114 P-4①) 필터는 ``선언 ∪ 신호`` 밖을 버린다.
+    신호 테이블(스키마에 실재하는 것)이 전부 선언 집합 안이면 LLM이 무엇을 고르든 최종 집합은
+    선언 집합과 같다. run ``20260923-103638``에서 비알람 호출 321회 중 297회가 이 경우였다.
+
+    Returns:
+        선언 순서의 테이블 실명 목록. 선언이 없거나(프로필·``allowed_tables`` 부재), 스키마에
+        선언 테이블이 하나도 없거나, 신호가 선언 집합 밖이면 None — 호출부가 LLM을 부른다.
+    """
+    if not manual_profile or "allowed_tables" not in manual_profile:
+        return None
+    declared = [str(t).lower() for t in manual_profile.get("allowed_tables") or []]
+    declared_set = set(declared)
+    all_tables_map = {t.rsplit(".", 1)[-1].lower(): t for t in full_schema.tables.keys()}
+    outside = sorted(
+        t for t in query_syn_tables if t in all_tables_map and t not in declared_set
+    )
+    if outside:
+        logger.info(
+            "테이블 선택 LLM 유지(plans/119 Q-5): 선언 집합 밖 유사어 테이블 %s", outside,
+        )
+        return None
+    tables = list(dict.fromkeys(all_tables_map[b] for b in declared if b in all_tables_map))
+    if not tables:
+        return None
+    logger.info(
+        "테이블 선택 LLM 생략(plans/119 Q-5): 질의 신호가 선언 집합 안 — %s", tables,
+    )
+    return tables
+
+
 class _SchemaCacheProxy:
     """호환성 프록시: 기존 _schema_cache 심볼을 사용하는 코드를 위한 래퍼.
 
@@ -529,13 +609,35 @@ async def schema_analyzer(
             logger.debug("DEBUG[1] db_id=%s, full_schema tables: %s", db_id, list(full_schema.tables.keys()))
 
             # 2. LLM 기반 관련 테이블 선택
-            relevant = await _llm_select_relevant_tables(
-                llm,
-                full_schema,
-                query_targets,
-                parsed.get("original_query", ""),
-                routing_intent=state.get("routing_intent"),
-            )
+            # plans/119 Q-5(플래그 기본 off): 질의의 유사어 테이블 신호가 프로필 선언 집합
+            # (`allowed_tables`) 안이면 LLM을 부르지 않는다 — 아래 2-2 필터·보충의 결과가 그때는
+            # LLM 출력과 무관하게 선언 집합이다. 신호는 2-2에서 재사용한다(중복 조회·로그 방지).
+            _query_syn_tables: set[str] | None = None
+            relevant: list[str] | None = None
+            _intent = state.get("routing_intent")
+            if _table_select_skip_enabled(app_config) and _intent != "alarm_query":
+                _skip_prof = _load_manual_profile(db_id)
+                if _skip_prof and "allowed_tables" in _skip_prof:
+                    try:
+                        _query_syn_tables = await _query_synonym_tables(
+                            cache_mgr, db_id, parsed, query_targets, app_config,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "테이블 선택 생략 판정 불가(유사어 조회 실패) — LLM 선택: %s", e,
+                        )
+                    else:
+                        relevant = _declared_tables_if_signal_inside(
+                            _skip_prof, full_schema, _query_syn_tables,
+                        )
+            if relevant is None:
+                relevant = await _llm_select_relevant_tables(
+                    llm,
+                    full_schema,
+                    query_targets,
+                    parsed.get("original_query", ""),
+                    routing_intent=state.get("routing_intent"),
+                )
             # ★ DEBUG[2]: LLM이 선택한 테이블 확인
             logger.debug("DEBUG[2] LLM selected relevant: %s (query_targets=%s)", relevant, query_targets)
 
@@ -557,30 +659,24 @@ async def schema_analyzer(
             _routing_intent = state.get("routing_intent")
             if _manual_prof and "allowed_tables" in _manual_prof and _routing_intent != "alarm_query":
                 _allowed = {t.lower() for t in _manual_prof["allowed_tables"]}
+                # 강제 보충 대상은 **수동 프로필에 적힌 테이블만**이다(plans/114 P-4①).
+                # 아래에서 `_allowed` 에 유사어 매칭 테이블이 합쳐지는데, 그것까지 보충하면
+                # LLM 이 고르지 않은 잡음 테이블이 relevant 로 들어온다 — 폐쇄망 실측에서
+                # 보충 557회 중 61회가 화이트리스트 밖 테이블이었고(`sms_*_file_info`·
+                # `rep_document`·`core_schema_ver`), 그 테이블의 샘플 수집이 예산을 태웠다
+                # (§2.8-②⑤). 유사어 테이블은 **허용만** 한다 — 멀티 게이트
+                # (`multi_db_executor._scope_multi_schema`)가 필터만 하고 보충하지 않는 것과 같다.
+                _supplement_bare = set(_allowed)
                 # 매핑 피드백(synonyms)에 등록된 테이블을 allowed_tables에 동적 보완하되,
                 # **이번 질의 용어와 매칭된 유사어의 테이블만** 추가한다(D-051). 전량 추가하면
                 # 누적 유사어 전 테이블이 _allowed로 유입되어 relevant·프롬프트 토큰이 폭증한다
                 # (실측: b0 _allowed 5→407, relevant 400, system_prompt 104K > 95K 한도).
                 try:
-                    db_syns = await cache_mgr.get_synonyms(db_id)
-                    _match_text = (
-                        (parsed.get("original_query", "") or "")
-                        + " "
-                        + " ".join(query_targets or [])
-                    ).lower()
-                    # E5-3: 보완 상한을 config에서 읽는다(모듈 상수 하드코딩 대체, 기본 15).
-                    # E5-1: fuzzy 플래그 ON 시 유연 근사 매칭 병행(기본 OFF → 정확 부분어만).
-                    # E5-4: semantic 플래그 ON 시 임베딩 의미 검색을 계단 마지막 단으로 병행(D-084).
-                    _syn_cfg = app_config.synonym
-                    _allowed |= _synonym_tables_matching_query(
-                        db_syns,
-                        _match_text,
-                        cap=_syn_cfg.max_synonym_supplement_tables,
-                        fuzzy=_syn_cfg.fuzzy_match,
-                        min_score=_syn_cfg.match_confidence_min,
-                        semantic=_syn_cfg.semantic_match,
-                        semantic_min=_syn_cfg.semantic_confidence_min,
-                    )
+                    if _query_syn_tables is None:
+                        _query_syn_tables = await _query_synonym_tables(
+                            cache_mgr, db_id, parsed, query_targets, app_config,
+                        )
+                    _allowed |= _query_syn_tables
                 except Exception as e:
                     logger.warning("synonyms 테이블 allowed_tables 동적 보완 실패: %s", e)
                 # ★ DEBUG[4]: 필터링 조건 확인
@@ -601,7 +697,7 @@ async def schema_analyzer(
                 for t in full_schema.tables.keys():
                     _all_tables_map[t.rsplit(".", 1)[-1].lower()] = t
 
-                for allowed_bare in _allowed:
+                for allowed_bare in _supplement_bare:
                     if allowed_bare not in _filtered_bare:
                         full_name = _all_tables_map.get(allowed_bare)
                         if full_name:

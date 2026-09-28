@@ -125,44 +125,139 @@ settings:
     example: >-
       은행존(DB2) 질의에서 SQL 생성 한 번이 약 20초 걸리고 검증 실패로 재생성이 한 번 붙자, 60초 상한에서
       결과 없이 끊겼다(2026-09-21). 상위 타임아웃이 하위 단계의 합보다 작으면 이렇게 하위 단계가 끝나기 전에 전체가 먼저 끊긴다. 그러면 실패 원인이 '전체 시간 초과'로만 남아 어느 단계가
-      느렸는지 알 수 없다 — 상위 타임아웃은 하위의 합보다 커야 한다.
-    summary: 일반 질의 하나에 허용하는 전체 시간(초).
+      느렸는지 알 수 없다 — 상위 타임아웃은 하위의 합보다 커야 한다. 또 이 상한이 요청 전체를 재던 때(run
+      20260923-103638, 240초)는 타임아웃 20턴 중 12턴이 데이터를 확보한 뒤 서술 중에, 그중 7턴은 답을
+      스트리밍하던 중에 끊겼다 — 그래서 2026-09-28부터 첫 답변까지만 잰다.
+    summary: 일반 질의에서 첫 답변(표 또는 첫 토큰)이 나가기까지 허용하는 처리 시간(초).
     behavior: >-
-      그래프 실행 전체를 감싸는 상한이다 — LLM 호출·DB 조회·재시도를 모두 합쳐
-      이 시간을 넘기면 중단된다.
+      요청을 받은 뒤 **첫 답변이 나가기 전까지**의 상한이다 — 파싱·계획·SQL 생성과 재시도·실행·재계획·
+      서술 시작이 모두 이 안에 든다. 넘기면 중단하고, 이미 조회한 행이 있으면 오류 대신 결정적 표로
+      답한다. 스트리밍 응답은 첫 답변이 나간 뒤 이 값으로 끊지 않는다 — 토큰 간 idle 상한
+      (API_STREAM_IDLE_TIMEOUT_SEC)과 전체 상한(이 값 + API_STREAM_DELIVERY_GRACE_SEC)으로만 끊는다.
+      스트리밍이 아닌 응답(`/query`)은 첫 답변 개념이 없어 이 값이 곧 전체 상한이다. 요청 안의 조회
+      단계는 이 마감에서 서술 예약(API_ANSWER_RESERVE_SEC)을 뺀 시각을 조회 마감으로 본다.
     options:
       - value: "120"
         label: 기본
-        effect: 2분. SQL 재생성 1~2회가 붙은 질의도 완주한다(2026-09-21 60→120).
+        effect: 2분 안에 첫 답변이 나가야 한다. SQL 재생성 1~2회가 붙은 질의도 첫 답변까지 간다(2026-09-21 60→120).
       - value: "60"
-        effect: 재생성이 한 번만 붙어도 끊길 수 있다(은행존 DB2 실측 60.6초 중단).
+        effect: 재생성이 한 번만 붙어도 첫 답변 전에 끊길 수 있다(은행존 DB2 실측 60.6초 중단).
       - value: "20 이하"
-        effect: 복합 질의나 재시도가 붙은 질의가 자주 중단된다.
+        effect: 복합 질의나 재시도가 붙은 질의가 첫 답변 전에 자주 중단된다.
       - value: "180 이상"
-        effect: 대부분 완주하지만 사용자가 3분을 기다린다. 동시 사용자가 많으면 처리량이 떨어진다.
-    performance: 이 시간 동안 처리 슬롯이 점유된다 — 동시 요청 수에 직접 영향을 준다.
-    stability: 하위 타임아웃(LLM·MCP)의 합보다 커야 원인이 하위에서 먼저 드러난다.
-    related: [API_FILE_QUERY_TIMEOUT, DBHUB_MCP_CALL_TIMEOUT, LLM_OLLAMA_TIMEOUT]
+        effect: >-
+          대부분 첫 답변까지 가지만 사용자가 첫 화면을 3분까지 기다린다. 스트리밍 전체 상한(이 값 +
+          전달 연장)도 함께 늘어난다. 동시 사용자가 많으면 처리량이 떨어진다.
+    performance: 이 시간(스트리밍이면 첫 답변 뒤 전달 시간까지) 동안 처리 슬롯이 점유된다 — 동시 요청 수에 직접 영향을 준다.
+    stability: >-
+      하위 타임아웃(LLM·MCP)의 합보다 커야 원인이 하위에서 먼저 드러난다. 첫 답변 뒤 스트리밍이
+      끊기는 문제는 이 값이 아니라 API_STREAM_IDLE_TIMEOUT_SEC·API_STREAM_DELIVERY_GRACE_SEC로 조정한다.
+    caveats:
+      - >-
+        2026-09-28(D-267 ⑦)부터 뜻이 "요청 전체 상한"에서 "첫 답변까지의 처리 상한"으로 바뀌었다. .env에
+        값을 적어 둔 설치는 값이 같아도 스트리밍 응답이 더 오래 이어질 수 있다(최대 이 값 +
+        API_STREAM_DELIVERY_GRACE_SEC). 배포 시 운영자에게 알리고, 이전 측정의 타임아웃률과 직접 비교하지 않는다.
+    related: [API_FILE_QUERY_TIMEOUT, API_STREAM_IDLE_TIMEOUT_SEC, API_STREAM_DELIVERY_GRACE_SEC, API_ANSWER_RESERVE_SEC, DBHUB_MCP_CALL_TIMEOUT, LLM_OLLAMA_TIMEOUT]
 
   API_FILE_QUERY_TIMEOUT:
     example: >-
       열이 30개인 월간 보고서 양식은 필드마다 매핑 판단이 붙어 LLM 호출이 수십 번 일어난다. 일반 질의 타임아웃(120초)과 같게 두면 큰 양식은 중단되므로 별도로 넉넉히 잡아 둔
       것이다.
-    summary: 양식 파일을 올린 질의에 허용하는 전체 시간(초).
+    summary: 양식 파일을 올린 질의(와 폼필 역질문 답변 턴)에서 첫 답변이 나가기까지 허용하는 처리 시간(초).
     behavior: >-
       엑셀·워드 양식을 채우는 경로는 필드마다 매핑 판단이 붙어 LLM 호출이 많다.
-      그래서 일반 질의보다 넉넉하게 따로 잡는다.
+      그래서 일반 질의보다 넉넉하게 따로 잡는다. 채우지 못한 항목 역질문에 답한 턴도 양식 전체를
+      다시 채우므로 이 값을 쓴다. 뜻은 API_QUERY_TIMEOUT과 같다 — 첫 답변 전까지의 상한이고, 스트리밍
+      응답은 첫 답변 뒤 토큰 간 idle·전달 연장 상한으로만 끊는다. 스트리밍이 아닌 `/query/file`은
+      이 값이 곧 전체 상한이다.
     options:
       - value: "120"
         label: 기본
-        effect: 2분. 문서 생성 60초 목표에 재시도 여유를 더한 값이다.
+        effect: 2분 안에 첫 답변이 나가야 한다. 문서 생성 60초 목표에 재시도 여유를 더한 값이다.
       - value: "60"
-        effect: 필드가 많은 양식이 완료 전에 끊긴다.
+        effect: 필드가 많은 양식이 첫 답변 전에 끊긴다.
       - value: "600 이상"
-        effect: 큰 양식도 완주하지만 한 요청이 10분간 슬롯을 점유한다.
+        effect: 큰 양식도 완주하지만 한 요청이 10분 넘게 슬롯을 점유한다.
     performance: 양식 처리는 원래 무거운 경로다 — 동시에 여러 건이 들어오면 서버 부하가 크다.
     stability: 중단되면 산출물이 나오지 않는다. 실패 사유는 응답에 노출되므로 조용히 빈 파일이 나가지는 않는다.
-    related: [API_QUERY_TIMEOUT, QUERY_FORM_MEMORY_TTL_DAYS]
+    caveats:
+      - >-
+        2026-09-28(D-267 ⑦)부터 뜻이 "요청 전체 상한"에서 "첫 답변까지의 처리 상한"으로 바뀌었다
+        (API_QUERY_TIMEOUT과 같은 변경). 배포 시 운영자에게 알린다.
+    related: [API_QUERY_TIMEOUT, API_STREAM_DELIVERY_GRACE_SEC, QUERY_FORM_MEMORY_TTL_DAYS]
+
+  API_ANSWER_RESERVE_SEC:
+    summary: 첫 답변 마감 안에서 서술(요약) 단계 몫으로 남겨 두는 시간(초).
+    behavior: >-
+      조회 마감 = 처리 마감(요청 시각 + API_QUERY_TIMEOUT 또는 API_FILE_QUERY_TIMEOUT) − 이 값이다.
+      조회 단계(SQL 재생성·재계획 후속)는 조회 마감을 넘겨 새 LLM 작업을 시작하지 않고, 조회 단계의
+      호출 상한도 조회 마감까지 남은 시간으로 줄어든다. 서술 단계는 처리 마감까지 쓴다. 플래그 없이
+      기본 동작이다(D-267 ⑥). 1차는 설정 상수이고 적응형 값은 재측정 뒤 다시 판단한다.
+    example: >-
+      처리 상한 120초에 이 값이 15면, 조회 단계는 요청 후 105초를 넘겨 재생성·재계획을 새로 시작하지
+      않는다. run 20260923-103638에서는 재계획 루프가 조회 예산을 다 써 서술에 쓸 시간이 남지 않은 채
+      끊긴 턴이 8건이었다.
+    options:
+      - value: "15"
+        label: 기본
+        effect: 요약 2~3줄을 가정한 추정값이다. 단계 타임라인(첫 답변 시각) 실측 p90으로 다시 정한다.
+      - value: "0"
+        effect: 조회 마감 = 처리 마감. 조회가 상한 직전까지 이어져 서술 전에 끊기기 쉽다(종전과 비슷하다).
+      - value: "30 이상"
+        effect: 서술 몫이 넉넉하지만 조회 단계의 재시도·재계획이 일찍 멈춘다.
+    performance: LLM 호출이 늘지 않는다. 값이 크면 재시도·재계획이 줄어 느린 턴이 짧아질 수 있다.
+    stability: >-
+      처리 상한보다 충분히 작아야 한다. 같거나 크면 조회 마감이 요청 직후가 되어 재생성·재계획이
+      사실상 꺼진다.
+    related: [API_QUERY_TIMEOUT, API_FILE_QUERY_TIMEOUT, MAX_REPLAN, REPLAN_BUDGET_PROMPT_ENABLED]
+
+  API_STREAM_IDLE_TIMEOUT_SEC:
+    summary: 스트리밍 응답에서 첫 답변이 나간 뒤 답변 토큰 사이에 허용하는 최대 공백(초).
+    behavior: >-
+      첫 답변(코드가 그린 표 또는 첫 토큰)이 나간 뒤에는 처리 상한으로 끊지 않고, 마지막 답변 토큰
+      이후 이 시간 동안 새 토큰이 없을 때 끊는다. heartbeat·진행 표시는 이 시계를 되돌리지 않는다 —
+      답변 토큰만 되돌린다. 끊으면 그때까지 보낸 답변을 그대로 두고 끊은 사유 한 줄을 붙인다(상태
+      partial). 표가 아직 나가지 않았고 조회한 행이 있으면 결정적 표를 덧붙인다. 0이면 이 상한을
+      쓰지 않는다(전체 상한만 남는다). 스트리밍이 아닌 응답에는 쓰이지 않는다.
+    example: >-
+      서술 LLM이 답의 앞부분을 보낸 뒤 게이트웨이 정체로 멈추면, 종전에는 요청 후 상한이 될 때까지
+      기다렸다가 오류(행이 있으면 받은 서술 대신 표만 남는 부분 결과)로 끝났다. 이 값이 30이면 멈춘
+      지 30초 뒤에 받은 부분과 「답변 생성이 30초 동안 멈춰 여기서 끊었습니다」를 남기고 끝낸다.
+    options:
+      - value: "30"
+        label: 기본
+        effect: 정상 스트리밍의 토큰 간격(1초 미만)과 요약 LLM의 첫 토큰 지연을 넉넉히 덮는다.
+      - value: "10 이하"
+        effect: 표를 먼저 보낸 뒤 요약 LLM이 첫 토큰을 늦게 내는 정상 응답까지 끊길 수 있다.
+      - value: "60 이상"
+        effect: 멈춘 응답을 오래 붙잡는다. 전체 상한에 먼저 닿을 수 있다.
+      - value: "0"
+        effect: 토큰 간 공백으로 끊지 않는다. 멈춘 응답은 전체 상한에서만 끊긴다.
+    performance: 판정 비용은 없다.
+    stability: 표를 먼저 보내고 요약을 이어 쓰는 응답에서는 요약 LLM의 첫 토큰 지연이 이 값 안에 들어와야 한다.
+    related: [API_QUERY_TIMEOUT, API_STREAM_DELIVERY_GRACE_SEC, API_SSE_HEARTBEAT_INTERVAL_SEC]
+
+  API_STREAM_DELIVERY_GRACE_SEC:
+    summary: 처리 상한에 더해 답변 전달에 허용하는 연장 시간(초) — 둘을 합한 값이 스트리밍 요청의 전체 상한이다.
+    behavior: >-
+      전체 상한 = 처리 상한(API_QUERY_TIMEOUT 또는 API_FILE_QUERY_TIMEOUT) + 이 값이고 요청 시작부터
+      잰다. 첫 답변 뒤 토큰이 계속 흘러 토큰 간 idle 상한에 걸리지 않아도 이 시각이 되면 끊는다 — 무한
+      대기 방지다(D-242). 끊으면 보낸 답변에 사유 한 줄을 붙인다(상태 partial). 첫 답변 전에는 처리
+      상한이 먼저 걸리므로 영향이 없다. 스트리밍이 아닌 응답에는 쓰이지 않는다.
+    example: >-
+      처리 상한 120초에 이 값이 60이면, 115초에 첫 답변이 나간 긴 응답은 180초까지 이어질 수 있고
+      거기서 「답변 전달이 전체 상한 180초(처리 상한 120초 + 전달 연장 60초)를 넘어 여기서 끊었습니다」로 끝난다.
+    options:
+      - value: "60"
+        label: 기본
+        effect: 처리 상한 직전에 시작한 답변에도 1분의 전달 시간을 준다.
+      - value: "0"
+        effect: 첫 답변 뒤에는 남은 처리 상한만큼만 전달한다. 상한 직전에 답이 시작되면 거의 바로 끊긴다(종전 단일 상한과 비슷하다).
+      - value: "180 이상"
+        effect: 긴 서술도 끝까지 가지만 한 요청이 슬롯을 오래 점유한다.
+    performance: 이 시간만큼 한 요청의 최대 점유 시간이 늘어난다.
+    stability: 토큰 속도가 느린 모델(로컬 대형 모델 등)을 쓰면 긴 답이 이 상한에 걸릴 수 있다 — 그때 늘린다.
+    related: [API_QUERY_TIMEOUT, API_FILE_QUERY_TIMEOUT, API_STREAM_IDLE_TIMEOUT_SEC]
 
   API_SSE_PROGRESS_EVENTS:
     example: >-
@@ -190,8 +285,10 @@ settings:
     summary: 무이벤트 구간에 heartbeat를 보내는 주기(초).
     behavior: >-
       마지막 이벤트 뒤 이 시간 동안 새 이벤트가 없으면 heartbeat를 하나 보낸다. 0이면
-      보내지 않는다. 무이벤트 상한(API_QUERY_TIMEOUT 등)의 의미는 그대로다 — heartbeat는
-      상한 카운트를 되돌리지 않는다.
+      보내지 않는다. heartbeat는 어떤 상한도 되돌리지 않는다 — 첫 답변 전 처리 상한
+      (API_QUERY_TIMEOUT 등)은 요청 시작부터, 첫 답변 뒤 토큰 간 idle 상한(API_STREAM_IDLE_TIMEOUT_SEC)은
+      마지막 답변 토큰부터 잰다. 상한 판정은 heartbeat와 별개로 제때 일어난다 — 0으로 꺼도 판정이
+      다음 이벤트 도착까지 밀리지 않는다.
     options:
       - value: "5"
         label: 기본
@@ -202,7 +299,7 @@ settings:
         effect: heartbeat 없음. 조용한 구간에서는 정지 판정이 늦어진다.
     performance: 연결마다 주기당 수십 바이트. 동시 접속이 수백이 아니면 체감 없음.
     stability: 하트비트 자체는 판정에 쓰이지 않으므로 값이 커도 타임아웃이 빨라지거나 늦어지지 않는다.
-    related: [API_SSE_PROGRESS_EVENTS, API_QUERY_TIMEOUT]
+    related: [API_SSE_PROGRESS_EVENTS, API_QUERY_TIMEOUT, API_STREAM_IDLE_TIMEOUT_SEC]
 
   API_SSE_GROUP_PREVIEW_ROWS:
     example: >-

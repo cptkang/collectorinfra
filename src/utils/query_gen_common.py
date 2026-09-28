@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 from collections.abc import Mapping
@@ -1655,10 +1656,72 @@ def extract_sql_from_llm_response(content: str) -> str:
 # 레거시 경로(semantic_router, infrastructure 계층)가 후단 게이트에서 같은 목록을
 # 써야 해 계층 규칙(infrastructure→application 금지)상 utils로 내렸다.
 # input_parser가 re-export하므로 기존 임포트 지점은 그대로 동작한다.
-LOCATION_HINT_TERMS: tuple[str, ...] = ("공동존", "김포", "여의도", "은행", "레거시", "은행존")
+# 개발·스테이징·DR은 여의도 폴스타의 기준 용어다(D-271).
+LOCATION_HINT_TERMS: tuple[str, ...] = (
+    "공동존", "김포", "운영", "여의도", "개발", "스테이징", "DR", "은행", "레거시", "은행존",
+)
 
 # 존 역질문 스킵 신호 — 위치어 + 제품/DB 표면어(사용자가 대상을 이미 지목한 형태).
 ZONE_SKIP_SIGNAL_TERMS: tuple[str, ...] = (*LOCATION_HINT_TERMS, "폴스타", "polestar")
+
+_LATIN_ALNUM = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+
+def _is_latin_term(term: str) -> bool:
+    return bool(term) and all(ch in _LATIN_ALNUM for ch in term)
+
+
+# 한글 표면어 뒤에 이 꼬리(정규식)가 오면 다른 뜻의 말이라 위치로 보지 않는다(D-271).
+# "운영체제"(OS)는 OSType·OSVerson의 공식 별칭이다. "운영 중"·"운영중"(상태)·"운영자"·"운영팀"은
+# 김포가 아니라 상태·사람·조직이다 — 김포로 좁히면 존 역질문이 생략되고 여의도가 빠진다
+# (사용자 확정 2026-09-28 「넷 다 제외」). "운영 중요"처럼 "중" 뒤에 "요"가 오면 제외하지 않는다.
+_TERM_EXCLUDED_TAILS: dict[str, tuple[str, ...]] = {
+    "운영": ("체제", "자", "팀", r"\s*중(?!요)"),
+}
+
+
+def excluded_tail_lookahead(term: str) -> str:
+    """표면어의 제외 꼬리를 부정 전방탐색으로 만든다(없으면 빈 문자열) — 정규식 소비처용."""
+    tails = _TERM_EXCLUDED_TAILS.get(term, ())
+    return "(?!" + "|".join(tails) + ")" if tails else ""
+
+
+@functools.lru_cache(maxsize=256)
+def _term_re(term: str) -> re.Pattern[str] | None:
+    """부분 문자열 판정으로 부족한 표면어의 정규식(라틴 단어 경계 · 제외 꼬리). 없으면 None."""
+    if _is_latin_term(term):
+        return re.compile(rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])", re.IGNORECASE)
+    lookahead = excluded_tail_lookahead(term)
+    if lookahead:
+        return re.compile(re.escape(term) + lookahead)
+    return None
+
+
+def term_in_text(term: str, text: str) -> bool:
+    """표면어가 텍스트에 있는가 — 위치·DB 표면어 판정의 공용 규칙(D-271).
+
+    라틴 문자·숫자로만 된 표면어(DR 등)는 앞뒤가 라틴 문자·숫자가 아닐 때만 맞고 대소문자를
+    무시한다 — "DRM"·"ADDRESS"가 여의도로 오라우팅되지 않게 한다. 한글 조사는 바로 붙으므로
+    ("DR도"·"DR서버") 경계로 보지 않는다. 한글 표면어는 종전과 같은 부분 문자열 판정이되,
+    다른 뜻의 복합어("운영체제")에 든 것은 세지 않는다.
+    """
+    if not term or not text:
+        return False
+    pattern = _term_re(term)
+    if pattern is not None:
+        return pattern.search(text) is not None
+    return term in text
+
+
+def remove_term(text: str, term: str, repl: str = " ") -> str:
+    """`term_in_text`와 같은 규칙으로 표면어를 지운다(라틴 단어 경계 · 제외 복합어 보존)."""
+    if not term or not text:
+        return text
+    pattern = _term_re(term)
+    if pattern is not None:
+        return pattern.sub(repl, text)
+    return text.replace(term, repl)
+
 
 # 서버 식별자로 인정할 filter_conditions field (종전 canonical: process_query._HOST_FIELDS —
 # 존 게이트가 routing 계층에서도 필요해 utils로 내림, process_query가 re-export).
@@ -1755,6 +1818,210 @@ def has_host_identifier_filter(parsed_requirements: dict | None) -> bool:
     return False
 
 
+# ── 생략형 후속 턴 승계 (plans/120 PL-1 · G-4 (a)) ────────────────────────────────
+# 지시어("해당·그 서버") 없이 첨가 표지만 있는 후속 턴("네 그럼 메모리도 보여줘")은 종전에
+# 승계되지 않아 전 서버를 조회했다(run 20260923-140539 G-01 t3). 직전 턴이 서버 1대로 좁혀져
+# 있었을 때만 그 서버를 잇는다. 지시어 없는 턴에 엔티티 표본을 넣으면 대량 후속이 표본으로
+# 축소되므로(2026-08-04 실측) 아래 조건을 **전부** 충족할 때만 발동하고, 응답에 고지를 싣는다.
+
+#: parsed_requirements에 승계 사실을 남기는 키 — output_generator가 이 값으로 고지를 붙인다.
+#: 2단은 `_build_output_state`가 parsed_requirements를 넘기므로 같은 키가 그대로 닿는다.
+ELLIPTICAL_SUCCESSION_KEY = "elliptical_succession"
+#: 담화 표지 — 앞 턴을 이어받는 말(낱말 단위 일치).
+ELLIPTICAL_DISCOURSE_MARKERS: tuple[str, ...] = ("그럼", "그러면")
+#: '도'로 끝나지만 첨가 조사가 아닌 명사 — 한자어 '-도(度)' 계열 등(오탐 방지).
+_DO_ENDING_NOUNS: tuple[str, ...] = (
+    "온도", "속도", "정도", "빈도", "용도", "한도", "각도", "강도", "밀도", "습도", "농도",
+    "고도", "경도", "위도", "지도", "제도", "시도", "진도", "척도", "태도",
+    "심각도", "중요도", "난이도", "만족도", "신뢰도", "정확도", "유사도", "포화도",
+    "혼잡도", "가용도", "민감도", "활용도", "완성도", "기여도",
+)
+#: '도'로 끝나는 비첨가 형태 — 연결어미("-어도·-아도·-라도")와 부정 극어("아무도").
+_DO_ENDING_NON_ADDITIVE: tuple[str, ...] = (
+    "어도", "아도", "여도", "해도", "봐도", "줘도", "돼도", "되도", "워도", "져도",
+    "라도", "래도", "아무도", "누구도", "어디도", "하나도", "조금도",
+)
+#: 전역 조회 신호 — `refers_to_demonstrative_server`와 같은 어휘.
+_GLOBAL_SCOPE_TERMS: tuple[str, ...] = ("전체", "모든", "모두")
+#: filter_conditions에서 새 식별자로 보는 IP 계열 field(서버 식별 field 밖).
+_IP_IDENTIFIER_FIELDS: tuple[str, ...] = ("ip", "ip_address", "ipaddress")
+#: hostname 종류 field — 나머지 서버 식별 field는 서버명 종류다(`prior_targets`와 같은 구분).
+_HOSTNAME_KIND_FIELDS: frozenset[str] = frozenset({"hostname", "host_name", "호스트명"})
+#: 원문의 새 식별자 표면형 — IPv4 · 구분자가 든 영문 이름(`app-01`) · 영문+숫자(`db01`).
+#: 파서가 식별 필터로 못 뽑았을 때 직전 서버로 덮어쓰지 않기 위한 보강이다.
+_NEW_IDENTIFIER_TOKEN = re.compile(
+    r"(?<![0-9A-Za-z])(?:\d{1,3}(?:\.\d{1,3}){3}"
+    r"|[A-Za-z][A-Za-z0-9]*[-_][A-Za-z0-9][A-Za-z0-9_-]*"
+    r"|[A-Za-z]+\d[A-Za-z0-9]*)"
+)
+_WORD_TOKEN = re.compile(r"[0-9A-Za-z가-힣]+")
+#: 서버 집합을 고르거나 나누는 낱말(접두 일치) — 순위·목록·나머지 등. `top`은 소문자로 비교한다.
+_SET_SELECTION_PREFIXES: tuple[str, ...] = (
+    "상위", "하위", "top", "순위", "정렬", "목록", "리스트", "나머지", "다른",
+)
+_SET_SELECTION_WORDS: frozenset[str] = frozenset({"각", "각각"})
+#: '~별' 앞말 — 이 앞말이면 한 서버 안의 시간 구간이라 집합 분할이 아니다("일별도 보여줘").
+_TIME_BUCKET_STEMS: frozenset[str] = frozenset({
+    "일", "일자", "날짜", "요일", "주", "월", "년", "연", "연도", "분기", "시간", "분",
+})
+_BY_SUFFIX = re.compile(r"(.+?)별")
+#: 한 서버 안의 흐름으로 읽히는 집계(파서 `aggregation` 값). 나머지(top_n·group_by 등)는
+#: 서버 집합에 대한 연산이다.
+_PER_ENTITY_AGGREGATIONS: frozenset[str] = frozenset({"time_series"})
+
+
+def _selects_server_set(text: str, parsed: Mapping[str, Any]) -> bool:
+    """이번 턴이 서버 집합을 스스로 지목하거나 고르는가 — 그러면 생략형이 아니다(ⓕ·ⓖ).
+
+    ⓕ 서버 계열 명사(`DEMONSTRATIVE_NOUNS`)가 원문에 있다 — 생략형은 대상 명사 자체가 빠진
+       턴이다("그럼 메모리도 보여줘"). "다른 서버도"·"WAS 서버도"는 새 집합을 지목한다.
+    ⓖ 선택·집계 신호 — 식별 필드 밖 `filter_conditions`(임계·OS 등) · `limit` · 시계열 밖
+       `aggregation` · 원문의 순위·집합어(상위·목록·나머지·~별·각 등).
+    """
+    if any(noun in text for noun in DEMONSTRATIVE_NOUNS):
+        return True
+    if parsed.get("limit") is not None:
+        return True
+    aggregation = parsed.get("aggregation")
+    if aggregation and str(aggregation).strip().lower() not in _PER_ENTITY_AGGREGATIONS:
+        return True
+    for cond in parsed.get("filter_conditions") or []:
+        if not isinstance(cond, dict):
+            return True
+        field = str(cond.get("field", "")).lower()
+        if field in HOST_IDENTIFIER_FIELDS or field in _IP_IDENTIFIER_FIELDS:
+            continue  # 식별 필터는 ⓑ가 본다(지시어 값은 선택이 아니다)
+        return True
+    for token in _WORD_TOKEN.findall(text):
+        if token.lower().startswith(_SET_SELECTION_PREFIXES) or token in _SET_SELECTION_WORDS:
+            return True
+        by = _BY_SUFFIX.search(token)
+        if by and by.group(1) not in _TIME_BUCKET_STEMS:
+            return True
+    return False
+
+
+def _has_additive_marker(text: str) -> bool:
+    """첨가 표지 — 담화 표지("그럼"·"그러면") 또는 낱말에 붙은 첨가 조사 '도'("메모리도")."""
+    for token in _WORD_TOKEN.findall(text):
+        if token in ELLIPTICAL_DISCOURSE_MARKERS:
+            return True
+        if len(token) < 2 or not token.endswith("도"):
+            continue
+        if token[:-1].isdigit():  # "30도" — 수치 단위
+            continue
+        if token.endswith(_DO_ENDING_NOUNS) or token.endswith(_DO_ENDING_NON_ADDITIVE):
+            continue
+        return True
+    return False
+
+
+def _has_new_identifier(text: str, parsed: Mapping[str, Any]) -> bool:
+    """이번 턴이 새 대상을 지목했는가 — 서버·IP 식별 필터 또는 원문의 식별자 표면형."""
+    if has_host_identifier_filter(dict(parsed)):
+        return True
+    for cond in parsed.get("filter_conditions") or []:
+        if (
+            isinstance(cond, dict)
+            and str(cond.get("field", "")).lower() in _IP_IDENTIFIER_FIELDS
+            and cond.get("value")
+        ):
+            return True
+    return bool(_NEW_IDENTIFIER_TOKEN.search(text))
+
+
+def _single_previous_entity(
+    conversation_context: Mapping[str, Any] | None,
+) -> tuple[str, str] | None:
+    """직전 턴이 서버 1대로 좁혀졌으면 (주입 field, 값), 아니면 None.
+
+    `previous_entities_complete`(context_resolver)는 엔티티가 직전 턴 결과 **전체**를 담는다는
+    표지다 — sticky 승계분이거나 행 상한 표본이면 발동하지 않는다. 해소 규칙은 지시어 경로
+    (`prior_targets.resolve_targets` ③)와 같다 — 같은 종류의 값이 둘이면 서로 다른 서버이고,
+    hostname·서버명 한 쌍은 한 서버의 두 표기다. 주입 field는 해소된 식별자 종류를 따른다 —
+    hostname이 있으면 hostname, 서버명뿐이면 name(D-148 · D-046).
+    """
+    ctx = conversation_context or {}
+    if not ctx.get("previous_entities_complete"):
+        return None
+    hostnames: list[str] = []
+    names: list[str] = []
+    for entity in ctx.get("previous_entities") or []:
+        if not isinstance(entity, Mapping):
+            continue
+        field = str(entity.get("field", "")).strip().lower()
+        if field not in HOST_IDENTIFIER_FIELDS:
+            continue
+        value = entity.get("value")
+        if is_demonstrative_identifier(value):
+            continue
+        bucket = hostnames if field in _HOSTNAME_KIND_FIELDS else names
+        text = str(value).strip()
+        if text not in bucket:
+            bucket.append(text)
+    if len(hostnames) > 1 or len(names) > 1 or not (hostnames or names):
+        return None
+    return ("hostname", hostnames[0]) if hostnames else ("name", names[0])
+
+
+def elliptical_succession_filter(
+    text: str,
+    parsed_requirements: Mapping[str, Any] | None,
+    conversation_context: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """생략형 후속 턴이면 직전 서버의 식별 필터를, 아니면 None을 돌려준다 (plans/120 PL-1).
+
+    발동 조건(전부):
+      ⓐ 직전 턴이 단일 엔티티 스코프 — 엔티티가 직전 결과 전체를 담고 서버 1대로 해소된다.
+      ⓑ 이번 턴에 새 식별자가 없다 — 서버·IP 식별 필터도, 원문의 식별자 표면형도 없다.
+      ⓒ 이번 턴에 위치어가 없다(`target_db_hints` · 위치 표면어).
+      ⓓ 이번 턴에 "전체·모든·모두"가 없다.
+      ⓔ 이번 턴에 지시어가 없고 첨가 표지("~도" · "그럼"·"그러면")가 있다 — 지시어 턴은 종전
+         경로(2단 `_inject_demonstrative_hostname` · 노드 `demonstrative_entity_scope`)가 잇는다.
+      ⓕ 이번 턴 원문에 서버 계열 명사가 없다 — 대상 명사 자체가 빠진 턴만 생략형이다.
+      ⓖ 이번 턴에 선택·집계 신호가 없다 — 식별 필드 밖 필터 · `limit` · 시계열 밖 집계 ·
+         순위·집합어(상위·하위·top·순위·정렬·목록·리스트·나머지·다른·~별·각).
+      그리고 조회 대상이 파싱된 질의다(잡담성 턴 제외 — 존 역질문 게이트와 같은 기준).
+
+    Args:
+        text: 이번 턴 사용자 원문
+        parsed_requirements: 이번 턴 파싱 결과
+        conversation_context: context_resolver가 채운 직전 턴 맥락
+
+    Returns:
+        ``{"field", "op": "=", "value"}`` 또는 None
+    """
+    text = text or ""
+    parsed = parsed_requirements or {}
+    if not parsed.get("query_targets"):
+        return None
+    if any(term in text for term in _GLOBAL_SCOPE_TERMS):
+        return None
+    if parsed.get("target_db_hints") or any(term_in_text(term, text) for term in LOCATION_HINT_TERMS):
+        return None
+    if refers_to_demonstrative_server(text) or not _has_additive_marker(text):
+        return None
+    if _has_new_identifier(text, parsed):
+        return None
+    if _selects_server_set(text, parsed):
+        return None
+    entity = _single_previous_entity(conversation_context)
+    if entity is None:
+        return None
+    field, value = entity
+    return {"field": field, "op": "=", "value": value}
+
+
+def render_elliptical_succession_note(marker: Any) -> str:
+    """생략형 승계 고지(침묵 승계 금지 · plans/120 PL-1). 승계가 없으면 빈 문자열."""
+    if not isinstance(marker, Mapping) or not marker.get("value"):
+        return ""
+    return (
+        f"**[직전 서버 기준]** 직전 서버 `{marker['value']}` 기준으로 조회했습니다 — "
+        "전체 서버는 '전체 서버 …'로 다시 요청하세요."
+    )
+
+
 # 존 선택지 — DB 라우팅 입도와 일치(D-143 §4.4). group은 존 그룹 상호배타(D-143 후속3):
 # 은행존(bank)과 공동존(common)은 담당 조직이 달라 동시 조회 실수요가 없고(사용자 확정
 # 2026-08-05), b0+gp 조합에서 FabriX PII 필터가 gp 생성 요청을 차단하는 미종결 이슈의
@@ -1781,7 +2048,7 @@ _ZONE_GROUP_BY_DB: dict[str, str] = {
 # LOCATION_HINT_TERMS의 그룹 분할(단일 출처 파생 — 사본 아님, 항목 추가 시 여기도 갱신).
 _ZONE_GROUP_TERMS: dict[str, tuple[str, ...]] = {
     "bank": ("은행존", "은행", "레거시"),
-    "common": ("공동존", "김포", "여의도"),
+    "common": ("공동존", "김포", "운영", "여의도", "개발", "스테이징", "DR"),
 }
 
 ZONE_CLARIFY_QUESTION = (
@@ -1818,7 +2085,7 @@ def has_mixed_zone_group_terms(text: str) -> bool:
     """
     t = text or ""
     return all(
-        any(term in t for term in terms) for terms in _ZONE_GROUP_TERMS.values()
+        any(term_in_text(term, t) for term in terms) for terms in _ZONE_GROUP_TERMS.values()
     )
 
 
@@ -1872,9 +2139,18 @@ _ZONE_LABEL_BY_DB: dict[str, str] = {
 # 존 열거 구간: 존 표면어로 시작해 접속어·존 표면어·"센터" 표기가 이어지는 최장 span.
 # 예: "은행존 및 공동존 여의도 센터" / "공동존 김포와 여의도". 바깥 조사("…센터의")는
 # span에 포함하지 않아 치환 후 자연스럽게 이어진다("은행존" + "의 모든 서버…").
+_ZONE_ENUM_DR = r"(?<![A-Za-z0-9])DR(?![A-Za-z0-9])"  # 라틴 표면어는 단어 경계(D-271)
+_ZONE_ENUM_OP = "운영" + excluded_tail_lookahead("운영")  # 운영체제·운영 중 등 제외(D-271)
+_ZONE_ENUM_HEAD = (
+    rf"(?:은행존|공동존|김포|{_ZONE_ENUM_OP}|여의도|개발|스테이징|{_ZONE_ENUM_DR}|레거시)"
+)
+_ZONE_ENUM_TAIL = (
+    rf"(?:은행존|공동존|은행|레거시|김포|{_ZONE_ENUM_OP}|여의도|개발|스테이징|{_ZONE_ENUM_DR}"
+    r"|센터|센타)"
+)
 _ZONE_ENUM_RE = re.compile(
-    r"(?:은행존|공동존|김포|여의도|레거시)"
-    r"(?:\s*(?:및|와|과|,|·|/|그리고)?\s*(?:은행존|공동존|은행|레거시|김포|여의도|센터|센타))*"
+    rf"{_ZONE_ENUM_HEAD}(?:\s*(?:및|와|과|,|·|/|그리고)?\s*{_ZONE_ENUM_TAIL})*",
+    re.IGNORECASE,
 )
 
 
@@ -1917,7 +2193,7 @@ def rewrite_zone_mentions_for_selection(
     def _sub(m: re.Match) -> str:
         span = m.group(0)
         # 미선택 그룹 표면어를 포함한 열거 구간만 치환 — 선택 존만 언급한 구간은 유지
-        return replacement if any(t in span for t in non_selected_terms) else span
+        return replacement if any(term_in_text(t, span) for t in non_selected_terms) else span
 
     rewritten = _ZONE_ENUM_RE.sub(_sub, q)
     return re.sub(r"[ \t]{2,}", " ", rewritten).strip()

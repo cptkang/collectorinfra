@@ -96,8 +96,12 @@ scenarios:
           query: "이번 달 CPU 사용률"
         expect:
           status: completed
-          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)'20\\d{4}'"]
-          manual_review: "진행 중 월이 실행 시점 기준으로 맞는지"
+          # plans/120 U-7 - G-3(폐쇄망 읽기 전용 확인) 전까지 수동 판정으로 둔다. 진행 중 월에
+          #   월 통계(`cmm_metric_stat_m`) 행이 있는지는 폐쇄망 **데이터 사실**이다 - 없으면 일간 통계
+          #   집계(제품의 "이번 달 = stat_d 집계" 프로필 규칙 · `_append_current_month_partial_note`)가
+          #   정답이고 아래 단언이 틀린다. G-3 결과에 따라 복원하거나 고친다(종전 단언):
+          #   sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)'20\\d{4}'"]
+          manual_review: "진행 중 월이 실행 시점 기준으로 맞는지 · 기준 테이블(월/일 통계)은 plans/120 G-3 확인 전 수동 판정"
   - id: C-07
     plans: [61, 69]
     title: "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘"
@@ -165,8 +169,11 @@ scenarios:
           query: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 보여줘"
         expect:
           status: completed
-          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)'202606'", "(?i)select[\\s\\S]*\\(\\s*select"]
-          manual_review: "스칼라 서브쿼리가 전체 평균을 계산하는지"
+          # plans/120 U-3: 전체 평균을 따로 계산하는가를 본다 - 서브쿼리 **또는** CTE(`WITH x AS (`).
+          #   종전 구문 단언은 같은 결과(475행)를 낸 CTE 형태를 떨어뜨렸다(run 20260923-140539 2단).
+          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)'202606'",
+                           "(?i)select[\\s\\S]*\\(\\s*select|\\bwith\\s+\\w+(?:\\s*\\([^)]*\\))?\\s+as\\s*\\("]
+          manual_review: "서브쿼리 또는 CTE 가 전체 평균을 계산하는지"
   - id: C-12
     plans: [61, 69]
     title: "지금 CPU 사용률 높은 서버 알려줘"

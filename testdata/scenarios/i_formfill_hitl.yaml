@@ -11,6 +11,13 @@
 #      준다 → 각 시나리오를 자기 완결 멀티턴으로 다시 썼다.
 #
 # 답변 본문 키는 **`action`** 이다(state.py:149). docs/29 원문의 `kind` 는 오기다.
+#
+# 폼필 확인 이력 격리(plans/120 V-4 = 108·CU-B3). 이력 키는 양식 시그니처(헤더 필드 집합 해시)
+# 하나뿐이고 사용자 스코프가 없다 - I-01~I-06 은 같은 양식이라 앞 실행이 `form_fill_remember`
+# 로 저장한 `담당자` 가 뒤 실행의 역질문을 지운다(run 20260923-140539: 사용 42회 · 적용마다 TTL 연장).
+#   - 저장하는 시나리오(I-02~I-06)는 `forget_form_memory` 로 **그 실행이 더한 `담당자` 만** 지운다.
+#   - 러너는 업로드 시나리오마다 실행 전에 그 양식의 이력을 읽고(조회 전용), 이미 있으면 그
+#     실행의 턴을 `invalid`(선적재 오염)로 적재한다. 폐쇄망에 남은 이력은 사람이 지운다.
 version: 1
 group:
   id: I
@@ -74,7 +81,8 @@ scenarios:
                  # 공란이면 답변이 적용되지 않은 것이다(판정의 핵심).
                  filled_rows: {min: 1}}
           manual_review: "담당자 열 전행이 '인프라팀'인지 · 원본 바이트가 재생됐는지"
-    teardown: [drop_thread]
+    teardown: [drop_thread, forget_form_memory]
+    forget_form_fields: ["담당자"]
 
   - id: I-03
     plans: [73, 58]
@@ -103,7 +111,8 @@ scenarios:
           status: completed
           has_file: true
           response_must_contain: ["[확인 이력 적용]"]
-    teardown: [drop_thread]
+    teardown: [drop_thread, forget_form_memory]
+    forget_form_fields: ["담당자"]
 
   - id: I-04
     plans: [73, 58]
@@ -133,7 +142,8 @@ scenarios:
           # 결정적 경로다 - SQL 도 LLM 도 타지 않는다.
           sql_must_not_match: ["(?i)\\bselect\\b"]
           manual_review: "form_memory_panel 이 실렸는지 · LLM 미호출인지"
-    teardown: [drop_thread]
+    teardown: [drop_thread, forget_form_memory]
+    forget_form_fields: ["담당자"]
 
   - id: I-05
     plans: [73, 58]
@@ -161,7 +171,8 @@ scenarios:
           # 패널 조회로 새면 산출물이 안 나온다.
           status: completed
           has_file: true
-    teardown: [drop_thread]
+    teardown: [drop_thread, forget_form_memory]
+    forget_form_fields: ["담당자"]
 
   - id: I-06
     plans: [73, 58]
@@ -201,7 +212,9 @@ scenarios:
           query: "김포 서버로 채워줘"
         expect:
           clarification: {options_contains: ["담당자"]}
-    teardown: [drop_thread]
+    # 4턴이 제품 경로로 지우지만, 앞 턴에서 끊기면 저장만 남는다 - 러너가 한 번 더 확인한다.
+    teardown: [drop_thread, forget_form_memory]
+    forget_form_fields: ["담당자"]
 
   - id: I-07
     plans: [73, 58]

@@ -192,6 +192,14 @@ class RecordingGraph:
                 "complete": state["final"],
             }
             path = self._out / f"{key}.json"
+            # 끝나지 않은 녹화(시간 초과·중단)로 완료된 녹화를 덮지 않는다(2026-09-23 재녹화 중 MLX 정체로 15건 소실 실측)
+            if not state["final"] and path.exists():
+                try:
+                    if json.loads(path.read_text(encoding="utf-8")).get("complete"):
+                        logger.warning("미완료 녹화 — 기존 완료 녹화 보존: %s", path.name)
+                        return
+                except (OSError, ValueError):
+                    pass
             path.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
             logger.info("녹화 저장 %s (이벤트 %d · 완료=%s)", path.name, len(recs), state["final"])
 

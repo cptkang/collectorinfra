@@ -268,6 +268,16 @@ header .container {
     height: var(--header-h);
 }
 
+/* 머리글·뷰 탭은 본문 읽기 폭(920px)이 아니라 화면 전체 폭을 쓴다 — 아래 채팅 레이아웃이
+   전체 폭이라, 920px 가운데 박스에 두면 제목이 왼쪽 위가 아닌 어중간한 자리에 뜨고 Admin 등
+   오른쪽 버튼도 화면 끝에 붙지 않았다. 운영자 대시보드의 본문 폭(1560px) 규칙보다 앞서도록
+   그 선택자도 함께 적는다. */
+header .container,
+.admin-dashboard header .container,
+.view-tabs .container {
+    max-width: none;
+}
+
 header h1 {
     font-family: var(--font-display);
     font-size: 1.125rem;
@@ -363,6 +373,18 @@ header nav .btn {
     align-items: stretch;
     height: 100%;
     gap: 2px;
+    /* 탭은 아래 채팅 창으로 이어지는 모양이라 그 창의 왼쪽 선에서 시작한다 — 질의 이력 패널의
+       오른쪽 경계선(패널 안쪽 1px)과 활성 탭의 왼쪽 테두리가 같은 픽셀에 겹친다.
+       --history-w 는 .chat-layout 의 첫 열 폭과 같아야 한다(접힘·반응형 포함). */
+    padding-left: calc(var(--history-w) - 1px);
+}
+
+body {
+    --history-w: 260px;
+}
+
+body:has(.chat-layout.history-collapsed) {
+    --history-w: 44px;
 }
 
 .view-tab {
@@ -4376,6 +4398,14 @@ select:focus {
 /* ─── Responsive ─── */
 
 @media (max-width: 1024px) {
+    body {
+        --history-w: 220px;
+    }
+
+    body:has(.chat-layout.history-collapsed) {
+        --history-w: 44px;
+    }
+
     .chat-layout {
         grid-template-columns: 220px 1fr 320px;
     }
@@ -4396,6 +4426,11 @@ select:focus {
 @media (max-width: 640px) {
     .container {
         padding: 0 16px;
+    }
+
+    /* 질의 이력 패널을 감추는 폭 — 탭은 머리글과 같은 여백에서 시작한다 */
+    .view-tabs .container {
+        padding-left: 16px;
     }
 
     :root {

@@ -160,6 +160,35 @@ def resolve_column_key(mapped_col: str, result_keys: set[str]) -> str | None:
     return None
 
 
+def match_field_name_key(field: str, result_keys: set[str]) -> str | None:
+    """양식 필드명과 **이름이 같은** 결과 키를 찾는다 — 정규화 후 완전 일치(plans/119 Q-4).
+
+    결정적 폼필 피벗(D-146)은 SELECT alias를 양식 필드명 그대로 붙인다(``AS "<필드명>"``).
+    그래서 결과 키가 곧 필드명인데, 매핑 값(``EAV:STATUS``)만 결과 키와 비교하면 이 행을
+    풀지 못하고 Layer 2 LLM(약 6초)으로 넘겼다(run ``20260923-103638``: 52회 발동 · 해석
+    209건 중 199건이 필드명과 같은 키였다).
+
+    정규화는 **대소문자 접기 하나**다 — DB2는 결과 칼럼명의 라틴 문자를 소문자로 돌려준다
+    (``OS버전`` → ``os버전``). 공백 제거·부분 일치·편집 거리는 쓰지 않는다: 이름이 다른
+    필드끼리 이어 붙이는 오매칭을 만들지 않기 위해서다(그런 경우는 종전대로 Layer 2로 간다).
+    대소문자만 다른 후보가 둘 이상이면 판정하지 않는다.
+
+    Args:
+        field: 양식 필드명(``column_mapping``의 키)
+        result_keys: SQL 결과의 실제 키 집합
+
+    Returns:
+        같은 이름의 결과 키, 또는 None
+    """
+    if not field or not result_keys:
+        return None
+    if field in result_keys:
+        return field
+    folded = field.lower()
+    candidates = [key for key in result_keys if key.lower() == folded]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def build_resolved_mapping(
     column_mapping: dict[str, str | None],
     result_keys: set[str],
@@ -186,6 +215,10 @@ def build_resolved_mapping(
             continue
 
         matched_key = resolve_column_key(db_col, result_keys)
+        if matched_key is None:
+            # 매핑 값으로 못 찾으면 필드명 자체가 결과 키인지 본다(plans/119 Q-4 · D-146 alias
+            # = 필드명). 매핑 값 매칭을 먼저 두어 종전에 풀리던 필드의 결과는 그대로다.
+            matched_key = match_field_name_key(field, result_keys)
         if matched_key is not None:
             resolved[field] = matched_key
         else:

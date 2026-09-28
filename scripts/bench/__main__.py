@@ -263,7 +263,12 @@ def _sweep_proposals(
         # **조용히 빠뜨리지 않는다.** 카탈로그에 없는 축은 그 사이 키가 삭제·개명된 것이고
         # (실측: run 20260914-185540 의 `SCHEMA_CACHE_AUTO_GENERATE_DESCRIPTIONS`),
         # 그 사실이 안 보이면 "처분이 27건인데 축은 28개"가 원인 불명으로 남는다.
-        dropped = [axis for axis in sorted(verdicts) if axis not in by_key]
+        # 합성 축(`LADDER_TIER` — 키 여러 개를 묶은 구조 축)은 원래 카탈로그 키가 아니다 — 권고
+        # diff 가 실제 키로 펼친다(`optimize._axis_env_pairs`). 삭제·개명으로 보고하지 않는다
+        # (plans/120 V-5).
+        synthetic = {axes_mod.LADDER_AXIS} | {a.env_key for a in axes_mod.structural_axes()[0]}
+        dropped = [axis for axis in sorted(verdicts)
+                   if axis not in by_key and axis not in synthetic]
         if dropped:
             say(f"  ※ 카탈로그에 없는 축 {len(dropped)}건은 처분 대상에서 뺐습니다 "
                 f"(키 삭제·개명 추정): {', '.join(dropped)}")
@@ -515,7 +520,7 @@ def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
             f"`summary.json` 이 없어 94 분석기(`scripts.scenario --analyze`)에는 넣을 수 없습니다.")
 
     health = sweep_mod.scan_health(result, raw, tier_axis=tier_axis,
-                                   expected_tiers=expected_tiers)
+                                   expected_tiers=expected_tiers, substituted=sorted(sub_ids))
     say()
     launched = len(result.get("profiles") or []) or len(arms)   # arm × 시나리오 자기 프로파일
     say(f"건전성 — 유효 프로파일 {health.valid_profiles}/{launched} · 턴 {health.turns}건 "
@@ -523,6 +528,10 @@ def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
     say(f"  워크로드 도달 — SQL 관측 {health.sql_rate:.0%} · 그래프 진입 "
         f"{health.graph_entry_rate:.0%} · 역질문 종료 {health.clarify_rate:.0%}")
     say(f"  {_unevaluated_line(health.unevaluated)}")
+    if health.user_timeout_line():
+        say(f"  {health.user_timeout_line()}")
+    if health.ttft_line():   # plans/119 H-1 — 단계 타임라인·사망 단계는 같은 폴더 94 리포트 3절
+        say(f"  {health.ttft_line()}")
     for name, reason in health.invalid_profiles:
         say(f"  INVALID {name}: {reason}")
     for mark, count in health.evidence:
@@ -611,6 +620,10 @@ def run_sweep(args: argparse.Namespace, arms: list, *, label: str,
         lines += [f"> {sweep_mod.TIER_AXIS_CAVEAT}", "",
                   f"> {sweep_mod.TIER_AXIS_ATTRIBUTION}", ""]
     lines += [f"> {_unevaluated_line(health.unevaluated)}", ""]
+    if health.user_timeout_line():
+        lines += [f"> {health.user_timeout_line()}", ""]
+    if health.ttft_line():
+        lines += [f"> {health.ttft_line()}", ""]
     if all_unjudged:
         lines += [
             f"> **이 판정표는 무효다.** arm {len(verdicts)}개가 전부 "
@@ -824,10 +837,11 @@ def _tier_gate(
                     "올리거나, `--groups` 로 워크로드를 줄여 다시 실행합니다.")
         return None
 
-    if campaign.structural_done() is not None:
+    if campaign.structural_done() is not None or campaign.tier_cited():
         # 끝났으면 승자 유무와 무관하게 통과다 — **판정 불가는 멈춤 사유가 아니다**
         # (벤치 소유 검토 ④). 대신 `campaign.tier_caveat()` 가 판정문·리포트에 조건부 고지를
-        # 싣고, 승자가 없으면 주입도 없어 서버 `.env` 의 단으로 돈다.
+        # 싣고, 승자가 없으면 주입도 없어 서버 `.env` 의 단으로 돈다. 인용으로 단을 고정한
+        # 캠페인(plans/120 G-1)도 통과다 — 단 축 구간을 돌지 않는 것이 그 결정이다.
         return None
     waiting = (any(s.structural for s in plan.segments)
                or any(r.structural and r.status != campaign_mod.DONE
@@ -840,6 +854,30 @@ def _tier_gate(
                 f"(구간 `{target.segment_id}`). "
                 "먼저 `--segment next` 로 단 축 구간을 돌리세요.")
     return None
+
+
+def _cite_tier(campaign: campaign_mod.Campaign, path: Path) -> bool:
+    """`--cite-tier` — 인용 기록의 보정 판정으로 사다리 단을 고정한다(plans/120 G-1 (b)).
+
+    주입값은 기록이 아니라 **현재 축 정의**(`profiles.yaml`)에서 뽑는다(사본 금지). 기록에
+    `env` 가 있으면 그것과 같아야 한다 — 다르면 인용 run 의 그 레벨과 지금의 그 레벨이 다른
+    설정이라 인용이 성립하지 않는다. 새로 고정했으면 True.
+    """
+    citation = campaign_mod.load_tier_citation(path)
+    axis = axes_mod.find_axis(axes_mod.LADDER_AXIS)
+    if axis is None or citation["axis"] != axes_mod.LADDER_AXIS:
+        raise campaign_mod.CitationError(
+            f"인용 축 `{citation['axis']}` 을 사다리 단 축 정의로 풀지 못했다 — "
+            f"{_ladder_axis()[1] or '사다리 단 축이 아니다'}")
+    try:
+        env = axis.env_for(citation["level"])
+    except KeyError as exc:
+        raise campaign_mod.CitationError(str(exc)) from exc
+    if citation.get("env") and dict(citation["env"]) != env:
+        raise campaign_mod.CitationError(
+            f"인용 run 의 레벨 `{citation['level']}` 주입값({citation['env']})이 "
+            f"현재 정의({env})와 다르다 — 같은 레벨이 아니라 인용하지 않는다")
+    return campaign.cite_tier(citation, env=env)
 
 
 def _campaign_context(args: argparse.Namespace, snapshot=None):
@@ -859,6 +897,11 @@ def _campaign_context(args: argparse.Namespace, snapshot=None):
     campaign = campaign_mod.Campaign.load_or_new(
         path, name=name, env=env, mode="run" if args.mode == "dry" else args.mode,
         repeat=args.repeat, max_hours=args.max_hours)
+    if getattr(args, "cite_tier", None):
+        # 인용으로 단을 고정한다(plans/120 G-1) — 계획보다 먼저다. 고정된 축은 `frozen_axes` 로
+        # 빠지고, 그 레벨의 주입값이 아래에서 전 arm 에 얹힌다. 저장은 호출부가 한다(dry 는
+        # 안 한다).
+        _cite_tier(campaign, Path(args.cite_tier))
     all_arms = sweep_mod.build_arms()
     winner_env = campaign.tier_winner_env()
     if winner_env:
@@ -919,6 +962,20 @@ def _campaign_guard(args: argparse.Namespace) -> Optional[str]:
             diffs.append(f"반복 — 상태 파일 {data.get('repeat')} · 인자 --repeat {args.repeat}")
         if args.mode != "dry" and data.get("mode", mode) != args.mode:
             diffs.append(f"모드 — 상태 파일 {data.get('mode')} · 인자 --mode {args.mode}")
+        # 측정 상한 주입(plans/118 G-1)이 캠페인 도중 바뀌면 구간 간 기준선이 다른 상한으로 돈다.
+        # 기록이 없는 옛 캠페인은 **주입 없이** 돈 구간이 있다 — 이어 돌리면 섞인다.
+        recorded = data.get("measurement_env")
+        # 인용으로 연 캠페인(plans/120 G-1)은 구간 기록 전부터 상태 파일이 있다 — 그때 기록한
+        # 주입값과 다른 코드로 첫 구간을 돌면 상태와 실행이 어긋난다.
+        cited = (data.get("tier_decision") or {}).get("source") == campaign_mod.CITED
+        if (data.get("records") or cited) and recorded != sweep_mod.MEASUREMENT_ENV:
+            diffs.append(
+                "측정 상한 주입 — 상태 파일 "
+                + (" · ".join(f"{k}={v}" for k, v in sorted(recorded.items()))
+                   if recorded else "없음(주입 도입 전 캠페인 — 서버 .env 상한으로 돌았다)")
+                + " · 현재 코드 "
+                + " · ".join(f"{k}={v}" for k, v in sorted(sweep_mod.MEASUREMENT_ENV.items()))
+                + " — 새 캠페인 이름으로 여세요(plans/118 G-4)")
         if diffs:
             return (f"캠페인 `{name}` 과 실행 조건이 다릅니다({' / '.join(diffs)}). "
                     f"한 캠페인의 구간은 같은 조건이어야 합산됩니다 — 처음 옵션"
@@ -960,11 +1017,25 @@ def cmd_segment(args: argparse.Namespace) -> int:
     if problem:
         say(f"멈춥니다 — {problem}")
         return 1
+    cite = getattr(args, "cite_tier", None)
+    if cite and not args.campaign:
+        # 기본 이름(`run-closed` 등)은 D-266 ⑤ 로 닫힌 캠페인일 수 있다 — 인용은 이름을 받아 연다.
+        say("멈춥니다 — 인용(--cite-tier)은 새 캠페인 이름을 명시해야 합니다: --campaign <이름> "
+            "(D-266 ⑤ · plans/120 G-1)")
+        return 1
     try:
         env, env_reason, campaign, all_arms, categories, plan, snapshot = _campaign_context(args)
+    except campaign_mod.CitationError as exc:
+        say(f"멈춥니다 — 인용을 받지 않습니다: {exc}")
+        return 1
     except Exception as exc:
         say(f"캠페인 계획 실패: {type(exc).__name__}: {exc}")
         return 1
+    if cite and args.mode != "dry":
+        # 인용은 구간 실행과 별개인 캠페인 상태다 — 돌기 전에 상태 파일과 합산 리포트에 남긴다
+        # (plans/120 G-1). 같은 인용을 다시 주면 `tier_decision` 은 그대로다.
+        campaign.save()
+        _write_campaign_report(campaign, plan, categories, all_arms)
     say(f"  환경: {env} — {env_reason}")
     for line in campaign_mod.render_plan(campaign, plan):
         say(line)
@@ -1184,14 +1255,23 @@ def _campaign_tier_lines(campaign: campaign_mod.Campaign) -> list[str]:
       2. 구간 사이에 단·설정 지문·커밋이 바뀌었으면 — 구간 간 기준선 반복이 같은 조건의
          반복이 아니라는 고지(노이즈 바닥 해석 조건).
     """
+    lines: list[str] = []
+    decision = campaign.tier_decision
+    cited = campaign.tier_cited()
+    if cited:
+        # 인용은 끝난 구간이 없어도 싣는다 — 단의 출처가 측정이 아니라는 사실이 먼저 보여야
+        # 한다(plans/120 G-1 · 측정인 척 금지).
+        env = " · ".join(f"`{k}={v}`" for k, v in sorted((decision.get("env") or {}).items()))
+        lines += [f"> **사다리 단 — 인용 · `{decision.get('level')}`"
+                  f"(단 `{decision.get('tier')}`)**. "
+                  f"{decision.get('sentence', '')}. **남은 구간 기준선에 주입했다**: {env}.", ""]
+        lines += [f"> - {line}" for line in campaign_mod.citation_details(decision)] + [""]
     finished = sorted((r for r in campaign.done() if r.finished_at),
                       key=lambda r: r.finished_at or "")
     if not finished:
-        return []
-    lines: list[str] = []
-    decision = campaign.tier_decision
+        return lines
     blocked = campaign.tier_blocked()
-    if decision and not blocked and decision.get("level"):
+    if decision and not blocked and decision.get("level") and not cited:
         env = " · ".join(f"`{k}={v}`" for k, v in sorted((decision.get("env") or {}).items()))
         tier = decision.get("tier") or "?"
         lines += [f"> **사다리 단 축 판정 — `{decision['level']}`(단 `{tier}`) 승**"
@@ -1367,21 +1447,38 @@ def _write_campaign_report(campaign, plan, categories, all_arms) -> Optional[Pat
                         + f" · ⚠ {sweep_mod.TIER_AXIS_CAVEAT}")
         rows.append(f"| `{opt.axis}` | {categories.get(opt.axis, '?')} | `{seg_id}` | "
                     f"{' · '.join(opt.levels)} | **{opt.verdict}** | {best} | {sentence} |")
+    cited = campaign.cited_axes() - measured
     for axis in all_axes:
         if axis in measured:
+            continue
+        if axis in cited:
+            # 인용으로 고정한 축(plans/120 G-1) — 측정도 미완도 아니다. 표 맨 위에 두고
+            # 미측정 처분(`everything`)에는 넣지 않는다.
+            decision = campaign.tier_decision
+            injected = " · ".join(f"`{k}={v}`"
+                                  for k, v in sorted(campaign.tier_winner_env().items()))
+            rows.insert(0, f"| `{axis}` | {categories.get(axis, '?')} | 인용 "
+                           f"`{decision.get('segment_id')}`(run `{decision.get('run_id')}`) | "
+                           f"{' · '.join(levels[axis])} | "
+                           f"**인용 · {decision.get('verdict') or '고정'}** | "
+                           f"`{decision.get('level')}` | {decision.get('sentence', '')} · "
+                           f"**주입**: {injected} |")
             continue
         reason = (missing.get(axis) or campaign_mod.unmeasured_reason(axis, campaign, plan)
                   or "미측정")
         rows.append(f"| `{axis}` | {categories.get(axis, '?')} | — | {' · '.join(levels[axis])} | "
                     f"**{reason}** | — | 이 축은 아직 판정되지 않았다 — 표에서 빼지 않는다 |")
+        # 「판정 불가」가 아니라 「미측정」이다 — 재지 않은 축을 「검정력 부족」으로 처분하지
+        # 않는다(plans/120 V-5).
         everything.append(compare.AxisOptimum(
-            axis=axis, levels=levels[axis], verdict=compare.UNDERPOWERED, best_level=None,
+            axis=axis, levels=levels[axis], verdict=compare.UNMEASURED, best_level=None,
             signal="없음", sentence=reason))
 
     lines = [f"# 캠페인 합산 판정 — `{campaign.name}`", "",
              f"> 환경 {campaign.env} · 모드 {campaign.mode} · 완료 {len(campaign.done())}구간 · "
              f"실패 {len(campaign.failed())}구간 · 미완 {len(plan.segments)}구간 · "
-             f"측정된 축 {len(measured)}/{len(all_axes)}", ""]
+             f"측정된 축 {len(measured)}/{len(all_axes)}"
+             + (f" · 인용 {len(cited & set(all_axes))}" if cited else ""), ""]
     if campaign.mode == "mock":
         lines += ["> **모의 캠페인이다.** 배관 리허설이며 설정 판단의 근거가 아니다.", ""]
     totals = {reason: 0 for reason in sweep_mod.UNEVALUATED_REASONS}
@@ -1554,6 +1651,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--campaign",
                         help="캠페인 이름 (기본: <mode>-<env> — mock 리허설과 실 캠페인이 "
                              "섞이지 않는다)")
+    parser.add_argument("--cite-tier", metavar="<인용 기록 JSON>",
+                        help="구간 캠페인 — 사다리 단 구간을 돌지 않고 인용 기록의 보정 판정으로 "
+                             "단을 고정한다(plans/120 G-1). 새 캠페인에서만 · --campaign 필수 "
+                             "(예: scripts/bench/citations/ladder-1-20260923-140539.json)")
     parser.add_argument("--max-hours", type=float, default=campaign_mod.DEFAULT_MAX_HOURS,
                         help="구간 1회 구동 상한(시간 · 기본 10). "
                              "계획은 안전 여유 10%%를 뺀 값까지 채운다")

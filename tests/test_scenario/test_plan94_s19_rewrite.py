@@ -191,13 +191,16 @@ def _runs(tmp_path: Path, *names: str) -> Path:
 
 class TestV29Baseline:
     def test_comparison_key_is_extensible_tuple(self):
-        """비교 키는 (env, tier, base_profile, arm) — 옛 행은 arm=None, base_profile=이름."""
-        assert analyze.COMPARISON_AXES == ("env", "tier", "base_profile", "arm")
+        """비교 키는 (env, tier, base_profile, arm, cap_semantic) — 옛 행은 arm=None,
+        base_profile=이름, 상한 의미 칸이 없으면 `total`(plans/119 · D-267 ⑦ — 끝에 붙인
+        경고 축)."""
+        assert analyze.COMPARISON_AXES == ("env", "tier", "base_profile", "arm", "cap_semantic")
         old = analyze.comparison_keys(_summary("intent_orchestration"))
         new = analyze.comparison_keys(_summary("semantic_router", arm="tier3_router"))
-        assert old == {("closed", "intent_orchestration", "baseline", None)}
-        assert new == {("closed", "semantic_router", "baseline", "tier3_router")}
-        assert analyze.comparison_keys(_summary("mock")) == {("closed", None, "baseline", None)}
+        assert old == {("closed", "intent_orchestration", "baseline", None, "total")}
+        assert new == {("closed", "semantic_router", "baseline", "tier3_router", "total")}
+        assert analyze.comparison_keys(_summary("mock")) == {
+            ("closed", None, "baseline", None, "total")}
 
     def test_regression_skips_other_ladder_tier(self, tmp_path: Path, monkeypatch):
         runs = _runs(tmp_path, "20260901-000000", "20260902-000000", "20260903-000000")
@@ -267,8 +270,8 @@ class TestV29Baseline:
         record = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))["meta"][
             "regression_baseline"]
         assert record["run_id"] == "20260901-000000"
-        assert record["axes"] == ["env", "tier", "base_profile", "arm"]
-        assert record["keys"] == [["closed", "semantic_router", "baseline", None]]
+        assert record["axes"] == ["env", "tier", "base_profile", "arm", "cap_semantic"]
+        assert record["keys"] == [["closed", "semantic_router", "baseline", None, "total"]]
 
 
 # ──────────────────────────────────────────────

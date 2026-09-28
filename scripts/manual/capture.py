@@ -236,8 +236,12 @@ def _alarm_replay(opt: dict) -> None:
 def _step(page: Page, base: str, step: dict) -> None:
     ((kind, arg),) = step.items()
     if kind == "goto":
-        page.goto(base + arg)
-        page.wait_for_load_state("networkidle")
+        # 관제 화면은 장시간 fetch 스트림(D-257)을 열어 load·networkidle 이 오지 않는다 — DOM 준비 뒤 짧게만 기다린다
+        page.goto(base + arg, wait_until="domcontentloaded")
+        try:
+            page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            page.wait_for_timeout(1500)
     elif kind == "click":
         page.click(arg)
     elif kind == "dblclick":

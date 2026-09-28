@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -23,9 +24,22 @@ from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.orchestration.db_access import is_access_denied_result
-from src.prompts.replanner import REPLANNER_SYSTEM_TEMPLATE
+from src.prompts.replanner import (
+    REPLANNER_BUDGET_BLOCK_TEMPLATE,
+    REPLANNER_BUDGET_TIME_LINE_TEMPLATE,
+    REPLANNER_SYSTEM_TEMPLATE,
+)
+from src.routing.registry import get_registry
 from src.state import AgentState
+from src.utils.deadline import retrieval_remaining
 from src.utils.json_extract import extract_json_from_response
+from src.utils.query_gen_common import term_in_text
+from src.utils.prior_dependency import (
+    NOTE_DESCRIPTIONS_MISSING,
+    NOTE_OWNERSHIP,
+    NOTE_TRACE,
+    has_sequential_marker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,12 +115,41 @@ async def replanner(
             "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
         }
 
+    # 결정적 성공 종료(D-251 ⑤ · CU-4 · plans/119 N-2 — 플래그 없음): 전 task 성공 · 조회 행 ≥1 ·
+    # 미완 표지 없음이면 평가 LLM이 더할 판단이 없다. 0건·부분 실패·순차 의존(D-203) 경로는 아래
+    # LLM 평가를 그대로 탄다(같은 컨텍스트 — 비트 동일). 판정 기준은 `_all_tasks_succeeded`.
+    if _all_tasks_succeeded(state):
+        logger.info("replanner: 전 task 성공·행 반환·미완 표지 없음 — LLM 평가 없이 종료(D-251 ⑤)")
+        return {
+            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
+        }
+
+    # 시간 예산(plans/118 P-1 · G-2 — 플래그 없음): 남은 시간이 직전 한 바퀴 소요보다 짧으면
+    # 후속을 붙여도 그 턴은 상한에 걸려 **이미 얻은 결과까지** 버린다. LLM 평가 전에 끊는다.
+    # 남은 시간은 **조회 마감**(처리 마감 − 서술 예약) 기준이다(plans/119 T-2 · D-267 ⑥).
+    reserve_sec = _answer_reserve_sec(app_config)
+    deadline_notice = _deadline_stop_notice(state, reserve_sec=reserve_sec)
+    if deadline_notice:
+        return {
+            "needs_replan": False, "replan_history": replan_history,
+            "current_node": "replanner",
+            # 오케스트레이터가 조회 마감을 넘겨 후속을 시작하지 않았으면(T-2) 그 사유가 더
+            # 구체적이다 — 이 노드 진입 시점의 사유는 그 한 곳에서만 온다(요청 스코프 · 라우트가
+            # 매 턴 비운다).
+            "replan_stop_notice": state.get("replan_stop_notice") or deadline_notice,
+        }
+
     decision = await _llm_evaluate(
         llm,
         state.get("user_query", ""),
         state.get("task_plan", []),
         state.get("task_results", {}),
         app_config,
+        # 예산 인지 블록(plans/119 T-6) — 플래그 off면 None이라 입력이 종전과 바이트 동일하다.
+        budget_block=(
+            _budget_block(state, app_config, replan_count, reserve_sec)
+            if _budget_prompt_on(app_config) else None
+        ),
     )
 
     # 보수적 종료(R-A1/R-A4): 후속 불필요·빈 task·파싱 실패 시 루프 종료
@@ -131,6 +174,31 @@ async def replanner(
             decision.get("reason"),
         )
         return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
+
+    # 재생성 위임 제거(plans/119 Q-3 · D-063 확장): 내부 루프가 재생성을 멈춘(`regen_stop` — 검증
+    # 예산 소진·산문·조회 마감) 조회를 같은 담당·같은 대상 DB·같은 식별 리터럴로 다시 시키는 후속은
+    # 같은 프롬프트·같은 스키마로 같은 결과를 낸다. 제거로 끝나면 마지막 사유를 응답에 싣는다.
+    new_tasks, regen_notice = _filter_regen_stopped(
+        new_tasks, state.get("task_plan", []), state.get("task_results", {}),
+    )
+    if not new_tasks:
+        logger.info("replanner: 재생성을 멈춘 조회의 재위임 후속 전부 제거 → 종료")
+        return {
+            "needs_replan": False, "replan_history": replan_history,
+            "current_node": "replanner", "replan_stop_notice": regen_notice,
+        }
+
+    # 반복 0건 중단(plans/118 P-2 · D-063 개정 G-3): 직전 두 바퀴가 모두 대상 DB 전부 0건이고
+    # 새 후속이 같은 엔티티를 또 찾으면 제거한다. 첫 0건 뒤 한 번의 재조회는 그대로 둔다.
+    new_tasks, empty_notice = _filter_repeated_empty(
+        new_tasks, state.get("task_plan", []), state.get("task_results", {}), replan_history,
+    )
+    if not new_tasks:
+        logger.info("replanner: 전 DB 연속 0건 대상의 재조회 전부 제거 → 종료")
+        return {
+            "needs_replan": False, "replan_history": replan_history,
+            "current_node": "replanner", "replan_stop_notice": empty_notice,
+        }
 
     # 관리 작업 강등 차단: 순수 관리 요청(캐시/유사어)의 후속으로 DB 조회를 붙이면
     # 관리 실패가 무관한 조회 결과로 종결된다(침묵 강등 금지, D-059 계열).
@@ -181,6 +249,8 @@ async def _llm_evaluate(
     task_plan: list[dict],
     task_results: dict[str, dict],
     app_config: AppConfig,
+    *,
+    budget_block: str | None = None,
 ) -> dict:
     """LLM으로 결과를 평가하여 후속 task 필요 여부를 판단한다.
 
@@ -193,12 +263,16 @@ async def _llm_evaluate(
         task_plan: 현재까지의 TaskSpec 목록 (status 포함)
         task_results: {task_id: 정규화된 결과}
         app_config: 앱 설정
+        budget_block: (plans/119 T-6) 평가 컨텍스트 말미에 붙일 예산 블록. None이면 붙이지 않는다
+            — 종전 입력과 바이트 동일.
 
     Returns:
         {"needs_followup": bool, "reason": str, "new_tasks": [...]} 또는 빈 dict(실패 시)
     """
     try:
         context = _build_eval_context(user_query, task_plan, task_results)
+        if budget_block:
+            context = f"{context}\n\n{budget_block}"
         messages: list[BaseMessage] = [
             SystemMessage(content=REPLANNER_SYSTEM_TEMPLATE)
         ]
@@ -466,3 +540,409 @@ def _filter_futile_retries(
         kept.append(t)
 
     return kept
+
+
+# ── plans/118 P-1 · P-2 ────────────────────────────────────────────────
+
+
+def _deadline_stop_notice(
+    state: AgentState, *, now: float | None = None, reserve_sec: float = 0.0,
+) -> str | None:
+    """조회 마감까지 남은 시간이 직전 한 바퀴 소요보다 짧으면 사유 문구, 아니면 None.
+
+    plans/118 P-1 판정식(`남은 시간 < 직전 한 바퀴` · 배수 1.0 — 추정 상수 금지)을 유지하되,
+    "남은 시간"은 **조회 마감**(= `request_deadline` − 서술 예약 `reserve_sec`)까지다
+    (plans/119 T-2 · D-267 ⑥). 서술 몫을 남겨 두지 않으면 조회가 시간을 다 쓰고 서술 단계에서
+    끊긴다(§2.9 12턴).
+    조회 마감이 이미 지났으면(남은 시간 ≤ 0) 한 바퀴 소요와 무관하게 멈춘다.
+
+    마감(`request_deadline`)이나 한 바퀴 소요(`orchestrator_round_sec`)가 없으면(CLI·옛
+    체크포인트·3단 계획 루프) **판정하지 않는다** — 종전 동작이다. `reserve_sec=0`이면 plans/118
+    P-1과 같은 판정·같은 문구다.
+    """
+    round_sec = state.get("orchestrator_round_sec")
+    remaining = retrieval_remaining(state, reserve_sec, now=now)
+    if (
+        remaining is None
+        or not isinstance(round_sec, (int, float))
+        or isinstance(round_sec, bool)
+    ):
+        return None
+    if remaining > 0 and remaining >= round_sec:
+        return None
+    reserve = max(0.0, float(reserve_sec or 0))
+    logger.info(
+        "replanner: 시간 예산 부족 — 조회 마감까지 %.1f초(서술 예약 %.0f초 제외) < 직전 한 바퀴 "
+        "%.1f초, 재계획 없이 종료",
+        remaining, reserve, round_sec,
+    )
+    left = f"답변 작성 몫 {reserve:.0f}초를 뺀 남은 시간" if reserve > 0 else "남은 시간"
+    return (
+        f"응답 시간 상한이 가까워 추가 조회가 필요한지 더 판단하지 않고 지금까지의 결과로 "
+        f"답했습니다({left} {max(0.0, remaining):.0f}초 < 직전 조회 한 바퀴 "
+        f"{round_sec:.0f}초)."
+    )
+
+
+def _answer_reserve_sec(app_config: object) -> float:
+    """서술 예약 초(`ServerConfig.answer_reserve_sec`) — 테스트 대역 설정에서는 0(종전 동작)."""
+    value = getattr(getattr(app_config, "server", None), "answer_reserve_sec", 0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return max(0.0, float(value))
+
+
+def _budget_prompt_on(app_config: object) -> bool:
+    """`REPLAN_BUDGET_PROMPT_ENABLED`(plans/119 T-6) — 명시 True일 때만 켠다(대역 설정은 off)."""
+    return getattr(app_config, "replan_budget_prompt_enabled", False) is True
+
+
+def _budget_block(
+    state: AgentState, app_config: object, replan_count: int, reserve_sec: float,
+) -> str:
+    """재계획 평가 입력 말미에 붙일 예산 블록(plans/119 T-6 · 문헌 L-9).
+
+    조회 마감까지 남은 시간(마감이 없는 요청은 줄 생략) · 남은 재계획 횟수(`max_replan −
+    replan_count`) · "지금 결과로 종결 가능"을 싣는다. LLM 행동에 기대는 장치라 결정적 가드
+    (P-1·T-2·Q-3) 뒤에 두고, 플래그 기본 off로 arm 측정한다(D-162 · D-267 ⑥).
+    """
+    left = retrieval_remaining(state, reserve_sec)
+    time_line = "" if left is None else REPLANNER_BUDGET_TIME_LINE_TEMPLATE.format(
+        remaining_sec=int(max(0.0, left)), reserve_sec=int(reserve_sec),
+    )
+    max_replan = getattr(app_config, "max_replan", 0)
+    if isinstance(max_replan, bool) or not isinstance(max_replan, int):
+        max_replan = 0
+    return REPLANNER_BUDGET_BLOCK_TEMPLATE.format(
+        time_line=time_line,
+        remaining_replans=max(0, max_replan - int(replan_count or 0)),
+        max_replan=max_replan,
+    )
+
+
+# 식별 리터럴 — 숫자를 포함한 호스트명형 토큰(영숫자·하이픈·밑줄 4자 이상)과 IPv4.
+# 지표어("cpu"·"메모리")는 숫자가 없어 빠진다(`realtime_usage._host_tokens` 와 같은 규칙).
+_ENTITY_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9\-_]{3,}")
+_IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+# 전 DB 0건 판정 대상 — 행을 돌려주는 조회 담당만 본다.
+_ROW_AGENTS = ("data_query", "alarm_query")
+
+
+def _entity_literals(text: str) -> set[str]:
+    """지시문에서 식별 리터럴(호스트명·IP)을 뽑는다 — LLM 판단에 의존하지 않는다."""
+    found = {t.lower() for t in _ENTITY_TOKEN_RE.findall(text or "")
+             if any(ch.isdigit() for ch in t)}
+    found |= set(_IPV4_RE.findall(text or ""))
+    return found
+
+
+def _same_entity(a: set[str], b: set[str]) -> bool:
+    """같거나 한쪽이 다른 쪽의 부분 문자열이면 같은 엔티티다(`sbhdbo53` ↔ `sbhdbo53-01`)."""
+    return any(x in y or y in x for x in a for y in b)
+
+
+def _rounds(task_plan: list[dict[str, Any]], replan_history: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """task_plan 을 바퀴(최초 계획 + 재계획 회차별 추가분)로 나눈다.
+
+    재계획은 신규 task 만 뒤에 붙이고(R-A1) 회차마다 추가 개수를 `replan_history.added` 에
+    남기므로, 뒤에서부터 그 개수만큼 떼면 회차가 복원된다. 개수가 맞지 않으면 한 바퀴로 본다.
+    """
+    ordered = sorted(task_plan, key=lambda t: t.get("order", 0))
+    added = [int(h.get("added") or 0) for h in replan_history if isinstance(h, dict)]
+    if sum(added) > len(ordered):
+        return [ordered]
+    head = len(ordered) - sum(added)
+    rounds = [ordered[:head]]
+    idx = head
+    for n in added:
+        rounds.append(ordered[idx:idx + n])
+        idx += n
+    return [r for r in rounds if r]
+
+
+def _round_all_empty(tasks: list[dict[str, Any]], task_results: dict[str, dict[str, Any]]) -> bool:
+    """이 바퀴의 조회 task 가 **전부** 오류 없이 대상 DB 전부 0건인가.
+
+    단일 DB·멀티 DB 결과 모양이 같다 — 멀티 DB 는 DB별 행을 합친 `query_results` 가 비면
+    전 DB 0건이다(`_pack_pipeline_result`). 미조회 DB(`skipped_dbs`)가 있으면 전부가 아니다.
+    """
+    row_tasks = [t for t in tasks if t.get("agent") in _ROW_AGENTS]
+    if not row_tasks:
+        return False
+    for t in row_tasks:
+        res = task_results.get(str(t.get("task_id")), {}) or {}
+        if res.get("error") or res.get("skipped_dbs"):
+            return False
+        rows = _extract_rows(res)
+        if rows is None or rows:
+            return False
+    return True
+
+
+def _queried_dbs(tasks: list[dict[str, Any]], task_results: dict[str, dict[str, Any]]) -> list[str]:
+    dbs: set[str] = set()
+    for t in tasks:
+        for target in (task_results.get(str(t.get("task_id")), {}) or {}).get("source") or []:
+            if isinstance(target, dict) and target.get("db_id"):
+                dbs.add(str(target["db_id"]))
+    return sorted(dbs)
+
+
+def _filter_repeated_empty(
+    new_tasks: list[dict[str, Any]],
+    existing: list[dict[str, Any]],
+    task_results: dict[str, dict[str, Any]],
+    replan_history: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """전 DB 연속 0건 대상을 또 찾는 후속을 제거한다(plans/118 P-2 · D-063 개정 G-3).
+
+    발동 조건 — 셋 다:
+    - 직전 **두 바퀴**가 모두 「조회 task 전부 오류 없이 대상 DB 전부 0건」이다
+    - 새 후속의 식별 리터럴(호스트명·IP)이 그 두 바퀴 **각각의** 지시문 리터럴과 같거나 부분
+      문자열이다(같은 엔티티를 두 번 못 찾았다)
+    - 리터럴이 없는 후속은 판정하지 않는다(보존)
+
+    첫 0건 뒤 한 번의 재조회(오타·대소문자 완화)는 두 바퀴 조건에 걸리지 않아 그대로 간다
+    (D-063 의 "0건 → 재조회 허용"을 1회로 좁힌다 — 전면 금지가 아니다).
+
+    Returns:
+        (남길 후속, 전부 제거됐을 때 응답에 실을 결정적 사유 또는 None)
+    """
+    rounds = _rounds(existing, replan_history)
+    if len(rounds) < 2:
+        return new_tasks, None
+    last_two = rounds[-2:]
+    if not all(_round_all_empty(r, task_results) for r in last_two):
+        return new_tasks, None
+    round_literals = [
+        set().union(*(_entity_literals(str(t.get("sub_query") or "")) for t in r)) for r in last_two
+    ]
+    kept: list[dict[str, Any]] = []
+    removed: set[str] = set()
+    for t in new_tasks:
+        lits = _entity_literals(str(t.get("sub_query") or ""))
+        if lits and all(_same_entity(lits, prev) for prev in round_literals):
+            logger.info(
+                "replanner: 전 DB 연속 0건 대상 재조회 제거(plans/118 P-2): %.80s",
+                t.get("sub_query", ""),
+            )
+            removed |= {x for x in round_literals[-1] if _same_entity({x}, lits)} or lits
+            continue
+        kept.append(t)
+    if kept or not removed:
+        return kept, None
+    dbs = _queried_dbs([t for r in last_two for t in r], task_results)
+    names = ", ".join(f"`{x}`" for x in sorted(removed))
+    return kept, (
+        f"조건에 맞는 {names} 을(를) 찾지 못했습니다"
+        f"(조회한 DB: {', '.join(dbs) if dbs else '기록 없음'}). 같은 대상을 두 번 연속 "
+        "모든 대상 DB에서 조회했지만 0건이어서 더 재조회하지 않았습니다."
+    )
+
+
+# ── plans/119 N-2 (D-251 ⑤ · CU-4) · Q-3 (D-063 확장) ─────────────────────────
+
+
+# 미완 표지로 보지 않는 경과 노트 종류 — 결과가 완결돼도 붙는 안내다(정상 주입 경과 · 답변 영역
+# 소유 교정 · 컬럼 설명 미등록). 그 밖의 종류(게이트·절단·사후 대조·충족도·DB별 미조회·분해 강등·
+# 분류 폴백·구조 미등록 등, 그리고 앞으로 생길 종류)는 전부 미완으로 본다 — 모르면 LLM 평가(종전).
+_INFO_NOTE_KINDS = frozenset({NOTE_TRACE, NOTE_OWNERSHIP, NOTE_DESCRIPTIONS_MISSING})
+# task 결과 dict 의 실패·부분 실패·미완 표지 — 값이 있으면 성공으로 보지 않는다.
+#   error(실패·게이트 미실행) · skipped(D-203 게이트) · regen_stop(재생성 중단 — Q-3 계약) ·
+#   db_errors(멀티 DB 일부 실패) · skipped_dbs(DB별 스코프 미조회) · zone_clarification(역질문 대기)
+_INCOMPLETE_RESULT_KEYS = (
+    "error", "skipped", "regen_stop", "db_errors", "skipped_dbs", "zone_clarification",
+)
+
+
+def _has_incomplete_notes(notes: object) -> bool:
+    """경과 노트 중 미완 표지(안내성 종류 밖)가 하나라도 있는가."""
+    if not isinstance(notes, list):
+        return False
+    return any(
+        isinstance(n, dict) and n.get("kind") not in _INFO_NOTE_KINDS for n in notes
+    )
+
+
+def _all_tasks_succeeded(state: AgentState) -> bool:
+    """재계획 평가 LLM 없이 끝내도 되는 성공 상태인가(D-251 ⑤ · CU-4 · plans/119 N-2).
+
+    **전부** 참이어야 성공이다(하나라도 아니면 종전대로 LLM이 평가한다):
+
+    1. 계획이 비어 있지 않다.
+    2. 순차 의존(D-203) 경로가 아니다 — 어떤 task에도 `input_from`·`depends_on`이 없고, 원질의에
+       D-203 순차 표지(`has_sequential_marker`)가 없다(단일 계획이 둘째 단계를 빠뜨렸을 수 있다).
+    3. 상태 수준 미완 표지가 없다 — `orchestration_incomplete_notice` · `sufficiency_shortfalls`
+       (78 W5 충족도 미달) · `dependency_notes`의 미완 종류(`_INFO_NOTE_KINDS` 밖).
+    4. 모든 task가 `status == "completed"`이고 결과 dict가 있으며, 조회 권한 거부가 아니고,
+       `_INCOMPLETE_RESULT_KEYS` 표지·미완 경과 노트가 없고, `organized_data.is_sufficient`가
+       False가 아니다.
+    5. 행 모양 결과(`_extract_rows`가 None이 아님)는 **모두 1행 이상**이다 — 0건은 LLM 평가 유지.
+       조회 담당(`_QUERY_AGENTS`)인데 행 모양이 없으면 성공으로 보지 않는다.
+    6. 행을 돌려준 task가 **하나 이상** 있다 — 텍스트 결과만 있는 계획(일반 안내 등)은 종전대로
+       평가한다(폴백 담당이 받은 데이터 질의를 재계획이 되살리는 경로를 막지 않는다).
+    """
+    tasks = state.get("task_plan") or []
+    results = state.get("task_results") or {}
+    if not tasks or not isinstance(results, dict):
+        return False
+    if has_sequential_marker(str(state.get("user_query") or "")):
+        return False
+    if str(state.get("orchestration_incomplete_notice") or "").strip():
+        return False
+    if state.get("sufficiency_shortfalls") or _has_incomplete_notes(state.get("dependency_notes")):
+        return False
+    returned_rows = False
+    for task in tasks:
+        if task.get("input_from") or task.get("depends_on"):
+            return False
+        if task.get("status") != "completed":
+            return False
+        res = results.get(str(task.get("task_id")))
+        if not isinstance(res, dict) or is_access_denied_result(res):
+            return False
+        if any(res.get(k) for k in _INCOMPLETE_RESULT_KEYS):
+            return False
+        if _has_incomplete_notes(res.get("dependency_notes")):
+            return False
+        organized = res.get("organized_data")
+        if isinstance(organized, dict) and organized.get("is_sufficient") is False:
+            return False
+        rows = _extract_rows(res)
+        if rows is None:
+            if task.get("agent") in _QUERY_AGENTS:
+                return False
+            continue
+        if not rows:
+            return False
+        returned_rows = True
+    return returned_rows
+
+
+# 재생성 중단 사유(`regen_stop.reason` — SQL 루프 담당과의 계약) → 사용자 문구.
+_REGEN_STOP_REASON_TEXT = {
+    "validation_budget": "SQL을 재시도 한도까지 다시 만들었지만 검증을 통과하지 못했습니다",
+    "non_sql": "SQL 대신 설명문이 생성됐습니다",
+    "deadline": "응답 시간 상한이 가까워 SQL 재생성을 멈췄습니다",
+}
+_REGEN_STOP_FALLBACK_TEXT = "SQL 재생성이 멈췄습니다"
+# 응답 말미 사유에 싣는 길이 상한 — 산문(non_sql)은 길 수 있다.
+_MAX_NOTICE_QUERY_CHARS = 80
+_MAX_NOTICE_DETAIL_CHARS = 200
+
+
+def _db_signal_vocab() -> frozenset[str] | None:
+    """DB를 지목하는 표면어(위치·제품·DB 신호어) — `config/db_registry.yaml` 파생.
+
+    레지스트리를 읽지 못하면 None — 호출부는 "같은 대상 DB"를 판정하지 못한 것으로 보고 후속을
+    **보존**한다(제거 쪽으로 틀리지 않는다).
+    """
+    try:
+        reg = get_registry()
+        terms = (*reg.location_terms(), *reg.product_terms(), *reg.db_signal_terms())
+    except Exception:  # noqa: BLE001 — 판정 보류(보존)로 떨어진다
+        logger.warning(
+            "replanner: DB 신호어를 읽지 못해 재생성 위임 판정을 보류한다", exc_info=True,
+        )
+        return None
+    return frozenset(str(t).lower() for t in terms if str(t).strip())
+
+
+def _db_terms(text: str, vocab: frozenset[str]) -> frozenset[str]:
+    low = (text or "").lower()
+    return frozenset(t for t in vocab if term_in_text(t, low))
+
+
+def _same_regen_family(
+    new: dict[str, Any], prior: dict[str, Any], prior_res: dict[str, Any], vocab: frozenset[str],
+) -> bool:
+    """새 후속이 재생성을 멈춘 선행과 **같은 조회**인가 — 같은 담당 · 같은 대상 DB · 같은 계열.
+
+    - 같은 담당(`agent`).
+    - 다른 선행 결과를 입력으로 쓰는 보강(`input_from` 있음)은 같은 조회가 아니다 — 단, 이 선행을
+      명시적으로 대체(`supersedes`)하면 같은 조회다.
+    - 같은 대상 DB: 후속은 아직 실행 전이라 대상이 없다. 같은 턴의 DB 선택 입력 중 task마다 다른
+      것은 지시문의 DB 지목 표면어뿐이므로 그 집합이 같아야 한다. 후속이 DB를 고정(`db_ids`)했으면
+      선행이 실제로 조회한 DB(`target_db_ids`) 안이어야 한다.
+    - 같은 계열: 식별 리터럴(호스트명·IP — `_entity_literals`) 집합이 같거나, 둘 다 있고 같은
+      엔티티다(`_same_entity`).
+    """
+    if new.get("agent") != prior.get("agent"):
+        return False
+    prior_id = str(prior.get("task_id"))
+    if new.get("input_from") and prior_id not in (new.get("supersedes") or []):
+        return False
+    pinned = new.get("db_ids")
+    if pinned and not set(pinned) <= set(prior_res.get("target_db_ids") or []):
+        return False
+    new_q = str(new.get("sub_query") or "")
+    prior_q = str(prior.get("sub_query") or "")
+    if _db_terms(new_q, vocab) != _db_terms(prior_q, vocab):
+        return False
+    a, b = _entity_literals(new_q), _entity_literals(prior_q)
+    return a == b or (bool(a) and bool(b) and _same_entity(a, b))
+
+
+def _regen_stop_notice(stopped: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
+    """재위임을 막은 조회마다 마지막 사유를 사용자 문구 한 줄로 만든다(침묵 강등 금지)."""
+    lines: list[str] = []
+    for prior, stop in stopped:
+        reason = _REGEN_STOP_REASON_TEXT.get(
+            str(stop.get("reason") or ""), _REGEN_STOP_FALLBACK_TEXT,
+        )
+        query = " ".join(str(prior.get("sub_query") or "").split())[:_MAX_NOTICE_QUERY_CHARS]
+        detail = " ".join(str(stop.get("detail") or "").split())[:_MAX_NOTICE_DETAIL_CHARS]
+        line = (
+            f"「{query}」 조회는 {reason}. "
+            "같은 조회를 다시 맡기지 않고 지금까지의 결과로 답했습니다"
+        )
+        lines.append(f"{line}(마지막 사유: {detail})." if detail else f"{line}.")
+    return "\n".join(lines)
+
+
+def _filter_regen_stopped(
+    new_tasks: list[dict[str, Any]],
+    existing: list[dict[str, Any]],
+    task_results: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """재생성을 멈춘 조회를 같은 방식으로 다시 시키는 후속을 제거한다(plans/119 Q-3 · D-063 확장).
+
+    발동 조건: 선행 task 결과에 `regen_stop`(`{"reason": "validation_budget"|"non_sql"|"deadline",
+    "detail": str}` — SQL 루프 담당과의 계약)이 있고, 새 후속이 그 선행과 같은 조회다
+    (`_same_regen_family`). 내부 루프가 이미 예산만큼 재생성한 질의를 새 task로 다시 시키면 같은
+    프롬프트·같은 스키마로 같은 결과가 나온다(run `20260923-103638` — 한 턴 SQL 생성 최대 12회).
+
+    보존: 다른 담당·다른 DB 지목·다른 식별 대상·다른 선행 결과를 쓰는 보강은 그대로 간다.
+    `regen_stop` 이 없는 실패(실행 오류 등)는 대상이 아니다.
+
+    Returns:
+        (남길 후속, 전부 제거됐을 때 응답에 실을 사유 또는 None)
+    """
+    stopped = [
+        (t, task_results.get(str(t.get("task_id"))) or {})
+        for t in existing
+        if isinstance((task_results.get(str(t.get("task_id"))) or {}).get("regen_stop"), dict)
+    ]
+    if not stopped or not new_tasks:
+        return new_tasks, None
+    vocab = _db_signal_vocab()
+    if vocab is None:
+        return new_tasks, None
+    kept: list[dict[str, Any]] = []
+    blocked: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    for t in new_tasks:
+        match = next(
+            ((p, res) for p, res in stopped if _same_regen_family(t, p, res, vocab)), None,
+        )
+        if match is None:
+            kept.append(t)
+            continue
+        prior, res = match
+        logger.info(
+            "replanner: 재생성 중단(%s) 조회의 재위임 후속 제거(plans/119 Q-3): %.80s",
+            (res.get("regen_stop") or {}).get("reason"), t.get("sub_query", ""),
+        )
+        blocked.setdefault(str(prior.get("task_id")), (prior, res["regen_stop"]))
+    if kept or not blocked:
+        return kept, None
+    return kept, _regen_stop_notice(list(blocked.values()))

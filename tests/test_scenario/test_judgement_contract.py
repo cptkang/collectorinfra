@@ -315,6 +315,7 @@ def _failed(*keys: str, **row: Any) -> dict[str, Any]:
     (("row_count_per_db.max",), "volume"),
     (("row_count_total.eq",), "volume"),
     (("response_must_contain",), "contract"),
+    (("response_must_contain_any",), "contract"),   # plans/120 U-4
     (("period_covers",), "semantics"),
     (("sql_must_match",), "semantics"),
 ])

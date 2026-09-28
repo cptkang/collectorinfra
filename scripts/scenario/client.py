@@ -159,8 +159,22 @@ def _apply_done(obs: Observation, payload: dict[str, Any]) -> None:
     scope = payload.get("db_scope") or {}
     if isinstance(scope, dict) and scope.get("db_ids"):
         obs.db_ids = [str(d) for d in scope["db_ids"]]
+        obs.db_ids_source = "scope"
+    # 스코프가 비면 러너가 감사 로그의 실행 DB 로 채운다(plans/120 V-1 · `runner._apply_sql_audit`).
     # O-e(plans/94 §19.3): 재작성 감사 — 기능이 꺼진 서버는 키 자체를 싣지 않는다.
     obs.rewrite_traces = [t for t in payload.get("rewrite_trace") or [] if isinstance(t, dict)]
+    _apply_timeline(obs, payload)
+
+
+def _apply_timeline(obs: Observation, payload: dict[str, Any]) -> None:
+    """서버 단계 타임라인(plans/119 T-0)을 **가공 없이** 옮긴다 - 해석은 리포트가 한다.
+
+    `done`(정상·`status=partial`)과 `error` 페이로드 둘 다 싣는다. 옛 서버는 키가 없어 None 으로
+    남는다 - 리포트는 그 턴을 노드 경과로 추정 귀속하고 "추정"이라 적는다.
+    """
+    timeline = payload.get("timeline")
+    if isinstance(timeline, dict):
+        obs.timeline = dict(timeline)
 
 
 class ScenarioClient:
@@ -363,6 +377,7 @@ class ScenarioClient:
                 boundary_ms = start_ms if boundary_ms is None else max(boundary_ms, start_ms)
                 obs.node_path.append(name)
                 if obs.ttfb_ms is None:
+                    # 첫 node_start 도착 - 그래프 진입 신호다. 답변 첫 토큰(`ttft_ms`)이 아니다.
                     obs.ttfb_ms = (now - started) * 1000
             elif kind == "node_complete":
                 name = str(payload.get("node") or "")
@@ -376,10 +391,16 @@ class ScenarioClient:
             elif kind == "progress":
                 obs.progress_events.append(payload)
             elif kind == "token":
-                tokens.append(str(payload.get("content") or ""))
+                content = str(payload.get("content") or "")
+                if content and obs.ttft_ms is None:
+                    # H-1(plans/119): 사용자가 답을 보기 시작한 시각. 기준은 `ttfb_ms` 와 같은
+                    # 요청 송신 시각이다. 빈 토큰은 답변이 아니라 세지 않는다.
+                    obs.ttft_ms = (now - started) * 1000
+                tokens.append(content)
             elif kind == "error":
                 obs.error = str(payload.get("message") or payload.get("detail") or "error")
                 obs.status = "error"
+                _apply_timeline(obs, payload)
             elif kind == "done":
                 saw_done = True
                 _apply_done(obs, payload)

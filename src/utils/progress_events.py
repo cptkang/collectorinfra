@@ -31,6 +31,17 @@ async def dispatch_progress_event(name: str, data: dict) -> None:
         logger.warning("progress event 발행 실패(%s): %s", name, e)
 
 
+#: 응답 선행 본문(코드가 렌더한 결과 표) custom event 이름(plans/119 N-1 · T-5). SSE 라우트는 이
+#: 이벤트를 progress 가 아니라 **답변 토큰**(`type:"token"`)으로 내보내고 첫 답변 시각으로 센다.
+ANSWER_PREFIX_EVENT = "answer_prefix"
+
+
+async def emit_answer_prefix(text: str) -> None:
+    """요약 LLM 전에 코드가 렌더한 표를 답변 스트림 앞에 내보낸다(부모 run 없으면 생략)."""
+    if text:
+        await dispatch_progress_event(ANSWER_PREFIX_EVENT, {"text": text})
+
+
 async def emit_step(
     name: str, phase: str = "start", *, label: Optional[str] = None, detail: Optional[str] = None
 ) -> None:

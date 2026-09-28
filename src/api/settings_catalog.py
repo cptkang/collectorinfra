@@ -265,6 +265,11 @@ RELOADABLE_KEYS: frozenset[str] = frozenset({
     # --- server: 라우트 요청 시점 판독 (state.config 교체로 반영) ---
     "API_QUERY_TIMEOUT",
     "API_FILE_QUERY_TIMEOUT",
+    # plans/119 T-1·T-5 — 질의 라우트가 요청마다 app.state.config 에서 읽는다
+    # (마감 바인딩·스트림 상한)
+    "API_ANSWER_RESERVE_SEC",
+    "API_STREAM_IDLE_TIMEOUT_SEC",
+    "API_STREAM_DELIVERY_GRACE_SEC",
     # --- admin/auth: 라우트·의존성 요청 시점 판독. AUTH_ENABLED는 리로드가 운영
     #     게이트(_validate_production_secrets)를 재실행하므로 fail-closed 유지 ---
     "ADMIN_JWT_EXPIRE_HOURS",

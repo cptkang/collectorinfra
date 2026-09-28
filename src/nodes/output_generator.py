@@ -6,6 +6,7 @@ Phase 1에서는 자연어 응답만 지원하고, Phase 2에서 Excel/Word 생�
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -19,14 +20,29 @@ from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.domain.empty_answer import from_payload as diagnosis_from_payload
 from src.domain.empty_answer import render_diagnosis
+from src.domain.partial_result import render_markdown_table
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.nodes.intent_frame_builder import CONSUMER_OUTPUT_GENERATOR, get_prompt_query
-from src.prompts.output_generator import OUTPUT_GENERATOR_SYSTEM_PROMPT
+from src.prompts.output_generator import OUTPUT_SUMMARY_SYSTEM_PROMPT
 from src.routing.domain_config import get_domain_by_id
 from src.schema_cache.form_memory import save_form_memory_entries
 from src.state import AgentState
+from src.utils.deadline import (
+    MIN_CALL_TIMEOUT_SEC,
+    answer_phase,
+    bound_deadline,
+    call_timeout,
+    remaining_sec,
+)
+from src.utils.month_structure import is_month_structure_field
 from src.utils.prior_dependency import ADMIN_ASSET_NOTE_KINDS, CROSS_SYSTEM_NOTE_KINDS
-from src.utils.query_gen_common import FORM_MEMORY_SHORTCUT_HINT, resolve_stat_month_range
+from src.utils.progress_events import emit_answer_prefix
+from src.utils.query_gen_common import (
+    ELLIPTICAL_SUCCESSION_KEY,
+    FORM_MEMORY_SHORTCUT_HINT,
+    render_elliptical_succession_note,
+    resolve_stat_month_range,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +143,7 @@ async def _run_output_generator(
         response = _append_inferred_mapping_info(response, state)
         response = _append_spike_notes(response, state)
         response = _append_scope_note(response, state)
+        response = _append_elliptical_succession_note(response, state)
         response = _append_zone_coverage_notes(response, state)
         response = _append_current_month_partial_note(response, state)
         response = _append_unavailable_metric_notes(response, state)
@@ -148,12 +165,29 @@ async def _run_output_generator(
         # Phase 2: 파일 생성
         file_result = _generate_document_file(state, output_format)
         if file_result and file_result.get("file_bytes"):
+            # HITL 폼필(D-151) 역질문을 **서술 전에** 확정한다(plans/119 N-1 ④) — 역질문이 나가는
+            # 턴은 결과가 아직 확정되지 않았으므로 요약 LLM을 부르지 않고 결정적 안내만 싣는다.
+            # 최종 서술은 답변 턴(역질문 없음)에서 1회 한다. 판정 입력(state·fill_stats)은 서술과
+            # 무관해 순서를 바꿔도 페이로드가 같다.
+            clarification: dict[str, Any] | None = None
+            pending: dict[str, Any] | None = None
+            if state.get("template_structure"):
+                clarification, pending = _build_form_fill_hitl(
+                    state, file_result.get("fill_stats")
+                )
             text_response = await _generate_text_response(
-                app_config, state, llm=llm, stream_user_response=stream_user_response
+                app_config, state, llm=llm, stream_user_response=stream_user_response,
+                summary_skip_notice=(
+                    _form_fill_pending_notice(len(clarification["fields"]))
+                    if clarification else None
+                ),
+                # 역질문 없이 끝나는 폼필 턴만 요약한다 — 채운 열 목록을 요약 입력에(plans/120 F-6)
+                form_fill_stats=None if clarification else file_result.get("fill_stats"),
             )
             text_response = _append_inferred_mapping_info(text_response, state)
             text_response = _append_spike_notes(text_response, state)
             text_response = _append_scope_note(text_response, state)
+            text_response = _append_elliptical_succession_note(text_response, state)
             text_response = _append_zone_coverage_notes(text_response, state)
             text_response = _append_unavailable_metric_notes(text_response, state)
             text_response = append_structure_missing_note(text_response, state)
@@ -213,12 +247,9 @@ async def _run_output_generator(
                             "적용되었습니다."
                         )
 
-            # HITL 폼필(D-151): 미해결 필드 역질문 페이로드 + 대기 상태.
+            # HITL 폼필(D-151): 미해결 필드 역질문 페이로드 + 대기 상태(위에서 서술 전에 판정).
             # 미해결 0이면 pending=None으로 자기정리(답변 적용 완료 턴 포함).
             if state.get("template_structure"):
-                clarification, pending = _build_form_fill_hitl(
-                    state, file_result.get("fill_stats")
-                )
                 result["pending_form_fill"] = pending
                 if clarification:
                     result["form_fill_clarification"] = clarification
@@ -281,17 +312,33 @@ async def _generate_text_response(
     *,
     llm: BaseChatModel | None = None,
     stream_user_response: bool = True,
+    summary_skip_notice: str | None = None,
+    form_fill_stats: dict[str, int] | None = None,
 ) -> str:
-    """LLM을 사용하여 자연어 응답을 생성한다.
+    """결과 표(코드 렌더) + 요약(LLM 2~3줄)으로 응답 본문을 만든다(plans/119 N-1 · D-251 ④).
+
+    - **표는 코드가** `_preview_rows`·`_display_row` 결과로 렌더한다 — 컬럼 전부(D-100) · 최대
+      20행 · 넘으면 "전체 N건 중 M건 표시" 한 줄. LLM은 표를 쓰지 않는다(서술 비용이 출력 길이에
+      선형 — plans/119 §2.3).
+    - **요약은 LLM이** 2~3줄로 쓴다. 입력은 질의·데이터 요약·수치 요약·기준 정보·미리보기 5행.
+      출력 상한은 프롬프트 지시 + `max_tokens` + 시간 상한이다(T-4 — `narration_limit_sec`).
+    - **스트리밍 순서 = 표 먼저**: `stream_user_response`면 요약 LLM 호출 **전에** 표를 답변
+      선행 본문(`emit_answer_prefix`)으로 내보낸다. 반환 본문도 같은 순서(표 → 요약)라 프론트가
+      `done`의 `response`로 교체할 때 화면이 튀지 않는다. D-062 중간 산출(False)은 내지 않는다.
+    - 요약이 시간 상한·예외·빈 응답으로 실패하면 **표 + 사유 한 줄**로 끝낸다(표는 버리지 않는다).
 
     Args:
         config: 앱 설정
         state: 에이전트 상태
         llm: LLM 인스턴스 (외부 주입, 없으면 내부 생성)
-        stream_user_response: USER_RESPONSE_TAG 부여 여부 (D-062 합성 시 False).
+        stream_user_response: USER_RESPONSE_TAG 부여·표 선행 발행 여부 (D-062 합성 시 False).
+        summary_skip_notice: 주어지면 요약 LLM을 부르지 않고 이 결정적 안내를 요약 자리에 싣는다
+            (폼필 역질문 턴 — D-151).
+        form_fill_stats: 역질문 없이 끝나는 폼필 턴의 writer 채움 통계 — 채운/비운 열을 요약
+            입력에 싣는다(plans/120 F-6 서술 가드). None이면 블록 생략.
 
     Returns:
-        자연어 응답 텍스트
+        응답 본문(표 → 요약)
     """
     organized = state["organized_data"]
     parsed = state["parsed_requirements"]
@@ -307,6 +354,15 @@ async def _generate_text_response(
         all_null_cols = _all_null_value_columns(organized["rows"])
         if all_null_cols is not None:
             return _generate_all_null_response(all_null_cols, organized["rows"], state)
+
+    # 멀티 DB 순위 전역 재정렬(plans/113 S-1)이 적용된 행은 이미 전체 순위다 — 앞 행 그대로.
+    ranked = bool((organized.get("merge_ranking") or {}).get("applied"))
+    table = _render_result_table(organized["rows"], ranked=ranked)
+
+    if summary_skip_notice is not None:
+        if stream_user_response and table:
+            await emit_answer_prefix(table + "\n\n")
+        return _join_table_and_summary(table, summary_skip_notice)
 
     if llm is None:
         # 최종 사용자 응답만 answer 프로파일(D-194). D-062 중간 합성
@@ -327,33 +383,144 @@ async def _generate_text_response(
         summary=organized["summary"],
         rows=organized["rows"],
         reference_info=reference_info,
-        # 멀티 DB 순위 전역 재정렬(plans/113 S-1)이 적용된 행은 이미 전체 순위다 — 앞 20건 그대로.
-        ranked=bool((organized.get("merge_ranking") or {}).get("applied")),
+        ranked=ranked,
         # 멀티 DB 집계 질의(plans/113 S-3) — 수치 요약을 DB별·전체 코드 계산값으로 바꾼다.
         aggregates=organized.get("merge_aggregates"),
+        form_fill_stats=form_fill_stats,
     )
 
     messages: list[BaseMessage] = [
-        SystemMessage(content=OUTPUT_GENERATOR_SYSTEM_PROMPT)
+        SystemMessage(content=OUTPUT_SUMMARY_SYSTEM_PROMPT)
     ]
     if type(llm) is KBGenAIChat:
         messages.append(AIMessage(content=""))
     messages.append(HumanMessage(content=user_prompt))
 
+    # 표를 먼저 내보낸다 — 요약 LLM의 첫 토큰을 기다리지 않고 첫 답변이 나간다(T-5 첫 답변 시각).
+    if stream_user_response and table:
+        await emit_answer_prefix(table + "\n\n")
+
     # 토큰 단위 SSE 스트리밍(D-009)을 위해 .astream()으로 호출하고,
     # 최종 사용자 응답임을 USER_RESPONSE_TAG로 표시한다. 단, 딥 에이전트 단일
     # 합성(D-062)에서는 중간 per-task 토큰이 새지 않도록 태그를 생략한다.
     tags = [USER_RESPONSE_TAG] if stream_user_response else None
-    response = await astream_text(llm, messages, tags=tags)
-    # 표 정규화(D-187): GFM은 구분선 셀 수 ≠ 헤더 셀 수면 표로 인식하지 않아 원문이 노출된다
-    # (19열 금감원 양식에서 LLM이 셀 수를 자주 틀림 — 라이브 실측 2026-08-26). 렌더만 보장.
-    response = _normalize_markdown_tables(response)
+    summary = await _summarize(llm, messages, tags=tags)
+    # 표 정규화(D-187): 요약에 표를 쓰지 말라고 지시하지만(비결정성) 쓰면 렌더는 보장한다.
+    summary = _normalize_markdown_tables(summary)
     # 사후 가드(D-186): 요약 문단의 "YYYY년 M월" 연도가 기준 연도 밖이면 침묵하지 않는다.
     # 스트리밍은 이미 화면에 나간 뒤라 회수가 아닌 후행 경고이며, 자동 치환은 하지 않는다.
-    warn = _check_response_years(response, reference_info)
+    warn = _check_response_years(summary, reference_info)
     if warn:
-        response = f"{response}\n\n{warn}"
-    return response
+        summary = f"{summary}\n\n{warn}"
+    return _join_table_and_summary(table, summary)
+
+
+# ── 요약 서술 예산 (plans/119 T-4 · 문헌 L-6·L-7) ─────────────────────────────
+
+#: 요약 LLM 한 번의 시간 상한(초) — 마감이 묶여 있을 때 min(이 값, 처리 마감까지 남은 시간)으로
+#: 돈다(마감이 없으면 적용하지 않는다 — 종전). 요약 2~3줄 ≈ 300자 × 25ms/자 ≈ 7.5초 + 짧은 LLM
+#: 호출 한 번의 고정 비용(파싱 LLM p50 6.9초 — plans/119 §2.9)이 서술 예약 초기값(15초 ·
+#: `API_ANSWER_RESERVE_SEC`)에 들어간다. 그 두 배를 상한으로 둔다(추정 — T-0 실측으로 재조정).
+SUMMARY_TIMEOUT_SEC = 30.0
+#: 서술 속도(초/자) — plans/119 §2.3 실측: 응답 길이 구간별 23.8~30.1ms/자(p50 · D-251 배경
+#: 24.2ms/자 재현). 1토큰 ≈ 1자로 보고(한국어 — 실측 아님) 남은 시간을 토큰 상한으로 바꾼다.
+SUMMARY_SEC_PER_CHAR = 0.025
+#: 요약 출력 토큰 상한(요약 2~3줄 ≈ 100~300자에 여유) · 하한(문장 하나가 끝날 만큼).
+SUMMARY_MAX_TOKENS = 400
+SUMMARY_MIN_TOKENS = 64
+#: 요약 미리보기 행 수 — 표는 이미 코드가 렌더했으므로 LLM은 일부만 본다(N-1 ②).
+_SUMMARY_PREVIEW_ROWS = 5
+
+_SUMMARY_TIMEOUT_NOTE = "요약은 처리 시간 상한으로 생략했습니다."
+_SUMMARY_FAILED_NOTE = "요약은 생성하지 못해 생략했습니다. 위 표가 조회 결과입니다."
+
+
+def narration_limit_sec(*, now: float | None = None) -> float | None:
+    """서술 LLM 한 번의 시간 상한 = min(서술 상한, 처리 마감까지 남은 시간) (T-4).
+
+    요청 마감이 묶여 있지 않으면(CLI·단위 테스트·옛 체크포인트) None — 종전처럼 상한을 걸지 않는다.
+    반환값이 `MIN_CALL_TIMEOUT_SEC`보다 작으면 이미 늦었다는 뜻이다(호출부가 LLM을 시작하지 않는다).
+    `result_aggregator._synthesize_finalized`(D-062)도 같은 상한을 쓴다.
+    """
+    bound = bound_deadline()
+    if bound is None:
+        return None
+    left = remaining_sec(bound[0], now=now)  # 서술 단계 — 처리 마감까지(예약을 빼지 않는다)
+    if left is None or left < MIN_CALL_TIMEOUT_SEC:
+        return left
+    with answer_phase():
+        return call_timeout(SUMMARY_TIMEOUT_SEC, now=now)
+
+
+def _summary_max_tokens(limit_sec: float | None) -> int:
+    """남은 서술 예산 ÷ 서술 속도 → 출력 토큰 상한(요약용 상수로 자름). 예산 없으면 상수."""
+    if limit_sec is None:
+        return SUMMARY_MAX_TOKENS
+    by_time = int(limit_sec / SUMMARY_SEC_PER_CHAR)
+    return max(SUMMARY_MIN_TOKENS, min(SUMMARY_MAX_TOKENS, by_time))
+
+
+async def _summarize(
+    llm: BaseChatModel, messages: list[BaseMessage], *, tags: list[str] | None
+) -> str:
+    """요약 LLM을 서술 예산 안에서 부른다. 시간 초과·예외·빈 응답이면 **사유 한 줄**을 돌려준다.
+
+    호출부는 어느 쪽이든 표 뒤에 붙인다 — 표는 이미 있으므로 버리지 않는다(T-4 ③ · 침묵 금지).
+    """
+    limit = narration_limit_sec()
+    if limit is not None and limit < MIN_CALL_TIMEOUT_SEC:
+        logger.warning("요약 생략 — 처리 마감까지 남은 시간 %.1fs(시작하지 않음)", limit)
+        return _SUMMARY_TIMEOUT_NOTE
+    max_tokens = _summary_max_tokens(limit)
+    try:
+        with answer_phase():
+            call = astream_text(llm, messages, tags=tags, max_tokens=max_tokens)
+            text = await (call if limit is None else asyncio.wait_for(call, timeout=limit))
+    except TimeoutError:
+        logger.warning("요약 LLM이 서술 상한 %.1fs를 넘어 생략 — 표 + 사유로 종결", limit or 0.0)
+        return _SUMMARY_TIMEOUT_NOTE
+    except Exception as e:  # noqa: BLE001 — 표는 이미 있다. 사유를 남기고 표로 끝낸다(T-4 ③)
+        logger.error("요약 LLM 실패 — 표 + 사유로 종결: %s", e, exc_info=True)
+        return _SUMMARY_FAILED_NOTE
+    text = (text or "").strip()
+    if not text:
+        logger.warning("요약 LLM이 빈 응답을 돌려줘 표 + 사유로 종결")
+        return _SUMMARY_FAILED_NOTE
+    return text
+
+
+def _join_table_and_summary(table: str, summary: str) -> str:
+    """표 → 요약 순서로 잇는다(스트리밍 선행 본문 `표 + 빈 줄`과 같은 순서)."""
+    return f"{table}\n\n{summary}" if table else summary
+
+
+def _render_result_table(rows: list[Any], *, ranked: bool) -> str:
+    """응답 결과 표를 코드로 렌더한다(plans/119 N-1 ① · D-100 컬럼 전부 · LLM 0).
+
+    행은 `_preview_rows`(최대 20행 · 멀티 DB 균형 · 전역 순위면 앞 행)로 고르고 헤더는
+    `_display_row` 표시명(복합 필드명 `A > B` · 출처 DB 표시명)이다. 20행을 넘으면 몇 건 중
+    몇 건인지 한 줄로 밝힌다 — 전체는 CSV 다운로드다. dict 행이 없으면 빈 문자열이다.
+    """
+    preview, balanced = _preview_rows(rows, ranked=ranked)
+    display = [_display_row(r) for r in preview if isinstance(r, dict)]
+    lines = render_markdown_table(display)
+    if not lines:
+        return ""
+    if len(rows) > len(preview):
+        how = "DB별로 고르게 " if balanced else ""
+        lines.append("")
+        lines.append(
+            f"전체 {len(rows):,}건 중 {how}{len(preview):,}건 표시(전체는 CSV 다운로드)"
+        )
+    return "\n".join(lines)
+
+
+def _form_fill_pending_notice(unresolved: int) -> str:
+    """폼필 역질문 턴의 요약 자리 안내(D-151 · N-1 ④ — LLM 0)."""
+    return (
+        f"채우지 못한 항목 {unresolved}건의 처리 방법을 먼저 여쭙니다. "
+        "답을 받아 양식을 다시 채운 뒤 결과를 요약합니다."
+    )
 
 
 def _generate_empty_result_response(
@@ -517,31 +684,37 @@ def _build_response_prompt(
     *,
     ranked: bool = False,
     aggregates: dict[str, Any] | None = None,
+    form_fill_stats: dict[str, int] | None = None,
 ) -> str:
-    """응답 생성 프롬프트를 구성한다.
+    """요약 LLM 입력 프롬프트를 구성한다(plans/119 N-1 ② — 표는 코드가 렌더한다).
+
+    입력은 질의 · 데이터 요약 · 미리보기 5행 · 수치 요약(코드 계산) · 기준 정보다. 표 컬럼 규칙
+    (종전 「표시 규칙」 — D-100 "컬럼 모두 포함")은 싣지 않는다 — 표는 `_render_result_table`이
+    컬럼 전부로 렌더한다.
 
     Args:
         original_query: 원본 사용자 질의
         summary: 데이터 요약
         rows: 결과 데이터 행
         reference_info: `_build_reference_info` 산출(오늘·기준월·조회 기간) — 기간·연도 표기의
-            결정적 근거(D-186). None이면 블록 생략(종전 프롬프트와 동일).
+            결정적 근거(D-186). None이면 블록 생략.
         ranked: 멀티 DB 순위 전역 재정렬(plans/113 S-1)이 적용된 행인지 — True면 미리보기를
-            DB별로 고르게 뽑지 않고 앞 20건(전체 순위 상위)을 그대로 싣는다.
+            DB별로 고르게 뽑지 않고 앞 행(전체 순위 상위)을 그대로 싣는다.
         aggregates: 멀티 DB 집계 종합(plans/113 S-3) — 적용됐으면 「수치 요약」을 DB별 값과
             건수·합계·최대·최소의 전체 값으로 바꾼다(평균 전체 값은 만들지 않는다). 행 위 통계
             (DB별 값끼리의 최소·최대·평균)는 DB를 넘나드는 무의미한 값이라 싣지 않는다.
+        form_fill_stats: 폼필 writer 채움 통계 — 주어지면 「양식 채움 결과」(채운 열·비운 열)를
+            싣는다(plans/120 F-6 서술 가드). None이면 블록 생략.
 
     Returns:
         구성된 프롬프트 문자열
     """
-    # 결과가 많으면 20건만 프롬프트에 포함 — 멀티 DB 이어 붙이기는 DB별로 고르게(S-2).
-    # 복합 필드명(그룹|서브, D-145)의 '|'는 Markdown 표 구분자와 충돌해 응답 표가
-    # 깨진다(라이브 실측: 칼럼 분해·순서 뒤죽박죽) — 표시용 키로 결정적 치환.
-    preview, balanced = _preview_rows(rows, ranked=ranked)
+    # 미리보기는 5행만 — 멀티 DB 이어 붙이기는 DB별로 고르게(S-2).
+    # 복합 필드명(그룹|서브, D-145)의 '|'는 표시용 키로 결정적 치환(표와 같은 표시명).
+    preview, balanced = _preview_rows(rows, ranked=ranked, limit=_SUMMARY_PREVIEW_ROWS)
     display_rows = [_display_row(r) if isinstance(r, dict) else r for r in preview]
-    truncated = len(rows) > 20
-    shown = "DB별로 고르게 20건" if balanced else "상위 20건"
+    truncated = len(rows) > len(preview)
+    shown = f"DB별로 고르게 {len(preview)}건" if balanced else f"상위 {len(preview)}건"
 
     parts = [
         f"## 사용자 질의\n{original_query}",
@@ -582,23 +755,15 @@ def _build_response_prompt(
             + "\n".join(stats_lines)
         )
 
-    # 표에 모든 컬럼을 빠짐없이 포함하도록 컬럼 목록을 명시한다(D-100) — LLM이 질의 문구에
-    # 이끌려 일부 컬럼만 표시하는 것을 방지(실측: "제조사와 일련번호" 질의에서 서버명·알람명 누락).
-    columns = list(display_rows[0].keys()) if display_rows and isinstance(display_rows[0], dict) else []
-    if columns:
-        rule = (
-            "## 표시 규칙\n"
-            f"아래 {len(columns)}개 컬럼을 **모두** 표에 포함하세요(하나도 생략 금지): "
-            + ", ".join(columns)
+    # "N건 중 상위 M건(대표 서버)" 오서술 차단(D-186) — 절단은 표시 제한이지 데이터 특성이 아니다.
+    # 표 컬럼 규칙(D-100)은 싣지 않는다 — 표는 코드가 컬럼 전부로 렌더한다(plans/119 N-1).
+    if truncated:
+        parts.append(
+            "## 미리보기 안내\n"
+            f"전체 결과는 {len(rows)}건이며 위 JSON은 표시용으로 {shown}만 실은 것입니다. "
+            f"요약에는 전체 건수만 쓰고, '{shown}'·'대표 서버'처럼 절단을 데이터 특성으로 "
+            "서술하지 마세요."
         )
-        if truncated:
-            # "N건 중 상위 20건(대표 서버)" 오서술 차단(D-186) — 절단은 표시 제한이지 데이터 특성이 아니다
-            rule += (
-                f"\n전체 결과는 {len(rows)}건이며 위 JSON은 표시용으로 {shown}만 실은 것입니다. "
-                "요약에는 전체 건수만 쓰고, '상위 20건'·'대표 서버'처럼 절단을 데이터 특성으로 "
-                "서술하지 마세요."
-            )
-        parts.append(rule)
 
     # 기준 정보(D-186): 기간·연도 표기의 결정적 근거. 프롬프트에 연도가 없으면 LLM이 학습
     # prior 연도를 적는다 — [기준월 안내]는 LLM 생성 **이후** 덧붙어 LLM이 볼 수 없다.
@@ -620,7 +785,31 @@ def _build_response_prompt(
             + "\n".join(ref_lines)
         )
 
+    # 양식 채움 결과(plans/120 F-6): 요약 LLM은 조회 행만 보고 양식에 무엇이 들어갔는지 모른다 —
+    # 월 사용률 열이 하나도 안 채워졌는데 "기간 기준 데이터 N건이 조회되었다"고 서술했다(H-10).
+    fill_block = _form_fill_result_block(form_fill_stats)
+    if fill_block:
+        parts.append(fill_block)
+
     return "\n\n".join(parts)
+
+
+def _form_fill_result_block(fill_stats: dict[str, int] | None) -> str:
+    """요약 입력용 「양식 채움 결과」 블록 — writer 채움 통계의 채운 열·비운 열(plans/120 F-6)."""
+    if not fill_stats:
+        return ""
+    filled = [_display_field_name(f) for f, cnt in fill_stats.items() if cnt > 0]
+    empty = [_display_field_name(f) for f, cnt in fill_stats.items() if cnt == 0]
+    lines = [f"- 채운 열: {', '.join(filled) if filled else '없음'}"]
+    if empty:
+        lines.append(f"- 비운 열: {', '.join(empty)}")
+    return (
+        "## 양식 채움 결과 (코드 집계)\n"
+        "요약에는 **채운 열**에 실제로 들어간 내용만 쓰세요. 비운 열의 항목(예: 월별 사용률)을 "
+        "조회했다거나 그 기간의 데이터가 몇 건이라고 서술하지 마세요. 이 블록 자체를 본문에 "
+        "복창하지 마세요.\n"
+        + "\n".join(lines)
+    )
 
 
 #: 멀티 DB 병합 행의 출처 태그(`multi_db_executor._merge_results`) · 응답 표의 출처 칼럼 표시명.
@@ -632,7 +821,8 @@ _PREVIEW_LIMIT = 20
 def _preview_rows(
     rows: list[Any], *, ranked: bool, limit: int = _PREVIEW_LIMIT,
 ) -> tuple[list[Any], bool]:
-    """응답 LLM에 싣는 미리보기 행(최대 20건)과 DB 균형 추출 여부 (plans/113 S-2 · B-2).
+    """응답 표(최대 20건 · plans/119 N-1)·요약 미리보기(`limit`)에 싣는 행과 DB 균형 추출 여부
+    (plans/113 S-2 · B-2).
 
     멀티 DB 이어 붙이기 결과는 DB 실행 순서대로 이어져 있어 앞 20건으로 자르면 뒤 DB 행이
     하나도 보이지 않는다("한쪽만 조회한 것처럼" 보이는 두 번째 경로). 행마다 출처 태그가 있고
@@ -1014,6 +1204,19 @@ def _ranking_clause(state: AgentState, names: dict[str, str]) -> str:
     return f" → 전체 기준 상위 {len(rows):,}건({dist})"
 
 
+def _form_month_fields(state: AgentState, fill_stats: dict[str, int] | None) -> set[str]:
+    """월 시리즈 필드 = 인식기 앵커 필드 ∪ 채움 통계의 월 구조 필드(plans/120 F-6).
+
+    인식기가 발동하지 않아(리소스 명사 부재 등) 앵커가 없어도 월 구조 열은 매핑 대상이 아니다
+    — 역질문 후보·[미작성 항목]에서 빼고 전부 0건이면 [확인 필요]로 알린다. 판정은 필드 매퍼의
+    매핑 스킵과 같은 규칙(`src.utils.month_structure`)이다. 채움 통계가 없으면(docx) 앵커만 본다.
+    """
+    anchor = state.get("form_month_anchor") or {}
+    fields = set(anchor.get("fields") or [])
+    fields.update(f for f in (fill_stats or {}) if is_month_structure_field(f))
+    return fields
+
+
 def _append_form_fill_notes(
     response: str,
     state: AgentState,
@@ -1029,10 +1232,11 @@ def _append_form_fill_notes(
       None이어도 행 키=필드명 폴백으로 채워지는 칼럼이 있어 매핑 기준 판정은 오보를 냈다.
       fill_stats가 없으면(docx 등) 종전 매핑 기준으로 폴백한다.
     - 월 시리즈 필드가 전부 0건이면 사유 목록 대신 "생성 SQL 확인" 안내를 낸다
-      (D-050 — null/공란은 데이터 부재가 아니라 SQL 문제일 수 있음).
+      (D-050 — null/공란은 데이터 부재가 아니라 SQL 문제일 수 있음). 인식기가 발동하지 않아
+      앵커가 없어도 월 구조 열은 같은 규칙으로 센다(plans/120 F-6 · `_form_month_fields`).
     """
     anchor = state.get("form_month_anchor") or {}
-    month_fields = set(anchor.get("fields") or [])
+    month_fields = _form_month_fields(state, fill_stats)
 
     parts: list[str] = []
     if anchor.get("start") and anchor.get("end"):
@@ -1069,10 +1273,19 @@ def _append_form_fill_notes(
         ]
         observed_month = [f for f in month_fields if f in fill_stats]
         if observed_month and all(fill_stats[f] == 0 for f in observed_month):
-            parts.append(
-                "**[확인 필요]** 월별 사용률 칼럼이 전부 채워지지 않았습니다. 데이터 부재가 "
-                "아니라 조회 SQL 문제일 수 있으니 처리현황의 생성 SQL을 확인해주세요."
-            )
+            if anchor.get("fields"):
+                parts.append(
+                    "**[확인 필요]** 월별 사용률 칼럼이 전부 채워지지 않았습니다. 데이터 부재가 "
+                    "아니라 조회 SQL 문제일 수 있으니 처리현황의 생성 SQL을 확인해주세요."
+                )
+            else:
+                # 앵커 없음 = 월 시리즈 인식기 미발동 — 월 열이 조회 SQL에 없다(plans/120 F-6).
+                parts.append(
+                    "**[확인 필요]** 월별 사용률 칼럼이 전부 채워지지 않았습니다. "
+                    "월별 사용률 양식으로 인식하지 못해 기준월을 정하지 못했습니다. "
+                    "질의에 대상 자원(CPU·메모리 등)과 기간을 함께 적어 다시 요청하거나 "
+                    "처리현황의 생성 SQL을 확인해주세요."
+                )
     else:
         column_mapping = state.get("column_mapping") or {}
         unfilled = [
@@ -1144,8 +1357,8 @@ def _build_form_fill_hitl(
         return None, None
     if not any(cnt > 0 for cnt in fill_stats.values()):
         return None, None
-    anchor = state.get("form_month_anchor") or {}
-    month_fields = set(anchor.get("fields") or [])
+    # 앵커가 없어도 월 구조 열은 역질문하지 않는다 — 매핑 대상이 아니다(plans/120 F-6)
+    month_fields = _form_month_fields(state, fill_stats)
     literals = state.get("form_fill_literals") or {}
     overrides = state.get("form_fill_overrides") or {}
     user_blanks = {
@@ -1207,6 +1420,18 @@ def _append_scope_note(response: str, state: AgentState) -> str:
     from src.domain.scope_select import render_narrowed_note
 
     note = render_narrowed_note(state.get("scope_narrowed"))
+    return f"{response}\n\n{note}" if note else response
+
+
+def _append_elliptical_succession_note(response: str, state: AgentState) -> str:
+    """생략형 후속 턴이 직전 서버를 승계했으면 그 사실을 덧붙인다(plans/120 PL-1 — 침묵 승계 금지).
+
+    승계는 `input_parser`가 parsed_requirements에 남긴다 — 2단은 `_build_output_state`가 같은
+    parsed_requirements를 넘기므로 두 단이 같은 키로 닿는다. 범위 축소 고지와 같은 원칙으로 코드가
+    결정적으로 붙인다.
+    """
+    marker = (state.get("parsed_requirements") or {}).get(ELLIPTICAL_SUCCESSION_KEY)
+    note = render_elliptical_succession_note(marker)
     return f"{response}\n\n{note}" if note else response
 
 
@@ -1646,13 +1871,26 @@ def _generate_document_file(
             }
 
         elif output_format == "docx":
-            from src.document.word_writer import fill_word_template
+            from src.document.word_writer import (
+                fill_word_template,
+                resolve_placeholder_literals,
+            )
 
+            # 매핑 불가 본문 자리 표시({{부서}}·{{서버수}})는 질의 명시값·행 수로 결정적으로
+            # 채운다(plans/116 §10.3). 2단은 user_query 가 task 문장이라 원문을 먼저 본다.
+            literals = resolve_placeholder_literals(
+                template.get("placeholders") or [],
+                effective_mapping,
+                rows,
+                state.get("original_user_query") or state.get("user_query") or "",
+            )
+            literals.update(state.get("form_fill_literals") or {})
             file_bytes = fill_word_template(
                 file_data=uploaded_file,
                 template_structure=template,
                 column_mapping=effective_mapping,
                 rows=rows,
+                literal_values=literals,
             )
             return {
                 "file_bytes": file_bytes,

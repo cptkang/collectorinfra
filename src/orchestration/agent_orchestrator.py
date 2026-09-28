@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -35,6 +36,7 @@ from src.orchestration.sufficiency import (
     summarize_shortfalls,
 )
 from src.state import AgentState
+from src.utils.deadline import retrieval_remaining
 from src.utils.prior_dependency import (
     NOTE_SUFFICIENCY,
     POSTCHECK_AGENTS,
@@ -72,6 +74,8 @@ async def agent_orchestrator(
         - task_results: {task_id: 정규화된 결과} (기존 누적 + 신규)
         - current_node: "agent_orchestrator"
     """
+    # 한 바퀴 소요 계측 — 재계획기가 남은 시간과 비교한다(plans/118 P-1 · 추정 상수 금지).
+    round_started = time.monotonic()
     if app_config is None:
         app_config = load_config()
     if llm is None:
@@ -98,7 +102,19 @@ async def agent_orchestrator(
     # off면 None — 게이트·대조 호출이 종전과 같다.
     bridges: dict[str, BridgeContext] | None = {} if key_bridge_enabled(app_config) else None
 
-    for level in topological_levels(pending):
+    # 조회 마감(plans/119 T-2 · D-267 ⑥ — 플래그 없음): 재계획 후속을 실행하는 바퀴(이미 끝난 task가
+    # 있는 계획)는 조회 마감(= 처리 마감 − 서술 예약)이 지났으면 새 task를 시작하지 않는다. 시작하면
+    # 서술 몫까지 써서 **이미 얻은 결과까지** 상한에 걸린다(§2.9). 첫 바퀴(새 계획)는 대상이 아니다.
+    # 마감이 없는 상태(CLI·옛 체크포인트)는 판정하지 않는다 — 종전 동작.
+    reentry = any(t.get("status") in _DONE_STATUSES for t in tasks)
+    reserve_sec = _answer_reserve_sec(app_config)
+    not_started: list[dict[str, Any]] = []
+
+    levels = topological_levels(pending)
+    for level_idx, level in enumerate(levels):
+        if reentry and _retrieval_deadline_passed(state, reserve_sec):
+            not_started = [t for lvl in levels[level_idx:] for t in lvl]
+            break
         runnable = _gate_level(
             level, results, gate_on=gate_on, notes=notes, verdicts=verdicts, bridges=bridges,
         )
@@ -131,6 +147,19 @@ async def agent_orchestrator(
                     task["task_id"], task.get("agent"), norm["error"],
                 )
 
+    stop_notice: str | None = None
+    if not_started:
+        # 시작하지 않은 후속은 계획에서 뺀다 — 이미 실행된 task·결과는 그대로다. 계획에 남기면
+        # 집계기가 빈 결과를 서술하고 복합 합성(LLM)까지 부른다. 사유는 재계획 중단 사유 채널로
+        # 응답 말미에 싣는다.
+        stop_notice = _not_started_notice(not_started, reserve_sec)
+        logger.info(
+            "agent_orchestrator: 조회 마감 경과 — 재계획 후속 %d건 미시작(%s)",
+            len(not_started), [t.get("task_id") for t in not_started],
+        )
+        dropped = {id(t) for t in not_started}
+        tasks = [t for t in tasks if id(t) not in dropped]
+
     # 오케스트레이션 수준 충족도 검증·재계획 (Plan 78 W5 · P7 · LLM 미사용).
     # 대상 주입이 없었으면 `injected`가 비어 검증도 재시도도 일어나지 않는다 — 회귀 0.
     sufficiency_reasons: list[dict] = []
@@ -162,6 +191,7 @@ async def agent_orchestrator(
         "task_plan": tasks,
         "task_results": results,
         "current_node": "agent_orchestrator",
+        "orchestrator_round_sec": round(time.monotonic() - round_started, 3),
     }
     if sufficiency_reasons:
         # 미충족 사유를 응답에 노출한다(78 W5-3 · 침묵 폴백 금지).
@@ -169,7 +199,45 @@ async def agent_orchestrator(
         out["sufficiency_shortfalls"] = sufficiency_reasons
     if notes:
         out["dependency_notes"] = list(state.get("dependency_notes") or []) + notes
+    if stop_notice:
+        out["replan_stop_notice"] = stop_notice
     return out
+
+
+# 재진입 판정 — 계획에 이미 끝난 task가 있으면 재계획 후속을 실행하는 바퀴다. `replan_count`는
+# 턴 사이에 초기화되지 않아(plans/103 K-5) 쓰지 않는다 — task_plan은 매 턴 intent_planner가
+# 새로 낸다.
+_DONE_STATUSES = ("completed", "failed", "skipped")
+
+
+def _answer_reserve_sec(app_config: object) -> float:
+    """서술 예약 초(`ServerConfig.answer_reserve_sec`) — 테스트 대역 설정에서는 0(종전 동작)."""
+    value = getattr(getattr(app_config, "server", None), "answer_reserve_sec", 0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return max(0.0, float(value))
+
+
+def _retrieval_deadline_passed(state: AgentState, reserve_sec: float) -> bool:
+    """조회 마감(처리 마감 − 서술 예약)이 이미 지났는가. 마감이 없으면 False(종전 동작)."""
+    left = retrieval_remaining(state, reserve_sec)
+    return left is not None and left <= 0
+
+
+def _not_started_notice(not_started: list[dict[str, Any]], reserve_sec: float) -> str:
+    """조회 마감 경과로 시작하지 않은 재계획 후속의 사용자 사유(침묵 금지 · plans/119 T-2)."""
+    queries = ", ".join(
+        f"「{' '.join(str(t.get('sub_query') or '').split())[:80]}」" for t in not_started[:3]
+    )
+    more = f" 외 {len(not_started) - 3}건" if len(not_started) > 3 else ""
+    why = (
+        f"답변 작성 몫 {reserve_sec:.0f}초를 남긴 조회 마감 경과"
+        if reserve_sec > 0 else "조회 마감 경과"
+    )
+    return (
+        f"응답 시간 상한이 가까워({why}) 추가 조회 {len(not_started)}건({queries}{more})은 "
+        "실행하지 않고 지금까지의 결과로 답했습니다."
+    )
 
 
 def _sequential_gate_on(app_config: object) -> bool:

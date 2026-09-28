@@ -245,9 +245,10 @@ settings:
       사용자가 수동 중단해야 했다. 이 상한이 있으면 300초에서 호출이 실패로 떨어지고
       재시도 예산(3회) 또는 에러 응답으로 이어진다 — 무한이 유한이 된다.
     performance: >-
-      정상 응답에는 영향이 없다. 서버 응답 가드(API_QUERY_TIMEOUT 120초 /
-      API_FILE_QUERY_TIMEOUT 120초)가 사용자 응답을 먼저 끊으므로, 이 상한이 실제로
-      끊는 것은 백그라운드에 남은 잔여 호출이다.
+      정상 응답에는 영향이 없다. 서버 응답 가드 — 첫 답변 전에는 처리 상한(API_QUERY_TIMEOUT /
+      API_FILE_QUERY_TIMEOUT 120초), 첫 답변 뒤에는 토큰 간 idle(API_STREAM_IDLE_TIMEOUT_SEC)과
+      전체 상한(처리 상한 + API_STREAM_DELIVERY_GRACE_SEC) — 가 사용자 응답을 먼저 끊으므로, 이
+      상한이 실제로 끊는 것은 백그라운드에 남은 잔여 호출이다.
     stability: >-
       너무 낮추면(예: 60초 미만) 대형 프롬프트의 정상 응답까지 끊겨 재시도가 늘어난다.
       SSE 가드의 유령 태스크 수명도 이 값이 보장하므로 0이나 과대값으로 두면 안 된다.
@@ -257,7 +258,7 @@ settings:
     caveats:
       - 읽기가 완전히 침묵하는 구간에서는 read 타임아웃(300초)만큼 발화가 늦어질 수 있다.
       - ollama·gemini·구 FabriX(OpenAI 호환) 경로에는 적용되지 않는다(D-198 후속).
-    related: [API_QUERY_TIMEOUT, API_FILE_QUERY_TIMEOUT, LLM_PROVIDER]
+    related: [API_QUERY_TIMEOUT, API_FILE_QUERY_TIMEOUT, API_STREAM_DELIVERY_GRACE_SEC, LLM_PROVIDER]
     references:
       - docs/02_decision.md (D-198)
 
@@ -339,8 +340,9 @@ settings:
       - value: "120 이하"
         effect: 서버 기동 직후 첫 질의나 긴 스키마 질의가 정상 처리 중에 끊긴다.
     stability: >-
-      요청 전체 상한 API_QUERY_TIMEOUT이 더 짧으면 이 값보다 먼저 끊긴다. 서버를 띄운 뒤
-      질의 한 번으로 캐시를 채우고 검증을 시작한다.
+      첫 답변까지의 처리 상한 API_QUERY_TIMEOUT이 더 짧으면 첫 답변 전 호출이 이 값보다 먼저
+      끊긴다. 첫 답변 뒤 호출은 전체 상한(처리 상한 + API_STREAM_DELIVERY_GRACE_SEC)에 먼저 걸릴
+      수 있다. 서버를 띄운 뒤 질의 한 번으로 캐시를 채우고 검증을 시작한다.
     related: [LLM_MLX_MAX_TOKENS, API_QUERY_TIMEOUT]
 
   LLM_MLX_ENABLE_THINKING:

@@ -57,6 +57,10 @@ def _mock_llm(content: str) -> AsyncMock:
     return llm
 
 
+# 멀티 DB 일부 실패 표지 — plans/119 N-2(D-251 ⑤)의 결정적 성공 종료를 피해 LLM 평가 경로에 둔다.
+_PARTIAL = {"polestar_cm_yd": "timeout"}
+
+
 def _make_state(*, user_query="복합 질의", task_plan=None, task_results=None, replan_count=0):
     """task_plan/task_results/replan_count를 주입한 초기 state를 만든다."""
     state = create_initial_state(user_query=user_query)
@@ -95,7 +99,8 @@ async def test_replanner_terminates(mock_config):
     ]
     state = _make_state(
         task_plan=task_plan,
-        task_results={"t1": {"query_results": [{"hostname": "web-01"}]}},
+        # 부분 실패(db_errors) — 전 task 성공이면 plans/119 N-2가 LLM 없이 끝내므로 평가 경로로 둔다
+        task_results={"t1": {"query_results": [{"hostname": "web-01"}], "db_errors": _PARTIAL}},
     )
 
     result = await replanner(state, llm=llm, app_config=mock_config)
@@ -133,7 +138,8 @@ async def test_replanner_adds_followup(mock_config):
     ]
     state = _make_state(
         task_plan=task_plan,
-        task_results={"t1": {"query_results": [{"hostname": "web-01"}]}},
+        # 부분 실패(db_errors) — 전 task 성공이면 plans/119 N-2가 LLM 없이 끝내므로 평가 경로로 둔다
+        task_results={"t1": {"query_results": [{"hostname": "web-01"}], "db_errors": _PARTIAL}},
         replan_count=0,
     )
 
@@ -177,7 +183,9 @@ async def test_replanner_preserves_completed(mock_config):
     llm = _mock_llm(content)
     t1 = {"task_id": "t1", "agent": "data_query", "sub_query": "원조회",
           "depends_on": [], "input_from": [], "order": 1, "status": "completed"}
-    t1_result = {"query_results": [{"hostname": "web-01"}, {"hostname": "web-02"}]}
+    # 부분 실패(db_errors) — 전 task 성공이면 plans/119 N-2가 LLM 없이 끝내므로 평가 경로로 둔다
+    t1_result = {"query_results": [{"hostname": "web-01"}, {"hostname": "web-02"}],
+                 "db_errors": _PARTIAL}
     state = _make_state(
         task_plan=[t1],
         task_results={"t1": t1_result},

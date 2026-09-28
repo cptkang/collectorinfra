@@ -19,6 +19,7 @@ import sqlparse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 
+from src.utils.deadline import has_time_for, retrieval_remaining
 from src.utils.llm_compat import is_kbgenai
 from src.utils.progress_events import dispatch_progress_event
 from src.observability.group_metrics import record_group
@@ -26,7 +27,16 @@ from src.utils.sql_dialect import is_db2
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.nodes.candidate_generator import classify_complexity
-from src.nodes.query_validator import check_left_join_where_demotion as _check_left_join_where_demotion
+from src.nodes.query_validator import (
+    NON_SQL_RETRY_BUDGET,
+    REGEN_STOP_DEADLINE,
+    REGEN_STOP_NON_SQL,
+    REGEN_STOP_VALIDATION_BUDGET,
+    check_left_join_where_demotion as _check_left_join_where_demotion,
+    deadline_stop_message,
+    is_non_sql_prose,
+    retrieval_reserve_sec,
+)
 from src.nodes.semantic_compiler import compile_from_nl
 from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
 from src.routing.db_registry import DBRegistry
@@ -85,6 +95,7 @@ from src.nodes.prompt_blocks import (
     format_schema_text,
     path_parity_enabled,
     resolve_prompt_token_budget,
+    demonstrative_entity_scope,
     prior_server_scope,
     prior_server_scope_by_db,
     select_history_fewshot,
@@ -306,6 +317,60 @@ class _MultiRun:
     # 재정렬이 정렬 키·행 상한을 **실행한 SQL**에서 결정적으로 읽는다(plans/113 S-1).
     # `all_attempts`(QueryAttempt)에는 DB 식별자가 없어 DB별 대조가 불가하다.
     db_sqls: dict[str, str] = field(default_factory=dict)
+    # SQL 재생성 루프가 유효 SQL 없이 멈춘 DB와 사유(plans/119 N-5·T-3·T-1ⓑ) —
+    # `{db_id: {"reason": validation_budget|non_sql|deadline, "detail": 마지막 사유}}`. 2단 핸들러가
+    # 전 DB 실패 task의 `regen_stop`으로 접는다(`subagents._task_regen_stop`).
+    regen_stops: dict[str, dict[str, str]] = field(default_factory=dict)
+    # DB별 직전 SQL 생성 소요(초) — 실행 오류 재생성의 시간 게이트 입력(추정 상수 금지 · T-3).
+    gen_elapsed: dict[str, float] = field(default_factory=dict)
+
+
+def _monotonic() -> float:
+    """단조 시계(초) — 조회 마감 판정·생성 소요 계측이 쓴다. 테스트는 이 이름을 바꿔 끼운다."""
+    return time.monotonic()
+
+
+def _record_regen_stop(run: _MultiRun, db_id: str, reason: str, detail: str) -> None:
+    """DB 하나의 재생성 루프 종결 사유를 남긴다.
+
+    테스트 대역(run에 필드 없음)에서는 조용히 넘긴다.
+    """
+    stops = getattr(run, "regen_stops", None)
+    if isinstance(stops, dict):
+        stops[db_id] = {"reason": reason, "detail": detail}
+
+
+def _note_gen_elapsed(run: _MultiRun, db_id: str, elapsed: float) -> None:
+    table = getattr(run, "gen_elapsed", None)
+    if isinstance(table, dict):
+        table[db_id] = elapsed
+
+
+def _last_gen_elapsed(run: _MultiRun, db_id: str) -> float | None:
+    table = getattr(run, "gen_elapsed", None)
+    value = table.get(db_id) if isinstance(table, dict) else None
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _deadline_blocks(
+    run: _MultiRun, need_sec: float | None, *, stage: str, last_reason: str | None,
+) -> str | None:
+    """조회 마감 게이트(plans/119 T-1ⓑ·T-3) — 막히면 사용자 문구, 시간이 있으면 None.
+
+    마감(`request_deadline`)이 없는 상태(CLI·테스트)는 항상 None이다(종전 동작). 필요 시간은 방금 잰
+    직전 생성 소요이고, 없으면(첫 생성·진입 전) 조회 마감 경과만 본다.
+    """
+    state = getattr(run, "state", None)
+    if not isinstance(state, dict):
+        return None
+    reserve = retrieval_reserve_sec(getattr(run, "app_config", None))
+    now = _monotonic()
+    if has_time_for(state, reserve, need_sec, now=now):
+        return None
+    return deadline_stop_message(
+        stage, remaining_sec=retrieval_remaining(state, reserve, now=now),
+        need_sec=need_sec, last_reason=last_reason,
+    )
 
 
 def _prior_for_db(run: _MultiRun, db_id: str) -> tuple[str | None, tuple[str, list[str]] | None]:
@@ -384,7 +449,10 @@ async def _prepare_multi_run(
     prior_block = build_prior_rows_block(state.get("prior_rows"))
     if prior_block and is_scrub_samples_enabled():
         prior_block = scrub_pii(prior_block)
-    prior_scope = prior_server_scope(state.get("prior_rows"))
+    # 선행 결과가 없으면 지시어 후속 턴의 직전 엔티티 스코프(plans/116 §10.3) — 단일 대칭.
+    prior_scope = (
+        prior_server_scope(state.get("prior_rows")) or demonstrative_entity_scope(state)
+    )
     value_index = state.get("column_value_index")
     # DB별 스코프 분할(D-203) — `is True` 비교는 설정 대역(MagicMock)의 오발동 방지(multi_relevant_gate와 동일).
     prior_scope_by_db = None
@@ -568,6 +636,8 @@ async def _generate_validated_sql(
 
     # 선행 스코프는 DB별로 고른다(plans/88 순차 의존 계약) — 분할이 없으면 run 단위 값 그대로.
     _pb, _ps = _prior_for_db(run, db_id)
+    # 생성 소요를 잰다 — 재생성 시간 게이트(T-3)가 방금 잰 값과 비교한다(추정 상수 금지).
+    _gen_started = _monotonic()
     sql = await _generate_sql(
         run.llm, run.parsed_requirements, schema_info,
         sub_context, run.effective_limit,
@@ -590,6 +660,8 @@ async def _generate_validated_sql(
         form_fill_answers=run.form_fill_answers,
         surface_query=surface_query_for_judgment(run.state),
     )
+    _last_gen = _monotonic() - _gen_started
+    _note_gen_elapsed(run, db_id, _last_gen)
 
     # 3. SQL 검증 (간이) — 실패 시 최대 2회 재생성(총 3회 시도, 단일 경로 재시도 3회와
     # 대칭 — D-153 후속1). 동일 스키마 복구원이 없는 조합(b0+gp 등)은 소급 복구가
@@ -602,6 +674,10 @@ async def _generate_validated_sql(
     )
     # 보정본(행 상한 자동 추가)이 오면 갈아탄다 — 버리면 검증이 "통과만" 하고 끝난다(CU-16).
     sql = _fixed or sql
+    # 유효 SQL 없이 끝날 때의 종결 사유(plans/119) — 아래 루프가 정하고 반환 직전에 기록한다.
+    # detail은 마지막 검증 사유다(시간 종결이면 사용자 문구로 바뀌기 전 값 — Q-3 계약).
+    _stop_reason = REGEN_STOP_VALIDATION_BUDGET
+    _stop_detail: str | None = None
     for _retry in range(1, 3):
         if not validation_error:
             break
@@ -618,6 +694,31 @@ async def _generate_validated_sql(
                 db_id,
             )
             break
+        # N-5: 산문(비-SQL) 전용 예산 — 그래프·2단 단일 루프와 같은 상수·같은 판정
+        # (`is_non_sql_prose`).
+        # 방금 검증한 산출은 `_retry - 1`번째 재시도다(단일 경로 `retry_count`와 같은 눈금).
+        if (
+            _retry - 1 >= NON_SQL_RETRY_BUDGET
+            and is_non_sql_prose(sql, validation_error.split("; "))
+        ):
+            logger.warning(
+                "DB '%s' 산문(비-SQL) 응답 전용 예산 소진 — 재생성 중단(plans/119 N-5)"
+                " | 산출 head=%r",
+                db_id, (sql or "")[:300],
+            )
+            _stop_reason = REGEN_STOP_NON_SQL
+            break
+        # T-3: 재생성 직전 시간 게이트 — 조회 마감까지 남은 시간이 방금 잰 생성 소요보다
+        # 짧으면 멈춘다.
+        _blocked = _deadline_blocks(
+            run, _last_gen, stage="SQL 재생성", last_reason=validation_error,
+        )
+        if _blocked:
+            logger.warning("DB '%s' %s", db_id, _blocked)
+            _stop_reason = REGEN_STOP_DEADLINE
+            _stop_detail = validation_error
+            validation_error = _blocked
+            break
         logger.warning(
             "DB '%s' SQL 검증 실패(시도 %d/3), 재생성: %s | 산출 head=%r",
             db_id, _retry, validation_error, (sql or "")[:300],
@@ -629,6 +730,7 @@ async def _generate_validated_sql(
                 " 직전 응답은 실행 가능한 SQL이 아니었습니다. "
                 "설명·사과·안내문 없이 SELECT 문 한 개만 출력하세요."
             )
+        _gen_started = _monotonic()
         sql = await _generate_sql(
             run.llm, run.parsed_requirements, schema_info,
             sub_context, run.effective_limit,
@@ -648,12 +750,19 @@ async def _generate_validated_sql(
             form_fill_answers=run.form_fill_answers,
             surface_query=surface_query_for_judgment(run.state),
         )
+        _last_gen = _monotonic() - _gen_started
+        _note_gen_elapsed(run, db_id, _last_gen)
         validation_error, _fixed = _validate_sql(
             sql, schema_info, db_id=db_id, db_engine=db_engine,
             user_query=run.state.get("user_query", ""), app_config=run.app_config,
             surface_query=surface_query_for_judgment(run.state),
         )
         sql = _fixed or sql
+    if validation_error:
+        # 유효 SQL 없이 끝났다 — 사유를 DB별로 남겨 2단 task의 `regen_stop`으로 접게 한다
+        # (plans/119 Q-3).
+        # PII 차단·토큰 한도 중단도 "재생성이 무익해 멈춘 검증 실패"라 검증 소진으로 본다.
+        _record_regen_stop(run, db_id, _stop_reason, _stop_detail or validation_error)
     return sql, validation_error
 
 
@@ -681,6 +790,14 @@ async def _run_single_target(target: dict, run: _MultiRun) -> None:
         _dom = get_domain_by_id(db_id)
         run.dependency_notes.append(scope_db_note(db_id, label=getattr(_dom, "label", None) or None))
         logger.info("DB '%s': 선행 스코프에 서버 없음 — 미조회(D-203)", db_id)
+        return
+
+    # T-1ⓑ(plans/119): 스키마 분석 진입 전 — 조회 마감이 이미 지났으면 시작하지 않고 사유를 남긴다.
+    _blocked = _deadline_blocks(run, None, stage="스키마 분석", last_reason=None)
+    if _blocked:
+        run.db_errors[db_id] = _blocked
+        _record_regen_stop(run, db_id, REGEN_STOP_DEADLINE, _blocked)
+        logger.warning("DB '%s' %s", db_id, _blocked)
         return
 
     try:
@@ -720,6 +837,14 @@ async def _run_single_target(target: dict, run: _MultiRun) -> None:
                     "DB '%s': 동일 스키마%s SQL 재사용 (alias 일관성)", db_id, schema_key
                 )
             else:
+                # T-1ⓑ: SQL 생성 진입 전 — 스키마 분석이 조회 마감을 넘겼으면 생성을 시작하지
+                # 않는다.
+                _blocked = _deadline_blocks(run, None, stage="SQL 생성", last_reason=None)
+                if _blocked:
+                    run.db_errors[db_id] = _blocked
+                    _record_regen_stop(run, db_id, REGEN_STOP_DEADLINE, _blocked)
+                    logger.warning("DB '%s' %s", db_id, _blocked)
+                    return
                 sql, validation_error = await _generate_validated_sql(
                     run, client, schema_info, sub_context, db_mapping,
                     db_engine=db_engine, db_id=db_id,
@@ -729,7 +854,15 @@ async def _run_single_target(target: dict, run: _MultiRun) -> None:
                         "DB '%s' SQL 검증 최종 실패: %s | 산출 head=%r",
                         db_id, validation_error, (sql or "")[:300],
                     )
-                    _err_msg = f"SQL 검증 실패: {validation_error}"
+                    _stops = getattr(run, "regen_stops", None)
+                    _stopped_for_time = isinstance(_stops, dict) and (
+                        (_stops.get(db_id) or {}).get("reason") == REGEN_STOP_DEADLINE
+                    )
+                    # 조회 마감 종결은 사유 문구 자체가 사용자 문구다(각주 150자 절단 — 접두 생략).
+                    _err_msg = (
+                        validation_error if _stopped_for_time
+                        else f"SQL 검증 실패: {validation_error}"
+                    )
                     # 비-SQL 산출(산문·PII 필터 차단문)은 발췌를 에러에 실어 UI에서 바로
                     # 원인 특정(D-153 후속2 — 폐쇄망 진단 프로토콜: 실패 산출 전문 우선.
                     # 발췌는 PII 스크럽). 차단문 발췌는 [PII-FILTER] 로그가 없는 환경
@@ -763,6 +896,18 @@ async def _run_single_target(target: dict, run: _MultiRun) -> None:
                     db_id, exec_exc, (sql or "")[:200],
                 )
                 _first_error = str(exec_exc)
+                # T-3: 실행 오류 재생성도 같은 시간 게이트 — 남은 조회 시간이 직전 생성 소요보다
+                # 짧으면 재생성하지 않고 원 실행 오류와 사유를 남긴다(감사 기록은 종전 실패 경로와
+                # 같다).
+                _blocked = _deadline_blocks(
+                    run, _last_gen_elapsed(run, db_id), stage="SQL 재생성", last_reason=None,
+                )
+                if _blocked:
+                    await _record_failure(run, db_id, sql, exec_exc, exec_start)
+                    run.db_errors[db_id] = f"DB '{db_id}' 실행 에러: {_first_error} | {_blocked}"
+                    _record_regen_stop(run, db_id, REGEN_STOP_DEADLINE, _first_error)
+                    logger.warning("DB '%s' 실행 오류 재생성 생략: %s", db_id, _blocked)
+                    return
                 sql, _regen_validation_error = await _generate_validated_sql(
                     run, client, schema_info, sub_context, db_mapping,
                     db_engine=db_engine, db_id=db_id,
@@ -1036,6 +1181,11 @@ async def _run_groups(
             merged.form_fill_out.update(run.form_fill_out)
             merged.skipped_dbs.extend(run.skipped_dbs)
             merged.dependency_notes.extend(run.dependency_notes)
+            # 재생성 종결 사유(plans/119) — 뒤 그룹의 사유가 빠지면 전 DB 실패 판정이 어긋난다.
+            if isinstance(getattr(merged, "regen_stops", None), dict) and isinstance(
+                getattr(run, "regen_stops", None), dict
+            ):
+                merged.regen_stops.update(run.regen_stops)
 
     if merged is None:
         merged = await _prepare_multi_run(state, llm, app_config)
@@ -1191,6 +1341,11 @@ async def multi_db_executor(
         result["dependency_notes"] = merged_notes
     if isinstance(getattr(run, "skipped_dbs", None), list) and run.skipped_dbs:
         result["skipped_dbs"] = list(run.skipped_dbs)
+    # SQL 재생성 루프 종결 사유(plans/119) — 발동했을 때만 싣는다(반환 shape 현행 유지). 2단
+    # 핸들러가 전 DB 실패 task의 `regen_stop`으로 접는다. 그래프 경로(3단)는 상태 스키마에 없는
+    # 키라 버려진다 — 그쪽 사용자 사유는 `db_errors`(존 커버리지 각주)가 운반한다.
+    if isinstance(getattr(run, "regen_stops", None), dict) and run.regen_stops:
+        result["regen_stops"] = {d: dict(v) for d, v in run.regen_stops.items()}
     # 폼필 월 시리즈 앵커·스코프 매핑 갱신분을 state에 반영(D-146/D-148 — 단일 경로와 대칭).
     if run.form_fill_out.get("month_anchor"):
         result["form_month_anchor"] = run.form_fill_out["month_anchor"]
@@ -2147,6 +2302,9 @@ def _build_mapping_user_parts(
         user_query=parsed_requirements.get("original_query", "") or "",
         # 앵커 산출에도 LLM 기간 2단 폴백 — 단일 경로·아래 stat_month와 대칭(D-185)
         parsed_time_range=parsed_requirements.get("time_range"),
+        # 실행 DB 허용 테이블 밖 매핑(오염 유사어)은 미매핑으로 본다 — 단일 경로와 대칭
+        # (plans/120 F-1b)
+        allowed_tables=((schema_info or {}).get("tables") or {}).keys(),
     )
     if month_series:
         # 단일 경로와 동일 관측 로그(D-185 — 멀티 경로만 인식 로그가 없어 폐쇄망 진단 불가였음)

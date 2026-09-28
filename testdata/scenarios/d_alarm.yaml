@@ -74,7 +74,9 @@ scenarios:
           # 기간은 **표기가 아니라 의미**로 본다(Y-5) — 결정적 조립은
           #   `ctime >= TIMESTAMP '2026-07-01' AND ctime < TIMESTAMP '2026-08-01'` 을 낸다.
           #   종전 `(?i)202607` 은 기간이 정확한데도 불합격이었다(허위 불합격).
-          sql_must_match: ["(?i)count\\s*\\("]
+          # plans/120 U-6: 알람 테이블을 세는가 - 3단이 `SELECT COUNT(*) … FROM cmm_resource` 로 서버 수
+          #   1,690 을 "심각 알람 건수"로 답했다(run 20260923-140539). 단과 무관하게 잡는다.
+          sql_must_match: ["(?i)count\\s*\\(", "(?i)\\bcmm_alarm"]
           period_covers: {from: "2026-07-01", to: "2026-08-01"}
           row_count_per_db: {eq: 1}
   - id: D-04

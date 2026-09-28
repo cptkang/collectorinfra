@@ -385,20 +385,259 @@ class TestPipelineAdapter:
             H.PipelinePredictor("bogus")
 
     def test_extract_sql_generated(self):
-        assert H.PipelinePredictor._extract_sql({"generated_sql": "SELECT 1"}) == "SELECT 1"
+        assert H.PipelinePredictor._select_scored_sql(
+            {"generated_sql": "SELECT 1"}
+        ) == ("SELECT 1", None)
 
     def test_extract_sql_from_attempts(self):
         out = {"query_attempts": [{"sql": "SELECT 1"}, {"sql": "SELECT 2"}]}
-        assert H.PipelinePredictor._extract_sql(out) == "SELECT 2"
+        assert H.PipelinePredictor._select_scored_sql(out) == ("SELECT 2", None)
 
     def test_extract_sql_none(self):
-        assert H.PipelinePredictor._extract_sql({}) is None
+        sql, reason = H.PipelinePredictor._select_scored_sql({})
+        assert sql is None
+        assert reason == H.SKIP_NO_SQL
 
     def test_unavailable_predictor_skips(self):
         item = H.GoldItem("x", "q", "d", "SELECT 1", "server_config", "inside")
         res = H.UnavailablePredictor("closed net").predict(item, {})
         assert res.skipped is True
         assert res.sql is None
+
+
+# ──────────────────────────────────────────────
+# 채점 대상 SQL 선정 — "최종 답을 만든 것" (plans/111 §6 M-1a)
+# ──────────────────────────────────────────────
+
+_T1_SQL = "SELECT name FROM alarm_servers"
+_T2_SQL = "SELECT name, cpu FROM metric_month"
+_REPLAN_SQL = "SELECT definition_name FROM metric_defs"
+
+
+def _task(tid: str, order: int, status: str) -> dict:
+    return {
+        "task_id": tid, "order": order, "status": status,
+        "depends_on": [], "agent": "data_query",
+    }
+
+
+def _cx04_state() -> dict:
+    """`plans/111` §2.7 `cx-04` 형태의 2단 결과 state.
+
+    t1(알람)이 0행 → D-203 순차 게이트가 t2를 막고(`skip_result`) → 재계획기가 형제 task
+    3건을 order 3·4·5로 덧붙였고 전부 검증 실패했다(그래도 `generated_sql`은 남는다).
+    종전 규칙("마지막이 이긴다")은 t5의 무관한 지표 SQL을 채점했다.
+    """
+    tasks = [_task("t1", 1, "completed"), _task("t2", 2, "skipped")]
+    results = {
+        "t1": {"generated_sql": _T1_SQL, "query_results": [], "organized_data": None},
+        "t2": {
+            "error": "선행 결과 0행 — 스코프 없음",
+            "skipped": True, "skip_reason": "empty_prior",
+        },
+    }
+    for i, order in enumerate((3, 4, 5), start=3):
+        tid = f"t{i}"
+        tasks.append(_task(tid, order, "failed"))
+        results[tid] = {"error": "SQL 검증 실패(재시도 소진)", "generated_sql": _REPLAN_SQL}
+    return {"task_plan": tasks, "task_results": results}
+
+
+class TestScoredSqlSelection:
+    """재계획·게이트가 낀 계획 상태에서 **최종 답**의 SQL만 채점 대상이 된다."""
+
+    def test_cx04_shape_scores_final_answer_task(self):
+        sql, reason = H.PipelinePredictor._select_scored_sql(_cx04_state())
+
+        assert sql == _T1_SQL, "재계획이 덧붙인 검증 실패 task의 SQL이 채점되면 안 된다"
+        assert reason is None
+
+    def test_failed_replanned_task_does_not_win_over_earlier_success(self):
+        out = {
+            "task_plan": [_task("t1", 1, "completed"), _task("t2", 2, "failed")],
+            "task_results": {
+                "t1": {"generated_sql": _T1_SQL},
+                "t2": {"error": "검증 실패", "generated_sql": _REPLAN_SQL},
+            },
+        }
+        assert H.PipelinePredictor._select_scored_sql(out) == (_T1_SQL, None)
+
+    def test_successful_later_task_wins(self):
+        """순차 의존 계획의 최종 답은 성공한 **마지막** task다(재조회 성공도 같은 규칙)."""
+        out = {
+            "task_plan": [_task("t1", 1, "completed"), _task("t2", 2, "completed")],
+            "task_results": {
+                "t1": {"generated_sql": _T1_SQL},
+                "t2": {"generated_sql": _T2_SQL},
+            },
+        }
+        assert H.PipelinePredictor._select_scored_sql(out) == (_T2_SQL, None)
+
+    def test_order_not_list_position_decides(self):
+        """`task_plan` 나열 순서가 아니라 `order`가 최종 답 순서다(result_aggregator와 동일)."""
+        out = {
+            "task_plan": [_task("t2", 2, "completed"), _task("t1", 1, "completed")],
+            "task_results": {
+                "t1": {"generated_sql": _T1_SQL},
+                "t2": {"generated_sql": _T2_SQL},
+            },
+        }
+        assert H.PipelinePredictor._select_scored_sql(out) == (_T2_SQL, None)
+
+    def test_gate_skipped_task_not_scored(self):
+        """순차 게이트가 막은 task는 SQL을 남겼어도 답이 아니다."""
+        out = {
+            "task_plan": [_task("t1", 1, "completed"), _task("t2", 2, "skipped")],
+            "task_results": {
+                "t1": {"generated_sql": _T1_SQL},
+                # 게이트 차단 뒤 일부 경로가 SQL을 남기더라도 status/skipped로 걸러야 한다
+                "t2": {"error": "선행 0행", "skipped": True, "generated_sql": _REPLAN_SQL},
+            },
+        }
+        assert H.PipelinePredictor._select_scored_sql(out) == (_T1_SQL, None)
+
+    def test_all_tasks_failed_gives_structured_reason(self):
+        out = {
+            "task_plan": [_task("t1", 1, "failed"), _task("t2", 2, "failed")],
+            "task_results": {
+                "t1": {"error": "검증 실패", "generated_sql": _T1_SQL},
+                "t2": {"error": "검증 실패", "generated_sql": _REPLAN_SQL},
+            },
+        }
+        sql, reason = H.PipelinePredictor._select_scored_sql(out)
+
+        assert sql is None, "전 task 실패면 아무 SQL도 채점하지 않는다"
+        assert reason == H.SKIP_NO_FINAL_TASK
+
+    def test_successful_task_without_sql_gives_distinct_reason(self):
+        """성공했지만 SQL이 없는 에이전트(general_inference 등) — 실패와 사유를 구분한다."""
+        out = {
+            "task_plan": [_task("t1", 1, "completed")],
+            "task_results": {"t1": {"organized_data": None, "query_results": []}},
+        }
+        sql, reason = H.PipelinePredictor._select_scored_sql(out)
+
+        assert sql is None
+        assert reason == H.SKIP_FINAL_TASK_NO_SQL
+        assert reason != H.SKIP_NO_FINAL_TASK
+
+    def test_task_results_outside_plan_are_considered(self):
+        out = {"task_results": {"t9": {"generated_sql": _T2_SQL}}}
+        assert H.PipelinePredictor._select_scored_sql(out) == (_T2_SQL, None)
+
+    def test_db_results_no_longer_shadows_task_branch(self):
+        """종전에는 `db_results`가 비지 않으면 task 분기 앞에서 `return None`이었다(M-1a)."""
+        out = {**_cx04_state(), "db_results": {"polestar": [{"name": "a"}]}}
+
+        assert H.PipelinePredictor._select_scored_sql(out) == (_T1_SQL, None)
+
+    def test_db_results_without_sql_gives_structured_reason(self):
+        out = {"db_results": {"polestar": [{"name": "a"}]}}
+        sql, reason = H.PipelinePredictor._select_scored_sql(out)
+
+        assert sql is None
+        assert reason == H.SKIP_MULTIDB_NO_SQL
+
+    def test_failed_last_attempt_does_not_win(self):
+        out = {"query_attempts": [
+            {"sql": _T2_SQL, "success": True},
+            {"sql": _REPLAN_SQL, "success": False},
+        ]}
+        assert H.PipelinePredictor._select_scored_sql(out) == (_T2_SQL, None)
+
+    def test_all_attempts_failed_gives_structured_reason(self):
+        out = {"query_attempts": [
+            {"sql": _T1_SQL, "success": False},
+            {"sql": _REPLAN_SQL, "success": False},
+        ]}
+        sql, reason = H.PipelinePredictor._select_scored_sql(out)
+
+        assert sql is None
+        assert reason == H.SKIP_NO_LIVE_ATTEMPT
+
+    def test_attempt_objects_supported(self):
+        class _Attempt:
+            def __init__(self, sql, success):
+                self.sql, self.success = sql, success
+
+        out = {"query_attempts": [_Attempt(_T2_SQL, True), _Attempt(_REPLAN_SQL, False)]}
+        assert H.PipelinePredictor._select_scored_sql(out) == (_T2_SQL, None)
+
+    def test_non_dict_state(self):
+        sql, reason = H.PipelinePredictor._select_scored_sql(None)
+
+        assert sql is None
+        assert reason == H.SKIP_NOT_A_STATE
+
+    def test_skip_reasons_are_distinct(self):
+        reasons = [
+            H.SKIP_NOT_A_STATE, H.SKIP_NO_SQL, H.SKIP_NO_LIVE_ATTEMPT,
+            H.SKIP_NO_FINAL_TASK, H.SKIP_FINAL_TASK_NO_SQL, H.SKIP_MULTIDB_NO_SQL,
+        ]
+        assert len(set(reasons)) == len(reasons), "사유가 겹치면 스킵 원인을 구별할 수 없다"
+
+
+class TestScoredSqlReachesPrediction:
+    """선정 결과·스킵 사유가 `PredictionResult`까지 실린다 (그래프·LLM은 대역)."""
+
+    @pytest.fixture
+    def fake_graph(self, monkeypatch):
+        import asyncio
+
+        import src.config
+        import src.graph
+        import src.llm
+        from src.observability import ladder as ld
+
+        def _returns(state_out: dict):
+            class _Graph:
+                async def ainvoke(self, state, config=None):
+                    return state_out
+
+            monkeypatch.setattr(src.graph, "build_graph", lambda cfg, checkpointer=None: _Graph())
+
+        monkeypatch.setattr(src.config, "load_config", lambda: object())
+        monkeypatch.setattr(src.llm, "create_llm", lambda cfg: object())
+        monkeypatch.setattr(H, "_run_async", lambda coro: asyncio.run(coro))
+        ld.reset_ladder()
+        yield _returns
+        ld.reset_ladder()
+
+    def test_cx04_prediction_uses_final_answer_sql(self, fake_graph):
+        fake_graph(_cx04_state())
+        item = H.GoldItem("cx-04", "q", "polestar", "SELECT 1", "complex", "outside")
+
+        res = H.PipelinePredictor("graph").predict(item, {})
+
+        assert res.skipped is False
+        assert res.sql == _T1_SQL
+
+    def test_unresolvable_final_answer_surfaces_reason(self, fake_graph):
+        fake_graph({
+            "task_plan": [_task("t1", 1, "failed")],
+            "task_results": {"t1": {"error": "검증 실패", "generated_sql": _REPLAN_SQL}},
+        })
+        item = H.GoldItem("cx-04", "q", "polestar", "SELECT 1", "complex", "outside")
+
+        res = H.PipelinePredictor("graph").predict(item, {})
+
+        assert res.skipped is True and res.sql is None
+        assert res.error == H.SKIP_NO_FINAL_TASK, "'추출 실패'로 뭉개면 오답과 구별되지 않는다"
+
+    def test_skip_reason_lands_in_item_result(self, fake_graph):
+        """`run_batch`가 사유를 `ex_skip_reason`으로 실어 리포트에 노출한다."""
+        fake_graph({
+            "task_plan": [_task("t1", 1, "failed")],
+            "task_results": {"t1": {"error": "검증 실패", "generated_sql": _REPLAN_SQL}},
+        })
+        item = H.GoldItem("cx-04", "q", "polestar", "SELECT 1", "complex", "outside")
+
+        report = H.run_batch(
+            [item], H.PipelinePredictor("graph"), H.MockExecutor(), label="m1a",
+        )
+
+        assert report.items[0].ex_scored is False
+        assert report.items[0].ex_skip_reason == H.SKIP_NO_FINAL_TASK
 
 
 class TestLadderCheckedPaths:

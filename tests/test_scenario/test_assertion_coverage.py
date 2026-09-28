@@ -27,6 +27,8 @@ KNOWN_KEYS = {
     "row_count_per_db", "row_count_total", "period_covers",
     # 재작성 감사 단언 (plans/94 §19.2 Y-11·Y-12 · plans/107). 하위 키 gate·slots_preserved.
     "rewrite",
+    # 선택지형 응답 단언 (plans/120 U-4 · H-06).
+    "response_must_contain_any",
 }
 
 

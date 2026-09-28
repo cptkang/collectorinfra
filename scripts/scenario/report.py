@@ -44,12 +44,72 @@ INTENT_TIER = "intent_orchestration"
 TIER2_ALARM_NOTE = "2단 알람 교정 우회(plans/111 §2.4) - 해석 제외 권고"
 #: 알람 군(카탈로그 `d_alarm.yaml`).
 ALARM_GROUP = "D"
+#: T-1 이 들어간 run 의 낮춘 고지(plans/119 H-2).
+TIER2_ALARM_T1_NOTE = "T-1 적용 run - 해석 제외 불요"
+
+#: T-1(plans/114 · D-250 ⑤ - 계획 단일 출구 정규화)의 **증거 문구**. `_coerce_alarm_intent` 가
+#: 교정할 때 남긴다(`src/orchestration/intent_planner.py`).
+T1_ALARM_MARKER = "알람 조회 결정적 교정"
+#: 사전 처리 단락의 로그 표지(`intent_planner: selected_db_ids 감지, ...`). **교정 문구가 이 줄
+#: 뒤에 나와야 T-1 증거다.** 같은 교정 함수는 LLM 분해 경로(`분해 결과 없음/무효 ... 폴백` 뒤)에서
+#: T-1 이전에도 돌았다 - run `20260922-093837` 은 T-1 이전인데 그 경로로 1회가 찍혀 있다(실측).
+_PLANNER_LOG = "intent_planner"
+_SHORTCUT_MARK = "감지"
+#: run 메타의 T-1 표지 - 러너가 프로파일마다 서버 로그를 세어 남긴다(`{프로파일: 회수}`).
+T1_META_KEY = "t1_alarm_evidence"
+
+
+def t1_alarm_evidence(log_path: Path) -> int:
+    """서버 로그 1개에서 **사전 처리 단락 뒤의** 알람 교정 회수를 센다(plans/119 H-2).
+
+    교정 문구 직전의 `intent_planner` 줄이 단락 표지(`감지`)면 T-1 이 그 단락 출구에서 교정한
+    것이다. 다른 모듈의 줄이 끼어도 직전 **플래너** 줄로 판정한다. 파일이 없으면 0 이다.
+    """
+    if not log_path.exists():
+        return 0
+    count = 0
+    last_planner = ""
+    # 바이트로 읽어 줄마다 복원한다(`runner.SqlAuditTail` 과 같은 관행) - 서버 로그에 깨진 바이트가
+    # 섞여도 판정을 멈추지 않는다.
+    with open(log_path, "rb") as handle:
+        for raw_line in handle:
+            line = raw_line.decode("utf-8", errors="replace")
+            if T1_ALARM_MARKER in line:
+                if _SHORTCUT_MARK in last_planner:
+                    count += 1
+                continue
+            if _PLANNER_LOG in line:
+                last_planner = line
+    return count
+
+
+def t1_evidence(run_dir: Path, meta: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """이 run 에 T-1 이 들어가 있었다는 증거. 없으면 None(종전 고지 유지).
+
+    1순위는 run 메타 표지(러너 기록), 없으면 run 디렉터리의 서버 로그(`server-*.log`·
+    `logs/server-*.log`)를 직접 센다 - 표지 도입 전 run(`20260923-103638`)도 판정된다.
+    """
+    recorded = meta.get(T1_META_KEY)
+    if isinstance(recorded, dict):
+        counts = {str(k): int(v) for k, v in recorded.items() if isinstance(v, int)}
+        source = "run_meta"
+    else:
+        logs = (sorted(run_dir.glob("server-*.log"))
+                + sorted((run_dir / "logs").glob("server-*.log")))
+        counts = {path.name: t1_alarm_evidence(path) for path in logs}
+        source = "server_log"
+    total = sum(counts.values())
+    if not total:
+        return None
+    return {"source": source, "count": total,
+            "by": {name: n for name, n in counts.items() if n}}
 
 
 def tier2_alarm_caveat(
     verdicts: dict[str, dict[str, Any]],
     profiles: list[dict[str, Any]],
     catalog: Optional[Catalog],
+    evidence: Optional[dict[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
     """2단 프로파일이 섞인 run 이면 **해석에서 뺄 알람 시나리오**를 고른다(plans/114 M-7).
 
@@ -58,6 +118,9 @@ def tier2_alarm_caveat(
     `_coerce_alarm_intent` 가 쓰는 판정 **그대로**다 - 우회되는 교정과 같은 술어로 골라야
     고지 범위가 결함 범위와 맞는다. 목록을 손으로 두면 카탈로그가 바뀔 때 낡는다.
     카탈로그 없이 부르면(`--report` 재생성 등) D군만 고르고 그 사실을 `criterion` 에 남긴다.
+
+    `evidence`(plans/119 H-2 · `t1_evidence`)가 있으면 우회가 닫힌 run 이다 - 대상 목록은 남기되
+    `t1_evidence` 를 실어 리포트가 고지를 "해석 제외 불요"로 낮춘다. 없으면 종전 고지 그대로다.
     """
     tier2 = [str(p.get("name")) for p in profiles or [] if p.get("tier") == INTENT_TIER]
     if not tier2:
@@ -79,7 +142,55 @@ def tier2_alarm_caveat(
         ),
         "criterion": ("D군 + 질의문 알람 신호(has_alarm_signal)" if catalog
                       else "D군만(카탈로그 없이 생성 - 다른 군의 알람 시나리오는 고르지 못했다)"),
+        "t1_evidence": evidence,
     }
+
+
+#: 처리 상한의 의미(D-267 ⑦ · plans/119 T-0) - 서버 `timeline.cap_semantic` 값.
+#: **키가 없으면(옛 서버) 종전 의미 `total` 로 읽는다**(계약).
+CAP_SEMANTIC_TOTAL = "total"
+CAP_SEMANTIC_LABELS = {"total": "요청 전체", "first_answer": "첫 답변까지"}
+
+
+def timeline_cap_semantic(timeline: Any) -> Optional[str]:
+    """행 타임라인의 상한 의미. 타임라인이 없으면 None(미관측) · 키가 없으면 `total`."""
+    if not isinstance(timeline, dict):
+        return None
+    return str(timeline.get("cap_semantic") or CAP_SEMANTIC_TOTAL)
+
+
+def cap_semantic_info(meta: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """run 의 상한 의미 - 러너 메타(첫 관측값)가 1순위, 없으면 행 타임라인, 둘 다 없으면 `total`.
+
+    `observed` 는 행에서 본 값 전부다. 둘 이상이면 한 run 에 두 의미가 섞인 것이다(재개 등).
+    """
+    observed = list(dict.fromkeys(
+        value for value in (timeline_cap_semantic(row.get("timeline")) for row in rows) if value
+    ))
+    value, source = meta.get("cap_semantic"), meta.get("cap_semantic_source") or "run_meta"
+    if not value:
+        value, source = (observed[0], "rows") if observed else (CAP_SEMANTIC_TOTAL, "default")
+    return {"value": str(value), "source": source, "observed": observed,
+            "mixed": len(observed) > 1}
+
+
+def cap_semantic_of(summary: dict[str, Any]) -> str:
+    """요약의 상한 의미. 이 칸이 없는 옛 `summary.json` 은 종전 의미(`total`)다."""
+    return str((summary.get("cap_semantic") or {}).get("value") or CAP_SEMANTIC_TOTAL)
+
+
+def cap_semantic_label(value: str) -> str:
+    return f"{CAP_SEMANTIC_LABELS.get(value, value)}(`{value}`)"
+
+
+def cap_semantic_warning(previous: str, current: str) -> Optional[str]:
+    """직전 run 과 상한 의미가 다르면 경고 한 줄(D-267 주의 ③). 같으면 None."""
+    if previous == current:
+        return None
+    return (f"**[경고] 처리 상한 의미가 다르다** - 직전 {cap_semantic_label(previous)} → 이번 "
+            f"{cap_semantic_label(current)} (D-267 ⑦). 두 run 의 타임아웃은 같은 사건이 아니다 - "
+            "**타임아웃률과 타임아웃으로 갈린 판정 전환을 직접 비교하지 않는다.** 타임아웃률은 "
+            "같은 의미의 run 끼리만 비교한다.")
 
 
 def _degraded_profiles(summary: dict[str, Any]) -> list[dict[str, Any]]:
@@ -213,9 +324,17 @@ def unevaluated_reason(
             기대한 역질문은 그 자체가 판정 대상이라 평가된 것이다(R3-03 · I-01~I-06).
             `None` 이면 칸이 없던 옛 run 으로 보고 실패 단언 키로 보수적으로 추정한다.
     """
+    from src.domain.partial_result import PARTIAL_STATUS   # 제품 정본 재사용(사본 금지)
+
     if row_is_invalid(row):
         return "invalid"
     if _is_timeout(row) or row.get("forbidden_mode") == "hang":
+        return "timeout"
+    if row.get("status") == PARTIAL_STATUS:
+        # 시간 상한에 걸려 **서술 없이 표만** 나간 턴(plans/114 P-2 · G-E). 오류 문구가 없어
+        # 위 검사에 걸리지 않지만 사건은 타임아웃이다. `timeout` 으로 두어야 ①서술 본문을 보는
+        # 단언(`manual_review`·`response_must_contain`)을 공정하게 뺄 수 있고 ②제품이 빨라진
+        # 것도 아닌데 타임아웃률만 내려가는 은폐(M-2 ② 관문)를 막는다. 사유 어휘는 늘리지 않는다.
         return "timeout"
     if row.get("response_mode") != "clarify":
         return None
@@ -500,6 +619,192 @@ def _latency_stats(values: list[float]) -> dict[str, Any]:
     return stats
 
 
+# --- 첫 토큰(H-1) · 단계 타임라인(T-0) · 타임아웃 사망 단계 (plans/119) -------------
+
+#: p90 을 내는 최소 표본. 최근접 순위 p90 은 n=10 에서 비로소 최댓값과 갈린다.
+P90_MIN_SAMPLE = 10
+
+#: 서버 단계 타임라인의 경계 칸(plans/119 T-0 계약 · 전부 **서버 요청 시작 기준 ms**). 표 순서 고정.
+TIMELINE_MARKS: tuple[tuple[str, str], ...] = (
+    ("parse_end_ms", "의도 파싱 끝"),
+    ("plan_end_ms", "계획 끝(분해·라우팅)"),
+    ("first_rows_ms", "첫 행 확보"),
+    ("answer_start_ms", "서술 시작"),
+    ("first_answer_ms", "첫 답변 송출"),
+    ("end_ms", "종료"),
+)
+
+#: 사망 단계 어휘(T-0 계약 `timeout_stage`) → 라벨. 순서 = 파이프라인 순서.
+TIMEOUT_STAGES: tuple[tuple[str, str], ...] = (
+    ("parse", "의도 파싱"),
+    ("plan", "계획(분해·라우팅)"),
+    ("retrieval", "조회(스키마·SQL·실행·재계획)"),
+    ("answer", "응답 서술"),
+    ("delivery", "답변 전달(첫 답변 뒤)"),
+)
+_STAGE_ORDER = [stage for stage, _label in TIMEOUT_STAGES]
+
+#: 옛 run 추정용 노드 → 단계. **여기 없는 노드는 조회 단계로 본다** - 스키마 분석·SQL 생성·
+#: 실행·재계획(`agent_orchestrator`·`replanner`·`schema_analyzer`·`multi_db_executor` …)이다.
+#: 경계는 서버 계약과 같다: 파싱 끝 = `input_parser` 종료 · 계획 끝 = `intent_planner`/
+#: `semantic_router` 종료 · 서술 시작 = `result_aggregator`/`output_generator` 시작. 계약 밖으로
+#: `general_inference`(3단 일반 추론 - 조회 없이 바로 서술한다)도 서술로 본다.
+_NODE_STAGE = {
+    "context_resolver": "parse", "input_parser": "parse",
+    "field_mapper": "plan", "intent_planner": "plan", "semantic_router": "plan",
+    "result_aggregator": "answer", "output_generator": "answer", "general_inference": "answer",
+}
+
+
+def _number(value: Any) -> Optional[float]:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _pctl(values: list[float]) -> dict[str, Any]:
+    """p50·p90(ms). 표본이 `P90_MIN_SAMPLE` 미만이면 p90 을 만들지 않는다."""
+    clean = sorted(v for v in values if v is not None)
+    if not clean:
+        return {"n": 0, "p50": None, "p90": None}
+    p90 = None
+    if len(clean) >= P90_MIN_SAMPLE:
+        p90 = round(clean[max(0, int(round(0.9 * len(clean))) - 1)], 1)
+    return {"n": len(clean), "p50": round(statistics.median(clean), 1), "p90": p90}
+
+
+def ttft_measured(rows: list[dict[str, Any]]) -> bool:
+    """러너가 TTFT 칸을 싣는 판인가. 칸이 없는 옛 run 은 "미측정"이다(표본 0 과 다르다)."""
+    return any("ttft_ms" in row for row in rows)
+
+
+def ttft_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {**_pctl([v for v in (_number(r.get("ttft_ms")) for r in rows) if v is not None]),
+            "measured": ttft_measured(rows)}
+
+
+def timeline_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """단계 경계별 p50·p90(서버 timeline 이 있는 턴만) + 러너 TTFT (plans/119 T-0 (a))."""
+    timelines = [row["timeline"] for row in rows if isinstance(row.get("timeline"), dict)]
+    return {
+        "turns": len(rows),
+        "with_timeline": len(timelines),
+        "marks": {key: _pctl([v for v in (_number(t.get(key)) for t in timelines)
+                              if v is not None])
+                  for key, _label in TIMELINE_MARKS},
+        "ttft": ttft_stats(rows),
+    }
+
+
+def _data_state(row: dict[str, Any], first_rows_ms: Optional[float] = None) -> str:
+    """데이터 확보 상태: `rows`(행 ≥1) · `zero`(SQL 은 돌았고 0행) · `none`(SQL 없음)."""
+    if first_rows_ms is not None:
+        return "rows"
+    counts = [v for v in (row.get("row_counts_by_db") or {}).values() if isinstance(v, int)]
+    if any(v > 0 for v in counts) or (_number(row.get("row_count")) or 0) > 0:
+        return "rows"
+    if counts or row.get("executed_sqls") or row.get("executed_sql"):
+        return "zero"
+    return "none"
+
+
+def _streaming(row: dict[str, Any], timeline: Optional[dict[str, Any]] = None) -> bool:
+    """답변이 이미 나가던 중이었나 - 서버 첫 답변 칸 또는 러너가 받은 토큰."""
+    if timeline and _number(timeline.get("first_answer_ms")) is not None:
+        return True
+    return _number(row.get("ttft_ms")) is not None or "token" in (row.get("sse_events") or [])
+
+
+def _estimated_stage(row: dict[str, Any]) -> tuple[Optional[str], Optional[float]]:
+    """서버 timeline 이 없는 턴의 사망 단계와 그 단계 진입 시각(ms) - plans/119 §2.9 방식.
+
+    노드는 순차로 돈다. 시작만 오고 완료가 없는 노드가 끊긴 노드이고, **완료된 노드 경과의 합**이
+    그 단계에 들어간 시각이다. 전 노드가 완료됐으면 마지막 노드의 단계(서술 노드였으면 전달)다.
+    노드 안쪽(스키마 분석·SQL 생성)은 가르지 못한다 - 그래서 "추정"이다.
+    """
+    path = [str(node) for node in row.get("node_path") or []]
+    if not path:
+        return None, None
+    calls = row.get("node_calls") or {}
+    unfinished = [node for node in path if not calls.get(node)]
+    if unfinished:
+        stage = _NODE_STAGE.get(unfinished[-1], "retrieval")
+    else:
+        stage = _NODE_STAGE.get(path[-1], "retrieval")
+        stage = "delivery" if stage == "answer" else stage
+    position = _STAGE_ORDER.index(stage)
+    entered = sum(
+        float(elapsed) for node, elapsed in (row.get("node_elapsed_ms") or {}).items()
+        if isinstance(elapsed, (int, float))
+        and _STAGE_ORDER.index(_NODE_STAGE.get(node, "retrieval")) < position
+    )
+    return stage, round(entered, 1)
+
+
+def _timed_out(row: dict[str, Any]) -> bool:
+    timeline = row.get("timeline")
+    if isinstance(timeline, dict) and (timeline.get("timeout_stage")
+                                       or timeline.get("timeout_kind")):
+        return True
+    return row_unevaluated(row) == "timeout"
+
+
+def timeout_attribution(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """타임아웃 턴마다 사망 단계를 귀속한다(plans/119 T-0 (b) · §2.9 형식).
+
+    서버 `timeline.timeout_stage` 가 1순위(`source="server"`)이고, 없으면 노드 경과로 추정한다
+    (`source="estimate"`). 진입 시각은 서버 요청 시작 기준 ms 다.
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not _timed_out(row):
+            continue
+        timeline = row.get("timeline") if isinstance(row.get("timeline"), dict) else None
+        stage = str(timeline.get("timeout_stage") or "") if timeline else ""
+        if timeline and stage in _STAGE_ORDER:
+            entered = {
+                "parse": 0.0,
+                "plan": _number(timeline.get("parse_end_ms")),
+                "retrieval": (_number(timeline.get("plan_end_ms"))
+                              if _number(timeline.get("plan_end_ms")) is not None
+                              else _number(timeline.get("parse_end_ms"))),
+                "answer": _number(timeline.get("answer_start_ms")),
+                "delivery": _number(timeline.get("first_answer_ms")),
+            }[stage]
+            data = _data_state(row, _number(timeline.get("first_rows_ms")))
+            source, kind = "server", timeline.get("timeout_kind")
+        else:
+            estimated, entered = _estimated_stage(row)
+            stage = estimated or ""
+            data, source, kind = _data_state(row), "estimate", None
+        out.append({
+            "scenario_id": row.get("scenario_id"), "turn": row.get("turn"),
+            "repeat": row.get("repeat"), "profile": row.get("profile"),
+            "stage": stage or None, "entered_ms": entered, "data": data,
+            "streaming": _streaming(row, timeline), "source": source, "kind": kind,
+        })
+    return out
+
+
+def timeout_stage_table(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """귀속 목록을 (단계, 근거)별로 접는다. 단계 순서 → 서버 먼저 → 추정."""
+    order = {stage: index for index, stage in enumerate(_STAGE_ORDER)}
+    cells: dict[tuple[Optional[str], str], dict[str, Any]] = {}
+    for item in items:
+        cell = cells.setdefault((item["stage"], item["source"]), {
+            "stage": item["stage"], "source": item["source"], "turns": 0, "entered_ms": [],
+            "data": Counter(), "streaming": 0, "kinds": Counter(),
+        })
+        cell["turns"] += 1
+        if item["entered_ms"] is not None:
+            cell["entered_ms"].append(item["entered_ms"])
+        cell["data"][item["data"]] += 1
+        cell["streaming"] += int(bool(item["streaming"]))
+        if item.get("kind"):
+            cell["kinds"][str(item["kind"])] += 1
+    ranked = sorted(cells.values(), key=lambda c: (order.get(c["stage"], len(order)),
+                                                   c["source"] != "server"))
+    return [{**cell, "data": dict(cell["data"]), "kinds": dict(cell["kinds"])} for cell in ranked]
+
+
 def build_summary(
     run_dir: Path, catalog: Optional[Catalog] = None
 ) -> dict[str, Any]:
@@ -540,6 +845,8 @@ def build_summary(
             "invalid": counts.get(INVALID_VERDICT, 0),
             "target_ms": target,
             "latency": _latency_stats([float(v) for v in latencies]),
+            # H-1(plans/119): 첫 답변 토큰까지. 칸 없는 옛 run 은 `measured=False`("미측정").
+            "ttft": ttft_stats([row for row in live_rows if row.get("group") == group_id]),
             "perf_pass": perf.get("pass", 0),
             "perf_fail": perf.get("fail", 0),
             "perf_na": perf.get("n/a", 0),
@@ -608,7 +915,14 @@ def build_summary(
         "scenario_verdicts": verdicts,
         "invalid": invalid,
         "unevaluated": unevaluated,
-        "tier2_alarm_caveat": tier2_alarm_caveat(verdicts, run.get("profiles", []), catalog),
+        "tier2_alarm_caveat": tier2_alarm_caveat(
+            verdicts, run.get("profiles", []), catalog,
+            evidence=t1_evidence(run_dir, run.get("meta") or {}),
+        ),
+        # plans/119 T-0 · D-267 ⑦: 상한 의미 · 단계 타임라인 · 타임아웃 사망 단계.
+        "cap_semantic": cap_semantic_info(run.get("meta") or {}, rows),
+        "timeline": timeline_summary(live_rows),
+        "timeouts": timeout_attribution(live_rows),
     }
 
 
@@ -683,8 +997,9 @@ def classify_failure(row: dict[str, Any]) -> str:
     if any(str(key).startswith("row_count") for key in keys):
         # 행 수가 기대와 다르다. **어느 축으로 쟀는지**를 먼저 확인할 것(단일 DB vs 팬아웃).
         return "volume"
-    if "response_must_contain" in keys:
+    if {"response_must_contain", "response_must_contain_any"} & keys:
         # 처리는 했는데 사유·안내를 말하지 않았다(침묵 처리). 응답 계약 위반이다.
+        # `_any` 는 선택지형 같은 계약이다(plans/120 U-4 - H-06 미작성 고지 또는 답변 적용 내역).
         return "contract"
     if any(str(key).startswith("rewrite") for key in keys):
         # 재작성문이 확정 해석과 어긋났다(위치 누출·스코프 축소) 또는 게이트 판정이 기대와 다르다
@@ -830,6 +1145,100 @@ def _removal_ladder(
     return rows
 
 
+def _ttft_cells(stats: Optional[dict[str, Any]]) -> list[Any]:
+    """3절 표의 TTFT p50·p90 두 칸.
+
+    옛 run 은 "미측정", 표본 0 은 "-", p90 표본 부족은 그대로 적는다.
+    """
+    if not stats or not stats.get("measured"):
+        return ["미측정", "미측정"]
+    if not stats.get("n"):
+        return ["-", "-"]
+    return [stats["p50"], stats["p90"] if stats["p90"] is not None else "표본 부족"]
+
+
+def _sec(ms: Optional[float]) -> str:
+    return "-" if ms is None else f"{ms / 1000:.1f}"
+
+
+def _timeline_section(summary: dict[str, Any]) -> str:
+    """단계 경계별 소요 p50·p90 (plans/119 T-0 (a)) - 서버 `timeline` 이 있는 턴만."""
+    data = summary.get("timeline") or {}
+    lines = ["### 단계 타임라인 (서버 `timeline` · plans/119 T-0)", ""]
+    with_timeline = int(data.get("with_timeline") or 0)
+    ttft = data.get("ttft") or {}
+    if not with_timeline:
+        lines.append("서버 `timeline` 미수집 - 옛 서버(T-0 이전) run 이다. 아래 타임아웃 "
+                     "귀속은 노드 경과로 **추정**했다. 노드별 소요는 7절.")
+        if ttft.get("measured"):
+            lines.append(f"러너 TTFT(전 군): n={ttft.get('n', 0)} · "
+                         f"p50 {_sec(ttft.get('p50'))}초 · p90 {_sec(ttft.get('p90'))}초.")
+        lines.append("")
+        return "\n".join(lines)
+    marks = data.get("marks") or {}
+    body = [
+        [label, (marks.get(key) or {}).get("n", 0), _sec((marks.get(key) or {}).get("p50")),
+         _sec((marks.get(key) or {}).get("p90"))]
+        for key, label in TIMELINE_MARKS
+    ]
+    body.append(["(러너) 첫 답변 토큰 수신 - TTFT",
+                 ttft.get("n", 0) if ttft.get("measured") else "미측정",
+                 _sec(ttft.get("p50")), _sec(ttft.get("p90"))])
+    lines.append(f"`timeline` 이 실린 턴 {with_timeline}/{data.get('turns')}. 값은 **서버 "
+                 "요청 시작 기준 경과(초)**다. 경계가 없는 경로(3단의 분해 없음 등)는 그 칸의 "
+                 "표본에서 빠진다.")
+    lines.append("")
+    lines.append(_table(["경계", "n", "p50(초)", "p90(초)"], body))
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _timeout_stage_section(summary: dict[str, Any]) -> str:
+    """타임아웃 사망 단계 귀속 표 (plans/119 T-0 (b) · §2.9 형식)."""
+    items = summary.get("timeouts") or []
+    lines = ["### 타임아웃 사망 단계 (plans/119 §2.9 형식)", ""]
+    if not items:
+        lines.append("타임아웃 턴 0건.")
+        lines.append("")
+        return "\n".join(lines)
+    labels = dict(TIMEOUT_STAGES)
+    body = []
+    for cell in timeout_stage_table(items):
+        entered = sorted(cell["entered_ms"])
+        if not entered:
+            when = "-"
+        elif len(entered) == 1:
+            when = f"{entered[0] / 1000:.0f}초"
+        else:
+            when = (f"{entered[0] / 1000:.0f}~{entered[-1] / 1000:.0f}초 · 중앙값 "
+                    f"{statistics.median(entered) / 1000:.0f}초")
+        data = cell["data"]
+        body.append([
+            labels.get(cell["stage"], "미상(노드 없음)"),
+            "서버" if cell["source"] == "server" else "**추정**",
+            cell["turns"], when,
+            f"행 {data.get('rows', 0)} · 0행 {data.get('zero', 0)} · "
+            f"SQL 없음 {data.get('none', 0)}",
+            cell["streaming"],
+            " · ".join(f"{k} {v}" for k, v in sorted(cell["kinds"].items())) or "-",
+        ])
+    lines.append(_table(
+        ["사망 단계", "근거", "턴", "그 단계 진입(요청 후)", "데이터 확보", "답변 스트리밍 중 끊김",
+         "상한 종류"],
+        body,
+    ))
+    lines.append("")
+    if any(item["source"] == "estimate" for item in items):
+        lines.append(
+            "※ **추정** 행은 서버 `timeline` 이 없는 턴을 노드 경과로 귀속했다(plans/119 "
+            "§2.9 방식 - 완료 노드 경과의 합 = 그 단계 진입 시각 · 시작만 있고 완료가 없는 "
+            "노드 = 사망 단계). 노드 안쪽(스키마 분석·SQL 생성)은 가르지 못하고, 진입 시각은 "
+            "러너가 받은 노드 경계로 잰 값이다."
+        )
+        lines.append("")
+    return "\n".join(lines)
+
+
 def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Catalog]) -> str:
     meta = summary.get("meta", {})
     out: list[str] = []
@@ -842,6 +1251,20 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
             "> **모의 실행(--mock)이다.** LLM도 DB도 호출하지 않았다. 기능 판정은 러너·단언기·"
             "리포트 배관이 도는지를 본 것이고 **시스템 품질의 근거가 아니다.**"
         )
+        add("")
+    cap = summary.get("cap_semantic") or {}
+    cap_value = cap_semantic_of(summary)
+    # D-267 ⑦ 주의 ③: 상한 의미가 바뀐 전후 run 의 타임아웃률은 같은 뜻이 아니다 - 머리에 둔다.
+    cap_source = {"server": "서버 보고", "rows": "서버 보고(행)", "run_meta": "run 메타",
+                  "default": "서버 미보고 - 종전 의미로 간주"}.get(cap.get("source"), "-")
+    add(f"> 처리 상한 의미: **{cap_semantic_label(cap_value)}** ({cap_source}). 상한 의미가 다른 "
+        "run 과는 타임아웃률을 직접 비교하지 않는다(D-267 ⑦).")
+    add("")
+    if cap.get("mixed"):
+        add("> **[경고] 한 run 에 처리 상한 의미가 섞였다** - "
+            + " · ".join(f"`{v}`" for v in cap.get("observed") or [])
+            + ". 이 run 의 타임아웃률은 한 의미로 읽을 수 없다(재개 사이에 서버 판이 "
+            "바뀌었는지 확인).")
         add("")
     degraded = _degraded_profiles(summary)
     if degraded:
@@ -863,8 +1286,24 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
         )
         add("")
     alarm_caveat = summary.get("tier2_alarm_caveat") or {}
-    alarm_ids = set(alarm_caveat.get("scenario_ids") or [])
-    if alarm_caveat:
+    t1 = alarm_caveat.get("t1_evidence")
+    # H-2(plans/119): T-1 증거가 있으면 우회가 닫힌 run 이다 - 시나리오별 「해석 제외」를
+    # 달지 않는다.
+    alarm_ids = set() if t1 else set(alarm_caveat.get("scenario_ids") or [])
+    if alarm_caveat and t1:
+        where = " · ".join(f"`{name}` {count}" for name, count in (t1.get("by") or {}).items())
+        found = ("run 메타 표지" if t1.get("source") == "run_meta" else "서버 로그")
+        add(
+            f"> **[안내] {TIER2_ALARM_T1_NOTE}.** 2단(`{INTENT_TIER}`) 프로파일 "
+            + " · ".join(f"`{name}`" for name in alarm_caveat.get("profiles") or [])
+            + f" 이 섞였지만 {found}에서 사전 처리 단락 직후의 `{T1_ALARM_MARKER}` "
+            f"**{t1.get('count')}회**를 확인했다({where}) - 알람 의도 교정의 단락 우회(plans/111 "
+            "§2.4)가 닫힌 판(plans/114 T-1 · D-250 ⑤)이다. 종전 고지 "
+            f"(`{TIER2_ALARM_NOTE}`)의 대상 {len(alarm_caveat.get('scenario_ids') or [])}건을 "
+            "해석에서 빼지 않는다."
+        )
+        add("")
+    elif alarm_caveat:
         # plans/114 M-7 · 111 G-5 확정: 2단을 측정 arm 으로 쓰면 알람 왜곡을 고지한다.
         add(
             f"> **[{TIER2_ALARM_NOTE}]** 2단(`{INTENT_TIER}`) 프로파일 "
@@ -942,6 +1381,7 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
         ["작업 트리 dirty", meta.get("dirty")],
         ["시작 시각", meta.get("started_at")],
         ["반복", meta.get("repeat")],
+        ["처리 상한 의미", f"{cap_semantic_label(cap_value)} - {cap_source}"],
         ["플랫폼", (meta.get("platform") or {}).get("os")],
         ["콘솔 인코딩", (meta.get("platform") or {}).get("encoding")],
         ["PYTHONUTF8", (meta.get("platform") or {}).get("pythonutf8")],
@@ -1013,18 +1453,25 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
     add("## 3. 성능 목표 대조")
     add("")
     add(_table(
-        ["군", "목표(ms)", "n", "p50", "p95", "최댓값", "성능 합격", "성능 불합격", "비고"],
+        ["군", "목표(ms)", "n", "p50", "p95", "최댓값", "TTFT p50", "TTFT p90",
+         "성능 합격", "성능 불합격", "비고"],
         [
             [
                 g, v.get("target_ms"), v["latency"]["n"], v["latency"]["p50"],
                 v["latency"]["p95"] if v["latency"]["p95"] is not None else "표본 부족",
-                v["latency"]["max"], v["perf_pass"], v["perf_fail"],
+                v["latency"]["max"], *_ttft_cells(v.get("ttft")),
+                v["perf_pass"], v["perf_fail"],
                 v["latency"]["note"] or "-",
             ]
             for g, v in sorted(summary.get("groups", {}).items())
-        ] or [["(없음)", "-", 0, "-", "-", "-", 0, 0, "-"]],
+        ] or [["(없음)", "-", 0, "-", "-", "-", "-", "-", 0, 0, "-"]],
     ))
     add("")
+    add("`TTFT` 는 요청 송신부터 **첫 답변 토큰**을 받은 시각(ms · plans/119 H-1)이다. 토큰 없이 "
+        "끝난 턴(역질문·오류)은 표본에 없다. `미측정` 은 러너가 이 칸을 싣기 전 run 이다.")
+    add("")
+    add(_timeline_section(summary))
+    add(_timeout_stage_section(summary))
 
     # 4
     add("## 4. 계획서 커버리지")
@@ -1168,14 +1615,16 @@ def _render_invalid(invalid: dict[str, Any]) -> str:
         "### 무효 턴(측정 미성립)",
         "",
         f"**{count}건 / {invalid.get('total_turns')}턴 ({float(invalid.get('ratio') or 0):.1%})** - "
-        "러너 자신의 인증 실패(401/403)로 측정이 성립하지 않았다. "
+        "러너 자신의 인증 실패(401/403) 또는 상태 오염(폼필 확인 이력 선적재 · plans/120 V-4)으로 "
+        "측정이 성립하지 않았다. "
         "판정표·실패 분류·대안 수립의 **분모에서 제외**했고, 여기에만 센다.",
         "",
         f"- 실행 순서 구간: **{invalid.get('first_index')}~{invalid.get('last_index')}번째 턴** "
         f"(첫 무효 시나리오 `{invalid.get('first_scenario')}`)",
         f"- 군별: {', '.join(f'{g}:{c}' for g, c in (invalid.get('by_group') or {}).items()) or '-'}",
         "",
-        "재개하면 **이 턴들만** 다시 돈다(X-1 - `already()` 는 「기록됨」이 아니라 「성공」을 본다):",
+        "재개하면 **이 턴들만** 다시 돈다(X-1 - `already()` 는 「기록됨」이 아니라 「성공」을 "
+        "본다). 상태 오염 무효는 사유 칸의 양식 시그니처 이력을 먼저 지운 뒤 재개한다:",
         "",
         "```bash",
         "python -m scripts.scenario --resume <RUN_ID>",
@@ -1220,6 +1669,10 @@ def _regression_section(run_dir: Path, summary: dict[str, Any]) -> str:
             # 직전 run 이 무효투성이면 "판정이 바뀌었다"가 아니라 "저쪽이 측정되지 않았다"다.
             continue
         lines = [f"직전 비교 대상: `{candidate.name}` (같은 환경 `{meta.get('env')}` · 같은 성격 `{meta.get('mode')}`)", ""]
+        # D-267 ⑦ 주의 ③: 상한 의미가 다르면 비교는 하되 타임아웃률을 직접 비교하지 말라고 적는다.
+        cap_warning = cap_semantic_warning(cap_semantic_of(prev), cap_semantic_of(summary))
+        if cap_warning:
+            lines += [f"> {cap_warning}", ""]
         current = summary.get("scenario_verdicts", {})
         previous = prev.get("scenario_verdicts", {})
         rows = [

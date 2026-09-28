@@ -6,13 +6,24 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
+import math
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from pydantic import SecretStr
 
 from src.config import AppConfig
+from src.utils.deadline import (
+    bound_deadline,
+    call_timeout,
+    delivery_phase,
+    in_answer_phase,
+    in_delivery_phase,
+)
 from src.utils.json_extract import coerce_content_text
 
 logger = logging.getLogger(__name__)
@@ -25,11 +36,38 @@ logger = logging.getLogger(__name__)
 USER_RESPONSE_TAG = "user_response"
 
 
+def output_token_limit_kwargs(llm: Any, max_tokens: int) -> dict[str, Any] | None:
+    """출력 토큰 상한을 이 LLM에 싣는 호출 인자. 싣는 방법이 확인되지 않은 provider면 None.
+
+    plans/119 N-1 — 요약 길이를 프롬프트 지시에만 맡기지 않는다(LLM 비결정성). provider마다
+    실측한 결과(2026-09-28)만 반영하고, 나머지는 호출부의 **시간 상한으로만** 제한한다.
+
+    - ChatOpenAI 계열(MLX 워커 `MLXChatOpenAI` 포함): `max_tokens` 호출 인자가 요청 본문의
+      `max_completion_tokens`로 실린다(langchain-openai 1.3.2 `_get_request_payload` 실측 —
+      생성자 기본값을 덮어쓴다).
+    - 싣지 않는 것
+      - `KBGenAIChat`(FabriX 운영): `llmConfig` 규약은 temperature·top_k·top_p만 확인됐다(D-194).
+        모르는 필드는 게이트웨이가 거부할 수 있다.
+      - `FabriXAPIClient`(OpenAI 호환 폴백): `_build_payload`가 호출 인자를 버린다.
+      - Gemini: `max_output_tokens`가 요청 설정에 실리는 것까지는 확인했다. 그러나 사고(thinking)
+        모델에서 사고 토큰이 같은 예산을 쓰는지는 과금 호출 없이 잴 수 없어 싣지 않는다.
+      - Ollama(`LLMAPIClient`): 호출 인자가 요청 본문 최상위에 그대로 붙는다. 서버 측
+        `options.num_predict` 동작은 측정하지 못했다.
+
+    클래스는 MRO 이름으로 가린다 — `langchain_openai`는 선택 extra라 import하지 않는다.
+    """
+    names = {cls.__name__ for cls in type(llm).__mro__}
+    if "BaseChatOpenAI" in names:
+        return {"max_tokens": int(max_tokens)}
+    return None
+
+
 async def astream_text(
     llm: BaseChatModel,
     messages: list[BaseMessage],
     *,
     tags: list[str] | None = None,
+    max_tokens: int | None = None,
 ) -> str:
     """LLM을 스트리밍 방식으로 호출하고 전체 응답 텍스트를 누적해 반환한다.
 
@@ -42,19 +80,67 @@ async def astream_text(
     `_generate`만 구현한 클라이언트(FabriX OpenAI 호환/Ollama)는 BaseChatModel의
     기본 동작에 따라 단일 청크로 폴백되므로 회귀가 없다.
 
+    **마감 전파(plans/119 T-1ⓐ)**: 라우트가 요청 마감을 묶었으면(`bind_request_deadline`) 호출
+    전체를 `call_timeout` 상한 안에서 돌리고, 넘으면 `TimeoutError`를 던진다. 최종 사용자 응답
+    스트림(`USER_RESPONSE_TAG`)은 전달 단계라 처리 마감 + 전달 연장까지다 — 첫 답변 뒤는 라우트의
+    idle·전체 상한이 끊는다(G-7). 요약처럼 더 짧게 끊어야 하는 호출은 호출부가 자기 상한을 건다
+    (`output_generator._summarize`). `answer_phase()` 안의 그 밖 호출은 처리 마감까지, 나머지는
+    조회 마감까지다. **마감이 없고 `max_tokens`도 없으면 종전 호출과 비트 동일하다.**
+
     Args:
         llm: LLM 인스턴스
         messages: 입력 메시지 목록
         tags: 이 LLM 실행에 부여할 태그. SSE 핸들러가 토큰 스트리밍 대상을 식별하는
             데 사용한다(예: [USER_RESPONSE_TAG]). 태그는 자식 run에 전파되어
             astream_events 이벤트의 `tags`로 노출된다.
+        max_tokens: 출력 토큰 상한. provider가 받는 방법이 확인된 경우에만 싣는다
+            (`output_token_limit_kwargs`) — 나머지는 호출부 시간 상한이 제한한다.
 
     Returns:
         누적된 전체 응답 텍스트
+
+    Raises:
+        TimeoutError: 묶인 마감 기준 상한을 넘긴 경우(마감이 없으면 나지 않는다)
     """
+    runnable: Any = llm
+    if max_tokens is not None:
+        limit_kwargs = output_token_limit_kwargs(llm, max_tokens)
+        if limit_kwargs:
+            runnable = llm.bind(**limit_kwargs)
+        else:
+            logger.debug(
+                "출력 토큰 상한 미전달(%s) — 호출부 시간 상한으로만 제한", type(llm).__name__
+            )
     config = {"tags": tags} if tags else None
+    if bound_deadline() is None:
+        return await _collect_stream_text(runnable, messages, config)
+
+    # 전달 단계 표지는 스트림이 끝날 때까지 유지한다 — 클라이언트(KBGenAIChat)가 스트림 시작 시
+    # 계산하는 자체 상한도 같은 마감(처리 마감 + 전달 연장)을 보게 한다(G-7).
+    answer = USER_RESPONSE_TAG in (tags or ())
+    with delivery_phase() if answer else contextlib.nullcontext():
+        limit = call_timeout(math.inf)
+        phase = (
+            "전달(처리 마감 + 전달 연장)" if in_delivery_phase()
+            else "서술(처리 마감)" if in_answer_phase() else "조회(조회 마감)"
+        )
+        try:
+            async with asyncio.timeout(limit):
+                return await _collect_stream_text(runnable, messages, config)
+        except TimeoutError:
+            logger.warning(
+                "LLM 스트림이 요청 마감 기준 상한 %.1fs에 걸려 끊겼다(%s · %s)",
+                limit, type(llm).__name__, phase,
+            )
+            raise
+
+
+async def _collect_stream_text(
+    runnable: Any, messages: list[BaseMessage], config: dict[str, Any] | None
+) -> str:
+    """`astream` 청크를 이어 붙인다(블록 리스트 content는 text만)."""
     parts: list[str] = []
-    async for chunk in llm.astream(messages, config=config):
+    async for chunk in runnable.astream(messages, config=config):
         content = getattr(chunk, "content", "")
         if isinstance(content, str):
             if content:
@@ -177,6 +263,9 @@ def _create_orchestrator_vllm(config: AppConfig) -> BaseChatModel:
         "model": config.orchestrator.model,
         "temperature": 0.0,
         "timeout": config.orchestrator.timeout,
+        # openai SDK 기본 재시도 2회를 끈다 — 호출 상한이 재시도마다 새로 걸려 벽시계가
+        # 최대 3배가 된다. 재시도는 노드 루프·재계획이 마감을 보며 맡는다(plans/119 · D-268 부기)
+        "max_retries": 0,
     }
     if extra_body is not None:
         kwargs["extra_body"] = extra_body
@@ -283,6 +372,8 @@ def _create_mlx(config: AppConfig) -> BaseChatModel:
         # 서버 기본 512토큰 절단 방지(J-1 ①). ChatOpenAI `max_tokens` 필드의 alias로 넘긴다
         max_completion_tokens=config.llm.mlx_max_tokens,
         timeout=config.llm.mlx_timeout,
+        # openai SDK 기본 재시도 2회를 끈다(오케스트레이터와 같은 이유 · plans/119 · D-268 부기)
+        max_retries=0,
         # prefill이 끝나야 첫 청크가 온다 — 청크 대기 상한 120초 기본값에 끊기지 않게 한다
         **stream_chunk_timeout_kwargs(config.llm.mlx_timeout),
         # 모델명과 무관하게 부착한다 — 미전송이면 content가 빈다(J-1 ②)

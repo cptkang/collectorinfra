@@ -116,10 +116,32 @@ def _columns(rows: Sequence[Mapping[str, Any]]) -> list[str]:
 
 
 def _cell(value: Any) -> str:
-    """셀 한 칸. `|` 는 표를 깨뜨리므로 탈출하고, 없는 값은 빈 칸이다."""
+    """셀 한 칸. `|` 는 표를 깨뜨리므로 탈출하고, 개행은 공백, 없는 값은 빈 칸이다."""
     if value is None:
         return ""
-    return str(value).replace("|", "\\|").replace("\n", " ")
+    return (
+        str(value).replace("|", "\\|")
+        .replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    )
+
+
+def render_markdown_table(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """행들을 GFM 표 줄 목록(헤더 · 구분선 · 본문)으로 렌더한다 — LLM 0 (D-265 · D-251 ④).
+
+    컬럼은 **행 키의 합집합 전부**(등장 순서 · D-100 — 표시 컬럼 상한 없음)이고, 헤더도 셀과
+    같은 규칙으로 탈출한다. 부분 결과 응답(이 모듈)과 정상 응답 표(`output_generator`)가 같은
+    렌더를 쓴다 — 사용자가 두 경로에서 같은 모양의 표를 본다. 컬럼이 없으면 빈 목록이다.
+    """
+    columns = _columns(rows)
+    if not columns:
+        return []
+    lines = [
+        "| " + " | ".join(_cell(c) for c in columns) + " |",
+        "|" + "|".join(["---"] * len(columns)) + "|",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(_cell(row.get(c)) for c in columns) + " |")
+    return lines
 
 
 def render_partial_text(
@@ -145,13 +167,10 @@ def render_partial_text(
         )
 
     shown = answer.rows[:max_rows] if max_rows > 0 else answer.rows
-    columns = _columns(shown)
-    if columns:
+    table = render_markdown_table(shown)
+    if table:
         lines.append("")
-        lines.append("| " + " | ".join(columns) + " |")
-        lines.append("|" + "|".join(["---"] * len(columns)) + "|")
-        for row in shown:
-            lines.append("| " + " | ".join(_cell(row.get(c)) for c in columns) + " |")
+        lines.extend(table)
 
     total = len(answer.rows)
     if total > len(shown):

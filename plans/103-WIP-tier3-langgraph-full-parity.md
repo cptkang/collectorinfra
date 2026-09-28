@@ -291,6 +291,25 @@ P0(기반 계약)은 플래그 없이 랜딩한다 — 프록시·SSE·턴 초�
 **검증** — `tests/test_orchestration/test_plan103_tier3_plan_loop.py` 22건(배선 · 진입 · 라우터 off 바이트 동일/on 절 추가 · normalize · 0행 게이트 · task_prompt · replan 입력 범위 · 그래프 실행 **`ainvoke`·`astream_events` 두 방식** · 턴 격리) · `tests/test_api/test_stream_subgraph_done.py` 2건 · `tests/test_observability/test_graph_proxy.py` +3건 · 전체 스위트 회귀 0(구조 단언 1건 갱신 — `test_two_stage.py`: 라우터 응답 검증부가 `_classify_parsed`로 추출됨).
 **실 노드 통합 스모크**(저장소 밖 스크립트 · 2026-09-22): 계획·라우터·입력 파서만 대역, `schema_analyzer`~`result_organizer`는 **실제 노드**, DB는 로컬 샌드박스(MCP 9099 · 읽기 전용), LLM은 스크립트 대역(네트워크·과금 0), 실행은 `astream_events` — t1 알람 2행 → t2 SQL 프롬프트에 선행 스코프 블록 주입 · 2행 → 합성(`result_aggregator` 식별자 병합) · 경과 노트 1건 · SSE 종료 판정 `finalize` 1회 · 루트 노드 순서 `plan→normalize→dispatch→task_run→join→dispatch→task_run→join→replan→finalize`. **실 LLM 계획 루프 스모크(2026-09-23 · 로컬 MLX 9B · `TIER3_PLAN_LOOP_ENABLED=true` · 로컬 샌드박스 DB · 비과금 D-240)**: *"서버 목록을 보여주고, 그중 2026년 6월 CPU 사용률 평균이 40%를 넘는 서버의 알람 이력도 알려줘"* 한 턴이 라우터 `needs_plan=true` → `plan` → `normalize` → `dispatch` → `task_run` ×2(서버 목록 54행 → 알람 이력 3행) → `join` → `replan`(추가 0) → `finalize` 합성까지 **끊김 없이 돌았고**(569s), SSE 종료는 `finalize`(루트 직속) 1회였다. M-4(3단 복합 골드 재측정)는 미실시.
 
+### 4.2 잔여 장부 — P5 동등성 판정 입력 (2026-09-28 · `plans/120` 트랙 T3 이관)
+
+> 출처: 폐쇄망 벤치 구간 run `20260923-140539`(`ladder-1` · 축 `LADDER_TIER` · 226턴 · arm `baseline`=2단 · `S2-LADDER_TIER-tier3_router`=3단 · 반복 1회). 산출물 `results/bench/run-closed-20260928-triage.tar/20260923-140539/`(`raw.jsonl` · `logs/server-*.log`). 분석·보정은 `plans/120` §2.2·§2.7. **이 표는 증거 인계이며 여기서 구현하지 않았다** — P5-1 동등성 매트릭스의 행으로 쓴다.
+> 판정 맥락: `db_ids` 하네스 오염(`plans/120` V-1·S-1)을 걷어낸 뒤에도 사다리 정확도는 2단 우위다(−19.6%p · 불일치 9:0 · p=0.004). 남은 9쌍이 아래 결함이다. **T3-1(D-03 조용한 오답)과 T3-3(3단 은행존 경로에 엔진 미전달)은 3단을 비교 arm으로 쓰는 동안에도 판정을 흔든다** — P5 전이라도 우선순위가 높다.
+
+| ID | 시나리오 | 3단 관측(증거) | 2단 | 대응 격차(§1.2) · 처분 후보 |
+|---|---|---|---|---|
+| **T3-1** | A-04 · D-01 · D-02 · **D-03** | 스키마 분석 허용 테이블이 서버·EAV·성능 통계 계열뿐이라 알람 테이블이 후보에 없다 → `error_response`("알람 테이블이 없다"). **D-03은 `SELECT COUNT(*) AS server_count FROM cmm_resource`로 "심각 알람 1,690건"이라 답했다(조용한 오답)** — 기존 `period_covers` 단언은 떨어뜨렸지만 조용한 오답으로 분류되지 않았다(`plans/120` U-6이 `sql_must_match (?i)\bcmm_alarm` 추가) | 사전 처리 단락 뒤 결정적 교정(`알람 조회 결정적 교정` 로그 10회)으로 정상 | 알람 의도의 테이블 선택 · 3단 라우터 알람 결정적 경로 대칭 |
+| T3-2 | E-05 | "프로세스 이력" 테이블 미선택 → `error_response` | 정상(1,689행) | 테이블 선택 격차 |
+| **T3-3** | A-02 · B-10 · H-04 · H-17 | 은행존(DB2) SQL에 `LIMIT 10000` — 폼필 결정적 피벗 포함. DB2가 실행은 했다(행 수 같음) | 같은 자리에서 `FETCH FIRST` | **3단 은행존 경로에 엔진 정보가 전달되지 않는다** — 단일/멀티 경로 방언 대칭(Known Mistakes) |
+| T3-4 | A-12 | 양식 미첨부 폼필 요청이 `general_inference` 자유 응답 | 결정적 안내(D-264) | 3단 사전 처리 대칭 |
+| T3-5 | E-01 | "캐시 갱신 + 서버 목록" → `cache_management` 단독(목록 누락) | 두 task | 복합 의도 분해(P2) |
+| T3-6 | G-02 t2 · G-04 t2 | "해당 서버 …" 지시어 승계 유실 → 4,787행 전체 | 승계 | 턴 간 승계(P1-2) |
+| T3-7 | I-07 t2 | 폼필 답변 턴이 `general_inference`로 라우팅 | 폼필 경로 | 폼필 답변 턴 라우팅 |
+| T3-8 | B-09 | 장비명 질의를 은행존 단독으로 라우팅 → 0행 | 3-DB 팬아웃 1행 | 위치 없는 엔티티 질의 팬아웃(D-206) |
+
+- 측정 공백: 3단 `multi_db_executor`·`result_merger` 노드 시간이 이 run에서 수집되지 않았다(16행 — `plans/120` V-6). 3단 멀티 DB 비용은 이 run 리포트 §7 노드 분해에 없다.
+- 이 장부가 비면 `plans/120` G-1 (b)의 인용 판정(사다리 단 구간 생략)을 걷고 `ladder` 구간을 재측정한다(`plans/120` §5 G-1 · D-269).
+
 ---
 
 ## 5. 성공 기준
@@ -390,6 +409,7 @@ P0(기반 계약)은 플래그 없이 랜딩한다 — 프록시·SSE·턴 초�
 
 | 버전 | 날짜 | 내용 |
 |---|---|---|
+| v1.4 | 2026-09-28 | **§4.2 잔여 장부 신설** — `plans/120` 트랙 T3(벤치 run `20260923-140539` 3단 전용 결함 T3-1~T3-8)을 증거와 함께 이관(구현 0 · P5-1 동등성 매트릭스 입력). T3-1 D-03 조용한 오답 · T3-3 3단 은행존 경로 엔진 미전달이 우선. 이 장부가 비면 사다리 단 구간을 재측정한다(D-269 · `plans/120` G-1 (b)) |
 | v1.3 | 2026-09-23 | **P0-3 SSE 실측 보강** — 1단(`deep_agent`)·2단(`result_aggregator`)·3단(`output_generator`) 실 그래프를 로컬 MLX로 `astream_events` 실행해 `final_response` 종료가 **루트 직속 1건**이고 종전 규칙과 같은 자리에서 잡히는 것을 확인(폴백 `ainvoke` 0) · 라우트 테스트 `tests/test_api/test_stream_done_root_only.py` 4건 추가(실 LangGraph 이벤트 · 두 라우트 × 1단형·계획 루프형 · 판정 제거 시 실패하는 것까지 확인) · P2-1에 `needs_plan` 신호 재현율 실측 부기 · 신규 D-번호 0 |
 | v1.2 | 2026-09-22 | **부분 구현**(`plans/111` C-4·C-5 범위 · teammate 지시 *"111번 계획을 구현하라"*) — §4.1 구현 현황: P0-1 ✅ · P0-2 ✅(루프 한정 · K-5 미해소) · P0-3 ◐ · P1-1 ✅ · P2-1 ✅ · P2-2 ◐ · P2-3 ◐ · P2-4 ◐. 플래그 `TIER3_PLAN_LOOP_ENABLED` 1개(기본 off · §3.7 구현 주). **실측 정정 2건**: §1.1 서브그래프 함정 — `output_schema`는 `astream_events`에서 불충분(함수 노드 안 `ainvoke`로 해결) · §1.3 K-1 — `config` 주입은 이미 동작. §3.3 턴 초기화 자리를 `plan` 노드로. §7 게이트는 **미응답 — 기본 가정 채택 기록**만 더했다(확정 아님). 파일명 `-TODO` → `-WIP` · 신규 D-번호 0 |
 | v1.1 | 2026-09-21 | **`plans/111` 델타 편입**(111 G-2 확정 · 사용자 *"권고에 맞게 진행하라"*) — §3.3.1 신설(`plan` 원문 조각 계약 · `normalize` 단일 출구 · `task_prompt` · 0행 의존 게이트 기본 on · 재계획 입력 범위) · P1-1·P2-1·P2-2·P2-3 작업 항목 확장. **이 계획의 게이트 G-1~G-7 상태는 바꾸지 않았다**(111 게이트만 확정) · 신규 D-번호 0 |

@@ -7,13 +7,13 @@
    - 별칭: polestar_b0, 은행 폴스타, 레거시 폴스타, 은행, 은행존, 은행존 폴스타
    - 은행 레거시 및 K리전(은행존) 서버 물리 사양, 사용량 및 모니터링 데이터. 서버 사양(CPU, Core 수, Memory 크기, Disk 크기), 서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량), 서버 정보(hostname, IP, gateway), 모니터링 알람(alert) 정보: 현재 발생 알람(CMM_ALARM), 알람 이력, 알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME), 알람 담당자(ACKUSERNAME), 알람 대상 장비(CMM_RESOURCE)
 
-2. **K리전(공동존) 김포(운영/DR) Polestar** (polestar_cm_gp)
-   - 별칭: polestar_cm_gp, 공동존, 공동존 폴스타, 공동존 김포 폴스타, 공동존 운영 폴스타, 공동존 DR 폴스타, 김포, 김포 폴스타
-   - K리전(공동존) 김포 운영 및 DR 서버 물리 사양, 사용량 및 모니터링 데이터. 서버 사양(CPU, Core 수, Memory 크기, Disk 크기), 서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량), 서버 정보(hostname, IP, gateway), 모니터링 알람(alert) 정보: 현재 발생 알람(CMM_ALARM), 알람 이력, 알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME), 알람 담당자(ACKUSERNAME), 알람 상태(CURRENTALARMSTATUS), 알람 대상 장비(CMM_RESOURCE), 알람 유형(CMM_ALARM_DEF)
+2. **K리전(공동존) 김포(운영) Polestar** (polestar_cm_gp)
+   - 별칭: polestar_cm_gp, 공동존, 공동존 폴스타, 공동존 김포 폴스타, 공동존 운영 폴스타, 김포, 김포 폴스타, 운영
+   - K리전(공동존) 김포 운영 서버 물리 사양, 사용량 및 모니터링 데이터. 서버 사양(CPU, Core 수, Memory 크기, Disk 크기), 서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량), 서버 정보(hostname, IP, gateway), 모니터링 알람(alert) 정보: 현재 발생 알람(CMM_ALARM), 알람 이력, 알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME), 알람 담당자(ACKUSERNAME), 알람 상태(CURRENTALARMSTATUS), 알람 대상 장비(CMM_RESOURCE), 알람 유형(CMM_ALARM_DEF)
 
-3. **K리전(공동존) 여의도(개발/스테이징) Polestar** (polestar_cm_yd)
-   - 별칭: polestar_cm_yd, 공동존, 공동존 폴스타, 공동존 여의도 폴스타, 공동존 개발 폴스타, 공동존 스테이징 폴스타, 여의도, 여의도 폴스타
-   - K리전(공동존) 여의도 개발 및 스테이징 서버 물리 사양, 사용량 및 모니터링 데이터. 서버 사양(CPU, Core 수, Memory 크기, Disk 크기), 서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량), 서버 정보(hostname, IP, gateway), 모니터링 알람(alert) 정보: 현재 발생 알람(CMM_ALARM), 알람 이력, 알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME), 알람 담당자(ACKUSERNAME), 알람 상태(CURRENTALARMSTATUS), 알람 대상 장비(CMM_RESOURCE), 알람 유형(CMM_ALARM_DEF)
+3. **K리전(공동존) 여의도(개발/스테이징/DR) Polestar** (polestar_cm_yd)
+   - 별칭: polestar_cm_yd, 공동존, 공동존 폴스타, 공동존 여의도 폴스타, 공동존 개발 폴스타, 공동존 스테이징 폴스타, 공동존 DR 폴스타, 여의도, 여의도 폴스타, 개발, 스테이징, DR
+   - K리전(공동존) 여의도 개발·스테이징 및 DR 서버 물리 사양, 사용량 및 모니터링 데이터. 서버 사양(CPU, Core 수, Memory 크기, Disk 크기), 서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량), 서버 정보(hostname, IP, gateway), 모니터링 알람(alert) 정보: 현재 발생 알람(CMM_ALARM), 알람 이력, 알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME), 알람 담당자(ACKUSERNAME), 알람 상태(CURRENTALARMSTATUS), 알람 대상 장비(CMM_RESOURCE), 알람 유형(CMM_ALARM_DEF)
 
 4. **로컬 개발 샌드박스 Polestar** (polestar)
    - 별칭: polestar, 로컬 폴스타, 테스트 폴스타
@@ -51,7 +51,7 @@
 이 경우 각 DB별로 조회해야 할 내용을 sub_query_context에 분리하여 기술하세요.
 
 **중요: sub_query_context에는 순수한 데이터 조회 의도만 기술하세요.**
-DB를 식별하기 위해 사용된 위치/환경/존 정보(공동존, 김포, 여의도, 은행, 레거시, 은행존, 운영, 개발, 스테이징 등)는
+DB를 식별하기 위해 사용된 위치/환경/존 정보(공동존, 김포, 운영, 여의도, 개발, 스테이징, DR, 은행, 레거시, 은행존 등)는
 sub_query_context에 포함하지 마세요. 이 정보는 DB 라우팅에만 사용되며,
 실제 SQL 쿼리 조건으로 변환되어서는 안 됩니다.
 

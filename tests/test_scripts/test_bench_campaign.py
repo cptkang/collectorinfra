@@ -652,15 +652,16 @@ def test_env_가_바뀌어도_다른_모드의_끊긴_구간은_막지_않는다
     assert len(calls) == 2
 
 
-def test_출처가_섞인_재개는_건전성_주의로만_알린다() -> None:
+def test_출처가_섞인_재개는_주의이자_구간_실패_사유다() -> None:
     """CS-19 ③ — 94 러너가 `meta.provenance_mixed` 를 남기면 주의 문장이 된다.
 
-    멈춤 사유는 아니다(사용자 판단).
+    plans/118 B-1 ③(G-1 사용자 확정 2026-09-28)로 **구간 실패 사유**로 격상됐다 — 섞인 run 은
+    arm 비교가 성립하지 않는다(run `20260922-162132`). 종전 「멈춤 사유 아님」 단언을 개정했다.
     """
     health = sweep.scan_health(
         {"profiles": [], "meta": {"provenance_mixed": "커밋이 다르다(aaa → bbb)"}}, Path("/없음"))
 
     assert any("커밋이 다르다(aaa → bbb)" in w for w in health.warnings())
-    assert not any("커밋" in r for r in health.stop_reasons())
+    assert any("출처 섞임" in r and "커밋" in r for r in health.stop_reasons())
     clean = sweep.scan_health({"profiles": []}, Path("/없음"))
     assert not any("출처" in w for w in clean.warnings())

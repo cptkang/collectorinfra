@@ -263,13 +263,13 @@ class TestResponsePreviewBalance:
         assert preview == rows[:20] and balanced is False
 
     def test_single_db_prompt_is_unchanged(self):
-        """단일 DB(출처 태그 없음)는 종전 프롬프트와 같다 — 표시 행·절단 문구."""
+        """단일 DB(출처 태그 없음)는 앞 행 그대로 — 요약 미리보기 5행·절단 문구(plans/119 N-1)."""
         rows = [{"그룹|서브": i, "v": i} for i in range(25)]
         prompt = _build_response_prompt("q", "s", rows)
         body = prompt.split("```json\n", 1)[1].split("\n```", 1)[0]
-        assert json.loads(body) == [{"그룹 > 서브": i, "v": i} for i in range(20)]
-        assert "## 조회 결과 (25건, 상위 20건 표시)" in prompt
-        assert "위 JSON은 표시용으로 상위 20건만 실은 것입니다" in prompt
+        assert json.loads(body) == [{"그룹 > 서브": i, "v": i} for i in range(5)]
+        assert "## 조회 결과 (25건, 상위 5건 표시)" in prompt
+        assert "위 JSON은 표시용으로 상위 5건만 실은 것입니다" in prompt
         assert "출처" not in prompt
 
     def test_multi_db_preview_includes_every_db(self):
@@ -298,7 +298,7 @@ class TestResponsePreviewBalance:
             _GP: _rows("gp", list(range(25))), _YD: _rows("yd", list(range(5))),
         })
         prompt = _build_response_prompt("q", "s", rows)
-        assert "DB별로 고르게 20건 표시" in prompt
+        assert "DB별로 고르게 5건 표시" in prompt  # 요약 미리보기 5행(plans/119 N-1)
         assert '"_source_db"' not in prompt
         assert get_domain_by_id(_YD).display_name in prompt
 

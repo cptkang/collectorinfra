@@ -86,7 +86,7 @@ def decide(
     shadowed: bool = False,
     boot_failed: bool = False,
     consumption: Optional[str] = None,       # changed | unchanged | unchecked
-    verdict: Optional[str] = None,           # compare 판정 5어휘
+    verdict: Optional[str] = None,           # compare 판정 5어휘 + 축 미측정(plans/120 V-5)
     recommended_value: Optional[str] = None,
     reference_count: Optional[int] = None,
     env_differs_from_default: bool = False,
@@ -125,6 +125,9 @@ def decide(
         return Disposition(key, DOWNGRADE, "6", "성능 차이 없음 + 참조 3건 이상 — 존치하되 비노출")
     if verdict == cmp_mod.UNDERPOWERED:
         return Disposition(key, DEFER, "7", "검정력 부족 — 정적 규칙으로 폴백, 재측정 대기")
+    if verdict == cmp_mod.UNMEASURED:
+        # 재지 않은 축이다 — 「재 봤는데 약하다」로 읽히지 않게 문구를 가른다(plans/120 V-5).
+        return Disposition(key, DEFER, "7", "미측정 — 구간 미완, 재측정 대기")
     if verdict is None:
         return Disposition(key, DOWNGRADE, "8", "성능 미측정(축 밖) — C등급 기본 배정")
 
@@ -232,6 +235,8 @@ def axis_verdict_word(optimum: "cmp_mod.AxisOptimum") -> tuple[str, Optional[str
                 f"레벨 간 비교에서 `{optimum.best_level}` 가 우세하다")
     if optimum.verdict == cmp_mod.LEVELS_TIED:
         return (cmp_mod.NO_DIFFERENCE, None, "레벨 간 유의차 없음 — 기본값을 바꿀 근거가 없다")
+    if optimum.verdict == cmp_mod.UNMEASURED:
+        return (cmp_mod.UNMEASURED, None, f"축 미측정 — {optimum.sentence[:120]}")
     return (cmp_mod.UNDERPOWERED, None, f"축 판정 불가 — {optimum.sentence[:120]}")
 
 

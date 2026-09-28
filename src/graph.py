@@ -32,7 +32,12 @@ from src.nodes.multi_db_executor import multi_db_executor
 from src.nodes.output_generator import append_structure_missing_note, output_generator
 from src.nodes.query_executor import query_executor
 from src.nodes.query_generator import query_generator
-from src.nodes.query_validator import query_validator
+from src.nodes.query_validator import (
+    NON_SQL_RETRY_BUDGET as NON_SQL_RETRY_BUDGET,  # 재노출 — 종전 이름 유지(아래 주석)
+    non_sql_budget_exhausted,
+    non_sql_prose_response,
+    query_validator,
+)
 from src.nodes.result_merger import result_merger
 from src.nodes.result_organizer import result_organizer
 from src.nodes.schema_analyzer import schema_analyzer
@@ -78,20 +83,18 @@ from src.state import AgentState
 logger = logging.getLogger(__name__)
 
 
-#: 생성기가 SQL 대신 산문(되물음·불가 사유)을 반환한 경우의 재시도 예산.
-#: 전체 예산(`QUERY_MAX_RETRY_COUNT`)과 별도로 둔다 — 산문은 프롬프트가 지시한 동작이라
-#: (polestar 템플릿 [Strict Constraints] 1: *"모호하거나 스키마 범위를 벗어나면 쿼리를
-#: 생성하지 말고 추가 맥락을 요청하라"*) 같은 프롬프트를 다시 돌려도 대개 같은 산문이
-#: 돌아온다. run `20260918-182507` 실측(체인 39건): 회복은 retry=1 **7건**인데 retry=2·3은
-#: 합해 3건이고, 회복하지 못한 29건이 각 3회를 더 태워 턴을 60초 벽으로 밀어냈다.
-NON_SQL_RETRY_BUDGET = 1
+#: 산문(비-SQL) 전용 재시도 예산 `NON_SQL_RETRY_BUDGET`은 application 계층
+#: (`src.nodes.query_validator`)이 단일 출처다(plans/119 N-5) — 2단 서브에이전트 루프·
+#: 멀티 DB 재생성 루프도 같은 상수를 쓴다. 이 모듈은 위에서 import 해 종전 이름
+#: (`graph.NON_SQL_RETRY_BUDGET`)을 유지한다.
 
 
 def _non_sql_exhausted(state: AgentState) -> bool:
-    """산문 응답이고 그 전용 예산을 소진했는가."""
-    return bool(
-        (state.get("validation_result") or {}).get("non_sql")
-    ) and state["retry_count"] >= NON_SQL_RETRY_BUDGET
+    """산문 응답이고 그 전용 예산을 소진했는가.
+
+    판정 본체는 `non_sql_budget_exhausted` — 2단 단일 DB 루프와 공용이다.
+    """
+    return non_sql_budget_exhausted(state.get("validation_result"), state["retry_count"])
 
 
 def route_after_validation(state: AgentState, max_retry: int = 3) -> str:
@@ -329,14 +332,9 @@ def route_after_replanner(state: AgentState) -> str:
 def _error_response_node(state: AgentState) -> dict:
     """최대 재시도 초과 시 에러 응답을 생성한다."""
     if (state.get("validation_result") or {}).get("non_sql"):
-        # 생성기가 남긴 되물음·불가 사유를 그대로 싣는다 — 그 텍스트가 사용자가 받아야 할
-        # 답이고, 종전에는 "재시도 3회 초과"로 덮여 통째로 버려졌다(침묵적 폐기 금지).
-        prose = (state.get("generated_sql") or "").strip()[:1500]
-        response = (
-            "요청을 SQL로 옮기지 못했습니다. 조회 엔진이 대신 남긴 설명입니다.\n\n"
-            f"{prose}\n\n"
-            "조회 대상(서버·지표·기간)을 구체적으로 지정해 주시면 다시 시도하겠습니다."
-        )
+        # 생성기가 남긴 되물음·불가 사유를 그대로 싣는다(침묵적 폐기 금지). 문구는 2단
+        # 단일 DB 경로와 같은 함수가 만든다(plans/119 N-5 · 경로 대칭).
+        response = non_sql_prose_response(state.get("generated_sql") or "")
         response = append_structure_missing_note(response, state)
         return {
             "final_response": response,

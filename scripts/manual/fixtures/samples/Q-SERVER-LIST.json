@@ -83,6 +83,11 @@
    ]
   }
  ],
- "reviewed": false,
- "recorded_at": "2026-09-23T16:16:11"
+ "reviewed": true,
+ "recorded_at": "2026-09-23T16:16:11",
+ "review": {
+  "verdict": "ok",
+  "notes": "재녹화(운영 설정) — 54행 = server.Server dtime null 54대 · hostname null 4대가 원본에도 null(독립 SQL) · 결정적 피벗 SQL",
+  "at": "2026-09-28"
+ }
 }

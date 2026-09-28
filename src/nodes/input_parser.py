@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
@@ -38,7 +38,12 @@ logger = logging.getLogger(__name__)
 # registry를 임포트할 수 없어(계층 규칙), 값은 utils.query_gen_common에 두고 registry와의
 # 동기를 테스트로 강제한다(tests/test_routing/test_location_terms_sync.py).
 # D-004 경계: 이 표면어는 라우팅 의도 분류에 쓰지 않는다(사용자 명시 힌트 보강 전용).
-from src.utils.query_gen_common import LOCATION_HINT_TERMS
+from src.utils.query_gen_common import (
+    ELLIPTICAL_SUCCESSION_KEY,
+    LOCATION_HINT_TERMS,
+    elliptical_succession_filter,
+    term_in_text,
+)
 
 _LOCATION_HINT_TERMS = LOCATION_HINT_TERMS
 
@@ -63,11 +68,38 @@ def _ensure_location_hints(parsed: dict, user_query: str) -> dict:
         hints = [] if hints in (None, "") else [hints]
     existing_text = " ".join(str(h) for h in hints)
     for term in _LOCATION_HINT_TERMS:
-        if term in user_query and term not in existing_text:
+        # 라틴 표면어(DR)는 단어 경계로 — "DRM"이 여의도 힌트가 되지 않게(D-271)
+        if term_in_text(term, user_query) and not term_in_text(term, existing_text):
             hints.append(term)
             existing_text += f" {term}"
     parsed["target_db_hints"] = hints
     return parsed
+
+
+def _apply_elliptical_succession(parsed: dict[str, Any], state: AgentState) -> dict[str, Any]:
+    """생략형 후속 턴이면 직전 서버 식별 필터를 결정적으로 주입한다 (plans/120 PL-1 · G-4 (a)).
+
+    공통 전단에서 한 번 한다 — 2단 서브에이전트와 3단 노드가 모두 이 `filter_conditions`로 SQL을
+    만들므로 두 단이 대칭이다. 주입 사실은 `ELLIPTICAL_SUCCESSION_KEY`로 남겨 응답 고지의 근거로
+    쓴다(침묵 승계 금지). 양식 턴은 전량 채움이 기본이라 대상이 아니다. 이미 서버 식별 필터가 있으면
+    발동하지 않으므로(조건 ⓑ) 같은 파싱본에 다시 적용해도 결과가 같다(존 답변 재사용 턴).
+    """
+    if state.get("uploaded_file"):
+        return parsed
+    cond = elliptical_succession_filter(
+        state.get("user_query", ""), parsed, state.get("conversation_context")
+    )
+    if cond is None:
+        return parsed
+    logger.info(
+        "생략형 후속 승계(plans/120 PL-1): %s=%s 를 filter_conditions에 주입(직전 턴 단일 서버)",
+        cond["field"], cond["value"],
+    )
+    return {
+        **parsed,
+        "filter_conditions": [*(parsed.get("filter_conditions") or []), cond],
+        ELLIPTICAL_SUCCESSION_KEY: {"field": cond["field"], "value": cond["value"]},
+    }
 
 
 async def input_parser(
@@ -97,6 +129,34 @@ async def input_parser(
         app_config = load_config()
     if llm is None:
         llm = create_llm(app_config)
+
+    # 존 역질문 답변 턴(plans/119 Q-2 · D-267 ③): 라우트가 직전 턴 파싱본을 실었으면 LLM 파싱을
+    # 건너뛴다. 원 질의가 같고 이번 턴 입력은 존 선택뿐이라 다시 파싱할 내용이 없다(4~7초 절감).
+    # 직전 파싱본은 동의어 치환·위치 힌트 보강까지 끝난 값이라 후처리도 다시 하지 않는다.
+    # 대상 DB는 `selected_db_ids`가 정한다 — 위치 힌트는 라우팅에 쓰이지 않는다.
+    reused = state.get("reuse_parsed_requirements")
+    if isinstance(reused, dict) and reused and not state.get("uploaded_file"):
+        parsed = {**reused, "original_query": state["user_query"]}
+        logger.info(
+            "입력 파싱 재사용(plans/119 Q-2): 존 선택 답변 턴 — LLM 파싱 생략, targets=%s",
+            parsed.get("query_targets", []),
+        )
+        # 생략형 승계는 재사용 턴에도 같은 규칙으로 판정한다(plans/120 PL-1 — 멱등: 필터가 이미
+        # 있으면 발동하지 않는다).
+        parsed = _apply_elliptical_succession(parsed, state)
+        # 시트명 추출은 아래 종전 경로와 같다(업로드 없음 → 직전 턴 양식 구조의 시트명).
+        _prior_sheets = [
+            s.get("name", "")
+            for s in ((state.get("template_structure") or {}).get("sheets") or [])
+            if s.get("name")
+        ]
+        return {
+            "parsed_requirements": parsed,
+            "template_structure": None,
+            "target_sheets": _extract_target_sheets(parsed, state["user_query"], _prior_sheets),
+            "current_node": "input_parser",
+            "error_message": None,
+        }
 
     try:
         context = state.get("conversation_context")
@@ -132,6 +192,9 @@ async def input_parser(
 
     # 위치/환경 표면어(공동존 등) target_db_hints 결정적 보강(D-065)
     parsed = _ensure_location_hints(parsed, state.get("user_query", ""))
+
+    # 생략형 후속 턴 직전 서버 승계(plans/120 PL-1) — 위치 힌트 보강 뒤에 판정한다(조건 ⓒ)
+    parsed = _apply_elliptical_succession(parsed, state)
 
     # 2. 파일 업로드 처리 — 서식 보존용 template_structure 병행 생성
     template: Optional[dict] = None

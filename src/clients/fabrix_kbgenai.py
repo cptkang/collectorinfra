@@ -29,6 +29,7 @@ from langchain_core.messages import (
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
 from src.security.pii_filter import is_filter_blocked, log_filter_block_if_any
+from src.utils.deadline import call_timeout
 
 LLAMA_JUNK_TOKENS = [
     "<|eot_id|>",
@@ -57,6 +58,8 @@ class KBGenAIChat(BaseChatModel):
     # 1회당 간격이라, 게이트웨이·하트비트(STATUS/SYNC)가 바이트를 계속 흘리면
     # 무기한 대기가 가능하다(2026-09-07 무한대기 실측 — 1시간+ 미귀환). 총상한은
     # 그와 무관하게 벽시계 기준으로 호출을 끊는다.
+    # 실제 적용값은 호출 시작 시 1회 계산한 `call_timeout(total_timeout)` — 요청 마감이 묶여
+    # 있으면 min(이 값, 남은 시간)이다(plans/119 T-1ⓐ · 마감이 없으면 이 값 그대로).
     total_timeout: int = 300
     # 하이퍼파라미터 프로파일(D-194) — FabriX 가이드의 llmConfig 규약
     # ({"temperature": <float>, "top_k": <int>, "top_p": <float>}).
@@ -159,15 +162,17 @@ class KBGenAIChat(BaseChatModel):
     ) -> ChatResult:
         # D-198: 총 소요 상한. httpx는 취소에 즉시 반응(연결 abort)하므로
         # wait_for의 "취소 완료 대기"가 여기서는 갇히지 않는다.
+        # plans/119 T-1ⓐ: 상한 = min(total_timeout, 요청 마감까지 남은 시간) — 시작 시 1회 계산.
         started = time.monotonic()
+        limit = call_timeout(self.total_timeout, now=started)
         try:
             return await asyncio.wait_for(
-                self._agenerate_impl(messages), timeout=self.total_timeout
+                self._agenerate_impl(messages), timeout=limit
             )
         except asyncio.TimeoutError:
             logger.error(
-                "FabriX _agenerate 총 소요 상한 %ds 초과 (경과 %.1fs, endpoint=%s)",
-                self.total_timeout, time.monotonic() - started, self.endpoint_url,
+                "FabriX _agenerate 총 소요 상한 %.1fs 초과 (설정 %ds, 경과 %.1fs, endpoint=%s)",
+                limit, self.total_timeout, time.monotonic() - started, self.endpoint_url,
             )
             raise
 
@@ -218,16 +223,17 @@ class KBGenAIChat(BaseChatModel):
         _content_parts: list[str] = []
         # D-198: 동기 스트림도 동일한 벽시계 총상한 (async 쪽 주석 참조)
         _started = time.monotonic()
+        _limit = call_timeout(self.total_timeout, now=_started)  # plans/119 T-1ⓐ
         _line_count = 0
         for line in response.iter_lines(decode_unicode=True):
             _line_count += 1
-            if time.monotonic() - _started > self.total_timeout:
+            if time.monotonic() - _started > _limit:
                 logger.error(
-                    "FabriX _stream 총 소요 상한 %ds 초과 — 경과 %.1fs, 수신 라인 %d개",
-                    self.total_timeout, time.monotonic() - _started, _line_count,
+                    "FabriX _stream 총 소요 상한 %.1fs 초과(설정 %ds) — 경과 %.1fs, 수신 라인 %d개",
+                    _limit, self.total_timeout, time.monotonic() - _started, _line_count,
                 )
                 raise TimeoutError(
-                    f"FabriX 스트림 총 소요 상한 {self.total_timeout}s 초과"
+                    f"FabriX 스트림 총 소요 상한 {_limit:g}s 초과"
                 )
             if not line:
                 continue
@@ -297,6 +303,8 @@ class KBGenAIChat(BaseChatModel):
                 # D-198 진단 계측 — 총상한 발화 시 FabriX 측 상태 판정 근거
                 # (하트비트만 오는 무한대기인지, 침묵인지)를 로그로 남긴다.
                 _started = time.monotonic()
+                # plans/119 T-1ⓐ: min(total_timeout, 요청 마감까지 남은 시간) — 시작 시 1회 계산
+                _limit = call_timeout(self.total_timeout, now=_started)
                 _line_count = 0
                 _last_status = ""
                 async for line in response.aiter_lines():
@@ -304,15 +312,15 @@ class KBGenAIChat(BaseChatModel):
                     # D-198: 벽시계 총상한. STATUS/SYNC 하트비트가 read 타임아웃을
                     # 리셋해도 여기서 끊는다(수신이 완전히 멈추면 read 타임아웃 소관 —
                     # 그 경우 최대 read 타임아웃만큼 초과 후 발화할 수 있다).
-                    if time.monotonic() - _started > self.total_timeout:
+                    if time.monotonic() - _started > _limit:
                         logger.error(
-                            "FabriX _astream 총 소요 상한 %ds 초과 — 경과 %.1fs, "
+                            "FabriX _astream 총 소요 상한 %.1fs 초과(설정 %ds) — 경과 %.1fs, "
                             "수신 라인 %d개, 마지막 event_status=%r (endpoint=%s)",
-                            self.total_timeout, time.monotonic() - _started,
+                            _limit, self.total_timeout, time.monotonic() - _started,
                             _line_count, _last_status, self.endpoint_url,
                         )
                         raise asyncio.TimeoutError(
-                            f"FabriX 스트림 총 소요 상한 {self.total_timeout}s 초과"
+                            f"FabriX 스트림 총 소요 상한 {_limit:g}s 초과"
                         )
                     if not line:
                         continue

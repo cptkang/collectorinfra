@@ -231,6 +231,36 @@ class TestDemonstrativeHostnameInjection:
         iso = self._isolated("해당 서버 알람", [], [])
         assert _inject_demonstrative_hostname(iso)["filter_conditions"] == []
 
+    def test_server_name_entity_injected_as_name_not_hostname(self):
+        """직전 엔티티가 서버명(name)이면 name 필터로 주입한다 (plans/116 §10.3).
+
+        종전에는 필드를 항상 hostname으로 붙여, name≠hostname인 서버(DB-ORA-023 /
+        호스트 dbora023)의 「해당 서버」 후속이 `hostname = 'DB-ORA-023'` 0건이 됐다.
+        """
+        iso = self._isolated(
+            "해당 서버의 제조사", [], [{"field": "name", "value": "DB-ORA-023"}]
+        )
+        conds = _inject_demonstrative_hostname(iso)["filter_conditions"]
+        assert conds == [{"field": "name", "op": "=", "value": "DB-ORA-023"}]
+
+    def test_hostname_entity_paired_with_name_prefers_hostname(self):
+        iso = self._isolated(
+            "해당 서버의 제조사", [],
+            [{"field": "name", "value": "DB-ORA-023"}, {"field": "hostname", "value": "dbora023"}],
+        )
+        conds = _inject_demonstrative_hostname(iso)["filter_conditions"]
+        assert conds == [{"field": "hostname", "op": "=", "value": "dbora023"}]
+
+    def test_multiple_previous_servers_are_not_narrowed_to_first(self):
+        """「그 서버들」 — 대상이 여럿이면 첫 1대로 좁히지 않는다(노드 스코프가 전체를 승계)."""
+        iso = self._isolated(
+            "그 서버들의 제조사와 OS 종류", [],
+            [{"field": "name", "value": "DB-ORA-023"},
+             {"field": "name", "value": "cocm-hdkapp01"},
+             {"field": "name", "value": "SV-WEB-001"}],
+        )
+        assert _inject_demonstrative_hostname(iso)["filter_conditions"] == []
+
     def test_skips_demonstrative_previous_value(self):
         """previous_entities 값이 지시어/플레이스홀더면 주입 안 함(오염 방지)."""
         iso = self._isolated(

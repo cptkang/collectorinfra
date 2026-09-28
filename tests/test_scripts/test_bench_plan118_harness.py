@@ -457,3 +457,71 @@ def test_효과가_표준편차보다_크면_검정력_부족을_붙이지_않�
     verdict = compare.judge("S2-X-true", "X", "true", base, var)
     assert "지연 차 표준편차" in verdict.sentence
     assert "검정력 부족" not in verdict.sentence
+
+
+# ── B-1 · G-1 측정 상한 주입 · 캠페인 기록 · 60초 초과 병기 ───────────────────
+
+
+def test_측정_상한은_스냅샷_기준선과_arm_에_같이_얹힌다(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(sweep, "isolation_env", lambda: {"ALARM_ENABLED": "false"})
+    seen: list = []
+
+    def echo(overrides=None, base_env=None):
+        seen.append((dict(overrides or {}), dict(base_env or {})))
+        return SimpleNamespace(ok=True, config={"server.query_timeout": 180})
+
+    arms = [sweep.ArmSpec("baseline", None, None),
+            sweep.ArmSpec("S2-API_QUERY_TIMEOUT-60", "API_QUERY_TIMEOUT", "60",
+                          {"API_QUERY_TIMEOUT": "60"})]
+    sweep.capture_config_snapshot(arms, echo=echo, graph=lambda *a, **k: None,
+                                  detect_nd=lambda base_env=None: frozenset(), tier_only={})
+    for _overrides, base_env in seen:
+        assert base_env["API_QUERY_TIMEOUT"] == "180" and base_env["ALARM_ENABLED"] == "false"
+    assert seen[1][0] == {"API_QUERY_TIMEOUT": "60"}, "축 값이 주입을 덮는다"
+
+
+def test_새_캠페인은_측정_상한을_기록한다(tmp_path) -> None:
+    camp = cm.Campaign.load_or_new(tmp_path / "c.json", name="n", env="closed", mode="run",
+                                   repeat=1, max_hours=10)
+    camp.save()
+    data = json.loads((tmp_path / "c.json").read_text(encoding="utf-8"))
+    assert data["measurement_env"] == sweep.MEASUREMENT_ENV == {
+        "API_QUERY_TIMEOUT": "180", "API_FILE_QUERY_TIMEOUT": "180"}
+
+
+def test_주입_전_캠페인을_이으면_멈추고_새_캠페인을_권한다(tmp_path, monkeypatch) -> None:
+    """★ G-4 — `run-closed` 는 서버 `.env` 상한으로 돈 구간이 있다. 주입 코드로 잇지 않는다."""
+    from scripts.bench import __main__ as cli
+
+    monkeypatch.setattr(cli, "_RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(sweep, "resolve_env", lambda explicit=None: ("closed", "테스트"))
+    path = cm.campaign_path(tmp_path, "run-closed")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"name": "run-closed", "env": "closed", "mode": "run",
+                                "repeat": 1, "records": [{"segment_id": "general-1"}]}),
+                    encoding="utf-8")
+    args = cli.build_parser().parse_args(["--segment", "next", "--mode", "run",
+                                          "--campaign", "run-closed"])
+
+    problem = cli._campaign_guard(args)
+
+    assert problem and "측정 상한 주입" in problem and "주입 도입 전 캠페인" in problem
+    assert "새 캠페인 이름" in problem
+
+
+def test_60초_초과_턴을_arm_마다_센다(tmp_path) -> None:
+    rows = ([{"profile": "baseline", "scenario_id": f"S{i}", "wall_ms": w}
+             for i, w in enumerate((30_000, 61_000, 179_000))]
+            + [{"profile": "S2-X-1", "scenario_id": "S0", "wall_ms": 59_000}])
+    raw = tmp_path / "raw.jsonl"
+    raw.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+
+    health = sweep.scan_health({"profiles": []}, raw)
+
+    assert health.over_user_timeout == {"baseline": 2, "S2-X-1": 0}
+    line = health.user_timeout_line()
+    # 상한 의미를 보고하지 않은 판(D-267 ⑦ 이전)은 요청 전체 기준 — 그렇게 적는다(plans/119).
+    assert "운영 상한(요청 전체) 60초 초과" in line and "`baseline` 2턴" in line
+    assert "측정 상한 180초" in line

@@ -204,8 +204,8 @@ RUN_LOCAL_LLM=1 pytest tests/test_pipeline.py -m live_llm   # 로컬 MLX 실 LLM
 | db_id | 존 | 엔진 | 스키마 |
 |---|---|---|---|
 | `polestar_b0` | bankjon(은행존) | DB2 | `POLESTAR` (대문자 필수) |
-| `polestar_cm_gp` | gongjon(공동존·김포 운영/DR) | PostgreSQL | `polestar` |
-| `polestar_cm_yd` | gongjon(공동존·여의도 개발/스테이징) | PostgreSQL | `polestar` |
+| `polestar_cm_gp` | gongjon(공동존·김포 운영 — 「운영」은 김포 기준 용어 · 「운영체제」·「운영 중」·「운영자」·「운영팀」은 제외 · D-271) | PostgreSQL | `polestar` |
+| `polestar_cm_yd` | gongjon(공동존·여의도 개발/스테이징/DR — 「개발」·「스테이징」·「DR」은 여의도 기준 용어 · D-271) | PostgreSQL | `polestar` |
 | `polestar` | — | PostgreSQL | 로컬 도커 샌드박스(`testdata/pg/init`) |
 | `itam` | — (존 미배정 · 단일 시스템) | MariaDB | 로컬 도커 샌드박스(`testdata/itam` · 3307 · `INST1` 가정) · 구조 정본 미작성(G-4) — plans/95 |
 

@@ -355,8 +355,8 @@ class DBRegistry:
         return tuple(terms)
 
     def location_signal_terms(self) -> tuple[str, ...]:
-        """위치 + 환경 표면어(DB 식별 신호 승계용)."""
-        return self.location_terms() + tuple(self.environment_terms)
+        """위치 + 환경 표면어(DB 식별 신호 승계용). 둘에 모두 있는 표면어(개발 등 · D-271)는 한 번만."""
+        return tuple(dict.fromkeys(self.location_terms() + tuple(self.environment_terms)))
 
     def new_db_signal_terms(self) -> tuple[str, ...]:
         """위치 + 환경 + 제품/DB 표면어 — 직전 DB 승계를 차단할 신호 전체."""

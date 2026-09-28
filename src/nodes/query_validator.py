@@ -15,6 +15,8 @@ state에서 인자를 뽑아 코어를 호출하고 감사 로그·State 변환�
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 import structlog
 
@@ -48,10 +50,120 @@ from src.utils.query_gen_common import surface_query_for_judgment
 logger = logging.getLogger(__name__)
 _audit_logger = structlog.get_logger("audit")
 
+#: 생성기가 SQL 대신 산문(되물음·불가 사유)을 반환한 경우의 재시도 예산.
+#: 전체 예산(`QUERY_MAX_RETRY_COUNT`)과 별도로 둔다 — 산문은 프롬프트가 지시한 동작이라
+#: (polestar 템플릿 [Strict Constraints] 1: *"모호하거나 스키마 범위를 벗어나면 쿼리를
+#: 생성하지 말고 추가 맥락을 요청하라"*) 같은 프롬프트를 다시 돌려도 대개 같은 산문이
+#: 돌아온다. run `20260918-182507` 실측(체인 39건): 회복은 retry=1 **7건**인데 retry=2·3은
+#: 합해 3건이고, 회복하지 못한 29건이 각 3회를 더 태워 턴을 60초 벽으로 밀어냈다.
+#:
+#: **단일 출처다**(plans/119 N-5). 그래프 경로(`graph.route_after_validation`)·2단 단일 DB 루프
+#: (`subagents._run_single_db_pipeline`)·멀티 DB 재생성 루프(`multi_db_executor.
+#: _generate_validated_sql`)가 이 상수를 import 한다 — 종전에는 그래프에만 배선돼 기준 경로(2단)가
+#: 일반 예산 3까지 돌았다(run `20260923-103638`: 재시도 2~3회차 산문 83회).
+NON_SQL_RETRY_BUDGET = 1
+
+#: 검증 사유 중 "생성 산출물이 SELECT 문이 아님"을 뜻하는 접두 — 검증 코어(`validate_sql` 2번
+#: 검사)와 멀티 DB 간이 검증(`multi_db_executor._validate_sql_simple`)의 두 문구다.
+NON_SELECT_ERROR_PREFIXES: tuple[str, ...] = ("SELECT 문만 허용됩니다", "SELECT 문이 아닙니다")
+
+#: SQL 재생성 루프 종결 표지(`regen_stop.reason`) — 유효 SQL 없이 끝난 task 결과에 싣고 재계획기가
+#: 소비한다(plans/119 Q-3 · 계약: ``{"reason": …, "detail": 마지막 검증/실패 사유}``).
+REGEN_STOP_VALIDATION_BUDGET = "validation_budget"
+REGEN_STOP_NON_SQL = "non_sql"
+REGEN_STOP_DEADLINE = "deadline"
+
+
+def is_non_sql_prose(sql: str, errors: Iterable[str]) -> bool:
+    """생성 산출물이 SQL이 아니라 산문(되물음·불가 사유)인가 — 산문 전용 예산의 판정 신호.
+
+    검증 사유에 "SELECT 문이 아님" 계열이 있고, 그 산출물이 FabriX PII 필터 차단 안내문이 아닐 때
+    참이다. PII 차단 변형은 원인이 달라(D-153 후속2) 제외한다 — 종전 경로. 단일(노드)·멀티
+    (간이·전체 검증) 경로가 같은 판정을 쓴다(D-066).
+    """
+    if not any(str(e).startswith(NON_SELECT_ERROR_PREFIXES) for e in errors):
+        return False
+    from src.security.pii_filter import is_filter_blocked
+
+    return not is_filter_blocked(raw_text=sql)
+
+
+def non_sql_budget_exhausted(
+    validation_result: Mapping[str, Any] | None, retry_count: int,
+) -> bool:
+    """산문 응답이고 그 전용 예산을 소진했는가(그래프·2단 단일 루프 공용 판정)."""
+    return bool((validation_result or {}).get("non_sql")) and retry_count >= NON_SQL_RETRY_BUDGET
+
+
+def non_sql_prose_response(prose: str) -> str:
+    """산문 조기 종결의 사용자 응답 본문 — 그래프 `error_response`와 2단 단일 DB 경로가 같은 문구다.
+
+    생성기가 남긴 되물음·불가 사유를 그대로 싣는다 — 그 텍스트가 사용자가 받아야 할 답이고,
+    종전에는 "재시도 3회 초과"로 덮여 통째로 버려졌다(침묵적 폐기 금지 · plans/108 CU-A2).
+    """
+    text = (prose or "").strip()[:1500]
+    return (
+        "요청을 SQL로 옮기지 못했습니다. 조회 엔진이 대신 남긴 설명입니다.\n\n"
+        f"{text}\n\n"
+        "조회 대상(서버·지표·기간)을 구체적으로 지정해 주시면 다시 시도하겠습니다."
+    )
+
+
+def retrieval_reserve_sec(app_config: Any) -> float:
+    """서술 예약 초(`ServerConfig.answer_reserve_sec`) — 조회 마감 = 처리 마감 − 이 값(D-267 ⑥).
+
+    설정 대역(SimpleNamespace·MagicMock)에서는 0이다. 마감(`request_deadline`)이 없는 상태에서는
+    이 값과 무관하게 시간 게이트가 항상 통과한다(종전 동작).
+    """
+    value = getattr(getattr(app_config, "server", None), "answer_reserve_sec", 0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return max(0.0, float(value))
+
+
+def deadline_stop_message(
+    stage: str,
+    *,
+    remaining_sec: float | None,
+    need_sec: float | None,
+    last_reason: str | None = None,
+) -> str:
+    """조회 마감 때문에 SQL 작업을 시작하지 않고 끝낼 때의 사용자 문구.
+
+    plans/119 T-1ⓑ·T-3 — 침묵 금지.
+
+    Args:
+        stage: 시작하지 않은 단계("스키마 분석"·"SQL 생성"·"SQL 재생성")
+        remaining_sec: 조회 마감까지 남은 초(음수면 이미 지남)
+        need_sec: 비교한 직전 생성 소요(초). 없으면(첫 생성·진입 전) 마감 경과로 판정한 것이다
+        last_reason: 마지막 검증·실행 실패 사유(있으면 덧붙인다)
+
+    멀티 DB 경로는 이 문구가 존 커버리지 각주(DB당 150자 절단)에 실리므로 앞부분을 짧게 둔다.
+    """
+    if need_sec is None or remaining_sec is None:
+        why = "조회 마감 경과"
+    else:
+        why = f"조회 마감까지 {max(0.0, remaining_sec):.0f}초 < 직전 SQL 생성 {need_sec:.0f}초"
+    message = f"답변할 시간을 남기려고 {stage}을(를) 하지 않았습니다({why})."
+    if last_reason:
+        message += f" 마지막 실패 사유: {last_reason}"
+    return message
+
+
 #: 이 모듈이 계속 노출하는 이름 — 노드 자체 API + 코어의 하위호환 재노출이다.
 #: (신규 코드는 코어 심볼을 ``src.tools.sql_validation``에서 직접 임포트할 것.)
 __all__ = [
     "query_validator",
+    "NON_SQL_RETRY_BUDGET",
+    "NON_SELECT_ERROR_PREFIXES",
+    "REGEN_STOP_VALIDATION_BUDGET",
+    "REGEN_STOP_NON_SQL",
+    "REGEN_STOP_DEADLINE",
+    "is_non_sql_prose",
+    "non_sql_budget_exhausted",
+    "non_sql_prose_response",
+    "retrieval_reserve_sec",
+    "deadline_stop_message",
     "validate_sql",
     "SQLValidationOutcome",
     "check_left_join_where_demotion",
@@ -128,17 +240,16 @@ async def query_validator(
     # "SELECT 아님" 판정을 차단 원인 진단으로 치환해 정확히 노출한다(멀티 경로와 대칭).
     # 코어는 state 접근이 없으므로 진단 결합은 노드 계층에서 수행한다.
     _non_select_errors = [
-        e for e in outcome.errors if e.startswith("SELECT 문만 허용됩니다")
+        e for e in outcome.errors if e.startswith(NON_SELECT_ERROR_PREFIXES)
     ]
     #: 생성기가 SQL이 아니라 산문(되물음·불가 사유)을 반환한 경우. PII 차단 변형은 원인이
-    #: 달라 제외한다 — 여기 True면 그래프가 전용 예산(`NON_SQL_RETRY_BUDGET`)으로 조기
-    #: 종결하고 그 산문을 사용자 응답에 싣는다(plans/108 CU-A2).
+    #: 달라 제외한다 — 여기 True면 그래프·2단 루프가 전용 예산(`NON_SQL_RETRY_BUDGET`)으로 조기
+    #: 종결하고 그 산문을 사용자 응답에 싣는다(plans/108 CU-A2 · plans/119 N-5). 판정은 멀티 경로와
+    #: 같은 함수다(`is_non_sql_prose`).
     _is_non_sql_prose = False
     if _non_select_errors:
-        from src.security.pii_filter import is_filter_blocked
-
-        _pii_blocked = is_filter_blocked(raw_text=sql)
-        _is_non_sql_prose = not _pii_blocked
+        _is_non_sql_prose = is_non_sql_prose(sql, _non_select_errors)
+        _pii_blocked = not _is_non_sql_prose
         if _pii_blocked:
             # D-155: query_generator가 차단 시점에 산출한 섹션별 로컬 스캔 진단을
             # 에러에 실어 "어느 블록의 어떤 값이 걸렸는지"를 UI에서 바로 읽게 한다

@@ -67,6 +67,62 @@ PENDING = "미완"
 #: 시작했지만 끝을 기록하지 못한 구간 — 돌고 있거나(pid 생존) 끊겼다(재개 대상).
 RUNNING = "진행"
 
+#: 사다리 단 판정의 출처가 **인용**이다(plans/120 G-1 · `tier_decision["source"]`). 이 캠페인은
+#: 단 축 구간을 돌지 않고 다른 run 의 보정 판정으로 단을 고정했다. 칸이 없으면 이 캠페인이 잰
+#: 판정이다.
+CITED = "cited"
+
+#: 인용 기록(JSON)의 필수 칸 — 하나라도 비면 받지 않는다(근거 없는 고정 금지).
+CITATION_FIELDS = ("source", "axis", "run_id", "segment_id", "level", "tier", "corrected",
+                   "reported", "corrections", "cap_warning", "remeasure_when")
+
+
+class CitationError(ValueError):
+    """인용으로 사다리 단을 고정할 수 없다 — 사유 문장을 싣는다(plans/120 G-1)."""
+
+
+def load_tier_citation(path: Path) -> dict[str, Any]:
+    """인용 기록을 읽는다. 못 읽거나 필수 칸이 비면 `CitationError`."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CitationError(
+            f"인용 기록 `{path}` 을 읽지 못했다 — {type(exc).__name__}: {exc}") from exc
+    missing = [key for key in CITATION_FIELDS if not data.get(key)]
+    if missing:
+        raise CitationError(f"인용 기록 `{path}` 에 필수 칸이 없다: {', '.join(missing)}")
+    if data["source"] != CITED:
+        raise CitationError(f"인용 기록 `{path}` 의 `source` 가 `{CITED}` 가 아니다")
+    return data
+
+
+def _signals_text(signals: Mapping[str, Any], completion_label: str) -> str:
+    """`{"accuracy": {...}, "completion": {...}}` → `정확도 -19.6%p · 불일치 9:0 · p=0.004 · …`."""
+    parts: list[str] = []
+    for key, label in (("accuracy", "정확도"), ("completion", completion_label)):
+        sig = signals.get(key)
+        if not sig:
+            continue
+        text = f"{label} {float(sig['delta_pp']):+.1f}%p"
+        if sig.get("discordant"):
+            text += f" · 불일치 {sig['discordant']}"
+        if sig.get("p") is not None:
+            text += f" · p={sig['p']:g}" + ("(비유의)" if sig.get("significant") is False else "")
+        parts.append(text)
+    return " · ".join(parts)
+
+
+def citation_details(decision: Mapping[str, Any]) -> list[str]:
+    """인용 판정의 근거 줄 — 계획 표·합산 리포트가 같은 문장을 쓴다(plans/120 G-1)."""
+    lines = [f"보정 수치: {_signals_text(decision.get('corrected') or {}, '완주율(교정 정의)')}",
+             f"원 보고 수치: {_signals_text(decision.get('reported') or {}, '완주율')}"]
+    if decision.get("discordant_order"):
+        lines.append(f"불일치 표기: {decision['discordant_order']}")
+    lines.append("보정 사유: " + " · ".join(str(c) for c in decision.get("corrections") or []))
+    lines.append(f"⚠ 상한 차이: {decision.get('cap_warning')}")
+    lines.append(f"재측정 조건: {decision.get('remeasure_when')}")
+    return lines
+
 
 @dataclass(frozen=True)
 class RateModel:
@@ -377,8 +433,13 @@ class Campaign:
     #: **구조 축(사다리 단) 판정**(plans/114 M-0 · D-250 ②). 첫 구간이 끝나면 여기에 이긴 단이
     #: 남고, 남은 구간의 **기준선 환경**에 그 3키가 주입된다. 키:
     #: `segment_id`·`axis`·`verdict`·`level`·`tier`·`env`·`sentence`·`decided_at` ·
-    #: 판정 불가면 `blocked`(사유 문자열)만 있고 `level` 은 없다.
+    #: 판정 불가면 `blocked`(사유 문자열)만 있고 `level` 은 없다. 인용으로 고정했으면
+    #: `source="cited"` 와 인용 기록 칸(`run_id`·`corrected`·`reported` 등 · plans/120 G-1)이
+    #: 붙는다.
     tier_decision: dict[str, Any] = field(default_factory=dict)
+    #: 이 캠페인이 전 arm 에 주입한 **기능 측정 상한**(plans/118 G-1 · `sweep.MEASUREMENT_ENV`).
+    #: 새 캠페인을 열 때 기록되고, 값이 다른 코드로 잇지 않는다(`__main__._campaign_guard`).
+    measurement_env: dict[str, str] = field(default_factory=dict)
 
     # ── 입출력 ──
     @classmethod
@@ -391,9 +452,14 @@ class Campaign:
                        mode=data.get("mode", mode), repeat=int(data.get("repeat", repeat)),
                        max_hours=float(max_hours), created_at=data.get("created_at", ""),
                        records=records,
-                       tier_decision=dict(data.get("tier_decision") or {}))
+                       tier_decision=dict(data.get("tier_decision") or {}),
+                       measurement_env=dict(data.get("measurement_env") or {}))
+        # 지연 import — 순환 방지(sweep 은 campaign 을 모른다)
+        from scripts.bench.sweep import MEASUREMENT_ENV
+
         return cls(name=name, path=path, env=env, mode=mode, repeat=repeat, max_hours=max_hours,
-                   created_at=datetime.now().isoformat(timespec="seconds"))
+                   created_at=datetime.now().isoformat(timespec="seconds"),
+                   measurement_env=dict(MEASUREMENT_ENV))
 
     def save(self) -> Path:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -402,6 +468,7 @@ class Campaign:
             "max_hours": self.max_hours, "created_at": self.created_at,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "tier_decision": self.tier_decision,
+            "measurement_env": self.measurement_env,
             "records": [asdict(r) for r in
                         sorted(self.records.values(), key=lambda r: r.segment_id)],
         }
@@ -449,14 +516,59 @@ class Campaign:
         """끝난 구조 축 구간. 없으면 None."""
         return next((r for r in self.done() if r.structural), None)
 
+    def tier_cited(self) -> bool:
+        """사다리 단 판정이 **인용**인가(plans/120 G-1) — 이 캠페인은 단 축 구간을 돌지 않는다."""
+        return self.tier_decision.get("source") == CITED
+
+    def cited_axes(self) -> set[str]:
+        """인용으로 고정해 **돌지 않는** 축. 미완도 미측정도 아니다 — 계획·합산이 따로 적는다."""
+        return {str(self.tier_decision.get("axis"))} if self.tier_cited() else set()
+
+    def cite_tier(self, citation: Mapping[str, Any], *, env: Mapping[str, str]) -> bool:
+        """인용 기록으로 사다리 단 판정을 고정한다(plans/120 G-1 · 사용자 확정 G-1 (b)).
+
+        새로 고정했으면 True, 같은 인용이 이미 있으면 False(명령을 반복해 쳐도 된다). **새
+        캠페인에서만** 받는다 — 구간을 하나라도 돈 캠페인이나 단 판정이 이미 있는 캠페인은
+        `CitationError` 다(D-266 ⑤ — 닫힌 캠페인을 인용으로 잇지 않는다). `env` 는 호출부가
+        현재 축 정의에서 뽑은 그 레벨의 주입값이다 — 남은 구간 기준선에 주입된다.
+        """
+        same = ("run_id", "segment_id", "level")
+        if self.tier_cited() and all(self.tier_decision.get(k) == citation.get(k) for k in same):
+            return False
+        if self.tier_decision:
+            raise CitationError(
+                f"캠페인 `{self.name}` 에 사다리 단 판정이 이미 있다"
+                f"({self.tier_decision.get('level') or self.tier_decision.get('blocked')}) — "
+                "인용은 새 캠페인 이름으로 연다")
+        if self.records:
+            raise CitationError(
+                f"캠페인 `{self.name}` 은 구간을 이미 돌았다"
+                f"({', '.join(sorted(self.records))}) — 인용은 새 캠페인 이름으로 연다(D-266 ⑤)")
+        run_id, segment, level, tier = (citation["run_id"], citation["segment_id"],
+                                        citation["level"], citation["tier"])
+        self.tier_decision = {
+            **{k: citation[k] for k in citation if k != "env"},
+            "env": dict(env),
+            "decided_at": datetime.now().isoformat(timespec="seconds"),
+            "sentence": (f"**인용 — 이 캠페인은 사다리 단 구간을 돌지 않았다**(plans/120 G-1). "
+                         f"run `{run_id}` 구간 `{segment}` 의 보정 판정을 인용해 `{level}`"
+                         f"(단 `{tier}`)로 고정한다 — 보정 "
+                         f"{_signals_text(citation['corrected'], '완주율(교정 정의)')}"),
+            "caveat": (f"사다리 단은 이 캠페인에서 재지 않았다 — run `{run_id}` 구간 `{segment}` "
+                       f"의 보정 판정을 인용해 `{tier}` 로 고정했다(plans/120 G-1). 이후 구간의 "
+                       f"축 결과는 그 단에 조건부다. 재측정: {citation['remeasure_when']}"),
+        }
+        return True
+
     # ── 판정 ──
     def frozen_axes(self) -> set[str]:
         """계획이 **다시 배정하지 않는** 축 — 완료·실패·진행 기록 전부.
 
         실패·진행 구간의 축도 얼린다. 그 구간은 `--segment <id>` 재시도·재개로 **같은 구간**으로
-        다시 돌고, 새 구간에 다시 배정되면 한 축이 두 구간에 걸린다.
+        다시 돌고, 새 구간에 다시 배정되면 한 축이 두 구간에 걸린다. 인용으로 고정한 축
+        (plans/120 G-1)도 얼린다 — 그 구간은 돌지 않는다.
         """
-        return {axis for r in self.records.values() for axis in r.axes}
+        return {axis for r in self.records.values() for axis in r.axes} | self.cited_axes()
 
     def reopened_axes(self) -> set[str]:
         """재시도·재개로 **다시 돌 수 있는** 구간(실패·진행)의 축(plans/118 B-2).
@@ -636,6 +748,14 @@ def render_tier_decision(campaign: Campaign) -> list[str]:
     if not decision:
         return ["  사다리 단: **미측정** — 첫 구간(구조 축)이 잰다. 그 전까지 남은 구간은 돌지 "
                 "않는다(D-250 ①)."]
+    if campaign.tier_cited():
+        # 인용은 측정이 아니다 — 그 사실과 근거를 계획 표에서 읽게 한다(plans/120 G-1).
+        env = " · ".join(f"{k}={v}" for k, v in sorted((decision.get("env") or {}).items()))
+        return ([f"  사다리 단: **`{decision.get('level')}`**(단 `{decision.get('tier')}`) — "
+                 f"**인용**(이 캠페인은 재지 않았다) · run `{decision.get('run_id')}` 구간 "
+                 f"`{decision.get('segment_id')}` 보정 판정 · plans/120 G-1",
+                 f"    남은 구간 기준선 주입: {env or '(없음)'}"]
+                + [f"    {line}" for line in citation_details(decision)])
     blocked = campaign.tier_blocked()
     if blocked:
         return [f"  사다리 단: **판정 불가** — {blocked}",

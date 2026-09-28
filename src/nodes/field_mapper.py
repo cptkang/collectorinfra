@@ -139,7 +139,8 @@ async def field_mapper(
     # 3. Redis 캐시에서 전체 DB의 synonyms/descriptions 로드
     active_db_ids = _get_active_db_ids(app_config)
     all_db_synonyms, all_db_descriptions, priority_db_ids, eav_name_synonyms, global_synonyms_raw, cache_mgr = await _load_db_cache_data(
-        app_config, active_db_ids, target_db_hints
+        app_config, active_db_ids, target_db_hints,
+        selected_db_ids=state.get("selected_db_ids"),
     )
 
     # 4. 3단계 매핑 수행 (cache_manager를 전달하여 LLM 매핑 즉시 Redis 등록)
@@ -163,8 +164,9 @@ async def field_mapper(
     pending = _build_pending_registrations(mapping_result)
 
     if llm_inference_details:
+        # 쓰기 가드(plans/120 F-4)가 막은 매핑은 등록되지 않는다 — 실제 건수·차단 사유는 등록 로그.
         logger.info(
-            "LLM 추론 매핑 %d건이 Redis에 즉시 등록되었습니다.",
+            "LLM 추론 매핑 %d건 — Redis 즉시 등록 시도(실제 등록·차단은 등록 로그 참조).",
             len(llm_inference_details),
         )
 
@@ -251,6 +253,42 @@ def _get_active_db_ids(app_config: AppConfig) -> list[str]:
 _resolve_priority_db_ids = resolve_priority_db_ids
 
 
+def _resolve_mapping_priority_db_ids(
+    target_db_hints: list[str],
+    active_db_ids: list[str],
+    selected_db_ids: list[str] | None,
+) -> list[str]:
+    """매핑 우선 DB를 이번 턴 대상 DB로 정한다(plans/120 F-3).
+
+    존 선택(`selected_db_ids`)이 있으면 그것이 이번 턴 실행 DB다 — 2단 `intent_planner` ②.5와
+    3단 `semantic_router` 우선순위 2.5가 같은 값으로 DB를 고정한다. 폼필 답변 턴도 라우트가
+    역질문을 낸 런의 확정 존을 이 필드로 복원한다(인가 필터 통과분만). 질의 텍스트 힌트로 정하면
+    실행 DB와 다른 DB의 유사어로 매핑되므로 선택을 텍스트 힌트보다 앞에 둔다.
+    활성 DB 필터는 `semantic_router`와 같다. 선택이 없거나 필터 뒤 비면 종전대로 텍스트 힌트로
+    정한다.
+
+    Args:
+        target_db_hints: 프롬프트에서 추출한 대상 DB 힌트
+        active_db_ids: 활성 DB ID 목록
+        selected_db_ids: 이번 턴 존 선택(요청 스코프 · 없으면 None)
+
+    Returns:
+        우선순위 DB ID 목록
+    """
+    selected = [
+        d for d in dict.fromkeys(selected_db_ids or [])
+        if not active_db_ids or d in active_db_ids
+    ]
+    if selected:
+        logger.info(
+            "field_mapper: 매핑 우선 DB = 존 선택 %s "
+            "(질의 텍스트 힌트 %s보다 우선 — plans/120 F-3)",
+            selected, target_db_hints,
+        )
+        return selected
+    return _resolve_priority_db_ids(target_db_hints, active_db_ids)
+
+
 def _load_local_yaml_fallback(
     active_db_ids: list[str],
 ) -> tuple[dict[str, dict[str, list[str]]], dict[str, list[str]], dict[str, list[str]]]:
@@ -332,16 +370,20 @@ async def _load_db_cache_data(
     app_config: AppConfig,
     active_db_ids: list[str],
     target_db_hints: list[str],
+    *,
+    selected_db_ids: list[str] | None = None,
 ) -> tuple[dict[str, dict[str, list[str]]], dict[str, dict[str, str]], list[str], dict[str, list[str]], dict[str, list[str]], Any]:
     """Redis 캐시에서 전체 DB의 synonyms/descriptions를 로드한다.
 
-    target_db_hints가 있으면 해당 DB를 우선 조회한다.
+    존 선택(selected_db_ids)이 있으면 그 DB를, 없고 target_db_hints가 있으면 해당 DB를
+    우선 조회한다(plans/120 F-3).
     Redis 미존재 시 로컬 YAML 파일에서 로드하여 폴백한다.
 
     Args:
         app_config: 앱 설정
         active_db_ids: 활성 DB ID 목록
         target_db_hints: 프롬프트에서 추출한 대상 DB 힌트
+        selected_db_ids: 이번 턴 존 선택(텍스트 힌트보다 우선)
 
     Returns:
         (all_db_synonyms, all_db_descriptions, priority_db_ids, eav_name_synonyms, global_synonyms, cache_manager)
@@ -350,7 +392,9 @@ async def _load_db_cache_data(
     all_descriptions: dict[str, dict[str, str]] = {}
 
     # 우선순위 DB 결정
-    priority_db_ids = _resolve_priority_db_ids(target_db_hints, active_db_ids)
+    priority_db_ids = _resolve_mapping_priority_db_ids(
+        target_db_hints, active_db_ids, selected_db_ids
+    )
     remaining_db_ids = [db_id for db_id in active_db_ids if db_id not in priority_db_ids]
 
     ordered_db_ids = priority_db_ids + remaining_db_ids

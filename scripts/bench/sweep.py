@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import statistics
 import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -60,6 +61,65 @@ GRAPH_REGISTRATION_FLAGS: dict[str, tuple[str, ...]] = {
     "COMPOSITE_SEQUENTIAL_FALLBACK_TIERS_ENABLED": ("sequential_runner",),
     "ENABLE_SQL_APPROVAL": ("approval_gate",),
 }
+
+#: **기능 측정 상한** — 벤치가 **전 arm(기준선 포함)에 같은 값**으로 주입한다(plans/118 G-1 ·
+#: 114 G-C·M-4 · 사용자 확정 2026-09-28). 운영 `.env` 는 바꾸지 않는다. 종전에는 서버 `.env` 가
+#: 정한 상한으로 돌아, 캠페인 도중 `.env` 가 60 → 180 으로 바뀌자 한 run 에 두 상한이 섞였다
+#: (run `20260922-162132`). 주입값은 기동 에코로 확인되고(러너 `verify_profile`) 캠페인 상태에도
+#: 남는다(`Campaign.measurement_env` — 값이 바뀌면 캠페인을 잇지 않는다). arm 자신의 축 값이
+#: 이 키면 그 값이 이긴다(`{**MEASUREMENT_ENV, **arm.env}`).
+MEASUREMENT_ENV: dict[str, str] = {
+    "API_QUERY_TIMEOUT": "180",
+    "API_FILE_QUERY_TIMEOUT": "180",
+}
+
+#: 사용자가 실제로 끊기는 운영 상한(초) — 폐쇄망 운영 `.env` `API_QUERY_TIMEOUT=60` 실측
+#: (plans/114 §2.3). 기능은 180초로 재지만 **"사용자는 60초에 끊긴다"는 사실을 판정표에서
+#: 지우지 않으려고** 이 값을 넘긴 턴 수를 arm 마다 함께 싣는다(114 M-4 의 대가).
+USER_FACING_TIMEOUT_SEC = 60.0
+
+#: 처리 상한 의미(D-267 ⑦ · plans/119 T-0 계약) — 서버 `timeline.cap_semantic`. **키가 없으면
+#: 종전 의미 `total`**(계약). 94 리포트 `report.timeline_cap_semantic` 과 같은 규칙이다 — 여기
+#: 문자열로 두는 이유는 `INVALID_VERDICT` 와 같다(원시 로그 판독이 94 하네스 import 에 묶이지 않게).
+CAP_SEMANTIC_TOTAL = "total"
+CAP_SEMANTIC_FIRST_ANSWER = "first_answer"
+
+#: TTFT p90 을 내는 최소 표본 — 94 리포트 `P90_MIN_SAMPLE` 과 같다.
+TTFT_P90_MIN_SAMPLE = 10
+
+
+def run_cap_semantic(result: dict[str, Any], rows: Sequence[dict[str, Any]]) -> str:
+    """run 의 처리 상한 의미 — 러너 메타(첫 관측값) → 행 타임라인 → 종전 의미 순."""
+    recorded = (result.get("meta") or {}).get("cap_semantic")
+    if recorded:
+        return str(recorded)
+    for row in rows:
+        timeline = row.get("timeline")
+        if isinstance(timeline, dict):
+            return str(timeline.get("cap_semantic") or CAP_SEMANTIC_TOTAL)
+    return CAP_SEMANTIC_TOTAL
+
+
+def first_answer_ms_of(row: dict[str, Any]) -> Optional[float]:
+    """첫 답변 시각(ms). 서버 `timeline.first_answer_ms`(상한을 거는 쪽의 시계)가 1순위, 없으면
+    러너 `ttft_ms`. 답변이 스트리밍되지 않은 턴(역질문·오류)은 None 이다."""
+    timeline = row.get("timeline")
+    for value in ((timeline or {}).get("first_answer_ms") if isinstance(timeline, dict) else None,
+                  row.get("ttft_ms")):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+    return None
+
+
+def _ttft_stat(values: list[float]) -> tuple[int, Optional[float], Optional[float]]:
+    """(표본, p50, p90) ms — 표본이 `TTFT_P90_MIN_SAMPLE` 미만이면 p90 을 만들지 않는다."""
+    clean = sorted(values)
+    if not clean:
+        return 0, None, None
+    p90 = (clean[max(0, int(round(0.9 * len(clean))) - 1)]
+           if len(clean) >= TTFT_P90_MIN_SAMPLE else None)
+    return (len(clean), round(statistics.median(clean), 1),
+            round(p90, 1) if p90 is not None else None)
 
 #: 러너 자신의 실패로 측정이 성립하지 않은 턴(94 `assertions.INVALID_VERDICT` · D-218).
 #: 여기서 문자열로 두는 이유는 94 하네스가 없는 환경에서도 원시 로그를 읽을 수 있어야 하기
@@ -126,7 +186,8 @@ class Observation:
     retries: Optional[int]
     node_count: Optional[int] = None  # 실행 노드 수 — 비용 대리 지표(LLM 호출 수는 못 잰다)
     manual: bool = False        # 판정 보류 — 정확도 비교에서 제외한다
-    completed: bool = True      # 오류·크래시·행 없이 끝났는가
+    #: 오류·크래시·행·타임아웃 없이 끝났는가 — 기능 불합격도 완주다(plans/120 V-2).
+    completed: bool = True
     sql_generated: bool = False # SQL 이 실제로 관측됐는가(`executed_sql` 또는 `executed_sqls`)
     #: 측정이 성립하지 않은 턴이 섞였다(러너 인증 실패 등 · D-218 `invalid`).
     #: **기능 불합격이 아니다** — 정확도·완주 비교의 분모에서 뺀다.
@@ -668,7 +729,9 @@ def capture_config_snapshot(
     run_echo = echo or probe_mod.echo_config
     run_graph = graph or probe_mod.graph_reach
     detect = detect_nd or probe_mod.detect_nondeterministic_keys
-    shared = {**(base_env or {}), **isolation_env()}
+    # 측정 상한 주입(plans/118 G-1)도 실행과 같게 얹는다 — 빼면 스냅샷 기준선 실효값이
+    # 실제 기동과 달라진다. arm 의 축 값은 `_echo(arm.env)` 가 덮는다.
+    shared = {**(base_env or {}), **isolation_env(), **MEASUREMENT_ENV}
 
     def _echo(overrides: Optional[dict[str, str]]) -> tuple[dict[str, Any], bool, Optional[str]]:
         """에코 1회. **실패도 예외도 데이터로 돌려준다** — 스냅샷은 provenance이지
@@ -800,8 +863,9 @@ def run_arms(
     # 프로파일을 싣고 arm 을 그 위에 덧씌운다 — 94 러너가 `config.arms` 로 `merge_arm_profiles` 를
     # 부르고 행에 `arm`·`base_profile` 칸을 싣는다(`arm_of` 가 그 칸을 읽어 D군도 arm 에 묶인다).
     # arm 을 뒤에 등록한다 — `baseline` 은 시나리오 프로파일과 이름이 같고 둘 다 빈 주입이다.
+    # 기능 측정 상한은 **전 arm 에 같은 값**으로 얹는다(plans/118 G-1) — arm 의 축 값이 이긴다.
     catalog.profiles = {**sc_catalog.load_catalog().profiles,
-                        **{arm.arm_id: dict(arm.env) for arm in arms}}
+                        **{arm.arm_id: {**MEASUREMENT_ENV, **arm.env} for arm in arms}}
 
     config = sc_runner.RunConfig(
         mode=mode,
@@ -880,9 +944,20 @@ def unevaluated_reason_of(row: dict[str, Any]) -> Optional[str]:
                 and (verdict in ("fail", "error")
                      or row.get("response_mode") in ("hang", "error", "crash")))):
         return "timeout"
+    if row.get("status") == _partial_status():
+        # 서술 없이 표만 나간 턴(plans/114 P-2) — 러너 칸이 정본이라 새 run 은 위 분기에서
+        # 끝나고, 이 규칙은 러너 칸이 없는 run 을 위한 대칭 폴백이다.
+        return "timeout"
     if row.get("response_mode") == "clarify" and verdict != "pass":
         return None if _expected_question(row) else "clarify_blocked"
     return None
+
+
+def _partial_status() -> str:
+    """부분 결과 턴의 상태값. 제품 정본을 재사용한다(사본 금지 · plans/114 P-2)."""
+    from src.domain.partial_result import PARTIAL_STATUS
+
+    return PARTIAL_STATUS
 
 
 def unevaluated_counts(rows: Iterable[dict[str, Any]]) -> dict[str, int]:
@@ -956,7 +1031,11 @@ def read_observations(raw_path: Path) -> list[Observation]:
         # 0개다 — 그 상태로는 정확도 쌍이 언제나 0쌍이고, 성공한 런조차 "판정 불가"만 낸다.
         # 완주 여부와 SQL 생성 여부는 사람이 옮겨 적지 않아도 원시 로그에 이미 있고,
         # **설정 축이 실제로 흔드는 것**이다(재시도 폭주·생성 실패·조기 종료).
-        if verdict in ("error", "fail") or row.get("response_mode") in ("error", "crash", "hang"):
+        # 완주 = 응답 모드가 오류·크래시·행이 아니고 타임아웃 미평가가 아니다(plans/120 V-2).
+        # **기능 불합격(`fail`)은 완주다** — 종전에는 `func_verdict` 로도 미완주를 세서 완주율이
+        # 정확도의 그림자가 됐고, run 20260923-140539 의 3단 완주율이 −14.6%p 로 나왔다(교정
+        # 정의로는 +6.8%p · 방향이 뒤집힌다).
+        if row.get("response_mode") in ("error", "crash", "hang") or reason == "timeout":
             cell["completed"] = False
         if sql_observed(row):
             cell["sql_generated"] = True
@@ -1018,10 +1097,22 @@ class RunHealth:
     #: 단언 미평가 턴 수 — 사유별(`invalid`·`timeout`·`clarify_blocked` · D-241).
     #: 기능 분모 제외분이다.
     unevaluated: dict[str, int] = field(default_factory=dict)
-    #: 재개한 run 의 시도 사이에 판(커밋·작업 트리)이 바뀌었으면 그 사유 — 94 러너
-    #: `meta.provenance_mixed`(109·CS-19③). **주의로만 싣는다** — 멈춤 기준으로 올릴지는
-    #: 사용자 판단이다.
+    #: 재개한 run 의 시도 사이에 판(커밋·작업 트리·**프로파일 실효 설정**)이 바뀌었으면 그
+    #: 사유 — 94 러너 `meta.provenance_mixed`(109·CS-19③ · plans/118 B-1). **구간 실패
+    #: 사유다**(118 B-1 ③ · G-1 확정) — 섞인 run 은 arm 비교가 성립하지 않는다(run
+    #: `20260922-162132`: 같은 상한 66쌍은 A/A 인데 판정문은 +5.1%p 를 적었다).
     provenance_mixed: Optional[str] = None
+    #: arm → 운영 상한(`USER_FACING_TIMEOUT_SEC`)을 넘긴 턴 수(114 M-4 대가 · plans/118 G-1).
+    #: 상한 의미가 `first_answer`(D-267 ⑦)면 **첫 답변 시각**으로, 아니면 전체 소요(`wall_ms`)로
+    #: 센다.
+    over_user_timeout: dict[str, int] = field(default_factory=dict)
+    #: 처리 상한 의미(D-267 ⑦ · plans/119 T-0) — 94 러너 `meta.cap_semantic` 또는 행 `timeline`.
+    #: 서버가 보고하지 않은 판은 종전 의미(`total`)다.
+    cap_semantic: str = CAP_SEMANTIC_TOTAL
+    #: arm → (표본, p50 ms, p90 ms) — 첫 답변 토큰까지(94 러너 `ttft_ms` · plans/119 H-1).
+    #: 러너가 그 칸을 싣기 전 run 이면 비어 있다(「미측정」 — 표본 0 과 다르다).
+    ttft_by_arm: dict[str, tuple[int, Optional[float], Optional[float]]] = field(
+        default_factory=dict)
     #: 유효 프로파일의 사다리 단 — `(프로파일, arm, 단)`(plans/114 M-2 ①). 모의(`mock`)·미관측은
     #: 싣지 않는다 — 미관측을 강등으로 세면 주의가 상시 켜진다(94 리포트 O-c 와 같은 규칙).
     tiers: tuple[tuple[str, str, str], ...] = ()
@@ -1031,6 +1122,9 @@ class RunHealth:
     #: `{arm_id: 기대 단}` — 설정 스냅샷이 서버 기동 **전에** 뜬 값이다(`ConfigSnapshot.tier_of`).
     #: 실제 단이 이것과 다르면 주입 실패·강등이므로 차단한다(D-250 ③ · M-2 ① (b)).
     expected_tiers: dict[str, str] = field(default_factory=dict)
+    #: 실행을 생략하고 기준선 관측으로 대신한 arm(대조군·도달 불가 · plans/120 V-3). `run.json`
+    #: 프로파일에 없어 `tiers` 에 잡히지 않는다 — `tier_by_arm` 이 기준선의 관측 단을 싣는다.
+    substituted: tuple[str, ...] = ()
 
     @property
     def error_turns(self) -> int:
@@ -1100,11 +1194,20 @@ class RunHealth:
 
         단 축 구간의 승자에게 어느 단을 주입할지 정할 때 쓴다(plans/114 M-0). 사전 프로브가
         아니라 **실제로 돈 서버가 보고한 단**이다(`run.json.profiles[].tier`).
+
+        **실행 생략 arm 은 기준선의 관측 단이다**(plans/120 V-3) — 그 arm 의 관측이 곧 기준선
+        관측이다. 빠지면 생략된 대조군 레벨이 이기거나 기준 경로로 고정될 때 단을 못 찾는다
+        (run 20260923-140539 `tier: null` · 「차이 없음」·「판정 불가」면 `blocked`).
         """
         seen: dict[str, set[str]] = {}
         for _, arm, tier in self.tiers:
             seen.setdefault(arm, set()).add(tier)
-        return {arm: next(iter(tiers)) for arm, tiers in seen.items() if len(tiers) == 1}
+        out = {arm: next(iter(tiers)) for arm, tiers in seen.items() if len(tiers) == 1}
+        base = out.get(BASELINE_ARM)
+        if base:
+            for arm in self.substituted:
+                out.setdefault(arm, base)
+        return out
 
     def baseline_tier(self) -> Optional[str]:
         """기준선 arm 의 사다리 단 — 구간 간 비교(plans/114 M-2 ①b)가 캠페인 상태에 남길 값.
@@ -1233,8 +1336,50 @@ class RunHealth:
         if self.baseline_order and self.baseline_order[0] != 1:
             position, total = self.baseline_order
             reasons.append(f"기준선이 {total}개 중 {position}번째로 실행됐다")
+        if self.provenance_mixed:
+            reasons.append(f"출처 섞임 — {self.provenance_mixed}")
         reasons.extend(self.qualification_problems())
         return reasons
+
+    def user_timeout_line(self) -> Optional[str]:
+        """성능 표에 함께 싣는 한 줄 — arm 별 운영 상한 초과 턴 수. 행이 없으면 None.
+
+        D-267 ⑦ 이후 `API_QUERY_TIMEOUT` 은 **첫 답변(표 또는 첫 토큰)까지의 처리 상한**이다 —
+        서버가 그 의미(`first_answer`)를 보고한 판이면 문구도 계수 기준도 "첫 답변까지"다
+        (D-267 주의 ②). 보고하지 않은 판(종전 전체 상한)은 종전 기준으로 세고 그렇게 적는다.
+        """
+        if not self.over_user_timeout:
+            return None
+        listing = " · ".join(f"`{arm}` {count}턴"
+                             for arm, count in sorted(self.over_user_timeout.items()))
+        measured = MEASUREMENT_ENV.get("API_QUERY_TIMEOUT")
+        if self.cap_semantic == CAP_SEMANTIC_FIRST_ANSWER:
+            return (f"운영 처리 상한(첫 답변까지) {USER_FACING_TIMEOUT_SEC:.0f}초 초과 턴(기능은 "
+                    f"측정 처리 상한 {measured}초(첫 답변까지)로 쟀다 · plans/114 M-4 · D-267 ⑦) — "
+                    f"{listing}. 사용자는 이 턴들에서 첫 답변을 받기 전에 운영 상한에 끊긴다")
+        return (f"운영 상한(요청 전체) {USER_FACING_TIMEOUT_SEC:.0f}초 초과 턴(기능은 측정 상한 "
+                f"{measured}초로 쟀다 · plans/114 M-4) — {listing}. 사용자는 이 턴들에서 운영 "
+                "상한에 끊긴다 — 서버가 상한 의미를 보고하지 않은 판"
+                "(D-267 ⑦ 이전 · 요청 전체 기준)")
+
+    def ttft_line(self) -> Optional[str]:
+        """arm 별 첫 답변 토큰(TTFT) p50·p90 한 줄(plans/119 H-1).
+
+        러너가 칸을 싣기 전 run 이면 None.
+        """
+        if not self.ttft_by_arm:
+            return None
+
+        def cell(arm: str, stat: tuple[int, Optional[float], Optional[float]]) -> str:
+            count, p50, p90 = stat
+            if not count or p50 is None:
+                return f"`{arm}` 표본 없음"
+            tail = f" · p90 {p90 / 1000:.1f}초" if p90 is not None else " · p90 표본 부족"
+            return f"`{arm}` p50 {p50 / 1000:.1f}초{tail}(n={count})"
+
+        listing = " · ".join(cell(arm, stat) for arm, stat in sorted(self.ttft_by_arm.items()))
+        return (f"첫 답변 토큰(TTFT · plans/119 H-1) — {listing}. 토큰 없이 끝난 턴(역질문·오류)은 "
+                "표본에 없다")
 
     def blocking_reason(self) -> Optional[str]:
         """판정을 내면 안 되는 사유. 없으면 None."""
@@ -1260,7 +1405,8 @@ class RunHealth:
 
 def scan_health(result: dict[str, Any], raw_path: Path, *,
                 tier_axis: bool = False,
-                expected_tiers: Optional[Mapping[str, str]] = None) -> RunHealth:
+                expected_tiers: Optional[Mapping[str, str]] = None,
+                substituted: Sequence[str] = ()) -> RunHealth:
     """원시 로그와 프로파일 상태를 읽어 런의 건전성을 낸다.
 
     93이 이것을 먼저 보지 않으면, 전건 401 같은 사고가 "판정 불가 62건"이라는
@@ -1273,7 +1419,8 @@ def scan_health(result: dict[str, Any], raw_path: Path, *,
     함께 센다 — 차단은 SQL 0건과 전건 무효만, 나머지는 `warnings()` 로 고지한다.
 
     `tier_axis`·`expected_tiers` 는 **캠페인이 아는 사실**이다(plans/114 M-0 · D-250 ③).
-    호출부가 설정 스냅샷에서 뽑아 넘긴다 — 사람에게 기대 단을 묻지 않는다.
+    호출부가 설정 스냅샷에서 뽑아 넘긴다 — 사람에게 기대 단을 묻지 않는다. `substituted` 는
+    실행을 생략한 arm 이다(plans/120 V-3 — `tier_by_arm` 이 기준선의 관측 단을 싣는다).
     """
     profiles = result.get("profiles") or []
     valid = sum(1 for p in profiles if p.get("valid"))
@@ -1287,10 +1434,29 @@ def scan_health(result: dict[str, Any], raw_path: Path, *,
     evidence: dict[str, int] = {}
     turns = sql_turns = graph_turns = clarify_turns = auto_turns = 0
     arm_order: list[str] = []
+    over_user: dict[str, int] = {}
     rows = read_raw_rows(raw_path)
+    cap_semantic = run_cap_semantic(result, rows)
+    ttft_values: dict[str, list[float]] = {}
+    ttft_seen = any("ttft_ms" in row for row in rows)
     if rows:
         for row in rows:
             turns += 1
+            wall = row.get("wall_ms")
+            arm_key = arm_of(row)
+            over_user.setdefault(arm_key, 0)
+            # D-267 ⑦: 첫 답변 상한 판이면 첫 답변 시각으로 센다. 답변이 스트리밍되지 않은 턴
+            # (역질문·오류·타임아웃)은 응답 도착(= 전체 소요)이 곧 첫 답변이다.
+            first = first_answer_ms_of(row) if cap_semantic == CAP_SEMANTIC_FIRST_ANSWER else None
+            basis = first if first is not None else wall
+            if isinstance(basis, (int, float)) and basis > USER_FACING_TIMEOUT_SEC * 1000:
+                over_user[arm_key] += 1
+            if ttft_seen:
+                values = ttft_values.setdefault(arm_key, [])
+                ttft = row.get("ttft_ms")
+                if isinstance(ttft, (int, float)) and not isinstance(ttft, bool) \
+                        and row.get("func_verdict") != INVALID_VERDICT:
+                    values.append(float(ttft))
             verdicts[str(row.get("func_verdict"))] = verdicts.get(
                 str(row.get("func_verdict")), 0) + 1
             mark = str(row.get("mode_evidence") or row.get("error") or "")[:80]
@@ -1323,7 +1489,12 @@ def scan_health(result: dict[str, Any], raw_path: Path, *,
                      unevaluated=unevaluated_counts(rows),
                      provenance_mixed=(result.get("meta") or {}).get("provenance_mixed"),
                      tiers=tiers, tier_axis=tier_axis,
-                     expected_tiers=dict(expected_tiers or {}))
+                     expected_tiers=dict(expected_tiers or {}),
+                     substituted=tuple(substituted),
+                     over_user_timeout=over_user,
+                     cap_semantic=cap_semantic,
+                     ttft_by_arm={arm: _ttft_stat(values)
+                                  for arm, values in ttft_values.items()})
 
 
 def canonical_tier() -> str:

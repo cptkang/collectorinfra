@@ -798,6 +798,9 @@ ORCHESTRATOR_MODEL=mlx-community/Qwen3.5-9B-OptiQ-4bit
 **스트리밍 청크 대기 상한도 이 두 타임아웃을 따른다** — `mlx_lm.server`는 prefill이 끝나야 첫 청크를 보내는데,
 langchain-openai 기본값(120초)에 두면 긴 프롬프트 호출이 첫 청크 전에 끊겨 폴백으로 넘어간다(`src/clients/mlx_client.py`).
 느린 모델(27B 등)을 쓰면 `LLM_MLX_TIMEOUT=900` · `ORCHESTRATOR_TIMEOUT=300` · `API_QUERY_TIMEOUT=900` · `API_FILE_QUERY_TIMEOUT=1200`으로 올린다.
+`API_QUERY_TIMEOUT`·`API_FILE_QUERY_TIMEOUT`은 **첫 답변(표 또는 첫 토큰)까지**의 상한이다(2026-09-28 · D-267 ⑦). 스트리밍 응답은 첫 답변 뒤
+토큰 간 공백 `API_STREAM_IDLE_TIMEOUT_SEC`(기본 30초)과 전체 상한(처리 상한 + `API_STREAM_DELIVERY_GRACE_SEC`, 기본 60초)으로만 끊긴다 —
+토큰 속도가 느린 모델에서 긴 답이 끝까지 오지 않으면 `API_STREAM_DELIVERY_GRACE_SEC`도 올린다.
 
 **사전 점검** — 서버 도달·모델 ID·**1토큰 생성**·재적재 위험·루프백 바인딩을 코드가 판정한다(질의 전 실행). `/health`·`/v1/models`는 생성 스레드가 죽어도 200이라 생성까지 본다.
 시나리오·벤치 하네스의 실 실행(`python -m scripts.scenario --run` · `python -m scripts.bench --sweep --mode run`)은 이 MLX 점검을 **자동으로 먼저** 돌고, 막히면 앱 서버를 띄우기 전에 멈춘다(하네스 쪽 안내는 `plans/94` ⑪ · `plans/93` 퀵 가이드 7).

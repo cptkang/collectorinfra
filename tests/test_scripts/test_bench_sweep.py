@@ -376,8 +376,9 @@ def test_크레덴셜이_없어도_arm에_인증을_끄는_값을_싣지_않는�
     ]
     sweep.run_arms(arms, credentials=sweep.Credentials())
 
-    assert captured["profiles"]["baseline"] == {}
-    assert captured["profiles"]["A-1"] == {"A": "1"}
+    # 기능 측정 상한(plans/118 G-1)만 얹힌다 — 인증을 끄는 값은 없다.
+    assert captured["profiles"]["baseline"] == sweep.MEASUREMENT_ENV
+    assert captured["profiles"]["A-1"] == {**sweep.MEASUREMENT_ENV, "A": "1"}
 
 
 def test_로그인_크레덴셜이_있으면_인증을_끄지_않는다(monkeypatch) -> None:
@@ -418,7 +419,7 @@ def test_로그인_크레덴셜이_있으면_인증을_끄지_않는다(monkeypa
                               admin_user="admin", admin_password="pw")
     sweep.run_arms(arms, credentials=creds)
 
-    assert captured["profiles"]["baseline"] == {}
+    assert captured["profiles"]["baseline"] == sweep.MEASUREMENT_ENV   # 측정 상한만(118 G-1)
     assert captured["config"].user_id == "bench"
     assert captured["config"].admin_user == "admin"
 
@@ -727,8 +728,8 @@ def test_판정_가능_집계는_러너가_건너뛰는_시나리오를_뺀다()
     catalog = sweep.load_normal_catalog(env="closed")
     judged, runnable = sweep.judgeable_count(catalog)
 
-    # 러너 규칙과 독립적으로 다시 센다(오라클).
-    supported = {"drop_thread", "unregister_synonym"}
+    # 러너 규칙과 독립적으로 다시 센다(오라클). `forget_form_memory` 는 plans/120 V-4 가 더했다.
+    supported = {"drop_thread", "unregister_synonym", "forget_form_memory"}
     skipped = {s.id for s in catalog.scenarios
                if not s.prompt_authored or [a for a in s.teardown if a not in supported]}
 
@@ -1405,6 +1406,6 @@ def test_arm_은_시나리오_프로파일을_치환하지_않고_병합한다(m
     assert captured["config"].arms == ["baseline", "S2-A-1"], "러너가 병합한다(merge_arm_profiles)"
     assert captured["config"].profiles == [], "시나리오 프로파일로 거르지 않는다 — D군도 돈다"
     assert captured["profiles"]["optin_alarm"] == {"TEXT2SQL_ALARM_DETERMINISTIC": "true"}
-    assert captured["profiles"]["S2-A-1"] == {"A": "1"}
+    assert captured["profiles"]["S2-A-1"] == {**sweep.MEASUREMENT_ENV, "A": "1"}
     assert captured["scenarios"] == scenarios, "시나리오를 arm 이름으로 복제·치환하지 않는다"
 

@@ -1,7 +1,7 @@
 # 118. 벤치 캠페인 `run-closed` 2구간(composite-5) 완주분 분석 — 측정이 성립하지 않은 이유(114 이후 신규)와 수정 계획
 
 > **작성일**: 2026-09-23
-> **상태**: **트랙 B 게이트 없는 5건 랜딩(B-2·B-3·B-4·B-5·B-6 · 2026-09-23 · D-254)** · 잔여 B-1·P-1·P-2(게이트 G-1~G-3 대기) · P-3(조사) · G-4 대기
+> **상태**: **게이트 G-1~G-4 사용자 확정(2026-09-28 · D-266)** · 트랙 B 전건(B-1~B-6) · P-1·P-2 구현 · P-3 조사 완료 · G-4 로컬 기록 완료 — **잔여: 재측정(§6 단계 4·5 · 사용자 폐쇄망 실행)** · ⚠ P-1·P-2 폐쇄망 배포는 D-251 ⑦ 기준선 run 뒤
 > **대상 산출물**: `results/bench/run-closed-triage.tar/` — 이름은 `.tar`지만 **디렉터리**다(`~/Downloads/run-closed-triage.tar`와 같은 내용).
 > - 구간 run `20260922-112010` — `general-1` · 223턴 · **`plans/114`가 이미 분석했다**(이 문서는 재분석하지 않는다)
 > - 구간 run `20260922-162132` — `composite-5` · **완주 230턴** · 5.47시간 · 시도 2회(재개 1회). 114 작성 시점에는 15턴에서 중단된 상태였다
@@ -187,6 +187,43 @@
 
 트랙은 둘이다. **B** = 벤치·하네스(무과금 · 제품 동작 불변) · **P** = 제품(2단 = 기준 경로).
 
+### 4.0-b 랜딩 기록 — 게이트 확정 후 잔여 (2026-09-28 · 커밋 없음 · D-266)
+
+사용자 지시 *"G-1~G-4 권고대로 확정하고 잔여 작업을 진행하라"*. 실 LLM·DB·서버 기동 0회 · 과금 0.
+
+| ID | 상태 | 앵커(현 작업 트리) | 테스트 |
+|---|---|---|---|
+| **B-1** + G-1 | ✅ 랜딩 | **러너** `scripts/scenario/runner.py` `RESUME_VOLATILE_KEYS`(포트)·`profile_config_record`(설정 에코 → `scripts.bench.probe.config_fingerprint` 재사용)·`resume_config_conflict` · 프로파일 기동 직후 `meta.attempts[-1].configs[profile]` 기록 + `run.json` 즉시 저장(끊겨도 남는다) · 재개 때 앞 시도와 다르면 `meta.resume_refused`·`provenance_mixed="재개 거부 - …"` + 남은 프로파일 제외 / `scripts/scenario/__main__.py` 거부 시 exit 1(리포트 안 씀). **벤치** `scripts/bench/sweep.py` `MEASUREMENT_ENV`(`API_QUERY_TIMEOUT`·`API_FILE_QUERY_TIMEOUT` = 180 · 전 arm · 축 값 우선)·스냅샷 공유 env 에도 주입·`RunHealth.stop_reasons` 에 `출처 섞임`(주의 → 실패)·`over_user_timeout`/`user_timeout_line`(운영 상한 60초 초과 턴 · 114 M-4 대가) / `campaign.py` `Campaign.measurement_env` / `__main__.py` `_campaign_guard`(주입 기록이 다르거나 없는데 구간이 있으면 멈춤) · 판정표·콘솔에 60초 초과 줄 | `tests/test_scenario/test_plan118_resume_config.py` 5건(지문 포트 제외 · 바뀐 키 문구 · 끊긴 시도에도 기록 · ★60→180 재개 거부 · 같은 설정 재개) · `test_bench_plan118_harness.py` +4건(스냅샷 주입·축 값 우선 · 캠페인 기록 · ★주입 전 캠페인 멈춤 · 60초 초과 계수) |
+| **P-1** (G-2) | ✅ 랜딩 | `src/state.py` 요청 스코프 3키(`request_deadline`·`orchestrator_round_sec`·`replan_stop_notice`) + `create_initial_state`·`create_followup_input` 초기화 · `src/api/routes/query.py` `_request_deadline` + 진입점 4곳(`/query`·`/query/stream`·`/query/file`·`/query/file/stream` — `graph.ainvoke` 폴백 2곳도 같은 상태) · `src/orchestration/agent_orchestrator.py` 한 바퀴 소요 · `src/orchestration/replanner.py` `_deadline_stop_notice`(LLM 평가 **전** · 배수 1.0) · `src/orchestration/result_aggregator.py` `_apply_incomplete_notice` 합류 | `tests/test_orchestration/test_plan118_replan_budget.py` 10건(마감 20초·바퀴 60초 → LLM 0·사유 · 여유면 종전 · 칸 없으면 종전 3형 · 경계 · 바퀴 계측 · 두 생성기 초기화 · 집계기 합류 · 라우트 4곳) |
+| **P-2** (G-3) | ✅ 랜딩 | `replanner.py` `_filter_repeated_empty`·`_rounds`(재계획 이력 `added` 로 바퀴 복원)·`_round_all_empty`(오류·`skipped_dbs` 없음 + 행 0)·`_entity_literals`(숫자 포함 호스트명형 토큰 · IPv4)·`_queried_dbs` · D-063 필터 **뒤**에 둔다 | 같은 파일 9건(★B-05 형태 3 DB·단일 DB · 첫 0건 뒤 재조회 유지 · 둘째 바퀴 행 있음 · 다른 엔티티·리터럴 없음 보존 · 오류·미조회 DB · 바퀴 복원 · replanner 통합) |
+| **P-3** | 🔍 조사 완료(처방 없음) | 아래 「P-3 조사 결과」 | — |
+| **G-4** | ✅ 로컬 기록 | D-266 ⑤ · 이 절 「G-4 폐쇄망 처리 절차」 · 코드 가드(`_campaign_guard` — 주입 기록 없는 옛 캠페인을 새 코드로 잇지 않는다) | 위 ★주입 전 캠페인 멈춤 |
+
+**⚠ 기준선 run 순서(D-251 ⑦)** — 착수 전 D-251·`plans/110` §0.3·`plans/98` 을 확인했다. 폐쇄망 기준선 run(`--arm tier2_intent --arm tier3_router`)의 **완료 기록이 없다**(110 §0.3 「판정 자격을 갖춘 기준선 run 0건」). 지시대로 P-1·P-2 를 **파일 경계가 분명한 형태**로 넣었다 — P-1 = `state.py` 3키·`query.py` `_request_deadline`·`agent_orchestrator.py` 계측 1줄·`replanner.py` `_deadline_stop_notice`·`result_aggregator.py` 합류 / P-2 = `replanner.py` `_filter_repeated_empty` 계열 함수(호출 1곳). **폐쇄망 배포·재측정은 기준선 run 뒤다.** 기준선을 이 코드로 돌리면 D-251 ④⑤ 효과와 P-1·P-2 효과가 섞인다(D-265 도 같은 조건).
+
+**P-1 과 D-265(시간 상한 부분 결과)의 관계** — 순차이며 충돌하지 않는다. P-1 은 재계획 단계에서 **상한 전에** 루프를 끊어 집계기가 정상 응답(`status=completed` + 사유 문구)을 만들게 한다. 그래도 서술이 상한을 넘기면 라우트의 D-265 출구가 받는다 — 그때는 체크포인트의 표(`status=partial`)만 나가고 P-1 사유 문구는 실리지 않는다(표가 사유 첫 줄을 따로 가진다). 스트림 출구는 여전히 `done`(D-248)이고 행이 없으면 504 그대로다 — `query.py` 의 D-265 코드는 건드리지 않았다(마감 한 줄만 입력 상태에 더했다).
+
+**대칭 실측** — 단일 DB·멀티 DB: task 결과 모양이 같다(`_pack_pipeline_result` — 멀티 DB 는 합친 `query_results`·`source` 대상 목록) → P-2 테스트가 두 모양을 다 돈다. 2단·3단: 3단 계획 루프(`TIER3_PLAN_LOOP_ENABLED` 기본 off)는 ①바퀴 소요를 재지 않아 P-1 이 발동하지 않고(종전 동작) ②행 없는 task 를 재계획 입력에서 이미 빼므로(111 D-3) P-2 조건에 도달하지 않는다. 1단은 `replanner` 를 쓰지 않는다.
+
+**P-3 조사 결과(코드 · 2026-09-28)** — 2단 재계획 후속도 최초 task 와 같은 `agent_orchestrator` → `_make_isolated_input` 으로 돈다. ①`process_query` 후속의 대상 수는 `resolve_targets(max_targets=COMPOSITE_MAX_TARGETS)` 로 **10개 상한이 걸린다**(선행 행에서 대상을 푸는 `COMPOSITE_PRIOR_TARGETS_ENABLED` 는 run `20260922-162132` 실효값 `false`). ②**`data_query`·`alarm_query` 후속은 `COMPOSITE_MAX_TARGETS` 를 거치지 않는다** — 선행 행은 `prior_rows` 로 넘어가며 상한은 모듈 상수 `subagents._MAX_PRIOR_ROWS = 100`(설정 아님)이다. `input_from` 이 없으면 **완료된 선행 결과 전체**가 원천이다. E-03(CPU 상위 1,689행 → "그 서버들의 프로세스 분석")은 담당이 `process_query` 면 10개, `data_query` 로 분해되면 100행 IN 조건 × 대상 DB 수로 돈다. G-04(10,000행 × 3회)는 대상 수가 아니라 행 상한(LIMIT) 문제다. 처방은 하지 않는다 — 서버 로그로 해당 턴의 후속 담당·대상 수를 실측한 뒤 별도 항목으로 올린다(소유 후보 `plans/111`·`113`).
+
+**G-4 폐쇄망 처리 절차(사용자 몫)**
+1. `run-closed` 에 `--segment next` 를 다시 치지 않는다. 새 코드에서는 가드가 멈춘다(「측정 상한 주입 — 상태 파일 없음(주입 도입 전 캠페인 …) — 새 캠페인 이름으로 여세요」).
+2. `results/bench/campaigns/run-closed/` 와 구간 run 두 폴더(`20260922-112010` general-1 · `20260922-162132` composite-5)는 지우지 않는다 — general-1 은 노이즈·속도 자료, composite-5 는 무자격 기록이다.
+3. 새 캠페인은 **새 이름**으로 연다: `python -m scripts.bench --segment next --mode dry --campaign run-closed-180` 으로 계획 표(첫 구간 `ladder-1`)를 확인한 뒤 `--mode run` 으로 돈다. 180초 주입은 자동이다(`MEASUREMENT_ENV` · 캠페인 상태에 기록).
+4. 새 캠페인의 첫 run 이 D-251 ⑦ 기준선 run 과 겹치지 않게 순서를 정한다 — 기준선 run 이 먼저다(§6).
+
+**검증 실측(2026-09-28)**: `tests/test_scripts`·`tests/test_scenario`·`tests/test_api` **2,162 passed · 2 skipped · 0 failed**(병행 세션 기준선 2,153 + 신규 9) · `tests/test_orchestration`·`tests/test_nodes`·`tests/test_state*`·`tests/test_observability` **1,984 passed · 1 skipped · 0 failed**(신규 19 포함) · `arch_check --ci` 위반 0 · `overfit_check --ci` 신규 유입 없음 · ruff(`uvx --offline`) HEAD `48b0eae` 클린 worktree 대비 신규는 `UP045`(주변 표기 유지)·한글 테스트명 `N802` 뿐 · mypy(`--python-version 3.12`) 변경 10파일 신규 0(`replanner.py` 오류 유형·건수 기준선과 동일). `tests/test_manual` 은 9 failed 인데 **이 변경 전에도 9 failed**(병행 세션의 미커밋 사례 픽스처 `reviewed=false` — 매뉴얼 HTML 을 HEAD 로 되돌려 같은 수 실측) — 이 변경 귀속 0.
+
+**매뉴얼(D-255)**: P-1·P-2 는 사용자 응답 문구가 바뀌는 변경이라 **대상**이다. `scripts/manual/content/user.md` U-16 「주의」에 2줄(추가 조회 중단 안내 · 전 DB 연속 0건 안내)을 넣고 재빌드했다. **재빌드는 HEAD 클린 worktree 에서 했다** — 작업 트리에는 병행 세션의 미검토 사례 픽스처(2026-09-28 재녹화 · `reviewed=false`)가 있어, 그대로 빌드하면 미검토 사례가 게재본에 섞인다. 화면 변화 없음 → 캡처 갱신 없음 · `features.yaml` 변경 없음(기존 U-16 절의 동작 설명).
+
+**계획과 다르게 한 것**
+1. **P-1 사유 문구에서 「생략한 추가 조회(○○)」를 적지 않는다** — LLM 평가 전에 끊으므로(계획 요구) 무엇을 생략했는지 알 수 없다. *"추가 조회가 필요한지 더 판단하지 않고 지금까지의 결과로 답했습니다(남은 시간 N초 < 직전 조회 한 바퀴 M초)"* 로 사실만 적는다.
+2. **측정 상한 주입에 `API_FILE_QUERY_TIMEOUT` 도 넣었다**(둘 다 180). 파일·폼필 답변 턴은 파일 상한을 쓴다 — 한쪽만 주입하면 H군이 서버 `.env` 값으로 돌아 캠페인 사이에 또 섞인다.
+3. **B-1 재개 거부는 프로파일 단위로 판정한다** — 설정 에코는 서버를 띄운 뒤에야 나오므로 시도 시작 시점이 아니라 그 프로파일 기동 직후에 대조한다. 거부되면 그 뒤 프로파일도 돌지 않는다(제외 사유 「재개 거부」). 앞 시도에 그 프로파일 기록이 없으면(도달 전에 끊김·옛 run) 대조하지 않는다.
+4. **운영 상한 60초는 상수**(`USER_FACING_TIMEOUT_SEC`)다 — 기준선 실효값은 주입 뒤 180 이라 운영값을 에코로 읽을 수 없다. 근거는 114 §2.3 폐쇄망 `.env` 실측.
+5. **기존 테스트 4건 개정**: `test_bench_campaign.py` 출처 섞임(주의 → 실패 사유) · `test_bench_sweep.py` 3건(`run_arms` 프로파일에 측정 상한이 얹힌다).
+
 ### 4.1 트랙 B — 벤치·하네스
 
 #### B-1 ★ 재개 시 실효 설정 대조 (§2.2)
@@ -266,6 +303,8 @@
 
 ## 5. 사용자 확정 게이트
 
+> **2026-09-28 사용자 확정 — G-1~G-4 전건 권고대로**(원문 *"G-1~G-4 권고대로 확정하고 잔여 작업을 진행하라"* · D-266).
+
 | ID | 물음 | 권고 | 근거 |
 |---|---|---|---|
 | **G-1** | 기능 측정 상한을 **벤치가 전 arm에 같은 값으로 주입**하는가?(114 G-C 확정) 값은? | **주입한다 · 180초.** 이번에 `.env`로 180을 쓴 것이 섞임의 원인이었다. 주입이면 캠페인 상태에 남고 B-1이 대조한다. 성능 판정은 군별 목표로 따로 낸다 | §1 ② · §2.2 · 114 M-4 |
@@ -307,5 +346,6 @@
 
 | 날짜 | 판 | 내용 |
 |---|---|---|
+| 2026-09-28 | v3 | **게이트 G-1~G-4 확정 · 잔여 구현**(§4.0-b) — B-1(재개 설정 대조 + 180초 주입 · 캠페인 기록·가드 · 60초 초과 병기 · 출처 섞임 = 구간 실패) · P-1(재계획기 시간 예산 · 플래그 없음) · P-2(전 DB 연속 0건 중단 · D-063 개정) · P-3 조사 · G-4 로컬 기록·절차 · D-266 · 매뉴얼 U-16. ⚠ P-1·P-2 폐쇄망 배포는 D-251 ⑦ 기준선 run 뒤. 잔여 = 재측정(사용자 실행)이라 `-WIP` 유지 |
 | 2026-09-23 | v2 | **트랙 B 게이트 없는 5건 랜딩**(B-2·B-3·B-4·B-5·B-6 · §4.0) — D-254 등재 · D-251 ⓐ 처리 부기 · 파일명 `-TODO` → `-WIP`(잔여 B-1·P-1·P-2·P-3·G-4). 제품 코드 0 · 과금 0 |
 | 2026-09-23 | v1 | 최초 작성 — 캠페인 `run-closed` 2구간 `composite-5`(run `20260922-162132` · 230턴 완주분) 분석. 114가 분석한 1구간은 다시 다루지 않았다. 신규 사실: 측정 축 소비처 0 · 재개가 `.env` 상한 변경(60→180)을 섞음 · 재개 구간 스냅샷 arm 누락(현 트리 재현) · 180초 상한에서 드러난 2단 재계획 루프(23/191턴) · 지연 노이즈 6.5초→38.7초 · 1단 전용 축 1개. 코드 0건 · 게이트 G-1~G-4 대기 |

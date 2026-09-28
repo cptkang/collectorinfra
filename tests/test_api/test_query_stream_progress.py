@@ -211,7 +211,9 @@ def test_flag_off_emits_no_progress_or_heartbeat(route, app_config):
     off = _post(_client(_Graph(list(_TOOL_EVENTS)), app_config), route)
     assert not [e for e in off if e["type"] in ("progress", "heartbeat")]
     strip = lambda evs: [  # noqa: E731
-        {k: v for k, v in e.items() if k not in ("timestamp_ms", "processing_time_ms", "query_id", "thread_id")}
+        # timeline(plans/119 T-0)은 단계 경계 ms라 실행마다 다르다 — 시각 필드와 같이 뺀다
+        {k: v for k, v in e.items()
+         if k not in ("timestamp_ms", "processing_time_ms", "query_id", "thread_id", "timeline")}
         for e in evs if e["type"] not in ("progress", "heartbeat")
     ]
     assert strip(on) == strip(off)

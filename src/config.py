@@ -407,6 +407,14 @@ class Text2SQLConfig(BaseSettings):
     # 정본이고 이 값은 **운영 override**다 — 사용 시 값을 응답에 노출한다(§6.12 ②).
     spike_default_delta_pp: float = 20.0
 
+    # === plans/119 Q-5 · D-267 ④: 단일 경로 테이블 선택 LLM 생략 (기본 OFF 옵트인 · D-162) ===
+    # ON이면 schema_analyzer가 이번 질의의 유사어 테이블 신호(D-051 매칭)가 수동 프로필
+    # `allowed_tables` 안에 있을 때 테이블 선택 LLM을 부르지 않고 그 선언 집합을 쓴다. 그때는
+    # 필터·보충(보충 = 프로필 테이블만 · plans/114 P-4①) 결과가 LLM 출력과 무관하게 같은 집합이다.
+    # 신호가 선언 집합 밖이거나 알람 의도·프로필 부재면 종전대로 LLM을 부른다.
+    # 기본 OFF = 현행 경로와 비트 동일. arm 측정으로 효과를 확인한 뒤 전환을 판단한다.
+    schema_table_select_skip_enabled: bool = False
+
     model_config = {"env_prefix": "TEXT2SQL_", "env_file": ".env", "extra": "ignore"}
 
 
@@ -466,17 +474,29 @@ class ServerConfig(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     cors_origins: list[str] = ["*"]
-    # 일반 질의 전체 상한(초). 60 → 120(2026-09-21 사용자 확정): 은행존 DB2 질의가 SQL 재생성
-    # 1회로 60.6s에 끊겼다. 관리자 설정 화면(API_QUERY_TIMEOUT)에서 바꾸고 설정 리로드로 반영된다.
+    # 일반 질의 **처리 상한**(초) — 요청 후 **첫 답변(표 또는 첫 토큰)까지**의 상한이다(D-267 ⑦ ·
+    # 2026-09-28 · 종전 "요청 전체 상한"). 첫 답변 뒤에는 아래 토큰 간 idle·전달 연장으로만 끊는다.
+    # 60 → 120(2026-09-21 사용자 확정): 은행존 DB2 질의가 SQL 재생성 1회로 60.6s에 끊겼다.
+    # 관리자 설정 화면(API_QUERY_TIMEOUT)에서 바꾸고 설정 리로드로 반영된다.
     query_timeout: int = 120
     file_query_timeout: int = 120
+    # plans/119 트랙 T · D-267 ⑥⑦ — **플래그 없이 기본 동작**(D-162 예외). 1차는 설정 상수다(G-6 —
+    # 적응형 예산은 재측정 R2 뒤 재판단).
+    # 서술 예약(초): 조회 마감 = 처리 마감 − 이 값. 조회 단계는 조회 마감을 넘겨 새 LLM 작업(SQL
+    # 재생성·재계획 후속)을 시작하지 않는다. 15는 plans/119 §5.4.3 T-2의 추정(요약 2~3줄)이다 —
+    # 단계 타임라인(T-0) 실측 p90으로 다시 정한다.
+    answer_reserve_sec: int = 15
+    # 첫 답변 뒤 토큰 간 idle 상한(초) — 이 시간 동안 답변 토큰이 없으면 끊는다(G-7 초기값 30).
+    stream_idle_timeout_sec: int = 30
+    # 전달 연장(초) — 처리 상한 + 이 값이 무한 대기 방지 전체 상한이다(G-7 초기값 60 · D-242 유지).
+    stream_delivery_grace_sec: int = 60
     # plans/89 · D-204: SSE 진행 신호. **기본 on** — plans/80 §5.4-③(신규 플래그 기본 off)의
     # 명시 예외다. 근거: ①추가되는 이벤트(progress·heartbeat)는 부가적이고 구 클라이언트는
     # 미지 type을 무시한다(app.js SSE 파서 실측) ②off면 이 기능이 푸는 증상("커서만 깜박임",
     # 무이벤트 최대 API_QUERY_TIMEOUT초)이 운영에서 그대로 남는다 ③프론트와 동시 배포된다.
     sse_progress_events: bool = True
-    # 무이벤트 구간에 heartbeat를 내는 주기(초). 0 이하면 하트비트 없음. 무이벤트 상한
-    # (query_timeout/file_query_timeout)의 의미는 바뀌지 않는다.
+    # 무이벤트 구간에 heartbeat를 내는 주기(초). 0 이하면 하트비트 없음. heartbeat는 어떤 상한
+    # (처리 상한·토큰 간 idle·전체 상한 — plans/119 T-5)도 되돌리지 않고, 0이어도 판정은 제때 한다.
     sse_heartbeat_interval_sec: int = 5
     # plans/82 v7 R-2 · D-249: 존 동시 조회에서 먼저 끝난 존 그룹의 **행 미리보기** 행 수.
     # 0이면 행 없이 "은행존 12건 완료 · 3.2s" 알림만 낸다. 행은 최종 응답과 같은 `DataMasker`로
@@ -1381,6 +1401,10 @@ class AppConfig(BaseSettings):
 
     # 결과 기반 재계획 최대 반복 (무한 루프 방지, R-A3/R-11)
     max_replan: int = 3
+    # 예산 인지 재계획 프롬프트(plans/119 T-6 · 문헌 L-9) — **기본 off = 현행과 비트 동일**(D-162 ·
+    # D-267 ⑥). on이면 재계획 평가 LLM 입력에 조회 마감까지 남은 시간·남은 재계획 횟수·"지금
+    # 결과로 종결 가능"을 싣는다. LLM 행동 의존이라 결정적 가드(T-1~T-4) 뒤에 arm으로 잰다.
+    replan_budget_prompt_enabled: bool = False
 
     # 사다리 3단 계획 루프 (plans/103 P2 · plans/111 C-4·C-5) — **기본 off = 현행 3단과 비트 동일**
     # (plans/80 §5.4-③). on이면 3단 빌드에 plan → normalize → dispatch ─(Send)→ task_run → join →

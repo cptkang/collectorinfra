@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field as dc_field
 from datetime import date
 
@@ -23,6 +24,8 @@ from src.utils.query_gen_common import (
     resolve_stat_month_range,
     utilization_guard as _utilization_guard,
 )
+# 월 구조 필드 판정(서브 헤더 파서·집계어)은 필드 매퍼와 공유하는 공용 규칙이다(plans/120 F-1).
+from src.utils.month_structure import parse_month_structure_field
 # EAV 속성 메타 추출은 카탈로그 계층에 위임한다(application→infrastructure 허용).
 from src.schema_cache.catalog_builder import attribute_resource_types
 
@@ -144,21 +147,16 @@ def classify_metric_field(field: str) -> tuple[str, str, str] | None:
 # "사용률+집계어 그룹 | M+k(또는 절대월) 서브" **구조 패턴**만 인식한다.
 # 기관명·시트제목·칼럼순서 하드코딩 금지(과적합 가드 — plans/72 §8 R3의 경계 지표).
 # 판정 불가 시 None을 반환해 기존 경로로 폴백한다(오동작이 아니라 미발동으로 실패).
+# 구조 판정(서브 헤더 파서·집계어)은 `src.utils.month_structure`가 소유한다(plans/120 F-1).
 
 # 리소스 판정용 문맥 명사(양식 제목·질의에서 탐색). _METRIC_NOUN_RT에 관용 표현 추가.
 _CONTEXT_NOUN_RT: tuple[tuple[str, str], ...] = _METRIC_NOUN_RT + (
     ("주기억장치", "server.Memory"),
 )
 
-# peak 판정을 평균보다 먼저 — "Peak시 사용률"류에 '평균'이 공존할 일은 없으나 순서 명시.
-_MONTH_GROUP_AGG: tuple[tuple[tuple[str, ...], str, str], ...] = (
-    (("peak", "피크", "최고", "최대"), "max_val", "peak"),
-    (("평균", "avg"), "avg_val", "avg"),
-)
-
-_REL_MONTH_RE = re.compile(r"^m(?:\s*\+\s*(\d{1,2}))?$", re.IGNORECASE)
-_ABS_YM_RE = re.compile(r"^(\d{4})\s*[.\-/년]\s*(\d{1,2})\s*월?$")
-_ABS_M_ONLY_RE = re.compile(r"^(\d{1,2})\s*월$")
+# 월 그룹 집계 종류(utils `MONTH_GROUP_AGG_TERMS`의 종류 키) → 통계 값 컬럼. 어댑터는 값
+# 컬럼 대응만 가진다 — 집계어 표면어를 여기에 다시 적지 않는다(규칙 사본 금지).
+_MONTH_AGG_VAL_COL: dict[str, str] = {"peak": "max_val", "avg": "avg_val"}
 
 # PostgreSQL 식별자 63바이트 한도 — 초과 alias는 조용히 잘려 월 서픽스가 소실·충돌하므로
 # 그 양식은 인식 대상에서 제외한다(폴백). DB2는 128바이트라 PG 기준이 보수적 상한.
@@ -198,25 +196,22 @@ class MonthSeries:
     anchor_source: str = "default"  # "query"(질의 기간) | "default"(지난달 폴백) | "absolute"(양식 절대월)
 
 
-def _parse_month_sub(sub: str) -> tuple[str, int | str] | None:
-    """서브 헤더를 ('rel', k) 또는 ('abs', 'YYYYMM'|'MM')로 해석한다(아니면 None)."""
-    s = sub.strip()
-    m = _REL_MONTH_RE.match(s)
-    if m:
-        return ("rel", int(m.group(1) or 0))
-    m = _ABS_YM_RE.match(s)
-    if m:
-        month = int(m.group(2))
-        if 1 <= month <= 12:
-            return ("abs", f"{int(m.group(1))}{month:02d}")
-        return None
-    m = _ABS_M_ONLY_RE.match(s)
-    if m:
-        month = int(m.group(1))
-        if 1 <= month <= 12:
-            return ("abs", f"{month:02d}")  # 연도 미상 — 앵커 해석 시 보정
-        return None
-    return None
+def _table_names(tables: Iterable[str] | None) -> set[str]:
+    """허용 테이블 목록을 소문자 이름 집합으로 만든다(스키마 한정명은 맨 이름도 넣는다)."""
+    names: set[str] = set()
+    for t in tables or ():
+        low = str(t).lower()
+        names.add(low)
+        names.add(low.rsplit(".", 1)[-1])
+    return names
+
+
+def _mapped_outside_tables(col: str, allowed: set[str]) -> bool:
+    """'[스키마.]테이블.컬럼' 매핑의 테이블이 허용 테이블 밖인가(EAV·무한정 컬럼은 판정 안 함)."""
+    if col.startswith("EAV:"):
+        return False
+    parts = col.split(".")
+    return len(parts) >= 2 and parts[-2].lower() not in allowed
 
 
 def recognize_month_series(
@@ -225,12 +220,16 @@ def recognize_month_series(
     user_query: str = "",
     today: date | None = None,
     parsed_time_range: dict | None = None,
+    allowed_tables: Iterable[str] | None = None,
 ) -> MonthSeries | None:
     """복합 필드명에서 월 시리즈(사용률 가로 전개) 패턴을 결정적으로 인식한다(D-146).
 
     인식 조건(모두 충족해야 발동 — 미충족 시 None 폴백):
     - 미매핑(None 또는 cmm_metric_stat 오매핑) 필드명이 "그룹|서브" 구조이고,
       그룹에 '사용률'과 집계어(평균/peak류)가 있으며 서브가 M+k 또는 절대월
+      (구조 판정은 `src.utils.month_structure` — 필드 매퍼의 매핑 스킵과 같은 규칙)
+    - 실행 DB의 허용 테이블(`allowed_tables`) 밖 컬럼에 매핑된 월 구조 필드는 미매핑과
+      같게 본다(plans/120 F-1b — 오염 유사어가 다른 DB의 비지표 컬럼에 정확 매칭한 경우)
     - 리소스 명사(cpu/메모리/주기억장치/디스크)가 context_text(양식 제목 등)·user_query·
       필드명 어디선가 발견됨 (없으면 판정 불가 → 폴백)
     - 상대(M+k)·절대월 표기가 한 양식에 혼재하지 않음
@@ -248,6 +247,8 @@ def recognize_month_series(
         user_query: 사용자 질의(기간 해석용)
         today: 기준일(테스트 주입용, None이면 오늘)
         parsed_time_range: `parsed_requirements["time_range"]` — 정규식 미매칭 시에만 채택
+        allowed_tables: 실행 DB의 허용 테이블(스키마 분석 결과 `tables` 키). None·빈 값이면
+            허용 테이블 판정을 하지 않는다(종전 동작)
 
     Returns:
         MonthSeries 또는 None(패턴 아님 — 기존 경로 유지)
@@ -255,25 +256,21 @@ def recognize_month_series(
     if not column_mapping:
         return None
 
+    allowed = _table_names(allowed_tables)
     parsed: list[tuple[str, str, tuple[str, int | str]]] = []  # (field, val_col, sub해석)
+    nonmetric: list[tuple[str, str]] = []  # 비지표 컬럼에 매핑된 월 구조 필드(인식 제외)
+    out_of_scope: list[tuple[str, str]] = []  # 허용 테이블 밖 매핑 — 미매핑 간주(F-1b)
     for fname, col in column_mapping.items():
+        structure = parse_month_structure_field(fname)
+        if structure is None:
+            continue
         if col is not None and "cmm_metric_stat" not in str(col).lower():
-            continue
-        if "|" not in fname:
-            continue
-        group, _, sub = fname.rpartition("|")
-        low = group.lower()
-        if "사용률" not in low:
-            continue
-        agg = next(
-            (vc for terms, vc, _sfx in _MONTH_GROUP_AGG if any(t in low for t in terms)),
-            None,
-        )
-        if agg is None:
-            continue
-        sub_parsed = _parse_month_sub(sub)
-        if sub_parsed is None:
-            continue
+            if allowed and _mapped_outside_tables(str(col), allowed):
+                out_of_scope.append((fname, str(col)))
+            else:
+                nonmetric.append((fname, str(col)))
+                continue
+        agg_kind, sub_parsed = structure
         if len(fname.encode("utf-8")) > _MAX_ALIAS_BYTES:
             # alias 잘림 → 월 서픽스 소실·충돌 위험. 양식 전체 폴백.
             logger.info(
@@ -281,11 +278,25 @@ def recognize_month_series(
                 len(fname.encode("utf-8")), _MAX_ALIAS_BYTES, fname[:40],
             )
             return None
-        parsed.append((fname, agg, sub_parsed))
+        parsed.append((fname, _MONTH_AGG_VAL_COL[agg_kind], sub_parsed))
 
+    # 침묵·오보 금지(plans/120 F-1b): 매핑 탓 제외와 패턴 불충족을 사유별로 따로 남긴다.
+    if out_of_scope:
+        logger.info(
+            "월 시리즈(plans/120 F-1b): 허용 테이블 밖 컬럼에 매핑된 월 구조 필드 %d건은 "
+            "미매핑으로 간주 — 예: %r → %r",
+            len(out_of_scope), out_of_scope[0][0], out_of_scope[0][1],
+        )
+    if nonmetric:
+        logger.info(
+            "월 시리즈%s(D-146): 월 구조 필드 %d건이 비지표 컬럼 매핑이라 인식 제외 — 예: %r → %r",
+            "" if parsed else " 미발동", len(nonmetric), nonmetric[0][0], nonmetric[0][1],
+        )
     if not parsed:
-        # 침묵 금지(Known Mistakes): 후보에 근접한 필드가 있으면 사유를 남긴다.
-        near = [f for f in column_mapping if "|" in f and "사용률" in f]
+        near = [
+            f for f in column_mapping
+            if "|" in f and "사용률" in f and parse_month_structure_field(f) is None
+        ]
         if near:
             logger.info(
                 "월 시리즈 미발동(D-146): '그룹|서브' 사용률 필드 %d개가 있으나 "
@@ -551,7 +562,10 @@ def resolve_form_fill_answers(
     if not answers:
         return overrides, mapping_updates, literals
     entity = (eav_pattern or {}).get("entity_table", "cmm_resource")
-    protected = protected_fields or set()
+    protected = set(protected_fields or ())
+    # 복합 필드("그룹|서브")는 그룹명 답변도 막는다 — 그룹 하나가 월 칸 여러 개를 덮는다. 완전
+    # 일치만 보면 그룹명 답변이 적용 처리되고 writer는 그 이름의 열을 못 찾는다(plans/120 I-07 t2).
+    protected |= {p.rpartition("|")[0] for p in protected if "|" in p}
     valid = {c["value"] for c in build_form_fill_candidates(schema_info, eav_pattern)}
 
     for field, ans in answers.items():
@@ -807,6 +821,7 @@ def _pivot_select_parts(
     concat_eav: list[tuple[str, str, str]] | None = None,
     *,
     parent_alias: str | None = None,
+    value_join_cols: dict[str, str] | None = None,
 ) -> tuple[list[str], set[str], bool]:
     """피벗 SELECT 라인 목록·필요 resource_type 집합·metric 유무를 계산한다(블록/SQL 공용).
 
@@ -824,6 +839,10 @@ def _pivot_select_parts(
     parent_alias가 주어지면 엔티티 직접 컬럼을 `MAX(<alias>.<컬럼>)`로 뽑는다 — 시계열 행
     분해(Plan 67 S-IR2)는 GROUP BY에 통계 기간이 들어가 서버 행(server.Server)과 통계 행이
     다른 그룹으로 갈리므로, 식별 컬럼을 부모 서버 조인에서 가져와야 NULL이 되지 않는다.
+
+    value_join_cols({EAV 속성 대문자: 엔티티 컬럼})에 있는 서버 EAV 속성은 엔티티 직접 컬럼으로
+    뽑는다 — 프로필 `value_joins`가 두 값이 같다고 선언한 속성이고, 값은 직접 컬럼에만 있을 수
+    있다(plans/116 §10.3: EAV IP 속성이 빈 서버 8대의 IP주소 누락). 열 순서는 그대로 둔다.
     """
     lines: list[str] = []
     rtset: set[str] = {_SERVER_RESOURCE_TYPE}
@@ -837,6 +856,14 @@ def _pivot_select_parts(
             f'THEN c.{bare} END) AS "{field}"'
         )
     for field, attr in server_eav:
+        direct = (value_join_cols or {}).get(attr.upper())
+        if direct:
+            lines.append(
+                f"  MAX({parent_alias}.{direct}) AS \"{field}\"" if parent_alias else
+                f"  MAX(CASE WHEN c.resource_type='{_SERVER_RESOURCE_TYPE}' "
+                f'THEN c.{direct} END) AS "{field}"'
+            )
+            continue
         lines.append(
             f"  MAX(CASE WHEN c.resource_type='{_SERVER_RESOURCE_TYPE}' "
             f"AND cc.{attr_col}='{attr}' THEN cc.{val_col} END) AS \"{field}\""
@@ -884,6 +911,17 @@ def _pivot_select_parts(
             _metric_select_line(alias, rt, "MAX", mval, db_engine, stat_date=month)
         )
     return lines, rtset, has_metric
+
+
+def _value_join_columns(eav_pattern: dict) -> dict[str, str]:
+    """프로필 `value_joins`에서 {EAV 속성 대문자: 엔티티 컬럼}을 만든다(값 컬럼이 같은 것만)."""
+    val_col = eav_pattern.get("value_column", "stringvalue_short")
+    out: dict[str, str] = {}
+    for vj in eav_pattern.get("value_joins") or []:
+        attr, col = vj.get("eav_attribute"), vj.get("entity_column")
+        if attr and col and vj.get("eav_value_column", val_col) == val_col:
+            out[str(attr).upper()] = str(col)
+    return out
 
 
 def _eav_pattern_parts(eav_pattern: dict) -> tuple[str, str, str, str, str, str]:
@@ -970,6 +1008,7 @@ def _build_pivot_sql(
         explicit_measures=explicit_measures, month_measures=month_measures,
         concat_eav=concat_eav,
         parent_alias=_PARENT_ALIAS if time_breakdown else None,
+        value_join_cols=_value_join_columns(eav_pattern),
     )
     if time_breakdown:
         # 기간 컬럼은 dimension 뒤·measure 앞(시계열 표의 통상 배치).
@@ -1209,7 +1248,8 @@ def build_multi_resource_pivot_block(
     """
     entity, config, attr_col, val_col, ent_join, cfg_join = _eav_pattern_parts(eav_pattern)
     lines, rtset, has_metric = _pivot_select_parts(
-        regular_entries, server_eav, child_eav, metric_fields, attr_col, val_col, db_engine
+        regular_entries, server_eav, child_eav, metric_fields, attr_col, val_col, db_engine,
+        value_join_cols=_value_join_columns(eav_pattern),
     )
     rt_in = ", ".join(f"'{r}'" for r in sorted(rtset))
     select_block = ",\n".join(lines)

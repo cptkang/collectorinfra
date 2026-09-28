@@ -735,6 +735,19 @@ class _LadderTierMismatchError(RuntimeError):
     """`--path semantic_router|deep_agent`인데 그 단으로 확정되지 않음(graceful 스킵 사유)."""
 
 
+# 채점 대상 SQL을 특정하지 못한 사유 어휘(plans/111 §6 M-1a) — 침묵 강등 금지(CLAUDE.md).
+# 종전에는 전부 "생성 SQL 추출 실패" 한 덩어리였다. 그러면 EX 분모에서 빠진 항목이
+# **파이프라인이 답을 못 만든 것**인지 **하네스가 답을 못 고른 것**인지 원격에서 구별되지 않는다.
+SKIP_NOT_A_STATE = "채점 불가 — 파이프라인 결과가 state dict가 아님"
+SKIP_NO_SQL = "채점 대상 SQL 없음 — 파이프라인이 SQL을 남기지 않았다"
+SKIP_NO_LIVE_ATTEMPT = "채점 대상 SQL 특정 불가 — 실행 성공한 SQL 시도가 없다(전 시도 실패)"
+SKIP_NO_FINAL_TASK = "채점 대상 SQL 특정 불가 — 최종 답을 만든 task 없음(전 task 실패·미실행)"
+SKIP_FINAL_TASK_NO_SQL = (
+    "채점 대상 SQL 특정 불가 — 성공 task가 SQL을 남기지 않았다(비 SQL 에이전트)"
+)
+SKIP_MULTIDB_NO_SQL = "채점 대상 SQL 특정 불가 — DB별 결과만 있고 생성 SQL 미노출(멀티 DB)"
+
+
 class PipelinePredictor:
     """실제 파이프라인을 구동하는 예측기(best-effort).
 
@@ -840,10 +853,10 @@ class PipelinePredictor:
                     retries=int(out.get("retry_count", 0) or 0),
                     latency_ms=latency, rewrite_traces=traces,
                 )
-            sql = self._extract_sql(out)
+            sql, select_skip = self._select_scored_sql(out)
             if not sql:
                 return PredictionResult(
-                    sql=None, skipped=True, error="생성 SQL 추출 실패",
+                    sql=None, skipped=True, error=select_skip or SKIP_NO_SQL,
                     latency_ms=latency, rewrite_traces=traces,
                 )
             return PredictionResult(
@@ -858,31 +871,95 @@ class PipelinePredictor:
             return PredictionResult(sql=None, skipped=True, error=f"{type(exc).__name__}: {exc}")
 
     @staticmethod
-    def _extract_sql(out: dict) -> Optional[str]:
-        """파이프라인 결과 state에서 생성 SQL을 추출한다(단일/멀티 경로 대응)."""
+    def _select_scored_sql(out: dict) -> tuple[Optional[str], Optional[str]]:
+        """채점 대상 SQL(= **최종 답을 만든** SQL)과, 특정 실패 시 그 사유를 반환한다.
+
+        종전 규칙은 "마지막 것이 이긴다"였다 — 2단은 `task_plan` 순서의 마지막 task,
+        단일은 `query_attempts`의 마지막 시도. 재계획기는 기존 계획을 보존하고 신규만
+        append하며(`replanner.py` R-A1) 신규 task의 order는 기존 최대 order+1이므로
+        (`replanner._assign_ids`), **재계획이 돌면 구조적으로 마지막 = 재계획 task**다.
+        그 task가 검증 실패로 끝나도 SQL은 남으므로(`subagents._pack_pipeline_result` —
+        `generated_sql`이 비면 `query_attempts` 마지막 시도로 채운다) 질문과 무관한 SQL이
+        채점됐다(`plans/111` §2.7 `cx-04` — 재계획 형제 3건 전부 검증 실패).
+
+        교정 규칙: **실패·미실행 task/시도를 후보에서 빼고, 남은 것 중 마지막**을 쓴다.
+        후보가 없으면 아무 SQL도 채점하지 않고 사유를 돌려준다(침묵 강등 금지).
+
+        Returns:
+            (채점 대상 SQL, None) 또는 (None, 스킵 사유).
+        """
         if not isinstance(out, dict):
-            return None
+            return None, SKIP_NOT_A_STATE
+        # 2단(intent_orchestration)·3단 계획 루프: SQL은 최상위가 아니라 task 결과 안에 있다.
+        # **다른 분기보다 먼저** 본다 — 종전에는 `db_results` 조기 반환이 이 분기를 가려
+        # 오답이 아니라 "추출 실패" 스킵으로 나타났다(M-1a). `agent_orchestrator`·
+        # `tier3_plan`이 같은 두 키를 쓰므로 한 규칙이 두 단을 덮는다.
+        if out.get("task_plan") or out.get("task_results"):
+            return PipelinePredictor._final_answer_task_sql(out)
         if out.get("generated_sql"):
-            return str(out["generated_sql"])
+            # 단일 DB 경로: 검증 실패(재시도 소진)는 호출부가 앞에서 걸러내므로, 여기 남은
+            # `generated_sql`은 검증을 통과한 최종 SQL이다. 실행 실패는 run_batch가 따로 낸다.
+            return str(out["generated_sql"]), None
         attempts = out.get("query_attempts") or []
+        if attempts:
+            return PipelinePredictor._live_attempt_sql(attempts)
+        if out.get("db_results"):
+            # 멀티 DB 경로가 DB별 SQL을 노출하지 않은 상태(현행 `multi_db_executor`는
+            # `query_attempts`를 남기므로 드물다) — 아무 SQL도 고르지 않고 사유로 남긴다.
+            return None, SKIP_MULTIDB_NO_SQL
+        return None, SKIP_NO_SQL
+
+    @staticmethod
+    def _final_answer_task_sql(out: dict) -> tuple[Optional[str], Optional[str]]:
+        """계획 상태(2·3단)에서 **최종 답을 만든 task**의 SQL을 고른다.
+
+        순서는 `result_aggregator`가 최종 답 본문을 만드는 순서(`order` 정렬)와 같게 맞춘다.
+        대체(`supersedes`) 판정은 따로 하지 않는다 — 대체 task는 항상 선행보다 order가 크므로
+        (`_assign_ids`) 성공 후보의 **마지막**은 대체를 제외해도 바뀌지 않는다.
+        """
+        tasks = [t for t in (out.get("task_plan") or []) if isinstance(t, dict)]
+        results = out.get("task_results") or {}
+        ordered_ids = [t.get("task_id") for t in sorted(tasks, key=lambda t: t.get("order", 0))]
+        # 계획에 없는 잔여 결과도 뒤에 붙인다(계획 밖 결과를 빠뜨리지 않는다).
+        ordered_ids += [tid for tid in results if tid not in ordered_ids]
+        status = {t.get("task_id"): t.get("status") for t in tasks}
+
+        sqls: list[str] = []
+        any_success = False
+        for tid in ordered_ids:
+            res = results.get(tid)
+            if not isinstance(res, dict):
+                continue
+            # 실패·미실행 task는 최종 답의 원천이 아니다. `agent_orchestrator`는 결과에
+            # `error`가 있으면 status를 failed로, 순차 게이트가 막은 task는 skipped로 두고
+            # `skip_result`가 `error`·`skipped`를 채운다 — 세 신호를 함께 본다.
+            if res.get("error") or res.get("skipped") or status.get(tid) in ("failed", "skipped"):
+                continue
+            any_success = True
+            if res.get("generated_sql"):
+                sqls.append(str(res["generated_sql"]))
+        if sqls:
+            return sqls[-1], None
+        if any_success:
+            return None, SKIP_FINAL_TASK_NO_SQL
+        return None, SKIP_NO_FINAL_TASK
+
+    @staticmethod
+    def _live_attempt_sql(attempts: list) -> tuple[Optional[str], Optional[str]]:
+        """SQL 시도 이력에서 **실패로 확정되지 않은 마지막** 시도의 SQL을 고른다.
+
+        `QueryAttempt.success`는 `query_executor`가 시도마다 채우므로 실행 실패 시도는
+        `False`로 걸러진다. 필드가 없는 축약 레코드는 판정 불가로 보고 그대로 통과시킨다
+        (없는 신호로 후보를 지우면 SQL이 있는데도 미채점이 된다).
+        """
         for att in reversed(attempts):
-            sql = att.get("sql") if isinstance(att, dict) else getattr(att, "sql", None)
-            if sql:
-                return str(sql)
-        db_results = out.get("db_results") or {}
-        # 멀티 경로: 첫 성공 DB의 SQL은 별도 노출이 없어 attempts 우선. 없으면 None.
-        if db_results:
-            return None
-        # 2단(intent_orchestration): SQL은 최상위가 아니라 task 결과 안에 있다. 계획 순서의
-        # **마지막** SQL을 쓴다 — 순차 의존 계획이면 마지막 task가 최종 답을 만든다.
-        task_results = out.get("task_results") or {}
-        order = [t.get("task_id") for t in (out.get("task_plan") or []) if isinstance(t, dict)]
-        order += [tid for tid in task_results if tid not in order]
-        sqls = [
-            str(task_results[tid]["generated_sql"]) for tid in order
-            if isinstance(task_results.get(tid), dict) and task_results[tid].get("generated_sql")
-        ]
-        return sqls[-1] if sqls else None
+            if isinstance(att, dict):
+                sql, ok = att.get("sql"), att.get("success")
+            else:
+                sql, ok = getattr(att, "sql", None), getattr(att, "success", None)
+            if sql and ok is not False:
+                return str(sql), None
+        return None, SKIP_NO_LIVE_ATTEMPT
 
 
 # ──────────────────────────────────────────────

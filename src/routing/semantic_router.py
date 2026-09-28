@@ -75,6 +75,7 @@ from src.utils.query_gen_common import (
     ZONE_SKIP_SIGNAL_TERMS,
     build_zone_clarification,
     has_host_identifier_filter,
+    term_in_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -690,7 +691,7 @@ def _zone_clarification_or_none_router(
     # 이번 턴 원문에 위치/DB 신호가 있으면 비발동(D-065 결정적 보강이 처리)
     user_query = state.get("user_query", "") or ""
     lowered = user_query.lower()
-    if any(t.lower() in lowered for t in ZONE_SKIP_SIGNAL_TERMS):
+    if any(term_in_text(t.lower(), lowered) for t in ZONE_SKIP_SIGNAL_TERMS):
         return None
     parsed = state.get("parsed_requirements") or {}
     # 서버명 지목 질의는 존이 결과에 영향 없음(§4.2 ⓐ)

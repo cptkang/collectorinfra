@@ -84,7 +84,11 @@ scenarios:
     title: "은행존 및 공동존 여의도 센터의 모든 서버들 OS종류"
     kind: normal
     env: closed
-    profile: baseline
+    # plans/120 U-5: 턴 1 역질문은 존 그룹 상호배타(`ZONE_GROUP_EXCLUSIVE=true`)가 전제다. 기본값
+    #   false(D-206 후속1)에서는 두 존을 조회해 답하는 것이 정답이라 기본 프로파일에서 반드시
+    #   떨어졌다(run 20260923-140539). D-220 ③ 선례대로 옵트인 프로파일로 옮긴다 - **서버 기동이
+    #   1회 늘어난다**(프로파일 1개 = 기동 1회 · arm 을 얹으면 arm 마다 1회).
+    profile: optin_zone_exclusive
     endpoint: stream
     response_modes: [clarify, answer]
     turns:

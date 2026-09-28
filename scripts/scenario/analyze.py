@@ -20,7 +20,13 @@ from typing import Any, Optional
 
 from . import REPO_ROOT, utf8_open
 from .catalog import Catalog
-from .report import build_summary, load_rows, valid_rows
+from .report import (
+    build_summary,
+    cap_semantic_of,
+    cap_semantic_warning,
+    load_rows,
+    valid_rows,
+)
 
 COVERAGE_DOC = REPO_ROOT / "docs" / "30_scenario_coverage.md"
 
@@ -439,24 +445,30 @@ def coverage_gap(summary: dict[str, Any], catalog: Optional[Catalog]) -> str:
 
 #: 회귀 비교 키의 축(순서 고정 · V29 — plans/110 `94·V29 기준선`). 축을 늘릴 때는 끝에 붙인다.
 #: `arm` 은 사다리 단 비교 arm(110·N-1) — 덧씌운 arm 이 없던 옛 run 은 `None` 이다.
-COMPARISON_AXES: tuple[str, ...] = ("env", "tier", "base_profile", "arm")
+#: `cap_semantic` 은 처리 상한 의미(D-267 ⑦ 주의 ③ · plans/119 T-0) — 칸이 없는 옛 run 은 `total`.
+#: **경고 축이다**: 다르면 기준선에서 빼지 않고 "타임아웃률을 직접 비교하지 않는다"고 적는다
+#: (`WARN_ONLY_AXES`). 판정 전환 표는 상한 의미와 무관하게 읽을 가치가 있기 때문이다.
+COMPARISON_AXES: tuple[str, ...] = ("env", "tier", "base_profile", "arm", "cap_semantic")
+WARN_ONLY_AXES: frozenset[str] = frozenset({"cap_semantic"})
 
 
 def comparison_keys(summary: dict[str, Any]) -> set[tuple[Any, ...]]:
-    """프로파일별 비교 키 ``(env, tier, base_profile, arm)``.
+    """프로파일별 비교 키 ``(env, tier, base_profile, arm, cap_semantic)``.
 
     ``tier`` 가 없거나 ``mock`` 이면 None(미관측)이다 — 미관측은 강등으로 세지 않는다(O-c).
     ``base_profile`` 이 없는 옛 run 은 프로파일 이름을 쓴다(``row.get("arm") or row.get("profile")``
-    규약과 같은 폴백).
+    규약과 같은 폴백). ``cap_semantic`` 은 run 단위 값이라 모든 프로파일에 같게 붙는다.
     """
     env = (summary.get("meta") or {}).get("env")
+    cap = cap_semantic_of(summary)
     keys: set[tuple[Any, ...]] = set()
     for profile in summary.get("profiles") or []:
         base = profile.get("base_profile") or profile.get("name")
         if not base:
             continue
         tier = profile.get("tier")
-        keys.add((env, tier if tier and tier != "mock" else None, str(base), profile.get("arm")))
+        keys.add((env, tier if tier and tier != "mock" else None, str(base), profile.get("arm"),
+                  cap))
     return keys
 
 
@@ -467,9 +479,10 @@ def _incompatible(now: set[tuple[Any, ...]], prev: set[tuple[Any, ...]]) -> Opti
     단이 관측됐다면 같아야 한다. 이번 run 에 프로파일 기록이 없으면(모의·옛 형식) 제약하지 않는다.
     """
     prev_by_group: dict[tuple[Any, Any], set[Any]] = defaultdict(set)
-    for _env, tier, base, arm in prev:
+    # 뒤쪽 축(`cap_semantic` …)은 경고 축이다 — 여기서 기준선을 거르지 않는다(`WARN_ONLY_AXES`).
+    for _env, tier, base, arm, *_warn in prev:
         prev_by_group[(base, arm)].add(tier)
-    for _env, tier, base, arm in now:
+    for _env, tier, base, arm, *_warn in now:
         label = f"{base}+{arm}" if arm else base
         tiers = prev_by_group.get((base, arm))
         if tiers is None:
@@ -529,7 +542,8 @@ def regression(run_dir: Path, summary: dict[str, Any]) -> str:
     out = ["# 회귀", "",
            "같은 프로파일·같은 환경하고만 비교한다. 개발망 run 과 폐쇄망 run 은 비교하지 않는다(§5.3).",
            f"비교 키: `({', '.join(COMPARISON_AXES)})` — "
-           "사다리 단·arm 이 다른 run 과는 비교하지 않는다(V29).",
+           "사다리 단·arm 이 다른 run 과는 비교하지 않는다(V29). 처리 상한 의미(`cap_semantic`)가 "
+           "다르면 비교하되 타임아웃률을 직접 비교하지 말라고 경고한다(D-267 ⑦).",
            ""]
     meta = summary.get("meta", {})
     invalid = summary.get("invalid") or {}
@@ -562,6 +576,11 @@ def regression(run_dir: Path, summary: dict[str, Any]) -> str:
             if sid in previous and previous[sid]["verdict"] != info["verdict"]]
     out.append(f"직전 비교 대상: `{baseline.name}`")
     out.append("")
+    cap_warning = cap_semantic_warning(cap_semantic_of(prev), cap_semantic_of(summary))
+    if cap_warning:
+        # D-267 ⑦ 주의 ③ — 비교 키의 경고 축. 기준선은 유지하고 읽는 법을 못 박는다.
+        out.append(f"> {cap_warning}")
+        out.append("")
     if skipped_note:
         out.append(f"비교 키가 달라 건너뛴 run: {skipped_note}")
         out.append("")

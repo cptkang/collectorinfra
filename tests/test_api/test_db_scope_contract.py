@@ -39,8 +39,14 @@ class TestFourPathSymmetry:
         return (_ROUTES / "query.py").read_text(encoding="utf-8")
 
     def test_response_data_blocks_all_carry_db_scope(self, query_py):
-        """/query · /query/stream(astream+폴백) · /query/file · /query/file/stream(astream+폴백) = 6."""
-        assert len(re.findall(r'"db_scope": build_db_scope\((result|output), selected_db_ids=', query_py)) == 6
+        """/query · /query/stream(astream+폴백) · /query/file · /query/file/stream(astream+폴백) = 6.
+
+        스트림(astream)은 종료 노드 델타(`output`)가 아니라 누적 상태(`_scope_state`)로 만든다 —
+        델타로 만들면 3단 스트림의 db_ids가 빈다(plans/120 S-1).
+        """
+        pattern = r'"db_scope": build_db_scope\((result|_scope_state), selected_db_ids='
+        assert len(re.findall(pattern, query_py)) == 6
+        assert "build_db_scope(output," not in query_py
 
     def test_done_events_all_carry_db_scope(self, query_py):
         """SSE done 이벤트 4곳(텍스트 astream·폴백 · 파일 astream·폴백)."""

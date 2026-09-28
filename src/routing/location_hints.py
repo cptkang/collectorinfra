@@ -21,7 +21,7 @@ from typing import Any
 
 from src.routing.domain_config import get_domain_by_id
 from src.routing.registry import get_registry
-from src.utils.query_gen_common import LOCATION_HINT_TERMS
+from src.utils.query_gen_common import LOCATION_HINT_TERMS, remove_term, term_in_text
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ def _is_generic_only_hint(hint: str) -> bool:
     low = hint.strip().lower()
     if not any(g in low for g in _GENERIC_DB_TOKENS):
         return False
-    return not any(r in low for r in _REGION_HINT_TOKENS)
+    return not any(term_in_text(r, low) for r in _REGION_HINT_TOKENS)
 
 
 def _hint_excludes_db(hint: str, db_id_lower: str) -> bool:
@@ -52,15 +52,15 @@ def _hint_excludes_db(hint: str, db_id_lower: str) -> bool:
     regions = _DB_EXCLUDING_REGIONS.get(db_id_lower)
     if not regions:
         return False
-    return any(region in hint for region in regions)
+    return any(term_in_text(region, hint) for region in regions)
 
 
 # 상호 배타 지역 그룹 — 한 hint에 서로 다른 그룹이 함께 들어오면(예: "공동존 김포/여의도")
 # hint 단위 배제가 모든 DB를 전멸시킨다(gp는 '여의도'에, yd는 '김포'에, b0는 둘 다에 배제
 # → 빈 priority → 폴백 오판. 라이브 실측 2026-07-29: 은행존 선택). 지역별로 분해한다.
 _EXCLUSIVE_REGION_GROUPS: tuple[tuple[str, ...], ...] = (
-    ("김포",),
-    ("여의도",),
+    ("김포", "운영"),  # 김포 기준 용어(D-271)
+    ("여의도", "개발", "스테이징", "DR"),  # 여의도 기준 용어(D-271)
     ("은행존", "은행", "레거시"),
 )
 
@@ -73,7 +73,7 @@ def _split_multi_region_hint(hint: str) -> list[str]:
     """
     found: list[str] = []
     for group in _EXCLUSIVE_REGION_GROUPS:
-        token = next((t for t in group if t in hint), None)
+        token = next((t for t in group if term_in_text(t, hint)), None)
         if token:
             found.append(token)
     if len(found) < 2:
@@ -108,7 +108,7 @@ def resolve_priority_db_ids(
     # 오히려 b0("은행 폴스타") 등을 부분매칭으로 끌어들인다(D-065 후속). 지역 토큰이 있으면
     # 제품명 단독 hint를 제거해 지역이 우선하도록 한다. 지역 토큰이 전혀 없으면(순수 "폴스타") 유지.
     has_region = any(
-        any(r in h for r in _REGION_HINT_TOKENS) for h in normalized_hints
+        any(term_in_text(r, h) for r in _REGION_HINT_TOKENS) for h in normalized_hints
     )
     if has_region:
         filtered = [h for h in normalized_hints if not _is_generic_only_hint(h)]
@@ -136,7 +136,12 @@ def resolve_priority_db_ids(
             for alias in domain_cfg.aliases:
                 alias_lower = alias.strip().lower()
                 for hint in candidate_hints:
-                    if hint == alias_lower or hint in alias_lower or alias_lower in hint:
+                    # 별칭이 hint 안에 있는지는 표면어 규칙으로 — 라틴 별칭(DR)은 단어 경계(D-271)
+                    if (
+                        hint == alias_lower
+                        or hint in alias_lower
+                        or term_in_text(alias_lower, hint)
+                    ):
                         priority_set.add(db_id)
                         break
                 if db_id in priority_set:
@@ -160,7 +165,7 @@ def strip_location_terms(text: str) -> str:
         (*LOCATION_HINT_TERMS, "폴스타", "polestar"), key=len, reverse=True
     )
     for token in tokens:
-        stripped = stripped.replace(token, " ")
+        stripped = remove_term(stripped, token)
     return " ".join(stripped.split())
 
 
@@ -171,7 +176,7 @@ def strip_location_terms(text: str) -> str:
 def _has_region(hint: str) -> bool:
     """힌트가 지역/존 변별 토큰을 담는지 — 제품명 단독 힌트("폴스타")는 task 범위 근거가 아니다."""
     low = hint.strip().lower()
-    return any(r in low for r in _REGION_HINT_TOKENS)
+    return any(term_in_text(r, low) for r in _REGION_HINT_TOKENS)
 
 
 def task_hint_scope(hints: list[str], task_query: str) -> list[str]:
@@ -200,7 +205,7 @@ def task_hint_scope(hints: list[str], task_query: str) -> list[str]:
     if literal:
         return literal
     original = " ".join(h.lower() for h in region_hints)
-    terms = [t for t in _REGION_HINT_TOKENS if t.lower() in original and t.lower() in text]
+    terms = [t for t in _REGION_HINT_TOKENS if term_in_text(t, original) and term_in_text(t, text)]
     return terms or list(hints)
 
 

@@ -14,6 +14,7 @@ task_results를 통합하여 단일 final_response(또는 output_file)를 생성
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any, Optional
@@ -24,9 +25,10 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
-from src.nodes.output_generator import output_generator
+from src.nodes.output_generator import narration_limit_sec, output_generator
 from src.prompts.result_synthesizer import RESULT_SYNTHESIZER_SYSTEM_PROMPT
 from src.state import AgentState
+from src.utils.deadline import MIN_CALL_TIMEOUT_SEC
 from src.utils.prior_dependency import render_dependency_notes
 
 logger = logging.getLogger(__name__)
@@ -387,7 +389,14 @@ def _apply_incomplete_notice(result: dict, state: AgentState) -> dict:
     Returns:
         안내문이 덧붙은 dict (안내문 없으면 원본 그대로)
     """
-    notice = (state.get("orchestration_incomplete_notice") or "").strip()
+    # 재계획기가 결정적으로 멈춘 사유(plans/118 P-1 시간 상한 · P-2 전 DB 연속 0건)도 같은
+    # 자리에서 싣는다 — 4개 반환 지점의 단일 통과점이다(침묵적 종료 금지).
+    notice = "\n\n".join(
+        n for n in (
+            (state.get("orchestration_incomplete_notice") or "").strip(),
+            (state.get("replan_stop_notice") or "").strip(),
+        ) if n
+    )
     if not notice:
         return _apply_dependency_notes(result, state)
     body = (result.get("final_response") or "").strip()
@@ -748,6 +757,22 @@ def _merge_finalized(finalized: list[dict]) -> dict:
     return result
 
 
+_SYNTHESIS_SKIPPED_NOTE = (
+    "**[안내]** 여러 조회 결과를 하나의 답변으로 합치는 서술은 처리 시간 상한으로 생략하고, "
+    "조회별 결과를 이어 붙였습니다."
+)
+
+
+def _merge_with_synthesis_skipped(finalized: list[dict[str, Any]]) -> dict[str, Any]:
+    """합성(D-062)을 시간 상한으로 건너뛴 결정적 병합 — 사유를 본문 끝에 싣는다(침묵 금지)."""
+    merged = _merge_finalized(finalized)
+    body = (merged.get("final_response") or "").strip()
+    merged["final_response"] = (
+        f"{body}\n\n{_SYNTHESIS_SKIPPED_NOTE}" if body else _SYNTHESIS_SKIPPED_NOTE
+    )
+    return merged
+
+
 async def _synthesize_finalized(
     finalized: list[dict],
     state: AgentState,
@@ -806,8 +831,20 @@ async def _synthesize_finalized(
         messages.append(AIMessage(content=""))
     messages.append(HumanMessage(content=user_prompt))
 
+    # plans/119 T-4: 합성도 요약과 같은 서술 상한 — min(서술 상한, 처리 마감까지 남은 시간).
+    # 마감이 없으면 종전(상한 없음). 넘으면 조회별 결과(각각 표 + 요약)를 이어 붙이고 사유를 싣는다.
+    limit = narration_limit_sec()
+    if limit is not None and limit < MIN_CALL_TIMEOUT_SEC:
+        logger.warning("result_aggregator 합성 생략 — 처리 마감까지 %.1fs · 이어붙이기", limit)
+        return _merge_with_synthesis_skipped(finalized)
     try:
-        body = await astream_text(llm, messages, tags=[USER_RESPONSE_TAG])
+        call = astream_text(llm, messages, tags=[USER_RESPONSE_TAG])
+        body = await (call if limit is None else asyncio.wait_for(call, timeout=limit))
+    except TimeoutError:
+        logger.warning(
+            "result_aggregator 합성이 서술 상한 %.1fs를 넘어 이어붙이기로 폴백", limit or 0.0
+        )
+        return _merge_with_synthesis_skipped(finalized)
     except Exception as e:  # noqa: BLE001 — 합성 실패는 deterministic 병합으로 폴백
         logger.error("result_aggregator 단일 합성 실패 → 이어붙이기 폴백: %s", e)
         return _merge_finalized(finalized)

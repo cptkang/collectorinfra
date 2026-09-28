@@ -93,14 +93,15 @@ class TestBuildResponsePrompt:
         assert "SELECT" not in prompt.upper()
 
     def test_truncates_large_result(self):
-        """결과가 20건을 초과하면 상위 20건만 표시한다."""
+        """요약 LLM 미리보기는 5행이다(plans/119 N-1 — 표는 코드가 20행까지 렌더한다)."""
         rows = [{"id": i} for i in range(50)]
         prompt = _build_response_prompt(
             original_query="test",
             summary="50건",
             rows=rows,
         )
-        assert "상위 20건" in prompt
+        assert "상위 5건" in prompt
+        assert "상위 20건" not in prompt
 
 
 class TestNumericSummary:

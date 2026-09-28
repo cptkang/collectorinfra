@@ -135,8 +135,11 @@ families:
     product_terms: ["포탈", "portal"]
     signal_terms: ["cloud_portal", "클라우드"]
 
-# ── 환경 표면어(운영/개발/스테이징) — 위치와 함께 DB 식별 신호로 승계된다.
-environment_terms: ["운영", "개발", "스테이징"]
+# ── 환경 표면어(운영/개발/스테이징/DR) — 위치와 함께 DB 식별 신호로 승계된다.
+#    운영은 김포, 개발·스테이징·DR은 여의도 폴스타를 가리키는 기준 용어라 아래 `locations`에도
+#    배타 표면어로 둔다(D-271). "운영체제"(OS)·"운영 중"(상태)·"운영자"·"운영팀"의 "운영"은
+#    위치로 보지 않는다(`query_gen_common.term_in_text`의 제외 꼬리).
+environment_terms: ["운영", "개발", "스테이징", "DR"]
 
 # ── 위치 표면어 → db_id. 선언 순서가 소비처의 스캔/렌더 순서다.
 #    db_ids가 2개 이상이면 존 단위 표면어(예: 공동존=김포+여의도)이며,
@@ -146,7 +149,19 @@ locations:
     db_ids: [polestar_cm_gp, polestar_cm_yd]
   - term: 김포
     db_ids: [polestar_cm_gp]
+  # 김포 폴스타의 기준 용어(D-271 — 사용자 확정 2026-09-28 "운영은 김포로 매핑하면 된다").
+  - term: 운영
+    db_ids: [polestar_cm_gp]
   - term: 여의도
+    db_ids: [polestar_cm_yd]
+  # 여의도 폴스타의 기준 용어(D-271 — 사용자 확정 2026-09-28 "DR은 여의도이다").
+  # 라틴 문자 표면어(DR)는 소비처가 단어 경계로 판정한다(DRM·ADDRESS 오탐 방지 —
+  # `query_gen_common.term_in_text`). 이 목록은 `LOCATION_HINT_TERMS`와 순서까지 같아야 한다.
+  - term: 개발
+    db_ids: [polestar_cm_yd]
+  - term: 스테이징
+    db_ids: [polestar_cm_yd]
+  - term: DR
     db_ids: [polestar_cm_yd]
   - term: 은행
     db_ids: [polestar_b0]
@@ -187,9 +202,9 @@ databases:
 
   - db_id: polestar_cm_gp
     enabled: true
-    display_name: K리전(공동존) 김포(운영/DR) Polestar
+    display_name: K리전(공동존) 김포(운영) Polestar
     description: >-
-      K리전(공동존) 김포 운영 및 DR 서버 물리 사양, 사용량 및 모니터링 데이터.
+      K리전(공동존) 김포 운영 서버 물리 사양, 사용량 및 모니터링 데이터.
       서버 사양(CPU, Core 수, Memory 크기, Disk 크기),
       서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량),
       서버 정보(hostname, IP, gateway),
@@ -197,7 +212,7 @@ databases:
       알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME),
       알람 담당자(ACKUSERNAME), 알람 상태(CURRENTALARMSTATUS),
       알람 대상 장비(CMM_RESOURCE), 알람 유형(CMM_ALARM_DEF)
-    aliases: ["polestar_cm_gp", "공동존", "공동존 폴스타", "공동존 김포 폴스타", "공동존 운영 폴스타", "공동존 DR 폴스타", "김포", "김포 폴스타"]
+    aliases: ["polestar_cm_gp", "공동존", "공동존 폴스타", "공동존 김포 폴스타", "공동존 운영 폴스타", "김포", "김포 폴스타", "운영"]
     env_connection_key: POLESTAR_CM_GP_CONNECTION
     env_type_key: POLESTAR_CM_GP_TYPE
     engine: postgresql
@@ -207,9 +222,9 @@ databases:
 
   - db_id: polestar_cm_yd
     enabled: true
-    display_name: K리전(공동존) 여의도(개발/스테이징) Polestar
+    display_name: K리전(공동존) 여의도(개발/스테이징/DR) Polestar
     description: >-
-      K리전(공동존) 여의도 개발 및 스테이징 서버 물리 사양, 사용량 및 모니터링 데이터.
+      K리전(공동존) 여의도 개발·스테이징 및 DR 서버 물리 사양, 사용량 및 모니터링 데이터.
       서버 사양(CPU, Core 수, Memory 크기, Disk 크기),
       서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량),
       서버 정보(hostname, IP, gateway),
@@ -217,7 +232,7 @@ databases:
       알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME),
       알람 담당자(ACKUSERNAME), 알람 상태(CURRENTALARMSTATUS),
       알람 대상 장비(CMM_RESOURCE), 알람 유형(CMM_ALARM_DEF)
-    aliases: ["polestar_cm_yd", "공동존", "공동존 폴스타", "공동존 여의도 폴스타", "공동존 개발 폴스타", "공동존 스테이징 폴스타", "여의도", "여의도 폴스타"]
+    aliases: ["polestar_cm_yd", "공동존", "공동존 폴스타", "공동존 여의도 폴스타", "공동존 개발 폴스타", "공동존 스테이징 폴스타", "공동존 DR 폴스타", "여의도", "여의도 폴스타", "개발", "스테이징", "DR"]
     env_connection_key: POLESTAR_CM_YD_CONNECTION
     env_type_key: POLESTAR_CM_YD_TYPE
     engine: postgresql

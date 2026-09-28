@@ -309,12 +309,18 @@ class TestTokenLimitStopsRetry:
         assert validation_error and mdb._TOKEN_LIMIT_ERROR_PREFIX in validation_error
 
     async def test_ordinary_failure_still_retries(self, monkeypatch):
-        """일반 검증 실패의 기존 재생성 루프(최대 3회 시도)는 유지된다."""
+        """일반 검증 실패의 기존 재생성 루프(최대 3회 시도)는 유지된다.
+
+        예시는 **SQL이지만 검증에 걸리는** 형태(FROM 없는 상수 SELECT — 일반 재시도 경로 ·
+        plans/114 P-6)다. 종전 예시 `"not sql at all"`은 산문(비-SQL)이라 plans/119 N-5 이후
+        산문 전용 예산(`NON_SQL_RETRY_BUDGET`=1 · 총 2회)으로 끝난다 — 그 계약은
+        `test_plan119_sql_loop.py`가 고정한다.
+        """
         calls = []
 
         async def fake_generate(llm, parsed, schema_info, sub_context, limit, **kwargs):
             calls.append(1)
-            return "not sql at all"
+            return "SELECT 1"
 
         monkeypatch.setattr(mdb, "_generate_sql", fake_generate)
         run = SimpleNamespace(

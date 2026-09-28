@@ -2,8 +2,11 @@
 #
 # 목적: 분해 계약 A/B(자유문 sub_query vs 원문 조각 task 프레임 · `COMPOSITE_TASK_FRAME_ENABLED`)를
 #       로컬 MLX로 상대 비교한다(M-2). 2단(intent_orchestration)만 분해가 있다 — 3단은 참고용 기준선.
-# 채점: 다중 task 계획은 **마지막 task의 SQL**을 채점한다(`scripts/eval_text2sql.py` `_extract_sql`) —
-#       순차 의존 계획의 최종 답을 만드는 task다. 전부 subset(골드 컬럼 값 멀티셋이 pred 어느 컬럼과 일치).
+# 채점: 다중 task 계획은 **최종 답을 만든 task의 SQL**을 채점한다(`scripts/eval_text2sql.py`
+#       `_select_scored_sql` · plans/111 §6 M-1a) — 실패·게이트 미실행 task를 뺀 뒤 `order`가 가장 큰 것이다.
+#       ~~마지막 task~~(2026-09-28 교정 전): 재계획이 덧붙인 검증 실패 task가 채점돼 답이 아닌 SQL이 뽑혔다(cx-04).
+#       최종 답을 특정할 수 없으면 아무 SQL도 채점하지 않고 사유를 남긴다(미채점 ≠ 불합격).
+#       전부 subset 채점(골드 컬럼 값 멀티셋이 pred 어느 컬럼과 일치).
 # 출처: 카탈로그(testdata/scenarios) 복합 시나리오를 샌드박스 데이터에 맞게 옮긴 것 —
 #       cx-01=SYN-H-04 · cx-02=SYN-I-04 · cx-03≈R1-01 · cx-04≈R1-08 · cx-05≈E-03 · cx-06=SYN-I-06 · cx-07=SYN-H-01 · cx-08=SYN-F-04.
 # 골드 SQL은 2026-09-21 샌드박스에서 실행해 확인했다. cx-02는 문서 기대값(1건)과 다르다 —

@@ -20,6 +20,7 @@ from src.config import AppConfig
 from src.routing.db_scope import extract_state_db_ids
 from src.routing.registry import get_registry
 from src.state import AgentState
+from src.utils.query_gen_common import has_host_identifier_filter, term_in_text
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +107,14 @@ async def context_resolver(
     # 이번 턴 추출로 잡혀 승계보다 우선 — 오염 없음).
     prior_ctx = state.get("conversation_context") or {}
     previous_db_ids = _extract_previous_db_ids(state) or (prior_ctx.get("previous_db_ids") or [])
-    previous_entities = _extract_previous_entities(state, previous_results) or (
-        prior_ctx.get("previous_entities") or []
+    fresh_entities = _extract_previous_entities(state, previous_results)
+    previous_entities = fresh_entities or (prior_ctx.get("previous_entities") or [])
+    # 엔티티가 직전 턴 결과 **전체**를 담는가(plans/120 PL-1 ⓐ) — 직전 턴에서 새로 뽑았고
+    # (sticky 승계분 아님) 행을 전부 훑었거나 직전 턴이 서버 식별 필터로 좁혔다.
+    # 표본이면 생략형 승계를 막는다.
+    previous_entities_complete = bool(fresh_entities) and (
+        len(previous_results) <= _MAX_ENTITY_ROWS
+        or has_host_identifier_filter(state.get("parsed_requirements"))
     )
     previous_location = _extract_previous_location(state) or (
         prior_ctx.get("previous_location") or ""
@@ -133,6 +140,7 @@ async def context_resolver(
         # [M3] 신규: 후속 턴 DB 승계·지시어 해소용 압축 신호
         "previous_db_ids": previous_db_ids,
         "previous_entities": previous_entities,
+        "previous_entities_complete": previous_entities_complete,
         "previous_location": previous_location,
     }
 
@@ -281,7 +289,7 @@ def _extract_previous_location(state: AgentState) -> str:
     haystack = f"{hint_text} {parsed.get('raw_query', '')}".strip()
 
     for kw in _LOCATION_KEYWORDS:
-        if kw in haystack and kw not in found:
+        if term_in_text(kw, haystack) and kw not in found:
             found.append(kw)
 
     return " ".join(found)

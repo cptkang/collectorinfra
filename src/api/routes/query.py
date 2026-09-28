@@ -17,6 +17,8 @@ import re
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Callable, Mapping
+from contextvars import Token
 from typing import Any, AsyncGenerator, Optional
 from urllib.parse import quote
 
@@ -26,9 +28,15 @@ from langchain_core.messages import HumanMessage
 
 from src.api.dependencies import require_user
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
-from src.api.stream_failure import StreamTrace
+from src.api.stream_failure import (
+    CUT_HARD_CAP,
+    CUT_PROCESSING,
+    StreamTrace,
+    StreamWatch,
+    delivery_cut_notice,
+)
 from src.api.thread_history import TurnRecorder
-from src.config import SecurityConfig
+from src.config import AppConfig, SecurityConfig
 from src.domain.partial_result import (
     PARTIAL_STATUS,
     PartialAnswer,
@@ -38,7 +46,9 @@ from src.domain.partial_result import (
 from src.domain.user import UserRole
 from src.llm import USER_RESPONSE_TAG
 from src.security.data_masker import DataMasker
+from src.utils.deadline import bind_request_deadline, unbind_request_deadline
 from src.utils.json_extract import coerce_content_text
+from src.utils.progress_events import ANSWER_PREFIX_EVENT
 from src.routing.db_authz import SELECTION_DENIED_MESSAGE, authorized_db_ids, filter_selected_db_ids
 from src.state import create_followup_input, create_initial_state
 from src.routing.db_scope import build_db_scope
@@ -279,16 +289,24 @@ async def _graph_event_stream(
     input_state: dict,
     thread_config: dict,
     *,
-    idle_timeout: float,
+    idle_timeout: float | None,
     heartbeat_interval: float,
+    wake_at: Callable[[], float | None] | None = None,
 ) -> AsyncGenerator[tuple[str, object], None]:
     """astream_events를 생산자 태스크로 돌리고 (kind, payload)를 낸다 (plans/89 §3.2-④ · D-204).
 
-    kind: ``"event"``(LangGraph 이벤트) · ``"heartbeat"``(``{"idle_ms"}``) · ``"timeout"``.
+    kind: ``"event"``(LangGraph 이벤트) · ``"heartbeat"``(``{"idle_ms"}``) · ``"tick"``(상한 판정
+    시각 — 페이로드 없음) · ``"timeout"``.
 
     - 무이벤트 연속 시간이 ``idle_timeout``을 넘으면 ``timeout``을 내고 끝낸다 — D-066 후속의
-      "이벤트 fetch당 타임아웃" 의미를 그대로 보존한다.
+      "이벤트 fetch당 타임아웃"(무한 hang 방지 안전 상한)이다. None·0 이하면 없음. 라우트는 전체
+      상한(처리 상한 + 전달 연장)을 넘긴다 — 상한 판정 자체는 라우트가 한다(plans/119 T-5).
+    - ``wake_at``은 다음 상한 판정 시각(``time.monotonic()``)을 돌려준다. 그 시각까지
+      이벤트가 없으면 ``tick``을 내서 라우트가 판정하게 한다 — heartbeat가 꺼져 있어도(0)
+      판정이 이벤트 도착에 묶이지 않는다(종전에는 heartbeat off면 이벤트가 올 때만 전체
+      상한을 쟀다).
     - ``heartbeat_interval``(초) 동안 이벤트가 없으면 ``heartbeat``를 낸다. 0 이하면 하트비트 없음.
+      heartbeat는 상한 시계를 되돌리지 않는다.
     - **``wait_for(__anext__)``를 재호출하지 않는다** — 취소된 ``__anext__``는 비동기 제너레이터를
       깨뜨린다. 대신 큐를 기다린다(``Queue.get`` 취소는 안전).
     - 생산자 예외는 소비자에게 재전달한다(기존 ``except (AttributeError, …)`` 폴백 경로 유지).
@@ -308,24 +326,40 @@ async def _graph_event_stream(
             await queue.put(("done", None))
 
     producer = asyncio.create_task(_produce())
+    idle_cap = idle_timeout if idle_timeout and idle_timeout > 0 else None
+    beat = heartbeat_interval if heartbeat_interval and heartbeat_interval > 0 else None
     last_activity = time.monotonic()
-    wait = min(heartbeat_interval, idle_timeout) if heartbeat_interval and heartbeat_interval > 0 else idle_timeout
+    last_signal = last_activity   # 마지막 이벤트 또는 heartbeat
     try:
         while True:
+            marks: list[float] = []
+            if idle_cap is not None:
+                marks.append(last_activity + idle_cap)
+            if beat is not None:
+                marks.append(last_signal + beat)
+            check_at = wake_at() if wake_at is not None else None
+            if check_at is not None:
+                marks.append(check_at)
+            wait = max(0.0, min(marks) - time.monotonic()) if marks else None
             try:
                 kind, payload = await asyncio.wait_for(queue.get(), timeout=wait)
             except asyncio.TimeoutError:
-                idle = time.monotonic() - last_activity
-                if idle >= idle_timeout:
+                now = time.monotonic()
+                idle = now - last_activity
+                if idle_cap is not None and idle >= idle_cap:
                     yield ("timeout", None)
                     return
-                yield ("heartbeat", {"idle_ms": idle * 1000})
+                if beat is not None and now - last_signal >= beat:
+                    last_signal = now
+                    yield ("heartbeat", {"idle_ms": idle * 1000})
+                else:
+                    yield ("tick", None)
                 continue
             if kind == "done":
                 return
             if kind == "error":
                 raise payload  # type: ignore[misc]
-            last_activity = time.monotonic()
+            last_activity = last_signal = time.monotonic()
             yield ("event", payload)
     finally:
         if not producer.done():
@@ -349,20 +383,30 @@ def _heartbeat_sse_payload(start_time: float, hb: dict) -> dict:
 
 
 def _stream_error_payload(
-    message: str, trace: StreamTrace, *, code: str, start_time: float, limit_sec: float | None
+    message: str,
+    trace: StreamTrace,
+    *,
+    code: str,
+    start_time: float,
+    limit_sec: float | None,
+    timeline: dict[str, Any] | None = None,
 ) -> dict:
     """SSE ``error`` 이벤트 — 문구(``message``)는 그대로 두고 실패 경위를 덧붙인다 (D-242).
 
     경위(어느 단계에서·얼마나 걸려·앞서 무슨 실패가 있었는지)는 화면이 그대로 보여 주고,
     다시 시도할지는 사용자가 정한다. 문구를 바꾸지 않는 이유: 하네스가 문구로 실패 유형을 가른다.
+    ``timeline``은 단계 경계 시각이다(plans/119 T-0 — 있을 때만 싣는다).
     """
-    return {
+    payload = {
         "type": "error",
         "message": message,
         **trace.failure_fields(
             code=code, elapsed_ms=(time.time() - start_time) * 1000, limit_sec=limit_sec
         ),
     }
+    if timeline is not None:
+        payload["timeline"] = timeline
+    return payload
 
 
 def _progress_sse_payload(event: dict, current_node: str | None, start_time: float) -> dict | None:
@@ -722,6 +766,18 @@ def _track_sql_state(tracked: dict, output: Any) -> None:
             tracked[key] = output[key]
 
 
+def _merge_node_delta(state: dict[str, Any], output: Any) -> None:
+    """루트 직속 노드 델타를 스트림의 누적 상태에 덮어쓴다 (plans/120 S-1 · D-205 4경로 대칭).
+
+    스트림은 `final_response`를 낸 첫 노드에서 닫혀 그 노드의 델타만 손에 쥔다. 비스트림 `ainvoke`는
+    체크포인트 복원값 + 입력 + 전 노드 델타가 병합된 전체 상태를 돌려준다. 3단 `output_generator`
+    델타에는 대상 DB 키가 없어 스트림 `done.db_scope`만 비었다. 리듀서 채널(messages 등)은
+    덮어쓰기로 근사되므로 이 누적본은 `build_db_scope` 입력으로만 쓴다.
+    """
+    if isinstance(output, dict):
+        state.update(output)
+
+
 def _executed_sql(state: dict) -> str | None:
     """「실행된 SQL 보기」에 보일 SQL 문자열 (plans/116 §10.3).
 
@@ -924,6 +980,28 @@ def _extract_node_progress(
     return None
 
 
+def _zone_answer_parse_reuse(
+    body: QueryRequest, checkpoint_state: dict[str, Any]
+) -> dict[str, Any] | None:
+    """존 역질문 답변 턴이면 직전 턴 `parsed_requirements`를, 아니면 None (plans/119 Q-2).
+
+    조건(전부): 직전 턴이 후단 게이트로 존을 되물었고(체크포인트 `zone_clarification`) · 이번 턴이
+    존을 골랐고(`selected_db_ids`) · 이번 턴 질의가 역질문의 원 질의와 같고 · 직전 파싱본이 있다.
+    이 턴은 **대상 DB만 바꾸는** 턴이라 다시 파싱할 내용이 없다(`plans/111` C-6의 좁은 조각 —
+    C-6이 오면 흡수된다). 앞단 게이트(파이프라인 미실행)는 체크포인트가 없어 해당하지 않는다.
+    """
+    if not body.selected_db_ids:
+        return None
+    zone_q = checkpoint_state.get("zone_clarification")
+    parsed = checkpoint_state.get("parsed_requirements")
+    if not isinstance(zone_q, dict) or not isinstance(parsed, dict) or not parsed:
+        return None
+    original = str(zone_q.get("original_query") or "").strip()
+    if not original or original != (body.query or "").strip():
+        return None
+    return dict(parsed)
+
+
 def _build_turn_input_state(
     body: QueryRequest,
     thread_id: str,
@@ -1031,6 +1109,8 @@ def _build_turn_input_state(
         # 존 선택 재개 턴은 전량 조회가 기본 — LIMIT 상향(D-153 후속1, 폼필 후속1과 동형)
         if body.selected_db_ids:
             delta["resolved_limit"] = resolve_query_limit(body.query, _ZONE_SCAN_LIMIT)
+        # 존 역질문 답변 턴은 직전 턴 파싱본을 재사용한다(plans/119 Q-2 · D-267 ③ — 요청 스코프).
+        delta["reuse_parsed_requirements"] = _zone_answer_parse_reuse(body, checkpoint_state)
         # 범위를 좁혔으면 그 사실을 state에 남긴다(D-176 후속4 — 침묵 절단 금지).
         delta["scope_narrowed"] = (
             _scope_narrowed_or_none(body, config, current_user) if config else None
@@ -1245,8 +1325,8 @@ def _scope_select_or_none(
     if not is_full_scan_query(query):
         return None
     # 위치어가 있으면 D-065가 결정적으로 좁힌다 — 이미 정해진 것을 되묻지 않는다.
-    from src.nodes.input_parser import LOCATION_HINT_TERMS
-    if any(t in query for t in LOCATION_HINT_TERMS):
+    from src.utils.query_gen_common import LOCATION_HINT_TERMS, term_in_text
+    if any(term_in_text(t, query) for t in LOCATION_HINT_TERMS):
         return None
 
     allowed = (current_user or {}).get("allowed_db_ids")
@@ -1394,8 +1474,8 @@ def _file_zone_clarification_or_none(
     if unregistered:
         return unregistered
     if _ZONE_PLACEHOLDER not in q:
-        from src.nodes.input_parser import LOCATION_HINT_TERMS
-        if any(t in q for t in LOCATION_HINT_TERMS):
+        from src.utils.query_gen_common import LOCATION_HINT_TERMS, term_in_text
+        if any(term_in_text(t, q) for t in LOCATION_HINT_TERMS):
             return None  # 위치어 해소 — D-065 결정적 보강이 처리
     return _authorized_zone_clarification(
         config,
@@ -1551,8 +1631,8 @@ def _zone_clarification_or_none(
         if not is_full_scan_query(query) or "서버" not in query:
             return None  # 존 단위 대량 조회 의도 아님 — 과잉 역질문 방지
         # 위치 표면어가 하나라도 해소되면 비발동 (D-065 결정적 보강이 처리)
-        from src.nodes.input_parser import LOCATION_HINT_TERMS
-        if any(t in query for t in LOCATION_HINT_TERMS):
+        from src.utils.query_gen_common import LOCATION_HINT_TERMS, term_in_text
+        if any(term_in_text(t, query) for t in LOCATION_HINT_TERMS):
             return None
     # 페이로드 조립은 공용 헬퍼로(D-143 후속3 — 상호배타 시 안내 문구·그룹 렌더 일원화)
     return _authorized_zone_clarification(
@@ -1563,19 +1643,87 @@ def _zone_clarification_or_none(
     )
 
 
-def _exceeded_total_timeout(start_time: float, limit: float) -> bool:
-    """이 요청이 전체 경과 상한을 넘겼는가 (CU-11 · P-16).
+def _request_deadline(limit_sec: float) -> float | None:
+    """이 요청의 마감 시각(`time.monotonic()` 기준 초) — 그래프 입력 상태에 싣는다(plans/118 P-1).
 
-    SSE 경로에는 `idle_timeout`이 이미 있지만 그것은 **무이벤트 구간**만 끊는다.
-    진행 이벤트·하트비트가 계속 나오는 한 영영 걸리지 않아, 실측에서 B-06 455초 ·
-    K-10 251초가 상한을 넘겨 계속 돌았다(hang 7건 중 2건). `CLAUDE.md` 「장시간 실행
-    경로는 전체 타임아웃 가드 필수 — per-call 타임아웃만으론 무력화됨」이 이 경우다.
-
-    limit이 0 이하면 상한 없음으로 본다(설정으로 끌 수 있게 — 기존 동작 보존).
+    재계획기가 남은 시간이 직전 한 바퀴보다 짧으면 후속을 붙이지 않는다. **요청 스코프 값이라
+    매 턴 라우트가 명시 초기화한다**(체크포인터는 델타만 병합한다 — CLAUDE.md Known Mistakes).
+    상한이 0 이하(상한 없음)면 None 이다 — 재계획기는 종전 동작이다.
     """
-    if limit <= 0:
-        return False
-    return (time.time() - start_time) > limit
+    return time.monotonic() + float(limit_sec) if limit_sec and limit_sec > 0 else None
+
+
+def _processing_limit(config: AppConfig, *, file_turn: bool) -> float:
+    """처리 상한(초) — 요청 후 **첫 답변(표 또는 첫 토큰)까지** (plans/119 T-5 · D-267 ⑦ G-7).
+
+    네 진입점이 이 함수 하나로 정한다(D-066). 파일 턴 — 양식 업로드와 폼필 답변 턴(FIX-18: 양식
+    재채움 전체 파이프라인이라 파일 런과 부하가 같다) — 은 `API_FILE_QUERY_TIMEOUT`, 나머지는
+    `API_QUERY_TIMEOUT`. 비스트림 경로는 첫 답변 개념이 없어 이 값이 곧 전체 상한이다(종전과
+    같다). 스트림 경로는 첫 답변 뒤 토큰 간 idle·전달 연장 상한으로 넘어간다(`StreamCaps`).
+    """
+    return config.server.file_query_timeout if file_turn else config.server.query_timeout
+
+
+def _sec_or(value: Any, default: float) -> float:
+    """초 단위 설정값 — 숫자가 아니면 기본값(테스트 대역·구 설정 호환).
+
+    필드명은 호출부가 `getattr(config.server, "필드", 기본)` 처럼 **상수로** 읽는다 — 이름을
+    변수로 넘기면 벤치 소비처 색인(`scripts/bench/axes.py`)이 동적 접근으로 보고 판정을 보류한다.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _bind_deadline(state: Mapping[str, Any], config: Any, *, stream: bool) -> Token[Any]:
+    """그래프 실행 구간에 요청 마감을 묶는다 (plans/119 T-1 · D-267 ⑥).
+
+    LLM 클라이언트는 그래프 상태를 받지 않으므로 같은 마감(`request_deadline`)과 서술 예약
+    (`API_ANSWER_RESERVE_SEC`)을 ContextVar로 묶는다(`src/utils/deadline.py`). asyncio 태스크는
+    **생성 시** 컨텍스트를 복사하므로 그래프 실행(비스트림 `wait_for` · 스트림 생산자 태스크)을
+    시작하기 **전에** 불러야 노드·서브에이전트 태스크까지 보인다. 네 진입점이 공유한다(D-066).
+    """
+    return bind_request_deadline(
+        state.get("request_deadline"),
+        _sec_or(getattr(config.server, "answer_reserve_sec", 0), 0),
+        # 전달 연장은 스트림만 — 최종 응답 스트림의 호출 상한이 처리 마감 + 이 값까지다(G-7).
+        # 비스트림은 첫 답변 개념이 없어 처리 상한이 곧 전체 상한이다.
+        _sec_or(getattr(config.server, "stream_delivery_grace_sec", 0), 0) if stream else 0.0,
+    )
+
+
+def _unbind_deadline(token: Token[Any]) -> None:
+    """`_bind_deadline` 해제. 스트림 제너레이터가 다른 컨텍스트에서 닫히면(비정상 종료 뒤 GC
+    정리) reset 이 거부된다 — 그 컨텍스트는 요청과 함께 사라지므로 무시한다."""
+    with contextlib.suppress(ValueError):
+        unbind_request_deadline(token)
+
+
+def _stream_watch(config: Any, limit_sec: float, start_time: float) -> StreamWatch:
+    """스트림 요청 한 건의 상한·타임라인 — 두 스트림 라우트가 같은 조립을 쓴다(D-066)."""
+    return StreamWatch(
+        limit_sec=limit_sec,
+        idle_sec=_sec_or(getattr(config.server, "stream_idle_timeout_sec", 30), 30),
+        grace_sec=_sec_or(getattr(config.server, "stream_delivery_grace_sec", 60), 60),
+        start_time=start_time,
+    )
+
+
+def _answer_prefix_text(event: Any) -> str:
+    """`answer_prefix` custom event 의 본문(코드 렌더 표 · plans/119 N-1). 없으면 빈 문자열."""
+    data = event.get("data")
+    text = data.get("text") if isinstance(data, dict) else None
+    return text if isinstance(text, str) else ""
+
+
+def _finish_timeline(
+    watch: StreamWatch, query_id: str, *, timeout_kind: str | None = None, done: bool = False
+) -> dict[str, Any]:
+    """단계 타임라인을 확정하고 서버 로그 한 줄로 남긴다 (plans/119 T-0 — 하네스 수집 대상)."""
+    timeline = watch.timeline_payload(timeout_kind=timeout_kind, done=done)
+    logger.info("[timeline] query_id=%s %s", query_id, json.dumps(timeline, ensure_ascii=False))
+    return timeline
 
 
 async def _partial_on_timeout(
@@ -1624,6 +1772,7 @@ async def _timeout_sse_event(
     trace: StreamTrace,
     message: str,
     owner: str | None,
+    timeline: dict[str, Any] | None = None,
 ) -> str:
     """상한에 걸린 스트림이 내보낼 마지막 이벤트 (plans/114 P-2 · G-E).
 
@@ -1637,10 +1786,87 @@ async def _timeout_sse_event(
             start_time=start_time, limit_sec=limit_sec,
         )
         _store_result(query_id, {**data, "query_results": partial.rows}, owner=owner)
-        return _sse_event({"type": "done", **data})
+        event = {"type": "done", **data}
+        if timeline is not None:
+            event["timeline"] = timeline
+        return _sse_event(event)
     return _sse_event(_stream_error_payload(
         message, trace, code="timeout", start_time=start_time, limit_sec=limit_sec,
+        timeline=timeline,
     ))
+
+
+async def _delivery_cut_sse_event(
+    graph: Any,
+    thread_config: dict[str, Any],
+    *,
+    watch: StreamWatch,
+    kind: str,
+    tracked_rows: list[dict[str, Any]] | None,
+    query_id: str,
+    thread_id: str | None,
+    owner: str | None,
+    timeline: dict[str, Any],
+) -> str:
+    """첫 답변 **뒤** 상한(토큰 간 idle · 전체 상한)에 걸린 스트림의 마지막 이벤트 (plans/119 T-5).
+
+    이미 보낸 답변을 잃지 않는다. 화면은 `done.response` 로 말풍선을 교체하므로(`app.js`) 보낸
+    본문 그대로에 끊은 사유 한 줄을 붙여 돌려준다. 코드 렌더 표(`answer_prefix`)가 아직 나가지
+    않았고 행이 있으면 D-265 결정적 표를 덧붙인다 — 행을 버리지 않는다(D-265 ①). 상태는
+    `partial`(D-265 ② — 판정은 timeout 과 같은 제거 사유)이고 `done` 으로 낸다(D-265 ③ — 오류
+    이벤트는 기록기가 턴을 남기지 않는다).
+    """
+    partial = await _partial_on_timeout(graph, thread_config, tracked_rows)
+    caps = watch.caps
+    text = watch.answer_text.rstrip() + "\n\n---\n" + delivery_cut_notice(
+        kind, idle_sec=caps.idle_sec, limit_sec=caps.limit_sec, grace_sec=caps.grace_sec,
+    )
+    if partial is not None and not watch.prefix_sent:
+        text += "\n\n" + render_partial_text(partial)
+    rows = partial.rows if partial is not None else []
+    data = {
+        "query_id": query_id,
+        "status": PARTIAL_STATUS,
+        "response": text,
+        "thread_id": thread_id,
+        "row_count": len(rows),
+        "processing_time_ms": watch.elapsed_ms(),
+    }
+    _store_result(query_id, {**data, "query_results": rows}, owner=owner)
+    return _sse_event({"type": "done", **data, "timeline": timeline})
+
+
+async def _stream_cut_sse_event(
+    graph: Any,
+    thread_config: dict[str, Any],
+    *,
+    watch: StreamWatch,
+    kind: str,
+    tracked_rows: list[dict[str, Any]] | None,
+    query_id: str,
+    thread_id: str | None,
+    trace: StreamTrace,
+    message: str,
+    owner: str | None,
+) -> str:
+    """스트림 상한 출구 하나 — 사유별로 나눈다 (plans/119 T-5 · 두 스트림 라우트 공유).
+
+    - 처리 상한(첫 답변 전): 종전 타임아웃 그대로 — D-265 부분 결과 또는 오류(`message` 불변).
+    - 토큰 간 idle · 전체 상한(첫 답변 뒤): 보낸 답변 + 사유(`_delivery_cut_sse_event`).
+    """
+    timeline = _finish_timeline(watch, query_id, timeout_kind=kind)
+    if kind == CUT_PROCESSING:
+        return await _timeout_sse_event(
+            graph, thread_config,
+            tracked_rows=tracked_rows, query_id=query_id, thread_id=thread_id,
+            start_time=watch.start_time, limit_sec=watch.caps.limit_sec,
+            trace=trace, message=message, owner=owner, timeline=timeline,
+        )
+    return await _delivery_cut_sse_event(
+        graph, thread_config,
+        watch=watch, kind=kind, tracked_rows=tracked_rows,
+        query_id=query_id, thread_id=thread_id, owner=owner, timeline=timeline,
+    )
 
 
 @router.post(
@@ -1738,11 +1964,13 @@ async def process_query(
     # FIX-18: 폼필 답변 턴은 양식 재채움 전체 파이프라인(파일 런과 동일 부하)이므로
     # 텍스트 타임아웃이 아니라 파일 타임아웃을 적용한다(라이브 실측 2026-07-31:
     # 답변 턴 조기 타임아웃 — 폼필 런 소요가 query_timeout을 상회).
-    effective_timeout = (
-        config.server.file_query_timeout
-        if input_state.get("form_fill_answers") else config.server.query_timeout
+    # 처리 상한 = 첫 답변까지(plans/119 G-7) — 비스트림은 곧 전체 상한이다(네 진입점 공유 함수).
+    effective_timeout = _processing_limit(
+        config, file_turn=bool(input_state.get("form_fill_answers"))
     )
+    input_state["request_deadline"] = _request_deadline(effective_timeout)   # plans/118 P-1
 
+    _deadline_token = _bind_deadline(input_state, config, stream=False)   # plans/119 T-1 — wait_for 전에 묶는다
     try:
         result = await asyncio.wait_for(
             graph.ainvoke(input_state, thread_config),
@@ -1771,6 +1999,8 @@ async def process_query(
             status_code=500,
             detail=f"처리 중 오류가 발생했습니다: {str(e)}",
         )
+    finally:
+        _unbind_deadline(_deadline_token)
 
     elapsed_ms = (time.time() - start_time) * 1000
 
@@ -1933,10 +2163,11 @@ async def process_query_stream(
     await _audit_scope_narrowed(input_state, current_user, thread_id)
 
     # FIX-18: 폼필 답변 턴은 파일 런과 동일 부하 — 파일 타임아웃 적용(/query와 대칭)
-    effective_timeout = (
-        config.server.file_query_timeout
-        if input_state.get("form_fill_answers") else config.server.query_timeout
+    # 처리 상한 = 첫 답변까지(plans/119 G-7) — 네 진입점 공유 함수(D-066)
+    effective_timeout = _processing_limit(
+        config, file_turn=bool(input_state.get("form_fill_answers"))
     )
+    input_state["request_deadline"] = _request_deadline(effective_timeout)   # plans/118 P-1
 
     async def event_generator() -> AsyncGenerator[str, None]:
         """SSE 이벤트를 생성하는 비동기 제너레이터."""
@@ -1947,7 +2178,13 @@ async def process_query_stream(
         _tracked_row_count: int = 0
         _tracked_query_results: list[dict] = []
         _sql_state: dict = {}   # 실행 SQL 출처 누적(plans/116 §10.3)
+        # db_scope 입력 — 체크포인트 + 입력 + 노드 델타 누적(plans/120 S-1 · ainvoke 결과와 같은 값)
+        _scope_state: dict[str, Any] = {**(checkpoint_state or {}), **input_state}
         _trace = StreamTrace()   # 실패 시 경위(D-242)
+        # 상한 세 시계(T-5) + 단계 타임라인(T-0) — plans/119 · D-267 ⑦
+        _watch = _stream_watch(config, effective_timeout, start_time)
+        # 마감 바인딩(T-1) — 생산자 태스크·폴백 ainvoke 가 만들어지기 전에 묶는다
+        _deadline_token = _bind_deadline(input_state, config, stream=True)
 
         try:
             if hasattr(graph, "astream_events"):
@@ -1955,33 +2192,52 @@ async def process_query_stream(
                     # 이벤트 fetch마다 타임아웃을 건다(D-066 후속). 노드 내부 LLM 호출이
                     # 응답 없이 멈추면 astream_events가 다음 이벤트를 영영 못 내놓아 SSE가
                     # 무한 hang된다(healthcheck만 도는 증상). wait_for로 stuck fetch를 끊는다.
-                    # plans/89 §3.2-④ · D-204: 생산자 태스크 + 큐. 무이벤트 상한(idle_timeout)은
-                    # 그대로, 그 사이 heartbeat를 낸다. wait_for(__anext__) 재호출 금지.
+                    # plans/89 §3.2-④ · D-204: 생산자 태스크 + 큐. 그 사이 heartbeat를 낸다.
+                    # wait_for(__anext__) 재호출 금지. plans/119 T-5: 무이벤트 안전 상한은 전체
+                    # 상한(처리 상한 + 전달 연장)이고, 상한 판정은 `wake_at` tick으로 제때 한다.
                     _progress_on = bool(getattr(config.server, "sse_progress_events", True))
                     _hb = float(getattr(config.server, "sse_heartbeat_interval_sec", 0) or 0) if _progress_on else 0.0
                     async with contextlib.aclosing(_graph_event_stream(
                         graph, input_state, thread_config,
-                        idle_timeout=effective_timeout, heartbeat_interval=_hb,
+                        idle_timeout=_watch.caps.hard_cap_sec, heartbeat_interval=_hb,
+                        wake_at=_watch.next_check_at,
                     )) as _events:
                         async for _ev_kind, _ev_payload in _events:
-                            # 전체 경과 상한(CU-11) — idle_timeout 은 무이벤트 구간만 끊는다.
-                            if _exceeded_total_timeout(start_time, effective_timeout) or _ev_kind == "timeout":
-                                yield await _timeout_sse_event(
+                            # 상한 세 시계(plans/119 T-5 · G-7) — 첫 답변 전 처리 상한 ·
+                            # 첫 답변 뒤 토큰 간 idle · 전체 상한(CU-11 hang 방지).
+                            # heartbeat는 시계를 되돌리지 않는다.
+                            _cut = _watch.cut()
+                            if _cut is None and _ev_kind == "timeout":
+                                _cut = CUT_HARD_CAP if _watch.caps.answered else CUT_PROCESSING
+                            if _cut is not None:
+                                yield await _stream_cut_sse_event(
                                     graph, thread_config,
+                                    watch=_watch, kind=_cut,
                                     tracked_rows=_tracked_query_results,
                                     query_id=query_id, thread_id=thread_id,
-                                    start_time=start_time, limit_sec=effective_timeout,
                                     trace=_trace,
                                     message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
                                     owner=current_user.get("sub"),
                                 )
                                 return
+                            if _ev_kind == "tick":
+                                continue
                             if _ev_kind == "heartbeat":
                                 yield _sse_event(_heartbeat_sse_payload(start_time, _ev_payload))
                                 continue
                             event = _ev_payload
                             kind = event.get("event", "")
                             name = event.get("name", "")
+                            _watch.observe(event, root=not _is_subgraph_event(event))
+
+                            # 응답 선행 본문(코드 렌더 표 · plans/119 N-1) — 답변 토큰이다
+                            if kind == "on_custom_event" and name == ANSWER_PREFIX_EVENT:
+                                _prefix = _answer_prefix_text(event)
+                                if _prefix:
+                                    streamed_any_token = True
+                                    _watch.answer_sent(_prefix, prefix=True)
+                                    yield _sse_event({"type": "token", "content": _prefix})
+                                continue
 
                             # 도구·커스텀 이벤트 → progress (plans/89 T3)
                             _prog = _progress_sse_payload(event, _current_node, start_time)
@@ -2019,18 +2275,22 @@ async def process_query_stream(
                                     progress_data = _extract_node_progress(
                                         name, node_output, security=config.security
                                     )
-                                    if progress_data:
-                                        yield _sse_event({
-                                            "type": "node_complete",
-                                            "node": name,
-                                            "data": progress_data,
-                                            "timestamp_ms": (time.time() - start_time) * 1000,
-                                        })
+                                    # 진행 데이터가 없어도 완료를 알린다 — 노드 시간 경계다
+                                    # (plans/120 V-6: 3단 multi_db_executor·result_merger 는
+                                    # 추출 분기가 없어 완료 이벤트가 0건 → 하네스가 구간을 잃었다).
+                                    yield _sse_event({
+                                        "type": "node_complete",
+                                        "node": name,
+                                        "data": progress_data or {},
+                                        "timestamp_ms": (time.time() - start_time) * 1000,
+                                    })
 
                             # LLM 토큰 스트리밍 (output_generator, general_inference 노드)
                             # 종료 노드 출력엔 SQL 이 없어 앞 노드 출력에서 모은다(plans/116 §10.3)
                             if kind == "on_chain_end" and not _is_subgraph_event(event):
-                                _track_sql_state(_sql_state, event.get("data", {}).get("output"))
+                                _root_out = event.get("data", {}).get("output")
+                                _track_sql_state(_sql_state, _root_out)
+                                _merge_node_delta(_scope_state, _root_out)   # plans/120 S-1
 
                             if kind == "on_chat_model_stream":
                                 # 최종 사용자 응답(USER_RESPONSE_TAG)으로 태깅된 LLM 호출의
@@ -2044,6 +2304,7 @@ async def process_query_stream(
                                     token_text = _token_text(chunk) if chunk else ""
                                     if token_text:
                                         streamed_any_token = True
+                                        _watch.answer_sent(token_text)   # 첫 답변·idle 시계(T-5)
                                         yield _sse_event({
                                             "type": "token",
                                             "content": token_text,
@@ -2055,6 +2316,9 @@ async def process_query_stream(
                                     elapsed_ms = (time.time() - start_time) * 1000
 
                                     if not streamed_any_token:
+                                        _watch.answer_sent(
+                                            output.get("final_response", ""), final=True
+                                        )
                                         yield _sse_event({
                                             "type": "token",
                                             "content": output.get("final_response", ""),
@@ -2093,7 +2357,8 @@ async def process_query_stream(
                                         "form_fill_clarification": output.get("form_fill_clarification"),
                                         "form_memory_panel": output.get("form_memory_panel"),  # D-187 저장 값 패널
                                         # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
-                                        "db_scope": build_db_scope(output, selected_db_ids=body.selected_db_ids),
+                                        # 종료 노드 델타가 아니라 누적 상태로(plans/120 S-1)
+                                        "db_scope": build_db_scope(_scope_state, selected_db_ids=body.selected_db_ids),
                                         "clarification": _zone_clar,
                                     }
                                     _store_result(query_id, {
@@ -2122,6 +2387,8 @@ async def process_query_stream(
                                         # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                                         "clarification": response_data.get("clarification"),
                                         **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
+                                        # 단계 타임라인(plans/119 T-0)
+                                        "timeline": _finish_timeline(_watch, query_id, done=True),
                                     })
                                     return
 
@@ -2140,6 +2407,7 @@ async def process_query_stream(
             elapsed_ms = (time.time() - start_time) * 1000
 
             final_response = result.get("final_response", "")
+            _watch.answer_sent(final_response, final=True)
             yield _sse_event({"type": "token", "content": final_response})
 
             yield _sse_event({
@@ -2200,14 +2468,16 @@ async def process_query_stream(
                 # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                 "clarification": response_data.get("clarification"),
                 **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
+                "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0
             })
 
         except asyncio.TimeoutError:
-            yield await _timeout_sse_event(
+            # 폴백 ainvoke 는 첫 답변 개념이 없다 — 처리 상한 그대로(plans/119 T-5)
+            yield await _stream_cut_sse_event(
                 graph, thread_config,
+                watch=_watch, kind=CUT_PROCESSING,
                 tracked_rows=_tracked_query_results,
                 query_id=query_id, thread_id=thread_id,
-                start_time=start_time, limit_sec=effective_timeout,
                 trace=_trace,
                 message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
                 owner=current_user.get("sub"),
@@ -2217,7 +2487,10 @@ async def process_query_stream(
             yield _sse_event(_stream_error_payload(
                 f"처리 중 오류가 발생했습니다: {str(e)}",
                 _trace, code="exception", start_time=start_time, limit_sec=effective_timeout,
+                timeline=_finish_timeline(_watch, query_id),
             ))
+        finally:
+            _unbind_deadline(_deadline_token)
 
     return StreamingResponse(
         turn.stream(event_generator()),
@@ -2349,14 +2622,19 @@ async def process_file_query(
         # 없으면 1,000행 절단). 명시 건수("100건")는 resolve_query_limit이 우선 반영.
         resolved_limit=resolve_query_limit(query, _FORM_FILL_DEFAULT_LIMIT),
     )
+    # 처리 상한 = 첫 답변까지(plans/119 G-7) — 비스트림은 곧 전체 상한이다(네 진입점 공유 함수).
+    limit_sec = _processing_limit(config, file_turn=True)
+    # 파일 경로도 같은 마감을 싣는다(plans/118 P-1 · 진입점 4곳 대칭 D-066).
+    initial_state["request_deadline"] = _request_deadline(limit_sec)
 
     thread_config = {"configurable": {"thread_id": actual_thread_id}}
 
     # 5. 그래프 실행
+    _deadline_token = _bind_deadline(initial_state, config, stream=False)   # plans/119 T-1 — wait_for 전에 묶는다
     try:
         result = await asyncio.wait_for(
             graph.ainvoke(initial_state, thread_config),
-            timeout=config.server.file_query_timeout,
+            timeout=limit_sec,
         )
     except asyncio.TimeoutError:
         # G-E(plans/114 P-2) — 텍스트 경로와 대칭. 양식은 못 채웠어도 조회한 행은 준다.
@@ -2364,7 +2642,7 @@ async def process_file_query(
         if partial is not None:
             data = _partial_response_data(
                 partial, query_id=query_id, thread_id=actual_thread_id,
-                start_time=start_time, limit_sec=config.server.file_query_timeout,
+                start_time=start_time, limit_sec=limit_sec,
             )
             _store_result(
                 query_id, {**data, "query_results": partial.rows}, owner=current_user.get("sub")
@@ -2377,6 +2655,8 @@ async def process_file_query(
             status_code=500,
             detail=f"처리 중 오류가 발생했습니다: {str(e)}",
         )
+    finally:
+        _unbind_deadline(_deadline_token)
 
     elapsed_ms = (time.time() - start_time) * 1000
     turn_count = _count_human_messages(result.get("messages", []))
@@ -2650,6 +2930,10 @@ async def process_file_query_stream(
         # 없으면 1,000행 절단). 명시 건수("100건")는 resolve_query_limit이 우선 반영.
         resolved_limit=resolve_query_limit(query, _FORM_FILL_DEFAULT_LIMIT),
     )
+    # 처리 상한 = 첫 답변까지(plans/119 G-7) — 네 진입점 공유 함수(D-066)
+    limit_sec = _processing_limit(config, file_turn=True)
+    # 파일 경로도 같은 마감을 싣는다(plans/118 P-1 · 진입점 4곳 대칭 D-066).
+    initial_state["request_deadline"] = _request_deadline(limit_sec)
 
     thread_config = {"configurable": {"thread_id": actual_thread_id}}
 
@@ -2661,42 +2945,65 @@ async def process_file_query_stream(
         _tracked_row_count: int = 0
         _tracked_query_results: list[dict] = []
         _sql_state: dict = {}   # 실행 SQL 출처 누적(plans/116 §10.3)
+        # db_scope 입력 — 전체 초기 상태 + 노드 델타 누적(plans/120 S-1 · 텍스트 스트림과 대칭)
+        _scope_state: dict[str, Any] = dict(initial_state)
         _trace = StreamTrace()   # 실패 시 경위(D-242)
+        # 상한 세 시계(T-5) + 단계 타임라인(T-0) — plans/119 · D-267 ⑦ (텍스트 스트림과 대칭)
+        _watch = _stream_watch(config, limit_sec, start_time)
+        # 마감 바인딩(T-1) — 생산자 태스크·폴백 ainvoke 가 만들어지기 전에 묶는다
+        _deadline_token = _bind_deadline(initial_state, config, stream=True)
 
         try:
             if hasattr(graph, "astream_events"):
                 try:
                     # 이벤트 fetch마다 타임아웃(D-066 후속). 노드 내부 LLM 호출이 응답 없이
                     # 멈추면 SSE가 무한 hang되므로 stuck fetch를 wait_for로 끊는다.
-                    # plans/89 §3.2-④ · D-204: 생산자 태스크 + 큐. 무이벤트 상한(idle_timeout)은
-                    # 그대로, 그 사이 heartbeat를 낸다. wait_for(__anext__) 재호출 금지.
+                    # plans/89 §3.2-④ · D-204: 생산자 태스크 + 큐. 그 사이 heartbeat를 낸다.
+                    # wait_for(__anext__) 재호출 금지. plans/119 T-5: 무이벤트 안전 상한은 전체
+                    # 상한(처리 상한 + 전달 연장)이고, 상한 판정은 `wake_at` tick으로 제때 한다.
                     _progress_on = bool(getattr(config.server, "sse_progress_events", True))
                     _hb = float(getattr(config.server, "sse_heartbeat_interval_sec", 0) or 0) if _progress_on else 0.0
                     async with contextlib.aclosing(_graph_event_stream(
                         graph, initial_state, thread_config,
-                        idle_timeout=config.server.file_query_timeout, heartbeat_interval=_hb,
+                        idle_timeout=_watch.caps.hard_cap_sec, heartbeat_interval=_hb,
+                        wake_at=_watch.next_check_at,
                     )) as _events:
                         async for _ev_kind, _ev_payload in _events:
-                            # 전체 경과 상한(CU-11) — idle_timeout 은 무이벤트 구간만 끊는다.
-                            if (_exceeded_total_timeout(start_time, config.server.file_query_timeout)
-                                    or _ev_kind == "timeout"):
-                                yield await _timeout_sse_event(
+                            # 상한 세 시계(plans/119 T-5 · G-7) — 첫 답변 전 처리 상한 ·
+                            # 첫 답변 뒤 토큰 간 idle · 전체 상한(CU-11 hang 방지).
+                            # heartbeat는 시계를 되돌리지 않는다.
+                            _cut = _watch.cut()
+                            if _cut is None and _ev_kind == "timeout":
+                                _cut = CUT_HARD_CAP if _watch.caps.answered else CUT_PROCESSING
+                            if _cut is not None:
+                                yield await _stream_cut_sse_event(
                                     graph, thread_config,
+                                    watch=_watch, kind=_cut,
                                     tracked_rows=_tracked_query_results,
                                     query_id=query_id, thread_id=actual_thread_id,
-                                    start_time=start_time,
-                                    limit_sec=config.server.file_query_timeout,
                                     trace=_trace,
                                     message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
                                     owner=current_user.get("sub"),
                                 )
                                 return
+                            if _ev_kind == "tick":
+                                continue
                             if _ev_kind == "heartbeat":
                                 yield _sse_event(_heartbeat_sse_payload(start_time, _ev_payload))
                                 continue
                             event = _ev_payload
                             kind = event.get("event", "")
                             name = event.get("name", "")
+                            _watch.observe(event, root=not _is_subgraph_event(event))
+
+                            # 응답 선행 본문(코드 렌더 표 · plans/119 N-1) — 답변 토큰이다
+                            if kind == "on_custom_event" and name == ANSWER_PREFIX_EVENT:
+                                _prefix = _answer_prefix_text(event)
+                                if _prefix:
+                                    streamed_any_token = True
+                                    _watch.answer_sent(_prefix, prefix=True)
+                                    yield _sse_event({"type": "token", "content": _prefix})
+                                continue
 
                             # 도구·커스텀 이벤트 → progress (plans/89 T3)
                             _prog = _progress_sse_payload(event, _current_node, start_time)
@@ -2731,17 +3038,19 @@ async def process_file_query_stream(
                                     progress_data = _extract_node_progress(
                                         name, node_output, security=config.security
                                     )
-                                    if progress_data:
-                                        yield _sse_event({
-                                            "type": "node_complete",
-                                            "node": name,
-                                            "data": progress_data,
-                                            "timestamp_ms": (time.time() - start_time) * 1000,
-                                        })
+                                    # 진행 데이터 없어도 완료 알림(plans/120 V-6)
+                                    yield _sse_event({
+                                        "type": "node_complete",
+                                        "node": name,
+                                        "data": progress_data or {},
+                                        "timestamp_ms": (time.time() - start_time) * 1000,
+                                    })
 
                             # 종료 노드 출력엔 SQL 이 없어 앞 노드 출력에서 모은다(plans/116 §10.3)
                             if kind == "on_chain_end" and not _is_subgraph_event(event):
-                                _track_sql_state(_sql_state, event.get("data", {}).get("output"))
+                                _root_out = event.get("data", {}).get("output")
+                                _track_sql_state(_sql_state, _root_out)
+                                _merge_node_delta(_scope_state, _root_out)   # plans/120 S-1
 
                             if kind == "on_chat_model_stream":
                                 # 최종 사용자 응답(USER_RESPONSE_TAG)으로 태깅된 LLM 호출의
@@ -2755,6 +3064,7 @@ async def process_file_query_stream(
                                     token_text = _token_text(chunk) if chunk else ""
                                     if token_text:
                                         streamed_any_token = True
+                                        _watch.answer_sent(token_text)   # 첫 답변·idle 시계(T-5)
                                         yield _sse_event({
                                             "type": "token",
                                             "content": token_text,
@@ -2766,6 +3076,9 @@ async def process_file_query_stream(
                                     elapsed_ms = (time.time() - start_time) * 1000
 
                                     if not streamed_any_token:
+                                        _watch.answer_sent(
+                                            output.get("final_response", ""), final=True
+                                        )
                                         yield _sse_event({
                                             "type": "token",
                                             "content": output.get("final_response", ""),
@@ -2796,7 +3109,8 @@ async def process_file_query_stream(
                                         "form_fill_clarification": output.get("form_fill_clarification"),
                                         "form_memory_panel": output.get("form_memory_panel"),  # D-187 저장 값 패널
                                         # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
-                                        "db_scope": build_db_scope(output, selected_db_ids=selected_list),
+                                        # 종료 노드 델타가 아니라 누적 상태로(plans/120 S-1)
+                                        "db_scope": build_db_scope(_scope_state, selected_db_ids=selected_list),
                                     }
                                     _store_result(query_id, {
                                         **response_data,
@@ -2827,6 +3141,8 @@ async def process_file_query_stream(
                                         "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
                                         "db_scope": response_data.get("db_scope"),  # D-205
                                         **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
+                                        # 단계 타임라인(plans/119 T-0)
+                                        "timeline": _finish_timeline(_watch, query_id, done=True),
                                     })
                                     return
 
@@ -2839,10 +3155,11 @@ async def process_file_query_stream(
             # Fallback: ainvoke
             result = await asyncio.wait_for(
                 graph.ainvoke(initial_state, thread_config),
-                timeout=config.server.file_query_timeout,
+                timeout=limit_sec,
             )
             elapsed_ms = (time.time() - start_time) * 1000
             final_response = result.get("final_response", "")
+            _watch.answer_sent(final_response, final=True)
             yield _sse_event({"type": "token", "content": final_response})
             _final_row_count = len(result.get("query_results", []))
             yield _sse_event({
@@ -2896,14 +3213,16 @@ async def process_file_query_stream(
                 "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
                 "db_scope": response_data.get("db_scope"),  # D-205
                 **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
+                "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0
             })
 
         except asyncio.TimeoutError:
-            yield await _timeout_sse_event(
+            # 폴백 ainvoke 는 첫 답변 개념이 없다 — 처리 상한 그대로(plans/119 T-5)
+            yield await _stream_cut_sse_event(
                 graph, thread_config,
+                watch=_watch, kind=CUT_PROCESSING,
                 tracked_rows=_tracked_query_results,
                 query_id=query_id, thread_id=actual_thread_id,
-                start_time=start_time, limit_sec=config.server.file_query_timeout,
                 trace=_trace,
                 message="처리 시간이 초과되었습니다.",
                 owner=current_user.get("sub"),
@@ -2913,8 +3232,11 @@ async def process_file_query_stream(
             yield _sse_event(_stream_error_payload(
                 f"처리 중 오류가 발생했습니다: {str(e)}",
                 _trace, code="exception", start_time=start_time,
-                limit_sec=config.server.file_query_timeout,
+                limit_sec=limit_sec,
+                timeline=_finish_timeline(_watch, query_id),
             ))
+        finally:
+            _unbind_deadline(_deadline_token)
 
     return StreamingResponse(
         turn.stream(event_generator()),

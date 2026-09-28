@@ -53,6 +53,11 @@
    ]
   }
  ],
- "reviewed": false,
- "recorded_at": "2026-09-23T16:27:48"
+ "reviewed": true,
+ "recorded_at": "2026-09-23T16:27:48",
+ "review": {
+  "verdict": "partly",
+  "notes": "재녹화 — 2026-05 Cpus 평균 68.4·45.6·35.2·15.8 원본 일치 · 5월 데이터 있는 서버는 4대라 5번째 행(svr-bkp-01)이 null — 요약이 누락을 밝힘",
+  "at": "2026-09-28"
+ }
 }

@@ -33,17 +33,25 @@ profiles:
   optin_alarm:
     TEXT2SQL_ALARM_DETERMINISTIC: "true"
 
+  # 존 그룹 상호배타(D-143 후속3) - 코드 기본값은 false(동시 선택 개방 · D-206 후속1)라 기본
+  # 프로파일에서는 두 존을 조회하는 것이 정답이다. 상호배타 역질문을 기대하는 F-03 만 여기서 잰다
+  # (plans/120 U-5 · D-220 ③ 선례). 프로파일 1개 = 서버 기동 1회가 늘어난다.
+  # 벤치 축 `ZONE_GROUP_EXCLUSIVE` 와 같은 키다 - arm 이 이 키를 주면 arm 값이 이긴다(병합 규칙).
+  optin_zone_exclusive:
+    ZONE_GROUP_EXCLUSIVE: "true"
+
   # ── 사다리 단 비교 arm (2026-09-21 · plans/110 「▶ 실행 가이드」 ③·④) ──
   #
   # **쓰는 법은 `--profile` 이 아니라 `--arm` 이다**(`110·N-1` 랜딩 2026-09-21).
   #   python -m scripts.scenario --run --arm tier2_intent --arm tier3_router
   # `--profile` 은 **시나리오 필터**라서(`runner.py` `iter_executions`) 여기에 쓸 수 없다 —
-  # 카탈로그 220건의 `profile:` 은 baseline 212 · optin_alarm 8 뿐이라
-  # `--profile tier2_intent` 는 **선택 0건**이 된다.
+  # 카탈로그 220건의 `profile:` 은 baseline 211 · optin_alarm 8 · optin_zone_exclusive 1
+  # (plans/120 U-5 · 2026-09-28) 뿐이라 `--profile tier2_intent` 는 **선택 0건**이 된다.
   # `--arm` 은 각 시나리오의 자기 프로파일 **위에 덧씌운다**. 덧씌움은 **치환이 아니라
   # 병합**이고(키 충돌 시 arm 우선) 조합마다 서버를 따로 띄운다:
-  #   baseline+tier2_intent(212) · baseline+tier3_router(212)
+  #   baseline+tier2_intent(211) · baseline+tier3_router(211)
   #   optin_alarm+tier2_intent(8) · optin_alarm+tier3_router(8)  ← 알람 플래그를 유지한다
+  #   optin_zone_exclusive+tier2_intent(1) · optin_zone_exclusive+tier3_router(1)
   # 치환했다면 D군 8건이 `TEXT2SQL_ALARM_DETERMINISTIC` 을 잃는다(회귀 테스트:
   # `tests/test_scenario/test_arm_fanout.py`).
   # 기록: `raw.jsonl` 행과 `run.json.profiles[]` 가 조합 이름(`profile`)과 함께

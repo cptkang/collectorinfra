@@ -24,11 +24,19 @@ REPO = Path(__file__).resolve().parents[2]
 REGISTRY_FILE = REPO / "config" / "db_registry.yaml"
 
 # 레지스트리 도입 전(2026-07-29) 코드에 하드코딩돼 있던 값 — 동작 불변 기준선.
-_LEGACY_LOCATION_TERMS = ("공동존", "김포", "여의도", "은행", "레거시", "은행존")
+# D-271(2026-09-28): 김포 기준 용어 운영 · 여의도 기준 용어 개발·스테이징·DR을 각 DB의 배타
+# 위치어로 **의도적으로** 더했다.
+_D271_GIMPO_TERMS = ("운영",)
+_D271_YEOUIDO_TERMS = ("개발", "스테이징", "DR")
+_D271_TERMS = {"polestar_cm_gp": _D271_GIMPO_TERMS, "polestar_cm_yd": _D271_YEOUIDO_TERMS}
+_LEGACY_LOCATION_TERMS = (
+    "공동존", "김포", *_D271_GIMPO_TERMS, "여의도", *_D271_YEOUIDO_TERMS,
+    "은행", "레거시", "은행존",
+)
 _LEGACY_PRODUCT_TOKENS = ("폴스타", "polestar", "포탈", "portal")
 _LEGACY_LOCATION_DB_HINTS = {
-    "polestar_cm_gp": ("김포",),
-    "polestar_cm_yd": ("여의도",),
+    "polestar_cm_gp": ("김포", *_D271_GIMPO_TERMS),
+    "polestar_cm_yd": ("여의도", *_D271_YEOUIDO_TERMS),
     "polestar_b0": ("은행", "레거시", "은행존"),
 }
 _LEGACY_EXCLUDING_REGIONS = {
@@ -61,11 +69,16 @@ class TestDerivationParity:
 
         추가되는 "은행존"은 기존 항목 "은행"의 확장 문자열이라 부분문자열 판정
         (`region in hint`)에서 이미 동일하게 걸린다 — 배제 결과 불변.
+        D-271의 김포·여의도 기준 용어는 그 DB가 아닌 형제 DB만 배제하도록 의도적으로 더했다.
         """
         derived = get_registry().excluding_region_terms()
         for db_id, legacy in _LEGACY_EXCLUDING_REGIONS.items():
             assert set(legacy) <= set(derived[db_id]), db_id
-            extra = set(derived[db_id]) - set(legacy)
+            all_d271 = {t for terms in _D271_TERMS.values() for t in terms}
+            own = set(_D271_TERMS.get(db_id, ()))
+            d271 = all_d271 & set(derived[db_id])
+            assert d271 == all_d271 - own, db_id
+            extra = set(derived[db_id]) - set(legacy) - d271
             assert all(
                 any(base in term for base in legacy) for term in extra
             ), f"{db_id}: 판정에 영향을 주는 신규 배제 토큰 {extra}"
@@ -173,7 +186,7 @@ class TestNewDBOnboardingRehearsal:
         excluding = new_reg.excluding_region_terms()
         assert "대전" not in excluding["polestar_cm_gp"]
         assert excluding["acme_dc1"] == ()
-        assert new_reg.location_db_hints()["polestar_cm_gp"] == ("김포",)
+        assert new_reg.location_db_hints()["polestar_cm_gp"] == ("김포", *_D271_GIMPO_TERMS)
 
     def test_prompt_render_picks_up_new_db(self, new_reg, monkeypatch):
         """라우팅 프롬프트의 DB 나열·위치 어휘도 레지스트리 파생이라 자동 반영된다."""

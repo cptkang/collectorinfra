@@ -223,6 +223,10 @@ class AgentState(TypedDict):
     # 존 역질문 후단 게이트 발동 페이로드(D-143 후속2, 요청 스코프) — 라우트가
     # status="clarification" 응답으로 변환(pre-gate와 동일 shape, 프론트 재사용).
     zone_clarification: Optional[dict]
+    # 존 역질문 답변 턴의 파싱 재사용(plans/119 Q-2 · D-267 ③ · 요청 스코프) — 직전 턴이 후단
+    # 게이트로 존을 되물었고 이번 턴이 같은 원 질의 + 존 선택뿐이면 라우트가 직전 턴
+    # `parsed_requirements`를 싣는다. `input_parser`는 이것이 있으면 LLM 파싱을 건너뛴다.
+    reuse_parsed_requirements: Optional[dict]
     # 스레드 DB 스코프(plans/90 · D-205) — 둘 다 **요청 스코프**(매 턴 라우트가 재공급).
     #   db_scope_source: 이번 턴 대상 DB가 어디서 왔나(selected|hint|inherited|planned|classified).
     #     문자열 reason 매칭 대신 구조화 키 — 3단 semantic_router·2단 subagents(db_origin 승격)가 남긴다.
@@ -257,6 +261,8 @@ class AgentState(TypedDict):
     #                                        후속 턴 DB 승계 우선 후보 (M2).
     #   previous_entities: list[dict]      — [{"field": "hostname", "value": "###"}] 직전 식별 서버/장비
     #                                        (filter_conditions 식별 키 + 결과 식별 컬럼 값, 행수 상한). "해당 서버" 해소.
+    #   previous_entities_complete: bool   — 위 엔티티가 직전 턴 결과 전체를 담는가
+    #                                        (sticky·표본이면 False) — plans/120 PL-1 ⓐ.
     #   previous_location: str             — 직전 폴스타 위치/환경 신호("김포 운영" 등). DB 식별 신호 승계.
 
     # === [Phase 3] Human-in-the-loop ===
@@ -325,6 +331,14 @@ class AgentState(TypedDict):
     replan_count: int                # 결과 기반 재계획 반복 횟수 (MAX_REPLAN 상한)
     needs_replan: bool               # replanner → 라우팅 신호 (True면 agent_orchestrator 재진입)
     replan_history: list[dict]       # 재계획 이력 [{count, reason, added}] (처리 현황 표시용, 루프 누적)
+    # === [plans/118 P-1·P-2] 재계획 시간 예산 · 반복 0건 중단 — 전부 **요청 스코프** ===
+    # 요청 마감 시각(`time.monotonic()` 기준 초). 라우트가 매 턴 명시 초기화한다 — 없으면(CLI·옛
+    # 체크포인트) 재계획기는 종전 동작이다.
+    request_deadline: Optional[float]
+    # 직전 `agent_orchestrator` 한 바퀴 소요(초) — 재계획기가 남은 시간과 비교한다(추정 상수 금지).
+    orchestrator_round_sec: Optional[float]
+    # 재계획기가 결정적으로 멈춘 사유(시간 상한 · 전 DB 연속 0건). 집계기가 응답 말미에 싣는다.
+    replan_stop_notice: Optional[str]
 
     # === [plans/103 P0-2 · P2] 3단 계획 루프 (`TIER3_PLAN_LOOP_ENABLED` · 기본 off) ===
     # 라우터 구조화 출력의 계획 필요 신호(103 §3.2 · G-1) — 플래그 on일 때만 라우터가 쓴다.
@@ -387,6 +401,8 @@ def create_followup_input(
         # 직전 턴 발동 페이로드가 체크포인터로 승계돼 새 턴 응답을 오염시키지 않도록 초기화.
         "zone_clarification_allowed": allow_zone_clarification,
         "zone_clarification": None,
+        # 존 답변 턴 파싱 재사용(plans/119 Q-2) — 요청 스코프. 라우트가 조건을 맞출 때만 싣는다.
+        "reuse_parsed_requirements": None,
         # HITL 폼필(D-151) 요청 스코프 값들 — 직전 턴 산출이 새 턴을 오염시키지 않도록
         # 매 턴 초기화. 답변 턴은 route가 이 델타 위에 form_fill_answers·복원 파일을 덮어쓴다.
         # pending_form_fill(멀티턴 보존)은 여기서 비우지 않는다.
@@ -399,6 +415,10 @@ def create_followup_input(
         "form_fill_remember": None,
         # 순차 의존 경과 노트(D-203)도 요청 스코프 — 직전 턴 경과가 새 턴 응답에 붙지 않도록.
         "dependency_notes": None,
+        # 재계획 시간 예산·중단 사유(plans/118 P-1·P-2) — 요청 스코프. 마감은 라우트가 다시 싣는다.
+        "request_deadline": None,
+        "orchestrator_round_sec": None,
+        "replan_stop_notice": None,
         # 스레드 DB 스코프(D-205) — 요청 스코프. source는 이번 턴 라우터/서브에이전트가 다시 남긴다.
         "db_scope_source": None,
         "db_scope_reset": bool(reset_db_scope),
@@ -543,6 +563,7 @@ def create_initial_state(
         selected_db_ids=selected_db_ids,
         zone_clarification_allowed=allow_zone_clarification,
         zone_clarification=None,
+        reuse_parsed_requirements=None,
         db_scope_source=None,
         db_scope_reset=False,
         # 교차 시스템 질의(plans/102) — 요청 스코프
@@ -596,6 +617,10 @@ def create_initial_state(
         replan_count=0,
         needs_replan=False,
         replan_history=[],
+        # plans/118 P-1·P-2(요청 스코프) — 마감은 라우트가 싣는다. 없으면 재계획기는 종전 동작.
+        request_deadline=None,
+        orchestrator_round_sec=None,
+        replan_stop_notice=None,
         # plans/103 3단 계획 루프(요청 스코프)
         needs_plan=None,
         task_outcomes=[],

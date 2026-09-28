@@ -74,6 +74,7 @@ _FORM_FILL_VERB_KEYWORDS = ("채우", "채워", "기입", "작성")
 # (nodes.field_mapper가 계층 역방향 없이 공유하기 위함, FIX-24). 기존 임포터
 # (api.routes.query 등)를 위해 이 모듈에서 재수출한다.
 from src.utils.query_gen_common import (  # noqa: E402
+    term_in_text,
     FORM_MEMORY_ALL_KEYWORDS as _FORM_MEMORY_ALL_KEYWORDS,
     FORM_MEMORY_DELETE_KEYWORDS as _FORM_MEMORY_DELETE_KEYWORDS,
     FORM_MEMORY_NOUN_KEYWORDS as _FORM_MEMORY_NOUN_KEYWORDS,
@@ -652,7 +653,7 @@ def _build_context_block(
         return ""
 
     has_explicit_location = any(
-        term in (user_query or "") for term in LOCATION_HINT_TERMS
+        term_in_text(term, user_query or "") for term in LOCATION_HINT_TERMS
     )
     # 이번 턴에 지시어("해당/그/위 … 서버")가 있을 때만 직전 서버 엔티티를 주입한다
     # (D-153 후속1). previous_entities는 직전 턴이 대량 조회였으면 상한 샘플

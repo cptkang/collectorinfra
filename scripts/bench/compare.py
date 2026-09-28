@@ -30,6 +30,9 @@ UNDERPOWERED = "판정 불가"
 #: 축 판정은 "이 축의 어느 레벨이 최적인가"라 묻는 것이 다르다(§5.5 어휘 폐쇄성 유지).
 BEST_LEVEL = "최적 레벨"
 LEVELS_TIED = "레벨 간 차이 없음"
+#: 축을 **재지 않았다**(구간 미완·구간 불가·폴더 없음) — 캠페인 합산의 「미측정」 행(plans/120
+#: V-5). 「판정 불가」(쟀는데 검정력이 약하다)와 섞지 않는다 — 처분 문구가 갈린다.
+UNMEASURED = "미측정"
 
 #: 이 아래 차이는 운영 판단을 바꾸지 못한다고 본다(§2-② 검정력 한계).
 MIN_MEANINGFUL_PP = 5.0
@@ -340,7 +343,7 @@ class AxisOptimum:
 
     axis: str
     levels: tuple[str, ...]
-    verdict: str                      # BEST_LEVEL | LEVELS_TIED | UNDERPOWERED
+    verdict: str                      # BEST_LEVEL | LEVELS_TIED | UNDERPOWERED | UNMEASURED
     best_level: Optional[str]
     signal: str
     sentence: str

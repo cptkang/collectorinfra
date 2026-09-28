@@ -23,8 +23,10 @@ scenarios:
           query: "cocm-hdkapp01 서버의 OS 확인"
         expect:
           status: completed
-          sql_must_match: ["(?i)hostname\\s*=", "(?i)cocm-hdkapp01"]
-          row_count: {eq: 1}
+          # plans/120 U-1 - 장비명(`name`) 필터로 본다. B-03 주석 참조.
+          sql_must_match: ["(?i)\\bname\\b(?:\\s+END)?\\s*\\)?\\s*(?:=|\\bIN\\s*\\()\\s*'cocm-hdkapp01'",
+                           "(?i)cocm-hdkapp01"]
+          row_count_total: {eq: 1}
       - send:
           query: "해당 서버의 최근 1개월 CPU 사용률 평균/최대"
         expect:

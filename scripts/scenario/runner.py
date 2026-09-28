@@ -32,13 +32,20 @@ from .assertions import (
     Verdict,
     option_labels,
     evaluate_turn,
+    resolve_db_ids,
     row_is_invalid,
 )
 from .catalog import Catalog, Scenario, Turn
 from .client import ClientConfig, ScenarioClient
 # 판정 계약(`108·G-6`)의 규칙 정본은 report 한 곳이다 - 쓰는 쪽과 읽는 쪽이 같은 규칙을
 # 쓰지 않으면 칸과 재도출값이 갈린다. report 는 runner 를 import 하지 않아 순환이 없다.
-from .report import unevaluated_reason
+from .report import (
+    CAP_SEMANTIC_TOTAL,
+    T1_META_KEY,
+    t1_alarm_evidence,
+    timeline_cap_semantic,
+    unevaluated_reason,
+)
 from .server import ProfileStatus, ServerHandle, pick_port, platform_provenance
 
 RESULTS_ROOT = REPO_ROOT / "results" / "scenario"
@@ -217,6 +224,50 @@ def provenance_mix(attempts: list[dict[str, Any]]) -> Optional[str]:
                         "같은 커밋 위의 미커밋 변경이 같은지 확인할 수 없다")
             return (f"작업 트리가 다르다 - 같은 커밋 {str(first['commit'])[:12]} 위의 "
                     f"미커밋 변경이 시도 1 과 시도 {number} 사이에 바뀌었다")
+    return None
+
+
+#: 재개 대조에서 빼는 키 - 러너가 **시도마다 새로 정하는** 값이라 설정 차이가 아니다(포트).
+RESUME_VOLATILE_KEYS = frozenset({"API_PORT"})
+
+
+def profile_config_record(settings: dict[str, str]) -> dict[str, Any]:
+    """프로파일 기동 1회의 실효 설정 지문(plans/118 B-1).
+
+    원천은 기동 검증이 이미 받는 설정 에코(`ProfileStatus.effective_settings`)다 - 시크릿은
+    에코가 값 없이 내보내므로 평문이 남지 않는다. 지문은 벤치와 **같은 함수**로 만든다
+    (`scripts.bench.probe.config_fingerprint` 재사용 - 사본 금지). 바뀐 키를 사람이 읽을 수
+    있게 값도 함께 남긴다.
+    """
+    from scripts.bench.probe import EchoResult, config_fingerprint
+
+    kept = {str(k): str(v) for k, v in settings.items() if k not in RESUME_VOLATILE_KEYS}
+    return {"fingerprint": config_fingerprint(EchoResult(ok=True, config=kept)),
+            "settings": kept}
+
+
+def resume_config_conflict(prior_attempts: list[dict[str, Any]], profile: str,
+                           record: dict[str, Any]) -> Optional[str]:
+    """앞 시도의 같은 프로파일과 실효 설정이 다르면 그 사유, 같거나 비교할 기록이 없으면 None.
+
+    run `20260922-162132` 는 끊긴 뒤 `.env` 의 `API_QUERY_TIMEOUT` 이 60 -> 180 으로 바뀐 채
+    이어 돌아, 기준선 39턴은 60초 · arm 은 180초로 한 raw.jsonl 에 섞였다(plans/118 §2.2).
+    커밋·작업 트리 대조(`provenance_mix`)는 `.env` 변경을 모른다. 콘솔에도 찍히므로 ASCII
+    구두점만 쓴다(cp949).
+    """
+    for number, attempt in enumerate(prior_attempts, start=1):
+        before = (attempt.get("configs") or {}).get(profile)
+        if not before or before.get("fingerprint") == record.get("fingerprint"):
+            continue
+        old = before.get("settings") or {}
+        new = record.get("settings") or {}
+        keys = sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
+        shown = ", ".join(f"{k} {old.get(k, '(없음)')} -> {new.get(k, '(없음)')}"
+                          for k in keys[:6])
+        more = f" 외 {len(keys) - 6}개" if len(keys) > 6 else ""
+        return (f"프로파일 {profile} 의 실효 설정이 시도 {number} 와 다르다 - 바뀐 키: "
+                f"{shown or '(값 기록 없음 - 지문만 다르다)'}{more}. 한 raw.jsonl 에 두 설정의 "
+                "결과를 섞지 않는다 - 새 run_id 로 처음부터 돌거나 .env 를 되돌린 뒤 이을 것")
     return None
 
 
@@ -505,6 +556,19 @@ def _clarification_snapshot(obs: Observation) -> Optional[dict[str, Any]]:
     return snapshot
 
 
+def note_cap_semantic(meta: dict[str, Any], timeline: Any) -> None:
+    """서버가 보고한 처리 상한 의미의 **첫 관측값**을 run 메타에 남긴다.
+
+    plans/119 §7 단계 6 · D-267 ⑦ - ⑦ 이전 run(요청 전체 상한)과 이후 run(첫 답변까지)의
+    타임아웃률은 같은 뜻이 아니다. 리포트 머리와 회귀 비교가 이 칸을 읽는다. 끝까지 관측이
+    없으면 `_execute` 가 `total`(종전 의미)로 채운다.
+    """
+    semantic = timeline_cap_semantic(timeline)
+    if semantic and not meta.get("cap_semantic"):
+        meta["cap_semantic"] = semantic
+        meta["cap_semantic_source"] = "server"
+
+
 def _row(
     meta: dict[str, Any],
     profile: str,
@@ -519,6 +583,7 @@ def _row(
     # 덧씌우기가 없으면 `arm=None` 이고 `base_profile == profile` 이라, 벤치의
     # `arm_of(row) = row.get("arm") or row.get("profile")` 가 옛 행·새 행 모두에서 성립한다.
     binding = (meta.get("arm_bindings") or {}).get(profile) or {}
+    note_cap_semantic(meta, obs.timeline)
     row: dict[str, Any] = {
         "run_id": meta["run_id"],
         "profile": profile,
@@ -546,7 +611,12 @@ def _row(
         "manual_notes": verdict.manual_notes,
         "wall_ms": round(obs.wall_ms, 1),
         "processing_time_ms": obs.processing_time_ms,
+        # 첫 `node_start` 도착(그래프 진입) - 답변 첫 토큰이 아니다. 체감 지연은 `ttft_ms`.
         "ttfb_ms": obs.ttfb_ms,
+        # 첫 답변 토큰 도착(plans/119 H-1) - 기준 시각은 `ttfb_ms` 와 같다. 토큰 없는 턴은 None.
+        "ttft_ms": obs.ttft_ms,
+        # 서버 단계 타임라인(plans/119 T-0) - 서버 페이로드 그대로. 옛 서버는 None.
+        "timeline": obs.timeline,
         "max_event_gap_ms": obs.max_event_gap_ms,
         "node_elapsed_ms": obs.node_elapsed_ms,
         "node_calls": obs.node_calls,
@@ -567,6 +637,9 @@ def _row(
         # db_ids 단언이 실제로 무엇과 대조됐는지 원시 로그에 남긴다 — 없으면 판정을 검증할 수 없다
         # (2026-09-15: 이 칸이 없어 "db_ids 가 비었다"는 오판을 원시 로그로 반박하지 못했다).
         "db_ids": obs.db_ids,
+        # 그 값의 출처(plans/120 V-1) - `scope`(done `db_scope`) · `executed`(감사 로그 실행 DB)
+        # · None(둘 다 없음).
+        "db_ids_source": obs.db_ids_source,
         "llm_calls": obs.llm_calls,
         "tokens": obs.tokens,
         "retries": obs.retries,
@@ -576,6 +649,10 @@ def _row(
         "rewrite_trace": obs.rewrite_traces or None,
         "artifacts": obs.artifacts,
         "error": obs.error,
+        # 응답이 보고한 상태(`completed`·`partial`·`clarification`…). 판정 계약이 `partial`
+        # (시간 상한에 걸려 서술 없이 표만 나간 턴 · plans/114 P-2)을 읽는다 - 이 턴은
+        # 오류 문구가 없어 타임아웃 검사에 걸리지 않는다.
+        "status": obs.status,
     }
     if extras:
         row.update(extras)
@@ -594,15 +671,16 @@ def _row(
 
 #: 러너가 수행하는 teardown. `drop_thread` 는 실행마다 새 thread_id 로, `unregister_synonym` 은 턴 전후
 #: 유사어 사전 스냅샷의 차이 - **이 시나리오가 더한 단어** - 만 지우는 것으로 보장한다(D-217).
-SUPPORTED_TEARDOWN = frozenset({"drop_thread", "unregister_synonym"})
+#: `forget_form_memory` 는 같은 방식으로 폼필 확인 이력의 **선언 필드**만 지운다(plans/120 V-4).
+SUPPORTED_TEARDOWN = frozenset({"drop_thread", "unregister_synonym", "forget_form_memory"})
 
 
 def _teardown(scenario: Scenario) -> list[str]:
     """teardown 을 수행한다. **수행하지 못한 것을 조용히 넘기지 않는다**(§2-3).
 
     drop_thread 는 실행마다 새 thread_id 를 쓰는 것으로 이미 보장된다. 그 밖의 정리
-    (유사어 등록 해제·스키마 캐시·폼필 기억)는 관리자 엔드포인트가 필요하고 실 서버에서
-    검증하지 않았으므로 **미지원으로 기록**한다 - 리포트 10절에 사유와 함께 남는다.
+    (스키마 캐시 등)는 관리자 엔드포인트가 필요하고 실 서버에서 검증하지 않았으므로
+    **미지원으로 기록**한다 - 리포트 10절에 사유와 함께 남는다.
     """
     return [action for action in scenario.teardown if action not in SUPPORTED_TEARDOWN]
 
@@ -1041,6 +1119,12 @@ def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
     if prior_meta.get("rerun_partial"):
         # 앞 시도가 1턴부터 다시 돈 기록도 잃지 않는다(109·CS-17).
         meta["rerun_partial"] = list(prior_meta["rerun_partial"])
+    if prior_meta.get("cap_semantic_source") == "server":
+        # 상한 의미는 **run 의 첫 관측값**이다 - 재개가 앞 시도의 관측을 지우지 않는다(plans/119).
+        meta["cap_semantic"] = prior_meta.get("cap_semantic")
+        meta["cap_semantic_source"] = "server"
+    if isinstance(prior_meta.get(T1_META_KEY), dict):
+        meta[T1_META_KEY] = dict(prior_meta[T1_META_KEY])
     meta["attempts"] = prior_attempts + [attempt_provenance(meta)]
     mixed = provenance_mix(meta["attempts"])
     if mixed:
@@ -1059,6 +1143,13 @@ def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
     with utf8_open(out_dir / "run.json", "w") as handle:
         json.dump(started, handle, ensure_ascii=False, indent=2)
 
+    def _save_progress() -> None:
+        """프로파일 설정 지문이 생길 때마다 시작 기록을 다시 쓴다(plans/118 B-1) - 이 시도가
+        끊겨도 다음 재개가 대조할 기록이 남는다."""
+        started["meta"] = {**meta, "in_progress": True}
+        with utf8_open(out_dir / "run.json", "w") as progress:
+            json.dump(started, progress, ensure_ascii=False, indent=2)
+
     raw = RawLog(out_dir / "raw.jsonl")
     statuses: list[ProfileStatus] = []
     skipped: list[dict[str, Any]] = []
@@ -1073,7 +1164,13 @@ def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
         merge_arm_profiles(catalog, catalog.scenarios, config.arms)[1] if config.arms else {}
     )
 
+    refused: Optional[str] = None
     for profile, scenarios in iter_executions(catalog, config):
+        if refused:
+            # 재개 거부 뒤의 프로파일은 돌지 않는다 - 사유와 함께 제외로 남긴다.
+            skipped.extend({"scenario_id": sc.id, "reason": f"재개 거부 - {refused}"}
+                           for sc in scenarios)
+            continue
         # 주입하는 것은 전부 에코로 확인한다 - 격리 설정도 예외가 아니다(.encenv 우선순위로
         # 조용히 무시되면 격리한 줄 알고 운영 알람을 계속 나눠 가진다).
         expected = {**ISOLATION_ENV, **catalog.profiles.get(profile, {})}
@@ -1081,11 +1178,12 @@ def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
         # 운영 checkpoints.db(실측 82MB) 오염 금지 - 런 전용 체크포인트로 격리한다(§2-3).
         overrides["CHECKPOINT_DB_URL"] = str(out_dir / f"checkpoints-{profile}.db")
         port = pick_port(config.port)
+        server_log = out_dir / "logs" / f"server-{profile}.log"
         handle = ServerHandle(
             profile=profile,
             env_overrides=overrides,
             port=port,
-            log_path=out_dir / "logs" / f"server-{profile}.log",
+            log_path=server_log,
             mock=(config.mode == "mock"),
         )
         # arm 출처를 `run.json` 과 `raw.jsonl` **양쪽에 같은 칸 이름**으로 남긴다(`110·N-1`).
@@ -1130,6 +1228,19 @@ def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
                     "/query 요청이 전건 401 로 끝난다. 전용 벤치 계정을 --user/--password "
                     "로 넘길 것(인증을 끄고 재지 않는다 - plans/94 G-3)"
                 )
+            if status.valid and status.effective_settings:
+                # plans/118 B-1: 이 기동의 실효 설정 지문을 이 시도 기록에 남기고, 재개면
+                # 앞 시도의 같은 프로파일과 대조한다. 다르면 **재개를 멈춘다**.
+                record = profile_config_record(status.effective_settings)
+                meta["attempts"][-1].setdefault("configs", {})[profile] = record
+                _save_progress()
+                refused = resume_config_conflict(prior_attempts, profile, record)
+                if refused:
+                    meta["resume_refused"] = refused
+                    meta["provenance_mixed"] = f"재개 거부 - {refused}"
+                    print(f"       [멈춤] 재개 거부 - {refused}", flush=True)
+                    status.valid = False
+                    status.reasons.append(f"재개 거부 - {refused}")
             if not status.valid:
                 for scenario in scenarios:
                     skipped.append(
@@ -1179,6 +1290,15 @@ def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
             handle.stop()
             if not handle.port_released():
                 status.reasons.append(f"포트 {port} 가 회수되지 않았다 - 고아 프로세스 확인")
+            # plans/119 H-2: T-1 표지를 run 메타에 남긴다 - 로그가 run 과 함께 오지 않아도
+            # 리포트가 알람 고지를 판정한다. 재개는 로그를 옮겨 두므로(`_keep_previous_log`)
+            # 앞 시도분에 더한다.
+            evidence = meta.setdefault(T1_META_KEY, {})
+            evidence[profile] = int(evidence.get(profile) or 0) + t1_alarm_evidence(server_log)
+
+    if not meta.get("cap_semantic"):
+        # 서버가 한 번도 상한 의미를 보고하지 않았다 - 옛 서버다. 종전 의미로 적되 출처를 남긴다.
+        meta["cap_semantic"], meta["cap_semantic_source"] = CAP_SEMANTIC_TOTAL, "default"
 
     summary = {
         "meta": meta,
@@ -1278,10 +1398,11 @@ class SqlAuditTail:
 
 
 def _apply_sql_audit(obs: Observation, entries: list[dict[str, Any]]) -> None:
-    """감사 로그 수집분을 관측치에 얹는다 - SQL 목록·재시도 회차·**DB 별 행 수**.
+    """감사 로그 수집분을 관측치에 얹는다 - SQL 목록·재시도 회차·**DB 별 행 수**·`db_ids` 폴백.
 
     DB 별 행 수는 **마지막 성공 실행**의 값을 쓴다(Y-4). 합산하면 재시도 회차가 중복으로
     더해져 "각 DB 100행"이 200행으로 보인다 - 사용자가 받은 것은 마지막 성공분이다.
+    done 의 `db_scope` 가 비었으면 실행 DB 집합으로 `db_ids` 를 채운다(plans/120 V-1).
     """
     if not entries:
         return
@@ -1295,6 +1416,9 @@ def _apply_sql_audit(obs: Observation, entries: list[dict[str, Any]]) -> None:
         if source and isinstance(count, int) and entry.get("success") is not False:
             per_db[str(source)] = count
     obs.row_counts_by_db = per_db
+    obs.db_ids, obs.db_ids_source = resolve_db_ids(
+        obs.db_ids, [entry.get("source") for entry in entries]
+    )
 
 
 def _trace_files() -> set[str]:
@@ -1423,6 +1547,158 @@ def remove_synonym_additions(before: dict[str, dict[str, list[str]]], words: lis
         return results
 
     return _with_redis(work)
+
+
+# --- 폼필 확인 이력 격리 (plans/120 V-4 = 108·CU-B3) ---------------------------------------
+#
+# 이력 키는 `formfill:memory:{양식 시그니처}` 하나뿐이고 **사용자 스코프가 없다**
+# (`src/schema_cache/form_memory.py` · `redis_cache._form_memory_key`). 그래서 "벤치 계정의 이력
+# 전체 삭제"는 곧 그 양식을 쓰는 모든 사용자의 이력 삭제라 두지 않는다 - 시나리오가 선언한 필드
+# 중 그 실행이 더한 것만 지운다(D-217 ⑪ `unregister_synonym` 과 같은 규칙).
+
+#: 선적재 오염으로 무효(D-241 `invalid`)가 된 턴의 사유 머리말.
+FORM_MEMORY_PRELOAD_REASON = "폼필 확인 이력 선적재(상태 오염) - 폐쇄망에서 삭제 필요"
+
+#: 이력 API 는 프로세스 싱글톤(캐시 매니저)의 연결을 쓴다 - 호출을 한 번에 하나로 묶는다.
+_FORM_MEMORY_LOCK = threading.Lock()
+
+
+def form_memory_dependent(scenario: Scenario) -> bool:
+    """이 시나리오의 판정이 폼필 확인 이력 상태에 달려 있는가(plans/120 V-4).
+
+    폼필 역질문을 기대하거나(`expect.clarification` 중 존 역질문이 아닌 것), 폼필 답변·기억·저장
+    값 패널을 보내거나(`send.form_*`), 이력을 지우는 teardown 을 선언한 시나리오다. 이력 키에
+    사용자 스코프가 없어 폐쇄망 실사용자가 표준 양식에 기억시킨 답도 선적재로 보인다 - 의존하지
+    않는 업로드 시나리오(H군 등)까지 무효로 돌리면 표적 재측정이 성립하지 않는다(코드 리뷰
+    2026-09-28). 그런 시나리오는 선적재 사실만 행에 남긴다.
+    """
+    if "forget_form_memory" in scenario.teardown:
+        return True
+    for turn in scenario.turns:
+        if any(str(key).startswith("form_") for key in (turn.send or {})):
+            return True
+        expected = (turn.expect or {}).get("clarification")
+        if isinstance(expected, dict) and expected.get("kind") != "zone_select":
+            return True
+    return False
+
+
+def form_signature_of(upload: Path) -> Optional[str]:
+    """업로드 양식의 이력 키(양식 시그니처)를 **서버와 같은 파서**로 로컬 계산한다. LLM 0.
+
+    서버는 `input_parser._parse_uploaded_file`(`parse_excel_template`·`parse_word_template`)로
+    `template_structure` 를 만들고 `form_signature` 로 키를 뜬다. 응답 패널의 시그니처
+    (`form_memory_panel.signature` · I-06)는 조회 턴에만 실려 **턴 전** 기준선을 뜰 수 없다.
+    시트 헤더가 없는 양식(Word 등)은 None - 이력 대상이 아니다.
+    """
+    from src.utils.schema_utils import form_signature
+
+    suffix = upload.suffix.lower()
+    if suffix == ".xlsx":
+        from src.document.excel_parser import parse_excel_template
+
+        return form_signature(parse_excel_template(upload.read_bytes()))
+    if suffix == ".docx":
+        from src.document.word_parser import parse_word_template
+
+        return form_signature(parse_word_template(upload.read_bytes()))
+    return None
+
+
+def _with_form_memory(work: Callable[[Any], Awaitable[Any]]) -> Any:
+    """러너 프로세스에서 폼필 확인 이력 API 1건을 부른다(plans/120 V-4).
+
+    이력 API(`load_form_memory_answers`·`delete_form_memory_entries`)는 Redis 불가·TTL 0 을 **빈
+    결과로 강등**한다 - 그대로 쓰면 "읽지 못했다"가 "이력 없음"으로 보인다. 그래서 TTL 과 연결을
+    먼저 확인하고 못 하면 예외로 알린다. API 가 쓰는 캐시 매니저 싱글톤의 연결은 호출마다 닫는다 -
+    `asyncio.run` 마다 이벤트 루프가 바뀐다(`_with_redis` 와 같은 이유). 싱글톤을 나눠 쓰므로
+    동시 부하 묶음의 작업 스레드끼리는 한 번에 하나만 들어온다.
+    """
+
+    async def run() -> Any:
+        from src.config import load_config
+        from src.schema_cache.cache_manager import get_cache_manager
+
+        config = load_config()
+        if int(getattr(config.query, "form_memory_ttl_days", 0) or 0) <= 0:
+            raise RuntimeError("form_memory_ttl_days=0 - 이력 API 가 Redis 를 읽지 않는다")
+        manager = get_cache_manager(config)
+        if not await manager.ensure_redis_connected():
+            raise RuntimeError("Redis 에 연결하지 못했다")
+        try:
+            return await work(config)
+        finally:
+            await manager.disconnect()
+
+    with _FORM_MEMORY_LOCK:
+        return asyncio.run(run())
+
+
+def snapshot_form_memory(signature: str) -> list[str]:
+    """양식 시그니처의 이력 필드 이름(정렬).
+
+    **조회 전용**이다 - `touch=False` 라 TTL·사용 횟수가 그대로다.
+    """
+
+    async def work(config: Any) -> list[str]:
+        from src.schema_cache.form_memory import load_form_memory_answers
+
+        _sig, answers, _meta = await load_form_memory_answers(
+            None, config, touch=False, signature=signature,
+        )
+        return sorted(answers)
+
+    return _with_form_memory(work)
+
+
+def forget_form_memory_additions(signature: str, before: list[str], fields: list[str]) -> list[str]:
+    """기준선 이후 더해진 이력 필드 중 **시나리오가 선언한 필드만** 지운다(`forget_form_fields`).
+
+    원래 있던 필드는 차이에 들지 않아 남는다. 선언 밖 필드는 같은 시각 다른 주체가 더한 것이라
+    지우지 않고 `남김` 으로 기록한다. 조회는 `touch=False` 다. 삭제 API 는 남은 필드를 다시 쓰며
+    TTL 을 한 주기로 되돌리는데, 지울 필드가 있다는 것은 이 실행이 방금 저장하며 TTL 을 이미
+    되돌렸다는 뜻이라 추가 연장이 아니다(`save_form_memory_entries` "TTL 리셋").
+    """
+
+    async def work(config: Any) -> list[str]:
+        from src.schema_cache.form_memory import (
+            delete_form_memory_entries,
+            load_form_memory_answers,
+        )
+
+        _sig, answers, _meta = await load_form_memory_answers(
+            None, config, touch=False, signature=signature,
+        )
+        declared = {name.strip().casefold() for name in fields}
+        added = sorted(set(answers) - set(before))
+        owned = [name for name in added if name.strip().casefold() in declared]
+        foreign = [name for name in added if name.strip().casefold() not in declared]
+        results: list[str] = []
+        if owned:
+            removed, _display = await delete_form_memory_entries(
+                None, config, owned, signature=signature,
+            )
+            done = "완료" if removed == len(owned) else "실패"
+            results.append(f"삭제 {signature} {owned}: {done}")
+        if foreign:
+            results.append(f"남김 {signature} {foreign}: 선언한 필드가 아니다")
+        if not added:
+            results.append(f"대상 없음 {signature}: 기준선 이후 더해진 필드가 없다")
+        return results
+
+    return _with_form_memory(work)
+
+
+def _invalidate(verdict: Verdict, reason: str) -> None:
+    """판정을 무효(D-241 `invalid`)로 돌린다 - 러너 인증 실패(T-c)와 같은 모양이다.
+
+    단언은 오염된 상태의 그림자라 판정에서 뺀다. 원본 관측(SQL·응답)은 행에 그대로 남는다.
+    """
+    verdict.func = INVALID_VERDICT
+    verdict.invalid_reason = reason
+    verdict.failures = []
+    verdict.manual_notes = []
+    verdict.perf = "n/a"
 
 
 def _cleanup_leftover_setup(scenarios: list[Scenario], run_env: Optional[str]) -> list[str]:
@@ -1895,6 +2171,40 @@ def _run_once(
             })
             return 0
 
+    # 폼필 확인 이력(plans/120 V-4) - 한 번 읽어 ①선적재 오염 탐지 ②forget_form_memory 기준선에
+    # 쓴다. 조회 전용(`touch=False`)이다. 환경 불일치여도 턴은 나가 이력을 쓰므로 실 모드면 늘 본다.
+    form_sig: Optional[str] = None
+    form_before: Optional[list[str]] = None
+    form_check_error: Optional[str] = None
+    if live and scenario.upload:
+        try:
+            form_sig = form_signature_of(REPO_ROOT / scenario.upload)
+            if form_sig:
+                form_before = snapshot_form_memory(form_sig)
+        except Exception as exc:  # 읽지 못하면 판정을 바꾸지 않는다 - 사실은 행에 남긴다
+            form_check_error = f"{type(exc).__name__}: {exc}"
+    forget_form = "forget_form_memory" in scenario.teardown and live
+    if forget_form and form_before is None:
+        skipped.append({
+            "scenario_id": scenario.id,
+            "reason": "폼필 확인 이력 기준선을 뜨지 못해 쓰기 시나리오를 실행하지 않았다 - "
+                      "되돌릴 수 없다: "
+                      + (form_check_error or "양식 시그니처 없음(시트 헤더가 없는 양식)"),
+        })
+        return 0
+    # 무효화는 이력 상태에 판정이 달린 시나리오만(`form_memory_dependent`) - 나머지는 사실만 남긴다.
+    preload_reason = (
+        f"{FORM_MEMORY_PRELOAD_REASON} (양식 시그니처 {form_sig} · 필드 {form_before})"
+        if form_before and form_memory_dependent(scenario) else None
+    )
+    if form_before:
+        base_extras["form_memory_preload"] = {
+            "signature": form_sig, "fields": form_before,
+            "invalidated": bool(preload_reason),
+        }
+    elif form_check_error:
+        base_extras["form_memory_check"] = f"미확인 - {form_check_error}"
+
     # 선행 상태(K-10 고의 오매핑 유사어). 만들지 못하면 전제가 없는 측정이라 실행하지 않는다.
     setup_live = bool(scenario.setup) and live and not env_mismatch
     if scenario.setup and not setup_live:
@@ -1956,6 +2266,26 @@ def _run_once(
                 if (scenario.upload and endpoint in ("file", "file_stream"))
                 else None
             )
+            if preload_reason:
+                # V-4 (b): 선적재 오염이면 턴을 **보내지 않는다**. 보내면 서버의 업로드 턴이 이력을
+                # `touch=True` 로 읽어 sliding TTL 을 늘리고 사용 횟수를 올린다 - 벤치가 오염 이력의
+                # 수명을 스스로 늘린다(run 20260923-140539 사용 42회 · 코드 리뷰 2026-09-28).
+                verdict = Verdict()
+                _invalidate(verdict, f"{preload_reason} - 턴을 보내지 않았다(TTL 연장 방지)")
+                extras = dict(base_extras)
+                if unsupported:
+                    extras["teardown_unsupported"] = unsupported
+                raw.append(_row(meta, profile, scenario, turn_no, repeat, Observation(),
+                                verdict, extras))
+                executed += 1
+                for remaining in range(index + 1, len(scenario.turns) + 1):
+                    skipped.append({
+                        "scenario_id": scenario.id,
+                        "turn": turn_offset + remaining,
+                        "reason": (f"선행 턴 {turn_no} 이 무효"
+                                   "(폼필 확인 이력 선적재 - 이력 삭제 후) - 재개(--resume) 대상"),
+                    })
+                break
             sql_since = sql_tail.mark() if sql_tail else 0
             traces_before = _trace_files() if live else set()
             obs = _send(client, endpoint, payload, upload)
@@ -2005,8 +2335,14 @@ def _run_once(
             if verdict.func in ("fail", "error", INVALID_VERDICT) and index < len(scenario.turns):
                 # 앞 턴이 깨지면 뒤 턴의 판정은 의미가 없다. 건너뛴 사실을 남긴다.
                 # 무효(T-c)도 여기 포함한다 - 인증이 죽은 채로 뒤 턴을 보내 봐야 401 이 늘 뿐이다.
+                # 선적재 오염 무효(V-4)도 같다 - 이력을 지우기 전에는 뒤 턴도 오염된 상태에서 돈다.
+                cause = (
+                    "폼필 확인 이력 선적재 - 이력 삭제 후"
+                    if str(verdict.invalid_reason or "").startswith(FORM_MEMORY_PRELOAD_REASON)
+                    else "러너 인증 실패"
+                )
                 reason = (
-                    f"선행 턴 {turn_no} 이 무효(러너 인증 실패) - 재개(--resume) 대상"
+                    f"선행 턴 {turn_no} 이 무효({cause}) - 재개(--resume) 대상"
                     if verdict.func == INVALID_VERDICT
                     else f"선행 턴 {turn_no} 이 {verdict.func} - 후속 턴 판정 불가"
                 )
@@ -2040,6 +2376,20 @@ def _run_once(
                 skipped.append({
                     "scenario_id": scenario.id,
                     "reason": f"유사어 되돌리기 실패 - 유사어 사전을 수동으로 확인할 것: "
+                              f"{type(exc).__name__}: {exc}",
+                })
+        if forget_form and form_sig and form_before is not None:
+            try:
+                meta.setdefault("teardown_log", []).append({
+                    "scenario_id": scenario.id, "repeat": repeat,
+                    "forget_form_memory": forget_form_memory_additions(
+                        form_sig, form_before, scenario.forget_form_fields),
+                })
+            except Exception as exc:
+                skipped.append({
+                    "scenario_id": scenario.id,
+                    "reason": f"폼필 확인 이력 되돌리기 실패 - 양식 시그니처 {form_sig} 의 "
+                              f"{scenario.forget_form_fields} 를 수동으로 확인할 것: "
                               f"{type(exc).__name__}: {exc}",
                 })
 

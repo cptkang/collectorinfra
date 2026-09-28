@@ -57,7 +57,7 @@ async def _two_tier_response(mock_config, db_results: dict, sqls: dict) -> tuple
         )
     prompts: list[str] = []
 
-    async def _fake_stream(llm, messages, tags=None):
+    async def _fake_stream(llm, messages, tags=None, max_tokens=None):
         prompts.append(messages[-1].content)
         return "응답 본문"
 

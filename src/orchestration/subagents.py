@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -28,7 +29,16 @@ from src.nodes.general_inference import general_inference
 from src.nodes.multi_db_executor import multi_db_executor
 from src.nodes.query_executor import query_executor
 from src.nodes.query_generator import query_generator
-from src.nodes.query_validator import query_validator
+from src.nodes.query_validator import (
+    REGEN_STOP_DEADLINE,
+    REGEN_STOP_NON_SQL,
+    REGEN_STOP_VALIDATION_BUDGET,
+    deadline_stop_message,
+    non_sql_budget_exhausted,
+    non_sql_prose_response,
+    query_validator,
+    retrieval_reserve_sec,
+)
 from src.nodes.realtime_usage import realtime_usage_lookup
 from src.nodes.result_merger import result_merger
 from src.nodes.result_organizer import result_organizer
@@ -39,7 +49,7 @@ from src.orchestration.process_query import (
     _DEMONSTRATIVE_PREFIXES,
     _HOST_FIELDS,
     _is_demonstrative_value,
-    _resolve_hostname,
+    resolve_investigation_targets,
     run_process_query,
 )
 from src.orchestration.db_access import access_denied_result, authorize_targets, denied_for_all
@@ -58,10 +68,12 @@ from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
 from src.routing.location_hints import pin_targets_to_hints, strip_location_terms
 from src.routing.registry import get_registry
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
+from src.utils.deadline import has_time_for, retrieval_remaining
 from src.utils.prior_targets import SOURCE_DB_KEY, build_prior_targets
 from src.utils.progress_events import emit_step
 from src.utils.query_gen_common import (
     ZONE_CLARIFY_OPTIONS,
+    term_in_text,
     build_zone_clarification,
     has_host_identifier_filter,
     is_realtime_usage_query,
@@ -228,8 +240,7 @@ def _has_new_location_db_signal(text: str) -> bool:
     """
     if not text:
         return False
-    lowered = text.lower()
-    return any(sig.lower() in lowered for sig in _LOCATION_DB_SIGNALS)
+    return any(term_in_text(sig.lower(), text.lower()) for sig in _LOCATION_DB_SIGNALS)
 
 
 #: 존 선택이 결과를 바꾸는 agent (G-3 확정 2026-09-16).
@@ -336,6 +347,66 @@ def _zone_clarification_or_none_task(
     return payload
 
 
+def _zone_clarification_before_classify(
+    task: dict[str, Any],
+    isolated: dict[str, Any],
+    sub_query: str,
+    app_config: AppConfig,
+) -> dict[str, Any] | None:
+    """존 역질문 조기 판정 — DB 분류 LLM **전에** 후단 게이트와 같은 판정을 한다.
+
+    plans/119 Q-1 · D-267 ② (D-143 후속2 개정).
+
+    등가성(분류 결과와 무관하게 후단 게이트가 같은 페이로드로 끝남)이 성립하는 경우에만 판정하고,
+    나머지는 None을 돌려 종전 경로(분류 → 핀 → 승계 → 소유 제한 → 후단 게이트)에 맡긴다.
+
+    등가성 근거(코드 추적 — `tests/test_orchestration/test_plan119_zone_early.py`가 고정한다):
+    - 분류 결과는 활성 DB의 비지 않은 부분집합이다 — `_validate_db_entries`가 활성 도메인 밖 db_id를
+      버리고, 결과가 비거나 LLM이 실패하면 `classify_dbs`가 첫 활성 DB로 폴백한다.
+    - 위치 힌트가 없으면 핀은 입력 그대로·미적용이다(`pin_targets_to_hints` 규칙 6). 힌트가 있으면
+      핀 판정이 결과를 바꿀 수 있어 여기서 판정하지 않는다.
+    - 승계는 `previous_db_ids`가 있어야 일어나는데, 그 경우 후단 게이트가 먼저 비발동한다.
+    - 소유 제한은 활성 DB 안에서만 좁히거나 소유 시스템의 활성 DB로 넓힌다 — 결과가 비지 않는다.
+    - 후단 게이트가 대상 목록에서 쓰는 것은 "비지 않고 전부 폴스타 DB인가" 하나뿐이고, 페이로드는
+      활성·인가 DB와 원문으로만 만든다.
+    따라서 **활성 DB가 전부 폴스타 DB이면서 존 그룹 소속**이면 분류가 무엇을 내든 후단 게이트의 답은
+    같다. 존 그룹이 없는 DB가 하나라도 활성이면(W-10 경계 — 분류가 그 DB를 고르면 역질문하지 않는다)
+    판정하지 않는다. 활성 DB·존 그룹은 설정·레지스트리에서 읽는다.
+    """
+    active = [d for d in app_config.multi_db.get_active_db_ids() if d]
+    if not active:
+        return None
+    polestar_ids = app_config.get_polestar_db_ids() or set()
+    registry = get_registry()
+    if not all(d in polestar_ids and registry.zone_group_of(d) is not None for d in active):
+        return None
+    hints = (isolated.get("parsed_requirements") or {}).get("target_db_hints") or []
+    if isinstance(hints, list) and any(str(h).strip() for h in hints):
+        return None
+    payload = _zone_clarification_or_none_task(
+        task, isolated, _normalize_targets(active, sub_query),
+        db_pinned=False, db_succeeded=False, app_config=app_config,
+    )
+    if payload:
+        logger.info(
+            "존 역질문 조기 판정(plans/119 Q-1): 활성 DB %s 전부 존 그룹 소속 · 신호 없음 — "
+            "DB 분류 LLM 생략", active,
+        )
+    return payload
+
+
+def _zone_clarification_result(zone_q: dict[str, Any]) -> dict[str, Any]:
+    """존 역질문 task 결과 — 조기 판정·후단 게이트가 같은 모양을 낸다."""
+    return {
+        "final_response": zone_q["question"],
+        "zone_clarification": zone_q,
+        "source": [],
+        # target_db_ids를 의도적으로 남기지 않는다 — result_aggregator의 DB 승격
+        # (_collect_db_promotion)이 임의 분류 결과를 previous_db_ids로 체크포인터에
+        # 남겨 재개·후속 턴 승계를 오염시키는 것을 차단(요청 스코프 원칙).
+    }
+
+
 def _refers_to_specific_server(text: str) -> bool:
     """질의가 지시어로 특정 서버 하나를 가리키는지 판정한다 (전체 조회 방지 게이트).
 
@@ -365,7 +436,12 @@ def _inject_demonstrative_hostname(isolated: dict) -> dict:
     주입 조건(모두 충족):
     - 이번 턴 filter_conditions에 서버 식별 필터가 없음(concrete 질의면 그대로 둠).
     - original_query가 지시어로 특정 서버를 가리킴(전체 조회 신호 없음).
-    - 직전 턴 서버(previous_entities)에서 지시어가 아닌 실제 hostname이 해소됨.
+    - 직전 턴 서버(previous_entities)에서 지시어가 아닌 실제 서버가 **정확히 1대** 해소됨.
+      여러 대(「그 서버들」)면 첫 1대로 좁히지 않고 주입을 생략한다 — 노드의 지시어 스코프
+      (`prompt_blocks.demonstrative_entity_scope`)가 전체를 HAVING으로 승계한다(plans/116 §10.3).
+
+    필드는 해소된 식별자 종류를 따른다 — hostname이 있으면 hostname, 서버명뿐이면 name.
+    서버명을 hostname 필드로 붙이면 name≠hostname 서버(D-046)가 0건이 된다.
 
     Args:
         isolated: subagent 격리 입력(parsed_requirements/conversation_context 포함)
@@ -382,17 +458,31 @@ def _inject_demonstrative_hostname(isolated: dict) -> dict:
         return parsed  # 이미 서버 식별 필터 있음(concrete 질의)
     if not _refers_to_specific_server(str(parsed.get("original_query", ""))):
         return parsed  # 특정 서버 지목 아님(전체 조회 등) — 스코프 강제 금지
-    hostname = _resolve_hostname(isolated)
-    if not hostname or _is_demonstrative_value(hostname):
+    resolution = resolve_investigation_targets(isolated)
+    if not resolution.resolved:
         return parsed  # 직전 실제 서버 미해소
+    if len(resolution.targets) > 1:
+        logger.info(
+            "지시어 대상 %d대 — 단일 필터 주입 생략(노드 지시어 스코프가 승계)",
+            len(resolution.targets),
+        )
+        return parsed
+    target = resolution.targets[0]
+    field, value = (
+        ("hostname", target.hostname) if target.hostname
+        else ("name", target.server_name) if target.server_name
+        else ("hostname", target.ip)
+    )
+    if not value or _is_demonstrative_value(value):
+        return parsed
     new_parsed = dict(parsed)
     new_parsed["filter_conditions"] = [
         *filters,
-        {"field": "hostname", "op": "=", "value": hostname},
+        {"field": field, "op": "=", "value": value},
     ]
     logger.info(
-        "data_query 지시어 서버 해소: hostname=%s 를 filter_conditions에 주입(전체 조회 방지)",
-        hostname,
+        "data_query 지시어 서버 해소: %s=%s 를 filter_conditions에 주입(전체 조회 방지)",
+        field, value,
     )
     return new_parsed
 
@@ -551,6 +641,57 @@ def _normalize_targets(targets: list, sub_query: str) -> list[dict]:
 # 단일 DB 파이프라인 (풀 검증·재시도 보존)
 # ──────────────────────────────────────────────
 
+def _monotonic() -> float:
+    """단조 시계(초) — 조회 마감 판정·생성 소요 계측이 쓴다. 테스트는 이 이름을 바꿔 끼운다."""
+    return time.monotonic()
+
+
+def _stop_regen(
+    state: dict[str, Any], reason: str, detail: str, *, response: str | None = None,
+) -> None:
+    """SQL 재생성 루프 종결 표지를 파이프라인 상태에 싣는다(plans/119 N-5·T-3·T-1ⓑ).
+
+    - `regen_stop`(`{"reason", "detail"}`)은 실패 task 결과로 승격돼 재계획기가 소비한다
+      (`_pack_pipeline_result` · 계약 plans/119 Q-3).
+    - `regen_stop_response`가 있으면 호출부가 결과 정리 대신 그 문구를 응답 본문으로 싣는다.
+    - 앞선 실패 사유(`error_message`)가 없으면 detail을 실패 사유로 둔다 — task가 "0건 완료"로
+      바뀌지 않게 한다(D-231 ②와 같은 이유).
+    """
+    state["regen_stop"] = {"reason": reason, "detail": detail}
+    if response is not None:
+        state["regen_stop_response"] = response
+    if not state.get("error_message"):
+        state["error_message"] = detail
+
+
+def _stop_for_deadline(
+    state: dict[str, Any], reserve_sec: float, *, stage: str, need_sec: float | None,
+    last_reason: str | None,
+) -> None:
+    """조회 마감으로 다음 단계를 시작하지 않고 끝낸다 — 사유를 사용자 문구로 남긴다(침묵 금지).
+
+    직전 실패가 산문(비-SQL)이면 그 산문(되물음·불가 사유)이 사용자에게 가장 쓸모 있는 답이라
+    산문 응답(`non_sql_prose_response`)을 앞에 두고 시간 사유를 덧붙인다 — 검증 사유 문자열
+    ("SELECT 문만 허용됩니다 …")은 사용자 언어가 아니다.
+    """
+    left = retrieval_remaining(state, reserve_sec, now=_monotonic())
+    prose_first = bool(last_reason) and bool((state.get("validation_result") or {}).get("non_sql"))
+    message = deadline_stop_message(
+        stage, remaining_sec=left, need_sec=need_sec,
+        last_reason=None if prose_first else last_reason,
+    )
+    if prose_first:
+        message = (
+            f"{non_sql_prose_response(state.get('generated_sql') or '')}\n\n{message}"
+        )
+    logger.info(
+        "단일 DB 파이프라인 조회 마감 종결(plans/119): %s 미시작 — 남은 %s초 · 직전 생성 %s초",
+        stage, None if left is None else round(left, 1),
+        None if need_sec is None else round(need_sec, 1),
+    )
+    _stop_regen(state, REGEN_STOP_DEADLINE, last_reason or message, response=message)
+
+
 async def _run_single_db_pipeline(
     s: dict,
     llm: BaseChatModel,
@@ -564,6 +705,16 @@ async def _run_single_db_pipeline(
       → query_executor
       → (error 있고 retry<3이면 query_generator 회귀 / >=3이면 에러)
       → result_organizer (호출자가 별도 수행하므로 여기서는 executor까지)
+
+    종결 규칙(plans/119 — 그래프 경로와 같은 상수·같은 판정):
+    - **산문(비-SQL) 응답**은 전용 예산 `NON_SQL_RETRY_BUDGET`(1)으로 끝낸다(N-5). 그래프
+      `route_after_validation`과 같은 판정(`non_sql_budget_exhausted`)이다. 일반 검증 실패는 종전
+      예산(`QUERY_MAX_RETRY_COUNT`) 그대로다.
+    - **조회 마감**(처리 마감 − 서술 예약): 스키마 분석·첫 생성 **진입 전** 마감이 지났으면
+      시작하지 않고(T-1ⓑ), 재생성(검증 실패·실행 오류 모두)은 `남은 시간 < 방금 잰 직전 생성
+      소요`면 하지 않는다(T-3). 마감(`request_deadline`)이 없는 상태(CLI·테스트·옛
+      체크포인트)는 종전 동작과 같다.
+    - 유효 SQL 없이 끝나면 `regen_stop`을 남긴다(`_stop_regen`).
 
     주의: result_organizer는 호출자(run_data_query_pipeline)에서 일괄 수행한다.
     여기서는 schema→generate→validate→execute 까지의 재시도 루프만 담당한다.
@@ -579,6 +730,13 @@ async def _run_single_db_pipeline(
     state = dict(s)
     # SQL 재생성 재시도 예산 — config 단일 출처 (D-099, Plan 69 P0-⑧)
     _max_retry = app_config.query.max_retry_count if app_config else 3
+    # 조회 마감 = 처리 마감(request_deadline) − 서술 예약(plans/119 T-1ⓑ·T-3 · D-267 ⑥)
+    _reserve = retrieval_reserve_sec(app_config)
+
+    # T-1ⓑ: 스키마 분석 진입 전 — 조회 마감이 이미 지났으면 시작하지 않는다.
+    if not has_time_for(state, _reserve, None, now=_monotonic()):
+        _stop_for_deadline(state, _reserve, stage="스키마 분석", need_sec=None, last_reason=None)
+        return state
 
     # 단계 마일스톤(plans/89 T4): 서브에이전트 안에서는 노드가 함수로 불려 바깥 그래프에
     # node 이벤트가 없다 — 각 단계 앞뒤에 `pipeline.<stage>` custom event를 내 상태줄이 따라온다.
@@ -588,13 +746,28 @@ async def _run_single_db_pipeline(
     await emit_step("pipeline.schema", "end")
 
     steps = 0
+    # 직전 SQL 생성 소요(초) — 방금 잰 값으로 재생성 가능 여부를 판정한다(추정 상수 금지 · T-3).
+    last_gen_sec: float | None = None
     while steps < _MAX_PIPELINE_STEPS:
         steps += 1
+
+        # T-1ⓑ·T-3: (재)생성 진입 전 시간 게이트 — 첫 생성은 조회 마감 경과만,
+        # 재생성은 직전 생성 소요와 비교한다.
+        if not has_time_for(state, _reserve, last_gen_sec, now=_monotonic()):
+            _stop_for_deadline(
+                state, _reserve,
+                stage="SQL 생성" if steps == 1 else "SQL 재생성",
+                need_sec=last_gen_sec,
+                last_reason=state.get("error_message") if steps > 1 else None,
+            )
+            break
 
         # 2) SQL 생성
         _gen_label = "SQL 생성" if steps == 1 else f"SQL 재생성 {steps - 1}회차"
         await emit_step("pipeline.generate", "start", label=_gen_label)
+        _gen_started = _monotonic()
         state.update(await query_generator(state, llm=llm, app_config=app_config))
+        last_gen_sec = _monotonic() - _gen_started
         await emit_step("pipeline.generate", "end")
 
         # 3) 검증
@@ -606,12 +779,23 @@ async def _run_single_db_pipeline(
             else state.get("error_message") or state["validation_result"].get("reason")
         ))
         if not state["validation_result"]["passed"]:
+            _reason = state["validation_result"].get("reason", "SQL 검증 실패")
+            if non_sql_budget_exhausted(state["validation_result"], state.get("retry_count", 0)):
+                # N-5: 산문 전용 예산 소진 — 그래프 `error_response`와 같은 문구로 산문을 싣는다
+                logger.info(
+                    "단일 DB 파이프라인 산문 조기 종결(plans/119 N-5): retry=%s",
+                    state.get("retry_count", 0),
+                )
+                _stop_regen(
+                    state, REGEN_STOP_NON_SQL, _reason,
+                    response=non_sql_prose_response(state.get("generated_sql") or ""),
+                )
+                break
             if state.get("retry_count", 0) >= _max_retry:
                 # 검증 실패 + 재시도 초과 → 에러 종료
                 if not state.get("error_message"):
-                    state["error_message"] = state["validation_result"].get(
-                        "reason", "SQL 검증 실패"
-                    )
+                    state["error_message"] = _reason
+                _stop_regen(state, REGEN_STOP_VALIDATION_BUDGET, _reason)
                 break
             # 재시도 가능 → query_generator 재진입
             continue
@@ -834,6 +1018,10 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         # 원문 기준이어야 함 — resolved_limit 승격과 동일 원리).
         "zone_clarification_allowed": bool(state.get("zone_clarification_allowed")),
         "original_user_query": state.get("user_query", ""),
+        # 요청 처리 마감(monotonic · D-266 ④) — SQL 루프의 조회 마감 게이트 입력
+        # (plans/119 T-1ⓑ·T-3).
+        # 없으면(CLI·옛 체크포인트·1단 ambient 미전파) 게이트가 항상 통과한다(종전 동작).
+        "request_deadline": state.get("request_deadline"),
     }
 
     # 노드 KeyError 방지용 기본값 (대형 누적분은 빈 값으로 초기화)
@@ -1134,6 +1322,12 @@ async def run_data_query_pipeline(
     if raw_targets:
         targets = _normalize_targets(raw_targets, sub_query)
     else:
+        # 존 역질문 조기 판정(plans/119 Q-1): 분류 결과와 무관하게 후단 게이트가 같은 답을
+        # 내는 경우엔 DB 분류 LLM을 부르지 않고 여기서 되묻는다. 그 밖에는 None — 아래 종전
+        # 경로가 판정한다.
+        _early_zone_q = _zone_clarification_before_classify(task, isolated, sub_query, app_config)
+        if _early_zone_q:
+            return _zone_clarification_result(_early_zone_q)
         targets = await classify_dbs(llm, sub_query, app_config)
         # X-T3(plans/102) — classify_dbs 폴백 표지(소유 플래그 on에서만 붙는다)를 떼어
         # 경과 노트로 올린다.
@@ -1205,14 +1399,7 @@ async def run_data_query_pipeline(
             db_pinned=db_pinned, db_succeeded=db_succeeded, app_config=app_config,
         )
         if _zone_q:
-            return {
-                "final_response": _zone_q["question"],
-                "zone_clarification": _zone_q,
-                "source": [],
-                # target_db_ids를 의도적으로 남기지 않는다 — result_aggregator의 DB 승격
-                # (_collect_db_promotion)이 임의 분류 결과를 previous_db_ids로 체크포인터에
-                # 남겨 재개·후속 턴 승계를 오염시키는 것을 차단(요청 스코프 원칙).
-            }
+            return _zone_clarification_result(_zone_q)
 
     # 사용자별 DB 인가(D-232) — 대상 출처(계획 고정·존 선택·분류·위치 힌트 고정·승계·소유 제한)와
     # 무관하게 확정된 대상에 3단과 같은 필터를 건다. 존 역질문 뒤에 두는 것도 3단과 같다(라우터 안의
@@ -1243,6 +1430,10 @@ async def run_data_query_pipeline(
                     "target_databases": targets,
                     "is_multi_db": len(targets) > 1,
                     "active_db_id": targets[0]["db_id"],
+                    # D-205 승격 재료 — SQL 경로 반환부와 대칭(plans/120 S-1b: 없으면 이 턴의
+                    # `db_scope.db_ids`가 스트림·비스트림 모두 비고 다음 턴 DB 승계가 끊긴다)
+                    "target_db_ids": _target_ids,
+                    "db_origin": db_origin,
                 }
                 if ownership_notes:
                     rt_result["dependency_notes"] = (
@@ -1301,6 +1492,22 @@ async def run_data_query_pipeline(
     # 게이트·집계기가 "데이터가 없습니다"로 답했다(P-13 — 2026-09-17 로컬 C-06 재현, 그래프 경로는
     # 같은 실패를 error_response로 보낸다).
     pipeline_error = s.get("error_message")
+    # SQL 루프가 사유 문구를 남기고 끝났으면(산문 조기 종결 N-5 · 조회 마감 T-1ⓑ·T-3) 정리할
+    # 결과가 없다 — 결과 정리를 건너뛰고 그 문구를 응답 본문으로 싣는다. 결과 정리·출력 생성을
+    # 거치면 0행이라 집계기가 "조건에 해당하는 … 데이터가 없습니다"로 답해 사유가 사라진다(침묵
+    # 강등). 집계기는 `organized_data`가 없는 결과의 `final_response`를 그대로 쓴다
+    # (`_finalize_task` 텍스트 계열 분기). 산문 문구는 그래프 `error_response`와 같은 함수다
+    # (`non_sql_prose_response` · 경로 대칭).
+    stop_response = s.get("regen_stop_response") if pipeline_error else None
+    if stop_response:
+        stopped = _pack_pipeline_result(
+            s, targets, pipeline_error,
+            ownership_notes=ownership_notes, db_origin=db_origin,
+            db_succeeded=db_succeeded, db_pinned=db_pinned,
+        )
+        stopped["organized_data"] = None
+        stopped["final_response"] = stop_response
+        return stopped
     await emit_step("pipeline.organize", "start", label="결과 정리")
     s.update(await result_organizer(s, llm=llm, app_config=app_config))
     await emit_step("pipeline.organize", "end")
@@ -1310,6 +1517,34 @@ async def run_data_query_pipeline(
         ownership_notes=ownership_notes, db_origin=db_origin,
         db_succeeded=db_succeeded, db_pinned=db_pinned,
     )
+
+
+def _task_regen_stop(s: dict[str, Any]) -> dict[str, str] | None:
+    """실패 task에 실을 `regen_stop` — 단일 DB는 루프가 남긴 표지, 멀티 DB는 DB별 표지를 합친다.
+
+    멀티 DB는 **실패한 DB 전부**가 SQL 루프에서 멈췄을 때만 싣는다. 연결 오류·미등록·테이블
+    없음 등 SQL 루프 밖 실패가 하나라도 섞이면 재위임이 무익하다고 단정할 수 없어 싣지 않는다
+    (재계획기 판단에 맡긴다). 사유가 DB마다 다르면 조회 마감(요청 전체의 사유)이 앞서고,
+    산문·검증 소진이 섞이면 검증 소진으로 본다. detail은 DB별 마지막 사유를 잇는다.
+    """
+    stop = s.get("regen_stop")
+    if isinstance(stop, dict) and stop.get("reason"):
+        return {"reason": str(stop["reason"]), "detail": str(stop.get("detail") or "")}
+    stops = s.get("regen_stops")
+    if not isinstance(stops, dict) or not stops:
+        return None
+    failed = [d for d in (s.get("db_errors") or {}) if d]
+    if not failed or any(not isinstance(stops.get(d), dict) for d in failed):
+        return None
+    reasons = {str(stops[d].get("reason") or "") for d in failed}
+    if len(reasons) == 1:
+        reason = reasons.pop()
+    elif REGEN_STOP_DEADLINE in reasons:
+        reason = REGEN_STOP_DEADLINE
+    else:
+        reason = REGEN_STOP_VALIDATION_BUDGET
+    detail = " / ".join(f"{d}: {stops[d].get('detail') or ''}" for d in failed)
+    return {"reason": reason, "detail": detail}
 
 
 def _pack_pipeline_result(
@@ -1348,6 +1583,11 @@ def _pack_pipeline_result(
     error = pipeline_error or s.get("error_message")
     if error:
         result["error"] = error
+        # SQL 재생성 루프 종결 표지(plans/119 Q-3 계약) — 유효 SQL 없이 끝난 **실패 task에만**
+        # 싣는다.
+        stop = _task_regen_stop(s)
+        if stop is not None:
+            result["regen_stop"] = stop
     # DB별 스코프 분할 경과(D-203) — multi_db_executor가 낸 미조회 DB·노트를 task 결과로 승격한다.
     # group_results(D-206 존 순차 실행 경과)도 처리현황에 실린다.
     for _dk in ("dependency_notes", "skipped_dbs", "group_results"):

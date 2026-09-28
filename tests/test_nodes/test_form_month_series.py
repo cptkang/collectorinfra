@@ -1052,7 +1052,8 @@ class TestResponseTableMarkdownSafety:
         assert "오늘: 2026-08-25" in prompt
         assert "기준월: 2026년 1월 ~ 2026년 6월" in prompt
         assert "조회 기간: 2026년 1월 ~ 2026년 6월" in prompt
-        assert "전체 결과는 25건" in prompt and "상위 20건만" in prompt
+        # 요약 미리보기는 5행(plans/119 N-1) — 절단 문구는 그 수를 쓴다
+        assert "전체 결과는 25건" in prompt and "상위 5건만" in prompt
         # reference_info 없으면 종전 프롬프트와 동일(블록 없음)
         assert "## 기준 정보" not in _build_response_prompt("질의", "요약", rows[:1])
 

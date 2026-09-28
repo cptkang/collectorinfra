@@ -27,6 +27,9 @@ from src.utils.query_gen_common import (
     build_value_index_block,
     collect_prior_identity_values,
     collect_prior_identity_values_by_db,
+    has_host_identifier_filter,
+    refers_to_demonstrative_server,
+    surface_query_for_judgment,
 )
 from src.utils.schema_utils import build_excluded_join_map
 
@@ -713,6 +716,50 @@ def prior_server_scope(prior_rows: Any) -> Optional[tuple[str, list[str]]]:
     col, values = collect_prior_identity_values(prior_rows)
     if not col or not values:
         return None
+    return col, values
+
+
+def demonstrative_entity_scope(state: Any) -> Optional[tuple[str, list[str]]]:
+    """지시어 후속 턴(「그 서버들의 …」)의 서버 스코프를 직전 턴 식별 엔티티에서 뽑는다.
+
+    선행 task 결과(prior_rows)가 없는 **턴 간** 승계다. 단수 지시어는 2단 핸들러가 hostname
+    필터를 주입하지만(`_inject_demonstrative_hostname` — 값 1개), 복수 지시어는 아무도 승계하지
+    않아 결정적 컴파일이 서버 필터 없는 전체 피벗(54행)을 냈다(plans/116 §10.3 Q-MULTI-TOP 2턴).
+    `prior_server_scope`와 같은 (식별컬럼, 값목록)을 돌려 두 경로가 같은 HAVING 스코프를 쓴다.
+
+    발동 조건(모두): 이번 턴 원문이 지시어로 서버를 가리킴 · 이번 턴에 실제 서버 식별 필터 없음 ·
+    직전 엔티티가 직전 결과 **전체**를 담음(엔티티는 상한 표본이라 결과가 더 많으면 표본으로
+    좁히는 오답이 된다 — 그때는 발동하지 않는다).
+
+    Returns:
+        (식별컬럼, 값목록) 또는 None
+    """
+    parsed = state.get("parsed_requirements") or {}
+    # 원문 기준 판정 — 2단은 original_query·user_query를 planner 재작성문(「직전 조회 결과인
+    # 서버 목록 (…) 의 …」)으로 바꿔 지시어가 사라진다(plans/107 W0.5와 같은 부류).
+    text = surface_query_for_judgment(state)
+    if has_host_identifier_filter(parsed) or not refers_to_demonstrative_server(text):
+        return None
+    ctx = state.get("conversation_context") or {}
+    entities = [
+        e for e in ctx.get("previous_entities") or []
+        if isinstance(e, dict) and e.get("field")
+    ]
+    if not entities:
+        return None
+    col, values = collect_prior_identity_values(
+        {"previous": [{e["field"]: e.get("value")} for e in entities]}, limit=None,
+    )
+    if not col or not values:
+        return None
+    total = ctx.get("previous_result_count")
+    if isinstance(total, int) and total > len(values):
+        logger.info(
+            "지시어 서버 스코프 미적용 — 직전 결과 %d건 중 엔티티 %d건만 보존(표본)",
+            total, len(values),
+        )
+        return None
+    logger.info("지시어 서버 스코프 승계: %s IN %s (직전 턴 엔티티)", col, values)
     return col, values
 
 

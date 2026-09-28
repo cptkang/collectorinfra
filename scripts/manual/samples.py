@@ -218,6 +218,11 @@ def run(only: list[str] | None, profile: str) -> None:
                     flush=True,
                 )
                 turns.append(res)
+            failed = [t for t in turns if (t["done"].get("type") or "") != "done"]
+            if failed:
+                # 시간 초과·오류로 끝난 녹화는 기존 샘플을 덮지 않는다 — 다시 돌린다
+                print(f"   ✗ {case['id']}: 완료되지 않은 턴 {len(failed)}개 — 샘플 보존", flush=True)
+                continue
             prev = SAMPLES / f"{case['id']}.json"
             doc = {
                 "id": case["id"],

@@ -43,6 +43,11 @@
    ]
   }
  ],
- "reviewed": false,
- "recorded_at": "2026-09-23T16:22:10"
+ "reviewed": true,
+ "recorded_at": "2026-09-23T16:22:10",
+ "review": {
+  "verdict": "ok",
+  "notes": "재녹화 — IP 10.61.0.3 · Linux · RHEL 8.6 · Xeon Gold 6248R · 65536 원본 일치. 요약의 「64GB」는 단위 없는 값의 해석(참고사항에 명시)",
+  "at": "2026-09-28"
+ }
 }

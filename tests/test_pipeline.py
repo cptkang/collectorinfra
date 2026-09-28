@@ -424,7 +424,12 @@ class TestHappyPath:
         state.update(result)
 
         assert state["current_node"] == "output_generator"
-        assert state["final_response"] == nl_response
+        # plans/119 N-1(D-251 ④): 표는 코드가 렌더하고 LLM 요약은 그 아래에 붙는다.
+        assert state["final_response"] == (
+            "| hostname | usage_pct |\n|---|---|\n"
+            "| web-01 | 85.3% |\n| web-02 | 92.1% |\n| db-01 | 88.7% |\n\n"
+            + nl_response
+        )
         assert state["output_file"] is None
         assert state["error_message"] is None
 

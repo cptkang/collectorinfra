@@ -136,3 +136,19 @@ REPLANNER_SYSTEM_TEMPLATE = """당신은 인프라 질의 처리 결과를 평�
 
 반드시 유효한 JSON만 출력하세요.
 """
+
+# ── 예산 인지 재계획(plans/119 T-6 · 문헌 L-9 · `REPLAN_BUDGET_PROMPT_ENABLED` 기본 off) ──
+# 켜졌을 때만 평가 컨텍스트(Human 메시지) **말미**에 붙는다. 시스템 템플릿은 건드리지 않는다 —
+# off면 LLM 입력이 바이트 단위로 종전과 같고(D-162), on이어도 시스템 접두가 같아 KV 캐시가 유지된다.
+REPLANNER_BUDGET_BLOCK_TEMPLATE = (
+    "## 남은 예산 (시간·재계획)\n"
+    "{time_line}- 남은 재계획 횟수: {remaining_replans}회 (최대 {max_replan}회)\n"
+    "- 지금까지의 결과로 종결할 수 있습니다. 남은 예산 안에 끝내기 어렵거나 꼭 필요하지 않은 "
+    "후속이면 `needs_followup=false`로 종료하세요."
+)
+
+# 조회 마감이 있을 때만(라우트가 마감을 실은 요청) 위 `{time_line}` 자리에 들어간다.
+REPLANNER_BUDGET_TIME_LINE_TEMPLATE = (
+    "- 조회 마감까지 남은 시간: 약 {remaining_sec}초 "
+    "(답변 작성에 쓸 {reserve_sec}초는 이미 뺐습니다)\n"
+)

@@ -112,7 +112,13 @@ scenarios:
         expect:
           status: completed
           has_file: true
-          response_must_contain: ["[미작성 항목]"]
+          # plans/120 U-4: 제품은 3열을 폼필 역질문(D-151)으로 먼저 묻고, 러너는 "전 필드 공란"으로
+          #   자동 응답한다(D-216). 사용자가 지정한 공란은 `[미작성 항목]` 에서 빠지고 대신
+          #   `[사용자 답변 적용 내역]` 에 열마다 `공란 유지 적용` 으로 실린다(output_generator 결정적
+          #   덧붙임 - plans/119 N-1 이후에도 LLM 요약 밖이다). 둘 중 하나면 사유 고지가 성립한다.
+          response_must_contain_any:
+            - "[미작성 항목]"
+            - ["[사용자 답변 적용 내역]", "TPMC: 공란 유지", "도입일자: 공란 유지", "용도: 공란 유지"]
           manual_review: "TPMC·도입일자·용도 3열이 공란이고 그 사유가 열 이름과 함께 나오는지"
   - id: H-10
     plans: [10, 19, 72, 73, 58, 35]

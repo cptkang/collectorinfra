@@ -32,6 +32,11 @@
    "rows_head": []
   }
  ],
- "reviewed": false,
- "recorded_at": "2026-09-23T17:58:15"
+ "reviewed": true,
+ "recorded_at": "2026-09-23T17:58:15",
+ "review": {
+  "verdict": "ok",
+  "notes": "재녹화 — 결정적 안내(D-200) 문구 동일",
+  "at": "2026-09-28"
+ }
 }

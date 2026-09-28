@@ -5,28 +5,60 @@
    "query": "심각 알람이 발생한 적이 있는 서버들의 IP 주소와 OS 종류를 보여줘",
    "file": null,
    "key": "664da25f3134454c",
-   "elapsed_s": 745.5,
+   "elapsed_s": 142.6,
    "nodes": [
     "context_resolver",
-    "input_parser"
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
    ],
    "done": {
-    "type": "error",
-    "response": null,
-    "row_count": null,
-    "executed_sql": null,
-    "has_file": null,
+    "type": "done",
+    "response": "조회 결과\n\n심각도 3.0(최고 심각) 의 알람이 발생한 서버 3 건의 IP 주소와 OS 종류를 확인했습니다.\n\n| server_name | alarm_name | severity | ipaddress | OSType |\n|---|---|---|---|---|\n| SV-WEB-001 | CPU 사용률 임계 초과 | 3.0 | 10.61.0.1 | Linux |\n| DB-ORA-023 | 메모리 사용률 임계 초과 | 3.0 | 10.61.0.2 | Linux |\n| SV-BATCH-009 | CPU 사용률 임계 초과 | 3.0 | 10.61.0.4 | AIX |\n\n참고사항\n- 조회된 데이터는 심각도 3.0 인 알람 건만 포함되어 있으며, severity 값은 모두 3.0 입니다.\n- OS 종류는 Linux(2 건), AIX(1 건) 입니다.\n\n---\n## 순차 처리 경과\n- [t2] 선행 작업(t1) 결과 3대(name)로 대상을 한정했습니다. 선별 기준: 정렬 CTIME 내림차순 · 상한 10000건.\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 3,
+    "executed_sql": "-- [t1]\nSELECT\n  SVR.NAME AS server_name,\n  D.NAME AS alarm_name,\n  CA.ALARMSEVERITY AS severity\nFROM polestar.cmm_resource CR\nJOIN polestar.cmm_alarm CA ON CA.RESOURCE_ID = CR.ID\nJOIN polestar.cmm_alarm_def D ON CA.DEFINITION_ID = D.ID\nLEFT JOIN polestar.cmm_resource SVR ON SVR.ID = COALESCE(CR.PLATFORM_RESOURCE_ID, CR.SERVICE_RESOURCE_ID, CR.ID)\nWHERE CR.DTIME IS NULL\n  AND CA.ALARMSEVERITY = 3\nORDER BY CA.CTIME DESC, CA.ID DESC\nLIMIT 10000;\n\n-- [t2]\nSELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.name END) AS \"name\",\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.ipaddress END) AS \"ipaddress\",\n  MAX(CASE WHEN c.resource_type='server.Server' AND cc.name='OSType' THEN cc.stringvalue_short END) AS \"OSType\"\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id\nWHERE c.resource_type IN ('server.Server')\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nHAVING MAX(CASE WHEN c.resource_type='server.Server' THEN c.name END) IN ('SV-WEB-001', 'DB-ORA-023', 'SV-BATCH-009')\nLIMIT 10000;",
+    "has_file": false,
     "file_name": null,
-    "awaiting_approval": null,
+    "awaiting_approval": false,
     "clarification": null,
     "form_fill_clarification": null,
     "form_memory_panel": null,
-    "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-    "code": "timeout"
+    "message": null,
+    "code": null
    },
-   "rows_head": []
+   "rows_head": [
+    {
+     "server_name": "SV-WEB-001",
+     "alarm_name": "CPU 사용률 임계 초과",
+     "severity": 3.0,
+     "ipaddress": "10.61.0.1",
+     "OSType": "Linux"
+    },
+    {
+     "server_name": "DB-ORA-023",
+     "alarm_name": "메모리 사용률 임계 초과",
+     "severity": 3.0,
+     "ipaddress": "10.61.0.2",
+     "OSType": "Linux"
+    },
+    {
+     "server_name": "SV-BATCH-009",
+     "alarm_name": "CPU 사용률 임계 초과",
+     "severity": 3.0,
+     "ipaddress": "10.61.0.4",
+     "OSType": "AIX"
+    }
+   ]
   }
  ],
- "reviewed": false,
- "recorded_at": "2026-09-23T17:25:09"
+ "reviewed": true,
+ "recorded_at": "2026-09-28T07:59:35",
+ "review": {
+  "verdict": "ok",
+  "notes": "재녹화 — 심각(3) 알람 서버 3대 · IP·OS(Linux·Linux·AIX) 원본 일치",
+  "at": "2026-09-28"
+ }
 }

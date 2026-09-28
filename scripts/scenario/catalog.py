@@ -130,6 +130,10 @@ class Scenario:
     # teardown unregister_synonym 이 지울 단어(A-10). 유사어 사전 스냅샷 차이 중 이 단어만 지운다 -
     # 공유 Redis 에서 같은 시각 다른 출처가 더한 단어까지 지우지 않기 위해서다.
     unregister_words: list[str] = field(default_factory=list)
+    # teardown forget_form_memory 가 지울 폼필 확인 이력 필드(plans/120 V-4 · I-02~I-06).
+    # 업로드 양식 시그니처의 이력 스냅샷 차이 중 이 필드만 지운다 - 원래 있던 필드·다른 주체가
+    # 더한 필드는 남긴다.
+    forget_form_fields: list[str] = field(default_factory=list)
     source_file: Optional[str] = None
 
     @property
@@ -280,6 +284,29 @@ def _validate_patterns(turns: list[Turn], scenario_id: str, errors: list[str]) -
                     )
 
 
+def _validate_contain_any(turns: list[Turn], scenario_id: str, errors: list[str]) -> None:
+    """`response_must_contain_any` 는 선택지 목록이다(plans/120 U-4).
+
+    항목은 문구 하나 또는 문구 묶음(전부 포함해야 성립)이다. 모양이 틀리면 평가기가 문자열을
+    한 글자씩 선택지로 읽어 거의 모든 응답을 통과시킨다.
+    """
+    for index, turn in enumerate(turns, start=1):
+        options = turn.expect.get("response_must_contain_any")
+        if options is None:
+            continue
+        valid = isinstance(options, list) and bool(options) and all(
+            (isinstance(option, str) and option.strip())
+            or (isinstance(option, list) and option
+                and all(isinstance(item, str) and item.strip() for item in option))
+            for option in options
+        )
+        if not valid:
+            errors.append(
+                f"{scenario_id} 턴{index} response_must_contain_any: 비지 않은 목록이어야 하고 "
+                f"항목은 문구 또는 문구 목록이다 - {options!r}"
+            )
+
+
 def _positive_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
@@ -289,7 +316,10 @@ def _id_list(value: Any) -> bool:
 
 
 def _parse_runner_steps(raw: dict[str, Any], scenario_id: str, errors: list[str]) -> dict[str, Any]:
-    """replay·concurrent·action·setup·unregister_words 를 읽는다(D-217). 틀린 선언은 조용히 무시하지 않는다."""
+    """replay·concurrent·action·setup·unregister_words·forget_form_fields 를 읽는다(D-217).
+
+    틀린 선언은 조용히 무시하지 않는다.
+    """
     parsed: dict[str, Any] = {}
     for key in ("replay", "concurrent", "action"):
         value = raw.get(key) or {}
@@ -339,6 +369,26 @@ def _parse_runner_steps(raw: dict[str, Any], scenario_id: str, errors: list[str]
     elif words is not None and not wants_unregister:
         errors.append(f"{scenario_id}: unregister_words 는 teardown unregister_synonym 과 함께만 쓴다")
     parsed["unregister_words"] = [str(word).strip() for word in words] if _id_list(words) else []
+
+    # plans/120 V-4 - 폼필 확인 이력은 양식 시그니처 단위라 사용자 스코프가 없다. 선언한 필드만
+    # 지우고, 시그니처는 업로드 양식에서 뜬다 - 둘 중 하나라도 없으면 지울 범위가 정해지지 않는다.
+    fields = raw.get("forget_form_fields")
+    wants_forget = "forget_form_memory" in (raw.get("teardown") or [])
+    if wants_forget and not _id_list(fields):
+        errors.append(
+            f"{scenario_id}: teardown forget_form_memory 에는 지울 필드 목록 "
+            "forget_form_fields 가 필요하다"
+        )
+    elif fields is not None and not wants_forget:
+        errors.append(
+            f"{scenario_id}: forget_form_fields 는 teardown forget_form_memory 와 함께만 쓴다"
+        )
+    if wants_forget and not raw.get("upload"):
+        errors.append(
+            f"{scenario_id}: teardown forget_form_memory 는 upload(양식 파일)가 있어야 한다 - "
+            "이력 키(양식 시그니처)를 거기서 뜬다"
+        )
+    parsed["forget_form_fields"] = [str(f).strip() for f in fields] if _id_list(fields) else []
     return parsed
 
 
@@ -401,6 +451,7 @@ def _parse_scenario(
 
     turns = _parse_turns(raw.get("turns"), scenario_id, errors)
     _validate_patterns(turns, scenario_id, errors)
+    _validate_contain_any(turns, scenario_id, errors)
 
     perf = raw.get("perf") or {}
     if not isinstance(perf, dict):
@@ -457,6 +508,7 @@ def _parse_scenario(
         action=dict(steps["action"]),
         setup=steps["setup"],
         unregister_words=steps["unregister_words"],
+        forget_form_fields=steps["forget_form_fields"],
         source_file=source.name,
     )
 

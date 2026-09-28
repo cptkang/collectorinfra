@@ -224,6 +224,12 @@ def cmd_mock(args: argparse.Namespace) -> int:
         return 1
     summary = execute(catalog, config)
     run_dir = Path(summary["out_dir"])
+    refused = (summary.get("meta") or {}).get("resume_refused")
+    if refused:
+        # plans/118 B-1: 앞 시도와 실효 설정이 달라 재개를 멈췄다 - 리포트를 쓰지 않는다
+        # (두 설정이 섞인 판정표를 만들지 않는다).
+        print(f"       재개를 멈췄습니다 - {refused}", file=sys.stderr)
+        return 1
     paths = write_report(run_dir, catalog)
     print(f"[2단] 모의 실행 완료 - 턴 {summary['executed_turns']}회")
     print(f"       산출: {run_dir}")
@@ -323,6 +329,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 130
     summary = execute(catalog, config)
     run_dir = Path(summary["out_dir"])
+    refused = (summary.get("meta") or {}).get("resume_refused")
+    if refused:
+        # plans/118 B-1: 앞 시도와 실효 설정이 달라 재개를 멈췄다 - 리포트를 쓰지 않는다
+        # (두 설정이 섞인 판정표를 만들지 않는다).
+        print(f"       재개를 멈췄습니다 - {refused}", file=sys.stderr)
+        return 1
     paths = write_report(run_dir, catalog)
     analyze(run_dir, catalog)
     print(f"       완료 - 턴 {summary['executed_turns']}회, 리포트 {paths['report']}")

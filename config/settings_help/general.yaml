@@ -165,6 +165,28 @@ settings:
     recommendation: 기본 3을 유지한다. 응답이 느리다는 민원이 잦으면 2로 줄여 실패를 빨리 드러내는 편이 낫다.
     related: [ENABLE_INTENT_ORCHESTRATION, QUERY_MAX_RETRY_COUNT, TIER3_PLAN_LOOP_ENABLED]
 
+  REPLAN_BUDGET_PROMPT_ENABLED:
+    summary: 재계획 LLM에 남은 시간·남은 재계획 횟수를 알려 줄지(예산 인지 재계획 — 기본 off).
+    behavior: >-
+      켜면 2단 재계획 평가 LLM 입력에 조회 마감까지 남은 시간, 남은 재계획 횟수, "지금 결과로
+      종결할 수 있다"는 선택지를 싣는다. 끄면 종전 프롬프트와 비트 단위로 같다. LLM 행동에 기대는
+      기능이라 결정적 시간 가드(마감 전파·서술 예약) 뒤에 비교 측정으로 효과를 잰다(D-267 ⑥ ·
+      plans/119 T-6).
+    options:
+      - value: "false"
+        label: 기본
+        effect: 재계획 LLM은 시간을 모른 채 판단한다. 시간 초과는 결정적 가드만 막는다.
+      - value: "true"
+        effect: >-
+          프롬프트가 조금 길어지고, 남은 시간이 적으면 재계획이 조기 종결 쪽으로 기울 수 있다.
+          효과는 아직 측정 전이다.
+    example: >-
+      처리 상한 120초 요청에서 조회 마감까지 20초가 남았을 때, 켜 두면 재계획 LLM이 "남은 시간 20초 ·
+      남은 재계획 1회"를 보고 추가 조회 대신 지금 결과로 답하기를 고를 수 있다.
+    performance: 입력 토큰이 수십 개 늘어난다. 조기 종결을 고르면 재계획 한 바퀴(수 초~수십 초)가 줄어든다.
+    stability: 켜도 결정적 시간 가드는 그대로다 — LLM이 예산을 무시해도 마감을 넘겨 새 조회를 시작하지 않는다.
+    related: [MAX_REPLAN, API_ANSWER_RESERVE_SEC, ENABLE_INTENT_ORCHESTRATION]
+
   TIER3_PLAN_LOOP_ENABLED:
     example: >-
       '심각 알람이 있는 서버들의 7월 CPU 사용률'은 알람을 먼저 찾고 그 서버들의 지표를 봐야 한다. 3단 기준 경로는 질의 하나를

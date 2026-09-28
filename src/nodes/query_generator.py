@@ -88,6 +88,7 @@ from src.nodes.prompt_blocks import (
     first_eav_pattern,
     format_schema_text,
     path_parity_enabled,
+    demonstrative_entity_scope,
     prior_server_scope,
     resolve_prompt_token_budget,
     select_history_fewshot,
@@ -219,10 +220,13 @@ def _prior_server_scope(state: AgentState) -> Optional[tuple[str, list[str]]]:
     Args:
         state: 현재 에이전트 상태
 
+    선행 결과가 없으면 지시어 후속 턴(「그 서버들의 …」)의 직전 턴 엔티티로 대신한다 —
+    복수 지시어가 서버 필터 없는 전체 피벗으로 빠지던 결함(plans/116 §10.3 Q-MULTI-TOP).
+
     Returns:
         (식별컬럼, 값목록) 또는 None(선행 스코프 없음)
     """
-    return prior_server_scope(state.get("prior_rows"))
+    return prior_server_scope(state.get("prior_rows")) or demonstrative_entity_scope(state)
 
 
 def _bridge_only_scope(state: AgentState, app_config: AppConfig) -> bool:
@@ -304,6 +308,9 @@ def _try_build_form_fill_pivot_sql(
         user_query=user_query,
         # 앵커 산출에도 LLM 기간 2단 폴백(D-136 R3-(i)) — 아래 stat_month와 대칭(D-185)
         parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
+        # 실행 DB 허용 테이블 밖 매핑(오염 유사어)은 미매핑으로 본다 — 멀티 경로와 대칭
+        # (plans/120 F-1b)
+        allowed_tables=(schema_info.get("tables") or {}).keys(),
     )
     mapping_updates: dict[str, Optional[str]] = {}
     # 채움 제외된 llm_inferred 필드는 state 매핑도 None으로 — writer가 낡은 매핑으로
@@ -828,6 +835,7 @@ async def _build_fallback_prompts(
             context_text=template_context_text(state.get("template_structure")),
             user_query=user_query,
             parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
+            allowed_tables=((state.get("schema_info") or {}).get("tables") or {}).keys(),
         ))
         if _ms_block:
             user_prompt += "\n\n" + _ms_block

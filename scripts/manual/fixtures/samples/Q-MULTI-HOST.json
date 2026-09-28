@@ -5,53 +5,81 @@
    "query": "cocm-hdkapp01 서버의 IP 주소와 OS 종류를 보여줘",
    "file": null,
    "key": "092b2f7c830f14f7",
-   "elapsed_s": 986.5,
+   "elapsed_s": 264.1,
    "nodes": [
     "context_resolver",
-    "input_parser"
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
    ],
    "done": {
-    "type": "error",
-    "response": null,
-    "row_count": null,
-    "executed_sql": null,
-    "has_file": null,
+    "type": "done",
+    "response": "조회 결과\n\ncocm-hdkapp01 서버의 IP 주소와 OS 정보를 조회했습니다. 총 1 건의 데이터가 확인되었으며, 해당 서버는 Linux 기반입니다.\n\n| id | server_name | hostname | ipaddress | ostype |\n|---|---|---|---|---|\n| 9610003.0 | cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | Linux |\n\n참고사항\n- 조회 기간: 2026-09-28 기준\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 1,
+    "executed_sql": "-- [t1]\n-- cocm-hdkapp01 서버의 IP 주소와 OS 종류 조회\n-- 폴스타(로컬 샌드박스) 전용: 필터 조건 field=\"hostname\"이 전달되더라도, 원문 \"서버 이름\"이므로 WHERE r.name = 'cocm-hdkapp01' 적용\n-- 호스트명으로 필터링하라고 명시하지 않았으므로 서버 식별은 r.name(장비명) 기준\n-- EAV 'OSType' 속성 사용, IP 주소는 직접 컬럼 사용\n-- ★ 서버 식별 필터는 HAVING으로 분리하여 GROUP BY 에러 방지\nSELECT\n    COALESCE(c.name, c.hostname) AS server_name,\n    c.ipaddress AS ipaddress,\n    cc_ostype.stringvalue_short AS os_type\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc_ostype\n    ON c.resource_conf_id = cc_ostype.configuration_id\n   AND cc_ostype.name = 'OSType'\nWHERE c.resource_type = 'server.Server'\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nHAVING MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) = 'cocm-hdkapp01'\nLIMIT 1000;\n\n-- [t2]\n-- cocm-hdkapp01 서버의 IP 주소와 OS 종류 조회 (호스트명으로 필터링)\nSELECT\n    COALESCE(c.platform_resource_id, c.id) AS id,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN COALESCE(c.name, c.hostname) END) AS server_name,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname END) AS hostname,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,\n    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSType' THEN cc.stringvalue_short END) AS ostype\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc\n       ON c.resource_conf_id = cc.configuration_id\nWHERE c.resource_type = 'server.Server'\n  AND c.dtime IS NULL\n  AND (c.hostname = 'cocm-hdkapp01' OR c.name = 'cocm-hdkapp01')\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nORDER BY hostname\nLIMIT 1000;",
+    "has_file": false,
     "file_name": null,
-    "awaiting_approval": null,
+    "awaiting_approval": false,
     "clarification": null,
     "form_fill_clarification": null,
     "form_memory_panel": null,
-    "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-    "code": "timeout"
+    "message": null,
+    "code": null
    },
-   "rows_head": []
+   "rows_head": [
+    {
+     "id": 9610003.0,
+     "server_name": "cocm-hdkapp01",
+     "hostname": "cocm-hdkapp01",
+     "ipaddress": "10.61.0.3",
+     "ostype": "Linux"
+    }
+   ]
   },
   {
    "query": "해당 서버의 메모리 용량도 보여줘",
    "file": null,
    "key": "c04feb20898de7eb",
-   "elapsed_s": 1033.7,
+   "elapsed_s": 107.3,
    "nodes": [
     "context_resolver",
-    "input_parser"
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
    ],
    "done": {
-    "type": "error",
-    "response": null,
-    "row_count": null,
-    "executed_sql": null,
-    "has_file": null,
+    "type": "done",
+    "response": "조회 결과\n\n2026-09-28 기준, 서버 `cocm-hdkapp01` 의 총 메모리 용량은 64GB 입니다.\n\n| hostname | TotalSize |\n|---|---|\n| cocm-hdkapp01 | 65536 |\n\n참고사항\n- TotalSize 값 (65536) 은 KB 단위로 해석되어 64GB 에 해당합니다.\n\n---\n## 순차 처리 경과\n- 순차 분해가 적용되지 않아 한 번의 조회로 처리했습니다(앞 결과 → 뒤 조회 대상 배선 없음).\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 1,
+    "executed_sql": "-- [t1]\nSELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.hostname END) AS \"hostname\",\n  MAX(CASE WHEN c.resource_type='server.Memory' AND cc.name='TotalSize' THEN cc.stringvalue_short END) AS \"TotalSize\"\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id\nWHERE c.resource_type IN ('server.Memory', 'server.Server')\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nHAVING MAX(CASE WHEN c.resource_type='server.Server' THEN c.hostname END) = 'cocm-hdkapp01'\nLIMIT 1000;\n\n-- [t2]\n-- cocm-hdkapp01 서버의 IP 주소와 OS 종류 조회 (호스트명으로 필터링)\nSELECT\n    COALESCE(c.platform_resource_id, c.id) AS id,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN COALESCE(c.name, c.hostname) END) AS server_name,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname END) AS hostname,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,\n    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSType' THEN cc.stringvalue_short END) AS ostype\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc\n       ON c.resource_conf_id = cc.configuration_id\nWHERE c.resource_type = 'server.Server'\n  AND c.dtime IS NULL\n  AND (c.hostname = 'cocm-hdkapp01' OR c.name = 'cocm-hdkapp01')\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nORDER BY hostname\nLIMIT 1000;",
+    "has_file": false,
     "file_name": null,
-    "awaiting_approval": null,
+    "awaiting_approval": false,
     "clarification": null,
     "form_fill_clarification": null,
     "form_memory_panel": null,
-    "message": "처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-    "code": "timeout"
+    "message": null,
+    "code": null
    },
-   "rows_head": []
+   "rows_head": [
+    {
+     "hostname": "cocm-hdkapp01",
+     "TotalSize": "65536"
+    }
+   ]
   }
  ],
- "reviewed": false,
- "recorded_at": "2026-09-23T19:04:23"
+ "reviewed": true,
+ "recorded_at": "2026-09-28T08:21:35",
+ "review": {
+  "verdict": "partly",
+  "notes": "재녹화 — 1턴 IP 10.61.0.3·Linux · 2턴 메모리 65536 원본 일치(지시어 승계 정상). 2턴 참고사항의 「KB 단위로 해석되어 64GB」는 틀린 설명(샌드박스 무단위 값은 MB) — 본문 포인트에 밝힘",
+  "at": "2026-09-28"
+ }
 }

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
@@ -81,10 +82,22 @@ class Observation:
     # 저장 값 패널(D-187). 삭제 턴의 signature 를 여기서 얻는다(I-06).
     form_memory_panel: Optional[dict] = None
     db_ids: list[str] = field(default_factory=list)
+    # `db_ids` 의 출처(plans/120 V-1) - `scope`(done `db_scope`) | `executed`(감사 로그 실행 DB)
+    # | None(둘 다 없음).
+    db_ids_source: Optional[str] = None
     intent: Optional[str] = None
     processing_time_ms: Optional[float] = None
     wall_ms: float = 0.0
+    # 요청 송신 → **첫 `node_start` 수신**(ms). 서버가 그래프를 시작했다는 신호일 뿐 답변이 아니다
+    # (run 20260923-103638 p50 27ms). 답변 체감 지연은 아래 `ttft_ms` 로 읽는다(plans/119 H-1).
     ttfb_ms: Optional[float] = None
+    # 요청 송신 → **첫 `token` 이벤트(내용 있음) 수신**(ms · plans/119 H-1). `ttfb_ms` 와
+    # 기준 시각이 같다. 토큰 없이 done 만 온 턴(역질문·비스트림)은 None 이다 - 0 으로 채우지
+    # 않는다.
+    ttft_ms: Optional[float] = None
+    # 서버 단계 타임라인(plans/119 T-0) - 스트림 `done`·`error` 페이로드의 `timeline` 객체 그대로.
+    # 옛 서버는 싣지 않는다(None).
+    timeline: Optional[dict] = None
     # 노드별 **누적** 실행 시간. 재계획 루프로 같은 노드가 여러 번 돌면 회차를 합친다.
     node_elapsed_ms: dict[str, float] = field(default_factory=dict)
     node_calls: dict[str, int] = field(default_factory=dict)  # 노드별 완료 횟수(루프 회차)
@@ -163,6 +176,40 @@ def observed_sqls(obs: Observation) -> list[str]:
     if obs.executed_sqls:
         return list(obs.executed_sqls)
     return [obs.executed_sql] if obs.executed_sql else []
+
+
+def resolve_db_ids(
+    scope_ids: Iterable[Any], executed_sources: Iterable[Any]
+) -> tuple[list[str], Optional[str]]:
+    """`db_ids` 단언이 대조할 DB 집합과 그 출처 `(목록, "scope"|"executed"|None)` (plans/120 V-1).
+
+    스트림 `done.db_scope` 는 **마지막 노드의 델타**로 만들어진다(`src/api/routes/query.py` 스트림
+    `on_chain_end`). 3단 `output_generator` 델타에는 `active_db_id`·`target_databases` 가 없어 run
+    20260923-140539 의 3단 111행이 전부 `db_ids=[]` 였고, `db_ids` 불합격 12턴은 실제 조회 DB 가
+    기대값과 전부 같았다. 스코프가 비면 **SQL 이 실제로 나간 DB**(감사 로그 `source_name`)로 본다 -
+    실패한 실행도 센다. 라우팅 단언은 "어디로 보냈나"를 보고, 행 수는 `row_counts_by_db` 가
+    따로 본다. 스코프가 있으면 스코프가 이긴다. 제품 교정(S-1) 뒤에도 옛 run 재판정에 쓰므로 남긴다.
+    """
+    scope = [str(db_id) for db_id in scope_ids if db_id]
+    if scope:
+        return scope, "scope"
+    executed = sorted({str(source) for source in executed_sources if source})
+    return (executed, "executed") if executed else ([], None)
+
+
+def row_db_ids(row: dict[str, Any]) -> tuple[list[str], Optional[str]]:
+    """`raw.jsonl` 행 1개에 `resolve_db_ids` 를 적용한다 - 옛 run 재판정용(plans/120 V-1).
+
+    `db_ids_source` 칸이 있는 행은 이미 폴백을 거쳤으므로 그대로 둔다. 실행 DB 는 러너가 싣는
+    `executed_sqls[].source`(감사 로그 `query_executed` 의 `source_name`)다.
+    """
+    if row.get("db_ids_source"):
+        return [str(db_id) for db_id in row.get("db_ids") or []], str(row["db_ids_source"])
+    entries = row.get("executed_sqls") or []
+    return resolve_db_ids(
+        row.get("db_ids") or [],
+        [entry.get("source") for entry in entries if isinstance(entry, dict)],
+    )
 
 
 def sql_body(sql: str) -> str:
@@ -673,6 +720,16 @@ def evaluate_turn(
     for needle in expect.get("response_must_contain") or []:
         if str(needle) not in obs.response:
             failures.append(Failure("response_must_contain", needle, "응답에 없음"))
+    # plans/120 U-4: 선택지 중 하나라도 성립하면 통과. 선택지가 목록이면 그 문구가 **전부** 있어야
+    # 성립한다 - H-06 은 `[미작성 항목]` 또는 3열 각각의 `공란 유지` 적용 내역을 받는다
+    # (D-151 역질문 × D-216 자동응답).
+    options = expect.get("response_must_contain_any") or []
+    if options and not any(
+        all(str(needle) in obs.response
+            for needle in (option if isinstance(option, list) else [option]))
+        for option in options
+    ):
+        failures.append(Failure("response_must_contain_any", options, "응답에 없음"))
     for needle in expect.get("response_must_not_contain") or []:
         if str(needle) in obs.response:
             failures.append(Failure("response_must_not_contain", needle, "응답에 있음"))
