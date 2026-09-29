@@ -8,7 +8,15 @@
 > **개정(6)**: 2026-09-29 **v2.0 — 범위 재편(팀장 협의)**: **RAG 라우팅을 이 계획에서 뺀다.** 여러 데이터 소스의 라우팅은 팀장이 설계 중인 영역이라, 여기서 미리 만들면 그 설계를 선점한다. 남기는 것은 **①RAG 질의 → 응답 생성 엔진 ②라우팅 없이 실제 환경에서 시험하는 표면**뿐이다. 라우팅 편입 설계(3단 옵트인 의도·2단 처리기·우선순위 배치·사용법 안내·멀티턴·스트리밍)는 **버리지 않고 `부록 D`로 보류**한다 — 팀장의 소스 라우팅 결론이 나오면 그 위에서 재개한다.
 > **개정(7)**: 2026-09-29 **v2.1 — 착수 승인**: 게이트 **G-16(시험 표면 T-1~T-3 전부)·G-17(T-4 만들되 기본 off)·G-18(`src/doc_qa/`)** 사용자 확정 · **W1~W2 착수 승인**. 평가에서 코드로 확인한 전제 4건(arch 매핑 1줄 · 관리자 화면 토큰 편집 가능 · `require_admin_user` 재사용 · `.env` gitignore)과 **계획에 없던 발견 2건**(`RELOADABLE_KEYS` 미등재면 reload 대신 재시작 · 마스킹은 `SENSITIVE_VALUE_KEYS`로 분리 제어)을 §4.12·W1에 반영.
 > **개정(8)**: 2026-09-29 **v2.2 — 분기점 이동·재번호**: 브랜치를 `multiintent` 최신 커밋 `f51cd49`에서 뻗도록 옮기고(브랜치명 `enabling_rag` → `rag_implementation`) 선점된 식별자를 재부여했다 — **`plans/122` → `plans/126`**(원격이 `122-WIP-scenario-pass-rate-and-coverage` 사용) · **`docs/31` → `docs/32`**(원격이 제니퍼 연동 가이드 사용) · **D-272 → D-280**(원격이 D-272~279 사용) · 설정 카탈로그 카운트 단언 재계산(필드 365 → **384** · 그룹 25 → **26** · 미소비 19 → **26**). **★중요 발견**: 원격 `plans/125`(4소스 의도 라우팅과 조합 응답 — 폴스타·Prometheus·ITAM·제니퍼)가 **바로 이 계획이 라우팅을 비워 둔 그 영역**이다 → 부록 D의 재개 조건을 «팀장 설계 확정»에서 **«`plans/125` 결론 확정»으로 구체화**한다.
-> **상태**: **W1 구현 완료**(2026-09-29 · 아래 「W1 랜딩」) · W2 착수 대기 · 범위 = 엔진 + 시험 표면(라우팅 제외 · 부록 D 보류) · G-13~G-18 확정 · 잔여 = G-1(M-9 토큰·URL)·G-2(1차 자동 해소)·G-3·G-4·G-7~G-12
+> **상태**: **W1·W2 구현 완료**(2026-09-29 · 아래 「W2 랜딩」·「W1 랜딩」) · W3(CLI) 착수 대기
+>
+> **W2 랜딩(2026-09-29 · 실 LLM 0 · 외부 호출 0 · 과금 0)**
+> - 산출: `src/doc_qa/{__init__,service,evidence}.py`(엔진 9단계 · 근거 예산 · 인용 조립) · `src/prompts/doc_answer.py`(서술 지시 7항 + 데이터 구획) · `scripts/arch_check.py`(`src.doc_qa` → application 1줄) · 신규 테스트 **39건**(합계 92건).
+> - 계약 고정: **근거 0건이면 LLM 호출 0회**(카운터 단언) · `stale_id`·타임아웃·PII 차단이 「문서에 없음」과 **다른 문구** · 부분 폐기 시 **살아 있는 컬렉션으로 답하고 각주로 고지** · 인용은 코드가 항상 부착(LLM 누락 무관) · 유사도는 사용자 미표기·LLM 메타로만 전달 · 문서 본문 `<<<DOC n>>>` 구획 · 캐시 키에 **자산 ID 포함**(회전 시 자동 무효) · 캐시 오류가 조회를 막지 않음 · 서술 실패도 근거 목록 반환(D-236).
+> - 검증: `tests/test_doc_qa` **92 passed** · `arch_check --ci` 위반 0(패키지 내부 import 1건은 `src/tools/validation.py`와 같은 기존 WARN 계열) · `overfit_check --ci` 신규 유입 0 · 설정 카탈로그 미소비 26 → **20**(엔진이 예산·캐시·URL 6키 소비 · 잔여 `RAG_CHAT_PREFIX_ENABLED`는 W4).
+> - **범위대로 남긴 것**: 감사 로그(`log_doc_retrieval`)는 **W5** 소관이라 W2에서 넣지 않았다 — 엔진은 `diagnostics`만 채운다(조용한 누락이 아니라 Wave 배치다).
+>
+> **W1 구현 완료**(2026-09-29 · 아래 「W1 랜딩」) · W2 착수 대기 · 범위 = 엔진 + 시험 표면(라우팅 제외 · 부록 D 보류) · G-13~G-18 확정 · 잔여 = G-1(M-9 토큰·URL)·G-2(1차 자동 해소)·G-3·G-4·G-7~G-12
 >
 > **W1 랜딩(2026-09-29 · 실 LLM 0 · 외부 호출 0 · 과금 0)**
 > - 산출: `config/rag_collections.yaml`(의미 정본 2종) · `src/infrastructure/doc_sources.py`(로더·강등 사유·표면어 접두 제거) · `src/clients/fabrix_retrieval.py`(판정 순서·`stale_id`·이중 타임아웃·마스킹 로그) · `src/config.py` `RagConfig`(19키) · `src/api/settings_catalog.py`(`GROUP_ORDER`·`GROUP_TITLES`·`RELOADABLE_KEYS` 19키·`SENSITIVE_VALUE_KEYS` 6키·`UNCONSUMED_KEYS` 7키) · `.env.example`(C등급 13키 접기) · `config/settings_help/rag.yaml`(19항목 5칸+사례) · 신규 테스트 **53건**(`tests/test_doc_qa/`).

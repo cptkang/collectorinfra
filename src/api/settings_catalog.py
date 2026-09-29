@@ -420,14 +420,8 @@ UNCONSUMED_KEYS: frozenset[str] = frozenset({
     "SYNONYM_DECAY_DAYS",                   # redis_cache.py:958 인자만 존재 — config에서 넘기는 호출부 없음
     "ALARM_PROMETHEUS_BASE_URLS_CSV",       # PrometheusClient가 src/에서 미생성 (테스트에서만 생성) — 예비 코드 확정(2026-09-10 · 판정 기한 2027-02-20 · docs/27 §3.3)
     "ALARM_PROMETHEUS_TIMEOUT_SECONDS",     # 동상
-    # --- 문서 RAG (plans/126 W1) — 정본·클라이언트 단계에서 아직 읽지 않는 예산·정책 키.
-    #     W2(엔진: 근거 예산·인용·캐시)·W4(시험 표면: 채팅 접두)에서 소비하며 그때 여기서 뺀다.
-    "RAG_MAX_COLLECTIONS_PER_TURN",
-    "RAG_MAX_DOC_CHARS",
-    "RAG_MAX_CONTEXT_CHARS",
-    "RAG_ANSWER_MAX_CHARS",
-    "RAG_CACHE_TTL",
-    "RAG_DOC_URL_BASE",
+    # --- 문서 RAG: W2(엔진) 에서 예산·캐시·URL 베이스를 소비했다. 남은 1키는
+    #     W4(시험 표면 T-4 명시 채팅 접두)에서 소비하며 그때 여기서 뺀다.
     "RAG_CHAT_PREFIX_ENABLED",
 })
 
