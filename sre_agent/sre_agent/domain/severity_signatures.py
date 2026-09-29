@@ -13,11 +13,18 @@
 - dmesg/journal 원문은 원격 2축(Prometheus + 폴스타 MCP)에서 수집되지 않는다.
   OOM 등 로그 시그니처는 Prometheus 카운터(예: `node_vmstat_oom_kill`) 대체 시그니처로
   매칭하고, 대체 신호도 없으면 "증거 불충분"(상향 보류) 경로를 따른다.
+
+WAS 신호(plans/87 J3 · D-274 ⑤ · SPEC-apm-gateway §4):
+- WAS 판정 규칙은 게이트웨이 `domain/`에 **한 번만** 정의된다. 여기서는 게이트웨이 도구 원시 출력
+  (JSON · `source_kind="apm_api"`)의 `was_signals`를 `Signal`로 **옮기기만** 한다(규칙 재구현 금지).
+  배선은 `apm_signatures_enabled`일 때만 `judge(extra_signals=...)`로 합쳐진다 — 끄면 판정 불변.
 """
 
 from __future__ import annotations
 
+import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 # ── 중요도 레벨 (게이트 severity 의미와 정합, Plan 02 §5.3) ──────────────
@@ -180,11 +187,70 @@ def match_signatures(tool_outputs: list[str]) -> list[Signal]:
     return signals
 
 
+#: 게이트웨이 반환의 소스 표지(SPEC-apm-gateway §3.1·§3.2).
+APM_SOURCE_KIND = "apm_api"
+#: 승격 대상 category — judge()가 아는 두 값뿐이다(그 밖은 추측하지 않고 버린다).
+_WAS_CATEGORIES: tuple[str, ...] = ("strong", "medium")
+
+
+def apm_payloads(tool_outputs: Sequence[str]) -> list[dict]:
+    """도구 원시 출력 중 게이트웨이 반환(JSON 객체 · `source_kind == "apm_api"`)만 dict로 돌려준다.
+
+    holmes MCP 도구의 원시 출력은 서버가 돌려준 텍스트 그대로다(`StructuredToolResult.data`).
+    JSON이 아니거나(잘림·다른 소스) 표지가 다르면 건너뛴다 — 오류 반환(`{"error": …}`)도 포함한다.
+    """
+    out: list[dict] = []
+    for text in tool_outputs:
+        if not text or APM_SOURCE_KIND not in text:
+            continue
+        try:
+            obj = json.loads(text)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("source_kind") == APM_SOURCE_KIND:
+            out.append(obj)
+    return out
+
+
+def was_signals_from_outputs(tool_outputs: Sequence[str]) -> list[Signal]:
+    """게이트웨이가 판정한 `was_signals`를 `Signal(name=kind, source="apm")`로 승격한다(D-274 ⑤).
+
+    판정은 하지 않는다 — kind·category·label·evidence를 옮길 뿐이다. 같은 kind는 1건(strong 우선,
+    그다음 먼저 본 것)으로 줄인다. category가 strong/medium이 아닌 항목은 버린다(추측 금지).
+    """
+    best: dict[str, Signal] = {}
+    for payload in apm_payloads(tool_outputs):
+        for item in payload.get("was_signals") or []:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind") or "").strip()
+            category = item.get("category")
+            if not kind or category not in _WAS_CATEGORIES:
+                continue
+            where = [str(item.get("source_tool") or payload.get("tool") or "")]
+            if item.get("instance_id") is not None:
+                where.append(f"instance {item['instance_id']}")
+            evidence = str(item.get("evidence") or "")
+            where_s = " · ".join(w for w in where if w)
+            signal = Signal(
+                name=kind,
+                category=category,
+                source="apm",
+                label=str(item.get("label") or kind),
+                evidence=(f"{evidence} ({where_s})" if where_s else evidence)[:200],
+            )
+            prev = best.get(kind)
+            if prev is None or (category == "strong" and prev.category != "strong"):
+                best[kind] = signal
+    return list(best.values())
+
+
 def judge(
     gate_severity: int,
     tool_outputs: list[str],
     *,
     remote: bool = False,
+    extra_signals: Sequence[Signal] = (),
 ) -> ImportanceVerdict:
     """중요도 2차 판정(escalate-only).
 
@@ -196,9 +262,12 @@ def judge(
 
     remote=True + 무매칭 → evidence_insufficient=True(상향 보류·증거 불충분).
     로컬(remote=False) 무매칭은 "로그 확보됐으나 신호 없음(자기 복구)"이므로 불충분이 아니다.
+
+    `extra_signals`(plans/87 J3): 외부에서 이미 판정된 신호(`was_signals_from_outputs`)를 OS 시그니처 뒤에
+    합친다. 비어 있으면(기본) 판정이 종전과 같다.
     """
     baseline = clamp_level(gate_severity)
-    signals = match_signatures(tool_outputs)
+    signals = match_signatures(tool_outputs) + list(extra_signals)
 
     strong = any(s.category == "strong" for s in signals)
     medium = any(s.category == "medium" for s in signals)
@@ -241,6 +310,9 @@ __all__ = [
     "Signal",
     "ImportanceVerdict",
     "SIGNATURES",
+    "APM_SOURCE_KIND",
     "match_signatures",
+    "apm_payloads",
+    "was_signals_from_outputs",
     "judge",
 ]

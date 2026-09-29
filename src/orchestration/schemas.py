@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -22,6 +22,30 @@ def allowed_agents() -> frozenset[str]:
     레지스트리에 agent가 추가되면 이 계약도 자동으로 따라간다.
     """
     return frozenset(SUBAGENT_REGISTRY.keys())
+
+
+#: 닫힌 어휘 밖 담당을 맞췄다는 task 표지(plans/121 TP-1.7) — 계획 요약이 건수만 센다(U-18).
+AGENT_FALLBACK_KEY = "agent_fallback"
+
+
+def close_agent_vocabulary(task: dict[str, Any]) -> dict[str, Any]:
+    """task의 담당을 닫힌 어휘로 맞춘다 — **task 단위**, 현행 의미 그대로(plans/121 TP-1.7).
+
+    JSON 분해 경로(`structured_output_backend=none`)와 재계획 신규 task는 담당 이름을 검증하지 않아
+    목록 밖 이름이 계획에 남았다. 디스패치는 그런 task를 폴백 handler로 보냈으므로
+    (`agent_orchestrator._fallback_spec`) 폴백 담당으로 적는 것이 그 의미를 바꾸지 않는다.
+    `data_query`로 바꾸거나 계획 전체를 폴백하지 않는다(유효 task까지 잃는다). 목록 안이면
+    입력 그대로(in-place)다.
+    """
+    agent = task.get("agent")
+    if agent in allowed_agents():
+        return task
+    fallback = next(
+        (name for name, spec in SUBAGENT_REGISTRY.items() if spec.fallback), "general_inference"
+    )
+    task["agent"] = fallback
+    task[AGENT_FALLBACK_KEY] = True
+    return task
 
 
 class TaskSpec(BaseModel):

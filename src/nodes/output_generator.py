@@ -9,9 +9,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
+from bisect import bisect_left, bisect_right
+from collections import Counter
 from datetime import date
-from typing import Any, Optional
+from decimal import Decimal
+from typing import Any, NamedTuple, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
@@ -290,6 +294,11 @@ async def _run_output_generator(
         }
 
 
+#: 양식 없는 파일 요청 안내의 머리(D-264 ④). 턴 단위 안내라 2단 단계별 답변은 이 머리로 찾아
+#: 두 번째 단계부터 뗀다(`result_aggregator._finalize_steps` · plans/121 TP-4.5).
+NO_TEMPLATE_NOTICE_HEAD = "양식 파일이 첨부되지 않아 "
+
+
 def _no_template_file_notice(output_format: str, has_rows: bool) -> str:
     """양식 없이 Excel/Word 파일을 요청했을 때의 안내 (plans/116 §10.3).
 
@@ -298,7 +307,7 @@ def _no_template_file_notice(output_format: str, has_rows: bool) -> str:
     """
     kind = "Excel" if output_format == "xlsx" else "Word"
     text = (
-        f"양식 파일이 첨부되지 않아 {kind} 파일은 만들지 않았습니다. "
+        f"{NO_TEMPLATE_NOTICE_HEAD}{kind} 파일은 만들지 않았습니다. "
         "파일은 첨부한 양식(Excel/Word)을 채우는 방식으로만 만들 수 있습니다."
     )
     if has_rows:
@@ -405,6 +414,8 @@ async def _generate_text_response(
     # 합성(D-062)에서는 중간 per-task 토큰이 새지 않도록 태그를 생략한다.
     tags = [USER_RESPONSE_TAG] if stream_user_response else None
     summary = await _summarize(llm, messages, tags=tags)
+    # 요약 숫자 대조 — 측정 전용(plans/121 TP-4.4 · G-25): 로그 한 줄뿐, 본문은 바꾸지 않는다.
+    _audit_summary_numbers(summary, state, stream=stream_user_response)
     # 표 정규화(D-187): 요약에 표를 쓰지 말라고 지시하지만(비결정성) 쓰면 렌더는 보장한다.
     summary = _normalize_markdown_tables(summary)
     # 사후 가드(D-186): 요약 문단의 "YYYY년 M월" 연도가 기준 연도 밖이면 침묵하지 않는다.
@@ -905,7 +916,14 @@ def _aggregate_summary_lines(aggregates: dict[str, Any] | None) -> list[str]:
 
 
 def _db_display_name(db_id: Any) -> str:
-    """DB 표시명(레지스트리 `display_name`) — 미등록이면 db_id 그대로."""
+    """DB 표시명(레지스트리 `display_name`) — 미등록이면 db_id 그대로.
+
+    task를 넘는 병합 행은 원천을 쉼표로 이어 싣는다(plans/121 TP-11.3) — 각각 표시명으로 바꾼다.
+    db_id에는 쉼표가 없으므로 단일 원천 값은 종전과 같다.
+    """
+    if isinstance(db_id, str) and "," in db_id:
+        parts = [part.strip() for part in db_id.split(",") if part.strip()]
+        return ", ".join(_db_display_name(part) for part in parts)
     domain = get_domain_by_id(str(db_id)) if db_id else None
     return domain.display_name if domain else str(db_id)
 
@@ -1039,6 +1057,290 @@ def _format_ym(yyyymm: str) -> str:
     if len(yyyymm) != 6 or not yyyymm.isdigit():
         return yyyymm
     return f"{yyyymm[:4]}년 {int(yyyymm[4:6])}월"
+
+
+# ── 요약 숫자 대조 — 측정 전용 (plans/121 TP-4.4 · G-25 · D-272 ⑥) ───────────────────
+#
+# 요약 LLM이 쓴 숫자를 결정적으로 뽑아 **어디서 온 숫자인지** 원천별로 센다(LLM 0). 응답은 바꾸지
+# 않는다 — 스트리밍은 이미 화면에 나간 뒤라 바꿔 끼우면 화면이 튄다(D-268 ①). 이 개수가 ②좁은
+# 부류 후행 경고(D-186 선례)와 G-7 ②(템플릿 요약) 재상정의 입력이다. 로그에는 개수만 싣는다(D-219).
+
+#: 분류 = 판정 순서(앞이 우선). 로그 키 순서도 같다.
+#: date 연도·날짜·시각 · ordinal 순위·차례 · table 이번 결과 행 값 · query 질의 원문 숫자 ·
+#: derived 코드 계산 파생값(건수·합·평균·최대·최소·범위·null 건수·질의 숫자 기준 초과/미만 건수 ·
+#: 집계 종합 · 데이터 요약 문구) · category 범주 건수(문자열 열의 값별 건수·고유 값 수) ·
+#: rounded 반올림·절사·단위 환산(% ↔ 비율 · 바이트 1000/1024 배수) · mismatch 어디에도 없음.
+SUMMARY_NUMBER_CLASSES: tuple[str, ...] = (
+    "date", "ordinal", "table", "query", "derived", "category", "rounded", "mismatch",
+)
+#: 값별 건수를 셀 범주 열의 고유 값 상한(저카디널리티만 — 고유 식별 열의 "1건"이 전부 맞지 않게).
+_CATEGORY_MAX_DISTINCT = 20
+
+_NUMBER_RUN_RE = re.compile(r"\d[\d.,]*\d|\d")
+_THOUSANDS_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?")
+_PLAIN_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+#: 날짜·시각 표기 — 연도는 19xx·20xx만(「1024.5」 같은 소수를 날짜로 읽지 않게), 점 구분은 연월일만.
+#: 뒤에 문장 끝 마침표가 와도 날짜다(「2026-05-01.」) — 막는 것은 숫자·「.숫자」만.
+_SUMMARY_DATE_RE = re.compile(
+    r"(?<![\d.])(?:(?:19|20)\d{2}(?:-\d{1,2}(?:-\d{1,2})?|/\d{1,2}(?:/\d{1,2})?|\.\d{1,2}\.\d{1,2})"
+    r"|\d{1,2}:\d{2}(?::\d{2})?)(?!\d|\.\d)"
+)
+#: 줄머리 목록 번호(「1. 」「2) 」) — 요약 내용 숫자가 아니다.
+_LIST_MARKER_RE = re.compile(r"^[ \t]*\d{1,2}[.)](?=\s)", re.MULTILINE)
+_CELL_NUMBER_RE = re.compile(
+    r"\s*[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:%|[KMGTP]i?B)?\s*", re.IGNORECASE
+)
+_PERCENT_SUFFIX_RE = re.compile(r"\s?%")
+_BYTE_SUFFIX_RE = re.compile(r"\s?[KMGTP]i?B(?![A-Za-z])", re.IGNORECASE)
+_DATE_SUFFIXES = ("년", "월", "일", "분기")
+_ORDINAL_SUFFIXES = ("위", "번째", "순위")
+_KOREAN_SCALES = {"천": 1e3, "만": 1e4, "억": 1e8}
+_BYTE_SCALES = tuple(f**k for f in (1000.0, 1024.0) for k in (-4, -3, -2, -1, 1, 2, 3, 4))
+
+
+class _SummaryNumber(NamedTuple):
+    """요약 문장에서 뽑은 숫자 1개 — 부호를 뗀 절댓값."""
+
+    value: float
+    decimals: int
+    tag: str  # "date" · "ordinal" · "%" · "byte" · ""
+    scale: float  # 한국어 수 단위(천·만·억) 배수 — 없으면 1
+
+
+def _is_ascii_word(ch: str) -> bool:
+    """식별자 문자(ASCII 영숫자·밑줄)인지 — 「web01」「x86」의 숫자를 값으로 읽지 않는다."""
+    return bool(ch) and ch.isascii() and (ch.isalnum() or ch == "_")
+
+
+def _number_suffix(rest: str) -> tuple[str, float]:
+    """숫자 바로 뒤 글자로 표기 종류와 한국어 수 단위 배수를 정한다."""
+    if rest.startswith(_DATE_SUFFIXES) or (rest.startswith("시") and not rest.startswith("시간")):
+        return "date", 1.0
+    if rest.startswith(_ORDINAL_SUFFIXES):
+        return "ordinal", 1.0
+    scale = _KOREAN_SCALES.get(rest[:1], 1.0)
+    if scale != 1.0:
+        rest = rest[1:]
+    if _PERCENT_SUFFIX_RE.match(rest):
+        return "%", scale
+    if _BYTE_SUFFIX_RE.match(rest):
+        return "byte", scale
+    return "", scale
+
+
+def _extract_summary_numbers(text: str) -> list[_SummaryNumber]:
+    """문장에서 숫자를 결정적으로 뽑는다(날짜 표기는 값 없이 date 1건 · 식별자·버전·IP 제외).
+
+    천 단위 쉼표(「1,024」)는 한 숫자로, 그 밖의 쉼표(「2,3」)는 나열로 읽는다. 한국어 수사
+    (「세 대」)는 숫자가 아니라 뽑지 않는다.
+    """
+    out: list[_SummaryNumber] = []
+
+    def _blank_date(match: re.Match[str]) -> str:
+        out.append(_SummaryNumber(math.nan, 0, "date", 1.0))
+        return " " * len(match.group(0))
+
+    text = _LIST_MARKER_RE.sub(lambda m: " " * len(m.group(0)), text)
+    text = _SUMMARY_DATE_RE.sub(_blank_date, text)
+    for match in _NUMBER_RUN_RE.finditer(text):
+        start, end = match.span()
+        run = match.group(0)
+        prev = text[start - 1] if start else ""
+        if _is_ascii_word(prev) or (
+            prev in "-./" and start > 1 and _is_ascii_word(text[start - 2])
+        ):
+            continue  # 식별자 일부(web01 · srv-02)
+        if run.count(".") >= 2:
+            continue  # IP·버전
+        parts = [run] if _THOUSANDS_RE.fullmatch(run) else run.split(",")
+        tag, scale = _number_suffix(text[end:end + 5])
+        for idx, part in enumerate(parts):
+            digits = part.replace(",", "")
+            if not _PLAIN_NUMBER_RE.fullmatch(digits):
+                continue
+            last = idx == len(parts) - 1
+            decimals = len(digits.split(".", 1)[1]) if "." in digits else 0
+            out.append(_SummaryNumber(
+                float(digits), decimals, tag if last else "", scale if last else 1.0,
+            ))
+    return out
+
+
+def _cell_number(value: Any) -> float | None:
+    """결과 셀 값을 숫자로 — 수치형과 숫자만 담은 문자열(「4.0」「1,024」「76.5%」「16GB」)."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float, Decimal)):
+        number = float(value)
+    elif isinstance(value, str) and _CELL_NUMBER_RE.fullmatch(value):
+        sign = -1.0 if value.strip().startswith("-") else 1.0
+        number = sign * float(re.sub(r"[^\d.]", "", value))
+    else:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _num_key(value: float) -> float:
+    """집합 비교 키 — 부동소수 오차를 흡수한 절댓값."""
+    return round(abs(value), 9)
+
+
+class _NumberReferences(NamedTuple):
+    """요약 숫자 대조의 참조 키 집합 — 표 값 · 파생 통계 · 파생 건수 · 범주 건수."""
+
+    table: set[float]
+    stats: set[float]  # 최소·최대·합·평균·범위 · 집계 종합 · 데이터 요약 문구 숫자
+    counts: set[float]  # 전체 행 수 · 값 있는 행 수 · null 건수 · 질의 숫자 기준 초과·미만 건수
+    category: set[float]  # 문자열 열의 값별 건수(저카디널리티) · 고유 값 수
+
+
+def _summary_number_references(
+    rows: list[Any],
+    *,
+    query_values: list[float],
+    data_summary: str,
+    aggregates: dict[str, Any] | None,
+) -> _NumberReferences:
+    """결과 행·집계 종합·데이터 요약에서 참조 키 집합을 만든다."""
+    dict_rows = [r for r in rows if isinstance(r, dict)]
+    columns: list[str] = []
+    for row in dict_rows:
+        for k in row:
+            if str(k) not in columns:
+                columns.append(str(k))
+    refs = _NumberReferences(set(), set(), {float(len(dict_rows))}, set())
+    for col in columns:
+        values = [r.get(col) for r in dict_rows]
+        present = [v for v in values if v is not None and v != ""]
+        numbers = [n for n in map(_cell_number, present) if n is not None]
+        refs.table.update(_num_key(n) for n in numbers)
+        if present and len(numbers) == len(present):
+            lo, hi, total = min(numbers), max(numbers), sum(numbers)
+            mean = total / len(numbers)
+            # 뒤 셋은 수치 요약 블록 표기(`_numeric_summary_lines` — 소수 둘째 자리)
+            refs.stats.update(_num_key(x) for x in (
+                lo, hi, total, mean, hi - lo, round(lo, 2), round(hi, 2), round(mean, 2),
+            ))
+            refs.counts.add(float(len(numbers)))
+            if len(values) > len(present):
+                refs.counts.add(float(len(values) - len(present)))
+            ordered = sorted(numbers)
+            for q in query_values:  # 「90% 이상 서버 3대」 — 질의 숫자 기준 초과·미만 건수
+                below, upto = bisect_left(ordered, q), bisect_right(ordered, q)
+                refs.counts.update(
+                    map(float, (below, upto, len(ordered) - upto, len(ordered) - below))
+                )
+        elif any(isinstance(v, str) for v in present):
+            by_value = Counter(str(v).strip() for v in present)
+            refs.category.add(float(len(by_value)))
+            if len(by_value) <= _CATEGORY_MAX_DISTINCT:
+                refs.category.update(float(c) for c in by_value.values())
+    if isinstance(aggregates, dict) and aggregates.get("applied"):
+        for agg in aggregates.get("columns") or []:
+            vals = [*(agg.get("per_db") or {}).values(), agg.get("total")]
+            refs.stats.update(_num_key(n) for n in map(_cell_number, vals) if n is not None)
+    refs.stats.update(
+        _num_key(t.value) for t in _extract_summary_numbers(data_summary) if t.tag != "date"
+    )
+    return refs
+
+
+def _near_reference(token: _SummaryNumber, pool: list[float]) -> bool:
+    """반올림·절사·단위 환산으로 참조값(정렬 목록)에 닿는지 — 허용 폭은 표기 자릿수의 한 단위."""
+    unit = 10.0 ** -token.decimals
+    scales: tuple[float, ...] = (1.0,)
+    if token.tag == "%":
+        scales = (1.0, 0.01)  # 76.5% ↔ 0.765
+    elif token.tag == "byte":
+        scales = (1.0, *_BYTE_SCALES)  # 1GB ↔ 1,024MB
+    for base in {token.value, token.value * token.scale}:
+        for factor in scales:
+            target, step = base * factor, unit * factor
+            idx = bisect_left(pool, target - step / 2 - 1e-9)
+            if idx < len(pool) and pool[idx] < target + step:
+                return True
+    return False
+
+
+def classify_summary_numbers(
+    summary: str,
+    *,
+    rows: list[Any],
+    query: str = "",
+    data_summary: str = "",
+    aggregates: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    """요약 문장의 숫자를 원천별로 센다(plans/121 TP-4.4 ① 측정 전용 · 순수 함수 · LLM 0).
+
+    Args:
+        summary: 요약 LLM이 돌려준 문장
+        rows: 이번 결과 행(`organized_data.rows` — 표·수치 요약의 원천)
+        query: 질의 원문(여러 개면 이어 붙인 문자열)
+        data_summary: 데이터 요약 문구(`organized_data.summary` — 코드 생성)
+        aggregates: 멀티 DB 집계 종합(`merge_aggregates` — plans/113 S-3)
+
+    Returns:
+        `SUMMARY_NUMBER_CLASSES` 전 키의 개수(없는 부류는 0)
+    """
+    counts = dict.fromkeys(SUMMARY_NUMBER_CLASSES, 0)
+    tokens = _extract_summary_numbers(summary or "")
+    if not tokens:
+        return counts
+    query_values = [t.value for t in _extract_summary_numbers(query or "") if t.tag != "date"]
+    query_keys = {_num_key(v) for v in query_values}
+    refs = _summary_number_references(
+        rows, query_values=query_values, data_summary=data_summary or "", aggregates=aggregates,
+    )
+    pool = sorted(refs.table | refs.stats)
+    for token in tokens:
+        if token.tag in ("date", "ordinal"):
+            counts[token.tag] += 1
+            continue
+        keys = {_num_key(token.value), _num_key(token.value * token.scale)}
+        # 단위 붙은 값(「1GB」「76%」)은 건수가 아니다 — 건수 집합과는 맞추지 않는다.
+        measured = token.tag in ("%", "byte")
+        candidates: tuple[tuple[str, set[float]], ...] = (
+            ("table", refs.table),
+            ("query", query_keys),
+            ("derived", refs.stats if measured else refs.stats | refs.counts),
+            ("category", set() if measured else refs.category),
+        )
+        for name, ref_keys in candidates:
+            if keys & ref_keys:
+                counts[name] += 1
+                break
+        else:
+            counts["rounded" if _near_reference(token, pool) else "mismatch"] += 1
+    return counts
+
+
+def _audit_summary_numbers(summary: str, state: AgentState, *, stream: bool) -> None:
+    """요약 숫자 대조 측정 — 원천별 개수 로그 한 줄(D-219: 숫자·문장 원문 없음). 반환값 없음.
+
+    요약이 실패·시간 초과 사유 문구면(LLM 문장이 아님) 재지 않는다. 측정 예외는 삼키고 클래스명만
+    경고로 남긴다 — 측정이 응답을 깨지 않는다.
+    """
+    if summary in (_SUMMARY_TIMEOUT_NOTE, _SUMMARY_FAILED_NOTE):
+        return
+    try:
+        organized = state.get("organized_data") or {}
+        parsed = state.get("parsed_requirements") or {}
+        counts = classify_summary_numbers(
+            summary,
+            rows=list(organized.get("rows") or []),
+            query="\n".join(
+                str(q) for q in (parsed.get("original_query"), state.get("user_query")) if q
+            ),
+            data_summary=str(organized.get("summary") or ""),
+            aggregates=organized.get("merge_aggregates"),
+        )
+    except Exception as e:  # noqa: BLE001 — 측정 전용: 실패해도 응답은 그대로 나간다
+        logger.warning("요약 숫자 대조 측정 생략(plans/121 TP-4.4): %s", type(e).__name__)
+        return
+    logger.info(
+        "요약 숫자 대조(plans/121 TP-4.4 측정): stream=%d total=%d %s",
+        int(stream), sum(counts.values()), " ".join(f"{k}={v}" for k, v in counts.items()),
+    )
 
 
 _ALARM_MODE_LABELS = {"active": "활성", "history": "이력"}

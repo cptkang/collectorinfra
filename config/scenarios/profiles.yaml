@@ -40,6 +40,13 @@ profiles:
   optin_zone_exclusive:
     ZONE_GROUP_EXCLUSIVE: "true"
 
+  # 마스킹 확장 on(plans/122 K-2 · G-3 · D-220 ③ 선례) - 코드 기본값은 `mask_ip`·`mask_email` 이
+  # false 라 기준 프로파일에서는 이메일·IP 가 그대로 나오는 것이 정답이다. 마스킹 형태(J-05 on 쪽)는
+  # 여기서만 잰다. 프로파일 1개 = 서버 기동 1회가 늘어난다.
+  optin_masking:
+    SECURITY_MASK_IP: "true"
+    SECURITY_MASK_EMAIL: "true"
+
   # ── 사다리 단 비교 arm (2026-09-21 · plans/110 「▶ 실행 가이드」 ③·④) ──
   #
   # **쓰는 법은 `--profile` 이 아니라 `--arm` 이다**(`110·N-1` 랜딩 2026-09-21).
@@ -100,3 +107,21 @@ profiles:
     ENABLE_SEMANTIC_ROUTING: "true"
     INTENT_FRAME_ENABLED: "true"
     REWRITE_VERIFY_MODE: "shadow"
+
+  # ── 교차 소스 시나리오 군 M 의 자기 프로파일 (2026-09-28 · plans/121 TP-0.7) ──
+  #
+  # **arm 이 아니라 시나리오 프로파일이다.** `testdata/scenarios/m_cross_system.yaml` 9건이
+  # `profile: cross_system_tier2` 로 선언한다 — 위 「카탈로그 220건」 집계에는 M군이 들어 있지 않다.
+  # 기준 경로(2단 · D-251)를 확정하려고 사다리 세 플래그를 모두 명시한다(tier2_intent 와 같은 값).
+  # 로컬 `.env` 는 1단(`ENABLE_DEEPAGENTS_PACKAGE=true`)이라 주입하지 않으면 1단으로 잰다(D-272 ④).
+  # `tier2_intent` 를 재사용하지 않는 이유: 그 이름은 arm 전용(`--profile tier2_intent` = 선택 0건
+  # 이라는 위 설명 · 벤치 `LADDER_LEVEL_PROFILES`)이라 시나리오 프로파일로 쓰면 두 용도가 섞인다.
+  # `--arm tier3_router` 를 덧씌우면 병합 규칙대로 3단 비교 arm 이 된다.
+  #
+  # **`ACTIVE_DB_IDS` 는 주입하지 않는다.** 폐쇄망 자동 판정 run(D-216 ③)도 이 프로파일로 서버를
+  # 띄우므로, 샌드박스 DB 목록을 주입하면 폐쇄망 서버가 없는 DB(polestar·itam)에 붙는다. ITAM 활성은
+  # 로컬 `.env`(`ACTIVE_DB_IDS=polestar,itam` · 실측 2026-09-28)가 전제다 — 군 헤더 「실행 전제」.
+  cross_system_tier2:
+    ENABLE_DEEPAGENTS_PACKAGE: "false"
+    ENABLE_INTENT_ORCHESTRATION: "true"
+    ENABLE_SEMANTIC_ROUTING: "true"

@@ -1,7 +1,7 @@
 """산출물 D - 분석기 (plans/94 §6).
 
 **제안까지만 하고 적용은 사람이 한다.** `src/`·`.env`·`plans/`·`docs/17` 을 수정하지
-않는다(V10). 산출은 run 디렉터리 안의 제안 문서 6종뿐이다.
+않는다(V10). 산출은 run 디렉터리 안의 제안 문서 7종뿐이다(plans/122 J-3 `manual_taxonomy.md` 추가).
 
 두 가지를 제안문에 못 박는다:
   - **1회 관측으로 처방을 제안하지 않는다.** 반복 3회 미만이면 전건 `불안정·보류`다(V18).
@@ -19,12 +19,22 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import REPO_ROOT, utf8_open
+from .assertions import MANUAL_SOURCES
 from .catalog import Catalog
 from .report import (
+    CANONICAL_TIER,
     build_summary,
     cap_semantic_of,
     cap_semantic_warning,
+    contract_mismatch,
+    contract_of,
+    contract_unrecorded_note,
+    judge_change_note,
     load_rows,
+    row_bundle_of,
+    row_env_held,
+    row_manual_sources,
+    row_unevaluated,
     valid_rows,
 )
 
@@ -237,9 +247,15 @@ def parse_coverage_doc(path: Path = COVERAGE_DOC) -> list[dict[str, str]]:
 
 
 def bottleneck(run_dir: Path, rows: list[dict[str, Any]]) -> str:
+    # plans/122 C-4a(D-276 ①): 환경 보류 행(D-216 ③ 실행·보류)은 그 환경의 성능이 아니다 - 병목
+    # 귀속 표본에서 뺀다. 건수는 머리에 적는다(0건도 적는다 - 「없음」과 「안 셌음」을 가른다).
+    held = sum(1 for row in rows if row_env_held(row))
+    rows = [row for row in rows if not row_env_held(row)]
     out = ["# 성능 병목 귀속", "",
            "표본 5건 미만인 노드는 순위에 올리지 않는다 - `판정 불가` 다(§6.3).",
-           "무효 턴(러너 인증 실패 · T-c)은 분모에서 빠져 있다 - 건수는 리포트 10절.", ""]
+           "무효 턴(러너 인증 실패 · T-c)은 분모에서 빠져 있다 - 건수는 리포트 10절.",
+           f"환경 보류 턴 {held}건(D-216 ③ 실행·보류 · plans/122 C-4a)도 표본에서 뺐다 - "
+           "그 환경의 지연은 이 run 환경의 성능이 아니다.", ""]
     per_node: dict[str, list[float]] = defaultdict(list)
     for row in rows:
         for node, elapsed in (row.get("node_elapsed_ms") or {}).items():
@@ -401,6 +417,129 @@ def failure_taxonomy(summary: dict[str, Any]) -> str:
     return "\n".join(out) + "\n"
 
 
+#: K 묶음 상속 표지(plans/122 J-3). 판정기 출처(`MANUAL_SOURCES`)가 아니라 **러너 행 표지**다 -
+#: 부하 묶음(K군) 행은 참조 시나리오의 단언을 물려받는다(`replay_of` · `concurrent_of`).
+BUNDLE_SOURCE = "bundle"
+MANUAL_SOURCE_LABELS: dict[str, str] = {
+    "env_mismatch": "환경 불일치(D-216 ③ 실행·보류)",
+    "policy": "대응 등급 정책 미확정(`policy_confirmed: false`)",
+    "catalog": "카탈로그 `manual_review`",
+    "oracle_unavailable": "오라클 미가용(O-2 · 불합격 아님)",
+    "fanout": "팬아웃 턴의 단일 DB `row_count`(Y-4)",
+    "unobservable": "관측 수단 없음(하네스)",
+    BUNDLE_SOURCE: "K 묶음 상속(참조 시나리오 단언)",
+}
+_SOURCE_ORDER = (*MANUAL_SOURCES, BUNDLE_SOURCE)
+
+
+def _row_taxonomy_sources(row: dict[str, Any]) -> tuple[str, ...]:
+    """수동 턴 1행의 출처 집합(판정기 출처 + K 묶음 상속 표지) - `_SOURCE_ORDER` 순."""
+    present = set(row_manual_sources(row))
+    if row_bundle_of(row):
+        present.add(BUNDLE_SOURCE)
+    return tuple(source for source in _SOURCE_ORDER if source in present)
+
+
+def manual_taxonomy_counts(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """판정 분모(D-241 제거 뒤) 안의 `manual` 턴을 출처로 가른다(plans/122 J-3 · §2.3 기계 재현).
+
+    - `by_source` - 출처별 턴 수(**중복 포함** - 한 턴이 여러 출처면 각각 센다)
+    - `single` - 출처가 하나뿐인 턴 수
+    - `combos` - 복수 출처 조합별 턴 수
+    - `derived_rows` - `manual_sources` 칸 없이 문구로 되살린 행(옛 run)
+    """
+    manual = [row for row in rows
+              if row.get("func_verdict") == "manual" and not row_unevaluated(row)]
+    by_source: Counter[str] = Counter()
+    single: Counter[str] = Counter()
+    combos: Counter[tuple[str, ...]] = Counter()
+    for row in manual:
+        sources = _row_taxonomy_sources(row) or ("(출처 미상)",)
+        by_source.update(sources)
+        if len(sources) == 1:
+            single[sources[0]] += 1
+        else:
+            combos[sources] += 1
+    return {
+        "turns": len(manual),
+        "by_source": dict(by_source),
+        "single": dict(single),
+        "combos": {" + ".join(combo): count for combo, count in combos.most_common()},
+        "derived_rows": sum(1 for row in manual
+                            if "manual_sources" not in row and "manual_source" not in row),
+        "catalog_notes": Counter(
+            str(note) for row in manual for note in row.get("manual_notes") or []
+            if "catalog" in row_manual_sources({"manual_notes": [note]})
+        ).most_common(15),
+    }
+
+
+def _taxonomy_block(title: str, counts: dict[str, Any]) -> list[str]:
+    out = [f"## {title} - 수동 {counts['turns']}턴", ""]
+    if not counts["turns"]:
+        return out + ["수동 턴 0건.", ""]
+    keys = [s for s in (*_SOURCE_ORDER, "(출처 미상)") if s in counts["by_source"]]
+    out.append(_table(
+        ["출처", "턴(중복 포함)", "단일 출처"],
+        [[MANUAL_SOURCE_LABELS.get(key, key), counts["by_source"][key],
+          counts["single"].get(key, 0)] for key in keys],
+    ))
+    out.append("")
+    if counts["combos"]:
+        out.append(_table(["복수 출처 조합", "턴"],
+                          [[" + ".join(MANUAL_SOURCE_LABELS.get(part, part)
+                                       for part in combo.split(" + ")), count]
+                           for combo, count in counts["combos"].items()]))
+        out.append("")
+    by_source, single = counts["by_source"], counts["single"]
+    out.append(
+        f"§2.3 형식: 카탈로그 단일 출처 {single.get('catalog', 0)} · "
+        f"정책 {by_source.get('policy', 0)} · "
+        f"환경 불일치 {by_source.get('env_mismatch', 0)} · "
+        f"K 묶음 상속 {by_source.get(BUNDLE_SOURCE, 0)} · 팬아웃 {by_source.get('fanout', 0)} · "
+        f"관측 수단 없음 {by_source.get('unobservable', 0)} · 오라클 미가용 "
+        f"{by_source.get('oracle_unavailable', 0)} (카탈로그 전체 {by_source.get('catalog', 0)})"
+    )
+    out.append("")
+    return out
+
+
+def manual_taxonomy(summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    """`manual_taxonomy.md` - 수동 판정 사유 분류(plans/122 J-3 · `failure_taxonomy` 선례).
+
+    arm 별로 가른다(기준 arm 첫 줄 - `report.arm_groups`). 수동이 이관 대상(카탈로그)인지
+    하네스·정책·환경 몫인지가 갈려야 판정 상한을 올리는 처방이 갈린다.
+    """
+    from .report import arm_groups
+
+    groups = arm_groups(rows, {"profiles": summary.get("profiles") or []})
+    out = ["# 수동 판정 사유 분류 (plans/122 J-3)", "",
+           "판정 분모(D-241 제거 뒤) 안의 `manual` 턴을 출처로 가른다. 한 턴이 여러 출처를 "
+           "가질 수 있다 - `턴(중복 포함)` 의 합은 턴 수와 다르고, `단일 출처` 는 출처가 "
+           "하나뿐인 턴만 센다. `K 묶음 상속` 은 판정기 출처가 아니라 부하 묶음(K군) 행이 "
+           "참조 시나리오의 단언을 물려받았다는 러너 표지다(`replay_of`·`concurrent_of`).", ""]
+    whole = manual_taxonomy_counts(rows)
+    basis = ("옛 run - 행 칸 `manual_sources` 가 없어 보류 문구·`env_mismatch` 칸으로 되살렸다"
+             f"({whole['derived_rows']}행)" if whole["derived_rows"]
+             else "행 칸 `manual_sources`(러너 기록)")
+    out += [f"분류 근거: {basis}.", ""]
+    for group in groups:
+        label = group["arm"] or "(arm 없음)"
+        suffix = " (기준)" if group["reference"] else ""
+        if group["tier"] and group["tier"] != CANONICAL_TIER:
+            suffix += f" · {group['tier']}"
+        out += _taxonomy_block(f"{label}{suffix}", manual_taxonomy_counts(group["rows"]))
+    if len(groups) > 1:
+        out += _taxonomy_block("arm 혼합 합계(참고)", whole)
+    if whole["catalog_notes"]:
+        out.append("## 카탈로그 출처 상위 문구 (이관 후보 - plans/122 §4)")
+        out.append("")
+        out.append(_table(["문구", "턴"], [[note[:120], count]
+                                          for note, count in whole["catalog_notes"]]))
+        out.append("")
+    return "\n".join(out) + "\n"
+
+
 def coverage_gap(summary: dict[str, Any], catalog: Optional[Catalog]) -> str:
     out = ["# 커버리지 갭", "",
            '미커버 사유는 반드시 분류한다. "그냥 없음"은 허용하지 않는다(§6.4).', "",
@@ -415,12 +554,26 @@ def coverage_gap(summary: dict[str, Any], catalog: Optional[Catalog]) -> str:
         )
         return "\n".join(out) + "\n"
 
+    # plans/122 C-1·C-2: 분모 범위와 미분류 건수를 **첫머리**에 싣는다(0 도 적는다).
+    numbers = sorted({int(item["plan"]) for item in matrix})
+    unclassified = sum(1 for item in matrix if item["trigger"] == "미분류")
+    out.insert(2, f"**분모: `docs/30` {len(matrix)}행 · plans/{numbers[0]}~{numbers[-1]} "
+                  f"({len(numbers)}건) · 미분류 {unclassified}건**"
+                  + (" - 사람 확정 대기(분모에서 빠진 것이 아니다)" if unclassified else ""))
+    out.insert(3, "")
+
+    # C-4b(D-276 ②): 요구 소스가 비활성이라 러너가 선택하지 않은 시나리오 - 「실행 환경 부재」다.
+    unselected = {
+        str(item.get("scenario_id")): item for item in summary.get("skipped") or []
+        if item.get("reason_code") == "requires_sources" and item.get("scenario_id")
+    }
     index = catalog.plans_index() if catalog else {}
     coverage = summary.get("plans_coverage", {})
     rows = []
     for item in matrix:
         plan = int(item["plan"])
         scenarios = index.get(plan, [])
+        note = item["note"]
         if item["status"] == "미구현":
             reason = "미구현"
         elif item["trigger"] == "미분류":
@@ -430,16 +583,32 @@ def coverage_gap(summary: dict[str, Any], catalog: Optional[Catalog]) -> str:
         elif item["trigger"] != "가능":
             reason = "프롬프트 트리거 아님"
         elif not scenarios:
-            reason = "카탈로그 미작성"
+            # docs/30 비고가 「실행 환경 부재」로 시작하면 시나리오를 쓸 수 없는 환경 전제다
+            # (plans/122 부록 A - 74 DRM 폐쇄망 전용). 그 밖은 카탈로그 미작성이다.
+            reason = "실행 환경 부재" if note.startswith("실행 환경 부재") else "카탈로그 미작성"
         elif str(plan) not in coverage or coverage[str(plan)]["executed"] == 0:
             reason = "실행 환경 부재"
+            held = [sid for sid in scenarios if sid in unselected]
+            if held:
+                note = f"{note} · 요구 소스 비활성으로 선택 제외 {len(held)}건(C-4b)".lstrip(" ·")
         else:
             continue
-        rows.append([f"plans/{plan}", item["feature"], len(scenarios), reason, item["note"]])
+        rows.append([f"plans/{plan}", item["feature"], len(scenarios), reason, note])
 
     out.append(_table(["계획서", "기능", "시나리오 수", "미커버 사유", "비고"], rows)
                if rows else "미커버 항목 없음.")
     out.append("")
+    if unselected:
+        out.append("## 요구 소스 비활성으로 선택하지 않은 시나리오 (plans/122 C-4b · D-276 ②)")
+        out.append("")
+        out.append("시나리오·군이 `requires_sources` 로 선언한 소스가 run 서버에서 비활성이라 "
+                   "러너가 고르지 않았다 - 판정 보류가 아니라 **실행 환경 부재**다.")
+        out.append("")
+        out.append(_table(
+            ["시나리오", "사유"],
+            [[sid, item.get("reason") or "-"] for sid, item in sorted(unselected.items())],
+        ))
+        out.append("")
     return "\n".join(out) + "\n"
 
 
@@ -531,6 +700,10 @@ def select_baseline(
             continue
         # V29: 2단 run(타임아웃 52%)과 3단 run 의 판정 차이는 코드 변화가 아니라 경로 차이다(O-c).
         reason = _incompatible(now, comparison_keys(prev)) if now else None
+        # plans/122 J-1 ⑤ · G-17(D-276 ③): 두 run 모두 카탈로그 지문이 있고 다르면 판정 전환에
+        # 계약 변화가 섞인다 - J-4 재판정으로 같은 카탈로그에 맞춘 뒤에만 비교한다. 한쪽이라도
+        # 지문이 없으면(옛 run) 비교는 하되 `regression()` 이 「판정 계약 미기록」 줄을 싣는다.
+        reason = reason or contract_mismatch(prev, summary)
         if reason:
             skipped[candidate.name] = reason
             continue
@@ -576,6 +749,16 @@ def regression(run_dir: Path, summary: dict[str, Any]) -> str:
             if sid in previous and previous[sid]["verdict"] != info["verdict"]]
     out.append(f"직전 비교 대상: `{baseline.name}`")
     out.append("")
+    unrecorded = contract_unrecorded_note(prev, summary)
+    if unrecorded:
+        # plans/122 J-1 ⑤ - 지문이 없는 옛 run 과의 비교는 막지 않되 읽는 법을 못 박는다.
+        out.append(f"> {unrecorded}")
+        out.append("")
+    judge_note = judge_change_note(prev, summary)
+    if judge_note:
+        # 판정기 지문이 다르면 비교는 하되 판정기 변경이 섞였을 수 있다고 적는다(J-1 ⑤ 보강).
+        out.append(f"> {judge_note}")
+        out.append("")
     cap_warning = cap_semantic_warning(cap_semantic_of(prev), cap_semantic_of(summary))
     if cap_warning:
         # D-267 ⑦ 주의 ③ — 비교 키의 경고 축. 기준선은 유지하고 읽는 법을 못 박는다.
@@ -591,7 +774,7 @@ def regression(run_dir: Path, summary: dict[str, Any]) -> str:
 
 def baseline_record(run_dir: Path, summary: dict[str, Any]) -> dict[str, Any]:
     """`summary.meta.regression_baseline` 에 남길 기록(V29) — 고른 기준선 run id·비교 키·건너뛴 run."""
-    baseline, _prev, skipped = select_baseline(run_dir, summary)
+    baseline, prev, skipped = select_baseline(run_dir, summary)
     return {
         "run_id": baseline.name if baseline else None,
         "axes": list(COMPARISON_AXES),
@@ -599,6 +782,11 @@ def baseline_record(run_dir: Path, summary: dict[str, Any]) -> dict[str, Any]:
             [list(k) for k in comparison_keys(summary)], key=lambda k: [str(v) for v in k]
         ),
         "skipped": skipped,
+        # plans/122 J-1 ⑤ - 두 run 의 판정 계약(카탈로그 지문 동일성은 여기서 확인한다).
+        "judgement_contract": {
+            "current": contract_of(summary),
+            "baseline": contract_of(prev) if baseline else None,
+        },
     }
 
 
@@ -774,7 +962,7 @@ def improvement_backlog(summary: dict[str, Any], rows: list[dict[str, Any]]) -> 
 
 
 def analyze(run_dir: Path, catalog: Optional[Catalog] = None) -> list[Path]:
-    """제안 문서 6종을 run 디렉터리 안에만 쓴다.
+    """제안 문서 7종을 run 디렉터리 안에만 쓴다.
 
     **분석의 분모는 유효 턴이다**(T-c). 무효 턴을 섞으면 병목·실패 분류·처방 축이 전부
     401 구간의 그림자를 센다 - run 20260915-131903 에서 `generation` 108건이 백로그
@@ -788,7 +976,7 @@ def analyze(run_dir: Path, catalog: Optional[Catalog] = None) -> list[Path]:
     else:
         summary = build_summary(run_dir, catalog)
 
-    # V29: 고른 회귀 기준선을 요약 메타에 남긴다(문서 6종과 별개 — summary.json 이 있을 때만 갱신).
+    # V29: 고른 회귀 기준선을 요약 메타에 남긴다(문서 7종과 별개 — summary.json 이 있을 때만 갱신).
     if not (summary.get("invalid") or {}).get("over_threshold"):
         summary.setdefault("meta", {})["regression_baseline"] = baseline_record(run_dir, summary)
         if summary_path.exists():
@@ -798,6 +986,8 @@ def analyze(run_dir: Path, catalog: Optional[Catalog] = None) -> list[Path]:
     documents = {
         "bottleneck.md": bottleneck(run_dir, rows),
         "failure_taxonomy.md": failure_taxonomy(summary),
+        # plans/122 J-3 - 수동 판정 사유 분류(`failure_taxonomy` 선례).
+        "manual_taxonomy.md": manual_taxonomy(summary, rows),
         "coverage_gap.md": coverage_gap(summary, catalog),
         "regression.md": regression(run_dir, summary),
         "countermeasures.md": countermeasures(summary, rows),

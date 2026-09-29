@@ -50,6 +50,8 @@ NOTE_OWNERSHIP = "ownership"          # 답변 영역 소유 교정(선택 DB �
 NOTE_ROUTING_FALLBACK = "routing_fallback"  # 빈 분류·LLM 실패로 첫 활성 DB 폴백
 NOTE_BRIDGE = "bridge"                # 값 기반 키 브리지 매칭 보고(일치·가능·미발견·모호)
 NOTE_PROBE = "probe"                  # 식별자 소재 프로브 판정(미발견 ≠ 확인 못 함)
+# 요청 소스 불가(plans/121 TP-1.11a · N-11) — 원문 힌트가 등록·비활성 소스만 가리킬 때. 플래그 무관.
+NOTE_SOURCE_UNAVAILABLE = "source_unavailable"
 #: 3단 단일·멀티 DB 경로(`output_generator`)가 응답 말미에 렌더하는 종류 — D-203 노트는 넣지 않는다
 #: (그 노트는 2단 부품 경로의 `result_aggregator`가 렌더하며, 여기 넣으면 off 경로 응답이 바뀐다).
 CROSS_SYSTEM_NOTE_KINDS: tuple[str, ...] = (

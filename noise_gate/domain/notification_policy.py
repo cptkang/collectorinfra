@@ -191,7 +191,8 @@ STAGE_DESCRIPTIONS: dict[str, str] = {
     STAGE_MATRIX: (
         "앞 단계를 모두 지난 알람의 최종 관문입니다. 심각도×중요도 표로 기본 티어를 정하고, "
         "보조 신호(통보 정책·일상 패턴·LLM 판단·변경 근접)로 최대 한 단계 올리거나 내립니다. "
-        "둘이 충돌하면 올립니다."
+        "둘이 충돌하면 올립니다. 앱 영향 승격이 켜져 있으면 같은 호스트에 사건창 안 APM fatal "
+        "이벤트가 있을 때 DASHBOARD·TICKET을 PAGE로 올립니다(SUPPRESS는 그대로)."
     ),
     STAGE_UNKNOWN: (
         "단계 라벨이 없고 사유 문구로도 판별되지 않은 옛 레코드입니다. 버리지 않고 모아 "
@@ -770,14 +771,50 @@ def decide_notification(
         tier = _RANK_TIER[adjusted]
         adjust_note = " · 강등: " + ", ".join(demote)
 
+    # ── step 9.5(plans/87 J4 · R-7 · D-195 ②): 앱 영향 승격 — **승격 전용 비대칭** ──
+    # noise_ctx["app_impact"](Plan 55 예약키)는 게이트 노드가 APM 게이트웨이 `apm_events`로 채운다
+    # (같은 hostname·사건창의 fatal 이벤트 1건 이상). 위 조정 결과가 DASHBOARD·TICKET일 때만 PAGE로
+    # 올린다 — SUPPRESS(강등 결과 포함)는 되살리지 않고 PAGE는 그대로다. 억제 단계와 심각도3 단락은
+    # 이 지점 앞에서 끝나므로 영향이 없다. 키 부재·None(off·미수집·agentic 예약값)이면 무영향
+    # (회귀 0).
+    # signals 동결 스키마는 확장하지 않는다(change_nearby 전례 — 근거는 reason·evidence).
+    app_impact_note = ""
+    app_impact_evidence: dict[str, Any] = {}
+    app_impact = noise_ctx.get("app_impact") if noise_ctx else None
+    fatal_events = _app_impact_fatal_events(app_impact)
+    if fatal_events and tier in (TIER_DASHBOARD, TIER_TICKET):
+        tier = TIER_PAGE
+        app_impact_note = f" · 앱 영향 승격: APM fatal {fatal_events}건"
+        app_impact_evidence = {
+            "app_impact_fatal_events": fatal_events,
+            "app_impact_event_types": list(app_impact.get("event_types") or []),
+            "app_impact_was_signals": list(app_impact.get("was_signals") or []),
+            "app_impact_source": str(app_impact.get("source") or ""),
+        }
+
     reason = (
         f"매트릭스(심각도{effective_severity}×중요도{importance}) → {base_tier}{adjust_note}"
-        f" → 최종 {tier}"
+        f"{app_impact_note} → 최종 {tier}"
     )
     # (plans/112 S6) 사유 문자열에 합쳐 있던 산식 조각을 구조화해 함께 남긴다(판정 무관).
     return _decision(
         tier,
         reason,
         STAGE_MATRIX,
-        {"base_tier": base_tier, "promote": list(promote), "demote": list(demote)},
+        {
+            "base_tier": base_tier,
+            "promote": list(promote),
+            "demote": list(demote),
+            **app_impact_evidence,
+        },
     )
+
+
+def _app_impact_fatal_events(app_impact: object) -> int:
+    """`app_impact` 예약값에서 fatal 이벤트 수를 읽는다(dict가 아니거나 값이 이상하면 0)."""
+    if not isinstance(app_impact, dict):
+        return 0
+    try:
+        return max(int(app_impact.get("fatal_events") or 0), 0)
+    except (TypeError, ValueError):
+        return 0

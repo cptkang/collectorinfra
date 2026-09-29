@@ -34,8 +34,9 @@ def to_tool_records(tool_calls: list | None) -> list["ToolCallRecord"]:
             output = result.get_stringified_data()
             error = getattr(result, "error", None)
             return_code = getattr(result, "return_code", None)
+            params = getattr(result, "params", None)
         else:
-            status, output, error, return_code = "unknown", "", None, None
+            status, output, error, return_code, params = "unknown", "", None, None, None
         records.append(
             ToolCallRecord(
                 tool_name=getattr(tc, "tool_name", ""),
@@ -44,6 +45,7 @@ def to_tool_records(tool_calls: list | None) -> list["ToolCallRecord"]:
                 output=output or "",
                 error=error,
                 return_code=return_code,
+                params=params if isinstance(params, dict) else None,
             )
         )
     return records
@@ -59,6 +61,9 @@ class ToolCallRecord:
     `tool_name/description/result: StructuredToolResult`를 가지고, 원시 출력은
     `StructuredToolResult.data(Any)`이고 `get_stringified_data() -> str`로 문자열화된다
     (`status: StructuredToolResultStatus`(.value=str)·`error`·`return_code` 동봉).
+
+    `params`는 `StructuredToolResult.params`(도구 호출 인자 — holmes 0.36.0 MCP `_invoke_async`가 채운다)다.
+    정체 가드(plans/87 P15 — 같은 도구·같은 인자 반복)의 입력이며, 없으면 None이다.
     """
 
     tool_name: str
@@ -67,6 +72,7 @@ class ToolCallRecord:
     output: str  # StructuredToolResult.get_stringified_data() — 원시 출력 문자열
     error: str | None = None
     return_code: int | None = None
+    params: dict | None = None
 
 
 @dataclass

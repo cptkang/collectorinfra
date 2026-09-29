@@ -79,6 +79,80 @@ _METRIC_UNSPECIFIED_ERROR = (
     "실시간 메트릭 조회에는 메트릭 이름(예: node_load1) 또는 접두(예: node_)가 필요합니다."
 )
 
+#: `metric_trend`의 지표 종류(서버 `kind`) — 입력 파서의 `query_targets`(LLM 닫힌 열거 · D-004)에서
+#: 결정적으로 고른다(plans/121 TP-1.9 · N-9). 「디스크」는 파일시스템 사용률과 디스크 IO 둘 다일 수
+#: 있어 모호하다 — 추측하지 않고 거부한다.
+_METRIC_KIND_BY_TARGET: dict[str, str] = {
+    "CPU": "cpu", "메모리": "memory", "파일시스템": "filesystem",
+}
+_AMBIGUOUS_METRIC_TARGETS: frozenset[str] = frozenset({"디스크"})
+_METRIC_KIND_LABELS: dict[str, str] = {
+    "cpu": "CPU", "memory": "메모리", "filesystem": "파일시스템", "disk_io": "디스크 IO",
+}
+_METRIC_KIND_UNRESOLVED_ERROR = (
+    "메트릭 추세 조회에는 지표 종류(CPU·메모리·파일시스템 사용률 중 하나 이상)가 필요합니다."
+)
+#: 기존 DB 프로파일의 응답용 이름 — 행 요약(결정적 문구)에 쓴다.
+_PROFILE_LABELS: dict[str, str] = {
+    "os_config": "OS 구성", "resource_status": "자원 현황", "metric_trend": "메트릭 추세",
+}
+
+
+def _refusal(message: str, reason: str) -> dict[str, Any]:
+    """거부·실패 결과 — **텍스트 결과**로 돌려준다(plans/121 TP-1.5 · N-4).
+
+    종전에는 `organized_data: ""`를 실어 응답 조립기가 행 결과로 읽다가 `TypeError` 문구로 끝났다
+    (1단은 조사 플래그 off에서도 도구가 노출돼 운영 응답에 섞였다). 사유는 `error`·`degraded_reason`
+    으로 구조화해 그대로 두고, 사용자 문구는 `final_response`로 싣는다.
+    """
+    return {"error": message, DEGRADED_KEY: reason, "final_response": message}
+
+
+def _metric_kinds(isolated: dict[str, Any]) -> list[str] | None:
+    """`metric_trend`에 넘길 `kind` 목록 — 모호하거나 하나도 없으면 None(호출하지 않는다)."""
+    targets = (isolated.get("parsed_requirements") or {}).get("query_targets") or []
+    if not isinstance(targets, list):
+        return None
+    names = [str(t).strip() for t in targets]
+    if any(n in _AMBIGUOUS_METRIC_TARGETS for n in names):
+        return None
+    kinds = list(dict.fromkeys(
+        _METRIC_KIND_BY_TARGET[n] for n in names if n in _METRIC_KIND_BY_TARGET
+    ))
+    return kinds or None
+
+
+def _organize_db_rows(result: dict[str, Any], profile: str) -> dict[str, Any]:
+    """DB 프로파일(`os_config`·`resource_status`·`metric_trend`)의 행을 응답 조립기가 읽는 모양으로.
+
+    `_organize_live_metrics`(plans/92 O3)와 같은 규약이다 — 서버 계약 키는 건드리지 않고
+    `organized_data`·`query_results` 두 키만 더한다(D-122). 종전에는 이 키가 없어 성공한 조사도
+    "처리 결과가 없습니다."로 끝났다(plans/121 TP-1.5 · N-4). 요약은 결정적 문구다(LLM 0).
+    """
+    rows = [r for r in (result.get("rows") or []) if isinstance(r, dict)]
+    parts = [
+        f"{_PROFILE_LABELS.get(profile, profile)} 조회 결과 {len(rows)}행입니다"
+        f"(조회 시각 {result.get('queried_at') or '미상'})."
+    ]
+    if profile == "metric_trend":
+        kinds = result.get("kinds") or ([result["kind"]] if result.get("kind") else [])
+        labels = ", ".join(_METRIC_KIND_LABELS.get(k, str(k)) for k in kinds)
+        parts.append(f"지표 {labels} · 기간은 최근 24시간(시간 단위)입니다.")
+        for kind, reason in (result.get("kind_errors") or {}).items():
+            label = _METRIC_KIND_LABELS.get(kind, kind)
+            parts.append(f"{label} 추세는 조회하지 못했습니다({reason}).")
+    return {
+        "organized_data": {
+            "summary": " ".join(parts),
+            "rows": rows,
+            "column_mapping": None,
+            "resolved_mapping": None,
+            "is_sufficient": bool(rows),
+            "sheet_mappings": None,
+        },
+        "query_results": rows,
+    }
+
 
 def detect_profile(sub_query: str) -> Optional[str]:
     """질의 문자열에서 조사 프로파일을 **결정적으로** 판정한다 (W3-2).
@@ -218,6 +292,41 @@ def _organize_live_metrics(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _metric_trend_by_kind(
+    client: Any, kinds: list[str], server_name: str | None,
+) -> dict[str, Any]:
+    """지표 종류마다 한 번씩 부른다(최대 4종 · plans/121 TP-1.9).
+
+    한 종류면 서버 계약을 그대로 돌려준다. 여러 종류면 행마다 `kind`를 붙여 잇고, 실패한 종류는
+    `kind_errors`로 남긴다(침묵 누락 금지). 전부 실패면 `{error}`다.
+    """
+    results: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
+    for kind in kinds:
+        res = await client.inspect_host(profile="metric_trend", server_name=server_name, kind=kind)
+        if not isinstance(res, dict) or res.get("error"):
+            errors[kind] = str((res or {}).get("error") if isinstance(res, dict) else res)
+        else:
+            results[kind] = res
+    if not results:
+        return {"error": " / ".join(
+            f"{_METRIC_KIND_LABELS.get(k, k)}: {e}" for k, e in errors.items()
+        )}
+    if len(kinds) == 1:
+        return results[kinds[0]]
+    first = next(iter(results.values()))
+    rows = [
+        {"kind": kind, **row}
+        for kind, res in results.items()
+        for row in (res.get("rows") or []) if isinstance(row, dict)
+    ]
+    merged: dict[str, Any] = {**first, "rows": rows, "row_count": len(rows), "kinds": list(results)}
+    merged.pop("kind", None)
+    if errors:
+        merged["kind_errors"] = errors
+    return merged
+
+
 async def run_host_inspect(
     task: dict,
     isolated: dict,
@@ -243,28 +352,29 @@ async def run_host_inspect(
 
     Returns:
         성공 시 `inspect_host`의 서버 반환 계약을 **변형 없이** 실은 dict
-        (`{rows, row_count, queried_at, source_kind, source, engine}` · D-122),
-        실패·거부는 `{error, degraded_reason, ...}`. `metrics_live`는 서버 계약(instant vector)에
-        응답 조립용 `organized_data`·`query_results`를 **더한다**(`_organize_live_metrics`).
+        (`{rows, row_count, queried_at, source_kind, source, engine}` · D-122)에 응답 조립용
+        `organized_data`·`query_results`를 **더한다**(DB 프로파일 `_organize_db_rows` ·
+        `metrics_live` `_organize_live_metrics`). 실패·거부는 텍스트 결과
+        `{error, degraded_reason, final_response}`(plans/121 TP-1.5). `metric_trend`가 여러
+        지표 종류면 종류별 호출을 잇는다(TP-1.9).
     """
     # ── 게이트 (W3-3 · fail-closed) ─────────────────────────────────
     if not app_config.composite.investigation_enabled:
         logger.info("host_inspect 거부: composite.investigation_enabled=False")
-        return {
-            "error": "호스트 조사 경로가 비활성입니다(COMPOSITE_INVESTIGATION_ENABLED).",
-            DEGRADED_KEY: "composite_investigation_disabled",
-            "organized_data": "",
-        }
+        return _refusal(
+            "호스트 조사 경로가 비활성입니다(COMPOSITE_INVESTIGATION_ENABLED).",
+            "composite_investigation_disabled",
+        )
 
     sub_query = task.get("sub_query") or isolated.get("user_query") or ""
     profile = detect_profile(sub_query)
     if not profile:
         logger.info("host_inspect 거부: 프로파일 미판정 sub_query=%r", sub_query[:120])
-        return {
-            "error": "조사 프로파일을 판정하지 못했습니다(OS 구성·자원 현황·메트릭 추세 중 하나여야 합니다).",
-            DEGRADED_KEY: "profile_undetected",
-            "organized_data": "",
-        }
+        return _refusal(
+            "조사 프로파일을 판정하지 못했습니다"
+            "(OS 구성·자원 현황·메트릭 추세 중 하나여야 합니다).",
+            "profile_undetected",
+        )
 
     # ── 대상 해소 — 공통 모듈 경유 (W1-4 · G5) ──────────────────────
     # 사본을 만들지 않는다(D-053): 세 진입 경로가 쓰는 그 함수를 그대로 쓴다.
@@ -284,11 +394,9 @@ async def run_host_inspect(
     resolution = resolve_investigation_targets(isolated, db_id=db_id)
     if not resolution.targets:
         logger.info("host_inspect 0건: 대상 미식별 db_id=%s source=%s", db_id, resolution.source)
-        return {
-            "error": "조사 대상 서버를 식별하지 못했습니다. 서버명을 지정해 주세요.",
-            DEGRADED_KEY: "target_unresolved",
-            "organized_data": "",
-        }
+        return _refusal(
+            "조사 대상 서버를 식별하지 못했습니다. 서버명을 지정해 주세요.", "target_unresolved",
+        )
 
     # **단건 조회 경로다**(78 W3-2 경로표 "단건 조회"). N개 대상은 W2 fan-out 소관이므로
     # 여기서 조용히 첫 건만 쓰지 않고 **절단 사실을 결과에 싣는다**(침묵 절단 금지).
@@ -299,11 +407,9 @@ async def run_host_inspect(
     if not (hostname or server_name):
         need = _PROFILE_IDENTIFIER[profile]
         logger.info("host_inspect 0건: %s 프로파일이 요구하는 %s 부재", profile, need)
-        return {
-            "error": f"{profile} 조사에 필요한 {need}을(를) 대상에서 찾지 못했습니다.",
-            DEGRADED_KEY: "identifier_missing",
-            "organized_data": "",
-        }
+        return _refusal(
+            f"{profile} 조사에 필요한 {need}을(를) 대상에서 찾지 못했습니다.", "identifier_missing",
+        )
 
     # `metrics_live`는 필터가 필수다(서버 계약 — metric 또는 prefix). 다른 프로파일은 옵션
     # 없이 종전 인자 그대로 부른다(`**{}` — 호출 인자 비트 동일).
@@ -316,12 +422,22 @@ async def run_host_inspect(
             logger.info(
                 "host_inspect 거부: metrics_live 메트릭 미지정 sub_query=%r", sub_query[:120]
             )
-            return {
-                "error": _METRIC_UNSPECIFIED_ERROR,
-                DEGRADED_KEY: "metric_unspecified",
-                "organized_data": "",
-            }
+            return _refusal(_METRIC_UNSPECIFIED_ERROR, "metric_unspecified")
         options = metric_filter
+
+    # `metric_trend`는 지표 종류(`kind`)가 서버 필수 인자다(plans/121 TP-1.9 · N-9 — 종전에는
+    # 넘기지 않아 상시 거부됐다). 입력 파서의 조회 대상에서 결정적으로 고르고, 없거나 모호하면
+    # 부르지 않는다.
+    kinds: list[str] = []
+    if profile == "metric_trend":
+        resolved_kinds = _metric_kinds(isolated)
+        if resolved_kinds is None:
+            logger.info(
+                "host_inspect 거부: metric_trend 지표 종류 미확정 query_targets=%r",
+                (isolated.get("parsed_requirements") or {}).get("query_targets"),
+            )
+            return _refusal(_METRIC_KIND_UNRESOLVED_ERROR, "metric_kind_unresolved")
+        kinds = resolved_kinds
 
     logger.info(
         "host_inspect 진입: profile=%s db_id=%s hostname=%s server_name=%s targets=%d",
@@ -329,16 +445,19 @@ async def run_host_inspect(
     )
 
     async with get_db_client(app_config, db_id=db_id) as client:
-        result = await client.inspect_host(
-            profile=profile,
-            hostname=hostname,
-            server_name=server_name,
-            **options,
-        )
+        if kinds:
+            result = await _metric_trend_by_kind(client, kinds, server_name)
+        else:
+            result = await client.inspect_host(
+                profile=profile,
+                hostname=hostname,
+                server_name=server_name,
+                **options,
+            )
 
     # 반환 계약은 **서버가 정본**이다(D-122) — 본체는 변형하지 않고 그대로 싣는다.
     if isinstance(result, dict) and result.get("error"):
-        return {**result, DEGRADED_KEY: "inspect_failed", "organized_data": ""}
+        return {**result, DEGRADED_KEY: "inspect_failed", "final_response": str(result["error"])}
 
     payload: dict[str, Any] = {**result, "profile": profile}
     # 서버 계약에 `target`이 있으면(`om_metric_instant` — 스크레이프 허용목록 타깃 이름)
@@ -349,6 +468,9 @@ async def run_host_inspect(
         # vector는 `rows`가 아니라 `data.result`라 응답 조립기가 읽지 못한다 —
         # 행으로 펼친 두 키를 더한다.
         payload.update(_organize_live_metrics(result))
+    else:
+        # DB 프로파일도 응답 조립기가 읽는 두 키를 더한다(plans/121 TP-1.5 — 서버 계약 키 불변).
+        payload.update(_organize_db_rows(result, profile))
     if truncated > 0:
         payload["truncated_targets"] = truncated
         payload["truncation_note"] = (

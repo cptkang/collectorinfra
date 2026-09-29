@@ -231,17 +231,23 @@ def test_off_does_not_touch_render_cache(flag):
 # ──────────────────────────────────────────────
 
 
-def test_planner_off_is_base_template():
-    assert (
-        ip._planner_system_prompt(_cfg(ownership=False))
-        is planner_prompts.INTENT_PLANNER_SYSTEM_TEMPLATE
+def _planner_base() -> str:
+    """off 기준 — 기본 템플릿에 환경어 자리만 레지스트리 정본으로 채운 것(plans/121 TP-11.2)."""
+    return planner_prompts.render_intent_planner_environment_terms(
+        planner_prompts.INTENT_PLANNER_SYSTEM_TEMPLATE, get_registry().environment_terms
     )
+
+
+def test_planner_off_is_base_template():
+    off = ip._planner_system_prompt(_cfg(ownership=False))
+    assert off == _planner_base()
+    assert ip._planner_system_prompt(_cfg(ownership=False)) is off   # 캐시 — 요청마다 같은 접두
 
 
 def test_planner_on_is_insertion_only():
     ip._render_planner_ownership_prompt.cache_clear()
     on = ip._planner_system_prompt(_cfg(ownership=True))
-    base = planner_prompts.INTENT_PLANNER_SYSTEM_TEMPLATE
+    base = _planner_base()
     assert _opcodes(base, on) == {"equal", "insert"}
     added = _inserted(base, on)
     assert "## 답변 영역(capability)" in added and "### 예시 3-2" in added

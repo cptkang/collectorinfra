@@ -57,7 +57,7 @@ INTENT_PLANNER_SYSTEM_TEMPLATE = """당신은 사용자의 인프라 질의를 �
 - 각 task의 `sub_query`에는 그 작업이 처리할 부분만 추출하여 자연어로 기술하세요.
 - **대상 DB는 선택하지 마세요.** DB 선택은 data_query agent가 내부적으로 수행합니다. planner는 `agent`와 `sub_query`만 결정합니다.
 - **단, 질의에 포함된 DB 식별 신호는 `sub_query`에 그대로 보존하세요.** 폴스타 위치(김포/여의도/은행/공동존),
-  DB명(polestar/cloud_portal/itsm/itam 등), 환경(운영/개발/스테이징)이 언급되면 `sub_query`에 남겨야 올바른 DB가 선택됩니다.
+  DB명(polestar/cloud_portal/itsm/itam 등), 환경(<environment_terms>)이 언급되면 `sub_query`에 남겨야 올바른 DB가 선택됩니다.
   이 신호는 DB 선택에만 쓰이고 SQL 조건으로는 변환되지 않습니다(누락하면 잘못된 DB로 라우팅됩니다).
 - **보수적으로**: 분해가 불확실하면 무리하게 쪼개지 말고 task 1개(주로 data_query)로 묶으세요.
 
@@ -212,10 +212,49 @@ INTENT_PLANNER_SYSTEM_TEMPLATE = """당신은 사용자의 인프라 질의를 �
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# 환경어 자리 (plans/121 TP-11.2 · D-271 ④ · D-131 단일 출처)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 위 템플릿의 환경어 목록은 사본을 두지 않고 레지스트리 정본(`config/db_registry.yaml`
+# `environment_terms`)으로 채운다. 프롬프트 계층은 레지스트리를 읽지 않으므로(계층 규칙) 값은 조립
+# 지점(`orchestration.intent_planner._planner_system_prompt` — 2단 분해·3단 순차 러너 공유)이 넘기고
+# 그 결과를 캐시한다(기동 시 1회 · 프롬프트 접두 고정). 소유·task 프레임 삽입은 이 자리를 건드리지
+# 않으므로 채움은 조립의 마지막 한 번이다. 렌더 결과는 종전 하드코딩 사본("운영/개발/스테이징/DR")과
+# 바이트 동일하다(테스트가 sha256으로 고정).
+
+ENVIRONMENT_TERMS_SLOT = "<environment_terms>"
+
+
+def render_intent_planner_environment_terms(
+    prompt: str, environment_terms: tuple[str, ...]
+) -> str:
+    """분해 프롬프트의 환경어 자리를 레지스트리 환경어로 채운다(plans/121 TP-11.2).
+
+    Args:
+        prompt: 기본 템플릿 또는 소유·task 프레임 삽입본(자리가 정확히 1개)
+        environment_terms: 레지스트리 `environment_terms` — 선언 순서 그대로 `/`로 잇는다
+
+    Returns:
+        환경어가 채워진 프롬프트
+
+    Raises:
+        RuntimeError: 자리가 정확히 1회가 아니거나 환경어가 비었다(빈 괄호로 침묵 렌더하지 않는다)
+    """
+    if prompt.count(ENVIRONMENT_TERMS_SLOT) != 1:
+        raise RuntimeError(f"분해 프롬프트 환경어 자리가 1회가 아니다: {ENVIRONMENT_TERMS_SLOT!r}")
+    if not environment_terms:
+        raise RuntimeError(
+            "레지스트리 환경어(environment_terms)가 비어 분해 프롬프트를 렌더할 수 없다"
+        )
+    return prompt.replace(ENVIRONMENT_TERMS_SLOT, "/".join(environment_terms))
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 답변 영역 소유 (plans/102 X-8 · D-224 ① · `ROUTER_CAPABILITY_OWNERSHIP_ENABLED`) — 옵트인
 # ══════════════════════════════════════════════════════════════════════════
 #
-# **위 템플릿은 한 글자도 바꾸지 않는다** — off는 `INTENT_PLANNER_SYSTEM_TEMPLATE` 그대로다.
+# **위 템플릿은 한 글자도 바꾸지 않는다** — off는 `INTENT_PLANNER_SYSTEM_TEMPLATE` 그대로다
+# (환경어 자리 채움만 — plans/121 TP-11.2).
 # on 렌더는 `render_intent_planner_ownership_template`이 앵커 두 곳 **앞에 삽입만** 해서 만든다
 # (기존 줄 변경 0 — 삽입 전용 테스트가 강제). 3단 순차 러너가 `_llm_decompose`로 이 프롬프트를
 # 재사용한다.

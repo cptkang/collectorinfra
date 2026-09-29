@@ -761,6 +761,7 @@ DB 전체를 한두 문단으로 설명하는 **DB 상세 설명**을 등록한�
 - 인증이 꺼져 있던 동안의 요청은 사용자가 anonymous로 남는다.
 - 성공률은 쿼리 실행(SQL 1건) 기준이다. 이 기록이 생기기 전 기간은 쿼리 실행 기록이 없어 성공률이 「-」이거나 적은 표본으로 계산될 수 있다.
 - 쿼리 실행 기록은 조회를 기다리게 하지 않도록 조회가 끝난 뒤 따로 감사 DB에 쓴다. 앱 DB가 5초 안에 쓰지 못하면 그 건은 이 화면에서 빠지고 서버 로그에 「쿼리 실행 DB 감사 기록 시간 초과」 경고가 남는다(파일 감사 `logs/audit-*.jsonl`에는 남는다). 서버를 내릴 때는 쓰던 기록을 마친 뒤 종료한다.
+- 실시간 프로세스 조회와 호스트 조사(OS 구성·자원 현황·메트릭 추세)는 작업 1건마다 파일 감사(`logs/audit-*.jsonl`)에 `host_investigation` 이벤트로 남는다 — 경로(`backend`: `process_api`·`mcp_server`)·대상 서버·결과(`ok`·`partial`·`failed`·`denied`)·걸린 시간, 프로세스 조회는 서버명 해소 SELECT까지 싣는다. 이 화면의 목록·쿼리 실행 집계에는 섞지 않는다. `COMPOSITE_AUDIT_ENABLED=false`면 남기지 않는다.
 :::
 ::: related
 - [A-35 로그 검색](#a-35)
@@ -2276,7 +2277,7 @@ DRM이 걸린 샘플 파일을 올려 서버가 풀 수 있는지 시험한다.
 - **설정 키**: `ALARM_HISTORY_ENABLED`(true) · `ALARM_HISTORY_LOOKBACK_DAYS`(90) · `ALARM_HISTORY_MAX_ROWS`(2000) · `ALARM_HISTORY_CACHE_TTL_SECONDS`(300).
 
 ##### 19. 부가 정보 수집 — 영향 프로세스
-- **하는 일**: CPU·메모리 발생 알람에 한해 hostname으로 폴스타 프로세스 API를 불러 자원을 많이 쓰는 프로세스를 고른다.
+- **하는 일**: CPU·메모리 발생 알람에 한해 hostname으로 폴스타 프로세스 API를 불러 자원을 많이 쓰는 프로세스를 고른다. APM 게이트웨이가 보낸 제니퍼 이벤트(자원 종류 `apm.Instance`)는 이름에 메모리·CPU가 들어 있어도 이 조회를 하지 않는다 — OS 프로세스가 WAS 장애의 원인처럼 보이지 않게 하려는 것이다. 켠 경우 메시지 L1 보강이 호스트 프로세스 상위를 「호스트 참고」로만 붙인다.
 - **입력·출력**: 상위 N개 프로세스 목록이 분석 프롬프트에 들어간다.
 - **판단 주체**: 외부 API 조회와 정렬이다.
 - **실패하면**: 그 DB의 API 주소가 목록에 없으면 부르지 않고, 호출이 실패하면 프로세스 없이 분석한다.
@@ -2306,9 +2307,9 @@ DRM이 걸린 샘플 파일을 올려 서버가 풀 수 있는지 시험한다.
 ##### 23. 발송 판단(게이트)
 - **하는 일**: LLM을 부르지 않는 순수 함수가 비알람 → 심각도3 단락 → 자가복구·해소 → 수집 실패 → 유지보수 → 침묵 → 의존성 → 인히비션 → 플래핑 → 스톰 → 상관 → 계획-무해 주석 → 매트릭스 → 보조 조정 순서로 보고, 처음 걸리는 단계에서 티어를 확정한다. 단계별 조건은 [A-60](#a-60)에 있다.
 - **입력·출력**: 입력은 알람 이벤트·분석 결과·노이즈 컨텍스트·탐지기 값·침묵 규칙·주석이다. 출력은 티어(PAGE·TICKET·DASHBOARD·SUPPRESS)·사유·우선순위·신호 스냅샷·결정 단계·단계 근거다.
-- **판단 주체**: 결정적 규칙(`noise_gate/domain/notification_policy.py`)이다.
-- **실패하면**: 분석이 실패해도 분석 노드가 원문 알람으로 만든 결과로 판단하고, 결정 기록의 단계 근거에 `analysis`(「AI 분석 실패 — 원문 알람으로 판단」)를 남긴다.
-- **설정 키**: `NOISE_ENABLE_NOISE_GATE`(false) · `NOISE_SUPPRESS_MAX_SEVERITY`(2) · `NOISE_NON_ALARM_FILTER_ENABLED`(false).
+- **판단 주체**: 결정적 규칙(`noise_gate/domain/notification_policy.py`)이다. 앱 영향 승격을 켜면 매트릭스 결과가 DASHBOARD·TICKET인 폴스타 알람에 한해 APM 게이트웨이의 `apm_events`를 한 번 불러 판정 재료로 쓴다([A-60](#a-60)).
+- **실패하면**: 분석이 실패해도 분석 노드가 원문 알람으로 만든 결과로 판단하고, 결정 기록의 단계 근거에 `analysis`(「AI 분석 실패 — 원문 알람으로 판단」)를 남긴다. 게이트웨이 조회가 실패하면 판정을 그대로 두고 단계 근거에 `app_impact_error`(사유)를 남긴다.
+- **설정 키**: `NOISE_ENABLE_NOISE_GATE`(false) · `NOISE_SUPPRESS_MAX_SEVERITY`(2) · `NOISE_NON_ALARM_FILTER_ENABLED`(false) · `NOISE_APP_IMPACT_ENABLED`(false) · `NOISE_APM_MCP_URL`(빈 값) · `NOISE_APP_IMPACT_WINDOW_MINUTES`(10).
 
 ##### 24. 결정 기록
 - **하는 일**: 발송 판단이 끝날 때마다 결정 기록 파일에 JSON 한 줄을 덧붙인다.
@@ -2367,7 +2368,7 @@ DRM이 걸린 샘플 파일을 올려 서버가 풀 수 있는지 시험한다.
 - **설정 키**: `NOISE_MESSAGE_ENRICHMENT_ENABLED`(false) · `NOISE_ENRICHMENT_MIN_TIER`(PAGE).
 
 ##### 32. L3 진단 보강(PAGE 뒤)
-- **하는 일**: worKB 발송에 성공한 PAGE 알람 가운데 종류(cpu·memory·disk·network·process·log)를 판정할 수 있는 것에 대해, 통보를 막지 않는 백그라운드 작업으로 대상 서버에 ssh 허용목록 명령을 실행한다.
+- **하는 일**: worKB 발송에 성공한 PAGE 알람 가운데 종류(cpu·memory·disk·network·process·log)를 판정할 수 있는 것에 대해, 통보를 막지 않는 백그라운드 작업으로 대상 서버에 ssh 허용목록 명령을 실행한다. 제니퍼 이벤트(자원 종류 `apm.Instance`)는 종류가 `apm`으로 먼저 정해져 OS 명령을 돌리지 않는다(`NOISE_L3_PROFILE_MAP_CSV`로 연결해도 마찬가지다).
 - **입력·출력**: 결과의 상태지문(포화 구간·OOM 흔적·swap 사용)을 같은 지문의 직전 기록과 비교해, 처음이거나 악화됐을 때만 「L3 진단 요지」 후속 쪽지를 보낸다. 감사를 켜면 결정 기록 파일에 `type="l3_state"` 레코드를 남긴다.
 - **판단 주체**: 결정적 비교(상태지문 전이)다.
 - **실패하면**: 동시 작업 상한을 넘으면 사유 로그를 남기고 건너뛴다. 수집·발송이 실패해도 이미 나간 통보는 그대로다.
@@ -2545,6 +2546,8 @@ DRM이 걸린 샘플 파일을 올려 서버가 풀 수 있는지 시험한다.
 | 강등 | 폴스타 비통보 정책 `suppress` | 현재 수집 코드는 이 값을 만들지 않으므로 발생하지 않는다 |
 | 강등 | LLM `is_routine=true`(일상 반복) | 실효 심각도 ≤ `NOISE_SUPPRESS_MAX_SEVERITY`(2) |
 | 강등 | LLM 액션가능성 `noise` | 위 조건 + `NOISE_ENABLE_LLM_ACTIONABILITY` |
+
+**9.5 앱 영향 승격 (matrix 안)** — `NOISE_APP_IMPACT_ENABLED`(false)와 `NOISE_APM_MCP_URL`이 있을 때만. 보조 조정까지 끝난 결과가 [[DASHBOARD|티어 DASHBOARD — 화면에만]]·[[TICKET|티어 TICKET — 요약 큐 + 화면]]인 폴스타 알람이면 APM 게이트웨이에 같은 hostname의 사건창(`NOISE_APP_IMPACT_WINDOW_MINUTES` 10분) 안 fatal 이벤트를 묻고, 한 건이라도 있으면 [[PAGE|티어 PAGE — 즉시 통보]]로 올린다. 올리기만 한다 — SUPPRESS(강등 결과 포함)는 되살리지 않고, 억제 단계와 심각도3 단락은 이 지점에 오지 않는다. 사유에 「앱 영향 승격: APM fatal N건」이 붙는다.
 :::
 ::: how
 1. 결정 추적의 **판단 경로**에서 결과를 정한 단계를 찾고, 이 표의 같은 표시명 행에서 조건과 설정을 확인한다.
@@ -2698,6 +2701,13 @@ DRM이 걸린 샘플 파일을 올려 서버가 풀 수 있는지 시험한다.
 - **강등 신호**: 폴스타 비통보 정책 `suppress`(현재 수집 코드가 이 값을 만들지 않아 발생하지 않는다), `is_routine=true`, LLM 액션가능성 `noise`. 뒤의 둘은 실효 심각도가 `NOISE_SUPPRESS_MAX_SEVERITY` 이하일 때만 목록에 들어간다.
 - **규칙**: 승격이 하나라도 있으면 1단계 승격(강등 무시), 승격 없이 강등만 있으면 1단계 강등. 상한 PAGE·하한 SUPPRESS.
 - **주의**: 통보 대상이 지정된 알람은 통보 정책 신호 하나로 매번 한 단계 오른다. 분석 프롬프트는 이력 통계가 없으면 `is_routine=false`를 내도록 지시하므로, 이력 조회가 꺼지거나 실패하면 승격 쪽으로 기운다.
+
+##### 9.5 앱 영향 승격 (`matrix` 안)
+- **켜는 키**: `NOISE_APP_IMPACT_ENABLED`(false) + `NOISE_APM_MCP_URL`(APM 게이트웨이 SSE 주소 · 인증 `NOISE_APM_MCP_TOKEN`). 켰는데 주소가 비면 워커 기동 로그에 경고가 남고 승격하지 않는다.
+- **보는 것**: 보조 조정 결과가 DASHBOARD·TICKET인 폴스타 알람만 게이트웨이 `apm_events`(hostname · 기준 시각 = 알람 발생 시각 · 창 `NOISE_APP_IMPACT_WINDOW_MINUTES` 10분 · 레벨 fatal)를 부른다. PAGE·SUPPRESS·억제 단계·심각도3·제니퍼 이벤트 자신은 부르지 않는다.
+- **결과**: fatal 이벤트가 한 건 이상이면 PAGE. 사유에 「앱 영향 승격: APM fatal N건」이 붙고, 노이즈 컨텍스트의 `app_impact`가 채워진다.
+- **근거**: `stage_evidence`에 `app_impact_fatal_events`·`app_impact_event_types`·`app_impact_was_signals`·`app_impact_source`.
+- **실패하면**: 게이트웨이 미가용(30초 동안 재시도 안 함)·타임아웃·오류 응답(`source_unavailable`·`instance_unresolved` 등)은 판정을 바꾸지 않고, 경고 로그와 `stage_evidence.app_impact_error`로 사유를 남긴다.
 
 #### 동작 원리
 판단 함수에 닿기 전 워커가 하는 일과, 판단 함수가 쓰는 입력·기록을 항목별로 적는다.

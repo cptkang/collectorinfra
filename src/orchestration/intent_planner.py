@@ -27,9 +27,12 @@ from src.nodes.input_parser import LOCATION_HINT_TERMS
 from src.domain.task_frame import render_task_query, task_spans, verify_task_frames
 from src.prompts.intent_planner import (
     INTENT_PLANNER_SYSTEM_TEMPLATE,
+    render_intent_planner_environment_terms,
     render_intent_planner_ownership_template,
     render_intent_planner_task_frame_template,
 )
+from src.routing.db_scope import ZONE_GROUP_ONLY, ZONE_SELECTION_SCOPE_KEY
+from src.routing.registry import get_registry
 from src.routing.capability_ownership import (
     active_owner_system_count,
     known_capability_codes,
@@ -39,9 +42,11 @@ from src.routing.capability_ownership import (
 from src.state import AgentState
 from src.clients.instructor_adapter import StructuredOutputError, try_structured_call
 from src.orchestration.schemas import (
+    AGENT_FALLBACK_KEY,
     DecomposedPlan,
     OwnershipDecomposedPlan,
     SpanDecomposedPlan,
+    close_agent_vocabulary,
     validate_plan_dag,
 )
 from src.utils.json_extract import extract_json_from_response
@@ -248,7 +253,27 @@ async def intent_planner(
         app_config = load_config()
     result = await _plan_turn(state, llm=llm, app_config=app_config)
     _normalize_plan_exit(result, state)
+    _record_clarification(result)
     return result
+
+
+def _record_clarification(result: dict[str, Any]) -> None:
+    """분해 되묻기 후보를 계획 출구에서 **항상** 쓴다(없으면 None · plans/121 TP-1.4 · N-3).
+
+    `clarification_needed`는 선언된 요청 스코프 키라 쓰지 않은 턴에 앞 턴 값이 남는다(체크포인터
+    델타 병합) — 매 턴 덮어쓴다. 소비는 plans/106 H1과 함께 넣고, 지금은 로그만 남긴다(내용은
+    남기지 않는다 — 질문 길이·선택지 수만).
+    """
+    clarification = result.get("clarification_needed")
+    if not isinstance(clarification, dict) or not clarification:
+        result["clarification_needed"] = None
+        return
+    options = clarification.get("options")
+    logger.info(
+        "intent_planner: 분해 되묻기 후보 방출(소비 없음 · plans/106 H1) — 질문 %d자 · 선택지 %d개",
+        len(str(clarification.get("question") or "")),
+        len(options) if isinstance(options, list) else 0,
+    )
 
 
 def _normalize_plan_exit(result: dict[str, Any], state: AgentState) -> None:
@@ -264,6 +289,60 @@ def _normalize_plan_exit(result: dict[str, Any], state: AgentState) -> None:
     if not isinstance(tasks, list) or not tasks:
         return
     result["task_plan"] = _coerce_alarm_intent(_coerce_process_intent(tasks))
+
+
+#: 계획 경로 코드(plans/121 TP-0.1) — 어느 사전 처리 단락 또는 LLM 분해로 계획이 나왔는지.
+#: 요청 스코프 상태 키 `plan_path`로 남아 계획 요약(`done.plan_summary`)이 읽는다(코드만).
+PLAN_PATH_KEY = "plan_path"
+
+
+def _on_path(plan: dict[str, Any], code: str) -> dict[str, Any]:
+    plan[PLAN_PATH_KEY] = code
+    return plan
+
+
+#: 존 답변 턴에 직전 턴 복합 계획을 되살린 경로(plans/121 TP-1.2).
+#: 종전 단일 task 복원은 `zone_reentry` 그대로다.
+ZONE_REENTRY_RESTORED_PATH = "zone_reentry_restored"
+
+
+def _restored_zone_reentry_plan(
+    state: AgentState, selected_db_ids: list[str]
+) -> dict[str, Any] | None:
+    """존 답변 턴에 직전 턴 복합 계획을 복원한다 — 복원할 것이 없으면 None(plans/121 TP-1.2 · G-30).
+
+    입력은 라우트가 Q-2 재사용 조건에서만 싣는 `reuse_task_plan`(직전 턴 존 역질문 단락의
+    스냅샷)이다. 계획에서는 **게이트에 걸렸던 task만** `db_ids`를 선택 존으로 고정하고 나머지
+    task에는 존 선택 적용 범위 표지(`ZONE_SELECTION_SCOPE_KEY` = 존 그룹 DB만)를 단다(§12.5) — 실행
+    배관은 그 task를 분류한 뒤 존 그룹 대상만 선택 존으로 바꾼다. 상태는 pending으로 새로
+    시작하고 `task_id`·`depends_on`·`input_from`·`order`는 그대로 둔다. 양식 턴은 복원하지
+    않는다(D-150 단일 task). 스냅샷 모양이 어긋나면 None — 호출부가 종전 단일 task 경로로 간다.
+    """
+    snapshot = state.get("reuse_task_plan")
+    if not isinstance(snapshot, dict):
+        return None
+    if state.get("template_structure") or state.get("uploaded_file"):
+        return None
+    raw_tasks = snapshot.get("tasks")
+    gated = {str(t) for t in (snapshot.get("gated_task_ids") or [])}
+    if not isinstance(raw_tasks, list) or len(raw_tasks) < 2 or not gated:
+        return None
+    tasks: list[dict[str, Any]] = []
+    for raw in raw_tasks:
+        if not isinstance(raw, dict) or not raw.get("task_id") or not raw.get("agent"):
+            return None
+        task = {k: (list(v) if isinstance(v, list) else v) for k, v in raw.items()}
+        task["status"] = "pending"
+        if str(task["task_id"]) in gated:
+            task["db_ids"] = list(selected_db_ids)
+        elif not task.get("db_ids"):
+            # 존 선택은 존 그룹 DB에만 적용한다 — 실행 배관이 분류 뒤 존 그룹 대상만 선택 존으로
+            # 바꾼다(`subagents.run_data_query_pipeline` · 교차 시스템 task 보호)
+            task[ZONE_SELECTION_SCOPE_KEY] = ZONE_GROUP_ONLY
+        tasks.append(task)
+    if not gated <= {str(t["task_id"]) for t in tasks}:
+        return None
+    return {"task_plan": tasks, "is_composite": True, "current_node": "intent_planner"}
 
 
 async def _plan_turn(
@@ -300,13 +379,15 @@ async def _plan_turn(
     # ① pending_synonym_reuse → cache_management 강제
     if state.get("pending_synonym_reuse"):
         logger.info("intent_planner: pending_synonym_reuse 감지, cache_management 단일 task")
-        return _single_task_plan("cache_management", user_query)
+        return _on_path(_single_task_plan("cache_management", user_query), "pending_synonym_reuse")
 
     # ② 명시적 유사어 등록 요청 (멀티턴 두 번째 요청)
     parsed = state.get("parsed_requirements", {})
     if parsed.get("synonym_registration") and state.get("pending_synonym_registrations"):
         logger.info("intent_planner: 유사어 등록 요청 감지, synonym_registration 단일 task")
-        return _single_task_plan("synonym_registration", user_query)
+        return _on_path(
+            _single_task_plan("synonym_registration", user_query), "synonym_registration"
+        )
 
     # ②.3 앵커 없는 동의어 집합 선언(D-142) — 3단 pre-gate(semantic_router 우선순위 ③)와
     # 대칭. 트랙 A에는 이 분기가 없어 신규 셋 선언이 LLM 분해에서 synonym_registration
@@ -314,7 +395,7 @@ async def _plan_turn(
     # 라이브 실측 A-10). cache_management 노드가 같은 파서로 결정적 등록한다.
     if parse_synonym_set(user_query):
         logger.info("intent_planner: 동의어 집합 선언 감지(D-142), cache_management 단일 task")
-        return _single_task_plan("cache_management", user_query)
+        return _on_path(_single_task_plan("cache_management", user_query), "synonym_set")
 
     # ②.7 폼필 확인 이력 조회·삭제 (Plan 73 Phase 3, D-151 — FIX-21).
     # 반드시 ②.5(selected_db_ids)·③(mapped_db_ids)보다 먼저 판정해야 한다 —
@@ -357,29 +438,38 @@ async def _plan_turn(
             plan["task_plan"][0]["form_memory_panel"] = _panel
         if _sig:
             plan["last_form_signature"] = _sig  # 직전 양식 컨텍스트 갱신(멀티턴 보존)
-        return plan
+        return _on_path(plan, "form_memory")
 
     # ②.5 존 역질문에서 사용자가 체크박스로 확정한 DB (Plan 75 §4) — LLM 분해를 건너뛰어
     # 자연어 재조합 없이 결정적 고정(mapped_db_ids 선례 동형). task.db_ids는 하류
     # run_data_query_pipeline이 classify_dbs를 우회하는 기존 배관을 그대로 탄다.
     selected_db_ids = state.get("selected_db_ids")
     if selected_db_ids:
+        # 직전 턴 복합 계획 복원(plans/121 TP-1.2 · G-30) — 라우트가 Q-2 조건에서만 싣는다.
+        # 없거나 복원할 수 없으면 아래 종전 단일 task 경로 그대로다.
+        restored = _restored_zone_reentry_plan(state, list(selected_db_ids))
+        if restored is not None:
+            logger.info(
+                "intent_planner: 존 답변 턴 — 직전 턴 계획 복원 %d건(게이트 task만 존 고정=%s)",
+                len(restored["task_plan"]), selected_db_ids,
+            )
+            return _on_path(restored, ZONE_REENTRY_RESTORED_PATH)
         logger.info(
             "intent_planner: selected_db_ids 감지, data_query 단일 task (존 선택 고정=%s)",
             selected_db_ids,
         )
-        return _with_form_signature(
+        return _on_path(_with_form_signature(
             _single_task_plan("data_query", user_query, db_ids=list(selected_db_ids)),
             state,
-        )
+        ), "zone_reentry")
 
     # ③ field_mapper가 이미 대상 DB를 결정한 경우 (양식 업로드 시)
     mapped_db_ids = state.get("mapped_db_ids")
     if mapped_db_ids:
         logger.info("intent_planner: mapped_db_ids 감지, data_query 단일 task (DB 고정=%s)", mapped_db_ids)
-        return _with_form_signature(
+        return _on_path(_with_form_signature(
             _single_task_plan("data_query", user_query, db_ids=mapped_db_ids), state,
-        )
+        ), "mapped_db_ids")
 
     # ③.5 양식 업로드(template_structure) → 폼필 단일 task 고정 (Plan 73 D-150).
     # 양식 채우기는 의미상 단일 파이프라인 작업 — LLM 복합 분해가 서버정보/월지표를
@@ -387,7 +477,9 @@ async def _plan_turn(
     # mapped_db_ids 미성립 턴(③ 미발동)도 결정적으로 단일화한다.
     if state.get("template_structure"):
         logger.info("intent_planner: template_structure 감지, data_query 단일 task (폼필 고정, D-150)")
-        return _with_form_signature(_single_task_plan("data_query", user_query), state)
+        return _on_path(
+            _with_form_signature(_single_task_plan("data_query", user_query), state), "form_fill"
+        )
 
     # ③.6 파일 없는 폼필 요청 → 안내 응답으로 단락 (Plan 73 D-150).
     # template_structure 없이 "양식 채워줘"류가 LLM 분해로 가면 data_query가 존재하지
@@ -398,7 +490,7 @@ async def _plan_turn(
         logger.info("intent_planner: 파일 없는 폼필 요청 감지 — 안내 응답 단락(D-150)")
         plan = _single_task_plan("general_inference", user_query)
         plan["task_plan"][0]["direct_response"] = _FORM_FILL_NO_FILE_GUIDANCE
-        return plan
+        return _on_path(plan, "form_no_file")
 
     # ③.7 '가동률' 질의 → 미지원 지표 안내 단락 (D-200, D-150 동형).
     # 가동 시간 비율(uptime) 지표는 폴스타 3존 모두 미집계(2026-09-07 전수 실측) —
@@ -408,14 +500,14 @@ async def _plan_turn(
         logger.info("intent_planner: '가동률' 미지원 지표 감지 — 안내 응답 단락(D-200)")
         plan = _single_task_plan("general_inference", user_query)
         plan["task_plan"][0]["direct_response"] = _UPTIME_RATE_GUIDANCE
-        return plan
+        return _on_path(plan, "uptime_guidance")
 
     # ③.8 사용법·지원 소스 문의 → general_inference 단일 task (plans/116 §10.3, D-038).
     # LLM 분해에 맡기면 분류가 흔들린다(분해 실패 시 data_query 폴백). 안내문은 노드가
     # 사용자 권한(allowed_db_ids)을 반영해 결정적으로 조립하므로 direct_response 는 두지 않는다.
     if is_usage_query(user_query):
         logger.info("intent_planner: 사용법 문의 감지 — general_inference 단일 task(plans/116)")
-        return _single_task_plan("general_inference", user_query)
+        return _on_path(_single_task_plan("general_inference", user_query), "usage_help")
 
     # [계층 B] LLM 복합 분해 — 후속 턴이면 압축 맥락(M3 보존 신호)을 주입한다(M1).
     conversation_context = state.get("conversation_context")
@@ -444,7 +536,8 @@ async def _plan_turn(
             {"kind": NOTE_DECOMPOSE, "task_id": None, "reason": d.get("reason"), "detail": d.get("detail", "")}
             for d in degraded if isinstance(d, dict) and d.get("detail")
         ]
-    return result
+    _record_decompose_fallback(result, decomposed, state, user_query)
+    return _on_path(result, "llm_decompose")
 
 
 _FORM_MEMORY_ACTION_LABELS = {
@@ -726,6 +819,7 @@ def _plan_from_model(model: DecomposedPlan, user_query: str) -> dict:
                 "depends_on": [], "input_from": [], "order": 1, "status": "pending",
             }],
             "clarification_needed": None,
+            _FALLBACK_MARK: {"code": DECOMPOSE_FALLBACK_EMPTY_STRUCTURED, "error_class": ""},
         }
     return {"tasks": tasks, "clarification_needed": model.clarification_needed}
 
@@ -825,15 +919,25 @@ def _capability_ownership_on(app_config: AppConfig) -> bool:
 def _planner_system_prompt(app_config: AppConfig) -> str:
     """분해 시스템 프롬프트.
 
-    off면 기본 템플릿 그대로(바이트 동일), on이면 소유표·교차 예시 삽입본이다.
+    off면 기본 템플릿 그대로(바이트 동일), on이면 소유표·교차 예시 삽입본이다. 환경어 자리는
+    마지막에 레지스트리 정본으로 채운다(plans/121 TP-11.2 — 종전 사본과 바이트 동일).
     """
     if not _capability_ownership_on(app_config):
         base = INTENT_PLANNER_SYSTEM_TEMPLATE
     else:
         base = _render_planner_ownership_prompt(tuple(app_config.multi_db.get_active_db_ids()))
-    if not _task_frame_on(app_config):
-        return base
-    return _render_task_frame_prompt(base)
+    if _task_frame_on(app_config):
+        base = _render_task_frame_prompt(base)
+    return _render_planner_environment_terms(base, get_registry().environment_terms)
+
+
+@lru_cache(maxsize=8)
+def _render_planner_environment_terms(prompt: str, environment_terms: tuple[str, ...]) -> str:
+    """환경어 자리 채움 — (프롬프트, 레지스트리 환경어) 단위 캐시(plans/121 TP-11.2 · D-131).
+
+    레지스트리는 프로세스 캐시(`get_registry`)라 값은 기동 시 1회 정해진다 — 요청마다 접두가 같다.
+    """
+    return render_intent_planner_environment_terms(prompt, environment_terms)
 
 
 def _task_frame_on(app_config: AppConfig) -> bool:
@@ -891,6 +995,71 @@ def _degraded(reason: str, detail: str, *, attempts: int = 1) -> dict:
         "stage": "intent_planner._llm_decompose", "reason": reason,
         "attempts": attempts, "detail": detail[:500],
     }
+
+
+# ── 사유 없는 분해 폴백(plans/121 TP-1.6 · N-7) ─────────────────────────────
+#: 요청 스코프 상태 키 — LLM 분해가 원문 단일 task로 폴백한 원인 코드(관측 전용). 계획 요약
+#: (`done.plan_summary.decompose_fallback`)이 코드만 읽는다. 폴백이 없으면 쓰지 않는다.
+DECOMPOSE_FALLBACK_KEY = "decompose_fallback"
+#: 분해 결과 dict 안의 폴백 표지(내부) — `_decompose_once`·`_plan_from_model`이 싣는다.
+_FALLBACK_MARK = "fallback_cause"
+# 원인 코드 — D-241 판정 어휘(`invalid`·`timeout`·`clarify_blocked`)와 겹치지 않게 짓는다.
+DECOMPOSE_FALLBACK_LLM_ERROR = "llm_error"            # JSON 경로 호출 예외
+DECOMPOSE_FALLBACK_MALFORMED = "malformed_output"     # JSON 없음 · tasks 없음/빈 목록 · 유효 task 0
+DECOMPOSE_FALLBACK_EMPTY_STRUCTURED = "empty_structured"  # 구조화 출력의 tasks가 빔
+#: 순차 표지가 있는 질의의 분해 폴백 사용자 노트 사유(`decompose` 종류).
+REASON_DECOMPOSE_FALLBACK = "decompose_fallback"
+_DECOMPOSE_FALLBACK_HEADS = {
+    DECOMPOSE_FALLBACK_LLM_ERROR: "질의 분해 호출이 실패해({error_class})",
+    DECOMPOSE_FALLBACK_MALFORMED: "질의 분해 결과의 형식이 맞지 않아",
+    DECOMPOSE_FALLBACK_EMPTY_STRUCTURED: "질의 분해 결과가 비어",
+}
+
+
+def _mark_fallback(
+    fallback: dict[str, Any], code: str, error_class: str = "",
+) -> dict[str, Any]:
+    """원문 단일 task 폴백 사본에 원인 표지를 단다 — 공유 `fallback` 객체는 건드리지 않는다."""
+    out = {**fallback, "tasks": [dict(t) for t in fallback.get("tasks") or []]}
+    out[_FALLBACK_MARK] = {"code": code, "error_class": error_class}
+    return out
+
+
+def decompose_fallback_note(code: str, error_class: str = "") -> dict[str, Any]:
+    """순차 표지 질의의 분해 폴백 경과 노트 — 원인은 예외 클래스명만(원문은 로그에만)."""
+    head = _DECOMPOSE_FALLBACK_HEADS.get(code, "질의를 여러 단계로 나누지 못해").format(
+        error_class=error_class or "호출 오류",
+    )
+    return {
+        "kind": NOTE_DECOMPOSE, "task_id": None, "reason": REASON_DECOMPOSE_FALLBACK,
+        "detail": (
+            f"{head} 순차 분해가 적용되지 않았고 한 번의 조회로 처리했습니다"
+            "(앞 결과 → 뒤 조회 대상 배선 없음)."
+        ),
+    }
+
+
+def _record_decompose_fallback(
+    result: dict[str, Any], decomposed: dict[str, Any], state: AgentState, user_query: str,
+) -> None:
+    """분해 폴백을 관측 필드로 남기고, 순차 표지가 있을 때만 사용자 노트를 단다(in-place).
+
+    단일 의도 질의의 폴백 계획(원문 단일 task)은 정상 분해 결과와 같아 노트는 소음이다 — 관측
+    필드만 남긴다. 순차 표지가 있으면 앞 결과 → 뒤 조회 배선이 빠진 것이라 알린다. 이미 분해 사유
+    노트가 있으면(되먹임 재요청 뒤 `sequential_not_applied` 등) 더하지 않는다.
+    재계획 의미(§12.4): `decompose` 종류는 미완이지만 순차 표지 턴은 원래 결정적 성공 종료
+    대상이 아니므로(`replanner._all_tasks_succeeded`) 평가 LLM 호출 수가 늘지 않는다.
+    """
+    mark = decomposed.get(_FALLBACK_MARK)
+    if not isinstance(mark, dict):
+        return
+    code = str(mark.get("code") or "")
+    result[DECOMPOSE_FALLBACK_KEY] = code
+    if decomposed.get("degraded") or not has_sequential_marker(user_query):
+        return
+    result["dependency_notes"] = list(state.get("dependency_notes") or []) + [
+        decompose_fallback_note(code, str(mark.get("error_class") or ""))
+    ]
 
 
 async def _enforce_plan_contract(
@@ -1011,11 +1180,11 @@ async def _decompose_once(
         parsed = extract_json_from_response(response.content)
     except Exception as e:
         logger.error("intent_planner LLM 분해 실패, 단일 data_query 폴백: %s", e)
-        return fallback
+        return _mark_fallback(fallback, DECOMPOSE_FALLBACK_LLM_ERROR, type(e).__name__)
 
     if not parsed or not isinstance(parsed.get("tasks"), list) or not parsed["tasks"]:
         logger.warning("intent_planner 분해 결과 없음/무효, 단일 data_query 폴백")
-        return fallback
+        return _mark_fallback(fallback, DECOMPOSE_FALLBACK_MALFORMED)
 
     tasks: list[dict] = []
     for i, raw in enumerate(parsed["tasks"], 1):
@@ -1039,11 +1208,17 @@ async def _decompose_once(
             # 원문 조각 보존 — `sub_query`는 `_apply_task_frames`가 조각으로 다시 만든다
             # (plans/111 C-3).
             task["spans"] = raw.get("spans") or []
+        # 닫힌 어휘(plans/121 TP-1.7) — 목록 밖 담당은 디스패치 폴백과 같은 담당으로(task 단위)
+        close_agent_vocabulary(task)
+        if task.get(AGENT_FALLBACK_KEY):
+            logger.warning(
+                "intent_planner: 목록 밖 담당 %r → %s(현행 디스패치 의미)", agent, task["agent"],
+            )
         tasks.append(task)
 
     if not tasks:
         logger.warning("intent_planner 유효 task 없음, 단일 data_query 폴백")
-        return fallback
+        return _mark_fallback(fallback, DECOMPOSE_FALLBACK_MALFORMED)
 
     return {
         "tasks": tasks,

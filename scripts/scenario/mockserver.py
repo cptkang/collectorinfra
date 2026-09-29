@@ -7,6 +7,10 @@
 응답은 시나리오의 `mock:` 블록이 정한다. 블록이 없으면 일반 canned 응답이 나가고,
 그 시나리오의 단언은 대개 깨진다 - **이는 정상이다.** 모의 실행의 기능 판정은 배관
 검증용이며 시스템 품질의 근거가 아니다(리포트 1절이 이 사실을 명시한다).
+
+모의 턴의 `query_results`(행 매핑 목록)는 done 페이로드에 싣지 않고 결과 저장소에만 둔다 -
+`GET /query/{id}/download-csv` 가 그 행을 CSV 로 돌려준다(plans/122 H-1). 없으면 실 서버처럼
+404 「다운로드할 조회 결과가 없습니다.」, 모르는 query_id 면 404 「결과를 찾을 수 없습니다.」다.
 """
 
 from __future__ import annotations
@@ -93,6 +97,10 @@ def _mock_turn(scenario: Optional[Scenario], turn: int) -> dict[str, Any]:
     return scenario.mock
 
 
+#: 모의 턴 정의 중 done 페이로드에 싣지 않는 제어값. `query_results` 는 결과 저장소 전용이다(H-1).
+_CONTROL_KEYS = frozenset({"delay_ms", "http_status", "answer", "query_results"})
+
+
 def _payload_for(
     scenario: Optional[Scenario], turn: int, query: str, answered: bool = False
 ) -> dict[str, Any]:
@@ -105,8 +113,28 @@ def _payload_for(
         "processing_time_ms": 1200.0,
     }
     override = _mock_control(scenario, turn, answered)
-    base.update({k: v for k, v in override.items() if k not in ("delay_ms", "http_status", "answer")})
+    base.update({k: v for k, v in override.items() if k not in _CONTROL_KEYS})
     return base
+
+
+
+def _result_csv(rows: list[dict[str, Any]]) -> bytes:
+    """실 서버 `download_csv` 와 같은 모양.
+
+    UTF-8 BOM · 등장 순서 키 합집합 머리글 · 누락 키는 빈 값이다.
+    """
+    import csv
+    from io import StringIO
+
+    fieldnames: list[str] = []
+    for row in rows:
+        fieldnames.extend(key for key in row if key not in fieldnames)
+    output = StringIO()
+    output.write("\ufeff")
+    writer = csv.DictWriter(output, fieldnames=fieldnames, restval="", extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue().encode("utf-8")
 
 
 def _mock_control(scenario: Optional[Scenario], turn: int, answered: bool = False) -> dict[str, Any]:
@@ -128,6 +156,8 @@ def create_app() -> FastAPI:
     app = FastAPI(title="scenario mock server")
     resolver = _Resolver(catalog)
     artifacts: dict[str, bytes] = {}
+    # query_id -> 결과 행(plans/122 H-1). 응답한 query_id 는 전부 「저장됨」이다(행이 없어도).
+    results: dict[str, list[dict[str, Any]]] = {}
 
     @app.get("/api/v1/health")
     async def health() -> dict[str, str]:
@@ -149,6 +179,10 @@ def create_app() -> FastAPI:
         if payload.get("has_file"):
             artifacts[payload["query_id"]] = _sample_xlsx(payload.get("file_columns"))
             payload.setdefault("file_name", "mock_result.xlsx")
+        rows = _mock_control(scenario, turn, answered).get("query_results")
+        results[payload["query_id"]] = [
+            row for row in (rows if isinstance(rows, list) else []) if isinstance(row, dict)
+        ]
         resolver.settle(body.get("thread_id"), payload)
         return payload
 
@@ -218,6 +252,18 @@ def create_app() -> FastAPI:
             data,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
+    @app.get("/api/v1/query/{query_id}/download-csv")
+    async def download_csv(query_id: str) -> Any:
+        """결과 행 CSV(plans/122 H-1) - 404 두 갈래는 실 서버 문구와 같다(러너가 문구로 가른다)."""
+        from fastapi.responses import Response
+
+        rows = results.get(query_id)
+        if rows is None:
+            return JSONResponse({"detail": "결과를 찾을 수 없습니다."}, status_code=404)
+        if not rows:
+            return JSONResponse({"detail": "다운로드할 조회 결과가 없습니다."}, status_code=404)
+        return Response(_result_csv(rows), media_type="text/csv; charset=utf-8")
 
     return app
 

@@ -37,12 +37,20 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
+from sre_agent.domain.investigation_limits import (
+    apm_limitations,
+    is_apm_trigger,
+    repeated_calls,
+    stall_limitation,
+)
 from sre_agent.domain.remediation import recommend_lines
 from sre_agent.domain.severity_signatures import (
     LEVEL_NAMES,
     ImportanceVerdict,
+    apm_payloads,
     clamp_level,
     judge,
+    was_signals_from_outputs,
 )
 from sre_agent.settings import AgentSettings
 
@@ -395,6 +403,18 @@ class InvestigationDispatcher:
         briefing_kwargs: dict = {}
         if getattr(job, "correlation", None):
             briefing_kwargs["correlation"] = job.correlation   # 없을 땐 인자 자체를 넘기지 않는다(종전 호출 동일)
+        stalls: list[tuple[str, str, int]] = []
+        if self._settings.apm_guidance_enabled:
+            # plans/87 J3 — APM 한계·소스 라벨·정체 가드(사후 판정). off면 인자를 넘기지 않는다(종전 호출 동일).
+            stalls = repeated_calls(self._call_keys(result))
+            briefing_kwargs["limitations"] = apm_limitations(
+                apm_payloads(self._tool_texts(result)),
+                apm_configured=bool(self._settings.apm_mcp_url),
+                apm_incident=is_apm_trigger(job.payload),
+                apm_called=any(to.tool_name.startswith("apm_") for to in result.tool_outputs),
+            ) + [stall_limitation(*s) for s in stalls]
+            briefing_kwargs["source_labels"] = True
+            briefing_kwargs["unresolved"] = bool(stalls)
         briefing = self._briefing_fn(
             answer=result.answer,
             verdict=verdict,
@@ -411,18 +431,19 @@ class InvestigationDispatcher:
         job.tokens = result.total_tokens
         job.cost = result.total_cost
         job.updated_at = self._wall_clock()
-        self._audit(
-            {
-                "event": "done",
-                "investigation_id": job.investigation_id,
-                "level": verdict.level,
-                "confidence": verdict.confidence,
-                "escalate": verdict.escalate,
-                "signals": [s.name for s in verdict.signals],
-                "tokens": result.total_tokens,
-                "cost": result.total_cost,
-            }
-        )
+        record = {
+            "event": "done",
+            "investigation_id": job.investigation_id,
+            "level": verdict.level,
+            "confidence": verdict.confidence,
+            "escalate": verdict.escalate,
+            "signals": [s.name for s in verdict.signals],
+            "tokens": result.total_tokens,
+            "cost": result.total_cost,
+        }
+        if stalls:
+            record["unresolved"] = [f"{name} x{n}" for name, _args, n in stalls]  # 정체 가드(미결)만 추가 키
+        self._audit(record)
 
     def _prefetch(self, job: JobLike) -> dict | None:
         """사전수집 콜러블을 격리 실행한다. 미주입·기준시각 없음이면 None(호출 자체를 하지 않는다)."""
@@ -499,16 +520,42 @@ class InvestigationDispatcher:
         assert self._diagnose_fn is not None
         return self._join_timebox(self._diagnose_fn, job, self._timeout, "sre-investigate")
 
+    @staticmethod
+    def _tool_texts(result: DiagnosisLike) -> list[str]:
+        """판정 입력 — 도구 원시 출력 + 오류 문자열(severity_judge·APM 한계 공용)."""
+        texts: list[str] = [to.output for to in result.tool_outputs]
+        texts += [to.error for to in result.tool_outputs if to.error]
+        return texts
+
+    @staticmethod
+    def _call_keys(result: DiagnosisLike) -> list[tuple[str, str]]:
+        """정체 가드 입력 `(도구명, 인자 표기)` — 인자는 키 정렬 JSON, 인자가 없으면 holmes 호출 요약(description)."""
+        keys: list[tuple[str, str]] = []
+        for to in result.tool_outputs:
+            params = getattr(to, "params", None)
+            if isinstance(params, dict):
+                args = json.dumps(params, sort_keys=True, ensure_ascii=False, default=str)
+            else:
+                args = str(getattr(to, "description", "") or "")
+            keys.append((to.tool_name, args))
+        return keys
+
     def _run_severity_judge(self, gate_severity: int, result: DiagnosisLike) -> ImportanceVerdict:
-        """severity_judge_enabled면 도구 원시 출력 시그니처 매칭, 아니면 게이트 승계(상향 없음)."""
+        """severity_judge_enabled면 도구 원시 출력 시그니처 매칭, 아니면 게이트 승계(상향 없음).
+
+        `apm_signatures_enabled`(plans/87 J3)면 게이트웨이 `was_signals`를 신호로 옮겨 같은 판정에 합친다 —
+        WAS 규칙은 재구현하지 않는다(D-274 ⑤). off면 호출이 종전과 같다.
+        """
         if not self._settings.severity_judge_enabled:
             return ImportanceVerdict(
                 level=LEVEL_NAMES[clamp_level(gate_severity)],
                 confidence="none",
                 escalate=False,
             )
-        texts: list[str] = [to.output for to in result.tool_outputs]
-        texts += [to.error for to in result.tool_outputs if to.error]
+        texts = self._tool_texts(result)
+        if self._settings.apm_signatures_enabled:
+            return judge(gate_severity, texts, remote=self._remote,
+                         extra_signals=was_signals_from_outputs(texts))
         return judge(gate_severity, texts, remote=self._remote)
 
     def _recommend_remediation(self, verdict: ImportanceVerdict) -> list[str] | None:

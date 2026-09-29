@@ -9,7 +9,9 @@
       ``prometheus_client`` core 패밀리를 그대로 쓴다(인코더가 직접 소비하므로 변환 층이 없고,
       info 패밀리의 형식별 렌더 차이 — 1.0 ``info`` / 0.0.4 ``_info`` gauge — 를 인코더가 맡는다).
     - ``render_exposition`` — 요청마다 새 ``CollectorRegistry`` + 1회용 collector로 직렬화하고
-      ``Accept``로 OpenMetrics 1.0 / text 0.0.4를 협상한다. 전역 ``REGISTRY``는 쓰지 않는다.
+      ``Accept``로 OpenMetrics 1.0 / text 0.0.4를 협상한다. OpenMetrics는 **1.0.0이 상한**이다 —
+      2.0.0 이상을 요청해도 1.0.0으로 답한다(plans/87 G-2·G-10 · plans/92 O-1). 전역 ``REGISTRY``는
+      쓰지 않는다.
     - ``ExpositionCache`` — 수집 결과 TTL 캐시 + single-flight(동시 스크레이프에도 수집 1회).
     - ``make_exposition_endpoint`` — Starlette ``Request → Response`` 핸들러 팩토리.
     - ``register_shutdown``·``install_shutdown_hooks`` — 브리지 전용 자원(지연 DB 풀 등)을
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
@@ -44,6 +47,11 @@ logger = logging.getLogger(__name__)
 Collect = Callable[[], Awaitable[list[Metric]]]
 #: 종료 정리 함수(인자 없는 코루틴 함수).
 Closer = Callable[[], Awaitable[None]]
+
+#: OpenMetrics 미디어 타입과 노출 버전 상한. 2.0은 Experimental이라 내지 않는다(plans/87 G-2·G-10).
+_OPENMETRICS_MEDIA_TYPE = "application/openmetrics-text"
+_OPENMETRICS_MAX_VERSION = (1, 0, 0)
+_OPENMETRICS_MAX_VERSION_TEXT = "1.0.0"
 
 
 # =====================================================================
@@ -159,6 +167,41 @@ def _reject_explicit_timestamps(families: Sequence[Metric]) -> None:
                 )
 
 
+def _version_tuple(value: str) -> tuple[int, ...] | None:
+    """점 구분 조각마다 앞 숫자만 읽는다 — ``"2.0.0-rc.1"`` → ``(2, 0, 0, 1)``.
+
+    첫 조각이 숫자로 시작하지 않으면 None(버전을 모르면 손대지 않는다).
+    """
+    heads = [re.sub(r"\D.*", "", piece) for piece in value.strip().split(".")]
+    if not heads[0]:
+        return None
+    return tuple(int(head) for head in heads if head)
+
+
+def _cap_openmetrics_version(accept_header: str) -> str:
+    """``Accept``의 OpenMetrics 항목 중 1.0.0보다 높은 ``version``을 ``1.0.0``으로 낮춘다.
+
+    ``prometheus_client.exposition.choose_encoder``는 1.0.0 이상이면 **요청한 버전을 그대로**
+    되돌린다(prometheus-client 0.26.0 실측 — ``version=2.0.0`` 요청에 ``version=2.0.0``
+    Content-Type). 여기서 버전만 낮추고 나머지 협상(escaping·q값·항목 순서·text 0.0.4 폴백)은
+    라이브러리에 그대로 맡긴다. 1.0.0 미만(``0.0.1``)·버전 없음·OpenMetrics가 아닌 항목은
+    손대지 않는다.
+    """
+    entries: list[str] = []
+    for accepted in accept_header.split(","):
+        tokens = accepted.split(";")
+        if tokens[0].strip() == _OPENMETRICS_MEDIA_TYPE:
+            for i, token in enumerate(tokens[1:], start=1):
+                if "=" not in token:
+                    continue
+                key, value = token.strip().split("=", 1)
+                version = _version_tuple(value) if key == "version" else None
+                if version is not None and version > _OPENMETRICS_MAX_VERSION:
+                    tokens[i] = f"version={_OPENMETRICS_MAX_VERSION_TEXT}"
+        entries.append(";".join(tokens))
+    return ",".join(entries)
+
+
 def render_exposition(
     families: Sequence[Metric], accept_header: str | None
 ) -> tuple[bytes, str]:
@@ -166,8 +209,13 @@ def render_exposition(
 
     요청마다 새 ``CollectorRegistry``에 1회용 collector를 등록해 렌더한다 — 프로세스 전역
     ``REGISTRY``와 섞이지 않는다. 형식은 ``prometheus_client.exposition.choose_encoder``가
-    ``Accept``로 고른다: ``application/openmetrics-text``(version ≥ 1.0.0)면 OpenMetrics 1.0
-    (``# EOF`` 종결), 그 외(빈 값·``*/*`` 포함)는 text 0.0.4.
+    ``Accept``로 고르되, OpenMetrics 버전은 **1.0.0으로 상한**한다(plans/87 G-2·G-10):
+
+    - ``application/openmetrics-text``에 ``version`` ≥ 1.0.0(2.0.0 이상 포함) 또는 버전 없음
+      → OpenMetrics 1.0(``# EOF`` 종결). 라이브러리는 2.0.0 요청에 2.0.0으로 답하므로 요청 버전을
+      먼저 1.0.0으로 낮춘다(``_cap_openmetrics_version``).
+    - 그 밖은 라이브러리 협상 그대로다 — 빈 값·``*/*``·버전 없는 ``text/plain``·OpenMetrics
+      ``version`` < 1.0.0(0.0.1)만 있는 요청은 text 0.0.4다.
 
     Args:
         families: 노출할 패밀리 목록.
@@ -182,7 +230,7 @@ def render_exposition(
     _reject_explicit_timestamps(families)
     registry = CollectorRegistry(auto_describe=False)
     registry.register(_OneShotCollector(families))
-    encoder, content_type = choose_encoder(accept_header or "")
+    encoder, content_type = choose_encoder(_cap_openmetrics_version(accept_header or ""))
     return encoder(registry), content_type
 
 

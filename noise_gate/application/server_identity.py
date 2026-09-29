@@ -43,6 +43,12 @@ SOURCE_DB = "polestar_db"
 SOURCE_CACHE = "cache"
 SOURCE_EVENT = "event"
 
+# plans/87 J4: APM 게이트웨이 이벤트의 소스 배지. 게이트웨이가 `dbId`·`source`에 싣는 값
+# (SPEC-apm-gateway §5)은 레지스트리 DB가 아니라서 `source_labels_for`(db_id → family)로 풀리지
+# 않는다(121 TP-9.2 "solutions 전용 family" 전). 레지스트리 등재(J5) 전까지 로컬 상수로 둔다.
+_APM_SOURCE_ID = "jennifer"
+_APM_SOURCE_LABEL = "제니퍼"
+
 
 def zone_labels_for(db_id: str) -> tuple[str, str, str]:
     """db_id → (존 코드, 존 라벨, 사이트 라벨)을 레지스트리(config/db_registry.yaml)에서 파생한다.
@@ -95,6 +101,28 @@ def source_labels_for(db_id: str, zone_label: str = "", site_label: str = "") ->
     head = " — ".join(p for p in (label, where) if p)
     detail = "; ".join(p for p in (head, db_id or "") if p)
     return label, detail
+
+
+def is_apm_source(event: AlarmEvent) -> bool:
+    """APM 게이트웨이가 발행한 이벤트인지 — `dbId` 또는 원문 `source`가 게이트웨이 상수다."""
+    raw = event.raw_payload if isinstance(event.raw_payload, dict) else {}
+    return event.db_id == _APM_SOURCE_ID or raw.get("source") == _APM_SOURCE_ID
+
+
+def apm_source_labels(event: AlarmEvent) -> tuple[str, str]:
+    """APM 이벤트의 (소스 배지 라벨, 툴팁 상세) — 배지는 이벤트를 **보낸 소스**다.
+
+    hostname 역조회(D-188)가 식별 정보를 채워도 배지는 바뀌지 않는다(역조회 출처는 `source`
+    필드가 따로 말한다). 상세는 `source_labels_for`와 같은 모양 `"{라벨} — {위치}; {id}"`이고,
+    존·사이트 대신 원문 `apm.domain_name`(제니퍼 도메인)을 위치 자리에 쓴다. 도메인이 없으면
+    `"{라벨}; {id}"`.
+    """
+    raw = event.raw_payload if isinstance(event.raw_payload, dict) else {}
+    apm = raw.get("apm") if isinstance(raw.get("apm"), dict) else {}
+    domain = str(apm.get("domain_name") or "").strip()
+    head = " — ".join(p for p in (_APM_SOURCE_LABEL, domain) if p)
+    detail = "; ".join(p for p in (head, event.db_id or _APM_SOURCE_ID) if p)
+    return _APM_SOURCE_LABEL, detail
 
 
 def _promote(event: AlarmEvent, row: dict[str, Any]) -> None:
@@ -153,14 +181,20 @@ async def attach_server_identity(
         cache_ttl: 캐시 TTL(초, 0 이하면 미캐시)
 
     Returns:
-        부착된 ServerIdentity. hostname이 비어 있으면 None(이벤트 무변경).
+        부착된 ServerIdentity. hostname이 비어 있으면 None(이벤트 무변경) — 단 APM 소스 이벤트는
+        hostname 미해소여도 소스 배지("제니퍼")를 보이도록 역조회 없이 식별 정보를 붙인다
+        (plans/87 J4).
     """
     hostname = (event.hostname or "").strip()
-    if not hostname:
+    apm_source = is_apm_source(event)
+    if not hostname and not apm_source:
         return None
 
     zone, zone_label, site_label = zone_labels_for(event.db_id)
-    source_label, source_detail = source_labels_for(event.db_id, zone_label, site_label)
+    if apm_source:
+        source_label, source_detail = apm_source_labels(event)
+    else:
+        source_label, source_detail = source_labels_for(event.db_id, zone_label, site_label)
     identity = ServerIdentity(
         name="",
         hostname=hostname,
@@ -174,7 +208,7 @@ async def attach_server_identity(
     )
 
     row: Optional[dict[str, Any]] = None
-    if resolver is not None:
+    if resolver is not None and hostname:
         key = _CACHE_KEY.format(db_id=event.db_id, hostname=hostname)
         row = await _cache_get(redis, key)
         if row is not None:

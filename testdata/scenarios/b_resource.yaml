@@ -23,9 +23,13 @@ scenarios:
           query: "전체 서버의 호스트명, OS종류, 벤더를 조회해줘"
         expect:
           status: completed
+          # plans/122 A-5: 행 제한은 방언 중립으로 본다(은행존 DB2 는 FETCH FIRST).
+          #   원식: "(?i)\\blimit\\s+10000\\b"
           sql_must_match: ["(?i)\\bcmm_resource\\b", "(?i)\\bcore_config_prop\\b",
-                          "(?i)dtime\\s+is\\s+null", "(?i)\\blimit\\s+10000\\b"]
+                          "(?i)dtime\\s+is\\s+null",
+                          "(?i)\\b(?:limit\\s+10000|fetch\\s+first\\s+10000\\s+rows?)\\b"]
           row_count: {min: 1}
+          # 수동 유지 — 정답 서버 수는 DB 오라클(plans/122 O-3 · DB2 는 폐쇄망 검수 전)로만 구한다.
           manual_review: "행 수가 전체 서버 수와 일치하는지"
   - id: B-02
     plans: [20, 21, 25, 32, 33, 37, 42, 43]
@@ -62,7 +66,19 @@ scenarios:
                            "(?i)cocm-hdkapp01"]
           # 3-DB 팬아웃이라 합계로 본다(`row_count` 는 단일 DB 턴 전용 · Y-4).
           row_count_total: {eq: 1}
-          manual_review: "열 6개(OS종류·버전·IP·호스트명·CPU모델·메모리)가 모두 채워졌는지"
+          # plans/122 H-1: 종전 수동 문구 "열 6개(OS종류·버전·IP·호스트명·CPU모델·메모리)가 모두
+          #   채워졌는지". 결과 행(download-csv)의 6열이 전 행 채워졌는지 본다. 별칭은 모든 run 의
+          #   B-03 실행 SQL 별칭 실측(os_type · os_version · ip_address · hostname · cpu_model ·
+          #   memory_size/mem_size/memory_total_size)에 같은 뜻의 표기를 더했다.
+          result:
+            filled_columns:
+              - [os_type, ostype, os_kind]
+              - [os_version, osversion, os_ver]
+              - [ip_address, ipaddress, ip]
+              - [hostname, host_name]
+              - [cpu_model, cpumodel, model]
+              - [memory_size, mem_size, memory_total_size, memory_total, total_memory,
+                 memory_capacity, mem_total]
   - id: B-04
     plans: [20, 21, 25, 32, 33, 37, 42, 43]
     title: "장비명이 'cob0-bnndbp01'인 서버의 가용성 상태와 IP를 조회해줘"
@@ -77,7 +93,10 @@ scenarios:
           status: completed
           sql_must_match: ["(?i)\\bname\\s*=", "(?i)cob0-bnndbp01"]
           sql_must_not_match: ["(?i)hostname\\s*=\\s*.?cob0-bnndbp01"]
-          row_count: {eq: 1}
+          # plans/122 A-3: 3-DB 팬아웃 턴이라 `row_count` 는 보류(fanout)였다 — 세 run 모두
+          #   b0 0 · cm_gp 1 · cm_yd 0. 장비 한 대이므로 합계로 본다(B-03 선례 · Y-4).
+          #   원식: row_count: {eq: 1}
+          row_count_total: {eq: 1}
   - id: B-05
     plans: [20, 21, 25, 32, 33, 37, 42, 43]
     title: "호스트명이 sbhdbo53인 서버의 CPU 리소스를 조회해줘"
@@ -90,7 +109,12 @@ scenarios:
           query: "호스트명이 sbhdbo53인 서버의 CPU 리소스를 조회해줘"
         expect:
           status: completed
-          sql_must_match: ["(?i)hostname\\s*=", "(?i)sbhdbo53"]
+          # plans/122 A-5: 필터 모양을 넓힌다 — `hostname =` 에 더해 `COALESCE(name, hostname) =`·
+          #   HAVING 피벗 `MAX(CASE … THEN c.hostname END) =`·`hostname IN (` 를 받는다(원식의 상위 집합).
+          #   원식: "(?i)hostname\\s*="
+          sql_must_match: ["(?i)hostname\\s*=|\\bhostname\\b(?:\\s+END)?\\s*\\)\\s*=|\\bhostname\\s+IN\\s*\\(",
+                           "(?i)sbhdbo53"]
+          # 수동 유지 — G-10(D-275 ⑩): "CPU 리소스" = EAV 세 속성인가 server.Cpu 자식 행인가 정답 미정.
           manual_review: "LOGICALCORE/PHYSICALCORE/MODEL 세 속성이 나오는지"
   - id: B-06
     plans: [20, 21, 25, 32, 33, 37, 42, 43]
@@ -140,6 +164,11 @@ scenarios:
           # B-07 주석 참조 — D-199 가드가 `AS DECIMAL(31, 6)`으로 치환한다.
           sql_must_match: ["(?i)\\b(numeric|decimal)\\b"]
           sql_must_not_match: ["(?i)as\\s+int(eger)?\\b"]
+          # plans/122 A-1 보류 — 계획 이관안은 `row_count_per_db: {min: 1}` + 오류 문구 부정이었다.
+          #   그러나 질의에 존이 없어 세 run(20260922-093837 · 20260923-103638 · 20260923-140539 두 단)
+          #   모두 polestar_cm_gp 단일 DB 로만 갔다 — **b0 는 한 번도 실행되지 않았다.** 그 단언은
+          #   b0 캐스트를 보지 않은 채 통과한다(거짓 합격). b0 실행을 강제하는 수단(질의 변경 또는
+          #   db_ids 에 b0 포함)이 정해질 때까지 수동으로 둔다.
           manual_review: "b0에서 '4.0' 값 캐스트 에러가 없는지"
   - id: B-09
     plans: [20, 21, 25, 32, 33, 37, 42, 43]
@@ -189,7 +218,10 @@ scenarios:
           query: "메모리 사이즈가 큰 순서로 상위 3대 서버를 보여줘"
         expect:
           status: completed
-          sql_must_match: ["(?i)\\blimit\\s+3\\b", "(?i)order\\s+by[\\s\\S]*\\bdesc\\b"]
+          # plans/122 A-5: 행 제한은 방언 중립으로 본다(은행존 DB2 는 FETCH FIRST).
+          #   원식: "(?i)\\blimit\\s+3\\b"
+          sql_must_match: ["(?i)\\b(?:limit\\s+3|fetch\\s+first\\s+3\\s+rows?)\\b",
+                           "(?i)order\\s+by[\\s\\S]*\\bdesc\\b"]
           row_count: {eq: 3}
   - id: B-12
     plans: [20, 21, 25, 32, 33, 37, 42, 43]
@@ -203,7 +235,19 @@ scenarios:
           query: "2026년 6월 서버별 CPU 사용률 평균이 높은 상위 3대를 보여줘"
         expect:
           status: completed
-          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)202606"]
+          # plans/122 A-2: 날짜는 표기가 아니라 기간으로 본다(D-218 Y-5 · `to` 는 배타 경계).
+          #   원식: "(?i)202606"
+          sql_must_match: ["(?i)cmm_metric_stat_m"]
+          period_covers: {from: "2026-06-01", to: "2026-07-01"}
           column_must_not_map: ["logicalcore"]
           row_count: {eq: 3}
-          manual_review: "값이 0~100 범위인지"
+          # plans/122 H-1 — 결과 행(download-csv)의 CPU 평균 열이 0~100(docs/29 B-12 「3행, 값 0~100」).
+          #   열 이름이 run 마다 갈려(results/ 아래 raw.jsonl 전수의 B-12 SQL 별칭: cpu_avg_utilization ·
+          #   cpu_avg_percent · cpu_avg · cpu_avg_usage) 별칭 목록 형식으로 적었다 — 넷 다 없으면 불합격이고
+          #   상세에 헤더가 실린다(새 별칭이 나오면 여기에 더한다). 상한 100: 월 **평균**이라 H-05(`CPU 최고`
+          #   측정값 100.06 → 상한 101)의 여유가 필요 없다 — 관측 최댓값 67.88(세 run 응답 표).
+          #   원 수동 문구: "값이 0~100 범위인지"
+          result:
+            value_range:
+              - {columns: [cpu_avg_utilization, cpu_avg_percent, cpu_avg, cpu_avg_usage],
+                 range: [0, 100]}

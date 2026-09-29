@@ -75,6 +75,16 @@ _DEFAULT_PROFILES: dict[str, EnrichmentProfile] = {
         signals=("조건 로그 시그니처",),
         has_l1_data=False,
     ),
+    # plans/87 U-13: APM(WAS) 이벤트의 호스트 보강은 **교차 증거로만** 남긴다 — 제목·신호 라벨이
+    # "참고"임을 밝혀 OS 프로세스가 WAS 사건의 원인처럼 읽히지 않게 한다. 스냅샷은 disk/network와
+    # 같은 host-wide 참고 표(정렬 기본 cpu)이며, 이벤트 db_id에 프로세스 API 매핑이 있을 때만
+    # 붙는다.
+    "apm": EnrichmentProfile(
+        kind="apm",
+        title="호스트 참고(WAS 이벤트 교차 확인)",
+        signals=("호스트 프로세스 상위(참고 — 원인 판정 아님)",),
+        has_l1_data=True,
+    ),
 }
 
 

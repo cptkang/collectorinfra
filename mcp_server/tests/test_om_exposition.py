@@ -107,6 +107,59 @@ class TestRenderExposition:
         _, content_type = om.render_exposition(_demo_families(), accept)
         assert content_type == TEXT_004_CONTENT_TYPE
 
+    def test_library_echoes_requested_openmetrics_version(self):
+        """전제 실측 — 라이브러리 협상은 1.0.0 이상의 요청 버전을 그대로 되돌린다.
+
+        prometheus-client 0.26.0 기준. 상한 코드(`_cap_openmetrics_version`)가 필요한 이유를
+        고정한다. 라이브러리가 스스로 상한을 두게 되면 이 단언이 깨진다 — 그때는 상한 코드가
+        무해한 중복인지 재검토한다(docs/18 2026-09-29).
+        """
+        from prometheus_client.exposition import choose_encoder
+
+        _, content_type = choose_encoder("application/openmetrics-text; version=2.0.0")
+        assert "version=2.0.0" in content_type
+
+    @pytest.mark.parametrize(
+        "accept",
+        [
+            "application/openmetrics-text; version=2.0.0",
+            "application/openmetrics-text;version=2.0.0",
+            "application/openmetrics-text; version=3.1.0; charset=utf-8",
+            "application/openmetrics-text;version=2.0.0,text/plain;version=0.0.4;q=0.5",
+            "application/openmetrics-text;version=2.0.0-rc.1",
+        ],
+    )
+    def test_openmetrics_version_capped_at_1_0(self, accept):
+        """OpenMetrics 1.0 고정 — 2.0 이상을 요청해도 1.0.0으로 답한다.
+
+        plans/87 G-2·G-10 · plans/92 O-1.
+        """
+        body, content_type = om.render_exposition(_demo_families(), accept)
+        assert content_type == OM_CONTENT_TYPE
+        text = body.decode("utf-8")
+        assert text == GOLDEN_OM
+        assert text.endswith("# EOF\n")
+        assert list(text_string_to_metric_families(text))  # 1.0 strict 파서 무오류
+
+    def test_openmetrics_1_0_request_unchanged(self):
+        """1.0.0을 명시한 요청은 상한 전과 같다(회귀 0)."""
+        body, content_type = om.render_exposition(
+            _demo_families(), "application/openmetrics-text; version=1.0.0"
+        )
+        assert content_type == OM_CONTENT_TYPE
+        assert body.decode("utf-8") == GOLDEN_OM
+
+    def test_openmetrics_below_1_0_falls_back_unchanged(self):
+        """1.0.0 미만(0.0.1)만 요청하면 라이브러리 동작 그대로 text 0.0.4다.
+
+        상한은 버전을 낮추기만 하고 올려 주지 않는다.
+        """
+        body, content_type = om.render_exposition(
+            _demo_families(), "application/openmetrics-text; version=0.0.1"
+        )
+        assert content_type == TEXT_004_CONTENT_TYPE
+        assert body.decode("utf-8") == GOLDEN_004
+
     def test_openmetrics_output_parses_strict_without_timestamps(self):
         """1.0 출력은 strict 파서를 통과하고, 어느 샘플에도 타임스탬프가 없다."""
         body, _ = om.render_exposition(_demo_families(), PROM_ACCEPT)
@@ -279,6 +332,18 @@ class TestEndpoint:
         assert r_txt.status_code == 200
         assert r_txt.headers["content-type"] == TEXT_004_CONTENT_TYPE
         assert r_txt.text == GOLDEN_004
+
+    def test_openmetrics_2_0_request_answered_as_1_0(self):
+        """HTTP 경로에서도 2.0 요청 → 1.0 Content-Type + `# EOF` 종결(plans/87 G-10)."""
+
+        async def collect():
+            return _demo_families()
+
+        with TestClient(_app_with(collect)) as client:
+            r = client.get("/m", headers={"accept": "application/openmetrics-text; version=2.0.0"})
+        assert r.status_code == 200
+        assert r.headers["content-type"] == OM_CONTENT_TYPE
+        assert r.text == GOLDEN_OM
 
     def test_collect_failure_is_503(self):
         """수집 불가는 503 + 사유(예외 타입) — Prometheus에서 up 0으로 드러난다."""

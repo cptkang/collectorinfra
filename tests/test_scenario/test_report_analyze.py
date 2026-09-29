@@ -238,7 +238,7 @@ def test_V10_분석기는_저장소_파일을_수정하지_않는다(tmp_path: P
     after = {p: p.stat().st_mtime_ns for p in watched if p.exists()}
     assert before == after
     assert all(path.parent == run_dir for path in written)
-    assert len(written) == 6
+    assert len(written) == 7   # plans/122 J-3 `manual_taxonomy.md` 추가
 
 
 # ──────────────────────────────────────────────

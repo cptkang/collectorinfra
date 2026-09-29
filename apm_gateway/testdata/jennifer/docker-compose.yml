@@ -1,0 +1,60 @@
+# 제니퍼 로컬 검증 환경 (plans/87 §0.8 J0-L · 로컬 전용)
+# - 호스트 게시는 127.0.0.1만. 데이터 서버 5000은 내부 네트워크 전용(비게시).
+# - 설치본·라이선스는 저장소 밖 JENNIFER_DIST_DIR에 둔다(.env.example 참조).
+name: jennifer-local
+
+services:
+  jennifer-server:
+    build: ./server
+    platform: ${JENNIFER_PLATFORM:-linux/arm64}
+    environment:
+      TZ: ${TZ:-Asia/Seoul}
+      JENNIFER_VERSION: ${JENNIFER_VERSION:-5.7.0.1}
+      # 기동 전 점검 끄기(로컬 한정 · 자원 부족으로 기동이 막힐 때만 1)
+      DISABLE_BOOTSTRAP_CHECK: ${DISABLE_BOOTSTRAP_CHECK:-0}
+    volumes:
+      - ${JENNIFER_DIST_DIR:?JENNIFER_DIST_DIR를 .env에 설정하라}:/dist:ro
+      - jennifer-home:/opt/jennifer
+    ports:
+      - "127.0.0.1:${JENNIFER_VIEW_HOST_PORT:-17900}:7900"
+    networks:
+      jennifer-net:
+        ipv4_address: 172.29.87.10
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://127.0.0.1:7900/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  sample-was:
+    build: ./was
+    platform: ${JENNIFER_PLATFORM:-linux/arm64}
+    environment:
+      TZ: ${TZ:-Asia/Seoul}
+      # 에이전트가 JENNIFER_* 환경변수를 설정으로 읽으므로 이 스크립트 전용 이름은 AGENT_* 로 둔다
+      AGENT_DOWNLOAD_URL: http://172.29.87.10:7900
+      AGENT_SERVER_ADDRESS: 172.29.87.10
+      AGENT_DOMAIN_ID: ${JENNIFER_DOMAIN_ID:-1000}
+      AGENT_INST_NAME: ${JENNIFER_INST_NAME:-sample-was-01}
+    volumes:
+      - ./was/app:/usr/local/tomcat/webapps/sample:ro
+      - jennifer-agent:/opt/agent
+    ports:
+      - "127.0.0.1:${SAMPLE_WAS_HOST_PORT:-18080}:8080"
+    networks:
+      jennifer-net:
+        ipv4_address: 172.29.87.20
+    depends_on:
+      jennifer-server:
+        condition: service_healthy
+
+networks:
+  jennifer-net:
+    ipam:
+      config:
+        - subnet: 172.29.87.0/24
+
+volumes:
+  jennifer-home:
+  jennifer-agent:

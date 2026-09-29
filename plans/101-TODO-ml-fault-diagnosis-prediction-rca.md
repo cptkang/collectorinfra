@@ -474,6 +474,7 @@ ML은 **판정자가 아니라 정량 증거 생산자**로 들인다. 점수·�
 - **엔티티 키**: `entity = {layer: host|was|db|service, id, zone, db_id}`
   - host: 폴스타 `server_name`(Prometheus `nodename` 규약 D-119와 동일)
   - was: 제니퍼 `instance_id` ↔ host. 정합은 `plans/87` §5.3 `apm_instance_map` 결과를 **그대로 소비**한다(재구현 금지). 폴스타 `was_object`는 U-10 확인 전에는 단정하지 않는다
+    - **(부기 2026-09-29 · `plans/87` v3.1 · D-274·D-195)** `apm_*`의 제공 주체는 `mcp_server`가 아니라 독립 패키지 **`apm_gateway`(자체 MCP 서버 · 두 번째 MCP 엔드포인트)**다. 소비 계약(`apm_instance_map`·`apm_slow_transactions`·WAS 판정 결과 `was_signals`)은 그대로이고 연결 대상만 다르다 — 이 문서의 `mcp_server : … · apm_*` 표기(§4 그림 등)도 이렇게 읽는다
   - db: DPM 대상 인스턴스 ↔ host. **매핑 원천은 G-3 DPM 계획 소관**이다
   - 매핑 신뢰도가 `high`가 아니면 **교차 계층 결합을 하지 않는다**(`plans/55` C-1 · `plans/87` `match_confidence`)
 - **시계열 레코드**: `(source, entity, metric, resolution, ts, value, agg∈{avg,max,min,top,bottom,p95})`. 메트릭 이름은 `plans/87`이 쓰는 OpenTelemetry 시맨틱 이름(`http.server.request.duration`·`jvm.memory.used` 등)과 폴스타 kind(`cpu`·`memory`·`filesystem`·`disk_io`)를 **소스별 매핑 파일**(`sre_agent/config/ml/metric_map.yaml`)로 정규화한다. 폴스타 리터럴은 `domain/`에 두지 않는다(`sre_agent/domain`은 overfit 스캔 대상 · D-132 ④).

@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>시스템 소개 — KB AIOps 포탈</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/intro/intro.css?v=1">
+<!-- 소개 페이지(plans/124 · D-277): 어두운 바탕 고정(D-180 적용 밖) · 외부 요청 0 · 3D는 벤더링한 three.js -->
+<script type="importmap">
+{ "imports": {
+  "three": "/static/vendor/three/build/three.module.min.js",
+  "three/addons/": "/static/vendor/three/examples/jsm/"
+} }
+</script>
+<script src="/static/intro/scroll.js?v=1" defer></script>
+<noscript><style>
+  .scene { height: auto !important; } .sticky { position: static; height: auto; overflow: visible; }
+  .frame { position: static; display: block; } .reveal, .line { opacity: 1 !important; visibility: visible !important; }
+  .final { min-height: 0; }
+</style></noscript>
+</head>
+<body>
+<canvas id="gl" aria-hidden="true"></canvas>
+<div class="backdrop" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+<div class="vignette" aria-hidden="true"></div>
+<div class="progress" id="progress" aria-hidden="true"></div>
+
+<header class="bar">
+  <div class="brand"><img src="/static/img/kb-mark.svg" alt="">KB AIOps 포탈</div>
+  <nav aria-label="장면">
+    <ul class="dots" id="dots">
+      <li><a href="#s1" aria-label="도입"></a></li>
+      <li><a href="#s2" aria-label="문제"></a></li>
+      <li><a href="#s3" aria-label="장애 대응 5단계"></a></li>
+      <li><a href="#s4" aria-label="알람 선별"></a></li>
+      <li><a href="#s5" aria-label="원인 분석"></a></li>
+      <li><a href="#s6" aria-label="주요 기능"></a></li>
+      <li><a href="#s7" aria-label="원칙과 숫자"></a></li>
+      <li><a href="#s8" aria-label="관측 확대와 로드맵"></a></li>
+      <li><a href="#s9" aria-label="마무리"></a></li>
+    </ul>
+  </nav>
+</header>
+
+<main>
+  <!-- S1 도입: 관제실이 돈다 -->
+  <section class="scene" id="s1" data-scene="0" data-stops="0.12,0.5,0.86" style="--h:440vh">
+    <div class="sticky">
+      <div class="frame hero">
+        <div class="layer reveal" data-show="0,0.3">
+          <p class="eyebrow">KB AIOps 포탈 · Agentic AI 기반 장애 대응 자동화</p>
+          <h1 class="display">장애는 먼저 알아채고,<br>원인은 <em>AI 에이전트</em>가 좁힙니다.</h1>
+          <p class="lede">관측 데이터를 읽고, 알람을 가려내고, 원인을 조사해 근거와 함께 알려 주는 인프라 운영 AIOps 플랫폼입니다.</p>
+        </div>
+        <div class="layer reveal" data-show="0.34,0.68">
+          <p class="eyebrow">여섯 가지 일을 나눠 맡습니다</p>
+          <h2 class="display sm">알람은 알람대로,<br>조사는 조사대로.</h2>
+          <ul class="chips" id="chips">
+            <li>알람 선별</li><li>자동 조사</li><li>현황 조회</li><li>대화형 콘솔</li><li>양식 채우기</li><li>감사 추적</li>
+          </ul>
+        </div>
+        <div class="layer reveal" data-show="0.74,1">
+          <h2 class="display">이제 알람 앞에서<br><span class="warm">혼자 헤매지 않아도 됩니다.</span></h2>
+        </div>
+        <div class="layer hint reveal" data-show="0,0.06" aria-hidden="true">SCROLL <span></span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- S2 문제 제기: 한 줄씩 밝아진다 -->
+  <section class="scene" id="s2" data-scene="1" data-stops="0.1,0.28,0.46,0.64,0.86" style="--h:300vh">
+    <div class="sticky dim">
+      <div class="frame center">
+        <div class="layer">
+          <div class="lines" id="lines">
+            <p class="line display" data-at="0.04">알람을 받으면, 원인을 찾아 여러 시스템을 오갑니다.</p>
+            <p class="line display" data-at="0.22">증상은 앱에, 원인은 DB와 호스트에 있습니다.</p>
+            <p class="line display" data-at="0.40">내 담당 밖은 보이지 않습니다.</p>
+            <p class="line display" data-at="0.58">반복·연쇄 알람 속에서 진짜 장애를 가려내기 어렵습니다.</p>
+          </div>
+          <p class="line answer" data-at="0.76">그래서 장애 대응을 다섯 단계로 나누고, 단계마다 막힌 곳을 풉니다.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- S3 다섯 단계 고리 -->
+  <section class="scene" id="s3" data-scene="2" data-stops="0.08,0.24,0.40,0.56,0.72,0.88" style="--h:420vh">
+    <div class="sticky">
+      <div class="frame side">
+        <div class="layer panel reveal" data-show="0.02,1">
+          <p class="eyebrow">장애 대응 5단계</p>
+          <h2 class="display sm">관측 · 선별 · 분석 ·<br>조치 · 학습</h2>
+          <p class="lede">단계마다 막히는 구조적 원인이 하나씩 있습니다.</p>
+          <ol class="steps" id="steps">
+            <li style="--c:var(--cyan)"><b>① 관측</b><span class="badge" data-status="partial">구현 · 확대 중</span>
+              <span class="d">인프라 관제(SMS)는 연동을 마쳤습니다. 앱·WAS·DB 내부는 관측원을 넓히는 중입니다.</span></li>
+            <li style="--c:var(--mint)"><b>② 선별</b><span class="badge" data-status="done">구현</span>
+              <span class="d">중복·연쇄·반복을 억제하고 중요도에 따라 네 갈래로 나눕니다.</span></li>
+            <li style="--c:var(--kb)"><b>③ 분석</b><span class="badge" data-status="mvp">MVP</span>
+              <span class="d">중요 알람을 자동으로 조사하고, 근거를 인용한 브리핑으로 원인 후보를 좁힙니다.</span></li>
+            <li style="--c:var(--violet)"><b>④ 조치</b><span class="badge" data-status="plan">계획</span>
+              <span class="d">지금은 근거와 위험도를 붙인 권고까지입니다. 실행은 운영자가 승인하고 수행합니다.</span></li>
+            <li style="--c:var(--red)"><b>⑤ 학습</b><span class="badge" data-status="plan">계획</span>
+              <span class="d">알람 피드백은 동작 중입니다. 진단 결과 보존과 사후 채점으로 선별 기준을 개선할 계획입니다.</span></li>
+          </ol>
+          <p class="note">관측이 가장 큰 제약입니다 — 볼 수 없는 것은 거를 수도, 이을 수도, 조치할 수도 없습니다.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- S4 알람 선별: 입자 깔때기 -->
+  <section class="scene" id="s4" data-scene="3" data-stops="0.18,0.52,0.86" style="--h:380vh">
+    <div class="sticky">
+      <div class="frame side">
+        <div class="layer panel reveal" data-show="0.02,0.36">
+          <p class="eyebrow">② 선별 · 알람 노이즈 캔슬링</p>
+          <h2 class="display sm">같은 알람은 하나로,<br>연쇄 알람은 뿌리로.</h2>
+          <p class="lede">같은 알람은 <b data-fact="dedup_seconds">300</b>초 창 안에서 하나로 합치고, 토폴로지상 상위 장애에 딸린 알람은 묶어 근본 원인을 드러냅니다.</p>
+        </div>
+        <div class="layer panel reveal" data-show="0.38,0.68">
+          <p class="eyebrow">중요도 판정</p>
+          <h2 class="display sm">중요도에 따라<br>네 갈래로 보냅니다.</h2>
+          <ul class="tiers" id="tiers">
+            <li style="--c:var(--red)"><b>즉시 통보</b><span>바로 대응할 알람</span></li>
+            <li style="--c:var(--kb)"><b>티켓</b><span>기록하고 처리할 알람</span></li>
+            <li style="--c:var(--cyan)"><b>대시보드</b><span>지켜볼 알람</span></li>
+            <li style="--c:var(--muted)"><b>억제</b><span>통보하지 않고 기록만 남길 알람</span></li>
+          </ul>
+        </div>
+        <div class="layer panel reveal" data-show="0.70,1">
+          <p class="eyebrow">통제 원칙</p>
+          <h2 class="display sm">억제는 삭제가 아니라<br><span class="warm">기록</span>입니다.</h2>
+          <p class="lede">최고 심각도 알람은 어떤 억제도 거치지 않고 바로 통보합니다. 억제한 알람과 그 근거는 관제 화면에서 확인할 수 있습니다.</p>
+        </div>
+        <p class="caption reveal" data-show="0,1">3D 알람 입자는 연출 예시이며 실제 건수가 아닙니다.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- S5 원인 분석: 계층 타임라인 -->
+  <section class="scene" id="s5" data-scene="4" data-stops="0.14,0.44,0.70,0.92" style="--h:360vh">
+    <div class="sticky">
+      <div class="frame side">
+        <div class="layer panel reveal" data-show="0.02,0.3">
+          <p class="eyebrow">③ 분석 · 자동 조사 <span class="badge" data-status="mvp">MVP</span></p>
+          <h2 class="display sm">흩어진 증거를<br>한 타임라인에.</h2>
+          <p class="lede">중요 알람이 오면 부하·병목·원인 격리·로그를 자동으로 조사합니다.</p>
+        </div>
+        <div class="layer panel reveal" data-show="0.32,0.58">
+          <p class="eyebrow">선후 관계</p>
+          <h2 class="display sm">무엇이 먼저였는지<br>따져 봅니다.</h2>
+          <p class="lede">증거를 시각 순서로 늘어놓고, 먼저 일어난 이상에서 원인 후보를 찾습니다.</p>
+        </div>
+        <div class="layer panel reveal" data-show="0.60,0.8">
+          <p class="eyebrow">근거 인용</p>
+          <h2 class="display sm">근거를 대지 못한 단정은<br><span class="warm">가설</span>로 낮춥니다.</h2>
+          <p class="lede">판단은 결정적 규칙이, 서술은 LLM이 맡습니다. 브리핑의 결론에는 조회 결과를 인용합니다.</p>
+        </div>
+        <div class="layer panel brief reveal" data-show="0.82,1">
+          <p class="eyebrow">조사 브리핑 <span class="tag">예시</span></p>
+          <dl>
+            <dt>원인 후보</dt><dd>호스트 디스크 IO 포화 <span class="cite">[1] 지표 추이</span> <span class="cite">[2] 프로세스</span></dd>
+            <dt>가설</dt><dd>DB 락 경합 — DB 내부를 아직 관측하지 못해 인용 근거가 없습니다</dd>
+            <dt>조치 권고</dt><dd>로그 정리 대상 확인 · 위험도 낮음 · 실행은 운영자 승인</dd>
+          </dl>
+          <p class="note">지금은 인프라 계층까지 봅니다. 앱·DB 계층은 APM·DPM 연동과 함께 잇습니다.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- S6 주요 기능 링 (높이는 기능 수로 계산) -->
+  <section class="scene" id="s6" data-scene="5" style="--h:340vh">
+    <div class="sticky">
+      <div class="frame feat">
+        <div class="feat-head reveal" data-show="0,1">
+          <p class="eyebrow">주요 기능</p>
+          <p class="count"><b id="featIdx">01</b> / <span id="featN">06</span></p>
+        </div>
+        <div class="feat-cap reveal" data-show="0,1" aria-live="polite">
+          <p class="kind"><span class="badge" id="featBadge" data-status="done">구현 완료</span> <span id="featRole"></span></p>
+          <p class="name" id="featName"></p>
+          <p class="desc" id="featDesc"></p>
+        </div>
+        <ol class="sr-only" id="featList">
+          <li data-icon="funnel" data-status="done" data-role="탐지·선별"><b>알람 노이즈 캔슬링</b><span>중복·연쇄·반복을 억제하고 중요도를 네 단계로 나눕니다. 억제 현황은 관제 화면에 공개합니다.</span></li>
+          <li data-icon="search" data-status="mvp" data-role="진단(RCA)"><b>자동 조사·브리핑</b><span>중요 알람이 오면 부하·병목·원인 격리·로그를 조사해, 근거가 달린 브리핑과 조치 권고를 통보에 첨부합니다.</span></li>
+          <li data-icon="chart" data-status="done" data-role="대응 지원"><b>시스템 현황 즉시 조회</b><span>관제 솔루션의 자원·상태·프로세스·추이·알람 이력을 한국어 질의로 바로 확인합니다. 여러 조건을 묶은 복합 질의도 됩니다.</span></li>
+          <li data-icon="chat" data-status="done" data-role="대응 창구 단일화"><b>대화형 운영 콘솔</b><span>알람 확인부터 추천 질의, 브리핑 확인, 사건 확인·피드백까지 한 대화 화면에서 합니다.</span></li>
+          <li data-icon="doc" data-status="done" data-role="감사·보고 자동화"><b>양식 채우기·보고</b><span>Excel·Word 양식을 조회 결과로 자동 작성합니다. 감사 취합 양식도 채웁니다.</span></li>
+          <li data-icon="shield" data-status="done" data-role="추적성 확보"><b>통제·운영 도구</b><span>권한·감사 로그·관리자 설정·운영 매뉴얼로 모든 단계를 추적합니다.</span></li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- S7 원칙과 숫자 (숫자는 코드로 셀 수 있는 값만 — 사실 가드 테스트가 대조한다) -->
+  <section class="scene" id="s7" data-scene="6" data-stops="0.5" style="--h:240vh">
+    <div class="sticky soft">
+      <div class="frame center">
+        <div class="layer reveal" data-show="0.04,1">
+          <p class="eyebrow">숫자로 보는 KB AIOps 포탈</p>
+          <div class="stats">
+            <div class="stat"><b data-count>5</b><span>장애 대응 단계</span></div>
+            <div class="stat"><b data-count data-fact="tiers">4</b><span>알람 통보 갈래</span></div>
+            <div class="stat"><b data-count data-fact="polestar_tools">9</b><span>관제 조회 도구(읽기 전용)</span></div>
+            <div class="stat"><b data-count data-fact="ops_dbs">3</b><span>연동한 운영 관제 DB</span></div>
+          </div>
+          <ul class="principles">
+            <li>폐쇄망 우선</li><li>읽기 전용</li><li>감사 추적</li><li>조치는 권고까지</li>
+          </ul>
+          <p class="lede center-lede">판단은 결정적 규칙이, 해석과 설명은 LLM이 맡습니다.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- S8 관측 확대와 로드맵 -->
+  <section class="scene" id="s8" data-scene="7" data-stops="0.24,0.74" style="--h:320vh">
+    <div class="sticky">
+      <div class="frame side">
+        <div class="layer panel reveal" data-show="0.02,0.42">
+          <p class="eyebrow">관측 범위 확대</p>
+          <h2 class="display sm">볼 수 있어야<br>거르고, 잇고, 고칩니다.</h2>
+          <ul class="sources" id="sources">
+            <li><b>인프라 관제(SMS) · 폴스타</b><span class="badge" data-status="done">연동 완료</span></li>
+            <li><b>메트릭 · Prometheus/OpenMetrics</b><span class="badge" data-status="wait">운영 연결 대기</span></li>
+            <li><b>자산 · ITAM</b><span class="badge" data-status="wait">운영 개방 대기</span></li>
+            <li><b>애플리케이션 · APM(제니퍼)</b><span class="badge" data-status="wait">연동 개발 중</span></li>
+            <li><b>DB 내부 · DPM</b><span class="badge" data-status="plan">제품 선정 전</span></li>
+            <li><b>변경 이력 · ITSM</b><span class="badge" data-status="plan">계획</span></li>
+          </ul>
+        </div>
+        <div class="layer panel reveal" data-show="0.46,1">
+          <p class="eyebrow">다음 단계</p>
+          <h2 class="display sm">관측 → 분석 → 학습 →<br>예방 순서로.</h2>
+          <ol class="roadmap">
+            <li><b>단기</b><span>재측정으로 효과·품질 기준선을 확보하고, 진단 증거를 보완하고, 운영 매뉴얼을 마칩니다.</span></li>
+            <li><b>중기</b><span>ITAM·Prometheus를 운영에 연결하고 APM에 착수해 진단 범위를 넓힙니다.</span></li>
+            <li><b>중장기</b><span>예측·ML을 고도화하고 승인 기반 자동 조치를 준비합니다.</span></li>
+          </ol>
+          <p class="note">예측과 자동 조치는 목표입니다 — 앞 단계가 쌓은 신호·상관·영향도 데이터를 전제로 합니다.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- S9 마무리 -->
+  <section class="final" id="s9" data-scene="8">
+    <div class="final-inner">
+      <h2 class="display">사람은 판단에,<br><em>반복은 AI 에이전트에게.</em></h2>
+      <div class="cta-row">
+        <a class="cta" href="/login">포탈 시작하기 <span aria-hidden="true">→</span></a>
+        <a class="cta ghost" href="/manual/user">사용자 매뉴얼</a>
+      </div>
+      <p class="byline">그룹아키텍처센터 · 클라우드아키텍처</p>
+    </div>
+    <footer class="basis">
+      <p>이 페이지의 현황은 2026-09-29 「Agentic AI 기반 장애 대응 자동화 추진 현황」 기준입니다.</p>
+      <p>도입 효과(알람 억제율·MTTR 등)는 아직 측정 전이며, 예측과 자동 조치는 목표입니다. 3D 연출의 수량은 실제 건수가 아닙니다.</p>
+    </footer>
+  </section>
+</main>
+</body>
+</html>

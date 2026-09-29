@@ -79,8 +79,11 @@ scenarios:
                  # 응답에 사유로 실린다(CU-9). 픽스처 헤더 실측 2026-09-16.
                  # '담당자'는 **빼지 않는다** — 이 턴이 literal 답변으로 채운 열이라
                  # 공란이면 답변이 적용되지 않은 것이다(판정의 핵심).
-                 filled_rows: {min: 1}}
-          manual_review: "담당자 열 전행이 '인프라팀'인지 · 원본 바이트가 재생됐는지"
+                 filled_rows: {min: 1},
+                 # plans/122 H-4 - 담당자 열 전 행이 literal 답변값. 「원본 바이트 재생」은 삭제(계획서 §4 I-02 -
+                 #   양식 복원은 `has_file` + 헤더 `columns` 가 이미 본다).
+                 #   원 수동 문구: "담당자 열 전행이 '인프라팀'인지 · 원본 바이트가 재생됐는지"
+                 column_equals: {"담당자": "인프라팀"}}
     teardown: [drop_thread, forget_form_memory]
     forget_form_fields: ["담당자"]
 
@@ -141,7 +144,11 @@ scenarios:
           status: completed
           # 결정적 경로다 - SQL 도 LLM 도 타지 않는다.
           sql_must_not_match: ["(?i)\\bselect\\b"]
-          manual_review: "form_memory_panel 이 실렸는지 · LLM 미호출인지"
+          # plans/122 H-5 - 저장 값 패널은 intent_planner 의 폼필 이력 결정적 단락에서만 만들어진다(LLM 미호출 ·
+          #   src/orchestration/intent_planner.py:405-440 → `build_form_memory_panel` · 그 밖의 생산처는 라우트의
+          #   결정적 삭제 응답 src/api/routes/query.py:1508 뿐). 그래서 패널이 실렸으면 LLM 을 타지 않은 경로다.
+          #   원 수동 문구: "form_memory_panel 이 실렸는지 · LLM 미호출인지"
+          form_memory_panel: present
     teardown: [drop_thread, forget_form_memory]
     forget_form_fields: ["담당자"]
 

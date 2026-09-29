@@ -18,8 +18,16 @@ from typing import Any, Optional
 
 from noise_gate.domain.alarm import AlarmEvent, ProcessInfo
 
+# APM 게이트웨이 이벤트 선판정 (plans/87 R-16 · U-13 · D-274 ⑤). 게이트웨이가 `alarm:raw`에 싣는
+# `resourceType`(SPEC-apm-gateway §5)과 비교한다(대소문자 무시). 이 값이면 OS 키워드를 보지 않는다 —
+# 제니퍼 유형명(`JVM_HEAP_MEM_HIGH`·`OUTOFMEMORY`·`JVM_CPU_HIGH_LONGTIME`·`PROCESS_DOWN` 등)이
+# 부분 문자열로 memory·cpu·process에 걸려 OS 플레이북·L3 kind 프로파일·"영향 프로세스" 표가
+# WAS 사건에 붙기 때문이다.
+KIND_APM = "apm"
+APM_RESOURCE_TYPE = "apm.instance"
+
 # 알람 종류 판정 키워드 (대소문자 무시 — Plan 47-1 §5.2, Plan 60 E6 §16.2 확장)
-# 판정 순서: cpu → memory(기존, 비트 동일) → disk → network → process → log.
+# 판정 순서: (apm 선판정) → cpu → memory(기존, 비트 동일) → disk → network → process → log.
 # cpu/memory를 최우선으로 검사해 기존 판정 결과를 보존한다(신규 키워드가 끼어들지 않음).
 _CPU_KEYWORDS = ("cpu",)
 _MEMORY_KEYWORDS = ("memory", "메모리", "mem")
@@ -47,8 +55,17 @@ _CONN_STRING_RE = re.compile(
 _MASK = "***"
 
 
+def is_apm_event(event: AlarmEvent) -> bool:
+    """APM 게이트웨이가 발행한 이벤트인지(`resource_type == "apm.Instance"`, 대소문자 무시)."""
+    return (getattr(event, "resource_type", "") or "").strip().lower() == APM_RESOURCE_TYPE
+
+
 def classify_alarm_kind(event: AlarmEvent) -> Optional[str]:
-    """알람 종류를 판정한다 (Plan 47-1 §5.2 + Plan 60 E6 §16.2).
+    """알람 종류를 판정한다 (Plan 47-1 §5.2 + Plan 60 E6 §16.2 + plans/87 R-16).
+
+    **0. apm 선판정**: `resource_type == "apm.Instance"`(대소문자 무시)면 키워드 검사 없이 "apm".
+    소비처는 "apm"을 OS kind로 다루지 않는다 — "영향 프로세스" 표·L3 kind 프로파일·동적 baseline은
+    붙지 않고, E6 호스트 보강만 "호스트 참고"로 남는다(U-13). 그 밖의 이벤트는 아래 판정 그대로다.
 
     판정 키워드(대소문자 무시) — resource_type / alarm_name 에서 검색.
     **판정 순서**(cpu/memory 우선 → 나머지) — cpu/memory 판정은 기존과 비트 동일:
@@ -64,8 +81,10 @@ def classify_alarm_kind(event: AlarmEvent) -> Optional[str]:
     신규 kind는 정렬 기본=cpu로 취급된다(프로세스 표는 host-wide 참고용으로 여전히 유효).
 
     Returns:
-        "cpu" | "memory" | "disk" | "network" | "process" | "log" | None (비대상)
+        "apm" | "cpu" | "memory" | "disk" | "network" | "process" | "log" | None (비대상)
     """
+    if is_apm_event(event):
+        return KIND_APM
     haystack = f"{event.resource_type} {event.alarm_name}".lower()
     if any(kw in haystack for kw in _CPU_KEYWORDS):
         return "cpu"

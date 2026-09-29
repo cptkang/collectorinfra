@@ -154,8 +154,6 @@ _LLM_PATH_CASES = [
     _case("순차_표지_원질의", user_query="CPU 높은 서버를 찾아 그 서버들의 메모리도 보여줘"),
     _case("충족도_미달_상태", sufficiency_shortfalls=[{"task_id": "t1"}]),
     _case("순차_경과_노트_게이트", dependency_notes=[{"kind": "gate", "detail": "선행 0건"}]),
-    _case("결과_노트_분류_폴백", res={**_rows(), "dependency_notes": [
-        {"kind": "routing_fallback", "detail": "첫 활성 DB 폴백"}]}),
     _case("1단_미실행_안내", orchestration_incomplete_notice="일부 작업 미실행"),
     _case("일부_권한_거부", extra=[(_task("t2"), {"final_response": "권한 없음",
                                                   "routing_intent": "access_denied",

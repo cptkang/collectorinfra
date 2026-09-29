@@ -548,9 +548,14 @@ def build_graph(config: AppConfig, checkpointer=None):
         # synthesize=True: 다중 의도 분해/재계획으로 task가 여러 개면 deterministic
         # 이어붙이기(_merge_finalized)는 "없음→있음" 모순·부분 결과를 한 말풍선에 그대로
         # 나열한다. LLM 1회로 단일 일관 답변을 합성해 모순/중복을 해소한다(D-062).
+        # composite_answer="steps"(plans/121 TP-4.5 · G-7 ①): 병합 불성립 복합 턴은 합성 LLM 대신
+        # 단계별 표 + 요약을 잇고 모순은 결정적 숨김으로 막는다 — 2단만(1단·3단은 LLM 합성 유지).
         graph.add_node(
             "result_aggregator",
-            partial(result_aggregator, llm=llm, app_config=config, synthesize=True),
+            partial(
+                result_aggregator, llm=llm, app_config=config, synthesize=True,
+                composite_answer="steps",
+            ),
         )
         # Plan 49: 결과 기반 동적 재계획 노드 (orchestrator↔replanner 루프)
         graph.add_node(

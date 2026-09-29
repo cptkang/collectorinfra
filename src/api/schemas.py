@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -139,6 +139,11 @@ class QueryResponse(BaseModel):
     # [{kind, task_id, reason, detail, ...}] — 본문 말미 블록과 같은 내용의 구조화본.
     dependency_notes: Optional[list[dict]] = Field(
         default=None, description="복합 질의 순차 처리 경과 노트(게이트·대조·절단·충족도)"
+    )
+    # plans/121 TP-0.1: 2단 계획 요약 — 계획 경로 코드 · task 담당·간선·조회 DB · 재계획 횟수 ·
+    # 노트 종류별 건수(개수·코드만). 선언하지 않으면 pydantic이 조용히 버린다. 1·3단은 None.
+    plan_summary: dict[str, Any] | None = Field(
+        default=None, description="2단 계획 요약(계획 경로·task 구성·재계획 횟수 — 코드·개수만)"
     )
 
 

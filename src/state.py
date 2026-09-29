@@ -227,6 +227,16 @@ class AgentState(TypedDict):
     # 게이트로 존을 되물었고 이번 턴이 같은 원 질의 + 존 선택뿐이면 라우트가 직전 턴
     # `parsed_requirements`를 싣는다. `input_parser`는 이것이 있으면 LLM 파싱을 건너뛴다.
     reuse_parsed_requirements: Optional[dict]
+    # 존 재진입 계획 스냅샷(plans/121 TP-1.2 · G-30 · D-272 ⑪ · 요청 스코프) — 2단 집계기의 존
+    # 역질문 단락이 **복합 계획(task 2개 이상)**일 때만 쓴다:
+    # `{"tasks": [계획 필드만 — 상태·결과 없음], "gated_task_ids": [게이트에 걸린 task id]}`.
+    # 다음 턴 라우트가 입력 조립 **전에** 체크포인트에서 읽어 Q-2 조건일 때만 `reuse_task_plan`으로
+    # 옮기고, 입력 델타가 이 키를 None으로 덮는다(두 상태 생성 함수).
+    zone_reentry_plan: dict[str, Any] | None
+    # 존 답변 턴의 계획 복원 입력(plans/121 TP-1.2 · 요청 스코프) — 라우트가 Q-2 파싱 재사용
+    # (`reuse_parsed_requirements`)과 같은 조건에서만 직전 턴 `zone_reentry_plan`을 싣는다.
+    # 2단 `intent_planner` ②.5가 읽는다.
+    reuse_task_plan: dict[str, Any] | None
     # 스레드 DB 스코프(plans/90 · D-205) — 둘 다 **요청 스코프**(매 턴 라우트가 재공급).
     #   db_scope_source: 이번 턴 대상 DB가 어디서 왔나(selected|hint|inherited|planned|classified).
     #     문자열 reason 매칭 대신 구조화 키 — 3단 semantic_router·2단 subagents(db_origin 승격)가 남긴다.
@@ -326,6 +336,18 @@ class AgentState(TypedDict):
     # 요청 스코프(라우트·후속 턴 명시 초기화). agent_orchestrator가 쓰던 `sufficiency_shortfalls`는
     # 선언·소비처가 없어 응답에 닿지 않았다 — 같은 내용을 이 채널에 병기하고 2027-03-09 폐기(D-161 ①).
     dependency_notes: Optional[list[dict]]
+    # 분해 LLM이 낸 되묻기 후보 {question, options, reason}(plans/121 TP-1.4 · N-3). 선언·로그만 —
+    # 소비(되묻기 게이트)는 plans/106 H1과 함께 넣는다. 미선언이면 LangGraph가 버린다. 요청 스코프:
+    # 2단 계획 출구가 매 턴 쓰고(없으면 None), 두 상태 생성 함수가 None으로 초기화한다.
+    clarification_needed: dict[str, Any] | None
+    # 계획 경로 코드(plans/121 TP-0.1) — 2단 계획 본체가 어느 사전 처리 단락·LLM 분해로
+    # 계획을 냈는지. 계획 요약(`done.plan_summary`)이 읽는다. 요청 스코프(두 상태 생성 함수가
+    # None으로 초기화).
+    plan_path: str | None
+    # LLM 분해가 원문 단일 task로 폴백한 원인 코드(plans/121 TP-1.6 · 관측 전용 — `llm_error` ·
+    # `malformed_output` · `empty_structured`). 계획 요약이 코드만 읽는다. 요청 스코프(두 상태 생성
+    # 함수가 None으로 초기화 · 폴백이 없는 턴은 쓰지 않는다).
+    decompose_fallback: str | None
 
     # === [Plan 49] 동적 재계획 ===
     replan_count: int                # 결과 기반 재계획 반복 횟수 (MAX_REPLAN 상한)
@@ -403,6 +425,10 @@ def create_followup_input(
         "zone_clarification": None,
         # 존 답변 턴 파싱 재사용(plans/119 Q-2) — 요청 스코프. 라우트가 조건을 맞출 때만 싣는다.
         "reuse_parsed_requirements": None,
+        # 존 재진입 계획 스냅샷·복원 입력(plans/121 TP-1.2) — 요청 스코프. 라우트는 이 델타를 만들기
+        # 전에 체크포인트의 스냅샷을 읽고, Q-2 조건일 때만 복원 입력으로 옮긴다.
+        "zone_reentry_plan": None,
+        "reuse_task_plan": None,
         # HITL 폼필(D-151) 요청 스코프 값들 — 직전 턴 산출이 새 턴을 오염시키지 않도록
         # 매 턴 초기화. 답변 턴은 route가 이 델타 위에 form_fill_answers·복원 파일을 덮어쓴다.
         # pending_form_fill(멀티턴 보존)은 여기서 비우지 않는다.
@@ -415,6 +441,21 @@ def create_followup_input(
         "form_fill_remember": None,
         # 순차 의존 경과 노트(D-203)도 요청 스코프 — 직전 턴 경과가 새 턴 응답에 붙지 않도록.
         "dependency_notes": None,
+        # 분해 되묻기 후보(plans/121 TP-1.4)도 요청 스코프 — 1단·3단은 계획 출구를 거치지 않는다.
+        "clarification_needed": None,
+        "plan_path": None,  # 계획 경로 코드(plans/121 TP-0.1) — 요청 스코프
+        "decompose_fallback": None,  # 분해 폴백 원인 코드(plans/121 TP-1.6) — 요청 스코프
+        # 2단 계획·재계획 상태(plans/121 TP-1.1 · K-5 · D-272 ③ D-162 예외) — 요청 스코프.
+        # 비우지 않으면 앞 턴 결과가 재계획 스킵(존 역질문 대기)·권한 판정·경과 노트·「실행된 SQL」·
+        # 부분 결과를 오염시키고, 앞 턴이 재계획 상한이면 이번 턴 첫 재계획이 막힌다.
+        # 여섯 키만 비운다 — `query_results`·`target_databases`·`parsed_requirements` 등은
+        # 지시어·승계(PL-1·D-205·Q-2)가 쓴다.
+        "task_plan": [],
+        "task_results": {},
+        "replan_count": 0,
+        "replan_history": [],
+        "needs_replan": False,
+        "is_composite": False,
         # 재계획 시간 예산·중단 사유(plans/118 P-1·P-2) — 요청 스코프. 마감은 라우트가 다시 싣는다.
         "request_deadline": None,
         "orchestrator_round_sec": None,
@@ -564,6 +605,8 @@ def create_initial_state(
         zone_clarification_allowed=allow_zone_clarification,
         zone_clarification=None,
         reuse_parsed_requirements=None,
+        zone_reentry_plan=None,  # 요청 스코프(plans/121 TP-1.2)
+        reuse_task_plan=None,  # 요청 스코프(plans/121 TP-1.2)
         db_scope_source=None,
         db_scope_reset=False,
         # 교차 시스템 질의(plans/102) — 요청 스코프
@@ -613,6 +656,9 @@ def create_initial_state(
         # 이전 턴 대상이 승계돼 엉뚱한 호스트를 조사한다(Plan 78 W1-5).
         prior_targets=None,
         dependency_notes=None,  # 요청 스코프(D-203)
+        clarification_needed=None,  # 요청 스코프(plans/121 TP-1.4)
+        plan_path=None,  # 요청 스코프(plans/121 TP-0.1)
+        decompose_fallback=None,  # 요청 스코프(plans/121 TP-1.6)
         # Plan 49: 동적 재계획
         replan_count=0,
         needs_replan=False,

@@ -35,6 +35,14 @@ HYPOTHESIS_PREFIX = "[가설] "
 # 조치 권고 human-gated 안내(항상 병기 — 실행 경로 부재를 서술로 고정, D-011).
 HUMAN_GATED_NOTE = "※ 실행은 운영자 승인 후 수동 — 시스템은 제안만(자동 실행 경로 없음)"
 
+# 증거 소스 라벨(plans/87 §5.4(d) · J3) — `source_labels=True`(apm_guidance_enabled)일 때만 타임라인 앞에 붙인다.
+APM_SOURCE_LABEL = "애플리케이션(APM)"
+INFRA_SOURCE_LABEL = "인프라"
+_APM_TOOL_PREFIX = "apm_"
+
+# 정체 가드로 미결 판정된 조사의 요약 접두어(plans/87 P15 · J3).
+UNRESOLVED_PREFIX = "[미결] "
+
 # 상관 ≠ 인과 — 결정적 상관에서 도출한 가설의 신뢰도 한계(plans/50 §6.3).
 CORRELATION_NOT_CAUSATION_NOTE = "상관 ≠ 인과 — 가설 신뢰도는 선행성·지속성(결정적 상관)에서 도출한 것이며 인과 확정이 아님"
 _KIND_LABEL = {"metric": "메트릭", "alarm": "알람", "change": "변경"}
@@ -142,6 +150,13 @@ def _claim_lines(answer: str) -> list[str]:
     return [ln.strip() for ln in answer.splitlines() if ln.strip()]
 
 
+def evidence_source_label(line: str, tool_names: list[str]) -> str:
+    """증거 한 줄의 소스 라벨 — 실제 호출된 `apm_*` 도구를 인용하면 애플리케이션(APM), 그 밖은 인프라."""
+    if any(name.startswith(_APM_TOOL_PREFIX) and name in line for name in tool_names):
+        return APM_SOURCE_LABEL
+    return INFRA_SOURCE_LABEL
+
+
 def build_briefing(
     *,
     answer: str,
@@ -151,6 +166,8 @@ def build_briefing(
     remediation: list[str] | None = None,
     limitations: list[str] | None = None,
     correlation: dict | None = None,
+    source_labels: bool = False,
+    unresolved: bool = False,
 ) -> dict:
     """6요소 브리핑 dict를 결정적으로 조립한다.
 
@@ -160,6 +177,10 @@ def build_briefing(
     `correlation`(plans/50 G4 · `CorrelationResult.to_dict()`)이 있으면 **그 수치가 정본**이다 —
     타임라인은 상대시각 항목(§9.1)으로, 원인은 rank·confidence 가설(§7.2)로 조립하고 `notes`를
     한계에 싣는다. 없으면 `root_cause_hypotheses`만 빈 목록이고 나머지는 종전과 같다.
+
+    `source_labels`(plans/87 J3 — apm_guidance_enabled): 타임라인 증거 앞에 `[애플리케이션(APM)]`
+    (호출된 apm_* 인용) · `[인프라]`(그 밖 · 상관 타임라인) 라벨을 붙인다. `unresolved`(정체 가드):
+    요약 앞에 `[미결] `을 붙인다(사유는 호출자가 `limitations`에 싣는다). 둘 다 기본 False — 종전과 같다.
     """
     tool_names = tool_names or []
     claims = _claim_lines(answer)
@@ -172,6 +193,8 @@ def build_briefing(
     # 요약: 첫 단정. 검증 불가(인용 결여)면 가설 강등 표기.
     head = claims[0] if claims else "조사 서술 없음"
     summary = head if _is_cited(head, tool_names) and tool_names else HYPOTHESIS_PREFIX + head
+    if unresolved:
+        summary = UNRESOLVED_PREFIX + summary
 
     # 원인: 인용된 단정이 있으면 그중 마지막, 없으면 서술 말미를 가설로.
     if cited:
@@ -183,8 +206,12 @@ def build_briefing(
 
     # 타임라인: 상관 타임라인(상대시각 · 주입값) 먼저, 인용 라인은 근거로 뒤에(없으면 안내).
     cited_lines = [c for c in claims if _is_cited(c, tool_names)]
+    corr_lines = correlation_timeline(correlation) if correlation else []
+    if source_labels:
+        corr_lines = [f"[{INFRA_SOURCE_LABEL}] {ln}" for ln in corr_lines]
+        cited_lines = [f"[{evidence_source_label(c, tool_names)}] {c}" for c in cited_lines]
     if correlation:
-        timeline = correlation_timeline(correlation) + cited_lines
+        timeline = corr_lines + cited_lines
         timeline = timeline or ["타임라인 근거 없음(상관 타임라인·도구 출력 인용 모두 결여)"]
     else:
         timeline = cited_lines or ["타임라인 근거 없음(도구 출력 인용 결여)"]
@@ -254,6 +281,10 @@ __all__ = [
     "CITATION_MARKERS",
     "HYPOTHESIS_PREFIX",
     "HUMAN_GATED_NOTE",
+    "APM_SOURCE_LABEL",
+    "INFRA_SOURCE_LABEL",
+    "UNRESOLVED_PREFIX",
+    "evidence_source_label",
     "build_briefing",
     "stub_briefing",
 ]

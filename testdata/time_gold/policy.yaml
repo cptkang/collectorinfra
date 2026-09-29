@@ -1,0 +1,372 @@
+# plans/122 T-0 — 한국어 시간 표현 골드셋 ①: 해석 정책 표(§10.3.1 · G-15 · D-275 ⑮) × 다중 기준 시각
+#
+# 기대값의 정본은 plans/122 §10.3.1 표다. 표가 정하지 않은 조합(진행 중인 명시 기간 · 연도 없는 월 ·
+# 「지난 N주」 · 비교 질의 등)은 src/domain/time_spec.py · time_expr.py 머리말의 「표 밖 조합」 규칙을 따른다.
+#
+# 채점: 구간 정확 일치(Laparra et al. TACL 2018 · plans/122 §11) — start·end·grain·completeness 전부.
+# notes는 부분 집합 단언(적힌 코드가 모두 있어야 한다).
+#
+# 시각 표기: "YYYY-MM-DD"(그날 0시) 또는 "YYYY-MM-DD HH:MM" — 모두 KST. 구간은 반개구간 [start, end).
+# expect 종류:
+#   {start, end, grain, completeness, notes?}  — 해석 결과
+#   {unbounded: true, grain}                   — 기간 조건 없음(「~한 적이 있는」)
+#   {unresolved: true}                         — 규칙 해석 불가 + 기간 흔적 있음 → LLM 슬롯·되묻기 대상
+#   {no_period: true}                          — 기간 표현 아님(오탐 차단) → 기본값(직전 완결 월)
+#
+# 「이번 달 미적재」(당월 행 없음)는 데이터 조건이라 해석기 입력이 아니다 — 해석기는 「매월 1일」
+# 기준 시각(m_first · q_first · leap_next)에서 빈 구간(empty_range)을 내는 것까지만 책임진다.
+version: 1
+anchors:
+  base: "2026-09-29 10:00"       # 화 — §10.3.1 표의 기준 시각
+  month_end: "2026-06-30 23:30"  # 화 — 월말 · 분기말 · 반기말 · 23시대
+  jan: "2026-01-15 09:00"        # 목 — 1월(연 넘김)
+  leap: "2028-02-29 10:00"       # 화 — 윤년 2월 말일
+  leap_next: "2028-03-01 10:00"  # 수 — 윤년 다음 날 · 매월 1일
+  monday: "2026-09-28 09:00"     # 월 — 주 경계(주 시작)
+  sunday: "2026-09-27 22:00"     # 일 — 주 마지막 날
+  q_first: "2026-10-01 10:00"    # 목 — 분기 경계 · 매월 1일
+  m_first: "2026-09-01 10:00"    # 화 — 매월 1일
+  new_year: "2027-01-01 00:30"   # 금 — 연 경계 · 0시대
+cases:
+  # ── base 2026-09-29(화) 10:00 — 표의 행 순서 ─────────────────────────────
+  - {id: P-001, anchor: base, query: "지난달 CPU 사용률", source: "표 지난달",
+     expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}}
+  - {id: P-002, anchor: base, query: "전월 메모리 사용률", source: "표 전월",
+     expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}}
+  - {id: P-003, anchor: base, query: "이번 달 CPU 사용률", source: "표 이번 달(D-201)",
+     expect: {start: "2026-09-01", end: "2026-09-29", grain: day, completeness: to_date}}
+  - {id: P-004, anchor: base, query: "당월 평균 사용률", source: "표 당월",
+     expect: {start: "2026-09-01", end: "2026-09-29", grain: day, completeness: to_date}}
+  - {id: P-005, anchor: base, query: "지난 3개월 CPU", source: "표 지난 N개월(D-102)",
+     expect: {start: "2026-06-01", end: "2026-09-01", grain: month, completeness: complete}}
+  - {id: P-006, anchor: base, query: "최근 3개월간 알람", source: "표 최근 N개월",
+     expect: {start: "2026-06-01", end: "2026-09-01", grain: month, completeness: complete}}
+  - {id: P-007, anchor: base, query: "최근 세 달 동안 알람", source: "표 최근 N개월 · 한글 수사",
+     expect: {start: "2026-06-01", end: "2026-09-01", grain: month, completeness: complete}}
+  - {id: P-008, anchor: base, query: "지난 한 달 동안 알람", source: "표 지난 N개월 · 한글 수사(G-01 t5)",
+     expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}}
+  - {id: P-009, anchor: base, query: "반년 추이", source: "표 반년",
+     expect: {start: "2026-03-01", end: "2026-09-01", grain: month, completeness: complete}}
+  - {id: P-010, anchor: base, query: "지난 반년 데이터", source: "표 지난 반년",
+     expect: {start: "2026-03-01", end: "2026-09-01", grain: month, completeness: complete}}
+  - {id: P-011, anchor: base, query: "최근 반년치 CPU", source: "표 최근 반년",
+     expect: {start: "2026-03-01", end: "2026-09-01", grain: month, completeness: complete}}
+  - {id: P-012, anchor: base, query: "상반기 CPU", source: "표 상반기(연도 없음 · D-185)",
+     expect: {start: "2026-01-01", end: "2026-07-01", grain: month, completeness: complete,
+              notes: [year_inferred]}}
+  - {id: P-013, anchor: base, query: "하반기 CPU", source: "표 하반기 — 진행 중 반기 허용(D-185 현행)",
+     expect: {start: "2026-07-01", end: "2027-01-01", grain: month, completeness: complete,
+              notes: [period_in_progress]}}
+  - {id: P-014, anchor: base, query: "작년 하반기 CPU", source: "표 상·하반기 · 상대 연도",
+     expect: {start: "2025-07-01", end: "2026-01-01", grain: month, completeness: complete}}
+  - {id: P-015, anchor: base, query: "2025년 상반기 CPU", source: "표 상·하반기 · 연도 명시",
+     expect: {start: "2025-01-01", end: "2025-07-01", grain: month, completeness: complete}}
+  - {id: P-016, anchor: base, query: "최근 7일 CPU", source: "표 최근 N일(오늘 제외)",
+     expect: {start: "2026-09-22", end: "2026-09-29", grain: day, completeness: complete}}
+  - {id: P-017, anchor: base, query: "지난 30일 CPU 평균", source: "표 지난 N일(R4-02C)",
+     expect: {start: "2026-08-30", end: "2026-09-29", grain: day, completeness: complete}}
+  - {id: P-018, anchor: base, query: "어제 알람", source: "표 어제",
+     expect: {start: "2026-09-28", end: "2026-09-29", grain: day, completeness: complete}}
+  - {id: P-019, anchor: base, query: "그제 CPU 사용률", source: "T-2 그제(어제와 같은 규칙)",
+     expect: {start: "2026-09-27", end: "2026-09-28", grain: day, completeness: complete}}
+  - {id: P-020, anchor: base, query: "오늘 CPU 사용률", source: "표 오늘",
+     expect: {start: "2026-09-29 00:00", end: "2026-09-29 10:00", grain: hour, completeness: to_date}}
+  - {id: P-021, anchor: base, query: "지난주 알람", source: "표 지난주(월요일 시작)",
+     expect: {start: "2026-09-21", end: "2026-09-28", grain: day, completeness: complete}}
+  - {id: P-022, anchor: base, query: "이번 주 알람", source: "표 이번 주",
+     expect: {start: "2026-09-28", end: "2026-09-29", grain: day, completeness: to_date}}
+  - {id: P-023, anchor: base, query: "최근 1시간 CPU", source: "표 최근 N시간(시각 내림)",
+     expect: {start: "2026-09-29 09:00", end: "2026-09-29 10:00", grain: hour, completeness: rolling}}
+  - {id: P-024, anchor: base, query: "최근 24시간 CPU 추이", source: "표 최근 N시간",
+     expect: {start: "2026-09-28 10:00", end: "2026-09-29 10:00", grain: hour, completeness: rolling}}
+  - {id: P-025, anchor: base, query: "시간 단위로 최근 30일 CPU", source: "표 시간 단위 + 기간(K-09)",
+     expect: {start: "2026-08-30", end: "2026-09-29", grain: hour, completeness: complete}}
+  - {id: P-026, anchor: base, query: "시간별 지난 7일 CPU", source: "표 시간별 + 기간",
+     expect: {start: "2026-09-22", end: "2026-09-29", grain: hour, completeness: complete}}
+  - {id: P-027, anchor: base, query: "일별 지난달 CPU", source: "명시 입도 우선(§10.3 입도 선택)",
+     expect: {start: "2026-08-01", end: "2026-09-01", grain: day, completeness: complete}}
+  - {id: P-028, anchor: base, query: "월별 최근 30일 CPU", source: "월 입도는 월 경계에 맞을 때만 — 낮추고 고지",
+     expect: {start: "2026-08-30", end: "2026-09-29", grain: day, completeness: complete,
+              notes: [display_grain_unaligned]}}
+  - {id: P-029, anchor: base, query: "지난 분기 CPU", source: "표 지난 분기",
+     expect: {start: "2026-04-01", end: "2026-07-01", grain: month, completeness: complete}}
+  - {id: P-030, anchor: base, query: "이번 분기 CPU", source: "표 이번 분기(분기 시작~어제)",
+     expect: {start: "2026-07-01", end: "2026-09-29", grain: day, completeness: to_date}}
+  - {id: P-031, anchor: base, query: "작년 CPU 평균", source: "표 작년(달력 연)",
+     expect: {start: "2025-01-01", end: "2026-01-01", grain: month, completeness: complete}}
+  - {id: P-032, anchor: base, query: "올해 CPU 평균", source: "표 올해(완결 월 + 이번 달 제외 고지)",
+     expect: {start: "2026-01-01", end: "2026-09-01", grain: month, completeness: complete,
+              notes: [current_month_excluded]}}
+  - {id: P-033, anchor: base, query: "11월부터 2월까지 CPU", source: "표 연도 없는 월 범위(D-185)",
+     expect: {start: "2025-11-01", end: "2026-03-01", grain: month, completeness: complete,
+              notes: [year_inferred]}}
+  - {id: P-034, anchor: base, query: "1월~6월 CPU 사용률", source: "표 연도 없는 월 범위",
+     expect: {start: "2026-01-01", end: "2026-07-01", grain: month, completeness: complete}}
+  - {id: P-035, anchor: base, query: "6월 CPU 사용률", source: "표 연도 없는 월",
+     expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete,
+              notes: [year_inferred]}}
+  - {id: P-036, anchor: base, query: "10월 CPU 사용률", source: "표 연도 없는 월 — 미래가 아닌 가장 최근",
+     expect: {start: "2025-10-01", end: "2025-11-01", grain: month, completeness: complete,
+              notes: [year_inferred]}}
+  - {id: P-037, anchor: base, query: "2026년 9월 CPU", source: "진행 중 단일 월 = 이번 달(D-201 현행 동형)",
+     expect: {start: "2026-09-01", end: "2026-09-29", grain: day, completeness: to_date,
+              notes: [period_in_progress]}}
+  - {id: P-038, anchor: base, query: "9월 15일 알람", source: "T-2 N월 D일",
+     expect: {start: "2026-09-15", end: "2026-09-16", grain: day, completeness: complete}}
+  - {id: P-039, anchor: base, query: "2026-09-15 알람", source: "ISO 날짜",
+     expect: {start: "2026-09-15", end: "2026-09-16", grain: day, completeness: complete}}
+  - {id: P-040, anchor: base, query: "9월 1일부터 9월 15일까지 알람", source: "일 범위(끝 포함 → 반개구간)",
+     expect: {start: "2026-09-01", end: "2026-09-16", grain: day, completeness: complete}}
+  - {id: P-041, anchor: base, query: "메모리가 90%를 넘은 적이 있는 서버", source: "표 ~한 적이 있는",
+     expect: {unbounded: true, grain: month}}
+  - {id: P-042, anchor: base, query: "CPU 사용률 보여줘", source: "표 기간 없음",
+     expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete,
+              notes: [default_period]}}
+  - {id: P-043, anchor: base, query: "시간별 CPU 사용률", source: "기간 없음 + 명시 입도",
+     expect: {start: "2026-08-01", end: "2026-09-01", grain: hour, completeness: complete,
+              notes: [default_period]}}
+  - {id: P-044, anchor: base, query: "지난달 대비 이번 달 CPU", source: "비교 질의 — 덮는 구간(cover)",
+     expect: {start: "2026-08-01", end: "2026-09-29", grain: day, completeness: to_date,
+              notes: [multiple_periods]}}
+  - {id: P-045, anchor: base, query: "2030년 1월 알람 보여줘", source: "미래 절대 월(R3-06)",
+     expect: {start: "2030-01-01", end: "2030-02-01", grain: month, completeness: complete,
+              notes: [future_period]}}
+  - {id: P-046, anchor: base, query: "지난 13월 CPU 사용률", source: "값 범위 밖(R3-05) — 되묻기",
+     expect: {unresolved: true}}
+  - {id: P-047, anchor: base, query: "3일 전 알람", source: "규칙 미커버(ago) — LLM 슬롯 대상",
+     expect: {unresolved: true}}
+  - {id: P-048, anchor: base, query: "내일 CPU 예측", source: "미래 어휘 — 규칙 미커버",
+     expect: {unresolved: true}}
+  - {id: P-049, anchor: base, query: "9월부터 CPU 사용률", source: "since(~부터 · 어제까지)",
+     expect: {start: "2026-09-01", end: "2026-09-29", grain: day, completeness: to_date,
+              notes: [year_inferred]}}
+  - {id: P-050, anchor: base, query: "작년 6월 CPU", source: "상대 연도 + 월(year_offset)",
+     expect: {start: "2025-06-01", end: "2025-07-01", grain: month, completeness: complete}}
+  - {id: P-051, anchor: base, query: "3분기 CPU", source: "진행 중 분기 = 이번 분기",
+     expect: {start: "2026-07-01", end: "2026-09-29", grain: day, completeness: to_date,
+              notes: [period_in_progress]}}
+  - {id: P-052, anchor: base, query: "2026년 2분기 CPU", source: "달력 분기",
+     expect: {start: "2026-04-01", end: "2026-07-01", grain: month, completeness: complete}}
+  - {id: P-053, anchor: base, query: "2025년 CPU 평균", source: "달력 연(연도 명시)",
+     expect: {start: "2025-01-01", end: "2026-01-01", grain: month, completeness: complete}}
+  - {id: P-054, anchor: base, query: "최근 2주 알람", source: "지난 N주 = 완결 N×7일(어휘 결정)",
+     expect: {start: "2026-09-15", end: "2026-09-29", grain: day, completeness: complete}}
+  - {id: P-055, anchor: base, query: "최근 일주일 알람", source: "일주일 = 7일",
+     expect: {start: "2026-09-22", end: "2026-09-29", grain: day, completeness: complete}}
+  - {id: P-056, anchor: base, query: "지난 2년치 CPU", source: "지난 N년 = 완결 12N개월(어휘 결정)",
+     expect: {start: "2024-09-01", end: "2026-09-01", grain: month, completeness: complete}}
+  - {id: P-057, anchor: base, query: "last month cpu usage", source: "종전 영어 신호 호환",
+     expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}}
+  - {id: P-058, anchor: base, query: "6월까지 CPU", source: "until(~까지 · 왼쪽 열림)",
+     expect: {start: null, end: "2026-07-01", grain: month, completeness: complete,
+              notes: [year_inferred]}}
+  - {id: P-059, anchor: base, query: "요번 달 데이터", source: "이번 달 변형(종전 테스트의 정규식 미매칭 예)",
+     expect: {start: "2026-09-01", end: "2026-09-29", grain: day, completeness: to_date}}
+  - {id: P-060, anchor: base, query: "이달 CPU 사용률", source: "이번 달 변형",
+     expect: {start: "2026-09-01", end: "2026-09-29", grain: day, completeness: to_date}}
+  - {id: P-061, anchor: base, query: "지지난달 CPU", source: "표 밖 — 두 달 전 달력 월(현행은 「지난달」로 오독)",
+     expect: {start: "2026-07-01", end: "2026-08-01", grain: month, completeness: complete}}
+  - {id: P-062, anchor: base, query: "재작년 CPU", source: "표 밖 — 두 해 전 달력 연",
+     expect: {start: "2024-01-01", end: "2025-01-01", grain: month, completeness: complete}}
+  - {id: P-063, anchor: base, query: "지지난주 알람", source: "표 밖 — 두 주 전 달력 주",
+     expect: {start: "2026-09-14", end: "2026-09-21", grain: day, completeness: complete}}
+  - {id: P-064, anchor: base, query: "지지난 분기 CPU", source: "표 밖 — 두 분기 전 달력 분기",
+     expect: {start: "2026-01-01", end: "2026-04-01", grain: month, completeness: complete}}
+  - {id: P-065, anchor: base, query: "다다음 주 예측", source: "미래 어휘 — 규칙 미커버", expect: {unresolved: true}}
+  - {id: P-066, anchor: base, query: "요번 분기 CPU", source: "규칙 미커버 변형 — 침묵 기본값 대신 되묻기",
+     expect: {unresolved: true}}
+
+  # ── 오탐 차단(기간 아님) ─────────────────────────────────────────────────
+  - {id: N-001, anchor: base, query: "경고 이상 알람 이력을 최근 발생 순으로 100건 조회해줘",
+     source: "D-02 — 「최근 발생 순」은 정렬", expect: {no_period: true}}
+  - {id: N-002, anchor: base, query: "논리코어가 8개 이상인 서버", source: "B-07", expect: {no_period: true}}
+  - {id: N-003, anchor: base, query: "상위 3-5개 서버", source: "D-185 숫자 범위 무매칭", expect: {no_period: true}}
+  - {id: N-004, anchor: base, query: "1-6 서버", source: "D-185 숫자 범위 무매칭", expect: {no_period: true}}
+  - {id: N-005, anchor: base, query: "경과년수가 5년 이상인 노후 서버", source: "M-05 — 수량 비교",
+     expect: {no_period: true}}
+  - {id: N-006, anchor: base, query: "호스트명이 완전일치하는 서버", source: "「전일」 오탐 차단",
+     expect: {no_period: true}}
+  - {id: N-007, anchor: base, query: "해당월 CPU 값", source: "「당월」 오탐 차단(해당월)", expect: {no_period: true}}
+  - {id: N-008, anchor: base, query: "IP 대역대 서버 목록", source: "「역대」 비채택", expect: {no_period: true}}
+  - {id: N-009, anchor: base, query: "그제서야 확인한 서버", source: "「그제」 오탐 차단", expect: {no_period: true}}
+  - {id: N-010, anchor: base, query: "용도와 목적이 있는 서버", source: "「적이 있」 오탐 차단(목적)",
+     expect: {no_period: true}}
+  - {id: N-011, anchor: base, query: "메모리 64GB 넘는 서버 5대", source: "수량", expect: {no_period: true}}
+  - {id: N-012, anchor: base, query: "지난 해당 서버의 OS", source: "「지난 해」 오탐 차단(해당)",
+     expect: {no_period: true}}
+  - {id: N-013, anchor: base, query: "요번에 교체한 서버 목록", source: "「요번에」는 기간 아님(흔적도 아님)",
+     expect: {no_period: true}}
+
+  # ── month_end 2026-06-30(화) 23:30 ───────────────────────────────────────
+  - {id: P-101, anchor: month_end, query: "지난달 CPU", source: "월말",
+     expect: {start: "2026-05-01", end: "2026-06-01", grain: month, completeness: complete}}
+  - {id: P-102, anchor: month_end, query: "이번 달 CPU", source: "월말 — 어제까지",
+     expect: {start: "2026-06-01", end: "2026-06-30", grain: day, completeness: to_date}}
+  - {id: P-103, anchor: month_end, query: "어제 알람", source: "월말",
+     expect: {start: "2026-06-29", end: "2026-06-30", grain: day, completeness: complete}}
+  - {id: P-104, anchor: month_end, query: "오늘 CPU", source: "23시대 — 직전 정시까지",
+     expect: {start: "2026-06-30 00:00", end: "2026-06-30 23:00", grain: hour, completeness: to_date}}
+  - {id: P-105, anchor: month_end, query: "최근 1시간 CPU", source: "시각 내림",
+     expect: {start: "2026-06-30 22:00", end: "2026-06-30 23:00", grain: hour, completeness: rolling}}
+  - {id: P-106, anchor: month_end, query: "이번 분기 CPU", source: "분기말",
+     expect: {start: "2026-04-01", end: "2026-06-30", grain: day, completeness: to_date}}
+  - {id: P-107, anchor: month_end, query: "지난 분기 CPU", source: "분기말",
+     expect: {start: "2026-01-01", end: "2026-04-01", grain: month, completeness: complete}}
+  - {id: P-108, anchor: month_end, query: "상반기 CPU", source: "반기말 — 진행 중 반기 허용(D-185)",
+     expect: {start: "2026-01-01", end: "2026-07-01", grain: month, completeness: complete,
+              notes: [period_in_progress]}}
+  - {id: P-109, anchor: month_end, query: "하반기 CPU", source: "아직 시작 안 한 반기 → 전년",
+     expect: {start: "2025-07-01", end: "2026-01-01", grain: month, completeness: complete,
+              notes: [year_inferred]}}
+  - {id: P-110, anchor: month_end, query: "올해 CPU", source: "올해 — 이번 달 제외",
+     expect: {start: "2026-01-01", end: "2026-06-01", grain: month, completeness: complete,
+              notes: [current_month_excluded]}}
+  - {id: P-111, anchor: month_end, query: "최근 30일 CPU", source: "월말 롤링",
+     expect: {start: "2026-05-31", end: "2026-06-30", grain: day, completeness: complete}}
+  - {id: P-112, anchor: month_end, query: "6월 CPU", source: "진행 중 단일 월(연도 없음)",
+     expect: {start: "2026-06-01", end: "2026-06-30", grain: day, completeness: to_date,
+              notes: [period_in_progress]}}
+  - {id: P-113, anchor: month_end, query: "7월 CPU", source: "미래 월 → 전년",
+     expect: {start: "2025-07-01", end: "2025-08-01", grain: month, completeness: complete,
+              notes: [year_inferred]}}
+
+  # ── jan 2026-01-15(목) 09:00 — 연 넘김 ───────────────────────────────────
+  - {id: P-201, anchor: jan, query: "지난달 CPU", source: "1월 → 전년 12월",
+     expect: {start: "2025-12-01", end: "2026-01-01", grain: month, completeness: complete}}
+  - {id: P-202, anchor: jan, query: "지난 3개월 CPU", source: "연 넘김",
+     expect: {start: "2025-10-01", end: "2026-01-01", grain: month, completeness: complete}}
+  - {id: P-203, anchor: jan, query: "올해 CPU", source: "1월의 올해 — 완결 월 없음",
+     expect: {start: "2026-01-01", end: "2026-01-01", grain: month, completeness: complete,
+              notes: [current_month_excluded, empty_range]}}
+  - {id: P-204, anchor: jan, query: "작년 CPU", source: "연 넘김",
+     expect: {start: "2025-01-01", end: "2026-01-01", grain: month, completeness: complete}}
+  - {id: P-205, anchor: jan, query: "11월부터 2월까지 CPU", source: "끝 월(2월)이 미래 → 전년 기준",
+     expect: {start: "2024-11-01", end: "2025-03-01", grain: month, completeness: complete}}
+  - {id: P-206, anchor: jan, query: "12월 CPU", source: "연도 없는 월 → 전년",
+     expect: {start: "2025-12-01", end: "2026-01-01", grain: month, completeness: complete}}
+  - {id: P-207, anchor: jan, query: "지난주 알람", source: "목요일 기준 직전 달력 주",
+     expect: {start: "2026-01-05", end: "2026-01-12", grain: day, completeness: complete}}
+  - {id: P-208, anchor: jan, query: "이번 분기 CPU", source: "1분기 시작~어제",
+     expect: {start: "2026-01-01", end: "2026-01-15", grain: day, completeness: to_date}}
+  - {id: P-209, anchor: jan, query: "지난 분기 CPU", source: "연 넘김 분기",
+     expect: {start: "2025-10-01", end: "2026-01-01", grain: month, completeness: complete}}
+  - {id: P-210, anchor: jan, query: "상반기 CPU", source: "시작한 반기 — 진행 중 허용",
+     expect: {start: "2026-01-01", end: "2026-07-01", grain: month, completeness: complete,
+              notes: [period_in_progress]}}
+  - {id: P-211, anchor: jan, query: "작년 12월 CPU", source: "상대 연도 + 월",
+     expect: {start: "2025-12-01", end: "2026-01-01", grain: month, completeness: complete}}
+  - {id: P-212, anchor: jan, query: "반년 CPU", source: "연 넘김 반년",
+     expect: {start: "2025-07-01", end: "2026-01-01", grain: month, completeness: complete}}
+  - {id: P-213, anchor: jan, query: "이번 달 CPU", source: "1월 이번 달",
+     expect: {start: "2026-01-01", end: "2026-01-15", grain: day, completeness: to_date}}
+
+  # ── leap 2028-02-29(화) 10:00 · leap_next 2028-03-01(수) 10:00 ───────────
+  - {id: P-301, anchor: leap, query: "지난달 CPU", source: "윤년",
+     expect: {start: "2028-01-01", end: "2028-02-01", grain: month, completeness: complete}}
+  - {id: P-302, anchor: leap, query: "이번 달 CPU", source: "윤년 2월 말일",
+     expect: {start: "2028-02-01", end: "2028-02-29", grain: day, completeness: to_date}}
+  - {id: P-303, anchor: leap, query: "어제 CPU", source: "윤년",
+     expect: {start: "2028-02-28", end: "2028-02-29", grain: day, completeness: complete}}
+  - {id: P-304, anchor: leap, query: "최근 30일 CPU", source: "윤년 롤링",
+     expect: {start: "2028-01-30", end: "2028-02-29", grain: day, completeness: complete}}
+  - {id: P-305, anchor: leap, query: "2월 29일 CPU", source: "오늘 = 진행 중 일 → 오늘과 같게",
+     expect: {start: "2028-02-29 00:00", end: "2028-02-29 10:00", grain: hour, completeness: to_date,
+              notes: [period_in_progress]}}
+  - {id: P-306, anchor: leap, query: "지난 3개월 CPU", source: "윤년 연 넘김",
+     expect: {start: "2027-11-01", end: "2028-02-01", grain: month, completeness: complete}}
+  - {id: P-307, anchor: leap, query: "반년 CPU", source: "윤년",
+     expect: {start: "2027-08-01", end: "2028-02-01", grain: month, completeness: complete}}
+  - {id: P-311, anchor: leap_next, query: "어제 CPU", source: "윤일",
+     expect: {start: "2028-02-29", end: "2028-03-01", grain: day, completeness: complete}}
+  - {id: P-312, anchor: leap_next, query: "지난달 CPU", source: "윤년 2월 전체",
+     expect: {start: "2028-02-01", end: "2028-03-01", grain: month, completeness: complete}}
+  - {id: P-313, anchor: leap_next, query: "이번 달 CPU", source: "매월 1일 — 0행이 정답(D-201)",
+     expect: {start: "2028-03-01", end: "2028-03-01", grain: day, completeness: to_date,
+              notes: [empty_range]}}
+  - {id: P-314, anchor: leap_next, query: "최근 7일 CPU", source: "윤일 포함",
+     expect: {start: "2028-02-23", end: "2028-03-01", grain: day, completeness: complete}}
+  - {id: P-315, anchor: leap_next, query: "2월 29일 CPU", source: "윤일(연도 없음)",
+     expect: {start: "2028-02-29", end: "2028-03-01", grain: day, completeness: complete,
+              notes: [year_inferred]}}
+  - {id: P-316, anchor: leap_next, query: "지난주 알람", source: "수요일 기준",
+     expect: {start: "2028-02-21", end: "2028-02-28", grain: day, completeness: complete}}
+
+  # ── monday 2026-09-28(월) 09:00 · sunday 2026-09-27(일) 22:00 ────────────
+  - {id: P-401, anchor: monday, query: "이번 주 알람", source: "월요일 — 완결 일 없음",
+     expect: {start: "2026-09-28", end: "2026-09-28", grain: day, completeness: to_date,
+              notes: [empty_range]}}
+  - {id: P-402, anchor: monday, query: "지난주 알람", source: "주 경계",
+     expect: {start: "2026-09-21", end: "2026-09-28", grain: day, completeness: complete}}
+  - {id: P-403, anchor: monday, query: "어제 알람", source: "일요일",
+     expect: {start: "2026-09-27", end: "2026-09-28", grain: day, completeness: complete}}
+  - {id: P-404, anchor: monday, query: "최근 3시간 CPU", source: "시각 내림",
+     expect: {start: "2026-09-28 06:00", end: "2026-09-28 09:00", grain: hour, completeness: rolling}}
+  - {id: P-405, anchor: monday, query: "오늘 CPU", source: "월요일 오늘",
+     expect: {start: "2026-09-28 00:00", end: "2026-09-28 09:00", grain: hour, completeness: to_date}}
+  - {id: P-411, anchor: sunday, query: "이번 주 알람", source: "일요일 — 월~토",
+     expect: {start: "2026-09-21", end: "2026-09-27", grain: day, completeness: to_date}}
+  - {id: P-412, anchor: sunday, query: "지난주 알람", source: "일요일 기준",
+     expect: {start: "2026-09-14", end: "2026-09-21", grain: day, completeness: complete}}
+
+  # ── q_first 2026-10-01(목) 10:00 — 분기 경계 · 매월 1일 ──────────────────
+  - {id: P-501, anchor: q_first, query: "지난 분기 CPU", source: "분기 경계",
+     expect: {start: "2026-07-01", end: "2026-10-01", grain: month, completeness: complete}}
+  - {id: P-502, anchor: q_first, query: "이번 분기 CPU", source: "분기 첫날 — 빈 구간",
+     expect: {start: "2026-10-01", end: "2026-10-01", grain: day, completeness: to_date,
+              notes: [empty_range]}}
+  - {id: P-503, anchor: q_first, query: "이번 달 CPU", source: "매월 1일",
+     expect: {start: "2026-10-01", end: "2026-10-01", grain: day, completeness: to_date,
+              notes: [empty_range]}}
+  - {id: P-504, anchor: q_first, query: "지난달 CPU", source: "매월 1일",
+     expect: {start: "2026-09-01", end: "2026-10-01", grain: month, completeness: complete}}
+  - {id: P-505, anchor: q_first, query: "올해 CPU", source: "10월의 올해",
+     expect: {start: "2026-01-01", end: "2026-10-01", grain: month, completeness: complete,
+              notes: [current_month_excluded]}}
+  - {id: P-506, anchor: q_first, query: "3분기 CPU", source: "끝난 분기",
+     expect: {start: "2026-07-01", end: "2026-10-01", grain: month, completeness: complete}}
+  - {id: P-507, anchor: q_first, query: "하반기 CPU", source: "진행 중 반기 허용(D-185)",
+     expect: {start: "2026-07-01", end: "2027-01-01", grain: month, completeness: complete,
+              notes: [period_in_progress]}}
+  - {id: P-508, anchor: q_first, query: "4분기 CPU", source: "진행 중 분기 첫날 — 빈 구간",
+     expect: {start: "2026-10-01", end: "2026-10-01", grain: day, completeness: to_date,
+              notes: [period_in_progress, empty_range]}}
+  - {id: P-509, anchor: q_first, query: "지난 3개월 CPU", source: "분기 경계 = 3분기 전체",
+     expect: {start: "2026-07-01", end: "2026-10-01", grain: month, completeness: complete}}
+
+  # ── m_first 2026-09-01(화) 10:00 — 매월 1일 ──────────────────────────────
+  - {id: P-601, anchor: m_first, query: "이번 달 CPU", source: "매월 1일 — 0행이 정답(D-201)",
+     expect: {start: "2026-09-01", end: "2026-09-01", grain: day, completeness: to_date,
+              notes: [empty_range]}}
+  - {id: P-602, anchor: m_first, query: "지난달 CPU", source: "매월 1일",
+     expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}}
+  - {id: P-603, anchor: m_first, query: "지난 7일 CPU", source: "월 넘김 롤링",
+     expect: {start: "2026-08-25", end: "2026-09-01", grain: day, completeness: complete}}
+  - {id: P-604, anchor: m_first, query: "어제 알람", source: "전월 말일",
+     expect: {start: "2026-08-31", end: "2026-09-01", grain: day, completeness: complete}}
+  - {id: P-605, anchor: m_first, query: "CPU 사용률", source: "기간 없음 — 매월 1일",
+     expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete,
+              notes: [default_period]}}
+  - {id: P-606, anchor: m_first, query: "지난 31일 CPU", source: "월 경계에 맞아도 N일은 일 입도(표 입도)",
+     expect: {start: "2026-08-01", end: "2026-09-01", grain: day, completeness: complete}}
+
+  # ── new_year 2027-01-01(금) 00:30 — 연 경계 · 0시대 ──────────────────────
+  - {id: P-701, anchor: new_year, query: "어제 알람", source: "연 경계",
+     expect: {start: "2026-12-31", end: "2027-01-01", grain: day, completeness: complete}}
+  - {id: P-702, anchor: new_year, query: "지난달 CPU", source: "연 경계",
+     expect: {start: "2026-12-01", end: "2027-01-01", grain: month, completeness: complete}}
+  - {id: P-703, anchor: new_year, query: "올해 CPU", source: "1월 1일 — 완결 월 없음",
+     expect: {start: "2027-01-01", end: "2027-01-01", grain: month, completeness: complete,
+              notes: [current_month_excluded, empty_range]}}
+  - {id: P-704, anchor: new_year, query: "작년 CPU", source: "연 경계",
+     expect: {start: "2026-01-01", end: "2027-01-01", grain: month, completeness: complete}}
+  - {id: P-705, anchor: new_year, query: "오늘 CPU", source: "0시대 — 완결 시간 없음",
+     expect: {start: "2027-01-01 00:00", end: "2027-01-01 00:00", grain: hour, completeness: to_date,
+              notes: [empty_range]}}
+  - {id: P-706, anchor: new_year, query: "최근 1시간 CPU", source: "연 경계 롤링",
+     expect: {start: "2026-12-31 23:00", end: "2027-01-01 00:00", grain: hour, completeness: rolling}}
+  - {id: P-707, anchor: new_year, query: "지난주 알람", source: "연 경계 주",
+     expect: {start: "2026-12-21", end: "2026-12-28", grain: day, completeness: complete}}
+  - {id: P-708, anchor: new_year, query: "12월 CPU", source: "연도 없는 월 → 전년",
+     expect: {start: "2026-12-01", end: "2027-01-01", grain: month, completeness: complete}}
+  - {id: P-709, anchor: new_year, query: "11월부터 2월까지 CPU", source: "끝 월(2월)이 미래 → 전년 기준",
+     expect: {start: "2025-11-01", end: "2026-03-01", grain: month, completeness: complete}}

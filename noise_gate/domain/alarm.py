@@ -168,7 +168,8 @@ class MessageEnrichment:
       kind(process/log) 또는 수집 실패 시 None(요지 제목만 첨부 — graceful).
     """
 
-    kind: str                              # "disk" | "network" | "process" | "log"
+    # "disk" | "network" | "process" | "log" | "apm"(호스트 참고 · plans/87 U-13)
+    kind: str
     title: str                             # 프로파일 요지 제목 (사람이 읽는 한국어)
     signals: tuple[str, ...]               # 서술하는 L1 신호 라벨
     snapshot: Optional["ProcessSnapshot"] = None   # host-wide 참고 스냅샷 (disk/network)

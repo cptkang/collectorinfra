@@ -1,0 +1,25 @@
+{
+  "fixture_version": 1,
+  "source": "local-docker",
+  "jennifer_version": "5.7.0.1",
+  "recorded_at": "2026-09-29T12:53:40+0900",
+  "request": {
+    "method": "GET",
+    "template": "/api/domain",
+    "path": "/api/domain",
+    "query": {},
+    "accept": "application/json"
+  },
+  "response": {
+    "status": 200,
+    "content_type": "application/json",
+    "body_json": {
+      "result": []
+    }
+  },
+  "variant": "ok",
+  "label": "",
+  "masking": {
+    "masked_values": 0
+  }
+}

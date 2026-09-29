@@ -90,6 +90,10 @@ def test_orchestration_result_aggregator_wired_with_synthesize(monkeypatch):
     intent_planner→agent_orchestrator→replanner→result_aggregator이다. 이 경로의
     result_aggregator가 synthesize 없이(기본 False) 배선되면 복합 task가 deterministic
     이어붙이기로 모순 이중 답변이 한 말풍선에 노출된다. 단일 LLM 합성을 강제한다.
+
+    계약 변경(plans/121 TP-4.5 · G-7 ①): 2단은 `synthesize=True`(병합 선행 · 단계 마감 스트림
+    억제)를 유지하되 병합 불성립 복합 턴은 LLM 합성 대신 단계별 조립(`composite_answer="steps"`)
+    이다 — 모순 이중 답변은 LLM이 아니라 결정적 숨김으로 막는다(test_plan121_step_answers).
     """
     monkeypatch.setattr(graph_module, "select_orchestration_backend", lambda c: "semantic_router")
 
@@ -101,6 +105,7 @@ def test_orchestration_result_aggregator_wired_with_synthesize(monkeypatch):
     partial = _bound_partial(compiled, "result_aggregator")
     assert partial is not None
     assert partial.keywords.get("synthesize") is True
+    assert partial.keywords.get("composite_answer") == "steps"
 
 
 # ──────────────────────────────────────────────

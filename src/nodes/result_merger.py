@@ -158,6 +158,9 @@ REASON_OFFSET = "페이지 조회(OFFSET)라"
 REASON_KEY_NOT_IN_RESULT = "정렬 키가 결과 칼럼에 없어"
 REASON_KEY_NOT_ORDERABLE = "정렬 키 값이 수치·날짜가 아니어서"
 REASON_NULL_KEYS = "정렬 키가 빈 값(NULL)인 행이 DB별 상위 N을 차지했을 수 있어"
+#: 시스템(제품군)이 다른 DB의 결과를 한 순위로 섞지 않는다(plans/121 TP-1.12 · 113 S-1 인접) —
+#: 같은 별칭이어도 의미가 다를 수 있다(폴스타 CPU 사용률 ↔ 자산 DB 연계 스냅샷).
+REASON_CROSS_SYSTEM = "서로 다른 시스템의 결과라"
 
 #: DB·존마다 따로 순위를 원하는 표현 — 전역 한 표로 자르면 요청한 존별 목록이 사라진다
 #: ("김포·여의도 각각 상위 5" · "존별 상위 10" · "5개씩"). 표면어 결정적 판정(D-202 조립기
@@ -485,6 +488,16 @@ def _resolve_column(rows: list[dict[str, Any]], key: str) -> str | None:
     return None
 
 
+def _distinct_systems(db_ids: list[str]) -> list[str]:
+    """DB들의 소유 시스템(`registry.system_of` — 선언 없으면 None, 세지 않는다) 목록.
+
+    2개 이상이면 시스템을 넘는 종합이다(plans/121 TP-1.12). 폴스타 존끼리는 한 시스템이라
+    1개 이하 — 종전 경로 그대로다(§12.6 ① 단일 시스템 조기 반환).
+    """
+    reg = get_registry()
+    return sorted({s for s in (reg.system_of(d) for d in db_ids) if s is not None})
+
+
 def _skip(reason: str, detail: str) -> dict[str, Any]:
     logger.warning(
         "결과 병합: 순위 질의 전역 재정렬 미적용 — %s DB별 결과를 이어 붙인다(%s)", reason, detail
@@ -541,6 +554,9 @@ def plan_global_ranking(
             reasons[db_id] = reason
     if not specs and not reasons:
         return None  # 어느 DB도 순위 형태가 아니다 — 종전 이어 붙이기(노트 없음)
+    systems = _distinct_systems(with_rows)
+    if len(systems) >= 2:
+        return _skip(REASON_CROSS_SYSTEM, f"시스템={systems} · DB={with_rows}")
 
     if missing:
         # 순위 형태인 DB가 있는데 다른 DB의 실행 SQL을 모른다 — 기준 대조 불가
@@ -633,6 +649,8 @@ def _rank(
 #: 집계 종합 미적용 사유 — 응답 존별 줄에 그대로 실린다(사용자 문구).
 REASON_AGG_UNREADABLE = "실행 SQL의 집계 항목을 판독하지 못해"
 REASON_AGG_MISMATCH = "DB별 집계 항목이 서로 달라"
+#: 시스템(제품군)이 다른 DB의 집계 값을 더해 "전체" 값을 만들지 않는다(plans/121 TP-1.12 · N-13).
+REASON_AGG_CROSS_SYSTEM = "서로 다른 시스템의 값이라"
 
 _AGG_FUNCS = frozenset({"COUNT", "SUM", "MAX", "MIN", "AVG"})
 #: 전체 값을 코드가 계산하는 집계(건수·합계는 더하고, 최대·최소는 그중 최대·최소).
@@ -742,6 +760,9 @@ def plan_aggregate_synthesis(
             reasons[db_id] = reason
     if not kinds_by_db:
         return None  # 어느 DB도 집계 질의가 아니다 — 종전 그대로(노트 없음)
+    systems = _distinct_systems(with_rows)
+    if len(systems) >= 2:
+        return _skip_agg(REASON_AGG_CROSS_SYSTEM, f"시스템={systems} · DB={with_rows}")
     if reasons:
         return _skip_agg(next(iter(reasons.values())), f"DB별 사유={reasons}")
     if len(kinds_by_db) != len(with_rows):

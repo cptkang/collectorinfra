@@ -27,6 +27,17 @@
 #   - 교차 시스템 케이스(plans/102 H-1 · critical: cross_system) — 자산 단독(R1) · 모니터링 단독(R2) ·
 #     폴스타→자산(R3) · 자산→폴스타(R4) · IP 앵커(R5) · 식별자 프로브(R6) · 소유 모호(G-1 server_spec).
 #     질의 문장은 라우터·분해 프롬프트 예시와 **다르게** 둔다(few-shot 복사로 통과하는 것을 막는다)
+#
+# 항목 묶음(suite · plans/121 TP-0.6):
+#   (없음) = core   — 정적 core 점수(core26). 기본 모드(`_llm_classify` 단독 · 등록 DB 전부 · DB 설명 없음)는
+#                     core만 채점한다. core 항목에는 unscored를 둘 수 없다(정적 점수에 섞지 않는다).
+#   system          — 시스템 수준 소스 판단 케이스(Prometheus · 폴스타 REST · ITAM · 기권 · 명시 소스 불가).
+#                     `--runtime-prompt-conditions` 모드만 읽는다. core 점수·합격률과 따로 요약한다.
+#   unscored: "<사유>" — 채점 불가 선언. 합격·불합격과 따로 센다(통과로 세지 않는다). 출력 칸이 아직 없는
+#                     기대값은 지금 어휘로 적으면 틀린 기대가 되므로 expect를 비워 두고 note에 적는다.
+#                     비SQL 시스템은 TP-2.2(분해 출력 `requested_source`) 전이라 전부 채점 불가다.
+#   런타임 모드는 기대 DB(expect.databases)가 활성 집합 밖이면 그 항목을 「채점 불가(기대 DB 비활성)」로
+#   따로 센다 — 로컬(`ACTIVE_DB_IDS=polestar,itam`)에서는 존 DB 항목을 `--active-dbs`로 주입해야 채점된다.
 
 version: 1
 items:
@@ -282,3 +293,54 @@ items:
     note: >
       G-1 소유 모호(server_spec) — **사용자 미확정 · 기본 가정(폴스타) 기준**. G-1이 확정되면 expect를
       갱신한다. 명시 식별자 + 소유 모호 영역이라 프로브 발동 조건(§3.4 c) 성립.
+
+  # ── 시스템 수준 소스 판단 (plans/121 TP-0.6 · suite: system — 정적 core 점수에 넣지 않는다) ──────
+  # 질의는 합성 문장이다(운영 데이터·PII 없음). 비SQL 시스템(Prometheus·폴스타 REST)과 기권·소스 불가는
+  # 라우터·분해 출력에 소스 칸이 없어(TP-2.2 `requested_source` 전) 전부 채점 불가로 선언한다 — 런타임
+  # 모드는 이 항목들의 실제 분류를 `observed`로만 남긴다(침묵 대체 관찰 · F-11).
+  - id: r-080
+    query: "프로메테우스에 쌓인 지표로 웹 서버들의 지난 30분 CPU 사용률 추이를 보여줘"
+    suite: system
+    critical: system_prometheus
+    unscored: "비SQL 시스템(Prometheus) — 라우터·분해 출력에 요청 소스 칸이 없다(TP-2.2 전 · 처리기 TP-10.5 전)"
+    note: >
+      출력 칸이 생긴 뒤의 기대: 요청 소스 = Prometheus. 비활성이면 소스 불가 사유를 알리고 폴스타 SQL로
+      조용히 대체하지 않는다(plans/121 §2.7.2 (B) · N-11).
+
+  - id: r-081
+    query: "폴스타 실시간 API로 앱 서버들에서 지금 돌고 있는 프로세스 목록을 가져와줘"
+    suite: system
+    critical: system_rest
+    unscored: "비SQL 시스템(폴스타 실시간 REST) — 라우터 출력에 소스 칸이 없다(TP-2.2 전)"
+    note: >
+      출력 칸이 생긴 뒤의 기대: 요청 소스 = 폴스타 실시간 프로세스 REST(분해 담당 process_query). 라우터는
+      DB만 고르므로 지금은 어떤 DB를 골라도 판정할 수 없다.
+
+  - id: r-082
+    query: "ITAM 자산관리 DB에서 설치 지역 정보가 비어 있는 서버 자산을 보여줘"
+    suite: system
+    critical: system_itam
+    expect:
+      intent: data_query
+      databases: [itam]
+      forbid_databases: [polestar, polestar_b0, polestar_cm_gp, polestar_cm_yd]
+      min_databases: 1
+    note: "명시 소스(ITAM) — SQL 시스템이라 채점한다. 설치 지역은 자산 원장 속성이다(폴스타 위치어 아님)."
+
+  - id: r-083
+    query: "인사 시스템에서 이번 달 직원 연차 사용 현황을 조회해줘"
+    suite: system
+    critical: system_abstain
+    unscored: "기권(보유 소스 없음) — 라우터·분해 출력에 기권 칸이 없다(TP-9.7 소스 판단 절차 · TP-2.2 전)"
+    note: >
+      출력 칸이 생긴 뒤의 기대: 조회할 소스 0개 → 기권(보유하지 않은 데이터라고 알린다). 지금은 첫 활성 DB
+      폴백(`classify_dbs`)이나 일반 응답으로 흘러도 구분할 칸이 없다.
+
+  - id: r-084
+    query: "ITSM DB에서 지난주 등록된 변경 요청 건수를 알려줘"
+    suite: system
+    critical: system_unavailable
+    unscored: "명시 소스 불가(등록·비활성 DB) — 라우터 출력에 소스 불가 칸이 없다(TP-1.11a 노트 · TP-2.2 전)"
+    note: >
+      itsm은 레지스트리에 등록돼 있으나 로컬 `.env` 기준 비활성이다. 정적 모드(등록 DB 전부)면 itsm을 고를 수
+      있고, 런타임 조건(활성 집합)에서는 고를 수 없어 다른 DB로 조용히 대체될 수 있다 — 기대는 소스 불가 안내.

@@ -41,13 +41,14 @@ captures:
     callouts: [[1, "#statusBadge"], [2, "#userDisplayName"], [3, "#userLogoutBtn"], [4, "#themeToggle"], [5, "#noiseConsoleLink"], [6, "#manualMenu"]]
   - id: header-manual
     login: admin
-    height: 260
+    height: 300
     steps:
       - click: "#manualMenu > summary"
       - wait: 300
       - assert_visible: "#adminManualLink"   # V-2 — 관리자는 둘 다(Admin 링크와 같은 분기)
       - assert_visible: "#adminEntryLink"
-    callouts: [[1, "#manualMenu > summary"], [2, "#userManualLink"], [3, "#adminManualLink"]]
+      - assert_visible: "#introLink"   # plans/124 — 누구나 보인다
+    callouts: [[1, "#manualMenu > summary"], [2, "#userManualLink"], [3, "#adminManualLink"], [4, "#introLink"]]
   - id: header-status
     login: user
     steps:

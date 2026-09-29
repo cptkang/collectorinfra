@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import platform
+import shutil
 import signal
 import threading
 import time
@@ -18,13 +19,15 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterator, Optional, Sequence
 
 import yaml
 
 from . import REPO_ROOT, clarify, run_capture, utf8_open
+from . import oracle as _oracle
+from . import report as _report
 from .assertions import (
     INVALID_VERDICT,
     Failure,
@@ -32,11 +35,13 @@ from .assertions import (
     Verdict,
     option_labels,
     evaluate_turn,
+    judge_digest,
+    primary_manual_source,
     resolve_db_ids,
     row_is_invalid,
 )
-from .catalog import Catalog, Scenario, Turn
-from .client import ClientConfig, ScenarioClient
+from .catalog import Catalog, Scenario, Turn, judgement_digest, oracle_targets
+from .client import ClientConfig, ScenarioClient, result_unavailable
 # 판정 계약(`108·G-6`)의 규칙 정본은 report 한 곳이다 - 쓰는 쪽과 읽는 쪽이 같은 규칙을
 # 쓰지 않으면 칸과 재도출값이 갈린다. report 는 runner 를 import 하지 않아 순환이 없다.
 from .report import (
@@ -102,6 +107,33 @@ ENV_NEUTRAL_KEYS = frozenset({
     "manual_review",
 })
 
+#: 한국 표준시(UTC+9). 턴 앵커(plans/122 H-2)의 시간대 - 상대 기간·오라클 자리표가 이 시각을 본다.
+KST = timezone(timedelta(hours=9))
+
+#: 결과 행(H-1)이 있어야 판정되는 `period_covers` 하위 키 - 상대 기간·월 범위(plans/122 H-2).
+#: SQL 에 날짜 리터럴이 없으면 결과 행의 기간 열로 판정하기 때문이다. 「날짜 한정 없음」
+#: (`unbounded`)은 실행 SQL 만 보므로 받지 않는다(다운로드마다 서버 감사에 `file download` 가
+#: 남는다).
+RESULT_PERIOD_KEYS = frozenset({"relative", "month_span"})
+
+#: 오라클 1회(phase 1개)의 러너 측 타임아웃 = 대상 DB 수 × 이 값(plans/122 O-1 · §8 「러너 측
+#: 전체 타임아웃」). 30초는 MCP 서버 소스별 `query_timeout`(mcp_server/config.toml —
+#: polestar_b0·cm_gp·cm_yd 모두 30)과 같다 - MCP 가 이미 끊었을 시간 뒤까지 기다리지 않는다.
+#: DB2 는 DB 레벨 timeout 이 없어 러너가 기다림만 끊는다(서버 측 질의는 계속 돈다 - 정본은
+#: 집계·키 조회만 · oracle.py 머리 주석).
+ORACLE_TIMEOUT_PER_DB_SEC = 30.0
+#: 오라클 실행 기록(태그·db·SQL·행 수·ms·status - 행 원문 없음)을 남기는 run 디렉터리
+#: 파일(G-9).
+ORACLE_LOG_NAME = "oracle_log.jsonl"
+
+#: C-4b 선택 제외의 기계 코드(`run.json` `skipped[].reason_code`). 리포트가 `coverage_gap`
+#: 「실행 환경 부재」로 분류한다(plans/122 C-4b · D-276 ②).
+SOURCE_SKIP_CODE = "requires_sources"
+
+#: 러너 생성 업로드(plans/122 H-6)를 두는 run 디렉터리 하위 폴더. 시나리오가 끝나면 파일을 지우고
+#: run 이 끝나면 폴더도 지운다(수십 MB 가 산출물에 남지 않게).
+GENERATED_DIR = "generated"
+
 
 @dataclass
 class RunConfig:
@@ -131,6 +163,10 @@ class RunConfig:
     resume_failed: Optional[str] = None
     #: `resume_failed` 선택 근거(원본 행 수·무효/오류 턴 수·시나리오 수). run.json 에 남는다.
     rerun_stats: dict[str, Any] = field(default_factory=dict)
+    #: run 서버의 활성 소스(plans/122 C-4b) - `resolve_active_sources` 가 채운다. None 이면
+    #: 판독하지 않았거나 못 했다는 뜻이고, 그때는 `requires_sources` 선택 제외를 하지 않는다
+    #: (D-216 ③대로 실행·보류).
+    active_sources: list[str] | None = None
 
     def resolved_run_id(self) -> str:
         if self.resume_from:
@@ -173,6 +209,14 @@ def run_meta(config: RunConfig, catalog: Catalog) -> dict[str, Any]:
         "scenario_total": len(catalog.scenarios),
         "platform": platform_provenance(),
         "host": platform.node(),
+        # 판정 계약 = (리포트 정의 버전, 카탈로그 지문, 판정기 지문) (plans/122 J-1 ⑤ · §13.3 G-17 ·
+        # D-276 ③). 카탈로그 지문이 다른 run 끼리는 J-4 재판정 뒤에만 비교한다 — 판정기 지문은 달라도
+        # 비교하되 주의 줄을 싣는다(`report.judge_change_note`). 리포트 상수가 아직 없으면 None 이다.
+        "judgement_contract": {
+            "report_version": getattr(_report, "JUDGEMENT_REPORT_VERSION", None),
+            "catalog_digest": judgement_digest(catalog),
+            "judge_digest": judge_digest(),
+        },
     }
 
 
@@ -405,6 +449,68 @@ def resolve_env(config: RunConfig) -> tuple[Optional[str], str]:
     return env, ("auto" if env else f"판정 불가: 활성 DB {active}")
 
 
+def resolve_active_sources(config: RunConfig) -> tuple[list[str] | None, str]:
+    """run 서버의 활성 소스와 판독 출처(plans/122 C-4b · D-276 ②). 판독하지 못하면 `(None, 사유)`.
+
+    - SQL 소스 = `ACTIVE_DB_IDS` - `resolve_env`(`detect_env`)와 **같은 출처**다. 자식 서버는 이
+      프로세스와 같은 `.env`/`.encenv` 를 읽고, 프로파일은 `ACTIVE_DB_IDS` 를 주입하지 않는다
+      (`config/scenarios/profiles.yaml` 의 `cross_system_tier2` 주석 · 실측 2026-09-29 주입 0건).
+    - 비SQL 시스템(`catalog.NON_SQL_SOURCES` - 현재 `prometheus` 하나)은 **비활성으로 본다.** 본체
+      설정 `PROMETHEUS_ENABLED` 는 소비처 0(예비 · `src/config.py` 주석)이라 켜도 조회 경로가 생기지
+      않고, 질의가 실제로 쓰는 경로는 `mcp_server` PromQL 도구인데 그 가용 여부는 이 프로세스가 읽는
+      설정에 없다(M군 헤더 「⑥ Prometheus 현재 로컬 미연결」). 확실한 신호가 생기면 여기에 더한다.
+    - 모의 실행은 판정하지 않는다 - 모의 서버는 데이터 소스가 없고 canned 응답으로 배관만 보므로
+      소스 전제로 시나리오를 빼면 그 시나리오의 배관 검증만 잃는다.
+    """
+    if config.mode == "mock":
+        return None, "mock"
+    try:
+        from src.config import load_config
+
+        active = load_config().multi_db.get_active_db_ids()
+    except Exception as exc:  # 판독 실패는 치명상이 아니다 - 선택 제외를 하지 않을 뿐이다
+        return None, f"판독 불가: 설정 로드 실패 ({type(exc).__name__})"
+    return sorted(set(active)), "ACTIVE_DB_IDS"
+
+
+def missing_sources(scenario: Scenario, active: Sequence[str]) -> list[str]:
+    """시나리오 `requires_sources` 중 활성 소스에 없는 것(정렬). 선언이 없으면 빈 목록."""
+    return sorted(set(scenario.requires_sources) - set(active))
+
+
+def _selection_sources(config: RunConfig) -> list[str] | None:
+    """선택 제외에 쓸 활성 소스 - 모의 실행이거나 판독하지 않았으면 None(제외 없음)."""
+    return None if config.mode == "mock" else config.active_sources
+
+
+def _selected(catalog: Catalog, config: RunConfig) -> list[Scenario]:
+    """군·ID·환경·프로파일 필터까지 거친 선택(arm 전개 전 · 요구 소스 제외 전)."""
+    selected = catalog.select(config.groups, config.only, config.env)
+    if config.profiles:
+        wanted = set(config.profiles)
+        selected = [s for s in selected if s.profile in wanted]
+    return selected
+
+
+def source_exclusions(catalog: Catalog, config: RunConfig) -> list[dict[str, Any]]:
+    """요구 소스가 비활성이라 선택하지 않는 시나리오의 `skipped` 항목(plans/122 C-4b · D-276 ②).
+
+    **침묵 제외 금지**(D-276 주의 ②) - 뺀 시나리오마다 사람이 읽는 사유와 기계 코드를 남긴다.
+    선언이 없는 시나리오는 여기 들지 않는다(D-216 ③대로 실행·보류).
+    """
+    active = _selection_sources(config)
+    if active is None:
+        return []
+    shown = ", ".join(active)
+    return [
+        {"scenario_id": scenario.id,
+         "reason": (f"요구 소스 비활성 - requires_sources=[{', '.join(scenario.requires_sources)}]"
+                    f" · 활성=[{shown}]"),
+         "reason_code": SOURCE_SKIP_CODE}
+        for scenario in _selected(catalog, config) if missing_sources(scenario, active)
+    ]
+
+
 def planned_turns(catalog: Catalog, scenario: Scenario, config: RunConfig) -> int:
     """예상치용 턴 수. 부하 묶음은 참조 시나리오 턴을 반복·세션 수만큼, 러너 동작은 1회로 센다."""
     if scenario.action:
@@ -453,6 +559,8 @@ def estimate(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
     )
     return {
         "scenarios": len(selected),
+        # plans/122 C-4b: 요구 소스가 비활성이라 선택하지 않을 시나리오(위 수치에 들지 않는다).
+        "source_excluded": [item["scenario_id"] for item in source_exclusions(catalog, config)],
         "turns": total_turns,
         "r_group_turns": r_turns,
         "assumed_llm_calls_per_turn": ASSUMED_LLM_CALLS_PER_TURN,
@@ -556,6 +664,55 @@ def _clarification_snapshot(obs: Observation) -> Optional[dict[str, Any]]:
     return snapshot
 
 
+def _result_check(result: Any) -> dict[str, Any] | None:
+    """결과 행 수집 요약(plans/122 H-1). 수집하지 않았으면 None.
+
+    **행 원문은 싣지 않는다**(G-4 · D-275 ④).
+    """
+    if not isinstance(result, dict):
+        return None
+    return {
+        "status": result.get("status"),
+        "total_rows": result.get("total_rows"),
+        "column_count": len(result.get("columns") or []),
+        "truncated": bool(result.get("truncated")),
+        "reason": result.get("reason"),
+    }
+
+
+def _oracle_phase_check(outcome: Any) -> dict[str, Any] | None:
+    """run_oracle 결과 1개의 요약 — phase·status·사유·DB 별 행 수·ms. 행 원문은 싣지 않는다(G-4)."""
+    if not isinstance(outcome, dict):
+        return None
+    summary: dict[str, Any] = {
+        "phase": outcome.get("phase"),
+        "status": outcome.get("status"),
+        "reason": outcome.get("reason"),
+        "rows_by_db": {str(db): len(rows) for db, rows in (outcome.get("rows_by_db") or {}).items()
+                       if isinstance(rows, list)},
+        "elapsed_ms": outcome.get("elapsed_ms"),
+    }
+    if outcome.get("log_error"):
+        summary["log_error"] = outcome["log_error"]
+    return summary
+
+
+def _oracle_check(record: Any) -> dict[str, Any] | None:
+    """오라클 실행 요약(plans/122 O-2) - 실행하지 않았으면 None.
+
+    판정은 `failed_assertions`·`manual_notes`(`oracle` 로 시작)에 있다.
+    **행 원문은 싣지 않는다**(G-4 · `oracle_log.jsonl` 도 같다).
+    """
+    if not isinstance(record, dict):
+        return None
+    return {
+        "id": record.get("id"),
+        "targets": list(record.get("targets") or []),
+        "pre": _oracle_phase_check(record.get("pre")),
+        "post": _oracle_phase_check(record.get("post")),
+    }
+
+
 def note_cap_semantic(meta: dict[str, Any], timeline: Any) -> None:
     """서버가 보고한 처리 상한 의미의 **첫 관측값**을 run 메타에 남긴다.
 
@@ -617,6 +774,9 @@ def _row(
         "ttft_ms": obs.ttft_ms,
         # 서버 단계 타임라인(plans/119 T-0) - 서버 페이로드 그대로. 옛 서버는 None.
         "timeline": obs.timeline,
+        # 2단 계획 요약(plans/121 TP-0.1) - 계획 경로·task 구성·재계획 횟수·노트 종류 건수.
+        # 1·3단은 None.
+        "plan_summary": obs.plan_summary,
         "max_event_gap_ms": obs.max_event_gap_ms,
         "node_elapsed_ms": obs.node_elapsed_ms,
         "node_calls": obs.node_calls,
@@ -653,6 +813,19 @@ def _row(
         # (시간 상한에 걸려 서술 없이 표만 나간 턴 · plans/114 P-2)을 읽는다 - 이 턴은
         # 오류 문구가 없어 타임아웃 검사에 걸리지 않는다.
         "status": obs.status,
+        # --- plans/122 새 칸(기존 칸은 이름·값 그대로) ---
+        # 보류 사유의 출처(J-3) - `MANUAL_SOURCES` 어휘 목록과 그 대표값. 보류가 없으면 [] · None.
+        "manual_sources": list(verdict.manual_sources),
+        "manual_source": primary_manual_source(verdict.manual_sources),
+        # 턴 송신 시각(H-2 · KST ISO 초 단위) - 상대 기간 판정·오라클 자리표의 앵커.
+        "anchor_at": obs.anchor_at,
+        # 순차 의존 경과 노트(H-5) - 서버 `done.dependency_notes` 그대로(코드·종류 위주로 작다).
+        "dependency_notes": list(obs.dependency_notes),
+        # 결과 행 수집 요약(H-1). 행 원문은 싣지 않는다(G-4). 수집하지 않은 턴은 None.
+        "result_check": _result_check(obs.result),
+        # 오라클 실행 요약(O-2) - phase 별 status·사유·DB 별 행 수·ms. 실행하지 않은 턴은 None.
+        # 행 원문은 싣지 않는다(G-4). 판정은 failed_assertions(`oracle`)·manual_notes 에 있다.
+        "oracle_check": _oracle_check(obs.oracle),
     }
     if extras:
         row.update(extras)
@@ -829,11 +1002,15 @@ def iter_executions(
     **`config.arms` 가 주어지면 같은 시나리오를 arm 마다 한 번씩 돈다**(`110·N-1`).
     `--profile` 은 여전히 **필터**이므로 덧씌우기 전에 적용한다 - 필터는 시나리오가 선언한
     자기 프로파일에 걸고, arm 은 그 위에 병합한다(`merge_arm_profiles`).
+
+    **요구 소스가 비활성인 시나리오는 고르지 않는다**(plans/122 C-4b · D-276 ②) - 빼는 것도
+    arm 전개 전이라 서버 기동 자체가 생기지 않는다. 사유 적재는 `source_exclusions` 가 같은
+    규칙으로 한다.
     """
-    selected = catalog.select(config.groups, config.only, config.env)
-    if config.profiles:
-        wanted = set(config.profiles)
-        selected = [s for s in selected if s.profile in wanted]
+    selected = _selected(catalog, config)
+    active = _selection_sources(config)
+    if active is not None:
+        selected = [s for s in selected if not missing_sources(s, active)]
     if config.arms:
         selected, _bindings = merge_arm_profiles(catalog, selected, config.arms)
 
@@ -1155,6 +1332,12 @@ def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
     skipped: list[dict[str, Any]] = []
     executed = 0
 
+    # plans/122 C-4b: 요구 소스가 비활성인 시나리오는 고르지 않고 사유를 적재한다(D-276 ②).
+    # 호출부(`__main__`)가 이미 판독했으면 그 값을 쓴다 - 예상치와 실제 선택이 같은 판독을 본다.
+    if config.active_sources is None:
+        config = replace(config, active_sources=resolve_active_sources(config)[0])
+    skipped.extend(source_exclusions(catalog, config))
+
     # arm 출처의 **1차 출처는 기록이지 파싱이 아니다.** 소비자(벤치 `arm_of` · 회귀 비교 키)는
     # `profile` 문자열을 파싱하지 않고 행의 `arm`·`base_profile` 칸을 읽는다. 그래서 조합
     # 이름에서 되돌리는 대신 `merge_arm_profiles` 가 정한 바인딩을 여기서 그대로 들고 간다.
@@ -1299,6 +1482,9 @@ def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
     if not meta.get("cap_semantic"):
         # 서버가 한 번도 상한 의미를 보고하지 않았다 - 옛 서버다. 종전 의미로 적되 출처를 남긴다.
         meta["cap_semantic"], meta["cap_semantic_source"] = CAP_SEMANTIC_TOTAL, "default"
+    # plans/122 H-6: 러너 생성 업로드는 시나리오가 끝날 때 지운다. 끊긴 앞 시도가 남긴 것까지
+    # 여기서 치운다.
+    shutil.rmtree(out_dir / GENERATED_DIR, ignore_errors=True)
 
     summary = {
         "meta": meta,
@@ -1698,6 +1884,8 @@ def _invalidate(verdict: Verdict, reason: str) -> None:
     verdict.invalid_reason = reason
     verdict.failures = []
     verdict.manual_notes = []
+    # 무효 턴은 보류 출처도 비운다 - 판정기의 T-c 계약과 같다(plans/122 J-3).
+    verdict.manual_sources = []
     verdict.perf = "n/a"
 
 
@@ -2028,10 +2216,14 @@ def _run_segment(
 
 
 def _send(
-    client: ScenarioClient, endpoint: str, payload: dict[str, Any], upload: Optional[Path]
+    client: ScenarioClient, endpoint: str, payload: dict[str, Any], upload: Path | None,
+    anonymous: bool = False,
 ) -> Observation:
     started = time.perf_counter()
     try:
+        if anonymous:
+            # plans/122 H-6 턴 `auth: none` - 인증 헤더 없이 보내고 재로그인 재시도를 하지 않는다.
+            return client.send(endpoint, payload, upload, anonymous=True)
         return client.send(endpoint, payload, upload)
     except Exception as exc:  # 한 건의 예외가 스위트를 멈추지 않는다
         return Observation(
@@ -2051,6 +2243,7 @@ def _answer_questions(
     obs: Observation,
     preference: list[str],
     log: list[dict[str, Any]],
+    anonymous: bool = False,
 ) -> Observation:
     """역질문에 결정적으로 답하며 턴을 끝까지 진행한다(D-216). 답을 받은 뒤의 관측치를 돌려준다.
 
@@ -2078,7 +2271,7 @@ def _answer_questions(
         })
         obs = _send(
             client, answer_endpoint, {**body, "thread_id": thread_id},
-            upload if resend_file else None,
+            upload if resend_file else None, anonymous,
         )
     return obs
 
@@ -2098,6 +2291,139 @@ def _hold_for_env(turn: Turn, scenario: Scenario, run_env: Optional[str]) -> Tur
     original = expect.get("manual_review")
     expect["manual_review"] = f"{original} / {note}" if original else note
     return Turn(send=turn.send, expect=expect, endpoint=turn.endpoint, auto_answer=turn.auto_answer)
+
+
+def mark_env_hold(verdict: Verdict, original_review: Any) -> None:
+    """환경 보류 턴의 보류 출처를 정리한다(plans/122 J-3 · D-276 ① — 성능 표본 분리의 판별 칸).
+
+    `env_mismatch` 를 맨 앞에 두고, 원래 턴에 `manual_review` 가 없었으면 `_hold_for_env` 가
+    끼워 넣은 문구 때문에 붙었을 수 있는 `catalog` 를 뺀다. `manual_notes` 문구는 건드리지 않는다.
+    무효 턴은 출처를 비우는 계약이라(T-c) 손대지 않는다.
+    """
+    if verdict.func == INVALID_VERDICT:
+        return
+    rest = [source for source in verdict.manual_sources if source != "env_mismatch"]
+    if not original_review:
+        rest = [source for source in rest if source != "catalog"]
+    verdict.manual_sources = ["env_mismatch", *rest]
+
+
+def anchor_now() -> str:
+    """턴 송신 시각(plans/122 H-2) - KST ISO 8601 초 단위. 상대 기간·오라클 자리표의 앵커다."""
+    return datetime.now(KST).isoformat(timespec="seconds")
+
+
+def needs_result_rows(expect: dict[str, Any]) -> bool:
+    """이 턴의 판정에 결과 행(H-1 `download-csv`)이 필요한가.
+
+    `result` 단언 · 결과 행으로 판정하는 `period_covers`(`relative`·`month_span`) · `oracle` 이 있을
+    때만 받는다 - 다운로드마다 서버 감사에 `file download` 가 남기 때문이다.
+    """
+    if "result" in expect or "oracle" in expect:
+        return True
+    period = expect.get("period_covers")
+    return isinstance(period, dict) and bool(RESULT_PERIOD_KEYS & set(period))
+
+
+def collect_result_rows(client: ScenarioClient, obs: Observation) -> dict[str, Any]:
+    """턴의 결과 행을 받는다(plans/122 H-1). 받지 못해도 예외 없이 `unavailable` 로 돌려준다."""
+    if not obs.query_id:
+        return result_unavailable("응답에 query_id 가 없다 - 결과 행을 받을 수 없다")
+    try:
+        return client.download_csv(obs.query_id)
+    except Exception as exc:  # 한 턴의 수집 실패가 스위트를 멈추지 않는다 - 판정기가 보류한다
+        return result_unavailable(f"러너 예외: {type(exc).__name__}: {exc}")
+
+
+@dataclass
+class TurnOracle:
+    """턴 1회의 오라클 실행 계획(plans/122 O-1 · O-4). `oracle_plan` 이 만들고 `run_phase` 가 돈다.
+
+    `targets` 가 비면 DB 를 부르지 않고 `skip_reason` 을 post 결과로 남긴다(판정기가 보류한다).
+    """
+
+    spec: dict[str, Any]
+    targets: list[str]
+    anchor_at: str
+    run_id: str
+    scenario_id: str
+    log_path: Path
+    skip_reason: str | None = None
+
+    @property
+    def pre_post(self) -> bool:
+        return self.spec.get("snapshot") == "pre_post"
+
+    def run_phase(self, phase: str) -> dict[str, Any]:
+        """phase(pre|post) 1회 — 대상 DB 마다 직렬 · 읽기 전용(`oracle.run_oracle` · 예외 없음)."""
+        if self.skip_reason:
+            return {"status": "unavailable", "reason": self.skip_reason, "rows_by_db": {},
+                    "elapsed_ms": 0.0, "phase": phase, "limit_by_db": {}}
+        return _oracle.run_oracle(
+            self.spec, db_ids=self.targets, anchor_at=self.anchor_at, run_id=self.run_id,
+            scenario_id=self.scenario_id, log_path=self.log_path,
+            timeout_sec=ORACLE_TIMEOUT_PER_DB_SEC * len(self.targets), phase=phase,
+        )
+
+
+def oracle_plan(
+    expect: dict[str, Any], *, live: bool, anchor_at: str, run_id: str, scenario_id: str,
+    out_dir: Path,
+) -> TurnOracle | None:
+    """이 턴에서 오라클 DB 조회를 할 것인가(plans/122 O-1). 하지 않으면 None.
+
+    **DB 를 부르지 않는 턴**: 모의 실행(`live=False`) · 환경 보류 턴(판정용 `expect` 에서
+    `oracle` 이 빠진다 - `_hold_for_env`) · `source: fixture`(판정기가 정답표를 직접 읽는다) ·
+    오라클 선언 없음. 대상 DB 는 `catalog.oracle_targets`(spec `db_ids` → 턴 `expect.db_ids`)로
+    로더와 같게 정한다. 둘 다 없으면 실행하지 않고 사유를 남긴다 - 시스템이 고른 DB 를
+    따라가면 오라우팅을 정답으로 삼는다.
+    """
+    spec = expect.get("oracle")
+    if not live or not isinstance(spec, dict) or spec.get("source", "sql") != "sql":
+        return None
+    targets = oracle_targets(spec, expect)
+    return TurnOracle(
+        spec=spec, targets=targets, anchor_at=anchor_at, run_id=run_id, scenario_id=scenario_id,
+        log_path=out_dir / ORACLE_LOG_NAME,
+        skip_reason=None if targets else (
+            "대상 DB 가 없다 - oracle.db_ids 도 턴 expect.db_ids 도 없다"
+            "(시스템이 고른 DB 로 오라클을 돌리지 않는다)"),
+    )
+
+
+#: 생성 업로드를 쓰는 조각 크기(1 MiB) - 상한 64 MiB(`catalog.UPLOAD_GENERATE_MAX_BYTES`)를 메모리에
+#: 한 번에 올리지 않는다.
+_GENERATE_CHUNK = 1024 * 1024
+
+
+def generate_upload(out_dir: Path, scenario: Scenario, repeat: int) -> Path:
+    """`upload_generate: {ext, size_bytes}` 파일을 run 디렉터리 `generated/` 에 만든다(H-6).
+
+    **내용은 채움 바이트(0x00)다 - 유효한 xlsx 로 만들지 않는다.** 서버 업로드 검사 순서가 ①확장자
+    (파일명) ②존 역질문 게이트 ③크기(10MB) ④DRM 해제 ⑤파싱이라(`src/api/routes/query.py`
+    `process_file_query` · `process_file_query_stream` 실측 2026-09-29), 한도 초과 크기와 거부
+    확장자는 내용을 읽기 전에 판정된다. 크기 검사 전에 존 역질문(②)이 나오면 러너 자동
+    응답(D-216)이 파일을 다시 실어 보내므로(`clarify.answer_endpoint`) 크기 검사에 닿는다.
+    본문 크기 상한 미들웨어는 없다.
+    """
+    folder = out_dir / GENERATED_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    spec = scenario.upload_generate
+    path = folder / f"{scenario.id}-{repeat}{spec['ext']}"
+    remaining = int(spec["size_bytes"])
+    with open(path, "wb") as handle:
+        while remaining > 0:
+            size = min(remaining, _GENERATE_CHUNK)
+            handle.write(b"\0" * size)
+            remaining -= size
+    return path
+
+
+def _upload_source(scenario: Scenario, generated: Path | None) -> Path | None:
+    """이 실행이 올릴 파일 - 러너 생성본(H-6)이 있으면 그것, 없으면 저장소 양식(`upload`)."""
+    if generated is not None:
+        return generated
+    return REPO_ROOT / scenario.upload if scenario.upload else None
 
 
 def _resume_state(
@@ -2237,17 +2563,32 @@ def _run_once(
     elif resume_state == "done" and len(done_turns) < len(turn_nos):
         # 앞 턴이 fail/error 로 끊겨 끝난 시나리오다. `run.json` 은 끝에서 이번 시도의 `skipped` 로
         # 새로 쓰이므로, 앞 시도가 남긴 건너뜀 사유를 같은 문구로 다시 적는다 - 안 적으면 사라진다.
-        verdict = raw.verdict(profile, scenario.id, done_turns[-1], repeat)
+        # 이름을 `verdict` 와 가른다 - 같은 이름이면 아래 턴 판정(Verdict)의 타입이
+        # 문자열로 추론된다.
+        last_verdict = raw.verdict(profile, scenario.id, done_turns[-1], repeat)
         for remaining in turn_nos[len(done_turns):]:
             skipped.append({
                 "scenario_id": scenario.id,
                 "turn": remaining,
-                "reason": f"선행 턴 {done_turns[-1]} 이 {verdict} - 후속 턴 판정 불가",
+                "reason": f"선행 턴 {done_turns[-1]} 이 {last_verdict} - 후속 턴 판정 불가",
             })
 
     last_obs: Optional[Observation] = None
     last_query = ""
+    # 러너 생성 업로드(plans/122 H-6) - 이 실행 1회에만 쓰고 finally 에서 지운다.
+    generated: Path | None = None
     try:
+        if scenario.upload_generate and resume_state != "done":
+            try:
+                generated = generate_upload(out_dir, scenario, repeat)
+            except OSError as exc:
+                skipped.append({
+                    "scenario_id": scenario.id,
+                    "reason": f"생성 업로드를 만들지 못해 실행하지 않았다(plans/122 H-6): "
+                              f"{type(exc).__name__}: {exc}",
+                })
+                return 0
+        source = _upload_source(scenario, generated)
         for index, turn in enumerate(scenario.turns, start=1):
             turn_no = turn_offset + index
             if resume_state == "done":
@@ -2261,11 +2602,10 @@ def _run_once(
             endpoint = turn.endpoint or scenario.endpoint
             # 파일은 업로드 엔드포인트일 때만 싣는다. 답변 턴(JSON)에 파일을 다시 붙이면
             # 체크포인터에 복원된 양식 대신 새 업로드로 취급돼 역질문 상태가 끊긴다.
-            upload = (
-                (REPO_ROOT / scenario.upload)
-                if (scenario.upload and endpoint in ("file", "file_stream"))
-                else None
-            )
+            upload = source if (source and endpoint in ("file", "file_stream")) else None
+            # plans/122 H-6 턴 `auth: none` - 헤더 없이 보낸다(401 이 기대값 · 재로그인
+            # 재시도 금지).
+            anonymous = turn.auth == "none"
             if preload_reason:
                 # V-4 (b): 선적재 오염이면 턴을 **보내지 않는다**. 보내면 서버의 업로드 턴이 이력을
                 # `touch=True` 로 읽어 sliding TTL 을 늘리고 사용 횟수를 올린다 - 벤치가 오염 이력의
@@ -2288,13 +2628,40 @@ def _run_once(
                 break
             sql_since = sql_tail.mark() if sql_tail else 0
             traces_before = _trace_files() if live else set()
-            obs = _send(client, endpoint, payload, upload)
+            judged = _hold_for_env(turn, scenario, run_env) if env_mismatch else turn
+            # H-2 앵커 - 턴 송신 직전(역질문 자동 응답은 같은 턴이라 첫 송신 시각을 쓴다).
+            anchor_at = anchor_now()
+            # O-1·O-4 오라클 - 판정용 expect 기준(환경 보류 턴은 `oracle` 이 빠져 DB 를 부르지
+            # 않는다). pre·post 가 같은 자리표 리터럴을 쓰도록 앵커를 먼저 잡는다 - 앵커는 pre
+            # 소요만큼 송신보다 앞설 수 있다(월 경계 ±1일은 H-2 가 보류한다).
+            turn_oracle = oracle_plan(judged.expect, live=live, anchor_at=anchor_at,
+                                      run_id=str(meta.get("run_id") or ""),
+                                      scenario_id=scenario.id, out_dir=out_dir)
+            oracle_pre: dict[str, Any] | None = None
+            if turn_oracle is not None and turn_oracle.pre_post:
+                # 송신 직전 · **계측 밖**(wall_ms 는 `_send` 안에서 잰다) · 직렬.
+                oracle_pre = turn_oracle.run_phase("pre")
+            obs = _send(client, endpoint, payload, upload, anonymous)
             auto_answers: list[dict[str, Any]] = []
             if turn.auto_answer and not clarify.expects_question(turn.expect):
                 obs = _answer_questions(
                     client, scenario, endpoint, upload, thread_id,
                     str(payload.get("query") or ""), obs, zone_preference, auto_answers,
+                    anonymous=anonymous,
                 )
+            obs.anchor_at = anchor_at
+            if needs_result_rows(judged.expect):
+                # H-1: 턴 완료 직후·판정 전에 받는다. **계측 밖**이다 - wall_ms·processing_time 은
+                # 송신이 이미 정했다. 서버 결과 저장소가 LRU 1,000건이라 미루면 축출될 수 있다.
+                # 다운로드마다 서버 감사에 `file download` 이벤트가 남는다(필요한 턴에서만
+                # 받는 이유).
+                obs.result = collect_result_rows(client, obs)
+            if turn_oracle is not None:
+                # O-1: 턴 완료·결과 행 수집 **뒤** · 계측 밖 · 직렬(gp·yd 풀을 시스템과 공유한다
+                # - §9.2).
+                obs.oracle = {"id": turn_oracle.spec.get("id"),
+                              "targets": list(turn_oracle.targets),
+                              "pre": oracle_pre, "post": turn_oracle.run_phase("post")}
             sql_entries = sql_tail.collect(sql_since, thread_id) if sql_tail else []
             _apply_sql_audit(obs, sql_entries)
             if sql_tail and not obs.rewrite_traces:
@@ -2312,9 +2679,11 @@ def _run_once(
                     if saved:
                         obs.artifacts.append(str(saved))
 
-            judged = _hold_for_env(turn, scenario, run_env) if env_mismatch else turn
             verdict = evaluate_turn(scenario, index, judged, obs, group,
                                     mock=(config.mode == "mock"))
+            if env_mismatch:
+                # J-3: 환경 보류 출처를 맨 앞에(D-276 ① 성능 표본 분리의 판별 칸).
+                mark_env_hold(verdict, turn.expect.get("manual_review"))
             extras: dict[str, Any] = dict(base_extras)
             if unsupported:
                 extras["teardown_unsupported"] = unsupported
@@ -2356,6 +2725,8 @@ def _run_once(
                     )
                 break
     finally:
+        if generated is not None:
+            generated.unlink(missing_ok=True)
         if setup_live:
             try:
                 apply_synonym_setup(scenario.setup, remove=True)

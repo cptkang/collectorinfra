@@ -47,7 +47,11 @@ from noise_gate.domain.enrichment_profile import (
     parse_profile_map_csv,
     resolve_profile,
 )
-from noise_gate.domain.process_rank import classify_alarm_kind, select_top_processes
+from noise_gate.domain.process_rank import (
+    KIND_APM,
+    classify_alarm_kind,
+    select_top_processes,
+)
 from noise_gate.infrastructure.embedding_provider import build_event_text
 from noise_gate.infrastructure.polestar_noise_context import _unavailable
 
@@ -401,7 +405,7 @@ async def build_message_enrichment(
     계획서에 정밀 정의되지 않아 확인 안 된 신규 SQL을 만들지 않는다(graceful, §16.3 제약).
 
     Returns:
-        MessageEnrichment(disk/network/process/log) 또는 None(cpu/memory·비대상 kind·해소).
+        MessageEnrichment(disk/network/process/log/apm) 또는 None(cpu/memory·비대상 kind·해소).
     """
     if event.is_clear:
         return None
@@ -416,8 +420,10 @@ async def build_message_enrichment(
 
     snapshot: Optional[ProcessSnapshot] = None
     # 데이터 소스 확정 kind(disk/network)만 host-wide 프로세스 스냅샷 참고 첨부.
+    # (plans/87 U-13) apm도 같은 host-wide 참고 표를 "호스트 참고"로 붙인다 — "영향 프로세스"
+    # 표(enrich_processes)는 cpu/memory 전용이라 apm에는 생기지 않는다.
     # 자체 try/except — 수집 실패가 요지 첨부(통보)를 막지 않는다(§16.3, 기존 gather 패턴).
-    if profile.has_l1_data and kind in ("disk", "network"):
+    if profile.has_l1_data and kind in ("disk", "network", KIND_APM):
         timeout = float(getattr(noise_cfg, "enrichment_l1_timeout_seconds", 3.0))
         try:
             snapshot = await _collect_host_snapshot(

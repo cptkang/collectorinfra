@@ -17,6 +17,7 @@
 > `plans/sre-agent/06` §3(원격 VM 2축 도구 표면)
 > **[v3 정정]** Plan 87은 v2.1(2026-09-17)에서 "제니퍼는 OpenMetrics를 내지 않는다"로 확정했다. 관계가 **반대 방향**으로 바뀌었다 —
 > 87 J7(`/metrics/apm`)이 이 계획 B-2의 **노출 기계를 재사용**한다(§0.0.4). Plan 81 §1.3은 한계만 적는다. `up{nodename}` 아이디어는 docs/27 §8 「후속 후보」에 있다.
+> **(부기 2026-09-29 · `plans/87` v3.1 · D-274·D-195)** 87 J7은 `mcp_server`의 `custom_route`가 아니라 **독립 패키지 `apm_gateway`**가 낸다. 경계상 import가 불가하므로 `om_exposition.py`를 **복제**한다(87 G-12 ①) — 원본에 넣은 OpenMetrics 1.0 상한(87 G-10 · §5.1 O5 해소 부기)을 복제본이 물려받는다. 본체 `/metrics`(B-1 · `src/observability/metrics.py:76`)의 같은 2.0 협상은 92 잔여다.
 > **관련 결정**: D-003(읽기 전용 — 트랙 A는 GET만, 트랙 B는 우리 데이터 노출이라 DB 쓰기 0) · D-035(결정적=판단·LLM=서술) ·
 > D-119(접근 경계 일원화) · D-120(실 데이터 외부 SaaS 송신 금지) · D-122(조사 배치 `expose_*` 규약) · D-127(과금 API 건별 승인) ·
 > D-139(패키지 경계 — 트랙 A·B-2는 `mcp_server`, B-1은 `src/api`+각 패키지 infrastructure) · D-161(플래그는 만료일 동반) ·
@@ -658,7 +659,7 @@ metric_instant(hostname, metric, source="auto")
 - O2: 도구 독스트링의 "폴스타" 어휘 유지 여부 · `metrics_om.txt` 줄 끝(`.gitattributes eol=lf`) · 스크레이프 클라이언트 `trust_env` 끄기(SSRF 관점).
 - O3: 1단 오케스트레이터 프롬프트·SubAgentSpec 설명 갱신 여부(KV 캐시 영향).
 - O4: FastAPI 비공개 키 의존 수용 · 저장소 off 시 미계수 · 알람 워커의 `prometheus_client` 하드 의존(배포 재설치 노트) · `OBS_METRICS_BEARER_TOKEN`은 `.env` 전용인데 UI 문구는 ".encenv".
-- O5: 첫 스크레이프에서 풀 생성이 실패하면 재기동 전까지 `source_up 0` · 실패 결과도 TTL 300초 캐시 · `plans/87` J7의 "1.0 고정" 요구(`make_exposition_endpoint` 인자 1개) · mcp_server와 폴스타 DB의 시간대 동일 가정 · EXPLAIN 비용·`core_config_prop` 조인 인덱스 미실측 · Docker IT용 픽스처 `prometheus.yml` job `polestar` 미추가.
+- O5: 첫 스크레이프에서 풀 생성이 실패하면 재기동 전까지 `source_up 0` · 실패 결과도 TTL 300초 캐시 · `plans/87` J7의 "1.0 고정" 요구(`make_exposition_endpoint` 인자 1개) — **해소 — 2026-09-29 `plans/87` G-10**: `om_exposition.render_exposition`이 Accept의 OpenMetrics `version`을 1.0.0으로 상한한 뒤 협상한다(`_cap_openmetrics_version` · 종전에는 `version=2.0.0` 요청에 2.0.0으로 응답 — prometheus-client 0.26.0 실측). `mcp_server/tests/test_om_exposition.py` 신규 9건 · `mcp_server` 전체 591 → 600 passed(11 skipped). 장기 실행 중인 9099·9097은 **재기동해야 반영**된다. 잔여: 본체 `/metrics`(B-1 · `src/observability/metrics.py:76`)도 `choose_encoder`를 직접 불러 같은 2.0 응답이 남는다 — G-10 범위 밖, 92 소관 · mcp_server와 폴스타 DB의 시간대 동일 가정 · EXPLAIN 비용·`core_config_prop` 조인 인덱스 미실측 · Docker IT용 픽스처 `prometheus.yml` job `polestar` 미추가.
 
 ### 5.2 [v5] 통합 회귀 재개 · O0 잔여 실측 (2026-09-23)
 

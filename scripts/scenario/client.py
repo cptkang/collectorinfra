@@ -12,6 +12,8 @@ processing_time_ms·executed_sql·row_count·has_file 이 전부 실린다 - `sr
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import time
 from dataclasses import dataclass, field
@@ -25,6 +27,17 @@ from .assertions import AUTH_FAILURE_STATUSES, Observation
 # 무이벤트 구간이 이 값을 넘으면 hang 후보로 본다(§3.8 · D-198 계열).
 # 서버 하트비트 간격의 배수로 잡는다 - 하트비트가 꺼져 있어도 이 상한은 유효하다.
 DEFAULT_HANG_GAP_MS = 120_000.0
+
+#: 결과 행 수집(plans/122 H-1)의 행 상한. 넘으면 앞부분만 싣고 `truncated`·`total_rows` 로 남긴다 -
+#: 판정은 받은 행만 한다(`assertions._check_result`). 서버 결과 저장소는 질의 결과를 전량 보관한다.
+RESULT_ROWS_MAX = 5000
+
+#: `download-csv` 404 중 「결과는 저장됐으나 행이 없다」를 가리는 서버 문구
+#: (`src/api/routes/query.py` `download_csv` 의 "다운로드할 조회 결과가 없습니다."). 다른 404 는
+#: `_owned_result` 의 "결과를 찾을 수 없습니다." - 결과 저장소(LRU 1,000건)에 query_id 자체가 없다
+#: (축출 · 사전 게이트 역질문처럼 저장하지 않는 응답). 둘을 같은 「빈 결과」로 세면 축출이 거짓
+#: 불합격이 된다(plans/122 §8 위험표).
+RESULT_EMPTY_DETAIL = "조회 결과가 없습니다"
 
 #: 비스트리밍 요청은 서버 상한보다 이만큼 더 기다린다 - 서버의 타임아웃 응답이 먼저 도착하게 한다.
 NONSTREAM_TIMEOUT_MARGIN_SEC = 30.0
@@ -163,7 +176,48 @@ def _apply_done(obs: Observation, payload: dict[str, Any]) -> None:
     # 스코프가 비면 러너가 감사 로그의 실행 DB 로 채운다(plans/120 V-1 · `runner._apply_sql_audit`).
     # O-e(plans/94 §19.3): 재작성 감사 — 기능이 꺼진 서버는 키 자체를 싣지 않는다.
     obs.rewrite_traces = [t for t in payload.get("rewrite_trace") or [] if isinstance(t, dict)]
+    # 2단 계획 요약(plans/121 TP-0.1) — 서버가 싣지 않는 단(1·3단)·옛 서버는 None 그대로다.
+    summary = payload.get("plan_summary")
+    if isinstance(summary, dict):
+        obs.plan_summary = dict(summary)
+    # 순차 의존 경과 노트(plans/122 H-5 · plans/121 TP-11.8) — 서버 페이로드 그대로. 서버는
+    # 노트가 없으면 키를 싣지 않는다(`_dependency_notes_field`). 비스트림 응답(`QueryResponse`)도
+    # 같은 키다.
+    notes = payload.get("dependency_notes")
+    if isinstance(notes, list):
+        obs.dependency_notes = list(notes)
     _apply_timeline(obs, payload)
+
+
+def result_unavailable(reason: str) -> dict[str, Any]:
+    """결과 행을 받지 못했다는 `Observation.result`(plans/122 H-1).
+
+    판정기는 보류로 본다(불합격 아님).
+    """
+    return {"status": "unavailable", "columns": [], "rows": [], "total_rows": 0,
+            "truncated": False, "reason": reason}
+
+
+def parse_result_csv(data: bytes, limit: int = RESULT_ROWS_MAX) -> dict[str, Any]:
+    """`download-csv` 본문 → `Observation.result`(plans/122 H-1).
+
+    서버는 UTF-8 BOM 을 붙이고(엑셀 한글 대응) 행마다 키 합집합을 머리글로 쓴다
+    (`src/api/routes/query.py` `download_csv`). 값은 전부 문자열로 둔다 - 숫자 해석은 판정기가 한다.
+    `limit` 을 넘는 행은 싣지 않고 전체 행 수만 센다.
+    """
+    reader = csv.reader(io.StringIO(data.decode("utf-8-sig")))
+    header = next(reader, None) or []
+    rows: list[dict[str, str]] = []
+    total = 0
+    for record in reader:
+        if not record:
+            continue
+        total += 1
+        if len(rows) < limit:
+            rows.append({name: (record[i] if i < len(record) else "")
+                         for i, name in enumerate(header)})
+    return {"status": "ok" if total else "empty", "columns": list(header), "rows": rows,
+            "total_rows": total, "truncated": total > len(rows), "reason": None}
 
 
 def _apply_timeline(obs: Observation, payload: dict[str, Any]) -> None:
@@ -270,7 +324,8 @@ class ScenarioClient:
     # --- 질의 -----------------------------------------------------------
 
     def send(
-        self, endpoint: str, payload: dict[str, Any], upload: Optional[Path] = None
+        self, endpoint: str, payload: dict[str, Any], upload: Path | None = None,
+        *, anonymous: bool = False,
     ) -> Observation:
         """턴 1회의 요청. **401/403 이면 재로그인 후 1회만 다시 보낸다**(T-a).
 
@@ -280,7 +335,12 @@ class ScenarioClient:
 
         재시도는 **1회뿐**이다. 크레덴셜이 틀려서 나는 401 을 무한히 두드리면
         `max_login_attempts`(기본 5)에 걸려 계정이 잠긴다.
+
+        `anonymous=True`(plans/122 H-6 · 턴 `auth: none`)면 Authorization 헤더 없이 보내고
+        **재로그인 재시도를 하지 않는다** - 401 이 그 턴의 기대값이다.
         """
+        if anonymous:
+            return self._dispatch(endpoint, payload, upload, headers={})
         obs = self._dispatch(endpoint, payload, upload)
         if obs.http_status not in AUTH_FAILURE_STATUSES:
             return obs
@@ -294,14 +354,20 @@ class ScenarioClient:
         return retried
 
     def _dispatch(
-        self, endpoint: str, payload: dict[str, Any], upload: Optional[Path]
+        self, endpoint: str, payload: dict[str, Any], upload: Path | None,
+        headers: dict[str, str] | None = None,
     ) -> Observation:
+        """`headers` 가 None 이면 러너 토큰 헤더다.
+
+        요청 시점에 읽는다 - T-a 재시도가 새 토큰을 쓴다.
+        """
+        sent = self._config.headers if headers is None else headers
         if endpoint == "plain":
-            return self._post_plain(payload)
+            return self._post_plain(payload, sent)
         if endpoint == "stream":
-            return self._post_stream(payload)
+            return self._post_stream(payload, sent)
         if endpoint in ("file", "file_stream"):
-            return self._post_file(endpoint, payload, upload)
+            return self._post_file(endpoint, payload, upload, sent)
         raise ValueError(f"알 수 없는 endpoint: {endpoint}")
 
     def _nonstream_timeout(self, server_key: str) -> float:
@@ -317,7 +383,7 @@ class ScenarioClient:
             return self._config.timeout_sec
         return max(self._config.timeout_sec, server + NONSTREAM_TIMEOUT_MARGIN_SEC)
 
-    def _post_plain(self, payload: dict[str, Any]) -> Observation:
+    def _post_plain(self, payload: dict[str, Any], headers: dict[str, str]) -> Observation:
         obs = Observation()
         started = time.perf_counter()
         # 서버는 폼필 답변 턴에 파일 질의 상한을 쓴다(src/api/routes/query.py).
@@ -327,7 +393,7 @@ class ScenarioClient:
             resp = self._client.post(
                 f"{self._config.base_url}/query",
                 json=payload,
-                headers=self._config.headers,
+                headers=headers,
                 timeout=self._nonstream_timeout(server_key),
             )
         except httpx.HTTPError as exc:
@@ -432,7 +498,7 @@ class ScenarioClient:
         elif max_gap > self._config.hang_gap_ms:
             obs.hang = True
 
-    def _post_stream(self, payload: dict[str, Any]) -> Observation:
+    def _post_stream(self, payload: dict[str, Any], headers: dict[str, str]) -> Observation:
         obs = Observation()
         started = time.perf_counter()
         try:
@@ -440,7 +506,7 @@ class ScenarioClient:
                 "POST",
                 f"{self._config.base_url}/query/stream",
                 json=payload,
-                headers=self._config.headers,
+                headers=headers,
             ) as resp:
                 obs.http_status = resp.status_code
                 if resp.status_code >= 400:
@@ -459,7 +525,8 @@ class ScenarioClient:
         return obs
 
     def _post_file(
-        self, endpoint: str, payload: dict[str, Any], upload: Optional[Path]
+        self, endpoint: str, payload: dict[str, Any], upload: Path | None,
+        headers: dict[str, str],
     ) -> Observation:
         obs = Observation()
         if upload is None or not Path(upload).exists():
@@ -483,7 +550,7 @@ class ScenarioClient:
                 files = {"file": (path.name, handle, "application/octet-stream")}
                 if endpoint == "file":
                     resp = self._client.post(
-                        url, data=form, files=files, headers=self._config.headers,
+                        url, data=form, files=files, headers=headers,
                         timeout=self._nonstream_timeout("API_FILE_QUERY_TIMEOUT"),
                     )
                     obs.http_status = resp.status_code
@@ -496,7 +563,7 @@ class ScenarioClient:
                     _apply_done(obs, resp.json())
                 else:
                     with self._client.stream(
-                        "POST", url, data=form, files=files, headers=self._config.headers
+                        "POST", url, data=form, files=files, headers=headers
                     ) as resp:
                         obs.http_status = resp.status_code
                         if resp.status_code >= 400:
@@ -528,3 +595,40 @@ class ScenarioClient:
         dest = dest_dir / name_hint
         dest.write_bytes(resp.content)
         return dest
+
+    def download_csv(self, query_id: str) -> dict[str, Any]:
+        """턴의 결과 행을 `GET /query/{id}/download-csv` 로 받는다(plans/122 H-1 · G-4).
+
+        돌려주는 모양은 `Observation.result` 계약이다 - `status` 는 `ok`(행 있음) · `empty`(결과는
+        저장됐고 행이 없다) · `unavailable`(받지 못했다 · `reason`). 질의한 사용자의 토큰으로 받는다
+        (서버가 소유자를 확인한다 - `_owned_result`). 행은 서버가 화면 응답과 같은 규칙으로
+        마스킹한다.
+
+        **다운로드마다 서버 감사에 `file download` 이벤트가 남는다**(`_audit_file_download` →
+        `AuditService.log_file_download`) - 러너는 필요한 턴에서만 부른다
+        (`runner.needs_result_rows`).
+        """
+        url = f"{self._config.base_url}/query/{query_id}/download-csv"
+        try:
+            resp = self._client.get(url, headers=self._config.headers, timeout=120.0)
+        except httpx.HTTPError as exc:
+            return result_unavailable(f"download-csv 요청 실패: {type(exc).__name__}: {exc}")
+        if resp.status_code == 404:
+            try:
+                body = resp.json()
+                detail = str(body.get("detail") or "") if isinstance(body, dict) else str(body)
+            except ValueError:
+                detail = resp.text[:200]
+            if RESULT_EMPTY_DETAIL in detail:
+                return {"status": "empty", "columns": [], "rows": [], "total_rows": 0,
+                        "truncated": False, "reason": None}
+            return result_unavailable(
+                "download-csv 404 - 결과 저장소에 query_id 가 없다(LRU 1,000건 축출 또는 "
+                f"결과를 저장하지 않는 응답): {detail}"
+            )
+        if resp.status_code != 200:
+            return result_unavailable(f"download-csv http {resp.status_code}: {resp.text[:200]}")
+        try:
+            return parse_result_csv(resp.content)
+        except (UnicodeDecodeError, csv.Error) as exc:
+            return result_unavailable(f"download-csv 본문 해석 실패: {type(exc).__name__}: {exc}")

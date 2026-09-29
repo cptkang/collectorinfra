@@ -13,7 +13,7 @@ task의 답변 영역(LLM 구조화 출력)으로 대상을 맞춘다.
     T3 다중 존 시스템 소유 → 고정하지 않고 소유 DB 집합으로 제한만(비면 활성 전체 + 노트)
     T4 X-T13 — 원문 위치 힌트로 고정된 존(gp)만 남는다
     T5 이미 DB가 정해진 task·존 선택 재개 턴은 건드리지 않는다 · 비활성 소유자는 사유 노트
-    T6 classify_dbs 폴백 표지 → 경과 노트(on) / 표지·노트 없음(off)
+    T6 classify_dbs 폴백 표지 → 경과 노트(플래그 무관 — plans/121 TP-1.6 · 종전 off = 없음)
     T7 분해 — off 프롬프트·스키마 불변 · on에서 capability가 JSON 파싱 경로에서 보존·정제된다
 
 실 LLM 호출 0(D-127).
@@ -28,8 +28,12 @@ import pytest
 
 from src.config import AppConfig, MultiDBConfig, RouterConfig
 from src.orchestration.schemas import DecomposedPlan, OwnershipDecomposedPlan
-from src.prompts.intent_planner import INTENT_PLANNER_SYSTEM_TEMPLATE
+from src.prompts.intent_planner import (
+    INTENT_PLANNER_SYSTEM_TEMPLATE,
+    render_intent_planner_environment_terms,
+)
 from src.routing import capability_ownership as own
+from src.routing.registry import get_registry
 from src.utils.prior_dependency import NOTE_OWNERSHIP, NOTE_ROUTING_FALLBACK
 
 sa = importlib.import_module("src.orchestration.subagents")
@@ -279,7 +283,7 @@ class TestClassifyFallbackMarker:
         self._llm_classify(monkeypatch, {"intent": "data_query", "databases": []})
         off = await sa.classify_dbs(object(), "q", _cfg(ownership=False))
         on = await sa.classify_dbs(object(), "q", _cfg(ownership=True))
-        assert "routing_fallback" not in off[0]
+        assert off[0]["routing_fallback"]["reason"] == own.REASON_NO_CLASSIFICATION
         assert on[0]["routing_fallback"]["reason"] == own.REASON_NO_CLASSIFICATION
 
     async def test_pipeline_turns_marker_into_note_and_strips_it(self, monkeypatch, pipeline):
@@ -293,14 +297,17 @@ class TestClassifyFallbackMarker:
         ]
         assert all("routing_fallback" not in t for t in res["source"])
 
-    async def test_pipeline_off_has_no_fallback_note(self, monkeypatch, pipeline):
+    async def test_pipeline_off_has_fallback_note(self, monkeypatch, pipeline):
         self._llm_classify(monkeypatch, RuntimeError("boom"))
         monkeypatch.setattr(sa, "classify_dbs", _REAL_CLASSIFY)
         res = await _run(
             _cfg(ownership=False), {"task_id": "t1", "agent": "data_query", "sub_query": "q"}
         )
         assert res["target_db_ids"] == ["polestar_b0"]
-        assert "dependency_notes" not in res
+        notes = _notes(res, NOTE_ROUTING_FALLBACK)
+        assert [(n["reason"], n["task_id"], n["db_id"]) for n in notes] == [
+            (own.REASON_LLM_ERROR, "t1", "polestar_b0")
+        ]
 
 
 _REAL_CLASSIFY = sa.classify_dbs
@@ -360,7 +367,10 @@ class TestDecomposition:
     async def test_off_prompt_is_base_template_and_capability_not_kept(self):
         llm = _ScriptedLLM(_PLAN)
         plan = await ip._llm_decompose(llm, "질의", _cfg(ownership=False))
-        assert llm.system_prompts[0] == INTENT_PLANNER_SYSTEM_TEMPLATE
+        # 기본 템플릿 + 환경어 자리 채움만(plans/121 TP-11.2 — 레지스트리 정본)
+        assert llm.system_prompts[0] == render_intent_planner_environment_terms(
+            INTENT_PLANNER_SYSTEM_TEMPLATE, get_registry().environment_terms
+        )
         assert all("capability" not in t for t in plan["tasks"])
 
     async def test_on_prompt_inserts_ownership_and_keeps_sanitized_capability(self):

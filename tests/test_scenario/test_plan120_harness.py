@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import dataclasses
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -580,9 +581,28 @@ H06_UNANSWERED = (
 )
 
 
+def _eval_h06_response(catalog, **obs: Any):
+    """H-06 1턴을 **`file` 단언을 뺀** 실제 카탈로그 기대값으로 판정한다(U-4 전용).
+
+    U-4 가 고정하는 것은 응답 문구 선택지(`response_must_contain_any`) 판정이다.
+    plans/122 H-4 가 H-06 에 `file.empty_columns`(3열 공란)를 더했는데, 이 테스트의 관측은 산출물
+    없는 합성 관측이라 `file` 이 「산출물 없음」 불합격이 된다 — U-4 의 관심 밖이다.
+    픽스처 산출물을 만들어 넣으면 이 테스트가 xlsx 판정까지 떠안게 되므로
+    (그 판정은 tests/test_scenario/test_plan122_judge_file.py 소관) 판정 전에 `file` 키만 뺐다.
+    나머지 기대값(status·has_file·선택지)은 카탈로그 그대로라 선택지가 바뀌면 여전히 깨진다.
+    """
+    scenario = catalog.by_id("H-06")
+    turn = scenario.turns[0]
+    # 뺄 것이 실제로 있다(카탈로그가 바뀌면 이 전제를 다시 본다).
+    assert "file" in turn.expect
+    judged = dataclasses.replace(
+        turn, expect={key: value for key, value in turn.expect.items() if key != "file"})
+    return evaluate_turn(scenario, 1, judged, Observation(**obs), catalog.groups[scenario.group])
+
+
 @pytest.mark.parametrize("response", [H06_ANSWERED, H06_UNANSWERED], ids=["답변_적용", "미작성"])
 def test_U4_미작성_또는_3열_공란_적용_내역이면_통과한다(catalog, response: str) -> None:
-    verdict = _eval(catalog, "H-06", 1, **DONE, has_file=True, response=response)
+    verdict = _eval_h06_response(catalog, **DONE, has_file=True, response=response)
     assert verdict.failures == []
 
 
@@ -591,7 +611,7 @@ def test_U4_미작성_또는_3열_공란_적용_내역이면_통과한다(catalo
     H06_TABLE,
 ], ids=["한_열이_공란이_아님", "고지_없음"])
 def test_U4_고지가_모자라면_불합격이다(catalog, response: str) -> None:
-    verdict = _eval(catalog, "H-06", 1, **DONE, has_file=True, response=response)
+    verdict = _eval_h06_response(catalog, **DONE, has_file=True, response=response)
     assert _keys(verdict) == ["response_must_contain_any"]
 
 

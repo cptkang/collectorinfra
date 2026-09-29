@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator, Optional
@@ -739,6 +740,17 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     async def admin_manual_page() -> FileResponse:
         """관리자 매뉴얼."""
         return FileResponse(static_dir / "manual" / "admin.html")
+
+    # 시스템 소개(plans/124 · D-277) — 어느 화면에도 링크하지 않는다.
+    # 주소를 직접 입력할 때만 열린다.
+    @application.get("/intro", include_in_schema=False)
+    async def intro_page() -> FileResponse:
+        """시스템 소개 페이지."""
+        return FileResponse(static_dir / "intro.html")
+
+    # 소개 페이지의 3D는 ES 모듈이라 JavaScript MIME 이 아니면 브라우저가 거부한다.
+    # Windows 는 레지스트리 설정에 따라 .js 를 text/plain 으로 추정하므로 고정한다.
+    mimetypes.add_type("text/javascript", ".js")
 
     # 정적 파일 서빙 (라우트 등록 후에 마운트해야 우선순위 보장)
     if static_dir.exists():

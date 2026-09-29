@@ -540,3 +540,72 @@ class TestAggregateSynthesis:
         assert _build_response_prompt("q", "s", rows) == _build_response_prompt(
             "q", "s", rows, aggregates=None
         )
+
+
+# ──────────────────────────────────────────────
+# plans/121 TP-1.12 — 시스템(제품군)을 넘는 합산·순위 가드 (N-13 · 113 S-1·S-3 인접)
+# ──────────────────────────────────────────────
+
+_ITAM = "itam"
+
+
+class TestCrossSystemGuard:
+    """폴스타 존끼리는 한 시스템이라 종전 그대로, 폴스타 ↔ 자산 DB는 합치지 않는다."""
+
+    def test_cross_system_aggregate_is_not_summed(self):
+        from src.nodes.result_merger import REASON_AGG_CROSS_SYSTEM
+
+        state = _state(
+            {_GP: _agg_row(12, 96, 91.5, 3.0, 40.0), _ITAM: _agg_row(54, 0, 1.0, 0.0, 0.5)},
+            {_GP: _AGG_SQL, _ITAM: _AGG_SQL},
+        )
+        agg = plan_aggregate_synthesis(state, state["query_results"])
+        assert agg == {"applied": False, "reason": REASON_AGG_CROSS_SYSTEM}
+
+    def test_same_system_zones_are_still_summed(self):
+        """폴스타 3존(한 시스템) 집계는 가드 전과 같은 결과다(§12.6 ①)."""
+        state = _state(
+            {_B0: _agg_row(5, 40, 70.0, 2.0, 20.0), _GP: _agg_row(12, 96, 91.5, 3.0, 40.0),
+             _YD: _agg_row(8, 64, 88.0, 1.5, 30.0)},
+            {_B0: _AGG_SQL, _GP: _AGG_SQL, _YD: _AGG_SQL},
+        )
+        agg = plan_aggregate_synthesis(state, state["query_results"])
+        assert agg["applied"] is True
+        by = {c["column"]: c for c in agg["columns"]}
+        assert by["server_count"]["total"] == 25
+
+    def test_cross_system_ranking_is_not_merged(self):
+        from src.nodes.result_merger import REASON_CROSS_SYSTEM
+
+        state = _state({_GP: _GP_ROWS, _ITAM: _rows("itam", [99, 98, 97, 1, 1, 1, 1, 1, 1, 1])},
+                       {_GP: _PG_SQL, _ITAM: _PG_SQL})
+        ranking = plan_global_ranking(state, state["query_results"], _CONFIG)
+        assert ranking == {"applied": False, "reason": REASON_CROSS_SYSTEM}
+
+    def test_same_system_ranking_unchanged(self):
+        state = _state({_GP: _GP_ROWS, _YD: _YD_ROWS}, {_GP: _PG_SQL, _YD: _PG_SQL})
+        ranking = plan_global_ranking(state, state["query_results"], _CONFIG)
+        assert ranking["applied"] is True and ranking["limit"] == 10
+
+    def test_listing_across_systems_stays_noop(self):
+        """순위·집계 형태가 아니면 시스템이 달라도 노트 없이 종전 이어 붙이기다."""
+        sql = "SELECT r.hostname AS host FROM x r"
+        state = _state({_GP: [{"host": "a"}], _ITAM: [{"host": "b"}]}, {_GP: sql, _ITAM: sql})
+        assert plan_global_ranking(state, state["query_results"], _CONFIG) is None
+        assert plan_aggregate_synthesis(state, state["query_results"]) is None
+
+    def test_skip_reason_reads_as_a_sentence(self):
+        from src.nodes.result_merger import REASON_AGG_CROSS_SYSTEM, REASON_CROSS_SYSTEM
+
+        state = {
+            "db_result_summary": {_GP: {"row_count": 1, "display_name": "김포"},
+                                  _ITAM: {"row_count": 1, "display_name": "ITAM DB"}},
+            "organized_data": {"rows": [{"_source_db": _GP}, {"_source_db": _ITAM}],
+                               "merge_aggregates": {"applied": False,
+                                                    "reason": REASON_AGG_CROSS_SYSTEM},
+                               "merge_ranking": {"applied": False,
+                                                 "reason": REASON_CROSS_SYSTEM}},
+        }
+        out = _append_zone_coverage_notes("응답", state)
+        assert "서로 다른 시스템의 값이라 DB별 집계 값을 합치지 않았습니다" in out
+        assert "서로 다른 시스템의 결과라 전체 기준으로 다시 정렬하지 않고" in out

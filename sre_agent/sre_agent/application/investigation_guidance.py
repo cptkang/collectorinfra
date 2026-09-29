@@ -7,7 +7,8 @@
 구성(순서 고정): ① REMOTE_VM_SHELL_NOTE(원격 프로파일) ② 사건 구간 지침(잡의 reference_time —
 도구 호출에 앵커 인자를 쓰라는 지시) ③ 상관 결과 ④ kind별 플레이북(plans/91 1-5 · plans/51 §6 —
 결정적 문구) ⑤ OpenMetrics 서술 노트(settings.openmetrics_guidance_enabled일 때만 ·
-plans/92 O3 · R-12) ⑥ settings.investigation_guidance_extra(운영자 자유 지침).
+plans/92 O3 · R-12) ⑥ APM 노트(settings.apm_guidance_enabled일 때만 · plans/87 J3)
+⑦ settings.investigation_guidance_extra(운영자 자유 지침).
 부하 가드(LOAD_GUARD_NOTE)는 `ask()`가 항상 덧붙이므로 여기서 넣지 않는다.
 
 계층: application. LLM을 호출하지 않는다(문자열 조립만).
@@ -15,6 +16,11 @@ plans/92 O3 · R-12) ⑥ settings.investigation_guidance_extra(운영자 자유 
 
 from __future__ import annotations
 
+from sre_agent.domain.investigation_limits import (
+    APM_UNAVAILABLE_CODES,
+    is_apm_resource_type,
+    is_apm_trigger,
+)
 from sre_agent.toolset_profiles import REMOTE_VM_SHELL_NOTE
 
 # 앵커 인자를 받는 mcp_server 도구(incident-window-tools).
@@ -23,6 +29,15 @@ ANCHORED_TOOLS: tuple[str, ...] = (
     "polestar_alarm_history",
     "polestar_incident_alarms",
     "prom_metric_range",
+)
+
+# 앵커 인자를 받는 제니퍼 게이트웨이 구간 도구(SPEC-apm-gateway §3). `apm_guidance_enabled`일 때만 사건창에 더한다.
+# `apm_active_services`·`apm_resource_pool`은 현재값 전용이라 넣지 않는다(`APM_REALTIME_NOTE` — om_* 전례).
+APM_ANCHORED_TOOLS: tuple[str, ...] = (
+    "apm_app_health",
+    "apm_runtime_health",
+    "apm_events",
+    "apm_slow_transactions",
 )
 
 INCIDENT_SCOPE_NOTE_TEMPLATE: str = (
@@ -34,14 +49,22 @@ INCIDENT_SCOPE_NOTE_TEMPLATE: str = (
 )
 
 
-def incident_scope_note(reference_time: str | None, lookback_minutes: int | None) -> str | None:
-    """잡의 사건 구간을 조사 LLM 지침 한 단락으로 만든다. 기준시각이 없으면 None."""
+def incident_scope_note(
+    reference_time: str | None,
+    lookback_minutes: int | None,
+    tools: tuple[str, ...] = ANCHORED_TOOLS,
+) -> str | None:
+    """잡의 사건 구간을 조사 LLM 지침 한 단락으로 만든다. 기준시각이 없으면 None.
+
+    `tools`는 `apm_guidance_enabled`일 때만 `ANCHORED_TOOLS + APM_ANCHORED_TOOLS`로 넘어온다 —
+    기본값이면 렌더가 종전과 바이트 동일하다.
+    """
     if not reference_time:
         return None
     return INCIDENT_SCOPE_NOTE_TEMPLATE.format(
         reference_time=reference_time,
         lookback_minutes=int(lookback_minutes or 0),
-        tools=" · ".join(ANCHORED_TOOLS),
+        tools=" · ".join(tools),
     )
 
 
@@ -88,6 +111,12 @@ def correlation_note(correlation: dict | None) -> str | None:
 # 알람 kind는 게이트(noise_gate `classify_alarm_kind`)와 **같은 어휘·같은 판정 순서**로 페이로드
 # `event.resourceType`·`event.alarmName`에서 유도한다(패키지 경계상 import 불가 — 동형 재정의, D-139).
 # 미매칭 kind면 아무것도 덧붙이지 않아 종전 지침과 문자열이 같다.
+#
+# R-16(plans/87 · D-195 ②): 게이트웨이 이벤트(`resourceType="apm.Instance"`)는 OS 키워드보다 **먼저** `apm`이다.
+# 제니퍼 이벤트 이름(`JVM_HEAP_MEM_HIGH`·`OUTOFMEMORY`·`JVM_CPU_HIGH_LONGTIME`·`PROCESS_DOWN`…)이 부분 문자열
+# 키워드에 걸려 OS 플레이북이 WAS 사건에 붙는 것을 막는다. 플래그와 무관하다(게이트웨이 이벤트에서만 발현).
+# `apm`은 `PLAYBOOK_NOTES`에 없다 — APM 플레이북은 `apm_guidance_enabled`일 때만 붙는다.
+# 판정 기준(`is_apm_resource_type`)은 dispatcher와 함께 쓰므로 domain `investigation_limits`에 있다.
 # ---------------------------------------------------------------------
 
 _KIND_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -101,7 +130,12 @@ _KIND_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 
 def classify_alarm_kind(resource_type: str | None, alarm_name: str | None) -> str | None:
-    """알람 kind(cpu·memory·disk·network·process·log) — 게이트 분류기와 동형(순서 고정 · 첫 매칭)."""
+    """알람 kind(apm·cpu·memory·disk·network·process·log) — 게이트 분류기와 동형(순서 고정 · 첫 매칭).
+
+    `resourceType="apm.Instance"`(대소문자 무시)는 이름과 무관하게 `apm`이다(R-16 선판정).
+    """
+    if is_apm_resource_type(resource_type):
+        return "apm"
     haystack = f"{resource_type or ''} {alarm_name or ''}".lower()
     if not haystack.strip():
         return None
@@ -119,6 +153,14 @@ def alarm_kind_from_job(job) -> str | None:  # noqa: ANN001 — JobLike
     if not isinstance(event, dict):
         return None
     return classify_alarm_kind(event.get("resourceType"), event.get("alarmName"))
+
+
+def trigger_hints(job) -> dict:  # noqa: ANN001 — JobLike
+    """트리거 페이로드 `meta.hints`(noise_gate가 apm 이벤트에만 싣는다 — SPEC-apm-sre-agent §3.7). 없으면 {}."""
+    payload = getattr(job, "payload", None)
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    hints = meta.get("hints") if isinstance(meta, dict) else None
+    return hints if isinstance(hints, dict) else {}
 
 
 PLAYBOOK_NOTES: dict[str, str] = {
@@ -199,35 +241,125 @@ OPENMETRICS_NOTE: str = (
 )
 
 
+# ---------------------------------------------------------------------
+# APM(제니퍼 게이트웨이) 지침 (plans/87 J3 · SPEC-apm-sre-agent §3.3 · D-035 — 결정적 문구, LLM 0)
+#
+# 전부 `apm_guidance_enabled`일 때만 붙는다 — 꺼져 있으면 조립 문자열이 종전과 바이트 동일하다.
+# 폴백은 셸이 아니라 폴스타 MCP 도구다(D-233 — 운영 원격 조사에 셸 없음).
+# ---------------------------------------------------------------------
+
+APM_FOCUS_NOTE_TEMPLATE: str = (
+    "APM(제니퍼 게이트웨이) 조사 순서 — 대상 호스트에 WAS 인스턴스가 있을 때(apm_* 도구):\n"
+    "① apm_instance_map(hostname)으로 대상 인스턴스를 확정한다(match_confidence 확인).\n"
+    "② apm_events로 사건 구간의 선행 이벤트를 본다.\n"
+    "③ apm_app_health · apm_runtime_health로 골든 시그널(응답시간·TPS·오류율)과 런타임(힙·GC·CPU·스레드)을 본다.\n"
+    "④ 증상별로 한 갈래를 판다 — 큐잉이면 apm_active_services, 지연이면 apm_slow_transactions → "
+    "apm_transaction_profile(앞 도구가 준 profile_ref의 domain_id·txid·time_ms를 그대로 넘긴다), "
+    "커넥션 풀이면 apm_resource_pool.\n"
+    "⑤ 인프라와 대조한다 — polestar_metric_trend · prom_metric_range로 같은 구간의 호스트 지표를 본다.\n"
+    "- 주 가설을 세우면 그 가설을 반증할 수 있는 도구를 1회 호출해 확인한다.\n"
+    "- apm_* 도구를 부를 때 {investigation_id_arg} 인자를 함께 넘긴다(감사 추적).\n"
+    "- was_signals는 게이트웨이가 결정적으로 판정한 결과다 — 임계를 다시 판단하지 말고 kind·evidence를 인용한다."
+)
+
+APM_REALTIME_NOTE: str = (
+    "APM 현재값 도구(apm_active_services · apm_resource_pool) 서술 지침:\n"
+    "- 이 두 도구는 조회 시점의 현재 상태만 돌려준다(구간 인자 없음). "
+    "과거 사건의 증거로 서술하지 말고 '현재 상태'로만 쓴다.\n"
+    "- 사건 구간 증거는 apm_events · apm_app_health · apm_runtime_health · apm_slow_transactions에서 가져온다."
+)
+
+APM_FALLBACK_NOTE: str = (
+    "APM 미가용 시 폴백:\n"
+    "- apm_* 도구가 없거나 error(" + " · ".join(APM_UNAVAILABLE_CODES) + ")를 돌려주면 "
+    "폴스타 MCP 도구로 대체한다 — 프로세스(polestar_process_snapshot) · OS 구성(polestar_os_config) · "
+    "메트릭 추세(polestar_metric_trend).\n"
+    "- 대체했다는 사실과 사유(오류 코드·reason)를 결론의 한계에 적는다. 셸 명령으로 대체하지 않는다(원격 조사에 셸 없음)."
+)
+
+APM_NOT_CONFIGURED_NOTE: str = (
+    "현재 APM 게이트웨이가 설정되지 않았다(APM_MCP_URL 미설정) — apm_* 도구가 없으므로 처음부터 위 폴백으로 조사하고, "
+    "그 사실을 한계에 적는다."
+)
+
+APM_PLAYBOOK_NOTE: str = (
+    "장애 유형 플레이북 — WAS(APM) 사건(plans/87 §5.4):\n"
+    "- 증거: 트리거 이벤트(event_type · instance_id · txid) · apm_events 선행 이벤트 · "
+    "apm_app_health 응답시간·오류율·reject_rate · apm_runtime_health 힙·GC·스레드 추세 · was_signals · "
+    "같은 구간 호스트 지표.\n"
+    "- 기법: 증상별로 분기한다. 큐잉·PLC 거절(SERVICE_QUEUING·PLC_REJECTED)이면 apm_active_services로 정체 지점"
+    "(DB·외부 호출·동일 실행 모드)을, 커넥션 실패·미반납(JDBC_CONNECTION_FAIL·DB_CONN_UNCLOSED)이면 "
+    "apm_resource_pool 사용률을, 힙·GC(OUTOFMEMORY·JVM_HEAP_MEM_HIGH·MAYBE_GC_TIME_DELAY)면 "
+    "apm_runtime_health 추세(계단식 상승은 누수 의심)를, 응답 지연(TX_BAD_RESPONSE 등)이면 "
+    "apm_slow_transactions 분해(sql·fetch·external 비중) → apm_transaction_profile을 본다.\n"
+    "- 서술: was_signals kind·evidence → 선행 이벤트 → 인프라 대조 순으로 인용한다. 호스트 CPU·메모리 이상은 "
+    "교차 증거로 병기하고, 인스턴스 정합 신뢰도가 medium 이하면 그 한계를 명시한다."
+)
+
+#: 트리거 힌트 중 지침에 싣는 키(순서 고정). `solution`은 플레이북 선택에만 쓴다.
+_HINT_KEYS: tuple[str, ...] = ("event_type", "instance_id", "domain_id", "txid")
+
+
+def apm_playbook_note(hints: dict) -> str:
+    """APM 플레이북 + 트리거 힌트 한 줄(값이 있는 키만 — 도구 인자로 쓸 수 있게)."""
+    shown = [f"{k}={hints[k]}" for k in _HINT_KEYS if hints.get(k) not in (None, "")]
+    if not shown:
+        return APM_PLAYBOOK_NOTE
+    return f"{APM_PLAYBOOK_NOTE}\n- 트리거 힌트: " + " · ".join(shown)
+
+
+def apm_notes(settings, job) -> list[str]:  # noqa: ANN001 — AgentSettings · JobLike
+    """⑥ APM 노트(조사 순서 · 현재값 · 폴백 [· 미설정 사유]). `apm_guidance_enabled`일 때만 호출된다."""
+    iid = getattr(job, "investigation_id", None)
+    iid_arg = f'investigation_id="{iid}"' if iid else "investigation_id(이 조사의 id)"
+    notes = [APM_FOCUS_NOTE_TEMPLATE.format(investigation_id_arg=iid_arg), APM_REALTIME_NOTE, APM_FALLBACK_NOTE]
+    if not getattr(settings, "apm_mcp_url", ""):
+        notes.append(APM_NOT_CONFIGURED_NOTE)
+    return notes
+
+
 def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
     """조사 지침을 조립한다. 넣을 것이 없으면 None(`ask()`는 부하 가드만 붙인다).
 
     순서: ① 원격 셸 ② 사건 구간 ③ 상관 결과 ④ **kind별 플레이북**(plans/91 1-5)
     ⑤ **OpenMetrics 서술 노트**(`openmetrics_guidance_enabled`일 때만 · plans/92 O3)
-    ⑥ 운영자 자유 지침.
+    ⑥ **APM 노트**(`apm_guidance_enabled`일 때만 · plans/87 J3) ⑦ 운영자 자유 지침.
+
+    `apm_guidance_enabled`면 ②에 apm_* 구간 도구를 더하고, ④는 apm 사건(kind `apm` 또는 트리거
+    `meta.hints.solution == "apm"`)이면 OS 플레이북 대신 APM 플레이북 하나만 싣는다.
     """
+    apm_on = bool(getattr(settings, "apm_guidance_enabled", False))
     parts: list[str] = []
     if remote:
         parts.append(REMOTE_VM_SHELL_NOTE)
     scope = incident_scope_note(
-        getattr(job, "reference_time", None), getattr(job, "lookback_minutes", None)
+        getattr(job, "reference_time", None),
+        getattr(job, "lookback_minutes", None),
+        ANCHORED_TOOLS + APM_ANCHORED_TOOLS if apm_on else ANCHORED_TOOLS,
     )
     if scope:
         parts.append(scope)
     corr = correlation_note(getattr(job, "correlation", None))
     if corr:
         parts.append(corr)
-    playbook = playbook_note(alarm_kind_from_job(job))
+    if apm_on and is_apm_trigger(getattr(job, "payload", None)):   # kind apm 또는 hints.solution == apm
+        playbook: str | None = apm_playbook_note(trigger_hints(job))
+    else:
+        playbook = playbook_note(alarm_kind_from_job(job))
     if playbook:
         parts.append(playbook)
     if getattr(settings, "openmetrics_guidance_enabled", False):
         parts.append(OPENMETRICS_NOTE)
+    if apm_on:
+        parts.extend(apm_notes(settings, job))
     extra = (getattr(settings, "investigation_guidance_extra", None) or "").strip()
     if extra:
         parts.append(extra)
     return "\n\n".join(parts) or None
 
 
-__all__ = ["ANCHORED_TOOLS", "INCIDENT_SCOPE_NOTE_TEMPLATE", "PLAYBOOK_NOTES", "OPENMETRICS_NOTE",
+__all__ = ["ANCHORED_TOOLS", "APM_ANCHORED_TOOLS", "INCIDENT_SCOPE_NOTE_TEMPLATE", "PLAYBOOK_NOTES",
+           "OPENMETRICS_NOTE", "APM_UNAVAILABLE_CODES", "APM_FOCUS_NOTE_TEMPLATE", "APM_REALTIME_NOTE",
+           "APM_FALLBACK_NOTE", "APM_NOT_CONFIGURED_NOTE", "APM_PLAYBOOK_NOTE",
            "incident_scope_note", "correlation_note", "classify_alarm_kind", "alarm_kind_from_job",
-           "playbook_note", "build_guidance"]
+           "trigger_hints", "playbook_note", "apm_playbook_note", "apm_notes", "build_guidance"]

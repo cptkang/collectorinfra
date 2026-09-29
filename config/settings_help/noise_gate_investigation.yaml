@@ -517,3 +517,71 @@ settings:
     performance: 토큰이 하나 늘어나는 정도라 비용이 작다.
     stability: 서버 상관 스위치가 꺼져 있으면 이 값만으로는 아무 일도 일어나지 않는다.
     related: [NOISE_CROSS_HOST_CORRELATION_ENABLED, NOISE_CORRELATION_SIM_THRESHOLD]
+
+  # ── plans/87 J4: app_impact 승격 — APM 게이트웨이(apm_gateway) fatal 이벤트 ──
+  NOISE_APP_IMPACT_ENABLED:
+    summary: 같은 서버에 WAS(제니퍼) 치명 이벤트가 겹치면 폴스타 알람을 PAGE로 올릴지.
+    behavior: >-
+      폴스타 알람이 우선순위 매트릭스에서 DASHBOARD·TICKET으로 판정되면, APM 게이트웨이에
+      같은 hostname의 사건창 안 fatal 이벤트를 묻는다. 한 건이라도 있으면 PAGE로 올린다.
+      올리기만 한다 — 억제 단계(유지보수·침묵·연쇄·스톰 등)와 SUPPRESS 결과는 되살리지 않고,
+      심각도3은 원래 PAGE다. 게이트웨이 오류면 판정을 그대로 두고 사유를 결정 감사에 남긴다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 게이트웨이를 부르지 않는다. 판정이 지금과 같다.
+      - value: "true"
+        effect: >-
+          WAS 장애와 겹친 저우선 알람이 즉시 통보된다. 게이트웨이 주소(NOISE_APM_MCP_URL)도
+          있어야 동작한다.
+    example: >-
+      DB 서버 디스크 경고(심각도1·중요도 보통 → DASHBOARD)가 뜬 같은 시각에 그 서버의 WAS에서
+      OUTOFMEMORY가 났다면 사용자 영향이 있는 사건이다 — 켜 두면 이 경고가 PAGE로 올라온다.
+    performance: >-
+      DASHBOARD·TICKET 판정 알람마다 게이트웨이 호출이 1회(최대 몇 초) 붙는다. PAGE·억제 알람은
+      부르지 않는다. 게이트웨이가 없으면 30초 동안 호출을 건너뛴다.
+    stability: 게이트웨이 장애·타임아웃·오류 응답은 판정을 바꾸지 않는다(사유는 로그와 결정 감사).
+    recommendation: 제니퍼와 APM 게이트웨이가 배포된 환경에서만 켠다.
+    related: [NOISE_APM_MCP_URL, NOISE_APM_MCP_TOKEN, NOISE_APP_IMPACT_WINDOW_MINUTES]
+
+  NOISE_APM_MCP_URL:
+    example: >-
+      게이트웨이 기본 바인드는 127.0.0.1:9096이다 — 다른 장비에 있으면 그 장비 주소로 바꾸고
+      게이트웨이 쪽 바인드도 열어야 한다. 비워 두면 스위치를 켜도 승격하지 않는다(기동 로그에 경고).
+    summary: APM 게이트웨이의 MCP 주소.
+    behavior: >-
+      별도 프로세스로 도는 APM 게이트웨이(apm_gateway)의 SSE 엔드포인트다. 제니퍼 자체 주소가
+      아니다 — 제니퍼 접속 정보는 게이트웨이 설정에만 있다.
+    options:
+      - value: ""
+        label: 기본
+        effect: 비어 있으면 app_impact 승격을 하지 않는다.
+      - value: "http://127.0.0.1:9096/sse"
+        effect: 같은 장비의 게이트웨이에 붙는다.
+    stability: 주소가 틀려도 알람 처리는 정상이다 — 승격만 빠지고 사유가 결정 감사에 남는다.
+    related: [NOISE_APP_IMPACT_ENABLED, NOISE_APM_MCP_TOKEN]
+
+  NOISE_APM_MCP_TOKEN:
+    example: >-
+      게이트웨이가 인증을 요구하는데 값이 비면 호출이 거부된다. 알람 판정에는 영향이 없어 '승격만 안 된다'로 나타난다.
+    summary: APM 게이트웨이 인증 토큰 — 시크릿이라 이 화면에서 편집할 수 없다.
+    behavior: >-
+      게이트웨이의 APM_GATEWAY_BEARER_TOKEN과 같은 값을 둔다. 제니퍼 API 토큰이 아니다.
+      값이 없으면 인증 헤더 없이 호출한다.
+    stability: 토큰이 틀리면 게이트웨이 호출이 실패한다 — 판정은 그대로다.
+    related: [NOISE_APM_MCP_URL]
+
+  NOISE_APP_IMPACT_WINDOW_MINUTES:
+    example: >-
+      30으로 늘리면 30분 전에 끝난 WAS 장애까지 지금 알람의 근거가 되어 승격이 늘어난다. 너무 줄이면 알람보다 조금 먼저 난 WAS 장애를 놓친다.
+    summary: 알람 발생 시각 이전 몇 분 안의 WAS 치명 이벤트를 볼지(분).
+    behavior: 게이트웨이에 알람 발생 시각을 기준 시각으로, 이 폭을 조회 구간으로 넘긴다.
+    options:
+      - value: "10"
+        label: 기본
+        effect: 알람 전 10분 안의 fatal 이벤트만 본다.
+      - value: "30 이상"
+        effect: 오래전 WAS 장애까지 겹친 것으로 보아 승격이 늘어난다.
+    performance: 창이 넓을수록 게이트웨이가 제니퍼에서 읽는 이벤트가 늘어난다(상한 24시간).
+    recommendation: 기본 10분 유지.
+    related: [NOISE_APP_IMPACT_ENABLED]

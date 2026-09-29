@@ -1062,6 +1062,17 @@ class NoiseGateConfig(BaseSettings):
     # 않고 상향 신호만 안내한다(Plan 64 §5.1 역방향 계약). 기본 off면 escalation 미생성 → 통보
     # 본문 비트동일(회귀 0). investigation_trigger_enabled가 켜져 poll이 돌 때만 verdict가 존재한다.
     fault_escalation_enabled: bool = False  # (CW-C) escalate-only 후속 통보 승격 옵트인
+    # ── plans/87 J4: `app_impact` 승격 — APM 게이트웨이 MCP `apm_events` (D-195 ② · R-7) ──
+    # 폴스타 알람(비 APM)이 매트릭스 단계에서 DASHBOARD·TICKET으로 판정되면, 같은 hostname·사건창
+    # [alarm_time − window, alarm_time]의 제니퍼 fatal 이벤트를 게이트웨이에 묻고 있으면 PAGE로
+    # **승격만** 한다. 억제 단계·SUPPRESS·심각도3 단락은 건드리지 않는다. 호출 실패·오류 응답은
+    # 판정 불변 + 사유 로그·감사. 기본 off(또는 URL 비움)면 클라이언트 미생성·호출 0 → 게이트 판정
+    # 비트동일(회귀 0). 토큰은 게이트웨이 Bearer(`APM_GATEWAY_BEARER_TOKEN`)이며 제니퍼 토큰이
+    # 아니다(제니퍼 자격증명은 게이트웨이에만).
+    app_impact_enabled: bool = False          # (J4) app_impact 승격 옵트인
+    apm_mcp_url: str = ""                     # (J4) 게이트웨이 MCP SSE 엔드포인트 — 비면 off
+    apm_mcp_token: SecretStr = SecretStr("")  # (J4) 게이트웨이 정적 Bearer 토큰(비면 무헤더)
+    app_impact_window_minutes: int = 10       # (J4) 사건창(분) — apm_events lookback_minutes
 
     model_config = {"env_prefix": "NOISE_", "env_file": ".env", "extra": "ignore"}
 
@@ -1399,6 +1410,17 @@ class AppConfig(BaseSettings):
         ),
     )
 
+    # plans/121 묶음 B — **신규 플래그 없이 기본 동작을 바꾼 결함 교정**
+    # (D-162 예외 · D-272 ③ · D-273). 대상: 2단 턴 초기화(TP-1.1 — `create_followup_input` 6키 ·
+    # 부분 결과는 이번 계획 행만 1.1b) · 계획 요약 필드(TP-0.1) ·
+    # 재계획 신규 task 교정·DAG(TP-1.3) · 닫힌 어휘(TP-1.7) ·
+    # 병합 판정 선행과 병합 경로 침묵 손실 교정(TP-4.1·11.6) · 병합 출처(TP-11.3) ·
+    # 0건 퍼널 사유 전달(TP-11.5) · 재계획 예시 1(TP-11.4) · 테이블 목록 정렬(TP-11.10).
+    # 근거: 현행 동작 자체가 결함이고 끄는 쪽이 결함 보존이라 스위치를 두지 않는다 —
+    # 한 재측정 묶음으로 기준선(R1) 대비 잰다(D-251 ⑦).
+    # 묶음 C도 확정 게이트대로 플래그 없이 바꿨다(D-273 ⑥~⑪): 존 재진입 복합 계획 복원(TP-1.2 ·
+    # G-30) · 폴백 경과 노트 플래그 무관(TP-1.6 — D-224 ⑥ 부분 개정) · 2단 병합 불성립 복합 턴의
+    # 단계별 답변(TP-4.5 · G-7 ① — D-062 개정).
     # 결과 기반 재계획 최대 반복 (무한 루프 방지, R-A3/R-11)
     max_replan: int = 3
     # 예산 인지 재계획 프롬프트(plans/119 T-6 · 문헌 L-9) — **기본 off = 현행과 비트 동일**(D-162 ·

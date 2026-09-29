@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KB AIOps 포탈</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css?v=22">
+    <link rel="stylesheet" href="/static/css/style.css?v=23">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
 </head>
@@ -20,7 +20,8 @@
     </div>
     <header>
         <div class="container">
-            <h1 class="has-mark"><img class="brand-mark" src="/static/img/kb-mark.svg" alt="">KB AIOps 포탈</h1>
+            <!-- 제목을 누르면 시스템 소개(plans/124 · D-277)를 새 탭으로 연다 — 같은 탭이면 대화 화면이 사라진다(D-248) -->
+            <h1 class="has-mark"><a id="brandIntroLink" class="brand-link" href="/intro" target="_blank" rel="noopener" title="시스템 소개 (새 탭)"><img class="brand-mark" src="/static/img/kb-mark.svg" alt="">KB AIOps 포탈</a></h1>
             <nav>
                 <span class="status-badge-wrapper">
                     <span id="statusBadge" class="status-badge status-badge--checking">CHECKING</span>
@@ -75,6 +76,8 @@
                     <div class="manual-menu-list">
                         <a id="userManualLink" href="/manual/user" target="_blank" rel="noopener">사용자 매뉴얼</a>
                         <a id="adminManualLink" href="/manual/admin" target="_blank" rel="noopener" style="display: none;">관리자 매뉴얼</a>
+                        <!-- 시스템 소개(plans/124 · D-277): 누구나 · 새 탭. 머리글 버튼을 늘리지 않으려 이 메뉴에 둔다. -->
+                        <a id="introLink" href="/intro" target="_blank" rel="noopener">시스템 소개</a>
                     </div>
                 </details>
                 <a id="adminEntryLink" href="/admin" target="_blank" rel="noopener" class="btn btn-secondary"

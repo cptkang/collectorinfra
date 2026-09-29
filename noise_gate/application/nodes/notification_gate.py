@@ -10,6 +10,9 @@ alarm_analyzer 다음에 위치하여, 결정적 정책 함수 `decide_notificat
     - 감사 기록(store.record) 실패는 발송을 막지 않는다(graceful — warning 후 진행).
     - analysis_result가 없거나 error 상태면 결정을 만들지 않는다. AI 분석 실패는 analyzer가
       원문 알람으로 만든 결과(result.error 표시)를 넘기므로 여기서도 판단·기록한다.
+    - (plans/87 J4) app_impact_enabled일 때만, 매트릭스 DASHBOARD·TICKET 폴스타 알람에 한해 APM
+      게이트웨이(`apm_client` 주입)에 fatal 이벤트를 묻고 있으면 승격만 한다. 조회 실패는 판정
+      불변 + 사유(로그·`stage_evidence.app_impact_error`).
 
 계층: application → domain(notification_policy.decide_notification) 단방향 의존만 사용한다.
 """
@@ -17,11 +20,18 @@ alarm_analyzer 다음에 위치하여, 결정적 정책 함수 `decide_notificat
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
-from noise_gate.domain.notification_policy import decide_notification
+from noise_gate.domain.notification_policy import (
+    STAGE_MATRIX,
+    TIER_DASHBOARD,
+    TIER_TICKET,
+    decide_notification,
+)
+from noise_gate.domain.process_rank import is_apm_event
 
 logger = logging.getLogger(__name__)
 
@@ -54,22 +64,55 @@ async def notification_gate_node(
         return {}  # 안전장치 — 게이트 off면 결정하지 않음 (회귀 0)
 
     event = state["alarm_event"]
-    decision = decide_notification(
-        event,
-        state.get("history_stats"),
-        result,
-        state.get("noise_context"),
-        gate_cfg,
-        self_heal=bool(state.get("self_heal", False)),
-        inhibited=bool(state.get("inhibited", False)),
-        flapping=bool(state.get("flapping", False)),
-        storm=bool(state.get("storm", False)),
-        correlated=bool(state.get("correlated", False)),
-        # (Plan 60 E7-a) 워커가 산출한 계획-무해 코로보레이션 게이팅용 주석 신호(off/없으면 None).
-        annotation=state.get("annotation"),
-        # (Plan 54 모듈 4) 워커가 읽어 넘긴 활성 침묵 규칙(off/없으면 빈 목록 → 단계 미평가).
-        silence_rules=state.get("silence_rules"),
-    )
+
+    def _decide(noise_ctx):  # noqa: ANN001, ANN202 — 같은 입력으로 한 번 더 판정하기 위한 묶음
+        return decide_notification(
+            event,
+            state.get("history_stats"),
+            result,
+            noise_ctx,
+            gate_cfg,
+            self_heal=bool(state.get("self_heal", False)),
+            inhibited=bool(state.get("inhibited", False)),
+            flapping=bool(state.get("flapping", False)),
+            storm=bool(state.get("storm", False)),
+            correlated=bool(state.get("correlated", False)),
+            # (Plan 60 E7-a) 워커가 산출한 계획-무해 코로보레이션 게이팅용 주석 신호
+            # (off/없으면 None).
+            annotation=state.get("annotation"),
+            # (Plan 54 모듈 4) 워커가 읽어 넘긴 활성 침묵 규칙(off/없으면 빈 목록 → 단계 미평가).
+            silence_rules=state.get("silence_rules"),
+        )
+
+    noise_ctx = state.get("noise_context")
+    decision = _decide(noise_ctx)
+
+    # (plans/87 J4 · R-7) app_impact 승격 — 매트릭스 결과가 DASHBOARD·TICKET인 폴스타 알람만
+    # 게이트웨이에 묻는다(PAGE·억제 결과는 바뀔 수 없으니 부르지 않는다 — 부하·지연 절약). fatal
+    # 이벤트가 있으면 예약키 app_impact를 채워 같은 입력으로 다시 판정한다(도메인 step 9.5가 PAGE로
+    # 올린다). 실패는 판정 그대로 두고 사유를 로그·감사에 남긴다. off(기본)면 이 블록에 들어오지
+    # 않아 비트 동일.
+    app_impact_audit: dict[str, Any] = {}
+    updated_ctx: dict[str, Any] | None = None
+    if _app_impact_applicable(gate_cfg, event, decision, noise_ctx):
+        client = configurable.get("apm_client")
+        if client is None:
+            logger.debug(
+                "app_impact 조회 생략 — 게이트웨이 클라이언트 없음: alarm_id=%s", event.alarm_id
+            )
+        else:
+            app_impact, failure = await _fetch_app_impact(client, event, gate_cfg)
+            if app_impact is not None:
+                updated_ctx = {**noise_ctx, "app_impact": app_impact}
+                promoted = _decide(updated_ctx)
+                logger.info(
+                    "app_impact 승격: alarm_id=%s %s→%s fatal=%d types=%s",
+                    event.alarm_id, decision.tier, promoted.tier,
+                    app_impact["fatal_events"], app_impact["event_types"],
+                )
+                decision = promoted
+            elif failure:
+                app_impact_audit["app_impact_error"] = failure
 
     store = configurable.get("decision_store")
     if store is not None:
@@ -81,6 +124,8 @@ async def notification_gate_node(
             stage_evidence = {
                 **(getattr(decision, "evidence", None) or {}),
                 **(detected.get(getattr(decision, "stage", "")) or {}),
+                # (plans/87 J4) 게이트웨이 조회 실패 사유 — 판정은 바뀌지 않았다(없으면 키 없음).
+                **app_impact_audit,
             }
             # AI 분석이 실패해 원문 알람으로 판단한 건 — 결정 추적에서 구별되게 남긴다
             if getattr(result, "error", None):
@@ -116,4 +161,94 @@ async def notification_gate_node(
         decision.tier,
         decision.reason,
     )
-    return {"notification_decision": decision}
+    out: dict[str, Any] = {"notification_decision": decision}
+    if updated_ctx is not None:
+        out["noise_context"] = updated_ctx  # 예약키 app_impact를 채운 컨텍스트(승격했을 때만)
+    return out
+
+
+# ── plans/87 J4: app_impact 승격(APM 게이트웨이 `apm_events`) ─────────────────
+# fatal 이상으로 세는 레벨 — 게이트웨이 레벨 매핑(fatal·critical → 심각도 3 · SPEC-apm-gateway §5)과
+# 같다.
+# `level="fatal"`로 요청하지만, 다른 레벨 행이 섞여 와도 승격 근거로 쓰지 않는다(과승격 방지 · R-7).
+_APP_IMPACT_LEVELS: frozenset[str] = frozenset({"fatal", "critical"})
+
+
+def _app_impact_applicable(gate_cfg, event, decision, noise_ctx) -> bool:  # noqa: ANN001
+    """app_impact를 물을 대상인지 — 플래그 on · 폴스타(비 APM) 알람 · 매트릭스 DASHBOARD·TICKET."""
+    if not getattr(gate_cfg, "app_impact_enabled", False):
+        return False
+    if is_apm_event(event) or not isinstance(noise_ctx, dict):
+        return False
+    return decision.stage == STAGE_MATRIX and decision.tier in (TIER_DASHBOARD, TIER_TICKET)
+
+
+async def _fetch_app_impact(client, event, gate_cfg) -> tuple[dict | None, str]:  # noqa: ANN001
+    """게이트웨이 `apm_events`로 같은 hostname·사건창의 fatal 이벤트를 조회한다.
+
+    Returns:
+        (app_impact, "") — fatal 이벤트가 있을 때
+                           `{source, fatal_events, event_types, was_signals}`.
+        (None, "")       — 조회는 됐고 fatal 이벤트가 없다(승격 없음).
+        (None, 사유)     — 조회하지 못했다(판정 불변 · 사유는 호출부가 감사에 남긴다).
+    """
+    alarm_id = str(getattr(event, "alarm_id", "") or "")
+    hostname = str(getattr(event, "hostname", "") or "").strip()
+    if not hostname:
+        reason = "invalid_argument — 알람 hostname이 비어 있다"
+        logger.info("app_impact 조회 생략: alarm_id=%s 사유=%s", alarm_id, reason)
+        return None, reason
+    alarm_time = getattr(event, "alarm_time", None)
+    if not isinstance(alarm_time, datetime):
+        reason = "invalid_argument — 알람 발생 시각이 없다"
+        logger.info("app_impact 조회 생략: alarm_id=%s 사유=%s", alarm_id, reason)
+        return None, reason
+
+    probe = getattr(client, "unreachable_reason", None)
+    unreachable = await probe() if probe is not None else None
+    if unreachable:
+        reason = f"gateway_unreachable — {unreachable}"
+        logger.warning("app_impact 조회 실패(판정 유지): alarm_id=%s 사유=%s", alarm_id, reason)
+        return None, reason
+    try:
+        resp = await client.apm_events(
+            hostname=hostname,
+            # naive(폴스타 알람 시각 그대로) — 게이트웨이가 APM_TIMEZONE으로 해석한다(§3 공통 인자).
+            reference_time=alarm_time.isoformat(),
+            lookback_minutes=int(getattr(gate_cfg, "app_impact_window_minutes", 10)),
+            level="fatal",
+            investigation_id=alarm_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — 통신 실패도 판정을 막지 않는다(사유만 남긴다)
+        reason = f"gateway_error — {exc}"
+        logger.warning("app_impact 조회 실패(판정 유지): alarm_id=%s 사유=%s", alarm_id, reason)
+        return None, reason
+
+    if resp.get("error"):
+        reason = f"{resp.get('error')} — {resp.get('reason') or ''}".strip(" —")
+        logger.warning(
+            "app_impact 게이트웨이 오류 응답(판정 유지): alarm_id=%s 사유=%s", alarm_id, reason
+        )
+        return None, reason
+    rows = resp.get("rows")
+    if not isinstance(rows, list):
+        reason = "contract_violation — 응답에 rows 배열이 없다"
+        logger.warning("app_impact 응답 계약 위반(판정 유지): alarm_id=%s", alarm_id)
+        return None, reason
+
+    fatal_rows = [
+        r for r in rows
+        if isinstance(r, dict) and str(r.get("level") or "").strip().lower() in _APP_IMPACT_LEVELS
+    ]
+    if not fatal_rows:
+        logger.debug("app_impact 없음(fatal 0건): alarm_id=%s host=%s", alarm_id, hostname)
+        return None, ""
+    was_signals = resp.get("was_signals") if isinstance(resp.get("was_signals"), list) else []
+    return {
+        "source": str(resp.get("source") or ""),
+        "fatal_events": len(fatal_rows),
+        "event_types": sorted({str(r["event_type"]) for r in fatal_rows if r.get("event_type")}),
+        "was_signals": sorted(
+            {str(s["kind"]) for s in was_signals if isinstance(s, dict) and s.get("kind")}
+        ),
+    }, ""

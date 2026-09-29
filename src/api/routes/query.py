@@ -778,6 +778,93 @@ def _merge_node_delta(state: dict[str, Any], output: Any) -> None:
         state.update(output)
 
 
+def _dependency_notes_field(state: dict[str, Any]) -> dict[str, Any]:
+    """순차 처리 경과 노트를 스트림 응답에 싣는 필드 — 노트가 없으면 키를 싣지 않는다(바이트 불변).
+
+    비스트림 두 경로와 스트림 폴백(`ainvoke`)의 응답 조립에만 있던 키를 스트림 `done`과 astream
+    `response_data`에도 싣는다(plans/121 TP-11.8 · 4경로 대칭 D-205·D-066) — 측정 정본인 스트림
+    하네스가 게이트·브리지 경과를 구조로 받는다. astream 입력은 종료 노드 델타가 아니라 누적 상태다.
+    """
+    notes = state.get("dependency_notes")
+    return {"dependency_notes": notes} if notes else {}
+
+
+def _plan_summary_field(state: dict[str, Any]) -> dict[str, Any]:
+    """2단 계획 요약(plans/121 TP-0.1) — 계획이 없는 단(1·3단)은 키를 싣지 않는다(바이트 불변).
+
+    **개수·코드만** 싣는다(값·문장 없음 · D-219 반출): 계획 경로 코드 · task별 담당·상태·간선·
+    조회 DB · 재계획 횟수 · 닫힌 어휘 폴백 건수(TP-1.7) · 경과 노트 종류별 건수 · 키 브리지
+    등급 건수 · 분해 폴백 원인 코드(TP-1.6 — 폴백한 턴만). 상태는 이번 턴 값이다 — 후속 턴 입력이
+    계획 키를 비운다(TP-1.1).
+    """
+    from src.orchestration.intent_planner import DECOMPOSE_FALLBACK_KEY, PLAN_PATH_KEY
+    from src.orchestration.schemas import AGENT_FALLBACK_KEY
+
+    path = state.get(PLAN_PATH_KEY)
+    plan = [t for t in (state.get("task_plan") or []) if isinstance(t, dict)]
+    if not path or not plan:
+        return {}
+    results = state.get("task_results") or {}
+    notes = list(state.get("dependency_notes") or [])
+    tasks = []
+    for task in sorted(plan, key=lambda t: t.get("order", 0)):
+        res = results.get(task.get("task_id")) if isinstance(results, dict) else None
+        res = res if isinstance(res, dict) else {}
+        notes.extend(res.get("dependency_notes") or [])
+        tasks.append({
+            "id": task.get("task_id"),
+            "agent": task.get("agent"),
+            "status": task.get("status"),
+            "depends_on": list(task.get("depends_on") or []),
+            "input_from": list(task.get("input_from") or []),
+            "db_ids": list(res.get("target_db_ids") or []),
+            "db_origin": res.get("db_origin"),
+        })
+    seen: set[tuple[Any, ...]] = set()
+    kinds: dict[str, int] = {}
+    bridge: list[dict[str, Any]] = []
+    for note in notes:
+        if not isinstance(note, dict):
+            continue
+        key = (note.get("kind"), note.get("task_id"), note.get("detail"))
+        if key in seen:
+            continue
+        seen.add(key)
+        kind = str(note.get("kind"))
+        kinds[kind] = kinds.get(kind, 0) + 1
+        if kind == "bridge" and isinstance(note.get("counts"), dict):
+            bridge.append({"task_id": note.get("task_id"), **note["counts"]})
+    summary: dict[str, Any] = {
+        "plan_path": path,
+        "task_count": len(plan),
+        "tasks": tasks,
+        "replan_count": int(state.get("replan_count") or 0),
+        "agent_fallback": sum(1 for t in plan if t.get(AGENT_FALLBACK_KEY)),
+        "note_kinds": kinds,
+    }
+    if bridge:
+        summary["bridge"] = bridge
+    decompose_fallback = state.get(DECOMPOSE_FALLBACK_KEY)
+    if decompose_fallback:
+        summary["decompose_fallback"] = str(decompose_fallback)
+    return {"plan_summary": summary}
+
+
+def _plan_summary_carry(response_data: dict[str, Any]) -> dict[str, Any]:
+    """응답 본문에 실린 계획 요약을 `done` 이벤트로 옮긴다 — 없으면 키 없음(TP-0.1)."""
+    summary = response_data.get("plan_summary")
+    return {"plan_summary": summary} if summary else {}
+
+
+def _pre_gate_plan_summary() -> dict[str, Any]:
+    """그래프 밖 사전 게이트(존 역질문 등)로 끝난 턴의 계획 요약 — 2단 확정일 때만(TP-0.1)."""
+    from src.observability.ladder import current_ladder
+
+    if (current_ladder() or {}).get("tier") != "intent_orchestration":
+        return {}
+    return {"plan_summary": {"plan_path": "pre_gate", "task_count": 0}}
+
+
 def _executed_sql(state: dict) -> str | None:
     """「실행된 SQL 보기」에 보일 SQL 문자열 (plans/116 §10.3).
 
@@ -1002,6 +1089,23 @@ def _zone_answer_parse_reuse(
     return dict(parsed)
 
 
+def _zone_answer_plan_reuse(
+    body: QueryRequest, checkpoint_state: dict[str, Any]
+) -> dict[str, Any] | None:
+    """존 역질문 답변 턴이면 직전 턴 계획 스냅샷을, 아니면 None (plans/121 TP-1.2 · G-30 · D-272 ⑪).
+
+    조건은 Q-2 파싱 재사용과 같다(`_zone_answer_parse_reuse`가 값을 낼 때만). 스냅샷
+    (`zone_reentry_plan`)은 2단 집계기가 존 역질문 턴의 **복합 계획**일 때만 남긴다. 앞단 게이트
+    (그래프 미실행)는 스냅샷이 없어 해당하지 않는다(G-30 (b) — 범위 밖).
+    """
+    if _zone_answer_parse_reuse(body, checkpoint_state) is None:
+        return None
+    snapshot = checkpoint_state.get("zone_reentry_plan")
+    if not isinstance(snapshot, dict) or not snapshot.get("tasks"):
+        return None
+    return dict(snapshot)
+
+
 def _build_turn_input_state(
     body: QueryRequest,
     thread_id: str,
@@ -1111,6 +1215,9 @@ def _build_turn_input_state(
             delta["resolved_limit"] = resolve_query_limit(body.query, _ZONE_SCAN_LIMIT)
         # 존 역질문 답변 턴은 직전 턴 파싱본을 재사용한다(plans/119 Q-2 · D-267 ③ — 요청 스코프).
         delta["reuse_parsed_requirements"] = _zone_answer_parse_reuse(body, checkpoint_state)
+        # 같은 조건에서 직전 턴 복합 계획 스냅샷을 복원 입력으로 옮긴다(plans/121 TP-1.2 · G-30).
+        # 원 키(`zone_reentry_plan`)는 위 델타가 None으로 덮는다 — 체크포인트는 병합 전에 읽었다.
+        delta["reuse_task_plan"] = _zone_answer_plan_reuse(body, checkpoint_state)
         # 범위를 좁혔으면 그 사실을 state에 남긴다(D-176 후속4 — 침묵 절단 금지).
         delta["scope_narrowed"] = (
             _scope_narrowed_or_none(body, config, current_user) if config else None
@@ -1738,7 +1845,14 @@ async def _partial_on_timeout(
     tracked = [row for row in (tracked_rows or []) if isinstance(row, dict)]
     if tracked:
         return PartialAnswer(rows=tracked, source="query_results")
-    return extract_partial_answer(await _get_checkpoint_state(graph, thread_config))
+    # 2단 그래프(`intent_planner` 노드가 있다 — 사다리 배타는 빌드 타임이다)면 이번 계획의 하위
+    # 작업 결과만 본다 — 최상위 행은 앞 턴 값이다(plans/121 TP-1.1b). 판정은 이 턴을 돌린 그래프로
+    # 한다(프로세스 전역 확정 기록은 테스트·재빌드 사이에 남는다).
+    nodes = getattr(graph, "nodes", None)
+    return extract_partial_answer(
+        await _get_checkpoint_state(graph, thread_config),
+        task_scoped=isinstance(nodes, dict) and "intent_planner" in nodes,
+    )
 
 
 def _partial_response_data(
@@ -1941,6 +2055,7 @@ async def process_query(
             response=clarification["question"],
             thread_id=thread_id,
             clarification=clarification,
+            **_pre_gate_plan_summary(),  # plans/121 TP-0.1
         ))
     # D-187: 저장 값 패널 삭제 버튼 — 파이프라인·LLM 없이 결정적 처리(/query/stream과 대칭)
     mem_delete = await _form_memory_delete_or_none(body, checkpoint_state, config)
@@ -2039,6 +2154,7 @@ async def process_query(
         "db_scope": build_db_scope(result, selected_db_ids=body.selected_db_ids),
         # 순차 처리 경과 노트(plans/88 · D-203) — 본문 블록의 구조화본
         "dependency_notes": result.get("dependency_notes"),
+        **_plan_summary_field(result),  # TP-0.1
         # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 키로 프론트 렌더
         "clarification": zone_clarification,
     }
@@ -2123,6 +2239,7 @@ async def process_query_stream(
                 "query_id": query_id,
                 "thread_id": thread_id,
                 "clarification": clarification,
+                **_pre_gate_plan_summary(),  # plans/121 TP-0.1
             })
         return StreamingResponse(
             turn.stream(clarification_generator()),
@@ -2359,6 +2476,8 @@ async def process_query_stream(
                                         # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
                                         # 종료 노드 델타가 아니라 누적 상태로(plans/120 S-1)
                                         "db_scope": build_db_scope(_scope_state, selected_db_ids=body.selected_db_ids),
+                                        **_dependency_notes_field(_scope_state),  # TP-11.8
+                                        **_plan_summary_field(_scope_state),  # TP-0.1
                                         "clarification": _zone_clar,
                                     }
                                     _store_result(query_id, {
@@ -2384,6 +2503,8 @@ async def process_query_stream(
                                         "form_fill_clarification": response_data.get("form_fill_clarification"),
                                         "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
                                         "db_scope": response_data.get("db_scope"),  # D-205
+                                        **_dependency_notes_field(response_data),  # TP-11.8
+                                        **_plan_summary_carry(response_data),  # TP-0.1
                                         # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                                         "clarification": response_data.get("clarification"),
                                         **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
@@ -2441,6 +2562,7 @@ async def process_query_stream(
                 # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
                 "db_scope": build_db_scope(result, selected_db_ids=body.selected_db_ids),
                 "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
+                **_plan_summary_field(result),  # TP-0.1
                 "clarification": _zone_clar,
             }
             _store_result(query_id, {
@@ -2465,6 +2587,8 @@ async def process_query_stream(
                 "form_fill_clarification": response_data.get("form_fill_clarification"),
                 "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
                 "db_scope": response_data.get("db_scope"),  # D-205
+                **_dependency_notes_field(response_data),  # TP-11.8
+                **_plan_summary_carry(response_data),  # TP-0.1
                 # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                 "clarification": response_data.get("clarification"),
                 **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
@@ -2565,6 +2689,7 @@ async def process_file_query(
             response=clarification["question"],
             thread_id=thread_id,
             clarification=clarification,
+            **_pre_gate_plan_summary(),  # plans/121 TP-0.1
         ))
 
     # 2. 파일 크기 검증 (최대 10MB)
@@ -2679,6 +2804,7 @@ async def process_file_query(
         # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
         "db_scope": build_db_scope(result, selected_db_ids=selected_list),
         "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
+        **_plan_summary_field(result),  # TP-0.1
     }
     _store_result(query_id, {
         **response_data,
@@ -2864,6 +2990,7 @@ async def process_file_query_stream(
                 "query_id": _clar_qid,
                 "thread_id": thread_id,
                 "clarification": clarification,
+                **_pre_gate_plan_summary(),  # plans/121 TP-0.1
             })
         return StreamingResponse(
             turn.stream(file_clarification_generator()),
@@ -3111,6 +3238,8 @@ async def process_file_query_stream(
                                         # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
                                         # 종료 노드 델타가 아니라 누적 상태로(plans/120 S-1)
                                         "db_scope": build_db_scope(_scope_state, selected_db_ids=selected_list),
+                                        **_dependency_notes_field(_scope_state),  # TP-11.8
+                                        **_plan_summary_field(_scope_state),  # TP-0.1
                                     }
                                     _store_result(query_id, {
                                         **response_data,
@@ -3140,6 +3269,8 @@ async def process_file_query_stream(
                                         "form_fill_clarification": response_data.get("form_fill_clarification"),
                                         "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
                                         "db_scope": response_data.get("db_scope"),  # D-205
+                                        **_dependency_notes_field(response_data),  # TP-11.8
+                                        **_plan_summary_carry(response_data),  # TP-0.1
                                         **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
                                         # 단계 타임라인(plans/119 T-0)
                                         "timeline": _finish_timeline(_watch, query_id, done=True),
@@ -3186,6 +3317,7 @@ async def process_file_query_stream(
                 # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
                 "db_scope": build_db_scope(result, selected_db_ids=selected_list),
                 "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
+                **_plan_summary_field(result),  # TP-0.1
             }
             _store_result(query_id, {
                 **response_data,
@@ -3212,6 +3344,8 @@ async def process_file_query_stream(
                 "form_fill_clarification": response_data.get("form_fill_clarification"),
                 "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
                 "db_scope": response_data.get("db_scope"),  # D-205
+                **_dependency_notes_field(response_data),  # TP-11.8
+                **_plan_summary_carry(response_data),  # TP-0.1
                 **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
                 "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0
             })

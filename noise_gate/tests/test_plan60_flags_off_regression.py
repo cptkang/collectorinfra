@@ -1002,3 +1002,97 @@ class TestE7AllFlagsOffBitIdentical:
             annotation=_planned(planned_work=True, resolution=True),
         )
         assert (d.tier, d.reason, d.priority) == (base.tier, base.reason, base.priority)
+
+
+# ─────────────────────────────────────────────────────────────
+# P. plans/87 J4 — app_impact 승격 off(기본)면 게이트 판정·노드 반환·그래프·트리거 페이로드 비트동일
+#    (spec/SPEC-apm-noise-gate.md §4 「플래그 off 비트 동일」)
+# ─────────────────────────────────────────────────────────────
+class _NeverCalledApmClient:
+    """off면 게이트 노드가 절대 만지면 안 되는 대역 — 호출되면 즉시 실패한다."""
+
+    async def unreachable_reason(self):
+        raise AssertionError("app_impact off인데 게이트웨이 도달성 확인을 호출했다")
+
+    async def apm_events(self, **kw):
+        raise AssertionError("app_impact off인데 apm_events를 호출했다")
+
+
+def _j4_event(severity: int = 1) -> AlarmEvent:
+    return AlarmEvent(
+        db_id="db1", server_name="srv-1", hostname="h1", ip_address="", resource_ancestry="",
+        alarm_id="J4-1", severity=severity, alarm_status="", resource_type="server.Disks",
+        resource_name="/data", alarm_name="디스크 사용률",
+        alarm_time=datetime(2026, 9, 29, 10, 0, 0),
+        conditions="", condition_log="",
+    )
+
+
+def _j4_analysis() -> SimpleNamespace:
+    return SimpleNamespace(ai_message_severity=None, pattern_type="", is_routine=None,
+                           llm_actionability=None, error=None)
+
+
+class TestPlan87AppImpactOffBitIdentical:
+    async def test_gate_node_never_asks_gateway_when_flag_off(self):
+        from noise_gate.application.nodes.notification_gate import notification_gate_node
+
+        ctx = {"importance_id": "2", "maintenance": False, "noti_policy": None,
+               "parent_avail_status": None, "source": "polestar_db"}
+        for gate in (
+            # 미설정(=off)
+            SimpleNamespace(enable_noise_gate=True, importance_value_map={"2": "보통"}),
+            SimpleNamespace(enable_noise_gate=True, importance_value_map={"2": "보통"},
+                            app_impact_enabled=False, apm_mcp_url="http://127.0.0.1:9096/sse"),
+        ):
+            state = {"alarm_event": _j4_event(1), "analysis_result": _j4_analysis(),
+                     "history_stats": None, "noise_context": dict(ctx)}
+            out = await notification_gate_node(state, {"configurable": {
+                "app_config": SimpleNamespace(noise_gate=gate),
+                "apm_client": _NeverCalledApmClient(), "decision_store": None,
+            }})
+            direct = decide_notification(_j4_event(1), None, _j4_analysis(), dict(ctx), gate)
+            got = out["notification_decision"]
+            assert set(out) == {"notification_decision"}  # noise_context 갱신 없음
+            fields = ("tier", "reason", "priority", "stage", "signals", "evidence")
+            assert [getattr(got, f) for f in fields] == [getattr(direct, f) for f in fields]
+            assert got.tier == "dashboard" and "앱 영향" not in got.reason
+
+    def test_reserved_key_none_is_bit_identical(self):
+        # agentic_enricher가 setdefault("app_impact", None)로 예약키를 채운 컨텍스트도 판정이 같다.
+        base = decide_notification(_event(2), None, None, _ctx(None), _cfg())
+        reserved = decide_notification(_event(2), None, None, _ctx(None, app_impact=None), _cfg())
+        assert (reserved.tier, reserved.reason, reserved.priority, reserved.evidence) == (
+            base.tier, base.reason, base.priority, base.evidence)
+
+    def test_worker_builds_no_client_when_off(self):
+        for ng in (SimpleNamespace(enable_noise_gate=True),
+                   SimpleNamespace(enable_noise_gate=True, app_impact_enabled=False,
+                                   apm_mcp_url="http://127.0.0.1:9096/sse"),
+                   SimpleNamespace(enable_noise_gate=False, app_impact_enabled=True,
+                                   apm_mcp_url="http://127.0.0.1:9096/sse")):
+            w = AlarmWorker(SimpleNamespace(noise_gate=ng, alarm=SimpleNamespace()))
+            assert w._build_apm_gateway_client() is None
+
+    def test_graph_node_set_unchanged_by_app_impact_flag(self):
+        nodes_off = set(build_alarm_graph(_gcfg()).get_graph().nodes.keys())
+        nodes_on = set(build_alarm_graph(_gcfg(
+            app_impact_enabled=True, apm_mcp_url="http://127.0.0.1:9096/sse",
+        )).get_graph().nodes.keys())
+        assert nodes_off == nodes_on
+
+    def test_config_defaults_are_off(self):
+        from src.config import NoiseGateConfig
+
+        cfg = NoiseGateConfig(_env_file=None)
+        assert cfg.app_impact_enabled is False and cfg.apm_mcp_url == ""
+        assert cfg.apm_mcp_token.get_secret_value() == "" and cfg.app_impact_window_minutes == 10
+
+    def test_polestar_trigger_payload_meta_unchanged(self):
+        from noise_gate.domain.investigation_payload import build_trigger_payload
+        from noise_gate.domain.notification_policy import NotificationDecision
+
+        decision = NotificationDecision(TIER_PAGE, "r", 1, {}, "fp")
+        payload = build_trigger_payload(_j4_event(2), decision)
+        assert payload["meta"] == {"recurrence": None, "cluster": None, "root_resource": None,
+                                   "source": "collectorinfra"}

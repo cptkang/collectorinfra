@@ -1,0 +1,155 @@
+{
+  "source": "local-docker",
+  "jennifer_version": "5.7.0.1",
+  "recorded_at": "2026-09-29T12:53:40+0900",
+  "masking_rules": [],
+  "fixtures": [
+    {
+      "file": "GET_api_domain__ok.json",
+      "template": "/api/domain",
+      "variant": "ok",
+      "label": "",
+      "status": 200
+    },
+    {
+      "file": "GET_api_instance__domain_not_connected.json",
+      "template": "/api/instance",
+      "variant": "domain_not_connected",
+      "label": "",
+      "status": 500
+    },
+    {
+      "file": "GET_api_realtime_instance__ok.json",
+      "template": "/api/realtime/instance",
+      "variant": "ok",
+      "label": "",
+      "status": 200
+    },
+    {
+      "file": "GET_api_activeService_list__domain_not_connected.json",
+      "template": "/api/activeService/list",
+      "variant": "domain_not_connected",
+      "label": "",
+      "status": 500
+    },
+    {
+      "file": "GET_api_metrics__ok.json",
+      "template": "/api/metrics",
+      "variant": "ok",
+      "label": "",
+      "status": 200
+    },
+    {
+      "file": "GET_api_dbmetrics_instance__domain_not_connected__heap_used.json",
+      "template": "/api/dbmetrics/instance",
+      "variant": "domain_not_connected",
+      "label": "heap_used",
+      "status": 500
+    },
+    {
+      "file": "GET_api_dbmetrics_instance__domain_not_connected__gc_time_usage.json",
+      "template": "/api/dbmetrics/instance",
+      "variant": "domain_not_connected",
+      "label": "gc_time_usage",
+      "status": 500
+    },
+    {
+      "file": "GET_api_dbmetrics_instance__domain_not_connected__service_rate.json",
+      "template": "/api/dbmetrics/instance",
+      "variant": "domain_not_connected",
+      "label": "service_rate",
+      "status": 500
+    },
+    {
+      "file": "GET_api_dbmetrics_instance__domain_not_connected__service_time.json",
+      "template": "/api/dbmetrics/instance",
+      "variant": "domain_not_connected",
+      "label": "service_time",
+      "status": 500
+    },
+    {
+      "file": "GET_api_dbmetrics_instance__domain_not_connected__active_service.json",
+      "template": "/api/dbmetrics/instance",
+      "variant": "domain_not_connected",
+      "label": "active_service",
+      "status": 500
+    },
+    {
+      "file": "GET_api_dbmetrics_instance__domain_not_connected__error_count.json",
+      "template": "/api/dbmetrics/instance",
+      "variant": "domain_not_connected",
+      "label": "error_count",
+      "status": 500
+    },
+    {
+      "file": "GET_api_transaction_time__ok__w0.json",
+      "template": "/api/transaction/time",
+      "variant": "ok",
+      "label": "w0",
+      "status": 200
+    },
+    {
+      "file": "GET_api_transaction_txid__domain_not_connected__tx0.json",
+      "template": "/api/transaction/txid",
+      "variant": "domain_not_connected",
+      "label": "tx0",
+      "status": 500
+    },
+    {
+      "file": "GET_api_transaction_profile_txt__domain_not_connected__tx0.json",
+      "template": "/api/transaction/profile.txt",
+      "variant": "domain_not_connected",
+      "label": "tx0",
+      "status": 500
+    },
+    {
+      "file": "GET_api_transaction_sql__domain_not_connected__tx0.json",
+      "template": "/api/transaction/sql",
+      "variant": "domain_not_connected",
+      "label": "tx0",
+      "status": 500
+    },
+    {
+      "file": "GET_api_dbsearch_event__domain_not_connected.json",
+      "template": "/api/dbsearch/event",
+      "variant": "domain_not_connected",
+      "label": "",
+      "status": 500
+    },
+    {
+      "file": "GET_api_dbsearch_error__domain_not_connected.json",
+      "template": "/api/dbsearch/error",
+      "variant": "domain_not_connected",
+      "label": "",
+      "status": 500
+    },
+    {
+      "file": "GET_api_status_application__domain_not_connected.json",
+      "template": "/api/status/application",
+      "variant": "domain_not_connected",
+      "label": "",
+      "status": 500
+    },
+    {
+      "file": "GET_api_status_sql__domain_not_connected.json",
+      "template": "/api/status/sql",
+      "variant": "domain_not_connected",
+      "label": "",
+      "status": 500
+    },
+    {
+      "file": "GET_api_status_external_call__domain_not_connected.json",
+      "template": "/api/status/external_call",
+      "variant": "domain_not_connected",
+      "label": "",
+      "status": 500
+    },
+    {
+      "file": "GET_api_v2_deploy_domainId__domain_not_connected.json",
+      "template": "/api-v2/deploy/{domainId}",
+      "variant": "domain_not_connected",
+      "label": "",
+      "status": 500
+    }
+  ]
+}

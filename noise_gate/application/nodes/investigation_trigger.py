@@ -34,6 +34,7 @@ from noise_gate.domain.investigation_payload import (
     is_availability_alarm,
 )
 from noise_gate.domain.notification_policy import _TIER_RANK, TIER_PAGE
+from noise_gate.domain.process_rank import is_apm_event
 from src.domain.host_authz import Principal, authorize_host_investigation
 from src.observability.investigation_metrics import record_investigation
 from src.utils.prior_targets import resolve_targets
@@ -85,6 +86,22 @@ async def investigation_trigger_node(
         return {}  # 클라이언트 미주입(빌드 실패/off) → graceful no-op
 
     event = state["alarm_event"]
+
+    # plans/87 J4: 게이트웨이가 인스턴스↔hostname 정합에 실패한 APM 이벤트는 `hostname=""`로 온다
+    # (SPEC-apm-gateway §5). 조사 계약 필수 필드(serverName·hostname·severity)를 채우지 못하므로
+    # 보내지 않고 사유를 남긴다 — 보내 봐야 조사 서비스가 rejected로 되돌릴 뿐이다(왕복 제거 ·
+    # 침묵 금지).
+    # 폴스타 이벤트는 이 분기에 들어오지 않는다(판정은 resourceType 기준).
+    if is_apm_event(event) and not str(getattr(event, "hostname", "") or "").strip():
+        reason = "APM 인스턴스 hostname 미해소 — 조사 필수 필드(hostname) 결측으로 조사 생략"
+        logger.warning(
+            "조사 트리거 생략: alarm_id=%s 사유=%s", getattr(event, "alarm_id", ""), reason
+        )
+        _audit(
+            configurable.get("decision_store"), event, decision,
+            None, "target_unresolved", reason,
+        )
+        return {}
 
     # 조사 대상 확정 — **채팅 경로와 같은 공통 모듈**을 쓴다 (Plan 78 W1-4 · G5 대칭).
     # 이벤트 경로는 알람 페이로드가 1순위이므로 그것만 넘긴다. 종전에는 hostname이

@@ -34,7 +34,8 @@ scenarios:
           selected_db_ids: ["polestar_cm_gp"]
         expect:
           status: completed
-          sql_must_match: ["(?i)\\blimit\\s+10000\\b"]
+          # plans/122 A-5 - 방언 중립(DB2 는 `FETCH FIRST n ROWS`). 원식: ["(?i)\\blimit\\s+10000\\b"]
+          sql_must_match: ["(?i)\\blimit\\s+10000\\b|\\bfetch\\s+first\\s+10000\\s+rows\\b"]
           sql_must_not_match: ["(?i)여의도"]
           row_count: {min: 1}
     perf: {target_ms: 30000, applies_to_turn: 2}
@@ -76,8 +77,13 @@ scenarios:
         expect:
           status: completed
           db_ids: ["polestar_cm_gp", "polestar_cm_yd"]
-          row_count: {min: 1}
-          manual_review: "두 DB 결과가 존 라벨로 구분돼 병합됐는지"
+          # plans/122 A-3 - 2개 DB 팬아웃 턴이라 `row_count`(단일 DB 전용)는 보류였다.
+          #   원식: row_count: {min: 1}
+          row_count_per_db: {min: 1}
+          # plans/122 A-1 - 존 라벨 = 멀티 DB 병합 응답의 결정적 존별 건수 줄(src/nodes/output_generator.py:1433
+          #   `**[존별 결과]** {레지스트리 display_name} N건 · …`). 표의 "출처" 열도 같은 display_name 이다(:871).
+          #   원 수동 문구: "두 DB 결과가 존 라벨로 구분돼 병합됐는지"
+          response_must_contain: ["[존별 결과]", "김포", "여의도"]
     teardown: [drop_thread]
   - id: F-03
     plans: [82, 90, 75]
@@ -96,7 +102,13 @@ scenarios:
           query: "은행존 및 공동존 여의도 센터의 모든 서버들 OS종류"
         expect:
           status: clarification
-          manual_review: "재질문 종류가 group_exclusive 인지(존 그룹 상호배타)"
+          # plans/122 A-1 - 계획서 §4 는 `clarification: {kind: group_exclusive}` 였으나 제품의 역질문 kind 는
+          #   상호배타여도 항상 `zone_select` 다(src/utils/query_gen_common.py:2120 · 상호배타는 페이로드의
+          #   `group_exclusive: true` 플래그 :2127-2129 - 평가기는 kind·선택지만 본다). 상호배타 위반의 결정적
+          #   표지는 질문 문구다(ZONE_GROUP_EXCLUSIVE_QUESTION :2066-2069 · 라우트 게이트 src/api/routes/query.py:1636).
+          #   원 수동 문구: "재질문 종류가 group_exclusive 인지(존 그룹 상호배타)"
+          clarification: {kind: zone_select}
+          response_must_contain: ["은행존과 공동존은 동시에 조회할 수 없습니다"]
       - send:
           selected_db_ids: ["polestar_b0"]
         expect:
@@ -180,7 +192,17 @@ scenarios:
         expect:
           status: completed
           db_ids: ["polestar_cm_gp", "polestar_cm_yd"]
-          manual_review: "멀티 경로 토큰 예산(D-159) 안에서 비교 표가 나왔는지"
+          # plans/122 A-1 - 두 존 모두 행을 내고 존 라벨로 갈랐는지(F-02 와 같은 존별 건수 줄 ·
+          #   src/nodes/output_generator.py:1433). 토큰 예산(D-159)은 응답에 실리지 않아 측정 불가 - 삭제.
+          #   원 수동 문구: "멀티 경로 토큰 예산(D-159) 안에서 비교 표가 나왔는지"
+          row_count_per_db: {min: 1}
+          response_must_contain: ["[존별 결과]", "김포", "여의도"]
+          # 「비교」 자체는 남긴다 - 존 라벨·DB별 행 수는 병합 표만 있어도 통과한다. run 20260923-140539 3단 행은 이
+          #   단언을 모두 통과하면서 "김포와 여의도 각각에 대한 평균·최대 CPU 사용률이 별도로 계산되어 있지 않으므로
+          #   두 지역 간 직접적인 평균 비교는 추가적인 집계 작업이 필요합니다"라고 답했다(재판정 대조에서 확인한
+          #   거짓 합격 후보 - 수동 문구를 지우지 않은 이유). 존별 집계 줄(:895-910)은 건수·합계·최대·최소만이고
+          #   조건부로만 붙어 비교의 결정적 표지가 아니다.
+          manual_review: "두 존의 CPU 사용률을 실제로 대조했는지(존별 집계·비교 서술 — 존 라벨이 붙은 병합 표만으로는 비교가 아니다)"
   - id: F-08
     plans: [82, 90, 75]
     title: "공동존 전체 서버 수"

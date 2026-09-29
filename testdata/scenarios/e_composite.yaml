@@ -24,7 +24,11 @@ scenarios:
         expect:
           status: completed
           sql_must_match: ["(?i)\\bcmm_resource\\b"]
-          manual_review: "캐시 갱신과 조회 두 태스크가 병렬로 돌고 결과가 합산됐는지"
+          # plans/121 TP-0.3 - 분해 프롬프트 예시 2 와 같은 질의다. 두 요구가 계획에 모두 있는지 본다.
+          # 병렬 여부(depends_on)는 보지 않는다 - 예시 2 자체가 depends_on 을 둔다(121 §2.2 예시 모순).
+          # 데이터 간선이 잘못 붙어 게이트가 서버 목록을 건너뛰면 위 sql_must_match 가 깨진다.
+          # (종전 수동 검토: "캐시 갱신과 조회 두 태스크가 병렬로 돌고 결과가 합산됐는지")
+          plan: {min_tasks: 2, agents: [cache_management, data_query]}
   - id: E-02
     plans: [88, 82, 80, 78]
     title: "현재 활성 상태인 심각 알람이 있는 서버들의 최근 1개월 CPU 사용률을 보여줘"
@@ -37,7 +41,11 @@ scenarios:
           query: "현재 활성 상태인 심각 알람이 있는 서버들의 최근 1개월 CPU 사용률을 보여줘"
         expect:
           status: completed
-          manual_review: "t1 알람 조회의 호스트 집합이 t2 WHERE IN 으로 전달됐는지 — 복합 경로는 executed_sql 에 마지막 태스크만 남아 기계로 못 본다"
+          # plans/121 TP-0.3 - D-086 · 분해 프롬프트 예시 3-1(같은 질의): 알람 선별 → 지표 조회는
+          # 2 task 분해가 정답이다. 호스트 집합 전달은 input_from 간선으로 본다(주입은 D-086 스코프
+          # 블록, 선행 0건이면 D-203 게이트).
+          # (종전 수동 검토: "t1 알람 조회의 호스트 집합이 t2 WHERE IN 으로 전달됐는지")
+          plan: {min_tasks: 2, edges: [[alarm_query, data_query]]}
   - id: E-03
     plans: [88, 82, 80, 78]
     title: "CPU 사용률이 높은 서버를 찾아 그 서버들의 프로세스를 분석해줘"
@@ -50,7 +58,10 @@ scenarios:
           query: "CPU 사용률이 높은 서버를 찾아 그 서버들의 프로세스를 분석해줘"
         expect:
           status: completed
-          manual_review: "프로세스 API 대상이 t1 결과 서버인지 — 프로세스는 SQL 경로가 아니다"
+          # plans/121 TP-0.3 - 분해 프롬프트 예시 3 과 같은 질의 + 순차 표지("찾아"·"그 서버" - D-203 ②).
+          # 뒤 task 는 시간성 신호가 없어 결정적 교정으로 process_query(실시간 API · D-046)가 된다.
+          # (종전 수동 검토: "프로세스 API 대상이 t1 결과 서버인지 — 프로세스는 SQL 경로가 아니다")
+          plan: {min_tasks: 2, edges: [[data_query, process_query]]}
   - id: E-04
     plans: [88, 82, 80, 78]
     title: "김포 서버 목록과 여의도 서버 목록을 각각 알려줘"

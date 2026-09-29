@@ -102,21 +102,32 @@ def _job_to_question(job) -> str:
     )
 
 
-def _build_mcp_servers(settings: AgentSettings) -> dict[str, dict] | None:
-    """AgentSettings 폴스타 MCP 접속 설정을 holmes Config.mcp_servers 형식으로 조립한다.
-
-    URL 미설정이면 None(로컬 vm_profile 경로 유지). 토큰(SecretStr) 설정 시 Bearer 헤더
-    첨부(D-125). 관측 데이터 접근 경계는 mcp_server 하나로 일원화(D-119) — 폴스타 SQL
-    고수준 도구·PromQL 도구가 이 한 엔드포인트에서 자동 발견된다(RemoteMCPToolset).
-    """
-    url = settings.polestar_mcp_url
-    if not url:
-        return None
-    config: dict = {"mode": "sse", "url": url, "health_check_tool": "list_sources"}
-    tok = settings.polestar_mcp_token
+def _sse_server_config(url: str, health_check_tool: str, tok) -> dict:  # noqa: ANN001 — SecretStr | None
+    """holmes `Config.mcp_servers` 항목 한 개(SSE · 헬스체크 도구 · 토큰이 있으면 Bearer — D-125)."""
+    config: dict = {"mode": "sse", "url": url, "health_check_tool": health_check_tool}
     if tok is not None and tok.get_secret_value():
         config["headers"] = {"Authorization": f"Bearer {tok.get_secret_value()}"}
-    return {"polestar": {"config": config}}
+    return {"config": config}
+
+
+def _build_mcp_servers(settings: AgentSettings) -> dict[str, dict] | None:
+    """AgentSettings MCP 접속 설정을 holmes Config.mcp_servers 형식으로 조립한다.
+
+    URL이 하나도 없으면 None(로컬 vm_profile 경로 유지). 토큰(SecretStr) 설정 시 Bearer 헤더
+    첨부(D-125). 폴스타 관측 데이터 접근 경계는 mcp_server 하나로 일원화(D-119) — 폴스타 SQL
+    고수준 도구·PromQL 도구가 이 한 엔드포인트에서 자동 발견된다(RemoteMCPToolset).
+
+    제니퍼 APM 게이트웨이(plans/87 J3 · D-274 ⑦)는 `apm_mcp_url`이 있을 때만 `"apm"` 서버로 더한다 —
+    폴스타 URL 없이 APM만 있어도 등록한다. `apm_mcp_url`이 비면 결과가 종전 dict(또는 None)와 같다.
+    """
+    servers: dict[str, dict] = {}
+    if settings.polestar_mcp_url:
+        servers["polestar"] = _sse_server_config(
+            settings.polestar_mcp_url, "list_sources", settings.polestar_mcp_token
+        )
+    if settings.apm_mcp_url:
+        servers["apm"] = _sse_server_config(settings.apm_mcp_url, "gateway_health", settings.apm_mcp_token)
+    return servers or None
 
 
 def _default_diagnose_fn(settings: AgentSettings):

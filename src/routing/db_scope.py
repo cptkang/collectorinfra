@@ -46,6 +46,14 @@ def extract_state_db_ids(state: Mapping[str, Any]) -> list[str]:
     return db_ids
 
 
+#: 존 선택의 적용 범위 표지(plans/121 TP-1.2) — 존 답변 턴에 복원한 계획 중 **존 게이트에 걸리지
+#: 않은** task에 단다. 값이 `ZONE_GROUP_ONLY`면 그 task는 분류를 거치고, 분류 대상 중 존 그룹 DB만
+#: 사용자가 고른 존으로 바꾼다(존 없는 시스템 DB는 그대로 — 교차 시스템 task가 폴스타 존으로
+#: 끌려가지 않게). 표지가 없으면 종전대로 선택 존으로 통째 고정한다.
+ZONE_SELECTION_SCOPE_KEY = "zone_selection_scope"
+ZONE_GROUP_ONLY = "zone_group_only"
+
+
 def zone_selection_db_ids(
     selected_db_ids: Sequence[str] | None,
     target_databases: Sequence[Any] | None,

@@ -16,20 +16,34 @@ group:
                                #   전에는 false 로 둔다. false 면 선언 밖 등급이 나와도
                                #   불합격이 아니라 manual(관측)이다. 금지 3종은 항상 불합격
   source: "docs/29"            # 선택. 이관 출처
+  requires_sources: [itam]     # 선택(plans/122 C-4b · D-276 ②). 이 군 시나리오의 **판정 전제 데이터**가
+                               #   있는 소스 — 레지스트리(config/db_registry.yaml) db_id 또는 비SQL
+                               #   시스템 id(catalog.NON_SQL_SOURCES · 예 prometheus). 모르는 id 는
+                               #   로더가 거부한다. 러너는 run 서버의 활성 소스에 없으면 시나리오를
+                               #   **선택하지 않고** 사유를 적재한다. 선언이 없으면 D-216 ③대로 실행·보류.
+                               #   **판정 계약 지문(judgement_digest)에 들어가지 않는다**(선택 전용)
 
 scenarios:
   - id: F-01                   # 필수. 고유. 중복이면 거부(V2) — 재개 키가 충돌해 한 건이 사라진다
     plans: [82, 90, 75]        # 필수. **빈 리스트 금지**(V1). 계획서 역추적의 유일한 출처이며
                                #   이 필드가 "plans 폴더의 기능들을 테스트" 요건을 검증 가능하게 만든다
     title: "존 선택 역질문 -> 단일 존 선택"
-    kind: normal               # normal | compound | misuse | mistake | misconception | control
+    kind: normal               # normal | compound | misuse | mistake | misconception | control | probe
                                #   misuse/mistake/misconception 은 pair_with 필수(V16)
+                               #   probe(plans/122 K-1) = 관측 전용 — 기계 판정 대상이 아니다. 판정
+                               #   어휘는 그대로이고(D-241 ①) 정상군만 고르는 소비처(합격 가능 가드 ·
+                               #   벤치 load_normal_catalog)에서 자동으로 빠진다
     env: closed                # closed | sandbox | both. --env 와 안 맞으면 사유와 함께 건너뛴다
     profile: baseline          # config/scenarios/profiles.yaml 의 키. 미정의면 거부(V2)
     cache_state: warm          # cold | warm. cold 는 군 맨 앞에 배치된다(순서가 결과를 바꾼다)
     endpoint: stream           # stream | plain | file | file_stream
                                #   stream 이 측정 정본이다 — 성공 건의 노드별 지연을 주는 유일한 경로
-    upload: null               # file/file_stream 이면 필수. 저장소 루트 기준 상대 경로
+    upload: null               # file/file_stream 이면 필수(upload_generate 가 없으면). 저장소 루트 기준 상대 경로
+    upload_generate: null      # 선택(plans/122 H-6). 러너가 실행 시 만드는 업로드 —
+                               #   {ext: .xlsx|.csv|.xls, size_bytes: 1..67108864}. 저장소에 둘 수 없는
+                               #   입력(한도 초과 크기·거부 확장자)용. upload 와 함께 쓰지 않고,
+                               #   endpoint 가 file|file_stream 이어야 한다
+    requires_sources: null     # 선택(plans/122 C-4b). 군 헤더 값을 덮는다(없으면 물려받는다)
     repeat: null               # 선택. 미지정 시 R군은 3, 나머지는 --repeat 값
 
     turns:                     # 필수. 비면 거부
@@ -62,11 +76,95 @@ scenarios:
           #   filled_columns: 반드시 채워져야 하는 열(없으면 columns 전부)
           #   optional_columns: **공란이 정답인** 자유 서술 열 — filled_rows 를 깎지 않는다
           #     (선언하지 않으면 종전과 동일. '비고' 같은 열의 처분은 G-4 사람 확정 사항)
+          #   --- xlsx 확장(plans/122 H-4) — 정의 밖 하위 키는 로더가 거부한다 ---
+          #   header_row: 5                         머리글 행 번호(1-based · 기본 1 = 첫 행 · 선언하지
+          #     않으면 종전과 바이트 동일). 제목 행 아래에 머리글이 있는 양식. 데이터는 그 다음 행부터
+          #   header_rows: [5, 6]                   2단 머리글(오름차순 · header_row 와 함께 쓰지 않는다).
+          #     열 이름 = 위→아래 칸 문구를 `상위/하위` 로 잇는다. 빈 칸이 병합 범위 안이면 그 범위
+          #     좌상단 값(가로 병합 E5:J5 → E~J 가 같은 상위 · 세로 병합 B5:B6 → 6행도 5행 값), 빈 값과
+          #     바로 위와 같은 값은 뺀다(하위가 없으면 상위만 · 상위가 없으면 하위만). 공백(줄바꿈
+          #     포함)은 한 칸으로 접는다 — 예: "월중평균사용률(최근 6개월간)/M" · "처리능력/(TPMC)" ·
+          #     "제조사(모델명)" · "서버위치/설치장소 (주센터, 재해복구센터 등)". columns · filled_rows ·
+          #     filled_columns · optional_columns 와 아래 값 단언이 모두 이 이름으로 본다
+          #   value_range: {"CPU 평균": [0, 100]}   열 값이 [하한, 상한](양 끝 포함). 빈 칸은 세지
+          #     않지만 숫자가 하나도 없으면 불합격. 문자열은 공백을 뺀 뒤 숫자로 읽는다
+          #   value_range: [{columns: [cpu_avg, avg_cpu], range: [0, 100]}]   별칭 목록 형식(file ·
+          #     result 공통) — run 마다 갈리는 열 이름. 적은 순서로 머리글에 있는 첫 별칭을 쓰고, 하나도
+          #     없으면 불합격(상세에 머리글). 종전 매핑 형식과 섞지 않고 목록 항목은 두 키만 쓴다
+          #   unique_by: ["호스트명", "월"]         열 조합이 행마다 유일(서버당 1행 · 서버×월 1행)
+          #   columns_differ: [["서버명", "호스트명"]]  두 열이 **전 행에서 같으면**(사본) 불합격.
+          #     행 단위 다름은 요구하지 않는다 — name=hostname 인 정상 서버가 있다(122 §9.1 H-04)
+          #   empty_columns: ["TPMC"]               공란이 **정답**인 열 — 채워지면 불합격
+          #     (optional_columns 는 공란을 허용할 뿐, 채워져도 통과다)
+          #   column_equals: {담당자: 인프라팀}      모든 데이터 행의 값이 이것
+          #   style_preserved: true                 업로드 원본(upload) 대비 사용자 지정 열 너비·병합
+          #     셀이 그대로. 원본이 없으면 보류
+          #   불합격 상세에는 개수와 예시 값 최대 3개만 싣는다(행 원문 없음 — G-4)
+          #   --- docx(plans/122 H-3) — xlsx 하위 키와 함께 쓰지 않는다 ---
+          file:
+            docx:
+              no_placeholders: true               # 본문·표·머리글/바닥글에 {{…}} 가 남지 않았다
+              tables: [{index: 0, min_rows: 6, first_row: ["서버명", "IP주소", "CPU사용률"]}]
+                                                  # index 0 = 첫 표 · min_rows 행 수 하한 ·
+                                                  #   first_row 행 0(보통 머리글) 셀 문구
+              styles_preserved: true              # 업로드 원본 대비 스타일 ID — 본문 문단 · 표 스타일 ·
+                                                  #   더한 행은 원본 첫 데이터 행 스타일의 복제.
+                                                  #   python-docx 가 없거나 원본이 없으면 보류
+
+          # --- 관측값 단언(plans/122 H-5) — 관측하지 못하면 불합격이 아니라 보류 ---
+          sql_executed: false          # 관측 SQL 유무. 역질문으로 끝난 턴·모의 실행(SQL 수집기 없음)은
+                                       #   보류(sql_must_match 와 같은 규칙). false 인데 SQL 은 못 보고
+                                       #   행만 나왔으면 보류
+          node_path_must_not: [query_generator]   # 이 노드를 밟지 않았다. 노드 경로를 못 봤으면 보류
+          status_any: [clarification, completed]  # 상태가 이 중 하나(completed · clarification · error ·
+                                       #   awaiting_approval · partial)
+          form_memory_panel: present   # present | absent — done 의 저장 값 패널(D-187) 유무
+          stream: {ttft_ms: {max: 8000}, max_event_gap_ms: {max: 15000}}
+                                       # 첫 토큰·최대 무이벤트 간격 상한(ms). 값이 없으면(토큰 없는
+                                       #   턴·옛 서버) 보류
+          dependency_notes_contains: [gate]   # done.dependency_notes 에 이 종류(kind)의 노트가 있다
+                                       #   (catalog.DEPENDENCY_NOTE_KINDS = src/utils/prior_dependency
+                                       #   NOTE_*). 계획 요약(plan_summary)이 없거나 사전 게이트면 보류
+
+          # --- 결과 행 단언(plans/122 H-1 · G-4) — 러너가 /query/{id}/download-csv 로 받은 행 ---
+          result:
+            columns: ["hostname", ["cpu_avg", "avg_cpu"]]   # 열 이름 또는 별칭 목록(하나라도 있으면)
+            filled_columns: ["hostname"]                    # 전 행이 채워진 열
+            value_range: {cpu_avg: [0, 100]}   # 또는 별칭 목록 [{columns: [cpu_avg, avg_cpu], range: [0, 100]}]
+            unique_by: ["hostname"]
+            allow_empty: false         # 0행이 정답이면 true. 아니면 0행일 때 선언한 하위 단언이 전부 불합격
+                                       # 결과 행을 못 받았으면(미수집·unavailable) 보류. 절단된 결과는
+                                       #   받은 행만 판정하고 상세에 절단 사실을 싣는다
+
+          # --- 실 DB 오라클 단언(plans/122 트랙 O · O-2) — 정답을 읽기 전용 조회로 구해 비교 ---
+          oracle:
+            id: B-01                   # 필수. source=sql 이면 정본 SQL testdata/scenarios/oracles/{id}.{pg|db2}.sql
+            source: sql                # sql(기본) | fixture(정답표 — DB 호출 0 · field 필수)
+            db_ids: [polestar_b0, polestar_cm_gp, polestar_cm_yd]
+                                       # 오라클을 돌릴 DB. 없으면 턴 expect.db_ids. 둘 다 없으면 로더가 거부한다
+                                       #   (시스템이 고른 DB 를 따라가면 오라우팅을 정답으로 삼는다)
+            compare: count             # count | keyset | rowset | argmax | value (fixture 는 count | keyset)
+            system: row_counts_by_db   # count 의 시스템 쪽 — result(기본 · 결과 행 수) | row_counts_by_db(감사 DB 별)
+            # key: [[server_name, 서버명]]  열 참조(이름 또는 같은 뜻의 별칭 목록) — keyset·argmax 필수
+            # value: [cpu_avg, avg_cpu]     값 열 — argmax·value 필수 · tol(기본 0.01) · top(argmax 상위 N)
+            # match: equal                  keyset 관계 equal | subset | superset | disjoint
+            # snapshot: once                once(기본) | pre_post(송신 직전·턴 뒤 두 번 — 시스템 값이 사이에 드는가)
+            # fixture: <경로> · field: <점 경로>   source=fixture 정답표(기본 m_cross_system_oracle.yaml)
+                                       # 로더가 정의 밖 키·정본 파일 존재·대상 DB 엔진 커버리지·SELECT 전용·
+                                       #   행 상한(LIMIT/FETCH FIRST)을 검사한다 — 빠진 선언은 pass 로 샌다(§9.2)
+                                       # 러너(실 모드)는 턴 완료·결과 행 수집 뒤(pre_post 는 송신 직전도) 계측
+                                       #   밖에서 직렬로 조회하고 run 디렉터리 oracle_log.jsonl 에 기록한다.
+                                       #   raw.jsonl `oracle_check` 에는 요약(status·사유·DB 별 행 수·ms)만 싣는다
+                                       # 판정: 일치 pass · 불일치 fail(차이 상세) · 오라클 실패·결과 미수집·
+                                       #   열 미해결은 보류(oracle_unavailable — 불합격 아님). 모의 실행·환경
+                                       #   보류 턴은 DB 를 부르지 않는다(내용 단언과 같은 규칙)
 
       - send: {selected_db_ids: ["polestar_cm_gp"]}   # HITL 응답은 자연어가 아니라 구조화 필드다
         endpoint: stream           # 선택. 턴 단위 재지정(기본은 시나리오 값).
                                    #   폼필 답변 턴은 `/query/file` 이 form_fill_answers 를
                                    #   Form 으로 받지 않아 JSON 경로로 보내야 한다
+        auth: none                 # 선택(plans/122 H-6). none = 인증 헤더 없이 보낸다(401 기대 가드).
+                                   #   생략 = 러너 토큰. 그 밖의 값은 로더가 거부한다
         expect:
           # --- L2 구조 ---
           sql_must_match: ["(?i)\\blimit\\s+10000\\b"]   # "전체" 상향값은 10,000 이다
@@ -74,11 +172,30 @@ scenarios:
                                          #   모의 실행)은 불합격이 아니라 보류다(Y-9)
           sql_must_not_match: ["(?i)여의도"]
           period_covers: {from: "2026-07-01", to: "2026-08-01"}
+                                         # from·to 둘 다 필수(YYYY-MM-DD · from < to) — 하나라도
+                                         #   빠지면 로더가 거부한다(빠진 선언은 판정 0 으로 샜다).
                                          # **표기가 아니라 기간**을 본다(Y-5). `to` 는 배타
                                          #   경계다. `'202607'` 도 `TIMESTAMP '2026-07-01'
                                          #   … < '2026-08-01'` 도 같은 기간으로 통과한다 —
                                          #   D-03 은 기간이 정확한데 `(?i)202607` 표기가
                                          #   달라서 불합격했다
+          # --- 상대 기간(plans/122 H-2) — 아래 형식 중 **하나만**(from·to 와 섞으면 로더가 거부) ---
+          period_covers: {relative: last_month}      # last_month | this_month
+          period_covers: {relative: last_n_months, n: 3}   # n 은 last_n_months 에서만(1~120)
+          period_covers: {month_span: {from: 11, to: 2}}   # 연도 없는 월 범위(1~12) — 「11월~2월」.
+                                         #   연 넘김은 해석기가 정한다(미래가 아닌 가장 최근)
+          period_covers: {unbounded: true}           # 「~한 적이 있는」(C-07) — true 만
+                                         # 창 = src/domain/time_spec.relative_window(종류, 앵커) — 앵커는
+                                         #   턴 송신 시각(raw.jsonl `anchor_at` · KST). 앵커가 없거나(옛 run)
+                                         #   월 경계 ±1일(말일·1일·2일)이면 보류다
+                                         # 판정은 절대 기간과 같은 「덮는다」 규칙 — 실행 SQL(주석 제외)의 날짜
+                                         #   리터럴 경계가 창을 덮으면 통과. 리터럴이 없으면(CURRENT_DATE 식 등)
+                                         #   결과 행(H-1)의 기간 열(stat_month·stat_date·yyyymm·month·ctime·
+                                         #   alarm_time·created_time — 이름 정확 일치)로 **월 단위** 판정한다.
+                                         #   둘 다 없으면 보류
+                                         # unbounded: 관측 SQL 전부에 날짜 리터럴·DB 현재시각 함수
+                                         #   (CURRENT_DATE·CURRENT TIMESTAMP·NOW()·SYSDATE·INTERVAL)가 없어야
+                                         #   통과. SQL 을 관측하지 못했으면 보류
           column_must_not_map: ["cpu_usage"]   # D-200형 회귀 탐지. 실행 SQL 과 매핑 산출물을 대조
           rewrite: {gate: pass_through, slots_preserved: true}
                                          # plans/94 §19.2 Y-11·Y-12 — 서버 재작성 감사(plans/107 §4.9)를
@@ -88,6 +205,20 @@ scenarios:
                                          #   스코프 축소·식별자 누락 없음). **레코드가 없으면
                                          #   불합격이 아니라 보류다** — 서버 INTENT_FRAME_ENABLED
                                          #   (+ 검증은 REWRITE_VERIFY_MODE=shadow)일 때만 생긴다
+          plan:                          # plans/121 TP-0.3 — 2단 계획 요약(done.plan_summary)을 본다.
+                                         #   하위 키는 전부 선택이고 정의 밖 키는 로더가 거부한다
+            min_tasks: 2                 #   task 수 하한·상한. 재계획이 더한 task 도 센다
+            max_tasks: 3                 #   (첫 분해만 보려면 replan_max: 0 을 함께 쓴다)
+            agents: [alarm_query, data_query]   # 이 담당들이 개수만큼 계획에 있다(순서 무관).
+                                         #   담당 이름은 2단 레지스트리 키(catalog.PLAN_AGENTS)
+            edges: [[alarm_query, data_query]]  # input_from 간선 [생산 담당, 소비 담당] — 이
+                                         #   간선이 하나 이상 있어야 한다. "*" 는 아무 담당.
+                                         #   순서가 계약이면 agents 가 아니라 여기에 쓴다
+            plan_path: [llm_decompose]   #   허용 계획 경로 코드(하나 또는 목록 · intent_planner)
+            replan_max: 1                #   재계획 횟수 상한
+                                         # **계획 요약이 없거나(1·3단 · 옛 서버 · 모의 실행)
+                                         #   plan_path=pre_gate(그래프 밖 사전 게이트)면 불합격이
+                                         #   아니라 보류다** — 보류 사유에 기대 구조가 실린다
           node_path: ["field_mapper"]
           sse_events: ["node_start", "done"]
           llm_calls: {max: 10}                 # **측정 불가** - 응답에 호출 수가 없다.

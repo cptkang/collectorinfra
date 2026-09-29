@@ -66,6 +66,8 @@ PUBLIC_LAYER_DIRS: tuple[str, ...] = (
     # Plan 69 후속 2단계로 query_validator에서 분리된 SQL 검증 코어(단일 파일) —
     # 이동 전과 동일하게 감시(리터럴의 어댑터 이관은 별건 D-088 작업)
     "src/sql_validation.py",
+    # plans/87 G-11(2026-09-29 확정) — APM 게이트웨이(D-274 독립 패키지). 벤더 어댑터는 아래 EXCLUDE 대칭
+    "apm_gateway/apm_gateway",
 )
 # DB 어댑터·전용 도구(격리 계층)는 특화 리터럴 허용 — 스캔 제외.
 EXCLUDE_DIRS: tuple[str, ...] = (
@@ -74,6 +76,9 @@ EXCLUDE_DIRS: tuple[str, ...] = (
     # plans/92 §4.5 — 폴스타 → OpenMetrics 브리지(SQL·패밀리 정의 전용, polestar_tools와 대칭).
     # 벤더 중립 노출 기계 om_exposition.py는 스캔 대상에 남긴다.
     "mcp_server/mcp_server/polestar_exporter.py",
+    # plans/87 G-11 — 제니퍼 Open API 어댑터(경로·필드명 전용, polestar_tools와 대칭).
+    # 벤더 중립 계층(domain·application·interface)은 스캔 대상에 남긴다.
+    "apm_gateway/apm_gateway/adapters/jennifer",
 )
 
 # ──────────────────────────────────────────────

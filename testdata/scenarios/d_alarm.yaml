@@ -38,7 +38,26 @@ scenarios:
           status: completed
           sql_must_match: ["(?i)cmm_alarm_active", "(?i)alarmseverity\\s*=\\s*3",
                           "(?i)dtime\\s+is\\s+null"]
-          manual_review: "9열 표준 알람 뷰인지"
+          # plans/122 H-1(일부) — "9열 표준 알람 뷰"는 카탈로그 알람 패턴의 기본 차원 9개다
+          #   (`config/knowledge/_base/catalog.yaml` pattern_c.default_dimensions · 시맨틱 컴파일러 별칭
+          #   `src/semantic/coverage.py` _ALARM_DIM_ALIAS): severity_grade · occurred_at · server_name ·
+          #   ipaddress · hostname · resource_name · alarm_name · conditionlogtext · alarm_id.
+          #   그런데 이 시나리오가 도는 결정적 알람 조립(optin_alarm · `src/db_adapters/polestar/
+          #   assembler.py` 활성 알람 목록)은 **8열**이다: alarm_id · severity · ack_status · description ·
+          #   alarm_time · server_name · hostname · ipaddress — resource_name(CR.NAME)과
+          #   alarm_name(D.NAME, 알람 정의명)이 없다(세 run 의 실행 SQL 도 같다).
+          #   두 뷰가 공유하는 7개 개념만 별칭 목록으로 옮기고, 없는 두 열은 계약 확정(9열 vs 8열) 전까지
+          #   수동으로 남긴다 — 9열을 그대로 단언하면 이 경로에서는 영구 불합격이다.
+          result:
+            columns:
+              - [alarm_id]
+              - [severity_grade, severity, alarmseverity]
+              - [occurred_at, alarm_time, ctime]
+              - [server_name]
+              - [ipaddress, ip_address]
+              - [hostname, host_name]
+              - [conditionlogtext, description]
+          manual_review: "9열 표준 알람 뷰 중 resource_name(자원명)·alarm_name(알람 정의명) 2열 — 결정적 알람 조립(optin_alarm)은 8열이라 없다. 계약(9열 vs 8열) 확정 전 수동"
   - id: D-02
     plans: [44, 45]
     title: "경고 이상 알람 이력을 최근 발생 순으로 100건 조회해줘"
@@ -54,7 +73,9 @@ scenarios:
           # ★ 이 두 단언은 **일부러 남긴다** — 결정적 조립 실측(2026-09-16)에서
           #   사용자가 말한 "100건"이 버려지고 설정 상한(LIMIT 1000)이 붙었다.
           #   요건 침묵 누락이라 불합격이 나야 맞다(하네스 계약 결함이 아니다).
-          sql_must_match: ["(?i)\\blimit\\s+100\\b",
+          # plans/122 A-5: 행 제한은 방언 중립으로 본다(은행존 DB2 는 FETCH FIRST) — "100건" 준수라는
+          #   단언의 뜻은 그대로다. 원식: "(?i)\\blimit\\s+100\\b"
+          sql_must_match: ["(?i)\\b(?:limit\\s+100|fetch\\s+first\\s+100\\s+rows?)\\b",
                           "(?i)order\\s+by[\\s\\S]*\\bdesc\\b"]
           # 행 수는 DB별로 본다(Y-4) — 존 역질문 확대(CU-3) 전에는 3-DB 합산이 300이라
           # per-DB 기대값과 비교돼 허위 불합격이었다.
@@ -93,8 +114,10 @@ scenarios:
           status: completed
           # ★ `limit 10` 단언도 **일부러 남긴다** — 실측상 "상위 10개"가 버려지고
           #   LIMIT 1000 이 붙는다(D-02와 같은 요건 침묵 누락).
+          # plans/122 A-5: 행 제한은 방언 중립으로 본다(은행존 DB2 는 FETCH FIRST) — "상위 10개" 준수라는
+          #   단언의 뜻은 그대로다. 원식: "(?i)\\blimit\\s+10\\b"
           sql_must_match: ["(?i)group\\s+by", "(?i)order\\s+by[\\s\\S]*\\bdesc\\b",
-                          "(?i)\\blimit\\s+10\\b"]
+                          "(?i)\\b(?:limit\\s+10|fetch\\s+first\\s+10\\s+rows?)\\b"]
           row_count_per_db: {max: 10}
   - id: D-05
     plans: [44, 45]
@@ -118,11 +141,22 @@ scenarios:
           sql_must_match: ["(?i)resource_type", "(?i)server\\.Cpus"]
           # 정의명 축으로 되돌아가면 D-202 4차를 조용히 뒤집는 것이다.
           sql_must_not_match: ["(?i)cmm_alarm_def\\.name", "(?i)d\\.name\\s+(?i:i?like)"]
-          manual_review: "이번 달 범위가 실행 시점 기준으로 맞는지 · 절단 고지(CU-8)가 응답에 실렸는지"
+          # plans/122 H-2: "이번 달"을 턴 송신 시각 기준 창으로 본다(월 경계 ±1일 보류).
+          period_covers: {relative: this_month}
+          # 절단 고지는 옮기지 않았다 — 조건부다. 고지 문구는 `src/nodes/output_generator.py`
+          #   `_append_limit_truncation_note`("[안내] … 조회가 상한(LIMIT n)에 도달해 이후 행이 절단되었을 수
+          #   있습니다.")이고 **존별 행 수가 적용 상한에 닿을 때만** 붙는다. 세 run 의 2단 D-05 알람 조회는
+          #   4,226~4,472행(LIMIT 10000 미도달)이라 고지가 없는 것이 정답이다 — `response_must_contain` 으로 쓰면 옳은
+          #   응답이 떨어진다. 또 2단 경로는 존이 상한에 닿아도 이 고지를 붙이지 않았다(세 run 에서 존별
+          #   10,000행 도달 · 응답 4,000자 미절단인 2단 행 전부 고지 0건 — 예: 20260923-103638 D-06 b0=10000.
+          #   고지 문구가 나온 행은 3단뿐) — 별도 결함 후보.
+          manual_review: "절단 고지(CU-8) - 존별 행 수가 적용 상한에 닿았을 때만 응답에 실려야 한다(조건부라 기계 단언 불가)"
+  # plans/122 K-1 (G-2 · D-275 ②): 관측 전용 — 판정 모집단(합격 가능 가드 · 벤치 정상군)에서 뺀다.
+  #   판정 어휘는 그대로이고 아래 수동 문구는 관측 메모로 남긴다.
   - id: D-06
     plans: [44, 45]
     title: "담당자 없는 미확인 알람"
-    kind: normal
+    kind: probe
     env: closed
     profile: optin_alarm
     endpoint: stream

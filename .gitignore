@@ -60,3 +60,8 @@ results/scenario/
 # 실행·분석 산출물 전체 — 로컬에만 보관하고 저장소에 올리지 않는다 (2026-09-22 사용자 지시)
 results/
 reports/
+
+# 제니퍼 로컬 검증 환경(plans/87 §0.8) — 설치본·라이선스·녹화 원본은 커밋하지 않는다
+apm_gateway/testdata/jennifer/**/*.zip
+apm_gateway/testdata/jennifer/**/license*
+apm_gateway/testdata/jennifer/recorded/raw/

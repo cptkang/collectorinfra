@@ -974,9 +974,12 @@ async def _llm_select_relevant_tables(
     if not query_targets:
         return all_tables
 
-    # 테이블별 컬럼 요약 생성
+    # 테이블별 컬럼 요약 생성 — **이름순**으로 나열한다(plans/121 TP-11.10 · D-222 부기 ④). 스키마
+    # 사전의 순서는 출처마다 다르다(실측 2026-09-28: 실시간 수집은 목록 조회 순서, Redis 캐시는 해시
+    # 테이블 인코딩 HGETALL 순서 — 394테이블 `hashtable` · 서버 재기동마다 해시 시드가 바뀐다). 같은
+    # 질문을 다시 보내도 약 12K토큰 접두가 달라져 KV 캐시에 적중하지 못했다.
     table_summaries: list[str] = []
-    for table_name, table_info in full_schema.tables.items():
+    for table_name, table_info in sorted(full_schema.tables.items()):
         col_names = [col.name for col in table_info.columns]
         col_summary = ", ".join(col_names[:15])
         if len(col_names) > 15:
@@ -988,10 +991,10 @@ async def _llm_select_relevant_tables(
     # FK 관계 요약
     relationship_text = ""
     if full_schema.relationships:
-        rel_lines = [
+        rel_lines = sorted(  # 테이블 목록과 같은 이유로 출처 순서에 기대지 않는다(TP-11.10)
             f"- {rel.get('from', '')} -> {rel.get('to', '')}"
             for rel in full_schema.relationships
-        ]
+        )
         relationship_text = "\n\nFK 관계:\n" + "\n".join(rel_lines)
 
     # routing_intent별 추가 힌트

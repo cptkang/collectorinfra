@@ -207,6 +207,11 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_INVESTIGATION_FOLLOWUP_MAX_INFLIGHT": "자동 장애 조사",
     "NOISE_FAULT_DIAGNOSIS_ENABLED": "자동 장애 조사",
     "NOISE_FAULT_ESCALATION_ENABLED": "자동 장애 조사",
+    # (plans/87 J4) APM 게이트웨이 fatal 이벤트로 폴스타 알람 승격(app_impact)
+    "NOISE_APP_IMPACT_ENABLED": "앱 영향 승격(APM)",
+    "NOISE_APM_MCP_URL": "앱 영향 승격(APM)",
+    "NOISE_APM_MCP_TOKEN": "앱 영향 승격(APM)",
+    "NOISE_APP_IMPACT_WINDOW_MINUTES": "앱 영향 승격(APM)",
 }
 
 #: `.encenv.example` 파싱 외에 수동으로 시크릿 취급하는 키.

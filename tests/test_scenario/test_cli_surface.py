@@ -150,12 +150,13 @@ def test_report_는_없는_run_에_1을_돌려준다(fake_run: Path, capsys) -> 
 
 # --- --analyze ------------------------------------------------------------
 
-def test_analyze_는_제안_문서_6종을_만든다(fake_run: Path, capsys) -> None:
+def test_analyze_는_제안_문서_7종을_만든다(fake_run: Path, capsys) -> None:
     assert main(["--analyze"]) == 0
-    for name in ("bottleneck.md", "failure_taxonomy.md", "coverage_gap.md",
+    for name in ("bottleneck.md", "failure_taxonomy.md", "manual_taxonomy.md", "coverage_gap.md",
                  "regression.md", "countermeasures.md", "improvement_backlog.md"):
         assert (fake_run / name).exists(), name
-    assert "분석 산출 6종" in capsys.readouterr().out
+    # plans/122 J-3 - `manual_taxonomy.md` 가 더해져 6종 → 7종.
+    assert "분석 산출 7종" in capsys.readouterr().out
 
 
 def test_analyze_도_run_을_지정할_수_있다(fake_run: Path) -> None:

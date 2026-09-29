@@ -10,7 +10,7 @@ plans/102 X-7 · X-T3 · X-T4.
     O4 3단 라우터 노드 소유 교정 — 단일 DB 시스템은 그 DB로, 다중 존 시스템은 이미 고른
        DB만/없으면 활성 전체
     O5 교정 제외 — 답변 영역 없음 · 사용자 직접 지정 · 선언 없는 DB · 비활성 소유자(사유 노트)
-    O6 빈 분류·LLM 실패 폴백이 노트로 표기된다(on) / 표기되지 않는다(off)
+    O6 빈 분류·LLM 실패 폴백이 노트로 표기된다(플래그 무관 — plans/121 TP-1.6 · 종전 off = 없음)
     O7 D-004 — 소유 판정 함수는 질의 원문을 입력으로 받지 않는다
     O8 `description_locked` — 캐시 「상세」 덧붙이기를 끈다(기본 false = 종전)
 
@@ -428,12 +428,18 @@ class TestRouterNodeOwnership:
         ]
 
     @pytest.mark.parametrize(
-        "classified", [RuntimeError("x"), {"intent": "data_query", "databases": []}]
+        ("classified", "reason"),
+        [
+            (RuntimeError("x"), own.REASON_LLM_ERROR),
+            ({"intent": "data_query", "databases": []}, own.REASON_NO_CLASSIFICATION),
+        ],
     )
-    async def test_fallbacks_are_silent_off(self, monkeypatch, classified):
+    async def test_fallbacks_are_reported_off(self, monkeypatch, classified, reason):
         out = await _route(monkeypatch, _cfg(ownership=False), classified)
         assert [t["db_id"] for t in out["target_databases"]] == ["polestar_b0"]
-        assert "dependency_notes" not in out
+        assert [(n["kind"], n["reason"]) for n in out["dependency_notes"]] == [
+            (NOTE_ROUTING_FALLBACK, reason)
+        ]
 
     async def test_existing_request_notes_are_preserved(self, monkeypatch):
         cfg = _use(monkeypatch, _cfg(ownership=True))

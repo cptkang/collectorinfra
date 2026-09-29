@@ -337,20 +337,27 @@ def _active_db_ids(cfg: Any) -> list[str]:
 
 
 def _check_active_dbs(cfg: Any, report: Report) -> None:
-    from .runner import SANDBOX_DB_ID
+    # 환경 판정은 러너 `detect_env` 가 단일 출처다(plans/121 TP-11.7) - 종전에는 "샌드박스 id 외
+    # DB 가 있으면 closed" 로 따로 판정해 `["polestar","itam"]` 에서 preflight 는 closed,
+    # 러너는 sandbox 로 갈렸다.
+    from .runner import detect_env, zoned_db_ids
 
     ids = _active_db_ids(cfg)
     if not ids:
         report.add("ACTIVE_DB_IDS", "(비어 있음)", VERDICT_STOP,
                    "실행 전에 채운다. 환경 판정이 어긋나 시나리오가 통째로 보류된다.")
         return
-    non_sandbox = [d for d in ids if d != SANDBOX_DB_ID]
-    if non_sandbox:
+    env = detect_env(ids, zoned_db_ids())
+    if env == "closed":
         report.add("ACTIVE_DB_IDS", ", ".join(ids), VERDICT_OK,
                    "그대로 진행한다(환경=closed).")
-    else:
+    elif env == "sandbox":
         report.add("ACTIVE_DB_IDS", ", ".join(ids), VERDICT_WARN,
                    "로컬 도커 샌드박스다(환경=sandbox). 폐쇄망 측정이 목적이면 잘못된 환경이다.")
+    else:
+        report.add("ACTIVE_DB_IDS", ", ".join(ids), VERDICT_WARN,
+                   "환경을 판정할 수 없다(존 DB 도 샌드박스 DB 도 없음). "
+                   "--env 로 명시하지 않으면 환경 의존 단언이 보류된다.")
 
 
 def _check_auth(cfg: Any, report: Report) -> None:

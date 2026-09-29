@@ -23,8 +23,10 @@ from src.orchestration.intent_planner import (
 from src.prompts.intent_planner import (
     INTENT_PLANNER_SYSTEM_TEMPLATE,
     INTENT_PLANNER_TASK_FRAME_SECTION,
+    render_intent_planner_environment_terms,
     render_intent_planner_task_frame_template,
 )
+from src.routing.registry import get_registry
 from src.state import create_initial_state
 
 Q = "은행존 서버 목록 보여주고, 그중 CPU 90% 넘는 건 알람 이력도 같이 알려줘"
@@ -104,7 +106,10 @@ class TestPrompt:
 
     def test_off_is_byte_identical(self, mock_config):
         mock_config.composite.task_frame_enabled = False
-        assert _planner_system_prompt(mock_config) == INTENT_PLANNER_SYSTEM_TEMPLATE
+        # 기본 템플릿 + 환경어 자리 채움만(plans/121 TP-11.2 — 레지스트리 정본)
+        assert _planner_system_prompt(mock_config) == render_intent_planner_environment_terms(
+            INTENT_PLANNER_SYSTEM_TEMPLATE, get_registry().environment_terms
+        )
 
     def test_on_contains_section(self, mock_config):
         mock_config.composite.task_frame_enabled = True

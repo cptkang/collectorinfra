@@ -34,7 +34,7 @@ user:
   - {id: U-07, title: DB 연결 경고 배너, anchors: ["#dbWarningBanner"], files: *IDX, captures: [], case_na: 장애 시에만 나타나는 표시}
   - {id: U-08, title: 화면 테마(라이트·다크), anchors: ["#themeToggle"], files: *IDX, captures: [main-dark], case_na: 버튼 한 번}
   - {id: U-09, title: 알림 수신과 표시 레벨, anchors: ["#alarmReceiveToggle", "#alarmViewLevel", "#alarmZonesTooltip"], files: *IDX, captures: [header-alarm], case_na: 설정 토글}
-  - {id: U-10, title: 노이즈 관제·매뉴얼 바로가기, anchors: ["#noiseConsoleLink", "#manualMenu", "#userManualLink", "#adminManualLink"], files: *IDX, captures: [header, header-manual], case_na: 링크}
+  - {id: U-10, title: 노이즈 관제·매뉴얼·시스템 소개 바로가기, anchors: ["#noiseConsoleLink", "#manualMenu", "#userManualLink", "#adminManualLink", "#introLink", "#brandIntroLink"], files: *IDX, captures: [header, header-manual], case_na: 링크}
   # 3. 질의하기
   - {id: U-11, title: 질문 입력과 전송, anchors: ["#prompt", "#sendBtn", "data-view=\"chat\""], files: *IDX, captures: [query-input], cases: [Q-SERVER-LIST], detail_src: [src/api/schemas.py, src/utils/query_gen_common.py, src/config.py, src/static/js/app.js]}
   - {id: U-12, title: 이전 질문 다시 불러오기(↑·↓), anchors: ["이전 질의"], files: *IDX, captures: [], case_na: 키보드 조작}

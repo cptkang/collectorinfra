@@ -33,6 +33,11 @@ class AgentSettings(BaseSettings):
     # 미설정 시 None → 무인증 로컬 픽스처 경로).
     polestar_mcp_url: str = "http://localhost:9099/sse"
     polestar_mcp_token: SecretStr | None = None
+    # 제니퍼 APM 게이트웨이 MCP(plans/87 J3 · D-274 ⑦ · SPEC-apm-sre-agent §2) — `apm_gateway`의 SSE 엔드포인트
+    # (예: http://127.0.0.1:9096/sse). 비면 등록하지 않는다 → `_build_mcp_servers()` 결과가 종전과 같다.
+    # 토큰은 `polestar_mcp_token`과 같은 SecretStr(env: APM_MCP_TOKEN · 게이트웨이 APM_GATEWAY_BEARER_TOKEN과 일치).
+    apm_mcp_url: str = ""
+    apm_mcp_token: SecretStr | None = None
 
     # 개발·테스트 LLM — Gemini API (D-120). 운영 LLM(model)과 분리한다.
     # 기본값 gemini-3.5-flash — 2026-07-28 ListModels 실측 채택: D-021 권장이던
@@ -144,6 +149,17 @@ class AgentSettings(BaseSettings):
     # 노트만 켜면 없는 도구를 가리킨다. **만료일 2027-03-22**(D-161 ① · 6개월) — OM 배치 운영
     # 실측 후 상시화 또는 삭제를 판정한다.
     openmetrics_guidance_enabled: bool = False
+    # APM 조사 지침(plans/87 J3 · SPEC-apm-sre-agent §3.3). 기본 off = 조사 지침·브리핑 비트 동일.
+    # 켜면 사건창 앵커에 apm_* 구간 도구 4종 · APM 조사 순서·현재값·폴백 노트 · (apm 사건이면) APM 플레이북 ·
+    # 브리핑 소스 라벨·APM 한계 · 정체 가드(같은 도구·같은 인자 3회 → 미결 — 사후 판정)가 붙는다.
+    # 운영 메모: `APM_MCP_URL` 배치와 함께 켠다 — URL이 비면 지침·브리핑에 "APM 미가용" 폴백 사유가 실린다.
+    # **만료일 2027-03-29**(D-161 ① · 6개월) — J0-O 운영 실측 후 상시화 또는 삭제를 판정한다.
+    apm_guidance_enabled: bool = False
+    # APM 판정 승격(plans/87 J3 · D-195 ② · D-274 ⑤). 기본 off = 판정 불변. 켜면 도구 원시 출력 중
+    # source_kind=apm_api JSON의 was_signals를 Signal로 옮겨 escalate-only 판정에 합친다(WAS 규칙 재구현 없음).
+    # severity_judge_enabled와 함께 켠다 — judge가 꺼져 있으면 합칠 판정이 없다.
+    # **만료일 2027-03-29**(D-161 ① · 6개월).
+    apm_signatures_enabled: bool = False
     # 사건 구간 증거 사전수집 + 결정적 상관(plans/50 G4 · D-197). 기본 off — 켜면 잡에 reference_time이
     # 있을 때 조사 전에 mcp_server 도구(전 알람 1 + 지표 4)를 코드가 호출해 선행 신호·타임라인을 계산하고
     # 조사 지침·브리핑에 싣는다. LLM 호출 0. 실패해도 조사를 막지 않는다(상관 없음 + 감사).

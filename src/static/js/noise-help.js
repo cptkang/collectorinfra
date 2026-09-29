@@ -242,5 +242,11 @@ window.NOISE_HELP = {
         base_tier: "매트릭스 기본 티어",
         promote: "승격 근거",
         demote: "강등 근거",
+        // plans/87 J4 — 앱 영향 승격(APM 게이트웨이 `apm_events`)
+        app_impact_fatal_events: "앱 영향 — APM fatal 이벤트 수",
+        app_impact_event_types: "앱 영향 — 이벤트 유형",
+        app_impact_was_signals: "앱 영향 — WAS 판정",
+        app_impact_source: "앱 영향 — 소스",
+        app_impact_error: "앱 영향 조회 실패 사유",
     },
 };

@@ -151,6 +151,27 @@ def resolve_priority_db_ids(
     return [db_id for db_id in active_db_ids if db_id in priority_set]
 
 
+def inactive_hinted_sources(hints: list[str], active_db_ids: list[str]) -> list[str]:
+    """원문 힌트 중 **등록됐지만 활성이 아닌 DB로만** 해소되는 힌트를 고른다(plans/121 TP-1.11a).
+
+    요청한 소스를 쓸 수 없는데 다른 소스로 조용히 답하는 것(N-11 침묵 대체)을 드러내는 재료다.
+    힌트 하나씩 등록 DB 전체로 해소해, 해소 결과가 있고 그중 활성 DB가 하나도 없을 때만 고른다 —
+    활성 DB로도 해소되는 힌트(제품명 단독 등)는 세지 않는다. 대상 집합은 바꾸지 않는다(노트 재료만 ·
+    LLM 0). 입력은 입력 파서가 만든 `target_db_hints`뿐이다(D-004 — 원문 재스캔 없음).
+    """
+    clean = [str(h).strip() for h in hints if str(h).strip()] if isinstance(hints, list) else []
+    if not clean:
+        return []
+    registered = list(get_registry().db_ids())
+    active = {d for d in active_db_ids if d}
+    out: list[str] = []
+    for hint in clean:
+        resolved = resolve_priority_db_ids([hint], registered)
+        if resolved and not any(d in active for d in resolved) and hint not in out:
+            out.append(hint)
+    return out
+
+
 def strip_location_terms(text: str) -> str:
     """질의 텍스트에서 위치/제품명 토큰을 제거한다(핀 대체 target의 정제 질의용).
 
@@ -207,6 +228,31 @@ def task_hint_scope(hints: list[str], task_query: str) -> list[str]:
     original = " ".join(h.lower() for h in region_hints)
     terms = [t for t in _REGION_HINT_TOKENS if term_in_text(t, original) and term_in_text(t, text)]
     return terms or list(hints)
+
+
+def _log_cross_system_pin(
+    targets: list[dict[str, Any]], pinned: list[str], task_query: str | None,
+) -> None:
+    """교차 시스템 위치 힌트 고정 섀도 — **로그만**(plans/121 TP-1.10a · 응답 비트 동일).
+
+    분류가 고른 DB의 시스템과 힌트가 고정한 DB의 시스템이 다르면(예: 자산 DB task에 폴스타 존 힌트
+    고정 — N-10) 그 차이를 남긴다. TP-1.10(시스템 밖 힌트 미적용)은 TP-10.1 소유 판정 단계에서
+    넣는다 — 이 로그가 그때의 발동 빈도 근거다. 활성 시스템이 하나 이하인 구성은 판정하지 않는다
+    (§12.6 ① — 운영 폴스타 전용 구성은 이 함수를 지나도 아무것도 하지 않는다).
+    """
+    reg = get_registry()
+    classified = {
+        s for s in (reg.system_of(str(t.get("db_id") or "")) for t in targets
+                    if isinstance(t, dict)) if s
+    }
+    hinted = {s for s in (reg.system_of(d) for d in pinned) if s}
+    if len(classified | hinted) < 2 or not classified or classified & hinted:
+        return
+    logger.info(
+        "교차 시스템 힌트 고정 섀도(TP-1.10a): 분류 시스템 %s ↔ 힌트 고정 시스템 %s "
+        "(task=%s) — 동작 불변",
+        sorted(classified), sorted(hinted), (task_query or "")[:60] or "원문",
+    )
 
 
 def pin_targets_to_hints(
@@ -273,6 +319,7 @@ def pin_targets_to_hints(
             pinned = narrowed
             groups = {g for g in (reg.zone_group_of(d) for d in pinned) if g is not None}
 
+    _log_cross_system_pin(targets, pinned, task_query)
     pinned_set = set(pinned)
     by_id = {t.get("db_id"): t for t in targets if isinstance(t, dict)}
     final: list[dict[str, Any]] = []

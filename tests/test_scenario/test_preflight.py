@@ -145,6 +145,29 @@ def test_샌드박스만_활성이면_폐쇄망_측정이_아님을_경고한다
     assert "sandbox" in report.checks[0].action
 
 
+@pytest.mark.parametrize("active, verdict, env_word", [
+    (["polestar_cm_gp"], pf.VERDICT_OK, "closed"),
+    (["polestar", "polestar_cm_yd"], pf.VERDICT_OK, "closed"),
+    # 존 없는 DB(itam)가 섞여도 샌드박스다 - 종전 preflight 는 closed, 러너는 sandbox 로 갈렸다
+    (["polestar", "itam"], pf.VERDICT_WARN, "sandbox"),
+    (["itam"], pf.VERDICT_WARN, "--env"),
+])
+def test_env_verdict_matches_runner_detect_env(active, verdict, env_word) -> None:
+    """plans/121 TP-11.7 - preflight 표기와 러너 판정이 어긋나지 않는다(단일 출처)."""
+    from scripts.scenario.runner import detect_env, zoned_db_ids
+
+    report = pf.Report()
+    pf._check_active_dbs(_cfg(multi_db=_multi_db(active)), report)
+    check = report.checks[0]
+    assert check.verdict == verdict
+    assert env_word in check.action
+    runner_env = detect_env(active, zoned_db_ids())
+    if runner_env:
+        assert f"환경={runner_env}" in check.action
+    else:
+        assert "환경=" not in check.action
+
+
 def test_활성_DB는_실제_설정_경로로_읽는다(monkeypatch) -> None:
     """mock 통과 != 실동작 - 실 `load_config()` 가 만든 `AppConfig` 로 판정한다(B-1).
 

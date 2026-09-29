@@ -24,6 +24,12 @@ from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.orchestration.db_access import is_access_denied_result
+from src.orchestration.intent_planner import (
+    REASON_DECOMPOSE_FALLBACK,
+    _coerce_alarm_intent,
+    _coerce_process_intent,
+)
+from src.orchestration.schemas import close_agent_vocabulary, validate_plan_dag
 from src.prompts.replanner import (
     REPLANNER_BUDGET_BLOCK_TEMPLATE,
     REPLANNER_BUDGET_TIME_LINE_TEMPLATE,
@@ -35,8 +41,11 @@ from src.utils.deadline import retrieval_remaining
 from src.utils.json_extract import extract_json_from_response
 from src.utils.query_gen_common import term_in_text
 from src.utils.prior_dependency import (
+    NOTE_DECOMPOSE,
     NOTE_DESCRIPTIONS_MISSING,
     NOTE_OWNERSHIP,
+    NOTE_ROUTING_FALLBACK,
+    NOTE_SOURCE_UNAVAILABLE,
     NOTE_TRACE,
     has_sequential_marker,
 )
@@ -81,11 +90,6 @@ async def replanner(
     # 처리 현황 표시용 누적 이력 (루프 종료 시에도 보존되도록 항상 그대로 carry forward)
     replan_history = list(state.get("replan_history", []))
 
-    # 상한 가드(R-A3): 재계획 반복 상한 초과 시 현재 결과로 종료
-    if replan_count >= app_config.max_replan:
-        logger.info("replanner: 재계획 상한(%d) 도달, 현재 결과로 종료", app_config.max_replan)
-        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
-
     # 결정적 direct_response(고정 안내·확인 이력 조회/삭제 등)는 정의상 **최종 응답** —
     # LLM 재평가에 넘기면 "내용이 제공되지 않았다"로 오판해 데이터 조회 후속(B0 등)을
     # 만들어 이력 조회가 채우기로 회귀한다(라이브 실측 2026-08-03, FIX-22).
@@ -98,13 +102,26 @@ async def replanner(
     # 존 역질문(D-143 후속2)은 정의상 이번 턴의 최종 응답(사용자 존 선택 대기) — LLM
     # 재평가에 넘기면 빈 결과로 오판해 데이터 조회 후속을 만들어 역질문을 덮어쓴다
     # (FIX-22 direct_response와 동형 위험). 결정적으로 종료한다.
-    _results_now = state.get("task_results", {}) or {}
+    # 판정은 **이번 계획의 task 결과**로만 한다(plans/121 TP-1.1 · K-5) — 앞 턴 결과가 남아 있으면
+    # 그 역질문·거부로 이번 턴 재계획을 건너뛰었다(존 역질문 대기 스킵 7구간 실측).
+    _plan_ids = {str(t.get("task_id")) for t in _tasks_now if isinstance(t, dict)}
+    _results_now = {
+        k: v for k, v in (state.get("task_results", {}) or {}).items() if str(k) in _plan_ids
+    }
     if any(
         isinstance(r, dict) and r.get("zone_clarification")
         for r in _results_now.values()
     ):
         logger.info("replanner: 존 역질문 대기 — 재계획 스킵(D-143 후속2)")
-        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
+        zone_out: dict[str, Any] = {
+            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
+        }
+        # 역질문 본문에는 분해 폴백 노트를 붙이지 않는다(plans/121 §12.4 — 집계기가 경과 노트를
+        # 역질문 말미에도 붙인다). 뺄 것이 없으면 키를 싣지 않는다(종전 반환과 같다).
+        kept_notes = _without_zone_turn_notes(state.get("dependency_notes"))
+        if kept_notes is not None:
+            zone_out["dependency_notes"] = kept_notes
+        return zone_out
 
     # 조회 권한 거부(D-232)는 결정적이다 — 다시 계획해도 같은 거부가 나온다. 전 task가 거부면
     # LLM 재평가 없이 종료해 3단 `access_denied` 종결과 같은 응답을 남긴다(plans/116 §10.3 결함 ②).
@@ -123,6 +140,21 @@ async def replanner(
         return {
             "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
         }
+
+    # 상한 가드(R-A3): 재계획 반복 상한 초과 시 현재 결과로 종료. 위 결정적 종료(direct_response ·
+    # 존 역질문 · 권한 거부 · 성공)는 상한과 같은 반환이라 뒤로 옮겨도 결과가 같다 — 여기 닿으면
+    # 상한이 평가를 실제로 끊은 것이므로 사유를 경과 노트로 남긴다(plans/121 TP-1.6 · 3단
+    # `tier3_plan.replan`과 같은 종류·사유·문구 · 첫 바퀴 전 상한(0회)은 노트 없음).
+    if replan_count >= app_config.max_replan:
+        logger.info("replanner: 재계획 상한(%d) 도달, 현재 결과로 종료", app_config.max_replan)
+        cap_out: dict[str, Any] = {
+            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
+        }
+        if replan_count:
+            cap_out["dependency_notes"] = list(state.get("dependency_notes") or []) + [
+                _replan_cap_note(app_config.max_replan)
+            ]
+        return cap_out
 
     # 시간 예산(plans/118 P-1 · G-2 — 플래그 없음): 남은 시간이 직전 한 바퀴 소요보다 짧으면
     # 후속을 붙여도 그 턴은 상한에 걸려 **이미 얻은 결과까지** 버린다. LLM 평가 전에 끊는다.
@@ -152,15 +184,36 @@ async def replanner(
         ),
     )
 
+    # 평가 LLM 호출·응답 실패 — 보수적 종료는 종전과 같고, 사유를 경과 노트로 남긴다
+    # (plans/121 TP-1.6 · N-7 — 종전에는 로그만 남았다). 원인은 예외 클래스명만.
+    if _EVAL_FAILURE_KEY in decision:
+        return {
+            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
+            "dependency_notes": list(state.get("dependency_notes") or []) + [
+                _eval_failure_note(str(decision.get(_EVAL_FAILURE_KEY) or ""))
+            ],
+        }
+
     # 보수적 종료(R-A1/R-A4): 후속 불필요·빈 task·파싱 실패 시 루프 종료
     if not decision.get("needs_followup") or not decision.get("new_tasks"):
         logger.debug("replanner: 후속 불필요, 종료 (reason=%s)", decision.get("reason"))
         return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
 
     new_tasks = _assign_ids(decision["new_tasks"], existing=state.get("task_plan", []))
+    # 신규 task도 분해와 같은 계획 검증을 지난다(plans/121 TP-1.3 · N-5) — 담당 교정 + DAG만,
+    # 무익 재시도 필터들보다 **앞**(교정된 담당으로 비교한다). 위반 task만 빼고 사유를 남긴다.
+    new_tasks, plan_notes = _validate_replanned_tasks(
+        new_tasks, state.get("task_plan", []), state, app_config,
+    )
+    replan_notes = list(state.get("dependency_notes") or []) + plan_notes
     if not new_tasks:
         # 유효 신규 task가 없으면 보수적 종료
-        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
+        out: dict[str, Any] = {
+            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
+        }
+        if plan_notes:
+            out["dependency_notes"] = replan_notes
+        return out
 
     # 무의미 재시도 차단(D-063): 엔티티를 이미 찾은(>0행) 조회를 같은 방식으로 다시 묻는
     # 후속을 제거한다. 행은 찾았으나 일부 요청 필드가 null인 것은 "데이터에 그 속성이
@@ -234,13 +287,64 @@ async def replanner(
     })
 
     # 증분 추가(R-A1): 기존 task_plan 보존 + 신규만 append (전체 교체 금지)
-    return {
+    added: dict[str, Any] = {
         "task_plan": state.get("task_plan", []) + new_tasks,
         "needs_replan": True,
         "replan_count": replan_count + 1,
         "replan_history": replan_history,
         "current_node": "replanner",
     }
+    if plan_notes:
+        added["dependency_notes"] = replan_notes
+    return added
+
+
+def _validate_replanned_tasks(
+    new_tasks: list[dict[str, Any]],
+    existing: list[dict[str, Any]],
+    state: AgentState,
+    app_config: AppConfig,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """재계획 신규 task에 분해 출구와 같은 결정적 검증을 건다(plans/121 TP-1.3 · 3단 `replan` 공용).
+
+    ① 닫힌 어휘(TP-1.7 — 목록 밖 담당은 현행 디스패치 의미의 폴백 담당) ② 담당 교정(알람·프로세스 —
+    분해 출구 `_normalize_plan_exit`와 같은 함수 · 양식 턴 제외) ③ DAG(분해와 같은 계약·같은 플래그
+    `composite.plan_dag_validation_enabled`). DAG 위반은 **그 task만** 뺀다 — 되먹임 재요청은
+    하지 않는다(LLM +0). 빠진 task는 경과 노트(`decompose` · 미완 종류 — 후속을 못 붙였다는 뜻이라
+    안내성이 아니다)로 남긴다.
+
+    Returns:
+        (검증을 통과한 신규 task, 경과 노트)
+    """
+    tasks = [close_agent_vocabulary(t) for t in new_tasks]
+    if not (state.get("template_structure") or state.get("uploaded_file")):
+        tasks = _coerce_alarm_intent(_coerce_process_intent(tasks))
+    cfg = getattr(app_config, "composite", None)
+    if not bool(getattr(cfg, "plan_dag_validation_enabled", False)):
+        return tasks, []
+    if validate_plan_dag(list(existing))[1]:
+        return tasks, []  # 기존 계획이 이미 위반이면 신규 task에 책임을 돌릴 수 없다
+    fixed, violations, _fixes = validate_plan_dag(list(existing) + tasks)
+    if not violations:
+        return fixed[len(existing):], []
+    kept: list[dict[str, Any]] = []
+    notes: list[dict[str, Any]] = []
+    for task in tasks:
+        checked, task_violations, _ = validate_plan_dag(list(existing) + kept + [task])
+        if task_violations:
+            logger.warning("replanner: 신규 task %s 계획 위반 — 제외: %s",
+                           task.get("task_id"), task_violations)
+            notes.append({
+                "kind": NOTE_DECOMPOSE, "task_id": task.get("task_id"),
+                "reason": "replan_task_invalid",
+                "detail": (
+                    "재계획 후속 작업이 계획 규칙을 어겨 실행하지 않았습니다"
+                    f"({'; '.join(task_violations)})."
+                ),
+            })
+            continue
+        kept.append(checked[-1])
+    return kept, notes
 
 
 async def _llm_evaluate(
@@ -255,7 +359,8 @@ async def _llm_evaluate(
     """LLM으로 결과를 평가하여 후속 task 필요 여부를 판단한다.
 
     REPLANNER_SYSTEM_TEMPLATE로 LLM을 호출하고 JSON을 파싱한다.
-    호출·파싱 실패 시 빈 dict를 반환하여 호출부가 보수적으로 종료하도록 한다.
+    호출·파싱 실패 시 `{_EVAL_FAILURE_KEY: 예외 클래스명 또는 ""}`를 반환하여 호출부가 보수적으로
+    종료하고 사유를 남기도록 한다(plans/121 TP-1.6).
 
     Args:
         llm: LLM 인스턴스
@@ -267,7 +372,7 @@ async def _llm_evaluate(
             — 종전 입력과 바이트 동일.
 
     Returns:
-        {"needs_followup": bool, "reason": str, "new_tasks": [...]} 또는 빈 dict(실패 시)
+        {"needs_followup": bool, "reason": str, "new_tasks": [...]} 또는 실패 표지 dict
     """
     try:
         context = _build_eval_context(user_query, task_plan, task_results)
@@ -284,11 +389,11 @@ async def _llm_evaluate(
         parsed = extract_json_from_response(response.content)
     except Exception as e:
         logger.error("replanner LLM 평가 실패, 보수적 종료: %s", e)
-        return {}
+        return {_EVAL_FAILURE_KEY: type(e).__name__}
 
     if not isinstance(parsed, dict):
         logger.warning("replanner 평가 결과 무효, 보수적 종료")
-        return {}
+        return {_EVAL_FAILURE_KEY: ""}
     return parsed
 
 
@@ -744,12 +849,71 @@ def _filter_repeated_empty(
 
 
 # 미완 표지로 보지 않는 경과 노트 종류 — 결과가 완결돼도 붙는 안내다(정상 주입 경과 · 답변 영역
-# 소유 교정 · 컬럼 설명 미등록). 그 밖의 종류(게이트·절단·사후 대조·충족도·DB별 미조회·분해 강등·
-# 분류 폴백·구조 미등록 등, 그리고 앞으로 생길 종류)는 전부 미완으로 본다 — 모르면 LLM 평가(종전).
-_INFO_NOTE_KINDS = frozenset({NOTE_TRACE, NOTE_OWNERSHIP, NOTE_DESCRIPTIONS_MISSING})
+# 소유 교정 · 컬럼 설명 미등록 · 요청 소스 불가(plans/121 TP-1.11a — 재계획으로 비활성 소스를 살릴
+# 수 없다) · 분류 폴백(plans/121 TP-1.6 — 평가 LLM은 경과 노트를 보지 않아(`_build_eval_context`)
+# 노트가 없는 성공 턴과 입력이 같다. 미완으로 두면 소유 플래그와 분리된 이 노트가 성공 턴마다 평가
+# LLM을 부른다 — §12.6 ④)). 그 밖의 종류(게이트·절단·사후 대조·충족도·DB별 미조회·분해 강등·구조
+# 미등록 등, 그리고 앞으로 생길 종류)는 전부 미완으로 본다 — 모르면 LLM 평가(종전). 새 종류는
+# 여기서 안내성/미완을 선언한다(plans/121 §12.4).
+# `decompose` 종류(미완 유지)에 TP-1.6이 더한 사유 셋은 평가 LLM 호출 수를 늘리지 않는다 —
+# `decompose_fallback`은 순차 표지 질의에만 붙고(그 턴은 원래 결정적 성공 종료 대상이 아니다),
+# `replan_cap`·`replan_eval_failed`는 이 노드가 루프를 끝내는 반환에만 실린다.
+_INFO_NOTE_KINDS = frozenset(
+    {
+        NOTE_TRACE, NOTE_OWNERSHIP, NOTE_DESCRIPTIONS_MISSING, NOTE_SOURCE_UNAVAILABLE,
+        NOTE_ROUTING_FALLBACK,
+    }
+)
+# 재계획 종료 사유(plans/121 TP-1.6 · `decompose` 종류) — 3단 `tier3_plan.replan`의 상한 노트와
+# 같은 사유 코드·문구다. D-241 판정 어휘(`invalid`·`timeout`·`clarify_blocked`)와 겹치지 않는다.
+REASON_REPLAN_CAP = "replan_cap"
+REASON_REPLAN_EVAL_FAILED = "replan_eval_failed"
+# `_llm_evaluate` 실패 표지 키(내부) — 값은 예외 클래스명(응답 형식 무효면 "").
+_EVAL_FAILURE_KEY = "_eval_failure"
+
+
+def _replan_cap_note(max_replan: int) -> dict[str, Any]:
+    """재계획 상한 도달 경과 노트 — 3단 `tier3_plan.replan`과 같은 문구."""
+    return {
+        "kind": NOTE_DECOMPOSE, "task_id": None, "reason": REASON_REPLAN_CAP,
+        "detail": f"재계획 상한({max_replan}회)에 도달해 지금까지의 결과로 답했습니다.",
+    }
+
+
+def _eval_failure_note(error_class: str) -> dict[str, Any]:
+    """재계획 평가 실패 경과 노트 — 원인은 예외 클래스명만(원문은 로그에만)."""
+    head = (
+        f"추가 조회가 필요한지 판단하는 단계가 실패해({error_class})" if error_class
+        else "추가 조회가 필요한지 판단하는 단계의 응답 형식이 맞지 않아"
+    )
+    return {
+        "kind": NOTE_DECOMPOSE, "task_id": None, "reason": REASON_REPLAN_EVAL_FAILED,
+        "detail": f"{head} 지금까지의 결과로 답했습니다.",
+    }
+
+
+def _without_zone_turn_notes(notes: object) -> list[dict[str, Any]] | None:
+    """존 역질문 턴에서 뺄 경과 노트(분해 폴백)를 걸러 낸 목록 — 뺄 것이 없으면 None.
+
+    존 선택을 기다리는 턴은 역질문이 응답의 전부다. 분해 폴백 노트는 답변 턴의 조회와 무관한
+    분해 단계 사유라 역질문 본문에 붙이지 않는다(plans/121 §12.4). 관측은 계획 요약의
+    `decompose_fallback` 코드로 남는다.
+    """
+    if not isinstance(notes, list):
+        return None
+    kept = [
+        n for n in notes
+        if not (isinstance(n, dict) and n.get("reason") == REASON_DECOMPOSE_FALLBACK)
+    ]
+    if len(kept) == len(notes):
+        return None
+    return kept or None
 # task 결과 dict 의 실패·부분 실패·미완 표지 — 값이 있으면 성공으로 보지 않는다.
 #   error(실패·게이트 미실행) · skipped(D-203 게이트) · regen_stop(재생성 중단 — Q-3 계약) ·
 #   db_errors(멀티 DB 일부 실패) · skipped_dbs(DB별 스코프 미조회) · zone_clarification(역질문 대기)
+# plans/121이 더한 결과 키의 의미 선언(§12.4): `empty_diagnosis`(TP-11.5 — 0건일 때만 실린다.
+# 0건은 행 판정이 이미 미완으로 보므로 따로 두지 않는다) · `organized_data`·`query_results`를 더한
+# 호스트 조사 결과(TP-1.5 — 행 판정과 같은 규칙).
 _INCOMPLETE_RESULT_KEYS = (
     "error", "skipped", "regen_stop", "db_errors", "skipped_dbs", "zone_clarification",
 )

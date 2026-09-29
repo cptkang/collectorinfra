@@ -317,6 +317,25 @@ header h1.has-mark::before {
     content: none;
 }
 
+/* 제목 = 시스템 소개 링크(plans/124 · D-277) — 제목 모양은 그대로 둔다 */
+header h1 .brand-link {
+    display: inherit;
+    align-items: inherit;
+    gap: inherit;
+    color: inherit;
+    text-decoration: none;
+    border-radius: 6px;
+}
+
+header h1 .brand-link:hover {
+    opacity: 0.8;
+}
+
+header h1 .brand-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+}
+
 @keyframes pulse-dot {
     0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--accent-glow-strong); }
     50% { opacity: 0.6; box-shadow: 0 0 16px var(--accent-glow-strong); }

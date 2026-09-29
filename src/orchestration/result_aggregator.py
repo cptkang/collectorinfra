@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -25,13 +25,24 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
-from src.nodes.output_generator import narration_limit_sec, output_generator
+from src.nodes.output_generator import (
+    NO_TEMPLATE_NOTICE_HEAD,
+    narration_limit_sec,
+    output_generator,
+)
+from src.orchestration.host_inspect import HOST_INSPECT_AGENT
 from src.prompts.result_synthesizer import RESULT_SYNTHESIZER_SYSTEM_PROMPT
 from src.state import AgentState
 from src.utils.deadline import MIN_CALL_TIMEOUT_SEC
 from src.utils.prior_dependency import render_dependency_notes
+from src.utils.progress_events import emit_answer_prefix
 
 logger = logging.getLogger(__name__)
+
+#: 병합이 성립하지 않는 복합 턴의 답변 조립 방식(`synthesize=True`일 때만 쓴다 · plans/121 TP-4.5).
+#: "synthesize" = LLM 1회 합성(D-062 — 1단 `deep_agent` · 3단 계획 루프 `finalize`) ·
+#: "steps" = 단계(task)별 결과를 순서대로 잇는 결정적 조립(G-7 ① — 2단 기준 경로).
+CompositeAnswer = Literal["synthesize", "steps"]
 
 
 async def result_aggregator(
@@ -40,6 +51,7 @@ async def result_aggregator(
     llm: BaseChatModel | None = None,
     app_config: AppConfig | None = None,
     synthesize: bool = False,
+    composite_answer: CompositeAnswer = "synthesize",
 ) -> dict:
     """task_results를 통합하여 최종 응답을 생성한다.
 
@@ -53,6 +65,12 @@ async def result_aggregator(
             때 collector에 1·2차 결과가 모두 쌓여 "없음→있음" 모순 이중 답변이 한
             말풍선에 섞이는 문제를 합성으로 해소한다. replanner 경로(D-005/D-043)는
             기존 deterministic 병합을 유지한다(False).
+        composite_answer: `synthesize=True`에서 공통 서버 키 병합(TP-4.1)이 성립하지 않는 복합
+            턴을 어떻게 끝낼지(`CompositeAnswer`). 기본 "synthesize"는 종전 LLM 합성이다(1단·3단).
+            "steps"(2단 그래프 배선만 — plans/121 TP-4.5 · G-7 ①)는 합성 LLM 없이 단계별 결과를
+            잇고(`_finalize_steps`), `supersedes`가 빠진 재조회의 실패·0건 선행도 숨긴다
+            (`_collect_implicit_superseded` — D-062 원 결함 재발 방지).
+            `synthesize=False`면 무시한다.
 
     Returns:
         업데이트할 State 필드:
@@ -73,6 +91,13 @@ async def result_aggregator(
     # 그 후속이 성공(에러 없음)했을 때만 선행을 숨겨, 동일 질문에 대한 상반된 이중 답변
     # (없음→있음)을 방지한다. 재조회 자체가 실패하면 선행 결과를 그대로 유지한다(안전).
     superseded = _collect_superseded(tasks, task_results)
+    # 단계별 조립(TP-4.5)은 합성 LLM이 모순을 풀어 주지 않는다 — LLM이 supersedes를 빠뜨린
+    # 재조회도 같은 자리에서 결정적으로 숨긴다(D-062 원 결함 재발 방지).
+    step_answers = synthesize and composite_answer == "steps"
+    if step_answers:
+        superseded |= _collect_implicit_superseded(
+            tasks, task_results, state.get("replan_history") or [],
+        )
 
     # order 순으로 task 정렬 (표시 순서 안정화), 대체된 task는 본문에서 제외.
     ordered_tasks = [
@@ -100,16 +125,45 @@ async def result_aggregator(
     # 남기면 다음 턴 승계가 오염된다(subagents 반환부가 `target_db_ids` 를 비우는 것과 같은 사유).
     zone_q = _zone_clarification_from_tasks(ordered_tasks, task_results)
     if zone_q:
-        return _with_answer_history(_apply_incomplete_notice({
+        zone_out: dict[str, Any] = {
             "final_response": zone_q["question"],
             "zone_clarification": zone_q,
             "current_node": "result_aggregator",
             "query_results": [],
-        }, state))
+        }
+        # 존 재진입 계획 보존(plans/121 TP-1.2 · G-30 · D-272 ⑪) — 다음 턴(존 답변)이 이번 턴 복합
+        # 계획을 되살리도록 스냅샷을 남긴다. 2단 계획 턴(계획 경로 코드 있음)만 — 1단·3단도 이
+        # 함수를 거치지만 `intent_planner`를 타지 않아 복원할 곳이 없다(키 미탑재 · 바이트 불변).
+        snapshot = _zone_reentry_snapshot(tasks, task_results) if state.get("plan_path") else None
+        if snapshot:
+            zone_out["zone_reentry_plan"] = snapshot
+        return _with_answer_history(_apply_incomplete_notice(zone_out, state))
 
     # 합성 모드 + 복합 task일 때만 per-task 마감의 토큰 스트리밍을 억제한다.
     # (최종 합성 1회에만 USER_RESPONSE_TAG를 부여하여 중간 답변 토큰 누출 방지 — D-062/D-009)
     suppress_stream = synthesize and len(ordered_tasks) > 1
+
+    # 복합 task + 합성 모드(2단·1단): 먼저 공통 서버 키로 결정적 병합을 시도한다(D-100).
+    # 여러 하위 조회(알람 선별·지표·설정)가 같은 서버 식별 컬럼을 공유하면, 질의에 언급된
+    # 모든 항목(알람명·심각도·CPU평균·제조사·일련번호 등)을 한 표로 합쳐 노출한다.
+    # 병합 판정은 task 마감 **앞**이다(plans/121 TP-4.1) — 병합이 성립하면 task별 요약 LLM은
+    # 결과가 버려지므로 부르지 않는다. 병합 원천 밖 task(행 없음)만 LLM 없이 마감해 덧붙인다
+    # (TP-11.6).
+    if suppress_stream:
+        merged_rows = _merge_task_results_by_identity(ordered_tasks, task_results)
+        if merged_rows:
+            merged_out = await _finalize_merged_path(
+                merged_rows, ordered_tasks, task_results, state, llm, app_config,
+            )
+            return _with_answer_history(_apply_incomplete_notice(
+                {**merged_out, **db_promotion}, state,
+            ))
+        # 병합 불성립 + 2단(TP-4.5): 합성 LLM 없이 단계별 결과를 순서대로 잇는다.
+        if step_answers:
+            steps_out = await _finalize_steps(ordered_tasks, task_results, state, llm, app_config)
+            return _with_answer_history(_apply_incomplete_notice(
+                {**steps_out, **db_promotion}, state,
+            ))
 
     # 각 task 결과를 최종화 (텍스트 응답 + 선택적 output_file)
     finalized: list[dict] = []
@@ -123,17 +177,8 @@ async def result_aggregator(
             )
         )
 
-    # 복합 task + 합성 모드(딥 에이전트): 먼저 공통 서버 키로 결정적 병합을 시도한다(D-100).
-    # 여러 하위 조회(알람 선별·지표·설정)가 같은 서버 식별 컬럼을 공유하면, 질의에 언급된
-    # 모든 항목(알람명·심각도·CPU평균·제조사·일련번호 등)을 한 표로 합쳐 노출한다.
     # 공통 키가 없으면(도메인 이질) LLM 1회 합성으로 폴백한다(D-062).
     if synthesize and len(finalized) > 1:
-        merged_rows = _merge_task_results_by_identity(ordered_tasks, task_results)
-        if merged_rows:
-            out = await _finalize_merged_rows(merged_rows, state, llm, app_config)
-            return _with_answer_history(_apply_incomplete_notice(
-                {**out, **db_promotion}, state,
-            ))
         return _with_answer_history(_apply_incomplete_notice(
             {**await _synthesize_finalized(finalized, state, llm, app_config), **db_promotion},
             state,
@@ -177,6 +222,10 @@ _IDENTITY_COL_HINTS = ("server_name", "hostname", "host_name", "서버명", "nam
 
 #: 병합 키에서 제거하는 표기 구분자 — 같은 서버의 서로 다른 표기형을 한 키로 모은다.
 _IDENTITY_KEY_NOISE = re.compile(r"[\s_.-]")
+
+#: 멀티 DB 결과의 행 출처 태그(`multi_db_executor` · 표의 "출처" 열 — 113 S-2). 병합에서는 일반 열이
+#: 아니라 원천 목록으로 모은다(plans/121 TP-11.3).
+_MERGE_SOURCE_KEY = "_source_db"
 
 
 def _identity_key(value: Any) -> str:
@@ -273,6 +322,8 @@ def _merge_task_results_by_identity(
 
     merged: dict[str, dict] = {}
     col_order: list[str] = [canonical]
+    # 병합 행의 출처 원천 목록(등장 순서) — 첫 원천 값만 남기면 "출처"가 오표기된다(TP-11.3).
+    row_sources: dict[str, list[str]] = {}
     dropped = 0
     keyless = 0
     for rows, idc in sources:
@@ -287,6 +338,14 @@ def _merge_task_results_by_identity(
             slot = merged.setdefault(key, {canonical: raw_key})
             for col, val in row.items():
                 if col in id_cols:  # 모든 식별 컬럼은 canonical로 흡수(중복 제거)
+                    continue
+                if col == _MERGE_SOURCE_KEY:
+                    # 원천 태그는 대표값 경쟁 대상이 아니다 — 모으기만 하고 다건으로 세지 않는다
+                    seen = row_sources.setdefault(key, [])
+                    if val not in (None, "") and str(val) not in seen:
+                        seen.append(str(val))
+                    if col not in col_order:
+                        col_order.append(col)
                     continue
                 existing = slot.get(col)
                 if col not in slot or existing in (None, ""):
@@ -326,7 +385,92 @@ def _merge_task_results_by_identity(
             "result_aggregator 병합: 서버당 다건으로 %d개 값이 대표행에 흡수되지 않음(대표 유지)",
             dropped,
         )
-    return [{c: slot.get(c) for c in col_order} for slot in merged.values()]
+    out_rows: list[dict[str, Any]] = []
+    for key, slot in merged.items():
+        if row_sources.get(key):
+            # 원천이 둘 이상이면 모두 적는다(표시 쪽이 db_id마다 표시명으로 바꾼다 — TP-11.3)
+            slot = {**slot, _MERGE_SOURCE_KEY: ", ".join(row_sources[key])}
+        out_rows.append({c: slot.get(c) for c in col_order})
+    return out_rows
+
+
+def _merged_zone_state(
+    merged_rows: list[dict[str, Any]], source_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """병합 원천 task들의 존 커버리지 재료를 병합 표 기준으로 모은다(plans/121 TP-11.6 ②).
+
+    - `db_errors`: 원천 task의 DB별 실패를 합친다(같은 DB가 여러 task에서 실패하면 사유를 잇는다).
+    - `db_result_summary`: 원천 task가 조회한 DB마다 **병합 표 행 중 그 DB에서 온 행 수**를 센다 —
+      task별 건수를 더하면 병합 표와 맞지 않는다. 표시명은 원천 요약의 것을 쓴다.
+    원천에 둘 다 없으면 빈 dict — 단일 DB 병합의 응답은 종전과 같다.
+    """
+    errors: dict[str, str] = {}
+    names: dict[str, Any] = {}
+    for res in source_results:
+        for db_id, err in (res.get("db_errors") or {}).items():
+            errors[db_id] = f"{errors[db_id]} / {err}" if db_id in errors else err
+        for db_id, info in (res.get("db_result_summary") or {}).items():
+            names.setdefault(db_id, (info or {}).get("display_name"))
+    out: dict[str, Any] = {}
+    if errors:
+        out["db_errors"] = errors
+    if names:
+        sources = [
+            {s.strip() for s in str(r.get(_MERGE_SOURCE_KEY) or "").split(",") if s.strip()}
+            for r in merged_rows if isinstance(r, dict)
+        ]
+        out["db_result_summary"] = {
+            db_id: {"row_count": sum(db_id in s for s in sources), "display_name": name or db_id}
+            for db_id, name in names.items()
+        }
+    return out
+
+
+async def _finalize_merged_path(
+    merged_rows: list[dict[str, Any]],
+    ordered_tasks: list[dict[str, Any]],
+    task_results: dict[str, dict[str, Any]],
+    state: AgentState,
+    llm: BaseChatModel,
+    app_config: AppConfig,
+) -> dict[str, Any]:
+    """병합 성립 경로의 마감 — 병합 표 1회 서술 + 병합 원천 밖 task의 결정적 문구.
+
+    plans/121 TP-4.1·11.6.
+
+    행이 없는 task(실패·0건·텍스트 담당)는 병합 원천에서 빠져 오류·0건 사유가 사라졌다(①).
+    그 task만
+    `_finalize_task`로 마감해 표 뒤에 잇는다 — 행이 없으면 서술 LLM을 부르지 않는 경로다
+    (빈 결과 문구·텍스트·오류 안내). 모든 task가 행을 가진 병합은 덧붙임이 없어 종전 병합
+    응답과 같다.
+    """
+    source_results: list[dict[str, Any]] = []
+    outside: list[dict[str, Any]] = []
+    for task in ordered_tasks:
+        res = task_results.get(task["task_id"], {})
+        if _extract_result_rows(res):
+            source_results.append(res)
+        else:
+            outside.append(task)
+    out = await _finalize_merged_rows(
+        merged_rows, state, llm, app_config,
+        zone_state=_merged_zone_state(merged_rows, source_results),
+    )
+    notes: list[str] = []
+    for task in outside:
+        f = await _finalize_task(
+            task, task_results.get(task["task_id"], {}), state, llm, app_config,
+            stream_user_response=False,
+        )
+        if f.get("text"):
+            notes.append(f["text"])
+        if f.get("output_file") is not None and "output_file" not in out:
+            out["output_file"] = f["output_file"]
+            out["output_file_name"] = f.get("output_file_name")
+    if notes:
+        body = (out.get("final_response") or "").strip()
+        out["final_response"] = "\n\n".join([body, *notes]) if body else "\n\n".join(notes)
+    return out
 
 
 async def _finalize_merged_rows(
@@ -334,6 +478,8 @@ async def _finalize_merged_rows(
     state: AgentState,
     llm: BaseChatModel,
     app_config: AppConfig,
+    *,
+    zone_state: dict[str, Any] | None = None,
 ) -> dict:
     """병합된 통합 행을 단일 output_generator로 최종 표/자연어 응답으로 만든다(D-100).
 
@@ -342,9 +488,10 @@ async def _finalize_merged_rows(
         state: 전체 에이전트 상태(원본 질의)
         llm: LLM 인스턴스
         app_config: 앱 설정
+        zone_state: 병합 원천의 존 커버리지 재료(`_merged_zone_state` — plans/121 TP-11.6 ②)
 
     Returns:
-        final_response/query_results/current_node를 포함한 State 갱신 dict
+        final_response/query_results/current_node(+ output_file)를 포함한 State 갱신 dict
     """
     organized = {
         "summary": f"총 {len(merged_rows)}건의 통합 결과입니다.",
@@ -357,20 +504,27 @@ async def _finalize_merged_rows(
     # 통합 표는 전체 질의에 대한 답이므로 original_query를 전체 질의로 둔다(sub-task 스코프 아님).
     merge_task = {"sub_query": state.get("user_query", ""), "agent": "data_query"}
     out_state = _build_output_state(
-        state, merge_task, {"organized_data": organized, "query_results": merged_rows}
+        state, merge_task,
+        {"organized_data": organized, "query_results": merged_rows, **(zone_state or {})},
     )
     # _build_output_state가 original_query를 sub_query(=전체 질의)로 세팅 — 그대로 사용.
+    out: dict[str, Any] = {}
     try:
         out = await output_generator(out_state, llm=llm, app_config=app_config)
         text = out.get("final_response", "")
     except Exception as e:  # noqa: BLE001 — 표 생성 실패는 로그 후 최소 안내
         logger.error("result_aggregator 병합 표 생성 실패: %s", e)
         text = f"통합 결과 {len(merged_rows)}건을 정리하는 중 오류가 발생했습니다: {e}"
-    return {
+    result: dict[str, Any] = {
         "final_response": text,
         "current_node": "result_aggregator",
         "query_results": merged_rows,
     }
+    # 병합 표로 만든 파일을 버리지 않는다(plans/121 TP-11.6 ③ — 종전에는 텍스트만 돌려줬다).
+    if out.get("output_file") is not None:
+        result["output_file"] = out["output_file"]
+        result["output_file_name"] = out.get("output_file_name")
+    return result
 
 
 def _apply_incomplete_notice(result: dict, state: AgentState) -> dict:
@@ -482,6 +636,43 @@ def _zone_clarification_from_tasks(
     return None
 
 
+#: 존 재진입 스냅샷에 싣는 task 계획 필드(plans/121 TP-1.2). 상태(`status`)·응답(`direct_response`)·
+#: 실행 중 노트(`dependency_note`)는 싣지 않는다 — 다음 턴이 계획을 새로 실행한다.
+_ZONE_REENTRY_PLAN_FIELDS = (
+    "task_id", "agent", "sub_query", "depends_on", "input_from", "order",
+    "db_ids", "supersedes", "capability", "spans", "agent_fallback",
+)
+
+
+def _zone_reentry_snapshot(
+    tasks: list[dict[str, Any]], task_results: dict[str, dict[str, Any]]
+) -> dict[str, Any] | None:
+    """존 역질문 턴의 계획 스냅샷 — 복합 계획(task 2개 이상)일 때만, 아니면 None.
+
+    plans/121 TP-1.2 · G-30 · D-272 ⑪. 단일 task 계획은 종전 ②.5 단일 복원이 같은 일을 하므로
+    남기지 않는다(단일 의도 답변 턴 바이트 불변). `gated_task_ids`는 결과에 존 역질문이 실린
+    task다 — 복원 때 그 task만 선택 존으로 고정한다.
+    """
+    plan = [t for t in tasks if isinstance(t, dict) and t.get("task_id")]
+    if len(plan) < 2:
+        return None
+    gated = [
+        str(t["task_id"]) for t in plan
+        if isinstance(task_results.get(t["task_id"]), dict)
+        and task_results[t["task_id"]].get("zone_clarification")
+    ]
+    if not gated:
+        return None
+    return {
+        "tasks": [
+            {k: (list(t[k]) if isinstance(t[k], list) else t[k])
+             for k in _ZONE_REENTRY_PLAN_FIELDS if k in t}
+            for t in plan
+        ],
+        "gated_task_ids": gated,
+    }
+
+
 def _collect_db_promotion(
     tasks: list[dict], task_results: dict[str, dict]
 ) -> dict:
@@ -547,6 +738,84 @@ def _collect_superseded(tasks: list[dict], task_results: dict[str, dict]) -> set
     return superseded
 
 
+def _is_row_result(res: dict[str, Any]) -> bool:
+    """행 모양 결과(조회 담당)인지 — 텍스트 담당 결과(`final_response`만)는 0건이 없다."""
+    return isinstance(res.get("organized_data"), dict) or isinstance(res.get("query_results"), list)
+
+
+def _task_rounds(
+    tasks: list[dict[str, Any]], replan_history: list[dict[str, Any]]
+) -> dict[str, int]:
+    """task_id → 바퀴 번호(0 = 최초 계획 · k = k번째 재계획이 추가한 task).
+
+    재계획은 신규 task만 order 뒤에 붙이고(R-A1) 회차마다 추가 개수를 `replan_history.added`에
+    남긴다(`replanner._rounds`와 같은 복원). 개수가 맞지 않으면 빈 dict — 바퀴를 모르면
+    숨기지 않는다.
+    """
+    ordered = sorted(tasks, key=lambda t: t.get("order", 0))
+    added = [int(h.get("added") or 0) for h in replan_history if isinstance(h, dict)]
+    if sum(added) > len(ordered):
+        return {}
+    rounds: dict[str, int] = {}
+    start = 0
+    for idx, size in enumerate([len(ordered) - sum(added), *added]):
+        for t in ordered[start:start + size]:
+            rounds[str(t.get("task_id"))] = idx
+        start += size
+    return rounds
+
+
+def _collect_implicit_superseded(
+    tasks: list[dict[str, Any]],
+    task_results: dict[str, dict[str, Any]],
+    replan_history: list[dict[str, Any]],
+) -> set[str]:
+    """`supersedes`가 빠진 재조회의 선행 task_id — 단계별 조립 전용(plans/121 TP-4.5 · D-062).
+
+    LLM 합성이 없으면 "없음(선행) → 있음(재조회)" 두 서술이 한 답에 남는다. 재계획 LLM이
+    `supersedes`를 빠뜨려도(D-043은 명시가 있어야 숨긴다) 다음 조건이 모두 맞으면 선행을 숨긴다.
+
+    - 선행이 실패(`error` — 순차 게이트 미실행 포함)했거나 행 모양 결과가 0건이다.
+    - **뒤 바퀴**(재계획이 나중에 추가한 회차)에 **같은 담당**의 후속이 있고, 그 후속은 데이터
+      의존(`input_from`)이 없으며 성공했다 — 오류 없음 · 행 모양이면 1행 이상 · 텍스트면 본문 있음.
+
+    같은 바퀴의 task(최초 분해가 나눈 서로 다른 질문)는 숨기지 않는다 — 한 질문이 0건이고 다른
+    질문이 성공한 것은 재조회가 아니다(침묵 손실 방지). 행이 있는 선행(부분 성공)은 대상이
+    아니다 — 그 재조회는 재계획 단계에서 이미 걸러진다(`replanner._filter_futile_retries` · D-063).
+    """
+    rounds = _task_rounds(tasks, replan_history)
+    hidden: set[str] = set()
+    for pred in tasks:
+        pid = str(pred.get("task_id"))
+        pres = task_results.get(pid) or {}
+        if pid not in rounds or not (
+            pres.get("error") or (_is_row_result(pres) and not _extract_result_rows(pres))
+        ):
+            continue
+        for succ in tasks:
+            sid = str(succ.get("task_id"))
+            sres = task_results.get(sid) or {}
+            if (
+                rounds.get(sid, -1) <= rounds[pid]
+                or succ.get("agent") != pred.get("agent")
+                or succ.get("input_from")
+                or sres.get("error")
+            ):
+                continue
+            ok = (
+                bool(_extract_result_rows(sres)) if _is_row_result(sres)
+                else bool(str(sres.get("final_response") or "").strip())
+            )
+            if ok:
+                logger.info(
+                    "result_aggregator: 재조회 %s 성공 — 실패·0건 선행 %s 본문 숨김"
+                    "(supersedes 없음 · 같은 담당 %s)", sid, pid, pred.get("agent"),
+                )
+                hidden.add(pid)
+                break
+    return hidden
+
+
 async def _finalize_task(
     task: dict,
     res: dict,
@@ -600,8 +869,9 @@ async def _finalize_task(
         # (서버 식별 실패·API 미연결·API 미응답·0건 등). output_generator의 일반
         # "조건에 해당하는 …데이터가 없습니다" 문구로 덮어쓰면 실제 원인이 사라지므로,
         # 빈 결과(rows=[]) + summary가 있으면 그 summary를 그대로 노출한다(Plan 50 M4 / D-046).
+        # 호스트 조사(plans/121 TP-1.5)도 같은 규약이다 — 결정적 요약이 0행 원인을 담는다.
         if (
-            agent == "process_query"
+            agent in ("process_query", HOST_INSPECT_AGENT)
             and not organized.get("rows")
             and organized.get("summary")
         ):
@@ -673,6 +943,8 @@ def _build_output_state(state: AgentState, task: dict, res: dict) -> dict:
         # 존 커버리지 각주(D-159 계열 침묵 강등 금지) — 부분 실패·0행 존 명시용
         "db_errors": res.get("db_errors"),
         "db_result_summary": res.get("db_result_summary"),
+        # 0건 원인 진단(plans/121 TP-11.5) — 없으면 None이라 빈 결과 문구가 종전과 바이트 동일하다.
+        "empty_diagnosis": res.get("empty_diagnosis"),
         "template_structure": state.get("template_structure"),
         # uploaded_file(원본 파일 바이너리)이 없으면 output_generator가 양식을 채우지 못하고
         # CSV로만 강등된다(비대칭 전파 방지, D-053 계열).
@@ -755,6 +1027,70 @@ def _merge_finalized(finalized: list[dict]) -> dict:
         result["output_file"] = output_file
         result["output_file_name"] = output_file_name
     return result
+
+
+async def _finalize_steps(
+    ordered_tasks: list[dict[str, Any]],
+    task_results: dict[str, dict[str, Any]],
+    state: AgentState,
+    llm: BaseChatModel,
+    app_config: AppConfig,
+) -> dict[str, Any]:
+    """병합이 성립하지 않는 복합 턴 — 단계(task)별 결과를 순서대로 잇는다(plans/121 TP-4.5 · G-7 ①).
+
+    합성 LLM을 부르지 않는다(D-062 의미 개정). 각 단계는 `_finalize_task` 산출(코드 표 + 짧은
+    요약 · 0건 사유 · 오류 안내 · 텍스트 담당 응답)을 그대로 쓰고, 단계 머리말 없이 빈 줄로 잇는다
+    — `_merge_finalized`(D-005)와 같은 모양이다(첫 파일 · 실패 안내 · CSV 행 누적 포함). 합성
+    서술 상한 폴백(T-4 · `_merge_with_synthesis_skipped`)과 같은 본문에서 생략 안내만 없다.
+
+    스트리밍(D-268 ① 표 먼저 · `done` 본문과 같은 순서):
+    - **마지막 단계**는 `output_generator`가 표를 먼저 내고 요약을 토큰으로 흘린다(단일 task와
+      같다).
+    - **앞 단계들**은 스트림 없이 마감한 뒤 마지막 단계 직전에 **한 번에** 답변 선행 본문으로 낸다.
+      앞 단계를 요약 토큰으로 흘리면 그 단계의 덧붙임(존별 결과 등 — 스트림에 실리지 않는다)이
+      `done` 본문 **중간**에 끼어 교체 때 화면이 튄다. 마지막 단계의 덧붙임은 본문 끝이라 끝에
+      붙을 뿐이다. 앞 단계를 하나씩 내지 않는 것은, 그 사이 스트림 없는 요약 LLM(상한 30초) 동안
+      답변 토큰이 끊겨 첫 답변 뒤 토큰 간 상한(기본 30초)에 걸릴 수 있어서다.
+    """
+    *head, last = ordered_tasks
+    finalized: list[dict[str, Any]] = []
+    notice_seen = False
+    for task in head:
+        step = await _finalize_task(
+            task, task_results.get(task["task_id"], {}), state, llm, app_config,
+            stream_user_response=False,
+        )
+        notice_seen = _drop_repeated_turn_notice(step, notice_seen)
+        finalized.append(step)
+    lead = "\n\n".join(f["text"] for f in finalized if f.get("text"))
+    if lead:
+        # `_merge_finalized`가 잇는 순서·구분자와 같다 — 마지막 단계 본문이 이 뒤에 붙는다.
+        await emit_answer_prefix(lead + "\n\n")
+    step = await _finalize_task(
+        last, task_results.get(last["task_id"], {}), state, llm, app_config,
+        stream_user_response=True,
+    )
+    _drop_repeated_turn_notice(step, notice_seen)
+    finalized.append(step)
+    return _merge_finalized(finalized)
+
+
+def _drop_repeated_turn_notice(step: dict[str, Any], seen: bool) -> bool:
+    """턴 단위 안내가 단계마다 붙은 것을 두 번째 단계부터 뗀다(plans/121 TP-4.5 · 결함 B).
+
+    양식 없는 파일 요청 안내(D-264 ④)는 `parsed_requirements.output_format`(턴 전체 값)으로 정해져
+    `output_generator`가 **단계마다** 본문 머리에 붙인다. 합성 모드(D-062)는 LLM이 한 번으로
+    합쳤지만 단계별 조립은 그대로 이어 붙여 같은 안내가 단계 수만큼 나왔다. 첫 안내만 남긴다 —
+    CSV 안내 문장 유무는 첫 단계의 행 유무를 따른다. 마지막 단계의 안내를 떼면 `done` 본문이 다시
+    스트림 본문의 뒤를 잇는다(단계 사이에 안내가 끼지 않는다). 안내가 있었으면 True를 돌려준다.
+    """
+    text = step.get("text") or ""
+    if not text.startswith(NO_TEMPLATE_NOTICE_HEAD):
+        return seen
+    if seen:
+        _, sep, rest = text.partition("\n\n")
+        step["text"] = rest if sep else ""
+    return True
 
 
 _SYNTHESIS_SKIPPED_NOTE = (

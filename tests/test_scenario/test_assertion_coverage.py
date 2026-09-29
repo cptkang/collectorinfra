@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from scripts.scenario import runner as runner_mod
-from scripts.scenario.catalog import ENDPOINTS, load_catalog
+from scripts.scenario.catalog import ENDPOINTS, Catalog, Scenario, load_catalog
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -29,6 +29,16 @@ KNOWN_KEYS = {
     "rewrite",
     # 선택지형 응답 단언 (plans/120 U-4 · H-06).
     "response_must_contain_any",
+    # 계획 구조 단언 (plans/121 TP-0.3). 하위 키는 catalog.PLAN_KEYS 가 로드 시점에 검사한다.
+    "plan",
+    # 관측값 단언 (plans/122 H-5) · 결과 행 단언 (H-1). 하위 키(`stream`·`result`·`file`·
+    # `period_covers`)는 catalog 의 *_KEYS 가 로드 시점에 검사한다.
+    "sql_executed", "node_path_must_not", "status_any", "form_memory_panel", "stream",
+    "dependency_notes_contains", "result",
+    # 실 DB 오라클 단언 (plans/122 O-2) — 평가기 `_check_oracle` 과 같은 변경으로 넣는다
+    # (D-275 주의 ③ · §9.2 「조용한 통과 방지」). 하위 키·정본 파일·엔진 커버리지는 로더가
+    # `oracle.validate_oracle_spec` 로 검사한다.
+    "oracle",
 }
 
 
@@ -37,7 +47,7 @@ def catalog():
     return load_catalog()
 
 
-def _normal_closed(catalog):
+def _normal_closed(catalog: Catalog) -> list[Scenario]:
     # 러너 동작 시나리오(부하 묶음·시드 재적재·선행 상태, D-217)는 자기 턴을 판정하지 않는다 -
     # 묶음은 참조 시나리오의 단언으로, 러너 동작은 러너가 판정한다. 질의 시나리오만 센다.
     return [s for s in catalog.scenarios
@@ -58,6 +68,59 @@ def test_정상군_대부분이_기계_판정_대상이다(catalog) -> None:
     assert ratio >= 0.85, (
         f"기계 판정 가능 {len(judged)}/{len(runnable)}({ratio:.0%}) — "
         "단언 없는 시나리오가 늘면 정확도 비교가 다시 0쌍이 된다"
+    )
+
+
+#: 선언하면 관측 수단이 없어 **늘 보류**되는 키(assertions.evaluate_turn) — `manual_review`
+#: 처럼 합격을 막는다. `intent` 는 스트림 done 에 없고, `llm_calls` 는 호출 수가 실리지 않고,
+#: `gold_sql` 은 러너가 실행하지 않는다(eval_text2sql 별도 판정).
+STRUCTURALLY_HELD_KEYS = frozenset({"intent", "llm_calls", "gold_sql"})
+
+#: 「합격 가능」 비율 하한(plans/122 J-2) — 현 실측 42/104(40.4%)을 소수 둘째 자리에서 내림해
+#: 고정했다
+#: (최종 하한 0.90 으로 먼저 돌려 실패를 확인함 · Prove-It 2026-09-29).
+#: 단계 하한은 이관 커밋과 함께 올린다(122 §6: 0.55 → 0.70 → 0.90).
+#: 이력(현 작업 트리 카탈로그 실측 · 소수 둘째 자리 내림):
+#:   - 단계 0(2026-09-29) 42/104 = 40.4% → 0.40
+#:   - 카탈로그 v2 이관 CatA(A~D군)·CatB(F~L군) 뒤 74/103 = 71.8%(하한은 올리지 않았다)
+#:   - 하네스 보완(refine · 2026-09-29 — H-4 다단 머리글 · value_range 별칭 · K-3 H-18 미작성 전환)
+#:     뒤 78/102 = 76.5% → **0.76**. 이관 +4(B-12 · H-06 · H-15 · H-16) · 모집단 −1(H-18 미작성).
+#:     단계 3 하한 0.70 은 넘었고 단계 5 하한 0.90 은 아직이다.
+PASSABLE_FLOOR = 0.76
+
+
+def _runnable(catalog: Catalog) -> list[Scenario]:
+    """러너가 실제로 도는 정상군 — 프롬프트 작성됨 · teardown 지원.
+
+    `test_정상군_대부분이_기계_판정_대상이다` 와 같은 모집단이다.
+    """
+    return [s for s in _normal_closed(catalog)
+            if s.prompt_authored and not runner_mod._teardown(s)]
+
+
+def test_passable_ratio_floor(catalog: Catalog) -> None:
+    """plans/122 J-2 — 「판정 가능」(단언 1개 이상)이 아니라 「합격 가능」을 센다.
+
+    어느 턴에든 `manual_review` 가 있으면 기계 단언이 전부 통과해도 판정은 `manual` 이 상한이다
+    (`assertions.evaluate_turn` 판정 순서 `error → forbidden → fail → manual → pass`).
+    구조적 보류 키(`STRUCTURALLY_HELD_KEYS`)도 같은 이유로 합격을 막으므로 합격 가능에서
+    뺀다(엄격 정의).
+
+    실측(2026-09-29 · 현 작업 트리 카탈로그): 모집단 104건 · `manual_review` 없는 시나리오 42건
+    (40.4% — 122 §4 「현 작업 트리」 42/104와 같다) · 구조적 보류 키를 가진 시나리오 0건
+    (카탈로그 전체 229건에서도 0건). 「판정 가능」 테스트는 같은 모집단을 93/104(89%)로 센다.
+    이 단락은 단계 0 실측이다 — 이후 값은 `PASSABLE_FLOOR` 주석 이력에 적는다.
+    """
+    runnable = _runnable(catalog)
+    passable = [
+        s for s in runnable
+        if not any(t.expect.get("manual_review") or set(t.expect) & STRUCTURALLY_HELD_KEYS
+                   for t in s.turns)
+    ]
+    ratio = len(passable) / len(runnable)
+    assert ratio >= PASSABLE_FLOOR, (
+        f"합격 가능 {len(passable)}/{len(runnable)}({ratio:.1%}) — 하한 {PASSABLE_FLOOR:.2f}. "
+        "`manual_review` 를 새로 두면 그 시나리오는 기계 단언이 다 통과해도 합격이 될 수 없다"
     )
 
 

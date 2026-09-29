@@ -479,10 +479,18 @@ def _spawn_l3_enrichment(
         return
     if not result.notifications_sent.get("workb"):
         return
-    from noise_gate.domain.process_rank import classify_alarm_kind
+    from noise_gate.domain.process_rank import KIND_APM, classify_alarm_kind
 
     kind = classify_alarm_kind(result.alarm_event)
     if not kind:
+        return
+    if kind == KIND_APM:
+        # (plans/87 R-16 · U-13) APM(WAS) 이벤트에 OS kind L3 프로파일을 붙이지 않는다 — 호스트
+        # 명령 결과가 WAS 사건의 원인처럼 후속 통보되는 것을 막는다(`l3_profile_map_csv`로 apm을
+        # OS 프로파일에 연결해도 여기서 끊긴다). WAS 증거는 조사 서비스의 `apm_*` 도구 몫이다.
+        logger.debug(
+            "L3 보강 생략 — APM 이벤트(OS kind 아님): alarm_id=%s", result.alarm_event.alarm_id
+        )
         return
     max_inflight = int(getattr(gate_cfg, "l3_max_inflight", 4))
     if len(_L3_TASKS) >= max_inflight:

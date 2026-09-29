@@ -23,9 +23,10 @@ scenarios:
           query: "여의도 개발 서버들의 CPU 사용률을 보여줘"
         expect:
           status: completed
+          # plans/122 A-1: 위치어 힌트의 결과는 `db_ids`(여의도 → polestar_cm_yd)가 이미 본다.
+          #   종전 수동 문구 "위치어 결정적 힌트가 적용됐는지 기동 로그 확인"은 삭제했다.
           db_ids: ["polestar_cm_yd"]
           sql_must_not_match: ["(?i)여의도"]
-          manual_review: "위치어 결정적 힌트가 적용됐는지 기동 로그 확인"
   - id: A-02
     plans: [9, 79]
     title: "은행존 서버의 디스크 사용량 조회"
@@ -53,7 +54,10 @@ scenarios:
         expect:
           status: completed
           db_ids: ["polestar_cm_gp", "polestar_cm_yd"]
-          manual_review: "멀티DB 축소 회귀 감시 - 한쪽으로 좁혀지지 않았는지"
+          # plans/122 A-1: 종전 수동 문구 "멀티DB 축소 회귀 감시 - 한쪽으로 좁혀지지 않았는지".
+          #   두 DB 라우팅은 `db_ids` 가, 두 DB 가 각각 행을 냈는지는 아래가 본다.
+          #   (실패한 DB 실행은 `row_counts_by_db` 에 실리지 않는다 - 러너 `_apply_sql_audit`)
+          row_count_per_db: {min: 1}
   - id: A-04
     plans: [9, 79]
     title: "현재 활성 상태인 심각 알람 목록 보여줘"
@@ -115,7 +119,9 @@ scenarios:
           status: completed
           sql_must_not_match: ["(?i)\\bselect\\b"]
           db_ids: []
-          manual_review: "일반 추론 응답인지 - 관측 데이터를 지어내지 않았는지"
+          # plans/122 H-5: 종전 수동 문구 "일반 추론 응답인지 - 관측 데이터를 지어내지 않았는지".
+          #   관측 데이터 조회가 없었다 = 실행 SQL 0건(실시간 REST 감사 레코드 포함).
+          sql_executed: false
   - id: A-08
     plans: [9, 79]
     title: "쿠버네티스란 뭐야?"
@@ -130,10 +136,12 @@ scenarios:
           status: completed
           sql_must_not_match: ["(?i)\\bselect\\b"]
           db_ids: []
+  # plans/122 K-1 (G-2 · D-275 ②): 관측 전용 — 판정 모집단(합격 가능 가드 · 벤치 정상군)에서 뺀다.
+  #   판정 어휘는 그대로이고 아래 수동 문구는 관측 메모로 남긴다.
   - id: A-09
     plans: [9, 79]
     title: "서버 상태 좀 확인해줘"
-    kind: normal
+    kind: probe
     env: closed
     profile: baseline
     endpoint: stream
@@ -155,13 +163,32 @@ scenarios:
         expect:
           status: completed
           sql_must_not_match: ["(?i)\\bselect\\b"]
-          manual_review: "LLM 미호출 확인 - 유사어 등록이 결정적 경로로 처리됐는지"
+          # plans/122 H-5: 종전 수동 문구 "LLM 미호출 확인 - 유사어 등록이 결정적 경로로 처리됐는지".
+          #   ① SQL 생성 LLM 노드를 밟지 않았다 — 3단은 노드 경로에 보인다. **2단 상위 스트림에는
+          #      query_generator 가 나오지 않는다**(run 20260923-103638 2단 369행 · 20260923-140539
+          #      2단 110행 전부 0건) — 2단에서는 이 단언만으로 판별력이 없다.
+          #   ② 그래서 결정적 등록기(`cache_management._handle_add_synonym_set` · D-142)의 고정 결과
+          #      문구로 두 단 모두 경로를 본다 — 앵커 미발견(`src/nodes/cache_management.py:1099`) ·
+          #      앵커 모호(`:1107`) · 등록 완료(`:1141`). LLM 호출 수 자체는 plans/56 전까지 측정 불가.
+          node_path_must_not: [query_generator]
+          response_must_contain_any:
+            - "실제 컬럼(또는 등록된 속성)으로 찾지 못했습니다"
+            - "기준 컬럼을 하나로 정하지 못했습니다"
+            - "동의어로 등록했습니다"
     # 쓰기 시나리오 - 유사어 사전(Redis)에 등록한다. 정리하지 않으면 뒤 시나리오의
     # 매핑이 바뀐다(유사어 오염 자기강화 - Known Mistakes). 러너가 턴 전후 유사어 사전
     # 스냅샷을 떠 차이 중 **아래 선언한 단어만** 지운다(D-217 - 원래 있던 단어는 건드리지 않는다).
     # 공유 Redis 에서 같은 턴 동안 다른 서버·운영자가 더한 단어는 지우지 않고 run.json 에 `남김`으로 남긴다.
     teardown: [drop_thread, unregister_synonym]
     unregister_words: [vcore, cpu, core]
+  # plans/122 K-2 보류(G-3) — 프로파일별 두 건으로 가르지 않았다. 사유 둘:
+  #   ① on 쪽(`fault_diagnosis`)은 **기준 경로(2단)에 처리기가 없다** — `fault_diagnosis` 는 3단 그래프
+  #      노드뿐이고(`src/graph.py` fault_dx_enabled 배선) 2단 `SUBAGENT_REGISTRY` 에 없다
+  #      (`src/orchestration/schemas.py:21`). plans/121 §14.2 부기(87 R-18 소유 이관) 미착수. 없는 동작을
+  #      기대로 적으면 영구 불합격이다.
+  #   ② off 쪽도 baseline 으로는 고정되지 않는다 — baseline 은 운영 .env 를 그대로 쓰는데 폐쇄망 실효값이
+  #      NOISE_FAULT_DIAGNOSIS_ENABLED=true 다(run 20260922-093837 · 20260923-103638 · 20260923-140539
+  #      run.json profiles[].effective_settings). off 고정 프로파일이 있어야 off 변형이 결정적이다.
   - id: A-11
     plans: [9, 79]
     title: "○○ 서버 왜 느려? 원인 분석해줘"

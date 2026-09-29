@@ -386,12 +386,15 @@ async def test_metrics_live_without_metric_is_refused_not_silent(monkeypatch):
         llm=None,
         app_config=_cfg(investigation=True),
     )
+    # plans/121 TP-1.5 교정: 종전 기대값의 `"organized_data": ""`가 결함이었다 — 응답 조립기가
+    # 행 결과로 읽다가 TypeError 문구로 끝났다(1단 운영 응답). 거부는 텍스트 결과다.
+    message = (
+        "실시간 메트릭 조회에는 메트릭 이름(예: node_load1) 또는 접두(예: node_)가 필요합니다."
+    )
     assert result == {
-        "error": (
-            "실시간 메트릭 조회에는 메트릭 이름(예: node_load1) 또는 접두(예: node_)가 필요합니다."
-        ),
+        "error": message,
         DEGRADED_KEY: "metric_unspecified",
-        "organized_data": "",
+        "final_response": message,
     }
     assert fake.seen is None
 
@@ -448,8 +451,12 @@ async def test_existing_profile_call_kwargs_unchanged(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_existing_profile_payload_has_no_organized_rows(monkeypatch):
-    """기존 프로파일의 성공 payload는 종전 키 그대로다 — 행 펼치기는 `metrics_live`에만 적용된다."""
+async def test_existing_profile_payload_adds_organized_rows(monkeypatch):
+    """기존 프로파일의 성공 payload — 서버 계약 키는 그대로 두고 응답 조립용 두 키만 더한다.
+
+    plans/121 TP-1.5 교정: 종전 기대값(`organized_data` 없음)이 결함을 굳혔다 — 성공한 조사가
+    "처리 결과가 없습니다."로 끝났다. `metrics_live`(plans/92 O3)와 같은 규약으로 맞춘다(D-122).
+    """
     server = {"rows": [{"k": "v"}], "row_count": 1, "queried_at": "t",
               "source_kind": "polestar_db", "source": "s", "engine": "postgres"}
     _fake_client_ctx(monkeypatch, server)
@@ -457,7 +464,11 @@ async def test_existing_profile_payload_has_no_organized_rows(monkeypatch):
         {"sub_query": "svweb001 OS 정보 보여줘"}, _STATE_WITH_HOST, llm=None,
         app_config=_cfg(investigation=True),
     )
-    assert set(result) == set(server) | {"profile", "target"}
+    assert set(result) == set(server) | {"profile", "target", "organized_data", "query_results"}
+    for key, value in server.items():
+        assert result[key] == value, f"{key}가 변형됐다"
+    assert result["organized_data"]["rows"] == [{"k": "v"}] == result["query_results"]
+    assert result["organized_data"]["summary"] == "OS 구성 조회 결과 1행입니다(조회 시각 t)."
 
 
 def test_metrics_live_flag_off_no_coercion():

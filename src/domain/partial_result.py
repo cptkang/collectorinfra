@@ -63,23 +63,39 @@ def _rows_of(container: Mapping[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-def extract_partial_answer(state: Optional[Mapping[str, Any]]) -> Optional[PartialAnswer]:
+def extract_partial_answer(
+    state: Optional[Mapping[str, Any]], *, task_scoped: bool = False,
+) -> Optional[PartialAnswer]:
     """체크포인트 상태에서 부분 결과를 건진다. 행이 없으면 None.
 
     None 이면 **종전 오류 그대로** 나가야 한다 — 빈 표를 답이라고 내보내지 않는다.
+
+    `task_scoped`(2단 — 호출부가 확정 단으로 정한다)면 **이번 계획의 하위 작업 결과만** 본다
+    (plans/121 TP-1.1b). 2단의 최상위 `query_results`·`organized_data`는 집계기가 턴 끝에 쓰므로,
+    그 전에 끊긴 후속 턴에서는 **앞 턴 값**이다 — 종전에는 그것을 먼저 골라 앞 턴 행을 이번 턴
+    부분 결과로 냈다.
     """
     if not isinstance(state, Mapping):
         return None
 
-    rows = _row_list(state.get("query_results"))
-    if rows:
-        return PartialAnswer(rows=rows, source="query_results")
-
-    organized = state.get("organized_data")
-    if isinstance(organized, Mapping):
-        rows = _row_list(organized.get("rows"))
+    if not task_scoped:
+        rows = _row_list(state.get("query_results"))
         if rows:
-            return PartialAnswer(rows=rows, source="organized_data")
+            return PartialAnswer(rows=rows, source="query_results")
+
+        organized = state.get("organized_data")
+        if isinstance(organized, Mapping):
+            rows = _row_list(organized.get("rows"))
+            if rows:
+                return PartialAnswer(rows=rows, source="organized_data")
+
+    plan_ids: set[str] | None = None
+    if task_scoped:
+        plan = state.get("task_plan")
+        plan_ids = {
+            str(t.get("task_id")) for t in (plan if isinstance(plan, Sequence) else [])
+            if isinstance(t, Mapping)
+        }
 
     # 2단 — 하위 작업별 결과. 여러 작업이 행을 냈으면 **마지막 작업**을 쓴다.
     # 작업마다 컬럼이 다르므로 이어 붙이면 표가 아니라 잡동사니가 된다. 대신 몇 건 중
@@ -90,6 +106,8 @@ def extract_partial_answer(state: Optional[Mapping[str, Any]]) -> Optional[Parti
         count = 0
         for task_id, result in tasks.items():
             if not isinstance(result, Mapping):
+                continue
+            if plan_ids is not None and str(task_id) not in plan_ids:
                 continue
             rows = _rows_of(result)
             if rows:

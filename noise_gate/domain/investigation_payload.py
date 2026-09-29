@@ -13,9 +13,32 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
+from noise_gate.domain.process_rank import KIND_APM, is_apm_event
+
 # 트리거 페이로드 계약 버전 (sre-agent/05 §4). sre_agent JobStore.validate_payload가 이 값과
 # 일치할 때만 수용한다(불일치·event 결측·필수 필드 결측 시 rejected).
 CONTRACT_VERSION = "1"
+
+# 조사측 힌트 키(plans/87 J4 · SPEC-apm-sre-agent §7). 값은 원문 `raw_payload["apm"]`의 같은
+# 이름 필드다.
+_APM_HINT_FIELDS: tuple[str, ...] = ("instance_id", "domain_id", "event_type", "txid")
+
+
+def apm_trigger_hints(event) -> dict:  # noqa: ANN001 — AlarmEvent (덕 타이핑)
+    """APM 이벤트의 조사 힌트를 만든다.
+
+    모양: `{"solution": "apm", instance_id, domain_id, event_type, txid}`.
+
+    원문에 `apm` 객체가 없거나 필드가 비면 그 값은 None이다(키 집합은 고정 — 소비자가 키 부재와
+    값 부재를 구분하지 않아도 되게 한다).
+    """
+    raw = getattr(event, "raw_payload", None)
+    apm = raw.get("apm") if isinstance(raw, dict) else None
+    apm = apm if isinstance(apm, dict) else {}
+    hints: dict = {"solution": KIND_APM}
+    for key in _APM_HINT_FIELDS:
+        hints[key] = apm.get(key)
+    return hints
 
 
 def _fmt_alarm_time(value: object) -> str:
@@ -77,6 +100,11 @@ def build_trigger_payload(
     # 값이 있을 때만 키를 넣는다(없으면 종전 바이트 동일). 클러스터 멤버명은 게이트가 보존하지 않아 싣지 않는다.
     if root_resource_name:
         meta["root_resource_name"] = str(root_resource_name)
+    # plans/87 J4: APM 게이트웨이 이벤트에만 조사측 플레이북 선택 힌트를 싣는다
+    # (SPEC-apm-sre-agent §7 계약). 값은 게이트웨이가 원문 `apm` 객체에 담은 것을 그대로 옮긴다.
+    # 그 밖의 이벤트는 키가 없어 바이트 동일.
+    if is_apm_event(event):
+        meta["hints"] = apm_trigger_hints(event)
 
     return {
         "contract_version": CONTRACT_VERSION,
@@ -168,6 +196,7 @@ def build_escalation(verdict: object) -> Optional[dict]:
 
 __all__ = [
     "CONTRACT_VERSION",
+    "apm_trigger_hints",
     "build_escalation",
     "build_trigger_payload",
     "verdict_escalates",

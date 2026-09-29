@@ -7,14 +7,26 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-from .catalog import FORBIDDEN_MODES, Group, Scenario, Turn
+from . import REPO_ROOT
+from .catalog import (
+    FORBIDDEN_MODES,
+    FORM_MEMORY_PANEL_STATES,
+    PLAN_ANY_AGENT,
+    STREAM_KEYS,
+    Group,
+    Scenario,
+    Turn,
+)
 
 # 대응 등급 탐지 표지 (§3.8).
 #
@@ -98,6 +110,8 @@ class Observation:
     # 서버 단계 타임라인(plans/119 T-0) - 스트림 `done`·`error` 페이로드의 `timeline` 객체 그대로.
     # 옛 서버는 싣지 않는다(None).
     timeline: Optional[dict] = None
+    # 2단 계획 요약(plans/121 TP-0.1) — 스트림 `done.plan_summary` 그대로(코드·개수만). 없으면 None.
+    plan_summary: dict[str, Any] | None = None
     # 노드별 **누적** 실행 시간. 재계획 루프로 같은 노드가 여러 번 돌면 회차를 합친다.
     node_elapsed_ms: dict[str, float] = field(default_factory=dict)
     node_calls: dict[str, int] = field(default_factory=dict)  # 노드별 완료 횟수(루프 회차)
@@ -123,6 +137,24 @@ class Observation:
     # 페이로드, 없으면 감사 로그(`rewrite_trace` 이벤트). 서버가 INTENT_FRAME_ENABLED 가
     # 아니면 빈다.
     rewrite_traces: list[dict] = field(default_factory=list)
+    # 턴 송신 시각(plans/122 H-2) — KST ISO 8601(초 단위). 상대 기간·오라클 자리표의 앵커다.
+    anchor_at: Optional[str] = None
+    # 순차 의존 경과 노트(plans/122 H-5 · plans/121 TP-11.8) — 스트림 `done.dependency_notes` 그대로.
+    dependency_notes: list[dict[str, Any]] = field(default_factory=list)
+    # 결과 행(plans/122 H-1 · G-4) — 러너가 `/query/{id}/download-csv` 로 받는다. None = 수집하지 않았다.
+    # {"status": "ok"|"empty"|"unavailable", "columns": [...], "rows": [{열: 값}], "total_rows": int,
+    #  "truncated": bool, "reason": str|None}. 행 원문은 raw.jsonl 에 싣지 않는다(판정 결과만).
+    result: Optional[dict[str, Any]] = None
+    # 오라클 실행 결과(plans/122 O-1·O-2·O-4) — 러너가 `oracle.run_oracle` 로 채운다.
+    # None = 실행하지 않았다(모의 실행 · 환경 보류 · `source: fixture` · 옛 run). 형태:
+    #   {"id": 오라클 id, "targets": [db_id…],
+    #    "pre": run_oracle 결과(phase="pre") | None,    # snapshot=pre_post — 송신 직전
+    #    "post": run_oracle 결과(phase="post") | None}  # 턴 완료·결과 행 수집 뒤
+    # run_oracle 결과 = {"status": "ok"|"unavailable", "reason", "rows_by_db": {db: [행]},
+    #   "elapsed_ms", "phase", "limit_by_db"}. `rows_by_db` 는 마스킹된 행 원문이다
+    #   - raw.jsonl 에는 요약만 싣는다(G-4).
+    # 대상 DB 가 없어 돌리지 않았으면 post 는 status=unavailable·사유만 있는 같은 모양이다.
+    oracle: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -148,6 +180,85 @@ INVALID_VERDICT = "invalid"
 #: 러너 인증 실패로 보는 HTTP 상태.
 AUTH_FAILURE_STATUSES = frozenset({401, 403})
 
+#: 보류(`manual`) 사유의 출처 어휘(plans/122 J-3). 앞일수록 대표 출처(`manual_source`)로 먼저 뽑힌다.
+#: - `env_mismatch`: 실행 환경이 시나리오 선언과 달라 러너가 데이터 의존 단언을 보류했다(D-216 ③)
+#: - `policy`: 대응 등급 정책 미확정(`policy_confirmed: false`)
+#: - `catalog`: 카탈로그 `manual_review` 문구
+#: - `oracle_unavailable`: 오라클을 실행·비교하지 못했다(plans/122 O-2 — 불합격 아님)
+#: - `fanout`: 단일 DB 전용 단언이 멀티 DB 팬아웃 턴에 걸렸다(Y-4)
+#: - `unobservable`: 관측 수단이 없어 확인하지 못했다(스트림 미탑재·모의 실행·역질문 등)
+MANUAL_SOURCES: tuple[str, ...] = (
+    "env_mismatch", "policy", "catalog", "oracle_unavailable", "fanout", "unobservable",
+)
+
+
+#: 판정기 지문(`judge_digest`)이 덮는 소스 — 턴 판정(`evaluate_turn`)과 오라클 비교(`evaluate_oracle`).
+JUDGE_SOURCES: tuple[str, ...] = ("assertions.py", "oracle.py")
+
+
+def judge_digest() -> str:
+    """판정기 코드 지문 — 판정 소스 바이트의 sha256 앞 16자(plans/122 J-1 ⑤ 보강 · 123 교차 검토).
+
+    판정 계약은 (리포트 정의 버전, 카탈로그 지문)만 봐서 **판정기 코드 변경**(예: run 뒤 들어온
+    plans/120 V-1 `db_ids` 폴백 — 20260923 run 재판정 차이 14행)을 가르지 못했다. 파일 바이트를
+    그대로 해시하므로 주석만 고쳐도 달라진다 — 그래서 지문이 달라도 비교를 **막지 않고** 주의 줄만
+    싣는다(같은 판정기로 보려면 J-4 재판정). 버전 상수를 손으로 올리는 방식은 잊으면 조용히 틀린다.
+    """
+    here = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for name in JUDGE_SOURCES:
+        digest.update(name.encode("utf-8") + b"\0")
+        path = here / name
+        digest.update(path.read_bytes() if path.exists() else b"")
+    return digest.hexdigest()[:16]
+
+
+def primary_manual_source(sources: Iterable[str]) -> Optional[str]:
+    """보류 출처 목록의 대표값 — `MANUAL_SOURCES` 순서로 가장 앞선 것. 없으면 None."""
+    present = set(sources)
+    return next((source for source in MANUAL_SOURCES if source in present), None)
+
+
+#: 러너 `_hold_for_env` 가 `manual_review` 에 쓰는 환경 불일치 보류 문구의 머리(D-216 ③).
+#: 보류 출처(plans/122 J-3)를 가르는 데만 쓴다 — 러너 문구가 바뀌면
+#: `tests/test_scenario/test_plan122_judge_sources.py` 가 깨진다.
+ENV_MISMATCH_NOTE_PREFIX = "환경 불일치 - 시나리오 env="
+
+
+@dataclass
+class _Holds:
+    """보류 사유와 그 출처(plans/122 J-3). 사유 문구는 종전과 바이트 동일하게 쌓는다."""
+
+    notes: list[str] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)
+
+    def add(self, note: str, *sources: str) -> None:
+        """사유 1건을 쌓고 출처를 첫 등장 순서로(중복 없이) 적는다.
+
+        출처는 `MANUAL_SOURCES` 어휘뿐이다.
+        """
+        if not sources or any(source not in MANUAL_SOURCES for source in sources):
+            raise ValueError(f"보류 출처는 MANUAL_SOURCES 어휘여야 한다 - {sources!r}")
+        self.notes.append(note)
+        for source in sources:
+            if source not in self.sources:
+                self.sources.append(source)
+
+    def __bool__(self) -> bool:
+        return bool(self.notes)
+
+
+def _review_sources(review: str) -> tuple[str, ...]:
+    """`manual_review` 문구의 출처 — 카탈로그 문구 · 러너 환경 불일치 보류 · 둘을 이은 것.
+
+    러너는 원 문구가 있으면 `"{원문} / {환경 불일치 …}"`, 없으면 환경 문구만 넣는다
+    (`_hold_for_env`).
+    """
+    at = review.find(ENV_MISMATCH_NOTE_PREFIX)
+    if at < 0:
+        return ("catalog",)
+    return ("env_mismatch",) if at == 0 else ("catalog", "env_mismatch")
+
 
 @dataclass
 class Verdict:
@@ -160,6 +271,8 @@ class Verdict:
     mode_evidence: Optional[str] = None
     failures: list[Failure] = field(default_factory=list)
     manual_notes: list[str] = field(default_factory=list)
+    #: 보류 사유의 출처(plans/122 J-3) — `MANUAL_SOURCES` 어휘 · 첫 등장 순서 · 중복 없음.
+    manual_sources: list[str] = field(default_factory=list)
     #: `func == "invalid"` 일 때만 채운다. 무엇이 측정을 무효로 만들었는지 한 줄.
     invalid_reason: Optional[str] = None
 
@@ -249,9 +362,16 @@ def row_is_invalid(row: dict[str, Any]) -> bool:
       - `error` 가 `http 401`/`http 403` — **T-c 이전에 적재된 행**. run 20260915-131903 의
         103턴이 여기 해당한다. 판정값만 보면 그 run 은 영영 무효로 식별되지 않아 재개가
         바로 그 턴들을 건너뛴다(X-1 이 풀려는 문제 자체다).
+
+    오류 문구 추정은 **`invalid_reason` 칸이 없는 행(T-c 이전)에만** 쓴다(plans/122 J-4 보강).
+    T-c 이후 러너는 그 칸을 늘 싣고 러너 인증 실패를 `invalid` 로 적는다 — 그 행의 `http 401` 은
+    401 을 **기대한** 가드 턴(H-6 `auth: none` · J-08)의 판정된 관측이라 무효가 아니다. 문구로
+    추정하면 그 턴이 재판정·리포트·재개에서 무효로 빠진다.
     """
     if str(row.get("func_verdict")) == INVALID_VERDICT:
         return True
+    if "invalid_reason" in row:
+        return False
     return is_auth_failure_error(row.get("error"))
 
 
@@ -318,7 +438,7 @@ def _check_row_count(
 
 
 def _check_row_count_axes(
-    expect: dict[str, Any], obs: Observation, failures: list[Failure], manual: list[str]
+    expect: dict[str, Any], obs: Observation, failures: list[Failure], manual: _Holds
 ) -> None:
     """행 수 판정 3축 (Y-4).
 
@@ -337,10 +457,12 @@ def _check_row_count_axes(
 
     if "row_count" in expect:
         if multi_db:
-            manual.append(
+            manual.add(
                 f"row_count 는 단일 DB 턴 전용이다 - 이 턴은 {len(per_db) or len(set(obs.db_ids))}개 DB "
                 f"팬아웃이라 합계({obs.row_count})와 per-DB 기대값을 비교하게 된다. "
-                f"row_count_per_db / row_count_total 로 선언할 것 (DB별 실측: {per_db or '미관측'})"
+                f"row_count_per_db / row_count_total 로 선언할 것 "
+                f"(DB별 실측: {per_db or '미관측'})",
+                "fanout",
             )
         else:
             _check_row_count(expect["row_count"], obs.row_count, failures)
@@ -351,9 +473,10 @@ def _check_row_count_axes(
     if isinstance(spec, dict):
         if not per_db:
             # 감사 로그 tail 이 없으면 DB 별 행 수를 모른다 - 통과로도 불합격으로도 세지 않는다.
-            manual.append(
+            manual.add(
                 "row_count_per_db 를 확인하지 못했다 - DB 별 행 수는 감사 로그 "
-                "`query_executed` 에서만 나온다(모의 실행·tail 미가동이면 관측 0건)"
+                "`query_executed` 에서만 나온다(모의 실행·tail 미가동이면 관측 0건)",
+                "unobservable",
             )
         else:
             for db_id, count in sorted(per_db.items()):
@@ -447,8 +570,90 @@ def _empty_by_column(
     return counts
 
 
+#: 2단 머리글의 상위·하위 이름 구분자(plans/122 H-4 `file.header_rows`) — `상위/하위`.
+HEADER_JOIN = "/"
+
+
+def _header_rows_of(spec: dict[str, Any]) -> list[int]:
+    """`file.header_row: N`(1-based) · `file.header_rows: [N, …]` → 머리글 행 번호 목록.
+
+    선언이 없으면 [1] 이다.
+    """
+    if spec.get("header_rows"):
+        return [int(n) for n in spec["header_rows"]]
+    return [int(spec.get("header_row") or 1)]
+
+
+def _header_text(value: Any) -> str:
+    """머리글 칸 문구 — 공백(줄바꿈 포함)을 한 칸으로 접고 양끝을 뗀다."""
+    return " ".join(_cell(value).split())
+
+
+def _merged_ranges(path: Path, sheet_name: str | None) -> tuple[list[Any] | None, str | None]:
+    """시트의 병합 범위 목록(openpyxl `CellRange`). 읽지 못하면 (None, 사유)."""
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return None, "openpyxl 미설치"
+    try:
+        book = load_workbook(path, data_only=True)
+    except Exception as exc:  # `_read_xlsx` 와 같은 파일이라 여기까지 오면 드물다
+        return None, f"xlsx 열기 실패: {type(exc).__name__}: {exc}"
+    sheet = book[sheet_name] if sheet_name in book.sheetnames else book.worksheets[0]
+    return list(sheet.merged_cells.ranges), None
+
+
+def _header_view(
+    path: Path, sheet_name: str | None, rows: list[list[Any]] | None, spec: dict[str, Any],
+) -> tuple[list[list[Any]] | None, dict[str, Any] | None]:
+    """(머리글 1행 + 데이터 행, 문제) — `file.header_row`·`header_rows`(plans/122 H-4).
+
+    머리글 이름 규칙(열마다):
+      1. 머리글 행을 위에서 아래로 읽는다. 빈 칸이 병합 범위 안이면 그 범위 좌상단 값을 쓴다
+         (가로 병합 `E5:J5` 는 E~J 가 같은 상위 이름을 갖고 · 세로 병합 `B5:B6` 은 6행도
+         5행 값이다).
+      2. 칸 문구는 공백(줄바꿈 포함)을 한 칸으로 접는다 —
+         `설치장소\\n(주센터, …)` → `설치장소 (주센터, …)`.
+      3. 빈 값과 바로 위와 같은 값(세로 병합)을 빼고 `상위/하위` 로 잇는다(`HEADER_JOIN`).
+         하위가 없으면 상위만, 상위가 없으면 하위만이다 — `월중평균사용률(최근 6개월간)/M` ·
+         `제조사(모델명)` · `처리능력/(TPMC)` · `서버위치/설치장소 (주센터, 재해복구센터 등)`.
+      4. 이름이 비는 열은 빈 문자열로 자리만 지킨다(열 번호 정렬 유지).
+    데이터 행은 마지막 머리글 행 다음부터다. `header_row: N` 은 `header_rows: [N]` 과 같다.
+    """
+    if rows is None:
+        return None, {"reason": "대상 시트가 없다"}
+    numbers = _header_rows_of(spec)
+    if max(numbers) > len(rows):
+        return None, {"reason": "머리글 행이 시트 행 수를 넘는다", "sheet_rows": len(rows)}
+    ranges, problem = _merged_ranges(path, sheet_name)
+    if ranges is None:
+        return None, {"reason": problem}
+    anchors: dict[tuple[int, int], Any] = {}
+    for cells in ranges:
+        top_left = (_at(rows[cells.min_row - 1], cells.min_col - 1)
+                    if cells.min_row <= len(rows) else None)
+        for row_no in range(cells.min_row, cells.max_row + 1):
+            if row_no in numbers:
+                for col_no in range(cells.min_col, cells.max_col + 1):
+                    anchors[(row_no, col_no)] = top_left
+    width = max((len(rows[n - 1]) for n in numbers), default=0)
+    header: list[Any] = []
+    for col_no in range(1, width + 1):
+        parts: list[str] = []
+        for row_no in numbers:
+            value = _at(rows[row_no - 1], col_no - 1)
+            if _cell(value) == "":
+                value = anchors.get((row_no, col_no))
+            text = _header_text(value)
+            if text and (not parts or parts[-1] != text):
+                parts.append(text)
+        header.append(HEADER_JOIN.join(parts))
+    return [header, *rows[max(numbers):]], None
+
+
 def _check_file(
-    spec: Any, obs: Observation, failures: list[Failure], manual: list[str]
+    spec: Any, obs: Observation, failures: list[Failure], manual: _Holds,
+    upload: str | None = None,
 ) -> None:
     if not isinstance(spec, dict):
         return
@@ -456,12 +661,20 @@ def _check_file(
         failures.append(Failure("file", spec, "산출물 없음"))
         return
     path = Path(obs.artifacts[0])
+    if isinstance(spec.get("docx"), dict):
+        # plans/122 H-3 - docx 선언은 docx 산출물만 본다
+        # (xlsx 하위 키와 함께 쓰지 않는다 · 로더 검사).
+        if path.suffix.lower() != ".docx":
+            failures.append(Failure("file.docx", "docx 산출물", path.name))
+        else:
+            _check_docx(spec["docx"], path, upload, failures, manual)
+        return
     if path.suffix.lower() != ".xlsx":
-        manual.append(f"{path.name}: xlsx 가 아니라 자동 칼럼 검증 대상이 아니다")
+        manual.add(f"{path.name}: xlsx 가 아니라 자동 칼럼 검증 대상이 아니다", "unobservable")
         return
     sheets, reason = _read_xlsx(path)
     if sheets is None:
-        manual.append(reason or "산출물 판독 불가")
+        manual.add(reason or "산출물 판독 불가", "unobservable")
         return
 
     wanted_sheets = spec.get("sheets") or []
@@ -470,6 +683,24 @@ def _check_file(
             failures.append(Failure("file.sheets", name, sorted(sheets)))
 
     target_rows = sheets.get(wanted_sheets[0]) if wanted_sheets else next(iter(sheets.values()), [])
+    if "header_row" in spec or "header_rows" in spec:
+        # plans/122 H-4 — 머리글이 첫 행이 아닌 양식(제목 행 · 2단 머리글).
+        # 선언하지 않으면 이 분기를 타지 않는다(종전 판정과 바이트 동일).
+        sheet_name = wanted_sheets[0] if wanted_sheets else next(iter(sheets), None)
+        view, problem = _header_view(path, sheet_name, target_rows, spec)
+        if view is None:
+            # 선언한 시트가 없으면 `file.sheets` 가 이미 불합격이다
+            # - 머리글 불합격을 겹쳐 싣지 않는다.
+            if target_rows is not None:
+                failures.append(Failure("file.header_rows",
+                                        spec.get("header_rows") or spec.get("header_row"), problem))
+            if spec.get("style_preserved"):
+                _check_xlsx_style(path, upload, failures, manual)
+            return
+        target_rows = view
+    # 선언한 시트가 없으면 `sheets.get` 이 None 이다 — `file.sheets` 는 위에서 이미 불합격이고, 빈 표로
+    # 이어 판정한다(종전에는 `filled_rows` 선언 시 None 인덱싱 예외로 판정 전체가 죽었다 · 122 h-judge 발견).
+    target_rows = target_rows or []
     header = [str(c) for c in (target_rows[0] if target_rows else []) if c is not None]
     for column in spec.get("columns") or []:
         if column not in header:
@@ -515,6 +746,276 @@ def _check_file(
                 },
             ))
 
+    # plans/122 H-4 - 새 하위 키는 선언했을 때만 본다(없으면 종전 판정과 바이트 동일).
+    _check_xlsx_values(spec, target_rows, failures)
+    if spec.get("style_preserved"):
+        _check_xlsx_style(path, upload, failures, manual)
+
+
+def _at(row: list[Any], index: int) -> Any:
+    return row[index] if index < len(row) else None
+
+
+def _check_xlsx_values(
+    spec: dict[str, Any], target_rows: list[list[Any]] | None, failures: list[Failure],
+) -> None:
+    """xlsx 값 단언(plans/122 H-4) — value_range · unique_by · columns_differ · empty_columns ·
+    column_equals. 머리글은 빈 칸도 자리를 지키게 읽고(열 번호 정렬), 데이터 행은 빈 행을 뺀다.
+    불합격 상세에는 개수와 예시 값 최대 3개만 싣는다(G-4). 선언한 시트가 없으면(`file.sheets`
+    불합격) 빈 표로 본다. 첫 행은 `file.header_row(s)` 선언이 있으면 `_header_view` 가 만든
+    머리글이다."""
+    target_rows = target_rows or []
+    header = [_cell(c) for c in (target_rows[0] if target_rows else [])]
+    rows = [list(r) for r in target_rows[1:] if any(c not in (None, "") for c in r)]
+    failures.extend(_value_range_failures("file", spec.get("value_range") or {}, header, rows, {}))
+    if spec.get("unique_by"):
+        failure = _unique_by_failure("file", spec["unique_by"], header, rows, {})
+        if failure:
+            failures.append(failure)
+    for pair in spec.get("columns_differ") or []:
+        # 두 열이 **전 행에서 같으면**(사본) 불합격이다. 행 단위로 다름을 요구하면 name=hostname 인
+        # 정상 서버에서 오탐한다(122 §9.1 H-04) - 잘못된 매핑(D-148)은 열 전체를 사본으로 만든다.
+        if pair[0] not in header or pair[1] not in header:
+            failures.append(Failure("file.columns_differ", pair,
+                                    {"missing": "헤더에 없음", "header": header}))
+            continue
+        left, right = header.index(pair[0]), header.index(pair[1])
+        compared = [(_cell(_at(r, left)), _cell(_at(r, right))) for r in rows
+                    if _cell(_at(r, left)) and _cell(_at(r, right))]
+        equal = sum(1 for a, b in compared if a == b)
+        if not compared or equal == len(compared):
+            failures.append(Failure("file.columns_differ", pair,
+                                    {"compared_rows": len(compared), "equal_rows": equal}))
+    for column in spec.get("empty_columns") or []:
+        # 공란이 **정답**인 열 - 채워지면 불합격이다(`optional_columns` 는 공란을 허용할 뿐이다).
+        if column not in header:
+            failures.append(Failure("file.empty_columns", column,
+                                    {"missing": "헤더에 없음", "header": header}))
+            continue
+        index = header.index(column)
+        filled = sum(1 for r in rows if _cell(_at(r, index)))
+        if filled:
+            failures.append(Failure("file.empty_columns", column, {
+                "filled_rows": filled,
+                "empty_by_column": _empty_by_column(target_rows, header, [column]),
+            }))
+    for column, value in (spec.get("column_equals") or {}).items():
+        if column not in header:
+            failures.append(Failure("file.column_equals", {column: value},
+                                    {"missing": "헤더에 없음", "header": header}))
+            continue
+        index = header.index(column)
+        others = [_cell(_at(r, index)) for r in rows if _cell(_at(r, index)) != _cell(value)]
+        if others or not rows:
+            failures.append(Failure("file.column_equals", {column: value}, {
+                "rows": len(rows), "mismatched_rows": len(others),
+                "examples": list(dict.fromkeys(others))[:_EXAMPLE_LIMIT],
+            }))
+
+
+def _upload_path(upload: str | None) -> Path | None:
+    """업로드 원본 경로(저장소 루트 기준 상대 경로 허용). 없으면 None."""
+    if not upload:
+        return None
+    path = Path(upload)
+    path = path if path.is_absolute() else REPO_ROOT / path
+    return path if path.exists() else None
+
+
+def _column_letter(index: int) -> str:
+    """1 → A · 27 → AA (openpyxl `get_column_letter` 와 같다)."""
+    letters = ""
+    while index:
+        index, rest = divmod(index - 1, 26)
+        letters = chr(ord("A") + rest) + letters
+    return letters
+
+
+def _custom_widths(sheet: Any) -> dict[str, float]:
+    """시트의 사용자 지정 열 너비 {열 문자: 너비}. 범위(min~max)로 묶인 차원은 열마다 편다."""
+    widths: dict[str, float] = {}
+    for key, dim in sheet.column_dimensions.items():
+        if not dim.customWidth or not dim.width:
+            continue
+        if not dim.min:
+            widths[str(key)] = float(dim.width)
+            continue
+        for index in range(dim.min, (dim.max or dim.min) + 1):
+            widths[_column_letter(index)] = float(dim.width)
+    return widths
+
+
+def _check_xlsx_style(
+    path: Path, upload: str | None, failures: list[Failure], manual: _Holds,
+) -> None:
+    """`file.style_preserved`(H-4) — 업로드 원본의 사용자 지정 열 너비·병합 셀이 그대로인가."""
+    original = _upload_path(upload)
+    if original is None or original.suffix.lower() != ".xlsx":
+        manual.add("file.style_preserved 를 확인하지 못했다 - 대조할 업로드 원본 xlsx 가 없다",
+                   "unobservable")
+        return
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        manual.add("openpyxl 미설치 - file.style_preserved 는 수동 검토로 남긴다", "unobservable")
+        return
+    try:
+        before, after = load_workbook(original), load_workbook(path)
+    except Exception as exc:  # 깨진 파일은 판독 불가로 남긴다(`_read_xlsx` 와 같다)
+        manual.add("file.style_preserved 를 확인하지 못했다 - 열기 실패: "
+                   f"{type(exc).__name__}: {exc}", "unobservable")
+        return
+    missing_sheets = [name for name in before.sheetnames if name not in after.sheetnames]
+    widths: dict[str, list[float | None]] = {}
+    merged_missing: list[str] = []
+    for name in before.sheetnames:
+        if name not in after.sheetnames:
+            continue
+        have = _custom_widths(after[name])
+        for letter, width in _custom_widths(before[name]).items():
+            if have.get(letter) is None or abs(float(have[letter]) - width) > 0.01:
+                widths[f"{name}!{letter}"] = [width, have.get(letter)]
+        kept = {str(r) for r in after[name].merged_cells.ranges}
+        merged = sorted(str(x) for x in before[name].merged_cells.ranges)
+        merged_missing += [f"{name}!{r}" for r in merged if r not in kept]
+    if missing_sheets or widths or merged_missing:
+        failures.append(Failure("file.style_preserved", True, {
+            "sheets_missing": missing_sheets, "widths_changed": widths,
+            "merged_missing": merged_missing,
+        }))
+
+
+#: docx 자리 표시(`{{…}}`) - 양식 파서·작성기(`src/document/word_parser.py`
+#: `_PLACEHOLDER_PATTERN`)와 같은 식.
+_PLACEHOLDER_RE = re.compile(r"\{\{.+?\}\}")
+
+
+def _docx_texts(doc: Any) -> list[str]:
+    """본문·표(중첩 포함)·자기 정의가 있는 머리글/바닥글의 문단 문구."""
+    texts = [p.text for p in doc.paragraphs]
+
+    def walk(tables: Any) -> None:
+        for table in tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    texts.extend(p.text for p in cell.paragraphs)
+                    walk(cell.tables)
+
+    walk(doc.tables)
+    for section in doc.sections:
+        for part in (section.header, section.footer):
+            if not part.is_linked_to_previous:
+                texts.extend(p.text for p in part.paragraphs)
+                walk(part.tables)
+    return texts
+
+
+def _docx_style_ids(doc: Any) -> tuple[list[Any], list[tuple[Any, list[list[list[Any]]]]]]:
+    """(본문 문단 스타일 ID 목록, [(표 스타일 ID, 행별 셀별 문단 스타일 ID)])."""
+    def sid(style: Any) -> Any:
+        return getattr(style, "style_id", None)
+
+    paragraphs = [sid(p.style) for p in doc.paragraphs]
+    tables = [
+        (sid(t.style),
+         [[[sid(p.style) for p in cell.paragraphs] for cell in row.cells] for row in t.rows])
+        for t in doc.tables
+    ]
+    return paragraphs, tables
+
+
+def _check_docx(
+    spec: dict[str, Any], path: Path, upload: str | None,
+    failures: list[Failure], manual: _Holds,
+) -> None:
+    """`.docx` 산출 단언(plans/122 H-3) — 자리 표시 잔존 · 표 행 수·첫 행 · 원본 대비 스타일 ID."""
+    try:
+        from docx import Document
+    except ImportError:
+        manual.add("python-docx 미설치 - docx 단언은 수동 검토로 남긴다(`document` extra)",
+                   "unobservable")
+        return
+    try:
+        doc = Document(str(path))
+    except Exception as exc:  # 깨진 파일은 판독 불가로 남긴다(`_read_xlsx` 와 같다)
+        manual.add(f"docx 열기 실패: {type(exc).__name__}: {exc}", "unobservable")
+        return
+
+    if spec.get("no_placeholders"):
+        left = [m for text in _docx_texts(doc) for m in _PLACEHOLDER_RE.findall(text)]
+        if left:
+            failures.append(Failure("file.docx.no_placeholders", 0, {
+                "remaining": len(left), "examples": list(dict.fromkeys(left))[:_EXAMPLE_LIMIT],
+            }))
+
+    for item in spec.get("tables") or []:
+        index = int(item["index"])
+        if index >= len(doc.tables):
+            failures.append(Failure("file.docx.tables", item, {"tables": len(doc.tables)}))
+            continue
+        table = doc.tables[index]
+        if "min_rows" in item and len(table.rows) < int(item["min_rows"]):
+            failures.append(Failure("file.docx.tables.min_rows", item["min_rows"],
+                                    {"index": index, "rows": len(table.rows)}))
+        if "first_row" in item:
+            wanted = [str(text).strip() for text in item["first_row"]]
+            actual = [cell.text.strip() for cell in table.rows[0].cells] if table.rows else []
+            if actual != wanted:
+                wrong = [{"cell": i, "actual": a}
+                         for i, (a, w) in enumerate(zip(actual, wanted)) if a != w]
+                failures.append(Failure("file.docx.tables.first_row", wanted, {
+                    "index": index, "cells": len(actual), "mismatched": wrong[:_EXAMPLE_LIMIT],
+                }))
+
+    if spec.get("styles_preserved"):
+        original = _upload_path(upload)
+        if original is None or original.suffix.lower() != ".docx":
+            manual.add("file.docx.styles_preserved 를 확인하지 못했다"
+                       " - 대조할 업로드 원본 docx 가 없다", "unobservable")
+            return
+        try:
+            before = _docx_style_ids(Document(str(original)))
+        except Exception as exc:
+            manual.add(f"file.docx.styles_preserved 를 확인하지 못했다 - 원본 열기 실패: "
+                       f"{type(exc).__name__}: {exc}", "unobservable")
+            return
+        detail = _docx_style_diff(before, _docx_style_ids(doc))
+        if detail:
+            failures.append(Failure("file.docx.styles_preserved", True, detail))
+
+
+def _docx_style_diff(
+    before: tuple[list[Any], list[tuple[Any, list[list[list[Any]]]]]],
+    after: tuple[list[Any], list[tuple[Any, list[list[list[Any]]]]]],
+) -> dict[str, Any]:
+    """원본 대비 스타일 ID 차이. 채움은 본문 문단을 늘리지 않고, 표에 더한 행은 원본 첫 데이터 행
+    (없으면 머리글 행)의 스타일을 복제해야 한다 - 그 행과 대조한다."""
+    detail: dict[str, Any] = {}
+    (before_pars, before_tables), (after_pars, after_tables) = before, after
+    if before_pars != after_pars:
+        changed = sum(1 for a, b in zip(before_pars, after_pars) if a != b)
+        detail["paragraphs"] = {"original": len(before_pars), "output": len(after_pars),
+                                "changed": changed + abs(len(before_pars) - len(after_pars))}
+    tables: dict[str, Any] = {}
+    for index, (table_style, rows) in enumerate(before_tables):
+        if index >= len(after_tables):
+            tables[str(index)] = "산출물에 없음"
+            continue
+        out_style, out_rows = after_tables[index]
+        reference = rows[1] if len(rows) > 1 else (rows[0] if rows else [])
+        mismatched = [r for r, row in enumerate(out_rows)
+                      if row != (rows[r] if r < len(rows) else reference)]
+        entry: dict[str, Any] = {}
+        if out_style != table_style:
+            entry["table_style"] = [table_style, out_style]
+        if mismatched:
+            entry.update(rows_mismatched=len(mismatched), first_mismatch_row=mismatched[0])
+        if entry:
+            tables[str(index)] = entry
+    if tables:
+        detail["tables"] = tables
+    return detail
+
 
 #: SQL 안의 날짜 리터럴. `2026-07-01` · `20260701` · `202607`(월 파티션) 세 표기를 본다.
 _DATE_LITERAL_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b|\b(\d{4})(\d{2})(\d{2})\b|\b(\d{4})(\d{2})\b")
@@ -554,7 +1055,7 @@ REWRITE_GATE_EXPECTATIONS: frozenset[str] = frozenset({"pass_through", "rewritte
 
 
 def _check_rewrite(
-    spec: Any, obs: Observation, failures: list[Failure], manual: list[str],
+    spec: Any, obs: Observation, failures: list[Failure], manual: _Holds,
 ) -> None:
     """Y-11 `rewrite.gate` · Y-12 `rewrite.slots_preserved` (plans/94 §19.2 · plans/107).
 
@@ -571,9 +1072,10 @@ def _check_rewrite(
         return
     traces = [t for t in obs.rewrite_traces if isinstance(t, dict)]
     if not traces:
-        manual.append(
+        manual.add(
             f"rewrite {sorted(spec)} 를 확인하지 못했다 - 재작성 감사 레코드가 없다"
-            "(서버 INTENT_FRAME_ENABLED·SQL 생성 노드 통과 여부 확인)"
+            "(서버 INTENT_FRAME_ENABLED·SQL 생성 노드 통과 여부 확인)",
+            "unobservable",
         )
         return
 
@@ -591,9 +1093,10 @@ def _check_rewrite(
     if spec.get("slots_preserved"):
         verified = [(t.get("consumer"), t.get("verify") or {}) for t in traces]
         if not any(v for _, v in verified):
-            manual.append(
+            manual.add(
                 "rewrite.slots_preserved 를 확인하지 못했다 - 검증 결과가 비었다"
-                "(서버 REWRITE_VERIFY_MODE=shadow 필요 · 재작성이 없던 턴은 검증 대상이 아니다)"
+                "(서버 REWRITE_VERIFY_MODE=shadow 필요 · 재작성이 없던 턴은 검증 대상이 아니다)",
+                "unobservable",
             )
         else:
             broken = {
@@ -610,8 +1113,97 @@ def _check_rewrite(
                 ))
 
 
+#: 그래프 밖 사전 게이트(존 역질문 등)로 끝난 턴의 계획 경로 코드 - 서버가 계획 없이 싣는다
+#: (`src/api/routes/query.py` `_pre_gate_plan_summary` · plans/121 TP-0.1).
+PRE_GATE_PLAN_PATH = "pre_gate"
+
+
+def _plan_edges(tasks: list[dict[str, Any]]) -> list[list[str]]:
+    """계획 요약의 `input_from` 간선을 [생산 담당, 소비 담당] 쌍으로 편다(등장 순서 · 중복 제거)."""
+    agent_of = {task.get("id"): str(task.get("agent")) for task in tasks}
+    edges: list[list[str]] = []
+    for task in tasks:
+        for source in task.get("input_from") or []:
+            if source in agent_of:
+                edge = [agent_of[source], str(task.get("agent"))]
+                if edge not in edges:
+                    edges.append(edge)
+    return edges
+
+
+def _check_plan(
+    spec: Any, obs: Observation, failures: list[Failure], manual: _Holds,
+) -> None:
+    """계획 구조 단언 `plan` (plans/121 TP-0.3) — 2단 계획 요약(`done.plan_summary`)을 본다.
+
+    **관측하지 못한 것을 판정하지 않는다**(`rewrite` 와 같은 구조). 계획 요약은 2단만 싣는다 —
+    1·3단 실행·옛 서버·모의 실행에는 요약이 없고, 그래프 밖 사전 게이트(존 역질문 등)로 끝난
+    턴은 `plan_path=pre_gate` 라 계획이 없다. 이때는 불합격이 아니라 보류이고, 보류 사유에 기대
+    구조를 그대로 적어 사람이 대신 볼 것을 남긴다.
+
+    요약은 **이번 턴에 실행된 최종 계획**이다 — 재계획이 더한 task 도 들어 있다. 그래서 하한
+    (`min_tasks`·`agents`·`edges`)은 재계획으로 채워져도 통과하고, 첫 분해만 보려면
+    `replan_max: 0` 을 함께 선언한다. `agents` 는 개수까지 세는 포함 관계이고 순서를 보지 않는다
+    — 독립 task 의 나열 순서는 LLM 이 정한다. 순서가 계약이면 `edges`(input_from 간선)로 쓴다.
+    """
+    if not isinstance(spec, dict) or not spec:
+        return
+    wanted = json.dumps(spec, ensure_ascii=False, sort_keys=True)
+    summary = obs.plan_summary if isinstance(obs.plan_summary, dict) else None
+    if summary is None:
+        manual.add(
+            f"plan {wanted} 를 확인하지 못했다 - 계획 요약(done.plan_summary)이 없다"
+            "(2단 밖 실행 단 · 옛 서버 · 모의 실행)",
+            "unobservable",
+        )
+        return
+    path = summary.get("plan_path")
+    if path == PRE_GATE_PLAN_PATH:
+        manual.add(
+            f"plan {wanted} 를 확인하지 못했다 - 사전 게이트에서 끝난 턴이라 계획이 없다"
+            f"(plan_path={path})",
+            "unobservable",
+        )
+        return
+
+    tasks = [task for task in summary.get("tasks") or [] if isinstance(task, dict)]
+    count = summary.get("task_count")
+    if not isinstance(count, int) or isinstance(count, bool):
+        count = len(tasks)
+    agents = [str(task.get("agent")) for task in tasks]
+    shape = {"task_count": count, "agents": agents}
+    if "min_tasks" in spec and count < int(spec["min_tasks"]):
+        failures.append(Failure("plan.min_tasks", spec["min_tasks"], shape))
+    if "max_tasks" in spec and count > int(spec["max_tasks"]):
+        failures.append(Failure("plan.max_tasks", spec["max_tasks"], shape))
+    if spec.get("agents") and Counter(str(a) for a in spec["agents"]) - Counter(agents):
+        failures.append(Failure("plan.agents", spec["agents"], agents))
+    edges = _plan_edges(tasks)
+    for source, target in (spec.get("edges") or []):
+        if not any(
+            str(source) in (PLAN_ANY_AGENT, have[0]) and str(target) in (PLAN_ANY_AGENT, have[1])
+            for have in edges
+        ):
+            failures.append(Failure("plan.edges", [source, target], edges))
+    allowed = spec.get("plan_path")
+    if allowed is not None:
+        allowed_paths = [allowed] if isinstance(allowed, str) else [str(p) for p in allowed]
+        if path not in allowed_paths:
+            failures.append(Failure("plan.plan_path", allowed_paths, path))
+    if "replan_max" in spec:
+        replans = summary.get("replan_count")
+        if not isinstance(replans, int) or isinstance(replans, bool):
+            manual.add(
+                f"plan.replan_max={spec['replan_max']} 를 확인하지 못했다"
+                " - 계획 요약에 재계획 횟수가 없다",
+                "unobservable",
+            )
+        elif replans > int(spec["replan_max"]):
+            failures.append(Failure("plan.replan_max", spec["replan_max"], replans))
+
+
 def _check_period(
-    spec: Any, sqls: list[str], failures: list[Failure], manual: list[str]
+    spec: Any, sqls: list[str], failures: list[Failure], manual: _Holds
 ) -> None:
     """`period_covers: {from, to}` - **표기가 아니라 기간**을 본다(Y-5).
 
@@ -631,7 +1223,8 @@ def _check_period(
         failures.append(Failure("period_covers", spec, "from/to 가 YYYY-MM-DD 가 아니다"))
         return
     if not sqls:
-        manual.append(f"period_covers {spec} 를 확인하지 못했다 - 실행 SQL 을 관측하지 못했다")
+        manual.add(f"period_covers {spec} 를 확인하지 못했다 - 실행 SQL 을 관측하지 못했다",
+                   "unobservable")
         return
     low, high = sql_period_bounds(sqls)
     if low is None or high is None:
@@ -642,6 +1235,212 @@ def _check_period(
             "period_covers", spec,
             {"sql_period": f"{low.isoformat()}~{high.isoformat()}"},
         ))
+
+
+# --- 상대 기간 `period_covers` (plans/122 H-2) ------------------------------------------
+
+#: 상대 기간 판정이 결과 행(H-1)에서 찾는 기간 열 — 이름 **정확 일치**(대소문자 무시) ·
+#: 앞일수록 우선. 근거(run 20260923-103638 · 20260923-140539 실행 SQL 별칭 실측):
+#: `alarm_time`(38회 · `a.ctime` 별칭) · `stat_month`(30회 · `TO_DATE(s.stat_date || '01', …)`) ·
+#: `stat_date`(8회 · 원 컬럼) · `created_time`(D-06 · `a.ctime` 별칭) · `month`(2회).
+#: 원 컬럼 `ctime`(알람 발생 시각)과 계획서 표기 `yyyymm`(§3.3 H-2)을 더했다.
+#: 부분 일치는 쓰지 않는다 — `cpu_avg_month`·`months_over_40`(값 열) · `도입일자`(자산 날짜)를
+#: 조회 기간으로 오인한다.
+RESULT_PERIOD_COLUMNS: tuple[str, ...] = (
+    "stat_month", "stat_date", "yyyymm", "month", "ctime", "alarm_time", "created_time",
+)
+
+#: DB 현재시각 함수 — `unbounded`(날짜 한정 없음)에서 리터럴 없는 날짜 한정을 잡는다
+#: (§10.1 A-01 `CURRENT_DATE - INTERVAL '1 month'` 실측 · §10.3 T-5b 와 같은 목록).
+#: PG·DB2 표기를 함께 본다.
+_DB_NOW_RE = re.compile(
+    r"(?i)\bcurrent[_ ](?:date|timestamp)\b|\bnow\s*\(|\bsysdate\b|\binterval\b"
+)
+#: 결과 행 기간 값 — 숫자형 `202608`·`20260824`·`2026082410`(시간 통계) ·
+#: 날짜형 `2026-08`·`2026-08-24`·`2026-08-24 10:00:00`·`2026-08-24T10:00:00+09:00`.
+_ROW_PERIOD_DIGITS = re.compile(r"(\d{4})(\d{2})(?:\d{2}(?:\d{2})?)?")
+_ROW_PERIOD_DASHED = re.compile(r"(\d{4})-(\d{2})(?:-\d{2})?(?:[T ]|$)")
+
+
+def near_month_boundary(day: date) -> bool:
+    """앵커 날짜(KST)가 월 경계 ±1일인가 — **말일 · 1일 · 2일**(plans/122 §8 위험표).
+
+    앵커는 러너 시계(턴 송신 시각)이고 시스템은 서버 시계·DB `CURRENT_DATE` 로 기간을
+    푼다. 두 시계가 하루 안쪽으로 어긋나도 ① 말일·1일은 서로 **다른 달**을 볼 수 있고
+    (지난달·이번 달이 통째로 바뀐다) ② 2일은 「이번 달 = 1일~어제」 창이 [1일, 2일) 과
+    빈 창(1일 기준) 사이에서 갈린다. 이 셋은 판정하지 않고 보류한다 — 어긋남을 시스템
+    오답으로 세지 않는다.
+    """
+    return day.day in (1, 2) or (day + timedelta(days=1)).day == 1
+
+
+def _period_window(
+    spec: dict[str, Any], anchor_at: str | None,
+) -> tuple[tuple[date, date] | None, str]:
+    """(상대 기간 창 `[시작일, 끝일)`, 보류 사유).
+
+    창은 해석기 `relative_window` 가 정한다(정책 단일 출처 — 자체 월 산술 금지).
+    """
+    if not anchor_at:
+        return None, "턴 앵커(anchor_at)가 없다 - 옛 run 이거나 러너가 기록하지 않았다"
+    from src.domain.time_spec import KST, TimeSpecError, relative_window
+
+    try:
+        moment = datetime.fromisoformat(str(anchor_at))
+    except ValueError:
+        return None, f"턴 앵커를 읽지 못했다 - {anchor_at!r}"
+    moment = moment.replace(tzinfo=KST) if moment.tzinfo is None else moment.astimezone(KST)
+    if near_month_boundary(moment.date()):
+        return None, (f"앵커 {moment.date().isoformat()} 가 월 경계 ±1일(말일·1일·2일)"
+                      "이다 - 시스템과 러너가 다른 달을 볼 수 있다")
+    try:
+        if "month_span" in spec:
+            span = spec["month_span"]
+            window = relative_window("month_span", moment, month_from=int(span["from"]),
+                                     month_to=int(span["to"]))
+        else:
+            window = relative_window(str(spec.get("relative")), moment, n=spec.get("n"))
+    except (TimeSpecError, KeyError, TypeError, ValueError) as exc:
+        return None, f"기간 창을 계산하지 못했다 - {exc}"
+    if window[0] >= window[1]:
+        return None, f"기간 창이 비었다 - {window[0].isoformat()}"
+    return window, ""
+
+
+def _row_month(value: Any) -> tuple[int, int] | None:
+    """결과 행 기간 값 → (연, 월). 읽지 못하면 None."""
+    text = _cell(value)
+    match = _ROW_PERIOD_DIGITS.fullmatch(text) or _ROW_PERIOD_DASHED.match(text)
+    if not match:
+        return None
+    year, month = int(match.group(1)), int(match.group(2))
+    return (year, month) if 1900 <= year <= 2100 and 1 <= month <= 12 else None
+
+
+def _result_months(result: Any) -> tuple[str | None, list[tuple[int, int]], str]:
+    """(기간 열, 행의 (연, 월) 목록, 못 읽은 사유) — 결과 행(H-1)의 조회 기간 표본."""
+    if not isinstance(result, dict):
+        return None, [], "결과 행을 수집하지 않았다"
+    status = result.get("status")
+    if status == "empty":
+        return None, [], "결과 행이 0건이다"
+    if status != "ok":
+        return None, [], f"결과 행을 받지 못했다({result.get('reason') or status})"
+    folded = {str(column).casefold(): str(column) for column in result.get("columns") or []}
+    column = next((folded[name] for name in RESULT_PERIOD_COLUMNS if name in folded), None)
+    if column is None:
+        return None, [], f"결과 행에 기간 열({', '.join(RESULT_PERIOD_COLUMNS)})이 없다"
+    months = [month for row in result.get("rows") or [] if isinstance(row, dict)
+              for month in [_row_month(row.get(column))] if month is not None]
+    if not months:
+        return column, [], f"기간 열 {column} 의 값을 날짜로 읽지 못했다"
+    return column, months, ""
+
+
+def _check_relative_period(
+    spec: Any, obs: Observation, sqls: list[str], failures: list[Failure], manual: _Holds,
+) -> None:
+    """`period_covers` 상대 기간·월 범위·날짜 한정 없음(plans/122 H-2).
+
+    절대 기간(`{from, to}`)은 `_check_period` 가 보고 여기서는 아무것도 하지 않는다.
+
+    - 창 = `relative_window(종류, 앵커)` — 앵커는 턴 송신 시각(`obs.anchor_at` · KST).
+      앵커가 없거나 월 경계 ±1일(`near_month_boundary`)이면 보류한다.
+    - 판정은 `_check_period` 와 같은 「덮는다」 규칙이다 — 실행 SQL(주석 제외) 날짜
+      리터럴의 최소·최대 경계가 창을 덮으면 통과(넓게 조회한 것은 통과 · 좁거나 다른
+      기간이면 불합격).
+    - SQL 에 날짜 리터럴이 없으면(DB 함수식 · SQL 미관측) 결과 행의 기간 열
+      (`RESULT_PERIOD_COLUMNS`)로 본다. 결과 행은 **표본**이라 일 단위 끝까지 닿는다는
+      보장이 없어(알람은 매일 나지 않는다) 월 단위로 덮는지를 본다. 결과가 잘렸는데
+      덮지 못하면 보류, 둘 다 없으면 보류다.
+    - `unbounded: true` 는 관측 SQL 전부에 날짜 한정(날짜 리터럴 · DB 현재시각 함수)이
+      **없어야** 통과한다. SQL 을 관측하지 못했으면 보류다.
+
+    불합격의 기대값은 선언 그대로 싣는다(재판정기가 기대값으로 카탈로그 변경을 가린다) —
+    창·앵커·관측 기간은 실제값 쪽에 싣는다.
+    """
+    if not isinstance(spec, dict) or not (
+        spec.get("unbounded") is True or "relative" in spec or "month_span" in spec
+    ):
+        return
+    bodies = [sql_body(sql) for sql in sqls]
+    if spec.get("unbounded") is True:
+        if not sqls:
+            manual.add(f"period_covers {spec} 를 확인하지 못했다 - 실행 SQL 을 관측하지 못했다",
+                       "unobservable")
+            return
+        low, high = sql_period_bounds(bodies)
+        functions = sorted({match.group(0).upper()
+                            for body in bodies for match in _DB_NOW_RE.finditer(body)})
+        if low is not None or functions:
+            actual: dict[str, Any] = {}
+            if low is not None and high is not None:
+                actual["sql_period"] = f"{low.isoformat()}~{high.isoformat()}"
+            if functions:
+                actual["db_time_functions"] = functions
+            failures.append(Failure("period_covers", spec, actual))
+        return
+    window, reason = _period_window(spec, obs.anchor_at)
+    if window is None:
+        manual.add(f"period_covers {spec} 를 확인하지 못했다 - {reason}", "unobservable")
+        return
+    start, end = window
+    shown: dict[str, Any] = {"window": f"{start.isoformat()}~{end.isoformat()}",
+                             "anchor_at": obs.anchor_at}
+    low, high = sql_period_bounds(bodies)
+    if low is not None and high is not None:
+        if low > start or high < end - timedelta(days=1):
+            failures.append(Failure("period_covers", spec, {
+                **shown, "sql_period": f"{low.isoformat()}~{high.isoformat()}"}))
+        return
+    column, months, why = _result_months(obs.result)
+    if not months:
+        head = "실행 SQL 에 날짜 리터럴이 없고" if sqls else "실행 SQL 을 관측하지 못했고"
+        manual.add(f"period_covers {spec} 를 확인하지 못했다 - {head} {why}", "unobservable")
+        return
+    last = end - timedelta(days=1)
+    first_month, last_month = min(months), max(months)
+    if first_month <= (start.year, start.month) and last_month >= (last.year, last.month):
+        return
+    observed = (f"{first_month[0]:04d}-{first_month[1]:02d}"
+                f"~{last_month[0]:04d}-{last_month[1]:02d}")
+    if isinstance(obs.result, dict) and obs.result.get("truncated"):
+        manual.add(f"period_covers {spec} 를 확인하지 못했다 - 결과 행이 잘려 기간 열"
+                   f" {column} 의 표본({observed})이 창 {shown['window']} 을 덮는지"
+                   " 알 수 없다", "unobservable")
+        return
+    failures.append(Failure("period_covers", spec, {
+        **shown, "result_period": observed, "column": column}))
+
+
+def _check_oracle(spec: Any, obs: Observation, failures: list[Failure], manual: _Holds) -> None:
+    """오라클 단언 `oracle`(plans/122 O-2) — 비교는 `oracle.evaluate_oracle` 에 맡긴다.
+
+    `obs.oracle`(러너가 채운다 · 형태는 `Observation.oracle` 주석)의 post·pre 결과와
+    결과 행(`obs.result`)·감사 DB 별 행 수(`obs.row_counts_by_db`)를 넘긴다.
+    `source: fixture` 는 판정기가 정답표를 직접 읽는다(DB 호출 0 · 옛 run 재판정에도 쓴다).
+
+    pass → 무표시 · fail → `Failure("oracle", 선언, 차이 상세)` · hold → 보류
+    (`oracle_unavailable` — 오라클 실패·결과 미수집은 불합격이 아니다 · §9.2 판정 계약).
+    보류 문구는 `oracle` 로 시작한다(재판정기 `rejudge._NOT_COLLECTED_NOTES` 가 과거 run 의
+    미수집 보류로 가른다).
+    """
+    from .oracle import evaluate_oracle
+
+    record = obs.oracle if isinstance(obs.oracle, dict) else {}
+    verdict, detail = evaluate_oracle(
+        spec, record.get("post"), obs.result, pre=record.get("pre"),
+        row_counts_by_db=obs.row_counts_by_db,
+    )
+    if verdict == "pass":
+        return
+    if verdict == "fail":
+        failures.append(Failure("oracle", spec, detail))
+        return
+    oracle_id = spec.get("id") if isinstance(spec, dict) else None
+    reason = detail.get("reason") if isinstance(detail, dict) else detail
+    manual.add(f"oracle {oracle_id} 를 확인하지 못했다 - {reason or '사유 없음'}",
+               "oracle_unavailable")
 
 
 def _check_column_mapping(spec: Any, obs: Observation, failures: list[Failure]) -> None:
@@ -662,6 +1461,275 @@ def _check_column_mapping(spec: Any, obs: Observation, failures: list[Failure]) 
             failures.append(Failure("column_must_not_map", name, "실행 SQL 에 존재"))
 
 
+def _ended_in_question(obs: Observation) -> bool:
+    """역질문으로 끝난 턴 — 아직 조회 단계가 아니다(Y-9 와 같은 판별)."""
+    return (obs.status == "clarification" or bool(obs.clarification)
+            or bool(obs.form_fill_clarification))
+
+
+def _check_observed_facts(
+    expect: dict[str, Any], obs: Observation, sqls: list[str],
+    failures: list[Failure], manual: _Holds, *, mock: bool,
+) -> None:
+    """이미 관측되는 값에 붙는 단언(plans/122 H-5). 관측하지 못한 것은 불합격이 아니라 보류다."""
+    wanted = expect.get("sql_executed")
+    if isinstance(wanted, bool):
+        # `sql_must_match`(Y-9)와 같은 규칙 — **못 본 것**과 **안 만든 것**을 가른다.
+        if sqls:
+            if not wanted:
+                failures.append(Failure("sql_executed", False, sqls[0][:200]))
+        elif _ended_in_question(obs):
+            manual.add("sql_executed: 역질문으로 끝난 턴이라 SQL 이 없다(판정 보류)",
+                       "unobservable")
+        elif mock:
+            manual.add("sql_executed: 모의 실행은 SQL 수집기가 없다(판정 보류)", "unobservable")
+        elif wanted:
+            failures.append(Failure("sql_executed", True, None))
+        elif (obs.row_count or 0) > 0:
+            # 데이터는 나왔는데 SQL 을 못 봤다 - 「SQL 없음」을 통과로 세지 않는다
+            # (부정 단언 가드와 대칭).
+            manual.add("sql_executed: 행이 나왔지만 실행 SQL 을 관측하지 못했다(판정 보류)",
+                       "unobservable")
+
+    forbidden_nodes = expect.get("node_path_must_not") or []
+    if forbidden_nodes:
+        if not obs.node_path:
+            # 노드 경로가 비면 「안 밟았다」가 아니라 「못 봤다」다(비스트림 경로 · 스트림 단절).
+            manual.add(
+                f"node_path_must_not {list(forbidden_nodes)} 를 확인하지 못했다"
+                " - 노드 경로를 관측하지 못했다",
+                "unobservable",
+            )
+        else:
+            for node in forbidden_nodes:
+                if node in obs.node_path:
+                    failures.append(Failure("node_path_must_not", node, obs.node_path))
+
+    allowed = expect.get("status_any")
+    if allowed and obs.status not in [str(status) for status in allowed]:
+        failures.append(Failure("status_any", list(allowed), obs.status))
+
+    panel = expect.get("form_memory_panel")
+    if panel in FORM_MEMORY_PANEL_STATES:
+        present = isinstance(obs.form_memory_panel, dict) and bool(obs.form_memory_panel)
+        if present != (panel == "present"):
+            failures.append(Failure("form_memory_panel", panel, "present" if present else "absent"))
+
+    stream = expect.get("stream")
+    if isinstance(stream, dict):
+        for key in sorted(STREAM_KEYS & set(stream)):
+            bound = stream[key]
+            if not isinstance(bound, dict) or "max" not in bound:
+                continue
+            actual = getattr(obs, key)
+            if actual is None:
+                # 토큰 없이 done 만 온 턴(역질문·비스트림)·옛 서버는 값이 없다 - 0 으로 보지 않는다.
+                manual.add(
+                    f"stream.{key}.max={bound['max']} 를 확인하지 못했다"
+                    f" - 스트림에서 {key} 가 관측되지 않았다",
+                    "unobservable",
+                )
+            elif actual > float(bound["max"]):
+                failures.append(Failure(f"stream.{key}.max", bound["max"], actual))
+
+    kinds = expect.get("dependency_notes_contains") or []
+    if kinds:
+        summary = obs.plan_summary if isinstance(obs.plan_summary, dict) else None
+        if summary is None or summary.get("plan_path") == PRE_GATE_PLAN_PATH:
+            # 노트는 2단 계획이 실행될 때만 생긴다 - 계획 요약이 없으면(1·3단 · 옛 서버 · 모의) 또는
+            # 사전 게이트로 끝났으면 「노트 없음」이 아니라 「볼 수 없음」이다
+            # (`plan` 단언과 같은 계약).
+            manual.add(
+                f"dependency_notes_contains {list(kinds)} 를 확인하지 못했다"
+                " - 계획 요약(done.plan_summary)이 없거나 사전 게이트에서 끝난 턴이다"
+                "(2단 밖 실행 단 · 옛 서버 · 모의 실행)",
+                "unobservable",
+            )
+        else:
+            have = sorted({str(note.get("kind")) for note in obs.dependency_notes
+                           if isinstance(note, dict)})
+            for kind in kinds:
+                if kind not in have:
+                    failures.append(Failure("dependency_notes_contains", kind, have))
+
+
+# --- 표 형태 값 판정 (결과 행 H-1 · xlsx H-4 공용) --------------------------------------------
+#: 불합격 상세에 싣는 예시 값 수 상한 — 행 원문을 싣지 않는다(G-4 · PII 노출면 · plans/110 94·§4.4).
+_EXAMPLE_LIMIT = 3
+
+
+def _cell(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _resolve_column(ref: Any, header: list[str]) -> str | None:
+    """열 참조(이름 또는 별칭 목록) → 머리글에 있는 첫 이름. 없으면 None."""
+    names = ref if isinstance(ref, list) else [ref]
+    return next((str(name) for name in names if str(name) in header), None)
+
+
+def _as_number(value: Any) -> tuple[str, float | None]:
+    """("empty"|"number"|"invalid", 값). 문자열은 공백을 전부 뺀 뒤 float 로 읽는다."""
+    if isinstance(value, bool):
+        return "invalid", None
+    if isinstance(value, (int, float)):
+        return "number", float(value)
+    text = "".join(_cell(value).split())
+    if not text:
+        return "empty", None
+    try:
+        return "number", float(text)
+    except ValueError:
+        return "invalid", None
+
+
+def _value_range_items(ranges: Any) -> list[tuple[Any, Any, Any]]:
+    """`value_range` 선언 → [(열 참조, [하한, 상한], 불합격 기대값)].
+
+    두 형식을 받는다(plans/122 H-1·H-4):
+      - 종전 `{열: [하한, 상한]}` — 열 이름 하나. 기대값·상세는 종전과 바이트 동일하다.
+      - 별칭 목록 `[{columns: [별칭…], range: [하한, 상한]}]` — run 마다 갈리는 열 이름
+        (B-12 CPU 평균 `cpu_avg_utilization`·`cpu_avg_percent`·`cpu_avg`·`cpu_avg_usage`)을
+        한 단언으로 본다.
+        **머리글에 먼저 나오는 별칭이 아니라 목록에서 먼저 적은 별칭**이 이긴다(`_resolve_column`).
+    """
+    if isinstance(ranges, dict):
+        return [(column, bounds, {column: bounds}) for column, bounds in ranges.items()]
+    return [(item.get("columns"), item.get("range"), item)
+            for item in ranges or [] if isinstance(item, dict)]
+
+
+def _value_range_failures(
+    prefix: str, ranges: dict[str, Any] | list[dict[str, Any]], header: list[str],
+    rows: list[list[Any]], extra: dict[str, Any],
+) -> list[Failure]:
+    """열 값이 [하한, 상한](양 끝 포함) 안인가.
+
+    빈 칸은 세지 않되, 숫자가 하나도 없으면 불합격이다. 별칭 목록이 머리글에 하나도 없으면
+    불합격 상세에 별칭과 머리글을 싣는다.
+    """
+    out: list[Failure] = []
+    for ref, bounds, expected in _value_range_items(ranges):
+        low, high = float(bounds[0]), float(bounds[1])
+        if isinstance(ref, list):
+            resolved = _resolve_column(ref, header)
+            if resolved is None:
+                out.append(Failure(f"{prefix}.value_range", expected,
+                                   {"columns": ref, "missing": "헤더에 없음", "header": header,
+                                    **extra}))
+                continue
+            column = resolved
+        else:
+            column = ref
+        if column not in header:
+            out.append(Failure(f"{prefix}.value_range", expected,
+                               {"column": column, "missing": "헤더에 없음", "header": header,
+                                **extra}))
+            continue
+        index = header.index(column)
+        checked = 0
+        offenders: list[str] = []
+        invalid = 0
+        for row in rows:
+            kind, number = _as_number(row[index] if index < len(row) else None)
+            if kind == "empty":
+                continue
+            if kind == "invalid":
+                invalid += 1
+                offenders.append(_cell(row[index]))
+                continue
+            checked += 1
+            if number is not None and not (low <= number <= high):
+                offenders.append(_cell(row[index]))
+        if offenders or not checked:
+            out.append(Failure(f"{prefix}.value_range", expected, {
+                "column": column, "checked": checked, "non_numeric": invalid,
+                "out_of_range": len(offenders) - invalid, "examples": offenders[:_EXAMPLE_LIMIT],
+                **extra,
+            }))
+    return out
+
+
+def _unique_by_failure(
+    prefix: str, refs: list[Any], header: list[str], rows: list[list[Any]], extra: dict[str, Any],
+) -> Failure | None:
+    """열 조합이 행마다 유일한가(예: 서버당 1행 · 서버×월 1행)."""
+    columns = [_resolve_column(ref, header) for ref in refs]
+    if any(column is None for column in columns):
+        return Failure(f"{prefix}.unique_by", refs,
+                       {"missing": "헤더에 없음", "header": header, **extra})
+    indexes = [header.index(str(column)) for column in columns]
+    seen: dict[tuple[str, ...], int] = {}
+    for row in rows:
+        key = tuple(_cell(row[i] if i < len(row) else None) for i in indexes)
+        seen[key] = seen.get(key, 0) + 1
+    duplicated = [key for key, count in seen.items() if count > 1]
+    if not duplicated:
+        return None
+    return Failure(f"{prefix}.unique_by", refs, {
+        "columns": columns, "rows": len(rows), "duplicate_keys": len(duplicated),
+        "duplicate_rows": sum(seen[key] for key in duplicated),
+        "examples": [list(key) for key in duplicated[:_EXAMPLE_LIMIT]], **extra,
+    })
+
+
+def _check_result(spec: Any, obs: Observation, failures: list[Failure], manual: _Holds) -> None:
+    """결과 행 단언 `result` (plans/122 H-1) — 러너가 받은 `download-csv` 행을 본다.
+
+    관측하지 못하면(수집 안 함 · 받지 못함) 불합격이 아니라 보류다. 빈 결과는 `allow_empty` 가
+    아니면 선언한 하위 단언이 전부 불합격이다. 절단된 결과는 받은 행만 판정하고 그 사실을 상세에
+    싣는다. 불합격 상세에는 **개수와 예시 값 최대 3개만** 싣는다 - 행 원문은 싣지 않는다(G-4).
+    """
+    if not isinstance(spec, dict) or not spec:
+        return
+    result = obs.result if isinstance(obs.result, dict) else None
+    if result is None:
+        manual.add("result 를 확인하지 못했다 - 결과 행 미수집(러너가 download-csv 를 받지 않았다)",
+                   "unobservable")
+        return
+    status = result.get("status")
+    if status == "unavailable" or status not in ("ok", "empty"):
+        manual.add(f"result 를 확인하지 못했다 - 결과 행을 받지 못했다"
+                   f"(status={status} · {result.get('reason') or '사유 없음'})", "unobservable")
+        return
+    header = [str(column) for column in result.get("columns") or []]
+    rows = [[row.get(column) for column in header]
+            for row in result.get("rows") or [] if isinstance(row, dict)]
+    checks = [key for key in ("columns", "filled_columns", "value_range", "unique_by")
+              if key in spec]
+    if status == "empty" or not rows:
+        if not spec.get("allow_empty"):
+            for key in checks or ["allow_empty"]:
+                failures.append(Failure(f"result.{key}", spec.get(key, False), "결과 행 0건"))
+        return
+    extra: dict[str, Any] = (
+        {"truncated": True, "judged_rows": len(rows), "total_rows": result.get("total_rows")}
+        if result.get("truncated") else {}
+    )
+    for ref in spec.get("columns") or []:
+        if _resolve_column(ref, header) is None:
+            failures.append(Failure("result.columns", ref, header))
+    for ref in spec.get("filled_columns") or []:
+        column = _resolve_column(ref, header)
+        if column is None:
+            failures.append(Failure("result.filled_columns", ref,
+                                    {"missing": "헤더에 없음", "header": header, **extra}))
+            continue
+        index = header.index(column)
+        empty = sum(1 for row in rows if not _cell(row[index] if index < len(row) else None))
+        if empty:
+            failures.append(Failure("result.filled_columns", ref,
+                                    {"column": column, "empty_rows": empty, "rows": len(rows),
+                                     **extra}))
+    failures.extend(
+        _value_range_failures("result", spec.get("value_range") or {}, header, rows, extra)
+    )
+    if spec.get("unique_by"):
+        failure = _unique_by_failure("result", spec["unique_by"], header, rows, extra)
+        if failure:
+            failures.append(failure)
+
+
 def evaluate_turn(
     scenario: Scenario,
     turn_index: int,
@@ -678,7 +1746,8 @@ def evaluate_turn(
     """
     verdict = Verdict()
     failures: list[Failure] = []
-    manual: list[str] = []
+    # 보류 사유 + 출처(plans/122 J-3). 사유 문구는 종전과 바이트 동일하다.
+    manual = _Holds()
     expect = dict(turn.expect)
 
     if mock and not scenario.mock:
@@ -686,13 +1755,15 @@ def evaluate_turn(
         for key in skipped:
             expect.pop(key)
         if skipped:
-            manual.append(
+            manual.add(
                 f"모의 실행(canned 응답) - 단언 {len(skipped)}종을 적용하지 않았다"
-                f"({', '.join(skipped)}). 모의가 증명하는 것은 배관뿐이다 - 실 모드에서 판정한다"
+                f"({', '.join(skipped)}). 모의가 증명하는 것은 배관뿐이다 - 실 모드에서 판정한다",
+                "unobservable",
             )
 
     if expect.get("manual_review"):
-        manual.append(str(expect["manual_review"]))
+        review = str(expect["manual_review"])
+        manual.add(review, *_review_sources(review))
 
     if "status" in expect and obs.status != expect["status"]:
         failures.append(Failure("status", expect["status"], obs.status))
@@ -703,9 +1774,10 @@ def evaluate_turn(
             # **관측되지 않는 값으로 불합격을 만들지 않는다.** `/query/stream` 의 done
             # 페이로드에 intent 가 없어(query.py 의 done 키 목록) 이 필드는 영영 None 이다.
             # 그대로 대조하면 전건이 거짓 불합격이 된다 - 라우팅은 `db_ids` 로 본다.
-            manual.append(
+            manual.add(
                 f"intent={expect['intent']} 를 확인하지 못했다 "
-                "(응답에 intent 가 실리지 않는다 - db_ids 로 라우팅을 본다)"
+                "(응답에 intent 가 실리지 않는다 - db_ids 로 라우팅을 본다)",
+                "unobservable",
             )
         elif obs.intent != expect["intent"]:
             failures.append(Failure("intent", expect["intent"], obs.intent))
@@ -744,10 +1816,11 @@ def evaluate_turn(
         # (plans/96 P-13 → plans/98 J-5 로 내려간 사례). 부정 단언 쪽 가드와 대칭이다.
         if obs.status == "clarification" or obs.clarification or obs.form_fill_clarification:
             # 역질문은 아직 조회 단계가 아니다 - 사용자가 답해야 SQL 이 나온다.
-            manual.append("sql_must_match: 역질문으로 끝난 턴이라 SQL 이 없다(판정 보류)")
+            manual.add("sql_must_match: 역질문으로 끝난 턴이라 SQL 이 없다(판정 보류)",
+                       "unobservable")
         elif mock:
             # 감사 로그 tail 은 실 모드에만 붙는다(runner: sql_tail = ... if live else None).
-            manual.append("sql_must_match: 모의 실행은 SQL 수집기가 없다(판정 보류)")
+            manual.add("sql_must_match: 모의 실행은 SQL 수집기가 없다(판정 보류)", "unobservable")
         else:
             # 실 모드에서 완료됐는데 SQL 0건이면 그것은 관측이다 - 불합격으로 센다.
             for pattern in must_match:
@@ -763,12 +1836,22 @@ def evaluate_turn(
             failures.append(Failure("sql_must_not_match", pattern, hit[:200]))
     if expect.get("sql_must_not_match") and not sqls and (obs.row_count or 0) > 0:
         # 데이터는 나왔는데 SQL 을 하나도 보지 못했다 - 부정 단언을 통과로 세지 않는다.
-        manual.append("행이 나왔지만 실행 SQL 을 관측하지 못했다 - sql_must_not_match 확인 불가")
+        manual.add("행이 나왔지만 실행 SQL 을 관측하지 못했다 - sql_must_not_match 확인 불가",
+                   "unobservable")
     _check_period(expect.get("period_covers"), sqls, failures, manual)
+    # plans/122 H-2 - 상대 기간·월 범위·날짜 한정 없음. 절대 기간 선언에는 아무것도 하지 않는다.
+    _check_relative_period(expect.get("period_covers"), obs, sqls, failures, manual)
 
     _check_column_mapping(expect.get("column_must_not_map"), obs, failures)
-    _check_file(expect.get("file"), obs, failures, manual)
+    _check_file(expect.get("file"), obs, failures, manual, scenario.upload)
     _check_rewrite(expect.get("rewrite"), obs, failures, manual)
+    _check_plan(expect.get("plan"), obs, failures, manual)
+    # plans/122 H-1 · H-5 - 선언하지 않은 턴은 아무것도 하지 않는다(판정 바이트 불변).
+    _check_result(expect.get("result"), obs, failures, manual)
+    if "oracle" in expect:
+        # plans/122 O-2 - 오라클 정답과 비교(선언하지 않은 턴은 판정 바이트 불변).
+        _check_oracle(expect["oracle"], obs, failures, manual)
+    _check_observed_facts(expect, obs, sqls, failures, manual, mock=mock)
 
     for node in expect.get("node_path") or []:
         if node not in obs.node_path:
@@ -782,9 +1865,10 @@ def evaluate_turn(
         if obs.llm_calls is None:
             # **확인 못 한 예산을 통과로 세지 않는다.** `done` 페이로드에 LLM 호출 수가
             # 없어 이 단언은 영영 발화하지 않는다 - 조용히 건너뛰면 "예산을 지켰다"로 읽힌다.
-            manual.append(
+            manual.add(
                 f"llm_calls.max={budget['max']} 예산을 확인하지 못했다 "
-                "(스트림에 LLM 호출 수가 실리지 않는다 - 노드 수 `node_count` 로 대신 본다)"
+                "(스트림에 LLM 호출 수가 실리지 않는다 - 노드 수 `node_count` 로 대신 본다)",
+                "unobservable",
             )
         elif obs.llm_calls > int(budget["max"]):
             failures.append(Failure("llm_calls.max", budget["max"], obs.llm_calls))
@@ -793,23 +1877,26 @@ def evaluate_turn(
         if obs.retries is None:
             # 회귀 노드가 상위 스트림에 보이지 않는 단(intent_orchestration·deep_agent)에서는
             # 재시도를 셀 수 없다 - 통과로 세지 않는다(llm_calls 와 같은 규칙).
-            manual.append(
+            manual.add(
                 f"retries.max={budget['max']} 예산을 확인하지 못했다 "
-                "(query_generator 가 상위 스트림에 나오지 않는 실행 단)"
+                "(query_generator 가 상위 스트림에 나오지 않는 실행 단)",
+                "unobservable",
             )
         elif obs.retries > int(budget["max"]):
             failures.append(Failure("retries.max", budget["max"], obs.retries))
         elif obs.retries_partial:
-            manual.append(
+            manual.add(
                 f"retries={obs.retries} 는 하한이다(멀티 DB 경로의 검증 거부 재시도는 관측되지 않는다) - "
-                f"max={budget['max']} 이내인지 확정하지 못했다"
+                f"max={budget['max']} 이내인지 확정하지 못했다",
+                "unobservable",
             )
 
     if expect.get("gold_sql"):
         # EX 결과집합 동등성은 골드 SQL 실행이 필요하다 - 러너는 DB 쓰기 경로를 갖지 않고
         # 읽기 실행기도 붙이지 않는다. scripts/eval_text2sql.py 의 execution_match 로
         # 별도 실행하는 것이 정본이므로(§1.2 재사용 목록) 여기서는 수동 검토로 넘긴다.
-        manual.append(f"gold_sql 동등성은 eval_text2sql.execution_match 로 별도 판정 ({scenario.id})")
+        manual.add(f"gold_sql 동등성은 eval_text2sql.execution_match 로 별도 판정 ({scenario.id})",
+                   "unobservable")
 
     mode, evidence = classify_mode(obs)
     verdict.response_mode = mode
@@ -829,13 +1916,15 @@ def evaluate_turn(
             failures.append(Failure("response_modes", sorted(declared), mode))
         else:
             # G-10 (b) - 정책 확정 전에는 우리가 정한 기대값으로 시스템을 재단하지 않는다.
-            manual.append(
+            manual.add(
                 f"대응 등급 '{mode}' 가 선언 {sorted(declared)} 밖이다 "
-                "(등급 정책 미확정 - 1차는 관측으로만 쓴다)"
+                "(등급 정책 미확정 - 1차는 관측으로만 쓴다)",
+                "policy",
             )
 
     verdict.failures = failures
-    verdict.manual_notes = manual
+    verdict.manual_notes = manual.notes
+    verdict.manual_sources = manual.sources
 
     # 기대한 오류는 오류 판정이 아니다. 클라이언트가 HTTP 4xx 를 obs.error 로 옮기므로
     # (2026-09-14 — 401 이 manual 로 새던 것을 막은 변경) 400 을 **기대하는** 가드 시나리오
@@ -853,6 +1942,7 @@ def evaluate_turn(
         verdict.func = INVALID_VERDICT
         verdict.failures = []
         verdict.manual_notes = []
+        verdict.manual_sources = []
         verdict.invalid_reason = (
             f"러너 인증 실패 - {obs.error or f'http {obs.http_status}'}"
             + ("  (재로그인 후 1회 재시도했으나 다시 거부됐다)" if obs.auth_retried else "")

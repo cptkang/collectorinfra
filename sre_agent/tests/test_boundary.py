@@ -14,8 +14,8 @@ _PACKAGE = _TOP / "sre_agent"                        # 파이썬 패키지
 _SCRIPTS = _TOP / "scripts"
 _COLLECTORINFRA_SRC = _TOP.parent / "src"            # collectorinfra/src (co-located 시)
 
-# sre_agent 안에서 금지되는 최상위 모듈 (collectorinfra 본체)
-_FORBIDDEN_TOP = frozenset({"src", "collectorinfra"})
+# sre_agent 안에서 금지되는 최상위 모듈 (collectorinfra 본체 · 제니퍼 게이트웨이 — D-274 ③ MCP 계약만)
+_FORBIDDEN_TOP = frozenset({"src", "collectorinfra", "apm_gateway"})
 
 
 def _absolute_imported_tops(py_file: Path) -> set[str]:

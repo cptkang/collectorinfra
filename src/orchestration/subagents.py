@@ -54,6 +54,11 @@ from src.orchestration.process_query import (
 )
 from src.orchestration.db_access import access_denied_result, authorize_targets, denied_for_all
 from src.orchestration.host_inspect import HOST_INSPECT_AGENT, run_host_inspect
+from src.orchestration.investigation_audit import (
+    BACKEND_MCP,
+    BACKEND_PROCESS_API,
+    audited_investigation,
+)
 from src.routing.capability_ownership import (
     REASON_LLM_ERROR,
     REASON_NO_CLASSIFICATION,
@@ -63,12 +68,21 @@ from src.routing.capability_ownership import (
     routing_fallback_note,
 )
 from src.routing.db_authz import authorized_db_ids
-from src.routing.db_scope import zone_selection_db_ids
+from src.routing.db_scope import (
+    ZONE_GROUP_ONLY,
+    ZONE_SELECTION_SCOPE_KEY,
+    zone_selection_db_ids,
+)
 from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
-from src.routing.location_hints import pin_targets_to_hints, strip_location_terms
+from src.routing.location_hints import (
+    inactive_hinted_sources,
+    pin_targets_to_hints,
+    strip_location_terms,
+)
 from src.routing.registry import get_registry
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
 from src.utils.deadline import has_time_for, retrieval_remaining
+from src.utils.prior_dependency import NOTE_SOURCE_UNAVAILABLE
 from src.utils.prior_targets import SOURCE_DB_KEY, build_prior_targets
 from src.utils.progress_events import emit_step
 from src.utils.query_gen_common import (
@@ -119,6 +133,28 @@ class SubAgentSpec:
             추론/판단형 응답(general_inference)은 직전 턴 답변을 근거로 삼아야 하므로 True.
             데이터 조회 agent(data_query/process_query)는 이력이 SQL 생성에 불필요·토큰
             부담·오염 위험이 있어 False(격리 유지).
+
+    처리기 계약(plans/121 §4.4 · TP-2.1a) — 값은 현행 코드 실측이다. **이번 단계 소비처 0**:
+    `description`·분해/재계획/1단 프롬프트는 바이트 그대로이고 목록 렌더 교체는 TP-2.1b다.
+    모르는 값은 None(추정 금지). 슬롯 어휘는 §4.5 — `entity_set`(서버 식별 집합 — 현행
+    `prior_rows`·`prior_targets`·`filter_conditions` 식별 키) · `db_set`(`task.db_ids`·존 선택) ·
+    `time_window`(`parsed_requirements.time_range`).
+
+        purpose: 목적 1문장(TP-2.1b 목록 렌더 원천)
+        backend: 닿는 소스 종류 — `sql` · `mcp` · `rest` · `none`(None = 미선언)
+        input_slots: 받는 슬롯
+        required_inputs: 반드시 바인딩돼야 하는 슬롯(없으면 조회하지 않고 사유를 돌려준다)
+        output_type: `rows` · `entity_set` · `scalar` · `text` · `file`(None = 미선언)
+        key_facets_out: 결과 행에서 후속 단계가 뽑을 수 있는 키 패싯
+        self_filters: 처리기가 스스로 거는 필터 — `zone` · `time` · `host`
+        max_bind_values: 한 task가 받는 선행 키 값 상한(None = 설정값·상한 없음)
+        bind_block: 한 번 호출에 싣는 키 값 수(None = 배치 분할 없음)
+        side_effects: 관측 데이터 소스에 대한 쓰기 — 전부 `none`(D-003 읽기 전용). 앱 자체 저장소
+            (스키마 캐시·유사어) 쓰기는 이 필드의 대상이 아니다.
+        prerequisites: 선행 준비(없으면 조회하지 않거나 사유 노트로 끝난다)
+        latency_class: 지연 등급(None = 미측정 — TP-0.4 노드별 소요 뒤)
+        timeout_sec: 처리기 고정 호출 상한(None = 고정값 없음 — 요청 마감 파생 또는 설정값)
+        concurrency: 처리기 동시 호출 상한(None = 상한 없음 — 병렬은 task 레벨 · TP-10.7)
     """
 
     name: str
@@ -128,6 +164,20 @@ class SubAgentSpec:
     prompt: Optional[str] = None
     fallback: bool = False
     needs_history: bool = False
+    purpose: str = ""
+    backend: str | None = None
+    input_slots: tuple[str, ...] = ()
+    required_inputs: tuple[str, ...] = ()
+    output_type: str | None = None
+    key_facets_out: tuple[str, ...] = ()
+    self_filters: tuple[str, ...] = ()
+    max_bind_values: int | None = None
+    bind_block: int | None = None
+    side_effects: str = "none"
+    prerequisites: tuple[str, ...] = ()
+    latency_class: str | None = None
+    timeout_sec: float | None = None
+    concurrency: int | None = None
 
 
 # ──────────────────────────────────────────────
@@ -206,18 +256,18 @@ async def classify_dbs(
                 "reason": "DB 분류 결과 없음, 기본 DB 사용",
             }
         ]
-        if _capability_ownership_on(app_config):
-            # X-T3(plans/102) — 폴백 사실을 구조화 표지로 싣는다. `run_data_query_pipeline`이
-            # 떼어 내 경과 노트로 올린다(대상 dict에 남겨 두지 않는다).
-            targets[0][_ROUTING_FALLBACK_KEY] = {
-                "reason": REASON_LLM_ERROR if llm_error else REASON_NO_CLASSIFICATION,
-                "cause": llm_error or "",
-            }
+        # X-T3(plans/102) — 폴백 사실을 구조화 표지로 싣는다. `run_data_query_pipeline`이
+        # 떼어 내 경과 노트로 올린다(대상 dict에 남겨 두지 않는다). 소유 플래그와 무관하다
+        # (plans/121 TP-1.6 — 침묵 폴백 금지).
+        targets[0][_ROUTING_FALLBACK_KEY] = {
+            "reason": REASON_LLM_ERROR if llm_error else REASON_NO_CLASSIFICATION,
+            "cause": llm_error or "",
+        }
 
     return targets
 
 
-#: classify_dbs 폴백 표지 키(plans/102 X-T3) — 소유 플래그 on에서만 붙는다.
+#: classify_dbs 폴백 표지 키(plans/102 X-T3) — 소유 플래그와 무관하게 붙는다(plans/121 TP-1.6).
 _ROUTING_FALLBACK_KEY = "routing_fallback"
 
 
@@ -539,6 +589,52 @@ def _apply_turn_hint_pinning(
         task_query=sub_query if isolated.get("is_composite") else None,
         zone_group_exclusive=zone_group_exclusive,
     )
+
+
+def _multiple_systems_active(app_config: AppConfig) -> bool:
+    """활성 DB의 소유 시스템(`registry.system_of` · None 제외)이 둘 이상인가(§12.6 ①)."""
+    reg = get_registry()
+    systems = {s for s in (reg.system_of(d) for d in app_config.multi_db.get_active_db_ids()) if s}
+    return len(systems) >= 2
+
+
+def _apply_selection_to_zone_groups(
+    targets: list[dict[str, Any]], selected_db_ids: list[str], sub_query: str,
+) -> list[dict[str, Any]]:
+    """분류 대상 중 존 그룹 DB만 사용자가 고른 존으로 바꾼다(plans/121 TP-1.2).
+
+    존 없는 시스템 DB(자산 DB 등)는 그대로 둔다 — 복원된 교차 시스템 task가 폴스타 존으로 끌려가지
+    않게 한다. 대상에 존 그룹 DB가 없으면 입력 그대로다.
+    """
+    reg = get_registry()
+    kept = [t for t in targets if reg.zone_group_of(str(t.get("db_id") or "")) is None]
+    if len(kept) == len(targets):
+        return targets
+    return _normalize_targets(selected_db_ids, sub_query) + kept
+
+
+def _source_unavailable_notes(
+    isolated: dict[str, Any], active_db_ids: list[str],
+) -> list[dict[str, Any]]:
+    """원문 힌트가 등록·비활성 소스만 가리키면 사유 노트를 만든다(plans/121 TP-1.11a · N-11).
+
+    대상 집합은 바꾸지 않는다 — 분류가 고른 활성 DB로 답하되, 요청한 소스를 조회하지 않았다는
+    사실을 숨기지 않는다. 문구에는 사용자가 쓴 표현만 싣는다(레지스트리 표시명 비노출 — D-264).
+    턴 단위 사실이라 `task_id`를 두지 않는다 — 여러 task에서 같은 노트가 나와도 집계기가
+    한 번만 싣는다.
+    """
+    hints = (isolated.get("parsed_requirements") or {}).get("target_db_hints") or []
+    return [
+        {
+            "kind": NOTE_SOURCE_UNAVAILABLE,
+            "task_id": None,
+            "reason": "source_inactive",
+            "detail": (
+                f"요청하신 「{hint}」 데이터 소스는 현재 활성화되어 있지 않아 조회하지 않았습니다."
+            ),
+        }
+        for hint in inactive_hinted_sources(hints if isinstance(hints, list) else [], active_db_ids)
+    ]
 
 
 def _apply_db_succession(
@@ -1312,13 +1408,22 @@ async def run_data_query_pipeline(
     # (plans/95 W-10) 존 선택 고정에 이번 턴 라우터가 남긴 존 미배정 DB를 합친다 —
     # 라우터에서 살린 대상을 여기서 다시 떨어뜨리면 같은 침묵 탈락이 순차 러너 경로에서
     # 되살아난다(3단도 이 부품을 쓴다 — docs/21 §7). 존 미배정 대상이 없으면 선택값 그대로다.
-    raw_targets = (
-        task.get("db_ids")
-        or isolated.get("zone_selection_db_ids")
-        or isolated.get("selected_db_ids")
+    # 존 답변 턴에 복원한 계획의 비게이트 task(plans/121 TP-1.2)는 선택 존으로 통째 고정하지 않고
+    # 분류 뒤 존 그룹 대상만 바꾼다. 활성 시스템이 하나 이하면(운영 폴스타 전용) 종전 고정과 같은
+    # 결과라 분류 LLM을 더 부르지 않도록 종전 경로를 그대로 탄다(§12.6 ①).
+    zone_group_only = (
+        task.get(ZONE_SELECTION_SCOPE_KEY) == ZONE_GROUP_ONLY
+        and bool(isolated.get("selected_db_ids"))
+        and _multiple_systems_active(app_config)
+    )
+    raw_targets = task.get("db_ids") or (
+        None if zone_group_only
+        else isolated.get("zone_selection_db_ids") or isolated.get("selected_db_ids")
     )
     db_succeeded = False
     db_pinned = False
+    # 소유 플래그 off의 분류 폴백 노트(plans/121 TP-1.6) — 대상 확정·인가 뒤에 싣는다(아래).
+    pending_fallback_note: dict[str, Any] | None = None
     if raw_targets:
         targets = _normalize_targets(raw_targets, sub_query)
     else:
@@ -1329,17 +1434,22 @@ async def run_data_query_pipeline(
         if _early_zone_q:
             return _zone_clarification_result(_early_zone_q)
         targets = await classify_dbs(llm, sub_query, app_config)
-        # X-T3(plans/102) — classify_dbs 폴백 표지(소유 플래그 on에서만 붙는다)를 떼어
-        # 경과 노트로 올린다.
+        # X-T3(plans/102) — classify_dbs 폴백 표지를 떼어 경과 노트로 올린다. 소유 플래그 on은
+        # 종전 그대로 바로 싣는다. off(plans/121 TP-1.6)는 폴백 DB가 위치 힌트 고정·승계로
+        # 바뀌지 않고 인가 필터 뒤에도 남을 때만 싣는다(인가 밖 DB 이름 비노출 — D-264).
         for _target in targets:
             _mark = _target.pop(_ROUTING_FALLBACK_KEY, None)
             if isinstance(_mark, dict):
-                ownership_notes.append(routing_fallback_note(
+                _fallback_note = routing_fallback_note(
                     str(_mark.get("reason") or REASON_NO_CLASSIFICATION),
                     db_id=str(_target.get("db_id") or ""),
                     cause=str(_mark.get("cause") or ""),
                     task_id=task.get("task_id"),
-                ))
+                )
+                if _capability_ownership_on(app_config):
+                    ownership_notes.append(_fallback_note)
+                else:
+                    pending_fallback_note = _fallback_note
         # ① 이번 턴 원문 위치 힌트가 해소되면 DB 집합을 결정적으로 고정한다
         #    (LLM 분해/분류가 직전 턴 위치를 병합해도 원문 힌트가 이긴다 — 2026-07-16).
         targets, db_pinned = _apply_turn_hint_pinning(
@@ -1359,6 +1469,11 @@ async def run_data_query_pipeline(
                     getattr(app_config.multi_db, "zone_group_exclusive", True) is False
                 ),
             )
+        # 요청 소스 불가 사유(plans/121 TP-1.11a) — 원문 힌트가 등록·비활성 소스만 가리키면
+        # 노트만 남긴다.
+        ownership_notes.extend(
+            _source_unavailable_notes(isolated, app_config.multi_db.get_active_db_ids())
+        )
         if task_owner is not None:
             # 다중 존 시스템 소유 — 위치 힌트 고정·승계가 남긴 존 한정 위에서 소유 DB 집합으로
             # 제한만 한다.
@@ -1366,6 +1481,10 @@ async def run_data_query_pipeline(
                 targets, task_owner, sub_query=sub_query, task_id=task.get("task_id"),
             )
             ownership_notes.extend(_restricted)
+        if zone_group_only:
+            targets = _apply_selection_to_zone_groups(
+                targets, list(isolated.get("selected_db_ids") or []), sub_query,
+            )
 
     # D-205 스코프 출처(구조화 키) — 처리현황 note 문자열이 아니라 이 값을 승격·보고한다.
     if task.get("db_ids"):
@@ -1393,7 +1512,7 @@ async def run_data_query_pipeline(
     # 없는 data_query가 폴스타 존으로 팬아웃되면, LLM 임의 라우팅(전 존/임의 존 — 종전
     # "기존 폴백"의 실체) 대신 존 선택을 역질문한다. 재개 턴은 selected_db_ids가
     # raw_targets로 고정되므로 비발동.
-    if not raw_targets:
+    if not raw_targets and not zone_group_only:
         _zone_q = _zone_clarification_or_none_task(
             task, isolated, targets,
             db_pinned=db_pinned, db_succeeded=db_succeeded, app_config=app_config,
@@ -1408,6 +1527,14 @@ async def run_data_query_pipeline(
     if authorized is None:
         return access_denied_result()
     targets = authorized
+    # 분류 폴백 노트(plans/121 TP-1.6 · 소유 플래그 off) — 존 역질문·인가 거부는 위에서 이미
+    # 반환했다. 폴백 DB가 그대로 조회 대상일 때만 싣는다.
+    if (
+        pending_fallback_note is not None
+        and not (db_pinned or db_succeeded)
+        and pending_fallback_note["db_id"] in {t.get("db_id") for t in targets}
+    ):
+        ownership_notes.append(pending_fallback_note)
 
     # Plan 71: 실시간 사용률 분기 (옵트인 기본 OFF, B안 게이트 — 원문 기준 승격 신호).
     # 대상이 전부 폴스타이고 measurement 조회가 성공하면 SQL 파이프라인을 건너뛴다.
@@ -1650,6 +1777,11 @@ def _pack_pipeline_result(
     db_result_summary = s.get("db_result_summary")
     if db_result_summary:
         result["db_result_summary"] = db_result_summary
+    # 0건 원인 진단(D-176 후속1) — 결과 정리가 남긴 결정적 신호를 task 결과로 승격한다(plans/121
+    # TP-11.5). 없으면 2·1단 0건 응답이 퍼널 사유 없이 종전 문구로만 나갔다(3단 단일 경로와 비대칭).
+    empty_diagnosis = s.get("empty_diagnosis")
+    if empty_diagnosis:
+        result["empty_diagnosis"] = empty_diagnosis
     return result
 
 
@@ -1658,38 +1790,104 @@ def _pack_pipeline_result(
 # ──────────────────────────────────────────────
 
 SUBAGENT_REGISTRY: dict[str, SubAgentSpec] = {
+    # 처리기 계약(plans/121 §4.4 · TP-2.1a) — 값은 현행 코드 실측이고 소비처는 아직 없다.
+    # `purpose`는 분해 프롬프트(`prompts/intent_planner.py` 「사용 가능한 agent」)의 현행 줄
+    # 그대로다(강조 표기 포함 — TP-2.1b가 이 값으로 렌더해도 분해 목록이 바이트 그대로이도록).
     "data_query": SubAgentSpec(
         "data_query",
         "인프라 DB(서버 사양·사용량·성능 통계) 조회 — 알람/이벤트(event) 조회는 alarm_query 담당",
         run_data_query_pipeline,
+        purpose="인프라 DB(서버 사양·사용량·VM·자산·프로세스 **이력/추세** 등) 조회",
+        # 실시간 사용률 분기(REST)는 옵트인 기본 off(`POLESTAR_REST_REALTIME_USAGE_ENABLED`)
+        backend="sql",
+        input_slots=("entity_set", "db_set", "time_window"),
+        output_type="rows",
+        # 선행 결과 → 조사 대상 해소(`build_prior_targets`)가 행에서 뽑는 패싯(ip는 조건에서만)
+        key_facets_out=("hostname", "server_name"),
+        self_filters=("zone", "time", "host"),
+        max_bind_values=_MAX_PRIOR_ROWS,  # 선행 행 주입 상한 — 넘는 값은 절단(한 IN 목록)
+        prerequisites=("structure_info",),  # 구조 정보 없으면 사유 노트(D-227 structure_missing)
+        # timeout: 고정 초 없음 — 요청 마감(`retrieval_remaining`)에서 파생
     ),
     "process_query": SubAgentSpec(
         "process_query",
         "특정 서버의 현재/실시간 프로세스 리스트 조회 (DB 이력이 아닌 실시간 폴스타 프로세스 API)",
-        run_process_query,
+        # 본체 감사 task당 1건(plans/121 TP-1.13) — 세 단이 모두 이 handler를 부른다
+        audited_investigation(run_process_query, BACKEND_PROCESS_API),
+        purpose=(
+            "특정 서버의 **현재/실시간 프로세스 리스트**(실행 중 프로세스·top 프로세스) 조회 "
+            "(DB 이력이 아닌 실시간 API)"
+        ),
+        backend="rest",  # 존별 프로세스 API(httpx GET)
+        input_slots=("entity_set", "db_set"),
+        required_inputs=("entity_set",),  # 대상 서버 미식별이면 조회하지 않고 안내
+        output_type="rows",
+        # 프로세스 행(pid)은 서버 대상으로 해소하지 않는다(`looks_like_process_rows`)
+        key_facets_out=(),
+        self_filters=("zone", "host"),
+        # 대상 상한은 설정값 `composite.max_targets` · 대상별 API 호출 1회 · fan-out 동시 수는
+        # `composite.fanout_concurrency` · 시간 상한은 `composite.*_timeout_seconds`(설정값)
+        bind_block=1,
+        # 존별 프로세스 API 매핑(`get_process_api_base_url`)이 없으면 안내로 끝난다
+        prerequisites=("process_api_mapping",),
     ),
     "alarm_query": SubAgentSpec(
         "alarm_query",
         "알람/모니터링 이벤트(event) 조회 — 알람 현황·이력, event 발생 서버, alert, 경보",
         run_data_query_pipeline,
+        purpose="알람/모니터링 이벤트(알람 현황·이력·임계값 초과·alert) 조회",
+        backend="sql",  # data_query와 같은 handler
+        input_slots=("entity_set", "db_set", "time_window"),
+        output_type="rows",
+        key_facets_out=("hostname", "server_name"),
+        self_filters=("zone", "time", "host"),
+        max_bind_values=_MAX_PRIOR_ROWS,
+        prerequisites=("structure_info",),
     ),
     "cache_management": SubAgentSpec(
-        "cache_management", "스키마 캐시·유사어 관리", run_cache_management
+        "cache_management", "스키마 캐시·유사어 관리", run_cache_management,
+        purpose="스키마 캐시 생성/갱신/삭제, 유사어 관리, 컬럼/DB 설명 변경",
+        backend="sql",  # 캐시 생성 동작만 DB 구조를 읽는다(`refresh_cache`) — 나머지는 앱 캐시
+        output_type="text",
     ),
     "synonym_registration": SubAgentSpec(
-        "synonym_registration", "유사어 등록", run_synonym_registration
+        "synonym_registration", "유사어 등록", run_synonym_registration,
+        purpose="유사어 등록",
+        backend="none",  # 앱 유사어 저장소만 쓴다 — 관측 데이터 소스에 닿지 않는다
+        output_type="text",
     ),
     "general_inference": SubAgentSpec(
         "general_inference", "DB 미접근 일반 응답", run_general_inference,
         fallback=True, needs_history=True,
+        purpose=(
+            "DB에 접근하지 않는 일반 응답(개념 설명, 인사, 범위 외 요청). **최후 수단(fallback)**"
+        ),
+        backend="none",
+        output_type="text",
     ),
     # Plan 78 W3-1·W3-2 (WU-18) — 중간 비용대. `data_query`(DB SQL)와 `fault_diagnosis`
     # (sre_agent 위임) 사이의 공백을 메운다. **도구 수를 늘리지 않는다**(W3-4): 프로파일
-    # 4종을 `profile` 인자로 흡수한다. 목록 노출은 플래그 종속 — `active_subagents()` 참조.
+    # 4종을 `profile` 인자로 흡수한다. 목록 노출은 플래그와 무관하다 — 1단 도구 목록은
+    # 고정이고(78 P14 · `deepagents_tools.py` 목록 고정 주석), 2단 진입은 분해 뒤 결정적 교정
+    # (`intent_planner._coerce_host_inspect_intent` · 플래그 on에서만)뿐이다. 가용성은
+    # handler 진입부 게이트(`run_host_inspect` — 플래그 off면 구조화 거부)가 막는다.
     HOST_INSPECT_AGENT: SubAgentSpec(
         HOST_INSPECT_AGENT,
         "특정 서버의 OS 구성·자원 현황·메트릭 추세 단건 조회 "
         "(DB SQL도 장애 진단 위임도 아닌 mcp_server 고수준 도구 경로)",
-        run_host_inspect,
+        audited_investigation(run_host_inspect, BACKEND_MCP),  # 본체 감사(plans/121 TP-1.13)
+        # 분해 프롬프트에는 줄이 없다 — `description`·1단 지시문 줄의 공통 앞부분
+        purpose="특정 서버의 OS 구성·자원 현황·메트릭 추세 단건 조회",
+        backend="mcp",  # `DBHubClient.inspect_host`
+        input_slots=("entity_set", "db_set"),
+        required_inputs=("entity_set",),  # 대상 미식별이면 구조화 거부(target_unresolved)
+        output_type="rows",  # 거부·실패는 텍스트 결과(TP-1.5)
+        key_facets_out=(),  # 서버 계약 행의 식별 열 미확인 — 조사 대상은 `target` 키에 따로 싣는다
+        self_filters=("zone", "host"),
+        max_bind_values=1,  # 단건 — 첫 대상만 조사하고 나머지는 절단 고지
+        bind_block=1,
+        # 조사 플래그(`composite.investigation_enabled`) off면 거부 ·
+        # `inspect_host`는 MCP 백엔드 클라이언트에만 있다
+        prerequisites=("investigation_enabled", "mcp_backend"),
     ),
 }

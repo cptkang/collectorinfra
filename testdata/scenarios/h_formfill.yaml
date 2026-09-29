@@ -25,9 +25,11 @@ scenarios:
         expect:
           status: completed
           has_file: true
+          # plans/122 H-4 - 서식·열 너비 보존 = 업로드 원본 대비 사용자 지정 열 너비·병합 셀 대조.
+          #   원 수동 문구: "서식·열 너비가 보존됐는지 · mapping_sources 가 hint/synonym 인지(LLM 추론 아님)"
           file: {columns: ["호스트명", "IP주소", "OS종류", "CPU코어수", "제조사", "상태"],
-                 filled_rows: {min: 1}}
-          manual_review: "서식·열 너비가 보존됐는지 · mapping_sources 가 hint/synonym 인지(LLM 추론 아님)"
+                 filled_rows: {min: 1}, style_preserved: true}
+    notes: "plans/122 H-4 - 매핑 출처(mapping_sources 가 hint/synonym 인지)는 응답에 실리지 않아 이 시나리오에서 판정하지 않는다 - plans/110 `94·O-a 잔여` 소관"
   - id: H-02
     plans: [10, 19, 72, 73, 58, 35]
     title: "채워줘 (위치 없음)"
@@ -41,7 +43,18 @@ scenarios:
           query: "채워줘 (위치 없음)"
         expect:
           status: clarification
-          manual_review: "재질문 후 존을 고르면 채움이 이어지는지"
+          clarification: {kind: zone_select}
+      # plans/122 A-4 - 두 턴화: 존을 고르면 채움이 이어지는지. 파일 경로 역질문의 답은 파일을 다시 싣는다
+      #   (웹 UI 와 같다 - 러너가 시나리오 upload 를 file_stream 턴에 재첨부하고 selected_db_ids 를 Form 으로
+      #   보낸다 · 질의는 원문으로 채운다 clarify.complete_payload).
+      #   원 수동 문구(턴 1): "재질문 후 존을 고르면 채움이 이어지는지"
+      - send:
+          selected_db_ids: ["polestar_cm_gp"]
+        expect:
+          status: completed
+          has_file: true
+          file: {columns: ["호스트명", "IP주소", "OS종류", "CPU코어수", "제조사", "상태"],
+                 filled_rows: {min: 1}}
   - id: H-03
     plans: [10, 19, 72, 73, 58, 35]
     title: "여의도 리소스 현황 채워줘"
@@ -77,9 +90,18 @@ scenarios:
                  # G-4 확정(2026-09-16): '비고'는 DB 대응 컬럼이 없는 자유 서술 열이라
                  # **공란이 정답**이다 — filled_rows 를 깎지 않는다(Y-2). 왜 비었는지는
                  # 응답에 사유로 실린다(CU-9). 픽스처 헤더 실측 2026-09-16.
-                 filled_rows: {min: 1}}
+                 filled_rows: {min: 1},
+                 # plans/122 H-4 - 두 열이 전 행에서 같으면(사본) 불합격 - name=hostname 인 정상 서버가 있어 행
+                 #   단위 다름은 요구하지 않는다. ⚠ 세 run(20260922-093837 · 20260923-103638 · 20260923-140539)
+                 #   산출물은 2,337행 전부 두 열이 같다(b0 name 은 "sicwso01 (이미지 업무 WAS#1)" 꼴인데 서버명
+                 #   열이 hostname 으로 채워짐 - D-148 오매핑이 수동에 가려져 있었다) → 이관 뒤 불합격이 정상이다.
+                 #   원 수동 문구: "서버명(cmm_resource.name)과 호스트명 열의 값이 서로 다른지 — 같으면
+                 #   EAV Hostname 으로 잘못 매핑된 것이다(D-148)"
+                 columns_differ: [["서버명", "호스트명"]]}
+          # 이 부정 단언은 b0(DB2) 에서 `FETCH FIRST n ROWS` 를 보지 못한다. 방언 중립으로 바꾸면 폼필 표준
+          #   상한 `FETCH FIRST 10000 ROWS ONLY`(2,338행 < 상한 - 절단 아님)에 걸려 거짓 불합격이 되므로
+          #   바꾸지 않았다(plans/122 A-5 보고). 절단 판정은 행 수 오라클(트랙 O) 소관이다.
           sql_must_not_match: ["(?i)\\blimit\\s+\\d"]
-          manual_review: "서버명(cmm_resource.name)과 호스트명 열의 값이 서로 다른지 — 같으면 EAV Hostname 으로 잘못 매핑된 것이다(D-148)"
   - id: H-05
     plans: [10, 19, 72, 73, 58, 35]
     title: "2026년 6월 기준으로 채워줘"
@@ -95,9 +117,19 @@ scenarios:
           status: completed
           has_file: true
           file: {columns: ["호스트명", "CPU 평균", "CPU 최고", "메모리 평균"],
-                 filled_rows: {min: 1}}
-          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)202606"]
-          manual_review: "값이 0~100 범위이고 서버당 1행인지"
+                 filled_rows: {min: 1},
+                 # plans/122 H-4 - 세 열은 사용률(%)이다(열 이름 · docs/29 H-05 "값 0~100"). 상한을 101 로 둔 근거:
+                 #   폴스타 측정값 자체가 100 을 조금 넘는다 - 세 run 산출물 `CPU 최고` 최댓값 100.06 · K-09 응답
+                 #   cpu_max 최대 100.05 · K-08 응답 100.1. 단위·열 오매핑(바이트·개수·0~1 비율)을 거르는 것이 목적이다.
+                 value_range: {"CPU 평균": [0, 101], "CPU 최고": [0, 101], "메모리 평균": [0, 101]}}
+          # plans/122 A-2 - 날짜 리터럴 → 기간 의미(D-218 Y-5). 원식: ["(?i)cmm_metric_stat_m", "(?i)202606"]
+          sql_must_match: ["(?i)cmm_metric_stat_m"]
+          period_covers: {from: "2026-06-01", to: "2026-07-01"}
+          # 「서버당 1행」은 `unique_by: [호스트명]` 으로 옮기지 않았다 - 김포에는 호스트명이 같은 서로 다른
+          #   서버가 실재한다(세 run 산출물 모두 호스트명 6개가 2~3행 · 행마다 값이 다르다 · D-148). 양식 키가
+          #   호스트명뿐이라 서버 단위 유일성은 행 수 오라클(트랙 O · 활성 서버 수) 소관이다.
+          #   원 수동 문구: "값이 0~100 범위이고 서버당 1행인지"
+          manual_review: "서버당 1행인지(호스트명 중복 서버가 실재해 unique_by 로 판정 불가 - 행 수 오라클 소관)"
   - id: H-06
     plans: [10, 19, 72, 73, 58, 35]
     title: "채워줘"
@@ -119,7 +151,12 @@ scenarios:
           response_must_contain_any:
             - "[미작성 항목]"
             - ["[사용자 답변 적용 내역]", "TPMC: 공란 유지", "도입일자: 공란 유지", "용도: 공란 유지"]
-          manual_review: "TPMC·도입일자·용도 3열이 공란이고 그 사유가 열 이름과 함께 나오는지"
+          # plans/122 H-4 - 도메인 밖 3열은 공란이 정답이다(채워지면 불합격). 사유 고지는 위 선택지가 본다.
+          #   세 run(20260922-093837 · 20260923-103638 · 20260923-140539 두 arm) 산출물 전부 3열 0/1689 채움.
+          #   tests/test_scenario/test_plan120_harness.py U4 테스트는 산출물 없는 합성 관측이라 `file` 을 빼고
+          #   응답 선택지만 판정한다(그 테스트 독스트링).
+          #   원 수동 문구: "TPMC·도입일자·용도 3열이 공란이고 그 사유가 열 이름과 함께 나오는지"
+          file: {empty_columns: ["TPMC", "도입일자", "용도"]}
   - id: H-10
     plans: [10, 19, 72, 73, 58, 35]
     title: "2026년 6월 기준 CPU 양식 채워줘"
@@ -134,8 +171,41 @@ scenarios:
         expect:
           status: completed
           has_file: true
-          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)202601", "(?i)202606"]
-          manual_review: "평균 6열=avg_val · Peak 6열=max_val · 제조사(모델명)=Vendor+Model 결합 · 처리능력(TPMC)=공란 · 비고=name · [기준월 안내]의 연도가 정확한지"
+          # plans/122 A-2 - 날짜 리터럴 → 기간 의미. 원식: ["(?i)cmm_metric_stat_m", "(?i)202601", "(?i)202606"]
+          sql_must_match: ["(?i)cmm_metric_stat_m"]
+          period_covers: {from: "2026-01-01", to: "2026-07-01"}
+          # plans/122 A-1 - [기준월 안내]의 연도: 제품 문구 `**[기준월 안내]** 월별 사용률 칼럼은 {시작}부터
+          #   {끝}까지 (…) 데이터로 채웠습니다`(src/nodes/output_generator.py:1548-1553 · 월 표기 `YYYY년 M월`
+          #   :1050-1054). docs/29 H-10 M=202601 … M+5=202606.
+          response_must_contain: ["[기준월 안내]", "2026년 1월부터 2026년 6월까지"]
+          # plans/122 H-4 - CPU_양식은 1행이 제목이고 머리글이 5·6행 2단(E5:J5 · K5:P5 가로 병합)이다 →
+          #   `header_rows: [5, 6]`(이름 규칙 `상위/하위` - scripts/scenario/assertions.py `_header_view`).
+          #   평균 6열·Peak 6열은 사용률(%)로 채워져야 한다 - 상한 101 은 H-05 와 같은 근거(폴스타 Peak 측정값
+          #   100.06). 이 단언은 「숫자 사용률로 채움」을 보고 평균↔Peak 방향(avg_val·max_val)은 보지 못한다.
+          #   처리능력(TPMC)은 공란이 정답이다.
+          #   ⚠ 이관 뒤 불합격이 정상이다: 세 run 산출물은 12열이 전부 공란(폼필 역질문에 러너 자동응답
+          #   「전 필드 공란」이 적용됨 - 응답 `[사용자 답변 적용 내역]` 월중평균사용률(최근 6개월간) > M: 공란 유지)이고
+          #   처리능력(TPMC) 열은 메모리 용량("31.1 GB")으로 채워졌다(D-148 반례).
+          file:
+            header_rows: [5, 6]
+            value_range:
+              "월중평균사용률(최근 6개월간)/M": [0, 101]
+              "월중평균사용률(최근 6개월간)/M+1": [0, 101]
+              "월중평균사용률(최근 6개월간)/M+2": [0, 101]
+              "월중평균사용률(최근 6개월간)/M+3": [0, 101]
+              "월중평균사용률(최근 6개월간)/M+4": [0, 101]
+              "월중평균사용률(최근 6개월간)/M+5": [0, 101]
+              "월중 Peak시 사용률(최근 6개월간)/M": [0, 101]
+              "월중 Peak시 사용률(최근 6개월간)/M+1": [0, 101]
+              "월중 Peak시 사용률(최근 6개월간)/M+2": [0, 101]
+              "월중 Peak시 사용률(최근 6개월간)/M+3": [0, 101]
+              "월중 Peak시 사용률(최근 6개월간)/M+4": [0, 101]
+              "월중 Peak시 사용률(최근 6개월간)/M+5": [0, 101]
+            empty_columns: ["처리능력/(TPMC)"]
+          # 남은 항목은 값의 **출처·형식**이라 단언 키가 없다(file 에 열 간 대소·열 값 정규식·DB 대조 키 없음).
+          #   원 수동 문구: "평균 6열=avg_val · Peak 6열=max_val · 제조사(모델명)=Vendor+Model 결합 ·
+          #   처리능력(TPMC)=공란 · 비고=name · [기준월 안내]의 연도가 정확한지"
+          manual_review: "평균 6열=avg_val·Peak 6열=max_val 방향(value_range 는 사용률 채움만 본다) · 제조사(모델명)=Vendor+Model 결합 · 비고=name"
   - id: H-11
     plans: [10, 19, 72, 73, 58, 35]
     title: "1월부터 6월까지의 데이터를 기준으로 양식을 채우시오"
@@ -150,7 +220,9 @@ scenarios:
         expect:
           status: completed
           has_file: true
-          sql_must_match: ["(?i)202601", "(?i)202606"]
+          # plans/122 A-2 - 날짜 리터럴 → 기간 의미. 원식: sql_must_match: ["(?i)202601", "(?i)202606"]
+          #   부정 단언(2~7월 밀림 D-176 가드)은 그대로 둔다 - period_covers 는 「덮는다」만 본다.
+          period_covers: {from: "2026-01-01", to: "2026-07-01"}
           sql_must_not_match: ["(?i)202607"]
   - id: H-12
     plans: [10, 19, 72, 73, 58, 35]
@@ -167,7 +239,10 @@ scenarios:
           status: completed
           has_file: true
           response_must_contain: ["[기준월 안내]"]
-          manual_review: "기간 지정이 없으면 지난달 끝 기준 6개월인지(실행 시점 의존)"
+          # plans/122 H-2 - 지난달 끝 기준 6개월 = 앵커(턴 송신 시각 KST) 기준 완결 6개월
+          #   (src/domain/time_spec.relative_window · 예: 앵커 2026-09-23 → [2026-03-01, 2026-09-01)).
+          #   원 수동 문구: "기간 지정이 없으면 지난달 끝 기준 6개월인지(실행 시점 의존)"
+          period_covers: {relative: last_n_months, n: 6}
   - id: H-13
     plans: [10, 19, 72, 73, 58, 35]
     title: "1월부터 3월까지 채워줘"
@@ -182,8 +257,11 @@ scenarios:
         expect:
           status: completed
           has_file: true
-          response_must_contain: ["[기간 불일치]"]
-          manual_review: "나머지 3칸을 어떻게 처리했는지 응답에 명시됐는지"
+          # plans/122 A-1 - 나머지 칸 처리 방식은 [기간 불일치] 고지의 고정 문장이 명시한다
+          #   (`… 양식의 월 칼럼 수에 맞춰 {시작}~{끝}로 채웠습니다. 요청 개월 수와 양식 칸 수가 다르면 끝 월을
+          #   기준으로 정렬합니다.` src/nodes/output_generator.py:1559-1564). 선택지가 하나라 `_any` 가 아니라
+          #   `response_must_contain` 에 더했다. 원 수동 문구: "나머지 3칸을 어떻게 처리했는지 응답에 명시됐는지"
+          response_must_contain: ["[기간 불일치]", "끝 월을 기준으로 정렬합니다"]
   - id: H-14
     plans: [10, 19, 72, 73, 58, 35]
     title: "지난 반년 데이터로 채워줘"
@@ -198,7 +276,9 @@ scenarios:
         expect:
           status: completed
           has_file: true
-          manual_review: "'지난 반년'이 실행 시점 기준 6개월 범위로 풀렸는지"
+          # plans/122 H-2 - 「반년」 = 지난 6개월(G-15 · D-275 ⑮ · docs/29 H-14 202602~202607 은 8월 실행 기준).
+          #   원 수동 문구: "'지난 반년'이 실행 시점 기준 6개월 범위로 풀렸는지"
+          period_covers: {relative: last_n_months, n: 6}
   - id: H-15
     plans: [10, 19, 72, 73, 58, 35]
     title: "2026년 6월 기준 메모리 양식 채워줘"
@@ -213,8 +293,16 @@ scenarios:
         expect:
           status: completed
           has_file: true
-          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)202606"]
-          manual_review: "리소스=server.Memory('주기억장치' 제목 인식) · 처리능력(GB)=TotalSize 채움"
+          # plans/122 A-2·A-1 - 날짜 리터럴 → 기간 의미 + 사용률 조회가 server.Memory 자원인지. 원식:
+          #   ["(?i)cmm_metric_stat_m", "(?i)202606"]. `server\.Memory` 를 따로 두면 처리능력 칸의 TotalSize
+          #   조회(세 run 전부 'server.Memory' 포함)로도 통과해 버려, 월 통계와 **같은 SQL** 에 있어야 하게 묶었다.
+          sql_must_match: ["(?is)\\bcmm_metric_stat_m\\b.*'server\\.Memory'|'server\\.Memory'.*\\bcmm_metric_stat_m\\b"]
+          period_covers: {from: "2026-06-01", to: "2026-07-01"}
+          # plans/122 H-4 - 처리능력(GB)=TotalSize 채움. 메모리_양식은 1행이 제목이고 머리글이 5·6행 2단이다 →
+          #   `header_rows: [5, 6]`(처리능력 D5 · (GB) D6 → `처리능력/(GB)`). 처리능력 열이 채워진 행이 1행 이상.
+          #   세 run 산출물은 1,689/1,690행이 "31.1 GB" 꼴로 채워졌다(이관하면 합격).
+          #   원 수동 문구: "리소스=server.Memory('주기억장치' 제목 인식) · 처리능력(GB)=TotalSize 채움"
+          file: {header_rows: [5, 6], filled_columns: ["처리능력/(GB)"], filled_rows: {min: 1}}
   - id: H-16
     plans: [10, 19, 72, 73, 58, 35]
     title: "김포 서버 목록 양식 채워줘"
@@ -230,7 +318,23 @@ scenarios:
           status: completed
           has_file: true
           sql_must_not_match: ["(?i)cmm_metric_stat_"]
-          manual_review: "용도·도입일자·설치장소·접근통제가 공란 + 사유로 처리됐는지"
+          # plans/122 H-4 - 사유 고지(H-06 · plans/120 U-4 선례): [미작성 항목](src/nodes/output_generator.py:1628-1632)
+          #   또는 폼필 역질문 × 자동응답(D-151 × D-216)의 `[사용자 답변 적용 내역]`·`공란 유지 적용`(:1596-1618).
+          #   표시 이름은 다단 머리글이 `상위 > 하위` 로 붙는다(세 run 응답 실측).
+          response_must_contain_any:
+            - "[미작성 항목]"
+            - ["[사용자 답변 적용 내역]", "용도: 공란 유지", "도입일자: 공란 유지",
+               "설치장소 (주센터, 재해복구센터 등): 공란 유지", "적용 솔루션명: 공란 유지", "추가인증수단: 공란 유지"]
+          # plans/122 H-4 - 네 항목 공란(docs/29 H-16). 서버_목록_리스트_양식은 1행이 제목이고 머리글이 5·6행
+          #   2단이다(H5:I5 서버위치 · J5:K5 접근통제 및 추가인증 가로 병합) → `header_rows: [5, 6]`. 「접근통제」는
+          #   하위 두 열(적용 솔루션명 · 추가인증수단)이라 물리 열은 다섯이다. 사유 고지는 위 선택지가 본다.
+          #   ⚠ 이관 뒤 불합격이 정상인 run 이 있다: 20260923-103638 · 20260923-140539(두 arm) 산출물의 도입일자 열은
+          #   epoch 밀리초(1677568395200 등)로 채워졌다(20260922-093837 은 다섯 열 전부 공란).
+          #   원 수동 문구: "용도·도입일자·설치장소·접근통제가 공란 + 사유로 처리됐는지"
+          file:
+            header_rows: [5, 6]
+            empty_columns: ["용도", "도입일자", "서버위치/설치장소 (주센터, 재해복구센터 등)",
+                            "접근통제 및 추가인증/적용 솔루션명", "접근통제 및 추가인증/추가인증수단"]
   - id: H-17
     plans: [10, 19, 72, 73, 58, 35]
     title: "은행존 2026년 6월 기준 채워줘"
@@ -255,6 +359,12 @@ scenarios:
     profile: baseline
     endpoint: file_stream
     upload: "testdata/scenarios/fixtures/form_sample.xlsx"
+    # plans/122 K-3 - 원문(docs/29 H-18)이 가리키는 `sample/취합 예시1.xlsx`(4행 헤더 · 3행 부분 병합 -
+    #   D-145 부정 픽스처)가 저장소에 없다(2026-09-29 실측: sample/ 에는 Office 잠금 파일 `~$취합 예시1.xlsx`
+    #   165바이트뿐). 지금 upload 는 자리표 양식(form_sample.xlsx)이라 돌려도 H-18 이 재는 것을 재지 못한다.
+    #   픽스처가 편입되면 upload 를 그 파일로 바꾸고 아래 두 줄을 지운다(tests/test_scenario/test_catalog.py 허용 목록도).
+    # 실행 불가: 픽스처 부재(plans/122 K-3 · 사용자 제공 대기)
+    prompt_authored: false
     turns:
       - send:
           query: "채워줘"
@@ -274,7 +384,18 @@ scenarios:
         expect:
           status: completed
           has_file: true
-          manual_review: "{{서버명}}·{{IP주소}} 플레이스홀더 치환 · 표 5행 스타일 유지"
+          # plans/122 H-3 - 자리표 잔존 0 · 표 머리글 · 업로드 원본(sample_template.docx: 표 6행 TableGrid ·
+          #   문단 Normal) 대비 스타일 ID. 행 수는 한 서버라 하한만 둔다(원본 빈 행을 남기는지는 계약이 아니다).
+          file:
+            docx:
+              no_placeholders: true
+              tables: [{index: 0, min_rows: 2, first_row: ["서버명", "IP주소", "CPU사용률"]}]
+              styles_preserved: true
+          # docx 단언은 **무엇으로** 채웠는지를 보지 못한다(본문 값·행 수 상한 키가 없다). 세 run 산출물은 전 서버
+          #   1,690행 + 자리표 = 첫 서버(cob0-peawao01)로 채워졌다(SQL 에 cocm-hdkapp01 한정 없음 · 응답은 "레코드가
+          #   조회되지 않았습니다"). 지목한 서버로 조회 범위를 좁혔는지를 SQL 로 본다 - 이관 뒤 불합격이 정상이다.
+          #   원 수동 문구: "{{서버명}}·{{IP주소}} 플레이스홀더 치환 · 표 5행 스타일 유지"
+          sql_must_match: ["(?i)cocm-hdkapp01"]
   - id: H-21
     plans: [10, 19, 72, 73, 58, 35]
     title: "김포 전체 서버로 채워줘"
@@ -289,4 +410,13 @@ scenarios:
         expect:
           status: completed
           has_file: true
-          manual_review: "표 행이 스타일 복제로 추가됐는지 · 플레이스홀더는 첫 행 값인지"
+          # plans/122 H-3 - 표 행 추가(원본 6행 → 7행 이상) · 더한 행은 원본 첫 데이터 행 스타일의 복제 · 자리표
+          #   잔존 0. 「자리표 = 표 첫 행 값」은 docx 단언에 본문 값 키가 없어 옮기지 못했다(세 run 산출물은
+          #   자리표 cob0-peawao01 = 표 1행으로 일치).
+          #   원 수동 문구: "표 행이 스타일 복제로 추가됐는지 · 플레이스홀더는 첫 행 값인지"
+          file:
+            docx:
+              no_placeholders: true
+              tables: [{index: 0, min_rows: 7, first_row: ["서버명", "IP주소", "CPU사용률"]}]
+              styles_preserved: true
+          manual_review: "플레이스홀더({{서버명}}·{{IP주소}}) 값이 표 첫 데이터 행 값인지 (docx 본문 값 단언 키 없음)"

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 
+from scripts.scenario import REPO_ROOT
 from scripts.scenario.catalog import CatalogError, load_catalog
 from tests.test_scenario.conftest import GOOD_GROUP, write
 
@@ -174,14 +176,43 @@ def test_정본_카탈로그의_프롬프트에_표_파싱_찌꺼기가_없다()
             assert not query.startswith("`"), f"{scenario.id}: 코드 표기가 벗겨지지 않았다"
 
 
+#: 실행하지 않는(`prompt_authored: false`) 시나리오의 허용 목록 {id: 사유 주석에 있어야 할 표지}.
+#: F·I 는 2026-09-14, K군(반복·동시성·쓰기 선행)과 SYN-F-05(시드 재적재 절차)는 2026-09-15 러너 동작
+#: (replay·concurrent·setup·action)으로 전건 실행 가능해져 0건이었다(D-217). 새로 여는 건은
+#: **구체 사유 주석**(`# 실행 불가: …` - 러너가 건너뛸 때 「사유는 시나리오 파일의 해당 항목
+#: 주석에 있다」고 적는다)과 함께 여기에 더한다.
+UNAUTHORED_ALLOWED: dict[str, str] = {
+    # plans/122 K-3 - `sample/취합 예시1.xlsx`(D-145 부정 픽스처) 사용자 제공 대기.
+    "H-18": "plans/122 K-3",
+}
+
+
+def _scenario_block(scenario_id: str, source_file: str) -> str:
+    """시나리오 파일에서 `- id: <id>` 항목 한 건의 원문(다음 항목 앞까지 · 주석 포함)."""
+    text = (REPO_ROOT / "testdata" / "scenarios" / source_file).read_text(encoding="utf-8")
+    match = re.search(rf"(?ms)^  - id: {re.escape(scenario_id)}\n.*?(?=^  - id: |\Z)", text)
+    assert match, f"{source_file} 에서 {scenario_id} 항목을 찾지 못했다"
+    return match.group(0)
+
+
 def test_프롬프트_미작성_시나리오는_사유를_갖는다() -> None:
-    """산문을 프롬프트로 실행하지 않는다 - 다만 조용히 사라지지도 않는다."""
+    """산문을 프롬프트로 실행하지 않는다 - 다만 조용히 사라지지도 않는다.
+
+    미작성은 허용 목록에 있어야 하고, 시나리오 항목에 `# 실행 불가:` 사유 주석
+    (허용 목록 표지 포함)이 있어야 한다 - 목록 밖 미작성이나 사유 없는 미작성이 생기면 실패한다.
+    """
     catalog = load_catalog()
     unauthored = [s for s in catalog.scenarios if not s.prompt_authored]
-    # F·I 는 2026-09-14, K군(반복·동시성·쓰기 선행)과 SYN-F-05(시드 재적재 절차)는 2026-09-15
-    # 러너 동작(replay·concurrent·setup·action)으로 전건 실행 가능해졌다(D-217). 새로 미작성 초안이
-    # 생기면 사유 주석과 함께 이 목록을 다시 연다.
-    assert not unauthored, f"미작성 초안이 다시 생겼다: {[s.id for s in unauthored]}"
+    stray = sorted(s.id for s in unauthored if s.id not in UNAUTHORED_ALLOWED)
+    assert not stray, f"허용 목록 밖 미작성 초안이 생겼다: {stray}"
+    for scenario in unauthored:
+        block = _scenario_block(scenario.id, Path(str(scenario.source_file)).name)
+        reasons = [line.strip() for line in block.splitlines()
+                   if line.strip().startswith("# 실행 불가:")]
+        assert any(UNAUTHORED_ALLOWED[scenario.id] in reason for reason in reasons), (
+            f"{scenario.id}: 구체 사유 주석"
+            f"(`# 실행 불가: … {UNAUTHORED_ALLOWED[scenario.id]} …`)이 없다"
+        )
 
 
 def test_실제_저장소_카탈로그가_로드된다() -> None:

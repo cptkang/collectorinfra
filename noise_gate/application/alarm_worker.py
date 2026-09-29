@@ -100,6 +100,7 @@ class AlarmWorker:
         self._sse_publisher = None  # (E3 후속) 워커→UI 실시간 SSE Redis pub/sub 발행기
         self._incident_publisher = None  # (D-049) incident 이벤트 Redis pub/sub 발행기
         self._sre_agent_client = None  # (Plan 64 CW-A) sre_agent 조사 서비스 MCP 클라이언트
+        self._apm_client = None  # (plans/87 J4) APM 게이트웨이 MCP 클라이언트 — app_impact 승격용
         self._identity_resolver = None  # (D-188) hostname → 등록 서버명·IP 역조회 리졸버
         # (Plan 67 R3-(v) · D-132) 운영자 주석 LLM 분류기 — annotation_llm_classification_enabled
         # 활성 시에만 생성. None이면 주석 신호는 기존 정규식 추출로 산출된다(비트동일·회귀 0).
@@ -485,6 +486,30 @@ class AlarmWorker:
             logger.exception("sre_agent 조사 클라이언트 생성 실패 — 조사 트리거 없이 진행")
             return None
 
+    def _build_apm_gateway_client(self):  # noqa: ANN202
+        """APM 게이트웨이 MCP 클라이언트를 만든다 (plans/87 J4 · _build_sre_agent_client 미러).
+
+        enable_noise_gate·app_impact_enabled 중 하나라도 off면 None(회귀 0 — 게이트 노드가 조회하지
+        않는다). 켰는데 URL이 비었거나 생성에 실패하면 경고를 남기고 None이다(침묵 금지 — 승격 없이
+        진행). `apm_gateway` 패키지는 import하지 않고 MCP(SSE)로만 통신한다(D-274 ③).
+        """
+        ng = getattr(self._config, "noise_gate", None)
+        if ng is None or not getattr(ng, "enable_noise_gate", False):
+            return None
+        if not getattr(ng, "app_impact_enabled", False):
+            return None
+        from noise_gate.infrastructure.apm_gateway_client import build_apm_gateway_client
+
+        client = build_apm_gateway_client(ng)
+        if client is None:
+            logger.warning(
+                "NOISE_APP_IMPACT_ENABLED=true지만 게이트웨이 클라이언트가 없다"
+                "(NOISE_APM_MCP_URL 비었거나 생성 실패) — app_impact 승격 없이 진행"
+            )
+        else:
+            logger.info("app_impact 승격 활성: 게이트웨이=%s", ng.apm_mcp_url)
+        return client
+
     def _build_annotation_classifier(self):  # noqa: ANN202
         """운영자 주석 LLM 분류기를 생성한다 (Plan 67 R3-(v) · D-132 · _build_* 미러).
 
@@ -560,6 +585,8 @@ class AlarmWorker:
         self._incident_publisher = self._build_incident_publisher()
         # (Plan 64 CW-A) sre_agent 조사 서비스 클라이언트 — off/미배선이면 None(회귀 0).
         self._sre_agent_client = self._build_sre_agent_client()
+        # (plans/87 J4) APM 게이트웨이 클라이언트 — app_impact off(기본)면 None(회귀 0).
+        self._apm_client = self._build_apm_gateway_client()
         # (Plan 67 R3-(v) · D-132) 주석 LLM 분류기 — 플래그 off(기본)면 None → 정규식 경로.
         self._annotation_classifier = self._build_annotation_classifier()
         dedup: dict[str, float] = {}
@@ -929,6 +956,9 @@ class AlarmWorker:
                         # investigation_trigger 노드는 no-op(브리핑 미생성·회귀 0). 노드가 connect/
                         # submit/poll/disconnect를 전체 타임아웃 가드 안에서 관리한다.
                         "sre_agent_client": self._sre_agent_client,
+                        # (plans/87 J4) APM 게이트웨이 클라이언트 — off/미설정이면 None →
+                        # 게이트 노드가 app_impact를 조회하지 않는다(판정 비트동일·회귀 0).
+                        "apm_client": self._apm_client,
                     }
                 },
             )

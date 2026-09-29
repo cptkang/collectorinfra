@@ -32,6 +32,8 @@ SREAgent 프로젝트(HolmesGPT 기반 장애 진단 에이전트)를 별도 프
 
 **갱신(2026-07-27 · D-119)**: PromQL 접근을 `mcp_server`로 통합(holmesgpt 내장 Prometheus toolset 직결 미채택) — `mcp_server` 성격을 "관측 데이터 읽기 접근 경계"로 재정의. hostname 앵커 고수준 도구 기본 + 원시 옵트인, 서버측 `{nodename=…}` 결정적 조립, 감사·자격증명·지침 주입 일원화. 검증 게이트(내장 toolset 대비 품질 열화 없음·열화 시 복귀)는 Plan 06 §8 수용 기준 7. 반영: Plan 04 §4.4·Plan 06 §1~§8·Plan 02·collectorinfra Plan 66 R5.
 
+**갱신(2026-09-29 · D-274·D-195 · `plans/87` v3.1)**: 제니퍼 APM은 `mcp_server` 확장이 아니라 독립 패키지 `apm_gateway`(자체 MCP 서버)로 붙는다(D-119 ① 개정). 제니퍼가 배포된 환경에서 `sre_agent`의 하향 의존은 MCP 서버 **둘**(`mcp_server` + `apm_gateway`)이 된다 — `_build_mcp_servers()`에 `"apm"` 항목 · `AgentSettings.apm_mcp_url`·`apm_mcp_token`(예정 · `plans/87` J3). 위 원칙 3 「하향은 `mcp_server` 하나」는 이 범위에서 갱신된다. WAS 시그니처 판정은 게이트웨이가 하고(`was_signals`) `sre_agent`는 승격만 한다.
+
 **갱신(2026-07-27 · D-120)**: HolmesGPT **개발·테스트 LLM = Gemini API**(litellm 경유·착수 시 실측) — 스모크 하네스 `sre_agent/scripts/smoke_llm.py`·`AgentSettings` LLM 필드·데이터 통제(외부 송신은 목업·픽스처만, 운영 투입 금지)는 Plan 02 §10.1. 운영 LLM은 Plan 66 §7-1에서 별도 확정(운영 활성화 게이트로 완화 — Phase 2 개발은 선행 가능).
 
 ## 번호 체계 주의

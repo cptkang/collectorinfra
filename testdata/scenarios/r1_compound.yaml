@@ -26,7 +26,12 @@ scenarios:
         expect:
           status: completed
           row_count: {min: 1}
-          manual_review: "분해가 2개 작업으로 떨어졌는가. 선행 0건일 때 후속이 침묵하지 않는가(D-203 게이트 노트)"
+          # plans/121 TP-0.3 - 순차 표지 "그중"(D-203 ②)이라 서버 목록 → 알람 이력 input_from 간선이
+          # 계약이다(없으면 제품이 1회 재분해하고 sequential_not_applied 를 남긴다). 알람 이력은
+          # alarm_query 담당이다 - data_query 로 남으면 알람 테이블에 닿지 못한다(D-086 ④).
+          # 선행 0건 → 후속 미실행·게이트 노트는 D-203 ① 코드 계약이 간선 위에서 보장한다.
+          # (종전 수동 검토: "분해가 2개 작업으로 떨어졌는가. 선행 0건일 때 후속이 침묵하지 않는가")
+          plan: {min_tasks: 2, edges: [[data_query, alarm_query]]}
     perf: {target_ms: 30000}
     teardown: [drop_thread]
     notes: "순차 의존 계약 7종 기본 on (D-203)"
@@ -65,7 +70,11 @@ scenarios:
         expect:
           status: completed
           has_file: true
-          manual_review: "산출물과 인라인 응답이 동시에 나오는가. 두 요구 중 하나가 조용히 빠지지 않는가"
+          # plans/121 TP-0.3 - 산출물(전체 사양)과 인라인 표(64GB 이상)는 두 요구다 - 한 task 로 묶으면
+          # 요약 LLM 이 표본 20행에서 걸러 둘째 요구가 조용히 줄어든다(run 20260923-103638 실측).
+          # 간선은 요구하지 않는다 - 전체 서버를 input_from 으로 넘기면 스코프 상한 100 에 절단된다.
+          # (종전 수동 검토: "산출물과 인라인 응답이 동시에 나오는가. 두 요구 중 하나가 조용히 빠지지 않는가")
+          plan: {min_tasks: 2, agents: [data_query, data_query]}
     perf: {target_ms: 60000}
     teardown: [drop_thread]
 
@@ -101,7 +110,15 @@ scenarios:
       - send:
           query: "장애 알람이 났던 서버를 찾고, 그 서버들의 프로세스를 본 다음, OS 파라미터까지 정리해줘"
         expect:
-          manual_review: "선행 스코프가 하위 단으로 전파되는가. 중간 0건일 때 하위 단이 전체 조회로 퍼지지 않는가"
+          # plans/121 TP-0.3 - 순차 표지("찾고"·"그 서버" - D-203 ②) 3단: 알람 → 프로세스(실시간 API ·
+          # D-046) → OS 파라미터. OS 파라미터 task 는 앞 두 단 중 어느 결과를 받아도 된다("*").
+          # 중간 0건이면 하위 단 미실행은 D-203 ① 게이트가 간선 위에서 보장한다.
+          # (종전 수동 검토: "선행 스코프가 하위 단으로 전파되는가. 중간 0건일 때 하위 단이 전체
+          #  조회로 퍼지지 않는가")
+          plan:
+            min_tasks: 3
+            agents: [alarm_query, process_query, data_query]
+            edges: [[alarm_query, process_query], ["*", data_query]]
     perf: {target_ms: 30000}
     teardown: [drop_thread]
 
@@ -152,7 +169,12 @@ scenarios:
       - send:
           query: "어제 심각 알람이 3건 이상 난 서버의 메모리 용량과 벤더를 같이 보여줘"
         expect:
-          manual_review: "알람 집계 조건(HAVING count>=3)과 EAV 피벗이 한 응답에 합쳐지는가"
+          # plans/121 TP-0.3 - D-086 · 분해 프롬프트 예시 3-1: 알람으로 서버를 고른 뒤 그 서버들의
+          # 설정 값(메모리·벤더)을 조회하는 질의는 2 task 분해가 정답이다. 집계 조건("3건 이상")은
+          # count( 로, EAV 피벗은 E-07 과 같은 표지(core_config_prop)로 SQL 에서 본다.
+          # (종전 수동 검토: "알람 집계 조건(HAVING count>=3)과 EAV 피벗이 한 응답에 합쳐지는가")
+          sql_must_match: ["(?i)\\bcount\\s*\\(", "(?i)\\bcore_config_prop\\b"]
+          plan: {min_tasks: 2, edges: [[alarm_query, data_query]]}
     perf: {target_ms: 30000}
     teardown: [drop_thread]
 
@@ -169,8 +191,9 @@ scenarios:
       - send:
           query: "CPU 사용률 상위 5대 서버 알려줘"
         expect:
+          # plans/121 TP-0.3 - "정상 응답"은 완료 + 1행 이상으로 판정한다(종전 수동 검토: "1턴이 정상 응답인가").
+          status: completed
           row_count: {min: 1}
-          manual_review: "1턴이 정상 응답인가"
       - send:
           query: "그 서버들 중에 메모리가 64GB 넘는 것만 다시"
         expect:

@@ -10,14 +10,20 @@
 from __future__ import annotations
 
 import json
+import re
 import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Optional
 
 from . import utf8_open
-from .assertions import INVALID_VERDICT, row_is_invalid
-from .catalog import Catalog
+from .assertions import (
+    ENV_MISMATCH_NOTE_PREFIX,
+    INVALID_VERDICT,
+    MANUAL_SOURCES,
+    row_is_invalid,
+)
+from .catalog import Catalog, judgement_digest
 
 # 표본이 이보다 적으면 p95 를 내지 않는다 (§5.3 · group_metrics.py 와 같은 철학).
 P95_MIN_SAMPLE = 20
@@ -443,6 +449,353 @@ def unevaluated_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+# --- 판정 정의 v2 (plans/122 J-1 · G-1 · D-241 ③ 부기 · D-275 ①) ---------------------------------
+
+#: 리포트 판정 정의 버전(plans/122 J-1 ⑤).
+#: - **1** = 종전 — 헤드라인이 `pass / 판정 분모`(D-241 제거만 · `manual` 을 분모에 남긴다)
+#: - **2** = D-241 ③ 정의 — `pass / (pass + fail + error)` · 판정 커버리지 · arm별 ·
+#:   기준 arm 첫 줄 · 판정 상한
+#: 리포트 정의는 재렌더로 모든 run 에 같게 적용되므로 run 간 비교를 막지 않는다 — 막는 것은
+#: 카탈로그 지문이다(§13.3 G-17 · D-276 ③).
+JUDGEMENT_REPORT_VERSION = 2
+
+#: 관측 전용 시나리오(plans/122 K-1 · G-2) — 기능 합격률·판정 상한 분모에서 빼고
+#: 「관측」 절에 싣는다.
+PROBE_KIND = "probe"
+
+
+def run_catalog_digest(meta: dict[str, Any]) -> str | None:
+    """run 메타에 실린 카탈로그 판정 지문(`catalog.judgement_digest`). 없으면(옛 run) None.
+
+    러너가 싣는 칸 이름을 하나로 못 박기 전이라 세 자리를 차례로 본다 — 계약 칸
+    `judgement_contract.catalog_digest` · `catalog_digest` · `judgement_digest`.
+    """
+    contract = meta.get("judgement_contract")
+    if isinstance(contract, dict) and contract.get("catalog_digest"):
+        return str(contract["catalog_digest"])
+    for key in ("catalog_digest", "judgement_digest"):
+        if meta.get(key):
+            return str(meta[key])
+    return None
+
+
+def run_judge_digest(meta: dict[str, Any]) -> str | None:
+    """run 메타에 실린 판정기 지문(`assertions.judge_digest`). 없으면(옛 run) None."""
+    contract = meta.get("judgement_contract")
+    if isinstance(contract, dict) and contract.get("judge_digest"):
+        return str(contract["judge_digest"])
+    return None
+
+
+def judgement_contract(meta: dict[str, Any]) -> dict[str, Any]:
+    """`summary.meta.judgement_contract` — (리포트 정의 버전, 카탈로그 지문, 판정기 지문)(plans/122 J-1 ⑤)."""
+    return {"report_version": JUDGEMENT_REPORT_VERSION, "catalog_digest": run_catalog_digest(meta),
+            "judge_digest": run_judge_digest(meta)}
+
+
+def contract_of(summary: dict[str, Any]) -> dict[str, Any]:
+    """요약의 판정 계약. 칸이 없는 옛 `summary.json` 은 run 메타에서 되살린다(버전은 1)."""
+    meta = summary.get("meta") or {}
+    contract = meta.get("judgement_contract")
+    if isinstance(contract, dict):
+        return dict(contract)
+    return {"report_version": 1, "catalog_digest": run_catalog_digest(meta)}
+
+
+def contract_mismatch(previous: dict[str, Any], current: dict[str, Any]) -> str | None:
+    """두 run 의 카탈로그 지문이 **둘 다 있고 다르면** 비교 거부 사유. 아니면 None.
+
+    G-17 · D-276 ③ — 지문이 다르면 판정 전환에 계약 변화가 섞인다.
+    """
+    before = contract_of(previous).get("catalog_digest")
+    after = contract_of(current).get("catalog_digest")
+    if before and after and before != after:
+        return (f"판정 계약이 다르다(카탈로그 지문 {before} → {after}) - "
+                "J-4 재판정(`python -m scripts.scenario.rejudge`) 뒤 같은 카탈로그로 비교")
+    return None
+
+
+def contract_unrecorded_note(previous: dict[str, Any], current: dict[str, Any]) -> str | None:
+    """한쪽이라도 카탈로그 지문이 없으면 싣는 줄. 둘 다 있으면(같다) None."""
+    if contract_of(previous).get("catalog_digest") and contract_of(current).get("catalog_digest"):
+        return None
+    return ("판정 계약 미기록 - 카탈로그 동일성 미확인(한쪽 run 에 카탈로그 지문이 없다 · "
+            "plans/122 J-1 ⑤). 판정 전환에는 카탈로그 변경이 섞였을 수 있다.")
+
+
+def judge_change_note(previous: dict[str, Any], current: dict[str, Any]) -> str | None:
+    """두 run 의 판정기 지문이 **둘 다 있고 다르면** 싣는 줄. 비교는 막지 않는다(plans/122 J-1 ⑤ 보강).
+
+    판정기 지문은 판정 소스 바이트 해시라 주석 수정에도 바뀐다 — 거부하면 비교가 거의 막힌다.
+    판정 전환에 판정기 변경이 섞였을 수 있다는 사실만 못 박고, 같은 판정기로 보려면 J-4 재판정을 쓴다.
+    """
+    before = contract_of(previous).get("judge_digest")
+    after = contract_of(current).get("judge_digest")
+    if before and after and before != after:
+        return (f"판정기 코드가 다르다(판정기 지문 {before} → {after}) - 판정 전환에 판정기 변경이 "
+                "섞였을 수 있다. 같은 판정기로 비교하려면 두 run 을 J-4 재판정"
+                "(`python -m scripts.scenario.rejudge`)한 산출끼리 비교한다.")
+    return None
+
+
+def _is_probe(row: dict[str, Any]) -> bool:
+    return str(row.get("kind") or "") == PROBE_KIND
+
+
+def judged_counts(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """D-241 ③ 정의의 턴 집계 — 벤치 `compare._scored` 와 같은 정의다(plans/122 J-1 ①②).
+
+    판정 분모 = D-241 제거(`invalid`·`timeout`·`clarify_blocked`) 뒤의 턴 − 관측(probe) 턴.
+    기능 합격률 = `pass / (pass + fail + error)`(`manual` 은 분자·분모 모두 아니다).
+    판정 커버리지 = `(pass + fail + error) / 판정 분모`. 분모가 0이면 비율을 만들지 않는다.
+    """
+    counted = [row for row in rows if not row_unevaluated(row)]
+    scored = [row for row in counted if not _is_probe(row)]
+    verdicts = Counter(str(row.get("func_verdict")) for row in scored)
+    judged = verdicts["pass"] + verdicts["fail"] + verdicts["error"]
+    return {
+        "turns": len(rows),
+        "scored": len(scored),
+        "pass": verdicts["pass"],
+        "fail": verdicts["fail"],
+        "error": verdicts["error"],
+        "manual": verdicts["manual"],
+        "judged": judged,
+        "probe": len(counted) - len(scored),
+        "func_pass_rate": round(verdicts["pass"] / judged, 4) if judged else None,
+        "coverage": round(judged / len(scored), 4) if scored else None,
+    }
+
+
+def arm_groups(rows: list[dict[str, Any]], run: dict[str, Any]) -> list[dict[str, Any]]:
+    """행을 (arm, 사다리 단)으로 가른다 — **기준 arm 이 첫 줄**이다(D-251 ① 2단 · plans/122 J-1 ③).
+
+    arm 은 행의 `arm` 칸, 사다리 단은 `run.json` 프로파일의 `tier` 다. 같은 arm 을 여러 기저
+    프로파일(baseline · optin_alarm …)로 돌렸으면 한 줄로 합친다. 기준 arm 은 사다리 단이 기준 단인
+    줄이고, 그런 줄이 여럿이면 덧씌우기가 없는(`arm` 없음 · `baseline`) 줄을 고른다. 사다리 단을
+    관측하지 못했으면(모의 등) 기준 arm 이 없다. 나머지는 `run.json` 기동 순서다.
+
+    Returns:
+        ``[{arm, tier, profiles, reference, rows}]``
+    """
+    profiles = {str(p.get("name")): p for p in (run.get("profiles") or [])}
+    order = {name: index for index, name in enumerate(profiles)}
+    cells: dict[tuple[str | None, str | None], dict[str, Any]] = {}
+    for row in rows:
+        profile = str(row.get("profile"))
+        tier = (profiles.get(profile) or {}).get("tier")
+        arm = row.get("arm")
+        cell = cells.setdefault((arm, tier), {
+            "arm": arm, "tier": tier, "profiles": [], "rows": [],
+            "order": order.get(profile, len(order)),
+        })
+        cell["rows"].append(row)
+        if profile not in cell["profiles"]:
+            cell["profiles"].append(profile)
+        cell["order"] = min(cell["order"], order.get(profile, len(order)))
+    ranked = sorted(cells.values(), key=lambda cell: cell["order"])
+    canonical = [cell for cell in ranked if cell["tier"] == CANONICAL_TIER]
+    reference = next((cell for cell in canonical if cell["arm"] in (None, "baseline")),
+                     canonical[0] if canonical else None)
+    if reference is not None:
+        ranked.remove(reference)
+        ranked.insert(0, reference)
+    return [
+        {"arm": cell["arm"], "tier": cell["tier"], "profiles": cell["profiles"],
+         "reference": cell is reference, "rows": cell["rows"]}
+        for cell in ranked
+    ]
+
+
+def arm_breakdown(rows: list[dict[str, Any]], run: dict[str, Any]) -> list[dict[str, Any]]:
+    """(arm, 사다리 단)별 J-1 집계(`arm_groups` 순서 — 기준 arm 첫 줄) + arm별 지연 p50."""
+    return [
+        {
+            "arm": cell["arm"], "tier": cell["tier"], "profiles": cell["profiles"],
+            "reference": cell["reference"],
+            **judged_counts(cell["rows"]),
+            # C-4a(D-276 ①): arm별 지연 p50 은 성능 표본(유효 − 환경 보류)으로 잰다.
+            "latency": _latency_stats([
+                float(row["processing_time_ms"]) for row in perf_rows(cell["rows"])
+                if row.get("processing_time_ms") is not None
+            ]),
+        }
+        for cell in arm_groups(rows, run)
+    ]
+
+
+def _scenario_passable(catalog: Catalog, scenario_id: str, seen: frozenset[str] = frozenset()
+                       ) -> bool | None:
+    """시나리오가 `pass` 를 낼 수 있는가 — 어느 턴에도 `manual_review` 가 없다.
+
+    카탈로그에 없으면 None 이다.
+
+    부하 묶음(K군)은 자기 턴이 아니라 참조 시나리오의 단언으로 판정되므로(`runner._as_member`)
+    참조 시나리오가 전부 합격 가능해야 합격 가능이다.
+    """
+    scenario = catalog.by_id(scenario_id)
+    if scenario is None:
+        return None
+    if scenario.is_bundle:
+        spec = scenario.replay or scenario.concurrent
+        refs = [str(ref) for ref in (spec.get("scenarios") or [])]
+        results = [_scenario_passable(catalog, ref, seen | {scenario_id})
+                   for ref in refs if ref not in seen]
+        return bool(results) and all(result is True for result in results)
+    return not any(turn.expect.get("manual_review") for turn in scenario.turns)
+
+
+def judgement_ceiling(rows: list[dict[str, Any]], catalog: Catalog | None) -> dict[str, Any]:
+    """판정 상한 — 실행 시나리오 중 어느 턴에도 `manual_review` 가 없는 비율(plans/122 J-1 ④).
+
+    기계 단언이 전부 통과해도 `manual_review` 가 있는 턴은 `manual` 로 끝난다(판정 순서
+    `error → forbidden → fail → manual → pass`). 관측(probe) 시나리오는 모집단에서 뺀다(K-1).
+    카탈로그가 없으면 계산하지 않고 사유를 남긴다 — 없는 수치를 만들지 않는다.
+    """
+    if catalog is None:
+        return {"measured": False,
+                "reason": ("카탈로그 없이 생성했다 - 판정 상한은 카탈로그의 "
+                           "`manual_review` 로만 센다")}
+    executed = list(dict.fromkeys(
+        str(row.get("scenario_id")) for row in rows if row.get("scenario_id") and not _is_probe(row)
+    ))
+    passable: list[str] = []
+    blocked: list[str] = []
+    missing: list[str] = []
+    for scenario_id in executed:
+        verdict = _scenario_passable(catalog, scenario_id)
+        (missing if verdict is None else passable if verdict else blocked).append(scenario_id)
+    population = len(passable) + len(blocked)
+    return {
+        "measured": True,
+        "executed": population,
+        "passable": len(passable),
+        "ratio": round(len(passable) / population, 4) if population else None,
+        "blocked": blocked,
+        "missing": missing,
+        "catalog_digest": judgement_digest(catalog),
+    }
+
+
+def judgement_summary(
+    rows: list[dict[str, Any]], run: dict[str, Any], catalog: Catalog | None
+) -> dict[str, Any]:
+    """J-1 헤드라인 재료 — arm별 집계 · arm 혼합 참고 합계 · 판정 상한 · 종전 헤드라인(참고)."""
+    by_arm = arm_breakdown(rows, run)
+    legacy = unevaluated_summary(rows)
+    return {
+        "report_version": JUDGEMENT_REPORT_VERSION,
+        "by_arm": by_arm,
+        "reference_found": any(cell["reference"] for cell in by_arm),
+        "mixed": judged_counts(rows),
+        "ceiling": judgement_ceiling(rows, catalog),
+        # 종전 헤드라인(판정 정의 v1)은 **종전과 같은 값**으로 참고 줄에 남긴다.
+        "legacy_headline": {"pass": legacy["pass"], "scored": legacy["scored"],
+                            "rate": legacy["pass_rate"]},
+        "probe_turns": [
+            {"scenario_id": row.get("scenario_id"), "turn": row.get("turn"),
+             "profile": row.get("profile"), "arm": row.get("arm"),
+             "func_verdict": row.get("func_verdict"), "response_mode": row.get("response_mode"),
+             "notes": list(row.get("manual_notes") or [])[:2]}
+            for row in rows if _is_probe(row)
+        ],
+    }
+
+
+# --- 수동 사유 출처 · 환경 보류 (plans/122 J-3 · C-4a · D-276 ①) --------------------------------
+
+#: 옛 행(`manual_sources` 칸 도입 전)의 보류 문구 → 출처 판별(J-3). **판정기가 직접 쓰는 문구**만
+#: 여기 둔다(`assertions.py` 의 `manual.add` 호출부) — 나머지 문구는 카탈로그 `manual_review` 다.
+_POLICY_NOTE_MARK = "등급 정책 미확정"
+_FANOUT_NOTE_PREFIX = "row_count 는 단일 DB 턴 전용이다"
+_UNOBSERVABLE_NOTE = re.compile(
+    r"^(?:모의 실행\(canned 응답\)|sql_must_match: |sql_executed: |행이 나왔지만 실행 SQL|"
+    r"gold_sql 동등성은|openpyxl 미설치|python-docx 미설치|docx 열기 실패|xlsx 열기 실패|"
+    r"산출물 판독 불가|retries=\S+ 는 하한이다|"
+    r"(?:intent=|row_count_per_db |file\.|rewrite[ .]|plan[ .]|period_covers |"
+    r"node_path_must_not |stream\.|dependency_notes_contains |result |llm_calls\.max=|"
+    r"retries\.max=)[^\n]*확인하지 못했다)"
+    r"|: xlsx 가 아니라 자동 칼럼 검증 대상이 아니다$"
+)
+
+
+def note_sources(note: str) -> tuple[str, ...]:
+    """보류 문구 1건의 출처(`MANUAL_SOURCES` 어휘) — 옛 행 재분류용(J-3).
+
+    환경 불일치 문구는 러너가 카탈로그 문구 뒤에 이어 붙인다(`runner._hold_for_env`) - 앞에 원문이
+    있으면 카탈로그와 환경 불일치 둘 다다(`assertions._review_sources` 와 같은 규칙).
+    """
+    at = note.find(ENV_MISMATCH_NOTE_PREFIX)
+    if at >= 0:
+        return ("env_mismatch",) if at == 0 else ("catalog", "env_mismatch")
+    if _POLICY_NOTE_MARK in note:
+        return ("policy",)
+    if note.startswith(_FANOUT_NOTE_PREFIX):
+        return ("fanout",)
+    if _UNOBSERVABLE_NOTE.search(note):
+        return ("unobservable",)
+    return ("catalog",)
+
+
+def row_manual_sources(row: dict[str, Any]) -> list[str]:
+    """행의 보류 출처 — 러너 칸(`manual_sources` · `manual_source`)이 1차 출처다.
+
+    칸이 없으면(옛 run) 보류 문구로 되살린다.
+
+    옛 행의 `env_mismatch` 칸(D-216 ③ 러너 기록)도 환경 불일치 출처로 본다. 순서는 첫 등장 순이다.
+    """
+    sources: list[str] = []
+    recorded = row.get("manual_sources")
+    if isinstance(recorded, list):
+        sources = [str(source) for source in recorded if source in MANUAL_SOURCES]
+    elif row.get("manual_source") in MANUAL_SOURCES:
+        sources = [str(row["manual_source"])]
+    else:
+        for note in row.get("manual_notes") or []:
+            for source in note_sources(str(note)):
+                if source not in sources:
+                    sources.append(source)
+    if row.get("env_mismatch") and "env_mismatch" not in sources:
+        sources.insert(0, "env_mismatch")
+    return sources
+
+
+def row_bundle_of(row: dict[str, Any]) -> str | None:
+    """부하 묶음(K군) 행이면 판정 단언을 물려준 참조 시나리오 id(`replay_of`·`concurrent_of`)."""
+    ref = row.get("replay_of") or row.get("concurrent_of")
+    return str(ref) if ref else None
+
+
+def row_env_held(row: dict[str, Any]) -> bool:
+    """환경 불일치로 실행·보류된 행인가(D-216 ③ · D-276 ① — 성능 표본에서 뺀다)."""
+    return "env_mismatch" in row_manual_sources(row)
+
+
+def perf_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """성능 표본 — 유효 턴(T-c)에서 환경 보류 행을 뺀다(plans/122 C-4a · D-276 ①).
+
+    환경이 다른 시나리오(폐쇄망의 SYN 등)의 지연은 그 환경의 성능이 아니다. 기능 분모는 J-1 이
+    이미 뺀다(`manual`) — 여기는 지연·성능 판정 표본이다.
+    """
+    return [row for row in valid_rows(rows) if not row_env_held(row)]
+
+
+def env_hold_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """환경 보류 건수와 판별 근거 — **「없음」과 「안 셌음」을 가른다**(D-276 ①).
+
+    근거 `manual_sources` 는 러너가 보류 출처 칸을 싣는 run 이다. `legacy` 는 그 칸 이전 run 이라
+    옛 칸 `env_mismatch`·보류 문구로 셌다 — 두 표지가 없던 run(D-216 이전)이면 0 은 안 센 것이다.
+    """
+    held = [row for row in valid_rows(rows) if row_env_held(row)]
+    basis = "manual_sources" if any("manual_sources" in row for row in rows) else "legacy"
+    return {
+        "count": len(held),
+        "basis": basis,
+        "by_group": dict(sorted(Counter(str(row.get("group")) for row in held).items())),
+        "by_verdict": dict(sorted(Counter(str(row.get("func_verdict")) for row in held).items())),
+    }
+
+
 def turn_key(row: dict[str, Any]) -> tuple[str, str, int, int]:
     """한 턴을 유일하게 가리키는 키 - 94 러너 `row_key` 와 **같은 정의**다(테스트가 대조한다).
 
@@ -575,7 +928,8 @@ def profile_breakdown(
         subset = [row for row in rows if str(row.get("profile")) == name]
         verdicts = scenario_verdicts(subset)
         counts = Counter(v["verdict"] for v in verdicts.values())
-        live = valid_rows(subset)
+        # C-4a(plans/122 · D-276 ①): 지연은 성능 표본(유효 − 환경 보류)으로 잰다.
+        live = perf_rows(subset)
         meta = info.get(name, {})
         out.append({
             "name": name,
@@ -594,6 +948,8 @@ def profile_breakdown(
                 float(row["processing_time_ms"]) for row in live
                 if row.get("processing_time_ms") is not None
             ]),
+            # plans/122 J-1: 턴 단위 기능 합격률·판정 커버리지(D-241 ③ 정의) - 1절 arm 표 칸.
+            "turn_judgement": judged_counts(subset),
         })
     return out
 
@@ -817,6 +1173,11 @@ def build_summary(
     by_profile = profile_breakdown(rows, run)
     # 성능·판정·R군 집계는 전부 **유효 턴**만 본다(T-c·T-d). 무효 턴은 별도 절에서 센다.
     live_rows = valid_rows(rows)
+    # 성능 표본은 여기서 환경 보류 행을 더 뺀다(plans/122 C-4a · D-276 ①). 건수는 3절 머리에 싣는다.
+    perf_sample = perf_rows(rows)
+    # 판정 계약(plans/122 J-1 ⑤) - 리포트 정의 버전 + run 메타의 카탈로그 지문.
+    meta = dict(run.get("meta") or {})
+    meta["judgement_contract"] = judgement_contract(meta)
 
     groups: dict[str, dict[str, Any]] = {}
     for group_id in sorted({v["group"] for v in verdicts.values() if v.get("group")}):
@@ -824,11 +1185,11 @@ def build_summary(
         counts = Counter(v["verdict"] for v in members)
         latencies = [
             row.get("processing_time_ms")
-            for row in live_rows
+            for row in perf_sample
             if row.get("group") == group_id and row.get("processing_time_ms") is not None
         ]
         perf = Counter(
-            row.get("perf_verdict") for row in live_rows if row.get("group") == group_id
+            row.get("perf_verdict") for row in perf_sample if row.get("group") == group_id
         )
         target = (
             catalog.groups[group_id].latency_target_ms
@@ -846,7 +1207,7 @@ def build_summary(
             "target_ms": target,
             "latency": _latency_stats([float(v) for v in latencies]),
             # H-1(plans/119): 첫 답변 토큰까지. 칸 없는 옛 run 은 `measured=False`("미측정").
-            "ttft": ttft_stats([row for row in live_rows if row.get("group") == group_id]),
+            "ttft": ttft_stats([row for row in perf_sample if row.get("group") == group_id]),
             "perf_pass": perf.get("pass", 0),
             "perf_fail": perf.get("fail", 0),
             "perf_na": perf.get("n/a", 0),
@@ -903,9 +1264,13 @@ def build_summary(
     )
 
     return {
-        "meta": run.get("meta", {}),
+        "meta": meta,
         "profiles": run.get("profiles", []),
         "by_profile": by_profile,
+        # plans/122 J-1 - D-241 ③ 정의 헤드라인(arm별 · 기준 arm 첫 줄 · 판정 상한 · 종전 값 참고).
+        "judgement": judgement_summary(rows, run, catalog),
+        # plans/122 C-4a - 성능 표본에서 뺀 환경 보류 행(「없음」과 「안 셌음」을 가른다).
+        "env_hold": env_hold_summary(rows),
         "groups": groups,
         "plans_coverage": plans_coverage,
         "misuse": misuse,
@@ -921,8 +1286,9 @@ def build_summary(
         ),
         # plans/119 T-0 · D-267 ⑦: 상한 의미 · 단계 타임라인 · 타임아웃 사망 단계.
         "cap_semantic": cap_semantic_info(run.get("meta") or {}, rows),
-        "timeline": timeline_summary(live_rows),
-        "timeouts": timeout_attribution(live_rows),
+        # 단계 타임라인·타임아웃 귀속도 3절 성능 표본이다(C-4a - 환경 보류 행 제외).
+        "timeline": timeline_summary(perf_sample),
+        "timeouts": timeout_attribution(perf_sample),
     }
 
 
@@ -1049,20 +1415,171 @@ def _arm_section(summary: dict[str, Any]) -> str:
     lines.append("")
     lines.append(_table(
         ["프로파일", "arm", "사다리 단", "시나리오", "턴", "합격", "불합격", "오류",
-         "수동", "불안정", "무효", "지연 p50(ms)"],
+         "수동", "불안정", "무효", "기능 합격률(턴)", "판정 커버리지(턴)", "지연 p50(ms)"],
         [
             [
                 row.get("name"), row.get("arm") or "-", row.get("tier") or "-",
                 row.get("scenarios"), row.get("turns"),
                 row.get("pass"), row.get("fail"), row.get("error"),
                 row.get("manual"), row.get("flaky"), row.get("invalid"),
+                *_judgement_cells(row.get("turn_judgement") or {}),
                 (row.get("latency") or {}).get("p50"),
             ]
             for row in breakdown
         ],
     ))
     lines.append("")
+    lines.append("`합격`~`무효` 는 시나리오 단위(턴을 접은 값)이고, `기능 합격률(턴)`·"
+                 "`판정 커버리지(턴)` 는 2절 헤드라인과 같은 턴 단위 D-241 ③ 정의다"
+                 "(plans/122 J-1). 지연 p50 은 환경 보류 행을 뺀 성능 표본이다(C-4a).")
+    lines.append("")
     return "\n".join(lines)
+
+
+def _pct(value: float | None) -> str:
+    return "-" if value is None else f"{value * 100:.1f}%"
+
+
+def _judgement_cells(counts: dict[str, Any]) -> list[str]:
+    """J-1 두 칸 — `기능 합격률 (합격/판정)` · `판정 커버리지 (판정/분모)`. 분모 0이면 `-`."""
+    if not counts:
+        return ["-", "-"]
+    judged = counts.get("judged") or 0
+    return [
+        f"{_pct(counts.get('func_pass_rate'))} ({counts.get('pass', 0)}/{judged})",
+        f"{_pct(counts.get('coverage'))} ({judged}/{counts.get('scored', 0)})",
+    ]
+
+
+def _judgement_section(summary: dict[str, Any]) -> str:
+    """헤드라인 — D-241 ③ 정의 기능 합격률 · 판정 커버리지 · 판정 상한(plans/122 J-1 · D-241 부기).
+
+    기준 arm(사다리 2단 · D-251)이 첫 줄이고, arm 을 섞은 합계와 종전 헤드라인은 **참고 줄**이다.
+    """
+    data = summary.get("judgement") or {}
+    by_arm = data.get("by_arm") or []
+    if not by_arm:
+        return ""
+    lines = ["### 기능 합격률 (턴 · D-241 ③ 정의 · arm별 — plans/122 J-1)", ""]
+    lines.append(
+        "**기능 합격률 = 합격 / (합격 + 불합격 + 오류)** - `수동`(보류)과 D-241 제거 사유"
+        "(`invalid`·`timeout`·`clarify_blocked`)는 분자·분모 모두 아니다(벤치 `compare._scored` 와 "
+        "같은 정의). **판정 커버리지 = (합격 + 불합격 + 오류) / 판정 분모** - 판정 분모 중 기계가 "
+        "판정을 낸 비율이다. 기준 arm(사다리 2단 `intent_orchestration` · D-251)이 첫 줄이다."
+    )
+    lines.append("")
+    body = []
+    for cell in by_arm:
+        label = cell.get("arm") or "(arm 없음)"
+        if cell.get("reference"):
+            label = f"**{label} (기준)**"
+        rate, coverage = _judgement_cells(cell)
+        body.append([
+            label, cell.get("tier") or "-", " · ".join(cell.get("profiles") or []) or "-",
+            cell.get("scored"), cell.get("pass"), cell.get("fail"), cell.get("error"),
+            cell.get("manual"), f"**{rate}**" if cell.get("reference") else rate, coverage,
+            (cell.get("latency") or {}).get("p50"),
+        ])
+    mixed = data.get("mixed") or {}
+    if len(by_arm) > 1:
+        rate, coverage = _judgement_cells(mixed)
+        body.append(["참고: arm 혼합 합계", "-", "-", mixed.get("scored"), mixed.get("pass"),
+                     mixed.get("fail"), mixed.get("error"), mixed.get("manual"), rate, coverage,
+                     "-"])
+    lines.append(_table(
+        ["arm", "사다리 단", "프로파일", "판정 분모", "합격", "불합격", "오류", "수동",
+         "기능 합격률", "판정 커버리지", "지연 p50(ms)"],
+        body,
+    ))
+    lines.append("")
+    if not data.get("reference_found"):
+        lines.append("- 기준 arm 미확인 - 사다리 2단으로 확정된 프로파일이 없다"
+                     "(모의 실행·단 미관측 또는 비교 arm 만 돈 run). 위 줄은 run 순서다.")
+    if len(by_arm) > 1:
+        lines.append("- `참고: arm 혼합 합계` 는 서로 다른 실행 경로를 한 숫자로 섞은 값이다 - "
+                     "성적으로 읽지 않는다(plans/122 §2.1).")
+    lines.append(f"- {_ceiling_line(data.get('ceiling') or {}, summary)}")
+    legacy = data.get("legacy_headline") or {}
+    lines.append(
+        f"- 참고(종전 헤드라인 · 판정 정의 v1): 합격 / 판정 분모 = "
+        f"{_pct(legacy.get('rate'))} ({legacy.get('pass', 0)}/{legacy.get('scored', 0)}) - "
+        "`수동`을 분모에 남긴 값이다(아래 「판정 분모」 표의 같은 값)."
+    )
+    probes = data.get("probe_turns") or []
+    if probes:
+        lines.append(f"- 관측(probe) 턴 {len(probes)}건은 위 표의 분모에서 뺐다 - 「관측」 절.")
+    contract = contract_of(summary)
+    digest = contract.get("catalog_digest")
+    lines.append(
+        f"- 판정 계약: 리포트 정의 v{contract.get('report_version')} · 카탈로그 지문 "
+        + (f"`{digest}`" if digest else "**미기록**(옛 run - 다른 run 과 비교하면 "
+           "카탈로그 동일성을 확인할 수 없다 · J-4 재판정으로 맞춘다)")
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _ceiling_line(ceiling: dict[str, Any], summary: dict[str, Any]) -> str:
+    """「판정 상한」 줄(J-1 ④). 카탈로그가 없으면 줄 대신 사유를 적는다."""
+    if not ceiling.get("measured"):
+        return f"판정 상한: 계산하지 않았다 - {ceiling.get('reason')}"
+    line = (f"**판정 상한: 실행 시나리오 {ceiling.get('executed')}건 중 `manual_review` 없는 "
+            f"시나리오 {ceiling.get('passable')}건({_pct(ceiling.get('ratio'))})** - 나머지는 기계 "
+            "단언이 전부 통과해도 `manual` 로 끝난다")
+    missing = ceiling.get("missing") or []
+    if missing:
+        line += f" · 카탈로그에 없는 시나리오 {len(missing)}건은 분모에서 뺐다"
+    run_digest = contract_of(summary).get("catalog_digest")
+    used = ceiling.get("catalog_digest")
+    if run_digest and used and run_digest != used:
+        line += (f" · ⚠ 리포트 생성 시점 카탈로그(지문 `{used}`)로 셌다 - run 판정 계약"
+                 f"(`{run_digest}`)과 다르다")
+    elif not run_digest:
+        line += f" · 리포트 생성 시점 카탈로그(지문 `{used}`) 기준"
+    return line + "."
+
+
+def _probe_section(summary: dict[str, Any]) -> str:
+    """「관측」 절 - `kind: probe` 턴(plans/122 K-1 · G-2).
+
+    기계 판정 분모 밖이라 여기에만 싣는다.
+    """
+    probes = (summary.get("judgement") or {}).get("probe_turns") or []
+    lines = ["### 관측(probe) - 기계 판정하지 않는 시나리오 (plans/122 K-1)", ""]
+    if not probes:
+        lines.append("관측 턴 0건.")
+        lines.append("")
+        return "\n".join(lines)
+    lines.append("관측 전용 시나리오다 - 기능 합격률·판정 커버리지·판정 상한의 분모에 넣지 않는다. "
+                 "판정 어휘는 늘리지 않았다(D-241 ①) - 아래 `판정` 칸은 평가기가 낸 값 그대로다.")
+    lines.append("")
+    lines.append(_table(
+        ["시나리오", "턴", "프로파일", "판정", "대응 등급", "메모"],
+        [[item.get("scenario_id"), item.get("turn"), item.get("profile"),
+          item.get("func_verdict"), item.get("response_mode"),
+          " / ".join(str(note)[:120] for note in item.get("notes") or []) or "-"]
+         for item in probes],
+    ))
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _env_hold_line(summary: dict[str, Any]) -> str:
+    """3절 머리 - 성능 표본에서 뺀 환경 보류 건수(C-4a · D-276 ①). 0건도 적는다."""
+    hold = summary.get("env_hold") or {}
+    count = int(hold.get("count") or 0)
+    basis = ("행 칸 `manual_sources`" if hold.get("basis") == "manual_sources"
+             else "옛 행 칸 `env_mismatch`·보류 문구(`manual_sources` 칸 도입 전 run)")
+    line = (f"**환경 보류 턴 {count}건**을 아래 성능 표본(군별 지연·성능 합격/불합격·TTFT·"
+            "단계 타임라인·타임아웃 귀속 · 1절·2절 지연 p50 · 7절 노드 지연)에서 뺐다"
+            f"(D-216 ③ 실행·보류 · D-276 ① · 판별 근거: {basis}).")
+    if count:
+        by_group = " · ".join(f"{g} {n}" for g, n in (hold.get("by_group") or {}).items())
+        by_verdict = " · ".join(f"{v} {n}" for v, n in (hold.get("by_verdict") or {}).items())
+        line += f" 군별 {by_group} · 판정별 {by_verdict}."
+    elif hold.get("basis") != "manual_sources":
+        line += " 옛 run 의 0 은 「표지가 없었다」는 뜻이다 - D-216 이전 run 이면 안 센 것이다."
+    return line
 
 
 def _unevaluated_section(summary: dict[str, Any]) -> str:
@@ -1099,7 +1616,9 @@ def _unevaluated_section(summary: dict[str, Any]) -> str:
         [
             ["기능 합격 턴", data.get("pass")],
             ["판정 분모(단언 평가된 턴)", scored],
-            ["**기능 합격률(계약 적용)**", f"**{pct(rate)}**"],
+            # plans/122 J-1: 헤드라인은 위 「기능 합격률」 표(D-241 ③ 정의)로 옮겼다. 이 값은 종전
+            # 헤드라인(판정 정의 v1 - `manual` 을 분모에 남긴다)이며 **종전과 같은 값**이다.
+            ["참고: 종전 헤드라인(판정 정의 v1) - 합격 / 판정 분모", pct(rate)],
             ["참고: 전 턴을 분모로 한 값", pct(legacy_rate)],
             ["제거 합 + 분모 == 전체", "일치" if data.get("ladder_ok") else "**불일치 - 이중 차감**"],
             ["역질문 차단 · 자동응답", clarify_blocked_label(data)],
@@ -1420,7 +1939,9 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
     # 2
     add("## 2. 기능 판정 요약")
     add("")
+    add(_judgement_section(summary))
     add(_unevaluated_section(summary))
+    add(_probe_section(summary))
     add("### 시나리오별 판정 (턴을 접은 값)")
     add("")
     add("한 칸도 비우지 않는다. `불안정`은 합격으로도 불합격으로도 세지 않는다.")
@@ -1451,6 +1972,8 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
 
     # 3
     add("## 3. 성능 목표 대조")
+    add("")
+    add(_env_hold_line(summary))
     add("")
     add(_table(
         ["군", "목표(ms)", "n", "p50", "p95", "최댓값", "TTFT p50", "TTFT p90",
@@ -1544,7 +2067,8 @@ def render_markdown(summary: dict[str, Any], run_dir: Path, catalog: Optional[Ca
     add("## 7. 노드별 지연 분해")
     add("")
     node_totals: dict[str, list[float]] = defaultdict(list)
-    for row in load_rows(run_dir):
+    # C-4a(plans/122 · D-276 ①): 환경 보류 행의 노드 지연은 그 환경의 성능이 아니다 - 뺀다.
+    for row in (row for row in load_rows(run_dir) if not row_env_held(row)):
         for node, elapsed in (row.get("node_elapsed_ms") or {}).items():
             node_totals[node].append(float(elapsed))
     ranked = sorted(
@@ -1660,6 +2184,7 @@ def _regression_section(run_dir: Path, summary: dict[str, Any]) -> str:
         (p for p in parent.iterdir() if p.is_dir() and p.name < run_dir.name), reverse=True
     )
     meta = summary.get("meta", {})
+    refused: list[str] = []
     for candidate in others:
         prev = build_summary(candidate, None)
         prev_meta = prev.get("meta", {})
@@ -1668,7 +2193,20 @@ def _regression_section(run_dir: Path, summary: dict[str, Any]) -> str:
         if (prev.get("invalid") or {}).get("over_threshold"):
             # 직전 run 이 무효투성이면 "판정이 바뀌었다"가 아니라 "저쪽이 측정되지 않았다"다.
             continue
+        # plans/122 J-1 ⑤ · G-17(D-276 ③): 카탈로그 지문이 다르면 판정 전환에 계약 변화가 섞인다.
+        mismatch = contract_mismatch(prev, summary)
+        if mismatch:
+            refused.append(f"`{candidate.name}`({mismatch})")
+            continue
         lines = [f"직전 비교 대상: `{candidate.name}` (같은 환경 `{meta.get('env')}` · 같은 성격 `{meta.get('mode')}`)", ""]
+        if refused:
+            lines += [f"판정 계약이 달라 건너뛴 run: {', '.join(refused)}", ""]
+        unrecorded = contract_unrecorded_note(prev, summary)
+        if unrecorded:
+            lines += [f"> {unrecorded}", ""]
+        judge_note = judge_change_note(prev, summary)
+        if judge_note:
+            lines += [f"> {judge_note}", ""]
         # D-267 ⑦ 주의 ③: 상한 의미가 다르면 비교는 하되 타임아웃률을 직접 비교하지 말라고 적는다.
         cap_warning = cap_semantic_warning(cap_semantic_of(prev), cap_semantic_of(summary))
         if cap_warning:
@@ -1690,6 +2228,9 @@ def _regression_section(run_dir: Path, summary: dict[str, Any]) -> str:
                 "지연 회귀는 판정하지 않았다 - 반복 3회 미만이라 편차와 구별되지 않는다(`판정 불가`)."
             )
         return "\n".join(lines)
+    if refused:
+        return ("비교 가능한 직전 run 이 없다 - 판정 계약이 달라 건너뛴 run: "
+                + ", ".join(refused))
     return "비교 가능한 직전 run 이 없다 (같은 환경·같은 성격의 run 필요)."
 
 

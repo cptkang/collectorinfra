@@ -38,6 +38,8 @@ from .runner import (
     iter_executions,
     latest_run,
     merge_arm_profiles,
+    resolve_active_sources,
+    source_exclusions,
 )
 
 
@@ -126,6 +128,21 @@ def _check_arms(args: argparse.Namespace, catalog: Catalog) -> Optional[str]:
             f"(현재: {', '.join(sorted(catalog.profiles))})")
 
 
+def _source_line(catalog: Catalog, config: RunConfig) -> str:
+    """plans/122 C-4b - 활성 소스를 판독해 `config` 에 싣고 「선택 제외 예정」 한 줄을 돌려준다.
+
+    실행(`execute`)은 여기서 채운 값을 그대로 쓴다 - 예상치와 실제 선택이 같은 판독을 본다.
+    """
+    config.active_sources, origin = resolve_active_sources(config)
+    if config.active_sources is None:
+        return (f"       선택 제외(requires_sources): 판정 안 함 - {origin} "
+                "(선언한 시나리오도 실행하고 환경이 다르면 보류한다)")
+    excluded = [item["scenario_id"] for item in source_exclusions(catalog, config)]
+    shown = ", ".join(excluded[:10]) + (" ..." if len(excluded) > 10 else "")
+    return (f"       선택 제외 예정(requires_sources): {len(excluded)}건 - 활성 소스 "
+            f"[{', '.join(config.active_sources)}]" + (f": {shown}" if excluded else ""))
+
+
 def cmd_dry_run(args: argparse.Namespace) -> int:
     """1단 - 카탈로그만 검증한다. 서버를 띄우지 않는다."""
     catalog = _load()
@@ -137,6 +154,7 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
     selected = catalog.select(args.group, args.only, args.env)
     print(f"[1단] 카탈로그 OK - 군 {len(catalog.groups)}개, 시나리오 {len(catalog.scenarios)}건")
     print(f"       선택: {len(selected)}건 (env={_env_label(args.env)})")
+    print(_source_line(catalog, _run_config(args, "dry")))
     groups: dict[str, int] = {}
     for scenario in selected:
         groups[scenario.group] = groups.get(scenario.group, 0) + 1
@@ -180,9 +198,12 @@ def cmd_estimate(args: argparse.Namespace) -> int:
     if problem:
         print(problem, file=sys.stderr)
         return 1
-    result = estimate(catalog, _run_config(args, "run"))
+    config = _run_config(args, "run")
+    source_line = _source_line(catalog, config)
+    result = estimate(catalog, config)
     print("[3단] 예상치 - 이 출력을 승인권자에게 제시한다")
     print(f"       시나리오      : {result['scenarios']}건")
+    print(source_line)
     print(f"       실행 턴       : {result['turns']}회 (R군 {result['r_group_turns']}회 포함)")
     print(f"       예상 LLM 호출 : {result['estimated_llm_calls']}회"
           f" (가정: 턴당 {result['assumed_llm_calls_per_turn']}회)")
@@ -306,8 +327,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     if problem:
         print(problem, file=sys.stderr)
         return 1
+    source_line = _source_line(catalog, config)
     result = estimate(catalog, config)
     print("[4단] 실 실행")
+    print(source_line)
     if internal:
         print(f"       프로바이더 {_provider_label(worker, orchestrator)} - "
               "내부망/로컬이라 승인 없이 진행합니다 (D-216)")

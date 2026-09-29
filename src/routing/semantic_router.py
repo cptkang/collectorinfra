@@ -279,6 +279,9 @@ async def semantic_router(
     # (plans/102 X-7) 답변 영역 소유 — off면 아래 소유 분기가 전부 건너뛰어져 반환이 종전과 같다.
     ownership_on = _ownership_enabled()
     ownership_notes: list[dict[str, Any]] = []
+    # 소유 플래그 off의 분류 폴백 (사유 코드, 예외 클래스명) — 확정 대상을 본 뒤 노트로 싣는다
+    # (plans/121 TP-1.6 · `_fallback_notes_off`).
+    fallback_mark: tuple[str, str] | None = None
 
     # LLM 기반 분류 (사용자 직접 지정 감지 포함)
     # `_llm_classify`는 dict를 돌려주지만 아래 실패 분기가 같은 이름에 목록을 넣는다
@@ -310,6 +313,8 @@ async def semantic_router(
             ownership_notes.append(routing_fallback_note(
                 REASON_LLM_ERROR, db_id=active_db_ids[0], cause=type(e).__name__,
             ))
+        else:
+            fallback_mark = (REASON_LLM_ERROR, type(e).__name__)
 
     # 캐시 관리 의도 확인
     intent = "data_query"
@@ -414,6 +419,8 @@ async def semantic_router(
             ownership_notes.append(routing_fallback_note(
                 REASON_NO_CLASSIFICATION, db_id=active_db_ids[0],
             ))
+        else:
+            fallback_mark = (REASON_NO_CLASSIFICATION, "")
 
     # (plans/102 X-7) 소유 검증 지점 ① — LLM이 낸 답변 영역만 입력으로 정본 시스템을
     # 확인·교정한다(D-004: 질의 원문을 보지 않는다). 존 역질문 게이트보다 앞이다 — 교정으로
@@ -484,6 +491,15 @@ async def semantic_router(
     }
     if ownership_on:
         routed.update(_ownership_state_fields(state, targets, capability_chain, ownership_notes))
+    elif fallback_mark is not None:
+        # 분류 폴백 노트(plans/121 TP-1.6 · 1·2단 핸들러와 대칭) — 존 역질문 반환에는 싣지 않는다.
+        fallback_notes = _fallback_notes_off(
+            state, fallback_mark, targets, hint_pinned=hint_pinned, active_db_ids=active_db_ids,
+        )
+        if fallback_notes:
+            routed["dependency_notes"] = (
+                list(state.get("dependency_notes") or []) + fallback_notes
+            )
     if plan_signal_on:
         # plans/102 교차 체인(`chain`)이 있으면 계획 필요로 본다(103 §3.2).
         routed["needs_plan"] = needs_plan or bool(capability_chain)
@@ -501,6 +517,34 @@ def _ownership_enabled() -> bool:
         return bool(getattr(load_config().router, "capability_ownership_enabled", False))
     except Exception:  # noqa: BLE001 — 설정 부재가 라우팅을 막으면 안 된다(off = 현행)
         return False
+
+
+def _fallback_notes_off(
+    state: AgentState,
+    mark: tuple[str, str],
+    targets: list[dict[str, Any]],
+    *,
+    hint_pinned: bool,
+    active_db_ids: list[str],
+) -> list[dict[str, Any]]:
+    """소유 플래그 off의 분류 폴백 노트(plans/121 TP-1.6) — 붙일 것이 없으면 빈 목록.
+
+    폴백 DB(첫 활성 DB)가 **그대로 조회 대상**일 때만 싣는다. 위치 힌트로 고정했으면 폴백이
+    대상을 정하지 않았다. 사용자 인가 밖 DB면 노드 경계 필터(`authorized_router`)가 대상을 지우므로
+    그 이름을 노트에 남기지 않는다(D-264). 원인은 예외 클래스명만(원문은 로그에만).
+    """
+    if hint_pinned or not active_db_ids:
+        return []
+    db_id = active_db_ids[0]
+    if db_id not in {t.get("db_id") for t in targets}:
+        return []
+    allowed = authorized_db_ids(
+        active_db_ids, state.get("allowed_db_ids"), state.get("user_role"),
+    )
+    if db_id not in allowed:
+        return []
+    reason, cause = mark
+    return [routing_fallback_note(reason, db_id=db_id, cause=cause)]
 
 
 def _ownership_state_fields(
