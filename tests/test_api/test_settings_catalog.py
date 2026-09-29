@@ -735,8 +735,8 @@ def test_t6_requires_restart_matches_immediate_list():
 def test_t6_unconsumed_fields_flagged():
     """미소비 필드 26개는 consumed=False로 구분된다(§6.2 재실측으로 4건 추가).
 
-    2026-09-29(plans/126 W1→W2): 문서 RAG 예산·정책 7키 편입으로 19 → 26 → W2 엔진이 6키를
-    소비해 **20**(잔여 = RAG_CHAT_PREFIX_ENABLED, W4 대기).
+    2026-09-29(plans/126 W1→W4): 문서 RAG 7키가 편입(19 → 26)됐다가 W2 엔진이 6키·W4 접두가
+    1키를 소비해 **19**로 복귀했다 — RAG_* 전건이 코드에서 읽힌다.
 
     2026-09-21(plans/104 C-4 · D-232): `AUTH_DEFAULT_ALLOWED_DB_IDS`가 신규 가입자
     초기 허용 목록으로 실제 소비돼 20 → 19가 됐다.
@@ -744,7 +744,7 @@ def test_t6_unconsumed_fields_flagged():
     index = field_index()
     unconsumed = {key for key, spec in index.items() if not spec.consumed}
     assert unconsumed == set(UNCONSUMED_KEYS)
-    assert len(unconsumed) == 20
+    assert len(unconsumed) == 19
 
 
 def test_t6_semantic_routing_is_tristate():

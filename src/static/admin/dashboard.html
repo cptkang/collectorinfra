@@ -91,6 +91,7 @@
                 <button class="tab" data-tab="incidents">열린 사건</button>
                 <button class="tab" data-tab="feedback">알람 피드백</button>
                 <button class="tab" data-tab="drm">DRM 연동</button>
+                <button class="tab" data-tab="ragdocs">문서 검색 시험</button>
             </div>
 
             <!-- 환경변수 설정 탭 -->
@@ -557,6 +558,62 @@
                     <div id="drmVerifyResult" style="display: none; margin-top: 14px;"></div>
                 </div>
             </div>
+
+            <!-- 문서 검색 시험 탭 (plans/126 W4 · T-3) -->
+            <div class="tab-content" id="tab-ragdocs">
+                <div class="card">
+                    <div class="toolbar">
+                        <h2>문서군 접속 상태</h2>
+                        <button class="btn btn-secondary" id="refreshRagBtn" style="padding: 8px 18px; font-size: 0.8125rem;">새로고침</button>
+                    </div>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+                        사내 규정·설계문서를 검색해 답하는 기능의 접속 상태입니다.
+                        <strong>값은 「환경변수 설정」 탭의 <code>RAG_*</code> 키에서 편집</strong>하고 <code>설정 반영</code>을 누르면 재기동 없이 적용됩니다.
+                        주소·토큰·클라이언트 키·자산 ID <strong>4개를 같은 발급 건에서 함께</strong> 바꿔야 합니다 —
+                        교체 절차는 <code>docs/32_rag_retrieval_runbook.md</code>.
+                    </p>
+                    <div id="ragStatusLoading" class="loading">
+                        <div class="spinner"></div>
+                        <div class="loading-text">상태를 확인하는 중...</div>
+                    </div>
+                    <div id="ragSummary" style="display: none; padding: 12px 14px; border-radius: 6px; margin-bottom: 14px; font-size: 0.85rem;"></div>
+                    <table class="settings-table" id="ragStatusTable" style="display: none;">
+                        <thead>
+                            <tr>
+                                <th style="width: 18%;">문서군</th>
+                                <th style="width: 10%;">상태</th>
+                                <th>접속 정보(마스킹)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ragStatusBody"></tbody>
+                    </table>
+                </div>
+
+                <div class="card" style="margin-top: 18px;">
+                    <div class="toolbar">
+                        <h2>검색 시험</h2>
+                    </div>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+                        문서군을 고르고 질문을 넣어 <strong>실제 검색·답변</strong>을 확인합니다.
+                        <strong>「검색만」</strong>은 답변을 만들지 않아 «검색이 되는가»와 «답을 잘 쓰는가»를 나눠 판정할 때 씁니다.
+                        문서에 쓰인 용어·조항 번호를 그대로 넣는 편이 잘 찾습니다.
+                        <br>※ 일반 채팅에서는 이 기능으로 자동 연결되지 않습니다(문서 질의 라우팅은 아직 없습니다).
+                    </p>
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px;">
+                        <select id="ragCollectionSelect" class="form-input" style="max-width: 260px;"></select>
+                        <label style="font-size: 0.8125rem; display: flex; align-items: center; gap: 6px;">
+                            <input type="checkbox" id="ragSearchOnly"> 검색만(답변 생성 안 함)
+                        </label>
+                        <label style="font-size: 0.8125rem; display: flex; align-items: center; gap: 6px;">
+                            <input type="checkbox" id="ragIncludeRaw"> 원시 응답 포함
+                        </label>
+                    </div>
+                    <textarea id="ragQuery" class="form-input" rows="2" placeholder="예) 계정 신청은 누가 승인하나요?" style="width: 100%; margin-bottom: 10px;"></textarea>
+                    <button class="btn btn-primary" id="ragRunBtn" style="padding: 8px 18px; font-size: 0.8125rem;">검색 실행</button>
+                    <div id="ragResult" style="display: none; margin-top: 16px;"></div>
+                </div>
+            </div>
+
         </div>
     </main>
 
@@ -578,5 +635,6 @@
 
     <script src="/static/js/admin.js?v=10"></script>
     <script src="/static/js/admin-db-structure.js?v=1"></script>
+    <script src="/static/js/admin-rag-docs.js?v=1"></script>
 </body>
 </html>
