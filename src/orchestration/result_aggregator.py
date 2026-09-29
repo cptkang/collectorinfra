@@ -283,6 +283,8 @@ def _merge_task_results_by_identity(
     서버" 순위 1건)의 서버 키만 최종 표에 남긴다. 이렇게 해야 "심각 알람 서버 중 CPU 최고
     서버의 제조사"에서 알람 선별 결과 전체(2서버)가 아니라 최종 대상(1서버)만 나온다.
     행수가 같으면(각 서버 1행씩) 선행 조회를 기준으로 삼는다(선별 기준 우선).
+    단, base가 다른 원천을 `input_from`으로 받은 단계일 때만 좁힌다 — 독립 형제 조회는 좁히지
+    않는다(D-234 ③ 개정 · plans/123 G-13).
 
     카디널리티: 서버 키당 1행(대표)으로 접는다 — 한 조회가 서버당 여러 행(예: 서버당 알람
     다건)이면 먼저 채워진 값을 유지하고 로그로 알린다(침묵 절단 방지). 컬럼 순서는 조회·행
@@ -296,6 +298,7 @@ def _merge_task_results_by_identity(
         병합된 행 목록(canonical 식별 컬럼 우선). 병합 불가 시 None.
     """
     sources: list[tuple[list[dict], str]] = []
+    source_tasks: list[dict] = []
     for t in ordered_tasks:
         rows = _extract_result_rows(task_results.get(t.get("task_id"), {}))
         if not rows:
@@ -304,6 +307,7 @@ def _merge_task_results_by_identity(
         if idc is None:
             return None  # 식별 컬럼 없는 조회가 있으면 결정적 병합 불가 → 합성 폴백
         sources.append((rows, idc))
+        source_tasks.append(t)
     if len(sources) < 2:
         return None
 
@@ -367,8 +371,23 @@ def _merge_task_results_by_identity(
     # 절단은 **좁히기일 때만** 한다 — base 집합이 다른 조회들의 집합 안에 온전히 들어갈 때.
     # 그렇지 않으면 base에만 있는 서버를 남기려다 다른 조회에만 있는 서버를 지우게 된다
     # (plans/49 §12.3 B-1 — 침묵 손실).
+    # 그리고 base가 다른 원천의 결과를 **입력으로 받아 좁힌 단계**일 때만이다(D-234 ③ 개정 ·
+    # plans/123 G-13 결함 A). 서로 독립인 형제 조회(「전체 서버 목록과 메모리 64GB 이상 서버」)는
+    # 작은 쪽이 큰 쪽의 부분집합이어도 좁히기가 아니다 — 종전에는 전체 목록이 64GB 서버로 잘렸다
+    # (run `20260923-103638` R1-03). 좁히기 표지는 데이터 의존 간선(`input_from` — D-203 ·
+    # 121 TP-0.1 · 1단 D-095)이다.
     covered = set().union(*(s for i, s in enumerate(key_sets) if i != base_idx))
-    scoped = {k: v for k, v in merged.items() if k in base_keys} if base_keys <= covered else {}
+    narrows = _narrows_other_source(source_tasks, base_idx, ordered_tasks, task_results)
+    scoped = (
+        {k: v for k, v in merged.items() if k in base_keys}
+        if base_keys <= covered and narrows else {}
+    )
+    if base_keys <= covered and not narrows and len(base_keys) < len(merged):
+        logger.info(
+            "result_aggregator 병합: 최소 행수 조회(%d행)가 다른 원천을 입력으로 받지 않은 "
+            "형제 조회라 좁히지 않음(D-234 ③ 개정 · %d행 유지)",
+            len(sources[base_idx][0]), len(merged),
+        )
     if scoped:
         if len(scoped) < len(merged):
             logger.info(
@@ -395,6 +414,62 @@ def _merge_task_results_by_identity(
             slot = {**slot, _MERGE_SOURCE_KEY: ", ".join(row_sources[key])}
         out_rows.append({c: slot.get(c) for c in col_order})
     return out_rows
+
+
+def _narrows_other_source(
+    source_tasks: list[dict],
+    base_idx: int,
+    ordered_tasks: list[dict],
+    task_results: dict[str, dict] | None = None,
+) -> bool:
+    """base 원천이 **같은 시스템의** 다른 원천 결과를 입력으로 받아 좁힌 단계인가.
+
+    D-234 ③ 개정(plans/123 G-13 · 125 G-6). `input_from`을 계획 전체에서 거슬러 올라가(행 없는
+    중간 단계를 건너 — 예: 0건·텍스트 단계) 다른 행 원천에 닿으면 좁히기 후보다. 간선이 없으면 형제
+    조회라 좁히지 않는다. **교차 시스템 보강**(폴스타 서버 → 자산관리 담당자처럼 다른 시스템에서
+    속성을 찾아 붙이는 단계)은 짝을 못 찾은 행이 있어도 구동 집합을 줄이지 않는다 — 구동 집합 기준
+    left join(125 §4.9). 시스템은 task가 조회한 DB의 레지스트리 소유 시스템으로 본다(모르면 같은
+    시스템으로 보아 종전처럼 좁힌다).
+    """
+    by_id = {str(t.get("task_id")): t for t in ordered_tasks if isinstance(t, dict)}
+    base_id = str(source_tasks[base_idx].get("task_id"))
+    others = {str(t.get("task_id")) for i, t in enumerate(source_tasks) if i != base_idx}
+    seen: set[str] = set()
+    stack = [str(x) for x in (source_tasks[base_idx].get("input_from") or [])]
+    while stack:
+        tid = stack.pop()
+        if tid in seen or tid == base_id:
+            continue
+        seen.add(tid)
+        if tid in others:
+            return not _crosses_system(base_id, tid, task_results or {})
+        stack.extend(str(x) for x in ((by_id.get(tid) or {}).get("input_from") or []))
+    return False
+
+
+def _task_systems(res: dict[str, Any]) -> set[str]:
+    """task가 조회한 DB들의 레지스트리 소유 시스템 집합(모르면 빈 집합)."""
+    from src.routing.registry import get_registry
+
+    try:
+        registry = get_registry()
+    except Exception:  # noqa: BLE001 — 레지스트리를 못 읽으면 판정 보류(종전 동작)
+        return set()
+    systems: set[str] = set()
+    for db_id in res.get("target_db_ids") or []:
+        system = registry.system_of(str(db_id)) or (
+            (registry.get(str(db_id)).family or None) if registry.get(str(db_id)) else None
+        )
+        if system:
+            systems.add(str(system))
+    return systems
+
+
+def _crosses_system(base_id: str, upstream_id: str, task_results: dict[str, dict]) -> bool:
+    """두 task의 조회 시스템이 겹치지 않으면 교차 시스템 단계다(둘 중 하나라도 모르면 False)."""
+    a = _task_systems(task_results.get(base_id) or {})
+    b = _task_systems(task_results.get(upstream_id) or {})
+    return bool(a) and bool(b) and not (a & b)
 
 
 def _merged_zone_state(

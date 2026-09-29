@@ -464,16 +464,9 @@ def test_s11_condition_check_only_for_single_task() -> None:
     assert texts and "OR" in texts[0]
 
 
-# ── S-10 형제 task 병합 축소(결함 A) 회귀 — 교정은 121·TP-11.6 ④ + D-234 ③ 개정(123·G-13) ──
+# ── S-10 · G-13 형제 병합 축소(결함 A) 교정 — D-234 ③ 개정 · 123·G-13 (b) ──
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "결함 A — 형제 부분집합을 좁히기로 오인(D-234 ③). "
-        "교정 소유 121·TP-11.6 ④(123·G-13 · run R2b)"
-    ),
-)
 def test_s10_sibling_subset_merge_keeps_full_list() -> None:
     """R1-03 모양 — 「전체 서버 목록과 메모리 64GB 이상 서버」: 형제 task 둘이 같은 hostname 키."""
     everyone = [{"hostname": f"h{i}", "os": "LINUX"} for i in range(20)]
@@ -487,6 +480,62 @@ def test_s10_sibling_subset_merge_keeps_full_list() -> None:
     merged = ra._merge_task_results_by_identity(tasks, results)
 
     assert merged is not None and len(merged) == len(everyone)
+    by_host = {r["hostname"]: r for r in merged}
+    assert by_host["h0"]["memory_gb"] == 128 and by_host["h19"]["memory_gb"] is None
+
+
+def test_g13_dependent_step_still_narrows() -> None:
+    """선행 결과를 입력으로 받은 단계(`input_from`)가 base면 종전처럼 좁힌다(순위 1건 등)."""
+    alarm = [{"hostname": f"h{i}", "severity": 3} for i in range(4)]
+    top = [{"hostname": "h2", "cpu": 99}]
+    tasks = [
+        {"task_id": "t1", "order": 1},
+        {"task_id": "t2", "order": 2, "input_from": ["t1"]},
+    ]
+    results = {"t1": {"organized_data": {"rows": alarm}}, "t2": {"organized_data": {"rows": top}}}
+
+    merged = ra._merge_task_results_by_identity(tasks, results)
+
+    assert merged is not None and [r["hostname"] for r in merged] == ["h2"]
+
+
+def test_g13_transitive_dependency_through_rowless_step_narrows() -> None:
+    """행 없는 중간 단계를 건너 선행 원천에 닿아도 좁히기다(간선 추적)."""
+    base = [{"hostname": "h1", "vendor": "HPE"}]
+    alarm = [{"hostname": f"h{i}", "severity": 3} for i in range(3)]
+    tasks = [
+        {"task_id": "t1", "order": 1},
+        {"task_id": "t2", "order": 2, "input_from": ["t1"]},
+        {"task_id": "t3", "order": 3, "input_from": ["t2"]},
+    ]
+    results = {
+        "t1": {"organized_data": {"rows": alarm}},
+        "t2": {"organized_data": {"rows": []}},
+        "t3": {"organized_data": {"rows": base}},
+    }
+
+    merged = ra._merge_task_results_by_identity(tasks, results)
+
+    assert merged is not None and [r["hostname"] for r in merged] == ["h1"]
+
+
+def test_g13_cross_system_enrichment_keeps_driving_set() -> None:
+    """125 G-6 — 폴스타 10대 → 자산관리 7대 보강 연쇄는 짝 없는 3대를 지우지 않는다(left join)."""
+    hosts = [{"hostname": f"h{i}", "cpu": i} for i in range(10)]
+    owners = [{"hostname": f"h{i}", "owner": "kim"} for i in range(7)]
+    tasks = [
+        {"task_id": "t1", "order": 1},
+        {"task_id": "t2", "order": 2, "input_from": ["t1"]},
+    ]
+    results = {
+        "t1": {"organized_data": {"rows": hosts}, "target_db_ids": ["polestar_cm_gp"]},
+        "t2": {"organized_data": {"rows": owners}, "target_db_ids": ["itam"]},
+    }
+
+    merged = ra._merge_task_results_by_identity(tasks, results)
+
+    assert merged is not None and len(merged) == 10
+    assert {r["hostname"] for r in merged if r.get("owner") is None} == {"h7", "h8", "h9"}
 
 
 # ── W-8 네 진입점 대칭 — 라우트가 `disclosures`를 응답·`done`에 싣는다 ─────────────

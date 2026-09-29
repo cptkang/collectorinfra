@@ -611,7 +611,9 @@ def test_merge_scopes_to_smallest_source_ranking():
         {"server_name": "SV-BATCH-009", "alarm_name": "메모리 임계", "severity": 3},
     ]
     cpu_rows = [{"name": "SV-WEB-001", "Vendor": "HPE", "SerialNumber": "KR2024", "cpus_avg": 42.8}]
-    tasks = [{"task_id": "t1", "order": 1}, {"task_id": "t2", "order": 2}]
+    # 「알람 서버 중 CPU 최고」는 t1 결과를 입력으로 받아 좁힌 단계다 — 좁히기 표지는 데이터 의존
+    # 간선이다(D-234 ③ 개정 · plans/123 G-13). 간선 없는 형제 조회는 좁히지 않는다(test_plan123).
+    tasks = [{"task_id": "t1", "order": 1}, {"task_id": "t2", "order": 2, "input_from": ["t1"]}]
     results = {
         "t1": {"organized_data": {"rows": alarm_rows}},
         "t2": {"organized_data": {"rows": cpu_rows}},
