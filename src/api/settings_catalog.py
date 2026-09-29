@@ -396,6 +396,7 @@ RELOADABLE_KEYS: frozenset[str] = frozenset({
     "RAG_CACHE_TTL",
     "RAG_DOC_URL_BASE",
     "RAG_CHAT_PREFIX_ENABLED",
+    "RAG_SENSITIVE_ALLOWED_USERS",
 })
 
 #: config에 정의됐지만 현재 코드가 읽지 않는 필드(Plan 68 §1.5-4). UI 기본 숨김 + "미소비" 뱃지.

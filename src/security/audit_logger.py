@@ -512,6 +512,46 @@ async def log_clarification(
     )
 
 
+async def log_doc_retrieval(
+    *,
+    collection_ids: list[str],
+    status: str,
+    hit_count: int,
+    elapsed_ms: float,
+    query: str,
+    doc_ids: Optional[list[str]] = None,
+    source: str = "api",
+    reason: Optional[str] = None,
+    user_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+) -> None:
+    """문서 RAG 조회 1건을 기록한다 (plans/126 W5 · D-261 정합).
+
+    남기는 것과 남기지 않는 것을 의도적으로 갈랐다:
+      - **남긴다**: 누가·어느 문서군·무엇을 물었는지(스크럽본)·결과 상태·건수·상위 문서 식별자·소요.
+        "누가 규정 문서를 조회했나"가 감사의 요건이고, 자산 폐기(`stale_id`)처럼 관리자 조치가
+        필요한 사건도 이 레코드로 사후 판독한다.
+      - **남기지 않는다**: 문서 **본문**과 접속 토큰. 본문은 길고 기밀이며(감사 파일이 문서
+        사본이 되어선 안 된다) 토큰은 어디에도 원문으로 남기지 않는다(plans/126 R-17).
+
+    `query`는 호출부가 `scrub_pii` 를 통과시킨 값을 넘긴다 — 이 함수는 마스킹하지 않는다
+    (마스킹 책임을 한 곳에 두고, 여기서 다시 덮으면 무엇이 가려졌는지 추적이 어렵다).
+    """
+    await _record_event(
+        "doc_retrieval",
+        collection_ids=collection_ids,
+        doc_status=status,
+        hit_count=hit_count,
+        elapsed_ms=round(float(elapsed_ms), 1),
+        user_query=query,
+        doc_ids=doc_ids or [],
+        source=source,
+        reason=reason,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+
+
 async def log_scope_narrowed(
     *,
     selected: list[str],

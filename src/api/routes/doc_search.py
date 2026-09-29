@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from src.api.dependencies import require_admin_user
+from src.doc_qa.authz import allowed_collection_ids
 from src.doc_qa.service import answer_from_documents
 from src.infrastructure.doc_sources import CONNECTION_FIELD_MAP, resolve_collections
 
@@ -116,6 +117,7 @@ async def search_documents(
         from src.llm import create_llm
         llm = create_llm(config, purpose="answer")
 
+    rag = getattr(config, "rag", None)
     result = await answer_from_documents(
         body.query,
         body.collection_ids,
@@ -123,6 +125,15 @@ async def search_documents(
         app_config=config,
         include_raw=body.include_raw,
         search_only=body.search_only,
+        # 관리자여도 인가 판정을 건너뛰지 않는다 — 판정 함수 하나만 두고, 관리자면 그 함수가
+        # 전체를 돌려준다(경로마다 예외를 두면 나중에 비관리자 진입이 붙을 때 빠진다).
+        allowed_collection_ids=allowed_collection_ids(
+            resolve_collections(rag), user=admin, rag_config=rag,
+        ),
+        audit_context={
+            "user_id": admin.get("username") or admin.get("sub"),
+            "source": "admin_api",
+        },
     )
     logger.info(
         "문서 검색 API status=%s 컬렉션=%s 근거=%d건 by=%s",

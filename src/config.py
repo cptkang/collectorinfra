@@ -1387,6 +1387,9 @@ class RagConfig(BaseSettings):
     cache_ttl: int = 300                     # 0이면 캐시 비활성
     doc_url_base: str = ""                   # 비면 링크 미노출(url이 상대 경로다)
     chat_prefix_enabled: bool = False        # T-4 명시 접두(`/문서`) — 기본 off(G-17)
+    # 민감 문서군(`sensitive: true`)을 열 수 있는 비관리자 사용자(쉼표 구분).
+    # **빈 값 = 아무도 없음**이다(민감 자료의 기본값은 닫힘 · D-232 정합 · W5).
+    sensitive_allowed_users: str = ""
 
     model_config = {"env_prefix": "RAG_", "env_file": ".env", "extra": "ignore"}
 

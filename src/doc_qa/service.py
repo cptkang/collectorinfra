@@ -179,7 +179,39 @@ def _aggregate_status(outcomes: Sequence[RetrievalOutcome]) -> tuple[str, str]:
     return STATUS_EMPTY, ""
 
 
-async def answer_from_documents(
+async def _audit(
+    context: dict[str, Any] | None,
+    *,
+    collection_ids: Sequence[str],
+    result: "DocAnswer",
+    hit_count: int,
+    query: str,
+) -> None:
+    """감사 1건 — 실패해도 조회 결과를 버리지 않는다(감사 실패가 사용자 경로를 막지 않는다)."""
+    if not context:
+        return
+    try:
+        from src.security.audit_logger import log_doc_retrieval
+        from src.security.pii_filter import scrub_pii
+
+        await log_doc_retrieval(
+            collection_ids=list(collection_ids),
+            status=result.status,
+            hit_count=hit_count,
+            elapsed_ms=float(result.diagnostics.get("total_ms")
+                             or result.diagnostics.get("search_ms") or 0),
+            query=scrub_pii(query),
+            doc_ids=[c.doc_id for c in result.citations if c.doc_id][:5],
+            source=str(context.get("source") or "api"),
+            reason=result.reason or None,
+            user_id=context.get("user_id"),
+            thread_id=context.get("thread_id"),
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("문서 조회 감사 기록 실패", exc_info=True)
+
+
+async def _answer_impl(
     query: str,
     collection_ids: Sequence[str],
     *,
@@ -190,6 +222,7 @@ async def answer_from_documents(
     search_only: bool = False,
     allowed_collection_ids: Sequence[str] | None = None,
     collections_path: str | None = None,
+    audit_context: dict[str, Any] | None = None,
 ) -> DocAnswer:
     """문서군을 검색해 근거 기반 답변을 만든다.
 
@@ -205,6 +238,8 @@ async def answer_from_documents(
         search_only: 검색만 하고 서술하지 않는다(진단 · LLM 호출 0).
         allowed_collection_ids: 호출자 신원의 허용 목록(None이면 인가 판정 생략).
         collections_path: 정본 경로 override(테스트용).
+        audit_context: `{"user_id":…, "thread_id":…, "source":…}`. 주면 감사 로그를 남긴다
+            (진입점마다 흩어지지 않게 **기록은 이 함수 한 곳**에서 한다 · D-261 정합).
     """
     started = time.monotonic()
     rag = getattr(app_config, "rag", None)
@@ -383,6 +418,39 @@ async def answer_from_documents(
     )
     return DocAnswer(answer, citations=list(evidence.citations), status=STATUS_OK,
                      diagnostics=diagnostics, raw=raw)
+
+
+async def answer_from_documents(
+    query: str,
+    collection_ids: Sequence[str],
+    *,
+    llm: Any = None,
+    app_config: Any,
+    cache: Any = None,
+    include_raw: bool = False,
+    search_only: bool = False,
+    allowed_collection_ids: Sequence[str] | None = None,
+    collections_path: str | None = None,
+    audit_context: dict[str, Any] | None = None,
+) -> DocAnswer:
+    """`_answer_impl` 을 감싸 **감사 기록을 한 곳에서** 남긴다(plans/126 W5).
+
+    반환 경로가 여러 개(0건·폐기·타임아웃·검색 전용·정상·서술 실패)라 각 지점에 기록을 흩으면
+    한 경로가 빠진다. 래퍼로 모아 두면 «감사에 안 남는 조회»가 구조적으로 생기지 않는다.
+    """
+    result = await _answer_impl(
+        query, collection_ids, llm=llm, app_config=app_config, cache=cache,
+        include_raw=include_raw, search_only=search_only,
+        allowed_collection_ids=allowed_collection_ids,
+        collections_path=collections_path,
+    )
+    counts = result.diagnostics.get("counts") or {}
+    hit_count = sum(int(v) for v in counts.values()) if counts else len(result.citations)
+    await _audit(
+        audit_context, collection_ids=collection_ids, result=result,
+        hit_count=hit_count, query=query,
+    )
+    return result
 
 
 __all__ = [
