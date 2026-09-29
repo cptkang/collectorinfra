@@ -220,14 +220,20 @@ def resolve_collections(
     for meta in load_collection_meta(path):
         conn = _connection_of(rag_config, meta.id)
         missing = [k for k in CONNECTION_FIELDS if not conn[k]]
-        reason = ""
+        # 사유는 **누적**한다 — 기능이 꺼져 있고 접속 정보도 비어 있으면 둘 다 조치 대상이다.
+        # 하나만 알리면 켜자마자 다시 막히고, 그때 원인을 다시 찾아야 한다.
+        reasons: list[str] = []
         if not feature_on:
-            reason = "문서 검색 기능이 꺼져 있습니다(RAG_ENABLED=false)"
-        elif not meta.enabled:
-            reason = "정본에서 비활성(enabled: false)"
-        elif missing:
+            reasons.append("문서 검색 기능이 꺼져 있습니다(RAG_ENABLED=false)")
+        if not meta.enabled:
+            reasons.append("정본에서 비활성(enabled: false)")
+        if missing:
             keys = " · ".join(f"RAG_{meta.id.upper()}_{k.upper()}" for k in missing)
-            reason = f"접속 정보 미입력 — {keys} (docs/32 §3 교체 절차)"
+            reasons.append(
+                f"접속 정보 미입력 — {keys} "
+                "(`python scripts/rag_conn.py set " + meta.id + "` · docs/32 §3)"
+            )
+        reason = " / ".join(reasons)
         item = DocCollection(
             id=meta.id, title=meta.title, description=meta.description,
             sibling_note=meta.sibling_note, answer_domains=meta.answer_domains,
