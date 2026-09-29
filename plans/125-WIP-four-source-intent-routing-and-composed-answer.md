@@ -764,7 +764,7 @@
 | M-4 | 계획 요약 `plan_summary.tasks[]` 비SQL 칸 — `views` · `inserted_steps`(첫 홉 보기 id · 변환 간선 id) · `link`(패싯별 건수) · `source_status` 코드 — 값이 있을 때만(SQL task 바이트 불변) | `21726ee` · `src/api/routes/query.py` |
 
 - 테스트: 신규 `tests/test_routing/test_plan125_registry.py`(5) · `tests/test_clients/test_source_mcp_client.py`(3) · `tests/test_orchestration/test_plan125_apm_query.py`(12) · `tests/test_cross_system/test_plan125_entity_link.py`(7) · `tests/test_scenario/test_plan125_source_metrics.py`(5). 의도된 변경으로 갱신(사유 주석): 실행 그룹 `apm` 0건 단언 2건(`test_execution_groups.py`) · 라우터 소유 안내 행 · 판정 카탈로그 알려진 소스 집합 · 설정 카탈로그 건수·시크릿 · 계획 어휘 사본(`PLAN_AGENTS` = 레지스트리 ∪ {`apm_query`}) · 선택 제외 단언(FS 초안 반영).
-- 실 LLM 검증: 하지 않았다 — 이 호스트의 두 평면이 `mlx`가 아니고(`.env` 운영값 gemini) MLX 서버가 없다. 과금 경로 호출 0 · `RUN_E2E` 미사용. 제니퍼 실연결은 게이트웨이 기동 환경(87 J0-L/J0-O)에서.
+- 실 LLM 검증: 하지 않았다 — 이 호스트의 설정 해석이 워커 `ollama` · 오케스트레이터 `vllm`(`python -m scripts.bench --show-env`)이라 두 평면이 `mlx`가 아니고(D-240 조건 불성립) MLX 서버도 없다. 과금 경로 호출 0 · `RUN_E2E` 미사용. 제니퍼 실연결은 게이트웨이 기동 환경(87 J0-L/J0-O)에서.
 - 전체 회귀: 최종 HEAD 결과는 §14.4.
 
 ### 14.2 잔여 — 사유 · 재개 조건
