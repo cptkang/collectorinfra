@@ -323,6 +323,9 @@ class AgentState(TypedDict):
     # 두 상태 생성 함수가 초기화한다. 미선언이면 LangGraph가 노드 출력을 버린다.
     disclosures: list[dict[str, Any]] | None
     turn_disclosures: list[dict[str, Any]] | None
+    # 선행 대상 없는 지시어(plans/123 S-7(b) · 123·G-6 (a)) — `context_resolver`가 매 턴 쓴다.
+    # 소비(되묻기 게이트)는 `plans/106` H1 몫이다. `clarification_needed`(D-270 ⑤)와 별도 키.
+    demonstrative_without_antecedent: bool | None
 
     # === 출력 ===
     final_response: str                      # 자연어 응답
@@ -492,6 +495,7 @@ def create_followup_input(
         # 결정적 고지(plans/123 W-8) — 요청 스코프. 직전 턴 고지가 새 턴 응답에 실리지 않도록.
         "disclosures": None,
         "turn_disclosures": None,
+        "demonstrative_without_antecedent": None,  # plans/123 S-7(b) — 요청 스코프
     }
     if reset_db_scope:
         # 승계 원천 3종을 비운다 — 체크포인터는 델타만 병합하므로 명시 초기화가 필요하다(D-064).
@@ -654,6 +658,7 @@ def create_initial_state(
         scope_narrowed=None,
         disclosures=None,  # 요청 스코프(plans/123 W-8)
         turn_disclosures=None,
+        demonstrative_without_antecedent=None,  # plans/123 S-7(b)
         # 출력
         final_response="",
         output_file=None,

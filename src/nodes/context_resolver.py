@@ -20,7 +20,11 @@ from src.config import AppConfig
 from src.routing.db_scope import extract_state_db_ids
 from src.routing.registry import get_registry
 from src.state import AgentState
-from src.utils.query_gen_common import has_host_identifier_filter, term_in_text
+from src.utils.query_gen_common import (
+    has_host_identifier_filter,
+    refers_to_demonstrative_server,
+    term_in_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +77,8 @@ async def context_resolver(
         result: dict = {
             "conversation_context": None,
             "current_node": "context_resolver",
+            # 선행 대상 없는 지시어(plans/123 S-7(b)) — 첫 턴은 가리킬 대상이 없다
+            "demonstrative_without_antecedent": _demonstrative_without_antecedent(state, []),
         }
         # 대화 히스토리 트리밍
         trimmed = _trim_messages(messages)
@@ -160,6 +166,9 @@ async def context_resolver(
     result = {
         "conversation_context": context,
         "current_node": "context_resolver",
+        "demonstrative_without_antecedent": _demonstrative_without_antecedent(
+            state, previous_entities
+        ),
     }
 
     # 대화 히스토리 트리밍
@@ -168,6 +177,24 @@ async def context_resolver(
         result["messages"] = trimmed
 
     return result
+
+
+def _demonstrative_without_antecedent(state: AgentState, previous_entities: list) -> bool:
+    """지시어(「그 장비」·「해당 서버」)로 서버를 가리키는데 가리킬 선행 대상이 없는가.
+
+    plans/123 S-7(b) · 123·G-6 (a)(사용자 확정 — 첫 턴 지시어·선행 대상 없음은 되묻기) —
+    **트리거만** 산출한다. 되묻기 게이트 구현·소비는 `plans/106` H1 몫이고, LLM 분해의
+    `clarification_needed`(D-270 ⑤)와는 별도 키다. 지시어 판정은
+    `refers_to_demonstrative_server` 단일 출처를 쓴다. 발동하면 로그 한 줄을 남긴다.
+    """
+    query = str(state.get("user_query") or "")
+    hit = refers_to_demonstrative_server(query) and not previous_entities
+    if hit:
+        logger.info(
+            "S-7(b) 트리거(plans/123): 선행 대상 없는 지시어 — %r(되묻기 소비는 106 H1)",
+            query[:80],
+        )
+    return hit
 
 
 def _extract_previous_db_ids(state: AgentState) -> list[str]:

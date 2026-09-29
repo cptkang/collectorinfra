@@ -620,3 +620,41 @@ def test_w8_non_stream_response_carries_disclosures() -> None:
 
     assert r.status_code == 200, r.text
     assert r.json()["disclosures"] == [item]
+
+
+# ── S-7(b) 선행 대상 없는 지시어 트리거(123·G-6 (a) — 소비는 106 H1) ─────────────
+
+
+@pytest.mark.asyncio
+async def test_s7b_first_turn_demonstrative_is_flagged() -> None:
+    from langchain_core.messages import HumanMessage
+
+    from src.nodes.context_resolver import context_resolver
+
+    first = {"user_query": "그 장비 CPU 사용률", "messages": [HumanMessage(content="그 장비 CPU")]}
+    out = await context_resolver(first)
+    assert out["demonstrative_without_antecedent"] is True
+
+    plain = {"user_query": "김포 서버 목록", "messages": [HumanMessage(content="김포 서버 목록")]}
+    assert (await context_resolver(plain))["demonstrative_without_antecedent"] is False
+
+
+@pytest.mark.asyncio
+async def test_s7b_follow_up_with_previous_entity_is_not_flagged() -> None:
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from src.nodes.context_resolver import context_resolver
+
+    state = {
+        "user_query": "해당 서버의 메모리",
+        "messages": [
+            HumanMessage(content="web01 서버 CPU"), AIMessage(content="답"),
+            HumanMessage(content="해당 서버의 메모리"),
+        ],
+        "query_results": [{"hostname": "web01", "cpu": 3}],
+    }
+
+    out = await context_resolver(state)
+
+    assert out["conversation_context"]["previous_entities"]
+    assert out["demonstrative_without_antecedent"] is False
