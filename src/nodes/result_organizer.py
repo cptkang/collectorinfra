@@ -17,12 +17,16 @@ from src.utils.json_extract import coerce_content_text
 from src.utils.llm_compat import is_kbgenai
 from src.config import AppConfig, load_config
 from src.db import get_db_client
+from src.db_adapters import get_adapter
 from src.domain.empty_answer import (
     SINGLE_GROUP,
+    EntityCheck,
     FunnelStage,
     as_payload,
     build_diagnosis,
     detect_unexpressed_conditions,
+    entity_lines,
+    identifier_only_values,
 )
 from src.llm import create_llm
 from src.nodes.condition_probe import (
@@ -30,8 +34,10 @@ from src.nodes.condition_probe import (
     split_user_conditions,
     truncated_stage_count,
 )
+from src.routing.domain_config import get_domain_by_id
 from src.security.data_masker import DataMasker
 from src.state import AgentState, OrganizedData, SheetMappingResult
+from src.utils.query_gen_common import HOST_IDENTIFIER_FIELDS, is_demonstrative_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -374,12 +380,108 @@ async def _probe_group(
     return labels, counts
 
 
+def _entity_probe_db_ids(state: AgentState) -> list[str]:
+    """존재 확인을 할 대상 DB — 멀티 DB면 라우팅된 대상 전부, 단일이면 활성 DB."""
+    if state.get("is_multi_db"):
+        return [
+            str(t["db_id"]) for t in (state.get("target_databases") or [])
+            if isinstance(t, dict) and t.get("db_id")
+        ]
+    db_id = state.get("active_db_id")
+    return [str(db_id)] if db_id else []
+
+
+async def _check_entities(
+    state: AgentState, app_config: AppConfig, values: tuple[str, ...], k_max: int
+) -> EntityCheck | None:
+    """식별자마다 대상 DB별 존재 확인 1회(plans/123 S-4a · LLM 0).
+
+    SQL은 담당 어댑터가 조립한다(D-089 — 공용 계층에 스키마 리터럴을 두지 않는다). 어댑터가
+    없거나 조회가 실패한 DB가 하나라도 있으면 None — 「확인하지 못함」은 「없음」이 아니므로
+    종전 0건 경로로 돌아가고, 사유는 WARNING으로 남긴다(침묵 폴백 금지). 식별자 수는 퍼널과
+    같은 프로브 상한(`empty_diagnosis_max_probes`)을 넘지 않을 때만 확인한다.
+    """
+    db_ids = _entity_probe_db_ids(state)
+    if not db_ids or len(values) > k_max:
+        logger.warning(
+            "식별자 존재 확인 생략 — 대상 DB %d곳 · 식별자 %d개(상한 %d) — 종전 0건 경로",
+            len(db_ids), len(values), k_max,
+        )
+        return None
+    polestar_ids = app_config.get_polestar_db_ids() or None
+    groups: list[str] = []
+    found: dict[str, list[str]] = {v: [] for v in values}
+    for db_id in db_ids:
+        adapter = get_adapter(db_id, polestar_ids)
+        build = getattr(adapter, "entity_probe_sql", None) if adapter else None
+        if not callable(build):
+            logger.warning(
+                "식별자 존재 확인 생략 — %s에는 존재 확인 어댑터가 없습니다(종전 0건 경로)", db_id
+            )
+            return None
+        domain = get_domain_by_id(db_id)
+        label = domain.display_name if domain else db_id
+        groups.append(label)
+        for value in values:
+            sql = build(
+                value,
+                db_engine=domain.db_engine if domain else state.get("active_db_engine"),
+                db_schema=(domain.db_schema if domain else "") or None,
+            )
+            try:
+                async with get_db_client(app_config, db_id=db_id) as client:
+                    result = await client.execute_sql(sql)
+            except Exception as e:  # noqa: BLE001 — 진단 실패가 응답을 막으면 안 된다
+                logger.warning(
+                    "식별자 존재 확인 실패(%s, '%s') — 종전 0건 경로: %s", db_id, value, e
+                )
+                return None
+            if result.rows:
+                found[value].append(label)
+    return EntityCheck(
+        values=values, groups=tuple(groups), found={v: tuple(g) for v, g in found.items()},
+    )
+
+
+async def _shadow_entity_check(
+    state: AgentState, app_config: AppConfig, values: tuple[str, ...], k_max: int
+) -> None:
+    """식별자 존재 확인 섀도(plans/123 S-4a · D-280 ⑧ · 123·G-8 (c)) — 응답 불변 · 로그만.
+
+    판정(`all_missing` · `partial` · `all_present`)을 한 줄로 남겨 run R5에서 과잉 판정(있는 서버를
+    없다고 말함)을 대조한다. 확인하지 못한 경우의 사유는 `_check_entities`가 WARNING으로 남긴다.
+    """
+    try:
+        checked = await _check_entities(state, app_config, values, k_max)
+    except Exception as e:  # noqa: BLE001 — 섀도 판정은 질의 경로를 막지 않는다
+        logger.warning("S-4a 섀도 판정 실패(plans/123): %s", e)
+        return
+    if checked is None:
+        return
+    lines = entity_lines(checked)
+    verdict = "all_missing" if checked.all_missing else ("partial" if lines else "all_present")
+    logger.info(
+        "S-4a 섀도(plans/123): 식별자 존재 확인 verdict=%s values=%s groups=%s found=%s"
+        " — 응답 불변",
+        verdict,
+        list(checked.values),
+        list(checked.groups),
+        {v: list(g) for v, g in checked.found.items()},
+    )
+
+
 async def _diagnose_empty_result(
     state: AgentState, parsed: dict, app_config: AppConfig
 ) -> Optional[Any]:
     """0건 응답에 붙일 진단을 만든다(플래그 OFF·재료 부재면 None).
 
     LLM을 호출하지 않는다 — 조건 제거는 SQL 텍스트 조작이고, `COUNT(*)`만 던진다.
+
+    조건이 서버 식별자 등호뿐이면(plans/123 S-4a) 대상 DB마다 존재 확인을 한다 — **섀도**다
+    (D-280 ⑧ · 123·G-8 (c)): 판정은 로그에만 남기고 진단·재생성·응답은 바꾸지 않는다. 기본 on은
+    run R5′ 섀도 대조 뒤이며, 그때 판정을 `build_diagnosis(entity=…)`로 넘기면 렌더·고지
+    (`entity_lines` · kind `entity_not_found`)가 이미 준비돼 있다. 식별자뿐인 조건의 완화 제안
+    문구(S-4b)는 섀도가 아니다.
     """
     if not app_config.text2sql.empty_diagnosis_enabled:
         return None
@@ -390,12 +492,21 @@ async def _diagnose_empty_result(
         state.get("user_query"), parsed.get("filter_conditions")
     )
 
+    identifiers = identifier_only_values(
+        parsed.get("filter_conditions"),
+        identity_fields=HOST_IDENTIFIER_FIELDS,
+        is_placeholder=is_demonstrative_identifier,
+    )
+    if identifiers:
+        await _shadow_entity_check(state, app_config, identifiers, k_max)
+
     labels: list[str] = []
     per_group: dict[str, list[Optional[int]]] = {}
     for label, sql, db_id in _probe_sources(state):
         group_labels, counts = await _probe_group(
             app_config, label, sql, db_id, k_max, notes,
-            report_missing=bool(parsed.get("filter_conditions")),
+            # 식별자뿐인 조건은 애초에 단계로 나눌 수치 비교가 없다 — 그 사유는 소음이다.
+            report_missing=bool(parsed.get("filter_conditions")) and not identifiers,
         )
         if not group_labels:
             continue
@@ -409,6 +520,7 @@ async def _diagnose_empty_result(
         # 퍼널을 못 그려도 **미반영 경고와 사유는 반드시 낸다** — 말하지 않는 것이 최악이다.
         return build_diagnosis(
             parsed=parsed, stage_counts=[], unexpressed=unexpressed, notes=notes,
+            identifier_only=bool(identifiers),
         )
 
     stages = [
@@ -421,6 +533,7 @@ async def _diagnose_empty_result(
     ]
     return build_diagnosis(
         parsed=parsed, stage_counts=stages, unexpressed=unexpressed, notes=notes,
+        identifier_only=bool(identifiers),
     )
 
 

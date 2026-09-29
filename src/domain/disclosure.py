@@ -43,6 +43,8 @@ UNIT_SUSPECT = "unit_suspect"
 GENERATOR_NOTE = "generator_note"
 #: 파서가 뽑은 조건이 최종 실행 SQL에 같은 뜻으로 들어가지 않았다(S-11 1차).
 CONDITION_CHANGED = "condition_changed"
+#: 0건 조회의 대상 식별자가 확인한 DB에 등록돼 있지 않다(일부 DB에만 있음 포함 · S-4a).
+ENTITY_NOT_FOUND = "entity_not_found"
 
 # ── 실패 계열 (W-6) — `regen_stop.reason`(plans/119 Q-3 계약) 재사용 + SQL 차단 ──────
 
@@ -107,6 +109,7 @@ KIND_TABLE: dict[str, KindSpec] = {
         KindSpec(SQL_BLOCKED, "refuse", True, "task", 5),
         KindSpec(QUERY_FAILED, "error", True, "task", 5),
         KindSpec(CONDITION_CHANGED, "correct", False, "task", 20),
+        KindSpec(ENTITY_NOT_FOUND, "guide", False, "task", 15),
         KindSpec(GENERATOR_NOTE, "auxiliary", False, "task", 40),
         # 123 — 턴 단위
         KindSpec(SCOPE_NARROWED, "correct", True, "turn", 10),

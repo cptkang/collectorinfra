@@ -24,8 +24,8 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AI
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.domain import disclosure as disc
+from src.domain.empty_answer import entity_lines, identifier_only_values, render_diagnosis
 from src.domain.empty_answer import from_payload as diagnosis_from_payload
-from src.domain.empty_answer import render_diagnosis
 from src.domain.partial_result import render_markdown_table
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.nodes.intent_frame_builder import CONSUMER_OUTPUT_GENERATOR, get_prompt_query
@@ -46,8 +46,10 @@ from src.utils.progress_events import emit_answer_prefix
 from src.utils.query_gen_common import (
     ELLIPTICAL_SUCCESSION_KEY,
     FORM_MEMORY_SHORTCUT_HINT,
+    HOST_IDENTIFIER_FIELDS,
     explicit_row_count,
     has_all_scope_keyword,
+    is_demonstrative_identifier,
     render_elliptical_succession_note,
     resolve_stat_month_range,
 )
@@ -553,7 +555,9 @@ def _generate_empty_result_response(
     진단(D-176 후속1)이 있으면 *"어느 조건에서 끊겼는지"* 를 덧붙인다. 조건이 3개일 때
     "필터 조건을 완화해보세요"는 **어느 것을 완화해야 하는지**를 알려주지 못한다.
 
-    진단이 없으면(플래그 OFF·프로브 미발동) 종전 문구를 **바이트 단위로** 그대로 낸다.
+    진단이 없으면(플래그 OFF·프로브 미발동) 종전 문구를 **바이트 단위로** 그대로 낸다. 단, 조건이
+    서버 식별자 등호뿐이면(plans/123 S-4b) 「임계값 낮추기」 대신 대상 이름 확인을 권한다 — 사용자는
+    임계값을 말한 적이 없다. 없는 대상이면 진단(S-4a)이 「등록된 서버가 아닙니다」로 말한다.
 
     Args:
         parsed: 파싱된 요구사항
@@ -579,7 +583,14 @@ def _generate_empty_result_response(
 
     if filters:
         response += "\n\n다음과 같은 방법을 시도해보세요:"
-        response += "\n- 필터 조건을 완화해보세요 (예: 임계값 낮추기)"
+        if identifier_only_values(
+            filters,
+            identity_fields=HOST_IDENTIFIER_FIELDS,
+            is_placeholder=is_demonstrative_identifier,
+        ):
+            response += "\n- 대상 이름(서버명·호스트명·IP)이 정확한지 확인해보세요"
+        else:
+            response += "\n- 필터 조건을 완화해보세요 (예: 임계값 낮추기)"
         if parsed.get("time_range"):
             response += "\n- 시간 범위를 넓혀보세요"
 
@@ -2064,6 +2075,12 @@ def _condition_change_texts(state: Mapping[str, Any]) -> list[str]:
     return texts
 
 
+def _entity_not_found_texts(state: Mapping[str, Any]) -> list[str]:
+    """식별자 존재 확인 문장들(plans/123 S-4a) — 0건 응답 본문(`render_diagnosis`)과 같은 문장."""
+    diagnosis = diagnosis_from_payload(state.get("empty_diagnosis"))
+    return entity_lines(diagnosis.entity) if diagnosis is not None else []
+
+
 def _append_condition_changes(response: str, state: AgentState) -> str:
     """조건 누락·반전·결합 변경·무력화를 응답에 결정적으로 드러낸다(plans/123 S-11 1차)."""
     texts = _condition_change_texts(state)
@@ -2152,6 +2169,8 @@ def collect_disclosures(state: Mapping[str, Any], response: str) -> list[disc.Di
         found.append(disc.make(disc.GENERATOR_NOTE, text, source=source))
     for text in _condition_change_texts(state):
         found.append(disc.make(disc.CONDITION_CHANGED, text, source=source))
+    for text in _entity_not_found_texts(state):
+        found.append(disc.make(disc.ENTITY_NOT_FOUND, text, source=source))
     if not state.get("per_task_finalize"):
         from src.domain.scope_select import render_narrowed_note
 

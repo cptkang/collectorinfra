@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Callable
 
 from src.db_adapters.polestar.assembler import classify_metric_field as _classify_metric_field
+from src.db_adapters.polestar.entity_probe import build_entity_probe_sql
 from src.db_adapters.polestar.prompts import (
     knowledge_render_enabled,
     render_alarm_system_template,
@@ -57,6 +58,15 @@ class PolestarAdapter:
         src/tools/metrics.py의 optional 훅 계약 — 미분류 필드는 None.
         """
         return _classify_metric_field(field)
+
+    def entity_probe_sql(
+        self, value: str, *, db_engine: str | None, db_schema: str | None
+    ) -> str:
+        """서버 식별자 1개의 존재 확인 SELECT(entity_probe 위임 · plans/123 S-4a).
+
+        0건 진단(`src/nodes/result_organizer.py`)의 optional 훅 계약 — 행이 오면 등록돼 있다.
+        """
+        return build_entity_probe_sql(value, db_engine=db_engine, db_schema=db_schema)
 
     def validator_checks(
         self, user_query: str | None = None
