@@ -85,6 +85,27 @@ class ViewSpec:
 
 
 @dataclass(frozen=True)
+class EdgeSpec:
+    """교차 계층 엔터티 간선 1건(plans/125 §4.5 · E-2) — 패싯 → 패싯 결정적 대응.
+
+    Attributes:
+        id: 간선 id(E1 …)
+        from_facet · to_facet: 옮기는 식별 패싯(hostname · server_name · apm_instance · asset_key ·
+            nodename)
+        owner: 대응을 주는 시스템(소유자 — 본체는 재구현하지 않는다)
+        via: 수단(도구 · 어댑터 고정 조회 · 키 브리지 · 셀렉터)
+        grades: 판정 등급 어휘
+    """
+
+    id: str
+    from_facet: str
+    to_facet: str
+    owner: str
+    via: str = ""
+    grades: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SolutionSpec:
     """관측 솔루션 선언 — 실행 그룹의 1차 축 (D-176 · plans/82 §4.2).
 
@@ -192,6 +213,11 @@ class DBRegistry:
     locations: tuple[LocationSpec, ...] = ()
     databases: tuple[DBEntry, ...] = field(default_factory=tuple)
     capabilities_: tuple[CapabilitySpec, ...] = ()
+    entity_edges_: tuple[EdgeSpec, ...] = ()
+
+    def entity_edges(self) -> tuple[EdgeSpec, ...]:
+        """교차 계층 엔터티 간선 표(선언 순서 · plans/125 E-2)."""
+        return self.entity_edges_
 
     # ── DB 조회 ────────────────────────────────────────────
     def get(self, db_id: str) -> DBEntry | None:
@@ -585,6 +611,19 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
                 entry.db_id, entry.zone,
             )
 
+    entity_edges = tuple(
+        EdgeSpec(
+            id=str(raw["id"]),
+            from_facet=str(raw.get("from", "")),
+            to_facet=str(raw.get("to", "")),
+            owner=str(raw.get("owner", "")),
+            via=str(raw.get("via", "")),
+            grades=_as_str_tuple(raw.get("grades")),
+        )
+        for raw in data.get("entity_edges") or []
+        if isinstance(raw, dict) and raw.get("id") and raw.get("from") and raw.get("to")
+    )
+
     return DBRegistry(
         version=int(data.get("version", 1)),
         zones=zones,
@@ -595,6 +634,7 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
         locations=locations,
         databases=tuple(databases),
         capabilities_=capability_specs,
+        entity_edges_=entity_edges,
     )
 
 

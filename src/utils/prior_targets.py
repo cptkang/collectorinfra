@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from src.utils.query_gen_common import (
     HOST_IDENTIFIER_FIELDS,
@@ -70,6 +70,12 @@ REASON_DEMONSTRATIVE = "demonstrative_value"
 REASON_EMPTY_VALUE = "empty_value"
 
 
+#: 교차 계층 패싯 필드(plans/125 E-1) — 값이 없으면 직렬화에서 뺀다.
+FACET_FIELDS: tuple[str, ...] = (
+    "apm_domain_id", "apm_instance_id", "apm_instance_name", "asset_key",
+)
+
+
 class TargetRef(BaseModel):
     """조사 대상 1건의 타입 계약 (78 W1-6).
 
@@ -90,6 +96,22 @@ class TargetRef(BaseModel):
     hostname: Optional[str] = None
     ip: Optional[str] = None
     db_id: Optional[str] = None
+    # ── 교차 계층 패싯(plans/125 E-1) — 소스별 로컬 ID 를 모두 보존한다(DM-7). 값이 없으면
+    # 직렬화에서 빠진다(`_drop_empty_facets`) — 폴스타 → 폴스타 경로의 상태·응답 바이트는 종전
+    # 그대로다.
+    apm_domain_id: Optional[str] = None
+    apm_instance_id: Optional[str] = None
+    apm_instance_name: Optional[str] = None
+    asset_key: Optional[str] = None
+
+    @model_serializer(mode="wrap")
+    def _drop_empty_facets(self, handler: Any) -> dict[str, Any]:
+        """교차 계층 패싯은 값이 있을 때만 싣는다(E-1 — 종전 4필드 직렬화 불변)."""
+        data: dict[str, Any] = handler(self)
+        for name in FACET_FIELDS:
+            if data.get(name) is None:
+                data.pop(name, None)
+        return data
 
     @model_validator(mode="after")
     def _require_identifier(self) -> "TargetRef":

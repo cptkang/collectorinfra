@@ -187,8 +187,8 @@ def test_D217_업로드_형식_가드의_400이_모의에서도_판정까지_전
     rows = _rows(Path(summary["out_dir"]))
 
     assert len(rows) == 3, "R군은 3회 반복한다"
-    # plans/123 CT-1·CT-7 - R2 등급 정책 확정 + J-10 문구 기계 단언(수동 검토 이관)으로 이제 pass
-    # 다.
+    # plans/123 CT-1·CT-7 - R2 등급 정책 확정 + J-10 문구 기계 단언(수동 검토 이관)으로 이제
+    # pass 다.
     assert {row["func_verdict"] for row in rows} == {"pass"}, [r["failed_assertions"] for r in rows]
     assert all(row["failed_assertions"] == [] for row in rows)
     assert {row["response_mode"] for row in rows} == {"error"}

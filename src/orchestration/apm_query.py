@@ -1,8 +1,7 @@
 """WAS·미들웨어(APM) 1급 처리기 `apm_query` — plans/125 A-3 · 87 J5 본체 쪽 이관(D-281 ①).
 
 **LLM 0회.** 분해 LLM 이 고른 보기(`views[]` — 레지스트리 `solutions[apm].views` 닫힌 어휘)를
-게이트웨이
-도구 고정 표로 바꾸고, 대상(hostname)·창을 코드가 정해 부른다(plans/125 §4.6 · Q-2).
+게이트웨이 도구 고정 표로 바꾸고, 대상(hostname)·창을 코드가 정해 부른다(plans/125 §4.6 · Q-2).
 
 - **활성일 때만 등록**: 엔드포인트(`MCP_SOURCE_ENDPOINTS` 의 `apm`)가 없으면 처리기도 분해 프롬프트
   줄도 없다 — 비활성 배포는 바이트 불변(신규 `enable_*` 0 · D-162 · D-251 ⑥). 고정 처리기 목록
@@ -32,6 +31,14 @@ from langchain_core.language_models import BaseChatModel
 
 from src.clients.source_mcp_client import SessionFactory, SourceMcpError, open_source_session
 from src.config import AppConfig
+from src.orchestration.entity_link import (
+    LINKED,
+    UNLINKED,
+    LinkEntry,
+    ledger_line,
+    ledger_summary,
+    link_hostnames,
+)
 from src.orchestration.investigation_audit import BACKEND_APM, audited_investigation
 from src.orchestration.subagents import SubAgentSpec
 from src.routing.registry import ViewSpec, get_registry
@@ -185,8 +192,8 @@ def resolve_apm_targets(isolated: dict[str, Any], max_targets: int) -> list[Targ
     """선행 결과 → 이번 턴 식별자 → 직전 대상 순으로 대상을 고른다(공용 규칙 `resolve_targets`).
 
     선행 결과는 `prior_targets`(해소본) 또는 `prior_rows`(행)에서 온다 — 이 처리기는 신규라 조사
-    대상
-    승계 플래그(`COMPOSITE_PRIOR_TARGETS_ENABLED`)와 무관하게 데이터 의존을 따른다(`input_from`).
+    대상 승계 플래그(`COMPOSITE_PRIOR_TARGETS_ENABLED`)와 무관하게 데이터 의존을 따른다
+    (`input_from`).
     """
     from src.orchestration.process_query import _targets_from_prior_rows  # 지연 — 순환 방지
 
@@ -286,12 +293,10 @@ async def run_apm_query(
 
     max_targets = _int_setting(app_config, "max_targets", 10)
     targets = resolve_apm_targets(isolated, max_targets)
-    hostnames = list(dict.fromkeys(t.hostname for t in targets if t.hostname))
-    unconverted = [t for t in targets if not t.hostname]
-    if unconverted:
-        meta["notes"].append(
-            f"hostname 이 없는 대상 {len(unconverted)}건은 WAS 조회에서 뺐습니다"
-            "(서버명 → hostname 변환 간선 필요)")
+    # 패싯 변환(plans/125 E-3) — hostname 없는 대상은 간선 표 경로(E2 등록명 → hostname)로 바꾼다.
+    hostnames, ledger, link_steps = await link_hostnames(
+        targets, consumer=APM_SYSTEM, app_config=app_config)
+    meta["inserted_steps"] += link_steps
 
     parsed = isolated.get("parsed_requirements") or {}
     windows = {vid: plan_window(by_id[vid], parsed.get("time_range"), now) for vid in views}
@@ -334,6 +339,12 @@ async def run_apm_query(
 
     meta["hostnames"] = hostnames
     rows = _collect(calls, meta)
+    ledger += _apm_hop_ledger(calls)
+    meta["link_ledger"] = [entry.as_dict() for entry in ledger]
+    meta["link_summary"] = ledger_summary(ledger)
+    line = ledger_line(ledger)
+    if line:
+        meta["notes"].insert(0, line)
     ok_calls = [c for c in calls if c.error is None]
     if calls and not ok_calls:
         meta["source_status"] = _status(label, "unavailable", 0,
@@ -388,6 +399,29 @@ async def _insert_instances_step(
     return hosts, step
 
 
+def _apm_hop_ledger(calls: list[_Call]) -> list[LinkEntry]:
+    """hostname → WAS 인스턴스 정합(간선 E1r · 게이트웨이 소유) 결과를 장부에 옮긴다.
+
+    호스트당 1행이다.
+    """
+    entries: dict[str, LinkEntry] = {}
+    for call in calls:
+        if not call.hostname or not call.view.required_input or call.hostname in entries:
+            continue
+        env = call.envelope or {}
+        resolution = env.get("instance_resolution")
+        if call.error is None and isinstance(resolution, dict):
+            matched = bool(resolution.get("matched"))
+            entries[call.hostname] = LinkEntry(
+                call.hostname, "apm_instance", "E1r", LINKED if matched else UNLINKED,
+                grade=str(resolution.get("confidence")) if matched else None,
+                reason="" if matched else str(resolution.get("reason") or ""))
+        elif call.error and "instance_unresolved" in call.error:
+            entries[call.hostname] = LinkEntry(call.hostname, "apm_instance", "E1r", UNLINKED,
+                                               reason=call.error[:120])
+    return list(entries.values())
+
+
 def _collect(calls: list[_Call], meta: dict[str, Any]) -> list[dict[str, Any]]:
     """봉투 → 행 · 출처(보기·도구·대상·기준 시각·창·정합) · 실패 사유."""
     rows: list[dict[str, Any]] = []
@@ -433,6 +467,12 @@ def _summary(label: str, views: list[str], by_id: dict[str, ViewSpec], meta: dic
     parts = [f"{label} 조회 — {view_text}: 대상 {hosts}대 · {row_count}행"
              + (f"(기준 시각 {queried[-1]})." if queried else ".")]
     for step in meta["inserted_steps"]:
+        if step.get("edge"):
+            if step.get("error") or step.get("errors"):
+                parts.append(f"{step['edge']} 변환 실패: "
+                             + "; ".join([step.get("error") or ""] + (step.get("errors") or []))
+                             .strip("; "))
+            continue
         if step.get("hosts") is not None:
             tail = (f"(상한으로 {step['truncated']}대 제외 — 조회한 범위 안의 결과입니다)."
                     if step.get("truncated") else ".")

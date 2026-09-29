@@ -32,6 +32,32 @@ def _is_ip(value: str) -> bool:
     return True
 
 
+def build_hostname_lookup_sql(
+    names: list[str], *, db_engine: str | None, db_schema: str | None
+) -> str:
+    """등록 서버명 → OS hostname 고정 조회(plans/125 E-3 간선 E2 · LLM 0 · 읽기 전용).
+
+    폴스타는 등록명(`name`)과 OS 호스트명(`hostname`)이 다를 수 있다(D-046 — 공동존). APM
+    게이트웨이는 OS hostname 으로 정합하므로 서버명만 아는 대상은 이 조회로 hostname 을 얻는다.
+    대소문자는 무시하고(RFC 4343) 행 상한은 이름 수의 5배다(한 이름이 여러 행이면 「모호」로
+    판정 — 자동 결합 금지).
+
+    Returns:
+        `server_name`·`hostname` 두 열을 돌려주는 SELECT
+    """
+    table = f"{db_schema}.{_RESOURCE_TABLE}" if db_schema else _RESOURCE_TABLE
+    lowered = list(dict.fromkeys(str(n).strip().lower() for n in names if str(n).strip()))
+    literals = ", ".join(sql_literal(n) for n in lowered) or "''"
+    return (
+        "SELECT r.name AS server_name, r.hostname AS hostname\n"
+        f"  FROM {table} r\n"
+        f" WHERE r.resource_type = '{_SERVER_TYPE}'\n"
+        "   AND r.dtime IS NULL\n"
+        f"   AND LOWER(r.name) IN ({literals})\n"
+        f" {row_limit_clause(db_engine, max(1, len(lowered)) * 5)}"
+    )
+
+
 def build_entity_probe_sql(
     value: str, *, db_engine: str | None, db_schema: str | None
 ) -> str:

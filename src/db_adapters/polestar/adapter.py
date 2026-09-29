@@ -9,7 +9,10 @@ from __future__ import annotations
 from typing import Callable
 
 from src.db_adapters.polestar.assembler import classify_metric_field as _classify_metric_field
-from src.db_adapters.polestar.entity_probe import build_entity_probe_sql
+from src.db_adapters.polestar.entity_probe import (
+    build_entity_probe_sql,
+    build_hostname_lookup_sql,
+)
 from src.db_adapters.polestar.prompts import (
     knowledge_render_enabled,
     render_alarm_system_template,
@@ -67,6 +70,12 @@ class PolestarAdapter:
         0건 진단(`src/nodes/result_organizer.py`)의 optional 훅 계약 — 행이 오면 등록돼 있다.
         """
         return build_entity_probe_sql(value, db_engine=db_engine, db_schema=db_schema)
+
+    def hostname_lookup_sql(
+        self, names: list[str], *, db_engine: str | None, db_schema: str | None
+    ) -> str:
+        """등록 서버명 → OS hostname 고정 조회(간선 E2 · plans/125 E-3 — 선택 훅 계약)."""
+        return build_hostname_lookup_sql(names, db_engine=db_engine, db_schema=db_schema)
 
     def validator_checks(
         self, user_query: str | None = None
