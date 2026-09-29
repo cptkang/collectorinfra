@@ -463,7 +463,7 @@ class SettingSchemaItem(BaseModel):
     env_key: str
     group_key: str
     field_name: str
-    type: str  # bool|tristate|int|float|enum|json_list|csv|string|secret
+    type: str  # bool|tristate|int|float|enum|json_list|json_object|csv|string|secret
     enum_choices: Optional[list[str]] = None
     optional: bool = False  # enum에서 "(미설정)" 선택 가능 여부
     section: Optional[str] = None
@@ -617,6 +617,9 @@ def _detect_type(
         return "float", None, optional
     if typing.get_origin(base) is list:
         return "json_list", None, optional
+    if typing.get_origin(base) is dict:
+        # 시스템 코드 → 값 맵(plans/125 A-2 `MCP_SOURCE_ENDPOINTS`) — `.env` 는 JSON 객체다.
+        return "json_object", None, optional
     if field_name.endswith("_csv") or env_key in CSV_KEYS:
         return "csv", None, optional
     return "string", None, optional
@@ -633,6 +636,8 @@ def serialize_value(field_type: str, raw: Any) -> Optional[str]:
         return "true" if raw else "false"
     if field_type == "json_list" or isinstance(raw, (list, tuple)):
         return json.dumps(list(raw), ensure_ascii=False)
+    if field_type == "json_object" or isinstance(raw, dict):
+        return json.dumps(dict(raw), ensure_ascii=False)
     return str(raw)
 
 
@@ -653,7 +658,11 @@ def field_index() -> dict[str, FieldSpec]:
             or env_key in _MANUAL_SECRET_KEYS
         )
         field_type, choices, optional = _detect_type(env_key, field_name, annotation, is_secret)
-        default = None if is_secret else serialize_value(field_type, field.default)
+        # `default_factory` 필드(`Field(default_factory=dict)`)는 `default` 가 미정의 표지라 팩토리
+        # 값을 쓴다 — 표지 문자열이 기본값으로 보이지 않게 한다(plans/125 A-2).
+        raw_default = (field.get_default(call_default_factory=True)
+                       if field.default_factory is not None else field.default)
+        default = None if is_secret else serialize_value(field_type, raw_default)
         if env_key in IMMEDIATE_KEYS:
             apply_mode = "immediate"
         elif env_key in RELOADABLE_KEYS:
@@ -921,6 +930,17 @@ def _type_error(spec: FieldSpec, value: str) -> Optional[str]:
             return 'JSON 배열 형식이어야 합니다 (예: ["a","b"]).'
         if any(not isinstance(item, str) for item in parsed):
             return "배열 항목은 모두 문자열이어야 합니다."
+        return None
+    if spec.type == "json_object":
+        hint = 'JSON 객체 형식이어야 합니다 (예: {"apm": "http://127.0.0.1:9096/sse"}).'
+        try:
+            parsed = json.loads(value) if value else {}
+        except json.JSONDecodeError:
+            return hint
+        if not isinstance(parsed, dict):
+            return hint
+        if any(not isinstance(item, str) for item in parsed.values()):
+            return "객체 값은 모두 문자열이어야 합니다."
         return None
     return None
 

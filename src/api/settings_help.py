@@ -370,6 +370,7 @@ def _derive_summary(spec: FieldSpec) -> str:
         "float": "실수 값을 지정하는 항목입니다.",
         "csv": "쉼표로 구분한 목록을 지정하는 항목입니다.",
         "json_list": "JSON 배열 형식의 목록을 지정하는 항목입니다.",
+        "json_object": "JSON 객체 형식(키 → 값)으로 지정하는 항목입니다.",
         "secret": "비밀 값(시크릿)입니다.",
     }.get(spec.type, "값을 지정하는 항목입니다.")
     return f"{GROUP_TITLES.get(spec.group_key, spec.group_key)} 영역의 설정으로, {type_text}"

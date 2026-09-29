@@ -145,6 +145,7 @@ def test_boot_exhaustive_tries_every_enum_choice():
 @pytest.mark.parametrize(("knob_type", "expected"), [
     ("tristate", ("true", "false")),                       # 미입력(None)은 표본이 아니다
     ("json_list", ("[]", '["bench-probe-sentinel"]')),     # `.env` 의 list 는 JSON 배열
+    ("json_object", ("{}",)),                              # dict 필드는 JSON 객체(plans/125 A-2)
 ])
 def test_boot_samples_match_the_field_format(knob_type, expected):
     """`x` 를 넣으면 설정이 **올바르게** 거부해 허위 「기동 실패」가 된다(2026-09-21 6건)."""

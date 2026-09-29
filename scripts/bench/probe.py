@@ -40,9 +40,13 @@ try:
         data = obj.model_dump() if hasattr(obj, "model_dump") else {}
         for name, value in data.items():
             key = f"{prefix}{name}"
-            if isinstance(value, dict):
+            attr = getattr(obj, name, None)
+            if hasattr(attr, "model_dump"):
+                walk(attr, key + ".")
+            elif isinstance(value, dict) and not isinstance(attr, dict):
                 walk_dict(value, key + ".")
             else:
+                # dict 값 필드(plans/125 A-2 `source_endpoints`)는 펼치지 않고 한 칸으로 둔다
                 flat[key] = _safe(value, key)
     def walk_dict(d, prefix):
         for name, value in d.items():

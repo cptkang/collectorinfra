@@ -390,6 +390,9 @@ def test_t2_type_detection():
     assert index["LLM_OLLAMA_TIMEOUT"].type == "int"
     assert index["QUERY_SUFFICIENCY_REQUIRED_THRESHOLD"].type == "float"
     assert index["SECURITY_SENSITIVE_COLUMNS"].type == "json_list"
+    # dict 필드(plans/125 A-2) — JSON 객체 · `default_factory` 값이 기본값(표지 문자열 아님)
+    assert index["MCP_SOURCE_ENDPOINTS"].type == "json_object"
+    assert index["MCP_SOURCE_ENDPOINTS"].default == "{}"
     assert index["ALARM_NOTIFICATION_CHANNELS_CSV"].type == "csv"
     assert index["POLESTAR_DB_IDS"].type == "csv"
     assert index["LLM_MODEL"].type == "string"
@@ -529,6 +532,9 @@ async def test_t3_tristate_reset_to_auto(monkeypatch, tmp_path):
     [
         ("SECURITY_SENSITIVE_COLUMNS", "password,token", "JSON 배열"),
         ("SECURITY_SENSITIVE_COLUMNS", '{"a":1}', "JSON 배열"),
+        ("MCP_SOURCE_ENDPOINTS", "apm=http://x", "JSON 객체"),
+        ("MCP_SOURCE_ENDPOINTS", '["http://x"]', "JSON 객체"),
+        ("MCP_SOURCE_ENDPOINTS", '{"apm": 1}', "문자열"),
         ("LLM_PROVIDER", "openai", "허용값"),
         ("LLM_MODEL", "abc # 주석", "'#'"),
         ("LLM_MODEL", "abc\ndef", "개행"),

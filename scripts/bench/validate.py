@@ -96,6 +96,8 @@ def _sample_values(knob: catalog.KnobSpec, *, exhaustive: bool) -> tuple[str, ..
         return _TRISTATE_VALUES if exhaustive else ("true",)
     if knob.type == "json_list":
         return _JSON_LIST_VALUES if exhaustive else (_JSON_LIST_VALUES[1],)
+    if knob.type == "json_object":  # dict 필드(plans/125 A-2) — `.env` 는 JSON 객체
+        return (_JSON_OBJECT_VALUE,)
     if knob.type == "int":
         return _INT_VALUES if exhaustive else ("1",)
     if knob.type == "float":
