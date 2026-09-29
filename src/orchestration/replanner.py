@@ -316,7 +316,12 @@ def _validate_replanned_tasks(
     Returns:
         (검증을 통과한 신규 task, 경과 노트)
     """
-    tasks = [close_agent_vocabulary(t) for t in new_tasks]
+    # 활성인 조건부 처리기(plans/125 A-3 — 예 `apm_query`)는 어휘 안이다 — 비활성이면 빈 집합(종전
+    # 그대로).
+    from src.orchestration.apm_query import active_extra_subagents  # 지연 — 순환 방지
+
+    extra = frozenset(active_extra_subagents(app_config))
+    tasks = [close_agent_vocabulary(t, extra) for t in new_tasks]
     if not (state.get("template_structure") or state.get("uploaded_file")):
         tasks = _coerce_alarm_intent(_coerce_process_intent(tasks))
     cfg = getattr(app_config, "composite", None)

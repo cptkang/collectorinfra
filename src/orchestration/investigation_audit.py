@@ -40,6 +40,8 @@ logger = logging.getLogger(__name__)
 
 BACKEND_MCP = "mcp_server"
 BACKEND_PROCESS_API = "process_api"
+#: 관측 소스 게이트웨이(APM · plans/125 A-3) — 두 번째 MCP 엔드포인트.
+BACKEND_APM = "apm_gateway"
 
 
 def _audit_enabled(app_config: Any) -> bool:
@@ -59,6 +61,30 @@ def _host_inspect_fields(result: dict[str, Any]) -> dict[str, Any]:
         fields["outcome"] = INVESTIGATION_PARTIAL
         fields["truncation"] = {"truncated": True,
                                 "truncated_count": result["truncated_targets"]}
+    else:
+        fields["outcome"] = INVESTIGATION_OK
+    return fields
+
+
+def _apm_query_fields(result: dict[str, Any]) -> dict[str, Any]:
+    """APM 보기 호출 감사(plans/125 A-3) — 대상 hostname · 도구 호출 요약 · 실패 사유."""
+    meta = result.get("apm_query") or {}
+    hosts = [h for h in meta.get("hostnames") or [] if h]
+    fields: dict[str, Any] = {
+        "targets": [{"hostname": h} for h in hosts] or None,
+        "profile": ",".join(meta.get("views") or []) or None,
+        "commands": [
+            f"{p.get('tool')}(hostname={p.get('hostname') or '*'})"
+            for p in meta.get("provenance") or []
+        ] or None,
+    }
+    failures = meta.get("failures") or []
+    if result.get("error"):
+        fields["outcome"] = INVESTIGATION_FAILED
+        fields["degraded"] = [{"reason": result.get(DEGRADED_KEY) or "error"}]
+    elif failures:
+        fields["outcome"] = INVESTIGATION_PARTIAL
+        fields["degraded"] = [{"reason": str(f.get("reason"))[:120]} for f in failures[:5]]
     else:
         fields["outcome"] = INVESTIGATION_OK
     return fields
@@ -131,6 +157,8 @@ async def _record(
                   "degraded": [{"reason": "exception", "detail": type(exc).__name__}]}
     elif isinstance(result, dict) and is_access_denied_result(result):
         fields = {"outcome": INVESTIGATION_DENIED, "degraded": [{"reason": "access_denied"}]}
+    elif isinstance(result, dict) and backend == BACKEND_APM:
+        fields = _apm_query_fields(result)
     elif isinstance(result, dict):
         fields = (
             _host_inspect_fields(result) if backend == BACKEND_MCP

@@ -72,20 +72,22 @@ solutions:
     capabilities: [was_instance, was_performance, was_runtime, was_activity, apm_event]
     requires: [host_location]
     views:
-      - {id: apm.instances, capability: was_instance, tool: apm_instance_map, first_hop: true,
-         limit: "전체 200개 상한"}
-      - {id: apm.app_health, capability: was_performance, tool: apm_app_health,
-         required_input: hostname, window_max_minutes: 10, limit: "구간 10분 상한"}
-      - {id: apm.runtime, capability: was_runtime, tool: apm_runtime_health,
-         required_input: hostname, limit: "5분 간격 추세"}
-      - {id: apm.pool, capability: was_runtime, tool: apm_resource_pool,
-         required_input: hostname, limit: "현재값"}
-      - {id: apm.active, capability: was_activity, tool: apm_active_services,
-         required_input: hostname, limit: "현재값 · 상위 20"}
-      - {id: apm.slow_tx, capability: was_activity, tool: apm_slow_transactions,
-         required_input: hostname, limit: "상위 20"}
-      - {id: apm.events, capability: apm_event, tool: apm_events,
-         required_input: hostname, window_max_minutes: 1440, limit: "기본 30분 · 최대 24시간"}
+      - {id: apm.instances, label: "WAS 인스턴스 목록·호스트 매핑", capability: was_instance,
+         tool: apm_instance_map, first_hop: true, limit: "전체 200개 상한"}
+      - {id: apm.app_health, label: "WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절",
+         capability: was_performance, tool: apm_app_health, required_input: hostname,
+         window_max_minutes: 10, limit: "구간 10분 상한"}
+      - {id: apm.runtime, label: "JVM 힙·GC 비중·프로세스 CPU·스레드 추세", capability: was_runtime,
+         tool: apm_runtime_health, required_input: hostname, limit: "5분 간격 추세"}
+      - {id: apm.pool, label: "DB 커넥션 풀·실행 모드별 액티브 서비스", capability: was_runtime,
+         tool: apm_resource_pool, required_input: hostname, limit: "현재값"}
+      - {id: apm.active, label: "지금 실행 중인 서비스", capability: was_activity,
+         tool: apm_active_services, required_input: hostname, limit: "현재값 · 상위 20"}
+      - {id: apm.slow_tx, label: "느린 트랜잭션(시간 분해)", capability: was_activity,
+         tool: apm_slow_transactions, required_input: hostname, limit: "상위 20"}
+      - {id: apm.events, label: "WAS 이벤트(fatal·warning 등)", capability: apm_event,
+         tool: apm_events, required_input: hostname, window_max_minutes: 1440,
+         limit: "기본 30분 · 최대 24시간"}
 
   # 향후 편입 예시 (현재 미등록 — plans/55 소관):
   # - code: dpm

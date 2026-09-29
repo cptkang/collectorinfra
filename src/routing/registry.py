@@ -71,9 +71,11 @@ class ViewSpec:
         first_hop: 대상 없이 부를 수 있는가(전체 목록 보기)
         window_max_minutes: 구간 조회 상한(분) — 넘는 요청은 자르고 고지한다
         limit: 사용자 고지용 상한 설명
+        label: 분해 프롬프트·요약에 쓰는 보기 설명(비면 답변 영역 설명)
     """
 
     id: str
+    label: str = ""
     capability: str = ""
     tool: str = ""
     required_input: str = ""
@@ -445,6 +447,7 @@ def _parse_views(value: Any) -> tuple[ViewSpec, ...]:
         window = raw.get("window_max_minutes")
         views.append(ViewSpec(
             id=str(raw["id"]),
+            label=str(raw.get("label", "")),
             capability=str(raw.get("capability", "")),
             tool=str(raw.get("tool", "")),
             required_input=str(raw.get("required_input", "")),

@@ -1825,6 +1825,19 @@ def _pack_pipeline_result(
 # registry (handler 정의 이후)
 # ──────────────────────────────────────────────
 
+
+def resolve_subagent(name: str | None, app_config: Any) -> SubAgentSpec | None:
+    """고정 처리기 목록 → (없으면) 활성인 조건부 처리기(plans/125 A-3 — 예 `apm_query`).
+
+    조건부 처리기는 소스 엔드포인트가 설정됐을 때만 있다 — 비활성이면 종전처럼 None(호출부 폴백).
+    """
+    spec = SUBAGENT_REGISTRY.get(name or "")
+    if spec is not None:
+        return spec
+    from src.orchestration.apm_query import active_extra_subagents  # 지연 — 순환 방지
+
+    return active_extra_subagents(app_config).get(name or "")
+
 SUBAGENT_REGISTRY: dict[str, SubAgentSpec] = {
     # 처리기 계약(plans/121 §4.4 · TP-2.1a) — 값은 현행 코드 실측이고 소비처는 아직 없다.
     # `purpose`는 분해 프롬프트(`prompts/intent_planner.py` 「사용 가능한 agent」)의 현행 줄

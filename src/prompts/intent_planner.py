@@ -412,6 +412,57 @@ INTENT_PLANNER_TASK_FRAME_SECTION = """## task 프레임 계약 — `spans` (이
 _TASK_FRAME_SECTION_ANCHOR = "## 출력 형식\n"
 
 
+# ══════════════════════════════════════════════════════════════════════════ 비SQL 처리기 —
+# WAS·미들웨어(APM) `apm_query` (plans/125 A-5 · G-3 (a)) — 활성일 때만
+# ══════════════════════════════════════════════════════════════════════════
+#
+# APM 엔드포인트가 설정됐을 때만(`MCP_SOURCE_ENDPOINTS`) 담당 목록 한 줄과 보기 절을 **삽입만** 한다
+# (기존 줄 변경 0 · 비활성 배포는 바이트 불변 — 신규 `enable_*` 없음 · D-162). 담당 줄·보기 표는
+# 레지스트리에서 렌더해 넣는다(사본 금지 · D-053). `<apm_view_rows>` 자리 치환만 한다 — `.format()`
+# 을 거치지 않으므로 예시 JSON 의 `{{` 표기는 위 템플릿과 같다.
+
+_APM_AGENT_ANCHOR = "\n\n## agent 분류 우선순위\n"
+_APM_SECTION_ANCHOR = "## 작업 분해 규칙\n"
+APM_VIEW_ROWS_SLOT = "<apm_view_rows>"
+
+INTENT_PLANNER_APM_SECTION = """## WAS·미들웨어(APM) 조회 — `apm_query` 보기(views)
+
+WAS 인스턴스·응답시간·TPS·에러율·JVM 힙·GC·커넥션 풀·실행 중 서비스·느린 트랜잭션·WAS 이벤트는 **`apm_query`** 담당입니다(폴스타 DB가 아닙니다).
+`apm_query` task에는 `views`에 아래 보기 id를 **1~2개** 넣으세요(목록 밖 id는 버려집니다). 비워 두면 응답시간·TPS 보기(`apm.app_health`)입니다.
+
+<apm_view_rows>
+
+- **WAS 이벤트(fatal·warning 등)는 폴스타 서버 알람이 아닙니다** → `apm_query` + `"views": ["apm.events"]`. 서버 모니터링 알람은 종전대로 `alarm_query`입니다.
+- 서버 CPU·메모리·디스크 사용률(호스트)은 `data_query`이고, JVM 힙·프로세스 CPU(WAS)는 `apm_query`입니다. 둘 다 원하면 task를 나눕니다.
+- 대상 서버가 필요한 보기에 서버가 정해지지 않았으면 실행기가 인스턴스 목록(`apm.instances`)을 먼저 조회합니다 — 그 task를 따로 만들지 마세요.
+- 앞 task 결과의 서버들을 대상으로 하면 `depends_on`·`input_from`으로 잇습니다.
+- 예: {{"task_id": "t1", "agent": "apm_query", "sub_query": "김포 WAS 응답시간 조회", "views": ["apm.app_health"],
+       "depends_on": [], "input_from": [], "order": 1}}
+
+"""  # noqa: E501
+
+
+def render_intent_planner_apm_template(base: str, agent_line: str, view_rows: str) -> str:
+    """APM 활성 전용 — 담당 줄을 담당 목록 끝에, 보기 절을 「작업 분해 규칙」 앞에 **삽입만** 한다.
+
+    Args:
+        base: 기본 템플릿 또는 다른 옵트인 렌더본(소유·task 프레임과 함께 켜질 수 있다)
+        agent_line: 담당 목록 한 줄(`- **apm_query**: …`)
+        view_rows: 레지스트리 보기 표 행
+
+    Raises:
+        RuntimeError: 앵커가 정확히 1회 나타나지 않는다(삽입 위치가 흔들림)
+    """
+    for anchor in (_APM_AGENT_ANCHOR, _APM_SECTION_ANCHOR):
+        if base.count(anchor) != 1:
+            raise RuntimeError(f"분해 프롬프트 삽입 앵커가 1회가 아니다: {anchor!r}")
+    head, sep, tail = base.partition(_APM_AGENT_ANCHOR)
+    rendered = head + "\n" + agent_line + sep + tail
+    section = INTENT_PLANNER_APM_SECTION.replace(APM_VIEW_ROWS_SLOT, view_rows)
+    head, sep, tail = rendered.partition(_APM_SECTION_ANCHOR)
+    return head + section + sep + tail
+
+
 def render_intent_planner_task_frame_template(base: str) -> str:
     """task 프레임 on 전용 분해 프롬프트 — ``base``의 「출력 형식」 앞에 계약 절을 **삽입만** 한다.
 

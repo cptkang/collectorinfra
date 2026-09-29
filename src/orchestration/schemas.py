@@ -8,9 +8,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from functools import lru_cache
+from typing import Any, Optional, get_args
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from src.orchestration.subagents import SUBAGENT_REGISTRY
 
@@ -28,17 +29,20 @@ def allowed_agents() -> frozenset[str]:
 AGENT_FALLBACK_KEY = "agent_fallback"
 
 
-def close_agent_vocabulary(task: dict[str, Any]) -> dict[str, Any]:
+def close_agent_vocabulary(
+    task: dict[str, Any], extra_agents: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
     """task의 담당을 닫힌 어휘로 맞춘다 — **task 단위**, 현행 의미 그대로(plans/121 TP-1.7).
 
     JSON 분해 경로(`structured_output_backend=none`)와 재계획 신규 task는 담당 이름을 검증하지 않아
     목록 밖 이름이 계획에 남았다. 디스패치는 그런 task를 폴백 handler로 보냈으므로
     (`agent_orchestrator._fallback_spec`) 폴백 담당으로 적는 것이 그 의미를 바꾸지 않는다.
     `data_query`로 바꾸거나 계획 전체를 폴백하지 않는다(유효 task까지 잃는다). 목록 안이면
-    입력 그대로(in-place)다.
+    입력 그대로(in-place)다. `extra_agents`는 활성인 조건부 처리기(plans/125 A-3 — 예
+    `apm_query`)다.
     """
     agent = task.get("agent")
-    if agent in allowed_agents():
+    if agent in allowed_agents() or agent in extra_agents:
         return task
     fallback = next(
         (name for name, spec in SUBAGENT_REGISTRY.items() if spec.fallback), "general_inference"
@@ -114,6 +118,39 @@ class SpanDecomposedPlan(DecomposedPlan):
     """`_llm_decompose` 출력 — task마다 원문 조각을 싣는다."""
 
     tasks: list[SpanTaskSpec] = Field(default_factory=list)
+
+
+# ── 비SQL 처리기 보기 슬롯(plans/125 A-5 · G-3 (a)) ──
+# 비SQL 처리기(예 `apm_query`)가 활성일 때만 쓰는 파생 모델이다 — 기존 모델에 필드를 더하면 비활성
+# 배포의 구조화 출력 스키마가 바뀌므로(위 소유·프레임 서브클래스와 같은 이유) 선택된 모델에서
+# 파생한다. 보기 값(닫힌 어휘)은 스키마가 아니라 분해 후 정제(`intent_planner._sanitize_task_views`)가
+# 검증한다.
+
+
+@lru_cache(maxsize=8)
+def views_plan_model(
+    plan_model: type[DecomposedPlan], extra_agents: tuple[str, ...],
+) -> type[DecomposedPlan]:
+    """`plan_model`의 task 에 `views: list[str]`을 더하고 `extra_agents`를 담당 어휘에 더한 모델."""
+    task_model = get_args(plan_model.model_fields["tasks"].annotation)[0]
+    allowed = allowed_agents() | frozenset(extra_agents)
+
+    class ViewsTaskSpec(task_model):  # type: ignore[valid-type,misc]
+        views: list[str] = Field(default_factory=list)
+
+        def model_post_init(self, _ctx: Any) -> None:  # noqa: D105
+            if self.agent not in allowed:
+                raise ValueError(
+                    f"agent가 알려진 서브에이전트가 아닙니다: {self.agent!r} "
+                    f"(허용: {sorted(allowed)})"
+                )
+
+    ViewsTaskSpec.__name__ = f"Views{task_model.__name__}"
+    return create_model(
+        f"Views{plan_model.__name__}",
+        __base__=plan_model,
+        tasks=(list[ViewsTaskSpec], Field(default_factory=list)),
+    )
 
 
 def validate_plan_dag(tasks: list[dict]) -> tuple[list[dict], list[str], list[str]]:

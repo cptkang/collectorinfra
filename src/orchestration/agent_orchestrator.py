@@ -26,6 +26,7 @@ from src.nodes.key_bridge import (
 )
 from src.orchestration.subagents import (
     SUBAGENT_REGISTRY,
+    resolve_subagent,
     SubAgentSpec,
     _make_isolated_input,
 )
@@ -445,7 +446,7 @@ async def _run_agent(
     Returns:
         subagent handler의 반환 dict
     """
-    spec = SUBAGENT_REGISTRY.get(task["agent"]) or _fallback_spec()
+    spec = resolve_subagent(task["agent"], app_config) or _fallback_spec()
     isolated = _make_isolated_input(task, state, prior)
     isolated["user_query"] = task["sub_query"]
     # 이 task에 실제로 주입된 대상 집합을 기록한다 — 충족도 판정(W5-1)과 대상 정합

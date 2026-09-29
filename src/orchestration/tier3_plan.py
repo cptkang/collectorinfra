@@ -69,6 +69,7 @@ from src.orchestration.intent_planner import (
 from src.orchestration.replanner import _assign_ids, _extract_rows, replanner
 from src.orchestration.subagents import (
     SUBAGENT_REGISTRY,
+    resolve_subagent,
     _make_isolated_input,
     _normalize_targets,
     _pack_pipeline_result,
@@ -354,7 +355,7 @@ async def task_handler(
 ) -> dict[str, Any]:
     """노드 체인이 없는 담당(프로세스·호스트 점검·일반 추론 등) — 2단 레지스트리 핸들러를 부른다."""
     task = dict(state.get("current_task") or {})
-    spec = SUBAGENT_REGISTRY.get(task.get("agent", "")) or _fallback_spec()
+    spec = resolve_subagent(task.get("agent", ""), app_config) or _fallback_spec()
     isolated = {k: v for k, v in dict(state).items() if k not in _TASK_KEYS}
     res: object
     try:

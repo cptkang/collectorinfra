@@ -27,6 +27,7 @@ from src.nodes.input_parser import LOCATION_HINT_TERMS
 from src.domain.task_frame import render_task_query, task_spans, verify_task_frames
 from src.prompts.intent_planner import (
     INTENT_PLANNER_SYSTEM_TEMPLATE,
+    render_intent_planner_apm_template,
     render_intent_planner_environment_terms,
     render_intent_planner_ownership_template,
     render_intent_planner_task_frame_template,
@@ -46,6 +47,7 @@ from src.orchestration.schemas import (
     DecomposedPlan,
     OwnershipDecomposedPlan,
     SpanDecomposedPlan,
+    views_plan_model,
     close_agent_vocabulary,
     validate_plan_dag,
 )
@@ -879,7 +881,31 @@ async def _llm_decompose(
         _sanitize_task_capabilities(result)
     if _task_frame_on(app_config):
         result = _apply_task_frames(result, user_query, context_block, fallback)
+    if _nonsql_agents(app_config):
+        _sanitize_task_views(result)
     return result
+
+
+def _nonsql_agents(app_config: AppConfig) -> tuple[str, ...]:
+    """활성인 비SQL 처리기 이름(plans/125 A-5) — 비활성이면 빈 튜플(분해 바이트 불변)."""
+    from src.orchestration.apm_query import active_extra_subagents  # 지연 — 순환 방지
+
+    return tuple(active_extra_subagents(app_config))
+
+
+def _sanitize_task_views(result: dict[str, Any]) -> None:
+    """`apm_query` task 의 `views`를 닫힌 어휘로 정제하고, 다른 담당의 `views`는 떼어 낸다.
+
+    구조화·JSON·폴백 모든 경로의 결과에 같은 규칙을 적용하려고 분해의 마지막 한 곳에서 한다.
+    """
+    from src.orchestration.apm_query import APM_QUERY_AGENT, sanitize_views
+
+    for task in result.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        raw = task.pop("views", None)
+        if task.get("agent") == APM_QUERY_AGENT:
+            task["views"] = sanitize_views(raw)
 
 
 def _apply_task_frames(
@@ -928,7 +954,17 @@ def _planner_system_prompt(app_config: AppConfig) -> str:
         base = _render_planner_ownership_prompt(tuple(app_config.multi_db.get_active_db_ids()))
     if _task_frame_on(app_config):
         base = _render_task_frame_prompt(base)
+    if _nonsql_agents(app_config):
+        from src.orchestration.apm_query import render_agent_line, render_view_rows
+
+        base = _render_apm_prompt(base, render_agent_line(), render_view_rows())
     return _render_planner_environment_terms(base, get_registry().environment_terms)
+
+
+@lru_cache(maxsize=8)
+def _render_apm_prompt(base: str, agent_line: str, view_rows: str) -> str:
+    """APM 활성 렌더 캐시(plans/125 A-5) — 기동 시 1회 렌더(프롬프트 접두 고정 · KV 캐시)."""
+    return render_intent_planner_apm_template(base, agent_line, view_rows)
 
 
 @lru_cache(maxsize=8)
@@ -1151,13 +1187,21 @@ async def _decompose_once(
     # 기존 경로를 지우지 않는다(off가 상시 존재한다).
     parsed: dict | None = None
     ownership_on = _capability_ownership_on(app_config)
+    extra_agents = _nonsql_agents(app_config)
+    plan_model: type[DecomposedPlan] = (
+        # 소유 플래그 on이면 `capability` 필드가 있는 서브클래스 — off 스키마는 종전 그대로. task
+        # 프레임 on이면 원문 조각(`spans`) 서브클래스(소유 필드 포함 — plans/111 C-3).
+        SpanDecomposedPlan if _task_frame_on(app_config)
+        else (OwnershipDecomposedPlan if ownership_on else DecomposedPlan)
+    )
+    if extra_agents:
+        # 비SQL 처리기 활성일 때만 `views` 슬롯 파생 모델(plans/125 A-5) — 비활성은 종전 모델
+        # 그대로.
+        plan_model = views_plan_model(plan_model, extra_agents)
     try:
         model = await try_structured_call(
-            # 소유 플래그 on이면 `capability` 필드가 있는 서브클래스 — off 스키마는 종전 그대로.
-            # task 프레임 on이면 원문 조각(`spans`) 서브클래스(소유 필드 포함 — plans/111 C-3).
             llm, messages,
-            SpanDecomposedPlan if _task_frame_on(app_config)
-            else (OwnershipDecomposedPlan if ownership_on else DecomposedPlan),
+            plan_model,
             backend=getattr(app_config, "structured_output_backend", "none"),
             max_retries=getattr(app_config, "structured_output_max_retries", 1),
         )
@@ -1208,8 +1252,11 @@ async def _decompose_once(
             # 원문 조각 보존 — `sub_query`는 `_apply_task_frames`가 조각으로 다시 만든다
             # (plans/111 C-3).
             task["spans"] = raw.get("spans") or []
+        if extra_agents:
+            # 보기 슬롯 보존(plans/125 A-5) — 정제는 `_sanitize_task_views`.
+            task["views"] = raw.get("views") or []
         # 닫힌 어휘(plans/121 TP-1.7) — 목록 밖 담당은 디스패치 폴백과 같은 담당으로(task 단위)
-        close_agent_vocabulary(task)
+        close_agent_vocabulary(task, frozenset(extra_agents))
         if task.get(AGENT_FALLBACK_KEY):
             logger.warning(
                 "intent_planner: 목록 밖 담당 %r → %s(현행 디스패치 의미)", agent, task["agent"],
