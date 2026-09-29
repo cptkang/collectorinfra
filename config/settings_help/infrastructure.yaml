@@ -72,6 +72,35 @@ settings:
     stability: 서버가 인증을 요구하는데 값이 비면 모든 조회가 거부된다.
     related: [DBHUB_SERVER_URL]
 
+  MCP_SOURCE_ENDPOINTS:
+    example: >-
+      {"apm": "http://127.0.0.1:9096/sse"}로 채우면 WAS(제니퍼 APM) 질의가 게이트웨이로 간다. 비워 두면 WAS 질의는
+      기존처럼 폴스타 쪽으로만 분해된다.
+    summary: 비SQL 관측 시스템(예 apm = 제니퍼 APM 게이트웨이)의 MCP 주소 — 시스템 코드 → SSE URL(JSON).
+    behavior: >-
+      코드가 있으면 그 시스템이 활성이 되어 분해 목록에 담당(apm_query)과 보기 목록이 추가된다. 없으면 비활성이고
+      분해 프롬프트·응답은 설정 전과 같다.
+    stability: 주소가 틀리면 WAS 질의가 「사용 불가」 사유로 끝난다 — 폴스타 값으로 대신 답하지 않는다.
+    related: [MCP_SOURCE_TOKENS, MCP_SOURCE_CALL_TIMEOUT, DBHUB_SERVER_URL]
+
+  MCP_SOURCE_TOKENS:
+    example: >-
+      게이트웨이에 Bearer 인증을 켰는데 이 값을 비워 두면 WAS 질의가 모두 401로 실패한다.
+    summary: 위 시스템별 정적 Bearer 토큰(JSON · 시크릿).
+    behavior: 비어 있으면 인증 헤더 없이 호출한다. 시크릿이라 이 화면에서 편집할 수 없다.
+    stability: 게이트웨이 토큰과 다르면 그 시스템 조회가 모두 거부된다.
+    related: [MCP_SOURCE_ENDPOINTS]
+
+  MCP_SOURCE_CALL_TIMEOUT:
+    example: >-
+      호스트 20대 × 보기 2종이면 호출이 40번이다 — 한 번에 10초를 넘기는 게이트웨이면 값을 올리기보다 대상 수를
+      줄이는 편이 낫다.
+    summary: 관측 소스 도구 호출 1회의 상한(초).
+    behavior: 넘으면 그 호출만 실패로 적고 나머지 결과로 답한다.
+    performance: 값이 크면 느린 게이트웨이가 응답 전체를 늦춘다.
+    stability: 너무 작으면 정상 호출도 시간 초과로 빠진다.
+    related: [MCP_SOURCE_ENDPOINTS]
+
   API_HOST:
     example: >-
       127.0.0.1로 바꾸면 같은 장비에서만 접속된다 — 앞단에 nginx를 두는 구성에서는 이쪽이 안전하지만, 프록시 없이 바꾸면 다른 장비에서 화면이 열리지 않는다.

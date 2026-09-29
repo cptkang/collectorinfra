@@ -6,6 +6,7 @@ pydantic-settings를 사용하여 타입 안전한 설정 관리를 제공한다
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from functools import lru_cache
@@ -175,7 +176,52 @@ class DBHubConfig(BaseSettings):
     mcp_call_timeout: int = 60                       # MCP 호출 전체 대기시간 (초)
     bearer_token: str = ""                           # 전송 인증 Bearer 토큰 (DBHUB_BEARER_TOKEN, 빈 값이면 무헤더 — 서버 무인증 전제)
 
-    model_config = {"env_prefix": "DBHUB_", "env_file": ".env", "extra": "ignore"}
+    # ── 두 번째 이후 MCP 엔드포인트(plans/125 A-2 · G-8 (a) · D-274 ⑦) ──────────────────
+    # 비SQL 관측 시스템(레지스트리 `solutions[]` 중 DB 항목이 없는 것 — 예 `apm`)의 게이트웨이.
+    # **시스템 코드 → URL**(JSON · 예 {"apm": "http://127.0.0.1:9096/sse"}). 코드가 없으면 그
+    # 시스템은 **비활성**이다 — 처리기 미등록·분해 프롬프트 렌더 0(신규 `enable_*` 없음 · D-162 ·
+    # D-251 ⑥).
+    source_endpoints: dict[str, str] = Field(
+        default_factory=dict, validation_alias=AliasChoices("MCP_SOURCE_ENDPOINTS"),
+    )
+    # 시스템 코드 → 정적 Bearer 토큰(JSON 문자열 · 시크릿 — 웹UI 편집 차단·repr 마스킹).
+    # 비면 무헤더.
+    # DBHubConfig 는 `.env` 만 읽는다(DBHUB_BEARER_TOKEN 과 같은 자리).
+    source_tokens: SecretStr = Field(
+        default=SecretStr(""), validation_alias=AliasChoices("MCP_SOURCE_TOKENS"),
+    )
+    # 관측 소스 도구 호출 1회 상한(초) — 세션은 처리기 호출 동안 재사용한다(fan-out 지연).
+    source_call_timeout: float = Field(
+        default=10.0, validation_alias=AliasChoices("MCP_SOURCE_CALL_TIMEOUT"),
+    )
+
+    model_config = {
+        "env_prefix": "DBHUB_", "env_file": ".env", "extra": "ignore", "populate_by_name": True,
+    }
+
+    def active_source_codes(self) -> tuple[str, ...]:
+        """엔드포인트가 설정된(= 활성) 비SQL 시스템 코드 — 설정 선언 순서."""
+        return tuple(code for code, url in self.source_endpoints.items() if str(url or "").strip())
+
+    def source_endpoint(self, code: str) -> tuple[str, str | None] | None:
+        """(URL, 토큰) — 설정이 없으면 None(= 그 시스템 비활성).
+
+        토큰 JSON 이 깨졌으면 무헤더로 두고 경고를 남긴다(토큰 값은 로그에 싣지 않는다).
+        """
+        url = str(self.source_endpoints.get(code) or "").strip()
+        if not url:
+            return None
+        raw = self.source_tokens.get_secret_value().strip()
+        tokens: dict[str, object] = {}
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning("MCP_SOURCE_TOKENS 가 JSON 이 아니다 — 무헤더로 연결한다")
+                parsed = {}
+            tokens = parsed if isinstance(parsed, dict) else {}
+        token = str(tokens.get(code) or "").strip() or None
+        return url, token
 
 
 class QueryConfig(BaseSettings):
