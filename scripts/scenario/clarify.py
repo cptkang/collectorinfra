@@ -187,3 +187,24 @@ def summarize_answer(question: Question, body: dict[str, Any]) -> dict[str, Any]
     if question.kind == "form_fill":
         return {"kind": "form_fill", "fields": sorted((body.get("form_fill_answers") or {}).keys())}
     return {"kind": question.kind, "query": body.get("query")}
+
+
+#: 원시 로그에 남기는 역질문 문구 상한(plans/123 V-2) - 미등록 존 역질문(「'판교존'은(는) 등록되지
+#: 않은 존」)과 일반 존 선택을 가르는 데 앞머리면 충분하다.
+QUESTION_TEXT_MAX = 200
+
+
+def question_record(question: Question) -> dict[str, Any]:
+    """자동 응답 전 역질문의 기록(plans/123 V-2).
+
+    `reason`(제품이 싣는 경우만) · 문구 앞머리 · 제시 존을 남긴다.
+
+    자동 응답은 제품이 되물은 사실을 최종 관측에서 지운다(R3-03·R4-12 - 123 §2.5). 무엇을 물었는지를
+    남겨 둬야 「제품은 되물었다」를 사후에 읽는다. 과거 run 은 이 칸이 없다 - 종류·선택 존만 남는다.
+    """
+    payload = question.payload
+    record: dict[str, Any] = {"reason": payload.get("reason")}
+    if question.kind == "zone":
+        record["question"] = str(payload.get("question") or "")[:QUESTION_TEXT_MAX]
+        record["offered_db_ids"] = offered_db_ids(payload)
+    return record

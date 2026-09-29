@@ -42,6 +42,16 @@
   이 분류로 가려진다 - 그래서 제외 행은 `rejudge.md` 에 건수와 행 목록으로 싣는다(조용히 빼지
   않는다).
 
+**입력 변경**(plans/123 V-6 · CT-2·CT-3 v3 — 턴 `send`·`auto_answer`·턴 수·업로드·엔드포인트)도
+비교에서 뺀다(`input_gap`). 과거 run 이 **보낸 것**과 재판정 카탈로그가 **보낼 것**이 다르면 그
+행의 관측은 새 기대의 답이 아니다. run 이 보낸 입력은 `--input-ref`(기본 run 메타 커밋)의 카탈로그로
+되살린다 - 그 ref 를 못 찾으면 대조하지 않고 요약에 적는다(조용히 비교하지 않는다).
+
+**두 벌 산출**(123 V-6 · D-276 부기 ⓒ): 같은 run 을 ①123 카탈로그 변경 **이전** ref
+(`--catalog-ref <ref>`)와 ②현 작업 트리로 두 번 재판정하면 두 산출의 차이가 123 판정 계약(CT)
+몫이다 - 판정기(`judge_digest`)는 둘 다 현 판정기다. 제품 효과는 run 끼리의 차이에서 이 계약 몫을
+뺀 것이다.
+
 산출(`--out`, 기본 `<run_dir>/rejudge/<카탈로그 표지>/`):
   - `raw.jsonl`(재판정 행) · `run.json`(판정 계약 = 재판정 카탈로그 지문)
   - `rejudge_diff.jsonl`(행별 전후) · `rejudge.md`(요약)
@@ -285,12 +295,49 @@ def restore_observation(row: dict[str, Any], run_dir: Path) -> tuple[Observation
     obs.rewrite_traces = [t for t in row.get("rewrite_trace") or [] if isinstance(t, dict)]
     obs.anchor_at = row.get("anchor_at")
     obs.dependency_notes = [n for n in row.get("dependency_notes") or [] if isinstance(n, dict)]
+    # plans/123 V-1·V-2·V-4 - 응답 고지·SQL 별 행 수·존 선택·본문 절단.
+    obs.response_truncated = bool(row.get("response_truncated"))
+    disclosures = row.get("disclosures")
+    # 칸이 없으면(W-8 이전 러너) None = 수집하지 않았다 - kind 등급 대신 표지어로, 불변식은
+    # 트리아지만.
+    obs.disclosures = ([d for d in disclosures if isinstance(d, dict)]
+                       if isinstance(disclosures, list) else None)
+    obs.sql_entries = [dict(entry) for entry in row.get("executed_sqls") or []
+                       if isinstance(entry, dict) and entry.get("sql")]
+    obs.zone_selection = restore_zone_selection(row)
     if isinstance(row.get("form_memory_panel"), dict):
         obs.form_memory_panel = row["form_memory_panel"]
     else:
         estimated.append("form_memory_panel")
     # 결과 행(H-1)·오라클(O)은 과거 run 에 없다 - None 이면 판정기가 보류로 남긴다.
     return obs, estimated
+
+
+def restore_zone_selection(row: dict[str, Any]) -> dict[str, Any] | None:
+    """존 선택 기록(plans/123 V-2).
+
+    새 행은 `zone_selection` 칸, 과거 행은 `auto_answers` 에서 되살린다.
+
+    과거 run 은 제시 존(`offered`)을 적지 않았다 - None 이면 불변식이 레지스트리 존으로 대신한다.
+    """
+    if isinstance(row.get("zone_selection"), dict):
+        return dict(row["zone_selection"])
+    for answer in row.get("auto_answers") or []:
+        if isinstance(answer, dict) and answer.get("selected_db_ids"):
+            return {"selected": [str(d) for d in answer["selected_db_ids"]],
+                    "offered": answer.get("offered_db_ids") or None, "source": "auto"}
+    return None
+
+
+def restore_pre_answer_mode(row: dict[str, Any], mode: str | None) -> str | None:
+    """자동 응답 전 첫 응답 등급(plans/123 V-2). 칸이 없는 과거 행은 `auto_answers` 로 도출한다.
+
+    자동 응답이 있었으면 첫 응답은 역질문(`clarify`)이었다 - 러너는 역질문에만 답한다. 없으면
+    첫 응답이 곧 최종 응답이다.
+    """
+    if "pre_answer_mode" in row:
+        return row.get("pre_answer_mode")
+    return "clarify" if row.get("auto_answers") else mode
 
 
 # --- 재판정 ------------------------------------------------------------------------------
@@ -417,7 +464,41 @@ def send_contract_gap(
     return f"{SEND_CONTRACT_NOTE} - {' · '.join(missing)} - 과거 run 은 이 방식으로 보내지 않았다"
 
 
-def _excluded_row(row: dict[str, Any], turn: Turn, note: str) -> dict[str, Any]:
+#: 입력 변경 행의 사유 머리(plans/123 V-6 · 원인 `input_changed`).
+INPUT_CHANGED_NOTE = "입력 변경 — 재판정 불가"
+
+
+def _send_signature(scenario: Scenario, index: int) -> tuple[str, ...]:
+    """턴이 서버에 **보내는 것**의 지문 - 송신 본문 · 자동 응답 · 턴 수 · 엔드포인트 · 업로드."""
+    turn = scenario.turns[index - 1]
+    return (_canon(turn.send), str(turn.auto_answer), str(len(scenario.turns)),
+            str(scenario.endpoint), str(scenario.upload))
+
+
+def input_gap(row: dict[str, Any], scenario: Scenario, index: int,
+              input_catalog: Catalog | None) -> str | None:
+    """run 이 보낸 입력(`input_catalog`)과 재판정 카탈로그의 입력이 다르면 그 사유, 같으면 None.
+
+    `input_catalog` 가 없으면(run 커밋을 못 찾음) 대조하지 않는다 - 호출부가 요약에 적는다.
+    """
+    if input_catalog is None:
+        return None
+    resolved, _missing = resolve_turn(row, input_catalog)
+    if resolved is None:
+        return f"{INPUT_CHANGED_NOTE} - run 입력 카탈로그에 이 턴이 없다"
+    before_scenario, before_index, _turn, _group = resolved
+    before = _send_signature(before_scenario, before_index)
+    after = _send_signature(scenario, index)
+    if before == after:
+        return None
+    fields = ("send", "auto_answer", "턴 수", "endpoint", "upload")
+    changed = [name for name, a, b in zip(fields, before, after) if a != b]
+    return (f"{INPUT_CHANGED_NOTE} - {' · '.join(changed)} 이(가) 바뀌었다"
+            " - 과거 run 은 이 입력을 보내지 않았다")
+
+
+def _excluded_row(row: dict[str, Any], turn: Turn, note: str,
+                  excluded: str = "send_contract") -> dict[str, Any]:
     """비교에서 뺀 행의 재판정 행 - 판정은 `manual` 보류.
 
     다른 요청의 관측을 새 기대로 재단하지 않는다.
@@ -427,7 +508,7 @@ def _excluded_row(row: dict[str, Any], turn: Turn, note: str) -> dict[str, Any]:
         "func_verdict": "manual", "invalid_reason": None, "forbidden_mode": None,
         "failed_assertions": [], "manual_notes": [note],
         "manual_sources": ["unobservable"], "manual_source": "unobservable",
-        "rejudge_excluded": "send_contract",
+        "rejudge_excluded": excluded,
     })
     new_row["unevaluated_reason"] = unevaluated_reason(
         new_row, expected_question=clarify.expects_question(turn.expect))
@@ -445,7 +526,7 @@ _FIELD_KEYS: dict[str, tuple[str, ...]] = {
     "retries_partial": ("retries",),
     "form_memory_panel": ("form_memory_panel",),
     "response": ("response_must_contain", "response_must_contain_any", "response_must_not_contain",
-                 "mode", "response_modes"),
+                 "mode", "response_modes", "invariant"),
 }
 #: 과거 run 에 없는 관측(H-1 결과 행 · O 오라클)의 보류 문구 머리.
 _NOT_COLLECTED_NOTES = ("result 를 확인하지 못했다", "oracle")
@@ -460,6 +541,8 @@ CAUSES: dict[str, str] = {
                       "단언을 판정하지 않았다"),
     "send_contract": f"{SEND_CONTRACT_NOTE} - 과거 run 이 새 송신 방식(auth·upload_generate)으로 "
                      "보내지 않았다(비교 제외)",
+    "input_changed": (f"{INPUT_CHANGED_NOTE} - 과거 run 이 이 카탈로그의 입력(send·auto_answer·"
+                      "턴 수)을 보내지 않았다(비교 제외 · plans/123 V-6)"),
     "not_collected": "과거 run 에 없는 관측 - 결과 행(H-1)·오라클(O) 보류",
     "response_truncated": "응답 절단 - 4,000자 뒤를 못 본다",
     "unrestorable": "복원 불가 칸 - 행에 없는 값을 추정했다",
@@ -547,13 +630,15 @@ def _diff_causes(
 def rejudge_row(
     row: dict[str, Any], catalog: Catalog, meta: dict[str, Any], run_dir: Path,
     *, identity: bool = False, sql_collected: bool | None = None,
-    catalog_digest: str | None = None,
+    catalog_digest: str | None = None, input_catalog: Catalog | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """행 1개를 재판정한다 → (재판정 행, 차이 기록). 무효 행은 그대로 둔다(측정 미성립).
 
     `sql_collected` 는 run 단위 판별(`run_sql_collected`)이다 - 없으면 이 행의 칸으로만 가른다.
     `catalog_digest` 는 재판정 카탈로그 지문 - 없으면 송신 계약을 선언한 턴에서만 계산한다.
     송신 계약 변경 행은 상태 `send_contract` 로 비교에서 빠진다(`changed`·`detail_changed` 거짓).
+    `input_catalog`(run 이 보낸 입력의 카탈로그)와 입력이 다른 행은 상태 `input_changed` 로
+    빠진다(V-6).
     """
     base: dict[str, Any] = {"profile": row.get("profile"), "arm": row.get("arm"),
             "scenario_id": row.get("scenario_id"), "turn": row.get("turn"),
@@ -578,6 +663,11 @@ def rejudge_row(
             return _excluded_row(row, turn, gap), {
                 **base, "status": "send_contract", "after": None, "changed": False,
                 "detail_changed": False, "causes": ["send_contract"], "reason": gap}
+    changed_input = input_gap(row, scenario, index, input_catalog)
+    if changed_input:
+        return _excluded_row(row, turn, changed_input, "input_changed"), {
+            **base, "status": "input_changed", "after": None, "changed": False,
+            "detail_changed": False, "causes": ["input_changed"], "reason": changed_input}
     obs, estimated = restore_observation(row, run_dir)
     run_env = meta.get("env")
     mock = str(row.get("mode") or meta.get("mode")) == "mock"
@@ -607,6 +697,9 @@ def rejudge_row(
         "failed_assertions": [f.as_dict() for f in verdict.failures],
         "manual_notes": verdict.manual_notes, "manual_sources": verdict.manual_sources,
         "manual_source": primary_manual_source(verdict.manual_sources),
+        "invariant_violations": list(verdict.invariant_violations),
+        "pre_answer_mode": restore_pre_answer_mode(row, verdict.response_mode),
+        "zone_selection": obs.zone_selection,
     })
     if env_mismatch:
         new_row["env_mismatch"] = {"scenario_env": scenario.env, "run_env": run_env}
@@ -631,9 +724,13 @@ def rejudge_row(
 
 
 def rejudge_run(
-    run_dir: Path, catalog: Catalog, *, identity: bool = False
+    run_dir: Path, catalog: Catalog, *, identity: bool = False,
+    input_catalog: Catalog | None = None,
 ) -> dict[str, Any]:
-    """run 전체를 재판정한다 → {rows(재판정 행), diffs, meta}."""
+    """run 전체를 재판정한다 → {rows(재판정 행), diffs, meta}.
+
+    `input_catalog` 는 run 이 보낸 입력의 카탈로그다(plans/123 V-6) - 주면 입력이 바뀐 행을 뺀다.
+    """
     rows = load_rows(run_dir)
     if not rows:
         raise RejudgeError(f"{run_dir / 'raw.jsonl'} 가 없거나 비었다")
@@ -644,11 +741,12 @@ def rejudge_run(
     new_rows, diffs = [], []
     for row in rows:
         new_row, diff = rejudge_row(row, catalog, meta, run_dir, identity=identity,
-                                    sql_collected=sql_collected, catalog_digest=digest)
+                                    sql_collected=sql_collected, catalog_digest=digest,
+                                    input_catalog=input_catalog)
         new_rows.append(new_row)
         diffs.append(diff)
     return {"run": run, "rows": rows, "new_rows": new_rows, "diffs": diffs,
-            "sql_collected": sql_collected}
+            "sql_collected": sql_collected, "input_compared": input_catalog is not None}
 
 
 # --- 산출 --------------------------------------------------------------------------------
@@ -686,6 +784,8 @@ def summarize(result: dict[str, Any]) -> dict[str, Any]:
         "invalid_kept": sum(1 for d in diffs if d["status"] == "invalid_kept"),
         "missing": sum(1 for d in diffs if d["status"] in ("catalog_missing", "turn_missing")),
         "send_contract": sum(1 for d in diffs if d["status"] == "send_contract"),
+        "input_changed": sum(1 for d in diffs if d["status"] == "input_changed"),
+        "input_compared": result.get("input_compared"),
         "held_rows": sum(1 for d in judged if d.get("held")),
         "held_by_column": {column: {"rows": count, "keys": held_keys[column]}
                            for column, count in held_rows.most_common()},
@@ -733,6 +833,9 @@ def render_markdown(result: dict[str, Any], summary: dict[str, Any], source: dic
         ["판정이 바뀐 행", summary["func_changed"]],
         ["환경 불일치 판별이 바뀐 행", summary["env_mismatch_changed"]],
         [f"{SEND_CONTRACT_NOTE}(비교 제외 · `manual` 보류)", summary["send_contract"]],
+        [f"{INPUT_CHANGED_NOTE}(비교 제외 · `manual` 보류 · plans/123 V-6)",
+         summary["input_changed"] if summary.get("input_compared") else
+         "대조하지 않음 - run 입력 카탈로그(--input-ref · run 커밋)를 찾지 못했다"],
         ["복원 불가 보류 행(칸 없음 - 판정은 나머지 단언으로)", summary["held_rows"]],
         ["SQL 수집 run", "예" if summary["sql_collected"] else
          "아니오 - SQL 단언은 복원 불가 보류"],
@@ -757,6 +860,14 @@ def render_markdown(result: dict[str, Any], summary: dict[str, Any], source: dic
         out.append(_table(["시나리오", "턴", "프로파일", "원 판정", "사유"], [
             [d["scenario_id"], d["turn"], d["profile"], d["before"]["func"], d.get("reason")]
             for d in excluded[:200]]))
+        out.append("")
+    changed_inputs = [d for d in result["diffs"] if d["status"] == "input_changed"]
+    if changed_inputs:
+        out.append(f"## {INPUT_CHANGED_NOTE} ({len(changed_inputs)}건 · 비교 제외)")
+        out.append("")
+        out.append(_table(["시나리오", "턴", "프로파일", "원 판정", "사유"], [
+            [d["scenario_id"], d["turn"], d["profile"], d["before"]["func"], d.get("reason")]
+            for d in changed_inputs[:200]]))
         out.append("")
     out.append("## 판정 전이")
     out.append("")
@@ -857,6 +968,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="이 git ref 의 카탈로그로 판정(checkout 없이 git archive)")
     source.add_argument("--catalog-dir", help="시나리오 YAML 디렉터리(프로파일은 현 작업 트리)")
     parser.add_argument("--out", help="산출 디렉터리(기본 <run_dir>/rejudge/<카탈로그 표지>)")
+    parser.add_argument("--input-ref",
+                        help="run 이 보낸 입력의 카탈로그 git ref(기본 run 메타 커밋)"
+                             " - 입력이 바뀐 턴을 비교에서 뺀다(plans/123 V-6)")
     parser.add_argument("--identity", action="store_true",
                         help="run 메타 커밋의 카탈로그로 재판정해 원 판정과 행 단위 대조"
                              "(커밋이 로컬에 없으면 --catalog-ref 로 대체 ref 를 준다)")
@@ -892,9 +1006,27 @@ def main(argv: list[str] | None = None) -> int:
                 dirty_note = ("원 run 은 dirty 였다 - 미커밋 카탈로그 변경은 커밋에 없어 "
                               "불일치로 나올 수 있다(원인 `uncommitted_catalog`).")
                 note = f"{note} {dirty_note}" if note else dirty_note
+            input_catalog = None
+            input_ref = args.input_ref or str(meta.get("commit") or "")
+            missing_note = None
+            if input_ref and resolve_commit(input_ref):
+                input_dir = Path(workdir) / "input"
+                input_dir.mkdir()
+                try:
+                    input_catalog, _input_sha = load_catalog_at_ref(input_ref, input_dir)
+                except CatalogError as exc:
+                    missing_note = (f"입력 변경 대조를 하지 않았다 - `{input_ref[:12]}`"
+                                    f" 카탈로그를 현 로더로 읽지 못했다({str(exc)[:200]})")
+            else:
+                missing_note = ("입력 변경 대조를 하지 않았다 - run 입력 카탈로그의 ref"
+                                f"(`{input_ref[:12] or '-'}`)를 로컬에서 찾지 못했다"
+                                "(--input-ref 로 준다)")
+            if missing_note:
+                note = f"{note} {missing_note}" if note else missing_note
             source_info = {"label": label, "digest": judgement_digest(catalog),
                            "identity": bool(args.identity), "note": note}
-            result = rejudge_run(run_dir, catalog, identity=bool(args.identity))
+            result = rejudge_run(run_dir, catalog, identity=bool(args.identity),
+                                 input_catalog=input_catalog)
             out_dir = Path(args.out) if args.out else run_dir / "rejudge" / tag
             paths = write_outputs(result, out_dir, source_info, catalog)
     except (RejudgeError, CatalogError) as exc:
@@ -905,6 +1037,7 @@ def main(argv: list[str] | None = None) -> int:
           f"판정 일치 {summary['func_equal']}/{summary['rejudged']} · "
           f"전부 일치 {summary['detail_equal']}/{summary['rejudged']} · "
           f"복원 불가 보류 {summary['held_rows']} · 송신 계약 변경 {summary['send_contract']} · "
+          f"입력 변경 {summary['input_changed']} · "
           f"대표 원인 {summary['primary_causes'] or '-'}")
     for name, path in paths.items():
         print(f"  {name}: {path}")

@@ -446,7 +446,8 @@ def test_judge_digest_is_stable_and_tracks_sources() -> None:
 
     assert judge_digest() == judge_digest()
     assert len(judge_digest()) == 16
-    assert set(JUDGE_SOURCES) == {"assertions.py", "oracle.py"}
+    # plans/123 V-4 - 불변식 판정기도 판정 소스다(바뀌면 판정이 바뀐다)
+    assert set(JUDGE_SOURCES) == {"assertions.py", "oracle.py", "invariants.py"}
 
 
 def test_judge_change_note_warns_but_does_not_refuse() -> None:

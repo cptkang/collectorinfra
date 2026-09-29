@@ -112,8 +112,11 @@ KIND_TABLE: dict[str, KindSpec] = {
         KindSpec(ENTITY_NOT_FOUND, "guide", False, "task", 15),
         KindSpec(GENERATOR_NOTE, "auxiliary", False, "task", 40),
         # 123 — 턴 단위
-        KindSpec(SCOPE_NARROWED, "correct", True, "turn", 10),
-        KindSpec(SCOPE_PARTIAL, "correct", True, "turn", 10),
+        # 좁힌 범위는 사용자(또는 러너 자동 응답 — D-216 ②)가 고른 범위다 — 응답의 대응 등급을
+        # 정하지 않는다(123 V-1 확정). 「전체」 요청을 일부 존으로 답한 것은 `scope_partial`이
+        # partial.
+        KindSpec(SCOPE_NARROWED, "neutral", True, "turn", 10),
+        KindSpec(SCOPE_PARTIAL, "partial", True, "turn", 10),
         KindSpec(UNREGISTERED_ZONE, "correct", False, "turn", 20),
         KindSpec(UNIT_SUSPECT, "correct", False, "turn", 30),
         # 123 — 섀도(응답 불변 · S-2·S-6 · run R5′ 뒤 기본 on 판정)

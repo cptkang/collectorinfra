@@ -25,9 +25,11 @@ SCENARIO_DIR = REPO_ROOT / "testdata" / "scenarios"
 PROFILES_PATH = REPO_ROOT / "config" / "scenarios" / "profiles.yaml"
 DB_REGISTRY_PATH = REPO_ROOT / "config" / "db_registry.yaml"
 
-# 대응 등급 (plans/94 §3.8). 7등급 + 금지 3종.
+# 대응 등급 (plans/94 §3.8). 8등급 + 금지 3종. `empty_template`(plans/123 V-3 · 123·G-2 (b))는 0건
+# 응답을 「조건에 해당하는 데이터가 없습니다」류 템플릿으로 끝낸 것이다 — 대상 없음·미래 기간·조건
+# 충돌을 짚는 `guide` 와 가른다. 응답 등급이지 판정 어휘(`func_verdict`)가 아니다(D-241 ① 불변).
 RESPONSE_MODES: frozenset[str] = frozenset(
-    {"answer", "correct", "clarify", "guide", "partial", "refuse", "error"}
+    {"answer", "correct", "clarify", "guide", "partial", "refuse", "error", "empty_template"}
 )
 FORBIDDEN_MODES: frozenset[str] = frozenset({"silent_wrong", "hang", "crash"})
 
@@ -87,8 +89,10 @@ FILLED_ROWS_KEYS: frozenset[str] = frozenset({"min"})
 DOCX_KEYS: frozenset[str] = frozenset({"no_placeholders", "tables", "styles_preserved"})
 DOCX_TABLE_KEYS: frozenset[str] = frozenset({"index", "min_rows", "first_row"})
 # 결과 행 단언(H-1) — 러너가 받은 `/query/{id}/download-csv` 행을 본다.
+# `matches_db_row_sum`(plans/123 CT-6 · E-04) — 결과 행 수 = 감사 로그 DB별 행 수 합(병합 소실
+# 탐지).
 RESULT_KEYS: frozenset[str] = frozenset(
-    {"columns", "filled_columns", "value_range", "unique_by", "allow_empty"}
+    {"columns", "filled_columns", "value_range", "unique_by", "allow_empty", "matches_db_row_sum"}
 )
 # 스트림 지연 단언(H-5) — 각 값은 {max: ms}.
 STREAM_KEYS: frozenset[str] = frozenset({"ttft_ms", "max_event_gap_ms"})
@@ -117,6 +121,42 @@ DEPENDENCY_NOTE_KINDS: frozenset[str] = frozenset({
     "ownership", "routing_fallback", "bridge", "probe", "source_unavailable",
     "structure_missing", "descriptions_missing",
 })
+# 응답 고지 kind → 대응 등급(plans/123 V-1 · W-8) — `src/domain/disclosure.py` `KIND_TABLE` 의
+# `grade` 사본이다. 하네스는 제품 모듈을 import 하지 않으므로 낡지 않게 테스트가 대조한다
+# (tests/test_scenario/test_plan123_judge.py). `neutral`(121 `NOTE_*` · 122 시간 notes)·
+# `auxiliary`(생성기 메모)는 등급을 정하지 않는다. `disclosures_contains` 단언의 어휘이기도 하다.
+DISCLOSURE_KIND_GRADES: dict[str, str] = {
+    # 123 — task 단위
+    "row_limit_reached": "partial", "validation_budget": "error", "non_sql": "error",
+    "deadline": "error", "sql_blocked": "refuse", "query_failed": "error",
+    "condition_changed": "correct", "entity_not_found": "guide", "generator_note": "auxiliary",
+    # 123 — 턴 단위
+    "scope_narrowed": "neutral", "scope_partial": "partial", "unregistered_zone": "correct",
+    "unit_suspect": "correct",
+    # 123 — 섀도(S-2 · S-6 — on 전에는 응답에 실리지 않는다)
+    "blank_input": "guide", "sql_input": "refuse", "write_request": "refuse",
+    "prompt_injection": "refuse", "credential_request": "refuse", "condition_conflict": "guide",
+    # 121 `NOTE_*` · 122 `TimeResolution.notes` — 등급 중립
+    **{kind: "neutral" for kind in (
+        "gate", "trace", "truncation", "postcheck", "sufficiency", "scope_db", "decompose",
+        "ownership", "routing_fallback", "bridge", "probe", "source_unavailable",
+        "structure_missing", "descriptions_missing",
+        "default_period", "current_month_excluded", "empty_range", "period_in_progress",
+        "future_period", "display_grain_unaligned", "year_inferred", "multiple_periods",
+    )},
+}
+# 불변식(plans/123 V-4) — 이름 → 활성화를 좌우하는 소유 제품 항목. 판정기(`invariants.py`)가 모든
+# 턴에 계산해 `invariant_violations` 칸(트리아지)에 싣고, 군 헤더 `invariants:` 가 `active_from`(첫
+# run 표지)을 적은 불변식만 판정(`func_verdict`)에 넣는다 — 소유 제품 수정이 랜딩되기 전에 남의
+# 결함으로 불합격을 만들지 않는다.
+INVARIANTS: dict[str, str] = {
+    "limit_disclosed": "123·W-1",
+    "zone_coverage_named": "123·W-2·W-5",
+    "empty_template_misuse": "123·S-4",
+    "overgeneralization": "121·TP-4.4 ②",
+    "demonstrative_bulk": "123·G-6 · 106·H1 · 123·S-7(b)",
+    "upload_misattributed": "295feee(D-264 ④ 교정)",
+}
 
 # 턴 인증 방식(H-6). None = 러너 토큰. "none" = 인증 헤더 없이 보낸다(401 기대 가드).
 AUTH_MODES: frozenset[str] = frozenset({"none"})
@@ -176,6 +216,9 @@ class Group:
     source: Optional[str] = None
     # 군 기본 요구 소스(plans/122 C-4b). 시나리오가 선언하지 않으면 이것을 물려받는다.
     requires_sources: tuple[str, ...] = ()
+    # 불변식 활성 선언(plans/123 V-4) — 이름 → `active_from`(판정에 넣기 시작하는 run 표지 · None
+    # 이면 트리아지만). 판정 계약 지문에 들어간다 — 활성 전환은 계약 변경이다.
+    invariants: dict[str, Optional[str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -659,6 +702,8 @@ def _result_errors(spec: Any) -> list[str]:
         errors.extend(_value_range_errors(spec["value_range"]))
     if "allow_empty" in spec and not isinstance(spec["allow_empty"], bool):
         errors.append(f"allow_empty 는 true|false 여야 한다 - {spec['allow_empty']!r}")
+    if "matches_db_row_sum" in spec:
+        errors.extend(_true_only("matches_db_row_sum", spec["matches_db_row_sum"]))
     return errors
 
 
@@ -756,7 +801,8 @@ def _expect_shape_errors(expect: dict[str, Any]) -> list[str]:
         errors.append(f"node_path_must_not 는 노드 이름의 비지 않은 목록이어야 한다 - "
                       f"{expect['node_path_must_not']!r}")
     for key, vocab in (("status_any", TURN_STATUSES),
-                       ("dependency_notes_contains", DEPENDENCY_NOTE_KINDS)):
+                       ("dependency_notes_contains", DEPENDENCY_NOTE_KINDS),
+                       ("disclosures_contains", frozenset(DISCLOSURE_KIND_GRADES))):
         if key in expect and not (
             _text_list(expect[key]) and all(item in vocab for item in expect[key])
         ):
@@ -913,6 +959,32 @@ def _parse_sources(value: Any, where: str, errors: list[str]) -> tuple[str, ...]
         )
         return ()
     return tuple(str(item).strip() for item in value)
+
+
+def _parse_invariants(value: Any, where: str, errors: list[str]) -> dict[str, Optional[str]]:
+    """군 헤더 `invariants:`(plans/123 V-4) — `{불변식 이름: active_from 표지 | null}`.
+
+    이름은 `INVARIANTS` 어휘다(오타가 조용히 트리아지로 새지 않게). `active_from` 은 비지 않은
+    문자열(판정에 넣기 시작하는 run 표지 — 예 `R5`) 또는 null(트리아지만)이다.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not value:
+        errors.append(f"{where}: invariants 는 {{불변식: active_from | null}} 매핑이어야 한다"
+                      f" - {value!r}")
+        return {}
+    parsed: dict[str, Optional[str]] = {}
+    for name, active_from in value.items():
+        if name not in INVARIANTS:
+            errors.append(f"{where}: 알 수 없는 불변식 '{name}'"
+                          f" - 허용: {', '.join(sorted(INVARIANTS))}")
+            continue
+        if active_from is not None and not _text(active_from):
+            errors.append(f"{where}: invariants.{name} 는 run 표지 문자열 또는 null 이어야 한다"
+                          f" - {active_from!r}")
+            continue
+        parsed[str(name)] = str(active_from).strip() if active_from is not None else None
+    return parsed
 
 
 def _parse_upload_generate(
@@ -1109,6 +1181,9 @@ def _parse_file(path: Path, errors: list[str]) -> tuple[Optional[Group], list[Sc
         source=(str(group_raw["source"]) if group_raw.get("source") else None),
         requires_sources=_parse_sources(
             group_raw.get("requires_sources"), f"{path.name} 군 '{group_id}'", errors,
+        ),
+        invariants=_parse_invariants(
+            group_raw.get("invariants"), f"{path.name} 군 '{group_id}'", errors,
         ),
     )
 

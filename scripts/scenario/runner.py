@@ -33,6 +33,7 @@ from .assertions import (
     Failure,
     Observation,
     Verdict,
+    classify_mode,
     option_labels,
     evaluate_turn,
     judge_digest,
@@ -826,6 +827,14 @@ def _row(
         # 오라클 실행 요약(O-2) - phase 별 status·사유·DB 별 행 수·ms. 실행하지 않은 턴은 None.
         # 행 원문은 싣지 않는다(G-4). 판정은 failed_assertions(`oracle`)·manual_notes 에 있다.
         "oracle_check": _oracle_check(obs.oracle),
+        # --- plans/123 새 칸(V-1 · V-2 · V-4 — 기존 칸은 이름·값 그대로) ---
+        # 응답 고지 구조 필드(W-8) - 서버 페이로드 그대로. **None = 수집하지 않았다**(done 을 못 받은
+        # 오류 턴) · [] = 수집했고 고지 없음. 재판정(J-4)이 이 칸으로 kind 등급·불변식 활성을 되살린다.
+        "disclosures": obs.disclosures,
+        # 불변식 위반(V-4 트리아지 칸) - `{name, active, detail}`. `active` 인 것만 판정에 들어갔다.
+        "invariant_violations": list(verdict.invariant_violations),
+        # 조회 범위를 좁힌 존 선택(V-2) - `{selected, offered, source: auto|turn}`. 없으면 None.
+        "zone_selection": obs.zone_selection,
     }
     if extras:
         row.update(extras)
@@ -1593,6 +1602,8 @@ def _apply_sql_audit(obs: Observation, entries: list[dict[str, Any]]) -> None:
     if not entries:
         return
     obs.executed_sqls = [entry["sql"] for entry in entries if entry["sql"]]
+    # SQL 별 행 수(plans/123 V-4 `limit_disclosed`) - 행에는 `executed_sqls` 칸으로 이미 실린다.
+    obs.sql_entries = [dict(entry) for entry in entries if entry.get("sql")]
     attempts = [e["retry_attempt"] for e in entries if isinstance(e.get("retry_attempt"), int)]
     if attempts:
         obs.retries = max(obs.retries or 0, max(attempts))
@@ -2252,6 +2263,7 @@ def _answer_questions(
     무한 왕복을 막고, 답이 거부됐다는 사실을 판정에서 숨기지 않는다.
     """
     asked: set[str] = set()
+    selection: Optional[dict[str, Any]] = None
     for _ in range(clarify.MAX_AUTO_ANSWERS):
         question = clarify.pending_question(obs)
         if question is None or question.signature in asked:
@@ -2265,15 +2277,40 @@ def _answer_questions(
         answer_endpoint, resend_file = clarify.answer_endpoint(endpoint, question)
         log.append({
             **clarify.summarize_answer(question, body),
+            # plans/123 V-2 - 역질문 reason · 문구 · 제시 존
+            **clarify.question_record(question),
             "endpoint": answer_endpoint,
             "question_status": obs.status,
             "question_wall_ms": round(obs.wall_ms, 1),
         })
+        if question.kind == "zone":
+            selection = {"selected": list(body.get("selected_db_ids") or []),
+                         "offered": clarify.offered_db_ids(question.payload) or None,
+                         "source": "auto"}
         obs = _send(
             client, answer_endpoint, {**body, "thread_id": thread_id},
             upload if resend_file else None, anonymous,
         )
+    if selection is not None:
+        # plans/123 V-2 · V-4 `zone_coverage_named` - 러너가 고른 존이 이 턴의 조회 범위다.
+        obs.zone_selection = selection
     return obs
+
+
+def _turn_zone_selection(
+    payload: dict[str, Any], last_obs: Optional[Observation]
+) -> Optional[dict[str, Any]]:
+    """턴이 직접 보낸 존 선택(`selected_db_ids` - F-06형 2턴의 답 턴)의 기록(plans/123 V-2).
+
+    제시 존은 직전 턴 역질문의 선택지다. 역질문이 없었으면 None(판정기가 레지스트리 존으로
+    대신한다).
+    """
+    selected = payload.get("selected_db_ids")
+    if not selected:
+        return None
+    question = (last_obs.clarification if last_obs else None) or {}
+    offered = clarify.offered_db_ids(question) if isinstance(question, dict) else []
+    return {"selected": [str(d) for d in selected], "offered": offered or None, "source": "turn"}
 
 
 def _hold_for_env(turn: Turn, scenario: Scenario, run_env: Optional[str]) -> Turn:
@@ -2642,6 +2679,10 @@ def _run_once(
                 # 송신 직전 · **계측 밖**(wall_ms 는 `_send` 안에서 잰다) · 직렬.
                 oracle_pre = turn_oracle.run_phase("pre")
             obs = _send(client, endpoint, payload, upload, anonymous)
+            # plans/123 V-2 - 자동 응답 전 첫 응답의 대응 등급. 자동 응답이 제품이 되물은 사실을
+            # 덮으므로 (R3-03·R4-12 - 123 §2.5) 최종 등급과 따로 남긴다.
+            pre_answer_mode = classify_mode(obs)[0]
+            turn_selection = _turn_zone_selection(payload, last_obs)
             auto_answers: list[dict[str, Any]] = []
             if turn.auto_answer and not clarify.expects_question(turn.expect):
                 obs = _answer_questions(
@@ -2649,6 +2690,8 @@ def _run_once(
                     str(payload.get("query") or ""), obs, zone_preference, auto_answers,
                     anonymous=anonymous,
                 )
+            if obs.zone_selection is None and turn_selection is not None:
+                obs.zone_selection = turn_selection
             obs.anchor_at = anchor_at
             if needs_result_rows(judged.expect):
                 # H-1: 턴 완료 직후·판정 전에 받는다. **계측 밖**이다 - wall_ms·processing_time 은
@@ -2690,6 +2733,7 @@ def _run_once(
             if auto_answers:
                 # 무엇에 어떻게 답했는지가 판정을 검증하는 재료다 - 역질문 자체가 회귀인지도 여기서 본다.
                 extras["auto_answers"] = auto_answers
+            extras["pre_answer_mode"] = pre_answer_mode
             if env_mismatch:
                 extras["env_mismatch"] = {"scenario_env": scenario.env, "run_env": run_env}
             if sql_entries:

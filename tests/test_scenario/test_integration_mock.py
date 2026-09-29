@@ -162,10 +162,20 @@ def test_D216_존_역질문에_스크립트가_자동_응답해_완료까지_간
     (row,) = rows
     assert row["func_verdict"] == "pass", row["failed_assertions"]
     assert row["db_ids"] == ["polestar_cm_gp"]
-    assert row["auto_answers"] == [{
+    (answer,) = row["auto_answers"]
+    assert answer == {
         "kind": "zone_select", "selected_db_ids": ["polestar_cm_gp"], "endpoint": "stream",
-        "question_status": "clarification", "question_wall_ms": row["auto_answers"][0]["question_wall_ms"],
-    }]
+        "question_status": "clarification", "question_wall_ms": answer["question_wall_ms"],
+        # plans/123 V-2 - 자동 응답 전 역질문 기록(reason · 문구 앞머리 · 제시 존)
+        "reason": None, "question": answer["question"],
+        "offered_db_ids": ["polestar_b0", "polestar_cm_gp", "polestar_cm_yd"],
+    }
+    assert answer["question"], "역질문 문구 앞머리가 남는다"
+    # plans/123 V-2 - 자동 응답이 덮은 첫 응답 등급과 러너가 고른 존
+    assert row["pre_answer_mode"] == "clarify"
+    assert row["zone_selection"] == {
+        "selected": ["polestar_cm_gp"],
+        "offered": ["polestar_b0", "polestar_cm_gp", "polestar_cm_yd"], "source": "auto"}
 
 
 def test_D217_업로드_형식_가드의_400이_모의에서도_판정까지_전달된다(
@@ -177,6 +187,8 @@ def test_D217_업로드_형식_가드의_400이_모의에서도_판정까지_전
     rows = _rows(Path(summary["out_dir"]))
 
     assert len(rows) == 3, "R군은 3회 반복한다"
-    assert {row["func_verdict"] for row in rows} == {"manual"}, [r["failed_assertions"] for r in rows]
+    # plans/123 CT-1·CT-7 - R2 등급 정책 확정 + J-10 문구 기계 단언(수동 검토 이관)으로 이제 pass
+    # 다.
+    assert {row["func_verdict"] for row in rows} == {"pass"}, [r["failed_assertions"] for r in rows]
     assert all(row["failed_assertions"] == [] for row in rows)
     assert {row["response_mode"] for row in rows} == {"error"}

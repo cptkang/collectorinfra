@@ -708,13 +708,15 @@ def judgement_summary(
 #: 여기 둔다(`assertions.py` 의 `manual.add` 호출부) — 나머지 문구는 카탈로그 `manual_review` 다.
 _POLICY_NOTE_MARK = "등급 정책 미확정"
 _FANOUT_NOTE_PREFIX = "row_count 는 단일 DB 턴 전용이다"
+#: 활성 불변식 판정 보류(plans/123 V-4 · `invariants.evaluate_invariants`).
+_INVARIANT_NOTE_PREFIX = "불변식 "
 _UNOBSERVABLE_NOTE = re.compile(
     r"^(?:모의 실행\(canned 응답\)|sql_must_match: |sql_executed: |행이 나왔지만 실행 SQL|"
     r"gold_sql 동등성은|openpyxl 미설치|python-docx 미설치|docx 열기 실패|xlsx 열기 실패|"
     r"산출물 판독 불가|retries=\S+ 는 하한이다|"
     r"(?:intent=|row_count_per_db |file\.|rewrite[ .]|plan[ .]|period_covers |"
-    r"node_path_must_not |stream\.|dependency_notes_contains |result |llm_calls\.max=|"
-    r"retries\.max=)[^\n]*확인하지 못했다)"
+    r"node_path_must_not |stream\.|dependency_notes_contains |disclosures_contains |result |"
+    r"llm_calls\.max=|retries\.max=)[^\n]*확인하지 못했다)"
     r"|: xlsx 가 아니라 자동 칼럼 검증 대상이 아니다$"
 )
 
@@ -732,6 +734,8 @@ def note_sources(note: str) -> tuple[str, ...]:
         return ("policy",)
     if note.startswith(_FANOUT_NOTE_PREFIX):
         return ("fanout",)
+    if note.startswith(_INVARIANT_NOTE_PREFIX):
+        return ("invariant",)
     if _UNOBSERVABLE_NOTE.search(note):
         return ("unobservable",)
     return ("catalog",)

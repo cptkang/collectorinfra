@@ -356,8 +356,11 @@ def _composite_turns() -> list[tuple[Scenario, Turn]]:
 def test_converted_turns_drop_manual_review() -> None:
     """`manual_review` 가 남으면 구조 단언이 통과해도 합격이 아니라 manual 이다(§3.4)."""
     planned = [(s.id, t) for s, t in _composite_turns() if "plan" in t.expect]
+    # R1-03 의 `plan: {min_tasks: 2}` 는 plans/123 CT-3(123·G-7 (a) · D-280 ⑦)이 A-12형 기대와 같은
+    # 변경으로 뺐다 - 원문이 앞단 존 게이트를 발동해 답 턴이 단일 task 로 확정되는 경로라 구조적으로
+    # 불합격이었다(123 §2.6). 키 소유는 그대로 `plan` = 121 이다.
     assert {sid for sid, _ in planned} == {
-        "E-01", "E-02", "E-03", "R1-01", "R1-03", "R1-05", "R1-08",
+        "E-01", "E-02", "E-03", "R1-01", "R1-05", "R1-08",
     }
     assert all("manual_review" not in turn.expect for _, turn in planned)
 

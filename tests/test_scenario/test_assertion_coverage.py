@@ -39,6 +39,9 @@ KNOWN_KEYS = {
     # (D-275 주의 ③ · §9.2 「조용한 통과 방지」). 하위 키·정본 파일·엔진 커버리지는 로더가
     # `oracle.validate_oracle_spec` 로 검사한다.
     "oracle",
+    # 응답 고지 kind 단언 (plans/123 V-1 · W-8) — 어휘는 catalog.DISCLOSURE_KIND_GRADES 가 로드
+    # 시점에 검사한다.
+    "disclosures_contains",
 }
 
 

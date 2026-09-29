@@ -186,6 +186,10 @@ def _apply_done(obs: Observation, payload: dict[str, Any]) -> None:
     notes = payload.get("dependency_notes")
     if isinstance(notes, list):
         obs.dependency_notes = list(notes)
+    # 응답 고지(plans/123 W-8 · V-1) — 서버는 고지가 없으면 키를 싣지 않는다(`_disclosures_field`).
+    # done 을 받았으면 「수집했고 없음」([])이다 - None(수집하지 않음)과 가른다(불변식 활성 판별 ·
+    # V-4).
+    obs.disclosures = [d for d in payload.get("disclosures") or [] if isinstance(d, dict)]
     _apply_timeline(obs, payload)
 
 

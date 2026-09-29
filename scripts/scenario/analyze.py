@@ -426,6 +426,7 @@ MANUAL_SOURCE_LABELS: dict[str, str] = {
     "catalog": "카탈로그 `manual_review`",
     "oracle_unavailable": "오라클 미가용(O-2 · 불합격 아님)",
     "fanout": "팬아웃 턴의 단일 DB `row_count`(Y-4)",
+    "invariant": "활성 불변식 판정 불가(응답 본문 절단 - plans/123 V-4)",
     "unobservable": "관측 수단 없음(하네스)",
     BUNDLE_SOURCE: "K 묶음 상속(참조 시나리오 단언)",
 }

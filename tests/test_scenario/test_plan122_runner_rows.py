@@ -31,6 +31,10 @@ NEW_KEYS = frozenset({
     "manual_sources", "manual_source", "anchor_at", "dependency_notes",
     "result_check", "oracle_check",
 })
+#: plans/123 이 더한 칸(V-1 · V-2 · V-4) - 기존 칸은 이름·값 그대로다.
+NEW_KEYS_123 = frozenset({
+    "disclosures", "invariant_violations", "zone_selection", "pre_answer_mode",
+})
 #: 벽시계 지연 - 실행마다 다르다(기준선에서 뺐다). 서버 타임스탬프로 계산하는 노드 지연은
 #: 결정적이라 남긴다.
 VOLATILE_KEYS = frozenset({"wall_ms", "ttfb_ms", "ttft_ms", "max_event_gap_ms"})
@@ -78,9 +82,12 @@ def test_기존_칸은_새_칸을_빼면_변경_전_행과_같다(mock_run: dict
     rows = mock_run["rows"]
     assert len(rows) == len(expected) == 5
     for actual, before in zip(rows, expected):
-        assert set(actual) - set(before) - VOLATILE_KEYS == NEW_KEYS, "새 칸은 정해진 여섯뿐이다"
+        added = set(actual) - set(before) - VOLATILE_KEYS
+        assert added - NEW_KEYS_123 == NEW_KEYS, "122 새 칸은 정해진 여섯뿐이다"
+        assert added - NEW_KEYS <= NEW_KEYS_123, "123 새 칸은 정해진 넷뿐이다"
         assert not set(before) - set(actual), "기존 칸이 사라지면 안 된다"
-        kept = {k: v for k, v in actual.items() if k not in NEW_KEYS | VOLATILE_KEYS}
+        kept = {k: v for k, v in actual.items()
+                if k not in NEW_KEYS | NEW_KEYS_123 | VOLATILE_KEYS}
         where = f"{actual['scenario_id']} 턴 {actual['turn']}"
         assert kept == before, f"{where} 의 기존 칸 값이 바뀌었다"
 

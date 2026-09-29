@@ -22,6 +22,14 @@ group:
                                #   로더가 거부한다. 러너는 run 서버의 활성 소스에 없으면 시나리오를
                                #   **선택하지 않고** 사유를 적재한다. 선언이 없으면 D-216 ③대로 실행·보류.
                                #   **판정 계약 지문(judgement_digest)에 들어가지 않는다**(선택 전용)
+  invariants:                  # 선택(plans/123 V-4). 불변식 활성 선언 — {불변식: active_from | null}.
+    limit_disclosed: R5        #   불변식은 **모든 턴에 계산**해 raw.jsonl `invariant_violations` 칸(트리아지)에
+    overgeneralization: null   #   싣고, 여기서 active_from(판정에 넣기 시작한 run 표지)을 적은 것만
+                               #   판정(func_verdict)에 넣는다 — null 은 트리아지만. 이름은 catalog.INVARIANTS
+                               #   어휘(모르는 이름은 로더가 거부). 활성 불변식도 응답 고지(done.disclosures)를
+                               #   **수집한 run**(W-8 이후 러너)에서만 판정에 들어간다 — 과거 run 재판정은 트리아지.
+                               #   활성 위반 + 대응 등급 answer·empty_template = silent_wrong(V-5).
+                               #   **판정 계약 지문에 들어간다**(활성 전환 = 계약 변경)
 
 scenarios:
   - id: F-01                   # 필수. 고유. 중복이면 거부(V2) — 재개 키가 충돌해 한 건이 사라진다
@@ -125,6 +133,11 @@ scenarios:
           dependency_notes_contains: [gate]   # done.dependency_notes 에 이 종류(kind)의 노트가 있다
                                        #   (catalog.DEPENDENCY_NOTE_KINDS = src/utils/prior_dependency
                                        #   NOTE_*). 계획 요약(plan_summary)이 없거나 사전 게이트면 보류
+          disclosures_contains: [row_limit_reached]   # plans/123 V-1 — 응답 고지 구조 필드
+                                       #   (done.disclosures[].kind · QueryResponse.disclosures)에 이 kind 가
+                                       #   있다. 어휘 = catalog.DISCLOSURE_KIND_GRADES(= src/domain/disclosure
+                                       #   KIND_TABLE · drift 테스트). 고지를 수집하지 않은 run(W-8 이전 러너 ·
+                                       #   과거 run)이나 역질문으로 끝난 턴은 보류
 
           # --- 결과 행 단언(plans/122 H-1 · G-4) — 러너가 /query/{id}/download-csv 로 받은 행 ---
           result:
@@ -133,6 +146,9 @@ scenarios:
             value_range: {cpu_avg: [0, 100]}   # 또는 별칭 목록 [{columns: [cpu_avg, avg_cpu], range: [0, 100]}]
             unique_by: ["hostname"]
             allow_empty: false         # 0행이 정답이면 true. 아니면 0행일 때 선언한 하위 단언이 전부 불합격
+            matches_db_row_sum: true   # plans/123 CT-6(E-04) — 결과 행 수 = 감사 로그 DB별 행 수 합
+                                       #   (「각각」 병합이 DB별 조회 행을 잃지 않았다). DB별 행 수를
+                                       #   못 봤으면 보류 · true 만
                                        # 결과 행을 못 받았으면(미수집·unavailable) 보류. 절단된 결과는
                                        #   받은 행만 판정하고 상세에 절단 사실을 싣는다
 
@@ -233,7 +249,12 @@ scenarios:
 
     perf: {target_ms: 30000, applies_to_turn: 2}
     response_modes: [clarify, answer]   # 허용 대응 등급(§3.8).
-                                        #   answer correct clarify guide partial refuse error
+                                        #   answer correct clarify guide partial refuse error empty_template
+                                        #   empty_template(plans/123 V-3 · 123·G-2 (b)) = 0행 + 「데이터가
+                                        #   없습니다」류 템플릿(대상 없음·미래·충돌을 짚는 안내는 guide)
+                                        #   등급은 응답 고지 kind(done.disclosures)가 먼저 정하고(V-1) 없으면
+                                        #   표지어로 고른다. 상한 고지만으로 정해진 partial 은 answer 를
+                                        #   허용한 시나리오에서 answer 동치다(V-1)
                                         #   금지 3종(silent_wrong hang crash)은 선언과 무관하게 불합격
     pair_with: null                     # R군 대조군 짝. 서로를 가리켜야 하고 짝의 kind 는 control(V16)
     depends_on: []                      # 선행 시나리오 ID

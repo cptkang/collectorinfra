@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from . import REPO_ROOT
 from .catalog import (
+    DISCLOSURE_KIND_GRADES,
     FORBIDDEN_MODES,
     FORM_MEMORY_PANEL_STATES,
     PLAN_ANY_AGENT,
@@ -30,20 +31,41 @@ from .catalog import (
 
 # 대응 등급 탐지 표지 (§3.8).
 #
-# 이 표지는 **관측 어휘**이지 판정 기준이 아니다. G-10 (b)에 따라 케이스별 허용 등급이
-# 사용자 확정되기 전까지 R군 판정은 manual 로 남고, 여기서 고른 등급은 리포트의 분포로만
-# 쓰인다. 어느 표지가 맞았는지는 raw.jsonl 의 mode_evidence 에 남겨 사람이 감사할 수 있게 한다.
+# 이 표지는 **관측 어휘**다. 등급은 먼저 제품의 구조 필드 `disclosures[].kind`(plans/123 V-1)로
+# 정하고, kind 가 없거나(과거 run) 등급을 정하지 않는 kind 뿐이면 표지어로 고른다. 어느 표지가
+# 맞았는지는 raw.jsonl 의 mode_evidence 에 남겨 사람이 감사할 수 있게 한다.
 _REFUSE_MARKERS = (
     "수행할 수 없", "허용되지 않", "읽기 전용", "실행하지 않", "거부",
     "삭제할 수 없", "변경할 수 없", "권한이 없",
 )
+# plans/123 V-3 - 「지원 범위에 포함되지 않」·「제공하고 있지 않」·「제공되지 않」(run
+# 20260923-103638 에서 guide 응답 7턴이 이 표지 누락으로 answer 로 분류됐다).
 _GUIDE_MARKERS = (
     "지원하지 않", "제공하지 않", "수집 대상이 아니", "수집하지 않", "범위 밖",
     "기능이 없", "존재하지 않", "등록되어 있지 않", "해당 존이 없",
+    "지원 범위에 포함되지 않", "제공하고 있지 않", "제공되지 않",
 )
 _CORRECT_MARKERS = ("오타", "으로 이해", "로 이해", "으로 해석", "로 해석", "교정", "대신")
 _PARTIAL_MARKERS = ("일부만", "절단", "잘라", "전체가 아니", "먼저 보여", "우선 표시")
+# plans/123 V-3 `empty_template` - 0건 응답의 템플릿 문구(제품 빈 결과 문구 · 완화 제안 · 「확인되지
+# 않습니다」류 LLM 서술). 대상 없음·미래·충돌을 짚는 안내(`guide`)가 먼저 판정된다.
+_EMPTY_TEMPLATE_MARKERS = (
+    "데이터가 없습니다", "데이터가 없어", "데이터가 없는", "결과가 없습니다", "조회된 데이터가 없",
+    "조회 결과가 없", "확인되지 않습니다", "임계값 낮추기", "임계값을 낮추거나", "조건을 완화",
+)
 _CRASH_MARKERS = ("Traceback (most recent call last)", "Internal Server Error")
+
+#: 고지 kind 등급의 우선순위(plans/123 V-1) - 한 턴에 여러 kind 가 있으면 앞선 등급이 턴의 등급이다.
+_GRADE_PRECEDENCE: tuple[str, ...] = ("refuse", "error", "guide", "partial", "correct")
+#: 범위·상한 고지 kind - 응답의 **대응**이 아니라 **조회 범위**를 알린다. 응답 본문의 거절·안내·빈
+#: 결과 표지보다 뒤에 본다: 상한에 닿은 「수집하지 않는 지표」 안내 응답을 `partial` 로 덮으면 안
+#: 된다(R4-05 형). `scope_narrowed`(사용자·러너 자동 응답이 고른 범위 - D-216 ②)는 등급을 정하지
+#: 않는다(`neutral`).
+CONTEXT_KINDS: frozenset[str] = frozenset({"row_limit_reached", "scope_partial"})
+#: 상한 고지만으로 정해진 `partial` - `answer` 를 허용한 시나리오에서는 `answer` 동치다(123 V-1 ·
+#: 상한 도달 대조군 R2-07C·R3-08C). 상한을 밝힌 정상 조회를 「정상 응답이 아니다」로 떨어뜨리지
+#: 않는다.
+LIMIT_ONLY_PARTIAL_EVIDENCE = "kind:row_limit_reached"
 
 # 부정 단언 - 위반이 곧 silent_wrong 후보다(§3.8).
 _NEGATIVE_KEYS = frozenset({"sql_must_not_match", "response_must_not_contain", "column_must_not_map"})
@@ -155,6 +177,20 @@ class Observation:
     #   - raw.jsonl 에는 요약만 싣는다(G-4).
     # 대상 DB 가 없어 돌리지 않았으면 post 는 status=unavailable·사유만 있는 같은 모양이다.
     oracle: Optional[dict[str, Any]] = None
+    # 응답 고지(plans/123 W-8 · V-1) - 스트림 `done.disclosures`·`QueryResponse.disclosures`
+    # (`{kind, text, source}` 목록). **None = 수집하지 않았다**(옛 러너·과거 run 행) · [] = 수집했고
+    # 고지 없음. 불변식 활성(V-4)은 이 칸을 수집한 run(= W-8 이후 러너 · run R5~)에서만 판정에
+    # 들어간다.
+    disclosures: Optional[list[dict[str, Any]]] = None
+    # 감사 로그 실행 SQL 항목(plans/123 V-4 `limit_disclosed`) - `{sql, source, row_count, success,
+    # retry_attempt}`. `executed_sqls` 는 SQL 문자열만 남긴다 - SQL 별 행 수는 여기서 읽는다.
+    sql_entries: list[dict[str, Any]] = field(default_factory=list)
+    # 존 선택(plans/123 V-2) - `{selected: [db_id], offered: [db_id] | None, source: auto|turn}`.
+    # 러너 자동 응답(D-216 ②) 또는 턴의 `selected_db_ids` 로 조회 범위를 좁힌 턴. 없으면 None.
+    zone_selection: Optional[dict[str, Any]] = None
+    # 응답 본문이 원시 로그 상한(4,000자)에서 잘렸다 - 재판정 복원 행만 참이다(실 run 은 전문이
+    # 있다).
+    response_truncated: bool = False
 
 
 @dataclass
@@ -186,14 +222,17 @@ AUTH_FAILURE_STATUSES = frozenset({401, 403})
 #: - `catalog`: 카탈로그 `manual_review` 문구
 #: - `oracle_unavailable`: 오라클을 실행·비교하지 못했다(plans/122 O-2 — 불합격 아님)
 #: - `fanout`: 단일 DB 전용 단언이 멀티 DB 팬아웃 턴에 걸렸다(Y-4)
+#: - `invariant`: 활성 불변식(plans/123 V-4)을 판정하지 못했다(응답 본문 절단 등 - 불합격 아님)
 #: - `unobservable`: 관측 수단이 없어 확인하지 못했다(스트림 미탑재·모의 실행·역질문 등)
 MANUAL_SOURCES: tuple[str, ...] = (
-    "env_mismatch", "policy", "catalog", "oracle_unavailable", "fanout", "unobservable",
+    "env_mismatch", "policy", "catalog", "oracle_unavailable", "fanout", "invariant",
+    "unobservable",
 )
 
 
-#: 판정기 지문(`judge_digest`)이 덮는 소스 — 턴 판정(`evaluate_turn`)과 오라클 비교(`evaluate_oracle`).
-JUDGE_SOURCES: tuple[str, ...] = ("assertions.py", "oracle.py")
+#: 판정기 지문(`judge_digest`)이 덮는 소스 — 턴 판정(`evaluate_turn`) · 오라클
+#: 비교(`evaluate_oracle`) · 불변식(`invariants.evaluate_invariants` - plans/123 V-4).
+JUDGE_SOURCES: tuple[str, ...] = ("assertions.py", "oracle.py", "invariants.py")
 
 
 def judge_digest() -> str:
@@ -275,6 +314,9 @@ class Verdict:
     manual_sources: list[str] = field(default_factory=list)
     #: `func == "invalid"` 일 때만 채운다. 무엇이 측정을 무효로 만들었는지 한 줄.
     invalid_reason: Optional[str] = None
+    #: 불변식 위반(plans/123 V-4 트리아지 칸) - `{name, active, detail}`. `active` 인 것만 판정에
+    #: 들어간다.
+    invariant_violations: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _contains_any(text: str, markers: tuple[str, ...]) -> Optional[str]:
@@ -392,8 +434,81 @@ def is_runner_auth_failure(obs: Observation, expect: Optional[dict[str, Any]] = 
     return obs.http_status == 0 and is_auth_failure_error(obs.error)
 
 
+def disclosure_kinds(obs: Observation) -> list[str]:
+    """이 턴 응답 고지의 kind(등장 순서 · 중복 없음). 수집하지 않았으면 빈 목록."""
+    kinds: list[str] = []
+    for item in obs.disclosures or []:
+        kind = str(item.get("kind") or "") if isinstance(item, dict) else ""
+        if kind and kind not in kinds:
+            kinds.append(kind)
+    return kinds
+
+
+def _graded_kind(kinds: Iterable[str]) -> Optional[tuple[str, str]]:
+    """kind 들 중 우선순위(`_GRADE_PRECEDENCE`)가 가장 앞선 (등급, kind).
+
+    등급을 정하는 kind 가 없으면 None.
+    """
+    best: Optional[tuple[int, str, str]] = None
+    for kind in kinds:
+        grade = DISCLOSURE_KIND_GRADES.get(kind)
+        if grade not in _GRADE_PRECEDENCE:
+            continue            # neutral · auxiliary · 미매핑(표지어 폴백)
+        rank = _GRADE_PRECEDENCE.index(grade)
+        if best is None or rank < best[0]:
+            best = (rank, grade, kind)
+    return (best[1], best[2]) if best else None
+
+
+def _norm_text(text: str) -> str:
+    """본문 대조용 정규화 - 강조 표지를 걷고 공백을 한 칸으로 접는다.
+
+    제품 `result_aggregator._norm_text` 와 같은 규칙이다.
+    """
+    return " ".join(str(text).replace("**", "").split())
+
+
+def undisclosed_text(obs: Observation) -> str:
+    """표지어를 볼 본문 - 등급을 아는 고지(kind 매핑 있음)의 문구를 걷어낸다(plans/123 V-1).
+
+    고지는 kind 로 이미 등급에 반영된다. 문구가 본문에 남아 표지어에 한 번 더 걸리면 kind 와
+    다른 등급이 난다(상한 고지의 「절단」→ partial · 좁힌 범위의 「전체가 아니라」→ partial ·
+    생성기 메모 인용문의 「대신」→ correct — D-279 주의 ①). 매핑 없는 kind 의 문구는 남긴다
+    (표지어 폴백).
+    """
+    text = _norm_text(obs.response)
+    for item in obs.disclosures or []:
+        if not isinstance(item, dict) or str(item.get("kind") or "") not in DISCLOSURE_KIND_GRADES:
+            continue
+        piece = _norm_text(item.get("text") or "")
+        if piece:
+            text = text.replace(piece, " ")
+    return text
+
+
+def _zero_rows(obs: Observation) -> bool:
+    """돌려준 데이터 행이 0이다 - SQL·행이 없는 응답이거나, 행 수를 **관측했고** 0이다.
+
+    SQL 은 있는데 행 수를 관측하지 못한 턴(합계 None · DB별 행 수 없음)은 0행으로 보지 않는다
+    - 모르는 것이다.
+    """
+    per_db = obs.row_counts_by_db
+    if not observed_sqls(obs) and not (obs.row_count or 0):
+        return True
+    observed = obs.row_count == 0 or (obs.row_count is None and bool(per_db))
+    return observed and not any((count or 0) for count in per_db.values())
+
+
 def classify_mode(obs: Observation) -> tuple[str, Optional[str]]:
-    """대응 등급을 고른다. 먼저 맞는 것을 적용한다. (등급, 근거 표지)를 돌려준다."""
+    """대응 등급을 고른다. 먼저 맞는 것을 적용한다. (등급, 근거 표지)를 돌려준다.
+
+    순서(plans/123 V-1·V-3): 구조(crash·hang·clarify·error) → **응답 고지 kind**(범위·상한
+    kind 제외 · 우선순위 refuse > error > guide > partial > correct) → 거절·안내 표지(데이터 없는
+    응답 · **0행이면 SQL 이 있어도 안내 표지**) → `empty_template`(0행 + 빈 결과 템플릿) →
+    범위·상한 kind(`CONTEXT_KINDS`) → 교정·부분 표지 → answer. 표지어는 kind 로 등급이 정해진
+    고지 문구를 걷어낸 본문에서 본다(`undisclosed_text`). 근거가 kind 이면 `mode_evidence` 는
+    `kind:<kind>` 다.
+    """
     if obs.http_status >= 500:
         return "crash", f"http_status={obs.http_status}"
     crash_marker = _contains_any(obs.response, _CRASH_MARKERS)
@@ -405,20 +520,36 @@ def classify_mode(obs: Observation) -> tuple[str, Optional[str]]:
         return "clarify", "clarification"
     if obs.status == "error" or obs.http_status >= 400:
         return "error", f"status={obs.status} http={obs.http_status}"
+    kinds = disclosure_kinds(obs)
+    graded = _graded_kind(kind for kind in kinds if kind not in CONTEXT_KINDS)
+    if graded:
+        return graded[0], f"kind:{graded[1]}"
+    text = undisclosed_text(obs)
+    zero_rows = _zero_rows(obs)
     # 거부·안내 표지는 **데이터를 돌려주지 않은 응답**에만 적용한다. 데이터 표에 붙은 진단 절
     # ("[일부 존 조회 실패] ... 허용되지 않은 테이블")이 거부로 분류되던 오분류(SYN-F-03)를 막는다 -
     # 종전에는 오케스트레이션 경로의 executed_sql 이 늘 None 이라 모든 응답이 이 검사를 탔다.
     if not observed_sqls(obs) and not (obs.row_count or 0):
-        marker = _contains_any(obs.response, _REFUSE_MARKERS)
+        marker = _contains_any(text, _REFUSE_MARKERS)
         if marker:
             return "refuse", marker
-        marker = _contains_any(obs.response, _GUIDE_MARKERS)
+    # plans/123 V-3 - 0행 응답은 SQL 이 있어도 안내 표지를 본다(「nonexistent-01 은 존재하지
+    # 않습니다」를 조회 뒤에 말한 응답이 answer 로 분류됐다). 행이 있는 응답은 종전대로 보지
+    # 않는다(SYN-F-03).
+    if zero_rows:
+        marker = _contains_any(text, _GUIDE_MARKERS)
         if marker:
             return "guide", marker
-    marker = _contains_any(obs.response, _CORRECT_MARKERS)
+        marker = _contains_any(text, _EMPTY_TEMPLATE_MARKERS)
+        if marker:
+            return "empty_template", marker
+    context = _graded_kind(kind for kind in kinds if kind in CONTEXT_KINDS)
+    if context:
+        return context[0], f"kind:{context[1]}"
+    marker = _contains_any(text, _CORRECT_MARKERS)
     if marker:
         return "correct", marker
-    marker = _contains_any(obs.response, _PARTIAL_MARKERS)
+    marker = _contains_any(text, _PARTIAL_MARKERS)
     if marker:
         return "partial", marker
     return "answer", None
@@ -1552,6 +1683,29 @@ def _check_observed_facts(
                 if kind not in have:
                     failures.append(Failure("dependency_notes_contains", kind, have))
 
+    wanted_kinds = expect.get("disclosures_contains") or []
+    if wanted_kinds:
+        # plans/123 V-1 - 응답 고지 구조 필드(`done.disclosures`)의 kind. 고지는 조회 결과에 붙는다
+        # - 역질문 턴에는 없고(제품 계약), 수집하지 않은 행(옛 러너·과거 run)은 「고지 없음」이
+        # 아니라 「볼 수 없음」이다.
+        if obs.disclosures is None:
+            manual.add(
+                f"disclosures_contains {list(wanted_kinds)} 를 확인하지 못했다"
+                " - 응답 고지(done.disclosures)를 수집하지 않은 run 이다(W-8 이전 러너 · 과거 run)",
+                "unobservable",
+            )
+        elif _ended_in_question(obs):
+            manual.add(
+                f"disclosures_contains {list(wanted_kinds)} 를 확인하지 못했다"
+                " - 역질문으로 끝난 턴이라 조회 고지가 없다",
+                "unobservable",
+            )
+        else:
+            have = disclosure_kinds(obs)
+            for kind in wanted_kinds:
+                if kind not in have:
+                    failures.append(Failure("disclosures_contains", kind, have))
+
 
 # --- 표 형태 값 판정 (결과 행 H-1 · xlsx H-4 공용) --------------------------------------------
 #: 불합격 상세에 싣는 예시 값 수 상한 — 행 원문을 싣지 않는다(G-4 · PII 노출면 · plans/110 94·§4.4).
@@ -1673,6 +1827,27 @@ def _unique_by_failure(
     })
 
 
+def _check_db_row_sum(
+    result: dict[str, Any], obs: Observation, failures: list[Failure], manual: _Holds,
+) -> None:
+    """`result.matches_db_row_sum`(plans/123 CT-6 · E-04) - 결과 행 수 = 감사 로그 DB별 행 수 합.
+
+    「각각」 질의의 병합 결과가 DB별 조회 행을 잃었는지 본다(run 20260923-103638 E-04: 2,442행
+    대 1,690 + 759). DB별 행 수는 **마지막 성공 실행**의 값이다(`runner._apply_sql_audit`).
+    관측하지 못하면 보류다.
+    """
+    per_db = obs.row_counts_by_db
+    total = result.get("total_rows")
+    if not per_db or not isinstance(total, int) or isinstance(total, bool):
+        manual.add("result.matches_db_row_sum 을 확인하지 못했다 - DB별 행 수(감사 로그)"
+                   " 또는 결과 행 수가 없다", "unobservable")
+        return
+    expected = sum(int(count or 0) for count in per_db.values())
+    if total != expected:
+        failures.append(Failure("result.matches_db_row_sum", expected,
+                                {"total_rows": total, "row_counts_by_db": dict(per_db)}))
+
+
 def _check_result(spec: Any, obs: Observation, failures: list[Failure], manual: _Holds) -> None:
     """결과 행 단언 `result` (plans/122 H-1) — 러너가 받은 `download-csv` 행을 본다.
 
@@ -1695,10 +1870,13 @@ def _check_result(spec: Any, obs: Observation, failures: list[Failure], manual: 
     header = [str(column) for column in result.get("columns") or []]
     rows = [[row.get(column) for column in header]
             for row in result.get("rows") or [] if isinstance(row, dict)]
+    if spec.get("matches_db_row_sum"):
+        _check_db_row_sum(result, obs, failures, manual)
     checks = [key for key in ("columns", "filled_columns", "value_range", "unique_by")
               if key in spec]
     if status == "empty" or not rows:
-        if not spec.get("allow_empty"):
+        # 행 합 단언만 있으면 0행도 그 단언이 판정한다(DB별 합도 0 이면 일치).
+        if not spec.get("allow_empty") and (checks or not spec.get("matches_db_row_sum")):
             for key in checks or ["allow_empty"]:
                 failures.append(Failure(f"result.{key}", spec.get(key, False), "결과 행 0건"))
         return
@@ -1902,6 +2080,17 @@ def evaluate_turn(
     verdict.response_mode = mode
     verdict.mode_evidence = evidence
 
+    # plans/123 V-4 - 불변식은 모든 턴에 계산해 트리아지 칸에 싣고, 군 헤더가 활성으로 선언했고 그
+    # run 이 응답 고지를 수집했을 때만(= W-8 이후 러너 · run R5~) 판정에 넣는다.
+    from .invariants import evaluate_invariants
+
+    verdict.invariant_violations = evaluate_invariants(
+        scenario, turn_index, turn, obs, group, mode=mode, mock=mock, manual=manual,
+    )
+    active = [v for v in verdict.invariant_violations if v["active"]]
+    for violation in active:
+        failures.append(Failure(f"invariant.{violation['name']}", "위반 없음", violation["detail"]))
+
     negative_violated = any(f.key in _NEGATIVE_KEYS for f in failures)
     if mode in FORBIDDEN_MODES:
         verdict.forbidden_mode = mode
@@ -1909,8 +2098,15 @@ def evaluate_turn(
         # 착각을 그대로 받아 그럴듯한 답을 냈다. 사용자가 알아차릴 수 없는 실패다.
         verdict.forbidden_mode = "silent_wrong"
         verdict.mode_evidence = "부정 단언 위반 + answer"
+    elif mode in ("answer", "empty_template") and active:
+        # plans/123 V-5(120·V-7 보류 해제) - 활성 불변식 위반 + 정상 응답·빈 결과 템플릿. 상한
+        # 도달·한 존 조회·대상 없음을 말하지 않고 그럴듯하게 끝낸 응답이다.
+        verdict.forbidden_mode = "silent_wrong"
+        verdict.mode_evidence = (f"불변식 위반({', '.join(v['name'] for v in active)}) + {mode}")
 
     declared = set(scenario.response_modes)
+    if (mode == "partial" and evidence == LIMIT_ONLY_PARTIAL_EVIDENCE and "answer" in declared):
+        declared.add("partial")          # 123 V-1 - 상한 고지만의 partial 은 answer 동치
     if declared and mode not in declared and verdict.forbidden_mode is None:
         if group.policy_confirmed:
             failures.append(Failure("response_modes", sorted(declared), mode))
@@ -1943,6 +2139,7 @@ def evaluate_turn(
         verdict.failures = []
         verdict.manual_notes = []
         verdict.manual_sources = []
+        verdict.invariant_violations = []
         verdict.invalid_reason = (
             f"러너 인증 실패 - {obs.error or f'http {obs.http_status}'}"
             + ("  (재로그인 후 1회 재시도했으나 다시 거부됐다)" if obs.auth_retried else "")

@@ -75,6 +75,10 @@ scenarios:
         expect:
           status: completed
           db_ids: ["polestar_cm_gp", "polestar_cm_yd"]
+          # plans/123 CT-6(122 소유 카탈로그 - 123 요청분) - 「각각」 병합 결과가 DB별 조회 행을 잃지 않았다
+          #   (run 20260923-103638: 결과 2,442행 대 김포 1,690 + 여의도 759 = 2,449). 「표 2개」는 단언 키가 없어
+          #   수동으로 남긴다.
+          result: {matches_db_row_sum: true}
           manual_review: "두 표가 존 라벨로 구분돼 나오는지"
   - id: E-05
     plans: [88, 82, 80, 78]

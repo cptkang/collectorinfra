@@ -237,6 +237,10 @@ scenarios:
           query: "2026년 6월 기준으로 채워줘"
         expect:
           status: completed
+          # plans/123 CT-6(122 소유 카탈로그 - 123 요청분 · 120 D-269 주의 ⑥) - 종전 `status` 만으로 pass 였으나
+          #   run 20260923-103638 산출물의 「처리능력 (TPMC)」 열에 메모리 GB 가 1,688행 채워졌다(오매핑).
+          #   TPMC 는 공란이 정답이다(H-10 과 같은 양식 · 같은 머리글 규칙 `상위/하위`).
+          file: {header_rows: [5, 6], empty_columns: ["처리능력/(TPMC)"]}
       - send:
           form_fill_answers: {"월중평균사용률(최근 6개월간)": {"action": "literal", "value": "99"}}
         endpoint: stream
