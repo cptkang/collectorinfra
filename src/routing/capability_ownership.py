@@ -179,7 +179,9 @@ def ownership_guidance_rows(
     own: list[str] = []
     other: list[str] = []
     for spec in reg.capability_specs():
-        owners = reg.capability_owners(spec.code)
+        # DB 설명 생성 안내는 DB 시스템 사이의 경계다 — 비DB 시스템(APM · plans/125 A-1) 영역은
+        # 싣지 않는다(DB 설명이 WAS 영역을 말할 일이 없고, 등재만으로 생성 프롬프트가 바뀌지 않게).
+        owners = tuple(o for o in reg.capability_owners(spec.code) if not reg.is_non_db_system(o))
         if not owners:
             continue
         line = f"- {spec.code}: {spec.label or spec.code}"

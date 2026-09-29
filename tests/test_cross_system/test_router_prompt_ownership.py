@@ -159,7 +159,13 @@ def test_ownership_rows_are_registry_derived(flag):
         0
     ]
     table_codes = re.findall(r"^\| ([a-z_]+) \|", section, re.MULTILINE)
-    assert table_codes == [s.code for s in reg.capability_specs() if reg.capability_owners(s.code)]
+    # 비DB 시스템(APM · plans/125 A-1) 영역은 소유자가 있어도 활성 DB 가 없어 라우터 소유표에 싣지
+    # 않는다 — 라우터는 DB 를 고르고, 등재만으로 라우터 프롬프트가 바뀌지 않는다(바이트 불변).
+    assert table_codes == [
+        s.code for s in reg.capability_specs()
+        if reg.capability_owners(s.code)
+        and not reg.is_non_db_system(reg.capability_owners(s.code)[0])
+    ]
     for code in table_codes:
         assert reg.system_label(reg.capability_owners(code)[0]) in section
 

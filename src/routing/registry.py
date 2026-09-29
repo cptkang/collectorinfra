@@ -60,6 +60,29 @@ class FamilySpec:
 
 
 @dataclass(frozen=True)
+class ViewSpec:
+    """비SQL 처리기의 고정 보기 1건(plans/125 §4.2 · G-4 (a)) — LLM 이 고르는 유일한 비SQL 인자.
+
+    Attributes:
+        id: 보기 id(벤더 중립 · 예 `apm.app_health`)
+        capability: 이 보기가 답하는 답변 영역
+        tool: 게이트웨이 MCP 도구 이름
+        required_input: 반드시 있어야 하는 대상 패싯(예 `hostname`) — 비면 첫 홉 가능
+        first_hop: 대상 없이 부를 수 있는가(전체 목록 보기)
+        window_max_minutes: 구간 조회 상한(분) — 넘는 요청은 자르고 고지한다
+        limit: 사용자 고지용 상한 설명
+    """
+
+    id: str
+    capability: str = ""
+    tool: str = ""
+    required_input: str = ""
+    first_hop: bool = False
+    window_max_minutes: int | None = None
+    limit: str = ""
+
+
+@dataclass(frozen=True)
 class SolutionSpec:
     """관측 솔루션 선언 — 실행 그룹의 1차 축 (D-176 · plans/82 §4.2).
 
@@ -69,6 +92,7 @@ class SolutionSpec:
         backend: 그룹 실행 주체 선택 키(sql·rest·mcp).
         capabilities: 이 솔루션이 답할 수 있는 관측 능력.
         requires: 이 솔루션을 쓰기 전에 해소돼야 하는 능력(예: apm → host_location).
+        views: 비SQL 처리기의 고정 보기 표(plans/125 §4.2) — SQL 솔루션은 비어 있다.
     """
 
     code: str
@@ -78,6 +102,7 @@ class SolutionSpec:
     family: str = ""
     capabilities: tuple[str, ...] = ()
     requires: tuple[str, ...] = ()
+    views: tuple[ViewSpec, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -267,13 +292,48 @@ class DBRegistry:
         return solution.capabilities if solution else ()
 
     def capability_owners(self, capability: str) -> tuple[str, ...]:
-        """답변 영역을 소유한 시스템 키(선언 순서 · 중복 제거). 정상 구성이면 0~1개다."""
+        """답변 영역을 소유한 시스템 키(선언 순서 · 중복 제거). 정상 구성이면 0~1개다.
+
+        DB 항목의 소유가 먼저이고, **DB 항목이 없는 솔루션(비DB 시스템 — plans/125 A-1 · 121
+        TP-9.2)**의 선언이 뒤따른다. 비DB 시스템은 종전에 소유자가 될 수 없었다(B-9) — 기존 영역
+        코드에는 비DB 시스템 선언이 없어 결과가 바뀌지 않는다.
+        """
         owners: list[str] = []
         for entry in self.databases:
             system = self.system_of(entry.db_id)
             if system and system not in owners and capability in self.capabilities_of(entry.db_id):
                 owners.append(system)
+        for spec in self.non_db_systems():
+            if spec.code not in owners and capability in spec.capabilities:
+                owners.append(spec.code)
         return tuple(owners)
+
+    # ── 비DB 시스템 (plans/125 A-1 · 121 TP-9.2) ─────────────
+    def non_db_systems(self) -> tuple[SolutionSpec, ...]:
+        """DB 항목이 없는 솔루션(`order` 순) — MCP·REST 로만 닿는 관측 시스템(예: APM 게이트웨이).
+
+        활성 여부는 여기서 정하지 않는다(레지스트리는 설정을 모른다) — 엔드포인트 설정이 정한다.
+        """
+        families = {e.family for e in self.databases if e.family}
+        return tuple(
+            s for s in self.solutions()
+            if s.backend != "sql" and not (s.family and s.family in families)
+        )
+
+    def is_non_db_system(self, system: str) -> bool:
+        """비DB 시스템 키인가."""
+        return any(s.code == system for s in self.non_db_systems())
+
+    def is_zoned_system(self, system: str) -> bool:
+        """존 그룹을 가진 다중 존 시스템인가(존 순회 조회를 쓴다) — 폴스타."""
+        return any(g.solution == system for g in self.zone_groups_)
+
+    def views_of(self, system: str) -> tuple[ViewSpec, ...]:
+        """시스템의 고정 보기 표(선언 순서). SQL 시스템·미등록은 빈 튜플."""
+        for spec in self.solutions_:
+            if spec.code == system:
+                return spec.views
+        return ()
 
     def system_db_ids(self, system: str) -> tuple[str, ...]:
         """소유 시스템에 속한 등록 db_id(레지스트리 선언 순서)."""
@@ -376,6 +436,25 @@ def _as_str_tuple(value: Any) -> tuple[str, ...]:
     return tuple(str(v) for v in value)
 
 
+def _parse_views(value: Any) -> tuple[ViewSpec, ...]:
+    """솔루션 `views:` 목록 → ViewSpec 튜플(id 없는 항목은 버린다)."""
+    views: list[ViewSpec] = []
+    for raw in value or []:
+        if not isinstance(raw, dict) or not raw.get("id"):
+            continue
+        window = raw.get("window_max_minutes")
+        views.append(ViewSpec(
+            id=str(raw["id"]),
+            capability=str(raw.get("capability", "")),
+            tool=str(raw.get("tool", "")),
+            required_input=str(raw.get("required_input", "")),
+            first_hop=bool(raw.get("first_hop", False)),
+            window_max_minutes=int(window) if window is not None else None,
+            limit=str(raw.get("limit", "")),
+        ))
+    return tuple(views)
+
+
 def parse_registry(data: dict[str, Any]) -> DBRegistry:
     """레지스트리 dict(YAML 파싱 결과)를 DBRegistry로 변환한다.
 
@@ -420,6 +499,7 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
             family=str(raw.get("family", "")),
             capabilities=_as_str_tuple(raw.get("capabilities")),
             requires=_as_str_tuple(raw.get("requires")),
+            views=_parse_views(raw.get("views")),
         )
         for raw in data.get("solutions") or []
         if isinstance(raw, dict) and raw.get("code")

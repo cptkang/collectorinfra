@@ -191,8 +191,9 @@ def test_known_source_ids_are_registry_plus_non_sql() -> None:
     known = known_source_ids()
     assert REGISTRY_IDS <= known
     assert NON_SQL_SOURCES <= known
-    # 2026-09-29 레지스트리 실측(7 DB · 비SQL 선언 0).
-    assert known == REGISTRY_IDS | NON_SQL_SOURCES
+    # 2026-09-30 레지스트리 실측(7 DB · 비SQL 선언 1 — `apm`, plans/125 A-1 · D-281 ②). 4소스 골드
+    # (plans/125 M-1)가 `requires_sources: [apm]` 을 선언하려면 이 id 가 있어야 한다.
+    assert known == REGISTRY_IDS | NON_SQL_SOURCES | {"apm"}
 
 
 def test_registry_non_sql_solution_is_accepted(tmp_path: Path) -> None:

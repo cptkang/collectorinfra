@@ -689,8 +689,11 @@ def _db_label(registry: RegistrySpec, db_id: str) -> str:
 
 
 def _is_zoned_system(registry: RegistrySpec, system: str) -> bool:
-    """솔루션(다중 존) 시스템인가 — 존 순회 호스트 조회를 쓴다. 아니면 DB별 키 매니페스트 조회."""
-    return any(spec.code == system for spec in registry.solutions())
+    """솔루션(다중 존) 시스템인가 — 존 순회 호스트 조회를 쓴다. 아니면 DB별 키 매니페스트 조회.
+
+    존 그룹을 가진 솔루션만이다 — 비DB 시스템(APM · plans/125 A-1)은 솔루션이지만 존이 없다.
+    """
+    return any(group.solution == system for group in registry.zone_groups())
 
 
 async def _default_host_lookup(

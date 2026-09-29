@@ -45,8 +45,14 @@ zones:
 #    capabilities : 이 솔루션이 답할 수 있는 관측 능력. 파이프라인 전개의 결정적 재료다.
 #    requires     : 이 솔루션을 쓰기 전에 해소돼야 하는 능력(예: apm은 host_location 선행)
 #
-#    ⚠ 지금은 polestar 하나만 등록한다. apm·dpm은 실제 연동 시 주석을 풀어 등재하며,
-#      그때까지 등록 0건 상태에서 회귀 0을 테스트가 단언한다(plans/82 Wave 7 비범위).
+#    views        : 비SQL 처리기가 부르는 고정 보기 표(plans/125 §4.2 · G-4 (a)) — 보기 id → 게이트웨이
+#                   도구 · 답변 영역 · 필수 입력 패싯 · 창 상한 · 첫 홉 가능 여부. LLM 이 고르는 유일한
+#                   비SQL 인자다(보기 id 닫힌 어휘). 벤더 중립 어휘(`apm.*`)만 둔다(D-274 ③).
+#
+#    ⚠ 비DB 시스템(apm — DB 항목이 없는 솔루션)은 **등재돼도 엔드포인트가 설정돼야만 활성**이다
+#      (plans/125 A-1 · D-281 ② · 신규 `enable_*` 0 — D-162). 비활성이면 처리기 등록·분해
+#      프롬프트 렌더가 0이다. 존 그룹이 없어 실행 그룹(존 순회)에는 들지 않는다. dpm 은 아직
+#      주석 예시다(plans/55).
 solutions:
   - code: polestar
     label: 폴스타(인프라 모니터링)
@@ -56,13 +62,32 @@ solutions:
     # server_status: plans/102 §3.1 답변 영역 소유표(D-224 ①) — 가용 상태·호스트·IP·OS 구성
     capabilities: [server_status, server_spec, server_usage, alarm, host_location, process_list]
 
-  # 향후 편입 예시 (현재 미등록 — plans/55 · plans/78 W7-2 소관):
-  # - code: apm
-  #   label: APM(애플리케이션 성능)
-  #   order: 20
-  #   backend: rest
-  #   capabilities: [was_metric, jvm_heap, thread_pool, transaction]
-  #   requires: [host_location]
+  # plans/125 A-1(87 J5 본체 쪽 · D-281 ①②) — 제니퍼 APM 게이트웨이(`apm_gateway/` MCP · D-274).
+  # 활성 = `MCP_SOURCE_ENDPOINTS` 에 `apm` 이 있을 때만(두 번째 MCP 엔드포인트 · G-8).
+  - code: apm
+    label: 제니퍼(APM · WAS 모니터링)
+    order: 20
+    backend: mcp
+    family: jennifer
+    capabilities: [was_instance, was_performance, was_runtime, was_activity, apm_event]
+    requires: [host_location]
+    views:
+      - {id: apm.instances, capability: was_instance, tool: apm_instance_map, first_hop: true,
+         limit: "전체 200개 상한"}
+      - {id: apm.app_health, capability: was_performance, tool: apm_app_health,
+         required_input: hostname, window_max_minutes: 10, limit: "구간 10분 상한"}
+      - {id: apm.runtime, capability: was_runtime, tool: apm_runtime_health,
+         required_input: hostname, limit: "5분 간격 추세"}
+      - {id: apm.pool, capability: was_runtime, tool: apm_resource_pool,
+         required_input: hostname, limit: "현재값"}
+      - {id: apm.active, capability: was_activity, tool: apm_active_services,
+         required_input: hostname, limit: "현재값 · 상위 20"}
+      - {id: apm.slow_tx, capability: was_activity, tool: apm_slow_transactions,
+         required_input: hostname, limit: "상위 20"}
+      - {id: apm.events, capability: apm_event, tool: apm_events,
+         required_input: hostname, window_max_minutes: 1440, limit: "기본 30분 · 최대 24시간"}
+
+  # 향후 편입 예시 (현재 미등록 — plans/55 소관):
   # - code: dpm
   #   label: DPM(DB 성능)
   #   order: 30
@@ -104,6 +129,19 @@ capabilities:
     label: 서버 프로세스 목록
   - code: host_location
     label: 서버가 어느 존·인스턴스에 등록돼 있는지
+  # plans/125 §4.1 L3(애플리케이션·미들웨어) — 소유는 `solutions[apm]`. 비DB 시스템 영역이라 소유표
+  # 렌더(`owned_capability_rows`)는 활성 DB 가 없어 행을 내지 않는다 — 분해 프롬프트의 WAS 안내는
+  # 엔드포인트가 활성일 때만 붙는 `apm_query` 줄이 맡는다.
+  - code: was_instance
+    label: WAS 인스턴스 목록·호스트 매핑·도메인
+  - code: was_performance
+    label: WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절
+  - code: was_runtime
+    label: WAS JVM 힙·GC 비중·스레드·커넥션 풀
+  - code: was_activity
+    label: WAS 실행 중 서비스·느린 트랜잭션
+  - code: apm_event
+    label: WAS 이벤트(fatal·warning 등) — 폴스타 알람과 다른 영역
 
 # ── 존 그룹(zone_group) — 솔루션 내부의 2차 축. 담당 조직·DB 엔진이 갈리는 경계다.
 #    query_order가 **조회 순서의 정본**이다 — 사용자 요구(2026-08-28): 은행존을 먼저

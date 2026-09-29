@@ -29,8 +29,14 @@ class TestRegistrySolutionAxis:
         assert sols["polestar"].backend == "sql"
 
     def test_only_polestar_registered(self, reg):
-        """apm·dpm은 주석 예시로만 — 등록 0건에서 회귀 0을 단언한다."""
-        assert [s.code for s in reg.solutions()] == ["polestar"]
+        """SQL 솔루션은 폴스타뿐 — apm 은 비DB 시스템으로만 등재된다(plans/125 A-1 · D-281 ②).
+
+        apm 은 존 그룹이 없어 실행 그룹(존 순회)에 들지 않고, 엔드포인트 설정이 있어야만 활성이다.
+        dpm 은 주석 예시로만 남는다.
+        """
+        assert [s.code for s in reg.solutions()] == ["polestar", "apm"]
+        assert [s.code for s in reg.non_db_systems()] == ["apm"]
+        assert not any(g.solution == "apm" for g in reg.zone_groups())
 
     def test_solution_capabilities_include_host_location(self, reg):
         """탐색(host_location)은 폴스타가 제공한다 — 2차 모듈의 전제."""
