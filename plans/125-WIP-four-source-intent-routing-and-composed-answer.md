@@ -1,7 +1,7 @@
 # 125. 4소스(폴스타 · Prometheus · ITAM · 제니퍼) 의도 기반 조회와 조합 응답 — 계층별 권위 소스 지도 · 제니퍼 1급 처리기 · 교차 계층 엔터티 연결 · 조합 응답 계약: 문헌 조사와 구현 계획
 
 > **작성일**: 2026-09-29
-> **상태**: **게이트 G-1~G-14 확정(2026-09-29 · D-281) · 구현 착수 — G-14 (a) 범위(M · A-1~A-3·A-5 · E · B-1)** — 파일명 `-TODO`(첫 코드 랜딩 때 `-WIP`) · 착수 전 충돌(§11.1)은 사용자 확정으로 해소
+> **상태**: **G-14 (a) 범위 랜딩(2026-09-30 · D-283 · `multiintent` 커밋 6건 · 소스 비활성 기본 = 바이트 불변)** — A-1·A-2·A-3·A-5 · B-1 · E-1~E-4 · M-1(초안)~M-4. 파일명 `-TODO` → `-WIP`. 잔여(A-4 흡수 · A-6·A-7·A-8 · B-2·B-3·B-7 · C · R · V-2·V-3)는 §14.2 · 게이트 G-1~G-14 확정(2026-09-29 · D-281) · 착수 전 충돌(§11.1)은 사용자 확정으로 해소
 > **요청 원문(2026-09-29)**: *"데이터 소스가 폴스타, 프로메테우스, ITAM, 제니퍼 등으로 다양화 되었다. 폴스타와 프로메테우스는 OS레벨의 모니터링과 운영체제 관련 정보를 가지고 있고, ITAM은 담당자나 장비 정보, 장비에 설치된 소프트웨어 정보 등을 자산 관리 측면의 정보를 가지고 있다, 제니퍼는 WAS의 모니터링 정보와 미들웨어 관련된 정보를 가지고 있다. 이 정보를 사용자 프롬프트의 의도를 파악하여 각종 데이터 소스에서 정보를 조회하여 사용자에게 적절한 답변을 제공해야 한다. 다양한 데이터소스를 사용자 의도에 맞게 적절히 조회하여 조합된 응답을 제공할 수 있는 방안을 각종 문헌과 논문등을 조사하고 현재 구현되어 있는 코드를 분석하여 구현 계획을 수립하라."*
 >
 > **해석(추정 — 원문 기준)**
@@ -18,7 +18,7 @@
 > - `plans/122`(시간 표현 해석기 · 재측정 R1 → R2 · D-275·D-276) · `plans/123`(그럴듯한 오답 · 병합 축소 G-13) · `plans/106`·`107`(의도 파악 하네스 · IntentFrame) · `plans/55`(멀티소스 로드맵 — 방향 문서)
 >
 > **관련 결정**: D-003(읽기 전용) · **D-004**(LLM 전용 라우팅 · 키워드 사전 분류 금지) · D-062(복합 합성 — 개정 예정) · D-119·D-122(관측 읽기 경계 · PromQL 서버측 조립) · **D-131**(정본 일원화·파생) · **D-162·D-251 ⑥**(신규 `enable_*` 0 · 플래그 없이 기본 동작 + 재측정) · **D-195·D-274**(제니퍼 = 독립 게이트웨이 · `src` ↔ `apm_gateway` import 0 · WAS 판정 단일 정의) · D-214 ③(관측/자산 경계) · **D-224**(답변 영역 소유 · 값 기반 키) · D-227(사용자에게 구조 정보를 묻지 않음) · D-232(사용자별 DB 인가) · D-234(결정적 병합) · D-240(로컬 MLX) · D-255(매뉴얼 동반) · D-265(부분 결과) · **D-270·D-272**(121 게이트) · D-273(121 랜딩) · **D-276**(재측정 순서 · `requires_sources`)
-> **D-번호**: 신규 없음. 게이트 확정 시 등재 직전 3곳(`## D-` 헤더 · 「변경 이력」 · 「채번 이력」/안내 라인) grep으로 채번한다 — 2026-09-29 현재 안내 라인 「다음 D-277」.
+> **D-번호**: 게이트 확정 D-281(2026-09-29) · 구현 결정 **D-283**(2026-09-30 — §14). 채번은 등재 직전 3곳(`## D-` 헤더 · 「변경 이력」 · 「채번 이력」/안내 라인) grep.
 >
 > **실측 기준**: 브랜치 `multiintent` HEAD `2e635a9` + 미커밋 작업 트리(121 묶음 A·B·C 랜딩분 · 미추적 `apm_gateway/` · `plans/87` v4 포함 · 2026-09-29 15:40 KST). 코드는 **읽기만** 했다(수정 0 · LLM 호출 0 · 서버 기동 0 · 과금 0). 병행 세션이 `plans/87`·`docs/31`을 편집 중이었다 — 그 두 파일의 줄 번호는 인용 시점 값이다.
 > **근거 표기**: **코드** = `파일:라인`(현 작업 트리 · 작성자가 직접 대조한 것은 ✔) · **추적** = 코드 경로를 따라간 결론(실행 없음) · **문헌** = 부록 A · **추정** = 검증하지 않은 추론. 문헌 확인 수준: **원문** · **요약**(초록·요약 도구 경유 — 수치 인용 전 원문 재대조 권장) · **서지**.
@@ -741,6 +741,68 @@
 
 ---
 
+## 14. (v2) G-14 (a) 범위 구현 랜딩 — 2026-09-30 · `multiintent` 커밋 · 소스 비활성 기본 (D-283)
+
+사용자 지시 *"123번을 먼저 구현하고 125번을 이어서 구현하라."*(재개 지시 *"중단된 작업을 재개하라."*)에 따라 123 V·CT·S-4 랜딩(D-282) 뒤 G-14 (a) 범위를 A-1 → A-2 → A-5 → A-3 + B-1 → E-1~E-4 → M-1~M-4 순서로 구현했다. **신규 `enable_*` 0**(D-162 · D-251 ⑥) — 새 설정은 엔드포인트·토큰·타임아웃 3개(`MCP_SOURCE_*`)뿐이고 **엔드포인트가 없으면 비활성**이다. 비활성 배포는 라우터 프롬프트 · 분해 프롬프트(플래그 조합 4종) · 구조화 출력 스키마 · 소유 안내 행이 **바이트 불변**이다(HEAD worktree와 렌더 덤프 대조 실측 — 달라진 것은 레지스트리의 알려진 영역 코드 집합뿐). run R2~R4는 `f51cd49` 고정 빌드라 이 랜딩과 섞이지 않는다(D-280 ⑭).
+
+### 14.1 랜딩
+
+| ID | 구현 | 커밋 · 파일 |
+|---|---|---|
+| A-1 | 레지스트리 `solutions[apm]`(`backend: mcp` · family `jennifer` · 영역 5종 · `requires: [host_location]` · **보기 표 `views`** — id·label·영역·도구·필수 입력·창 상한·상한 문구·첫 홉) · 영역 카탈로그 5행. `registry.non_db_systems()`·`is_non_db_system()`·`views_of()` · `capability_owners`가 비DB 솔루션을 소유자로 인식(121 TP-9.2 — D-281 ②) · 비DB 시스템은 실행 그룹(존 순회)·존 판정(`_is_zoned_system` = 존 그룹을 가진 솔루션)·라우터 소유 안내 행에서 빠진다 | `db52c36` · `config/db_registry.yaml` · `src/routing/registry.py` · `capability_ownership.py` · `src/orchestration/entity_locator.py` |
+| A-2 | `DBHubConfig`: `MCP_SOURCE_ENDPOINTS`(시스템 코드 → SSE URL · JSON) · `MCP_SOURCE_TOKENS`(시스템 코드 → Bearer · **시크릿** — 웹 UI 편집 차단·repr 마스킹) · `MCP_SOURCE_CALL_TIMEOUT`(초 · 기본 10). 관측 소스 MCP 세션 `src/clients/source_mcp_client.py`(처리기 호출 1회 안에서 세션 재사용 · None 인자 제거 · 호출별 타임아웃 · `isError` → `SourceMcpError` · 실제 취소만 전파). 설정 도움말 3행 · `.env.example`. `src/`에 제니퍼 토큰·URL 0건. **후속**: 첫 dict 설정이라 설정 카탈로그 `json_object` 타입(검증 · 기본값 `{}` · JSON 직렬화 — 종전엔 `string`·기본값 `PydanticUndefined`·현재값 파이썬 repr로 보였다)과 벤치 에코 dict 칸을 더했다(최종 회귀가 `test_every_catalog_knob_path_resolves` 신규 실패로 드러냄) | `1815d7f` · `src/config.py` · `src/clients/source_mcp_client.py` · `config/settings_help/infrastructure.yaml` · 후속 `src/api/settings_catalog.py` · `settings_help.py` · `scripts/bench/probe.py` · `validate.py` |
+| A-5 | 분해 `views[]` 슬롯 — **APM 활성일 때만** 파생 구조화 모델(`views_plan_model`)과 프롬프트 절(담당 한 줄 + 보기 표 `<apm_view_rows>` — **삽입만**)을 쓴다. `views`는 레지스트리 닫힌 어휘로 정제(`sanitize_views` — 모르는 보기는 버리고 비면 `apm.app_health`) | `dd85745` · `src/orchestration/schemas.py` · `intent_planner.py` · `src/prompts/intent_planner.py` |
+| A-3 | `apm_query` 처리기(LLM 0) — 보기 → 도구 고정 표 · 대상(hostname — 선행 결과 → 이번 턴 식별자 → 직전 대상) · 대상이 없고 보기가 대상을 요구하면 첫 홉 `apm.instances` 삽입(인스턴스 hostname으로 fan-out · `max_targets` 상한 넘으면 「조회한 범위 안」 고지) · 창 규칙(§14.3 ③) · 봉투 → 행 + 출처(보기·도구·대상·`queried_at`·창·정합) · 실패 사유(게이트웨이 미가용·도구 오류·창 밖 — **폴스타로 대체하지 않는다**) · 소스 상태 · 감사(`audited_investigation(BACKEND_APM)`) · `thread_id` 전파. **고정 처리기 목록(`SUBAGENT_REGISTRY`) 밖**의 조건부 처리기 — `active_extra_subagents()`로 분해 목록 · `resolve_subagent`(2단 오케스트레이터 · 3단 계획 루프 실행) · 재계획 어휘에 활성일 때만 합친다 | `dd85745` · `src/orchestration/apm_query.py` · `subagents.py` · `agent_orchestrator.py` · `replanner.py` · `tier3_plan.py` · `investigation_audit.py` |
+| B-1 | 알람 결정적 교정(`_coerce_alarm_intent`)이 `apm_query` task(WAS 이벤트)를 건드리지 않음을 분해·재계획 양쪽 회귀 테스트로 고정(교정은 원래 `data_query`만 대상 — §11.1) | `dd85745` · `tests/test_orchestration/test_plan125_apm_query.py` |
+| E-1 | `TargetRef` 교차 계층 패싯 4칸(`apm_domain_id`·`apm_instance_id`·`apm_instance_name`·`asset_key`) — 값이 없으면 직렬화에서 빠진다(폴스타 → 폴스타 상태·응답 바이트 불변) | `ade5733` · `src/utils/prior_targets.py` |
+| E-2 | 간선 표 = 레지스트리 **`entity_edges` 절**(E1·E1r·E2·E2r·E3·E4·E5 — 소유자·수단·등급 · 새 정본 파일 없음 D-131) · `EdgeSpec`·`entity_edges()` · 최단 경로 `facet_path`(표 밖 경로 = None · DM-5) · 교차 시스템 전용 `cross_system_only` | `ade5733` · `config/db_registry.yaml` · `src/routing/registry.py` · `src/routing/entity_edges.py` |
+| E-3 | 간선 E2(폴스타 등록명 → OS hostname) 실행 수단 = 폴스타 어댑터 고정 조회 `hostname_lookup_sql`(D-089 · LLM 0 · 읽기 전용 · PG `LIMIT` / DB2 `FETCH FIRST` · 스키마 한정 · 대소문자 무시 · 행 상한 = 이름 수 × 5). `link_hostnames`가 `apm_query` 대상 해소에 배선(종전 「hostname 없는 대상은 뺐습니다」 안내 대체) · 소비 시스템이 소유한 간선은 삽입하지 않는다 | `ade5733` · `src/db_adapters/polestar/entity_probe.py` · `adapter.py` · `src/orchestration/entity_link.py` |
+| E-4 | 연결 장부 — `linked`(등급 `given`·`one`·`high`·`medium`) · `unlinked` · `ambiguous`(다건 — 자동 결합 금지) · `not_queried`(사유). 게이트웨이 `instance_resolution`(E1r)도 장부로 옮긴다 · 응답 노트 첫 줄 「호스트 연결 a/b · WAS 연결 c/d(등급) · 미연결 n」 · 변환 실패는 요약에 사유 | `ade5733` · `entity_link.py` · `apm_query.py` |
+| M-1 | 4소스 골드 **초안** `testdata/scenarios/fs_four_source.yaml`(군 `FS` · `policy_confirmed: false` · 24건 — P-A·P-B·P-C·P-D·P-F 각 4 · 기권 2(FS-21·22) · 창 밖 2(FS-23·24) · 전 건 `requires_sources`). 러너 활성 소스 = `ACTIVE_DB_IDS` ∪ `MCP_SOURCE_ENDPOINTS` 시스템 코드 · 하네스 계획 어휘 `PLAN_AGENTS` += `apm_query`(단언 어휘만) | `21726ee` · `testdata/scenarios/fs_four_source.yaml` · `scripts/scenario/runner.py` · `catalog.py` |
+| M-2 | 오프라인 결정적 e2e — 선행 폴스타 결과(등록명만) → E2 → APM 보기 → 행·장부·출처(연결 정답표 대비 정밀도·재현율 1.0 · LLM·네트워크 0) · 보기별 모의 게이트웨이 봉투(SPEC-apm-gateway §3 모양) | `ade5733` · `tests/test_cross_system/test_plan125_entity_link.py` · `dd85745` · `test_plan125_apm_query.py` |
+| M-3 | 지표 정의서 + 계산 `scripts/scenario/source_metrics.py` — 필수 소스 재현율 · 불필요 호출률 · 「없음」 판정 · 연결 P/R · 미연결 고지율 · 최종 답 점수(오답 −1). `raw.jsonl` 행만 읽는다(제품 import 0 · 판정 `func_verdict` 불변) | `21726ee` |
+| M-4 | 계획 요약 `plan_summary.tasks[]` 비SQL 칸 — `views` · `inserted_steps`(첫 홉 보기 id · 변환 간선 id) · `link`(패싯별 건수) · `source_status` 코드 — 값이 있을 때만(SQL task 바이트 불변) | `21726ee` · `src/api/routes/query.py` |
+
+- 테스트: 신규 `tests/test_routing/test_plan125_registry.py`(5) · `tests/test_clients/test_source_mcp_client.py`(3) · `tests/test_orchestration/test_plan125_apm_query.py`(12) · `tests/test_cross_system/test_plan125_entity_link.py`(7) · `tests/test_scenario/test_plan125_source_metrics.py`(5). 의도된 변경으로 갱신(사유 주석): 실행 그룹 `apm` 0건 단언 2건(`test_execution_groups.py`) · 라우터 소유 안내 행 · 판정 카탈로그 알려진 소스 집합 · 설정 카탈로그 건수·시크릿 · 계획 어휘 사본(`PLAN_AGENTS` = 레지스트리 ∪ {`apm_query`}) · 선택 제외 단언(FS 초안 반영).
+- 실 LLM 검증: 하지 않았다 — 이 호스트의 두 평면이 `mlx`가 아니고(`.env` 운영값 gemini) MLX 서버가 없다. 과금 경로 호출 0 · `RUN_E2E` 미사용. 제니퍼 실연결은 게이트웨이 기동 환경(87 J0-L/J0-O)에서.
+- 전체 회귀: 최종 HEAD 결과는 §14.4.
+
+### 14.2 잔여 — 사유 · 재개 조건
+
+| 항목 | 사유 · 재개 조건 |
+|---|---|
+| **A-4** | 별도 작업 없음 — 보기 표·영역 어휘가 레지스트리(`solutions[apm].views` · `capabilities`)에 들어갔다(G-4 (a) · A-1). `overfit_check` 신규 유입 0 |
+| **A-6** | 게이트웨이 도구 요청(도메인 단위 순위 · 다건 hostname · hostname+PID 정합)은 87 소유 — 통지만(G-12). 지금은 호스트별 fan-out · 인스턴스 상한 고지 |
+| **A-7** | `allowed_sources`(D-270 ⑰ G-18 — 미구현 기계) 자체가 121 소유 미구현이다. **APM이 운영 활성되기 전 선결**(D-281 ⑨) — 그 전까지 APM 활성 배포는 사용자별 소스 인가가 없다(엔드포인트를 설정한 배포의 모든 로그인 사용자가 WAS 질의 가능) |
+| **A-8 · C-6** | 매뉴얼 WAS 질의 절 — 기본 배포에서 기능이 비활성(엔드포인트 없음)이라 사용자 접점이 없다. 엔드포인트를 설정하는 배포(87 J0-O 뒤) 전에 `scripts/manual/features.yaml`(`no_ui`) · `content/user.md`로 추가한다. 설정 도움말 3행(관리자 설정 화면)은 A-2에서 반영 |
+| **B-2 · B-3 · B-7** | 기본 경로 변경 — R2 뒤 한 재측정 묶음(G-14 (a)). B-7(재계획 프롬프트 처리기 목록 = 분해 목록 렌더)은 121 TP-2.1b와 조율 — 지금 재계획은 `apm_query`를 **어휘로 허용**만 한다 |
+| **C 트랙 · R 트랙** | R2 뒤(엔터티 표 · 소스 상태 행 · 불일치 각주 · 4소스 소스 목록 렌더 · 라우팅 골드 확장) |
+| **1단 `deep_agent` 도구 목록** | 1단(opt-in)에는 `apm_query`를 노출하지 않았다 — 기준 경로(2단)만. 1단 도구 노출은 운영 1단 확정이 풀린 뒤(D-251) 필요 여부 판단 |
+| **`views` 단언 키** | 보기는 계획 요약 칸(M-4)에 실리지만 시나리오 단언 키가 없다 — 보기 선택 정확도는 R-4 라우팅 골드 몫 |
+| **권한 밖 골드 2건** | 하네스에 사용자 전환 키가 없고 A-7이 없다 — 카탈로그 밖 |
+| **E3 · E4 · E5 실행 수단** | 선언만(수단 없음 → `not_queried` 사유). E3·E5 = ITAM 키 브리지(104 승인본 `entity_keys` · 95 G-3) · E4 = Prometheus 셀렉터(92 P0-3 nodename 규약) |
+| **E-3 수용 기준 대체** | 「제니퍼 → Prometheus 픽스처에서 E2 삽입」은 Prometheus 처리기·E4 수단이 없어 만들 수 없다 — 같은 E2 삽입을 폴스타 선행(등록명) → APM(P-C 모양) 픽스처로 검증했다. same-system xfail 3건 유지 |
+| **M-1 확정 · 목표 수치** | 골드는 초안 — 사용자 검수 뒤 확정(DM-4). 목표 수치는 MLX 기준선 뒤(G-10 (a)) |
+| **V-2 · V-3** | 로컬 MLX(두 평면 `mlx` 확인 뒤) · 내부망 run(제니퍼 J0-O 뒤 · R2 뒤 묶음) — 이 호스트에서 불가 |
+| **계약 필드 측정값** | `max_bind_values`·`bind_block`·`concurrency`·`timeout_sec`는 M-2 지연 + J0-O 실측 뒤 — 지금은 `COMPOSITE_MAX_TARGETS`·`COMPOSITE_FANOUT_CONCURRENCY`·`MCP_SOURCE_CALL_TIMEOUT`을 쓴다 |
+
+### 14.3 구현 중 정한 것 (D-283)
+
+- ① **설정 형식(G-8 (a) 구현형)**: {URL, 토큰}을 한 맵에 넣지 않고 `MCP_SOURCE_ENDPOINTS`·`MCP_SOURCE_TOKENS` 두 맵으로 나눴다 — 설정 카탈로그의 시크릿 판정이 필드 단위라 토큰 필드를 따로 둬야 웹 UI 편집 차단·마스킹이 된다. 둘 다 `DBHubConfig`(`.env`) 소속 · JSON · 인라인 주석 금지.
+- ② **활성 판정** = 레지스트리에 그 시스템의 보기 표가 있고 **엔드포인트가 설정됨**. 설정 대역(MagicMock)·깨진 설정은 비활성으로 읽는다(테스트 설정 누수 차단).
+- ③ **창 규칙**: 기간 없는 질의 = 현재값 · **기간 끝이 지금보다 하루 넘게 과거 = 창 밖**(조회하지 않고 「보존 기간 확인 필요」 사유 — 하루는 게이트웨이 최대 창(`apm.events` 24시간 · §4.2)에 맞춘 잠정값, U-3 확인 뒤 조정) · 현재값 보기(창 상한 없음)에 기간이 오면 「현재값 기준」 노트 · 창 상한을 넘는 기간은 **마지막 N분만** 조회하고 노트 · `reference_time`은 기간 끝이 1분 넘게 과거일 때만.
+- ④ **조건부 처리기**는 고정 목록에 넣지 않는다 — 처리기 계약 고정 테스트·레지스트리 목록 단언이 비활성 배포에서 불변(D-281 주의 ①).
+- ⑤ **간선 실행 수단**은 간선 소유자 쪽에만 둔다 — E2는 폴스타 어댑터(D-089), E1r은 게이트웨이 정합 결과를 옮길 뿐(D-274 ⑤ — 본체가 정합을 재구현하지 않음).
+
+### 14.4 전체 회귀
+
+- **`d9d7abc`**(구현 최종 — worktree · `tests` + `noise_gate/tests` 디렉터리·파일 18조각 · 조각당 타임아웃 1,200초 · 타임아웃 0): **11,760 passed · 104 failed · 55 errors · 3 xfailed · 63 skipped** — 실패·오류 목록이 기준선(`f51cd49` · 104·55 · 123 회귀 `0777bb2`와 같은 목록)과 **완전히 같다**(신규 0 · 해소 0 · 환경 의존 — `prometheus_client`·`mcp` 미설치 · Windows 파일 권한 등). 3 xfailed = same-system 키 브리지 회귀 3건(E-3 수용 기준 유지).
+- 그 전 `21726ee`(M 커밋) 회귀는 **신규 실패 1건**(`tests/test_scripts/test_bench_validate.py::test_every_catalog_knob_path_resolves` — A-2 첫 dict 설정을 벤치 에코가 펼쳐 경로 소실)을 드러냈고 `d9d7abc`에서 고쳤다(§14.1 A-2 후속 · `docs/18_known_mistakes.md`).
+- 비활성 바이트 불변(시작 커밋 `c140e78` worktree 대조 · 렌더 덤프): 3단 라우터 프롬프트 2종(fault 진단 off·on) · 2단 분해 프롬프트 4종(소유 × task 프레임) · 소유 표 2종 · DB별 소유 안내 행 7종 **동일** — 다른 것은 알려진 영역 코드 집합(+`apm_event`·`was_activity`·`was_instance`·`was_performance`·`was_runtime`)뿐. 설정 카탈로그 기존 키의 타입·기본값 전수 동일 · 벤치 에코 기존 365칸 값 동일(난수 JWT 시크릿 제외).
+- 품질 게이트: `arch_check --ci` error 0(경고 87 → 89 — 둘 다 123 S-4a의 `application → application` 기존 유형: `result_organizer → db_adapters.get_adapter` · `polestar/adapter → entity_probe`) · `overfit_check --ci` 신규 유입 0 · 변경 줄 ruff·mypy 신규 0.
+
+---
+
 ## 부록 A. 문헌 목록
 
 > 선정 기준은 **게재처의 동료심사 여부 + 과제 적합성**이다. 인용수는 적지 않았다(OpenAlex 과소집계). 이번 조사에서 OpenAlex·Semantic Scholar·DBLP·OpenReview API는 쓰지 않았다. 게재처는 학회 proceedings·ACL Anthology·ACM DL·IEEE Xplore·arXiv comment로 확인했다. 확인 수준: 원문 · 요약(초록·요약 도구 경유) · 서지.
@@ -847,5 +909,6 @@
 
 | 버전 | 일자 | 내용 |
 |---|---|---|
+| v2 | 2026-09-30 | **G-14 (a) 범위 구현 랜딩(D-283)** — 재개 지시 *"중단된 작업을 재개하라."* · A-1(`db52c36`) · A-2(`1815d7f` · 후속 `d9d7abc`) · A-5·A-3·B-1(`dd85745`) · E-1~E-4 + M-2(`ade5733`) · M-1 초안·M-3·M-4(`21726ee`) · 소스 비활성 기본 = 바이트 불변 · 신규 `enable_*` 0 · 잔여 §14.2 · 파일명 `-TODO` → `-WIP` |
 | v1.1 | 2026-09-29 | 사용자 지시 *"123번을 먼저 구현하고 125번을 이어서 구현하라."* — 123 랜딩(D-279) 뒤 착수 전 결정 충돌 검토(§11.1): G-2 (a)가 D-195 G-5′ ⓐ(「121 TP-9.1·9.2·10.5 뒤」)의 재해석이자 D-270 ⑯ 소유(121 TP-9.2) 이전이고, G-1 (a)가 87 J5 이관이라 **사용자 결정 전 코드 0 유지** · 확정 뒤 착수 순서 기록 |
 | v1 | 2026-09-29 | 최초 작성 — 문헌 조사(신규 4주제) · 현행 실측(소스 도달 · 소스 결정 지점 · 식별자 앵커 · 게이트웨이 · 결과 조합 · 결함 B-1~B-9) · 목표 설계(권위 소스 지도 · 보기 표 · 처리기 선택 · 조합 패턴 · 간선·패싯 변환·연결 장부 · `apm_query` · 조합 응답 계약) · 트랙 M·B·A·E·C·R·V · 게이트 G-1~G-14 · 코드 0 · **번호 재부여 124 → 125**(작성 중 병행 세션이 `plans/124-TODO-system-intro-page.md`로 124를 선점 — 뒤 번호로 옮김) |

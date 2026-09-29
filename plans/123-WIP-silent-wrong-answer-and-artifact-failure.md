@@ -753,6 +753,7 @@
 
 - 테스트: 신규 `tests/test_scenario/test_plan123_judge.py`(33) · `tests/test_empty_answer/test_entity_check.py`(섀도로 전환) · 갱신 `test_integration_mock.py`(자동 응답 기록 칸 · R2-08 pass) · `test_plan122_report.py`(판정기 지문 소스 3개) · `test_plan122_runner_rows.py`(123 새 칸 4개) · `test_assertion_coverage.py`(`disclosures_contains`) · `test_plan121_plan_assertions.py`(R1-03 `plan` 제거 — 사유 주석). `tests/test_scenario` 1,352 passed.
 - R 카탈로그 규모: 79 시나리오(+R4-07U) · 85턴(+R3-03 t2 · R4-12 t2 · R4-07U) · `manual_review` 10턴.
+- 전체 회귀(`0777bb2` worktree · `tests` + `noise_gate/tests` 디렉터리·파일 조각 실행 — 단일 실행은 hang 이력): **11,724 passed · 104 failed · 55 errors · 3 xfailed · 63 skipped** — 실패·오류 목록이 기준선(`f51cd49` · 104·55)과 **완전히 같다**(신규 0 · 해소 0 · 환경 의존). `arch_check` error 0 · `overfit_check` 신규 0.
 
 ### 17.2 CT-7 — R `manual_review` 이관표 (종전 60턴)
 
