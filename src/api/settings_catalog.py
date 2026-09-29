@@ -49,7 +49,7 @@ GROUP_ORDER: tuple[str, ...] = (
     "llm", "orchestrator", "router", "dbhub", "query", "synonym", "text2sql",
     "intent_frame", "composite", "security", "host_authz", "server", "admin", "auth",
     "multi_db", "polestar_rest", "redis", "schema_cache", "audit", "observability",
-    "alarm", "workb", "noise_gate", "drm", TOP_LEVEL_GROUP,
+    "alarm", "workb", "noise_gate", "drm", "rag", TOP_LEVEL_GROUP,
 )
 
 GROUP_TITLES: dict[str, str] = {
@@ -77,6 +77,7 @@ GROUP_TITLES: dict[str, str] = {
     "workb": "worKB 발송",
     "noise_gate": "노이즈 게이트",
     "drm": "DRM 복호화",
+    "rag": "문서 검색(RAG)",
     TOP_LEVEL_GROUP: "전역",
 }
 
@@ -232,6 +233,15 @@ _ENCENV_FALLBACK_KEYS: frozenset[str] = frozenset({
 
 #: 값 자체는 편집 가능하지만 화면 표시는 마스킹하는 키(비밀번호를 포함할 수 있는 접속 문자열).
 SENSITIVE_VALUE_KEYS: frozenset[str] = frozenset({
+    # ※ RAG_* 접속 정보(plans/126 §4.12)는 **의도적으로 여기에만** 둔다 — `_MANUAL_SECRET_KEYS`나
+    #   `.encenv`에 두면 화면 편집이 막히는데, 자산 회전이 문서 1건 수정에도 일어나므로
+    #   "마스킹은 켜고 편집은 열어둔다"가 요구사항이다(G-14 확정 · 교체 절차 docs/32).
+    "RAG_HQ_MANUAL_ENDPOINT",
+    "RAG_HQ_MANUAL_TOKEN",
+    "RAG_HQ_MANUAL_CLIENT_KEY",
+    "RAG_ARCH_DOCS_ENDPOINT",
+    "RAG_ARCH_DOCS_TOKEN",
+    "RAG_ARCH_DOCS_CLIENT_KEY",
     "AUTH_AUTH_DB_URL",
     "DB_CONNECTION_STRING",
 })
@@ -364,6 +374,28 @@ RELOADABLE_KEYS: frozenset[str] = frozenset({
     "NOISE_META_ALERT_MIN_EVENTS",
     "NOISE_FORMAT_TOLERANT_PARSING_ENABLED",
     "NOISE_FAULT_DIAGNOSIS_ENABLED",  # 그래프 빌드 시점 게이팅 — 워커 미소비 실측
+    # --- 문서 RAG (plans/126 · docs/32) — 엔진·CLI·API 가 호출 시점에 config 에서 읽는다.
+    #     자산 ID·토큰이 문서 추가·수정·재청킹마다 회전하므로 **재기동 없이** 반영돼야 한다
+    #     (미등재면 apply_mode=restart 로 분류되어 회전마다 재기동이 된다).
+    "RAG_ENABLED",
+    "RAG_HQ_MANUAL_ENDPOINT",
+    "RAG_HQ_MANUAL_TOKEN",
+    "RAG_HQ_MANUAL_CLIENT_KEY",
+    "RAG_HQ_MANUAL_RETRIEVAL_ID",
+    "RAG_ARCH_DOCS_ENDPOINT",
+    "RAG_ARCH_DOCS_TOKEN",
+    "RAG_ARCH_DOCS_CLIENT_KEY",
+    "RAG_ARCH_DOCS_RETRIEVAL_ID",
+    "RAG_COLLECTIONS_FILE",
+    "RAG_TIMEOUT",
+    "RAG_TOTAL_TIMEOUT",
+    "RAG_MAX_COLLECTIONS_PER_TURN",
+    "RAG_MAX_DOC_CHARS",
+    "RAG_MAX_CONTEXT_CHARS",
+    "RAG_ANSWER_MAX_CHARS",
+    "RAG_CACHE_TTL",
+    "RAG_DOC_URL_BASE",
+    "RAG_CHAT_PREFIX_ENABLED",
 })
 
 #: config에 정의됐지만 현재 코드가 읽지 않는 필드(Plan 68 §1.5-4). UI 기본 숨김 + "미소비" 뱃지.
@@ -388,6 +420,15 @@ UNCONSUMED_KEYS: frozenset[str] = frozenset({
     "SYNONYM_DECAY_DAYS",                   # redis_cache.py:958 인자만 존재 — config에서 넘기는 호출부 없음
     "ALARM_PROMETHEUS_BASE_URLS_CSV",       # PrometheusClient가 src/에서 미생성 (테스트에서만 생성) — 예비 코드 확정(2026-09-10 · 판정 기한 2027-02-20 · docs/27 §3.3)
     "ALARM_PROMETHEUS_TIMEOUT_SECONDS",     # 동상
+    # --- 문서 RAG (plans/126 W1) — 정본·클라이언트 단계에서 아직 읽지 않는 예산·정책 키.
+    #     W2(엔진: 근거 예산·인용·캐시)·W4(시험 표면: 채팅 접두)에서 소비하며 그때 여기서 뺀다.
+    "RAG_MAX_COLLECTIONS_PER_TURN",
+    "RAG_MAX_DOC_CHARS",
+    "RAG_MAX_CONTEXT_CHARS",
+    "RAG_ANSWER_MAX_CHARS",
+    "RAG_CACHE_TTL",
+    "RAG_DOC_URL_BASE",
+    "RAG_CHAT_PREFIX_ENABLED",
 })
 
 #: `str` 타입이지만 허용값이 config.py 주석에 명시된 필드 — enum 위젯으로 노출한다(부록 A의 `※`).

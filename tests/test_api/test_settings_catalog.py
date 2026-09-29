@@ -178,7 +178,7 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     env_file = _use_env_file(monkeypatch, tmp_path, "LLM_MODEL=from-file\n")
     response = await get_settings_schema(_ADMIN)
 
-    assert len(response.groups) == 25  # plans/107 intent_frame 그룹 +1
+    assert len(response.groups) == 26  # plans/107 intent_frame +1 · plans/126 rag +1
     assert response.env_file_path == str(env_file)
     items = {
         item.env_key: item
@@ -192,7 +192,7 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     # plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1 ·
     # plans/119 Q-5 TEXT2SQL_SCHEMA_TABLE_SELECT_SKIP_ENABLED +1 ·
     # plans/87 J4 NOISE_{APP_IMPACT_ENABLED,APM_MCP_URL,APM_MCP_TOKEN,APP_IMPACT_WINDOW_MINUTES} +4
-    assert len(items) == 365
+    assert len(items) == 384  # plans/126 W1: RAG_* 19키
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -330,7 +330,7 @@ def test_t2_group_and_field_counts():
     """
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
-    assert len(group_keys) == 25
+    assert len(group_keys) == 26
     # plans/111 COMPOSITE_TASK_FRAME_ENABLED +1 · plans/103 TIER3_PLAN_LOOP_ENABLED +1 ·
     # plans/82 v7.1 API_SSE_GROUP_PREVIEW_ROWS +1 ·
     # plans/92 O4 OBS_METRICS_{ENDPOINT_ENABLED,BEARER_TOKEN} +2 ·
@@ -339,7 +339,7 @@ def test_t2_group_and_field_counts():
     # plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1 ·
     # plans/119 Q-5 TEXT2SQL_SCHEMA_TABLE_SELECT_SKIP_ENABLED +1 ·
     # plans/87 J4 NOISE_{APP_IMPACT_ENABLED,APM_MCP_URL,APM_MCP_TOKEN,APP_IMPACT_WINDOW_MINUTES} +4
-    assert len(index) == 365
+    assert len(index) == 384
     # plans/103 TIER3_PLAN_LOOP_ENABLED +1 · plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1
     assert len([s for s in index.values() if s.group_key == "general"]) == 21
 
@@ -733,7 +733,9 @@ def test_t6_requires_restart_matches_immediate_list():
 
 
 def test_t6_unconsumed_fields_flagged():
-    """미소비 필드 19개는 consumed=False로 구분된다(§6.2 재실측으로 4건 추가).
+    """미소비 필드 26개는 consumed=False로 구분된다(§6.2 재실측으로 4건 추가).
+
+    2026-09-29(plans/126 W1): 문서 RAG 예산·정책 7키가 W2·W4 소비 대기라 19 → 26.
 
     2026-09-21(plans/104 C-4 · D-232): `AUTH_DEFAULT_ALLOWED_DB_IDS`가 신규 가입자
     초기 허용 목록으로 실제 소비돼 20 → 19가 됐다.
@@ -741,7 +743,7 @@ def test_t6_unconsumed_fields_flagged():
     index = field_index()
     unconsumed = {key for key, spec in index.items() if not spec.consumed}
     assert unconsumed == set(UNCONSUMED_KEYS)
-    assert len(unconsumed) == 19
+    assert len(unconsumed) == 26
 
 
 def test_t6_semantic_routing_is_tristate():
