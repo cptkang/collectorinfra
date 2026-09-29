@@ -27,6 +27,8 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 
 from src.api.dependencies import require_user
+from src.doc_qa import chat_prefix as doc_chat_prefix
+from src.infrastructure.doc_sources import resolve_collections
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
 from src.api.stream_failure import (
     CUT_HARD_CAP,
@@ -1983,6 +1985,60 @@ async def _stream_cut_sse_event(
     )
 
 
+async def _answer_document_query(
+    config: Any,
+    command: Any,
+    *,
+    query_id: str,
+    thread_id: str,
+    user: dict | None = None,
+) -> QueryResponse:
+    """명시 접두(`/문서 …`) 질의를 문서 엔진으로 처리한다(plans/126 T-4 · 기본 off).
+
+    그래프를 타지 않으므로 상태·체크포인터와 무관한 **단발** 응답이다. 라우팅이 편입되면
+    이 함수와 호출부를 함께 지운다(§4.17 「시험 표면의 수명」).
+    """
+    from src.doc_qa.authz import allowed_collection_ids
+    from src.doc_qa.service import answer_from_documents
+    from src.infrastructure.doc_sources import usable_collections
+
+    rag = getattr(config, "rag", None)
+    # 접두 경로는 **일반 사용자도 닿는다**(기본 off이지만 켜면 열린다) — 민감 문서군은
+    # 인가 목록으로 막는다. 목록 자체도 사용자가 열 수 있는 것만 보여 준다.
+    permitted = set(allowed_collection_ids(
+        resolve_collections(rag), user=user, rag_config=rag,
+    ))
+    usable = [c.id for c in usable_collections(rag) if c.id in permitted]
+    if not command.query:
+        return QueryResponse(
+            query_id=query_id, status="completed", thread_id=thread_id,
+            response=doc_chat_prefix.usage_hint(usable),
+        )
+
+    targets = list(command.collection_ids) or usable
+    llm = None if command.search_only else create_llm(config, purpose="answer")
+    result = await answer_from_documents(
+        command.query, targets, llm=llm, app_config=config,
+        search_only=command.search_only,
+        allowed_collection_ids=sorted(permitted),
+        audit_context={
+            "user_id": (user or {}).get("username") or (user or {}).get("sub"),
+            "thread_id": thread_id,
+            "source": "chat_prefix",
+        },
+    )
+    logger.info(
+        "문서 접두 질의 status=%s 컬렉션=%s 근거=%d건",
+        result.status, targets, len(result.citations),
+    )
+    return QueryResponse(
+        query_id=query_id,
+        status="completed" if result.ok else "error",
+        thread_id=thread_id,
+        response=result.answer,
+    )
+
+
 @router.post(
     "/query",
     response_model=QueryResponse,
@@ -2022,6 +2078,18 @@ async def process_query(
     )
     # 질의응답 스레드 기록(D-248) — 아래 반환 지점마다 turn.response()로 감싼다
     turn = TurnRecorder(request, current_user, user_query=body.query, has_upload=False)
+
+    # (plans/126 W4 · T-4) 명시 채팅 접두 `/문서 …` — **라우팅이 아니다**: 라우터·플래너·
+    # 그래프를 건드리지 않고 결정적 접두 파싱으로 문서 엔진을 직접 부른다(추론 0). 기본 off이고
+    # 라우팅(plans/125)이 편입되면 이 분기와 헬퍼를 함께 지운다(§4.17 「시험 표면의 수명」).
+    if doc_chat_prefix.is_enabled(config):
+        _doc_cmd = doc_chat_prefix.parse(body.query)
+        if _doc_cmd is not None:
+            _doc_res = await _answer_document_query(
+                config, _doc_cmd, query_id=query_id, thread_id=thread_id,
+                user=current_user,
+            )
+            return await turn.response(_doc_res)
 
     thread_config = {"configurable": {"thread_id": thread_id}}
 

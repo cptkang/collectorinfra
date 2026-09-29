@@ -1347,6 +1347,53 @@ class DrmConfig(BaseSettings):
     model_config = {"env_prefix": "DRM_", "env_file": ".env", "extra": "ignore"}
 
 
+class RagConfig(BaseSettings):
+    """문서 RAG(FabriX Retrieval Connector) 설정 (plans/126 · W1).
+
+    **접속 정보는 컬렉션별 정적 필드**다(`RAG_<COLLECTION>_*`). 자산 ID·토큰·엔드포인트가
+    리트리벌 발급마다 회전하므로(plans/126 §3.1b) 설정이 소유하고, 코퍼스의 **의미**는
+    `config/rag_collections.yaml`이 소유한다. 교체 절차는 `docs/32_rag_retrieval_runbook.md`.
+
+    동적 키 이름(`RAG_CONN_<ID>_*`)을 쓰지 않는 이유: 설정 카탈로그·관리자 화면·도움말 가드가
+    pydantic 필드 introspection에 의존해(D-129) 런타임 생성 키는 화면에도 검증에도 오르지 않는다.
+    코퍼스 **추가**는 여기에 4필드를 더하는 1회 작업이고, **회전**은 코드를 건드리지 않는다.
+
+    검색 파라미터(HyDE·top_k·threshold·rerank)는 **플랫폼 전속**이라 이 그룹에 없다(§3.3).
+    라우팅(어떤 질의를 문서로 보낼지)은 이 계획의 범위가 아니다 — `plans/125`가 소유한다.
+    """
+
+    enabled: bool = False                    # 기능 전체 옵트인(D-162 — off면 현행 비트 동일)
+
+    # ── 접속 4종 × 컬렉션 (docs/32 §1) ──────────────────────────────
+    # 전산관리규정 / 본부 전산관리매뉴얼
+    hq_manual_endpoint: str = ""             # 엔드포인트 URL 전문(조립 금지 — 발급마다 다르다)
+    hq_manual_token: str = ""                # x-openapi-token
+    hq_manual_client_key: str = ""           # x-generative-ai-client
+    hq_manual_retrieval_id: str = ""         # 자산 ID(가장 자주 바뀐다)
+    # 아키텍처 설계문서
+    arch_docs_endpoint: str = ""
+    arch_docs_token: str = ""
+    arch_docs_client_key: str = ""
+    arch_docs_retrieval_id: str = ""
+
+    # ── 엔진 예산·정책 ─────────────────────────────────────────────
+    collections_file: str = ""               # 비면 config/rag_collections.yaml
+    timeout: int = 12                        # 호출 1건 read 상한(초)
+    total_timeout: int = 20                  # 벽시계 총상한(초, D-198 교훈)
+    max_collections_per_turn: int = 2        # 우리가 정하는 유일한 "건수" 축
+    max_doc_chars: int = 4000                # 문서 1건 본문 상한(절단 시 고지)
+    max_context_chars: int = 24000           # 근거 총 문자 예산
+    answer_max_chars: int = 1200             # 서술 길이 상한(지연 ∝ 출력 길이)
+    cache_ttl: int = 300                     # 0이면 캐시 비활성
+    doc_url_base: str = ""                   # 비면 링크 미노출(url이 상대 경로다)
+    chat_prefix_enabled: bool = False        # T-4 명시 접두(`/문서`) — 기본 off(G-17)
+    # 민감 문서군(`sensitive: true`)을 열 수 있는 비관리자 사용자(쉼표 구분).
+    # **빈 값 = 아무도 없음**이다(민감 자료의 기본값은 닫힘 · D-232 정합 · W5).
+    sensitive_allowed_users: str = ""
+
+    model_config = {"env_prefix": "RAG_", "env_file": ".env", "extra": "ignore"}
+
+
 class AppConfig(BaseSettings):
     """애플리케이션 전체 설정을 통합 관리한다."""
 
@@ -1378,6 +1425,8 @@ class AppConfig(BaseSettings):
     host_authz: HostAuthzConfig = Field(default_factory=HostAuthzConfig)  # Plan 78 W3-5: 호스트 인가
     # plans/107: 의도 프레임·정규 질의
     intent_frame: IntentFrameConfig = Field(default_factory=IntentFrameConfig)
+    # plans/126: 문서 RAG(FabriX Retrieval) — 기본 off · 라우팅 미포함(plans/125 소유)
+    rag: RagConfig = Field(default_factory=RagConfig)
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"
 
