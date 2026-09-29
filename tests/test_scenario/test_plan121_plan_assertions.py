@@ -341,9 +341,11 @@ def test_invalid_plan_rejected_at_load(
 
 def test_agent_vocabulary_matches_tier2_registry() -> None:
     """하네스 사본(catalog.PLAN_AGENTS)이 레지스트리보다 낡으면 새 담당을 단언할 수 없다."""
+    from src.orchestration.apm_query import APM_QUERY_AGENT
     from src.orchestration.subagents import SUBAGENT_REGISTRY
 
-    assert PLAN_AGENTS == frozenset(SUBAGENT_REGISTRY)
+    # 조건부 처리기(plans/125 A-3 — 소스가 활성일 때만 등록)도 단언 어휘다(4소스 골드 FS군).
+    assert PLAN_AGENTS == frozenset(SUBAGENT_REGISTRY) | {APM_QUERY_AGENT}
 
 
 # --- 5. 정본 카탈로그 ------------------------------------------------------

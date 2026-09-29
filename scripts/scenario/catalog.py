@@ -66,6 +66,9 @@ PLAN_KEYS: frozenset[str] = frozenset(
 PLAN_AGENTS: frozenset[str] = frozenset({
     "data_query", "process_query", "alarm_query", "cache_management",
     "synonym_registration", "general_inference", "host_inspect",
+    # 조건부 처리기(plans/125 A-3) - 소스 엔드포인트가 설정됐을 때만 2단에 등록된다
+    # (`src/orchestration/apm_query.py` · 고정 목록 밖). 4소스 골드(FS군)가 이 이름을 단언한다.
+    "apm_query",
 })
 # 간선 한쪽의 "아무 담당". 소비 담당만 계약이고 생산 담당이 둘 중 하나일 때 쓴다(R1-05).
 PLAN_ANY_AGENT = "*"

@@ -456,6 +456,9 @@ def resolve_active_sources(config: RunConfig) -> tuple[list[str] | None, str]:
     - SQL 소스 = `ACTIVE_DB_IDS` - `resolve_env`(`detect_env`)와 **같은 출처**다. 자식 서버는 이
       프로세스와 같은 `.env`/`.encenv` 를 읽고, 프로파일은 `ACTIVE_DB_IDS` 를 주입하지 않는다
       (`config/scenarios/profiles.yaml` 의 `cross_system_tier2` 주석 · 실측 2026-09-29 주입 0건).
+    - 레지스트리 비DB 시스템(예 `apm` - plans/125 A-2)은 본체 설정 `MCP_SOURCE_ENDPOINTS` 에
+      엔드포인트가 있으면 활성이다(처리기가 그때만 등록된다 - 같은 판정). 4소스 골드(FS군)가
+      `requires_sources` 로 쓴다.
     - 비SQL 시스템(`catalog.NON_SQL_SOURCES` - 현재 `prometheus` 하나)은 **비활성으로 본다.** 본체
       설정 `PROMETHEUS_ENABLED` 는 소비처 0(예비 · `src/config.py` 주석)이라 켜도 조회 경로가 생기지
       않고, 질의가 실제로 쓰는 경로는 `mcp_server` PromQL 도구인데 그 가용 여부는 이 프로세스가 읽는
@@ -468,10 +471,14 @@ def resolve_active_sources(config: RunConfig) -> tuple[list[str] | None, str]:
     try:
         from src.config import load_config
 
-        active = load_config().multi_db.get_active_db_ids()
+        cfg = load_config()
+        active = list(cfg.multi_db.get_active_db_ids())
     except Exception as exc:  # 판독 실패는 치명상이 아니다 - 선택 제외를 하지 않을 뿐이다
         return None, f"판독 불가: 설정 로드 실패 ({type(exc).__name__})"
-    return sorted(set(active)), "ACTIVE_DB_IDS"
+    codes = getattr(getattr(cfg, "dbhub", None), "active_source_codes", None)
+    extra = [str(c) for c in codes()] if callable(codes) else []
+    origin = "ACTIVE_DB_IDS+MCP_SOURCE_ENDPOINTS" if extra else "ACTIVE_DB_IDS"
+    return sorted(set(active) | set(extra)), origin
 
 
 def missing_sources(scenario: Scenario, active: Sequence[str]) -> list[str]:

@@ -234,7 +234,9 @@ def test_itam_이_없는_run_에서_M군을_고르지_않고_사유_9건을_남�
     picked = [s.id for _p, group in iter_executions(catalog, closed) for s in group]
     assert not [sid for sid in picked if sid.startswith("M-")]
     skipped = source_exclusions(catalog, closed)
-    assert sorted(item["scenario_id"] for item in skipped) == M_IDS
+    # plans/125 M-1 4소스 골드 초안(FS군)도 요구 소스(apm·itam)를 선언한다 — M군만 떼어 본다.
+    assert sorted(i["scenario_id"] for i in skipped if i["scenario_id"].startswith("M-")) == M_IDS
+    assert {i["scenario_id"][:3] for i in skipped} <= {"M-0", "FS-"}
     first = next(item for item in skipped if item["scenario_id"] == "M-01")
     assert first["reason_code"] == SOURCE_SKIP_CODE == "requires_sources"
     assert first["reason"] == ("요구 소스 비활성 - requires_sources=[polestar, itam] · "
@@ -246,10 +248,15 @@ def test_선택_제외는_선언한_시나리오에만_걸린다() -> None:
     undecided = [s.id for _p, g in iter_executions(catalog, RunConfig(mode="run")) for s in g]
     closed = RunConfig(mode="run", active_sources=list(CLOSED))
     picked = [s.id for _p, g in iter_executions(catalog, closed) for s in g]
-    assert sorted(set(undecided) - set(picked)) == M_IDS, "선언 없는 L군 등은 그대로 선택된다"
+    # 선언한 군(M · plans/125 FS 초안)만 빠진다 — FS 중 폐쇄망 DB 만 요구하는 기권 2건은 선택된다.
+    fs_unmet = sorted(s.id for s in catalog.scenarios
+                      if s.group == "FS" and not set(s.requires_sources) <= set(CLOSED))
+    assert sorted(set(undecided) - set(picked)) == sorted(M_IDS + fs_unmet), \
+        "선언 없는 L군 등은 그대로 선택된다"
+    assert "FS-21" in picked and "FS-01" not in picked
     local = RunConfig(mode="run", active_sources=["itam", "polestar"])
     assert "M-01" in [s.id for _p, g in iter_executions(catalog, local) for s in g]
-    assert source_exclusions(catalog, local) == []
+    assert not [i for i in source_exclusions(catalog, local) if i["scenario_id"].startswith("M-")]
 
 
 def test_모의_실행과_판독_불가는_선택_제외를_하지_않는다() -> None:

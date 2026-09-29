@@ -810,6 +810,29 @@ def _scope_reexpand_field(state: dict[str, Any]) -> dict[str, Any]:
     return {"scope_reexpand": panel} if panel else {}
 
 
+def _nonsql_task_summary(task: dict[str, Any], res: dict[str, Any]) -> dict[str, Any]:
+    """비SQL 처리기 task 의 계획 요약 칸(plans/125 M-4) — 코드·개수만 · 없으면 키를 싣지 않는다.
+
+    보기(`views`) · 삽입한 단계(첫 홉 보기 id · 변환 간선 id) · 연결 장부 패싯별 건수 · 소스
+    상태 코드. SQL 처리기 task 는 이 칸이 없다(바이트 불변).
+    """
+    out: dict[str, Any] = {}
+    if task.get("views"):
+        out["views"] = [str(v) for v in task["views"]]
+    meta = res.get("apm_query") if isinstance(res.get("apm_query"), dict) else None
+    if meta:
+        steps = [s.get("edge") or s.get("view") for s in meta.get("inserted_steps") or []
+                 if isinstance(s, dict)]
+        if steps:
+            out["inserted_steps"] = steps
+        if meta.get("link_summary"):
+            out["link"] = meta["link_summary"]
+    statuses = [s for s in res.get("source_status") or [] if isinstance(s, dict)]
+    if statuses:
+        out["source_status"] = [f"{s.get('system')}:{s.get('status')}" for s in statuses]
+    return out
+
+
 def _plan_summary_field(state: dict[str, Any]) -> dict[str, Any]:
     """2단 계획 요약(plans/121 TP-0.1) — 계획이 없는 단(1·3단)은 키를 싣지 않는다(바이트 불변).
 
@@ -840,6 +863,7 @@ def _plan_summary_field(state: dict[str, Any]) -> dict[str, Any]:
             "input_from": list(task.get("input_from") or []),
             "db_ids": list(res.get("target_db_ids") or []),
             "db_origin": res.get("db_origin"),
+            **_nonsql_task_summary(task, res),
         })
     seen: set[tuple[Any, ...]] = set()
     kinds: dict[str, int] = {}

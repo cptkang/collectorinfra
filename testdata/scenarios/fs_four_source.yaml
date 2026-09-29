@@ -1,0 +1,354 @@
+# 4소스 교차 조회 골드 — **초안**(plans/125 M-1 · G-10 (a) · D-281 ⑩) — 사용자 검수 전
+#
+# 폴스타(호스트·OS) · Prometheus(호스트 메트릭) · ITAM(자산·담당자) · 제니퍼 APM(WAS) 를 계층(L3 WAS ·
+# L2 호스트 · L1 자산)으로 나눠 조회하고 한 응답으로 묶는 질의의 **목표 동작**이다(plans/125 §4.4 패턴).
+#
+# ★ 초안이다 — 목록·기대는 역량 질문 방식(DM-4)으로 뽑았고 사용자 검수 뒤 확정한다. 목표 수치는 MLX
+#   기준선 뒤(G-10 (a)). **지금은 불합격이 정상인 건이 많다** — 엔터티 표(C-1)·소스 상태 행(C-2)·명시
+#   소스 인식(B-2)은 R2 뒤 묶음이다. 불합격을 회귀로 읽지 않는다(M군 ★ 선례).
+#
+# ★ 선택 — 모든 건이 `requires_sources`(판정 전제 소스)를 선언한다(D-276 ②). 러너는 활성 소스
+#   (`ACTIVE_DB_IDS` ∪ `MCP_SOURCE_ENDPOINTS`)에 없으면 선택하지 않고 사유를 적재한다 — 제니퍼 운영
+#   접근(87 J0-O) · ITAM 운영 연결(95 G-3) 전에는 폐쇄망 run 에서 빠진다. run R2~R4 는 `f51cd49`
+#   고정 빌드라 이 파일이 들어가지 않는다(D-280 ⑭).
+#
+# ★ 규모(§5 M-1 최소) — 패턴 P-A·P-B·P-C·P-D·P-F 각 4건(P-E 인벤토리 대조는 G-11 보류) · 제니퍼 포함
+#   22건 · 3홉 4건(P-F) · 기권(해당 소스 없음) 2건 · 창 밖 2건. **권한 밖 2건은 카탈로그 밖**이다 —
+#   하네스에 사용자 전환 키가 없고 `allowed_sources`(A-7)가 R2 뒤다(plans/125 §17).
+#
+# ★ 단언 — 처리기·간선은 `plan`(2단 계획 요약)으로 본다. 보기(`views`)는 계획 요약 칸(M-4)에 실리지만
+#   단언 키는 아직 없다(보기 선택 정확도는 R-4 라우팅 골드 몫).
+version: 1
+group:
+  id: FS
+  name: "4소스 교차 조회 (초안)"
+  latency_target_ms: 30000
+  policy_confirmed: false
+  source: "plans/125 §5 M-1 (초안)"
+scenarios:
+  # ── P-A 단일 계층 (WAS) ─────────────────────────────────────────────────
+  - id: FS-01
+    plans: [125, 87]
+    title: "P-A · 김포 WAS 응답시간"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm]
+    turns:
+      - send: {query: "김포 WAS 응답시간 알려줘"}
+        expect:
+          status: completed
+          sql_executed: false
+          plan: {agents: [apm_query]}
+    teardown: [drop_thread]
+  - id: FS-02
+    plans: [125, 87]
+    title: "P-A · 힙 사용률 높은 WAS 인스턴스"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm]
+    turns:
+      - send: {query: "JVM 힙 사용률이 높은 WAS 인스턴스 보여줘"}
+        expect: {status: completed, sql_executed: false, plan: {agents: [apm_query]}}
+    teardown: [drop_thread]
+  - id: FS-03
+    plans: [125, 87]
+    title: "P-A · WAS 이벤트는 폴스타 알람이 아니다(B-1)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm]
+    turns:
+      - send: {query: "web01 서버의 제니퍼 fatal 이벤트 보여줘"}
+        expect:
+          status: completed
+          # 폴스타 알람 SQL 로 가면 안 된다(plans/125 B-1)
+          sql_executed: false
+          plan: {agents: [apm_query]}
+    teardown: [drop_thread]
+  - id: FS-04
+    plans: [125, 87]
+    title: "P-A · 지금 실행 중인 WAS 서비스"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm]
+    turns:
+      - send: {query: "지금 실행 중인 WAS 서비스 목록 보여줘"}
+        expect: {status: completed, sql_executed: false, plan: {agents: [apm_query]}}
+    teardown: [drop_thread]
+
+  # ── P-B 엔터티 프로필 (계층별 병렬) ────────────────────────────────────
+  - id: FS-05
+    plans: [125, 121, 102]
+    title: "P-B · 한 서버 종합 — OS · CPU · WAS · 담당자"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [polestar_cm_gp, apm, itam]
+    turns:
+      - send: {query: "svr-web-01 상태 종합해줘 — OS, CPU 사용률, WAS 응답시간, 담당자까지"}
+        expect:
+          status: completed
+          plan: {min_tasks: 3, agents: [data_query, apm_query, data_query]}
+    teardown: [drop_thread]
+  - id: FS-06
+    plans: [125, 121]
+    title: "P-B · 서버 CPU 와 WAS 힙 함께"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [polestar_cm_gp, apm]
+    turns:
+      - send: {query: "web01 서버 CPU 사용률이랑 그 서버 WAS 힙 사용량 같이 보여줘"}
+        expect: {status: completed, plan: {min_tasks: 2, agents: [data_query, apm_query]}}
+    teardown: [drop_thread]
+  - id: FS-07
+    plans: [125, 121, 102]
+    title: "P-B · WAS 서버의 자산 정보"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm, itam]
+    turns:
+      - send: {query: "web01 WAS 응답시간과 그 장비의 유지보수 계약 만료일 알려줘"}
+        expect: {status: completed, plan: {min_tasks: 2, agents: [apm_query, data_query]}}
+    teardown: [drop_thread]
+  - id: FS-08
+    plans: [125, 121]
+    title: "P-B · WAS 커넥션 풀과 서버 메모리"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [polestar_cm_gp, apm]
+    turns:
+      - send: {query: "web02 의 DB 커넥션 풀 사용률과 서버 메모리 사용률 비교해줘"}
+        expect: {status: completed, plan: {min_tasks: 2, agents: [apm_query, data_query]}}
+    teardown: [drop_thread]
+
+  # ── P-C 필터 → 보강 (WAS 선별 → 호스트·자산) ────────────────────────────
+  - id: FS-09
+    plans: [125, 121, 102]
+    title: "P-C · 느린 WAS 의 서버 CPU 와 담당자"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm, polestar_cm_gp, itam]
+    turns:
+      - send: {query: "응답시간이 느린 WAS 를 찾아서 그 서버들의 CPU 사용률과 담당자를 알려줘"}
+        expect:
+          status: completed
+          plan: {min_tasks: 2, edges: [[apm_query, data_query]]}
+    teardown: [drop_thread]
+  - id: FS-10
+    plans: [125, 121]
+    title: "P-C · 에러율 높은 WAS 의 서버 디스크"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm, polestar_cm_gp]
+    turns:
+      - send: {query: "에러율이 높은 WAS 가 올라간 서버들의 디스크 사용률 보여줘"}
+        expect: {status: completed, plan: {min_tasks: 2, edges: [[apm_query, data_query]]}}
+    teardown: [drop_thread]
+  - id: FS-11
+    plans: [125, 121]
+    title: "P-C · 폴스타 선별 → WAS 보강"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [polestar_cm_gp, apm]
+    turns:
+      - send: {query: "CPU 사용률이 90% 넘는 서버를 찾고 그 서버들의 WAS 응답시간도 보여줘"}
+        expect: {status: completed, plan: {min_tasks: 2, edges: [[data_query, apm_query]]}}
+    teardown: [drop_thread]
+  - id: FS-12
+    plans: [125, 121, 102]
+    title: "P-C · 지원 종료 임박 장비의 WAS"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [itam, apm]
+    turns:
+      - send: {query: "HW 지원 종료가 6개월 안 남은 서버들의 WAS 인스턴스 목록 보여줘"}
+        expect: {status: completed, plan: {min_tasks: 2, edges: [[data_query, apm_query]]}}
+    teardown: [drop_thread]
+
+  # ── P-D 동시간대 상관 ──────────────────────────────────────────────────
+  - id: FS-13
+    plans: [125, 121, 122]
+    title: "P-D · WAS 에러 시점의 서버 CPU"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm, polestar_cm_gp]
+    turns:
+      - send: {query: "WAS 에러 이벤트가 난 시점에 그 서버 CPU 사용률은 어땠어?"}
+        expect: {status: completed, plan: {min_tasks: 2, edges: [[apm_query, data_query]]}}
+    teardown: [drop_thread]
+  - id: FS-14
+    plans: [125, 121, 122]
+    title: "P-D · 서버 알람 시점의 WAS 응답시간"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [polestar_cm_gp, apm]
+    turns:
+      - send: {query: "오늘 심각 알람이 난 서버에서 그 시각 WAS 응답시간도 튀었는지 확인해줘"}
+        expect: {status: completed, plan: {min_tasks: 2, edges: [[alarm_query, apm_query]]}}
+    teardown: [drop_thread]
+  - id: FS-15
+    plans: [125, 121]
+    title: "P-D · GC 지연과 호스트 메모리"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm, polestar_cm_gp]
+    turns:
+      - send: {query: "GC 시간이 긴 WAS 의 서버 메모리 사용률을 같은 시간대로 보여줘"}
+        expect: {status: completed, plan: {min_tasks: 2, edges: [[apm_query, data_query]]}}
+    teardown: [drop_thread]
+  - id: FS-16
+    plans: [125, 121]
+    title: "P-D · 느린 트랜잭션과 서버 부하"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm, polestar_cm_gp]
+    turns:
+      - send: {query: "web01 느린 트랜잭션이 몰린 때 서버 CPU 부하도 같이 봐줘"}
+        expect: {status: completed, plan: {min_tasks: 2, agents: [apm_query, data_query]}}
+    teardown: [drop_thread]
+
+  # ── P-F 영향 범위 (3홉) ────────────────────────────────────────────────
+  - id: FS-17
+    plans: [125, 121, 102]
+    title: "P-F · 심각 알람 서버의 WAS 와 담당자"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [polestar_cm_gp, apm, itam]
+    turns:
+      - send: {query: "심각 알람이 난 서버들의 WAS 응답시간과 담당자를 알려줘"}
+        expect:
+          status: completed
+          plan: {min_tasks: 3, edges: [[alarm_query, apm_query], [alarm_query, data_query]]}
+    teardown: [drop_thread]
+  - id: FS-18
+    plans: [125, 121, 102]
+    title: "P-F · 에러 WAS → 서버 → 담당 부점"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm, polestar_cm_gp, itam]
+    turns:
+      - send: {query: "에러가 난 WAS 의 서버를 찾고, 그 서버 CPU 와 담당 부점까지 정리해줘"}
+        expect: {status: completed, plan: {min_tasks: 3, edges: [[apm_query, data_query]]}}
+    teardown: [drop_thread]
+  - id: FS-19
+    plans: [125, 121]
+    title: "P-F · 디스크 부족 서버 → WAS → 실행 중 서비스"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [polestar_cm_gp, apm]
+    turns:
+      - send: {query: "디스크가 90% 넘는 서버의 WAS 인스턴스와 지금 실행 중인 서비스까지 보여줘"}
+        expect: {status: completed, plan: {min_tasks: 2, edges: [[data_query, apm_query]]}}
+    teardown: [drop_thread]
+  - id: FS-20
+    plans: [125, 121, 102]
+    title: "P-F · 계약 만료 장비 → 서버 CPU → WAS"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [itam, polestar_cm_gp, apm]
+    turns:
+      - send: {query: "유지보수 계약이 이번 달 끝나는 장비들의 서버 CPU 와 WAS 응답시간을 같이 보여줘"}
+        expect: {status: completed, plan: {min_tasks: 3, edges: [[data_query, apm_query]]}}
+    teardown: [drop_thread]
+
+  # ── 기권(해당 소스 없음) ─────────────────────────────────────────────────
+  - id: FS-21
+    plans: [125, 121]
+    title: "기권 · DB 성능(DPM) 은 연동 소스가 없다"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [polestar_cm_gp]
+    turns:
+      - send: {query: "오라클 DB 세션 락 대기 현황 보여줘"}
+        expect:
+          status: completed
+          sql_executed: false
+          response_must_contain_any: ["연동되어 있지 않", "제공하지 않", "지원하지 않", "수집하지 않"]
+    teardown: [drop_thread]
+  - id: FS-22
+    plans: [125, 121]
+    title: "기권 · 네트워크 장비 트래픽은 연동 소스가 없다"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [polestar_cm_gp]
+    turns:
+      - send: {query: "L4 스위치 포트별 트래픽 보여줘"}
+        expect:
+          status: completed
+          sql_executed: false
+          response_must_contain_any: ["연동되어 있지 않", "제공하지 않", "지원하지 않", "수집하지 않"]
+    teardown: [drop_thread]
+
+  # ── 창 밖 (제니퍼 조회 창) ───────────────────────────────────────────────
+  - id: FS-23
+    plans: [125, 87]
+    title: "창 밖 · 지난주 WAS 응답시간 추이는 조회하지 않고 사유"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm]
+    turns:
+      - send: {query: "지난주 WAS 응답시간 추이 보여줘"}
+        expect:
+          sql_executed: false
+          response_must_contain: ["조회 창"]
+          plan: {agents: [apm_query]}
+    teardown: [drop_thread]
+  - id: FS-24
+    plans: [125, 87]
+    title: "창 밖 · 지난달 WAS 이벤트"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm]
+    turns:
+      - send: {query: "지난달 WAS 이벤트 전부 보여줘"}
+        expect:
+          sql_executed: false
+          response_must_contain: ["조회 창"]
+          plan: {agents: [apm_query]}
+    teardown: [drop_thread]
