@@ -492,8 +492,27 @@ def is_full_scan_query(user_query: str | None) -> bool:
 
 # 명시 건수 표현("100건", "상위 10개") — "건"은 레코드 수 전용 조사라 안전. 단독 "개"는
 # "개월"·"4개인 서버" 등 수량 한정과 혼동되므로 "상위 N(개)" 꼴에서만 인정한다.
-_EXPLICIT_COUNT_RE = re.compile(r"(\d{1,6})\s*건")
+# 「N건 이상·이하·초과·미만·넘는」은 **조건**이지 결과 건수가 아니다(plans/123 W-0 — 「알람 3건
+# 이상 발생한 서버」가 LIMIT 3으로 읽혀 격리 입력 `resolved_limit`으로 모든 task에 승격됐다
+# · R1-08).
+_EXPLICIT_COUNT_RE = re.compile(
+    r"(\d{1,6})\s*건(?!\s*(?:을|를|이|가)?\s*(?:이상|이하|초과|미만|넘|보다|까지|부터))"
+)
 _TOP_N_RE = re.compile(r"상위\s*(\d{1,6})")
+
+
+def explicit_row_count(user_query: str | None) -> int | None:
+    """질의가 명시한 결과 건수("100건"·"상위 10") — 없으면 None (plans/123 W-0·W-1 ②).
+
+    `resolve_query_limit`의 첫 판정과 같은 규칙이다. 상한 절단 고지(`output_generator`)가 이 값과
+    같은 상한이면 「요청한 만큼 가져온 것」이라 절단으로 말하지 않는다.
+    """
+    text = user_query or ""
+    m = _EXPLICIT_COUNT_RE.search(text) or _TOP_N_RE.search(text)
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n if n > 0 else None
 
 
 def resolve_query_limit(
@@ -520,11 +539,9 @@ def resolve_query_limit(
         적용할 LIMIT 값
     """
     text = user_query or ""
-    m = _EXPLICIT_COUNT_RE.search(text) or _TOP_N_RE.search(text)
-    if m:
-        n = int(m.group(1))
-        if n > 0:
-            return min(n, _ALL_QUERY_LIMIT)
+    n = explicit_row_count(text)
+    if n is not None:
+        return min(n, _ALL_QUERY_LIMIT)
     if has_all_scope_keyword(text):
         return _ALL_QUERY_LIMIT
     # 2단 폴백(R3-(i)): 표면어 미매칭 → 이미 계산돼 있던 LLM 건수 산출물을 채택한다.

@@ -103,7 +103,7 @@ def non_sql_prose_response(prose: str) -> str:
     """
     text = (prose or "").strip()[:1500]
     return (
-        "요청을 SQL로 옮기지 못했습니다. 조회 엔진이 대신 남긴 설명입니다.\n\n"
+        "요청을 SQL로 옮기지 못했습니다. 조회 엔진이 남긴 설명입니다.\n\n"
         f"{text}\n\n"
         "조회 대상(서버·지표·기간)을 구체적으로 지정해 주시면 다시 시도하겠습니다."
     )

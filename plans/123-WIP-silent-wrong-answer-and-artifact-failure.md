@@ -1,7 +1,8 @@
 # 123. 그럴듯한 오답 방지 — 오용·실수·착각 미탐지 · 2단 결정적 고지 배선 복구 · R군 판정화 · 파일 산출 기대 정정
 
 > **작성일**: 2026-09-29
-> **상태**: **계획 v2.3 · 구현 0건 · 게이트 123·G-1~G-16 사용자 확정 대기(§7)** — 파일명 `-TODO`
+> **상태**: **v3 · 구현 진행(2026-09-29 · 작업 트리 · 커밋·재측정 전 · D-279)** — 트랙 W 전부 · S-1·S-8·S-11 1차 · S-2·S-6 섀도 · S-10 적색 테스트 랜딩(§16) · 잔여 = 판정기 V·카탈로그 CT(게이트 G-1·G-2·G-4·G-6·G-7·G-16 — 결정 개정 필요) · S-2·S-6 on(run R5′ · G-9) · S-3·S-4·S-5·S-7·S-9·PR(선행 계획·게이트) — 파일명 `-WIP`
+> - **v3(2026-09-29)**: 사용자 지시 *"123번을 먼저 구현하고 125번을 이어서 구현하라."* — 권고안을 기존 결정 개정 없이 적용할 수 있는 게이트만 근거로 구현(§16 · D-279). 결정 개정이 필요한 게이트는 사용자 확정 대기로 남김.
 > - **v2(2026-09-29)**: 사용자 지시 *"작성한 123번의 계획과 121, 122번 계획을 복합적으로 분석하여 상호 계획에 문제가 없는지 확인하여 계획을 업데이트하라."* — 읽기 전용 교차 검토 3건(123×121 · 123×122 · 삼자+결정 정합) 결과 반영(§14). **결정 충돌은 없지만 순서·소유 공백·중복·ID 충돌이 있었다.** 핵심 변경: ①**착륙 격리**(121 커밋 = run R2 스냅샷 · 123 코드는 그 위 별도 브랜치 · **판정기 코드도 run R2 뒤**) ②카탈로그 변경을 **판정 전용(v2)과 입력 변경(v3)**으로 분리 ③불변식 단언은 소유 제품 수정 전까지 **트리아지 칸만** ④「없는 대상」 **판정 주체 신설**(S-4a) ⑤S-9·S-7(a)를 121·TP-4.2·4.4·4.7로 **합류** ⑥「N건 이상 → LIMIT N」 결함 **W-0 선행** ⑦고지 전용 **구조 필드**(W-8)와 **턴 단위 단일 통과점**(W-9) ⑧**통합 재측정 일정**(run R2b·R5′ 추가 · 폐쇄망 run 8회) ⑨R군 **이관 장부**(§12) ⑩ID 개명(판정 H → **V** · 카탈로그 C → **CT** · 프롬프트 P → **PR** · 위험 K → **RK** · 원인 범주 C01 → **SW01**) ⑪사실 정정 15건(§14.4). **121·122 문서는 병행 세션(collectorinfra-9d)이 구현 중이라 이 문서만 고쳤고, 두 계획에 부기할 내용은 그 세션에 전달했다(§14.5).**
 > - **v1(2026-09-29)**: 사용자 지시 *"123번 계획을 작성하라."* — run `20260923-103638` R군 174턴 판독 · 코드 감사 · 문헌 58편 · 게이트 14.
 >
@@ -681,6 +682,49 @@
 - **사용자가 함께 볼 결정 묶음**(세 계획 공통): 123·G-7 + R1-03 `plan` 단언(121) · 결함 A(D-234 ③ · 121) · G-27 경계(121) ↔ 123·G-12 · 오라클 3 DB ↔ 123·CT-4·G-4 · 정책표 두 행(122) ↔ 123·S-5·G-5 · run R3′ 분할(122) ↔ §9.
 
 
+## 16. (v3) 구현 랜딩 — 2026-09-29 · 작업 트리 · 커밋 없음 · run R5 전 (D-279)
+
+사용자 지시 *"123번을 먼저 구현하고 125번을 이어서 구현하라."* — 게이트는 **권고안을 적용할 수 있는 항목만** 구현했다. 기존 결정을 개정해야 하거나(§7.1 부기 목록) 다른 계획의 선행·사용자 결정에 묶인 항목은 잔류다(§16.2). 착륙 격리(G-14 (a))는 **커밋된 HEAD `f51cd49`(121·122 스냅샷)** 위 작업 트리로 지켰다 — run R2~R4는 HEAD(또는 `git worktree add <dir> HEAD`)로 빌드하고 이 작업 트리로 빌드하지 않는다.
+
+### 16.1 랜딩
+
+| ID | 구현 | 파일 |
+|---|---|---|
+| W-0 | `explicit_row_count()` 단일 출처 · 「N건 이상·이하·초과·미만·넘·보다·까지·부터」 제외 · `resolve_query_limit`이 사용 | `src/utils/query_gen_common.py` |
+| W-1 | task 결과 `executed_sqls`(DB별 마지막 실행 SQL · `_executed_sqls_by_db`) → `_build_output_state`가 `query_attempts`로 · 비발동 = 질의 지정 건수(명시 건수·상위 N·TOP N·N대·N위)와 같은 상한 · 병합 경로 `limit_sources`(원천 task별) · `resolved_limit` 미전달 · 존별 분기 재사용 | `subagents.py` · `result_aggregator.py` · `output_generator.py` |
+| W-2 | 좁힌 범위 문구 = 집계기 단일 통과점(1·2단) · 3단은 종전 `_append_scope_note` · 스트림 `done` 네 곳(텍스트·파일 × astream·폴백)에 `scope_reexpand` · `narrowed_record` 그룹 안 미선택 DB 기록(존 이름 · `db_labels`) · 권한 밖 비노출(활성 ∩ 허용 유지) | `result_aggregator.py` · `query.py` · `scope_select.py` |
+| W-3 | `routing_intent`(alarm_query task) · `spike_notes`(task 결과 → 출력 입력) · 병합은 원천이 **모두** 알람일 때만 알람 의도 | `subagents.py` · `result_aggregator.py` |
+| W-4 | 선택 존 턴에서 미등록 존 표기를 선택 존 라벨로 치환 · kind `unregistered_zone` 고지(라우트 `turn_disclosures` · 역질문 턴 제외 · 파일 라우트 대칭) | `query.py` |
+| W-5 | 「전체」 강화 — 좁힌 기록이 있으면 그 문구 머리 「전체가 아니라」 · 없으면 (전체어 · 조회 DB ⊊ 활성∩허용 · origin ∉ {hint, inherited})일 때 kind `scope_partial` 한 줄 · **조회 대상 줄 자체는 121·TP-4.7(106) 몫(G-15)** · 코드분 `_normalize_targets`의 `sub_query_context`만 위치어 제거 | `output_generator.py` · `result_aggregator.py` · `subagents.py` |
+| W-6 | 조회 실패 + 0행 = 실패 안내(단일 출처 `disclosure.failure_text`) · kind = `regen_stop.reason` 재사용 + `sql_blocked`(읽기 전용 가드 차단) + `query_failed` · 결정적 조사 처리기(process_query·host_inspect) 진단 요약 유지 · 「대신」 표지어 제거(비-SQL 산문 문구 · 재계획 중단 사유) · 빈 대상 이중 공백 정정 | `result_aggregator.py` · `disclosure.py` · `query_validator.py` · `replanner.py` · `output_generator.py` |
+| W-7 | 사용자 문구의 「D-053 계열」 제거 | `output_generator.py` |
+| W-8 | `QueryResponse.disclosures` · 스트림 `done.disclosures`(네 진입점) `{kind, text, source}` · kind 정본 `src/domain/disclosure.py`(123 kind + 121 `NOTE_*` 14 + 122 notes 8 — 등급 중립 · drift 테스트) · `AgentState.disclosures`·`turn_disclosures` 요청 스코프(두 상태 생성 함수 초기화) | `disclosure.py` · `schemas.py` · `state.py` · `query.py` |
+| W-9 | 턴 단위 고지 = 집계기 `_apply_disclosures`(1·2단) · 3단 `output_generator._append_turn_notices`(`per_task_finalize` 아닐 때) 한 곳 · 의무 고지 전부 + 그 밖 최대 3줄(나머지 구조 필드만) · 1단 합성이 떨어뜨린 의무 task 고지 복원 · 역질문 턴 제외 | `result_aggregator.py` · `output_generator.py` · `disclosure.py` |
+| S-1 | 원문 단위 의심(메모리·디스크 용량 × MB<1024·KB · 프로세스·JVM·힙·캐시 문맥 제외) → kind `unit_suspect` · 조회는 요청 그대로 · **규칙 위치는 `src/domain/input_guard.py`** — 121·TP-9.3 속성 레코드 미착수라 그 랜딩 때 옮긴다 | `input_guard.py` · `query.py` |
+| S-2 | **섀도** — 라우트 진입(존 앞단 게이트보다 앞)에서 비조회 입력 판정 로그만 · 응답 불변 · kind `blank_input`·`sql_input`·`write_request`·`prompt_injection`·`credential_request` | `input_guard.py` · `query.py` |
+| S-6 | **섀도** — `input_parser`에서 같은 열 수치 구간 공집합 로그만 | `input_guard.py` · `input_parser.py` |
+| S-8 | 실행 SQL 주석의 자기 고백(「무시·생략·적용하지 않·상충·스키마에 없·대신·초과이거나」) 원문 인용 → kind `generator_note` · 출력 단계에서만(재계획 전 노트 아님 → `_INFO_NOTE_KINDS` 불변) | `sql_disclosure.py` · `output_generator.py` |
+| S-10 | 형제 부분집합 병합 축소 회귀 테스트 — `xfail(strict)`(121·TP-11.6 ④ 교정 때 녹색) | 테스트 |
+| S-11 1차 | 단일 task 계획(집계기 `condition_check`)·3단 단일 경로만 · 수치 부등호 조건의 누락·반전·AND→OR(원문에 「또는」 없음)·항상 참 → kind `condition_changed` | `sql_disclosure.py` · `output_generator.py` |
+
+- 매뉴얼(D-255 ②): U-16(실패 안내 · 읽기 전용 거절) · U-19(단위 의심 · 생성기 메모 · 조건 변경) · U-20(상한 도달 · 개수 지정 질의 비발동) · U-25(좁힌 범위 · 「전체가 아니라」 · 미등록 존) 주의 줄 · 화면 변화 없음(캡처 불필요) · 빌드 · `tests/test_manual` 통과.
+- 테스트: `tests/test_orchestration/test_plan123_disclosures.py`(56) · `tests/test_domain/test_input_guard.py`·`test_sql_disclosure.py`(208) · 전체 회귀 11,660 passed · 4 xfailed — 실패 104·오류 55는 HEAD `f51cd49`와 목록이 같다(환경 의존) · 갱신 `tests/test_scope_select/test_gate.py`·`test_narrow_record.py`(W-2 ③ 의미 변경 — 종전 테스트가 그룹 단위 기록을 정답으로 고정) · `tests/test_orchestration/test_plan119_replanner.py`(문구).
+
+### 16.2 잔여 — 사유
+
+| 항목 | 사유 · 재개 조건 |
+|---|---|
+| V-1~V-6 · CT-1~CT-7 | 게이트 G-1(R군 소유 이관 — D-275 ⑥ 부기) · G-2(`94·G-10` 정책 형태 · `empty_template` 8번째 등급 — D-241) · G-4(3존 자동 응답 — D-216 ② 부기 · D-206 주의 ① PII 위험) · G-6(식별자 누락 정책 — **사용자 판단**) · G-7(R1-03·R4-07C 기대 정정) · G-16이 **기존 결정 개정**을 요구해 사용자 확정 뒤 착수. 판정기 코드도 run R2 뒤(G-14). V-1의 kind 입력(`disclosures`)은 이번 랜딩으로 준비됨 |
+| S-2 · S-6 on 전환 | G-8 (c) — run R5 섀도 로그로 대조군 과잉 판정 0 확인 뒤(run R5′) · S-2는 **G-9(D-004 부기)** 사용자 확정 필요 · 공백·기호 입력 422도 이때 |
+| S-3 | 121·TP-9.3 속성 레코드(`coverage`·`role`) 미착수 — 같은 정본 위치(D-270 ⑭) |
+| S-4a · S-4b | G-12 — 121이 G-27 경계를 사용자 결정으로 올림(결정적 존재 확인 프로브가 「새 판정기 금지」에 걸리는지) · 121·TP-5.2 미착수 |
+| S-5 | 122·T 배선(run R4 뒤) · 정책표 「연도 명시 미래」·「비존재 월」 행 사용자 결정(되묻기면 S-5 불필요) |
+| S-7 | G-6(사용자 판단) · G-15 — 해석 한 줄은 121·TP-4.7(106) |
+| S-9 | G-11 — 121·TP-4.2·4.4 ②로 합류(123은 요구·검증 시나리오만) |
+| PR-1 · PR-2 | G-10 — run R5 뒤 단독 run R6 |
+| 3단 `semantic_router` 가동률 단락 | 121 §1.2 비대상 · 103 통지 |
+| 통지(코드 0) | §14.5 목록 · 103 장부(3단 바이트 변화: top-N 오탐 제거 · 스트림 `scope_reexpand` · 「전체가 아니라」 · 실패 안내 문구) · 122(J-01 새 문구 병기 · K-09·D-05 절단 단언 활성 선행 충족) |
+
 ## 15. 변경 이력
 
 | 날짜 | 내용 |
@@ -689,4 +733,5 @@
 | 2026-09-29 (v2) | 사용자 지시 *"작성한 123번의 계획과 121, 122번 계획을 복합적으로 분석하여 상호 계획에 문제가 없는지 확인하여 계획을 업데이트하라."* — 읽기 전용 교차 검토 3건(123×121 25행 · 123×122 29행 · 삼자·결정 정합) 반영(§14). 착륙 격리(G-14) · 판정기 버전 · CT v2/v3 분리 · 불변식 트리아지 · S-4a·W-0·W-8·W-9·CT-7 신설 · S-9·S-7(a) 121 합류(G-11·G-15) · G-16 신설 · 통합 재측정 일정(run R2b·R5′ · 8회) · R군 이관 장부(§12) · 결정 부기 목록(§7.1) · ID 개명(V·CT·PR·RK·SW) · 사실 정정 15건(§14.4). 121·122 문서는 병행 세션 구현 중이라 편집하지 않고 부기 요청을 전달(§14.5) |
 | 2026-09-29 (v2.1) | 123×122 검토 에이전트의 현 트리 겹침 지도(15:39 · 122 하네스 diff 17파일) 반영 — 새 등급 `empty` → **`empty_template`** 개명(122 결과 행 `status: "empty"`와 충돌) · V-4에 `evaluate_turn` 제약 3건(`_Holds.add` 출처 어휘 · 결과 행은 선언 턴만 · 환경 보류 직접 필터) · V-1 drift 테스트 결합(제품 `NOTE_*`와 하네스 사본 같은 커밋) · 122 키 재사용(`dependency_notes_contains` · `sql_executed: false` · `status: clarification` · `file.empty_columns`) — 123 새 키는 불변식 선언과 E-04 행 합 검사(122·H-1 요청) 둘뿐 · CT-1 동결 가드 · CT-4 오라클 대상 DB 결정 코드 확인 · V-2/§14.2 #15 정정(`pre_answer_mode`는 과거 run에서도 도출 가능) |
 | 2026-09-29 (v2.2) | 병행 세션 통지 반영 — **D-278**(121·122 결합 구현 · D-275·D-276 부기) 등재 · 122 파일명 `-WIP` · 다음 번호 D-279 · 테스트 개명 `test_catalog_probe_set_is_frozen` · CT-4: D-278 ④(오라클 대상 DB = 선언만)로 「러너가 고른 존」 대안 소멸 → 3존 선택(CT-4)이 선결 · §7.1 D-276 ⓑ(판정기 버전은 123 V 때문에 여전히 필요)·ⓓ(D-278 ⑦이 auth·upload 송신 변경은 처리 — 남은 빈틈은 auto_answer·send·턴 수) 갱신 · ③ 오프라인 행에 카탈로그 v2 파일 분리 방식 적용 |
+| 2026-09-29 (v3) | 사용자 지시 *"123번을 먼저 구현하고 125번을 이어서 구현하라."* — §16 구현 랜딩(W-0~W-9 · S-1 · S-2·S-6 섀도 · S-8 · S-10 xfail · S-11 1차) · **D-279** · 매뉴얼 U-16·U-19·U-20·U-25 · 파일명 `-TODO` → `-WIP` · 잔여 §16.2 |
 | 2026-09-29 (v2.3) | 121·122 편집 완료 통지 반영(121 v11 §16.6 · 122 v6 §14.10) — §14.6 처리 결과 표 신설 · 결함 B 121 교정 완료(W-7) · K-09·J-01만 문구 단언(W-1·W-6) · R1-03은 CT-3과 같은 변경(긴급 아님) · 판정기 지문 `judge_digest` 122 반영(§7.1 ⓑ · RK-7) · `input_changed`는 `--catalog-ref`(V-6) · G-12·G-13은 121이 사용자 결정으로 올림 · S-5는 정책표 결정(되묻기면 불필요) · §9에 run R3′ 행 · 폐쇄망 run 9회 |

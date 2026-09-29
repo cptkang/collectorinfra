@@ -168,13 +168,30 @@ class TestNarrowedRecord:
         assert record["skipped_db_ids"] == ["polestar_cm_gp", "polestar_cm_yd"]
 
     def test_full_selection_is_not_a_narrowing(self):
-        assert narrowed_record(TWO, ["polestar_b0", "polestar_cm_gp"]) is None
+        assert narrowed_record(
+            TWO, ["polestar_b0", "polestar_cm_gp", "polestar_cm_yd"]
+        ) is None
 
-    def test_partial_group_selection_counts_as_selected(self):
-        """공동존 2개 중 하나만 골라도 그 그룹은 '조회함'이다(그룹 단위 기록)."""
-        record = narrowed_record(TWO, ["polestar_cm_gp"])
+    def test_partial_group_selection_records_unselected_db(self):
+        """공동존 2개 중 하나만 고르면 **나머지 하나도 미조회**다(plans/123 W-2 ③).
 
-        assert record["skipped"] == ["은행존"]
+        종전(그룹 단위 기록)은 공동존을 「조회함」으로 세어 여의도 759대 미조회가 응답·감사에서
+        사라졌다(run `20260923-103638` R4-12). 그룹 안 미선택 DB를 db 이름으로 적는다.
+        """
+        record = narrowed_record(
+            TWO, ["polestar_cm_gp"],
+            db_labels={"polestar_cm_gp": "공동존 김포", "polestar_cm_yd": "공동존 여의도"},
+        )
+
+        assert record["selected"] == ["공동존 김포"]
+        assert record["skipped"] == ["은행존", "공동존 여의도"]
+        assert record["skipped_db_ids"] == ["polestar_b0", "polestar_cm_yd"]
+
+    def test_partial_group_without_labels_uses_db_ids(self):
+        record = narrowed_record(TWO, ["polestar_b0", "polestar_cm_gp"])
+
+        assert record["selected"] == ["은행존", "polestar_cm_gp"]
+        assert record["skipped"] == ["polestar_cm_yd"]
 
     def test_no_selection_is_not_a_record(self):
         assert narrowed_record(TWO, None) is None

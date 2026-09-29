@@ -145,6 +145,12 @@ class QueryResponse(BaseModel):
     plan_summary: dict[str, Any] | None = Field(
         default=None, description="2단 계획 요약(계획 경로·task 구성·재계획 횟수 — 코드·개수만)"
     )
+    # plans/123 W-8: 결정적 고지의 구조화본 — [{kind, text, source}]. kind 어휘 정본은
+    # `src/domain/disclosure.py`. 선언하지 않으면 pydantic이 조용히 버린다(121 §12.5 TP-0.1 함정).
+    disclosures: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="결정적 고지(상한 도달·좁힌 범위·미등록 존·단위 의심·조건 변경·조회 실패 등)",
+    )
 
 
 class HealthResponse(BaseModel):

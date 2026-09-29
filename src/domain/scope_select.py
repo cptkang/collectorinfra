@@ -148,12 +148,19 @@ def scope_question_or_none(
 
 
 def narrowed_record(
-    groups: Sequence[Mapping[str, Any]], selected_db_ids: Sequence[str] | None
+    groups: Sequence[Mapping[str, Any]],
+    selected_db_ids: Sequence[str] | None,
+    db_labels: Mapping[str, str] | None = None,
 ) -> Optional[dict]:
     """좁힌 사실을 기록한다 — **미조회 범위를 남기지 않으면 침묵 절단이다**.
 
     범위 축소는 정보 손실이 복구되지 않는 절단이므로, 무엇을 보지 않았는지가 응답과
     감사 로그 양쪽에 남아야 한다. 전부 선택했으면 절단이 아니므로 None.
+
+    **그룹 안에서 일부 DB만 고른 것도 좁힌 것이다**(plans/123 W-2 ③). 종전에는 그룹 단위로만
+    세어 공동존 그룹에서 김포만 고르면 그룹이 「선택」으로 잡혀 여의도 미조회가 기록되지 않았다
+    (run `20260923-103638` R4-12 — 여의도 759대 미조회 무고지). 그룹 일부 선택이면 선택 쪽에는 고른
+    DB 이름을, 미조회 쪽에는 고르지 않은 DB 이름을 적는다(`db_labels` — 없으면 db_id).
 
     Returns:
         `{"selected": [...], "skipped": [...], "skipped_db_ids": [...]}` 또는 None.
@@ -161,6 +168,7 @@ def narrowed_record(
     billable = _distinct_groups(groups)
     if not billable or not selected_db_ids:
         return None
+    labels = db_labels or {}
     chosen = set(selected_db_ids)
     selected: list[str] = []
     skipped: list[str] = []
@@ -168,23 +176,36 @@ def narrowed_record(
     for group in billable:
         label = str(group.get("label") or group.get("group_key"))
         db_ids = list(group.get("db_ids") or [])
-        if any(d in chosen for d in db_ids):
-            selected.append(label)
-        else:
+        picked = [d for d in db_ids if d in chosen]
+        missed = [d for d in db_ids if d not in chosen]
+        if not picked:
             skipped.append(label)
             skipped_db_ids.extend(db_ids)
+        elif missed:
+            selected.append(", ".join(str(labels.get(d) or d) for d in picked))
+            skipped.append(", ".join(str(labels.get(d) or d) for d in missed))
+            skipped_db_ids.extend(missed)
+        else:
+            selected.append(label)
     if not skipped:
         return None
     return {"selected": selected, "skipped": skipped, "skipped_db_ids": skipped_db_ids}
 
 
-def render_narrowed_note(record: Mapping[str, Any] | None) -> str:
-    """응답 말미에 붙일 미조회 범위 문구(없으면 빈 문자열)."""
+def render_narrowed_note(
+    record: Mapping[str, Any] | None, *, full_scope_requested: bool = False
+) -> str:
+    """응답 말미에 붙일 미조회 범위 문구(없으면 빈 문자열).
+
+    `full_scope_requested`: 질의가 「전체·모든·모두」를 요청했는데 좁혔으면 문구 머리에
+    「전체가 아니라」를 밝힌다(plans/123 W-5 강화 규칙 — 한 존 결과를 「전체」로 읽지 않게).
+    """
     if not record or not record.get("skipped"):
         return ""
     skipped = ", ".join(record["skipped"])
     selected = ", ".join(record.get("selected") or []) or "선택한 범위"
+    head = "전체가 아니라 " if full_scope_requested else ""
     return (
-        f"- {selected}만 조회했습니다. **{skipped}은(는) 조회하지 않았습니다** — "
+        f"- {head}{selected}만 조회했습니다. **{skipped}은(는) 조회하지 않았습니다** — "
         "전체 범위로 다시 조회하려면 아래 버튼을 눌러 주세요."
     )

@@ -13,6 +13,7 @@ import math
 import re
 from bisect import bisect_left, bisect_right
 from collections import Counter
+from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal
 from typing import Any, NamedTuple, Optional
@@ -22,6 +23,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AI
 
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
+from src.domain import disclosure as disc
 from src.domain.empty_answer import from_payload as diagnosis_from_payload
 from src.domain.empty_answer import render_diagnosis
 from src.domain.partial_result import render_markdown_table
@@ -44,6 +46,8 @@ from src.utils.progress_events import emit_answer_prefix
 from src.utils.query_gen_common import (
     ELLIPTICAL_SUCCESSION_KEY,
     FORM_MEMORY_SHORTCUT_HINT,
+    explicit_row_count,
+    has_all_scope_keyword,
     render_elliptical_succession_note,
     resolve_stat_month_range,
 )
@@ -152,8 +156,11 @@ async def _run_output_generator(
         response = _append_current_month_partial_note(response, state)
         response = _append_unavailable_metric_notes(response, state)
         response = _append_limit_truncation_note(response, state)
+        response = _append_generator_notes(response, state)
+        response = _append_condition_changes(response, state)
         response = append_structure_missing_note(response, state)
         response = _append_cross_system_notes(response, state)
+        response = _append_turn_notices(response, state)
         response = _prepend_alarm_headline(response, state, app_config)
         if no_template_notice:
             response = f"{no_template_notice}\n\n{response}"
@@ -163,6 +170,8 @@ async def _run_output_generator(
             "output_file_name": None,
             "current_node": "output_generator",
             "error_message": None,
+            # 결정적 고지의 구조화본(plans/123 W-8) — 본문에 실린 고지만 싣는다.
+            "disclosures": collect_disclosures(state, response),
         }
 
     elif output_format in ("xlsx", "docx"):
@@ -214,12 +223,14 @@ async def _run_output_generator(
                     + text_response
                 )
 
+            text_response = _append_turn_notices(text_response, state)
             result: dict = {
                 "final_response": text_response,
                 "output_file": file_result["file_bytes"],
                 "output_file_name": file_result["file_name"],
                 "current_node": "output_generator",
                 "error_message": None,
+                "disclosures": collect_disclosures(state, text_response),  # plans/123 W-8
             }
             # 확인 이력 저장(D-151 Phase 3) — 옵트인(기억 체크) + 검증 통과 + 이번 턴
             # 답변(origin=answer)만. LLM 산출물·이력 재적용분은 저장하지 않는다(C3).
@@ -551,10 +562,14 @@ def _generate_empty_result_response(
     Returns:
         빈 결과 안내 텍스트
     """
-    targets = ", ".join(parsed.get("query_targets", ["데이터"]))
+    # 대상이 비면(빈 목록) 「조건에 해당하는  데이터」처럼 공백이 겹쳤다(plans/123 W-6 부수 정정).
+    targets = ", ".join(str(t) for t in parsed.get("query_targets", ["데이터"]) or [] if t)
     filters = parsed.get("filter_conditions", [])
 
-    response = f"조건에 해당하는 {targets} 데이터가 없습니다."
+    response = (
+        f"조건에 해당하는 {targets} 데이터가 없습니다." if targets
+        else "조건에 해당하는 데이터가 없습니다."
+    )
 
     diagnosis = diagnosis_from_payload(diagnosis_payload)
     if diagnosis is not None:
@@ -1721,7 +1736,11 @@ def _append_scope_note(response: str, state: AgentState) -> str:
     """
     from src.domain.scope_select import render_narrowed_note
 
-    note = render_narrowed_note(state.get("scope_narrowed"))
+    note = render_narrowed_note(
+        state.get("scope_narrowed"),
+        # 「전체」를 요청했는데 좁혔으면 그 점을 문구 머리에 밝힌다(plans/123 W-5 강화 규칙)
+        full_scope_requested=has_all_scope_keyword(_turn_query(state)),
+    )
     return f"{response}\n\n{note}" if note else response
 
 
@@ -1864,6 +1883,95 @@ def _applied_row_limit(state: AgentState) -> Optional[int]:
     return found
 
 
+#: 결과 건수를 직접 지정한 표현 중 `explicit_row_count`(LIMIT 결정 규칙) 밖의 것 — 상한 절단
+#: 고지의 **비발동 판정에만** 쓴다(LIMIT 결정은 바꾸지 않는다 · plans/123 W-1 ②). 「CPU 높은 서버
+#: 3대」·「TOP 5」는 LLM이 LIMIT 3·5를 스스로 붙인다 — 그 수만큼 온 것은 절단이 아니다.
+_REQUESTED_COUNT_EXTRA_RES = (
+    re.compile(r"(?i)\btop\s*(\d{1,6})"),
+    re.compile(r"(\d{1,6})\s*대(?!\s*(?:이상|이하|초과|미만|넘))"),
+    re.compile(r"(\d{1,6})\s*위(?:까지)?(?![가-힣])"),
+)
+
+
+def _turn_query(state: Mapping[str, Any]) -> str:
+    """턴 원문 — 2단 task 마감은 `original_user_query`(집계기가 싣는다), 3단은 `user_query`."""
+    return str(
+        state.get("original_user_query")
+        or state.get("user_query")
+        or (state.get("parsed_requirements") or {}).get("original_query")
+        or ""
+    )
+
+
+def _requested_row_counts(query: str) -> set[int]:
+    """질의가 지정한 결과 건수들 — 명시 건수(W-0) · 상위 N · TOP N · N대 · N위."""
+    counts: set[int] = set()
+    explicit = explicit_row_count(query)
+    if explicit is not None:
+        counts.add(explicit)
+    for pattern in _REQUESTED_COUNT_EXTRA_RES:
+        for m in pattern.finditer(query or ""):
+            n = int(m.group(1))
+            if n > 0:
+                counts.add(n)
+    return counts
+
+
+def _limit_truncation_text_one(state: Mapping[str, Any]) -> str | None:
+    """조회 한 건(단일 task 또는 병합 원천 하나)의 상한 도달 고지 문장 — 없으면 None."""
+    limit = _applied_row_limit(state)  # type: ignore[arg-type]
+    if not limit:
+        return None
+    # 명시 건수·상위 N과 같은 상한이면 「요청한 만큼」이다 — 절단이 아니다
+    # (W-1 ② · 3단 top-N 오탐 제거).
+    if limit in _requested_row_counts(_turn_query(state)):
+        return None
+
+    summary = state.get("db_result_summary") or {}
+    if summary:
+        truncated = [
+            str((info or {}).get("display_name") or db_id)
+            for db_id, info in summary.items()
+            if int((info or {}).get("row_count") or 0) >= limit
+        ]
+        if not truncated:
+            return None
+        return (
+            f"{' · '.join(truncated)} 조회가 상한(LIMIT {limit:,})에 도달해 "
+            "이후 행이 절단되었을 수 있습니다. 기간이나 조건을 좁혀 다시 조회하면 전체를 "
+            "확인할 수 있습니다."
+        )
+
+    rows = state.get("query_results") or []
+    if len(rows) < limit:
+        return None
+    return (
+        f"결과가 조회 상한(LIMIT {limit:,})에 도달해 이후 행이 절단되었을 수 "
+        "있습니다. 기간이나 조건을 좁혀 다시 조회하면 전체를 확인할 수 있습니다."
+    )
+
+
+def _limit_truncation_texts(state: Mapping[str, Any]) -> list[str]:
+    """상한 도달 고지 문장들.
+
+    병합 경로(plans/123 W-1 ③)는 `limit_sources`로 **원천 task별** 실행 SQL·행 수를 받는다 — 병합
+    표의 행 수·존별 건수(`_merged_zone_state`)는 표시용이라 상한 판정 입력이 아니다
+    (3,000행 병합 표가 원천 10,000행 도달을 가리면 안 된다). 원천이 없으면 이 상태 하나로 판정한다.
+    """
+    sources = state.get("limit_sources")
+    if isinstance(sources, list) and sources:
+        texts: list[str] = []
+        for src in sources:
+            if not isinstance(src, Mapping):
+                continue
+            text = _limit_truncation_text_one({**src, "original_user_query": _turn_query(state)})
+            if text and text not in texts:
+                texts.append(text)
+        return texts
+    text = _limit_truncation_text_one(state)
+    return [text] if text else []
+
+
 def _append_limit_truncation_note(response: str, state: AgentState) -> str:
     """LIMIT 도달 절단을 결정적으로 명시한다(K-09 · CU-8 — 절단 사실 응답 명시).
 
@@ -1875,35 +1983,201 @@ def _append_limit_truncation_note(response: str, state: AgentState) -> str:
     틀렸다 — 3-DB × 4,000행이면 절단이 없는데도 12,000 ≥ 10,000으로 경고했고, 반대로
     어느 존이 잘렸는지는 말하지 못했다(P-4 실측: 10,000 / 2,813 / 10,000 — 잘린 것은 둘뿐).
     상한을 판독하지 못하면 no-op(오탐 없음).
+
+    **질의가 지정한 건수와 같은 상한은 절단이 아니다**(plans/123 W-1 ② — 「상위 10대」 LIMIT 10 ·
+    10행에 붙던 오탐). 2단은 집계기가 task 결과의 실행 SQL(`query_attempts`)을 넘겨 준다(W-1 ①).
     """
-    limit = _applied_row_limit(state)
-    if not limit:
+    texts = _limit_truncation_texts(state)
+    if not texts:
         return response
+    return response + "\n\n" + "\n".join(f"[안내] {t}" for t in texts)
 
-    summary = state.get("db_result_summary") or {}
-    if summary:
-        truncated = [
-            str((info or {}).get("display_name") or db_id)
-            for db_id, info in summary.items()
-            if int((info or {}).get("row_count") or 0) >= limit
-        ]
-        if not truncated:
-            return response
-        return (
-            response
-            + f"\n\n[안내] {' · '.join(truncated)} 조회가 상한(LIMIT {limit:,})에 도달해 "
-            "이후 행이 절단되었을 수 있습니다. 기간이나 조건을 좁혀 다시 조회하면 전체를 "
-            "확인할 수 있습니다."
-        )
 
-    rows = state.get("query_results") or []
-    if len(rows) < limit:
+# ── 결정적 고지: 생성기 자기 고백 · 조건 반영 대조 (plans/123 S-8 · S-11) ──────────
+
+
+def executed_sql_list(state: Mapping[str, Any]) -> list[str]:
+    """이번 조회에서 **실제로 실행한** SQL 목록(DB별 마지막 1건).
+
+    - 2단 task 마감: 집계기가 task 결과의 `executed_sqls`를 싣는다(W-1 ①).
+    - 3단 멀티 DB: `db_executed_sqls`(DB별 실행 SQL — plans/113 S-1).
+    - 3단 단일 DB: `query_attempts`의 마지막 성공 시도(없으면 마지막 시도) — 재시도 SQL은 뺀다.
+    """
+    executed = state.get("executed_sqls")
+    if isinstance(executed, list) and executed:
+        return [str(e.get("sql")) for e in executed if isinstance(e, Mapping) and e.get("sql")]
+    by_db = state.get("db_executed_sqls")
+    if isinstance(by_db, Mapping) and by_db:
+        return [str(v) for v in by_db.values() if v]
+    attempts = [a for a in (state.get("query_attempts") or []) if isinstance(a, Mapping)]
+    if not attempts:
+        return []
+    with_sql = [a for a in attempts if a.get("sql")]
+    ok = [a for a in with_sql if a.get("success")]
+    chosen = ok or with_sql
+    return [str(chosen[-1]["sql"])] if chosen else []
+
+
+def _generator_note_texts(state: Mapping[str, Any]) -> list[str]:
+    """SQL 주석의 자기 고백(「무시」·「생략」·「상충」 …)을 원문 인용한 고지 문장들(S-8)."""
+    from src.domain.sql_disclosure import generator_confessions
+
+    return [
+        f"조회 SQL에 생성기가 남긴 메모: 「{quote}」"
+        for quote in generator_confessions(executed_sql_list(state))
+    ]
+
+
+def _append_generator_notes(response: str, state: AgentState) -> str:
+    """생성기가 조건을 무시·생략했다고 스스로 적은 주석을 응답에 드러낸다(plans/123 S-8).
+
+    SQL 주석은 사용자가 「실행된 SQL 보기」를 열지 않으면 보이지 않는다 — 조건을 버렸다는 고백이
+    거기에만 있으면 침묵 폴백이다(R3-03 「지역 힌트는 스키마에 없으므로 무시」). 요약하지 않고
+    원문을 인용한다. 없으면 no-op.
+    """
+    texts = _generator_note_texts(state)
+    if not texts:
         return response
+    return response + "\n\n" + "\n".join(f"[안내] {t}" for t in texts)
+
+
+def _condition_change_texts(state: Mapping[str, Any]) -> list[str]:
+    """파서 조건이 실행 SQL에 같은 뜻으로 들어갔는지 대조한 고지 문장들(S-11 1차).
+
+    1차 범위는 **단일 task 계획**이다 — 2단 복합은 전역 조건이 모든 task에 들어가(D-094 ③)
+    「다른 task 몫 조건 누락」을 오탐한다(121 TP-3.2 단계 슬롯 뒤 확장). 집계기는 단일 task일
+    때만 `condition_check`를 켠다. 3단 그래프(집계기 밖)는 단일 경로라 늘 본다.
+    """
+    if state.get("per_task_finalize") and not state.get("condition_check"):
+        return []
+    parsed = state.get("parsed_requirements") or {}
+    conditions = parsed.get("filter_conditions") if isinstance(parsed, Mapping) else None
+    if not conditions:
+        return []
+    from src.domain.sql_disclosure import condition_changes
+
+    texts: list[str] = []
+    for sql in executed_sql_list(state):
+        for change in condition_changes(list(conditions), sql, _turn_query(state)):
+            if change.detail and change.detail not in texts:
+                texts.append(change.detail)
+    return texts
+
+
+def _append_condition_changes(response: str, state: AgentState) -> str:
+    """조건 누락·반전·결합 변경·무력화를 응답에 결정적으로 드러낸다(plans/123 S-11 1차)."""
+    texts = _condition_change_texts(state)
+    if not texts:
+        return response
+    return response + "\n\n" + "\n".join(f"[안내] {t}" for t in texts)
+
+
+# ── 결정적 고지: 턴 단위 (plans/123 W-2·W-4·W-5·S-1 · W-9) ─────────────────────
+
+
+def scope_partial_text(
+    state: Mapping[str, Any],
+    *,
+    queried_db_ids: list[str],
+    db_origin: str | None,
+    active_db_ids: list[str] | None = None,
+) -> str | None:
+    """「전체」를 요청했는데 조회 가능 존의 일부만 조회했으면 그 사실 한 줄(plans/123 W-5).
+
+    발동: 질의에 「전체·모든·모두」 + 조회한 DB ⊊ (활성 ∩ 허용) + 대상이 원문 위치 힌트·직전 턴
+    승계로 정해지지 않았을 것(`db_origin ∉ {hint, inherited}` — 「은행존 전체」·「운영 서버 전체」는
+    사용자가 범위를 이미 말했다). 좁힌 범위 기록(W-2 `scope_narrowed`)이 있으면 그쪽이 같은 사실을
+    말하므로 여기서는 내지 않는다. 권한 밖 존 이름은 싣지 않는다(D-264 ②).
+    """
+    if state.get("scope_narrowed"):
+        return None
+    if db_origin in ("hint", "inherited"):
+        return None
+    if not queried_db_ids or not has_all_scope_keyword(_turn_query(state)):
+        return None
+    if active_db_ids is None:
+        active_db_ids = list(load_config().multi_db.get_active_db_ids() or [])
+    allowed = state.get("allowed_db_ids")
+    candidates = [d for d in active_db_ids if allowed is None or d in set(allowed)]
+    queried = [d for d in queried_db_ids if d]
+    if not candidates or not set(queried) < set(candidates):
+        return None
+    names = " · ".join(_db_display_name(d) for d in queried)
+    skipped = " · ".join(_db_display_name(d) for d in candidates if d not in set(queried))
     return (
-        response
-        + f"\n\n[안내] 결과가 조회 상한(LIMIT {limit:,})에 도달해 이후 행이 절단되었을 수 "
-        "있습니다. 기간이나 조건을 좁혀 다시 조회하면 전체를 확인할 수 있습니다."
+        f"전체가 아니라 {names}만 조회했습니다({skipped} 미조회) — "
+        "전체가 필요하면 존을 모두 선택해 다시 조회해 주세요."
     )
+
+
+def _append_turn_notices(response: str, state: AgentState) -> str:
+    """턴 단위 고지(W-4 미등록 존 · S-1 단위 의심 · W-5 「전체」 강화) — 3단 그래프 경로 전용.
+
+    1·2단은 집계기(`result_aggregator`)가 턴당 **한 번** 붙인다(W-9 단일 통과점) — task 마감 입력
+    (`per_task_finalize`)이면 아무것도 하지 않는다(단계별 답변에서 task 수만큼 반복되지 않게).
+    """
+    if state.get("per_task_finalize"):
+        return response
+    items: list[disc.Disclosure] = disc.dedupe(state.get("turn_disclosures") or [])
+    partial = scope_partial_text(
+        state,
+        queried_db_ids=[
+            str(t.get("db_id")) for t in (state.get("target_databases") or [])
+            if isinstance(t, Mapping) and t.get("db_id")
+        ],
+        db_origin=state.get("db_scope_source"),
+    )
+    if partial:
+        items.append(disc.make(disc.SCOPE_PARTIAL, partial))
+    lines = disc.body_lines_for_turn(items)
+    if not lines:
+        return response
+    return response + "\n\n" + disc.render_lines(lines)
+
+
+def collect_disclosures(state: Mapping[str, Any], response: str) -> list[disc.Disclosure]:
+    """본문에 실린 결정적 고지를 구조화본으로 모은다(plans/123 W-8).
+
+    본문 문장을 다시 계산해 **실제로 본문에 있는 것만** 싣는다 — 구조 필드와 본문이 어긋나지
+    않게 한다. task 마감 입력이면 source를 `task:<id>`로 단다.
+    """
+    source = f"task:{state['task_id']}" if state.get("task_id") else (
+        "task" if state.get("per_task_finalize") else "turn"
+    )
+    body = response or ""
+    found: list[disc.Disclosure] = []
+    for text in _limit_truncation_texts(state):
+        found.append(disc.make(disc.ROW_LIMIT_REACHED, text, source=source))
+    for text in _generator_note_texts(state):
+        found.append(disc.make(disc.GENERATOR_NOTE, text, source=source))
+    for text in _condition_change_texts(state):
+        found.append(disc.make(disc.CONDITION_CHANGED, text, source=source))
+    if not state.get("per_task_finalize"):
+        from src.domain.scope_select import render_narrowed_note
+
+        narrowed = render_narrowed_note(
+            state.get("scope_narrowed"),
+            full_scope_requested=has_all_scope_keyword(_turn_query(state)),
+        )
+        if narrowed:
+            found.append(disc.make(disc.SCOPE_NARROWED, narrowed.lstrip("- ")))
+        found.extend(disc.dedupe(state.get("turn_disclosures") or []))
+        partial = scope_partial_text(
+            state,
+            queried_db_ids=[
+                str(t.get("db_id")) for t in (state.get("target_databases") or [])
+                if isinstance(t, Mapping) and t.get("db_id")
+            ],
+            db_origin=state.get("db_scope_source"),
+        )
+        if partial:
+            found.append(disc.make(disc.SCOPE_PARTIAL, partial))
+    return [d for d in disc.dedupe(found) if _normalized(d["text"]) in _normalized(body)]
+
+
+def _normalized(text: str) -> str:
+    """본문 대조용 — 공백·강조 표지를 걷어낸다(렌더 형식 차이로 대조가 어긋나지 않게)."""
+    return " ".join(str(text).replace("**", "").split())
 
 
 def append_structure_missing_note(response: str, state: AgentState) -> str:
@@ -2114,9 +2388,11 @@ def _generate_document_file(
             missing.append("uploaded_file(원본 파일 바이너리)")
         missing_str = ", ".join(missing)
         logger.warning("양식 파일 생성 불가 — state 누락: %s", missing_str)
+        # 사용자 문구에 내부 결정 번호를 싣지 않는다(plans/123 W-7 — 「D-053 계열」은 실제 D-053
+        # (hostname SQL 방언)과 무관해 원인을 오도했다). 경로 진단은 위 경고 로그가 맡는다.
         return {"reason": (
-            f"양식을 채우는 데 필요한 정보가 state에서 누락되었습니다: {missing_str}. "
-            "(오케스트레이션 경로의 상태 전파 누락 가능성 — 원본 파일이면 D-053 계열)"
+            f"양식을 채우는 데 필요한 정보가 전달되지 않았습니다: {missing_str}. "
+            "양식 파일을 다시 첨부해 요청해 주세요."
         )}
 
     if not effective_mapping:

@@ -719,12 +719,18 @@ def _normalize_targets(targets: list, sub_query: str) -> list[dict]:
         target_databases 형태 dict 리스트
     """
     normalized: list[dict] = []
+    # 정제 질의(`sub_query_context` — 단일 DB SQL 생성 입력)는 위치어를 걷어낸다
+    # (plans/123 W-5 코드분).
+    # DB는 이미 정해졌다(선택·계획 고정). 위치어가 남으면 생성기·요약이 「김포」를 데이터 조건으로
+    # 읽어 「구분할 수 있는 컬럼이 없다」고 답하거나 WHERE로 누출한다(run `20260923-103638` R2-09C).
+    # `sub_query` 자체는 바꾸지 않는다(121 TP-11.2 · 113 F-2 위치어 보존 계약).
+    context = strip_location_terms(sub_query) or sub_query
     for t in targets:
         if isinstance(t, str):
             normalized.append({
                 "db_id": t,
                 "relevance_score": 1.0,
-                "sub_query_context": sub_query,
+                "sub_query_context": context,
                 "user_specified": False,
                 "reason": "필드 매핑 결과에서 식별된 DB",
             })
@@ -1674,6 +1680,27 @@ def _task_regen_stop(s: dict[str, Any]) -> dict[str, str] | None:
     return {"reason": reason, "detail": detail}
 
 
+def _executed_sqls_by_db(
+    s: dict[str, Any], targets: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    """실행한 SQL을 DB별 마지막 1건으로 모은다(plans/123 W-1 ①) — `[{db_id, sql}]`.
+
+    멀티 DB는 `db_executed_sqls`(DB별 실행 SQL · plans/113 S-1)를, 단일 DB는 `query_attempts`의
+    마지막 성공 시도(없으면 마지막 시도)를 쓴다 — 재시도 전 SQL의 상한·주석이 고지 판정에 섞이지
+    않게 한다. 실행하지 않았으면 빈 목록이다.
+    """
+    by_db = s.get("db_executed_sqls")
+    if isinstance(by_db, dict) and by_db:
+        return [{"db_id": str(d), "sql": str(q)} for d, q in by_db.items() if q]
+    attempts = [a for a in (s.get("query_attempts") or []) if isinstance(a, dict) and a.get("sql")]
+    if not attempts:
+        return []
+    ok = [a for a in attempts if a.get("success")]
+    last = (ok or attempts)[-1]
+    db_id = str(s.get("active_db_id") or (targets[0].get("db_id") if targets else "") or "")
+    return [{"db_id": db_id, "sql": str(last["sql"])}]
+
+
 def _pack_pipeline_result(
     s: dict[str, Any],
     targets: list[dict[str, Any]],
@@ -1769,6 +1796,15 @@ def _pack_pipeline_result(
         gen_sql = sqls[-1] if sqls else None
     if gen_sql:
         result["generated_sql"] = gen_sql
+    # 실제로 실행한 SQL(DB별 마지막 1건 · plans/123 W-1 ①) — 2단 결정적 고지(상한 도달 · 생성기
+    # 자기 고백 · 조건 반영 대조)의 입력이다. 종전에는 집계기가 출력 생성에 넘기는 입력에 실행 SQL이
+    # 없어 10,000행 도달 17턴에 고지가 0이었다(run `20260923-103638`).
+    executed = _executed_sqls_by_db(s, targets)
+    if executed:
+        result["executed_sqls"] = executed
+    # 급증 조회 한계 표기(D-176 후속2)도 task 결과로 싣는다(W-3) — 없으면 2단 응답에서 빠졌다.
+    if s.get("spike_notes"):
+        result["spike_notes"] = list(s["spike_notes"])
     db_errors = s.get("db_errors")
     if db_errors:
         result["db_errors"] = db_errors

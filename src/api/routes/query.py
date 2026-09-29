@@ -789,6 +789,27 @@ def _dependency_notes_field(state: dict[str, Any]) -> dict[str, Any]:
     return {"dependency_notes": notes} if notes else {}
 
 
+def _disclosures_field(state: dict[str, Any]) -> dict[str, Any]:
+    """결정적 고지의 구조화본(plans/123 W-8) — 네 진입점 응답·`done`에 같은 모양으로 싣는다.
+
+    고지가 없으면 키를 싣지 않는다(바이트 불변). astream 입력은 누적 상태(`_scope_state`)다.
+    """
+    items = state.get("disclosures")
+    return {"disclosures": items} if items else {}
+
+
+def _scope_reexpand_field(state: dict[str, Any]) -> dict[str, Any]:
+    """범위 재확장 패널을 스트림 `done`에도 싣는다(plans/123 W-2 ② — 비스트림과 대칭).
+
+    응답 조립본(`response_data`)에 이미 있으면 그것을, 없으면 누적 상태의 좁힌 범위 기록으로
+    만든다. 좁히지 않은 턴은 키를 싣지 않는다(바이트 불변).
+    """
+    panel = state.get("scope_reexpand") or build_scope_reexpand(
+        state.get("scope_narrowed"), state.get("user_query", "")
+    )
+    return {"scope_reexpand": panel} if panel else {}
+
+
 def _plan_summary_field(state: dict[str, Any]) -> dict[str, Any]:
     """2단 계획 요약(plans/121 TP-0.1) — 계획이 없는 단(1·3단)은 키를 싣지 않는다(바이트 불변).
 
@@ -1222,6 +1243,8 @@ def _build_turn_input_state(
         delta["scope_narrowed"] = (
             _scope_narrowed_or_none(body, config, current_user) if config else None
         )
+        # 원문만으로 정해지는 턴 단위 고지(plans/123 W-4 · S-1) — 요청 스코프
+        delta["turn_disclosures"] = _turn_disclosures(body.query, body.selected_db_ids)
         return _with_current_identity(
             _release_legacy_structure_hitl(delta, checkpoint_state), current_user
         )
@@ -1244,7 +1267,9 @@ def _build_turn_input_state(
     ) | {
         "scope_narrowed": (
             _scope_narrowed_or_none(body, config, current_user) if config else None
-        )
+        ),
+        # 원문만으로 정해지는 턴 단위 고지(plans/123 W-4 · S-1) — 요청 스코프
+        "turn_disclosures": _turn_disclosures(body.query, body.selected_db_ids),
     }
 
 
@@ -1264,6 +1289,16 @@ _ZONE_OPTIONS: tuple[dict, ...] = ZONE_CLARIFY_OPTIONS
 _ZONE_LABEL_BY_ID: dict[str, str] = {o["db_id"]: o["label"] for o in _ZONE_OPTIONS}
 
 
+def _zone_display_label(db_id: str) -> str:
+    """존 선택지 라벨 → 레지스트리 표시명 → db_id 순으로 사용자 표기를 고른다."""
+    if db_id in _ZONE_LABEL_BY_ID:
+        return _ZONE_LABEL_BY_ID[db_id]
+    from src.routing.domain_config import get_domain_by_id
+
+    domain = get_domain_by_id(db_id)
+    return domain.display_name if domain else db_id
+
+
 def _substitute_zone_placeholder(query: str, selected_db_ids: list[str] | None) -> str:
     """존 선택 재개 턴에서 존 표기를 선택 존 라벨로 치환한다.
 
@@ -1279,7 +1314,79 @@ def _substitute_zone_placeholder(query: str, selected_db_ids: list[str] | None) 
     if _ZONE_PLACEHOLDER in (query or ""):
         labels = [_ZONE_LABEL_BY_ID.get(d, d) for d in selected_db_ids]
         return query.replace(_ZONE_PLACEHOLDER, ", ".join(labels))
-    return rewrite_zone_mentions_for_selection(query, selected_db_ids)
+    return _replace_unregistered_zones(
+        rewrite_zone_mentions_for_selection(query, selected_db_ids), selected_db_ids
+    )
+
+
+def _replace_unregistered_zones(query: str, selected_db_ids: list[str]) -> str:
+    """③ 등록되지 않은 존 표기를 선택 존 라벨로 치환한다(plans/123 W-4).
+
+    존 선택 답변 턴(미등록 존 역질문 → 사용자가 존을 골라 재전송)에서 원문의 「판교존」이 그대로
+    흐르면 sub_query·SQL 주석·응답 서술에 없는 존 이름이 남고(run `20260923-103638` R3-03 —
+    「전체 1690건의 판교존 서버」), 생성기가 그 표기를 조건으로 오인한다. 라우팅은 이미
+    `selected_db_ids`가 정했으므로 텍스트만 바꾼다. 바꾼 사실은 `_turn_disclosures`가 알린다.
+    """
+    from src.routing.db_scope import find_unregistered_zone_terms
+
+    unknown = find_unregistered_zone_terms(query)
+    if not unknown:
+        return query
+    labels = ", ".join(_zone_display_label(d) for d in selected_db_ids)
+    for token in unknown:
+        query = query.replace(token, labels)
+    return query
+
+
+def _turn_disclosures(
+    query: str, selected_db_ids: list[str] | None
+) -> list[Any] | None:
+    """원문만으로 정해지는 턴 단위 고지(plans/123 W-4 · S-1) — 없으면 None.
+
+    - W-4: 선택 존으로 조회하는 턴에 원문이 등록되지 않은 존을 지목했으면 바꿔 조회한 사실.
+      역질문 턴에는 붙지 않는다(이 값은 파이프라인을 탄 턴에서만 렌더된다).
+    - S-1: 사용자 값의 단위가 지표에 비해 이상하면(「메모리 64MB 이상」) 알린다. 조회는 요청
+      그대로 한다(D-264 ⑤ — 사용자 값은 고치지 않는다).
+    렌더는 집계기(1·2단 — 턴당 한 번)와 3단 `output_generator`가 한다(W-9).
+    """
+    from src.domain import disclosure as disc
+    from src.domain.input_guard import render_unit_suspect, unit_suspects
+    from src.routing.db_scope import find_unregistered_zone_terms
+
+    items: list[Any] = []  # `disclosure.Disclosure` 목록
+    if selected_db_ids:
+        unknown = find_unregistered_zone_terms(query)
+        if unknown:
+            named = ", ".join(f"'{t}'" for t in unknown)
+            labels = ", ".join(_zone_display_label(d) for d in selected_db_ids)
+            items.append(disc.make(
+                disc.UNREGISTERED_ZONE,
+                f"{named}은(는) 등록된 존이 아니어서 선택하신 {labels}(으)로 조회했습니다.",
+            ))
+    for suspect in unit_suspects(query):
+        items.append(disc.make(disc.UNIT_SUSPECT, render_unit_suspect(suspect)))
+    return items or None
+
+
+def _shadow_input_guard(query: str, thread_id: str | None) -> None:
+    """비조회 입력 판정 섀도(plans/123 S-2 · 123·G-8 (c)) — **응답은 바꾸지 않고 로그만** 남긴다.
+
+    붙여넣은 SQL · 쓰기 요청 · 지시 무시 · 계정 요구 · 빈 입력을 좁은 결정적 규칙으로 판정한다.
+    판정 위치는 존 앞단 게이트보다 앞(라우트 진입)이다 — on 전환 때 단락할 자리와 같다. 대조군
+    과잉 판정 0을 run으로 확인한 뒤(run R5′) 안내 단락으로 켠다. 판정 실패는 질의를 막지 않는다.
+    """
+    try:
+        from src.domain.input_guard import classify_non_query_input
+
+        verdict = classify_non_query_input(query)
+    except Exception as e:  # noqa: BLE001 — 섀도 판정은 질의 경로를 막지 않는다
+        logger.warning("S-2 섀도 판정 실패(plans/123): %s", e)
+        return
+    if verdict is not None:
+        logger.info(
+            "S-2 섀도(plans/123): 비조회 입력 kind=%s matched=%r thread=%s — 응답 불변",
+            verdict.kind, verdict.matched, thread_id,
+        )
 
 
 def _raw_query_seed(query: str, config) -> str | None:
@@ -1317,8 +1424,14 @@ def _scope_narrowed_or_none(body, config, current_user: dict | None) -> dict | N
 
     allowed = (current_user or {}).get("allowed_db_ids")
     active = config.multi_db.get_active_db_ids() or []
+    # 권한 밖 존은 미조회 목록에도 싣지 않는다(D-264 ② · plans/123 W-2 ④ — 대상이 활성 ∩ 허용)
     targets = [d for d in active if allowed is None or d in set(allowed)]
-    record = narrowed_record(partition_execution_groups(targets), body.selected_db_ids)
+    record = narrowed_record(
+        partition_execution_groups(targets),
+        body.selected_db_ids,
+        # 그룹 안 일부 선택도 좁힌 것이다 — 미조회 DB를 존 이름으로 적는다(plans/123 W-2 ③)
+        db_labels={d: _zone_display_label(d) for d in targets},
+    )
     if record:
         record["all_db_ids"] = targets
     return record
@@ -2022,6 +2135,7 @@ async def process_query(
     )
     # 질의응답 스레드 기록(D-248) — 아래 반환 지점마다 turn.response()로 감싼다
     turn = TurnRecorder(request, current_user, user_query=body.query, has_upload=False)
+    _shadow_input_guard(body.query, thread_id)  # plans/123 S-2 섀도 — 응답 불변
 
     thread_config = {"configurable": {"thread_id": thread_id}}
 
@@ -2154,6 +2268,7 @@ async def process_query(
         "db_scope": build_db_scope(result, selected_db_ids=body.selected_db_ids),
         # 순차 처리 경과 노트(plans/88 · D-203) — 본문 블록의 구조화본
         "dependency_notes": result.get("dependency_notes"),
+        **_disclosures_field(result),  # plans/123 W-8
         **_plan_summary_field(result),  # TP-0.1
         # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 키로 프론트 렌더
         "clarification": zone_clarification,
@@ -2198,6 +2313,7 @@ async def process_query_stream(
     )
     # 질의응답 스레드 기록(D-248) — 아래 스트림마다 turn.stream()으로 감싼다(/query와 대칭)
     turn = TurnRecorder(request, current_user, user_query=body.query, has_upload=False)
+    _shadow_input_guard(body.query, thread_id)  # plans/123 S-2 섀도 — 응답 불변
 
     thread_config = {"configurable": {"thread_id": thread_id}}
 
@@ -2477,6 +2593,8 @@ async def process_query_stream(
                                         # 종료 노드 델타가 아니라 누적 상태로(plans/120 S-1)
                                         "db_scope": build_db_scope(_scope_state, selected_db_ids=body.selected_db_ids),
                                         **_dependency_notes_field(_scope_state),  # TP-11.8
+                                        **_disclosures_field(_scope_state),  # plans/123 W-8
+                                        **_scope_reexpand_field(_scope_state),  # plans/123 W-2 ②
                                         **_plan_summary_field(_scope_state),  # TP-0.1
                                         "clarification": _zone_clar,
                                     }
@@ -2504,6 +2622,8 @@ async def process_query_stream(
                                         "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
                                         "db_scope": response_data.get("db_scope"),  # D-205
                                         **_dependency_notes_field(response_data),  # TP-11.8
+                                        **_disclosures_field(response_data),  # plans/123 W-8
+                                        **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
                                         **_plan_summary_carry(response_data),  # TP-0.1
                                         # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                                         "clarification": response_data.get("clarification"),
@@ -2562,6 +2682,8 @@ async def process_query_stream(
                 # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
                 "db_scope": build_db_scope(result, selected_db_ids=body.selected_db_ids),
                 "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
+                **_disclosures_field(result),  # plans/123 W-8
+                **_scope_reexpand_field(result),  # plans/123 W-2 ②
                 **_plan_summary_field(result),  # TP-0.1
                 "clarification": _zone_clar,
             }
@@ -2588,6 +2710,8 @@ async def process_query_stream(
                 "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
                 "db_scope": response_data.get("db_scope"),  # D-205
                 **_dependency_notes_field(response_data),  # TP-11.8
+                **_disclosures_field(response_data),  # plans/123 W-8
+                **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
                 **_plan_summary_carry(response_data),  # TP-0.1
                 # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                 "clarification": response_data.get("clarification"),
@@ -2656,6 +2780,7 @@ async def process_file_query(
     )
     # 질의응답 스레드 기록(D-248) — 텍스트 경로와 대칭
     turn = TurnRecorder(request, current_user, user_query=query, has_upload=True)
+    _shadow_input_guard(query, thread_id)  # plans/123 S-2 섀도 — 응답 불변
 
     # 1. 파일 타입 검증
     file_ext = _get_file_extension(file.filename)
@@ -2747,6 +2872,8 @@ async def process_file_query(
         # 없으면 1,000행 절단). 명시 건수("100건")는 resolve_query_limit이 우선 반영.
         resolved_limit=resolve_query_limit(query, _FORM_FILL_DEFAULT_LIMIT),
     )
+    # 원문만으로 정해지는 턴 단위 고지(plans/123 W-4 · S-1) — 텍스트 라우트와 대칭
+    initial_state["turn_disclosures"] = _turn_disclosures(query, selected_list)
     # 처리 상한 = 첫 답변까지(plans/119 G-7) — 비스트림은 곧 전체 상한이다(네 진입점 공유 함수).
     limit_sec = _processing_limit(config, file_turn=True)
     # 파일 경로도 같은 마감을 싣는다(plans/118 P-1 · 진입점 4곳 대칭 D-066).
@@ -2804,6 +2931,8 @@ async def process_file_query(
         # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
         "db_scope": build_db_scope(result, selected_db_ids=selected_list),
         "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
+        **_disclosures_field(result),  # plans/123 W-8
+        **_scope_reexpand_field(result),  # plans/123 W-2 ②
         **_plan_summary_field(result),  # TP-0.1
     }
     _store_result(query_id, {
@@ -2942,6 +3071,7 @@ async def process_file_query_stream(
     )
     # 질의응답 스레드 기록(D-248) — 텍스트 경로와 대칭
     turn = TurnRecorder(request, current_user, user_query=query, has_upload=True)
+    _shadow_input_guard(query, thread_id)  # plans/123 S-2 섀도 — 응답 불변
 
     file_ext = _get_file_extension(file.filename)
     if file_ext not in ("xlsx", "docx"):
@@ -3057,6 +3187,8 @@ async def process_file_query_stream(
         # 없으면 1,000행 절단). 명시 건수("100건")는 resolve_query_limit이 우선 반영.
         resolved_limit=resolve_query_limit(query, _FORM_FILL_DEFAULT_LIMIT),
     )
+    # 원문만으로 정해지는 턴 단위 고지(plans/123 W-4 · S-1) — 텍스트 라우트와 대칭
+    initial_state["turn_disclosures"] = _turn_disclosures(query, selected_list)
     # 처리 상한 = 첫 답변까지(plans/119 G-7) — 네 진입점 공유 함수(D-066)
     limit_sec = _processing_limit(config, file_turn=True)
     # 파일 경로도 같은 마감을 싣는다(plans/118 P-1 · 진입점 4곳 대칭 D-066).
@@ -3239,6 +3371,8 @@ async def process_file_query_stream(
                                         # 종료 노드 델타가 아니라 누적 상태로(plans/120 S-1)
                                         "db_scope": build_db_scope(_scope_state, selected_db_ids=selected_list),
                                         **_dependency_notes_field(_scope_state),  # TP-11.8
+                                        **_disclosures_field(_scope_state),  # plans/123 W-8
+                                        **_scope_reexpand_field(_scope_state),  # plans/123 W-2 ②
                                         **_plan_summary_field(_scope_state),  # TP-0.1
                                     }
                                     _store_result(query_id, {
@@ -3270,6 +3404,8 @@ async def process_file_query_stream(
                                         "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
                                         "db_scope": response_data.get("db_scope"),  # D-205
                                         **_dependency_notes_field(response_data),  # TP-11.8
+                                        **_disclosures_field(response_data),  # plans/123 W-8
+                                        **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
                                         **_plan_summary_carry(response_data),  # TP-0.1
                                         **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
                                         # 단계 타임라인(plans/119 T-0)
@@ -3317,6 +3453,8 @@ async def process_file_query_stream(
                 # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
                 "db_scope": build_db_scope(result, selected_db_ids=selected_list),
                 "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
+                **_disclosures_field(result),  # plans/123 W-8
+                **_scope_reexpand_field(result),  # plans/123 W-2 ②
                 **_plan_summary_field(result),  # TP-0.1
             }
             _store_result(query_id, {
@@ -3345,6 +3483,8 @@ async def process_file_query_stream(
                 "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
                 "db_scope": response_data.get("db_scope"),  # D-205
                 **_dependency_notes_field(response_data),  # TP-11.8
+                **_disclosures_field(response_data),  # plans/123 W-8
+                **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
                 **_plan_summary_carry(response_data),  # TP-0.1
                 **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
                 "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0

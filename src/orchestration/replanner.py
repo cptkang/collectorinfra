@@ -986,7 +986,7 @@ def _all_tasks_succeeded(state: AgentState) -> bool:
 # 재생성 중단 사유(`regen_stop.reason` — SQL 루프 담당과의 계약) → 사용자 문구.
 _REGEN_STOP_REASON_TEXT = {
     "validation_budget": "SQL을 재시도 한도까지 다시 만들었지만 검증을 통과하지 못했습니다",
-    "non_sql": "SQL 대신 설명문이 생성됐습니다",
+    "non_sql": "SQL이 아니라 설명문이 생성됐습니다",  # 「대신」은 하네스 교정 표지어(plans/123 W-6)
     "deadline": "응답 시간 상한이 가까워 SQL 재생성을 멈췄습니다",
 }
 _REGEN_STOP_FALLBACK_TEXT = "SQL 재생성이 멈췄습니다"

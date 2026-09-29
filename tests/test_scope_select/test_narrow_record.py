@@ -42,9 +42,16 @@ class TestNarrowedRecord:
         assert record["all_db_ids"] == ALL_DBS
 
     def test_full_selection_is_not_a_narrowing(self):
-        assert _scope_narrowed_or_none(
+        assert _scope_narrowed_or_none(_body(ALL_DBS), _config(), None) is None
+
+    def test_group_partial_selection_names_unqueried_zone(self):
+        """공동존에서 김포만 골랐으면 여의도도 미조회다(plans/123 W-2 ③ — 존 이름으로)."""
+        record = _scope_narrowed_or_none(
             _body(["polestar_b0", "polestar_cm_gp"]), _config(), None
-        ) is None
+        )
+
+        assert record["skipped"] == ["공동존 여의도"]
+        assert record["skipped_db_ids"] == ["polestar_cm_yd"]
 
     def test_no_selection_is_not_a_narrowing(self):
         assert _scope_narrowed_or_none(_body(None), _config(), None) is None
@@ -52,11 +59,19 @@ class TestNarrowedRecord:
     def test_authorization_shapes_the_universe(self):
         """인가 밖 존은 애초에 '조회 대상'이 아니므로 미조회로 세지 않는다."""
         record = _scope_narrowed_or_none(
-            _body(["polestar_cm_gp"]), _config(),
+            _body(["polestar_cm_gp", "polestar_cm_yd"]), _config(),
             {"allowed_db_ids": ["polestar_cm_gp", "polestar_cm_yd"]},
         )
 
-        assert record is None, "허용 범위가 공동존뿐이면 좁힌 것이 없다"
+        assert record is None, "허용 범위(공동존 둘)를 모두 골랐으면 좁힌 것이 없다"
+
+        narrowed = _scope_narrowed_or_none(
+            _body(["polestar_cm_gp"]), _config(),
+            {"allowed_db_ids": ["polestar_cm_gp", "polestar_cm_yd"]},
+        )
+        # 권한 밖 은행존은 미조회 목록에 나오지 않는다(D-264 ②) — 권한 안의 여의도만 적는다
+        assert narrowed["skipped_db_ids"] == ["polestar_cm_yd"]
+        assert "은행존" not in narrowed["skipped"]
 
 
 class TestReexpandPanel:

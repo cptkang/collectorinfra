@@ -226,6 +226,7 @@ async def input_parser(
         target_sheets,
         parsed.get("time_range"),
     )
+    _shadow_condition_conflicts(parsed)
 
     # 감사 기록은 여기서 하지 않는다(D-183) — 요청 수신 지점(API 라우트 · CLI 진입부)이
     # 주체다. 노드는 app.state에 닿지 못해 client_ip·session_id를 채울 수 없고,
@@ -238,6 +239,27 @@ async def input_parser(
         "current_node": "input_parser",
         "error_message": None,
     }
+
+
+def _shadow_condition_conflicts(parsed: dict[str, Any]) -> None:
+    """조건 충돌 사전 판정 섀도(plans/123 S-6 · 123·G-8 (c)) — **응답은 바꾸지 않고 로그만** 남긴다.
+
+    같은 열의 수치 구간이 공집합(「90% 초과이고 10% 미만」)이면 조회해도 0건이거나, 생성기가 조건을
+    「또는」으로 바꿔 전혀 다른 답을 낸다(run `20260923-103638` R3-07 — 1,535건). on 전환(조회 없이
+    안내)은 대조군 과잉 판정 0을 run으로 확인한 뒤다(run R5′). 모든 사다리 단이 이 노드를 지난다.
+    """
+    try:
+        from src.domain.input_guard import condition_conflicts
+
+        conflicts = condition_conflicts(parsed.get("filter_conditions"))
+    except Exception as e:  # noqa: BLE001 — 섀도 판정은 질의 경로를 막지 않는다
+        logger.warning("S-6 섀도 판정 실패(plans/123): %s", e)
+        return
+    for conflict in conflicts:
+        logger.info(
+            "S-6 섀도(plans/123): 조건 충돌 field=%s conditions=%s — 응답 불변",
+            conflict.field, list(conflict.conditions),
+        )
 
 
 async def _try_structured_requirements(

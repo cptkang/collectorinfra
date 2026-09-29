@@ -317,6 +317,12 @@ class AgentState(TypedDict):
     # 범위 축소 기록(D-176 후속4 · §5.3 불변식 6) — {selected, skipped, skipped_db_ids}.
     # **미조회 범위를 남기지 않으면 침묵 절단이다**(복구 불가한 정보 손실).
     scope_narrowed: Optional[dict]
+    # 결정적 고지(plans/123 W-8) — `src.domain.disclosure.Disclosure` 목록({kind, text, source}).
+    # `disclosures`는 이번 턴 응답의 구조화본(출구 노드가 쓴다), `turn_disclosures`는 라우트가
+    # 원문만으로 정한 턴 단위 고지(미등록 존 · 단위 의심) 입력이다. 둘 다 **요청 스코프** —
+    # 두 상태 생성 함수가 초기화한다. 미선언이면 LangGraph가 노드 출력을 버린다.
+    disclosures: list[dict[str, Any]] | None
+    turn_disclosures: list[dict[str, Any]] | None
 
     # === 출력 ===
     final_response: str                      # 자연어 응답
@@ -483,6 +489,9 @@ def create_followup_input(
         "db_executed_sqls": None,
         "merged_ranking": None,
         "merged_aggregates": None,
+        # 결정적 고지(plans/123 W-8) — 요청 스코프. 직전 턴 고지가 새 턴 응답에 실리지 않도록.
+        "disclosures": None,
+        "turn_disclosures": None,
     }
     if reset_db_scope:
         # 승계 원천 3종을 비운다 — 체크포인터는 델타만 병합하므로 명시 초기화가 필요하다(D-064).
@@ -643,6 +652,8 @@ def create_initial_state(
         spike_notes=None,
         discovery_trace=None,
         scope_narrowed=None,
+        disclosures=None,  # 요청 스코프(plans/123 W-8)
+        turn_disclosures=None,
         # 출력
         final_response="",
         output_file=None,

@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
+from src.domain import disclosure as disc
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.nodes.output_generator import (
     NO_TEMPLATE_NOTICE_HEAD,
@@ -208,6 +209,8 @@ async def result_aggregator(
         # 저장 값 삭제 패널(D-187) — 이력 조회는 단일 task 단락이라 이 분기로 충분
         if f.get("form_memory_panel"):
             out["form_memory_panel"] = f["form_memory_panel"]
+        if f.get("disclosures"):
+            out["disclosures"] = f["disclosures"]  # plans/123 W-8
         out.update(db_promotion)
         return _with_answer_history(_apply_incomplete_notice(out, state))
 
@@ -445,23 +448,28 @@ async def _finalize_merged_path(
     응답과 같다.
     """
     source_results: list[dict[str, Any]] = []
+    source_tasks: list[dict[str, Any]] = []
     outside: list[dict[str, Any]] = []
     for task in ordered_tasks:
         res = task_results.get(task["task_id"], {})
         if _extract_result_rows(res):
             source_results.append(res)
+            source_tasks.append(task)
         else:
             outside.append(task)
     out = await _finalize_merged_rows(
         merged_rows, state, llm, app_config,
         zone_state=_merged_zone_state(merged_rows, source_results),
+        source_state=_merged_source_state(source_tasks, source_results),
     )
     notes: list[str] = []
+    disclosures = list(out.get("disclosures") or [])
     for task in outside:
         f = await _finalize_task(
             task, task_results.get(task["task_id"], {}), state, llm, app_config,
             stream_user_response=False,
         )
+        disclosures.extend(f.get("disclosures") or [])
         if f.get("text"):
             notes.append(f["text"])
         if f.get("output_file") is not None and "output_file" not in out:
@@ -470,7 +478,44 @@ async def _finalize_merged_path(
     if notes:
         body = (out.get("final_response") or "").strip()
         out["final_response"] = "\n\n".join([body, *notes]) if body else "\n\n".join(notes)
+    if disclosures:
+        out["disclosures"] = disc.dedupe(disclosures)  # plans/123 W-8
     return out
+
+
+def _merged_source_state(
+    source_tasks: list[dict[str, Any]], source_results: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """병합 원천 task들의 결정적 고지 입력을 모은다(plans/123 W-1 ③ · W-3 · S-8).
+
+    - `limit_sources`: 원천별 실행 SQL·원 조회 행·존별 건수 — 병합 표의 행 수는 상한 판정 입력이
+      아니다(원천이 10,000행에 닿아도 병합 표는 3,000행일 수 있다).
+    - `executed_sqls`: 원천 실행 SQL 전체(생성기 자기 고백 수집).
+    - `spike_notes`: 원천 급증 한계 표기의 합집합(순서 보존).
+    - 의도: 원천이 **모두** 알람 조회일 때만 알람(헤드라인·당월 각주 제외) — 섞인 병합 표는 지표
+      값이 있어 당월 각주가 필요하고, 알람 건수 헤드라인은 병합 표 행 수와 뜻이 다르다.
+    """
+    executed: list[dict[str, Any]] = []
+    spikes: list[str] = []
+    limit_sources: list[dict[str, Any]] = []
+    for res in source_results:
+        sqls = [e for e in (res.get("executed_sqls") or []) if isinstance(e, dict) and e.get("sql")]
+        executed.extend(sqls)
+        for note in res.get("spike_notes") or []:
+            if note not in spikes:
+                spikes.append(note)
+        limit_sources.append({
+            "query_attempts": [{"sql": e["sql"]} for e in sqls],
+            "query_results": res.get("query_results") or _extract_result_rows(res),
+            "db_result_summary": res.get("db_result_summary"),
+        })
+    all_alarm = bool(source_tasks) and all(t.get("agent") == "alarm_query" for t in source_tasks)
+    return {
+        "agent": "alarm_query" if all_alarm else "data_query",
+        "executed_sqls": executed,
+        "spike_notes": spikes or None,
+        "limit_sources": limit_sources,
+    }
 
 
 async def _finalize_merged_rows(
@@ -480,6 +525,7 @@ async def _finalize_merged_rows(
     app_config: AppConfig,
     *,
     zone_state: dict[str, Any] | None = None,
+    source_state: dict[str, Any] | None = None,
 ) -> dict:
     """병합된 통합 행을 단일 output_generator로 최종 표/자연어 응답으로 만든다(D-100).
 
@@ -502,10 +548,21 @@ async def _finalize_merged_rows(
         "sheet_mappings": None,
     }
     # 통합 표는 전체 질의에 대한 답이므로 original_query를 전체 질의로 둔다(sub-task 스코프 아님).
-    merge_task = {"sub_query": state.get("user_query", ""), "agent": "data_query"}
+    src_state = source_state or {}
+    merge_task = {
+        "sub_query": state.get("user_query", ""),
+        "agent": src_state.get("agent") or "data_query",
+    }
     out_state = _build_output_state(
         state, merge_task,
-        {"organized_data": organized, "query_results": merged_rows, **(zone_state or {})},
+        {
+            "organized_data": organized,
+            "query_results": merged_rows,
+            **(zone_state or {}),
+            "executed_sqls": src_state.get("executed_sqls") or [],
+            "spike_notes": src_state.get("spike_notes"),
+        },
+        limit_sources=src_state.get("limit_sources"),
     )
     # _build_output_state가 original_query를 sub_query(=전체 질의)로 세팅 — 그대로 사용.
     out: dict[str, Any] = {}
@@ -524,6 +581,8 @@ async def _finalize_merged_rows(
     if out.get("output_file") is not None:
         result["output_file"] = out["output_file"]
         result["output_file_name"] = out.get("output_file_name")
+    if out.get("disclosures"):
+        result["disclosures"] = list(out["disclosures"])  # plans/123 W-8
     return result
 
 
@@ -543,6 +602,9 @@ def _apply_incomplete_notice(result: dict, state: AgentState) -> dict:
     Returns:
         안내문이 덧붙은 dict (안내문 없으면 원본 그대로)
     """
+    # 결정적 고지(plans/123 W-8·W-9) — 턴 단위 고지를 턴당 한 번 붙이고, 합성에서 떨어진 task 단위
+    # 의무 고지를 되살린다. 같은 단일 통과점이다.
+    result = _apply_disclosures(result, state)
     # 재계획기가 결정적으로 멈춘 사유(plans/118 P-1 시간 상한 · P-2 전 DB 연속 0건)도 같은
     # 자리에서 싣는다 — 4개 반환 지점의 단일 통과점이다(침묵적 종료 금지).
     notice = "\n\n".join(
@@ -557,6 +619,89 @@ def _apply_incomplete_notice(result: dict, state: AgentState) -> dict:
     out = dict(result)
     out["final_response"] = f"{body}\n\n---\n{notice}" if body else notice
     return _apply_dependency_notes(out, state)
+
+
+def _norm_text(text: str) -> str:
+    """본문 대조용 정규화 — 공백·강조 표지를 걷어낸다."""
+    return " ".join(str(text).replace("**", "").split())
+
+
+def _collect_task_disclosures(finalized: list[dict[str, Any]]) -> list[disc.Disclosure]:
+    """task 마감 결과들의 고지를 등장 순서대로 모은다(plans/123 W-8)."""
+    return disc.dedupe(d for f in finalized for d in (f.get("disclosures") or []))
+
+
+def _turn_level_disclosures(
+    result: dict[str, Any], state: AgentState
+) -> tuple[str | None, list[disc.Disclosure]]:
+    """턴 단위 고지 — (좁힌 범위 문단, 고지 목록) (plans/123 W-2·W-4·W-5·S-1).
+
+    - W-2 좁힌 범위: 라우트가 남긴 기록(`scope_narrowed`)의 문구 — 3단 `output_generator`
+      (`_append_scope_note`)와 같은 문구·같은 모양으로 싣는다(경로 대칭).
+    - W-4 미등록 존 · S-1 단위 의심: 라우트가 원문으로 정한 `turn_disclosures`.
+    - W-5 「전체」 강화: 좁힌 기록이 없는데 「전체」를 요청하고 조회 가능 존의 일부만 조회했으면.
+    """
+    from src.domain.scope_select import render_narrowed_note
+    from src.nodes.output_generator import scope_partial_text
+    from src.utils.query_gen_common import has_all_scope_keyword
+
+    query = str(state.get("user_query") or "")
+    items: list[disc.Disclosure] = []
+    narrowed = render_narrowed_note(
+        state.get("scope_narrowed"), full_scope_requested=has_all_scope_keyword(query)
+    ) or None
+    if narrowed:
+        items.append(disc.make(disc.SCOPE_NARROWED, narrowed.lstrip("- ")))
+    items.extend(disc.dedupe(state.get("turn_disclosures") or []))
+    queried = [
+        str(t.get("db_id")) for t in (result.get("target_databases") or [])
+        if isinstance(t, dict) and t.get("db_id")
+    ]
+    partial = scope_partial_text(
+        {**state, "original_user_query": query},
+        queried_db_ids=queried,
+        db_origin=result.get("db_scope_source"),
+    )
+    if partial:
+        items.append(disc.make(disc.SCOPE_PARTIAL, partial))
+    return narrowed, items
+
+
+def _apply_disclosures(result: dict[str, Any], state: AgentState) -> dict[str, Any]:
+    """결정적 고지를 턴 단위로 한 번 정리한다 — 1·2단 단일 통과점(plans/123 W-9).
+
+    - **task 단위**(상한 도달 · 생성기 고백 · 조건 변경 · 조회 실패)는 각 task 마감
+      (`output_generator` · `_finalize_task`)이 이미 본문에 붙였다. 1단 합성(D-062)은 LLM이
+      그 줄을 떨어뜨릴 수 있어 **의무 고지가 본문에 없으면 합성 뒤에 다시 붙인다**.
+    - **턴 단위**(좁힌 범위 · 미등록 존 · 단위 의심 · 「전체」 강화)는 여기서만 붙인다 — task 마감에
+      붙이면 2단 단계별 답변에서 task 수만큼 반복된다. 의무 고지는 모두, 그 밖은 최대 3줄
+      (`disclosure.body_lines_for_turn`) — 나머지는 구조 필드에만 남는다.
+    - 존 역질문 턴에는 붙이지 않는다(되묻는 턴은 조회 결과가 아니다).
+    - 모은 고지 전체를 `disclosures`로 돌려준다(라우트가 API에 싣는다). 고지가 없으면 원본 그대로.
+    """
+    if result.get("zone_clarification"):
+        return result
+    task_items = disc.dedupe(result.get("disclosures") or [])
+    narrowed, turn_items = _turn_level_disclosures(result, state)
+    if not task_items and not turn_items:
+        return result
+    body = (result.get("final_response") or "").strip()
+    tail: list[str] = []
+    for d in task_items:
+        spec = disc.KIND_TABLE.get(d["kind"])
+        if spec is not None and spec.mandatory and _norm_text(d["text"]) not in _norm_text(body):
+            tail.append(f"[안내] {d['text']}")
+    if narrowed:
+        tail.append(narrowed)
+    others = [d for d in disc.body_lines_for_turn(turn_items) if d["kind"] != disc.SCOPE_NARROWED]
+    if others:
+        tail.append(disc.render_lines(others))
+    out = dict(result)
+    if tail:
+        block = "\n\n".join(tail)
+        out["final_response"] = f"{body}\n\n{block}" if body else block
+    out["disclosures"] = disc.dedupe([*task_items, *turn_items])
+    return out
 
 
 def _collect_dependency_notes(result: dict, state: AgentState) -> list[dict]:
@@ -862,8 +1007,28 @@ async def _finalize_task(
     if res.get("form_memory_panel"):
         base["form_memory_panel"] = res["form_memory_panel"]
 
-    # data 계열: organized_data가 있으면 output_generator로 최종화
+    # 조회 실패를 「데이터 없음」으로 바꾸지 않는다(plans/123 W-6) — 실패 + 0행이면 결과 정리·출력
+    # 생성의 빈 결과 문구(「조건에 해당하는 … 데이터가 없습니다」)가 아니라 사유가 있는 실패 안내로
+    # 끝낸다.
+    failure = _failure_disclosure(task, res)
     organized = res.get("organized_data")
+    if (
+        failure is not None
+        and organized is not None
+        and not _extract_result_rows(res)
+        # 결정적 조사 처리기는 0행 원인 진단 요약을 스스로 낸다(Plan 50 M4 · D-046) — 그대로 둔다
+        and agent not in ("process_query", HOST_INSPECT_AGENT)
+    ):
+        base["text"] = failure["text"]
+        base["disclosures"] = [failure]
+        logger.info(
+            "result_aggregator: task %s 실패를 빈 결과가 아니라 실패 안내로 마감"
+            "(kind=%s · plans/123 W-6)",
+            task.get("task_id"), failure["kind"],
+        )
+        return base
+
+    # data 계열: organized_data가 있으면 output_generator로 최종화
     if organized is not None:
         # 결정적 subagent(process_query)는 빈 결과에도 **원인 진단 summary**를 제공한다
         # (서버 식별 실패·API 미연결·API 미응답·0건 등). output_generator의 일반
@@ -877,7 +1042,12 @@ async def _finalize_task(
         ):
             base["text"] = organized["summary"]
             return base
-        s = _build_output_state(state, task, res)
+        s = _build_output_state(
+            state, task, res,
+            # 조건 반영 대조(plans/123 S-11) 1차는 단일 task 계획만 — 복합은 전역 조건이 모든 task에
+            # 들어가(D-094 ③) 다른 task 몫 조건 누락을 오탐한다(121 TP-3.2 뒤 확장).
+            condition_check=len(state.get("task_plan") or []) == 1,
+        )
         try:
             out = await output_generator(
                 s, llm=llm, app_config=app_config,
@@ -886,6 +1056,9 @@ async def _finalize_task(
             base["text"] = out.get("final_response", "")
             base["output_file"] = out.get("output_file")
             base["output_file_name"] = out.get("output_file_name")
+            # task 단위 결정적 고지의 구조화본(plans/123 W-8) — 집계기가 턴 단위로 모은다
+            if out.get("disclosures"):
+                base["disclosures"] = list(out["disclosures"])
             # HITL 폼필(D-151): 역질문 페이로드·대기 상태를 최종 응답까지 운반.
             # pending_form_fill은 None(해소·자기정리)도 유의미한 델타이므로 키 존재로 판별.
             if "form_fill_clarification" in out:
@@ -911,10 +1084,56 @@ async def _finalize_task(
         base["text"] = f"작업 처리 중 오류가 발생했습니다: {res['error']}"
     else:
         base["text"] = "처리 결과가 없습니다."
+    # SQL 루프가 사유 문구로 끝낸 조회(산문 조기 종결 · 조회 마감 — plans/119 N-5·T-3)도 kind를
+    # 남긴다(plans/123 W-8). 본문은 그 사유 문구 그대로다.
+    if failure is not None and res.get("regen_stop"):
+        base["disclosures"] = [failure]
     return base
 
 
-def _build_output_state(state: AgentState, task: dict, res: dict) -> dict:
+#: `regen_stop` 사유 → 고지 kind(plans/123 W-6 — 119 계약 어휘 재사용).
+_REGEN_STOP_KINDS = {
+    disc.FAIL_VALIDATION_BUDGET, disc.FAIL_NON_SQL, disc.FAIL_DEADLINE,
+}
+#: 읽기 전용 가드가 막은 생성 SQL의 검증 사유 표지(`sql_validation.validate_sql` 2·3번 검사).
+_SQL_BLOCKED_RE = re.compile(
+    r"금지된 키워드가 포함되어 있습니다"
+    r"|감지된 타입:\s*(?:INSERT|UPDATE|DELETE|MERGE|REPLACE|CREATE|ALTER|DROP|TRUNCATE"
+    r"|RENAME|GRANT|REVOKE)"
+)
+
+
+def _failure_disclosure(task: dict[str, Any], res: dict[str, Any]) -> disc.Disclosure | None:
+    """조회 task 실패의 고지 한 건 — 실패가 아니면 None (plans/123 W-6).
+
+    kind는 `regen_stop.reason`(plans/119 Q-3 계약)을 재사용하고, 읽기 전용 가드 차단이면
+    `sql_blocked`, 사유 표지가 없는 실패(실행 오류 · 전 DB 실패)는 `query_failed`다. 인가 거부
+    (D-232)는 자체 문구가 있는 정상 종결이라 대상이 아니다.
+    """
+    error = res.get("error")
+    if not error:
+        return None
+    raw_stop = res.get("regen_stop")
+    stop: dict[str, Any] = raw_stop if isinstance(raw_stop, dict) else {}
+    detail = str(stop.get("detail") or error)
+    if _SQL_BLOCKED_RE.search(f"{error} {detail}"):
+        kind = disc.SQL_BLOCKED
+    elif str(stop.get("reason") or "") in _REGEN_STOP_KINDS:
+        kind = str(stop["reason"])
+    else:
+        kind = disc.QUERY_FAILED
+    text = disc.failure_text(kind, subject=str(task.get("sub_query") or ""), detail=detail)
+    return disc.make(kind, text, source=f"task:{task.get('task_id')}")
+
+
+def _build_output_state(
+    state: AgentState,
+    task: dict[str, Any],
+    res: dict[str, Any],
+    *,
+    condition_check: bool = False,
+    limit_sources: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """output_generator 호출용 입력 state를 구성한다.
 
     output_generator는 organized_data, parsed_requirements, mapping_sources 등을 읽는다.
@@ -923,6 +1142,8 @@ def _build_output_state(state: AgentState, task: dict, res: dict) -> dict:
         state: 전체 에이전트 상태
         task: 현재 TaskSpec
         res: 해당 task 결과
+        condition_check: 조건 반영 대조(plans/123 S-11 1차)를 켤지 — 단일 task 계획만
+        limit_sources: 병합 경로의 원천 task별 상한 판정 입력(plans/123 W-1 ③)
 
     Returns:
         output_generator 입력 state dict
@@ -974,6 +1195,28 @@ def _build_output_state(state: AgentState, task: dict, res: dict) -> dict:
             [{"db_id": d} for d in (res.get("target_db_ids") or []) if d]
             or state.get("target_databases")
         ),
+        # ── 2단 결정적 고지 입력(plans/123 W-1·W-3) ──────────────────────────────
+        # 종전 허용목록에 없어 상한 절단·급증 한계·알람 헤드라인·당월 각주 알람 제외가 2단에서
+        # no-op였다(10,000행 도달 17턴 고지 0 — run `20260923-103638`). 없으면 각 덧붙임이
+        # no-op이다.
+        # 실행 SQL은 task가 실제로 실행한 DB별 마지막 1건이다(`resolved_limit`은 넘기지 않는다 —
+        # 격리 입력은 늘 값이 있어 「요청 상한」과 「실제 적용 상한」을 가르지 못한다 · W-1 ⑥).
+        "executed_sqls": res.get("executed_sqls") or [],
+        "query_attempts": [
+            {"sql": e.get("sql")} for e in (res.get("executed_sqls") or [])
+            if isinstance(e, dict) and e.get("sql")
+        ],
+        "spike_notes": res.get("spike_notes"),
+        "routing_intent": "alarm_query" if task.get("agent") == "alarm_query" else None,
+        # 턴 원문 — 명시 건수 판정(W-1 ②)·「전체」 판정의 입력(task 질의는 재작성될 수 있다)
+        "original_user_query": state.get("user_query", ""),
+        # task 마감 표지 — 턴 단위 고지는 집계기가 턴당 한 번 붙인다(W-9 · 단계마다 반복 금지)
+        "per_task_finalize": True,
+        "task_id": task.get("task_id"),
+        # 조건 반영 대조(S-11) 1차는 단일 task 계획만 — 집계기가 정한다
+        "condition_check": condition_check,
+        # 병합 경로의 원천 task별 상한 판정 입력(W-1 ③) — 병합 표 행 수는 표시용이라 쓰지 않는다
+        "limit_sources": limit_sources,
         "final_response": "",
         "output_file": None,
         "output_file_name": None,
@@ -1026,6 +1269,9 @@ def _merge_finalized(finalized: list[dict]) -> dict:
     if output_file is not None:
         result["output_file"] = output_file
         result["output_file_name"] = output_file_name
+    disclosures = _collect_task_disclosures(finalized)
+    if disclosures:
+        result["disclosures"] = disclosures  # plans/123 W-8
     return result
 
 
@@ -1198,4 +1444,9 @@ async def _synthesize_finalized(
     if output_file is not None:
         result["output_file"] = output_file
         result["output_file_name"] = output_file_name
+    # task 단위 고지는 합성 LLM이 떨어뜨릴 수 있다 — 구조화본을 싣고, 본문에 없는 의무 고지는 단일
+    # 통과점(`_apply_disclosures`)이 되살린다(plans/123 W-9).
+    disclosures = _collect_task_disclosures(finalized)
+    if disclosures:
+        result["disclosures"] = disclosures
     return result

@@ -224,7 +224,7 @@ def test_q3_blocks_same_family_followup_with_reason() -> None:
 
 
 @pytest.mark.parametrize(("reason", "phrase"), [
-    ("non_sql", "SQL 대신 설명문이 생성됐습니다"),
+    ("non_sql", "SQL이 아니라 설명문이 생성됐습니다"),
     ("deadline", "응답 시간 상한이 가까워 SQL 재생성을 멈췄습니다"),
     ("unknown_reason", "SQL 재생성이 멈췄습니다"),
 ])
