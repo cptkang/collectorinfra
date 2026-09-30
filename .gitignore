@@ -13,6 +13,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+# 소개 페이지 three.js 벤더링 사본(D-277)은 build/ 규칙에서 제외 — 폐쇄망 반입 대상
+!src/static/vendor/three/build/
 *.egg
 
 # 체크포인트 DB
