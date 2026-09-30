@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import logging
 import re
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -831,22 +832,49 @@ _EAV_UNIT_CAST_TYPES = r"(?:NUMERIC|DECIMAL|DEC)"
 _UNIT_GUARD_MARKER = "NULLIF(TRIM("
 
 
-def _unwrap_llm_unit_replace(operand: str) -> str:
-    """LLM이 만든 ``REPLACE(<식>, '<단위>', '')`` 임기응변을 벗긴다(D-199 후속).
+# 단위 접미 표본(D-199 실측 단위 TB/GB/MB/KB) — LLM 정규식 삭제가 단위를 지우는지 판정한다.
+_UNIT_PROBES = ("1.5 TB", "14.9 GB", "965.5 MB", "512 KB")
 
-    REPLACE는 sql_guard 금지 키워드(MySQL ``REPLACE INTO`` 차단)라 검증기가 SQL
-    전체를 거부한다(2026-09-07 폐쇄망 실측 — B0/GP/YD 전부 재생성 루프 유발).
-    피연산자가 정확히 "REPLACE(X, '단위 문자열', '')" 형태면 X만 남긴다 — 단위
-    처리는 이 가드의 CASE가 원값 기준으로 대신한다. 형태가 다르면 무변경.
+
+def _regex_strips_unit(pattern_literal: str, flags_literal: str = "") -> bool:
+    """정규식 삭제(``REGEXP_REPLACE(X, '<패턴>', '')``)가 값의 단위 접미를 지우는가.
+
+    패턴은 파이썬 ``re``로 표본에 적용해 본다 — 컴파일되지 않으면(POSIX 전용 문법 등)
+    지우지 않는 것으로 본다(무변경 쪽이 하방 안전).
     """
-    m = re.match(r"\s*REPLACE\s*\(", operand, flags=re.IGNORECASE)
+    pattern = pattern_literal.strip()[1:-1]
+    rx_flags = re.IGNORECASE if "i" in flags_literal.lower() else 0
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # 「[[:alpha:]]」 같은 중첩 집합 경고
+            rx = re.compile(pattern, rx_flags)
+    except re.error:
+        return False
+    return any(p.split()[1] not in rx.sub("", p) for p in _UNIT_PROBES)
+
+
+def _unwrap_llm_unit_replace(operand: str) -> str:
+    """LLM이 만든 단위 제거 임기응변을 벗긴다(D-199 후속).
+
+    - ``REPLACE(<식>, '<단위>', '')`` — REPLACE는 sql_guard 금지 키워드(MySQL
+      ``REPLACE INTO`` 차단)라 검증기가 SQL 전체를 거부한다(2026-09-07 폐쇄망 실측 —
+      B0/GP/YD 전부 재생성 루프 유발).
+    - ``REGEXP_REPLACE(<식>, '<패턴>', ''[, '<플래그>'])`` 중 패턴이 단위를 지우는 것
+      (예 ``'[^0-9\\.]'``) — 벗기지 않으면 CASE가 단위를 못 봐 전부 ELSE(GB 가정)로
+      떨어진다. run ``20260923-103638`` R4-10: 「965.5 MB」가 965.5 GB로 읽혀 「64GB 넘는
+      서버」가 198건이 됐다(원값으로 판정한 반복은 197건 — plans/123 S-1b).
+
+    피연산자가 정확히 그 호출 하나면 X만 남긴다 — 단위 처리는 이 가드의 CASE가 원값
+    기준으로 대신한다. 형태가 다르면 무변경.
+    """
+    m = re.match(r"\s*(REGEXP_REPLACE|REPLACE)\s*\(", operand, flags=re.IGNORECASE)
     if not m:
         return operand
     open_pos = m.end() - 1
     close_pos = _matching_paren(operand, open_pos)
     if close_pos is None or operand[close_pos + 1:].strip():
-        return operand  # REPLACE(...)가 피연산자 전체가 아니면 보수적으로 무변경
-    # 최상위 콤마로 3개 인자 분해
+        return operand  # 호출이 피연산자 전체가 아니면 보수적으로 무변경
+    # 최상위 콤마로 인자 분해
     inner = operand[open_pos + 1: close_pos]
     args: list[str] = []
     depth = 0
@@ -860,11 +888,16 @@ def _unwrap_llm_unit_replace(operand: str) -> str:
             args.append(inner[last:i])
             last = i + 1
     args.append(inner[last:])
-    if len(args) != 3:
+
+    def literal(arg: str) -> bool:
+        return re.fullmatch(r"\s*'[^']*'\s*", arg) is not None
+
+    if len(args) < 3 or not re.fullmatch(r"\s*'\s*'\s*", args[2]) or not literal(args[1]):
         return operand
-    if not re.fullmatch(r"\s*'[^']*'\s*", args[1]) or not re.fullmatch(
-        r"\s*'\s*'\s*", args[2]
-    ):
+    if m.group(1).upper() == "REPLACE":
+        return args[0].strip() if len(args) == 3 else operand
+    flags = args[3] if len(args) == 4 else "''"
+    if len(args) > 4 or not literal(flags) or not _regex_strips_unit(args[1], flags):
         return operand
     return args[0].strip()
 

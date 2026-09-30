@@ -314,7 +314,13 @@ scenarios:
     response_modes: [answer]
     turns:
       - send: {query: "은행존 서버만 보여줘"}
-        expect: {status: completed, db_ids: ["polestar_b0"], row_count: {min: 1}}
+        expect:
+          # plans/123 CT-5 - run 20260923-103638의 그 오답(「"은행존"을 구분할 수 있는 컬럼이 없어 전체 서버
+          #   2,338건을 그대로 제공」)은 이 1턴에서 나왔다(v5 재판정 실측 — 종전엔 2턴에만 걸어 거짓 합격).
+          status: completed
+          db_ids: ["polestar_b0"]
+          row_count: {min: 1}
+          response_must_not_contain: ["구분할 수 있는 컬럼"]
       - send: {query: "그중 메모리 64GB 이상만"}
         expect:
           # plans/123 CT-7 - 승계는 DB 스코프로 본다. CT-5 - 존 조건을 DB 선택이 이미 적용했는데

@@ -962,6 +962,7 @@ INDEX 「이관 조항」(D-208)에 따라 이관처(122)가 항목마다 원 �
 | 추가 4 | 123 신규 키 2건(불변식 선언 · E-04 행 합 → `RESULT_KEYS`) · `rejudge.py` `_FIELD_KEYS`·`_diff_causes` | — | (b) 123 랜딩 때 같은 커밋 |
 | (h-judge 발견) | 선언한 xlsx 시트가 없고 `filled_rows`를 선언하면 판정 전체가 `TypeError`로 죽는다(HEAD부터 잠복) | 재현 확인 | **(a) 반영** — 없는 시트는 빈 표로 이어 판정(`file.sheets` 불합격은 그대로) · `test_missing_sheet_with_filled_rows_fails_without_crash` |
 | D-276 부기 | v1a/v1b 재정의 · run R2b·R5·R5′·R6 칸 | 123 소관 일정 | (d) 이쪽에서 쓰지 않는다 — a9가 123 게이트 확정 때 등재. 이쪽은 **D-278**을 썼다 |
+| 통지(2026-09-30 · `plans/123` v5) | ② J-01 새 문구 병기 · K-09 활성 선행 | J-01: 123 W-6 종결 문구(`src/domain/disclosure.failure_text` — 「데이터 변경 요청은 수행할 수 없습니다」·「검증을 통과하지 못해」·「요청을 SQL로 옮기지 못해」)가 옛 `_any` 목록에 없었다 · K-09: W-1 상한 고지 문장이 「이후 행이 절단되었을 수 있습니다」를 담는다(`output_generator._limit_truncation_text_one`) | **(a) 123이 대신 반영** — `testdata/scenarios/j_guard.yaml` J-01 `response_must_contain_any`에 세 문구 병기(옛 문구 유지 — 과거 run 재판정용 · D-279 주의 ② 이행). K-09는 선행 충족 · 카탈로그 무변경. 재판정 `20260923-103638` 두 벌 산출은 `plans/123` §18.3 |
 
 ---
 

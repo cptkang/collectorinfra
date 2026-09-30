@@ -15,6 +15,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 from src.utils.llm_compat import is_kbgenai
 from src.config import AppConfig, load_config
+from src.domain.query_target_surfaces import surfaces_of
 from src.llm import create_llm
 from src.prompts.input_parser import (
     INPUT_PARSER_CSV_CONTEXT_PROMPT,
@@ -154,6 +155,7 @@ async def input_parser(
             "parsed_requirements": parsed,
             "template_structure": None,
             "target_sheets": _extract_target_sheets(parsed, state["user_query"], _prior_sheets),
+            "unanchored_query_targets": _unanchored_query_targets(parsed, state, None),
             "current_node": "input_parser",
             "error_message": None,
         }
@@ -236,9 +238,55 @@ async def input_parser(
         "parsed_requirements": parsed,
         "template_structure": template,
         "target_sheets": target_sheets,
+        "unanchored_query_targets": _unanchored_query_targets(parsed, state, template),
         "current_node": "input_parser",
         "error_message": None,
     }
+
+
+def _attachment_texts(state: AgentState, template: dict[str, Any] | None) -> list[str]:
+    """첨부 양식의 헤더·플레이스홀더 문자열(엑셀 CSV 시트 · 양식 구조)."""
+    texts: list[str] = []
+    for sheet in (state.get("csv_sheet_data") or {}).values():
+        if isinstance(sheet, dict):
+            texts += [str(h) for h in sheet.get("headers") or []]
+    for sheet in (template or {}).get("sheets") or []:
+        if isinstance(sheet, dict):
+            texts += [str(h) for h in sheet.get("headers") or []]
+    for table in (template or {}).get("tables") or []:
+        if isinstance(table, dict):
+            texts += [str(h) for h in table.get("headers") or []]
+    texts += [str(p) for p in (template or {}).get("placeholders") or []]
+    return texts
+
+
+def _unanchored_query_targets(
+    parsed: dict[str, Any], state: AgentState, template: dict[str, Any] | None
+) -> list[str]:
+    """파서가 낸 조회 대상 중 원문에 표면어가 없는 것 — 해석 고지 트리거(plans/123 S-7(a)).
+
+    사용자 확정(2026-09-30): 「`query_targets` 항목이 원문·유사어 사전에 없음」의 사전은
+    `config/query_target_surfaces.yaml`(도메인 ↔ 표면어)이다. **트리거 키와 로그만** 남기고 응답은
+    바꾸지 않는다 — 해석 한 줄 표시는 121·TP-4.7 소유다(123·G-15). 첨부 양식이 있으면 헤더·
+    플레이스홀더도 원문으로 본다 — 파서 규칙 12가 헤더에서 도출한 도메인은 사용자 말의 해석이
+    아니다(S-7(a)의 대상은 「CP」 → CPU 같은 말의 해석 — `plans/123` SW08).
+    """
+    query = str(parsed.get("original_query") or state.get("user_query") or "")
+    anchor = " ".join([query, *_attachment_texts(state, template)])
+    unanchored: list[str] = []
+    for target in parsed.get("query_targets") or []:
+        name = str(target).strip()
+        if not name or name in unanchored:
+            continue
+        if not any(term_in_text(surface, anchor) for surface in surfaces_of(name)):
+            unanchored.append(name)
+    if unanchored:
+        logger.info(
+            "S-7(a) 트리거(plans/123): 원문에 표면어가 없는 조회 대상 %s — %r"
+            "(해석 한 줄 표시는 121 TP-4.7)",
+            unanchored, query[:80],
+        )
+    return unanchored
 
 
 def _shadow_condition_conflicts(parsed: dict[str, Any]) -> None:

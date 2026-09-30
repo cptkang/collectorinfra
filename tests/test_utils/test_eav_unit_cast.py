@@ -114,3 +114,50 @@ class TestUnitCastRewrite:
         """괄호 불균형은 무변경(하방 안전)."""
         sql = "SELECT CAST(cc.stringvalue_short AS NUMERIC"
         assert normalize_eav_unit_casts(sql, COLS) == sql
+
+
+class TestRegexpUnitStrip:
+    """plans/123 S-1b — LLM이 숫자만 남기는 정규식으로 단위를 지운 캐스트.
+
+    run `20260923-103638` R4-10(「메모리 64GB 넘는 서버」): 반복 3회 중 2회가
+    `CAST(regexp_replace(cc.stringvalue_short, '[^0-9\\.]', '', 'g') AS DECIMAL)`를 만들었고,
+    가드가 그 식을 그대로 CASE 피연산자로 써 단위 분기가 모두 죽었다 — 「965.5 MB」가
+    ELSE(GB 가정)로 965.5가 돼 198건(원값으로 판정한 반복은 197건).
+    """
+
+    R4_10 = (
+        "SELECT 1 FROM t WHERE CAST(regexp_replace(cc.stringvalue_short, "
+        "'[^0-9\\.]', '', 'g') AS DECIMAL(31, 6)) > 64"
+    )
+
+    def test_digit_only_strip_is_unwrapped(self):
+        out = normalize_eav_unit_casts(self.R4_10, COLS)
+        assert "regexp_replace" not in out.lower()
+        assert "WHEN UPPER(cc.stringvalue_short) LIKE '%MB%'" in out
+        assert out.endswith("END > 64")
+
+    def test_db2_three_arg_and_letter_strip_are_unwrapped(self):
+        for operand in (
+            "REGEXP_REPLACE(cc.stringvalue_short, '[^0-9.]', '')",
+            "regexp_replace(cc.stringvalue_short, '[A-Za-z ]', '', 'g')",
+            "regexp_replace(cc.stringvalue_short, '[a-z]+', '', 'gi')",
+        ):
+            out = normalize_eav_unit_casts(f"SELECT CAST({operand} AS NUMERIC) FROM t", COLS)
+            assert "regexp_replace" not in out.lower(), operand
+            assert "WHEN UPPER(cc.stringvalue_short) LIKE '%TB%'" in out
+
+    def test_strip_that_keeps_units_is_untouched(self):
+        """단위를 지우지 않는 정규식(쉼표 제거 등)·해석 못 하는 패턴은 벗기지 않는다."""
+        for operand in (
+            "regexp_replace(cc.stringvalue_short, ',', '', 'g')",
+            "regexp_replace(cc.stringvalue_short, '[a-z]+', '', 'g')",  # 대소문자 구분 — 단위 유지
+            "regexp_replace(cc.stringvalue_short, '[^0-9.]', 'x', 'g')",  # 삭제가 아니다
+            "regexp_replace(cc.stringvalue_short, '[', '', 'g')",  # 컴파일 불가
+        ):
+            out = normalize_eav_unit_casts(f"SELECT CAST({operand} AS NUMERIC) FROM t", COLS)
+            assert operand in out, operand
+
+    def test_unwrapped_output_passes_sql_guard_and_is_idempotent(self):
+        once = normalize_eav_unit_casts(self.R4_10, COLS)
+        assert SQLGuard().detect_forbidden_keywords(once) == []
+        assert normalize_eav_unit_casts(once, COLS) == once

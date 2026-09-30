@@ -326,6 +326,9 @@ class AgentState(TypedDict):
     # 선행 대상 없는 지시어(plans/123 S-7(b) · 123·G-6 (a)) — `context_resolver`가 매 턴 쓴다.
     # 소비(되묻기 게이트)는 `plans/106` H1 몫이다. `clarification_needed`(D-270 ⑤)와 별도 키.
     demonstrative_without_antecedent: bool | None
+    # 원문에 표면어가 없는 조회 대상(plans/123 S-7(a) — 해석 고지 트리거) — `input_parser`가 쓴다.
+    # 사전 = `config/query_target_surfaces.yaml`. 소비(해석 한 줄)는 121 TP-4.7 몫(123·G-15).
+    unanchored_query_targets: list[str] | None
 
     # === 출력 ===
     final_response: str                      # 자연어 응답
@@ -496,6 +499,7 @@ def create_followup_input(
         "disclosures": None,
         "turn_disclosures": None,
         "demonstrative_without_antecedent": None,  # plans/123 S-7(b) — 요청 스코프
+        "unanchored_query_targets": None,  # plans/123 S-7(a) — 요청 스코프
     }
     if reset_db_scope:
         # 승계 원천 3종을 비운다 — 체크포인터는 델타만 병합하므로 명시 초기화가 필요하다(D-064).
@@ -659,6 +663,7 @@ def create_initial_state(
         disclosures=None,  # 요청 스코프(plans/123 W-8)
         turn_disclosures=None,
         demonstrative_without_antecedent=None,  # plans/123 S-7(b)
+        unanchored_query_targets=None,  # plans/123 S-7(a)
         # 출력
         final_response="",
         output_file=None,

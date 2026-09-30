@@ -1,0 +1,23 @@
+# 조회 대상 도메인 ↔ 표면어 대응 표 (plans/123 S-7(a) · 사용자 확정 2026-09-30 · 초안 — 사용자 검수 대기)
+#
+# 입력 파서(`src/prompts/input_parser.py`)는 질의를 닫힌 도메인 10종의 `query_targets`로 옮긴다.
+# 파서가 낸 도메인이 **원문(첨부 양식 헤더 포함)에 이 표의 표면어로 나타나지 않으면** 파서가 말을
+# 해석한 것이다 — `input_parser`가 트리거 키 `unanchored_query_targets`와 로그만 남긴다(응답 불변).
+# 해석 한 줄 표시는 121·TP-4.7 소유(123·G-15)이고, 이 표는 그 트리거의 사전이다.
+#
+# - 키(도메인)는 파서의 가능한 값과 **정확히 같아야** 한다(drift 테스트 `tests/test_domain/test_query_target_surfaces.py`).
+# - 도메인 이름 자체는 코드가 늘 표면어로 본다 — 여기에는 다른 표면어만 적는다.
+# - 판정은 위치 표면어와 같은 규칙(`term_in_text` · D-271)이다: 라틴 문자·숫자 표면어는 단어 경계 ·
+#   대소문자 무시, 한글 표면어·띄어쓰기가 든 라틴 표면어("file system")는 부분 문자열(대소문자 구분).
+# - `config/global_synonyms.yaml`(Redis 적재 유사어)과는 별개다 — 이 표는 도메인 단위다.
+domains:
+  서버: [장비, 호스트, 머신, 가상머신, 노드, host, server, VM, node]
+  CPU: [씨피유, 프로세서, 코어, processor, core, vcore, vCPU]
+  메모리: [스왑, memory, RAM, swap]
+  디스크: [스토리지, 볼륨, disk, storage, volume]
+  네트워크: [트래픽, 대역폭, 패킷, 랜카드, network, traffic, bandwidth, packet, NIC]
+  파일시스템: [파일 시스템, 마운트, 파티션, filesystem, file system, mount, partition]
+  프로세스: [데몬, process, daemon, PID]
+  HBA: [파이버채널, 파이버 채널, WWN, WWPN, SAN, Fibre Channel]
+  에이전트: [수집기, agent]
+  서버설정: [서버 설정, 설정, 구성, 사양, 스펙, 운영체제, 커널, 버전, 모델, 제조사, 시리얼, config, configuration, spec, OS, kernel, vendor]
