@@ -47,6 +47,13 @@ profiles:
     SECURITY_MASK_IP: "true"
     SECURITY_MASK_EMAIL: "true"
 
+  # 실시간 사용률 off 고정(plans/122 K-2 · 2026-09-30 사용자 확정 · D-291) - 기준 프로파일은 운영
+  # .env 를 그대로 쓰는데 폐쇄망 실효값이 POLESTAR_REST_REALTIME_USAGE_ENABLED=true 라 off 쪽(통계 테이블)을
+  # 잴 수 없었다(run 20260922-093837 · 20260923-103638 · 20260923-140539 run.json effective_settings).
+  # C-12(off) 만 쓴다 - on 쪽은 C-12b(`optin_realtime`). 프로파일 1개 = 서버 기동 1회가 늘어난다.
+  optout_realtime:
+    POLESTAR_REST_REALTIME_USAGE_ENABLED: "false"
+
   # ── 사다리 단 비교 arm (2026-09-21 · plans/110 「▶ 실행 가이드」 ③·④) ──
   #
   # **쓰는 법은 `--profile` 이 아니라 `--arm` 이다**(`110·N-1` 랜딩 2026-09-21).

@@ -89,7 +89,10 @@ STRUCTURALLY_HELD_KEYS = frozenset({"intent", "llm_calls", "gold_sql"})
 #:   - 하네스 보완(refine · 2026-09-29 — H-4 다단 머리글 · value_range 별칭 · K-3 H-18 미작성 전환)
 #:     뒤 78/102 = 76.5% → **0.76**. 이관 +4(B-12 · H-06 · H-15 · H-16) · 모집단 −1(H-18 미작성).
 #:     단계 3 하한 0.70 은 넘었고 단계 5 하한 0.90 은 아직이다.
-PASSABLE_FLOOR = 0.76
+#:   - 2026-09-30 사용자 확정 반영(D-291 — C-12 off 고정 프로파일 · D-01 9열) 뒤
+#:     104/126 = 82.5% → **0.82**. 모집단 102 → 126 은 그사이 다른 계획(123·125)이 더한
+#:     정상군 시나리오다.
+PASSABLE_FLOOR = 0.82
 
 
 def _runnable(catalog: Catalog) -> list[Scenario]:

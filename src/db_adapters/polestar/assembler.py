@@ -1503,7 +1503,17 @@ def build_active_alarm_sql(
     db_schema: str,
     limit: int,
 ) -> str:
-    """인식 결과로 존 공통 별칭의 runnable SQL을 조립한다 (엔진 방언 분기 포함)."""
+    """인식 결과로 존 공통 별칭의 runnable SQL을 조립한다 (엔진 방언 분기 포함).
+
+    목록 열은 지식 정본 표준 알람 뷰 9열(`config/knowledge/_base/catalog.yaml`
+    `pattern_c.default_dimensions`)과 같은 개념이다(2026-09-30 사용자 확정 「9열이 정답」 · D-291):
+    alarm_id · severity(= severity_grade 코드) · description(= CONDITIONLOGTEXT) ·
+    alarm_time(= occurred_at) · server_name · hostname · ipaddress ·
+    resource_name(알람 발생 자원 CR.NAME) · alarm_name(알람 정의명 D.NAME).
+    `severity`·`alarm_time`·`description` 별칭은 유지한다 — 다중 DB 순위 재정렬 키(`alarm_time` ·
+    plans/113 S-1)와 존 병합 CSV 칼럼 연속성. 9열 밖 `ack_status`(확인 상태)는 뺐다(소비처 0 ·
+    미확인 필터는 WHERE가 맡는다 · 샘플 행 일반화 환각의 재료였다 — `_prepend_alarm_headline`).
+    """
     prefix = f"{db_schema}." if db_schema else ""
     conds: list[str] = []
     if spec.resource_types:
@@ -1552,12 +1562,14 @@ def build_active_alarm_sql(
     row_limit = row_limit_clause(db_engine, limit)
     return (
         "SELECT a.alarm_id, a.alarmseverity AS severity, "
-        "a.currentalarmstatus AS ack_status, a.conditionlogtext AS description, "
+        "a.conditionlogtext AS description, "
         "a.ctime AS alarm_time, "
         "COALESCE(srv.name, srv.hostname, res.name) AS server_name, "
-        "srv.hostname AS hostname, srv.ipaddress AS ipaddress "
+        "srv.hostname AS hostname, srv.ipaddress AS ipaddress, "
+        "res.name AS resource_name, d.name AS alarm_name "
         f"FROM {prefix}cmm_alarm_active a "
         f"{res_join}"
+        f"LEFT JOIN {prefix}cmm_alarm_def d ON a.definition_id = d.id "
         f"LEFT JOIN {prefix}cmm_resource srv "
         "ON COALESCE(res.platform_resource_id, res.id) = srv.id "
         "AND srv.resource_type = 'server.Server' AND srv.dtime IS NULL "
@@ -1637,12 +1649,14 @@ def build_alarm_history_sql(
     row_limit = row_limit_clause(db_engine, limit)
     return (
         "SELECT a.id AS alarm_id, a.alarmseverity AS severity, "
-        "a.currentalarmstatus AS ack_status, a.conditionlogtext AS description, "
+        "a.conditionlogtext AS description, "
         "a.ctime AS alarm_time, "
         "COALESCE(srv.name, srv.hostname, res.name) AS server_name, "
-        "srv.hostname AS hostname, srv.ipaddress AS ipaddress "
+        "srv.hostname AS hostname, srv.ipaddress AS ipaddress, "
+        "res.name AS resource_name, d.name AS alarm_name "
         f"FROM {prefix}cmm_alarm a "
         f"JOIN {prefix}cmm_resource res ON a.resource_id = res.id "
+        f"LEFT JOIN {prefix}cmm_alarm_def d ON a.definition_id = d.id "
         f"LEFT JOIN {prefix}cmm_resource srv "
         "ON srv.id = COALESCE(res.platform_resource_id, "
         "res.service_resource_id, res.id) "

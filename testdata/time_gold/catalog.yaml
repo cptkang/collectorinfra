@@ -19,7 +19,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "여의도 개발 서버들의 CPU 사용률을 보여줘"
+    query: "여의도 개발 서버들의 CPU 사용률을 10건만 보여줘"
     source: "기간 없음(§10.1 — 현행은 CURRENT_DATE 함수식)"
     expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete, notes: [default_period]}
   - id: C-002
@@ -27,7 +27,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "현재 활성 상태인 심각 알람 목록 보여줘"
+    query: "현재 활성 상태인 심각 알람 목록 10건만 보여줘"
     source: "현재류"
     expect: {out_of_scope: "현재 활성 알람 — 상태 조회(기간 아님)"}
   - id: C-003
@@ -51,7 +51,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "전체 서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 조회해줘. 사용률은 지난달 1개월 통계 기준으로."
+    query: "전체 서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 10건만 조회해줘. 사용률은 지난달 1개월 통계 기준으로."
     source: "지난달(「지난달 1개월」)"
     expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}
   - id: C-006
@@ -59,7 +59,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "지난 3개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 조회해줘"
+    query: "지난 3개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 10건만 조회해줘"
     source: "지난 N개월 + 월간"
     expect: {start: "2026-06-01", end: "2026-09-01", grain: month, completeness: complete}
   - id: C-007
@@ -67,7 +67,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "2026년 상반기 서버별 CPU 사용률 평균"
+    query: "2026년 상반기 서버별 CPU 사용률 평균 10건만"
     source: "YYYY년 상반기"
     expect: {start: "2026-01-01", end: "2026-07-01", grain: month, completeness: complete}
   - id: C-008
@@ -75,7 +75,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "2026년 1월부터 6월까지 메모리 사용률 최대값"
+    query: "2026년 1월부터 6월까지 메모리 사용률 최대값 10건만"
     source: "YYYY년 M월~M월"
     expect: {start: "2026-01-01", end: "2026-07-01", grain: month, completeness: complete}
   - id: C-009
@@ -83,7 +83,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "11월부터 2월까지 CPU 사용률"
+    query: "11월부터 2월까지 CPU 사용률 10건만"
     source: "연도 없는 월 범위(연 넘김)"
     expect: {start: "2025-11-01", end: "2026-03-01", grain: month, completeness: complete, notes: [year_inferred]}
   - id: C-010
@@ -91,7 +91,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "이번 달 CPU 사용률"
+    query: "이번 달 CPU 사용률 10건만"
     source: "이번 달(D-201)"
     expect: {start: "2026-09-01", end: "2026-09-29", grain: day, completeness: to_date}
   - id: C-011
@@ -99,7 +99,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘"
+    query: "메모리 이용률이 90%를 초과한 적이 있는 서버를 10건만 조회해줘"
     source: "~한 적이 있는"
     expect: {unbounded: true, grain: month}
   - id: C-012
@@ -131,7 +131,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 보여줘"
+    query: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 10건만 보여줘"
     source: "YYYY년 M월"
     expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
   - id: C-016
@@ -155,7 +155,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "현재 발생 중인 심각(severity 3) 알람 목록을 조회해줘"
+    query: "현재 발생 중인 심각(severity 3) 알람 목록을 10건만 조회해줘"
     source: "현재류"
     expect: {out_of_scope: "현재 발생 중 알람 — 상태 조회"}
   - id: C-019
@@ -179,15 +179,16 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "이번 달 CPU 임계값 초과 알람 이력 조회"
-    source: "이번 달(알람 — §10.1은 [09-01, 10-01)을 정답으로 셌다 · 정책 표는 어제까지)"
-    expect: {start: "2026-09-01", end: "2026-09-29", grain: day, completeness: to_date}
+    query: "이번 달 CPU 임계값 초과 알람 이력 10건만 조회"
+    subject: event
+    source: "이번 달(알람) — 알람 경로 예외: 진행 중 기간은 기준 시각까지(2026-09-30 사용자 확정 · D-291 · §10.1은 [09-01, 10-01)을 정답으로 셌다)"
+    expect: {start: "2026-09-01", end: "2026-09-29 10:00", grain: hour, completeness: to_date, notes: [event_to_now]}
   - id: C-022
     scenario: E-02
     turn: 1
     env: closed
     anchor: base
-    query: "현재 활성 상태인 심각 알람이 있는 서버들의 최근 1개월 CPU 사용률을 보여줘"
+    query: "현재 활성 상태인 심각 알람이 있는 서버들의 최근 1개월 CPU 사용률을 10건만 보여줘"
     source: "최근 1개월"
     expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}
   - id: C-023
@@ -211,7 +212,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "심각 알람이 발생한 적이 있는 서버들의 제조사와 메모리 용량을 보여줘"
+    query: "심각 알람이 발생한 적이 있는 서버들의 제조사와 메모리 용량을 10건만 보여줘"
     source: "~한 적이 있는"
     expect: {unbounded: true, grain: month}
   - id: C-026
@@ -235,7 +236,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "2026년 6월 기준으로 채워줘"
+    query: "2026년 6월 기준으로 10건만 채워줘"
     source: "YYYY년 M월 기준(폼필)"
     expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
   - id: C-029
@@ -243,7 +244,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "2026년 6월 기준 CPU 양식 채워줘"
+    query: "2026년 6월 기준 CPU 양식을 10건만 채워줘"
     source: "YYYY년 M월 기준(폼필)"
     expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
   - id: C-030
@@ -251,7 +252,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "1월부터 6월까지의 데이터를 기준으로 양식을 채우시오"
+    query: "1월부터 6월까지의 데이터를 기준으로 양식을 10건만 채우시오"
     source: "연도 없는 월 범위(D-185)"
     expect: {start: "2026-01-01", end: "2026-07-01", grain: month, completeness: complete, notes: [year_inferred]}
   - id: C-031
@@ -259,7 +260,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "채워줘 (기간 없음)"
+    query: "10건만 채워줘 (기간 없음)"
     source: "기간 없음(폼필)"
     expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete, notes: [default_period]}
   - id: C-032
@@ -267,7 +268,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "1월부터 3월까지 채워줘"
+    query: "1월부터 3월까지 10건만 채워줘"
     source: "연도 없는 월 범위"
     expect: {start: "2026-01-01", end: "2026-04-01", grain: month, completeness: complete, notes: [year_inferred]}
   - id: C-033
@@ -275,7 +276,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "지난 반년 데이터로 채워줘"
+    query: "지난 반년 데이터로 10건만 채워줘"
     source: "지난 반년"
     expect: {start: "2026-03-01", end: "2026-09-01", grain: month, completeness: complete}
   - id: C-034
@@ -283,7 +284,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "2026년 6월 기준 메모리 양식 채워줘"
+    query: "2026년 6월 기준 메모리 양식을 10건만 채워줘"
     source: "YYYY년 M월 기준"
     expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
   - id: C-035
@@ -299,7 +300,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "2026년 6월 기준으로 채워줘"
+    query: "2026년 6월 기준으로 10건만 채워줘"
     source: "YYYY년 M월 기준"
     expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
   - id: C-037
@@ -379,7 +380,7 @@ cases:
     turn: 1
     env: sandbox
     anchor: base
-    query: "2026년 6월 서버별 CPU 사용률과 메모리 사용률 평균을 CPU 사용률이 높은 순으로 함께 보여줘"
+    query: "2026년 6월 서버별 CPU 사용률과 메모리 사용률 평균을 CPU 사용률이 높은 순으로 함께 10건만 보여줘"
     source: "YYYY년 M월"
     expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
   - id: C-047
@@ -419,7 +420,7 @@ cases:
     turn: 1
     env: sandbox
     anchor: base
-    query: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 보여줘"
+    query: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 10건만 보여줘"
     source: "YYYY년 M월"
     expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
   - id: C-052
@@ -523,7 +524,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "현재 설정된 알람 임계치를 보여줘"
+    query: "현재 설정된 알람 임계치를 10건만 보여줘"
     source: "현재류"
     expect: {out_of_scope: "현재 설정된 임계치 — 상태 조회"}
   - id: C-065
@@ -539,7 +540,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "지난 1개월 CPU 사용률"
+    query: "지난 1개월 CPU 사용률 10건만"
     source: "지난 1개월"
     expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}
   - id: C-067
@@ -548,14 +549,14 @@ cases:
     env: closed
     anchor: base
     query: "2030년 1월 알람 보여줘"
-    source: "미래 절대 월"
-    expect: {start: "2030-01-01", end: "2030-02-01", grain: month, completeness: complete, notes: [future_period]}
+    source: "미래 절대 월 — 연도를 명시한 미래는 되묻기(2026-09-30 사용자 확정 · D-291)"
+    expect: {clarify: future_explicit}
   - id: C-068
     scenario: R3-06C
     turn: 1
     env: closed
     anchor: base
-    query: "지난주 알람 보여줘"
+    query: "지난주 알람 10건만 보여줘"
     source: "지난주(알람 — §10.1 오답)"
     expect: {start: "2026-09-21", end: "2026-09-28", grain: day, completeness: complete}
   - id: C-069
@@ -563,7 +564,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "이번 달 CPU 평균 알려줘"
+    query: "이번 달 CPU 평균 10건만 알려줘"
     source: "이번 달"
     expect: {start: "2026-09-01", end: "2026-09-29", grain: day, completeness: to_date}
   - id: C-070
@@ -571,7 +572,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "지난 30일 CPU 평균 알려줘"
+    query: "지난 30일 CPU 평균 10건만 알려줘"
     source: "지난 30일(§10.1 오답)"
     expect: {start: "2026-08-30", end: "2026-09-29", grain: day, completeness: complete}
   - id: C-071
@@ -587,7 +588,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "최근 1시간 CPU 사용률 평균"
+    query: "최근 1시간 CPU 사용률 평균 10건만"
     source: "최근 1시간(§10.1 오답)"
     expect: {start: "2026-09-29 09:00", end: "2026-09-29 10:00", grain: hour, completeness: rolling}
   - id: C-073
@@ -595,7 +596,7 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "현재 활성 상태인 심각 알람 목록 보여줘"
+    query: "현재 활성 상태인 심각 알람 목록 10건만 보여줘"
     source: "현재류"
     expect: {out_of_scope: "현재 활성 알람 — 상태 조회"}
   - id: C-074
@@ -611,6 +612,6 @@ cases:
     turn: 1
     env: closed
     anchor: base
-    query: "어제 CPU 사용률 최댓값 알려줘"
+    query: "어제 CPU 사용률 최댓값 10건만 알려줘"
     source: "어제"
     expect: {start: "2026-09-28", end: "2026-09-29", grain: day, completeness: complete}

@@ -15,7 +15,8 @@ LLM 슬롯(`time_expr.slot_to_spec`)이 만든 `TimeSpec`을 기준 시각(요�
   (테이블명은 DB 특화라 어댑터 몫 — D-089)
 - 입도 = f(display_grain, 구간 경계 정렬). 월 입도는 구간 양 끝이 월 경계에 맞을 때만 나온다
 
-표 밖 조합(plans/122 T-1 구현 시 정함 — 보고서의 「모호해서 정한 것」과 같다):
+표 밖 조합(plans/122 T-1 구현 시 정함 → **2026-09-30 사용자 확정 · D-291** — §10.3.1 표에
+행으로 올렸다):
 
 - `this` 기본 완결성: 연·반기 = complete(완결 월까지 + 「이번 달 제외」), 분기·월·주·일·시 = to_date
 - 명시 달력 기간이 진행 중이면: 단일 월 → 「이번 달」과 같게(D-201 현행 동형), 분기 → 「이번 분기」,
@@ -23,6 +24,19 @@ LLM 슬롯(`time_expr.slot_to_spec`)이 만든 `TimeSpec`을 기준 시각(요�
   달력 구간을 그대로 쓰고 `period_in_progress`를 단다
 - 연도 없는 절대값은 "미래가 아닌 가장 최근 발생"(D-185 · 당월 허용)
 - 기간 표현이 여럿이면(비교 질의) 모두를 덮는 최소 구간(`cover`)과 `multiple_periods`
+
+사건(알람) 예외(2026-09-30 사용자 확정 · D-291 — §10.3.1 「알람 경로」 행):
+`subject="event"`로 부르면
+- 기간 없음 = **기간 조건 없음**(unbounded · `event_no_default_period`) — 직전 완결 월
+  기본값을 쓰지 않는다
+  (「최근 발생 순 100건」은 최신 알람이지 지난달 알람이 아니다 · D-02)
+- 진행 중 기간(`this`·`to_date` · 진행 중인 명시 달력 기간) = 시작 ~ **기준 시각**(`event_to_now`) —
+  통계의 「어제까지·완결 월」 절단(D-201 · G-15 ③)은 **성능 통계** 사정이라 사건에는
+  쓰지 않는다(D-05)
+
+되묻기(2026-09-30 사용자 확정 · D-291): 연도를 명시한 기간이 **통째로 미래**면(시작 > 기준 시각)
+`TimeSpecError("future_explicit_period")` — 호출부가 되묻는다. 존재하지 않는 월·날짜는 인식기
+(`time_expr.interpret_detail`)가 `invalid_date`로 되묻기 대상에 올린다.
 
 domain 계층 — 표준 라이브러리만 의존한다(src.config·src.utils import 금지).
 """
@@ -46,6 +60,9 @@ Anchor = Literal["now", "explicit"]
 Grain = Literal["hour", "day", "month"]
 DisplayGrain = Literal["hour", "day", "month", "none"]
 Source = Literal["rule", "llm", "default"]
+#: 해석 대상 — 성능 통계(metric · 기본)와 사건(event · 알람 이력·활성 알람).
+#: 사건 예외는 모듈 머리말.
+Subject = Literal["metric", "event"]
 
 RELATIONS: frozenset[str] = frozenset(get_args(Relation))
 UNITS: frozenset[str] = frozenset(get_args(Unit))
@@ -54,6 +71,7 @@ ANCHORS: frozenset[str] = frozenset(get_args(Anchor))
 GRAINS: frozenset[str] = frozenset(get_args(Grain))
 DISPLAY_GRAINS: frozenset[str] = frozenset(get_args(DisplayGrain))
 SOURCES: frozenset[str] = frozenset(get_args(Source))
+SUBJECTS: frozenset[str] = frozenset(get_args(Subject))
 
 #: 단위별 n 상한 — 보존 기간이 아니라 **값 범위 검사**(환각·오타 차단)용 상한이다.
 N_MAX: dict[str, int] = {
@@ -70,6 +88,8 @@ NOTE_FUTURE_PERIOD = "future_period"                # 구간 시작이 기준 �
 NOTE_DISPLAY_GRAIN_UNALIGNED = "display_grain_unaligned"  # 요청 입도가 구간 경계에 안 맞아 낮췄다
 NOTE_YEAR_INFERRED = "year_inferred"                # 연도 미상 — 미래가 아닌 가장 최근으로 보정
 NOTE_MULTIPLE_PERIODS = "multiple_periods"          # 기간 표현 여럿 — 모두를 덮는 구간
+NOTE_EVENT_NO_DEFAULT = "event_no_default_period"   # 사건(알람) 기간 미지정 — 기간 조건 없음(D-291)
+NOTE_EVENT_TO_NOW = "event_to_now"                  # 사건(알람) 진행 중 기간 — 기준 시각까지(D-291)
 
 _GRAIN_RANK: dict[str, int] = {"hour": 0, "day": 1, "month": 2}
 _GRAIN_OF: dict[str, Grain] = {"hour": "hour", "day": "day", "month": "month"}
@@ -464,14 +484,44 @@ def _key(p: PartialDate) -> tuple[int, int, int]:
 # ──────────────────────────────────────────────
 
 
-def default_resolution(now: datetime) -> TimeResolution:
-    """기간 없음 = 직전 완결 월(source=default · 고지 대상 — §10.3.1 마지막 행)."""
+def default_resolution(now: datetime, *, subject: Subject = "metric") -> TimeResolution:
+    """기간 없음 = 직전 완결 월(source=default · 고지 대상 — §10.3.1 마지막 행).
+
+    사건(`subject="event"`)은 기간 조건 없음이다(D-291 알람 예외 — 모듈 머리말).
+    """
     now = _to_kst(now)
+    if _check_subject(subject) == "event":
+        return TimeResolution(
+            start=None, end=None, grain="month", completeness="complete", source="default",
+            anchor_at=now, unbounded=True, notes=(NOTE_EVENT_NO_DEFAULT,),
+        )
     cur = _floor(now, "month")
     return TimeResolution(
         start=_add_months(cur, -1), end=cur, grain="month", completeness="complete",
         source="default", anchor_at=now, notes=(NOTE_DEFAULT_PERIOD,),
     )
+
+
+def _check_subject(subject: str) -> str:
+    if subject not in SUBJECTS:
+        raise TimeSpecError("invalid_subject", str(subject))
+    return subject
+
+
+def _explicit_year(*parts: PartialDate | None) -> bool:
+    """사용자가 연도를 적은 부분값이 있는가(절대 연도 또는 상대 연도)."""
+    return any(p is not None and p.has_year for p in parts)
+
+
+def _reject_future_explicit(
+    start: datetime | None, now: datetime, *parts: PartialDate | None
+) -> None:
+    """연도를 명시한 기간이 통째로 미래면 되묻기(D-291).
+
+    연도 미상은 "미래가 아닌 가장 최근"으로 정하므로 해당 없다.
+    """
+    if start is not None and start > now and _explicit_year(*parts):
+        raise TimeSpecError("future_explicit_period", start.isoformat())
 
 
 def _this_complete_end(now: datetime, unit: str) -> datetime:
@@ -507,17 +557,20 @@ def _policy_cap(unit: str, completeness: str) -> Grain:
     return "hour" if unit in ("hour", "day") else "day"
 
 
-def resolve(spec: TimeSpec, now: datetime) -> TimeResolution:
+def resolve(spec: TimeSpec, now: datetime, *, subject: Subject = "metric") -> TimeResolution:
     """TimeSpec + 기준 시각 → TimeResolution(§10.3.1 정책 표 전 행).
 
     Args:
         spec: 규칙·LLM 슬롯이 만든 기간 명세
         now: 기준 시각(요청 수신 시각). naive면 KST로 본다
+        subject: 해석 대상 — `metric`(성능 통계 · 기본) · `event`(알람 — D-291 예외)
 
     Raises:
-        TimeSpecError: 명세가 해석 불가(연도 추론 실패 · 존재하지 않는 날짜 등)
+        TimeSpecError: 명세가 해석 불가(연도 추론 실패 · 존재하지 않는 날짜 등) ·
+            연도를 명시한 기간이 통째로 미래(`future_explicit_period` — 되묻기 · D-291)
     """
     now = _to_kst(now)
+    event = _check_subject(subject) == "event"
     anchor_at = now
     if spec.anchor == "explicit":
         assert spec.abs_start is not None  # TimeSpec 검증이 보장
@@ -533,6 +586,13 @@ def resolve(spec: TimeSpec, now: datetime) -> TimeResolution:
             return TimeResolution(
                 start=None, end=None, grain=grain, completeness="complete", source=spec.source,
                 anchor_at=now, span=spec.span, unbounded=True,
+            )
+        if event:
+            base_event = default_resolution(now, subject="event")
+            return TimeResolution(
+                start=None, end=None, grain=_GRAIN_OF.get(spec.display_grain, "month"),
+                completeness="complete", source="default", anchor_at=now, span=spec.span,
+                unbounded=True, notes=base_event.notes,
             )
         base = default_resolution(now)
         assert base.end is not None
@@ -564,6 +624,12 @@ def resolve(spec: TimeSpec, now: datetime) -> TimeResolution:
         default = "to_date" if rel == "to_date" else _default_this_completeness(unit)
         completeness = spec.completeness or default
         start = _floor(anchor_at, unit)
+        if event:
+            # 사건 예외(D-291): 진행 중 기간은 기준 시각까지 — 완결 월·어제까지 절단은 통계 사정이다
+            completeness = "to_date"
+            end = max(anchor_at.replace(microsecond=0), start)
+            notes.append(NOTE_EVENT_TO_NOW)
+            return _finish(spec, start, end, completeness, "hour", notes, now, anchor_at)
         if completeness == "complete":
             end = _this_complete_end(anchor_at, unit)
             if unit in ("year", "half", "quarter"):
@@ -588,10 +654,11 @@ def resolve(spec: TimeSpec, now: datetime) -> TimeResolution:
         cap = _UNIT_GRAIN[unit]
     elif rel == "absolute":
         assert spec.abs_start is not None
-        return _resolve_absolute(spec, now)
+        return _resolve_absolute(spec, now, subject=subject)
     elif rel == "between":
         assert spec.abs_start is not None and spec.abs_end is not None
         start, end, inferred = _between_bounds(spec.abs_start, spec.abs_end, now)
+        _reject_future_explicit(start, now, spec.abs_start, spec.abs_end)
         completeness = spec.completeness or "complete"
         cap = _finer(_UNIT_GRAIN[spec.abs_start.precision], _UNIT_GRAIN[spec.abs_end.precision])
         if inferred:
@@ -603,6 +670,7 @@ def resolve(spec: TimeSpec, now: datetime) -> TimeResolution:
     elif rel == "since":
         assert spec.abs_start is not None
         start, inferred = _partial_start(spec.abs_start, now)
+        _reject_future_explicit(start, now, spec.abs_start)
         completeness = spec.completeness or "to_date"
         precision = spec.abs_start.precision
         end = _floor(now, "hour") if precision == "hour" else _floor(now, "day")
@@ -648,7 +716,9 @@ def _finish(
     )
 
 
-def _resolve_absolute(spec: TimeSpec, now: datetime) -> TimeResolution:
+def _resolve_absolute(
+    spec: TimeSpec, now: datetime, *, subject: Subject = "metric"
+) -> TimeResolution:
     """달력 기간 하나(2026년 6월 · 3분기 · 상반기 · 9월 15일 · 2025년).
 
     진행 중이면(시작 ≤ 기준 시각 < 끝) 같은 단위의 `this`와 같게 자른다 — 월 → 「이번 달」
@@ -660,14 +730,15 @@ def _resolve_absolute(spec: TimeSpec, now: datetime) -> TimeResolution:
     start, inferred = _partial_start(spec.abs_start, now)
     start = _floor(start, unit)
     end = _shift(start, unit, 1)
+    _reject_future_explicit(start, now, spec.abs_start)
     notes: list[str] = [NOTE_YEAR_INFERRED] if inferred else []
-    if start <= now < end and unit != "half":
+    if start <= now < end and (unit != "half" or subject == "event"):
         clipped = TimeSpec(
             relation="this", unit=unit,
             display_grain=spec.display_grain, span=spec.span, span_pos=spec.span_pos,
             source=spec.source, completeness=spec.completeness,
         )
-        res = resolve(clipped, now)
+        res = resolve(clipped, now, subject=subject)
         return TimeResolution(
             start=res.start, end=res.end, grain=res.grain, completeness=res.completeness,
             source=res.source, anchor_at=res.anchor_at, span=res.span,
@@ -795,10 +866,10 @@ def relative_window(
 __all__ = [
     "ANCHORS", "COMPLETENESS", "DISPLAY_GRAINS", "GRAINS", "KST", "N_MAX",
     "NOTE_CURRENT_MONTH_EXCLUDED", "NOTE_DEFAULT_PERIOD", "NOTE_DISPLAY_GRAIN_UNALIGNED",
-    "NOTE_EMPTY_RANGE", "NOTE_FUTURE_PERIOD", "NOTE_MULTIPLE_PERIODS",
-    "NOTE_PERIOD_IN_PROGRESS", "NOTE_YEAR_INFERRED", "RELATIONS", "RELATIVE_WINDOW_KINDS",
-    "SOURCES", "UNITS",
+    "NOTE_EMPTY_RANGE", "NOTE_EVENT_NO_DEFAULT", "NOTE_EVENT_TO_NOW", "NOTE_FUTURE_PERIOD",
+    "NOTE_MULTIPLE_PERIODS", "NOTE_PERIOD_IN_PROGRESS", "NOTE_YEAR_INFERRED", "RELATIONS",
+    "RELATIVE_WINDOW_KINDS", "SOURCES", "SUBJECTS", "UNITS",
     "Anchor", "Completeness", "DisplayGrain", "Grain", "PartialDate", "Relation", "Source",
-    "TimeResolution", "TimeSpec", "TimeSpecError", "Unit",
+    "Subject", "TimeResolution", "TimeSpec", "TimeSpecError", "Unit",
     "cover", "default_resolution", "relative_window", "resolve", "window_around",
 ]

@@ -147,9 +147,14 @@ class TestResolveRelations:
         res = resolve(spec, NOW)
         assert (res.start, res.end) == (kst(2025, 11, 1), kst(2026, 3, 1))
 
-    def test_since_future_start_is_empty(self) -> None:
-        res = resolve(TimeSpec("since", abs_start=PartialDate(2027, 1)), NOW)
-        assert res.is_empty and NOTE_FUTURE_PERIOD in res.notes
+    def test_since_future_explicit_year_is_clarified(self) -> None:
+        """연도를 명시한 미래 시작은 되묻기(2026-09-30 사용자 확정 · D-291).
+
+        종전은 빈 구간 + 미래 고지였다.
+        """
+        with pytest.raises(TimeSpecError) as exc:
+            resolve(TimeSpec("since", abs_start=PartialDate(2027, 1)), NOW)
+        assert exc.value.code == "future_explicit_period"
 
     def test_yearless_leap_day_goes_back_to_leap_year(self) -> None:
         """연도 미상 「2월 29일」을 평년에 물으면 가장 최근 윤년(2024)이다."""
@@ -298,3 +303,40 @@ class TestRelativeWindow:
 def test_empty_range_note_on_first_of_month() -> None:
     res = resolve(TimeSpec("this", unit="month"), kst(2026, 9, 1, 10))
     assert res.is_empty and NOTE_EMPTY_RANGE in res.notes and res.grain == "day"
+
+
+class TestEventSubjectAndClarify:
+    """2026-09-30 사용자 확정(D-291) — 알람 경로 예외 · 연도 명시 미래 되묻기(정책 표 §10.3.1)."""
+
+    def test_event_default_is_unbounded(self) -> None:
+        res = default_resolution(NOW, subject="event")
+        assert res.unbounded and res.source == "default"
+        assert "event_no_default_period" in res.notes
+
+    def test_metric_default_is_unchanged(self) -> None:
+        res = default_resolution(NOW)
+        assert (res.start, res.end, res.grain) == (kst(2026, 8, 1), kst(2026, 9, 1), "month")
+
+    def test_event_this_month_runs_to_anchor(self) -> None:
+        res = resolve(TimeSpec("this", unit="month"), kst(2026, 9, 29, 10, 37), subject="event")
+        assert (res.start, res.end, res.completeness) == (kst(2026, 9, 1), kst(2026, 9, 29, 10, 37),
+                                                          "to_date")
+        assert "event_to_now" in res.notes
+
+    def test_invalid_subject_is_rejected(self) -> None:
+        with pytest.raises(TimeSpecError) as exc:
+            resolve(TimeSpec("this", unit="month"), NOW, subject="stat")  # type: ignore[arg-type]
+        assert exc.value.code == "invalid_subject"
+
+    def test_future_explicit_absolute_and_between(self) -> None:
+        for spec in (TimeSpec("absolute", abs_start=PartialDate(2027, 3)),
+                     TimeSpec("between", abs_start=PartialDate(2027, 1),
+                              abs_end=PartialDate(2027, 3))):
+            with pytest.raises(TimeSpecError) as exc:
+                resolve(spec, NOW)
+            assert exc.value.code == "future_explicit_period"
+
+    def test_yearless_month_is_never_future(self) -> None:
+        """연도 없는 월은 「미래가 아닌 가장 최근」이라 되묻지 않는다(D-185 유지)."""
+        res = resolve(TimeSpec("absolute", abs_start=PartialDate(month=12)), NOW)
+        assert (res.start, res.end) == (kst(2025, 12, 1), kst(2026, 1, 1))

@@ -1041,6 +1041,76 @@ class TestAlarmHistoryAssembly:
             assert check_active_status_literal_filter(sql) == []
 
 
+class TestAlarmListNineColumnView:
+    """알람 목록 조립 = 표준 알람 뷰 9열(2026-09-30 사용자 확정 「9열이 정답」 · D-291 · D-01).
+
+    정본은 `config/knowledge/_base/catalog.yaml` `pattern_c.default_dimensions`(9개). 조립 별칭은
+    같은 개념의 기존 이름을 유지한다(severity = severity_grade 코드 · alarm_time = occurred_at ·
+    description = CONDITIONLOGTEXT) — 다중 DB 순위 재정렬 키(`alarm_time`)와 CSV 열 연속성.
+    """
+
+    NINE = ["alarm_id", "severity", "description", "alarm_time", "server_name",
+            "hostname", "ipaddress", "resource_name", "alarm_name"]
+
+    def _spec(self, q):
+        from src.db_adapters.polestar.assembler import recognize_active_alarm_query
+        return recognize_active_alarm_query(q)
+
+    @staticmethod
+    def _out_columns(sql):
+        """SELECT 목록의 출력 이름 — 괄호 안 쉼표(COALESCE 인자)는 가르지 않는다."""
+        import re as _re
+        select_list = sql.split(" FROM ")[0].replace("SELECT", "", 1)
+        items, depth, cur = [], 0, ""
+        for ch in select_list:
+            depth += ch == "("
+            depth -= ch == ")"
+            if ch == "," and depth == 0:
+                items.append(cur)
+                cur = ""
+            else:
+                cur += ch
+        items.append(cur)
+        names = []
+        for item in (i.strip() for i in items):
+            m = _re.search(r"AS (\w+)$", item)
+            names.append(m.group(1) if m else item.split(".")[-1])
+        return names
+
+    def _both(self, engine, schema):
+        from src.db_adapters.polestar.assembler import (
+            build_active_alarm_sql,
+            build_alarm_history_sql,
+        )
+        active = build_active_alarm_sql(
+            self._spec("현재 활성 심각 알람 목록"), db_engine=engine, db_schema=schema, limit=10)
+        history = build_alarm_history_sql(
+            self._spec("최근 3개월 심각 알람 이력"), db_engine=engine, db_schema=schema, limit=10)
+        return active, history
+
+    def test_list_columns_are_the_nine_view(self):
+        for engine, schema in (("postgresql", "polestar"), ("db2", "POLESTAR")):
+            for sql in self._both(engine, schema):
+                assert self._out_columns(sql) == self.NINE, (engine, sql)
+                assert "ack_status" not in sql
+
+    def test_alarm_name_comes_from_definition_left_join(self):
+        """정의가 없는 알람 행을 떨어뜨리지 않는다 — LEFT JOIN."""
+        active, history = self._both("db2", "POLESTAR")
+        for sql in (active, history):
+            assert "LEFT JOIN POLESTAR.cmm_alarm_def d ON a.definition_id = d.id" in sql
+            assert "res.name AS resource_name" in sql and "d.name AS alarm_name" in sql
+
+    def test_list_sql_passes_all_registered_validators(self):
+        """목록 조립 SQL도 등록 검증기 전체를 통과한다(조립·검증 자기모순 방지 — 그룹 조립 선례)."""
+        from src.db_adapters import get_adapter
+        checks = get_adapter("polestar", {"polestar"}).validator_checks()
+        for engine, schema in (("postgresql", "polestar"), ("db2", "POLESTAR")):
+            for sql in self._both(engine, schema):
+                for check in checks:
+                    assert check(sql) == [], f"{engine}: {check.__name__}"
+
+
 class TestAlarmAssemblyCoverageGuard:
     """커버리지 밖 신호 가드 (D-202) — 조립기가 표현 못 하는 의도는 조립하지 않는다.
 

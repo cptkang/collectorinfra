@@ -38,16 +38,16 @@ scenarios:
           status: completed
           sql_must_match: ["(?i)cmm_alarm_active", "(?i)alarmseverity\\s*=\\s*3",
                           "(?i)dtime\\s+is\\s+null"]
-          # plans/122 H-1(일부) — "9열 표준 알람 뷰"는 카탈로그 알람 패턴의 기본 차원 9개다
+          # plans/122 H-1 — "9열 표준 알람 뷰"는 카탈로그 알람 패턴의 기본 차원 9개다
           #   (`config/knowledge/_base/catalog.yaml` pattern_c.default_dimensions · 시맨틱 컴파일러 별칭
           #   `src/semantic/coverage.py` _ALARM_DIM_ALIAS): severity_grade · occurred_at · server_name ·
           #   ipaddress · hostname · resource_name · alarm_name · conditionlogtext · alarm_id.
-          #   그런데 이 시나리오가 도는 결정적 알람 조립(optin_alarm · `src/db_adapters/polestar/
-          #   assembler.py` 활성 알람 목록)은 **8열**이다: alarm_id · severity · ack_status · description ·
-          #   alarm_time · server_name · hostname · ipaddress — resource_name(CR.NAME)과
-          #   alarm_name(D.NAME, 알람 정의명)이 없다(세 run 의 실행 SQL 도 같다).
-          #   두 뷰가 공유하는 7개 개념만 별칭 목록으로 옮기고, 없는 두 열은 계약 확정(9열 vs 8열) 전까지
-          #   수동으로 남긴다 — 9열을 그대로 단언하면 이 경로에서는 영구 불합격이다.
+          #   2026-09-30 사용자 확정 「9열이 정답(조립 SQL 수정)」(D-291): 이 시나리오가 도는 결정적 알람 조립
+          #   (optin_alarm · `src/db_adapters/polestar/assembler.py` 활성 알람 목록)에 resource_name(CR.NAME)과
+          #   alarm_name(알람 정의명 — cmm_alarm_def LEFT JOIN)을 더하고 9열 밖 ack_status 를 뺐다. 같은 개념의
+          #   기존 이름(severity · alarm_time · description)은 별칭 목록으로 받는다.
+          #   종전 수동 문구: "9열 표준 알람 뷰 중 resource_name(자원명)·alarm_name(알람 정의명) 2열 — 결정적 알람
+          #   조립(optin_alarm)은 8열이라 없다. 계약(9열 vs 8열) 확정 전 수동"
           result:
             columns:
               - [alarm_id]
@@ -56,8 +56,9 @@ scenarios:
               - [server_name]
               - [ipaddress, ip_address]
               - [hostname, host_name]
+              - [resource_name]
+              - [alarm_name]
               - [conditionlogtext, description]
-          manual_review: "9열 표준 알람 뷰 중 resource_name(자원명)·alarm_name(알람 정의명) 2열 — 결정적 알람 조립(optin_alarm)은 8열이라 없다. 계약(9열 vs 8열) 확정 전 수동"
   - id: D-02
     plans: [44, 45]
     title: "경고 이상 알람 이력을 최근 발생 순으로 100건 조회해줘"
@@ -138,7 +139,9 @@ scenarios:
           #   그리고 **"임계값/사용률"은 유형어를 동반하면 의미 잉여다 — 폴스타 알람 자체가
           #   임계 이벤트이기 때문이다.** 즉 "CPU 임계값 초과 알람" = "CPU 알람"이고
           #   cmm_alarm_def 조인은 필요 없다. 제품이 옳고 단언이 틀렸다.
-          sql_must_match: ["(?i)resource_type", "(?i)server\\.Cpus"]
+          # plans/131 연결(2026-09-30): `\bcmm_alarm` — 3단이 알람 대신 `cmm_metric_stat_d` 로 답한 SQL 이
+          #   `resource_type`·`server.Cpus` 만으로는 통과했다(거짓 합격 위험 · D-03 U-6 선례 · plans/103 T3-10).
+          sql_must_match: ["(?i)resource_type", "(?i)server\\.Cpus", "(?i)\\bcmm_alarm"]
           # 정의명 축으로 되돌아가면 D-202 4차를 조용히 뒤집는 것이다.
           sql_must_not_match: ["(?i)cmm_alarm_def\\.name", "(?i)d\\.name\\s+(?i:i?like)"]
           # plans/122 H-2: "이번 달"을 턴 송신 시각 기준 창으로 본다(월 경계 ±1일 보류).

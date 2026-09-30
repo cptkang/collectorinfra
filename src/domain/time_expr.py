@@ -9,6 +9,10 @@
   (source=llm)으로 바꾼다. 스팬이 원문에 없으면 폐기한다(환각 기간 차단)
 - `interpret(text, now)` — 규칙만으로 원문 → `TimeResolution`(골드 채점 · 섀도 비교용 합성).
   기간 표현 흔적이 있는데 규칙이 못 잡으면 None(LLM 슬롯 또는 되묻기 대상 — 침묵 기본값 금지)
+- `interpret_detail(text, now)` — 같은 해석 + **되묻기 사유 코드**(D-291):
+  `invalid_date`(존재하지 않는 월·날짜) · `future_explicit`(연도를 명시한 미래 기간) ·
+  `future_relative`(「내년」 등 규칙이 못 잡은
+  미래 어휘) · `unresolved`(그 밖의 못 잡은 기간 흔적) · `invalid_spec`(해석기가 거부한 명세)
 
 규칙 설계 — 기존 정규식(`src/utils/query_gen_common.py` D-185 · D-102)의 오탐 차단을 지킨다:
 
@@ -44,6 +48,7 @@ from src.domain.time_spec import (
     DisplayGrain,
     PartialDate,
     Relation,
+    Subject,
     TimeResolution,
     TimeSpec,
     TimeSpecError,
@@ -370,23 +375,42 @@ def _overlaps(claimed: list[tuple[int, int]], start: int, end: int) -> bool:
     return any(start < e and s < end for s, e in claimed)
 
 
+#: 값 범위 밖이라 **존재하지 않는** 날짜 표현의 명세 거부 코드(「13월」 · 「2월 30일」 ·
+#: 윤년 아닌 해의
+#: 「2월 29일」). 이 스팬은 채택된 것처럼 막아 후순위 규칙이 안쪽 「2월」만 떼어 가지 못하게 하고
+#: 되묻기 사유 `invalid_date`로 올린다(D-291 — 종전에는 「2월 30일」이 조용히 2월 한 달이 됐다).
+_INVALID_VALUE_CODES: frozenset[str] = frozenset(
+    {"month_out_of_range", "day_out_of_range", "hour_out_of_range", "year_out_of_range"}
+)
+
+
 def recognize(text: str) -> list[TimeSpec]:
     """원문에서 시간 표현을 찾아 `TimeSpec` 목록(source=rule · 원문 위치 순)을 돌려준다.
 
     기간(relation != none) 외에 입도 표현(「시간 단위」 — relation=none · display_grain)과
     「~한 적이 있는」(relation=none · unbounded)도 따로 돌려준다. 합치는 것은 `interpret`의 몫이다.
-    값이 범위를 벗어난 표현(「13월」)은 명세를 만들지 않는다 — `interpret`가 흔적으로 본다.
+    값이 범위를 벗어난 표현(「13월」)은 명세를 만들지 않는다 — `interpret_detail`이
+    `invalid_date`로 본다.
     """
+    return recognize_detail(text)[0]
+
+
+def recognize_detail(text: str) -> tuple[list[TimeSpec], list[tuple[int, int, str]]]:
+    """`recognize` + 존재하지 않는 날짜 표현의 스팬 목록 `[(시작, 끝, 거부 코드)]`."""
     claimed: list[tuple[int, int]] = []
     found: list[TimeSpec] = []
+    invalid: list[tuple[int, int, str]] = []
     for rule in _RULES:
         for m in rule.pattern.finditer(text):
             if _overlaps(claimed, m.start(), m.end()):
                 continue
             try:
                 built = rule.build(m, text)
-            except TimeSpecError:
-                continue  # 값 범위 밖(13월 · 2월 30일 등) — 흔적으로 남긴다
+            except TimeSpecError as exc:
+                if exc.code in _INVALID_VALUE_CODES:
+                    claimed.append((m.start(), m.end()))
+                    invalid.append((m.start(), m.end(), exc.code))
+                continue  # 그 밖의 거부는 종전대로 흔적으로 남긴다
             if built is None:
                 continue
             spec, end = built
@@ -395,7 +419,7 @@ def recognize(text: str) -> list[TimeSpec]:
             claimed.append((m.start(), end))
             found.append(replace(spec, span=text[m.start():end], span_pos=(m.start(), end)))
     found.sort(key=lambda s: s.span_pos[0] if s.span_pos else -1)
-    return found
+    return found, invalid
 
 
 # ──────────────────────────────────────────────
@@ -413,6 +437,41 @@ _TRACE_RE = re.compile(
 )
 
 
+# 규칙이 못 잡은 **미래** 어휘(`_TRACE_RE`의 미래 부분). 기간 표현이 따로 잡혀도 남아 있으면
+# 되묻는다 — 「내년 3월」이 「3월」만 잡혀 조용히 올해 3월이 되던 것(D-291 · 미래 기간 = 되묻기).
+_FUTURE_TRACE_RE = re.compile(
+    r"내일|모레|다음\s*(?:달|주|분기|해)|내년|익월|차주|(?:다다음)\s*(?:달|월|주|분기|해|년)"
+)
+
+#: 되묻기 사유 코드(`interpret_detail` · D-291).
+CLARIFY_INVALID_DATE = "invalid_date"
+CLARIFY_FUTURE_EXPLICIT = "future_explicit"
+CLARIFY_FUTURE_RELATIVE = "future_relative"
+CLARIFY_UNRESOLVED = "unresolved"
+CLARIFY_INVALID_SPEC = "invalid_spec"
+CLARIFY_CODES: frozenset[str] = frozenset({
+    CLARIFY_INVALID_DATE, CLARIFY_FUTURE_EXPLICIT, CLARIFY_FUTURE_RELATIVE,
+    CLARIFY_UNRESOLVED, CLARIFY_INVALID_SPEC,
+})
+
+
+@dataclass(frozen=True)
+class Interpretation:
+    """`interpret_detail` 결과 — 해석(또는 None)과 되묻기 사유 코드(해석되면 None)."""
+
+    resolution: TimeResolution | None
+    clarify: str | None = None
+
+
+def _masked(text: str, specs: list[TimeSpec]) -> str:
+    chars = list(text)
+    for spec in specs:
+        if spec.span_pos:
+            s, e = spec.span_pos
+            chars[s:e] = " " * (e - s)
+    return "".join(chars)
+
+
 def _residual_trace(text: str, specs: list[TimeSpec]) -> str | None:
     """인식된 스팬을 가린 원문에 남은 기간 표현 흔적(없으면 None)."""
     chars = list(text)
@@ -424,7 +483,7 @@ def _residual_trace(text: str, specs: list[TimeSpec]) -> str | None:
     return m.group(0) if m else None
 
 
-def interpret(text: str, now: datetime) -> TimeResolution | None:
+def interpret(text: str, now: datetime, *, subject: Subject = "metric") -> TimeResolution | None:
     """규칙만으로 원문을 해석한다(골드 채점 · 섀도 비교용 — plans/122 T-0·T-4).
 
     - 기간 표현이 하나면 그것, 여럿이면(비교 질의) 모두를 덮는 구간(`cover`)
@@ -434,33 +493,52 @@ def interpret(text: str, now: datetime) -> TimeResolution | None:
       되묻기 대상이다(§10.3 「해석 불가」 · 침묵 기본값 금지)
     - 그 밖에는 기본값(직전 완결 월 · source=default · 고지 대상)
     - 해석기가 명세를 거부하면(존재하지 않는 날짜 등) None — 해석 불가와 같게 다룬다
+    - 연도를 명시한 미래 기간 · 존재하지 않는 월·날짜 · 「내년」 같은 미래 어휘도 None
+      (되묻기 · D-291)
+    - `subject="event"`(알람)는 사건 예외를 쓴다(`time_spec` 머리말 · D-291)
     """
+    return interpret_detail(text, now, subject=subject).resolution
+
+
+def interpret_detail(text: str, now: datetime, *, subject: Subject = "metric") -> Interpretation:
+    """`interpret` + 되묻기 사유 코드(`CLARIFY_*`) — 호출부가 되묻기 문구를 고른다."""
     try:
-        return _interpret(text, now)
-    except TimeSpecError:
-        return None
+        return _interpret(text, now, subject)
+    except TimeSpecError as exc:
+        code = (CLARIFY_FUTURE_EXPLICIT if exc.code == "future_explicit_period"
+                else CLARIFY_INVALID_DATE if exc.code in _INVALID_VALUE_CODES
+                else CLARIFY_INVALID_SPEC)
+        return Interpretation(None, code)
 
 
-def _interpret(text: str, now: datetime) -> TimeResolution | None:
-    specs = recognize(text)
+def _interpret(text: str, now: datetime, subject: Subject) -> Interpretation:
+    specs, invalid = recognize_detail(text)
+    if invalid:
+        return Interpretation(None, CLARIFY_INVALID_DATE)
     periods = [s for s in specs if s.relation != "none"]
     grains = [s.display_grain for s in specs if s.display_grain != "none"]
     # 입도 표현이 여럿이면 가장 세밀한 것(시 > 일 > 월)
     display: DisplayGrain = (
         min(grains, key=lambda g: {"hour": 0, "day": 1, "month": 2}[g]) if grains else "none"
     )
+    if _FUTURE_TRACE_RE.search(_masked(text, specs)):
+        return Interpretation(None, CLARIFY_FUTURE_RELATIVE)
     if not periods:
         if _residual_trace(text, specs):
-            return None
+            return Interpretation(None, CLARIFY_UNRESOLVED)
         unbounded = next((s for s in specs if s.unbounded), None)
         if unbounded is not None:
-            return resolve(replace(unbounded, display_grain=display), now)
+            return Interpretation(
+                resolve(replace(unbounded, display_grain=display), now, subject=subject))
         grain_spec = next((s for s in specs if s.display_grain != "none"), None)
         if grain_spec is not None:
-            return resolve(replace(grain_spec, display_grain=display), now)
-        return default_resolution(now)
-    resolved = [resolve(replace(p, display_grain=display), now) for p in periods]
-    return cover(resolved)
+            return Interpretation(
+                resolve(replace(grain_spec, display_grain=display), now, subject=subject))
+        return Interpretation(default_resolution(now, subject=subject))
+    resolved = [
+        resolve(replace(p, display_grain=display), now, subject=subject) for p in periods
+    ]
+    return Interpretation(cover(resolved))
 
 
 # ──────────────────────────────────────────────
@@ -611,4 +689,8 @@ def slot_to_spec(slot: Any, text: str) -> tuple[TimeSpec | None, str | None]:
     return spec, None
 
 
-__all__ = ["SLOT_KEYS", "interpret", "recognize", "slot_to_spec"]
+__all__ = [
+    "CLARIFY_CODES", "CLARIFY_FUTURE_EXPLICIT", "CLARIFY_FUTURE_RELATIVE", "CLARIFY_INVALID_DATE",
+    "CLARIFY_INVALID_SPEC", "CLARIFY_UNRESOLVED", "SLOT_KEYS", "Interpretation", "interpret",
+    "interpret_detail", "recognize", "recognize_detail", "slot_to_spec",
+]

@@ -146,6 +146,7 @@ DISCLOSURE_KIND_GRADES: dict[str, str] = {
         "structure_missing", "descriptions_missing",
         "default_period", "current_month_excluded", "empty_range", "period_in_progress",
         "future_period", "display_grain_unaligned", "year_inferred", "multiple_periods",
+        "event_no_default_period", "event_to_now",
     )},
 }
 # 불변식(plans/123 V-4) — 이름 → 활성화를 좌우하는 소유 제품 항목. 판정기(`invariants.py`)가 모든

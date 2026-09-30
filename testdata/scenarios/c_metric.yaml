@@ -212,24 +212,26 @@ scenarios:
           manual_review: "서브쿼리 또는 CTE 가 전체 평균을 계산하는지"
   - id: C-12
     plans: [61, 69]
-    title: "지금 CPU 사용률 높은 서버 알려줘"
+    title: "지금 CPU 사용률 높은 서버 알려줘 — 실시간 사용률 off"
     kind: normal
     env: closed
-    profile: baseline
+    profile: optout_realtime
     endpoint: stream
     turns:
       - send:
           query: "지금 CPU 사용률 높은 서버 알려줘"
         expect:
-          # plans/122 K-2(G-3 · D-220 ③ 선례): on 쪽(실시간 REST)은 C-12b(`optin_realtime`)로 갈랐다.
-          #   off 쪽은 baseline 으로 고정되지 않아 수동으로 남긴다 — baseline 은 운영 .env 를 그대로 쓰는데
-          #   폐쇄망 실효값이 POLESTAR_REST_REALTIME_USAGE_ENABLED=true 다(run 20260922-093837 ·
-          #   20260923-103638 · 20260923-140539 run.json profiles[].effective_settings). 실제로 세 run 의
-          #   2단 baseline 이 전부 실시간 REST(`[REALTIME-API] measurement`)로 답했다. off 고정 프로파일이
-          #   생기면 통계 테이블 단언으로 옮긴다.
-          #   종전 문구: "플래그 의존 - off 면 통계 테이블, on 이면 실시간 REST. 설정에 따라 정답이 갈려
-          #   기계 판정하지 않는다"
-          manual_review: "플래그 off 쪽(통계 테이블) - baseline 은 운영 .env 값이라 off 가 고정되지 않는다(폐쇄망 실효값 true). off 고정 프로파일 전까지 수동. on 쪽은 C-12b"
+          # plans/122 K-2(G-3 · D-220 ③ 선례): on 쪽(실시간 REST)은 C-12b(`optin_realtime`). 이 시나리오는
+          #   off 고정 프로파일 `optout_realtime`(2026-09-30 사용자 확정 · D-291)로 돈다 — 기준 프로파일은 운영
+          #   .env 그대로라 폐쇄망 실효값(POLESTAR_REST_REALTIME_USAGE_ENABLED=true)에서 off 가 고정되지 않았다.
+          #   off 면 실시간 분기(`src/orchestration/subagents.py` realtime_usage_enabled)를 타지 않고 통계
+          #   테이블 SQL 로 답한다 — 실시간 측정 표지(`[REALTIME-API] measurement` · `src/nodes/realtime_usage.py`)가
+          #   없어야 한다. D-289(10건 제한) 제외 ⓒ(정답이 대량 목록이 아님)라 질의는 그대로다.
+          #   종전 수동 문구: "플래그 off 쪽(통계 테이블) - baseline 은 운영 .env 값이라 off 가 고정되지 않는다
+          #   (폐쇄망 실효값 true). off 고정 프로파일 전까지 수동. on 쪽은 C-12b"
+          status: completed
+          sql_must_match: ["(?i)\\bcmm_metric_stat_[hdm]\\b"]
+          sql_must_not_match: ["(?i)\\[REALTIME-API\\]"]
   # plans/122 K-2(G-3 · D-220 ③ 선례) — C-12 의 on 쪽. 실시간 사용률 분기는 2단 data_query 처리기에만
   #   있다(`src/orchestration/subagents.py` realtime_usage_enabled 분기 · 의도 판정은 원문 결정적 규칙
   #   `is_realtime_usage_query` — "지금" + 사용률). 성공하면 SQL 파이프라인을 건너뛰고 감사에

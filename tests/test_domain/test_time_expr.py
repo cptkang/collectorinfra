@@ -266,3 +266,37 @@ class TestSlotToSpec:
         spec, reason = slot_to_spec(
             _slot(relation="last", n=24, unit="month", span="지난 2년"), "지난 2년 CPU")
         assert reason is None and spec is not None
+
+
+class TestInterpretDetail:
+    """되묻기 사유 코드(D-291) — 호출부가 되묻기 문구를 고를 수 있게 사유를 가른다."""
+
+    NOW = datetime(2026, 9, 29, 10, 0, tzinfo=KST)
+
+    @pytest.mark.parametrize("text, code", [
+        ("13월 CPU 사용률", "invalid_date"),
+        ("2월 30일 알람", "invalid_date"),
+        ("2027년 3월 CPU", "future_explicit"),
+        ("내년 3월 CPU", "future_relative"),
+        ("3일 전 알람", "unresolved"),
+    ])
+    def test_clarify_codes(self, text: str, code: str) -> None:
+        from src.domain.time_expr import interpret_detail
+
+        detail = interpret_detail(text, self.NOW)
+        assert detail.resolution is None and detail.clarify == code
+
+    def test_invalid_date_span_is_claimed(self) -> None:
+        """「2월 30일」 안의 「2월」을 후순위 규칙이 떼어 가지 않는다(종전 2월 한 달 오해석)."""
+        from src.domain.time_expr import recognize_detail
+
+        specs, invalid = recognize_detail("2월 30일 알람")
+        assert specs == [] and [code for _, _, code in invalid] == ["day_out_of_range"]
+        assert recognize("2월 30일 알람") == []
+
+    def test_resolved_has_no_clarify(self) -> None:
+        from src.domain.time_expr import interpret_detail
+
+        detail = interpret_detail("지난달 CPU", self.NOW)
+        assert detail.clarify is None and detail.resolution is not None
+        assert detail.resolution == interpret("지난달 CPU", self.NOW)

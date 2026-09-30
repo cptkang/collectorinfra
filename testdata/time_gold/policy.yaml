@@ -12,6 +12,9 @@
 #   {unbounded: true, grain}                   — 기간 조건 없음(「~한 적이 있는」)
 #   {unresolved: true}                         — 규칙 해석 불가 + 기간 흔적 있음 → LLM 슬롯·되묻기 대상
 #   {no_period: true}                          — 기간 표현 아님(오탐 차단) → 기본값(직전 완결 월)
+#   {clarify: <코드>}                          — 되묻기(2026-09-30 사용자 확정 · D-291) — interpret_detail 사유 코드
+#                                                future_explicit · future_relative · invalid_date · unresolved
+# subject: event                                — 알람 경로 예외(D-291): 기간 없음 = 조건 없음 · 진행 중 기간 = 기준 시각까지
 #
 # 「이번 달 미적재」(당월 행 없음)는 데이터 조건이라 해석기 입력이 아니다 — 해석기는 「매월 1일」
 # 기준 시각(m_first · q_first · leap_next)에서 빈 구간(empty_range)을 내는 것까지만 책임진다.
@@ -128,9 +131,9 @@ cases:
   - {id: P-044, anchor: base, query: "지난달 대비 이번 달 CPU", source: "비교 질의 — 덮는 구간(cover)",
      expect: {start: "2026-08-01", end: "2026-09-29", grain: day, completeness: to_date,
               notes: [multiple_periods]}}
-  - {id: P-045, anchor: base, query: "2030년 1월 알람 보여줘", source: "미래 절대 월(R3-06)",
-     expect: {start: "2030-01-01", end: "2030-02-01", grain: month, completeness: complete,
-              notes: [future_period]}}
+  - {id: P-045, anchor: base, query: "2030년 1월 알람 보여줘",
+     source: "미래 절대 월(R3-06) — 연도 명시 미래는 되묻기(D-291)",
+     expect: {clarify: future_explicit}}
   - {id: P-046, anchor: base, query: "지난 13월 CPU 사용률", source: "값 범위 밖(R3-05) — 되묻기",
      expect: {unresolved: true}}
   - {id: P-047, anchor: base, query: "3일 전 알람", source: "규칙 미커버(ago) — LLM 슬롯 대상",
@@ -370,3 +373,44 @@ cases:
      expect: {start: "2026-12-01", end: "2027-01-01", grain: month, completeness: complete}}
   - {id: P-709, anchor: new_year, query: "11월부터 2월까지 CPU", source: "끝 월(2월)이 미래 → 전년 기준",
      expect: {start: "2025-11-01", end: "2026-03-01", grain: month, completeness: complete}}
+  # ── 2026-09-30 사용자 확정(D-291) — 되묻기 · 알람 경로 예외 · 표 밖 규칙 11건 확정 행 ──────────
+  - {id: P-801, anchor: base, query: "2027년 3월 CPU 사용률", source: "연도를 명시한 미래 → 되묻기",
+     expect: {clarify: future_explicit}}
+  - {id: P-802, anchor: base, query: "2026년 12월 알람 보여줘", subject: event,
+     source: "연도 명시 미래(알람도 같다)", expect: {clarify: future_explicit}}
+  - {id: P-803, anchor: base, query: "2027년 CPU 평균", source: "연도 명시 미래 연",
+     expect: {clarify: future_explicit}}
+  - {id: P-804, anchor: base, query: "내년 3월 CPU", source: "미래 어휘가 남음 — 종전은 「3월」만 잡혀 올해 3월로 오해석",
+     expect: {clarify: future_relative}}
+  - {id: P-805, anchor: base, query: "13월 CPU 사용률", source: "존재하지 않는 월 → 되묻기",
+     expect: {clarify: invalid_date}}
+  - {id: P-806, anchor: base, query: "2월 30일 알람", subject: event,
+     source: "존재하지 않는 날짜 — 종전은 「2월」만 잡혀 2월 한 달로 오해석", expect: {clarify: invalid_date}}
+  - {id: P-807, anchor: base, query: "2026년 2월 29일 CPU", source: "윤년 아닌 해의 2월 29일",
+     expect: {clarify: invalid_date}}
+  - {id: P-808, anchor: base, query: "2026년 9월부터 12월까지 CPU",
+     source: "대조군 — 시작이 과거인 명시 기간은 되묻지 않는다(진행 중 고지)",
+     expect: {start: "2026-09-01", end: "2027-01-01", grain: month, completeness: complete,
+              notes: [period_in_progress]}}
+  - {id: P-811, anchor: base, query: "이번 달 CPU 임계 초과 알람", subject: event,
+     source: "알람 경로 예외 — 이번 달 = 기준 시각까지(D-05)",
+     expect: {start: "2026-09-01", end: "2026-09-29 10:00", grain: hour, completeness: to_date,
+              notes: [event_to_now]}}
+  - {id: P-812, anchor: base, query: "경고 이상 알람 이력을 최근 발생 순으로 100건 조회해줘", subject: event,
+     source: "알람 경로 예외 — 기간 없음 = 조건 없음(D-02)", expect: {unbounded: true, grain: month}}
+  - {id: P-813, anchor: base, query: "오늘 알람", subject: event, source: "알람 — 오늘 = 기준 시각까지",
+     expect: {start: "2026-09-29", end: "2026-09-29 10:00", grain: hour, completeness: to_date}}
+  - {id: P-814, anchor: base, query: "올해 알람 건수", subject: event,
+     source: "알람 — 올해 = 기준 시각까지(통계의 완결 월 절단 없음)",
+     expect: {start: "2026-01-01", end: "2026-09-29 10:00", grain: hour, completeness: to_date}}
+  - {id: P-815, anchor: base, query: "지난주 알람 보여줘", subject: event,
+     source: "대조군 — 완결 기간은 알람도 같다", expect: {start: "2026-09-21", end: "2026-09-28", grain: day,
+     completeness: complete}}
+  - {id: P-816, anchor: m_first, query: "이번 달 알람", subject: event,
+     source: "알람 — 매월 1일에도 빈 구간이 아니다(0시~기준 시각)",
+     expect: {start: "2026-09-01", end: "2026-09-01 10:00", grain: hour, completeness: to_date}}
+  - {id: P-817, anchor: base, query: "이번 달 CPU 사용률", source: "대조군 — 통계는 D-201 그대로(어제까지)",
+     expect: {start: "2026-09-01", end: "2026-09-29", grain: day, completeness: to_date}}
+  - {id: P-818, anchor: base, query: "CPU 사용률 상위 10개 서버", source: "대조군 — 통계 기간 없음은 직전 완결 월",
+     expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete,
+              notes: [default_period]}}

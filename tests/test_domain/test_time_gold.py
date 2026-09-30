@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 import yaml  # type: ignore[import-untyped]
 
-from src.domain.time_expr import interpret, recognize
+from src.domain.time_expr import CLARIFY_CODES, interpret, interpret_detail, recognize
 from src.domain.time_spec import KST
 from src.utils.query_gen_common import resolve_stat_month_range
 
@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 GOLD_DIR = ROOT / "testdata" / "time_gold"
 SCENARIO_DIR = ROOT / "testdata" / "scenarios"
 
-_EXPECT_KINDS = ("unbounded", "unresolved", "no_period", "out_of_scope", "ambiguous")
+_EXPECT_KINDS = ("unbounded", "unresolved", "no_period", "out_of_scope", "ambiguous", "clarify")
 
 
 def _ts(value: str | None) -> datetime | None:
@@ -69,6 +69,9 @@ def test_gold_schema() -> None:
         if cid.startswith("replay_"):
             assert case.get("log") and case.get("llm_time_range"), f"{cid}: 로그 출처 없음"
         expect = case["expect"]
+        assert case.get("subject", "metric") in ("metric", "event"), cid
+        if _kind(expect) == "clarify":
+            assert expect["clarify"] in CLARIFY_CODES, cid
         if _kind(expect) == "interval":
             assert {"end", "grain", "completeness"} <= set(expect), cid
             assert expect["grain"] in ("hour", "day", "month"), cid
@@ -84,9 +87,16 @@ def test_gold_case(cid: str, case: dict[str, Any], anchor: datetime) -> None:
     if kind == "out_of_scope":
         assert period_specs == [], f"{cid}: 「현재」류가 기간으로 해석됨 {period_specs}"
         return
-    res = interpret(query, anchor)
+    subject = case.get("subject", "metric")  # 알람 경로 예외(D-291)
+    detail = interpret_detail(query, anchor, subject=subject)
+    res = detail.resolution
     if kind == "unresolved":
         assert res is None, f"{cid}: 해석 불가여야 한다(되묻기 대상) — {res}"
+        return
+    if kind == "clarify":
+        # 되묻기 사유까지 맞아야 한다(D-291 — 연도 명시 미래 · 존재하지 않는 날짜 · 미래 어휘)
+        assert res is None and detail.clarify == expect["clarify"], (
+            f"{cid}: 되묻기 {expect['clarify']} 기대 — 실제 {detail.clarify} · {res}")
         return
     assert res is not None, f"{cid}: 해석 실패"
     if kind == "no_period":
@@ -124,7 +134,10 @@ def test_catalog_rule_coverage() -> None:
     ]
     missed = [cid for cid, case, _ in targets if not recognize(case["query"])]
     assert not missed, f"규칙 미매칭: {missed}"
-    assert len(targets) == 62  # 기간 57 + unbounded 5(기본값 · 해석 불가 · 모호 · 현재류 제외)
+    # 기간 56 + unbounded 5(기본값 · 해석 불가 · 모호 · 현재류 · 되묻기 제외)
+    # — C-067(R3-06 「2030년 1월」)은
+    # 2026-09-30 되묻기로 바뀌었다(연도 명시 미래 · D-291)
+    assert len(targets) == 61
 
 
 def _scenario_queries() -> dict[tuple[str, int], str]:
@@ -171,7 +184,6 @@ _KNOWN_MONTH_DIFFS: dict[str, str] = {
 # 현행이 월 범위를 내는데 새 해석은 월 경계에 맞지 않는 구간(월 투영 None) — 입도가 월이 아닌 행.
 _KNOWN_NON_MONTH: dict[str, str] = {
     "catalog:C-06#1": "이번 달 — 새 해석은 [1일, 오늘) 일 입도(D-201을 해석기가 직접 표현)",
-    "catalog:D-05#1": "이번 달(알람)",
     "catalog:R4-02#1": "이번 달",
     "policy:P-003": "이번 달",
     "policy:P-004": "당월",
@@ -184,6 +196,7 @@ _KNOWN_NON_MONTH: dict[str, str] = {
     "policy:P-313": "이번 달(매월 1일 — 빈 구간)",
     "policy:P-503": "이번 달(매월 1일 — 빈 구간)",
     "policy:P-601": "이번 달(매월 1일 — 빈 구간)",
+    "policy:P-817": "이번 달(D-291 대조군 — 통계는 D-201 그대로)",
 }
 
 
@@ -192,7 +205,9 @@ def _month_compat() -> tuple[dict[str, tuple[Any, Any]], dict[str, Any], list[st
     non_month: dict[str, Any] = {}
     current_none: list[str] = []
     for cid, case, anchor in SCORED:
-        if _kind(case["expect"]) != "interval":
+        if _kind(case["expect"]) != "interval" or case.get("subject") == "event":
+            # 월 투영 호환은 통계(metric) 해석만 본다 — 알람 예외(D-291)는 현행 월 해석과
+            # 대조 대상이 아니다
             continue
         res = interpret(case["query"], anchor)
         assert res is not None
@@ -217,5 +232,5 @@ def test_month_projection_compat_with_current_resolver() -> None:
     assert set(non_month) == set(_KNOWN_NON_MONTH), non_month
     # 현행 None(정규식 미매칭 → LLM 폴백 또는 기간 없음)은 새 규칙이 넓힌 범위다 — 건수만 고정한다
     # (반년 · 한글 수사 · 분기 · 연 · 연도 없는 단일 월 · 상대 연도+월 · N년 · N일 ·
-    #  기간 없음 기본값)
-    assert len(current_none) == 40, sorted(current_none)
+    #  기간 없음 기본값 — 2026-09-30 대조군 P-818 1건 추가)
+    assert len(current_none) == 41, sorted(current_none)

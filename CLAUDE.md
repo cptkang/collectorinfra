@@ -13,6 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | **장애 조사** | HolmesGPT 기반 조사 위임 | `sre_agent/` (별도 프로세스) |
 
 관측 데이터 읽기 경계는 `mcp_server/`(FastMCP)가 담당한다 — DB SQL 실행·폴스타 도구·PromQL.
+도메인 판정이나 별도 자격증명을 가진 관측 소스는 독립 게이트웨이 패키지로 둔다(D-274) — 제니퍼 APM은 `apm_gateway/`.
 
 규모(실측 2026-08-31): `src/` 약 68K LOC · `noise_gate/` 약 14K LOC · 테스트 360개 파일
 (`tests/` 263 · `noise_gate/tests/` 68 · `sre_agent/tests/` 20 · `mcp_server/tests/` 9).
@@ -30,6 +31,7 @@ src/            text2sql 파이프라인 · FastAPI 앱 조립 · 웹 UI(static)
 noise_gate/     알람 노이즈 게이트 (본체와 같은 프로세스) + alarm_server(독립 프로세스)
 sre_agent/      HolmesGPT 장애 조사 (별도 venv·별도 프로세스)
 mcp_server/     관측 데이터 읽기 MCP 서버 (자체 pyproject·별도 프로세스 — venv는 루트 공유)
+apm_gateway/    제니퍼 APM Open API 게이트웨이 — 읽기 전용 MCP 서버(`apm_*`)·이벤트 폴러 (자체 pyproject·별도 프로세스 — venv는 루트 공유 · D-274)
 config/         런타임 정본 YAML (DB 레지스트리·프로필·시맨틱 모델·지식·유사어 시드)
 docs/           설계·가이드·의사결정(02)·실수 이력(18)·사다리(21)
 plans/          영역별 구현 계획서 (INDEX.md가 전건 인덱스)
@@ -148,11 +150,15 @@ scripts/mlx_server.sh                    # .env 모델·포트로 기동(포그�
 # mcp_server/pyproject.toml에만 선언돼 있으므로 DB2 대상 기동 전 설치 여부를 확인할 것.
 cd mcp_server && python -m mcp_server
 
+# APM 게이트웨이 (제니퍼 · 별도 프로세스·별도 cwd · 루트 venv) — 설정은 apm_gateway/.env(.env.example 참고)
+cd apm_gateway && ../.venv/bin/python -m apm_gateway
+
 # 테스트
 pytest                                   # 본체 + noise_gate 자동 수집
 pytest tests/test_graph.py -v
 cd sre_agent && .venv/bin/python -m pytest tests -q   # 자체 venv 보유
 cd mcp_server && ../.venv/bin/python -m pytest       # 자체 venv 없음 — 루트 venv 사용
+cd apm_gateway && ../.venv/bin/python -m pytest -q    # 루트 수집 밖 · 자체 venv 없음 — 루트 venv 사용
 
 # 품질 게이트
 python scripts/arch_check.py --ci        # 계층 의존성 (스킬: /arch-check)
@@ -300,13 +306,16 @@ python -m agents.run --phase 1    # 요구사항 분석만
 | `noise_gate/` | 알람 노이즈 캔슬링·분석·통보 + TCP 수신부(`alarm_server/`) | 게이트·워커는 **본체와 같은 프로세스·같은 venv**, 수신부는 독립 프로세스 | `src/ → noise_gate` 의존 잔존(D-048 워커 in-process 기동). 역방향은 config/llm/utils/routing 최소 |
 | `sre_agent/` | HolmesGPT 장애 조사 | 별도 venv·별도 프로세스 | 양방향 import 0 (MCP 계약만) |
 | `mcp_server/` | 관측 데이터 읽기 경계 | 별도 프로세스·별도 cwd (**자체 venv 없음 — 루트 공유**) | 양방향 import 0 |
+| `apm_gateway/` | 제니퍼 APM 연동 — Open API GET 허용목록 조회·`apm_*` 8종·WAS 판정(`was_signals`)·이벤트 폴러(`alarm:raw` 생산) · 제니퍼 뷰 서버 N개(소스 — 소스↔존은 루트 레지스트리 `solutions[apm].sources` · D-287) | 별도 프로세스·별도 cwd (**자체 venv 없음 — 루트 공유** · 제니퍼가 있는 환경에만 배포) | 양방향 import 0 (MCP · `alarm:raw` 계약만 — `tests/test_boundary.py`) · 제니퍼 토큰은 여기에만(D-274 · D-195) |
 
 - **신규 기능은 소속 패키지 폴더에** 만들고, 본체 수정은 배선 최소로 한정한다.
 - `noise_gate`는 **평탄 레이아웃**(디렉토리 자체가 패키지) — 2단 중첩은 루트에서 import가
   해석되지 않아 editable 설치에 의존하게 된다(D-139 실측). `sre_agent`·`mcp_server`는 **자체
   `pyproject.toml`·자체 cwd**를 가져 2단 중첩을 유지한다(`sre_agent`는 자체 venv도 보유 —
-  본체 >=3.11 · holmesgpt 스택 >=3.13으로 요구 버전이 갈린다. `mcp_server`는 >=3.11로 같아
-  루트 venv를 공유한다).
+  본체 >=3.11 · holmesgpt 스택 >=3.13으로 요구 버전이 갈린다. `mcp_server`·`apm_gateway`는 >=3.11로 같아
+  루트 venv를 공유한다). `apm_gateway`는 2단 중첩이라 `arch_check.py`가 모듈 이름을 해석하지 못해
+  계층 방향을 자기 `tests/test_boundary.py`(AST)로 검사하고, `overfit_check.py`는 벤더 어댑터
+  `adapters/jennifer/`만 빼고 스캔한다(`plans/87` G-11).
 - 예외: `src/api/routes/alarm.py`는 알람 전용이지만 본체 앱 인증 계층에 묶여 `src/api/`에 남긴다
   (옮기면 `noise_gate → src.api` 역방향 결합 신설 — D-139 근거 참조)
 

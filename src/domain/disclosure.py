@@ -142,6 +142,8 @@ KIND_TABLE: dict[str, KindSpec] = {
                 "default_period", "current_month_excluded", "empty_range",
                 "period_in_progress", FUTURE_PERIOD, "display_grain_unaligned",
                 "year_inferred", "multiple_periods",
+                # 알람 경로 예외(`subject="event"` · D-291)
+                "event_no_default_period", "event_to_now",
             )
         ),
     )
