@@ -680,6 +680,7 @@ DB 전체를 한두 문단으로 설명하는 **DB 상세 설명**을 등록한�
 :::
 ::: caution
 - 알람 수신 권한 변경은 사용자가 알람 스트림에 다시 연결(새로고침)한 뒤 반영된다.
+- 제니퍼(APM) 알람의 존은 알람을 보낸 제니퍼 소스로 정해진다. 소스와 존의 대응은 `config/db_registry.yaml`의 `solutions[apm].sources[]`에 있다(은행존 제니퍼·레거시 제니퍼는 은행존, 공동존 제니퍼는 공동존). 표에 없는 소스와 게이트웨이를 소스 하나로 설정한 경우(알람 `db_id`가 `jennifer`)는 존이 없어 **알림그룹이 전 존인 사용자와 관리자만** 받는다.
 - 서버는 마지막 활성 관리자를 강등·비활성화·삭제하지 못하게 막는다(최소 1명 유지).
 - 변경은 관리 작업(`user_update`)으로 변경 전후 값과 함께 감사 로그에 남는다.
 :::
@@ -2710,7 +2711,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 | 강등 | LLM `is_routine=true`(일상 반복) | 실효 심각도 ≤ `NOISE_SUPPRESS_MAX_SEVERITY`(2) |
 | 강등 | LLM 액션가능성 `noise` | 위 조건 + `NOISE_ENABLE_LLM_ACTIONABILITY` |
 
-**9.5 앱 영향 승격 (matrix 안)** — `NOISE_APP_IMPACT_ENABLED`(false)와 `NOISE_APM_MCP_URL`이 있을 때만. 보조 조정까지 끝난 결과가 [[DASHBOARD|티어 DASHBOARD — 화면에만]]·[[TICKET|티어 TICKET — 요약 큐 + 화면]]인 폴스타 알람이면 APM 게이트웨이에 같은 hostname의 사건창(`NOISE_APP_IMPACT_WINDOW_MINUTES` 10분) 안 fatal 이벤트를 묻고, 한 건이라도 있으면 [[PAGE|티어 PAGE — 즉시 통보]]로 올린다. 올리기만 한다 — SUPPRESS(강등 결과 포함)는 되살리지 않고, 억제 단계와 심각도3 단락은 이 지점에 오지 않는다. 사유에 「앱 영향 승격: APM fatal N건」이 붙는다.
+**9.5 앱 영향 승격 (matrix 안)** — `NOISE_APP_IMPACT_ENABLED`(false)와 `NOISE_APM_MCP_URL`이 있을 때만. 보조 조정까지 끝난 결과가 [[DASHBOARD|티어 DASHBOARD — 화면에만]]·[[TICKET|티어 TICKET — 요약 큐 + 화면]]인 폴스타 알람이면 APM 게이트웨이에 같은 hostname의 사건창(`NOISE_APP_IMPACT_WINDOW_MINUTES` 10분) 안 fatal 이벤트를 묻고, 한 건이라도 있으면 [[PAGE|티어 PAGE — 즉시 통보]]로 올린다. 이때 알람과 같은 존의 제니퍼 소스에만 묻는다. 올리기만 한다 — SUPPRESS(강등 결과 포함)는 되살리지 않고, 억제 단계와 심각도3 단락은 이 지점에 오지 않는다. 사유에 「앱 영향 승격: APM fatal N건」이 붙는다.
 :::
 ::: how
 1. 결정 추적의 **판단 경로**에서 결과를 정한 단계를 찾고, 이 표의 같은 표시명 행에서 조건과 설정을 확인한다.
@@ -2868,9 +2869,10 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 ##### 9.5 앱 영향 승격 (`matrix` 안)
 - **켜는 키**: `NOISE_APP_IMPACT_ENABLED`(false) + `NOISE_APM_MCP_URL`(APM 게이트웨이 SSE 주소 · 인증 `NOISE_APM_MCP_TOKEN`). 켰는데 주소가 비면 워커 기동 로그에 경고가 남고 승격하지 않는다.
 - **보는 것**: 보조 조정 결과가 DASHBOARD·TICKET인 폴스타 알람만 게이트웨이 `apm_events`(hostname · 기준 시각 = 알람 발생 시각 · 창 `NOISE_APP_IMPACT_WINDOW_MINUTES` 10분 · 레벨 fatal)를 부른다. PAGE·SUPPRESS·억제 단계·심각도3·제니퍼 이벤트 자신은 부르지 않는다.
+- **묻는 소스**: 알람 DB의 존에 대응하는 제니퍼 소스만 묻는다(`config/db_registry.yaml` `solutions[apm].sources[]` — 은행존 알람은 은행존·레거시 제니퍼, 공동존 알람은 공동존 제니퍼). 다른 존에 같은 hostname이 있어도 그 이벤트로는 올리지 않는다. 존에 대응하는 소스가 없으면 모든 소스에 묻는다.
 - **결과**: fatal 이벤트가 한 건 이상이면 PAGE. 사유에 「앱 영향 승격: APM fatal N건」이 붙고, 노이즈 컨텍스트의 `app_impact`가 채워진다.
 - **근거**: `stage_evidence`에 `app_impact_fatal_events`·`app_impact_event_types`·`app_impact_was_signals`·`app_impact_source`.
-- **실패하면**: 게이트웨이 미가용(30초 동안 재시도 안 함)·타임아웃·오류 응답(`source_unavailable`·`instance_unresolved` 등)은 판정을 바꾸지 않고, 경고 로그와 `stage_evidence.app_impact_error`로 사유를 남긴다.
+- **실패하면**: 게이트웨이 미가용(30초 동안 재시도 안 함)·타임아웃·오류 응답(`source_unavailable`·`instance_unresolved` 등)은 판정을 바꾸지 않고, 경고 로그와 `stage_evidence.app_impact_error`로 사유를 남긴다. 게이트웨이가 모르는 소스라고 답하면(`invalid_argument` — 레지스트리의 소스 id와 게이트웨이 `JENNIFER_SOURCES`가 다름) 다른 소스로 다시 묻지 않고 같은 방식으로 사유만 남긴다. 두 설정의 소스 id를 맞춘다.
 
 #### 동작 원리
 판단 함수에 닿기 전 워커가 하는 일과, 판단 함수가 쓰는 입력·기록을 항목별로 적는다.

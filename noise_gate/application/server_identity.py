@@ -56,12 +56,20 @@ def zone_labels_for(db_id: str) -> tuple[str, str, str]:
     사이트 라벨은 그 DB를 **배타적으로** 지목하는 위치 표면어 중 하나다(김포/여의도/은행존).
     여러 후보가 있으면 "…존"으로 끝나는 표면어를 우선하고, 없으면 선언 순서 첫 항목을 쓴다
     (결정적). 미등록 db_id·레지스트리 로드 실패는 빈 문자열 3개(표시 생략).
+
+    DB 항목이 없으면 레지스트리 솔루션 소스(APM 알람 dbId `jennifer_<소스 id>`)의 존을 쓴다 —
+    사이트는 빈 값이다(소스에는 위치 표면어가 없다 · plans/87 J8 · D-287 ④).
     """
     try:
         from src.routing.registry import get_registry
 
         registry = get_registry()
         entry = registry.get(db_id)
+        if entry is None:
+            found = registry.alarm_source(db_id)
+            zone = found[1].zone if found else ""
+            labels = {z.code: z.label for z in registry.zones}
+            return zone, (labels.get(zone, "") if zone else ""), ""
         zone = (entry.zone if entry and entry.zone else "") or ""
         zone_label = next((z.label for z in registry.zones if z.code == zone), "") if zone else ""
         hints = tuple(registry.location_db_hints().get(db_id, ()))
@@ -104,23 +112,32 @@ def source_labels_for(db_id: str, zone_label: str = "", site_label: str = "") ->
 
 
 def is_apm_source(event: AlarmEvent) -> bool:
-    """APM 게이트웨이가 발행한 이벤트인지 — `dbId` 또는 원문 `source`가 게이트웨이 상수다."""
+    """APM 게이트웨이가 발행한 이벤트인지 — `dbId`(`jennifer` · 다중 소스 `jennifer_<소스 id>` —
+    plans/87 J8) 또는 원문 `source`가 게이트웨이 상수다."""
     raw = event.raw_payload if isinstance(event.raw_payload, dict) else {}
-    return event.db_id == _APM_SOURCE_ID or raw.get("source") == _APM_SOURCE_ID
+    db_id = event.db_id or ""
+    return (
+        db_id == _APM_SOURCE_ID
+        or db_id.startswith(_APM_SOURCE_ID + "_")
+        or raw.get("source") == _APM_SOURCE_ID
+    )
 
 
-def apm_source_labels(event: AlarmEvent) -> tuple[str, str]:
+def apm_source_labels(event: AlarmEvent, zone_label: str = "") -> tuple[str, str]:
     """APM 이벤트의 (소스 배지 라벨, 툴팁 상세) — 배지는 이벤트를 **보낸 소스**다.
 
     hostname 역조회(D-188)가 식별 정보를 채워도 배지는 바뀌지 않는다(역조회 출처는 `source`
     필드가 따로 말한다). 상세는 `source_labels_for`와 같은 모양 `"{라벨} — {위치}; {id}"`이고,
-    존·사이트 대신 원문 `apm.domain_name`(제니퍼 도메인)을 위치 자리에 쓴다. 도메인이 없으면
-    `"{라벨}; {id}"`.
+    위치 자리에는 소스 존 약칭(plans/87 J8 — `zone_labels_for`가 레지스트리 소스로 푼 존 라벨의
+    `(`/`—` 앞 토큰)과 원문 `apm.domain_name`(제니퍼 도메인)을 있는 것만 쓴다. 둘 다 없으면
+    `"{라벨}; {id}"`. 존 없는 소스(`jennifer` 단일 설정)는 종전과 같은 문자열이다.
     """
     raw = event.raw_payload if isinstance(event.raw_payload, dict) else {}
     apm = raw.get("apm") if isinstance(raw.get("apm"), dict) else {}
     domain = str(apm.get("domain_name") or "").strip()
-    head = " — ".join(p for p in (_APM_SOURCE_LABEL, domain) if p)
+    zone_short = (zone_label or "").split("(")[0].split("—")[0].strip()
+    where = " ".join(p for p in (zone_short, domain) if p)
+    head = " — ".join(p for p in (_APM_SOURCE_LABEL, where) if p)
     detail = "; ".join(p for p in (head, event.db_id or _APM_SOURCE_ID) if p)
     return _APM_SOURCE_LABEL, detail
 
@@ -192,7 +209,7 @@ async def attach_server_identity(
 
     zone, zone_label, site_label = zone_labels_for(event.db_id)
     if apm_source:
-        source_label, source_detail = apm_source_labels(event)
+        source_label, source_detail = apm_source_labels(event, zone_label)
     else:
         source_label, source_detail = source_labels_for(event.db_id, zone_label, site_label)
     identity = ServerIdentity(

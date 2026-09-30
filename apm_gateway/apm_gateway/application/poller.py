@@ -9,6 +9,10 @@ SPEC-apm-gateway §5).
   유실 방지 · 토큰 사용량은 실패 응답까지 센다(§0.10 #10). `contract_violation`은 폴러 버그이므로 그
   도메인 폴링을 멈춘다.
 - 상태는 `status()`로 드러낸다(`gateway_health`·기동 로그 — 침묵 금지).
+- 제니퍼 소스가 여럿이면(plans/87 J8 · D-287 ②) 소스 간은 병렬로, 소스 안은 도메인 순차로
+  폴링한다(속도 상한은 소스 클라이언트마다). 커서 키·멱등 키·백오프·중지는 (소스, 도메인)별이다 —
+  두 서버의 같은 도메인 id가 커서를 덮어쓰거나 같은 값 이벤트가 중복으로 버려지지 않게(S-6·S-7).
+  운영 발행 이력이 없어(§0.12) 종전 커서 키를 옮기지 않는다.
 """
 
 from __future__ import annotations
@@ -20,9 +24,10 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from apm_gateway.adapters.jennifer.api import SOURCE, SOURCE_LABEL, JenniferApi
+from apm_gateway.adapters.jennifer.api import SOURCE, SOURCE_LABEL
 from apm_gateway.application.masking import mask_text, mask_url
-from apm_gateway.application.resolver import InstanceResolver
+from apm_gateway.application.resolver import Inventory
+from apm_gateway.application.sources import JenniferSource, SourceSet
 from apm_gateway.config import GatewayConfig
 from apm_gateway.domain import signals as sig
 from apm_gateway.domain.errors import CONTRACT_VIOLATION, ApmError
@@ -33,26 +38,24 @@ logger = logging.getLogger(__name__)
 OVERLAP_MS = 60_000
 SEEN_TTL_SECONDS = 24 * 3600
 MAX_BACKOFF_FACTOR = 8
-_CURSOR_KEY = "apm_gateway:poller:cursor:{domain_id}"
+_CURSOR_KEY = "apm_gateway:poller:cursor:{source_id}:{domain_id}"
 _SEEN_KEY = "apm_gateway:poller:seen:{key}"
 
 
 class EventPoller:
     def __init__(
         self,
-        api: JenniferApi,
-        resolver: InstanceResolver,
+        sources: SourceSet,
         cfg: GatewayConfig,
         redis: Any,
         *,
         clock: Callable[[], float] = time.time,
     ) -> None:
-        self.api = api
-        self.resolver = resolver
+        self.sources = sources
         self.cfg = cfg
         self.redis = redis
         self.clock = clock
-        self._state: dict[int, dict[str, Any]] = {}
+        self._state: dict[tuple[str, int], dict[str, Any]] = {}
         self.published_total = 0
         self.duplicates_total = 0
 
@@ -64,8 +67,8 @@ class EventPoller:
             "published_total": self.published_total,
             "duplicates_total": self.duplicates_total,
             "domains": {
-                str(k): {kk: v for kk, v in st.items() if kk != "next_at"}
-                for k, st in self._state.items()
+                f"{sid}:{domain_id}": {kk: v for kk, v in st.items() if kk != "next_at"}
+                for (sid, domain_id), st in self._state.items()
             },
         }
 
@@ -87,39 +90,63 @@ class EventPoller:
             await asyncio.sleep(interval)
 
     async def poll_once(self) -> int:
-        """한 주기 — 발행 건수를 돌려준다."""
-        try:
-            inv = await self.resolver.inventory()
-        except ApmError as e:
-            logger.warning("폴러: 도메인 목록 조회 실패(%s) — 이번 주기 건너뜀", e.code)
+        """한 주기 — 발행 건수를 돌려준다. 한 소스의 실패가 다른 소스 폴링을 막지 않는다."""
+        results = await asyncio.gather(
+            *(self._poll_source(src) for src in self.sources), return_exceptions=True
+        )
+        published = 0
+        for src, result in zip(self.sources, results, strict=True):
+            if isinstance(result, BaseException):
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
+                logger.error("폴러: 소스 %s 주기 실패", src.source_id, exc_info=result)
+                continue
+            published += result
+        return published
+
+    async def _poll_source(self, src: JenniferSource) -> int:
+        inv = await src.resolver.inventory()
+        if inv.error_code:
+            logger.warning(
+                "폴러: 소스 %s 도메인 목록 조회 실패(%s) — 이번 주기 건너뜀",
+                src.source_id,
+                inv.error_code,
+            )
             return 0
         published = 0
         now_s = self.clock()
         for domain in inv.domains:
-            domain_id = domain["domain_id"]
             state = self._state.setdefault(
-                domain_id, {"state": "idle", "failures": 0, "next_at": 0.0}
+                (src.source_id, domain["domain_id"]),
+                {"state": "idle", "failures": 0, "next_at": 0.0},
             )
             if state["state"] == "stopped" or now_s < state["next_at"]:
                 continue
-            published += await self._poll_domain(domain, inv, state, now_s)
+            published += await self._poll_domain(src, domain, inv, state, now_s)
         return published
 
     async def _poll_domain(
-        self, domain: dict[str, Any], inv: Any, state: dict[str, Any], now_s: float
+        self,
+        src: JenniferSource,
+        domain: dict[str, Any],
+        inv: Inventory,
+        state: dict[str, Any],
+        now_s: float,
     ) -> int:
         domain_id = domain["domain_id"]
         interval = self.cfg.poller.interval_seconds
         end_ms = int(now_s * 1000)
-        cursor_raw = await self.redis.get(_CURSOR_KEY.format(domain_id=domain_id))
+        cursor_key = _CURSOR_KEY.format(source_id=src.source_id, domain_id=domain_id)
+        cursor_raw = await self.redis.get(cursor_key)
         cursor = int(cursor_raw) if cursor_raw else end_ms - interval * 1000
         try:
-            events = await self.api.events(domain_id, None, cursor, end_ms)
+            events = await src.api.events(domain_id, None, cursor, end_ms)
         except ApmError as e:
             if e.code == CONTRACT_VIOLATION:
                 state.update(state="stopped", reason=e.reason)
                 logger.warning(
-                    "폴러: 도메인 %s 계약 위반 — 폴링 중지(게이트웨이 버그): %s",
+                    "폴러: 소스 %s 도메인 %s 계약 위반 — 폴링 중지(게이트웨이 버그): %s",
+                    src.source_id,
                     domain_id,
                     e.reason,
                 )
@@ -128,7 +155,8 @@ class EventPoller:
             factor = min(2 ** state["failures"], MAX_BACKOFF_FACTOR)
             state.update(state="unavailable", reason=e.code, next_at=now_s + interval * factor)
             logger.warning(
-                "폴러: 도메인 %s 수집 불가(%s) — 커서 유지 · 다음 시도 %s초 뒤",
+                "폴러: 소스 %s 도메인 %s 수집 불가(%s) — 커서 유지 · 다음 시도 %s초 뒤",
+                src.source_id,
                 domain_id,
                 e.code,
                 interval * factor,
@@ -139,18 +167,24 @@ class EventPoller:
         for event in sorted(events, key=lambda e: e.get("time_ms") or 0):
             if not passes_min_level(event["level"], self.cfg.poller.min_level):
                 continue
-            outcome = await self._publish(event, domain, inv)
+            outcome = await self._publish(src, event, domain, inv)
             if outcome is None:
                 publish_failed = True
                 break
             published += outcome
         if not publish_failed:
             new_cursor = max(cursor, end_ms - OVERLAP_MS)
-            await self.redis.set(_CURSOR_KEY.format(domain_id=domain_id), str(new_cursor))
+            await self.redis.set(cursor_key, str(new_cursor))
         state.update(state="ok", failures=0, next_at=0.0, reason="", last_poll_ms=end_ms)
         return published
 
-    async def _publish(self, event: dict[str, Any], domain: dict[str, Any], inv: Any) -> int | None:
+    async def _publish(
+        self,
+        src: JenniferSource,
+        event: dict[str, Any],
+        domain: dict[str, Any],
+        inv: Inventory,
+    ) -> int | None:
         """이벤트 1건 발행. 1 = 발행 · 0 = 중복 · None = Redis 실패(커서 유지)."""
         clean = {
             **event,
@@ -161,20 +195,23 @@ class EventPoller:
             "message": mask_text(event.get("message", "")),
             "application": mask_url(event.get("application", "")),
         }
-        hostname, confidence, reason, inst = self.resolver.reverse(
+        hostname, confidence, reason, inst = src.resolver.reverse(
             inv, clean["domain_id"], clean.get("instance_id"), clean.get("instance_name", "")
         )
-        mapped = self.api.event_signal(clean.get("event_type", ""))
+        mapped = src.api.event_signal(clean.get("event_type", ""))
         signal = sig.signal_from_event(
             mapped,
             clean.get("event_type", ""),
             instance_id=clean.get("instance_id"),
             source_tool="event_poller",
         )
+        if signal is not None:
+            signal = {**signal, "source_id": src.source_id}
         payload = build_alarm_payload(
             clean,
             source=SOURCE,
             source_label=SOURCE_LABEL,
+            source_id=src.source_id,
             hostname=hostname,
             ip_address=(inst or {}).get("ip_address", ""),
             match_confidence=confidence,
@@ -209,7 +246,8 @@ class EventPoller:
             logger.warning(
                 "폴러: 인스턴스 hostname 미해소 — hostname 빈 값으로 발행"
                 "(조사 트리거는 사유를 남기고 생략): "
-                "domain=%s instance=%s",
+                "source=%s domain=%s instance=%s",
+                src.source_id,
                 clean["domain_id"],
                 clean.get("instance_id"),
             )

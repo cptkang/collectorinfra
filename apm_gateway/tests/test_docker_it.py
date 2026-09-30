@@ -51,3 +51,50 @@ async def test_tool_result_is_contract_shaped():
         assert e.code == "source_unavailable"
     else:
         assert out["source_kind"] == "apm_api"
+
+
+def _two_source_tools():
+    """로컬 Docker 1대를 소스 두 개(bank·common)로 등록한다(plans/87 J8 §0.13 (5))."""
+    from apm_gateway.application.sources import build_source_set
+    from apm_gateway.application.tools import ApmTools
+
+    from apm_gateway.config import load_config
+
+    url = os.environ["JENNIFER_IT_URL"]
+    assert url.startswith(("http://127.0.0.1", "http://localhost")), "로컬 Docker 전용"
+    token = os.environ.get("JENNIFER_IT_TOKEN", "")
+    cfg = load_config(
+        {
+            "JENNIFER_SOURCES": '["bank", "common"]',
+            "JENNIFER_BANK_API_URL": url,
+            "JENNIFER_BANK_API_TOKEN": token,
+            "JENNIFER_COMMON_API_URL": url,
+            "JENNIFER_COMMON_API_TOKEN": token,
+            "JENNIFER_RATE_LIMIT_PER_SEC": "0",
+        }
+    )
+    return ApmTools(build_source_set(cfg), cfg)
+
+
+@pytest.mark.asyncio
+async def test_two_sources_health_rows_reach_local_server():
+    tools = _two_source_tools()
+    out = await tools.gateway_health()
+    assert [r["source_id"] for r in out["rows"]] == ["bank", "common"]
+    assert all(r["jennifer_reachable"] for r in out["rows"])
+    assert out["status"] in ("ok", "degraded")
+
+
+@pytest.mark.asyncio
+async def test_two_sources_contract_or_all_sources_unavailable():
+    from apm_gateway.domain.errors import ApmError
+
+    tools = _two_source_tools()
+    try:
+        out = await tools.apm_instance_map()
+    except ApmError as e:  # 라이선스 없음 → 두 소스 모두 도메인 0건
+        assert e.code == "source_unavailable" and "모든 APM 소스 조회 불가" in e.reason
+    else:
+        assert {s["source_id"] for s in out["sources"]} == {"bank", "common"}
+    per_source = tools.sources.calls()
+    assert per_source["bank"] >= 1 and per_source["common"] >= 1  # 소스마다 따로 호출

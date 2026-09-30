@@ -10,6 +10,8 @@
 - 허용목록 밖 경로(민감 GET·쓰기 경로·`.xml`·POST 변형)도 존재하는 것처럼 응답하고
   **접근을 기록**한다
   → 게이트웨이 테스트는 `/__mock/hits`로 "허용목록 밖 호출 0회"를 단언한다.
+- 접근 기록의 `bearer_fp`는 요청 Bearer 값의 sha256 앞 12자리다(값 자체는 남기지 않는다) — 다중 소스
+  테스트가 "소스 A 토큰이 소스 B 요청에 0회"를 단언한다(plans/87 J8 M-10).
 
 한계: 실제 EVENT 발생·필드 변형은 재현하지 못한다. 이벤트는 `/__mock/events`로 주입한다.
 
@@ -26,6 +28,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import threading
@@ -48,6 +51,11 @@ from jennifer_catalog import (  # noqa: E402
 
 MODES = ("fixtures", "connected", "disconnected")
 NOT_FOUND_HTML = "<!DOCTYPE html><html><head><title>JENNIFER5</title></head><body>404</body></html>"
+
+
+def bearer_fingerprint(token: str) -> str:
+    """접근 기록용 Bearer 지문(sha256 앞 12자리)."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
 
 
 class MockState:
@@ -138,6 +146,8 @@ class Handler(BaseHTTPRequestHandler):
         status: int,
         query_token: bool,
     ) -> None:
+        auth = self.headers.get("Authorization", "")
+        bearer = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
         with self.state.lock:
             self.state.hits.append(
                 {
@@ -148,6 +158,7 @@ class Handler(BaseHTTPRequestHandler):
                     "allowlisted": allowlisted,
                     "query_keys": sorted(query),
                     "query_token": query_token,
+                    "bearer_fp": bearer_fingerprint(bearer) if bearer else "",
                     "status": status,
                 }
             )

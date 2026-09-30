@@ -26,14 +26,14 @@ group:
 scenarios:
   - id: D-01
     plans: [44, 45]
-    title: "현재 발생 중인 심각(severity 3) 알람 목록을 조회해줘"
+    title: "현재 발생 중인 심각(severity 3) 알람 목록을 10건만 조회해줘"
     kind: normal
     env: closed
     profile: optin_alarm
     endpoint: stream
     turns:
       - send:
-          query: "현재 발생 중인 심각(severity 3) 알람 목록을 조회해줘"
+          query: "현재 발생 중인 심각(severity 3) 알람 목록을 10건만 조회해줘"
         expect:
           status: completed
           sql_must_match: ["(?i)cmm_alarm_active", "(?i)alarmseverity\\s*=\\s*3",
@@ -121,14 +121,14 @@ scenarios:
           row_count_per_db: {max: 10}
   - id: D-05
     plans: [44, 45]
-    title: "이번 달 CPU 임계값 초과 알람 이력 조회"
+    title: "이번 달 CPU 임계값 초과 알람 이력 10건만 조회"
     kind: normal
     env: closed
     profile: optin_alarm
     endpoint: stream
     turns:
       - send:
-          query: "이번 달 CPU 임계값 초과 알람 이력 조회"
+          query: "이번 달 CPU 임계값 초과 알람 이력 10건만 조회"
         expect:
           status: completed
           # ★ 2026-09-16 교정 — 종전 단언 `cmm_alarm_def` 는 **D-202 4차 결정과 어긋났다.**
@@ -184,14 +184,14 @@ scenarios:
   # 깨지면 원인은 멀티턴 병합이 아니라 존 라우팅 자체다.
   - id: D-07
     plans: [44, 45, 9]
-    title: "은행존에서 발생 중인 심각 알람 목록 보여줘"
+    title: "은행존에서 발생 중인 심각 알람 목록 10건만 보여줘"
     kind: normal
     env: closed
     profile: optin_alarm
     endpoint: stream
     turns:
       - send:
-          query: "은행존에서 발생 중인 심각 알람 목록 보여줘"
+          query: "은행존에서 발생 중인 심각 알람 목록 10건만 보여줘"
         # 자동응답이 답해 버리면 오라우팅이 가려진다(D-216 · plans/108 §1.5b).
         auto_answer: false
         expect:
@@ -207,12 +207,12 @@ scenarios:
     endpoint: stream
     turns:
       - send:
-          query: "김포 공동존에서 발생 중인 알람 목록 보여줘"
+          query: "김포 공동존에서 발생 중인 알람 목록 10건만 보여줘"
         expect:
           status: completed
           db_ids: ["polestar_cm_gp"]
       - send:
-          query: "은행존 알람 보여줘"
+          query: "은행존 알람 10건만 보여줘"
         # 이번 턴에 위치가 **명시**돼 있다. 직전 턴 위치(김포)와 병합되면 회귀다.
         auto_answer: false
         expect:

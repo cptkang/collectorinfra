@@ -49,6 +49,13 @@ zones:
 #                   도구 · 답변 영역 · 필수 입력 패싯 · 창 상한 · 첫 홉 가능 여부. LLM 이 고르는 유일한
 #                   비SQL 인자다(보기 id 닫힌 어휘). 벤더 중립 어휘(`apm.*`)만 둔다(D-274 ③).
 #
+#    sources      : 제니퍼 소스 표(plans/87 J8 · D-287 ④) — 제니퍼 소스 = 뷰 서버 하나(Open API URL+토큰
+#                   1쌍) ↔ 존의 **정본**. `views`(보기 표)와 다른 층이다. 선언 순서 = 조회·표시 순서.
+#                   id 는 게이트웨이 `.env` `JENNIFER_SOURCES` 의 id 와 같아야 하고(소문자 슬러그 ·
+#                   예약어 default·api 금지), 그 소스의 알람 dbId 는 `jennifer_<id>` 다. 게이트웨이는
+#                   존을 모른다(D-274 ③) — 소비자(본체 알람 존 판정·noise_gate)가 이 표로 존을 푼다.
+#                   zone 비움 = 존 없는 소스(전 존 구독자·관리자만 본다). 레거시 = 은행존(G-14 ①).
+#
 #    ⚠ 비DB 시스템(apm — DB 항목이 없는 솔루션)은 **등재돼도 엔드포인트가 설정돼야만 활성**이다
 #      (plans/125 A-1 · D-281 ② · 신규 `enable_*` 0 — D-162). 비활성이면 처리기 등록·분해
 #      프롬프트 렌더가 0이다. 존 그룹이 없어 실행 그룹(존 순회)에는 들지 않는다. dpm 은 아직
@@ -88,6 +95,12 @@ solutions:
       - {id: apm.events, label: "WAS 이벤트(fatal·warning 등)", capability: apm_event,
          tool: apm_events, required_input: hostname, window_max_minutes: 1440,
          limit: "기본 30분 · 최대 24시간"}
+    # plans/87 J8 · D-287 ④ — 제니퍼 소스 ↔ 존 정본(위 `sources` 설명). 단일 설정(게이트웨이
+    # `JENNIFER_API_URL`만 · 소스 `default` · dbId `jennifer`)은 이 표에 없고 존 없음으로 다룬다.
+    sources:
+      - {id: bank, label: 은행존 제니퍼, zone: bankjon}
+      - {id: common, label: 공동존 제니퍼, zone: gongjon}
+      - {id: legacy, label: 레거시 제니퍼, zone: bankjon}
 
   # plans/127 W1(G-5 (a)) — 사내 문서 RAG(plans/126 엔진 · FabriX Retrieval Connector). 엔터티 계층이
   # 아닌 «규정·설계 근거» 계층이라 간선(entity_edges)이 없다. 보기(문서군)는 여기 적지 않는다 —

@@ -254,7 +254,8 @@ APM_FOCUS_NOTE_TEMPLATE: str = (
     "② apm_events로 사건 구간의 선행 이벤트를 본다.\n"
     "③ apm_app_health · apm_runtime_health로 골든 시그널(응답시간·TPS·오류율)과 런타임(힙·GC·CPU·스레드)을 본다.\n"
     "④ 증상별로 한 갈래를 판다 — 큐잉이면 apm_active_services, 지연이면 apm_slow_transactions → "
-    "apm_transaction_profile(앞 도구가 준 profile_ref의 domain_id·txid·time_ms를 그대로 넘긴다), "
+    "apm_transaction_profile(앞 도구가 준 profile_ref의 source_id·domain_id·txid·time_ms를 "
+    "그대로 넘긴다), "
     "커넥션 풀이면 apm_resource_pool.\n"
     "⑤ 인프라와 대조한다 — polestar_metric_trend · prom_metric_range로 같은 구간의 호스트 지표를 본다.\n"
     "- 주 가설을 세우면 그 가설을 반증할 수 있는 도구를 1회 호출해 확인한다.\n"
@@ -297,7 +298,8 @@ APM_PLAYBOOK_NOTE: str = (
 )
 
 #: 트리거 힌트 중 지침에 싣는 키(순서 고정). `solution`은 플레이북 선택에만 쓴다.
-_HINT_KEYS: tuple[str, ...] = ("event_type", "instance_id", "domain_id", "txid")
+#: `source_id`(제니퍼 소스 — 다중 소스에서 인스턴스·트랜잭션을 특정)는 plans/87 J8 · D-287 ②.
+_HINT_KEYS: tuple[str, ...] = ("event_type", "source_id", "instance_id", "domain_id", "txid")
 
 
 def apm_playbook_note(hints: dict) -> str:

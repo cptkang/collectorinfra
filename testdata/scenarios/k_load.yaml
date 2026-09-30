@@ -84,7 +84,7 @@ scenarios:
     cache_state: warm
     turns:
       - send:
-          query: "전체 서버의 호스트명, OS종류, 벤더를 조회해줘"
+          query: "전체 서버의 호스트명, OS종류, 벤더를 10건만 조회해줘"
         expect:
           status: completed
           # 스트림이 끊기면 done 이 없고 러너가 hang 으로 잡는다(금지 등급).
@@ -187,7 +187,7 @@ scenarios:
         words: ["검증용사용률"]
     turns:
       - send:
-          query: "김포 서버별 검증용사용률 평균을 높은 순으로 보여줘"
+          query: "김포 서버별 검증용사용률 평균을 높은 순으로 10건만 보여줘"
         expect:
           http_status: 200
           retries: {max: 3}

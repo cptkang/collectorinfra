@@ -2,7 +2,8 @@
 SPEC-apm-gateway §2).
 
 SSE MCP 서버(uvicorn · 정적 Bearer)와 이벤트 폴러(옵트인)를 한 이벤트 루프에서 함께 돌린다. 기동
-로그 1줄에 허용 경로 수 · 폴러 상태 · 설정 여부를 남긴다(비밀 값 없음 — R-20).
+로그 1줄에 허용 경로 수 · 폴러 상태 · 소스 id와 설정 여부를 남긴다(비밀 값 없음 — R-20). 설정 오류
+(단일·다중 설정 동시 · 소스 필수 키 누락 · id 형식)는 기동 실패다(plans/87 J8 · D-287 ③).
 """
 
 from __future__ import annotations
@@ -17,15 +18,17 @@ async def _serve() -> None:
     import uvicorn
 
     from apm_gateway.adapters.jennifer.allowlist import ALLOWED
-    from apm_gateway.adapters.jennifer.api import JenniferApi
-    from apm_gateway.adapters.jennifer.client import JenniferClient
     from apm_gateway.application.poller import EventPoller
-    from apm_gateway.application.resolver import InstanceResolver
+    from apm_gateway.application.sources import build_source_set
     from apm_gateway.application.tools import ApmTools
     from apm_gateway.config import describe, load_config
     from apm_gateway.interface.server import build_asgi_app, create_server
 
-    cfg = load_config()
+    try:
+        cfg = load_config()
+    except ValueError as e:
+        print(f"APM 게이트웨이 설정 오류 — 기동 중단: {e}", file=sys.stderr)
+        raise SystemExit(2) from e
     logging.basicConfig(
         level=getattr(logging, cfg.server.log_level.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -34,13 +37,7 @@ async def _serve() -> None:
     )
     logger = logging.getLogger("apm_gateway")
 
-    api = JenniferApi(JenniferClient(cfg.jennifer))
-    resolver = InstanceResolver(
-        api,
-        cfg.policies.instance_map,
-        domain_filter=cfg.jennifer.domain_ids,
-        cache_seconds=cfg.runtime.instance_cache_seconds,
-    )
+    sources = build_source_set(cfg)
     poller: EventPoller | None = None
     redis_client = None
     if cfg.poller.enabled:
@@ -52,8 +49,8 @@ async def _serve() -> None:
             db=cfg.redis.db,
             password=cfg.redis.password or None,
         )
-        poller = EventPoller(api, resolver, cfg, redis_client)
-    tools = ApmTools(api, resolver, cfg, poller_status=poller.status if poller else None)
+        poller = EventPoller(sources, cfg, redis_client)
+    tools = ApmTools(sources, cfg, poller_status=poller.status if poller else None)
     mcp = create_server(tools, host=cfg.server.host, port=cfg.server.port)
     app = build_asgi_app(mcp, cfg.server.bearer_token or None)
 
@@ -80,7 +77,8 @@ async def _serve() -> None:
             poll_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await poll_task
-        await api.client.aclose()
+        for src in sources:
+            await src.api.client.aclose()
         if redis_client is not None:
             await redis_client.aclose()
 

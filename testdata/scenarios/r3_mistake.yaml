@@ -94,7 +94,7 @@ scenarios:
     #   존(김포 - D-216 ②)을 턴이 직접 보내고, 미등록 존 치환 고지(W-4)를 본다. 치환을 밝힌 응답은 correct.
     response_modes: [guide, clarify, correct]
     turns:
-      - send: {query: "판교존 서버 목록"}
+      - send: {query: "판교존 서버 목록 10건만"}
         expect:
           # 종전 `row_count: {max: 0}` 은 뺐다 - 역질문으로 끝난 턴은 행 수가 없어 늘 불합격이었다.
           status: clarification
@@ -114,7 +114,7 @@ scenarios:
     pair_with: R3-03
     response_modes: [answer, clarify]
     turns:
-      - send: {query: "은행존 서버 목록"}
+      - send: {query: "은행존 서버 목록 10건만"}
         expect: {status: completed, row_count: {min: 1}}
     teardown: [drop_thread]
 
@@ -174,7 +174,7 @@ scenarios:
     pair_with: R3-05
     response_modes: [answer]
     turns:
-      - send: {query: "지난 1개월 CPU 사용률"}
+      - send: {query: "지난 1개월 CPU 사용률 10건만"}
         expect: {status: completed, row_count: {min: 1}}
     teardown: [drop_thread]
 
@@ -205,7 +205,7 @@ scenarios:
     pair_with: R3-06
     response_modes: [answer]
     turns:
-      - send: {query: "지난주 알람 보여줘"}
+      - send: {query: "지난주 알람 10건만 보여줘"}
         expect: {status: completed}
     teardown: [drop_thread]
 
@@ -234,7 +234,7 @@ scenarios:
     pair_with: R3-07
     response_modes: [answer]
     turns:
-      - send: {query: "CPU가 10% 넘고 90% 미만인 서버"}
+      - send: {query: "CPU가 10% 넘고 90% 미만인 서버 10건만"}
         expect: {status: completed, row_count: {min: 1}}
     teardown: [drop_thread]
 
@@ -266,7 +266,7 @@ scenarios:
     # plans/123 CT-1 - 상한 도달 대조군. 상한 고지만의 partial 은 answer 동치다(V-1).
     response_modes: [answer]
     turns:
-      - send: {query: "서버 자원 목록 전체 보여줘"}
+      - send: {query: "서버 자원 목록 전체 중 10건만 보여줘"}
         expect: {status: completed, row_count: {min: 1}}
     teardown: [drop_thread]
 
@@ -295,7 +295,7 @@ scenarios:
     pair_with: R3-09
     response_modes: [answer]
     turns:
-      - send: {query: "김포 서버 CPU 사용률"}
+      - send: {query: "김포 서버 CPU 사용률 10건만"}
         expect: {status: completed, row_count: {min: 1}}
     teardown: [drop_thread]
 
@@ -325,7 +325,7 @@ scenarios:
     pair_with: R3-10
     response_modes: [answer]
     turns:
-      - send: {query: "김포 서버 cpu 사용률 보여줘"}
+      - send: {query: "김포 서버 cpu 사용률 10건만 보여줘"}
         expect: {status: completed}
     teardown: [drop_thread]
 
@@ -355,7 +355,7 @@ scenarios:
     pair_with: R3-11
     response_modes: [answer]
     turns:
-      - send: {query: "메모리 64기가 넘는 서버 보여줘"}
+      - send: {query: "메모리 64기가 넘는 서버 10건만 보여줘"}
         expect: {status: completed, row_count: {min: 1}}
     teardown: [drop_thread]
 

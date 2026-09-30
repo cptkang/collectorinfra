@@ -118,28 +118,28 @@ scenarios:
           manual_review: "LOGICALCORE/PHYSICALCORE/MODEL 세 속성이 나오는지"
   - id: B-06
     plans: [20, 21, 25, 32, 33, 37, 42, 43]
-    title: "비정상 서버 목록과 IP를 조회해줘"
+    title: "비정상 서버 목록과 IP를 10건만 조회해줘"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "비정상 서버 목록과 IP를 조회해줘"
+          query: "비정상 서버 목록과 IP를 10건만 조회해줘"
         expect:
           status: completed
           sql_must_match: ["(?i)avail_status"]
           row_count: {min: 0}
   - id: B-07
     plans: [20, 21, 25, 32, 33, 37, 42, 43]
-    title: "논리코어가 8개 이상인 서버의 서버명, 논리코어 수, 메모리 용량을 논리코어 내림차순으로 보여줘"
+    title: "논리코어가 8개 이상인 서버의 서버명, 논리코어 수, 메모리 용량을 논리코어 내림차순으로 10건만 보여줘"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "논리코어가 8개 이상인 서버의 서버명, 논리코어 수, 메모리 용량을 논리코어 내림차순으로 보여줘"
+          query: "논리코어가 8개 이상인 서버의 서버명, 논리코어 수, 메모리 용량을 논리코어 내림차순으로 10건만 보여줘"
         expect:
           status: completed
           # 캐스트 타입명은 `numeric|decimal` 양쪽을 인정한다 — EAV 값 컬럼의 숫자 캐스트는
@@ -151,14 +151,14 @@ scenarios:
           sql_must_not_match: ["(?i)as\\s+int(eger)?\\b"]
   - id: B-08
     plans: [20, 21, 25, 32, 33, 37, 42, 43]
-    title: "서버별 CPU 코어(vcore) 수 합계를 조회해줘"
+    title: "서버별 CPU 코어(vcore) 수 합계를 10건만 조회해줘"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "서버별 CPU 코어(vcore) 수 합계를 조회해줘"
+          query: "서버별 CPU 코어(vcore) 수 합계를 10건만 조회해줘"
         expect:
           status: completed
           # B-07 주석 참조 — D-199 가드가 `AS DECIMAL(31, 6)`으로 치환한다.

@@ -89,11 +89,14 @@ def make_signal(
 
 
 def dedupe(signals: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """같은 `(kind, instance_id)`는 가장 강한 것 1건만 남긴다(입력 순서 보존)."""
-    best: dict[tuple[str, Any], dict[str, Any]] = {}
-    order: list[tuple[str, Any]] = []
+    """같은 `(kind, source_id, instance_id)`는 가장 강한 것 1건만 남긴다(입력 순서 보존).
+
+    인스턴스 id는 소스마다 따로 매겨 겹칠 수 있다(plans/87 J8) — 소스가 다르면 다른 인스턴스다.
+    """
+    best: dict[tuple[str, Any, Any], dict[str, Any]] = {}
+    order: list[tuple[str, Any, Any]] = []
     for sig in signals:
-        key = (sig["kind"], sig.get("instance_id"))
+        key = (sig["kind"], sig.get("source_id"), sig.get("instance_id"))
         rank = (_LEVEL_RANK.get(sig["level"], 0), _CATEGORY_RANK.get(sig["category"], 0))
         if key not in best:
             order.append(key)

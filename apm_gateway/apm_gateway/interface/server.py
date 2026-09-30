@@ -86,7 +86,7 @@ async def run_tool(
 ) -> str:
     """도구 1회 실행 — 오류를 계약 JSON으로 바꾸고 감사 1줄을 남긴다."""
     started = time.monotonic()
-    calls_before = tools.api.calls_total
+    calls_before = tools.sources.calls()
     try:
         result = await call()
     except ApmError as e:
@@ -100,12 +100,18 @@ async def run_tool(
         logger.exception("도구 실행 실패: %s", tool)
         result = tools.err(tool, API_ERROR, f"내부 오류: {type(e).__name__}")
     elapsed_ms = (time.monotonic() - started) * 1000
+    called = {
+        sid: n - calls_before.get(sid, 0)
+        for sid, n in tools.sources.calls().items()
+        if n > calls_before.get(sid, 0)
+    }
     audit(
         tool,
         mask_text(target, limit=120),
         elapsed_ms,
         rows=result.get("row_count"),
-        api_calls=tools.api.calls_total - calls_before,
+        api_calls=sum(called.values()),
+        sources=",".join(f"{sid}:{n}" for sid, n in called.items()) or "-",
         error=result.get("error"),
         investigation_id=investigation_id,
         thread_id=thread_id,
@@ -119,16 +125,17 @@ def register_tools(mcp: FastMCP, tools: ApmTools) -> list[str]:
     @mcp.tool()
     async def apm_instance_map(
         hostname: str | None = None,
+        source_ids: list[str] | None = None,
         investigation_id: str | None = None,
         thread_id: str | None = None,
     ) -> str:
         """APM 인스턴스 목록과 hostname 정합 결과. hostname을 주면 그 서버의 WAS 인스턴스만(정합
-        신뢰도·근거 포함)."""
+        신뢰도·근거 포함). source_ids로 APM 소스를 좁힐 수 있다(비면 전 소스)."""
         return await run_tool(
             tools,
             "apm_instance_map",
             hostname or "*",
-            lambda: tools.apm_instance_map(hostname),
+            lambda: tools.apm_instance_map(hostname, source_ids),
             investigation_id=investigation_id,
             thread_id=thread_id,
         )
@@ -139,6 +146,7 @@ def register_tools(mcp: FastMCP, tools: ApmTools) -> list[str]:
         instance_id: int | None = None,
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
+        source_ids: list[str] | None = None,
         investigation_id: str | None = None,
         thread_id: str | None = None,
     ) -> str:
@@ -148,7 +156,9 @@ def register_tools(mcp: FastMCP, tools: ApmTools) -> list[str]:
             tools,
             "apm_app_health",
             hostname,
-            lambda: tools.apm_app_health(hostname, instance_id, reference_time, lookback_minutes),
+            lambda: tools.apm_app_health(
+                hostname, instance_id, reference_time, lookback_minutes, source_ids
+            ),
             investigation_id=investigation_id,
             thread_id=thread_id,
         )
@@ -159,6 +169,7 @@ def register_tools(mcp: FastMCP, tools: ApmTools) -> list[str]:
         instance_id: int | None = None,
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
+        source_ids: list[str] | None = None,
         investigation_id: str | None = None,
         thread_id: str | None = None,
     ) -> str:
@@ -169,7 +180,7 @@ def register_tools(mcp: FastMCP, tools: ApmTools) -> list[str]:
             "apm_runtime_health",
             hostname,
             lambda: tools.apm_runtime_health(
-                hostname, instance_id, reference_time, lookback_minutes
+                hostname, instance_id, reference_time, lookback_minutes, source_ids
             ),
             investigation_id=investigation_id,
             thread_id=thread_id,
@@ -179,6 +190,7 @@ def register_tools(mcp: FastMCP, tools: ApmTools) -> list[str]:
     async def apm_resource_pool(
         hostname: str,
         instance_id: int | None = None,
+        source_ids: list[str] | None = None,
         investigation_id: str | None = None,
         thread_id: str | None = None,
     ) -> str:
@@ -188,7 +200,7 @@ def register_tools(mcp: FastMCP, tools: ApmTools) -> list[str]:
             tools,
             "apm_resource_pool",
             hostname,
-            lambda: tools.apm_resource_pool(hostname, instance_id),
+            lambda: tools.apm_resource_pool(hostname, instance_id, source_ids),
             investigation_id=investigation_id,
             thread_id=thread_id,
         )
@@ -200,6 +212,7 @@ def register_tools(mcp: FastMCP, tools: ApmTools) -> list[str]:
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
         n: int | None = None,
+        source_ids: list[str] | None = None,
         investigation_id: str | None = None,
         thread_id: str | None = None,
     ) -> str:
@@ -210,7 +223,7 @@ def register_tools(mcp: FastMCP, tools: ApmTools) -> list[str]:
             "apm_slow_transactions",
             hostname,
             lambda: tools.apm_slow_transactions(
-                hostname, instance_id, reference_time, lookback_minutes, n
+                hostname, instance_id, reference_time, lookback_minutes, n, source_ids
             ),
             investigation_id=investigation_id,
             thread_id=thread_id,
@@ -221,6 +234,7 @@ def register_tools(mcp: FastMCP, tools: ApmTools) -> list[str]:
         hostname: str,
         instance_id: int | None = None,
         n: int | None = None,
+        source_ids: list[str] | None = None,
         investigation_id: str | None = None,
         thread_id: str | None = None,
     ) -> str:
@@ -230,7 +244,7 @@ def register_tools(mcp: FastMCP, tools: ApmTools) -> list[str]:
             tools,
             "apm_active_services",
             hostname,
-            lambda: tools.apm_active_services(hostname, instance_id, n),
+            lambda: tools.apm_active_services(hostname, instance_id, n, source_ids),
             investigation_id=investigation_id,
             thread_id=thread_id,
         )
@@ -241,6 +255,7 @@ def register_tools(mcp: FastMCP, tools: ApmTools) -> list[str]:
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
         level: str | None = None,
+        source_ids: list[str] | None = None,
         investigation_id: str | None = None,
         thread_id: str | None = None,
     ) -> str:
@@ -250,7 +265,7 @@ def register_tools(mcp: FastMCP, tools: ApmTools) -> list[str]:
             tools,
             "apm_events",
             hostname,
-            lambda: tools.apm_events(hostname, reference_time, lookback_minutes, level),
+            lambda: tools.apm_events(hostname, reference_time, lookback_minutes, level, source_ids),
             investigation_id=investigation_id,
             thread_id=thread_id,
         )
@@ -262,17 +277,18 @@ def register_tools(mcp: FastMCP, tools: ApmTools) -> list[str]:
         txid: str | None = None,
         time_ms: int | None = None,
         top_k: int | None = None,
+        source_id: str | None = None,
         investigation_id: str | None = None,
         thread_id: str | None = None,
     ) -> str:
-        """개별 트랜잭션 프로파일(마스킹 발췌)·SQL(리터럴 마스킹). domain_id·txid·time_ms는 앞
-        도구의 profile_ref를 그대로 넘긴다."""
+        """개별 트랜잭션 프로파일(마스킹 발췌)·SQL(리터럴 마스킹). source_id·domain_id·txid·
+        time_ms는 앞 도구의 profile_ref를 그대로 넘긴다(APM 소스가 둘 이상이면 source_id 필수)."""
         return await run_tool(
             tools,
             "apm_transaction_profile",
             hostname,
             lambda: tools.apm_transaction_profile(
-                hostname, domain_id, txid, time_ms, top_k, investigation_id
+                hostname, domain_id, txid, time_ms, top_k, investigation_id, source_id
             ),
             investigation_id=investigation_id,
             thread_id=thread_id,
@@ -280,7 +296,8 @@ def register_tools(mcp: FastMCP, tools: ApmTools) -> list[str]:
 
     @mcp.tool()
     async def gateway_health() -> str:
-        """게이트웨이 상태 — APM API 설정·도달 여부·도메인 수·허용 경로 수·폴러 상태(헬스체크용)."""
+        """게이트웨이 상태 — APM 소스별 설정·도달 여부·도메인 수 · 허용 경로 수 · 전체 상태 ·
+        폴러 상태(헬스체크용)."""
         return await run_tool(tools, "gateway_health", "-", tools.gateway_health)
 
     return [

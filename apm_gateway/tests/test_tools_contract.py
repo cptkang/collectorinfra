@@ -72,7 +72,12 @@ async def test_instance_map_by_hostname_normalizes_fqdn_and_case(synth):
         "confidence": "high",
         "reason": "host_name",
         "instances": [1001, 1002],
+        "instance_refs": [
+            {"source_id": "default", "domain_id": 1000, "instance_id": 1001},
+            {"source_id": "default", "domain_id": 1000, "instance_id": 1002},
+        ],
     }
+    assert out["sources"] == [{"source_id": "default", "status": "ok", "reason": ""}]
     assert "port" not in out["rows"][0] or out["rows"][0]["port"] is None
     _assert_clean(base, out)
 
@@ -185,6 +190,7 @@ async def test_slow_transactions_top_n_masking_profile_ref(synth):
     assert [r["response_time_ms"] for r in out["rows"]] == [4000, 3900, 3800]
     assert all("kim" not in r["application"] for r in out["rows"])
     assert out["rows"][0]["profile_ref"] == {
+        "source_id": "default",
         "domain_id": 1000,
         "txid": "9000",
         "time_ms": NOW_MS - 30_000,

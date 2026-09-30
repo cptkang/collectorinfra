@@ -20,6 +20,7 @@ MCP 클라이언트 생성)로 별개 모듈이다. 이 모듈은 선언 정본(
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -31,6 +32,12 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_PATH = PROJECT_ROOT / "config" / "db_registry.yaml"
+
+# 소스 id 형식(plans/87 M-2 · 게이트웨이 `JENNIFER_SOURCES`와 같은 규칙)과 예약어.
+_SOURCE_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,15}$")
+_RESERVED_SOURCE_IDS: frozenset[str] = frozenset({"default", "api"})
+# 레지스트리에 없는 소스 dbId 경고를 id별 1회로 줄인다(plans/87 J8 M-4 — 알람마다 반복 방지).
+_WARNED_UNKNOWN_SOURCES: set[str] = set()
 
 
 class RegistryError(Exception):
@@ -85,6 +92,22 @@ class ViewSpec:
 
 
 @dataclass(frozen=True)
+class SourceSpec:
+    """솔루션 아래 소스 1건(plans/87 J8 · D-287 ④) — 제니퍼 소스(뷰 서버 하나) ↔ 존 정본.
+
+    Attributes:
+        id: 소스 id(소문자 슬러그 · 게이트웨이 `JENNIFER_SOURCES`의 id와 같다 · 알람 dbId는
+            `{family}_{id}`)
+        label: 사용자 표시 이름
+        zone: 소스가 속한 존 코드 — 비면 존 없는 소스(전 존 구독자·관리자만)
+    """
+
+    id: str
+    label: str = ""
+    zone: str = ""
+
+
+@dataclass(frozen=True)
 class EdgeSpec:
     """교차 계층 엔터티 간선 1건(plans/125 §4.5 · E-2) — 패싯 → 패싯 결정적 대응.
 
@@ -116,6 +139,7 @@ class SolutionSpec:
         capabilities: 이 솔루션이 답할 수 있는 관측 능력.
         requires: 이 솔루션을 쓰기 전에 해소돼야 하는 능력(예: apm → host_location).
         views: 비SQL 처리기의 고정 보기 표(plans/125 §4.2) — SQL 솔루션은 비어 있다.
+        sources: 소스 ↔ 존 표(plans/87 J8 · D-287 ④ — 제니퍼 뷰 서버 N개) — 선언 순서.
     """
 
     code: str
@@ -126,6 +150,7 @@ class SolutionSpec:
     capabilities: tuple[str, ...] = ()
     requires: tuple[str, ...] = ()
     views: tuple[ViewSpec, ...] = ()
+    sources: tuple[SourceSpec, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -363,6 +388,42 @@ class DBRegistry:
                 return spec.views
         return ()
 
+    # ── 소스 ↔ 존 (plans/87 J8 · D-287 ④) ─────────────────
+    def sources_of(self, system: str) -> tuple[SourceSpec, ...]:
+        """시스템의 소스 표(선언 순서). 미등록·소스 없음은 빈 튜플."""
+        for spec in self.solutions_:
+            if spec.code == system:
+                return spec.sources
+        return ()
+
+    def alarm_source(self, db_id: str) -> tuple[str, SourceSpec] | None:
+        """알람 dbId `{family}_{소스 id}` → (시스템 코드, 소스). 못 풀면 None(= 존 없음).
+
+        family·sources가 있는 솔루션만 본다 — 벤더 문자열이 아니라 레지스트리 family로 판정한다.
+        `db_id == family`(게이트웨이 단일 설정 `default`)는 경고 없이 None이다. family 접두인데 표에
+        없는 소스 id면 id별 경고 1회 후 None — 조용히 버리지 않고 존 없음으로 다룬다(M-4).
+        """
+        if not db_id or self.get(db_id) is not None:
+            return None
+        for spec in self.solutions_:
+            if not spec.family or not spec.sources:
+                continue
+            prefix = f"{spec.family}_"
+            if not db_id.startswith(prefix):
+                continue
+            for source in spec.sources:
+                if db_id == prefix + source.id:
+                    return spec.code, source
+            if db_id not in _WARNED_UNKNOWN_SOURCES:
+                _WARNED_UNKNOWN_SOURCES.add(db_id)
+                logger.warning(
+                    "레지스트리에 없는 %s 소스 — 존 없음으로 다룬다"
+                    "(solutions[%s].sources 확인): db_id=%s",
+                    spec.code, spec.code, db_id,
+                )
+            return None
+        return None
+
     def system_db_ids(self, system: str) -> tuple[str, ...]:
         """소유 시스템에 속한 등록 db_id(레지스트리 선언 순서)."""
         return tuple(e.db_id for e in self.databases if self.system_of(e.db_id) == system)
@@ -484,6 +545,47 @@ def _parse_views(value: Any) -> tuple[ViewSpec, ...]:
     return tuple(views)
 
 
+def _parse_sources(
+    value: Any, *, solution: str, declared_zones: set[str]
+) -> tuple[SourceSpec, ...]:
+    """솔루션 `sources:` 목록 → SourceSpec 튜플(plans/87 J8 · D-287 ④).
+
+    소스는 알람 존 판정(RBAC)의 정본이라 틀린 항목을 조용히 버리지 않는다 — 버리면 그 소스 알람이
+    존 없음으로 떨어져 존 구독자에게 가지 않는다. zone 빈 값은 허용한다(존 없는 소스).
+
+    Raises:
+        RegistryError: 목록·매핑 아님 · id 없음·형식 위반·예약어 · 같은 솔루션 안 id 중복 ·
+            미선언 존 참조
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise RegistryError(f"solutions[{solution}].sources는 목록이어야 합니다.")
+    sources: list[SourceSpec] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, dict) or not raw.get("id"):
+            raise RegistryError(f"solutions[{solution}].sources 항목에 id가 없습니다: {raw!r}")
+        sid = str(raw["id"])
+        if not _SOURCE_ID_RE.match(sid):
+            raise RegistryError(
+                f"solutions[{solution}].sources id '{sid}' 형식 위반"
+                "(소문자 슬러그 [a-z][a-z0-9_]{0,15})."
+            )
+        if sid in _RESERVED_SOURCE_IDS:
+            raise RegistryError(f"solutions[{solution}].sources id '{sid}'는 예약어입니다.")
+        if sid in seen:
+            raise RegistryError(f"solutions[{solution}].sources id '{sid}'가 중복됐습니다.")
+        seen.add(sid)
+        zone = str(raw.get("zone") or "")
+        if zone and zone not in declared_zones:
+            raise RegistryError(
+                f"solutions[{solution}].sources '{sid}'가 미선언 존 '{zone}'를 참조합니다."
+            )
+        sources.append(SourceSpec(id=sid, label=str(raw.get("label", "")), zone=zone))
+    return tuple(sources)
+
+
 def parse_registry(data: dict[str, Any]) -> DBRegistry:
     """레지스트리 dict(YAML 파싱 결과)를 DBRegistry로 변환한다.
 
@@ -494,7 +596,7 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
         DBRegistry 인스턴스
 
     Raises:
-        RegistryError: 필수 필드(db_id) 누락 등 구조 오류
+        RegistryError: 필수 필드(db_id) 누락 · 솔루션 `sources` 검증 실패(plans/87 J8) 등 구조 오류
     """
     if not isinstance(data, dict):
         raise RegistryError("레지스트리 최상위 구조가 매핑이 아닙니다.")
@@ -519,6 +621,7 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
         if isinstance(loc, dict) and loc.get("term")
     )
 
+    zone_code_set = {z.code for z in zones}
     solutions = tuple(
         SolutionSpec(
             code=str(raw["code"]),
@@ -529,6 +632,9 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
             capabilities=_as_str_tuple(raw.get("capabilities")),
             requires=_as_str_tuple(raw.get("requires")),
             views=_parse_views(raw.get("views")),
+            sources=_parse_sources(
+                raw.get("sources"), solution=str(raw["code"]), declared_zones=zone_code_set
+            ),
         )
         for raw in data.get("solutions") or []
         if isinstance(raw, dict) and raw.get("code")

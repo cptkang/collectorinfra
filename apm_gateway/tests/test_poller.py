@@ -95,15 +95,11 @@ def _event(**over) -> dict:
 
 
 def _poller(base: str, redis: FakeRedis, clock=lambda: NOW_S, transport=None, extra=None):
-    from apm_gateway.adapters.jennifer.api import JenniferApi
-    from apm_gateway.adapters.jennifer.client import JenniferClient
     from apm_gateway.application.poller import EventPoller
-    from apm_gateway.application.resolver import InstanceResolver
+    from apm_gateway.application.sources import build_source_set
 
     cfg = make_cfg(base, extra={"APM_EVENT_POLLER_ENABLED": "true", **(extra or {})})
-    api = JenniferApi(JenniferClient(cfg.jennifer, transport=transport))
-    resolver = InstanceResolver(api, cfg.policies.instance_map)
-    return EventPoller(api, resolver, cfg, redis, clock=clock)
+    return EventPoller(build_source_set(cfg, transport=transport), cfg, redis, clock=clock)
 
 
 @pytest.fixture
@@ -208,20 +204,20 @@ async def test_cursor_advances_with_overlap(events_server):
     poller = _poller(events_server, redis, clock=lambda: now[0])
     await poller.poll_once()
     # 첫 주기는 [지금 − 주기, 지금] — 커서는 뒤로 가지 않는다(max(시작, 끝 − 겹침 60초))
-    assert int(redis.kv["apm_gateway:poller:cursor:1000"]) == NOW_MS - 30_000
+    assert int(redis.kv["apm_gateway:poller:cursor:default:1000"]) == NOW_MS - 30_000
     now[0] += 120
     await poller.poll_once()
-    assert int(redis.kv["apm_gateway:poller:cursor:1000"]) == NOW_MS + 120_000 - 60_000
+    assert int(redis.kv["apm_gateway:poller:cursor:default:1000"]) == NOW_MS + 120_000 - 60_000
 
 
 @pytest.mark.asyncio
 async def test_disconnected_domain_keeps_cursor_and_backs_off(mock_server_factory, tmp_path):
     base, _ = mock_server_factory(write_fixtures(tmp_path / "d", _no_event_fixtures()), "connected")
     redis = FakeRedis()
-    redis.kv["apm_gateway:poller:cursor:1000"] = str(NOW_MS - 90_000)
+    redis.kv["apm_gateway:poller:cursor:default:1000"] = str(NOW_MS - 90_000)
     now = [NOW_S]
     poller = _poller(base, redis, clock=lambda: now[0])
-    await poller.resolver.inventory()  # 도메인·인스턴스는 연결 상태에서 캐시
+    await poller.sources.get("default").resolver.inventory()  # 도메인·인스턴스는 연결 상태에서 캐시
     urllib.request.urlopen(
         urllib.request.Request(
             f"{base}/__mock/mode", data=b'{"mode": "disconnected"}', method="POST"
@@ -229,13 +225,13 @@ async def test_disconnected_domain_keeps_cursor_and_backs_off(mock_server_factor
         timeout=5,
     ).read()
     assert await poller.poll_once() == 0
-    st = poller.status()["domains"]["1000"]
+    st = poller.status()["domains"]["default:1000"]
     assert st["state"] == "unavailable" and st["reason"] == "source_unavailable"
-    assert redis.kv["apm_gateway:poller:cursor:1000"] == str(NOW_MS - 90_000)
-    calls = poller.api.calls_total
+    assert redis.kv["apm_gateway:poller:cursor:default:1000"] == str(NOW_MS - 90_000)
+    calls = poller.sources.calls_total
     now[0] += 30  # 백오프(주기 30초 × 2) 안 — 호출하지 않는다
     await poller.poll_once()
-    assert poller.api.calls_total == calls
+    assert poller.sources.calls_total == calls
 
 
 @pytest.mark.asyncio
@@ -253,10 +249,10 @@ async def test_contract_violation_stops_domain():
     redis = FakeRedis()
     poller = _poller("http://apm.test", redis, transport=httpx.MockTransport(handler))
     await poller.poll_once()
-    assert poller.status()["domains"]["1000"]["state"] == "stopped"
-    calls = poller.api.calls_total
+    assert poller.status()["domains"]["default:1000"]["state"] == "stopped"
+    calls = poller.sources.calls_total
     await poller.poll_once()
-    assert poller.api.calls_total == calls  # 캐시된 인벤토리 · 중지 도메인은 부르지 않는다
+    assert poller.sources.calls_total == calls  # 캐시된 인벤토리 · 중지 도메인은 부르지 않는다
 
 
 @pytest.mark.asyncio
@@ -266,7 +262,7 @@ async def test_xadd_failure_retries_next_cycle(events_server):
     _inject(events_server, [_event()])
     poller = _poller(events_server, redis)
     assert await poller.poll_once() == 0
-    assert "apm_gateway:poller:cursor:1000" not in redis.kv  # 커서 유지
+    assert "apm_gateway:poller:cursor:default:1000" not in redis.kv  # 커서 유지
     redis.fail_xadd = False
     assert await poller.poll_once() == 1
     assert len(redis.stream) == 1

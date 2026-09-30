@@ -91,14 +91,14 @@ scenarios:
           manual_review: "\"타임존\"→`GMT`, \"제조사\"→`Vendor` — **복수 서버 × 복수 속성 동시 매핑** / 2행 모두 `GMT+09:00` / `Dell Inc.`"
   - id: SYN-A-05
     plans: [37, 61]
-    title: "논리코어가 8개 이상인 서버의 서버명, 논리코어 수, 메모리 용량을 논리코어 내림차순으로 보여줘"
+    title: "논리코어가 8개 이상인 서버의 서버명, 논리코어 수, 메모리 용량을 논리코어 내림차순으로 10건만 보여줘"
     kind: normal
     env: sandbox
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "논리코어가 8개 이상인 서버의 서버명, 논리코어 수, 메모리 용량을 논리코어 내림차순으로 보여줘"
+          query: "논리코어가 8개 이상인 서버의 서버명, 논리코어 수, 메모리 용량을 논리코어 내림차순으로 10건만 보여줘"
         expect:
           # plans/122 C-3 - 옮기지 않음(①②): 순서 기준이고, 09 픽스처가 LOGICALCORE ≥8 서버 4대(cocm-ngcapo91 16 ·
           #   cob0-bnndbp01·sbhdbo53·cocm-xgzapp09 각 8)를 더해 기대 목록이 낡았다.
@@ -139,14 +139,14 @@ scenarios:
           response_must_contain: ["SV-BATCH-009", "10.61.0.4"]
   - id: SYN-B-03
     plans: [37, 61]
-    title: "서버 이름과 호스트명이 서로 다른 서버 목록을 보여줘"
+    title: "서버 이름과 호스트명이 서로 다른 서버 목록을 10건만 보여줘"
     kind: normal
     env: sandbox
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "서버 이름과 호스트명이 서로 다른 서버 목록을 보여줘"
+          query: "서버 이름과 호스트명이 서로 다른 서버 목록을 10건만 보여줘"
         expect:
           # plans/122 C-3 - 옮기지 않음(③): 기대 5건 중 hostapo01/02 는 init 밖 excel 데이터에만 있다.
           manual_review: "\"서버 이름\"→`name`, \"호스트명\"→`hostname` 분리 매핑 + **칼럼 간 비교 조건**(`name <> hostname`) / 5건(hostname 단위) — DB-ORA-023, SV-WEB-001, SV-BATCH-009, hostapo01, hostapo02"
@@ -227,28 +227,28 @@ scenarios:
           manual_review: "\"CPU\"가 `LOGICALCORE` synonym에 포함 / 코어 수(EAV)가 아닌 **사용률 metric**(`cmm_metric_stat_m`, Utilization, server.Cpus) 경로 + `stat_date='202606'` + 내림차순 + TOP-3. 기대 순서: **DB-ORA-023(72.1) > cocm-hdkapp01(48.9) > SV-WEB-001(42.8)** (4위 SV-BATCH-009 18.3은 잘려야 함). 트랙 C(semantic compiler) 활성 시 결정적 피벗 SQL"
   - id: SYN-E-02
     plans: [37, 61]
-    title: "디스크 용량이 2TB 이상인 서버를 용량이 큰 순서로 보여줘"
+    title: "디스크 용량이 2TB 이상인 서버를 용량이 큰 순서로 10건만 보여줘"
     kind: normal
     env: sandbox
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "디스크 용량이 2TB 이상인 서버를 용량이 큰 순서로 보여줘"
+          query: "디스크 용량이 2TB 이상인 서버를 용량이 큰 순서로 10건만 보여줘"
         expect:
           # plans/122 C-3 - 옮기지 않음(①④⑤): 순서 기준 · 문구가 잘렸고(hostapo01/…) · 합성 데이터에 server.Disks
           #   30건이 있어 init 만으로 기대 집합을 확정하지 못했다 · 용량을 TB 로 환산해 표기할 수 있다.
           manual_review: "\"디스크용량\"이 `TotalSize` synonym에 있으나 TotalSize는 server.Memory/server.Disks 양쪽 속성 / `server.Disks`의 TotalSize 기준 + **단위 변환(2TB=2097152MB) 수치 조건** + 정렬. 기대: DB-ORA-023(4194304) > SV-BATCH-009(3145728) > cocm-hdkapp01(2097152), SV-WEB-001(1048576)은 제외. 메모리 TotalSize로 가면(최대 65536) 0건 — 즉시 실패 판정. hostapo01/"
   - id: SYN-E-03
     plans: [37, 61]
-    title: "가용성 상태가 정상이 아닌 서버의 서버명과 제조사를 보여줘"
+    title: "가용성 상태가 정상이 아닌 서버의 서버명과 제조사를 10건만 보여줘"
     kind: normal
     env: sandbox
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "가용성 상태가 정상이 아닌 서버의 서버명과 제조사를 보여줘"
+          query: "가용성 상태가 정상이 아닌 서버의 서버명과 제조사를 10건만 보여줘"
         expect:
           # plans/122 C-3 - 옮기지 않음(③): 기대 8건 중 svr-app-03·svr-bat-02 는 init 밖 excel 데이터에만 있고,
           #   init 합성 서버(avail_status 1: svr-web-05·svr-web-08·svr-was-03·svr-was-07·svr-db-04 - 실측)의 제조사
@@ -406,14 +406,14 @@ scenarios:
           manual_review: "**알람 상태 필터(ACTIVE + 심각=3) × metric 결합**. 멀티인텐트 분해 시 t1(alarm_query, 서버 선별)→t2(data_query, 지표) + **prior_rows 스코프 주입**(D-086)이 정답 경로 — t2 SQL에 `name IN ('SV-WEB-001','SV-BATCH-009')`가 있고 알람 테이블/환각 조건이 없어야 함. 2026-07-18 실측 회귀: prior_rows 죽은 배선으로 t2가 `resource_type='alarm.Alarm'` 환각 → 0건(CPU 미조회). 재발 시"
   - id: SYN-I-01
     plans: [37, 61]
-    title: "2026년 6월 서버별 CPU 사용률과 메모리 사용률 평균을 CPU 사용률이 높은 순으로 함께 보여줘"
+    title: "2026년 6월 서버별 CPU 사용률과 메모리 사용률 평균을 CPU 사용률이 높은 순으로 함께 10건만 보여줘"
     kind: normal
     env: sandbox
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "2026년 6월 서버별 CPU 사용률과 메모리 사용률 평균을 CPU 사용률이 높은 순으로 함께 보여줘"
+          query: "2026년 6월 서버별 CPU 사용률과 메모리 사용률 평균을 CPU 사용률이 높은 순으로 함께 10건만 보여줘"
         expect:
           # plans/122 C-3 - 부분 이관: 07 픽스처 2026-06 Cpus/Memory Utilization avg 4대 값·행 수는 옮겼고(자원 타입을
           #   섞으면 다른 값이 된다), 「CPU 사용률 높은 순」 순서는 응답 문자열로 볼 수 없어 남긴다.
@@ -486,14 +486,14 @@ scenarios:
           manual_review: "**EAV 수치 조건 + NOT EXISTS 안티조인**(알람 부재 증명, 조인 키 `cmm_alarm.resource_id` = 서버 id). 더미 알람(resource_id 1~5)은 실서버 미매핑이라 무영향 / 1건: cocm-hdkapp01(16코어). DB-ORA-023·SV-WEB-001이 나오면 EXISTS 방향 반전, svr-* 서버가 나오면 platform 장부 미한정(B4 — platform 쪽 LOGICALCORE는 `8.0` 등 텍스트로 34대 존재). hostapo01/02 판정 제외"
   - id: SYN-I-05
     plans: [37, 61]
-    title: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 보여줘"
+    title: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 10건만 보여줘"
     kind: normal
     env: sandbox
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 보여줘"
+          query: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 10건만 보여줘"
         expect:
           # plans/122 C-3 - 2026-06 CPU 월 통계는 07 픽스처 4대뿐(평균 (72.1+48.9+42.8+18.3)/4 = 45.525) → 2건.
           #   임계를 환각하면 행 수가 달라진다(40 안팎 3건 · 50 이상 1건).

@@ -13,7 +13,7 @@ group:
 scenarios:
   - id: H-01
     plans: [10, 19, 72, 73, 58, 35]
-    title: "김포 서버로 채워줘"
+    title: "김포 서버로 10건만 채워줘"
     kind: normal
     env: closed
     profile: baseline
@@ -21,7 +21,7 @@ scenarios:
     upload: "testdata/templates/server_list_template.xlsx"
     turns:
       - send:
-          query: "김포 서버로 채워줘"
+          query: "김포 서버로 10건만 채워줘"
         expect:
           status: completed
           has_file: true
@@ -32,7 +32,7 @@ scenarios:
     notes: "plans/122 H-4 - 매핑 출처(mapping_sources 가 hint/synonym 인지)는 응답에 실리지 않아 이 시나리오에서 판정하지 않는다 - plans/110 `94·O-a 잔여` 소관"
   - id: H-02
     plans: [10, 19, 72, 73, 58, 35]
-    title: "채워줘 (위치 없음)"
+    title: "10건만 채워줘 (위치 없음)"
     kind: normal
     env: closed
     profile: baseline
@@ -40,7 +40,7 @@ scenarios:
     upload: "testdata/templates/server_list_template.xlsx"
     turns:
       - send:
-          query: "채워줘 (위치 없음)"
+          query: "10건만 채워줘 (위치 없음)"
         expect:
           status: clarification
           clarification: {kind: zone_select}
@@ -57,7 +57,7 @@ scenarios:
                  filled_rows: {min: 1}}
   - id: H-03
     plans: [10, 19, 72, 73, 58, 35]
-    title: "여의도 리소스 현황 채워줘"
+    title: "여의도 리소스 현황 10건만 채워줘"
     kind: normal
     env: closed
     profile: baseline
@@ -65,7 +65,7 @@ scenarios:
     upload: "testdata/templates/resource_status_template.xlsx"
     turns:
       - send:
-          query: "여의도 리소스 현황 채워줘"
+          query: "여의도 리소스 현황 10건만 채워줘"
         expect:
           status: completed
           has_file: true
@@ -104,7 +104,7 @@ scenarios:
           sql_must_not_match: ["(?i)\\blimit\\s+\\d"]
   - id: H-05
     plans: [10, 19, 72, 73, 58, 35]
-    title: "2026년 6월 기준으로 채워줘"
+    title: "2026년 6월 기준으로 10건만 채워줘"
     kind: normal
     env: closed
     profile: baseline
@@ -112,7 +112,7 @@ scenarios:
     upload: "testdata/scenarios/fixtures/adhoc_cpu_memory.xlsx"
     turns:
       - send:
-          query: "2026년 6월 기준으로 채워줘"
+          query: "2026년 6월 기준으로 10건만 채워줘"
         expect:
           status: completed
           has_file: true
@@ -132,7 +132,7 @@ scenarios:
           manual_review: "서버당 1행인지(호스트명 중복 서버가 실재해 unique_by 로 판정 불가 - 행 수 오라클 소관)"
   - id: H-06
     plans: [10, 19, 72, 73, 58, 35]
-    title: "채워줘"
+    title: "10건만 채워줘"
     kind: normal
     env: closed
     profile: baseline
@@ -140,7 +140,7 @@ scenarios:
     upload: "testdata/scenarios/fixtures/adhoc_out_of_domain.xlsx"
     turns:
       - send:
-          query: "채워줘"
+          query: "10건만 채워줘"
         expect:
           status: completed
           has_file: true
@@ -159,7 +159,7 @@ scenarios:
           file: {empty_columns: ["TPMC", "도입일자", "용도"]}
   - id: H-10
     plans: [10, 19, 72, 73, 58, 35]
-    title: "2026년 6월 기준 CPU 양식 채워줘"
+    title: "2026년 6월 기준 CPU 양식을 10건만 채워줘"
     kind: normal
     env: closed
     profile: baseline
@@ -167,7 +167,7 @@ scenarios:
     upload: "tests/fixtures/forms/CPU_양식.xlsx"
     turns:
       - send:
-          query: "2026년 6월 기준 CPU 양식 채워줘"
+          query: "2026년 6월 기준 CPU 양식을 10건만 채워줘"
         expect:
           status: completed
           has_file: true
@@ -208,7 +208,7 @@ scenarios:
           manual_review: "평균 6열=avg_val·Peak 6열=max_val 방향(value_range 는 사용률 채움만 본다) · 제조사(모델명)=Vendor+Model 결합 · 비고=name"
   - id: H-11
     plans: [10, 19, 72, 73, 58, 35]
-    title: "1월부터 6월까지의 데이터를 기준으로 양식을 채우시오"
+    title: "1월부터 6월까지의 데이터를 기준으로 양식을 10건만 채우시오"
     kind: normal
     env: closed
     profile: baseline
@@ -216,7 +216,7 @@ scenarios:
     upload: "tests/fixtures/forms/CPU_양식.xlsx"
     turns:
       - send:
-          query: "1월부터 6월까지의 데이터를 기준으로 양식을 채우시오"
+          query: "1월부터 6월까지의 데이터를 기준으로 양식을 10건만 채우시오"
         expect:
           status: completed
           has_file: true
@@ -226,7 +226,7 @@ scenarios:
           sql_must_not_match: ["(?i)202607"]
   - id: H-12
     plans: [10, 19, 72, 73, 58, 35]
-    title: "채워줘 (기간 없음)"
+    title: "10건만 채워줘 (기간 없음)"
     kind: normal
     env: closed
     profile: baseline
@@ -234,7 +234,7 @@ scenarios:
     upload: "tests/fixtures/forms/CPU_양식.xlsx"
     turns:
       - send:
-          query: "채워줘 (기간 없음)"
+          query: "10건만 채워줘 (기간 없음)"
         expect:
           status: completed
           has_file: true
@@ -245,7 +245,7 @@ scenarios:
           period_covers: {relative: last_n_months, n: 6}
   - id: H-13
     plans: [10, 19, 72, 73, 58, 35]
-    title: "1월부터 3월까지 채워줘"
+    title: "1월부터 3월까지 10건만 채워줘"
     kind: normal
     env: closed
     profile: baseline
@@ -253,7 +253,7 @@ scenarios:
     upload: "tests/fixtures/forms/CPU_양식.xlsx"
     turns:
       - send:
-          query: "1월부터 3월까지 채워줘"
+          query: "1월부터 3월까지 10건만 채워줘"
         expect:
           status: completed
           has_file: true
@@ -264,7 +264,7 @@ scenarios:
           response_must_contain: ["[기간 불일치]", "끝 월을 기준으로 정렬합니다"]
   - id: H-14
     plans: [10, 19, 72, 73, 58, 35]
-    title: "지난 반년 데이터로 채워줘"
+    title: "지난 반년 데이터로 10건만 채워줘"
     kind: normal
     env: closed
     profile: baseline
@@ -272,7 +272,7 @@ scenarios:
     upload: "tests/fixtures/forms/CPU_양식.xlsx"
     turns:
       - send:
-          query: "지난 반년 데이터로 채워줘"
+          query: "지난 반년 데이터로 10건만 채워줘"
         expect:
           status: completed
           has_file: true
@@ -281,7 +281,7 @@ scenarios:
           period_covers: {relative: last_n_months, n: 6}
   - id: H-15
     plans: [10, 19, 72, 73, 58, 35]
-    title: "2026년 6월 기준 메모리 양식 채워줘"
+    title: "2026년 6월 기준 메모리 양식을 10건만 채워줘"
     kind: normal
     env: closed
     profile: baseline
@@ -289,7 +289,7 @@ scenarios:
     upload: "tests/fixtures/forms/메모리_양식.xlsx"
     turns:
       - send:
-          query: "2026년 6월 기준 메모리 양식 채워줘"
+          query: "2026년 6월 기준 메모리 양식을 10건만 채워줘"
         expect:
           status: completed
           has_file: true
@@ -305,7 +305,7 @@ scenarios:
           file: {header_rows: [5, 6], filled_columns: ["처리능력/(GB)"], filled_rows: {min: 1}}
   - id: H-16
     plans: [10, 19, 72, 73, 58, 35]
-    title: "김포 서버 목록 양식 채워줘"
+    title: "김포 서버 목록을 10건만 양식 채워줘"
     kind: normal
     env: closed
     profile: baseline
@@ -313,7 +313,7 @@ scenarios:
     upload: "tests/fixtures/forms/서버_목록_리스트_양식.xlsx"
     turns:
       - send:
-          query: "김포 서버 목록 양식 채워줘"
+          query: "김포 서버 목록을 10건만 양식 채워줘"
         expect:
           status: completed
           has_file: true
@@ -398,7 +398,7 @@ scenarios:
           sql_must_match: ["(?i)cocm-hdkapp01"]
   - id: H-21
     plans: [10, 19, 72, 73, 58, 35]
-    title: "김포 전체 서버로 채워줘"
+    title: "김포 전체 서버로 10건만 채워줘"
     kind: normal
     env: closed
     profile: baseline
@@ -406,7 +406,7 @@ scenarios:
     upload: "tests/e2e/fixtures/sample_template.docx"
     turns:
       - send:
-          query: "김포 전체 서버로 채워줘"
+          query: "김포 전체 서버로 10건만 채워줘"
         expect:
           status: completed
           has_file: true

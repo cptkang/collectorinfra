@@ -1229,8 +1229,11 @@ def _build_turn_input_state(
                 # Phase 3(D-151): 기억 옵트인 — 검증 통과 답변만 output_generator가 저장
                 delta["form_fill_remember"] = bool(body.form_fill_remember)
                 # 폼필은 전량 채움이 기본 — 파일 경로와 동일 LIMIT(텍스트 경로 기본
-                # 1,000 절단 방지, D-066 후속7 계열)
-                delta["resolved_limit"] = _FORM_FILL_DEFAULT_LIMIT
+                # 1,000 절단 방지, D-066 후속7 계열). 원 질의의 명시 건수("10건만")는
+                # 첫 턴과 같이 우선한다 — 고정 전량이면 답변 뒤에 건수가 사라졌다.
+                delta["resolved_limit"] = resolve_query_limit(
+                    original_q or body.query, _FORM_FILL_DEFAULT_LIMIT
+                )
                 logger.info(
                     "폼필 답변 턴(D-151): %d개 필드 답변 수신, 원본 파일·원 질의 복원"
                     "(file_type=%s, query=%r, 존 복원=%s)",

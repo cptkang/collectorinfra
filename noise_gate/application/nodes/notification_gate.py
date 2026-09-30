@@ -12,7 +12,8 @@ alarm_analyzer 다음에 위치하여, 결정적 정책 함수 `decide_notificat
       원문 알람으로 만든 결과(result.error 표시)를 넘기므로 여기서도 판단·기록한다.
     - (plans/87 J4) app_impact_enabled일 때만, 매트릭스 DASHBOARD·TICKET 폴스타 알람에 한해 APM
       게이트웨이(`apm_client` 주입)에 fatal 이벤트를 묻고 있으면 승격만 한다. 조회 실패는 판정
-      불변 + 사유(로그·`stage_evidence.app_impact_error`).
+      불변 + 사유(로그·`stage_evidence.app_impact_error`). (plans/87 J8) 조회는 알람 존의 제니퍼
+      소스(`source_ids`)로 좁힌다 — 존에 소스가 없으면 전 소스.
 
 계층: application → domain(notification_policy.decide_notification) 단방향 의존만 사용한다.
 """
@@ -173,6 +174,33 @@ async def notification_gate_node(
 # `level="fatal"`로 요청하지만, 다른 레벨 행이 섞여 와도 승격 근거로 쓰지 않는다(과승격 방지 · R-7).
 _APP_IMPACT_LEVELS: frozenset[str] = frozenset({"fatal", "critical"})
 
+# 제니퍼 소스 표를 가진 레지스트리 시스템 코드
+# (`config/db_registry.yaml` `solutions[].code` · plans/87 J8).
+_APM_SYSTEM = "apm"
+
+
+def apm_source_ids_for(db_id: str) -> list[str] | None:
+    """폴스타 알람 db_id의 존에 대응하는 제니퍼 소스 id 목록(선언 순서 · plans/87 J8 · D-287 ④).
+
+    존은 레지스트리 DB 항목의 zone이고, 소스는 `solutions[apm].sources` 중 같은 존인 것이다 —
+    `app_impact`가 다른 존의 같은 hostname 인스턴스 이벤트로 승격하지 않게 좁힌다. 존이 없거나 그
+    존에 소스가 없으면 None(= 전 소스 · 종전 호출). 레지스트리 실패는 경고 후 None(판정을 막지
+    않는다).
+    """
+    try:
+        from src.routing.registry import get_registry
+
+        registry = get_registry()
+        entry = registry.get(db_id)
+        zone = entry.zone if entry and entry.zone else ""
+        if not zone:
+            return None
+        ids = [s.id for s in registry.sources_of(_APM_SYSTEM) if s.zone == zone]
+        return ids or None
+    except Exception:  # noqa: BLE001 — 소스 좁히기 실패가 발송 판단을 막지 않는다
+        logger.warning("APM 소스 좁히기 실패 — 전 소스로 조회: db_id=%s", db_id, exc_info=True)
+        return None
+
 
 def _app_impact_applicable(gate_cfg, event, decision, noise_ctx) -> bool:  # noqa: ANN001
     """app_impact를 물을 대상인지 — 플래그 on · 폴스타(비 APM) 알람 · 매트릭스 DASHBOARD·TICKET."""
@@ -210,15 +238,26 @@ async def _fetch_app_impact(client, event, gate_cfg) -> tuple[dict | None, str]:
         reason = f"gateway_unreachable — {unreachable}"
         logger.warning("app_impact 조회 실패(판정 유지): alarm_id=%s 사유=%s", alarm_id, reason)
         return None, reason
+    kwargs: dict[str, Any] = {
+        "hostname": hostname,
+        # naive(폴스타 알람 시각 그대로) — 게이트웨이가 APM_TIMEZONE으로 해석한다(§3 공통 인자).
+        "reference_time": alarm_time.isoformat(),
+        "lookback_minutes": int(getattr(gate_cfg, "app_impact_window_minutes", 10)),
+        "level": "fatal",
+        "investigation_id": alarm_id,
+    }
+    # (plans/87 J8) 알람 존의 제니퍼 소스로만 좁힌다 — 없으면 인자를 넣지 않아 종전 호출과 같다
+    # (전 소스). 게이트웨이가 모르는 id라고 답하면(invalid_argument) 아래 오류 경로로 판정을
+    # 유지한다 — 전 소스 재시도는 하지 않는다(다른 존 승격 방지 · 침묵 폴백 금지).
+    source_ids = apm_source_ids_for(str(getattr(event, "db_id", "") or ""))
+    if source_ids:
+        kwargs["source_ids"] = source_ids
+    logger.debug(
+        "app_impact 조회: alarm_id=%s host=%s source_ids=%s",
+        alarm_id, hostname, source_ids or "전 소스",
+    )
     try:
-        resp = await client.apm_events(
-            hostname=hostname,
-            # naive(폴스타 알람 시각 그대로) — 게이트웨이가 APM_TIMEZONE으로 해석한다(§3 공통 인자).
-            reference_time=alarm_time.isoformat(),
-            lookback_minutes=int(getattr(gate_cfg, "app_impact_window_minutes", 10)),
-            level="fatal",
-            investigation_id=alarm_id,
-        )
+        resp = await client.apm_events(**kwargs)
     except Exception as exc:  # noqa: BLE001 — 통신 실패도 판정을 막지 않는다(사유만 남긴다)
         reason = f"gateway_error — {exc}"
         logger.warning("app_impact 조회 실패(판정 유지): alarm_id=%s 사유=%s", alarm_id, reason)

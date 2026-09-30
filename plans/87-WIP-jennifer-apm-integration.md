@@ -1,7 +1,7 @@
 # 87. 제니퍼(JENNIFER) APM 연동 — 미들웨어(WAS) 장애 진단·대응·복구 범위 확대
 
-> **작성일**: 2026-09-03 · **v2 갱신**: 2026-09-17(연동 방식 재조사 — §0.4) · **v2.1**: 2026-09-17(G-1·G-2 사용자 확정 · G-8 실측 판정 — §0.5) · **v2.2**: 2026-09-29(현재 구현 재실측 · 17일 이후 결정 반영 · 연동 가이드 `docs/31` 신설 — §0.6) · **v3**: 2026-09-29(**독립 최상위 패키지 `apm_gateway/`** — 자체 MCP 서버 · 독립 프로세스 · **D-274**(D-119 ① 개정) — §0.7) · **v3.1**: 2026-09-29(게이트 G-1~G-12 전건 확정 · **D-195 본문 등재** · G-10 코드 수정 · R-18 소유 지정 · 파급 반영 · **로컬 Docker 제니퍼 검증 환경 J0-L** — §0.8 · §10) · **v3.2**: 2026-09-29(**Open API 공식 스펙 대조 반영** — 52건 중 정정 24 · 스펙에 없음 3 · 확인 불가 2 · 원천 [J-23] — §0.9) · **v3.3**: 2026-09-29(**로컬 Docker 제니퍼 실측 J0-L-a**(라이선스 없음 · Open API 40건) — 전제 정정 · §0.10 · **D-003 재기록**(L2 = D-003 범위 밖 — 예외 아님 · D-195 ③ 별도 통제) · **목 Open API 서버·녹화 하네스**(J0-L-a ④⑤ 완료 · 실서버와 40건 불일치 0)) · **v4**: 2026-09-29(**J1~J4 구현** — `apm_gateway/` 패키지 · `sre_agent`·`noise_gate` 소비측 · J5·J6·J7 보류 · 파일명 `-TODO` → `-WIP` — **§0.11**) · **v4.1**: 2026-09-29(**로컬 Docker 제니퍼 실서버 검증** — 게이트웨이·소비측 58항목 통과 · 후속 후보 F-3·F-4 — §0.12) · **v5**: 2026-09-30(**다중 제니퍼 소스** — 은행존·공동존·레거시 등 뷰 서버 N개 · 게이트웨이 1개·소스 N개 · 식별자 `source_id` · 소스↔존 = 루트 레지스트리 · Wave J8 · 게이트 G-13~G-16 · 현행 결함 F-7 — §0.13)
-> **성격**: 구현 계획 · **[v5] 다중 제니퍼 소스 계획 추가(Wave J8 · 코드 0 · 게이트 G-15·G-16 확정(2026-09-30) · G-13·G-14 대기 — 정본 §0.13)** · **[v4] 상태: 부분 구현(J1~J4 · 작업 트리 · 커밋 없음) — 보류 J5·J6·J7 · 선행 J0-L-b·J0-O(사용자·외부) · 정본 §0.11** · ~~구현 전~~ · (이력) **상태: 계획(미구현) — 게이트 G-1~G-12 전건 확정(G-1·G-2·G-8 2026-09-17 · 나머지 2026-09-29) · D-195 본문 등재(①②③) · D-274 · 남은 선행 = J0-O 외부 전제(운영 제니퍼 접근 권한·테스트 토큰) · ~~로컬 Docker 사실 조사~~ **v3.2 완료(§0.8 · [J-24])** · ~~Open API 경로 대조~~ **v3.2 완료(§0.9)** · **[v3.3] J0-L-a 로컬 실측 완료(§0.10 — 라이선스 없는 범위)** · 사용자 할 일(평가판 신청 · **최신 Java 에이전트 5.6.x 입수** — J0-L-b 착수 조건 §0.8 (10)) · (v2.2) 제니퍼 코드 0건 재확인(`grep -i jennifer` — 샌드박스 DDL 2파일뿐) → 파일명 `-TODO` 유지(v3도 코드 0 · **[v3.3]** `apm_gateway/testdata/jennifer/` 로컬 검증 픽스처만 생김 — 패키지 코드 0 · §10)
+> **작성일**: 2026-09-03 · **v2 갱신**: 2026-09-17(연동 방식 재조사 — §0.4) · **v2.1**: 2026-09-17(G-1·G-2 사용자 확정 · G-8 실측 판정 — §0.5) · **v2.2**: 2026-09-29(현재 구현 재실측 · 17일 이후 결정 반영 · 연동 가이드 `docs/31` 신설 — §0.6) · **v3**: 2026-09-29(**독립 최상위 패키지 `apm_gateway/`** — 자체 MCP 서버 · 독립 프로세스 · **D-274**(D-119 ① 개정) — §0.7) · **v3.1**: 2026-09-29(게이트 G-1~G-12 전건 확정 · **D-195 본문 등재** · G-10 코드 수정 · R-18 소유 지정 · 파급 반영 · **로컬 Docker 제니퍼 검증 환경 J0-L** — §0.8 · §10) · **v3.2**: 2026-09-29(**Open API 공식 스펙 대조 반영** — 52건 중 정정 24 · 스펙에 없음 3 · 확인 불가 2 · 원천 [J-23] — §0.9) · **v3.3**: 2026-09-29(**로컬 Docker 제니퍼 실측 J0-L-a**(라이선스 없음 · Open API 40건) — 전제 정정 · §0.10 · **D-003 재기록**(L2 = D-003 범위 밖 — 예외 아님 · D-195 ③ 별도 통제) · **목 Open API 서버·녹화 하네스**(J0-L-a ④⑤ 완료 · 실서버와 40건 불일치 0)) · **v4**: 2026-09-29(**J1~J4 구현** — `apm_gateway/` 패키지 · `sre_agent`·`noise_gate` 소비측 · J5·J6·J7 보류 · 파일명 `-TODO` → `-WIP` — **§0.11**) · **v4.1**: 2026-09-29(**로컬 Docker 제니퍼 실서버 검증** — 게이트웨이·소비측 58항목 통과 · 후속 후보 F-3·F-4 — §0.12) · **v5**: 2026-09-30(**다중 제니퍼 소스** — 은행존·공동존·레거시 등 뷰 서버 N개 · 게이트웨이 1개·소스 N개 · 식별자 `source_id` · 소스↔존 = 루트 레지스트리 · Wave J8 · 게이트 G-13~G-16 전건 확정 · **D-287** · 현행 결함 F-7 — §0.13) · **v5.1**: 2026-09-30(**J8 구현** — 게이트웨이 소스 N개 · 레지스트리 `sources[]` · 알람 존 판정(F-7 해소) · `noise_gate` 존 좁히기 · F-3 흡수 · 목 서버 2개·로컬 Docker 두 소스 실프로세스 검증 — **§0.14**)
+> **성격**: 구현 계획 · **[v5.1] J8 구현(작업 트리 · 커밋 없음 · 정본 §0.14 — 본체 채팅 쪽 G-16·승계 패싯은 `plans/125`)** · **[v5] 다중 제니퍼 소스 계획 추가(Wave J8 · ~~코드 0~~ · 게이트 G-13~G-16 전건 확정(2026-09-30) · **D-287** — 정본 §0.13)** · **[v4] 상태: 부분 구현(J1~J4 · 작업 트리 · 커밋 없음) — 보류 J5·J6·J7 · 선행 J0-L-b·J0-O(사용자·외부) · 정본 §0.11** · ~~구현 전~~ · (이력) **상태: 계획(미구현) — 게이트 G-1~G-12 전건 확정(G-1·G-2·G-8 2026-09-17 · 나머지 2026-09-29) · D-195 본문 등재(①②③) · D-274 · 남은 선행 = J0-O 외부 전제(운영 제니퍼 접근 권한·테스트 토큰) · ~~로컬 Docker 사실 조사~~ **v3.2 완료(§0.8 · [J-24])** · ~~Open API 경로 대조~~ **v3.2 완료(§0.9)** · **[v3.3] J0-L-a 로컬 실측 완료(§0.10 — 라이선스 없는 범위)** · 사용자 할 일(평가판 신청 · **최신 Java 에이전트 5.6.x 입수** — J0-L-b 착수 조건 §0.8 (10)) · (v2.2) 제니퍼 코드 0건 재확인(`grep -i jennifer` — 샌드박스 DDL 2파일뿐) → 파일명 `-TODO` 유지(v3도 코드 0 · **[v3.3]** `apm_gateway/testdata/jennifer/` 로컬 검증 픽스처만 생김 — 패키지 코드 0 · §10)
 > **v2.2 요청(사용자 지시 원문, 2026-09-29)**: *"현재 구현을 검토하여 87번 제니퍼 연동 계획서를 업데이트하고 연동 가이드를 상세하게 docs 폴더에 작성하라."*
 > → 결과: 계획서가 기대거나 전제한 코드를 전수 재실측(§0.6 표 — 41항목) · 17일 이후 결정(D-229·D-233·D-240·D-244·D-251·D-255·**D-270·D-272**) 반영 · 운영자용 연동 가이드
 > **`docs/31_jennifer_integration_guide.md`** 신설(구현 전이라 절마다 「현재 가능」/「구현 후 절차(계획)」를 나눴다). **확정 사항 G-1·G-2·G-8은 바꾸지 않았다.**
@@ -57,7 +57,7 @@
 > OpenAI 호환 3필드 · 로컬 MLX 검증 경로) · **D-233**(원격 조사 프로파일 bash 제거) · D-240(실 LLM 테스트 = 로컬 MLX) · **D-244**(SDD
 > 산출물은 `spec/`) · **D-251**(기준 경로 = 사다리 2단) · **D-255**(사용자·관리자 기능은 매뉴얼 동반) · **D-270 · D-272**(`plans/121` —
 > 소스 카탈로그 · 처리기 계약 · `allowed_sources` · 82 Wave 7 흡수) · **(v3) D-274**(관측 소스 독립 게이트웨이 패키지 허용 — **D-119 ① 개정** ·
-> `apm_gateway/` · D-139 신규 최상위 패키지 · 2026-09-29 본문 등재)
+> `apm_gateway/` · D-139 신규 최상위 패키지 · 2026-09-29 본문 등재) · **(v5) D-287**(제니퍼 다중 소스 — 게이트웨이 1개·소스 N개 · 2026-09-30 본문 등재)
 > **신규 결정 예약**: **D-195**(제니퍼 APM 연동 — §11). `docs/02_decision.md` 「채번 이력」 표에 등재(2026-09-03). → **[v3.1] 2026-09-29 본문 등재 완료**(`## D-195` — ①②③ · 같은 번호 소진 관례).
 > ※ 채번 실측 2026-09-03 — `## D-` 헤더 최댓값 **193** · 「변경 이력」 표 최댓값 **193** · 「채번 이력」 표
 > (D-105·115·134·158·163~168·176 예약) 대조 → 다음 번호는 194이나, 작성 시점에 **D-194를 `plans/50` v2.1·
@@ -706,7 +706,7 @@ APM 라벨·폴백 사유·정체 가드(사후) ✔ · 실 LLM 완주 ✖(미�
 
 ### 0.13 v5 — 다중 제니퍼 소스(은행존·공동존·레거시 등) 설정·조회 (2026-09-30 · 사용자 지시 *"제니퍼 소스도 여러개이다. 은행존, 공동존, 레가시등 여러개의 제니퍼 소스가 있다. 여러 소스를 설정하여 조회할 수 있도록 수정 계획을 업데이트하라."*)
 
-> **정본**. 계획만 갱신했다 — 코드 변경 0 · 게이트 **G-15·G-16 사용자 확정**(2026-09-30 — G-15 ① 전체 권한 · G-16 ① 권고대로) · **G-13·G-14 대기** · 실행 Wave **J8**(§6). v4 구현(J1~J4 · §0.11)은 제니퍼 뷰 서버 **하나**를 전제로
+> **정본**. 계획만 갱신했다 — 코드 변경 0 · 게이트 **G-13~G-16 전건 사용자 확정**(2026-09-30 — G-13 ① · G-14 ① · G-15 ① 전체 권한 · G-16 ①) · 결정 **D-287** · 실행 Wave **J8**(§6). v4 구현(J1~J4 · §0.11)은 제니퍼 뷰 서버 **하나**를 전제로
 > 만들어졌다. 운영에는 뷰 서버가 여럿이고(은행존 · 공동존 · 레거시 · 그 밖) 서버마다 URL·토큰·도메인 id 공간이 따로다.
 > **용어** — 이 절의 **제니퍼 소스**는 제니퍼 뷰 서버 하나(Open API 기준 URL + 토큰 1쌍)다. 코드 이름은 게이트웨이 안에서 `source_id`, 본체에서 `apm_source_id`다.
 > `plans/125`의 관측 소스(`allowed_sources`의 `apm`·`doc` — 시스템 단위)보다 한 층 아래다. 시스템 `apm` 하나 아래에 제니퍼 소스가 여럿 있다.
@@ -738,7 +738,7 @@ APM 라벨·폴백 사유·정체 가드(사후) ✔ · 실 LLM 완주 ✖(미�
 | M-1 | 배치(G-13) | **게이트웨이 1개 = 소스 N개**. 소비자 3곳의 엔드포인트 설정(`MCP_SOURCE_ENDPOINTS`의 `apm` · `APM_MCP_URL` · `NOISE_APM_MCP_URL`)은 **하나 그대로**다. 소스 선택·집계·부분 실패를 게이트웨이 한 곳에서 처리한다 | 소스마다 게이트웨이 — 소비자 3곳이 다중 엔드포인트를 알아야 하고(본체 `MCP_SOURCE_ENDPOINTS`는 시스템 → URL 하나) 집계·부분 실패를 세 번 구현한다. 한 호스트에서 모든 뷰 서버에 닿지 않을 때(R-31)만 재판정 |
 | M-2 | 식별자 | 인스턴스 = (**`source_id`**, `domain_id`, `instance_id`). `source_id`는 소문자 슬러그 `[a-z][a-z0-9_]{0,15}`(예 `bank`·`common`·`legacy`) · 예약어 `default`·`api` | `domain_id` 전역 유일 가정(S-4) |
 | M-3 | 설정 — 게이트웨이 `.env` | `JENNIFER_SOURCES=["bank","common","legacy"]`(JSON 배열 · 선언 순서 = 조회·표시 순서) + 소스별 접두 키 `JENNIFER_<ID>_API_URL`·`JENNIFER_<ID>_API_TOKEN`(필수) · `_DOMAIN_IDS`·`_API_TIMEOUT_SECONDS`·`_RATE_LIMIT_PER_SEC`·`_MAX_RESPONSE_BYTES`(선택 — 비면 전역 `JENNIFER_*` 값). **단일 설정 호환**: `JENNIFER_SOURCES`가 없고 `JENNIFER_API_URL`만 있으면 소스 `default` 1개(v4 동작 · `docs/31` §10.2 절차 그대로). **둘 다 있으면 기동 실패**(정본이 모호 — 침묵 선택 금지) · URL 없는 소스·중복 id·형식 위반도 기동 실패 · 기동 로그 1줄에 소스 id와 설정 여부만(URL·토큰 값 없음 — R-20) | `config/sources.yaml` + env 키 이름(두 번째 파일 — 비밀은 어차피 `.env`) · JSON 한 줄(토큰이 JSON 문자열 안에 섞이고 편집 오류가 잦다) |
-| M-4 | 소스 ↔ 존 정본 | 루트 레지스트리 `solutions[apm].sources[]` = `{id, label, zone}`(예 `{id: bank, label: 은행존 제니퍼, zone: bankjon}`). **게이트웨이는 존을 모른다**(루트 `config/`를 읽지 않는다 — D-274 ③). 소비자(본체·`noise_gate`)가 레지스트리로 존·라벨을 푼다. 게이트웨이가 알려 온 `source_id`가 레지스트리에 없으면 **존 없음**으로 다루고 경고 1회(조용히 버리지 않는다) | 게이트웨이 설정에 존을 두고 결과에 싣기 — 존 코드의 두 번째 출처(D-053)이고, 본체 인가는 게이트웨이를 부르기 **전에** 존을 알아야 한다 |
+| M-4 | 소스 ↔ 존 정본 | 루트 레지스트리 `solutions[apm].sources[]` = `{id, label, zone}`(예 `{id: bank, label: 은행존 제니퍼, zone: bankjon}` · 레거시도 `bankjon` — G-14 확정). **게이트웨이는 존을 모른다**(루트 `config/`를 읽지 않는다 — D-274 ③). 소비자(본체·`noise_gate`)가 레지스트리로 존·라벨을 푼다. 게이트웨이가 알려 온 `source_id`가 레지스트리에 없으면 **존 없음**으로 다루고 경고 1회(조용히 버리지 않는다) | 게이트웨이 설정에 존을 두고 결과에 싣기 — 존 코드의 두 번째 출처(D-053)이고, 본체 인가는 게이트웨이를 부르기 **전에** 존을 알아야 한다 |
 | M-5 | 인벤토리·부분 실패 | 소스별 인벤토리·TTL 캐시 · 갱신은 소스 간 병렬 · 한 소스 실패는 그 소스만 빠지고 `[한계]` + 봉투 `sources[]` 상태로 드러낸다 · **전 소스 실패 또는 전 소스 도메인 0건이면 `source_unavailable`**(빈 결과를 정상으로 보지 않는 규칙 유지) · 실패·빈 소스는 짧게 캐시(상수 30초 — `gateway_health` 캐시와 같은 값) → **F-3 흡수**(사용자 결정 대기였던 후속 후보 — J8 착수가 확정되면 함께 고친다) | 전역 인벤토리 1개(S-3 그대로) |
 | M-6 | 도구 계약 — 추가만 | ① `hostname`을 받는 7종과 `apm_instance_map`에 선택 인자 `source_ids`(문자열 목록 · 비면 전 소스 · 모르는 id는 `invalid_argument` + 설정된 id 목록) ② 행·`profile_ref`에 `source_id` · `instance_resolution`에 `instance_refs[]`(`{source_id, domain_id, instance_id}` — 기존 `instances` id 목록은 그대로) ③ `apm_transaction_profile`에 `source_id` — 소스가 2개 이상이면 필수(없으면 `invalid_argument`) · 정합 결과의 (소스, 도메인) 쌍과 대조 ④ 봉투의 `source_kind="apm_api"`·`source="jennifer"`는 **그대로**(소비자 인식 키 — 예 `sre_agent/sre_agent/domain/severity_signatures.py:191`) + `sources: [{source_id, status, reason}]` 추가 ⑤ `gateway_health` = 소스별 행 · 전체 상태 `ok`(모두 정상) / `degraded`(하나라도) / `not_configured`(0개) | 봉투 `source`를 소스 id로 바꾸기 — 소비자의 인식 키가 깨진다 |
 | M-7 | 이벤트·폴러 | 커서 키 `apm_gateway:poller:cursor:{source_id}:{domain_id}` · 멱등 키에 `source_id` 포함 · 소스 간 병렬 폴링(소스 안은 종전대로 도메인 순차 · 소스별 속도 상한) · 백오프·중지를 (소스, 도메인)별로 · **알람 `dbId` = `jennifer_<source_id>`**(단일 설정 `default`는 종전 `jennifer`) · `source`는 `jennifer` 그대로(`is_apm_source` 인식 유지) · `apm.source_id` 추가 · `resourceAncestry` = `JENNIFER > <source_id> > <도메인> > <인스턴스>`. 운영 발행 이력이 없어(§0.12 폴러 발행 0 · J0-O 전) 키를 옮기지 않는다 | `dbId`는 고정하고 `apm.source_id`만 싣기 — 존 판정·ack·식별 캐시가 전부 `dbId`로 도는데(S-12) 그 경로마다 원문 페이로드를 다시 읽어야 한다 |
@@ -774,7 +774,94 @@ APM 라벨·폴백 사유·정체 가드(사후) ✔ · 실 LLM 완주 ✖(미�
 |---|---|---|
 | F-7 | APM 알람이 **존 일부 구독자에게 전달되지 않는다**(S-12) — 서버 하나일 때도 성립하는 현행 결함이다. v4.1 검증(§0.12)은 존 구독 경로를 보지 않았다 | J8에서 M-4·M-7로 해소. 그 전까지 APM 알람은 전 존 구독자·관리자만 본다 — `docs/31` §11에 적는다(J8 산출물) |
 
-**(7) 바꾸지 않은 것** — 확정 G-1~G-12 · D-274 구조(게이트웨이 1패키지·1프로세스) · 허용목록 방침 · `app_impact` 승격 전용 · 심각도 3 불변 · 소비자 엔드포인트 설정 키. v4 코드는 고치지 않았다. 결정은 G-13~G-16 확정 뒤 신규 D-번호로 등재한다(채번은 등재 직전 3곳 grep · 지금 `docs/02_decision.md`는 다른 작업이 작업 트리에서 수정 중이라 건드리지 않았다). 본체 쪽 요청은 `plans/125` 변경 이력에 통지 1행으로 남겼다.
+**(7) 바꾸지 않은 것** — 확정 G-1~G-12 · D-274 구조(게이트웨이 1패키지·1프로세스) · 허용목록 방침 · `app_impact` 승격 전용 · 심각도 3 불변 · 소비자 엔드포인트 설정 키. v4 코드는 고치지 않았다. 결정은 게이트 전건 확정 뒤 **D-287**로 등재했다(2026-09-30 · 채번은 등재 직전 3곳 grep · 다른 작업의 미커밋 변경은 건드리지 않고 덧붙였다). 본체 쪽 요청은 `plans/125` 변경 이력에 통지 1행으로 남겼다.
+
+### 0.14 v5.1 — J8 다중 제니퍼 소스 구현 (2026-09-30 · 사용자 지시 *"87번 계획을 구현하라."*)
+
+> **정본 요약**. 작업 트리 반영 · **커밋하지 않았다**. 결정 = D-287 구현 부기(신규 D-번호 없음). SDD = `spec/SPEC-apm-gateway.md`·`SPEC-apm-noise-gate.md`·`SPEC-apm-sre-agent.md`의 [J8] 표지 ·
+> `tasks/plan-87.md`·`tasks/todo-87.md` J8 절(T-14~T-22). 운영자 절차 = `docs/31` v5. 본체 채팅 쪽(G-16 위치어 좁히기 · 승계 패싯 `apm_source_id` · 첫 홉 `source_id` 보존)은 `plans/125` 소관이라
+> 구현하지 않았다(125 변경 이력에 랜딩 통지 1행).
+
+**(1) 착수 판정(§6 "선행 완료 + 게이트 해제인 Wave만" · 2026-09-30 재판정)**
+
+| Wave | 판정 | 근거(실측) |
+|---|---|---|
+| **J8** | **구현** | G-13~G-16 전건 확정 · D-287 · 선행 J1~J4·목 서버 완료 · 라이선스·운영 접근 불필요 |
+| J5 본체 쪽 | `plans/125` 소관 — 구현 안 함 | D-281 ① · 125 요청 ②③④는 이번 랜딩으로 착수 가능(통지 행) |
+| J6 | **보류 유지** | G-6 "J3 완료 + 목업 검증 뒤" — 목업 = J0-L-b 로컬 재현인데 로컬 Docker는 여전히 도메인 0건(두 소스 `gateway_health` `domain_count` 0 · 2026-09-30 실측) |
+| J7 | **보류 유지** | G-9 "J2 완료 + 소비자 확정" — 루트 `.env`·`mcp_server/.env`의 `PROMETHEUS_URL`이 비어 있다(2026-09-30 실측) |
+| J0-L-b | 사용자 전제 | 평가판 라이선스·최신 에이전트 미입수(도메인 0건) |
+| J0-O | 외부 전제 | 운영 접근·토큰 — **소스마다**(§0.13 (4) · 레거시 버전 R-30 1순위) |
+
+**(2) 구현 위치(파일별 요지)**
+
+| 영역 | 파일 | 요지 |
+|---|---|---|
+| 게이트웨이 설정 | `apm_gateway/apm_gateway/config.py` · `domain/sources.py`(신규) · `__main__.py` · `.env.example` | `JENNIFER_SOURCES` + `JENNIFER_<ID>_*`(필수 URL·토큰 · 선택 키 전역 상속) · 단일 설정 = 소스 `default` · 두 방식 동시·필수 키 누락·id 형식/예약어/중복 → `ValueError` → 기동 실패(종료 코드 2 · 값 없는 메시지) · 정합 파일의 미설정 소스 경고 · 기동 로그 `sources[{id, url_set, token_set, domain_filter}]` |
+| 소스 묶음 | `application/sources.py`(신규 `SourceSet`·`build_source_set`) · `application/resolver.py` | 소스마다 클라이언트·조회 함수·정합기(토큰은 그 클라이언트에만) · `select(source_ids)`(모르는 id = `invalid_argument`+목록) · 인벤토리 병렬 · 부분 실패 `[한계]`+`sources[]` · 전부 실패 → 원인 코드 동일이면 그 코드, 섞이면 `source_unavailable` · 정합기는 소스 하나 · 도메인 목록 실패를 예외 대신 인벤토리에 담음 · **실패·빈 인벤토리 30초 캐시(F-3)** · `overrides[].source_id` · `per_source.<id>.match_rules` · 인스턴스에 `source_id` |
+| 도구 | `application/tools.py` · `domain/signals.py` | 키 = (소스, 인스턴스) · 호출 묶음 = (소스, 도메인) · 행·`profile_ref`·`instance_refs`·`sources[]` · `apm_transaction_profile(source_id)`(소스 ≥2 필수 · 그 소스에서만 정합) · 신호에 `source_id`·중복 제거 키 `(kind, source_id, instance_id)` · `gateway_health` 소스별 행·최상위 `status` · 소스 1개면 `[한계]` 문구 v4 그대로 |
+| 폴러 | `application/poller.py` · `domain/events.py` | 소스 간 병렬(한 소스 예외가 다른 소스를 막지 않음) · 커서 `…:cursor:<source_id>:<domain_id>` · 멱등 키에 `source_id` · 상태 키 `<source_id>:<domain_id>` · `dbId` = `jennifer_<id>`(default `jennifer`) · `apm.source_id` · `resourceAncestry`(default는 v4) |
+| 서버·감사 | `interface/server.py` · `interface/audit.py` | 도구 7종 `source_ids` · 프로파일 `source_id` · 감사 `sources=<id>:<HTTP 호출 수>,…`(도구 1회 전후 소스별 차이) |
+| 목 서버 | `testdata/jennifer/scripts/mock_openapi.py` | 접근 기록 `bearer_fp`(Bearer sha256 앞 12자리 — 값 미기록) |
+| 레지스트리·존 | `config/db_registry.yaml` · `src/routing/registry.py` · `src/routing/zones.py` | `solutions[apm].sources[]` 3건(bank→bankjon · common→gongjon · legacy→bankjon) · `SourceSpec` · `_parse_sources`(검증 실패 `RegistryError`) · `sources_of` · `alarm_source`(표에 없는 id 경고 1회) · `db_id_to_zone`이 APM 소스도 푼다(**F-7 해소** — `src/api/routes/alarm.py` 코드 변경 0) |
+| `noise_gate` | `application/server_identity.py` · `application/nodes/notification_gate.py` · `infrastructure/apm_gateway_client.py` · `domain/investigation_payload.py` | 존·툴팁(`제니퍼 — <존 약칭> <도메인>; <dbId>` · default 불변) · `is_apm_source`가 `jennifer_` 접두도 인정 · `apm_source_ids_for`(알람 존의 소스 · 없으면 전 소스) · 클라이언트 `source_ids`(값 있을 때만) · `invalid_argument` 시 재시도 없음 · 힌트 `source_id` |
+| `sre_agent` | `application/investigation_guidance.py` | 지침 ④ "profile_ref의 source_id·domain_id·txid·time_ms를 그대로" · 힌트 키 `source_id`(off 바이트 불변) |
+| 문서 | SPEC 3종 · `tasks/plan-87.md`·`todo-87.md` · `docs/31` v5 · 관리자 매뉴얼 A-30·9.5 + 빌드 · `plans/125` 통지 행 · `plans/INDEX.md` · D-287 부기 | — |
+
+- 소비측 코드(레지스트리·존·`noise_gate`·`sre_agent`)는 병렬 서브에이전트가 작성했고, 산출물·테스트·렌더 지문은 이 작업자가 직접 다시 확인했다. 서브에이전트는 `apm_source_ids_for`를
+  작업 지시(`server_identity.py`)와 달리 `notification_gate.py`에 두었다 — 지시대로 두면 application → application WARN이 1건 새로 생긴다(되돌리는 비용: 함수 이동 + import 1줄 · 계획 이탈 아님).
+
+**(3) 계획 대비 이탈 — 근거와 되돌리는 비용**
+
+| # | 계획 | 실제 | 근거 | 되돌리는 비용 |
+|---|---|---|---|---|
+| E-11 | M-6 ① "`hostname`을 받는 7종과 `apm_instance_map`에 `source_ids`"(= `apm_*` 8종 전부) | `apm_transaction_profile`은 `source_ids` 없이 `source_id`만(나머지 7종에 `source_ids`) | 프로파일은 `profile_ref`가 소스 하나를 가리킨다 — 두 인자를 함께 받으면 교집합·모순 입력 규칙이 새로 필요하다 | 인자 1개 + 교집합 검사 |
+| E-12 | D-287 ⑦ "전 소스 실패 → `source_unavailable`" | 원인 코드가 모두 같으면 그 코드, 섞이면 `source_unavailable`(사유 = 소스별 나열) | 소스 1개(단일 설정)에서 v4 코드(예 401 → `apm_api_error` "인증 실패")를 지킨다(수용 기준 "단일 설정 = v4 동작") · `sre_agent`는 `source_unavailable`만 폴백 대상으로 보므로 인증 실패를 '미가용'으로 뭉개지 않는다 | `_all_failed` 한 줄 |
+| E-13 | M-7 `resourceAncestry` = `JENNIFER > <source_id> > …` | 단일 설정 `default`는 v4 그대로(소스 구간 없음) | `dbId`의 default 예외와 같은 원칙 · 단일 설정 = v4 | 조건 1줄 |
+| E-14 | M-3 "둘 다 있으면 기동 실패" | 단일 키 범위 = `JENNIFER_API_URL` **또는** `JENNIFER_API_TOKEN` | 토큰만 남아도 어디에도 쓰이지 않는 비밀이 모호하게 남는다(셸 export 잔존 포함) | 조건에서 토큰 제거 |
+| E-15 | M-4 "로더 검증(존 코드 실재 · id 중복 없음)" | 검증 실패 = `RegistryError`(로드 실패) — 기존 DB 항목의 미선언 존은 경고만 | 소스는 알람 존 판정(RBAC)의 정본 — 조용히 버리면 존 구독자에게 알람이 가지 않는다(F-7 재발) | `raise` → 경고 |
+| E-16 | `sources: [{source_id, status, reason}]`(상태 어휘 미정) | 어휘 4종 `ok`·`no_match`·`empty`·`unavailable` · `gateway_health`는 봉투 `sources` 대신 소스별 행 | 계약 상세 — SPEC §3.1에 적었다 | 어휘 문서만 |
+| E-17 | `gateway_health` "전체 상태 `not_configured`(0개)" | 소스 0개 = 행 0 + 최상위 `status: not_configured`(v4는 `not_configured` 행 1개) | 행 = 소스 | 빈 행 1개 |
+| E-18 | "기존 게이트웨이 테스트 통과(`source_id` 필드 추가 단언만 갱신)" | 단언 갱신(`instance_refs`·`sources` · `profile_ref.source_id` · 커서 키 · 폴러 상태 키 · 호출 수 속성) + **테스트 헬퍼 생성자 2곳**(`conftest.make_tools` · `test_poller._poller` — `ApmTools`·`EventPoller`가 `SourceSet`을 받는다) | 생성자 시그니처 변경 — 테스트 본문 단언의 의미는 그대로 | 호환 생성자 추가 |
+
+**(4) 수용 기준(§0.13 (5)) 충족**
+
+| 기준 | 결과 | 근거 |
+|---|---|---|
+| 두 소스가 같은 `domain_id`·`instance_id` — 정합·도구 호출이 그 소스 서버로만 · `profile_ref`로 다른 소스 호출 0 · 멱등·커서 키 분리로 두 이벤트 모두 발행 · 재기동 중복 0 | ✔ | `apm_gateway/tests/test_multi_source.py`(목 서버 2개 · `/__mock/hits` 소스별) · 실프로세스 25항목 |
+| 소스 A 토큰이 소스 B 요청 헤더에 0회 · 거부 입력은 소스마다 HTTP 0회 | ✔ | `bearer_fp` 대조 · `test_rejected_input_is_zero_http_per_source` · 실프로세스 |
+| 한 소스 다운 → 나머지 + `[한계]` + `sources[].status` · 전 소스 다운·전 소스 도메인 0건 → `source_unavailable` · 실패·빈 소스 30초 뒤 재조회(F-3) | ✔ | `test_one_source_down_…`·`test_all_sources_down_or_empty_…`·`test_failed_or_empty_source_is_requeried_after_30s` · 로컬 Docker 31초 재조회(감사 `sources=bank:1,common:1`) |
+| 단일 설정 = v4 · 기존 게이트웨이 테스트 통과 · 동시 설정 → 기동 실패 · `.env.example` 커버리지 | ✔ | 기존 154건 통과(단언 갱신은 E-18) · `test_single_setting_keeps_v4_identifiers` · `test_invalid_source_settings_fail_startup` · 실프로세스 종료 코드 2 · 접미 키 커버리지 테스트 |
+| 존 구독자: 자기 존 APM 알람 수신·ack · 다른 존 미수신 · 존 없는 소스는 전 존·관리자만 · `app_impact`가 다른 존 소스 이벤트로 승격하지 않음 | ✔ | `tests/test_api/test_plan87_j8_apm_alarm_zone.py`(라우트 판정·ack 라우트) · `noise_gate/tests/test_plan87_j8_multi_source.py`(존 소스만 `source_ids`) + 게이트웨이 좁히기 테스트 + 실클라이언트 종단(공동존 소스만) |
+| 레지스트리에 없는 `source_id` → 존 없음 + 경고 1회 · 경계 불변식·`overfit_check`·계층 테스트 | ✔ | `test_unknown_source_id_warns_once_and_is_none` · `test_boundary.py` · overfit 신규 유입 0 |
+| 산출물(SPEC 3종 · `docs/31` §4·§10.2·§11 · 매뉴얼 · `.env.example`) | ✔ | (2) 표 |
+
+**(5) 검증 수치(2026-09-30)**
+
+- 게이트웨이: **182 passed · 4 skipped**(착수 전 154 passed · 2 skipped · skip = `RUN_DOCKER_IT` 없음) — 신규 `test_multi_source.py` 14 · `test_config.py` +14 · `test_docker_it.py` +2.
+- 로컬 Docker: `RUN_DOCKER_IT=1` **4 passed**(단일 2 + 두 소스 2) · 게이트웨이 실프로세스(로컬 Docker 1대 = 소스 두 개) **10/10**. 첫 실행 6/7 — 측정 방법 오류 1: 폴러 첫 주기가 두 소스 인벤토리를 먼저 캐시해 도구 호출 감사가 `api_calls=0`이었다. 폴러를 끈 2단계로 다시 재 통과(코드 결함 아님).
+- 목 서버 2개 + 임시 Redis(`redis:7-alpine` · 127.0.0.1 빈 포트 · 끝나고 삭제) + 게이트웨이 실프로세스 **25/25**(설정 오류 기동 실패 · Bearer · 좁힌 호출 · 프로파일 소스 고정 · `noise_gate` 실클라이언트 · 폴러 2건·커서·재기동 · 한 소스 다운 · 감사 · 비밀 0회 · 토큰 교차 0). 공유 Redis 6380 미사용 · 과금 API 0.
+- `sre_agent`: **752 passed · 3 skipped**.
+- 소비측 신규 테스트 **74건**(레지스트리 26 · 알람 존 15 · `noise_gate` 28 · `sre_agent` 5) 전부 통과 — 알람 존 15건 중 6건은 세션 시작 커밋 `4c2614e` worktree에 얹으면 **실패한다**(F-7 재현 · `db_id_to_zone`이 `jennifer_<id>`를 못 풀어 존 구독자 수신·ack 판정이 거부). 기존 `noise_gate/tests/test_plan87_apm_consumer.py`는 기대값 3줄만 갱신.
+- 본체 + `noise_gate` 관련 범위(J8 신규 4파일 · 125 테스트 · 알람 존·스트림 · 레지스트리 · `noise_gate` APM 소비·플래그 off): **552 passed**.
+- 전체 회귀(루트 `pytest`): **12916 passed · 3 failed · 31 skipped · 3 xfailed** — 실패 3건은 J8과 무관: `test_plan104_local_sandbox_profile_gate`(추적 중인 `config/db_profiles/itam.yaml`이 `local_sandbox` 표기 — 세션 시작 커밋 `4c2614e` worktree에서도 실패) · `test_api_multiturn::test_both_text_routes_resolve_approval`·`test_form_state_reset::test_both_text_routes_share_the_helper`(`inspect.getsource(process_query)` — 단독 실행은 두 트리 모두 통과 · 전체 실행 순서 의존. 책임 소재는 아래 부기).
+- 프롬프트 렌더 지문 **11/11 동일**(분해 플래너 APM 활성·비활성 × 소유표 on·off 4 · 라우터 소유표 on·off × 장애진단 on·off 4 · 소유표 행 2 · 소유 지침 1 — 세션 시작 커밋 `4c2614e` worktree 대조 · worktree 삭제).
+- 품질 게이트: `arch_check --ci` 위반 0 · `overfit_check --ci` 신규 유입 0 · ruff 게이트웨이 신규 0(기준선 E501 1건 `interface/server.py:3` 그대로) · 소비측 파일 델타 0 · mypy 게이트웨이 0 · `tests/test_manual` 499 passed.
+
+**(6) 측정하지 못한 것** — 라이선스가 없어 두 소스 **실데이터**(인스턴스·이벤트·트랜잭션 모양 · 소스 간 같은 hostname 정합)는 합성 픽스처로만 돌았다 · 운영 망 분리(R-31)·레거시 버전(R-30)·소스별 명명 규칙(`per_source` 값)은 J0-O · 실 LLM(MLX) 조사 완주 · `noise_gate` 워커 전체를 거친 `app_impact` 종단(게이트 노드 단위 테스트와 실클라이언트 → 실게이트웨이까지만) · 존 구독 화면의 브라우저 확인(라우트 판정·ack 라우트 테스트까지).
+
+**(7) 새로 안 사실**
+
+| # | 실측 | 반영 |
+|---|---|---|
+| F-8 | 레지스트리에 소스가 있는 배포에서 게이트웨이를 단일 설정(`default`)으로 띄우면 `noise_gate` 존 좁히기가 `invalid_argument`(모르는 `source_ids`)로 실패한다 — 판정은 그대로이고 사유가 남는다(설계대로 · 재시도 없음) | `docs/31` §4.2·§4.7·§11 — `app_impact`를 켜기 전에 게이트웨이를 다중 설정으로 맞춘다 |
+| F-9 | `plans/125` `apm_query`는 첫 홉(`apm.instances`) 결과에서 hostname만 넘긴다 — 행의 `source_id`는 결과 행에는 그대로 실리지만 다음 홉 대상에는 없다 | 125 요청 ④(통지 행) |
+
+**(8) F-8을 코드로 완화할지 — 판단: 하지 않는다(문서·체크리스트로 막는다)**. 후보는 「게이트웨이가 단일 설정(`default`)이면 `source_ids`를 무시하고 `[한계]`만 단다」였다. 하지 않는 이유 ① 모르는
+id를 받아들이는 예외가 계약(M-6 ① 「모르는 id는 `invalid_argument`」)에 구멍을 낸다 — 다중 설정의 오타·누락도 같은 길로 조용히 넓어질 위험이 생긴다 ② 사용자가 운영 제니퍼가 여럿이라고
+확정했다(v5) — 운영은 다중 설정이고, 단일 설정은 로컬·개발용이다 ③ `app_impact`는 기본 off이고 이 저장소의 루트 `.env`에서도 켜져 있지 않다(2026-09-30 실측 — `NOISE_APP_IMPACT_ENABLED`·`NOISE_APM_MCP_URL` 없음 · 폐쇄망 `.env`는 측정하지 못했다)
+④ 실패는 조용하지 않다(판정 유지 + `app_impact_error` 사유). 대신 `docs/31` §4.2·§4.7·§11과 §10.4 내부망 절차에 「레지스트리 `sources[].id` = 게이트웨이 `JENNIFER_SOURCES`」 확인을
+넣었다. 구버전 게이트웨이(J8 전)에 `source_ids`가 가면 도구 인자 검증 오류(`gateway_error`)로 같은 경로다. 되돌리는 비용(완화를 넣는다면): `SourceSet.select`에 단일 설정 분기 + `[한계]` 1줄 + 테스트.
 
 ---
 
@@ -1746,7 +1833,7 @@ EVENT 룰 API(on/off·대상별 설정)는 조치 카탈로그가 아니다(관�
 | **J5** 질의 경로 | `db_registry` `apm`(**`backend: mcp`** — v2)·`jennifer` family · ~~`jennifer_export` DB · 지식·유사어 시드~~(v2 삭제) · 라우팅 골든셋 추가 · 미제공 능력 부분 응답 · UI 배지 | 설정 파일 · `testdata/routing_gold` 추가 | J2 · ~~Plan 82 Wave 7(그룹 실행자 훅 — `mcp` 변형)~~ **[v2.2] `plans/121` TP-9.1·9.2·10.5**(D-270 ⑯ — 82 Wave 7 디스패치 흡수) | **G-5** |
 | **J6** 대응·복구 L2 | 승인 대기함 UI·API · `remediation_policy.yaml` · 실행기 패키지(트랜잭션·검증·롤백·감사) · 카탈로그 3종 · 적응형 공격 시나리오 | 신규 패키지 `remediation/`(권고) · 본체 어드민 라우트 · 테스트(정책 거부·롤백·이중 승인·"제안 변조 → 실행 불가") | J3 | **G-6·G-7 + D-195 ③ 등재** |
 | **J7** 표준 노출(선택 · v2.1) | `GET /metrics/apm` OpenMetrics 1.0 브리지(§5.9) — 인스턴스 수치 지표 8패밀리 · `nodename` 라벨 규약 · 캐시·호출 예산 · 브리지 상태 게이지 | `mcp_server/mcp_server/apm_openmetrics.py`(벤더 매핑) · 공용 직렬화기(`plans/92` B-2와 공유) · 테스트(1.0 형식 검증 — `# EOF`·`_total`·단위 접미사·타임스탬프 부재 · 미정합 인스턴스 `nodename` 미노출 · 라벨 금지 목록 · 플래그 off 라우트 404) | J2 · ~~(공유 시) `plans/92` O-B2~~ **[v2.2] 공유 기계 구현 완료(`om_exposition.py`) · 버전 상한 수정(92 소유 — R-17)** | **G-9 · G-10** |
-| **J8** 다중 제니퍼 소스(v5 · §0.13) | 게이트웨이 소스 N개(설정·클라이언트·인벤토리·부분 실패) · 식별자 `source_id`(도구 인자·행·`profile_ref`·멱등·커서·`dbId`) · 레지스트리 `solutions[apm].sources[]`(존) · 알람 존 판정(F-7) · `noise_gate` 존 좁히기·배지 · `sre_agent` 지침 · 본체 쪽은 `plans/125`가 실행 | 게이트웨이 변경 · `apm_gateway/.env.example` · 레지스트리 · `noise_gate`·알람 라우트·`sre_agent` 변경 · 테스트(§0.13 (5)) · SPEC 3종 · `docs/31` · 매뉴얼(해당 시) | J1~J4(완료) · 목 서버(완료) — **라이선스·운영 접근 불필요** | **G-13~G-16** |
+| **J8** 다중 제니퍼 소스(v5 · §0.13) | 게이트웨이 소스 N개(설정·클라이언트·인벤토리·부분 실패) · 식별자 `source_id`(도구 인자·행·`profile_ref`·멱등·커서·`dbId`) · 레지스트리 `solutions[apm].sources[]`(존) · 알람 존 판정(F-7) · `noise_gate` 존 좁히기·배지 · `sre_agent` 지침 · 본체 쪽은 `plans/125`가 실행 | 게이트웨이 변경 · `apm_gateway/.env.example` · 레지스트리 · `noise_gate`·알람 라우트·`sre_agent` 변경 · 테스트(§0.13 (5)) · SPEC 3종 · `docs/31` · 매뉴얼(해당 시) | J1~J4(완료) · 목 서버(완료) — **라이선스·운영 접근 불필요** | **G-13~G-16 ✅ 전건 확정 · D-287** · **[v5.1] 구현(2026-09-30 · §0.14)** |
 
 ```
 (v2)
@@ -2052,8 +2139,8 @@ HEAD `src/config.py:834-839`)이라 `NOISE_APP_IMPACT_ENABLED` 꼴이 된다.
 | **G-11** ✅ **확정(2026-09-29 · 사용자 '권고에 맞게 진행하고 미결사항은 해결하라')** — 경계 불변식 테스트 J1 필수 · `overfit_check` 편입 + `adapters/jennifer/` 제외 · `arch_check` 편입은 J1에서 판정(판정 기준: §10 아래 [v3.1] G-11 기준) | 품질 게이트 범위: `arch_check`(현재 `src`·`noise_gate`)·`overfit_check`(현재 `mcp_server/mcp_server` 포함) 스캔 대상에 `apm_gateway`를 넣을지 | 권고: **경계 불변식 테스트는 필수**(J1) · `overfit_check`는 편입하되 `adapters/jennifer/`는 제외 목록(`polestar_tools.py` 전례) · `arch_check` 편입(4계층 규칙 정의)은 J1에서 비용을 보고 결정 | J1 |
 | **G-12** ✅ **확정(2026-09-29 · 사용자 '권고에 맞게 진행하고 미결사항은 해결하라')** — ① 복제. G-10을 원본에서 고쳤으므로(2026-09-29) 복제본은 그 수정을 물려받는다 | J7 OpenMetrics 직렬화기: ① `om_exposition.py`(321행)를 게이트웨이에 **복제** ② 벤더 중립 **공용 모듈로 추출**(두 패키지가 쓰는 새 공유 위치 — 새 경계 필요) | 권고: **①** — 소비자가 둘뿐이고 공용 위치 신설은 경계 하나를 더 만든다. R-17(2.0 협상) 수정은 복제본·원본 둘 다에 넣는다. 착수 시(J7) 확정 | J7 |
 | **G-10** ✅ **확정(2026-09-29 · 사용자 '권고에 맞게 진행하고 미결사항은 해결하라')** — ① 원본 `om_exposition` 협상을 1.0 이하로 — **수정 완료**(`_cap_openmetrics_version` · 테스트 9건 · `mcp_server` 600 passed) | 공유 노출 기계의 **OpenMetrics 버전 상한**(§0.6 #15 · R-17): ① 공유 `om_exposition`의 협상을 1.0 이하로 묶는다(`plans/92` 소유 코드 — 폴스타 `/metrics`에도 적용) ② J7 라우트만 감싸서 1.0으로 고정 ③ 현행 유지(2.0 요청 시 2.0 응답) | **①** — G-2의 "1.0 고정"과 92 O-1이 같은 기준이고, 한 기계를 두 규칙으로 쓰지 않는다. 87은 코드 소유자가 아니므로 **92 소유자에게 요청**한다. ③은 G-2 확정과 어긋나 권고하지 않는다 | J7 · `plans/92` |
-| **G-13** (v5 신규) | 제니퍼 소스 **배치**(여기서 게이트웨이 = v4에서 만든 `apm_gateway/` 프로세스 — 제니퍼 토큰을 쥐고 Open API를 부르는 자체 MCP 서버 · 기본 9096): ① 게이트웨이 1개 · 소스 N개 ② 소스(또는 존)마다 게이트웨이 1개 | **①** — 소비자 3곳의 엔드포인트 설정이 그대로이고 집계·부분 실패를 한 곳에서 처리한다(§0.13 M-1). 단 J0-O에서 한 호스트가 모든 뷰 서버에 닿지 않으면(R-31) ②로 재판정 — 그때 소비자 다중 엔드포인트가 새 작업이다 | J8 · 배포 |
-| **G-14** (v5 신규) | **레거시 소스의 존**(존 = 레지스트리 `zones`의 은행존·공동존 — 알람 구독 범위와 위치어 좁히기(G-16)의 단위 · 은행존·공동존 제니퍼는 이름대로 붙고 레거시만 정할 것이 남는다): ① `bankjon` ② 존 없음(APM 알람은 전 존 구독자·관리자만 · 채팅은 시스템 권한만) ③ 새 존 추가 | **①** — 레지스트리가 이미 레거시를 은행존에 둔다(`zones` 라벨 「은행존(K리전 은행/레거시)」 `config/db_registry.yaml:39` · `polestar_b0` 「은행 레거시 및 K리전(은행존)」 `:258` · 위치어 「레거시」 → `polestar_b0` `:246`). ③은 알림 지역 스코프 선택지와 사용자 권한 데이터가 바뀐다 | J8 · 알람 가시성 · G-15 |
+| **G-13** ✅ **확정(2026-09-30 · 사용자 "둘다 권고가 맞다")** — ① 게이트웨이 1개·소스 N개(망 분리가 확인되면 재판정) · D-287 ① | 제니퍼 소스 **배치**(여기서 게이트웨이 = v4에서 만든 `apm_gateway/` 프로세스 — 제니퍼 토큰을 쥐고 Open API를 부르는 자체 MCP 서버 · 기본 9096): ① 게이트웨이 1개 · 소스 N개 ② 소스(또는 존)마다 게이트웨이 1개 | **①** — 소비자 3곳의 엔드포인트 설정이 그대로이고 집계·부분 실패를 한 곳에서 처리한다(§0.13 M-1). 단 J0-O에서 한 호스트가 모든 뷰 서버에 닿지 않으면(R-31) ②로 재판정 — 그때 소비자 다중 엔드포인트가 새 작업이다 | J8 · 배포 |
+| **G-14** ✅ **확정(2026-09-30 · 사용자 "둘다 권고가 맞다")** — ① 레거시 = `bankjon` · D-287 ④ | **레거시 소스의 존**(존 = 레지스트리 `zones`의 은행존·공동존 — 알람 구독 범위와 위치어 좁히기(G-16)의 단위 · 은행존·공동존 제니퍼는 이름대로 붙고 레거시만 정할 것이 남는다): ① `bankjon` ② 존 없음(APM 알람은 전 존 구독자·관리자만 · 채팅은 시스템 권한만) ③ 새 존 추가 | **①** — 레지스트리가 이미 레거시를 은행존에 둔다(`zones` 라벨 「은행존(K리전 은행/레거시)」 `config/db_registry.yaml:39` · `polestar_b0` 「은행 레거시 및 K리전(은행존)」 `:258` · 위치어 「레거시」 → `polestar_b0` `:246`). ③은 알림 지역 스코프 선택지와 사용자 권한 데이터가 바뀐다 | J8 · 알람 가시성 · G-15 |
 | **G-15** ✅ **확정(2026-09-30 · 사용자 "g-15는 전체 권한을 갖는게 맞다")** — ① 시스템 단위만(`apm` 권한이면 모든 제니퍼 소스 · 존으로 좁히지 않는다 · 인가 코드 변경 없음) | **채팅 질의의 소스 인가**: ① 시스템 단위만(현행 `allowed_sources`의 `apm`) ② 시스템 단위 + **사용자 DB 권한(`allowed_db_ids`)의 존**으로 소스를 좁힌다(존 없는 소스는 시스템 권한만 · 관리자·NULL은 전체) ③ `allowed_sources`에 소스 단위 값(예 `apm:bank`) 추가 | **②** — 폴스타 조회가 지키는 존 경계를 제니퍼에서도 지킨다(①이면 공동존 권한만 가진 사용자가 은행존 WAS를 본다) · 새 관리 화면·저장 칸이 없다(D-285 관리 화면 그대로). ③은 편집기·저장 스키마·감사가 늘고 DB 권한과 두 번 적게 된다. 한계: 존보다 좁은 단위(김포만 등)는 거르지 못한다 — 제니퍼 서버가 존 단위라서 | 없음 — `plans/125` A-7 그대로 · D-285 불변 |
 | **G-16** ✅ **확정(2026-09-30 · 사용자 "g-16은 권고대로 하라")** — ① 위치어 → DB → 존 → 그 존의 소스(새 어휘 0 · 실행 `plans/125`) | **위치어로 소스 좁히기**: ① 기존 위치어 → DB → 존 → 그 존의 소스(새 어휘 0) ② 소스별 배타 표면어 추가(예 「레거시」 → `legacy`만) | **①** — D-004(위치어는 사용자가 말한 힌트의 결정적 보강만) 안에서 새 어휘 없이 된다 · 결과 행에 소스가 표기돼 섞여도 구분된다. 한계: G-14 ①이면 「레거시 WAS」가 은행존 두 소스를 함께 조회한다 → 부족하면 ②를 뒤에 더한다 | `plans/125` · 레지스트리 |
 
@@ -2281,3 +2368,5 @@ G-10 원본 수정(`mcp_server/mcp_server/om_exposition.py` · `plans/92` §5.1 
 | 2026-09-30 | **통지(`plans/125` · D-283 — 이 문서 본문 불변)** — J5 본체 쪽 125 이관분 중 **A-1(레지스트리 `solutions[apm]` · 보기 표) · A-2(`MCP_SOURCE_ENDPOINTS`·`MCP_SOURCE_TOKENS`·`MCP_SOURCE_CALL_TIMEOUT` · 관측 소스 MCP 세션) · A-3(`apm_query` — LLM 0 · 조건부 등록) · A-5(분해 `views[]`)** 랜딩(`multiintent` · 엔드포인트 없음 = 비활성 · 바이트 불변). 게이트웨이 도구 계약은 SPEC-apm-gateway §3 봉투 모양을 그대로 소비한다(`src` ↔ `apm_gateway` import 0). **87 쪽 요청(A-6 · G-12)**: 도메인 단위 인스턴스 순위 · 다건 hostname 입력 · hostname+PID 정합 — 지금은 호스트별 fan-out과 인스턴스 상한 고지로 대신한다. 인가(A-7)·매뉴얼(A-8)은 125 잔여(§14.2) |
 | 2026-09-30 | **v5 — 다중 제니퍼 소스 계획**(사용자 지시 *"제니퍼 소스도 여러개이다. 은행존, 공동존, 레가시등 여러개의 제니퍼 소스가 있다. 여러 소스를 설정하여 조회할 수 있도록 수정 계획을 업데이트하라."* · 코드 변경 0) — **§0.13 신설**: v4가 뷰 서버 하나를 전제한 15곳 실측(S-1~S-15 — 설정 1벌 · 인스턴스 식별 (domain, instance) · `profile_ref`·멱등 키·커서 키에 서버 없음 · 알람 `dbId` 상수 · 인가 시스템 단위) · 설계 M-1~M-10(게이트웨이 1개·소스 N개 · `source_id` · `.env` 접두 키 `JENNIFER_SOURCES`·`JENNIFER_<ID>_*` + 단일 설정 호환 · 소스↔존 = 루트 레지스트리 `solutions[apm].sources[]` · 부분 실패·F-3 흡수 · 도구 계약 추가만 · `dbId` = `jennifer_<source_id>` · 소스별 정합 규칙 · 감사 · 소스별 토큰) · 소비측(레지스트리 · 알람 존 판정 · `noise_gate` · `sre_agent` 87 소유 / 본체 `apm_query`는 `plans/125`) · J0-O 소스별 실측 · 수용 기준 · **F-7 현행 결함**(APM 알람이 존 일부 구독자에게 미전달 — `src/api/routes/alarm.py:1223`) · §6 **J8** · §9 R-30~R-33 · §10 **G-13~G-16**(권고 ① · ① · ② · ①) · §5.3·§5.5·§7.0 포인터 · `plans/125` 통지 1행 · INDEX 87행. 확정 G-1~G-12·D-274 불변 · 결정 등재는 게이트 확정 뒤 |
 | 2026-09-30 | **v5 부기 — G-15·G-16 사용자 확정**(사용자 *"g-15는 전체 권한을 갖는게 맞다. g-16은 권고대로 하라."*) — **G-15 = ①**(시스템 `apm` 권한이면 모든 제니퍼 소스 · 존으로 좁히지 않는다 · 권고 ②와 다름 — 본체 인가 변경 없음 · D-285 불변) · **G-16 = ①**(위치어 → DB → 존 → 그 존의 소스 · 새 어휘 0) · §0.13 머리·S-13·(3) 본체 행 · §10 G-15·G-16 확정 표기 · G-13·G-14 행에 용어 설명(게이트웨이 = `apm_gateway/` 프로세스 · 존 = 알람 구독 범위·위치어 좁히기 단위) · `plans/125` 통지 행 요청 ①② 갱신 · INDEX. **G-13·G-14는 사용자 설명 요청으로 대기** |
+| 2026-09-30 | **v5 부기 — G-13·G-14 사용자 확정 · D-287 등재**(사용자 *"둘다 권고가 맞다."* — G-13·G-14 설명 요청에 대한 답) — **G-13 = ①**(게이트웨이 1개·소스 N개 · 망 분리가 확인되면 재판정) · **G-14 = ①**(레거시 = `bankjon`) → 게이트 G-13~G-16 전건 확정 · `docs/02_decision.md` **D-287 본문 등재**(D-195 ① 부기 · 안내 라인 「다음 D-288」) · 머리말·관련 결정·§0.13 머리·M-4·(7)·§6 J8·§10 · `plans/125` 통지 행 · INDEX. 코드 0 — J8 착수는 사용자 지시 대기 |
+| 2026-09-30 | **v5.1 — J8 구현**(사용자 지시 *"87번 계획을 구현하라."* · 팀 리드 경유 · 작업 트리 · 커밋 없음) — **§0.14 신설**: 착수 판정(J8 구현 · J6·J7·J0-L-b·J0-O 재판정 = 보류·전제 유지) · 게이트웨이(`JENNIFER_SOURCES`·접두 키 · 단일 설정 = `default` · 동시 설정 기동 실패 · 소스 묶음 `SourceSet` · 부분 실패 · 실패·빈 인벤토리 30초(F-3 흡수) · 도구 계약 추가만 · `apm_transaction_profile(source_id)` · 신호 `source_id` · 헬스 소스별 행 · 감사 `sources=` · 폴러 커서·멱등·`dbId` `jennifer_<id>`) · 레지스트리 `solutions[apm].sources[]`·로더 검증·`alarm_source` · `db_id_to_zone`(**F-7 해소**) · `noise_gate`(툴팁 존 · `app_impact` 존 좁히기 · 힌트) · `sre_agent`(지침·힌트) · 이탈 E-11~E-18 · 수용 기준 전건 ✔ · 게이트웨이 182 passed · Docker IT 4 · 실프로세스 25+10 · `sre_agent` 752 · 전체 회귀 무관 실패 3건 · 렌더 지문 11/11 · 새 사실 F-8·F-9 · SPEC 3종 · `docs/31` v5 · 매뉴얼 A-30·9.5 · `plans/125` 통지 행 · D-287 구현 부기 |

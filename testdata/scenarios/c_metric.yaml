@@ -13,14 +13,14 @@ group:
 scenarios:
   - id: C-01
     plans: [61, 69]
-    title: "전체 서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 조회해줘. 사용률은 지난달 1개월 통계 기준으로."
+    title: "전체 서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 10건만 조회해줘. 사용률은 지난달 1개월 통계 기준으로."
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "전체 서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 조회해줘. 사용률은 지난달 1개월 통계 기준으로."
+          query: "전체 서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 10건만 조회해줘. 사용률은 지난달 1개월 통계 기준으로."
         expect:
           status: completed
           # plans/122 H-2: "지난달"을 턴 송신 시각 기준 창으로 본다(표기 무관 · 월 경계 ±1일 보류).
@@ -36,14 +36,14 @@ scenarios:
           manual_review: "서버당 1행 · avg/max 열"
   - id: C-02
     plans: [61, 69]
-    title: "지난 3개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 조회해줘"
+    title: "지난 3개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 10건만 조회해줘"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "지난 3개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 조회해줘"
+          query: "지난 3개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 10건만 조회해줘"
         expect:
           status: completed
           # plans/122 H-2: "지난 3개월"을 턴 송신 시각 기준 창으로 본다(표기 무관 · 월 경계 ±1일 보류).
@@ -56,14 +56,14 @@ scenarios:
           manual_review: "서버×월 행"
   - id: C-03
     plans: [61, 69]
-    title: "2026년 상반기 서버별 CPU 사용률 평균"
+    title: "2026년 상반기 서버별 CPU 사용률 평균 10건만"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "2026년 상반기 서버별 CPU 사용률 평균"
+          query: "2026년 상반기 서버별 CPU 사용률 평균 10건만"
         expect:
           status: completed
           # plans/122 A-2: 날짜는 표기가 아니라 기간으로 본다(D-218 Y-5 · `to` 는 배타 경계).
@@ -73,14 +73,14 @@ scenarios:
           row_count: {min: 1}
   - id: C-04
     plans: [61, 69]
-    title: "2026년 1월부터 6월까지 메모리 사용률 최대값"
+    title: "2026년 1월부터 6월까지 메모리 사용률 최대값 10건만"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "2026년 1월부터 6월까지 메모리 사용률 최대값"
+          query: "2026년 1월부터 6월까지 메모리 사용률 최대값 10건만"
         expect:
           status: completed
           # plans/122 A-2: 날짜는 표기가 아니라 기간으로 본다(D-218 Y-5 · `to` 는 배타 경계).
@@ -91,14 +91,14 @@ scenarios:
           row_count: {min: 1}
   - id: C-05
     plans: [61, 69]
-    title: "11월부터 2월까지 CPU 사용률"
+    title: "11월부터 2월까지 CPU 사용률 10건만"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "11월부터 2월까지 CPU 사용률"
+          query: "11월부터 2월까지 CPU 사용률 10건만"
         expect:
           status: completed
           # plans/122 H-2: 종전 수동 문구 "연도 넘김이 맞는지 - 11월의 연도가 2월보다 1년 앞서야 한다".
@@ -108,14 +108,14 @@ scenarios:
           period_covers: {month_span: {from: 11, to: 2}}
   - id: C-06
     plans: [61, 69]
-    title: "이번 달 CPU 사용률"
+    title: "이번 달 CPU 사용률 10건만"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "이번 달 CPU 사용률"
+          query: "이번 달 CPU 사용률 10건만"
         expect:
           status: completed
           # plans/120 U-7 - G-3(폐쇄망 읽기 전용 확인) 전까지 수동 판정으로 둔다. 진행 중 월에
@@ -126,14 +126,14 @@ scenarios:
           manual_review: "진행 중 월이 실행 시점 기준으로 맞는지 · 기준 테이블(월/일 통계)은 plans/120 G-3 확인 전 수동 판정"
   - id: C-07
     plans: [61, 69]
-    title: "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘"
+    title: "메모리 이용률이 90%를 초과한 적이 있는 서버를 10건만 조회해줘"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘"
+          query: "메모리 이용률이 90%를 초과한 적이 있는 서버를 10건만 조회해줘"
         expect:
           status: completed
           # plans/122 H-2: 종전 수동 문구 "'이용률' 동의어와 '~한 적이 있는'(기간 무제한)이 해석됐는지".
@@ -192,14 +192,14 @@ scenarios:
           manual_review: "HAVING 조건이 '2개월 이상'을 정확히 표현했는지"
   - id: C-11
     plans: [61, 69]
-    title: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 보여줘"
+    title: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 10건만 보여줘"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 보여줘"
+          query: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 10건만 보여줘"
         expect:
           status: completed
           # plans/120 U-3: 전체 평균을 따로 계산하는가를 본다 - 서브쿼리 **또는** CTE(`WITH x AS (`).

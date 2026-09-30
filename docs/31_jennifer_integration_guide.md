@@ -19,6 +19,10 @@
 > **v4.1 개정**: 2026-09-29 — 사용자 지시 *"구현한 내용을 확인하여 docs폴더의 31번 가이드도 업데이트하라."* — 구현 코드와 절마다 다시 대조했다(키·기본값·상수·파일·
 > 심볼·테스트 이름). 같은 날 **로컬 Docker 제니퍼 실서버 검증**(87 §0.12 — 게이트웨이·소비측 58항목 통과 · 라이선스 없는 범위) 결과와 거기서 새로 안 동작(토큰 사용량
 > 반영 지연 · 빈 인벤토리 캐시 · 401 사유 · 기준 URL 경로 302)을 §3.8·§4.5·§5·§6.1·§8.4·**§10.2**·§11에 넣었다. 남은 「예정」 표기는 J5·J6·J7과 미구현 `was_object` 브릿지 몫뿐이다.
+> **v5 개정**: 2026-09-30 — 사용자 지시 *"87번 계획을 구현하라."*(Wave J8) — **다중 제니퍼 소스**(은행존·공동존·레거시 등 뷰 서버 N개)를 구현했다(87 §0.14 · **D-287**).
+> 게이트웨이 1개가 소스 N개를 묶는다 — 설정 `JENNIFER_SOURCES` + `JENNIFER_<ID>_*`(§4.2) · 소스 ↔ 존 = 루트 레지스트리 `solutions[apm].sources[]`(§4.4) ·
+> 도구 인자 `source_ids`·`profile_ref.source_id`(§6) · 알람 `dbId` `jennifer_<id>`(§8.2) · **존 구독자에게 APM 알람이 전달된다**(F-7 해소 — §8.4 ⑥ · §11) ·
+> `app_impact` 존 좁히기(§4.7 · §8.4 ①) · 실패·빈 인벤토리 30초 캐시(F-3 해소 — §4.5) · §10.2 두 소스판. 단일 설정(`JENNIFER_API_URL`만)은 v4와 같다.
 >
 > **먼저 알아 둘 것 — 87은 J1~J4까지 구현됐다(2026-09-29).** 게이트웨이 코드는 `apm_gateway/apm_gateway/`에 있고, 계약 테스트는 목 Open API 서버와
 > 스펙 5.6.4 스키마로 만든 합성 픽스처로 돈다 — **실데이터 모양은 J0-L-b(평가판 라이선스) 녹화 전까지 미검증**이다. 절마다 아래 표지로 나눈다.
@@ -62,6 +66,7 @@
 | 항목 | 상태 (2026-09-29 실측) |
 |---|---|
 | 제니퍼 연동 코드 | **J1~J4 구현(v4 · 2026-09-29)** — 게이트웨이 `apm_gateway/apm_gateway/`(허용목록·클라이언트·정합·`apm_*` 8종·WAS 판정·폴러·MCP 서버) · `sre_agent` 소비측(두 번째 MCP 서버·APM 지침·판정 승격·WAS 권고) · `noise_gate` 소비측(`apm` kind 선판정·배지·트리거 힌트·`app_impact` 승격). `mcp_server`·`src`(질의 경로)에는 제니퍼 코드 0건 |
+| 제니퍼 소스 | **여러 개(v5 · J8 · D-287)** — 게이트웨이 1개가 뷰 서버 N개(예 `bank`·`common`·`legacy`)를 묶는다. 소스 ↔ 존 정본은 루트 레지스트리 `solutions[apm].sources[]`(레거시 = 은행존). 단일 설정은 소스 `default`(존 없음 · v4와 같음) — §4.2·§4.4 |
 | 연동 구조(확정) | **독립 최상위 패키지 `apm_gateway/`** — 자체 MCP 서버 · 독립 프로세스. 제니퍼 Open API(REST · Bearer 토큰)를 게이트웨이가 직접 호출한다(G-1 · G-8 · D-274) |
 | 제니퍼 설정 키 | 제니퍼 URL·토큰은 **`apm_gateway/.env`에만**(예시 `apm_gateway/.env.example` · §4.2). 소비자는 게이트웨이 MCP 주소·Bearer만 갖는다(`sre_agent/.env` `APM_MCP_*` · 루트 `.env` `NOISE_APM_MCP_*` — §4.6·§4.7). 전부 기본 off·빈 값 = 현행과 비트 동일 |
 | 재사용할 기존 기계 | **전례로 있다** — `mcp_server`의 HTTP 도구·반환 계약·Bearer 미들웨어(게이트웨이가 **복제**), `sre_agent`의 MCP 서버 등록, `noise_gate`의 `alarm:raw` 형식·MCP 클라이언트, OpenMetrics 노출 기계(`om_exposition.py` — 복제 또는 추출은 G-12) |
@@ -546,7 +551,7 @@ Redis(`redis/docker-compose.yml` — 호스트 6380)의 `alarm:raw`로 두지 �
 |---|---|---|
 | `apm_gateway/.env`(gitignore · 예시 `apm_gateway/.env.example`) | `apm_gateway` | 【현재 가능】 제니퍼 URL·토큰 · 게이트웨이 Bearer · 호출 상한 · 폴러 · Redis — §4.2 |
 | `apm_gateway/config/instance_map.yaml` · `event_levels.yaml` · `was_signatures.yaml` | `apm_gateway` | 【현재 가능】 게이트웨이 소유 정책(정합 규칙·수동 매핑 · 이벤트 레벨 → severity · WAS 잠정 임계). 루트 `config/`가 아니다(자체 cwd) |
-| `config/db_registry.yaml` | 본체 | 【현재 가능】 `solutions`에 `apm` **주석 자리**(`:60-65`) — 등재는 J5(보류) · §4.4 |
+| `config/db_registry.yaml` | 본체 | 【현재 가능】 `solutions[apm]` 등재(`plans/125` A-1 — 보기 표 `views` · 엔드포인트가 있어야 활성) + **`sources[]`**(v5 · J8 — 제니퍼 소스 ↔ 존 정본) — §4.4 |
 | `sre_agent/.env` | `sre_agent` | 【현재 가능】 `APM_MCP_URL`·`APM_MCP_TOKEN` · `APM_GUIDANCE_ENABLED` · `APM_SIGNATURES_ENABLED` — §4.6 |
 | 루트 `.env` | 본체(게이트 포함) | 【현재 가능】 `NOISE_APP_IMPACT_ENABLED` · `NOISE_APM_MCP_URL`·토큰 · 사건창 — §4.7 · (J5) 두 번째 MCP 엔드포인트는 보류 |
 | `mcp_server/config.toml`·`mcp_server/.env` | `mcp_server` | **제니퍼 키를 넣지 않는다.** v4는 `mcp_server`를 바꾸지 않았다(정합용 폴스타 도구 미추가 — §4.5) |
@@ -592,54 +597,80 @@ REDIS_PASSWORD=
 - **게이트웨이 설정에 폴스타 DB 연결 문자열이 없다**(`apm_gateway/tests/test_boundary.py` `test_no_polestar_db_connection_settings`).
 - `.env.example`이 로더가 읽는 키를 빠짐없이 담는지 테스트가 소스에서 뽑아 대조한다(`apm_gateway/tests/test_config.py` — `mcp_server` 전례).
 
-### 4.3 게이트웨이 기동 【현재 가능 — v4】
+**다중 소스 설정(v5 · J8 · D-287 ③)** 【현재 가능 — `config.py` `_load_sources`】 — 뷰 서버가 여럿이면 위의 `JENNIFER_API_URL`·`JENNIFER_API_TOKEN`을 **비우고**
+`JENNIFER_SOURCES`와 소스별 접두 키를 쓴다. 두 방식을 함께 쓰면 게이트웨이가 뜨지 않는다(정본 모호 — 침묵 선택 금지).
+
+```dotenv
+# 소스 id JSON 배열 — 소문자 슬러그 [a-z][a-z0-9_]{0,15} · 예약어 default·api · 선언 순서 = 조회·표시 순서
+# id는 루트 config/db_registry.yaml solutions[apm].sources[].id와 같게 둔다(존은 레지스트리가 정한다)
+JENNIFER_SOURCES=["bank","common","legacy"]
+# 소스마다 필수 두 키 — <ID>는 id 대문자(bank → JENNIFER_BANK_*) · 토큰은 소스별 AIOps 전용 토큰
+JENNIFER_BANK_API_URL=https://jennifer-bank.example.internal:7900
+JENNIFER_BANK_API_TOKEN=<은행존 뷰 서버 토큰>
+JENNIFER_COMMON_API_URL=https://jennifer-common.example.internal:7900
+JENNIFER_COMMON_API_TOKEN=<공동존 뷰 서버 토큰>
+JENNIFER_LEGACY_API_URL=https://jennifer-legacy.example.internal:7900
+JENNIFER_LEGACY_API_TOKEN=<레거시 뷰 서버 토큰>
+# 선택 키 — 비면 전역 JENNIFER_DOMAIN_IDS·JENNIFER_API_TIMEOUT_SECONDS·JENNIFER_RATE_LIMIT_PER_SEC·JENNIFER_MAX_RESPONSE_BYTES
+JENNIFER_LEGACY_API_TIMEOUT_SECONDS=4
+JENNIFER_LEGACY_DOMAIN_IDS=[3000]
+```
+
+- 기동 실패(메시지 1줄 · 종료 코드 2 · 값은 싣지 않는다): 두 방식 동시 설정 · 소스 필수 키(`_API_URL`·`_API_TOKEN`) 누락 · id 형식 위반·예약어·중복 · `JENNIFER_SOURCES`가 문자열 JSON 배열이 아님.
+- 소스마다 클라이언트가 따로다 — 토큰·초당 상한·응답 크기 상한·인벤토리 캐시가 소스별이고, 한 소스의 토큰은 다른 소스 요청에 실리지 않는다(`apm_gateway/tests/test_multi_source.py`).
+- **소스 타임아웃은 소비자 호출 상한보다 짧게** 둔다. `noise_gate`의 게이트웨이 호출 상한은 5초(코드 상수)인데 전역 기본 타임아웃은 10초다 — 느린 소스 하나가 게이트웨이 응답 전체를
+  늦춘다(87 R-33). 게이트웨이는 소스를 병렬로 부르고, 타임아웃 난 소스는 `[한계]`로 빼고 나머지를 돌려준다.
+- 레지스트리 `sources[].id`와 `JENNIFER_SOURCES`가 다르면 `noise_gate`의 존 좁히기가 `invalid_argument`(모르는 `source_ids`)로 실패한다(판정은 그대로 · §4.7). 둘을 같이 바꾼다.
+- `JENNIFER_<ID>_*` 키도 R-29 대상이다 — 에이전트를 붙인 WAS JVM 환경에 두지 않는다.
+
+### 4.3 게이트웨이 기동 【현재 가능 — v4 · v5 기동 로그】
 
 ```bash
 # [CWD=apm_gateway/ · 루트 venv 공유 — mcp_server와 같은 방식(둘 다 Python ≥3.11) · 설정은 apm_gateway/.env]
 cd apm_gateway && ../.venv/bin/python -m apm_gateway
-# 기동 로그 예:
-#   APM 게이트웨이 시작: 127.0.0.1:9096 · 허용 경로 16 · {'jennifer_configured': True, 'token_set': True, 'domain_filter': [],
-#   'bearer': True, 'poller': False, 'poll_interval': 30, 'overrides': 0}
+# 기동 로그 예(v5 — 소스 id와 설정 여부만 · URL·토큰 값 없음):
+#   APM 게이트웨이 시작: 127.0.0.1:9096 · 허용 경로 16 · {'sources': [{'id': 'bank', 'url_set': True, 'token_set': True, 'domain_filter': []},
+#   {'id': 'common', …}], 'bearer': True, 'poller': False, 'poll_interval': 30, 'overrides': 0}
+#   (단일 설정이면 sources = [{'id': 'default', …}] · 둘 다 비면 [])
 #   (Bearer가 비면) 전송 인증 off(APM_GATEWAY_BEARER_TOKEN 미설정) — 운영 배치에서는 필수
+#   (설정 오류면) APM 게이트웨이 설정 오류 — 기동 중단: JENNIFER_SOURCES와 단일 설정 키(…)를 함께 쓸 수 없다 …  (종료 코드 2)
 ```
 
 - SSE 엔드포인트는 `http://<호스트>:9096/sse`다. 소비자(`sre_agent`·게이트)는 이 주소와 Bearer만 안다.
-- 헬스체크는 도구 `gateway_health`다(`/api/domain` 1회 · 30초 캐시) — 제니퍼 설정·도달·도메인 수·허용 경로 수·폴러 상태를 돌려준다.
+- 헬스체크는 도구 `gateway_health`다(소스마다 `/api/domain` 1회 · 병렬 · 30초 캐시) — **소스별 행**(설정·도달·도메인 수·허용 경로 수)과 최상위 `status`(`ok` 모두 정상 ·
+  `degraded` 하나라도 · `not_configured` 소스 0개)·폴러 상태를 돌려준다.
 - 제니퍼 **버전 에코는 없다**(87 R-12의 `api_version_expect`) — 허용목록 16템플릿에 버전 조회 경로가 없다. 에이전트 버전은 `apm_instance_map` 결과의 `agent_version`에 실린다.
 - 로컬에는 `mcp_server`(9099)·조사 프로파일용(9097)·`sre_agent`(9098)·`alarm_server`(TCP 9100)가 장기 실행 중일 수 있다. 게이트웨이 기본 포트 9096은
   이들과 겹치지 않는다(2026-09-29 실측). 남이 띄운 프로세스는 건드리지 않는다.
 - `mcp` 패키지는 `<2`로 고정돼 있다(D-181 · 설치본 1.29.1). 게이트웨이 `pyproject.toml`도 같은 제약을 선언한다.
 
-### 4.4 `config/db_registry.yaml` — `apm` 솔루션 등재 【계획 — 87 §5.6 · J5】
+### 4.4 `config/db_registry.yaml` — `apm` 솔루션과 제니퍼 소스 【현재 가능 — `plans/125` A-1 등재 · v5 J8 `sources[]`】
 
-지금은 주석 자리만 있다(`config/db_registry.yaml:60-65` · `backend: rest`). 등록 0건을 테스트가 단언한다
-(`tests/test_orchestration/test_execution_groups.py:31-33` · `:40-42`). 레지스트리는 **본체 정본**이라 게이트웨이로 옮기지 않는다.
-
-87 J5 이후의 모습(「예정」 — `plans/121` TP-9.2 등재 형식을 따른다):
+`apm` 솔루션은 `plans/125` A-1(87 J5 본체 쪽 · D-281)이 등재했다(`backend: mcp` · `family: jennifer` · 보기 표 `views` — 채팅 처리기가 부르는 고정 보기).
+**엔드포인트(`MCP_SOURCE_ENDPOINTS`의 `apm`)가 설정돼야만 활성**이고, 비활성이면 처리기 등록·분해 프롬프트 렌더가 0이다(D-281 ②). v5(J8)는 여기에 **제니퍼 소스 표**를 더했다.
 
 ```yaml
 solutions:
   - code: apm
-    label: APM(애플리케이션 성능)
-    order: 20
-    backend: mcp            # rest 아님 — 본체는 제니퍼를 직접 부르지 않고 게이트웨이 MCP를 부른다
-    family: jennifer        # solutions 전용 고유 family(121 TP-9.2)
-    capabilities: [was_metric, jvm_heap, thread_pool, transaction, apm_event]
-    requires: [host_location]
-
-capabilities:               # D-224 ① 설명 카탈로그 — 새 능력 코드마다 설명 행을 더한다
-  - code: was_metric
-    label: WAS 응답시간·TPS·에러율·액티브 서비스
-  # ...
-
-families:
-  - name: jennifer
-    product_terms: ["제니퍼", "jennifer", "APM"]
-    signal_terms: ["jennifer", "제니퍼"]
+    label: 제니퍼(APM · WAS 모니터링)
+    backend: mcp
+    family: jennifer
+    views: [ ... ]            # plans/125 — 보기 id → 게이트웨이 도구
+    sources:                  # v5 · J8 · D-287 ④ — 제니퍼 소스 ↔ 존 정본
+      - {id: bank, label: 은행존 제니퍼, zone: bankjon}
+      - {id: common, label: 공동존 제니퍼, zone: gongjon}
+      - {id: legacy, label: 레거시 제니퍼, zone: bankjon}
 ```
 
+- **정본은 레지스트리 하나다**(D-053) — 게이트웨이는 존을 모른다(루트 `config/`를 읽지 않는다 · D-274 ③). 소비자(본체 알람 라우트·`noise_gate`)가 이 표로 존을 푼다.
+- 레거시 소스는 은행존이다(G-14 ① — `zones` 라벨 「은행존(K리전 은행/레거시)」).
+- 로더 검증(`src/routing/registry.py` `_parse_sources` — 틀리면 `RegistryError`로 로드 실패): id 형식(`[a-z][a-z0-9_]{0,15}`) · 예약어 `default`·`api` · 같은 솔루션 안 중복 ·
+  선언되지 않은 존. `zone`을 비우면 존 없는 소스(전 존 구독자·관리자만).
+- 조회 함수: `sources_of("apm")`(선언 순서) · `alarm_source(db_id)` — 알람 `dbId` `jennifer_<id>`(= `{family}_{id}`) → (시스템, 소스). 단일 설정 `jennifer`는 존 없음(경고 없음),
+  표에 없는 `jennifer_<id>`는 **id별 경고 1회** 뒤 존 없음. 알람 존 판정 `src/routing/zones.py` `db_id_to_zone`이 이 함수를 쓴다(§8.4 ⑥).
+- 소스 추가 절차: 게이트웨이 `JENNIFER_SOURCES`·접두 키(§4.2)와 이 표를 **같은 id로 함께** 바꾼다. 존을 모르면 `zone`을 비우고 추가해도 된다(알람은 전 존 구독자·관리자만 본다).
+- 이 표를 더해도 분해·라우팅 프롬프트 렌더는 바이트가 같다(v5 실측 — 렌더 지문 11종 · 87 §0.14). 채팅의 위치어 → 소스 좁히기(G-16)는 `plans/125`가 구현한다.
 - `databases`·`ACTIVE_DB_IDS`에는 넣지 않는다. 제니퍼는 DB가 아니다.
-- 이 파일을 바꾸면 위 두 테스트를 **같은 변경에서** 갱신한다(결정적 값 변경 시 단언 테스트 일괄 갱신 — Known Mistakes).
 
 ### 4.5 인스턴스 ↔ hostname 정합 【현재 가능 — v4 · `application/resolver.py` · `config/instance_map.yaml`】
 
@@ -666,16 +697,25 @@ overrides: []
 #    hostname: "example-host01"
 #    port: 8080
 #    kind: tomcat
+# (v5 · J8 — 다중 소스) override에 source_id를 주면 그 소스에만 쓴다(없으면 전 소스)
+#    source_id: bank
+# (v5 · J8) 소스별 규칙 — 있으면 그 소스는 전역 match_rules 대신 쓴다(레거시 명명 규칙이 다를 때 · J0-O 실측 뒤 채운다)
+# per_source:
+#   legacy:
+#     match_rules: [{kind: host_name}, {kind: exact}]
 ```
+
+- **다중 소스(v5)**: 정합은 소스마다 한다(소스 하나 = 정합기 하나). 한 hostname이 두 소스에서 정합되면 둘 다 싣고(상한 5 공유) 행마다 `source_id`와 그 소스의
+  `match_confidence`·`match_reason`을 단다 — 해소 결과의 신뢰도는 정합된 소스가 모두 high일 때만 high다. 다른 존의 서로 다른 서버가 같은 hostname이면(87 R-32)
+  override의 `source_id`로 고정하거나 `source_ids`로 좁힌다(`noise_gate`는 알람 존으로 좁힌다 — §4.7). 정합 파일이 설정에 없는 소스를 가리키면 기동 로그에 경고 1줄.
 
 - 해소 결과(`instance_resolution`)에 신뢰도와 근거(`override`·`host_name`·`exact`·`prefix`·`regex`)를 싣고, medium이면 `limits`에 적는다.
   **미매칭은 빈 결과가 아니라 `{"error": "instance_unresolved"}`**다. 도메인이 0건이거나 모든 도메인 조회가 실패하면 `source_unavailable`이다(빈 결과를 정상으로 보지 않는다).
 - 한 호스트에 인스턴스가 여럿이면 최대 5개까지 함께 본다(넘치면 `limits` · `instance_id`로 좁힌다).
 - 역방향(이벤트 → hostname)은 override → `hostName` → `regex` 순이다. 못 찾으면 `hostname=""`로 발행한다(§8.2).
-- 인벤토리(도메인 → 인스턴스)는 TTL 캐시(기본 600초 · `APM_INSTANCE_CACHE_SECONDS`)한다. **도메인 0건·도메인 조회 실패 결과도 같은 TTL로 캐시된다**(v4.1 실측 —
-  두 번째 호출의 감사 `api_calls=0`). 그래서 라이선스 적용·에이전트 접속 직후 최대 600초 동안 도구는 `source_unavailable`("도메인 0건")을 돌려주고,
-  `gateway_health`(자체 30초 캐시)는 먼저 회복돼 **둘이 어긋날 수 있다**. J0-L-b처럼 상태가 바뀌는 시험에서는 게이트웨이를 재기동하거나 캐시를 줄인다.
-  빈 결과를 짧게 캐시하는 개선은 후속 후보다(87 §0.12 F-3).
+- 인벤토리(도메인 → 인스턴스)는 소스마다 TTL 캐시(기본 600초 · `APM_INSTANCE_CACHE_SECONDS`)한다. **v5(J8)부터 도메인 목록 실패·도메인 0건·전 도메인 조회 불가
+  인벤토리는 30초만 캐시한다**(87 F-3 해소 — `gateway_health` 캐시와 같은 값). v4.1에서는 이 결과도 600초 캐시돼 라이선스 적용 직후 도구와 `gateway_health`가 어긋났다.
+  로컬 Docker(도메인 0건)에서 31초 뒤 두 소스 모두 다시 조회하는 것을 감사 `sources=bank:1,common:1`로 확인했다(87 §0.14).
 - OpenMetrics 노출(§9)의 `nodename`(= 폴스타 `server_name`) 역해소는 J7 몫이다(보류).
 
 ### 4.6 `sre_agent` 【현재 가능 — v4 · J3】
@@ -707,6 +747,12 @@ overrides: []
 
 - 게이트웨이 클라이언트는 `noise_gate/infrastructure/apm_gateway_client.py`다(`sre_agent_client.py` 전례 — SSE · Bearer · 호출 타임아웃 5초 · TCP 사전 도달성 확인 · 미가용이면 30초 동안 재시도 안 함).
   켜졌는데 URL이 비었거나 생성에 실패하면 기동 로그에 경고를 남기고 승격 없이 진행한다.
+- **존 좁히기(v5 · J8)** — `app_impact` 조회는 알람 DB의 존에 대응하는 제니퍼 소스만 `source_ids`로 넘긴다(`notification_gate.py` `apm_source_ids_for` — 예 `polestar_b0` →
+  `["bank","legacy"]` · `polestar_cm_gp`·`polestar_cm_yd` → `["common"]`). 존이 없거나 그 존에 소스가 없으면 인자를 넣지 않는다(전 소스 — 종전 호출과 같다). 다른 존의 같은
+  hostname 인스턴스 이벤트로 승격하지 않게 하려는 것이다. 게이트웨이가 모르는 id라고 답하면(`invalid_argument` — 레지스트리·게이트웨이 소스 불일치) 판정은 그대로 두고 사유를
+  `stage_evidence.app_impact_error`에 남긴다 — **전 소스로 다시 부르지 않는다.** 단일 설정 게이트웨이(`default`)에 레지스트리 소스가 있는 배포는 이 상태가 되므로,
+  `app_impact`를 켜기 전에 게이트웨이를 다중 설정으로 맞춘다.
+- `ALARM_PROCESS_API_BASE_URLS_CSV`(호스트 참고 표)의 키는 알람 `dbId`다 — 다중 소스 이벤트는 `jennifer_<id>`로 온다(종전 `jennifer=` 매핑은 단일 설정에만 맞는다).
 - 채팅 질의(J5)는 **보류**다 — `plans/121` 처리기가 게이트웨이를 두 번째 MCP 엔드포인트로 부르는 구조인데 처리기 코드가 아직 없다(`DBHubConfig.server_url`은 하나).
 
 ### 4.8 `.env` 작성 규칙 (Known Mistakes) 【현재 가능】
@@ -723,7 +769,9 @@ overrides: []
 
 | 키 | 파일 | 기본 | 뜻 |
 |---|---|---|---|
-| `JENNIFER_API_URL` · `JENNIFER_API_TOKEN` | `apm_gateway/.env` | 빈 값 | Open API 주소 · AIOps 전용 토큰(여기에만) |
+| `JENNIFER_API_URL` · `JENNIFER_API_TOKEN` | `apm_gateway/.env` | 빈 값 | 단일 설정 — Open API 주소 · AIOps 전용 토큰(여기에만) |
+| `JENNIFER_SOURCES` · `JENNIFER_<ID>_API_URL` · `JENNIFER_<ID>_API_TOKEN` | `apm_gateway/.env` | 빈 값 | (v5) 다중 설정 — 소스 id 목록 · 소스별 필수 키(단일 설정과 동시 사용 금지 — §4.2) |
+| `JENNIFER_<ID>_DOMAIN_IDS` · `_API_TIMEOUT_SECONDS` · `_RATE_LIMIT_PER_SEC` · `_MAX_RESPONSE_BYTES` | `apm_gateway/.env` | 전역 값 | (v5) 소스별 선택 키 |
 | `JENNIFER_DOMAIN_IDS` · `JENNIFER_API_TIMEOUT_SECONDS` · `JENNIFER_RATE_LIMIT_PER_SEC` · `JENNIFER_MAX_RESPONSE_BYTES` | `apm_gateway/.env` | `[]` · 10 · 5 · 4194304 | 도메인 제한 · timeout · 초당 상한 · 응답 크기 상한 |
 | `APM_GATEWAY_HOST` · `APM_GATEWAY_PORT` · `APM_GATEWAY_LOG_LEVEL` | `apm_gateway/.env` | 127.0.0.1 · 9096 · INFO | MCP 서버 |
 | `APM_GATEWAY_BEARER_TOKEN` | `apm_gateway/.env` | 빈 값 | 게이트웨이 MCP 서버 전송 인증 — 비면 무인증(운영 필수) |
@@ -843,20 +891,25 @@ overrides: []
 공통 인자: `investigation_id?`·`thread_id?`(감사 레코드에만 싣는다 — R-19). 구간 인자 `reference_time?`(ISO 8601 · naive면 `APM_TIMEZONE`) ·
 `lookback_minutes?` — 창은 `[reference_time − lookback, reference_time]`이고 `reference_time`을 빼면 "지금"이다(기존 사건 좌표계와 같다).
 
+**소스 인자(v5 · J8)** — `apm_transaction_profile`을 뺀 7종은 선택 인자 `source_ids`(소스 id 목록)를 받는다. 비면 전 소스(설정 선언 순서)이고, 모르는 id는 `invalid_argument`
+(사유에 설정된 id 목록)다. 행·`profile_ref`에는 `source_id`가 붙고, 해소 결과에는 `instance_refs[]`(`{source_id, domain_id, instance_id}`)가, 봉투에는 `sources[]`
+(`{source_id, status, reason}` — `ok`·`no_match`·`empty`·`unavailable`)가 붙는다. 봉투의 `source_kind`·`source`는 그대로다(소비자 인식 키). 도메인·인스턴스 id는 서버마다
+따로 매겨 겹칠 수 있어, 게이트웨이는 인스턴스를 (소스, 도메인, 인스턴스)로 구분하고 호출을 그 소스 서버로만 보낸다.
+
 | 도구 | 인자(값만) | 뒷단 Open API(§5.3) | 반환 핵심 필드 |
 |---|---|---|---|
-| `apm_instance_map` | `hostname?` | `/api/domain` → 도메인별 `/api/instance` | `instance_id`·`instance_name`·`domain_id`·`domain_name`·`host_name`·`ip_address`·`platform`·`status`·`agent_version`·`match_confidence`·`match_reason` (hostname 없이 부르면 전 인스턴스와 역해소 `hostname` · 200개 상한) |
+| `apm_instance_map` | `hostname?`·`source_ids?` | 소스별 `/api/domain` → 도메인별 `/api/instance` | `source_id`·`instance_id`·`instance_name`·`domain_id`·`domain_name`·`host_name`·`ip_address`·`platform`·`status`·`agent_version`·`match_confidence`·`match_reason` (hostname 없이 부르면 전 인스턴스와 역해소 `hostname` · 200개 상한) |
 | `apm_app_health` | `hostname`·`instance_id?`·구간 | `/api/realtime/instance`(창 끝이 지금일 때) · `/api/transaction/time`(1분 분할 · 직전 10분) · `/api/status/application`(창 > 10분 — 시 단위) | 평균 응답시간(ms)·TPS·액티브 서비스·나쁜 응답 액티브·PLC 거절률·동시 사용자 + 행별 `window{calls, errors, error_rate, p50, p95, max}` + (창 > 10분) 최상위 `hourly` + `was_signals` |
 | `apm_runtime_health` | 같음 | `/api/realtime/instance` · `/api/dbmetrics/instance`(`interval_minute=5` · 지표 3종 각 1호출 · 인스턴스 2개까지) | 힙(MB)·힙 사용률·non-heap·GC 시간 비중(%)·프로세스 CPU(%)·메모리·스레드 + `trend{heap_used_mb, heap_committed_mb, gc_time_usage_pct}` + `was_signals` |
 | `apm_resource_pool` | `hostname`·`instance_id?` | `/api/realtime/instance` · `/api/activeService/list` | DB 풀 활성·유휴·설정·사용률 · 스레드 · 실행 모드별·데이터소스별 액티브 수 + `was_signals` · `[한계]` WAS 스레드 풀 상한 필드 없음(근사) · 현재값 전용 |
-| `apm_slow_transactions` | `hostname`·`instance_id?`·구간(기본 최근 10분)·`n≤20` | `/api/transaction/time`(1분 분할 · 상한 10분) · `/api/status/application`(창 > 10분) | 상위 N: 애플리케이션(쿼리 값 마스킹)·응답·cpu·sql·fetch·external·network·오류 유형·`profile_ref{domain_id, txid, time_ms}` + `summary{calls, errors, error_rate, p50, p95, sql_fetch_share, external_share}` + `was_signals` |
+| `apm_slow_transactions` | `hostname`·`instance_id?`·구간(기본 최근 10분)·`n≤20` | `/api/transaction/time`(1분 분할 · 상한 10분) · `/api/status/application`(창 > 10분) | 상위 N: `source_id`·애플리케이션(쿼리 값 마스킹)·응답·cpu·sql·fetch·external·network·오류 유형·`profile_ref{source_id, domain_id, txid, time_ms}` + `summary{calls, errors, error_rate, p50, p95, sql_fetch_share, external_share}` + `was_signals` |
 | `apm_active_services` | `hostname`·`instance_id?`·`n≤20` | `/api/activeService/list` | 경과 순 상위 N: 상태·경과·실행 모드·실행 텍스트(마스킹)·데이터소스·클라이언트 IP(마스킹)·txid + `summary` + `was_signals` · 현재값 전용 · `elapsed_ms`는 단위 미기재 필드를 ms로 가정(U-12) |
 | `apm_events` | `hostname`·구간(기본 최근 30분 · 상한 24시간)·`level?`(최소 레벨) | `/api/dbsearch/event` · `/api/dbsearch/error` | 최근 순 50건: 시각·레벨·유형(`errorType` 또는 `metricsName`)·종류(error/metric)·값·메시지(마스킹)·`profile_ref` + `errors_by_type`(오류 기록 유형별 상위 10) + `was_signals` |
-| `apm_transaction_profile` | `hostname`·`domain_id`·`txid`·`time_ms`(앞 도구의 `profile_ref`를 그대로)·`top_k≤20` | `/api/transaction/txid` · `/api/transaction/profile.txt`(`Accept: text/plain`) · `/api/transaction/sql` | 트랜잭션 분해 · 프로파일 **마스킹 발췌**(60줄·4000자 상한 — 텍스트 형식 미검증이라 단계 요약은 하지 않는다) · SQL(리터럴 마스킹 · 상위 K) |
-| `gateway_health` | 없음 | `/api/domain` 1회(30초 캐시) | 상태(`ok`·`degraded`·`not_configured`)·설정·도달·도메인 수·허용 경로 수(16)·API 호출 수 + 최상위 `poller` |
+| `apm_transaction_profile` | `hostname`·`source_id`(v5 — 소스가 둘 이상이면 필수)·`domain_id`·`txid`·`time_ms`(앞 도구의 `profile_ref`를 그대로)·`top_k≤20` | 그 소스의 `/api/transaction/txid` · `/api/transaction/profile.txt`(`Accept: text/plain`) · `/api/transaction/sql` | 트랜잭션 분해 · 프로파일 **마스킹 발췌**(60줄·4000자 상한 — 텍스트 형식 미검증이라 단계 요약은 하지 않는다) · SQL(리터럴 마스킹 · 상위 K) |
+| `gateway_health` | 없음 | 소스마다 `/api/domain` 1회(병렬 · 30초 캐시) | **소스별 행**(`source_id`·상태 `ok`/`degraded`·설정·도달·도메인 수·허용 경로 수(16)·API 호출 수) + 최상위 `status`(`ok`·`degraded`·`not_configured`) · `poller`(`domains` 키 = `<source_id>:<domain_id>`) |
 
 - 도구 설명문은 벤더 중립이다(`jennifer`·「제니퍼」 없음 — `apm_gateway/tests/test_server.py`).
-- **`was_signals`**는 게이트웨이 `domain/signals.py`의 **WAS 시그니처 결정적 판정 결과**다 — `kind`·`level`·`category`·`label`·`evidence`·`instance_id`·`source_tool`.
+- **`was_signals`**는 게이트웨이 `domain/signals.py`의 **WAS 시그니처 결정적 판정 결과**다 — `kind`·`level`·`category`·`label`·`evidence`·`instance_id`·`source_tool`·`source_id`(v5).
   kind 8종: `was_service_queuing` · `was_thread_pool_exhaustion` · `was_db_pool_exhaustion` · `was_gc_stall` · `was_heap_pressure` · `was_slow_sql` ·
   `was_external_call_delay` · `was_error_burst`(잠정 임계 `apm_gateway/config/was_signatures.yaml`). `sre_agent`·`noise_gate`는 규칙을 다시 구현하지 않는다(D-274 ⑤ · D-035).
 - 지표 식별자 두 체계(realtime camelCase ↔ dbmetrics snake_case)는 `adapters/jennifer/fields.py` `METRIC_FIELDS` 표가 잇는다. TPS처럼 dbmetrics 식별자가 없는 지표는 추세로 조회하지 않는다.
@@ -874,11 +927,16 @@ overrides: []
   "source_kind": "apm_api",
   "source": "jennifer",
   "tool": "apm_runtime_health",
-  "instance_resolution": {"matched": true, "confidence": "high", "reason": "host_name", "instances": [1001, 1002]},
+  "instance_resolution": {"matched": true, "confidence": "high", "reason": "host_name", "instances": [1001, 1002],
+                          "instance_refs": [{"source_id": "bank", "domain_id": 1000, "instance_id": 1001},
+                                            {"source_id": "bank", "domain_id": 1000, "instance_id": 1002}]},
   "window": {"start": "2026-09-29T09:30:00+09:00", "end": "2026-09-29T10:00:00+09:00", "minutes": 30},
   "was_signals": [{"kind": "was_heap_pressure", "level": "WARNING", "category": "medium", "label": "힙 메모리 압박",
-                   "evidence": "heap 사용률 ≥ 0.9 연속 3샘플(최근 0.99)", "instance_id": 1001, "source_tool": "apm_runtime_health"}],
-  "limits": ["[한계] ..."]
+                   "evidence": "heap 사용률 ≥ 0.9 연속 3샘플(최근 0.99)", "instance_id": 1001, "source_tool": "apm_runtime_health",
+                   "source_id": "bank"}],
+  "limits": ["[한계] ..."],
+  "sources": [{"source_id": "bank", "status": "ok", "reason": ""},
+              {"source_id": "common", "status": "no_match", "reason": ""}]
 }
 ```
 
@@ -886,17 +944,20 @@ overrides: []
 
 | `error` | 뜻 | 호출자가 할 일 |
 |---|---|---|
-| `not_configured` | `JENNIFER_API_URL` 미설정 | §4.2 |
-| `invalid_argument` | 인자 오류(`hostname` 빈 값 · `profile_ref` 누락 · `n` 범위 밖 · 미지 `level`) | 인자를 고친다 |
+| `not_configured` | 소스 0개(`JENNIFER_API_URL`·`JENNIFER_SOURCES` 모두 미설정) | §4.2 |
+| `invalid_argument` | 인자 오류(`hostname` 빈 값 · `profile_ref` 누락 · `n` 범위 밖 · 미지 `level` · (v5) 모르는 `source_ids` · 소스가 둘 이상인데 `source_id` 없음) | 인자를 고친다 · 소스 목록은 사유에 있다 |
 | `instance_unresolved` | hostname에 대응하는 인스턴스가 없다 | 정합 파일 확인(§4.5) — 상관 보류 |
-| `profile_ref_mismatch` | `apm_transaction_profile`의 `domain_id`가 hostname의 정합 도메인이 아님 | 앞 도구의 `profile_ref`를 그대로 넘겼는지 확인 |
-| `source_unavailable` | 제니퍼 본문 *"… Domain is not connected"*(HTTP 500) · 도메인 0건 · 연결 실패 · timeout | `[한계]`에 사유 — 빈 결과로 삼키지 않는다 |
+| `profile_ref_mismatch` | `apm_transaction_profile`의 (`source_id`, `domain_id`)가 그 소스에서의 hostname 정합 도메인이 아님 | 앞 도구의 `profile_ref`를 그대로 넘겼는지 확인 |
+| `source_unavailable` | 제니퍼 본문 *"… Domain is not connected"*(HTTP 500) · 도메인 0건 · 연결 실패 · timeout · (v5) 고른 소스 전부 실패(원인 코드가 섞일 때) | `[한계]`에 사유 — 빈 결과로 삼키지 않는다 |
 | `contract_violation` | 제니퍼 본문 *"Required request parameter …"*·*"Cannot parse null string"* | **게이트웨이 버그** — 재시도하지 않는다(경고 로그) |
 | `apm_quota_exceeded` | HTTP 429(초과 응답의 실제 모양은 U-5 — 잠정) | 사용량 협의 · `[한계]` |
 | `apm_api_error` | 그 밖의 비200 · 리다이렉트(비추종) · 응답 크기 상한 초과 · 파싱 실패 | §11 |
 | `rate_limited` | 조사당 프로파일 호출 상한 초과 | 다른 증거로 판단 |
 
 - **침묵 폴백 금지**: 일부 도메인·일부 호출 실패, 창 상한, 과거 기준시각(실시간 스냅샷 생략)은 `limits`에 `[한계]`로 적고, 쓸 데이터가 하나도 없으면 오류를 돌려준다.
+- **부분 실패(v5 · D-287 ⑦)**: 한 소스가 실패하면 그 소스만 빠지고 `[한계] APM 소스 <id> 조회 불가(<code>) — 그 소스의 결과는 빠졌다`와 `sources[].status`로 드러난다.
+  고른 소스가 전부 실패하거나 전부 도메인 0건이면 오류다 — 원인 코드가 모두 같으면 그 코드(소스 1개면 v4와 같은 코드·사유), 섞이면 `source_unavailable`. 소스가 하나면
+  `[한계]` 문구는 v4 그대로(소스 표기 없음)이고, 둘 이상이면 위치에 `소스 <id> · 도메인 <n>`이 들어간다.
 - 제니퍼 오류는 HTTP 코드로 가를 수 없다(도메인 미접속·필수 파라미터 누락이 모두 500 — 로컬 실측). 게이트웨이는 v1 JSON `exception.message`·v2 문자열 본문으로 가른다.
   라이선스·에이전트가 없어도 일부 경로는 **200 + 빈 결과**를 준다 — 도메인이 0건이면 `source_unavailable`로 돌려준다(87 §0.10 #18).
 - 반환 형태는 폴스타 도구 계약을 **복제**했다(import 없음 — 소비자는 이 계약을 각자 복제한 픽스처로 테스트한다).
@@ -927,9 +988,9 @@ overrides: []
    (`sre_agent/sre_agent/application/investigation_guidance.py` `APM_ANCHORED_TOOLS`). 현재값 도구(`apm_active_services`·`apm_resource_pool`)는
    "현재 상태로만 서술" 노트를 받는다.
 3. 조사 순서 노트(`APM_FOCUS_NOTE_TEMPLATE`) — 대상 확정(`apm_instance_map`) → 선행 이벤트 → 골든 시그널·런타임 → 증상별 분기(큐잉·지연·풀 —
-   `profile_ref`를 그대로 넘긴다) → 인프라 대조 → 반증 도구 1회 · `apm_*`에 `investigation_id` 인자.
+   `profile_ref`의 `source_id`·`domain_id`·`txid`·`time_ms`를 그대로 넘긴다 · v5) → 인프라 대조 → 반증 도구 1회 · `apm_*`에 `investigation_id` 인자.
 4. **APM 사건**(`resourceType="apm.Instance"` 또는 트리거 `meta.hints.solution == "apm"`)이면 OS 플레이북 대신 **APM 플레이북** 하나만 싣고, 트리거 힌트
-   (`event_type`·`instance_id`·`domain_id`·`txid`)를 한 줄로 붙인다.
+   (`event_type`·`source_id`(v5)·`instance_id`·`domain_id`·`txid`)를 한 줄로 붙인다.
 5. 판정은 결정적이다 — WAS 시그니처는 **게이트웨이가 판정해 `was_signals`로 넘기고**, `APM_SIGNATURES_ENABLED=true`면 `sre_agent`가
    `Signal(source="apm")`로 승격만 한다(`domain/severity_signatures.py` `was_signals_from_outputs` — 규칙 재구현 없음).
 6. 권고는 WAS kind별 표에서 고른다(`domain/remediation.py` — 가역성 순 · 항목마다 **검증 방법·롤백**). 조치는 권고만이다(§5.4).
@@ -977,11 +1038,11 @@ overrides: []
 | 항목 | 내용 |
 |---|---|
 | 위치 | `apm_gateway/apm_gateway/application/poller.py` — `alarm_server`가 아니다. 게이트웨이 프로세스 안에서 MCP 서버와 같은 이벤트 루프로 돈다 |
-| 동작 | 주기(기본 30초 · 하한 10초)마다 **도메인별로** `GET /api/dbsearch/event?domain_id=<id>&start_time=<ms>&end_time=<ms>`를 호출한다. `level` 쿼리는 값 형식이 미정의(U-1)라 **보내지 않고** 받은 뒤 최소 레벨(`APM_EVENT_MIN_LEVEL` · 기본 warning)로 거른다 — 해소 레벨(recovery·clear)은 늘 통과시킨다 |
-| 커서 | 도메인별 Redis 키 `apm_gateway:poller:cursor:<domain_id>`. 첫 주기는 `[지금 − 주기, 지금]` · 이후 `[커서, 지금]`을 **경계 포함** 재조회 · 커서는 `지금 − 60초`(늦게 들어온 이벤트용 겹침)까지만 전진하고 뒤로 가지 않는다 |
-| 멱등 | 응답에 **`eventId`가 없다** → 합성 멱등 키 sha256(`domainId`·`instanceId`·`errorType\|metricsName`·`time`·`txid`). Redis `SET NX EX 86400`이 성공한 이벤트만 XADD — 재기동·경계 재조회·같은 ms 여러 건에도 **중복 발행 0**(`apm_gateway/tests/test_poller.py`) |
+| 동작 | 주기(기본 30초 · 하한 10초)마다 **소스 간 병렬 · 소스 안은 도메인별로**(v5) `GET /api/dbsearch/event?domain_id=<id>&start_time=<ms>&end_time=<ms>`를 호출한다. `level` 쿼리는 값 형식이 미정의(U-1)라 **보내지 않고** 받은 뒤 최소 레벨(`APM_EVENT_MIN_LEVEL` · 기본 warning)로 거른다 — 해소 레벨(recovery·clear)은 늘 통과시킨다 |
+| 커서 | (소스, 도메인)별 Redis 키 `apm_gateway:poller:cursor:<source_id>:<domain_id>`(v5 — 단일 설정은 `…:cursor:default:<domain_id>` · 운영 발행 이력이 없어 v4 키 `…:cursor:<domain_id>`는 옮기지 않았다). 첫 주기는 `[지금 − 주기, 지금]` · 이후 `[커서, 지금]`을 **경계 포함** 재조회 · 커서는 `지금 − 60초`(늦게 들어온 이벤트용 겹침)까지만 전진하고 뒤로 가지 않는다 |
+| 멱등 | 응답에 **`eventId`가 없다** → 합성 멱등 키 sha256(`source_id`(v5)·`domainId`·`instanceId`·`errorType\|metricsName`·`time`·`txid`) — 두 서버의 값이 같은 이벤트도 둘 다 발행된다. Redis `SET NX EX 86400`이 성공한 이벤트만 XADD — 재기동·경계 재조회·같은 ms 여러 건에도 **중복 발행 0**(`apm_gateway/tests/test_poller.py`) |
 | 형식 | `alarm_server`와 같은 `{"data": <json>}` 레코드(스트림 기본 `alarm:raw`) — 소비자(게이트·트리거)는 폴스타 알람과 같은 파서로 받는다 |
-| 오류 처리 | 도메인 미접속(`source_unavailable`) → **커서 유지** · 백오프(주기 ×2 · 최대 ×8) · 상태 `unavailable` · 계약 위반(`contract_violation`) → 그 도메인 폴링 **중지**(경고 로그 · 게이트웨이 버그) · Redis XADD 실패 → 멱등 키를 지우고 커서를 유지해 다음 주기에 다시 발행. 상태는 `gateway_health`의 `poller.domains`에 보인다 |
+| 오류 처리 | 도메인 미접속(`source_unavailable`) → **커서 유지** · 백오프(주기 ×2 · 최대 ×8) · 상태 `unavailable` · 계약 위반(`contract_violation`) → 그 도메인 폴링 **중지**(경고 로그 · 게이트웨이 버그) · Redis XADD 실패 → 멱등 키를 지우고 커서를 유지해 다음 주기에 다시 발행. 백오프·중지는 (소스, 도메인)별이고 한 소스의 실패(도메인 목록 실패 포함)가 다른 소스 폴링을 막지 않는다. 상태는 `gateway_health`의 `poller.domains`(`"<source_id>:<domain_id>"`)에 보인다 |
 | 호출 경로 | 게이트웨이 안에서 끝난다(토큰 한 곳 — G-4 해소 · D-274 ④) |
 | 제니퍼 측 준비 | 없음(Java 코드 0) — Open API 토큰과 네트워크(§3)뿐 |
 
@@ -994,8 +1055,8 @@ overrides: []
 | `errorType` 또는(비면) `metricsName` | `alarmName` · `resourceType="apm.Instance"` | 원문 유지 |
 | `time` | `alarmTime`(`yyyyMMddHHmmss` · `APM_TIMEZONE`) | 워커 파서 형식 |
 | `message`·`value` | `conditionLog`(`message` 마스킹 + `(value=…)`) · `conditions`(`JENNIFER EVENT <level> — <alarmName>`) | |
-| (상수) | `dbId="jennifer"` · `source="jennifer"` · `alarmId="jennifer:<멱등 키 앞 16자>"` · `resourceAncestry="JENNIFER > <domainName> > <instanceName>"` | 소스 배지(§8.4 ②) |
-| 부가 | `apm{domain_id, domain_name, instance_id, instance_name, event_type, event_kind, level, value, txid, time_ms, application, match_confidence, match_reason, was_signals, idempotency_key}` | 워커의 `raw_payload.apm` — 게이트 `hints`·조사 플레이북 입력 |
+| (소스) | `dbId="jennifer_<source_id>"`(v5 — 단일 설정 `default`는 `jennifer`) · `source="jennifer"`(항상) · `alarmId="jennifer:<멱등 키 앞 16자>"` · `resourceAncestry="JENNIFER > <source_id> > <domainName> > <instanceName>"`(단일 설정은 `JENNIFER > <domainName> > <instanceName>`) | 소스 배지(§8.4 ②) · 존 판정(§8.4 ⑥) |
+| 부가 | `apm{source_id(v5), domain_id, domain_name, instance_id, instance_name, event_type, event_kind, level, value, txid, time_ms, application, match_confidence, match_reason, was_signals, idempotency_key}` | 워커의 `raw_payload.apm` — 게이트 `hints`·조사 플레이북 입력 |
 
 조사 트리거 계약은 `serverName`·`hostname`·`severity`를 필수로 요구한다(`sre_agent/sre_agent/application/investigation_jobs.py:45`). 게이트웨이 테스트는 이 계약과
 워커가 읽는 키를 **import 없이 복제**해 단언한다(`apm_gateway/tests/test_poller.py` — R-21).
@@ -1020,15 +1081,16 @@ overrides: []
 
 1. **`app_impact`는 승격 전용**이다(`NOISE_APP_IMPACT_ENABLED=true` + `NOISE_APM_MCP_URL`). 매트릭스 단계에서 DASHBOARD·TICKET으로 판정된
    **폴스타(비 APM) 알람**에 대해서만 게이트웨이 `apm_events(hostname, reference_time=<알람 시각>, lookback_minutes=<사건창>, level="fatal")`를 부르고,
-   fatal 이벤트가 1건 이상이면 **PAGE로 올린다**. 억제 단계·SUPPRESS·심각도 3 단락은 건드리지 않는다. 게이트웨이 오류·미가용·계약 위반은 판정을 바꾸지 않고
+   fatal 이벤트가 1건 이상이면 **PAGE로 올린다**. 억제 단계·SUPPRESS·심각도 3 단락은 건드리지 않는다. **v5 — 알람 존의 제니퍼 소스만 부른다**(`source_ids` · §4.7 — 다른 존의 같은 hostname으로 승격하지 않는다). 게이트웨이 오류·미가용·계약 위반은 판정을 바꾸지 않고
    사유를 로그와 결정 기록(`stage_evidence.app_impact_error`)에 남긴다(`noise_gate/application/nodes/notification_gate.py` · 도메인 규칙 `domain/notification_policy.py` step 9.5).
    근거는 결정 기록의 `app_impact_fatal_events`·`app_impact_event_types`·`app_impact_was_signals`에 남는다. 관제 화면 결정 근거 패널은 이 키들을 「앱 영향 — …」 한글 이름으로 보여 준다(`src/static/js/noise-help.js`).
    게이트웨이가 느리면 대상 알람 1건에 최대 약 7초가 더해진다(호출 5초 · TCP 사전 확인 2초 · 미가용 판정 뒤 30초 동안 재시도 안 함 — 워커는 알람을 하나씩 처리).
    워커가 직렬이라 그동안 뒤에 쌓인 알람도 함께 밀린다 — 켜기 전에 게이트웨이 응답 시간을 먼저 본다. **v4.1 실측**(로컬 게이트웨이 · 도메인 0건): 추가 지연 0.20초(첫 호출) ·
    게이트웨이 다운이면 0.001초 만에 `gateway_unreachable`로 넘어가고 쿨다운 중에는 0초 · Bearer 불일치(401)는 `gateway_error — … unhandled errors in a TaskGroup
    (1 sub-exception)`으로만 남아 인증 실패인지 보이지 않는다(§11 · 사유 개선은 87 §0.12 F-4).
-2. **소스 배지** — 게이트웨이 이벤트(`dbId="jennifer"`)는 배지가 **「제니퍼」**다. 레지스트리 DB가 아니라서 `db_id` 해석 앞에서 분기하고(레지스트리 등재는 J5),
-   툴팁은 `제니퍼 — <제니퍼 도메인>; jennifer`다. hostname 역조회(D-188)가 폴스타 서버를 찾아도 배지는 바뀌지 않는다(`noise_gate/application/server_identity.py`).
+2. **소스 배지** — 게이트웨이 이벤트(`dbId="jennifer"`·`"jennifer_<id>"`)는 배지가 **「제니퍼」**다. 레지스트리 DB가 아니라서 `db_id` 해석 앞에서 분기한다.
+   툴팁은 `제니퍼 — <존 약칭> <제니퍼 도메인>; <dbId>`다(v5 — 예 `제니퍼 — 은행존 운영도메인; jennifer_legacy` · 존은 레지스트리 `sources[]`에서 · 존 없는 소스와 단일 설정은
+   v4 그대로 `제니퍼 — <도메인>; jennifer`). hostname 역조회(D-188)가 폴스타 서버를 찾아도 배지는 바뀌지 않는다(`noise_gate/application/server_identity.py`).
 3. **알람 kind 분류 충돌(87 R-16) — 해소.** 게이트 `classify_alarm_kind`(`noise_gate/domain/process_rank.py`)와 조사측 동형 함수가 `resourceType="apm.Instance"`를
    OS 키워드보다 **먼저** `apm`으로 판정한다(대칭 · 플래그 무관 — 게이트웨이 이벤트에서만 발현). 결과(U-13 확정안):
    - OS 플레이북·"영향 프로세스" 표·L3 kind 프로파일(`alarm_notifier.py` — 매핑 파일로 apm을 연결해도 끊는다)이 **붙지 않는다**.
@@ -1036,9 +1098,14 @@ overrides: []
 
    2026-09-29 전 실측 표(수정 전): `WARNING_JVM_HEAP_MEM_HIGH`·`ERROR_OUTOFMEMORY` → `memory` · `ERROR_JVM_CPU_HIGH_LONGTIME` → `cpu` · `ERROR_PROCESS_DOWN` → `process` —
    지금은 §2.3 전 유형(접두 유무 둘 다)이 `apm`이다(`noise_gate/tests/test_plan87_apm_consumer.py` · `sre_agent/tests/test_apm_consumer.py`).
-4. 트리거 페이로드 — APM 이벤트에만 `meta.hints = {solution: "apm", instance_id, domain_id, event_type, txid}`를 싣는다(`noise_gate/domain/investigation_payload.py`).
+4. 트리거 페이로드 — APM 이벤트에만 `meta.hints = {solution: "apm", source_id(v5), instance_id, domain_id, event_type, txid}`를 싣는다(`noise_gate/domain/investigation_payload.py`).
    그 밖의 이벤트는 페이로드가 바이트 동일하다. hostname이 미해소(`""`)인 APM 이벤트는 조사 서비스에 보내지 않고 사유(`target_unresolved`)를 남긴다.
 5. 플래그 off 비트 동일은 `noise_gate/tests/test_plan60_flags_off_regression.py`가 단언한다.
+6. **알람 존 전달 — v5에서 F-7 해소**(87 §0.13 (6) · D-287 ④). 알람 수신 범위(알림그룹 = 존)는 이벤트 `dbId`의 존으로 거른다(`src/api/routes/alarm.py`
+   `event_visible_to` · ack·피드백 `_zone_permits`). v4의 `dbId="jennifer"`는 레지스트리 DB가 아니라 존이 없었고, 그래서 **존 일부만 받는 구독자에게 APM 알람이 가지 않고
+   ack·피드백도 막혔다**(전 존 구독자·관리자만 봤다). v5는 `src/routing/zones.py` `db_id_to_zone`이 `jennifer_<id>`를 레지스트리 `sources[]`로 풀어 — 은행존 구독자는
+   `jennifer_bank`·`jennifer_legacy`, 공동존 구독자는 `jennifer_common` 알람을 받고 ack할 수 있다. 존 없는 소스(단일 설정 `jennifer` · 표에 없는 id · `zone` 빈 값)는 종전대로
+   전 존 구독자·관리자만 본다(`tests/test_api/test_plan87_j8_apm_alarm_zone.py`).
 
 ---
 
@@ -1165,6 +1232,7 @@ scrape_configs:
 | 이벤트 계약 | 게이트웨이 `alarm:raw` 레코드가 워커 키·`REQUIRED_EVENT_FIELDS`를 만족 · 중복 발행 0(재조회·재기동·같은 ms) — `apm_gateway/tests/test_poller.py` · 같은 레코드를 `noise_gate`가 파싱·트리거 — `noise_gate/tests/test_plan87_apm_consumer.py`(계약 복제) |
 | kind 분류 | §2.3 전 유형(접두 유무)이 두 분류기에서 `apm` — `noise_gate/tests/test_plan87_apm_consumer.py` · `sre_agent/tests/test_apm_consumer.py` |
 | 감사 병합 | 게이트웨이 감사 1줄에 `investigation_id`·`thread_id` — `test_server.py` |
+| **다중 소스(v5 · J8)** | 목 서버 **2개**가 같은 `domain_id`·`instance_id`·hostname을 갖는 충돌 경우 — 값이 섞이지 않음 · `source_ids`로 좁히면 다른 서버 호출 0 · `profile_ref`로 다른 소스 호출 0 · 소스 A 토큰이 B 요청에 0회(목 서버 `bearer_fp`) · 거부 입력 소스마다 HTTP 0 · 한 소스 다운 → 나머지 + `[한계]`·`sources[]` · 전부 다운·전부 도메인 0건 → `source_unavailable` · 실패·빈 인벤토리 30초 재조회(F-3) · `overrides[].source_id`·`per_source` · 감사 `sources=` · 폴러 두 소스 같은 값 이벤트 2건·커서 키 분리·재기동 중복 0 · 단일 설정 v4 식별자 — `apm_gateway/tests/test_multi_source.py` · 설정 — `test_config.py` · 레지스트리·존 판정 — `tests/test_routing/test_plan87_j8_registry_sources.py`·`tests/test_api/test_plan87_j8_apm_alarm_zone.py` · 소비측 — `noise_gate/tests/test_plan87_j8_multi_source.py`·`sre_agent/tests/test_plan87_j8_source_id.py` |
 | 실기동 스모크 | 게이트웨이 프로세스 + 목 서버 → MCP SSE 클라이언트(`list_tools`·`gateway_health`·`apm_events`) · Bearer 없이 `/sse` 401 · `noise_gate` 클라이언트 → 게이트웨이 `apm_events` · `sre_agent` 승격 함수 ← 게이트웨이 실출력(2026-09-29 수동 확인) · **실서버판은 §10.2(v4.1)** |
 
 ```bash
@@ -1238,6 +1306,43 @@ export APM_EVENT_POLLER_ENABLED=true REDIS_HOST=127.0.0.1 REDIS_PORT=16390
 **이 단계로도 확인하지 못한 것(J0-L-b)** — 실 인스턴스·이벤트·트랜잭션 응답 모양 · `interval_minute` 허용값 · `hostName` 형식 · 이벤트 재현 · 폴러의 실제
 발행·멱등 · `was_signals` 실판정 · `app_impact` 실승격 · 실 LLM 조사 완주.
 
+**두 소스판 — 로컬 Docker 1대를 소스 두 개로(v5 · J8)** 【현재 가능 — 라이선스 없는 범위 · 87 §0.14】
+
+로컬 Docker 제니퍼는 1대뿐이라 같은 뷰 서버를 소스 id 두 개(`bank`·`common`)로 등록해 다중 소스 경로(설정·소스별 클라이언트·병렬 인벤토리·부분 실패·감사)를 본다.
+토큰이 같으므로 **토큰 교차 검사는 목 서버 2개로** 한다(§10.1 · `test_multi_source.py`).
+
+```bash
+# [CWD=apm_gateway/] R-29 — 에이전트를 붙인 WAS와 무관한 개발 셸에서만. 단일 설정 키를 먼저 지운다(동시 설정 = 기동 실패).
+unset JENNIFER_API_URL JENNIFER_API_TOKEN
+TOK="$(grep '^JENNIFER_API_TOKEN=' /path/outside/repo/jennifer-token.env | cut -d= -f2-)"   # 화면에 출력하지 않는다
+export JENNIFER_SOURCES='["bank","common"]'
+export JENNIFER_BANK_API_URL=http://127.0.0.1:17900 JENNIFER_BANK_API_TOKEN="$TOK"
+export JENNIFER_COMMON_API_URL=http://127.0.0.1:17900 JENNIFER_COMMON_API_TOKEN="$TOK"
+unset TOK
+export APM_GATEWAY_PORT=19096 APM_GATEWAY_BEARER_TOKEN="$(openssl rand -hex 12)"
+# (폴러까지 볼 때) 임시 Redis — 공유 6380은 쓰지 않는다
+docker run -d --rm --name apm-it-redis -p 127.0.0.1:16390:6379 redis:7-alpine
+export APM_EVENT_POLLER_ENABLED=true REDIS_HOST=127.0.0.1 REDIS_PORT=16390
+../.venv/bin/python -m apm_gateway
+# 정리: 게이트웨이 Ctrl-C → docker rm -f apm-it-redis
+
+# 두 소스판 통합 테스트(게이트웨이 프로세스 없이 — 같은 로컬 서버를 bank·common으로 등록한다)
+RUN_DOCKER_IT=1 JENNIFER_IT_URL=http://127.0.0.1:17900 JENNIFER_IT_TOKEN=<로컬 토큰> \
+  ../.venv/bin/python -m pytest tests/test_docker_it.py -q      # 4 passed(단일 2 + 두 소스 2)
+```
+
+라이선스가 없을 때 **정상 응답(두 소스)**: `gateway_health` = 행 2개(`bank`·`common` — 둘 다 `jennifer_reachable: true` · `domain_count: 0`) · 최상위 `status: degraded` /
+`apm_instance_map` = `{"error": "source_unavailable", "reason": "모든 APM 소스 조회 불가 — bank: source_unavailable: APM 도메인 0건 …; common: …"}` /
+`source_ids: ["bank"]`로 좁히면 사유가 v4 문구 그대로(`APM 도메인 0건 — …`) / 폴러 = 발행 0 · 커서·멱등 키 0.
+
+2026-09-30 검증 결과(검증 스크립트는 세션 scratchpad — 저장소 밖 · 정본 87 §0.14):
+
+| 대상 | 확인한 것 |
+|---|---|
+| 목 서버 2개 + 임시 Redis + 게이트웨이 프로세스(25) | 동시 설정·필수 키 누락 → 기동 실패(종료 코드 2 · 메시지에 토큰 0회) · 기동 로그 소스 id · 도구 9종 · `source_ids` 인자 7종·프로파일 `source_id` · 틀린 Bearer 401 · 헬스 소스별 행 · 같은 id 두 소스 행 4개 · `source_ids=["common"]` → A 호출 0 · 값 분리 · `profile_ref(bank)` → B 호출 0 · `source_id` 없음 → `invalid_argument` · 모르는 id → `invalid_argument`+목록 · `noise_gate` 실클라이언트 `source_ids` 통과 · 폴러 2건(`jennifer_bank`·`jennifer_common`) · `apm.source_id`·`resourceAncestry` · 커서 키 2개 · 재기동 중복 0 · 폴러 상태 키 · 한 소스 다운 → 나머지 + `[한계]` · 헬스 degraded · 감사 `sources=` · DEBUG 로그 토큰·Bearer 0회 · 소스 A 요청에 B 토큰 0회 |
+| 로컬 Docker 두 소스 + 게이트웨이 프로세스(10) | 헬스 행 2 · 도달 · degraded(도메인 0) · 전 소스 도메인 0건 → `source_unavailable`(소스별 사유) · 단일 소스로 좁히면 v4 사유 · 폴러 발행 0·키 0 · 로그 비밀 0회 · 좁힌 호출 감사 `sources=bank:1` · 전 소스 호출은 30초 캐시된 소스를 빼고 조회(`sources=common:1`) · **31초 뒤 두 소스 재조회(`sources=bank:1,common:1` — F-3)** |
+| `RUN_DOCKER_IT=1` | 4 passed |
+
 ### 10.3 단계 3 — 로컬 MLX 실 LLM · 비과금 【현재 가능(도구) / APM 시나리오 실 LLM 완주는 미실행 — v4는 결정적 테스트로 수용】
 
 실 LLM이 필요한 검증(조사 완주·브리핑 인용 판정)은 **로컬 MLX**로 한다(D-240). 두 평면(워커·오케스트레이터)이 모두 `mlx`(127.0.0.1 루프백)면
@@ -1274,6 +1379,7 @@ RUN_LOCAL_LLM=1 pytest <대상 테스트> -m live_llm
 |---|---|---|
 | 1 | §3.6 연결 사전 확인 · §3.7 J0 채집 | U-1~U-13 기록 · recorded JSON(마스킹본) |
 | 2 | 게이트웨이를 임시 포트로 기동 · 도구 1종씩 호출 | 반환 계약 일치 · 허용목록 밖 호출 0 · 토큰 비노출 · 뷰 서버 부하 협의 범위 안 |
+| 2′ | (v5 · 다중 소스) 소스마다 1~2를 반복 · 게이트웨이 `JENNIFER_SOURCES` id와 루트 레지스트리 `solutions[apm].sources[].id`·존 대조 · 소스별 버전(레거시 4.x 여부 — R-30)·망 도달(R-31) | 모든 소스가 `gateway_health` 행에서 `ok` · 두 설정의 id 집합이 같다(다르면 `app_impact` 존 좁히기가 `invalid_argument` — §4.7) · 소스 간 같은 hostname 목록(R-32 — 있으면 override `source_id`) |
 | 3 | 정합 일치율 측정(U-4) · (U-10이 확인되면) `was_object` 브릿지 재판정(v4 미구현 — §4.5) | 미매칭 인스턴스 목록과 정합 파일 예외(override) · 브릿지를 만들면 `mcp_server` 중단 시 강등 사유 노출 |
 | 4 | 조사 서비스에 `APM_MCP_URL` 연결 · 실 사건 1건 재조사(운영 조사 LLM — FabriX는 조사 경로 밖이라 사내 vLLM) | 브리핑에 APM 증거가 인용됨 · 게이트웨이 미가용 시 사유 노출 |
 | 5 | 폴러(J4) 섀도 — 발행은 별도 스트림 또는 기록만 | 중복 0 · kind 분류 R-16 해소 확인 · 트리거 계약 통과 |
@@ -1323,11 +1429,16 @@ RUN_LOCAL_LLM=1 pytest <대상 테스트> -m live_llm
 | 허용 경로인데 거부(`contract_violation` — "허용목록 거부") | `adapters/jennifer/allowlist.py` · 쿼리 키 | 게이트웨이 버그 — 도구가 목록 밖 요청을 만들었다(경로별 쿼리 키 포함 · 설정으로는 넓힐 수 없다 — 코드와 사본·테스트를 함께 바꾼다) | 【현재 가능】 |
 | 제니퍼 알람이 게이트에 안 들어옴 | `gateway_health`의 `poller`(도메인별 `state`·`reason`) · 폴러 스위치 · Redis 접속 · 스트림 키 | `APM_EVENT_POLLER_ENABLED` · `REDIS_*` · `APM_EVENT_STREAM_KEY`=`alarm:raw` · 최소 레벨(`APM_EVENT_MIN_LEVEL`) · 도메인 `unavailable`(미접속 — 백오프 중) · `stopped`(계약 위반 — 재기동 전까지 중지) | 【현재 가능】 |
 | 제니퍼 알람에 OS 메모리 플레이북이 붙음 | kind 분류 | v4에서 해소 — 그래도 보이면 이벤트 `resourceType`이 `apm.Instance`인지(수동 주입 이벤트 등) | 【현재 가능】 |
-| 제니퍼 알람 배지가 "폴스타"로 보임 | 이벤트 `dbId`·`source` | v4에서 해소(`dbId="jennifer"`면 「제니퍼」) — 게이트웨이가 아닌 경로로 들어온 이벤트인지 확인 | 【현재 가능】 |
+| 제니퍼 알람 배지가 "폴스타"로 보임 | 이벤트 `dbId`·`source` | v4에서 해소(`dbId="jennifer"`·`"jennifer_<id>"`면 「제니퍼」) — 게이트웨이가 아닌 경로로 들어온 이벤트인지 확인 | 【현재 가능】 |
+| **존 구독자에게 제니퍼 알람이 안 옴 · ack가 403**(F-7) | 알람 `dbId` · 레지스트리 `solutions[apm].sources[]` · 사용자 알림그룹 | **v5에서 해소** — `dbId`가 `jennifer_<id>`이고 그 id가 레지스트리 표에 존과 함께 있어야 존 구독자에게 간다. 단일 설정(`dbId="jennifer"`) · 표에 없는 id(서버 로그에 「레지스트리에 없는 apm 소스 — 존 없음으로 다룬다」 id별 1회) · `zone` 빈 값은 존이 없어 전 존 구독자·관리자만 본다 — 게이트웨이를 다중 설정으로 바꾸거나 레지스트리 표에 id·존을 더한다(§4.2·§4.4) | 【현재 가능】 |
+| 게이트웨이 기동 실패 `JENNIFER_SOURCES와 단일 설정 키(…)를 함께 쓸 수 없다` · `소스 '…' 필수 키 없음` · `예약어` · `소문자 슬러그` | `apm_gateway/.env` · 셸 환경 | 두 방식 중 하나만(§4.2) — 셸에 남은 `JENNIFER_API_URL`·`JENNIFER_API_TOKEN`도 센다(셸 값이 `.env`보다 이긴다) · 소스마다 `_API_URL`·`_API_TOKEN` · id는 `[a-z][a-z0-9_]{0,15}`(`default`·`api` 금지) | 【현재 가능】 |
+| `{"error": "invalid_argument", "reason": "모르는 source_ids […] — 설정된 소스: […]"}` | 게이트웨이 `JENNIFER_SOURCES` ↔ 레지스트리 `sources[].id` | 둘이 다르다 — `noise_gate` `app_impact_error`에 이 사유가 남으면(판정은 그대로) 같은 id로 맞춘다(§4.7) | 【현재 가능】 |
+| `apm_transaction_profile`이 `invalid_argument` "소스가 N개라 profile_ref의 source_id가 필요하다" | 호출 인자 | 앞 도구가 준 `profile_ref`를 **통째로**(`source_id` 포함) 넘긴다(§7.1) | 【현재 가능】 |
+| 한 소스만 결과가 빠지고 `[한계] APM 소스 <id> 조회 불가(…)` | 그 소스 `gateway_health` 행 · 망 도달 | 그 뷰 서버 미도달·토큰·도메인 0건 — 나머지 소스는 정상 결과다(부분 실패 · D-287 ⑦). 게이트웨이 호스트에서 모든 뷰 서버에 닿지 않으면 87 R-31(G-13 재판정) | 【현재 가능】 |
 | 폴링이 같은 이벤트를 두 번 발행 | Redis 키 `apm_gateway:poller:seen:*`(TTL 24시간) | 멱등 키가 Redis에 남는지(다른 DB 번호 · 플러시) · 같은 게이트웨이를 두 개 띄우지 않았는지 | 【현재 가능】 |
 | 한 조사의 감사가 둘로 흩어짐 | 게이트웨이 로그 `apm audit: … investigation_id=` | 정상 구조(R-19) — 두 감사 로그를 id로 합쳐 본다(LLM이 인자를 빠뜨리면 `-`) | 【현재 가능】 |
 | `app_impact_error`가 `gateway_error — 게이트웨이 호출 실패(apm_events): unhandled errors in a TaskGroup (1 sub-exception)` | `NOISE_APM_MCP_TOKEN` ↔ `APM_GATEWAY_BEARER_TOKEN` · 게이트웨이 로그 | Bearer 불일치(401)면 이렇게만 남는다(v4.1 로컬 실측) — 두 값을 맞춘다. 사유 표시 개선은 후속(87 §0.12 F-4) | 【현재 가능】 |
-| 라이선스·에이전트를 붙였는데 `apm_*`가 계속 "APM 도메인 0건"(`gateway_health`는 도메인 수가 보임) | 게이트웨이 기동 시각 · `APM_INSTANCE_CACHE_SECONDS` | 빈 인벤토리도 최대 600초 캐시된다(§4.5) — 게이트웨이를 재기동하거나 캐시를 줄인다(87 §0.12 F-3) | 【현재 가능】 |
+| 라이선스·에이전트를 붙였는데 `apm_*`가 계속 "APM 도메인 0건"(`gateway_health`는 도메인 수가 보임) | 게이트웨이 버전(코드) | v4.1까지는 빈 인벤토리가 600초 캐시됐다. **v5(J8)부터 실패·빈 인벤토리는 30초만 캐시한다**(F-3 해소 · §4.5) — 30초 넘게 계속되면 다른 원인(도메인 필터 `JENNIFER_DOMAIN_IDS` 등)을 본다 | 【현재 가능】 |
 | 제니퍼 콘솔의 토큰 사용량이 호출 직후 안 늘어남 | 몇 초 뒤 다시 확인 | 약 5초 늦게 반영된다(v4.1 로컬 실측) — 반영 뒤에는 요청 수와 같다(타임아웃 요청 포함 · 401·연결 거부 제외) | 【현재 가능】 |
 | `profile.txt`가 500 `For input string: "…" under radix 16` 또는 `Range [0, 8) out of bounds` | 쿼리 `key` | 선택 키 `key`는 16진수 8자리 이상만 받는다(v4.1 로컬 실측) — 게이트웨이는 `key`를 보내지 않으므로 수동 호출에서만 생긴다 | 【현재 가능】 |
 | 샘플 앱 첫 호출이 매우 느림(`slow.jsp?ms=1500`이 7초대) | 첫 호출 여부 | JSP 첫 컴파일이다(로컬 실측) — 부하·지연 재현은 워밍업 호출 뒤에 잰다 | 【현재 가능 — 로컬】 |
@@ -1367,7 +1478,9 @@ RUN_LOCAL_LLM=1 pytest <대상 테스트> -m live_llm
 | ~~Open API 경로 대조~~ | ~~§3.6·§5.3·§6.1의 경로·파라미터 확정~~ | **완료(2026-09-29 · v3.2 · [J-23])** — 실응답 차이는 J0-L·J0-O의 U-항목으로 |
 | ~~로컬 Docker 제품 사실~~ | ~~J0-L 착수~~ | **완료(2026-09-29 · [J-24])** — 남은 「확인 불가」: Mac 라이선스 IP · 장기 라이선스 · LLM 프록시 포함 여부 · **v3.3** Bootstrap 가상 환경 감지는 실측으로 해소(경고만) · 직접 링크 약관은 사용자 확정(공개 S3)으로 수용 |
 | ~~J0-L-a 로컬 실측~~ | ~~라이선스 없는 범위의 응답·통제 확인~~ | **완료(2026-09-29 · 87 §0.10)** — 녹화 하네스·목 서버까지 완료(40건 불일치 0) · **v4.1**: 게이트웨이·소비측 실서버 검증 58항목 통과 · `RUN_DOCKER_IT` 2 passed(§10.2) · 남은 것: J0-L-b 재녹화 · 부하 재현 스크립트 |
-| 게이트웨이 개선 후보(v4.1 · 코드 미변경) | 빈 인벤토리 600초 캐시(F-3 — 라이선스 적용 직후 도구·헬스 불일치) · `noise_gate` 401 사유 불명확(F-4) · 지표 식별자 보강(F-5 — J0-L-b 실데이터로 판단) | 사용자 결정 뒤 — 87 §0.12 |
+| 게이트웨이 개선 후보(v4.1) | ~~빈 인벤토리 600초 캐시(F-3)~~ **v5(J8)에서 해소 — 30초** · `noise_gate` 401 사유 불명확(F-4) · 지표 식별자 보강(F-5 — J0-L-b 실데이터로 판단) | F-4는 사용자 결정 뒤 — 87 §0.12 |
+| **다중 소스 — 본체 채팅 쪽(v5 · J8 범위 밖)** | 위치어 → 소스 좁히기(G-16) · 승계 패싯 `apm_source_id` · 첫 홉 `source_id` 보존 | `plans/125`(D-281 — 87은 통지만) |
+| **다중 소스 — 소스별 J0-O**(v5) | 소스마다 뷰 서버 버전·16경로 가용(레거시가 4.x면 Open API가 없을 수 있다 — R-30) · 망 도달(R-31) · 도메인 id · 명명 규칙(`per_source` 값) · 소스 간 같은 hostname(R-32) | 운영 접근 권한 뒤 |
 | **사용자 할 일**(§3.8 표 1·2·9 — 3~6은 2026-09-29 완료) | J0-L-b(2주 채집) | 사용자 — 평가판 신청(IP 벤더 확인) · 최신 Java 에이전트(5.6.x) 입수 |
 
 U-1~U-14 가운데 로컬(J0-L)에서 풀 수 있는 것과 운영(J0-O)에서만 풀 수 있는 것은 §3.7 마지막 열에 나눴다. 특히 **U-4(인스턴스 ↔ hostname 일치율)**는
@@ -1427,12 +1540,13 @@ U-1~U-14 가운데 로컬(J0-L)에서 풀 수 있는 것과 운영(J0-O)에서�
 | 게이트웨이 기동 · 설정 로더 | `apm_gateway/apm_gateway/__main__.py` · `config.py`(`load_config`·`load_dotenv`·`describe`) |
 | 허용목록 정본 · 클라이언트(오류 분류·크기 상한·초당 상한·토큰 가림) | `adapters/jennifer/allowlist.py`(`ALLOWED`·`check_request`) · `adapters/jennifer/client.py`(`JenniferClient` · `_classify`) |
 | 벤더 필드·지표 식별자·이벤트 유형 매핑 · 조회 함수 | `adapters/jennifer/fields.py`(`METRIC_FIELDS`·`EVENT_TYPE_SIGNALS`) · `adapters/jennifer/api.py`(`JenniferApi`) |
-| 정합 · 도구 코어 · 마스킹 · 폴러 | `application/resolver.py`(`InstanceResolver`) · `application/tools.py`(`ApmTools`) · `application/masking.py` · `application/poller.py`(`EventPoller`) |
-| WAS 판정 · 이벤트 정규화 · 오류 어휘 | `domain/signals.py` · `domain/events.py`(`build_alarm_payload`) · `domain/errors.py` |
+| 정합 · 도구 코어 · 마스킹 · 폴러 | `application/resolver.py`(`InstanceResolver` — 소스 하나) · `application/sources.py`(v5 — `SourceSet`·`build_source_set` · 소스 선택·부분 실패) · `application/tools.py`(`ApmTools`) · `application/masking.py` · `application/poller.py`(`EventPoller`) |
+| WAS 판정 · 이벤트 정규화 · 오류 어휘 · 소스 id | `domain/signals.py` · `domain/events.py`(`build_alarm_payload`) · `domain/errors.py` · `domain/sources.py`(v5 — id 규칙·`alarm_db_id`) |
 | MCP 서버 · Bearer · 감사 | `interface/server.py`(`register_tools`·`StaticBearerAuthMiddleware`·`run_tool`) · `interface/audit.py` |
 | 정책 파일 | `apm_gateway/config/instance_map.yaml` · `event_levels.yaml` · `was_signatures.yaml` |
 | 조사 쪽 | `sre_agent/sre_agent/interface/mcp_service.py`(`_build_mcp_servers` `"apm"`) · `application/investigation_guidance.py`(`APM_ANCHORED_TOOLS`·`APM_FOCUS_NOTE_TEMPLATE`) · `domain/severity_signatures.py`(`was_signals_from_outputs`) · `domain/investigation_limits.py`(`apm_limitations`·정체 가드) · `domain/remediation.py` · `application/briefing_builder.py` · `settings.py`(`apm_*` 4필드) |
-| 게이트 쪽 | `noise_gate/infrastructure/apm_gateway_client.py` · `application/nodes/notification_gate.py`(`_fetch_app_impact`) · `domain/notification_policy.py`(step 9.5) · `domain/process_rank.py`(`is_apm_event`) · `application/server_identity.py`(배지 「제니퍼」) · `domain/investigation_payload.py`(`apm_trigger_hints`) · `src/config.py` `NoiseGateConfig`(4필드) · `src/static/js/noise-help.js`(근거 키 한글 라벨) |
+| 레지스트리·존 판정(v5) | `config/db_registry.yaml` `solutions[apm].sources[]` · `src/routing/registry.py`(`SourceSpec`·`sources_of`·`alarm_source`·`_parse_sources`) · `src/routing/zones.py`(`db_id_to_zone`) |
+| 게이트 쪽 | `noise_gate/infrastructure/apm_gateway_client.py` · `application/nodes/notification_gate.py`(`_fetch_app_impact` · v5 `apm_source_ids_for`) · `domain/notification_policy.py`(step 9.5) · `domain/process_rank.py`(`is_apm_event`) · `application/server_identity.py`(배지 「제니퍼」) · `domain/investigation_payload.py`(`apm_trigger_hints`) · `src/config.py` `NoiseGateConfig`(4필드) · `src/static/js/noise-help.js`(근거 키 한글 라벨) |
 | 테스트 | `apm_gateway/tests/`(9파일 + J0 도구 1) · `sre_agent/tests/test_apm_consumer.py`·`test_apm_was_scenarios.py` · `noise_gate/tests/test_plan87_apm_consumer.py` · `noise_gate/tests/test_plan60_flags_off_regression.py`(섹션 P) |
 
 **제니퍼·표준 1차 자료** — 87 §12.3·§12.4의 [J-1]~[J-24] · [OM-1]~[OM-3] · [W-5]를 그대로 쓴다. **[J-24]**(v3.2)는 Docker 로컬 설치 조사다(공식 이미지 없음 · 샘플 2종 · 공개 설치본 · 평가판 · 설치 가이드 1~4장 · Docker Hub 베이스 이미지 · 데모 서버). **[J-23]**(v3.2)은 Open API 공식 스펙 대조다 —
@@ -1457,4 +1571,5 @@ U-1~U-14 가운데 로컬(J0-L)에서 풀 수 있는 것과 운영(J0-O)에서�
 | 2026-09-29 | **v3.3 부기 — D-003 재기록**(사용자 확정 "권고") — L2는 D-003 예외가 아니라 **D-003 범위 밖**(WAS 조치 · DB 쓰기 없음) · 실행 평면은 D-195 ③이 별도 통제. 머리말 · §0 · §5.4 · §12.1 · §13 정정 |
 | 2026-09-29 | **v3.3 부기 — 목 서버·녹화 하네스**(사용자 지시 *"목 서버와 녹화 하네스도 만들어라"*) — §3.8(파일 표 · 녹화 하네스 · 목 서버 · 폴백 【현재 가능】) · §10 머리·§10.1(목 서버 · 사본 대조 · `/__mock/hits` · J0 도구 테스트 명령 · G-11 확정 반영) · §11(목 서버·하네스 4행) · §12.2 · §0 |
 | 2026-09-29 | **v4 — J1~J4 구현 반영**(사용자 지시 *"87번 계획을 구현하라."*) — 게이트웨이 `apm_gateway/`(허용목록 정본·클라이언트·정합·`apm_*` 8종·`gateway_health`·WAS 판정·이벤트 폴러·MCP 서버·Bearer·감사) · `sre_agent` 소비측(두 번째 MCP 서버·APM 지침·판정 승격·WAS 권고·브리핑 라벨·정체 가드) · `noise_gate` 소비측(`apm` kind 선판정·배지·트리거 힌트·`app_impact` 승격). 머리말 · §0 · §1.1·§1.3 · §2 · §4.1~§4.3·§4.5~§4.7·§4.9(실제 키) · §5.2·§5.3·§5.5·§5.6 · **§6 실제 도구·반환·오류 계약** · §7.1 · §8.2·§8.4 · §10.1(테스트·G-11 판정) · §12. J5·J6·J7 보류와 사유 · `was_object` 정합 미구현 · 원시 API 도구 미구현 · 버전 에코 없음을 적었다. 게이트웨이는 운영자 도구라 화면 변화가 없고, 알람 화면의 배지 값(「제니퍼」) 반영은 `noise_gate` 작업의 매뉴얼 판정을 따른다 |
+| 2026-09-30 | **v5 — J8 다중 제니퍼 소스 구현 반영**(사용자 지시 *"87번 계획을 구현하라."* · 87 §0.14 · D-287) — 머리말 · §0(제니퍼 소스 행) · §4.1 · **§4.2 다중 소스 설정**(`JENNIFER_SOURCES`·접두 키·기동 실패·타임아웃 주의) · §4.3(기동 로그·헬스 소스별) · **§4.4 재작성**(`plans/125` A-1 등재 현황 + `sources[]` 정본·검증·조회 함수·소스 추가 절차) · §4.5(`overrides[].source_id`·`per_source` · F-3 해소) · §4.7(존 좁히기 · `invalid_argument` 시 재시도 없음 · 호스트 참고 표 키) · §4.9 · §6(소스 인자·`instance_refs`·`sources[]`·부분 실패 · 오류 표) · §7.1 · §8.2(커서·멱등·`dbId`·`resourceAncestry`) · §8.4(존 좁히기 · 툴팁 · 힌트 · **⑥ 알람 존 전달 F-7 해소**) · §10.1 · **§10.2 두 소스판**(절차 · 정상 응답 · 목 서버 25 + Docker 10 · IT 4 passed) · §11(6행 추가 · 2행 정정) · §12.2 · §13. 관리자 매뉴얼 A-30·9.5 동반 갱신(D-255) |
 | 2026-09-29 | **v4.1 — 구현 대조 · 실서버 검증 반영**(사용자 지시 *"구현한 내용을 확인하여 docs폴더의 31번 가이드도 업데이트하라."*) — 구현 코드와 절마다 다시 대조: G-3 「미결」 표기 → 확정 · 남은 「예정」 표기 정리(§3.2·§3.5·§3.7·§9.4 — J5·J6·J7과 `was_object` 브릿지 몫만 남김) · §3.5 정합·MCP 소비 행(v4 실제) · §3.8 카탈로그 정본 = `allowlist.py`·대조 테스트 이름 · 깨진 문장 1곳 · §4.2 `APM_GATEWAY_LOG_LEVEL` · §4.8 게이트웨이 로더 실제 동작 · §13 **구현 위치 표** 신설 · D-195 표기. **87 §0.12 실서버 검증 반영**: §3.8(사용량 반영 지연 · 목 서버 재확인 · Docker IT 2 passed · 이벤트 재현 발행처 주의) · §4.5(빈 인벤토리 캐시) · §5.3(거부 34건 `usageCount` Δ=0 · `profile.txt` `key` 형식) · §5.6 · §6.1(지표 식별자 13/13) · §8.4(지연 실측 · 401 사유) · **§10.2 게이트웨이 실서버 검증 절(절차 · 정상 응답 · 58항목 · 미확인)** · §10.3(목업 판정은 테스트로 있음 · 실 LLM 미실행) · §10.4 · §11(6행 추가 · 5행 정정) · §12.2. 코드 변경 없음 · 화면 변화 없음(D-255 매뉴얼 대상 아님) |

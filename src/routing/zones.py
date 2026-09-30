@@ -26,11 +26,20 @@ def zone_to_db_ids(zone: str) -> list[str]:
 
 
 def db_id_to_zone(db_id: str | None) -> str | None:
-    """db_id가 속한 존 코드를 반환한다(매핑 없으면 None)."""
+    """db_id가 속한 존 코드를 반환한다(매핑 없으면 None).
+
+    DB 항목이 없으면 레지스트리 솔루션 소스(알람 dbId `{family}_{소스 id}`)의 존을 쓴다 —
+    plans/87 J8 · D-287 ④ · F-7 해소(APM 알람이 존 구독자에게 전달·ack된다). 존 없는 소스·
+    단일 설정(`db_id == family`)·표에 없는 소스는 None(전 존 구독자·관리자만).
+    """
     if not db_id:
         return None
-    entry = get_registry().get(db_id)
-    return entry.zone if entry and entry.zone else None
+    registry = get_registry()
+    entry = registry.get(db_id)
+    if entry is not None:
+        return entry.zone or None
+    found = registry.alarm_source(db_id)
+    return (found[1].zone or None) if found else None
 
 
 def normalize_zones(zones: list[str] | None) -> list[str]:

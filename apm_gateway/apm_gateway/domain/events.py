@@ -4,6 +4,10 @@
 순수 함수 · 벤더 무지(소스 이름·라벨은 인자로 받는다). 폴러가 이 모듈로 페이로드를 만들고,
 `noise_gate` 워커는 폴스타 알람과 **같은 파서**(`AlarmEvent`)로 받는다 — 게이트웨이 이벤트임은
 `resourceType="apm.Instance"`·`dbId`·`raw_payload.apm`으로 구분한다.
+
+제니퍼 소스가 여럿이면(plans/87 J8 · D-287 ②) `dbId` = `<source>_<source_id>`(소비자가 레지스트리로
+존을 푼다) · `apm.source_id` · `resourceAncestry`에 소스 id가 들어간다. 단일 설정 소스 `default`는
+`dbId`·`resourceAncestry`를 v4와 같게 둔다. 멱등 키에는 항상 소스 id가 들어간다(S-6).
 """
 
 from __future__ import annotations
@@ -12,6 +16,8 @@ import hashlib
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
+
+from apm_gateway.domain.sources import DEFAULT_SOURCE_ID, alarm_db_id
 
 RESOURCE_TYPE = "apm.Instance"
 
@@ -54,11 +60,20 @@ def passes_min_level(level: str, min_level: str) -> bool:
 
 
 def idempotency_key(
-    domain_id: object, instance_id: object, event_type: str, time_ms: object, txid: str
+    source_id: str,
+    domain_id: object,
+    instance_id: object,
+    event_type: str,
+    time_ms: object,
+    txid: str,
 ) -> str:
-    """합성 멱등 키(§0.9 판단 ③ — 응답에 eventId가 없다)."""
+    """합성 멱등 키(§0.9 판단 ③ — 응답에 eventId가 없다).
+
+    소스가 다르면 값이 같아도 다른 이벤트다(plans/87 J8 S-6).
+    """
     raw = "|".join(
-        str(x if x is not None else "") for x in (domain_id, instance_id, event_type, time_ms, txid)
+        str(x if x is not None else "")
+        for x in (source_id, domain_id, instance_id, event_type, time_ms, txid)
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -75,6 +90,7 @@ def build_alarm_payload(
     *,
     source: str,
     source_label: str,
+    source_id: str,
     hostname: str,
     ip_address: str,
     match_confidence: str,
@@ -85,6 +101,7 @@ def build_alarm_payload(
 ) -> dict[str, Any]:
     """중립 이벤트 레코드(마스킹 끝난 것)를 `alarm:raw` 페이로드로 만든다(SPEC §5)."""
     key = idempotency_key(
+        source_id,
         event.get("domain_id"),
         event.get("instance_id"),
         event.get("event_type", ""),
@@ -98,13 +115,16 @@ def build_alarm_payload(
     value = event.get("value")
     message = str(event.get("message") or "")
     condition_log = message if value is None else f"{message} (value={value:g})"
+    ancestry = [source_label, domain_name, instance_name]
+    if source_id != DEFAULT_SOURCE_ID:
+        ancestry.insert(1, source_id)
     return {
-        "dbId": source,
+        "dbId": alarm_db_id(source, source_id),
         "source": source,
         "serverName": hostname or instance_name,
         "hostname": hostname,
         "ipAddress": ip_address,
-        "resourceAncestry": f"{source_label} > {domain_name} > {instance_name}",
+        "resourceAncestry": " > ".join(ancestry),
         "alarmId": f"{source}:{key[:16]}",
         "severity": int(severity),
         "alarmStatus": "",
@@ -116,6 +136,7 @@ def build_alarm_payload(
         "conditionLog": condition_log,
         "apm": {
             "source": source,
+            "source_id": source_id,
             "domain_id": event.get("domain_id"),
             "domain_name": domain_name,
             "instance_id": event.get("instance_id"),

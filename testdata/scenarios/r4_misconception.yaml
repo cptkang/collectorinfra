@@ -52,7 +52,7 @@ scenarios:
     pair_with: R4-01
     response_modes: [answer]
     turns:
-      - send: {query: "서버 CPU 사용률 보여줘"}
+      - send: {query: "서버 CPU 사용률 10건만 보여줘"}
         expect:
           status: completed
           row_count: {min: 1}
@@ -69,7 +69,7 @@ scenarios:
     pair_with: R4-02C
     response_modes: [answer, clarify]
     turns:
-      - send: {query: "이번 달 CPU 평균 알려줘"}
+      - send: {query: "이번 달 CPU 평균 10건만 알려줘"}
         expect:
           sql_must_match: ["(?i)cmm_metric_stat_d"]
           # plans/123 CT-7 - D-201 결정적 각주(src/nodes/output_generator.py
@@ -86,7 +86,7 @@ scenarios:
     pair_with: R4-02
     response_modes: [answer]
     turns:
-      - send: {query: "지난 30일 CPU 평균 알려줘"}
+      - send: {query: "지난 30일 CPU 평균 10건만 알려줘"}
         expect: {status: completed, row_count: {min: 1}}
     teardown: [drop_thread]
 
@@ -115,7 +115,7 @@ scenarios:
     pair_with: R4-03
     response_modes: [answer]
     turns:
-      - send: {query: "최근 1시간 CPU 사용률 평균"}
+      - send: {query: "최근 1시간 CPU 사용률 평균 10건만"}
         expect: {status: completed}
     teardown: [drop_thread]
 
@@ -175,7 +175,7 @@ scenarios:
     pair_with: R4-05
     response_modes: [answer, guide]
     turns:
-      - send: {query: "서버 네트워크 정보 보여줘"}
+      - send: {query: "서버 네트워크 정보 10건만 보여줘"}
         expect: {status: completed}
     teardown: [drop_thread]
 
@@ -206,7 +206,7 @@ scenarios:
     # plans/123 CT-1 - 지금 활성 심각 알람이 0건일 수 있다(정상 0건 대조군).
     response_modes: [answer, empty_template]
     turns:
-      - send: {query: "현재 활성 상태인 심각 알람 목록 보여줘"}
+      - send: {query: "현재 활성 상태인 심각 알람 목록 10건만 보여줘"}
         expect: {status: completed}
     teardown: [drop_thread]
 
@@ -238,7 +238,7 @@ scenarios:
     #   준다(A-12형 · 매뉴얼 Q-EXCEL-OUT). 양식을 첨부한 1회 산출 대조는 R4-07U(입력 변경 v3).
     response_modes: [answer, guide]
     turns:
-      - send: {query: "전체 서버 목록을 엑셀로 만들어줘"}
+      - send: {query: "전체 서버 목록을 10건만 엑셀로 만들어줘"}
         expect:
           status: completed
           has_file: false
@@ -351,7 +351,7 @@ scenarios:
     pair_with: R4-10
     response_modes: [answer]
     turns:
-      - send: {query: "논리코어가 8개 이상인 서버 보여줘"}
+      - send: {query: "논리코어가 8개 이상인 서버 10건만 보여줘"}
         expect: {status: completed, row_count: {min: 1}}
     teardown: [drop_thread]
 
@@ -380,7 +380,7 @@ scenarios:
     pair_with: R4-11
     response_modes: [answer]
     turns:
-      - send: {query: "어제 CPU 사용률 최댓값 알려줘"}
+      - send: {query: "어제 CPU 사용률 최댓값 10건만 알려줘"}
         expect: {status: completed}
     teardown: [drop_thread]
 

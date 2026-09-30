@@ -4,9 +4,14 @@
 정규화 · high) → ③ 인스턴스명 규칙(`exact` high · `prefix`·`regex` medium). ② 폴스타 `was_object`
 브릿지는 운영 실재(U-10)가 확인되지 않아 두지 않았다 — 규칙 목록에 넣으면 경고 후 건너뛴다.
 
-인벤토리(도메인 → 인스턴스)는 TTL 캐시한다(기본 600초). 일부 도메인만 실패하면 부분 결과와 사유를
-함께 싣고, 전부 실패하거나 도메인이 0건이면 `source_unavailable`이다 — 빈 결과를 "정상 · 0건"으로
-단정하지 않는다(§0.10 #18).
+정합기는 **제니퍼 소스 하나**를 맡는다(plans/87 J8 · D-287 — 소스 묶음은 `application.sources`).
+정합 파일의 `overrides[].source_id`가 있으면 그 소스에만 쓰고, `per_source.<id>.match_rules`가
+있으면 그 소스는 전역 `match_rules` 대신 그것을 쓴다(M-8). 인스턴스 레코드에는 `source_id`를 붙인다.
+
+인벤토리(도메인 → 인스턴스)는 TTL 캐시한다(기본 600초). 도메인 목록 조회 실패는 예외를 올리지 않고
+인벤토리에 사유로 담는다(한 소스 장애가 다른 소스 조회를 막지 않게 — S-3). 실패·도메인 0건·전
+도메인 조회 불가 인벤토리는 짧게(30초) 캐시한다 — 라이선스 적용·에이전트 접속 뒤 최대 10분 동안
+"도메인 0건"을 돌려주지 않게 한다(F-3). 빈 결과를 "정상 · 0건"으로 단정하지 않는다(§0.10 #18).
 """
 
 from __future__ import annotations
@@ -14,11 +19,13 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from apm_gateway.adapters.jennifer.api import JenniferApi
-from apm_gateway.domain.errors import INSTANCE_UNRESOLVED, SOURCE_UNAVAILABLE, ApmError
+from apm_gateway.domain.errors import SOURCE_UNAVAILABLE, ApmError
+from apm_gateway.domain.sources import DEFAULT_SOURCE_ID
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +33,11 @@ MAX_INSTANCES_PER_HOST = 5
 HIGH = "high"
 MEDIUM = "medium"
 NONE = "none"
+# 실패·빈 인벤토리 재조회 간격(F-3) — `gateway_health` 캐시와 같은 값.
+SHORT_CACHE_SECONDS = 30.0
+EMPTY_REASON = (
+    "APM 도메인 0건 — 에이전트 미접속·라이선스·도메인 필터를 확인(빈 결과를 정상으로 보지 않는다)"
+)
 
 
 @dataclass
@@ -34,6 +46,19 @@ class Inventory:
     instances: list[dict[str, Any]] = field(default_factory=list)
     unavailable: dict[int, str] = field(default_factory=dict)  # domain_id → 사유
     fetched_at: float = 0.0
+    error_code: str = ""  # 도메인 목록 조회 실패(소스 단위)
+    error: str = ""
+
+    def problem(self) -> tuple[str, str] | None:
+        """이 소스를 쓸 수 없으면 (오류 코드, 사유). 쓸 수 있으면 None."""
+        if self.error_code:
+            return self.error_code, self.error
+        if not self.domains:
+            return SOURCE_UNAVAILABLE, EMPTY_REASON
+        if not self.instances and self.unavailable:
+            detail = "; ".join(f"{k}={v}" for k, v in sorted(self.unavailable.items()))
+            return SOURCE_UNAVAILABLE, f"모든 APM 도메인 조회 불가: {detail}"
+        return None
 
 
 @dataclass
@@ -43,6 +68,9 @@ class Resolution:
     confidence: str
     reason: str
     limits: list[str] = field(default_factory=list)
+    # 소스별 결과 `[{source_id, status, reason}]`(봉투 `sources`) · 정합된 소스 → (신뢰도, 근거)
+    sources: list[dict[str, Any]] = field(default_factory=list)
+    matches: dict[str, tuple[str, str]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -50,11 +78,27 @@ class Resolution:
             "confidence": self.confidence,
             "reason": self.reason,
             "instances": [i["instance_id"] for i in self.instances],
+            "instance_refs": [
+                {
+                    "source_id": i["source_id"],
+                    "domain_id": i["domain_id"],
+                    "instance_id": i["instance_id"],
+                }
+                for i in self.instances
+            ],
         }
 
     @property
-    def domain_ids(self) -> set[int]:
-        return {i["domain_id"] for i in self.instances if i.get("domain_id") is not None}
+    def source_domains(self) -> set[tuple[str, int]]:
+        return {
+            (i["source_id"], i["domain_id"])
+            for i in self.instances
+            if i.get("domain_id") is not None
+        }
+
+    def match_of(self, inst: dict[str, Any]) -> tuple[str, str]:
+        """인스턴스가 정합된 (신뢰도, 근거) — 소스마다 규칙이 달라 행마다 다를 수 있다."""
+        return self.matches.get(inst["source_id"], (self.confidence, self.reason))
 
 
 def normalize_host(value: str) -> str:
@@ -73,20 +117,31 @@ def _host_equal(a: str, b: str) -> bool:
 
 
 class InstanceResolver:
-    """정합기. 한 프로세스에서 공유하고 도구·폴러가 함께 쓴다."""
+    """소스 하나의 정합기. 한 프로세스에서 공유하고 도구·폴러가 함께 쓴다."""
 
     def __init__(
         self,
         api: JenniferApi,
         instance_map: dict[str, Any],
         *,
+        source_id: str = DEFAULT_SOURCE_ID,
         domain_filter: tuple[int, ...] = (),
         cache_seconds: int = 600,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._api = api
-        self._overrides = list(instance_map.get("overrides") or [])
+        self.source_id = source_id
+        self._overrides = [
+            ov
+            for ov in instance_map.get("overrides") or []
+            if not ov.get("source_id") or str(ov["source_id"]) == source_id
+        ]
+        per_source = (instance_map.get("per_source") or {}).get(source_id) or {}
+        rules = per_source.get("match_rules")
+        if rules is None:
+            rules = instance_map.get("match_rules")
         self._rules = []
-        for rule in instance_map.get("match_rules") or []:
+        for rule in rules or []:
             kind = str(rule.get("kind") or "")
             if kind == "polestar_was_object":
                 logger.warning("정합 규칙 polestar_was_object는 미구현(U-10 미확인) — 건너뜀")
@@ -99,45 +154,40 @@ class InstanceResolver:
             self._rules.append(rule)
         self._domain_filter = tuple(domain_filter)
         self._cache_seconds = cache_seconds
+        self._clock = clock
         self._inventory: Inventory | None = None
 
     @property
     def override_count(self) -> int:
         return len(self._overrides)
 
+    def _ttl(self, inv: Inventory) -> float:
+        return SHORT_CACHE_SECONDS if inv.problem() else float(self._cache_seconds)
+
     async def inventory(self, *, refresh: bool = False) -> Inventory:
-        now = time.monotonic()
+        """소스 인벤토리. 도메인 목록 조회 실패는 예외가 아니라 `error_code`·`error`로 담는다."""
+        now = self._clock()
         inv = self._inventory
-        if inv is not None and not refresh and now - inv.fetched_at < self._cache_seconds:
+        if inv is not None and not refresh and now - inv.fetched_at < self._ttl(inv):
             return inv
-        domains = await self._api.domains()
+        try:
+            domains = await self._api.domains()
+        except ApmError as e:
+            inv = Inventory(fetched_at=now, error_code=e.code, error=e.reason)
+            self._inventory = inv
+            return inv
         if self._domain_filter:
             domains = [d for d in domains if d["domain_id"] in self._domain_filter]
         inv = Inventory(domains=domains, fetched_at=now)
         for d in domains:
             try:
-                inv.instances.extend(await self._api.instances(d["domain_id"], d["domain_name"]))
+                found = await self._api.instances(d["domain_id"], d["domain_name"])
             except ApmError as e:
                 inv.unavailable[d["domain_id"]] = f"{e.code}: {e.reason}"
+                continue
+            inv.instances.extend({**inst, "source_id": self.source_id} for inst in found)
         self._inventory = inv
         return inv
-
-    def unavailable_note(self, inv: Inventory) -> list[str]:
-        if not inv.unavailable:
-            return []
-        ids = ", ".join(str(k) for k in sorted(inv.unavailable))
-        return [f"[한계] APM 도메인 {ids} 조회 불가 — 그 도메인의 인스턴스는 정합에서 빠졌다"]
-
-    def ensure_available(self, inv: Inventory) -> None:
-        if not inv.domains:
-            raise ApmError(
-                SOURCE_UNAVAILABLE,
-                "APM 도메인 0건 — 에이전트 미접속·라이선스·도메인 필터를 확인"
-                "(빈 결과를 정상으로 보지 않는다)",
-            )
-        if not inv.instances and inv.unavailable:
-            detail = "; ".join(f"{k}={v}" for k, v in sorted(inv.unavailable.items()))
-            raise ApmError(SOURCE_UNAVAILABLE, f"모든 APM 도메인 조회 불가: {detail}")
 
     def _match_override(
         self, hostname: str, instances: list[dict[str, Any]]
@@ -186,49 +236,19 @@ class InstanceResolver:
                 out.append(inst)
         return out
 
-    async def resolve(self, hostname: str, instance_id: int | None = None) -> Resolution:
-        """hostname → 인스턴스 목록(최대 5). 실패는
-        `ApmError`(instance_unresolved·source_unavailable)."""
-        inv = await self.inventory()
-        self.ensure_available(inv)
-        limits = self.unavailable_note(inv)
-        matched: list[dict[str, Any]] = []
-        confidence, reason = NONE, "no_match"
-        found = self._match_override(hostname, inv.instances)
+    def match(
+        self, hostname: str, instances: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], str, str]:
+        """hostname → (이 소스 인스턴스 목록, 신뢰도, 근거). 없으면 ([], none, no_match)."""
+        found = self._match_override(hostname, instances)
         if found:
-            matched, confidence, reason = found, HIGH, "override"
-        else:
-            for rule in self._rules:
-                found = self._match_rule(rule, hostname, inv.instances)
-                if found:
-                    matched = found
-                    confidence = HIGH if rule["kind"] in ("host_name", "exact") else MEDIUM
-                    reason = rule["kind"]
-                    break
-        if not matched:
-            raise ApmError(
-                INSTANCE_UNRESOLVED,
-                f"hostname {hostname!r}에 대응하는 APM 인스턴스 없음"
-                f"(인스턴스 {len(inv.instances)}건 대조"
-                + (" · 일부 도메인 조회 불가" if inv.unavailable else "")
-                + ") — 정합 파일 overrides로 매핑할 수 있다",
-            )
-        if instance_id is not None:
-            matched = [i for i in matched if i["instance_id"] == instance_id]
-            if not matched:
-                raise ApmError(
-                    INSTANCE_UNRESOLVED,
-                    f"instance_id {instance_id}는 hostname {hostname!r} 정합 결과에 없음",
-                )
-        if len(matched) > MAX_INSTANCES_PER_HOST:
-            limits.append(
-                f"[한계] 인스턴스 {len(matched)}개 중 {MAX_INSTANCES_PER_HOST}개만 조회(상한)"
-                " — instance_id로 좁힐 수 있다"
-            )
-            matched = matched[:MAX_INSTANCES_PER_HOST]
-        if confidence != HIGH:
-            limits.append(f"[한계] 정합 신뢰도 {confidence}({reason}) — 인스턴스명 규칙 기반 대응")
-        return Resolution(hostname, matched, confidence, reason, limits)
+            return found, HIGH, "override"
+        for rule in self._rules:
+            found = self._match_rule(rule, hostname, instances)
+            if found:
+                confidence = HIGH if rule["kind"] in ("host_name", "exact") else MEDIUM
+                return found, confidence, rule["kind"]
+        return [], NONE, "no_match"
 
     def reverse(
         self,

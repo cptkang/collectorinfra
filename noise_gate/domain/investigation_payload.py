@@ -20,14 +20,15 @@ from noise_gate.domain.process_rank import KIND_APM, is_apm_event
 CONTRACT_VERSION = "1"
 
 # 조사측 힌트 키(plans/87 J4 · SPEC-apm-sre-agent §7). 값은 원문 `raw_payload["apm"]`의 같은
-# 이름 필드다.
-_APM_HINT_FIELDS: tuple[str, ...] = ("instance_id", "domain_id", "event_type", "txid")
+# 이름 필드다. `source_id`(제니퍼 소스 — 인스턴스 식별 = 소스·도메인·인스턴스)는
+# plans/87 J8 · D-287 ②.
+_APM_HINT_FIELDS: tuple[str, ...] = ("source_id", "instance_id", "domain_id", "event_type", "txid")
 
 
 def apm_trigger_hints(event) -> dict:  # noqa: ANN001 — AlarmEvent (덕 타이핑)
     """APM 이벤트의 조사 힌트를 만든다.
 
-    모양: `{"solution": "apm", instance_id, domain_id, event_type, txid}`.
+    모양: `{"solution": "apm", source_id, instance_id, domain_id, event_type, txid}`.
 
     원문에 `apm` 객체가 없거나 필드가 비면 그 값은 None이다(키 집합은 고정 — 소비자가 키 부재와
     값 부재를 구분하지 않아도 되게 한다).

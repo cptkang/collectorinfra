@@ -45,3 +45,38 @@
 | `was_object` 정합 브릿지 · `polestar_was_instances` | U-10 |
 | J5 · J6 · J7 | `plans/121` 처리기 · G-6 목업 검증 · G-9 소비자 확정 |
 | 실 LLM(로컬 MLX) APM 조사 완주 | 결정적 테스트로 수용 — 필요 시 별도 실행 |
+
+---
+
+# TODO 87 — J8 다중 제니퍼 소스 (2026-09-30 · D-287)
+
+- [x] T-14 게이트웨이 설정 — `config.py`(`JENNIFER_SOURCES` · `JENNIFER_<ID>_*` · 단일 설정 = 소스 `default`) · `domain/sources.py` · `__main__.py`(설정 오류 = 종료 코드 2) · `.env.example`
+  - Acceptance: 동시 설정·필수 키 누락·id 형식/예약어/중복·비배열 → 기동 실패 · 선택 키 전역 상속 · 기동 로그에 id·설정 여부만 · 정합 파일의 미설정 소스 경고
+  - Verify: `apm_gateway/tests/test_config.py`
+- [x] T-15 소스 묶음·정합 — `application/sources.py` · `application/resolver.py`(소스 하나 · 실패 인벤토리 비예외 · 30초 캐시 · `overrides[].source_id` · `per_source.<id>.match_rules`)
+  - Acceptance: 부분 실패 `[한계]`+`sources[]` · 전부 실패·전부 도메인 0건 오류 · F-3 30초 재조회 · 한 hostname 두 소스 정합
+  - Verify: `apm_gateway/tests/test_multi_source.py`
+- [x] T-16 도구·서버·감사 — `application/tools.py` · `interface/server.py` · `interface/audit.py` · `domain/signals.py`
+  - Acceptance: 계약 추가만(`source_ids` 7종 · `source_id` 프로파일 · 행·`profile_ref`·`instance_refs`·`sources[]`) · 호출이 그 소스 서버로만 · 토큰 교차 0 · 거부 입력 소스마다 HTTP 0 · 감사 `sources=`
+  - Verify: `apm_gateway/tests/test_multi_source.py` · `test_tools_contract.py` · `test_server.py`
+- [x] T-17 폴러 — `application/poller.py` · `domain/events.py`
+  - Acceptance: 두 소스 같은 값 이벤트 모두 발행 · 커서 키 `…:cursor:<source_id>:<domain_id>` · 재기동 중복 0 · `dbId` `jennifer_<id>`(default `jennifer`) · `apm.source_id` · `resourceAncestry`
+  - Verify: `apm_gateway/tests/test_multi_source.py` · `test_poller.py`
+- [x] T-18 목 서버 Bearer 지문 — `testdata/jennifer/scripts/mock_openapi.py`(`bearer_fp`)
+- [x] T-19 레지스트리·존 판정(F-7) — `config/db_registry.yaml` · `src/routing/registry.py` · `src/routing/zones.py`
+  - Acceptance: 3소스·존 · 검증 실패 `RegistryError` · 미지 소스 경고 1회 · 존 구독자 수신·ack · 다른 존 미수신 · 존 없는 소스 전 존·관리자만 · 프롬프트 렌더 바이트 불변
+  - Verify: `tests/test_routing/test_plan87_j8_registry_sources.py` · `tests/test_api/test_plan87_j8_apm_alarm_zone.py`
+- [x] T-20 `noise_gate`·`sre_agent` 소비측
+  - Acceptance: `SPEC-apm-noise-gate.md` §4 [J8] · `SPEC-apm-sre-agent.md` §4 [J8]
+  - Verify: `noise_gate/tests/test_plan87_j8_multi_source.py` · `sre_agent/tests/test_plan87_j8_source_id.py`
+- [x] T-21 실프로세스 검증 — 목 서버 2개 25항목 · 로컬 Docker 두 소스 10항목 · `RUN_DOCKER_IT=1` 4 passed(계획서 §0.14)
+- [x] T-22 문서 — SPEC 3종 · `docs/31` · 관리자 매뉴얼(A-30 · 9.5) · 계획서 §0.14·§13 · `plans/INDEX.md` · D-287 부기
+
+## 잔여(J8 밖)
+
+| 항목 | 막는 것 · 소유 |
+|---|---|
+| 위치어 → 소스 좁히기(G-16) · 승계 패싯 `apm_source_id` · 첫 홉 `source_id` 보존 | `plans/125`(D-281) — 통지 행 |
+| 소스별 J0-O(버전·16경로·망 도달·도메인 id·명명 규칙 · 레거시 4.x 여부 R-30) | 운영 접근 |
+| `per_source` 정합 규칙 값 | J0-O 명명 규칙 실측 |
+| F-4(noise_gate 401 사유) | 사용자 결정 대기 |

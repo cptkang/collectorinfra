@@ -293,14 +293,8 @@ def make_cfg(url: str, *, token: str = TOKEN, extra: dict | None = None):
 
 
 def make_tools(url: str, *, clock=lambda: NOW_S, extra: dict | None = None, transport=None):
-    from apm_gateway.adapters.jennifer.api import JenniferApi
-    from apm_gateway.adapters.jennifer.client import JenniferClient
-    from apm_gateway.application.resolver import InstanceResolver
+    from apm_gateway.application.sources import build_source_set
     from apm_gateway.application.tools import ApmTools
 
     cfg = make_cfg(url, extra=extra)
-    api = JenniferApi(JenniferClient(cfg.jennifer, transport=transport))
-    resolver = InstanceResolver(
-        api, cfg.policies.instance_map, domain_filter=cfg.jennifer.domain_ids
-    )
-    return ApmTools(api, resolver, cfg, clock=clock), cfg
+    return ApmTools(build_source_set(cfg, transport=transport), cfg, clock=clock), cfg

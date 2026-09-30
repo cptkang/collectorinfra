@@ -78,7 +78,7 @@ python3 scripts/mock_openapi.py --port 17901 --token mock-token --mode disconnec
 | 허용목록 밖(민감 GET·쓰기 경로·`.xml`·POST 변형) | 실측과 같은 상태·모양으로 응답(개인정보 자리는 가짜 값) + **접근 기록** |
 
 제어 경로(인증 없음 · 127.0.0.1 전용): `GET /__mock/hits`(접근 기록 — `allowlisted`·`query_token`
-표지) · `POST /__mock/events`(EventData 13필드로 이벤트 주입 — 폴러 커서·멱등 검증용, `connected` 모드) ·
+표지 · `bearer_fp` = 요청 Bearer의 sha256 앞 12자리 — 값은 남기지 않는다 · 다중 소스 토큰 교차 단언용(plans/87 J8)) · `POST /__mock/events`(EventData 13필드로 이벤트 주입 — 폴러 커서·멱등 검증용, `connected` 모드) ·
 `GET /__mock/usage` · `POST /__mock/mode` · `POST /__mock/reset`.
 
 한계: 실제 EVENT 발생과 필드 변형은 재현하지 못한다. 실데이터 모양은 평가판 녹화(J0-L-b) 뒤에 채워진다.

@@ -611,6 +611,7 @@ class TestTriggerHints:
         payload = build_trigger_payload(apm_event(), NotificationDecision(TIER_PAGE, "r", 1, {}))
         assert payload["meta"]["hints"] == {
             "solution": "apm",
+            "source_id": None,  # plans/87 J8 — v4 레코드(원문에 source_id 없음)는 None
             "instance_id": 1001,
             "domain_id": 1000,
             "event_type": "ERROR_OUTOFMEMORY",
@@ -623,6 +624,7 @@ class TestTriggerHints:
         )
         assert payload["meta"]["hints"] == {
             "solution": "apm",
+            "source_id": None,
             "instance_id": None,
             "domain_id": None,
             "event_type": None,
@@ -814,6 +816,7 @@ class TestGateNodeAppImpact:
                 "lookback_minutes": 10,
                 "level": "fatal",
                 "investigation_id": "P-1",
+                "source_ids": ["common"],  # plans/87 J8 — 공동존 알람은 공동존 제니퍼 소스만
             }
         ]
         assert out["noise_context"]["app_impact"] == {

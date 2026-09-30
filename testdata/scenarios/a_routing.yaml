@@ -13,14 +13,14 @@ group:
 scenarios:
   - id: A-01
     plans: [9, 79]
-    title: "여의도 개발 서버들의 CPU 사용률을 보여줘"
+    title: "여의도 개발 서버들의 CPU 사용률을 10건만 보여줘"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "여의도 개발 서버들의 CPU 사용률을 보여줘"
+          query: "여의도 개발 서버들의 CPU 사용률을 10건만 보여줘"
         expect:
           status: completed
           # plans/122 A-1: 위치어 힌트의 결과는 `db_ids`(여의도 → polestar_cm_yd)가 이미 본다.
@@ -29,28 +29,28 @@ scenarios:
           sql_must_not_match: ["(?i)여의도"]
   - id: A-02
     plans: [9, 79]
-    title: "은행존 서버의 디스크 사용량 조회"
+    title: "은행존 서버의 디스크 사용량 10건만 조회"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "은행존 서버의 디스크 사용량 조회"
+          query: "은행존 서버의 디스크 사용량 10건만 조회"
         expect:
           status: completed
           db_ids: ["polestar_b0"]
           sql_must_not_match: ["(?i)\\blimit\\s+\\d"]
   - id: A-03
     plans: [9, 79]
-    title: "김포와 여의도 서버의 CPU 사용률을 비교해줘"
+    title: "김포와 여의도 서버의 CPU 사용률을 10건씩 비교해줘"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "김포와 여의도 서버의 CPU 사용률을 비교해줘"
+          query: "김포와 여의도 서버의 CPU 사용률을 10건씩 비교해줘"
         expect:
           status: completed
           db_ids: ["polestar_cm_gp", "polestar_cm_yd"]
@@ -60,14 +60,14 @@ scenarios:
           row_count_per_db: {min: 1}
   - id: A-04
     plans: [9, 79]
-    title: "현재 활성 상태인 심각 알람 목록 보여줘"
+    title: "현재 활성 상태인 심각 알람 목록 10건만 보여줘"
     kind: normal
     env: closed
     profile: baseline
     endpoint: stream
     turns:
       - send:
-          query: "현재 활성 상태인 심각 알람 목록 보여줘"
+          query: "현재 활성 상태인 심각 알람 목록 10건만 보여줘"
         expect:
           status: completed
           sql_must_match: ["(?i)\\bcmm_alarm(_active)?\\b"]

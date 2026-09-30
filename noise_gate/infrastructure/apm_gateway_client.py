@@ -91,10 +91,13 @@ class ApmGatewayClient:
         lookback_minutes: int,
         level: str,
         investigation_id: str,
+        source_ids: list[str] | None = None,
     ) -> dict:
         """게이트웨이 `apm_events`를 호출해 반환 dict를 돌려준다.
 
         §3.1 정상 반환과 §3.2 `{"error": ...}` 반환을 가공 없이 그대로 돌려준다.
+        `source_ids`(plans/87 J8 — 제니퍼 소스 id 목록)는 값이 있을 때만 인자에 싣는다(없으면 종전
+        인자와 같다 = 전 소스).
 
         Raises:
             ApmGatewayClientError: 연결·호출 타임아웃·도구 오류(isError)·파싱 실패.
@@ -106,6 +109,8 @@ class ApmGatewayClient:
             "level": level,
             "investigation_id": investigation_id,
         }
+        if source_ids:
+            arguments["source_ids"] = list(source_ids)
         try:
             return await asyncio.wait_for(
                 self._call(APM_EVENTS_TOOL, arguments), timeout=self._call_timeout
