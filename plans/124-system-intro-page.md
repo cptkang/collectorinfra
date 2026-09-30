@@ -278,4 +278,6 @@
 
 **추가(2026-09-29 · 사용자 지시 *"왼쪽 위 kb aiops 포탈 을 클릭하면 소개 페이지를 보여줘라."*)**: 머리글 제목을 링크로 감쌌다(`#brandIntroLink` · 새 탭 · `style.css` `.brand-link`로 제목 모양 유지 · 메인 `style.css?v=23`). 테스트는 `test_linked_only_from_main_page`(제목·메뉴 두 곳 · 다른 화면 0)로 바꿨고, 매뉴얼 U-10 사용 방법 2번·앵커를 더하고 `header` 캡처를 다시 찍었다(모양 변화 없음 확인). `pytest tests/test_manual tests/test_intro` 489 passed.
 
+**추가(2026-09-29 · 사용자 지시 *"intro 페이지의 kb aiops포탈 위치를 누르면 메인페이지로 넘어가도록 수정하라."*)**: 소개 페이지 왼쪽 위 제목을 메인(`/`) 링크로(`#brandHome` · 같은 탭 · 모양 그대로 · `intro.css?v=2`). 테스트 `test_brand_returns_to_main` · 매뉴얼 U-10 주의 1줄 · 브라우저에서 클릭 시 `/` 이동 확인. `pytest tests/test_intro tests/test_manual` 490 passed.
+
 관리자 매뉴얼은 사용자 화면 기능을 사용자 매뉴얼에 맡기므로 고치지 않았다(빌드로 `admin.html`이 다시 생성됐지만 원천 변경은 이 작업 전부터 있던 것이다).

@@ -154,3 +154,14 @@ def test_linked_only_from_main_page() -> None:
         assert 'target="_blank"' in tag and 'rel="noopener"' in tag
         assert "display: none" not in tag, "누구나 보여야 한다"
     assert len(re.findall(r"""href=["']/intro\b""", main)) == 2
+
+
+def test_brand_returns_to_main() -> None:
+    """소개 페이지 왼쪽 위 「KB AIOps 포탈」은 메인 화면으로 간다(같은 탭).
+
+    2026-09-29 사용자 지시.
+    """
+    tag = re.search(r'<a[^>]*id="brandHome"[^>]*>', _html())
+    assert tag
+    assert 'href="/"' in tag.group(0)
+    assert "target=" not in tag.group(0)

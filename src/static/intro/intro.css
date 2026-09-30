@@ -79,7 +79,9 @@ main { position: relative; z-index: 2; }
   pointer-events: none;
 }
 .bar > * { pointer-events: auto; }
-.brand { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 700; letter-spacing: .02em; }
+.brand { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 700; letter-spacing: .02em; color: var(--text); text-decoration: none; border-radius: 6px; transition: opacity .3s; }
+.brand:hover { opacity: .75; }
+.brand:focus-visible { outline: 2px solid var(--kb); outline-offset: 4px; }
 .brand img { height: 18px; width: auto; }
 .dots { display: flex; gap: 2px; list-style: none; margin: 0; padding: 0; }
 .dots a { display: grid; place-items: center; width: 26px; height: 28px; border-radius: 6px; }
