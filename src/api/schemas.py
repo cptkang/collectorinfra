@@ -211,6 +211,15 @@ class UserInfoResponse(BaseModel):
     last_login_at: Optional[str] = None
 
 
+class AdminUserInfoResponse(UserInfoResponse):
+    """관리자 사용자 목록·권한 응답 — 관측 소스 인가를 더한다(plans/125 A-7).
+
+    사용자 본인용 응답(`/auth/me`·로그인)은 그대로 둔다 — 소스 권한은 관리 화면에서만 쓴다.
+    """
+
+    allowed_sources: list[str] | None = None
+
+
 class UserLoginResponse(BaseModel):
     """사용자 로그인 응답."""
 
@@ -245,6 +254,18 @@ class UpdatePermissionsRequest(BaseModel):
 
     allowed_db_ids: Optional[list[str]] = Field(
         None, description="접근 허용 DB 목록 (null=전체 허용 불가)"
+    )
+
+
+class UpdateSourcePermissionsRequest(BaseModel):
+    """관리자용 관측 소스 권한 수정(plans/125 A-7 · D-272 ⑩ · D-281 ⑨).
+
+    DB 없는 소스(APM 등)의 시스템 코드 목록이다. null = 전체 허용 · [] = 없음.
+    DB 권한(`UpdatePermissionsRequest`)과 별도 요청이라 한쪽 저장이 다른 쪽을 지우지 않는다.
+    """
+
+    allowed_sources: list[str] | None = Field(
+        None, description="조회 허용 관측 소스 시스템 코드 목록 (null=전체 허용 · []=없음)"
     )
 
 

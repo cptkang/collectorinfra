@@ -193,8 +193,9 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     # plans/119 Q-5 TEXT2SQL_SCHEMA_TABLE_SELECT_SKIP_ENABLED +1 ·
     # plans/87 J4 NOISE_{APP_IMPACT_ENABLED,APM_MCP_URL,APM_MCP_TOKEN,APP_IMPACT_WINDOW_MINUTES} +4
     # plans/125 A-2 MCP_SOURCE_{ENDPOINTS,TOKENS,CALL_TIMEOUT} +3 ·
-    # plans/126 W1 19키 + W5 민감 허용 1키 +20
-    assert len(items) == 388
+    # plans/126 W1 19키 + W5 민감 허용 1키 +20 ·
+    # plans/125 A-7 AUTH_DEFAULT_ALLOWED_SOURCES +1
+    assert len(items) == 389
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -342,8 +343,9 @@ def test_t2_group_and_field_counts():
     # plans/119 Q-5 TEXT2SQL_SCHEMA_TABLE_SELECT_SKIP_ENABLED +1 ·
     # plans/87 J4 NOISE_{APP_IMPACT_ENABLED,APM_MCP_URL,APM_MCP_TOKEN,APP_IMPACT_WINDOW_MINUTES} +4
     # plans/125 A-2 MCP_SOURCE_{ENDPOINTS,TOKENS,CALL_TIMEOUT} +3(dbhub 기존 그룹 — 그룹 수 불변) ·
-    # plans/126 W1 19키 + W5 민감 허용 1키 +20
-    assert len(index) == 388
+    # plans/126 W1 19키 + W5 민감 허용 1키 +20 ·
+    # plans/125 A-7 AUTH_DEFAULT_ALLOWED_SOURCES +1(auth 기존 그룹 — 그룹 수 불변)
+    assert len(index) == 389
     # plans/103 TIER3_PLAN_LOOP_ENABLED +1 · plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1
     assert len([s for s in index.values() if s.group_key == "general"]) == 21
 

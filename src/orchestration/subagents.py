@@ -1079,6 +1079,8 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         # 빠뜨리면 role이 None이 되어 전 조사가 차단된다(fail-closed — 78 W3-5).
         "user_role": state.get("user_role"),
         "allowed_db_ids": state.get("allowed_db_ids"),
+        # 관측 소스 인가(plans/125 A-7) — 조건부 처리기(`apm_query`)가 실행 경계에서 판정한다
+        "allowed_sources": state.get("allowed_sources"),
         "request_id": state.get("request_id"),
         "client_ip": state.get("client_ip"),
         "template_structure": state.get("template_structure"),

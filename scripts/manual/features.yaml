@@ -115,6 +115,7 @@ admin:
   - {id: A-29, title: 이름·부서 고치기, anchors: ["#refreshUsersBtn"], files: *DASH, captures: [users]}
   - {id: A-30, title: 역할·상태·알림그룹, anchors: ["locked", "inactive"], files: *DASH, captures: [users]}
   - {id: A-31, title: 조회 가능 DB 권한, anchors: ["조회 가능 DB"], files: *DASH, captures: [users-permissions]}
+  - {id: A-64, title: 조회 가능 소스 권한, anchors: ["조회 가능 소스", "src-perm-edit-btn"], files: *DASH, captures: [users-sources]}
   - {id: A-32, title: 비밀번호 초기화, anchors: ["PW초기화"], files: *DASH, captures: [users]}
   - {id: A-33, title: 사용자 삭제, anchors: ["삭제"], files: *DASH, captures: [users]}
   # 6. 감사 로그

@@ -197,7 +197,8 @@ async def _register_with(default_allowed: str) -> object:
     user_repo.exists = AsyncMock(return_value=False)
     user_repo.create = AsyncMock(side_effect=lambda user: created.setdefault("user", user))
     config = SimpleNamespace(
-        auth=SimpleNamespace(password_min_length=8, default_allowed_db_ids=default_allowed),
+        auth=SimpleNamespace(password_min_length=8, default_allowed_db_ids=default_allowed,
+                             default_allowed_sources=""),
     )
     request = SimpleNamespace(
         app=SimpleNamespace(state=SimpleNamespace(user_repo=user_repo, config=config)),

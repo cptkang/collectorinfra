@@ -366,6 +366,14 @@ captures:
       - wait: 800
       - click: ".perm-edit-btn >> nth=0"
       - wait: 300
+  - id: users-sources
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='users']"
+      - wait: 800
+      - click: ".src-perm-edit-btn >> nth=0"
+      - wait: 300
   - id: audit
     login: admin
     steps:

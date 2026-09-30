@@ -29,8 +29,11 @@ from src.api.settings_catalog import (
 )
 from src.api.settings_help import SettingHelp, build_help
 from src.domain.user import UserRole, UserStatus
+from src.routing.registry import get_registry
 from src.api.schemas import (
+    AdminUserInfoResponse,
     UpdatePermissionsRequest,
+    UpdateSourcePermissionsRequest,
     UpdateUserRequest,
     UserInfoResponse,
 )
@@ -1226,12 +1229,12 @@ def _changes(before: dict[str, Any], after: dict[str, Any]) -> dict[str, dict[st
 
 @router.get(
     "/admin/users",
-    response_model=list[UserInfoResponse],
+    response_model=list[AdminUserInfoResponse],
 )
 async def list_users(
     request: Request,
     _admin: dict = Depends(require_admin_user),
-) -> list[UserInfoResponse]:
+) -> list[AdminUserInfoResponse]:
     """사용자 목록을 조회한다.
 
     Args:
@@ -1247,12 +1250,13 @@ async def list_users(
 
     users = await user_repo.list_all()
     return [
-        UserInfoResponse(
+        AdminUserInfoResponse(
             user_id=u.user_id,
             username=u.username,
             role=u.role.value,
             department=u.department,
             allowed_db_ids=u.allowed_db_ids,
+            allowed_sources=u.allowed_sources,
             alarm_zones=u.alarm_zones,
             is_protected=u.is_protected,
             status=u.status.value,
@@ -1509,6 +1513,72 @@ async def update_user_permissions(
         role=user.role.value,
         department=user.department,
         allowed_db_ids=user.allowed_db_ids,
+        status=user.status.value,
+        last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
+    )
+
+
+@router.get("/admin/sources")
+async def list_observation_sources(
+    request: Request,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+) -> dict[str, list[dict[str, Any]]]:
+    """관측 소스 권한 편집의 후보 — DB 없는 시스템과 활성 여부(plans/125 A-7).
+
+    활성 = 엔드포인트가 설정됨(D-283 ②). 관리자 전용이다 — 공개 헬스 응답에 싣지 않는다
+    (권한 밖 소스를 드러내지 않는다 · D-264 ② 선례).
+    """
+    active = set(request.app.state.config.dbhub.active_source_codes())
+    return {
+        "sources": [
+            {"code": spec.code, "label": spec.label or spec.code, "active": spec.code in active}
+            for spec in get_registry().non_db_systems()
+        ]
+    }
+
+
+@router.put(
+    "/admin/users/{user_id}/source-permissions",
+    response_model=AdminUserInfoResponse,
+)
+async def update_user_source_permissions(
+    request: Request,
+    user_id: str,
+    body: UpdateSourcePermissionsRequest,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+) -> AdminUserInfoResponse:
+    """사용자의 관측 소스 권한을 수정한다(plans/125 A-7 · D-232 권한 편집의 확장).
+
+    DB 권한과 별도 요청이라 한쪽을 저장해도 다른 쪽은 그대로다.
+    """
+    user_repo = getattr(request.app.state, "user_repo", None)
+    if not user_repo:
+        raise HTTPException(status_code=503, detail="인증 서비스를 사용할 수 없습니다.")
+
+    user = await user_repo.get_by_user_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+
+    before = user.allowed_sources
+    user.allowed_sources = body.allowed_sources
+    await user_repo.update(user)
+    logger.info(
+        "관리자가 사용자 관측 소스 권한 수정: %s -> allowed_sources=%s (by %s)",
+        user_id, body.allowed_sources, _admin.get("sub"),
+    )
+    await _audit_admin_action(
+        request, _admin, "user_source_permissions_update",
+        target_user_id=user_id,
+        changes=_changes({"allowed_sources": before}, {"allowed_sources": user.allowed_sources}),
+    )
+
+    return AdminUserInfoResponse(
+        user_id=user.user_id,
+        username=user.username,
+        role=user.role.value,
+        department=user.department,
+        allowed_db_ids=user.allowed_db_ids,
+        allowed_sources=user.allowed_sources,
         status=user.status.value,
         last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
     )

@@ -48,14 +48,15 @@ def authorize_targets(
     return list(out.get("target_databases") or [])
 
 
-def access_denied_result() -> dict[str, Any]:
+def access_denied_result(message: str = ACCESS_DENIED_MESSAGE) -> dict[str, Any]:
     """조회를 거부한 task 결과 — 3단 `access_denied` 종결과 같은 의도·문구.
 
     텍스트 결과라 집계기가 문구를 그대로 쓴다(LLM 0). `target_db_ids`를 남기지 않아 거부된
     DB가 다음 턴 승계(`previous_db_ids`)로 새지 않는다(존 역질문 반환과 같은 사유).
+    관측 소스 거부(plans/125 A-7)는 소스 이름을 밝히지 않는 문구를 넘긴다.
     """
     return {
-        "final_response": ACCESS_DENIED_MESSAGE,
+        "final_response": message,
         "routing_intent": ACCESS_DENIED_INTENT,
         "source": [],
     }

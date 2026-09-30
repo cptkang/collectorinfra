@@ -40,8 +40,9 @@ class PostgresUserRepository(UserRepository):
                 """
                 INSERT INTO auth_users
                     (user_id, username, hashed_password, role, status,
-                     department, allowed_db_ids, alarm_zones, is_protected, auth_method)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                     department, allowed_db_ids, alarm_zones, is_protected, auth_method,
+                     allowed_sources)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 """,
                 user.user_id,
                 user.username,
@@ -53,6 +54,7 @@ class PostgresUserRepository(UserRepository):
                 user.alarm_zones,
                 user.is_protected,
                 user.auth_method,
+                user.allowed_sources,
             )
 
     async def update(self, user: User) -> None:
@@ -64,7 +66,7 @@ class PostgresUserRepository(UserRepository):
                     username = $2, role = $3, status = $4,
                     department = $5, allowed_db_ids = $6,
                     login_fail_count = $7, last_login_at = $8,
-                    alarm_zones = $9,
+                    alarm_zones = $9, allowed_sources = $10,
                     updated_at = NOW()
                 WHERE user_id = $1
                 """,
@@ -77,6 +79,7 @@ class PostgresUserRepository(UserRepository):
                 user.login_fail_count,
                 user.last_login_at,
                 user.alarm_zones,
+                user.allowed_sources,
             )
 
     async def list_all(self) -> list[User]:
@@ -113,6 +116,7 @@ class PostgresUserRepository(UserRepository):
             status=UserStatus(row["status"]),
             department=row["department"],
             allowed_db_ids=row["allowed_db_ids"],
+            allowed_sources=row.get("allowed_sources"),
             alarm_zones=row.get("alarm_zones"),
             is_protected=bool(row.get("is_protected")),
             auth_method=row["auth_method"],

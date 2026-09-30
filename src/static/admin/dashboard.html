@@ -292,6 +292,9 @@
                              관리자 역할은 권한 목록과 무관하게 전체 조회가 허용된다(서버 판정과 동일). -->
                         「조회 가능 DB」가 <strong>없음</strong>인 사용자는 어떤 DB도 조회할 수 없습니다 — 관리자가 직접 지정해야 합니다.
                         관리자(admin) 역할은 이 목록과 무관하게 전체 DB 조회가 허용됩니다.
+                        <br>
+                        <!-- plans/125 A-7: DB가 없는 관측 소스(APM 등)는 「조회 가능 소스」로 따로 정한다(신규 가입자 = AUTH_DEFAULT_ALLOWED_SOURCES). -->
+                        「조회 가능 소스」는 DB가 없는 관측 소스(예: WAS 모니터링)의 조회 권한입니다 — 관리자 역할은 이것도 전체 허용입니다.
                     </p>
                     <div id="usersLoading" class="loading active">
                         <div class="spinner"></div>
@@ -308,6 +311,7 @@
                                     <th>부서</th>
                                     <th>알림그룹</th>
                                     <th title="조회를 허용할 DB 목록입니다. 「전체」는 제한 없음, 「없음」은 조회 불가입니다. 관리자(admin) 역할은 이 목록과 무관하게 전체 조회가 허용됩니다.">조회 가능 DB</th>
+                                    <th title="DB가 없는 관측 소스(예: WAS 모니터링)의 조회 권한입니다. 「전체」는 제한 없음, 「없음」은 조회 불가입니다. 관리자(admin) 역할은 전체 허용입니다.">조회 가능 소스</th>
                                     <th>마지막 로그인</th>
                                     <th>작업</th>
                                 </tr>
@@ -633,7 +637,7 @@
 
     <div class="footer"><img class="brand-mark" src="/static/img/kb-mark.svg" alt="">KB AIOps 포탈 v1.0 &mdash; ADMIN</div>
 
-    <script src="/static/js/admin.js?v=10"></script>
+    <script src="/static/js/admin.js?v=11"></script>
     <script src="/static/js/admin-db-structure.js?v=1"></script>
     <script src="/static/js/admin-rag-docs.js?v=1"></script>
 </body>

@@ -201,3 +201,35 @@ async def authorized_router(
     return filter_router_result(
         result, state.get("allowed_db_ids"), state.get("user_role")
     )
+
+
+# ── 관측 소스 인가(plans/125 A-7 · D-270 ⑰ · D-272 ⑩ · D-281 ⑨) ──────────────────────────
+#
+# DB가 없는 관측 소스(APM·Prometheus·OpenMetrics — 레지스트리 `solutions` 중 `databases` 항목이
+# 없는 시스템)의 사용자별 인가다. 값의 의미는 DB 축과 같다 — `None`=전체 허용(기존 사용자) ·
+# `[]`=없음 · 목록=그 시스템 코드만 · 관리자는 전체. 폴스타 REST는 이미 존(DB) 인가를 받으므로
+# 이 축에 넣지 않는다(D-272 ⑩ — 이중 인가 방지).
+
+#: 소스 인가 거부 문구 — **어느 소스인지 밝히지 않는다**(권한 밖 소스는 안내에도 노출하지 않는다 ·
+#: D-264 ② 선례). 의도는 DB 축과 같은 `access_denied`다(재계획·집계가 같은 규칙으로 다룬다).
+SOURCE_ACCESS_DENIED_MESSAGE = (
+    "요청하신 정보를 조회할 권한이 없습니다. 관리자에게 권한을 요청하세요 "
+    "(관리자 페이지 「사용자 관리」 탭에서 부여합니다)."
+)
+
+
+def parse_allowed_sources(raw: str | None) -> list[str]:
+    """`AUTH_DEFAULT_ALLOWED_SOURCES` 문자열을 시스템 코드 목록으로 파싱한다(쉼표 구분).
+
+    빈 값이면 **빈 목록**(신규 가입자는 관측 소스를 조회하지 못한다) — DB 축과 같은 안전 실패다.
+    """
+    return parse_allowed_db_ids(raw)
+
+
+def is_source_allowed(
+    system: str, allowed_sources: Sequence[str] | None, role: str | None = None
+) -> bool:
+    """이 사용자가 관측 소스 `system`을 조회할 수 있는가(`None`·관리자 = 허용)."""
+    if allowed_sources is None or is_admin(role):
+        return True
+    return system in {code for code in allowed_sources if code}

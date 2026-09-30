@@ -23,7 +23,7 @@ from src.api.schemas import (
 )
 from src.domain.audit import AuditEvent
 from src.domain.user import User, UserRole, UserStatus
-from src.routing.db_authz import parse_allowed_db_ids
+from src.routing.db_authz import parse_allowed_db_ids, parse_allowed_sources
 from src.utils.password import hash_password, verify_password
 
 logger = logging.getLogger(__name__)
@@ -212,6 +212,9 @@ async def register(
         # 빈 설정이면 `[]` — 아무 DB도 열리지 않고 관리자가 명시 부여한다(안전 실패).
         # 기존 사용자의 `None`(전체 허용)은 건드리지 않는다.
         allowed_db_ids=parse_allowed_db_ids(config.auth.default_allowed_db_ids),
+        # 관측 소스(APM 등)도 같은 규칙 — `AUTH_DEFAULT_ALLOWED_SOURCES`
+        # (빈 값이면 없음 · plans/125 A-7)
+        allowed_sources=parse_allowed_sources(config.auth.default_allowed_sources),
         auth_method="local",
     )
     await user_repo.create(user)

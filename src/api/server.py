@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS auth_users (
     status          VARCHAR(20) NOT NULL DEFAULT 'active',
     department      VARCHAR(100),
     allowed_db_ids  TEXT[],
+    allowed_sources TEXT[],
     alarm_zones     TEXT[],
     is_protected    BOOLEAN NOT NULL DEFAULT FALSE,
     auth_method     VARCHAR(20) NOT NULL DEFAULT 'local',
@@ -64,6 +65,10 @@ async def _ensure_auth_tables(pool) -> None:
             )
             await conn.execute(
                 "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS is_protected BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            # 관측 소스 인가(plans/125 A-7) — 기존 행은 NULL = 전체 허용(D-272 ⑩)
+            await conn.execute(
+                "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS allowed_sources TEXT[]"
             )
         # 인덱스는 IF NOT EXISTS로 별도 실행
         async with pool.acquire() as conn:

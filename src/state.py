@@ -288,6 +288,9 @@ class AgentState(TypedDict):
     # 전파 누락이 곧 fail-open이 되지 않도록 판정 기본값을 거부로 두었다.
     user_role: Optional[str]
     allowed_db_ids: Optional[list[str]]      # None=전체 허용
+    # 관측 소스 인가(plans/125 A-7 · D-272 ⑩) — DB 없는 소스 시스템 코드. None=전체 허용.
+    # 라우트가 매 턴 요청 토큰의 사용자 값으로 다시 싣는다(`_with_current_identity`).
+    allowed_sources: list[str] | None
 
     # === 감사 로깅 ===
     request_id: Optional[str]                # 요청 추적 ID
@@ -519,6 +522,7 @@ def create_initial_state(
     user_department: Optional[str] = None,
     user_role: Optional[str] = None,
     allowed_db_ids: Optional[list[str]] = None,
+    allowed_sources: list[str] | None = None,
     request_id: Optional[str] = None,
     client_ip: Optional[str] = None,
     selected_db_ids: Optional[list[str]] = None,
@@ -538,6 +542,7 @@ def create_initial_state(
         user_department: 사용자 부서 (선택)
         user_role: 사용자 역할 (조사 인가 판정용 — 없으면 조사 차단)
         allowed_db_ids: 허용 DB 목록 (선택, None=전체 허용)
+        allowed_sources: 허용 관측 소스 시스템 코드 (선택, None=전체 허용 · plans/125 A-7)
         request_id: 요청 추적 ID (선택, 미들웨어에서 주입)
         client_ip: 클라이언트 IP (선택, 미들웨어에서 주입)
         raw_user_query: 라우트 진입 원문(plans/107 — INTENT_FRAME_ENABLED일 때만 전달).
@@ -644,6 +649,7 @@ def create_initial_state(
         user_department=user_department,
         user_role=user_role,
         allowed_db_ids=allowed_db_ids,
+        allowed_sources=allowed_sources,
         # 감사 로깅
         request_id=request_id,
         client_ip=client_ip,

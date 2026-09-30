@@ -23,6 +23,7 @@ ANONYMOUS_USER: dict = {
     "role": "user",
     "department": None,
     "allowed_db_ids": None,
+    "allowed_sources": None,
     "alarm_zones": None,
 }
 
@@ -93,6 +94,7 @@ async def get_current_user(
         "role": payload.get("role", "user"),
         "department": None,
         "allowed_db_ids": None,
+        "allowed_sources": None,
     }
 
 
@@ -120,6 +122,7 @@ def _try_break_glass_admin(request: Request, authorization: Optional[str]) -> Op
         "role": UserRole.ADMIN.value,
         "department": None,
         "allowed_db_ids": None,
+        "allowed_sources": None,
         "break_glass": True,
     }
 
@@ -163,6 +166,7 @@ async def resolve_stream_user(
         "role": payload.get("role", "user"),
         "department": None,
         "allowed_db_ids": None,
+        "allowed_sources": None,
         "alarm_zones": payload.get("alarm_zones"),
     }
 
@@ -259,4 +263,5 @@ async def require_user(
         "role": payload.get("role", "user"),
         "department": None,
         "allowed_db_ids": None,
+        "allowed_sources": None,
     }

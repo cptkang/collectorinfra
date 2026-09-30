@@ -599,6 +599,9 @@ class AuthConfig(BaseSettings):
     lockout_minutes: int = 30
     password_min_length: int = 8
     default_allowed_db_ids: str = ""
+    # 신규 가입자의 관측 소스(APM 등 DB 없는 소스) 초기 허용 목록 — 쉼표 구분 시스템 코드 ·
+    # 빈 값이면 없음(plans/125 A-7 · D-272 ⑩). 기존 사용자(NULL)는 전체 허용 그대로다.
+    default_allowed_sources: str = ""
 
     _jwt_secret_explicit: bool = PrivateAttr(default=False)
 

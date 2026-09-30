@@ -685,6 +685,7 @@ def _with_current_identity(
     """
     delta["user_role"] = current_user.get("role")
     delta["allowed_db_ids"] = current_user.get("allowed_db_ids")
+    delta["allowed_sources"] = current_user.get("allowed_sources")  # plans/125 A-7
     return delta
 
 
@@ -1283,6 +1284,7 @@ def _build_turn_input_state(
         user_department=current_user.get("department"),
         user_role=current_user.get("role"),
         allowed_db_ids=current_user.get("allowed_db_ids"),
+        allowed_sources=current_user.get("allowed_sources"),
         selected_db_ids=body.selected_db_ids,
         allow_zone_clarification=True,
         # 존 선택 재개 턴(pre-gate는 파이프라인 미실행이라 첫 턴으로 도착)도 전량 상향
@@ -2959,6 +2961,7 @@ async def process_file_query(
         user_department=current_user.get("department"),
         user_role=current_user.get("role"),
         allowed_db_ids=current_user.get("allowed_db_ids"),
+        allowed_sources=current_user.get("allowed_sources"),
         selected_db_ids=selected_list,
         # 폼필은 전량 채움이 기본 — 기본 LIMIT(1000) 절단 방지(실측: 지시문에 "모든"이
         # 없으면 1,000행 절단). 명시 건수("100건")는 resolve_query_limit이 우선 반영.
@@ -3274,6 +3277,7 @@ async def process_file_query_stream(
         user_department=current_user.get("department"),
         user_role=current_user.get("role"),
         allowed_db_ids=current_user.get("allowed_db_ids"),
+        allowed_sources=current_user.get("allowed_sources"),
         selected_db_ids=selected_list,
         # 폼필은 전량 채움이 기본 — 기본 LIMIT(1000) 절단 방지(실측: 지시문에 "모든"이
         # 없으면 1,000행 절단). 명시 건수("100건")는 resolve_query_limit이 우선 반영.

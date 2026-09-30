@@ -31,6 +31,7 @@ from langchain_core.language_models import BaseChatModel
 
 from src.clients.source_mcp_client import SessionFactory, SourceMcpError, open_source_session
 from src.config import AppConfig
+from src.orchestration.db_access import access_denied_result
 from src.orchestration.entity_link import (
     LINKED,
     UNLINKED,
@@ -41,6 +42,7 @@ from src.orchestration.entity_link import (
 )
 from src.orchestration.investigation_audit import BACKEND_APM, audited_investigation
 from src.orchestration.subagents import SubAgentSpec
+from src.routing.db_authz import SOURCE_ACCESS_DENIED_MESSAGE, is_source_allowed
 from src.routing.registry import ViewSpec, get_registry
 from src.utils.prior_targets import TargetRef, resolve_targets
 
@@ -279,6 +281,12 @@ async def run_apm_query(
         + `source_status`. 실패: 텍스트 결과 `{error, degraded_reason, final_response}` + 메타.
     """
     del llm
+    # 관측 소스 인가(plans/125 A-7 · D-272 ⑩) — 실행 경계에서 판정한다(2단 오케스트레이터 ·
+    # 3단 계획 루프가 같은 처리기를 부른다). 거부 문구·결과에는 소스 이름을 싣지 않는다(D-264 ②).
+    role = isolated.get("user_role")
+    if not is_source_allowed(APM_SYSTEM, isolated.get("allowed_sources"), role):
+        logger.info("%s 인가 거부: 관측 소스 권한 없음(역할=%s)", APM_QUERY_AGENT, role)
+        return access_denied_result(SOURCE_ACCESS_DENIED_MESSAGE)
     now = now or datetime.now()
     label = get_registry().system_label(APM_SYSTEM)
     views = sanitize_views(task.get("views")) or [DEFAULT_VIEW]

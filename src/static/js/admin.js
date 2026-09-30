@@ -1514,6 +1514,7 @@
                 return;
             }
             var users = await response.json();
+            await loadSourceCandidates();
             usersBody.innerHTML = "";
 
             users.forEach(function(u) {
@@ -1574,6 +1575,10 @@
                 var permTd = document.createElement("td");
                 renderPermCell(permTd, u.user_id, u.allowed_db_ids, u.role === "admin");
                 tr.insertBefore(permTd, tr.querySelector(".last-login-cell"));
+                // (plans/125 A-7) 「조회 가능 소스」 셀 — DB 권한 셀 바로 뒤
+                var srcTd = document.createElement("td");
+                renderSourceCell(srcTd, u.user_id, u.allowed_sources, u.role === "admin");
+                tr.insertBefore(srcTd, tr.querySelector(".last-login-cell"));
 
                 usersBody.appendChild(tr);
             });
@@ -1815,6 +1820,166 @@
             // 서버가 돌려준 값으로 표를 갱신한다(클라이언트 추정값을 쓰지 않는다)
             renderPermCell(td, uid, data.allowed_db_ids, data.role === "admin" || isAdmin);
             showSuccess("사용자 '" + uid + "' DB 권한 저장 완료 (" + permLabel(data.allowed_db_ids) + ")");
+        } catch (e) {
+            showError("통신 실패");
+        }
+    }
+
+    // --- 사용자 관측 소스 권한 (plans/125 A-7 · D-272 ⑩) ---
+    //
+    // DB가 없는 관측 소스(APM 등)의 조회 권한이다. 값의 의미는 DB 권한과 같다(null=전체 · []=없음 ·
+    // 관리자 전체). 후보는 관리자 전용 GET /api/v1/admin/sources(활성 = 엔드포인트 설정) — 공개
+    // 헬스 응답에는 소스 목록이 없다. 저장은 DB 권한과 별도 요청(PUT …/source-permissions)이다.
+
+    var sourceCandidates = [];   // [{code, label, active}]
+
+    async function loadSourceCandidates() {
+        try {
+            var response = await apiRequest("GET", "/api/v1/admin/sources");
+            var data = response.ok ? await response.json() : {};
+            sourceCandidates = data.sources || [];
+        } catch (e) {
+            sourceCandidates = [];
+        }
+    }
+
+    function sourceLabel(code) {
+        var hit = sourceCandidates.filter(function (s) { return s.code === code; })[0];
+        return hit ? hit.label : code;
+    }
+
+    function sourcePermLabel(allowed) {
+        if (allowed === null || allowed === undefined) return "전체";
+        if (allowed.length === 0) return "없음";
+        return allowed.map(sourceLabel).join(", ");
+    }
+
+    function renderSourceCell(td, uid, allowed, isAdmin) {
+        td.textContent = "";
+        td.className = "src-perm-cell";
+
+        var value = document.createElement("span");
+        value.style.fontSize = "0.72rem";
+        value.style.marginRight = "6px";
+        value.textContent = sourcePermLabel(allowed);
+        if (allowed !== null && allowed !== undefined && allowed.length === 0) {
+            value.style.color = "var(--text-muted)";
+            value.title = "조회 가능한 관측 소스가 없습니다.";
+        }
+        td.appendChild(value);
+
+        if (isAdmin) {
+            var note = document.createElement("span");
+            note.style.fontSize = "0.68rem";
+            note.style.color = "var(--text-muted)";
+            note.style.marginRight = "6px";
+            note.textContent = "(관리자 전체 허용)";
+            td.appendChild(note);
+        }
+
+        var editBtn = document.createElement("button");
+        editBtn.className = "btn btn-secondary btn-sm src-perm-edit-btn";
+        editBtn.style.fontSize = "0.7rem";
+        editBtn.style.padding = "3px 8px";
+        editBtn.textContent = "편집";
+        editBtn.addEventListener("click", function () {
+            openSourceEditor(td, uid, allowed, isAdmin);
+        });
+        td.appendChild(editBtn);
+    }
+
+    function openSourceEditor(td, uid, allowed, isAdmin) {
+        td.textContent = "";
+
+        // 후보 = 활성 소스 + 이미 부여돼 있으나 지금은 비활성인 코드(저장 시 조용히 사라지지 않도록)
+        var candidates = sourceCandidates.filter(function (s) { return s.active; })
+            .map(function (s) { return s.code; });
+        (allowed || []).forEach(function (code) {
+            if (candidates.indexOf(code) < 0) candidates.push(code);
+        });
+
+        var box = document.createElement("div");
+        box.className = "zone-chk-group";
+        box.style.flexWrap = "wrap";
+        box.style.whiteSpace = "normal";
+
+        var allLabel = document.createElement("label");
+        var allChk = document.createElement("input");
+        allChk.type = "checkbox";
+        allChk.className = "src-perm-all-chk";
+        allChk.checked = (allowed === null || allowed === undefined);
+        allLabel.appendChild(allChk);
+        allLabel.appendChild(document.createTextNode("전체 허용"));
+        box.appendChild(allLabel);
+
+        var chks = [];
+        if (candidates.length === 0) {
+            var empty = document.createElement("span");
+            empty.style.color = "var(--text-muted)";
+            empty.textContent = "활성 관측 소스 없음";
+            empty.title = "엔드포인트가 설정된 관측 소스가 없습니다 — 「전체 허용」 또는 없음만 지정할 수 있습니다.";
+            box.appendChild(empty);
+        } else {
+            candidates.forEach(function (code) {
+                var label = document.createElement("label");
+                var chk = document.createElement("input");
+                chk.type = "checkbox";
+                chk.className = "src-perm-chk";
+                chk.value = code;
+                chk.checked = !!(allowed && allowed.indexOf(code) >= 0);
+                label.title = code;
+                label.appendChild(chk);
+                label.appendChild(document.createTextNode(sourceLabel(code)));
+                box.appendChild(label);
+                chks.push(chk);
+            });
+        }
+
+        function syncDisabled() {
+            chks.forEach(function (chk) { chk.disabled = allChk.checked; });
+        }
+        allChk.addEventListener("change", syncDisabled);
+        syncDisabled();
+
+        var saveBtn = document.createElement("button");
+        saveBtn.className = "btn btn-secondary btn-sm src-perm-save-btn";
+        saveBtn.style.fontSize = "0.7rem";
+        saveBtn.style.padding = "3px 8px";
+        saveBtn.textContent = "저장";
+        saveBtn.addEventListener("click", function () {
+            var selected = chks.filter(function (chk) { return chk.checked; })
+                .map(function (chk) { return chk.value; });
+            saveSourcePermissions(td, uid, allChk.checked ? null : selected, isAdmin);
+        });
+        box.appendChild(saveBtn);
+
+        var cancelBtn = document.createElement("button");
+        cancelBtn.className = "btn btn-secondary btn-sm src-perm-cancel-btn";
+        cancelBtn.style.fontSize = "0.7rem";
+        cancelBtn.style.padding = "3px 8px";
+        cancelBtn.textContent = "취소";
+        cancelBtn.addEventListener("click", function () {
+            renderSourceCell(td, uid, allowed, isAdmin);
+        });
+        box.appendChild(cancelBtn);
+
+        td.appendChild(box);
+    }
+
+    async function saveSourcePermissions(td, uid, allowed, isAdmin) {
+        try {
+            var response = await apiRequest(
+                "PUT",
+                "/api/v1/admin/users/" + encodeURIComponent(uid) + "/source-permissions",
+                {allowed_sources: allowed}
+            );
+            var data = await response.json();
+            if (!response.ok) {
+                showError(errorMessage(data, "관측 소스 권한 저장에 실패했습니다."));
+                return;
+            }
+            renderSourceCell(td, uid, data.allowed_sources, data.role === "admin" || isAdmin);
+            showSuccess("사용자 '" + uid + "' 관측 소스 권한 저장 완료 (" + sourcePermLabel(data.allowed_sources) + ")");
         } catch (e) {
             showError("통신 실패");
         }
