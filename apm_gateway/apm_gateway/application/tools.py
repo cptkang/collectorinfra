@@ -348,7 +348,7 @@ class ApmTools:
             return self.ok(tool, rows, resolution=res)
         inv = await self.resolver.inventory()
         self.resolver.ensure_available(inv)
-        limits = self.resolver.unavailable_note(inv)
+        limits = self.resolver.notes(inv)
         rows = []
         for inst in inv.instances[:200]:
             host, conf, reason, _ = self.resolver.reverse(

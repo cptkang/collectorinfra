@@ -325,6 +325,10 @@ async def run_apm_query(
                 hostnames, step = await _insert_instances_step(
                     session, max_targets, thread_id, by_id.get(INSTANCES_VIEW))
                 meta["inserted_steps"].append(step)
+                if step.get("error"):
+                    # 대상 선정이 실패한 사유를 결과에 싣는다 — 없으면 "조회 대상이 없습니다"로 가려진다
+                    meta["failures"].append(
+                        {"view": INSTANCES_VIEW, "hostname": None, "reason": step["error"]})
             calls: list[_Call] = []
             for vid in views:
                 view, plan = by_id[vid], windows[vid]

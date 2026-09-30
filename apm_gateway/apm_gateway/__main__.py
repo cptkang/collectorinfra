@@ -73,13 +73,16 @@ async def _serve() -> None:
         )
     )
     poll_task = asyncio.create_task(poller.run_forever()) if poller else None
+    # 인스턴스 목록 선적재 — 도메인이 많으면 적재에 수십 초가 걸려 첫 요청이 본체 호출 상한을 넘긴다
+    warm_task = asyncio.create_task(resolver.warm_up()) if api.configured else None
     try:
         await server.serve()
     finally:
-        if poll_task:
-            poll_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await poll_task
+        for task in (poll_task, warm_task):
+            if task:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
         await api.client.aclose()
         if redis_client is not None:
             await redis_client.aclose()

@@ -7,13 +7,25 @@
 인벤토리(도메인 → 인스턴스)는 TTL 캐시한다(기본 600초). 일부 도메인만 실패하면 부분 결과와 사유를
 함께 싣고, 전부 실패하거나 도메인이 0건이면 `source_unavailable`이다 — 빈 결과를 "정상 · 0건"으로
 단정하지 않는다(§0.10 #18).
+
+적재는 도메인마다 순차 호출이라 도메인이 수백 개면 수십 초~수 분이 걸린다(운영 실측 2026-09-30 —
+도메인 약 350개 · 호출 상한 5회/초 → 적재 1회 ≈ 70초, 겹친 적재 2회 ≈ 140~160초). 그래서
+- **적재는 한 번에 하나**다 — 진행 중이면 새 요청은 그 적재를 함께 기다린다(중복 적재가 호출 상한을
+  나눠 쓰며 서로를 두 배로 늦췄다).
+- 기다리던 요청이 취소돼도 적재는 끝까지 간다 — 결과가 캐시에 남아야 다음 요청이 빈 캐시를 만나지 않는다.
+- **만료 뒤에는 기존 명단으로 바로 답하고** 뒤에서 한 번만 갱신한다. 갱신이 실패하면 기존 명단을 두고
+  `REFRESH_RETRY_SECONDS` 동안 다시 시도하지 않는다. 기준 시각이 지난 명단으로 답할 때는 `notes`가
+  그 사실을 한계로 싣는다.
+- 게이트웨이 기동 직후 `warm_up`으로 미리 적재한다(`__main__`).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -23,6 +35,8 @@ from apm_gateway.domain.errors import INSTANCE_UNRESOLVED, SOURCE_UNAVAILABLE, A
 logger = logging.getLogger(__name__)
 
 MAX_INSTANCES_PER_HOST = 5
+# 백그라운드 갱신이 실패한 뒤 다시 시도하기까지(초) — 제니퍼가 멈춘 동안 요청마다 적재를 다시 걸지 않는다
+REFRESH_RETRY_SECONDS = 60
 HIGH = "high"
 MEDIUM = "medium"
 NONE = "none"
@@ -82,8 +96,10 @@ class InstanceResolver:
         *,
         domain_filter: tuple[int, ...] = (),
         cache_seconds: int = 600,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._api = api
+        self._clock = clock
         self._overrides = list(instance_map.get("overrides") or [])
         self._rules = []
         for rule in instance_map.get("match_rules") or []:
@@ -100,33 +116,87 @@ class InstanceResolver:
         self._domain_filter = tuple(domain_filter)
         self._cache_seconds = cache_seconds
         self._inventory: Inventory | None = None
+        self._loading: asyncio.Task[Inventory] | None = None
+        self._retry_after = 0.0
 
     @property
     def override_count(self) -> int:
         return len(self._overrides)
 
     async def inventory(self, *, refresh: bool = False) -> Inventory:
-        now = time.monotonic()
+        """명단을 돌려준다 — 캐시가 있으면 즉시(만료면 뒤에서 갱신), 없으면 진행 중 적재를 기다린다."""
         inv = self._inventory
-        if inv is not None and not refresh and now - inv.fetched_at < self._cache_seconds:
+        if inv is not None and not refresh:
+            if self._clock() - inv.fetched_at >= self._cache_seconds:
+                self._refresh_in_background()
             return inv
+        return await asyncio.shield(self._load_once())
+
+    async def warm_up(self) -> None:
+        """기동 직후 선적재 — 실패해도 기동은 막지 않는다(첫 요청 때 다시 적재한다)."""
+        try:
+            await self.inventory()
+        except Exception as e:  # noqa: BLE001 — 선적재 실패는 로그로만 알린다
+            logger.warning("인스턴스 목록 선적재 실패 — 첫 요청 때 다시 적재한다: %s", e)
+
+    def _load_once(self) -> asyncio.Task[Inventory]:
+        if self._loading is None or self._loading.done():
+            self._loading = asyncio.create_task(self._load())
+        return self._loading
+
+    def _refresh_in_background(self) -> None:
+        if self._loading is not None and not self._loading.done():
+            return
+        if self._clock() < self._retry_after:
+            return
+        self._load_once().add_done_callback(self._after_background_refresh)
+
+    def _after_background_refresh(self, task: asyncio.Task[Inventory]) -> None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            self._retry_after = self._clock() + REFRESH_RETRY_SECONDS
+            logger.warning(
+                "인스턴스 목록 갱신 실패 — 기존 명단을 유지하고 %d초 뒤 다시 시도한다: %s",
+                REFRESH_RETRY_SECONDS, error,
+            )
+
+    async def _load(self) -> Inventory:
+        started = self._clock()
         domains = await self._api.domains()
         if self._domain_filter:
             domains = [d for d in domains if d["domain_id"] in self._domain_filter]
-        inv = Inventory(domains=domains, fetched_at=now)
+        inv = Inventory(domains=domains, fetched_at=started)
         for d in domains:
             try:
                 inv.instances.extend(await self._api.instances(d["domain_id"], d["domain_name"]))
             except ApmError as e:
                 inv.unavailable[d["domain_id"]] = f"{e.code}: {e.reason}"
         self._inventory = inv
+        logger.info(
+            "인스턴스 목록 적재: 도메인 %d · 인스턴스 %d · 조회 불가 도메인 %d · %.1f초",
+            len(inv.domains), len(inv.instances), len(inv.unavailable), self._clock() - started,
+        )
         return inv
+
+    def notes(self, inv: Inventory) -> list[str]:
+        """명단의 한계 — 조회 불가 도메인 · 기준 시각이 지난 명단."""
+        return self.unavailable_note(inv) + self.staleness_note(inv)
 
     def unavailable_note(self, inv: Inventory) -> list[str]:
         if not inv.unavailable:
             return []
         ids = ", ".join(str(k) for k in sorted(inv.unavailable))
         return [f"[한계] APM 도메인 {ids} 조회 불가 — 그 도메인의 인스턴스는 정합에서 빠졌다"]
+
+    def staleness_note(self, inv: Inventory) -> list[str]:
+        age = self._clock() - inv.fetched_at
+        if age < self._cache_seconds:
+            return []
+        return [
+            f"[한계] 인스턴스 목록이 {int(age // 60)}분 전 기준이다 — 갱신 중이거나 갱신에 실패했다"
+        ]
 
     def ensure_available(self, inv: Inventory) -> None:
         if not inv.domains:
@@ -191,7 +261,7 @@ class InstanceResolver:
         `ApmError`(instance_unresolved·source_unavailable)."""
         inv = await self.inventory()
         self.ensure_available(inv)
-        limits = self.unavailable_note(inv)
+        limits = self.notes(inv)
         matched: list[dict[str, Any]] = []
         confidence, reason = NONE, "no_match"
         found = self._match_override(hostname, inv.instances)
