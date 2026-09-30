@@ -870,6 +870,51 @@
 ### 15.4 새 질문
 
 - ① **계획 요약의 처리기 이름 노출** — 분해 처리기 목록은 전역(기동 시 1회 렌더)이라, APM이 활성인 배포에서 권한 밖 사용자의 질문도 `apm_query`로 분해될 수 있다. 조회·문구는 막았지만 응답의 `plan_summary.tasks[].agent`(·`views`)에 `apm_query`가 실린다(화면은 이 칸을 그리지 않는다 — API·하네스 전용). 선택지: (a) 그대로 둔다 — 관측용 칸이고 화면 비노출(권고 — 사용자별 프롬프트는 KV 캐시 원칙과 충돌) (b) 권한 밖 task의 처리기·보기 칸을 계획 요약에서 가린다(`plan_summary` 조립 시 결과가 `access_denied`인 비SQL task) (c) 권한 밖 사용자는 분해 목록에서 처리기를 뺀다(사용자별 프롬프트 두 벌).
+  - **→ 사용자 확정(2026-09-30 · D-285 부기): (a) 그대로 둔다** — 사용자 원문 *"권고대로 설정하고 향후 apm 이 설정되면 정상적으로 처리하라."* 근거: 계획 직후에 권한 밖 task를 걸러 내면 WAS 부분을 알리지 않고 빼먹은 응답이 된다 — `plans/123`이 막으려는 침묵 누락이다. 알리려면 결국 같은 거부 문구가 필요하므로 (b)·(c)로 달라지는 것은 API `plan_summary`의 이름 한 칸뿐이고, (c) 사용자별 분해 프롬프트는 기동 시 1회 렌더(KV 캐시) 원칙과 충돌한다.
+
+### 15.5 APM 운영 활성 전 체크리스트 (흩어진 잔여 정리 — 새 작업 없음)
+
+엔드포인트를 설정하면(`MCP_SOURCE_ENDPOINTS`에 `apm`) 2단 기준 경로에서 `apm_query`가 분해 어휘·실행에 붙는다. 기본 배포(미설정)는 지금과 바이트가 같다. 켜기 전·켠 뒤 사람이 볼 것:
+
+**A. 켜기 전 — 선행**
+
+| # | 항목 | 출처 · 소유 | 끝났다고 보는 기준 |
+|---|---|---|---|
+| A1 | **87 J0-O 운영 실측** — 인스턴스 명명 규칙 · `hostName` 채움률 · 제니퍼 서버 버전(hostname+PID 정합 API 5.6.0.21+ 여부) · 데이터 보존 기간(`reference_time` 과거 조회 한계 — U-3) · 운영 응답 모양이 녹화 픽스처와 같은지(R-1) | `plans/87` J0-O · 이 계획 U-2·U-3 · R-1 | 보존 기간으로 창 밖 기준(D-283 ④ — 지금 잠정 1일)을 재확인 · 모양 차이는 `apm_query` 봉투 해석 테스트에 반영 |
+| A2 | **매뉴얼 WAS 질의 절(A-8 · C-6)** — 사용자 매뉴얼에 WAS 질의·조합 응답·소스 상태를 `no_ui` 항목으로 | §14.2 · D-255 | **엔드포인트 설정 전에** `features.yaml` · `content/user.md` · 빌드 · `pytest tests/test_manual` |
+| A3 | **계약 필드 측정값** — `max_bind_values` · `bind_block` · `concurrency` · `timeout_sec` | §4.6 · §14.2 | M-2 픽스처 지연 + J0-O 운영 실측으로 값 결정 — 그 전까지 `COMPOSITE_MAX_TARGETS` · `COMPOSITE_FANOUT_CONCURRENCY` · `MCP_SOURCE_CALL_TIMEOUT`(기본 10초)을 쓴다 |
+| A4 | **사용자별 `allowed_sources` 부여** — 기존 계정은 NULL = **전체 허용**이다. 제한할 계정은 관리 화면 「사용자 관리」 → 「조회 가능 소스」 편집(매뉴얼 A-64)에서 지정한다. 신규 가입자는 `AUTH_DEFAULT_ALLOWED_SOURCES`(빈 값 = 없음). 관리자 역할은 항상 전체 | §15.1 · D-285 ① | 부여 목록 확정 · 감사 로그 `user_source_permissions_update`로 변경 확인 |
+| A5 | **V-3 내부망 run 준비** — 4소스 골드(FS군 · M-1 사용자 검수 완료가 전제) · 제니퍼 행은 `requires_sources`로 J0-O 전에는 선택 제외(D-276 ②) | §5 V · M-1 | 골드 검수 완료 · run 일정은 D-285 ②의 R7 묶음과 함께 |
+
+**B. 설정**
+
+- `.env`(JSON · 인라인 주석 금지): `MCP_SOURCE_ENDPOINTS={"apm": "http://<게이트웨이>:9096/sse"}` · `MCP_SOURCE_TOKENS={"apm": "<Bearer>"}`(시크릿 — 화면 편집 차단·마스킹) · 필요하면 `MCP_SOURCE_CALL_TIMEOUT`.
+- 반영은 **재기동**을 권한다(관리자 「설정 리로드」도 그래프를 다시 만들지만 APM 활성 전환 경로는 실측하지 않았다).
+
+**C. 켠 뒤 — 사람이 확인할 것**
+
+| # | 확인 | 기대 | 보는 곳 |
+|---|---|---|---|
+| C1 | 활성 인식 | 「조회 가능 소스」 편집기에 APM 후보가 보인다(`GET /api/v1/admin/sources` → `active: true`) | 관리 화면 · API |
+| C2 | 권한 있는 계정(NULL · `["apm"]` · 관리자)으로 「web01 WAS 응답시간」 | 응답 표에 WAS 인스턴스·응답시간 행 · 폴스타 질의가 섞이면 같은 서버 행으로 합쳐진다 | 채팅 · 서버 로그 `host_investigation backend=apm_gateway … outcome=ok` |
+| C3 | 권한 없는 계정(`[]`)으로 같은 질의 | 「요청하신 정보를 조회할 권한이 없습니다…」(소스 이름 없음) · 게이트웨이 호출 0 · 폴스타 부분은 정상 답 | 채팅 · 서버 로그 `apm_query 인가 거부` · `outcome=denied` |
+| C4 | 게이트웨이를 멈춘 상태 | 「…에 연결하지 못해 조회하지 않았습니다(…). 다른 소스의 값으로 대신 답하지 않았습니다.」 | 채팅 |
+| C5 | 창 밖 질의(「지난주 WAS 응답시간」) | 조회하지 않고 「요청 기간이 APM 조회 창(…) 밖이라 조회하지 않았습니다 — 과거 기간은 보존 기간 확인이 필요합니다」 | 채팅 |
+| C6 | 폴스타만 묻는 기존 질의 몇 개 | 켜기 전과 같은 답(분해 프롬프트는 APM 절 **삽입만** — 기존 줄 불변) | 채팅 |
+| C7 | 감사 | 조사 감사 이벤트에 `thread_id`가 이어진다 · 권한 변경은 관리 작업 감사 | 감사 로그 탭 |
+
+- 로컬 검증(LLM·게이트웨이 대역): `tests/test_orchestration/test_plan125_apm_active_path.py`가 C2·C3과 기본 배포를 분해 → `apm_query` → 재계획 판정 → 집계까지 끝까지 태운다(§15.6).
+- 켠 뒤에도 남는 것: 명시 소스 인식(B-2) · 처리기 없음 노트(B-3) · 재계획 `views` 보존(B-7) · 조합 응답(C) · 라우팅 골드(R)는 D-285 ②대로 R5 뒤 별도 run(R7) 묶음이다. 권한 밖 사용자의 응답 `plan_summary`에 `apm_query` 이름이 실리는 것은 §15.4 결정대로 둔다.
+
+### 15.6 APM 활성 경로 검증 (2026-09-30 · 사용자 *"향후 apm 이 설정되면 정상적으로 처리하라"*)
+
+| 경우 | 덮는 테스트 | 구분 |
+|---|---|---|
+| 권한 있는 사용자(NULL · `["apm"]` · 관리자) — 제니퍼 결과가 응답에 실린다 | `tests/test_orchestration/test_plan125_apm_active_path.py::test_authorized_user_gets_apm_rows_in_the_answer`(3종 · 분해 → 실행 → 재계획 → 집계 → 응답 — 폴스타·제니퍼 행이 같은 서버 행으로 합쳐진 표) · `tests/test_api/test_plan125_source_permissions.py::test_authorized_user_queries`(처리기 단위 3종) | **신규**(끝까지) · 기존(처리기) |
+| 권한 없는 사용자 — 게이트웨이 미연결 · 소스 이름 없는 거부 문구 · 폴스타 부분 정상 | `test_plan125_apm_active_path.py::test_unauthorized_user_gets_denial_and_polestar_answer`(끝까지) · `test_plan125_source_permissions.py::test_unauthorized_user_is_denied_without_query`(처리기) | **신규** · 기존 |
+| 엔드포인트 미설정(기본 배포) — 지금과 바이트가 같다 | `tests/test_orchestration/test_plan125_apm_query.py::test_inactive_registers_nothing_and_keeps_prompt_bytes` · `test_active_prompt_is_insertion_only` · `test_views_schema_only_when_active` · `test_json_decompose_keeps_apm_task_only_when_active` · `tests/test_routing/test_plan125_registry.py::test_registration_does_not_change_ownership_renders` · `test_plan125_apm_active_path.py::test_default_deployment_has_no_apm_path`(끝까지 — 처리기 미해석 · 게이트웨이 0) · 렌더 지문 9종 HEAD 대조(§15.1) | 기존 · **신규** |
+
+- 결과: 신규 5건 통과. 제품 결함은 드러나지 않았다(제품 코드 변경 0). 입력 파서 산출(대상 서버 식별자)이 없으면 첫 홉(`apm.instances`)으로 가는 것도 확인했다 — 설계대로(§4.2).
 
 ---
 
@@ -979,6 +1024,7 @@
 
 | 버전 | 일자 | 내용 |
 |---|---|---|
+| v4.1 | 2026-09-30 | 사용자 후속 확정(D-285 부기) — §15.4 계획 요약 처리기 이름 노출 = **(a) 그대로 둔다**(근거: 걸러 내면 침묵 누락 · 알리려면 같은 거부 문구 · 다른 것은 `plan_summary` 이름 한 칸 · 사용자별 프롬프트는 KV 캐시 원칙 충돌) · **§15.5 APM 운영 활성 전 체크리스트**(선행 A1~A5 · 설정 B · 켠 뒤 확인 C1~C7) · **§15.6 활성 경로 검증**(끝까지 테스트 신규 5 · 제품 결함 0) |
 | v4 | 2026-09-30 | 사용자 인터뷰 확정 **D-285** 반영(§15) — **A-7 `allowed_sources` 랜딩**(실행 주체 121 → 125 · 판정 `is_source_allowed` · `auth_users.allowed_sources` · `AUTH_DEFAULT_ALLOWED_SOURCES` · `apm_query` 실행 경계 거부(소스 이름 없는 문구) · 관리자 전용 후보 API · 별도 저장 API · 「조회 가능 소스」 열·편집기 · 매뉴얼 A-64·캡처 3) · 기본 배포 프롬프트 렌더 9종 바이트 동일 · B-2·B-3·B-7·C·R = R5 뒤 별도 run(R7) · 새 질문 1건(계획 요약 처리기 이름 — §15.4) |
 | v3 | 2026-09-30 | 사용자 지시 *"123, 125번을 구현하라."*(팀 리드 경유) — **§14.5 잔여 분류**(run R2 미실시 실측 → B-2·B-3·B-7·C·R은 결정 충돌(4)로 보류 · A-7은 121 소유 기계라 실행 주체 결정 필요) · 통지 3건(`plans/121` R-3 루틴 후보·§4.7·TP-9.2 리뷰 · `plans/92` 메트릭 템플릿 도구 · `plans/114` B-6) · 사용자 확인 2건(§14.6) · 코드 0 · 파일명 `-WIP` 유지 |
 | v2 | 2026-09-30 | **G-14 (a) 범위 구현 랜딩(D-283)** — 재개 지시 *"중단된 작업을 재개하라."* · A-1(`db52c36`) · A-2(`1815d7f` · 후속 `d9d7abc`) · A-5·A-3·B-1(`dd85745`) · E-1~E-4 + M-2(`ade5733`) · M-1 초안·M-3·M-4(`21726ee`) · 소스 비활성 기본 = 바이트 불변 · 신규 `enable_*` 0 · 잔여 §14.2 · 파일명 `-TODO` → `-WIP` |
