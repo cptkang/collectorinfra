@@ -476,6 +476,8 @@
         process_query: "프로세스 조회",
         host_inspect: "호스트 점검",
         fault_diagnosis: "장애 진단",
+        // plans/127: 조건부 처리기(활성일 때만 계획에 오른다)
+        doc_query: "문서 검색",
     };
 
     // 도구 이름 → 사용자용 라벨 (plans/89 · D-204). 서버는 원시 이름만 낸다 —

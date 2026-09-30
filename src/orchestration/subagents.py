@@ -1829,16 +1829,17 @@ def _pack_pipeline_result(
 
 
 def resolve_subagent(name: str | None, app_config: Any) -> SubAgentSpec | None:
-    """고정 처리기 목록 → (없으면) 활성인 조건부 처리기(plans/125 A-3 — 예 `apm_query`).
+    """고정 처리기 목록 → (없으면) 활성인 조건부 처리기(plans/125 A-3 · plans/127 — `apm_query` ·
+    `doc_query`).
 
-    조건부 처리기는 소스 엔드포인트가 설정됐을 때만 있다 — 비활성이면 종전처럼 None(호출부 폴백).
+    조건부 처리기는 그 소스가 활성일 때만 있다 — 비활성이면 종전처럼 None(호출부 폴백).
     """
     spec = SUBAGENT_REGISTRY.get(name or "")
     if spec is not None:
         return spec
-    from src.orchestration.apm_query import active_extra_subagents  # 지연 — 순환 방지
+    from src.orchestration.conditional_agents import active_conditional_agents  # 지연 — 순환 방지
 
-    return active_extra_subagents(app_config).get(name or "")
+    return active_conditional_agents(app_config).get(name or "")
 
 SUBAGENT_REGISTRY: dict[str, SubAgentSpec] = {
     # 처리기 계약(plans/121 §4.4 · TP-2.1a) — 값은 현행 코드 실측이고 소비처는 아직 없다.

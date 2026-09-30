@@ -60,6 +60,10 @@ _MAX_SUMMARY_ROWS = 5
 # replanner가 "뒷부분 누락"으로 오판→불필요 재계획을 유발하므로 충분히 크게 둔다.
 _MAX_SUMMARY_TEXT_CHARS = 1500
 
+#: 문서 조건부 처리기 이름(plans/127 — `doc_query.DOC_QUERY_AGENT`와 같은 값 · import 순환을 피해
+#: 문자열로 둔다). 문서 전용 계획 결정적 종료·문서 재검색 중복 방지가 읽는다.
+_DOC_AGENT = "doc_query"
+
 
 async def replanner(
     state: AgentState,
@@ -137,6 +141,17 @@ async def replanner(
     # LLM 평가를 그대로 탄다(같은 컨텍스트 — 비트 동일). 판정 기준은 `_all_tasks_succeeded`.
     if _all_tasks_succeeded(state):
         logger.info("replanner: 전 task 성공·행 반환·미완 표지 없음 — LLM 평가 없이 종료(D-251 ⑤)")
+        return {
+            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
+        }
+
+    # 문서 전용 계획(plans/127 G-12 (a) — 플래그 없음 · 문서 task 가 있는 계획에서만 발동):
+    # 문서 답은 완결이다. 재계획이 붙일 수 있는 후속은 같은 문서 재검색(0건·색인 폐기는
+    # 다시 물어도 같다 — 126 §4.7)이거나 일반 안내 보충뿐이라 평가 LLM 을 생략한다.
+    if _tasks_now and all(
+        isinstance(t, dict) and t.get("agent") == _DOC_AGENT for t in _tasks_now
+    ) and all(isinstance(_results_now.get(str(t.get("task_id"))), dict) for t in _tasks_now):
+        logger.info("replanner: 문서 전용 계획 완료 — LLM 평가 없이 종료(plans/127 G-12)")
         return {
             "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
         }
@@ -273,6 +288,19 @@ async def replanner(
             decision.get("reason"),
         )
         return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
+    # 같은 규칙을 문서 답에도(plans/127 §4.8): 이미 문서를 찾은 계획에 문서 재검색만 붙이면
+    # 같은 답이 되풀이된다(플래그 없음 · 문서 task 가 있을 때만 발동).
+    if all(t.get("agent") == _DOC_AGENT for t in new_tasks) and any(
+        isinstance(t, dict) and t.get("agent") == _DOC_AGENT
+        for t in state.get("task_plan", []) or []
+    ):
+        logger.info(
+            "replanner: 후속이 모두 문서 재검색 → 중복 재답변 방지로 종료 (reason=%s)",
+            decision.get("reason"),
+        )
+        return {
+            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
+        }
 
     logger.info(
         "replanner: 후속 task %d개 추가 (replan_count=%d, reason=%s)",
@@ -316,11 +344,11 @@ def _validate_replanned_tasks(
     Returns:
         (검증을 통과한 신규 task, 경과 노트)
     """
-    # 활성인 조건부 처리기(plans/125 A-3 — 예 `apm_query`)는 어휘 안이다 — 비활성이면 빈 집합(종전
-    # 그대로).
-    from src.orchestration.apm_query import active_extra_subagents  # 지연 — 순환 방지
+    # 활성인 조건부 처리기(plans/125 A-3 · plans/127 — `apm_query`·`doc_query`)는 어휘 안이다 —
+    # 비활성이면 빈 집합(종전 그대로).
+    from src.orchestration.conditional_agents import active_conditional_agents  # 지연 — 순환 방지
 
-    extra = frozenset(active_extra_subagents(app_config))
+    extra = frozenset(active_conditional_agents(app_config))
     tasks = [close_agent_vocabulary(t, extra) for t in new_tasks]
     if not (state.get("template_structure") or state.get("uploaded_file")):
         tasks = _coerce_alarm_intent(_coerce_process_intent(tasks))

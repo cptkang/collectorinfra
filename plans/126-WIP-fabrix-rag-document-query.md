@@ -9,6 +9,8 @@
 > **개정(7)**: 2026-09-29 **v2.1 — 착수 승인**: 게이트 **G-16(시험 표면 T-1~T-3 전부)·G-17(T-4 만들되 기본 off)·G-18(`src/doc_qa/`)** 사용자 확정 · **W1~W2 착수 승인**. 평가에서 코드로 확인한 전제 4건(arch 매핑 1줄 · 관리자 화면 토큰 편집 가능 · `require_admin_user` 재사용 · `.env` gitignore)과 **계획에 없던 발견 2건**(`RELOADABLE_KEYS` 미등재면 reload 대신 재시작 · 마스킹은 `SENSITIVE_VALUE_KEYS`로 분리 제어)을 §4.12·W1에 반영.
 > **개정(8)**: 2026-09-29 **v2.2 — 분기점 이동·재번호**: 브랜치를 `multiintent` 최신 커밋 `f51cd49`에서 뻗도록 옮기고(브랜치명 `enabling_rag` → `rag_implementation`) 선점된 식별자를 재부여했다 — **`plans/122` → `plans/126`**(원격이 `122-WIP-scenario-pass-rate-and-coverage` 사용) · **`docs/31` → `docs/32`**(원격이 제니퍼 연동 가이드 사용) · **D-272 → D-280**(원격이 D-272~279 사용 · **→ 2026-09-30 원격 병합 시 D-284로 재부여** — 로컬 D-280~D-283 본문 점유) · 설정 카탈로그 카운트 단언 재계산(필드 365 → **384** · 그룹 25 → **26** · 미소비 19 → **26**). **★중요 발견**: 원격 `plans/125`(4소스 의도 라우팅과 조합 응답 — 폴스타·Prometheus·ITAM·제니퍼)가 **바로 이 계획이 라우팅을 비워 둔 그 영역**이다 → 부록 D의 재개 조건을 «팀장 설계 확정»에서 **«`plans/125` 결론 확정»으로 구체화**한다.
 > **상태**: **W1~W6 구현 완료**(2026-09-29 · W6는 캡처만 잔여) · 잔여 = **실호출 검증(M-9 접속 4종 수령 후)** · W7(품질 기록 — 실호출 뒤) · W6 캡처 1~2장
+> **상태 정정(2026-09-30 · 문서 불일치 정리 — 코드 변경 0)**: 파일명 `-TODO` → **`-WIP`**(W1 코드와 같은 커밋 `b8006ed`에서 `-TODO`로 생성돼 W1~W5 랜딩 뒤에도 접미사가 그대로였다 · `plans/INDEX.md` 「파일명 상태 접미사」 · `docs/18` 기록). 잔여 전수: ①실호출 검증(M-9 · `.env`에 `RAG_*` 0키 · 실호출 0회) ②**W2 완료 기준 「로컬 MLX로 서술 1건 확인」 미실행**(W2 랜딩 = 실 LLM 0) ③W6 캡처 1~2장(A-62·A-63 `captures: []`) · 런북 `docs/32` §2(플랫폼 화면 절차 — 사용자 1회 실행 뒤) ④W7 `testdata/rag_gold/queries.yaml` 미착수 ⑤**전용 접속 교체 감사 `rag_connection_updated` 미구현**(§4.1a 3·부록 C의 약속 — 실제 기록은 일반 설정 감사 `settings_update`뿐 · 런북 §7) ⑥W4 「부분 저장 거부」는 도구 경로(`scripts/rag_conn.py`)만 충족 — 화면 경로는 키별 편집이라 막지 않는다(§5 W4 주석 · 런북 §3.1) ⑦**T-4 접두는 비스트리밍 `POST /api/v1/query`에만 있어 웹 채팅 화면(스트리밍)에서는 닿지 않는다**(§4.17 T-4의 「실제 채팅 UX 확인」 목적과 불일치 · 2026-09-30 코드 실측 · 처분은 `plans/127`) ⑧~~UI 문구 「설정 반영」 ≠ 실제 버튼 「설정 리로드」~~ **해소(2026-09-30)** — `dashboard.html` 「문서 검색 시험」 안내문 · `admin-rag-docs.js`(캐시 `?v=2`) · `scripts/rag_conn.py` 출력 · `doc_search.py` 독스트링 · 관리자 매뉴얼 A-62 3곳을 「저장 → 설정 리로드」로 정정(런북은 앞서 정정) ⑨D-284 본문 등재(2026-09-30). **라우팅 편입은 후속 [`plans/127`](./127-WIP-doc-rag-source-routing-on-125.md)**(부록 D 재개 · `plans/125` 계약 위)
+> **127 W1~W3·W5 반영(2026-09-30 · D-286 — 이 계획의 엔진 코드 변경 0)**: 부록 D의 라우팅 보류는 사용자 확정으로 해제됐고(D-284 ① 개정), 문서 질의는 2단 조건부 처리기 `doc_query`(`src/orchestration/doc_query.py`)가 이 엔진(`answer_from_documents`)을 부른다 — **스위치 `RAG_CHAT_ROUTING_ENABLED` 기본 off**. **T-4 명시 접두 제거**: `src/doc_qa/chat_prefix.py` 삭제 · 질의 라우트 분기·헬퍼 삭제 · `RAG_CHAT_PREFIX_ENABLED` → `RAG_CHAT_ROUTING_ENABLED` 교체(위 ⑦ 불일치 해소 · 헬퍼의 서술 경로는 `create_llm` 미import였다). **라우팅 미선점 가드 개정**(`tests/test_doc_qa/test_api_and_prefix.py` `TestRouteWiring` — 3단 파일·상태 스키마 문서 심볼 0 · 질의 라우트 접두 진입 0). 엔진 쪽 변경은 docstring 2곳(`src/doc_qa/__init__.py` · `authz.py`)뿐이다.
 >
 > **W5 랜딩(2026-09-29 · 실 LLM 0 · 외부 호출 0 · 과금 0)**
 > - **감사** `src/security/audit_logger.py` `log_doc_retrieval` 신설 — 누가·어느 문서군·무엇을(스크럽본)·상태·건수·상위 `doc_id` 5건·소요·source. **문서 본문과 토큰은 남기지 않는다**(감사 파일이 문서 사본이 되어선 안 된다 · R-17). 필드명은 `doc_status`로 두어 기존 `status` 키와 충돌을 피했다.
@@ -20,7 +22,7 @@
 >
 > **W4 랜딩(2026-09-29 · 실 LLM 0 · 외부 호출 0 · 과금 0)**
 > - **T-2 운영자 API** `src/api/routes/doc_search.py` — `POST /api/v1/doc/search`(단발) · `GET /api/v1/doc/collections`(상태·마스킹) · 둘 다 `require_admin_user` · `collection_ids` 필수(빈 목록도 거부) · `server.py` 라우터 등재.
-> - **접속 저장 엔드포인트는 만들지 않았다** — `RAG_*` 9키가 이미 설정 카탈로그 `rag` 그룹으로 「환경변수 설정」 탭에서 편집·마스킹·`설정 반영`까지 된다(W1). 두 번째 `.env` 쓰기 구현을 만들면 백업·검증 규율이 갈린다(정본 이중화 금지). 시험 패널은 **무엇이 비었는지 보여주고 그 탭으로 보낸다**.
+> - **접속 저장 엔드포인트는 만들지 않았다** — `RAG_*` 9키가 이미 설정 카탈로그 `rag` 그룹으로 「환경변수 설정」 탭에서 편집·마스킹·`저장`·`설정 리로드`까지 된다(W1). 두 번째 `.env` 쓰기 구현을 만들면 백업·검증 규율이 갈린다(정본 이중화 금지). 시험 패널은 **무엇이 비었는지 보여주고 그 탭으로 보낸다**.
 > - **T-3 관리자 탭** 「문서 검색 시험」 — 문서군 접속 상태 표(마스킹·사유·플랫폼 설정 기록) + 검색 시험(문서군 선택·`검색만`·`원시 응답`) + 결과(상태 배지·답변·참고 문서·진단) · `src/static/js/admin-rag-docs.js`(신설) · 캐시 버전 `?v=1`.
 > - **T-4 명시 접두**(기본 off · G-17) `src/doc_qa/chat_prefix.py` + `query.py` **분기 1곳** — `/문서`·`/doc`·`/docs`·`/문서:<문서군>` · 경계 정규식으로 `/문서화` 류 오인 차단 · 질의 라우트의 문서 진입은 **접두 파싱 하나**뿐(추론 0)이며 라우터·플래너·의도 집합·그래프는 **무변경**.
 > - **매뉴얼 동반(D-255)** — 역방향 가드가 새 탭·버튼 3개를 즉시 잡았고(설계된 동작), 관리자 매뉴얼 **8-1장 + A-62·A-63**(5칸 + 「자세히 보기」)을 같은 작업에서 작성해 `tests/test_manual` **491 passed**. 캡처는 `::: ui -`(캡처 없음 형식)로 두고 W6 잔여로 남긴다.
@@ -51,7 +53,7 @@
 > - 검증: `tests/test_doc_qa` 53 passed · `tests/test_api/test_settings_catalog.py`·`test_settings_help.py` 통과(카운트 단언 3건 갱신 — 그룹 25→26 · 필드 361→380 · 미소비 19→26) · `arch_check --ci` **위반 0**(기존 WARN 불변) · `overfit_check --ci` **신규 유입 0**(기준선 무수정).
 > - **전체 스위트 기준선 대조(2026-09-29 · `git worktree add` 클린 HEAD)**: 현 트리 `tests/test_api`+`tests/test_doc_qa` **35 failed / 1109 passed** vs 클린 HEAD `tests/test_api` **36 failed / 1055 passed**. **차집합 = 현 트리에만 있는 실패 0건**(신규 실패 0 확정). 실패 35건은 전부 스트리밍·타임아웃·스레드 이력 계열(`plan119` 13 · `query_stream_progress` 6 · `stream_executed_sql` 4 · `plan114` 4 · `thread_history` 2 · `stream_done_root_only` 2 · `plan120` 2)과 `.env` 부재 2건이며 **모두 기준선에 사전 존재**한다. 통과 수 차이 54 = 신규 테스트 53 + 기준선에서만 실패한 `test_timeout_error_carries_failure_trace[text]` 1건(타임아웃 민감 · 플래키로 판단 · 현 트리에서는 통과).
 > - **사전 존재 실패 2건 확인**(내 변경과 무관): `test_t1_catalog_covers_all_env_file_keys`·`test_t1_env_example_has_no_duplicate_keys`가 저장소 루트 `.env` 부재로 실패한다 — `git worktree add`로 만든 **클린 HEAD에서도 동일**하게 실패함을 대조 확인했다. `test_prometheus_metrics_endpoint.py`의 수집 오류(`prometheus_client` 미설치)도 클린 HEAD 동일.
-> - **실측이 바꾼 것 3건**: ①`RELOADABLE_KEYS`/`UNCONSUMED_KEYS`는 **명시 집합**이라 필드 선언만으로는 reload·소비 판정이 성립하지 않는다(미등재 = `restart`) ②시크릿 판정이 이름 규칙이 아니라 `SecretStr`·`.encenv`·명시 목록 셋이라 **마스킹(표시)과 편집 차단이 분리 제어**된다 → 토큰을 `SENSITIVE_VALUE_KEYS`에만 넣어 «마스킹 O · 편집 O»를 얻었다 ③접속 필드를 동적 `getattr`로 읽으면 설정 소비가 카탈로그에 드러나지 않아 **명시 맵**(`CONNECTION_FIELD_MAP`)으로 바꿨다 — 정본에만 있고 설정 필드가 없는 코퍼스는 조용히 켜지지 않고 사유를 남긴다. · 파일명 `-TODO`(코드 0건)
+> - **실측이 바꾼 것 3건**: ①`RELOADABLE_KEYS`/`UNCONSUMED_KEYS`는 **명시 집합**이라 필드 선언만으로는 reload·소비 판정이 성립하지 않는다(미등재 = `restart`) ②시크릿 판정이 이름 규칙이 아니라 `SecretStr`·`.encenv`·명시 목록 셋이라 **마스킹(표시)과 편집 차단이 분리 제어**된다 → 토큰을 `SENSITIVE_VALUE_KEYS`에만 넣어 «마스킹 O · 편집 O»를 얻었다 ③접속 필드를 동적 `getattr`로 읽으면 설정 소비가 카탈로그에 드러나지 않아 **명시 맵**(`CONNECTION_FIELD_MAP`)으로 바꿨다 — 정본에만 있고 설정 필드가 없는 코퍼스는 조용히 켜지지 않고 사유를 남긴다. · 파일명 `-WIP`(W1~W5 랜딩 · 잔여 있음 — 2026-09-30 `-TODO`에서 정정 · 초안 시점 문구 「`-TODO`(코드 0건)」는 이 커밋에 W1 코드가 함께 들어가 처음부터 사실과 달랐다)
 > **성격**: 커넥터 계약 정리 + 현행 코드 실측 대조 + 단계별 구현 계획(문헌 조사 아님)
 >
 > **요청 취지(사용자 지시 원문, 2026-09-29)**
@@ -72,7 +74,7 @@
 >
 > **관련 결정**: **D-004**(LLM 전용 라우팅 · 키워드 사전 분류 금지 · 새 intent 추가 시 3곳) · **D-131**(지식 정본 일원화·파생 · 사본 금지) · **D-162**(신규 동작 기본 off) · **D-251**(기준 경로 = 사다리 2단 · 표는 코드 · 기준선→수정→재측정) · **D-119·D-122**(관측 데이터 읽기 경계 = `mcp_server`) · **D-127·D-240**(과금 승인 · 실 LLM은 로컬 MLX) · **D-198**(외부 호출 벽시계 총상한) · **D-222**(과금 판정은 워커·오케스트레이터 두 평면) · **D-232**(사용자별 조회 인가를 질의 경로가 강제) · **D-236**(조용히 비는 산출물 금지) · **D-242**(실패 경위 표시) · **D-252·D-255**(매뉴얼 · 동반 정책) · **D-261~D-263**(감사 로그·결과 소유자 인가) · D-003(읽기 전용 — 본 기능은 DB를 쓰지 않으므로 대상 밖이나 「외부 호출도 읽기 전용」은 유지)
 >
-> **결정 등재(예약)**: **D-284**(원 D-280 — 2026-09-30 원격 `multiintent` 병합 시 재부여: 로컬 미푸시 작업이 D-280~D-283을 본문 등재로 점유 · `docs/02_decision.md` 채번 이력 D-284 행) — `docs/02_decision.md` 「채번 이력」 안내 라인에 본 계획 예약으로 등재했다(2026-09-29). 등재 직전 3곳 grep: `## D-` 헤더 최댓값 D-236(이후 결정은 「변경 이력」에 등재) · 「변경 이력」 최댓값 D-271 · 안내 라인 「다음 **D-280**」 · `plans`·`docs`·`src`에서 `D-273` 선점 0건 → **D-280**. 게이트 확정 시 본문에 등재한다. **계획서에만 적은 예약은 효력이 없다**(D-161 부기)는 규율에 따라 안내 라인 등재를 함께 수행했다.
+> **결정 등재(예약)**: **D-284**(원 D-280 — 2026-09-30 원격 `multiintent` 병합 시 재부여: 로컬 미푸시 작업이 D-280~D-283을 본문 등재로 점유 · `docs/02_decision.md` 채번 이력 D-284 행) — `docs/02_decision.md` 「채번 이력」 안내 라인에 본 계획 예약으로 등재했다(2026-09-29). 등재 직전 3곳 grep: `## D-` 헤더 최댓값 D-236(이후 결정은 「변경 이력」에 등재) · 「변경 이력」 최댓값 D-271 · 안내 라인 「다음 **D-280**」 · `plans`·`docs`·`src`에서 `D-273` 선점 0건 → **D-280**. 게이트 확정 시 본문에 등재한다(**→ 2026-09-30 D-284로 본문 등재 완료** — `docs/02_decision.md` `## D-284`). **계획서에만 적은 예약은 효력이 없다**(D-161 부기)는 규율에 따라 안내 라인 등재를 함께 수행했다.
 >
 > **실측 기준**: 브랜치 `multiintent` HEAD `2e635a9`(clean) · 2026-09-29. 코드는 **읽기만** 했다(수정 0 · LLM 호출 0 · 서버 기동 0 · 외부 호출 0 · 과금 0).
 >
@@ -444,7 +446,7 @@ class DocAnswer:
 
 3. **나중에 라우팅이 붙을 때 이 함수는 바뀌지 않는다.** 그래프 노드 파일(`src/nodes/doc_retrieval.py`)이 추가되어 이 함수를 호출하고 상태 키를 채우는 얇은 래퍼가 된다(부록 D-5). **엔진 재작성이 아니라 호출부 추가**다.
 4. **배치와 계층**(G-18): `src/doc_qa/`(service·근거 조립) = **application** · `src/clients/fabrix_retrieval.py` = infrastructure · `src/infrastructure/doc_sources.py`(코퍼스 정본 로더) = infrastructure · `src/prompts/doc_answer.py` = prompts. `scripts/arch_check.py`의 `MODULE_LAYER_MAP`에 `doc_qa` → application **1줄 추가**가 필요하다. (대안: `src/nodes/`에 두면 게이트 수정 0이지만 «노드가 아닌데 nodes에 있는» 이름 불일치가 남는다 — 권고는 `src/doc_qa/`.)
-5. **스트리밍은 1차 범위 밖**이다 — 스트리밍이 의미 있는 곳은 채팅 경로뿐이고(부록 D-5), CLI·API·관리자 화면은 단발 응답으로 충분하다. 엔진은 완성 문자열을 돌려준다.
+5. **스트리밍은 1차 범위 밖**이다 — 스트리밍이 의미 있는 곳은 채팅 경로뿐이고(부록 D-5), CLI·API·관리자 화면은 단발 응답으로 충분하다. 엔진은 완성 문자열을 돌려준다. **(2026-09-30 정정 — 코드 실측)** 다만 서술 호출은 `astream_text(..., tags=[USER_RESPONSE_TAG])`(`src/doc_qa/service.py:394`)라서, 스트리밍 라우트 안에서 불리면 서술 토큰이 `/query/stream`으로 흘러 나간다(`src/api/routes/query.py:2629`가 이 태그를 전달). 현 시험 표면 T-1~T-4는 모두 비스트리밍이라 지금은 영향이 없다. 채팅 경로에 붙일 때의 토큰 순서·억제 문제는 `plans/127` R-10이 다룬다.
 
 **질의 구성 규칙(v1.3 · 여기로 소재 이동)**. 플랫폼이 Hybrid(lexical + vector · RRF)에 HyDE를 얹어 검색하므로 **보내는 문장의 형태가 회수를 좌우한다** — 우리에게 남은 유일한 품질 레버다(§3.3 ③).
 
@@ -705,7 +707,7 @@ python -m scripts.rag_probe --list                                              
 | **W1** 정본·클라이언트 | 코퍼스 정본(의미) · 접속 세트 설정 · 클라이언트(오류 봉투 우선 판정·`stale_id`·이중 타임아웃) | `config/rag_collections.yaml`* · `src/infrastructure/doc_sources.py`* · `src/clients/fabrix_retrieval.py`* · `src/config.py`(`RagConfig`) · **`src/api/settings_catalog.py`**(v2.1 — `RELOADABLE_KEYS`·`SENSITIVE_VALUE_KEYS` 등재) · `.env.example` · `config/settings_help/rag.yaml`* | 단위 테스트(파서·오류 봉투 3형태·정본 검증·타임아웃·부분 반환) · `arch_check --ci` 0 · `overfit_check --ci` 신규 유입 0 · **실호출 0** |
 | **W2** 응답 생성 엔진 | 서비스 함수 · 근거 블록·예산 절단 · 서술 지시 · 인용 조립 · 0건/실패 처분 · 진단 | `src/doc_qa/service.py`* · `src/doc_qa/evidence.py`* · `src/prompts/doc_answer.py`* · `scripts/arch_check.py`(`MODULE_LAYER_MAP` 1줄) | 모의 응답으로 종단 · **근거 0건이면 LLM 호출 0회**(카운터 단언) · 각주 부착률 100% · 로컬 MLX로 서술 1건 확인 |
 | **W3** 시험 표면 T-1 (CLI) | `rag_probe` — `--search-only`·`--raw`·`--json`·`--list` · 종료 코드 5종 | `scripts/rag_probe.py`* | **★폐쇄망 실제 호출 성공**(사용자 실행) · 검색/서술 분리 판정 · 토큰 마스킹 확인 |
-| **W4** 시험 표면 T-2·T-3 | 운영자 API + 관리자 탭(접속 세트 편집 + 시험 패널) | `src/api/routes/doc_search.py`* · `src/api/routes/admin.py` · `src/static/admin/*`(+캐시 버전) | 인증 없이는 401 · `collection_ids` 누락은 400 · **부분 저장 거부** · reload 후 새 ID로 호출 · `stale_id` 배너 |
+| **W4** 시험 표면 T-2·T-3 | 운영자 API + 관리자 탭(접속 세트 편집 + 시험 패널) | `src/api/routes/doc_search.py`* · `src/api/routes/admin.py` · `src/static/admin/*`(+캐시 버전) | 인증 없이는 401 · `collection_ids` 누락은 400 · **부분 저장 거부** · reload 후 새 ID로 호출 · `stale_id` 배너 — **(2026-09-30 주석) 「부분 저장 거부」는 도구 경로(`scripts/rag_conn.py` — 4종 중 하나라도 비면 거부)에서만 충족된다.** W4는 전용 접속 폼을 만들지 않았고 화면 경로(「환경변수 설정」 키별 편집 → 「저장」 · `PUT /admin/settings`)에는 4종 원자성 검사가 없다 — 빈 키가 생기면 로더가 그 문서군을 사유와 함께 비활성으로 강등할 뿐이다(`src/infrastructure/doc_sources.py`) · 런북 §3.1 |
 | **W5** 인가·감사·설정 | 컬렉션 인가(`sensitive`) · `has_permission` 필터 · 감사 로그(질의·교체) · 도움말 | `src/security/audit_logger.py` · `src/config.py` · `config/settings_help/rag.yaml` | 인가 거부 경로 · 감사 필드(토큰 마스킹) · 도움말 가드 통과 |
 | **W6** 문서 | 관리자 매뉴얼 절 + **런북 `docs/32` §2·§3.1 채움** | `scripts/manual/features.yaml` · `content/admin.md` · `captures.yaml` · `docs/32` | `pytest tests/test_manual` 통과 · 런북대로 따라가 교체 성공 |
 | **W7** 검색 품질 기록 | 질의 표현 A/B · 관측 shape 기준선 | `testdata/rag_gold/queries.yaml`* | 기록 완료(교정이 아니라 기준선 — §3.3) |
@@ -909,7 +911,7 @@ x-generative-ai-client: <RAG_HQ_MANUAL_CLIENT_KEY>
 | `scripts/rag_probe.py` | `--search-only` |
 | `src/api/routes/doc_search.py` | `collection_ids` |
 | `src/api/routes/admin.py` · `src/static/admin/*`(+캐시 버전) | `문서 검색 시험` |
-| `src/security/audit_logger.py` | `log_doc_retrieval` · `rag_connection_updated` |
+| `src/security/audit_logger.py` | `log_doc_retrieval` — ~~`rag_connection_updated`~~ **미구현(2026-09-30 실측 · `src/` 0건 · 잔여)**: 접속 교체는 일반 설정 감사 `settings_update`로만 남는다(자산 ID 옛값 → 새값 · 주소·토큰·클라이언트 키는 키 이름만 · 런북 §7) |
 | `scripts/arch_check.py` | `doc_qa` |
 | `.env.example` · `config/settings_help/rag.yaml` | `RAG_ENABLED` · `RAG_HQ_MANUAL_` · `RAG_ARCH_DOCS_` |
 | `docs/32_rag_retrieval_runbook.md` | `접속 4종 세트` |
@@ -922,6 +924,8 @@ x-generative-ai-client: <RAG_HQ_MANUAL_CLIENT_KEY>
 > **왜 남겨 두는가**: 이 분석은 실측(코드 인용)에 근거해 만들어졌고, 라우팅을 다시 열 때 **같은 조사를 반복하지 않게** 하려고 보존한다. **착수하지 않는다** — 다중 소스 라우팅의 결론이 나오면 그 설계 위에서 재평가한다.
 >
 > **재개 조건**: **`plans/125`(4소스 의도 라우팅과 조합 응답 · D-279 계열)의 결론 확정**(v2.2 구체화 — 그 계획이 계층별 권위 소스 지도·제니퍼 1급 처리기·교차 계층 엔터티 연결·조합 응답 계약을 소유한다). 문서 코퍼스는 그 지도에서 «규정·설계 근거» 계층으로 편입될 후보다. 그때 ①아래 설계가 그 결론과 충돌하는지 대조 ②`plans/121` TP-9(소스 카탈로그)·TP-10(다중 소스 연쇄)과 소유 경계 정리 ③이 계획서에서 떼어내 별도 계획서로 승격할지 판단.
+>
+> **후속 계획서(2026-09-30)**: 이 부록의 재개 설계는 [`plans/127`](./127-WIP-doc-rag-source-routing-on-125.md)이 `plans/125` 계약(소스 레지스트리 · 조건부 1급 처리기 · `views[]` · `allowed_sources` · 조합 응답) 위에서 이어받는다 — D-0~D-7과 125 결론의 대조표는 127 §3.
 >
 > **보존 항목**: **D-1** 3단 의도 · **D-2** 2단 처리기 · **D-3/D-3b** 우선순위 배치와 이관된 위험 · **D-4/D-4b** 사용법 안내 등재 · **D-5** 멀티턴·스트리밍·UI·상태 · **D-6** 컬렉션 자동 선택 · **D-7** 실측한 배선 자리(라우팅을 열 때 고칠 곳).
 

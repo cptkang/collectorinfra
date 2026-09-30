@@ -1408,7 +1408,8 @@ class RagConfig(BaseSettings):
     코퍼스 **추가**는 여기에 4필드를 더하는 1회 작업이고, **회전**은 코드를 건드리지 않는다.
 
     검색 파라미터(HyDE·top_k·threshold·rerank)는 **플랫폼 전속**이라 이 그룹에 없다(§3.3).
-    라우팅(어떤 질의를 문서로 보낼지)은 이 계획의 범위가 아니다 — `plans/125`가 소유한다.
+    채팅 라우팅(어떤 질의를 문서로 보낼지)은 `plans/127`이 `plans/125` 계약 위에 얹었다 —
+    `chat_routing_enabled`가 켜졌을 때만 2단 조건부 처리기 `doc_query`가 분해 목록에 오른다.
     """
 
     enabled: bool = False                    # 기능 전체 옵트인(D-162 — off면 현행 비트 동일)
@@ -1435,7 +1436,11 @@ class RagConfig(BaseSettings):
     answer_max_chars: int = 1200             # 서술 길이 상한(지연 ∝ 출력 길이)
     cache_ttl: int = 300                     # 0이면 캐시 비활성
     doc_url_base: str = ""                   # 비면 링크 미노출(url이 상대 경로다)
-    chat_prefix_enabled: bool = False        # T-4 명시 접두(`/문서`) — 기본 off(G-17)
+    # 채팅 라우팅 스위치(plans/127 G-4 (b)) — 켜면 2단 분해가 문서 질의를 `doc_query`로 보낸다
+    # (`enabled`와 둘 다 켜져야 한다 · 기본 off). 분해 프롬프트 접두를 바꾸는 값이라 기동 시 1회
+    # 해석한다(`RELOADABLE_KEYS` 미등재 = 재시작 반영). T-4 명시 접두 스위치를 이것으로 교체했다
+    # (플래그 순증 0 — D-162 주의 · D-251 ⑥과의 관계는 결정 기록 참조).
+    chat_routing_enabled: bool = False
     # 민감 문서군(`sensitive: true`)을 열 수 있는 비관리자 사용자(쉼표 구분).
     # **빈 값 = 아무도 없음**이다(민감 자료의 기본값은 닫힘 · D-232 정합 · W5).
     sensitive_allowed_users: str = ""

@@ -18,15 +18,19 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.config import AppConfig, load_config
+from src.infrastructure.doc_sources import routing_active, routing_collections
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.nodes.intent_frame_builder import CONSUMER_GENERAL_INFERENCE, get_prompt_query
-from src.routing.db_authz import ACCESS_DENIED_MESSAGE, authorized_db_ids
+from src.routing.db_authz import ACCESS_DENIED_MESSAGE, authorized_db_ids, is_source_allowed
 from src.routing.domain_config import get_domain_by_id
 from src.routing.registry import get_registry
 from src.state import AgentState
 from src.utils.usage_query import is_usage_query
 
 logger = logging.getLogger(__name__)
+
+#: 문서 소스 시스템 코드(레지스트리 `solutions[doc]` · plans/127) — 사용법 안내 조건부 행이 쓴다.
+_DOC_SYSTEM = "doc"
 
 
 def _location_vocab() -> str:
@@ -114,12 +118,40 @@ def _build_source_catalog(state: AgentState, app_config: AppConfig) -> str:
     return "\n".join(lines)
 
 
+def _doc_usage_lines(state: AgentState, app_config: AppConfig) -> tuple[str, str]:
+    """(소스 한 줄, 조회 유형 한 줄) — 문서 채팅 라우팅 활성 ∧ 문서 소스 허용일 때만.
+
+    plans/127 §4.10 · 126 부록 D-4: 채팅으로 닿지 않는 기능을 안내하면 「없는데 있다」가 되고,
+    닿는데 빼면 「있는데 없다」가 된다 — 라우팅 활성과 같은 판정(`routing_active`)으로만 넣는다.
+    문서군 이름은 정본 YAML 에서 렌더한다(사본 금지). 비활성이면 빈 문자열 둘 — 안내문 바이트 불변.
+    """
+    rag = getattr(app_config, "rag", None)
+    try:
+        active = routing_active(rag)
+    except Exception:  # noqa: BLE001 — 정본 오류는 안내하지 않는다(처리기 쪽이 사유를 남긴다)
+        active = False
+    if not active or not is_source_allowed(
+        _DOC_SYSTEM, state.get("allowed_sources"), state.get("user_role")
+    ):
+        return "", ""
+    titles = " · ".join(c.title for c in routing_collections(rag))
+    source = f"- {get_registry().system_label(_DOC_SYSTEM)}: {titles}"
+    capability = (
+        f"- 사내 문서: 등록된 문서({titles})의 규정·절차·설계 내용을 문서 근거와 출처로 답변"
+        "(문서에 없는 내용은 지어내지 않고 찾지 못했다고 안내)"
+    )
+    return source, capability
+
+
 def _build_usage_answer(state: AgentState, app_config: AppConfig) -> str:
     """사용법 안내를 활성∩허용 소스와 지원 조회 유형으로 조립한다(D-038 — 사실은 코드 조립).
 
     조회 가능한 소스가 없으면 소스·조회 유형을 광고하지 않고 권한 요청을 안내한다.
     """
     catalog = _build_source_catalog(state, app_config)
+    doc_source, doc_capability = _doc_usage_lines(state, app_config)
+    if catalog and doc_source:
+        catalog = f"{catalog}\n{doc_source}"
     if not catalog:
         return (
             "이 에이전트는 등록된 데이터 소스를 자연어 질문으로 조회해 답하는 "
@@ -133,6 +165,7 @@ def _build_usage_answer(state: AgentState, app_config: AppConfig) -> str:
         + catalog
         + "\n\n### 조회할 수 있는 항목\n"
         + _SUPPORTED_CAPABILITIES
+        + (f"\n{doc_capability}" if doc_capability else "")
         + "\n\n### 사용법\n"
         "- 조회할 대상과 항목을 한 문장으로 적어 주세요. 소스가 여럿이면 어느 소스인지 함께 적으면 "
         "정확해집니다.\n"

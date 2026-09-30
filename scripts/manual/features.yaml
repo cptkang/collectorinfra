@@ -70,6 +70,7 @@ user:
   - {id: U-37, title: 유사어 등록, anchors: ["synonym_registrar"], files: *IDX, captures: [answer-synonym], cases: [Q-SYNONYM], no_ui: true}
   - {id: U-38, title: SQL 실행 승인, anchors: ["SQL 승인 대기"], files: *IDX, captures: [], case_na: 관리자가 기능을 켠 환경에서만 나타난다 — 절차만 설명, no_ui: true}
   - {id: U-39, title: 스키마 캐시 갱신(관리자 전용), anchors: ["cache_management"], files: *IDX, captures: [], cases: [Q-CACHE], no_ui: true}
+  - {id: U-46, title: 사내 문서 질의(규정·설계 근거), anchors: ["doc_query", "문서 검색"], files: *IDX, captures: [], case_na: "관리자가 채팅 문서 검색을 켠 환경에서만 동작한다(기본 off) — 문서 검색 서비스가 사내망에만 있어 녹화 사례를 만들 수 없다", no_ui: true}
   # 9. 이벤트 알람
   - {id: U-40, title: 알람 탭과 알람 카드, anchors: ["이벤트 알람", "#alarmList", "#alarmTabBadge", "data-view=\"alarm\""], files: *IDX, captures: [alarm-list], case_na: 수신 화면}
   - {id: U-41, title: 알람 거르기·찾기, anchors: ["#alarmSearch", "#alarmFilterReset", "#alarmClearBtn"], files: *IDX, captures: [alarm-list], case_na: 필터 조작}

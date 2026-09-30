@@ -463,6 +463,63 @@ def render_intent_planner_apm_template(base: str, agent_line: str, view_rows: st
     return head + section + sep + tail
 
 
+# ══════════════════════════════════════════════════════════════════════════ 비SQL 처리기 —
+# 사내 문서(규정·설계 근거) `doc_query` (plans/127 W2 · G-5·G-6·G-7 (a)) — 라우팅 활성일 때만
+# ══════════════════════════════════════════════════════════════════════════
+#
+# `RAG_ENABLED` ∧ `RAG_CHAT_ROUTING_ENABLED`일 때만 담당 목록 한 줄과 문서군 절을 **삽입만** 한다
+# (우선순위 표 본문 변경 0 — G-7 (a) · 비활성 배포는 바이트 불변). APM 절과 같은 앵커를 쓰므로 둘 다
+# 켜지면 담당 줄은 APM 줄 뒤, 절은 APM 절 뒤에 온다. 문서군 표·예시 id 는 정본 YAML에서 렌더해
+# 넣는다(사본 금지 · D-131) — 이 문자열에는 문서군 이름을 적지 않는다(`overfit_check`).
+
+DOC_VIEW_ROWS_SLOT = "<doc_view_rows>"
+DOC_EXAMPLE_VIEW_SLOT = "<doc_example_view>"
+
+INTENT_PLANNER_DOC_SECTION = """## 사내 문서(규정·설계 근거) 조회 — `doc_query` 보기(views)
+
+사내 규정·업무 절차·승인 기준·보안지침, 시스템 아키텍처·구성·연계 방식·설계 근거처럼 **문서의 내용**을 묻는 질의는 **`doc_query`** 담당입니다(DB 조회가 아닙니다). 등록된 문서에서 찾아 문서 근거와 출처로 답합니다.
+`doc_query` task에는 `views`에 아래 문서군 id를 **1~2개** 넣으세요(목록 밖 id는 버려집니다). 어느 문서군인지 판단하기 어려우면 비워 두세요 — 등록 문서군 전체에서 찾습니다.
+
+<doc_view_rows>
+
+- 특정 서버·자원의 **현재 수치·목록·통계**와 **실제로 발생한 알람**은 문서가 아닙니다 → 종전대로 `data_query`·`alarm_query`입니다. 「알람 **대응 절차·기준**」처럼 규정·절차 자체를 물으면 `doc_query`입니다.
+- 유사어·캐시·컬럼 설명 같은 에이전트 고유 기능은 종전대로 `cache_management`입니다.
+- 사내 규정·설계를 **일반 지식으로 답하지 않습니다**(`general_inference`가 아닙니다) — `doc_query`로 문서에서 찾습니다.
+- `doc_query` task는 다른 task의 입력이 되지 않습니다 — `depends_on`·`input_from` 없이 독립 task로 두세요.
+- `sub_query`에는 사용자가 쓴 용어·문서명·조항 번호를 그대로 두고, 완전한 질문 문장으로 쓰세요.
+- 예: {{"task_id": "t1", "agent": "doc_query", "sub_query": "계정 신청은 누가 승인하나요?", "views": ["<doc_example_view>"],
+       "depends_on": [], "input_from": [], "order": 1}}
+
+"""  # noqa: E501
+
+
+def render_intent_planner_doc_template(
+    base: str, agent_line: str, view_rows: str, example_view: str,
+) -> str:
+    """문서 라우팅 활성 전용 — 담당 줄을 담당 목록 끝에, 문서군 절을 「작업 분해 규칙」 앞에
+    **삽입만** 한다.
+
+    Args:
+        base: 기본 템플릿 또는 다른 옵트인 렌더본(소유·task 프레임·APM 과 함께 켜질 수 있다)
+        agent_line: 담당 목록 한 줄(`- **doc_query**: …`)
+        view_rows: 정본 YAML 에서 렌더한 문서군 표 행
+        example_view: 예시에 쓸 보기 id(첫 문서군)
+
+    Raises:
+        RuntimeError: 앵커가 정확히 1회 나타나지 않는다(삽입 위치가 흔들림)
+    """
+    for anchor in (_APM_AGENT_ANCHOR, _APM_SECTION_ANCHOR):
+        if base.count(anchor) != 1:
+            raise RuntimeError(f"분해 프롬프트 삽입 앵커가 1회가 아니다: {anchor!r}")
+    head, sep, tail = base.partition(_APM_AGENT_ANCHOR)
+    rendered = head + "\n" + agent_line + sep + tail
+    section = (INTENT_PLANNER_DOC_SECTION
+               .replace(DOC_VIEW_ROWS_SLOT, view_rows)
+               .replace(DOC_EXAMPLE_VIEW_SLOT, example_view))
+    head, sep, tail = rendered.partition(_APM_SECTION_ANCHOR)
+    return head + section + sep + tail
+
+
 def render_intent_planner_task_frame_template(base: str) -> str:
     """task 프레임 on 전용 분해 프롬프트 — ``base``의 「출력 형식」 앞에 계약 절을 **삽입만** 한다.
 

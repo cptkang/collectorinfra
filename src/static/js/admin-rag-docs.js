@@ -83,7 +83,7 @@
 
         if (!payload.enabled) {
             setSummary("문서 검색 기능이 <strong>꺼져 있습니다</strong>. 「환경변수 설정」 탭에서 " +
-                       "<code>RAG_ENABLED=true</code> 로 바꾸고 <code>설정 반영</code>을 누르세요.", "warn");
+                       "<code>RAG_ENABLED=true</code> 로 바꿔 <code>저장</code>한 뒤 <code>설정 리로드</code>를 누르세요.", "warn");
         } else if (!usable.length) {
             setSummary("접속 정보가 채워진 문서군이 없습니다. 「환경변수 설정」 탭의 <code>RAG_*</code> 키 " +
                        "4개(주소·토큰·클라이언트 키·자산 ID)를 문서군마다 함께 넣으세요.", "warn");

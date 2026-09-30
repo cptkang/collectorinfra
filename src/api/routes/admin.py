@@ -1525,10 +1525,16 @@ async def list_observation_sources(
 ) -> dict[str, list[dict[str, Any]]]:
     """관측 소스 권한 편집의 후보 — DB 없는 시스템과 활성 여부(plans/125 A-7).
 
-    활성 = 엔드포인트가 설정됨(D-283 ②). 관리자 전용이다 — 공개 헬스 응답에 싣지 않는다
+    활성 = 엔드포인트가 설정됨(D-283 ②). 문서 소스(`doc` · plans/127 G-8 (a))는 MCP 엔드포인트가
+    아니라 문서 채팅 라우팅 설정이 활성을 정한다. 관리자 전용이다 — 공개 헬스 응답에 싣지 않는다
     (권한 밖 소스를 드러내지 않는다 · D-264 ② 선례).
     """
-    active = set(request.app.state.config.dbhub.active_source_codes())
+    from src.orchestration.doc_query import DOC_SYSTEM, doc_active
+
+    config = request.app.state.config
+    active = set(config.dbhub.active_source_codes())
+    if doc_active(config):
+        active.add(DOC_SYSTEM)
     return {
         "sources": [
             {"code": spec.code, "label": spec.label or spec.code, "active": spec.code in active}

@@ -283,7 +283,7 @@ def cmd_set(args: argparse.Namespace) -> int:
     print("\n다음: RAG_ENABLED=true 확인 후")
     print("  python scripts/rag_probe.py --list")
     print("  python scripts/rag_probe.py --collection %s --query \"…\" --search-only" % collection_id)
-    print("  (서버가 돌고 있으면 관리자 화면에서 `설정 반영`으로 재기동 없이 적용됩니다)")
+    print("  (서버가 돌고 있으면 관리자 「환경변수 설정」 탭의 `설정 리로드`로 재기동 없이 적용됩니다)")
     return 0
 
 

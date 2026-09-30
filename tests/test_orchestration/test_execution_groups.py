@@ -34,8 +34,10 @@ class TestRegistrySolutionAxis:
         apm 은 존 그룹이 없어 실행 그룹(존 순회)에 들지 않고, 엔드포인트 설정이 있어야만 활성이다.
         dpm 은 주석 예시로만 남는다.
         """
-        assert [s.code for s in reg.solutions()] == ["polestar", "apm"]
-        assert [s.code for s in reg.non_db_systems()] == ["apm"]
+        # plans/127 W1: 문서 소스 `doc`(backend rest · 존 그룹 없음)도 비DB 시스템 — 의도된 갱신
+        assert [s.code for s in reg.solutions()] == ["polestar", "apm", "doc"]
+        assert [s.code for s in reg.non_db_systems()] == ["apm", "doc"]
+        assert not any(g.solution == "doc" for g in reg.zone_groups())
         assert not any(g.solution == "apm" for g in reg.zone_groups())
 
     def test_solution_capabilities_include_host_location(self, reg):

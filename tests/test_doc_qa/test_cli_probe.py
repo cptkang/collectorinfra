@@ -69,7 +69,7 @@ def _config(manifest_path, **kw):
         arch_docs_retrieval_id="",
         timeout=12, total_timeout=20, max_collections_per_turn=2,
         max_doc_chars=4000, max_context_chars=24000, answer_max_chars=1200,
-        cache_ttl=0, doc_url_base="", chat_prefix_enabled=False,
+        cache_ttl=0, doc_url_base="", chat_routing_enabled=False,
     )
     for k, v in kw.items():
         setattr(rag, k, v)

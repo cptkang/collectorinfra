@@ -253,6 +253,35 @@ def usable_collections(rag_config: Any, *, path: str | None = None) -> tuple[Doc
     return tuple(c for c in resolve_collections(rag_config, path=path) if c.usable)
 
 
+def routing_collections(rag_config: Any) -> tuple[DocCollection, ...]:
+    """채팅 라우팅 보기로 오를 문서군(plans/127 §4.2 ②) — 정본 `enabled` ∧ **비민감**.
+
+    **의미 정본(YAML)만 본다** — 접속 4종은 자산 회전마다 바뀌므로 여기 넣으면 회전이 분해
+    프롬프트 바이트를 바꾼다(KV 캐시). 접속 미입력·폐기는 실행 시 엔진 status 로 드러난다.
+    민감 문서군은 1차에서 채팅 보기에 올리지 않는다 — 분해 프롬프트는 전역(기동 시 1회)이라 권한
+    밖 사용자의 계획에도 이름이 실린다(D-264 ②).
+    """
+    configured = str(getattr(rag_config, "collections_file", "") or "").strip()
+    return tuple(
+        c for c in load_collection_meta(configured or None) if c.enabled and not c.sensitive
+    )
+
+
+def routing_active(rag_config: Any) -> bool:
+    """채팅 라우팅 활성 = `RAG_ENABLED` ∧ `RAG_CHAT_ROUTING_ENABLED` ∧ 보기로 오를 문서군 ≥ 1.
+
+    ``is True``로 판정한다 — 설정 대역(MagicMock)의 속성이 참으로 평가돼 켜진 것처럼 동작하지
+    않게 한다(비활성 = 바이트 불변).
+    """
+    if rag_config is None:
+        return False
+    if getattr(rag_config, "enabled", False) is not True:
+        return False
+    if getattr(rag_config, "chat_routing_enabled", False) is not True:
+        return False
+    return bool(routing_collections(rag_config))
+
+
 def find_collection(
     rag_config: Any, collection_id: str, *, path: str | None = None
 ) -> DocCollection | None:

@@ -28,6 +28,7 @@ from src.domain.task_frame import render_task_query, task_spans, verify_task_fra
 from src.prompts.intent_planner import (
     INTENT_PLANNER_SYSTEM_TEMPLATE,
     render_intent_planner_apm_template,
+    render_intent_planner_doc_template,
     render_intent_planner_environment_terms,
     render_intent_planner_ownership_template,
     render_intent_planner_task_frame_template,
@@ -882,30 +883,34 @@ async def _llm_decompose(
     if _task_frame_on(app_config):
         result = _apply_task_frames(result, user_query, context_block, fallback)
     if _nonsql_agents(app_config):
-        _sanitize_task_views(result)
+        _sanitize_task_views(result, app_config)
     return result
 
 
 def _nonsql_agents(app_config: AppConfig) -> tuple[str, ...]:
-    """활성인 비SQL 처리기 이름(plans/125 A-5) — 비활성이면 빈 튜플(분해 바이트 불변)."""
-    from src.orchestration.apm_query import active_extra_subagents  # 지연 — 순환 방지
+    """활성인 비SQL 처리기 이름(plans/125 A-5 · plans/127 — `apm_query`·`doc_query`) — 비활성이면
+    빈 튜플(분해 바이트 불변)."""
+    from src.orchestration.conditional_agents import active_conditional_agents  # 지연 — 순환 방지
 
-    return tuple(active_extra_subagents(app_config))
+    return tuple(active_conditional_agents(app_config))
 
 
-def _sanitize_task_views(result: dict[str, Any]) -> None:
-    """`apm_query` task 의 `views`를 닫힌 어휘로 정제하고, 다른 담당의 `views`는 떼어 낸다.
+def _sanitize_task_views(result: dict[str, Any], app_config: AppConfig) -> None:
+    """조건부 처리기 task 의 `views`를 자기 닫힌 어휘로 정제하고, 다른 담당의 `views`는 떼어 낸다.
 
     구조화·JSON·폴백 모든 경로의 결과에 같은 규칙을 적용하려고 분해의 마지막 한 곳에서 한다.
+    문서 task(`doc_query`)의 의존은 끊고 사유를 경과 노트로 남긴다(간선 없음 · plans/127 G-10).
     """
-    from src.orchestration.apm_query import APM_QUERY_AGENT, sanitize_views
+    from src.orchestration.conditional_agents import sanitize_task_views
 
-    for task in result.get("tasks") or []:
-        if not isinstance(task, dict):
-            continue
-        raw = task.pop("views", None)
-        if task.get("agent") == APM_QUERY_AGENT:
-            task["views"] = sanitize_views(raw)
+    cut = sanitize_task_views(result, app_config)
+    if cut:
+        logger.info("intent_planner: 문서 task 의존 제거(간선 없음 · plans/127) — %s", cut)
+        result["degraded"] = list(result.get("degraded") or []) + [_degraded(
+            "doc_task_dependency_cut",
+            "문서 답은 다른 조회의 입력으로 쓰지 않았습니다"
+            "(문서 검색과 다른 조회는 따로 답합니다).",
+        )]
 
 
 def _apply_task_frames(
@@ -954,10 +959,18 @@ def _planner_system_prompt(app_config: AppConfig) -> str:
         base = _render_planner_ownership_prompt(tuple(app_config.multi_db.get_active_db_ids()))
     if _task_frame_on(app_config):
         base = _render_task_frame_prompt(base)
-    if _nonsql_agents(app_config):
+    agents = _nonsql_agents(app_config)
+    if "apm_query" in agents:
         from src.orchestration.apm_query import render_agent_line, render_view_rows
 
         base = _render_apm_prompt(base, render_agent_line(), render_view_rows())
+    if "doc_query" in agents:
+        from src.orchestration import doc_query
+
+        base = _render_doc_prompt(
+            base, doc_query.render_agent_line(), doc_query.render_view_rows(app_config),
+            doc_query.example_view(app_config),
+        )
     return _render_planner_environment_terms(base, get_registry().environment_terms)
 
 
@@ -965,6 +978,12 @@ def _planner_system_prompt(app_config: AppConfig) -> str:
 def _render_apm_prompt(base: str, agent_line: str, view_rows: str) -> str:
     """APM 활성 렌더 캐시(plans/125 A-5) — 기동 시 1회 렌더(프롬프트 접두 고정 · KV 캐시)."""
     return render_intent_planner_apm_template(base, agent_line, view_rows)
+
+
+@lru_cache(maxsize=8)
+def _render_doc_prompt(base: str, agent_line: str, view_rows: str, example_view: str) -> str:
+    """문서 라우팅 활성 렌더 캐시(plans/127 W2) — APM 렌더와 같은 규율(삽입만 · 기동 시 1회)."""
+    return render_intent_planner_doc_template(base, agent_line, view_rows, example_view)
 
 
 @lru_cache(maxsize=8)
