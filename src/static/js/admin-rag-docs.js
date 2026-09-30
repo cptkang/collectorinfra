@@ -10,9 +10,22 @@
 
     var API = "/api/v1/doc";
 
+    // admin.js와 같은 순서 — break-glass 운영자 토큰(admin_token)이 있으면 우선, 없으면 사용자
+    // 토큰(user_token). 일반 로그인(/login)한 관리자 계정은 user_token만 가진다.
+    var TOKEN_KEYS = ["admin_token", "user_token"];
+
     function authHeaders() {
-        var token = localStorage.getItem("admin_token") || "";
+        var token = "";
+        for (var i = 0; i < TOKEN_KEYS.length && !token; i++) {
+            token = localStorage.getItem(TOKEN_KEYS[i]) || "";
+        }
         return token ? { Authorization: "Bearer " + token } : {};
+    }
+
+    function authError(status) {
+        if (status === 401) return new Error("로그인이 필요합니다(인증 토큰 없음 또는 만료).");
+        if (status === 403) return new Error("관리자 권한이 필요합니다.");
+        return null;
     }
 
     function el(id) { return document.getElementById(id); }
@@ -101,7 +114,8 @@
         el("ragStatusTable").style.display = "none";
         fetch(API + "/collections", { headers: authHeaders() })
             .then(function (r) {
-                if (r.status === 401 || r.status === 403) throw new Error("권한이 없습니다(관리자 로그인 확인).");
+                var denied = authError(r.status);
+                if (denied) throw denied;
                 if (!r.ok) throw new Error("상태 조회 실패(HTTP " + r.status + ")");
                 return r.json();
             })
@@ -184,7 +198,8 @@
             })
         })
             .then(function (r) {
-                if (r.status === 401 || r.status === 403) throw new Error("권한이 없습니다(관리자 로그인 확인).");
+                var denied = authError(r.status);
+                if (denied) throw denied;
                 return r.json().then(function (body) {
                     if (!r.ok) throw new Error(body.detail || ("실패(HTTP " + r.status + ")"));
                     return body;
