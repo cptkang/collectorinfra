@@ -758,6 +758,8 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     # 소개 페이지의 3D는 ES 모듈이라 JavaScript MIME 이 아니면 브라우저가 거부한다.
     # Windows 는 레지스트리 설정에 따라 .js 를 text/plain 으로 추정하므로 고정한다.
     mimetypes.add_type("text/javascript", ".js")
+    # 정지 등급 배경 영상(D-277 ⑤ 개정) — 레지스트리에 .webm 이 없으면 text/plain 으로 나간다.
+    mimetypes.add_type("video/webm", ".webm")
 
     # 정적 파일 서빙 (라우트 등록 후에 마운트해야 우선순위 보장)
     if static_dir.exists():

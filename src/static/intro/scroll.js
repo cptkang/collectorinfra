@@ -36,6 +36,7 @@
     reduce,
     mobile,
     tier: 'static',
+    vdi: false, // 가상·소프트웨어 GPU 이거나 WebGL 없음 — pickTier 가 정한다
     feats,
     featF: 0, // 기능 링의 연속 위치(0 ~ N-1)
     wake: chips.map(() => 0), // 도입 장면 에이전트 깨어남(0~1) — 칩 하나에 에이전트 하나
@@ -189,11 +190,14 @@
   // 휠·터치로 움직이면 예약 지점을 버린다
   ['wheel', 'touchstart'].forEach((ev) => addEventListener(ev, () => { pending = null; }, { passive: true }));
 
-  /* ───────── 품질 등급 · 3D 불러오기 ───────── */
-  function pickTier() {
-    const q = new URLSearchParams(location.search).get('quality');
-    if (q === 'high' || q === 'mid' || q === 'static') return q;
-    if (reduce) return 'static';
+  /* ───────── 품질 등급 · 3D 불러오기 ─────────
+   * VDI 대응(D-277 ⑤ 개정)은 가상·소프트웨어 GPU 이거나 WebGL 이 없는 환경에서만 한다 —
+   * reduced-motion 이어도 3D를 켜고(움직임은 world.js 가 줄인다), 3D를 못 쓰면 장면 영상을 보여 준다.
+   * 그 밖의 PC는 기존 동작 그대로다(reduced-motion 이면 정지 · 정지 배경은 그라데이션). */
+  const VIRTUAL_GPU = /swiftshader|llvmpipe|basic render|software|vmware|svga|citrix|virtualbox|parallels|hyper-v|remote|virgl|virtio|qxl|grid/i;
+
+  /** WebGL 렌더러 이름 — WebGL 을 못 쓰면 null */
+  function probeRenderer() {
     let gl = null;
     try {
       const c = document.createElement('canvas');
@@ -201,7 +205,7 @@
     } catch (e) {
       gl = null;
     }
-    if (!gl) return 'static';
+    if (!gl) return null;
     let renderer = '';
     try {
       const ext = gl.getExtension('WEBGL_debug_renderer_info');
@@ -211,6 +215,16 @@
     }
     const lose = gl.getExtension('WEBGL_lose_context');
     if (lose) lose.loseContext();
+    return renderer;
+  }
+
+  function pickTier() {
+    const renderer = probeRenderer();
+    state.vdi = renderer === null || VIRTUAL_GPU.test(renderer);
+    const q = new URLSearchParams(location.search).get('quality');
+    if (q === 'high' || q === 'mid' || q === 'static') return q;
+    if (reduce && !state.vdi) return 'static';
+    if (renderer === null) return 'static';
     // 가상 PC 등 소프트웨어 렌더러는 블룸 없이 시작한다
     if (/swiftshader|llvmpipe|basic render|software/i.test(renderer)) return 'mid';
     return mobile ? 'mid' : 'high';
@@ -220,6 +234,21 @@
     state.tier = t;
     root.dataset.tier = t;
     root.classList.toggle('no-gl', t === 'static');
+  }
+
+  /* ───────── 정지 등급 영상 — VDI 등에서 3D 없이도 장면이 보이게(D-277 ⑤ 개정) ─────────
+   * 지금 장면의 영상만 받아 재생하고 나머지는 멈춘다. reduced-motion 이면 첫 프레임에 멈춰 둔다. */
+  const clips = $$('.backdrop video');
+  let clipOn = -1;
+  function syncClips() {
+    const want = state.tier === 'static' && state.vdi ? state.active : -1;
+    if (want === clipOn) return;
+    clipOn = want;
+    clips.forEach((v, i) => {
+      if (i !== want) { if (!v.paused) v.pause(); return; }
+      v.preload = 'auto';
+      if (!reduce) v.play().catch(() => {});
+    });
   }
 
   let world = null;
@@ -253,6 +282,7 @@
     if (pending !== null && Math.abs(scrollY - pending) < 2) pending = null;
     readScroll();
     updateUI();
+    syncClips();
     if (world && state.tier !== 'static' && !document.hidden) world.update(dt, t, raw);
     requestAnimationFrame(frame);
   }

@@ -1,7 +1,8 @@
 # 124. 시스템 소개 페이지 — 스크롤 연동 3D 장면으로 「Agentic AI 기반 장애 대응 자동화」를 소개
 
 > **작성일**: 2026-09-29
-> **상태**: **v3 · 완료 — 잔여 0** — 파일명 무표기 (확인하지 못한 환경 항목은 §8.4)
+> **상태**: **v4 · 완료 — 잔여 0** — 파일명 무표기 (확인하지 못한 환경 항목은 §8.4 · §10.4)
+> - **v4(2026-09-30)**: 내부망 VDI에서 3D 미표시 대응 — 사용자 *"vdi환경이 아닌 곳에서는 기존 방식으로 동작하고 vdi 등의 옵션이 꺼져 있는 곳에서는 현재 수정하는 방식으로 동작하게 구현하라."* · D-277 ⑤ 개정 부기(§10).
 > - **v3(2026-09-29)**: 사용자 지시 *"메인 페이지에 링크하라."* — T-13 완료: 메인 머리글 「매뉴얼 ▾」 메뉴에 「시스템 소개」(`#introLink` · 새 탭) · 매뉴얼 U-10·`header-manual` 캡처 갱신 · D-277 ② 부기(§9).
 > - **v2(2026-09-29)**: 사용자 지시 *"권고에 맞게 진행하라. 우선 메인페이지에 연결하지 말고 intro 링크를 직접 입력할때면 접속하게하라. 메인페이지 연결은 나중에 최종 정리되면 진행할 예정이다."* — 게이트 G-1~G-8 확정(권고안 · **G-6은 사용자 지정 (c′) 링크 없음**) · **D-277** · D-180 부기 · T-1~T-12·T-14·T-15 구현·검증(§8) · T-13(진입 링크·매뉴얼)은 보류(§9).
 > - **v1(2026-09-29)**: 계획 수립.
@@ -145,6 +146,8 @@
 | **중** | 모바일·저사양 · 소프트웨어 렌더러 의심 · FPS 강등 | 블룸 끔 · 입자 × 0.4 · 픽셀 비 1 · 안티앨리어싱 끔 |
 | **정지** | WebGL 생성 실패 · `prefers-reduced-motion` · `?quality=static` | 캔버스 없음 · 장면별 CSS 그라데이션 배경 · 글자 연출만 |
 
+> **2026-09-30 개정(§10)**: VDI 등(가상·소프트웨어 GPU 또는 WebGL 없음)에서는 reduced-motion이 정지를 부르지 않고, 정지 배경이 장면별 사전 렌더 반복 영상이다. 일반 GPU PC는 위 표 그대로다.
+
 - **판정**: WebGL 컨텍스트 실패 → 정지. `WEBGL_debug_renderer_info` 렌더러 문자열이 `SwiftShader`·`llvmpipe`·`Microsoft Basic Render`면 중으로 시작. 실행 중 **최근 2초 평균 프레임 시간 > 33ms면 한 단계 내림**(올리지 않는다).
 - 발표자 강제: `?quality=high|mid|static`.
 - 탭이 숨으면 렌더를 멈춘다(`document.hidden`).
@@ -281,3 +284,49 @@
 **추가(2026-09-29 · 사용자 지시 *"intro 페이지의 kb aiops포탈 위치를 누르면 메인페이지로 넘어가도록 수정하라."*)**: 소개 페이지 왼쪽 위 제목을 메인(`/`) 링크로(`#brandHome` · 같은 탭 · 모양 그대로 · `intro.css?v=2`). 테스트 `test_brand_returns_to_main` · 매뉴얼 U-10 주의 1줄 · 브라우저에서 클릭 시 `/` 이동 확인. `pytest tests/test_intro tests/test_manual` 490 passed.
 
 관리자 매뉴얼은 사용자 화면 기능을 사용자 매뉴얼에 맡기므로 고치지 않았다(빌드로 `admin.html`이 다시 생성됐지만 원천 변경은 이 작업 전부터 있던 것이다).
+
+## 10. VDI 대응 (2026-09-30 · D-277 ⑤ 개정)
+
+### 10.1 원인
+
+| 원인 | 실측 |
+|---|---|
+| ⓐ 반입 누락 | `.gitignore` `build/`가 `vendor/three/build/`를 삼켜 `three.module.min.js`가 커밋된 적이 없었다 — 내부망에서 404 → 3D 모듈 실패 → 정지. 예외 규칙은 사용자 커밋 `0cc44b8` |
+| ⓑ 등급 판정 전제 | 크롬은 GPU가 없으면 소프트웨어 WebGL로 자동 전환하지 않는다(크롬 154 `--disable-gpu` → 정지 · `--enable-unsafe-swiftshader` → 중). VDI는 Windows 애니메이션 효과를 꺼 두는 경우가 많아 reduced-motion → 정지. 정지 배경 그라데이션(투명도 0.12~0.18)은 사실상 빈 화면 |
+
+사용자 VDI: 크롬 149 · WebGL 가능(사용자 실측).
+
+### 10.2 동작
+
+| 환경 | 판정 | 3D | 정지 배경 |
+|---|---|---|---|
+| 일반 PC(하드웨어 GPU) | `state.vdi = false` | 기존 그대로 — reduced-motion이면 정지 | 그라데이션(영상 받지 않음) |
+| VDI 등 — 렌더러가 `VIRTUAL_GPU`(VMware SVGA · Citrix · Hyper-V · Remote Display · Basic Render · SwiftShader · llvmpipe · GRID 등) | `state.vdi = true` | reduced-motion이어도 켠다(`world.js` 기존 처리 — 컷 전환 · 대기 애니메이션 정지) | 장면 영상 |
+| WebGL 없음 | `state.vdi = true`(VDI 여부를 가를 수 없어 「옵션 꺼짐」으로 본다) | 없음 | 장면 영상 |
+
+- 영상: `src/static/intro/video/scene-{0..8}.webm` — VP9 · 1280×720 · 30fps · 6초 반복(장면 5는 14초 동안 전 기능을 훑고, 글자 카드와 겹치지 않게 흐림 sigma 14를 구움) · 합계 3.49MB(장면당 42KB~1.06MB).
+- 재생: 현재 장면만 `preload="auto"`로 바꿔 재생하고 나머지는 멈춘다 · reduced-motion이면 첫 프레임에 멈춤 · 영상을 못 받으면 `<i>`의 그라데이션이 남는다.
+- 제작: `python scripts/intro_capture.py`(개발 맥 · Chrome · `brew install ffmpeg`) — 헤드리스 크롬에 가상 시계(`requestAnimationFrame`·`performance.now` 대체)를 주입해 한 프레임씩 그려 받는다. 렌더 속도와 무관하게 결과가 같다. 9장면 약 4분. `--stills DIR`로 구도만 확인. **장면 구도·3D 코드를 바꾸면 다시 돌린다.**
+- 서버 `.webm` → `video/webm` 고정 · 캐시 무효화 `intro.css?v=3` · `scroll.js?v=2`.
+
+### 10.3 실측 (개발 맥 · 헤드리스 크롬 154 · 로컬 정적 서버 127.0.0.1 임시 포트 — 자기 프로세스만 종료)
+
+| # | 조건 | 렌더러 | 등급 | vdi | 결과 |
+|---|---|---|---|---|---|
+| 1 | 일반 | Apple M1 Max(Metal) | 상 | false | 3D · 영상 미요청 |
+| 2 | 일반 + reduced-motion | 〃 | 정지 | false | 그라데이션(기존 동작) |
+| 3 | 일반 + `?quality=static` | 〃 | 정지 | false | 그라데이션(기존 동작) |
+| 4 | SwiftShader | SwiftShader | 중 | true | 3D |
+| 5 | SwiftShader + reduced-motion | 〃 | 중 | true | **3D**(개정) |
+| 6 | SwiftShader + `?quality=static` | 〃 | 정지 | true | 장면 영상 재생 |
+| 7 | `--disable-gpu` | 없음 | 정지 | true | 장면 영상 재생 · 장면 0·3·5·8로 이동 시 해당 영상으로 바뀜(스크린샷 판독) |
+| 8 | `--disable-gpu` + reduced-motion | 없음 | 정지 | true | 첫 프레임 정지(`readyState 4`) |
+
+- 반복 이음매: 마지막→첫 프레임 PSNR이 평상시 이웃 프레임 PSNR과 같은 수준(장면 0: 33.5 vs 32.8dB · 1: 29.1 vs 29.0 · 2: 35.0 vs 36.1 · 8: 42.1 vs 43.1).
+- 실측 중 고친 것: 장면 5 영상의 3D 기능 카드가 정지 등급의 글자 카드와 겹쳐 서로 다른 기능 이름이 동시에 읽힘 → 흐림을 인코딩에 굽는다(재생 중 CSS `filter`는 GPU 없는 PC에서 CPU 부담).
+- 테스트: `tests/test_intro` 26 passed(신규 15 — VDI 게이트 · `VIRTUAL_GPU` 렌더러 표본 11 · 장면별 영상 실재·EBML·3MB 상한 · `video/webm` MIME · `git check-ignore` 가드).
+
+### 10.4 확인하지 못한 것
+
+- **사용자 VDI의 렌더러 이름** — WebGL은 된다고 확인했으나 렌더러 문자열은 모른다. `VIRTUAL_GPU`에 걸리지 않는 vGPU(예: 일반 NVIDIA 이름으로 보이는 프로파일)라면 일반 PC로 판정돼 reduced-motion에서 정지(기존 동작)가 된다. 콘솔 `__intro.state.vdi`와 렌더러 이름을 한 번 확인할 것.
+- **VDI에서의 영상 재생 부하** — GPU 없는 환경의 VP9 720p 소프트웨어 디코드는 실측하지 않았다.

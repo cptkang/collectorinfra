@@ -8,6 +8,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -165,3 +167,84 @@ def test_brand_returns_to_main() -> None:
     assert tag
     assert 'href="/"' in tag.group(0)
     assert "target=" not in tag.group(0)
+
+
+def _scroll_code() -> str:
+    """주석을 뺀 scroll.js — 게이트 문장이 주석에만 남은 경우를 거른다."""
+    text = (STATIC / "intro" / "scroll.js").read_text(encoding="utf-8")
+    return re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.S)
+
+
+def test_vdi_behaviour_is_gated() -> None:
+    """⑤ 개정(2026-09-30) — VDI 대응은 가상·소프트웨어 GPU 이거나 WebGL 이 없을 때만 한다.
+
+    VDI 등: reduced-motion 이어도 3D를 켜고, 정지 등급이면 장면 영상을 보여 준다.
+    그 밖의 PC: 기존 동작 그대로(reduced-motion 이면 정지 · 정지 배경은 그라데이션).
+    조건별 동작은 브라우저로 실측했다(plans/124 §10) — 여기서는 게이트 문장만 고정한다.
+    """
+    code = _scroll_code()
+    assert "state.vdi = renderer === null || VIRTUAL_GPU.test(renderer);" in code
+    assert "if (reduce && !state.vdi) return 'static';" in code
+    assert "state.tier === 'static' && state.vdi ? state.active : -1" in code
+
+
+@pytest.mark.parametrize(
+    ("renderer", "vdi"),
+    [
+        ("ANGLE (VMware, Inc., VMware SVGA 3D Direct3D11 vs_5_0 ps_5_0, D3D11)", True),
+        ("ANGLE (Microsoft, Microsoft Basic Render Driver Direct3D11 vs_5_0 ps_5_0, D3D11)", True),
+        ("ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0)))", True),
+        ("ANGLE (NVIDIA, NVIDIA GRID T4-2Q Direct3D11 vs_5_0 ps_5_0, D3D11)", True),
+        ("Citrix Indirect Display Adapter", True),
+        ("Microsoft Remote Display Adapter", True),
+        ("llvmpipe (LLVM 15.0.7, 256 bits)", True),
+        ("ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Max, Unspecified Version)", False),
+        ("ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)", False),
+        ("ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)", False),
+        ("ANGLE (AMD, AMD Radeon(TM) Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)", False),
+    ],
+)
+def test_virtual_gpu_pattern(renderer: str, vdi: bool) -> None:
+    """가상·소프트웨어 GPU 렌더러 이름만 VDI 로 본다 — 일반 GPU PC 는 기존 동작을 지킨다."""
+    m = re.search(r"const VIRTUAL_GPU = /(.+)/i;", _scroll_code())
+    assert m
+    assert bool(re.search(m.group(1), renderer, re.I)) is vdi
+
+
+def test_static_tier_has_a_video_per_scene() -> None:
+    """⑤ 개정 — 정지 등급 배경은 장면마다 사전 렌더 반복 영상(scripts/intro_capture.py)이다."""
+    html = _html()
+    scenes = sorted(int(n) for n in re.findall(r'data-scene="(\d+)"', html))
+    backdrop = re.search(r'<div class="backdrop"[^>]*>(.*?)</div>', html, re.S)
+    assert backdrop
+    clip = (
+        r'<i><video src="(/static/intro/video/scene-(\d+)\.webm)"'
+        r' muted loop playsinline preload="none">'
+    )
+    srcs = re.findall(clip, backdrop.group(1))
+    assert [int(n) for _, n in srcs] == scenes
+    for src, _ in srcs:
+        f = STATIC / src.removeprefix("/static/")
+        assert f.is_file(), f
+        assert f.read_bytes()[:4] == b"\x1a\x45\xdf\xa3", f"{f.name} 가 webm(EBML)이 아니다"
+        assert f.stat().st_size < 3 * 1024 * 1024, f"{f.name} 가 3MB 를 넘는다 — VDI 에서 늦게 뜬다"
+
+
+def test_scene_video_is_served_as_webm(client: TestClient) -> None:
+    """Windows 레지스트리에 .webm 이 없어도 video/webm 으로 나간다."""
+    r = client.get("/static/intro/video/scene-0.webm")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "video/webm"
+
+
+def test_page_assets_are_not_gitignored() -> None:
+    """벤더 사본·영상이 `.gitignore` 에 걸려 폐쇄망 반입에서 빠지지 않는다.
+
+    2026-09-30 실사례 — `build/` 규칙이 `vendor/three/build/` 를 삼켜 코어가 커밋되지 않았다.
+    """
+    if shutil.which("git") is None or not (REPO / ".git").exists():
+        pytest.skip("git 저장소가 아니다")
+    files = [*VENDOR.rglob("*.js"), *(STATIC / "intro" / "video").glob("*.webm")]
+    paths = [p.relative_to(REPO).as_posix() for p in files]
+    r = subprocess.run(["git", "check-ignore", *paths], cwd=REPO, capture_output=True, text=True)
+    assert r.stdout.strip() == "", r.stdout
