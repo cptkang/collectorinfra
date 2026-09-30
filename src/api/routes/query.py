@@ -2176,6 +2176,53 @@ async def _answer_document_query(
     )
 
 
+async def _document_query_sse(
+    config: Any,
+    command: Any,
+    *,
+    query_id: str,
+    thread_id: str,
+    user: dict | None = None,
+) -> AsyncGenerator[str, None]:
+    """`/문서 …` 접두의 SSE 판 — 엔진이 끝날 때까지 heartbeat를 내고 `done` 1건으로 끝낸다.
+
+    검색 총상한(`RAG_TOTAL_TIMEOUT`)에 서술 LLM까지 더하면 화면의 무신호 경고(15초)를 넘길 수
+    있다. 응답은 `/query`의 `_answer_document_query`와 같은 값이다(단일 출처).
+    """
+    start_time = time.time()
+    progress_on = bool(getattr(config.server, "sse_progress_events", True))
+    interval = float(getattr(config.server, "sse_heartbeat_interval_sec", 0) or 0) if progress_on else 0.0
+    task = asyncio.create_task(_answer_document_query(
+        config, command, query_id=query_id, thread_id=thread_id, user=user,
+    ))
+    try:
+        while True:
+            finished, _ = await asyncio.wait({task}, timeout=interval if interval > 0 else None)
+            if finished:
+                break
+            yield _sse_event(_heartbeat_sse_payload(start_time, {}))
+        res = task.result()
+    except Exception as exc:
+        # 헤더가 이미 나갔으므로 500이 아니라 오류 이벤트로 사유를 알린다
+        logger.exception("문서 접두 질의 실패 thread=%s", thread_id)
+        yield _sse_event({
+            "type": "error",
+            "message": f"문서 검색 중 오류가 발생했습니다({type(exc).__name__}).",
+            "query_id": query_id,
+            "thread_id": thread_id,
+        })
+        return
+    finally:
+        if not task.done():
+            task.cancel()
+    yield _sse_event({
+        "type": "done",
+        "response": res.response,
+        "query_id": query_id,
+        "thread_id": thread_id,
+    })
+
+
 @router.post(
     "/query",
     response_model=QueryResponse,
@@ -2406,6 +2453,25 @@ async def process_query_stream(
     # 질의응답 스레드 기록(D-248) — 아래 스트림마다 turn.stream()으로 감싼다(/query와 대칭)
     turn = TurnRecorder(request, current_user, user_query=body.query, has_upload=False)
     _shadow_input_guard(body.query, thread_id)  # plans/123 S-2 섀도 — 응답 불변
+
+    # (plans/126 T-4) 명시 채팅 접두 `/문서 …` — /query와 같은 자리(존 역질문보다 먼저).
+    # 채팅 화면은 텍스트 질의를 이 경로로 보내므로 여기에 분기가 없으면 접두가 그래프로 새어
+    # 일반 안내로 분류된다. 라우팅이 편입되면 /query 분기와 함께 지운다(§4.17).
+    if doc_chat_prefix.is_enabled(config):
+        _doc_cmd = doc_chat_prefix.parse(body.query)
+        if _doc_cmd is not None:
+            return StreamingResponse(
+                turn.stream(_document_query_sse(
+                    config, _doc_cmd, query_id=query_id, thread_id=thread_id,
+                    user=current_user,
+                )),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
 
     thread_config = {"configurable": {"thread_id": thread_id}}
 

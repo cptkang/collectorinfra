@@ -97,12 +97,28 @@ class TestRouteWiring:
         )
 
     def test_chat_prefix_is_the_only_query_route_touchpoint(self):
-        """질의 라우트의 문서 진입은 **접두 분기 하나**뿐이다(추론 0)."""
+        """질의 라우트의 문서 진입은 **접두 분기**뿐이고(추론 0), 텍스트 두 진입점에 하나씩 있다.
+
+        채팅 화면은 텍스트 질의를 `/query/stream`으로 보내고 `/query`는 스트리밍 폴백이다 —
+        한쪽에만 두면 접두가 그래프로 새어 일반 안내로 분류된다(2026-09-30 폐쇄망 실측).
+        존 역질문이 먼저 가로채지 않도록 두 곳 모두 `_zone_clarification_or_none`보다 앞이다.
+        """
         from pathlib import Path
         root = Path(__file__).resolve().parent.parent.parent
         text = (root / "src/api/routes/query.py").read_text(encoding="utf-8")
-        assert text.count("doc_chat_prefix.parse(") == 1
-        assert "doc_chat_prefix.is_enabled(config)" in text
+        assert text.count("doc_chat_prefix.parse(") == 2
+
+        def body_of(name: str) -> str:
+            start = text.index(f"async def {name}(")
+            end = text.find("\n@router.", start)
+            return text[start:] if end == -1 else text[start:end]
+
+        for name in ("process_query", "process_query_stream"):
+            body = body_of(name)
+            assert body.count("doc_chat_prefix.parse(") == 1, name
+            assert body.index("doc_chat_prefix.parse(") < body.index("_zone_clarification_or_none("), name
+        for name in ("process_file_query", "process_file_query_stream"):
+            assert "doc_chat_prefix" not in body_of(name), name
 
 
 class TestApiContract:
