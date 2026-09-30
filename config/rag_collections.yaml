@@ -1,0 +1,54 @@
+# 문서 코퍼스 정본 — RAG 리트리벌로 조회할 문서군의 **의미**를 선언한다 (plans/126 §4.1)
+#
+# 이 파일에 두는 것 = 자주 바뀌지 않는 것(설명·형제 차이·표면어·답변 영역·민감 여부).
+# 이 파일에 두지 않는 것 = 접속 정보(엔드포인트·토큰·클라이언트 키·retrieval_id).
+#   → 접속 정보는 문서 추가·수정·재청킹·파라미터 변경마다 회전하므로 설정(.env / 관리자 화면)이
+#     소유한다. 교체 절차는 docs/32_rag_retrieval_runbook.md.
+#
+# 검색 파라미터(top_k · threshold · rerank · HyDE)는 **플랫폼 전속**이라 여기에 적지 않는다
+# (plans/126 §3.3). 적으면 실제 설정과 어긋난 사본이 되고 이중 필터가 된다.
+# 로더는 최상위에 그런 제어 키가 있으면 로드를 거부한다 — 기록은 platform_params_snapshot 아래에만.
+
+version: 1
+
+collections:
+  - id: hq_manual
+    title: 본부 전산관리매뉴얼
+    enabled: true
+    # 답변 영역 — 소스 카탈로그(plans/121 §4.11) 연결용. 지금은 문서화 목적이다.
+    answer_domains: [규정, 절차, 권한, 신청, 보안지침]
+    description: |
+      전산 자산·계정·변경·보안 관련 사내 규정과 절차. "무엇을 해야 하는가 / 누가 승인하는가"에
+      답한다. 특정 서버의 현재 수치는 담고 있지 않다.
+    sibling_note: 아키텍처 설계문서와 달리 시스템 구성도·설계 근거는 담지 않는다
+    # 질의에서 결정적으로 떼어낼 접두 표면어(컬렉션은 retrieval_id로 이미 고른다).
+    # 라우팅 판단에는 쓰지 않는다 — 라우팅은 이 계획의 범위가 아니다(plans/126 §1.2).
+    surface_terms: [전산관리매뉴얼, 본부매뉴얼, 전산관리규정, 업무절차, 지침]
+    sensitive: false
+    # 플랫폼 설정 기록(사람이 읽는 메모 · 코드는 필터·제어에 쓰지 않는다).
+    # 파라미터가 바뀌면 플랫폼이 새 retrieval_id 를 발급하므로 ID 교체와 함께 갱신한다.
+    platform_params_snapshot:
+      recorded_at: "2026-09-29"
+      search: hybrid(lexical+vector) · exact KNN · RRF
+      vector_threshold: 0.5
+      top_k: 3
+      rerank: BGE-M3 · threshold 0.3 · candidates 15
+      hyde: enabled(Llama3.1)
+
+  - id: arch_docs
+    title: 아키텍처 설계문서
+    enabled: true
+    answer_domains: [아키텍처, 구성도, 설계근거, 표준, 연계]
+    description: |
+      시스템 아키텍처 설계·구성·연계 방식과 그 근거. "어떻게 구성되어 있는가"에 답한다.
+      규정·승인 절차는 담고 있지 않다.
+    sibling_note: 규정·승인 절차는 본부 전산관리매뉴얼 소유다
+    surface_terms: [아키텍처, 설계문서, 구성도, 연계설계, 표준아키텍처]
+    sensitive: false
+    platform_params_snapshot:
+      recorded_at: "2026-09-29"
+      search: hybrid(lexical+vector) · exact KNN · RRF
+      vector_threshold: 0.5
+      top_k: 3
+      rerank: BGE-M3 · threshold 0.3 · candidates 15
+      hyde: enabled(Llama3.1)

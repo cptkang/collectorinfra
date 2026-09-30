@@ -66,6 +66,9 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "src.infrastructure.user_repository":  "infrastructure",
     "src.infrastructure.audit_repository": "infrastructure",
     "src.nodes":                     "application",
+    # 문서 질의 엔진(plans/126 W2) — clients·infrastructure·prompts 를 조립하는 서비스 계층.
+    # 그래프 노드가 아니라 CLI·API·(후속) 노드가 함께 호출하는 순수 서비스라 nodes 와 같은 높이다.
+    "src.doc_qa":                    "application",
     "src.db_adapters":               "application",
     # 시맨틱 IR·커버리지 판정 계층(Plan 69 P5-1) — nodes에서 분리해 tools가 nodes를 거치지
     # 않고 참조하게 한 조각. nodes·tools와 동일 계층.

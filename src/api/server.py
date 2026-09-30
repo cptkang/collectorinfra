@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.api.routes import admin, admin_auth, alarm, conversation, db_structure, health, noise_dashboard, query, schema_cache, scope, ui, user_auth
+from src.api.routes import admin, admin_auth, alarm, conversation, db_structure, doc_search, health, noise_dashboard, query, schema_cache, scope, ui, user_auth
 from src.config import AppConfig, load_config
 from src.graph import build_graph
 from src.security.audit_logger import setup_logging
@@ -668,6 +668,8 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
         user_auth.router, prefix="/api/v1", tags=["user-auth"]
     )
     application.include_router(ui.router, prefix="/api/v1", tags=["ui"])
+    # (plans/126 W4) 문서 검색 시험 — 운영자 전용. 라우팅을 거치지 않고 엔진을 직접 부른다.
+    application.include_router(doc_search.router, prefix="/api/v1", tags=["doc-search"])
     # (plans/90 · D-205) 스코프 칩 선택지 — 축 배열
     application.include_router(scope.router, prefix="/api/v1", tags=["scope"])
     if metrics_enabled:
