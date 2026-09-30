@@ -12,10 +12,22 @@
 인벤토리에 사유로 담는다(한 소스 장애가 다른 소스 조회를 막지 않게 — S-3). 실패·도메인 0건·전
 도메인 조회 불가 인벤토리는 짧게(30초) 캐시한다 — 라이선스 적용·에이전트 접속 뒤 최대 10분 동안
 "도메인 0건"을 돌려주지 않게 한다(F-3). 빈 결과를 "정상 · 0건"으로 단정하지 않는다(§0.10 #18).
+
+적재는 도메인마다 순차 호출이라 도메인이 수백 개면 수십 초~수 분이 걸린다(운영 실측 2026-09-30 —
+도메인 약 350개 · 호출 상한 5회/초 → 적재 1회 ≈ 70초, 겹친 적재 2회 ≈ 140~160초). 그래서
+- **적재는 한 번에 하나**다 — 진행 중이면 새 요청은 그 적재를 함께 기다린다(중복 적재가 호출 상한을
+  나눠 쓰며 서로를 두 배로 늦췄다).
+- 기다리던 요청이 취소돼도 적재는 끝까지 간다 — 결과가 캐시에 남아야 다음 요청이 빈 캐시를 만나지 않는다.
+- **정상 명단이 만료되면 기존 명단으로 바로 답하고** 뒤에서 한 번만 갱신한다. 갱신 결과를
+  쓸 수 없으면(실패·도메인 0건) 기존 명단을 두고 `REFRESH_RETRY_SECONDS` 동안 다시 시도하지
+  않는다. 기준 시각이 지난 명단으로 답할 때는 `staleness_note`가 그 사실을 한계로 싣는다.
+  실패·빈 인벤토리는 쓸 명단이 없으므로 30초가 지나면 요청이 적재를 기다린다(F-3).
+- 게이트웨이 기동 직후 `warm_up`으로 소스마다 미리 적재한다(`__main__`).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -30,6 +42,8 @@ from apm_gateway.domain.sources import DEFAULT_SOURCE_ID
 logger = logging.getLogger(__name__)
 
 MAX_INSTANCES_PER_HOST = 5
+# 백그라운드 갱신이 실패한 뒤 다시 시도하기까지(초) — 제니퍼가 멈춘 동안 요청마다 적재를 다시 걸지 않는다
+REFRESH_RETRY_SECONDS = 60
 HIGH = "high"
 MEDIUM = "medium"
 NONE = "none"
@@ -156,6 +170,8 @@ class InstanceResolver:
         self._cache_seconds = cache_seconds
         self._clock = clock
         self._inventory: Inventory | None = None
+        self._loading: asyncio.Task[Inventory] | None = None
+        self._retry_after = 0.0
 
     @property
     def override_count(self) -> int:
@@ -165,20 +181,62 @@ class InstanceResolver:
         return SHORT_CACHE_SECONDS if inv.problem() else float(self._cache_seconds)
 
     async def inventory(self, *, refresh: bool = False) -> Inventory:
-        """소스 인벤토리. 도메인 목록 조회 실패는 예외가 아니라 `error_code`·`error`로 담는다."""
-        now = self._clock()
+        """소스 인벤토리 — 정상 명단은 즉시(만료면 뒤에서 갱신), 명단이 없거나 실패·빈 인벤토리가
+        30초를 넘었으면 진행 중 적재를 함께 기다린다. 도메인 목록 조회 실패는 예외가 아니라
+        `error_code`·`error`로 담는다."""
         inv = self._inventory
-        if inv is not None and not refresh and now - inv.fetched_at < self._ttl(inv):
-            return inv
+        if inv is not None and not refresh:
+            if self._clock() - inv.fetched_at < self._ttl(inv):
+                return inv
+            if inv.problem() is None:
+                self._refresh_in_background()
+                return inv
+        return await asyncio.shield(self._load_once())
+
+    async def warm_up(self) -> None:
+        """기동 직후 선적재 — 실패해도 기동은 막지 않는다(첫 요청 때 다시 적재한다)."""
+        try:
+            problem = (await self.inventory()).problem()
+        except Exception as e:  # noqa: BLE001 — 선적재 실패는 로그로만 알린다
+            problem = ("error", str(e))
+        if problem is not None:
+            logger.warning(
+                "인스턴스 목록 선적재 실패(소스 %s) — 첫 요청 때 다시 적재한다: %s: %s",
+                self.source_id, *problem,
+            )
+
+    def _load_once(self) -> asyncio.Task[Inventory]:
+        if self._loading is None or self._loading.done():
+            self._loading = asyncio.create_task(self._load())
+        return self._loading
+
+    def _refresh_in_background(self) -> None:
+        if self._loading is not None and not self._loading.done():
+            return
+        if self._clock() < self._retry_after:
+            return
+        self._load_once().add_done_callback(self._after_background_refresh)
+
+    def _after_background_refresh(self, task: asyncio.Task[Inventory]) -> None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            self._retry_after = self._clock() + REFRESH_RETRY_SECONDS
+            logger.warning(
+                "인스턴스 목록 갱신 실패 — 기존 명단을 유지하고 %d초 뒤 다시 시도한다: %s",
+                REFRESH_RETRY_SECONDS, error,
+            )
+
+    async def _load(self) -> Inventory:
+        started = self._clock()
         try:
             domains = await self._api.domains()
         except ApmError as e:
-            inv = Inventory(fetched_at=now, error_code=e.code, error=e.reason)
-            self._inventory = inv
-            return inv
+            return self._store(Inventory(fetched_at=started, error_code=e.code, error=e.reason))
         if self._domain_filter:
             domains = [d for d in domains if d["domain_id"] in self._domain_filter]
-        inv = Inventory(domains=domains, fetched_at=now)
+        inv = Inventory(domains=domains, fetched_at=started)
         for d in domains:
             try:
                 found = await self._api.instances(d["domain_id"], d["domain_name"])
@@ -186,8 +244,38 @@ class InstanceResolver:
                 inv.unavailable[d["domain_id"]] = f"{e.code}: {e.reason}"
                 continue
             inv.instances.extend({**inst, "source_id": self.source_id} for inst in found)
+        logger.info(
+            "인스턴스 목록 적재: 도메인 %d · 인스턴스 %d · 조회 불가 도메인 %d · %.1f초 · 소스 %s",
+            len(inv.domains), len(inv.instances), len(inv.unavailable), self._clock() - started,
+            self.source_id,
+        )
+        return self._store(inv)
+
+    def _store(self, inv: Inventory) -> Inventory:
+        """새 인벤토리를 캐시한다 — 갱신 결과를 쓸 수 없으면(실패·도메인 0건) 기존 정상 명단을
+        유지한다."""
+        prev = self._inventory
+        problem = inv.problem()
+        if problem is not None and prev is not None and prev.problem() is None:
+            self._retry_after = self._clock() + REFRESH_RETRY_SECONDS
+            logger.warning(
+                "인스턴스 목록 갱신 실패(소스 %s) — 기존 명단을 유지하고 %d초 뒤 다시 시도한다:"
+                " %s: %s",
+                self.source_id, REFRESH_RETRY_SECONDS, *problem,
+            )
+            return prev
         self._inventory = inv
         return inv
+
+    def staleness_note(self, inv: Inventory, tag: str = "") -> list[str]:
+        """기준 시각이 지난 명단으로 답할 때의 한계(`tag` — 소스가 여럿이면 「소스 <id> 」)."""
+        age = self._clock() - inv.fetched_at
+        if age < self._cache_seconds:
+            return []
+        return [
+            f"[한계] {tag}인스턴스 목록이 {int(age // 60)}분 전 기준이다"
+            " — 갱신 중이거나 갱신에 실패했다"
+        ]
 
     def _match_override(
         self, hostname: str, instances: list[dict[str, Any]]

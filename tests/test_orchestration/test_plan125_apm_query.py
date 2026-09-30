@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 from contextlib import asynccontextmanager
@@ -213,6 +214,39 @@ async def test_no_target_inserts_instances_first_hop_and_caps(gateway) -> None:
     step = res["apm_query"]["inserted_steps"][0]
     assert step == {"view": "apm.instances", "reason": step["reason"], "hosts": 5, "truncated": 2}
     assert "조회한 범위 안의 결과" in res["organized_data"]["summary"]
+
+
+class _SlowGateway(_Gateway):
+    """도구 응답이 본체 호출 상한보다 늦는 게이트웨이(운영 2026-09-30 — 빈 캐시 적재 70초 이상)."""
+
+    async def call_tool(self, name: str, arguments: dict):
+        self.calls.append((name, arguments))
+        await asyncio.sleep(1)
+        raise AssertionError("호출 상한에 먼저 걸려야 한다")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slow", [True, False], ids=["timeout", "error_envelope"])
+async def test_failed_instances_step_reports_its_reason(gateway, monkeypatch, slow) -> None:
+    """대상 선정(인스턴스 목록 선행 호출)이 실패하면 그 사유가 응답에 실린다 — "대상 없음"으로 가리지 않는다."""
+    cfg = _cfg()
+    if slow:
+        gw = _SlowGateway({})
+        monkeypatch.setattr(aq, "_SESSION_FACTORY", gw.factory())
+        cfg.dbhub.source_call_timeout = 0.05
+        expected = "도구 호출 시간 초과(apm_instance_map"
+    else:
+        gw = gateway({"apm_instance_map": {"error": "source_unavailable",
+                                            "reason": "APM 도메인 0건", "tool": "apm_instance_map"}})
+        expected = "source_unavailable"
+    res = await aq.run_apm_query({"task_id": "t1", "agent": "apm_query",
+                                  "views": ["apm.app_health"]},
+                                 _isolated(), llm=None, app_config=cfg, now=NOW)
+    assert [c[0] for c in gw.calls] == ["apm_instance_map"], "대상이 없으니 본 조회는 하지 않는다"
+    assert res["degraded_reason"] == "apm_not_queried"
+    assert expected in res["final_response"]
+    assert "조회 대상이 없습니다" not in res["final_response"]
+    assert expected in res["source_status"][0]["reason"]
 
 
 @pytest.mark.asyncio

@@ -132,13 +132,14 @@ class SourceSet:
             if problem is None:
                 usable.append((src, inv))
                 statuses.append({"source_id": src.source_id, "status": STATUS_OK, "reason": ""})
+                tag = "" if len(self._sources) == 1 else f"소스 {src.source_id} "
                 if inv.unavailable:
                     ids = ", ".join(str(k) for k in sorted(inv.unavailable))
-                    tag = "" if len(self._sources) == 1 else f"소스 {src.source_id} "
                     limits.append(
                         f"[한계] APM {tag}도메인 {ids} 조회 불가"
                         " — 그 도메인의 인스턴스는 정합에서 빠졌다"
                     )
+                limits += src.resolver.staleness_note(inv, tag)
                 continue
             code, reason = problem
             failures.append((src.source_id, code, reason))
