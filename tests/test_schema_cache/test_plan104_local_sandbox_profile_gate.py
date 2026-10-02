@@ -1,11 +1,13 @@
-"""품질 게이트 — `environment: local_sandbox` 표기 프로필의 git 추적 금지 (plans/104 · 계약 §3).
+"""품질 게이트 — `environment: local_sandbox` 표기 프로필·생성 자산의 git 추적 금지
+(plans/104 · 계약 §3 · D-294).
 
 로컬 샌드박스에서도 관리자 승인 적용은 `config/db_profiles/{db_id}.yaml`에 쓰되 `environment:
 local_sandbox`를 붙인다. 이 표기가 붙은 프로필은 운영 정본 재료가 아니므로(D-214 ⑥ — 샌드박스에서
 추출한 구조를 커밋하지 않는다) 추적 파일에 들어오면 이 테스트가 막는다.
 
-검사 대상: `git ls-files config/db_profiles`의 추적 파일 각각의 **작업 트리 내용**과 **인덱스
-내용**(`git show :<path>` — 스테이징만 하고 작업 트리를 되돌린 경우). 판정은 YAML 파싱 기준이라
+검사 대상: `git ls-files config/db_profiles config/synonym_seeds config/knowledge`(D-294 — 앱이 직접
+쓰는 생성 자산 파일까지)의 추적 파일 각각의 **작업 트리 내용**과 **인덱스 내용**
+(`git show :<path>` — 스테이징만 하고 작업 트리를 되돌린 경우). 판정은 YAML 파싱 기준이라
 주석 속 문자열은 표기로 보지 않는다. git이 없거나 저장소가 아니면 skip.
 """
 
@@ -22,7 +24,11 @@ import yaml
 from src.domain.profile_merge import LOCAL_SANDBOX_ENVIRONMENT
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PROFILES_REL = "config/db_profiles"
+# 앱이 직접 쓰는 정본 파일 위치(프로필 · D-294 시드·지식) — 로컬 샌드박스 산출물이 추적되면 안 된다
+GENERATED_ASSET_DIRS: tuple[str, ...] = (
+    "config/db_profiles", "config/synonym_seeds", "config/knowledge",
+)
+PROFILES_REL = GENERATED_ASSET_DIRS[0]
 
 # YAML 파싱이 실패한 파일의 보수적 판정용 — 주석을 뗀 최상위 `environment:` 줄
 _ENV_LINE_RE = re.compile(
@@ -97,7 +103,7 @@ def _require_git_repo(repo: Path) -> None:
 
 def find_local_sandbox_violations(repo: Path) -> list[str]:
     """추적 프로필 중 로컬 샌드박스 표기 항목(`<경로> (작업 트리|인덱스)`) — 경로 사전순."""
-    listed = _git(repo, "ls-files", "-z", "--", PROFILES_REL)
+    listed = _git(repo, "ls-files", "-z", "--", *GENERATED_ASSET_DIRS)
     if listed.returncode != 0:
         pytest.skip(f"git ls-files 실패: {listed.stderr.decode(errors='replace').strip()}")
     violations: list[str] = []
@@ -150,4 +156,28 @@ def test_gate_detects_worktree_and_index_in_scratch_repo(tmp_path):
     assert find_local_sandbox_violations(repo) == [
         f"{PROFILES_REL}/clean.yaml (작업 트리)",
         f"{PROFILES_REL}/staged_only.yaml (인덱스)",
+    ]
+
+
+def test_gate_covers_generated_asset_files(tmp_path):
+    """D-294 — 앱이 쓰는 시드·지식 파일의 로컬 샌드박스 표기도 잡는다."""
+    if shutil.which("git") is None:
+        pytest.skip("git 실행 파일 없음")
+    repo = tmp_path / "repo"
+    seeds = repo / "config" / "synonym_seeds"
+    knowledge = repo / "config" / "knowledge" / "app_x"
+    seeds.mkdir(parents=True)
+    knowledge.mkdir(parents=True)
+    if _git(repo, "init", "-q").returncode != 0:
+        pytest.skip("git init 실패")
+    marked = "db_id: app_x\nenvironment: local_sandbox\n"
+    (seeds / "app_x.yaml").write_text(marked, encoding="utf-8")
+    (knowledge / "prompt_template.yaml").write_text(marked, encoding="utf-8")
+    assert _git(repo, "add", "config").returncode == 0
+
+    assert find_local_sandbox_violations(repo) == [
+        "config/knowledge/app_x/prompt_template.yaml (작업 트리)",
+        "config/knowledge/app_x/prompt_template.yaml (인덱스)",
+        "config/synonym_seeds/app_x.yaml (작업 트리)",
+        "config/synonym_seeds/app_x.yaml (인덱스)",
     ]

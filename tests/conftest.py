@@ -21,6 +21,26 @@ from src.config import (
 )
 from src.state import AgentState, create_initial_state
 
+
+# ──────────────────────────────────────────────────────────────
+# 개발자 `.env`의 비SQL 소스 엔드포인트 누수 차단(plans/132 · D-293)
+#
+# `MCP_SOURCE_ENDPOINTS`는 dict 필드라 pydantic-settings(2.15)가 init 인자·OS env·`.env`를 **키
+# 단위로 병합**한다. 그래서 테스트가 `DBHubConfig(source_endpoints={})`로 「비활성」을 만들어도
+# 개발자 `.env`의 `{"apm": …}`가 남아 활성이 되고, 비활성 바이트 불변을 단언하는 테스트가 개발
+# 환경에 따라 깨진다 (2026-10-01 로컬 제니퍼 연결 직후 7건 실측 · docs/18). 등록된 비DB 시스템 키를
+# 빈 값(공백 — strip되어 비활성)으로 OS env에 깔아 `.env` 값을 덮는다. 테스트가 init 인자로 준
+# 엔드포인트는 OS env보다 우선이라 그대로 활성이다. 사용자가 OS env로 직접 준 값은 건드리지
+# 않는다(setdefault).
+# ──────────────────────────────────────────────────────────────
+def _neutral_source_endpoints() -> str:
+    from src.routing.registry import get_registry
+
+    return json.dumps({spec.code: " " for spec in get_registry().non_db_systems()})
+
+
+os.environ.setdefault("MCP_SOURCE_ENDPOINTS", _neutral_source_endpoints())
+
 # ──────────────────────────────────────────────────────────────
 # D-127 전역 가드 — 승인(RUN_E2E=1) 없는 외부 접속 차단
 #

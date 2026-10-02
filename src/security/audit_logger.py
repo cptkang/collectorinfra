@@ -512,6 +512,33 @@ async def log_clarification(
     )
 
 
+async def log_source_memory(
+    *,
+    action: str,
+    scope: str,
+    case_id: str,
+    sources: list[str] | None = None,
+    origin: str | None = None,
+    user_id: str | None = None,
+    thread_id: str | None = None,
+) -> None:
+    """소스 선택 기억의 쓰기·사용·삭제·승격을 기록한다(plans/132 W5 · §6.5).
+
+    ``action``: write | use | delete | promote. 질의 원문은 싣지 않는다(``user_request``에만 —
+    D-183) — 사례는 ``case_id``로 가리킨다.
+    """
+    await _record_event(
+        "source_memory",
+        action=action,
+        scope=scope,
+        case_id=case_id,
+        sources=sources or None,
+        origin=origin,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+
+
 async def log_doc_retrieval(
     *,
     collection_ids: list[str],

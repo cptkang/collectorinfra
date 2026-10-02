@@ -11,11 +11,13 @@ from typing import Any
 import pytest
 
 from src.domain.profile_merge import (
+    DICT_FILL_KEYS,
     FILL_IF_ABSENT_KEYS,
     LLM_PATTERN_LIST_KEYS,
     LLM_PATTERN_SCALAR_KEYS,
     LLM_TOP_LEVEL_KEYS,
     METADATA_KEYS,
+    UNION_LIST_KEYS,
     merge_profile,
     pattern_identity,
     profile_field_diff,
@@ -79,7 +81,12 @@ def _base() -> dict[str, Any]:
 class TestConstants:
     def test_contract_constants(self):
         assert LLM_TOP_LEVEL_KEYS == ("patterns", "code_values")
-        assert FILL_IF_ABSENT_KEYS == ("query_guide",)
+        # D-294 — 자산 자동 생성 키(비었을 때만 채움 · 항목 합집합)
+        assert FILL_IF_ABSENT_KEYS == ("query_guide", "allowed_tables", "entity_keys")
+        assert dict(UNION_LIST_KEYS) == {
+            "relationships": ("from", "to"), "query_rules": (), "query_examples": ("question",),
+        }
+        assert DICT_FILL_KEYS == ("code_labels",)
         assert METADATA_KEYS == ("source", "environment")
         assert LLM_PATTERN_SCALAR_KEYS["eav"] == (
             "entity_table", "config_table", "join_condition", "attribute_column",

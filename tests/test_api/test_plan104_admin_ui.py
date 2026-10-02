@@ -122,6 +122,13 @@ def test_script_calls_only_declared_routes() -> None:
         '"/discard"': "/admin/db-structure/{source}/description-drafts/{draft_id}/discard",
         '"/db-description"': "/admin/db-structure/{source}/db-description",
         '"/config-snippets"': "/admin/db-structure/{source}/config-snippets",
+        '"/ddl/preview"': "/admin/db-structure/{source}/ddl/preview",
+        '"/ddl/import"': "/admin/db-structure/{source}/ddl/import",
+        '"/assets"': "/admin/db-structure/{source}/assets",
+        '"/assets/profile"': "/admin/db-structure/{source}/assets/profile",
+        '"/llm"': "/admin/db-structure/{source}/asset-drafts/{draft_id}/llm",
+        '"/asset-drafts/"': "/admin/db-structure/{source}/asset-drafts/{draft_id}/approve",
+        '"/assets/"': "/admin/db-structure/{source}/assets/{kind}/versions/{ver}/rollback",
     }
     for literal, route_path in expected_suffixes.items():
         assert literal in script, literal

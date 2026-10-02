@@ -31,7 +31,7 @@ from src.utils.query_gen_common import (
     refers_to_demonstrative_server,
     surface_query_for_judgment,
 )
-from src.utils.schema_utils import build_excluded_join_map
+from src.utils.schema_utils import INFERRED_RELATION_ORIGINS, build_excluded_join_map
 
 if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 플래그 ON 경로에서만 수행한다.
     from src.nodes.column_deriver import StepwiseDeps
@@ -165,6 +165,42 @@ def build_forbidden_join_block(patterns: list[dict]) -> str:
 # ──────────────────────────────────────────────
 # few-shot 예시 (프로필 고정 ↔ 질의 이력)
 # ──────────────────────────────────────────────
+
+
+_PROFILE_RULES_MAX_CODES = 60
+_PROFILE_RULES_MAX_VALUES = 30
+
+
+def build_profile_rules_block(structure_meta: dict[str, Any] | None) -> str:
+    """프로필 `query_rules`·`code_values`·`code_labels`(D-294 자산 자동 생성) 블록.
+
+    단일 경로(`_format_structure_guide`)와 멀티 경로(`multi_db_executor`)가 같은 자리(few-shot 예시
+    앞)에서 이 함수를 부른다(D-066 대칭). 세 키가 모두 없으면 빈 문자열이라 기존 프로필의 프롬프트는
+    바이트 그대로다.
+    """
+    meta = structure_meta or {}
+    rules = [r for r in meta.get("query_rules") or [] if isinstance(r, str) and r.strip()]
+    raw_codes, raw_labels = meta.get("code_values"), meta.get("code_labels")
+    code_values: dict[str, Any] = raw_codes if isinstance(raw_codes, dict) else {}
+    code_labels: dict[str, Any] = raw_labels if isinstance(raw_labels, dict) else {}
+    out = ""
+    if rules:
+        out += "\n\n### DB 쿼리 규칙\n" + "".join(f"  - {rule}\n" for rule in rules)
+    keys = list(dict.fromkeys([*code_values, *code_labels]))[:_PROFILE_RULES_MAX_CODES]
+    if keys:
+        out += "\n\n### 코드값 (컬럼: 값=의미)\n"
+        for key in keys:
+            raw = code_labels.get(key)
+            labels: dict[str, Any] = raw if isinstance(raw, dict) else {}
+            raw_values = code_values.get(key)
+            values = raw_values if isinstance(raw_values, list) else list(labels)
+            shown = [
+                f"{v}={labels[str(v)]}" if str(v) in labels else str(v)
+                for v in values[:_PROFILE_RULES_MAX_VALUES]
+            ]
+            more = " …" if len(values) > _PROFILE_RULES_MAX_VALUES else ""
+            out += f"  - {key}: {', '.join(shown)}{more}\n"
+    return out
 
 
 def build_query_examples(
@@ -599,7 +635,10 @@ def format_schema_text(
     if rels:
         lines.append(relationships_header)
         for rel in rels:
-            lines.append(f"  {rel['from']} -> {rel['to']}")
+            # D-294 — 선언 FK가 아닌 추론·같은 기본키 관계는 표시를 단다(선언 FK 줄은 종전 그대로)
+            inferred = rel.get("origin") in INFERRED_RELATION_ORIGINS
+            mark = " (추론 · 값 겹침 확인)" if inferred else ""
+            lines.append(f"  {rel['from']} -> {rel['to']}{mark}")
 
     return "\n".join(lines)
 

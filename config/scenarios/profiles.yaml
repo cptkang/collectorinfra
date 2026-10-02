@@ -54,6 +54,12 @@ profiles:
   optout_realtime:
     POLESTAR_REST_REALTIME_USAGE_ENABLED: "false"
 
+  # 제니퍼(APM) off 고정(plans/132 W0 · FS-26·FS-28) - 같은 질의를 제니퍼 연결/미연결 쌍으로 잰다(사용자
+  # 보고 조건 C2). `MCP_SOURCE_ENDPOINTS` 는 dict 라 pydantic-settings 가 `.env` 와 키 단위로 병합한다 -
+  # `{}` 는 `.env` 의 apm 을 남긴다(docs/18 2026-10-01). 키별 공백 값이 strip 되어 비활성이 된다.
+  optout_apm:
+    MCP_SOURCE_ENDPOINTS: '{"apm": " "}'
+
   # ── 사다리 단 비교 arm (2026-09-21 · plans/110 「▶ 실행 가이드」 ③·④) ──
   #
   # **쓰는 법은 `--profile` 이 아니라 `--arm` 이다**(`110·N-1` 랜딩 2026-09-21).

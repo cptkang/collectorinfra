@@ -216,6 +216,25 @@ class AgentState(TypedDict):
     # semantic_router/intent_planner가 mapped_db_ids 선례로 결정적 고정한다.
     # 요청 스코프 — 매 턴 라우트가 재공급(미선택 턴은 None).
     selected_db_ids: Optional[list[str]]
+    # 소스 선택 칩(plans/132 N-10)에서 사용자가 고른 데이터 소스 시스템 코드. 요청 스코프 —
+    # 매 턴 라우트가 재공급(미선택 턴은 None). 비DB 소스면 2단 `intent_planner` ②.4가 그 처리기로
+    # 고정하고, DB 소스면 칩이 함께 보낸 `selected_db_ids`(②.5)가 처리한다.
+    selected_sources: list[str] | None
+    # 스레드 범위 소스 선택(plans/132 N-10) — `{"system": 코드}`. 칩 답변 턴에 2단 계획 출구가
+    # 쓰고, 같은 스레드의 다음 모호 판정이 다시 묻지 않고 쓴다(존 승계와 같은 자리 — 체크포인터
+    # 보존). 스코프 칩 해제(`reset_db_scope`)가 비운다.
+    source_choice: dict[str, Any] | None
+    # 이번 턴 2단 계획이 닿은 비DB 시스템(plans/132 · 처리기 고정·안내). 다음 턴
+    # `context_resolver`가 `conversation_context.previous_sources`로 옮긴다(G-15 유사어 등록 맥락).
+    # 2단 계획 출구가 쓴다 — 비DB 소스가 없는 턴은 직전 값이 있을 때만 비운다.
+    turn_sources: list[str] | None
+    # 소스 선택 기억(plans/132 W5) — 둘 다 **요청 스코프**.
+    #   source_selection_meta: 이번 턴 `selected_sources`가 직전 턴 소스 선택 칩·「다른 소스로
+    #     보기」의 응답일 때만 라우트가 싣는다(`{"origin": user_choice|feedback, "areas": [...]}`)
+    #     — 기억 쓰기 게이트.
+    #   source_switch: 기억을 써서 소스를 고른 턴의 「다른 소스로 보기」 칩 페이로드(응답 키 같음).
+    source_selection_meta: dict[str, Any] | None
+    source_switch: dict[str, Any] | None
     # 존 역질문 후단 게이트 허용 채널 여부(D-143 후속2). 대화형 텍스트 라우트만 True로
     # 주입 — API 직접 호출·배치·평가 하네스는 역질문에 답할 수 없어 기존 폴백 유지
     # (§4.3-3 비대화 경로 분기). 요청 스코프 — 매 턴 라우트가 재공급.
@@ -393,6 +412,7 @@ def create_followup_input(
     allow_zone_clarification: bool = False,
     reset_db_scope: bool = False,
     raw_user_query: Optional[str] = None,
+    selected_sources: list[str] | None = None,
 ) -> dict:
     """후속(텍스트) 턴의 델타 입력을 생성한다 (D-064).
 
@@ -434,6 +454,11 @@ def create_followup_input(
         # 존 선택(Plan 75 §4)도 요청 스코프 — 이번 턴 선택값 또는 None으로 매 턴 재공급
         # (직전 턴 선택이 체크포인터로 승계돼 새 질의를 오염시키지 않도록).
         "selected_db_ids": selected_db_ids,
+        # 소스 선택 칩 답변(plans/132 N-10) — 요청 스코프(이번 턴 선택값 또는 None).
+        "selected_sources": selected_sources,
+        # 소스 선택 기억(plans/132 W5) — 요청 스코프. 칩 응답 표지는 라우트가 이 델타 위에 싣는다.
+        "source_selection_meta": None,
+        "source_switch": None,
         # 존 역질문 후단 게이트(D-143 후속2) — 채널 플래그·발동 페이로드 모두 요청 스코프.
         # 직전 턴 발동 페이로드가 체크포인터로 승계돼 새 턴 응답을 오염시키지 않도록 초기화.
         "zone_clarification_allowed": allow_zone_clarification,
@@ -509,6 +534,8 @@ def create_followup_input(
         delta["active_db_id"] = None
         delta["target_databases"] = []
         delta["mapped_db_ids"] = None
+        # 스레드 소스 선택(plans/132 N-10)도 스코프다 — 해제하면 다음 모호 질의는 다시 묻는다.
+        delta["source_choice"] = None
     return delta
 
 
@@ -529,6 +556,7 @@ def create_initial_state(
     resolved_limit: Optional[int] = None,
     allow_zone_clarification: bool = False,
     raw_user_query: Optional[str] = None,
+    selected_sources: list[str] | None = None,
 ) -> AgentState:
     """초기 State를 생성한다.
 
@@ -547,6 +575,7 @@ def create_initial_state(
         client_ip: 클라이언트 IP (선택, 미들웨어에서 주입)
         raw_user_query: 라우트 진입 원문(plans/107 — INTENT_FRAME_ENABLED일 때만 전달).
             주어지면 ``user_query``(존 표기 치환본)를 ``display_query``로도 기록한다.
+        selected_sources: 소스 선택 칩 답변(plans/132 N-10 · 요청 스코프)
 
     Returns:
         초기화된 AgentState
@@ -624,6 +653,11 @@ def create_initial_state(
         is_multi_db=False,
         user_specified_db=None,
         selected_db_ids=selected_db_ids,
+        selected_sources=selected_sources,  # 요청 스코프(plans/132 N-10)
+        source_choice=None,  # 스레드 범위(plans/132 N-10) — 새 스레드는 비어 있다
+        turn_sources=None,  # 2단 계획 출구가 매 턴 쓴다(plans/132)
+        source_selection_meta=None,  # 요청 스코프(plans/132 W5)
+        source_switch=None,  # 요청 스코프(plans/132 W5)
         zone_clarification_allowed=allow_zone_clarification,
         zone_clarification=None,
         reuse_parsed_requirements=None,

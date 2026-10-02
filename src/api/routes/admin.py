@@ -1913,3 +1913,93 @@ async def verify_drm_sample(
         result.get("success"), _admin.get("sub"),
     )
     return result
+
+
+# ──────────────────────────────────────────────
+# 소스 선택 기억(plans/132 W5 · §6.5 · G-11) — 조회·삭제·승격
+# ──────────────────────────────────────────────
+
+_SOURCE_MEMORY_SCOPE_RE = re.compile(r"^(org|user:[\w.@\-]{1,64})$")
+_SOURCE_MEMORY_OFF = "소스 선택 기억 기능이 꺼져 있거나 저장소가 없습니다."
+
+
+async def _source_memory_store(request: Request) -> Any:
+    """기억 저장소 — 기능 off(TTL 0)이거나 Redis가 없으면 None."""
+    from src.schema_cache import source_memory as sm
+
+    config = request.app.state.config
+    if sm.ttl_seconds(config) <= 0:
+        return None
+    return await sm.open_store(config)
+
+
+def _check_source_memory_scope(scope: str) -> None:
+    if not _SOURCE_MEMORY_SCOPE_RE.match(scope or ""):
+        raise HTTPException(status_code=400, detail="알 수 없는 기억 범위입니다.")
+
+
+@router.get("/admin/source-memory")
+async def list_source_memory(
+    request: Request,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+) -> dict[str, Any]:
+    """소스 선택 기억 — 기능 상태 · 범위별 사례(개인 · 조직 공용) · 시드(git 정본)."""
+    from src.schema_cache import source_memory as sm
+
+    config = request.app.state.config
+    reg = get_registry()
+    ttl_days = sm.ttl_seconds(config) // 86400
+    seeds = [{"text": c["text"], "sources": c["sources"], "areas": c["areas"],
+              "source_labels": [reg.system_label(x) for x in c["sources"]]}
+             for c in sm.seed_cases(reg)]
+    store = await _source_memory_store(request)
+    scopes: list[dict[str, Any]] = []
+    if store is not None:
+        for scope in await store.scopes():
+            scopes.append({"scope": scope, "cases": [
+                {**case, "source_labels": [reg.system_label(s) for s in case.get("sources") or []]}
+                for case in await store.load(scope)
+            ]})
+    return {"enabled": ttl_days > 0, "ttl_days": ttl_days, "connected": store is not None,
+            "scopes": scopes, "seeds": seeds}
+
+
+@router.delete("/admin/source-memory/{scope}/{case_id}")
+async def delete_source_memory(
+    request: Request,
+    scope: str,
+    case_id: str,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+) -> dict[str, Any]:
+    """사례 1건을 지운다(개인·조직 공용 모두)."""
+    _check_source_memory_scope(scope)
+    store = await _source_memory_store(request)
+    if store is None:
+        raise HTTPException(status_code=409, detail=_SOURCE_MEMORY_OFF)
+    removed = await store.delete(scope, case_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="기억 사례를 찾을 수 없습니다.")
+    await _audit_admin_action(request, _admin, "source_memory_delete", scope=scope, case_id=case_id)
+    return {"message": "기억 사례를 지웠습니다.", "removed": removed}
+
+
+@router.post("/admin/source-memory/{scope}/{case_id}/promote")
+async def promote_source_memory(
+    request: Request,
+    scope: str,
+    case_id: str,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+) -> dict[str, Any]:
+    """개인 사례를 조직 공용으로 승격한다(관리자 승인 — 다른 사용자 판정에도 쓰인다 · G-11 (a))."""
+    _check_source_memory_scope(scope)
+    if scope == "org":
+        raise HTTPException(status_code=400, detail="이미 조직 공용 사례입니다.")
+    store = await _source_memory_store(request)
+    if store is None:
+        raise HTTPException(status_code=409, detail=_SOURCE_MEMORY_OFF)
+    promoted = await store.promote(scope, case_id, by=str(_admin.get("sub") or ""))
+    if promoted is None:
+        raise HTTPException(status_code=404, detail="기억 사례를 찾을 수 없습니다.")
+    await _audit_admin_action(request, _admin, "source_memory_promote", scope=scope,
+                              case_id=case_id, org_case_id=promoted["case_id"])
+    return {"message": "조직 공용 사례로 승격했습니다.", "case": promoted}

@@ -44,6 +44,13 @@ class QueryRequest(BaseModel):
         default=None,
         description="존 선택 역질문 응답 — 조회 대상 DB 식별자 목록 (결정적 라우팅 고정)",
     )
+    # plans/132 N-10: 소스 선택 칩에서 사용자가 고른 데이터 소스 시스템 코드(레지스트리). 비DB
+    # 소스는 이 필드만, DB 소스는 칩이 함께 보내는 `selected_db_ids`가 대상을 정한다. 자연어
+    # 재조합 없음.
+    selected_sources: list[str] | None = Field(
+        default=None,
+        description="소스 선택 칩 응답 — 조회할 데이터 소스 시스템 코드 목록(결정적 고정)",
+    )
     # Plan 73 §11 (D-151): 폼필 역질문 패널의 구조화 답변 — 자연어 재조합·LLM 파싱 없이
     # 이 필드로만 전달되어 결정적 검증(존재성)·적용을 거친다.
     form_fill_answers: Optional[dict[str, dict]] = Field(
@@ -106,6 +113,10 @@ class QueryResponse(BaseModel):
     )
     turn_count: Optional[int] = Field(
         default=None, description="현재 대화 턴 수"
+    )
+    source_switch: dict[str, Any] | None = Field(
+        default=None,
+        description="소스 선택 기억으로 소스를 고른 턴의 「다른 소스로 보기」 칩(plans/132 W5)",
     )
     has_mapping_report: bool = Field(
         default=False, description="매핑 보고서 존재 여부"

@@ -71,6 +71,9 @@ user:
   - {id: U-38, title: SQL 실행 승인, anchors: ["SQL 승인 대기"], files: *IDX, captures: [], case_na: 관리자가 기능을 켠 환경에서만 나타난다 — 절차만 설명, no_ui: true}
   - {id: U-39, title: 스키마 캐시 갱신(관리자 전용), anchors: ["cache_management"], files: *IDX, captures: [], cases: [Q-CACHE], no_ui: true}
   - {id: U-46, title: 사내 문서 질의(규정·설계 근거), anchors: ["doc_query", "문서 검색"], files: *IDX, captures: [], case_na: "관리자가 채팅 문서 검색을 켠 환경에서만 동작한다(기본 off) — 문서 검색 서비스가 사내망에만 있어 녹화 사례를 만들 수 없다", no_ui: true}
+  - {id: U-47, title: 데이터 소스를 이름으로 지정해 묻기, anchors: ["#prompt"], files: *IDX, captures: [], case_na: "지정한 소스의 연결 상태(제니퍼·문서 검색은 환경마다 다르다)에 따라 결과가 갈려 녹화 사례 하나로 대표할 수 없다 — 본문에 예문과 안내 문구를 싣는다", no_ui: true}
+  - {id: U-48, title: 데이터 소스 선택 칩, anchors: ["선택한 데이터 소스로 조회"], files: *IDX, captures: [], case_na: "칩은 질문 분석(LLM)이 여러 소스가 답할 수 있다고 판단할 때만 나와 결정적 녹화가 되지 않는다 — 위젯 모양은 U-25 존 선택과 같다"}
+  - {id: U-49, title: 소스 선택 기억 보기·지우기, anchors: ["#prompt"], files: *IDX, captures: [], case_na: "기능이 관리자 설정(기본 꺼짐)과 이전 선택에 따라 달라 녹화 사례 하나로 대표할 수 없다 — 본문에 명령과 답을 싣는다", no_ui: true}
   # 9. 이벤트 알람
   - {id: U-40, title: 알람 탭과 알람 카드, anchors: ["이벤트 알람", "#alarmList", "#alarmTabBadge", "data-view=\"alarm\""], files: *IDX, captures: [alarm-list], case_na: 수신 화면}
   - {id: U-41, title: 알람 거르기·찾기, anchors: ["#alarmSearch", "#alarmFilterReset", "#alarmClearBtn"], files: *IDX, captures: [alarm-list], case_na: 필터 조작}
@@ -103,6 +106,8 @@ admin:
   - {id: A-17, title: 소스 상세, anchors: ["#dbsDetailReloadBtn", "#dbsDetailCloseBtn"], files: *DBS, captures: [dbs-detail]}
   - {id: A-18, title: 레거시 분석본으로 초안 만들기, anchors: ["레거시 분석본으로 초안 만들기"], files: *DBS, captures: [dbs-list]}
   - {id: A-19, title: 신규 연동 등록(O-1~O-9), anchors: ["신규 연동"], files: *DBS, captures: [dbs-register]}
+  - {id: A-65, title: DDL로 스키마 등록, anchors: ["DDL로 스키마 등록", "DDL로 등록", "스키마 등록"], files: *DBS, captures: [dbs-ddl]}
+  - {id: A-67, title: 스키마 자산 자동 생성, anchors: ["스키마 자산 자동 생성", "프로파일링 실행", "LLM 보조 실행", "선택 자산 승인"], files: *DBS, captures: [dbs-assets]}
   - {id: A-20, title: 변경 점검, anchors: ["변경 점검"], files: *DBS, captures: [dbs-detail]}
   - {id: A-21, title: 구조 분석, anchors: ["구조 분석"], files: *DBS, captures: [dbs-detail]}
   - {id: A-22, title: 구조 초안 승인·반려, anchors: ["승인", "반려", "차이 보고서"], files: *DBS, captures: []}
@@ -151,6 +156,8 @@ admin:
   # 11. 운영
   - {id: A-52, title: 기동과 정지, anchors: ["--server"], files: [src/main.py], captures: [], no_ui: true}
   - {id: A-53, title: 새 DB 편입, anchors: ["env_connection_key"], files: [config/db_registry.yaml], captures: [], no_ui: true}
+  - {id: A-66, title: 데이터 소스 이름·유사어 관리, anchors: ["aliases"], files: [config/db_registry.yaml], captures: [], no_ui: true}
+  - {id: A-68, title: 소스 선택 기억 관리, anchors: ["data-tab=\"sourcememory\"", "#refreshSourceMemoryBtn"], files: *DASH, captures: [admin-source-memory]}
   - {id: A-54, title: 실행 경로(사다리) 확인, anchors: ["오케스트레이션 사다리 확정"], files: [src/observability/ladder.py], captures: [], no_ui: true}
   - {id: A-55, title: LLM 설정, anchors: ["LLM_PROVIDER"], files: [.env.example], captures: [], no_ui: true}
   - {id: A-56, title: Redis 백업·이관, anchors: ["redis"], files: [docs/14_redis_export_import_guide.md], captures: [], no_ui: true}

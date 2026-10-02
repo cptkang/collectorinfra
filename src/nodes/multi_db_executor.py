@@ -77,6 +77,7 @@ from src.nodes.intent_frame_builder import CONSUMER_MULTI_DB, observe_rewrite
 # 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
 from src.nodes.prompt_blocks import (
+    build_profile_rules_block,
     CRITERIA_AND_GRAIN_RULE_BLOCK,
     EAV_JOIN_RULE_BLOCK,
     PromptBudgetExceeded,
@@ -132,7 +133,7 @@ from src.db_adapters.polestar.validators import (
 # 내려가 tools→nodes 역참조가 사라졌으므로 모듈 수준 임포트가 안전하다(후속 2단계).
 from src.tools.metrics import classify_metric_field
 from src.schema_cache.form_memory import load_form_memory_answers
-from src.utils.schema_utils import safe_sample_preview
+from src.utils.schema_utils import attach_profile_relationships, safe_sample_preview
 
 if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 플래그 ON 경로에서만 수행한다.
     from src.nodes.column_deriver import StepwiseDeps
@@ -570,7 +571,10 @@ def _deterministic_alarm_sql_or_none(
         return None
     from src.db_adapters import get_adapter
 
-    if get_adapter(db_id, run.app_config.get_polestar_db_ids() or None) is None:
+    # 알람 조립을 소유한 어댑터(폴스타)만 — 다른 어댑터(생성 템플릿 · D-294)가 담당하는 DB에는
+    # 붙이지 않는다
+    adapter = get_adapter(db_id, run.app_config.get_polestar_db_ids() or None)
+    if getattr(adapter, "deterministic_alarm", False) is not True:
         return None
     from src.db_adapters.polestar.assembler import try_deterministic_alarm_sql
     from src.routing.domain_config import get_domain_by_id
@@ -1565,6 +1569,9 @@ async def _analyze_schema(
                 structure_meta = None
         if structure_meta:
             schema_dict["_structure_meta"] = structure_meta
+            # D-294 — 프로필 관계(추론·확인)를 스키마 관계에 더한다
+            # (단일 경로 schema_analyzer와 대칭)
+            attach_profile_relationships(schema_dict, structure_meta)
             logger.info(
                 "multi_db _analyze_schema: _structure_meta 부착 (db_id=%s, query_examples=%d)",
                 db_id, len(structure_meta.get("query_examples", []) or []),
@@ -1874,7 +1881,12 @@ async def _build_multi_structure_guide(
         parsed_requirements.get("original_query", "") or sub_query_context,
         app_config,
     )
-    return structure_guide + build_query_examples(structure_meta, _history_examples)
+    # D-294 — 프로필 쿼리 규칙·코드값 블록(단일 경로와 같은 자리 · 키 없으면 빈 문자열)
+    return (
+        structure_guide
+        + build_profile_rules_block(structure_meta)
+        + build_query_examples(structure_meta, _history_examples)
+    )
 
 
 def _build_multi_engine_hint(db_engine: str, db_id: str) -> str:
@@ -1916,13 +1928,17 @@ async def _build_multi_system_prompt(
     # 멀티로 조회하면 전용 지식이 통째로 빠졌다(D-066 원형 결함과 동형). 렌더 2모드(마커
     # 원문/정본)는 어댑터가 내부 처리하므로 여기서 재구현하지 않는다(Plan 69 P3-2).
     template = QUERY_GENERATOR_SYSTEM_TEMPLATE
-    if path_parity_enabled(app_config):
-        from src.db_adapters import get_adapter
+    from src.db_adapters import get_adapter
 
-        _adapter = get_adapter(db_id, app_config.get_polestar_db_ids() or None)
-        _adapter_template = (
-            _adapter.system_template(routing_intent=None) if _adapter is not None else None
-        )
+    _polestar_ids_getter = getattr(app_config, "get_polestar_db_ids", None)
+    _adapter = get_adapter(
+        db_id, (_polestar_ids_getter() if callable(_polestar_ids_getter) else None) or None
+    )
+    # 생성 템플릿(D-294)은 신규 기능이라 경로 대칭 플래그와 무관하게 단일 경로와 같게 적용한다
+    if _adapter is not None and (
+        path_parity_enabled(app_config) or getattr(_adapter, "multi_path_always", False) is True
+    ):
+        _adapter_template = _adapter.system_template(routing_intent=None)
         if _adapter_template is not None:
             template = _adapter_template
             logger.info("[경로대칭] (a) 어댑터 템플릿 적용(db=%s)", db_id)

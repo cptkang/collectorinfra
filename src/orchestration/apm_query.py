@@ -51,7 +51,8 @@ logger = logging.getLogger(__name__)
 #: 처리기 이름(분해 어휘 — 활성일 때만 렌더) · 시스템 코드(레지스트리 `solutions[apm]`).
 APM_QUERY_AGENT = "apm_query"
 APM_SYSTEM = "apm"
-#: 보기를 고르지 않았을 때의 기본 보기(영역 기본 — was_performance).
+#: 보기를 고르지 않았고 **이번 턴 대상(식별자·선행 결과)이 있을 때**의 기본 보기(영역 기본 —
+#: was_performance). 대상이 없으면 목록 보기(`INSTANCES_VIEW`)다(plans/132 N-4 · G-3 · D-293).
 DEFAULT_VIEW = "apm.app_health"
 #: 대상 없이 부를 수 있는 목록 보기 — 대상 미지정이면 코드가 먼저 부른다.
 INSTANCES_VIEW = "apm.instances"
@@ -190,6 +191,18 @@ def _int_setting(app_config: Any, name: str, default: int) -> int:
     return value if valid else default
 
 
+def default_views(isolated: dict[str, Any], max_targets: int) -> list[str]:
+    """보기를 고르지 않은 task의 기본 보기(plans/132 N-4 · G-3).
+
+    이번 턴 대상(사용자가 말한 식별자 · 선행 결과)이 있으면 응답시간 보기, 없으면 **인스턴스
+    목록**이다. 「제니퍼 인스턴스 리스트」처럼 대상 없는 질문에 앞 10개 인스턴스의 응답시간을 내던
+    것(실측 4/4 — 9B가 `views`를 비움)을 막는다. 직전 턴 대상은 보지 않는다 — 대상 없는 목록 질문이
+    직전 서버로 좁혀지지 않게 한다(명시 보기 `apm.app_health`는 종전대로 직전 대상을 쓴다).
+    """
+    current = {**isolated, "conversation_context": {}}
+    return [DEFAULT_VIEW] if resolve_apm_targets(current, max_targets) else [INSTANCES_VIEW]
+
+
 def resolve_apm_targets(isolated: dict[str, Any], max_targets: int) -> list[TargetRef]:
     """선행 결과 → 이번 턴 식별자 → 직전 대상 순으로 대상을 고른다(공용 규칙 `resolve_targets`).
 
@@ -289,7 +302,8 @@ async def run_apm_query(
         return access_denied_result(SOURCE_ACCESS_DENIED_MESSAGE)
     now = now or datetime.now()
     label = get_registry().system_label(APM_SYSTEM)
-    views = sanitize_views(task.get("views")) or [DEFAULT_VIEW]
+    views = sanitize_views(task.get("views")) or default_views(
+        isolated, _int_setting(app_config, "max_targets", 10))
     by_id = {v.id: v for v in apm_views()}
     meta: dict[str, Any] = {"views": views, "hostnames": [], "inserted_steps": [],
                             "provenance": [], "failures": [], "notes": []}

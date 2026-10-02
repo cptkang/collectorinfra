@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -81,6 +82,14 @@ from src.routing.location_hints import (
 )
 from src.routing.registry import get_registry
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
+from src.routing.source_hints import (
+    KIND_DB,
+    KIND_NON_DB,
+    is_mention_active,
+    mention_in_text,
+    resolve_source_mentions,
+    source_notice_text,
+)
 from src.utils.deadline import has_time_for, retrieval_remaining
 from src.utils.prior_dependency import NOTE_SOURCE_UNAVAILABLE
 from src.utils.prior_targets import SOURCE_DB_KEY, build_prior_targets
@@ -613,17 +622,70 @@ def _apply_selection_to_zone_groups(
     return _normalize_targets(selected_db_ids, sub_query) + kept
 
 
+#: 명시 소스 안내 단락의 사유 코드(plans/132 · 재계획이 종결로 본다 — N-3).
+REASON_SOURCE_INACTIVE = "source_inactive"
+REASON_SOURCE_UNSUPPORTED = "source_unsupported"
+
+
+def _explicit_source_notice(
+    sub_query: str, isolated: dict[str, Any], app_config: AppConfig,
+) -> dict[str, Any] | None:
+    """사용자가 이름으로 지목한 소스를 이 SQL 처리기가 조회할 수 없으면 안내 결과(plans/132 G-1).
+
+    task 질의에 이름이 남은 지목만 본다. 그중 **활성 DB 시스템**이 하나라도 있으면 None(종전 경로 —
+    비활성 지목은 아래 TP-1.11a 노트가 단다). 없으면 조회하지 않고 안내만 한다(「안내만」 — 다른
+    소스로 대신 답하지 않는다). 2단은 계획 출구(`conditional_agents.apply_explicit_sources`)가 먼저
+    바꾸므로 여기는 1단(부가 경로 — 비SQL 처리기 비노출 · G-5)·재계획 후속의 가드다. 지목한 비DB
+    시스템이 활성인데 SQL 처리기로 왔으면 「이 조회 경로에서 처리하지 않음」으로 안내한다.
+    """
+    hints = (isolated.get("parsed_requirements") or {}).get("target_db_hints")
+    mentions = resolve_source_mentions(hints if isinstance(hints, list) else [])
+    scoped = [m for m in mentions if mention_in_text(m, sub_query)]
+    if not scoped:
+        return None
+    from src.orchestration.conditional_agents import active_conditional_systems  # 지연 — 순환 방지
+
+    systems = active_conditional_systems(app_config)
+    active_db_ids = app_config.multi_db.get_active_db_ids()
+    if any(
+        m.kind == KIND_DB
+        and is_mention_active(m, active_db_ids=active_db_ids, active_non_db=systems)
+        for m in scoped
+    ):
+        return None
+    unsupported = any(m.kind == KIND_NON_DB and m.system in systems for m in scoped)
+    reason = REASON_SOURCE_UNSUPPORTED if unsupported else REASON_SOURCE_INACTIVE
+    logger.info("data_query 명시 소스 안내 단락(plans/132 G-1): 지목=%s 사유=%s",
+                [m.system for m in scoped], reason)
+    return {
+        "final_response": source_notice_text(
+            [m.hint for m in scoped], unsupported_path=unsupported),
+        "degraded_reason": reason,
+        "query_results": [],
+    }
+
+
 def _source_unavailable_notes(
     isolated: dict[str, Any], active_db_ids: list[str],
+    active_non_db: Collection[str] = (),
 ) -> list[dict[str, Any]]:
     """원문 힌트가 등록·비활성 소스만 가리키면 사유 노트를 만든다(plans/121 TP-1.11a · N-11).
 
     대상 집합은 바꾸지 않는다 — 분류가 고른 활성 DB로 답하되, 요청한 소스를 조회하지 않았다는
     사실을 숨기지 않는다. 문구에는 사용자가 쓴 표현만 싣는다(레지스트리 표시명 비노출 — D-264).
     턴 단위 사실이라 `task_id`를 두지 않는다 — 여러 task에서 같은 노트가 나와도 집계기가
-    한 번만 싣는다.
+    한 번만 싣는다. 비활성 **비DB 시스템**(제니퍼·문서·Prometheus — plans/132 N-1)을 함께 지목한
+    힌트도 같은 노트를 단다(활성 소스 지목과 섞여 조회가 진행되는 턴).
     """
     hints = (isolated.get("parsed_requirements") or {}).get("target_db_hints") or []
+    clean = hints if isinstance(hints, list) else []
+    inactive = list(inactive_hinted_sources(clean, active_db_ids))
+    for mention in resolve_source_mentions(clean):
+        if (
+            mention.kind == KIND_NON_DB and mention.system not in active_non_db
+            and mention.hint not in inactive
+        ):
+            inactive.append(mention.hint)
     return [
         {
             "kind": NOTE_SOURCE_UNAVAILABLE,
@@ -633,7 +695,7 @@ def _source_unavailable_notes(
                 f"요청하신 「{hint}」 데이터 소스는 현재 활성화되어 있지 않아 조회하지 않았습니다."
             ),
         }
-        for hint in inactive_hinted_sources(hints if isinstance(hints, list) else [], active_db_ids)
+        for hint in inactive
     ]
 
 
@@ -1352,6 +1414,10 @@ async def run_general_inference(
         # 저장 값 삭제 패널(D-187): 조회 단락의 구조화 컨텍스트를 task 결과로 운반
         if task.get("form_memory_panel"):
             out["form_memory_panel"] = task["form_memory_panel"]
+        # 소스 선택 칩(plans/132 N-10) — 존 역질문과 같은 키로 운반한다(집계기 턴당 1회 단락 ·
+        # 라우트 `clarification` · 재계획 스킵 · 존 재진입 스냅샷이 그대로 받는다).
+        if task.get("source_clarification"):
+            out["zone_clarification"] = task["source_clarification"]
         return out
     return await general_inference(isolated, llm=llm, app_config=app_config)
 
@@ -1384,6 +1450,15 @@ async def run_data_query_pipeline(
     if denied_for_all(isolated):
         logger.info("data_query 인가 거부: 조회 가능 DB 없음 (task=%s)", task.get("task_id"))
         return access_denied_result()
+
+    # 명시 소스 안내 단락(plans/132 G-1 「안내만」 · D-293) — 사용자가 이름으로 지목한 소스를 이
+    # SQL 처리기가 조회할 수 없으면(지목 소스 비활성 · 비SQL 시스템) 조회하지 않고 안내만 한다.
+    # 계획이 DB를 고정한 task(`db_ids` — 존 선택 재개 등)는 사용자 지목이 이미 반영된 것이라
+    # 건너뛴다.
+    if not task.get("db_ids"):
+        _notice = _explicit_source_notice(sub_query, isolated, app_config)
+        if _notice is not None:
+            return _notice
 
     # (plans/102 X-7) 소유 검증 지점 ② — 분해 task의 답변 영역(LLM 구조화 출력 · D-004 원문
     # 스캔 0)으로 대상 시스템을 맞춘다. 플래그 off거나 task에 답변 영역이 없으면 종전 경로 그대로다.
@@ -1479,8 +1554,15 @@ async def run_data_query_pipeline(
             )
         # 요청 소스 불가 사유(plans/121 TP-1.11a) — 원문 힌트가 등록·비활성 소스만 가리키면
         # 노트만 남긴다.
+        from src.orchestration.conditional_agents import (  # 지연 — 순환 방지
+            active_conditional_systems,
+        )
+
         ownership_notes.extend(
-            _source_unavailable_notes(isolated, app_config.multi_db.get_active_db_ids())
+            _source_unavailable_notes(
+                isolated, app_config.multi_db.get_active_db_ids(),
+                active_non_db=active_conditional_systems(app_config),
+            )
         )
         if task_owner is not None:
             # 다중 존 시스템 소유 — 위치 힌트 고정·승계가 남긴 존 한정 위에서 소유 DB 집합으로

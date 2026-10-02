@@ -35,7 +35,7 @@ from src.utils.prior_dependency import (
     structure_missing_note,
 )
 from src.utils.progress_events import emit_step
-from src.utils.schema_utils import cap_sample_rows
+from src.utils.schema_utils import attach_profile_relationships, cap_sample_rows
 
 logger = logging.getLogger(__name__)
 
@@ -846,6 +846,8 @@ async def schema_analyzer(
             asset_notes: list[dict[str, Any]] | None = None
             if structure_meta:
                 schema_dict["_structure_meta"] = structure_meta
+                # D-294 — 프로필 관계(추론·확인)를 관련 테이블 사이 관계에 더한다(멀티 경로와 대칭)
+                attach_profile_relationships(schema_dict, structure_meta)
             else:
                 logger.warning(
                     "구조 정보 없음(수동 프로필·승인본) — 구조 안내 없이 진행: db_id=%s", db_id

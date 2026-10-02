@@ -857,10 +857,11 @@ def _zone_clarification_from_tasks(
 
 
 #: 존 재진입 스냅샷에 싣는 task 계획 필드(plans/121 TP-1.2). 상태(`status`)·응답(`direct_response`)·
-#: 실행 중 노트(`dependency_note`)는 싣지 않는다 — 다음 턴이 계획을 새로 실행한다.
+#: 실행 중 노트(`dependency_note`)는 싣지 않는다 — 다음 턴이 계획을 새로 실행한다. `source_slot`은
+#: 소스 선택 칩 task의 칩 전 담당(plans/132 N-10) — 답변 턴이 원래 담당 또는 고른 처리기로 되살린다.
 _ZONE_REENTRY_PLAN_FIELDS = (
     "task_id", "agent", "sub_query", "depends_on", "input_from", "order",
-    "db_ids", "supersedes", "capability", "spans", "agent_fallback",
+    "db_ids", "supersedes", "capability", "spans", "agent_fallback", "source_slot",
 )
 
 

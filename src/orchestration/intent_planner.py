@@ -28,6 +28,7 @@ from src.domain.task_frame import render_task_query, task_spans, verify_task_fra
 from src.prompts.intent_planner import (
     INTENT_PLANNER_SYSTEM_TEMPLATE,
     render_intent_planner_apm_template,
+    render_intent_planner_areas_template,
     render_intent_planner_doc_template,
     render_intent_planner_environment_terms,
     render_intent_planner_ownership_template,
@@ -40,6 +41,7 @@ from src.routing.capability_ownership import (
     known_capability_codes,
     render_ownership_rows,
     sanitize_capability_code,
+    sanitize_capability_list,
 )
 from src.state import AgentState
 from src.clients.instructor_adapter import StructuredOutputError, try_structured_call
@@ -256,8 +258,175 @@ async def intent_planner(
         app_config = load_config()
     result = await _plan_turn(state, llm=llm, app_config=app_config)
     _normalize_plan_exit(result, state)
+    _apply_source_selection(result, state, app_config)
+    await _apply_source_memory(result, state, app_config)
+    await _record_source_choice(result, state, app_config)
     _record_clarification(result)
     return result
+
+
+#: 스레드 범위 소스 선택(plans/132 N-10) — 소스 선택 칩에서 고른 시스템. 같은 스레드의 다음 모호
+#: 판정이 다시 묻지 않고 쓴다(존 승계와 같은 자리 · 체크포인터 보존 · 스코프 칩 해제 때 비운다).
+SOURCE_CHOICE_KEY = "source_choice"
+#: 이번 턴 계획이 닿은 비DB 시스템(plans/132 — 다음 턴 `conversation_context.previous_sources`).
+TURN_SOURCES_KEY = "turn_sources"
+#: 소스 선택 칩 답변 턴의 선택(요청 스코프 — 라우트가 싣는다).
+SELECTED_SOURCES_KEY = "selected_sources"
+#: 칩·정정 답변 표지(요청 스코프 — 라우트가 직전 턴 칩을 보고 싣는다 · 기억 쓰기 게이트 · W5).
+SOURCE_SELECTION_META_KEY = "source_selection_meta"
+#: 기억을 써서 소스를 고른 턴의 「다른 소스로 보기」 칩(요청 스코프 · W5).
+SOURCE_SWITCH_KEY = "source_switch"
+
+
+def _apply_source_selection(
+    result: dict[str, Any], state: AgentState, app_config: AppConfig,
+) -> None:
+    """계획 단일 출구의 소스 선별(plans/132 N-2 · W2 N-6·N-10).
+
+    명시 지목(W1 · G-1)과 답변 영역의 정본 소유(W2 · G-7 (a))로 task 담당을 맞추고, 모호하면 소스
+    선택 칩 task로 바꾼다(`conditional_agents.apply_source_selection`). 양식 턴은 제외한다(양식 단일
+    task — `_normalize_plan_exit`와 같은 이유). 이번 턴이 닿은 비DB 시스템을 남긴다(G-15) — 비DB
+    소스가 없는 턴은 직전 값이 있을 때만 비운다(그 밖의 턴은 반환 dict 바이트 불변).
+    """
+    selection = None
+    tasks = result.get("task_plan")
+    if (
+        not (state.get("template_structure") or state.get("uploaded_file"))
+        and isinstance(tasks, list) and tasks
+    ):
+        from src.orchestration.conditional_agents import apply_source_selection  # 지연 — 순환 방지
+
+        selection = apply_source_selection(
+            tasks, state, app_config, remembered=_remembered_sources(state),
+        )
+    turn_sources = selection.turn_sources if selection is not None else []
+    if turn_sources or state.get(TURN_SOURCES_KEY):
+        result[TURN_SOURCES_KEY] = turn_sources
+    if selection is not None and selection.notes:
+        result["dependency_notes"] = (
+            list(result.get("dependency_notes") or state.get("dependency_notes") or [])
+            + selection.notes
+        )
+
+
+def _remembered_sources(state: AgentState) -> list[str]:
+    """기억된 소스 선택(판정 순서 「기억」 칸 · plans/132 §6.5) — 스레드 선택."""
+    choice = state.get(SOURCE_CHOICE_KEY)
+    system = choice.get("system") if isinstance(choice, dict) else None
+    return [str(system)] if system else []
+
+
+def _memory_text(state: AgentState) -> str:
+    """기억 사례 질의 — 원문 정규화(민감값 마스킹 · 입력 파서가 뽑은 서버 식별자 자리 일반화)."""
+    from src.schema_cache.source_memory import normalize_case_text
+    from src.utils.query_gen_common import is_server_identity_col
+
+    conditions = (state.get("parsed_requirements") or {}).get("filter_conditions") or []
+    identifiers = [
+        str(c.get("value")) for c in conditions
+        if isinstance(c, dict) and is_server_identity_col(str(c.get("field") or ""))
+        and isinstance(c.get("value"), str)
+    ]
+    return normalize_case_text(str(state.get("user_query") or ""), identifiers)
+
+
+async def _audit_source_memory(state: AgentState, action: str, case: dict[str, Any]) -> None:
+    """소스 선택 기억 감사(쓰기·사용) — 기록 실패는 질의를 막지 않는다."""
+    from src.security.audit_logger import log_source_memory
+
+    try:
+        await log_source_memory(
+            action=action, scope=str(case.get("scope")), case_id=str(case.get("case_id")),
+            sources=list(case.get("sources") or []), origin=case.get("origin"),
+            user_id=state.get("user_id"), thread_id=state.get("thread_id"),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("소스 선택 기억 감사 기록 실패: %s", e)
+
+
+async def _apply_source_memory(
+    result: dict[str, Any], state: AgentState, app_config: AppConfig,
+) -> None:
+    """소스 선택 칩 task를 확인된 사례로 해소한다(plans/132 W5 · §6.5 · G-12 (a)).
+
+    판정 순서 `명시 > 단독 소유 > [기억] > 칩`의 기억 칸이다 — 칩이 걸린 task(소유 소스 2개+ · 명시
+    없음)에만 쓴다. 개인 사례 → 조직 공용(관리자 승격) → 시드 순으로 찾고, 찾으면 칩 대신 그
+    소스로 조회하면서 고지(경과 노트) + 「다른 소스로 보기」 칩을 붙인다. TTL 0이면 아무것도 하지
+    않는다(비트 동일 · Redis 접근 0).
+    """
+    from src.schema_cache import source_memory as sm
+
+    ttl = sm.ttl_seconds(app_config)
+    tasks = [
+        t for t in result.get("task_plan") or [] if isinstance(t, dict) and t.get("source_slot")
+    ]
+    if ttl <= 0 or not tasks:
+        return
+    from src.orchestration.conditional_agents import memory_notice, resolve_chip_by_memory
+
+    reg = get_registry()
+    store = await sm.open_store(app_config)
+    scope = sm.user_scope(state.get("user_id"))
+    stored: list[dict[str, Any]] = []
+    if store is not None:
+        stored = (await store.load(scope) if scope else []) + await store.load(sm.SCOPE_ORG)
+    cases = stored + sm.seed_cases(reg)
+    text = _memory_text(state)
+    notes: list[dict[str, Any]] = []
+    for task in tasks:
+        candidates = list(task["source_slot"].get("candidates") or [])
+        hit = sm.search_cases(cases, text, candidates=candidates, ttl_seconds=ttl,
+                              registry_fp=sm.registry_fingerprint(reg))
+        system = sm.chosen_source(hit[0], candidates) if hit else None
+        switch = resolve_chip_by_memory(task, system, state, app_config) if system else None
+        if hit is None or switch is None:
+            continue
+        case, score, step = hit
+        logger.info("intent_planner: 소스 선택 기억 사용(plans/132 W5) — task=%s %s %s(%.2f)",
+                    task.get("task_id"), system, step, score)
+        switch["areas"] = list(task.get("areas") or [])
+        result[SOURCE_SWITCH_KEY] = switch
+        notes.append(memory_notice(str(task.get("task_id")), reg.system_label(str(system))))
+        if store is not None and any(c is case for c in stored):
+            await store.touch(case, ttl_seconds=ttl)
+        await _audit_source_memory(state, "use", case)
+    if notes:
+        result["dependency_notes"] = (
+            list(result.get("dependency_notes") or state.get("dependency_notes") or []) + notes
+        )
+
+
+async def _record_source_choice(
+    result: dict[str, Any], state: AgentState, app_config: AppConfig,
+) -> None:
+    """소스 선택 칩·정정 답변 턴이면 고른 시스템을 기억한다(plans/132 N-10 · W5).
+
+    스레드 범위 선택은 항상 남긴다(같은 스레드에서 다시 묻지 않는다). 확인된 사례(개인 범위)는
+    기능이 켜졌고(TTL > 0) 라우트가 이 답변을 칩·「다른 소스로 보기」 응답으로 확인했을 때만 쓴다 —
+    쓰기 진입점은 이 둘과 관리자 정리뿐이다(시스템 판정 저장 0).
+    """
+    chosen = [str(s) for s in state.get("selected_sources") or [] if s]
+    if not chosen:
+        return
+    result[SOURCE_CHOICE_KEY] = {"system": chosen[0]}
+    from src.schema_cache import source_memory as sm
+
+    meta = state.get(SOURCE_SELECTION_META_KEY)
+    ttl = sm.ttl_seconds(app_config)
+    scope = sm.user_scope(state.get("user_id"))
+    if ttl <= 0 or not isinstance(meta, dict) or not scope:
+        return
+    store = await sm.open_store(app_config)
+    if store is None:
+        return
+    case = sm.build_case(
+        _memory_text(state), chosen[:1], origin=str(meta.get("origin")), scope=scope,
+        registry_fp=sm.registry_fingerprint(get_registry()), areas=meta.get("areas") or (),
+    )
+    await store.save(case, ttl_seconds=ttl)
+    await _audit_source_memory(state, "write", case)
+    logger.info("intent_planner: 소스 선택 기억 저장(plans/132 W5) — %s %s",
+                case["origin"], chosen[0])
 
 
 def _record_clarification(result: dict[str, Any]) -> None:
@@ -309,8 +478,49 @@ def _on_path(plan: dict[str, Any], code: str) -> dict[str, Any]:
 ZONE_REENTRY_RESTORED_PATH = "zone_reentry_restored"
 
 
+#: 소스 선택 칩 답변 턴 경로(plans/132 N-10) — 단일 task · 직전 턴 복합 계획 복원.
+SOURCE_REENTRY_PATH = "source_reentry"
+SOURCE_REENTRY_RESTORED_PATH = "source_reentry_restored"
+
+
+def _source_reentry_plan(
+    state: AgentState, app_config: AppConfig, user_query: str,
+) -> dict[str, Any] | None:
+    """소스 선택 칩에서 비DB 소스를 고른 답변 턴의 계획 — 아니면 None(plans/132 N-10).
+
+    고른 소스가 그사이 비활성이 되면 조회하지 않고 안내만 한다(G-1). 직전 턴이 복합 계획이었으면
+    칩이 걸린 task만 그 처리기로 바꿔 계획을 되살린다(존 재진입 TP-1.2와 같은 스냅샷).
+    """
+    if (state.get("selected_db_ids") or state.get("template_structure")
+            or state.get("uploaded_file")):
+        return None
+    reg = get_registry()
+    chosen = [str(s) for s in state.get("selected_sources") or [] if reg.is_non_db_system(str(s))]
+    if not chosen:
+        return None
+    from src.orchestration.conditional_agents import active_conditional_systems  # 지연 — 순환 방지
+    from src.routing.source_hints import source_notice_text
+
+    agent = active_conditional_systems(app_config).get(chosen[0])
+    if agent is None:
+        logger.info("intent_planner: 소스 선택 답변 턴 — %s 비활성 → 안내만(plans/132 G-1)",
+                    chosen[0])
+        plan = _single_task_plan("general_inference", user_query)
+        plan["task_plan"][0]["direct_response"] = source_notice_text([reg.system_label(chosen[0])])
+        plan["task_plan"][0]["source_notice"] = [chosen[0]]
+        return _on_path(plan, SOURCE_REENTRY_PATH)
+    restored = _restored_zone_reentry_plan(state, [], agent=agent)
+    if restored is not None:
+        logger.info("intent_planner: 소스 선택 답변 턴 — 직전 턴 계획 복원(칩 task → %s)", agent)
+        return _on_path(restored, SOURCE_REENTRY_RESTORED_PATH)
+    logger.info("intent_planner: 소스 선택 답변 턴 — %s 단일 task(plans/132 N-10)", agent)
+    plan = _single_task_plan(agent, user_query)
+    plan["task_plan"][0]["views"] = []
+    return _on_path(plan, SOURCE_REENTRY_PATH)
+
+
 def _restored_zone_reentry_plan(
-    state: AgentState, selected_db_ids: list[str]
+    state: AgentState, selected_db_ids: list[str], *, agent: str | None = None,
 ) -> dict[str, Any] | None:
     """존 답변 턴에 직전 턴 복합 계획을 복원한다 — 복원할 것이 없으면 None(plans/121 TP-1.2 · G-30).
 
@@ -336,7 +546,15 @@ def _restored_zone_reentry_plan(
             return None
         task = {k: (list(v) if isinstance(v, list) else v) for k, v in raw.items()}
         task["status"] = "pending"
-        if str(task["task_id"]) in gated:
+        # 소스 선택 칩이 걸렸던 task(plans/132 N-10) — 칩 전 담당으로 되돌린 뒤 고른 소스를
+        # 적용한다.
+        slot = task.pop("source_slot", None)
+        if isinstance(slot, dict) and slot.get("from_agent"):
+            task["agent"] = slot["from_agent"]
+        if str(task["task_id"]) in gated and agent:
+            task["agent"] = agent
+            task["views"] = []
+        elif str(task["task_id"]) in gated:
             task["db_ids"] = list(selected_db_ids)
         elif not task.get("db_ids"):
             # 존 선택은 존 그룹 DB에만 적용한다 — 실행 배관이 분류 뒤 존 그룹 대상만 선택 존으로
@@ -443,6 +661,19 @@ async def _plan_turn(
             plan["last_form_signature"] = _sig  # 직전 양식 컨텍스트 갱신(멀티턴 보존)
         return _on_path(plan, "form_memory")
 
+    # ②.8 소스 선택 기억 보기·삭제 명령(plans/132 W5) — 양식 기억 명령(②.7)과 같은 결정적 단락.
+    if _is_source_memory_command(user_query):
+        return _on_path(
+            await _source_memory_command_plan(state, app_config, user_query), "source_memory",
+        )
+
+    # ②.4 소스 선택 칩 답변 턴(plans/132 N-10) — 비DB 소스를 골랐으면 LLM 분해 없이 그 처리기로
+    # 결정적 고정한다(존 선택 ②.5와 같은 모양). DB 소스를 골랐으면 칩이 DB 선택지를 함께 보냈으므로
+    # 아래 ②.5가 그대로 처리한다.
+    source_plan = _source_reentry_plan(state, app_config, user_query)
+    if source_plan is not None:
+        return source_plan
+
     # ②.5 존 역질문에서 사용자가 체크박스로 확정한 DB (Plan 75 §4) — LLM 분해를 건너뛰어
     # 자연어 재조합 없이 결정적 고정(mapped_db_ids 선례 동형). task.db_ids는 하류
     # run_data_query_pipeline이 classify_dbs를 우회하는 기존 배관을 그대로 탄다.
@@ -541,6 +772,54 @@ async def _plan_turn(
         ]
     _record_decompose_fallback(result, decomposed, state, user_query)
     return _on_path(result, "llm_decompose")
+
+
+#: 소스 선택 기억 명령(plans/132 W5) — 명사 + 동사(보기·삭제)가 함께 있을 때만(양식 기억 명령 선례).
+_SOURCE_MEMORY_NOUNS = ("소스 기억", "소스 선택 기억")
+_SOURCE_MEMORY_VIEW_WORDS = ("보여", "조회", "목록", "알려")
+_SOURCE_MEMORY_DELETE_WORDS = ("삭제", "지워", "지우", "잊어")
+
+
+def _is_source_memory_command(query: str) -> bool:
+    text = query or ""
+    return any(n in text for n in _SOURCE_MEMORY_NOUNS) and any(
+        w in text for w in _SOURCE_MEMORY_VIEW_WORDS + _SOURCE_MEMORY_DELETE_WORDS)
+
+
+async def _source_memory_command_plan(
+    state: AgentState, app_config: AppConfig, user_query: str,
+) -> dict[str, Any]:
+    """「소스 기억 보여줘 / 삭제」 — 내 소스 선택 기억을 보여 주거나 지운다(LLM 0 · 개인 범위만)."""
+    from src.schema_cache import source_memory as sm
+
+    plan = _single_task_plan("general_inference", user_query)
+    scope = sm.user_scope(state.get("user_id"))
+    store = await sm.open_store(app_config) if sm.ttl_seconds(app_config) > 0 else None
+    if sm.ttl_seconds(app_config) <= 0:
+        text = "소스 선택 기억 기능이 꺼져 있습니다(관리자 설정). 기억된 소스 선택이 없습니다."
+    elif store is None or not scope:
+        text = "소스 선택 기억을 지금 조회할 수 없습니다(저장소 연결 또는 로그인 정보 없음)."
+    elif any(w in user_query for w in _SOURCE_MEMORY_DELETE_WORDS):
+        cases = await store.load(scope)
+        removed = await store.delete(scope)
+        for case in cases:
+            await _audit_source_memory(state, "delete", case)
+        text = (f"기억된 소스 선택 {removed}건을 모두 지웠습니다. 다음에 소스가 모호한 질문을 "
+                "하시면 다시 어느 데이터 소스에서 조회할지 묻습니다.")
+    else:
+        reg = get_registry()
+        cases = await store.load(scope)
+        lines = [
+            f"- 「{c.get('text')}」 → "
+            f"{', '.join(reg.system_label(x) for x in c.get('sources') or [])}"
+            f" (사용 {int(c.get('use_count') or 0)}회)"
+            for c in cases
+        ]
+        text = (f"기억된 소스 선택이 {len(cases)}건 있습니다.\n\n" + "\n".join(lines)
+                + "\n\n「소스 기억 삭제」라고 하시면 모두 지웁니다." if cases
+                else "기억된 소스 선택이 없습니다. 소스 선택 칩에서 고르면 기억됩니다.")
+    plan["task_plan"][0]["direct_response"] = text
+    return plan
 
 
 _FORM_MEMORY_ACTION_LABELS = {
@@ -880,6 +1159,7 @@ async def _llm_decompose(
     result = await _enforce_plan_contract(llm, messages, user_query, app_config, fallback, result)
     if _capability_ownership_on(app_config):
         _sanitize_task_capabilities(result)
+    _sanitize_task_areas(result)
     if _task_frame_on(app_config):
         result = _apply_task_frames(result, user_query, context_block, fallback)
     if _nonsql_agents(app_config):
@@ -957,6 +1237,8 @@ def _planner_system_prompt(app_config: AppConfig) -> str:
         base = INTENT_PLANNER_SYSTEM_TEMPLATE
     else:
         base = _render_planner_ownership_prompt(tuple(app_config.multi_db.get_active_db_ids()))
+    # 답변 영역·요청 소스 칸(plans/132 N-5) — 항상. 골격 줄을 바꾸므로 다른 삽입 렌더보다 먼저다.
+    base = _render_areas_prompt(base, _area_rows())
     if _task_frame_on(app_config):
         base = _render_task_frame_prompt(base)
     agents = _nonsql_agents(app_config)
@@ -972,6 +1254,19 @@ def _planner_system_prompt(app_config: AppConfig) -> str:
             doc_query.example_view(app_config),
         )
     return _render_planner_environment_terms(base, get_registry().environment_terms)
+
+
+def _area_rows() -> str:
+    """영역 카탈로그 표 행 — 레지스트리 등록 전체(판정 재료 · G-7 (a) · 사본 금지 D-053)."""
+    return "\n".join(
+        f"| {spec.code} | {spec.label or spec.code} |" for spec in get_registry().capability_specs()
+    )
+
+
+@lru_cache(maxsize=8)
+def _render_areas_prompt(base: str, area_rows: str) -> str:
+    """답변 영역 칸 렌더 캐시(plans/132 N-5) — 기동 시 1회(프롬프트 접두 고정 · KV 캐시)."""
+    return render_intent_planner_areas_template(base, area_rows)
 
 
 @lru_cache(maxsize=8)
@@ -1042,6 +1337,34 @@ def _sanitize_task_capabilities(result: dict[str, Any]) -> None:
             logger.warning("분해 task 답변 영역 탈락(카탈로그 밖): task=%s capability=%r",
                            task.get("task_id"), raw)
         task["capability"] = code
+
+
+#: 요청 소스 칸 길이 상한 — 사용자가 쓴 이름 한 개(문장이 오면 자른다).
+_REQUESTED_SOURCE_MAX = 40
+
+
+def _sanitize_task_areas(result: dict[str, Any]) -> None:
+    """분해 task의 `areas`·`requested_source`를 정제한다(plans/132 N-5 — 모든 경로의 마지막 한 곳).
+
+    `areas`는 레지스트리 영역 카탈로그 코드만 남긴다(등록 전체 · 순서 유지 · 중복 제거 — 모르는
+    코드는 버리고 로그). 빈 목록은 「영역 없음」이다 — 소스 슬롯이 종전 경로를 탄다(K-3 칸 누락
+    폴백).
+    `requested_source`는 문자열 한 개(앞뒤 공백 제거 · 길이 상한)다. 소스로 푸는 일은 계획 출구가
+    한다 — 이 턴의 결정적 지목과 맞을 때만 쓴다(`conditional_agents.apply_source_selection`).
+    """
+    known = known_capability_codes()
+    for task in result.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        kept, dropped = sanitize_capability_list(task.get("areas"), known)
+        if dropped:
+            logger.warning("분해 task 답변 영역 탈락(카탈로그 밖): task=%s areas=%r",
+                           task.get("task_id"), dropped)
+        task["areas"] = kept
+        raw = task.get("requested_source")
+        task["requested_source"] = (
+            raw.strip()[:_REQUESTED_SOURCE_MAX] if isinstance(raw, str) else ""
+        )
 
 
 def _degraded(reason: str, detail: str, *, attempts: int = 1) -> dict:
@@ -1274,6 +1597,9 @@ async def _decompose_once(
         if extra_agents:
             # 보기 슬롯 보존(plans/125 A-5) — 정제는 `_sanitize_task_views`.
             task["views"] = raw.get("views") or []
+        # 답변 영역·요청 소스 칸 보존(plans/132 N-5) — 정제는 `_sanitize_task_areas`.
+        task["areas"] = raw.get("areas")
+        task["requested_source"] = raw.get("requested_source")
         # 닫힌 어휘(plans/121 TP-1.7) — 목록 밖 담당은 디스패치 폴백과 같은 담당으로(task 단위)
         close_agent_vocabulary(task, frozenset(extra_agents))
         if task.get(AGENT_FALLBACK_KEY):

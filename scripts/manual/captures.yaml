@@ -351,6 +351,48 @@ captures:
       - wait: 1200
       - click: "button:has-text('신규 연동') >> nth=0"
       - wait: 1500
+  - id: dbs-ddl
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='dbstructure']"
+      - wait: 1200
+      - click: "button:has-text('상세') >> nth=0"
+      - wait: 1500
+      - select: ["#dbsDdlEngine", "db2"]
+      - fill:
+          - "#dbsDdlText"
+          - |
+            CREATE TABLE "APP"."T_SERVER" (
+              "SERVER_ID" BIGINT NOT NULL,
+              "HOST_NAME" VARCHAR(100) NOT NULL,
+              "OS_TYPE" VARCHAR(20)
+            ) IN "USERSPACE1";
+            CREATE TABLE "APP"."T_DISK" ("DISK_ID" BIGINT NOT NULL, "SERVER_ID" BIGINT, "SIZE_GB" DECIMAL(10,2));
+            ALTER TABLE "APP"."T_SERVER" ADD CONSTRAINT "PK_SERVER" PRIMARY KEY ("SERVER_ID");
+            ALTER TABLE "APP"."T_DISK" ADD CONSTRAINT "PK_DISK" PRIMARY KEY ("DISK_ID");
+            ALTER TABLE "APP"."T_DISK" ADD CONSTRAINT "FK_DISK" FOREIGN KEY ("SERVER_ID") REFERENCES "APP"."T_SERVER";
+            COMMENT ON COLUMN "APP"."T_SERVER"."HOST_NAME" IS '호스트명';
+            CREATE INDEX "APP"."IX_DISK" ON "APP"."T_DISK" ("SERVER_ID");
+      - click: "#dbsDdlAnalyzeBtn"
+      - wait: "#dbsDdlPreview strong"
+      - scroll_top: "#dbsDdlText"
+      - scroll: "#dbs-sec-ddl"
+      - eval: "window.scrollBy(0, -90)"   # 상단 고정 헤더에 섹션 머리가 가리지 않게
+    clip: "#dbs-sec-ddl"
+    callouts: [[1, "#dbsDdlEngine"], [2, "#dbsDdlFile"], [3, "#dbsDdlText"], [4, "#dbsDdlAnalyzeBtn"], [5, "#dbsDdlPreview"], [6, "#dbsDdlRegisterBtn"]]
+  - id: dbs-assets
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='dbstructure']"
+      - wait: 1200
+      - click: "button:has-text('상세') >> nth=0"
+      - wait: 1500
+      - scroll: "#dbs-sec-assets"
+      - eval: "window.scrollBy(0, -90)"   # 상단 고정 헤더에 섹션 머리가 가리지 않게
+    clip: "#dbs-sec-assets"
+    callouts: [[1, "#dbs-sec-assets .dbs-form input"], [2, "#dbsAssetProfileBtn"]]
   - id: users
     login: admin
     steps:
@@ -408,6 +450,15 @@ captures:
       - wait: 1000
     height: 1250
     callouts: [[1, "#refreshDrmBtn"], [2, "#drmVerifyBtn"]]
+  # plans/132 W5 — 소스 선택 기억 탭(기본 꺼짐 · 저장 사례 없음 · 시드 표만 보인다 — LLM 0)
+  - id: admin-source-memory
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='sourcememory']"
+      - wait: "#sourceMemoryTable"
+      - wait: 600
+    callouts: [[1, "#sourceMemorySummary"], [2, "#sourceMemoryTable"], [3, "#sourceMemorySeedTable"]]
   - id: swagger
     steps:
       - goto: /docs

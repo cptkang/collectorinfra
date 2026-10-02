@@ -60,7 +60,7 @@ def test_link_and_answer_scores() -> None:
 def test_four_source_gold_draft_shape() -> None:
     catalog = load_catalog()
     fs = [s for s in catalog.scenarios if s.group == "FS"]
-    assert len(fs) == 24
+    assert len(fs) == 33, "125 초안 24건 + 132 소스 선별 9건(FS-25~FS-33 · plans/132 W0)"
     assert all(s.requires_sources for s in fs), "전부 판정 전제 소스를 선언한다(D-276 ②)"
     assert set().union(*(s.requires_sources for s in fs)) <= known_source_ids()
     assert sum(1 for s in fs if "apm" in s.requires_sources) >= 12

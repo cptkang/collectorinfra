@@ -65,6 +65,10 @@ class TaskSpec(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     input_from: list[str] = Field(default_factory=list)
     order: int = 1
+    # 답변 영역·요청 소스 칸(plans/132 N-5 — 항상 켜짐 · 플래그 없음). 코드 값(카탈로그 대조)은
+    # 스키마가 아니라 분해 후 정제(`intent_planner._sanitize_task_areas`)가 검증한다.
+    areas: list[str] = Field(default_factory=list)
+    requested_source: str = ""
 
     def model_post_init(self, _ctx) -> None:  # noqa: D105
         if self.agent not in allowed_agents():

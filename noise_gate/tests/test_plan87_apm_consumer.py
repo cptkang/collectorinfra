@@ -1048,6 +1048,69 @@ class TestApmGatewayClient:
                 investigation_id="A",
             )
 
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_auth_failure_in_exception_group_names_http_status(self, monkeypatch, status):
+        """F-4 — SSE SDK는 401을 예외 그룹으로 감싼다. 사유에 HTTP 상태·확인할 키가 실린다."""
+        import httpx
+
+        client = ApmGatewayClient("http://127.0.0.1:9096/sse", bearer_token="secret-token")
+        request = httpx.Request("GET", "http://127.0.0.1:9096/sse")
+        response = httpx.Response(status, request=request)
+
+        async def _unauthorized(tool, args):
+            raise ExceptionGroup(
+                "unhandled errors in a TaskGroup",
+                [httpx.HTTPStatusError("unauthorized", request=request, response=response)],
+            )
+
+        monkeypatch.setattr(client, "_call", _unauthorized)
+        with pytest.raises(ApmGatewayClientError) as info:
+            await client.apm_events(
+                hostname="h",
+                reference_time="t",
+                lookback_minutes=10,
+                level="fatal",
+                investigation_id="A",
+            )
+        reason = str(info.value)
+        assert f"HTTP {status} 인증 실패" in reason
+        assert "NOISE_APM_MCP_TOKEN" in reason
+        assert "TaskGroup" not in reason
+        assert "secret-token" not in reason
+
+    async def test_exception_group_without_http_status_lists_leaves(self, monkeypatch):
+        client = ApmGatewayClient("http://127.0.0.1:9096/sse")
+
+        async def _grouped(tool, args):
+            raise ExceptionGroup("unhandled errors in a TaskGroup", [ConnectionResetError("peer")])
+
+        monkeypatch.setattr(client, "_call", _grouped)
+        with pytest.raises(ApmGatewayClientError, match="ConnectionResetError: peer"):
+            await client.apm_events(
+                hostname="h",
+                reference_time="t",
+                lookback_minutes=10,
+                level="fatal",
+                investigation_id="A",
+            )
+
+    async def test_plain_failure_keeps_previous_reason(self, monkeypatch):
+        client = ApmGatewayClient("http://127.0.0.1:9096/sse")
+
+        async def _boom(tool, args):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(client, "_call", _boom)
+        with pytest.raises(ApmGatewayClientError) as info:
+            await client.apm_events(
+                hostname="h",
+                reference_time="t",
+                lookback_minutes=10,
+                level="fatal",
+                investigation_id="A",
+            )
+        assert str(info.value) == "게이트웨이 호출 실패(apm_events): boom"
+
     async def test_tool_error_result_raises(self, monkeypatch):
         import mcp.client.sse
 

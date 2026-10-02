@@ -132,7 +132,9 @@ class ApmGatewayClient:
         except ImportError as e:
             raise ApmGatewayClientError(f"MCP SDK 미설치로 게이트웨이 호출 불가: {e}") from e
         except Exception as e:  # noqa: BLE001 — 통신 실패를 명확히 노출(침묵 금지)
-            raise ApmGatewayClientError(f"게이트웨이 호출 실패({APM_EVENTS_TOOL}): {e}") from e
+            raise ApmGatewayClientError(
+                f"게이트웨이 호출 실패({APM_EVENTS_TOOL}): {_failure_detail(e)}"
+            ) from e
 
     def _auth_headers(self) -> dict[str, str] | None:
         if not self._bearer_token:
@@ -152,6 +154,34 @@ class ApmGatewayClient:
                 f"게이트웨이 도구 오류({tool_name}): {_result_text(result)[:200]}"
             )
         return _parse_json_result(result)
+
+
+def _leaf_exceptions(exc: BaseException) -> list[BaseException]:
+    """예외 그룹을 끝 예외 목록으로 편다(그룹이 아니면 자기 자신)."""
+    if isinstance(exc, BaseExceptionGroup):
+        return [leaf for sub in exc.exceptions for leaf in _leaf_exceptions(sub)]
+    return [exc]
+
+
+def _failure_detail(exc: Exception) -> str:
+    """통신 실패 사유 — MCP SSE가 올리는 예외 그룹을 풀어 HTTP 상태를 싣는다(plans/87 F-4).
+
+    Bearer가 틀리면 SDK가 `unhandled errors in a TaskGroup (1 sub-exception)`만 남겨 인증 실패인지
+    알 수 없었다. 그룹이 아니고 HTTP 상태도 없는 예외는 종전 문구 그대로다. 토큰 값은 싣지 않는다.
+    """
+    leaves = _leaf_exceptions(exc)
+    for leaf in leaves:
+        status = getattr(getattr(leaf, "response", None), "status_code", None)
+        if isinstance(status, int):
+            if status in (401, 403):
+                return (
+                    f"HTTP {status} 인증 실패 — NOISE_APM_MCP_TOKEN이 게이트웨이의 "
+                    "APM_GATEWAY_BEARER_TOKEN과 같은지 확인"
+                )
+            return f"HTTP {status}"
+    if leaves == [exc]:
+        return str(exc)
+    return "; ".join(f"{type(leaf).__name__}: {leaf}" for leaf in leaves[:3])
 
 
 def _result_text(raw_result: Any) -> str:

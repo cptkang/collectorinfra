@@ -18,6 +18,7 @@ from src.domain.user import UserRole
 from src.llm import create_llm
 from src.prompts.cache_management import CACHE_MANAGEMENT_PARSE_PROMPT
 from src.routing.db_authz import ACCESS_DENIED_MESSAGE, authorized_db_ids
+from src.routing.source_hints import non_db_synonym_context, non_db_synonym_guidance
 from src.schema_cache.cache_manager import get_cache_manager
 from src.state import AgentState
 from src.utils.json_extract import extract_json_from_response
@@ -62,6 +63,9 @@ async def cache_management(
         # 미매칭이면 None을 돌려주므로 아래 LLM 파싱으로 넘어간다.
         preparsed_set = parse_synonym_set(user_query)
         if preparsed_set:
+            guidance = _non_db_synonym_guidance(state)
+            if guidance:
+                return guidance
             logger.info("동의어 집합 결정적 파싱 (LLM 미사용): %s", preparsed_set)
             response_text = await _handle_add_synonym_set(
                 cache_mgr, app_config, None, preparsed_set
@@ -76,6 +80,13 @@ async def cache_management(
         parsed = await _parse_cache_intent(llm, user_query)
         action = parsed.get("action", "status")
         db_id = parsed.get("db_id")
+
+        # 비DB 소스(제니퍼·문서 등) 맥락의 유사어 쓰기는 DB 사전에 넣지 않고 안내한다(plans/132
+        # G-15). DB 맥락이면 DB를 못 정해도 묻지 않고 DB 공용 사전 — 현행(G-13).
+        if action in _SYNONYM_WRITE_ACTIONS:
+            guidance = _non_db_synonym_guidance(state)
+            if guidance:
+                return guidance
 
         # 생성·무효화는 관리자만(plans/104 S2) — 실행 경계에서 판정한다(UI 게이트 ≠ 인가).
         # 3단 노드·2단 서브에이전트·1단 deep_agent 도구가 모두 이 함수를 지나므로 한 곳이면 된다.
@@ -213,6 +224,32 @@ async def _parse_cache_intent(
 
     # 파싱 실패 시 기본값
     return {"action": "status", "db_id": None}
+
+
+# 유사어 사전에 쓰는 채팅 작업(plans/132 G-15 — 실측 전수: 이 노드의 등록·삭제·수정·생성 경로).
+# 양식 경로(`synonym_registrar` · `field_mapper` 매핑·피드백)는 DB 컬럼 매핑이 구조상 정해져 있어
+# 대상이 아니다.
+_SYNONYM_WRITE_ACTIONS = (
+    "add-synonym", "add-synonym-set", "remove-synonym", "update-synonym",
+    "generate-global-synonyms", "generate-synonyms",
+)
+
+
+def _non_db_synonym_guidance(state: AgentState) -> dict[str, Any] | None:
+    """비DB 소스 맥락이면 등록하지 않고 안내하는 반환값(G-15), 아니면 None."""
+    name = non_db_synonym_context(
+        (state.get("parsed_requirements") or {}).get("target_db_hints"),
+        (state.get("conversation_context") or {}).get("previous_sources"),
+    )
+    if not name:
+        return None
+    logger.info("cache_management: 비DB 소스 맥락(%s) 유사어 쓰기 — DB 사전 미등록 안내(G-15)",
+                name)
+    return {
+        "final_response": non_db_synonym_guidance(name),
+        "current_node": "cache_management",
+        "error_message": None,
+    }
 
 
 # 관리자 역할만 수행하는 생성·무효화 작업(plans/104 S2). 조회·유사어 등록·설명 수정 등

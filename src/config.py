@@ -1189,6 +1189,13 @@ class RouterConfig(BaseSettings):
     # 질의 원문 키워드 스캔 없음). 빈 분류·LLM 실패 폴백도 사유를 응답에 표기한다.
     capability_ownership_enabled: bool = False
 
+    # plans/132 W5 · G-10~G-12 — 소스 선택 기억(사용자가 칩·정정으로 확인한 「질의 → 소스」
+    # 사례)의 sliding TTL(일). **0 = 기능 off — 읽기·쓰기 0, 현행과 비트 동일**(신규 `enable_*`
+    # 없이 TTL 값으로 켠다 · D-162). 기억은 소스가 모호할 때(소유 소스 2개+ · 명시 없음)만 칩
+    # 대신 쓴다 — 명시 소스·단독 소유 판정은 뒤집지 않는다. 운영값은 측정 뒤 정한다(양식 기억
+    # `QUERY_FORM_MEMORY_TTL_DAYS` 선례).
+    source_memory_ttl_days: int = 0
+
     model_config = {"env_prefix": "ROUTER_", "env_file": ".env", "extra": "ignore"}
 
 

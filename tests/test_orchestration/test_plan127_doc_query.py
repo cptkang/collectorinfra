@@ -76,8 +76,12 @@ def _yaml(tmp_path, items: list[dict]) -> str:
 
 
 def _base_prompt() -> str:
+    # 기본 렌더 = 기본 템플릿 + 답변 영역 칸(plans/132 N-5 — 항상 켜짐) + 환경어 채움
+    from src.prompts.intent_planner import render_intent_planner_areas_template
+
     return render_intent_planner_environment_terms(
-        INTENT_PLANNER_SYSTEM_TEMPLATE, get_registry().environment_terms)
+        render_intent_planner_areas_template(INTENT_PLANNER_SYSTEM_TEMPLATE, ip._area_rows()),
+        get_registry().environment_terms)
 
 
 # ── 1. 비활성 = 바이트 불변 ──────────────────────────────────────────────────

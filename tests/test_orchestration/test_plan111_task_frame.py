@@ -106,9 +106,14 @@ class TestPrompt:
 
     def test_off_is_byte_identical(self, mock_config):
         mock_config.composite.task_frame_enabled = False
-        # 기본 템플릿 + 환경어 자리 채움만(plans/121 TP-11.2 — 레지스트리 정본)
+        # 기본 템플릿 + 답변 영역 칸(plans/132 N-5 — 항상 켜짐) + 환경어 자리 채움만
+        # (plans/121 TP-11.2)
+        from src.orchestration.intent_planner import _area_rows
+        from src.prompts.intent_planner import render_intent_planner_areas_template
+
         assert _planner_system_prompt(mock_config) == render_intent_planner_environment_terms(
-            INTENT_PLANNER_SYSTEM_TEMPLATE, get_registry().environment_terms
+            render_intent_planner_areas_template(INTENT_PLANNER_SYSTEM_TEMPLATE, _area_rows()),
+            get_registry().environment_terms,
         )
 
     def test_on_contains_section(self, mock_config):

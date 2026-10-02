@@ -527,15 +527,17 @@ async def _handle_synonym_registration(
                 continue
 
             try:
-                # 기존 synonyms 로드
-                existing = await cache_mgr.get_synonyms(db_id)
-                col_synonyms = existing.get(column, [])
-
-                # 중복 체크 후 추가
-                if field not in col_synonyms:
-                    col_synonyms.append(field)
-                    existing[column] = col_synonyms
-                    await cache_mgr.save_synonyms(db_id, existing)
+                # 사용자가 확정한 단어라 `operator` 태그로 넣는다(plans/132 Y-8). 종전 전체
+                # 재저장은 기본 태그 `llm`이라 다음 LLM 재생성(`llm` 단어 교체)·감쇠 정리에서
+                # 이 단어가 사라졌다. Redis가 없으면(파일 캐시 — 태그 없음) 종전 저장으로 간다.
+                if not await cache_mgr.add_synonyms(db_id, column, [field], source="operator"):
+                    existing = await cache_mgr.get_synonyms(db_id)
+                    col_synonyms = existing.get(column, [])
+                    # 중복 체크 후 추가
+                    if field not in col_synonyms:
+                        col_synonyms.append(field)
+                        existing[column] = col_synonyms
+                        await cache_mgr.save_synonyms(db_id, existing)
 
                 registered_count += 1
                 registered_items.append(

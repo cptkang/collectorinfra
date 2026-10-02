@@ -680,7 +680,12 @@ class TestProfileWriteSingleEntry:
         store_file = "src/schema_cache/structure_store.py"
         callers = _src_files_matching(re.compile(r"(?<!def )apply_profile\(")) - {store_file}
         rollback_callers = _src_files_matching(re.compile(r"store\.rollback\(")) - {store_file}
-        assert callers <= {"src/schema_cache/db_structure_service.py"}
+        # D-294 — 자산 자동 생성 승인도 관리자 서비스다(쓰기 지점은 여전히 `apply_profile` 한 곳)
+        admin_services = {
+            "src/schema_cache/db_structure_service.py",
+            "src/schema_cache/asset_generation_service.py",
+        }
+        assert callers <= admin_services
         assert rollback_callers <= {"src/schema_cache/db_structure_service.py"}
 
     def test_only_store_writes_files_next_to_profile_paths(self):

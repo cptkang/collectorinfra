@@ -63,6 +63,14 @@ _MAX_SUMMARY_TEXT_CHARS = 1500
 #: 문서 조건부 처리기 이름(plans/127 — `doc_query.DOC_QUERY_AGENT`와 같은 값 · import 순환을 피해
 #: 문자열로 둔다). 문서 전용 계획 결정적 종료·문서 재검색 중복 방지가 읽는다.
 _DOC_AGENT = "doc_query"
+#: 비SQL 조건부 처리기(plans/125·127 — 문자열로 둔다 · import 순환 방지). 이 처리기의 실패(연결 안
+#: 됨 · 0건 · 도구 오류 · 창 밖)는 **소스 불가 종결**이다 — 다른 소스로 바꾸면 침묵 대체가 된다(125
+#: §4.6).
+_NONSQL_AGENTS = frozenset({"apm_query", _DOC_AGENT})
+#: 명시 소스 안내로 끝난 결과의 사유(plans/132 — `subagents.REASON_SOURCE_*`와 같은 값).
+_SOURCE_NOTICE_REASONS = frozenset({"source_inactive", "source_unsupported"})
+#: 안내만 하는 task 표지(`conditional_agents.SOURCE_NOTICE_KEY`와 같은 값).
+_SOURCE_NOTICE_KEY = "source_notice"
 
 
 async def replanner(
@@ -135,6 +143,21 @@ async def replanner(
         return {
             "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
         }
+
+    # 소스 불가 종결(plans/132 N-3 · G-4 · D-293 — 플래그 없음): 비SQL 처리기 실패·명시 소스
+    # 안내는 다시 계획해도 같거나, 다른 소스로 바꾸면 침묵 대체가 된다(125 §4.6 — 실측: 제니퍼 0건
+    # 뒤 재계획이 폴스타 대체 task를 4/4 추가). 나머지 task가 없거나 전부 성공이면 평가 LLM 없이
+    # 끝낸다. 권한 거부는 대상이 아니다(D-251 ⑤ — 일부 거부는 종전대로 평가).
+    _terminal = _terminal_source_task_ids(_tasks_now, _results_now)
+    if _terminal:
+        _rest = [t for t in _tasks_now if str(t.get("task_id")) not in _terminal]
+        if not _rest or _all_tasks_succeeded({**state, "task_plan": _rest}):
+            logger.info("replanner: 소스 불가 종결 %s — 재계획 스킵(plans/132 G-4)",
+                        sorted(_terminal))
+            return {
+                "needs_replan": False, "replan_history": replan_history,
+                "current_node": "replanner",
+            }
 
     # 결정적 성공 종료(D-251 ⑤ · CU-4 · plans/119 N-2 — 플래그 없음): 전 task 성공 · 조회 행 ≥1 ·
     # 미완 표지 없음이면 평가 LLM이 더할 판단이 없다. 0건·부분 실패·순차 의존(D-203) 경로는 아래
@@ -215,6 +238,16 @@ async def replanner(
         return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
 
     new_tasks = _assign_ids(decision["new_tasks"], existing=state.get("task_plan", []))
+    # 소스 불가 종결 task를 대신하거나 그 결과에 기대는 후속은 뺀다(plans/132 G-4 — 침묵 대체 차단).
+    if _terminal:
+        new_tasks = _drop_terminal_substitutes(new_tasks, _terminal)
+        if not new_tasks:
+            logger.info("replanner: 소스 불가 종결 task의 대체 후속 전부 제거 → 종료"
+                        "(plans/132 G-4)")
+            return {
+                "needs_replan": False, "replan_history": replan_history,
+                "current_node": "replanner",
+            }
     # 신규 task도 분해와 같은 계획 검증을 지난다(plans/121 TP-1.3 · N-5) — 담당 교정 + DAG만,
     # 무익 재시도 필터들보다 **앞**(교정된 담당으로 비교한다). 위반 task만 빼고 사유를 남긴다.
     new_tasks, plan_notes = _validate_replanned_tasks(
@@ -959,6 +992,50 @@ def _has_incomplete_notes(notes: object) -> bool:
     return any(
         isinstance(n, dict) and n.get("kind") not in _INFO_NOTE_KINDS for n in notes
     )
+
+
+def _terminal_source_task_ids(
+    tasks: list[dict[str, Any]], results: dict[str, Any],
+) -> set[str]:
+    """이번 계획에서 **소스 불가로 종결**된 task id(plans/132 N-3 · G-4).
+
+    - 비SQL 처리기(`apm_query`·`doc_query`)가 실패(`error`)로 끝남 — 연결 안 됨·0건·도구 오류·창 밖
+    - 명시 소스 안내로 끝남(계획 출구 안내 task · SQL 처리기 안내 단락 — G-1 「안내만」)
+
+    조회 권한 거부는 넣지 않는다 — 일부만 거부된 복합 계획은 종전대로 평가 LLM이 본다(D-251 ⑤ ·
+    plans/119 N-2). 전 task 거부는 위 단락이 이미 끝낸다.
+    """
+    out: set[str] = set()
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        tid = str(task.get("task_id"))
+        res = results.get(tid)
+        if task.get(_SOURCE_NOTICE_KEY):
+            out.add(tid)
+        elif not isinstance(res, dict) or is_access_denied_result(res):
+            continue
+        elif task.get("agent") in _NONSQL_AGENTS and res.get("error"):
+            out.add(tid)
+        elif res.get("degraded_reason") in _SOURCE_NOTICE_REASONS:
+            out.add(tid)
+    return out
+
+
+def _drop_terminal_substitutes(
+    new_tasks: list[dict[str, Any]], terminal: set[str],
+) -> list[dict[str, Any]]:
+    """소스 불가 종결 task를 대체(`supersedes`)하거나 그 결과를 입력·선행으로 받는 후속을 뺀다."""
+    kept: list[dict[str, Any]] = []
+    for task in new_tasks:
+        refs = {str(x) for key in ("supersedes", "depends_on", "input_from")
+                for x in (task.get(key) or [])}
+        if refs & terminal:
+            logger.info("replanner: 소스 불가 종결 %s 대체·의존 후속 제거: %s",
+                        sorted(refs & terminal), str(task.get("sub_query") or "")[:60])
+            continue
+        kept.append(task)
+    return kept
 
 
 def _all_tasks_succeeded(state: AgentState) -> bool:

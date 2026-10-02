@@ -39,6 +39,7 @@
         .dbs-checks { list-style: none; padding: 0; margin: 6px 0; font-size: 0.78rem; }
         .dbs-checks li { margin-bottom: 3px; }
         .dbs-textarea { min-height: 90px; font-size: 0.8rem; padding: 8px; }
+        .dbs-ddl-text { width: 100%; min-height: 220px; font-family: var(--font-mono); font-size: 0.75rem; }
         @media (max-width: 900px) { .dbs-step { grid-template-columns: 1fr; } }
     </style>
 </head>
@@ -92,6 +93,7 @@
                 <button class="tab" data-tab="feedback">알람 피드백</button>
                 <button class="tab" data-tab="drm">DRM 연동</button>
                 <button class="tab" data-tab="ragdocs">문서 검색 시험</button>
+                <button class="tab" data-tab="sourcememory">소스 선택 기억</button>
             </div>
 
             <!-- 환경변수 설정 탭 -->
@@ -560,6 +562,44 @@
                         <div class="loading-text">복호화를 시도하는 중...</div>
                     </div>
                     <div id="drmVerifyResult" style="display: none; margin-top: 14px;"></div>
+                </div>
+            </div>
+
+            <!-- 소스 선택 기억 (plans/132 W5 · 조회·삭제·조직 공용 승격) -->
+            <div class="tab-content" id="tab-sourcememory">
+                <div class="card">
+                    <div class="toolbar">
+                        <h2>소스 선택 기억</h2>
+                        <button class="btn btn-secondary" id="refreshSourceMemoryBtn" style="padding: 8px 18px; font-size: 0.8125rem;">새로고침</button>
+                    </div>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+                        사용자가 소스 선택 칩에서 고르거나 「다른 소스로 보기」로 정정한 「질의 → 데이터 소스」 사례입니다.
+                        여러 데이터 소스가 답할 수 있는 질문에서 다시 묻기 전에 참고합니다(이름을 지정한 질문·한 소스에만 있는 정보는 영향 없음).
+                        개인 사례는 그 사용자에게만 쓰이고, <strong>조직 공용으로 승격</strong>하면 모든 사용자의 판정에 쓰입니다.
+                    </p>
+                    <div id="sourceMemoryLoading" class="loading">
+                        <div class="spinner"></div>
+                        <div class="loading-text">기억을 불러오는 중...</div>
+                    </div>
+                    <div id="sourceMemorySummary" style="display: none; padding: 12px 14px; border-radius: 6px; margin-bottom: 14px; font-size: 0.85rem;"></div>
+                    <table class="settings-table" id="sourceMemoryTable" style="display: none;">
+                        <thead>
+                            <tr>
+                                <th>범위</th>
+                                <th>질의</th>
+                                <th>데이터 소스</th>
+                                <th>출처</th>
+                                <th>사용</th>
+                                <th style="width: 160px;">작업</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sourceMemoryBody"></tbody>
+                    </table>
+                    <h3 style="font-size: 0.85rem; margin: 18px 0 8px;">시드 사례(설정 파일 · 조직 공용)</h3>
+                    <table class="settings-table" id="sourceMemorySeedTable">
+                        <thead><tr><th>질의</th><th>데이터 소스</th></tr></thead>
+                        <tbody id="sourceMemorySeedBody"></tbody>
+                    </table>
                 </div>
             </div>
 

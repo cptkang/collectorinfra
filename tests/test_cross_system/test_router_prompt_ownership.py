@@ -238,9 +238,12 @@ def test_off_does_not_touch_render_cache(flag):
 
 
 def _planner_base() -> str:
-    """off 기준 — 기본 템플릿에 환경어 자리만 레지스트리 정본으로 채운 것(plans/121 TP-11.2)."""
+    """off 기준 — 기본 템플릿 + 답변 영역 칸(plans/132 N-5 — 항상 켜짐) + 환경어 자리 채움
+    (plans/121 TP-11.2). 소유 on은 이 위에 삽입만 한다."""
     return planner_prompts.render_intent_planner_environment_terms(
-        planner_prompts.INTENT_PLANNER_SYSTEM_TEMPLATE, get_registry().environment_terms
+        planner_prompts.render_intent_planner_areas_template(
+            planner_prompts.INTENT_PLANNER_SYSTEM_TEMPLATE, ip._area_rows()),
+        get_registry().environment_terms,
     )
 
 

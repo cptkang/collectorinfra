@@ -16,6 +16,10 @@
 #   22건 · 3홉 4건(P-F) · 기권(해당 소스 없음) 2건 · 창 밖 2건. **권한 밖 2건은 카탈로그 밖**이다 —
 #   하네스에 사용자 전환 키가 없고 `allowed_sources`(A-7)가 R2 뒤다(plans/125 §17).
 #
+# ★ (plans/132 W0 · 2026-10-01) FS-25~FS-33 은 소스 선별 문항이다(132 소유 번호 — 130 등 후속 추가는 FS-34
+#   부터). 명시 소스 · 명시+비활성 · 영역만 · ITAM 명시/암묵 · Prometheus · 문서 off. 문서 on 쌍은 담당 어휘
+#   (`catalog.PLAN_AGENTS`)에 `doc_query`가 없고 러너가 문서 활성을 판독하지 않아 넣지 않았다.
+#
 # ★ 단언 — 처리기·간선은 `plan`(2단 계획 요약)으로 본다. 보기(`views`)는 계획 요약 칸(M-4)에 실리지만
 #   단언 키는 아직 없다(보기 선택 정확도는 R-4 라우팅 골드 몫).
 version: 1
@@ -351,4 +355,144 @@ scenarios:
           sql_executed: false
           response_must_contain: ["조회 창"]
           plan: {agents: [apm_query]}
+    teardown: [drop_thread]
+
+  # ── 소스 선별(plans/132 W0 · §9 — FS-25~FS-33은 132 소유 번호) ─────────────
+  # 명시 소스(이름·유사어)·영역만 있는 질의·비활성 소스의 처분을 본다. 기대는 plans/132 §8 수용 기준이다
+  # (G-1 「안내만」 · G-7 (a) 영역 소유 · R-7 「WAS는 제니퍼」). 2단 계획 출구가 판정하므로 `--arm tier2_intent`
+  # 로 잰다(1단은 SQL 처리기 가드만 — G-5). 제니퍼를 끈 쌍은 `optout_apm` 프로파일로 같은 질의를 잰다.
+  # 로컬 제니퍼는 라이선스가 없어 도메인 0건이다 — APM 켬 건은 안내 1건 종료도 합격이다(SQL 0 · task 1).
+  - id: FS-25
+    plans: [132, 125, 87]
+    title: "명시 소스 · 제니퍼 인스턴스 목록은 제니퍼만 조회한다"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm]
+    turns:
+      - send: {query: "제니퍼의 인스턴스 리스트를 보여줘"}
+        expect:
+          sql_executed: false
+          plan: {agents: [apm_query], max_tasks: 1, replan_max: 0}
+    teardown: [drop_thread]
+  - id: FS-26
+    plans: [132, 125]
+    title: "명시 소스 + 비활성 · 제니퍼 미연결이면 폴스타로 대신 답하지 않고 안내만(G-1)"
+    kind: normal
+    env: closed
+    profile: optout_apm
+    endpoint: stream
+    requires_sources: [polestar_cm_gp]
+    turns:
+      - send: {query: "제니퍼의 인스턴스 리스트를 보여줘"}
+        expect:
+          status: completed
+          sql_executed: false
+          response_must_contain: ["「제니퍼」", "연결되어 있지 않"]
+    teardown: [drop_thread]
+  - id: FS-27
+    plans: [132, 125]
+    title: "영역만 · WAS 인스턴스 목록은 묻지 않고 제니퍼(R-7 · 단독 소유)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm]
+    turns:
+      - send: {query: "WAS 인스턴스 목록 보여줘"}
+        expect:
+          sql_executed: false
+          plan: {agents: [apm_query], max_tasks: 1, replan_max: 0}
+    teardown: [drop_thread]
+  - id: FS-28
+    plans: [132, 125]
+    title: "영역만 + 비활성 · 제니퍼 미연결이면 폴스타 행을 WAS 인스턴스로 답하지 않는다(C2-2 · G-7)"
+    kind: normal
+    env: closed
+    profile: optout_apm
+    endpoint: stream
+    requires_sources: [polestar_cm_gp]
+    turns:
+      - send: {query: "WAS 인스턴스 목록 보여줘"}
+        expect:
+          status: completed
+          sql_executed: false
+          response_must_contain: ["연결되어 있지 않"]
+    teardown: [drop_thread]
+  - id: FS-29
+    plans: [132]
+    title: "명시 소스 유사어 · 「APM」으로 지목해도 제니퍼"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm]
+    turns:
+      - send: {query: "APM 인스턴스 목록 보여줘"}
+        expect:
+          sql_executed: false
+          plan: {agents: [apm_query], max_tasks: 1}
+    teardown: [drop_thread]
+  - id: FS-30
+    plans: [132, 95]
+    title: "명시 소스 · ITAM 지목은 ITAM 고정(현행 유지)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [itam]
+    turns:
+      - send: {query: "ITAM에서 자산 담당자 목록 보여줘"}
+        expect:
+          status: completed
+          db_ids: ["itam"]
+          plan: {agents: [data_query]}
+    teardown: [drop_thread]
+  - id: FS-31
+    plans: [132, 95, 102]
+    title: "영역만 · 자산 담당자는 ITAM(단독 소유 · 묻지 않음)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [itam]
+    turns:
+      - send: {query: "서버별 자산 담당자와 담당 부점 알려줘"}
+        expect:
+          status: completed
+          db_ids: ["itam"]
+          plan: {agents: [data_query]}
+    teardown: [drop_thread]
+  - id: FS-32
+    plans: [132, 92]
+    title: "명시 소스 · 프로메테우스(본체 처리기 없음)는 폴스타 CPU로 대신 답하지 않는다"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [polestar_cm_gp]
+    turns:
+      - send: {query: "프로메테우스에서 서버 CPU 사용률 보여줘"}
+        expect:
+          status: completed
+          sql_executed: false
+          response_must_contain: ["「프로메테우스」", "연결되어 있지 않"]
+    teardown: [drop_thread]
+  - id: FS-33
+    plans: [132, 127]
+    title: "명시 소스 · 문서 라우팅 off면 전산관리매뉴얼 지목은 안내만"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [polestar_cm_gp]
+    turns:
+      - send: {query: "전산관리매뉴얼에서 백업 절차 알려줘"}
+        expect:
+          status: completed
+          sql_executed: false
+          # 분해가 개념 설명(general_inference)으로 두면 「지원하지 않음」 안내다(B-6) — 둘 다 문서 내용을
+          # 일반 지식으로 지어내지 않은 응답이다.
+          response_must_contain_any: [["「전산관리매뉴얼」", "연결되어 있지 않"], "지원하지 않"]
     teardown: [drop_thread]

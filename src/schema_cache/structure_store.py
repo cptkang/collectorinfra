@@ -59,6 +59,8 @@ CHECK_RESULT_SUFFIX = "check_result"
 DRAFTS_SUFFIX = "structure_drafts"
 REGISTRATION_SUFFIX = "registration"
 DESCRIPTION_DRAFTS_SUFFIX = "description_drafts"
+ASSET_DRAFTS_SUFFIX = "asset_drafts"  # D-294 자산 자동 생성 초안
+DDL_COMMENTS_SUFFIX = "ddl_comments"  # D-294 DDL 등록 때 읽은 주석(D-292 미리보기 → 자산 생성 입력)
 APPLIED_SUFFIX = "structure_meta"
 VALUE_INDEX_SUFFIX = "column_value_index"
 
@@ -791,3 +793,38 @@ class StructureStore:
         return await self._update_item(
             db_id, DESCRIPTION_DRAFTS_SUFFIX, draft_id, fields
         )
+
+    # --- 자산 자동 생성 초안 · DDL 주석 (D-294) ---
+
+    async def add_asset_draft(self, db_id: str, draft: dict[str, Any]) -> dict[str, Any]:
+        """자산 초안을 추가한다. `draft_id`·`created_at`·`status="pending"`을 채워 반환한다."""
+        validate_db_id(db_id)
+        return await self._add_item(db_id, ASSET_DRAFTS_SUFFIX, draft)
+
+    async def list_asset_drafts(self, db_id: str) -> list[dict[str, Any]]:
+        """자산 초안 목록(최신순)."""
+        validate_db_id(db_id)
+        return list(reversed(await self._load_list(db_id, ASSET_DRAFTS_SUFFIX)))
+
+    async def get_asset_draft(self, db_id: str, draft_id: str) -> dict[str, Any] | None:
+        """자산 초안 1건(없으면 None)."""
+        validate_db_id(db_id)
+        return await self._get_item(db_id, ASSET_DRAFTS_SUFFIX, draft_id)
+
+    async def update_asset_draft(
+        self, db_id: str, draft_id: str, **fields: Any
+    ) -> dict[str, Any] | None:
+        """자산 초안 필드를 갱신하고 갱신본을 반환한다(없으면 None)."""
+        validate_db_id(db_id)
+        return await self._update_item(db_id, ASSET_DRAFTS_SUFFIX, draft_id, fields)
+
+    async def save_ddl_comments(self, db_id: str, comments: dict[str, str]) -> None:
+        """DDL 등록 때 읽은 주석(``table`` · ``table.column`` → 글)을 보관한다."""
+        validate_db_id(db_id)
+        await self._save_value(db_id, DDL_COMMENTS_SUFFIX, comments)
+
+    async def load_ddl_comments(self, db_id: str) -> dict[str, str]:
+        """보관한 DDL 주석(없으면 빈 dict)."""
+        validate_db_id(db_id)
+        raw = await self._load_dict(db_id, DDL_COMMENTS_SUFFIX) or {}
+        return {str(k): str(v) for k, v in raw.items() if isinstance(v, str)}

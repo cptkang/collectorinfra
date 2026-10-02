@@ -29,10 +29,17 @@ def register(adapter: DBAdapter) -> None:
 def get_adapter(
     db_id: str | None, polestar_db_ids: set[str] | None = None
 ) -> DBAdapter | None:
-    """db_id를 담당하는 어댑터를 반환한다(없으면 None → 공통 경로)."""
+    """db_id를 담당하는 어댑터를 반환한다(없으면 None → 공통 경로).
+
+    어댑터가 `bind(db_id)`를 가지면 그 DB에 묶인 어댑터를 돌려준다(D-294 생성 템플릿 —
+    `system_template` 훅이 db_id를 받지 않아 DB별 섹션을 묶어 둔다).
+    """
     for adapter in _REGISTRY:
         if adapter.owns(db_id, polestar_db_ids):
-            return adapter
+            bind = getattr(adapter, "bind", None)
+            bound = bind(db_id) if callable(bind) else adapter
+            if bound is not None:
+                return bound
     return None
 
 
@@ -77,3 +84,7 @@ def log_adapter_ownership_startup(config: Any) -> dict[str, list[str]]:
 # 부트스트랩 — 임포트 시 폴스타 어댑터 등록. register/get_adapter 정의 뒤에 두어
 # 순환 임포트를 피한다(polestar.__init__이 register를 참조).
 from src.db_adapters import polestar as _polestar_bootstrap  # noqa: E402,F401
+# D-294 — 생성 템플릿 어댑터는 폴스타 뒤에 등록한다(폴스타 담당 DB는 폴스타가 먼저 잡는다)
+from src.db_adapters.generated import GeneratedTemplateAdapter  # noqa: E402
+
+register(GeneratedTemplateAdapter())

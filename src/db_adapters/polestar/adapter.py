@@ -39,6 +39,9 @@ class PolestarAdapter:
     """폴스타(POLESTAR) 모니터링 DB 어댑터."""
 
     name = "polestar"
+    # 활성 알람 결정적 조립(assembler.try_deterministic_alarm_sql)을 소유한다 — 단일·멀티 경로가
+    # 이 표시로 붙일지 정한다(D-294: 다른 어댑터가 담당하는 DB에 폴스타 알람 SQL을 조립하지 않게)
+    deterministic_alarm = True
 
     def owns(self, db_id: str | None, polestar_db_ids: set[str] | None = None) -> bool:
         """POLESTAR_DB_IDS(.env 런타임 설정)에 db_id가 포함되면 담당한다."""

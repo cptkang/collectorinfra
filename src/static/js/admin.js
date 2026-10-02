@@ -2595,4 +2595,86 @@
             "</tbody></table>";
         drmVerifyResult.style.display = "block";
     }
+
+    // ─── 소스 선택 기억 (plans/132 W5 · 조회·삭제·조직 공용 승격) ───
+    var sourceMemoryBody = document.getElementById("sourceMemoryBody");
+    var sourceMemoryTable = document.getElementById("sourceMemoryTable");
+    var sourceMemorySeedBody = document.getElementById("sourceMemorySeedBody");
+    var sourceMemoryLoading = document.getElementById("sourceMemoryLoading");
+    var sourceMemorySummary = document.getElementById("sourceMemorySummary");
+    var refreshSourceMemoryBtn = document.getElementById("refreshSourceMemoryBtn");
+    var SOURCE_MEMORY_ORIGINS = { user_choice: "칩 선택", feedback: "정정", curated: "관리자 정리" };
+
+    if (refreshSourceMemoryBtn) refreshSourceMemoryBtn.addEventListener("click", loadSourceMemory);
+    document.querySelectorAll('.tab[data-tab="sourcememory"]').forEach(function (tab) {
+        tab.addEventListener("click", loadSourceMemory);
+    });
+
+    async function loadSourceMemory() {
+        if (!sourceMemoryBody) return;
+        if (sourceMemoryLoading) sourceMemoryLoading.classList.add("active");
+        try {
+            var response = await apiRequest("GET", "/api/v1/admin/source-memory");
+            if (!response.ok) throw new Error(String(response.status));
+            renderSourceMemory(await response.json());
+        } catch (err) {
+            showError("소스 선택 기억을 불러오지 못했습니다.");
+        } finally {
+            if (sourceMemoryLoading) sourceMemoryLoading.classList.remove("active");
+        }
+    }
+
+    function renderSourceMemory(data) {
+        if (sourceMemorySummary) {
+            sourceMemorySummary.style.background = data.enabled ? "rgba(46,125,50,0.12)" : "rgba(120,120,120,0.12)";
+            sourceMemorySummary.innerHTML = data.enabled
+                ? "<strong>켜짐</strong> &mdash; 마지막 사용 뒤 " + escapeHtml(data.ttl_days) + "일 동안 쓰지 않으면 사라집니다(사용할 때마다 연장)." +
+                  (data.connected ? "" : " 저장소(Redis)에 연결되지 않아 사례를 읽지 못했습니다.")
+                : "<strong>꺼짐</strong> &mdash; ROUTER_SOURCE_MEMORY_TTL_DAYS 가 0입니다. 기억을 쓰지도 저장하지도 않습니다(모호한 질문은 매번 소스를 묻습니다).";
+            sourceMemorySummary.style.display = "block";
+        }
+        var rows = [];
+        (data.scopes || []).forEach(function (group) {
+            (group.cases || []).forEach(function (c) {
+                var actions = '<button class="btn btn-secondary" data-sm-action="delete" data-scope="' + escapeHtml(group.scope) + '" data-case="' + escapeHtml(c.case_id) + '" style="padding: 4px 10px; font-size: 0.75rem;">삭제</button>';
+                if (group.scope !== "org") {
+                    actions += ' <button class="btn" data-sm-action="promote" data-scope="' + escapeHtml(group.scope) + '" data-case="' + escapeHtml(c.case_id) + '" style="padding: 4px 10px; font-size: 0.75rem;">조직 공용</button>';
+                }
+                rows.push("<tr><td>" + escapeHtml(group.scope === "org" ? "조직 공용" : group.scope) + "</td><td>" +
+                    escapeHtml(c.text) + "</td><td>" + escapeHtml((c.source_labels || c.sources || []).join(", ")) +
+                    "</td><td>" + escapeHtml(SOURCE_MEMORY_ORIGINS[c.origin] || c.origin) + "</td><td>" +
+                    escapeHtml(c.use_count || 0) + "회</td><td>" + actions + "</td></tr>");
+            });
+        });
+        sourceMemoryBody.innerHTML = rows.length ? rows.join("")
+            : '<tr><td colspan="6" style="color: var(--text-muted); text-align: center;">저장된 사례가 없습니다.</td></tr>';
+        if (sourceMemoryTable) sourceMemoryTable.style.display = "table";
+        if (sourceMemorySeedBody) {
+            sourceMemorySeedBody.innerHTML = (data.seeds || []).map(function (seed) {
+                return "<tr><td>" + escapeHtml(seed.text) + "</td><td>" + escapeHtml((seed.source_labels || seed.sources || []).join(", ")) + "</td></tr>";
+            }).join("") || '<tr><td colspan="2" style="color: var(--text-muted);">시드가 없습니다.</td></tr>';
+        }
+        sourceMemoryBody.querySelectorAll("button[data-sm-action]").forEach(function (btn) {
+            btn.addEventListener("click", function () { sourceMemoryAction(btn); });
+        });
+    }
+
+    async function sourceMemoryAction(btn) {
+        var action = btn.getAttribute("data-sm-action");
+        var url = "/api/v1/admin/source-memory/" + encodeURIComponent(btn.getAttribute("data-scope")) +
+            "/" + encodeURIComponent(btn.getAttribute("data-case"));
+        if (action === "promote") {
+            if (!confirm("조직 공용으로 승격하면 모든 사용자의 소스 판정에 쓰입니다. 승격할까요?")) return;
+            url += "/promote";
+        } else if (!confirm("이 기억 사례를 지울까요?")) {
+            return;
+        }
+        var response = await apiRequest(action === "promote" ? "POST" : "DELETE", url);
+        if (!response.ok) {
+            showError("작업에 실패했습니다.");
+            return;
+        }
+        showSuccess(action === "promote" ? "조직 공용 사례로 승격했습니다." : "기억 사례를 지웠습니다.");
+        loadSourceMemory();
+    }
 })();

@@ -35,8 +35,10 @@ class TestRegistrySolutionAxis:
         dpm 은 주석 예시로만 남는다.
         """
         # plans/127 W1: 문서 소스 `doc`(backend rest · 존 그룹 없음)도 비DB 시스템 — 의도된 갱신
-        assert [s.code for s in reg.solutions()] == ["polestar", "apm", "doc"]
-        assert [s.code for s in reg.non_db_systems()] == ["apm", "doc"]
+        # plans/132 N-1(D-293): Prometheus 명시 인식 전용 항목(처리기·보기·영역 없음) — 의도된 갱신
+        assert [s.code for s in reg.solutions()] == ["polestar", "apm", "doc", "prometheus"]
+        assert [s.code for s in reg.non_db_systems()] == ["apm", "doc", "prometheus"]
+        assert reg.solution_aliases("prometheus") and not reg.views_of("prometheus")
         assert not any(g.solution == "doc" for g in reg.zone_groups())
         assert not any(g.solution == "apm" for g in reg.zone_groups())
 

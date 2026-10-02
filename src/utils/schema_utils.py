@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from typing import Any
 
 # 샘플 프리뷰 상한 — DB2 CLOB성 설정값(수 MB 단일 라인)이 무제한으로 프롬프트에
 # 직렬화되면 PII 스크럽(라인×규칙 정규식)이 이벤트 루프를 수 시간 동기 점유한다
@@ -142,3 +143,46 @@ def form_signature(template_structure: dict | None) -> str | None:
         return None
     joined = "\x1f".join(sorted(fields))
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
+
+
+# 선언 FK가 아닌 관계 출처(D-294) — 프롬프트 관계 줄에 표시를 단다
+INFERRED_RELATION_ORIGINS = frozenset({"inferred", "same_key"})
+
+
+def attach_profile_relationships(
+    schema_dict: dict[str, Any], structure_meta: dict[str, Any] | None
+) -> int:
+    """프로필 `relationships`(D-294 — 선언 FK가 없는 DB의 추론·확인 관계)를 스키마 관계에 더한다.
+
+    두 끝 테이블이 모두 `schema_dict["tables"]`에 있을 때만 더하고(테이블 이름은 스키마 접두를 뗀
+    대소문자 무시 비교 · 표기는 스키마 딕셔너리 키로 맞춘다), 이미 있는 `(from, to)`는 건너뛴다.
+    프로필에 키가 없으면 아무것도 바꾸지 않는다.
+
+    Returns:
+        더한 관계 수
+    """
+    relations = (structure_meta or {}).get("relationships")
+    if not isinstance(relations, list) or not relations:
+        return 0
+    tables = {key.rsplit(".", 1)[-1].casefold(): key for key in (schema_dict.get("tables") or {})}
+    existing = schema_dict.setdefault("relationships", [])
+    seen = {(str(r.get("from")), str(r.get("to"))) for r in existing if isinstance(r, dict)}
+    added = 0
+    for rel in relations:
+        if not isinstance(rel, dict):
+            continue
+        ends: list[str | None] = []
+        for side in (str(rel.get("from") or ""), str(rel.get("to") or "")):
+            table, _, column = side.rpartition(".")
+            key = tables.get(table.rsplit(".", 1)[-1].casefold())
+            ends.append(f"{key}.{column}" if key and column else None)
+        from_end, to_end = ends
+        if from_end is None or to_end is None or (from_end, to_end) in seen:
+            continue
+        seen.add((from_end, to_end))
+        entry: dict[str, Any] = {"from": from_end, "to": to_end}
+        if rel.get("origin") in INFERRED_RELATION_ORIGINS:
+            entry["origin"] = rel["origin"]
+        existing.append(entry)
+        added += 1
+    return added

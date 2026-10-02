@@ -815,7 +815,12 @@ class TestSynonymRegistrationFlow:
             )
 
         assert "2건" in result["final_response"]
-        assert mock_cm.save_synonyms.call_count >= 1
+        # 사용자가 확정한 단어는 operator 태그로 단어 단위 추가(plans/132 Y-8 — 종전 전체 재저장은
+        # 기본 `llm` 태그라 LLM 재생성·감쇠에서 사라졌다)
+        assert mock_cm.add_synonyms.await_count == 2
+        calls = mock_cm.add_synonyms.await_args_list
+        assert all(c.kwargs.get("source") == "operator" for c in calls)
+        mock_cm.save_synonyms.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_synonym_registration_selective(self):

@@ -367,9 +367,13 @@ class TestDecomposition:
     async def test_off_prompt_is_base_template_and_capability_not_kept(self):
         llm = _ScriptedLLM(_PLAN)
         plan = await ip._llm_decompose(llm, "질의", _cfg(ownership=False))
-        # 기본 템플릿 + 환경어 자리 채움만(plans/121 TP-11.2 — 레지스트리 정본)
+        # 기본 템플릿 + 답변 영역 칸(plans/132 N-5 — 항상 켜짐) + 환경어 자리 채움
+        # (plans/121 TP-11.2)
+        from src.prompts.intent_planner import render_intent_planner_areas_template
+
         assert llm.system_prompts[0] == render_intent_planner_environment_terms(
-            INTENT_PLANNER_SYSTEM_TEMPLATE, get_registry().environment_terms
+            render_intent_planner_areas_template(INTENT_PLANNER_SYSTEM_TEMPLATE, ip._area_rows()),
+            get_registry().environment_terms,
         )
         assert all("capability" not in t for t in plan["tasks"])
 

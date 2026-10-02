@@ -72,6 +72,7 @@ from src.nodes.key_bridge import (
 # 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
 from src.nodes.prompt_blocks import (
+    build_profile_rules_block,
     CRITERIA_AND_GRAIN_RULE_BLOCK,
     EAV_JOIN_RULE_BLOCK,
     build_eav_pivot_block,
@@ -202,6 +203,10 @@ def _format_structure_guide(
 
     # 금지 JOIN 컬럼 경고
     guide += build_forbidden_join_block(structure_meta.get("patterns", []))
+
+    # D-294 — 프로필 쿼리 규칙·코드값 블록(자산 자동 생성 · 멀티 경로와 같은 자리)
+    # 키가 없으면 빈 문자열이라 기존 프로필의 프롬프트는 그대로다
+    guide += build_profile_rules_block(structure_meta)
 
     # 쿼리 예시 (few-shot) — 질문→SQL 쌍을 직접 제시하여 LLM 환각 방지.
     # 멀티 DB 경로(multi_db_executor)와 동일 출처를 쓰도록 공용 헬퍼로 분리(D-066).
@@ -1167,7 +1172,9 @@ def _try_deterministic_alarm_single(state: AgentState, ctx: "_GenContext") -> Op
     db_id = state.get("active_db_id")
     from src.db_adapters import get_adapter
 
-    if get_adapter(db_id, ctx.adapter_db_ids) is None:
+    # 알람 조립을 소유한 어댑터(폴스타)만 — 다른 어댑터(생성 템플릿 · D-294)가 담당하는 DB에는
+    # 붙이지 않는다
+    if getattr(get_adapter(db_id, ctx.adapter_db_ids), "deterministic_alarm", False) is not True:
         return None
     from src.db_adapters.polestar.assembler import try_deterministic_alarm_sql
     from src.routing.domain_config import get_domain_by_id

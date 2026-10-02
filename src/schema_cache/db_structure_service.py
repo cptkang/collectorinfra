@@ -923,6 +923,8 @@ class DBStructureService(AdminServiceBase):
                 "env": snapshot_record.get("env"),
                 "by": snapshot_record.get("by"),
                 "table_count": snapshot.get("table_count"),
+                # 기준선 출처 — DDL 등록(D-292)만 표기가 있고 없으면 MCP 수집이다
+                "origin": snapshot_record.get("origin") or "mcp",
             }
         return {
             "source": source,

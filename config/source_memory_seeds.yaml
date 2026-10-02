@@ -1,0 +1,18 @@
+# 소스 선택 기억 시드 — 조직 공용(`org`) 정리 사례의 정본 (plans/132 W5 · §6.5 · D-131 git 정본)
+#
+# 소스가 모호한 질의(답변 영역의 소유 소스가 2개 이상 · 소스 이름 없음)에서 **소스 선택 칩을 띄우기 전에**
+# 참고하는 「질의 → 데이터 소스」 사례다. 명시 소스·단독 소유 판정은 뒤집지 않는다(판정 순서
+# `명시 > 단독 소유 > 기억 > 칩`). 기능이 꺼져 있으면(`ROUTER_SOURCE_MEMORY_TTL_DAYS=0` · 기본) 읽지 않는다.
+#
+# - 정답 소스가 확정된 골드 문항(4소스 골드 FS군 · 라우팅 골드)과 관리자 정리 사례만 둔다.
+# - sources: 레지스트리 시스템 코드(`config/db_registry.yaml` — 비DB `solutions[].code` · DB 소유 시스템).
+#   레지스트리에 없는 코드를 쓴 행은 적재 때 버리고 경고한다.
+# - 런타임 사례(사용자 선택·정정·관리자 승격)는 Redis에 있다 — 이 파일은 사람이 고치는 시드뿐이다.
+# - 기동 뒤 첫 사용 때 읽는다(프로세스 캐시) — 고쳤으면 재기동한다.
+version: 1
+cases:
+  - {text: "WAS 인스턴스 목록 보여줘", sources: [apm], areas: [was_instance], from: "FS-27"}
+  - {text: "JVM 힙 사용률이 높은 WAS 인스턴스 보여줘", sources: [apm], areas: [was_runtime], from: "FS-02"}
+  - {text: "지금 실행 중인 WAS 서비스 목록 보여줘", sources: [apm], areas: [was_activity], from: "FS-04"}
+  - {text: "서버별 자산 담당자와 담당 부점 알려줘", sources: [itam], areas: [asset_owner], from: "FS-31"}
+  - {text: "DB 서버들의 자산 담당자와 담당 부점 목록 알려줘", sources: [itam], areas: [asset_owner], from: "routing_gold"}

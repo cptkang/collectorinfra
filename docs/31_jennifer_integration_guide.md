@@ -1093,8 +1093,8 @@ overrides: []
    근거는 결정 기록의 `app_impact_fatal_events`·`app_impact_event_types`·`app_impact_was_signals`에 남는다. 관제 화면 결정 근거 패널은 이 키들을 「앱 영향 — …」 한글 이름으로 보여 준다(`src/static/js/noise-help.js`).
    게이트웨이가 느리면 대상 알람 1건에 최대 약 7초가 더해진다(호출 5초 · TCP 사전 확인 2초 · 미가용 판정 뒤 30초 동안 재시도 안 함 — 워커는 알람을 하나씩 처리).
    워커가 직렬이라 그동안 뒤에 쌓인 알람도 함께 밀린다 — 켜기 전에 게이트웨이 응답 시간을 먼저 본다. **v4.1 실측**(로컬 게이트웨이 · 도메인 0건): 추가 지연 0.20초(첫 호출) ·
-   게이트웨이 다운이면 0.001초 만에 `gateway_unreachable`로 넘어가고 쿨다운 중에는 0초 · Bearer 불일치(401)는 `gateway_error — … unhandled errors in a TaskGroup
-   (1 sub-exception)`으로만 남아 인증 실패인지 보이지 않는다(§11 · 사유 개선은 87 §0.12 F-4).
+   게이트웨이 다운이면 0.001초 만에 `gateway_unreachable`로 넘어가고 쿨다운 중에는 0초 · Bearer 불일치(401)는 v4.1 당시 `… unhandled errors in a TaskGroup (1 sub-exception)`으로만 남았다 →
+   **2026-10-01 수정(87 §0.12 F-4)**: `gateway_error — 게이트웨이 호출 실패(apm_events): HTTP 401 인증 실패 — NOISE_APM_MCP_TOKEN이 게이트웨이의 APM_GATEWAY_BEARER_TOKEN과 같은지 확인`(Bearer 없음도 같음 · 로컬 게이트웨이 실측 · §11).
 2. **소스 배지** — 게이트웨이 이벤트(`dbId="jennifer"`·`"jennifer_<id>"`)는 배지가 **「제니퍼」**다. 레지스트리 DB가 아니라서 `db_id` 해석 앞에서 분기한다.
    툴팁은 `제니퍼 — <존 약칭> <제니퍼 도메인>; <dbId>`다(v5 — 예 `제니퍼 — 은행존 운영도메인; jennifer_legacy` · 존은 레지스트리 `sources[]`에서 · 존 없는 소스와 단일 설정은
    v4 그대로 `제니퍼 — <도메인>; jennifer`). hostname 역조회(D-188)가 폴스타 서버를 찾아도 배지는 바뀌지 않는다(`noise_gate/application/server_identity.py`).
@@ -1444,7 +1444,7 @@ RUN_LOCAL_LLM=1 pytest <대상 테스트> -m live_llm
 | 한 소스만 결과가 빠지고 `[한계] APM 소스 <id> 조회 불가(…)` | 그 소스 `gateway_health` 행 · 망 도달 | 그 뷰 서버 미도달·토큰·도메인 0건 — 나머지 소스는 정상 결과다(부분 실패 · D-287 ⑦). 게이트웨이 호스트에서 모든 뷰 서버에 닿지 않으면 87 R-31(G-13 재판정) | 【현재 가능】 |
 | 폴링이 같은 이벤트를 두 번 발행 | Redis 키 `apm_gateway:poller:seen:*`(TTL 24시간) | 멱등 키가 Redis에 남는지(다른 DB 번호 · 플러시) · 같은 게이트웨이를 두 개 띄우지 않았는지 | 【현재 가능】 |
 | 한 조사의 감사가 둘로 흩어짐 | 게이트웨이 로그 `apm audit: … investigation_id=` | 정상 구조(R-19) — 두 감사 로그를 id로 합쳐 본다(LLM이 인자를 빠뜨리면 `-`) | 【현재 가능】 |
-| `app_impact_error`가 `gateway_error — 게이트웨이 호출 실패(apm_events): unhandled errors in a TaskGroup (1 sub-exception)` | `NOISE_APM_MCP_TOKEN` ↔ `APM_GATEWAY_BEARER_TOKEN` · 게이트웨이 로그 | Bearer 불일치(401)면 이렇게만 남는다(v4.1 로컬 실측) — 두 값을 맞춘다. 사유 표시 개선은 후속(87 §0.12 F-4) | 【현재 가능】 |
+| `app_impact_error`가 `gateway_error — 게이트웨이 호출 실패(apm_events): HTTP 401 인증 실패 — NOISE_APM_MCP_TOKEN이 게이트웨이의 APM_GATEWAY_BEARER_TOKEN과 같은지 확인`(2026-10-01 이전 코드는 `… unhandled errors in a TaskGroup (1 sub-exception)`) | `NOISE_APM_MCP_TOKEN` ↔ `APM_GATEWAY_BEARER_TOKEN` · 게이트웨이 로그 | Bearer 불일치·누락(401)이다 — 두 값을 맞춘다. 사유에 HTTP 상태를 싣도록 고쳤다(87 §0.12 F-4 · 2026-10-01) | 【현재 가능】 |
 | 라이선스·에이전트를 붙였는데 `apm_*`가 계속 "APM 도메인 0건"(`gateway_health`는 도메인 수가 보임) | 게이트웨이 버전(코드) | v4.1까지는 빈 인벤토리가 600초 캐시됐다. **v5(J8)부터 실패·빈 인벤토리는 30초만 캐시한다**(F-3 해소 · §4.5) — 30초 넘게 계속되면 다른 원인(도메인 필터 `JENNIFER_DOMAIN_IDS` 등)을 본다 | 【현재 가능】 |
 | 제니퍼 콘솔의 토큰 사용량이 호출 직후 안 늘어남 | 몇 초 뒤 다시 확인 | 약 5초 늦게 반영된다(v4.1 로컬 실측) — 반영 뒤에는 요청 수와 같다(타임아웃 요청 포함 · 401·연결 거부 제외) | 【현재 가능】 |
 | `profile.txt`가 500 `For input string: "…" under radix 16` 또는 `Range [0, 8) out of bounds` | 쿼리 `key` | 선택 키 `key`는 16진수 8자리 이상만 받는다(v4.1 로컬 실측) — 게이트웨이는 `key`를 보내지 않으므로 수동 호출에서만 생긴다 | 【현재 가능】 |

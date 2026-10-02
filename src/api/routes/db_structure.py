@@ -1,7 +1,8 @@
 """관리자 「DB 구조」 API (plans/104 §3.2 · Wave 2 계약 §5).
 
-MCP 소스 목록 · 변경 점검 · 구조 분석 초안·승인·버전 · 신규 시스템 등록 흐름을 관리자에게 연다.
-무거운 작업(점검·분석·등록)은 `AdminJobRunner` 백그라운드 잡으로 돌리고 202 + `job_id`를 돌려준다.
+MCP 소스 목록 · 변경 점검 · 구조 분석 초안·승인·버전 · 신규 시스템 등록 흐름 · DDL 스키마
+등록(D-292)을 관리자에게 연다. 무거운 작업(점검·분석·등록·DDL 등록)은 `AdminJobRunner` 백그라운드
+잡으로 돌리고 202 + `job_id`를 돌려준다.
 
 - 전 엔드포인트 `require_admin_user`(D-069) + `ADMIN_ACTION` 감사 · 응답 `audit_logged`
   (diff-report는 YAML 본문이라 `X-Audit-Logged` 헤더로 싣는다).
@@ -34,6 +35,13 @@ _PREFIX = "/admin/db-structure"
 _ID_PATTERN = r"^[A-Za-z0-9_-]+$"
 
 RegisterStep = Literal["probe", "schema", "descriptions", "db_description", "seeds", "value_index"]
+DDLEngine = Literal["postgresql", "db2", "mariadb"]
+AssetKind = Literal[
+    "relationships", "allowed_tables", "code_values", "entity_keys", "query_rules",
+    "query_examples", "seeds", "prompt_template",
+]
+# DDL 본문 상한(문자 수) — 화면의 파일 크기 상한(5MB)과 맞춘다
+_DDL_MAX_CHARS = 5_000_000
 
 # `DraftNotApprovable.code` 중 "대상 없음"(404)
 # — 나머지(not_pending·validation_failed·env_mismatch)는 409
@@ -103,6 +111,39 @@ class DBDescriptionRequest(BaseModel):
     )
 
 
+class DDLPreviewRequest(BaseModel):
+    """DDL 해석 미리보기 요청(D-292) — SQL은 실행하지 않고 텍스트로만 읽는다."""
+
+    engine: DDLEngine = Field(..., description="DDL 방언(식별자 대소문자·타입 표기 기준)")
+    text: str = Field(..., min_length=1, max_length=_DDL_MAX_CHARS, description="DDL 원문")
+
+
+class AssetProfileRequest(BaseModel):
+    """자산 자동 생성 프로파일링 요청(D-294)."""
+
+    tables: list[str] | None = Field(
+        None, description="프로파일링 범위(없으면 프로필 allowed_tables · 없으면 전체)"
+    )
+
+
+class AssetApproveRequest(BaseModel):
+    """자산 초안 승인 요청 — 고른 자산만 적용한다."""
+
+    include: list[AssetKind] = Field(..., min_length=1, description="적용할 자산")
+    allowed_tables: list[str] | None = Field(
+        None, description="조회 대상 테이블 선택(없으면 초안 후보 그대로)"
+    )
+    reason: str = Field("", max_length=2000, description="사유(감사 기록에 남는다)")
+
+
+class DDLImportRequest(DDLPreviewRequest):
+    """DDL 스키마 등록 요청 — 미리보기에서 본 결과와 같을 때만 저장한다."""
+
+    expected_hash: str = Field(
+        ..., pattern=r"^[0-9a-f]{1,128}$", description="미리보기 응답의 `snapshot_hash`"
+    )
+
+
 # === 의존성 — 서비스·잡 러너 (테스트는 dependency_overrides로 교체) ===
 
 
@@ -134,6 +175,29 @@ def get_structure_service(request: Request) -> Any:
 def get_registration_service(request: Request) -> Any:
     """실행 중 프로세스 설정(`app.state.config`)으로 등록 서비스를 만든다."""
     return build_registration_service(request.app.state.config)
+
+
+def asset_sql_checker(sql: str, schema_info: Any, engine: str) -> list[str]:
+    """LLM 자산 SQL 검증기 — 질의 경로 `validate_sql`(참조 테이블·컬럼 실존 · SELECT 전용)의 오류.
+
+    서비스(`src/schema_cache`)는 application 계층의 `validate_sql`을 import할 수 없어 조립부가
+    주입한다(D-294).
+    """
+    from src.sql_validation import validate_sql
+
+    return list(validate_sql(sql, dict(schema_info), db_engine=engine, default_limit=50).errors)
+
+
+def build_asset_service(config: Any) -> Any:
+    """`AssetGenerationService`를 만든다(D-294 — 지연 import · LLM SQL 검증기 주입)."""
+    from src.schema_cache.asset_generation_service import AssetGenerationService
+
+    return AssetGenerationService(config, _cache_manager(config), sql_checker=asset_sql_checker)
+
+
+def get_asset_service(request: Request) -> Any:
+    """실행 중 프로세스 설정으로 자산 자동 생성 서비스를 만든다."""
+    return build_asset_service(request.app.state.config)
 
 
 def get_admin_job_runner(request: Request) -> Any:
@@ -511,6 +575,76 @@ async def get_registration(
     )
 
 
+@router.post(f"{_PREFIX}/{{source}}/ddl/preview")
+async def preview_ddl(
+    request: Request,
+    body: DDLPreviewRequest,
+    source: str = _SourcePath,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+    service: Any = Depends(get_registration_service),
+) -> dict[str, Any]:
+    """DDL을 해석해 테이블·컬럼·PK·FK와 현재 기준선 대비 차이를 보인다(저장 0 · D-292)."""
+    result = await _call(service.preview_ddl(source, engine=body.engine, text=body.text))
+    audit_logged = await _audit(
+        request,
+        _admin,
+        "ddl_preview",
+        source=source,
+        engine=body.engine,
+        text_length=len(body.text),
+        table_count=result.get("table_count"),
+        snapshot_hash=result.get("snapshot_hash"),
+    )
+    return _with_audit(result, audit_logged)
+
+
+@router.post(f"{_PREFIX}/{{source}}/ddl/import", status_code=202)
+async def start_ddl_import(
+    request: Request,
+    body: DDLImportRequest,
+    source: str = _SourcePath,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+    service: Any = Depends(get_registration_service),
+    runner: Any = Depends(get_admin_job_runner),
+) -> dict[str, Any]:
+    """DDL 해석 결과를 O-2 자리(스키마 캐시·기준선)에 저장하는 잡을 시작한다(D-292).
+
+    미리보기와 다르면(해시 불일치) 잡을 만들지 않고 422로 거절한다. 잡 파라미터에는 DDL 본문을
+    싣지 않는다(잡 레코드는 Redis에 남는다).
+    """
+    by = _admin.get("sub")
+    prepared = await _call(service.prepare_ddl_import(
+        source, engine=body.engine, text=body.text, expected_hash=body.expected_hash,
+    ))
+    table_count = prepared.snapshot["table_count"]
+    job = await _call(
+        runner.start(
+            kind="ddl_import",
+            db_id=source,
+            by=by,
+            params={
+                "engine": body.engine,
+                "text_length": len(body.text),
+                "snapshot_hash": body.expected_hash,
+                "table_count": table_count,
+            },
+            work=lambda ctx: service.run_ddl_import(source, prepared, by=by, ctx=ctx),
+        )
+    )
+    audit_logged = await _audit(
+        request,
+        _admin,
+        "ddl_import",
+        source=source,
+        job_id=job.get("job_id"),
+        engine=body.engine,
+        text_length=len(body.text),
+        table_count=table_count,
+        snapshot_hash=body.expected_hash,
+    )
+    return _with_audit(job, audit_logged)
+
+
 @router.post(f"{_PREFIX}/{{source}}/description-drafts/{{draft_id}}/apply")
 async def apply_description_draft(
     request: Request,
@@ -602,3 +736,128 @@ async def config_snippets(
         result,
         await _audit(request, _admin, "config_snippets", source=source),
     )
+
+
+# === 스키마 자산 자동 생성 (D-294 · plans/133) ===
+
+_AssetFileKind = Literal["seeds", "prompt_template"]
+
+
+@router.get(f"{_PREFIX}/{{source}}/assets")
+async def get_assets(
+    request: Request,
+    source: str = _SourcePath,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+    service: Any = Depends(get_asset_service),
+) -> dict[str, Any]:
+    """자산 초안 목록 · 시드·DB 전용 섹션 파일과 버전."""
+    result = await _call(service.overview(source))
+    return _with_audit(result, await _audit(request, _admin, "get_assets", source=source))
+
+
+@router.post(f"{_PREFIX}/{{source}}/assets/profile", status_code=202)
+async def start_asset_profile(
+    request: Request,
+    source: str = _SourcePath,
+    body: AssetProfileRequest | None = None,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+    service: Any = Depends(get_asset_service),
+    runner: Any = Depends(get_admin_job_runner),
+) -> dict[str, Any]:
+    """프로파일링 잡을 시작한다 — 카탈로그·데이터 읽기 전용 조회로 자산 초안(LLM 0)."""
+    by = _admin.get("sub")
+    tables = body.tables if body else None
+    job = await _call(runner.start(
+        kind="asset_profile", db_id=source, by=by, params={"tables": tables},
+        work=lambda ctx: service.run_asset_profile(source, tables=tables, by=by, ctx=ctx),
+    ))
+    audit_logged = await _audit(
+        request, _admin, "asset_profile", source=source, job_id=job.get("job_id"), tables=tables,
+    )
+    return _with_audit(job, audit_logged)
+
+
+@router.post(f"{_PREFIX}/{{source}}/asset-drafts/{{draft_id}}/llm", status_code=202)
+async def start_asset_llm(
+    request: Request,
+    source: str = _SourcePath,
+    draft_id: str = _DraftPath,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+    service: Any = Depends(get_asset_service),
+    runner: Any = Depends(get_admin_job_runner),
+) -> dict[str, Any]:
+    """LLM 보조 잡을 시작한다 — 쿼리 예시 · DB 전용 규칙 섹션(결정적 검증·실행 포함)."""
+    by = _admin.get("sub")
+    job = await _call(runner.start(
+        kind="asset_llm", db_id=source, by=by, params={"draft_id": draft_id},
+        work=lambda ctx: service.run_asset_llm(source, draft_id, by=by, ctx=ctx),
+    ))
+    audit_logged = await _audit(
+        request, _admin, "asset_llm", source=source, draft_id=draft_id, job_id=job.get("job_id"),
+    )
+    return _with_audit(job, audit_logged)
+
+
+@router.post(f"{_PREFIX}/{{source}}/asset-drafts/{{draft_id}}/approve")
+async def approve_asset_draft(
+    request: Request,
+    body: AssetApproveRequest,
+    source: str = _SourcePath,
+    draft_id: str = _DraftPath,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+    service: Any = Depends(get_asset_service),
+) -> dict[str, Any]:
+    """고른 자산만 적용한다(프로필 키 · 유사어 시드 · DB 전용 규칙 섹션)."""
+    include = list(dict.fromkeys(body.include))
+    result = await _call(service.approve_asset_draft(
+        source, draft_id, include=include, allowed_tables=body.allowed_tables,
+        by=_admin.get("sub"), reason=body.reason,
+    ))
+    audit_logged = await _audit(
+        request, _admin, "approve_asset_draft", source=source, draft_id=draft_id,
+        include=include, allowed_tables=body.allowed_tables, reason=body.reason,
+        applied=result.get("applied"),
+    )
+    return _with_audit(result, audit_logged)
+
+
+@router.post(f"{_PREFIX}/{{source}}/asset-drafts/{{draft_id}}/reject")
+async def reject_asset_draft(
+    request: Request,
+    source: str = _SourcePath,
+    draft_id: str = _DraftPath,
+    body: ReasonRequest | None = None,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+    service: Any = Depends(get_asset_service),
+) -> dict[str, Any]:
+    """자산 초안을 반려한다."""
+    reason = body.reason if body else ""
+    result = await _call(
+        service.reject_asset_draft(source, draft_id, by=_admin.get("sub"), reason=reason)
+    )
+    audit_logged = await _audit(
+        request, _admin, "reject_asset_draft", source=source, draft_id=draft_id, reason=reason,
+    )
+    return _with_audit(result, audit_logged)
+
+
+@router.post(f"{_PREFIX}/{{source}}/assets/{{kind}}/versions/{{ver}}/rollback")
+async def rollback_asset(
+    request: Request,
+    kind: _AssetFileKind,
+    source: str = _SourcePath,
+    ver: int = Path(..., ge=0, description="되돌릴 버전 번호"),
+    body: ReasonRequest | None = None,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+    service: Any = Depends(get_asset_service),
+) -> dict[str, Any]:
+    """유사어 시드 · DB 전용 규칙 섹션 파일을 이전 버전 원문으로 되돌린다."""
+    reason = body.reason if body else ""
+    result = await _call(
+        service.rollback_asset(source, kind, ver, by=_admin.get("sub"), reason=reason)
+    )
+    audit_logged = await _audit(
+        request, _admin, "rollback_asset", source=source, kind=kind, ver=ver, reason=reason,
+        new_ver=(result.get("version") or {}).get("ver"),
+    )
+    return _with_audit(result, audit_logged)

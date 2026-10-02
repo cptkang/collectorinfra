@@ -34,7 +34,7 @@
   - Verify: `noise_gate/tests/test_plan87_apm_consumer.py` · `test_plan60_flags_off_regression.py` · 루트 pytest
 - [x] T-11 품질 게이트 — ruff · mypy(게이트웨이) · `arch_check --ci` · `overfit_check --ci`(게이트웨이 편입 · 어댑터 제외 · 기준선 무변경)
 - [x] T-12 문서 — `docs/31` v4 · 계획서 `-WIP`·§0.11·§13 · `plans/INDEX.md` · D-195 부기 · `docs/18`
-- [ ] T-13 `CLAUDE.md` 「저장소 지도」·「패키지 경계」 — **미반영**(에이전트 지시만으로 설정 파일을 바꾸지 않는다 · 초안 패치를 팀 리드에게 전달)
+- [x] T-13 `CLAUDE.md` 「저장소 지도」·「패키지 경계」 — ~~미반영~~ **반영(2026-10-01 · 사용자 「결정이 필요한 사항은 권고를 기준으로 진행하라」)** — 초안 패치 적용(저장소 지도 · 기동·테스트 명령 · 패키지 경계 표 · 2단 중첩 설명) + 다중 소스(D-287) 구절
 
 ## 잔여(이 작업 밖)
 

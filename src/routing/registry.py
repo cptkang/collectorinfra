@@ -140,6 +140,8 @@ class SolutionSpec:
         requires: 이 솔루션을 쓰기 전에 해소돼야 하는 능력(예: apm → host_location).
         views: 비SQL 처리기의 고정 보기 표(plans/125 §4.2) — SQL 솔루션은 비어 있다.
         sources: 소스 ↔ 존 표(plans/87 J8 · D-287 ④ — 제니퍼 뷰 서버 N개) — 선언 순서.
+        aliases: 사용자가 이 시스템을 부르는 이름·유사어(plans/132 N-1) — 명시 소스 인식 전용.
+            DB 시스템의 유사어는 `databases[].aliases`가 정본이라 여기에는 비DB 시스템만 둔다.
     """
 
     code: str
@@ -151,6 +153,7 @@ class SolutionSpec:
     requires: tuple[str, ...] = ()
     views: tuple[ViewSpec, ...] = ()
     sources: tuple[SourceSpec, ...] = ()
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -508,8 +511,38 @@ class DBRegistry:
         return tuple(dict.fromkeys(self.location_terms() + tuple(self.environment_terms)))
 
     def new_db_signal_terms(self) -> tuple[str, ...]:
-        """위치 + 환경 + 제품/DB 표면어 — 직전 DB 승계를 차단할 신호 전체."""
-        return self.location_signal_terms() + self.db_signal_terms()
+        """위치 + 환경 + 제품/DB 표면어 + 데이터 소스 유사어 — 직전 DB 승계를 차단할 신호 전체.
+
+        소스 유사어(plans/132 N-2 · 예: 「제니퍼」)를 쓴 턴은 다른 소스를 새로 지목한 것이라 직전
+        폴스타 턴의 DB를 이어받지 않는다(S-9 ④).
+        """
+        terms = self.location_signal_terms() + self.db_signal_terms()
+        return terms + tuple(t for t in self.source_alias_terms() if t not in terms)
+
+    # ── 데이터 소스 유사어 (plans/132 N-1 · D-293) ─────────────
+    def solution_aliases(self, system: str) -> tuple[str, ...]:
+        """비DB 시스템의 이름·유사어(코드 포함 · 선언 순서). 미등록은 빈 튜플."""
+        for spec in self.non_db_systems():
+            if spec.code == system:
+                return tuple(dict.fromkeys((spec.code, *spec.aliases)))
+        return ()
+
+    def source_alias_terms(self) -> tuple[str, ...]:
+        """원문에서 결정적으로 찾을 **데이터 소스 이름·유사어**(선언 순서 · 중복 제거).
+
+        비DB 시스템의 `aliases` + 존·제품군이 없는 단독 DB 시스템(자산관리 등)의 `aliases`다.
+        폴스타처럼 존·제품군이 있는 DB의 별칭은 위치·제품 표면어(`locations`·`families`)가 이미
+        다루므로 넣지 않는다(위치어 보강 D-065와 겹치지 않게). D-004 경계: 등록된 이름의 인식이지
+        의도 분류가 아니다(D-004 부기 · D-281 ⑦).
+        """
+        terms: list[str] = []
+        for spec in self.non_db_systems():
+            terms.extend(spec.aliases)
+        for entry in self.databases:
+            if not entry.zone and not entry.family:
+                terms.extend(entry.aliases)
+        reserved = set(self.location_signal_terms()) | set(self.product_terms())
+        return tuple(t for t in dict.fromkeys(terms) if t and t not in reserved)
 
 
 # ──────────────────────────────────────────────
@@ -635,6 +668,7 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
             sources=_parse_sources(
                 raw.get("sources"), solution=str(raw["code"]), declared_zones=zone_code_set
             ),
+            aliases=_as_str_tuple(raw.get("aliases")),
         )
         for raw in data.get("solutions") or []
         if isinstance(raw, dict) and raw.get("code")

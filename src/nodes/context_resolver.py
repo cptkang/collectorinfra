@@ -148,6 +148,10 @@ async def context_resolver(
         "previous_entities": previous_entities,
         "previous_entities_complete": previous_entities_complete,
         "previous_location": previous_location,
+        # 직전 턴 2단 계획이 닿은 비DB 시스템(plans/132 · 처리기 고정·안내) — 유사어 등록 맥락(G-15)
+        "previous_sources": (
+            [] if state.get("db_scope_reset") else list(state.get("turn_sources") or [])
+        ),
     }
 
     logger.info(

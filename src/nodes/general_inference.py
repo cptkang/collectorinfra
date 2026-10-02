@@ -143,13 +143,50 @@ def _doc_usage_lines(state: AgentState, app_config: AppConfig) -> tuple[str, str
     return source, capability
 
 
+#: 비DB 관측 시스템 코드(레지스트리 `solutions[].code`) — 사용법 안내 조건부 행(plans/132 W4 ·
+#: 125 A-8).
+_APM_SYSTEM = "apm"
+
+
+def _apm_usage_lines(state: AgentState, app_config: AppConfig) -> tuple[str, str]:
+    """(소스 한 줄, 조회 유형 한 줄) — WAS·미들웨어(APM) 시스템이 활성 ∧ 허용일 때만(W4).
+
+    125 A-8 잔여 — 안내 목록에 APM이 없어 「무엇을 조회할 수 있나」에 답하지 못했다. 활성
+    판정은 처리기 등록과 같은 재료(레지스트리 보기 표 ∧ `MCP_SOURCE_ENDPOINTS` —
+    `active_source_codes`)이고, 시스템 표시명·보기 라벨·유사어는 레지스트리에서 렌더한다(사본
+    금지). 비활성·권한 밖이면 빈 문자열 둘 — 안내문 바이트 불변(문서 행 `_doc_usage_lines`와 같은
+    규율).
+    """
+    reg = get_registry()
+    codes = getattr(getattr(app_config, "dbhub", None), "active_source_codes", None)
+    try:
+        active = callable(codes) and _APM_SYSTEM in codes() and bool(reg.views_of(_APM_SYSTEM))
+    except Exception:  # noqa: BLE001 — 설정 대역·깨진 설정은 비활성
+        active = False
+    if not active or not is_source_allowed(
+        _APM_SYSTEM, state.get("allowed_sources"), state.get("user_role")
+    ):
+        return "", ""
+    views = " · ".join(v.label for v in reg.views_of(_APM_SYSTEM) if v.label)
+    aliases = reg.solution_aliases(_APM_SYSTEM)
+    names = " · ".join(dict.fromkeys(a for a in aliases if a != _APM_SYSTEM))
+    source = f"- {reg.system_label(_APM_SYSTEM)}: {views}"
+    capability = (
+        f"- WAS·미들웨어: {views} (질문에 「{names}」 같은 소스 이름을 넣으면 그 소스에서 조회)"
+    )
+    return source, capability
+
+
 def _build_usage_answer(state: AgentState, app_config: AppConfig) -> str:
     """사용법 안내를 활성∩허용 소스와 지원 조회 유형으로 조립한다(D-038 — 사실은 코드 조립).
 
     조회 가능한 소스가 없으면 소스·조회 유형을 광고하지 않고 권한 요청을 안내한다.
     """
     catalog = _build_source_catalog(state, app_config)
+    apm_source, apm_capability = _apm_usage_lines(state, app_config)
     doc_source, doc_capability = _doc_usage_lines(state, app_config)
+    if catalog and apm_source:
+        catalog = f"{catalog}\n{apm_source}"
     if catalog and doc_source:
         catalog = f"{catalog}\n{doc_source}"
     if not catalog:
@@ -165,6 +202,7 @@ def _build_usage_answer(state: AgentState, app_config: AppConfig) -> str:
         + catalog
         + "\n\n### 조회할 수 있는 항목\n"
         + _SUPPORTED_CAPABILITIES
+        + (f"\n{apm_capability}" if apm_capability else "")
         + (f"\n{doc_capability}" if doc_capability else "")
         + "\n\n### 사용법\n"
         "- 조회할 대상과 항목을 한 문장으로 적어 주세요. 소스가 여럿이면 어느 소스인지 함께 적으면 "

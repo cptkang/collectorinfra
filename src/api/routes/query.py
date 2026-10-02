@@ -1119,11 +1119,12 @@ def _zone_answer_parse_reuse(
     """존 역질문 답변 턴이면 직전 턴 `parsed_requirements`를, 아니면 None (plans/119 Q-2).
 
     조건(전부): 직전 턴이 후단 게이트로 존을 되물었고(체크포인트 `zone_clarification`) · 이번 턴이
-    존을 골랐고(`selected_db_ids`) · 이번 턴 질의가 역질문의 원 질의와 같고 · 직전 파싱본이 있다.
+    존을 골랐고(`selected_db_ids` — 소스 선택 칩이면 `selected_sources` · plans/132 N-10) · 이번 턴
+    질의가 역질문의 원 질의와 같고 · 직전 파싱본이 있다.
     이 턴은 **대상 DB만 바꾸는** 턴이라 다시 파싱할 내용이 없다(`plans/111` C-6의 좁은 조각 —
     C-6이 오면 흡수된다). 앞단 게이트(파이프라인 미실행)는 체크포인트가 없어 해당하지 않는다.
     """
-    if not body.selected_db_ids:
+    if not (body.selected_db_ids or getattr(body, "selected_sources", None)):
         return None
     zone_q = checkpoint_state.get("zone_clarification")
     parsed = checkpoint_state.get("parsed_requirements")
@@ -1254,6 +1255,7 @@ def _build_turn_input_state(
         delta = create_followup_input(
             _substitute_zone_placeholder(body.query, body.selected_db_ids),
             selected_db_ids=body.selected_db_ids,
+            selected_sources=getattr(body, "selected_sources", None),
             allow_zone_clarification=True,
             raw_user_query=_raw_query_seed(body.query, config),
             # 스코프 칩 "해제"(D-205) — 승계 원천 초기화 + context_resolver sticky 차단
@@ -1267,6 +1269,8 @@ def _build_turn_input_state(
         # 같은 조건에서 직전 턴 복합 계획 스냅샷을 복원 입력으로 옮긴다(plans/121 TP-1.2 · G-30).
         # 원 키(`zone_reentry_plan`)는 위 델타가 None으로 덮는다 — 체크포인트는 병합 전에 읽었다.
         delta["reuse_task_plan"] = _zone_answer_plan_reuse(body, checkpoint_state)
+        # 소스 선택 칩·「다른 소스로 보기」 응답 표지(plans/132 W5 — 기억 쓰기 게이트)
+        delta["source_selection_meta"] = _source_selection_meta(body, checkpoint_state)
         # 범위를 좁혔으면 그 사실을 state에 남긴다(D-176 후속4 — 침묵 절단 금지).
         delta["scope_narrowed"] = (
             _scope_narrowed_or_none(body, config, current_user) if config else None
@@ -1287,6 +1291,7 @@ def _build_turn_input_state(
         allowed_db_ids=current_user.get("allowed_db_ids"),
         allowed_sources=current_user.get("allowed_sources"),
         selected_db_ids=body.selected_db_ids,
+        selected_sources=getattr(body, "selected_sources", None),
         allow_zone_clarification=True,
         # 존 선택 재개 턴(pre-gate는 파이프라인 미실행이라 첫 턴으로 도착)도 전량 상향
         resolved_limit=(
@@ -1849,6 +1854,54 @@ def apply_selection_authorization(
     return authorized, False
 
 
+def _source_selection_meta(
+    body: QueryRequest, checkpoint_state: dict[str, Any]
+) -> dict[str, Any] | None:
+    """이번 턴 소스 선택이 직전 턴 칩의 응답이면 그 표지, 아니면 None(plans/132 W5 — 쓰기 게이트).
+
+    직전 턴이 소스 선택 칩(`zone_clarification.kind == "source_select"`)을 냈으면 `user_choice`,
+    기억을 써서 답하고 「다른 소스로 보기」(`source_switch`)를 냈으면 `feedback`(정정)이다. 그 밖의
+    `selected_sources`(API 직접 호출 등)는 확인된 선택으로 보지 않는다 — 기억에 쓰지 않는다.
+    """
+    if not getattr(body, "selected_sources", None):
+        return None
+    chip = checkpoint_state.get("zone_clarification")
+    if isinstance(chip, dict) and chip.get("kind") == "source_select":
+        return {"origin": "user_choice", "areas": list(chip.get("areas") or [])}
+    switch = checkpoint_state.get("source_switch")
+    if isinstance(switch, dict) and switch.get("correction"):
+        return {"origin": "feedback", "areas": list(switch.get("areas") or [])}
+    return None
+
+
+def apply_source_selection_authorization(
+    selected_sources: list[str] | None, current_user: dict[str, Any]
+) -> list[str] | None:
+    """소스 선택 칩 답변(plans/132 N-10)에 인가를 적용한다 — 외부 입력이라 요청 경계에서 거른다.
+
+    레지스트리에 없는 코드는 버린다. 비DB 소스는 관측 소스 인가(`allowed_sources` · D-264 ②)를
+    지나야 한다. DB 소스는 함께 오는 `selected_db_ids`가 DB 인가
+    (`apply_selection_authorization`)를 지난다. 전부 걸러지면 None(선택 없음 — 종전 턴 규칙)이다.
+    """
+    if not selected_sources:
+        return None
+    from src.routing.db_authz import is_source_allowed
+    from src.routing.registry import get_registry
+
+    reg = get_registry()
+    known = {spec.code for spec in reg.solutions()} | {reg.system_of(d) or d for d in reg.db_ids()}
+    kept = [
+        s for s in dict.fromkeys(str(x) for x in selected_sources if x)
+        if s in known and (
+            not reg.is_non_db_system(s)
+            or is_source_allowed(s, current_user.get("allowed_sources"), current_user.get("role"))
+        )
+    ]
+    if len(kept) != len(selected_sources):
+        logger.info("소스 선택 인가·검증으로 제외: %s → %s", selected_sources, kept)
+    return kept or None
+
+
 def _zone_clarification_or_none(
     body: QueryRequest, checkpoint_state: dict | None, config, current_user: dict | None = None
 ) -> dict | None:
@@ -2175,6 +2228,8 @@ async def process_query(
     body.selected_db_ids, _selection_denied = apply_selection_authorization(
         body.selected_db_ids, current_user
     )
+    body.selected_sources = apply_source_selection_authorization(
+        body.selected_sources, current_user)
     if _selection_denied:
         return await turn.response(QueryResponse(
             query_id=query_id,
@@ -2301,6 +2356,8 @@ async def process_query(
         **_plan_summary_field(result),  # TP-0.1
         # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 키로 프론트 렌더
         "clarification": zone_clarification,
+        # 소스 선택 기억을 쓴 턴의 「다른 소스로 보기」 칩(plans/132 W5)
+        "source_switch": result.get("source_switch"),
     }
     _store_result(query_id, {
         **response_data,
@@ -2353,6 +2410,8 @@ async def process_query_stream(
     body.selected_db_ids, _selection_denied = apply_selection_authorization(
         body.selected_db_ids, current_user
     )
+    body.selected_sources = apply_source_selection_authorization(
+        body.selected_sources, current_user)
     if _selection_denied:
         async def selection_denied_generator() -> AsyncGenerator[str, None]:
             yield _sse_event({
@@ -2626,6 +2685,9 @@ async def process_query_stream(
                                         **_scope_reexpand_field(_scope_state),  # plans/123 W-2 ②
                                         **_plan_summary_field(_scope_state),  # TP-0.1
                                         "clarification": _zone_clar,
+                                        # 「다른 소스로 보기」(plans/132 W5) — 계획
+                                        # 노드가 쓰는 키라 누적 상태에서 읽는다
+                                        "source_switch": _scope_state.get("source_switch"),
                                     }
                                     _store_result(query_id, {
                                         **response_data,
@@ -2656,6 +2718,7 @@ async def process_query_stream(
                                         **_plan_summary_carry(response_data),  # TP-0.1
                                         # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                                         "clarification": response_data.get("clarification"),
+                                        "source_switch": response_data.get("source_switch"),
                                         **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
                                         # 단계 타임라인(plans/119 T-0)
                                         "timeline": _finish_timeline(_watch, query_id, done=True),
@@ -2715,6 +2778,7 @@ async def process_query_stream(
                 **_scope_reexpand_field(result),  # plans/123 W-2 ②
                 **_plan_summary_field(result),  # TP-0.1
                 "clarification": _zone_clar,
+                "source_switch": result.get("source_switch"),  # plans/132 W5
             }
             _store_result(query_id, {
                 **response_data,
@@ -2744,6 +2808,7 @@ async def process_query_stream(
                 **_plan_summary_carry(response_data),  # TP-0.1
                 # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                 "clarification": response_data.get("clarification"),
+                "source_switch": response_data.get("source_switch"),  # plans/132 W5
                 **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
                 "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0
             })

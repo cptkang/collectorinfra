@@ -16,6 +16,8 @@ plans/104 §3.8 · B-1·B-3~B-5.
 - **설명 초안(G-8 (a))**: 테이블당 LLM 1회 · 동시성 상한 `SCHEMA_CACHE_ADMIN_LLM_CONCURRENCY` ·
   실패 테이블 목록. 적용은 테이블 단위 제외 후 저장 + 유사어 병합(S5) + 전역 동기화 +
   설명 백업(B-6).
+- **DDL 등록(D-292)**: O-2의 대체 입력 — 붙여 넣은 DDL·`.sql`을 결정적으로 해석해(LLM 0 · DB 접속 0)
+  미리보기를 보이고, 미리보기와 같은 결과(스냅샷 해시)만 O-2와 같은 자리에 저장한다(`origin: ddl`).
 - **설정 조각(R11)**: 레지스트리 항목 YAML 문자열만 돌려준다. 앱은 `config/db_registry.yaml`·`.env`·
   `mcp_server/`에 쓰지 않는다.
 
@@ -36,7 +38,7 @@ from typing import TYPE_CHECKING, Any
 import yaml  # type: ignore[import-untyped]
 
 from src.domain.db_readiness import ReadinessReport
-from src.domain.schema_snapshot import bare_name, build_snapshot
+from src.domain.schema_snapshot import bare_name, build_snapshot, diff_snapshots
 from src.schema_cache.db_structure_service import (
     LOCAL_SANDBOX_HEADER,
     AdminServiceBase,
@@ -47,6 +49,7 @@ from src.schema_cache.db_structure_service import (
     schema_dict_from_full_schema,
     schema_dict_from_snapshot,
 )
+from src.schema_cache.ddl_schema_parser import DDL_ENGINES, DDLParseResult, parse_ddl
 from src.schema_cache.structure_analysis import split_fk_groups
 from src.schema_cache.structure_store import StructureStoreUnavailable, validate_db_id
 from src.schema_cache.value_index import derive_value_specs
@@ -133,6 +136,16 @@ class _StepOutcome:
     status: str
     count: int | None = None
     detail: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PreparedDDLImport:
+    """미리보기와 같은지 확인을 마친 DDL 등록 재료(잡 안에서 저장만 한다)."""
+
+    engine: str
+    parsed: DDLParseResult
+    schema_dict: dict[str, Any]
+    snapshot: dict[str, Any]
 
 
 class _RegisterRun:
@@ -431,15 +444,33 @@ class DBRegistrationService(AdminServiceBase):
     async def _step_schema(self, run: _RegisterRun) -> _StepOutcome:
         """O-2 — `get_full_schema` 1회로 스키마 캐시와 스냅샷을 함께 만든다(지문 SQL 미호출)."""
         client = await run.client()
-        source = run.source
         full = await client.get_full_schema()
         schema_dict, table_schemas = schema_dict_from_full_schema(full)
         snapshot = build_snapshot(schema_dict, table_schemas)
-        await self._store.save_snapshot(source, {
-            "snapshot": snapshot, "hash": snapshot["hash"], "taken_at": _now_iso(),
-            "env": self.env, "by": run.by,
-        })
         run.schema_dict, run.snapshot = schema_dict, snapshot
+        return await self._save_schema_and_snapshot(run.source, schema_dict, snapshot, by=run.by)
+
+    async def _save_schema_and_snapshot(
+        self,
+        source: str,
+        schema_dict: dict[str, Any],
+        snapshot: dict[str, Any],
+        *,
+        by: str | None,
+        origin: str | None = None,
+    ) -> _StepOutcome:
+        """스냅샷(변경 점검 기준선)과 스키마 캐시를 함께 저장한다 — O-2와 DDL 등록이 공유한다.
+
+        Args:
+            origin: 스냅샷 출처 표기(DDL 등록 = ``"ddl"`` · MCP 수집은 표기하지 않는다)
+        """
+        record: dict[str, Any] = {
+            "snapshot": snapshot, "hash": snapshot["hash"], "taken_at": _now_iso(),
+            "env": self.env, "by": by,
+        }
+        if origin:
+            record["origin"] = origin
+        await self._store.save_snapshot(source, record)
         detail: dict[str, Any] = {
             "relationships": len(schema_dict.get("relationships") or []),
             "snapshot_hash": snapshot["hash"],
@@ -827,6 +858,195 @@ class DBRegistrationService(AdminServiceBase):
             source, origin, saved, preserved, by,
         )
         return result
+
+    # --- DDL 등록 (D-292 — O-2의 대체 입력 · LLM 0 · DB 접속 0) ---
+
+    async def _listed_engine(self, source: str) -> str | None:
+        """「DB 구조」 목록에 보이는 소스인지 확인하고 알려진 엔진을 돌려준다.
+
+        목록 = 레지스트리 ∪ `ACTIVE_DB_IDS` ∪ MCP 소스(`list_sources`와 같은 대조). 엔진은
+        레지스트리 우선, 없으면 MCP 소스 type(활성 목록에만 있으면 None).
+
+        Raises:
+            LookupError: 목록에 없는 소스(API 404)
+        """
+        registry = self._registry()
+        entry = registry.get(source) if registry is not None else None
+        if entry is not None:
+            return str(entry.engine or "") or None
+        view = await self._mcp_view(health_for=[])
+        mcp_row = view["sources"].get(source)
+        if mcp_row is not None:
+            return str(mcp_row.get("type") or "") or None
+        if source in self._active_db_ids():
+            return None
+        reason = "" if view["available"] else f"(MCP 목록 확인 실패: {view['error']})"
+        raise LookupError(f"「DB 구조」 목록에 없는 소스입니다: {source}{reason}")
+
+    async def _parse_ddl(
+        self, source: str, engine: str, text: str
+    ) -> tuple[str | None, DDLParseResult, dict[str, Any], dict[str, Any]]:
+        """DDL을 해석해 O-2와 같은 모양(스키마 딕셔너리·스냅샷)으로 바꾼다.
+
+        Returns:
+            (소스의 알려진 엔진, 해석 결과, 스키마 딕셔너리, 스냅샷)
+
+        Raises:
+            ValueError: 소스 이름·엔진 오류
+            LookupError: 목록에 없는 소스
+        """
+        validate_db_id(source)
+        if engine not in DDL_ENGINES:
+            raise ValueError(f"engine은 {', '.join(DDL_ENGINES)} 중 하나여야 합니다: {engine!r}")
+        source_engine = await self._listed_engine(source)
+        registry = self._registry()
+        entry = registry.get(source) if registry is not None else None
+        default_schema = str(entry.db_schema or "") if entry is not None else ""
+        # 수 MB DDL은 해석에 초 단위가 걸린다 — 이벤트 루프를 막지 않게 스레드에서 돈다
+        parsed = await asyncio.to_thread(
+            parse_ddl, text, engine, default_schema=default_schema or None
+        )
+        schema_dict, table_schemas = schema_dict_from_full_schema(parsed.schema)
+        snapshot = build_snapshot(schema_dict, table_schemas)
+        return source_engine, parsed, schema_dict, snapshot
+
+    async def preview_ddl(self, source: str, *, engine: str, text: str) -> dict[str, Any]:
+        """DDL 해석 미리보기 — 저장하지 않는다.
+
+        현재 기준선(스냅샷)과의 차이를 함께 보여 준다 — 등록하면 스키마 캐시와 기준선이 이 결과로
+        바뀌고, 사라지는 테이블의 컬럼 설명·유사어는 정리된다(O-2와 같다).
+
+        Returns:
+            ``{"source", "engine", "source_engine", "statement_count", "table_count",
+            "column_count", "relationship_count", "primary_key_tables", "snapshot_hash",
+            "tables": [{name, schema, comment, columns: [{name, type, nullable, primary_key,
+            references, comment}]}], "warnings", "skipped", "current_snapshot", "diff"}``
+
+        Raises:
+            ValueError: 소스 이름·엔진 오류
+            LookupError: 목록에 없는 소스
+        """
+        source_engine, parsed, schema_dict, snapshot = await self._parse_ddl(source, engine, text)
+        warnings = list(parsed.warnings)
+        if source_engine and _engine_key(source_engine) != engine:
+            warnings.insert(0, (
+                f"선택한 엔진({engine})이 소스 엔진({source_engine})과 다릅니다 — 식별자 대소문자·"
+                "타입 표기가 MCP 수집과 달라져 이후 변경 점검에 차이로 보일 수 있습니다"
+            ))
+        current = await self._store.load_snapshot(source)
+        diff = diff_snapshots((current or {}).get("snapshot"), snapshot)
+        if diff["tables_removed"]:
+            warnings.insert(0, (
+                f"현재 기준선에 있는 테이블 {len(diff['tables_removed'])}개가 이 DDL에 없습니다 — "
+                "등록하면 스키마 캐시에서 빠지고 그 테이블의 컬럼 설명·유사어가 정리됩니다"
+            ))
+        tables: list[dict[str, Any]] = []
+        for name, table in parsed.schema.tables.items():
+            tables.append({
+                "name": name,
+                "schema": table.schema_name,
+                "comment": parsed.comments.get(name),
+                "columns": [
+                    {
+                        "name": column.name,
+                        "type": column.data_type,
+                        "nullable": column.nullable,
+                        "primary_key": column.is_primary_key,
+                        "references": column.references,
+                        "comment": parsed.comments.get(f"{name}.{column.name}"),
+                    }
+                    for column in table.columns
+                ],
+            })
+        current_summary = None
+        if current:
+            current_summary = {
+                "hash": current.get("hash"),
+                "taken_at": current.get("taken_at"),
+                "origin": current.get("origin") or "mcp",
+                "table_count": (current.get("snapshot") or {}).get("table_count"),
+            }
+        return {
+            "source": source,
+            "engine": engine,
+            "source_engine": source_engine,
+            "statement_count": parsed.statement_count,
+            "table_count": snapshot["table_count"],
+            "column_count": sum(len(t.columns) for t in parsed.schema.tables.values()),
+            "relationship_count": len(schema_dict.get("relationships") or []),
+            "primary_key_tables": sum(
+                1 for t in parsed.schema.tables.values()
+                if any(c.is_primary_key for c in t.columns)
+            ),
+            "snapshot_hash": snapshot["hash"],
+            "tables": tables,
+            "warnings": warnings,
+            "skipped": parsed.skipped,
+            "current_snapshot": current_summary,
+            "diff": diff,
+        }
+
+    async def prepare_ddl_import(
+        self, source: str, *, engine: str, text: str, expected_hash: str
+    ) -> PreparedDDLImport:
+        """등록 직전 재해석 — 미리보기에서 본 것과 같은지(스냅샷 해시) 확인한다.
+
+        Raises:
+            ValueError: 소스 이름·엔진 오류 · 해석된 테이블 0개 · 미리보기 이후 DDL·엔진이 바뀜
+            LookupError: 목록에 없는 소스
+        """
+        _source_engine, parsed, schema_dict, snapshot = await self._parse_ddl(source, engine, text)
+        if not snapshot["table_count"]:
+            raise ValueError("해석된 테이블이 없습니다 — CREATE TABLE 문장을 확인하세요")
+        if snapshot["hash"] != expected_hash:
+            raise ValueError("미리보기 이후 DDL 또는 엔진이 바뀌었습니다 — 다시 분석하세요")
+        return PreparedDDLImport(engine, parsed, schema_dict, snapshot)
+
+    async def run_ddl_import(
+        self, source: str, prepared: PreparedDDLImport, *, by: str | None, ctx: JobContext
+    ) -> dict[str, Any]:
+        """DDL 등록 잡 본문 — O-2와 같은 자리(스키마 캐시·기준선·등록 상태 `schema`)에 저장한다.
+
+        해석 경고가 있으면 단계 상태를 `warning`으로 남긴다(저장은 한다).
+
+        Returns:
+            등록 잡과 같은 모양 ``{"source", "env", "provider", "steps": {"schema": 상태 항목}}``
+
+        Raises:
+            StructureStoreUnavailable: Redis 미연결
+        """
+        await self._require_store()
+        await ctx.progress(0, 1, "스키마 캐시·기준선 저장")
+        outcome = await self._save_schema_and_snapshot(
+            source, prepared.schema_dict, prepared.snapshot, by=by, origin="ddl",
+        )
+        parsed = prepared.parsed
+        outcome.detail.update({
+            "origin": "ddl",
+            "engine": prepared.engine,
+            "statements": parsed.statement_count,
+            "warnings": len(parsed.warnings),
+            "skipped": parsed.skipped,
+        })
+        if outcome.status == "ok" and parsed.warnings:
+            outcome.status = "warning"
+        # D-294 — 주석은 자산 자동 생성(설명·유사어·코드 의미)의 입력으로 보관한다
+        # (정본 파일에는 쓰지 않는다)
+        await self._store.save_ddl_comments(source, dict(parsed.comments))
+        outcome.detail["comments"] = len(parsed.comments)
+        recorded = await self._store.record_step(
+            source, "schema", status=outcome.status, count=outcome.count, by=by,
+            env=self.env, provider=None, detail=outcome.detail,
+        )
+        await ctx.progress(1, 1, "완료")
+        logger.info(
+            "DDL 스키마 등록: source=%s, engine=%s, tables=%s, status=%s, warnings=%d, by=%s",
+            source, prepared.engine, outcome.count, outcome.status, len(parsed.warnings), by,
+        )
+        return {
+            "source": source, "env": self.env, "provider": self.provider_info(),
+            "steps": {"schema": recorded},
+        }
 
     # --- 설정 조각 ---
 

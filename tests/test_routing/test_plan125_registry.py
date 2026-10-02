@@ -21,7 +21,8 @@ WAS_AREAS = ("was_instance", "was_performance", "was_runtime", "was_activity", "
 def test_apm_is_a_non_db_system_without_zone_groups() -> None:
     reg = get_registry()
     # plans/127 W1: 문서 소스 `doc`도 비DB 시스템으로 등재된다(G-5 (a) — 의도된 갱신)
-    assert [s.code for s in reg.non_db_systems()] == ["apm", "doc"]
+    # plans/132 N-1(D-293): Prometheus 명시 인식 전용 항목(처리기·보기·영역 없음) — 의도된 갱신
+    assert [s.code for s in reg.non_db_systems()] == ["apm", "doc", "prometheus"]
     assert reg.is_non_db_system("apm") and not reg.is_non_db_system("polestar")
     assert reg.system_db_ids("apm") == ()
     assert _is_zoned_system(reg, "polestar") and not _is_zoned_system(reg, "apm")

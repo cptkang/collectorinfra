@@ -294,7 +294,14 @@ def test_decompose_prompt_env_terms_rendered_from_registry():
     assert "운영/개발/스테이징" not in INTENT_PLANNER_SYSTEM_TEMPLATE        # 사본 없음
     rendered = _ip._planner_system_prompt(_planner_cfg())
     assert f"환경({'/'.join(terms)})" in rendered
-    assert hashlib.sha256(rendered.encode("utf-8")).hexdigest() == _PRE_REGISTRY_RENDER_SHA256
+    # 지문은 TP-11.2 렌더(환경어 채움)만 고정한다 — 답변 영역 칸(plans/132 N-5 · 2026-10-01 의도한
+    # 프롬프트 변경)은 그 위의 삽입이라 기본 템플릿 렌더를 따로 대조한다.
+    env_only = prompts.render_intent_planner_environment_terms(
+        INTENT_PLANNER_SYSTEM_TEMPLATE, terms)
+    assert hashlib.sha256(env_only.encode("utf-8")).hexdigest() == _PRE_REGISTRY_RENDER_SHA256
+    assert rendered == prompts.render_intent_planner_environment_terms(
+        prompts.render_intent_planner_areas_template(
+            INTENT_PLANNER_SYSTEM_TEMPLATE, _ip._area_rows()), terms)
     assert _ip._planner_system_prompt(_planner_cfg()) is rendered        # 캐시 — 접두 불변
 
 
@@ -312,8 +319,10 @@ def test_decompose_prompt_env_terms_follow_registry_value(monkeypatch):
     from types import SimpleNamespace
 
     sequential_runner = importlib.import_module("src.orchestration.sequential_runner")
-    monkeypatch.setattr(_ip, "get_registry",
-                        lambda: SimpleNamespace(environment_terms=("운영", "DR")))
+    real = _ip.get_registry()
+    # 답변 영역 칸(plans/132 N-5)도 같은 조립 함수가 레지스트리에서 렌더한다 — 영역은 정본 그대로
+    monkeypatch.setattr(_ip, "get_registry", lambda: SimpleNamespace(
+        environment_terms=("운영", "DR"), capability_specs=real.capability_specs))
     rendered = _ip._planner_system_prompt(_planner_cfg())
     assert "환경(운영/DR)" in rendered and "스테이징" not in rendered
     assert sequential_runner._llm_decompose is _ip._llm_decompose

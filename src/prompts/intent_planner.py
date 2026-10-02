@@ -428,13 +428,14 @@ APM_VIEW_ROWS_SLOT = "<apm_view_rows>"
 INTENT_PLANNER_APM_SECTION = """## WAS·미들웨어(APM) 조회 — `apm_query` 보기(views)
 
 WAS 인스턴스·응답시간·TPS·에러율·JVM 힙·GC·커넥션 풀·실행 중 서비스·느린 트랜잭션·WAS 이벤트는 **`apm_query`** 담당입니다(폴스타 DB가 아닙니다).
-`apm_query` task에는 `views`에 아래 보기 id를 **1~2개** 넣으세요(목록 밖 id는 버려집니다). 비워 두면 응답시간·TPS 보기(`apm.app_health`)입니다.
+`apm_query` task에는 `views`에 아래 보기 id를 **1~2개** 넣으세요(목록 밖 id는 버려집니다). 비워 두면 대상 서버가 있을 때는 응답시간·TPS 보기(`apm.app_health`), 없을 때는 인스턴스 목록(`apm.instances`)입니다.
 
 <apm_view_rows>
 
 - **WAS 이벤트(fatal·warning 등)는 폴스타 서버 알람이 아닙니다** → `apm_query` + `"views": ["apm.events"]`. 서버 모니터링 알람은 종전대로 `alarm_query`입니다.
 - 서버 CPU·메모리·디스크 사용률(호스트)은 `data_query`이고, JVM 힙·프로세스 CPU(WAS)는 `apm_query`입니다. 둘 다 원하면 task를 나눕니다.
 - 대상 서버가 필요한 보기에 서버가 정해지지 않았으면 실행기가 인스턴스 목록(`apm.instances`)을 먼저 조회합니다 — 그 task를 따로 만들지 마세요.
+- WAS 인스턴스 목록·인스턴스 리스트를 묻는 질의는 `"views": ["apm.instances"]`입니다.
 - 앞 task 결과의 서버들을 대상으로 하면 `depends_on`·`input_from`으로 잇습니다.
 - 예: {{"task_id": "t1", "agent": "apm_query", "sub_query": "김포 WAS 응답시간 조회", "views": ["apm.app_health"],
        "depends_on": [], "input_from": [], "order": 1}}
@@ -518,6 +519,77 @@ def render_intent_planner_doc_template(
                .replace(DOC_EXAMPLE_VIEW_SLOT, example_view))
     head, sep, tail = rendered.partition(_APM_SECTION_ANCHOR)
     return head + section + sep + tail
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 답변 영역·요청 소스 칸 (plans/132 N-5 · G-6 (a) — 121 TP-2.2 중 두 칸만) — 항상 켜짐
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 소스 선별(plans/132 W2)의 LLM 몫이다 — task마다 답할 **답변 영역 코드**(`areas` · 닫힌
+# 어휘)와 사용자가 직접 말한 데이터 소스 이름(`requested_source`)을 적게 한다. 소스는 코드가
+# 정한다(영역의 정본 소유 시스템 · `domain.clarification_policy`) — 이 절은 소스 이름을 렌더하지
+# 않는다. 영역 표는 **등록 전체**(레지스트리 `capabilities` — 판정 재료 · G-7 (a))이고 영역은
+# 소스가 아니라서 비활성 소스의 이름·처리기·보기는 여전히 렌더되지 않는다(D-283 ②). 플래그
+# 없음(D-162) — 기본 경로 변경이라 W2 재측정 대상이다.
+#
+# 배치는 121 TP-0.8 실측을 따른다 — 확장 키를 「출력 형식」 앞 절에만 두면 9B가 21/21
+# 누락했고, 「출력 형식」 **골격 자체**에 넣자 0/21이었다. 그래서 절(표·규칙)은 「출력 형식」
+# 앞에 **삽입**하고, 골격 task 줄에 두 키를 더하고, 주의 목록에 "항상 적는다" 한 줄을 더한다
+# (골격 줄만 바꾼다 — 다른 줄 변경 0). 표 행은 레지스트리에서 렌더해 `<area_rows>` 자리에
+# 넣는다(사본 금지 · D-053). `.format()`을 거치지 않는다.
+
+AREA_ROWS_SLOT = "<area_rows>"
+
+INTENT_PLANNER_AREAS_SECTION = """## 답변 영역(areas) — 조회할 데이터 소스 판정용
+
+각 task에 그 task가 답할 **답변 영역 코드**를 `areas`에 적으세요. 아래 표의 코드만 씁니다(보통 1개 · 많아야 2개).
+시스템은 이 값으로 그 task를 조회할 데이터 소스를 정합니다. **agent 분류 규칙은 위 그대로입니다** — `areas`는 agent를 바꾸지 않습니다.
+
+| 답변 영역 코드 | 내용 |
+|---|---|
+<area_rows>
+
+- 표에 맞는 영역이 없거나 조회가 아닌 task(cache_management·synonym_registration·general_inference)는 빈 목록 `[]`입니다.
+- 사용자가 조회할 데이터 소스(시스템)의 **이름**을 직접 말했으면 그 이름을 질의에 쓰인 그대로 `requested_source`에 적고, 말하지 않았으면 빈 문자열 `""`입니다. 이름을 추측해 채우지 마세요.
+
+"""  # noqa: E501
+
+_AREAS_SECTION_ANCHOR = "## 출력 형식\n"
+_AREAS_SKELETON_TASK = (
+    '"sub_query": "이 작업이 처리할 자연어 지시",\n'
+    '         "depends_on": [], "input_from": [], "order": 1}}'
+)
+_AREAS_SKELETON_TASK_WITH_KEYS = (
+    '"sub_query": "이 작업이 처리할 자연어 지시",\n'
+    '         "depends_on": [], "input_from": [], "order": 1,\n'
+    '         "areas": ["server_status"], "requested_source": ""}}'
+)
+_AREAS_RULE_ANCHOR = "- `tasks`는 최소 1개 이상이어야 합니다.\n"
+_AREAS_RULE = (
+    "- 모든 task에 `areas`·`requested_source` 두 키를 **항상** 적습니다"
+    " — 아래 예시들은 분해 모양만 보여 줍니다.\n"
+)
+
+
+def render_intent_planner_areas_template(base: str, area_rows: str) -> str:
+    """답변 영역·요청 소스 칸(plans/132 N-5) — 절을 「출력 형식」 앞에 삽입하고 골격 task 줄에
+    두 키를 더하고 주의 목록에 한 줄을 더한다.
+
+    Args:
+        base: 기본 템플릿 또는 답변 영역 소유 렌더본(다른 옵트인 렌더보다 먼저 적용한다 — 골격 줄이
+            온전해야 한다)
+        area_rows: 레지스트리 영역 카탈로그 표 행(등록 전체)
+
+    Raises:
+        RuntimeError: 앵커·골격 줄이 정확히 1회가 아니다(템플릿이 바뀌어 위치가 흔들림)
+    """
+    for anchor in (_AREAS_SECTION_ANCHOR, _AREAS_SKELETON_TASK, _AREAS_RULE_ANCHOR):
+        if base.count(anchor) != 1:
+            raise RuntimeError(f"분해 프롬프트 영역 칸 앵커가 1회가 아니다: {anchor!r}")
+    head, sep, tail = base.partition(_AREAS_SECTION_ANCHOR)
+    rendered = head + INTENT_PLANNER_AREAS_SECTION.replace(AREA_ROWS_SLOT, area_rows) + sep + tail
+    rendered = rendered.replace(_AREAS_SKELETON_TASK, _AREAS_SKELETON_TASK_WITH_KEYS)
+    return rendered.replace(_AREAS_RULE_ANCHOR, _AREAS_RULE_ANCHOR + _AREAS_RULE)
 
 
 def render_intent_planner_task_frame_template(base: str) -> str:

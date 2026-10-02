@@ -1607,7 +1607,7 @@
 
     // ─── SSE Streaming Query ───
 
-    async function executeStreamingQuery(query, selectedDbIds, formFillAnswers, formFillRemember, formMemoryDelete, resetDbScope) {
+    async function executeStreamingQuery(query, selectedDbIds, formFillAnswers, formFillRemember, formMemoryDelete, resetDbScope, selectedSources) {
         // 실패 시 "다시 시도" 버튼이 같은 인자로 다시 보낸다(D-242 — 자동 재시도 없음)
         var retryArgs = Array.prototype.slice.call(arguments);
         var retry = function () { executeStreamingQuery.apply(null, retryArgs); };
@@ -1630,6 +1630,10 @@
             // Plan 75 §4: 존 선택 역질문 응답 — 자연어 재조합 없이 구조화 필드로 전달
             if (selectedDbIds && selectedDbIds.length) {
                 streamBody.selected_db_ids = selectedDbIds;
+            }
+            // plans/132 N-10: 소스 선택 칩 응답 — 고른 데이터 소스 코드(구조화 필드)
+            if (selectedSources && selectedSources.length) {
+                streamBody.selected_sources = selectedSources;
             }
             // Plan 90 D-205: 스코프 칩 "해제" — 직전 존 승계를 끊는다(다음 질의는 첫 질의처럼 확인)
             if (resetDbScope) {
@@ -1657,7 +1661,7 @@
             if (response.status === 404 || response.status === 405) {
                 // SSE endpoint not available, fallback to regular POST
                 removeProcessingMessage();
-                await executeFallbackQuery(query, selectedDbIds, formMemoryDelete, resetDbScope);
+                await executeFallbackQuery(query, selectedDbIds, formMemoryDelete, resetDbScope, selectedSources);
                 return;
             }
 
@@ -1762,6 +1766,7 @@
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널(결과와 함께 첨부)
             appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
             appendZoneClarificationToLastBubble(metaData.scope_reexpand);
+            appendZoneClarificationToLastBubble(metaData.source_switch);   // plans/132 W5 「다른 소스로 보기」
             // D-187: 저장 값 패널(항목별 삭제)
             appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
             setCurrentThread(metaData.thread_id);
@@ -2073,17 +2078,20 @@
         // 범위 사전 선택(D-176 후속4)은 **성능 최적화**라 답하지 않아도 진행된다.
         // 모호성 해소(zone_select)는 답해야 진행되므로 문구·버튼이 다르다.
         var isScope = clar.kind === "scope_select";
+        // plans/132 N-10: 소스 선택 칩 — 같은 위젯. 선택지에 소스 코드(data-source)가 실리고
+        // 비DB 소스(값 없음)는 selected_sources 로, DB 소스는 selected_db_ids 와 함께 보낸다.
+        var isSource = clar.kind === "source_select";
         var boxId = "zoneClarify-" + Date.now();
         var itemsHtml = options.map(function (o) {
             // scope_select는 그룹 단위라 db_ids 배열을, zone_select는 단일 db_id를 싣는다.
             var val = (o.db_ids && o.db_ids.length) ? o.db_ids.join(",") : (o.db_id || "");
             return '<label class="zone-clarify-item">' +
-                '<input type="checkbox" value="' + escapeHtml(val) + '" data-label="' + escapeHtml(o.label) + '" data-group="' + escapeHtml(o.group || "") + '" data-key="' + escapeHtml(o.key || "") + '"' + (o.default ? " checked" : "") + '> ' +
+                '<input type="checkbox" value="' + escapeHtml(val) + '" data-label="' + escapeHtml(o.label) + '" data-group="' + escapeHtml(o.group || "") + '" data-key="' + escapeHtml(o.key || "") + '" data-source="' + escapeHtml(o.source || "") + '"' + (o.default ? " checked" : "") + '> ' +
                 escapeHtml(o.label) +
                 '</label>';
         }).join("");
         var anyDefault = options.some(function (o) { return !!o.default; });
-        var confirmLabel = isScope ? "선택한 범위로 조회" : "선택한 존으로 조회";
+        var confirmLabel = isScope ? "선택한 범위로 조회" : (isSource ? "선택한 데이터 소스로 조회" : "선택한 존으로 조회");
         // 건너뛰기 = 전체 조회. 이것이 있어야 "묻는 것이 진행을 막지 않는다"가 성립한다(U10).
         var skipHtml = clar.skippable
             ? '<button class="zone-clarify-skip">건너뛰고 전체 조회</button>'
@@ -2137,17 +2145,19 @@
             });
         }
         confirmBtn.addEventListener("click", function () {
-            var ids = [], labels = [];
+            var ids = [], labels = [], sources = [];
             checks.forEach(function (c) {
                 if (c.checked) {
                     // scope_select는 값이 CSV(그룹의 db_ids)라 펼친다.
                     (c.value ? c.value.split(",") : []).forEach(function (v) {
                         if (v && ids.indexOf(v) === -1) ids.push(v);
                     });
+                    var src = c.getAttribute("data-source");
+                    if (src && sources.indexOf(src) === -1) sources.push(src);
                     labels.push(c.getAttribute("data-label"));
                 }
             });
-            if (!ids.length) return;
+            if (!ids.length && !(isSource && sources.length)) return;
             box.classList.add("zone-clarify--done");
             box.querySelectorAll("input,button").forEach(function (el) { el.disabled = true; });
             // 선택 결과를 사용자 메시지로 에코(대화 이력 가독성) — 라우팅은 selected_db_ids가 결정
@@ -2157,6 +2167,8 @@
             // 파일(폼필) 경로 역질문이면 보관해 둔 파일과 함께 재전송 (Plan 75 §4 확장)
             if (clar.has_file && lastUploadedFile) {
                 executeFileQuery(clar.original_query || "", lastUploadedFile, ids);
+            } else if (isSource) {
+                executeStreamingQuery(clar.original_query || "", ids, null, null, null, false, sources);
             } else {
                 executeStreamingQuery(clar.original_query || "", ids);
             }
@@ -2338,7 +2350,7 @@
 
     // ─── Fallback (non-streaming) Query ───
 
-    async function executeFallbackQuery(query, selectedDbIds, formMemoryDelete, resetDbScope) {
+    async function executeFallbackQuery(query, selectedDbIds, formMemoryDelete, resetDbScope, selectedSources) {
         renderProcessingMessage();
         resetProgressPanel();
 
@@ -2350,6 +2362,9 @@
             }
             if (selectedDbIds && selectedDbIds.length) {
                 queryBody.selected_db_ids = selectedDbIds;
+            }
+            if (selectedSources && selectedSources.length) {
+                queryBody.selected_sources = selectedSources;   // plans/132 N-10 (스트리밍과 대칭)
             }
             if (resetDbScope) {
                 queryBody.reset_db_scope = true;   // Plan 90 D-205 (스트리밍 경로와 대칭)
@@ -2384,6 +2399,7 @@
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(data.form_fill_clarification);
             appendZoneClarificationToLastBubble(data.scope_reexpand);
+            appendZoneClarificationToLastBubble(data.source_switch);   // plans/132 W5 「다른 소스로 보기」
             // D-187: 저장 값 패널(항목별 삭제)
             appendFormMemoryPanelToLastBubble(data.form_memory_panel);
 
@@ -2528,6 +2544,7 @@
             // Plan 73 D-151: 폼필(파일 업로드) 1차 런의 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
             appendZoneClarificationToLastBubble(metaData.scope_reexpand);
+            appendZoneClarificationToLastBubble(metaData.source_switch);   // plans/132 W5 「다른 소스로 보기」
             // D-187: '?' 조회(파일 첨부) 응답의 저장 값 패널
             appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
             setCurrentThread(metaData.thread_id);
@@ -2590,6 +2607,7 @@
             // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
             appendFormFillPanelToLastBubble(data.form_fill_clarification);
             appendZoneClarificationToLastBubble(data.scope_reexpand);
+            appendZoneClarificationToLastBubble(data.source_switch);   // plans/132 W5 「다른 소스로 보기」
             // D-187: 저장 값 패널(항목별 삭제)
             appendFormMemoryPanelToLastBubble(data.form_memory_panel);
         } catch (err) {

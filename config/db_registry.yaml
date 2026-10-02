@@ -76,6 +76,11 @@ solutions:
     order: 20
     backend: mcp
     family: jennifer
+    # 데이터 소스 유사어(plans/132 N-1 · D-293) — 사용자가 이 시스템을 부르는 이름. 원문에 있으면
+    # 입력 파서가 `target_db_hints`에 결정적으로 보강하고(위치어 D-065와 같은 방식), 계획이 그 task를
+    # 이 시스템 처리기로 고정한다. 비활성이면 조회하지 않고 안내만 한다(G-1). 라틴 표면어는 단어
+    # 경계·대소문자 무시(`term_in_text`). 일반어(「모니터링」·「서버」 등)는 넣지 않는다 — 오고정 위험.
+    aliases: ["제니퍼", "JENNIFER", "APM"]
     capabilities: [was_instance, was_performance, was_runtime, was_activity, apm_event]
     requires: [host_location]
     views:
@@ -112,6 +117,20 @@ solutions:
     backend: rest
     family: fabrix_rag
     capabilities: [doc_regulation, doc_design]
+    # 데이터 소스 유사어(plans/132 N-1) — 문서 소스 **자체**를 부르는 이름만 둔다. 문서군 선택용 표면어
+    # (`config/rag_collections.yaml` surface_terms — 「지침」·「아키텍처」 등 일반어 포함)와 다르다.
+    aliases: ["전산관리매뉴얼", "본부매뉴얼", "전산관리규정", "설계문서"]
+
+  # plans/132 N-1(D-293) — Prometheus **명시 인식 전용** 항목. 본체 처리기·보기가 없어 활성이 될 수 없다
+  # (조회는 `sre_agent`의 `prom_*`만 — plans/121 §2.7.1). 사용자가 「프로메테우스에서 …」라고 하면 다른
+  # 소스(폴스타)로 대신 답하지 않고 「연결되어 있지 않음」을 안내하기 위해 등재한다(G-1). 답변 영역
+  # (`capabilities`)·보기는 비운다 — 등재 형식과 영역은 plans/92·121 TP-9.2가 정한다.
+  - code: prometheus
+    label: Prometheus(메트릭 시계열)
+    order: 50
+    backend: mcp
+    family: prometheus
+    aliases: ["프로메테우스", "Prometheus"]
 
   # 향후 편입 예시 (현재 미등록 — plans/55 소관):
   # - code: dpm

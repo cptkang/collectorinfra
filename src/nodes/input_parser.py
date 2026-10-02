@@ -49,6 +49,35 @@ from src.utils.query_gen_common import (
 _LOCATION_HINT_TERMS = LOCATION_HINT_TERMS
 
 
+def _ensure_source_hints(parsed: dict[str, Any], user_query: str) -> dict[str, Any]:
+    """원문의 데이터 소스 이름·유사어를 target_db_hints에 결정적으로 보강한다(plans/132 N-1 ·
+    D-293).
+
+    위치어 보강(D-065)과 같은 방식이다 — 「제니퍼」·「APM」·「자산관리」처럼 레지스트리에 등록된
+    소스 이름이 원문에 있는데 LLM이 힌트로 뽑지 않았으면 더한다. 정본은 `config/db_registry.yaml`
+    (`solutions[].aliases` · 단독 DB `aliases`)이고, 위치·환경·제품 표면어는 제외된다(위 함수 몫).
+    D-004 경계: 사용자가 이름으로 지목한 소스의 인식이지 의도 분류가 아니다(D-004 부기).
+    """
+    if not isinstance(parsed, dict) or not user_query:
+        return parsed
+    from src.routing.registry import get_registry  # 지연 — 레지스트리 로드는 첫 호출에서
+
+    hints = parsed.get("target_db_hints")
+    if not isinstance(hints, list):
+        hints = [] if hints in (None, "") else [hints]
+    existing_text = " ".join(str(h) for h in hints)
+    added: list[str] = []
+    for term in get_registry().source_alias_terms():
+        if term_in_text(term, user_query) and not term_in_text(term, existing_text):
+            hints.append(term)
+            added.append(term)
+            existing_text += f" {term}"
+    if added:
+        logger.info("데이터 소스 유사어 힌트 보강(plans/132 N-1): %s", added)
+    parsed["target_db_hints"] = hints
+    return parsed
+
+
 def _ensure_location_hints(parsed: dict, user_query: str) -> dict:
     """원문의 위치/환경 표면어를 target_db_hints에 결정적으로 보강한다(D-065).
 
@@ -194,6 +223,8 @@ async def input_parser(
 
     # 위치/환경 표면어(공동존 등) target_db_hints 결정적 보강(D-065)
     parsed = _ensure_location_hints(parsed, state.get("user_query", ""))
+    # 데이터 소스 이름·유사어(제니퍼·자산관리 등) target_db_hints 결정적 보강(plans/132 N-1)
+    parsed = _ensure_source_hints(parsed, state.get("user_query", ""))
 
     # 생략형 후속 턴 직전 서버 승계(plans/120 PL-1) — 위치 힌트 보강 뒤에 판정한다(조건 ⓒ)
     parsed = _apply_elliptical_succession(parsed, state)

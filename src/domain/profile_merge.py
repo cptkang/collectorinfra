@@ -19,6 +19,12 @@
 5. `code_values`: 초안에 있으면 base와 컬럼 키 단위로 병합한다(초안 값으로 갱신).
 6. 초안의 그 밖의 키(`samples` 등)는 프로필에 쓰지 않는다 — 실데이터 행이 git 추적 파일로 가는 것을
    막는다.
+7. (D-294 자산 자동 생성) `allowed_tables`·`entity_keys`는 비었을 때만 초안 값으로 채운다 ·
+   `relationships`·`query_rules`·`query_examples`는 항목 합집합(base 항목 전부 유지 · 초안에만 있는
+   항목을 뒤에 붙임). **초안에 키가 없으면 base 값을 그대로 둔다** — 구조 분석(O-6) 초안은 이 키들을
+   만들지 않으므로 O-6 병합 결과는 종전과 같다. base 값이 리스트·dict가 아닌 사람 편집값이어도
+   그대로 둔다. `code_labels`(컬럼 → {코드값: 라벨})는 코드값 단위로 base 라벨을 우선하고 새
+   코드값의 라벨만 더한다.
 
 계층: domain — 순수 함수 · I/O·LLM 0 · 표준 라이브러리만 · 스키마 리터럴 0.
 """
@@ -37,7 +43,15 @@ from src.domain.schema_snapshot import bare_name
 # 초안이 갱신하는 최상위 키
 LLM_TOP_LEVEL_KEYS: tuple[str, ...] = ("patterns", "code_values")
 # 기존 값이 비었을 때만 초안 값으로 채우는 최상위 키(수동 값 보존)
-FILL_IF_ABSENT_KEYS: tuple[str, ...] = ("query_guide",)
+FILL_IF_ABSENT_KEYS: tuple[str, ...] = ("query_guide", "allowed_tables", "entity_keys")
+# 항목 합집합으로 병합하는 자산 키 → 항목 식별 키(D-294 — base 항목 우선)
+UNION_LIST_KEYS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "relationships": ("from", "to"),
+    "query_rules": (),
+    "query_examples": ("question",),
+})
+# 컬럼 키 단위로 base를 우선하고 초안에만 있는 키를 더하는 dict 자산 키(D-294)
+DICT_FILL_KEYS: tuple[str, ...] = ("code_labels",)
 # 병합이 직접 정하는 메타 키(base 값은 쓰지 않는다)
 METADATA_KEYS: tuple[str, ...] = ("source", "environment")
 
@@ -219,7 +233,31 @@ def _merge_code_values(base_values: Any, draft_values: Any) -> Any:
 
 
 def _merge_top_key(key: str, base: Mapping[str, Any], draft: Mapping[str, Any]) -> Any:
-    """LLM·채움 대상 최상위 키 1개의 병합값."""
+    """LLM·채움·합집합 대상 최상위 키 1개의 병합값."""
+    if key in UNION_LIST_KEYS:
+        base_value = base.get(key)
+        # 초안에 키가 없거나, base 값이 리스트가 아닌 사람 편집값이면 그대로 둔다
+        if key not in draft or (key in base and not isinstance(base_value, list)):
+            return copy.deepcopy(base_value)
+        return _merge_list_key(base_value, draft.get(key), UNION_LIST_KEYS[key])
+    if key in DICT_FILL_KEYS:
+        base_value, draft_value = base.get(key), draft.get(key)
+        if key not in draft or not isinstance(draft_value, Mapping) or (
+            key in base and not isinstance(base_value, Mapping)
+        ):
+            return copy.deepcopy(base_value)
+        merged = dict(copy.deepcopy(base_value)) if isinstance(base_value, Mapping) else {}
+        for column_key, value in draft_value.items():
+            existing = merged.get(column_key)
+            if isinstance(existing, Mapping) and isinstance(value, Mapping):
+                # 코드값 단위로 base 라벨을 우선하고 새 코드값의 라벨만 더한다
+                inner = dict(existing)
+                for code, label in value.items():
+                    inner.setdefault(code, copy.deepcopy(label))
+                merged[column_key] = inner
+            else:
+                merged.setdefault(column_key, copy.deepcopy(value))
+        return merged
     if key == "patterns":
         return _merge_patterns(base.get(key), draft.get(key))
     if key == "code_values":
@@ -252,7 +290,7 @@ def merge_profile(
         병합된 프로필 dict
     """
     base_map: Mapping[str, Any] = base if isinstance(base, Mapping) else {}
-    merge_keys = (*LLM_TOP_LEVEL_KEYS, *FILL_IF_ABSENT_KEYS)
+    merge_keys = (*LLM_TOP_LEVEL_KEYS, *FILL_IF_ABSENT_KEYS, *UNION_LIST_KEYS, *DICT_FILL_KEYS)
 
     result: dict[str, Any] = {"source": MANUAL_SOURCE}
     if local_sandbox:
