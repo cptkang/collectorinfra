@@ -6,6 +6,7 @@
 > **`plans/134-TODO-jennifer-question-coverage.md`**가 정본이다.
 > **작성**: 2026-10-02 · 기준 = `multiintent` 작업 트리(HEAD `22f9628` + 미커밋) · 제니퍼 Open API 공식 스펙 5.6.4(39경로 — `plans/87` [J-23] 원천을 2026-10-02 다시 받아 파싱) · v2 매뉴얼 `spec/*.md` 8건
 > **범위 결정(D-296 · 2026-10-02)**: 제니퍼 Open API의 **읽기(GET) 경로는 민감·관리 조회까지 전부 허용**하고 **쓰기·제어는 계속 막는다**. 비밀번호·비밀 환경변수 값은 어떤 경로로도 내보내지 않는다. **조회 범위의 자체 상한(기간·대상·건수)은 없앤다**. 이 결정은 계획 단계이고 **코드는 아직 그대로**다 — 아래 「지금」 칸은 현재 동작이다.
+> **활용 계약(D-299 · 134 v1.2)**: 아래 43사례는 최소 회귀 집합이다. 전체 읽기 API·인자·필드, 복수 대상/보기/소스, 기간 비교·변경 전후·GUID 연계 분석까지 확장한다. 채팅·조사·알람 각각의 실제 경로로 검증하며 F-13 연동 전 전체 완료로 선언하지 않는다. 현재 상태 칸은 이 계획 개정으로 바뀌지 않는다.
 > **상태 칸은 시점 값이다.** `plans/134`의 Wave가 랜딩할 때마다 같은 작업에서 이 문서의 상태 칸을 고친다(`plans/134` W9).
 
 ---
@@ -71,8 +72,8 @@
 | O-06 | 「web01 지금 실행 중인 서비스」 · 「오래 걸리는 요청」 | `/api/activeService/list`(`elapseTime`·`status`·`runningMode`·`runningFullText`) | `apm_active_services` · `apm.active` | ✅ | 현재값 · **채팅은 개수를 넘기지 않아 기본 10건** · 실행 모드별 집계(`summary`)는 채팅이 버린다 → **W1** |
 | O-07 | 「web01 오늘 가장 오래 걸린 SQL」 · 「호출 많은 SQL」 | `/api/status/sql`(시 단위 · `name`·`calls`·`failures`·`responseTime`·`maxResponseTime`) | — | 🔶 | 도구 없음. 인스턴스 지정·정렬·건수 쿼리 키(`instance_id`·`sort_by_metrics`·`max_row`)도 허용 밖 → **W2** · SQL 문은 리터럴 마스킹 |
 | O-08 | 「web01 외부 호출 중 느린 곳」 | `/api/status/external_call`(시 단위 · 같은 필드) | — | 🔶 | → **W2** |
-| O-09 | 「web01 최근 하루 배포(소스 변경) 있었나」 | `/api-v2/deploy/{domainId}`(`collectTime`·`instanceId` · 25시간 이하 · 5.6.0.5+) | — | 🔶 | 정본 스펙 미수록(v2 매뉴얼 `spec/deploy.md`) · 응답은 「데이터 서버가 소스코드(리소스) 변경을 인지한 시각」뿐 — 배포 이력 그 자체가 아니다 → **W2** |
-| O-10 | 「제니퍼에서 볼 수 있는 지표 목록」 | `/api/metrics`(domain 41 · instance 60 · business 29 · application · sql · externalCall — 로컬 5.7.0.1 녹화본) | — | 🔶 | → **W2**(추세 지표 이름 검증에도 쓴다) |
+| O-09 | 「web01 최근 하루 배포(소스 변경) 있었나」 | `/api-v2/deploy/{domainId}`(`collectTime`·`instanceId` · 25시간 이하 · 5.6.0.5+) | — | 🔶 | 정본 스펙 미수록(v2 매뉴얼 `spec/deploy.md`) · 응답은 「데이터 서버가 소스코드(리소스) 변경을 인지한 시각」뿐 — 배포 이력 그 자체가 아니다 → **W2**(수집) · **W6**(변경 전후 분석) |
+| O-10 | 「제니퍼에서 볼 수 있는 지표 목록」 | `/api/metrics`(domain 41 · instance 60 · business 29 · application · sql · externalCall — 로컬 5.7.0.1 녹화본) | — | 🔶 | → **W2**(`apm.metrics` 보기로 전체 지표 군 목록을 직접 조회 · 지표 이름 검증에도 쓴다) |
 | O-11 | 「제니퍼 이벤트 룰·임계값이 어떻게 설정돼 있나」 · 「힙 경고 기준이 몇 %야?」 | `/api-v2/manage/rule/event/error/{d}` · `…/metric/{d}/{대상}` · `…/compare/{d}/{대상}`(`errorType`·`metricId`·`level`·`applied`·`expression`·`thresholdErrorCount`·`checkTimeRange`) | — | ➕ | 조회만 — 룰 **변경**은 X-03 · `autoScriptCommand`(서버 스크립트 경로)는 자격증명 제거 규칙을 거친다 → **W7** |
 | O-12 | 「액티브 서비스 느림(빨간색) 기준이 몇 초야?」 | `/api-v2/manage/rule/active-service-color-range-boundary`(경과 시간 경계 4색) | — | ➕ | → **W7** |
 | O-13 | 「web01 WAS 환경변수·JVM 시스템 속성」 | `/api-v2/environment-variable/{d}`(`SYSTEM`·`JAVA`) | — | ➕ | **비밀번호·토큰 같은 값은 가린다**(D-296 ③) · 누가 볼 수 있는지는 `plans/134` G-11 → **W7** |
@@ -91,9 +92,9 @@
 | F-04 | 「web01 OutOfMemory 오류만」 | `/api/dbsearch/error`(`error_type` — 대문자) | — | ➕ | `error_type` 쿼리 키 허용(D-296) → **W1** |
 | F-05 | 「web01 지금 왜 느려?」 · 「느린 트랜잭션 상위 10」 | `/api/transaction/time`(`responseTime`·`cpuTime`·`sqlTime`·`fetchTime`·`externalcallTime`·`networkTime`·`errorType`) | `apm_slow_transactions` · `apm.slow_tx` | ◐ | 행(트랜잭션별 시간 분해)은 나온다. **기간을 말해도 항상 최근 10분**이고 고지는 「현재값 기준」으로 잘못 나간다 · p95·SQL/외부 호출 비중(`summary`)과 시 단위 보충(`hourly`)은 채팅이 버린다 → **W1** |
 | F-06 | 「그 트랜잭션 프로파일 보여줘」 · 「그때 실행된 SQL」 | `/api/transaction/txid` · `/api/transaction/profile.txt` · `/api/transaction/sql` | `apm_transaction_profile`(앞 결과의 `profile_ref`를 그대로) | 🔎 | 채팅 보기 없음 → **W5**(D-296 — 채팅에서도 허용) |
-| F-07 | 「이 GUID 거래가 어느 서버를 거쳤나」 | `/api/transaction/guid`(`domain_id`·`guid`·`start_time`·`end_time`) | — | ➕ | 연계 거래 추적 → **W5** |
+| F-07 | 「이 GUID 거래가 어느 서버를 거쳤나」 | `/api/transaction/guid`(`domain_id`·`guid`·`start_time`·`end_time`) | — | ➕ | 허용된 소스·도메인 전체의 연계 거래 추적 → **W5**(조회) · **W6**(시간순 연결·누락 고지) |
 | F-08 | 「web01 요청이 밀리고 있어?」 · 「DB 풀 고갈이야?」 · 「GC 지연이야?」 | 위 API 조합 → 게이트웨이 결정적 판정 8종(`was_service_queuing`·`was_thread_pool_exhaustion`·`was_db_pool_exhaustion`·`was_gc_stall`·`was_heap_pressure`·`was_slow_sql`·`was_external_call_delay`·`was_error_burst`) | 각 도구의 `was_signals` | 🔎 | 조사·알람 판정에는 쓰인다. **채팅은 판정을 버린다** — 원자료 행만 나온다 → **W1** · 임계는 잠정치(`apm_gateway/config/was_signatures.yaml`) |
-| F-09 | 「배포 직후 오류가 늘었나」 | `/api-v2/deploy/{domainId}` + `/api/dbsearch/error` | — | 🔶 | → **W2** |
+| F-09 | 「배포 직후 오류가 늘었나」 | `/api-v2/deploy/{domainId}` + `/api/dbsearch/error` | — | 🔶 | → **W2** 수집 · **W6** 전후 창의 오류 수·율 비교(인과 확정 아님) |
 | F-10 | 「오늘 fatal 이벤트가 난 WAS 전부」 | 도메인별 `/api/dbsearch/event`(인스턴스 지정 없이) | — | ◐ | 지금은 대상 없으면 목록 앞 10대만 조회한다. D-296으로 전 도메인(폴러가 켜져 있으면 폴러가 모아 둔 기록) → **W3** |
 | F-11 | (알람) 「이 서버 알람이 앱에 영향이 있나」 | `/api/dbsearch/event`(fatal) | `noise_gate` `app_impact` 승격 | ✅ | 채팅 질문이 아니라 알람 판정이다(옵트인 `NOISE_APP_IMPACT_ENABLED`) |
 | F-12 | (알람) 제니퍼 이벤트를 알람으로 받기 | `/api/dbsearch/event` 폴링 | 게이트웨이 폴러 → `alarm:raw` | ✅ | 옵트인 `APM_EVENT_POLLER_ENABLED` · 관제 화면 배지 「제니퍼」 |
@@ -183,3 +184,4 @@
 |---|---|
 | 2026-10-02 | 최초 작성(사용자 지시 *"조사한 사용가능한 질문들은 docs폴더의 사용 사례를 별도로 정리하고 사용가능한 질문을 모두 사용할 수 있도록 구현할 계획을 plans폴더에 계획파일을 정리하라."*). 질문 35건(S 11 · O 10 · F 14) + 답할 수 없는 질문 6건(X) · API 지도 · 실측으로 바로잡은 것: 채팅이 봉투 집계(`summary`·`hourly`·`errors_by_type`)와 `was_signals`를 버린다 · `apm.runtime`·`apm.slow_tx` 보기에 기간 설정이 없어 추세·기간 지정이 채팅에서 안 된다 · `apm.app_health` 10분 상한 때문에 시 단위 통계에 도달하지 못한다 · 파서 `limit`·이벤트 `level`이 채팅에서 전달되지 않는다 |
 | 2026-10-02 | **D-296 반영**(사용자 *"모든 api는 허용하고 조회할 수 있는 범위는 모두 가능하도록 정한다."* · 「민감 조회 API까지」 · 「보호 한도도 올림」) — 읽기 API 전부 허용(쓰기·제어 차단 · 비밀번호·비밀 값 제거) · 자체 상한 제거. 질문 43건으로 확대: O-11(이벤트 룰 조회) · O-12(액티브 색상 경계) · O-13(환경변수) · O-14(로드된 클래스) · O-15(프로세스 → 인스턴스) · O-16(데이터 서버) · O-17(사용자 목록) · F-15(실행 중 요청 상세) 신설 · X-04·X-06 흡수 · X-03은 변경만 남김 · S-09 ⛔ → ➕ · 표지 ⛔ 삭제 · Wave 번호를 `plans/134` v1.1에 맞춤(W7 = 설정·관리·민감 · W8 = 보기 선택) · API 지도에 v2 매뉴얼 읽기 경로 추가 |
+| 2026-10-02 | **D-299 · plans/134 v1.2** — 43사례는 최소 회귀 집합, 전체 읽기 기능·복수 조회·분석으로 확장. metrics 직접 보기, GUID/변경 전후 분석 Wave 연결, 진입점별 검증·121 필수 연동. 코드 0이므로 현재 상태 표기는 유지 |
