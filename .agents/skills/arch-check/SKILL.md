@@ -12,6 +12,7 @@ python scripts/arch_check.py --verbose
 python scripts/arch_check.py --ci
 ```
 
+`--verbose`로 의존성 매트릭스와 위반 목록을 확인하고 `--ci` 종료 코드로 판정한다.
 JSON이 필요하면 `--json`을 사용한다. 이 검사는 외부 LLM이나 DB 접속이 필요 없다.
 
 ## 판정 기준
