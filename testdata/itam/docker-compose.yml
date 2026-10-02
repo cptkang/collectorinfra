@@ -1,0 +1,34 @@
+# 자산관리(ITAM) 로컬 MariaDB 샌드박스 (plans/95 트랙 S · §4.6.3)
+# 엔진 동작(드라이버·인트로스펙션·권한·방언 실패 양상) 검증 전용 — 운영 사실의 근거로 쓰지 않는다.
+services:
+  itam-mariadb:
+    # 메이저 고정(latest 금지). 운영 버전 미확정(G-2) — 확정되면 같은 메이저로 교체한다.
+    image: mariadb:11.4
+    container_name: itam_mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: itam_root_pass_2024
+      # G-2 미확정 가정 — 전사본 naming.logical_schema가 유일한 근거다.
+      MARIADB_DATABASE: INST1
+    # 운영 서버 변수 미확정(G-13) — Linux MariaDB 기본 동작을 가정하되 이미지 기본값에 기대지 않고
+    # 명시로 고정한다(11.4의 기본 collation은 uca1400이다). sql_mode는 이미지 기본값을 유지한다.
+    command:
+      - --lower-case-table-names=0
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./init:/docker-entrypoint-initdb.d:ro
+      # named volume 필수 — macOS bind mount는 대소문자 비구분 파일시스템이라 테이블명
+      # 대소문자 구분(plans/95 §3.4-b)을 재현하지 못한다.
+      - itam_mariadbdata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  itam_mariadbdata:
+    name: itam_mariadbdata

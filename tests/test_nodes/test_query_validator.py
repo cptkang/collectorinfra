@@ -129,6 +129,56 @@ class TestHasLimitClause:
     def test_case_insensitive(self):
         assert _has_limit_clause("SELECT * FROM servers limit 50") is True
 
+    def test_subquery_limit_does_not_count_as_outer(self):
+        """서브쿼리 내부 LIMIT은 외곽 행 제한이 아니다 (Plan 69 P0-⑦).
+
+        서브쿼리 LIMIT에 오매칭되면 외곽 LIMIT 자동 보정이 억제되어
+        무제한 반환이 가능했다(행 제한 제약 우회 구멍).
+        """
+        sql = (
+            "SELECT s.hostname FROM servers s "
+            "WHERE s.id IN (SELECT server_id FROM cpu_stats ORDER BY v DESC LIMIT 10)"
+        )
+        assert _has_limit_clause(sql) is False
+
+    def test_subquery_and_outer_limit(self):
+        sql = (
+            "SELECT s.hostname FROM servers s "
+            "WHERE s.id IN (SELECT server_id FROM cpu_stats LIMIT 10) LIMIT 100"
+        )
+        assert _has_limit_clause(sql) is True
+
+    def test_paren_inside_string_literal_does_not_break_detection(self):
+        """문자열 리터럴 속 괄호가 최상위 판정을 깨지 않는다."""
+        sql = "SELECT * FROM servers WHERE note = '(draft' LIMIT 50"
+        assert _has_limit_clause(sql) is True
+
+    def test_paren_inside_comment_does_not_break_detection(self):
+        """주석 속 홑괄호가 최상위 판정을 깨지 않는다 (plans/116 §10.3 오타 질의).
+
+        LLM 주석(`-- 조건 완화(부분 일치`)의 여는 괄호가 깊이를 어긋나게 하면 외곽 LIMIT을
+        못 보고 두 번째 LIMIT을 붙여 `syntax error at or near "LIMIT"`로 실행이 깨졌다.
+        """
+        sql = (
+            "SELECT name FROM servers -- 조건 완화(부분 일치\n"
+            "WHERE name LIKE '%app%'\n"
+            "LIMIT 1000;"
+        )
+        assert _has_limit_clause(sql) is True
+
+    def test_apostrophe_inside_comment_does_not_break_detection(self):
+        """주석 속 홑따옴표가 이후 괄호 판정을 뒤집지 않는다."""
+        sql = (
+            "SELECT name FROM servers -- host's name\n"
+            "WHERE id IN (SELECT id FROM t) -- ')\n"
+            "LIMIT 100"
+        )
+        assert _has_limit_clause(sql) is True
+
+    def test_limit_only_in_comment_is_not_a_limit(self):
+        sql = "SELECT name FROM servers -- LIMIT 10 은 넣지 않는다\n"
+        assert _has_limit_clause(sql) is False
+
 
 class TestAddLimitClause:
     """LIMIT 절 자동 추가 검증."""
@@ -260,3 +310,43 @@ class TestQueryValidatorNode:
 
         assert result["validation_result"]["passed"] is False
         assert "bad_column" in result["validation_result"]["reason"]
+
+
+class TestFilterBlockedDetection:
+    """FabriX PII 필터 차단 안내문 감지 (D-153 후속2 — 멀티 경로와 대칭)."""
+
+    @pytest.mark.asyncio
+    async def test_filter_blocked_content_reports_clear_reason(self):
+        from src.nodes.query_validator import query_validator
+
+        state = {
+            "generated_sql": (
+                "Your request was blocked by the filter. "
+                "filterBlockReason: personal information"
+            ),
+            "schema_info": {"tables": {}},
+            "retry_count": 0,
+        }
+        result = await query_validator(state)
+        assert result["validation_result"]["passed"] is False
+        assert "PII 필터 차단" in result["validation_result"]["reason"]
+
+    @pytest.mark.asyncio
+    async def test_filter_blocked_exposes_diagnosis_when_present(self):
+        """query_generator가 산출한 섹션별 진단이 에러 메시지에 노출된다(D-155)."""
+        from src.nodes.query_validator import query_validator
+
+        state = {
+            "generated_sql": "The content was blocked by the filter",
+            "schema_info": {"tables": {}},
+            "retry_count": 0,
+            "pii_block_diagnosis": (
+                "《시스템 프롬프트(스키마·샘플·유사어)》 핸드폰번호(룰855)×2 "
+                '["contact": >>0**********8<<]'
+            ),
+        }
+        result = await query_validator(state)
+        assert result["validation_result"]["passed"] is False
+        reason = result["validation_result"]["reason"]
+        assert "원인 후보" in reason
+        assert "핸드폰번호" in reason

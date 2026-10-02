@@ -1,0 +1,63 @@
+{
+ "id": "Q-CPU-MONTH",
+ "turns": [
+  {
+   "query": "2026년 5월 서버별 CPU 사용률 평균이 높은 상위 5대를 보여줘",
+   "file": null,
+   "key": "a73f2a75dd97ec4a",
+   "elapsed_s": 109.3,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n2026 년 5 월 기준, 서버별 CPU 사용률 평균이 높은 상위 5 대를 조회했습니다. DB-ORA-023 서버가 68.4% 로 가장 높은 사용률을 보이며, svr-bkp-01 서버는 데이터가 누락되었습니다.\n\n| name | cpus_avg |\n|---|---|\n| DB-ORA-023 | 68.4 |\n| cocm-hdkapp01 | 45.6 |\n| SV-WEB-001 | 35.2 |\n| SV-BATCH-009 | 15.8 |\n| svr-bkp-01 | null |\n\n참고사항\n- 조회 기간: 2026 년 5 월\n- 이상 징후: DB-ORA-023 서버의 CPU 사용률 (68.4%) 이 상대적으로 높게 나타났으며, svr-bkp-01 서버는 사용률 데이터가 존재하지 않습니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 5,
+    "executed_sql": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.name END) AS \"name\",\n  ROUND(AVG(CASE WHEN c.resource_type='server.Cpus' AND s.definition_name='Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS \"cpus_avg\"\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id\nLEFT JOIN polestar.cmm_metric_stat_m s ON s.resource_id = c.id AND s.definition_name = 'Utilization' AND s.stat_date = '202605'\nWHERE c.resource_type IN ('server.Cpus', 'server.Server')\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nORDER BY \"cpus_avg\" DESC NULLS LAST\nLIMIT 5;",
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "name": "DB-ORA-023",
+     "cpus_avg": 68.4
+    },
+    {
+     "name": "cocm-hdkapp01",
+     "cpus_avg": 45.6
+    },
+    {
+     "name": "SV-WEB-001",
+     "cpus_avg": 35.2
+    },
+    {
+     "name": "SV-BATCH-009",
+     "cpus_avg": 15.8
+    },
+    {
+     "name": "svr-bkp-01",
+     "cpus_avg": null
+    }
+   ]
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-23T16:27:48",
+ "review": {
+  "verdict": "partly",
+  "notes": "재녹화 — 2026-05 Cpus 평균 68.4·45.6·35.2·15.8 원본 일치 · 5월 데이터 있는 서버는 4대라 5번째 행(svr-bkp-01)이 null — 요약이 누락을 밝힘",
+  "at": "2026-09-28"
+ }
+}

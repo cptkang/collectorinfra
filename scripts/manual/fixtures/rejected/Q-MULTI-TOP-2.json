@@ -1,0 +1,108 @@
+{
+ "id": "Q-MULTI-TOP",
+ "turns": [
+  {
+   "query": "2026년 6월 CPU 사용률 평균이 높은 상위 3대 서버를 알려줘",
+   "file": null,
+   "key": "3925cc053d3541cc",
+   "elapsed_s": 131.6,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n2026 년 6 월 기준 CPU 사용률 평균이 높은 상위 3 대 서버를 조회했습니다. DB-ORA-023 서버가 72.1%로 가장 높은 사용률을 보이며, 전체 평균은 54.6%입니다.\n\n| server_name | os_hostname | ipaddress | cpu_avg_utilization |\n|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 72.1 |\n| cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | 48.9 |\n| SV-WEB-001 | svweb001 | 10.61.0.1 | 42.8 |\n\n참고사항\n- 조회 기간: 2026 년 6 월\n- **주의**: DB-ORA-023 서버의 CPU 사용률 (72.1) 이 70% 임계치를 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 3,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "server_name": "DB-ORA-023",
+     "os_hostname": "dbora023",
+     "ipaddress": "10.61.0.2",
+     "cpu_avg_utilization": 72.1
+    },
+    {
+     "server_name": "cocm-hdkapp01",
+     "os_hostname": "cocm-hdkapp01",
+     "ipaddress": "10.61.0.3",
+     "cpu_avg_utilization": 48.9
+    },
+    {
+     "server_name": "SV-WEB-001",
+     "os_hostname": "svweb001",
+     "ipaddress": "10.61.0.1",
+     "cpu_avg_utilization": 42.8
+    }
+   ]
+  },
+  {
+   "query": "그 서버들의 제조사와 모델",
+   "file": null,
+   "key": "8c93efefae1b508c",
+   "elapsed_s": 132.9,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n요청하신 3 대 서버 (DB-ORA-023, cocm-hdkapp01, SV-WEB-001) 의 제조사 및 모델 정보를 조회했습니다. 제조사는 HPE 와 Dell 이며, 모델 정보는 모두 누락되어 있습니다.\n\n| server_name | os_hostname | ipaddress | vendor | model |\n|---|---|---|---|---|\n| SV-WEB-001 | svweb001 | 10.61.0.1 | HPE | null |\n| DB-ORA-023 | dbora023 | 10.61.0.2 | Dell | null |\n| cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | HPE | null |\n\n참고사항\n- 모델 (model) 컬럼은 모든 서버에서 null 로 조회되었습니다.\n\n---\n## 순차 처리 경과\n- 순차 분해가 적용되지 않아 한 번의 조회로 처리했습니다(앞 결과 → 뒤 조회 대상 배선 없음).\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 3,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "server_name": "SV-WEB-001",
+     "os_hostname": "svweb001",
+     "ipaddress": "10.61.0.1",
+     "vendor": "HPE",
+     "model": null
+    },
+    {
+     "server_name": "DB-ORA-023",
+     "os_hostname": "dbora023",
+     "ipaddress": "10.61.0.2",
+     "vendor": "Dell",
+     "model": null
+    },
+    {
+     "server_name": "cocm-hdkapp01",
+     "os_hostname": "cocm-hdkapp01",
+     "ipaddress": "10.61.0.3",
+     "vendor": "HPE",
+     "model": null
+    }
+   ]
+  }
+ ],
+ "reviewed": false,
+ "recorded_at": "2026-09-23T11:51:20"
+}

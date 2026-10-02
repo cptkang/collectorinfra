@@ -1,0 +1,34 @@
+{
+  "fixture_version": 1,
+  "source": "local-docker",
+  "jennifer_version": "5.7.0.1",
+  "recorded_at": "2026-09-29T12:53:40+0900",
+  "request": {
+    "method": "GET",
+    "template": "/api/dbmetrics/instance",
+    "path": "/api/dbmetrics/instance",
+    "query": {
+      "domain_id": "1000",
+      "instance_id": "10000",
+      "interval_minute": "1",
+      "metrics": "heap_used",
+      "start_time": "1790653420545",
+      "end_time": "1790654020545"
+    },
+    "accept": "application/json"
+  },
+  "response": {
+    "status": 500,
+    "content_type": "application/json;charset=utf-8",
+    "body_json": {
+      "exception": {
+        "message": "1000 Domain is not connected"
+      }
+    }
+  },
+  "variant": "domain_not_connected",
+  "label": "heap_used",
+  "masking": {
+    "masked_values": 0
+  }
+}

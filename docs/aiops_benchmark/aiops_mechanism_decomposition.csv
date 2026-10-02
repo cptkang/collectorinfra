@@ -1,0 +1,21 @@
+﻿기능,판단 기준(입력 신호),동작 방식(알고리즘),실제 구현 방법(자료구조·수식·파라미터),대표 솔루션,collectorinfra 현황,구현 방향
+"① 중복제거
+(Dedup)",이벤트 지문(fingerprint): host+metric+object+상태 등 식별 필드 조합,"동일 지문 이벤트를 TTL 시간창 내 1건으로 병합. 최초 1건만 통과, 이후는 카운트만 증가","지문=정규화 필드 해시키, TTL 슬라이딩 윈도우(예 300s), count/last_seen 갱신. 인메모리 해시맵 또는 Redis SETEX","전 솔루션 공통(Alertmanager group_by, Moogsoft dedup key)",있음(alarm_id TTL 300s) — 단 alarm_id가 발생마다 새로 발급되어 재발생 dedup 아님,지문키를 host+정의ID+대상+상태로 재설계(§6.1). 재발생/재처리 구분
+"② 이벤트 상관·클러스터링
+(Correlation)",시간 근접성 + 텍스트 유사도 + 위상(topology) 근접성 + 공통 필드(host/service/tag),다중 알람을 하나의 '사건(Situation/Incident)'으로 군집. 시드 알람 기준 유사도 임계 이상을 같은 군집에 배정,"Moogsoft: Tanimoto/Jaccard 유사도(비트벡터) 필드별 임계(예 Description 50%+Host 50%), Cookbook Recipe. 시간군집 Tempus(타임스탬프 유사)","Moogsoft(Cookbook/Tempus), BigPanda, New Relic(시간·엔티티·메타)",부분 — 스톰 그룹핑(동일서버 다발) 있으나 크로스-호스트 텍스트/위상 상관 없음,Plan 50 correlation_engine에 필드유사도(Jaccard)+시간창 군집 추가. 위상 상관은 토폴로지 확보 후
+"③ 플래핑 억제
+(Flapping)",최근 N회 상태전이 이력(정상↔장애 반복),상태변화 비율을 가중 평균해 임계 초과 시 flapping으로 판정→억제. 진입/해제 히스테리시스,"Nagios %-state-change: 최근 21개 전이에 최신 가중(1.2→0.8), high(예 50%)/low(25%) 임계로 진입·해제 분리","Nagios, Zabbix, Alertmanager(간접)","설계됨(Plan 52 §3.7, Nagios 가중식 인용)",상태전이 링버퍼 유지 + 가중 %change 계산 결정적 구현. 히스테리시스 임계 파라미터화
+"④ 스톰·버스트 억제
+(Storm)",사건창 내 동일 서버/그룹 알람 수 + 공통 핑거프린트,"짧은 창에 다발한 알람을 1건 대표로 압축, 1회만 PAGE","사건창(예 60~120s) 카운트 임계 초과 시 그룹핑, 대표 알람 선정 + 나머지 첨부","BigPanda(압축), Moogsoft(Situation), PagerDuty(Intelligent Grouping)",설계됨(Plan 52 §3.8),"그룹핑 키+사건창 결정적 구현, 압축률 KPI 계측"
+"⑤ 자가복구 억제
+(Self-heal)",해소 이벤트(severity=0) + 원본 알람의 시간 상관,짧은 창 내 자동 해소된 저심각도 알람은 억제(운영자 개입 불필요),"self_heal_window 내 해소매칭, 저심각도 한정. 심각도3 제외",업계 통용(auto-close 상관),설계됨(Plan 52 §3.7),해소이벤트 상관 결정적 구현 — 이미 계획 반영됨
+"⑥ 이상탐지
+(Anomaly)",메트릭 시계열(CPU/메모리/디스크IO) baseline 대비 편차 + 계절성,동적 baseline 학습 후 예측구간 밖 관측을 이상으로 flag. 계절 주기 반영해 정상 피크는 억제,"Holt-Winters(지수평활, 계절 자동, ≥3주기), STL 분해(추세·계절 제거 후 잔차 z-score/가우시안 검정), Isolation Forest(경로길이=이상점수)","Dynatrace(auto-adaptive baseline), New Relic(Holt-Winters), Datadog",부분 — Plan 50 z-score+지속성 계획(정적 baseline),Plan 50 이상탐지를 STL/Holt-Winters 동적 baseline으로 격상. 계절성 반영해 오탐↓
+"⑦ RCA·인과추론
+(Root Cause)",위상 의존성 그래프(부모/자식·수직/수평) + 이벤트 타임라인 + 변경 이벤트,상관이 아닌 인과: 의존성 그래프를 순회(fault-tree/BFS)하며 시간순서로 근본원인 후보를 결정적으로 도출,"Dynatrace Davis: Smartscape 그래프 순회+fault-tree, 동일원인 이벤트를 1 problem으로 통합. 해당 연구: 그래프 BFS+시간정렬(결정적)→LLM은 설명만","Dynatrace Davis(선도), 해당 연구(arXiv), BigPanda",부분 — Plan 50 cascade(부모상태) 판정 있으나 위상 그래프·BFS 인과 없음,토폴로지 그래프 확보(최우선 갭)→ 결정적 그래프순회 RCA + LLM 설명자(현행 causal_reasoner와 정합)
+"⑧ 변경 상관
+(Change)",배포·구성변경·정책변경 이벤트 타임라인,이상 발생 시점 직전 변경을 오버레이해 최우선 원인 후보로 제시,"변경이벤트를 문제 타임라인에 정렬, 시간근접+영향범위 매칭. Davis는 code change/deploy/config 상관","Dynatrace(change 상관 내장), 업계 표준(변경=최대 장애원인)",갭 — Plan 50 §4.5 Phase C로만 존재(가용성 선조사),CI/CD·변경관리 피드 연동을 앞당김(사례가 검증한 최대 RCA 레버)
+"⑨ 예측·선제탐지
+(Predictive)",메트릭 추세 + 계절 예측(look-ahead),"임계 도달 전 예보로 선제 경보. 예상 피크는 억제, 패턴 이탈만 경보","Holt-Winters로 N스텝 예측(최대 360포인트), 예측구간 이탈 시 경보","New Relic(predictive alerts GA), Dynatrace",갭 — 미착수,이상탐지 baseline 확보 후 예측구간 기반 선제경보로 확장(로드맵 후반)
+"⑩ 자동복구·폐루프
+(Remediation)",확정된 근본원인 + 신뢰도 + 정책 가드레일,"탐지→진단→검증된 런북 실행→SLO 검증·학습의 폐루프. 저위험부터, 승인 게이트","Runbook-as-Code(버전관리·CI테스트), 신뢰도 게이트, 실행 프리뷰, 정책 as-code. Davis 승인형 agentic workflow","Dynatrace(preview), LogicMonitor+IBM+RedHat","갭 — 읽기전용(D-003)과 상충, 정책 결정 필요",거버넌스 결정 선행 → 저위험 런북+승인 게이트+감사부터(별도 브리프 D 후보)

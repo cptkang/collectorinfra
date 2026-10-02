@@ -40,6 +40,13 @@ class User:
     status: UserStatus = UserStatus.ACTIVE
     department: Optional[str] = None
     allowed_db_ids: Optional[list[str]] = None
+    # 관측 소스 인가(plans/125 A-7 · D-272 ⑩) — DB 없는 소스(APM 등) 시스템 코드. None = 전체 허용.
+    allowed_sources: list[str] | None = None
+    # 알림 지역 스코프(Plan 59 §17): 수신 가능한 존 코드 목록(예: ["gongjon","bankjon"]).
+    # 중복 할당은 리스트로 자연 표현. 빈/None = 수신 안 함(일반). admin은 존 무관 전 존 허용.
+    alarm_zones: Optional[list[str]] = None
+    # 보호 root 계정(Plan 59-a §9): True면 역할/상태 변경·PW초기화·삭제 불가(솔루션 상시 관리자 보장).
+    is_protected: bool = False
     auth_method: str = "local"
     login_fail_count: int = 0
     last_login_at: Optional[datetime] = None
@@ -59,6 +66,8 @@ class User:
             "role": self.role.value,
             "department": self.department,
             "allowed_db_ids": self.allowed_db_ids,
+            "allowed_sources": self.allowed_sources,
+            "alarm_zones": self.alarm_zones,
         }
 
 

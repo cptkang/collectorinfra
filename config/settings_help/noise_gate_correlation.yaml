@@ -1,0 +1,395 @@
+# 설정 옵션 상세 설명 — 노이즈 게이트: 상관 분석 · 기준선 · 변경 · 임베딩 주석 (D-191)
+# 근거: src/config.py NoiseGateConfig (Plan 60 E2~E5 · B-7) · docs/02_decision.md (D-078~D-081 · D-114)
+
+version: 1
+group: noise_gate
+
+settings:
+
+  NOISE_CROSS_HOST_CORRELATION_ENABLED:
+    summary: 여러 서버에서 비슷한 시각에 난 알람을 한 사건으로 묶을지.
+    behavior: >-
+      같은 존 안에서 짧은 시간에 발생한 알람들의 필드가 얼마나 겹치는지 재고, 비슷하면
+      한 클러스터로 묶어 대표만 통보한다. 스톰 그룹핑이 같은 서버를 다룬다면 이쪽은
+      서버를 가로지른다. 존을 넘는 상관은 금지돼 있다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 서버 간 상관을 보지 않는다. 각 서버의 알람이 따로 나간다.
+      - value: "true"
+        effect: 공통 원인으로 보이는 알람이 묶인다. 광역 장애에서 통보량이 크게 줄어든다.
+    example: 스토리지 하나가 느려져 그것을 쓰는 서버 열 대가 동시에 응답 지연 알람을 낼 때, 열 건이 아니라 한 건으로 묶인다.
+    performance: 활성 클러스터를 메모리에 유지한다. 상한은 NOISE_CORRELATION_BUFFER_MAX다.
+    stability: >-
+      우연히 같은 시각에 난 무관한 알람이 묶이면 하나만 보인다 — 유사도 임계를
+      너무 낮추지 않는 것이 중요하다.
+    recommendation: 광역 장애가 잦은 환경에서 켜고, 임계는 기본값에서 시작한다.
+    related: [NOISE_CORRELATION_SIM_THRESHOLD, NOISE_CORRELATION_WINDOW_SECONDS, NOISE_CORRELATION_MIN_CLUSTER_SIZE]
+
+  NOISE_CORRELATION_SIM_THRESHOLD:
+    example: >-
+      임계가 0.3이면 '디스크 사용률'과 '메모리 사용률' 알람처럼 필드가 절반쯤 겹치는 것도 한 사건으로 묶인다. 묶이면 대표 외에는 통보되지 않으므로, 그 안의 진짜 문제가
+      가려질 수 있다.
+    summary: 알람 두 건의 필드가 얼마나 겹쳐야 같은 사건으로 볼지(0~1).
+    behavior: 알람의 특징 토큰이 얼마나 겹치는지를 비율로 재고, 이 값 이상이면 같은 클러스터로 묶는다.
+    options:
+      - value: "0.5"
+        label: 기본
+        effect: 절반 이상 겹치면 묶는다.
+      - value: "0.3"
+        effect: 느슨하게 묶는다. 무관한 알람이 한 사건으로 합쳐질 위험이 커진다.
+      - value: "0.8 이상"
+        effect: 거의 같아야 묶인다. 진짜 공통 원인도 따로 나가 기능의 효과가 줄어든다.
+    performance: 임계가 낮으면 클러스터가 커져 메모리 사용이 늘어난다.
+    stability: 묶인 알람 중 대표만 통보되므로, 잘못 묶이면 그 안의 진짜 문제가 가려진다.
+    recommendation: 기본 0.5에서 시작해 감사 기록으로 묶인 결과를 확인한다.
+    related: [NOISE_CROSS_HOST_CORRELATION_ENABLED, NOISE_CORRELATION_FIELD_WEIGHTS_CSV]
+
+  NOISE_CORRELATION_WINDOW_SECONDS:
+    example: >-
+      2분 창이면 동시에 번진 장애를 묶는다. 10분으로 늘리면 그 사이 발생한 별개의 사건까지 같은 클러스터로 합쳐져 대표 하나만 남는다.
+    summary: 상관을 볼 시간창(초) — 창 밖의 클러스터는 만료된다.
+    behavior: 이 시간 안에 발생한 알람끼리만 묶는다. 창을 벗어난 클러스터는 정리된다.
+    options:
+      - value: "120"
+        label: 기본 (2분)
+        effect: 2분 안에 몰린 알람을 한 사건으로 본다.
+      - value: "30"
+        effect: 순간적으로 동시에 난 것만 묶는다. 몇 분에 걸쳐 번지는 장애는 놓친다.
+      - value: "600"
+        effect: 10분간 묶는다 — 그 사이 발생한 별개의 문제도 같은 사건으로 합쳐진다.
+    performance: 창이 길수록 유지할 클러스터가 늘어 메모리를 더 쓴다.
+    stability: 창이 넓으면 서로 다른 사건이 하나로 보인다.
+    recommendation: 기본 120초 유지.
+    related: [NOISE_CROSS_HOST_CORRELATION_ENABLED, NOISE_CORRELATION_BUFFER_MAX]
+
+  NOISE_CORRELATION_MIN_CLUSTER_SIZE:
+    example: >-
+      2로 두면 우연히 비슷한 두 건이 묶여 하나가 가려질 수 있다. 4로 올리면 확실히 몰린 경우에만 억제하지만, 소규모 연쇄는 그대로 전부 통보된다.
+    summary: 클러스터에 몇 건이 모여야 억제를 시작할지(대표 포함).
+    behavior: 이 수 미만이면 아직 묶을 근거가 부족하다고 보고 각각 통보한다.
+    options:
+      - value: "2"
+        label: 기본
+        effect: 두 건부터 묶는다. 대표 하나만 나가고 나머지가 억제된다.
+      - value: "5"
+        effect: 다섯 건 이상 모여야 억제한다. 소규모 연쇄는 그대로 통보된다.
+    performance: 값이 클수록 억제되는 건수가 줄어든다.
+    stability: 2로 두면 우연히 겹친 두 건이 묶여 하나가 가려질 수 있다.
+    recommendation: 기본 2에서 시작하되, 오억제가 보이면 3~4로 올린다.
+    related: [NOISE_CROSS_HOST_CORRELATION_ENABLED]
+
+  NOISE_CORRELATION_BUFFER_MAX:
+    example: >-
+      대규모 폭주에서 클러스터가 1000개를 넘으면 오래된 것부터 정리된다. 상한을 100으로 줄이면 폭주 중에 묶여야 할 알람이 밀려나 따로 통보되고, 상한을 없애면 폭주가 곧
+      메모리 고갈이 된다.
+    summary: 스코프별로 활성 클러스터를 몇 개까지 유지할지 — 메모리 가드다.
+    behavior: 이 수를 넘으면 오래된 클러스터부터 정리한다. 메모리에 두는 자료구조는 상한이 있어야 한다는 원칙에 따른다.
+    options:
+      - value: "1000"
+        label: 기본
+        effect: 존별로 1000개까지 유지한다. 대규모 폭주에도 메모리가 무한정 늘지 않는다.
+      - value: "100"
+        effect: 대규모 폭주 시 클러스터가 밀려나 묶여야 할 알람이 따로 나간다.
+      - value: "10000 이상"
+        effect: 폭주 상황에서 메모리 사용이 크게 늘어난다.
+    performance: 메모리 사용량이 이 값에 비례한다.
+    stability: 상한이 없으면 알람 폭주가 곧 메모리 고갈이 된다 — 값을 0이나 매우 크게 두지 않는다.
+    recommendation: 기본 1000 유지.
+    related: [NOISE_CORRELATION_WINDOW_SECONDS]
+
+  NOISE_CORRELATION_FIELD_WEIGHTS_CSV:
+    example: >-
+      특정 필드에 가중치를 주려고 값을 채워도 상관 판정은 달라지지 않는다 — 코드가 읽지 않는다.
+    summary: 상관 계산에서 필드별 가중치 — 현재 코드가 읽지 않는다.
+    behavior: 특정 필드를 더 중요하게 보려는 예약 항목이다. 지금은 소비처가 없다.
+    performance: 영향 없다(소비되지 않음).
+    stability: 영향 없다(소비되지 않음).
+    related: [NOISE_CORRELATION_SIM_THRESHOLD]
+
+  NOISE_CORRELATION_TOPOLOGY_WEIGHT_ENABLED:
+    example: >-
+      같은 랙에 붙은 서버들의 알람은 물리적으로 이어진 원인일 가능성이 높다. 켜면 인접 서버에 보너스 점수를 줘 더 쉽게 묶이지만, 상위
+      스위치(NOISE_CROSS_HOST_CORRELATION_ENABLED)가 꺼져 있으면 아무 일도 일어나지 않는다.
+    summary: 상관 판단에 토폴로지 인접성을 가산할지.
+    behavior: >-
+      서버 상관의 하위 정밀화 기능이다. 켜면 토폴로지상 이웃한 서버끼리 더 쉽게 묶인다.
+      꺼져 있으면 순수 필드 유사도만 쓴다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 필드 유사도만 본다.
+      - value: "true"
+        effect: 인접 서버에 보너스 점수를 준다. 물리적으로 연결된 서버들의 연쇄가 더 잘 묶인다.
+    performance: 토폴로지 그래프 로드가 추가된다. 캐시되므로 반복 비용은 작다.
+    stability: 상위 스위치가 켜져 있지 않으면 이 값만으로는 아무 일도 일어나지 않는다.
+    related: [NOISE_CROSS_HOST_CORRELATION_ENABLED, NOISE_CORRELATION_TOPOLOGY_WEIGHT]
+
+  NOISE_CORRELATION_TOPOLOGY_WEIGHT:
+    example: >-
+      유사도 임계가 0.5인데 보너스가 0.5면, 인접하기만 하면 필드가 전혀 안 겹쳐도 묶인다 — 필드 유사도가 사실상 무의미해진다. 기본 0.2는 임계의 절반 이하라 보조
+      신호로 작동한다.
+    summary: 인접 서버에 얹을 보너스 점수의 크기.
+    behavior: 유사도 점수에 더해지는 값이다. 임계(기본 0.5)와의 관계로 실효를 판단한다.
+    options:
+      - value: "0.2"
+        label: 기본
+        effect: 인접하면 유사도가 0.2만큼 더해진다 — 임계 0.5 기준으로 상당한 영향이다.
+      - value: "0.05"
+        effect: 거의 영향이 없다.
+      - value: "0.5 이상"
+        effect: 인접하기만 하면 무조건 묶인다 — 필드 유사도가 무의미해진다.
+    performance: 영향 없다.
+    stability: 보너스가 임계에 가까우면 토폴로지만으로 묶여 오억제가 늘어난다.
+    recommendation: 기본 0.2 유지.
+    related: [NOISE_CORRELATION_TOPOLOGY_WEIGHT_ENABLED, NOISE_CORRELATION_SIM_THRESHOLD]
+
+  NOISE_DYNAMIC_BASELINE_ENABLED:
+    example: >-
+      평소에도 CPU 85%로 도는 배치 서버와, 평소 20%인데 갑자기 85%가 된 서버는 같은 임계에 걸려도 의미가 전혀 다르다. 기준선을 학습하면 후자만 상향 후보가
+      되는데, NOISE_ENABLE_AI_SEVERITY_BOOST도 함께 켜져야 실제 심각도에 반영된다.
+    summary: 지표의 평소 패턴을 학습해 그것과 얼마나 벗어났는지로 이상을 판단할지.
+    behavior: >-
+      고정 임계는 "평소에도 높은 서버"와 "갑자기 높아진 서버"를 구분하지 못한다.
+      켜면 시계열 패턴을 학습해 잔차가 얼마나 큰지를 본다. 결과는 심각도를 올리는
+      후보로만 쓰이며, AI 심각도 보강과 함께 켜져야 실제로 반영된다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 기준선을 계산하지 않는다.
+      - value: "true"
+        effect: 평소 패턴에서 벗어난 알람이 상향 후보가 된다. CPU·메모리가 1차 대상이다.
+    performance: 지표별 기준선 계산이 붙지만 결과는 캐시된다. 외부 패키지 없이 순수 계산이다.
+    stability: >-
+      단독으로는 효과가 없다 — NOISE_ENABLE_AI_SEVERITY_BOOST와 둘 다 켜져야 심각도에
+      반영된다. 한쪽만 켜면 계산만 하고 쓰이지 않는다.
+    recommendation: 두 값을 함께 켠다. 켜기 전에 심각도 상향이 통보량에 미칠 영향을 감안한다.
+    related: [NOISE_ANOMALY_Z_HIGH, NOISE_ANOMALY_MIN_PERIODS, NOISE_ENABLE_AI_SEVERITY_BOOST]
+
+  NOISE_ANOMALY_Z_HIGH:
+    example: >-
+      3표준편차면 통계적으로 드문 값만 이상으로 본다. 2로 낮추면 평소 변동 범위 안의 값도 잡혀 상향이 잦아지고, 그만큼 통보량이 늘어난다.
+    summary: 평소 패턴에서 몇 표준편차 이상 벗어나면 이상으로 볼지.
+    behavior: 잔차를 표준편차 단위로 재고, 이 값을 넘으면 상향 후보로 올린다.
+    options:
+      - value: "3.0"
+        label: 기본
+        effect: 3표준편차. 통계적으로 드문 값만 이상으로 본다.
+      - value: "2.0"
+        effect: 민감해진다. 평소 변동 범위 안의 값도 이상으로 잡혀 상향이 잦아진다.
+      - value: "5.0 이상"
+        effect: 극단적인 값만 잡는다 — 웬만한 이상은 그냥 지나간다.
+    performance: 영향 없다.
+    stability: 낮추면 상향이 늘어 통보량이 증가한다. 오탐과 미탐의 균형 문제다.
+    recommendation: 기본 3.0 유지.
+    related: [NOISE_DYNAMIC_BASELINE_ENABLED]
+
+  NOISE_ANOMALY_MIN_PERIODS:
+    example: >-
+      새로 증설한 서버는 데이터가 며칠치뿐이라 주기가 세 번 관측되지 않는다. 그동안은 계산을 건너뛰어 판단하지 않는데, 이 값을 1로 낮추면 근거가 얕은 기준선이 만들어져
+      오탐이 늘어난다.
+    summary: 기준선을 계산하려면 최소 몇 주기의 데이터가 있어야 할지.
+    behavior: 데이터가 이보다 적으면 계산을 건너뛰고 판단하지 않는다 — 근거 없는 기준선을 만들지 않기 위해서다.
+    options:
+      - value: "3"
+        label: 기본
+        effect: 세 주기 이상 있어야 계산한다. 패턴이라 부를 최소 근거다.
+      - value: "1~2"
+        effect: 근거가 얕은 기준선이 만들어져 오탐이 늘어난다.
+      - value: "10 이상"
+        effect: 신뢰도는 높지만 신규 서버는 한참 동안 판단 대상에서 빠진다.
+    performance: 값이 크면 계산을 건너뛰는 경우가 늘어 오히려 가볍다.
+    stability: 데이터가 부족하면 계산하지 않는 것이 안전하다 — 이 값의 목적이다.
+    recommendation: 기본 3 유지.
+    related: [NOISE_DYNAMIC_BASELINE_ENABLED]
+
+  NOISE_ANOMALY_BASELINE_CACHE_TTL_SECONDS:
+    example: >-
+      한 시간 캐시면 기준선 계산 부담이 거의 사라진다. 다만 서버를 증설해 부하 패턴이 바뀐 직후에는 그 시간 동안 옛 기준으로 판단해 정상 상태를 이상으로 볼 수 있다.
+    summary: 계산한 기준선을 몇 초 동안 재사용할지.
+    behavior: 기준선 계산은 비싸므로 Redis에 캐시한다.
+    options:
+      - value: "3600"
+        label: 기본
+        effect: 한 시간 재사용한다. 계산 부담이 크게 준다.
+      - value: "300"
+        effect: 자주 다시 계산한다. 최신 패턴을 반영하지만 부담이 늘어난다.
+      - value: "86400"
+        effect: 하루 유지한다. 패턴이 바뀌어도 하루 동안 옛 기준으로 판단한다.
+    performance: 적중하면 기준선 계산이 통째로 생략된다.
+    stability: 길게 잡으면 최근 변화(증설·부하 패턴 변경)가 반영되지 않아 오탐이 늘어난다.
+    recommendation: 기본 3600초 유지.
+    related: [NOISE_DYNAMIC_BASELINE_ENABLED]
+
+  NOISE_ANOMALY_STL_ENABLED:
+    example: >-
+      요일·시간대 패턴이 뚜렷한 지표(주중 낮에만 높은 CPU)에서 더 정확하다. statsmodels가 설치돼 있지 않으면 조용히 기본 방식으로 돌아가므로, 켰는데 효과가
+      없다면 설치 여부를 먼저 확인한다.
+    summary: 기준선 계산에 계절성 분해(STL) 방식을 쓸지.
+    behavior: >-
+      요일·시간대 패턴이 뚜렷한 지표에 더 정확하다. statsmodels 패키지가 필요하며,
+      없으면 기본 방식으로 자동 폴백한다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 기본 방식(지수평활)을 쓴다. 외부 패키지가 필요 없다.
+      - value: "true"
+        effect: 계절성을 분리해 더 정확히 본다. statsmodels가 없으면 조용히 기본 방식으로 돌아간다.
+    performance: STL 분해는 기본 방식보다 계산이 무겁다. 캐시가 그 부담을 완화한다.
+    stability: 패키지가 없어도 실패하지 않고 폴백한다 — 켰는데 효과가 없다면 설치 여부를 확인한다.
+    related: [NOISE_DYNAMIC_BASELINE_ENABLED]
+
+  NOISE_ANOMALY_METRIC_SOURCE_MAP_CSV:
+    example: >-
+      형식이 잘못된 항목은 조용히 무시되어 그 알람 종류만 기준선 계산이 빠진다. 오류가 나지 않으므로 설정 후 실제로 상향 후보가 잡히는지 확인해야 한다.
+    summary: 알람 종류별로 어느 지표를 기준선 계산에 쓸지 지정하는 매핑.
+    behavior: >-
+      "kind=resource_type:definition_name" 형식이다. 비워 두면 어댑터의 기본 매핑을
+      쓴다. 벤더 스키마 이름은 코드가 아니라 설정에 두는 원칙에 따른 항목이다.
+    options:
+      - value: "(비움)"
+        label: 기본
+        effect: 어댑터 기본 매핑을 쓴다. 대부분의 경우 그대로 두면 된다.
+      - value: "cpu=server.Cpus:Utilization"
+        effect: CPU 알람의 기준선을 지정한 지표로 계산한다.
+    performance: 영향 없다.
+    stability: 형식이 잘못되면 그 종류만 기준선 계산이 빠진다 — 오류로 드러나지 않는다.
+    related: [NOISE_DYNAMIC_BASELINE_ENABLED]
+
+  NOISE_CHANGE_CORRELATION_ENABLED:
+    example: >-
+      장애의 상당수는 직전 변경이 원인이다. 켜면 알람에 '한 시간 안에 이 서버에 변경 작업이 있었음'이 함께 붙어 원인 추정이 빨라진다 — 다만 공동존만 조회하므로 은행존
+      알람에는 붙지 않는다.
+    summary: 알람 직전에 있었던 변경 작업을 원인 후보로 붙일지.
+    behavior: >-
+      장애의 상당수는 직전 변경이 원인이다. 켜면 변경 이력을 조회해 알람 직전 창 안의
+      변경을 함께 보여 준다. 억제가 아니라 승격 신호로만 쓰인다 — 변경이 있었다고
+      알람을 묻지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 변경 이력을 보지 않는다.
+      - value: "true"
+        effect: 알람에 "직전 변경 있음"이 함께 붙는다. 원인 추정이 빨라진다.
+    performance: 알람마다 변경 이력 조회가 붙는다.
+    stability: >-
+      공동존(PostgreSQL)만 조회한다 — 은행존(DB2)은 대상이 아니다. 존에 따라 동작이
+      다르다는 점을 알고 있어야 한다.
+    recommendation: 변경 이력이 실제로 관리되고 있는 존에서 켠다.
+    related: [NOISE_CHANGE_WINDOW_SECONDS]
+
+  NOISE_CHANGE_WINDOW_SECONDS:
+    example: >-
+      한 시간 창이면 배포 직후 터진 장애가 연결된다. 하루로 늘리면 관련 없는 변경까지 원인처럼 표시되어 '변경 있음' 표시가 신호 가치를 잃는다.
+    summary: 알람 직전 몇 초 안의 변경까지 원인 후보로 볼지.
+    behavior: 이 창 안의 변경만 알람과 연결한다.
+    options:
+      - value: "3600"
+        label: 기본 (1시간)
+        effect: 한 시간 안의 변경을 원인 후보로 본다.
+      - value: "600"
+        effect: 10분. 즉시 드러나는 장애만 연결된다. 서서히 나타나는 영향은 놓친다.
+      - value: "86400"
+        effect: 하루 안의 모든 변경이 후보가 된다 — 관련 없는 변경까지 원인처럼 보인다.
+    performance: 창이 넓을수록 조회 대상이 늘어난다.
+    stability: 넓게 잡으면 인과관계가 희석돼 "변경 있음" 표시가 신호 가치를 잃는다.
+    recommendation: 기본 1시간 유지.
+    related: [NOISE_CHANGE_CORRELATION_ENABLED]
+
+  NOISE_SEMANTIC_DEDUP_ANNOTATION_ENABLED:
+    example: >-
+      표현만 다르고 내용이 같은 알람에 '비슷한 알람이 있었음'을 표시한다. 억제 판단은 절대 바꾸지 않고 주석만 붙이며, 모델 경로가 비어 있으면 켜도 아무 일도 일어나지
+      않는다.
+    summary: 문장이 비슷한 알람을 임베딩으로 찾아 "비슷한 알람" 주석을 붙일지.
+    behavior: >-
+      임베딩은 주석 전용이다 — 억제할지 말지의 판단은 절대 바꾸지 않는다. 사람이 볼
+      참고 정보만 붙인다. 폐쇄망 전용이라 모델을 미리 반입해 로컬 경로로 지정해야 한다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 주석을 붙이지 않는다.
+      - value: "true"
+        effect: 의미가 가까운 과거 알람을 찾아 주석으로 표시한다. 판단은 그대로다.
+    performance: 알람마다 임베딩 계산이 붙는다. 예산은 NOISE_EMBEDDING_TIMEOUT_SECONDS다.
+    stability: >-
+      모델 경로가 없거나 디렉터리가 아니면 아무 일도 하지 않는다(다운로드하지 않는다).
+      켜도 효과가 없다면 모델 경로를 먼저 확인한다.
+    recommendation: 모델을 반입한 뒤에 켠다.
+    related: [NOISE_EMBEDDING_MODEL_PATH, NOISE_EMBEDDING_SIMILARITY_THRESHOLD, NOISE_EMBEDDING_TIMEOUT_SECONDS]
+
+  NOISE_EMBEDDING_MODEL_PATH:
+    example: >-
+      허브 이름을 적으면 동작하지 않는다 — 폐쇄망이라 런타임에 내려받지 않기 때문이다. 반입한 디렉터리를 가리켜야 하며, 모델을 바꾸면 유사도 임계도 함께 다시 맞춰야 한다.
+    summary: 임베딩 모델이 있는 로컬 디렉터리 경로.
+    behavior: >-
+      폐쇄망 원칙상 런타임에 모델을 내려받지 않는다. 반입한 모델 디렉터리를 가리켜야
+      하며, 비어 있거나 디렉터리가 아니면 임베딩 기능 전체가 조용히 비활성된다.
+    options:
+      - value: "(비움)"
+        label: 기본
+        effect: 임베딩 기능이 동작하지 않는다.
+      - value: "/opt/models/multilingual-e5-small"
+        effect: 그 디렉터리의 모델을 쓴다. 유사도 임계는 모델에 따라 재조정이 필요하다.
+    performance: 모델 크기가 임베딩 계산 시간을 좌우한다.
+    stability: 허브 이름(경로가 아닌 모델 이름)을 적으면 동작하지 않는다 — 반드시 로컬 디렉터리 경로여야 한다.
+    caveats:
+      - 모델을 바꾸면 유사도 임계를 반드시 다시 튜닝해야 한다 — 모델마다 점수 분포가 다르다.
+    related: [NOISE_EMBEDDING_SIMILARITY_THRESHOLD, NOISE_SEMANTIC_DEDUP_ANNOTATION_ENABLED]
+
+  NOISE_EMBEDDING_SIMILARITY_THRESHOLD:
+    example: >-
+      확정 모델의 실측에서 서로 다른 알람은 최대 0.852, 실제로 비슷한 알람은 최소 0.893이었다 — 0.87은 그 사이 값이다. 다른 모델은 분포가 완전히
+      달라(bge-m3는 0.65 수준) 그대로 쓰면 전부 비슷하다고 표시된다.
+    summary: 유사도가 이 값을 넘으면 "비슷한 알람"으로 주석을 단다.
+    behavior: >-
+      기본 0.87은 확정 모델(multilingual-e5-small)의 실측 분포에서 나온 값이다 —
+      다른 알람끼리는 최대 0.852, 실제로 비슷한 알람끼리는 최소 0.893이었다.
+    options:
+      - value: "0.87"
+        label: 기본
+        effect: 확정 모델 기준으로 오탐과 미탐 사이에 놓인 값이다.
+      - value: "0.7"
+        effect: 관련 없는 알람까지 비슷하다고 표시된다.
+      - value: "0.95"
+        effect: 거의 같은 문장만 잡는다 — 표현이 조금만 달라도 놓친다.
+    performance: 영향 없다.
+    stability: >-
+      이 값은 모델에 종속된다. 다른 모델(예: bge-m3)은 점수 분포가 완전히 달라
+      0.65 정도가 적정선이다. 모델을 바꾸면 반드시 재측정한다.
+    recommendation: 확정 모델을 쓰는 한 기본값 유지. 모델 교체 시 실측 후 조정.
+    related: [NOISE_EMBEDDING_MODEL_PATH]
+    references:
+      - docs/02_decision.md (D-114)
+
+  NOISE_EMBEDDING_TIMEOUT_SECONDS:
+    example: >-
+      주석은 부가 정보라 오래 기다릴 이유가 없다. 10초로 늘리면 알람 한 건의 처리가 그만큼 늦어지는데, 얻는 것은 참고용 주석 하나뿐이다.
+    summary: 임베딩 계산에 주는 시간(초).
+    behavior: 알람 처리 경로 안에서 도는 계산이라 짧게 잡혀 있다. 넘으면 주석 없이 진행한다.
+    options:
+      - value: "2.0"
+        label: 기본
+        effect: 2초. 주석은 부가 정보이므로 오래 기다릴 이유가 없다.
+      - value: "0.5"
+        effect: 대부분의 알람에서 주석이 빠진다.
+      - value: "10 이상"
+        effect: 부가 정보 하나 때문에 알람 처리가 10초 늦어진다.
+    performance: 알람 처리 시간에 직접 얹힌다.
+    stability: 실패해도 알람은 정상 처리된다 — 주석만 빠진다.
+    recommendation: 기본 2초 유지.
+    related: [NOISE_SEMANTIC_DEDUP_ANNOTATION_ENABLED]
+
+  NOISE_TOPOLOGY_TEXT_FUSION_ENABLED:
+    example: >-
+      물리적으로 인접하면서 내용도 비슷한 알람을 함께 표시한다. 임베딩 모델과 토폴로지 조회가 모두 필요하므로, 둘 중 하나라도 준비되지 않으면 동작하지 않는다.
+    summary: 토폴로지 인접성과 문장 유사도를 함께 보아 주석을 붙일지.
+    behavior: 임베딩 주석의 확장이다. 이것도 주석 전용이며 억제 판단을 바꾸지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 융합 주석을 붙이지 않는다.
+      - value: "true"
+        effect: 물리적으로 가깝고 내용도 비슷한 알람을 함께 표시한다.
+    performance: 토폴로지 조회와 임베딩 계산이 모두 붙는다.
+    stability: 임베딩 모델이 없으면 동작하지 않는다.
+    related: [NOISE_SEMANTIC_DEDUP_ANNOTATION_ENABLED, NOISE_EMBEDDING_MODEL_PATH]

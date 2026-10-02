@@ -12,8 +12,10 @@ parsed_requirements를 기반으로 LLM이 필요한 테이블과 컬럼을 선�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -23,10 +25,223 @@ from src.config import AppConfig, load_config
 from src.db import get_db_client
 from src.dbhub.models import SchemaInfo, schema_to_dict
 from src.llm import create_llm
-from src.schema_cache.cache_manager import SchemaCacheManager, get_cache_manager
+from src.schema_cache.cache_manager import get_cache_manager
 from src.state import AgentState
+from src.utils.flex_match import best_flex_match
+from src.utils.json_extract import coerce_content_text
+from src.utils.prior_dependency import (
+    add_db_note,
+    descriptions_missing_note,
+    structure_missing_note,
+)
+from src.utils.progress_events import emit_step
+from src.utils.schema_utils import attach_profile_relationships, cap_sample_rows
 
 logger = logging.getLogger(__name__)
+
+# 유사어 기반 allowed_tables 동적 보완 상한 (D-051: 누적 유사어 전 테이블 유입 차단)
+_MAX_SYNONYM_SUPPLEMENT_TABLES = 15
+
+# 라이브 샘플 수집 타임박스 (D-154, 2026-08-05 폐쇄망 실측):
+# 샘플은 보조 정보인데 get_sample_data 1건이 mcp_call_timeout(60s)까지 침묵 대기하면
+# SSE 무이벤트 타임아웃(query_timeout=60s)을 단독으로 초과해 파이프라인 전체가
+# "처리 시간 초과"로 죽는다(존 선택 재개 b0 단일 경로, DB2 CLOB성 대형 테이블).
+# 호출당·총량 상한으로 결정적으로 bound한다 — 실패·스킵은 로그로 가시화(침묵 강등 금지).
+_SAMPLE_FETCH_TIMEOUT_SEC = 8.0
+_SAMPLE_TOTAL_BUDGET_SEC = 20.0
+
+
+def _synonym_tables_matching_query(
+    db_syns: dict[str, list[str]],
+    match_text: str,
+    cap: int = _MAX_SYNONYM_SUPPLEMENT_TABLES,
+    *,
+    fuzzy: bool = False,
+    min_score: float = 0.85,
+    semantic: bool = False,
+    semantic_min: float = 0.65,
+) -> set[str]:
+    """등록된 컬럼 유사어 중 이번 질의 용어와 매칭되는 것의 테이블만 추린다 (D-051).
+
+    유사어 사전(column_synonyms)은 전 테이블×컬럼 규모일 수 있다(Known Mistakes
+    2026-06-11). allowed_tables 동적 보완 시 등록된 유사어 테이블을 **무조건 전량**
+    추가하면, 유사어가 누적된 DB(예: polestar_b0)에서 `_allowed`가 화이트리스트(5개)에서
+    전체 테이블(실측 407)로 부풀고 relevant·프롬프트 토큰이 폭증한다(system_prompt 104K
+    > FabriX 한도 95K). 따라서 **이번 질의(원질의 + query_targets)에 실제 등장한 유사어**의
+    테이블만 보완 대상으로 게이트하고 상한을 적용한다.
+
+    Plan 61 트랙 B(E5-1): ``fuzzy=True``이면 정확 부분어 포함(``s in match_text``)이
+    실패했을 때 질의 토큰과의 **유연 근사 매칭**(자모·편집거리·부분어)을 추가로 시도한다.
+    이로써 "메모리사용률"↔"메모리 사용률"류 표기 변형·오탈자를 잡는다. ``fuzzy=False``
+    (기본)이면 아래 루프는 기존 정확 부분어 매칭과 **바이트 단위로 동일**하다(회귀 0).
+
+    Plan 61 트랙 B(E5-4, D-084): ``semantic=True``이면 정확·퍼지 계단이 모두 놓친
+    유사어를 **임베딩 의미 검색**(계단 마지막 단)으로 보완한다. "가동률"↔"이용률"류
+    의역·동의개념을 잡는다. 모델 미가용 시 경고 1회 후 무매칭(모듈에서 가시화).
+    ``semantic=False``(기본)이면 임베딩 모듈을 임포트조차 하지 않는다(회귀 0).
+
+    ``cap``의 기본값은 모듈 상수(15)이나, 호출부는 config
+    (``cfg.synonym.max_synonym_supplement_tables``)에서 상한을 읽어 넘긴다(E5-3):
+    낮추면 토큰↓·리콜↓이므로 EX 하네스로 튜닝하는 파라미터다
+    (과잉 가지치기 경계 — Death of Schema Linking, arXiv 2408.07702).
+
+    Args:
+        db_syns: {"table.column": [synonym, ...]} 형태의 등록 유사어
+        match_text: 소문자화한 (원질의 + query_targets) 매칭 텍스트
+        cap: 보완 테이블 수 상한 (기본 _MAX_SYNONYM_SUPPLEMENT_TABLES=15)
+        fuzzy: 유연 근사 매칭 활성화 여부(플래그, 기본 OFF)
+        min_score: 유연 매칭 확정 신뢰도 임계(fuzzy=True일 때만 사용)
+
+    Returns:
+        질의와 매칭된 유사어가 속한 테이블명(소문자) 집합 (최대 cap개)
+    """
+    matched: set[str] = set()
+    if not match_text or not db_syns:
+        return matched
+
+    # 계측(E5-계측): 매칭 단계·근거를 수집해 종료 시 "[동의어]" 태그로 콘솔 로깅.
+    # 테스트 시 pytest --log-cli-level=INFO 로 동의어 사용 적절성을 육안 검증한다.
+    hit_details: list[str] = []
+
+    # 유연·의미 매칭용 질의 토큰은 fuzzy/semantic ON일 때만 준비한다(OFF 경로 오버헤드 0).
+    query_tokens: list[str] = []
+    if fuzzy or semantic:
+        import re as _re
+
+        query_tokens = [
+            tok for tok in _re.split(r"[\s,/()\[\]{}]+", match_text) if len(tok) >= 2
+        ]
+
+    for col_key, syns in db_syns.items():
+        if "." not in col_key:
+            continue
+        # 빈 문자열 유사어는 항상 매칭(="" in text)되어 전 테이블 유입을 유발하므로 제외.
+        # 1글자 유사어는 오매칭 위험이 커 길이 2 이상만 인정한다.
+        for s in syns or []:
+            if not s or len(s) < 2:
+                continue
+            s_low = s.lower()
+            hit = s_low in match_text
+            detail = f"'{s}'→{col_key}(정확)"
+            if not hit and fuzzy and query_tokens:
+                cand, _score = best_flex_match(s_low, query_tokens, min_score)
+                hit = cand is not None
+                if hit:
+                    detail = f"'{s}'→{col_key}(퍼지, 토큰='{cand}', 신뢰도={_score:.2f})"
+            if hit:
+                matched.add(col_key.split(".", 1)[0].lower())
+                hit_details.append(detail)
+                break
+        if len(matched) >= cap:
+            logger.warning(
+                "유사어 기반 allowed_tables 보완 상한(%d) 도달, 이후 생략", cap
+            )
+            break
+
+    # E5-4 (D-084): 정확·퍼지 계단이 놓친 유사어를 임베딩 의미 검색으로 마지막 보완한다.
+    # semantic=False(기본)면 진입하지 않아 기존 경로 바이트 무변경(회귀 0).
+    if semantic and query_tokens and len(matched) < cap:
+        from src.schema_cache.synonym_semantic import semantic_tables_matching_query
+
+        for table in sorted(
+            semantic_tables_matching_query(db_syns, query_tokens, semantic_min)
+        ):
+            if table in matched:
+                continue
+            if len(matched) >= cap:
+                logger.warning(
+                    "유사어 기반 allowed_tables 보완 상한(%d) 도달, 이후 생략", cap
+                )
+                break
+            matched.add(table)
+            hit_details.append(f"→{table}(임베딩)")
+
+    if hit_details:
+        logger.info(
+            "[동의어] 질의 테이블 보완 매칭 %d건: %s",
+            len(hit_details), "; ".join(hit_details),
+        )
+    return matched
+
+
+async def _query_synonym_tables(
+    cache_mgr: Any,
+    db_id: str,
+    parsed: dict[str, Any],
+    query_targets: list[str],
+    app_config: AppConfig,
+) -> set[str]:
+    """이번 질의와 매칭된 유사어의 테이블(소문자 bare명)을 구한다 — 질의의 테이블 신호(D-051).
+
+    2-2 allowed_tables 동적 보완과 테이블 선택 생략 판정(plans/119 Q-5)이 같은 값을 쓴다.
+    예외는 호출부가 처리한다(보완 실패 경고 · 생략 판정 불가 시 LLM 선택).
+    """
+    db_syns = await cache_mgr.get_synonyms(db_id)
+    _match_text = (
+        (parsed.get("original_query", "") or "")
+        + " "
+        + " ".join(query_targets or [])
+    ).lower()
+    # E5-3: 보완 상한을 config에서 읽는다(모듈 상수 하드코딩 대체, 기본 15).
+    # E5-1: fuzzy 플래그 ON 시 유연 근사 매칭 병행(기본 OFF → 정확 부분어만).
+    # E5-4: semantic 플래그 ON 시 임베딩 의미 검색을 계단 마지막 단으로 병행(D-084).
+    _syn_cfg = app_config.synonym
+    return _synonym_tables_matching_query(
+        db_syns,
+        _match_text,
+        cap=_syn_cfg.max_synonym_supplement_tables,
+        fuzzy=_syn_cfg.fuzzy_match,
+        min_score=_syn_cfg.match_confidence_min,
+        semantic=_syn_cfg.semantic_match,
+        semantic_min=_syn_cfg.semantic_confidence_min,
+    )
+
+
+def _table_select_skip_enabled(app_config: AppConfig) -> bool:
+    """테이블 선택 LLM 생략 플래그(plans/119 Q-5)가 **명시적으로** 켜졌는지 본다.
+
+    설정 객체를 목으로 대체한 호출부에서 속성 접근이 참 값을 흉내 내지 않도록 `is True`로 판정한다.
+    """
+    text2sql = getattr(app_config, "text2sql", None)
+    return getattr(text2sql, "schema_table_select_skip_enabled", False) is True
+
+
+def _declared_tables_if_signal_inside(
+    manual_profile: dict[str, Any] | None,
+    full_schema: SchemaInfo,
+    query_syn_tables: set[str],
+) -> list[str] | None:
+    """질의의 테이블 신호가 프로필 선언 집합 안이면 그 집합(스키마 실명)을 돌려준다(plans/119 Q-5).
+
+    근거: 비알람 의도에서 2-2의 최종 집합은 ``선언 집합 ∪ (LLM 선택 ∩ 신호 테이블)``이다 —
+    보충 대상이 프로필 테이블뿐이고(plans/114 P-4①) 필터는 ``선언 ∪ 신호`` 밖을 버린다.
+    신호 테이블(스키마에 실재하는 것)이 전부 선언 집합 안이면 LLM이 무엇을 고르든 최종 집합은
+    선언 집합과 같다. run ``20260923-103638``에서 비알람 호출 321회 중 297회가 이 경우였다.
+
+    Returns:
+        선언 순서의 테이블 실명 목록. 선언이 없거나(프로필·``allowed_tables`` 부재), 스키마에
+        선언 테이블이 하나도 없거나, 신호가 선언 집합 밖이면 None — 호출부가 LLM을 부른다.
+    """
+    if not manual_profile or "allowed_tables" not in manual_profile:
+        return None
+    declared = [str(t).lower() for t in manual_profile.get("allowed_tables") or []]
+    declared_set = set(declared)
+    all_tables_map = {t.rsplit(".", 1)[-1].lower(): t for t in full_schema.tables.keys()}
+    outside = sorted(
+        t for t in query_syn_tables if t in all_tables_map and t not in declared_set
+    )
+    if outside:
+        logger.info(
+            "테이블 선택 LLM 유지(plans/119 Q-5): 선언 집합 밖 유사어 테이블 %s", outside,
+        )
+        return None
+    tables = list(dict.fromkeys(all_tables_map[b] for b in declared if b in all_tables_map))
+    if not tables:
+        return None
+    logger.info(
+        "테이블 선택 LLM 생략(plans/119 Q-5): 질의 신호가 선언 집합 안 — %s", tables,
+    )
+    return tables
 
 
 class _SchemaCacheProxy:
@@ -72,321 +287,58 @@ def invalidate_schema_cache(db_id: Optional[str] = None) -> None:
         pass  # 캐시 매니저 초기화 전이면 무시
 
 
-def _format_schema_for_analysis(schema_dict: dict) -> str:
-    """스키마 딕셔너리를 LLM 분석용 텍스트로 변환한다.
-
-    각 테이블의 컬럼 정보(이름, 타입, PK, FK, nullable)를 나열하여
-    LLM이 구조적 패턴을 감지할 수 있도록 한다.
-
-    Args:
-        schema_dict: 스키마 딕셔너리 (tables 키 포함)
-
-    Returns:
-        LLM 프롬프트에 삽입할 텍스트
-    """
-    lines: list[str] = []
-    tables = schema_dict.get("tables", {})
-    for table_name, table_data in tables.items():
-        lines.append(f"### {table_name}")
-        columns = table_data.get("columns", [])
-        for col in columns:
-            attrs: list[str] = []
-            if col.get("primary_key"):
-                attrs.append("PK")
-            if col.get("foreign_key"):
-                ref = col.get("references", "")
-                attrs.append(f"FK->{ref}" if ref else "FK")
-            if not col.get("nullable", True):
-                attrs.append("NOT NULL")
-            attr_str = f" ({', '.join(attrs)})" if attrs else ""
-            col_type = col.get("type", "")
-            lines.append(f"  - {col['name']}: {col_type}{attr_str}")
-        lines.append("")
-
-    # 관계 정보가 있으면 추가
-    relationships = schema_dict.get("relationships", [])
-    if relationships:
-        lines.append("### FK 관계")
-        for rel in relationships:
-            from_t = rel.get("from", "")
-            to_t = rel.get("to", "")
-            lines.append(f"  - {from_t} -> {to_t}")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-def _parse_llm_json(raw_text: str) -> Any:
-    """LLM 응답에서 JSON을 추출하여 파싱한다.
-
-    마크다운 코드 블록(```json ... ```)을 자동 제거한다.
-
-    Args:
-        raw_text: LLM 응답 원문
-
-    Returns:
-        파싱된 Python 객체
-
-    Raises:
-        ValueError: JSON 파싱 실패 시
-    """
-    import json
-    import re
-
-    text = raw_text.strip()
-    # ```json ... ``` 또는 ``` ... ``` 블록 제거
-    md_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
-    if md_match:
-        text = md_match.group(1).strip()
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"LLM 응답 JSON 파싱 실패: {exc}") from exc
-
-
-async def _analyze_db_structure(
-    llm: BaseChatModel,
-    schema_dict: dict,
-) -> Optional[dict]:
-    """LLM을 사용하여 DB 스키마의 구조적 패턴을 분석한다.
-
-    EAV, 계층형, JOIN 관계 등 특수 패턴을 감지하고,
-    쿼리 가이드를 생성한다.
-
-    Args:
-        llm: LLM 인스턴스
-        schema_dict: 스키마 딕셔너리
-
-    Returns:
-        구조 분석 결과 딕셔너리 또는 None (분석 실패 또는 패턴 없음)
-    """
-    from src.prompts.structure_analyzer import STRUCTURE_ANALYSIS_PROMPT
-
-    schema_text = _format_schema_for_analysis(schema_dict)
-    prompt = STRUCTURE_ANALYSIS_PROMPT + "\n\n## DB 스키마\n\n" + schema_text
-    logger.info("LLM 프롬프트 %s",prompt)
-    try:
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        result = _parse_llm_json(response.content)
-
-        # patterns가 빈 배열이면 특수 구조 없음 -> None 반환
-        if not result.get("patterns"):
-            logger.info("LLM 구조 분석: 특수 패턴 미감지")
-            return None
-
-        logger.info(
-            "LLM 구조 분석 완료: %d개 패턴 감지",
-            len(result["patterns"]),
-        )
-        return result
-
-    except ValueError as e:
-        logger.warning("구조 분석 LLM 응답 파싱 실패: %s", e)
-        return None
-    except Exception as e:
-        logger.warning("구조 분석 LLM 호출 실패: %s", e)
-        return None
-
-
-def _validate_sample_sql(sql: str) -> bool:
-    """샘플 SQL의 안전성을 검증한다.
-
-    SELECT 문만 허용하며, DML/DDL 키워드가 포함되면 거부한다.
-    LIMIT 또는 FETCH FIRST 절이 있는지도 확인한다.
-
-    Args:
-        sql: 검증할 SQL 문자열
-
-    Returns:
-        안전하면 True, 위험하면 False
-    """
-    sql_upper = sql.strip().upper()
-
-    # SELECT 로 시작해야 함
-    if not sql_upper.startswith("SELECT"):
-        return False
-
-    # 위험한 키워드 검사
-    forbidden = [
-        "INSERT ", "UPDATE ", "DELETE ", "DROP ", "CREATE ",
-        "ALTER ", "TRUNCATE ", "GRANT ", "REVOKE ", "EXEC ",
-        "EXECUTE ", "MERGE ",
-    ]
-    for kw in forbidden:
-        if kw in sql_upper:
-            return False
-
-    # LIMIT 또는 FETCH FIRST 절 필수
-    has_limit = "LIMIT " in sql_upper or "FETCH FIRST" in sql_upper
-    if not has_limit:
-        return False
-
-    return True
-
-
-async def _collect_structure_samples(
-    llm: BaseChatModel,
+async def _collect_live_samples(
     client: Any,
     schema_dict: dict,
-    structure_meta: dict,
-) -> dict:
-    """LLM이 감지한 구조에 맞는 샘플 데이터를 수집한다.
+    relevant: list[str],
+    db_id: Optional[str],
+) -> None:
+    """샘플이 없는 관련 테이블의 라이브 샘플을 수집해 schema_dict에 붙인다(제자리 갱신).
 
-    LLM에 구조 분석 결과와 스키마를 제공하여 샘플 SQL을 생성하고,
-    안전성 검증을 통과한 SQL만 실행한다.
-
-    Args:
-        llm: LLM 인스턴스
-        client: DB 클라이언트
-        schema_dict: 스키마 딕셔너리
-        structure_meta: 구조 분석 결과
-
-    Returns:
-        샘플 데이터가 추가된 schema_dict
+    호출당 `_SAMPLE_FETCH_TIMEOUT_SEC`·총량 `_SAMPLE_TOTAL_BUDGET_SEC` 타임박스(D-154).
+    시작/완료 INFO 로그는 SSE 무이벤트 구간 진단용 계측을 겸하고, 테이블마다
+    `schema.sample` 마일스톤(`label="샘플 수집 k/n"`)을 내 상태줄이 이 구간에서 멈추지 않게 한다
+    (plans/89 §3.2-③ · T4 — D-154 타임박스는 *죽지 않게* 했지 *보이게* 하진 않았다).
     """
-    import json
-
-    from src.prompts.structure_analyzer import SAMPLE_SQL_GENERATION_PROMPT
-
-    schema_text = _format_schema_for_analysis(schema_dict)
-    structure_text = json.dumps(structure_meta, ensure_ascii=False, indent=2)
-
-    prompt = (
-        SAMPLE_SQL_GENERATION_PROMPT
-        + "\n\n## 구조 분석 결과\n\n"
-        + structure_text
-        + "\n\n## DB 스키마\n\n"
-        + schema_text
-    )
-
-    samples: dict[str, Any] = {}
-
-    try:
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        sql_list = _parse_llm_json(response.content)
-
-        if not isinstance(sql_list, list):
-            logger.warning("샘플 SQL 생성 결과가 배열이 아님")
-            return schema_dict
-
-        # 최대 3개만 처리
-        for item in sql_list[:3]:
-            purpose = item.get("purpose", "")
-            sql = item.get("sql", "")
-
-            if not sql or not _validate_sample_sql(sql):
-                logger.warning("샘플 SQL 안전성 검증 실패 (skip): %s", purpose)
-                continue
-
-            try:
-                result = await client.execute_sql(sql)
-                if result.rows:
-                    samples[purpose] = result.rows
-                    logger.debug("샘플 수집 성공: %s (%d행)", purpose, len(result.rows))
-            except Exception as e:
-                logger.warning("샘플 SQL 실행 실패 (%s): %s", purpose, e)
-
-    except ValueError as e:
-        logger.warning("샘플 SQL 생성 LLM 응답 파싱 실패: %s", e)
-    except Exception as e:
-        logger.warning("샘플 SQL 생성 LLM 호출 실패: %s", e)
-
-    if samples:
-        structure_meta["samples"] = samples
-
-    schema_dict["_structure_meta"] = structure_meta
-    return schema_dict
-
-
-def _format_structure_approval_summary(structure_meta: dict) -> str:
-    """구조 분석 결과를 사용자가 읽기 쉬운 요약으로 변환한다.
-
-    HITL 승인 요청 시 사용자에게 보여줄 요약 텍스트를 생성한다.
-
-    Args:
-        structure_meta: LLM 구조 분석 결과 딕셔너리
-
-    Returns:
-        승인 요청용 요약 텍스트
-    """
-    lines: list[str] = ["DB 구조 분석 결과를 확인해주세요.\n"]
-    for pattern in structure_meta.get("patterns", []):
-        ptype = pattern.get("type", "unknown")
-        if ptype == "eav":
-            lines.append(
-                f"- EAV 구조: {pattern.get('entity_table', '?')} "
-                f"+ {pattern.get('config_table', '?')}"
-            )
-            join_cond = pattern.get("join_condition")
-            value_joins = pattern.get("value_joins")
-            if value_joins:
-                vj_desc = "; ".join(
-                    f"{vj.get('eav_attribute', '?')} -> {vj.get('entity_column', '?')}"
-                    for vj in value_joins
-                )
-                lines.append(f"  조인: 값 기반 브릿지 ({vj_desc})")
-            elif join_cond:
-                lines.append(f"  조인: {join_cond}")
-            else:
-                lines.append("  조인: (값 기반 조인 참조)")
-        elif ptype == "hierarchy":
-            lines.append(
-                f"- 계층 구조: {pattern.get('table', '?')} "
-                f"(parent: {pattern.get('parent_column', '?')})"
-            )
-        else:
-            lines.append(f"- {ptype}: {pattern.get('description', '?')}")
-    if structure_meta.get("query_guide"):
-        guide_text = structure_meta["query_guide"][:200]
-        lines.append(f"\n쿼리 가이드:\n{guide_text}...")
-    lines.append('\n- 승인: "approve" 또는 "승인"')
-    lines.append('- 거부: "reject" 또는 "거부"')
-    return "\n".join(lines)
-
-
-def _read_existing_profile_source(profiles_dir: str, db_id: str) -> Optional[str]:
-    """기존 프로필 파일의 source 필드를 읽는다.
-
-    YAML 파일 우선, JSON fallback으로 source 값을 반환한다.
-    파일이 없거나 읽기 실패 시 None을 반환한다.
-
-    Args:
-        profiles_dir: 프로필 디렉토리 경로
-        db_id: DB 식별자
-
-    Returns:
-        source 필드 값 ("manual", "auto" 등) 또는 None
-    """
-    import json
-
-    # YAML 시도
-    yaml_path = os.path.join(profiles_dir, f"{db_id}.yaml")
-    try:
-        import yaml
-
-        if os.path.exists(yaml_path):
-            with open(yaml_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-            if isinstance(data, dict):
-                return data.get("source")
-    except ImportError:
-        pass
-    except Exception:
-        pass
-
-    # JSON fallback
-    json_path = os.path.join(profiles_dir, f"{db_id}.json")
-    if os.path.exists(json_path):
+    pending = [
+        t for t in relevant
+        if not schema_dict["tables"].get(t, {}).get("sample_data")
+    ]
+    if not pending:
+        return
+    total = len(pending)
+    logger.info("라이브 샘플 수집 시작: %d개 테이블 (db_id=%s)", total, db_id)
+    started = time.monotonic()
+    budget_skipped: list[str] = []
+    for idx, table_name in enumerate(pending, start=1):
+        if time.monotonic() - started > _SAMPLE_TOTAL_BUDGET_SEC:
+            budget_skipped.append(table_name)
+            continue
+        await emit_step("schema.sample", "start", label=f"샘플 수집 {idx}/{total}")
         try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                return data.get("source")
-        except Exception:
-            pass
-
-    return None
+            samples = await asyncio.wait_for(
+                client.get_sample_data(table_name, limit=5),
+                timeout=_SAMPLE_FETCH_TIMEOUT_SEC,
+            )
+            schema_dict["tables"][table_name]["sample_data"] = cap_sample_rows(samples)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "샘플 데이터 조회 타임아웃(%.0fs 초과) — 스킵: %s",
+                _SAMPLE_FETCH_TIMEOUT_SEC, table_name,
+            )
+        except Exception as e:
+            logger.warning(f"샘플 데이터 조회 실패 ({table_name}): {e}")
+    if budget_skipped:
+        logger.warning(
+            "샘플 수집 총량 예산(%.0fs) 소진 — %d개 테이블 스킵: %s",
+            _SAMPLE_TOTAL_BUDGET_SEC, len(budget_skipped), budget_skipped,
+        )
+    elapsed = time.monotonic() - started
+    await emit_step(
+        "schema.sample", "end",
+        label=f"샘플 수집 완료 {total - len(budget_skipped)}/{total}",
+    )
+    logger.info("라이브 샘플 수집 완료: %.1fs 소요 (db_id=%s)", elapsed, db_id)
 
 
 def _load_manual_profile(db_id: str) -> Optional[dict]:
@@ -541,77 +493,6 @@ def _supplement_eav_tables(
     return supplemented
 
 
-async def _save_structure_profile(
-    db_id: str,
-    structure_meta: dict,
-    cache_mgr: SchemaCacheManager,
-) -> None:
-    """LLM 분석 결과를 캐시와 YAML 파일에 자동 저장한다.
-
-    Redis 캐시에 구조 분석 결과를 저장하고,
-    config/db_profiles/{db_id}.yaml 파일에도 YAML 형식으로 저장한다.
-    YAML 라이브러리가 없으면 JSON 형식으로 fallback한다.
-
-    기존 파일의 source가 "manual"이면 덮어쓰기를 방지한다.
-    자동 생성 시 source: auto를 YAML에 포함한다.
-
-    Args:
-        db_id: DB 식별자
-        structure_meta: 구조 분석 결과 딕셔너리
-        cache_mgr: 스키마 캐시 매니저
-    """
-    import json
-
-    # 기존 파일의 source가 manual이면 파일 덮어쓰기 방지
-    profiles_dir = os.path.join("config", "db_profiles")
-    existing_source = _read_existing_profile_source(profiles_dir, db_id)
-    if existing_source == "manual":
-        logger.info("manual 프로필 보호: 덮어쓰기 스킵 (db_id=%s)", db_id)
-        # Redis 캐시에는 저장 (성능 최적화)
-        try:
-            await cache_mgr.save_structure_meta(db_id, structure_meta)
-        except Exception as e:
-            logger.warning("구조 분석 결과 캐시 저장 실패: %s", e)
-        return
-
-    # Redis 캐시 저장
-    try:
-        await cache_mgr.save_structure_meta(db_id, structure_meta)
-        logger.info("구조 분석 결과 캐시 저장 완료: db_id=%s", db_id)
-    except Exception as e:
-        logger.warning("구조 분석 결과 캐시 저장 실패: %s", e)
-
-    # 자동 생성 시 source: auto 포함
-    save_data = {**structure_meta, "source": "auto"}
-
-    # YAML/JSON 파일 자동 생성
-    os.makedirs(profiles_dir, exist_ok=True)
-
-    try:
-        import yaml
-
-        file_path = os.path.join(profiles_dir, f"{db_id}.yaml")
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write("# AUTO-GENERATED by structure analyzer\n")
-            f.write(f"# db_id: {db_id}\n\n")
-            yaml.dump(
-                save_data,
-                f,
-                allow_unicode=True,
-                default_flow_style=False,
-                sort_keys=False,
-            )
-        logger.info("구조 프로필 YAML 저장: %s", file_path)
-    except ImportError:
-        # PyYAML 미설치 시 JSON fallback
-        file_path = os.path.join(profiles_dir, f"{db_id}.json")
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(save_data, f, ensure_ascii=False, indent=2)
-        logger.info("구조 프로필 JSON 저장 (YAML fallback): %s", file_path)
-    except Exception as e:
-        logger.warning("구조 프로필 파일 저장 실패: %s", e)
-
-
 async def _get_schema_with_cache(
     client: Any,
     db_id: str,
@@ -688,7 +569,10 @@ async def schema_analyzer(
     1. 3단계 캐시를 활용하여 스키마를 조회한다.
     2. LLM을 사용하여 query_targets 기반으로 관련 테이블을 선택한다.
     3. 관련 테이블의 샘플 데이터를 수집한다.
-    4. 스키마를 영구 캐시에 저장한다.
+    4. 구조 정보를 **읽기만** 한다 — ①수동 프로필 ②관리자 승인 적용본 ③없음(plans/104 R1·R3).
+       질의 중 LLM 구조 분석·승인 대기·프로필 파일 기록은 하지 않는다. 없으면 멈추지 않고
+       `dependency_notes`에 사유를 남긴다(G-1 (a)).
+    5. 컬럼 설명도 읽기만 한다 — 캐시 미스에서 비었으면 사유만 남긴다(plans/104 B-6 · G-9 (a)).
 
     Args:
         state: 현재 에이전트 상태
@@ -699,6 +583,8 @@ async def schema_analyzer(
         업데이트할 State 필드:
         - relevant_tables: 관련 테이블 이름 목록
         - schema_info: 스키마 상세 정보 딕셔너리
+        - dependency_notes: 구조 정보가 없거나 컬럼 설명이 비었을 때만 —
+          기존 노트 + `structure_missing`·`descriptions_missing` 노트(DB당 1건)
         - current_node: "schema_analyzer"
         - error_message: 에러 발생 시 메시지, 정상 시 None
     """
@@ -720,18 +606,40 @@ async def schema_analyzer(
                 await _get_schema_with_cache(client, db_id, app_config)
             )
             # ★ DEBUG[1]: 캐시에서 로드된 전체 테이블 확인
-            logger.warning("DEBUG[1] db_id=%s, full_schema tables: %s", db_id, list(full_schema.tables.keys()))
+            logger.debug("DEBUG[1] db_id=%s, full_schema tables: %s", db_id, list(full_schema.tables.keys()))
 
             # 2. LLM 기반 관련 테이블 선택
-            relevant = await _llm_select_relevant_tables(
-                llm,
-                full_schema,
-                query_targets,
-                parsed.get("original_query", ""),
-                routing_intent=state.get("routing_intent"),
-            )
+            # plans/119 Q-5(플래그 기본 off): 질의의 유사어 테이블 신호가 프로필 선언 집합
+            # (`allowed_tables`) 안이면 LLM을 부르지 않는다 — 아래 2-2 필터·보충의 결과가 그때는
+            # LLM 출력과 무관하게 선언 집합이다. 신호는 2-2에서 재사용한다(중복 조회·로그 방지).
+            _query_syn_tables: set[str] | None = None
+            relevant: list[str] | None = None
+            _intent = state.get("routing_intent")
+            if _table_select_skip_enabled(app_config) and _intent != "alarm_query":
+                _skip_prof = _load_manual_profile(db_id)
+                if _skip_prof and "allowed_tables" in _skip_prof:
+                    try:
+                        _query_syn_tables = await _query_synonym_tables(
+                            cache_mgr, db_id, parsed, query_targets, app_config,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "테이블 선택 생략 판정 불가(유사어 조회 실패) — LLM 선택: %s", e,
+                        )
+                    else:
+                        relevant = _declared_tables_if_signal_inside(
+                            _skip_prof, full_schema, _query_syn_tables,
+                        )
+            if relevant is None:
+                relevant = await _llm_select_relevant_tables(
+                    llm,
+                    full_schema,
+                    query_targets,
+                    parsed.get("original_query", ""),
+                    routing_intent=state.get("routing_intent"),
+                )
             # ★ DEBUG[2]: LLM이 선택한 테이블 확인
-            logger.warning("DEBUG[2] LLM selected relevant: %s (query_targets=%s)", relevant, query_targets)
+            logger.debug("DEBUG[2] LLM selected relevant: %s (query_targets=%s)", relevant, query_targets)
 
             # 2-1. EAV 동반 테이블 자동 보충
             relevant = _supplement_eav_tables(
@@ -740,7 +648,7 @@ async def schema_analyzer(
                 db_id,
             )
             # ★ DEBUG[3]: EAV 보충 후 테이블 확인
-            logger.warning("DEBUG[3] after EAV supplement: %s", relevant)
+            logger.debug("DEBUG[3] after EAV supplement: %s", relevant)
 
             # 2-2. allowed_tables 필터링 + 보충 (수동 프로필에 허용 테이블이 정의된 경우)
             # allowed_tables가 정의되면:
@@ -751,19 +659,30 @@ async def schema_analyzer(
             _routing_intent = state.get("routing_intent")
             if _manual_prof and "allowed_tables" in _manual_prof and _routing_intent != "alarm_query":
                 _allowed = {t.lower() for t in _manual_prof["allowed_tables"]}
-                # 매핑 피드백(synonyms)에 등록된 테이블도 allowed_tables에 동적 추가하여 캐시 갱신 이후 필터링 유실 방지
+                # 강제 보충 대상은 **수동 프로필에 적힌 테이블만**이다(plans/114 P-4①).
+                # 아래에서 `_allowed` 에 유사어 매칭 테이블이 합쳐지는데, 그것까지 보충하면
+                # LLM 이 고르지 않은 잡음 테이블이 relevant 로 들어온다 — 폐쇄망 실측에서
+                # 보충 557회 중 61회가 화이트리스트 밖 테이블이었고(`sms_*_file_info`·
+                # `rep_document`·`core_schema_ver`), 그 테이블의 샘플 수집이 예산을 태웠다
+                # (§2.8-②⑤). 유사어 테이블은 **허용만** 한다 — 멀티 게이트
+                # (`multi_db_executor._scope_multi_schema`)가 필터만 하고 보충하지 않는 것과 같다.
+                _supplement_bare = set(_allowed)
+                # 매핑 피드백(synonyms)에 등록된 테이블을 allowed_tables에 동적 보완하되,
+                # **이번 질의 용어와 매칭된 유사어의 테이블만** 추가한다(D-051). 전량 추가하면
+                # 누적 유사어 전 테이블이 _allowed로 유입되어 relevant·프롬프트 토큰이 폭증한다
+                # (실측: b0 _allowed 5→407, relevant 400, system_prompt 104K > 95K 한도).
                 try:
-                    db_syns = await cache_mgr.get_synonyms(db_id)
-                    for col_key in db_syns.keys():
-                        if "." in col_key:
-                            tbl = col_key.split(".", 1)[0].lower()
-                            _allowed.add(tbl)
+                    if _query_syn_tables is None:
+                        _query_syn_tables = await _query_synonym_tables(
+                            cache_mgr, db_id, parsed, query_targets, app_config,
+                        )
+                    _allowed |= _query_syn_tables
                 except Exception as e:
                     logger.warning("synonyms 테이블 allowed_tables 동적 보완 실패: %s", e)
                 # ★ DEBUG[4]: 필터링 조건 확인
-                logger.warning("DEBUG[4] db_id=%s, allowed_tables=%s", db_id, _allowed)
-                logger.warning("DEBUG[4] relevant before filter: %s", relevant)
-                logger.warning("DEBUG[4] bare names: %s", [t.rsplit('.', 1)[-1].lower() for t in relevant])
+                logger.debug("DEBUG[4] db_id=%s, allowed_tables=%s", db_id, _allowed)
+                logger.debug("DEBUG[4] relevant before filter: %s", relevant)
+                logger.debug("DEBUG[4] bare names: %s", [t.rsplit('.', 1)[-1].lower() for t in relevant])
 
                 # Step 1: LLM 선택 중 allowed_tables에 있는 것만 남김
                 _filtered = [
@@ -778,7 +697,7 @@ async def schema_analyzer(
                 for t in full_schema.tables.keys():
                     _all_tables_map[t.rsplit(".", 1)[-1].lower()] = t
 
-                for allowed_bare in _allowed:
+                for allowed_bare in _supplement_bare:
                     if allowed_bare not in _filtered_bare:
                         full_name = _all_tables_map.get(allowed_bare)
                         if full_name:
@@ -789,7 +708,7 @@ async def schema_analyzer(
                             )
 
                 # ★ DEBUG[4]: 필터링+보충 결과
-                logger.warning("DEBUG[4] filtered+supplemented result: %s", _filtered)
+                logger.debug("DEBUG[4] filtered+supplemented result: %s", _filtered)
                 if _filtered:
                     _removed = set(relevant) - set(_filtered)
                     if _removed:
@@ -858,36 +777,34 @@ async def schema_analyzer(
             # 3. 스키마를 딕셔너리로 변환 (관련 테이블만 추출)
             schema_dict = schema_to_dict(full_schema, relevant)
             # ★ DEBUG[5]: 최종 schema_dict의 테이블 키 확인
-            logger.warning("DEBUG[5] final schema_dict tables: %s", list(schema_dict.get("tables", {}).keys()))
+            logger.debug("DEBUG[5] final schema_dict tables: %s", list(schema_dict.get("tables", {}).keys()))
 
             # 4. 샘플 데이터 수집 (관련 테이블만)
-            # 캐시에서 로드한 경우 샘플 데이터가 있을 수 있음
+            # 캐시에서 로드한 경우 샘플 데이터가 있을 수 있음 — 부착 시점에 값 절단
+            # (CLOB성 대형 값의 상태·체크포인트·PII 스크럽 무상한 유입 차단, D-154)
             if full_schema_dict:
                 for table_name in relevant:
                     cached_table = full_schema_dict.get("tables", {}).get(table_name, {})
                     if cached_table.get("sample_data"):
-                        schema_dict["tables"][table_name]["sample_data"] = cached_table["sample_data"]
+                        schema_dict["tables"][table_name]["sample_data"] = cap_sample_rows(
+                            cached_table["sample_data"]
+                        )
 
-            for table_name in relevant:
-                if not schema_dict["tables"].get(table_name, {}).get("sample_data"):
-                    try:
-                        samples = await client.get_sample_data(table_name, limit=5)
-                        schema_dict["tables"][table_name]["sample_data"] = samples
-                    except Exception as e:
-                        logger.warning(f"샘플 데이터 조회 실패 ({table_name}): {e}")
+            # 라이브 샘플 수집 — 호출당·총량 타임박스로 bound (D-154, 상수 주석 참조).
+            await _collect_live_samples(client, schema_dict, relevant, db_id)
 
-            # 구조 분석: 수동 프로필 -> Redis 캐시 -> LLM 분석 -> HITL 승인 -> 자동 저장
+            # 구조 정보: ①수동 프로필 ②관리자 승인 적용본 ③없음 (plans/104 §3.3 R3 · D-227).
+            # 질의 경로는 구조를 분석하지 않고 읽기만 한다(R1) — LLM 구조 분석·승인 대기·
+            # 프로필 파일 기록은 관리자 「DB 구조」 탭으로 옮겨졌다.
             structure_meta: Optional[dict] = None
-            manual_profile_loaded = False
 
-            # 1차: 수동 프로필 확인 (Redis 캐시보다 우선)
+            # 1차: 수동 프로필 (승인본보다 우선 — 승인본은 수동 프로필을 덮지 않는다)
             manual_profile = _load_manual_profile(db_id)
             if manual_profile is not None:
                 # source 필드는 메타데이터이므로 structure_meta에서 제거
                 structure_meta = {
                     k: v for k, v in manual_profile.items() if k != "source"
                 }
-                manual_profile_loaded = True
                 # Redis 캐시에도 저장 (성능 최적화)
                 try:
                     await cache_mgr.save_structure_meta(db_id, structure_meta)
@@ -914,82 +831,37 @@ async def schema_analyzer(
                                 "known_attributes → eav_name_synonyms 동기화 실패: %s", e
                             )
 
-            # 2차: Redis 캐시 확인
+            # 2차: 관리자가 승인한 적용본 (Redis → 없으면 파일 백업에서 복원)
             if structure_meta is None:
                 try:
-                    cached_structure = await cache_mgr.get_structure_meta(
-                        db_id
-                    )
-                    if cached_structure:
-                        structure_meta = cached_structure
-                        logger.info("구조 분석 캐시 히트: db_id=%s", db_id)
+                    applied = await cache_mgr.get_applied_structure_meta(db_id)
+                    if applied:
+                        structure_meta = applied
+                        logger.info("구조 정보 적용본 사용: db_id=%s", db_id)
                 except Exception as e:
-                    logger.warning("구조 분석 캐시 조회 실패: %s", e)
+                    logger.warning("구조 정보 적용본 조회 실패: %s", e)
 
-            # 3차: LLM 분석 (수동 프로필과 캐시 모두 없는 경우)
-            if structure_meta is None:
-                # HITL 재진입 확인: approval_context에 이미 분석 결과가 있으면 승인된 것
-                approval_ctx = state.get("approval_context")
-                if (
-                    approval_ctx
-                    and approval_ctx.get("type") == "structure_analysis"
-                    and state.get("approval_action") == "approve"
-                ):
-                    # 승인됨 -> 저장하고 진행
-                    structure_meta = approval_ctx.get("analysis_result")
-                    if structure_meta:
-                        await _save_structure_profile(
-                            db_id, structure_meta, cache_mgr
-                        )
-                        logger.info(
-                            "구조 분석 HITL 승인 -> 프로필 저장: db_id=%s",
-                            db_id,
-                        )
-                else:
-                    # 새 분석 수행
-                    structure_meta = await _analyze_db_structure(
-                        llm, schema_dict
-                    )
-                    if (
-                        structure_meta
-                        and app_config.enable_structure_approval
-                    ):
-                        # HITL 승인 요청: 중간 결과를 함께 반환
-                        logger.info(
-                            "구조 분석 HITL 승인 요청: db_id=%s", db_id
-                        )
-                        return {
-                            "relevant_tables": relevant,
-                            "schema_info": schema_dict,
-                            "column_descriptions": descriptions,
-                            "column_synonyms": synonyms,
-                            "resource_type_synonyms": {},
-                            "eav_name_synonyms": {},
-                            "awaiting_approval": True,
-                            "approval_context": {
-                                "type": "structure_analysis",
-                                "db_id": db_id,
-                                "analysis_result": structure_meta,
-                                "summary": _format_structure_approval_summary(
-                                    structure_meta
-                                ),
-                            },
-                            "current_node": "schema_analyzer",
-                            "error_message": None,
-                        }
-                    elif structure_meta:
-                        # HITL 비활성화: 바로 저장
-                        await _save_structure_profile(
-                            db_id, structure_meta, cache_mgr
-                        )
-
+            # 3차: 없음 — 멈추지 않고 구조 안내 없이 진행하되 사유를 남긴다
+            # (G-1 (a) · 침묵 강등 금지)
+            asset_notes: list[dict[str, Any]] | None = None
             if structure_meta:
                 schema_dict["_structure_meta"] = structure_meta
-                # 수동 프로필은 이미 완전한 정보를 포함하므로 LLM 샘플 수집 스킵
-                if not manual_profile_loaded:
-                    schema_dict = await _collect_structure_samples(
-                        llm, client, schema_dict, structure_meta
-                    )
+                # D-294 — 프로필 관계(추론·확인)를 관련 테이블 사이 관계에 더한다(멀티 경로와 대칭)
+                attach_profile_relationships(schema_dict, structure_meta)
+            else:
+                logger.warning(
+                    "구조 정보 없음(수동 프로필·승인본) — 구조 안내 없이 진행: db_id=%s", db_id
+                )
+                asset_notes = list(state.get("dependency_notes") or [])
+                add_db_note(asset_notes, structure_missing_note(db_id))
+
+            # 컬럼 설명은 질의 경로에서 LLM으로 만들지 않는다(plans/104 B-6 · G-9 (a)). 백업 복원
+            # 뒤에도 비었으면 구조 정보 없음과 같이 질의마다 사유를 남긴다 — 캐시가 데워진 뒤 조용히
+            # 품질이 떨어지지 않게(침묵 강등 금지). 한 응답 안에서는 DB당 1건.
+            if not descriptions:
+                if asset_notes is None:
+                    asset_notes = list(state.get("dependency_notes") or [])
+                add_db_note(asset_notes, descriptions_missing_note(db_id))
 
             # 5. 캐시 미스였던 경우에만 저장 (cache_hit=True면 이미 저장됨)
             # get_schema_or_fetch 내부에서 이미 save_schema를 호출하므로
@@ -1024,6 +896,29 @@ async def schema_analyzer(
                 except Exception as e:
                     logger.warning("글로벌 유사단어 자동 로드 실패: %s", e)
 
+            # E5-2 값 검색 인덱스 런타임 적재 (Plan 61 §12.3-3, D-075). value_retrieval OFF면
+            # 미진입(state에 None → 주입 no-op, 회귀 0). load 우선·없으면 best-effort build.
+            column_value_index: dict | None = None
+            if app_config.synonym.value_retrieval:
+                try:
+                    from src.routing.domain_config import get_domain_by_id
+                    from src.schema_cache.value_index import load_or_build_value_index
+
+                    _engine = ""
+                    _dom = get_domain_by_id(db_id) if db_id else None
+                    if _dom is not None:
+                        _engine = getattr(_dom, "db_engine", "") or ""
+                    _redis = (
+                        cache_mgr._redis_cache
+                        if cache_mgr and cache_mgr.redis_available else None
+                    )
+                    column_value_index = await load_or_build_value_index(
+                        db_id or "", schema_dict.get("_structure_meta"),
+                        client, _engine, redis_cache=_redis,
+                    )
+                except Exception as e:  # noqa: BLE001 — 값 인덱스 실패는 무시(회귀 0)
+                    logger.warning("값 인덱스 적재 실패(무시): %s", e)
+
             return {
                 "relevant_tables": relevant,
                 "schema_info": schema_dict,
@@ -1031,9 +926,12 @@ async def schema_analyzer(
                 "column_synonyms": synonyms,
                 "resource_type_synonyms": resource_type_synonyms,
                 "eav_name_synonyms": eav_name_synonyms,
+                "column_value_index": column_value_index,
                 "schema_cache_source": cache_source,
                 "current_node": "schema_analyzer",
                 "error_message": None,
+                # 구조 정보·컬럼 설명이 있으면 키를 싣지 않는다 — 반환 shape 현행 유지
+                **({"dependency_notes": asset_notes} if asset_notes else {}),
             }
 
     except Exception as e:
@@ -1078,9 +976,12 @@ async def _llm_select_relevant_tables(
     if not query_targets:
         return all_tables
 
-    # 테이블별 컬럼 요약 생성
+    # 테이블별 컬럼 요약 생성 — **이름순**으로 나열한다(plans/121 TP-11.10 · D-222 부기 ④). 스키마
+    # 사전의 순서는 출처마다 다르다(실측 2026-09-28: 실시간 수집은 목록 조회 순서, Redis 캐시는 해시
+    # 테이블 인코딩 HGETALL 순서 — 394테이블 `hashtable` · 서버 재기동마다 해시 시드가 바뀐다). 같은
+    # 질문을 다시 보내도 약 12K토큰 접두가 달라져 KV 캐시에 적중하지 못했다.
     table_summaries: list[str] = []
-    for table_name, table_info in full_schema.tables.items():
+    for table_name, table_info in sorted(full_schema.tables.items()):
         col_names = [col.name for col in table_info.columns]
         col_summary = ", ".join(col_names[:15])
         if len(col_names) > 15:
@@ -1092,10 +993,10 @@ async def _llm_select_relevant_tables(
     # FK 관계 요약
     relationship_text = ""
     if full_schema.relationships:
-        rel_lines = [
+        rel_lines = sorted(  # 테이블 목록과 같은 이유로 출처 순서에 기대지 않는다(TP-11.10)
             f"- {rel.get('from', '')} -> {rel.get('to', '')}"
             for rel in full_schema.relationships
-        ]
+        )
         relationship_text = "\n\nFK 관계:\n" + "\n".join(rel_lines)
 
     # routing_intent별 추가 힌트
@@ -1125,7 +1026,7 @@ async def _llm_select_relevant_tables(
 """
     try:
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        selected = [t.strip() for t in response.content.split(",")]
+        selected = [t.strip() for t in coerce_content_text(response.content).split(",")]
         valid_tables = set(all_tables)
         result = sorted(t for t in selected if t in valid_tables)
         if result:

@@ -1,0 +1,26 @@
+{
+  "fixture_version": 1,
+  "source": "local-docker",
+  "jennifer_version": "5.7.0.1",
+  "recorded_at": "2026-09-29T12:53:40+0900",
+  "request": {
+    "method": "GET",
+    "template": "/api-v2/deploy/{domainId}",
+    "path": "/api-v2/deploy/1000",
+    "query": {
+      "startTime": "1790653420545",
+      "endTime": "1790654020545"
+    },
+    "accept": "application/json"
+  },
+  "response": {
+    "status": 500,
+    "content_type": "application/json",
+    "body_json": "500 500 com.aries.view.core.nio.DataServerDownException: 1000 Domain is not connected"
+  },
+  "variant": "domain_not_connected",
+  "label": "",
+  "masking": {
+    "masked_values": 0
+  }
+}

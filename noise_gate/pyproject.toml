@@ -1,0 +1,19 @@
+# noise_gate 패키지 메타 (Plan 66 · D-139).
+#
+# sre_agent/mcp_server와 달리 **자체 venv를 두지 않는다** — 본체 API 서버가 AlarmWorker를
+# 같은 프로세스에서 기동하므로(D-048) 같은 인터프리터·같은 의존성 트리를 공유해야 한다.
+# 따라서 의존성·빌드는 루트 pyproject가 관장하고(`include = ["src*", "noise_gate*"]`),
+# 이 파일은 패키지 식별·도구 설정만 담는다. 설치는 루트에서 `pip install -e .` 한 번이다.
+[project]
+name = "noise-gate"
+version = "0.1.0"
+description = "폴스타 알람 노이즈 캔슬링 게이트 (collectorinfra 최상위 패키지, D-139)"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]

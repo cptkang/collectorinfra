@@ -18,7 +18,12 @@ from typing import Any
 from mcp.server.fastmcp import Context, FastMCP
 
 from mcp_server.db import DBPoolManager
-from mcp_server.security import ReadOnlyViolationError, validate_readonly
+from mcp_server.security import (
+    PolestarDomainViolationError,
+    ReadOnlyViolationError,
+    validate_polestar_domain,
+    validate_readonly,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +39,22 @@ def _get_source_config(ctx: Context, source: str) -> Any:
     return pool_manager.get_source_config(source)
 
 
-def register_tools(mcp: FastMCP) -> None:
-    """MCP 서버에 도구를 등록한다."""
+def register_tools(
+    mcp: FastMCP,
+    expose_execute_sql: bool = False,
+    polestar_domain_guard: bool = True,
+) -> None:
+    """MCP 서버에 저수준 도구를 등록한다.
+
+    Args:
+        mcp: FastMCP 서버 인스턴스.
+        expose_execute_sql: raw SQL 실행 도구(execute_sql) 노출 여부(기본 비노출 —
+            계획 §3/§6). True일 때만 execute_sql을 등록하며, 이때 읽기 전용 검증에
+            더해 폴스타 도메인 deny(D-022/D-028)를 추가로 적용한다.
+        polestar_domain_guard: 폴스타 도메인 deny 적용 여부(기본 True — 현행 동작 보존).
+            이 검증은 폴스타 스키마를 전제하므로 폴스타 소스를 서빙하지 않는 배치에서는
+            False로 옵트아웃한다. 읽기 전용 검증은 이 플래그와 무관하게 항상 적용된다.
+    """
 
     @mcp.tool()
     async def search_objects(
@@ -63,6 +82,8 @@ def register_tools(mcp: FastMCP) -> None:
                 sql = _pg_search_objects_sql(pattern, type)
             elif source_type == "db2":
                 sql = _db2_search_objects_sql(pattern, type)
+            elif source_type == "mariadb":
+                sql = _mariadb_search_objects_sql(pattern, type)
             else:
                 return json.dumps({"error": f"지원하지 않는 DB 타입: {source_type}"})
 
@@ -77,7 +98,6 @@ def register_tools(mcp: FastMCP) -> None:
             logger.error("search_objects 실패 (%s): %s", source, e)
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
-    @mcp.tool()
     async def execute_sql(
         source: str,
         sql: str,
@@ -104,6 +124,18 @@ def register_tools(mcp: FastMCP) -> None:
                 logger.warning("읽기 전용 위반 (%s): %s", source, e.reason)
                 return json.dumps(
                     {"error": f"읽기 전용 위반: {e.reason}"},
+                    ensure_ascii=False,
+                )
+
+        # 폴스타 도메인 deny (execute_sql 옵트인 노출 시에만 도달 — §6, D-022/D-028).
+        # 폴스타 스키마 전제 검증이므로 폴스타 미서빙 배치는 게이트로 끌 수 있다(기본 켜짐).
+        if polestar_domain_guard:
+            try:
+                validate_polestar_domain(sql)
+            except PolestarDomainViolationError as e:
+                logger.warning("폴스타 도메인 위반 (%s): %s", source, e.reason)
+                return json.dumps(
+                    {"error": f"폴스타 도메인 위반: {e.reason}"},
                     ensure_ascii=False,
                 )
 
@@ -175,6 +207,14 @@ def register_tools(mcp: FastMCP) -> None:
                     pool_manager, source, table_name
                 )
                 fk_relations = await _db2_get_foreign_keys(
+                    pool_manager, source, table_name
+                )
+            elif source_type == "mariadb":
+                columns = await _mariadb_get_columns(pool_manager, source, table_name)
+                pk_columns = await _mariadb_get_primary_keys(
+                    pool_manager, source, table_name
+                )
+                fk_relations = await _mariadb_get_foreign_keys(
                     pool_manager, source, table_name
                 )
             else:
@@ -279,6 +319,17 @@ def register_tools(mcp: FastMCP) -> None:
 
         logger.info("list_sources: %d개 활성 소스", len(sources_list))
         return json.dumps(sources_list, ensure_ascii=False)
+
+    # execute_sql은 옵트인 시에만 노출한다(기본 비노출 — 계획 §3/§6).
+    # 노출 시 위 execute_sql은 validate_readonly + validate_polestar_domain을 함께 적용한다.
+    if expose_execute_sql:
+        mcp.tool()(execute_sql)
+        logger.info(
+            "execute_sql 도구 노출됨 (expose_execute_sql=True) — 폴스타 도메인 deny=%s",
+            polestar_domain_guard,
+        )
+    else:
+        logger.info("execute_sql 도구 비노출 (기본) — 고수준 도구 사용")
 
 
 # --- PostgreSQL 스키마 조회 SQL ---
@@ -459,6 +510,117 @@ async def _db2_get_foreign_keys(
         "AND fk.COLSEQ = pk.COLSEQ "
         f"WHERE ref.TABNAME = '{table_name.upper()}' "
         "AND ref.TABSCHEMA NOT LIKE 'SYS%'"
+    )
+    try:
+        return await pm.execute(source, sql)
+    except Exception:
+        return []
+
+
+# --- MariaDB 스키마 조회 SQL ---
+#
+# 반환 키는 PostgreSQL 헬퍼와 같다(name·schema / column_name·data_type·is_nullable·
+# column_default / column_name / from_column·to_table·to_column). 모든 열에 별칭을 명시한다 —
+# 결과 키를 서버가 돌려주는 표기(대소문자)에 맡기지 않기 위해서다. `schema`는 예약어라 백틱으로
+# 인용한다.
+
+
+def _mariadb_literal(value: str) -> str:
+    """MariaDB 문자열 리터럴을 만든다.
+
+    기본 sql_mode에서 백슬래시가 이스케이프 문자라 `'`만 이중화하면 `\\'`로 리터럴을 탈출할 수 있다.
+    백슬래시를 먼저 이중화한다.
+    """
+    escaped = value.replace("\\", "\\\\").replace("'", "''")
+    return f"'{escaped}'"
+
+
+def _mariadb_table_filter(table_name: str) -> str:
+    """information_schema 조회용 스키마·테이블 조건을 만든다.
+
+    'db.table' 형태면 분리하고, bare name이면 연결의 기본 database(`DATABASE()`)로 한정한다.
+    """
+    if "." in table_name:
+        schema, bare = table_name.split(".", 1)
+        schema_expr = _mariadb_literal(schema)
+    else:
+        bare = table_name
+        schema_expr = "DATABASE()"
+    return (
+        f"table_schema = {schema_expr} "
+        f"AND table_name = {_mariadb_literal(bare)}"
+    )
+
+
+def _mariadb_search_objects_sql(pattern: str, obj_type: str) -> str:
+    """MariaDB 객체 검색 SQL을 생성한다.
+
+    연결 database의 테이블은 bare name, 그 외 database는 db.table 형태로 반환한다.
+    문자열 결합은 CONCAT이다 — MariaDB 기본 sql_mode에서 `||`는 OR 연산자다.
+    """
+    type_filter = "BASE TABLE" if obj_type == "table" else "VIEW"
+    schema_exclude = (
+        "table_schema NOT IN "
+        "('information_schema', 'mysql', 'performance_schema', 'sys')"
+    )
+    name_expr = (
+        "CASE WHEN table_schema = DATABASE() THEN table_name "
+        "ELSE CONCAT(table_schema, '.', table_name) END AS name"
+    )
+    pattern_filter = ""
+    if pattern != "*":
+        pattern_filter = (
+            f"AND table_name LIKE {_mariadb_literal(pattern.replace('*', '%'))} "
+        )
+    return (
+        f"SELECT {name_expr}, table_schema AS `schema` "
+        "FROM information_schema.tables "
+        f"WHERE {schema_exclude} AND table_type = '{type_filter}' "
+        f"{pattern_filter}"
+        "ORDER BY table_schema, table_name"
+    )
+
+
+async def _mariadb_get_columns(
+    pm: DBPoolManager, source: str, table_name: str
+) -> list[dict[str, Any]]:
+    """MariaDB 테이블의 컬럼 정보를 조회한다."""
+    sql = (
+        "SELECT column_name AS column_name, data_type AS data_type, "
+        "is_nullable AS is_nullable, column_default AS column_default "
+        "FROM information_schema.columns "
+        f"WHERE {_mariadb_table_filter(table_name)} "
+        "ORDER BY ordinal_position"
+    )
+    return await pm.execute(source, sql)
+
+
+async def _mariadb_get_primary_keys(
+    pm: DBPoolManager, source: str, table_name: str
+) -> list[dict[str, Any]]:
+    """MariaDB 테이블의 PK 컬럼을 키 순서대로 조회한다(PK 제약명은 항상 PRIMARY)."""
+    sql = (
+        "SELECT column_name AS column_name "
+        "FROM information_schema.key_column_usage "
+        f"WHERE {_mariadb_table_filter(table_name)} "
+        "AND constraint_name = 'PRIMARY' "
+        "ORDER BY ordinal_position"
+    )
+    return await pm.execute(source, sql)
+
+
+async def _mariadb_get_foreign_keys(
+    pm: DBPoolManager, source: str, table_name: str
+) -> list[dict[str, Any]]:
+    """MariaDB 테이블의 FK 관계를 조회한다."""
+    sql = (
+        "SELECT column_name AS from_column, "
+        "referenced_table_name AS to_table, "
+        "referenced_column_name AS to_column "
+        "FROM information_schema.key_column_usage "
+        f"WHERE {_mariadb_table_filter(table_name)} "
+        "AND referenced_table_name IS NOT NULL "
+        "ORDER BY constraint_name, ordinal_position"
     )
     try:
         return await pm.execute(source, sql)

@@ -1,0 +1,146 @@
+# 사용자 매뉴얼 프롬프트 사례 (plans/116 §4.9.2).
+#
+# - scenario_ref : testdata/scenarios 원천 ID(없으면 매뉴얼 전용 — 사유를 note 에)
+# - turns        : 같은 대화(thread)로 차례로 보낸다
+# - pregate      : 파이프라인 전에 라우트가 답하는 턴(존 역질문 등) — 재생 파일이 없다
+# - profile      : 녹화 서버 프로필 덧붙임(없으면 record 기본)
+# 샘플은 scripts/manual/fixtures/samples/<id>.json (실 실행 · 사람 확인 후 reviewed: true)
+cases:
+  # ── 3장 질의하기 ──────────────────────────────────────────────
+  - id: Q-SERVER-LIST
+    feature: U-11
+    scenario_ref: B-01
+    turns:
+      - query: "전체 서버의 호스트명, OS종류, 벤더를 조회해줘"
+  - id: Q-TOP-MEMORY
+    feature: U-19
+    scenario_ref: B-11
+    note: >-
+      원 문장(「메모리 사이즈가 큰 순서로 상위 3대」)은 샌드박스에서 틀린 답을 냈다 — 메모리 값이 「8.0 GB」·「65536」처럼
+      단위가 섞인 문자열이라 문자열 순서로 정렬됐다(2026-09-23 독립 SQL 대조 · 결함 보고). 숫자 지표로 바꿨다
+    turns:
+      - query: "2026년 6월 메모리 사용률 평균이 높은 순서로 상위 3대 서버를 보여줘"
+  - id: Q-SERVER-DETAIL
+    feature: U-19
+    scenario_ref: B-03
+    turns:
+      - query: "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량을 조회해줘"
+  - id: Q-CORE-FILTER
+    feature: U-19
+    scenario_ref: B-07
+    turns:
+      - query: "논리코어가 8개 이상인 서버의 서버명, 논리코어 수, 메모리 용량을 논리코어 내림차순으로 보여줘"
+  - id: Q-CPU-MONTH
+    feature: U-19
+    scenario_ref: B-12
+    note: 기준월을 샌드박스 데이터가 있는 2026년 5월로 바꿨다
+    turns:
+      - query: "2026년 5월 서버별 CPU 사용률 평균이 높은 상위 5대를 보여줘"
+  - id: Q-MEM-OVER
+    feature: U-19
+    scenario_ref: C-07
+    turns:
+      - query: "메모리 이용률이 90%를 초과한 적이 있는 서버를 조회해줘"
+  # Q-ALARM-ACTIVE(현재 발생 중인 알람)는 문장을 바꿔도 0건(활성 7건 존재) — 2026-09-23 제외 · 증거 fixtures/rejected
+  - id: Q-ALARM-HISTORY
+    feature: U-19
+    scenario_ref: D-02
+    note: 건수를 100건에서 20건으로 줄였다(매뉴얼 표시 분량)
+    turns:
+      - query: "경고 이상 알람 이력을 최근 발생 순으로 20건 조회해줘"
+  - id: Q-COMPOSITE
+    feature: U-19
+    scenario_ref: E-07
+    note: >-
+      원 문장(「…제조사와 메모리 용량」)은 대상 서버는 맞았으나 제조사가 전부 null 로 나왔다 — 원본에는 Vendor 값이
+      있다(2026-09-23 독립 SQL 대조 · 결함 보고). 항목을 IP·OS 종류로 바꿨다
+    turns:
+      - query: "심각 알람이 발생한 적이 있는 서버들의 IP 주소와 OS 종류를 보여줘"
+  # Q-HELP(「❓ 사용법」 문장)·Q-DBLIST 는 2026-09-23 검토에서 오답으로 제외 — 증거는 fixtures/rejected/ · plans/116 §10.3
+  - id: Q-GENERAL
+    feature: U-19
+    scenario_ref: A-08
+    turns:
+      - query: "쿠버네티스란 뭐야?"
+  - id: Q-BAD-DELETE
+    feature: U-19
+    scenario_ref: R2-01
+    turns:
+      - query: "서버 테이블 전부 삭제해줘"
+  - id: Q-BAD-UPTIME
+    feature: U-19
+    scenario_ref: R4-01
+    turns:
+      - query: "서버 가동률 보여줘"
+  - id: Q-BAD-TYPO
+    feature: U-19
+    scenario_ref: R3-01
+    turns:
+      - query: "cocm-hdkapp1 서버의 OS"
+  # ── 4장 결과 읽기·내려받기 ───────────────────────────────────
+  - id: Q-EXCEL-OUT
+    feature: U-23
+    scenario_ref: R4-07C
+    turns:
+      - query: "전체 서버 목록을 엑셀로 만들어줘"
+  # Q-SQL(3단 녹화)은 2026-09-23 제외 — 스트리밍 응답에 실행 SQL 이 실리지 않고(2·3단 공통) 결과도 틀림 · 증거 fixtures/rejected
+  # ── 5장 조회 범위와 역질문 ───────────────────────────────────
+  # Q-ZONE(존 역질문)은 라우트 제어 화면이라 사례 녹화 대신 캡처(zone-clarify)로 싣는다 — 샌드박스 단일 DB 에서는 발동하지 않는다(G-6)
+  # ── 7장 대화와 이력 ────────────────────────────────────────
+  - id: Q-MULTI-HOST
+    feature: U-34
+    scenario_ref: G-01
+    turns:
+      - query: "cocm-hdkapp01 서버의 IP 주소와 OS 종류를 보여줘"
+      - query: "해당 서버의 메모리 용량도 보여줘"
+  - id: Q-MULTI-TOP
+    feature: U-34
+    scenario_ref: G-02
+    turns:
+      - query: "2026년 6월 CPU 사용률 평균이 높은 상위 3대 서버를 알려줘"
+      - query: "그 서버들의 제조사와 OS 종류"
+  # ── 8장 채팅 명령 ─────────────────────────────────────────
+  - id: Q-SYNONYM
+    feature: U-37
+    scenario_ref: A-10
+    turns:
+      - query: "vcore, cpu, core은 동의어이다. 캐시에 등록하라."
+      - query: "hostname에 '장비이름' 유사 단어를 추가해줘"
+  - id: Q-CACHE
+    feature: U-39
+    scenario_ref: A-05
+    note: 스냅샷의 config 사본에서 실행된다 — 저장소 정본 파일은 건드리지 않는다
+    turns:
+      - query: "polestar DB의 스키마 캐시를 갱신해줘"
+  # ── 6장 양식 채우기 ───────────────────────────────────────
+  - id: F-SERVER-LIST
+    feature: U-27
+    scenario_ref: H-01
+    note: >-
+      위치를 샌드박스 전체로 바꿨다. 「채워줘」만 쓰면 로컬 MLX 입력 분석이 유사어 일괄 등록으로 오분류해
+      양식 채우기가 시작 전에 끝났다(2026-09-23 · 결함 보고) — 요청을 풀어 썼다
+    turns:
+      - query: "첨부한 양식에 전체 서버 정보를 넣어서 엑셀 파일로 만들어줘"
+        file: 서버목록_양식.xlsx
+  # F-SERVER-INFO 는 IP 가 2/50 만 채워지고(원본 50) 역질문도 발동하지 않아 2026-09-23 제외 — 증거 fixtures/rejected
+  - id: F-CLARIFY
+    feature: U-29
+    scenario_ref: ""
+    note: 매뉴얼 전용 양식 — DB 에 없는 열(담당자·연락처)이 역질문을 일으킨다
+    turns:
+      - query: "첨부한 양식에 전체 서버 정보를 넣어서 파일로 만들어줘"
+        file: 서버담당_양식.xlsx
+  - id: F-CPU-MONTH
+    feature: U-27
+    scenario_ref: H-05
+    note: 기준월을 샌드박스 데이터가 있는 2026년 5월로 바꿨다
+    turns:
+      - query: "첨부한 양식에 2026년 5월 기준 서버별 성능 통계를 넣어서 파일로 만들어줘"
+        file: 성능요약_양식.xlsx
+  - id: F-WORD
+    feature: U-27
+    scenario_ref: ""
+    note: 매뉴얼 전용 Word 양식(scripts/manual/make_forms.py)
+    turns:
+      - query: "첨부한 보고서 양식에 전체 서버 현황을 넣어서 파일로 만들어줘. 부서는 인프라운영팀"
+        file: 서버현황_보고서.docx

@@ -121,7 +121,6 @@ def mock_app_config_redis():
     config.schema_cache.backend = "redis"
     config.schema_cache.cache_dir = "/tmp/test_cache"
     config.schema_cache.enabled = True
-    config.schema_cache.auto_generate_descriptions = True
     config.schema_cache.fingerprint_ttl_seconds = 1800
     config.redis.host = "localhost"
     config.redis.port = 6379
@@ -139,7 +138,6 @@ def mock_app_config_file():
     config.schema_cache.backend = "file"
     config.schema_cache.cache_dir = "/tmp/test_cache"
     config.schema_cache.enabled = True
-    config.schema_cache.auto_generate_descriptions = False
     config.schema_cache.fingerprint_ttl_seconds = 1800
     config.redis.host = "localhost"
     config.redis.port = 6379

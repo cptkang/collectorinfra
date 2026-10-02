@@ -1,0 +1,259 @@
+# ============================================================================
+# 자산관리(ITAM) DB 스키마 — 벤더 제공 자료 전사본 (plans/95 §3)
+# ============================================================================
+# 성격: **전사본(transcription)이지 정본(profile)이 아니다.**
+#   - 출처: 사용자 제공 화면 캡처 6장(2026-09-11) —
+#       `업무룰리모델_RDB_테이블별컬럼(tcdmsif80).xlsx` 4장 · `(tcdmsif79).xlsx` 2장
+#   - 런타임은 이 파일을 **읽지 않는다**. 구조 정본은 `config/db_profiles/{db_id}.yaml`이며,
+#     그 파일은 **물리 컬럼·테이블 식별자가 확정된 뒤**(plans/95 G-4) 이 전사본을 재료로 쓴다.
+#     확정 전에 프로필을 만들면 LLM이 존재하지 않는 컬럼명을 가르친다.
+#   - 위치 근거: 비폴스타 DB 스키마 파일의 기존 선례는 `testdata/generic_mon/schema.json`이다
+#     (Plan 63 P4-2). 형식만 YAML로 바꿨다 — 한국어 컬럼 정의·미확정 표기·코드 도메인 주석을
+#     담아야 하는데 JSON은 주석을 못 쓴다.
+#
+# 판독 범례(각 항목의 `conf` 필드):
+#   ok     제공 이미지에서 명확히 판독
+#   check  판독했으나 원본 확인 필요(저해상도 화면 캡처 · 문자 혼동 가능)
+#   none   미제공 — plans/95 §8의 게이트 대상
+#
+# ⚠ 이 파일에 **추정으로 채운 값을 넣지 말 것.** 모르는 값은 null로 두고 `unresolved`에 남긴다.
+#   전사본에 추정이 섞이면 프로필이 그 추정을 정본으로 승격시킨다.
+# ============================================================================
+
+version: 1
+db_id: itam
+db_engine: mariadb            # 시트 「DBMS구분」 = MARIADB (conf: ok)
+source: vendor_sheet          # 전사본 — 실 DB `information_schema` 대조 미실시
+verified_against_live_db: false
+
+provenance:
+  captured: 2026-09-11
+  medium: 화면 캡처 6장(엑셀 「업무룰리모델_RDB_테이블별컬럼」)
+  files:
+    - "업무룰리모델_RDB_테이블별컬럼(tcdmsif80).xlsx"
+    - "업무룰리모델_RDB_테이블별컬럼(tcdmsif79).xlsx"
+  registered: 2026-07-23        # 시트 「등록일시」
+  app_code: DMS
+  standard_group: 차계정/MDB_UTF8
+  owner_system: IT자산관리포털 운영 DB      # 시트 「서버명」
+  group_company_code: KB0       # conf: check — 화면상 'KB0'와 'KBO' 구분 불가
+  server_code: R18S1
+  instance_standard: IC1
+
+# ── 이름 규약 — 확정 전까지 SQL을 쓸 수 없는 축 -----------------------------
+naming:
+  # 시트 B열 「스키마명」 값. 실 MariaDB database명인지 논리 인스턴스명인지 불명.
+  logical_schema: INST1
+  logical_schema_conf: check
+  # 시트 C열 「테이블명」은 대문자, 파일명은 소문자(tcdmsif80). Linux MariaDB는
+  # lower_case_table_names=0 이면 테이블명 대소문자를 **구분한다** — DB2 POLESTAR
+  # 대문자 한정(D-057)과 같은 계열의 함정이다.
+  tables_as_written: [TCDMSIF80, TCDMSIF79]
+  table_case_conf: check
+  # 아래 각 컬럼의 `var`는 시트 X열 「변수명」(= Y열 「서버변수명」과 동일)이다.
+  # 실 DDL 식별자가 이 camelCase인지, 스네이크 대문자(SEVR_HOST_NAME)인지, 한글인지 미확정.
+  physical_column_style: null
+  physical_column_style_conf: none   # → plans/95 G-4
+
+# ── 미확정 항목 — plans/95 §8 게이트와 1:1 ---------------------------------
+unresolved:
+  - gate: G-2
+    item: 실 database(스키마)명 · MariaDB 버전
+  - gate: G-4
+    item: 물리 컬럼·테이블 식별자(대소문자 포함)
+    how: "SHOW CREATE TABLE TCDMSIF80 한 줄이면 확정된다"
+  - gate: G-5
+    item: 코드성 컬럼 9종의 코드값 목록 또는 코드 마스터 테이블(아래 code_domains 참조)
+  - gate: G-6
+    item: sevrHostName·iPCtnt가 폴스타 cmm_resource.hostname·ipaddress와 정확 일치하는지
+  - gate: G-10
+    item: 서버현황조회 쿼리문(제공 이미지 6장은 전부 컬럼 정의 시트였다)
+  - gate: G-11
+    item: TCDMSIF*의 IF가 연계 테이블인지 · 적재 주기 · 행수 · 원장 테이블 존재 여부
+  - gate: null
+    item: FK 제약 실재 여부(시트에 제약 정보 열 없음) · 인덱스 · 파티션
+  - gate: null
+    item: TCDMSIF79·TCDMSIF80 외 테이블 목록
+
+# ── 표준 코드 도메인 — 값 목록이 없어 WHERE 조건을 만들 수 없다(G-5) ---------
+# key = 시트 V열 「인스턴스 식별자」, name = W열 「인스턴스명」.
+code_domains:
+  "105258000": {name: 그룹회사코드,         columns: [groupCoCd],                              values: null}
+  "145354000": {name: 서버유형구분코드,     columns: [sevrPtrnDstcd],                          values: null}
+  "145328000": {name: 서버운영환경구분코드, columns: [sevrOperEvirnDstcd],                     values: null}
+  "133673000": {name: 자산유지보수구분코드, columns: [asstManmenDstcd],                        values: null}
+  "145476000": {name: 노후교체기기구분코드, columns: [osoaRplacMchtlDstcd],                    values: null}
+  "102739000": {name: 자산상태구분코드,     columns: [asstStusDstcd],                          values: null}
+  "102738000": {name: 자산분류구분코드,     columns: [asstClsfiDstcd],                         values: null}
+  "114287000": {name: 세부자산분류구분코드, columns: [dtalsAsstClsfiDstcd],                    values: null}
+  "101370000": {name: 부점코드,             columns: [rspblBrncd, asstHoldBrncd],              values: null}
+  "102132000": {name: 여부,                 columns: [vrtlSevrMapngYn, asstMapngYn, stohusAsstYn], values: null}
+
+# ── 전 테이블 공통 규약 ------------------------------------------------------
+conventions:
+  # ① 날짜는 전부 CHAR(8) 'YYYYMMDD' 문자열이고 일시는 CHAR(20)이다 — DATE/TIMESTAMP가 아니다.
+  #    기간 비교는 문자열 비교(`manmenCtrcEndYmd <= '20261231'`) 또는 STR_TO_DATE()로 한다.
+  #    "이번 달 만료" 류 질의는 결정적 조립 대상(LLM에 맡기면 DATE 함수를 쓴다).
+  date_columns_are_char8: true
+  datetime_columns_are_char20: true
+  # ② 감사 컬럼 4종은 모든 테이블에 같은 이름·타입으로 붙는다.
+  audit_columns: [sysRegiUno, sysRegiPrcssYMS, sysLastUno, sysLastPrcssYMS]
+  # ③ sys*PrcssYMS의 기본값 규칙(시트 「업무규칙」 열):
+  #      DATE_FORMAT(CURRENT_TIMESTAMP(6), %Y%m%d%H%i%s%f)
+  #    → MariaDB 함수다. 엔진 판정(mariadb)의 방증이기도 하다.
+  timestamp_default_rule: "DATE_FORMAT(CURRENT_TIMESTAMP(6), %Y%m%d%H%i%s%f)"
+  # ④ 감사 컬럼의 NOT NULL / NOT NULL WITH DEFAULT 구분은 저해상도라 행별 판독이 흔들렸다.
+  #    조회에는 영향이 없어 nullable=false로만 적고 세부 구분은 확인 대상으로 둔다.
+  audit_nullability_conf: check
+
+# ── 시스템 간 조인 키 후보 (폴스타 대조 — plans/95 §4.3 · G-6) ---------------
+cross_system_keys:
+  - itam: sevrHostName
+    polestar: [cmm_resource.hostname, cmm_resource.name]
+    risk: "VARCHAR(300)은 호스트명 치고 과대 — FQDN·별칭·설명 혼입 시 정확 일치 조인 실패"
+  - itam: iPCtnt
+    polestar: [cmm_resource.ipaddress]
+    risk: "VARCHAR(255) — 다중 IP가 한 칸에 들어갔을 수 있음"
+
+# ── 민감 정보 (plans/95 §4.5 · G-9) -----------------------------------------
+sensitive:
+  pii:
+    - column: rspblPsnEmnm
+      reason: "시트 F·G열 「암호화/변환정보」=1, 「암호화/변환 항목구분」=성명 — 원천에서 암호화 대상"
+      note: "조회 계정이 평문을 보는지 자체가 확인 대상"
+  amount:
+    - acqsiAmt          # 취득금액
+    - manmenCnpr        # 유지보수계약금액
+    - rmainAcbkAmt      # 잔존장부금액
+  contract_identifiable:
+    - byCtrcName        # 구매계약명(공급사명 포함 가능)
+    - manmenCtrcName    # 유지보수계약명
+  employee_identifiable:
+    - rspblPsnEmpid     # 담당자직원번호
+    - sysRegiUno        # 시스템등록사용자번호
+    - sysLastUno        # 시스템최종사용자번호
+
+# ── 테이블 간 조인 -----------------------------------------------------------
+joins:
+  - from: TCDMSIF80
+    to: TCDMSIF79
+    on_columns: [groupCoCd, sevrHostName, iPCtnt]   # 3열 복합 — 한 열만 쓰면 중복 행이 난다
+                                                    # (`on`은 `no`와 마찬가지로 YAML 1.1 불리언이라 키로 못 쓴다)
+    cardinality: null                        # 미확인
+    fk_constraint: null                      # 시트에 제약 정보 없음 — 논리 조인으로 취급
+
+# ============================================================================
+# 테이블
+#   컬럼 필드: seq(시트 순서 — `no`는 YAML 1.1 불리언이라 못 쓴다) · var(변수명) · ko(컬럼 정의) · domain(인포타입명) ·
+#              type · nullable · pk(복합키 순번) · code(표준 코드 도메인 id) · grp(군)
+# ============================================================================
+tables:
+
+  # ── 서버 현황 · 자산 상세 (68컬럼) ────────────────────────────────────────
+  TCDMSIF80:
+    description: "서버 현황 및 자산 상세 — 사양·사용률·담당·물품·구매·유지보수·자산 회계·분류"
+    primary_key: [groupCoCd, sevrHostName, iPCtnt]
+    column_count: 68
+    row_count_estimate: null
+    load_kind: null            # IF = 연계 테이블 추정(G-11) — 추정이라 값은 비운다
+    columns:
+      # 식별(PK)
+      - {seq: 1,  var: groupCoCd,        ko: 그룹회사코드,             domain: 코드3,      type: "CHAR(3)",        nullable: false, pk: 1, code: "105258000", grp: identity, rule: KB0}
+      - {seq: 2,  var: sevrHostName,     ko: 해당 서버의 호스트 명,    domain: 명300,      type: "VARCHAR(300)",   nullable: false, pk: 2, grp: identity}
+      - {seq: 3,  var: iPCtnt,           ko: 해당 서버의 ip 주소,      domain: 내용255,    type: "VARCHAR(255)",   nullable: false, pk: 3, grp: identity}
+      # 가상화·군집
+      - {seq: 4,  var: vrtlMgtSevrID,    ko: 가상화 관리 서버ID,       domain: ID100,      type: "VARCHAR(100)",   nullable: true,  grp: virtualization}
+      - {seq: 5,  var: clstRefID,        ko: 군집 참조 ID,             domain: ID100,      type: "VARCHAR(100)",   nullable: true,  grp: virtualization}
+      - {seq: 6,  var: vrtlSevrRefID,    ko: 가상화 서버 참조ID,       domain: ID100,      type: "VARCHAR(100)",   nullable: true,  grp: virtualization}
+      # OS·벤더
+      - {seq: 7,  var: oSTypzCtnt,       ko: 운영체제 타입 내용,       domain: 내용255,    type: "VARCHAR(255)",   nullable: true,  grp: os}
+      - {seq: 8,  var: vndrCtnt,         ko: 벤더 내용,                domain: 내용255,    type: "VARCHAR(255)",   nullable: true,  grp: os}
+      - {seq: 9,  var: oSVsnCtnt,        ko: 운영체제 버전 내용,       domain: 내용255,    type: "VARCHAR(255)",   nullable: true,  grp: os}
+      # 분류·위치·모델
+      - {seq: 10, var: sevrPtrnDstcd,    ko: 서버 유형 구분코드,       domain: 구분코드1,  type: "CHAR(1)",        nullable: true,  code: "145354000", grp: classification}
+      - {seq: 11, var: inttAreaCtnt,     ko: 설치 지역 내용,           domain: 내용255,    type: "VARCHAR(255)",   nullable: true,  grp: classification}
+      - {seq: 12, var: sevrMdelName,     ko: 서버 모델명,              domain: 명75,       type: "VARCHAR(75)",    nullable: true,  grp: classification}
+      - {seq: 13, var: asstMdelName,     ko: 자산 모델명,              domain: 명75,       type: "VARCHAR(75)",    nullable: true,  grp: classification}
+      # 사양·사용률 ★폴스타와 답변 영역이 겹치는 축(plans/95 T5)
+      - {seq: 14, var: cPUCnt,           ko: CPU 개수,                 domain: 수3,        type: "DECIMAL(3,0)",   nullable: true,  grp: capacity}
+      - {seq: 15, var: cPUSocktCnt,      ko: CPU 소켓개수,             domain: 수3,        type: "DECIMAL(3,0)",   nullable: true,  grp: capacity}
+      - {seq: 16, var: sevrCPUSped,      ko: 서버 CPU 속도,            domain: 수12.2,     type: "DECIMAL(12,2)",  nullable: true,  grp: capacity}
+      - {seq: 17, var: sevrCPUUseQanty,  ko: 서버 CPU 사용량,          domain: 수량12.2,   type: "DECIMAL(12,2)",  nullable: true,  grp: usage}
+      - {seq: 18, var: sevrCPUUseRt,     ko: 서버 CPU 사용률,          domain: 률5.2,      type: "DECIMAL(5,2)",   nullable: true,  grp: usage}
+      - {seq: 19, var: sevrMmryCapc,     ko: 서버 메모리 용량,         domain: 수량12.2,   type: "DECIMAL(12,2)",  nullable: true,  grp: capacity}
+      - {seq: 20, var: sevrMmryUseQanty, ko: 서버 메모리 사용량,       domain: 수량12.2,   type: "DECIMAL(12,2)",  nullable: true,  grp: usage}
+      - {seq: 21, var: sevrMmryUseRt,    ko: 서버 메모리 사용률,       domain: 률5.2,      type: "DECIMAL(5,2)",   nullable: true,  grp: usage, conf: check, note: "시트 표기가 sevrMmryzUseRt로도 읽혀 철자 확인 필요"}
+      - {seq: 22, var: wholStrgeCapc,    ko: 전체 스토리지 용량,       domain: 수량12.2,   type: "DECIMAL(12,2)",  nullable: true,  grp: capacity}
+      - {seq: 23, var: wholStrgeUseQanty, ko: 전체 스토리지 사용량,    domain: 수량12.2,   type: "DECIMAL(12,2)",  nullable: true,  grp: usage}
+      - {seq: 24, var: wholStrgeUseRt,   ko: 전체 스토리지 사용률,     domain: 률5.2,      type: "DECIMAL(5,2)",   nullable: true,  grp: usage}
+      # 담당(PII)
+      - {seq: 25, var: rspblPsnEmpid,    ko: 담당자 직원번호,          domain: 직원번호7,  type: "CHAR(7)",        nullable: true,  grp: owner}
+      - {seq: 26, var: rspblPsnEmnm,     ko: 담당자 직원명,            domain: 성명50,     type: "VARCHAR(50)",    nullable: true,  grp: owner, encrypted: 성명}
+      - {seq: 27, var: rspblBrncd,       ko: 담당 부점코드,            domain: 부점코드4,  type: "CHAR(4)",        nullable: true,  code: "101370000", grp: owner}
+      - {seq: 28, var: rspblBrnName,     ko: 담당 부점명,              domain: 명75,       type: "VARCHAR(75)",    nullable: true,  grp: owner}
+      # 물품
+      - {seq: 29, var: cmdtsClsfiNo,     ko: 물품분류번호,             domain: 번호8,      type: "CHAR(8)",        nullable: true,  grp: commodity}
+      - {seq: 30, var: cmdtsUniqno,      ko: 물품고유번호,             domain: 물품고유번호7, type: "CHAR(7)",     nullable: true,  grp: commodity}
+      - {seq: 31, var: cmdtsName,        ko: 물품명,                   domain: 명75,       type: "VARCHAR(75)",    nullable: true,  grp: commodity}
+      - {seq: 32, var: cmdtsUseUsagCtnt, ko: 물품 사용용도 내용,       domain: 내용255,    type: "VARCHAR(255)",   nullable: true,  grp: commodity}
+      - {seq: 33, var: vrtlSevrMapngYn,  ko: 가상화 서버 매핑여부,     domain: 여부,       type: "CHAR(1)",        nullable: true,  code: "102132000", grp: virtualization}
+      # 구매·취득
+      - {seq: 34, var: byCtrcNo,         ko: 구매계약번호,             domain: 번호11,     type: "CHAR(11)",       nullable: true,  grp: purchase}
+      - {seq: 35, var: byCtrcName,       ko: 구매계약명,               domain: 명300,      type: "VARCHAR(300)",   nullable: true,  grp: purchase}
+      - {seq: 36, var: byCmdtsDtalsSerno, ko: 구매물품 세부일련번호,   domain: 일련번호5,  type: "DECIMAL(5,0)",   nullable: true,  grp: purchase}
+      - {seq: 37, var: acqsiAmt,         ko: 취득금액,                 domain: 금액15,     type: "DECIMAL(15,0)",  nullable: true,  grp: purchase, sensitive: amount}
+      - {seq: 38, var: acqsiYmd,         ko: 취득년월일,               domain: 년월일8,    type: "CHAR(8)",        nullable: true,  grp: purchase}
+      # 운영환경·노후화·상태
+      - {seq: 39, var: asstManmenDstcd,  ko: 자산유지보수 구분코드,    domain: 구분코드1,  type: "CHAR(1)",        nullable: true,  code: "133673000", grp: lifecycle}
+      - {seq: 40, var: sevrOperEvirnDstcd, ko: 서버운영환경 구분코드,  domain: 구분코드2,  type: "CHAR(2)",        nullable: true,  code: "145328000", grp: lifecycle}
+      - {seq: 41, var: elapsNoy,         ko: 경과년수,                 domain: 년수3,      type: "DECIMAL(3,0)",   nullable: true,  grp: lifecycle}
+      - {seq: 42, var: osoaRplacMchtlDstcd, ko: 노후교체기기 구분코드, domain: 구분코드2,  type: "CHAR(2)",        nullable: true,  code: "145476000", grp: lifecycle}
+      - {seq: 43, var: asstStusDstcd,    ko: 자산상태 구분코드,        domain: 구분코드1,  type: "CHAR(1)",        nullable: true,  code: "102739000", grp: lifecycle}
+      # 유지보수 계약
+      - {seq: 44, var: manmenCnpr,       ko: 유지보수계약금액,         domain: 금액15,     type: "DECIMAL(15,0)",  nullable: true,  grp: maintenance, sensitive: amount}
+      - {seq: 45, var: manmenCtrcStartYmd, ko: 유지보수계약 시작년월일, domain: 년월일8,   type: "CHAR(8)",        nullable: true,  grp: maintenance}
+      - {seq: 46, var: manmenCtrcEndYmd, ko: 유지보수계약 종료년월일,  domain: 년월일8,    type: "CHAR(8)",        nullable: true,  grp: maintenance}
+      - {seq: 47, var: manmenCtrcTermiYmd, ko: 유지보수계약 해지년월일, domain: 년월일8,   type: "CHAR(8)",        nullable: true,  grp: maintenance}
+      - {seq: 48, var: sevrManmenCtrcNo, ko: 서버 유지보수계약번호,    domain: 번호11,     type: "CHAR(11)",       nullable: true,  grp: maintenance}
+      - {seq: 49, var: manmenCtrcName,   ko: 유지보수계약명,           domain: 명300,      type: "VARCHAR(300)",   nullable: true,  grp: maintenance}
+      - {seq: 50, var: manmenCmdtsDtalsSerno, ko: 유지보수물품 세부일련번호, domain: 일련번호5, type: "DECIMAL(5,0)", nullable: true, grp: maintenance}
+      # 자산 회계
+      - {seq: 51, var: asstMapngYn,      ko: 자산 매핑여부,            domain: 여부,       type: "CHAR(1)",        nullable: true,  code: "102132000", grp: accounting}
+      - {seq: 52, var: asstHoldBrncd,    ko: 자산보유 부점코드,        domain: 부점코드4,  type: "CHAR(4)",        nullable: true,  code: "101370000", grp: accounting}
+      - {seq: 53, var: asstHoldBrnName,  ko: 자산보유 부점명,          domain: 명300,      type: "VARCHAR(300)",   nullable: true,  grp: accounting}
+      - {seq: 54, var: rmainAcbkAmt,     ko: 잔존 장부금액,            domain: 금액15,     type: "DECIMAL(15,0)",  nullable: true,  grp: accounting, sensitive: amount}
+      - {seq: 55, var: stohusAsstYn,     ko: 창고자산 여부,            domain: 여부,       type: "CHAR(1)",        nullable: true,  code: "102132000", grp: accounting}
+      # 자산 분류
+      - {seq: 56, var: asstClsfiDstcd,   ko: 자산분류 구분코드,        domain: 구분코드2,  type: "CHAR(2)",        nullable: true,  code: "102738000", grp: classification}
+      - {seq: 57, var: asstClsfiDsticName, ko: 자산분류 구분명,        domain: 명75,       type: "VARCHAR(75)",    nullable: true,  grp: classification}
+      - {seq: 58, var: dtalsAsstClsfiDstcd, ko: 세부자산분류 구분코드, domain: 구분코드3,  type: "CHAR(3)",        nullable: true,  code: "114287000", grp: classification}
+      - {seq: 59, var: dtalsAsstClsfiDsticName, ko: 세부자산분류 구분명, domain: 명75,     type: "VARCHAR(75)",    nullable: true,  grp: classification}
+      # 유지보수 희망 · 무상 · 시리얼
+      - {seq: 60, var: manmenHopeYm,     ko: 유지보수 희망년월,        domain: 년월6,      type: "CHAR(6)",        nullable: true,  grp: maintenance}
+      - {seq: 61, var: grttStartYmd,     ko: 무상 시작년월일,          domain: 년월일8,    type: "CHAR(8)",        nullable: true,  grp: warranty}
+      - {seq: 62, var: grttEndYmd,       ko: 무상 종료년월일,          domain: 년월일8,    type: "CHAR(8)",        nullable: true,  grp: warranty}
+      - {seq: 63, var: srialNoCtnt,      ko: 시리얼번호 내용,          domain: 내용255,    type: "VARCHAR(255)",   nullable: true,  grp: identity_aux}
+      - {seq: 64, var: cnfgItemDescCtnt, ko: 구성항목 설명내용,        domain: 내용255,    type: "VARCHAR(255)",   nullable: true,  grp: identity_aux}
+      # 감사
+      - {seq: 65, var: sysRegiUno,       ko: 시스템등록 사용자번호,    domain: 사용자번호7, type: "CHAR(7)",       nullable: false, grp: audit}
+      - {seq: 66, var: sysRegiPrcssYMS,  ko: 시스템등록 처리일시,      domain: 일시20,     type: "CHAR(20)",       nullable: false, grp: audit, default: timestamp_default_rule}
+      - {seq: 67, var: sysLastUno,       ko: 시스템최종 사용자번호,    domain: 사용자번호7, type: "CHAR(7)",       nullable: false, grp: audit}
+      - {seq: 68, var: sysLastPrcssYMS,  ko: 시스템최종 처리일시,      domain: 일시20,     type: "CHAR(20)",       nullable: false, grp: audit, default: timestamp_default_rule}
+
+  # ── 서버 HW/SW 지원 종료일 (9컬럼) ────────────────────────────────────────
+  TCDMSIF79:
+    description: "서버 하드웨어·소프트웨어 지원 종료일(EOS/EOL). TCDMSIF80과 동일 3열 복합키"
+    primary_key: [groupCoCd, sevrHostName, iPCtnt]
+    column_count: 9
+    row_count_estimate: null
+    load_kind: null
+    columns:
+      - {seq: 1, var: groupCoCd,       ko: 그룹회사코드,               domain: 코드3,      type: "CHAR(3)",      nullable: false, pk: 1, code: "105258000", grp: identity, rule: KB0}
+      - {seq: 2, var: sevrHostName,    ko: 해당 서버의 호스트 명,      domain: 명300,      type: "VARCHAR(300)", nullable: false, pk: 2, grp: identity}
+      - {seq: 3, var: iPCtnt,          ko: 해당 서버의 ip 주소,        domain: 내용255,    type: "VARCHAR(255)", nullable: false, pk: 3, grp: identity}
+      - {seq: 4, var: hWSportEndYmd,   ko: 하드웨어 지원 종료일자,     domain: 년월일8,    type: "CHAR(8)",      nullable: true,  grp: eol}
+      - {seq: 5, var: sWSportEndYmd,   ko: 소프트웨어 지원 종료일자,   domain: 년월일8,    type: "CHAR(8)",      nullable: true,  grp: eol}
+      - {seq: 6, var: sysRegiUno,      ko: 시스템등록 사용자번호,      domain: 사용자번호7, type: "CHAR(7)",     nullable: false, grp: audit}
+      - {seq: 7, var: sysRegiPrcssYMS, ko: 시스템등록 처리일시,        domain: 일시20,     type: "CHAR(20)",     nullable: false, grp: audit, default: timestamp_default_rule}
+      - {seq: 8, var: sysLastUno,      ko: 시스템최종 사용자번호,      domain: 사용자번호7, type: "CHAR(7)",     nullable: false, grp: audit}
+      - {seq: 9, var: sysLastPrcssYMS, ko: 시스템최종 처리일시,        domain: 일시20,     type: "CHAR(20)",     nullable: false, grp: audit, default: timestamp_default_rule}

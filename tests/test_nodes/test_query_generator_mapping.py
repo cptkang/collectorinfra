@@ -54,8 +54,13 @@ class TestBuildUserPromptWithMapping:
 
         assert "양식" not in result
 
-    def test_null_mappings_excluded(self):
-        """None 매핑은 프롬프트에서 제외된다."""
+    def test_null_mappings_surface_as_unmapped_guidance(self):
+        """★ None 매핑은 **매핑 지시에서는 빠지되 "미매핑 필드"로 노출**된다.
+
+        종전 계약("프롬프트에서 제외")은 뒤집혔다 — 조용히 빼면 LLM이 그 필드를 SELECT에
+        넣지 않아 양식 칸이 침묵 공란으로 남는다(D-066 후속4·D-147). 지금은 미매핑 필드를
+        "헤더명 그대로 alias" 지시와 함께 싣는다. 이 테스트는 그 반전을 못박는다.
+        """
         result = _build_user_prompt(
             parsed_requirements={"original_query": "서버 정보 조회"},
             template_structure=None,
@@ -68,4 +73,6 @@ class TestBuildUserPromptWithMapping:
         )
 
         assert "servers.hostname" in result
-        assert "비고" not in result
+        # 미매핑 필드는 노출되지만 **가짜 컬럼으로 매핑되지는 않는다**
+        assert "비고" in result
+        assert "비고: " not in result and '"비고" ->' not in result

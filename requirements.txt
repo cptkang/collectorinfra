@@ -2,11 +2,20 @@
 claude-agent-sdk
 anyio
 
-# Agent runtime dependencies
-langgraph>=0.2.0
-langchain-core>=0.3.0
-langchain-anthropic
-langchain-openai
+# Agent runtime dependencies (langchain 1.x — deepagents 0.6.10과 동일 생태계로 통일)
+langgraph>=1.2.4,<1.3.0
+langchain-core>=1.4.7,<2.0.0
+langchain>=1.3.9,<2.0.0
+langchain-anthropic>=1.4.6,<2.0.0
+langchain-openai>=1.3.2,<2.0.0
+langchain-google-genai>=4.2.5,<5.0.0  # src/llm.py Gemini 경로 직접 import + deepagents 의존
+
+# deepagents Track B (D-037 / Plan 49): 실제 패키지 오케스트레이션 경로.
+# deepagents 0.6.10은 langchain-core>=1.4.7 / langchain>=1.3.9 (1.x)를 요구하므로 위 하한을 1.x로 통일했다.
+# langsmith>=0.8.11, wcmatch>=10.1 등은 deepagents가 전이 의존으로 끌어온다.
+# enable_deepagents_package=true + 오케스트레이터(vLLM ChatOpenAI / Gemini) 가용 시에만 사용.
+# 폐쇄망은 wheels/{os}/로 반입 (Plan 49 §3.1).
+deepagents>=0.6.10
 
 # Document processing
 openpyxl>=3.1.0

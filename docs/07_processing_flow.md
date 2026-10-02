@@ -41,12 +41,7 @@
     └────────┬────────┘   └────┬─────┘  │(멀티DB 실행)  │  │(스키마 분석)  │
              │                 │        └──────┬───────┘  └──────┬───────┘
              ▼                 ▼               │                 │
-            END               END              │    ┌────────────▼────────┐
-                                               │    │ [structure_approval │
-                                               │    │  _gate] (HITL)     │
-                                               │    └────────────┬───────┘
-                                               │                 │
-                                               │    ┌────────────▼───────┐
+            END               END              │    ┌────────────▼───────┐
                                                │    │ query_generator    │◄──────────┐
                                                │    │ (LLM: SQL 생성)    │           │
                                                │    └────────────┬───────┘           │
@@ -201,9 +196,10 @@
 
   스키마 획득 후:
   1. LLM으로 관련 테이블 선택
-  2. 구조 분석 (EAV, 계층구조, JOIN 패턴 감지)
-  3. YAML 프로파일 확인 (config/db_profiles/ 수동 설정 우선)
-  4. HITL 구조 승인 대기 (enable_structure_approval=true 시)
+  2. 구조 정보 읽기 — ①config/db_profiles/{db_id}.yaml(수동 작성 또는 관리자 승인 적용)
+     ②Redis 적용본 캐시 ③없음 → 멈추지 않고 응답에 사유 고지(D-227 · G-1 (a))
+  3. 컬럼 설명이 없으면 LLM으로 만들지 않고 응답에 사유 고지(G-9 (a))
+  ※ 질의 중 LLM 구조 분석·구조 승인 HITL은 없다 — 관리자 「DB 구조」 탭에서 분석·승인(plans/104)
 
 출력: relevant_tables, schema_info, column_descriptions, column_synonyms
 ```

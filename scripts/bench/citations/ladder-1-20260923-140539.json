@@ -1,0 +1,31 @@
+{
+  "source": "cited",
+  "axis": "LADDER_TIER",
+  "campaign": "run-closed",
+  "run_id": "20260923-140539",
+  "segment_id": "ladder-1",
+  "verdict": "최적 레벨",
+  "level": "tier2_intent",
+  "tier": "intent_orchestration",
+  "env": {
+    "ENABLE_DEEPAGENTS_PACKAGE": "false",
+    "ENABLE_INTENT_ORCHESTRATION": "true",
+    "ENABLE_SEMANTIC_ROUTING": "true"
+  },
+  "corrected": {
+    "accuracy": {"delta_pp": -19.6, "discordant": "9:0", "p": 0.004, "pairs": 46},
+    "completion": {"delta_pp": 6.8, "discordant": "2:9", "p": 0.065, "pairs": 103, "significant": false}
+  },
+  "reported": {
+    "accuracy": {"delta_pp": -30.4, "discordant": "14:0", "p": 0.0001, "pairs": 46},
+    "completion": {"delta_pp": -14.6, "discordant": "23:8", "pairs": 103}
+  },
+  "discordant_order": "`tier2_intent`(2단)만 합격·완주 : `tier3_router`(3단)만 합격·완주",
+  "corrections": [
+    "3단 스트림 `done.db_scope` 공란 — 3단 arm `db_ids` 가 전 행 비어 `db_ids` 단언 12턴이 허위 불합격(plans/120 V-1·S-1)",
+    "완주 정의 — 기능 불합격을 미완주로 셌다(plans/120 V-2)"
+  ],
+  "cap_warning": "이 run 의 상한은 `server.query_timeout` 180 · `server.file_query_timeout` 600(`config_snapshot.json`)이라 D-266 ① 주입값(180/180)과 파일 상한이 다르다",
+  "remeasure_when": "`plans/103` P5 완료 시 `ladder` 구간 재측정",
+  "evidence": "plans/120 §2.2 · results/bench/run-closed-20260928-triage.tar/"
+}

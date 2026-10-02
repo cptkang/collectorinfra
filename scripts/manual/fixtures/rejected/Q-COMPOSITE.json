@@ -1,0 +1,67 @@
+{
+ "id": "Q-COMPOSITE",
+ "turns": [
+  {
+   "query": "심각 알람이 발생한 적이 있는 서버들의 제조사와 메모리 용량을 보여줘",
+   "file": null,
+   "key": "9b1d86a3d34a3312",
+   "elapsed_s": 332.8,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n심각 알람이 발생한 서버 3 건 중 1 건이 비정상 상태 (avail_status 2.0) 이며, 나머지 2 건은 정상 상태입니다. 모든 서버의 제조사 정보는 누락되어 있고, 메모리 용량은 16GB 에서 64GB 사이입니다.\n\n| server_name | os_hostname | ipaddress | avail_status | vendor | memory_size |\n|---|---|---|---|---|---|\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 0.0 | null | 65536 |\n| SV-BATCH-009 | svbatch009 | 10.61.0.4 | 2.0 | null | 16384 |\n| SV-WEB-001 | svweb001 | 10.61.0.1 | 0.0 | null | 32768 |\n\n참고사항\n- **비정상 서버**: `SV-BATCH-009` 가 `avail_status` 2.0 으로 비정상 상태입니다.\n- **제조사 정보**: 조회된 모든 서버의 `vendor` 가 `null` 입니다.\n- **메모리 용량**: `memory_size` 는 단위 없이 숫자 (예: 65536) 로 표기되어 있으며, 이는 64GB 를 의미합니다.\n\n---\n## 순차 처리 경과\n- [t2] 선행 작업(t1) 결과 3대(hostname)로 대상을 한정했습니다. 선별 기준: 정렬 hostname 오름차순 · 상한 10000건.\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 3,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "server_name": "DB-ORA-023",
+     "os_hostname": "dbora023",
+     "ipaddress": "10.61.0.2",
+     "avail_status": 0.0,
+     "vendor": null,
+     "memory_size": "65536"
+    },
+    {
+     "server_name": "SV-BATCH-009",
+     "os_hostname": "svbatch009",
+     "ipaddress": "10.61.0.4",
+     "avail_status": 2.0,
+     "vendor": null,
+     "memory_size": "16384"
+    },
+    {
+     "server_name": "SV-WEB-001",
+     "os_hostname": "svweb001",
+     "ipaddress": "10.61.0.1",
+     "avail_status": 0.0,
+     "vendor": null,
+     "memory_size": "32768"
+    }
+   ]
+  }
+ ],
+ "reviewed": false,
+ "recorded_at": "2026-09-23T10:55:34",
+ "review": {
+  "verdict": "wrong",
+  "notes": "대상 서버 3대(DB-ORA-023·SV-BATCH-009·SV-WEB-001)는 맞으나 제조사가 전부 null — 원본에는 Vendor HPE·Dell·IBM 이 있다(복합 2단계에서 EAV Vendor 속성 누락). 문장 교체 후 재녹화",
+  "at": "2026-09-23"
+ }
+}

@@ -1,0 +1,558 @@
+# 설정 옵션 상세 설명 — MCP 접속 · API 서버 · Redis · 스키마 캐시 (D-191)
+# 근거: src/config.py DBHubConfig/ServerConfig/RedisConfig/SchemaCacheConfig
+
+version: 1
+group: dbhub
+
+settings:
+
+  DBHUB_SERVER_URL:
+    summary: 관측 데이터를 읽는 MCP 서버의 주소.
+    behavior: >-
+      `DB_BACKEND=dbhub`일 때 모든 SQL 조회가 이 주소를 거친다. 폴스타 REST 도구와
+      PromQL 도구도 같은 서버가 제공한다. 이 서버는 **별도 프로세스·별도 설정 파일**로
+      돌기 때문에, 조회 타임아웃이나 최대 행수 같은 DB 레벨 제한은 이쪽에서 바꿀 수 없다.
+    options:
+      - value: "http://localhost:9099/sse"
+        label: 기본
+        effect: 같은 장비의 MCP 서버에 붙는다.
+      - value: "http://<mcp-host>:9099/sse"
+        effect: 별도 장비의 MCP 서버를 쓴다. 왕복 지연이 조회마다 얹힌다.
+    example: >-
+      "조회가 전부 실패한다"는 신고에서 이 주소와 MCP 서버 프로세스 생존을 먼저 본다.
+      본체는 정상 기동하고 질의 시점에만 실패하므로 기동 로그로는 드러나지 않는다.
+    performance: 조회마다 이 서버를 왕복한다. 원격이면 지연이 그만큼 더해진다.
+    stability: 이 서버가 내려가면 SQL 조회 경로 전체가 멈춘다 — 단일 장애점이다.
+    related: [DB_BACKEND, DBHUB_MCP_CALL_TIMEOUT, DBHUB_SOURCE_NAME]
+
+  DBHUB_SOURCE_NAME:
+    example: >-
+      MCP 서버 쪽 `config.toml`에 `polestar_cm_gp`로 등록돼 있는데 여기에 `polestar-cm-gp`(하이픈)로 적으면 조회가 대상을 못 찾는다.
+      오타가 아니라 표기 차이라 눈으로 지나치기 쉽다.
+    summary: MCP 서버에 등록된 기본 조회 대상 소스 이름.
+    behavior: >-
+      MCP 서버 쪽 `config.toml`의 소스 이름과 **문자 하나까지 정확히** 같아야 한다.
+      다르면 조회가 대상을 찾지 못한다.
+    options:
+      - value: "(비움)"
+        effect: 기본 소스를 지정하지 않는다. 질의마다 대상을 명시해야 한다.
+    performance: 영향이 없다.
+    stability: >-
+      MCP 서버의 설정 파일은 이 화면 범위 밖이다 — 양쪽을 함께 확인해야 하고,
+      한쪽만 고치면 조회가 조용히 실패한다.
+    related: [DBHUB_SERVER_URL, ACTIVE_DB_IDS]
+
+  DBHUB_MCP_CALL_TIMEOUT:
+    example: >-
+      MCP 서버가 자체 실행 제한으로 30초에 조회를 끊는다면, 이쪽 값은 그보다 커야 서버 측 사유(`쿼리 시간 초과`)가 그대로 전달된다. 이쪽이 더 짧으면 클라이언트
+      타임아웃으로 먼저 끊겨 원인이 흐려진다.
+    summary: MCP 호출 하나를 얼마나 기다릴지(초).
+    behavior: >-
+      조회 요청 전체에 걸리는 클라이언트 측 상한이다. 이 시간을 넘기면 실패로 처리되고
+      재시도 예산이 남아 있으면 다시 시도한다.
+    options:
+      - value: "60"
+        label: 기본
+        effect: 1분. 대량 조회도 대체로 이 안에 끝난다.
+      - value: "10 이하"
+        effect: 큰 테이블 조회가 정상인데도 끊긴다.
+      - value: "300 이상"
+        effect: 느린 조회도 완주하지만, 사용자가 5분을 기다린 뒤 실패를 볼 수 있다.
+    performance: 실패 확정까지 이 시간이 걸리고 그동안 처리 슬롯이 점유된다.
+    stability: >-
+      DB 쪽 실행 제한은 MCP 서버가 따로 관리한다 — 이 값은 그보다 넉넉해야 서버 측
+      제한이 먼저 걸린다(그래야 원인이 명확하게 드러난다).
+    related: [DBHUB_SERVER_URL, API_QUERY_TIMEOUT]
+
+  DBHUB_BEARER_TOKEN:
+    example: >-
+      MCP 서버에 인증을 붙인 뒤 이 값을 채우지 않으면 모든 조회가 401로 거부된다. 본체는 정상 기동하므로 첫 질의에서야 드러난다.
+    summary: MCP 서버 전송 인증 토큰 — .encenv에서 관리한다.
+    behavior: 비어 있으면 인증 헤더 없이 호출한다(서버가 무인증이라는 전제). 시크릿이라 이 화면에서 편집할 수 없다.
+    stability: 서버가 인증을 요구하는데 값이 비면 모든 조회가 거부된다.
+    related: [DBHUB_SERVER_URL]
+
+  MCP_SOURCE_ENDPOINTS:
+    example: >-
+      {"apm": "http://127.0.0.1:9096/sse"}로 채우면 WAS(제니퍼 APM) 질의가 게이트웨이로 간다. 비워 두면 WAS 질의는
+      기존처럼 폴스타 쪽으로만 분해된다.
+    summary: 비SQL 관측 시스템(예 apm = 제니퍼 APM 게이트웨이)의 MCP 주소 — 시스템 코드 → SSE URL(JSON).
+    behavior: >-
+      코드가 있으면 그 시스템이 활성이 되어 분해 목록에 담당(apm_query)과 보기 목록이 추가된다. 없으면 비활성이고
+      분해 프롬프트·응답은 설정 전과 같다.
+    stability: 주소가 틀리면 WAS 질의가 「사용 불가」 사유로 끝난다 — 폴스타 값으로 대신 답하지 않는다.
+    related: [MCP_SOURCE_TOKENS, MCP_SOURCE_CALL_TIMEOUT, DBHUB_SERVER_URL]
+
+  MCP_SOURCE_TOKENS:
+    example: >-
+      게이트웨이에 Bearer 인증을 켰는데 이 값을 비워 두면 WAS 질의가 모두 401로 실패한다.
+    summary: 위 시스템별 정적 Bearer 토큰(JSON · 시크릿).
+    behavior: 비어 있으면 인증 헤더 없이 호출한다. 시크릿이라 이 화면에서 편집할 수 없다.
+    stability: 게이트웨이 토큰과 다르면 그 시스템 조회가 모두 거부된다.
+    related: [MCP_SOURCE_ENDPOINTS]
+
+  MCP_SOURCE_CALL_TIMEOUT:
+    example: >-
+      호스트 20대 × 보기 2종이면 호출이 40번이다 — 한 번에 10초를 넘기는 게이트웨이면 값을 올리기보다 대상 수를
+      줄이는 편이 낫다.
+    summary: 관측 소스 도구 호출 1회의 상한(초).
+    behavior: 넘으면 그 호출만 실패로 적고 나머지 결과로 답한다.
+    performance: 값이 크면 느린 게이트웨이가 응답 전체를 늦춘다.
+    stability: 너무 작으면 정상 호출도 시간 초과로 빠진다.
+    related: [MCP_SOURCE_ENDPOINTS]
+
+  API_HOST:
+    example: >-
+      127.0.0.1로 바꾸면 같은 장비에서만 접속된다 — 앞단에 nginx를 두는 구성에서는 이쪽이 안전하지만, 프록시 없이 바꾸면 다른 장비에서 화면이 열리지 않는다.
+    summary: API 서버가 바인딩할 주소.
+    behavior: 어느 네트워크 인터페이스에서 요청을 받을지 정한다.
+    options:
+      - value: "0.0.0.0"
+        label: 기본
+        effect: 모든 인터페이스에서 받는다. 같은 망의 다른 장비에서 접속할 수 있다.
+      - value: "127.0.0.1"
+        effect: 같은 장비에서만 접속된다. 앞단에 리버스 프록시를 두는 구성에 맞다.
+    performance: 영향이 없다.
+    stability: 0.0.0.0은 망 안의 누구나 닿을 수 있다는 뜻이다 — 인증(AUTH_ENABLED)이 켜져 있어야 한다.
+    related: [API_PORT, API_CORS_ORIGINS, AUTH_ENABLED]
+
+  API_PORT:
+    example: >-
+      8000이 이미 다른 서비스에 쓰이고 있으면 기동이 실패한다. 포트를 바꾸면 방화벽 정책과 사용자에게 안내한 주소도 함께 바꿔야 한다.
+    summary: API 서버가 사용할 포트.
+    behavior: 웹 UI와 API가 같은 포트를 쓴다. 바꾸면 접속 주소가 함께 바뀐다.
+    options:
+      - value: "8000"
+        label: 기본
+        effect: 8000번 포트로 서비스한다.
+    stability: 이미 쓰이는 포트를 지정하면 기동이 실패한다. 방화벽 정책과도 함께 맞춰야 한다.
+    related: [API_HOST]
+
+  API_CORS_ORIGINS:
+    example: >-
+      웹 UI를 같은 서버가 제공하는 기본 구성에서는 이 값이 사실상 쓰이지 않는다. 다만 `*`로 둔 상태에서 별도 프런트를 붙이면, 임의 사이트의 스크립트도 사용자 브라우저를
+      통해 이 API를 부를 수 있게 된다.
+    summary: 브라우저에서 이 API를 호출할 수 있는 출처 목록.
+    behavior: >-
+      다른 도메인의 웹 페이지가 이 API를 부를 수 있는지 결정한다. 같은 서버가 웹 UI를
+      함께 제공하므로 기본 구성에서는 사실상 쓰이지 않지만, 별도 프런트를 붙이면 필요해진다.
+    options:
+      - value: '["*"]'
+        label: 기본
+        effect: >-
+          모든 출처를 허용한다. 개발에는 편하지만, 운영에서는 임의 사이트의 스크립트가
+          사용자 브라우저를 통해 이 API를 부를 수 있게 된다.
+      - value: '["https://내부도메인"]'
+        effect: 지정한 출처만 허용한다. 운영에서 권장하는 형태다.
+    performance: 영향이 없다.
+    stability: 운영에서 `*`로 두는 것은 인증에만 기대는 상태다 — 실제 사용하는 출처로 좁힌다.
+    caveats:
+      - .env에 적을 때는 JSON 배열 형식이어야 한다.
+    related: [AUTH_ENABLED, API_HOST]
+
+  API_QUERY_TIMEOUT:
+    example: >-
+      은행존(DB2) 질의에서 SQL 생성 한 번이 약 20초 걸리고 검증 실패로 재생성이 한 번 붙자, 60초 상한에서
+      결과 없이 끊겼다(2026-09-21). 상위 타임아웃이 하위 단계의 합보다 작으면 이렇게 하위 단계가 끝나기 전에 전체가 먼저 끊긴다. 그러면 실패 원인이 '전체 시간 초과'로만 남아 어느 단계가
+      느렸는지 알 수 없다 — 상위 타임아웃은 하위의 합보다 커야 한다. 또 이 상한이 요청 전체를 재던 때(run
+      20260923-103638, 240초)는 타임아웃 20턴 중 12턴이 데이터를 확보한 뒤 서술 중에, 그중 7턴은 답을
+      스트리밍하던 중에 끊겼다 — 그래서 2026-09-28부터 첫 답변까지만 잰다.
+    summary: 일반 질의에서 첫 답변(표 또는 첫 토큰)이 나가기까지 허용하는 처리 시간(초).
+    behavior: >-
+      요청을 받은 뒤 **첫 답변이 나가기 전까지**의 상한이다 — 파싱·계획·SQL 생성과 재시도·실행·재계획·
+      서술 시작이 모두 이 안에 든다. 넘기면 중단하고, 이미 조회한 행이 있으면 오류 대신 결정적 표로
+      답한다. 스트리밍 응답은 첫 답변이 나간 뒤 이 값으로 끊지 않는다 — 토큰 간 idle 상한
+      (API_STREAM_IDLE_TIMEOUT_SEC)과 전체 상한(이 값 + API_STREAM_DELIVERY_GRACE_SEC)으로만 끊는다.
+      스트리밍이 아닌 응답(`/query`)은 첫 답변 개념이 없어 이 값이 곧 전체 상한이다. 요청 안의 조회
+      단계는 이 마감에서 서술 예약(API_ANSWER_RESERVE_SEC)을 뺀 시각을 조회 마감으로 본다.
+    options:
+      - value: "120"
+        label: 기본
+        effect: 2분 안에 첫 답변이 나가야 한다. SQL 재생성 1~2회가 붙은 질의도 첫 답변까지 간다(2026-09-21 60→120).
+      - value: "60"
+        effect: 재생성이 한 번만 붙어도 첫 답변 전에 끊길 수 있다(은행존 DB2 실측 60.6초 중단).
+      - value: "20 이하"
+        effect: 복합 질의나 재시도가 붙은 질의가 첫 답변 전에 자주 중단된다.
+      - value: "180 이상"
+        effect: >-
+          대부분 첫 답변까지 가지만 사용자가 첫 화면을 3분까지 기다린다. 스트리밍 전체 상한(이 값 +
+          전달 연장)도 함께 늘어난다. 동시 사용자가 많으면 처리량이 떨어진다.
+    performance: 이 시간(스트리밍이면 첫 답변 뒤 전달 시간까지) 동안 처리 슬롯이 점유된다 — 동시 요청 수에 직접 영향을 준다.
+    stability: >-
+      하위 타임아웃(LLM·MCP)의 합보다 커야 원인이 하위에서 먼저 드러난다. 첫 답변 뒤 스트리밍이
+      끊기는 문제는 이 값이 아니라 API_STREAM_IDLE_TIMEOUT_SEC·API_STREAM_DELIVERY_GRACE_SEC로 조정한다.
+    caveats:
+      - >-
+        2026-09-28(D-267 ⑦)부터 뜻이 "요청 전체 상한"에서 "첫 답변까지의 처리 상한"으로 바뀌었다. .env에
+        값을 적어 둔 설치는 값이 같아도 스트리밍 응답이 더 오래 이어질 수 있다(최대 이 값 +
+        API_STREAM_DELIVERY_GRACE_SEC). 배포 시 운영자에게 알리고, 이전 측정의 타임아웃률과 직접 비교하지 않는다.
+    related: [API_FILE_QUERY_TIMEOUT, API_STREAM_IDLE_TIMEOUT_SEC, API_STREAM_DELIVERY_GRACE_SEC, API_ANSWER_RESERVE_SEC, DBHUB_MCP_CALL_TIMEOUT, LLM_OLLAMA_TIMEOUT]
+
+  API_FILE_QUERY_TIMEOUT:
+    example: >-
+      열이 30개인 월간 보고서 양식은 필드마다 매핑 판단이 붙어 LLM 호출이 수십 번 일어난다. 일반 질의 타임아웃(120초)과 같게 두면 큰 양식은 중단되므로 별도로 넉넉히 잡아 둔
+      것이다.
+    summary: 양식 파일을 올린 질의(와 폼필 역질문 답변 턴)에서 첫 답변이 나가기까지 허용하는 처리 시간(초).
+    behavior: >-
+      엑셀·워드 양식을 채우는 경로는 필드마다 매핑 판단이 붙어 LLM 호출이 많다.
+      그래서 일반 질의보다 넉넉하게 따로 잡는다. 채우지 못한 항목 역질문에 답한 턴도 양식 전체를
+      다시 채우므로 이 값을 쓴다. 뜻은 API_QUERY_TIMEOUT과 같다 — 첫 답변 전까지의 상한이고, 스트리밍
+      응답은 첫 답변 뒤 토큰 간 idle·전달 연장 상한으로만 끊는다. 스트리밍이 아닌 `/query/file`은
+      이 값이 곧 전체 상한이다.
+    options:
+      - value: "120"
+        label: 기본
+        effect: 2분 안에 첫 답변이 나가야 한다. 문서 생성 60초 목표에 재시도 여유를 더한 값이다.
+      - value: "60"
+        effect: 필드가 많은 양식이 첫 답변 전에 끊긴다.
+      - value: "600 이상"
+        effect: 큰 양식도 완주하지만 한 요청이 10분 넘게 슬롯을 점유한다.
+    performance: 양식 처리는 원래 무거운 경로다 — 동시에 여러 건이 들어오면 서버 부하가 크다.
+    stability: 중단되면 산출물이 나오지 않는다. 실패 사유는 응답에 노출되므로 조용히 빈 파일이 나가지는 않는다.
+    caveats:
+      - >-
+        2026-09-28(D-267 ⑦)부터 뜻이 "요청 전체 상한"에서 "첫 답변까지의 처리 상한"으로 바뀌었다
+        (API_QUERY_TIMEOUT과 같은 변경). 배포 시 운영자에게 알린다.
+    related: [API_QUERY_TIMEOUT, API_STREAM_DELIVERY_GRACE_SEC, QUERY_FORM_MEMORY_TTL_DAYS]
+
+  API_ANSWER_RESERVE_SEC:
+    summary: 첫 답변 마감 안에서 서술(요약) 단계 몫으로 남겨 두는 시간(초).
+    behavior: >-
+      조회 마감 = 처리 마감(요청 시각 + API_QUERY_TIMEOUT 또는 API_FILE_QUERY_TIMEOUT) − 이 값이다.
+      조회 단계(SQL 재생성·재계획 후속)는 조회 마감을 넘겨 새 LLM 작업을 시작하지 않고, 조회 단계의
+      호출 상한도 조회 마감까지 남은 시간으로 줄어든다. 서술 단계는 처리 마감까지 쓴다. 플래그 없이
+      기본 동작이다(D-267 ⑥). 1차는 설정 상수이고 적응형 값은 재측정 뒤 다시 판단한다.
+    example: >-
+      처리 상한 120초에 이 값이 15면, 조회 단계는 요청 후 105초를 넘겨 재생성·재계획을 새로 시작하지
+      않는다. run 20260923-103638에서는 재계획 루프가 조회 예산을 다 써 서술에 쓸 시간이 남지 않은 채
+      끊긴 턴이 8건이었다.
+    options:
+      - value: "15"
+        label: 기본
+        effect: 요약 2~3줄을 가정한 추정값이다. 단계 타임라인(첫 답변 시각) 실측 p90으로 다시 정한다.
+      - value: "0"
+        effect: 조회 마감 = 처리 마감. 조회가 상한 직전까지 이어져 서술 전에 끊기기 쉽다(종전과 비슷하다).
+      - value: "30 이상"
+        effect: 서술 몫이 넉넉하지만 조회 단계의 재시도·재계획이 일찍 멈춘다.
+    performance: LLM 호출이 늘지 않는다. 값이 크면 재시도·재계획이 줄어 느린 턴이 짧아질 수 있다.
+    stability: >-
+      처리 상한보다 충분히 작아야 한다. 같거나 크면 조회 마감이 요청 직후가 되어 재생성·재계획이
+      사실상 꺼진다.
+    related: [API_QUERY_TIMEOUT, API_FILE_QUERY_TIMEOUT, MAX_REPLAN, REPLAN_BUDGET_PROMPT_ENABLED]
+
+  API_STREAM_IDLE_TIMEOUT_SEC:
+    summary: 스트리밍 응답에서 첫 답변이 나간 뒤 답변 토큰 사이에 허용하는 최대 공백(초).
+    behavior: >-
+      첫 답변(코드가 그린 표 또는 첫 토큰)이 나간 뒤에는 처리 상한으로 끊지 않고, 마지막 답변 토큰
+      이후 이 시간 동안 새 토큰이 없을 때 끊는다. heartbeat·진행 표시는 이 시계를 되돌리지 않는다 —
+      답변 토큰만 되돌린다. 끊으면 그때까지 보낸 답변을 그대로 두고 끊은 사유 한 줄을 붙인다(상태
+      partial). 표가 아직 나가지 않았고 조회한 행이 있으면 결정적 표를 덧붙인다. 0이면 이 상한을
+      쓰지 않는다(전체 상한만 남는다). 스트리밍이 아닌 응답에는 쓰이지 않는다.
+    example: >-
+      서술 LLM이 답의 앞부분을 보낸 뒤 게이트웨이 정체로 멈추면, 종전에는 요청 후 상한이 될 때까지
+      기다렸다가 오류(행이 있으면 받은 서술 대신 표만 남는 부분 결과)로 끝났다. 이 값이 30이면 멈춘
+      지 30초 뒤에 받은 부분과 「답변 생성이 30초 동안 멈춰 여기서 끊었습니다」를 남기고 끝낸다.
+    options:
+      - value: "30"
+        label: 기본
+        effect: 정상 스트리밍의 토큰 간격(1초 미만)과 요약 LLM의 첫 토큰 지연을 넉넉히 덮는다.
+      - value: "10 이하"
+        effect: 표를 먼저 보낸 뒤 요약 LLM이 첫 토큰을 늦게 내는 정상 응답까지 끊길 수 있다.
+      - value: "60 이상"
+        effect: 멈춘 응답을 오래 붙잡는다. 전체 상한에 먼저 닿을 수 있다.
+      - value: "0"
+        effect: 토큰 간 공백으로 끊지 않는다. 멈춘 응답은 전체 상한에서만 끊긴다.
+    performance: 판정 비용은 없다.
+    stability: 표를 먼저 보내고 요약을 이어 쓰는 응답에서는 요약 LLM의 첫 토큰 지연이 이 값 안에 들어와야 한다.
+    related: [API_QUERY_TIMEOUT, API_STREAM_DELIVERY_GRACE_SEC, API_SSE_HEARTBEAT_INTERVAL_SEC]
+
+  API_STREAM_DELIVERY_GRACE_SEC:
+    summary: 처리 상한에 더해 답변 전달에 허용하는 연장 시간(초) — 둘을 합한 값이 스트리밍 요청의 전체 상한이다.
+    behavior: >-
+      전체 상한 = 처리 상한(API_QUERY_TIMEOUT 또는 API_FILE_QUERY_TIMEOUT) + 이 값이고 요청 시작부터
+      잰다. 첫 답변 뒤 토큰이 계속 흘러 토큰 간 idle 상한에 걸리지 않아도 이 시각이 되면 끊는다 — 무한
+      대기 방지다(D-242). 끊으면 보낸 답변에 사유 한 줄을 붙인다(상태 partial). 첫 답변 전에는 처리
+      상한이 먼저 걸리므로 영향이 없다. 스트리밍이 아닌 응답에는 쓰이지 않는다.
+    example: >-
+      처리 상한 120초에 이 값이 60이면, 115초에 첫 답변이 나간 긴 응답은 180초까지 이어질 수 있고
+      거기서 「답변 전달이 전체 상한 180초(처리 상한 120초 + 전달 연장 60초)를 넘어 여기서 끊었습니다」로 끝난다.
+    options:
+      - value: "60"
+        label: 기본
+        effect: 처리 상한 직전에 시작한 답변에도 1분의 전달 시간을 준다.
+      - value: "0"
+        effect: 첫 답변 뒤에는 남은 처리 상한만큼만 전달한다. 상한 직전에 답이 시작되면 거의 바로 끊긴다(종전 단일 상한과 비슷하다).
+      - value: "180 이상"
+        effect: 긴 서술도 끝까지 가지만 한 요청이 슬롯을 오래 점유한다.
+    performance: 이 시간만큼 한 요청의 최대 점유 시간이 늘어난다.
+    stability: 토큰 속도가 느린 모델(로컬 대형 모델 등)을 쓰면 긴 답이 이 상한에 걸릴 수 있다 — 그때 늘린다.
+    related: [API_QUERY_TIMEOUT, API_FILE_QUERY_TIMEOUT, API_STREAM_IDLE_TIMEOUT_SEC]
+
+  API_SSE_PROGRESS_EVENTS:
+    example: >-
+      복합 질의가 40초쯤 걸리는 동안 화면에는 커서만 깜박여 사용자가 새로고침을 눌렀다. 이 값을 켜 두면 "인프라 DB 조회 중… 18초"처럼 지금 하는 일과
+      경과가 커서 아래에 보이고, 서버 신호가 끊기면 "신호 대기 중"으로 바뀐다.
+    summary: 스트리밍 응답에 진행 신호(도구·단계 progress, heartbeat)를 실어 보낼지.
+    behavior: >-
+      켜면 도구 호출·복합 질의 단계마다 progress 이벤트를, 이벤트가 없는 구간에는
+      heartbeat를 보낸다. 끄면 기존 6종 이벤트만 나가고 화면은 다시 커서만 보인다.
+      질의 처리 자체·타임아웃 판정에는 영향이 없다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 커서 아래 상태줄이 동작한다. 신규 플래그 기본 off 원칙의 명시 예외다 — 구 화면은 미지 이벤트를 무시한다.
+      - value: "false"
+        effect: 진행 신호가 나가지 않는다. 오래 걸리는 질의에서 진행 중인지 멈췄는지 화면만으로 구분할 수 없다.
+    performance: 이벤트 하나가 수십 바이트라 부하는 무시할 수준이다. LLM 호출은 늘지 않는다.
+    stability: 신호 발행 실패는 삼켜지며 질의를 중단시키지 않는다.
+    related: [API_SSE_HEARTBEAT_INTERVAL_SEC, API_QUERY_TIMEOUT]
+
+  API_SSE_HEARTBEAT_INTERVAL_SEC:
+    example: >-
+      스키마 샘플 수집처럼 한 단계가 수십 초 조용히 도는 구간에서, 5초마다 heartbeat가 오면 화면은 "진행 중"을 유지하고
+      15초간 아무 신호도 없으면 "서버 신호 대기 중"으로 바꿔 사용자가 멈춤을 의심할 수 있게 한다.
+    summary: 무이벤트 구간에 heartbeat를 보내는 주기(초).
+    behavior: >-
+      마지막 이벤트 뒤 이 시간 동안 새 이벤트가 없으면 heartbeat를 하나 보낸다. 0이면
+      보내지 않는다. heartbeat는 어떤 상한도 되돌리지 않는다 — 첫 답변 전 처리 상한
+      (API_QUERY_TIMEOUT 등)은 요청 시작부터, 첫 답변 뒤 토큰 간 idle 상한(API_STREAM_IDLE_TIMEOUT_SEC)은
+      마지막 답변 토큰부터 잰다. 상한 판정은 heartbeat와 별개로 제때 일어난다 — 0으로 꺼도 판정이
+      다음 이벤트 도착까지 밀리지 않는다.
+    options:
+      - value: "5"
+        label: 기본
+        effect: 화면의 정지 판정(15초)이 heartbeat 3회 결손과 맞물린다.
+      - value: "1"
+        effect: 신호가 잦아 정지 감지가 빠르지만 연결당 초당 1건이 늘 흐른다.
+      - value: "0"
+        effect: heartbeat 없음. 조용한 구간에서는 정지 판정이 늦어진다.
+    performance: 연결마다 주기당 수십 바이트. 동시 접속이 수백이 아니면 체감 없음.
+    stability: 하트비트 자체는 판정에 쓰이지 않으므로 값이 커도 타임아웃이 빨라지거나 늦어지지 않는다.
+    related: [API_SSE_PROGRESS_EVENTS, API_QUERY_TIMEOUT, API_STREAM_IDLE_TIMEOUT_SEC]
+
+  API_SSE_GROUP_PREVIEW_ROWS:
+    example: >-
+      은행존과 공동존을 함께 조회하면 은행존이 먼저 끝난다. 이 값이 10이면 공동존을 기다리는 동안 "은행존 · 12건 · 3.2s" 아래에 은행존 결과 앞 10행이
+      먼저 보이고, 종합 응답이 오면 그 표는 "먼저 표시된 존별 결과"로 접힌다.
+    summary: 존 동시 조회에서 먼저 끝난 존 그룹 결과를 몇 행까지 미리 보여 줄지.
+    behavior: >-
+      존 그룹(은행존 → 공동존)이 하나 끝날 때마다 건수·소요와 함께 앞 N행을 진행 신호로 보낸다.
+      행은 최종 응답과 같은 민감정보 마스킹을 거친 뒤 나간다. 0이면 행 없이 건수·소요 알림만 보낸다.
+      종합 응답을 대신하지 않고 앞에 덧붙일 뿐이다. API_SSE_PROGRESS_EVENTS가 꺼져 있으면 함께 꺼진다.
+    options:
+      - value: "10"
+        label: 기본
+        effect: 먼저 끝난 존의 앞 10행이 종합 응답 전에 보인다.
+      - value: "0"
+        effect: 행을 보내지 않고 "은행존 12건 완료" 같은 알림만 보낸다. 조회 행이 화면에 먼저 나가는 것을 원치 않을 때 쓴다.
+    performance: 존 그룹당 이벤트 1건에 N행이 실린다. 셀은 200자에서 자른다. LLM 호출은 늘지 않는다.
+    stability: 미리보기를 만들거나 보내다 실패해도 질의는 계속된다. 존이 하나뿐인 질의에서는 이 값이 쓰이지 않는다.
+    related: [API_SSE_PROGRESS_EVENTS, ZONE_GROUP_EXCLUSIVE]
+
+  REDIS_HOST:
+    example: >-
+      Redis를 껐다 켜면 캐시가 비는 데 그치지 않는다 — 알람 스트림에 쌓여 있던 미처리 메시지와 pub/sub 중계가 함께 끊겨, 그 사이 도착한 알람이 화면에 뜨지
+      않는다.
+    summary: Redis 서버 주소.
+    behavior: >-
+      Redis는 스키마 캐시·알람 스트림·세션·각종 단기 캐시에 함께 쓰인다.
+      알람 기능을 쓰는 구성에서는 Redis가 곧 알람 파이프라인의 전달 경로다.
+    options:
+      - value: localhost
+        label: 기본
+        effect: 같은 장비의 Redis를 쓴다.
+    performance: 원격이면 캐시 조회마다 왕복이 붙는다 — 캐시의 이점이 줄어든다.
+    stability: >-
+      Redis가 죽으면 캐시 미스로 느려지는 데 그치지 않고, 알람 수신·중계 경로가 함께
+      멈춘다(스트림과 pub/sub을 쓰기 때문이다).
+    related: [REDIS_PORT, REDIS_PASSWORD, SCHEMA_CACHE_BACKEND, ALARM_REDIS_STREAM_KEY]
+
+  REDIS_PORT:
+    example: >-
+      한 장비에 Redis를 두 개(6379·6380) 띄운 구성에서 본체와 알람 수신부가 서로 다른 포트를 보면, 수신부는 정상 적재하는데 워커는 빈 스트림을 읽는다 —
+      '알람이 안 뜬다'의 원인이 된다.
+    summary: Redis 포트.
+    behavior: >-
+      주소와 함께 접속 대상을 결정한다. 한 장비에 여러 Redis를 띄운 구성이면
+      인스턴스마다 포트가 다르므로 캐시·알람이 서로 다른 인스턴스를 보지 않도록 맞춰야 한다.
+    options:
+      - value: "6379"
+        label: 기본
+        effect: 표준 포트를 쓴다.
+    stability: 주소가 맞아도 포트가 틀리면 연결이 실패한다.
+    related: [REDIS_HOST]
+
+  REDIS_DB:
+    example: >-
+      다른 시스템과 Redis를 공유하면서 번호를 나누지 않으면 키가 충돌할 수 있다. 반대로 운영 중에 번호를 바꾸면 이전 번호의 캐시와 알람 스트림이 보이지 않게 되어
+      처음부터 다시 쌓인다.
+    summary: 사용할 Redis 논리 DB 번호.
+    behavior: >-
+      한 Redis 인스턴스를 여러 용도로 나눠 쓸 때 번호로 구분한다. 다른 시스템과
+      같은 인스턴스를 공유한다면 번호를 나눠 키 충돌을 피한다.
+    options:
+      - value: "0"
+        label: 기본
+        effect: 0번 DB를 쓴다.
+    stability: 번호를 바꾸면 이전 번호에 있던 캐시·스트림이 보이지 않는다 — 알람 스트림도 함께 옮겨진다.
+    related: [REDIS_HOST]
+
+  REDIS_PASSWORD:
+    example: >-
+      인증을 켠 Redis에 이 값을 채우지 않으면 캐시 조회와 알람 경로가 동시에 실패한다. 캐시는 미스로 폴백되지만 알람은 대체 경로가 없어 통보가 멈춘다.
+    summary: Redis 인증 비밀번호 — .encenv에서 관리한다.
+    behavior: 인증이 걸린 Redis에 붙을 때 필요하다. 시크릿이라 이 화면에서 편집할 수 없다.
+    stability: 비밀번호가 틀리면 캐시와 알람 경로가 모두 실패한다.
+    related: [REDIS_HOST, REDIS_SSL]
+
+  REDIS_SSL:
+    example: >-
+      서버가 TLS를 켜지 않았는데 이 값을 true로 두면 연결 자체가 실패한다. 캐시가 죽는 것보다 알람이 멈추는 영향이 크므로 서버 설정을 먼저 확인한다.
+    summary: Redis 연결에 TLS를 쓸지.
+    behavior: >-
+      서버가 TLS를 지원할 때만 켤 수 있다. 서버 설정과 어긋나면 연결 자체가 실패해
+      캐시와 알람 경로가 함께 멈춘다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 평문으로 연결한다. 같은 장비·폐쇄망 전제다.
+      - value: "true"
+        effect: TLS로 연결한다. 서버가 TLS를 지원해야 하며, 아니면 연결이 실패한다.
+    performance: 암복호화 비용이 붙지만 캐시 조회 규모에서는 체감되지 않는다.
+    stability: 망 경계를 넘는 구간이라면 켜야 한다.
+    related: [REDIS_PASSWORD]
+
+  REDIS_SOCKET_TIMEOUT:
+    example: >-
+      Redis가 멈춘 상황에서 이 값이 30초면, 캐시를 조회하는 모든 요청이 30초씩 붙잡힌다 — 캐시가 응답을 빠르게 하려고 있는 건데 오히려 전체를 느리게 만드는 역전이
+      일어난다.
+    summary: Redis 응답을 얼마나 기다릴지(초).
+    behavior: 캐시 조회 하나에 걸리는 상한이다. 넘기면 캐시 미스처럼 처리되고 원본을 조회한다.
+    options:
+      - value: "5"
+        label: 기본
+        effect: 5초. 정상 Redis는 밀리초 단위로 응답한다.
+      - value: "1"
+        effect: Redis가 잠깐 느려지면 캐시가 자주 미스로 처리돼 원본 부하가 는다.
+      - value: "30 이상"
+        effect: Redis가 멈췄을 때 요청이 그만큼 붙잡힌다 — 캐시 때문에 전체가 느려지는 역전이 일어난다.
+    performance: 캐시는 빨라야 의미가 있다 — 이 값이 크면 장애 시 오히려 병목이 된다.
+    stability: 짧게 잡는 편이 안전하다. 캐시 실패는 원본 조회로 폴백되므로 치명적이지 않다.
+    related: [REDIS_HOST, SCHEMA_CACHE_BACKEND]
+
+  SCHEMA_CACHE_ENABLED:
+    example: >-
+      테이블이 수백 개인 공동존에서 캐시를 끄면 질의마다 전체 구조를 다시 읽는다. 조회 자체보다 스키마 파악에 더 오래 걸리는 상태가 되어 단순 질의도 수십 초로 늘어난다.
+    summary: 스키마 정보를 캐시할지.
+    behavior: >-
+      테이블·컬럼 구조와 설명을 매 질의마다 DB에서 읽으면 느리다. 켜면 한 번 읽은
+      구조를 보관해 재사용한다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 캐시를 쓴다. 질의마다 스키마 조회가 사라져 응답이 빨라진다.
+      - value: "false"
+        effect: >-
+          매번 DB에서 읽는다. 스키마 변경이 즉시 반영되지만 질의마다 조회가 늘어
+          응답이 눈에 띄게 느려진다.
+    performance: 끄면 질의마다 스키마 조회가 붙는다 — 테이블이 많은 DB에서 특히 무겁다.
+    stability: 스키마가 바뀌었는데 캐시가 낡으면 없는 컬럼을 조회하려 든다 — 지문(fingerprint) 검증이 그것을 잡는다.
+    related: [SCHEMA_CACHE_BACKEND, SCHEMA_CACHE_FINGERPRINT_TTL_SECONDS]
+
+  SCHEMA_CACHE_BACKEND:
+    example: >-
+      file로 바꾸면 Redis 없이도 동작하지만, 프로세스를 두 개로 늘리면 각자 캐시를 만들어 최초 조회가 두 번씩 일어난다. 재시작할 때마다 디렉터리가 그대로 남아 있어야
+      캐시가 유지된다.
+    summary: 스키마 캐시를 어디에 저장할지.
+    behavior: >-
+      캐시 자체를 켤지(SCHEMA_CACHE_ENABLED)와는 별개로, 켠 캐시를 어디에 둘지 정한다.
+      백엔드를 바꾸면 이전 백엔드의 캐시는 남아 있어도 읽지 않으므로 처음부터 다시 만든다.
+    options:
+      - value: redis
+        label: 기본
+        effect: Redis에 저장한다. 프로세스를 재시작해도 캐시가 남고 여러 프로세스가 공유한다.
+      - value: file
+        effect: >-
+          로컬 파일에 저장한다. Redis 없이 동작하지만 프로세스마다 따로 캐시를 갖고,
+          디렉터리 관리가 필요하다.
+    performance: 둘 다 원본 조회보다 훨씬 빠르다. Redis는 왕복이, 파일은 디스크 I/O가 든다.
+    stability: redis를 골랐는데 Redis가 죽으면 캐시가 통째로 미스가 된다 — 조회는 되지만 느려진다.
+    related: [SCHEMA_CACHE_CACHE_DIR, REDIS_HOST]
+
+  SCHEMA_CACHE_CACHE_DIR:
+    example: >-
+      상대 경로 `.cache/schema`는 서버 작업 디렉터리 기준이다. 서비스 등록 방식이 바뀌어 작업 디렉터리가 달라지면 이전 캐시를 못 찾아 처음부터 다시 만든다 — 첫
+      질의가 갑자기 느려지는 형태로 나타난다.
+    summary: 파일 백엔드가 캐시를 저장할 디렉터리.
+    behavior: >-
+      `SCHEMA_CACHE_BACKEND=file`일 때만 쓰인다. 상대 경로는 서버 작업 디렉터리 기준이다.
+    stability: 작업 디렉터리가 바뀌면 이전 캐시를 못 찾아 처음부터 다시 만든다.
+    related: [SCHEMA_CACHE_BACKEND]
+
+  SCHEMA_CACHE_FINGERPRINT_TTL_SECONDS:
+    example: >-
+      폴스타에 컬럼을 추가한 직후 질의하면, 검증 주기가 30분이라 최대 30분 동안은 캐시가 옛 구조를 들고 있다. 그동안 그 컬럼을 물으면 '없는 컬럼'으로 처리된다 —
+      스키마를 바꾼 뒤 바로 확인해야 한다면 값을 줄이거나 캐시를 수동으로 비운다.
+    summary: 캐시한 스키마가 아직 유효한지 얼마 만에 다시 확인할지(초).
+    behavior: >-
+      DB 구조의 지문을 주기적으로 비교해, 달라졌으면 캐시를 버리고 다시 읽는다.
+      이 값은 그 검증 주기다 — 캐시 자체의 수명이 아니라 **검증 간격**이다.
+    options:
+      - value: "1800"
+        label: 기본 (30분)
+        effect: 30분마다 구조 변경 여부를 확인한다.
+      - value: "60"
+        effect: 변경이 빨리 반영되지만 검증 조회가 잦아진다.
+      - value: "86400"
+        effect: >-
+          하루에 한 번만 확인한다. 컬럼을 추가해도 최대 하루 동안 캐시가 낡은 구조를
+          들고 있어 "새 컬럼을 못 찾는다"로 나타난다.
+    performance: 검증은 가벼운 조회지만 주기가 짧으면 누적된다.
+    stability: 스키마 변경이 잦은 환경에서는 짧게, 안정적인 환경에서는 길게 잡는다.
+    related: [SCHEMA_CACHE_ENABLED]
+
+  SCHEMA_CACHE_ADMIN_LLM_CONCURRENCY:
+    summary: 관리자 「DB 구조」 탭이 컬럼 설명·유사어 초안을 만들 때 동시에 띄우는 LLM 호출 수 상한.
+    behavior: >-
+      신규 DB를 연동하거나 설명을 다시 만들 때 관리자 잡은 테이블마다 LLM을 한 번 부른다.
+      이 값은 그 호출을 몇 개까지 겹쳐 띄울지 정한다. 사용자 질의 경로에는 영향이 없다 —
+      질의는 등록해 둔 설명을 읽기만 한다.
+    options:
+      - value: "2"
+        label: 기본
+        effect: 두 테이블씩 겹쳐 생성한다. 순차 생성보다 빠르고 LLM 서버 부하는 제한된다.
+      - value: "1"
+        effect: 한 번에 한 테이블만 생성한다. 가장 느리지만 LLM 서버를 다른 사용자와 나눠 쓸 때 안전하다.
+      - value: "8"
+        effect: >-
+          대형 DB 등록 시간이 크게 줄지만, 같은 LLM 서버를 쓰는 사용자 질의의 응답이
+          그동안 느려지거나 공급자 호출 한도에 걸릴 수 있다.
+    example: >-
+      테이블 394개인 공동존을 등록하면 설명 생성이 394회 호출이다. 2로 두면 순차보다 약 절반의
+      시간에 끝나고, 8로 올리면 더 빨리 끝나지만 그 사이 채팅 응답이 눈에 띄게 늦어질 수 있다.
+    performance: 값이 클수록 등록 잡은 빨라지고, 같은 시간대 LLM 서버 부하는 커진다. 총 호출 수는 변하지 않는다.
+    stability: 과금 공급자라면 총 호출 수만큼 비용이 발생한다 — 동시성은 비용이 아니라 속도만 바꾼다(D-127).
+    related: [SCHEMA_CACHE_STRUCTURE_GROUP_MAX_TABLES, LLM_PROVIDER]
+
+  SCHEMA_CACHE_STRUCTURE_GROUP_MAX_TABLES:
+    summary: 관리자 구조 분석이 한 번의 LLM 분석에 넣는 테이블 수 상한(FK로 연결된 묶음 단위).
+    behavior: >-
+      관리자 「DB 구조」 탭의 구조 분석은 선택한 테이블을 FK로 연결된 묶음으로 나눠 묶음마다
+      LLM을 한 번 부르고 결과를 합친다. 묶음이 이 값보다 크면 이름순으로 잘라 나눈다.
+      사용자 질의 경로에는 영향이 없다 — 질의는 승인된 구조 정보를 읽기만 한다.
+    options:
+      - value: "40"
+        label: 기본
+        effect: 한 번의 분석 프롬프트가 테이블 40개 이내로 유지된다.
+      - value: "10"
+        effect: >-
+          프롬프트가 작아 컨텍스트가 짧은 모델에서도 안전하지만, 연결된 테이블이 여러 묶음으로
+          갈라져 테이블 사이의 구조 패턴을 놓칠 수 있다.
+      - value: "200"
+        effect: 한 번에 넓게 보지만 프롬프트가 커져 공급자 입력 한도에 걸리거나 분석이 부정확해질 수 있다.
+    example: >-
+      테이블 120개를 분석하면 40 기준으로 약 세 번의 분석 호출이 된다. 값을 10으로 내리면 호출이
+      열두 번으로 늘고, 서로 조인되는 테이블이 다른 묶음에 들어가 그 조인이 초안에서 빠질 수 있다.
+    performance: 값이 작을수록 분석 호출 수가 늘고 호출당 프롬프트는 작아진다.
+    stability: 공급자 입력 한도(FabriX 등)를 넘지 않는 선에서 크게 잡는 편이 구조 패턴을 덜 놓친다.
+    related: [SCHEMA_CACHE_ADMIN_LLM_CONCURRENCY, LLM_PROVIDER]

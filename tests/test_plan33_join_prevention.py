@@ -1,105 +1,48 @@
-"""Plan 33: resource_conf_id JOIN 방지 통합 테스트.
+"""resource_conf_id 조인 규칙의 **현행 정본** 고정.
 
-polestar_pg.yaml -> schema_info -> 스키마/가이드 프롬프트까지의
-전체 파이프라인을 검증한다.
+파일명은 Plan 33(2026-04 `resource_conf_id` JOIN 금지) 시절의 것이지만, 그 결정은
+**D-022 재검토(2026-07-30)로 뒤집혔다** — 지금 정본은 `cmm_resource.resource_conf_id =
+core_config_prop.configuration_id` 조인을 **필수**로 지시한다(docs/02_decision.md D-022 부기,
+`config/db_profiles/*.yaml` query_guide "반드시 resource_conf_id를 사용하세요").
+
+종전 이 파일은 삭제된 `config/db_profiles/polestar_pg.yaml`(2026-07-01 ac2cdc8에서 제거)을
+픽스처로 읽어 5건 전부 수집 오류였고, 단언 내용도 뒤집힌 규칙 쪽이었다(2026-09-21 정리).
+`build_excluded_join_map()`·스키마 프롬프트 주석·구조 가이드 렌더는 합성 프로필로
+`tests/test_utils/test_schema_utils.py`·`tests/test_nodes/test_query_generator_excluded_join.py`가
+이미 덮으므로, 여기서는 **뒤집힌 결정이 되돌아오지 않는지만** 실 프로필로 지킨다.
 """
+
+from pathlib import Path
 
 import pytest
 import yaml
-from pathlib import Path
 
-from src.utils.schema_utils import build_excluded_join_map
-from src.nodes.query_generator import _format_schema_for_prompt, _format_structure_guide
-
-
-YAML_PATH = Path(__file__).resolve().parent.parent / "config" / "db_profiles" / "polestar_pg.yaml"
+_PROFILE_DIR = Path(__file__).resolve().parent.parent / "config" / "db_profiles"
+_POLESTAR_PROFILES = ("polestar", "polestar_b0", "polestar_cm_gp", "polestar_cm_yd")
 
 
-@pytest.fixture
-def polestar_profile():
-    """polestar_pg.yaml을 로드한다."""
-    with open(YAML_PATH, "r", encoding="utf-8") as f:
+def _load(db_id: str) -> dict:
+    with open(_PROFILE_DIR / f"{db_id}.yaml", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-def _build_test_schema_info(profile: dict) -> dict:
-    """프로필에서 테스트용 schema_info를 구성한다."""
-    return {
-        "tables": {
-            "polestar.cmm_resource": {
-                "columns": [
-                    {"name": "id", "type": "BIGINT", "primary_key": True},
-                    {"name": "hostname", "type": "VARCHAR(255)"},
-                    {"name": "ipaddress", "type": "VARCHAR(255)"},
-                    {"name": "resource_type", "type": "VARCHAR(255)"},
-                    {"name": "resource_conf_id", "type": "BIGINT"},
-                    {"name": "parent_resource_id", "type": "BIGINT"},
-                ],
-            },
-            "polestar.core_config_prop": {
-                "columns": [
-                    {"name": "id", "type": "BIGINT", "primary_key": True},
-                    {"name": "configuration_id", "type": "BIGINT"},
-                    {"name": "name", "type": "VARCHAR(255)"},
-                    {"name": "stringvalue_short", "type": "VARCHAR(4000)"},
-                    {"name": "stringvalue", "type": "TEXT"},
-                    {"name": "is_lob", "type": "BOOLEAN"},
-                ],
-            },
-        },
-        "_structure_meta": profile,
-    }
+@pytest.mark.parametrize("db_id", _POLESTAR_PROFILES)
+def test_resource_conf_id_is_not_an_excluded_join_column(db_id):
+    """resource_conf_id를 조인 금지 목록에 되돌리면 EAV 피벗이 전부 막힌다(D-022 재검토)."""
+    for pattern in _load(db_id).get("patterns") or []:
+        excluded = {
+            (e.get("table"), e.get("column"))
+            for e in pattern.get("excluded_join_columns") or []
+        }
+        assert ("cmm_resource", "resource_conf_id") not in excluded, (
+            f"{db_id}: resource_conf_id가 조인 금지로 되돌아왔다 — D-022 재검토(2026-07-30) 위배"
+        )
 
 
-class TestYamlConfiguration:
-    """polestar_pg.yaml 설정 검증."""
-
-    def test_excluded_join_columns_present(self, polestar_profile):
-        """EAV 패턴에 excluded_join_columns가 존재한다."""
-        eav_pattern = polestar_profile["patterns"][0]
-        assert eav_pattern["type"] == "eav"
-        assert "excluded_join_columns" in eav_pattern
-        excl = eav_pattern["excluded_join_columns"][0]
-        assert excl["column"] == "resource_conf_id"
-        assert excl["table"] == "cmm_resource"
-
-    def test_query_guide_prohibits_resource_conf_id(self, polestar_profile):
-        """query_guide에 resource_conf_id 금지 문구가 포함되어 있다."""
-        guide = polestar_profile["query_guide"]
-        assert "resource_conf_id" in guide
-        assert "금지" in guide
-
-
-class TestBuildExcludedJoinMap:
-    """build_excluded_join_map() 통합 테스트."""
-
-    def test_with_real_profile(self, polestar_profile):
-        """실제 프로필로부터 excluded_join_map이 올바르게 구축된다."""
-        schema_info = _build_test_schema_info(polestar_profile)
-        result = build_excluded_join_map(schema_info)
-        assert ("cmm_resource", "resource_conf_id") in result
-
-
-class TestSchemaPromptIntegration:
-    """스키마 프롬프트 통합 테스트."""
-
-    def test_schema_prompt_has_join_warning(self, polestar_profile):
-        """스키마 프롬프트에 JOIN 금지 주석이 포함된다."""
-        schema_info = _build_test_schema_info(polestar_profile)
-        schema_text = _format_schema_for_prompt(schema_info)
-        assert "JOIN 금지" in schema_text
-        # resource_conf_id 라인에만 주석이 있어야 함
-        lines = schema_text.split("\n")
-        for line in lines:
-            if "hostname:" in line:
-                assert "JOIN 금지" not in line
-
-
-class TestStructureGuideIntegration:
-    """구조 가이드 통합 테스트."""
-
-    def test_structure_guide_has_excluded_join_warning(self, polestar_profile):
-        """_format_structure_guide()에 금지 컬럼 경고가 포함된다."""
-        guide = _format_structure_guide(polestar_profile)
-        assert "resource_conf_id" in guide
-        assert "금지" in guide
+@pytest.mark.parametrize("db_id", _POLESTAR_PROFILES)
+def test_query_guide_directs_resource_conf_id_join(db_id):
+    """query_guide가 resource_conf_id 조인을 지시한다 — 이게 현행 정본 조인 키다."""
+    guide = _load(db_id).get("query_guide") or ""
+    assert "resource_conf_id = core_config_prop.configuration_id" in guide, (
+        f"{db_id}: query_guide에 정본 조인 키 지시가 없다"
+    )

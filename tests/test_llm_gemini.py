@@ -41,14 +41,25 @@ class TestLLMConfigGemini:
         with pytest.raises(Exception):
             LLMConfig(provider="invalid_provider")
 
-    def test_gemini_api_key_default_empty(self):
+    @pytest.fixture
+    def _no_gemini_env(self, monkeypatch):
+        """기본값 단언은 설정 파일·셸 값과 분리한다.
+
+        `.env`의 `LLM_GEMINI_MODEL`·`.encenv`의 `LLM_GEMINI_API_KEY`가 새어 들어와
+        기본값 테스트가 개발 PC에서 늘 실패했다(2026-09-17 귀속 실측 — 파일이 없으면 통과).
+        `GOOGLE_API_KEY`는 `model_post_init`이 `os.getenv`로 폴백해 읽으므로 함께 지운다.
+        """
+        for key in ("LLM_GEMINI_API_KEY", "LLM_GEMINI_MODEL", "GOOGLE_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+
+    def test_gemini_api_key_default_empty(self, _no_gemini_env):
         """gemini_api_key의 기본값은 빈 문자열이어야 한다."""
-        cfg = LLMConfig(provider="gemini")
+        cfg = LLMConfig(_env_file=None, provider="gemini")
         assert cfg.gemini_api_key == ""
 
-    def test_gemini_model_default_empty(self):
+    def test_gemini_model_default_empty(self, _no_gemini_env):
         """gemini_model의 기본값은 빈 문자열이어야 한다."""
-        cfg = LLMConfig(provider="gemini")
+        cfg = LLMConfig(_env_file=None, provider="gemini")
         assert cfg.gemini_model == ""
 
     def test_gemini_api_key_direct_setting(self):
@@ -160,7 +171,7 @@ class TestCreateGeminiFactory:
             ),
         )
         result = create_llm(config)
-        mock_create_fabrix.assert_called_once_with(config)
+        mock_create_fabrix.assert_called_once_with(config, purpose="deterministic")
         assert result is mock_create_fabrix.return_value
 
 
@@ -172,9 +183,12 @@ class TestCreateGeminiFactory:
 class TestCreateGeminiValidation:
     """_create_gemini()의 입력 검증 로직 테스트."""
 
-    def test_missing_api_key_raises_value_error(self):
+    def test_missing_api_key_raises_value_error(self, monkeypatch):
         """gemini_api_key가 비어있으면 ValueError가 발생해야 한다."""
         from src.llm import _create_gemini
+
+        # 빈 키를 명시해도 model_post_init이 셸 GOOGLE_API_KEY로 폴백한다 — 셸 값 누수 차단
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
         config = AppConfig(
             llm=LLMConfig(provider="gemini", gemini_api_key=""),
@@ -391,14 +405,25 @@ class TestEncenvFileConfig:
 class TestNodeCodeUnchanged:
     """노드 코드가 create_llm() 호출 패턴을 변경 없이 유지하는지 구조적으로 검증."""
 
-    def test_create_llm_signature_unchanged(self):
-        """create_llm()의 시그니처가 AppConfig 하나만 받아야 한다."""
+    def test_create_llm_signature_backward_compatible(self):
+        """create_llm()은 config 위치인자 + 선택 keyword-only 인자들을 받는다.
+
+        provider_override(기본 None)·purpose(기본 "deterministic" — D-194)는 모두
+        기본값 있는 keyword-only 인자이므로 기존 호출 `create_llm(config)`는 변경
+        없이 동작한다(노드 코드 영향 없음).
+        """
         import inspect
         from src.llm import create_llm
 
         sig = inspect.signature(create_llm)
-        params = list(sig.parameters.keys())
-        assert params == ["config"]
+        params = sig.parameters
+        assert list(params.keys()) == ["config", "provider_override", "purpose"]
+        # config: 위치 가능 / provider_override: keyword-only + 기본 None
+        assert params["provider_override"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params["provider_override"].default is None
+        # purpose: keyword-only + 기본 "deterministic" (D-194)
+        assert params["purpose"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params["purpose"].default == "deterministic"
 
     def test_create_llm_return_type_annotation(self):
         """create_llm()의 반환 타입이 BaseChatModel이어야 한다."""
@@ -477,3 +502,72 @@ class TestPyprojectGeminiDep:
         content = pyproject_path.read_text(encoding="utf-8")
         assert "gemini" in content
         assert "langchain-google-genai" in content
+
+
+# ──────────────────────────────────────────────
+# 14. worker_provider_override (테스트 전용 — deepagent 경로 gemini 검증)
+# ──────────────────────────────────────────────
+
+
+class TestWorkerProviderOverride:
+    """create_llm(provider_override=...) 및 AppConfig.worker_provider_override 검증 (D-037)."""
+
+    def test_config_default_none(self):
+        """worker_provider_override 기본값은 None(운영 = config.llm.provider 그대로)이어야 한다."""
+        cfg = AppConfig(llm=LLMConfig(provider="fabrix"))
+        assert cfg.worker_provider_override is None
+
+    def test_config_accepts_gemini(self):
+        """worker_provider_override='gemini'가 허용되어야 한다."""
+        cfg = AppConfig(llm=LLMConfig(provider="fabrix"), worker_provider_override="gemini")
+        assert cfg.worker_provider_override == "gemini"
+
+    def test_config_invalid_rejected(self):
+        """지원하지 않는 override 값은 validation error를 발생시켜야 한다."""
+        with pytest.raises(Exception):
+            AppConfig(llm=LLMConfig(provider="fabrix"), worker_provider_override="bogus")
+
+    @patch("src.llm._create_gemini")
+    def test_override_forces_gemini_despite_fabrix_provider(self, mock_create_gemini):
+        """provider_override='gemini'이면 config.llm.provider=fabrix여도 gemini로 생성한다."""
+        from src.llm import create_llm
+
+        mock_create_gemini.return_value = MagicMock()
+        config = AppConfig(
+            llm=LLMConfig(provider="fabrix", gemini_api_key="test-key"),
+        )
+        result = create_llm(config, provider_override="gemini")
+        mock_create_gemini.assert_called_once_with(config)
+        assert result is mock_create_gemini.return_value
+
+    @patch("src.llm._create_fabrix")
+    def test_override_none_uses_config_provider(self, mock_create_fabrix):
+        """provider_override=None(기본)이면 운영대로 config.llm.provider(fabrix)를 사용한다."""
+        from src.llm import create_llm
+
+        mock_create_fabrix.return_value = MagicMock()
+        config = AppConfig(
+            llm=LLMConfig(provider="fabrix", fabrix_base_url="http://fabrix.local", fabrix_api_key="k"),
+        )
+        result = create_llm(config, provider_override=None)
+        mock_create_fabrix.assert_called_once_with(config, purpose="deterministic")
+        assert result is mock_create_fabrix.return_value
+
+    @patch("src.graph.create_llm")
+    def test_build_graph_passes_override_to_worker(self, mock_create_llm):
+        """build_graph가 worker_provider_override를 create_llm에 주입해야 한다(deepagent 경로 전체 워커)."""
+        from src.graph import build_graph
+        from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+        mock_create_llm.return_value = GenericFakeChatModel(messages=iter([]))
+        config = AppConfig(
+            llm=LLMConfig(provider="fabrix"),
+            worker_provider_override="gemini",
+        )
+        # semantic_routing/deepagent 비활성으로 단순화 (워커 생성 호출만 확인)
+        config.enable_intent_orchestration = False
+        config.enable_semantic_routing = False
+        config.enable_deepagents_package = False
+        build_graph(config)
+        # 워커 생성 시 override가 전달되었는지 확인
+        assert mock_create_llm.call_args.kwargs.get("provider_override") == "gemini"

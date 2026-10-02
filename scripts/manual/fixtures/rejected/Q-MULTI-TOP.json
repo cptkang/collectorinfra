@@ -1,0 +1,114 @@
+{
+ "id": "Q-MULTI-TOP",
+ "turns": [
+  {
+   "query": "메모리 용량이 큰 상위 3대 서버를 알려줘",
+   "file": null,
+   "key": "6dbf91f237853146",
+   "elapsed_s": 123.1,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n메모리 용량이 65,536.0 GB인 상위 3 대 서버를 조회했습니다.\n\n| id | server_name | hostname | ipaddress | total_memory_gb |\n|---|---|---|---|---|\n| 9610002.0 | DB-ORA-023 | dbora023 | 10.61.0.2 | 65,536.0 GB |\n| 9610003.0 | cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | 65,536.0 GB |\n| 9680004.0 | cocm-ngcapo91 | cocm-ngcapo91 | 10.68.0.4 | 65,536.0 GB |\n\n참고사항\n- 조회된 데이터에는 가용성 상태 (avail_status), CPU 사용률, 디스크 사용률 등 추가 정보가 포함되어 있지 않습니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 3,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "id": 9610002.0,
+     "server_name": "DB-ORA-023",
+     "hostname": "dbora023",
+     "ipaddress": "10.61.0.2",
+     "total_memory_gb": 65536.0
+    },
+    {
+     "id": 9610003.0,
+     "server_name": "cocm-hdkapp01",
+     "hostname": "cocm-hdkapp01",
+     "ipaddress": "10.61.0.3",
+     "total_memory_gb": 65536.0
+    },
+    {
+     "id": 9680004.0,
+     "server_name": "cocm-ngcapo91",
+     "hostname": "cocm-ngcapo91",
+     "ipaddress": "10.68.0.4",
+     "total_memory_gb": 65536.0
+    }
+   ]
+  },
+  {
+   "query": "그 서버들의 제조사와 모델",
+   "file": null,
+   "key": "8c93efefae1b508c",
+   "elapsed_s": 130.7,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n요청하신 3개 서버 (id: 9610002.0, 9610003.0, 9680004.0) 의 제조사 및 모델 정보를 조회했습니다. 제조사는 Dell 과 HPE 로 확인되었으나, 모델 정보는 모두 누락되어 있습니다.\n\n| resource_id | server_name | os_hostname | ipaddress | vendor | model |\n|---|---|---|---|---|---|\n| 9610002.0 | DB-ORA-023 | dbora023 | 10.61.0.2 | Dell | null |\n| 9610003.0 | cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | HPE | null |\n| 9680004.0 | cocm-ngcapo91 | cocm-ngcapo91 | 10.68.0.4 | HPE | null |\n\n참고사항\n- 모델 (model) 컬럼은 모든 서버에서 null 로 조회되었습니다.\n\n---\n## 순차 처리 경과\n- 순차 분해가 적용되지 않아 한 번의 조회로 처리했습니다(앞 결과 → 뒤 조회 대상 배선 없음).\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 3,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "resource_id": 9610002.0,
+     "server_name": "DB-ORA-023",
+     "os_hostname": "dbora023",
+     "ipaddress": "10.61.0.2",
+     "vendor": "Dell",
+     "model": null
+    },
+    {
+     "resource_id": 9610003.0,
+     "server_name": "cocm-hdkapp01",
+     "os_hostname": "cocm-hdkapp01",
+     "ipaddress": "10.61.0.3",
+     "vendor": "HPE",
+     "model": null
+    },
+    {
+     "resource_id": 9680004.0,
+     "server_name": "cocm-ngcapo91",
+     "os_hostname": "cocm-ngcapo91",
+     "ipaddress": "10.68.0.4",
+     "vendor": "HPE",
+     "model": null
+    }
+   ]
+  }
+ ],
+ "reviewed": false,
+ "recorded_at": "2026-09-23T11:21:22"
+}

@@ -149,7 +149,11 @@ async def test_apply_llm_mapping_with_synonyms_restricts_to_priority_dbs() -> No
 
 @pytest.mark.asyncio
 async def test_core_table_priority_mapping() -> None:
-    """_apply_synonym_mapping은 핵심 테이블 cmm_resource의 컬럼을 다른 서브 테이블보다 우선 매칭한다."""
+    """_apply_synonym_mapping은 핵심 엔터티 테이블의 컬럼을 다른 서브 테이블보다 우선 매칭한다.
+
+    핵심 테이블 집합은 구조 선언(patterns[].entity_table)에서 도출해 주입한다
+    (Plan 67 R2 — 공용 계층에 특정 DB 테이블명 하드코딩 금지, D-088).
+    """
     # synonyms 사전에 스키마가 붙은 핵심 테이블 polestar.cmm_resource와 서브 테이블 cmm_ad_result가 둘 다 존재
     all_db_synonyms = {
         "polestar_cm_yd": {
@@ -167,12 +171,40 @@ async def test_core_table_priority_mapping() -> None:
         all_db_synonyms=all_db_synonyms,
         priority_db_ids=priority_db_ids,
         result=result,
+        core_tables={"cmm_resource"},
     )
 
     # cmm_ad_result.ip_address가 알파벳 순서상 앞서고 synonyms에 먼저 기재되어 있지만,
-    # cmm_resource가 핵심 테이블(CORE_TABLES)이므로 polestar.cmm_resource.ipaddress로 매핑되어야 함
+    # cmm_resource가 핵심 엔터티 테이블이므로 polestar.cmm_resource.ipaddress로 매핑되어야 함
     assert "IP주소" not in remaining
     assert result.db_column_mapping["polestar_cm_yd"]["IP주소"] == "polestar.cmm_resource.ipaddress"
+
+
+@pytest.mark.asyncio
+async def test_core_tables_derived_from_structure_declaration() -> None:
+    """구조 선언의 EAV entity_table이 핵심 테이블·피벗 게이트 판정의 근거가 된다."""
+    from src.document.field_mapper import (
+        _core_entity_tables,
+        _schema_uses_eav_metric_pivot,
+    )
+
+    metas = {
+        "polestar_cm_yd": {
+            "patterns": [
+                {"type": "eav", "entity_table": "cmm_resource", "config_table": "core_config_prop"},
+                {"type": "hierarchy"},
+            ]
+        }
+    }
+    assert _core_entity_tables(metas) == {"cmm_resource"}
+    assert _schema_uses_eav_metric_pivot(metas) is True
+
+    # 평탄 스키마(EAV 선언 없음)는 핵심 테이블 구분도, 사용률 스킵 게이트도 발동하지 않는다.
+    flat = {"generic_mon": {"patterns": [{"type": "hierarchy", "table": "servers"}]}}
+    assert _core_entity_tables(flat) == set()
+    assert _schema_uses_eav_metric_pivot(flat) is False
+    assert _core_entity_tables(None) == set()
+    assert _schema_uses_eav_metric_pivot(None) is False
 
 
 @pytest.mark.asyncio

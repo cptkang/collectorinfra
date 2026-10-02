@@ -1,0 +1,2836 @@
+"""실행 오케스트레이션 (plans/94 §4.2 · §4.3 · §7.1).
+
+프로파일별로 서버를 한 번 띄우고, 그 아래에서 시나리오를 순차 실행하며, 건별 측정치를
+JSONL 한 줄로 적재한다. **한 시나리오의 예외는 그 건만 ERROR 로 적재하고 다음으로 넘어간다** -
+폐쇄망에서 전 스위트가 한 번에 끝나지 않는 것을 전제로 설계했다.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import platform
+import shutil
+import signal
+import threading
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Iterator, Optional, Sequence
+
+import yaml
+
+from . import REPO_ROOT, clarify, run_capture, utf8_open
+from . import oracle as _oracle
+from . import report as _report
+from .assertions import (
+    INVALID_VERDICT,
+    Failure,
+    Observation,
+    Verdict,
+    classify_mode,
+    option_labels,
+    evaluate_turn,
+    judge_digest,
+    primary_manual_source,
+    resolve_db_ids,
+    row_is_invalid,
+)
+from .catalog import Catalog, Scenario, Turn, judgement_digest, oracle_targets
+from .client import ClientConfig, ScenarioClient, result_unavailable
+# 판정 계약(`108·G-6`)의 규칙 정본은 report 한 곳이다 - 쓰는 쪽과 읽는 쪽이 같은 규칙을
+# 쓰지 않으면 칸과 재도출값이 갈린다. report 는 runner 를 import 하지 않아 순환이 없다.
+from .report import (
+    CAP_SEMANTIC_TOTAL,
+    T1_META_KEY,
+    t1_alarm_evidence,
+    timeline_cap_semantic,
+    unevaluated_reason,
+)
+from .server import ProfileStatus, ServerHandle, pick_port, platform_provenance
+
+RESULTS_ROOT = REPO_ROOT / "results" / "scenario"
+
+# --estimate 의 LLM 호출 가정치. 실측이 아니라 **가정**이므로 출력에 그 사실을 함께 적는다.
+# 1단 deep_agent 경로의 턴당 호출 수는 아직 측정되지 않았다 - S5 이후 이 값을 실측으로 바꾼다.
+ASSUMED_LLM_CALLS_PER_TURN = 6
+
+#: 모든 프로파일에 **똑같이** 주입하는 격리 설정. 측정 축이 아니다.
+#:
+#: `ALARM_ENABLED=true` 인 환경(폐쇄망 운영 `.env`)에서 기동한 프로파일 서버는 in-process
+#: 알람 워커를 띄워 운영 스트림 `alarm:raw` 를 **운영과 같은 consumer group**
+#: (`alarm-workers`)으로 XREADGROUP 한다. 그룹 안에서 메시지는 소비자끼리 나눠 가지므로
+#: 벤치마크가 도는 동안 운영 알람 일부를 벤치 서버가 가져간다(2026-09-14 폐쇄망 스위프
+#: 기동 로그 실측: "알람 워커 시작 … group=alarm-workers").
+#: 이 플래그는 서버 기동·설정 재적용·워커 자신에서만 읽혀 질의 경로에 닿지 않는다.
+#: 프로파일이 같은 키를 명시하면 프로파일 값이 이긴다(알람 자체를 시험하는 프로파일).
+#: 러너가 띄우는 서버에 **주입**하는 값. `expected` 로도 쓰여 설정 에코로 반영을 확인한다.
+#: `AUTH_JWT_EXPIRE_HOURS` 를 여기 두는 이유(D-218 후속 · 2026-09-16): 러너가 서버를
+#: **직접 띄우므로** 수명을 `.env` 에서 읽어 맞히는 것이 아니라 **자기가 정하면 된다**.
+#: 읽어서 맞히는 방식은 OS env·`.encenv` 우선순위로 실효값이 달라지면 T-b 가 엉뚱한
+#: 시점에 갱신하고, 그래도 러너는 자기가 맞다고 믿는다. 주입하면 그 간극이 사라지고
+#: 에코 불일치는 프로파일 INVALID 로 드러난다. 값은 **코드 기본값과 같은 8** 이라
+#: 동작은 종전과 비트 동일하다 - 수명을 **늘려 만료를 회피하는 것이 아니다**(D-218 대안 기각).
+SERVER_JWT_EXPIRE_HOURS = 8
+ISOLATION_ENV: dict[str, str] = {
+    "ALARM_ENABLED": "false",
+    "AUTH_JWT_EXPIRE_HOURS": str(SERVER_JWT_EXPIRE_HOURS),
+}
+
+#: 인증이 켜진 서버에서 `--user`/`--password` 가 없을 때 쓰는 내장 테스트 계정(사용자 확정
+#: 2026-09-15 · D-216 - D-215 의 "94 CLI 는 --user/--password 만 받는다"를 개정). 옵션 없이
+#: 돌려도 폐쇄망에서 질의가 401 로 끝나지 않게 한다. 인증이 꺼진 서버에서는 로그인하지 않는다.
+DEFAULT_USER_ID = "5488923"
+DEFAULT_USER_PASSWORD = "54889230"
+
+#: 로컬 도커 샌드박스 DB(testdata/pg/init). 존이 붙은 DB 없이 이 DB가 활성이면 sandbox 다.
+SANDBOX_DB_ID = "polestar"
+DB_REGISTRY_PATH = REPO_ROOT / "config" / "db_registry.yaml"
+
+#: 실패 트레이스 위치(src/observability/trace_writer.py `logs/trace/YYYY-MM-DD/<request_id>.jsonl`).
+#: 서버는 러너와 같은 cwd(REPO_ROOT)로 뜨므로 같은 경로를 본다.
+TRACE_ROOT = REPO_ROOT / "logs" / "trace"
+SEED_DIR = REPO_ROOT / "config" / "synonym_seeds"
+
+#: 부하 묶음(K군)의 행 번호 간격. 참조 시나리오·동시 세션마다 turn 을 겹치지 않게 벌린다(재개 키).
+BUNDLE_TURN_STRIDE = 100
+
+#: 실행 환경이 시나리오 선언과 달라도 판정하는 단언(D-216). 데이터에 기대지 않는 배관·안전
+#: 단언만 남긴다 - 행 수·존·SQL 모양·역질문 여부는 그 환경의 데이터와 존 구성이 정한다.
+ENV_NEUTRAL_KEYS = frozenset({
+    "http_status", "sse_events", "node_path",
+    "sql_must_not_match", "response_must_not_contain", "column_must_not_map",
+    "manual_review",
+})
+
+#: 한국 표준시(UTC+9). 턴 앵커(plans/122 H-2)의 시간대 - 상대 기간·오라클 자리표가 이 시각을 본다.
+KST = timezone(timedelta(hours=9))
+
+#: 결과 행(H-1)이 있어야 판정되는 `period_covers` 하위 키 - 상대 기간·월 범위(plans/122 H-2).
+#: SQL 에 날짜 리터럴이 없으면 결과 행의 기간 열로 판정하기 때문이다. 「날짜 한정 없음」
+#: (`unbounded`)은 실행 SQL 만 보므로 받지 않는다(다운로드마다 서버 감사에 `file download` 가
+#: 남는다).
+RESULT_PERIOD_KEYS = frozenset({"relative", "month_span"})
+
+#: 오라클 1회(phase 1개)의 러너 측 타임아웃 = 대상 DB 수 × 이 값(plans/122 O-1 · §8 「러너 측
+#: 전체 타임아웃」). 30초는 MCP 서버 소스별 `query_timeout`(mcp_server/config.toml —
+#: polestar_b0·cm_gp·cm_yd 모두 30)과 같다 - MCP 가 이미 끊었을 시간 뒤까지 기다리지 않는다.
+#: DB2 는 DB 레벨 timeout 이 없어 러너가 기다림만 끊는다(서버 측 질의는 계속 돈다 - 정본은
+#: 집계·키 조회만 · oracle.py 머리 주석).
+ORACLE_TIMEOUT_PER_DB_SEC = 30.0
+#: 오라클 실행 기록(태그·db·SQL·행 수·ms·status - 행 원문 없음)을 남기는 run 디렉터리
+#: 파일(G-9).
+ORACLE_LOG_NAME = "oracle_log.jsonl"
+
+#: C-4b 선택 제외의 기계 코드(`run.json` `skipped[].reason_code`). 리포트가 `coverage_gap`
+#: 「실행 환경 부재」로 분류한다(plans/122 C-4b · D-276 ②).
+SOURCE_SKIP_CODE = "requires_sources"
+
+#: 러너 생성 업로드(plans/122 H-6)를 두는 run 디렉터리 하위 폴더. 시나리오가 끝나면 파일을 지우고
+#: run 이 끝나면 폴더도 지운다(수십 MB 가 산출물에 남지 않게).
+GENERATED_DIR = "generated"
+
+
+@dataclass
+class RunConfig:
+    """런 1회의 설정."""
+
+    mode: str = "mock"                    # dry | mock | run
+    env: Optional[str] = None             # closed | sandbox | None = 자동 판정·전 시나리오(D-216)
+    repeat: int = 1
+    groups: list[str] = field(default_factory=list)
+    only: list[str] = field(default_factory=list)
+    profiles: list[str] = field(default_factory=list)
+    #: 전 시나리오에 **덧씌우는** 프로파일(측정 축). 이름은 `catalog.profiles` 의 키다(`110·N-1`).
+    arms: list[str] = field(default_factory=list)
+    port: Optional[int] = None
+    token: Optional[str] = None           # 질의용 사용자 토큰(직접 주입 시)
+    admin_token: Optional[str] = None     # 설정 에코용 운영자 토큰(직접 주입 시)
+    user_id: Optional[str] = None         # 없으면 토큰을 로그인으로 받는다
+    user_password: Optional[str] = None
+    admin_user: Optional[str] = None
+    admin_password: Optional[str] = None
+    timeout_sec: float = 360.0
+    run_id: str = ""
+    resume_from: Optional[str] = None
+    #: 시나리오 N건마다 토큰을 새로 잡는다(X-2). 0/None 이면 분할하지 않는다.
+    segment: Optional[int] = None
+    #: 직전 run 의 무효·오류 시나리오만 **새 run_id** 로 다시 돈다(X-3).
+    resume_failed: Optional[str] = None
+    #: `resume_failed` 선택 근거(원본 행 수·무효/오류 턴 수·시나리오 수). run.json 에 남는다.
+    rerun_stats: dict[str, Any] = field(default_factory=dict)
+    #: run 서버의 활성 소스(plans/122 C-4b) - `resolve_active_sources` 가 채운다. None 이면
+    #: 판독하지 않았거나 못 했다는 뜻이고, 그때는 `requires_sources` 선택 제외를 하지 않는다
+    #: (D-216 ③대로 실행·보류).
+    active_sources: list[str] | None = None
+
+    def resolved_run_id(self) -> str:
+        if self.resume_from:
+            return self.resume_from
+        if self.run_id:
+            return self.run_id
+        # 경로 길이 260자 제한(부록 A.2)을 고려해 짧게 유지한다.
+        return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def run_meta(config: RunConfig, catalog: Catalog) -> dict[str, Any]:
+    """provenance. 커밋·dirty·환경·플랫폼 없이 나온 결과는 재현할 수 없다(§4.5)."""
+    # git 출력도 콘솔 코드페이지다(파일명에 한글이 있으면 cp949). run_capture 가 방어한다.
+    commit = run_capture(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"], timeout=5
+    ).strip() or None
+    dirty: Optional[bool] = None
+    status = run_capture(["git", "-C", str(REPO_ROOT), "status", "--porcelain"], timeout=5)
+    if commit is not None:
+        dirty = bool(status.strip())
+
+    provider = "(설정 로드 실패)"
+    try:
+        from src.config import load_config
+
+        provider = load_config().llm.provider
+    except Exception as exc:
+        provider = f"(설정 로드 실패: {type(exc).__name__})"
+
+    return {
+        "run_id": config.resolved_run_id(),
+        "mode": config.mode,
+        "env": config.env,
+        "provider": "mock" if config.mode == "mock" else provider,
+        "commit": commit,
+        "dirty": dirty,
+        "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "repeat": config.repeat,
+        "arms": list(dict.fromkeys(config.arms)),
+        "scenario_total": len(catalog.scenarios),
+        "platform": platform_provenance(),
+        "host": platform.node(),
+        # 판정 계약 = (리포트 정의 버전, 카탈로그 지문, 판정기 지문) (plans/122 J-1 ⑤ · §13.3 G-17 ·
+        # D-276 ③). 카탈로그 지문이 다른 run 끼리는 J-4 재판정 뒤에만 비교한다 — 판정기 지문은 달라도
+        # 비교하되 주의 줄을 싣는다(`report.judge_change_note`). 리포트 상수가 아직 없으면 None 이다.
+        "judgement_contract": {
+            "report_version": getattr(_report, "JUDGEMENT_REPORT_VERSION", None),
+            "catalog_digest": judgement_digest(catalog),
+            "judge_digest": judge_digest(),
+        },
+    }
+
+
+def _tree_digest() -> str:
+    """작업 트리 지문 - `git status --porcelain` 과 `git diff HEAD` 의 해시(109·CS-19③).
+
+    커밋이 같아도 미커밋 변경이 바뀌면 다른 판이다. dirty 가 아닐 때는 커밋이 곧 판이라
+    부르지 않는다.
+    """
+    status = run_capture(["git", "-C", str(REPO_ROOT), "status", "--porcelain"], timeout=5)
+    diff = run_capture(["git", "-C", str(REPO_ROOT), "diff", "HEAD"])
+    return hashlib.sha256(f"{status}\0{diff}".encode()).hexdigest()[:16]
+
+
+def attempt_provenance(meta: dict[str, Any]) -> dict[str, Any]:
+    """시도(시작·재개) 1회의 출처. `run.json` `meta.attempts` 에 누적된다(109·CS-19③)."""
+    return {
+        "started_at": meta.get("started_at"),
+        "commit": meta.get("commit"),
+        "dirty": meta.get("dirty"),
+        "tree_digest": _tree_digest() if meta.get("dirty") else None,
+    }
+
+
+def provenance_mix(attempts: list[dict[str, Any]]) -> Optional[str]:
+    """시도 사이에 판이 바뀌었으면 그 사유, 같으면 None(109·CS-19③).
+
+    재개는 같은 `raw.jsonl` 에 이어 쓴다. 끊긴 뒤 코드·`.env` 를 바꾸고 이으면 한 파일에 두 판의
+    결과가 섞이는데, 종전에는 `run.json` 이 마지막 시도의 커밋만 남겨 그 사실이 드러나지 않았다.
+    **모르는 것은 같다고 보지 않는다** - 출처가 없는 시도가 있으면 확인할 수 없다고 말한다.
+    콘솔에도 찍히므로 ASCII 구두점만 쓴다(cp949 - 모듈 독스트링).
+    """
+    if len(attempts) < 2:
+        return None
+    first = attempts[0]
+    for number, later in enumerate(attempts[1:], start=2):
+        if first.get("commit") is None or later.get("commit") is None:
+            return (f"시도 1 과 시도 {number} 중 출처(커밋)가 기록되지 않은 시도가 있다 - "
+                    "같은 판인지 확인할 수 없다")
+        if later["commit"] != first["commit"]:
+            return (f"커밋이 다르다(시도 1 {str(first['commit'])[:12]} -> "
+                    f"시도 {number} {str(later['commit'])[:12]})")
+        if later.get("dirty") != first.get("dirty"):
+            return (f"작업 트리 dirty 가 다르다(시도 1 {first.get('dirty')} -> "
+                    f"시도 {number} {later.get('dirty')})")
+        if first.get("dirty") and first.get("tree_digest") != later.get("tree_digest"):
+            if first.get("tree_digest") is None or later.get("tree_digest") is None:
+                return (f"작업 트리 지문이 없는 시도가 있다(시도 1 과 시도 {number}) - "
+                        "같은 커밋 위의 미커밋 변경이 같은지 확인할 수 없다")
+            return (f"작업 트리가 다르다 - 같은 커밋 {str(first['commit'])[:12]} 위의 "
+                    f"미커밋 변경이 시도 1 과 시도 {number} 사이에 바뀌었다")
+    return None
+
+
+#: 재개 대조에서 빼는 키 - 러너가 **시도마다 새로 정하는** 값이라 설정 차이가 아니다(포트).
+RESUME_VOLATILE_KEYS = frozenset({"API_PORT"})
+
+
+def profile_config_record(settings: dict[str, str]) -> dict[str, Any]:
+    """프로파일 기동 1회의 실효 설정 지문(plans/118 B-1).
+
+    원천은 기동 검증이 이미 받는 설정 에코(`ProfileStatus.effective_settings`)다 - 시크릿은
+    에코가 값 없이 내보내므로 평문이 남지 않는다. 지문은 벤치와 **같은 함수**로 만든다
+    (`scripts.bench.probe.config_fingerprint` 재사용 - 사본 금지). 바뀐 키를 사람이 읽을 수
+    있게 값도 함께 남긴다.
+    """
+    from scripts.bench.probe import EchoResult, config_fingerprint
+
+    kept = {str(k): str(v) for k, v in settings.items() if k not in RESUME_VOLATILE_KEYS}
+    return {"fingerprint": config_fingerprint(EchoResult(ok=True, config=kept)),
+            "settings": kept}
+
+
+def resume_config_conflict(prior_attempts: list[dict[str, Any]], profile: str,
+                           record: dict[str, Any]) -> Optional[str]:
+    """앞 시도의 같은 프로파일과 실효 설정이 다르면 그 사유, 같거나 비교할 기록이 없으면 None.
+
+    run `20260922-162132` 는 끊긴 뒤 `.env` 의 `API_QUERY_TIMEOUT` 이 60 -> 180 으로 바뀐 채
+    이어 돌아, 기준선 39턴은 60초 · arm 은 180초로 한 raw.jsonl 에 섞였다(plans/118 §2.2).
+    커밋·작업 트리 대조(`provenance_mix`)는 `.env` 변경을 모른다. 콘솔에도 찍히므로 ASCII
+    구두점만 쓴다(cp949).
+    """
+    for number, attempt in enumerate(prior_attempts, start=1):
+        before = (attempt.get("configs") or {}).get(profile)
+        if not before or before.get("fingerprint") == record.get("fingerprint"):
+            continue
+        old = before.get("settings") or {}
+        new = record.get("settings") or {}
+        keys = sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
+        shown = ", ".join(f"{k} {old.get(k, '(없음)')} -> {new.get(k, '(없음)')}"
+                          for k in keys[:6])
+        more = f" 외 {len(keys) - 6}개" if len(keys) > 6 else ""
+        return (f"프로파일 {profile} 의 실효 설정이 시도 {number} 와 다르다 - 바뀐 키: "
+                f"{shown or '(값 기록 없음 - 지문만 다르다)'}{more}. 한 raw.jsonl 에 두 설정의 "
+                "결과를 섞지 않는다 - 새 run_id 로 처음부터 돌거나 .env 를 되돌린 뒤 이을 것")
+    return None
+
+
+def _previous_run(out_dir: Path) -> tuple[Optional[dict[str, Any]], list[dict[str, Any]]]:
+    """같은 run_id 폴더에 남은 이전 시도의 `run.json` 과 출처 목록(109·CS-19③).
+
+    이 수정 전에 적재된 폴더는 출처 목록이 없다 - 끝난 run 이면 `meta` 에서 한 건을 되살리고,
+    `run.json` 없이 `raw.jsonl` 만 있으면(끊긴 run) **출처를 모르는 시도** 한 건으로 둔다.
+    """
+    previous: Optional[dict[str, Any]] = None
+    path = out_dir / "run.json"
+    if path.exists():
+        try:
+            with utf8_open(path, "r") as handle:
+                previous = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            previous = None
+    prior_meta = (previous or {}).get("meta") or {}
+    attempts = list(prior_meta.get("attempts") or [])
+    if not attempts and prior_meta:
+        attempts = [{
+            "started_at": prior_meta.get("started_at"), "commit": prior_meta.get("commit"),
+            "dirty": prior_meta.get("dirty"), "tree_digest": None,
+        }]
+    raw = out_dir / "raw.jsonl"
+    if not attempts and raw.exists() and raw.stat().st_size > 0:
+        attempts = [{"started_at": None, "commit": None, "dirty": None, "tree_digest": None}]
+    return previous, attempts
+
+
+def segments(scenarios: list[Scenario], size: Optional[int]) -> list[list[Scenario]]:
+    """시나리오를 세그먼트로 끊는다(X-2). 크기가 없으면 통째로 1개.
+
+    **경계는 시나리오 경계다 — 턴 경계가 아니다.** 멀티턴 시나리오가 세그먼트에 쪼개지면
+    승계(thread_id·이전 턴 DB)가 끊겨 측정이 아니라 다른 것을 재게 된다(§15.4-1).
+
+    입력 순서를 보존하므로 `_execution_order` 가 맨 앞에 둔 **cold 묶음이 항상 첫
+    세그먼트**에 남는다(§15.4-2 · K-02 는 "서버 기동 직후 첫 요청"으로 cold 를 근사한다).
+    """
+    if not size or size < 1:
+        return [list(scenarios)]
+    return [list(scenarios[i:i + size]) for i in range(0, len(scenarios), size)]
+
+
+def failed_scenarios(run_id: str) -> tuple[list[str], dict[str, Any]]:
+    """직전 run 에서 **다시 돌아야 하는** 시나리오 ID 와 근거 통계 (X-3).
+
+    대상은 **무효**(러너 인증 실패 — `row_is_invalid`)와 **오류**(`func_verdict == "error"`)다.
+    불합격(`fail`)은 제외한다 — 그건 측정이 성립한 결과이고, 다시 돌린다고 달라지지 않는다.
+
+    **판정에 `row_is_invalid` 를 쓴다.** `func_verdict == "invalid"` 만 보면 T-c 이전에
+    적재된 run 이 통째로 빠진다 — run 20260915-131903 의 103턴이 정확히 그 형태다(`error`/`fail`
+    로 적재됨). X-3 이 존재하는 이유가 그 run 의 복구이므로 여기서 틀리면 기능이 무의미해진다.
+
+    **턴이 아니라 시나리오 단위로 돌려준다.** 새 run 은 `raw.jsonl` 이 비어 있어 재개 스킵이
+    걸리지 않고, 멀티턴은 1턴부터 새 thread 로 가야 승계가 성립한다. "턴만 고른다"는 표현은
+    새 run 에서는 성립하지 않는다.
+
+    Returns:
+        (시나리오 ID 목록(실행 순서 보존), 근거 통계)
+    """
+    path = RESULTS_ROOT / run_id / "raw.jsonl"
+    if not path.exists():
+        raise FileNotFoundError(f"원본 run 의 raw.jsonl 이 없다: {path}")
+    ids: list[str] = []
+    stats = {"rows": 0, "invalid_turns": 0, "error_turns": 0, "scenarios": 0}
+    for line in utf8_open(path, "r"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        stats["rows"] += 1
+        invalid = row_is_invalid(row)
+        errored = str(row.get("func_verdict")) == "error"
+        if not (invalid or errored):
+            continue
+        stats["invalid_turns" if invalid else "error_turns"] += 1
+        scenario_id = str(row.get("scenario_id") or "")
+        if scenario_id and scenario_id not in ids:
+            ids.append(scenario_id)
+    stats["scenarios"] = len(ids)
+    return ids, stats
+
+
+def zoned_db_ids(path: Path = DB_REGISTRY_PATH) -> set[str]:
+    """레지스트리에서 존(zone)이 붙은 DB. 존은 운영 폴스타(은행존·공동존)에만 있다."""
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return set()
+    found: set[str] = set()
+    stack: list[Any] = [raw]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if node.get("db_id") and node.get("zone"):
+                found.add(str(node["db_id"]))
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return found
+
+
+def detect_env(active_db_ids: list[str], zoned: set[str]) -> Optional[str]:
+    """활성 DB 로 실행 환경을 판정한다. 판정할 수 없으면 None 이다."""
+    active = set(active_db_ids)
+    if active & zoned:
+        return "closed"
+    if SANDBOX_DB_ID in active:
+        return "sandbox"
+    return None
+
+
+def resolve_env(config: RunConfig) -> tuple[Optional[str], str]:
+    """(실행 환경, 판정 출처). `--env` 명시가 이긴다.
+
+    2026-09-14 폐쇄망 런은 `--env` 기본값 `sandbox` 로 돌아 closed 전용 158건이 빠지고,
+    샌드박스 기대값(L군)이 운영 DB 에 적용됐다. 기본값을 없애고 서버가 읽는 설정으로 판정한다 -
+    자식 서버는 이 프로세스와 같은 `.env`/`.encenv` 를 읽는다. 모의 실행은 데이터가 없어 판정하지 않는다.
+    """
+    if config.env:
+        return config.env, "cli"
+    if config.mode == "mock":
+        return None, "mock"
+    try:
+        from src.config import load_config
+
+        active = load_config().multi_db.get_active_db_ids()
+    except Exception as exc:  # 판정 실패는 치명상이 아니다 - 환경 의존 단언을 보류할 뿐이다
+        return None, f"판정 불가: 설정 로드 실패 ({type(exc).__name__})"
+    env = detect_env(active, zoned_db_ids())
+    return env, ("auto" if env else f"판정 불가: 활성 DB {active}")
+
+
+def resolve_active_sources(config: RunConfig) -> tuple[list[str] | None, str]:
+    """run 서버의 활성 소스와 판독 출처(plans/122 C-4b · D-276 ②). 판독하지 못하면 `(None, 사유)`.
+
+    - SQL 소스 = `ACTIVE_DB_IDS` - `resolve_env`(`detect_env`)와 **같은 출처**다. 자식 서버는 이
+      프로세스와 같은 `.env`/`.encenv` 를 읽고, 프로파일은 `ACTIVE_DB_IDS` 를 주입하지 않는다
+      (`config/scenarios/profiles.yaml` 의 `cross_system_tier2` 주석 · 실측 2026-09-29 주입 0건).
+    - 레지스트리 비DB 시스템(예 `apm` - plans/125 A-2)은 본체 설정 `MCP_SOURCE_ENDPOINTS` 에
+      엔드포인트가 있으면 활성이다(처리기가 그때만 등록된다 - 같은 판정). 4소스 골드(FS군)가
+      `requires_sources` 로 쓴다.
+    - 비SQL 시스템(`catalog.NON_SQL_SOURCES` - 현재 `prometheus` 하나)은 **비활성으로 본다.** 본체
+      설정 `PROMETHEUS_ENABLED` 는 소비처 0(예비 · `src/config.py` 주석)이라 켜도 조회 경로가 생기지
+      않고, 질의가 실제로 쓰는 경로는 `mcp_server` PromQL 도구인데 그 가용 여부는 이 프로세스가 읽는
+      설정에 없다(M군 헤더 「⑥ Prometheus 현재 로컬 미연결」). 확실한 신호가 생기면 여기에 더한다.
+    - 모의 실행은 판정하지 않는다 - 모의 서버는 데이터 소스가 없고 canned 응답으로 배관만 보므로
+      소스 전제로 시나리오를 빼면 그 시나리오의 배관 검증만 잃는다.
+    """
+    if config.mode == "mock":
+        return None, "mock"
+    try:
+        from src.config import load_config
+
+        cfg = load_config()
+        active = list(cfg.multi_db.get_active_db_ids())
+    except Exception as exc:  # 판독 실패는 치명상이 아니다 - 선택 제외를 하지 않을 뿐이다
+        return None, f"판독 불가: 설정 로드 실패 ({type(exc).__name__})"
+    codes = getattr(getattr(cfg, "dbhub", None), "active_source_codes", None)
+    extra = [str(c) for c in codes()] if callable(codes) else []
+    origin = "ACTIVE_DB_IDS+MCP_SOURCE_ENDPOINTS" if extra else "ACTIVE_DB_IDS"
+    return sorted(set(active) | set(extra)), origin
+
+
+def missing_sources(scenario: Scenario, active: Sequence[str]) -> list[str]:
+    """시나리오 `requires_sources` 중 활성 소스에 없는 것(정렬). 선언이 없으면 빈 목록."""
+    return sorted(set(scenario.requires_sources) - set(active))
+
+
+def _selection_sources(config: RunConfig) -> list[str] | None:
+    """선택 제외에 쓸 활성 소스 - 모의 실행이거나 판독하지 않았으면 None(제외 없음)."""
+    return None if config.mode == "mock" else config.active_sources
+
+
+def _selected(catalog: Catalog, config: RunConfig) -> list[Scenario]:
+    """군·ID·환경·프로파일 필터까지 거친 선택(arm 전개 전 · 요구 소스 제외 전)."""
+    selected = catalog.select(config.groups, config.only, config.env)
+    if config.profiles:
+        wanted = set(config.profiles)
+        selected = [s for s in selected if s.profile in wanted]
+    return selected
+
+
+def source_exclusions(catalog: Catalog, config: RunConfig) -> list[dict[str, Any]]:
+    """요구 소스가 비활성이라 선택하지 않는 시나리오의 `skipped` 항목(plans/122 C-4b · D-276 ②).
+
+    **침묵 제외 금지**(D-276 주의 ②) - 뺀 시나리오마다 사람이 읽는 사유와 기계 코드를 남긴다.
+    선언이 없는 시나리오는 여기 들지 않는다(D-216 ③대로 실행·보류).
+    """
+    active = _selection_sources(config)
+    if active is None:
+        return []
+    shown = ", ".join(active)
+    return [
+        {"scenario_id": scenario.id,
+         "reason": (f"요구 소스 비활성 - requires_sources=[{', '.join(scenario.requires_sources)}]"
+                    f" · 활성=[{shown}]"),
+         "reason_code": SOURCE_SKIP_CODE}
+        for scenario in _selected(catalog, config) if missing_sources(scenario, active)
+    ]
+
+
+def planned_turns(catalog: Catalog, scenario: Scenario, config: RunConfig) -> int:
+    """예상치용 턴 수. 부하 묶음은 참조 시나리오 턴을 반복·세션 수만큼, 러너 동작은 1회로 센다."""
+    if scenario.action:
+        return 1
+    spec = scenario.replay or scenario.concurrent
+    refs = [ref for ref in (catalog.by_id(str(i)) for i in (spec.get("scenarios") or [])) if ref]
+    if scenario.replay:
+        return sum(len(ref.turns) for ref in refs) * int(scenario.replay.get("repeat") or 1)
+    if scenario.concurrent and refs:
+        return sum(
+            len(refs[slot % len(refs)].turns)
+            for sessions in scenario.concurrent.get("sessions") or []
+            for slot in range(int(sessions))
+        )
+    return len(scenario.turns) * (scenario.repeat or (3 if scenario.is_r_group else config.repeat))
+
+
+def estimate(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
+    """예상치를 낸다. 이 출력이 D-127 승인 요청의 근거다(§4.4 · G-4).
+
+    **실행 계획을 여기서 다시 만들지 않는다** - `iter_executions` 가 내놓는 것을 그대로 센다.
+    따로 세면 arm 전개(`110·N-1`)나 `--profile` 필터를 한쪽만 반영해 승인 근거가 실제 실행과
+    어긋난다(종전에는 `--profile` 필터가 예상치에 반영되지 않았다).
+    """
+    plan = list(iter_executions(catalog, config))
+    selected = [scenario for _profile, scenarios in plan for scenario in scenarios]
+    per_group: dict[str, dict[str, Any]] = {}
+    total_turns = 0
+    total_ms = 0.0
+    for scenario in selected:
+        turns = planned_turns(catalog, scenario, config)
+        total_turns += turns
+        group = catalog.groups.get(scenario.group)
+        target = scenario.target_ms or (group.latency_target_ms if group else 0)
+        total_ms += turns * (target or 0)
+        bucket = per_group.setdefault(
+            scenario.group, {"scenarios": 0, "turns": 0, "r_group": 0}
+        )
+        bucket["scenarios"] += 1
+        bucket["turns"] += turns
+        if scenario.is_r_group:
+            bucket["r_group"] += 1
+
+    r_turns = sum(
+        len(s.turns) * (s.repeat or 3) for s in selected if s.is_r_group
+    )
+    return {
+        "scenarios": len(selected),
+        # plans/122 C-4b: 요구 소스가 비활성이라 선택하지 않을 시나리오(위 수치에 들지 않는다).
+        "source_excluded": [item["scenario_id"] for item in source_exclusions(catalog, config)],
+        "turns": total_turns,
+        "r_group_turns": r_turns,
+        "assumed_llm_calls_per_turn": ASSUMED_LLM_CALLS_PER_TURN,
+        "estimated_llm_calls": total_turns * ASSUMED_LLM_CALLS_PER_TURN,
+        "estimated_wall_sec_upper": round(total_ms / 1000.0, 1),
+        "per_group": per_group,
+        "profiles": [profile for profile, _scenarios in plan],
+        "note": (
+            "LLM 호출 수는 실측이 아니라 가정치(턴당 "
+            f"{ASSUMED_LLM_CALLS_PER_TURN}회)다. 소요 시간은 군 목표치의 합이라 상한에 가깝다. "
+            "실측은 S5 이후 이 값을 대체한다."
+        ),
+    }
+
+
+def row_key(row: dict[str, Any]) -> tuple[str, str, int, int]:
+    """재개 키. 한 턴을 유일하게 가리킨다."""
+    return (
+        str(row.get("profile")),
+        str(row.get("scenario_id")),
+        int(row.get("turn", 0)),
+        int(row.get("repeat", 0)),
+    )
+
+
+class RawLog:
+    """raw.jsonl 적재기. 재개(resume)의 원본이다."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._done: set[tuple[str, str, int, int]] = set()
+        # 키별 **마지막 행의** 판정. 재개가 "앞 턴이 깨져 뒤 턴을 일부러 건너뛴 시나리오"를
+        # "중간에 끊긴 시나리오"와 가르는 데 쓴다(`_resume_state` · 109·CS-17).
+        self._verdicts: dict[tuple[str, str, int, int], str] = {}
+        # 동시 부하(K-06·K-07)의 작업 스레드가 함께 적재한다 - 한 줄이 섞이면 재개 원본이 깨진다.
+        self._lock = threading.Lock()
+        if path.exists():
+            with utf8_open(path, "r") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    self._remember(row)
+
+    def _remember(self, row: dict[str, Any]) -> None:
+        # **「기록됨」이 아니라 「성공」이 재개 기준이다**(X-1). 무효 턴은 다시 돈다.
+        # 같은 키가 여러 번 나오면(재개 run) **뒤에 적재된 행이 결과**다 - 파일 순서가
+        # 곧 시간 순서이므로 마지막 것을 반영한다.
+        key = row_key(row)
+        self._verdicts[key] = str(row.get("func_verdict"))
+        if row_is_invalid(row):
+            self._done.discard(key)
+        else:
+            self._done.add(key)
+
+    def already(self, profile: str, scenario_id: str, turn: int, repeat: int) -> bool:
+        return (profile, scenario_id, turn, repeat) in self._done
+
+    def verdict(self, profile: str, scenario_id: str, turn: int, repeat: int) -> Optional[str]:
+        """그 턴의 마지막 적재 판정. 적재된 적이 없으면 None."""
+        return self._verdicts.get((profile, scenario_id, turn, repeat))
+
+    def append(self, row: dict[str, Any]) -> None:
+        line = json.dumps(row, ensure_ascii=False) + "\n"
+        with self._lock:
+            with utf8_open(self.path, "a") as handle:
+                handle.write(line)
+            self._remember(row)
+
+
+#: `raw.jsonl` 에 싣는 응답 본문의 상한(O-a). 표가 붙은 답변은 수만 자가 되므로 절단한다 -
+#: 판정에 필요한 것은 앞부분의 서술·안내 문구다. 절단 여부는 `response_truncated` 로 남는다.
+RESPONSE_TEXT_MAX = 4000
+
+
+def _clarification_snapshot(obs: Observation) -> Optional[dict[str, Any]]:
+    """역질문 선택지의 사후 판독본(O-a).
+
+    `clarification`/`form_fill_clarification` 원본을 통째로 싣지 않는다 - 폼필의
+    `candidates` 는 한 열에 86개가 붙어(P-14) 행을 부풀린다. **무엇을 몇 개 물었는가**만 남긴다.
+    """
+    payload = obs.clarification or obs.form_fill_clarification
+    if not payload:
+        return None
+    labels = option_labels(payload)
+    snapshot: dict[str, Any] = {
+        "kind": payload.get("kind") or ("form_fill" if obs.form_fill_clarification else None),
+        "options_len": len(labels),
+        "options": labels[:50],
+        "question": str(payload.get("question") or "")[:500],
+    }
+    candidates = payload.get("candidates")
+    if isinstance(candidates, list):
+        # 후보 목록 자체가 판정 대상이다(P-14 - 원시 스키마 순서 86개 노출).
+        snapshot["candidates_len"] = len(candidates)
+        snapshot["candidates_head"] = [str(c) for c in candidates[:10]]
+    return snapshot
+
+
+def _result_check(result: Any) -> dict[str, Any] | None:
+    """결과 행 수집 요약(plans/122 H-1). 수집하지 않았으면 None.
+
+    **행 원문은 싣지 않는다**(G-4 · D-275 ④).
+    """
+    if not isinstance(result, dict):
+        return None
+    return {
+        "status": result.get("status"),
+        "total_rows": result.get("total_rows"),
+        "column_count": len(result.get("columns") or []),
+        "truncated": bool(result.get("truncated")),
+        "reason": result.get("reason"),
+    }
+
+
+def _oracle_phase_check(outcome: Any) -> dict[str, Any] | None:
+    """run_oracle 결과 1개의 요약 — phase·status·사유·DB 별 행 수·ms. 행 원문은 싣지 않는다(G-4)."""
+    if not isinstance(outcome, dict):
+        return None
+    summary: dict[str, Any] = {
+        "phase": outcome.get("phase"),
+        "status": outcome.get("status"),
+        "reason": outcome.get("reason"),
+        "rows_by_db": {str(db): len(rows) for db, rows in (outcome.get("rows_by_db") or {}).items()
+                       if isinstance(rows, list)},
+        "elapsed_ms": outcome.get("elapsed_ms"),
+    }
+    if outcome.get("log_error"):
+        summary["log_error"] = outcome["log_error"]
+    return summary
+
+
+def _oracle_check(record: Any) -> dict[str, Any] | None:
+    """오라클 실행 요약(plans/122 O-2) - 실행하지 않았으면 None.
+
+    판정은 `failed_assertions`·`manual_notes`(`oracle` 로 시작)에 있다.
+    **행 원문은 싣지 않는다**(G-4 · `oracle_log.jsonl` 도 같다).
+    """
+    if not isinstance(record, dict):
+        return None
+    return {
+        "id": record.get("id"),
+        "targets": list(record.get("targets") or []),
+        "pre": _oracle_phase_check(record.get("pre")),
+        "post": _oracle_phase_check(record.get("post")),
+    }
+
+
+def note_cap_semantic(meta: dict[str, Any], timeline: Any) -> None:
+    """서버가 보고한 처리 상한 의미의 **첫 관측값**을 run 메타에 남긴다.
+
+    plans/119 §7 단계 6 · D-267 ⑦ - ⑦ 이전 run(요청 전체 상한)과 이후 run(첫 답변까지)의
+    타임아웃률은 같은 뜻이 아니다. 리포트 머리와 회귀 비교가 이 칸을 읽는다. 끝까지 관측이
+    없으면 `_execute` 가 `total`(종전 의미)로 채운다.
+    """
+    semantic = timeline_cap_semantic(timeline)
+    if semantic and not meta.get("cap_semantic"):
+        meta["cap_semantic"] = semantic
+        meta["cap_semantic_source"] = "server"
+
+
+def _row(
+    meta: dict[str, Any],
+    profile: str,
+    scenario: Scenario,
+    turn_index: int,
+    repeat: int,
+    obs: Observation,
+    verdict: Verdict,
+    extras: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    # 소비자는 조합 이름을 파싱하지 않는다 - `arm`·`base_profile` 칸으로 읽는다(확정 계약).
+    # 덧씌우기가 없으면 `arm=None` 이고 `base_profile == profile` 이라, 벤치의
+    # `arm_of(row) = row.get("arm") or row.get("profile")` 가 옛 행·새 행 모두에서 성립한다.
+    binding = (meta.get("arm_bindings") or {}).get(profile) or {}
+    note_cap_semantic(meta, obs.timeline)
+    row: dict[str, Any] = {
+        "run_id": meta["run_id"],
+        "profile": profile,
+        "arm": binding.get("arm"),
+        "base_profile": binding.get("base_profile") or profile,
+        "env": meta["env"],
+        "mode": meta["mode"],
+        "repeat": repeat,
+        "group": scenario.group,
+        "scenario_id": scenario.id,
+        "turn": turn_index,
+        "plans": scenario.plans,
+        "kind": scenario.kind,
+        "pair_id": scenario.pair_with,
+        "func_verdict": verdict.func,
+        # 무효 턴(T-c)의 사유. 판정표·실패 분류의 분모에서 빠지는 대신 리포트가 여기서 건수와
+        # 구간을 만든다 - 무효를 세지 않으면 "측정하지 못한 것"이 "측정했는데 통과"가 된다.
+        "invalid_reason": verdict.invalid_reason,
+        "auth_retried": obs.auth_retried,
+        "perf_verdict": verdict.perf,
+        "response_mode": verdict.response_mode,
+        "forbidden_mode": verdict.forbidden_mode,
+        "mode_evidence": verdict.mode_evidence,
+        "failed_assertions": [f.as_dict() for f in verdict.failures],
+        "manual_notes": verdict.manual_notes,
+        "wall_ms": round(obs.wall_ms, 1),
+        "processing_time_ms": obs.processing_time_ms,
+        # 첫 `node_start` 도착(그래프 진입) - 답변 첫 토큰이 아니다. 체감 지연은 `ttft_ms`.
+        "ttfb_ms": obs.ttfb_ms,
+        # 첫 답변 토큰 도착(plans/119 H-1) - 기준 시각은 `ttfb_ms` 와 같다. 토큰 없는 턴은 None.
+        "ttft_ms": obs.ttft_ms,
+        # 서버 단계 타임라인(plans/119 T-0) - 서버 페이로드 그대로. 옛 서버는 None.
+        "timeline": obs.timeline,
+        # 2단 계획 요약(plans/121 TP-0.1) - 계획 경로·task 구성·재계획 횟수·노트 종류 건수.
+        # 1·3단은 None.
+        "plan_summary": obs.plan_summary,
+        "max_event_gap_ms": obs.max_event_gap_ms,
+        "node_elapsed_ms": obs.node_elapsed_ms,
+        "node_calls": obs.node_calls,
+        "node_path": obs.node_path,
+        "sse_events": sorted(set(obs.sse_events)),
+        "progress_events": len(obs.progress_events),
+        "executed_sql": obs.executed_sql,
+        "row_count": obs.row_count,
+        "row_counts_by_db": obs.row_counts_by_db,
+        # O-a: **사후 판정의 재료**. 유효 280턴 중 185턴(66%)이 수동 검토인데 `raw.jsonl` 에
+        # 응답 본문이 없어(`"response"` 키 0건 실측) 그 185턴을 사후에 판정할 방법이 없었다.
+        # I군 원인('비고')도 1.49 GB 체크포인트를 msgpack 수준에서 파싱해서야 확인했다.
+        # 상한을 두고 절단하되 **절단했다는 사실을 남긴다** - 조용히 자르면 판독이 또 막힌다.
+        "response_text": obs.response[:RESPONSE_TEXT_MAX] if obs.response else "",
+        "response_truncated": len(obs.response or "") > RESPONSE_TEXT_MAX,
+        "clarification_options": _clarification_snapshot(obs),
+        "column_mapping": obs.column_mapping or {},
+        # db_ids 단언이 실제로 무엇과 대조됐는지 원시 로그에 남긴다 — 없으면 판정을 검증할 수 없다
+        # (2026-09-15: 이 칸이 없어 "db_ids 가 비었다"는 오판을 원시 로그로 반박하지 못했다).
+        "db_ids": obs.db_ids,
+        # 그 값의 출처(plans/120 V-1) - `scope`(done `db_scope`) · `executed`(감사 로그 실행 DB)
+        # · None(둘 다 없음).
+        "db_ids_source": obs.db_ids_source,
+        "llm_calls": obs.llm_calls,
+        "tokens": obs.tokens,
+        "retries": obs.retries,
+        "node_count": obs.node_count,
+        # O-e(plans/94 §19.3): 재작성 감사 — 비어 있으면 None(미측정).
+        # 원문 전문은 싣지 않는다(D-183).
+        "rewrite_trace": obs.rewrite_traces or None,
+        "artifacts": obs.artifacts,
+        "error": obs.error,
+        # 응답이 보고한 상태(`completed`·`partial`·`clarification`…). 판정 계약이 `partial`
+        # (시간 상한에 걸려 서술 없이 표만 나간 턴 · plans/114 P-2)을 읽는다 - 이 턴은
+        # 오류 문구가 없어 타임아웃 검사에 걸리지 않는다.
+        "status": obs.status,
+        # --- plans/122 새 칸(기존 칸은 이름·값 그대로) ---
+        # 보류 사유의 출처(J-3) - `MANUAL_SOURCES` 어휘 목록과 그 대표값. 보류가 없으면 [] · None.
+        "manual_sources": list(verdict.manual_sources),
+        "manual_source": primary_manual_source(verdict.manual_sources),
+        # 턴 송신 시각(H-2 · KST ISO 초 단위) - 상대 기간 판정·오라클 자리표의 앵커.
+        "anchor_at": obs.anchor_at,
+        # 순차 의존 경과 노트(H-5) - 서버 `done.dependency_notes` 그대로(코드·종류 위주로 작다).
+        "dependency_notes": list(obs.dependency_notes),
+        # 결과 행 수집 요약(H-1). 행 원문은 싣지 않는다(G-4). 수집하지 않은 턴은 None.
+        "result_check": _result_check(obs.result),
+        # 오라클 실행 요약(O-2) - phase 별 status·사유·DB 별 행 수·ms. 실행하지 않은 턴은 None.
+        # 행 원문은 싣지 않는다(G-4). 판정은 failed_assertions(`oracle`)·manual_notes 에 있다.
+        "oracle_check": _oracle_check(obs.oracle),
+        # --- plans/123 새 칸(V-1 · V-2 · V-4 — 기존 칸은 이름·값 그대로) ---
+        # 응답 고지 구조 필드(W-8) - 서버 페이로드 그대로. **None = 수집하지 않았다**(done 을 못 받은
+        # 오류 턴) · [] = 수집했고 고지 없음. 재판정(J-4)이 이 칸으로 kind 등급·불변식 활성을 되살린다.
+        "disclosures": obs.disclosures,
+        # 불변식 위반(V-4 트리아지 칸) - `{name, active, detail}`. `active` 인 것만 판정에 들어갔다.
+        "invariant_violations": list(verdict.invariant_violations),
+        # 조회 범위를 좁힌 존 선택(V-2) - `{selected, offered, source: auto|turn}`. 없으면 None.
+        "zone_selection": obs.zone_selection,
+    }
+    if extras:
+        row.update(extras)
+    # 판정 계약(`108·G-6` · D-241): 단언이 평가되지 않은 턴의 사유. 평가됐으면 None.
+    # **`func_verdict` 에 판정어를 늘리지 않는다** - 어휘를 늘리고 소비처를 안 봐서 생긴
+    # 사고가 이미 있다(docs/18:272). 별도 칸이라 옛 소비자는 그대로 돈다.
+    # 규칙 정본은 `report.unevaluated_reason` 한 곳이고, 여기는 그 규칙에 **턴이 역질문을
+    # 기대했는지**만 넘긴다(기대한 역질문은 그 자체가 판정 대상이라 평가된 것이다).
+    position = (turn_index - 1) % BUNDLE_TURN_STRIDE
+    asked = scenario.turns[position].expect if position < len(scenario.turns) else None
+    row["unevaluated_reason"] = unevaluated_reason(
+        row, expected_question=clarify.expects_question(asked) if asked is not None else None
+    )
+    return row
+
+
+#: 러너가 수행하는 teardown. `drop_thread` 는 실행마다 새 thread_id 로, `unregister_synonym` 은 턴 전후
+#: 유사어 사전 스냅샷의 차이 - **이 시나리오가 더한 단어** - 만 지우는 것으로 보장한다(D-217).
+#: `forget_form_memory` 는 같은 방식으로 폼필 확인 이력의 **선언 필드**만 지운다(plans/120 V-4).
+SUPPORTED_TEARDOWN = frozenset({"drop_thread", "unregister_synonym", "forget_form_memory"})
+
+
+def _teardown(scenario: Scenario) -> list[str]:
+    """teardown 을 수행한다. **수행하지 못한 것을 조용히 넘기지 않는다**(§2-3).
+
+    drop_thread 는 실행마다 새 thread_id 를 쓰는 것으로 이미 보장된다. 그 밖의 정리
+    (스키마 캐시 등)는 관리자 엔드포인트가 필요하고 실 서버에서 검증하지 않았으므로
+    **미지원으로 기록**한다 - 리포트 10절에 사유와 함께 남는다.
+    """
+    return [action for action in scenario.teardown if action not in SUPPORTED_TEARDOWN]
+
+
+def _execution_order(scenario: Scenario) -> tuple[int, str, str]:
+    """cold 캐시 시나리오를 프로파일 **맨 앞**에 둔다(§2-3) - 순서가 결과를 바꾼다.
+
+    서버 기동 직후 첫 요청만 프로세스 메모리 캐시가 비어 있다. K-02(cold 첫 호출 근사, D-217)가
+    그 자리를 차지해야 하므로 cold 부하 묶음이 가장 먼저이고, 나머지 cold 가 뒤를 잇는다.
+    """
+    cold = scenario.cache_state == "cold"
+    rank = 0 if (cold and scenario.is_bundle) else 1 if cold else 2
+    return rank, scenario.group, scenario.id
+
+
+#: arm 조합 프로파일 이름의 구분자. **파일명에 그대로 들어간다**
+#: (`checkpoints-<프로파일>.db` · `logs/server-<프로파일>.log`) - POSIX·Windows 양쪽에서
+#: 안전하고 cp949 콘솔에서 깨지지 않는 ASCII 한 글자여야 한다(부록 A.1-3).
+ARM_SEPARATOR = "+"
+
+
+class ArmError(ValueError):
+    """arm 지정이 성립하지 않는다 - 정의되지 않은 프로파일 이름."""
+
+
+@dataclass(frozen=True)
+class ArmBinding:
+    """조합 프로파일 1개의 출처. `run.json` `profiles[]` 가 이 세 칸을 그대로 싣는다."""
+
+    profile: str        #: 조합 이름 (예: `optin_alarm+tier3_router`)
+    base_profile: str   #: 시나리오가 선언한 자기 프로파일 (예: `optin_alarm`)
+    arm: str            #: 덧씌운 측정 축 — **arm id 원본**이다 (예: `tier3_router`)
+
+
+def arm_profile_name(scenario_profile: str, arm: str) -> str:
+    """시나리오 프로파일 × arm 의 조합 이름. 산출물·리포트·재개 키가 모두 이 이름을 쓴다."""
+    if scenario_profile == arm:
+        # arm 을 자기 프로파일로 선언한 시나리오. 이름을 겹쳐 적지 않는다.
+        return arm
+    return f"{scenario_profile}{ARM_SEPARATOR}{arm}"
+
+
+def split_arm_profile(profile: str, arms: Sequence[str]) -> tuple[str, Optional[str]]:
+    """조합 이름을 `(시나리오 프로파일, arm)` 으로 되돌린다. arm 조합이 아니면 `(그대로, None)`.
+
+    **정상 경로는 이 함수를 쓰지 않는다.** arm 출처의 1차 출처는 `raw.jsonl`·`run.json` 의
+    `arm`·`base_profile` **칸**이고, 소비자(벤치 `arm_of` · 회귀 비교 키)도 파싱하지 않고
+    칸을 읽는다. 이 함수는 **그 칸이 없는 옛 run 을 사후 분석할 때** 쓰는 폴백이다.
+    """
+    for arm in arms:
+        if profile == arm:
+            return arm, arm
+        suffix = ARM_SEPARATOR + arm
+        if profile.endswith(suffix):
+            return profile[: -len(suffix)], arm
+    return profile, None
+
+
+def merge_arm_profiles(
+    catalog: Catalog, scenarios: list[Scenario], arms: Sequence[str]
+) -> tuple[list[Scenario], dict[str, ArmBinding]]:
+    """시나리오 자기 프로파일 **위에** arm 을 덧씌운다 (`plans/110` §3.1 `110·N-1`).
+
+    **치환이 아니라 병합이다.** 실효 env = 시나리오 프로파일 ∪ arm 이고, 같은 키를 양쪽이
+    주면 **arm 이 이긴다**(arm 이 측정 축이다). 치환하면 `optin_alarm` 8건(D군)이
+    `TEXT2SQL_ALARM_DETERMINISTIC` 을 잃는다 - 그 8건은 알람 결정적 경로를 켜야 의미가 있는
+    시나리오라 플래그 없이 돌면 *잘못 측정한 것*이 아니라 **다른 것을 측정한 것**이 된다.
+
+    `catalog.profiles` 에 조합을 등록하고(`_execute` 가 여기서 주입 env 를 읽는다) 시나리오는
+    `profile` 만 갈아끼운 사본으로 복제한다. **id 는 건드리지 않는다** - arm 쌍은 id 로 맺는다.
+
+    두 번째 소비처는 `scripts/bench/sweep.py` 다. 거기 `fanout_scenarios` 와 `run_arms` 는
+    `profile=arm.arm_id` 로 **치환**하고 `catalog.profiles` 를 통째로 갈아 끼워 같은 결함을
+    갖고 있다. 호출부 교체는 그 파일 소유 세션과의 조율 사항이라 보류했다
+    (`plans/110` §3.1 `110·N-2`).
+
+    Returns:
+        (조합 프로파일이 박힌 시나리오 목록, 조합 이름 -> `ArmBinding`)
+    """
+    unique = list(dict.fromkeys(arms))
+    missing = [a for a in unique if a not in catalog.profiles]
+    if missing:
+        raise ArmError(
+            f"arm 프로파일이 정의되지 않았다: {', '.join(missing)} "
+            f"(정의는 config/scenarios/profiles.yaml)"
+        )
+
+    expanded: list[Scenario] = []
+    bindings: dict[str, ArmBinding] = {}
+    for scenario in scenarios:
+        base_env = catalog.profiles.get(scenario.profile, {})
+        for arm in unique:
+            name = arm_profile_name(scenario.profile, arm)
+            if name not in bindings:
+                catalog.profiles[name] = {**base_env, **catalog.profiles[arm]}
+                bindings[name] = ArmBinding(
+                    profile=name, base_profile=scenario.profile, arm=arm
+                )
+            expanded.append(replace(scenario, profile=name))
+    return expanded, bindings
+
+
+def _profile_order(grouped: dict[str, list[Scenario]], config: RunConfig) -> list[str]:
+    """프로파일 실행 순서. 지정이 없으면 종전대로 알파벳 정렬이다(재현성 · D-237).
+
+    **arm 이 있으면 프로파일 major · arm minor** 로 돈다 - 중간에 끊겨도 먼저 끝난 프로파일
+    에서는 arm 이 **둘 다** 남는다. arm major 로 돌면 한 arm 만 완주해 비교 자체가 성립하지
+    않는다. arm 이 실행 시각과 교란되는 것(93 스위프: 전반 61.1초 vs 후반 56.6초)은 같은 run
+    안에 두는 것으로 줄이고, 그 위에서 순서를 이렇게 고정한다.
+    """
+    if config.arms:
+        arms = list(dict.fromkeys(config.arms))
+        bases = config.profiles or sorted(
+            {split_arm_profile(name, arms)[0] for name in grouped}
+        )
+        wanted = [arm_profile_name(base, arm) for base in bases for arm in arms]
+    elif config.profiles:
+        wanted = list(config.profiles)
+    else:
+        return sorted(grouped)
+
+    # 지정 순서를 지키되 중복은 첫 등장만, 카탈로그에 없는 이름은 건너뛴다.
+    order: list[str] = []
+    seen: set[str] = set()
+    for name in wanted:
+        if name in grouped and name not in seen:
+            seen.add(name)
+            order.append(name)
+    order += sorted(p for p in grouped if p not in seen)
+    return order
+
+
+def iter_executions(
+    catalog: Catalog, config: RunConfig
+) -> Iterator[tuple[str, list[Scenario]]]:
+    """프로파일별로 시나리오를 묶는다. 프로파일 1개 = 서버 기동 1회다(§3.5).
+
+    **`config.profiles` 가 주어지면 그 순서대로 돈다**(D-237). 종전에는 언제나 알파벳
+    정렬이었는데, 그러면 `"baseline"`(0x62)이 `"S2-…"`(0x53)보다 뒤라 **기준선이 항상
+    마지막**에 실행된다. 93 스위프는 62 arm 을 **연속 93.4시간** 돌렸고 기준선은 4일차에
+    돌았다 — 쌍체 지연 비교가 통째로 실행 시각과 교란됐다(실행 순서 대 중앙 지연 r=-0.267 ·
+    전반 31 arm 61.1초 → 후반 31 arm 56.6초, 축 효과 보고값과 같은 크기대).
+    호출부가 순서를 정하면(93은 기준선을 맨 앞에 놓는다) 그 교란이 사라진다.
+    지정이 없으면 **종전대로 알파벳 정렬**이다 — 94 단독 실행의 재현성을 위해서다.
+
+    **`config.arms` 가 주어지면 같은 시나리오를 arm 마다 한 번씩 돈다**(`110·N-1`).
+    `--profile` 은 여전히 **필터**이므로 덧씌우기 전에 적용한다 - 필터는 시나리오가 선언한
+    자기 프로파일에 걸고, arm 은 그 위에 병합한다(`merge_arm_profiles`).
+
+    **요구 소스가 비활성인 시나리오는 고르지 않는다**(plans/122 C-4b · D-276 ②) - 빼는 것도
+    arm 전개 전이라 서버 기동 자체가 생기지 않는다. 사유 적재는 `source_exclusions` 가 같은
+    규칙으로 한다.
+    """
+    selected = _selected(catalog, config)
+    active = _selection_sources(config)
+    if active is not None:
+        selected = [s for s in selected if not missing_sources(s, active)]
+    if config.arms:
+        selected, _bindings = merge_arm_profiles(catalog, selected, config.arms)
+
+    grouped: dict[str, list[Scenario]] = {}
+    for scenario in selected:
+        grouped.setdefault(scenario.profile, []).append(scenario)
+
+    for profile in _profile_order(grouped, config):
+        ordered = sorted(grouped[profile], key=_execution_order)
+        yield profile, ordered
+
+
+def resolve_admin_credentials(
+    user: Optional[str], password: Optional[str]
+) -> tuple[Optional[str], Optional[str]]:
+    """운영자 크레덴셜을 채운다 - 명시값이 없으면 설정에서 읽는다.
+
+    `ADMIN_USERNAME`/`ADMIN_PASSWORD` 는 이미 `.env`/`.encenv` 에 있다(운영 모드에서는
+    없으면 기동 자체가 거부된다 - `_validate_production_secrets`). 개발자가 다시 타이핑할
+    이유가 없다. **여기 한 곳에만 둔다** - 진입점마다 따로 읽으면 한쪽만 낡는다.
+    """
+    if user and password:
+        return user, password
+    try:
+        from src.config import load_config
+
+        admin = load_config().admin
+        return (user or (admin.username or None), password or (admin.password or None))
+    except Exception:
+        # 설정 로드 실패는 치명상이 아니다 - 인증이 꺼진 서버는 토큰 없이 성립한다.
+        return user, password
+
+
+def acquire_tokens(
+    port: int, config: RunConfig
+) -> tuple[Optional[str], Optional[str], list[str]]:
+    """이 기동에 쓸 (사용자 토큰, 운영자 토큰, 진단 사유)를 만든다.
+
+    **프로파일마다 다시 받는다.** `AUTH_JWT_SECRET`/`ADMIN_JWT_SECRET` 이 `.env` 에
+    명시돼 있지 않으면 설정 객체가 기동마다 난수로 만들어내므로(config.py 의
+    `model_post_init`), 앞 프로파일에서 받은 토큰은 다음 프로파일에서 401 이다.
+    런 1회에 한 번만 받는 설계는 arm 62개 중 1개만 맞는다.
+
+    두 토큰은 **다른 시크릿으로 서명된다**(D-070). 질의(`require_user`)와 설정
+    에코(`require_admin_user`)는 각자의 토큰을 요구하므로 한쪽만 받아서는 안 된다.
+    """
+    reasons: list[str] = []
+    user_token, admin_token = config.token, config.admin_token
+    if user_token and admin_token:
+        return user_token, admin_token, reasons
+
+    admin_user, admin_password = resolve_admin_credentials(
+        config.admin_user, config.admin_password
+    )
+    client = ScenarioClient(ClientConfig(port=port))
+    try:
+        if not admin_token and admin_user and admin_password:
+            admin_token, error = client.admin_login(admin_user, admin_password)
+            if error:
+                reasons.append(error)
+        if not user_token and config.user_id and config.user_password:
+            user_token, error = client.login(config.user_id, config.user_password)
+            if error:
+                reasons.append(error)
+    finally:
+        client.close()
+    return user_token, admin_token, reasons
+
+
+#: 토큰 수명의 몇 %가 지나면 선제 갱신하는가(T-b). 8시간 수명이면 6.4시간에 한 번이다.
+TOKEN_REFRESH_RATIO = 0.8
+
+
+def jwt_lifetime_sec(*, injected: bool = True) -> Optional[float]:
+    """러너가 띄운 서버가 발급하는 사용자 토큰의 수명(초).
+
+    **읽어서 맞히지 않는다 - 주입한 값을 그대로 쓴다**(2026-09-16 개정). 러너가 서버를
+    직접 띄우고 `ISOLATION_ENV` 로 `AUTH_JWT_EXPIRE_HOURS` 를 주입하므로, 수명은 추정
+    대상이 아니라 **러너가 정한 값**이다. 주입이 먹지 않았으면 설정 에코가 불일치를 잡아
+    프로파일이 INVALID 로 선다 - 조용히 어긋난 주기로 갱신하는 경우가 없다.
+
+    Args:
+        injected: 러너가 띄운 서버인가. False 면(외부 서버에 `--port` 로 붙는 등 주입이
+            성립하지 않는 경우) 설정을 읽어 근사하고, 그것도 실패하면 None 이다.
+    """
+    if injected:
+        return float(SERVER_JWT_EXPIRE_HOURS) * 3600.0
+    try:
+        from src.config import load_config
+
+        hours = int(load_config().auth.jwt_expire_hours)
+    except Exception:
+        return None
+    return float(hours) * 3600.0 if hours > 0 else None
+
+
+class TokenSource:
+    """질의 토큰의 수명 관리자(T-a·T-b · D-218).
+
+    run 20260915-131903 은 **280번째 턴부터 마지막까지 103턴(26.9%)이 전건 401** 이었다.
+    러너가 프로파일 기동 시 토큰을 한 번 받고(`acquire_tokens`) 재발급 경로가 없었기 때문이다.
+    첫 401 시점의 누적 턴 wall 은 7.52시간 - `jwt_expire_hours = 8` 을 벽시계로 넘긴 지점이다.
+
+    두 갈래로 막는다:
+      - **T-b 선제 갱신** — 발급 시각을 기억하고 수명의 80% 가 지나면 **턴 경계에서** 다시 받는다.
+        턴 중간에 재발급하면 멀티턴 승계·역질문 왕복이 토큰 교체와 겹친다.
+      - **T-a 반응 재시도** — 그래도 401 이 오면 재로그인 후 그 요청만 1회 다시 보낸다.
+
+    **주입 토큰(`--token`)은 선제 갱신할 수 없다** - 언제 발급됐는지 러너가 모른다.
+    크레덴셜을 함께 넘겼으면 T-a 는 살아 있고, 아니면 재발급 경로 자체가 없다(그 사실을
+    프로파일 사유로 남긴다 - 조용히 8시간 뒤에 깨지지 않게).
+    """
+
+    def __init__(
+        self,
+        token: Optional[str],
+        relogin: Optional[Callable[[], tuple[Optional[str], Optional[str]]]] = None,
+        lifetime_sec: Optional[float] = None,
+        issued_at: Optional[float] = None,
+    ) -> None:
+        self._token = token
+        self._relogin = relogin
+        self._lifetime_sec = lifetime_sec
+        self._issued_at = issued_at
+        self._lock = threading.Lock()
+        #: (시각, 사유) - 리포트·run.json 이 "언제 몇 번 다시 받았나"를 말할 수 있게.
+        self.refreshes: list[dict[str, Any]] = []
+        self.failures: list[str] = []
+
+    @property
+    def token(self) -> Optional[str]:
+        return self._token
+
+    @property
+    def can_refresh(self) -> bool:
+        return self._relogin is not None
+
+    @property
+    def can_preempt(self) -> bool:
+        """선제 갱신이 가능한가 - 재로그인 경로 + 발급 시각 + 수명이 모두 있어야 한다."""
+        return self.can_refresh and self._issued_at is not None and bool(self._lifetime_sec)
+
+    def refresh(self, reason: str = "401") -> Optional[str]:
+        """재로그인해 새 토큰을 받는다. 못 받으면 None."""
+        if self._relogin is None:
+            return None
+        with self._lock:
+            token, error = self._relogin()
+            now = time.monotonic()
+            if token:
+                self._token = token
+                self._issued_at = now
+                self.refreshes.append({"reason": reason, "at_monotonic": round(now, 1)})
+                return token
+            # **조용히 넘기지 않는다.** 재발급 실패는 그 뒤 전 턴이 무효가 된다는 뜻이다.
+            self.failures.append(f"{reason}: 재로그인 실패 - {error or '사유 미상'}")
+            return None
+
+    def maybe_refresh(self) -> Optional[str]:
+        """턴 경계에서 호출한다. 수명의 80% 가 지났으면 미리 받아 둔다(T-b)."""
+        if not self.can_preempt:
+            return None
+        assert self._issued_at is not None and self._lifetime_sec is not None
+        elapsed = time.monotonic() - self._issued_at
+        if elapsed < self._lifetime_sec * TOKEN_REFRESH_RATIO:
+            return None
+        return self.refresh(reason=f"선제 갱신(경과 {elapsed / 3600:.1f}h)")
+
+
+def user_relogin(port: int, user_id: str, password: str) -> Callable[
+    [], tuple[Optional[str], Optional[str]]
+]:
+    """재로그인 클로저. **연결을 새로 연다** - 만료 시점의 연결 상태에 기대지 않는다."""
+
+    def _login() -> tuple[Optional[str], Optional[str]]:
+        client = ScenarioClient(ClientConfig(port=port))
+        try:
+            return client.login(user_id, password)
+        finally:
+            client.close()
+
+    return _login
+
+
+def build_token_source(port: int, config: RunConfig, token: Optional[str]) -> TokenSource:
+    """프로파일 1개에 쓸 토큰 수명 관리자를 만든다.
+
+    크레덴셜 우선순위는 `acquire_tokens`·`login_default_user` 와 **같아야 한다** -
+    다른 계정으로 재로그인하면 8시간 뒤에 권한이 조용히 바뀐다.
+
+    **`--token` 만 주입하고 크레덴셜이 없으면 재발급 경로를 만들지 않는다.** 그 토큰이
+    누구 것인지 러너가 모르는데 내장 테스트 계정으로 다시 로그인하면 신원이 바뀐다
+    (D-215 의 전용 벤치 계정이 정확히 이 경우다).
+    """
+    named = bool(config.user_id and config.user_password)
+    if config.token and not named:
+        return TokenSource(token=token, relogin=None)
+    user_id = config.user_id if named else DEFAULT_USER_ID
+    password = config.user_password if named else DEFAULT_USER_PASSWORD
+    relogin = user_relogin(port, str(user_id), str(password))
+    # 주입 토큰은 발급 시각을 모른다 - 선제 갱신 대상이 아니다(T-a 만 작동).
+    issued_at = None if config.token else time.monotonic()
+    return TokenSource(
+        token=token,
+        relogin=relogin,
+        # 러너가 띄운 서버면 주입값이 정본이다. 외부 서버에 붙었으면 읽어서 근사한다.
+        lifetime_sec=jwt_lifetime_sec(injected=config.port is None),
+        issued_at=issued_at,
+    )
+
+
+def login_default_user(port: int) -> tuple[Optional[str], Optional[str]]:
+    """내장 테스트 계정으로 로그인한다(D-216). (토큰, 실패 사유)."""
+    client = ScenarioClient(ClientConfig(port=port))
+    try:
+        token, error = client.login(DEFAULT_USER_ID, DEFAULT_USER_PASSWORD)
+    finally:
+        client.close()
+    return token, (f"내장 테스트 계정({DEFAULT_USER_ID}) 로그인 실패: {error}" if error else None)
+
+
+@contextmanager
+def _terminate_as_exit() -> Iterator[None]:
+    """SIGTERM(·SIGBREAK)을 SystemExit 으로 바꿔 프로파일별 `finally` 가 돌게 한다.
+
+    프로파일 서버는 `start_new_session=True` 로 **별도 세션**에 띄운다(Ctrl+C 가 자식에게
+    번지지 않게). 그 대가로 부모가 SIGTERM 에 죽으면 — `kill <pid>`, `timeout`, 작업
+    스케줄러 종료 — 파이썬 기본 동작은 `finally` 없이 즉시 종료라 **자식이 고아로 남는다**.
+    Ctrl+C(SIGINT)는 KeyboardInterrupt 라 괜찮았지만, nohup 장시간 런을 멈추는 방법은 kill 이다.
+    2026-09-14 실측: 강제 종료된 런들에서 모의 서버 7개가 ppid=1 로 남아 있었다. 실 모드였다면
+    Redis·DB 연결을 쥔 앱 서버다.
+
+    첫 신호를 받으면 같은 신호를 무시로 돌려 **정리 도중 두 번째 kill 에 끊기지 않게** 한다.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        # signal.signal 은 메인 스레드에서만 걸린다 - 다른 스레드에서는 종전 동작 그대로.
+        yield
+        return
+    names = ["SIGTERM"] + (["SIGBREAK"] if hasattr(signal, "SIGBREAK") else [])
+    previous: dict[int, Any] = {}
+
+    def _raise(signum: int, _frame: Any) -> None:
+        signal.signal(signum, signal.SIG_IGN)
+        raise SystemExit(128 + signum)
+
+    for name in names:
+        sig = getattr(signal, name)
+        previous[sig] = signal.signal(sig, _raise)
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
+    """런 1회를 수행하고 산출 디렉터리 경로·요약을 돌려준다.
+
+    kill 로 멈춰도 그때까지의 원시 로그는 남고(추가 기록식) 같은 명령으로 이어받는다.
+    """
+    with _terminate_as_exit():
+        return _execute(catalog, config)
+
+
+def _execute(catalog: Catalog, config: RunConfig) -> dict[str, Any]:
+    meta = run_meta(config, catalog)
+    meta["env"], meta["env_source"] = resolve_env(config)
+    if config.resume_failed:
+        # X-3: 원본 run 은 **건드리지 않는다** - 새 run_id 로 돌고 출처만 남긴다.
+        # 원본을 덮어쓰면 "무엇이 무효였는지"가 사라져 복구 자체를 검증할 수 없다.
+        meta["rerun_of"] = config.resume_failed
+        meta["rerun_selection"] = config.rerun_stats or {}
+    out_dir = RESULTS_ROOT / meta["run_id"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "logs").mkdir(exist_ok=True)
+    (out_dir / "artifacts").mkdir(exist_ok=True)
+
+    # 109·CS-19③: 시도(시작·재개)마다 출처를 누적한다. 종전에는 끝에서만 `run.json` 을
+    # 써서 끊긴 run 에는 출처가 없었고, 재개하면 마지막 시도의 커밋만 남아 두 판이 섞여도
+    # 드러나지 않았다.
+    previous, prior_attempts = _previous_run(out_dir)
+    prior_meta = (previous or {}).get("meta") or {}
+    if prior_meta.get("rerun_partial"):
+        # 앞 시도가 1턴부터 다시 돈 기록도 잃지 않는다(109·CS-17).
+        meta["rerun_partial"] = list(prior_meta["rerun_partial"])
+    if prior_meta.get("cap_semantic_source") == "server":
+        # 상한 의미는 **run 의 첫 관측값**이다 - 재개가 앞 시도의 관측을 지우지 않는다(plans/119).
+        meta["cap_semantic"] = prior_meta.get("cap_semantic")
+        meta["cap_semantic_source"] = "server"
+    if isinstance(prior_meta.get(T1_META_KEY), dict):
+        meta[T1_META_KEY] = dict(prior_meta[T1_META_KEY])
+    meta["attempts"] = prior_attempts + [attempt_provenance(meta)]
+    mixed = provenance_mix(meta["attempts"])
+    if mixed:
+        meta["provenance_mixed"] = mixed
+        print(f"       [주의] 출처 섞임 - {mixed}. 한 raw.jsonl 에 두 판의 결과가 함께 있다",
+              flush=True)
+    # 시작 시점에도 남긴다 - 끊겨도 출처가 있어야 재개 때 대조할 수 있다. 이전 시도의 프로파일·
+    # 제외 목록은 끝의 기록이 덮을 때까지 그대로 둔다(또 끊기면 그것이 남은 기록이다).
+    # `in_progress` 는 끝의 기록에 없다 - 분석기가 끊긴 run 을 기준선으로 고르지 않는 표지다.
+    started = dict(previous or {"profiles": [], "executed_turns": 0, "skipped": []})
+    started.update({
+        "meta": {**meta, "in_progress": True},
+        "raw_path": str(out_dir / "raw.jsonl"),
+        "out_dir": str(out_dir),
+    })
+    with utf8_open(out_dir / "run.json", "w") as handle:
+        json.dump(started, handle, ensure_ascii=False, indent=2)
+
+    def _save_progress() -> None:
+        """프로파일 설정 지문이 생길 때마다 시작 기록을 다시 쓴다(plans/118 B-1) - 이 시도가
+        끊겨도 다음 재개가 대조할 기록이 남는다."""
+        started["meta"] = {**meta, "in_progress": True}
+        with utf8_open(out_dir / "run.json", "w") as progress:
+            json.dump(started, progress, ensure_ascii=False, indent=2)
+
+    raw = RawLog(out_dir / "raw.jsonl")
+    statuses: list[ProfileStatus] = []
+    skipped: list[dict[str, Any]] = []
+    executed = 0
+
+    # plans/122 C-4b: 요구 소스가 비활성인 시나리오는 고르지 않고 사유를 적재한다(D-276 ②).
+    # 호출부(`__main__`)가 이미 판독했으면 그 값을 쓴다 - 예상치와 실제 선택이 같은 판독을 본다.
+    if config.active_sources is None:
+        config = replace(config, active_sources=resolve_active_sources(config)[0])
+    skipped.extend(source_exclusions(catalog, config))
+
+    # arm 출처의 **1차 출처는 기록이지 파싱이 아니다.** 소비자(벤치 `arm_of` · 회귀 비교 키)는
+    # `profile` 문자열을 파싱하지 않고 행의 `arm`·`base_profile` 칸을 읽는다. 그래서 조합
+    # 이름에서 되돌리는 대신 `merge_arm_profiles` 가 정한 바인딩을 여기서 그대로 들고 간다.
+    # (전 시나리오로 한 번 만든다 - 필터로 줄어든 목록보다 상위집합이라 조회에 문제가 없고,
+    #  `iter_executions` 가 다시 부르는 등록은 같은 값이라 멱등이다.)
+    bindings: dict[str, ArmBinding] = (
+        merge_arm_profiles(catalog, catalog.scenarios, config.arms)[1] if config.arms else {}
+    )
+
+    refused: Optional[str] = None
+    for profile, scenarios in iter_executions(catalog, config):
+        if refused:
+            # 재개 거부 뒤의 프로파일은 돌지 않는다 - 사유와 함께 제외로 남긴다.
+            skipped.extend({"scenario_id": sc.id, "reason": f"재개 거부 - {refused}"}
+                           for sc in scenarios)
+            continue
+        # 주입하는 것은 전부 에코로 확인한다 - 격리 설정도 예외가 아니다(.encenv 우선순위로
+        # 조용히 무시되면 격리한 줄 알고 운영 알람을 계속 나눠 가진다).
+        expected = {**ISOLATION_ENV, **catalog.profiles.get(profile, {})}
+        overrides = dict(expected)
+        # 운영 checkpoints.db(실측 82MB) 오염 금지 - 런 전용 체크포인트로 격리한다(§2-3).
+        overrides["CHECKPOINT_DB_URL"] = str(out_dir / f"checkpoints-{profile}.db")
+        port = pick_port(config.port)
+        server_log = out_dir / "logs" / f"server-{profile}.log"
+        handle = ServerHandle(
+            profile=profile,
+            env_overrides=overrides,
+            port=port,
+            log_path=server_log,
+            mock=(config.mode == "mock"),
+        )
+        # arm 출처를 `run.json` 과 `raw.jsonl` **양쪽에 같은 칸 이름**으로 남긴다(`110·N-1`).
+        # `arm` 은 **arm id 원본**이다 - 조합 이름을 넣으면 D군(`base_profile=optin_alarm`)이
+        # 기준선 arm 에서 떨어져 나가 쌍체 비교에서 빠진다.
+        binding = bindings.get(profile)
+        arm = binding.arm if binding else None
+        base_profile = binding.base_profile if binding else profile
+        meta.setdefault("arm_bindings", {})[profile] = {
+            "arm": arm, "base_profile": base_profile,
+        }
+        status = ProfileStatus(name=profile, port=port,
+                               arm=arm, base_profile=base_profile)
+        try:
+            handle.start()
+            from .server import verify_profile
+
+            # 로그인은 서버가 뜬 뒤에만 성립한다. 기동 중인 포트에 붙으면 ConnectError
+            # (WinError 10061)로 토큰을 못 받아 설정 에코 401 -> 프로파일 INVALID 가 된다
+            # (2026-09-14 폐쇄망 런 20260914-150834). 헬스 실패면 로그인하지 않는다 -
+            # 사유는 verify_profile 의 "헬스 실패" 하나만 남아야 원인이 가려지지 않는다.
+            healthy = handle.mock or handle.wait_healthy()[0]
+            user_token, admin_token, login_reasons = (
+                acquire_tokens(port, config) if healthy and not handle.mock else (None, None, [])
+            )
+            # verify_profile 은 **새 객체**를 돌려준다 - 출처 두 칸을 다시 얹지 않으면
+            # 정상 기동한 프로파일에서만 arm 이 사라진다(실패 경로에만 남는다).
+            status = verify_profile(handle, expected, admin_token)
+            status.arm, status.base_profile = arm, base_profile
+            status.reasons.extend(login_reasons)
+            if status.auth_enabled and not user_token:
+                # 계정을 넘기지 않았으면 내장 테스트 계정으로 로그인한다(D-216).
+                user_token, error = login_default_user(port)
+                if error:
+                    status.reasons.append(error)
+            if status.auth_enabled and not user_token:
+                # 여기서 끊지 않으면 시나리오 전건이 401 을 받아 "실행됐지만 전부 오류"인
+                # 원시 로그가 쌓인다 - 실행되지 않은 것과 구별되지 않아 리포트가 거짓이 된다.
+                status.valid = False
+                status.reasons.append(
+                    "AUTH_ENABLED=true 인데 질의용 사용자 토큰이 없다 - "
+                    "/query 요청이 전건 401 로 끝난다. 전용 벤치 계정을 --user/--password "
+                    "로 넘길 것(인증을 끄고 재지 않는다 - plans/94 G-3)"
+                )
+            if status.valid and status.effective_settings:
+                # plans/118 B-1: 이 기동의 실효 설정 지문을 이 시도 기록에 남기고, 재개면
+                # 앞 시도의 같은 프로파일과 대조한다. 다르면 **재개를 멈춘다**.
+                record = profile_config_record(status.effective_settings)
+                meta["attempts"][-1].setdefault("configs", {})[profile] = record
+                _save_progress()
+                refused = resume_config_conflict(prior_attempts, profile, record)
+                if refused:
+                    meta["resume_refused"] = refused
+                    meta["provenance_mixed"] = f"재개 거부 - {refused}"
+                    print(f"       [멈춤] 재개 거부 - {refused}", flush=True)
+                    status.valid = False
+                    status.reasons.append(f"재개 거부 - {refused}")
+            if not status.valid:
+                for scenario in scenarios:
+                    skipped.append(
+                        {
+                            "scenario_id": scenario.id,
+                            "reason": f"프로파일 {profile} INVALID: {'; '.join(status.reasons)}",
+                        }
+                    )
+                continue
+            token_source = build_token_source(port, config, user_token)
+            if status.auth_enabled and not token_source.can_refresh:
+                # 8시간을 넘기는 run 에서 이 상태는 **반드시 401 로 끝난다**(T-a·T-b 둘 다 불가).
+                # 끝나고 나서 103턴 무효를 발견하지 않도록 기동 시점에 말한다.
+                lifetime = jwt_lifetime_sec()
+                status.reasons.append(
+                    "주입 토큰(--token)이고 --user/--password 가 없어 만료 시 재발급 경로가 없다 - "
+                    + (f"수명 {lifetime / 3600:.0f}시간" if lifetime else "토큰 수명")
+                    + "을 넘기는 run 은 전건 401 로 끝난다"
+                )
+            elif status.auth_enabled and not token_source.can_preempt:
+                status.reasons.append(
+                    "토큰 발급 시각을 몰라 선제 갱신(T-b)을 하지 않는다 - 401 재시도(T-a)로만 막힌다"
+                )
+            executed += _run_profile(
+                catalog, config, meta, profile, scenarios, port, raw, out_dir, skipped,
+                token=user_token, token_source=token_source,
+                server_timeouts=status.server_timeouts,
+            )
+            if token_source.refreshes or token_source.failures:
+                meta.setdefault("token_refresh", []).append({
+                    "profile": profile,
+                    "refreshes": token_source.refreshes,
+                    "failures": token_source.failures,
+                })
+                status.reasons.extend(token_source.failures)
+        except Exception as exc:
+            # 기동 자체가 실패하면 그 프로파일이 리포트에서 통째로 사라진다 -
+            # 사라진 프로파일은 "돌지 않았다"가 아니라 "없었다"로 읽힌다.
+            status.reasons.append(f"기동/실행 예외: {type(exc).__name__}: {exc}")
+            for scenario in scenarios:
+                skipped.append({
+                    "scenario_id": scenario.id,
+                    "reason": f"프로파일 {profile} 기동 예외: {type(exc).__name__}: {exc}",
+                })
+        finally:
+            statuses.append(status)
+            handle.stop()
+            if not handle.port_released():
+                status.reasons.append(f"포트 {port} 가 회수되지 않았다 - 고아 프로세스 확인")
+            # plans/119 H-2: T-1 표지를 run 메타에 남긴다 - 로그가 run 과 함께 오지 않아도
+            # 리포트가 알람 고지를 판정한다. 재개는 로그를 옮겨 두므로(`_keep_previous_log`)
+            # 앞 시도분에 더한다.
+            evidence = meta.setdefault(T1_META_KEY, {})
+            evidence[profile] = int(evidence.get(profile) or 0) + t1_alarm_evidence(server_log)
+
+    if not meta.get("cap_semantic"):
+        # 서버가 한 번도 상한 의미를 보고하지 않았다 - 옛 서버다. 종전 의미로 적되 출처를 남긴다.
+        meta["cap_semantic"], meta["cap_semantic_source"] = CAP_SEMANTIC_TOTAL, "default"
+    # plans/122 H-6: 러너 생성 업로드는 시나리오가 끝날 때 지운다. 끊긴 앞 시도가 남긴 것까지
+    # 여기서 치운다.
+    shutil.rmtree(out_dir / GENERATED_DIR, ignore_errors=True)
+
+    summary = {
+        "meta": meta,
+        "profiles": [s.as_dict() for s in statuses],
+        "executed_turns": executed,
+        "skipped": skipped,
+        "raw_path": str(out_dir / "raw.jsonl"),
+        "out_dir": str(out_dir),
+    }
+    with utf8_open(out_dir / "run.json", "w") as handle:
+        json.dump(summary, handle, ensure_ascii=False, indent=2)
+    return summary
+
+
+class SqlAuditTail:
+    """서버 로그에서 턴 1회의 실행 SQL 을 모은다(D-217).
+
+    오케스트레이션·멀티 DB 경로는 done 에 SQL 을 싣지 않는다(run 20260914-154940 93턴 전부 None).
+    서버가 실행한 SQL 은 감사 로그 `query_executed`(src/security/audit_logger.py) 한 줄씩
+    thread_id·원본 DB·행 수·retry_attempt 와 함께 표준출력에 남고, 러너가 그 출력을 이 파일로 받는다.
+    턴 시작 시점의 파일 크기부터 읽고 thread_id 로 거르므로 다른 턴·동시 세션의 SQL 이 섞이지 않는다.
+    """
+
+    def __init__(self, path: Path, settle_sec: float = 2.0) -> None:
+        self.path = path
+        self._settle_sec = settle_sec
+
+    def mark(self) -> int:
+        try:
+            return self.path.stat().st_size
+        except OSError:
+            return 0
+
+    def _wait_flushed(self) -> None:
+        """로그 펌프 스레드가 마지막 줄을 쓸 틈을 준다 - done 이 로그 줄보다 먼저 도착할 수 있다."""
+        deadline = time.monotonic() + self._settle_sec
+        size = self.mark()
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            current = self.mark()
+            if current == size:
+                return
+            size = current
+
+    def collect(self, since: int, thread_id: str) -> list[dict[str, Any]]:
+        if not self.path.exists():
+            return []
+        self._wait_flushed()
+        with open(self.path, "rb") as handle:
+            handle.seek(since)
+            data = handle.read()
+        entries: list[dict[str, Any]] = []
+        for line in data.decode("utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line.startswith("{") or thread_id not in line or "query_executed" not in line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("event") != "query_executed" or record.get("thread_id") != thread_id:
+                continue
+            entries.append({
+                "sql": str(record.get("sql") or ""),
+                "source": record.get("source_name"),
+                "row_count": record.get("row_count"),
+                "success": record.get("success"),
+                "retry_attempt": record.get("retry_attempt"),
+            })
+        return entries
+
+    def collect_rewrite_traces(self, since: int, thread_id: str) -> list[dict[str, Any]]:
+        """같은 로그에서 재작성 감사(`rewrite_trace`) 이벤트를 모은다(O-e · plans/94 §19.3).
+
+        완료 done 페이로드가 1순위이고 이것은 폴백이다 — done 에 레코드가 없을 때만 쓴다.
+        ``collect`` 가 로그 펌프 대기를 이미 했으므로 여기서는 다시 기다리지 않는다.
+        """
+        if not self.path.exists():
+            return []
+        with open(self.path, "rb") as handle:
+            handle.seek(since)
+            data = handle.read()
+        traces: list[dict[str, Any]] = []
+        for line in data.decode("utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line.startswith("{") or thread_id not in line or "rewrite_trace" not in line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            trace = record.get("rewrite_trace")
+            if record.get("event") == "rewrite_trace" and record.get("thread_id") == thread_id \
+                    and isinstance(trace, dict):
+                traces.append(trace)
+        return traces
+
+
+def _apply_sql_audit(obs: Observation, entries: list[dict[str, Any]]) -> None:
+    """감사 로그 수집분을 관측치에 얹는다 - SQL 목록·재시도 회차·**DB 별 행 수**·`db_ids` 폴백.
+
+    DB 별 행 수는 **마지막 성공 실행**의 값을 쓴다(Y-4). 합산하면 재시도 회차가 중복으로
+    더해져 "각 DB 100행"이 200행으로 보인다 - 사용자가 받은 것은 마지막 성공분이다.
+    done 의 `db_scope` 가 비었으면 실행 DB 집합으로 `db_ids` 를 채운다(plans/120 V-1).
+    """
+    if not entries:
+        return
+    obs.executed_sqls = [entry["sql"] for entry in entries if entry["sql"]]
+    # SQL 별 행 수(plans/123 V-4 `limit_disclosed`) - 행에는 `executed_sqls` 칸으로 이미 실린다.
+    obs.sql_entries = [dict(entry) for entry in entries if entry.get("sql")]
+    attempts = [e["retry_attempt"] for e in entries if isinstance(e.get("retry_attempt"), int)]
+    if attempts:
+        obs.retries = max(obs.retries or 0, max(attempts))
+    per_db: dict[str, int] = {}
+    for entry in entries:
+        source, count = entry.get("source"), entry.get("row_count")
+        if source and isinstance(count, int) and entry.get("success") is not False:
+            per_db[str(source)] = count
+    obs.row_counts_by_db = per_db
+    obs.db_ids, obs.db_ids_source = resolve_db_ids(
+        obs.db_ids, [entry.get("source") for entry in entries]
+    )
+
+
+def _trace_files() -> set[str]:
+    """지금 있는 실패 트레이스 파일. 턴 전후 차이가 그 턴이 남긴 트레이스다(동시 부하에서는 섞일 수 있다)."""
+    if not TRACE_ROOT.exists():
+        return set()
+    return {path.relative_to(TRACE_ROOT).as_posix() for path in TRACE_ROOT.glob("*/*.jsonl")}
+
+
+def _with_redis(work: Callable[[Any, Any], Awaitable[Any]]) -> Any:
+    """러너 프로세스에서 Redis 작업 1건을 한다(D-217). 매번 새 연결 - 이벤트 루프를 넘기지 않는다."""
+
+    async def run() -> Any:
+        from src.config import load_config
+        from src.schema_cache.redis_cache import RedisSchemaCache
+
+        config = load_config()
+        cache = RedisSchemaCache(config.redis, config.schema_cache)
+        await cache.connect()
+        if not getattr(cache, "_connected", False):
+            raise RuntimeError("Redis 에 연결하지 못했다")
+        try:
+            return await work(cache, config)
+        finally:
+            await cache.disconnect()
+
+    return asyncio.run(run())
+
+
+def apply_synonym_setup(steps: list[dict[str, Any]], *, remove: bool) -> list[str]:
+    """setup 의 synonym_add 를 적용하거나(remove=False) **그 단어만** 되돌린다(remove=True)."""
+
+    async def work(cache: Any, _config: Any) -> list[str]:
+        results: list[str] = []
+        for step in steps:
+            if step.get("kind") != "synonym_add":
+                continue
+            db_id, column = str(step["db_id"]), str(step["column"])
+            words = [str(word) for word in step["words"]]
+            if remove:
+                ok = await cache.remove_synonyms(db_id, column, words)
+                results.append(f"삭제 {db_id} {column} {words}: {'완료' if ok else '대상 없음'}")
+            else:
+                ok = await cache.add_synonyms(db_id, column, words, source="operator")
+                results.append(f"등록 {db_id} {column} {words}: {'완료' if ok else '실패'}")
+        return results
+
+    return _with_redis(work)
+
+
+async def _synonym_shot(cache: Any, db_ids: list[str]) -> dict[str, dict[str, list[str]]]:
+    """유사어 사전 스냅샷 - 글로벌 사전 + DB별 사전. 영역 -> {키: 정렬된 단어}."""
+    shot = {"global": {k: sorted(set(v)) for k, v in (await cache.load_global_synonyms() or {}).items()}}
+    for db_id in db_ids:
+        per_db = await cache.load_synonyms(db_id) or {}
+        shot[f"per_db:{db_id}"] = {k: sorted(set(v)) for k, v in per_db.items()}
+    return shot
+
+
+def synonym_additions(
+    before: dict[str, dict[str, list[str]]], after: dict[str, dict[str, list[str]]]
+) -> dict[str, dict[str, list[str]]]:
+    """after 에만 있는 단어 - 기준선 이후 더해진 것. 원래 있던 단어는 결과에 들어오지 않는다."""
+    added: dict[str, dict[str, list[str]]] = {}
+    for area, keys in after.items():
+        for key, words in keys.items():
+            new = sorted(set(words) - set((before.get(area) or {}).get(key, [])))
+            if new:
+                added.setdefault(area, {})[key] = new
+    return added
+
+
+def snapshot_synonyms() -> dict[str, dict[str, list[str]]]:
+    """unregister_synonym teardown 의 기준선을 뜬다(글로벌 + 활성 DB별 유사어 사전)."""
+
+    async def work(cache: Any, config: Any) -> dict[str, dict[str, list[str]]]:
+        return await _synonym_shot(cache, list(config.multi_db.get_active_db_ids()))
+
+    return _with_redis(work)
+
+
+def split_owned_additions(
+    additions: dict[str, dict[str, list[str]]], words: list[str]
+) -> tuple[dict[str, dict[str, list[str]]], dict[str, dict[str, list[str]]]]:
+    """더해진 단어를 (시나리오가 선언한 단어, 그 밖)으로 나눈다. 비교는 공백·대소문자를 무시한다.
+
+    스냅샷 차이에는 같은 턴 동안 **다른 서버·운영자가 공유 Redis 에 더한 단어**도 들어온다.
+    선언한 단어만 지워야 남의 등록을 지우지 않는다. 서버는 입력 표기를 그대로 저장한다
+    (동의어 집합 등록은 공백·대소문자 중복만 정리한다).
+    """
+    declared = {word.strip().casefold() for word in words}
+    owned: dict[str, dict[str, list[str]]] = {}
+    foreign: dict[str, dict[str, list[str]]] = {}
+    for area, keys in additions.items():
+        for key, added in keys.items():
+            mine = [word for word in added if word.strip().casefold() in declared]
+            others = [word for word in added if word.strip().casefold() not in declared]
+            if mine:
+                owned.setdefault(area, {})[key] = mine
+            if others:
+                foreign.setdefault(area, {})[key] = others
+    return owned, foreign
+
+
+def remove_synonym_additions(before: dict[str, dict[str, list[str]]], words: list[str]) -> list[str]:
+    """기준선 이후 더해진 단어 중 **시나리오가 선언한 단어만** 지운다(A-10 `unregister_words`).
+
+    선언 밖 단어는 지우지 않고 `남김` 으로 기록한다 - 같은 시각 다른 출처의 등록이거나, 서버가
+    선언과 다른 표기로 저장한 경우다. 후자면 시나리오 선언을 고친다(조용히 넘기지 않는다).
+    """
+
+    async def work(cache: Any, config: Any) -> list[str]:
+        after = await _synonym_shot(cache, list(config.multi_db.get_active_db_ids()))
+        owned, foreign = split_owned_additions(synonym_additions(before, after), words)
+        results: list[str] = []
+        for area, keys in owned.items():
+            for key, removed in keys.items():
+                if area == "global":
+                    ok = await cache.remove_global_synonym(key, removed)
+                else:
+                    ok = await cache.remove_synonyms(area.split(":", 1)[1], key, removed)
+                results.append(f"삭제 {area} {key} {removed}: {'완료' if ok else '실패'}")
+        for area, keys in foreign.items():
+            for key, kept in keys.items():
+                results.append(f"남김 {area} {key} {kept}: 선언한 단어가 아니다")
+        return results
+
+    return _with_redis(work)
+
+
+# --- 폼필 확인 이력 격리 (plans/120 V-4 = 108·CU-B3) ---------------------------------------
+#
+# 이력 키는 `formfill:memory:{양식 시그니처}` 하나뿐이고 **사용자 스코프가 없다**
+# (`src/schema_cache/form_memory.py` · `redis_cache._form_memory_key`). 그래서 "벤치 계정의 이력
+# 전체 삭제"는 곧 그 양식을 쓰는 모든 사용자의 이력 삭제라 두지 않는다 - 시나리오가 선언한 필드
+# 중 그 실행이 더한 것만 지운다(D-217 ⑪ `unregister_synonym` 과 같은 규칙).
+
+#: 선적재 오염으로 무효(D-241 `invalid`)가 된 턴의 사유 머리말.
+FORM_MEMORY_PRELOAD_REASON = "폼필 확인 이력 선적재(상태 오염) - 폐쇄망에서 삭제 필요"
+
+#: 이력 API 는 프로세스 싱글톤(캐시 매니저)의 연결을 쓴다 - 호출을 한 번에 하나로 묶는다.
+_FORM_MEMORY_LOCK = threading.Lock()
+
+
+def form_memory_dependent(scenario: Scenario) -> bool:
+    """이 시나리오의 판정이 폼필 확인 이력 상태에 달려 있는가(plans/120 V-4).
+
+    폼필 역질문을 기대하거나(`expect.clarification` 중 존 역질문이 아닌 것), 폼필 답변·기억·저장
+    값 패널을 보내거나(`send.form_*`), 이력을 지우는 teardown 을 선언한 시나리오다. 이력 키에
+    사용자 스코프가 없어 폐쇄망 실사용자가 표준 양식에 기억시킨 답도 선적재로 보인다 - 의존하지
+    않는 업로드 시나리오(H군 등)까지 무효로 돌리면 표적 재측정이 성립하지 않는다(코드 리뷰
+    2026-09-28). 그런 시나리오는 선적재 사실만 행에 남긴다.
+    """
+    if "forget_form_memory" in scenario.teardown:
+        return True
+    for turn in scenario.turns:
+        if any(str(key).startswith("form_") for key in (turn.send or {})):
+            return True
+        expected = (turn.expect or {}).get("clarification")
+        if isinstance(expected, dict) and expected.get("kind") != "zone_select":
+            return True
+    return False
+
+
+def form_signature_of(upload: Path) -> Optional[str]:
+    """업로드 양식의 이력 키(양식 시그니처)를 **서버와 같은 파서**로 로컬 계산한다. LLM 0.
+
+    서버는 `input_parser._parse_uploaded_file`(`parse_excel_template`·`parse_word_template`)로
+    `template_structure` 를 만들고 `form_signature` 로 키를 뜬다. 응답 패널의 시그니처
+    (`form_memory_panel.signature` · I-06)는 조회 턴에만 실려 **턴 전** 기준선을 뜰 수 없다.
+    시트 헤더가 없는 양식(Word 등)은 None - 이력 대상이 아니다.
+    """
+    from src.utils.schema_utils import form_signature
+
+    suffix = upload.suffix.lower()
+    if suffix == ".xlsx":
+        from src.document.excel_parser import parse_excel_template
+
+        return form_signature(parse_excel_template(upload.read_bytes()))
+    if suffix == ".docx":
+        from src.document.word_parser import parse_word_template
+
+        return form_signature(parse_word_template(upload.read_bytes()))
+    return None
+
+
+def _with_form_memory(work: Callable[[Any], Awaitable[Any]]) -> Any:
+    """러너 프로세스에서 폼필 확인 이력 API 1건을 부른다(plans/120 V-4).
+
+    이력 API(`load_form_memory_answers`·`delete_form_memory_entries`)는 Redis 불가·TTL 0 을 **빈
+    결과로 강등**한다 - 그대로 쓰면 "읽지 못했다"가 "이력 없음"으로 보인다. 그래서 TTL 과 연결을
+    먼저 확인하고 못 하면 예외로 알린다. API 가 쓰는 캐시 매니저 싱글톤의 연결은 호출마다 닫는다 -
+    `asyncio.run` 마다 이벤트 루프가 바뀐다(`_with_redis` 와 같은 이유). 싱글톤을 나눠 쓰므로
+    동시 부하 묶음의 작업 스레드끼리는 한 번에 하나만 들어온다.
+    """
+
+    async def run() -> Any:
+        from src.config import load_config
+        from src.schema_cache.cache_manager import get_cache_manager
+
+        config = load_config()
+        if int(getattr(config.query, "form_memory_ttl_days", 0) or 0) <= 0:
+            raise RuntimeError("form_memory_ttl_days=0 - 이력 API 가 Redis 를 읽지 않는다")
+        manager = get_cache_manager(config)
+        if not await manager.ensure_redis_connected():
+            raise RuntimeError("Redis 에 연결하지 못했다")
+        try:
+            return await work(config)
+        finally:
+            await manager.disconnect()
+
+    with _FORM_MEMORY_LOCK:
+        return asyncio.run(run())
+
+
+def snapshot_form_memory(signature: str) -> list[str]:
+    """양식 시그니처의 이력 필드 이름(정렬).
+
+    **조회 전용**이다 - `touch=False` 라 TTL·사용 횟수가 그대로다.
+    """
+
+    async def work(config: Any) -> list[str]:
+        from src.schema_cache.form_memory import load_form_memory_answers
+
+        _sig, answers, _meta = await load_form_memory_answers(
+            None, config, touch=False, signature=signature,
+        )
+        return sorted(answers)
+
+    return _with_form_memory(work)
+
+
+def forget_form_memory_additions(signature: str, before: list[str], fields: list[str]) -> list[str]:
+    """기준선 이후 더해진 이력 필드 중 **시나리오가 선언한 필드만** 지운다(`forget_form_fields`).
+
+    원래 있던 필드는 차이에 들지 않아 남는다. 선언 밖 필드는 같은 시각 다른 주체가 더한 것이라
+    지우지 않고 `남김` 으로 기록한다. 조회는 `touch=False` 다. 삭제 API 는 남은 필드를 다시 쓰며
+    TTL 을 한 주기로 되돌리는데, 지울 필드가 있다는 것은 이 실행이 방금 저장하며 TTL 을 이미
+    되돌렸다는 뜻이라 추가 연장이 아니다(`save_form_memory_entries` "TTL 리셋").
+    """
+
+    async def work(config: Any) -> list[str]:
+        from src.schema_cache.form_memory import (
+            delete_form_memory_entries,
+            load_form_memory_answers,
+        )
+
+        _sig, answers, _meta = await load_form_memory_answers(
+            None, config, touch=False, signature=signature,
+        )
+        declared = {name.strip().casefold() for name in fields}
+        added = sorted(set(answers) - set(before))
+        owned = [name for name in added if name.strip().casefold() in declared]
+        foreign = [name for name in added if name.strip().casefold() not in declared]
+        results: list[str] = []
+        if owned:
+            removed, _display = await delete_form_memory_entries(
+                None, config, owned, signature=signature,
+            )
+            done = "완료" if removed == len(owned) else "실패"
+            results.append(f"삭제 {signature} {owned}: {done}")
+        if foreign:
+            results.append(f"남김 {signature} {foreign}: 선언한 필드가 아니다")
+        if not added:
+            results.append(f"대상 없음 {signature}: 기준선 이후 더해진 필드가 없다")
+        return results
+
+    return _with_form_memory(work)
+
+
+def _invalidate(verdict: Verdict, reason: str) -> None:
+    """판정을 무효(D-241 `invalid`)로 돌린다 - 러너 인증 실패(T-c)와 같은 모양이다.
+
+    단언은 오염된 상태의 그림자라 판정에서 뺀다. 원본 관측(SQL·응답)은 행에 그대로 남는다.
+    """
+    verdict.func = INVALID_VERDICT
+    verdict.invalid_reason = reason
+    verdict.failures = []
+    verdict.manual_notes = []
+    # 무효 턴은 보류 출처도 비운다 - 판정기의 T-c 계약과 같다(plans/122 J-3).
+    verdict.manual_sources = []
+    verdict.perf = "n/a"
+
+
+def _cleanup_leftover_setup(scenarios: list[Scenario], run_env: Optional[str]) -> list[str]:
+    """강제 종료로 남았을 수 있는 setup 을 실행 시작 때 먼저 지운다(사용자 확정 2026-09-15)."""
+    steps = [
+        step for scenario in scenarios if scenario.env in ("both", run_env)
+        for step in scenario.setup
+    ]
+    if not steps:
+        return []
+    try:
+        return apply_synonym_setup(steps, remove=True)
+    except Exception as exc:  # 정리 실패가 스위트를 멈추지 않는다 - 사실은 run.json 에 남긴다
+        return [f"사전 정리 실패: {type(exc).__name__}: {exc}"]
+
+
+def run_seed_reload_idempotency() -> dict[str, Any]:
+    """활성 DB 시드를 두 번 적재하고 전·1회차·2회차 스냅샷을 돌려준다(SYN-F-05 · 사용자 확정)."""
+
+    async def work(cache: Any, config: Any) -> dict[str, Any]:
+        from src.schema_cache.synonym_loader import SynonymLoader
+
+        active = list(config.multi_db.get_active_db_ids())
+        seeds = [(db_id, SEED_DIR / f"{db_id}.yaml") for db_id in active
+                 if (SEED_DIR / f"{db_id}.yaml").exists()]
+        loader = SynonymLoader(redis_cache=cache)
+
+        async def snapshot() -> dict[str, dict[str, list[str]]]:
+            shot: dict[str, dict[str, list[str]]] = {}
+            for db_id, _path in seeds:
+                per_db = await cache.load_synonyms(db_id) or {}
+                shot[f"per_db:{db_id}"] = {k: sorted(set(v)) for k, v in per_db.items()}
+            shot["eav_names"] = {
+                k: sorted(set(v)) for k, v in (await cache.load_eav_name_synonyms() or {}).items()
+            }
+            shot["global"] = {
+                k: sorted(set(v)) for k, v in (await cache.load_global_synonyms() or {}).items()
+            }
+            shot["column_values"] = {
+                k: sorted(v) for k, v in (await cache.load_column_value_synonyms() or {}).items()
+            }
+            return shot
+
+        async def load_all() -> list[str]:
+            errors: list[str] = []
+            for db_id, path in seeds:
+                result = await loader.load_seed_yaml(str(path))
+                if result.status == "error":
+                    errors.append(f"{db_id}: {'; '.join(result.errors) or 'error'}")
+            return errors
+
+        before = await snapshot()
+        errors = await load_all()
+        first = await snapshot()
+        errors += await load_all()
+        second = await snapshot()
+        return {"active": active, "seeded": [db_id for db_id, _ in seeds], "before": before,
+                "first": first, "second": second, "errors": errors}
+
+    return _with_redis(work)
+
+
+def judge_seed_reload(
+    before: dict[str, dict[str, list[str]]],
+    first: dict[str, dict[str, list[str]]],
+    second: dict[str, dict[str, list[str]]],
+    load_errors: list[str],
+) -> list[Failure]:
+    """멱등성(2회차 적재 뒤 변화 없음)·무손실(적재 전 단어가 1회차 뒤에도 있음)을 판정한다."""
+    failures: list[Failure] = []
+    if load_errors:
+        failures.append(Failure("seed_reload.load", "적재 오류 없음", load_errors))
+    changed = sorted(area for area in set(first) | set(second) if first.get(area) != second.get(area))
+    if changed:
+        failures.append(Failure("seed_reload.idempotent", "2회차 적재 뒤 변화 없음", changed))
+    lost: dict[str, list[str]] = {}
+    for area, keys in before.items():
+        for key, words in keys.items():
+            missing = sorted(set(words) - set((first.get(area) or {}).get(key, [])))
+            if missing:
+                lost[f"{area}:{key}"] = missing
+    if lost:
+        sample = dict(list(lost.items())[:20])
+        failures.append(Failure("seed_reload.lossless", "적재 전 단어 보존", sample))
+    return failures
+
+
+def _word_count(shot: dict[str, dict[str, list[str]]]) -> int:
+    return sum(len(words) for area in shot.values() for words in area.values())
+
+
+def _run_action(
+    config: RunConfig,
+    meta: dict[str, Any],
+    profile: str,
+    scenario: Scenario,
+    raw: RawLog,
+    skipped: list[dict[str, Any]],
+) -> int:
+    """질의가 아닌 러너 동작 1건(D-217). 행 1개로 적재한다."""
+    if raw.already(profile, scenario.id, 1, 0):
+        return 0
+    if config.mode == "mock":
+        skipped.append({
+            "scenario_id": scenario.id,
+            "reason": "모의 실행 - 러너 동작(Redis 쓰기)은 실 모드에서만 수행한다",
+        })
+        return 0
+    obs = Observation(status="completed")
+    verdict = Verdict()
+    extras: dict[str, Any] = {"action": scenario.action.get("kind")}
+    started = time.perf_counter()
+    try:
+        result = run_seed_reload_idempotency()
+        verdict.failures = judge_seed_reload(
+            result["before"], result["first"], result["second"], result["errors"]
+        )
+        if not result["seeded"]:
+            verdict.manual_notes.append(
+                f"활성 DB {result['active']} 에 시드 파일이 없어 적재하지 않았다 - 판정 불가"
+            )
+        words = {name: _word_count(result[name]) for name in ("before", "first", "second")}
+        extras["seed_reload"] = {"active": result["active"], "seeded": result["seeded"],
+                                 "words": words, "errors": result["errors"]}
+        obs.response = (
+            f"시드 재적재 {result['seeded']}: 단어 수 {words['before']} -> "
+            f"{words['first']} -> {words['second']}"
+        )
+    except Exception as exc:  # Redis 미연결 등 - 오류로 적재하고 다음으로 넘어간다
+        obs.status = "error"
+        obs.error = f"러너 동작 실패: {type(exc).__name__}: {exc}"
+    obs.wall_ms = (time.perf_counter() - started) * 1000
+    verdict.func = (
+        "error" if obs.error else "fail" if verdict.failures
+        else "manual" if verdict.manual_notes else "pass"
+    )
+    raw.append(_row(meta, profile, scenario, 1, 0, obs, verdict, extras))
+    return 1
+
+
+def _as_member(bundle: Scenario, ref: Scenario) -> Scenario:
+    """부하 묶음이 도는 참조 시나리오 1건. 행은 묶음 ID 로 적재하고 판정은 참조의 단언으로 한다."""
+    return replace(
+        ref, id=bundle.id, group=bundle.group, plans=bundle.plans,
+        perf=bundle.perf or ref.perf, pair_with=None, repeat=None,
+    )
+
+
+def _bundle_note(bundle: Scenario) -> str:
+    return str((bundle.turns[0].expect.get("manual_review") if bundle.turns else "") or "")
+
+
+def _run_replay(
+    catalog: Catalog,
+    config: RunConfig,
+    meta: dict[str, Any],
+    profile: str,
+    bundle: Scenario,
+    client: ScenarioClient,
+    raw: RawLog,
+    out_dir: Path,
+    skipped: list[dict[str, Any]],
+    **kwargs: Any,
+) -> int:
+    """반복 측정(K-01·K-02·K-03·K-04). 참조 시나리오를 회차마다 새 스레드로 차례로 돈다."""
+    refs = [catalog.by_id(str(ref_id)) for ref_id in bundle.replay["scenarios"]]
+    executed = 0
+    for iteration in range(int(bundle.replay.get("repeat") or 1)):
+        for position, ref in enumerate(refs):
+            assert ref is not None  # 카탈로그 교차 검증이 보장한다
+            executed += _run_once(
+                catalog, config, meta, profile, _as_member(bundle, ref), iteration, client, raw,
+                out_dir, skipped, turn_offset=position * BUNDLE_TURN_STRIDE,
+                extras_base={"replay_of": ref.id, "bundle_note": _bundle_note(bundle)}, **kwargs,
+            )
+    return executed
+
+
+def _run_concurrent(
+    catalog: Catalog,
+    config: RunConfig,
+    meta: dict[str, Any],
+    profile: str,
+    bundle: Scenario,
+    client_config: ClientConfig,
+    raw: RawLog,
+    out_dir: Path,
+    skipped: list[dict[str, Any]],
+    **kwargs: Any,
+) -> int:
+    """동시 부하(K-06·K-07). 세션 수만큼 작업 스레드를 띄워 참조 시나리오를 번갈아 배정한다."""
+    refs = [catalog.by_id(str(ref_id)) for ref_id in bundle.concurrent["scenarios"]]
+    executed = 0
+    for wave, sessions in enumerate(bundle.concurrent["sessions"]):
+        members = [refs[slot % len(refs)] for slot in range(int(sessions))]
+
+        def work(slot: int, ref: Optional[Scenario], wave: int = wave, sessions: int = sessions) -> int:
+            assert ref is not None
+            # 세션마다 별도 HTTP 클라이언트·스레드(thread_id)다 - 한 연결을 나눠 쓰면 동시성이 아니다.
+            with ScenarioClient(client_config) as worker:
+                return _run_once(
+                    catalog, config, meta, profile, _as_member(bundle, ref), wave, worker, raw,
+                    out_dir, skipped, turn_offset=slot * BUNDLE_TURN_STRIDE,
+                    extras_base={"concurrent_of": ref.id, "sessions": int(sessions),
+                                 "bundle_note": _bundle_note(bundle)},
+                    **kwargs,
+                )
+
+        with ThreadPoolExecutor(max_workers=int(sessions)) as pool:
+            executed += sum(pool.map(work, range(len(members)), members))
+    return executed
+
+
+def _run_profile(
+    catalog: Catalog,
+    config: RunConfig,
+    meta: dict[str, Any],
+    profile: str,
+    scenarios: list[Scenario],
+    port: int,
+    raw: RawLog,
+    out_dir: Path,
+    skipped: list[dict[str, Any]],
+    token: Optional[str] = None,
+    token_source: Optional[TokenSource] = None,
+    server_timeouts: Optional[dict[str, float]] = None,
+) -> int:
+    executed = 0
+    client_config = ClientConfig(
+        port=port,
+        token=token or config.token,
+        timeout_sec=config.timeout_sec,
+        artifact_dir=out_dir / "artifacts",
+        token_source=token_source,
+        server_timeouts=dict(server_timeouts or {}),
+    )
+    live = config.mode != "mock"
+    kwargs: dict[str, Any] = {
+        "preference": clarify.load_zone_preference(),
+        "sql_tail": SqlAuditTail(out_dir / "logs" / f"server-{profile}.log") if live else None,
+        "token_source": token_source,
+    }
+    if live:
+        cleanup = _cleanup_leftover_setup(scenarios, meta.get("env"))
+        if cleanup:
+            meta.setdefault("setup_cleanup", []).extend(cleanup)
+    with ScenarioClient(client_config) as client:
+        # X-2: 세그먼트마다 **토큰만** 새로 잡는다. 서버는 재기동하지 않고(프로파일 1개 =
+        # 서버 기동 1회 · §3.5), 체크포인트 DB·`raw.jsonl` 도 그대로 공유한다(§15.4-3·4).
+        # teardown 은 세그먼트가 아니라 run 단위라 여기서 손대지 않는다(§15.4-5 · D-217 ⑦·⑪).
+        chunks = segments(scenarios, config.segment)
+        total_segments = len(chunks)
+        for index, chunk in enumerate(chunks):
+            # 토큰을 쓰지 않는 프로파일(인증 off·모의 서버)은 갱신할 것이 없다 -
+            # 시도하면 세그먼트마다 허위 경고가 나서 진짜 경고를 덮는다.
+            if index > 0 and token_source is not None and token_source.token:
+                refreshed = token_source.refresh(reason=f"세그먼트 {index + 1} 시작")
+                if refreshed is None and token_source.can_refresh:
+                    # 조용히 넘기면 이 세그먼트 전체가 401 로 무효가 된다.
+                    print(
+                        f"       [경고] 세그먼트 {index + 1} 토큰 재발급 실패 - "
+                        "이후 턴이 무효로 적재될 수 있다",
+                        flush=True,
+                    )
+            if config.segment:
+                # 콘솔은 ASCII 구두점만 쓴다(cp949 - 모듈 독스트링).
+                print(
+                    f"       [세그먼트 {index + 1}/{total_segments}] "
+                    f"시나리오 {len(chunk)}건: {', '.join(s.id for s in chunk[:3])}"
+                    f"{' ...' if len(chunk) > 3 else ''}",
+                    flush=True,
+                )
+            executed += _run_segment(
+                catalog, config, meta, profile, chunk, client, client_config,
+                raw, out_dir, skipped, kwargs,
+            )
+    return executed
+
+
+def _run_segment(
+    catalog: Catalog,
+    config: RunConfig,
+    meta: dict[str, Any],
+    profile: str,
+    scenarios: list[Scenario],
+    client: ScenarioClient,
+    client_config: ClientConfig,
+    raw: RawLog,
+    out_dir: Path,
+    skipped: list[dict[str, Any]],
+    kwargs: dict[str, Any],
+) -> int:
+    """세그먼트 1개(시나리오 목록)를 순서대로 실행한다. 분할이 없으면 전체가 1 세그먼트다."""
+    executed = 0
+    for scenario in scenarios:
+        if not scenario.prompt_authored:
+            # 보낼 프롬프트가 없거나(원문이 산문) 러너가 그 흐름을 표현하지 못한다
+            # (반복·동시성·쓰기 선행 조건). 원인을 여기서 단정하지 않는다 - 사유는
+            # 시나리오 파일의 해당 항목 주석에 적는다(k_load.yaml 선례).
+            skipped.append({
+                "scenario_id": scenario.id,
+                "reason": "prompt_authored: false - 실행 불가 사유는 시나리오 파일의 "
+                          "해당 항목 주석에 있다",
+            })
+            continue
+        if scenario.action:
+            executed += _run_action(config, meta, profile, scenario, raw, skipped)
+            continue
+        if scenario.replay:
+            executed += _run_replay(
+                catalog, config, meta, profile, scenario, client, raw, out_dir, skipped, **kwargs
+            )
+            continue
+        if scenario.concurrent:
+            executed += _run_concurrent(
+                catalog, config, meta, profile, scenario, client_config, raw, out_dir,
+                skipped, **kwargs,
+            )
+            continue
+        repeats = scenario.repeat or (3 if scenario.is_r_group else config.repeat)
+        for repeat in range(repeats):
+            executed += _run_once(
+                catalog, config, meta, profile, scenario, repeat, client, raw, out_dir, skipped,
+                **kwargs,
+            )
+    return executed
+
+
+def _send(
+    client: ScenarioClient, endpoint: str, payload: dict[str, Any], upload: Path | None,
+    anonymous: bool = False,
+) -> Observation:
+    started = time.perf_counter()
+    try:
+        if anonymous:
+            # plans/122 H-6 턴 `auth: none` - 인증 헤더 없이 보내고 재로그인 재시도를 하지 않는다.
+            return client.send(endpoint, payload, upload, anonymous=True)
+        return client.send(endpoint, payload, upload)
+    except Exception as exc:  # 한 건의 예외가 스위트를 멈추지 않는다
+        return Observation(
+            status="error",
+            wall_ms=(time.perf_counter() - started) * 1000,
+            error=f"러너 예외: {type(exc).__name__}: {exc}",
+        )
+
+
+def _answer_questions(
+    client: ScenarioClient,
+    scenario: Scenario,
+    endpoint: str,
+    upload: Optional[Path],
+    thread_id: str,
+    query: str,
+    obs: Observation,
+    preference: list[str],
+    log: list[dict[str, Any]],
+    anonymous: bool = False,
+) -> Observation:
+    """역질문에 결정적으로 답하며 턴을 끝까지 진행한다(D-216). 답을 받은 뒤의 관측치를 돌려준다.
+
+    2026-09-14 폐쇄망 런은 93턴 중 48턴이 존 선택 역질문에서 끝나 기능까지 가지 못했다.
+    같은 질문이 되풀이되면(답이 먹지 않았다) 멈추고 그 역질문을 그대로 판정한다 -
+    무한 왕복을 막고, 답이 거부됐다는 사실을 판정에서 숨기지 않는다.
+    """
+    asked: set[str] = set()
+    selection: Optional[dict[str, Any]] = None
+    for _ in range(clarify.MAX_AUTO_ANSWERS):
+        question = clarify.pending_question(obs)
+        if question is None or question.signature in asked:
+            break
+        body = clarify.build_answer(
+            question, override=scenario.auto_answer, preference=preference, last_query=query
+        )
+        if body is None:
+            break
+        asked.add(question.signature)
+        answer_endpoint, resend_file = clarify.answer_endpoint(endpoint, question)
+        log.append({
+            **clarify.summarize_answer(question, body),
+            # plans/123 V-2 - 역질문 reason · 문구 · 제시 존
+            **clarify.question_record(question),
+            "endpoint": answer_endpoint,
+            "question_status": obs.status,
+            "question_wall_ms": round(obs.wall_ms, 1),
+        })
+        if question.kind == "zone":
+            selection = {"selected": list(body.get("selected_db_ids") or []),
+                         "offered": clarify.offered_db_ids(question.payload) or None,
+                         "source": "auto"}
+        obs = _send(
+            client, answer_endpoint, {**body, "thread_id": thread_id},
+            upload if resend_file else None, anonymous,
+        )
+    if selection is not None:
+        # plans/123 V-2 · V-4 `zone_coverage_named` - 러너가 고른 존이 이 턴의 조회 범위다.
+        obs.zone_selection = selection
+    return obs
+
+
+def _turn_zone_selection(
+    payload: dict[str, Any], last_obs: Optional[Observation]
+) -> Optional[dict[str, Any]]:
+    """턴이 직접 보낸 존 선택(`selected_db_ids` - F-06형 2턴의 답 턴)의 기록(plans/123 V-2).
+
+    제시 존은 직전 턴 역질문의 선택지다. 역질문이 없었으면 None(판정기가 레지스트리 존으로
+    대신한다).
+    """
+    selected = payload.get("selected_db_ids")
+    if not selected:
+        return None
+    question = (last_obs.clarification if last_obs else None) or {}
+    offered = clarify.offered_db_ids(question) if isinstance(question, dict) else []
+    return {"selected": [str(d) for d in selected], "offered": offered or None, "source": "turn"}
+
+
+def _hold_for_env(turn: Turn, scenario: Scenario, run_env: Optional[str]) -> Turn:
+    """환경이 다른 시나리오의 데이터 의존 단언을 보류한다(D-216 - 사용자 확정 "실행하고 판정 보류").
+
+    기대값은 선언한 환경의 데이터(샌드박스 픽스처 서버·존 구성)로 쓰였다. 다른 환경에서 그대로
+    판정하면 거짓 불합격이 된다. 판정기는 고치지 않고 `manual_review` 로 넘겨 합격으로 세지 않는다.
+    """
+    held = sorted(key for key in turn.expect if key not in ENV_NEUTRAL_KEYS)
+    expect = {key: value for key, value in turn.expect.items() if key in ENV_NEUTRAL_KEYS}
+    note = (
+        f"환경 불일치 - 시나리오 env={scenario.env}, 실행 env={run_env or '판정 불가'}. "
+        f"데이터 의존 단언 {len(held)}종 보류({', '.join(held) or '없음'})"
+    )
+    original = expect.get("manual_review")
+    expect["manual_review"] = f"{original} / {note}" if original else note
+    return Turn(send=turn.send, expect=expect, endpoint=turn.endpoint, auto_answer=turn.auto_answer)
+
+
+def mark_env_hold(verdict: Verdict, original_review: Any) -> None:
+    """환경 보류 턴의 보류 출처를 정리한다(plans/122 J-3 · D-276 ① — 성능 표본 분리의 판별 칸).
+
+    `env_mismatch` 를 맨 앞에 두고, 원래 턴에 `manual_review` 가 없었으면 `_hold_for_env` 가
+    끼워 넣은 문구 때문에 붙었을 수 있는 `catalog` 를 뺀다. `manual_notes` 문구는 건드리지 않는다.
+    무효 턴은 출처를 비우는 계약이라(T-c) 손대지 않는다.
+    """
+    if verdict.func == INVALID_VERDICT:
+        return
+    rest = [source for source in verdict.manual_sources if source != "env_mismatch"]
+    if not original_review:
+        rest = [source for source in rest if source != "catalog"]
+    verdict.manual_sources = ["env_mismatch", *rest]
+
+
+def anchor_now() -> str:
+    """턴 송신 시각(plans/122 H-2) - KST ISO 8601 초 단위. 상대 기간·오라클 자리표의 앵커다."""
+    return datetime.now(KST).isoformat(timespec="seconds")
+
+
+def needs_result_rows(expect: dict[str, Any]) -> bool:
+    """이 턴의 판정에 결과 행(H-1 `download-csv`)이 필요한가.
+
+    `result` 단언 · 결과 행으로 판정하는 `period_covers`(`relative`·`month_span`) · `oracle` 이 있을
+    때만 받는다 - 다운로드마다 서버 감사에 `file download` 가 남기 때문이다.
+    """
+    if "result" in expect or "oracle" in expect:
+        return True
+    period = expect.get("period_covers")
+    return isinstance(period, dict) and bool(RESULT_PERIOD_KEYS & set(period))
+
+
+def collect_result_rows(client: ScenarioClient, obs: Observation) -> dict[str, Any]:
+    """턴의 결과 행을 받는다(plans/122 H-1). 받지 못해도 예외 없이 `unavailable` 로 돌려준다."""
+    if not obs.query_id:
+        return result_unavailable("응답에 query_id 가 없다 - 결과 행을 받을 수 없다")
+    try:
+        return client.download_csv(obs.query_id)
+    except Exception as exc:  # 한 턴의 수집 실패가 스위트를 멈추지 않는다 - 판정기가 보류한다
+        return result_unavailable(f"러너 예외: {type(exc).__name__}: {exc}")
+
+
+@dataclass
+class TurnOracle:
+    """턴 1회의 오라클 실행 계획(plans/122 O-1 · O-4). `oracle_plan` 이 만들고 `run_phase` 가 돈다.
+
+    `targets` 가 비면 DB 를 부르지 않고 `skip_reason` 을 post 결과로 남긴다(판정기가 보류한다).
+    """
+
+    spec: dict[str, Any]
+    targets: list[str]
+    anchor_at: str
+    run_id: str
+    scenario_id: str
+    log_path: Path
+    skip_reason: str | None = None
+
+    @property
+    def pre_post(self) -> bool:
+        return self.spec.get("snapshot") == "pre_post"
+
+    def run_phase(self, phase: str) -> dict[str, Any]:
+        """phase(pre|post) 1회 — 대상 DB 마다 직렬 · 읽기 전용(`oracle.run_oracle` · 예외 없음)."""
+        if self.skip_reason:
+            return {"status": "unavailable", "reason": self.skip_reason, "rows_by_db": {},
+                    "elapsed_ms": 0.0, "phase": phase, "limit_by_db": {}}
+        return _oracle.run_oracle(
+            self.spec, db_ids=self.targets, anchor_at=self.anchor_at, run_id=self.run_id,
+            scenario_id=self.scenario_id, log_path=self.log_path,
+            timeout_sec=ORACLE_TIMEOUT_PER_DB_SEC * len(self.targets), phase=phase,
+        )
+
+
+def oracle_plan(
+    expect: dict[str, Any], *, live: bool, anchor_at: str, run_id: str, scenario_id: str,
+    out_dir: Path,
+) -> TurnOracle | None:
+    """이 턴에서 오라클 DB 조회를 할 것인가(plans/122 O-1). 하지 않으면 None.
+
+    **DB 를 부르지 않는 턴**: 모의 실행(`live=False`) · 환경 보류 턴(판정용 `expect` 에서
+    `oracle` 이 빠진다 - `_hold_for_env`) · `source: fixture`(판정기가 정답표를 직접 읽는다) ·
+    오라클 선언 없음. 대상 DB 는 `catalog.oracle_targets`(spec `db_ids` → 턴 `expect.db_ids`)로
+    로더와 같게 정한다. 둘 다 없으면 실행하지 않고 사유를 남긴다 - 시스템이 고른 DB 를
+    따라가면 오라우팅을 정답으로 삼는다.
+    """
+    spec = expect.get("oracle")
+    if not live or not isinstance(spec, dict) or spec.get("source", "sql") != "sql":
+        return None
+    targets = oracle_targets(spec, expect)
+    return TurnOracle(
+        spec=spec, targets=targets, anchor_at=anchor_at, run_id=run_id, scenario_id=scenario_id,
+        log_path=out_dir / ORACLE_LOG_NAME,
+        skip_reason=None if targets else (
+            "대상 DB 가 없다 - oracle.db_ids 도 턴 expect.db_ids 도 없다"
+            "(시스템이 고른 DB 로 오라클을 돌리지 않는다)"),
+    )
+
+
+#: 생성 업로드를 쓰는 조각 크기(1 MiB) - 상한 64 MiB(`catalog.UPLOAD_GENERATE_MAX_BYTES`)를 메모리에
+#: 한 번에 올리지 않는다.
+_GENERATE_CHUNK = 1024 * 1024
+
+
+def generate_upload(out_dir: Path, scenario: Scenario, repeat: int) -> Path:
+    """`upload_generate: {ext, size_bytes}` 파일을 run 디렉터리 `generated/` 에 만든다(H-6).
+
+    **내용은 채움 바이트(0x00)다 - 유효한 xlsx 로 만들지 않는다.** 서버 업로드 검사 순서가 ①확장자
+    (파일명) ②존 역질문 게이트 ③크기(10MB) ④DRM 해제 ⑤파싱이라(`src/api/routes/query.py`
+    `process_file_query` · `process_file_query_stream` 실측 2026-09-29), 한도 초과 크기와 거부
+    확장자는 내용을 읽기 전에 판정된다. 크기 검사 전에 존 역질문(②)이 나오면 러너 자동
+    응답(D-216)이 파일을 다시 실어 보내므로(`clarify.answer_endpoint`) 크기 검사에 닿는다.
+    본문 크기 상한 미들웨어는 없다.
+    """
+    folder = out_dir / GENERATED_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    spec = scenario.upload_generate
+    path = folder / f"{scenario.id}-{repeat}{spec['ext']}"
+    remaining = int(spec["size_bytes"])
+    with open(path, "wb") as handle:
+        while remaining > 0:
+            size = min(remaining, _GENERATE_CHUNK)
+            handle.write(b"\0" * size)
+            remaining -= size
+    return path
+
+
+def _upload_source(scenario: Scenario, generated: Path | None) -> Path | None:
+    """이 실행이 올릴 파일 - 러너 생성본(H-6)이 있으면 그것, 없으면 저장소 양식(`upload`)."""
+    if generated is not None:
+        return generated
+    return REPO_ROOT / scenario.upload if scenario.upload else None
+
+
+def _resume_state(
+    raw: RawLog, profile: str, scenario_id: str, repeat: int, turn_nos: list[int]
+) -> tuple[str, list[int]]:
+    """재개 때 이 시나리오 실행 1회를 어떻게 다룰지 - (상태, 이미 끝난 턴 번호) (109·CS-17).
+
+    재개는 **턴이 아니라 시나리오**로 판단한다(사용자 결정 2026-09-22 "멀티턴은 다시 돌려라").
+    멀티턴 승계는 한 thread 안에서만 성립하는데 thread_id 는 실행마다 새로 만든다. 끝난 턴을
+    건너뛰고 남은 턴만 돌리면 남은 턴이 **새 thread 에서 이전 턴 문맥·역질문 응답 재료 없이** 돈다 -
+    승계를 재는 시나리오가 다른 것을 잰다(`segments` 가 턴 경계에서 자르지 않는 것과 같은 이유).
+
+    - `new` - 끝난 턴이 없다. 새 run 과 똑같이 돈다.
+    - `done` - 전 턴이 끝났거나, 앞 턴이 fail/error 로 끝나 러너가 뒤 턴을 **일부러** 건너뛴
+      시나리오다(`_run_once` 의 break). 다시 돌지 않는다 - 뒤 턴만 돌리면 위와 같은 왜곡이다.
+    - `partial` - 일부만 끝났다(중간에 끊겼거나 뒤 턴이 무효). **1턴부터 새 thread 로 전부
+      다시 돈다.** 같은 키의 행이 한 번 더 적재되고, 소비자는 뒤 행을 결과로 읽는다
+      (`RawLog._remember` · `report.load_rows` · 벤치 `sweep.read_raw_rows`).
+    """
+    done = [turn_no for turn_no in turn_nos if raw.already(profile, scenario_id, turn_no, repeat)]
+    if not done:
+        return "new", done
+    if len(done) == len(turn_nos):
+        return "done", done
+    if done == turn_nos[:len(done)] and raw.verdict(
+        profile, scenario_id, done[-1], repeat
+    ) in ("fail", "error"):
+        return "done", done
+    return "partial", done
+
+
+def _run_once(
+    catalog: Catalog,
+    config: RunConfig,
+    meta: dict[str, Any],
+    profile: str,
+    scenario: Scenario,
+    repeat: int,
+    client: ScenarioClient,
+    raw: RawLog,
+    out_dir: Path,
+    skipped: list[dict[str, Any]],
+    preference: Optional[list[str]] = None,
+    sql_tail: Optional[SqlAuditTail] = None,
+    token_source: Optional[TokenSource] = None,
+    turn_offset: int = 0,
+    extras_base: Optional[dict[str, Any]] = None,
+) -> int:
+    group = catalog.groups[scenario.group]
+    # 실행마다 새 스레드를 쓴다 - drop_thread teardown 이 이것으로 보장된다.
+    thread_id = f"scn-{scenario.id}-{repeat}-{uuid.uuid4().hex[:6]}"
+    unsupported = _teardown(scenario)
+    executed = 0
+    zone_preference = clarify.load_zone_preference() if preference is None else preference
+    run_env = meta.get("env")
+    live = config.mode != "mock"
+    # 모의 실행은 판정기가 이미 내용 단언을 보류한다(assertions._MOCK_VERIFIABLE).
+    env_mismatch = live and scenario.env not in ("both", run_env)
+    base_extras: dict[str, Any] = dict(extras_base or {})
+
+    # 유사어 쓰기 시나리오(A-10)의 기준선. 선행 상태보다 먼저 떠야 되돌릴 범위가 정확하다.
+    synonym_baseline: Optional[dict[str, dict[str, list[str]]]] = None
+    if "unregister_synonym" in scenario.teardown and live and not env_mismatch:
+        try:
+            synonym_baseline = snapshot_synonyms()
+        except Exception as exc:
+            skipped.append({
+                "scenario_id": scenario.id,
+                "reason": f"유사어 기준선을 뜨지 못해 쓰기 시나리오를 실행하지 않았다 - 되돌릴 수 없다: "
+                          f"{type(exc).__name__}: {exc}",
+            })
+            return 0
+
+    # 폼필 확인 이력(plans/120 V-4) - 한 번 읽어 ①선적재 오염 탐지 ②forget_form_memory 기준선에
+    # 쓴다. 조회 전용(`touch=False`)이다. 환경 불일치여도 턴은 나가 이력을 쓰므로 실 모드면 늘 본다.
+    form_sig: Optional[str] = None
+    form_before: Optional[list[str]] = None
+    form_check_error: Optional[str] = None
+    if live and scenario.upload:
+        try:
+            form_sig = form_signature_of(REPO_ROOT / scenario.upload)
+            if form_sig:
+                form_before = snapshot_form_memory(form_sig)
+        except Exception as exc:  # 읽지 못하면 판정을 바꾸지 않는다 - 사실은 행에 남긴다
+            form_check_error = f"{type(exc).__name__}: {exc}"
+    forget_form = "forget_form_memory" in scenario.teardown and live
+    if forget_form and form_before is None:
+        skipped.append({
+            "scenario_id": scenario.id,
+            "reason": "폼필 확인 이력 기준선을 뜨지 못해 쓰기 시나리오를 실행하지 않았다 - "
+                      "되돌릴 수 없다: "
+                      + (form_check_error or "양식 시그니처 없음(시트 헤더가 없는 양식)"),
+        })
+        return 0
+    # 무효화는 이력 상태에 판정이 달린 시나리오만(`form_memory_dependent`) - 나머지는 사실만 남긴다.
+    preload_reason = (
+        f"{FORM_MEMORY_PRELOAD_REASON} (양식 시그니처 {form_sig} · 필드 {form_before})"
+        if form_before and form_memory_dependent(scenario) else None
+    )
+    if form_before:
+        base_extras["form_memory_preload"] = {
+            "signature": form_sig, "fields": form_before,
+            "invalidated": bool(preload_reason),
+        }
+    elif form_check_error:
+        base_extras["form_memory_check"] = f"미확인 - {form_check_error}"
+
+    # 선행 상태(K-10 고의 오매핑 유사어). 만들지 못하면 전제가 없는 측정이라 실행하지 않는다.
+    setup_live = bool(scenario.setup) and live and not env_mismatch
+    if scenario.setup and not setup_live:
+        base_extras["setup"] = ["모의 실행 - setup 미수행" if not live else "환경 불일치 - setup 미수행"]
+    if setup_live:
+        try:
+            base_extras["setup"] = apply_synonym_setup(scenario.setup, remove=False)
+        except Exception as exc:
+            skipped.append({
+                "scenario_id": scenario.id,
+                "reason": f"setup 실패 - 선행 상태를 만들지 못해 실행하지 않았다: "
+                          f"{type(exc).__name__}: {exc}",
+            })
+            return 0
+
+    turn_nos = [turn_offset + index for index in range(1, len(scenario.turns) + 1)]
+    resume_state, done_turns = _resume_state(raw, profile, scenario.id, repeat, turn_nos)
+    if resume_state == "partial":
+        # 다시 돈 사실을 조용히 넘기지 않는다 - run.json 과 콘솔에 남긴다(109·CS-17).
+        meta.setdefault("rerun_partial", []).append({
+            "profile": profile, "scenario_id": scenario.id, "repeat": repeat,
+            "done_turns": done_turns, "turns": len(turn_nos),
+            "attempt": len(meta.get("attempts") or []) or None,
+        })
+        print(
+            f"       [재개] {scenario.id} (반복 {repeat}) 턴 {len(done_turns)}/{len(turn_nos)} 만 "
+            "끝나 있어 1턴부터 새 thread 로 다시 돈다",
+            flush=True,
+        )
+    elif resume_state == "done" and len(done_turns) < len(turn_nos):
+        # 앞 턴이 fail/error 로 끊겨 끝난 시나리오다. `run.json` 은 끝에서 이번 시도의 `skipped` 로
+        # 새로 쓰이므로, 앞 시도가 남긴 건너뜀 사유를 같은 문구로 다시 적는다 - 안 적으면 사라진다.
+        # 이름을 `verdict` 와 가른다 - 같은 이름이면 아래 턴 판정(Verdict)의 타입이
+        # 문자열로 추론된다.
+        last_verdict = raw.verdict(profile, scenario.id, done_turns[-1], repeat)
+        for remaining in turn_nos[len(done_turns):]:
+            skipped.append({
+                "scenario_id": scenario.id,
+                "turn": remaining,
+                "reason": f"선행 턴 {done_turns[-1]} 이 {last_verdict} - 후속 턴 판정 불가",
+            })
+
+    last_obs: Optional[Observation] = None
+    last_query = ""
+    # 러너 생성 업로드(plans/122 H-6) - 이 실행 1회에만 쓰고 finally 에서 지운다.
+    generated: Path | None = None
+    try:
+        if scenario.upload_generate and resume_state != "done":
+            try:
+                generated = generate_upload(out_dir, scenario, repeat)
+            except OSError as exc:
+                skipped.append({
+                    "scenario_id": scenario.id,
+                    "reason": f"생성 업로드를 만들지 못해 실행하지 않았다(plans/122 H-6): "
+                              f"{type(exc).__name__}: {exc}",
+                })
+                return 0
+        source = _upload_source(scenario, generated)
+        for index, turn in enumerate(scenario.turns, start=1):
+            turn_no = turn_offset + index
+            if resume_state == "done":
+                continue
+            if token_source is not None:
+                # T-b: 재발급은 **턴 경계에서만** 한다. 턴 중간(역질문 왕복·멀티턴 승계)에
+                # 토큰이 바뀌면 교체와 승계가 겹쳐 무엇이 깨졌는지 구별되지 않는다.
+                token_source.maybe_refresh()
+            payload = clarify.complete_payload(dict(turn.send), last_obs, last_query)
+            payload["thread_id"] = thread_id
+            endpoint = turn.endpoint or scenario.endpoint
+            # 파일은 업로드 엔드포인트일 때만 싣는다. 답변 턴(JSON)에 파일을 다시 붙이면
+            # 체크포인터에 복원된 양식 대신 새 업로드로 취급돼 역질문 상태가 끊긴다.
+            upload = source if (source and endpoint in ("file", "file_stream")) else None
+            # plans/122 H-6 턴 `auth: none` - 헤더 없이 보낸다(401 이 기대값 · 재로그인
+            # 재시도 금지).
+            anonymous = turn.auth == "none"
+            if preload_reason:
+                # V-4 (b): 선적재 오염이면 턴을 **보내지 않는다**. 보내면 서버의 업로드 턴이 이력을
+                # `touch=True` 로 읽어 sliding TTL 을 늘리고 사용 횟수를 올린다 - 벤치가 오염 이력의
+                # 수명을 스스로 늘린다(run 20260923-140539 사용 42회 · 코드 리뷰 2026-09-28).
+                verdict = Verdict()
+                _invalidate(verdict, f"{preload_reason} - 턴을 보내지 않았다(TTL 연장 방지)")
+                extras = dict(base_extras)
+                if unsupported:
+                    extras["teardown_unsupported"] = unsupported
+                raw.append(_row(meta, profile, scenario, turn_no, repeat, Observation(),
+                                verdict, extras))
+                executed += 1
+                for remaining in range(index + 1, len(scenario.turns) + 1):
+                    skipped.append({
+                        "scenario_id": scenario.id,
+                        "turn": turn_offset + remaining,
+                        "reason": (f"선행 턴 {turn_no} 이 무효"
+                                   "(폼필 확인 이력 선적재 - 이력 삭제 후) - 재개(--resume) 대상"),
+                    })
+                break
+            sql_since = sql_tail.mark() if sql_tail else 0
+            traces_before = _trace_files() if live else set()
+            judged = _hold_for_env(turn, scenario, run_env) if env_mismatch else turn
+            # H-2 앵커 - 턴 송신 직전(역질문 자동 응답은 같은 턴이라 첫 송신 시각을 쓴다).
+            anchor_at = anchor_now()
+            # O-1·O-4 오라클 - 판정용 expect 기준(환경 보류 턴은 `oracle` 이 빠져 DB 를 부르지
+            # 않는다). pre·post 가 같은 자리표 리터럴을 쓰도록 앵커를 먼저 잡는다 - 앵커는 pre
+            # 소요만큼 송신보다 앞설 수 있다(월 경계 ±1일은 H-2 가 보류한다).
+            turn_oracle = oracle_plan(judged.expect, live=live, anchor_at=anchor_at,
+                                      run_id=str(meta.get("run_id") or ""),
+                                      scenario_id=scenario.id, out_dir=out_dir)
+            oracle_pre: dict[str, Any] | None = None
+            if turn_oracle is not None and turn_oracle.pre_post:
+                # 송신 직전 · **계측 밖**(wall_ms 는 `_send` 안에서 잰다) · 직렬.
+                oracle_pre = turn_oracle.run_phase("pre")
+            obs = _send(client, endpoint, payload, upload, anonymous)
+            # plans/123 V-2 - 자동 응답 전 첫 응답의 대응 등급. 자동 응답이 제품이 되물은 사실을
+            # 덮으므로 (R3-03·R4-12 - 123 §2.5) 최종 등급과 따로 남긴다.
+            pre_answer_mode = classify_mode(obs)[0]
+            turn_selection = _turn_zone_selection(payload, last_obs)
+            auto_answers: list[dict[str, Any]] = []
+            if turn.auto_answer and not clarify.expects_question(turn.expect):
+                obs = _answer_questions(
+                    client, scenario, endpoint, upload, thread_id,
+                    str(payload.get("query") or ""), obs, zone_preference, auto_answers,
+                    anonymous=anonymous,
+                )
+            if obs.zone_selection is None and turn_selection is not None:
+                obs.zone_selection = turn_selection
+            obs.anchor_at = anchor_at
+            if needs_result_rows(judged.expect):
+                # H-1: 턴 완료 직후·판정 전에 받는다. **계측 밖**이다 - wall_ms·processing_time 은
+                # 송신이 이미 정했다. 서버 결과 저장소가 LRU 1,000건이라 미루면 축출될 수 있다.
+                # 다운로드마다 서버 감사에 `file download` 이벤트가 남는다(필요한 턴에서만
+                # 받는 이유).
+                obs.result = collect_result_rows(client, obs)
+            if turn_oracle is not None:
+                # O-1: 턴 완료·결과 행 수집 **뒤** · 계측 밖 · 직렬(gp·yd 풀을 시스템과 공유한다
+                # - §9.2).
+                obs.oracle = {"id": turn_oracle.spec.get("id"),
+                              "targets": list(turn_oracle.targets),
+                              "pre": oracle_pre, "post": turn_oracle.run_phase("post")}
+            sql_entries = sql_tail.collect(sql_since, thread_id) if sql_tail else []
+            _apply_sql_audit(obs, sql_entries)
+            if sql_tail and not obs.rewrite_traces:
+                obs.rewrite_traces = sql_tail.collect_rewrite_traces(sql_since, thread_id)
+            last_obs = obs
+            last_query = str(payload.get("query") or last_query)
+
+            if obs.has_file and obs.file_name:
+                if obs.query_id:
+                    saved = client.download(
+                        obs.query_id,
+                        out_dir / "artifacts",
+                        f"{scenario.id}-{repeat}-{turn_no}-{obs.file_name}",
+                    )
+                    if saved:
+                        obs.artifacts.append(str(saved))
+
+            verdict = evaluate_turn(scenario, index, judged, obs, group,
+                                    mock=(config.mode == "mock"))
+            if env_mismatch:
+                # J-3: 환경 보류 출처를 맨 앞에(D-276 ① 성능 표본 분리의 판별 칸).
+                mark_env_hold(verdict, turn.expect.get("manual_review"))
+            extras: dict[str, Any] = dict(base_extras)
+            if unsupported:
+                extras["teardown_unsupported"] = unsupported
+            if auto_answers:
+                # 무엇에 어떻게 답했는지가 판정을 검증하는 재료다 - 역질문 자체가 회귀인지도 여기서 본다.
+                extras["auto_answers"] = auto_answers
+            extras["pre_answer_mode"] = pre_answer_mode
+            if env_mismatch:
+                extras["env_mismatch"] = {"scenario_env": scenario.env, "run_env": run_env}
+            if sql_entries:
+                extras["executed_sqls"] = sql_entries
+            if live:
+                new_traces = sorted(_trace_files() - traces_before)
+                if new_traces:
+                    extras["trace_files"] = new_traces
+            raw.append(_row(meta, profile, scenario, turn_no, repeat, obs, verdict, extras))
+            executed += 1
+
+            if verdict.func in ("fail", "error", INVALID_VERDICT) and index < len(scenario.turns):
+                # 앞 턴이 깨지면 뒤 턴의 판정은 의미가 없다. 건너뛴 사실을 남긴다.
+                # 무효(T-c)도 여기 포함한다 - 인증이 죽은 채로 뒤 턴을 보내 봐야 401 이 늘 뿐이다.
+                # 선적재 오염 무효(V-4)도 같다 - 이력을 지우기 전에는 뒤 턴도 오염된 상태에서 돈다.
+                cause = (
+                    "폼필 확인 이력 선적재 - 이력 삭제 후"
+                    if str(verdict.invalid_reason or "").startswith(FORM_MEMORY_PRELOAD_REASON)
+                    else "러너 인증 실패"
+                )
+                reason = (
+                    f"선행 턴 {turn_no} 이 무효({cause}) - 재개(--resume) 대상"
+                    if verdict.func == INVALID_VERDICT
+                    else f"선행 턴 {turn_no} 이 {verdict.func} - 후속 턴 판정 불가"
+                )
+                for remaining in range(index + 1, len(scenario.turns) + 1):
+                    skipped.append(
+                        {
+                            "scenario_id": scenario.id,
+                            "turn": turn_offset + remaining,
+                            "reason": reason,
+                        }
+                    )
+                break
+    finally:
+        if generated is not None:
+            generated.unlink(missing_ok=True)
+        if setup_live:
+            try:
+                apply_synonym_setup(scenario.setup, remove=True)
+            except Exception as exc:
+                skipped.append({
+                    "scenario_id": scenario.id,
+                    "reason": f"setup 되돌리기 실패 - 다음 실행 시작 때 다시 지운다: "
+                              f"{type(exc).__name__}: {exc}",
+                })
+        if synonym_baseline is not None:
+            try:
+                meta.setdefault("teardown_log", []).append({
+                    "scenario_id": scenario.id, "repeat": repeat,
+                    "unregister_synonym": remove_synonym_additions(synonym_baseline,
+                                                                   scenario.unregister_words),
+                })
+            except Exception as exc:
+                skipped.append({
+                    "scenario_id": scenario.id,
+                    "reason": f"유사어 되돌리기 실패 - 유사어 사전을 수동으로 확인할 것: "
+                              f"{type(exc).__name__}: {exc}",
+                })
+        if forget_form and form_sig and form_before is not None:
+            try:
+                meta.setdefault("teardown_log", []).append({
+                    "scenario_id": scenario.id, "repeat": repeat,
+                    "forget_form_memory": forget_form_memory_additions(
+                        form_sig, form_before, scenario.forget_form_fields),
+                })
+            except Exception as exc:
+                skipped.append({
+                    "scenario_id": scenario.id,
+                    "reason": f"폼필 확인 이력 되돌리기 실패 - 양식 시그니처 {form_sig} 의 "
+                              f"{scenario.forget_form_fields} 를 수동으로 확인할 것: "
+                              f"{type(exc).__name__}: {exc}",
+                })
+
+    if unsupported:
+        skipped.append(
+            {
+                "scenario_id": scenario.id,
+                "reason": f"teardown 미지원: {', '.join(unsupported)} - 상태 오염 가능",
+            }
+        )
+    return executed
+
+
+def next_run_id() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def latest_run() -> Optional[Path]:
+    if not RESULTS_ROOT.exists():
+        return None
+    runs = sorted((p for p in RESULTS_ROOT.iterdir() if p.is_dir()), reverse=True)
+    return runs[0] if runs else None

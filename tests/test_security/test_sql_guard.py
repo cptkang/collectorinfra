@@ -95,11 +95,22 @@ class TestDetectInjectionPatterns:
         )
         assert len(detected) > 0
 
-    def test_comment_injection_detected(self, guard):
+    def test_plain_block_comment_is_not_injection(self, guard):
+        """LLM이 붙이는 설명용 블록 주석은 인젝션이 아니다(2026-05-29 결정).
+
+        종전에는 블록 주석 자체를 탐지했으나, 생성 SQL의 주석이 전부 걸려 오탐이 됐다.
+        """
         detected = guard.detect_injection_patterns(
             "SELECT * FROM servers /* injected comment */"
         )
-        assert len(detected) > 0
+        assert detected == []
+
+    def test_comment_spliced_keyword_detected(self, guard):
+        """주석으로 키워드를 쪼개도 탐지된다 — 주석을 지우지 않고 공백으로 치환하기 때문."""
+        detected = guard.detect_injection_patterns(
+            "SELECT a FROM t UNION/**/SELECT password FROM users"
+        )
+        assert len(detected) > 0, "주석 분할 우회가 탐지되지 않았다"
 
     def test_xp_cmdshell_detected(self, guard):
         detected = guard.detect_injection_patterns(

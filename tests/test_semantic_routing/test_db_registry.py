@@ -69,12 +69,12 @@ class TestDBRegistry:
         assert registry.is_registered("nonexistent") is False
 
     def test_get_db_info(self):
-        """DB 정보를 올바르게 반환한다."""
+        """DB 정보를 올바르게 반환한다 (polestar = 로컬 개발 샌드박스 도메인, D-076 후속 재등재)."""
         config = _make_config(active_db_ids=["polestar"])
         registry = DBRegistry(config)
         info = registry.get_db_info("polestar")
         assert info["db_id"] == "polestar"
-        assert info["display_name"] == "Polestar DB"
+        assert info["display_name"] == "로컬 개발 샌드박스 Polestar"
         assert info["is_active"] is True
 
     def test_get_all_db_info(self):
@@ -105,8 +105,12 @@ class TestMultiDBConfig:
         assert "itam" not in active
 
     def test_no_active_dbs(self):
-        """연결이 없으면 빈 목록을 반환한다."""
-        config = MultiDBConfig()
+        """활성 DB를 명시적으로 비우면 빈 목록을 반환한다.
+
+        MultiDBConfig는 BaseSettings라 기본 생성 시 로컬 .env의 ACTIVE_DB_IDS가 누수된다
+        (Known Mistakes 2026-06-17) — 검증 대상 필드를 명시해 환경 비의존으로 고정한다.
+        """
+        config = MultiDBConfig(active_db_ids_csv="")
         assert config.get_active_db_ids() == []
 
     def test_csv_parsing(self):

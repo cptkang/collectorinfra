@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.state import AgentState, OrganizedData, create_initial_state
+from tests.mocks.streaming_llm import attach_astream
 
 
 # ============================================================
@@ -149,8 +150,12 @@ class TestLegacyRegression:
         result = await field_mapper(state, llm=AsyncMock(), app_config=MagicMock())
 
         assert result["current_node"] == "field_mapper"
-        assert "column_mapping" not in result
-        assert "mapped_db_ids" not in result
+        # field_mapper는 스킵 경로에서도 매핑 산출물 키를 전부 None으로 되돌린다 —
+        # LangGraph 체크포인터는 델타만 병합하므로 키를 빼면 직전 턴의 매핑이 그대로
+        # 남는다. "매핑하지 않았다"는 키 부재가 아니라 None으로 표현된다.
+        assert result["column_mapping"] is None
+        assert result["mapped_db_ids"] is None
+        assert result["db_column_mapping"] is None
 
     @pytest.mark.asyncio
     async def test_legacy_map_fields_single_db(self):
@@ -619,7 +624,9 @@ class TestOutputGeneratorMappingDisplay:
         )
 
         mock_llm = AsyncMock()
-        mock_llm.ainvoke.return_value = MagicMock(content="서버 현황 결과입니다.")
+        msg = MagicMock(content="서버 현황 결과입니다.")
+        mock_llm.ainvoke.return_value = msg
+        attach_astream(mock_llm, lambda: msg)
 
         mock_config = MagicMock()
         result = await output_generator(state, llm=mock_llm, app_config=mock_config)
@@ -651,7 +658,9 @@ class TestOutputGeneratorMappingDisplay:
         )
 
         mock_llm = AsyncMock()
-        mock_llm.ainvoke.return_value = MagicMock(content="서버 목록입니다.")
+        msg = MagicMock(content="서버 목록입니다.")
+        mock_llm.ainvoke.return_value = msg
+        attach_astream(mock_llm, lambda: msg)
 
         result = await output_generator(state, llm=mock_llm, app_config=MagicMock())
 
@@ -806,7 +815,12 @@ class TestSynonymRegistrationFlow:
             )
 
         assert "2건" in result["final_response"]
-        assert mock_cm.save_synonyms.call_count >= 1
+        # 사용자가 확정한 단어는 operator 태그로 단어 단위 추가(plans/132 Y-8 — 종전 전체 재저장은
+        # 기본 `llm` 태그라 LLM 재생성·감쇠에서 사라졌다)
+        assert mock_cm.add_synonyms.await_count == 2
+        calls = mock_cm.add_synonyms.await_args_list
+        assert all(c.kwargs.get("source") == "operator" for c in calls)
+        mock_cm.save_synonyms.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_synonym_registration_selective(self):
@@ -920,7 +934,7 @@ class TestResultOrganizerMappingIntegration:
         assert organized["column_mapping"] is not None
 
     @pytest.mark.asyncio
-    async def test_data_sufficiency_check_with_mapping(self):
+    async def test_data_sufficiency_check_with_mapping(self, column_coverage_llm):
         """column_mapping 기반 충분성 검사가 동작한다."""
         from src.nodes.result_organizer import _check_data_sufficiency
 
@@ -933,13 +947,18 @@ class TestResultOrganizerMappingIntegration:
         }
 
         is_sufficient = await _check_data_sufficiency(
-            results, parsed, template, column_mapping=column_mapping
+            results, parsed, template, column_mapping=column_mapping,
+            llm=column_coverage_llm,
         )
         assert is_sufficient is True
+        if column_coverage_llm is not None:
+            assert column_coverage_llm.calls[-1][2] == [
+                "servers.hostname", "cpu_metrics.usage_pct",
+            ]
 
     @pytest.mark.asyncio
-    async def test_data_insufficiency_detected(self):
-        """매핑된 컬럼이 결과에 없으면 불충분으로 판단한다."""
+    async def test_data_insufficiency_detected(self, column_coverage_llm):
+        """매핑된 컬럼이 결과에 없으면 불충분으로 판단한다 (자동=스텁 / RUN_E2E=1 승인=실 LLM)."""
         from src.nodes.result_organizer import _check_data_sufficiency
 
         results = [{"unrelated_col": "value"}]
@@ -953,10 +972,13 @@ class TestResultOrganizerMappingIntegration:
         }
 
         is_sufficient = await _check_data_sufficiency(
-            results, parsed, template, column_mapping=column_mapping
+            results, parsed, template, column_mapping=column_mapping,
+            llm=column_coverage_llm,
         )
         # 매핑된 4개 컬럼 중 0개가 결과에 있음 → 불충분
         assert is_sufficient is False
+        if column_coverage_llm is not None:
+            assert column_coverage_llm.calls[-1][2] == []
 
 
 # ============================================================

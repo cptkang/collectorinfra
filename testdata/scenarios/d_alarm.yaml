@@ -1,0 +1,225 @@
+# 자동 생성 초안 (scripts/scenario/import_docs.py) - plans/94 §3.4
+#
+# expect 는 비어 있고 manual_review 만 들어 있다. 단언으로 옮긴 만큼만 자동 판정
+# 대상이 되며, 옮기지 않은 것은 리포트 9절 '수동 검토'에 계속 남는다.
+# plans 필드는 군 단위 기본값이다 - 시나리오별로 정확히 좁히는 것이 사람의 일이다.
+version: 1
+group:
+  id: D
+  name: "알람 조회"
+  latency_target_ms: 10000
+  policy_confirmed: false
+  source: "docs/29"
+# ★ 프로파일 이전 (V-a · G-1 확정 2026-09-16) — baseline → optin_alarm
+#
+# D군은 `cmm_alarm_def` 조인·LIMIT 준수 같은 **결정적 알람 경로의 동작**을 단언하는데
+# 종전에는 그 경로가 꺼진 baseline 에서 돌았다(`TEXT2SQL_ALARM_DETERMINISTIC` 기본 false).
+# G-1 은 "기본값을 올리기 전에 먼저 측정한다"로 확정됐으므로 **시나리오를 옮긴다** —
+# `config/scenarios/profiles.yaml` 의 optin_alarm 은 그 플래그 하나만 켠다.
+#
+# 아래 단언은 결정적 조립이 실제로 내는 SQL 을 **직접 뽑아 대조**했다(2026-09-16 ·
+# `try_deterministic_alarm_sql` 무과금 호출). 그 결과 셋으로 갈렸다:
+#   ① 통과 확인 — D-01
+#   ② 하네스 계약 결함이라 단언을 고침 — D-03(표기 단언 → 기간 의미 단언)
+#   ③ **제품 결함이라 단언을 그대로 둠** — D-02·D-04(사용자가 말한 건수를 버리고
+#      설정 상한을 쓴다) · D-05(임계값 조인 없음). 불합격이 나야 맞는 자리다.
+scenarios:
+  - id: D-01
+    plans: [44, 45]
+    title: "현재 발생 중인 심각(severity 3) 알람 목록을 10건만 조회해줘"
+    kind: normal
+    env: closed
+    profile: optin_alarm
+    endpoint: stream
+    turns:
+      - send:
+          query: "현재 발생 중인 심각(severity 3) 알람 목록을 10건만 조회해줘"
+        expect:
+          status: completed
+          sql_must_match: ["(?i)cmm_alarm_active", "(?i)alarmseverity\\s*=\\s*3",
+                          "(?i)dtime\\s+is\\s+null"]
+          # plans/122 H-1 — "9열 표준 알람 뷰"는 카탈로그 알람 패턴의 기본 차원 9개다
+          #   (`config/knowledge/_base/catalog.yaml` pattern_c.default_dimensions · 시맨틱 컴파일러 별칭
+          #   `src/semantic/coverage.py` _ALARM_DIM_ALIAS): severity_grade · occurred_at · server_name ·
+          #   ipaddress · hostname · resource_name · alarm_name · conditionlogtext · alarm_id.
+          #   2026-09-30 사용자 확정 「9열이 정답(조립 SQL 수정)」(D-291): 이 시나리오가 도는 결정적 알람 조립
+          #   (optin_alarm · `src/db_adapters/polestar/assembler.py` 활성 알람 목록)에 resource_name(CR.NAME)과
+          #   alarm_name(알람 정의명 — cmm_alarm_def LEFT JOIN)을 더하고 9열 밖 ack_status 를 뺐다. 같은 개념의
+          #   기존 이름(severity · alarm_time · description)은 별칭 목록으로 받는다.
+          #   종전 수동 문구: "9열 표준 알람 뷰 중 resource_name(자원명)·alarm_name(알람 정의명) 2열 — 결정적 알람
+          #   조립(optin_alarm)은 8열이라 없다. 계약(9열 vs 8열) 확정 전 수동"
+          result:
+            columns:
+              - [alarm_id]
+              - [severity_grade, severity, alarmseverity]
+              - [occurred_at, alarm_time, ctime]
+              - [server_name]
+              - [ipaddress, ip_address]
+              - [hostname, host_name]
+              - [resource_name]
+              - [alarm_name]
+              - [conditionlogtext, description]
+  - id: D-02
+    plans: [44, 45]
+    title: "경고 이상 알람 이력을 최근 발생 순으로 100건 조회해줘"
+    kind: normal
+    env: closed
+    profile: optin_alarm
+    endpoint: stream
+    turns:
+      - send:
+          query: "경고 이상 알람 이력을 최근 발생 순으로 100건 조회해줘"
+        expect:
+          status: completed
+          # ★ 이 두 단언은 **일부러 남긴다** — 결정적 조립 실측(2026-09-16)에서
+          #   사용자가 말한 "100건"이 버려지고 설정 상한(LIMIT 1000)이 붙었다.
+          #   요건 침묵 누락이라 불합격이 나야 맞다(하네스 계약 결함이 아니다).
+          # plans/122 A-5: 행 제한은 방언 중립으로 본다(은행존 DB2 는 FETCH FIRST) — "100건" 준수라는
+          #   단언의 뜻은 그대로다. 원식: "(?i)\\blimit\\s+100\\b"
+          sql_must_match: ["(?i)\\b(?:limit\\s+100|fetch\\s+first\\s+100\\s+rows?)\\b",
+                          "(?i)order\\s+by[\\s\\S]*\\bdesc\\b"]
+          # 행 수는 DB별로 본다(Y-4) — 존 역질문 확대(CU-3) 전에는 3-DB 합산이 300이라
+          # per-DB 기대값과 비교돼 허위 불합격이었다.
+          row_count_per_db: {max: 100}
+  - id: D-03
+    plans: [44, 45]
+    title: "2026년 7월에 발생한 심각 알람이 몇 건인지 알려줘"
+    kind: normal
+    env: closed
+    profile: optin_alarm
+    endpoint: stream
+    turns:
+      - send:
+          query: "2026년 7월에 발생한 심각 알람이 몇 건인지 알려줘"
+        expect:
+          status: completed
+          # 기간은 **표기가 아니라 의미**로 본다(Y-5) — 결정적 조립은
+          #   `ctime >= TIMESTAMP '2026-07-01' AND ctime < TIMESTAMP '2026-08-01'` 을 낸다.
+          #   종전 `(?i)202607` 은 기간이 정확한데도 불합격이었다(허위 불합격).
+          # plans/120 U-6: 알람 테이블을 세는가 - 3단이 `SELECT COUNT(*) … FROM cmm_resource` 로 서버 수
+          #   1,690 을 "심각 알람 건수"로 답했다(run 20260923-140539). 단과 무관하게 잡는다.
+          sql_must_match: ["(?i)count\\s*\\(", "(?i)\\bcmm_alarm"]
+          period_covers: {from: "2026-07-01", to: "2026-08-01"}
+          row_count_per_db: {eq: 1}
+  - id: D-04
+    plans: [44, 45]
+    title: "최근 3개월간 경고 이상 알람이 가장 많이 발생한 상위 10개 서버를 알려줘"
+    kind: normal
+    env: closed
+    profile: optin_alarm
+    endpoint: stream
+    turns:
+      - send:
+          query: "최근 3개월간 경고 이상 알람이 가장 많이 발생한 상위 10개 서버를 알려줘"
+        expect:
+          status: completed
+          # ★ `limit 10` 단언도 **일부러 남긴다** — 실측상 "상위 10개"가 버려지고
+          #   LIMIT 1000 이 붙는다(D-02와 같은 요건 침묵 누락).
+          # plans/122 A-5: 행 제한은 방언 중립으로 본다(은행존 DB2 는 FETCH FIRST) — "상위 10개" 준수라는
+          #   단언의 뜻은 그대로다. 원식: "(?i)\\blimit\\s+10\\b"
+          sql_must_match: ["(?i)group\\s+by", "(?i)order\\s+by[\\s\\S]*\\bdesc\\b",
+                          "(?i)\\b(?:limit\\s+10|fetch\\s+first\\s+10\\s+rows?)\\b"]
+          row_count_per_db: {max: 10}
+  - id: D-05
+    plans: [44, 45]
+    title: "이번 달 CPU 임계값 초과 알람 이력 10건만 조회"
+    kind: normal
+    env: closed
+    profile: optin_alarm
+    endpoint: stream
+    turns:
+      - send:
+          query: "이번 달 CPU 임계값 초과 알람 이력 10건만 조회"
+        expect:
+          status: completed
+          # ★ 2026-09-16 교정 — 종전 단언 `cmm_alarm_def` 는 **D-202 4차 결정과 어긋났다.**
+          #   그 결정은 `scripts/diag_alarm_definitions.sql` 실측(판정 기준 b)에 근거한다:
+          #     - 정의명(cmm_alarm_def.name)은 센터별 임의 등록이라 필터 축으로 부적합
+          #     - res.resource_type 이 3존 공통 안정 축 (CPU=server.Cpus: B0 834K·GP 27K·YD 29K)
+          #   그리고 **"임계값/사용률"은 유형어를 동반하면 의미 잉여다 — 폴스타 알람 자체가
+          #   임계 이벤트이기 때문이다.** 즉 "CPU 임계값 초과 알람" = "CPU 알람"이고
+          #   cmm_alarm_def 조인은 필요 없다. 제품이 옳고 단언이 틀렸다.
+          # plans/131 연결(2026-09-30): `\bcmm_alarm` — 3단이 알람 대신 `cmm_metric_stat_d` 로 답한 SQL 이
+          #   `resource_type`·`server.Cpus` 만으로는 통과했다(거짓 합격 위험 · D-03 U-6 선례 · plans/103 T3-10).
+          sql_must_match: ["(?i)resource_type", "(?i)server\\.Cpus", "(?i)\\bcmm_alarm"]
+          # 정의명 축으로 되돌아가면 D-202 4차를 조용히 뒤집는 것이다.
+          sql_must_not_match: ["(?i)cmm_alarm_def\\.name", "(?i)d\\.name\\s+(?i:i?like)"]
+          # plans/122 H-2: "이번 달"을 턴 송신 시각 기준 창으로 본다(월 경계 ±1일 보류).
+          period_covers: {relative: this_month}
+          # 절단 고지는 옮기지 않았다 — 조건부다. 고지 문구는 `src/nodes/output_generator.py`
+          #   `_append_limit_truncation_note`("[안내] … 조회가 상한(LIMIT n)에 도달해 이후 행이 절단되었을 수
+          #   있습니다.")이고 **존별 행 수가 적용 상한에 닿을 때만** 붙는다. 세 run 의 2단 D-05 알람 조회는
+          #   4,226~4,472행(LIMIT 10000 미도달)이라 고지가 없는 것이 정답이다 — `response_must_contain` 으로 쓰면 옳은
+          #   응답이 떨어진다. 또 2단 경로는 존이 상한에 닿아도 이 고지를 붙이지 않았다(세 run 에서 존별
+          #   10,000행 도달 · 응답 4,000자 미절단인 2단 행 전부 고지 0건 — 예: 20260923-103638 D-06 b0=10000.
+          #   고지 문구가 나온 행은 3단뿐) — 별도 결함 후보.
+          manual_review: "절단 고지(CU-8) - 존별 행 수가 적용 상한에 닿았을 때만 응답에 실려야 한다(조건부라 기계 단언 불가)"
+  # plans/122 K-1 (G-2 · D-275 ②): 관측 전용 — 판정 모집단(합격 가능 가드 · 벤치 정상군)에서 뺀다.
+  #   판정 어휘는 그대로이고 아래 수동 문구는 관측 메모로 남긴다.
+  - id: D-06
+    plans: [44, 45]
+    title: "담당자 없는 미확인 알람"
+    kind: probe
+    env: closed
+    profile: optin_alarm
+    endpoint: stream
+    turns:
+      - send:
+          query: "담당자 없는 미확인 알람"
+        expect:
+          manual_review: "통보 다단 조인(yd-006 계열) - coverage=outside. 실패 허용 기록"
+  # ★ Y-10 (plans/94 §19.2 · 2026-09-21) — 존×알람 교차 단언 신설
+  #
+  # D-01~D-06 은 존을 **전혀 단언하지 않는다**(`db_ids` 0건 — grep 실측). 그래서 알람 경로의
+  # 오라우팅이 판정에 잡히지 않았다. 아래 둘은 그 공백을 메운다.
+  #
+  # 회귀 대상은 `plans/107` §2.4 의 2026-07-16 실측이다 — 플래너 LLM 이 **이번 턴 명시 위치와
+  # 직전 턴 위치를 병합**해 "은행존 알람"을 "김포 은행 공동존…"으로 재작성, gp 로 오라우팅했다.
+  # 현 방어는 `intent_planner.py:585-590`(명시 위치가 있으면 직전 위치 줄을 입력에서 제거)이며
+  # 이 시나리오가 그 방어의 회귀를 막는다.
+  #
+  # **`auto_answer: false` 가 필수다**(F-06 선례 `f_zone_hitl.yaml:160`). `plans/108` §1.5b 실측:
+  # 존 자동응답이 221/380턴(58.2%)에서 발동해 **정답 DB 로 교정**해 버리므로, 자동응답을 켠 채로는
+  # 오라우팅이 판정에 잡히지 않는다.
+  #
+  # 단일턴 은행존 라우팅 자체는 A-02 가 이미 단언한다(비알람 경로). 여기서 D-07 을 따로 두는 것은
+  # **알람 경로에서도 같은지**를 보기 위해서이고, D-08 의 대조군 역할을 겸한다 — D-07 이 함께
+  # 깨지면 원인은 멀티턴 병합이 아니라 존 라우팅 자체다.
+  - id: D-07
+    plans: [44, 45, 9]
+    title: "은행존에서 발생 중인 심각 알람 목록 10건만 보여줘"
+    kind: normal
+    env: closed
+    profile: optin_alarm
+    endpoint: stream
+    turns:
+      - send:
+          query: "은행존에서 발생 중인 심각 알람 목록 10건만 보여줘"
+        # 자동응답이 답해 버리면 오라우팅이 가려진다(D-216 · plans/108 §1.5b).
+        auto_answer: false
+        expect:
+          status: completed
+          db_ids: ["polestar_b0"]
+    notes: "Y-10 대조군 — 알람 경로의 단일턴 존 라우팅. D-08 과 함께 깨지면 원인은 멀티턴 병합이 아니다"
+  - id: D-08
+    plans: [44, 45, 90]
+    title: "김포 알람 조회 후 은행존 알람 후속 — 직전 위치 병합 오라우팅 회귀"
+    kind: normal
+    env: closed
+    profile: optin_alarm
+    endpoint: stream
+    turns:
+      - send:
+          query: "김포 공동존에서 발생 중인 알람 목록 10건만 보여줘"
+        expect:
+          status: completed
+          db_ids: ["polestar_cm_gp"]
+      - send:
+          query: "은행존 알람 10건만 보여줘"
+        # 이번 턴에 위치가 **명시**돼 있다. 직전 턴 위치(김포)와 병합되면 회귀다.
+        auto_answer: false
+        expect:
+          status: completed
+          db_ids: ["polestar_b0"]
+    teardown: [drop_thread]
+    notes: "plans/107 §2.4 2026-07-16 — '은행존 알람'이 '김포 은행 공동존…'으로 재작성돼 gp 오라우팅. 방어는 intent_planner.py:585-590"

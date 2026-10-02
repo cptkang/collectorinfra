@@ -1,0 +1,42 @@
+{
+ "id": "Q-ALARM-ACTIVE",
+ "turns": [
+  {
+   "query": "현재 발생 중인 알람을 심각도가 높은 순서로 보여줘",
+   "file": null,
+   "key": "ec5620cb8b68c878",
+   "elapsed_s": 553.6,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "현재 시스템에서 심각도가 높은 순서로 정렬된 알람 데이터가 확인되지 않았습니다.\n\n| 순위 | 알람 정보 | 상태 |\n| :--- | :--- | :--- |\n| 없음 | 조건에 해당하는 에이전트 데이터가 없습니다. | 확인되지 않음 |\n\n현재 모니터링 중인 에이전트나 설정된 알람 조건에 따라 데이터가 수집되지 않아, 구체적인 알람 목록을 조회할 수 없습니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 0,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": []
+  }
+ ],
+ "reviewed": false,
+ "recorded_at": "2026-09-23T11:38:59",
+ "review": {
+  "verdict": "wrong",
+  "notes": "문장 교체 후에도 0건(활성 알람 7건 존재) — 활성 알람 조회 결함. 사례 제외",
+  "at": "2026-09-23"
+ }
+}

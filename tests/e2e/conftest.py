@@ -2,18 +2,39 @@
 
 테스트용 FastAPI 앱을 별도 포트(18980)에서 실행하고,
 LLM/DB 호출은 MockGraph로 대체하여 외부 의존성 없이 테스트한다.
+
+기본 수집 제외(RUN_E2E=1 옵트인): e2e(pytest-playwright) 실행이 메인 프로세스에
+이벤트 루프를 실행 상태로 남겨, 이후 수집되는 pytest-asyncio 테스트 약 750건이
+"Runner.run() cannot be called from a running event loop"로 전멸한다
+(2026-07-15 실측 — 전체 800 failed 중 831개 라인이 이 유형, e2e 제외 시 49 failed).
+근본 원인(playwright↔asyncio_mode=auto 상호작용) 격리 전까지 기본 스위트에서
+제외하고, e2e는 `RUN_E2E=1 pytest tests/e2e`로 단독 실행한다.
+상세: docs/plan61_bugfix_plan.md B3.
 """
 
 from __future__ import annotations
 
 import asyncio
 import io
+import os
 import time
 from multiprocessing import Process
 from typing import Any, AsyncGenerator, Optional
 
 import pytest
-from playwright.sync_api import Page
+
+if os.getenv("RUN_E2E"):
+    from playwright.sync_api import Page
+else:
+    # 기본 스위트에서는 e2e를 수집하지 않는다(위 docstring). playwright는 선택적
+    # `e2e` extra(pyproject.toml)라 **미설치가 정상**인데, 종전에는 이 임포트가
+    # 무조건 실행돼 conftest 임포트 실패 → **전체 수집이 중단**됐다
+    # (2026-08-28 실측: `pytest -q`가 ModuleNotFoundError로 0건 수집).
+    # 임포트를 옵트인 뒤로 옮겨 아래 collect_ignore_glob이 실제로 작동하게 한다.
+    # `from __future__ import annotations`가 있어 Page는 주석으로만 쓰이며
+    # 런타임에 평가되지 않는다(사용처: page fixture 시그니처 1곳).
+    collect_ignore_glob = ["test_*.py"]
+    Page = Any
 
 TEST_PORT = 18980
 TEST_BASE_URL = f"http://localhost:{TEST_PORT}"

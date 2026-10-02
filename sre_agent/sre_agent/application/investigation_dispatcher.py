@@ -1,0 +1,637 @@
+"""조사 dispatcher — 결정적 폭주 방지 가드 (Plan 02 §4·§10, D-035 계승).
+
+HolmesGPT ReAct 조사 루프를 감싸되, **트리거·dedup·동시성·타임아웃·예산은 코드가 전담**한다
+(LLM에 위임 금지). JobStore(2-C)가 남긴 executor 주입점에 배선되는 실 dispatcher다.
+
+가드 6종:
+0. **대상 가용성**(Plan 81 · `docs/25` L-5) — 호출자가 실은 `target_state`가 `unavailable`이면
+   조사 전에 거부한다. 죽은 호스트에서는 도구가 **에러가 아니라 빈 데이터**를 돌려주므로
+   ReAct 루프가 전체 타임아웃(300s)까지 돌며 근거 없는 서술을 만들 수 있다.
+   **필드가 없으면 통과**한다(fail-open) — 이 가드는 보안 통제가 아니라 낭비 방지다.
+1. fingerprint dedup TTL — 완료된 조사도 `investigation_dedup_ttl_seconds` 내 재조사 억제.
+2. 동시 상한 — `investigation_max_concurrent`(기본 2) 세마포어.
+3. 전체 타임아웃 — `investigation_timeout_seconds`(기본 300s), **조사 1건 전체**에 asyncio.wait_for
+   (per-call 아님). collectorinfra MCP 동기 타임아웃(60s)보다 길므로 조사는 백그라운드 워커에서
+   실행하고 submit은 즉시 `running`을 남겨 반환한다(submit/poll 계약 성립).
+4. 시간당 예산 — `investigation_hourly_budget` 초과 시 신규 조사 거부.
+5. 토큰 비용 감사 — DiagnosisResult.total_tokens/total_cost를 잡·decision JSONL에 기록.
+
+in-memory 상태(dedup dict·budget window)는 **값 bound + 키 만료 sweep**을 동시 구현한다
+(CLAUDE.md Known Mistakes — 데몬 dict는 값 bound뿐 아니라 키 sweep도).
+
+계층 청결(0 warning): job/DiagnosisResult 등 application 세부 타입은 **구조적 Protocol**로
+디커플링하고, 실 조사 함수(diagnose_fn)·브리핑 함수(briefing_fn)는 **주입**받는다. 직접 참조는
+domain(severity_signatures)뿐이다(application→domain 허용). LLM 키 부재 시 스텁을 유지하되
+가드는 그대로 적용한다.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import threading
+import time
+from collections import deque
+from collections.abc import Callable, Sequence
+from pathlib import Path
+from typing import Protocol
+
+from sre_agent.domain.investigation_limits import (
+    apm_limitations,
+    is_apm_trigger,
+    repeated_calls,
+    stall_limitation,
+)
+from sre_agent.domain.remediation import recommend_lines
+from sre_agent.domain.severity_signatures import (
+    LEVEL_NAMES,
+    ImportanceVerdict,
+    apm_payloads,
+    clamp_level,
+    judge,
+    was_signals_from_outputs,
+)
+from sre_agent.settings import AgentSettings
+
+logger = logging.getLogger(__name__)
+
+# dedup dict 방어적 하드 상한(ttl sweep에 더해 무한 성장 방지).
+_MAX_DEDUP_KEYS = 4096
+
+
+# ── 구조적 타입(Protocol) — application 세부에 직접 의존하지 않기 위함 ──
+
+
+class ToolOutputLike(Protocol):
+    tool_name: str
+    description: str
+    output: str
+    error: str | None
+
+
+class DiagnosisLike(Protocol):
+    answer: str
+    total_tokens: int
+    total_cost: float
+    tool_calls: list[str]
+    tool_outputs: Sequence[ToolOutputLike]
+
+
+class JobLike(Protocol):
+    investigation_id: str
+    kind: str
+    status: str
+    fingerprint: str | None
+    payload: dict | None
+    question: str | None
+    verdict: str | None
+    briefing: dict | None
+    tool_calls_summary: list[str] | None
+    tokens: int | None
+    cost: float | None
+    error: str | None
+    reason: str | None
+    updated_at: float
+    # 사건 좌표계·상관(plans/50 A′-5·G4). 구현체에 없으면 getattr 기본값으로 읽는다.
+    reference_time: str | None
+    lookback_minutes: int | None
+    correlation: dict | None
+
+
+DiagnoseFn = Callable[[JobLike], DiagnosisLike]
+BriefingFn = Callable[..., dict]
+#: 사전수집 콜러블 — 잡을 받아 CorrelationResult.to_dict()(또는 None)를 돌려준다. 예외를 던져도 된다(격리).
+PrefetchFn = Callable[[JobLike], "dict | None"]
+
+
+def _host_key(job: JobLike) -> tuple[str, str] | None:
+    """조사 대상 호스트의 in-flight 키 `(db_id, host)`를 만든다 (78 W2-6 L-4).
+
+    **두 진입점의 payload 형태가 다르다**(실측 2026-08-27) — 한쪽만 보면 그 경로에서 가드가
+    통째로 무력화된다(Known Mistakes: 단일/멀티 경로 비대칭):
+
+        알람 트리거  `payload["event"]["dbId"|"hostname"|"serverName"]`
+        pull 진단    `payload["db_id"|"hostname"|"server_name"]`
+
+    **한계**: `hostname`이 없으면 `serverName`으로 대체한다. 폴스타는 server_name ≠ hostname
+    이므로(D-046), 같은 호스트가 한 번은 hostname으로 한 번은 serverName으로 들어오면 **다른
+    키가 되어 가드를 비껴간다.** 해소하려면 이름 해소가 필요한데 그건 본체(`cmm_resource`) 소관이라
+    여기서 부를 수 없다(D-118 경계) — 완화가 아니라 **명시된 잔여 한계**다.
+
+    Args:
+        job: 조사 잡
+
+    Returns:
+        `(db_id, host)` 키. 대상을 식별할 수 없으면 None(부하 귀속이 불가하므로 가드 대상 아님)
+    """
+    payload = getattr(job, "payload", None) or {}
+    event = payload.get("event") or {}
+    db_id = str(event.get("dbId") or payload.get("db_id") or "").strip()
+    host = str(
+        event.get("hostname")
+        or event.get("serverName")
+        or payload.get("hostname")
+        or payload.get("server_name")
+        or ""
+    ).strip()
+    if not host:
+        return None
+    return (db_id, host)
+
+
+#: 대상 가용성 가드의 거부 사유 코드(Plan 81).
+GUARD_TARGET_UNAVAILABLE = "target_unavailable"
+
+
+def _target_state(job: JobLike) -> dict | None:
+    """잡에서 호출자가 실은 대상 가용성 판정을 꺼낸다 (Plan 81).
+
+    **두 진입점의 payload 형태가 다르다**(`_host_key`와 같은 이유):
+
+        알람 트리거  `payload["meta"]["target_state"]`
+        pull 진단    `payload["target_state"]`
+
+    한쪽만 보면 그 경로에서 가드가 통째로 무력화된다(Known Mistakes: 단일/멀티 경로 비대칭).
+
+    Args:
+        job: 조사 잡
+
+    Returns:
+        판정 dict 또는 None(호출자가 싣지 않았거나 형태가 다름 → 가드 통과)
+    """
+    payload = getattr(job, "payload", None) or {}
+    if not isinstance(payload, dict):
+        return None
+    meta = payload.get("meta")
+    for candidate in ((meta or {}).get("target_state"), payload.get("target_state")):
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return None
+
+
+# 사전수집(prefetch) 타임박스 하한(초) — D-213 후속.
+# **per-call 타임아웃이 아니다**: 도구 1건당 상한은 `evidence_prefetch_timeout_seconds`(기본 20s)가
+# `mcp_tool_client`에서 이미 강제한다. 이쪽은 배치 전체(알람 1 + 지표 4 + 선택 항목)가 통째로
+# 매달렸을 때를 끊는 wedge 네트라, 정상 배치(도구 수 × per-call)를 자르지 않도록 넉넉해야 한다.
+# 조사 본예산의 절반을 상한으로 삼아 조사 쪽 예산을 최소 절반 남긴다.
+PREFETCH_TIMEBOX_FLOOR_SECONDS: float = 60.0
+
+
+class InvestigationDispatcher:
+    """JobStore executor로 주입되는 결정적 dispatcher.
+
+    __call__(job)이 executor 인터페이스다. dedup·예산 가드는 동기로 판정하고(위반 시 즉시
+    terminal 확정), 통과하면 조사를 **백그라운드 워커**에 넘기고 job을 `running`으로 남긴다
+    (JobStore는 running을 진행 중으로 간주). 워커가 동시 상한·전체 타임아웃 하에 조사·후처리를
+    수행하고 job을 terminal로 확정한다.
+    """
+
+    def __init__(
+        self,
+        settings: AgentSettings,
+        diagnose_fn: DiagnoseFn | None = None,
+        briefing_fn: BriefingFn | None = None,
+        *,
+        prefetch_fn: PrefetchFn | None = None,
+        remote: bool = False,
+        timeout_seconds: float | None = None,
+        prefetch_timeout_seconds: float | None = None,
+        audit_path: str | Path | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._settings = settings
+        self._diagnose_fn = diagnose_fn
+        self._briefing_fn = briefing_fn
+        self._prefetch_fn = prefetch_fn
+        self._remote = remote
+        self._timeout = timeout_seconds if timeout_seconds is not None else float(settings.investigation_timeout_seconds)
+        self._prefetch_timeout = (
+            prefetch_timeout_seconds
+            if prefetch_timeout_seconds is not None
+            else max(PREFETCH_TIMEBOX_FLOOR_SECONDS, self._timeout / 2)
+        )
+        self._audit_path = Path(audit_path) if audit_path is not None else None
+        self._clock = clock
+        self._wall_clock = wall_clock
+
+        self._semaphore = threading.BoundedSemaphore(max(1, settings.investigation_max_concurrent))
+        self._lock = threading.Lock()
+        self._dedup: dict[str, float] = {}          # fingerprint -> 마지막 조사 시작 시각(clock)
+        # L-4 대상 호스트 부하 가드 — (db_id, host) -> (investigation_id, 획득 시각).
+        # **fingerprint dedup과 목적이 다르다**: dedup은 *같은 알람*의 재조사를 TTL로 억제하고,
+        # 이쪽은 *서로 다른 알람이라도 같은 호스트*의 **동시** 조사를 막는다. 부하는 곱해지므로
+        # 이미 포화된 대상에 조사를 겹쳐 걸면 조사가 장애를 악화시킨다(78 W2-6 · docs/25 L-4).
+        self._inflight_hosts: dict[tuple[str, str], tuple[str, float]] = {}
+        self._budget_window: deque[float] = deque()  # 최근 1시간 조사 시작 시각들
+        self._workers: set[threading.Thread] = set()
+
+    # ── executor 진입점 ────────────────────────────────────────
+
+    def __call__(self, job: JobLike) -> None:
+        """JobStore가 호출하는 executor. 동기 가드 → (통과 시) 백그라운드 조사 위임."""
+        # 스텁 경로(조사 불가): 조사 LLM 게이트 차단(D-230) 또는 조사함수 미주입 → 동기 스텁 확정.
+        # 스텁도 폭주 가드(dedup·예산)는 그대로 통과시켜야 하므로 가드 판정을 먼저 한다.
+        blocked = self._apply_sync_guards(job)
+        if blocked is not None:
+            job.status, job.reason = "rejected", blocked
+            job.verdict = self._blocked_verdict(job, blocked)
+            job.briefing = {"stub": True, "message": job.verdict, "elements": None}
+            job.tool_calls_summary, job.tokens, job.cost = [], 0, 0.0
+            job.updated_at = self._wall_clock()
+            self._audit({"event": "rejected", "investigation_id": job.investigation_id, "reason": blocked})
+            return
+
+        if self._diagnose_fn is None or self._settings.investigation_llm_stub_reason() is not None:
+            self._finalize_stub(job)
+            return
+
+        # 실 조사: running 유지 + 백그라운드 워커 위임(submit 즉시 반환).
+        job.status = "running"
+        job.updated_at = self._wall_clock()
+        worker = threading.Thread(target=self._worker, args=(job,), daemon=True)
+        with self._lock:
+            self._workers.add(worker)
+        worker.start()
+
+    @staticmethod
+    def _blocked_verdict(job: JobLike, blocked: str) -> str:
+        """거부 사유를 사람이 읽을 문구로 만든다.
+
+        가용성 거부만 **사실을 담아** 돌려준다(G-2: 거부 + 사실 브리핑) — 호출자가 그대로
+        사용자에게 보이므로 "왜 조사하지 않았는지"가 문구에 있어야 한다. 다른 사유는
+        종전 문구를 그대로 유지한다(회귀 0).
+        """
+        if blocked != GUARD_TARGET_UNAVAILABLE:
+            return f"조사 거부 — {blocked}"
+        state = _target_state(job) or {}
+        at = f"(확인 시각 {state['as_of']}) " if state.get("as_of") else ""
+        return (
+            f"조사 거부 — 대상 호스트가 가용하지 않습니다 {at}"
+            f"[판정 {state.get('reason') or 'unknown'}]. "
+            "가용성 회복 후 다시 요청하십시오."
+        ).replace("  ", " ")
+
+    # ── 동기 가드(대상 가용성 · dedup TTL · 시간당 예산) + sweep ──────────────
+
+    def _apply_sync_guards(self, job: JobLike) -> str | None:
+        """dedup TTL·예산 가드를 판정한다. 통과면 None, 차단이면 사유 문자열.
+
+        통과 시 dedup·예산 상태를 기록한다. in-memory 상태는 값 bound + 키 만료 sweep한다.
+        """
+        now = self._clock()
+        with self._lock:
+            self._sweep(now)
+
+            # 가용성 가드는 **가장 먼저** 본다 — 거부될 조사가 dedup·예산·in-flight 슬롯을
+            # 잡으면 정작 필요한 조사가 그 슬롯에서 밀린다.
+            state = _target_state(job)
+            if state and str(state.get("state") or "").strip() == "unavailable":
+                return GUARD_TARGET_UNAVAILABLE
+
+            fp = job.fingerprint
+            ttl = self._settings.investigation_dedup_ttl_seconds
+            if fp and ttl is not None:
+                last = self._dedup.get(fp)
+                if last is not None and (now - last) < ttl:
+                    return "dedup_ttl_active"
+
+            budget = self._settings.investigation_hourly_budget
+            if budget is not None and len(self._budget_window) >= budget:
+                return "hourly_budget_exceeded"
+
+            # L-4 — 같은 호스트를 조사 중이면 거부한다. 직렬화(대기)하지 않는 이유:
+            # 조사는 분 단위로 길어(실측 161s) submit을 붙들면 MCP 동기 타임아웃(60s)을 넘긴다.
+            # 거부하고 사유를 남기면 호출자가 진행 중인 조사의 브리핑을 받아 쓸 수 있다.
+            host_key = _host_key(job)
+            if host_key is not None and host_key in self._inflight_hosts:
+                return "host_investigation_in_flight"
+
+            # 통과 — 상태 기록.
+            if fp and ttl is not None:
+                self._dedup[fp] = now
+            if budget is not None:
+                self._budget_window.append(now)
+            if host_key is not None:
+                self._inflight_hosts[host_key] = (job.investigation_id, now)
+            return None
+
+    def _release_host(self, job: JobLike) -> None:
+        """L-4 in-flight 키를 해제한다.
+
+        **자기 조사가 잡은 키만 푼다** — 방어적 축출 뒤 다른 조사가 같은 키를 잡았을 수 있고,
+        그때 무조건 pop하면 남의 가드를 풀어 버린다.
+        """
+        key = _host_key(job)
+        if key is None:
+            return
+        with self._lock:
+            held = self._inflight_hosts.get(key)
+            if held is not None and held[0] == job.investigation_id:
+                self._inflight_hosts.pop(key, None)
+
+    def _sweep(self, now: float) -> None:
+        """dedup dict(ttl 만료·하드 상한)·budget window(1시간 만료)를 정리한다(lock 보유 전제)."""
+        ttl = self._settings.investigation_dedup_ttl_seconds
+        if ttl is not None:
+            expired = [fp for fp, ts in self._dedup.items() if (now - ts) > ttl]
+            for fp in expired:
+                self._dedup.pop(fp, None)
+        # 방어적 하드 상한(가장 오래된 것부터 축출).
+        if len(self._dedup) > _MAX_DEDUP_KEYS:
+            for fp in sorted(self._dedup, key=self._dedup.get)[: len(self._dedup) - _MAX_DEDUP_KEYS]:
+                self._dedup.pop(fp, None)
+        # budget window: 1시간 초과분 제거.
+        while self._budget_window and (now - self._budget_window[0]) > 3600.0:
+            self._budget_window.popleft()
+        # in-flight 호스트: 해제는 워커·스텁 경로가 명시로 하지만, 워커가 죽으면 키가 남는다.
+        # 조사 전체 타임아웃의 2배가 지난 항목은 방어적으로 축출한다 — 없으면 그 호스트가
+        # **영구히 조사 불가**가 된다(가드가 장애가 되는 형태).
+        stale_after = self._timeout * 2
+        for key, (_iid, ts) in list(self._inflight_hosts.items()):
+            if (now - ts) > stale_after:
+                logger.warning("in-flight 호스트 키 방어적 축출(워커 유실 의심): %s", key)
+                self._inflight_hosts.pop(key, None)
+
+    # ── 백그라운드 워커(동시 상한 · 전체 타임아웃 · 후처리) ─────
+
+    def _worker(self, job: JobLike) -> None:
+        try:
+            with self._semaphore:  # 동시 상한
+                self._run_and_postprocess(job)
+        except BaseException as exc:  # noqa: BLE001 — Exception만 잡으면 잡이 영구 running으로 남는다
+            # ★ `Exception`이 아니라 `BaseException`이다 (D-213 근본원인 · 2026-09-11 스택 덤프 확정).
+            # `asyncio.CancelledError`는 3.8+에서 **BaseException 파생**이라 `except Exception`을
+            # 그대로 통과한다. MCP SSE 상대가 죽으면(mcp_server 종료) anyio 취소 스코프가 이 예외를
+            # 올리고, 그러면 워커 스레드가 **감사도 상태 전이도 없이 조용히 죽어** 잡이 영원히
+            # running으로 남는다(폐쇄망 실측: 스택 덤프에 조사 스레드가 아예 없었다 — 매달린 게
+            # 아니라 죽은 것). 여기는 코루틴이 아니라 평범한 워커 스레드라 취소 의미론을 전파할
+            # 상대가 없다 — 잡을 failed로 확정하는 것이 유일하게 옳은 처리다.
+            job.status = "failed"
+            job.error = f"dispatcher 워커 예외: {type(exc).__name__}: {exc}"
+            job.updated_at = self._wall_clock()
+            logger.exception("dispatcher 워커 예외: investigation_id=%s", job.investigation_id)
+            self._audit({"event": "failed", "investigation_id": job.investigation_id, "error": job.error})
+        finally:
+            self._release_host(job)
+            with self._lock:
+                self._workers.discard(threading.current_thread())
+
+    def _run_and_postprocess(self, job: JobLike) -> None:
+        """전체 타임아웃 하에 조사를 실행하고 severity_judge·briefing으로 후처리한다.
+
+        조사 전에 결정적 사전수집(plans/50 G4)을 돈다 — 결과는 `job.correlation`에 실려 조사 지침
+        (`build_guidance`)과 브리핑이 읽는다. 사전수집은 조사를 막지 않는다(실패 → None + 감사).
+        """
+        job.correlation = self._prefetch(job)
+        try:
+            result = self._investigate_with_timeout(job)
+        except asyncio.TimeoutError:
+            # 전체 타임아웃 — 부분 결과 없이 사유를 구조화해 전달(침묵 실패 금지, §12-④).
+            job.status = "timeout"
+            job.reason = "investigation_timeout"
+            job.verdict = f"조사 타임아웃(미완주) — investigation_timeout_seconds({self._timeout}s) 초과"
+            job.briefing = {"stub": True, "message": job.verdict, "elements": None}
+            job.tool_calls_summary, job.tokens, job.cost = [], 0, 0.0
+            job.updated_at = self._wall_clock()
+            self._audit({"event": "timeout", "investigation_id": job.investigation_id, "timeout_s": self._timeout})
+            return
+
+        gate_severity, gate_tier = self._gate_context(job)
+        verdict = self._run_severity_judge(gate_severity, result)
+        briefing_kwargs: dict = {}
+        if getattr(job, "correlation", None):
+            briefing_kwargs["correlation"] = job.correlation   # 없을 땐 인자 자체를 넘기지 않는다(종전 호출 동일)
+        stalls: list[tuple[str, str, int]] = []
+        if self._settings.apm_guidance_enabled:
+            # plans/87 J3 — APM 한계·소스 라벨·정체 가드(사후 판정). off면 인자를 넘기지 않는다(종전 호출 동일).
+            stalls = repeated_calls(self._call_keys(result))
+            briefing_kwargs["limitations"] = apm_limitations(
+                apm_payloads(self._tool_texts(result)),
+                apm_configured=bool(self._settings.apm_mcp_url),
+                apm_incident=is_apm_trigger(job.payload),
+                apm_called=any(to.tool_name.startswith("apm_") for to in result.tool_outputs),
+            ) + [stall_limitation(*s) for s in stalls]
+            briefing_kwargs["source_labels"] = True
+            briefing_kwargs["unresolved"] = bool(stalls)
+        briefing = self._briefing_fn(
+            answer=result.answer,
+            verdict=verdict,
+            tool_names=[to.tool_name for to in result.tool_outputs],
+            gate_tier=gate_tier,
+            remediation=self._recommend_remediation(verdict),
+            **briefing_kwargs,
+        )
+
+        job.status = "done"
+        job.verdict = f"{verdict.level}(신뢰도 {verdict.confidence}) escalate={verdict.escalate}"
+        job.briefing = briefing
+        job.tool_calls_summary = list(result.tool_calls)
+        job.tokens = result.total_tokens
+        job.cost = result.total_cost
+        job.updated_at = self._wall_clock()
+        record = {
+            "event": "done",
+            "investigation_id": job.investigation_id,
+            "level": verdict.level,
+            "confidence": verdict.confidence,
+            "escalate": verdict.escalate,
+            "signals": [s.name for s in verdict.signals],
+            "tokens": result.total_tokens,
+            "cost": result.total_cost,
+        }
+        if stalls:
+            record["unresolved"] = [f"{name} x{n}" for name, _args, n in stalls]  # 정체 가드(미결)만 추가 키
+        self._audit(record)
+
+    def _prefetch(self, job: JobLike) -> dict | None:
+        """사전수집 콜러블을 격리 실행한다. 미주입·기준시각 없음이면 None(호출 자체를 하지 않는다)."""
+        if self._prefetch_fn is None or not getattr(job, "reference_time", None):
+            return None
+        try:
+            # D-213 후속: 사전수집도 타임박스로 감싼다 — 조사 타임박스 **앞의 무가드 구간**이라
+            # 죽은 MCP read에 매달리면 전체 타임아웃에 도달조차 못 한다(조사와 같은 wedge 계열).
+            correlation = self._join_timebox(
+                self._prefetch_fn, job, self._prefetch_timeout, "sre-prefetch"
+            )
+        except TimeoutError as e:
+            logger.warning("증거 사전수집 타임아웃 (%s): %s", job.investigation_id, e)
+            self._audit({"event": "prefetch_failed", "investigation_id": job.investigation_id, "error": str(e)})
+            return None
+        except BaseException as e:  # noqa: BLE001 — CancelledError 포함(D-213: MCP 상대 사망 시 발생)
+            logger.warning("증거 사전수집 실패 (%s): %s: %s", job.investigation_id, type(e).__name__, e)
+            self._audit({"event": "prefetch_failed", "investigation_id": job.investigation_id, "error": str(e)})
+            return None
+        if correlation is None:
+            return None
+        findings = correlation.get("metric_findings") or {}
+        self._audit(
+            {
+                "event": "prefetch",
+                "investigation_id": job.investigation_id,
+                "leading_signal": correlation.get("leading_signal"),
+                "anomalies": sorted(k for k, f in findings.items() if isinstance(f, dict) and f.get("is_anomalous")),
+                "alarms": (correlation.get("alarm_summary") or {}).get("count"),
+                "notes": len(correlation.get("notes") or []),
+            }
+        )
+        return correlation
+
+    def _join_timebox(self, fn, job: JobLike, timeout: float, name_prefix: str):
+        """`fn(job)`을 데몬 스레드에서 실행하고 join 타임박스로 감싼다(D-213 공용).
+
+        만료 즉시 `TimeoutError`(3.11+에서 `asyncio.TimeoutError`와 동일 객체)를 올리고,
+        매달린 스레드는 데몬으로 버려진다(중단 불가·결과 폐기). `asyncio.run` 기반과 달리
+        정리 단계가 스레드 종료를 기다리지 않는다 — 그 '대기'가 폐쇄망 wedge의 원인이었다.
+        """
+        box: dict = {}
+        finished = threading.Event()
+
+        def _target() -> None:
+            try:
+                box["result"] = fn(job)
+            except BaseException as exc:  # noqa: BLE001 — 원예외를 호출 스레드로 그대로 전달
+                box["error"] = exc
+            finally:
+                finished.set()
+
+        worker = threading.Thread(
+            target=_target,
+            daemon=True,
+            name=f"{name_prefix}-{str(job.investigation_id)[:8]}",
+        )
+        worker.start()
+        if not finished.wait(timeout=timeout):
+            raise TimeoutError(f"{name_prefix} 타임박스({timeout}s) 만료 — 스레드 미종료(결과 폐기)")
+        if "error" in box:
+            raise box["error"]
+        return box.get("result")
+
+    def _investigate_with_timeout(self, job: JobLike) -> DiagnosisLike:
+        """조사 **전체**를 스레드 join 타임박스로 실행한다(per-call 타임아웃 아님).
+
+        D-213: 종전 `asyncio.run(wait_for(run_in_executor(...)))`는 타임아웃 발화 후
+        `asyncio.run`의 정리 단계(`shutdown_default_executor`)가 executor 스레드 종료를
+        **무기한 대기**했다 — 조사 스레드가 무한 read(죽은 MCP SSE 등)에 매달리면
+        TimeoutError가 밖으로 나오지 못해 timeout 감사도 없이 잡이 영원히 running으로
+        남는다(2026-09-09 폐쇄망 실측: 300s 상한에 960s+ running·mcp_server 종료가 원인).
+        """
+        assert self._diagnose_fn is not None
+        return self._join_timebox(self._diagnose_fn, job, self._timeout, "sre-investigate")
+
+    @staticmethod
+    def _tool_texts(result: DiagnosisLike) -> list[str]:
+        """판정 입력 — 도구 원시 출력 + 오류 문자열(severity_judge·APM 한계 공용)."""
+        texts: list[str] = [to.output for to in result.tool_outputs]
+        texts += [to.error for to in result.tool_outputs if to.error]
+        return texts
+
+    @staticmethod
+    def _call_keys(result: DiagnosisLike) -> list[tuple[str, str]]:
+        """정체 가드 입력 `(도구명, 인자 표기)` — 인자는 키 정렬 JSON, 인자가 없으면 holmes 호출 요약(description)."""
+        keys: list[tuple[str, str]] = []
+        for to in result.tool_outputs:
+            params = getattr(to, "params", None)
+            if isinstance(params, dict):
+                args = json.dumps(params, sort_keys=True, ensure_ascii=False, default=str)
+            else:
+                args = str(getattr(to, "description", "") or "")
+            keys.append((to.tool_name, args))
+        return keys
+
+    def _run_severity_judge(self, gate_severity: int, result: DiagnosisLike) -> ImportanceVerdict:
+        """severity_judge_enabled면 도구 원시 출력 시그니처 매칭, 아니면 게이트 승계(상향 없음).
+
+        `apm_signatures_enabled`(plans/87 J3)면 게이트웨이 `was_signals`를 신호로 옮겨 같은 판정에 합친다 —
+        WAS 규칙은 재구현하지 않는다(D-274 ⑤). off면 호출이 종전과 같다.
+        """
+        if not self._settings.severity_judge_enabled:
+            return ImportanceVerdict(
+                level=LEVEL_NAMES[clamp_level(gate_severity)],
+                confidence="none",
+                escalate=False,
+            )
+        texts = self._tool_texts(result)
+        if self._settings.apm_signatures_enabled:
+            return judge(gate_severity, texts, remote=self._remote,
+                         extra_signals=was_signals_from_outputs(texts))
+        return judge(gate_severity, texts, remote=self._remote)
+
+    def _recommend_remediation(self, verdict: ImportanceVerdict) -> list[str] | None:
+        """remediation_recommender_enabled면 매칭 시그니처에서 조치 후보를 도출한다(제시 전용).
+
+        off면 None을 반환해 briefing_builder의 기존 문구를 유지한다(회귀 0). 켜져 있어도
+        매칭 시그니처가 없으면 None — 근거 없는 권고를 만들지 않는다(D-035·§9).
+        **실행 경로 없음**: 반환값은 브리핑에 실릴 문자열일 뿐이다(D-003·D-011).
+        """
+        if not self._settings.remediation_recommender_enabled:
+            return None
+        lines = recommend_lines(verdict.signals)
+        return lines or None
+
+    # ── 스텁(조사 불가) ─────────────────────────────────────────
+
+    def _finalize_stub(self, job: JobLike) -> None:
+        """조사 LLM 게이트 차단(플래그 off·키 부재) 또는 조사함수 미주입 시 명시적 스텁 확정(침묵 금지)."""
+        message = self._settings.investigation_llm_stub_reason() or "조사 미실행 — dispatcher 조사함수 미주입(스텁)"
+        job.status = "stub"
+        job.verdict = message
+        job.briefing = {"stub": True, "message": message, "elements": None}
+        job.tool_calls_summary, job.tokens, job.cost, job.error = [], 0, 0.0, None
+        job.updated_at = self._wall_clock()
+        self._audit({"event": "stub", "investigation_id": job.investigation_id, "message": message})
+        # 스텁 경로는 워커가 돌지 않는다 — 여기서 풀지 않으면 그 호스트가 영구히 조사 불가가 된다.
+        self._release_host(job)
+
+    # ── 게이트 컨텍스트 추출 ────────────────────────────────────
+
+    @staticmethod
+    def _gate_context(job: JobLike) -> tuple[int, str | None]:
+        """잡에서 게이트 severity·tier를 추출한다(alarm만 게이트 존재, diagnosis는 baseline 0)."""
+        payload = job.payload or {}
+        if job.kind == "alarm":
+            event = payload.get("event") or {}
+            raw = event.get("severity")
+            try:
+                severity = int(raw)
+            except (TypeError, ValueError):
+                severity = 0
+            tier = (payload.get("decision") or {}).get("tier")
+            return severity, tier
+        return 0, None
+
+    # ── 감사(decision JSONL) ───────────────────────────────────
+
+    def _audit(self, record: dict) -> None:
+        """토큰 비용·판정 등 decision 레코드를 감사한다(경로 미설정 시 로그로만)."""
+        record = {"ts": self._wall_clock(), **record}
+        if self._audit_path is None:
+            logger.info("dispatcher decision: %s", record)
+            return
+        try:
+            self._audit_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._audit_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            logger.error("decision JSONL 기록 실패: %s (%s)", self._audit_path, exc)
+
+    # ── 테스트/종료 지원 ───────────────────────────────────────
+
+    def wait_workers(self, timeout: float | None = None) -> None:
+        """진행 중인 백그라운드 워커가 모두 끝날 때까지 대기한다(테스트·graceful 종료용)."""
+        with self._lock:
+            workers = list(self._workers)
+        for worker in workers:
+            worker.join(timeout)
+
+
+__all__ = [
+    "InvestigationDispatcher",
+    "GUARD_TARGET_UNAVAILABLE",
+    "ToolOutputLike",
+    "DiagnosisLike",
+    "JobLike",
+    "DiagnoseFn",
+    "BriefingFn",
+]

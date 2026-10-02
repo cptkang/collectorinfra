@@ -1,0 +1,42 @@
+{
+ "id": "Q-GENERAL",
+ "turns": [
+  {
+   "query": "쿠버네티스란 뭐야?",
+   "file": null,
+   "key": "270136a1cdc1e7e6",
+   "elapsed_s": 40.0,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "안녕하세요! 인프라 관리 시스템의 AI 어시스턴트입니다.\n\n쿠버네티스 (Kubernetes) 에 대한 일반적인 개념 설명은 가능합니다. 쿠버네티스는 구글에서 개발한 오픈소스 컨테이너 오케스트레이션 플랫폼으로, 컨테이너화된 애플리케이션의 배포, 관리, 스케줄링, 확장 및 자동 복구 등을 담당하는 핵심 인프라 도구입니다.\n\n다만, 저는 현재 **로컬 개발 샌드박스 Polestar**와 같은 특정 소스 기반의 인프라 데이터 조회 기능에 특화되어 있습니다. 따라서 쿠버네티스 자체의 이론적 정의나 일반적인 기능 설명은 도와드릴 수 있지만, **구체적인 서버 사양, 사용량, 모니터링 알람, 프로세스 정보, 또는 가상화/자산 현황**과 같은 실제 인프라 데이터를 조회해 드리는 것은 지원하지 않습니다.\n\n저는 다음과 같은 항목들을 확인해 드릴 수 있습니다:\n*   **서버 사양**: CPU 코어 수, 메모리 용량, 디스크 용량 등\n*   **서버 사용량**: CPU/메모리/디스크 사용률 (평균 및 최고치)\n*   **서버 정보**: 호스트명, IP 주소, 게이트웨이, OS 정보 등\n*   **모니터링 알람**: 현재 발생 중인 알람, 알람 이력, 심각도 등\n*   **프로세스**: 서버에서 동작 중인 프로세스 목록\n*   **양식 채우기 및 기억 관리**: 수집된 데이터를 엑셀 양식에 자동 채우거나, 이전에 저장된 답변을 관리하는 기능\n\n어떤 인프라 데이터 (예: 특정 위치의 서버 CPU 코어 수, 현재 알람 현황 등) 를 확인해 드릴까요?",
+    "row_count": 0,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": []
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-28T08:00:15",
+ "review": {
+  "verdict": "partly",
+  "notes": "재녹화 — 일반 개념 설명은 맞음 · 지원 범위 안내 포함. 참고용 답변임을 본문에 밝힘",
+  "at": "2026-09-28"
+ }
+}

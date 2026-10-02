@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>노이즈 캔슬링 관제 - KB AIOps 포탈</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/css/style.css?v=13">
+    <link rel="stylesheet" href="/static/css/noise-console.css?v=8">
+    <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
+    <script src="/static/js/theme.js"></script>
+</head>
+<body class="admin-dashboard" data-noise-mode="admin">
+    <div class="noise-wrap">
+        <!-- ── 헤더 ── -->
+        <header class="noise-top">
+            <div class="noise-brand">
+                <div class="noise-mark"><div class="wave" id="wave"></div></div>
+                <div>
+                    <h1>노이즈 캔슬링 관제</h1>
+                    <small>NOISE GATE CONSOLE</small>
+                </div>
+            </div>
+            <div class="noise-spacer"></div>
+            <span class="pill" id="streamPill"><span class="dot"></span>스트림 연결 중</span>
+            <span class="pill" id="healthPill"><span class="dot"></span>억제기 상태 확인 중</span>
+            <div class="seg" id="rangeSeg">
+                <button data-range="1h">1H</button>
+                <button data-range="24h" class="on">24H</button>
+                <button data-range="7d">7D</button>
+                <button data-range="30d">30D</button>
+            </div>
+            <a href="/manual/admin#a-42" target="_blank" rel="noopener" class="btn btn-secondary" style="padding:7px 14px;font-size:12px;">매뉴얼</a>
+            <a href="/static/admin/dashboard.html" class="btn btn-secondary" style="padding:7px 14px;font-size:12px;">운영자 대시보드</a>
+        </header>
+
+        <div class="alert alert-error" id="alertError" style="display:none;"></div>
+        <div class="alert alert-success" id="alertSuccess" style="display:none;"></div>
+
+        <!-- ── KPI ── -->
+        <section class="kpis">
+            <div class="kpi t-in" data-drill="raw">
+                <div class="lab" data-help="kpi.raw"><span class="tag" style="background:var(--text-muted)"></span>수신 알람</div>
+                <div class="num" id="kpiRaw">0</div>
+                <div class="sub" id="kpiRawSub">— · raw ingress</div>
+            </div>
+            <div class="kpi t-page" data-drill="page">
+                <div class="lab" data-help="kpi.page"><span class="tag" style="background:var(--tier-page)"></span>PAGE</div>
+                <div class="num c-page" id="kpiPage">0</div>
+                <div class="sub">즉시 통보</div>
+            </div>
+            <div class="kpi t-ticket" data-drill="ticket">
+                <div class="lab" data-help="kpi.ticket"><span class="tag" style="background:var(--tier-ticket)"></span>TICKET</div>
+                <div class="num c-ticket" id="kpiTicket">0</div>
+                <div class="sub">대기열·기록</div>
+            </div>
+            <div class="kpi t-dash" data-drill="dashboard">
+                <div class="lab" data-help="kpi.dashboard"><span class="tag" style="background:var(--tier-dash)"></span>DASHBOARD</div>
+                <div class="num c-dash" id="kpiDashboard">0</div>
+                <div class="sub">UI 표시만</div>
+            </div>
+            <div class="kpi t-sup" data-drill="suppress">
+                <div class="lab" data-help="kpi.suppress"><span class="tag" style="background:var(--tier-suppress)"></span>SUPPRESS</div>
+                <div class="num c-sup" id="kpiSuppress">0</div>
+                <div class="sub">억제(기록 유지)</div>
+            </div>
+            <div class="kpi t-rate">
+                <div class="lab" data-help="kpi.ratio"><span class="tag" style="background:var(--accent)"></span>억제율 / 액션가능</div>
+                <div class="num c-acc" id="kpiRatio" data-drill="suppress_ratio">0%</div>
+                <div class="sub" id="kpiActionable" data-drill="actionable">액션가능 —</div>
+            </div>
+        </section>
+
+        <!-- ── 퍼널 · 추이 · 피드 ── -->
+        <div class="noise-grid">
+            <div>
+                <div class="card" style="margin-bottom:14px;">
+                    <h2 data-help="funnel">노이즈 캔슬링 퍼널<span class="hint">결정 파이프라인 · 단계별 억제량</span></h2>
+                    <div class="funnel-head">
+                        <span class="big" id="funnelRaw" data-drill="raw">0</span><span class="lab">수신</span>
+                        <span class="big c-page" id="funnelPage" data-drill="page" style="margin-left:auto">0</span><span class="lab">PAGE</span>
+                    </div>
+                    <div class="stages" id="stages"></div>
+                    <div class="tiers" id="tierCards"></div>
+                </div>
+
+                <div class="card">
+                    <h2 data-help="chart">티어 분포 추이<span class="hint" id="chartHint">—</span></h2>
+                    <div class="chart" id="chart"></div>
+                    <!-- 범례·축·읽는 법은 noise.js가 그린다(기간 합계 포함 — plans/112 S5) -->
+                    <div class="chart-legend" id="chartLegend"></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2 data-help="feed.admin">실시간 결정 피드<span class="hint right">클릭 → 결정 추적</span></h2>
+                <div class="feed" id="feed"><div class="empty">결정 이력을 불러오는 중…</div></div>
+                <p class="sub" style="font-size:10.5px;color:var(--text-muted);margin-top:10px;line-height:1.5;">
+                    PAGE는 즉시 통보 경로라 실시간 스트림에 실리지 않습니다 —
+                    이 피드는 주기적으로 결정 이력과 재동기화해 PAGE도 함께 보여줍니다.
+                </p>
+            </div>
+        </div>
+
+        <!-- ── 메타모니터링 ── -->
+        <div class="meta-row">
+            <div class="card">
+                <h2 data-help="meta.ratio">억제율 감시<span class="hint">메타모니터링</span></h2>
+                <div class="gauge">
+                    <div class="ring" id="ratioRing"><b id="ratioText">—</b><small>SUPPRESS</small></div>
+                    <div class="meta-note" id="ratioNote">집계를 불러오는 중…</div>
+                </div>
+            </div>
+            <div class="card">
+                <h2 data-help="meta.watchdog">워치독<span class="hint">무수신 감지</span></h2>
+                <div class="gauge">
+                    <div class="ring" id="watchRing"><b id="watchText" style="font-size:13px">—</b><small>LAST</small></div>
+                    <div class="meta-note" id="watchNote">집계를 불러오는 중…</div>
+                </div>
+            </div>
+            <div class="card">
+                <h2 data-help="top">상위 억제 알람 유형<span class="hint">무엇이 캔슬되는가</span></h2>
+                <table class="kv"><tbody id="topSuppressed"></tbody></table>
+            </div>
+        </div>
+
+        <!-- ── 관리 ── -->
+        <div class="card">
+            <div class="mgmt-tabs">
+                <button class="on" data-pane="silence" data-help="mgmt.silence">침묵(Silence)</button>
+                <button data-pane="decisions" data-help="mgmt.decisions">결정 이력</button>
+                <button data-pane="policy" data-help="mgmt.policy">정책(읽기 전용)</button>
+            </div>
+
+            <!-- 침묵 -->
+            <div class="pane on" id="pane-silence">
+                <div id="silenceDisabledNote" class="alert alert-warning" style="display:none;font-size:12px;margin-bottom:12px;">
+                    침묵 기능이 꺼져 있습니다 — 규칙을 만들어도 게이트가 적용하지 않습니다.
+                    설정에서 <code>NOISE_SILENCE_ENABLED</code>를 켜십시오.
+                </div>
+                <div class="form-row">
+                    <div>
+                        <label for="slcServer">서버명 글롭</label>
+                        <input type="text" id="slcServer" placeholder="WEB-*">
+                    </div>
+                    <div>
+                        <label for="slcAlarm">알람명 글롭</label>
+                        <input type="text" id="slcAlarm" placeholder="(전체)">
+                    </div>
+                    <div>
+                        <label for="slcResource">자원명 글롭</label>
+                        <input type="text" id="slcResource" placeholder="(전체)">
+                    </div>
+                    <div>
+                        <label for="slcSeverity">심각도 상한</label>
+                        <select id="slcSeverity"><option value="1">1 (주의)</option><option value="2" selected>2 (경고)</option></select>
+                    </div>
+                    <div>
+                        <label for="slcDuration">지속 시간</label>
+                        <select id="slcDuration">
+                            <option value="3600">1시간</option>
+                            <option value="7200" selected>2시간</option>
+                            <option value="21600">6시간</option>
+                            <option value="86400">1일</option>
+                            <option value="604800">7일</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="slcReason">사유(필수)</label>
+                        <input type="text" id="slcReason" placeholder="월간 배포 점검">
+                    </div>
+                </div>
+                <div class="noise-actions">
+                    <button class="btn btn-primary" id="addSilenceBtn" style="padding:7px 16px;font-size:12px;">침묵 추가</button>
+                    <label style="font-size:11.5px;color:var(--text-secondary);display:flex;align-items:center;gap:6px;">
+                        <input type="checkbox" id="showInactive"> 만료·해제분 포함
+                    </label>
+                    <span style="font-size:11px;color:var(--text-muted);">
+                        심각도 3은 어떤 규칙으로도 침묵되지 않습니다.
+                    </span>
+                </div>
+                <div class="tbl-wrap">
+                    <table class="tbl">
+                        <thead><tr><th>매처</th><th>사유</th><th>생성자</th><th>만료</th><th></th></tr></thead>
+                        <tbody id="silenceBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 결정 이력 -->
+            <div class="pane" id="pane-decisions">
+                <div class="noise-actions">
+                    <input type="search" id="decSearch" placeholder="알람명·서버명·사유 검색"
+                           style="flex:1;min-width:200px;padding:7px 10px;font-size:12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);">
+                    <select id="decTier" style="padding:7px 9px;font-size:12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);">
+                        <option value="">전 티어</option>
+                        <option value="page">PAGE</option>
+                        <option value="ticket">TICKET</option>
+                        <option value="dashboard">DASHBOARD</option>
+                        <option value="suppress">SUPPRESS</option>
+                    </select>
+                    <select id="decStage" style="padding:7px 9px;font-size:12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);">
+                        <option value="">전 단계</option>
+                    </select>
+                    <button class="btn btn-secondary" id="decSearchBtn" style="padding:7px 14px;font-size:12px;">조회</button>
+                    <span id="decTotal" style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);"></span>
+                </div>
+                <div class="tbl-wrap">
+                    <table class="tbl">
+                        <thead><tr><th>시각</th><th>알람</th><th>서버</th><th>티어</th><th>결정 단계</th><th>사유</th></tr></thead>
+                        <tbody id="decisionBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 정책 -->
+            <div class="pane" id="pane-policy">
+                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:14px;">
+                    아래 값은 <strong>읽기 전용</strong>입니다. 변경은 설정 화면에서 하십시오 —
+                    검증·백업·감사·리로드가 그 경로에만 있습니다.
+                </p>
+                <div class="matrix" id="policyMatrix"></div>
+                <div class="policy-list" id="policySettings"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── 결정 추적 드로어 ── -->
+    <div class="scrim" id="scrim"></div>
+    <aside class="drawer" id="drawer" aria-hidden="true">
+        <button class="x" id="closeDrawer" aria-label="닫기">✕</button>
+        <h3 id="drawerName">—</h3>
+        <div class="meta-id" id="drawerMeta">—</div>
+        <div class="trace" id="drawerTrace"></div>
+        <h2 class="drawer-sub" data-help="drawer.signals">신호 스냅샷</h2>
+        <table class="signals"><tbody id="drawerSignals"></tbody></table>
+        <div class="noise-actions" style="margin-top:16px;">
+            <button class="btn btn-secondary" id="silenceThisBtn" style="padding:7px 14px;font-size:12px;">이 패턴 침묵</button>
+        </div>
+    </aside>
+
+    <script src="/static/js/noise-help.js?v=4"></script>
+    <script src="/static/js/noise.js?v=10"></script>
+</body>
+</html>

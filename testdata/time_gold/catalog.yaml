@@ -1,0 +1,617 @@
+# plans/122 T-0 — 한국어 시간 표현 골드셋 ②: 시나리오 카탈로그의 시간 표현 턴
+#
+# 출처: testdata/scenarios/*.yaml(load_catalog · 247턴) 중 기간·「~한 적이 있는」·「현재」류 표현이 있는 턴과
+# 기간 없음 대표 2턴(A-01 · H-12). 각 케이스의 scenario·turn이 출처다. query는 카탈로그 원문 그대로다.
+# 기준 시각은 §10.3.1 표와 같은 base(2026-09-29 화 10:00 KST) 하나다 — 다중 기준 시각은 policy.yaml,
+# 실제 run 시각의 재생은 replay_20260923.yaml에 있다.
+#
+# expect 종류는 policy.yaml 머리말과 같고, 둘이 더 있다:
+#   {ambiguous: 사유}     — 정답 정의 미정(G-10) — 채점하지 않는다
+#   {out_of_scope: 사유}  — 「현재·지금」류(정책 표에 행 없음) — 인식기가 기간을 만들지 않는 것만 단언
+#
+# 집계(이 파일): 기간·unbounded·해석 불가 63 + 기간 없음 2 + G-10 모호 3 + 현재류 7 = 75
+version: 1
+anchors:
+  base: "2026-09-29 10:00"
+cases:
+  - id: C-001
+    scenario: A-01
+    turn: 1
+    env: closed
+    anchor: base
+    query: "여의도 개발 서버들의 CPU 사용률을 10건만 보여줘"
+    source: "기간 없음(§10.1 — 현행은 CURRENT_DATE 함수식)"
+    expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete, notes: [default_period]}
+  - id: C-002
+    scenario: A-04
+    turn: 1
+    env: closed
+    anchor: base
+    query: "현재 활성 상태인 심각 알람 목록 10건만 보여줘"
+    source: "현재류"
+    expect: {out_of_scope: "현재 활성 알람 — 상태 조회(기간 아님)"}
+  - id: C-003
+    scenario: A-07
+    turn: 1
+    env: closed
+    anchor: base
+    query: "안녕하세요, 오늘 날씨 어때요?"
+    source: "오늘(범용 대화 — 기간 해석은 결정적)"
+    expect: {start: "2026-09-29 00:00", end: "2026-09-29 10:00", grain: hour, completeness: to_date}
+  - id: C-004
+    scenario: B-12
+    turn: 1
+    env: closed
+    anchor: base
+    query: "2026년 6월 서버별 CPU 사용률 평균이 높은 상위 3대를 보여줘"
+    source: "YYYY년 M월"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-005
+    scenario: C-01
+    turn: 1
+    env: closed
+    anchor: base
+    query: "전체 서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 10건만 조회해줘. 사용률은 지난달 1개월 통계 기준으로."
+    source: "지난달(「지난달 1개월」)"
+    expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}
+  - id: C-006
+    scenario: C-02
+    turn: 1
+    env: closed
+    anchor: base
+    query: "지난 3개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 10건만 조회해줘"
+    source: "지난 N개월 + 월간"
+    expect: {start: "2026-06-01", end: "2026-09-01", grain: month, completeness: complete}
+  - id: C-007
+    scenario: C-03
+    turn: 1
+    env: closed
+    anchor: base
+    query: "2026년 상반기 서버별 CPU 사용률 평균 10건만"
+    source: "YYYY년 상반기"
+    expect: {start: "2026-01-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-008
+    scenario: C-04
+    turn: 1
+    env: closed
+    anchor: base
+    query: "2026년 1월부터 6월까지 메모리 사용률 최대값 10건만"
+    source: "YYYY년 M월~M월"
+    expect: {start: "2026-01-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-009
+    scenario: C-05
+    turn: 1
+    env: closed
+    anchor: base
+    query: "11월부터 2월까지 CPU 사용률 10건만"
+    source: "연도 없는 월 범위(연 넘김)"
+    expect: {start: "2025-11-01", end: "2026-03-01", grain: month, completeness: complete, notes: [year_inferred]}
+  - id: C-010
+    scenario: C-06
+    turn: 1
+    env: closed
+    anchor: base
+    query: "이번 달 CPU 사용률 10건만"
+    source: "이번 달(D-201)"
+    expect: {start: "2026-09-01", end: "2026-09-29", grain: day, completeness: to_date}
+  - id: C-011
+    scenario: C-07
+    turn: 1
+    env: closed
+    anchor: base
+    query: "메모리 이용률이 90%를 초과한 적이 있는 서버를 10건만 조회해줘"
+    source: "~한 적이 있는"
+    expect: {unbounded: true, grain: month}
+  - id: C-012
+    scenario: C-08
+    turn: 1
+    env: closed
+    anchor: base
+    query: "지난달 통계 기준으로 가동률이 낮은 서버 순으로 정렬해서 보여줘"
+    source: "지난달"
+    expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}
+  - id: C-013
+    scenario: C-09
+    turn: 1
+    env: closed
+    anchor: base
+    query: "2026년 5월과 비교해서 6월에 CPU 사용률 평균이 가장 많이 상승한 서버와 상승폭을 알려줘"
+    source: "비교 질의 5월·6월 — 덮는 구간"
+    expect: {start: "2026-05-01", end: "2026-07-01", grain: month, completeness: complete, notes: [multiple_periods]}
+  - id: C-014
+    scenario: C-10
+    turn: 1
+    env: closed
+    anchor: base
+    query: "월 평균 CPU 사용률이 40%를 넘은 달이 2개월 이상인 서버와 그 개월 수를 보여줘"
+    source: "G-10"
+    expect: {ambiguous: "G-10 정답 정의 미정 — 「넘은 달이 2개월 이상」의 조사 기간이 정해지지 않았다(현 규칙은 월 입도 + 기본값)"}
+  - id: C-015
+    scenario: C-11
+    turn: 1
+    env: closed
+    anchor: base
+    query: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 10건만 보여줘"
+    source: "YYYY년 M월"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-016
+    scenario: C-12
+    turn: 1
+    env: closed
+    anchor: base
+    query: "지금 CPU 사용률 높은 서버 알려줘"
+    source: "현재류"
+    expect: {out_of_scope: "지금 CPU — 실시간/최신값 정책 미정(표에 행 없음)"}
+  - id: C-017
+    scenario: C-13
+    turn: 1
+    env: closed
+    anchor: base
+    query: "김포 폴스타 전체 서버를 통틀은 지난달 평균 CPU 사용률을 단일 값 하나로 알려줘"
+    source: "지난달"
+    expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}
+  - id: C-018
+    scenario: D-01
+    turn: 1
+    env: closed
+    anchor: base
+    query: "현재 발생 중인 심각(severity 3) 알람 목록을 10건만 조회해줘"
+    source: "현재류"
+    expect: {out_of_scope: "현재 발생 중 알람 — 상태 조회"}
+  - id: C-019
+    scenario: D-03
+    turn: 1
+    env: closed
+    anchor: base
+    query: "2026년 7월에 발생한 심각 알람이 몇 건인지 알려줘"
+    source: "YYYY년 M월(알람)"
+    expect: {start: "2026-07-01", end: "2026-08-01", grain: month, completeness: complete}
+  - id: C-020
+    scenario: D-04
+    turn: 1
+    env: closed
+    anchor: base
+    query: "최근 3개월간 경고 이상 알람이 가장 많이 발생한 상위 10개 서버를 알려줘"
+    source: "최근 N개월(알람)"
+    expect: {start: "2026-06-01", end: "2026-09-01", grain: month, completeness: complete}
+  - id: C-021
+    scenario: D-05
+    turn: 1
+    env: closed
+    anchor: base
+    query: "이번 달 CPU 임계값 초과 알람 이력 10건만 조회"
+    subject: event
+    source: "이번 달(알람) — 알람 경로 예외: 진행 중 기간은 기준 시각까지(2026-09-30 사용자 확정 · D-291 · §10.1은 [09-01, 10-01)을 정답으로 셌다)"
+    expect: {start: "2026-09-01", end: "2026-09-29 10:00", grain: hour, completeness: to_date, notes: [event_to_now]}
+  - id: C-022
+    scenario: E-02
+    turn: 1
+    env: closed
+    anchor: base
+    query: "현재 활성 상태인 심각 알람이 있는 서버들의 최근 1개월 CPU 사용률을 10건만 보여줘"
+    source: "최근 1개월"
+    expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}
+  - id: C-023
+    scenario: E-05
+    turn: 1
+    env: closed
+    anchor: base
+    query: "해당 서버 프로세스 이력 지난 7일 보여줘"
+    source: "지난 N일"
+    expect: {start: "2026-09-22", end: "2026-09-29", grain: day, completeness: complete}
+  - id: C-024
+    scenario: E-06
+    turn: 1
+    env: closed
+    anchor: base
+    query: "논리코어가 8개 이상인 서버 중에서 지금까지 알람이 한 번도 발생하지 않은 서버를 알려줘"
+    source: "지금까지 · 한 번도(기간 조건 없음)"
+    expect: {unbounded: true, grain: month}
+  - id: C-025
+    scenario: E-07
+    turn: 1
+    env: closed
+    anchor: base
+    query: "심각 알람이 발생한 적이 있는 서버들의 제조사와 메모리 용량을 10건만 보여줘"
+    source: "~한 적이 있는"
+    expect: {unbounded: true, grain: month}
+  - id: C-026
+    scenario: G-01
+    turn: 2
+    env: closed
+    anchor: base
+    query: "해당 서버의 최근 1개월 CPU 사용률 평균/최대"
+    source: "최근 1개월"
+    expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}
+  - id: C-027
+    scenario: G-01
+    turn: 5
+    env: closed
+    anchor: base
+    query: "지난 한 달 동안 해당 서버의 알람을 분석해줘"
+    source: "지난 한 달 동안(한글 수사)"
+    expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}
+  - id: C-028
+    scenario: H-05
+    turn: 1
+    env: closed
+    anchor: base
+    query: "2026년 6월 기준으로 10건만 채워줘"
+    source: "YYYY년 M월 기준(폼필)"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-029
+    scenario: H-10
+    turn: 1
+    env: closed
+    anchor: base
+    query: "2026년 6월 기준 CPU 양식을 10건만 채워줘"
+    source: "YYYY년 M월 기준(폼필)"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-030
+    scenario: H-11
+    turn: 1
+    env: closed
+    anchor: base
+    query: "1월부터 6월까지의 데이터를 기준으로 양식을 10건만 채우시오"
+    source: "연도 없는 월 범위(D-185)"
+    expect: {start: "2026-01-01", end: "2026-07-01", grain: month, completeness: complete, notes: [year_inferred]}
+  - id: C-031
+    scenario: H-12
+    turn: 1
+    env: closed
+    anchor: base
+    query: "10건만 채워줘 (기간 없음)"
+    source: "기간 없음(폼필)"
+    expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete, notes: [default_period]}
+  - id: C-032
+    scenario: H-13
+    turn: 1
+    env: closed
+    anchor: base
+    query: "1월부터 3월까지 10건만 채워줘"
+    source: "연도 없는 월 범위"
+    expect: {start: "2026-01-01", end: "2026-04-01", grain: month, completeness: complete, notes: [year_inferred]}
+  - id: C-033
+    scenario: H-14
+    turn: 1
+    env: closed
+    anchor: base
+    query: "지난 반년 데이터로 10건만 채워줘"
+    source: "지난 반년"
+    expect: {start: "2026-03-01", end: "2026-09-01", grain: month, completeness: complete}
+  - id: C-034
+    scenario: H-15
+    turn: 1
+    env: closed
+    anchor: base
+    query: "2026년 6월 기준 메모리 양식을 10건만 채워줘"
+    source: "YYYY년 M월 기준"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-035
+    scenario: H-17
+    turn: 1
+    env: closed
+    anchor: base
+    query: "은행존 2026년 6월 기준 채워줘"
+    source: "YYYY년 M월 기준"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-036
+    scenario: I-07
+    turn: 1
+    env: closed
+    anchor: base
+    query: "2026년 6월 기준으로 10건만 채워줘"
+    source: "YYYY년 M월 기준"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-037
+    scenario: K-08
+    turn: 1
+    env: closed
+    anchor: base
+    query: "최근 24개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 조회해줘"
+    source: "최근 24개월 + 월간"
+    expect: {start: "2024-09-01", end: "2026-09-01", grain: month, completeness: complete}
+  - id: C-038
+    scenario: K-09
+    turn: 1
+    env: closed
+    anchor: base
+    query: "전체 서버의 시간 단위 CPU 사용률을 최근 30일치 전부 보여줘"
+    source: "시간 단위 + 최근 30일(§10.1 오답)"
+    expect: {start: "2026-08-30", end: "2026-09-29", grain: hour, completeness: complete}
+  - id: C-039
+    scenario: SYN-E-01
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "2026년 6월 서버별 CPU 사용률 평균이 높은 상위 3대를 보여줘"
+    source: "YYYY년 M월"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-040
+    scenario: SYN-F-01
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "2026년 6월에 메모리 사용률이 90%를 넘은 적이 있는 서버를 알려줘"
+    source: "YYYY년 M월 + 적이 있는(기간이 이긴다)"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-041
+    scenario: SYN-F-02
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "2026년 7월에 발생한 심각 알람이 몇 건인지 알려줘"
+    source: "YYYY년 M월"
+    expect: {start: "2026-07-01", end: "2026-08-01", grain: month, completeness: complete}
+  - id: C-042
+    scenario: SYN-F-04
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "2026년 6월 디스크 아이오가 가장 높았던 서버의 제조사와 일련번호를 알려줘"
+    source: "YYYY년 M월"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-043
+    scenario: SYN-H-01
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "심각 알람이 발생한 적이 있는 서버들의 제조사와 메모리 용량을 보여줘"
+    source: "~한 적이 있는"
+    expect: {unbounded: true, grain: month}
+  - id: C-044
+    scenario: SYN-H-02
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "2026년 6월 CPU 사용률 평균이 40%를 넘은 서버의 서버명과 논리코어 수를 보여줘"
+    source: "YYYY년 M월"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-045
+    scenario: SYN-H-04
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "현재 활성 상태인 심각 알람이 있는 서버들의 2026년 7월 CPU 사용률을 보여줘"
+    source: "현재 + YYYY년 M월"
+    expect: {start: "2026-07-01", end: "2026-08-01", grain: month, completeness: complete}
+  - id: C-046
+    scenario: SYN-I-01
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "2026년 6월 서버별 CPU 사용률과 메모리 사용률 평균을 CPU 사용률이 높은 순으로 함께 10건만 보여줘"
+    source: "YYYY년 M월"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-047
+    scenario: SYN-I-02
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "2026년 5월과 비교해서 6월에 CPU 사용률 평균이 가장 많이 상승한 서버와 상승폭을 알려줘"
+    source: "비교 질의 — 덮는 구간"
+    expect: {start: "2026-05-01", end: "2026-07-01", grain: month, completeness: complete, notes: [multiple_periods]}
+  - id: C-048
+    scenario: SYN-I-03
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "월 평균 CPU 사용률이 40%를 넘은 달이 2개월 이상인 서버와 그 개월 수를 보여줘"
+    source: "G-10"
+    expect: {ambiguous: "C-10 샌드박스 쌍 — G-10 정답 미정"}
+  - id: C-049
+    scenario: SYN-I-03b
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "월 평균 CPU 사용률이 40%를 넘은 달이 2개월 이상인 서버와 그 개월 수를 보여줘. cpu 월 평균 사용률, 메모리 월 평균 사용률, cpu 최고 사용률을 같이 보여줘."
+    source: "G-10"
+    expect: {ambiguous: "C-10 샌드박스 쌍 — G-10 정답 미정"}
+  - id: C-050
+    scenario: SYN-I-04
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "논리코어가 8개 이상인 서버 중에서 지금까지 알람이 한 번도 발생하지 않은 서버를 알려줘"
+    source: "지금까지 · 한 번도"
+    expect: {unbounded: true, grain: month}
+  - id: C-051
+    scenario: SYN-I-05
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 10건만 보여줘"
+    source: "YYYY년 M월"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-052
+    scenario: SYN-I-06
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "현재 활성 상태인 심각 알람이 있는 서버 중 2026년 6월 CPU 사용률 평균이 가장 높았던 서버의 제조사와 일련번호를 알려줘"
+    source: "현재 + YYYY년 M월"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-053
+    scenario: SYN-I-07
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "제조사별 2026년 6월 CPU 사용률 평균을 높은 순으로 보여줘"
+    source: "YYYY년 M월"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-054
+    scenario: M-02
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "폴스타에서 2026년 6월 CPU 최대 사용률이 80% 이상이었던 서버를 찾아, 자산관리(ITAM)에서 그 서버들의 유지보수 계약 만료일을 알려줘"
+    source: "YYYY년 M월(교차 시스템)"
+    expect: {start: "2026-06-01", end: "2026-07-01", grain: month, completeness: complete}
+  - id: C-055
+    scenario: M-03
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "현재 활성 상태인 심각 알람이 발생한 서버들을 폴스타에서 찾고, 그 서버들의 최근 1시간 CPU 사용률 추이를 프로메테우스에서 보여줘"
+    source: "최근 N시간(§10.1 로컬 전용)"
+    expect: {start: "2026-09-29 09:00", end: "2026-09-29 10:00", grain: hour, completeness: rolling}
+  - id: C-056
+    scenario: M-04
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "폴스타에서 서버명이 svr-web으로 시작하는 서버 목록을 조회하고, 그 서버들의 최근 1시간 CPU 사용률 추이를 프로메테우스에서 보여줘"
+    source: "최근 N시간"
+    expect: {start: "2026-09-29 09:00", end: "2026-09-29 10:00", grain: hour, completeness: rolling}
+  - id: C-057
+    scenario: M-07
+    turn: 1
+    env: sandbox
+    anchor: base
+    query: "프로메테우스에서 svr-web-01 서버의 최근 1시간 CPU 사용률 추이를 보여줘"
+    source: "최근 N시간"
+    expect: {start: "2026-09-29 09:00", end: "2026-09-29 10:00", grain: hour, completeness: rolling}
+  - id: C-058
+    scenario: R1-04
+    turn: 1
+    env: closed
+    anchor: base
+    query: "최근 3개월 동안 월평균 CPU가 70% 넘은 적이 있는 서버를 상승폭 순으로"
+    source: "최근 N개월 + 월평균 + 적이 있는"
+    expect: {start: "2026-06-01", end: "2026-09-01", grain: month, completeness: complete}
+  - id: C-059
+    scenario: R1-08
+    turn: 1
+    env: closed
+    anchor: base
+    query: "어제 심각 알람이 3건 이상 난 서버의 메모리 용량과 벤더를 같이 보여줘"
+    source: "어제(알람 — §10.1 오답)"
+    expect: {start: "2026-09-28", end: "2026-09-29", grain: day, completeness: complete}
+  - id: C-060
+    scenario: R1-10
+    turn: 1
+    env: closed
+    anchor: base
+    query: "어제 CPU가 급등한 서버를 찾고 왜 그랬는지도 분석해줘"
+    source: "어제(§10.1 오답)"
+    expect: {start: "2026-09-28", end: "2026-09-29", grain: day, completeness: complete}
+  - id: C-061
+    scenario: R2-04C
+    turn: 1
+    env: both
+    anchor: base
+    query: "지금 조회 가능한 DB 목록과 설명을 알려줘"
+    source: "현재류"
+    expect: {out_of_scope: "지금 조회 가능한 DB — 기간 아님"}
+  - id: C-062
+    scenario: R2-05
+    turn: 1
+    env: closed
+    anchor: base
+    query: "전체 서버의 전체 지표를 지난 2년치 시간 단위로 전부"
+    source: "지난 2년치 + 시간 단위(오용 시나리오 · 행 수 상한은 소비처 몫)"
+    expect: {start: "2024-09-01", end: "2026-09-01", grain: hour, completeness: complete}
+  - id: C-063
+    scenario: R2-05C
+    turn: 1
+    env: closed
+    anchor: base
+    query: "최근 1개월 CPU 사용률 상위 10대 서버"
+    source: "최근 1개월"
+    expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}
+  - id: C-064
+    scenario: R2-07C
+    turn: 1
+    env: closed
+    anchor: base
+    query: "현재 설정된 알람 임계치를 10건만 보여줘"
+    source: "현재류"
+    expect: {out_of_scope: "현재 설정된 임계치 — 상태 조회"}
+  - id: C-065
+    scenario: R3-05
+    turn: 1
+    env: closed
+    anchor: base
+    query: "지난 13월 CPU 사용률"
+    source: "지난 13월 — 값 범위 밖 → 되묻기"
+    expect: {unresolved: true}
+  - id: C-066
+    scenario: R3-05C
+    turn: 1
+    env: closed
+    anchor: base
+    query: "지난 1개월 CPU 사용률 10건만"
+    source: "지난 1개월"
+    expect: {start: "2026-08-01", end: "2026-09-01", grain: month, completeness: complete}
+  - id: C-067
+    scenario: R3-06
+    turn: 1
+    env: closed
+    anchor: base
+    query: "2030년 1월 알람 보여줘"
+    source: "미래 절대 월 — 연도를 명시한 미래는 되묻기(2026-09-30 사용자 확정 · D-291)"
+    expect: {clarify: future_explicit}
+  - id: C-068
+    scenario: R3-06C
+    turn: 1
+    env: closed
+    anchor: base
+    query: "지난주 알람 10건만 보여줘"
+    source: "지난주(알람 — §10.1 오답)"
+    expect: {start: "2026-09-21", end: "2026-09-28", grain: day, completeness: complete}
+  - id: C-069
+    scenario: R4-02
+    turn: 1
+    env: closed
+    anchor: base
+    query: "이번 달 CPU 평균 10건만 알려줘"
+    source: "이번 달"
+    expect: {start: "2026-09-01", end: "2026-09-29", grain: day, completeness: to_date}
+  - id: C-070
+    scenario: R4-02C
+    turn: 1
+    env: closed
+    anchor: base
+    query: "지난 30일 CPU 평균 10건만 알려줘"
+    source: "지난 30일(§10.1 오답)"
+    expect: {start: "2026-08-30", end: "2026-09-29", grain: day, completeness: complete}
+  - id: C-071
+    scenario: R4-03
+    turn: 1
+    env: closed
+    anchor: base
+    query: "지금 이 순간 CPU 몇 %야?"
+    source: "현재류"
+    expect: {out_of_scope: "지금 이 순간 CPU — 실시간 정책 미정(표에 행 없음)"}
+  - id: C-072
+    scenario: R4-03C
+    turn: 1
+    env: closed
+    anchor: base
+    query: "최근 1시간 CPU 사용률 평균 10건만"
+    source: "최근 1시간(§10.1 오답)"
+    expect: {start: "2026-09-29 09:00", end: "2026-09-29 10:00", grain: hour, completeness: rolling}
+  - id: C-073
+    scenario: R4-06C
+    turn: 1
+    env: closed
+    anchor: base
+    query: "현재 활성 상태인 심각 알람 목록 10건만 보여줘"
+    source: "현재류"
+    expect: {out_of_scope: "현재 활성 알람 — 상태 조회"}
+  - id: C-074
+    scenario: R4-11
+    turn: 1
+    env: closed
+    anchor: base
+    query: "어제 CPU 사용률이 제일 높았던 값 알려줘"
+    source: "어제"
+    expect: {start: "2026-09-28", end: "2026-09-29", grain: day, completeness: complete}
+  - id: C-075
+    scenario: R4-11C
+    turn: 1
+    env: closed
+    anchor: base
+    query: "어제 CPU 사용률 최댓값 10건만 알려줘"
+    source: "어제"
+    expect: {start: "2026-09-28", end: "2026-09-29", grain: day, completeness: complete}

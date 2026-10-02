@@ -155,13 +155,16 @@ LLM_API_KEY=
 # Gemini API 키 (LLM_PROVIDER=gemini 시)
 LLM_GEMINI_API_KEY=
 
-# FabriX 키 (LLM_PROVIDER=fabrix 시)
-FABRIX_API_KEY=
-FABRIX_CLIENT_KEY=
+# FabriX 키 (LLM_PROVIDER=fabrix 시) — 반드시 LLM_ 접두
+# 접두 없는 FABRIX_API_KEY 는 OS 환경변수로만 읽혀, 이 파일에 적으면 무시된다
+LLM_FABRIX_API_KEY=
+LLM_FABRIX_CLIENT_KEY=
 
-# 운영자 인증
-ADMIN_PASSWORD=admin123
+# 운영자·사용자 인증 — AUTH_ENABLED=true 면 셋 다 필수 (3.5 참조)
+# 기본 크레덴셜은 없다(D-071). 두 시크릿은 서로 다른 값이어야 한다(D-070)
+ADMIN_PASSWORD=
 ADMIN_JWT_SECRET=
+AUTH_JWT_SECRET=
 
 # Redis 비밀번호 (설정 시)
 REDIS_PASSWORD=
@@ -180,6 +183,121 @@ API_CORS_ORIGINS=["*"]
 # 잘못된 예 (쉼표 구분 문자열 — 파싱 에러 발생)
 SECURITY_SENSITIVE_COLUMNS=password,secret,token
 ```
+
+`.env`·`.encenv`에는 **인라인 주석을 쓰지 않는다**(`KEY=value  # 설명` 금지). 주석은 별도 줄에 둔다.
+
+### 3.4 설정 우선순위 — "바꿨는데 안 바뀐다"의 1순위 원인
+
+같은 키가 여러 곳에 있으면 **OS 환경변수가 항상 이긴다.** 파일끼리는 **설정 그룹마다 읽는 파일이 다르다** —
+`.encenv`를 읽는 설정 클래스는 24개 중 **6개뿐**이다(`src/config.py`의 클래스별 `env_file`).
+
+| 그룹(접두) | 읽는 파일 | 같은 키가 `.env`·`.encenv` 둘 다에 있으면 |
+|---|---|---|
+| `ADMIN_`·`AUTH_`·`LLM_`·`ORCHESTRATOR_`·`REDIS_`·`WORKB_` | `.env` + `.encenv` | `.encenv`가 이긴다 |
+| 나머지 18개 — `ALARM_`·`API_`·`AUDIT_`·`COMPOSITE_`·`DBHUB_`·`DRM_`·`MULTI_DB_`·`NOISE_` 등 | `.env`만 | **`.encenv`의 값은 무시된다** |
+
+그래서 **시크릿이 아닌 설정은 `.env`에 둔다.** `.encenv`는 위 6개 그룹의 시크릿 전용이다.
+실측(2026-09-15): `.env`=false · `.encenv`=true 일 때 `AUTH_ENABLED`는 `true`, `ALARM_ENABLED`·`TEXT2SQL_MULTI_CANDIDATE`는 `false`.
+
+| 상황 | 실제 적용값 |
+|---|---|
+| `.env`에 `AUTH_ENABLED=false`, `.encenv`에 `AUTH_ENABLED=true` | `true` |
+| 셸에 `export AUTH_ENABLED=true`(PowerShell `$env:AUTH_ENABLED="true"`)가 남아 있음 | 파일 값과 무관하게 `true` |
+
+- 설정 파일은 **서버 기동 시 1회** 읽는다. 값을 바꾸면 서버를 재시작한다.
+- `.env`·`.encenv`는 **현재 작업 디렉터리 기준**으로 찾는다. 서버·스크립트는 프로젝트 루트에서 실행한다.
+- PowerShell의 `$env:` 값은 **그 창을 닫을 때까지 남는다.** 앞서 설정한 값이 다음 실행을 조용히 덮는 일이 잦다.
+  지울 때: `Remove-Item Env:AUTH_ENABLED` (POSIX: `unset AUTH_ENABLED`).
+- **실제 적용값 확인**: 관리자 화면의 「환경변수 설정」 탭이 키마다 실효값과 출처(OS env·`.encenv` 덮어쓰기)를 표시한다.
+- 파일 값은 OS 환경변수에 주입되지 않는다. 그래서 **OS 환경변수로만 읽는 키**는 `.env`·`.encenv`에 적어도
+  효과가 없다 — 예: 접두 없는 `FABRIX_API_KEY`, 벤치 스위프의 `BENCH_USER_ID`/`BENCH_USER_PASSWORD`.
+
+### 3.5 인증 설정 (AUTH_ENABLED)
+
+`AUTH_ENABLED` 하나로 **개발 모드와 운영 모드**가 갈린다. 폐쇄망 운영 서버는 운영 모드다.
+
+| | `AUTH_ENABLED=false` (기본 · 개발) | `AUTH_ENABLED=true` (운영) |
+|---|---|---|
+| 웹·API 접근 | 로그인 없이 전 기능 사용(익명 사용자) | 로그인 필수. 토큰 없는 요청은 401 |
+| 시크릿 미설정 | 기동마다 난수 시크릿을 만든다(재시작하면 기존 토큰 무효) | **기동 거부** |
+| 사용자 계정 | 불필요 | 인증 DB에 있어야 한다 |
+
+#### 3.5.1 키와 두는 파일
+
+비밀값은 `.encenv`, 나머지는 `.env`에 둔다(두 파일 모두 읽히지만 비밀값을 `.env`에 섞지 않는다).
+
+| 키 | 파일 | 운영 모드 | 설명 |
+|---|---|---|---|
+| `AUTH_ENABLED` | `.env` | — | `true` = 운영 모드. 미설정이면 `false` |
+| `ADMIN_USERNAME` | `.env` | **필수** | 운영자(break-glass) 아이디 |
+| `ADMIN_PASSWORD` | `.encenv` | **필수** | 운영자 비밀번호. 기본값 없음 |
+| `ADMIN_JWT_SECRET` | `.encenv` | **필수** | 운영자 토큰 서명 키 |
+| `AUTH_JWT_SECRET` | `.encenv` | **필수** | 사용자 토큰 서명 키. **`ADMIN_JWT_SECRET`과 다른 값** |
+| `AUTH_AUTH_DB_URL` | `.env` | 사실상 필수 | 사용자 계정 DB(PostgreSQL). 비우면 `DB_CONNECTION_STRING`을 쓴다. `DB_BACKEND=dbhub`라 `DB_CONNECTION_STRING`도 비어 있으면 **사용자 로그인이 전부 503** |
+| `ADMIN_JWT_EXPIRE_HOURS` / `AUTH_JWT_EXPIRE_HOURS` | `.env` | | 토큰 유효시간(기본 24 / 8시간) |
+| `AUTH_MAX_LOGIN_ATTEMPTS` / `AUTH_LOCKOUT_MINUTES` | `.env` | | 연속 실패 잠금(기본 5회 / 30분) |
+| `AUTH_PASSWORD_MIN_LENGTH` | `.env` | | 가입 비밀번호 최소 길이(기본 8) |
+
+#### 3.5.2 설정 예 (운영 모드)
+
+```dotenv
+# .env
+AUTH_ENABLED=true
+ADMIN_USERNAME=admin
+AUTH_AUTH_DB_URL=postgresql://infra_user:password@localhost:5432/infra_db
+```
+
+```dotenv
+# .encenv
+ADMIN_PASSWORD=<운영자 비밀번호>
+ADMIN_JWT_SECRET=<시크릿 A>
+AUTH_JWT_SECRET=<시크릿 B — A와 다른 값>
+```
+
+시크릿 생성(두 번 실행해 서로 다른 값을 쓴다):
+
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+#### 3.5.3 기동 시 일어나는 일
+
+1. **필수 키 확인** — 하나라도 없으면 서버가 뜨지 않고 로그에
+   `운영 모드(AUTH_ENABLED=true) 기동 거부 — 다음을 .env/.encenv에 설정하세요: …`가 남는다.
+2. **인증 DB 연결** — 사용자·감사 테이블이 없으면 자동 생성한다. 연결에 실패하면 서버는 뜨지만
+   `인증 DB 초기화 실패 (인증 기능 비활성)` 경고가 남고 사용자 로그인은 503이 된다.
+3. **관리자 계정 자동 생성** — DB에 활성 관리자가 한 명도 없으면 `ADMIN_USERNAME`/`ADMIN_PASSWORD`로
+   관리자 계정 1개를 만든다(로그 `seed admin 생성 완료`). **최초 1회만** 만들며, 나중에 `ADMIN_PASSWORD`를
+   바꿔도 이 DB 계정의 비밀번호는 바뀌지 않는다.
+
+#### 3.5.4 계정 두 종류
+
+| | 운영자(break-glass) | 사용자 |
+|---|---|---|
+| 로그인 화면 | `/admin/login` | `/login` |
+| API | `POST /api/v1/admin/login` · 본문 `{"username", "password"}` | `POST /api/v1/auth/login` · 본문 **`{"user_id", "password"}`** |
+| 대조 대상 | 설정의 `ADMIN_USERNAME`/`ADMIN_PASSWORD` 그대로(DB 불필요) | 인증 DB의 계정 |
+| 쓰임 | 관리자 화면·설정 조회(DB 장애 시 비상 진입) | 질의(`/api/v1/query/*`) |
+| 계정 만들기 | 설정 파일에 적는다 | `/register` 화면 가입(즉시 활성·일반 권한) 또는 `POST /api/v1/auth/register` `{"user_id", "username", "password"}`. 3.5.3-3에서 생성된 관리자 계정(아이디 = `ADMIN_USERNAME`)도 쓸 수 있다 |
+
+두 토큰은 서로 다른 시크릿으로 서명되므로 **운영자 토큰으로는 질의할 수 없다.**
+
+#### 3.5.5 자주 겪는 문제
+
+| 증상 | 원인 | 조치 |
+|---|---|---|
+| 서버가 뜨지 않고 로그에 `기동 거부 — 다음을 … 설정하세요` | 필수 키 누락 | 메시지에 나열된 키를 3.5.1의 파일에 추가 |
+| 로그인 503 `인증 서비스를 사용할 수 없습니다` | 인증 DB 없음·연결 실패 | `AUTH_AUTH_DB_URL` 확인 · 기동 로그의 `인증 DB 초기화 실패` |
+| 로그인 401 `ID 또는 비밀번호가 올바르지 않습니다` | 계정 없음·비밀번호 불일치·비활성 계정 | `/register` 가입 또는 비밀번호 확인 |
+| 로그인 423 `계정이 잠겼습니다` | 연속 실패(기본 5회) | 잠금 시간(기본 30분)이 지난 뒤 로그인하면 풀린다 |
+| 로그인 422 | 본문 키 오류(사용자 로그인에 `username`을 보냄) | 3.5.4의 본문 키 |
+| `.env`를 고쳤는데 그대로 | OS 환경변수·`.encenv`가 덮음 / 재시작 안 함 | 3.4 |
+
+#### 3.5.6 테스트 러너의 인증
+
+시나리오 러너(`python -m scripts.scenario`)와 벤치 스위프(`python -m scripts.bench --sweep`)는 프로파일마다
+서버를 새로 띄워 **스스로 로그인한다.** 사용자 계정을 넘기는 방법이 둘이 다르므로 각 가이드를 따른다 —
+`plans/110-WIP-scenario-test-consolidated.md` 「▶ 실행 가이드」 ③(인증) · `plans/109-WIP-config-simplification-consolidated.md` 「▶ 실행 가이드」 ① 퀵(벤치 계정).
 
 ---
 
@@ -575,7 +693,7 @@ DBHUB_MCP_CALL_TIMEOUT=60
 
 ## 7. LLM 설정
 
-세 가지 LLM 제공자를 지원한다.
+네 가지 LLM 제공자를 지원한다.
 
 ### 7.1 Ollama (로컬 LLM, 기본값)
 
@@ -601,7 +719,110 @@ LLM_OLLAMA_BASE_URL=http://localhost:11434
 LLM_OLLAMA_TIMEOUT=180
 ```
 
-### 7.2 Gemini
+### 7.2 MLX (맥북 Apple Silicon 로컬 테스트 — plans/100)
+
+과금 없이 맥북에서 워커와 1단(`deep_agent`) 오케스트레이터를 함께 돌려 보는 설정이다.
+MLX 모델은 앱 프로세스에 올리지 않는다. `mlx_lm.server`(OpenAI 호환 HTTP)를 따로 띄우고,
+앱은 vLLM 오케스트레이터와 같은 `ChatOpenAI` 경로로 붙는다.
+
+- **로컬 테스트 전용이다.** 워커가 FabriX가 아니라 9B 4bit 모델이므로 정확도·지연 수치를 운영 기준선으로 인용하지 않는다(D-174 부기). 서버 스스로도 운영 부적합을 경고한다.
+- **과금 경로가 아니다.** `mlx`는 워커·오케스트레이터 모두 비과금 집합에 들어 있어 시나리오·벤치 하네스가 승인 없이 실행한다. 단 두 평면 중 **하나라도** `gemini`면 승인 대상이다(D-222 — `LLM_PROVIDER=mlx` + `ORCHESTRATOR_PROVIDER=gemini`도 과금 경로).
+- 앱에 플랫폼 자동 감지는 없다. `LLM_PROVIDER=mlx`를 명시해야 켜진다.
+
+**1회 설치** — 루트 venv에 넣지 않는다(공유 venv 의존성 파손 예방 · D-181 유형).
+
+```bash
+uv tool install "mlx-lm==0.31.3"
+# 설치 없이 한 번만 돌려 보려면: uvx --from "mlx-lm==0.31.3" mlx_lm.server ...
+```
+
+앱 쪽에는 `langchain-openai`가 필요하다. 워커만 `mlx`로 쓸 때도 마찬가지다.
+
+```bash
+pip install -e ".[dev,document,deepagents]"
+```
+
+**서버 기동** — 테스트할 때 별도 터미널에서 기동 스크립트로 직접 띄운다(포그라운드 · `Ctrl+C`로 종료). 앱(`python -m src.main --server`)은 그 뒤에 다른 터미널에서 띄운다.
+
+```bash
+scripts/mlx_server.sh              # .env의 LLM_MLX_MODEL · LLM_MLX_BASE_URL 포트로 127.0.0.1에 기동
+scripts/mlx_server.sh --dry-run    # 점검만 하고 실행할 명령을 출력
+scripts/mlx_server.sh --help
+```
+
+- 모델·포트는 앱과 같은 설정 키(`LLM_MLX_MODEL` · `LLM_MLX_BASE_URL`, 오케스트레이터 점검은 `ORCHESTRATOR_*`)에서 앱과 같은 순서(셸 환경변수 > `.env`)로 읽는다. `LLM_MLX_BASE_URL`에는 포트를 명시해야 한다(없으면 중단). 스크립트 전용 `MLX_MODEL` · `MLX_PORT` · `MLX_MAX_TOKENS` · `MLX_PROMPT_CACHE_BYTES`를 주면 그 값이 가장 우선하며, 앱 설정과 달라지면 경고한다.
+- PATH에 `mlx_lm.server`가 없으면(위 1회 설치를 건너뛴 경우) `uvx --from "mlx-lm==0.31.3"`로 실행한다(`MLX_LM_VERSION`으로 변경).
+- 기동 전에 점검한다: Apple Silicon이 아니거나, 포트에 이미 서버가 떠 있거나, 모델이 로컬 HF 캐시에 없으면 **중단**한다. 캐시에 있는 MLX 모델 목록을 함께 보여 준다. `.env`의 워커·오케스트레이터 모델 ID나 포트가 기동 값과 다르면 **경고**한다.
+- 캐시에 없는 모델을 받으려면 `MLX_ALLOW_DOWNLOAD=1 scripts/mlx_server.sh`로 실행한다. 기본은 오프라인이다.
+- 바인딩은 항상 `127.0.0.1`이다(서버는 무인증이고 CORS 기본값이 `*`다).
+
+스크립트가 내부에서 실행하는 명령은 아래와 같다(참고용 — 직접 실행해도 동작은 같다).
+
+```bash
+HF_HUB_OFFLINE=1 mlx_lm.server \
+  --model mlx-community/Qwen3.5-9B-OptiQ-4bit \
+  --host 127.0.0.1 --port 8080 \
+  --max-tokens 4096 \
+  --chat-template-args '{"enable_thinking":false}' \
+  --prompt-cache-bytes 6GB
+```
+
+| 플래그 | 두는 이유 |
+|---|---|
+| `HF_HUB_OFFLINE=1` | 모델 ID를 잘못 적었을 때 수 GB를 조용히 내려받지 않고 첫 요청에서 바로 404로 실패시킨다 |
+| `--max-tokens` · `--chat-template-args` | 이중 안전장치다. 정본은 앱이 요청마다 보내는 값(`LLM_MLX_MAX_TOKENS` · `LLM_MLX_ENABLE_THINKING`)이다. 둘 다 보내지 않으면 응답이 512토큰에서 잘리거나, Qwen3.5가 생성 예산을 전부 추론에 써서 본문이 빈다 |
+| `--prompt-cache-bytes 6GB` | 상한이 없으면 프롬프트 캐시가 13GB까지 커졌다(32GB 장비). 너무 낮추면 축출된 시스템 프롬프트가 다시 콜드 처리된다(27B·3GB에서 16K토큰 프롬프트 두 개를 번갈아 보내면 4건 중 2건이 콜드로 돌아갔다). 상한은 요청이 끝난 뒤 적용돼 요청 중에는 9GB 가까이 커진다 |
+
+**모델 선택** — 맥의 메모리로 고른다(2026-09-17 M1 Max 32GB 실측 · Metal 권장 작업 메모리 26.8GB · mlx-lm 0.31.3).
+
+| 모델 ID | 크기 | 실측 | 판정 |
+|---|---|---|---|
+| **`mlx-community/Qwen3.5-9B-OptiQ-4bit`** | 5.6GB | 생성 47.6토큰/초 · 콜드 prefill 약 350토큰/초(16K토큰 44초) · 도구 1개 호출 5/5 | **32GB 맥북 권장(기본).** 여러 도구 질의에서 결과 누락·SQL 절단이 관측됐다(plans/100 Phase 4) |
+| `mlx-community/Qwen3.8-27B-4bit` | 16.1GB | 생성 17.5토큰/초 · 콜드 prefill 107토큰/초(16K토큰 151초) · 도구 2종 동시 호출 3/3 · 폴스타 SQL 정확 · **파이프라인 1턴 420~900초** | **32GB에서는 쓰지 않는다.** plans/93·94 실 실행 중 Metal 메모리 부족 1회(생성 스레드 사망)와 시스템 메모리 부족 강제 종료 1회가 났다. 더 큰 메모리 장비는 미실측 |
+
+Qwen3.8에는 27B보다 작은 모델이 없고, 다른 크기(Flash-Next 4bit 111.5GB · 2.4T-A95B)는 맥북에 올라가지 않는다. 27B와 9B 사이의 공식 모델은 MoE `Qwen3.6-35B-A3B`(4bit 20.4GB)뿐인데 27B보다 메모리를 더 쓴다(미실측). `mlx-community`의 "Uncensored"·"OBLITERATED" 등 파생 모델은 쓰지 않는다.
+
+`.env` — 한 서버·한 모델로 두 평면을 모두 태운다(두 평면의 모델 ID가 다르면 요청마다 가중치를 재적재한다):
+
+```dotenv
+LLM_PROVIDER=mlx
+LLM_MLX_BASE_URL=http://127.0.0.1:8080/v1
+LLM_MLX_MODEL=mlx-community/Qwen3.5-9B-OptiQ-4bit
+ORCHESTRATOR_PROVIDER=mlx
+ORCHESTRATOR_BASE_URL=http://127.0.0.1:8080/v1
+ORCHESTRATOR_MODEL=mlx-community/Qwen3.5-9B-OptiQ-4bit
+```
+
+선택 키: `LLM_MLX_MAX_TOKENS`(기본 4096) · `LLM_MLX_TIMEOUT`(기본 600초) · `LLM_MLX_ENABLE_THINKING`(기본 false).
+오케스트레이터 요청 타임아웃은 기존 `ORCHESTRATOR_TIMEOUT`(기본 120초)을 쓴다.
+**스트리밍 청크 대기 상한도 이 두 타임아웃을 따른다** — `mlx_lm.server`는 prefill이 끝나야 첫 청크를 보내는데,
+langchain-openai 기본값(120초)에 두면 긴 프롬프트 호출이 첫 청크 전에 끊겨 폴백으로 넘어간다(`src/clients/mlx_client.py`).
+느린 모델(27B 등)을 쓰면 `LLM_MLX_TIMEOUT=900` · `ORCHESTRATOR_TIMEOUT=300` · `API_QUERY_TIMEOUT=900` · `API_FILE_QUERY_TIMEOUT=1200`으로 올린다.
+`API_QUERY_TIMEOUT`·`API_FILE_QUERY_TIMEOUT`은 **첫 답변(표 또는 첫 토큰)까지**의 상한이다(2026-09-28 · D-267 ⑦). 스트리밍 응답은 첫 답변 뒤
+토큰 간 공백 `API_STREAM_IDLE_TIMEOUT_SEC`(기본 30초)과 전체 상한(처리 상한 + `API_STREAM_DELIVERY_GRACE_SEC`, 기본 60초)으로만 끊긴다 —
+토큰 속도가 느린 모델에서 긴 답이 끝까지 오지 않으면 `API_STREAM_DELIVERY_GRACE_SEC`도 올린다.
+
+**사전 점검** — 서버 도달·모델 ID·**1토큰 생성**·재적재 위험·루프백 바인딩을 코드가 판정한다(질의 전 실행). `/health`·`/v1/models`는 생성 스레드가 죽어도 200이라 생성까지 본다.
+시나리오·벤치 하네스의 실 실행(`python -m scripts.scenario --run` · `python -m scripts.bench --sweep --mode run`)은 이 MLX 점검을 **자동으로 먼저** 돌고, 막히면 앱 서버를 띄우기 전에 멈춘다(하네스 쪽 안내는 `plans/94` ⑪ · `plans/93` 퀵 가이드 7).
+
+```bash
+python -m scripts.scenario --preflight --no-db
+```
+
+**워밍업** — 서버 기동 직후 첫 질의는 노드마다 시스템 프롬프트를 처음 읽으므로(콜드 prefill — 9B 초당 약 350토큰, 27B 초당 약 107토큰)
+노드당 수십 초(9B)~수 분(27B)씩 걸린다. `API_QUERY_TIMEOUT`에 걸릴 수 있으니 질의를 한 번 돌려 캐시를 채운 뒤 검증한다.
+시스템 프롬프트가 같으면 질문이 달라도 앞부분이 캐시에서 재사용돼 9B는 1초, 27B는 2~3초 안에 prefill이 끝난다.
+
+| 증상 | 원인 · 조치 |
+|---|---|
+| 기동은 되는데 질의가 연결 오류 | 서버 미기동 또는 포트 불일치. 사전 점검이 `[중단] MLX 서버`로 알려 준다 |
+| `/health`는 200인데 질의가 끝없이 멎는다 | 서버 로그에 `Insufficient Memory`·`Exception in thread (_generate)`가 있으면 Metal 메모리 부족으로 생성 스레드가 죽은 상태다. 사전 점검이 `[중단] MLX 생성`으로 알려 준다. 서버를 내리고 다시 띄우며, 반복되면 더 작은 모델로 바꾼다 |
+| 앱 로그에 `No streaming chunk received for 120.0s` | 청크 대기 상한이 라이브러리 기본값이다. 2026-09-17 이후 코드는 `LLM_MLX_TIMEOUT`·`ORCHESTRATOR_TIMEOUT`을 따른다 — 그 뒤에도 나오면 두 값을 올린다 |
+| 첫 요청이 `404 Cannot find an appropriate cached snapshot` | 모델 ID가 HF 캐시에 없다. `LLM_MLX_MODEL`·`ORCHESTRATOR_MODEL`을 서버 `--model`과 맞춘다 |
+| 요청마다 3~5초씩 더 걸린다 | 두 평면의 모델 ID가 달라 서버가 가중치를 교대 재적재한다. 한 모델로 맞춘다 |
+| 1단이 아니라 3단으로 확정된다 | 기동 로그 `오케스트레이션 사다리 확정` 줄의 사유를 본다. `orchestrator_unavailable`이면 `ORCHESTRATOR_BASE_URL`의 `/models`가 200인지 확인한다 |
+
+### 7.3 Gemini
 
 ```dotenv
 LLM_PROVIDER=gemini
@@ -620,7 +841,7 @@ LLM_GEMINI_API_KEY=your-gemini-api-key
 pip install -e ".[gemini]"
 ```
 
-### 7.3 FabriX
+### 7.4 FabriX
 
 ```dotenv
 LLM_PROVIDER=fabrix
@@ -747,3 +968,28 @@ ollama pull llama3.1:8b
 # 6. 서버 실행
 python -m src.main --server
 ```
+
+## 10. 사용자·관리자 매뉴얼 (plans/116 · D-252)
+
+매뉴얼은 앱과 함께 배포되는 정적 HTML이다. 서버를 띄우면 `/manual/user`·`/manual/admin` 으로 열리고, 메인 화면 머리글의 **매뉴얼 ▾** 에서도 연다(관리자 매뉴얼 항목은 관리자 계정에만 보인다). 배포 서버에서는 따로 할 일이 없다 — 산출물(`src/static/manual/`)이 저장소에 커밋돼 있다.
+
+UI 를 바꾸면 `pytest tests/test_manual` 이 실패할 수 있다(사라진 버튼·새 버튼 감시). 그때 매뉴얼을 다시 만든다 — **개발 맥에서만**:
+
+```bash
+# 전제: 샌드박스 PG(polestar_pg, 5434) · Redis(6380) 가동, playwright 캐시 브라우저(chromium) 존재
+python -m scripts.manual.run_capture          # 캡처 51장(녹화 재생 · LLM 호출 0) → HTML 빌드
+python -m scripts.manual.build --draft        # 본문만 고칠 때(없는 캡처·샘플은 자리 표시)
+pytest tests/test_manual                      # manifest·절·캡처·사례 대조
+```
+
+| 고칠 것 | 파일 |
+|---|---|
+| 본문 | `scripts/manual/content/{user,admin}.md` |
+| 기능 목록(“모든 기능”의 정본) | `scripts/manual/features.yaml` |
+| 캡처 장면 | `scripts/manual/captures.yaml` |
+| 사용자 사례 | `scripts/manual/cases.yaml` — 새 사례는 로컬 MLX 로 녹화한다(`python -m scripts.manual.samples --run`, 녹화 서버는 `snapshot record` + `_serve` `MANUAL_MODE=record`). 녹화한 샘플은 원본과 대조해 `--review <ID> ok|partly|wrong "<근거>"` 로 판정한다 |
+| 사례 샘플 사람 확인 | `python -m scripts.manual.samples --sheet` → `build/manual_capture/review_sheet.html`(사례별 입력·응답 전문·결과 행·생성 SQL·대리 판정)을 원본 데이터와 대조한 뒤 `--confirm <ID> --by <이름>`. 틀렸으면 `--review <ID> wrong "<근거>"`. `python -m scripts.manual.samples`(check)는 사람 확인이 없는 사례를 「사람 확인 대기」로 보고하고 exit 1 로 끝난다 |
+
+캡처는 찍기 직전 화면 텍스트를 검사한다 — 저장소 루트 `.env` 의 호스트·IP·시크릿 값이 보이거나 설정 화면에 루프백이 아닌 IP 가 보이면 그 장면이 실패한다. 역할별 매뉴얼 링크 노출(일반 사용자 = 사용자 매뉴얼만, 관리자 = 둘 다)도 캡처 중에 단언한다(`captures.yaml` 의 `assert_visible`·`assert_hidden`).
+
+캡처·녹화 서버는 `build/manual_capture/` 의 스냅샷에서 캡처 전용 `.env` 로 뜬다 — 저장소의 `.env`·`.encenv` 를 읽지 않는다(스냅샷 생성 시 설정 해석을 자동 검증한다).

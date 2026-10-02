@@ -1,0 +1,638 @@
+"""HTTP/SSE 클라이언트 (plans/94 §4.3).
+
+측정 경로는 `/api/v1/query/stream` 이 정본이다. 실패 트레이스는 **실패 요청만** 파일로
+남기므로(trace_writer.flush_if_failed) 성공 건의 노드별 지연은 거기서 못 얻는다. 반면
+스트림은 node_start/node_complete/progress 를 timestamp_ms 와 함께 흘리고 done 에
+processing_time_ms·executed_sql·row_count·has_file 이 전부 실린다 - `src/` 수정 없이
+성공 건의 지연 분해를 얻는 유일한 경로다(§0.3-3).
+
+기준 URL은 **127.0.0.1 고정**이다. Windows에서 `localhost`는 ::1(IPv6)을 먼저 시도할 수
+있는데 API_HOST=0.0.0.0 은 IPv4 전용 바인딩이라 간헐 실패한다(부록 A.1-5 · W2).
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+import json
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Optional, Protocol, runtime_checkable
+
+import httpx
+
+from .assertions import AUTH_FAILURE_STATUSES, Observation
+
+# 무이벤트 구간이 이 값을 넘으면 hang 후보로 본다(§3.8 · D-198 계열).
+# 서버 하트비트 간격의 배수로 잡는다 - 하트비트가 꺼져 있어도 이 상한은 유효하다.
+DEFAULT_HANG_GAP_MS = 120_000.0
+
+#: 결과 행 수집(plans/122 H-1)의 행 상한. 넘으면 앞부분만 싣고 `truncated`·`total_rows` 로 남긴다 -
+#: 판정은 받은 행만 한다(`assertions._check_result`). 서버 결과 저장소는 질의 결과를 전량 보관한다.
+RESULT_ROWS_MAX = 5000
+
+#: `download-csv` 404 중 「결과는 저장됐으나 행이 없다」를 가리는 서버 문구
+#: (`src/api/routes/query.py` `download_csv` 의 "다운로드할 조회 결과가 없습니다."). 다른 404 는
+#: `_owned_result` 의 "결과를 찾을 수 없습니다." - 결과 저장소(LRU 1,000건)에 query_id 자체가 없다
+#: (축출 · 사전 게이트 역질문처럼 저장하지 않는 응답). 둘을 같은 「빈 결과」로 세면 축출이 거짓
+#: 불합격이 된다(plans/122 §8 위험표).
+RESULT_EMPTY_DETAIL = "조회 결과가 없습니다"
+
+#: 비스트리밍 요청은 서버 상한보다 이만큼 더 기다린다 - 서버의 타임아웃 응답이 먼저 도착하게 한다.
+NONSTREAM_TIMEOUT_MARGIN_SEC = 30.0
+
+#: 재시도 예산(`QUERY_MAX_RETRY_COUNT`)이 걸리는 회귀 지점.
+#: `query_validator` 실패·`query_executor` SQL 에러·`result_organizer` 데이터 부족이
+#: 전부 이 노드로 되돌아온다(CLAUDE.md 「LangGraph 노드」). 스트림의 `node_start` 를 세면
+#: **서버를 고치지 않고** 재시도 횟수를 얻는다.
+RETRY_ENTRY_NODE = "query_generator"
+
+
+@runtime_checkable
+class TokenProvider(Protocol):
+    """질의 토큰의 수명 관리자(T-a·T-b). 구현은 러너의 `TokenSource` 다.
+
+    클라이언트가 러너를 import 하면 순환이므로 **계약만** 여기에 둔다.
+    """
+
+    @property
+    def token(self) -> Optional[str]:
+        """지금 써야 할 토큰."""
+
+    def refresh(self) -> Optional[str]:
+        """재로그인해 새 토큰을 받는다. 못 받으면 None."""
+
+
+@dataclass
+class ClientConfig:
+    """클라이언트 설정. 포트는 러너가 프로파일별로 정한다."""
+
+    port: int
+    token: Optional[str] = None
+    admin_token: Optional[str] = None
+    timeout_sec: float = 360.0
+    hang_gap_ms: float = DEFAULT_HANG_GAP_MS
+    artifact_dir: Optional[Path] = None
+    #: 있으면 **토큰의 정본**이다(T-a·T-b). `token` 필드는 폴백으로만 남는다 -
+    #: 동시 부하(K-06·K-07)는 같은 ClientConfig 로 세션마다 클라이언트를 새로 만들므로,
+    #: 토큰을 값으로 복사해 두면 한 세션의 재발급이 다른 세션에 닿지 않는다.
+    token_source: Optional[TokenProvider] = None
+    #: 서버 실효 요청 상한(초) - 프로파일 기동 때 설정 에코로 읽는다(`server.SERVER_TIMEOUT_KEYS`).
+    server_timeouts: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/api/v1"
+
+    @property
+    def current_token(self) -> Optional[str]:
+        return self.token_source.token if self.token_source is not None else self.token
+
+    @property
+    def headers(self) -> dict[str, str]:
+        token = self.current_token
+        return {"Authorization": f"Bearer {token}"} if token else {}
+
+    @property
+    def admin_headers(self) -> dict[str, str]:
+        """설정 에코 전용 헤더.
+
+        **질의 토큰과 같은 것이 아니다.** `/query/*` 는 `require_user`(auth.jwt_secret)를
+        타고 `/admin/settings/schema` 는 `require_admin_user`(admin.jwt_secret 또는
+        role=admin 사용자)를 탄다 - D-070 으로 두 시크릿이 분리돼 있어 한쪽 토큰을
+        다른 쪽에 쓰면 401 이다. 하나로 합치면 "질의는 되는데 주입 검증만 조용히
+        건너뛰는" 상태가 만들어진다(2026-09-14 실측: 1984건 전량 401).
+        """
+        return {"Authorization": f"Bearer {self.admin_token}"} if self.admin_token else {}
+
+
+def _http_error(status_code: int, body: str) -> str:
+    """HTTP 실패를 관측치의 `error` 로 옮긴다.
+
+    **여기서 error 를 채우지 않으면 판정기가 그 턴을 `manual` 로 남긴다** -
+    `evaluate_turn` 은 `obs.error` 가 비고 단언 실패도 없으면 "옮기지 않은 기대값이
+    남았다"로 읽기 때문이다(assertions.py:337). 그래서 401 이 1984건 나도 리포트에는
+    "판정 불가"만 찍히고 실패로는 한 건도 세지 않았다(2026-09-14 실측).
+    """
+    hint = ""
+    if status_code in (401, 403):
+        hint = " - 토큰 없음/만료. 러너에 크레덴셜을 넘겼는지 확인"
+    return f"http {status_code}{hint}: {body[:300]}"
+
+
+def _count_retries(obs: Observation) -> tuple[Optional[int], bool]:
+    """재생성 회차를 센다. (회차, 하한 여부). 볼 수 있는 신호가 없으면 None 이다.
+
+    - 단일 그래프 경로: 회귀 노드 `query_generator` 의 **완료 횟수 - 1**. node_start 는 노드마다
+      한 번만 오므로(query.py `_seen_nodes`) 시작을 세면 늘 0 이었다.
+    - 서브에이전트 경로(intent_orchestration·deep_agent): 진행 이벤트 `pipeline.generate` 시작 수에서
+      파이프라인 수(`pipeline.schema` 시작)를 뺀다(subagents.py - 회차마다 generate 가 다시 시작한다).
+    - 멀티 DB 경로(`pipeline.multi_db`)는 존별 검증 거부 재시도가 스트림에 없다 - 하한으로 표시한다.
+    러너가 감사 로그의 `retry_attempt` 로 이 값을 보강한다.
+    """
+    counts: dict[str, int] = {}
+    for event in obs.progress_events:
+        if str(event.get("phase") or "start") == "start":
+            name = str(event.get("name") or "")
+            counts[name] = counts.get(name, 0) + 1
+    partial = counts.get("pipeline.multi_db", 0) > 0
+    if obs.node_calls.get(RETRY_ENTRY_NODE):
+        return max(0, obs.node_calls[RETRY_ENTRY_NODE] - 1), partial
+    if counts.get("pipeline.generate"):
+        return max(0, counts["pipeline.generate"] - counts.get("pipeline.schema", 0)), partial
+    return (0 if partial else None), partial
+
+
+def _derive_status(payload: dict[str, Any]) -> str:
+    """SSE done 이벤트에는 status 키가 없다 - 존재하는 키로 상태를 유도한다.
+
+    역질문은 clarification 키의 존재로만 판별된다(query.py:1311 의 pre-gate done).
+    이 유도 규칙을 한 곳에 두지 않으면 스트림 경로와 비스트림 경로의 판정이 갈린다.
+    """
+    if payload.get("clarification"):
+        return "clarification"
+    if payload.get("awaiting_approval"):
+        return "awaiting_approval"
+    return str(payload.get("status") or "completed")
+
+
+def _apply_done(obs: Observation, payload: dict[str, Any]) -> None:
+    obs.query_id = payload.get("query_id")
+    obs.response = str(payload.get("response") or obs.response)
+    obs.executed_sql = payload.get("executed_sql")
+    obs.row_count = payload.get("row_count")
+    obs.has_file = bool(payload.get("has_file"))
+    obs.file_name = payload.get("file_name")
+    obs.clarification = payload.get("clarification")
+    obs.form_fill_clarification = payload.get("form_fill_clarification")
+    obs.form_memory_panel = payload.get("form_memory_panel")
+    obs.processing_time_ms = payload.get("processing_time_ms")
+    obs.status = _derive_status(payload)
+    scope = payload.get("db_scope") or {}
+    if isinstance(scope, dict) and scope.get("db_ids"):
+        obs.db_ids = [str(d) for d in scope["db_ids"]]
+        obs.db_ids_source = "scope"
+    # 스코프가 비면 러너가 감사 로그의 실행 DB 로 채운다(plans/120 V-1 · `runner._apply_sql_audit`).
+    # O-e(plans/94 §19.3): 재작성 감사 — 기능이 꺼진 서버는 키 자체를 싣지 않는다.
+    obs.rewrite_traces = [t for t in payload.get("rewrite_trace") or [] if isinstance(t, dict)]
+    # 2단 계획 요약(plans/121 TP-0.1) — 서버가 싣지 않는 단(1·3단)·옛 서버는 None 그대로다.
+    summary = payload.get("plan_summary")
+    if isinstance(summary, dict):
+        obs.plan_summary = dict(summary)
+    # 순차 의존 경과 노트(plans/122 H-5 · plans/121 TP-11.8) — 서버 페이로드 그대로. 서버는
+    # 노트가 없으면 키를 싣지 않는다(`_dependency_notes_field`). 비스트림 응답(`QueryResponse`)도
+    # 같은 키다.
+    notes = payload.get("dependency_notes")
+    if isinstance(notes, list):
+        obs.dependency_notes = list(notes)
+    # 응답 고지(plans/123 W-8 · V-1) — 서버는 고지가 없으면 키를 싣지 않는다(`_disclosures_field`).
+    # done 을 받았으면 「수집했고 없음」([])이다 - None(수집하지 않음)과 가른다(불변식 활성 판별 ·
+    # V-4).
+    obs.disclosures = [d for d in payload.get("disclosures") or [] if isinstance(d, dict)]
+    _apply_timeline(obs, payload)
+
+
+def result_unavailable(reason: str) -> dict[str, Any]:
+    """결과 행을 받지 못했다는 `Observation.result`(plans/122 H-1).
+
+    판정기는 보류로 본다(불합격 아님).
+    """
+    return {"status": "unavailable", "columns": [], "rows": [], "total_rows": 0,
+            "truncated": False, "reason": reason}
+
+
+def parse_result_csv(data: bytes, limit: int = RESULT_ROWS_MAX) -> dict[str, Any]:
+    """`download-csv` 본문 → `Observation.result`(plans/122 H-1).
+
+    서버는 UTF-8 BOM 을 붙이고(엑셀 한글 대응) 행마다 키 합집합을 머리글로 쓴다
+    (`src/api/routes/query.py` `download_csv`). 값은 전부 문자열로 둔다 - 숫자 해석은 판정기가 한다.
+    `limit` 을 넘는 행은 싣지 않고 전체 행 수만 센다.
+    """
+    reader = csv.reader(io.StringIO(data.decode("utf-8-sig")))
+    header = next(reader, None) or []
+    rows: list[dict[str, str]] = []
+    total = 0
+    for record in reader:
+        if not record:
+            continue
+        total += 1
+        if len(rows) < limit:
+            rows.append({name: (record[i] if i < len(record) else "")
+                         for i, name in enumerate(header)})
+    return {"status": "ok" if total else "empty", "columns": list(header), "rows": rows,
+            "total_rows": total, "truncated": total > len(rows), "reason": None}
+
+
+def _apply_timeline(obs: Observation, payload: dict[str, Any]) -> None:
+    """서버 단계 타임라인(plans/119 T-0)을 **가공 없이** 옮긴다 - 해석은 리포트가 한다.
+
+    `done`(정상·`status=partial`)과 `error` 페이로드 둘 다 싣는다. 옛 서버는 키가 없어 None 으로
+    남는다 - 리포트는 그 턴을 노드 경과로 추정 귀속하고 "추정"이라 적는다.
+    """
+    timeline = payload.get("timeline")
+    if isinstance(timeline, dict):
+        obs.timeline = dict(timeline)
+
+
+class ScenarioClient:
+    """시나리오 1턴을 보내고 관측치를 돌려준다."""
+
+    def __init__(self, config: ClientConfig) -> None:
+        self._config = config
+        self._client = httpx.Client(timeout=config.timeout_sec)
+
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self) -> "ScenarioClient":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    # --- 헬스·설정 에코 -------------------------------------------------
+
+    def health(self) -> tuple[bool, str]:
+        try:
+            resp = self._client.get(f"{self._config.base_url}/health", timeout=10.0)
+        except httpx.HTTPError as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+        return resp.status_code == 200, f"http {resp.status_code}"
+
+    def effective_settings(self) -> tuple[Optional[dict[str, str]], Optional[str]]:
+        """실효 설정 에코를 읽는다 (§4.5 · 계획서 §4.2-2 정정).
+
+        `GET /admin/settings` 는 **`.env`에 실존하는 키만** 돌려주는 DEPRECATED 평면
+        목록이다(admin.py:535). 프로파일은 OS env로 주입하는데 `.env`에 없는 키는 거기
+        나오지 않으므로, 주입 무시를 잡아야 할 장치가 주입 자체를 못 본다.
+        정본은 `/admin/settings/schema` 다 - build_catalog 가 effective_value 와
+        override("os"/"encenv")까지 준다(settings_catalog.py:1029).
+        """
+        url = f"{self._config.base_url}/admin/settings/schema"
+        try:
+            resp = self._client.get(url, headers=self._config.admin_headers, timeout=20.0)
+        except httpx.HTTPError as exc:
+            return None, f"설정 에코 요청 실패: {type(exc).__name__}: {exc}"
+        if resp.status_code in (401, 403):
+            # AUTH_ENABLED=true 인 환경에서 토큰이 없다. 확인 못 한 것을 통과로 세지 않는다(G-3).
+            return None, f"설정 에코 미확인 (http {resp.status_code} - 관리자 토큰 필요)"
+        if resp.status_code != 200:
+            return None, f"설정 에코 미확인 (http {resp.status_code})"
+        values: dict[str, str] = {}
+        for group in resp.json().get("groups", []):
+            for item in group.get("settings", []):
+                key = item.get("env_key")
+                if key:
+                    values[str(key)] = "" if item.get("effective_value") is None else str(
+                        item["effective_value"]
+                    )
+        return values, None
+
+    def login(self, user_id: str, password: str) -> tuple[Optional[str], Optional[str]]:
+        """사용자 로그인 - `/query/*` 용 토큰을 받는다.
+
+        본문 키는 **`user_id`** 다(`UserLoginRequest`, schemas.py:185). `username` 으로
+        보내면 로그인 실패가 아니라 422 가 돌아온다 - 둘은 다른 사고이므로 사유도 달라야 한다.
+        """
+        return self._post_login("/auth/login", {"user_id": user_id, "password": password})
+
+    def admin_login(self, username: str, password: str) -> tuple[Optional[str], Optional[str]]:
+        """운영자 로그인 - 설정 에코(`/admin/settings/schema`) 용 토큰을 받는다.
+
+        운영자 크레덴셜은 `ADMIN_USERNAME`/`ADMIN_PASSWORD` 를 그대로 대조하므로
+        (admin_auth.py:164) 인증 DB 없이도 성립한다. 본문 키는 **`username`** 이다 -
+        사용자 로그인과 반대라 한 함수로 합칠 수 없다.
+        """
+        return self._post_login("/admin/login", {"username": username, "password": password})
+
+    def _post_login(
+        self, path: str, body: dict[str, str]
+    ) -> tuple[Optional[str], Optional[str]]:
+        url = f"{self._config.base_url}{path}"
+        try:
+            resp = self._client.post(url, json=body, timeout=20.0)
+        except httpx.HTTPError as exc:
+            return None, f"{path} 로그인 실패: {type(exc).__name__}: {exc}"
+        if resp.status_code != 200:
+            # 본문을 붙인다. 401(크레덴셜 불일치)·422(본문 계약 어긋남)·503(인증 DB 없음)은
+            # 조치가 전부 달라서 상태코드만으로는 다음 행동이 정해지지 않는다.
+            return None, f"{path} 로그인 실패 (http {resp.status_code}): {resp.text[:200]}"
+        try:
+            payload = resp.json()
+        except ValueError:
+            return None, f"{path} 로그인 응답이 JSON 이 아니다"
+        token = payload.get("access_token") or payload.get("token")
+        return (str(token), None) if token else (None, f"{path} 로그인 응답에 토큰이 없다")
+
+    # --- 질의 -----------------------------------------------------------
+
+    def send(
+        self, endpoint: str, payload: dict[str, Any], upload: Path | None = None,
+        *, anonymous: bool = False,
+    ) -> Observation:
+        """턴 1회의 요청. **401/403 이면 재로그인 후 1회만 다시 보낸다**(T-a).
+
+        run 20260915-131903 은 8시간을 넘기는 순간(`AuthConfig.jwt_expire_hours = 8`)
+        280번째 턴부터 마지막까지 **103턴 전건이 401** 이었다. 러너가 프로파일 기동 시
+        한 번만 토큰을 받고 재발급 경로가 없었기 때문이다.
+
+        재시도는 **1회뿐**이다. 크레덴셜이 틀려서 나는 401 을 무한히 두드리면
+        `max_login_attempts`(기본 5)에 걸려 계정이 잠긴다.
+
+        `anonymous=True`(plans/122 H-6 · 턴 `auth: none`)면 Authorization 헤더 없이 보내고
+        **재로그인 재시도를 하지 않는다** - 401 이 그 턴의 기대값이다.
+        """
+        if anonymous:
+            return self._dispatch(endpoint, payload, upload, headers={})
+        obs = self._dispatch(endpoint, payload, upload)
+        if obs.http_status not in AUTH_FAILURE_STATUSES:
+            return obs
+        source = self._config.token_source
+        if source is None or source.refresh() is None:
+            # 재발급 경로가 없다(주입 토큰 · 크레덴셜 부재 · 재로그인 실패).
+            # 조용히 넘기지 않는다 - 판정기가 이 턴을 `invalid` 로 적재한다(T-c).
+            return obs
+        retried = self._dispatch(endpoint, payload, upload)
+        retried.auth_retried = True
+        return retried
+
+    def _dispatch(
+        self, endpoint: str, payload: dict[str, Any], upload: Path | None,
+        headers: dict[str, str] | None = None,
+    ) -> Observation:
+        """`headers` 가 None 이면 러너 토큰 헤더다.
+
+        요청 시점에 읽는다 - T-a 재시도가 새 토큰을 쓴다.
+        """
+        sent = self._config.headers if headers is None else headers
+        if endpoint == "plain":
+            return self._post_plain(payload, sent)
+        if endpoint == "stream":
+            return self._post_stream(payload, sent)
+        if endpoint in ("file", "file_stream"):
+            return self._post_file(endpoint, payload, upload, sent)
+        raise ValueError(f"알 수 없는 endpoint: {endpoint}")
+
+    def _nonstream_timeout(self, server_key: str) -> float:
+        """비스트리밍 요청의 대기 상한(초).
+
+        응답 본문이 처리가 끝난 뒤 한 번에 오므로 read 타임아웃이 곧 전체 상한이다. 서버 자신의
+        상한보다 먼저 끊으면 서버는 정상 처리 중인데 러너가 `hang`(무조건 불합격)으로 판정한다 -
+        로컬 MLX 27B 1턴 420~900초 대 기본 360초(2026-09-17 실측). 스트리밍은 하트비트가 오므로
+        `timeout_sec`(청크 간격 상한)를 그대로 쓴다.
+        """
+        server = self._config.server_timeouts.get(server_key)
+        if server is None:
+            return self._config.timeout_sec
+        return max(self._config.timeout_sec, server + NONSTREAM_TIMEOUT_MARGIN_SEC)
+
+    def _post_plain(self, payload: dict[str, Any], headers: dict[str, str]) -> Observation:
+        obs = Observation()
+        started = time.perf_counter()
+        # 서버는 폼필 답변 턴에 파일 질의 상한을 쓴다(src/api/routes/query.py).
+        server_key = ("API_FILE_QUERY_TIMEOUT" if payload.get("form_fill_answers")
+                      else "API_QUERY_TIMEOUT")
+        try:
+            resp = self._client.post(
+                f"{self._config.base_url}/query",
+                json=payload,
+                headers=headers,
+                timeout=self._nonstream_timeout(server_key),
+            )
+        except httpx.HTTPError as exc:
+            obs.wall_ms = (time.perf_counter() - started) * 1000
+            obs.error = f"{type(exc).__name__}: {exc}"
+            obs.hang = isinstance(exc, httpx.TimeoutException)
+            obs.status = "error"
+            return obs
+        obs.wall_ms = (time.perf_counter() - started) * 1000
+        obs.http_status = resp.status_code
+        if resp.status_code >= 400:
+            obs.status = "error"
+            obs.response = resp.text[:4000]
+            obs.error = _http_error(resp.status_code, resp.text)
+            return obs
+        _apply_done(obs, resp.json())
+        return obs
+
+    def _consume_sse(self, response: httpx.Response, obs: Observation, started: float) -> None:
+        """SSE 라인을 소비하며 노드 지연·무이벤트 간격을 측정한다."""
+        last_event = started
+        # 노드 구간의 시작 경계. 서버는 node_start 를 노드마다 **한 번만** 보내고(query.py
+        # `_seen_nodes`) node_complete 는 회차마다 보낸다. 최상위 노드는 순차로 돌므로, 재진입한
+        # 회차는 직전 완료 시각에 시작한 것이다. 종전의 "마지막 완료 - 첫 시작" 은 재계획 루프에서
+        # 구간이 겹쳐 노드 합계가 전체 소요를 넘었다(run 20260914-154940: 7,700s > 6,278s).
+        boundary_ms: Optional[float] = None
+        max_gap = 0.0
+        saw_done = False
+        tokens: list[str] = []
+
+        for line in response.iter_lines():
+            if not line or not line.startswith("data: "):
+                continue
+            now = time.perf_counter()
+            max_gap = max(max_gap, (now - last_event) * 1000)
+            last_event = now
+            try:
+                payload = json.loads(line[6:])
+            except json.JSONDecodeError:
+                continue
+            kind = str(payload.get("type") or "")
+            obs.sse_events.append(kind)
+
+            if kind == "node_start":
+                name = str(payload.get("node") or "")
+                start_ms = float(payload.get("timestamp_ms") or 0.0)
+                boundary_ms = start_ms if boundary_ms is None else max(boundary_ms, start_ms)
+                obs.node_path.append(name)
+                if obs.ttfb_ms is None:
+                    # 첫 node_start 도착 - 그래프 진입 신호다. 답변 첫 토큰(`ttft_ms`)이 아니다.
+                    obs.ttfb_ms = (now - started) * 1000
+            elif kind == "node_complete":
+                name = str(payload.get("node") or "")
+                end_ms = float(payload.get("timestamp_ms") or 0.0)
+                begin_ms = end_ms if boundary_ms is None else boundary_ms
+                obs.node_elapsed_ms[name] = round(
+                    obs.node_elapsed_ms.get(name, 0.0) + max(0.0, end_ms - begin_ms), 1
+                )
+                obs.node_calls[name] = obs.node_calls.get(name, 0) + 1
+                boundary_ms = max(begin_ms, end_ms)
+            elif kind == "progress":
+                obs.progress_events.append(payload)
+            elif kind == "token":
+                content = str(payload.get("content") or "")
+                if content and obs.ttft_ms is None:
+                    # H-1(plans/119): 사용자가 답을 보기 시작한 시각. 기준은 `ttfb_ms` 와 같은
+                    # 요청 송신 시각이다. 빈 토큰은 답변이 아니라 세지 않는다.
+                    obs.ttft_ms = (now - started) * 1000
+                tokens.append(content)
+            elif kind == "error":
+                obs.error = str(payload.get("message") or payload.get("detail") or "error")
+                obs.status = "error"
+                _apply_timeline(obs, payload)
+            elif kind == "done":
+                saw_done = True
+                _apply_done(obs, payload)
+
+        obs.max_event_gap_ms = round(max_gap, 1)
+        # 비용 축은 스트림에서 나오는 것만 센다.
+        #
+        # `done` 페이로드에는 LLM 호출 수도 토큰 수도 없다(query.py 의 done 이벤트 키 목록).
+        # 그래서 `llm_calls`·`tokens` 는 **구조적으로 측정 불가**이며 여기서 추정하지 않는다 -
+        # 추정치를 넣으면 리포트가 "쟀다"고 말하게 된다. 대신 실제로 세지는 둘을 남긴다:
+        #   `retries`    회귀 지점 재진입 수 (재시도 예산의 실측)
+        #   `node_count` 실행된 노드 수 (파이프라인이 한 일의 양 - 비용 대리 지표)
+        # 실행된 노드 **회차** 수. 완료 이벤트는 회차마다 오고 시작은 노드마다 한 번이라, 완료 회차에
+        # 끝나지 않은(완료 이벤트가 없는) 시작을 더한다 - 시작만 세면 재계획·재시도 루프가 사라진다.
+        obs.node_count = sum(obs.node_calls.values()) + sum(
+            1 for name in obs.node_path if name not in obs.node_calls
+        )
+        # 회귀 노드가 스트림에 보일 때만 센다. intent_orchestration·deep_agent 단은 SQL 생성이
+        # 하위 에이전트 안에서 돌아 query_generator 의 node_start 가 상위 스트림에 나오지 않는다
+        # (2026-09-14 폐쇄망 런: 93턴 전부 상위 노드 7개 · 재진입 0) — 0 이 아니라 "못 봤다"다.
+        obs.retries, obs.retries_partial = _count_retries(obs)
+        if not obs.response and tokens:
+            obs.response = "".join(tokens)
+        if not saw_done:
+            # done 없이 끊겼다. 조용히 성공으로 세지 않는다.
+            obs.hang = True
+            obs.error = obs.error or "done 이벤트 없이 스트림이 끝났다"
+            obs.status = "error" if obs.status == "unknown" else obs.status
+        elif max_gap > self._config.hang_gap_ms:
+            obs.hang = True
+
+    def _post_stream(self, payload: dict[str, Any], headers: dict[str, str]) -> Observation:
+        obs = Observation()
+        started = time.perf_counter()
+        try:
+            with self._client.stream(
+                "POST",
+                f"{self._config.base_url}/query/stream",
+                json=payload,
+                headers=headers,
+            ) as resp:
+                obs.http_status = resp.status_code
+                if resp.status_code >= 400:
+                    resp.read()
+                    obs.status = "error"
+                    obs.response = resp.text[:4000]
+                    obs.error = _http_error(resp.status_code, resp.text)
+                    obs.wall_ms = (time.perf_counter() - started) * 1000
+                    return obs
+                self._consume_sse(resp, obs, started)
+        except httpx.HTTPError as exc:
+            obs.error = f"{type(exc).__name__}: {exc}"
+            obs.hang = isinstance(exc, httpx.TimeoutException)
+            obs.status = "error"
+        obs.wall_ms = (time.perf_counter() - started) * 1000
+        return obs
+
+    def _post_file(
+        self, endpoint: str, payload: dict[str, Any], upload: Path | None,
+        headers: dict[str, str],
+    ) -> Observation:
+        obs = Observation()
+        if upload is None or not Path(upload).exists():
+            obs.status = "error"
+            obs.error = f"업로드 파일이 없다: {upload}"
+            return obs
+
+        form: dict[str, str] = {"query": str(payload.get("query") or "")}
+        if payload.get("thread_id"):
+            form["thread_id"] = str(payload["thread_id"])
+        if payload.get("selected_db_ids"):
+            form["selected_db_ids"] = ",".join(payload["selected_db_ids"])
+
+        path = Path(upload)
+        started = time.perf_counter()
+        url = f"{self._config.base_url}/query/file"
+        if endpoint == "file_stream":
+            url += "/stream"
+        try:
+            with open(path, "rb") as handle:
+                files = {"file": (path.name, handle, "application/octet-stream")}
+                if endpoint == "file":
+                    resp = self._client.post(
+                        url, data=form, files=files, headers=headers,
+                        timeout=self._nonstream_timeout("API_FILE_QUERY_TIMEOUT"),
+                    )
+                    obs.http_status = resp.status_code
+                    obs.wall_ms = (time.perf_counter() - started) * 1000
+                    if resp.status_code >= 400:
+                        obs.status = "error"
+                        obs.response = resp.text[:4000]
+                        obs.error = _http_error(resp.status_code, resp.text)
+                        return obs
+                    _apply_done(obs, resp.json())
+                else:
+                    with self._client.stream(
+                        "POST", url, data=form, files=files, headers=headers
+                    ) as resp:
+                        obs.http_status = resp.status_code
+                        if resp.status_code >= 400:
+                            resp.read()
+                            obs.status = "error"
+                            obs.response = resp.text[:4000]
+                            obs.error = _http_error(resp.status_code, resp.text)
+                            obs.wall_ms = (time.perf_counter() - started) * 1000
+                            return obs
+                        self._consume_sse(resp, obs, started)
+                    obs.wall_ms = (time.perf_counter() - started) * 1000
+        except httpx.HTTPError as exc:
+            obs.wall_ms = (time.perf_counter() - started) * 1000
+            obs.error = f"{type(exc).__name__}: {exc}"
+            obs.hang = isinstance(exc, httpx.TimeoutException)
+            obs.status = "error"
+        return obs
+
+    def download(self, query_id: str, dest_dir: Path, name_hint: str) -> Optional[Path]:
+        """산출물을 내려받는다. 전 칼럼 검증(V7)의 재료다."""
+        url = f"{self._config.base_url}/query/{query_id}/download"
+        try:
+            resp = self._client.get(url, headers=self._config.headers, timeout=120.0)
+        except httpx.HTTPError:
+            return None
+        if resp.status_code != 200:
+            return None
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / name_hint
+        dest.write_bytes(resp.content)
+        return dest
+
+    def download_csv(self, query_id: str) -> dict[str, Any]:
+        """턴의 결과 행을 `GET /query/{id}/download-csv` 로 받는다(plans/122 H-1 · G-4).
+
+        돌려주는 모양은 `Observation.result` 계약이다 - `status` 는 `ok`(행 있음) · `empty`(결과는
+        저장됐고 행이 없다) · `unavailable`(받지 못했다 · `reason`). 질의한 사용자의 토큰으로 받는다
+        (서버가 소유자를 확인한다 - `_owned_result`). 행은 서버가 화면 응답과 같은 규칙으로
+        마스킹한다.
+
+        **다운로드마다 서버 감사에 `file download` 이벤트가 남는다**(`_audit_file_download` →
+        `AuditService.log_file_download`) - 러너는 필요한 턴에서만 부른다
+        (`runner.needs_result_rows`).
+        """
+        url = f"{self._config.base_url}/query/{query_id}/download-csv"
+        try:
+            resp = self._client.get(url, headers=self._config.headers, timeout=120.0)
+        except httpx.HTTPError as exc:
+            return result_unavailable(f"download-csv 요청 실패: {type(exc).__name__}: {exc}")
+        if resp.status_code == 404:
+            try:
+                body = resp.json()
+                detail = str(body.get("detail") or "") if isinstance(body, dict) else str(body)
+            except ValueError:
+                detail = resp.text[:200]
+            if RESULT_EMPTY_DETAIL in detail:
+                return {"status": "empty", "columns": [], "rows": [], "total_rows": 0,
+                        "truncated": False, "reason": None}
+            return result_unavailable(
+                "download-csv 404 - 결과 저장소에 query_id 가 없다(LRU 1,000건 축출 또는 "
+                f"결과를 저장하지 않는 응답): {detail}"
+            )
+        if resp.status_code != 200:
+            return result_unavailable(f"download-csv http {resp.status_code}: {resp.text[:200]}")
+        try:
+            return parse_result_csv(resp.content)
+        except (UnicodeDecodeError, csv.Error) as exc:
+            return result_unavailable(f"download-csv 본문 해석 실패: {type(exc).__name__}: {exc}")

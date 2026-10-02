@@ -1,0 +1,12 @@
+# APM 이벤트 레벨 → 폴스타 severity(0 해소 · 1 주의 · 2 경고 · 3 심각) (plans/87 §5.5 · 게이트웨이 소유 설정).
+# 대소문자 무시. 운영 레벨 값 형식은 U-1(J0) 확정 전이라 PagerDuty 어댑터 매핑[J-14]을 따른다.
+version: 1
+levels:
+  fatal: 3
+  critical: 3
+  warning: 2
+  normal: 1
+  recovery: 0
+  clear: 0
+# 미지 레벨은 보수적으로 경고(R-3)
+unknown_level_severity: 2

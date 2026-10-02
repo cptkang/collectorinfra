@@ -1,0 +1,244 @@
+# 교차 소스 시나리오 군 M 오라클 — 홉별 기대값 (plans/121 TP-0.7 · §6 「교차 연쇄 홉별」 지표)
+#
+# 카탈로그 로더·판정기는 이 파일을 읽지 않는다(`fixtures/` 는 로더 glob 밖). 홉별 지표 분석기
+# (설계만 — TP-0.7 보고 · TP-10.10 이 소비)의 입력이자, 기준선 run 을 사람이 판독할 때의 정답표다.
+# 카탈로그(`m_cross_system.yaml`)와의 짝·호스트 실재는 `tests/test_scenario/test_m_cross_system_catalog.py`
+# 가 고정한다.
+#
+# 실측: 2026-09-28 로컬 샌드박스 **읽기 전용 SELECT** — `polestar_pg`(5434 · 스키마 polestar) ·
+# `itam_mariadb`(3307 · INST1 · `itam_ro` · 컨테이너 init 2026-09-16). 이 값은 **엔진 동작 검증용
+# 합성 데이터**다 — 운영 사실의 근거로 쓰지 않는다(D-214 ⑥).
+#
+# 칸 뜻 —
+#   producer.expected : 선별 단계가 내야 하는 엔터티(키 패싯 값). 재현율·정밀도의 분모
+#   producer.optional : 적재 방식에 따라 있을 수도 있는 엔터티(정밀도 계산에서 빼지 않는다)
+#   bridge.link       : 1:1 로 이어져야 하는 키 · possible: 가능 일치로 **드러내야** 하는 키(자동 결합 금지)
+#   bridge.none       : 대상 시스템에 없는 키(「없음」 노출 대상) · multi: 한 키가 여러 행에 걸리는 함정
+#   consumer.present/absent : 요청 속성이 있는/없는 엔터티 — 없는 것은 「없음」으로 노출해야 한다
+#   negative          : 응답·SQL 에 나오면 안 되는 것. closed_safe=false 는 환경 불일치에도 판정되는
+#                       키(`runner.ENV_NEUTRAL_KEYS`)로 옮기면 폐쇄망 기준선에 불합격을 흘리는 것
+#   baseline_observe  : 기준선 run 에서 관측할 현행 동작(plans/121 §2.7 추적) — 판정이 아니다
+version: 1
+measured: "2026-09-28"
+sources:
+  polestar:
+    db_id: polestar
+    seeds:
+      - testdata/pg/init/02_insert_cmm_resource.sql
+      - testdata/pg/init/07_plan61_text2sql_gold_fixtures.sql
+      - testdata/pg/init/09_plan67_e1_gold_missing_servers.sql
+      - testdata/pg/05_insert_excel_data.sql   # init 밖 — 로컬 DB 에 적재돼 있음(실측)
+    server_rows: 54            # platform.server(dtime NULL) — hostname 고유 50 + hostname NULL 4(노이즈 픽스처)
+  itam:
+    db_id: itam
+    seeds: [testdata/itam/init/02_seed.sql]
+    relative_dates: true       # init 시점 상대값 — 기준선 전에 testdata/itam/setup.sh 로 재생성
+    server_rows: 30            # TCDMSIF80 = sevrHostName 고유 30
+  prometheus:
+    fixture: testdata/prometheus/prometheus.yml
+    nodenames: [svr-web-01]
+    wired_locally: false       # mcp_server PROMETHEUS_URL 미설정 · 픽스처 미기동 · 2단 호출부 0(§2.7.1)
+
+scenarios:
+  M-01:
+    shape: "(A) 폴스타 선별 → ITAM 상세"
+    producer:
+      system: polestar
+      key: hostname
+      rule: "platform.server · dtime IS NULL · avail_status <> 0"
+      expected: [svr-web-05, svr-web-08, svr-was-03, svr-was-07, svr-db-04, svbatch009, svr-app-03, svr-bat-02]
+    bridge:
+      to: itam
+      key: sevrHostName
+      link: [svr-web-05, svr-web-08, svr-was-03, svr-was-07, svr-db-04]
+      none: [svbatch009, svr-app-03, svr-bat-02]
+    consumer:
+      system: itam
+      attributes: [manmenCtrcEndYmd]
+      present: [svr-web-05, svr-web-08, svr-was-03, svr-was-07, svr-db-04]
+      values_note: "svr-db-04 = init 분기 첫날 −1일(init 2026-09-16 → 20260630) · 나머지 init +2년(20280916)"
+    merge_key: hostname
+    baseline_observe:
+      - "제품명·DB명 힌트(폴스타·자산관리)가 target_db_hints 로 잡히면 task_hint_scope 가 지역 없는 힌트 전체로 폴백해 두 task 모두 [polestar, itam] 으로 고정되는가(N-10 로컬판 · src/routing/location_hints.py:209)"
+      - "ITAM task 의 키 대응(hostname ↔ sevrHostName)을 LLM 이 쓰는가 · 사후 대조가 sevrHostName 을 식별 열로 인식하는가(N-12)"
+      - "ITAM 에 없는 3대가 응답에서 사라지는가(병합 침묵 손실)"
+
+  M-02:
+    shape: "(A) 폴스타 선별 → ITAM 상세 · 브리지 0"
+    producer:
+      system: polestar
+      key: hostname
+      rule: "cmm_metric_stat_m · server.Cpus Utilization · stat_date 202606 · max_val >= 80"
+      expected: [dbora023]
+      excluded_note: "svweb001 72.4 · cocm-hdkapp01 75.4 · svbatch009 48.1 (2026-06 max)"
+    bridge:
+      to: itam
+      key: sevrHostName
+      link: []
+      none: [dbora023]
+    consumer:
+      system: itam
+      attributes: [manmenCtrcEndYmd]
+      present: []
+      absent: [dbora023]
+    merge_key: hostname
+    negative:
+      - {what: "소수부 .37 사용률 값(자산 DB 사용률 스냅샷 T5 표식)", where: response, closed_safe: false}
+    baseline_observe:
+      - "「CPU 사용률 높은 서버」 선별을 ITAM sevrCPUUseRt 로 하는가(T5 · 같은 이름 다른 의미)"
+      - "브리지 0 을 「자산관리에 없음」으로 말하는가, 빈 표·환각으로 끝나는가"
+
+  M-03:
+    shape: "(B) 알람 선별 → Prometheus 추이"
+    producer:
+      system: polestar
+      key: server_name
+      rule: "cmm_alarm_active · alarmseverity 3 · ACTIVE · 자원 조인"
+      expected: [SV-WEB-001, SV-BATCH-009]
+      optional_note: "더미 알람(alarm_id 3 · 자원 없음)은 조인에서 빠진다"
+    bridge:
+      to: prometheus
+      key: nodename            # 값은 폴스타 server_name(D-119 ③)
+      link: []
+      none: [SV-WEB-001, SV-BATCH-009]
+    consumer:
+      system: prometheus
+      attributes: [cpu_usage_trend_1h]
+      present: []
+      absent: [SV-WEB-001, SV-BATCH-009]
+      not_queried_now: true    # 로컬 Prometheus 미연결 — 현재 정답은 「조회 안 함」+사유
+    negative:
+      - {what: "추이를 cmm_metric_stat_* SQL 로 채움(요청 소스 침묵 대체 N-11)", where: sql, closed_safe: false}
+    baseline_observe:
+      - "t2 가 data_query 로 가서 폴스타 시간 통계 SQL 로 대체되는가 · 사유 노트가 없는가(§2.7.2 (B))"
+      - "2단 알람 교정 우회 고지 대상(리포트 tier2_alarm_caveat)"
+
+  M-04:
+    shape: "폴스타 선별 → Prometheus 추이"
+    producer:
+      system: polestar
+      key: server_name
+      rule: "platform.server · name LIKE 'svr-web%'"
+      expected: [svr-web-01, svr-web-02, svr-web-03, svr-web-04, svr-web-05, svr-web-06, svr-web-07, svr-web-08, svr-web-09, svr-web-10]
+    bridge:
+      to: prometheus
+      key: nodename
+      link: [svr-web-01]
+      none: [svr-web-02, svr-web-03, svr-web-04, svr-web-05, svr-web-06, svr-web-07, svr-web-08, svr-web-09, svr-web-10]
+    consumer:
+      system: prometheus
+      attributes: [cpu_usage_trend_1h]
+      present: [svr-web-01]
+      not_queried_now: true
+    negative:
+      - {what: "추이를 cmm_metric_stat_* SQL 로 채움(N-11)", where: sql, closed_safe: false}
+    baseline_observe:
+      - "Prometheus 소스 부재를 계획 단계에서 알리는가(§2.7.4 부분 실패) — 현행은 장치 없음"
+
+  M-05:
+    shape: "ITAM 선별 → 폴스타 상세(역방향)"
+    producer:
+      system: itam
+      key: sevrHostName
+      rule: "TCDMSIF80 · elapsNoy >= 5"
+      expected: [svr-db-07, svr-db-08]
+      excluded_note: "svr-db-06 4년 · svr-db-09 NULL"
+    bridge:
+      to: polestar
+      key: hostname
+      link: [svr-db-07, svr-db-08]
+      none: []
+    consumer:
+      system: polestar
+      attributes: [avail_status, cpu_usage]
+      present_by_attribute:
+        avail_status: [svr-db-07, svr-db-08]   # 둘 다 0(정상)
+        cpu_usage: []                          # cmm_metric_stat_* 행 0 — 「없음」이 정답
+    merge_key: hostname
+    negative:
+      - {what: "CPU 사용률을 ITAM sevrCPUUseRt(36.37 · 37.37)로 채움(T5)", where: response, closed_safe: false}
+    baseline_observe:
+      - "선행 게이트가 sevrHostName 을 식별 열로 못 봐(`is_server_identity_col` — 정확 이름·접두+_name/_id 규칙) prior_no_identity 로 후속을 막는가(ITAM → 폴스타 차단 · 로컬 COMPOSITE_SEQUENTIAL_GATE_ENABLED=true) — LLM 이 AS hostname 별칭을 달면 통과한다"
+
+  M-06:
+    shape: "(C) 병렬 비교"
+    producer:
+      system: [polestar, itam]
+      rule: "시스템별 서버 수 — 폴스타 54(행)·50(hostname 고유) · ITAM 30"
+      expected: []
+    consumer:
+      system: [polestar, itam]
+      attributes: [server_count]
+    negative:
+      - {what: "이종 COUNT 합산을 「전체」로 냄(84·80 · N-13 · result_merger plan_aggregate_synthesis)", where: response, closed_safe: false}
+    parallel: true             # 같은 레벨 task 2개 — MLX 동시성 1 전제(군 헤더)
+    baseline_observe:
+      - "소유 플래그 off 에서 두 task 가 양쪽 DB 로 퍼지는가 · 1 task 멀티 DB 로 분해되면 합산하는가(§2.7.2 (C))"
+
+  M-07:
+    shape: "요청 소스 불가 — Prometheus 명시"
+    producer:
+      system: user
+      key: server_name
+      expected: [svr-web-01]
+    bridge:
+      to: prometheus
+      key: nodename
+      link: [svr-web-01]
+      none: []
+    consumer:
+      system: prometheus
+      attributes: [cpu_usage_trend_1h]
+      present: [svr-web-01]
+      not_queried_now: true
+    negative:
+      - {what: "cmm_metric_stat_* SQL 로 조용히 대체(N-11)", where: sql, closed_safe: false}
+    baseline_observe:
+      - "사유 노트 없이 폴스타 SQL 로 답하는가(N-11) — 폴스타 svr-web-01 은 통계 행이 없어 0행·환각 여부도 본다"
+
+  M-08:
+    shape: "다건 브리지 함정 — IP 부분 일치"
+    producer:
+      system: polestar
+      key: hostname
+      rule: "ipaddress = '10.0.1.1' (행 11 = 쌍둥이 앵커 2 + 자식 9 → 엔터티 1)"
+      expected: [svr-web-01]
+    bridge:
+      to: itam
+      key: sevrHostName
+      link: [svr-web-01]
+      none: []
+      multi:
+        key: iPCtnt
+        pattern: "LIKE '%10.0.1.1%'"
+        rows: [svr-web-01, svr-web-04, svr-web-10]   # 10.0.1.4,10.0.1.104 · 10.0.1.10
+    consumer:
+      system: itam
+      attributes: [manmenCtrcName]
+      present: [svr-web-01]
+      value: "합성 유지보수계약 00"
+    merge_key: hostname
+    negative:
+      - {what: "합성 유지보수계약 03 · 09(다건 자동 조인)", where: response, closed_safe: true}
+
+  M-09:
+    shape: "호스트 키 4형 브리지"
+    producer:
+      system: user
+      key: hostname
+      expected: [svr-web-01, svr-web-02, svr-web-03, svr-web-04]
+    bridge:
+      to: itam
+      key: sevrHostName
+      link: [svr-web-01, svr-web-02, svr-web-04]   # 02 는 대소문자만 다름(SVR-WEB-02) · 04 는 다중 IP 칸
+      possible: [svr-web-03]                      # svr-web-03.synth.example — 드러내되 자동 결합 금지
+      none: []
+    consumer:
+      system: itam
+      attributes: [acqsiAmt]
+      present: [svr-web-01, svr-web-02, svr-web-04]
+      values_note: "10,000,000 · 10,100,000 · (03) 10,200,000 · 10,300,000"
+    merge_key: hostname
+    baseline_observe:
+      - "`sevrHostName IN (...)` 정확 일치로 FQDN 행을 조용히 빠뜨리는가(0행 · 침묵)"
+      - "SVR-WEB-02 는 샌드박스 collation(utf8mb4_general_ci)이 `=` 로 맞춘다 — 운영 collation 미확정(G-13)"

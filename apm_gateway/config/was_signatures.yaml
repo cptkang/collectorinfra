@@ -1,0 +1,18 @@
+# WAS 시그니처 잠정 임계 (plans/87 §5.4(b) · 게이트웨이 소유 설정) — J0-L-b 실데이터·목업 시나리오로 보정한다.
+# 키 이름은 apm_gateway/domain/signals.py WasThresholds 필드와 같다. 미지 키는 경고 후 무시.
+version: 1
+thresholds:
+  heap_usage_ratio: 0.9
+  heap_sustained_samples: 3
+  heap_leak_step_ratio: 0.05
+  gc_time_usage_pct: 10.0
+  db_pool_usage_ratio: 0.95
+  # WebLogic StuckThreadMaxTime 전례(600s)[W-6]
+  stuck_elapsed_ms: 600000
+  stuck_same_mode_ratio: 0.7
+  stuck_min_count: 3
+  slow_sql_share: 0.6
+  external_share: 0.6
+  share_min_transactions: 3
+  error_rate: 0.2
+  error_min_calls: 20

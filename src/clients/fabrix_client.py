@@ -5,6 +5,7 @@ NWAgent의 fabrix_client.py를 기반으로 collectorinfra에 맞게 적용.
 """
 
 import json
+import logging
 import os
 import requests
 from typing import Any, Dict, List, Optional
@@ -19,6 +20,10 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.outputs import ChatGeneration, ChatResult
+
+from src.security.pii_filter import log_filter_block_if_any
+
+logger = logging.getLogger(__name__)
 
 
 class FabriXAPIClient(BaseChatModel):
@@ -246,6 +251,8 @@ class FabriXAPIClient(BaseChatModel):
                 raise requests.exceptions.HTTPError(f"{e} | body: {detail}") from e
 
             result = resp.json()
+            _prompt = "\n".join(str(m.get("content", "")) for m in openai_messages)
+            log_filter_block_if_any(logger, result=result, prompt=_prompt, where="_generate")
             ai_msg = self._parse_response(result)
             return ChatResult(generations=[ChatGeneration(message=ai_msg)])
 

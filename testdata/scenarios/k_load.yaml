@@ -1,0 +1,202 @@
+# 자동 생성 초안 (scripts/scenario/import_docs.py) - plans/94 §3.4
+#
+# expect 는 비어 있고 manual_review 만 들어 있다. 단언으로 옮긴 만큼만 자동 판정
+# 대상이 되며, 옮기지 않은 것은 리포트 9절 '수동 검토'에 계속 남는다.
+# plans 필드는 군 단위 기본값이다 - 시나리오별로 정확히 좁히는 것이 사람의 일이다.
+version: 1
+group:
+  id: K
+  name: "부하/성능"
+  latency_target_ms: 30000
+  policy_confirmed: false
+  source: "docs/29"
+scenarios:
+  - id: K-01
+    plans: [67, 84]
+    title: "B-01~B-06 각 5회 반복(캐시 warm)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    # 반복 측정(D-217): 참조 시나리오를 각 5회 새 스레드로 돈다. turns 는 보내지 않고 판정 메모로만 쓴다.
+    replay: {scenarios: [B-01, B-02, B-03, B-04, B-05, B-06], repeat: 5}
+    perf: {target_ms: 10000}
+    turns:
+      - send:
+          query: "B-01~B-06 각 5회 반복(캐시 warm)"
+        expect:
+          manual_review: "p50/p95 / p95 ≤10s"
+  - id: K-02
+    plans: [67, 84]
+    title: "동일 질의 첫 호출(스키마 캐시 cold, `캐시 삭제` 후)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    # cold 근사(D-217 · 사용자 확정): 캐시를 지우지 않는다 - 서버 캐시 삭제는 db_profiles 정본 파일까지 지운다.
+    # 대신 서버 기동 직후 **첫 요청**으로 돈다(러너가 cold 시나리오를 프로파일 맨 앞에 둔다).
+    # 1회차 = cold 근사(프로세스 메모리 캐시만 빈 상태, Redis·파일 캐시는 warm), 2회차 = warm 회귀.
+    cache_state: cold
+    replay: {scenarios: [B-01], repeat: 2}
+    perf: {target_ms: 30000}
+    turns:
+      - send:
+          query: "동일 질의 첫 호출(스키마 캐시 cold, `캐시 삭제` 후)"
+        expect:
+          manual_review: "1회 / ≤30s, 이후 warm 회귀 - cold 는 근사다(Redis·파일 캐시 warm)"
+  - id: K-03
+    plans: [67, 84]
+    title: "C-02, C-09~C-11 각 3회"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    # 반복 측정(D-217): 참조 시나리오를 각 3회 새 스레드로 돈다.
+    replay: {scenarios: [C-02, C-09, C-10, C-11], repeat: 3}
+    perf: {target_ms: 30000}
+    turns:
+      - send:
+          query: "C-02, C-09~C-11 각 3회"
+        expect:
+          manual_review: "p95 / ≤30s"
+  - id: K-04
+    plans: [67, 84]
+    title: "H-10, H-17(b0 2,328행) 각 3회"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    # 반복 측정(D-217): 참조 폼필 시나리오를 각 3회 새 스레드로 돈다.
+    replay: {scenarios: [H-10, H-17], repeat: 3}
+    perf: {target_ms: 60000}
+    turns:
+      - send:
+          query: "H-10, H-17(b0 2,328행) 각 3회"
+        expect:
+          manual_review: "전체·`fill` 단계 / ≤60s"
+  - id: K-05
+    plans: [67, 84]
+    title: "/query/stream` SSE로 B-01"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    cache_state: warm
+    turns:
+      - send:
+          query: "전체 서버의 호스트명, OS종류, 벤더를 10건만 조회해줘"
+        expect:
+          status: completed
+          # 스트림이 끊기면 done 이 없고 러너가 hang 으로 잡는다(금지 등급).
+          sse_events: ["node_start", "done"]
+          # plans/122 H-5 - 판정 기준은 docs/29 K-05 「토큰 스트림 끊김 없음 · 전체 타임아웃(query_timeout 60s) 가드」다.
+          #   - max_event_gap_ms ≤ 30,000: 제품의 스트림 끊김 정의 = 첫 답변 뒤 토큰 간 상한
+          #     `stream_idle_timeout_sec: 30`(src/config.py:490) · K군 목표 30,000ms 와 같다. 기존 run 분포:
+          #     K-05 최대 무이벤트 간격 7,823~9,252ms(세 run · 두 arm) · 같은 질의 B-01 7,873~9,087ms.
+          #   - ttft_ms ≤ 60,000: 첫 답변이 운영 처리 상한 안에 온다(docs/29 K-05 query_timeout 60s · 폐쇄망 운영
+          #     `API_QUERY_TIMEOUT=60` scripts/bench/sweep.py:76). 기존 run 은 ttft 를 적재하지 않았다 - 같은 질의의
+          #     done 까지 총 처리 43,282~53,758ms 라 첫 토큰은 그 이내다.
+          #   「첫 node_start 까지 지연 · done 까지 총합」은 측정값(ttfb_ms·wall_ms)으로 행에 남고 총합은 군 성능 판정
+          #   (latency_target_ms)이 본다 - 기능 단언이 아니다.
+          #   원 수동 문구: "첫 node_start 까지 지연과 done 까지 총합 · 토큰 스트림 끊김 없음"
+          stream: {ttft_ms: {max: 60000}, max_event_gap_ms: {max: 30000}}
+  - id: K-06
+    plans: [67, 84]
+    title: "동시 5·10 세션(thread_id 별도)로 B-01·C-01 혼합"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    # 동시 부하(D-217): 세션 5개, 이어서 10개를 동시에 띄워 B-01·C-01 을 번갈아 배정한다(세션마다 새 스레드).
+    concurrent: {scenarios: [B-01, C-01], sessions: [5, 10]}
+    turns:
+      - send:
+          query: "동시 5·10 세션(thread_id 별도)로 B-01·C-01 혼합"
+        expect:
+          manual_review: "p95, 에러율 / 에러 0, p95 ≤2× 단독"
+  - id: K-07
+    plans: [67, 84]
+    title: "F-07(gp+yd) + 은행존 B-10 동시"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    # 동시 부하(D-217): F-07(gp+yd)과 B-10(은행존)을 동시에 보낸다.
+    concurrent: {scenarios: [F-07, B-10], sessions: [2]}
+    turns:
+      - send:
+          query: "F-07(gp+yd) + 은행존 B-10 동시"
+        expect:
+          manual_review: "토큰 예산 초과 여부 / `db_errors`에 \"input tokens must be\" 0건"
+  - id: K-08
+    plans: [67, 84]
+    title: "30초 초과 유도(C-10을 24개월 범위)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "최근 24개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 조회해줘"
+        expect:
+          # 무한 대기가 아니라 구조화된 응답이어야 한다 - 타임아웃도 응답이다.
+          http_status: 200
+          # plans/122 A - 이관하지 않았다(계획서 §4 는 `status: error` + 타임아웃 문구). 근거 셋:
+          #   ① 현 제품은 행이 있으면 상한 도달을 오류가 아니라 `done`(status=partial)로 낸다(src/api/routes/query.py
+          #      `_timeout_sse_event` :1877-1910 · `_delivery_cut_sse_event` :1913-1950 · D-265) - `status: error` 는
+          #      이 경로를 불합격으로 만든다. 행이 없을 때만 오류 이벤트(`처리 시간이 초과되었습니다. …` :2336)다.
+          #   ② 러너는 오류 이벤트로 끝난 스트림(done 없음)을 hang 으로 적재하고(scripts/scenario/client.py:493-497)
+          #      평가기가 금지 등급으로 불합격시킨다 - 구조화된 타임아웃이 hang 으로 읽힌다(하네스 보고 사항).
+          #   ③ 오류 문구는 행의 `error` 에만 실리고 `response`(토큰)에는 없다 - 응답 문구 단언으로 볼 수 없다.
+          #   run 20260923-103638(API_QUERY_TIMEOUT=240)은 219초에 완료해 타임아웃이 유도되지 않았다(설정 의존).
+          manual_review: "전체 타임아웃 가드가 작동했는지 · 에러가 구조화돼 나왔는지"
+  - id: K-09
+    plans: [67, 84]
+    title: "10,000행 초과 결과(전체 서버×시간 grain `cmm_metric_stat_h`)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "전체 서버의 시간 단위 CPU 사용률을 최근 30일치 전부 보여줘"
+        expect:
+          status: completed
+          # 절단은 일어나도 된다. **숨기면** 안 된다.
+          row_count: {max: 10000}
+          # plans/122 A-1 - 절단 고지는 코드가 붙이는 고정 문장이다(LIMIT 도달 · 단일·멀티 DB 두 변형 공통
+          #   `… 이후 행이 절단되었을 수 있습니다.` src/nodes/output_generator.py:1888-1901). 세 run 은 시간
+          #   통계가 아니라 월 통계 8월(1,577~1,688행)을 조회해 고지가 없었다 - 122 §10 K-09 사슬(시간 해석 오답)이
+          #   수동에 가려져 있었다 → 이관 뒤 불합격이 정상이다.
+          #   원 수동 문구: "max_rows 절단 사실이 응답에 명시됐는지"
+          response_must_contain: ["이후 행이 절단되었을 수 있습니다"]
+  - id: K-10
+    plans: [67, 84]
+    title: "재시도 예산 소진(고의 오매핑 유사어 등록 후 조회)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    # 고의 오매핑(D-217 · 사용자 확정 "폐쇄망 포함"): 러너가 Redis 에 문자열 칼럼(hostname)을 수치
+    # 지표어로 등록한 뒤 조회하고, 끝나면 **그 단어만** 지운다. 강제 종료로 남아도 다음 실행 시작 때
+    # 먼저 지운다. 실사용자가 치지 않는 조어를 써서 남아 있는 동안의 영향 면적을 줄였다.
+    setup:
+      - kind: synonym_add
+        db_id: polestar_cm_gp
+        column: polestar.cmm_resource.hostname
+        words: ["검증용사용률"]
+    turns:
+      - send:
+          query: "김포 서버별 검증용사용률 평균을 높은 순으로 10건만 보여줘"
+        expect:
+          http_status: 200
+          retries: {max: 3}
+          # plans/122 A - 재시도 예산은 위 `retries` 가 본다. 실패 트레이스(원시 로그 trace_files)는 서버 로컬
+          #   파일이라 삭제했다(계획서 §4 K-10). 「실패 사유」는 옮기지 못했다 - 이 시나리오가 유도하는 실패는 실행
+          #   오류(문자열 열 집계) 재시도 소진인데 2단 단일 DB 경로의 실행 오류 소진은 고정 고지 문구 없이 오류
+          #   메시지를 태스크 결과로 넘긴다(src/orchestration/subagents.py:900-907) - 확인한 제품 문자열이 없다.
+          #   또 두 scenario run(20260922-093837 · 20260923-103638)은 심은 유사어를 따르지 않고 사용률 평균을 계산해
+          #   재시도 0회로 완료했다(실패가 유도되지 않음 - 사용률 자원 3종을 한 평균으로 섞은 답이기도 하다).
+          #   원 수동 문구: "재시도 예산(3) 안에서 끝났는지 · 실패 사유가 응답에 드러났는지 · 실패 트레이스가
+          #   생겼는지(원시 로그 trace_files)"
+          manual_review: "실패 사유가 응답에 드러났는지 (실행 오류 소진 경로의 고정 고지 문구 미확인)"

@@ -1,0 +1,101 @@
+{
+ "id": "Q-MULTI-TOP",
+ "turns": [
+  {
+   "query": "2026년 6월 CPU 사용률 평균이 높은 상위 3대 서버를 알려줘",
+   "file": null,
+   "key": "3925cc053d3541cc",
+   "elapsed_s": 85.7,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n2026 년 6 월 기준, CPU 사용률 평균이 높은 상위 3 대 서버를 조회했습니다. DB-ORA-023 서버가 72.1%로 가장 높은 사용률을 보이며, 전체 평균은 54.6%입니다.\n\n| name | cpus_avg |\n|---|---|\n| DB-ORA-023 | 72.1 |\n| cocm-hdkapp01 | 48.9 |\n| SV-WEB-001 | 42.8 |\n\n참고사항\n- 조회 기간: 2026 년 6 월\n- 이상 징후: DB-ORA-023 서버의 CPU 사용률 (72.1%) 이 70% 임계치를 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 3,
+    "executed_sql": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.name END) AS \"name\",\n  ROUND(AVG(CASE WHEN c.resource_type='server.Cpus' AND s.definition_name='Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS \"cpus_avg\"\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id\nLEFT JOIN polestar.cmm_metric_stat_m s ON s.resource_id = c.id AND s.definition_name = 'Utilization' AND s.stat_date = '202606'\nWHERE c.resource_type IN ('server.Cpus', 'server.Server')\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nORDER BY \"cpus_avg\" DESC NULLS LAST\nLIMIT 3;",
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "name": "DB-ORA-023",
+     "cpus_avg": 72.1
+    },
+    {
+     "name": "cocm-hdkapp01",
+     "cpus_avg": 48.9
+    },
+    {
+     "name": "SV-WEB-001",
+     "cpus_avg": 42.8
+    }
+   ]
+  },
+  {
+   "query": "그 서버들의 제조사와 OS 종류",
+   "file": null,
+   "key": "ae20377cc02695eb",
+   "elapsed_s": 96.7,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n요청하신 3 대 서버 (DB-ORA-023, cocm-hdkapp01, SV-WEB-001) 의 제조사와 OS 종류 정보를 조회했습니다.\n\n| name | Vendor | OSType |\n|---|---|---|\n| SV-WEB-001 | HPE | Linux |\n| cocm-hdkapp01 | HPE | Linux |\n| DB-ORA-023 | Dell | Linux |\n\n참고사항\n- 조회된 데이터에는 가용성 상태 (avail_status) 나 CPU/메모리 사용률 등 추가 지표가 포함되어 있지 않습니다.\n\n---\n## 순차 처리 경과\n- 순차 분해가 적용되지 않아 한 번의 조회로 처리했습니다(앞 결과 → 뒤 조회 대상 배선 없음).\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 3,
+    "executed_sql": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.name END) AS \"name\",\n  MAX(CASE WHEN c.resource_type='server.Server' AND cc.name='Vendor' THEN cc.stringvalue_short END) AS \"Vendor\",\n  MAX(CASE WHEN c.resource_type='server.Server' AND cc.name='OSType' THEN cc.stringvalue_short END) AS \"OSType\"\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id\nWHERE c.resource_type IN ('server.Server')\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nHAVING MAX(CASE WHEN c.resource_type='server.Server' THEN c.name END) IN ('DB-ORA-023', 'cocm-hdkapp01', 'SV-WEB-001')\nLIMIT 10000;",
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "name": "SV-WEB-001",
+     "Vendor": "HPE",
+     "OSType": "Linux"
+    },
+    {
+     "name": "cocm-hdkapp01",
+     "Vendor": "HPE",
+     "OSType": "Linux"
+    },
+    {
+     "name": "DB-ORA-023",
+     "Vendor": "Dell",
+     "OSType": "Linux"
+    }
+   ]
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-28T09:10:17",
+ "review": {
+  "verdict": "ok",
+  "notes": "재녹화(복수 지시어 수정 후) — 1턴 72.1·48.9·42.8 · 2턴 「그 서버들」이 앞 턴 3대로 좁혀짐 · 제조사 HPE·HPE·Dell · OS Linux 원본 일치",
+  "at": "2026-09-28"
+ }
+}

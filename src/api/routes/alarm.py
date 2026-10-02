@@ -18,12 +18,19 @@ import time
 import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from src.api.dependencies import require_user
-from src.alarm.domain.alarm import (
+from src.api.dependencies import (
+    alarm_zones_for_user,
+    require_admin_user,
+    require_user,
+    resolve_stream_user,
+)
+from src.routing.zones import all_zones, db_id_to_zone
+from noise_gate.domain.severity import coerce_severity, parse_severity
+from noise_gate.domain.alarm import (
     AlarmAnalysisResult,
     AlarmEvent,
     AlarmHistoryEntry,
@@ -38,6 +45,16 @@ router = APIRouter()
 
 # ─── Request / Response 스키마 ───────────────────────────────────────────────
 
+def _default_test_db_id() -> str:
+    """알람 테스트 요청의 db_id 기본값을 설정에서 읽는다.
+
+    임포트 시점이 아니라 요청마다 평가되므로 `.env` 변경 후 캐시 무효화가 그대로 반영된다.
+    """
+    from src.config import load_config
+
+    return load_config().alarm.default_test_db_id
+
+
 class AlarmTestRequest(BaseModel):
     """알람 분석 테스트 요청.
 
@@ -45,7 +62,10 @@ class AlarmTestRequest(BaseModel):
     """
 
     # ── 폴스타 알람 필드 (AlarmEvent와 1:1 대응) ──
-    db_id: str = Field(default="polestar", description="dbId — 폴스타 인스턴스 식별자 (상수 직접 기입)")
+    db_id: str = Field(
+        default_factory=_default_test_db_id,
+        description="dbId — 인스턴스 식별자 (생략 시 ALARM_DEFAULT_TEST_DB_ID 설정값)",
+    )
     server_name: str = Field(default="", description="${platformName} — 폴스타 등록 서버명")
     hostname: str = Field(default="", description="${hostname} — 호스트네임")
     ip_address: str = Field(default="", description="${ipAddress} — IP 주소")
@@ -305,6 +325,196 @@ class AlarmTestResponse(BaseModel):
     processing_time_ms: float
 
 
+class AlarmMetricsResponse(BaseModel):
+    """알람 노이즈 게이트 운영 지표 (Plan 52 §9 · Phase E3).
+
+    decision_store(JSONL 감사)에서 산출 가능한 지표만 노출한다. ack/해소상관 계측이 없는
+    MTTA/MTTR/사건전환율은 null로 두고 unavailable_metrics에 사유를 명시한다(환각 금지).
+    """
+
+    window_seconds: int = Field(description="집계 창(초)")
+    total: int = Field(description="창 내 결정 총건수")
+    by_tier: dict[str, int] = Field(description="티어별 건수")
+    page_count: int
+    ticket_count: int
+    dashboard_count: int
+    suppress_count: int
+    actionable_ratio: float = Field(description="액션가능 비율 = (page+ticket)/total")
+    suppress_ratio: float = Field(description="억제율 = suppress/total")
+    last_event_age_seconds: Optional[float] = Field(
+        default=None, description="최근 결정 이후 경과(초). 기록 없으면 null"
+    )
+    meta_alerts: list[dict[str, Any]] = Field(
+        description="억제기 메타경보(high_suppress_ratio/no_events). 정상이면 빈 배열"
+    )
+    mtta_seconds: Optional[float] = Field(
+        default=None,
+        description="평균 확인 시간 = AVG(acked_at-created_at). 트래커 off면 null",
+    )
+    mttr_seconds: Optional[float] = Field(
+        default=None,
+        description=(
+            "하위호환 — incident_mttr_seconds와 동일 값(paged incident 운영자 MTTR). "
+            "트래커 off면 null. auto_recovery_mttr_seconds(self-heal 편향지표)와 혼동 금지"
+        ),
+    )
+    incident_mttr_seconds: Optional[float] = Field(
+        default=None,
+        description=(
+            "paged incident 운영자 MTTR = AVG(resolved_at-created_at) (PG). 트래커 off면 null"
+        ),
+    )
+    auto_recovery_mttr_seconds: Optional[float] = Field(
+        default=None,
+        description=(
+            "자가복구(self-heal) 소요시간 평균 — **sev1..suppress_max 한정·sev3 제외 편향 부분지표** "
+            "(decision_store JSONL). incident_mttr_seconds와 다름. 기록 없으면 null"
+        ),
+    )
+    incident_conversion_rate: Optional[float] = Field(
+        default=None,
+        description="사건전환율 = incidents/page_count (window SQL). 트래커 off면 null",
+    )
+    open_incident_count: int = Field(
+        default=0, description="현재 열린(open) incident 수. 트래커 off면 0"
+    )
+    unavailable_metrics: dict[str, str] = Field(
+        description="계산 불가 지표와 사유. 트래커 활성 시 해당 키 제거됨"
+    )
+
+
+class IncidentAckResponse(BaseModel):
+    """incident ack 응답 (D-049)."""
+
+    acked: bool = Field(description="ack 성공 여부(이미 ack/resolved면 False)")
+    incident_id: int = Field(description="확인 대상 incident id")
+
+
+class IncidentListResponse(BaseModel):
+    """열린 incident 목록 응답 (D-049)."""
+
+    incidents: list[dict[str, Any]] = Field(
+        description="열린 incident 목록(트래커 off면 빈 배열)"
+    )
+
+
+class AlarmFeedbackRequest(BaseModel):
+    """운영자 알람 피드백 요청 (Plan 52 E4).
+
+    운영자가 알람 카드에서 매긴 라벨(유효/노이즈)을 few-shot 저장소에 적재한다.
+    이 피드백은 이후 유사 알람의 LLM 액션가능성 자문(보조 입력)에만 쓰이며, 발송 판단은
+    결정적 규칙이 내린다(승격 우선·재현율 우선).
+    """
+
+    alarm_name: str = Field(description="${alarmName} — 피드백 대상 알람 이름")
+    label: str = Field(description="운영자 라벨 — 'noise'(노이즈) | 'valid'(유효)")
+    resource_name: str = Field(default="", description="${resourceName} — 자원 이름(선택)")
+    pattern_type: str = Field(default="", description="패턴 분류(첫 발생/주기적/급증/산발적, 선택)")
+    server_name: str = Field(default="", description="${platformName} — 서버명(선택)")
+    db_id: str = Field(default="", description="dbId — 폴스타 인스턴스 식별자(선택)")
+    note: str = Field(default="", description="운영자 메모(선택)")
+    severity: Optional[int] = Field(default=None, description="심각도(선택)")
+    investigation_id: str = Field(
+        default="",
+        description="조사 ID(선택 · plans/91 1-4) — '실제 원인은 X' 피드백을 자동 조사 결과와 잇는다. 감사 전용",
+    )
+
+
+class AlarmPromptSuggestRequest(BaseModel):
+    """알람 카드의 LLM 조회 질의 추천 요청 (Plan 86 · D-192).
+
+    프론트는 **결정적 축 매핑이 0건일 때만** 이 엔드포인트를 부른다 — 추천이 이미 있으면
+    네트워크 요청 자체가 나가지 않는다(과금 경로를 미매핑 축으로 좁힌다).
+    """
+
+    target: str = Field(description="질의의 주어가 될 대상 서버 표기(등록명 우선)")
+    alarm_name: str = Field(default="", description="${alarmName}")
+    resource_type: str = Field(default="", description="${resourceType} — 결정적 매핑이 비는 축")
+    resource_name: str = Field(default="", description="${resourceName}")
+    severity_label: str = Field(default="", description="심각/경고/주의/해소")
+    summary: str = Field(default="", description="LLM 요약")
+    probable_cause: str = Field(default="", description="추정 원인")
+    recommended_action: str = Field(default="", description="권고 조치 — 추천의 주 근거")
+    pattern_type: str = Field(default="", description="첫 발생/주기적/급증/산발적")
+    pattern_analysis: str = Field(default="", description="패턴 해석 — 추천의 보조 근거")
+    db_id: str = Field(default="", description="dbId — 존 RBAC 판정용")
+
+
+class AlarmPromptSuggestion(BaseModel):
+    """추천 질의 1건. 형식은 프론트의 결정적 추천과 동일하다(CAPABILITY-MAP-86)."""
+
+    label: str = Field(description="칩에 표시할 짧은 요지")
+    text: str = Field(description="입력창에 들어갈 질의 전문")
+    axis: str = Field(default="", description="판정에 쓰인 resource_type")
+    source: str = Field(default="llm", description="deterministic | llm")
+
+
+class AlarmPromptSuggestResponse(BaseModel):
+    """추천 응답. 실패는 5xx가 아니라 `suggestion=null`이다 — 카드 렌더를 깨뜨리지 않는다."""
+
+    suggestion: Optional[AlarmPromptSuggestion] = Field(
+        default=None, description="추천 질의(생성 실패·파싱 실패 시 null)"
+    )
+
+
+class AlarmFeedbackResponse(BaseModel):
+    """운영자 알람 피드백 응답 (Plan 52 E4)."""
+
+    recorded: bool = Field(description="피드백 적재 성공 여부")
+    ts: str = Field(
+        default="",
+        description="적재 레코드의 타임스탬프(ISO8601) — 철회 요청의 target_ts로 쓴다 (Plan 83)",
+    )
+
+
+class AlarmFeedbackRetractRequest(BaseModel):
+    """운영자 피드백 철회 요청 (Plan 83 A-5).
+
+    tombstone 한 줄을 append해 원본 라벨을 few-shot 후보에서 제외한다 —
+    파일을 재작성하지 않으므로 원본은 감사 추적용으로 남는다.
+    """
+
+    target_ts: str = Field(description="철회할 레코드의 ts(적재 응답의 ts 값)")
+    alarm_name: str = Field(default="", description="대상 알람 이름(감사 표시용)")
+    db_id: str = Field(default="", description="dbId — 존 권한 판정용(선택)")
+
+
+class AlarmFeedbackRetractResponse(BaseModel):
+    """피드백 철회 응답 (Plan 83)."""
+
+    retracted: bool = Field(description="철회 tombstone 적재 성공 여부")
+
+
+class AlarmFeedbackSummaryResponse(BaseModel):
+    """피드백 라벨 집계 응답 (Plan 83 T13).
+
+    같은 알람에 상반된 라벨이 쌓였는지 운영자가 보게 하는 용도다 — 판정 로직은 바꾸지 않는다.
+    """
+
+    items: list[dict[str, Any]] = Field(
+        description="(알람명, 자원명)별 valid/noise 카운트 + 최근 라벨·작성자·시각"
+    )
+
+
+class AlarmCapabilitiesResponse(BaseModel):
+    """알람 UI 기능 가용성 (Plan 83 T5).
+
+    카드 UI가 버튼 렌더 여부를 결정하기 위한 계약이다. **불리언·정수만** 노출한다 —
+    경로·시크릿·엔드포인트 주소는 싣지 않는다(클라이언트가 .env를 추론하지 않게 한다).
+    """
+
+    feedback_enabled: bool = Field(
+        description="피드백 버튼 가용 여부 = 게이트 AND LLM 액션가능성(503 조건과 동일 식)"
+    )
+    incident_tracking: bool = Field(description="incident 계측 활성 — 확인(ack) 버튼 전제")
+    sse_bridge: bool = Field(description="워커→UI SSE 브리지 활성")
+    suppress_stream: bool = Field(description="SUPPRESS 티어 SSE 발행 활성(관리자 전용 표시)")
+    suppress_max_severity: int = Field(description="억제 허용 최대 심각도(그 위는 강등 불가)")
+    prompt_suggest_enabled: bool = Field(
+        default=False, description="알람 조회 질의 LLM 추천 활성 (Plan 86 · 기본 off)"
+    )
+
+
 # ─── 유틸 함수 ───────────────────────────────────────────────────────────────
 
 _SEVERITY_LABELS = {0: "해소", 1: "주의", 2: "경고", 3: "심각"}
@@ -372,13 +582,15 @@ async def _resolve_process_snapshot(
     """
     try:
         if simulated_processes is not None:
-            from src.alarm.domain.process_rank import (
+            from noise_gate.domain.process_rank import (
                 classify_alarm_kind,
                 select_top_processes,
             )
 
+            # Plan 60 E6: classify_alarm_kind가 disk/network 등도 판정하나, 이 테스트 경로
+            # process_snapshot("영향 프로세스" 표)은 현행처럼 cpu/memory만 대상으로 유지한다.
             kind = classify_alarm_kind(event)
-            if kind is None:
+            if kind not in ("cpu", "memory"):
                 return None
             top, total = select_top_processes(
                 simulated_processes, kind, config.alarm.process_top_n
@@ -391,10 +603,10 @@ async def _resolve_process_snapshot(
                 source_host=event.hostname,
             )
         if query_process:
-            from src.alarm.application.nodes.alarm_context_enricher import (
+            from noise_gate.application.nodes.alarm_context_enricher import (
                 enrich_processes,
             )
-            from src.alarm.infrastructure.polestar_process_api import (
+            from noise_gate.infrastructure.polestar_process_api import (
                 PolestarProcessApiClient,
             )
 
@@ -406,6 +618,37 @@ async def _resolve_process_snapshot(
     except Exception as exc:
         logger.warning("테스트 프로세스 스냅샷 산출 실패 — 프로세스 없이 분석 진행: %s", exc)
     return None
+
+
+async def _attach_server_identity(config, event: AlarmEvent) -> None:  # noqa: ANN001
+    """hostname → 등록 서버명·IP 역조회를 붙인다 (D-188 · 워커 `_process`와 대칭).
+
+    상시 동작(끄는 플래그 없음). 리졸버 생성·조회 실패는 graceful(존 라벨만 부착).
+    """
+    from noise_gate.application.server_identity import attach_server_identity
+
+    resolver = None
+    try:
+        from noise_gate.infrastructure.polestar_hostname_resolver import (
+            PolestarHostnameResolver,
+        )
+        from src.routing.db_registry import DBRegistry
+
+        resolver = PolestarHostnameResolver(DBRegistry(config))
+    except Exception:
+        logger.warning("서버 식별 리졸버 생성 실패 — 역조회 없이 진행", exc_info=True)
+    await attach_server_identity(
+        event,
+        resolver,
+        timeout=float(getattr(config.alarm, "server_identity_timeout_seconds", 3.0)),
+        cache_ttl=0,  # API 테스트 경로는 프로세스 로컬 — 캐시 미사용
+    )
+
+
+def _identity_dict(event: AlarmEvent) -> Optional[dict[str, Any]]:
+    """SSE payload용 서버 식별 dict (없으면 None)."""
+    identity = getattr(event, "server_identity", None)
+    return identity.to_dict() if identity is not None else None
 
 
 def _simulated_entries(items: list[dict[str, Any]]) -> list[AlarmHistoryEntry]:
@@ -441,7 +684,7 @@ async def _resolve_history_stats(
     """
     try:
         if simulated_history is not None:
-            from src.alarm.domain.alarm_pattern import compute_history_stats
+            from noise_gate.domain.alarm_pattern import compute_history_stats
 
             entries = _simulated_entries(simulated_history)
             return compute_history_stats(
@@ -452,8 +695,8 @@ async def _resolve_history_stats(
                 source="simulated",
             )
         if query_history:
-            from src.alarm.application.nodes.alarm_context_enricher import enrich_history
-            from src.alarm.infrastructure.polestar_history import (
+            from noise_gate.application.nodes.alarm_context_enricher import enrich_history
+            from noise_gate.infrastructure.polestar_history import (
                 PolestarAlarmHistoryRepository,
             )
             from src.routing.db_registry import DBRegistry
@@ -479,7 +722,7 @@ def _build_workb_preview(
     process_snapshot: Optional[ProcessSnapshot] = None,
 ) -> _WorkbPreview:
     """WorkB 발송 미리보기를 생성한다."""
-    from src.alarm.application.nodes.alarm_notifier import build_workb_body
+    from noise_gate.application.nodes.alarm_notifier import build_workb_body
 
     ev = result.alarm_event
     title = f"[{result.severity_label}] {ev.server_name} ({ev.hostname})"
@@ -503,7 +746,7 @@ def _build_webhook_preview(
     process_snapshot: Optional[ProcessSnapshot] = None,
 ) -> _WebhookPreview:
     """Webhook 발송 미리보기를 생성한다."""
-    from src.alarm.application.nodes.alarm_notifier import _process_payload
+    from noise_gate.application.nodes.alarm_notifier import _process_payload
 
     ev = result.alarm_event
     payload = {
@@ -553,6 +796,42 @@ def _build_notification_preview(
     return preview
 
 
+def _alarm_extra_configurable(request: Request, config) -> dict[str, Any]:
+    """게이트 활성 시 notifier/gate가 쓰는 부가 의존성을 묶어 반환한다 (Plan 52 E3).
+
+    enable_noise_gate=False(기본)면 빈 dict — 기존 발송 경로 무변경(회귀 0).
+    활성 시 TICKET 일배치 큐·감사 저장소·SSE 버스를 주입한다. 워커 경로와 달리 API 경로는
+    app.state.alarm_bus를 주입할 수 있어 DASHBOARD/TICKET SSE가 실제로 동작한다.
+    """
+    if not config.noise_gate.enable_noise_gate:
+        return {}
+    from noise_gate.infrastructure.decision_store import DecisionStore
+    from noise_gate.infrastructure.feedback_store import FeedbackStore
+    from noise_gate.infrastructure.ticket_queue import TicketBatchQueue
+
+    ng = config.noise_gate
+    return {
+        "decision_store": DecisionStore(ng.decision_store_path, ng.decision_store_enabled),
+        "ticket_queue": TicketBatchQueue(
+            ng.ticket_batch_queue_path, ng.ticket_batch_queue_enabled
+        ),
+        # (E4) 운영자 피드백 few-shot 저장소 — enable_llm_actionability off면 None → analyzer는
+        # 피드백 섹션 없이 진행(회귀 0).
+        "feedback_store": (
+            FeedbackStore(
+                ng.feedback_store_path,
+                ng.feedback_store_enabled,
+                getattr(ng, "feedback_store_max_lines", 20000),
+            )
+            if getattr(ng, "enable_llm_actionability", False)
+            else None
+        ),
+        "alarm_bus": getattr(request.app.state, "alarm_bus", None),
+        # (D-049) PAGE 결정 시 incident open 발행기 — 트래커 off면 app.state에 None.
+        "incident_publisher": getattr(request.app.state, "incident_publisher", None),
+    }
+
+
 # ─── 엔드포인트 ───────────────────────────────────────────────────────────────
 
 @router.post(
@@ -561,6 +840,7 @@ def _build_notification_preview(
     summary="알람 분석 테스트",
     description=(
         "폴스타 알람 페이로드를 직접 입력하여 알람 분석 에이전트를 실행합니다.<br/>"
+        "<b>관리자 전용</b>(관리자 역할 사용자 또는 운영자 토큰 · 그 밖은 403).<br/>"
         "<b>dry_run=true</b>(기본값): 분석 결과 + 발송될 메시지 미리보기만 반환, 실제 발송 안 함.<br/>"
         "<b>dry_run=false, send_notification=true</b>: 설정된 채널로 실제 알림 발송.<br/>"
         "<b>channels</b>: 특정 채널만 테스트하고 싶을 때 지정 (예: [\"workb\"])."
@@ -570,7 +850,8 @@ def _build_notification_preview(
 async def analyze_alarm_test(
     request: Request,
     body: AlarmTestRequest,
-    current_user: dict = Depends(require_user),
+    # 시험 도구 — 임의 db_id 조회·화면 게시·실제 발송이 되므로 관리자 전용(D-263 잔여 후속)
+    current_user: dict = Depends(require_admin_user),
 ) -> AlarmTestResponse:
     """알람 페이로드를 입력받아 LLM 분석 및 알림 미리보기(또는 실제 발송)를 반환한다."""
     start_time = time.time()
@@ -612,7 +893,10 @@ async def analyze_alarm_test(
                 "query_process", "simulated_processes",
             }
         ),
+        received_at=_dt.now(),
     )
+    # (D-188) hostname 역조회 — 워커 경로와 대칭(server_name이 hostname과 같을 때만 승격)
+    await _attach_server_identity(config, event)
 
     # 2. 사용할 채널 결정 (요청 오버라이드 > 서버 설정)
     channels: list[str] = (
@@ -632,7 +916,7 @@ async def analyze_alarm_test(
     )
 
     # 3. LLM 알람 분석 실행 (analyzer 노드만 직접 호출)
-    from src.alarm.application.nodes.alarm_analyzer import alarm_analyzer_node
+    from noise_gate.application.nodes.alarm_analyzer import alarm_analyzer_node
 
     state: dict[str, Any] = {
         "alarm_event": event,
@@ -641,7 +925,9 @@ async def analyze_alarm_test(
         "analysis_result": None,
         "error": None,
     }
-    lc_config = {"configurable": {"app_config": config}}
+    lc_config = {
+        "configurable": {"app_config": config, **_alarm_extra_configurable(request, config)}
+    }
 
     try:
         result_state = await alarm_analyzer_node(state, lc_config)
@@ -693,6 +979,7 @@ async def analyze_alarm_test(
             "resource_type": event.resource_type,
             "resource_name": event.resource_name,
             "alarm_status": event.alarm_status,
+            "server_identity": _identity_dict(event),  # (D-188) UI 헤더(등록명·IP·존) 렌더용
             "summary": analysis_result.summary,
             "probable_cause": analysis_result.probable_cause,
             "recommended_action": analysis_result.recommended_action,
@@ -700,8 +987,11 @@ async def analyze_alarm_test(
             "pattern_type": analysis_result.pattern_type,
             "is_routine": analysis_result.is_routine,
             "pattern_analysis": analysis_result.pattern_analysis,
+            # (Plan 83 T6) 결정적 사전분류 — 워커 경로 payload와 대칭
+            "pre_classification": analysis_result.pre_classification,
             # Plan 47: 패턴 근거 표 렌더용 — 이력 통계 원본 + 현재 알람 시각
             "alarm_time": event.alarm_time.isoformat(),
+            "received_at": event.received_at.isoformat() if event.received_at else None,
             "history_stats": _stats_to_dict(history_stats) if history_stats else None,
             # Plan 47-1: 영향 프로세스 표 렌더용 (args는 마스킹된 값)
             "process_snapshot": _process_to_dict(process_snapshot) if process_snapshot else None,
@@ -713,9 +1003,23 @@ async def analyze_alarm_test(
     # 7. 실제 발송 (dry_run=False + send_notification=True일 때만)
     notifications_sent: Optional[dict[str, bool]] = None
     if not body.dry_run and body.send_notification:
-        from src.alarm.application.nodes.alarm_notifier import alarm_notifier_node
+        from noise_gate.application.nodes.alarm_notifier import alarm_notifier_node
 
-        notifier_state = {**result_state, "process_snapshot": process_snapshot, "error": None}
+        # result_state는 노드의 업데이트 dict({"analysis_result": ...})만 담으므로
+        # 게이트/notifier가 쓰는 alarm_event·history_stats는 원본 state에서 병합한다.
+        notifier_state = {
+            **state, **result_state, "process_snapshot": process_snapshot, "error": None
+        }
+        # Plan 52 E3: 게이트 활성 시 4-티어 판단을 산출해 notifier에 전달한다
+        # (TICKET 큐 적재·DASHBOARD/TICKET SSE 동작). 게이트 off면 decision 미생성 →
+        # notifier는 기존 발송 경로로 폴백(무변경, 회귀 0).
+        if config.noise_gate.enable_noise_gate:
+            from noise_gate.application.nodes.notification_gate import (
+                notification_gate_node,
+            )
+
+            gate_out = await notification_gate_node(notifier_state, lc_config)
+            notifier_state = {**notifier_state, **gate_out}
         try:
             notifier_out = await alarm_notifier_node(notifier_state, lc_config)
             sent_result: Optional[AlarmAnalysisResult] = notifier_out.get("analysis_result")
@@ -760,8 +1064,39 @@ async def analyze_alarm_test(
     ),
     tags=["alarm"],
 )
-async def alarm_notifications_stream(request: Request) -> StreamingResponse:
-    """분석된 알람 이벤트를 SSE로 브로드캐스트한다."""
+async def alarm_notifications_stream(
+    request: Request,
+    token: Optional[str] = None,
+) -> StreamingResponse:
+    """분석된 알람 이벤트를 구독자 존으로 필터링해 SSE로 전송한다(Plan 59 §17).
+
+    지역 스코프 RBAC: 관리자=전 존, 공동존/은행존 운영자=해당 존만, 일반=구독 거부(403).
+    인증은 쿠키(user_token) 우선(EventSource 헤더 제약), 쿼리 토큰은 내부망 폴백.
+    """
+    config = request.app.state.config
+    user = await resolve_stream_user(request, token)
+    if config.auth.enabled and user is None:
+        raise HTTPException(status_code=401, detail="인증이 필요합니다.")
+
+    allowed_zones = alarm_zones_for_user(user, config.auth.enabled)
+    if not allowed_zones:
+        raise HTTPException(status_code=403, detail="알림 수신 권한이 없습니다.")
+
+    # 전 존 허용(관리자/개발 모드)이면 db_id 필터를 건너뛴다.
+    deliver_all = allowed_zones >= set(all_zones())
+    # (Plan 83 T10) SUPPRESS 수신 권한 — 개발 모드는 종전 진입성을 보존한다.
+    is_admin = (not config.auth.enabled) or (
+        bool(user) and user.get("role") == "admin"
+    )
+
+    def _visible(event: dict) -> bool:
+        return event_visible_to(
+            event,
+            allowed_zones=allowed_zones,
+            deliver_all=deliver_all,
+            is_admin=is_admin,
+        )
+
     bus = request.app.state.alarm_bus
     q = bus.subscribe()
 
@@ -772,6 +1107,8 @@ async def alarm_notifications_stream(request: Request) -> StreamingResponse:
                     break
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=25.0)
+                    if not _visible(event):
+                        continue  # 구독자 존이 아닌 이벤트는 전송하지 않음
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 except asyncio.TimeoutError:
                     yield 'data: {"type":"ping"}\n\n'
@@ -781,6 +1118,478 @@ async def alarm_notifications_stream(request: Request) -> StreamingResponse:
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+# ─── 운영 지표 / 메타모니터링 엔드포인트 ─────────────────────────────────────
+
+@router.get(
+    "/alarm/metrics",
+    response_model=AlarmMetricsResponse,
+    summary="알람 노이즈 게이트 운영 지표",
+    description=(
+        "발송 판단 감사(decision_store)에서 티어별 건수·억제율·액션가능 비율과 "
+        "억제기 메타경보(억제율 임계 초과/이벤트 무수신)를 산출해 반환합니다.<br/>"
+        "MTTA/MTTR/사건전환율은 ack·해소상관 계측이 없어 null이며 unavailable_metrics에 "
+        "사유를 명시합니다(환각 금지)."
+    ),
+    tags=["alarm"],
+)
+async def alarm_metrics(
+    request: Request,
+    current_user: dict = Depends(require_user),
+) -> AlarmMetricsResponse:
+    """decision_store 집계 + 메타경보를 운영 지표 JSON으로 반환한다 (Plan 52 §9)."""
+    from noise_gate.infrastructure.decision_store import DecisionStore
+
+    config = request.app.state.config
+    ng = config.noise_gate
+    window = ng.meta_alert_window_seconds
+
+    # 읽기 전용 — 파일이 있으면 집계, 없으면 빈 집계(전 키 포함)
+    store = DecisionStore(ng.decision_store_path)
+    agg = store.aggregate(window_seconds=window)
+    meta = store.meta_alerts(
+        window_seconds=window,
+        suppress_ratio_threshold=ng.meta_alert_suppress_ratio,
+        min_events=ng.meta_alert_min_events,
+    )
+
+    # ── D-049: incident_store 주입 시 MTTA/incident_mttr/사건전환율 채움 ──
+    # 트래커 off(store=None)면 기존 null + unavailable_metrics 동작 유지(회귀 0).
+    incident_store = getattr(request.app.state, "incident_store", None)
+    mtta_seconds: Optional[float] = None
+    incident_mttr_seconds: Optional[float] = None
+    incident_conversion_rate: Optional[float] = None
+    open_incident_count = 0
+    # 트래커 off — 기존 동작 유지(회귀 0): MTTA/MTTR/사건전환율 null + reason 사유 노출
+    unavailable_metrics: dict[str, str] = {
+        "reason": "ack/incident 계측 미활성(NOISE_INCIDENT_TRACKING_ENABLED=false)",
+    }
+    if incident_store is not None:
+        m = await incident_store.metrics(
+            window_seconds=window, page_count=agg["page_count"]
+        )
+        mtta_seconds = m["mtta_seconds"]
+        incident_mttr_seconds = m["incident_mttr_seconds"]
+        incident_conversion_rate = m["incident_conversion_rate"]
+        open_incident_count = m["open_count"]
+        # 계측 활성 — 해당 지표 사유를 제거(채워진 값으로 노출)
+        unavailable_metrics = {}
+
+    return AlarmMetricsResponse(
+        window_seconds=window,
+        total=agg["total"],
+        by_tier=agg["by_tier"],
+        page_count=agg["page_count"],
+        ticket_count=agg["ticket_count"],
+        dashboard_count=agg["dashboard_count"],
+        suppress_count=agg["suppress_count"],
+        actionable_ratio=agg["actionable_ratio"],
+        suppress_ratio=agg["suppress_ratio"],
+        last_event_age_seconds=agg["last_event_age_seconds"],
+        meta_alerts=meta,
+        mtta_seconds=mtta_seconds,
+        # 하위호환 — mttr_seconds는 incident_mttr_seconds와 동일 값(운영자 MTTR)
+        mttr_seconds=incident_mttr_seconds,
+        incident_mttr_seconds=incident_mttr_seconds,
+        # self-heal 편향 부분지표(sev3 제외) — incident_mttr와 명확히 구분
+        auto_recovery_mttr_seconds=agg["auto_recovery_mttr_seconds"],
+        incident_conversion_rate=incident_conversion_rate,
+        open_incident_count=open_incident_count,
+        unavailable_metrics=unavailable_metrics,
+    )
+
+
+# ─── SSE 이벤트 가시성 판정 (Plan 83 T10) ────────────────────────────────────
+
+def event_visible_to(
+    event: dict, *, allowed_zones: set[str], deliver_all: bool, is_admin: bool
+) -> bool:
+    """구독자에게 이 알람 이벤트를 전송해도 되는지 판정한다(순수 함수).
+
+    두 축이 있고 **권한은 서버가, 표시 선호는 클라이언트가** 판단한다(Plan 83 §B):
+
+    - **존(zone)**: 종전 규약 그대로 — 전 존이면 통과, 아니면 이벤트 db_id의 존이 구독자
+      존에 속할 때만 통과.
+    - **SUPPRESS 티어**: 관리자에게만 전송한다. 억제된 알람의 전문이 비관리자 브라우저에
+      도달한 뒤 화면에서만 가려지는 상태를 만들지 않기 위해서다(클라이언트 필터는 이미 받은
+      것을 안 그릴 뿐이라 개발자 도구로 그대로 보인다).
+
+    page/ticket/dashboard 사이의 표시 여부는 **여기서 거르지 않는다** — 개인 표시 레벨은
+    브라우저 localStorage에 있고(G-1 확정) 서버는 그 값을 모른다.
+    """
+    if event.get("tier") == "suppress" and not is_admin:
+        return False
+    if deliver_all:
+        return True
+    zone = db_id_to_zone(event.get("db_id"))
+    return zone is not None and zone in allowed_zones
+
+
+# ─── 존(zone) 접근 판정 — 피드백·ack·사건 목록·피드백 요약 공용 (Plan 83 T2·T3) ──
+
+def _alarm_zone_scope(request: Request, current_user: dict) -> set[str] | None:
+    """요청 사용자의 알람 존 범위를 산출한다 — 전 존이면 None(거를 것 없음).
+
+    Raises:
+        HTTPException: 존 집합이 비면 403(스트림의 구독 거부와 같은 의미).
+    """
+    zones = alarm_zones_for_user(current_user, request.app.state.config.auth.enabled)
+    if not zones:
+        raise HTTPException(status_code=403, detail="알람 수신 권한이 없습니다.")
+    if zones >= set(all_zones()):
+        return None
+    return zones
+
+
+def _zone_permits(scope: set[str] | None, db_id: str | None) -> bool:
+    """`_alarm_zone_scope` 범위가 이 db_id의 알람을 허용하는지 판정한다(순수 함수).
+
+    - 전 존(None)이면 db_id와 무관하게 허용.
+    - db_id가 없으면 **막지 않는다** — 판정 불가를 거부로 바꾸지 않는다(하위호환).
+    - 그 외에는 대상 존이 사용자 존에 속할 때만 허용(존 매핑 없는 db_id는 거부).
+    """
+    if scope is None or not db_id:
+        return True
+    zone = db_id_to_zone(db_id)
+    return zone is not None and zone in scope
+
+
+def _assert_zone_access(
+    request: Request, current_user: dict, db_id: Optional[str]
+) -> None:
+    """알람 대상 db_id에 대한 구독자 존 권한을 강제한다.
+
+    SSE 스트림(`alarm_notifications_stream`의 `_visible`)과 **동일한 규약**을 쓴다 —
+    쓰기 경로만 무방비였던 비대칭을 없애는 것이 목적이다(docs/28 실측).
+    조회 경로(사건 목록·피드백 요약)도 같은 `_alarm_zone_scope`·`_zone_permits`로 거른다.
+
+    - 존 집합이 비면 403(스트림의 구독 거부와 같은 의미).
+    - 전 존(관리자·개발 모드)이면 db_id와 무관하게 통과.
+    - db_id가 없으면 **차단하지 않는다** — 판정 불가를 거부로 바꾸지 않는다(하위호환).
+    - 그 외에는 대상 존이 구독자 존에 속할 때만 통과.
+
+    Raises:
+        HTTPException: 권한 없음(403).
+    """
+    if not _zone_permits(_alarm_zone_scope(request, current_user), db_id):
+        raise HTTPException(
+            status_code=403, detail="해당 존의 알람에 대한 권한이 없습니다."
+        )
+
+
+# ─── incident ack / 조회 엔드포인트 (D-049) ──────────────────────────────────
+
+@router.post(
+    "/alarm/incidents/{incident_id}/ack",
+    response_model=IncidentAckResponse,
+    summary="incident 확인(ack)",
+    description=(
+        "열린 incident를 확인(ack) 상태로 전이합니다(식별키=incident id, MTTA 계측).<br/>"
+        "incident 계측이 비활성(NOISE_INCIDENT_TRACKING_ENABLED=false)이면 503을 반환합니다."
+    ),
+    tags=["alarm"],
+)
+async def ack_incident(
+    incident_id: int,
+    request: Request,
+    current_user: dict = Depends(require_user),
+) -> IncidentAckResponse:
+    """incident를 ack 처리한다(트래커 비활성 시 503)."""
+    from datetime import datetime as _dt, timezone as _tz
+
+    store = getattr(request.app.state, "incident_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="incident tracking 비활성")
+
+    # (Plan 83 T3) 존 RBAC — 대상 incident의 db_id로 판정한다.
+    # get_db_id 미보유 구현체(테스트 대역 등)·조회 실패는 판정 생략(차단 아님·graceful).
+    target_db_id: Optional[str] = None
+    getter = getattr(store, "get_db_id", None)
+    if getter is not None:
+        try:
+            target_db_id = await getter(incident_id)
+        except Exception:  # noqa: BLE001 — 판정 불가는 통과시킨다
+            target_db_id = None
+    _assert_zone_access(request, current_user, target_db_id)
+
+    acked_by = current_user.get("sub") or current_user.get("name") or "operator"
+    ok = await store.ack(
+        incident_id=incident_id,
+        acked_at=_dt.now(tz=_tz.utc),
+        acked_by=acked_by,
+    )
+    return IncidentAckResponse(acked=ok, incident_id=incident_id)
+
+
+@router.get(
+    "/alarm/incidents",
+    response_model=IncidentListResponse,
+    summary="열린 incident 목록",
+    description=(
+        "열린(open) incident 목록을 최신순으로 반환합니다.<br/>"
+        "요청자의 알림 존에 속한 사건만 반환합니다(ack와 같은 존 판정 · 관리자는 전 존).<br/>"
+        "incident 계측이 비활성이면 빈 배열을 반환합니다."
+    ),
+    tags=["alarm"],
+)
+async def list_incidents(
+    request: Request,
+    status: str = "open",
+    limit: int = 100,
+    current_user: dict = Depends(require_user),
+) -> IncidentListResponse:
+    """열린 incident 목록을 요청자 존으로 걸러 반환한다(트래커 비활성 시 빈 배열)."""
+    # 결함 ⑤ — ack(쓰기)와 같은 존 판정. 존이 없으면 403, 전 존이면 거르지 않는다.
+    scope = _alarm_zone_scope(request, current_user)
+    store = getattr(request.app.state, "incident_store", None)
+    if store is None:
+        return IncidentListResponse(incidents=[])
+    incidents = await store.list_open(limit=limit)
+    # 저장소 포트(list_open)에 존 인자가 없어 조회 뒤에 거른다 — 스코프 사용자는 limit보다
+    # 적게 받을 수 있다(상위 limit건 안에서만 거른 결과).
+    incidents = [i for i in incidents if _zone_permits(scope, i.get("db_id"))]
+    return IncidentListResponse(incidents=incidents)
+
+
+# ─── 운영자 피드백 엔드포인트 (Plan 52 E4) ───────────────────────────────────
+
+@router.post(
+    "/alarm/suggest-prompt",
+    response_model=AlarmPromptSuggestResponse,
+    summary="알람 조회 질의 추천 (LLM · 기본 off)",
+)
+async def suggest_alarm_prompt(
+    request: Request,
+    body: AlarmPromptSuggestRequest,
+    current_user: dict = Depends(require_user),
+) -> AlarmPromptSuggestResponse:
+    """권고 조치·패턴 분석을 근거로 조회 질의 1건을 제안한다 (Plan 86 · D-192).
+
+    결정적 축 매핑이 비는 알람에서만 프론트가 호출한다. **기본 off**이며(과금 경로 —
+    D-127) 꺼져 있으면 503이다. 생성·파싱 실패는 200 + `suggestion=null`로 돌려준다 —
+    추천이 없다고 알람 카드가 깨지면 안 된다.
+    """
+    config = request.app.state.config
+    ng = config.noise_gate
+    if not getattr(ng, "alarm_prompt_llm_suggest_enabled", False):
+        raise HTTPException(status_code=503, detail="프롬프트 추천 비활성")
+    if not body.target.strip():
+        raise HTTPException(status_code=400, detail="target(대상 서버)이 비어 있습니다")
+    # 쓰기 경로와 같은 존 RBAC 규약 — 다른 존 알람의 내용을 LLM에 실어 보내지 못하게 한다.
+    _assert_zone_access(request, current_user, body.db_id)
+
+    from src.llm import create_llm
+    from src.utils.json_extract import extract_json_from_response
+    from noise_gate.prompts.alarm_prompt_suggest import (
+        ALARM_PROMPT_SUGGEST_SYSTEM,
+        ALARM_PROMPT_SUGGEST_USER_TEMPLATE,
+    )
+
+    user_msg = ALARM_PROMPT_SUGGEST_USER_TEMPLATE.format(
+        target=body.target,
+        alarm_name=body.alarm_name,
+        resource_type=body.resource_type,
+        resource_name=body.resource_name,
+        severity_label=body.severity_label,
+        summary=body.summary,
+        probable_cause=body.probable_cause,
+        recommended_action=body.recommended_action,
+        pattern_type=body.pattern_type,
+        pattern_analysis=body.pattern_analysis,
+    )
+    try:
+        llm = create_llm(config)
+        response = await llm.ainvoke(
+            [
+                {"role": "system", "content": ALARM_PROMPT_SUGGEST_SYSTEM},
+                {"role": "user", "content": user_msg},
+            ]
+        )
+        parsed = extract_json_from_response(getattr(response, "content", ""))
+    except Exception as exc:  # noqa: BLE001 — 어떤 실패든 카드는 계속 동작해야 한다
+        logger.warning("알람 질의 추천 실패: %s", exc)
+        return AlarmPromptSuggestResponse(suggestion=None)
+
+    label = (parsed or {}).get("label") or ""
+    text = (parsed or {}).get("text") or ""
+    if not isinstance(label, str) or not isinstance(text, str) or not text.strip():
+        logger.warning("알람 질의 추천 산출 형식 불일치: %s", parsed)
+        return AlarmPromptSuggestResponse(suggestion=None)
+    # 주어 없는 질의는 쓸모가 없다 — 대상이 빠졌으면 추천하지 않는다(결정적 경로와 같은 규칙).
+    if body.target not in text:
+        logger.warning("알람 질의 추천에 대상 서버 누락: %s", text)
+        return AlarmPromptSuggestResponse(suggestion=None)
+
+    return AlarmPromptSuggestResponse(
+        suggestion=AlarmPromptSuggestion(
+            label=label.strip()[:40] or "알람 조회",
+            text=text.strip(),
+            axis=body.resource_type,
+            source="llm",
+        )
+    )
+
+
+@router.post(
+    "/alarm/feedback",
+    response_model=AlarmFeedbackResponse,
+    summary="운영자 알람 피드백(유효/노이즈)",
+    description=(
+        "운영자가 알람 카드에서 매긴 라벨(유효/노이즈)을 few-shot 저장소에 적재합니다.<br/>"
+        "이후 유사 알람의 LLM 액션가능성 자문(보조 입력)에 활용됩니다.<br/>"
+        "게이트 또는 LLM 액션가능성이 비활성이면 503을 반환합니다."
+    ),
+    tags=["alarm"],
+)
+async def submit_alarm_feedback(
+    request: Request,
+    body: AlarmFeedbackRequest,
+    current_user: dict = Depends(require_user),
+) -> AlarmFeedbackResponse:
+    """운영자 피드백을 검증·적재한다(게이트/액션가능성 비활성 시 503)."""
+    config = request.app.state.config
+    ng = config.noise_gate
+    if not ng.enable_noise_gate or not getattr(ng, "enable_llm_actionability", False):
+        raise HTTPException(status_code=503, detail="LLM actionability 비활성")
+    if body.label not in ("noise", "valid"):
+        raise HTTPException(status_code=400, detail="label은 'noise' 또는 'valid'만 허용")
+    # (Plan 83 T2) 존 RBAC — 다른 존 알람에 라벨을 남기지 못하게 한다.
+    _assert_zone_access(request, current_user, body.db_id)
+
+    from noise_gate.infrastructure.feedback_store import FeedbackStore
+
+    from datetime import datetime as _dt, timezone as _tz
+
+    store = FeedbackStore(
+        ng.feedback_store_path,
+        ng.feedback_store_enabled,
+        getattr(ng, "feedback_store_max_lines", 20000),
+    )
+    # 적재 시각을 여기서 만들어 응답에 실어야 UI가 철회 대상을 지목할 수 있다(Plan 83 A-5).
+    recorded_ts = _dt.now(tz=_tz.utc)
+    store.record_feedback(
+        label=body.label,
+        alarm_name=body.alarm_name,
+        resource_name=body.resource_name,
+        pattern=body.pattern_type,
+        server_name=body.server_name,
+        db_id=body.db_id,
+        severity=body.severity,
+        note=body.note,
+        # (Plan 83 T6/A-4) 작성자 — 감사 전용(few-shot 프롬프트에는 실리지 않는다)
+        labeled_by=current_user.get("sub") or current_user.get("name") or "",
+        ts=recorded_ts,
+        # (plans/91 1-4 · C′-3) 조사 참조 — 존 RBAC·작성자·철회는 위 경로를 그대로 재사용한다(별도 저장소 없음)
+        investigation_id=body.investigation_id,
+    )
+    return AlarmFeedbackResponse(recorded=True, ts=recorded_ts.isoformat())
+
+
+@router.post(
+    "/alarm/feedback/retract",
+    response_model=AlarmFeedbackRetractResponse,
+    summary="운영자 알람 피드백 철회",
+    description=(
+        "오클릭한 라벨을 철회합니다(tombstone append — 원본은 감사용으로 남습니다).<br/>"
+        "게이트 또는 LLM 액션가능성이 비활성이면 503을 반환합니다."
+    ),
+    tags=["alarm"],
+)
+async def retract_alarm_feedback(
+    request: Request,
+    body: AlarmFeedbackRetractRequest,
+    current_user: dict = Depends(require_user),
+) -> AlarmFeedbackRetractResponse:
+    """피드백 철회 tombstone을 적재한다(적재 라우트와 동일한 게이트·존 판정)."""
+    config = request.app.state.config
+    ng = config.noise_gate
+    if not ng.enable_noise_gate or not getattr(ng, "enable_llm_actionability", False):
+        raise HTTPException(status_code=503, detail="LLM actionability 비활성")
+    if not body.target_ts:
+        raise HTTPException(status_code=400, detail="target_ts가 필요합니다")
+    _assert_zone_access(request, current_user, body.db_id)
+
+    from noise_gate.infrastructure.feedback_store import FeedbackStore
+
+    store = FeedbackStore(
+        ng.feedback_store_path,
+        ng.feedback_store_enabled,
+        getattr(ng, "feedback_store_max_lines", 20000),
+    )
+    store.record_retract(
+        target_ts=body.target_ts,
+        alarm_name=body.alarm_name,
+        labeled_by=current_user.get("sub") or current_user.get("name") or "",
+    )
+    return AlarmFeedbackRetractResponse(retracted=True)
+
+
+@router.get(
+    "/alarm/feedback/summary",
+    response_model=AlarmFeedbackSummaryResponse,
+    summary="운영자 피드백 라벨 집계",
+    description=(
+        "(알람명, 자원명)별 유효/노이즈 라벨 수와 최근 라벨·작성자를 반환합니다.<br/>"
+        "요청자의 알림 존에 속한 라벨만 집계합니다(적재와 같은 존 판정 · 관리자는 전 존).<br/>"
+        "상반된 라벨이 쌓였는지 사람이 확인하기 위한 조회이며 판정에는 관여하지 않습니다."
+    ),
+    tags=["alarm"],
+)
+async def alarm_feedback_summary(
+    request: Request,
+    limit: int = 100,
+    current_user: dict = Depends(require_user),
+) -> AlarmFeedbackSummaryResponse:
+    """피드백 라벨을 요청자 존으로 걸러 집계한다(저장소 비활성·파일 부재면 빈 목록)."""
+    # 결함 ⑤ — 적재(쓰기)와 같은 존 판정. 집계 전에 레코드 단위로 걸러야
+    # 다른 존 라벨이 카운트·최근 작성자에 섞이지 않는다.
+    scope = _alarm_zone_scope(request, current_user)
+    ng = request.app.state.config.noise_gate
+
+    from noise_gate.infrastructure.feedback_store import FeedbackStore
+
+    store = FeedbackStore(
+        ng.feedback_store_path,
+        getattr(ng, "feedback_store_enabled", True),
+        getattr(ng, "feedback_store_max_lines", 20000),
+    )
+    items = store.summarize(
+        limit=limit,
+        db_id_filter=None if scope is None else (lambda db_id: _zone_permits(scope, db_id)),
+    )
+    return AlarmFeedbackSummaryResponse(items=items)
+
+
+@router.get(
+    "/alarm/capabilities",
+    response_model=AlarmCapabilitiesResponse,
+    summary="알람 UI 기능 가용성",
+    description=(
+        "카드 UI가 버튼(피드백·확인)을 렌더할지 결정하기 위한 게이트 상태입니다.<br/>"
+        "불리언·정수만 반환하며 경로·시크릿은 노출하지 않습니다."
+    ),
+    tags=["alarm"],
+)
+async def alarm_capabilities(
+    request: Request,
+    current_user: dict = Depends(require_user),
+) -> AlarmCapabilitiesResponse:
+    """게이트 조합을 서버가 계산해 내린다(클라이언트가 .env를 추론하지 않게)."""
+    ng = request.app.state.config.noise_gate
+    gate_on = bool(getattr(ng, "enable_noise_gate", False))
+    return AlarmCapabilitiesResponse(
+        # 피드백 라우트의 503 조건과 **같은 식**이어야 한다(어긋나면 UI가 거짓말을 한다).
+        feedback_enabled=gate_on and bool(getattr(ng, "enable_llm_actionability", False)),
+        incident_tracking=bool(getattr(ng, "incident_tracking_enabled", False)),
+        sse_bridge=bool(getattr(ng, "sse_bridge_enabled", False)),
+        suppress_stream=bool(getattr(ng, "sse_suppressed_enabled", False)),
+        # Plan 86: 꺼져 있으면 프론트가 아예 호출하지 않는다 — 알람마다 503을 때리지 않게 한다.
+        prompt_suggest_enabled=bool(
+            getattr(ng, "alarm_prompt_llm_suggest_enabled", False)
+        ),
+        suppress_max_severity=int(getattr(ng, "suppress_max_severity", 2)),
+    )
+
+
 # ─── 폴스타 원문 메시지 분석 엔드포인트 ──────────────────────────────────────
 
 def _parse_raw_message(message: str) -> dict:
@@ -788,8 +1597,22 @@ def _parse_raw_message(message: str) -> dict:
     return json.loads(message.strip())
 
 
-def _build_alarm_event_from_payload(payload: dict) -> AlarmEvent:
-    """Redis Stream 페이로드(또는 파싱된 폴스타 JSON)를 AlarmEvent로 변환한다."""
+# (Plan 60 E7-c §17.5) 이질 포맷에서 severity 미식별 시 보수적 폴백값 — 비-해소(드롭 방지).
+_E7C_CONSERVATIVE_SEVERITY = 2
+
+
+def _build_alarm_event_from_payload(
+    payload: dict, *, format_tolerant: bool = False
+) -> AlarmEvent:
+    """Redis Stream 페이로드(또는 파싱된 폴스타 JSON)를 AlarmEvent로 변환한다.
+
+    (Plan 60 E7-c §17.5) format_tolerant=True면 이질 포맷(호스트 접두 없음·네트워크 장비·설비)
+    에 대해 graceful 폴백을 적용한다 — 침묵 드롭·크래시 금지: severity 누락/비정수는 보수적
+    비-해소 값으로 폴백(is_clear 오분류→드롭 방지)하고, 네트워크 장비 포맷("||(장애) <사이트명>")
+    에서 사이트 토큰을 추출해 raw_payload 사본에 `_site_token`으로 노출한다(원본 payload 불변).
+    format_tolerant=False(기본)면 **현행과 비트동일**(누락 severity→0, 비정수→ValueError 전파).
+    알려진 포맷(정상 severity)의 파싱 결과는 두 경로에서 동일하다(신규 폴백만 추가).
+    """
     from datetime import datetime as _dt
 
     alarm_time_str = payload.get("alarmTime", "")
@@ -799,9 +1622,30 @@ def _build_alarm_event_from_payload(payload: dict) -> AlarmEvent:
         alarm_time = _dt.now()
 
     alarm_status = payload.get("alarmStatus", "")
-    severity = int(payload.get("severity", 0))
+    # (D-184) 폴스타 `${severity}`는 한글 라벨로 렌더링된다 — 워커 `_process`와 동일한
+    # 결정적 정규화(noise_gate.domain.severity)를 쓴다(경로 대칭). 정수·정수 문자열·라벨 수용.
+    raw_sev = payload.get("severity", None)
+    if format_tolerant:
+        # 누락·미지 값 → 보수적(드롭·크래시 방지). 라벨/정수는 정규화.
+        severity, _ = coerce_severity(raw_sev, fallback=_E7C_CONSERVATIVE_SEVERITY)
+    else:
+        # 누락 → 0(현행 유지). 라벨/정수 문자열은 정규화, 미지 값은 SeverityParseError(ValueError
+        # 하위) 전파 — 현행 '비정수 → ValueError' 계약 유지.
+        severity = 0 if raw_sev is None else parse_severity(raw_sev)
     # is_clear는 severity == 0 단독 기준 — alarmStatus는 ACK 상태로 무관 (Plan 47 §9)
     is_clear = severity == 0
+
+    raw_payload = payload
+    if format_tolerant:
+        # (E7-c) 사이트 토큰 추출(네트워크 장비 포맷) — 원본 payload를 변형하지 않도록 사본에 노출.
+        from noise_gate.domain.correlation import extract_site_token
+
+        site = extract_site_token(
+            str(payload.get("serverName", "") or ""),
+            str(payload.get("resourceName", "") or ""),
+        )
+        if site:
+            raw_payload = {**payload, "_site_token": site}
 
     return AlarmEvent(
         db_id=payload.get("dbId", ""),
@@ -819,7 +1663,8 @@ def _build_alarm_event_from_payload(payload: dict) -> AlarmEvent:
         conditions=payload.get("conditions", ""),
         condition_log=payload.get("conditionLog", ""),
         is_clear=is_clear,
-        raw_payload=payload,
+        raw_payload=raw_payload,
+        received_at=_dt.now(),
     )
 
 
@@ -830,14 +1675,16 @@ def _build_alarm_event_from_payload(payload: dict) -> AlarmEvent:
     description=(
         "폴스타 TCP 소켓으로 전달되는 <b>단일행 JSON 원문</b>을 그대로 붙여넣어 분석합니다.<br/>"
         "소켓 수신 → JSON 파싱 → AlarmEvent 변환 → LLM 분석 전체 파이프라인을 시뮬레이션합니다.<br/>"
-        "실제 폴스타 메시지를 복사해서 테스트할 때 사용하세요."
+        "실제 폴스타 메시지를 복사해서 테스트할 때 사용하세요.<br/>"
+        "<b>관리자 전용</b>(관리자 역할 사용자 또는 운영자 토큰 · 그 밖은 403)."
     ),
     tags=["alarm"],
 )
 async def analyze_alarm_raw(
     request: Request,
     body: AlarmRawTestRequest,
-    current_user: dict = Depends(require_user),
+    # 시험 도구 — 관리자 전용(`analyze_alarm_test`와 같은 가드)
+    current_user: dict = Depends(require_admin_user),
 ) -> AlarmTestResponse:
     """폴스타 원문 JSON을 파싱해 AlarmEvent를 구성하고 LLM 분석을 실행한다."""
     start_time = time.time()
@@ -859,7 +1706,15 @@ async def analyze_alarm_raw(
         )
 
     # 2. AlarmEvent 구성 (AlarmWorker._process()와 동일)
-    event = _build_alarm_event_from_payload(payload)
+    # (Plan 60 E7-c) format_tolerant_parsing_enabled면 이질 포맷 graceful 폴백(off면 비트동일).
+    event = _build_alarm_event_from_payload(
+        payload,
+        format_tolerant=bool(
+            getattr(getattr(config, "noise_gate", None), "format_tolerant_parsing_enabled", False)
+        ),
+    )
+    # (D-188) hostname 역조회 — 워커 경로와 대칭
+    await _attach_server_identity(config, event)
 
     # 3. 사용할 채널 결정
     channels: list[str] = (
@@ -879,7 +1734,7 @@ async def analyze_alarm_raw(
     )
 
     # 4. LLM 알람 분석
-    from src.alarm.application.nodes.alarm_analyzer import alarm_analyzer_node
+    from noise_gate.application.nodes.alarm_analyzer import alarm_analyzer_node
 
     state: dict[str, Any] = {
         "alarm_event": event,
@@ -888,7 +1743,9 @@ async def analyze_alarm_raw(
         "analysis_result": None,
         "error": None,
     }
-    lc_config = {"configurable": {"app_config": config}}
+    lc_config = {
+        "configurable": {"app_config": config, **_alarm_extra_configurable(request, config)}
+    }
 
     try:
         result_state = await alarm_analyzer_node(state, lc_config)
@@ -938,6 +1795,7 @@ async def analyze_alarm_raw(
             "resource_type": event.resource_type,
             "resource_name": event.resource_name,
             "alarm_status": event.alarm_status,
+            "server_identity": _identity_dict(event),  # (D-188) UI 헤더(등록명·IP·존) 렌더용
             "summary": analysis_result.summary,
             "probable_cause": analysis_result.probable_cause,
             "recommended_action": analysis_result.recommended_action,
@@ -945,8 +1803,11 @@ async def analyze_alarm_raw(
             "pattern_type": analysis_result.pattern_type,
             "is_routine": analysis_result.is_routine,
             "pattern_analysis": analysis_result.pattern_analysis,
+            # (Plan 83 T6) 결정적 사전분류 — 워커 경로 payload와 대칭
+            "pre_classification": analysis_result.pre_classification,
             # Plan 47: 패턴 근거 표 렌더용 — 이력 통계 원본 + 현재 알람 시각
             "alarm_time": event.alarm_time.isoformat(),
+            "received_at": event.received_at.isoformat() if event.received_at else None,
             "history_stats": _stats_to_dict(history_stats) if history_stats else None,
             # Plan 47-1: 영향 프로세스 표 렌더용 (args는 마스킹된 값)
             "process_snapshot": _process_to_dict(process_snapshot) if process_snapshot else None,
@@ -958,9 +1819,23 @@ async def analyze_alarm_raw(
     # 7. 실제 발송 (dry_run=False + send_notification=True)
     notifications_sent: Optional[dict[str, bool]] = None
     if not body.dry_run and body.send_notification:
-        from src.alarm.application.nodes.alarm_notifier import alarm_notifier_node
+        from noise_gate.application.nodes.alarm_notifier import alarm_notifier_node
 
-        notifier_state = {**result_state, "process_snapshot": process_snapshot, "error": None}
+        # result_state는 노드의 업데이트 dict({"analysis_result": ...})만 담으므로
+        # 게이트/notifier가 쓰는 alarm_event·history_stats는 원본 state에서 병합한다.
+        notifier_state = {
+            **state, **result_state, "process_snapshot": process_snapshot, "error": None
+        }
+        # Plan 52 E3: 게이트 활성 시 4-티어 판단을 산출해 notifier에 전달한다
+        # (TICKET 큐 적재·DASHBOARD/TICKET SSE 동작). 게이트 off면 decision 미생성 →
+        # notifier는 기존 발송 경로로 폴백(무변경, 회귀 0).
+        if config.noise_gate.enable_noise_gate:
+            from noise_gate.application.nodes.notification_gate import (
+                notification_gate_node,
+            )
+
+            gate_out = await notification_gate_node(notifier_state, lc_config)
+            notifier_state = {**notifier_state, **gate_out}
         try:
             notifier_out = await alarm_notifier_node(notifier_state, lc_config)
             sent_result: Optional[AlarmAnalysisResult] = notifier_out.get("analysis_result")

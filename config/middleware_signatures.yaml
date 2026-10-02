@@ -1,0 +1,119 @@
+# 미들웨어 OS 근사 식별 규칙 (Plan 78 W7-1 · D-168)
+#
+# **정책은 코드가 아니라 이 파일에 있다**(하네스 문서 표 29 G). 새 미들웨어는 여기에 항목을
+# 추가하는 것만으로 식별된다 — 코드 변경이 필요하면 그것은 설계 실패다(SPEC S5).
+#
+# 판정은 **100% 결정적**이다(D-035). LLM 추정을 쓰지 않는다 — 미식별이 "모델이 못 맞혔다"가
+# 아니라 "규칙에 없다"로 귀결되어야 규칙을 고쳐 개선할 수 있다.
+#
+# 필드
+#   kind          미들웨어 종류 식별자(소문자 케밥)
+#   match_any     cmdline에 **하나라도** 포함되면 후보 (부분 문자열)
+#   match_regex   정규식 후보 판정 (match_any와 OR)
+#   exclude_any   포함되면 **탈락** — 오탐 방지(예: `grep tomcat`)
+#   instance_from 인스턴스 식별자 추출 정규식(첫 캡처 그룹)
+#   attributes    {이름: 정규식} — 기동 인자 핵심값(힙 설정 등) 추출
+#   ports         참고용 표준 포트(식별에 쓰지 않는다 — ss 결과 대조용 힌트)
+#
+# ⚠ `ps` 출력 형식은 배포판마다 다르므로 **컬럼 위치에 의존하지 않는다** — cmdline 문자열만 본다.
+#
+# ⚠ 아래는 **기본 세트**다. 조직의 실제 미들웨어 목록은 확인 후 이 파일에서 조정한다
+#   (SPEC Q1 — 확장이 데이터로 끝나므로 확인 지연이 착수를 막지 않는다).
+
+version: 1
+
+# 모든 규칙에 공통 적용되는 제외 패턴 — 조사 명령 자신이 잡히는 것을 막는다.
+global_exclude:
+  - "grep "
+  - "grep\t"
+  - "/usr/bin/ps "
+  - "pgrep "
+
+signatures:
+  # ── WAS (Java) ────────────────────────────────────────────────────
+  - kind: tomcat
+    match_any: ["org.apache.catalina.startup.Bootstrap", "catalina.home"]
+    instance_from: '-Dcatalina\.base=(\S+)'
+    attributes:
+      heap_max: '-Xmx(\S+)'
+      heap_min: '-Xms(\S+)'
+      java_home: '^(\S*/bin/java)'
+    ports: [8080, 8443]
+
+  - kind: jboss-wildfly
+    match_any: ["org.jboss.as.standalone", "jboss.home.dir", "org.jboss.as.server"]
+    instance_from: '-Djboss\.server\.name=(\S+)'
+    attributes:
+      heap_max: '-Xmx(\S+)'
+      base_dir: '-Djboss\.server\.base\.dir=(\S+)'
+    ports: [8080, 9990]
+
+  - kind: weblogic
+    match_any: ["weblogic.Server", "weblogic.Name"]
+    instance_from: '-Dweblogic\.Name=(\S+)'
+    attributes:
+      heap_max: '-Xmx(\S+)'
+      domain: '-Dweblogic\.RootDirectory=(\S+)'
+    ports: [7001, 7002]
+
+  - kind: websphere
+    match_any: ["com.ibm.ws.runtime.WsServer", "was.install.root"]
+    instance_from: 'WsServer\s+\S+\s+(\S+)'
+    attributes:
+      heap_max: '-Xmx(\S+)'
+    ports: [9080, 9443]
+
+  - kind: jeus
+    match_any: ["jeus.server.ServerBootstrapper", "jeus.home"]
+    instance_from: '-Djeus\.server\.name=(\S+)'
+    attributes:
+      heap_max: '-Xmx(\S+)'
+    ports: [8088]
+
+  # ── 웹서버 ────────────────────────────────────────────────────────
+  - kind: nginx
+    match_regex: '^nginx:\s+(master|worker)\s+process'
+    instance_from: '-c\s+(\S+)'
+    attributes:
+      role: '^nginx:\s+(\w+)\s+process'
+    ports: [80, 443]
+
+  - kind: apache-httpd
+    match_any: ["/httpd", "/apache2"]
+    exclude_any: ["httpd.conf.bak"]
+    instance_from: '-f\s+(\S+)'
+    ports: [80, 443]
+
+  - kind: webtob
+    match_any: ["wsm -", "htl -", "WEBTOBDIR"]
+    instance_from: '-d\s+(\S+)'
+    ports: [8080]
+
+  # ── 캐시·메시징·DB 프록시 ─────────────────────────────────────────
+  - kind: redis
+    match_any: ["redis-server", "redis-sentinel"]
+    instance_from: 'redis-(?:server|sentinel)\s+(\S+)'
+    ports: [6379, 26379]
+
+  - kind: kafka
+    match_any: ["kafka.Kafka"]
+    instance_from: 'kafka\.Kafka\s+(\S+)'
+    attributes:
+      heap_max: '-Xmx(\S+)'
+    ports: [9092]
+
+  - kind: rabbitmq
+    match_any: ["rabbit@", "rabbitmq_server"]
+    instance_from: '(rabbit@\S+)'
+    ports: [5672, 15672]
+
+  - kind: zookeeper
+    match_any: ["org.apache.zookeeper.server.quorum.QuorumPeerMain"]
+    attributes:
+      heap_max: '-Xmx(\S+)'
+    ports: [2181]
+
+  # ── Tuxedo 계열 TP 모니터 ─────────────────────────────────────────
+  - kind: tmax
+    match_any: ["tmboot", "tmadmin", "TMAXDIR"]
+    instance_from: '-d\s+(\S+)'

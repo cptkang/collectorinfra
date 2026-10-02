@@ -1,0 +1,1584 @@
+"""설정 축 스위프 — 94의 실행 원자 위에서 arm을 돌리고 축별로 비교한다 (plans/93 §4 · §1.5).
+
+**러너를 다시 만들지 않는다.** 서버 기동·주입 에코 검증·시나리오 실행·원시 적재는
+`scripts/scenario/`(plans/94 · D-212)가 이미 한다. 93이 더하는 것은 셋뿐이다.
+
+    1. 축 → arm 전개      (`axes.expand_ofat`)
+    2. arm을 프로파일로 주입 (94 `Catalog.profiles`는 이름→env 딕셔너리다 — arm과 같은 모양)
+    3. 축별 **쌍체 비교**   (같은 시나리오 id 단위로 baseline과 대조 — `compare.py`)
+
+경계(§1.5): 시나리오 카탈로그·실행 원자·판정기는 **94 소유**이고 93은 소비한다.
+R군(복합·오용·실수·착각)은 쓰지 않는다 — 대응 등급은 설정의 함수가 아니라 프롬프트·가드의
+함수라 arm 간 비교의 신호가 되지 못한다.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import statistics
+import sys
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Optional, Sequence
+
+_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from scripts.bench import axes as axes_mod
+from scripts.bench import probe as probe_mod
+
+BASELINE_ARM = "baseline"
+
+#: 건전성 고지·구간 실패의 임계. `RunHealth.warnings()`(고지)와 `stop_reasons()`(캠페인 구간 실패)가
+#: **같은 값을 쓴다** — 둘이 갈리면 화면에는 주의가 떴는데 구간은 완료로 기록되는 일이 생긴다.
+GRAPH_ENTRY_WARN = 0.8      # 그래프 진입률이 이보다 낮으면
+CLARIFY_WARN = 0.3          # 역질문 종료율이 이 이상이면
+INVALID_STOP = 0.05         # 무효 턴 비율이 이를 넘으면 구간 실패(D-219 ③)
+TIMEOUT_STOP = 0.2          # 타임아웃 턴 비율이 이 이상이면 구간 실패(plans/114 M-2 ②)
+
+#: 그래프 등록 조건 플래그 → 그 플래그가 등록하는 노드(plans/114 M-3 · 축 도달성).
+#:
+#: `src/graph.py` `build_graph` 의 `add_node` 조건을 전수 grep 해 뽑았다(2026-09-22). **플래그를
+#: 읽는 코드가 그 노드 안(또는 그 노드가 배선될 때만 도는 곳)뿐인 것만** 싣는다 — 그래야 「그 노드가
+#: START 에서 닿지 않는다 = 플래그 값이 결과를 바꿀 수 없다」가 성립한다.
+#:
+#: - 싣는 것: `cross_system_probe_enabled`(소비처 graph.py 뿐) · `tier3_plan_loop_enabled`(나머지
+#:   소비처 `semantic_router._plan_signal_enabled` 는 라우터가 배선되는 3단에서만 돈다 — 그때는 계획
+#:   노드도 등록된다) · `composite.sequential_fallback_tiers_enabled`(소비처는 러너 노드 안) ·
+#:   `enable_sql_approval`(`approval_gate` · 나머지 소비처는 계획 루프·순차 러너 노드 안)
+#: - 싣지 않는 것: 사다리 3키(단 자체를 바꾼다 — M-0 몫) · `noise_gate.fault_diagnosis_enabled`
+#:   (노드 밖 `orchestration/sufficiency.py` 가 2단 `agent_orchestrator` 에서도 읽는다) ·
+#:   `observability.trace_enabled`(노드 집합이 아니라 래핑만 바꾼다) ·
+#:   `worker_provider_override`(테스트 전용)
+#:
+#: 한계: 노드 **안**에서 읽는 대부분의 노브는 이 방법으로 판정하지 않는다 — 종전대로 잰다.
+GRAPH_REGISTRATION_FLAGS: dict[str, tuple[str, ...]] = {
+    "CROSS_SYSTEM_PROBE_ENABLED": ("entity_locator",),
+    "TIER3_PLAN_LOOP_ENABLED": ("plan", "normalize", "dispatch", "task_run", "join", "replan",
+                                "finalize"),
+    "COMPOSITE_SEQUENTIAL_FALLBACK_TIERS_ENABLED": ("sequential_runner",),
+    "ENABLE_SQL_APPROVAL": ("approval_gate",),
+}
+
+#: **기능 측정 상한** — 벤치가 **전 arm(기준선 포함)에 같은 값**으로 주입한다(plans/118 G-1 ·
+#: 114 G-C·M-4 · 사용자 확정 2026-09-28). 운영 `.env` 는 바꾸지 않는다. 종전에는 서버 `.env` 가
+#: 정한 상한으로 돌아, 캠페인 도중 `.env` 가 60 → 180 으로 바뀌자 한 run 에 두 상한이 섞였다
+#: (run `20260922-162132`). 주입값은 기동 에코로 확인되고(러너 `verify_profile`) 캠페인 상태에도
+#: 남는다(`Campaign.measurement_env` — 값이 바뀌면 캠페인을 잇지 않는다). arm 자신의 축 값이
+#: 이 키면 그 값이 이긴다(`{**MEASUREMENT_ENV, **arm.env}`).
+MEASUREMENT_ENV: dict[str, str] = {
+    "API_QUERY_TIMEOUT": "180",
+    "API_FILE_QUERY_TIMEOUT": "180",
+}
+
+#: 사용자가 실제로 끊기는 운영 상한(초) — 폐쇄망 운영 `.env` `API_QUERY_TIMEOUT=60` 실측
+#: (plans/114 §2.3). 기능은 180초로 재지만 **"사용자는 60초에 끊긴다"는 사실을 판정표에서
+#: 지우지 않으려고** 이 값을 넘긴 턴 수를 arm 마다 함께 싣는다(114 M-4 의 대가).
+USER_FACING_TIMEOUT_SEC = 60.0
+
+#: 처리 상한 의미(D-267 ⑦ · plans/119 T-0 계약) — 서버 `timeline.cap_semantic`. **키가 없으면
+#: 종전 의미 `total`**(계약). 94 리포트 `report.timeline_cap_semantic` 과 같은 규칙이다 — 여기
+#: 문자열로 두는 이유는 `INVALID_VERDICT` 와 같다(원시 로그 판독이 94 하네스 import 에 묶이지 않게).
+CAP_SEMANTIC_TOTAL = "total"
+CAP_SEMANTIC_FIRST_ANSWER = "first_answer"
+
+#: TTFT p90 을 내는 최소 표본 — 94 리포트 `P90_MIN_SAMPLE` 과 같다.
+TTFT_P90_MIN_SAMPLE = 10
+
+
+def run_cap_semantic(result: dict[str, Any], rows: Sequence[dict[str, Any]]) -> str:
+    """run 의 처리 상한 의미 — 러너 메타(첫 관측값) → 행 타임라인 → 종전 의미 순."""
+    recorded = (result.get("meta") or {}).get("cap_semantic")
+    if recorded:
+        return str(recorded)
+    for row in rows:
+        timeline = row.get("timeline")
+        if isinstance(timeline, dict):
+            return str(timeline.get("cap_semantic") or CAP_SEMANTIC_TOTAL)
+    return CAP_SEMANTIC_TOTAL
+
+
+def first_answer_ms_of(row: dict[str, Any]) -> Optional[float]:
+    """첫 답변 시각(ms). 서버 `timeline.first_answer_ms`(상한을 거는 쪽의 시계)가 1순위, 없으면
+    러너 `ttft_ms`. 답변이 스트리밍되지 않은 턴(역질문·오류)은 None 이다."""
+    timeline = row.get("timeline")
+    for value in ((timeline or {}).get("first_answer_ms") if isinstance(timeline, dict) else None,
+                  row.get("ttft_ms")):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+    return None
+
+
+def _ttft_stat(values: list[float]) -> tuple[int, Optional[float], Optional[float]]:
+    """(표본, p50, p90) ms — 표본이 `TTFT_P90_MIN_SAMPLE` 미만이면 p90 을 만들지 않는다."""
+    clean = sorted(values)
+    if not clean:
+        return 0, None, None
+    p90 = (clean[max(0, int(round(0.9 * len(clean))) - 1)]
+           if len(clean) >= TTFT_P90_MIN_SAMPLE else None)
+    return (len(clean), round(statistics.median(clean), 1),
+            round(p90, 1) if p90 is not None else None)
+
+#: 러너 자신의 실패로 측정이 성립하지 않은 턴(94 `assertions.INVALID_VERDICT` · D-218).
+#: 여기서 문자열로 두는 이유는 94 하네스가 없는 환경에서도 원시 로그를 읽을 수 있어야 하기
+#: 때문이다(`read_observations` 는 `scenario_harness()` 를 부르지 않는다).
+INVALID_VERDICT = "invalid"
+
+
+def arm_of(row: dict[str, Any]) -> str:
+    """행이 속한 arm. **원시 로그에서 arm 을 읽는 곳은 전부 이 함수를 쓴다.**
+
+    36 세션과 확정한 `raw.jsonl` 계약(2026-09-21): 러너가 arm 덧씌우기를 하면 `arm`(덧씌운 arm id —
+    `baseline`·`S2-…`)과 `base_profile`(시나리오 자신의 프로파일 — `optin_alarm` 등)을 따로 싣고,
+    `profile` 에는 조합 이름(`optin_alarm+baseline` — 파일명이 되므로 ASCII `+`)을 둔다. 덧씌우기가
+    없으면 `arm=null`·`profile=base_profile` 이다. 그 이전 행(run 20260914 등)에는 `arm` 칸이 없고
+    `profile` 이 곧 arm 이다.
+    """
+    return str(row.get("arm") or row.get("profile"))
+
+
+def sql_observed(row: dict[str, Any]) -> bool:
+    """이 턴에 SQL 이 **관측**됐는가.
+
+    `executed_sql`(done 페이로드 1건)만 보면 안 된다 — 오케스트레이션·멀티 DB 경로는 done 에
+    SQL 이 실리지 않아 **구조적으로 항상 None** 이다(run 20260914-185540 의 6567턴 전건 실측).
+    94 는 그래서 서버 감사 로그 `query_executed` 에서 모은 `executed_sqls` 를 따로 적재하는데
+    (`runner.py:1615` · D-217), 93 이 그 칸을 읽지 않아 **SQL 생성률 신호가 영구 0** 이었다.
+    """
+    if str(row.get("executed_sql") or "").strip():
+        return True
+    entries = row.get("executed_sqls")
+    if isinstance(entries, list):
+        for entry in entries:
+            text = entry.get("sql") if isinstance(entry, dict) else entry
+            if str(text or "").strip():
+                return True
+    return False
+
+
+class SweepUnavailable(RuntimeError):
+    """94 하네스가 없어 스위프를 돌릴 수 없다."""
+
+
+@dataclass(frozen=True)
+class ArmSpec:
+    """arm 1개 = 프로파일 1개 = 서버 기동 1회."""
+
+    arm_id: str
+    axis: Optional[str]
+    level: Optional[str]
+    env: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Observation:
+    """시나리오 1건 실행 1회의 관측치 — 축 비교에 필요한 것만 추린다."""
+
+    arm_id: str
+    scenario_id: str
+    repeat: int
+    passed: bool
+    wall_ms: Optional[float]
+    llm_calls: Optional[int]
+    tokens: Optional[int]
+    retries: Optional[int]
+    node_count: Optional[int] = None  # 실행 노드 수 — 비용 대리 지표(LLM 호출 수는 못 잰다)
+    manual: bool = False        # 판정 보류 — 정확도 비교에서 제외한다
+    #: 오류·크래시·행·타임아웃 없이 끝났는가 — 기능 불합격도 완주다(plans/120 V-2).
+    completed: bool = True
+    sql_generated: bool = False # SQL 이 실제로 관측됐는가(`executed_sql` 또는 `executed_sqls`)
+    #: 측정이 성립하지 않은 턴이 섞였다(러너 인증 실패 등 · D-218 `invalid`).
+    #: **기능 불합격이 아니다** — 정확도·완주 비교의 분모에서 뺀다.
+    invalid: bool = False
+    #: 그래프에 진입했는가(`node_path` 가 비지 않았는가). pre-gate 역질문·422 는 노드를
+    #: 한 개도 밟지 않아 **설정 축이 작용할 여지가 없다** — 축 비교의 유효 표본이 아니다.
+    entered_graph: bool = False
+    #: 단언이 평가되지 않은 사유(`timeout` · `clarify_blocked` · D-241). **기능 합격률 분모에서만**
+    #: 뺀다 — 완주율·SQL 생성·지연 신호에는 남는다(타임아웃은 성능 축의 사건이다).
+    unevaluated: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class Credentials:
+    """스위프가 서버에 붙는 방법.
+
+    인증이 켜진 서버는 **전용 벤치 계정으로 로그인해야만** 잰다(plans/94 G-3 · 사용자 확정
+    2026-09-15). 인증을 끄고 재면 인증 미들웨어와 사용자별 DB 범위가 빠져 운영과 다른 경로를
+    잰다. **아무것도 하지 않으면 전건 401 이다**(2026-09-14 실측: 1984건 전량).
+    """
+
+    user_id: Optional[str] = None
+    user_password: Optional[str] = None
+    admin_user: Optional[str] = None
+    admin_password: Optional[str] = None
+
+    @property
+    def can_login(self) -> bool:
+        return bool(self.user_id and self.user_password)
+
+
+def resolve_credentials(
+    user_id: Optional[str] = None,
+    user_password: Optional[str] = None,
+    admin_user: Optional[str] = None,
+    admin_password: Optional[str] = None,
+) -> Credentials:
+    """크레덴셜을 모은다. 개발자가 아무것도 타이핑하지 않아도 되는 것이 기본이다(§0.4).
+
+    운영자 크레덴셜은 `.env`/`.encenv` 에 이미 있으므로 설정에서 읽는다. 사용자
+    크레덴셜은 설정에 없다(인증 DB 소관) — 인증이 켜진 서버라면 `--user`/`--password`
+    또는 OS 환경변수 `BENCH_USER_ID`/`BENCH_USER_PASSWORD` 로 줘야 하고, 없으면
+    스위프는 서버를 띄우기 전에 멈춘다(G-3).
+    """
+    _, runner_mod = scenario_harness()
+    admin_user, admin_password = runner_mod.resolve_admin_credentials(
+        admin_user, admin_password
+    )
+    return Credentials(
+        user_id=user_id,
+        user_password=user_password,
+        admin_user=admin_user,
+        admin_password=admin_password,
+    )
+
+
+def server_auth_enabled() -> Optional[bool]:
+    """프로파일 서버가 인증을 켠 채로 뜨는가. 읽지 못하면 None.
+
+    프로파일 서버는 이 프로세스의 OS 환경변수를 물려받고 같은 `.env`·`.encenv` 를 읽으며,
+    arm 은 `AUTH_*` 를 주입하지 않는다(축 선정 결과 0개 · 격리 설정은 `ALARM_ENABLED` 뿐) —
+    그래서 여기서 읽은 값이 곧 서버의 값이다. **서버를 띄우기 전에** 알아야 계정 없는 런을
+    62 arm 기동 전에 멈출 수 있다.
+    """
+    try:
+        from src.config import load_config
+
+        return bool(load_config().auth.enabled)
+    except Exception:
+        return None
+
+
+def scenario_harness():
+    """94 하네스를 늦게 임포트한다.
+
+    93은 94 없이도 **트랙 T(설정 검증)가 완결**되므로, 임포트 실패를 모듈 로드 시점의
+    치명상으로 만들지 않는다. 스위프를 실제로 부를 때만 필요하다.
+    """
+    try:
+        from scripts.scenario import catalog as sc_catalog
+        from scripts.scenario import runner as sc_runner
+    except Exception as exc:  # pragma: no cover - 환경 의존
+        raise SweepUnavailable(
+            "성능 스위프는 `scripts/scenario/`(plans/94)의 실행 원자 위에 섭니다. "
+            f"임포트 실패: {type(exc).__name__}: {exc}"
+        ) from exc
+    return sc_catalog, sc_runner
+
+
+def build_arms(
+    selected_axes: Optional[Sequence[axes_mod.AxisCandidate]] = None,
+    *,
+    tier: str = "primary",
+    limit: Optional[int] = None,
+) -> list[ArmSpec]:
+    """축에서 arm을 전개한다. 기본은 1차 축(동작 모드)만."""
+    if selected_axes is None:
+        found, _ = axes_mod.select_axes()
+        selected_axes = [a for a in found if tier == "all" or a.tier == tier]
+    if limit:
+        selected_axes = list(selected_axes)[:limit]
+    return [
+        ArmSpec(arm_id=raw["arm_id"], axis=raw["axis"], level=raw["level"], env=dict(raw["env"]))
+        for raw in axes_mod.expand_ofat(list(selected_axes), baseline_label=BASELINE_ARM)
+    ]
+
+
+#: 로컬 도커 샌드박스의 db_id. 이것 말고 다른 id가 활성이면 실 관측 DB를 보고 있다는 뜻이다.
+SANDBOX_DB_IDS = frozenset({"polestar"})
+
+
+def resolve_env(explicit: Optional[str] = None) -> tuple[str, str]:
+    """워크로드 환경을 정한다. (env, 사유)를 돌려준다.
+
+    **기본값이 틀리면 벤치마크가 통째로 빗나간다.** 94 카탈로그의 정상군은 `env` 로
+    갈려 있다 — `closed` 에 그룹 A~K(실 질의 워크로드)가, `sandbox` 에 그룹 L(유사어·용어)이
+    들어 있다. 종전 기본값이 `sandbox` 여서 실 스위프가 **유사어 시나리오만 재고 실 질의
+    워크로드를 한 건도 건드리지 않았다**(실측 2026-09-14).
+
+    **건수는 여기 적지 않는다.** 카탈로그는 바뀐다(`closed` 2026-09-14 107건 → 2026-09-21
+    103건 — 그룹별 D 6→8 · F 8→9 · K 10→3). 산문에 박은 수치는 반드시 낡으므로 정본은
+    `workload_summary()`·`judgeable_count()` 의 **동적 계산**이고 산문은 파생이다 —
+    같은 드리프트가 `plans/93` v9→v10에서 이미 한 번 정정됐다.
+
+    자동 판정은 활성 DB로 한다 — 로컬 샌드박스(`polestar`)만 붙어 있으면 `sandbox`,
+    폴스타 실 DB가 하나라도 활성이면 `closed`. 근거가 없으면 추측하지 않고 사유를 적는다.
+    """
+    if explicit and explicit != "auto":
+        return explicit, f"--env {explicit} 로 지정됨"
+    try:
+        from src.config import load_config
+
+        active = [d for d in load_config().multi_db.get_active_db_ids() if d]
+    except Exception as exc:
+        return "closed", f"활성 DB를 읽지 못했다({type(exc).__name__}) — 폐쇄망 전제로 closed"
+    if not active:
+        return "closed", "ACTIVE_DB_IDS 미설정 — 폐쇄망 전제로 closed(§1.4)"
+    real = [d for d in active if d not in SANDBOX_DB_IDS]
+    if real:
+        return "closed", f"실 관측 DB 활성({', '.join(real)}) — closed"
+    return "sandbox", f"로컬 샌드박스만 활성({', '.join(active)}) — sandbox"
+
+
+def load_normal_catalog(*, env: str = "closed"):
+    """94 카탈로그에서 **정상 군만** 고른 사본을 만든다.
+
+    R군을 빼는 것이 계약이다(§1.5) — 그것은 94가 답하는 질문이지 93이 답하는 질문이 아니다.
+    """
+    sc_catalog, _ = scenario_harness()
+    catalog = sc_catalog.load_catalog()
+    # 러너 동작 시나리오(D-217)는 워크로드가 아니다 - 부하 묶음(K-01·K-06 등)은 arm 마다 수십 턴을
+    # 다시 돌리고, 시드 재적재(SYN-F-05)·고의 오매핑 유사어(K-10)는 공유 Redis 에 쓴다.
+    normal = [
+        s for s in catalog.select(kinds=["normal"], env=env)
+        if not (s.is_bundle or s.action or s.setup)
+    ]
+    return sc_catalog.Catalog(
+        groups=dict(catalog.groups),
+        scenarios=list(normal),
+        profiles={},   # arm으로 채운다
+    )
+
+
+def judgeable_count(catalog) -> tuple[int, int]:
+    """(기계 단언이 있는 시나리오 수, 실행 대상 수).
+
+    `manual_review` 뿐인 시나리오는 아무리 돌려도 **정확도 판정이 나오지 않는다** -
+    판정기가 보류로 남기고 93이 정확도 비교에서 제외하기 때문이다. 이 비율이 낮으면
+    스위프는 완주율·지연만 재는 것이고, 그 사실이 실행 전에 보여야 한다.
+    """
+    # 러너가 건너뛰는 것은 실행 대상이 아니다 — 프롬프트 미작성과 teardown 미지원(상태 오염).
+    # 종전에는 앞의 것만 빼서 A-05·A-10(캐시 갱신·유사어 등록)을 실행 대상으로 셌다
+    # (2026-09-14 모의 스위프: 두 건은 매 arm 에서 teardown 사유로 건너뛰었다).
+    # 판정은 러너의 `_teardown` 을 그대로 쓴다 — 여기서 규칙을 따로 두면 한쪽만 낡는다.
+    _, sc_runner = scenario_harness()
+    runnable = [s for s in catalog.scenarios
+                if s.prompt_authored and not sc_runner._teardown(s)]
+    judged = sum(
+        1 for s in runnable
+        if any(set(t.expect) - {"manual_review"} for t in s.turns)
+    )
+    return judged, len(runnable)
+
+
+def planned_turns_per_arm(catalog) -> int:
+    """arm 1개가 돌릴 **턴 수** — 소요 시간 추정의 입력.
+
+    시나리오 수가 아니라 턴 수를 센다. 멀티턴 시나리오가 있어 둘이 다르다
+    (2026-09-21: 103건 · 129턴 — 모의 스위프 실측 1,161턴 ÷ 9 arm = 129 와 일치).
+    실행 대상 판정은 `judgeable_count` 와 같은 러너 규칙이다(`prompt_authored` · teardown 지원).
+    """
+    _, sc_runner = scenario_harness()
+    return sum(len(s.turns) for s in catalog.scenarios
+               if s.prompt_authored and not sc_runner._teardown(s))
+
+
+def axis_categories(tier: str = "primary") -> dict[str, str]:
+    """축 id(env 키) → **설정 카테고리**(`KnobSpec.group_key`). 구간 분할의 기준이다."""
+    found, _ = axes_mod.select_axes()
+    return {a.env_key: a.group_key for a in found if tier == "all" or a.tier == tier}
+
+
+def excluded_axes(tier: str = "primary") -> dict[str, str]:
+    """축 선별에서 **소비처 없음**(F3)으로 빠진 축 → 사유(plans/118 B-3 ③).
+
+    arm 이 전개되지 않으므로 `build_arms` 에는 없다. 캠페인 계획 표·합산 판정표가 이 목록으로
+    「미측정」 행을 싣는다 — 축에서 조용히 사라지지 않게.
+    """
+    return axes_mod.consumer_exclusions(tier)
+
+
+def workload_summary(catalog) -> str:
+    """돌릴 워크로드를 한 줄로 적는다. **무엇을 재는지 보이지 않으면 빗나가도 모른다.**"""
+    import collections
+
+    groups = collections.Counter(s.group for s in catalog.scenarios)
+    names = ", ".join(
+        f"{key}({count})" for key, count in sorted(groups.items())
+    ) or "없음"
+    judged, runnable = judgeable_count(catalog)
+    pct = (judged / runnable * 100.0) if runnable else 0.0
+    skipped = len(catalog.scenarios) - runnable
+    tail = (f" · {skipped}건은 러너가 건너뛴다(프롬프트 미작성·teardown 미지원)"
+            if skipped else "")
+    return (f"시나리오 {len(catalog.scenarios)}건 — 그룹 {names}{tail}\n"
+            f"            정확도 판정 가능 {judged}/{runnable}건({pct:.0f}%) "
+            f"— 나머지는 완주율·지연만 잰다")
+
+
+def fanout_scenarios(catalog, arms: Sequence[ArmSpec]):
+    """**같은 시나리오를 모든 arm에 복제**한다 — 쌍체 비교의 전제다.
+
+    94는 시나리오가 자기 프로파일을 지정한다(`Scenario.profile`, 기본 `baseline`).
+    그 설계는 94의 질문(*"이 기능이 이 설정에서 동작하나"*)에 맞지만, 93의 질문
+    (*"같은 질의가 설정 A와 B에서 어떻게 다른가"*)에는 맞지 않는다 — 그대로 두면
+    baseline arm만 돌고 나머지는 대상 시나리오가 0건이 된다(2026-09-11 실측).
+
+    그래서 시나리오를 arm 수만큼 복제하며 `profile`만 갈아끼운다. 시나리오 id는 유지해야
+    쌍이 맺어지므로 **id는 건드리지 않는다**.
+    """
+    import dataclasses
+
+    expanded = []
+    for arm in arms:
+        for scenario in catalog.scenarios:
+            expanded.append(dataclasses.replace(scenario, profile=arm.arm_id))
+    return expanded
+
+
+# ── arm 실효 설정 스냅샷 (plans/93 §4.5) ────────────────────────────
+#
+# §4.5는 arm 마다 *"실효 설정 전체 스냅샷 — 우리가 주입했다고 믿는 값이 아니라 **자식이
+# 실제로 읽은 값**"* 을 남기라고 정해 두었는데, `run.json` 의 arm 레코드는
+# `echo_ok`·`echo_mismatch`(불일치만)까지만 담는다(실측 2026-09-21: 키 9개).
+# 그래서 *"이 arm 의 주입값이 기준선 실효값과 같은가"* — 즉 **대조군인가** — 를 사후에
+# 판정할 수 없었다. 여기서 93 자신이 그 스냅샷을 만든다.
+
+
+@dataclass(frozen=True)
+class ArmConfig:
+    """arm 1개가 **실제로 읽게 될** 설정. 서버를 띄우기 전에 자식 프로세스로 확인한다."""
+
+    arm_id: str
+    axis: Optional[str]
+    level: Optional[str]
+    injected: dict[str, str]
+    effective: dict[str, Any] = field(default_factory=dict)
+    ok: bool = True
+    error: Optional[str] = None
+    #: 이 설정으로 빌드한 그래프에서 START 로부터 닿는 노드(plans/114 M-3). 뜨지 않았으면 None.
+    reachable: Optional[tuple[str, ...]] = None
+    #: 그래프를 뜨려다 실패한 사유(빌드 실패·네트워크 시도). 있으면 도달성을 판정하지 않는다.
+    graph_error: Optional[str] = None
+
+
+#: 단 축 판정을 읽을 때 반드시 함께 읽어야 하는 주의(D-250 주의 ① · `plans/110` 가이드 ③).
+#: 3단 기능 동등성이 미완이라(`plans/103` P5) 3단 레벨의 **기능** 불합격이 결함이 아니라
+#: "아직 옮겨지지 않은 기능"일 수 있다. 판정문·판정표·합산 리포트가 **같은 문장**을 쓴다.
+TIER_AXIS_CAVEAT = (
+    "사다리 단 축 구간이다 — 레벨마다 단이 다른 것이 측정 대상이다. **3단 기능 동등성은 "
+    "미완이다(`plans/103` P5)** — 3단 레벨의 기능 불합격은 결함이 아니라 아직 옮겨지지 않은 "
+    "기능일 수 있으니 103 잔여와 대조해 읽을 것")
+
+#: 묶음 축의 **효과 귀속** 주의(벤치 소유 검토 ⑤). 레벨 하나가 `ENABLE_*` 3키를 함께 정하므로
+#: 델타를 어느 한 키의 효과로 읽으면 안 된다 — 키를 따로 바꾸면 그 레벨이 아니다.
+TIER_AXIS_ATTRIBUTION = (
+    "이 판정은 **플래그 3종 묶음**(`" + "`·`".join(axes_mod.LADDER_ENV_KEYS) + "`)의 효과이지 "
+    "개별 키의 효과가 아니다 — 레벨 하나가 세 키를 함께 정한다. 한 키만 바꾼 값은 이 측정의 "
+    "어느 레벨도 아니다")
+
+
+def tier_context(
+    arms: Sequence[ArmSpec], snapshot: Optional[ConfigSnapshot],
+) -> tuple[bool, dict[str, str]]:
+    """이 실행의 `(단 축 구간인가, {arm: 기대 단})` — **스냅샷에서만** 읽는다(plans/114 M-0).
+
+    사람에게 기대 단을 묻지 않는다(D-250 ③). 알 수 있는 경로는 둘뿐이고 둘 다 실측이다.
+
+    - **단 축 구간**: arm 하나하나가 자기 레벨의 단을 낸다 — 그 arm 의 그래프 도달 노드가 답이다.
+    - **승자 주입 뒤 구간**: 기준선에 사다리 3키가 주입돼 있고, 다른 축은 단을 바꾸지 않는다 —
+      기준선의 단이 곧 전 arm 의 기대 단이다.
+
+    스냅샷이 없거나 그래프를 못 떴으면 **빈 기대**다. 추정하지 않는다 — 기대가 비면
+    `tier_problems` 는 종전 규칙(단 갈림 = 사고)만 적용한다.
+    """
+    tier_axis = any(a.axis == axes_mod.LADDER_AXIS for a in arms)
+    if snapshot is None or snapshot.unavailable:
+        return tier_axis, {}
+    if tier_axis:
+        wanted = [a.arm_id for a in arms if a.axis == axes_mod.LADDER_AXIS]
+        base = snapshot.tier_of(BASELINE_ARM)
+        expected = snapshot.tier_expectations(wanted)
+        if base:
+            expected[BASELINE_ARM] = base
+        return True, expected
+    injected = snapshot.baseline.injected or {}
+    if not any(key in injected for key in axes_mod.LADDER_ENV_KEYS):
+        return False, {}
+    base = snapshot.tier_of(BASELINE_ARM)
+    if not base:
+        return False, {}
+    # 다른 축은 사다리 키를 건드리지 않는다(구조 축이 그 키를 독점한다 — `axes.select_axes`).
+    return False, {a.arm_id: base for a in arms}
+
+
+def ladder_tier_of(reachable: Optional[Sequence[str]]) -> Optional[str]:
+    """도달 노드로 사다리 단 이름을 읽는다(`src/graph.py` 배선 — 단마다 첫 분기 노드가 다르다).
+
+    노드를 못 떴으면(`None`) **추정하지 않는다** — 단을 모른다는 사실 자체가 판정 입력이다.
+    """
+    if reachable is None:
+        return None
+    nodes = set(reachable)
+    if "deep_agent" in nodes:
+        return "deep_agent"
+    if "intent_planner" in nodes:
+        return "intent_orchestration"
+    if "semantic_router" in nodes:
+        return "semantic_router"
+    return "legacy"
+
+
+@dataclass(frozen=True)
+class ConfigSnapshot:
+    """런 1회의 설정 provenance. `config_snapshot.json` 으로 산출물에 남긴다."""
+
+    baseline: ArmConfig
+    arms: dict[str, ArmConfig] = field(default_factory=dict)
+    nondeterministic: frozenset[str] = frozenset()
+    #: 스냅샷을 못 찍었을 때의 사유. 있으면 대조군 판정은 **하지 않는다**(추정 금지).
+    unavailable: Optional[str] = None
+    #: 단 전용 축 → (그 단, 소비 모듈)(plans/118 B-3 ② · `axes.tier_exclusive_axes`).
+    #: `unreachable_arms` 가 기준선 단과 대조한다. 비어 있으면 그 판정을 하지 않는다.
+    tier_only: Mapping[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
+
+    def arm_config(self, arm_id: str) -> Optional[ArmConfig]:
+        return self.baseline if arm_id == BASELINE_ARM else self.arms.get(arm_id)
+
+    def tier_of(self, arm_id: str) -> Optional[str]:
+        """이 arm 이 **실제로 확정할 사다리 단**. 그래프를 못 떴으면 None(추정 금지).
+
+        서버를 띄우기 전에 자식 프로세스로 뜬 값이다(`probe.graph_reach`) — 러너가 사후에
+        `run.json.profiles[].tier` 로 읽는 값과 같은 것을 **사전에** 안다. 그래서 캠페인이
+        *"이 arm 은 어느 단이어야 하는가"* 를 사람에게 묻지 않고 판정에 쓸 수 있다(D-250 ③).
+        """
+        arm = self.arm_config(arm_id)
+        return ladder_tier_of(arm.reachable) if arm is not None else None
+
+    def tier_expectations(self, arm_ids: Sequence[str]) -> dict[str, str]:
+        """`{arm_id: 기대 단}` — 못 뜬 arm 은 **싣지 않는다**(모르는 것을 기대로 만들지 않는다)."""
+        out: dict[str, str] = {}
+        for arm_id in arm_ids:
+            tier = self.tier_of(arm_id)
+            if tier:
+                out[arm_id] = tier
+        return out
+
+    def fingerprint(self, arm_id: str) -> Optional[str]:
+        """비결정 필드를 뺀 실효 설정 지문. 스냅샷이 없으면 None."""
+        arm = self.baseline if arm_id == BASELINE_ARM else self.arms.get(arm_id)
+        if arm is None or not arm.ok:
+            return None
+        return probe_mod.config_fingerprint(
+            probe_mod.EchoResult(ok=True, config=arm.effective),
+            exclude_keys=self.nondeterministic)
+
+    def subset(self, arm_ids: Sequence[str]) -> ConfigSnapshot:
+        """이 구간이 쓰는 arm 만 남긴 스냅샷 — 캠페인이 계획 때 뜬 것을 구간 실행에 넘길 때 쓴다
+        (같은 호출 안에서 자식 에코를 두 번 뜨지 않는다)."""
+        wanted = set(arm_ids)
+        return ConfigSnapshot(baseline=self.baseline,
+                              arms={k: v for k, v in self.arms.items() if k in wanted},
+                              nondeterministic=self.nondeterministic, unavailable=self.unavailable,
+                              tier_only=self.tier_only)
+
+    def baseline_env_values(self) -> dict[str, str]:
+        """기준선 실효값을 **env 키로** 돌려준다 — `recommended.env.diff` 의 「현행값」.
+
+        에코는 설정 경로(`composite.availability_precheck_enabled`)를 키로 쓰므로 카탈로그의
+        `group_key`·`field_name` 으로 되짚는다. 접두 문자열을 깎으면 빗나가는 경우가 실재해
+        (`API_PORT` → `server.port`) **`validate._dotted_of` 와 같은 규칙**을 쓴다.
+        """
+        if not self.baseline.ok:
+            return {}
+        try:
+            from scripts.bench import catalog as cat_mod
+            knobs = cat_mod.load_knobs()
+        except Exception:
+            return {}
+        out: dict[str, str] = {}
+        for knob in knobs:
+            dotted = (knob.field_name if knob.group_key == "general"
+                      else f"{knob.group_key}.{knob.field_name}")
+            if dotted in self.baseline.effective:
+                out[knob.env_key] = str(self.baseline.effective[dotted])
+        return out
+
+    def control_arms(self) -> list[str]:
+        """**기준선과 실효 설정이 글자 그대로 같은 arm** — 주입이 아무것도 바꾸지 않았다.
+
+        그 arm 이 내는 차이는 정의상 축 효과가 아니라 노이즈다. 판정표가 이것을 축 효과로
+        렌더링하면 사람이 없는 효과를 읽는다(run 20260914-185540 에서 3건 실측).
+        """
+        base = self.fingerprint(BASELINE_ARM)
+        if base is None:
+            return []
+        return sorted(arm_id for arm_id in self.arms
+                      if self.fingerprint(arm_id) == base)
+
+    def unreachable_arms(self) -> dict[str, str]:
+        """**설정은 다르지만 축이 워크로드에 닿을 수 없는 arm** → 사유(plans/114 M-3).
+
+        축이 그래프 등록 조건 플래그(`GRAPH_REGISTRATION_FLAGS`)이고, 기준선과 arm 의 도달 노드
+        집합이 같으며, 그 플래그가 등록하는 노드가 어느 쪽에서도 START 로부터 닿지 않는다. 그러면
+        플래그 값이 달라도 실효는 A/A 다 — run 20260922-112010 의 `CROSS_SYSTEM_PROBE_ENABLED`
+        true arm 이 2단 기준선 위에서 4.4시간 중 절반을 그렇게 썼다(`entity_locator` 는 3단 전용).
+        도달성을 못 뜬 쪽(`reachable is None`)이 있으면 판정하지 않는다(추정 금지).
+
+        **단 전용 축**(plans/118 B-3 ②)도 같은 사유 경로로 낸다 — 소비처가 전부 한 단의 전용
+        모듈(`axes.TIER_EXCLUSIVE_MODULES`)인 축은, 기준선과 arm 이 둘 다 그 단이 아니면 값이
+        결과를 바꿀 수 없다. 노드 **안**에서 읽는 플래그라 위 등록 판정으로는 잡히지 않는다
+        (`COMPOSITE_PRIOR_SCOPE_LATEST_ONLY` — 1단 `deepagents_tools.py` 만 읽는다).
+        """
+        base = self.baseline.reachable
+        if base is None or self.unavailable:
+            return {}
+        out: dict[str, str] = {}
+        base_tier = ladder_tier_of(base)
+        for arm_id, arm in sorted(self.arms.items()):
+            only = self.tier_only.get(arm.axis or "")
+            if only and arm.reachable is not None:
+                tier, modules = only
+                arm_tier = ladder_tier_of(arm.reachable)
+                if base_tier != tier and arm_tier != tier:
+                    out[arm_id] = (
+                        f"도달 불가 — `{arm.axis}` 의 소비처가 `{tier}` 단 전용 모듈"
+                        f"({', '.join(modules)})뿐인데 이 단은 `{base_tier}` 다"
+                        "(plans/118 B-3). 플래그 값이 결과를 바꿀 수 없다")
+                continue
+            gated = GRAPH_REGISTRATION_FLAGS.get(arm.axis or "")
+            if not gated or arm.reachable is None or set(arm.reachable) != set(base):
+                continue
+            if set(gated) & set(base):
+                continue
+            out[arm_id] = (
+                f"도달 불가 — `{arm.axis}` 가 등록하는 노드({', '.join(gated)})가 이 단"
+                f"(`{ladder_tier_of(base)}`)의 그래프에서 START 로부터 닿지 않는다"
+                "(기준선·arm 도달 노드 동일). 플래그 값이 결과를 바꿀 수 없다")
+        return out
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "baseline": {"effective": self.baseline.effective, "ok": self.baseline.ok,
+                         "error": self.baseline.error,
+                         "reachable": list(self.baseline.reachable)
+                         if self.baseline.reachable is not None else None,
+                         "graph_error": self.baseline.graph_error},
+            "arms": {
+                arm_id: {"axis": arm.axis, "level": arm.level, "injected": arm.injected,
+                         "ok": arm.ok, "error": arm.error, "effective": arm.effective,
+                         "reachable": list(arm.reachable) if arm.reachable is not None else None,
+                         "graph_error": arm.graph_error}
+                for arm_id, arm in sorted(self.arms.items())
+            },
+            "nondeterministic": sorted(self.nondeterministic),
+            "control_arms": self.control_arms(),
+            "unreachable_arms": self.unreachable_arms(),
+            "unavailable": self.unavailable,
+            "tier_only": {axis: {"tier": tier, "modules": list(modules)}
+                          for axis, (tier, modules) in sorted(self.tier_only.items())},
+        }
+
+
+def isolation_env() -> dict[str, str]:
+    """러너가 모든 프로파일에 동일 주입하는 격리 설정(`runner.ISOLATION_ENV`).
+
+    스냅샷을 이것 없이 찍으면 기준선 실효값이 실제 서버와 달라진다 — 94 정본을 읽어 쓴다.
+    """
+    try:
+        _, sc_runner = scenario_harness()
+        return dict(getattr(sc_runner, "ISOLATION_ENV", {}) or {})
+    except Exception:
+        return {}
+
+
+def capture_config_snapshot(
+    arms: Sequence[ArmSpec],
+    *,
+    base_env: Optional[dict[str, str]] = None,
+    echo: Any = None,
+    detect_nd: Any = None,
+    graph: Any = None,
+    tier_only: Optional[Mapping[str, tuple[str, tuple[str, ...]]]] = None,
+) -> ConfigSnapshot:
+    """arm 마다 자식 파이썬을 띄워 **자식이 실제로 읽는 설정**을 모은다.
+
+    `tier_only` 는 단 전용 축 표다(plans/118 B-3 ②). 주지 않으면 `axes.tier_exclusive_axes()`
+    (저장소 AST 판정)를 쓴다. 그 축의 arm 과 기준선도 그래프를 뜬다 — 단을 알아야 판정한다.
+
+    서버를 띄우기 **전에** 돌린다(arm 당 1~2초 · 62 arm 이면 약 2분). 실패는 예외가 아니라
+    데이터다 — 못 찍은 arm 은 `ok=False` 로 남기고, 기준선을 못 찍으면 전체를
+    `unavailable` 로 표시해 **대조군 판정을 아예 하지 않는다**(추정 금지).
+
+    축이 그래프 등록 조건 플래그(`GRAPH_REGISTRATION_FLAGS`)인 arm 과 기준선은 **그래프 도달
+    노드**도 뜬다(`probe.graph_reach` · 자식 1회 약 2초 · LLM·DB·네트워크 0 — plans/114 M-3).
+    **사다리 단 축 arm 과 단이 주입된 기준선**도 같이 뜬다(plans/114 M-0) — 그 노드 집합이 곧
+    그 arm 의 단이라, 캠페인이 기대 단을 사람에게 묻지 않고 알 수 있다(D-250 ③).
+    해당하는 arm 이 하나도 없으면 그래프는 뜨지 않는다.
+
+    **기준선도 자기 주입값으로 에코한다.** 종전에는 기준선을 언제나 빈 주입으로 떴는데,
+    캠페인이 이긴 단을 남은 구간 기준선에 주입하면(M-0) 그 기준선의 실효값이 `.env` 값과
+    달라진다 — 빈 주입으로 뜨면 대조군 지문 판정이 통째로 빗나간다.
+    """
+    if tier_only is None:
+        try:
+            tier_only = axes_mod.tier_exclusive_axes()
+        except Exception:   # 판정 원천을 못 읽으면 그 판정만 하지 않는다(추정 금지)
+            tier_only = {}
+    run_echo = echo or probe_mod.echo_config
+    run_graph = graph or probe_mod.graph_reach
+    detect = detect_nd or probe_mod.detect_nondeterministic_keys
+    # 측정 상한 주입(plans/118 G-1)도 실행과 같게 얹는다 — 빼면 스냅샷 기준선 실효값이
+    # 실제 기동과 달라진다. arm 의 축 값은 `_echo(arm.env)` 가 덮는다.
+    shared = {**(base_env or {}), **isolation_env(), **MEASUREMENT_ENV}
+
+    def _echo(overrides: Optional[dict[str, str]]) -> tuple[dict[str, Any], bool, Optional[str]]:
+        """에코 1회. **실패도 예외도 데이터로 돌려준다** — 스냅샷은 provenance이지
+        측정 자체가 아니므로, 여기서 죽으면 런이 통째로 날아간다(probe.py 와 같은 원칙)."""
+        try:
+            res = run_echo(overrides, base_env=shared) if overrides else run_echo(base_env=shared)
+            if not getattr(res, "ok", False):
+                return {}, False, f"{getattr(res, 'error_type', '?')}: {getattr(res, 'error', '')}"
+            return dict(getattr(res, "config", {}) or {}), True, None
+        except Exception as exc:
+            return {}, False, f"{type(exc).__name__}: {str(exc)[:300]}"
+
+    base_arm = next((a for a in arms if a.arm_id == BASELINE_ARM), None)
+    base_injected = dict(base_arm.env) if base_arm is not None else {}
+    effective, ok, error = _echo(base_injected or None)
+    baseline = ArmConfig(arm_id=BASELINE_ARM, axis=None, level=None, injected=base_injected,
+                         effective=effective, ok=ok, error=error)
+    if not ok:
+        return ConfigSnapshot(baseline=baseline, unavailable=(
+            f"기준선 설정 에코 실패 ({error}) — 대조군 판정을 하지 않는다"), tier_only=tier_only)
+
+    def _graph(
+        overrides: Optional[dict[str, str]],
+    ) -> tuple[Optional[tuple[str, ...]], Optional[str]]:
+        """도달 노드 1회. 에코와 같이 **실패를 데이터로** 돌려준다."""
+        try:
+            res = run_graph(overrides, base_env=shared)
+            if not getattr(res, "ok", False):
+                return None, str(getattr(res, "error", "") or "그래프 도달성 확인 실패")
+            return tuple(getattr(res, "reachable", ()) or ()), None
+        except Exception as exc:
+            return None, f"{type(exc).__name__}: {str(exc)[:300]}"
+
+    def _needs_graph(axis: Optional[str]) -> bool:
+        """그래프를 떠야 하는 축인가 — 등록 조건 플래그(M-3) · 사다리 단 축(M-0) ·
+        단 전용 축(118 B-3)이다."""
+        return (axis in GRAPH_REGISTRATION_FLAGS or axis == axes_mod.LADDER_AXIS
+                or axis in (tier_only or {}))
+
+    captured: dict[str, ArmConfig] = {}
+    for arm in arms:
+        if arm.arm_id == BASELINE_ARM:
+            continue
+        arm_effective, arm_ok, arm_error = _echo(dict(arm.env))
+        reachable, graph_error = (_graph(dict(arm.env))
+                                  if _needs_graph(arm.axis) else (None, None))
+        captured[arm.arm_id] = ArmConfig(
+            arm_id=arm.arm_id, axis=arm.axis, level=arm.level, injected=dict(arm.env),
+            effective=arm_effective, ok=arm_ok, error=arm_error,
+            reachable=reachable, graph_error=graph_error)
+    # 기준선 그래프는 ①비교 대상 arm 이 있거나 ②기준선 자신에 사다리 키가 주입됐을 때 뜬다.
+    # ②가 승자 주입 뒤 구간이다 — 그 구간의 기대 단은 기준선의 단이다(M-2 ① (b)).
+    if (any(_needs_graph(arm.axis) for arm in captured.values())
+            or any(key in base_injected for key in axes_mod.LADDER_ENV_KEYS)):
+        reachable, graph_error = _graph(base_injected or None)
+        baseline = replace(baseline, reachable=reachable, graph_error=graph_error)
+
+    try:
+        nd = detect(base_env=shared)
+    except Exception:
+        nd = frozenset()
+    return ConfigSnapshot(baseline=baseline, arms=captured, nondeterministic=nd,
+                          tier_only=dict(tier_only or {}))
+
+
+def load_config_snapshot(path: Path) -> Optional[ConfigSnapshot]:
+    """`config_snapshot.json` 을 되읽는다 — 캠페인 합산 리포트가 구간별 대조군·기준선 실효값을 쓴다.
+    파일이 없거나 깨졌으면 None(추정하지 않는다)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    def _reach(info: dict[str, Any]) -> Optional[tuple[str, ...]]:
+        value = info.get("reachable")
+        return tuple(value) if isinstance(value, list) else None
+
+    base = data.get("baseline") or {}
+    baseline = ArmConfig(arm_id=BASELINE_ARM, axis=None, level=None, injected={},
+                         effective=dict(base.get("effective") or {}), ok=bool(base.get("ok")),
+                         error=base.get("error"), reachable=_reach(base),
+                         graph_error=base.get("graph_error"))
+    arms = {
+        arm_id: ArmConfig(arm_id=arm_id, axis=info.get("axis"), level=info.get("level"),
+                          injected=dict(info.get("injected") or {}),
+                          effective=dict(info.get("effective") or {}), ok=bool(info.get("ok")),
+                          error=info.get("error"), reachable=_reach(info),
+                          graph_error=info.get("graph_error"))
+        for arm_id, info in (data.get("arms") or {}).items()
+    }
+    tier_only = {axis: (str(info.get("tier")), tuple(info.get("modules") or ()))
+                 for axis, info in (data.get("tier_only") or {}).items()
+                 if isinstance(info, dict) and info.get("tier")}
+    return ConfigSnapshot(baseline=baseline, arms=arms,
+                          nondeterministic=frozenset(data.get("nondeterministic") or ()),
+                          unavailable=data.get("unavailable"), tier_only=tier_only)
+
+
+def write_config_snapshot(snapshot: ConfigSnapshot, out_dir: Path) -> Path:
+    """산출물에 남긴다. `raw.jsonl` 과 같은 폴더 — 사후 재분석의 입력이다."""
+    path = out_dir / "config_snapshot.json"
+    path.write_text(json.dumps(snapshot.as_dict(), ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8")
+    return path
+
+
+def run_arms(
+    arms: Sequence[ArmSpec],
+    *,
+    mode: str = "mock",
+    env: str = "closed",
+    repeat: int = 1,
+    run_id: str = "",
+    groups: Optional[list[str]] = None,
+    credentials: Optional[Credentials] = None,
+    resume_from: Optional[str] = None,
+) -> dict[str, Any]:
+    """arm 전체를 94 러너로 돌린다. 산출은 94 형식 그대로다(재분석 호환).
+
+    `resume_from` 은 94 러너의 이어쓰기다 — 같은 run_id·같은 `raw.jsonl` 에 적재하고 **성공한 턴은
+    건너뛰며 무효 턴은 다시 돈다**(`RawLog` · X-1). 구간 캠페인이 끊긴 구간을 이을 때 쓴다.
+    """
+    sc_catalog, sc_runner = scenario_harness()
+    creds = credentials or Credentials()
+
+    catalog = load_normal_catalog(env=env)
+    # 인증 설정은 arm 에 싣지 않는다 — 인증이 켜진 서버는 벤치 계정으로 로그인한다(G-3).
+    # **치환이 아니라 병합이다**(`plans/110` `110·N-2`). 종전에는 시나리오의 `profile` 을 arm id 로
+    # 갈아끼워 D군 8건(`optin_alarm`)이 `TEXT2SQL_ALARM_DETERMINISTIC` 을 잃었다. 이제 시나리오 자기
+    # 프로파일을 싣고 arm 을 그 위에 덧씌운다 — 94 러너가 `config.arms` 로 `merge_arm_profiles` 를
+    # 부르고 행에 `arm`·`base_profile` 칸을 싣는다(`arm_of` 가 그 칸을 읽어 D군도 arm 에 묶인다).
+    # arm 을 뒤에 등록한다 — `baseline` 은 시나리오 프로파일과 이름이 같고 둘 다 빈 주입이다.
+    # 기능 측정 상한은 **전 arm 에 같은 값**으로 얹는다(plans/118 G-1) — arm 의 축 값이 이긴다.
+    catalog.profiles = {**sc_catalog.load_catalog().profiles,
+                        **{arm.arm_id: {**MEASUREMENT_ENV, **arm.env} for arm in arms}}
+
+    config = sc_runner.RunConfig(
+        mode=mode,
+        env=env,
+        repeat=repeat,
+        groups=list(groups or []),
+        arms=[arm.arm_id for arm in arms],
+        run_id=run_id,
+        # 이어쓰기일 때만 싣는다 — 새 run 은 종전 호출과 인자까지 같다.
+        **({"resume_from": resume_from} if resume_from else {}),
+        user_id=creds.user_id,
+        user_password=creds.user_password,
+        admin_user=creds.admin_user,
+        admin_password=creds.admin_password,
+    )
+    return sc_runner.execute(catalog, config)
+
+
+def turn_key(row: dict[str, Any]) -> tuple[str, str, int, int]:
+    """한 턴을 유일하게 가리키는 키 — 94 러너 `row_key` 와 **같은 정의**다(테스트가 대조한다).
+
+    러너를 임포트하지 않는 이유는 `INVALID_VERDICT` 와 같다 — 94 하네스가 없어도 원시 로그를 읽는다.
+    """
+    return (str(row.get("profile")), str(row.get("scenario_id")),
+            int(row.get("turn", 0)), int(row.get("repeat", 0)))
+
+
+#: 단언이 **평가되지 않은** 턴의 사유 — 기능 합격률 분모에서 뺀다(D-241 · 36 과 합의한 계약 ·
+#: 소유 `plans/110` `108·G-6`). 러너가 행에 `unevaluated_reason` 칸을 실으면 그 값이 정본이고,
+#: 없으면(옛 행 · 러너 쪽 미반영) 아래 규칙으로 도출한다. `func_verdict` 어휘는 늘리지 않는다.
+UNEVALUATED_REASONS = ("invalid", "timeout", "clarify_blocked")
+#: 서버 타임아웃 문구 — 한국어 응답(`처리 시간이 초과`)과 게이트웨이 504.
+_TIMEOUT_TEXT = "처리 시간이 초과"
+_HTTP_504 = re.compile(r"\b504\b")
+
+
+#: 실패한 단언 키가 이 접두로 시작하면 그 턴은 역질문을 **기대했다**(카탈로그가 역질문의 모양을
+#: 단언한다). `status` 는 넣지 않는다 — `response_mode == "clarify"` 인데 `status` 가 실패했다면
+#: 기대값이 `clarification` 이 아니었다는 뜻이다(run 20260914-185540: 2,311건 전부 기대 `completed`).
+_CLARIFY_EXPECT_KEYS = ("clarification", "options_contains")
+
+
+def _expected_question(row: dict[str, Any]) -> bool:
+    """이 턴이 역질문을 기대했는가 — 러너 칸(`expects_question`)이 있으면 그 값, 없으면 실패 단언으로 추정."""
+    if "expects_question" in row:
+        return bool(row.get("expects_question"))
+    for item in row.get("failed_assertions") or []:
+        key = str(item.get("key", "")) if isinstance(item, dict) else str(item)
+        if key.startswith(_CLARIFY_EXPECT_KEYS):
+            return True
+        if isinstance(item, dict) and key == "status" and item.get("expected") == "clarification":
+            return True
+    return False
+
+
+def unevaluated_reason_of(row: dict[str, Any]) -> Optional[str]:
+    """이 턴의 단언이 평가되지 않았다면 그 사유(`invalid`·`timeout`·`clarify_blocked`), 아니면 None.
+
+    - `invalid` — 측정이 성립하지 않았다(`func_verdict == "invalid"` · D-218). 하네스 과실이다
+    - `timeout` — 타임아웃 문구(`처리 시간이 초과`·504)가 있거나 `forbidden_mode == "hang"` 이
+      오류로 끝났다. **제품 성능 축의 사건**이라 완주율·지연 신호에는 그대로 남는다
+    - `clarify_blocked` — 역질문(`response_mode == "clarify"`)으로 끝나 답이 나오지 않았다. 단,
+      합격한 턴과 **역질문을 기대한 턴은 평가된 것이다**. 역질문이 기대 동작인데 모양이 틀렸다면
+      결함이므로 분모에 불합격으로 남긴다(36 합의 · `plans/110` `108·G-6`)
+    """
+    if "unevaluated_reason" in row:
+        reason = row.get("unevaluated_reason")
+        return str(reason) if reason else None
+    verdict = str(row.get("func_verdict"))
+    if verdict == INVALID_VERDICT:
+        return "invalid"
+    evidence = " ".join(str(row.get(k) or "") for k in ("error", "mode_evidence"))
+    text = evidence + " " + str(row.get("response_text") or "")
+    if (_TIMEOUT_TEXT in text or _HTTP_504.search(evidence)
+            or (row.get("forbidden_mode") == "hang"
+                and (verdict in ("fail", "error")
+                     or row.get("response_mode") in ("hang", "error", "crash")))):
+        return "timeout"
+    if row.get("status") == _partial_status():
+        # 서술 없이 표만 나간 턴(plans/114 P-2) — 러너 칸이 정본이라 새 run 은 위 분기에서
+        # 끝나고, 이 규칙은 러너 칸이 없는 run 을 위한 대칭 폴백이다.
+        return "timeout"
+    if row.get("response_mode") == "clarify" and verdict != "pass":
+        return None if _expected_question(row) else "clarify_blocked"
+    return None
+
+
+def _partial_status() -> str:
+    """부분 결과 턴의 상태값. 제품 정본을 재사용한다(사본 금지 · plans/114 P-2)."""
+    from src.domain.partial_result import PARTIAL_STATUS
+
+    return PARTIAL_STATUS
+
+
+def unevaluated_counts(rows: Iterable[dict[str, Any]]) -> dict[str, int]:
+    """사유별 턴 수(0 인 사유도 싣는다 — 「없음」과 「안 셌음」을 구별한다)."""
+    counts = {reason: 0 for reason in UNEVALUATED_REASONS}
+    for row in rows:
+        reason = unevaluated_reason_of(row)
+        if reason in counts:
+            counts[reason] += 1
+    return counts
+
+
+def read_raw_rows(raw_path: Path) -> list[dict[str, Any]]:
+    """`raw.jsonl` 을 읽되 **같은 턴은 마지막 행만** 남긴다 — 94 러너의 재개 규칙과 같다.
+
+    끊긴 구간을 `resume_from` 으로 이으면 무효였던 턴이 같은 파일에 한 번 더 적재된다. 러너
+    (`RawLog._remember`)는 *"파일 순서 = 시간 순서, 뒤 행이 결과"* 로 읽는다. 옛 행까지 접으면
+    그 시나리오가 무효로 빠지고 지연이 두 번 더해진다. 키는 러너의 `row_key`(프로파일·시나리오·
+    턴·반복)이고, 순서는 **처음 적재된 위치**를 지킨다(실행 순서 판정이 이것을 쓴다).
+    `turn` 칸이 없는 행(합성·옛 형식)은 접지 않는다.
+    """
+    if not raw_path.exists():
+        return []
+    rows: dict[Any, dict[str, Any]] = {}
+    for index, line in enumerate(raw_path.read_text(encoding="utf-8").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        rows[turn_key(row) if "turn" in row else ("#", index)] = row
+    return list(rows.values())
+
+
+def read_observations(raw_path: Path) -> list[Observation]:
+    """94의 `raw.jsonl`을 축 비교용 관측치로 옮긴다.
+
+    **턴 단위가 아니라 시나리오 단위**로 접는다 — 멀티턴 시나리오는 턴마다 행이 생기는데
+    축 비교의 단위는 "이 시나리오가 통과했는가"다. 한 턴이라도 실패하면 실패로 본다.
+    """
+    folded: dict[tuple[str, str, int], dict[str, Any]] = {}
+    for row in read_raw_rows(raw_path):
+        key = (arm_of(row), str(row.get("scenario_id")), int(row.get("repeat", 0)))
+        cell = folded.setdefault(key, {"passed": True, "manual": False, "wall_ms": 0.0,
+                                       "llm_calls": 0, "tokens": 0, "retries": 0, "seen": 0,
+                                       "node_count": 0,
+                                       "completed": True, "sql_generated": False,
+                                       "invalid": False, "entered_graph": False,
+                                       "unevaluated": None})
+        cell["seen"] += 1
+        reason = unevaluated_reason_of(row)
+        if reason in ("timeout", "clarify_blocked") and cell["unevaluated"] != "timeout":
+            # 한 턴이라도 단언이 평가되지 않았으면 그 시나리오의 합격·불합격은 기능 신호가 아니다.
+            # 타임아웃이 먼저다 — 성능 사건이 역질문 차단보다 드러나야 할 사유다.
+            cell["unevaluated"] = reason
+        verdict = str(row.get("func_verdict"))
+        if verdict == INVALID_VERDICT:
+            # 측정이 성립하지 않은 턴(D-218). 불합격으로 세면 러너 결함이 기능 결함으로
+            # 집계된다 — run 20260915-131903 에서 401 구간 31건이 그렇게 잡혔다.
+            cell["invalid"] = True
+        elif verdict == "manual":
+            # 판정을 사람에게 남긴 턴 — 정확도 비교의 재료가 아니다.
+            cell["manual"] = True
+        elif verdict != "pass":
+            cell["passed"] = False
+
+        # **정확도와 별개로 항상 잴 수 있는 두 신호.**
+        # 정상군 시나리오 32건은 전부 `manual_review` 뿐이라(실측 2026-09-14) 기계 단언이
+        # 0개다 — 그 상태로는 정확도 쌍이 언제나 0쌍이고, 성공한 런조차 "판정 불가"만 낸다.
+        # 완주 여부와 SQL 생성 여부는 사람이 옮겨 적지 않아도 원시 로그에 이미 있고,
+        # **설정 축이 실제로 흔드는 것**이다(재시도 폭주·생성 실패·조기 종료).
+        # 완주 = 응답 모드가 오류·크래시·행이 아니고 타임아웃 미평가가 아니다(plans/120 V-2).
+        # **기능 불합격(`fail`)은 완주다** — 종전에는 `func_verdict` 로도 미완주를 세서 완주율이
+        # 정확도의 그림자가 됐고, run 20260923-140539 의 3단 완주율이 −14.6%p 로 나왔다(교정
+        # 정의로는 +6.8%p · 방향이 뒤집힌다).
+        if row.get("response_mode") in ("error", "crash", "hang") or reason == "timeout":
+            cell["completed"] = False
+        if sql_observed(row):
+            cell["sql_generated"] = True
+        if row.get("node_path"):
+            cell["entered_graph"] = True
+        for src, dst in (("wall_ms", "wall_ms"), ("llm_calls", "llm_calls"),
+                         ("tokens", "tokens"), ("retries", "retries"),
+                         ("node_count", "node_count")):
+            value = row.get(src)
+            if isinstance(value, (int, float)):
+                cell[dst] += value
+
+    return [
+        Observation(
+            arm_id=arm, scenario_id=scenario, repeat=repeat,
+            passed=bool(cell["passed"]),
+            manual=bool(cell["manual"]),
+            wall_ms=cell["wall_ms"] or None,
+            llm_calls=int(cell["llm_calls"]) or None,
+            tokens=int(cell["tokens"]) or None,
+            retries=int(cell["retries"]) or None,
+            node_count=int(cell["node_count"]) or None,
+            completed=bool(cell["completed"]),
+            sql_generated=bool(cell["sql_generated"]),
+            invalid=bool(cell["invalid"]),
+            entered_graph=bool(cell["entered_graph"]),
+            unevaluated=cell["unevaluated"],
+        )
+        for (arm, scenario, repeat), cell in sorted(folded.items())
+        if not cell["invalid"]
+    ]
+
+
+@dataclass(frozen=True)
+class RunHealth:
+    """런이 **판정할 자격이 있는가**. 통계 이전에 답해야 하는 질문이다."""
+
+    valid_profiles: int
+    invalid_profiles: list[tuple[str, str]]
+    turns: int
+    verdicts: dict[str, int]
+    evidence: list[tuple[str, int]]
+    #: SQL 이 관측된 턴 수(`executed_sql` 또는 `executed_sqls`).
+    sql_turns: int = 0
+    #: 그래프에 진입한 턴 수(`node_path` 비어 있지 않음).
+    graph_turns: int = 0
+    #: 역질문으로 끝난 턴 수(`response_mode == "clarify"`).
+    clarify_turns: int = 0
+    #: 측정이 성립하지 않은 턴 수(`func_verdict == "invalid"` · D-218).
+    invalid_turns: int = 0
+    #: 하네스가 역질문에 **대신 답한** 턴 수(`auto_answers` · D-216).
+    #:
+    #: 자동응답은 판정을 가능하게 하지만 **판정 대상을 일부 대체한다** — 존 선택은 전건
+    #: 선호 존(기본 김포)을 고르고, 폼필은 전 필드 `blank`, 승인은 전건 `승인`이다.
+    #: 그 턴의 라우팅·매핑·거부 판정은 제품이 아니라 하네스가 정한 값 위에서 내려진다.
+    auto_answered_turns: int = 0
+    #: 기준선 arm 이 몇 번째로 실행됐는가 / 전체 arm 수. 못 찾으면 None.
+    baseline_order: Optional[tuple[int, int]] = None
+    #: 단언 미평가 턴 수 — 사유별(`invalid`·`timeout`·`clarify_blocked` · D-241).
+    #: 기능 분모 제외분이다.
+    unevaluated: dict[str, int] = field(default_factory=dict)
+    #: 재개한 run 의 시도 사이에 판(커밋·작업 트리·**프로파일 실효 설정**)이 바뀌었으면 그
+    #: 사유 — 94 러너 `meta.provenance_mixed`(109·CS-19③ · plans/118 B-1). **구간 실패
+    #: 사유다**(118 B-1 ③ · G-1 확정) — 섞인 run 은 arm 비교가 성립하지 않는다(run
+    #: `20260922-162132`: 같은 상한 66쌍은 A/A 인데 판정문은 +5.1%p 를 적었다).
+    provenance_mixed: Optional[str] = None
+    #: arm → 운영 상한(`USER_FACING_TIMEOUT_SEC`)을 넘긴 턴 수(114 M-4 대가 · plans/118 G-1).
+    #: 상한 의미가 `first_answer`(D-267 ⑦)면 **첫 답변 시각**으로, 아니면 전체 소요(`wall_ms`)로
+    #: 센다.
+    over_user_timeout: dict[str, int] = field(default_factory=dict)
+    #: 처리 상한 의미(D-267 ⑦ · plans/119 T-0) — 94 러너 `meta.cap_semantic` 또는 행 `timeline`.
+    #: 서버가 보고하지 않은 판은 종전 의미(`total`)다.
+    cap_semantic: str = CAP_SEMANTIC_TOTAL
+    #: arm → (표본, p50 ms, p90 ms) — 첫 답변 토큰까지(94 러너 `ttft_ms` · plans/119 H-1).
+    #: 러너가 그 칸을 싣기 전 run 이면 비어 있다(「미측정」 — 표본 0 과 다르다).
+    ttft_by_arm: dict[str, tuple[int, Optional[float], Optional[float]]] = field(
+        default_factory=dict)
+    #: 유효 프로파일의 사다리 단 — `(프로파일, arm, 단)`(plans/114 M-2 ①). 모의(`mock`)·미관측은
+    #: 싣지 않는다 — 미관측을 강등으로 세면 주의가 상시 켜진다(94 리포트 O-c 와 같은 규칙).
+    tiers: tuple[tuple[str, str, str], ...] = ()
+    #: 이 실행이 **사다리 단 축 구간**인가(plans/114 M-0). 단이 갈리는 것이 곧 측정 대상이므로
+    #: 「프로파일마다 단이 다르다」를 실패로 세지 않는다.
+    tier_axis: bool = False
+    #: `{arm_id: 기대 단}` — 설정 스냅샷이 서버 기동 **전에** 뜬 값이다(`ConfigSnapshot.tier_of`).
+    #: 실제 단이 이것과 다르면 주입 실패·강등이므로 차단한다(D-250 ③ · M-2 ① (b)).
+    expected_tiers: dict[str, str] = field(default_factory=dict)
+    #: 실행을 생략하고 기준선 관측으로 대신한 arm(대조군·도달 불가 · plans/120 V-3). `run.json`
+    #: 프로파일에 없어 `tiers` 에 잡히지 않는다 — `tier_by_arm` 이 기준선의 관측 단을 싣는다.
+    substituted: tuple[str, ...] = ()
+
+    @property
+    def error_turns(self) -> int:
+        return self.verdicts.get("error", 0)
+
+    @property
+    def error_rate(self) -> float:
+        return (self.error_turns / self.turns) if self.turns else 0.0
+
+    @property
+    def sql_rate(self) -> float:
+        return (self.sql_turns / self.turns) if self.turns else 0.0
+
+    @property
+    def graph_entry_rate(self) -> float:
+        return (self.graph_turns / self.turns) if self.turns else 0.0
+
+    @property
+    def clarify_rate(self) -> float:
+        return (self.clarify_turns / self.turns) if self.turns else 0.0
+
+    @property
+    def invalid_rate(self) -> float:
+        return (self.invalid_turns / self.turns) if self.turns else 0.0
+
+    @property
+    def timeout_turns(self) -> int:
+        return int(self.unevaluated.get("timeout", 0) or 0)
+
+    @property
+    def timeout_rate(self) -> float:
+        return (self.timeout_turns / self.turns) if self.turns else 0.0
+
+    def tier_problems(self) -> list[str]:
+        """**구간을 실패로 볼** 사다리 단 문제(plans/114 M-2 ① · D-250 ③).
+
+        기대 단을 사람에게 묻지 않는다 — 캠페인 상태가 안다.
+
+        - **arm 별 기대 단이 있으면**(`expected_tiers` — 설정 스냅샷이 기동 전에 뜬 값) 실제가
+          그것과 다른 arm 을 차단한다. 단 축 구간에서는 arm 마다 자기 레벨의 단이고, 승자 주입
+          뒤 구간에서는 전 arm 이 이긴 단이다.
+        - **단 축 구간에서는 단이 갈리는 것이 정상**이다 — 그것이 측정 대상이다.
+        - 그 밖에는 프로파일마다 단이 갈리면 주입·강등 사고다.
+
+        기준선이 기준 경로가 아닌 것은 **여기 넣지 않는다** — 고지다(`tier_notes`). 실패로 세면
+        D-250 ①이 정한 단 축(M-0)에서 2단이 이겼을 때 남은 구간이 전부 실패한다.
+        """
+        mismatched = [(name, arm, tier) for name, arm, tier in self.tiers
+                      if arm in self.expected_tiers and tier != self.expected_tiers[arm]]
+        if mismatched:
+            listing = " · ".join(f"{name}({arm})={tier} ≠ 기대 {self.expected_tiers[arm]}"
+                                 for name, arm, tier in mismatched)
+            return [f"사다리 단이 캠페인이 기대한 단과 다르다({listing}) — 주입이 먹지 않았거나 "
+                    "강등됐다. 이 구간의 결과는 기대한 단의 측정이 아니다"]
+        if self.tier_axis:
+            # 단 축 구간 — 레벨마다 단이 다른 것이 곧 측정이다(D-250 ①).
+            return []
+        observed = {tier for _, _, tier in self.tiers}
+        if len(observed) <= 1:
+            return []
+        listing = " · ".join(f"{name}={tier}" for name, _, tier in self.tiers)
+        return [f"사다리 단이 프로파일마다 다르다({listing}) — 사다리 축이 아닌데 단이 갈렸다"
+                "(주입·강등 사고). arm 차이가 단 차이와 교란된다"]
+
+    def tier_by_arm(self) -> dict[str, str]:
+        """`{arm: 관측된 단}` — 한 arm 이 여러 프로파일에서 단이 갈리면 **싣지 않는다**.
+
+        단 축 구간의 승자에게 어느 단을 주입할지 정할 때 쓴다(plans/114 M-0). 사전 프로브가
+        아니라 **실제로 돈 서버가 보고한 단**이다(`run.json.profiles[].tier`).
+
+        **실행 생략 arm 은 기준선의 관측 단이다**(plans/120 V-3) — 그 arm 의 관측이 곧 기준선
+        관측이다. 빠지면 생략된 대조군 레벨이 이기거나 기준 경로로 고정될 때 단을 못 찾는다
+        (run 20260923-140539 `tier: null` · 「차이 없음」·「판정 불가」면 `blocked`).
+        """
+        seen: dict[str, set[str]] = {}
+        for _, arm, tier in self.tiers:
+            seen.setdefault(arm, set()).add(tier)
+        out = {arm: next(iter(tiers)) for arm, tiers in seen.items() if len(tiers) == 1}
+        base = out.get(BASELINE_ARM)
+        if base:
+            for arm in self.substituted:
+                out.setdefault(arm, base)
+        return out
+
+    def baseline_tier(self) -> Optional[str]:
+        """기준선 arm 의 사다리 단 — 구간 간 비교(plans/114 M-2 ①b)가 캠페인 상태에 남길 값.
+
+        관측이 없거나 갈리면 None 이다(갈린 것은 `tier_problems` 가 실패로 잡는다).
+        """
+        base = {tier for _, arm, tier in self.tiers if arm == BASELINE_ARM}
+        base = base or {tier for _, _, tier in self.tiers}
+        return next(iter(base)) if len(base) == 1 else None
+
+    def tier_notes(self) -> list[str]:
+        """고지만 하는 단 사실 — 기준선이 기준 경로(D-251)가 아니다(D-250 ③).
+
+        멈추지 않는다. 이 단으로 잰 축 결과가 **그 단에 조건부**라는 사실을 판정문에 남길 뿐이다.
+        단을 고르는 것은 사다리 단 축(M-0)의 몫이다 — 그 구간에서는 이 고지 대신 **103 잔여
+        대조 주의**를 싣는다(D-250 주의 ①).
+        """
+        observed = {tier for _, _, tier in self.tiers}
+        if not observed:
+            return []
+        if self.tier_axis:
+            return [TIER_AXIS_CAVEAT]
+        canonical = canonical_tier()
+        base = sorted({tier for _, arm, tier in self.tiers if arm == BASELINE_ARM} or observed)
+        if base == [canonical]:
+            return []
+        return [f"기준선 단이 {'·'.join(f'`{t}`' for t in base)} 다 — 기준 경로 `{canonical}`"
+                "(D-251)가 아니다. 사다리 단 축(plans/114 M-0 · D-250)을 재기 전에는 다른 축 "
+                "결과가 이 단에 조건부다"]
+
+    def timeout_problem(self) -> Optional[str]:
+        """타임아웃이 비교 표본을 깎았는가(plans/114 M-2 ②). D-241 은 기능 분모에서 빼는 규칙이지
+        측정 성립 판정이 아니다 — run 20260922-112010 은 42.6%로도 「완료」였다."""
+        if not self.turns or self.timeout_rate < TIMEOUT_STOP:
+            return None
+        return (f"타임아웃 {self.timeout_rate:.0%} ≥ {TIMEOUT_STOP:.0%}"
+                f"({self.timeout_turns}/{self.turns}턴) — 타임아웃 턴은 기능 분모에서 빠지므로"
+                "(D-241) 축 비교 표본이 줄었다")
+
+    def qualification_problems(self) -> list[str]:
+        """**구간 실패로 보는** 측정 자격 문제 — 단 갈림(①)·타임아웃률(②).
+
+        기준선 단 고지(`tier_notes`)는 넣지 않는다 — 판정문에만 실린다(D-250 ③).
+
+        **사다리 단 축 구간에서는 타임아웃률을 실패로 세지 않는다**(D-250 · 벤치 소유 검토 ①
+        교착 방지). 이유 둘. ①단 축 구간에서는 **타임아웃 자체가 비교 대상**이다 — 단이 지연을
+        바꾸므로 한쪽 단의 타임아웃이 많은 것이 곧 그 단의 측정 결과다. ②첫 구간에서 승자를 못
+        뽑으면 **이후 모든 구간이 막힌다** — 1구간 실측이 42.6%였고(`plans/114` §2.3) 3단에서도
+        텍스트 타임아웃 93턴 중 최소 59턴은 60초를 넘는다(§2.4 · 운영 `.env` 는
+        `API_QUERY_TIMEOUT=60` 을 명시해 D-242 코드 기본 120이 적용되지 않는다). 실패로 두면
+        사다리 축이 자기 관문에 걸려 캠페인이 시작조차 못 한다.
+        **고지는 남는다**(`warnings()`) — 조용히 빼지 않고, 승자 판정에도 완주율·지연으로 실린다.
+        이 예외는 **단 축 구간에만** 걸린다. 그 뒤 구간은 종전대로 실패다.
+        """
+        timeout = None if self.tier_axis else self.timeout_problem()
+        return self.tier_problems() + ([timeout] if timeout else [])
+
+    def warnings(self) -> list[str]:
+        """판정을 막지는 않지만 **판정문에 함께 실려야 하는** 사실들.
+
+        차단하지 않는 이유: 임계값이 워크로드 구성의 함수라 하나로 못 박으면 정상 런을
+        막는다. 다만 **침묵은 금지**다 — 이 줄이 없으면 개발자는 34%가 그래프에 진입조차
+        못 한 런과 정상 런을 구별할 수 없다(run 20260914-185540 실측).
+        """
+        notes: list[str] = []
+        if self.turns and self.graph_entry_rate < GRAPH_ENTRY_WARN:
+            notes.append(
+                f"그래프 진입률 {self.graph_entry_rate:.0%} — 턴 "
+                f"{self.turns - self.graph_turns}건이 노드를 하나도 밟지 않았다"
+                f"(pre-gate 역질문·요청 거부). 그 턴에는 설정 축이 작용할 여지가 없다")
+        if self.turns and self.clarify_rate >= CLARIFY_WARN:
+            notes.append(
+                f"역질문 종료율 {self.clarify_rate:.0%} — 워크로드가 역질문에서 멈췄다면 "
+                f"축이 아니라 역질문 응답 경로를 재고 있다")
+        if self.invalid_turns:
+            notes.append(
+                f"무효 턴 {self.invalid_turns}건({self.invalid_rate:.0%}) — 측정이 성립하지 "
+                f"않은 턴이다. 비교의 분모에서 뺐다(D-218)")
+        if self.turns and self.auto_answered_turns:
+            rate = self.auto_answered_turns / self.turns
+            notes.append(
+                f"자동응답 {self.auto_answered_turns}건({rate:.0%}) — 하네스가 역질문에 "
+                f"대신 답했다(존=선호 존 · 폼필=전 필드 공란 · 승인=승인). **그 턴의 라우팅·"
+                f"매핑·거부 판정은 제품이 아니라 하네스가 정한 값 위에서 내려진다**")
+        if self.baseline_order:
+            position, total = self.baseline_order
+            if total > 1 and position > 1:
+                notes.append(
+                    f"기준선 arm 이 {total}개 중 {position}번째로 실행됐다 — 쌍체 지연 비교가 "
+                    f"실행 시각과 교란된다. 장시간 런일수록 지연 델타를 효과로 읽지 말 것")
+        if self.provenance_mixed:
+            notes.append(
+                f"출처가 섞인 재개다 — {self.provenance_mixed}. 끊긴 뒤 바뀐 판으로 이어 돌아 한 "
+                f"`raw.jsonl` 에 두 판의 결과가 있다 — arm 차이가 판 차이와 교란될 수 있다")
+        notes.extend(self.tier_notes())
+        notes.extend(self.qualification_problems())
+        # 단 축 구간의 타임아웃은 **실패가 아니라 고지**다(위 `qualification_problems` 참조).
+        # 빠뜨리면 42.6% 짜리 구간이 화면에 아무 표시 없이 「완료」로 지나간다.
+        if self.tier_axis:
+            timeout = self.timeout_problem()
+            if timeout:
+                notes.append(
+                    f"{timeout} — **단 축 구간이라 실패로 세지 않는다**(승자를 못 뽑으면 이후 "
+                    "모든 구간이 막힌다). 단이 지연을 바꾸므로 타임아웃 차이 자체가 이 구간의 "
+                    "측정 결과다 — 승자 판정의 완주율·지연으로 읽을 것")
+        return notes
+
+    def stop_reasons(self) -> list[str]:
+        """캠페인 구간을 **「실패」로 기록할 사유** — 차단 + 멈춤 주의.
+
+        실행 가이드 4단계 「멈춤」 표와 같은 목록이다. 자동응답 주의는 넣지 않는다 —
+        역질문 자동응답은 이 하네스가 판정을 가능하게 하려고 넣은 것이라 실 실행에서는
+        거의 항상 뜬다(해석 조건이지 멈춤 사유가 아니다). 전 arm 판정 불가(후단 관문)는
+        판정 결과가 필요해 호출부가 따로 더한다.
+        """
+        reasons: list[str] = []
+        blocking = self.blocking_reason()
+        if blocking:
+            reasons.append(f"차단 — {blocking}")
+        if self.turns and self.graph_entry_rate < GRAPH_ENTRY_WARN:
+            reasons.append(f"그래프 진입률 {self.graph_entry_rate:.0%} < {GRAPH_ENTRY_WARN:.0%}")
+        if self.turns and self.clarify_rate >= CLARIFY_WARN:
+            reasons.append(f"역질문 종료율 {self.clarify_rate:.0%} ≥ {CLARIFY_WARN:.0%}")
+        if self.turns and self.invalid_rate > INVALID_STOP:
+            reasons.append(f"무효 턴 {self.invalid_rate:.0%} > {INVALID_STOP:.0%}")
+        if self.baseline_order and self.baseline_order[0] != 1:
+            position, total = self.baseline_order
+            reasons.append(f"기준선이 {total}개 중 {position}번째로 실행됐다")
+        if self.provenance_mixed:
+            reasons.append(f"출처 섞임 — {self.provenance_mixed}")
+        reasons.extend(self.qualification_problems())
+        return reasons
+
+    def user_timeout_line(self) -> Optional[str]:
+        """성능 표에 함께 싣는 한 줄 — arm 별 운영 상한 초과 턴 수. 행이 없으면 None.
+
+        D-267 ⑦ 이후 `API_QUERY_TIMEOUT` 은 **첫 답변(표 또는 첫 토큰)까지의 처리 상한**이다 —
+        서버가 그 의미(`first_answer`)를 보고한 판이면 문구도 계수 기준도 "첫 답변까지"다
+        (D-267 주의 ②). 보고하지 않은 판(종전 전체 상한)은 종전 기준으로 세고 그렇게 적는다.
+        """
+        if not self.over_user_timeout:
+            return None
+        listing = " · ".join(f"`{arm}` {count}턴"
+                             for arm, count in sorted(self.over_user_timeout.items()))
+        measured = MEASUREMENT_ENV.get("API_QUERY_TIMEOUT")
+        if self.cap_semantic == CAP_SEMANTIC_FIRST_ANSWER:
+            return (f"운영 처리 상한(첫 답변까지) {USER_FACING_TIMEOUT_SEC:.0f}초 초과 턴(기능은 "
+                    f"측정 처리 상한 {measured}초(첫 답변까지)로 쟀다 · plans/114 M-4 · D-267 ⑦) — "
+                    f"{listing}. 사용자는 이 턴들에서 첫 답변을 받기 전에 운영 상한에 끊긴다")
+        return (f"운영 상한(요청 전체) {USER_FACING_TIMEOUT_SEC:.0f}초 초과 턴(기능은 측정 상한 "
+                f"{measured}초로 쟀다 · plans/114 M-4) — {listing}. 사용자는 이 턴들에서 운영 "
+                "상한에 끊긴다 — 서버가 상한 의미를 보고하지 않은 판"
+                "(D-267 ⑦ 이전 · 요청 전체 기준)")
+
+    def ttft_line(self) -> Optional[str]:
+        """arm 별 첫 답변 토큰(TTFT) p50·p90 한 줄(plans/119 H-1).
+
+        러너가 칸을 싣기 전 run 이면 None.
+        """
+        if not self.ttft_by_arm:
+            return None
+
+        def cell(arm: str, stat: tuple[int, Optional[float], Optional[float]]) -> str:
+            count, p50, p90 = stat
+            if not count or p50 is None:
+                return f"`{arm}` 표본 없음"
+            tail = f" · p90 {p90 / 1000:.1f}초" if p90 is not None else " · p90 표본 부족"
+            return f"`{arm}` p50 {p50 / 1000:.1f}초{tail}(n={count})"
+
+        listing = " · ".join(cell(arm, stat) for arm, stat in sorted(self.ttft_by_arm.items()))
+        return (f"첫 답변 토큰(TTFT · plans/119 H-1) — {listing}. 토큰 없이 끝난 턴(역질문·오류)은 "
+                "표본에 없다")
+
+    def blocking_reason(self) -> Optional[str]:
+        """판정을 내면 안 되는 사유. 없으면 None."""
+        if self.valid_profiles == 0:
+            return "유효한 프로파일이 0개다 — 어떤 arm도 검증을 통과하지 못했다"
+        if self.turns == 0:
+            return "실행된 턴이 0건이다"
+        if self.turns and self.invalid_turns >= self.turns:
+            return (f"턴 {self.turns}건이 전부 무효다(D-218) — 측정이 성립하지 않았다")
+        if self.error_rate >= 0.5:
+            return (f"턴 {self.turns}건 중 {self.error_turns}건"
+                    f"({self.error_rate:.0%})이 오류다 — 측정이 아니라 사고다")
+        if self.turns and self.sql_turns == 0:
+            # **임계값이 아니라 0이다.** 질의 벤치마크에서 SQL 이 한 건도 관측되지 않았다면
+            # 파이프라인이 안 돌았거나 하네스가 SQL 을 못 읽은 것이고, 어느 쪽이든 축 비교의
+            # 2순위 신호(SQL 생성률)가 전 arm 0 으로 고정돼 「차이 없음」을 만들어 낸다
+            # (run 20260914-185540: 6567턴 전건 `executed_sql=null` · SQL 생성률 +0.0%p 62줄).
+            return (f"턴 {self.turns}건 중 SQL 이 관측된 턴이 0건이다 — 파이프라인이 SQL 에 "
+                    "닿지 못했거나 하네스가 실행 SQL 을 적재하지 못했다. 어느 쪽이든 SQL "
+                    "생성률은 신호가 아니라 상수다")
+        return None
+
+
+def scan_health(result: dict[str, Any], raw_path: Path, *,
+                tier_axis: bool = False,
+                expected_tiers: Optional[Mapping[str, str]] = None,
+                substituted: Sequence[str] = ()) -> RunHealth:
+    """원시 로그와 프로파일 상태를 읽어 런의 건전성을 낸다.
+
+    93이 이것을 먼저 보지 않으면, 전건 401 같은 사고가 "판정 불가 62건"이라는
+    **정상처럼 보이는 리포트**로 나온다(2026-09-14 실측). 오류율은 통계의 입력이
+    아니라 통계를 낼지 말지를 정하는 관문이다.
+
+    **오류율만으로는 부족하다**(run 20260914-185540 실측): 그 런은 오류율 0.8%로 관문을
+    통과했지만 SQL 관측 0건·그래프 미진입 34%·역질문 56%였고, 62 arm 전부 「판정 불가」가
+    나왔다. 그래서 여기서 SQL 관측률·그래프 진입률·역질문률·무효율·기준선 실행 순서를
+    함께 센다 — 차단은 SQL 0건과 전건 무효만, 나머지는 `warnings()` 로 고지한다.
+
+    `tier_axis`·`expected_tiers` 는 **캠페인이 아는 사실**이다(plans/114 M-0 · D-250 ③).
+    호출부가 설정 스냅샷에서 뽑아 넘긴다 — 사람에게 기대 단을 묻지 않는다. `substituted` 는
+    실행을 생략한 arm 이다(plans/120 V-3 — `tier_by_arm` 이 기준선의 관측 단을 싣는다).
+    """
+    profiles = result.get("profiles") or []
+    valid = sum(1 for p in profiles if p.get("valid"))
+    invalid = [(str(p.get("name")), "; ".join(p.get("reasons") or []) or "(사유 없음)")
+               for p in profiles if not p.get("valid")]
+    tiers = tuple((str(p.get("name")), str(p.get("arm") or p.get("name")), str(p.get("tier")))
+                  for p in profiles
+                  if p.get("valid") and p.get("tier") and p.get("tier") != "mock")
+
+    verdicts: dict[str, int] = {}
+    evidence: dict[str, int] = {}
+    turns = sql_turns = graph_turns = clarify_turns = auto_turns = 0
+    arm_order: list[str] = []
+    over_user: dict[str, int] = {}
+    rows = read_raw_rows(raw_path)
+    cap_semantic = run_cap_semantic(result, rows)
+    ttft_values: dict[str, list[float]] = {}
+    ttft_seen = any("ttft_ms" in row for row in rows)
+    if rows:
+        for row in rows:
+            turns += 1
+            wall = row.get("wall_ms")
+            arm_key = arm_of(row)
+            over_user.setdefault(arm_key, 0)
+            # D-267 ⑦: 첫 답변 상한 판이면 첫 답변 시각으로 센다. 답변이 스트리밍되지 않은 턴
+            # (역질문·오류·타임아웃)은 응답 도착(= 전체 소요)이 곧 첫 답변이다.
+            first = first_answer_ms_of(row) if cap_semantic == CAP_SEMANTIC_FIRST_ANSWER else None
+            basis = first if first is not None else wall
+            if isinstance(basis, (int, float)) and basis > USER_FACING_TIMEOUT_SEC * 1000:
+                over_user[arm_key] += 1
+            if ttft_seen:
+                values = ttft_values.setdefault(arm_key, [])
+                ttft = row.get("ttft_ms")
+                if isinstance(ttft, (int, float)) and not isinstance(ttft, bool) \
+                        and row.get("func_verdict") != INVALID_VERDICT:
+                    values.append(float(ttft))
+            verdicts[str(row.get("func_verdict"))] = verdicts.get(
+                str(row.get("func_verdict")), 0) + 1
+            mark = str(row.get("mode_evidence") or row.get("error") or "")[:80]
+            if row.get("response_mode") in ("error", "crash", "hang") and mark:
+                evidence[mark] = evidence.get(mark, 0) + 1
+            if sql_observed(row):
+                sql_turns += 1
+            if row.get("node_path"):
+                graph_turns += 1
+            if row.get("response_mode") == "clarify":
+                clarify_turns += 1
+            if row.get("auto_answers"):
+                auto_turns += 1
+            # 적재 순서가 곧 실행 순서다 — 러너는 프로파일 하나를 끝내고 다음으로 간다.
+            profile = arm_of(row)
+            if not arm_order or arm_order[-1] != profile:
+                if profile not in arm_order:
+                    arm_order.append(profile)
+
+    baseline_order = ((arm_order.index(BASELINE_ARM) + 1, len(arm_order))
+                      if BASELINE_ARM in arm_order else None)
+    top = sorted(evidence.items(), key=lambda kv: -kv[1])[:5]
+    return RunHealth(valid_profiles=valid, invalid_profiles=invalid[:5],
+                     turns=turns, verdicts=verdicts, evidence=top,
+                     sql_turns=sql_turns, graph_turns=graph_turns,
+                     clarify_turns=clarify_turns,
+                     invalid_turns=verdicts.get(INVALID_VERDICT, 0),
+                     auto_answered_turns=auto_turns,
+                     baseline_order=baseline_order,
+                     unevaluated=unevaluated_counts(rows),
+                     provenance_mixed=(result.get("meta") or {}).get("provenance_mixed"),
+                     tiers=tiers, tier_axis=tier_axis,
+                     expected_tiers=dict(expected_tiers or {}),
+                     substituted=tuple(substituted),
+                     over_user_timeout=over_user,
+                     cap_semantic=cap_semantic,
+                     ttft_by_arm={arm: _ttft_stat(values)
+                                  for arm, values in ttft_values.items()})
+
+
+def canonical_tier() -> str:
+    """기준 경로 단 이름(D-251 — 2단 `intent_orchestration` · D-225 의 3단을 개정).
+
+    정본은 `src/observability/ladder.py` 의 `LadderTier.is_canonical` 이다 — 단 이름을 여기
+    박지 않고 **정본이 기준이라고 답하는 단**을 돌려준다(사본 금지 · D-251 ⓐ · plans/118 B-5).
+    종전에는 `SEMANTIC_ROUTER` 를 직접 돌려줘 D-251 이후에도 단 축 동률·판정 불가가 3단으로
+    고정됐다.
+    """
+    from src.observability.ladder import LadderTier
+
+    canonical = [tier for tier in LadderTier if tier.is_canonical]
+    if len(canonical) != 1:
+        raise RuntimeError(f"기준 경로 단이 {len(canonical)}개다 — ladder.is_canonical 정본 확인")
+    return canonical[0].value
+
+
+def arm_rate(raw_path: Path, arm_id: str, elapsed_sec: float) -> Optional[tuple[float, int]]:
+    """arm 하나의 `(턴당 초, arm 당 턴)` — **구간 평균을 쓰지 않으려고** 낸다(plans/114 M-0).
+
+    단 축 구간에는 **속도가 다른 두 단이 섞인다**(3단은 `intent_planner`·`replanner` 가 빠지고
+    라우터 LLM 1회가 붙는다). 그 구간의 평균으로 남은 구간을 재계획하면 지지 않은 단의 속도가
+    섞여 들어간다 — 남은 구간은 **이긴 단으로만** 돌기 때문이다(벤치 소유 검토 ②).
+
+    턴 수는 원시 로그에서 정확히 센다. 초/턴은 구간 전체 경과를 **그 arm 의 응답 시간 몫**
+    (`wall_ms` 비율)으로 나눠 배분한다 — 러너 오버헤드(기동·검증)까지 포함한 값을 유지하면서
+    arm 간 속도 차이를 반영하는 유일한 방법이다(러너는 arm 별 경과를 따로 남기지 않는다).
+    **추정임을 감춘 값이 아니다** — 호출부가 `RateModel.source` 에 그 사실을 적는다.
+
+    쓸 수 없으면 None(턴 0 · `wall_ms` 전무 · 경과 0). 그때는 구간 평균으로 내려가지 말고
+    기본값을 쓴다 — 섞인 평균보다 낫다.
+    """
+    rows = read_raw_rows(raw_path)
+    if not rows or elapsed_sec <= 0:
+        return None
+    turns = 0
+    wall = 0.0
+    total_wall = 0.0
+    for row in rows:
+        value = row.get("wall_ms")
+        value = float(value) if isinstance(value, (int, float)) else 0.0
+        total_wall += value
+        if arm_of(row) == arm_id:
+            turns += 1
+            wall += value
+    if not turns or total_wall <= 0 or wall <= 0:
+        return None
+    return (elapsed_sec * (wall / total_wall)) / turns, turns
+
+
+def baseline_as(baseline: Sequence[Observation], arm_id: str) -> list[Observation]:
+    """기준선 관측을 다른 arm 의 관측으로 **복사해 쓴다** — 실행을 생략한 대조군 레벨의 대체값.
+
+    실효 설정 지문이 기준선과 같은 arm 은 기준선을 다시 도는 A/A 반복이다. 그 레벨과 다른 레벨의
+    비교는 곧 「기준선 대 그 레벨」이고, 같은 구간·같은 시간대의 기준선이라 쌍체가 성립한다.
+    잃는 것은 구간 안의 A/A 노이즈 표본 하나뿐이다 — 노이즈 바닥은 구간 간 기준선 반복으로
+    잰다(캠페인 합산 리포트).
+    """
+    import dataclasses
+
+    return [dataclasses.replace(o, arm_id=arm_id) for o in baseline]
+
+
+def note_substitution(optimum: Any, substituted: Sequence[ArmSpec],
+                      unreachable: Optional[dict[str, str]] = None) -> Any:
+    """축 판정 문장에 **실행을 생략한 레벨**을 적는다 — 조용히 빼지 않는다.
+
+    생략 사유는 둘이다 — 기준선과 같은 설정(A/A), 축 도달 불가(`unreachable` · plans/114 M-3).
+    """
+    import dataclasses
+
+    arms = [a for a in substituted if a.axis == optimum.axis]
+    if not arms:
+        return optimum
+    note = " · ".join(
+        f"레벨 `{a.level}` = "
+        f"{'도달 불가' if a.arm_id in (unreachable or {}) else '기준선과 동일 설정'}"
+        " → 기준선 관측 사용(실행 생략)" for a in arms)
+    return dataclasses.replace(optimum, sentence=f"{optimum.sentence} · {note}")
+
+
+def group_by_arm(observations: Iterable[Observation]) -> dict[str, list[Observation]]:
+    grouped: dict[str, list[Observation]] = {}
+    for obs in observations:
+        grouped.setdefault(obs.arm_id, []).append(obs)
+    return grouped

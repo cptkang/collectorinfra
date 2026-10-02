@@ -33,7 +33,6 @@ def mock_config():
     config.schema_cache.backend = "redis"
     config.schema_cache.cache_dir = "/tmp/test_cache"
     config.schema_cache.enabled = True
-    config.schema_cache.auto_generate_descriptions = True
     config.redis.host = "localhost"
     config.redis.port = 6379
     config.redis.db = 0
@@ -50,7 +49,6 @@ def file_config():
     config.schema_cache.backend = "file"
     config.schema_cache.cache_dir = "/tmp/test_cache"
     config.schema_cache.enabled = True
-    config.schema_cache.auto_generate_descriptions = False
     config.redis.host = "localhost"
     config.redis.port = 6379
     config.redis.db = 0
@@ -164,12 +162,44 @@ class TestSchemaCacheManagerStatus:
 class TestSchemaCacheManagerInvalidate:
     """캐시 무효화 테스트."""
 
-    async def test_invalidate_file_mode(self, file_config):
-        """file 모드에서 캐시를 삭제한다."""
+    async def test_invalidate_file_mode(self, file_config, tmp_path, monkeypatch):
+        """file 모드에서 캐시를 삭제하되 프로필 파일은 남긴다(plans/104 S1).
+
+        작업 디렉터리를 tmp로 옮겨 저장소의 추적 프로필(`config/db_profiles/`)을 건드리지 않는다.
+        """
+        monkeypatch.chdir(tmp_path)
+        profile = tmp_path / "config" / "db_profiles" / "test_db.yaml"
+        profile.parent.mkdir(parents=True)
+        profile.write_text("source: auto\npatterns: []\n", encoding="utf-8")
         mgr = SchemaCacheManager(file_config)
         with patch.object(mgr._file_cache, "invalidate", return_value=True):
             result = await mgr.invalidate("test_db")
             assert result is True
+        assert profile.read_text(encoding="utf-8") == "source: auto\npatterns: []\n"
+
+    async def test_invalidate_keeps_manual_profile(self, mock_config, tmp_path, monkeypatch):
+        """`source: manual` 프로필이 있어도 무효화는 Redis 캐시만 지우고 파일은 그대로 둔다."""
+        from tests.mocks.async_redis import attach_fake_redis
+
+        monkeypatch.chdir(tmp_path)
+        profile = tmp_path / "config" / "db_profiles" / "manual_db.yaml"
+        profile.parent.mkdir(parents=True)
+        body = "source: manual\npatterns: []\nquery_guide: 수동 정본\n"
+        profile.write_text(body, encoding="utf-8")
+        mock_config.schema_cache.cache_dir = str(tmp_path / ".cache" / "schema")
+        mgr = SchemaCacheManager(mock_config)
+        fake = attach_fake_redis(mgr._redis_cache)
+        await fake.set("schema:manual_db:structure_meta", "{}")
+        await fake.hset("schema:manual_db:meta", mapping={"fingerprint": "fp"})
+
+        assert await mgr.invalidate("manual_db") is True
+
+        assert profile.read_text(encoding="utf-8") == body
+        assert await fake.exists("schema:manual_db:structure_meta", "schema:manual_db:meta") == 0
+
+    def test_delete_db_profile_removed(self):
+        """프로필 파일 삭제 함수 자체가 없다(재도입 방지)."""
+        assert not hasattr(SchemaCacheManager, "_delete_db_profile")
 
     async def test_invalidate_all_file_mode(self, file_config):
         """file 모드에서 전체 캐시를 삭제한다."""
@@ -231,7 +261,7 @@ class TestSchemaCacheManagerDBDescriptions:
                 result = await mgr.save_db_description("polestar", "인프라 DB")
                 assert result is True
                 mgr._redis_cache.save_db_description.assert_awaited_once_with(
-                    "polestar", "인프라 DB"
+                    "polestar", "인프라 DB", origin="manual"
                 )
 
     async def test_delete_db_description(self, mock_config):
@@ -270,6 +300,16 @@ class TestGetCacheManagerSingleton:
 
 class TestLoadSynonymsWithGlobalFallbackCaseInsensitive:
     """load_synonyms_with_global_fallback의 대소문자 무관 매칭 검증."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_profile_synonyms(self, monkeypatch, tmp_path):
+        """프로필 유사어 계층(config/db_profiles/{db_id}.yaml)을 밀어낸다.
+
+        load_synonyms_with_global_fallback은 db_synonyms > **profile_synonyms** >
+        global_synonyms 순으로 병합한다. 저장소 루트에서 돌리면 실 프로필의
+        cmm_resource.name 유사어 8개가 이겨 글로벌 폴백 단언이 깨진다(2026-09-21 실측).
+        """
+        monkeypatch.chdir(tmp_path)
 
     @pytest.mark.asyncio
     async def test_load_synonyms_case_insensitive_matching(self, mock_config):

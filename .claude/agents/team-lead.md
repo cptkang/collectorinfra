@@ -78,7 +78,7 @@ requirements-analyst와 research-planner는 둘 다 spec.md만 읽으므로 **�
 
 **실행 절차**:
 1. `docs/02_decision.md`를 읽고 기존 결정 사항을 확인합니다.
-2. `CLAUDE.md`의 Known Mistakes 섹션을 확인합니다.
+2. `CLAUDE.md`의 Known Mistakes 핵심 원칙과 `docs/18_known_mistakes.md`(전체 이력)를 확인합니다.
 3. **단일 메시지에서 두 에이전트를 동시에 시작합니다**:
    - requirements-analyst → `run_in_background: true`
    - research-planner → `run_in_background: true`
@@ -256,11 +256,11 @@ Wave 단위로 완료된 모듈은 **전체 구현 완료를 기다리지 않고
 ## 실수 방지 프로토콜
 
 ### 작업 시작 전
-1. `CLAUDE.md`의 **Known Mistakes** 섹션을 읽고, 동일 실수 패턴이 현재 작업에 해당되는지 확인합니다.
+1. `CLAUDE.md`의 **Known Mistakes 핵심 원칙**을 읽고, 관련 영역이면 `docs/18_known_mistakes.md`의 상세 이력에서 동일 실수 패턴이 현재 작업에 해당되는지 확인합니다.
 2. 서브에이전트에게 작업을 지시할 때 관련 실수 이력을 함께 전달합니다.
 
 ### 실수 발생 시
-1. 실수 내용·원인·방지책을 `CLAUDE.md`의 Known Mistakes 테이블에 즉시 추가합니다.
+1. 실수 내용·원인·방지책을 `docs/18_known_mistakes.md`의 테이블에 즉시 추가합니다.
 2. 서브에이전트의 실수도 팀 리드가 대신 기록합니다.
 
 ---

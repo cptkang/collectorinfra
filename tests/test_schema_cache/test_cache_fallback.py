@@ -111,7 +111,6 @@ def file_config(tmp_path: Path):
     config.schema_cache.backend = "file"
     config.schema_cache.cache_dir = str(tmp_path / "mgr_cache")
     config.schema_cache.enabled = True
-    config.schema_cache.auto_generate_descriptions = False
     config.redis.host = "localhost"
     config.redis.port = 6379
     config.redis.db = 0
@@ -128,7 +127,6 @@ def redis_config(tmp_path: Path):
     config.schema_cache.backend = "redis"
     config.schema_cache.cache_dir = str(tmp_path / "mgr_redis_cache")
     config.schema_cache.enabled = True
-    config.schema_cache.auto_generate_descriptions = False
     config.redis.host = "localhost"
     config.redis.port = 6379
     config.redis.db = 0

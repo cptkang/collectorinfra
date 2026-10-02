@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +36,50 @@ class QueryRequest(BaseModel):
     thread_id: Optional[str] = Field(
         default=None,
         description="세션 ID (멀티턴 대화용, Phase 3)",
+    )
+    # Plan 75 §4: 존 역질문(clarification)에서 사용자가 체크박스로 선택한 DB 목록.
+    # 자연어 재조합 금지 원칙 — 선택 결과는 이 구조화 필드로만 전달되어
+    # semantic_router/intent_planner의 결정적 고정(mapped_db_ids 선례)으로 주입된다.
+    selected_db_ids: Optional[list[str]] = Field(
+        default=None,
+        description="존 선택 역질문 응답 — 조회 대상 DB 식별자 목록 (결정적 라우팅 고정)",
+    )
+    # plans/132 N-10: 소스 선택 칩에서 사용자가 고른 데이터 소스 시스템 코드(레지스트리). 비DB
+    # 소스는 이 필드만, DB 소스는 칩이 함께 보내는 `selected_db_ids`가 대상을 정한다. 자연어
+    # 재조합 없음.
+    selected_sources: list[str] | None = Field(
+        default=None,
+        description="소스 선택 칩 응답 — 조회할 데이터 소스 시스템 코드 목록(결정적 고정)",
+    )
+    # Plan 73 §11 (D-151): 폼필 역질문 패널의 구조화 답변 — 자연어 재조합·LLM 파싱 없이
+    # 이 필드로만 전달되어 결정적 검증(존재성)·적용을 거친다.
+    form_fill_answers: Optional[dict[str, dict]] = Field(
+        default=None,
+        description=(
+            "폼필 역질문 답변 {필드명: {action: blank|column|eav|literal, value}} "
+            "(pending_form_fill 대기 중인 thread에서만 유효)"
+        ),
+    )
+    # Phase 3 (D-151): 답변을 양식 시그니처 스코프의 확인 이력에 저장할지(옵트인).
+    # TTL sliding(QueryConfig.form_memory_ttl_days) — 무기한 저장 없음.
+    form_fill_remember: bool = Field(
+        default=False,
+        description="폼필 답변을 이 양식에 기억(TTL sliding, 옵트인)",
+    )
+    # D-187: 저장 값 패널의 삭제 버튼 — 구조화 필드로만 전달되어 라우트가 파이프라인·LLM 없이
+    # 결정적으로 삭제한다. signature는 세션의 last_form_signature와 일치해야 수행(임의 삭제 차단).
+    form_memory_delete: Optional[dict] = Field(
+        default=None,
+        description=(
+            "저장 값 패널 삭제 요청 {signature, fields: [필드명] | null, all: bool} "
+            "(같은 세션에서 조회한 양식 시그니처만 유효)"
+        ),
+    )
+    # plans/90 (D-205): 스코프 칩 "해제" — 이 턴부터 직전 존 승계를 끊는다(다음 질의는 첫 턴 규칙).
+    # 기본 False = 현행 동작 동일. 선택은 별도 필드 없이 기존 selected_db_ids(1회 전송)로 한다.
+    reset_db_scope: bool = Field(
+        default=False,
+        description="스레드 DB 스코프 해제 — 직전 턴 DB 승계를 끊고 첫 턴 규칙으로 처리",
     )
 
 
@@ -70,8 +114,53 @@ class QueryResponse(BaseModel):
     turn_count: Optional[int] = Field(
         default=None, description="현재 대화 턴 수"
     )
+    source_switch: dict[str, Any] | None = Field(
+        default=None,
+        description="소스 선택 기억으로 소스를 고른 턴의 「다른 소스로 보기」 칩(plans/132 W5)",
+    )
     has_mapping_report: bool = Field(
         default=False, description="매핑 보고서 존재 여부"
+    )
+    # Plan 75 §4: status="clarification"일 때 존 선택 컨텍스트
+    # {kind, question, options: [{db_id, label}], original_query, multi}
+    clarification: Optional[dict] = Field(
+        default=None, description="역질문 컨텍스트 (존 선택 등)"
+    )
+    # Plan 73 §11 (D-151): 폼필 미해결 필드 역질문 — 결과와 함께 첨부(사후 패널).
+    # {question, fields: [{name, label}], candidates: [{value, label, kind}]}
+    form_fill_clarification: Optional[dict] = Field(
+        default=None, description="폼필 미해결 필드 역질문 패널 컨텍스트"
+    )
+    # Plan 82 §5.3 불변식 6 (D-176 후속4): 범위를 좁혀 조회했을 때 **미조회 범위 재확장**
+    # 사후 패널. 범위 축소는 정보 손실이 복구되지 않는 절단이므로 되돌릴 경로를 함께 준다.
+    # {kind: "scope_reexpand", question, options: [{key, label, db_ids}], original_query}
+    scope_reexpand: Optional[dict] = Field(
+        default=None, description="좁힌 범위의 재확장 패널 컨텍스트"
+    )
+    # D-187: 저장 값 조회 응답의 삭제 패널 — {signature, display_name, entries: [{field, label, action, value}]}
+    form_memory_panel: Optional[dict] = Field(
+        default=None, description="양식 저장 값 패널 컨텍스트(항목별 삭제 버튼)"
+    )
+    # plans/90 (D-205): 스레드 DB 스코프 — 다음 턴이 승계할 DB를 축 구조로 보고한다(4 응답 경로 대칭).
+    # {zone_group: {code,label,db_ids}|null, solutions: [{code,label,db_ids}], db_ids, source}
+    db_scope: Optional[dict] = Field(
+        default=None, description="스레드 DB 스코프(존 그룹·솔루션 축·출처) — 스코프 칩 표시용"
+    )
+    # plans/88 (D-203): 복합 질의 순차 처리 경과 — 게이트(후속 미실행)·대조·절단·충족도 미달 노트.
+    # [{kind, task_id, reason, detail, ...}] — 본문 말미 블록과 같은 내용의 구조화본.
+    dependency_notes: Optional[list[dict]] = Field(
+        default=None, description="복합 질의 순차 처리 경과 노트(게이트·대조·절단·충족도)"
+    )
+    # plans/121 TP-0.1: 2단 계획 요약 — 계획 경로 코드 · task 담당·간선·조회 DB · 재계획 횟수 ·
+    # 노트 종류별 건수(개수·코드만). 선언하지 않으면 pydantic이 조용히 버린다. 1·3단은 None.
+    plan_summary: dict[str, Any] | None = Field(
+        default=None, description="2단 계획 요약(계획 경로·task 구성·재계획 횟수 — 코드·개수만)"
+    )
+    # plans/123 W-8: 결정적 고지의 구조화본 — [{kind, text, source}]. kind 어휘 정본은
+    # `src/domain/disclosure.py`. 선언하지 않으면 pydantic이 조용히 버린다(121 §12.5 TP-0.1 함정).
+    disclosures: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="결정적 고지(상한 도달·좁힌 범위·미등록 존·단위 의심·조건 변경·조회 실패 등)",
     )
 
 
@@ -127,8 +216,19 @@ class UserInfoResponse(BaseModel):
     role: str
     department: Optional[str] = None
     allowed_db_ids: Optional[list[str]] = None
+    alarm_zones: Optional[list[str]] = None
+    is_protected: bool = False
     status: str = "active"
     last_login_at: Optional[str] = None
+
+
+class AdminUserInfoResponse(UserInfoResponse):
+    """관리자 사용자 목록·권한 응답 — 관측 소스 인가를 더한다(plans/125 A-7).
+
+    사용자 본인용 응답(`/auth/me`·로그인)은 그대로 둔다 — 소스 권한은 관리 화면에서만 쓴다.
+    """
+
+    allowed_sources: list[str] | None = None
 
 
 class UserLoginResponse(BaseModel):
@@ -154,6 +254,10 @@ class UpdateUserRequest(BaseModel):
     role: Optional[str] = Field(None, pattern=r"^(user|admin)$")
     department: Optional[str] = None
     status: Optional[str] = Field(None, pattern=r"^(active|inactive|locked)$")
+    # Plan 59 §17: 알림 지역 스코프(중복 할당 가능). 예: ["gongjon","bankjon"]. []=수신 안 함.
+    alarm_zones: Optional[list[str]] = Field(
+        None, description="알림 수신 존 목록(gongjon/bankjon). 빈 목록=수신 안 함"
+    )
 
 
 class UpdatePermissionsRequest(BaseModel):
@@ -161,6 +265,18 @@ class UpdatePermissionsRequest(BaseModel):
 
     allowed_db_ids: Optional[list[str]] = Field(
         None, description="접근 허용 DB 목록 (null=전체 허용 불가)"
+    )
+
+
+class UpdateSourcePermissionsRequest(BaseModel):
+    """관리자용 관측 소스 권한 수정(plans/125 A-7 · D-272 ⑩ · D-281 ⑨).
+
+    DB 없는 소스(APM 등)의 시스템 코드 목록이다. null = 전체 허용 · [] = 없음.
+    DB 권한(`UpdatePermissionsRequest`)과 별도 요청이라 한쪽 저장이 다른 쪽을 지우지 않는다.
+    """
+
+    allowed_sources: list[str] | None = Field(
+        None, description="조회 허용 관측 소스 시스템 코드 목록 (null=전체 허용 · []=없음)"
     )
 
 

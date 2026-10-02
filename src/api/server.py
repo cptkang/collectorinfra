@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator, Optional
@@ -15,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.api.routes import admin, admin_auth, alarm, conversation, health, query, schema_cache, user_auth
+from src.api.routes import admin, admin_auth, alarm, conversation, db_structure, doc_search, health, noise_dashboard, query, schema_cache, scope, ui, user_auth
 from src.config import AppConfig, load_config
 from src.graph import build_graph
 from src.security.audit_logger import setup_logging
@@ -31,6 +32,9 @@ CREATE TABLE IF NOT EXISTS auth_users (
     status          VARCHAR(20) NOT NULL DEFAULT 'active',
     department      VARCHAR(100),
     allowed_db_ids  TEXT[],
+    allowed_sources TEXT[],
+    alarm_zones     TEXT[],
+    is_protected    BOOLEAN NOT NULL DEFAULT FALSE,
     auth_method     VARCHAR(20) NOT NULL DEFAULT 'local',
     login_fail_count INTEGER NOT NULL DEFAULT 0,
     last_login_at   TIMESTAMPTZ,
@@ -54,6 +58,18 @@ async def _ensure_auth_tables(pool) -> None:
     try:
         async with pool.acquire() as conn:
             await conn.execute(_AUTH_DDL)
+        # 기존 설치(IF NOT EXISTS로 컬럼 미추가)에 신규 컬럼을 멱등 보강한다(Plan 59/59-a, incident 패턴 미러)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS alarm_zones TEXT[]"
+            )
+            await conn.execute(
+                "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS is_protected BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            # 관측 소스 인가(plans/125 A-7) — 기존 행은 NULL = 전체 허용(D-272 ⑩)
+            await conn.execute(
+                "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS allowed_sources TEXT[]"
+            )
         # 인덱스는 IF NOT EXISTS로 별도 실행
         async with pool.acquire() as conn:
             await conn.execute(
@@ -67,6 +83,179 @@ async def _ensure_auth_tables(pool) -> None:
             )
     except Exception as e:
         logger.warning("인증 테이블 DDL 실행 실패: %s", e)
+
+
+def _validate_production_secrets(config) -> None:
+    """운영 모드(AUTH_ENABLED=true)에서 필수 크레덴셜·시크릿 미설정 시 기동을 거부한다(D-071).
+
+    os.getenv는 .env/.encenv 값을 못 보므로(Known Mistakes 2026-06-10) pydantic 필드와
+    _jwt_secret_explicit 플래그로 '명시적 설정' 여부를 판정한다. 개발 모드는 검사하지 않는다.
+    """
+    if not config.auth.enabled:
+        return
+    missing = []
+    if not config.admin.username or not config.admin.password:
+        missing.append("ADMIN_USERNAME/ADMIN_PASSWORD(관리자 부트스트랩 계정)")
+    if not config.admin._jwt_secret_explicit:
+        missing.append("ADMIN_JWT_SECRET(운영자 토큰 시크릿)")
+    if not config.auth._jwt_secret_explicit:
+        missing.append("AUTH_JWT_SECRET(사용자 토큰 시크릿)")
+    if missing:
+        raise RuntimeError(
+            "운영 모드(AUTH_ENABLED=true) 기동 거부 — 다음을 .env/.encenv에 설정하세요: "
+            + ", ".join(missing)
+        )
+
+
+async def _seed_admin_user(user_repo, config) -> None:
+    """활성 관리자가 0명이고 env 부트스트랩 크레덴셜이 있으면 seed admin을 1회 생성한다(멱등, §9.2).
+
+    통합 RBAC(D-069)에서는 어드민 접근이 DB role==admin으로 판정되므로, 최초 기동 시
+    관리자 한 명은 DB에 존재해야 한다. break-glass env 계정으로 그 씨앗을 심는다.
+    """
+    from src.domain.user import User, UserRole, UserStatus
+    from src.utils.password import hash_password
+
+    admin_cfg = config.admin
+    if not admin_cfg.username or not admin_cfg.password:
+        return  # 부트스트랩 계정 미설정 → seed 생략(개발 모드 등)
+    try:
+        users = await user_repo.list_all()
+    except Exception as e:
+        logger.warning("seed admin 확인 실패: %s", e)
+        return
+    if any(u.role == UserRole.ADMIN and u.is_active for u in users):
+        return  # 이미 활성 관리자 존재 → 멱등 생략
+    if await user_repo.exists(admin_cfg.username):
+        logger.info("seed admin: user_id=%s 이미 존재 → 생성 생략", admin_cfg.username)
+        return
+    seed = User(
+        user_id=admin_cfg.username,
+        username=admin_cfg.username,
+        hashed_password=hash_password(admin_cfg.password),
+        role=UserRole.ADMIN,
+        status=UserStatus.ACTIVE,
+        is_protected=True,  # 솔루션 상시 관리자 — 역할/상태 변경·PW초기화·삭제 불가(Plan 59-a §9)
+        auth_method="local",
+    )
+    try:
+        await user_repo.create(seed)
+        logger.info("seed admin 생성 완료: %s (활성 관리자 0명 → 부트스트랩)", admin_cfg.username)
+    except Exception as e:
+        logger.warning("seed admin 생성 실패: %s", e)
+
+
+async def _cleanup_audit_once(audit_repo, retention_days: int) -> None:
+    """보관 기간(retention_days)이 지난 감사 로그를 1회 삭제한다(Plan 59-a §11).
+
+    retention_days<=0이면 비활성(정리 안 함). 예외는 warning으로 삼켜 기동/루프를 막지 않는다.
+    """
+    if not audit_repo or retention_days is None or retention_days <= 0:
+        return
+    try:
+        deleted = await audit_repo.cleanup_old_logs(retention_days)
+        logger.info("감사 로그 로테이션: %s일 경과 %s건 삭제", retention_days, deleted)
+    except Exception as e:
+        logger.warning("감사 로그 로테이션 실패: %s", e)
+
+
+async def _run_audit_retention_loop(audit_repo, retention_days: int, interval_seconds: int = 86400) -> None:
+    """감사 로그 로테이션을 주기적으로(기본 하루 1회) 수행하는 백그라운드 루프(Plan 59-a §11)."""
+    import asyncio
+
+    if not audit_repo or retention_days is None or retention_days <= 0:
+        return
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+        except asyncio.CancelledError:
+            break
+        await _cleanup_audit_once(audit_repo, retention_days)
+
+
+def _positive_days(value: object) -> bool:
+    """보존 일수가 양의 정수로 해석되는지 판정한다.
+
+    판정은 `log_retention._as_days`에 위임한다 — 삭제 여부를 가르는 규칙이 두 곳에서
+    갈리면 "기동은 정리한다고 판단했는데 정리 함수는 건너뛴다" 같은 어긋남이 생긴다.
+    """
+    from src.utils.log_retention import _as_days
+
+    days = _as_days(value)
+    return days is not None and days > 0
+
+
+async def _run_file_log_retention_loop(
+    sql_days: object, trace_days: object, interval_seconds: int = 86400
+) -> None:
+    """파일 로그(SQL·트레이스) 정리를 주기적으로(기본 하루 1회) 수행한다 (D-140/D-141).
+
+    감사 로그 루프와 분리한 이유: 감사 정리는 `audit_repo`(DB)가 있을 때만 도는데,
+    파일 로그는 DB 없이도 쌓인다. 같은 루프에 얹으면 무인증 구성에서 영영 정리되지 않는다.
+    """
+    import asyncio
+
+    from src.utils.log_retention import cleanup_file_logs
+
+    if not _positive_days(sql_days) and not _positive_days(trace_days):
+        return
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+        except asyncio.CancelledError:
+            break
+        cleanup_file_logs(Path.cwd(), sql_days, trace_days)
+
+
+# D-049: incident 라이프사이클 테이블 (ddl/alarm_incidents.sql과 동일)
+_INCIDENT_DDL = """
+CREATE TABLE IF NOT EXISTS alarm_incidents (
+    id          BIGSERIAL PRIMARY KEY,
+    fingerprint VARCHAR(128) NOT NULL,
+    alarm_id    VARCHAR(64),
+    alarm_name  VARCHAR(255),
+    db_id       VARCHAR(64),
+    server_name VARCHAR(255),
+    severity    INTEGER,
+    priority    VARCHAR(20),
+    tier        VARCHAR(20),
+    status      VARCHAR(20) NOT NULL DEFAULT 'open',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    acked_at    TIMESTAMPTZ,
+    acked_by    VARCHAR(100),
+    resolved_at TIMESTAMPTZ,
+    resolution  VARCHAR(20)
+);
+"""
+
+
+async def _ensure_incident_tables(pool) -> None:
+    """incident 테이블/인덱스가 없으면 생성한다 (D-049 · _ensure_auth_tables 미러)."""
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(_INCIDENT_DDL)
+        # 기존 테이블(IF NOT EXISTS로 컬럼 미추가)에 alarm_name을 멱등 보강한다 (D-049 delta).
+        # 신규 환경은 위 CREATE로, 기존 환경은 이 ALTER로 커버한다(graceful·auth 패턴 일관).
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "ALTER TABLE alarm_incidents "
+                "ADD COLUMN IF NOT EXISTS alarm_name VARCHAR(255)"
+            )
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_alarm_incidents_status "
+                "ON alarm_incidents(status)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_alarm_incidents_fp_open "
+                "ON alarm_incidents(fingerprint) WHERE status = 'open'"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_alarm_incidents_created_at "
+                "ON alarm_incidents(created_at DESC)"
+            )
+    except Exception as e:
+        logger.warning("incident 테이블 DDL 실행 실패: %s", e)
 
 
 @asynccontextmanager
@@ -86,18 +275,32 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     config = load_config()
     setup_logging(config.log_level)
 
-    # SQL 파일 로거 초기화
+    # D-071: 운영 모드 필수 크레덴셜·시크릿 검증(미설정 시 기동 거부)
+    _validate_production_secrets(config)
+
+    # SQL 파일 로거 초기화 (logs/sql/ — D-140)
     from src.utils.sql_file_logger import init_sql_file_logger
-    init_sql_file_logger()
+    init_sql_file_logger(enabled=config.observability.sql_log_enabled)
+
+    # 파일 로그 보존 정리(D-140/D-141): 기동 시 1회.
+    # 감사 로그 정리와 달리 DB 연결에 의존하지 않으므로 인증 DB 블록 밖에서 무조건 실행한다.
+    from src.utils.log_retention import cleanup_file_logs
+    cleanup_file_logs(
+        Path.cwd(),
+        config.observability.sql_log_retention_days,
+        config.observability.trace_retention_days,
+    )
 
     from src.graph import _create_checkpointer_async
 
     checkpointer = await _create_checkpointer_async(config)
     app.state.graph = build_graph(config, checkpointer=checkpointer)
     app.state.config = config
+    # 설정 리로드(POST /admin/settings/reload) 시 그래프 재빌드에 재사용한다(Plan 68 §6).
+    app.state.checkpointer = checkpointer
     logger.info("에이전트 그래프 빌드 완료")
 
-    from src.alarm.infrastructure.notification_bus import AlarmNotificationBus
+    from noise_gate.infrastructure.notification_bus import AlarmNotificationBus
     app.state.alarm_bus = AlarmNotificationBus()
 
     # 인증 DB 초기화 (AUTH_ENABLED 여부와 무관하게 테이블은 생성)
@@ -107,6 +310,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     app.state.audit_repo = None
     app.state.auth_provider = None
     app.state.audit_service = None  # lifespan 이전 기본값
+    app.state.thread_repo = None  # 질의응답 스레드 이력(D-248) — 앱 DB 풀이 있을 때만
 
     if auth_db_url:
         try:
@@ -133,9 +337,47 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
 
             # DDL 자동 실행 (테이블이 없으면 생성)
             await _ensure_auth_tables(auth_pool)
+
+            # 질의응답 스레드 이력(D-248) — 감사 로그와 같은 앱 DB에 둔다
+            from src.infrastructure.thread_repository import PostgresThreadRepository
+
+            app.state.thread_repo = PostgresThreadRepository(auth_pool)
+            await app.state.thread_repo.ensure_tables()
+
+            # break-glass seed admin 부트스트랩(활성 관리자 0명 시, 멱등, §9.2)
+            await _seed_admin_user(app.state.user_repo, config)
+            # 감사 로그 로테이션(Plan 59-a §11): 기동 시 1회 정리
+            await _cleanup_audit_once(app.state.audit_repo, config.audit.retention_days)
             logger.info("인증 DB 초기화 완료")
         except Exception as e:
             logger.warning("인증 DB 초기화 실패 (인증 기능 비활성): %s", e)
+
+    # 감사 로그 로테이션 주기 태스크(하루 1회). audit_repo가 있고 retention_days>0일 때만.
+    audit_retention_task = None
+    if getattr(app.state, "audit_repo", None) and config.audit.retention_days > 0:
+        import asyncio as _asyncio
+        audit_retention_task = _asyncio.create_task(
+            _run_audit_retention_loop(app.state.audit_repo, config.audit.retention_days)
+        )
+        logger.info("감사 로그 로테이션 주기 태스크 시작 (보관 %s일)", config.audit.retention_days)
+
+    # 파일 로그 정리 주기 태스크(하루 1회). DB 무관하게 항상 기동한다.
+    file_log_retention_task = None
+    if _positive_days(config.observability.sql_log_retention_days) or _positive_days(
+        config.observability.trace_retention_days
+    ):
+        import asyncio as _asyncio
+        file_log_retention_task = _asyncio.create_task(
+            _run_file_log_retention_loop(
+                config.observability.sql_log_retention_days,
+                config.observability.trace_retention_days,
+            )
+        )
+        logger.info(
+            "파일 로그 정리 주기 태스크 시작 (SQL %s일 / 트레이스 %s일)",
+            config.observability.sql_log_retention_days,
+            config.observability.trace_retention_days,
+        )
 
     # Redis 연결 (스키마 캐시)
     if config.schema_cache.backend == "redis":
@@ -151,11 +393,110 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     alarm_worker_task = None
     if config.alarm.enabled:
         import asyncio as _asyncio
-        from src.alarm.application.alarm_worker import AlarmWorker
+        from noise_gate.application.alarm_worker import AlarmWorker
         alarm_worker_task = _asyncio.create_task(AlarmWorker(config).run())
         logger.info(
             "알람 분석 워커 시작 (stream=%s)", config.alarm.redis_stream_key
         )
+
+    # 알람 SSE Redis pub/sub 브리지 구독 (워커→UI 실시간 SSE — D-048.9 해소).
+    # 워커는 cross-process라 in-memory alarm_bus를 공유 못 하므로 Redis로 중계받는다.
+    # 게이트 활성 + NOISE_SSE_BRIDGE_ENABLED=true일 때만 기동(기본 off → E3 무변경, 회귀 0).
+    # Redis 연결 실패는 warning 후 폴백 — 서버 기동을 막지 않는다.
+    sse_bridge_task = None
+    sse_bridge_redis = None
+    sse_bridge_stop = None
+    if config.noise_gate.enable_noise_gate and config.noise_gate.sse_bridge_enabled:
+        try:
+            import asyncio as _asyncio
+            import redis.asyncio as _aioredis
+
+            from noise_gate.infrastructure.sse_bridge import run_sse_bridge_subscriber
+
+            sse_bridge_redis = _aioredis.from_url(
+                f"redis://{config.redis.host}:{config.redis.port}",
+                password=config.redis.password or None,
+                db=config.redis.db,
+            )
+            sse_bridge_stop = _asyncio.Event()
+            sse_bridge_task = _asyncio.create_task(
+                run_sse_bridge_subscriber(
+                    sse_bridge_redis,
+                    config.noise_gate.sse_bridge_channel,
+                    app.state.alarm_bus,
+                    stop_event=sse_bridge_stop,
+                )
+            )
+            logger.info(
+                "알람 SSE 브리지 구독 시작 (channel=%s)",
+                config.noise_gate.sse_bridge_channel,
+            )
+        except Exception as e:
+            logger.warning("알람 SSE 브리지 구독 시작 실패 (실시간 SSE 비활성): %s", e)
+
+    # ── D-049: ack/incident 라이프사이클 계측 (PostgreSQL 단일 저장소) ──
+    # incident_tracking_enabled=true일 때만 기동(기본 off → /alarm/metrics 기존 null 동작, 회귀 0).
+    # 전용 PG 풀(auth 독립, DSN 재사용) + 단일 라이터(Redis 구독 subscriber)를 기동한다.
+    # 어떤 단계가 실패해도 서버 기동을 막지 않는다(graceful — warning 후 트래커 비활성).
+    app.state.incident_store = None
+    app.state.incident_publisher = None
+    incident_pool = None
+    incident_redis = None
+    incident_sub_task = None
+    incident_sub_stop = None
+    if config.noise_gate.enable_noise_gate and config.noise_gate.incident_tracking_enabled:
+        incident_db_url = config.db_connection_string
+        try:
+            import asyncio as _asyncio
+            import asyncpg
+
+            from noise_gate.infrastructure.incident_repository import (
+                PostgresIncidentStore,
+            )
+
+            if not incident_db_url:
+                raise RuntimeError("db_connection_string 미설정 — incident 계측 비활성")
+
+            incident_pool = await asyncpg.create_pool(
+                incident_db_url, min_size=1, max_size=3
+            )
+            await _ensure_incident_tables(incident_pool)
+            app.state.incident_store = PostgresIncidentStore(incident_pool)
+
+            import redis.asyncio as _aioredis
+
+            from noise_gate.infrastructure.incident_events import (
+                RedisIncidentPublisher,
+                run_incident_event_subscriber,
+            )
+
+            incident_redis = _aioredis.from_url(
+                f"redis://{config.redis.host}:{config.redis.port}",
+                password=config.redis.password or None,
+                db=config.redis.db,
+            )
+            # API 경로(analyze-*)에서 PAGE 결정 시 open 발행에 재사용한다(같은 Redis 채널 → 단일 라이터).
+            app.state.incident_publisher = RedisIncidentPublisher(
+                incident_redis, config.noise_gate.incident_event_channel
+            )
+            incident_sub_stop = _asyncio.Event()
+            incident_sub_task = _asyncio.create_task(
+                run_incident_event_subscriber(
+                    incident_redis,
+                    config.noise_gate.incident_event_channel,
+                    app.state.incident_store,
+                    alarm_bus=app.state.alarm_bus,
+                    stop_event=incident_sub_stop,
+                )
+            )
+            logger.info(
+                "incident 계측 시작 (channel=%s)",
+                config.noise_gate.incident_event_channel,
+            )
+        except Exception as e:
+            logger.warning("incident 계측 시작 실패 (계측 비활성): %s", e)
+            app.state.incident_store = None
+            app.state.incident_publisher = None
 
     yield
 
@@ -168,8 +509,65 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         except Exception:
             pass
 
-    # 종료 시: 인증 DB 풀 정리
+    # 종료 시: SSE 브리지 구독 task·Redis 연결 정리
+    if sse_bridge_task:
+        if sse_bridge_stop is not None:
+            sse_bridge_stop.set()
+        sse_bridge_task.cancel()
+        try:
+            await sse_bridge_task
+        except Exception:
+            pass
+    if sse_bridge_redis is not None:
+        try:
+            await sse_bridge_redis.aclose()
+        except Exception:
+            pass
+
+    # 종료 시: incident 계측 구독 task·Redis 연결·전용 PG 풀 정리 (D-049)
+    if incident_sub_task:
+        if incident_sub_stop is not None:
+            incident_sub_stop.set()
+        incident_sub_task.cancel()
+        try:
+            await incident_sub_task
+        except Exception:
+            pass
+    if incident_redis is not None:
+        try:
+            await incident_redis.aclose()
+        except Exception:
+            pass
+    if incident_pool is not None:
+        try:
+            await incident_pool.close()
+        except Exception:
+            pass
+
+    # 종료 시: 감사 로그 로테이션 주기 태스크 정리
+    if audit_retention_task:
+        audit_retention_task.cancel()
+        try:
+            await audit_retention_task
+        except Exception:
+            pass
+
+    # 종료 시: 파일 로그 정리 주기 태스크 정리 (D-140/D-141)
+    if file_log_retention_task:
+        file_log_retention_task.cancel()
+        try:
+            await file_log_retention_task
+        except Exception:
+            pass
+
+    # 종료 시: 인증 DB 풀 정리 — 그 전에 조회 경로가 띄워 둔 쿼리 실행 감사 DB 쓰기를 마친다(D-261 부기)
     if app.state.auth_pool:
+        try:
+            from src.security.audit_logger import wait_pending_db_mirrors
+
+            await wait_pending_db_mirrors()
+        except Exception:
+            logger.warning("쿼리 실행 감사 DB 쓰기 종료 대기 실패(무시)", exc_info=True)
         try:
             await app.state.auth_pool.close()
         except Exception:
@@ -188,6 +586,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         await cache_mgr.disconnect()
 
     logger.info("서버 종료")
+
+
+def _metrics_endpoint_enabled(config: object) -> bool:
+    """`/metrics` 노출 여부를 판정한다(plans/92 O4 — 기동 시 1회).
+
+    정확히 `True`일 때만 켠다. 테스트가 넘기는 `MagicMock` 설정은 속성이 참으로 평가되므로,
+    진리값으로 판정하면 옵트인 노출면이 의도 없이 열린다.
+    """
+    observability = getattr(config, "observability", None)
+    return getattr(observability, "metrics_endpoint_enabled", False) is True
 
 
 def create_app(config: Optional[AppConfig] = None) -> FastAPI:
@@ -231,6 +639,14 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 
     application.add_middleware(AuditMiddleware)
 
+    # (plans/92 O4 · 트랙 B-1) 본체 자기 관측 — 기본 off면 계측 미들웨어도 `/metrics` 라우트도 없다
+    # (현행과 비트 동일). 마지막에 추가해 가장 바깥에서 CORS·감사까지 포함한 지연을 잰다.
+    metrics_enabled = _metrics_endpoint_enabled(config)
+    if metrics_enabled:
+        from src.api.middleware.metrics_middleware import MetricsMiddleware
+
+        application.add_middleware(MetricsMiddleware)
+
     # 라우트 등록
     application.include_router(health.router, prefix="/api/v1", tags=["health"])
     application.include_router(query.router, prefix="/api/v1", tags=["query"])
@@ -239,8 +655,16 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
         admin_auth.router, prefix="/api/v1", tags=["admin-auth"]
     )
     application.include_router(admin.router, prefix="/api/v1", tags=["admin"])
+    # (Plan 54) 알람 노이즈 캔슬링 관제 — 운영자 JWT 뒤의 집계·조회·침묵 관리.
+    application.include_router(
+        noise_dashboard.router, prefix="/api/v1", tags=["noise-console"]
+    )
     application.include_router(
         schema_cache.router, prefix="/api/v1", tags=["schema-cache"]
+    )
+    # (plans/104) 관리자 「DB 구조」 — MCP 소스 목록·점검·구조 초안 승인·신규 연동 등록
+    application.include_router(
+        db_structure.router, prefix="/api/v1", tags=["db-structure"]
     )
     application.include_router(
         conversation.router, prefix="/api/v1", tags=["conversation"]
@@ -248,6 +672,24 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     application.include_router(
         user_auth.router, prefix="/api/v1", tags=["user-auth"]
     )
+    application.include_router(ui.router, prefix="/api/v1", tags=["ui"])
+    # (plans/126 W4) 문서 검색 시험 — 운영자 전용. 라우팅을 거치지 않고 엔진을 직접 부른다.
+    application.include_router(doc_search.router, prefix="/api/v1", tags=["doc-search"])
+    # (plans/90 · D-205) 스코프 칩 선택지 — 축 배열
+    application.include_router(scope.router, prefix="/api/v1", tags=["scope"])
+    if metrics_enabled:
+        from src.api.routes.metrics import build_metrics_router
+
+        # 토큰은 기동 시 1회 읽는다. 비어 있으면 라우트는 503으로 거부한다(fail-closed).
+        metrics_token = config.observability.metrics_bearer_token.get_secret_value()
+        if not metrics_token:
+            logger.warning(
+                "OBS_METRICS_ENDPOINT_ENABLED=true인데 OBS_METRICS_BEARER_TOKEN이 비어 있다 — "
+                "/api/v1/metrics는 503으로 거부한다(무인증 노출 금지)"
+            )
+        application.include_router(
+            build_metrics_router(metrics_token), prefix="/api/v1", tags=["metrics"]
+        )
 
     # 정적 파일 디렉토리
     static_dir = Path(__file__).resolve().parent.parent / "static"
@@ -280,6 +722,11 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
         """사용자 가입 화면."""
         return FileResponse(static_dir / "register.html")
 
+    @application.get("/noise", include_in_schema=False)
+    async def user_noise_console_page() -> FileResponse:
+        """사용자 노이즈 관제 화면(읽기 전용 — D-245)."""
+        return FileResponse(static_dir / "noise.html")
+
     @application.get("/admin/login", include_in_schema=False)
     async def admin_login_page() -> FileResponse:
         """운영자 로그인 화면."""
@@ -289,6 +736,30 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     async def admin_dashboard_page() -> FileResponse:
         """운영자 대시보드 화면."""
         return FileResponse(static_dir / "admin" / "dashboard.html")
+
+    # 매뉴얼(plans/116 · D-252) — 다른 HTML 화면과 같이 서버 인증 없이 서빙한다(G-2 확정).
+    @application.get("/manual/user", include_in_schema=False)
+    async def user_manual_page() -> FileResponse:
+        """사용자 매뉴얼."""
+        return FileResponse(static_dir / "manual" / "user.html")
+
+    @application.get("/manual/admin", include_in_schema=False)
+    async def admin_manual_page() -> FileResponse:
+        """관리자 매뉴얼."""
+        return FileResponse(static_dir / "manual" / "admin.html")
+
+    # 시스템 소개(plans/124 · D-277) — 어느 화면에도 링크하지 않는다.
+    # 주소를 직접 입력할 때만 열린다.
+    @application.get("/intro", include_in_schema=False)
+    async def intro_page() -> FileResponse:
+        """시스템 소개 페이지."""
+        return FileResponse(static_dir / "intro.html")
+
+    # 소개 페이지의 3D는 ES 모듈이라 JavaScript MIME 이 아니면 브라우저가 거부한다.
+    # Windows 는 레지스트리 설정에 따라 .js 를 text/plain 으로 추정하므로 고정한다.
+    mimetypes.add_type("text/javascript", ".js")
+    # 정지 등급 배경 영상(D-277 ⑤ 개정) — 레지스트리에 .webm 이 없으면 text/plain 으로 나간다.
+    mimetypes.add_type("video/webm", ".webm")
 
     # 정적 파일 서빙 (라우트 등록 후에 마운트해야 우선순위 보장)
     if static_dir.exists():

@@ -22,10 +22,45 @@
     var sendBtn = document.getElementById("sendBtn");
     var hintButtons = document.querySelectorAll(".chat-welcome-hint");
     var progressPanel = document.getElementById("progressPanel");
+    var progressPanelBody = document.getElementById("progressPanelBody");
     var progressPipeline = document.getElementById("progressPipeline");
     var progressEmpty = document.getElementById("progressEmpty");
     var panelToggle = document.getElementById("panelToggle");
     var scrollToBottomBtn = document.getElementById("scrollToBottomBtn");
+    var progressScrollBtn = document.getElementById("progressScrollBtn");
+
+    // 뷰 탭(질의응답 · 이벤트 알람) — 알람은 질의응답 스트림에 섞지 않고 자기 뷰에 쌓는다
+    var chatView = document.getElementById("chatView");
+    var alarmView = document.getElementById("alarmView");
+    var alarmList = document.getElementById("alarmList");
+    var alarmEmpty = document.getElementById("alarmEmpty");
+    var alarmTabBadge = document.getElementById("alarmTabBadge");
+    var alarmViewCount = document.getElementById("alarmViewCount");
+    var alarmClearBtn = document.getElementById("alarmClearBtn");
+    var alarmTools = document.getElementById("alarmTools");
+    var alarmSearch = document.getElementById("alarmSearch");
+    var alarmFilterReset = document.getElementById("alarmFilterReset");
+    var promptConfirm = document.getElementById("promptConfirm");
+    var promptConfirmRun = document.getElementById("promptConfirmRun");
+    var promptConfirmEdit = document.getElementById("promptConfirmEdit");
+    var alarmScrollTopBtn = document.getElementById("alarmScrollTopBtn");
+    // 스코프 칩(Plan 90 · D-205) — 이 창이 다음 질의에서 볼 폴스타 존
+    var dbScopeChip = document.getElementById("dbScopeChip");
+    var dbScopeText = document.getElementById("dbScopeText");
+    var dbScopePick = document.getElementById("dbScopePick");
+    var dbScopeSol = document.getElementById("dbScopeSol");
+    var dbScopeClear = document.getElementById("dbScopeClear");
+    var dbScopePopover = document.getElementById("dbScopePopover");
+
+    // 질의 이력 사이드바(D-183) — 이 브라우저에만 남는 목록
+    var historyPanel = document.getElementById("historyPanel");
+    var historyToggle = document.getElementById("historyToggle");
+    var historyList = document.getElementById("historyList");
+    var historyEmpty = document.getElementById("historyEmpty");
+    var historyPanelCount = document.getElementById("historyPanelCount");
+    var historySearch = document.getElementById("historySearch");
+    var historyClearBtn = document.getElementById("historyClearBtn");
+    var newChatBtn = document.getElementById("newChatBtn");
 
     // ─── Auth Helpers ───
 
@@ -35,17 +70,70 @@
         if (token) {
             headers["Authorization"] = "Bearer " + token;
         }
+        var clientId = getClientId();
+        if (clientId) headers["X-Client-Id"] = clientId;
         return headers;
+    }
+
+    // 브라우저 식별자(D-248) — 인증이 꺼져 전원이 anonymous일 때 서버가 대화 이력을
+    // 브라우저별로 나누는 키다(D-183 G-1: 한 사람으로 뭉치면 남의 대화가 섞인다).
+    // crypto.randomUUID는 보안 컨텍스트(https·localhost)에서만 있어 내부망 http에서 없다 —
+    // 어디서나 되는 getRandomValues로 만든다. 저장소가 막히면 식별자 없이 간다(이력 미기록).
+    var CLIENT_ID_KEY = "query_client_id";
+    var _clientId = null;
+
+    function getClientId() {
+        if (_clientId) return _clientId;
+        try {
+            var id = localStorage.getItem(CLIENT_ID_KEY);
+            if (!id) {
+                var bytes = new Uint8Array(16);
+                window.crypto.getRandomValues(bytes);
+                id = Array.prototype.map.call(bytes, function (b) {
+                    return (b < 16 ? "0" : "") + b.toString(16);
+                }).join("");
+                localStorage.setItem(CLIENT_ID_KEY, id);
+            }
+            _clientId = id;
+        } catch (e) {
+            console.warn("[history] 브라우저 식별자 생성 실패:", e);
+        }
+        return _clientId;
+    }
+
+    function redirectToLogin() {
+        // 만료/무효 토큰을 정리하여 로그인 후 동일 증상 재발을 방지한다.
+        localStorage.removeItem("user_token");
+        localStorage.removeItem("user_info");
+        window.location.href = "/login";
+    }
+
+    // §15: 인증 확정 전까지 앱 셸을 숨겨(FOUC 방지) 두었다가, 인증 성공/개발모드일 때만 노출한다.
+    // 미인증이면 redirectToLogin()으로 넘어가므로 노출 없이 리다이렉트된다.
+    function revealApp() {
+        document.body.classList.remove("auth-pending");
     }
 
     function checkAuthOnLoad() {
         fetch("/api/v1/auth/status", { headers: getAuthHeaders() })
-            .then(function(res) { return res.json(); })
+            .then(function(res) {
+                // 토큰이 만료/무효(예: 서버 재시작로 JWT 시크릿 회전)이면 status가 401을 반환한다.
+                // 본문에 auth_enabled가 없어 아래 분기로 잡히지 않으므로 여기서 먼저 처리한다.
+                if (res.status === 401) {
+                    redirectToLogin();
+                    return null;
+                }
+                return res.json();
+            })
             .then(function(data) {
-                if (data.auth_enabled && !localStorage.getItem("user_token")) {
-                    window.location.href = "/login";
+                if (!data) return;  // 401 처리 후 리다이렉트된 경우
+                // 인증이 켜져 있는데 유효 사용자가 없으면(토큰 부재 또는 무효) 로그인으로 유도한다.
+                if (data.auth_enabled && !data.user) {
+                    redirectToLogin();
                     return;
                 }
+                // 인증 확정(유효 사용자 또는 개발모드) — 앱 셸 노출(FOUC 방지 게이트 해제)
+                revealApp();
                 // 사용자 정보 표시
                 var userInfo = data.user;
                 var userArea = document.getElementById("userInfoArea");
@@ -54,10 +142,23 @@
                     var nameEl = document.getElementById("userDisplayName");
                     if (nameEl) nameEl.textContent = userInfo.username || userInfo.user_id;
                 }
+                // 통합 RBAC(D-069): role==admin 사용자에게만 어드민 진입 링크 노출.
+                // 개발 모드(auth 비활성, anonymous)에서는 항상 노출해 진입성을 보존한다.
+                var adminLink = document.getElementById("adminEntryLink");
+                var adminManualLink = document.getElementById("adminManualLink");  // plans/116 — 같은 조건
+                if (adminLink && userInfo &&
+                    (userInfo.role === "admin" || !data.auth_enabled)) {
+                    // inline-block으로 두면 .btn의 inline-flex(수직 중앙정렬)가 덮여
+                    // 헤더 고정 높이(32px)에서 글자가 위로 붙는다 — 클래스 표시값 복원
+                    adminLink.style.display = "inline-flex";
+                    if (adminManualLink) adminManualLink.style.display = "block";
+                }
+                // Plan 59 §17: 알림 존 권한을 확정한 뒤 구독을 시작한다(권한 없으면 미구독).
+                initAlarmSubscription(userInfo, data.auth_enabled);
                 // 로그아웃 버튼
                 var logoutBtn = document.getElementById("userLogoutBtn");
                 if (logoutBtn && data.auth_enabled) {
-                    logoutBtn.style.display = "inline-block";
+                    logoutBtn.style.display = "inline-flex";   // .btn 수직 중앙정렬 유지(Admin과 동일)
                     logoutBtn.addEventListener("click", function() {
                         fetch("/api/v1/auth/logout", {
                             method: "POST",
@@ -72,6 +173,8 @@
             })
             .catch(function() {
                 // 인증 상태 확인 실패 시 무시 (AUTH_ENABLED=false 기본)
+                // 서버 미응답 등으로 상태를 못 받아도 앱은 노출한다(무한 스플래시 방지).
+                revealApp();
             });
     }
 
@@ -179,24 +282,126 @@
     var messages = []; // session message history
     var stageTimer = null;
     var currentThreadId = null;
+    // 존 역질문(파일 경로) 재전송용 — 마지막 업로드 파일 참조 (Plan 75 §4 확장)
+    var lastUploadedFile = null;
+    // 스코프 칩 상태(Plan 90 · D-205). currentDbScope는 서버가 마지막 응답에 실은 db_scope(거울),
+    // pendingDbIds/pendingReset은 "다음 전송에 실릴 것". 저장하지 않는다 — thread_id가 메모리
+    // 전용이라 새로고침이 곧 새 스레드이고, 그때 칩도 새로 시작해야 맞다.
+    var currentDbScope = null;
+    var pendingDbIds = null;
+    var pendingReset = false;
+    var scopeAxes = null;   // GET /api/v1/scope/options 결과(1회 로드)
 
-    // ─── Scroll / Streaming Control (Plan 49) ───
-    var autoStick = true;                 // 바닥 따라가기 여부 (false면 사용자가 위로 스크롤한 상태)
-    var SCROLL_STICK_THRESHOLD = 80;      // px — 바닥과 이 거리 이내면 "붙어있음"으로 간주
-    var currentAbortController = null;    // 진행 중 SSE 스트림 취소용 (Stop, §6.2)
-    var pendingRenderText = null;         // rAF 배칭용 누적 텍스트 (§6.1)
-    var renderRafId = null;               // 스트리밍 렌더 rAF 핸들
-    var scrollRafPending = false;         // 스크롤 이벤트 throttle 플래그
+    // 질의 이력 사이드바의 대화 모드(D-248) — 서버에 저장된 스레드 목록의 캐시.
+    // 초기화(setupViewTabs)가 이력 코드보다 먼저 돌기 때문에 여기서 선언한다.
+    // 사이드바 펼침 상태 키도 같은 이유로 여기 둔다. 이력 코드 옆에 있을 때는 초기화 시점에
+    // undefined여서 펼친 상태가 복원되지 않았고, 새로고침 뒤 첫 클릭이 패널을 열지 못했다.
+    var HISTORY_PANEL_KEY = "query_history_panel_open";
+    var historyMode = "threads";   // threads(서버 대화) | queries(이 브라우저의 질의문 · D-183)
+    var threadItems = [];
+    var threadsState = "stale";    // stale | loading | ready | unavailable | error
+    var threadsReason = "";
+    var threadsSeq = 0;            // 늦게 도착한 옛 목록 응답을 버리기 위한 순번
+
+    // ─── Scroll (stick-to-bottom) State ───
+    var stickToBottom = true;          // 맨 아래 고정 여부
+    var hasNewContent = false;         // 고정 해제 상태에서 미확인 신규 출력 존재 여부(버튼 강조용)
+    var BOTTOM_THRESHOLD_PX = 24;      // 이 거리 이내면 "맨 아래"로 간주(테스트 후 조정 가능)
+
+    // 진행상황 패널 전용 스크롤 상태 (대화창 전역 상태와 분리 — §16)
+    var progressStickToBottom = true;  // 패널 맨 아래 고정 여부
+    var progressHasNewContent = false; // 패널 고정 해제 상태에서 미확인 신규 출력 존재 여부
+
+    // ─── Response Abort (Stop 버튼) State ───
+    var currentAbortController = null; // 진행 중 스트리밍 fetch의 AbortController
+    var currentReader = null;          // 진행 중 SSE reader (중단 시 best-effort cancel)
+
+    // ─── Streaming Render State (비파괴 렌더 + rAF 코얼레싱) ───
+    var _streamAccumulated = "";       // 현재 스트리밍 메시지의 누적 마크다운(렌더 입력)
+    var _streamRafQueued = false;      // 이번 프레임 렌더 예약 여부(토큰 버스트 코얼레싱)
+
+    // ─── Stream Status — 커서 아래 진행 상태 영역 (plans/89 · D-204) ───
+    // 서버 SSE progress/heartbeat 계약을 소비한다. 상태 문구는 도구명·노드명 → 결정적 라벨만
+    // 쓰고, LLM 사고 과정 텍스트는 노출하지 않는다(plans/89 §2).
+    var STREAM_STALL_MS = 15000;   // 마지막 신호 후 이만큼 조용하면 "신호 대기 중"(G-3: 하트비트 5s × 3)
+    var _streamStatus = null;      // 진행 중 스트림의 상태 기계 {startedAt,lastEventAt,phase,stalled,tasks,...}
 
     // ─── Prompt History ───
     var promptHistory = [];           // 전송된 프롬프트 히스토리 (오래된 순)
     var historyIndex = -1;            // 현재 탐색 위치 (-1 = 탐색 안 함)
     var savedCurrentInput = "";       // 히스토리 진입 전 입력 중이던 텍스트 보존
 
+    // ─── 질의 이력 저장소 (D-183) ───
+    //
+    // 위 promptHistory와 목적이 다르다 — 저것은 "직전에 친 순서"(↑↓ 탐색)라 세션 안에서만
+    // 의미가 있고, 이것은 "무엇을 물었나"(목록)라 새로고침을 넘겨 남아야 한다.
+    // 그래서 자료구조를 합치지 않는다: 합치면 한쪽 요구(연속 중복 보존 vs 중복 제거)가 깨진다.
+    //
+    // 저장 위치가 브라우저인 이유는 인증이 꺼져 있어(AUTH_ENABLED 미설정) 서버에 두면
+    // 모든 사용자가 anonymous 한 명으로 뭉쳐 남의 질의가 내 목록에 섞이기 때문이다.
+
+    var HISTORY_KEY = "query_prompt_history";   // 전례: alarm_receive_enabled · alarm_view_level
+    var HISTORY_MAX = 200;                      // 상한 없는 누적은 이 저장소의 금기
+
+    // 사생활 모드·용량 초과에서 localStorage는 **던진다**. 목록이 비는 것은 허용해도
+    // 그 때문에 질의 전송이 막히는 것은 허용하지 않는다 — 모든 접근을 감싼다.
+    function loadHistory() {
+        try {
+            var raw = localStorage.getItem(HISTORY_KEY);
+            var parsed = raw ? JSON.parse(raw) : [];
+            if (!Array.isArray(parsed)) return [];
+            // 손상된 항목은 조용히 걸러낸다(옛 형식·수동 편집)
+            return parsed.filter(function (it) {
+                return it && typeof it.q === "string" && it.q.length > 0;
+            });
+        } catch (e) {
+            console.warn("[history] 이력 로드 실패:", e);
+            return [];
+        }
+    }
+
+    function saveHistory(items) {
+        try {
+            localStorage.setItem(HISTORY_KEY, JSON.stringify(items));
+            return true;
+        } catch (e) {
+            console.warn("[history] 이력 저장 실패:", e);
+            return false;
+        }
+    }
+
+    // 같은 질의를 다시 보내면 기존 항목을 지우고 최신으로 올린다 —
+    // 같은 문장이 목록을 도배하면 목록 자체의 쓸모가 사라진다.
+    function pushHistory(query) {
+        var items = loadHistory().filter(function (it) { return it.q !== query; });
+        items.push({ q: query, t: Date.now() });
+        if (items.length > HISTORY_MAX) {
+            items = items.slice(items.length - HISTORY_MAX);
+        }
+        saveHistory(items);
+        renderHistoryList();
+    }
+
+    function removeHistoryAt(index) {
+        var items = loadHistory();
+        if (index < 0 || index >= items.length) return;
+        items.splice(index, 1);
+        saveHistory(items);
+        renderHistoryList();
+    }
+
+    function clearHistory() {
+        saveHistory([]);
+        renderHistoryList();
+    }
+
     // Stage definitions
     var stages = ["parse", "schema", "sql", "exec", "result"];
+    // 칩 정렬 순서 — "agent"는 1·2단 경로에서만 지연 생성된다(plans/89 §3.3)
+    var stageOrder = ["parse", "agent", "schema", "sql", "exec", "result"];
     var stageLabels = {
         parse: "입력 분석",
+        agent: "에이전트 실행",
         schema: "스키마 탐색",
         sql: "SQL 생성",
         exec: "쿼리 실행",
@@ -204,6 +409,7 @@
     };
     var stageMessages = {
         parse: "입력 분석 중...",
+        agent: "에이전트 실행 중...",
         schema: "데이터베이스 스키마 탐색 중...",
         sql: "SQL 쿼리 생성 중...",
         exec: "쿼리 실행 중...",
@@ -227,6 +433,10 @@
         result_merger:     "다중 DB 결과를 통합합니다",
         synonym_registrar: "새로운 유사어를 등록합니다",
         error_response:    "처리 중 오류가 발생했습니다",
+        intent_planner:    "사용자 질의를 처리할 작업(의도) 단위로 분해합니다",
+        agent_orchestrator:"분해된 작업들을 순서/병렬로 실행합니다",
+        replanner:         "1차 결과를 평가하여 후속 작업이 필요한지 판단합니다",
+        result_aggregator: "여러 작업 결과를 하나의 응답으로 통합합니다",
     };
 
     var nodeLabels = {
@@ -243,7 +453,60 @@
         result_merger: "결과 병합",
         general_inference: "일반 추론",
         error_response: "에러 처리",
+        intent_planner: "의도 분석",
+        agent_orchestrator: "작업 실행",
+        replanner: "재계획",
+        result_aggregator: "결과 통합",
+        // plans/89 · D-204: 사다리 1단(부가 경로 · D-225 ②) + 옵트인 노드(서버 화이트리스트와 대칭)
+        deep_agent: "에이전트 실행",
+        fault_diagnosis: "장애 진단",
+        cache_management: "캐시 관리",
+        approval_gate: "SQL 승인 대기",
+        synonym_registrar: "유사어 등록",
     };
+
+    // task agent 식별자 → 사용자용 라벨 (처리 현황 작업 목록 표시)
+    var agentLabels = {
+        data_query: "DB 조회",
+        alarm_query: "알람 조회",
+        cache_management: "캐시 관리",
+        synonym_registration: "유사어 등록",
+        general_inference: "일반 안내",
+        // plans/89 §3.4: 빠져 있던 agent — 상태줄이 원시 이름을 노출하지 않도록 보강
+        process_query: "프로세스 조회",
+        host_inspect: "호스트 점검",
+        fault_diagnosis: "장애 진단",
+        // plans/127: 조건부 처리기(활성일 때만 계획에 오른다)
+        doc_query: "문서 검색",
+    };
+
+    // 도구 이름 → 사용자용 라벨 (plans/89 · D-204). 서버는 원시 이름만 낸다 —
+    // deepagents_tools._TOOL_NAMES 7종 + deepagents 0.6.x 내장 도구. 미지 이름은 폴백 문구.
+    var toolLabels = {
+        query_infra_db: "인프라 DB 조회",
+        query_live_processes: "프로세스 실시간 조회",
+        query_alarm: "알람 조회",
+        manage_cache: "캐시 관리",
+        register_synonym: "유사어 등록",
+        general_answer: "일반 답변 생성",
+        inspect_host: "호스트 점검",
+        write_todos: "작업 계획 수립",
+        task: "하위 작업 위임",
+        read_file: "작업 메모 확인",
+        write_file: "작업 메모 기록",
+        edit_file: "작업 메모 수정",
+        ls: "작업 메모 확인",
+    };
+    var stepLabels = {
+        "agent.resume": "에이전트 재개", "agent.aggregate": "최종 응답 합성",
+        // 핸들러 내부 마일스톤(plans/89 T4) — 서버가 label을 실어 보내면 그쪽이 우선한다
+        "schema.sample": "샘플 수집", "pipeline.schema": "스키마 분석", "pipeline.generate": "SQL 생성",
+        "pipeline.validate": "SQL 검증", "pipeline.execute": "SQL 실행", "pipeline.multi_db": "멀티 DB 조회",
+        "pipeline.organize": "결과 정리"
+    };
+
+    function toolLabel(name) { return toolLabels[name] || ("도구 실행: " + name); }
+    function agentLabel(agent) { return agentLabels[agent] || agent || "작업"; }
 
     // ─── Tooltip ───
 
@@ -278,53 +541,93 @@
 
     // ─── Initialization ───
 
+    setupViewTabs();
+    setupDbScopeChip();   // Plan 90 D-205
+
+    // 테마 토글 — 이 브라우저에만 적용되는 개인 선택(전역 기본값은 운영자가 정한다).
+    // data-theme 적용 자체는 head의 theme.js가 첫 페인트 전에 끝낸다.
+    var themeToggleBtn = document.getElementById("themeToggle");
+    if (themeToggleBtn && window.AppTheme) {
+        themeToggleBtn.addEventListener("click", function () {
+            window.AppTheme.setPersonal(window.AppTheme.toggleValue());
+        });
+    }
+
     promptEl.addEventListener("input", autoResizeTextarea);
     promptEl.addEventListener("keydown", handleKeydown);
-    // 전송 버튼: 처리 중이면 응답 중지(Stop, §6.2), 아니면 전송
-    sendBtn.addEventListener("click", function () {
-        if (isProcessing) {
-            stopStreaming();
-        } else {
-            handleSend();
-        }
-    });
+    sendBtn.addEventListener("click", handleSend);
     fileInput.addEventListener("change", handleFileChange);
     removeFileBtn.addEventListener("click", clearFile);
-
-    // 채팅 영역 스크롤 추적 (Plan 49 §3.1) — rAF throttle
-    if (chatMessages) {
-        chatMessages.addEventListener("scroll", function () {
-            if (scrollRafPending) return;
-            scrollRafPending = true;
-            requestAnimationFrame(function () {
-                scrollRafPending = false;
-                autoStick = isNearBottom();
-                updateScrollButton();
-            });
-        });
-    }
-
-    // 플로팅 "맨 아래로" 버튼 클릭 (Plan 49 §3.3)
-    if (scrollToBottomBtn) {
-        scrollToBottomBtn.addEventListener("click", function () {
-            scrollToBottom({ behavior: "smooth" });
-        });
-    }
 
     hintButtons.forEach(function (btn) {
         btn.addEventListener("click", function () {
             promptEl.value = btn.dataset.query;
             autoResizeTextarea.call(promptEl);
             promptEl.focus();
+            // 도움말 버튼은 예시와 달리 클릭 즉시 실행하여 채팅으로 안내를 전달한다.
+            if (btn.dataset.help) {
+                handleSend();
+            }
         });
     });
 
     // Panel toggle
     panelToggle.addEventListener("click", function () {
         document.querySelector(".chat-layout").classList.toggle("panel-collapsed");
+        // 접힘/펼침 시 패널 스크롤 버튼 표시 상태 갱신(§16.4)
+        updateProgressScrollBtn();
     });
 
+    // 채팅 스크롤: 맨 아래 고정(stick-to-bottom) 상태 추적 + 플로팅 버튼 토글
+    chatMessages.addEventListener("scroll", function () {
+        stickToBottom = isNearBottom();
+        if (stickToBottom) hasNewContent = false;   // 맨 아래 복귀 → 신규 강조 해제
+        updateScrollToBottomBtn();
+    }, { passive: true });
+
+    if (scrollToBottomBtn) {
+        scrollToBottomBtn.addEventListener("click", function () {
+            scrollToBottom(true);   // smooth 이동 + stickToBottom=true 복귀
+        });
+    }
+
+    // 진행상황 패널 스크롤: 대화창과 동일한 스티키-팔로잉 (§16, 패널 전용 상태 사용)
+    if (progressPanelBody) {
+        progressPanelBody.addEventListener("scroll", function () {
+            progressStickToBottom = isNearBottom(progressPanelBody);
+            if (progressStickToBottom) progressHasNewContent = false;
+            updateProgressScrollBtn();
+        }, { passive: true });
+    }
+
+    if (progressScrollBtn) {
+        progressScrollBtn.addEventListener("click", function () {
+            scrollProgressToBottom(true);   // smooth 이동 + progressStickToBottom=true 복귀
+        });
+    }
+
+    // 이벤트 알람 뷰 스크롤: 최신 알람은 맨 위에 쌓이므로 채팅 버튼의 상하 반전이다 —
+    // 맨 위를 벗어나면 "맨 위로" 버튼을 띄우고, 그 사이 도착한 알람은 점으로 강조한다.
+    if (alarmView) {
+        alarmView.addEventListener("scroll", updateAlarmScrollBtn, { passive: true });
+    }
+    if (alarmScrollTopBtn) {
+        alarmScrollTopBtn.addEventListener("click", function () {
+            alarmView.scrollTo({ top: 0, behavior: "smooth" });
+            alarmHasNew = false;
+            updateAlarmScrollBtn();
+        });
+    }
+
     // ─── Auto-resize Textarea ───
+
+    // 매뉴얼 메뉴(plans/116): 링크를 누르거나 바깥을 누르면 닫는다(<details> 는 스스로 닫히지 않는다)
+    (function () {
+        var menu = document.getElementById("manualMenu");
+        if (!menu) return;
+        menu.addEventListener("click", function (e) { if (e.target.tagName === "A") menu.open = false; });
+        document.addEventListener("click", function (e) { if (!menu.contains(e.target)) menu.open = false; });
+    })();
 
     function autoResizeTextarea() {
         this.style.height = "auto";
@@ -453,32 +756,60 @@
 
     // ─── Send Message ───
 
-    // ─── Stop / Send button mode (Plan 49 §6.2) ───
-
-    function setSendButtonMode(processing) {
-        if (processing) {
-            sendBtn.classList.add("is-stop");
-            sendBtn.title = "응답 중지";
-            sendBtn.setAttribute("aria-label", "응답 중지");
+    // §11: 전송 버튼을 전송(paper-plane) ↔ 정지(■)로 토글한다.
+    // 정지 모드에서도 클릭을 받아야 하므로 disabled로 두지 않는다.
+    function setSendButtonMode(mode) {
+        if (mode === "stop") {
+            sendBtn.classList.add("input-btn--stop");
+            sendBtn.disabled = false;
+            sendBtn.title = "응답 중단";
+            sendBtn.setAttribute("aria-label", "응답 중단");
+            sendBtn.innerHTML =
+                '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>';
         } else {
-            sendBtn.classList.remove("is-stop");
+            sendBtn.classList.remove("input-btn--stop");
+            sendBtn.disabled = false;
             sendBtn.title = "전송 (Enter)";
             sendBtn.setAttribute("aria-label", "전송");
+            sendBtn.innerHTML =
+                '<svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>';
         }
-        sendBtn.disabled = false; // 중지 가능하도록 항상 활성 유지
     }
 
+    // §11: 진행 중 스트리밍 응답을 중단한다(클라이언트 abort → 서버 취소 전파).
     function stopStreaming() {
         if (currentAbortController) {
             try { currentAbortController.abort(); } catch (_e) {}
         }
+        if (currentReader) {
+            try { currentReader.cancel(); } catch (_e) {}
+        }
     }
 
     function handleSend() {
-        if (isProcessing) return;
+        // 진행 중이면 전송 대신 중단 동작(스트리밍 경로 한정).
+        if (isProcessing) {
+            stopStreaming();
+            return;
+        }
+        hidePromptConfirm();   // Plan 86: 어느 경로로 보내든 확인 바는 여기서 닫힌다
 
         var query = promptEl.value.trim();
         if (!query) {
+            // 존 선택 대기 중이면 전송 버튼(Enter 포함)도 '선택한 존으로 조회'와 동일 동작
+            // (사용자는 체크 후 습관적으로 전송을 누름 — 2026-07-24 UX 피드백).
+            var pendingClarify = document.querySelectorAll(".zone-clarify:not(.zone-clarify--done)");
+            if (pendingClarify.length) {
+                var lastBox = pendingClarify[pendingClarify.length - 1];
+                var clarifyConfirm = lastBox.querySelector(".zone-clarify-confirm");
+                var anyChecked = lastBox.querySelector('input[type="checkbox"]:checked');
+                if (clarifyConfirm && anyChecked) {
+                    clarifyConfirm.click();
+                    return;
+                }
+                showError("조회할 존을 선택해주세요.");
+                return;
+            }
             showError("질의를 입력해주세요.");
             return;
         }
@@ -487,10 +818,16 @@
         if (promptHistory.length === 0 || promptHistory[promptHistory.length - 1] !== query) {
             promptHistory.push(query);
         }
+        // 질의 이력(D-183)에도 함께 남긴다. handleSend는 전송의 단일 진입점이라
+        // (버튼·Enter·웰컴 힌트·파일 업로드가 전부 여기를 지난다) 기록 지점을 늘릴 필요가 없다.
+        // 성공 여부를 기다리지 않는 것은 기록 대상이 "무엇을 물었나"이기 때문이다.
+        pushHistory(query);
         historyIndex = -1;
         savedCurrentInput = "";
 
         hideError();
+        // 답하지 않은 존 선택 블록은 새 질의 시작 시 비활성 (보류 상태 자기정리 — Plan 75 §4)
+        disableZoneClarifyBlocks();
 
         // Hide welcome
         if (chatWelcome && !chatWelcome.classList.contains("hidden")) {
@@ -511,12 +848,17 @@
         promptEl.value = "";
         promptEl.style.height = "auto";
 
-        // Execute
+        // Execute — 스코프 칩의 pending(선택 1회 / 해제)은 여기서만 소비·초기화한다(단일 진입점).
+        var sendDbIds = pendingDbIds;
+        var sendReset = pendingReset;
+        pendingDbIds = null;
+        pendingReset = false;
         if (selectedFile) {
-            executeFileQuery(query, selectedFile);
+            // 파일 턴은 초기 상태로 시작해 원래 승계하지 않는다(SPEC Open Q2) — reset은 실을 필요가 없다.
+            executeFileQuery(query, selectedFile, sendDbIds);
             clearFile();
         } else {
-            executeStreamingQuery(query);
+            executeStreamingQuery(query, sendDbIds, undefined, undefined, undefined, sendReset);
         }
     }
 
@@ -528,20 +870,51 @@
 
         var avatarHtml = '<div class="message-avatar"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>';
 
-        var fileHtml = "";
+        // §14: 첨부 파일은 메신저(카카오톡)처럼 말풍선 "위"의 별도 카드로 분리한다.
+        // 전송 직후엔 query_id가 없으므로 href를 비워두고(data-attachment-pending로 마킹)
+        // 응답 수신 후 attachDownloadToLastFileCard()가 원본 다운로드 링크를 사후 주입한다.
+        var fileCardHtml = "";
         if (msg.file) {
-            fileHtml = '<div class="message-file-badge"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' + escapeHtml(msg.file.name) + '</div>';
+            var sizeHtml = (msg.file.size != null)
+                ? '<span class="message-file-card-size">' + escapeHtml(formatFileSize(msg.file.size)) + '</span>'
+                : '';
+            fileCardHtml =
+                '<a class="message-file-card" data-attachment-pending="1" title="원본 양식 다운로드">' +
+                    '<span class="message-file-card-icon"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>' +
+                    '<span class="message-file-card-info">' +
+                        '<span class="message-file-card-name">' + escapeHtml(msg.file.name) + '</span>' +
+                        sizeHtml +
+                    '</span>' +
+                    '<span class="message-file-card-download"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>' +
+                '</a>';
+        }
+
+        // 텍스트가 비어 있으면(파일만 첨부) 빈 말풍선을 렌더하지 않는다.
+        var bubbleHtml = "";
+        if (msg.content && msg.content.trim()) {
+            bubbleHtml = '<div class="message-bubble">' + escapeHtml(msg.content) + '</div>';
         }
 
         el.innerHTML =
             avatarHtml +
             '<div class="message-content">' +
-                '<div class="message-bubble">' + escapeHtml(msg.content) + fileHtml + '</div>' +
+                fileCardHtml +
+                bubbleHtml +
                 '<div class="message-time">' + formatTime(msg.time) + '</div>' +
             '</div>';
 
         chatMessages.appendChild(el);
         scrollToBottom();
+    }
+
+    // §14: 파일 질의 응답 수신 후, 가장 최근의 미확정 파일 카드에 원본 다운로드 링크를 주입한다.
+    function attachDownloadToLastFileCard(queryId) {
+        if (!queryId) return;
+        var cards = document.querySelectorAll(".message-file-card[data-attachment-pending]");
+        if (!cards.length) return;
+        var card = cards[cards.length - 1];
+        card.setAttribute("href", "/api/v1/query/" + encodeURIComponent(queryId) + "/attachment");
+        card.removeAttribute("data-attachment-pending");
     }
 
     // ─── Render Processing Indicator ───
@@ -572,7 +945,7 @@
             '</div>';
 
         chatMessages.appendChild(el);
-        scrollToBottom();
+        scrollToBottomIfSticky();
         startStageAnimation();
     }
 
@@ -592,7 +965,33 @@
         query_executor: "exec", multi_db_executor: "exec",
         result_organizer: "result", result_merger: "result",
         output_generator: "result",
+        // plans/89 · D-204: 1·2단 노드 → agent 단계(지연 칩)
+        deep_agent: "agent", intent_planner: "agent", agent_orchestrator: "agent",
+        replanner: "agent", fault_diagnosis: "agent", result_aggregator: "result",
     };
+
+    function stageContainer() {
+        return document.getElementById("streamingStages") || document.getElementById("processingStages");
+    }
+
+    // 칩을 지연 생성한다 — 없는 단계는 만들고, 있으면 그대로 돌려준다
+    function ensureStageChip(stage) {
+        var box = stageContainer();
+        if (!box || !stage) return null;
+        var chip = box.querySelector('.stage[data-stage="' + stage + '"]');
+        if (chip) return chip;
+        chip = document.createElement("div");
+        chip.className = "stage";
+        chip.setAttribute("data-stage", stage);
+        chip.innerHTML = '<span class="stage-dot"></span>' + (stageLabels[stage] || stage);
+        var idx = stageOrder.indexOf(stage);
+        var before = null;
+        Array.prototype.forEach.call(box.querySelectorAll(".stage"), function (c) {
+            if (!before && stageOrder.indexOf(c.getAttribute("data-stage")) > idx) before = c;
+        });
+        box.insertBefore(chip, before);
+        return chip;
+    }
 
     function startStageAnimation() {
         // 초기 상태만 설정하고, SSE 이벤트를 대기한다.
@@ -605,14 +1004,20 @@
         var stage = nodeToStage[node];
         if (!stage) return;
 
-        var stageEl = document.querySelector('.stage[data-stage="' + stage + '"]');
+        // 스트리밍 말풍선의 칩(#streamingStages)을 우선, 없으면 처리 말풍선(폴백 경로)
+        var stageEl = ensureStageChip(stage);
         if (!stageEl) return;
 
         var textEl = document.getElementById("processingText");
 
         if (status === "start") {
             stageEl.classList.add("active");
-            if (textEl) textEl.textContent = stageMessages[stage] || "처리 중...";
+            var msg = nodeLabels[node] ? (nodeLabels[node] + " 중...") : (stageMessages[stage] || "처리 중...");
+            if (textEl) textEl.textContent = msg;
+            if (_streamStatus && _streamStatus.phase !== "streaming") {
+                _streamStatus.phase = "active";
+                setStreamStatusText(msg);
+            }
         } else if (status === "complete") {
             stageEl.classList.remove("active");
             stageEl.classList.add("done");
@@ -703,6 +1108,12 @@
                 '</div>';
         }
 
+        // §13: 다운로드(엑셀/양식)·CSV 버튼을 간격 래퍼로 묶어 오클릭·답답함을 줄인다.
+        var downloadActionsHtml = "";
+        if (downloadHtml || csvHtml) {
+            downloadActionsHtml = '<div class="message-download-actions">' + downloadHtml + csvHtml + '</div>';
+        }
+
         el.innerHTML =
             avatarHtml +
             '<div class="message-content">' +
@@ -710,20 +1121,22 @@
                     '<div class="response-text">' + renderMarkdown(responseText) + '</div>' +
                     metaHtml +
                     sqlHtml +
-                    downloadHtml +
-                    csvHtml +
+                    downloadActionsHtml +
                     reportHtml +
                 '</div>' +
-                '<div class="message-time">' + formatTime(new Date()) + '</div>' +
+                // data.time: 저장된 대화를 다시 그릴 때의 원래 시각(D-248)
+                '<div class="message-time">' + formatTime(data.time || new Date()) + '</div>' +
             '</div>';
 
         chatMessages.appendChild(el);
-        scrollToBottom();
+        scrollToBottomIfSticky();
     }
 
     // ─── Create Streaming Agent Message ───
 
     function createStreamingMessage() {
+        // 새 스트리밍 시작 — 이전 스트림의 잔여 rAF가 새 버블에 옛 텍스트를 렌더하지 않도록 초기화
+        _streamAccumulated = "";
         var el = document.createElement("div");
         el.className = "message message--agent";
         el.id = "streamingMessage";
@@ -736,6 +1149,15 @@
                 '<div class="message-bubble">' +
                     '<div class="response-text" id="streamingText"></div>' +
                     '<span class="typing-cursor" id="streamingCursor"></span>' +
+                    // plans/89 · D-204: 커서 아래 진행 상태 영역 — 활동 문구 · 경과 · 단계 칩(이관) · 복합 단계 목록
+                    '<div class="stream-status" id="streamingStatus" role="status" aria-live="polite">' +
+                        '<div class="stream-status-line">' +
+                            '<span class="stream-status-spinner" aria-hidden="true"></span>' +
+                            '<span class="stream-status-text" id="streamingStatusText">요청 분석 중...</span>' +
+                            '<span class="stream-status-elapsed" id="streamingStatusElapsed">0.0s</span>' +
+                        '</div>' +
+                        '<div class="processing-stages stream-status-steps" id="streamingStages"></div>' +
+                    '</div>' +
                     '<div id="streamingMeta"></div>' +
                     '<div id="streamingSql"></div>' +
                 '</div>' +
@@ -743,16 +1165,455 @@
             '</div>';
 
         chatMessages.appendChild(el);
-        scrollToBottom();
+        // 처리 말풍선(#processingMessage)의 단계 칩 상태를 스트리밍 말풍선으로 이관한다 —
+        // 예전에는 SSE 연결 직후 칩을 지웠고 이후 갱신은 대상 DOM이 없어 무동작이었다(plans/89 §0 ③).
+        var oldChips = document.querySelectorAll("#processingStages .stage");
+        if (oldChips.length) {
+            Array.prototype.forEach.call(oldChips, function (c) {
+                var chip = ensureStageChip(c.getAttribute("data-stage"));
+                if (chip) chip.className = c.className;
+            });
+        } else {
+            stages.forEach(ensureStageChip);
+        }
+        beginStreamStatus();
+        scrollToBottomIfSticky();
         return el;
+    }
+
+    // ─── Stream Status 상태 기계 (plans/89 §3.3) ───
+    // waiting → active(node/tool/task) → streaming(첫 token) → done | stalled(무신호 15s, 하트비트로 복귀)
+    function beginStreamStatus() {
+        stopStreamStatusTimers();
+        var now = Date.now();
+        _streamStatus = { startedAt: now, lastEventAt: now, phase: "waiting", stalled: false,
+                          stepCount: 0, tasks: {}, taskOrder: [], activeTaskId: null, text: "", timer: null };
+        // 경과 시간은 클라이언트 타이머 — 서버 신호와 무관하게 "시간이 흐른다"는 최소 피드백(폴백 경로 포함)
+        _streamStatus.timer = setInterval(tickStreamStatus, 1000);
+        setStreamStatusText("요청 분석 중...");
+    }
+
+    function stopStreamStatusTimers() {
+        if (_streamStatus && _streamStatus.timer) {
+            clearInterval(_streamStatus.timer);
+            _streamStatus.timer = null;
+        }
+    }
+
+    function tickStreamStatus() {
+        if (!_streamStatus) return;
+        var el = document.getElementById("streamingStatusElapsed");
+        if (el) el.textContent = ((Date.now() - _streamStatus.startedAt) / 1000).toFixed(1) + "s";
+        var box = document.getElementById("streamingStatus");
+        if (!box) return;
+        var quiet = Date.now() - _streamStatus.lastEventAt;
+        if (quiet >= STREAM_STALL_MS && !_streamStatus.stalled) {
+            _streamStatus.stalled = true;
+            box.classList.add("stalled");
+        }
+        if (_streamStatus.stalled) {
+            var t = document.getElementById("streamingStatusText");
+            if (t) t.textContent = "서버 신호 대기 중 · 마지막 신호 " + Math.round(quiet / 1000) + "초 전";
+        }
+    }
+
+    // 모든 SSE 이벤트(heartbeat 포함)가 호출한다 — stalled 복귀
+    function noteStreamActivity() {
+        if (!_streamStatus) return;
+        _streamStatus.lastEventAt = Date.now();
+        if (_streamStatus.stalled) {
+            _streamStatus.stalled = false;
+            var box = document.getElementById("streamingStatus");
+            if (box) box.classList.remove("stalled");
+            var t = document.getElementById("streamingStatusText");
+            if (t) t.textContent = _streamStatus.text || "처리 중...";
+        }
+    }
+
+    function setStreamStatusText(text) {
+        if (_streamStatus) _streamStatus.text = text;
+        var t = document.getElementById("streamingStatusText");
+        if (t && !(_streamStatus && _streamStatus.stalled)) t.textContent = text;
+    }
+
+    function markStreamTokens() {
+        if (_streamStatus && _streamStatus.phase !== "streaming") {
+            _streamStatus.phase = "streaming";
+            setStreamStatusText("응답 작성 중...");
+        }
+    }
+
+    // progress 이벤트 — 문구 우선순위: task(in_progress) > tool > node (plans/89 §3.4)
+    function handleProgressEvent(event) {
+        if (!_streamStatus) return;
+        if (event.phase === "start") _streamStatus.stepCount++;
+        if (event.kind === "task" && event.task) {
+            handleTaskProgress(event);
+        } else if (event.kind === "tool") {
+            if (event.phase === "start" && _streamStatus.phase !== "streaming" && !_streamStatus.activeTaskId) {
+                _streamStatus.phase = "active";
+                setStreamStatusText(toolLabel(event.name) + " 중...");
+            }
+        } else if (event.kind === "step") {
+            if (event.phase === "start" && _streamStatus.phase !== "streaming") {
+                setStreamStatusText((event.label || stepLabels[event.name] || event.name) + "...");
+            }
+        } else if (event.kind === "group" && event.group) {
+            handleGroupProgress(event);
+        }
+        appendPipelineSubStep(event);
+    }
+
+    // 존 그룹 순차 조회(plans/82 v7 R-2·R-3 · D-249) — 그룹 시작·완료를 상태줄에 싣고, 먼저 끝난
+    // peer 그룹의 행 미리보기(서버가 마스킹한 뒤 보낸다)를 커서 아래 "부분 결과" 카드로 보여 준다.
+    // 카드는 종합 응답을 대신하지 않는다 — 완료되면 요약 버튼 아래로 접힌다(append-only).
+    function groupLabel(g) { return g.label || g.group_key || "실행 그룹"; }
+
+    function groupFailed(g) { return !!(g.error_dbs && g.error_dbs.length) && !g.row_count; }
+
+    function handleGroupProgress(event) {
+        var g = event.group;
+        if (_streamStatus.phase !== "streaming") {
+            _streamStatus.phase = "active";
+            setStreamStatusText(event.phase === "start"
+                ? groupLabel(g) + " 조회 중..."
+                : groupLabel(g) + " 조회 완료 · " + (g.row_count || 0) + "건");
+        }
+        if (event.phase === "end") renderGroupPartial(g);
+    }
+
+    function renderGroupPartial(g) {
+        var box = document.getElementById("streamingStatus");
+        if (!box) return;
+        var wrap = box.querySelector(".stream-partials");
+        if (!wrap) {
+            wrap = document.createElement("div");
+            wrap.className = "stream-partials";
+            box.appendChild(wrap);
+        }
+        var html = '<div class="stream-partial-head"><strong>' + escapeHtml(groupLabel(g)) + "</strong> · " +
+                   (g.row_count || 0) + "건 · " + ((g.elapsed_ms || 0) / 1000).toFixed(1) + "s" +
+                   ' <span class="stream-partial-note">먼저 조회된 결과</span></div>';
+        var p = g.preview;
+        if (p && p.columns && p.columns.length && p.rows && p.rows.length) {
+            html += '<div class="stream-partial-table-wrap"><table class="stream-partial-table"><thead><tr>' +
+                p.columns.map(function (c) { return "<th>" + escapeHtml(String(c)) + "</th>"; }).join("") +
+                "</tr></thead><tbody>" +
+                p.rows.map(function (r) {
+                    return "<tr>" + r.map(function (v) {
+                        return "<td>" + escapeHtml(v == null ? "" : String(v)) + "</td>";
+                    }).join("") + "</tr>";
+                }).join("") +
+                "</tbody></table></div>";
+            if (p.truncated) html += '<div class="stream-partial-more">외 ' + p.truncated + "건은 종합 응답에서 확인하세요</div>";
+        }
+        if (g.error_dbs && g.error_dbs.length) {
+            html += '<div class="stream-partial-error">조회 실패: ' + escapeHtml(g.error_dbs.join(", ")) + "</div>";
+        }
+        var card = document.createElement("div");
+        card.className = "stream-partial" + (groupFailed(g) ? " stream-partial--failed" : "");
+        card.setAttribute("data-group", g.group_key || "");
+        card.innerHTML = html;
+        wrap.appendChild(card);
+        scrollToBottomIfSticky();
+    }
+
+    function taskOrdinal(t) {
+        return t.total ? (t.order + "/" + t.total + " 단계") : (t.order + "번째 조회");
+    }
+
+    // 복합 질의 단계(plans/88 연계) — 실행 중 목록. 필드명은 서버 task 페이로드(DependencyVerdict) 그대로.
+    function handleTaskProgress(event) {
+        var t = event.task;
+        var id = t.task_id || ("t" + t.order);
+        if (!_streamStatus.tasks[id]) _streamStatus.taskOrder.push(id);
+        _streamStatus.tasks[id] = t;
+        if (event.phase === "start") {
+            _streamStatus.activeTaskId = id;
+        } else if (_streamStatus.activeTaskId === id) {
+            _streamStatus.activeTaskId = null;
+        }
+        renderStreamTasks();
+        if (_streamStatus.phase !== "streaming") {
+            if (event.phase === "start") {
+                _streamStatus.phase = "active";
+                setStreamStatusText(taskOrdinal(t) + " · " + (t.sub_query || agentLabel(t.agent)) + " 중...");
+            } else if (t.status === "skipped") {
+                setStreamStatusText(taskOrdinal(t) + " 건너뜀");
+            }
+        }
+    }
+
+    function renderStreamTasks() {
+        var box = document.getElementById("streamingStatus");
+        if (!box) return;
+        var list = box.querySelector(".stream-status-tasks");
+        if (!list) {
+            // 단일 DB 경로(3·4단)에는 task 이벤트가 없으므로 목록 DOM 자체가 생기지 않는다
+            list = document.createElement("ul");
+            list.className = "stream-status-tasks";
+            box.appendChild(list);
+        }
+        var html = "";
+        _streamStatus.taskOrder.forEach(function (id) {
+            var t = _streamStatus.tasks[id];
+            // reason이 있으면 상태값과 무관하게 "건너뜀" 우선(88 R-A: skipped 도입이 미뤄지면 failed로 온다)
+            var cls = (t.status === "skipped" || t.reason) ? "skipped"
+                    : t.status === "failed" ? "failed"
+                    : t.status === "completed" ? "done" : "active";
+            var mark = cls === "done" ? "\u2713" : cls === "skipped" ? "\u2298" : cls === "failed" ? "\u2715" : "\u25B8";
+            var tail = "";
+            if (t.row_count != null) tail += " \u2192 " + t.row_count + "건";
+            if (t.scope_size) tail += " · 대상 " + t.scope_size + "대" + (t.scope_col ? " (" + t.scope_col + ")" : "");
+            if (t.truncated_count) tail += " · " + t.truncated_count + "대 절단";
+            if (cls === "skipped") tail += " — 건너뜀" + (t.error ? ": " + t.error : "");
+            else if (cls === "failed" && t.error) tail += " — 실패: " + t.error;
+            else if (cls === "active") tail += " · 진행 중";
+            html += '<li class="stream-task stream-task--' + cls + '"><span class="stream-task-mark" aria-hidden="true">' + mark + '</span> ' +
+                    '<strong>' + escapeHtml(taskOrdinal(t)) + '</strong> ' +
+                    escapeHtml(t.sub_query || agentLabel(t.agent)) + escapeHtml(tail) + '</li>';
+        });
+        list.innerHTML = html;
+        scrollToBottomIfSticky();
+    }
+
+    // 완료: G-2/G-5 — 한 줄 요약으로 접는다(단계 목록은 클릭으로 펼침). 본문의 순차 처리 경과
+    // 블록(plans/88 R-5)이 정본이라 펼친 채 두면 같은 내용이 두 번 보인다. 중단·오류는 영역 제거.
+    function endStreamStatus(outcome, meta) {
+        stopStreamStatusTimers();
+        var box = document.getElementById("streamingStatus");
+        var st = _streamStatus;
+        _streamStatus = null;
+        if (!box) return;
+        var partials = box.querySelector(".stream-partials");
+        if (outcome !== "done" || !st) {
+            // 중단·오류여도 먼저 끝난 존의 부분 결과는 남긴다 — 공동존이 시간 초과로 끊겨도
+            // 은행존 결과는 이미 받은 것이다(plans/82 v7 R-2 · Online Aggregation의 이득이 여기서 난다).
+            if (partials && box.parentNode) box.parentNode.insertBefore(partials, box);
+            box.remove();
+            return;
+        }
+        var elapsed = (meta && meta.processing_time_ms != null)
+            ? meta.processing_time_ms / 1000 : (Date.now() - st.startedAt) / 1000;
+        var count = st.taskOrder.length || st.stepCount;
+        var summary = "완료 · " + (count ? count + "단계 · " : "") + elapsed.toFixed(1) + "s";
+        if (partials) summary += " · 먼저 표시된 존별 결과 " + partials.children.length + "개";
+        var line = box.querySelector(".stream-status-line");
+        if (line) line.remove();
+        var chips = box.querySelector(".stream-status-steps");
+        if (chips) chips.remove();
+        var tasks = box.querySelector(".stream-status-tasks");
+        var folded = [tasks, partials].filter(Boolean);
+        var doneEl = document.createElement("button");
+        doneEl.type = "button";
+        doneEl.className = "stream-status-done";
+        doneEl.textContent = summary;
+        if (folded.length) {
+            folded.forEach(function (el) { el.hidden = true; });
+            doneEl.setAttribute("aria-expanded", "false");
+            doneEl.addEventListener("click", function () {
+                var open = folded[0].hidden;
+                folded.forEach(function (el) { el.hidden = !open; });
+                doneEl.setAttribute("aria-expanded", String(open));
+            });
+        } else {
+            doneEl.disabled = true;
+        }
+        box.insertBefore(doneEl, box.firstChild);
+        box.classList.add("stream-status--done");
+        box.classList.remove("stalled");
+        box.removeAttribute("aria-live");
+    }
+
+    // 오른쪽 처리 현황 패널 — 활성 스텝 본문에 도구/단계 하위 행(G-4 · T7)
+    function appendPipelineSubStep(event) {
+        if (!progressPipeline) return;
+        var stepEl = (event.node && document.getElementById("step-" + event.node))
+                  || progressPipeline.querySelector(".pipeline-step.active");
+        if (!stepEl) return;
+        var bodyEl = stepEl.querySelector(".pipeline-step-body");
+        if (!bodyEl) return;
+        var list = bodyEl.querySelector(".pipeline-substeps");
+        if (!list) {
+            list = document.createElement("ul");
+            list.className = "step-data-list pipeline-substeps";
+            bodyEl.appendChild(list);
+            stepEl.classList.add("expanded");
+        }
+        var isTask = event.kind === "task" && event.task;
+        var isGroup = event.kind === "group" && event.group;  // 존 그룹 순차 조회(plans/82 v7 R-3)
+        var key = event.kind + ":" + (isTask ? (event.task.task_id || event.task.order)
+                                     : isGroup ? (event.group.group_key || "") : event.name);
+        var li = list.querySelector('li[data-key="' + key + '"]');
+        if (!li) {
+            li = document.createElement("li");
+            li.setAttribute("data-key", key);
+            li.setAttribute("data-start", String(event.timestamp_ms || 0));
+            list.appendChild(li);
+        }
+        var label = isTask ? (taskOrdinal(event.task) + " " + (event.task.sub_query || agentLabel(event.task.agent)))
+                  : isGroup ? (groupLabel(event.group) + " 조회" + (event.phase === "end" ? " — " + (event.group.row_count || 0) + "건" : ""))
+                  : event.kind === "tool" ? (toolLabel(event.name) + (event.label ? " — " + event.label : ""))
+                  : (event.label || stepLabels[event.name] || event.name);
+        var status = "진행 중";
+        if (event.phase === "end") {
+            var ts = isTask ? event.task.status : (isGroup && groupFailed(event.group)) ? "failed" : "completed";
+            status = (ts === "skipped" || (isTask && event.task.reason)) ? "건너뜀" : ts === "failed" ? "실패" : "완료";
+        }
+        var badgeCls = status === "완료" ? "success" : status === "진행 중" ? "info" : "error";
+        var elapsed = "";
+        if (event.phase === "end") {
+            var d = ((event.timestamp_ms || 0) - parseFloat(li.getAttribute("data-start") || "0")) / 1000;
+            if (d > 0) elapsed = " " + d.toFixed(1) + "s";
+        }
+        li.innerHTML = escapeHtml(label) + ' <span class="step-data-badge step-data-badge--' + badgeCls + '">' + status + '</span>' + escapeHtml(elapsed);
+        scrollProgressToBottomIfSticky();
+    }
+
+    // §12: 응답 중단 시 에이전트(왼쪽) 말풍선 하단에 회색 안내 라인을 표시한다.
+    // 부분 텍스트가 있으면 그 아래에, 스트리밍 버블이 없으면(토큰 0개) 안내만 단독 표시한다.
+    function markStreamInterrupted() {
+        endStreamStatus("interrupted");
+        // 타이핑 커서 제거
+        var cursor = document.getElementById("streamingCursor");
+        if (cursor) cursor.remove();
+
+        var noteHtml = '<div class="message-interrupted-note">⏹ 응답이 중단되었습니다</div>';
+        var streamingMsg = document.getElementById("streamingMessage");
+        var bubble = streamingMsg ? streamingMsg.querySelector(".message-bubble") : null;
+
+        if (bubble) {
+            if (!bubble.querySelector(".message-interrupted-note")) {
+                bubble.insertAdjacentHTML("beforeend", noteHtml);
+            }
+            // 후속 스트림과의 ID 충돌 방지 (finalize와 동일하게 정리)
+            streamingMsg.removeAttribute("id");
+            ["streamingText", "streamingCursor", "streamingTime", "streamingMeta", "streamingSql", "streamingStatus", "streamingStatusText", "streamingStatusElapsed", "streamingStages"].forEach(function (id) {
+                var e2 = document.getElementById(id);
+                if (e2) e2.removeAttribute("id");
+            });
+        } else {
+            // 스트리밍 버블이 아직 없는 상태(초기 fetch 중 중단) → 안내만 단독 표시
+            removeProcessingMessage();
+            var avatarHtml = '<div class="message-avatar"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></div>';
+            var el = document.createElement("div");
+            el.className = "message message--agent";
+            el.innerHTML =
+                avatarHtml +
+                '<div class="message-content">' +
+                    '<div class="message-bubble">' + noteHtml + '</div>' +
+                '</div>';
+            chatMessages.appendChild(el);
+        }
+        scrollToBottomIfSticky();
+    }
+
+    // 실패 경위(D-242)의 단계 이름 → 사용자 라벨. 서버가 label을 실어 보내면 그쪽이 우선한다.
+    function failureStepLabel(s) {
+        if (s.kind === "task") return "작업: " + (s.label || s.name);
+        if (s.label) return s.label;
+        if (s.kind === "node") return nodeLabels[s.name] || s.name;
+        if (s.kind === "tool") return toolLabel(s.name);
+        return stepLabels[s.name] || s.name;
+    }
+
+    function failureSec(ms) { return (Math.max(0, ms || 0) / 1000).toFixed(1) + "s"; }
+
+    // 오류 사유 + 경위(상한·경과·멈춘 단계·앞선 실패·단계 목록). d는 서버 error 이벤트의 경위 필드.
+    function renderStreamFailure(message, d) {
+        var facts = [];
+        if (d.code === "timeout" && d.limit_sec != null) {
+            facts.push(["시간", "상한 " + d.limit_sec + "초 · 경과 " + failureSec(d.elapsed_ms)]);
+        } else if (d.elapsed_ms != null) {
+            facts.push(["경과", failureSec(d.elapsed_ms)]);
+        }
+        if (d.http_status) facts.push(["응답 코드", String(d.http_status)]);
+        if (d.stage) facts.push(["멈춘 단계", failureStepLabel(d.stage) + " (진행 중 " + failureSec(d.stage.ms) + ")"]);
+        if (d.last_error) facts.push(["앞선 실패", d.last_error]);
+        var html = '<div class="message-error-title">⚠ ' + escapeHtml(message) + '</div>';
+        if (facts.length) {
+            html += '<dl class="message-error-facts">' + facts.map(function (f) {
+                return '<dt>' + escapeHtml(f[0]) + '</dt><dd>' + escapeHtml(f[1]) + '</dd>';
+            }).join("") + '</dl>';
+        }
+        var steps = d.steps || [];
+        if (steps.length) {
+            var marks = { done: "✓", failed: "✗", running: "…", skipped: "–" };
+            html += '<details class="message-error-steps"><summary>진행 경위 ' + steps.length + '단계' +
+                (d.steps_dropped ? ' (앞 ' + d.steps_dropped + '단계 생략)' : '') + '</summary><ol>' +
+                steps.map(function (s) {
+                    var st = marks[s.status] ? s.status : "done";
+                    return '<li class="is-' + st + '"><span class="message-error-step-mark" aria-hidden="true">' + marks[st] + '</span>' +
+                        escapeHtml(failureStepLabel(s)) + ' <span class="message-error-step-ms">' +
+                        (st === "running" ? "진행 중 " : "") + failureSec(s.ms) + '</span>' +
+                        (s.detail ? '<div class="message-error-step-detail">' + escapeHtml(s.detail) + '</div>' : '') + '</li>';
+                }).join("") + '</ol></details>';
+        }
+        return html;
+    }
+
+    // 스트림 실패(처리 시간 초과·서버 예외·HTTP 오류·연결 끊김) — 사유와 경위를 말풍선 안에 남긴다.
+    // 토스트(8초)만 띄우면 사라진 뒤 빈 말풍선이 "완료 · N단계"로 접혀 성공처럼 남았다(2026-09-21
+    // 운영 실측 60.6s). **다시 할지는 사용자가 정한다** — 자동 재시도는 하지 않고 버튼만 둔다(D-242).
+    function markStreamFailed(message, detail, onRetry) {
+        endStreamStatus("failed");   // "완료" 요약 대신 상태 영역을 걷어낸다
+        var cursor = document.getElementById("streamingCursor");
+        if (cursor) cursor.remove();
+        var streamingMsg = document.getElementById("streamingMessage");
+        var bubble = streamingMsg ? streamingMsg.querySelector(".message-bubble") : null;
+        var box = document.createElement("div");
+        box.className = "message-error-note";
+        box.setAttribute("role", "alert");
+        box.innerHTML = renderStreamFailure(message, detail || {});
+        if (onRetry) {
+            var retryBtn = document.createElement("button");
+            retryBtn.type = "button";
+            retryBtn.className = "message-error-retry";
+            retryBtn.textContent = "다시 시도";
+            retryBtn.addEventListener("click", function () {
+                if (isProcessing) { showError("처리 중인 질의가 끝난 뒤 다시 시도해 주세요."); return; }
+                retryBtn.disabled = true;
+                retryBtn.textContent = "다시 시도함";
+                var echoMsg = { role: "user", content: "다시 시도", time: new Date(), file: null };
+                messages.push(echoMsg);
+                renderUserMessage(echoMsg);
+                onRetry();
+            });
+            box.appendChild(retryBtn);
+        }
+        if (bubble) {
+            bubble.appendChild(box);
+            var timeEl = document.getElementById("streamingTime");
+            if (timeEl) timeEl.textContent = formatTime(new Date());
+            streamingMsg.removeAttribute("id");
+            ["streamingText", "streamingCursor", "streamingTime", "streamingMeta", "streamingSql", "streamingStatus", "streamingStatusText", "streamingStatusElapsed", "streamingStages"].forEach(function (id) {
+                var e2 = document.getElementById(id);
+                if (e2) e2.removeAttribute("id");
+            });
+        } else {
+            // 스트리밍 말풍선이 생기기 전 실패(HTTP 오류·연결 실패) → 단독 말풍선
+            removeProcessingMessage();
+            var el = document.createElement("div");
+            el.className = "message message--agent";
+            el.innerHTML =
+                '<div class="message-avatar"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></div>' +
+                '<div class="message-content"><div class="message-bubble"></div>' +
+                '<div class="message-time">' + formatTime(new Date()) + '</div></div>';
+            el.querySelector(".message-bubble").appendChild(box);
+            chatMessages.appendChild(el);
+        }
+        scrollToBottomIfSticky();
     }
 
     // ─── SSE Streaming Query ───
 
-    async function executeStreamingQuery(query) {
+    async function executeStreamingQuery(query, selectedDbIds, formFillAnswers, formFillRemember, formMemoryDelete, resetDbScope, selectedSources) {
+        // 실패 시 "다시 시도" 버튼이 같은 인자로 다시 보낸다(D-242 — 자동 재시도 없음)
+        var retryArgs = Array.prototype.slice.call(arguments);
+        var retry = function () { executeStreamingQuery.apply(null, retryArgs); };
         isProcessing = true;
-        setSendButtonMode(true);
         currentAbortController = new AbortController();
+        setSendButtonMode("stop");
 
         // Show processing first
         renderProcessingMessage();
@@ -760,17 +1621,47 @@
 
         try {
             // Try SSE streaming first
+            // 멀티턴: 진행 중 세션이 있으면 thread_id를 함께 전송해야 백엔드가
+            // 체크포인트(이전 대화 맥락)를 복원한다. 누락 시 매 턴 새 세션(1턴)으로 처리됨.
+            var streamBody = { query: query };
+            if (currentThreadId) {
+                streamBody.thread_id = currentThreadId;
+            }
+            // Plan 75 §4: 존 선택 역질문 응답 — 자연어 재조합 없이 구조화 필드로 전달
+            if (selectedDbIds && selectedDbIds.length) {
+                streamBody.selected_db_ids = selectedDbIds;
+            }
+            // plans/132 N-10: 소스 선택 칩 응답 — 고른 데이터 소스 코드(구조화 필드)
+            if (selectedSources && selectedSources.length) {
+                streamBody.selected_sources = selectedSources;
+            }
+            // Plan 90 D-205: 스코프 칩 "해제" — 직전 존 승계를 끊는다(다음 질의는 첫 질의처럼 확인)
+            if (resetDbScope) {
+                streamBody.reset_db_scope = true;
+            }
+            // D-187: 저장 값 패널 삭제 버튼 — 구조화 필드로만 전달(서버가 파이프라인 없이 결정적 삭제)
+            if (formMemoryDelete) {
+                streamBody.form_memory_delete = formMemoryDelete;
+            }
+            // Plan 73 D-151: 폼필 역질문 답변 — 구조화 필드(패널 산출)로만 전달
+            if (formFillAnswers) {
+                streamBody.form_fill_answers = formFillAnswers;
+                // Phase 3: 기억 옵트인(양식 시그니처 스코프, TTL sliding)
+                if (formFillRemember) {
+                    streamBody.form_fill_remember = true;
+                }
+            }
             var response = await fetch("/api/v1/query/stream", {
                 method: "POST",
                 headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
-                body: JSON.stringify({ query: query }),
+                body: JSON.stringify(streamBody),
                 signal: currentAbortController.signal,
             });
 
             if (response.status === 404 || response.status === 405) {
                 // SSE endpoint not available, fallback to regular POST
                 removeProcessingMessage();
-                await executeFallbackQuery(query);
+                await executeFallbackQuery(query, selectedDbIds, formMemoryDelete, resetDbScope, selectedSources);
                 return;
             }
 
@@ -781,8 +1672,8 @@
                 } catch (_e) {
                     errData = { detail: "처리 중 오류가 발생했습니다." };
                 }
-                removeProcessingMessage();
                 showError(errData.detail || "처리 중 오류가 발생했습니다.");
+                markStreamFailed(errData.detail || "처리 중 오류가 발생했습니다.", { http_status: response.status }, retry);
                 return;
             }
 
@@ -798,15 +1689,18 @@
             }
 
             // Process SSE stream
+            createStreamingMessage();   // 칩 상태 이관을 위해 처리 말풍선보다 먼저 만든다(plans/89)
             removeProcessingMessage();
-            createStreamingMessage();
 
             var reader = response.body.getReader();
+            currentReader = reader;
             var decoder = new TextDecoder();
             var buffer = "";
             var accumulatedText = "";
             var metaData = {};
             var done = false;
+            var streamError = null;
+            var streamErrorDetail = null;
 
             while (!done) {
                 var chunk = await reader.read();
@@ -824,22 +1718,31 @@
                         var dataStr = line.substring(6);
                         try {
                             var event = JSON.parse(dataStr);
+                            noteStreamActivity();   // plans/89: heartbeat 포함 모든 이벤트가 stalled를 해제
                             if (event.type === "token") {
                                 accumulatedText += event.content;
-                                scheduleStreamRender(accumulatedText);
+                                _streamAccumulated = accumulatedText;
+                                scheduleStreamingRender();   // 비파괴 렌더 + 스크롤(rAF 코얼레싱)
+                                markStreamTokens();
                             } else if (event.type === "node_start") {
                                 handleNodeStart(event);
                                 updateProcessingStage(event.node, "start");
                             } else if (event.type === "node_complete") {
                                 handleNodeComplete(event);
                                 updateProcessingStage(event.node, "complete");
+                            } else if (event.type === "progress") {
+                                handleProgressEvent(event);   // plans/89 · D-204
+                            } else if (event.type === "heartbeat") {
+                                // 살아 있음 신호 — noteStreamActivity()로 충분
                             } else if (event.type === "meta") {
                                 metaData = event;
                             } else if (event.type === "done") {
                                 done = true;
                                 metaData = Object.assign(metaData, event);
                             } else if (event.type === "error") {
-                                showError(event.message || "처리 중 오류가 발생했습니다.");
+                                streamError = event.message || "처리 중 오류가 발생했습니다.";
+                                streamErrorDetail = event;   // 경위 필드(D-242)
+                                showError(streamError);
                                 done = true;
                             }
                         } catch (_parseErr) {
@@ -849,13 +1752,29 @@
                 }
             }
 
+            if (streamError) {
+                markStreamFailed(streamError, streamErrorDetail, retry);
+                return;
+            }
+
+            // 권위 있는 최종 응답(서버 final_response)이 있으면 누적 토큰 대신 사용한다.
+            var finalText = (typeof metaData.response === "string" && metaData.response.length > 0)
+                ? metaData.response : accumulatedText;
+
             // Finalize streaming message
-            finalizeStreamingMessage(accumulatedText, metaData);
-            currentThreadId = metaData.thread_id || currentThreadId;
+            finalizeStreamingMessage(finalText, metaData);
+            // Plan 73 D-151: 폼필 미해결 필드 역질문 패널(결과와 함께 첨부)
+            appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
+            appendZoneClarificationToLastBubble(metaData.scope_reexpand);
+            appendZoneClarificationToLastBubble(metaData.source_switch);   // plans/132 W5 「다른 소스로 보기」
+            // D-187: 저장 값 패널(항목별 삭제)
+            appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
+            setCurrentThread(metaData.thread_id);
+            renderDbScopeChip(metaData.db_scope);   // Plan 90 D-205 — 서버 보고값으로 칩 갱신
             messages.push({
                 role: "agent",
                 data: {
-                    response: accumulatedText,
+                    response: finalText,
                     query_id: metaData.query_id,
                     executed_sql: metaData.executed_sql,
                     row_count: metaData.row_count,
@@ -867,32 +1786,29 @@
             });
 
         } catch (err) {
-            // 사용자가 중지(Stop) — 부분 응답을 그대로 확정 (§6.2)
-            if (err && err.name === "AbortError") {
-                if (document.getElementById("streamingText")) {
-                    finalizeStreamingMessage(accumulatedText, metaData);
-                } else {
-                    removeProcessingMessage();
-                }
+            // 사용자가 중단(Stop)한 경우는 오류가 아니라 정상 종료로 처리한다(§12).
+            if (err.name === "AbortError") {
+                markStreamInterrupted();
             } else {
-                removeProcessingMessage();
-                // Network error - fallback to regular query
-                if (err.name === "TypeError" || err.message.includes("fetch")) {
-                    await executeFallbackQuery(query);
-                } else {
-                    showError("서버와의 통신에 실패했습니다: " + err.message);
-                }
+                // 연결 실패·스트림 단절 — 종전에는 비스트리밍 API로 자동 재실행했다. 서버가 첫 요청을
+                // 계속 처리 중일 수 있어 중복 실행이 되므로, 경위를 보여 주고 재시도는 사용자가 정한다(D-242).
+                markStreamFailed("서버와의 통신에 실패했습니다: " + err.message, null, retry);
             }
         } finally {
+            stopStreamStatusTimers();   // plans/89: 경과·정지 타이머 해제(어느 경로로 끝나든)
             isProcessing = false;
             currentAbortController = null;
-            setSendButtonMode(false);
+            currentReader = null;
+            setSendButtonMode("send");
         }
     }
 
     function finalizeStreamingMessage(text, meta) {
-        // 보류 중인 스트리밍 렌더를 강제로 1회 반영 (§6.1)
-        flushFinalStreamRender(text);
+        endStreamStatus("done", meta);   // plans/89 G-2: 한 줄 요약으로 접는다
+        // 최종 텍스트를 렌더링한다. 스트리밍 중 누적된 토큰과 다를 수 있으므로
+        // (복합 질의의 병렬 토큰 순서/인터리빙) 권위 있는 최종 응답으로 보정한다.
+        var finalTextEl = document.getElementById("streamingText");
+        if (finalTextEl) finalTextEl.innerHTML = renderMarkdown(text);
 
         // Remove cursor
         var cursor = document.getElementById("streamingCursor");
@@ -933,31 +1849,29 @@
                 '</div>';
         }
 
-        // Add download button
+        // Add download + CSV buttons (§13: 간격 확보를 위해 .message-download-actions 래퍼로 묶어 삽입)
+        var streamDownloadHtml = "";
         if (meta.has_file && meta.query_id) {
-            var streamingMsg = document.getElementById("streamingMessage");
-            var bubble = streamingMsg ? streamingMsg.querySelector(".message-bubble") : null;
-            if (bubble) {
-                var downloadHtml =
-                    '<a class="message-download" href="/api/v1/query/' + encodeURIComponent(meta.query_id) + '/download">' +
-                        '<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
-                        escapeHtml(meta.file_name || "파일") + ' 다운로드' +
-                    '</a>';
-                bubble.insertAdjacentHTML("beforeend", downloadHtml);
-            }
+            streamDownloadHtml =
+                '<a class="message-download" href="/api/v1/query/' + encodeURIComponent(meta.query_id) + '/download">' +
+                    '<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
+                    escapeHtml(meta.file_name || "파일") + ' 다운로드' +
+                '</a>';
         }
-
-        // Add CSV download button
+        var streamCsvHtml = "";
         if (meta.row_count > 0 && meta.query_id) {
-            var streamingMsgCsv = document.getElementById("streamingMessage");
-            var bubbleCsv = streamingMsgCsv ? streamingMsgCsv.querySelector(".message-bubble") : null;
-            if (bubbleCsv) {
-                var csvHtml =
-                    '<a class="message-download message-download--csv" href="/api/v1/query/' + encodeURIComponent(meta.query_id) + '/download-csv">' +
-                        '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' +
-                        'CSV 다운로드 (' + meta.row_count + '건)' +
-                    '</a>';
-                bubbleCsv.insertAdjacentHTML("beforeend", csvHtml);
+            streamCsvHtml =
+                '<a class="message-download message-download--csv" href="/api/v1/query/' + encodeURIComponent(meta.query_id) + '/download-csv">' +
+                    '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' +
+                    'CSV 다운로드 (' + meta.row_count + '건)' +
+                '</a>';
+        }
+        if (streamDownloadHtml || streamCsvHtml) {
+            var streamingMsgDl = document.getElementById("streamingMessage");
+            var bubbleDl = streamingMsgDl ? streamingMsgDl.querySelector(".message-bubble") : null;
+            if (bubbleDl) {
+                bubbleDl.insertAdjacentHTML("beforeend",
+                    '<div class="message-download-actions">' + streamDownloadHtml + streamCsvHtml + '</div>');
             }
         }
 
@@ -982,29 +1896,487 @@
             }
         }
 
+        // Plan 75 §4: 존 선택 역질문 — 체크박스 블록 렌더 (ID 제거 전에 삽입)
+        if (meta.clarification) {
+            var streamingMsgClar = document.getElementById("streamingMessage");
+            var bubbleClar = streamingMsgClar ? streamingMsgClar.querySelector(".message-bubble") : null;
+            if (bubbleClar) renderZoneClarification(bubbleClar, meta.clarification);
+        }
+
         // Remove streaming IDs to prevent conflicts
         var streamingMsg = document.getElementById("streamingMessage");
         if (streamingMsg) streamingMsg.removeAttribute("id");
-        ["streamingText", "streamingCursor", "streamingTime", "streamingMeta", "streamingSql"].forEach(function(id) {
+        ["streamingText", "streamingCursor", "streamingTime", "streamingMeta", "streamingSql", "streamingStatus", "streamingStatusText", "streamingStatusElapsed", "streamingStages"].forEach(function(id) {
             var el = document.getElementById(id);
             if (el) el.removeAttribute("id");
         });
 
-        // 사용자가 위로 스크롤해 읽는 중이면 바닥으로 끌어내리지 않는다 (Plan 49 §3.2)
-        autoScrollIfStuck();
+        scrollToBottomIfSticky();
+    }
+
+    // ─── DB Scope Chip (Plan 90 · D-205) ───
+    // 칩은 서버 db_scope의 **거울**이다 — 프론트는 존을 추측하지 않는다. 상태는 마지막 응답의
+    // currentDbScope와 "다음 전송에 실릴 것"(pendingDbIds / pendingReset)만으로 정해진다.
+    //   none          존 미지정 — 첫 질의처럼 확인
+    //   inherited     {존} · 승계 중        (hint/planned/classified도 사용자에겐 같은 뜻)
+    //   selected      {존} · 선택
+    //   pending       다음 질의부터: {존}   (선택만 하고 아직 안 보냄)
+    //   pending-reset 다음 질의에서 다시 확인 (해제만 하고 아직 안 보냄)
+    function dbScopeChipState() {
+        if (pendingReset) return "pending-reset";
+        if (pendingDbIds && pendingDbIds.length) return "pending";
+        if (!currentDbScope || !currentDbScope.db_ids || !currentDbScope.db_ids.length) return "none";
+        return currentDbScope.source === "selected" ? "selected" : "inherited";
+    }
+
+    function dbScopeCurrentLabel() {
+        if (!currentDbScope) return "";
+        // D-206: 은행존+공동존을 함께 보는 스레드는 두 그룹을 모두 보여준다(조회 순서대로).
+        var groups = currentDbScope.zone_groups || (currentDbScope.zone_group ? [currentDbScope.zone_group] : []);
+        var labels = groups.map(function (g) { return g.label; }).filter(Boolean);
+        if (labels.length) return labels.join(" + ");
+        return (currentDbScope.db_ids || []).join(", ");
+    }
+
+    function dbScopeOptionLabels(dbIds) {
+        // 라벨은 서버(scope/options)의 것만 쓴다 — 없으면 db_id 원문.
+        var opts = (scopeAxes && scopeAxes[0] && scopeAxes[0].options) || [];
+        return (dbIds || []).map(function (id) {
+            var hit = opts.filter(function (o) { return o.key === id; })[0];
+            return hit ? hit.label : id;
+        });
+    }
+
+    function updateDbScopeChip() {
+        if (!dbScopeChip) return;
+        var state = dbScopeChipState();
+        var text;
+        if (state === "pending-reset") text = "다음 질의에서 다시 확인";
+        else if (state === "pending") text = "다음 질의부터: " + dbScopeOptionLabels(pendingDbIds).join(", ");
+        else if (state === "none") text = "존 미지정 — 첫 질의처럼 확인";
+        else if (state === "selected") text = dbScopeCurrentLabel() + " · 선택";
+        else text = dbScopeCurrentLabel() + " · 승계 중";
+        dbScopeChip.setAttribute("data-state", state);
+        dbScopeText.textContent = text;   // 외부 데이터(라벨)는 textContent로
+        // × 는 끊을 승계/선택이 있을 때만 — none 상태에서 해제는 뜻이 없다.
+        dbScopeClear.hidden = (state === "none" || state === "pending-reset");
+        // 솔루션 보조 줄(plans/90 §9.3 A1): 등록 솔루션이 2개 이상일 때만 — 오늘은 조건 거짓.
+        var sols = (currentDbScope && currentDbScope.solutions) || [];
+        if (sols.length > 1) {
+            dbScopeSol.textContent = sols.map(function (x) { return x.label; }).join(" + ");
+            dbScopeSol.hidden = false;
+        } else {
+            dbScopeSol.hidden = true;
+        }
+    }
+
+    function renderDbScopeChip(scope) {
+        // clarification 응답(db_scope 없음)은 직전 값을 유지한다 — 아직 실행 전이다.
+        if (scope === undefined || scope === null) { updateDbScopeChip(); return; }
+        currentDbScope = scope;
+        updateDbScopeChip();
+    }
+
+    async function loadScopeOptions() {
+        if (scopeAxes) return scopeAxes;
+        try {
+            var res = await fetch("/api/v1/scope/options", { headers: getAuthHeaders() });
+            if (!res.ok) return null;
+            var body = await res.json();
+            scopeAxes = body.axes || [];
+            return scopeAxes;
+        } catch (_e) {
+            return null;   // 로드 실패 → 팝오버 비활성, 칩은 표시만(침묵 대신 버튼 비활성)
+        }
+    }
+
+    function closeDbScopePopover() {
+        if (!dbScopePopover) return;
+        dbScopePopover.hidden = true;
+        dbScopePopover.innerHTML = "";
+        dbScopePick.setAttribute("aria-expanded", "false");
+    }
+
+    function openDbScopePopover(axes) {
+        var axis = axes && axes[0];
+        if (!axis || !axis.options || !axis.options.length) return;
+        // 마크업·라디오 규칙은 존 선택 역질문(renderZoneClarification)과 같다 — 옵션 형식이 같다.
+        var preset = (pendingDbIds && pendingDbIds.length) ? pendingDbIds
+            : ((currentDbScope && currentDbScope.db_ids) || []);
+        var itemsHtml = axis.options.map(function (o) {
+            var checked = preset.indexOf(o.key) !== -1 ? " checked" : "";
+            return '<label class="zone-clarify-item">' +
+                '<input type="checkbox" value="' + escapeHtml(o.key) + '" data-label="' + escapeHtml(o.label) + '" data-group="' + escapeHtml(o.group || "") + '"' + checked + '> ' +
+                escapeHtml(o.label) + '</label>';
+        }).join("");
+        dbScopePopover.innerHTML =
+            '<div class="zone-clarify-items">' + itemsHtml + '</div>' +
+            '<button type="button" class="zone-clarify-confirm db-scope-confirm">다음 질의부터 이 존으로</button>' +
+            '<button type="button" class="zone-clarify-skip db-scope-cancel">닫기</button>' +
+            '<div class="db-scope-popover-note">선택은 다음 질의 1건에 실리고, 그 뒤로는 승계됩니다.' +
+                (axis.exclusive ? "" : " 은행존과 공동존을 함께 선택하면 은행존을 먼저 조회한 뒤 공동존을 조회합니다.") +
+            '</div>';
+        dbScopePopover.hidden = false;
+        dbScopePick.setAttribute("aria-expanded", "true");
+        var checks = dbScopePopover.querySelectorAll('input[type="checkbox"]');
+        var confirmBtn = dbScopePopover.querySelector(".db-scope-confirm");
+        var syncConfirm = function () {
+            confirmBtn.disabled = !Array.prototype.some.call(checks, function (x) { return x.checked; });
+        };
+        checks.forEach(function (c) {
+            c.addEventListener("change", function () {
+                // 존 그룹 상호배타(D-143 후속3): 은행존↔공동존은 라디오 동작, 공동존 내부는 복수 가능.
+                if (axis.exclusive && c.checked) {
+                    var g = c.getAttribute("data-group");
+                    checks.forEach(function (x) {
+                        if (x !== c && x.getAttribute("data-group") !== g) x.checked = false;
+                    });
+                }
+                syncConfirm();
+            });
+        });
+        syncConfirm();
+        confirmBtn.addEventListener("click", function () {
+            var ids = [];
+            checks.forEach(function (c) { if (c.checked) ids.push(c.value); });
+            if (!ids.length) return;
+            pendingDbIds = ids;
+            pendingReset = false;   // 재선택하면 해제는 취소된다
+            closeDbScopePopover();
+            updateDbScopeChip();
+        });
+        dbScopePopover.querySelector(".db-scope-cancel").addEventListener("click", closeDbScopePopover);
+    }
+
+    function setupDbScopeChip() {
+        if (!dbScopeChip) return;
+        dbScopePick.addEventListener("click", async function () {
+            if (!dbScopePopover.hidden) { closeDbScopePopover(); return; }
+            var axes = await loadScopeOptions();
+            if (!axes) { showError("존 선택지를 불러오지 못했습니다."); return; }
+            openDbScopePopover(axes);
+        });
+        dbScopeClear.addEventListener("click", function () {
+            pendingReset = true;
+            pendingDbIds = null;
+            closeDbScopePopover();
+            updateDbScopeChip();
+        });
+        document.addEventListener("click", function (e) {
+            if (!dbScopePopover.hidden && !dbScopeChip.contains(e.target)) closeDbScopePopover();
+        });
+        updateDbScopeChip();
+    }
+
+    // ─── Zone Clarification (Plan 75 §4) ───
+    // 존 미지정 대량 조회 시 백엔드가 status="clarification"으로 존 선택을 요청한다.
+    // 체크 결과는 자연어 재조합 없이 selected_db_ids(구조화 필드)로 재전송한다(§4.4) —
+    // LLM 재해석 오라우팅(2026-07-16 실측) 차단. 화면에는 "선택: …"만 에코한다.
+    function renderZoneClarification(bubble, clar) {
+        var options = clar.options || [];
+        if (!options.length) return;
+        // 범위 사전 선택(D-176 후속4)은 **성능 최적화**라 답하지 않아도 진행된다.
+        // 모호성 해소(zone_select)는 답해야 진행되므로 문구·버튼이 다르다.
+        var isScope = clar.kind === "scope_select";
+        // plans/132 N-10: 소스 선택 칩 — 같은 위젯. 선택지에 소스 코드(data-source)가 실리고
+        // 비DB 소스(값 없음)는 selected_sources 로, DB 소스는 selected_db_ids 와 함께 보낸다.
+        var isSource = clar.kind === "source_select";
+        var boxId = "zoneClarify-" + Date.now();
+        var itemsHtml = options.map(function (o) {
+            // scope_select는 그룹 단위라 db_ids 배열을, zone_select는 단일 db_id를 싣는다.
+            var val = (o.db_ids && o.db_ids.length) ? o.db_ids.join(",") : (o.db_id || "");
+            return '<label class="zone-clarify-item">' +
+                '<input type="checkbox" value="' + escapeHtml(val) + '" data-label="' + escapeHtml(o.label) + '" data-group="' + escapeHtml(o.group || "") + '" data-key="' + escapeHtml(o.key || "") + '" data-source="' + escapeHtml(o.source || "") + '"' + (o.default ? " checked" : "") + '> ' +
+                escapeHtml(o.label) +
+                '</label>';
+        }).join("");
+        var anyDefault = options.some(function (o) { return !!o.default; });
+        var confirmLabel = isScope ? "선택한 범위로 조회" : (isSource ? "선택한 데이터 소스로 조회" : "선택한 존으로 조회");
+        // 건너뛰기 = 전체 조회. 이것이 있어야 "묻는 것이 진행을 막지 않는다"가 성립한다(U10).
+        var skipHtml = clar.skippable
+            ? '<button class="zone-clarify-skip">건너뛰고 전체 조회</button>'
+            : "";
+        bubble.insertAdjacentHTML("beforeend",
+            '<div class="zone-clarify" id="' + boxId + '">' +
+                '<div class="zone-clarify-items">' + itemsHtml + '</div>' +
+                '<button class="zone-clarify-confirm"' + (anyDefault ? "" : " disabled") + '>' + confirmLabel + '</button>' +
+                skipHtml +
+            '</div>');
+        var box = document.getElementById(boxId);
+        var confirmBtn = box.querySelector(".zone-clarify-confirm");
+        var skipBtn = box.querySelector(".zone-clarify-skip");
+        var checks = box.querySelectorAll('input[type="checkbox"]');
+        checks.forEach(function (c) {
+            c.addEventListener("change", function () {
+                // 존 그룹 상호배타(D-143 후속3): 은행존(bank)과 공동존(common)은 동시
+                // 선택 불가 — 다른 그룹을 체크하면 기존 그룹 선택을 해제한다(라디오 동작).
+                // 공동존 내 김포/여의도는 같은 그룹이라 복수 선택 유지.
+                if (clar.group_exclusive && c.checked) {
+                    var g = c.getAttribute("data-group");
+                    checks.forEach(function (x) {
+                        if (x !== c && x.getAttribute("data-group") !== g) x.checked = false;
+                    });
+                }
+                // "전체 조회"와 개별 그룹은 서로 배타다 — 함께 체크하면 무엇을 고른 건지
+                // 사용자도 시스템도 알 수 없다.
+                if (isScope && c.checked) {
+                    var isAll = c.getAttribute("data-key") === "__all__";
+                    checks.forEach(function (x) {
+                        if (x === c) return;
+                        var xAll = x.getAttribute("data-key") === "__all__";
+                        if (isAll || xAll) x.checked = false;
+                    });
+                }
+                var any = Array.prototype.some.call(checks, function (x) { return x.checked; });
+                confirmBtn.disabled = !any;  // 미선택 시 비활성 (Plan 75 §5.1 항목 3)
+            });
+        });
+        if (skipBtn) {
+            skipBtn.addEventListener("click", function () {
+                var all = [];
+                checks.forEach(function (c) {
+                    if (c.getAttribute("data-key") === "__all__") {
+                        all = c.value ? c.value.split(",") : [];
+                    }
+                });
+                box.classList.add("zone-clarify--done");
+                box.querySelectorAll("input,button").forEach(function (el) { el.disabled = true; });
+                executeStreamingQuery(clar.original_query || "", all);
+            });
+        }
+        confirmBtn.addEventListener("click", function () {
+            var ids = [], labels = [], sources = [];
+            checks.forEach(function (c) {
+                if (c.checked) {
+                    // scope_select는 값이 CSV(그룹의 db_ids)라 펼친다.
+                    (c.value ? c.value.split(",") : []).forEach(function (v) {
+                        if (v && ids.indexOf(v) === -1) ids.push(v);
+                    });
+                    var src = c.getAttribute("data-source");
+                    if (src && sources.indexOf(src) === -1) sources.push(src);
+                    labels.push(c.getAttribute("data-label"));
+                }
+            });
+            if (!ids.length && !(isSource && sources.length)) return;
+            box.classList.add("zone-clarify--done");
+            box.querySelectorAll("input,button").forEach(function (el) { el.disabled = true; });
+            // 선택 결과를 사용자 메시지로 에코(대화 이력 가독성) — 라우팅은 selected_db_ids가 결정
+            var echoMsg = { role: "user", content: "선택: " + labels.join(", "), time: new Date(), file: null };
+            messages.push(echoMsg);
+            renderUserMessage(echoMsg);
+            // 파일(폼필) 경로 역질문이면 보관해 둔 파일과 함께 재전송 (Plan 75 §4 확장)
+            if (clar.has_file && lastUploadedFile) {
+                executeFileQuery(clar.original_query || "", lastUploadedFile, ids);
+            } else if (isSource) {
+                executeStreamingQuery(clar.original_query || "", ids, null, null, null, false, sources);
+            } else {
+                executeStreamingQuery(clar.original_query || "", ids);
+            }
+        });
+    }
+
+    function appendZoneClarificationToLastBubble(clar) {
+        // 비스트리밍(JSON) 응답 경로 공용 — 마지막 에이전트 말풍선에 체크박스 블록 삽입
+        if (!clar) return;
+        var bubbles = document.querySelectorAll(".message--agent .message-bubble");
+        var last = bubbles.length ? bubbles[bubbles.length - 1] : null;
+        if (last) renderZoneClarification(last, clar);
+    }
+
+    function disableZoneClarifyBlocks() {
+        // 역질문에 답하지 않고 새 질의를 보내면 보류 블록을 비활성(자기정리 — §4.3-4)
+        document.querySelectorAll(".zone-clarify:not(.zone-clarify--done)").forEach(function (box) {
+            box.classList.add("zone-clarify--done");
+            box.querySelectorAll("input,button").forEach(function (el) { el.disabled = true; });
+        });
+        document.querySelectorAll(".form-fill-clarify:not(.zone-clarify--done)").forEach(function (box) {
+            box.classList.add("zone-clarify--done");
+            box.querySelectorAll("input,button,select").forEach(function (el) { el.disabled = true; });
+        });
+    }
+
+    // ─── Form Fill HITL Panel (Plan 73 §11, D-151) ───
+    // 폼필 미해결 필드 역질문 — 필드별 처리 방법(공란/DB 항목/직접 입력)을 위젯으로
+    // 지정해 form_fill_answers(구조화 필드)로 재전송한다. 자연어 재조합·LLM 파싱 없음
+    // (서버는 존재성 검증만 수행). 존 역질문(selected_db_ids)과 동형 패턴.
+    function renderFormFillPanel(bubble, ctx) {
+        var fields = (ctx && ctx.fields) || [];
+        if (!fields.length) return;
+        var candidates = ctx.candidates || [];
+        var boxId = "formFill-" + Date.now();
+        var candOptions = candidates.map(function (c) {
+            return '<option value="' + escapeHtml(c.value) + '">' + escapeHtml(c.label) + '</option>';
+        }).join("");
+        var rowsHtml = fields.map(function (f) {
+            var name = escapeHtml(f.name);
+            var label = escapeHtml(f.label || f.name);
+            return '<div class="form-fill-row" data-field="' + name + '" style="display:flex;gap:6px;align-items:center;margin:4px 0;flex-wrap:wrap;">' +
+                '<div class="form-fill-label" style="min-width:160px;font-weight:600;">' + label + '</div>' +
+                '<select class="form-fill-action">' +
+                    '<option value="blank">공란 유지</option>' +
+                    '<option value="db">DB 항목 선택</option>' +
+                    '<option value="literal">직접 입력</option>' +
+                '</select>' +
+                '<select class="form-fill-candidate" style="display:none;max-width:280px;">' + candOptions + '</select>' +
+                '<input type="text" class="form-fill-literal" style="display:none;" placeholder="채울 값 입력">' +
+            '</div>';
+        }).join("");
+        bubble.insertAdjacentHTML("beforeend",
+            '<div class="zone-clarify form-fill-clarify" id="' + boxId + '">' +
+                '<div class="form-fill-title" style="margin-bottom:6px;">' +
+                    escapeHtml(ctx.question || "채우지 못한 항목의 처리 방법을 지정해 주세요.") +
+                '</div>' +
+                rowsHtml +
+                '<label class="form-fill-remember-label" style="display:block;margin:6px 0;">' +
+                    '<input type="checkbox" class="form-fill-remember"> ' +
+                    '이 답을 기억 — 같은 양식에 자동 반영 (일정 기간 후 자동 만료, 사용 시 연장)' +
+                '</label>' +
+                '<button class="zone-clarify-confirm form-fill-confirm">선택한 방법으로 다시 채우기</button>' +
+            '</div>');
+        var box = document.getElementById(boxId);
+        box.querySelectorAll(".form-fill-row").forEach(function (row) {
+            var action = row.querySelector(".form-fill-action");
+            action.addEventListener("change", function () {
+                row.querySelector(".form-fill-candidate").style.display = action.value === "db" ? "" : "none";
+                row.querySelector(".form-fill-literal").style.display = action.value === "literal" ? "" : "none";
+            });
+        });
+        box.querySelector(".form-fill-confirm").addEventListener("click", function () {
+            var answers = {}, summary = [];
+            box.querySelectorAll(".form-fill-row").forEach(function (row) {
+                var field = row.getAttribute("data-field");
+                var action = row.querySelector(".form-fill-action").value;
+                if (action === "db") {
+                    var v = row.querySelector(".form-fill-candidate").value || "";
+                    var sep = v.indexOf(":");
+                    // value="column:name" | "eav:Vendor" → {action: kind, value: 항목명}
+                    answers[field] = { action: v.substring(0, sep), value: v.substring(sep + 1) };
+                    summary.push(field + "=DB 항목(" + v.substring(sep + 1) + ")");
+                } else if (action === "literal") {
+                    var lit = row.querySelector(".form-fill-literal").value;
+                    answers[field] = { action: "literal", value: lit };
+                    summary.push(field + "=직접 입력('" + lit + "')");
+                } else {
+                    answers[field] = { action: "blank", value: null };
+                    summary.push(field + "=공란 유지");
+                }
+            });
+            var rememberEl = box.querySelector(".form-fill-remember");
+            var remember = !!(rememberEl && rememberEl.checked);
+            box.classList.add("zone-clarify--done");
+            box.querySelectorAll("input,button,select").forEach(function (el) { el.disabled = true; });
+            // 선택 요약을 사용자 메시지로 에코(이력 가독성) — 처리 자체는 구조화 필드가 결정
+            var echoText = "양식 답변: " + summary.join(", ") + (remember ? " (기억)" : "");
+            var echoMsg = { role: "user", content: echoText, time: new Date(), file: null };
+            messages.push(echoMsg);
+            renderUserMessage(echoMsg);
+            executeStreamingQuery("[양식 미해결 항목 답변]", null, answers, remember);
+        });
+    }
+
+    function appendFormFillPanelToLastBubble(ctx) {
+        if (!ctx) return;
+        var bubbles = document.querySelectorAll(".message--agent .message-bubble");
+        var last = bubbles.length ? bubbles[bubbles.length - 1] : null;
+        if (last) renderFormFillPanel(last, ctx);
+    }
+
+    // ─── D-187: 양식 저장 값 패널(항목별 삭제) ───
+    // '?' 조회 응답의 form_memory_panel {signature, display_name, entries:[{field,label,action,value}]}를
+    // 체크박스 목록 + [선택 삭제]/[전체 삭제]로 렌더한다. 클릭 결과는 자연어 재조합 없이
+    // form_memory_delete(구조화 필드)로 전송되고 서버가 파이프라인·LLM 없이 결정적으로 삭제한다
+    // (존 역질문·폼필 답변 패널과 동형). 삭제 응답은 남은 항목으로 패널을 다시 내려준다.
+    function renderFormMemoryPanel(bubble, ctx) {
+        var entries = (ctx && ctx.entries) || [];
+        if (!entries.length || !ctx.signature) return;
+        var boxId = "formMemory-" + Date.now();
+        var rowsHtml = entries.map(function (e) {
+            var field = escapeHtml(e.field);
+            var label = escapeHtml(e.label || e.field);
+            var valueText = (e.value === null || e.value === undefined || e.value === "") ? "" : " (" + escapeHtml(String(e.value)) + ")";
+            return '<label class="form-memory-row" style="display:flex;gap:6px;align-items:center;margin:4px 0;">' +
+                '<input type="checkbox" class="form-memory-check" value="' + field + '">' +
+                '<span style="min-width:160px;font-weight:600;">' + label + '</span>' +
+                '<span>' + escapeHtml(e.action || "") + valueText + '</span>' +
+                '</label>';
+        }).join("");
+        var html = '<div class="zone-clarify form-memory-panel" id="' + boxId + '">' +
+            '<div class="zone-clarify-title">저장 값 관리 — ' + escapeHtml(ctx.display_name || "이 양식") + '</div>' +
+            rowsHtml +
+            '<div style="display:flex;gap:8px;margin-top:8px;">' +
+                '<button type="button" class="zone-clarify-confirm form-memory-delete-selected">선택 삭제</button>' +
+                '<button type="button" class="zone-clarify-confirm form-memory-delete-all">전체 삭제</button>' +
+            '</div>' +
+            '</div>';
+        var wrap = document.createElement("div");
+        wrap.innerHTML = html;
+        var box = wrap.firstChild;
+        bubble.appendChild(box);
+
+        function submitDelete(payload, echoText) {
+            box.classList.add("zone-clarify--done");
+            box.querySelectorAll("input,button").forEach(function (el) { el.disabled = true; });
+            var echoMsg = { role: "user", content: echoText, time: new Date(), file: null };
+            messages.push(echoMsg);
+            renderUserMessage(echoMsg);
+            executeStreamingQuery("[양식 기억 삭제]", null, null, false, payload);
+        }
+        box.querySelector(".form-memory-delete-selected").addEventListener("click", function () {
+            var fields = [];
+            box.querySelectorAll(".form-memory-check:checked").forEach(function (cb) { fields.push(cb.value); });
+            if (!fields.length) {
+                alert("삭제할 항목을 선택해 주세요.");
+                return;
+            }
+            submitDelete(
+                { signature: ctx.signature, fields: fields, all: false },
+                "기억 삭제: " + fields.map(function (f) { return f.replace(/\|/g, " > "); }).join(", ")
+            );
+        });
+        box.querySelector(".form-memory-delete-all").addEventListener("click", function () {
+            if (!confirm("'" + (ctx.display_name || "이 양식") + "'에 저장된 값 " + entries.length + "건을 모두 삭제할까요? 되돌릴 수 없습니다.")) {
+                return;
+            }
+            submitDelete({ signature: ctx.signature, fields: null, all: true }, "기억 전부 삭제");
+        });
+    }
+
+    function appendFormMemoryPanelToLastBubble(ctx) {
+        if (!ctx) return;
+        var bubbles = document.querySelectorAll(".message--agent .message-bubble");
+        var last = bubbles.length ? bubbles[bubbles.length - 1] : null;
+        if (last) renderFormMemoryPanel(last, ctx);
     }
 
     // ─── Fallback (non-streaming) Query ───
 
-    async function executeFallbackQuery(query) {
+    async function executeFallbackQuery(query, selectedDbIds, formMemoryDelete, resetDbScope, selectedSources) {
         renderProcessingMessage();
         resetProgressPanel();
 
         try {
+            // 멀티턴: 진행 중 세션이 있으면 thread_id를 함께 전송 (체크포인트 복원).
+            var queryBody = { query: query };
+            if (currentThreadId) {
+                queryBody.thread_id = currentThreadId;
+            }
+            if (selectedDbIds && selectedDbIds.length) {
+                queryBody.selected_db_ids = selectedDbIds;
+            }
+            if (selectedSources && selectedSources.length) {
+                queryBody.selected_sources = selectedSources;   // plans/132 N-10 (스트리밍과 대칭)
+            }
+            if (resetDbScope) {
+                queryBody.reset_db_scope = true;   // Plan 90 D-205 (스트리밍 경로와 대칭)
+            }
+            // D-187: 저장 값 패널 삭제 버튼(스트리밍 폴백 경로에서도 동일 구조화 필드)
+            if (formMemoryDelete) {
+                queryBody.form_memory_delete = formMemoryDelete;
+            }
             var response = await fetch("/api/v1/query", {
                 method: "POST",
                 headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
-                body: JSON.stringify({ query: query }),
+                body: JSON.stringify(queryBody),
             });
 
             var data = await response.json();
@@ -1018,8 +2390,18 @@
 
             renderAgentMessage(data);
             showPostHocProgress(data);
-            currentThreadId = data.thread_id || currentThreadId;
+            setCurrentThread(data.thread_id);
+            renderDbScopeChip(data.db_scope);   // Plan 90 D-205
             messages.push({ role: "agent", data: data, time: new Date() });
+
+            // Plan 75 §4: 존 선택 역질문 — 마지막 에이전트 말풍선에 체크박스 블록 삽입
+            appendZoneClarificationToLastBubble(data.clarification);
+            // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
+            appendFormFillPanelToLastBubble(data.form_fill_clarification);
+            appendZoneClarificationToLastBubble(data.scope_reexpand);
+            appendZoneClarificationToLastBubble(data.source_switch);   // plans/132 W5 「다른 소스로 보기」
+            // D-187: 저장 값 패널(항목별 삭제)
+            appendFormMemoryPanelToLastBubble(data.form_memory_panel);
 
         } catch (err) {
             removeProcessingMessage();
@@ -1029,10 +2411,16 @@
 
     // ─── File Query (SSE streaming) ───
 
-    async function executeFileQuery(query, file) {
+    async function executeFileQuery(query, file, selectedDbIds) {
+        var retryArgs = Array.prototype.slice.call(arguments);   // "다시 시도"(D-242)
+        var retry = function () { executeFileQuery.apply(null, retryArgs); };
         isProcessing = true;
-        setSendButtonMode(true);
         currentAbortController = new AbortController();
+        setSendButtonMode("stop");
+
+        // Plan 75 §4 파일 경로: 존 역질문 후 재전송을 위해 파일 참조 보관
+        // (handleSend가 입력창의 selectedFile을 clearFile()로 비우므로 여기서 캡처)
+        lastUploadedFile = file;
 
         renderProcessingMessage();
         resetProgressPanel();
@@ -1042,6 +2430,9 @@
         formData.append("file", file);
         if (currentThreadId) {
             formData.append("thread_id", currentThreadId);
+        }
+        if (selectedDbIds && selectedDbIds.length) {
+            formData.append("selected_db_ids", selectedDbIds.join(","));
         }
 
         try {
@@ -1063,8 +2454,8 @@
             if (!response.ok) {
                 var errData;
                 try { errData = await response.json(); } catch (_e) { errData = { detail: "처리 중 오류가 발생했습니다." }; }
-                removeProcessingMessage();
                 showError(errData.detail || "처리 중 오류가 발생했습니다.");
+                markStreamFailed(errData.detail || "처리 중 오류가 발생했습니다.", { http_status: response.status }, retry);
                 return;
             }
 
@@ -1074,21 +2465,26 @@
                 var jsonData = await response.json();
                 renderAgentMessage(jsonData);
                 showPostHocProgress(jsonData);
-                currentThreadId = jsonData.thread_id || currentThreadId;
+                attachDownloadToLastFileCard(jsonData.query_id);
+                setCurrentThread(jsonData.thread_id);
                 messages.push({ role: "agent", data: jsonData, time: new Date() });
+                appendZoneClarificationToLastBubble(jsonData.clarification);
                 return;
             }
 
             // SSE 스트림 처리 (executeStreamingQuery와 동일한 로직)
+            createStreamingMessage();   // 칩 상태 이관을 위해 처리 말풍선보다 먼저 만든다(plans/89)
             removeProcessingMessage();
-            createStreamingMessage();
 
             var reader = response.body.getReader();
+            currentReader = reader;
             var decoder = new TextDecoder();
             var buffer = "";
             var accumulatedText = "";
             var metaData = {};
             var done = false;
+            var streamError = null;
+            var streamErrorDetail = null;
 
             while (!done) {
                 var chunk = await reader.read();
@@ -1104,22 +2500,31 @@
                         var dataStr = line.substring(6);
                         try {
                             var event = JSON.parse(dataStr);
+                            noteStreamActivity();   // plans/89: heartbeat 포함 모든 이벤트가 stalled를 해제
                             if (event.type === "token") {
                                 accumulatedText += event.content;
-                                scheduleStreamRender(accumulatedText);
+                                _streamAccumulated = accumulatedText;
+                                scheduleStreamingRender();   // 비파괴 렌더 + 스크롤(rAF 코얼레싱)
+                                markStreamTokens();
                             } else if (event.type === "node_start") {
                                 handleNodeStart(event);
                                 updateProcessingStage(event.node, "start");
                             } else if (event.type === "node_complete") {
                                 handleNodeComplete(event);
                                 updateProcessingStage(event.node, "complete");
+                            } else if (event.type === "progress") {
+                                handleProgressEvent(event);   // plans/89 · D-204
+                            } else if (event.type === "heartbeat") {
+                                // 살아 있음 신호 — noteStreamActivity()로 충분
                             } else if (event.type === "meta") {
                                 metaData = event;
                             } else if (event.type === "done") {
                                 done = true;
                                 metaData = Object.assign(metaData, event);
                             } else if (event.type === "error") {
-                                showError(event.message || "처리 중 오류가 발생했습니다.");
+                                streamError = event.message || "처리 중 오류가 발생했습니다.";
+                                streamErrorDetail = event;   // 경위 필드(D-242)
+                                showError(streamError);
                                 done = true;
                             }
                         } catch (_parseErr) {}
@@ -1127,12 +2532,27 @@
                 }
             }
 
-            finalizeStreamingMessage(accumulatedText, metaData);
-            currentThreadId = metaData.thread_id || currentThreadId;
+            if (streamError) {
+                markStreamFailed(streamError, streamErrorDetail, retry);
+                return;
+            }
+
+            var finalText = (typeof metaData.response === "string" && metaData.response.length > 0)
+                ? metaData.response : accumulatedText;
+            finalizeStreamingMessage(finalText, metaData);
+            attachDownloadToLastFileCard(metaData.query_id);
+            // Plan 73 D-151: 폼필(파일 업로드) 1차 런의 미해결 필드 역질문 패널
+            appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
+            appendZoneClarificationToLastBubble(metaData.scope_reexpand);
+            appendZoneClarificationToLastBubble(metaData.source_switch);   // plans/132 W5 「다른 소스로 보기」
+            // D-187: '?' 조회(파일 첨부) 응답의 저장 값 패널
+            appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
+            setCurrentThread(metaData.thread_id);
+            renderDbScopeChip(metaData.db_scope);   // Plan 90 D-205
             messages.push({
                 role: "agent",
                 data: {
-                    response: accumulatedText,
+                    response: finalText,
                     query_id: metaData.query_id,
                     executed_sql: metaData.executed_sql,
                     row_count: metaData.row_count,
@@ -1144,21 +2564,18 @@
             });
 
         } catch (err) {
-            // 사용자가 중지(Stop) — 부분 응답 확정 (§6.2)
-            if (err && err.name === "AbortError") {
-                if (document.getElementById("streamingText")) {
-                    finalizeStreamingMessage(accumulatedText, metaData);
-                } else {
-                    removeProcessingMessage();
-                }
+            // 사용자가 중단(Stop)한 경우는 오류가 아니라 정상 종료로 처리한다(§12).
+            if (err.name === "AbortError") {
+                markStreamInterrupted();
             } else {
-                removeProcessingMessage();
-                showError("서버와의 통신에 실패했습니다: " + err.message);
+                markStreamFailed("서버와의 통신에 실패했습니다: " + err.message, null, retry);
             }
         } finally {
+            stopStreamStatusTimers();   // plans/89: 경과·정지 타이머 해제(어느 경로로 끝나든)
             isProcessing = false;
             currentAbortController = null;
-            setSendButtonMode(false);
+            currentReader = null;
+            setSendButtonMode("send");
         }
     }
 
@@ -1182,8 +2599,17 @@
             }
             renderAgentMessage(data);
             showPostHocProgress(data);
-            currentThreadId = data.thread_id || currentThreadId;
+            attachDownloadToLastFileCard(data.query_id);
+            setCurrentThread(data.thread_id);
+            renderDbScopeChip(data.db_scope);   // Plan 90 D-205
             messages.push({ role: "agent", data: data, time: new Date() });
+            appendZoneClarificationToLastBubble(data.clarification);
+            // Plan 73 D-151: 폼필 미해결 필드 역질문 패널
+            appendFormFillPanelToLastBubble(data.form_fill_clarification);
+            appendZoneClarificationToLastBubble(data.scope_reexpand);
+            appendZoneClarificationToLastBubble(data.source_switch);   // plans/132 W5 「다른 소스로 보기」
+            // D-187: 저장 값 패널(항목별 삭제)
+            appendFormMemoryPanelToLastBubble(data.form_memory_panel);
         } catch (err) {
             removeProcessingMessage();
             showError("서버와의 통신에 실패했습니다: " + err.message);
@@ -1227,91 +2653,176 @@
         return escapeHtml(text).replace(/\n/g, '<br>');
     }
 
-    // ─── Scroll control (Plan 49 §3) ───
+    // ─── Streaming Non-destructive Render (DOM 모핑) ───
+    //
+    // 토큰마다 innerHTML 전체 교체 대신, 새 파싱 결과를 기존 DOM에 diff 적용한다.
+    // 동일 위치·태그의 요소를 "재사용"하므로 표(table)의 가로 스크롤 위치(scrollLeft)와
+    // 텍스트 드래그 선택이 보존된다. 출력 HTML은 full-parse 결과와 동일.
+    // 폐쇄망 제약으로 외부 morphdom 의존성 대신 동등 동작의 경량 자체 구현 사용.
 
-    function prefersReducedMotion() {
-        return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
-    }
-
-    function isNearBottom() {
-        return (chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight) <= SCROLL_STICK_THRESHOLD;
-    }
-
-    function updateScrollButton() {
-        if (!scrollToBottomBtn) return;
-        if (autoStick) {
-            scrollToBottomBtn.classList.remove("is-visible");
-            scrollToBottomBtn.classList.remove("has-new");
-        } else {
-            scrollToBottomBtn.classList.add("is-visible");
+    function syncAttributes(fromEl, toEl) {
+        var toAttrs = toEl.attributes;
+        for (var i = 0; i < toAttrs.length; i++) {
+            var a = toAttrs[i];
+            if (fromEl.getAttribute(a.name) !== a.value) fromEl.setAttribute(a.name, a.value);
+        }
+        var fromAttrs = fromEl.attributes;
+        for (var j = fromAttrs.length - 1; j >= 0; j--) {
+            var name = fromAttrs[j].name;
+            if (!toEl.hasAttribute(name)) fromEl.removeAttribute(name);
         }
     }
 
-    // 의도적 이동(메시지 전송·버튼 클릭): 바닥으로 이동 + 따라가기 재개
-    function scrollToBottom(opts) {
-        opts = opts || {};
-        var behavior = (opts.behavior === "smooth" && !prefersReducedMotion()) ? "smooth" : "auto";
-        autoStick = true;
+    // 두 부모의 자식들을 인덱스 기준으로 reconcile(기존 노드 재사용 → scrollLeft/선택 보존)
+    function morphChildren(fromParent, toParent) {
+        var toNodes = toParent.childNodes;
+        var i = 0;
+        while (i < toNodes.length) {
+            var toNode = toNodes[i];
+            var fromNode = fromParent.childNodes[i];
+            if (!fromNode) {
+                // 새 노드 추가(끝에 append) — toNode를 옮기지 않도록 clone
+                fromParent.appendChild(toNode.cloneNode(true));
+            } else if (fromNode.nodeType !== toNode.nodeType ||
+                       (fromNode.nodeType === 1 && fromNode.nodeName !== toNode.nodeName)) {
+                // 타입/태그 불일치 → 해당 노드만 교체
+                fromParent.replaceChild(toNode.cloneNode(true), fromNode);
+            } else if (fromNode.nodeType === 3 || fromNode.nodeType === 8) {
+                // 텍스트/주석 → 값만 갱신
+                if (fromNode.nodeValue !== toNode.nodeValue) fromNode.nodeValue = toNode.nodeValue;
+            } else if (fromNode.nodeType === 1 && !fromNode.isEqualNode(toNode)) {
+                // 동일 태그 요소이며 내용이 다를 때만 어트리뷰트 동기화 + 재귀
+                syncAttributes(fromNode, toNode);
+                morphChildren(fromNode, toNode);
+            }
+            // isEqualNode가 true면 변화 없음 → 기존 노드 유지(불필요 reflow 방지)
+            i++;
+        }
+        // 남는 기존 노드 제거
+        while (fromParent.childNodes.length > toNodes.length) {
+            fromParent.removeChild(fromParent.lastChild);
+        }
+    }
+
+    // 스트리밍 마크다운을 기존 DOM 보존하며 갱신. 실패 시 폴백(가로 스크롤 위치만 보존).
+    function renderStreamingMarkdown(el, md) {
+        var html = renderMarkdown(md);
+        try {
+            var tpl = document.createElement("div");
+            tpl.innerHTML = html;
+            morphChildren(el, tpl);
+        } catch (_e) {
+            console.warn('[renderStreamingMarkdown] morph 실패 — 폴백 사용:', _e);
+            var prev = el.querySelectorAll("table");
+            var sc = [];
+            for (var i = 0; i < prev.length; i++) sc[i] = prev[i].scrollLeft;
+            el.innerHTML = html;
+            var next = el.querySelectorAll("table");
+            for (var j = 0; j < next.length && j < sc.length; j++) {
+                if (sc[j]) next[j].scrollLeft = sc[j];
+            }
+        }
+    }
+
+    // 토큰 버스트를 프레임당 1회 렌더로 코얼레싱(전체 재파싱 O(L²) 상수 절감)
+    function scheduleStreamingRender() {
+        if (_streamRafQueued) return;
+        _streamRafQueued = true;
         requestAnimationFrame(function () {
-            try {
-                chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: behavior });
-            } catch (_e) {
+            _streamRafQueued = false;
+            var el = document.getElementById("streamingText");
+            if (el) renderStreamingMarkdown(el, _streamAccumulated);
+            scrollToBottomIfSticky();   // 렌더 후 높이 갱신된 상태에서 추종
+        });
+    }
+
+    // §16: 컨테이너 파라미터화 — 대화창/진행상황 패널이 동일 로직을 공유한다.
+    function isNearBottom(el) {
+        var container = el || chatMessages;
+        var gap = container.scrollHeight - container.scrollTop - container.clientHeight;
+        return gap <= BOTTOM_THRESHOLD_PX;
+    }
+
+    function scrollElToBottom(el, smooth) {
+        if (!el) return;
+        if (smooth) {
+            el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+        } else {
+            el.scrollTop = el.scrollHeight;
+        }
+    }
+
+    function updateScrollBtn(btn, el, hasNew) {
+        if (!btn || !el) return;
+        var show = !isNearBottom(el);
+        btn.classList.toggle("is-visible", show);
+        btn.classList.toggle("has-new", show && hasNew);
+    }
+
+    function updateScrollToBottomBtn() {
+        // 버튼이 보이고 미확인 신규 출력이 있을 때만 강조
+        updateScrollBtn(scrollToBottomBtn, chatMessages, hasNewContent);
+    }
+
+    // 무조건 맨 아래로 (사용자 본인 질의 등 명시적 의도)
+    function scrollToBottom(smooth) {
+        requestAnimationFrame(function () {
+            if (smooth) {
+                chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: "smooth" });
+            } else {
                 chatMessages.scrollTop = chatMessages.scrollHeight;
             }
+            stickToBottom = true;
+            hasNewContent = false;       // 맨 아래로 강제 이동 → 신규 강조 해제
+            updateScrollToBottomBtn();
         });
-        updateScrollButton();
     }
 
-    // 자동 따라가기: 사용자가 바닥에 붙어있을 때만 이동(스트리밍·자동 append용)
-    function autoScrollIfStuck() {
-        if (!autoStick) return;
+    // 고정 상태일 때만 따라 내려감 (토큰 스트리밍 / 에이전트 출력 전용)
+    function scrollToBottomIfSticky() {
+        if (!stickToBottom) {
+            hasNewContent = true;        // 미확인 신규 출력 → 버튼 강조 대상
+            updateScrollToBottomBtn();
+            return;
+        }
         requestAnimationFrame(function () {
-            chatMessages.scrollTop = chatMessages.scrollHeight;
+            chatMessages.scrollTop = chatMessages.scrollHeight;  // 즉시(비smooth)
         });
     }
 
-    // 선택 영역이 특정 요소 안에 있는지 (스트리밍 중 텍스트 선택 보존용 — §6.1)
-    function hasSelectionInside(el) {
-        if (!el) return false;
-        var sel = window.getSelection ? window.getSelection() : null;
-        if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
-        var node = sel.getRangeAt(0).commonAncestorContainer;
-        return el.contains(node);
+    // ─── Progress Panel Scroll (§16: 대화창과 동일한 스티키-팔로잉) ───
+
+    function isPanelCollapsed() {
+        var layout = document.querySelector(".chat-layout");
+        return layout ? layout.classList.contains("panel-collapsed") : false;
     }
 
-    // 스트리밍 토큰 렌더를 프레임당 1회로 배칭한다 (§6.1: 깜빡임·O(n²) 방지, 선택 보존)
-    function flushStreamRender() {
-        renderRafId = null;
-        var textEl = document.getElementById("streamingText");
-        if (textEl && pendingRenderText !== null && !hasSelectionInside(textEl)) {
-            textEl.innerHTML = renderMarkdown(pendingRenderText);
-            pendingRenderText = null;
-        }
-        if (autoStick) {
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-        } else if (scrollToBottomBtn) {
-            scrollToBottomBtn.classList.add("has-new");
-        }
+    function updateProgressScrollBtn() {
+        updateScrollBtn(progressScrollBtn, progressPanelBody, progressHasNewContent);
     }
 
-    function scheduleStreamRender(text) {
-        pendingRenderText = text;
-        if (renderRafId === null) {
-            renderRafId = requestAnimationFrame(flushStreamRender);
-        }
+    // 패널을 무조건 맨 아래로 (버튼 클릭 등 명시적 의도)
+    function scrollProgressToBottom(smooth) {
+        if (!progressPanelBody) return;
+        requestAnimationFrame(function () {
+            scrollElToBottom(progressPanelBody, smooth);
+            progressStickToBottom = true;
+            progressHasNewContent = false;
+            updateProgressScrollBtn();
+        });
     }
 
-    // 스트리밍 종료 시 마지막 누적 텍스트를 강제로 1회 렌더(선택 보류분 반영)
-    function flushFinalStreamRender(text) {
-        if (renderRafId !== null) {
-            cancelAnimationFrame(renderRafId);
-            renderRafId = null;
+    // 고정 상태일 때만 패널을 따라 내려감 (진행 스텝 append 전용). 접힘 상태면 무시(§16.4).
+    function scrollProgressToBottomIfSticky() {
+        if (!progressPanelBody || isPanelCollapsed()) return;
+        if (!progressStickToBottom) {
+            progressHasNewContent = true;   // 미확인 신규 출력 → 버튼 강조 대상
+            updateProgressScrollBtn();
+            return;
         }
-        var textEl = document.getElementById("streamingText");
-        if (textEl) {
-            textEl.innerHTML = renderMarkdown(text || pendingRenderText || "");
-        }
-        pendingRenderText = null;
+        requestAnimationFrame(function () {
+            progressPanelBody.scrollTop = progressPanelBody.scrollHeight;  // 즉시(비smooth)
+        });
     }
 
     // ─── Global function for SQL toggle ───
@@ -1322,6 +2833,63 @@
         btn.classList.toggle("open");
         codeEl.classList.toggle("open");
     };
+
+    // ─── 결과·파일 받기 (헤더 인증) ───
+    // 결과·CSV·생성 파일·매핑 보고서·첨부 원본 API는 로그인과 소유자(질의한 사람)를 확인한다.
+    // 링크로 바로 이동하면 Authorization 헤더가 실리지 않으므로(토큰은 URL에 싣지 않는다) 클릭을
+    // 가로채 헤더를 실은 fetch로 받고 Blob으로 저장한다. 만료(401)는 기존 재로그인 흐름을 따른다.
+
+    // 한글 파일명은 filename*=UTF-8''(퍼센트 인코딩)에 있고 filename="..."은 ASCII 대체 이름이다
+    // (RFC 6266·5987) — UTF-8 이름을 먼저 읽는다.
+    function filenameFromDisposition(header) {
+        var h = header || "";
+        var star = /filename\*=UTF-8''([^;]+)/i.exec(h);
+        if (star) {
+            try { return decodeURIComponent(star[1].trim()); } catch (_e) { /* 깨진 인코딩이면 대체 이름 */ }
+        }
+        var m = /filename="([^"]+)"/.exec(h);
+        return m ? m[1] : null;
+    }
+
+    async function downloadWithAuth(url, fallbackName) {
+        try {
+            var res = await fetch(url, { headers: getAuthHeaders() });
+            if (res.status === 401) {
+                redirectToLogin();
+                return;
+            }
+            if (!res.ok) {
+                var detail = "다운로드에 실패했습니다 (HTTP " + res.status + ")";
+                try {
+                    var body = await res.json();
+                    if (body && body.detail) detail = body.detail;
+                } catch (_e) { /* 본문이 JSON이 아니면 기본 문구 */ }
+                showError(detail);
+                return;
+            }
+            var blob = await res.blob();
+            var objectUrl = URL.createObjectURL(blob);
+            var a = document.createElement("a");
+            a.href = objectUrl;
+            a.download = filenameFromDisposition(res.headers.get("content-disposition")) || fallbackName || "download";
+            a.style.display = "none";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 1000);
+        } catch (err) {
+            showError("다운로드에 실패했습니다: " + err.message);
+        }
+    }
+
+    chatMessages.addEventListener("click", function (e) {
+        var link = e.target.closest("a.message-download, a.message-file-card");
+        var href = link ? link.getAttribute("href") : null;
+        if (!href || href.indexOf("/api/v1/query/") !== 0) return;
+        e.preventDefault();
+        var nameEl = link.querySelector(".message-file-card-name");
+        downloadWithAuth(href, nameEl ? nameEl.textContent : null);
+    });
 
     // ─── Mapping Feedback Upload Handler ───
 
@@ -1349,6 +2917,11 @@
                 headers: getAuthHeaders(),
                 body: formData,
             });
+
+            if (response.status === 401) {
+                redirectToLogin();   // 만료 — 기존 재로그인 흐름
+                return;
+            }
 
             var result = await response.json();
 
@@ -1382,7 +2955,7 @@
                     '<div class="message-time">' + formatTime(new Date()) + '</div>' +
                 '</div>';
             chatMessages.appendChild(el);
-            scrollToBottom();
+            scrollToBottomIfSticky();
 
         } catch (err) {
             showError("피드백 업로드 실패: " + err.message);
@@ -1397,6 +2970,10 @@
     function resetProgressPanel() {
         progressPipeline.innerHTML = "";
         progressEmpty.style.display = "none";
+        // 새 질의 시작 시 패널 팔로잉 상태 초기화(§16)
+        progressStickToBottom = true;
+        progressHasNewContent = false;
+        updateProgressScrollBtn();
     }
 
     function showProgressEmpty() {
@@ -1466,7 +3043,7 @@
             '<div class="pipeline-step-body"></div>';
 
         progressPipeline.appendChild(stepEl);
-        progressPipeline.scrollTop = progressPipeline.scrollHeight;
+        scrollProgressToBottomIfSticky();
     }
 
     function handleNodeComplete(event) {
@@ -1497,10 +3074,15 @@
         // Fill body with data
         var bodyEl = stepEl.querySelector(".pipeline-step-body");
         if (bodyEl && data && Object.keys(data).length > 0) {
+            var subSteps = bodyEl.querySelector(".pipeline-substeps");   // plans/89 T7: 하위 행 보존
             bodyEl.innerHTML = renderNodeData(node, data);
+            if (subSteps) bodyEl.appendChild(subSteps);
             // Auto-expand step
             stepEl.classList.add("expanded");
         }
+
+        // 본문 확장으로 높이가 늘어난 뒤 패널을 팔로잉(§16)
+        scrollProgressToBottomIfSticky();
     }
 
     function renderNodeData(node, data) {
@@ -1546,7 +3128,6 @@
                 general_inference: "일반 추론",
                 cache_management: "캐시 관리",
                 synonym_registration: "유사어 등록",
-                process_query: "프로세스 조회",
             };
             var intentLabel = intentMap[data.routing_intent] || data.routing_intent || "알 수 없음";
             var intentBadgeClass = data.routing_intent === "data_query" ? "step-data-badge--success" : "step-data-badge--info";
@@ -1563,15 +3144,6 @@
                 });
                 targetHtml += "</ul>";
                 html += renderSection("라우팅 근거", targetHtml);
-            }
-        }
-
-        else if (node === "process_query") {
-            // Plan 48: 실시간 프로세스 조회 — 의도 배지 + 프로세스 표
-            html += renderSection("분류된 의도", '<span class="step-data-badge step-data-badge--info">프로세스 조회</span>');
-            var ovTable = renderProcessOverview(data.process_overview);
-            if (ovTable) {
-                html += renderSection("실시간 프로세스 현황", ovTable);
             }
         }
 
@@ -1695,6 +3267,41 @@
             html += renderSection("에러", '<div class="step-data-value" style="color:var(--error)">' + escapeHtml(data.error || "") + "</div>");
         }
 
+        else if (node === "intent_planner") {
+            var cnt = data.task_count != null ? data.task_count : (data.tasks ? data.tasks.length : 0);
+            html += renderSection("의도 분석", '<span class="step-data-badge step-data-badge--info">' + escapeHtml(cnt + "개 작업으로 분석됨") + "</span>");
+            if (data.tasks && data.tasks.length > 0) {
+                html += renderSection("작업 목록", renderTaskList(data.tasks));
+            }
+        }
+
+        else if (node === "agent_orchestrator") {
+            if (data.tasks && data.tasks.length > 0) {
+                html += renderSection("작업 진행", renderTaskList(data.tasks));
+            }
+        }
+
+        else if (node === "replanner") {
+            if (data.replan_history && data.replan_history.length > 0) {
+                var histHtml = '<ul class="step-data-list">';
+                data.replan_history.forEach(function (h) {
+                    histHtml += "<li><strong>재계획 " + (h.count || "?") + "회</strong>";
+                    histHtml += ' <span class="step-data-badge step-data-badge--warning">작업 ' + (h.added || 0) + "개 추가</span>";
+                    if (h.reason) histHtml += '<div class="step-data-value">' + escapeHtml(h.reason) + "</div>";
+                    histHtml += "</li>";
+                });
+                histHtml += "</ul>";
+                html += renderSection("재계획 이력", histHtml);
+            }
+            if (!data.needs_replan) {
+                html += renderSection("재계획 상태", '<span class="step-data-badge step-data-badge--success">추가 작업 없음 (완료)</span>');
+            }
+        }
+
+        else if (node === "result_aggregator") {
+            html += renderSection("상태", '<span class="step-data-badge step-data-badge--success">' + escapeHtml(data.status || "통합 완료") + "</span>");
+        }
+
         else {
             // Generic fallback
             html += renderSection("데이터", renderJsonPreview(data));
@@ -1705,6 +3312,79 @@
 
     function renderSection(label, contentHtml) {
         return '<div class="step-data-section"><div class="step-data-label">' + escapeHtml(label) + "</div>" + contentHtml + "</div>";
+    }
+
+    // 다중 의도 task 목록 렌더링 (의도 분석 / 작업 실행 단계 공용)
+    function renderTaskList(tasks) {
+        var html = '<ul class="step-data-list">';
+        tasks.forEach(function (t, idx) {
+            var label = agentLabels[t.agent] || t.agent || "작업";
+            // Plan 71: 실행 결과가 실시간 API 경로면 라벨을 실제 경로로 교체
+            // (실행 전 의도 분석 단계에는 source가 없어 "DB 조회"로 표시됨 — 폴백 가능성상 정직한 표기)
+            if (t.source === "realtime_api") {
+                label = "실시간 API 조회";
+            }
+            var ordinal = t.order != null ? t.order : (idx + 1);
+            var statusBadge = "";
+            if (t.status === "completed") {
+                statusBadge = ' <span class="step-data-badge step-data-badge--success">완료</span>';
+            } else if (t.status === "failed") {
+                statusBadge = ' <span class="step-data-badge step-data-badge--error">실패</span>';
+            } else if (t.status === "in_progress") {
+                statusBadge = ' <span class="step-data-badge step-data-badge--info">진행 중</span>';
+            } else if (t.status === "skipped" || t.reason) {
+                // D-203: 선행 결과 게이트로 실행하지 않은 단계 — "대기"로 보이면 오해를 만든다
+                // plans/89: reason이 있으면 상태값과 무관하게 "건너뜀" 우선(skipped 도입 지연 대비)
+                statusBadge = ' <span class="step-data-badge step-data-badge--error">건너뜀</span>';
+            } else if (t.status) {
+                statusBadge = ' <span class="step-data-badge step-data-badge--info">대기</span>';
+            }
+            html += "<li><strong>" + ordinal + ". " + escapeHtml(label) + "</strong>" + statusBadge;
+            if (t.sub_query) {
+                html += '<div class="step-data-value">' + escapeHtml(t.sub_query) + "</div>";
+            }
+            // 대상 DB (b0 등 오선택을 즉시 확인하기 위해 노출)
+            if (t.target_db_ids && t.target_db_ids.length > 0) {
+                html += '<div class="step-data-value">대상 DB: ' + escapeHtml(t.target_db_ids.join(", ")) + "</div>";
+            }
+            // 행 수
+            if (t.row_count != null) {
+                html += ' <span class="step-data-badge step-data-badge--info">' + t.row_count + "건</span>";
+            }
+            // D-206: 존 순차 실행 경과 — 그룹별 행수·소요를 실행 순서대로(은행존 → 공동존)
+            if (t.group_results && Object.keys(t.group_results).length > 1) {
+                var groupParts = Object.keys(t.group_results).map(function (key) {
+                    var g = t.group_results[key] || {};
+                    var errN = g.errors ? Object.keys(g.errors).length : 0;
+                    return escapeHtml(g.label || key) + " " + (g.row_count != null ? g.row_count : "?") + "건" +
+                        (g.elapsed_ms != null ? " · " + (g.elapsed_ms / 1000).toFixed(1) + "s" : "") +
+                        (errN ? " · 오류 " + errN : "");
+                });
+                html += '<div class="step-data-value">실행 그룹(순차): ' + groupParts.join(" → ") + "</div>";
+            }
+            // plans/89 §3.4 · plans/88 R-1/R-7: 선행 스코프·절단 — 실행 중 표시와 같은 필드명
+            if (t.scope_size) {
+                html += ' <span class="step-data-badge step-data-badge--info">대상 ' + t.scope_size + "대" + (t.scope_col ? " (" + escapeHtml(t.scope_col) + ")" : "") + "</span>";
+            }
+            if (t.truncated_count) {
+                html += ' <span class="step-data-badge step-data-badge--warning">' + t.truncated_count + "대 절단</span>";
+            }
+            // 생성된 SQL (orchestration에서 어떤 쿼리가 만들어졌는지 확인)
+            if (t.generated_sql) {
+                html += '<pre class="step-data-code">' + escapeHtml(t.generated_sql) + "</pre>";
+            }
+            // DB별 실행 에러 (예: polestar_b0 SQL0204N)
+            if (t.db_errors) {
+                Object.keys(t.db_errors).forEach(function (dbId) {
+                    html += '<div class="step-data-value" style="color:var(--error)">' + escapeHtml(dbId + ": " + t.db_errors[dbId]) + "</div>";
+                });
+            } else if (t.error) {
+                html += '<div class="step-data-value" style="color:var(--error)">' + escapeHtml(t.error) + "</div>";
+            }
+            html += "</li>";
+        });
+        html += "</ul>";
+        return html;
     }
 
     function renderJsonPreview(obj) {
@@ -1751,6 +3431,85 @@
         "주의": "#ffc107",
         "해소": "#28a745"
     };
+
+    // ─── 알람 → 질의 프롬프트 인계 (Plan 86 · D-192) ───
+    //
+    // 추천 문구는 창작 대상이 아니라 **검증된 형태의 재사용**이다. 각 문구는 골드셋
+    // (testdata/text2sql_gold/gp.yaml)에 동형이 있는 것만 넣는다 — 파이프라인이 못 푸는 질의를
+    // 추천하면 사용자가 얻는 경험은 "기능이 됐다"가 아니라 "알람에 답을 못 한다"이다.
+    //
+    // 축 판정 키는 **resource_type**이다. alarm_name은 자유 한국어라 단독 키로 쓸 수 없다
+    // (실측 값에 "내부Cloud ○○○님의 Cloud PC 사양변경 승인바랍니다" 같은 것이 섞인다).
+    // history_stats에는 의존하지 않는다 — SSE 티어 payload에 없어 경로에 따라 조용히 빈다.
+    var ALARM_PROMPT_AXES = {
+        "server.Cpus": [
+            { label: "1개월 CPU 사용률", suffix: "서버의 지난 1개월 평균·최대 CPU 사용률을 보여줘" }
+        ],
+        "server.Memory": [
+            { label: "1개월 메모리 사용률", suffix: "서버의 지난 1개월 평균·최대 메모리 사용률을 보여줘" }
+        ],
+        // 급증형은 **임계·차분을 문구에 명시**해야 급증 조립기(spike_sql.py)가 결정적으로 진입한다
+        // — 없으면 "급증 조립 미진입" 후 LLM 폴백이라 결과 품질이 보장되지 않는다(plans/86 §4.3).
+        "server.Disks": [
+            { label: "파일시스템 사용률", suffix: "서버의 파일시스템별 사용률을 보여줘" },
+            { label: "사용률 급증", spike: true,
+              suffix: "서버에서 지난달 대비 사용률이 10%p 이상 상승하고 80% 이상인 파일시스템을 보여줘" }
+        ],
+        "server.FileSystems": [
+            { label: "파일시스템 사용률", suffix: "서버의 파일시스템별 사용률을 보여줘" },
+            { label: "사용률 급증", spike: true,
+              suffix: "서버에서 지난달 대비 사용률이 10%p 이상 상승하고 80% 이상인 파일시스템을 보여줘" }
+        ],
+        "server.LogMonitor": [
+            { label: "최근 알람 이력", suffix: "서버의 최근 3개월 알람 발생 이력을 보여줘" }
+        ],
+        "server.Server": [
+            { label: "가용성 상태", suffix: "서버의 가용성 상태와 IP를 조회해줘" }
+        ]
+        // server.Network는 골드셋에 동형이 없어 **일부러 비워 둔다** — 답변 가능성 실측(T7) 후 편입.
+    };
+
+    // 축과 무관한 공통 추천. 매핑된 축에만 덧붙인다 — 미매핑 축을 이것 하나로 채우면
+    // "결정적 추천 0건"이 성립하지 않아 LLM 보강 경로(Plan 86 T5)가 영영 열리지 않는다.
+    var ALARM_PROMPT_COMMON = { label: "사양·OS 정보", suffix: "서버의 사양과 OS 정보를 조회해줘" };
+    //: 고르는 비용이 조회 비용을 넘지 않게 하는 상한.
+    var ALARM_PROMPT_MAX = 3;
+
+    // 질의의 주어. **카드 헤더와 같은 우선순위**여야 한다 — 헤더가 보여준 이름과 프롬프트의
+    // 이름이 다르면 사용자는 다른 서버를 조회한 것으로 읽는다(renderAlarmIdentityHeader 참조).
+    function alarmTargetName(data) {
+        var ident = data.server_identity || {};
+        var hostname = data.hostname || "";
+        var name = ident.name || "";
+        if (!name && data.server_name && data.server_name !== hostname) name = data.server_name;
+        if (!name) name = hostname || data.server_name || "";
+        return name;
+    }
+
+    // 알람 payload → 추천 질의 목록. 순수 함수다(DOM·네트워크·전역 상태를 만지지 않는다).
+    function buildAlarmPrompts(data) {
+        var name = alarmTargetName(data);
+        if (!name) return [];                       // 주어 없는 질의는 만들지 않는다
+        var axis = (data && data.resource_type) || "";
+        var specs = ALARM_PROMPT_AXES[axis];
+        if (!specs || !specs.length) return [];     // 미매핑 — LLM 보강 대상
+        specs = specs.slice();
+        // 카드가 "급증"이라 말했는데 추천이 평상시 통계부터 내밀면 분석과 추천이 어긋난다.
+        if (data.pattern_type === "급증") {
+            specs.sort(function (a, b) { return (b.spike ? 1 : 0) - (a.spike ? 1 : 0); });
+        }
+        specs.push(ALARM_PROMPT_COMMON);
+        var out = [];
+        for (var i = 0; i < specs.length && out.length < ALARM_PROMPT_MAX; i++) {
+            out.push({
+                label: specs[i].label,
+                text: name + " " + specs[i].suffix,
+                axis: axis,
+                source: "deterministic"
+            });
+        }
+        return out;
+    }
 
     // Plan 47: 패턴 근거 표 렌더 헬퍼 — history_stats(결정적 통계)를 그대로 표시한다.
 
@@ -1888,70 +3647,713 @@
             '</table>';
     }
 
-    // Plan 48: 사용자 프로세스 조회 현황 표.
-    // process_overview(이미 마스킹된 dict)의 metric에 따라 top_by_cpu/top_by_mem를
-    // .alarm-proc-table 스타일로 렌더한다. args는 백엔드에서 마스킹된 값만 전달됨.
-    function renderProcessOverview(ov) {
-        if (!ov) return "";
-        var metric = ov.metric || "both";
+    // ─── 뷰 탭 (질의응답 · 이벤트 알람) ───
+    //
+    // 알람은 SSE로 대화와 무관하게 도착하므로 질의응답 스트림에 섞으면 흐름이 끊긴다.
+    // 수신(EventSource)은 어느 탭에 있든 그대로 유지하고, 보고 있지 않은 동안 도착한
+    // 건수만 탭 배지로 알린다 — 알람 뷰를 열면 그 시점에 0으로 돌아간다.
 
-        function buildTable(rows, isMem) {
-            if (!rows || !rows.length) return "";
-            var metricLabel = isMem ? "메모리" : "CPU";
-            var caption = (ov.source_host || "-") + " · " + metricLabel + " 상위";
-            var meta = [];
-            if (ov.captured_at) meta.push(fmtHistTs(ov.captured_at) + " 기준");
-            if (ov.total_count !== null && ov.total_count !== undefined) {
-                meta.push("전체 " + ov.total_count + "개");
+    var activeView = "chat";
+    var alarmUnreadCount = 0;
+
+    // 뷰 등록표. 탭이 늘어도 setActiveView는 다시 손대지 않는다
+    // (하드코딩 toggle을 늘리면 뷰 하나가 조용히 안 숨는 회귀가 생긴다).
+    // 질의 이력은 여기 없다 — 탭으로 본문을 바꾸는 뷰가 아니라 채팅 옆에 붙는 사이드바다.
+    function viewRegistry() {
+        return { chat: chatView, alarm: alarmView };
+    }
+
+    function setActiveView(view) {
+        activeView = view;
+        var views = viewRegistry();
+        Object.keys(views).forEach(function (key) {
+            var el = views[key];
+            if (el) el.classList.toggle("view-hidden", key !== view);
+        });
+        document.querySelectorAll(".view-tab").forEach(function (btn) {
+            var on = btn.dataset.view === view;
+            btn.classList.toggle("active", on);
+            btn.setAttribute("aria-selected", on ? "true" : "false");
+        });
+        if (view === "alarm") {
+            alarmUnreadCount = 0;
+            renderAlarmBadge();
+            updateAlarmScrollBtn();   // 복귀 시 스크롤 위치에 맞춰 "맨 위로" 버튼 표시 갱신
+        } else if (view === "chat" && stickToBottom && chatMessages) {
+            // 숨겨진 동안 chatMessages.scrollHeight는 0이라 스트리밍 추종이 맨 위로 밀어 놓는다.
+            // 돌아올 때 "맨 아래 고정" 상태였던 경우에 한해 복원한다.
+            // (조건을 else로 두면 이력 탭으로 *갈* 때 복원이 돌아 엉뚱한 곳을 만진다.)
+            requestAnimationFrame(function () {
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            });
+        }
+    }
+
+    function renderAlarmBadge() {
+        if (!alarmTabBadge) return;
+        alarmTabBadge.textContent = alarmUnreadCount > 99 ? "99+" : String(alarmUnreadCount);
+        alarmTabBadge.classList.toggle("has-unread", alarmUnreadCount > 0);
+    }
+
+    // 현재 선택된 레벨 필터("" = 전체). 새로고침하면 전체로 돌아간다 —
+    // 저장해 두면 다시 들어왔을 때 걸려 있는 필터 때문에 알람이 없는 것처럼 보인다.
+    var alarmFilterSeverity = "";
+
+    // ─── 알람 뷰 "맨 위로" 버튼 (채팅 scroll-to-bottom의 상하 반전) ───
+    // 최신 알람이 맨 위에 삽입되므로 "새 내용" 방향이 채팅과 반대다. 맨 위 근처로
+    // 돌아오면 신규 강조를 해제한다(채팅의 stick-to-bottom 복귀와 동형).
+    var alarmHasNew = false;
+
+    function isAlarmNearTop() {
+        return !alarmView || alarmView.scrollTop < 40;
+    }
+
+    function updateAlarmScrollBtn() {
+        if (!alarmScrollTopBtn) return;
+        if (isAlarmNearTop()) alarmHasNew = false;
+        var show = activeView === "alarm" && !isAlarmNearTop();
+        alarmScrollTopBtn.classList.toggle("is-visible", show);
+        alarmScrollTopBtn.classList.toggle("has-new", show && alarmHasNew);
+    }
+
+    // 수신 건수 표시·빈 상태를 목록의 실제 내용에 맞춘다.
+    // 레벨 칩과 키워드는 카드를 지우지 않고 감추기만 한다 — 필터를 풀면 그대로 돌아온다.
+    function updateAlarmViewState() {
+        if (!alarmList) return;
+        var cards = alarmList.children;
+        var total = cards.length;
+        var keyword = alarmSearch ? alarmSearch.value.trim().toLowerCase() : "";
+        // 칩 건수는 **키워드만** 적용해 센다 — 레벨까지 반영하면 고른 칩 외에는
+        // 전부 0으로 보여 다른 레벨로 옮겨갈 단서가 사라진다.
+        var counts = {};
+        var byKeyword = 0;
+        var shown = 0;
+        for (var i = 0; i < total; i++) {
+            var card = cards[i];
+            var sev = card.dataset.severity || "";
+            var hitKeyword = !keyword || (card.dataset.search || "").indexOf(keyword) !== -1;
+            if (hitKeyword) {
+                counts[sev] = (counts[sev] || 0) + 1;
+                byKeyword += 1;
             }
-            if (meta.length) caption += " (" + meta.join(", ") + ")";
-
-            var head =
-                '<tr><th>프로세스</th><th>PID</th>' +
-                '<th class="alarm-proc-num' + (isMem ? '' : ' is-primary') + '">CPU</th>' +
-                '<th class="alarm-proc-num' + (isMem ? ' is-primary' : '') + '">MEM</th>' +
-                '<th>사용자</th></tr>';
-            var body = rows.map(function (p) {
-                var mainRow = '<tr>' +
-                    '<td>' + escapeHtml(p.name || "-") + '</td>' +
-                    '<td class="alarm-proc-num">' + escapeHtml(String(p.pid)) + '</td>' +
-                    '<td class="alarm-proc-num' + (isMem ? '' : ' is-primary') + '">' +
-                        fmtPctCell(p.p100cpu) + '</td>' +
-                    '<td class="alarm-proc-num' + (isMem ? ' is-primary' : '') + '">' +
-                        fmtPctCell(p.pmem) + '</td>' +
-                    '<td>' + escapeHtml(p.user || "-") + '</td>' +
-                    '</tr>';
-                var argsRow = p.args
-                    ? '<tr class="alarm-proc-args"><td colspan="5">' +
-                        escapeHtml(p.args) + '</td></tr>'
-                    : "";
-                return mainRow + argsRow;
-            }).join("");
-            return '<table class="alarm-evidence alarm-proc-table">' +
-                '<caption>' + escapeHtml(caption) + '</caption>' +
-                head + body +
-                '</table>';
+            var visible = hitKeyword && (!alarmFilterSeverity || sev === alarmFilterSeverity);
+            card.classList.toggle("alarm-card-hidden", !visible);
+            if (visible) shown += 1;
         }
 
-        var out = "";
-        if (metric === "cpu" || metric === "both") {
-            out += buildTable(ov.top_by_cpu, false);
+        document.querySelectorAll(".alarm-chip").forEach(function (chip) {
+            var sev = chip.dataset.severity || "";
+            var n = sev ? (counts[sev] || 0) : byKeyword;
+            var badge = chip.querySelector(".alarm-chip-count");
+            if (badge) badge.textContent = n ? String(n) : "";
+            // 고를 것이 없는 레벨은 흐리게 — 다만 지금 고른 칩은 풀 수 있어야 하므로 남긴다.
+            chip.classList.toggle("alarm-chip--empty", !n && sev !== alarmFilterSeverity);
+        });
+
+        var filtered = !!alarmFilterSeverity || !!keyword;
+        if (alarmTools) alarmTools.style.display = total ? "" : "none";
+        if (alarmFilterReset) alarmFilterReset.style.display = filtered ? "" : "none";
+        if (alarmEmpty) {
+            alarmEmpty.style.display = shown ? "none" : "flex";
+            var emptyText = alarmEmpty.querySelector("p");
+            // 빈 상태 문구는 두 가지다 — 아직 아무것도 안 왔을 때와, 필터에 걸린 게 없을 때.
+            if (emptyText) {
+                emptyText.innerHTML = total
+                    ? "필터·검색어와 일치하는 알람이 없습니다.<br>레벨을 바꾸거나 검색어를 지워보세요."
+                    : "수신한 이벤트 알람이 없습니다.<br>알람이 도착하면 여기에 최신순으로 쌓입니다.";
+            }
         }
-        if (metric === "memory" || metric === "both") {
-            out += buildTable(ov.top_by_mem, true);
+        if (alarmViewCount) {
+            alarmViewCount.textContent = total
+                ? (filtered ? shown + " / " + total + "건 표시" : total + "건 수신")
+                : "";
         }
-        if (!out && ov.total_count === 0) {
-            out = '<div class="step-data-value">조회된 프로세스가 없습니다 (' +
-                escapeHtml(ov.source_host || "-") + ').</div>';
+        // 지울 것이 없으면 버튼을 감춘다 — .btn에는 비활성 스타일이 없어
+        // disabled로 두면 눌리는 것처럼 보인다.
+        if (alarmClearBtn) alarmClearBtn.style.display = total ? "" : "none";
+    }
+
+    // 레벨·키워드 필터를 전체 보기로 되돌린다(칩 표시 상태 포함).
+    function resetAlarmFilter() {
+        alarmFilterSeverity = "";
+        if (alarmSearch) alarmSearch.value = "";
+        document.querySelectorAll(".alarm-chip").forEach(function (c) {
+            var on = !(c.dataset.severity || "");
+            c.classList.toggle("active", on);
+            c.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+    }
+
+    // 키워드 검색 대상. 카드 전체 텍스트를 긁으면 버튼 문구("유효"·"노이즈")까지 걸리므로
+    // 운영자가 실제로 찾는 필드만 모은다.
+    function alarmSearchText(data) {
+        var ident = data.server_identity || {};
+        return [
+            data.severity_label, ident.name, data.server_name, data.hostname,
+            ident.ip_address, data.ip_address, data.alarm_name, data.resource_name,
+            ident.source_label || ident.site_label || ident.zone_label,
+            data.summary, data.probable_cause, data.recommended_action
+        ].filter(Boolean).join(" ").toLowerCase();
+    }
+
+    // 알람 수신 권한이 없는 사용자에게는 탭을 감춘다 — 영영 비어 있을 탭이기 때문이다.
+    // (헤더의 수신 토글도 같은 조건으로 숨긴다 — setupAlarmToggle)
+    function setAlarmTabVisible(visible) {
+        var tab = document.querySelector('.view-tab[data-view="alarm"]');
+        if (tab) tab.style.display = visible ? "" : "none";
+        if (!visible && activeView === "alarm") setActiveView("chat");
+    }
+
+    // ─── 질의 이력 목록 (D-183) ───
+
+    function formatHistoryTime(ms) {
+        var d = new Date(ms);
+        function p(n) { return n < 10 ? "0" + n : String(n); }
+        return p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+    }
+
+    // 목록에서 고른 질의는 **입력창에 채우기만** 한다. 즉시 보내지 않는 이유는
+    // 옛 질의가 지금도 유효하다는 보장이 없고(존 개명·서버 폐기), 오전송은 되돌릴 수 없어서다.
+    function reuseHistoryQuery(query) {
+        if (!promptEl) return;
+        promptEl.value = query;
+        historyIndex = -1;
+        savedCurrentInput = "";
+        // 뷰 전환은 필요 없다 — 사이드바는 채팅 뷰 안에 있어서, 여기를 누를 수 있다는 것은
+        // 이미 채팅 뷰라는 뜻이다.
+        autoResizeTextarea.call(promptEl);   // this 가 입력창이어야 한다 — 인자 없이 부르면 TypeError(plans/116)
+        promptEl.focus();
+    }
+
+    function renderHistoryList() {
+        if (!historyList) return;
+        // 접힌 동안의 렌더는 낭비다(보이지 않는다). 펼칠 때 applyHistoryPanelState가 부른다.
+        var layout = document.querySelector(".chat-layout");
+        if (layout && layout.classList.contains("history-collapsed")) return;
+        if (historyMode === "threads") { renderThreadList(); return; }
+        var items = loadHistory();
+        var keyword = historySearch ? historySearch.value.trim().toLowerCase() : "";
+        // 저장은 오래된 순, 표시는 최신순. 검색은 서버 왕복 없이 부분일치로 거른다.
+        var rows = [];
+        for (var i = items.length - 1; i >= 0; i--) {
+            if (keyword && items[i].q.toLowerCase().indexOf(keyword) === -1) continue;
+            rows.push({ item: items[i], index: i });
         }
-        return out;
+
+        historyList.innerHTML = "";
+        rows.forEach(function (row) {
+            var el = document.createElement("div");
+            el.className = "history-row";
+
+            var text = document.createElement("div");
+            text.className = "history-row-query";
+            text.textContent = row.item.q;      // textContent — 질의문은 마크업으로 해석하지 않는다
+            text.title = row.item.q;            // 잘린 전문은 툴팁으로
+
+            var meta = document.createElement("div");
+            meta.className = "history-row-meta";
+
+            var time = document.createElement("span");
+            time.className = "history-row-time";
+            time.textContent = formatHistoryTime(row.item.t);
+
+            var reuseBtn = document.createElement("button");
+            reuseBtn.type = "button";
+            reuseBtn.className = "history-row-btn";
+            reuseBtn.title = "입력창에 불러오기";
+            reuseBtn.setAttribute("aria-label", "이 질의를 입력창에 불러오기");
+            reuseBtn.innerHTML = '<svg viewBox="0 0 24 24"><polyline points="9 14 4 9 9 4"></polyline>' +
+                '<path d="M20 20v-7a4 4 0 0 0-4-4H4"></path></svg>';
+            reuseBtn.addEventListener("click", function () { reuseHistoryQuery(row.item.q); });
+
+            var delBtn = document.createElement("button");
+            delBtn.type = "button";
+            delBtn.className = "history-row-btn";
+            delBtn.title = "이 항목 삭제";
+            delBtn.setAttribute("aria-label", "이 질의 이력 삭제");
+            delBtn.innerHTML = '<svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line>' +
+                '<line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+            delBtn.addEventListener("click", function () { removeHistoryAt(row.index); });
+
+            meta.appendChild(time);
+            meta.appendChild(reuseBtn);
+            meta.appendChild(delBtn);
+            el.appendChild(text);
+            el.appendChild(meta);
+            historyList.appendChild(el);
+        });
+
+        // 빈 상태 문구는 두 가지다 — 아직 아무것도 없는 것과, 검색에 안 걸린 것.
+        if (historyEmpty) {
+            historyEmpty.style.display = rows.length ? "none" : "flex";
+            var emptyText = historyEmpty.querySelector("p");
+            if (emptyText) {
+                emptyText.innerHTML = keyword
+                    ? "검색어와 일치하는 질의가 없습니다."
+                    : "저장된 질의가 없습니다.<br>질의를 보내면 여기에 최신순으로 쌓입니다.";
+            }
+        }
+        if (historyPanelCount) {
+            historyPanelCount.textContent = items.length
+                ? (keyword ? rows.length + " / " + items.length + "건" : items.length + "건 저장")
+                : "";
+        }
+        // 지울 것이 없으면 버튼을 감춘다(알람 뷰와 같은 규칙 — .btn에 비활성 스타일이 없다).
+        if (historyClearBtn) historyClearBtn.style.display = items.length ? "" : "none";
+    }
+
+    // ─── 대화(스레드) 이력 (D-248) ───
+    //
+    // 사이드바의 "대화" 모드. 서버가 완결된 턴(질의+응답)을 앱 DB에 남기고, 여기서는 그
+    // 목록을 보여 주며 고른 대화를 채팅 화면에 다시 그린다. 불러온 대화는 이어서 질의할 수
+    // 있다 — thread_id와 스코프 칩을 그 대화에 맞춘다. "질의" 모드(D-183)는 그대로 둔다.
+
+    var THREAD_UNAVAILABLE_TEXT = {
+        no_store: "대화 저장소(앱 DB)가 구성되지 않아 대화를 보관하지 않습니다.",
+        no_owner: "이 브라우저를 식별할 수 없어 대화를 보관하지 않습니다.",
+    };
+
+    // 턴이 끝날 때마다 부른다. 서버는 done을 보내기 전에 기록을 마치므로 곧바로 다시 받아도 된다.
+    function setCurrentThread(threadId) {
+        if (threadId) currentThreadId = threadId;
+        threadsState = "stale";
+        renderHistoryList();   // 접혀 있으면 아무것도 안 하고, 펼칠 때 다시 받는다
+    }
+
+    function loadThreads() {
+        var seq = ++threadsSeq;
+        threadsState = "loading";
+        fetch("/api/v1/threads", { headers: getAuthHeaders() })
+            .then(function (res) {
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                return res.json();
+            })
+            .then(function (body) {
+                if (seq !== threadsSeq) return;
+                threadItems = body.threads || [];
+                threadsState = body.available ? "ready" : "unavailable";
+                threadsReason = body.reason || "";
+                renderHistoryList();
+            })
+            .catch(function (e) {
+                if (seq !== threadsSeq) return;
+                threadItems = [];
+                threadsState = "error";
+                threadsReason = e.message;
+                renderHistoryList();
+            });
+    }
+
+    function renderThreadList() {
+        if (threadsState === "stale") loadThreads();
+        var keyword = historySearch ? historySearch.value.trim().toLowerCase() : "";
+        // 검색은 대화 안의 모든 질의문을 본다(서버가 queries로 이어 붙여 준다).
+        var rows = threadItems.filter(function (t) {
+            return !keyword || (t.queries || t.title || "").toLowerCase().indexOf(keyword) !== -1;
+        });
+
+        historyList.innerHTML = "";
+        rows.forEach(function (t) {
+            var el = document.createElement("div");
+            el.className = "history-row" + (t.thread_id === currentThreadId ? " history-row--active" : "");
+            el.tabIndex = 0;
+            el.setAttribute("role", "button");
+            el.setAttribute("aria-label", "대화 불러오기: " + (t.title || ""));
+
+            var text = document.createElement("div");
+            text.className = "history-row-query";
+            text.textContent = t.title || "(빈 질의)";
+            text.title = t.queries || t.title || "";
+
+            var meta = document.createElement("div");
+            meta.className = "history-row-meta";
+
+            var time = document.createElement("span");
+            time.className = "history-row-time";
+            var updated = Date.parse(t.updated_at);
+            time.textContent = (isNaN(updated) ? "" : formatHistoryTime(updated)) + " · " + t.turn_count + "턴";
+
+            var delBtn = document.createElement("button");
+            delBtn.type = "button";
+            delBtn.className = "history-row-btn";
+            delBtn.title = "이 대화 삭제";
+            delBtn.setAttribute("aria-label", "이 대화 삭제");
+            delBtn.innerHTML = '<svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line>' +
+                '<line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+            delBtn.addEventListener("click", function (e) {
+                e.stopPropagation();
+                deleteThread(t.thread_id);
+            });
+
+            el.addEventListener("click", function () { openThread(t.thread_id); });
+            el.addEventListener("keydown", function (e) {
+                if (e.target === el && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    openThread(t.thread_id);
+                }
+            });
+
+            meta.appendChild(time);
+            meta.appendChild(delBtn);
+            el.appendChild(text);
+            el.appendChild(meta);
+            historyList.appendChild(el);
+        });
+
+        if (historyEmpty) {
+            historyEmpty.style.display = rows.length ? "none" : "flex";
+            var emptyText = historyEmpty.querySelector("p");
+            if (emptyText) {
+                if (threadsState === "error") {
+                    emptyText.textContent = "대화 목록을 불러오지 못했습니다(" + threadsReason + ").";
+                } else if (threadsState === "unavailable") {
+                    emptyText.textContent = THREAD_UNAVAILABLE_TEXT[threadsReason] || "대화 이력을 사용할 수 없습니다.";
+                } else if (threadsState === "loading" && !threadItems.length) {
+                    emptyText.textContent = "대화 목록을 불러오는 중...";
+                } else {
+                    emptyText.innerHTML = keyword
+                        ? "검색어와 일치하는 대화가 없습니다."
+                        : "저장된 대화가 없습니다.<br>질의를 보내면 대화 단위로 쌓입니다.";
+                }
+            }
+        }
+        if (historyPanelCount) {
+            historyPanelCount.textContent = threadItems.length
+                ? (keyword ? rows.length + " / " + threadItems.length + "개" : threadItems.length + "개 대화")
+                : "";
+        }
+        if (historyClearBtn) historyClearBtn.style.display = threadItems.length ? "" : "none";
+    }
+
+    function openThread(threadId) {
+        if (isProcessing) {
+            showError("처리 중인 질의가 끝난 뒤 대화를 불러올 수 있습니다.");
+            return;
+        }
+        fetch("/api/v1/threads/" + encodeURIComponent(threadId), { headers: getAuthHeaders() })
+            .then(function (res) {
+                if (res.status === 404) throw new Error("대화를 찾을 수 없습니다");
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                return res.json();
+            })
+            .then(function (body) { showThreadTurns(threadId, body.turns || []); })
+            .catch(function (e) { showError("대화를 불러오지 못했습니다: " + e.message); });
+    }
+
+    function showThreadTurns(threadId, turns) {
+        // 불러오는 사이 새 질의가 시작됐으면 그 화면을 덮지 않는다
+        if (isProcessing) return;
+        hideError();
+        hidePromptConfirm();
+        Array.prototype.forEach.call(chatMessages.querySelectorAll(".message"), function (el) { el.remove(); });
+        if (chatWelcome) chatWelcome.classList.toggle("hidden", turns.length > 0);
+
+        var lastScope = null;
+        turns.forEach(function (t) {
+            var at = t.created_at ? new Date(t.created_at) : new Date();
+            renderUserMessage({ role: "user", content: t.user_query, time: at, file: null });
+            // query_id를 넘기지 않는다 — 다운로드·CSV 원본은 서버 메모리(_results_store)에만 있어
+            // 지난 대화에서는 대개 사라졌다. 없으면 renderAgentMessage가 링크를 만들지 않는다.
+            renderAgentMessage({
+                response: t.response,
+                executed_sql: t.executed_sql,
+                row_count: t.row_count,
+                processing_time_ms: t.processing_time_ms,
+                time: at,
+            });
+            // 역질문 턴은 db_scope가 없다 — 직전 보고값을 유지하는 renderDbScopeChip 규칙과 같다
+            if (t.db_scope) lastScope = t.db_scope;
+        });
+
+        // 이어서 질의하면 이 대화의 맥락(체크포인트)으로 이어진다
+        currentThreadId = threadId;
+        currentDbScope = lastScope;
+        pendingDbIds = null;
+        pendingReset = false;
+        updateDbScopeChip();
+        showProgressEmpty();
+        stickToBottom = true;
+        scrollToBottom();
+        renderHistoryList();   // 현재 대화 강조
+    }
+
+    // 새 대화 — 다음 전송이 thread_id 없이 나가 서버가 새 스레드를 연다. 저장된 대화는 그대로다.
+    function startNewChat() {
+        if (isProcessing) {
+            showError("처리 중인 질의가 끝난 뒤 새 대화를 시작할 수 있습니다.");
+            return;
+        }
+        hideError();
+        hidePromptConfirm();
+        Array.prototype.forEach.call(chatMessages.querySelectorAll(".message"), function (el) { el.remove(); });
+        if (chatWelcome) chatWelcome.classList.remove("hidden");
+        messages = [];
+        currentThreadId = null;
+        lastUploadedFile = null;
+        currentDbScope = null;
+        pendingDbIds = null;
+        pendingReset = false;
+        updateDbScopeChip();
+        showProgressEmpty();
+        stickToBottom = true;
+        renderHistoryList();   // 현재 대화 강조 해제
+        if (promptEl) promptEl.focus();
+    }
+
+    function deleteThread(threadId) {
+        if (!confirm("이 대화를 목록에서 삭제할까요? 되돌릴 수 없습니다.")) return;
+        fetch("/api/v1/threads/" + encodeURIComponent(threadId), { method: "DELETE", headers: getAuthHeaders() })
+            .then(function (res) {
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                threadsState = "stale";
+                renderHistoryList();
+            })
+            .catch(function (e) { showError("대화를 삭제하지 못했습니다: " + e.message); });
+    }
+
+    function clearThreads() {
+        if (!threadItems.length) return;
+        if (!confirm("저장된 대화 " + threadItems.length + "개를 모두 삭제할까요? 되돌릴 수 없습니다.")) return;
+        fetch("/api/v1/threads", { method: "DELETE", headers: getAuthHeaders() })
+            .then(function (res) {
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                threadsState = "stale";
+                renderHistoryList();
+            })
+            .catch(function (e) { showError("대화를 삭제하지 못했습니다: " + e.message); });
+    }
+
+    function setHistoryMode(mode) {
+        historyMode = mode;
+        document.querySelectorAll(".history-mode-btn").forEach(function (b) {
+            var on = b.dataset.mode === mode;
+            b.classList.toggle("active", on);
+            b.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+        if (historySearch) historySearch.placeholder = mode === "threads" ? "대화 검색" : "질의 검색";
+        if (mode === "threads") threadsState = "stale";   // 전환할 때마다 최신 목록
+        renderHistoryList();
+    }
+
+    // ─── 이력 사이드바 접기 (D-183) ───
+    //
+    // 기본은 **접힘**이다 — 첫 방문 화면이 종전(2열)과 같아 회귀가 없고, 필요한 사람만 펼친다.
+    // 편 상태는 브라우저가 기억한다(D-178·D-180의 "개인 선호는 브라우저"와 같은 계열).
+
+    // HISTORY_PANEL_KEY는 상단 State 구역에 있다 — 여기 두면 초기화가 undefined 키를 읽는다(D-248 부수 교정).
+
+    function isHistoryPanelOpen() {
+        try {
+            return localStorage.getItem(HISTORY_PANEL_KEY) === "1";
+        } catch (e) {
+            return false;   // 저장소가 막힌 환경에서는 기본값(접힘)
+        }
+    }
+
+    function applyHistoryPanelState(open) {
+        var layout = document.querySelector(".chat-layout");
+        if (layout) layout.classList.toggle("history-collapsed", !open);
+        if (historyToggle) historyToggle.setAttribute("aria-expanded", open ? "true" : "false");
+        // 접혀 있는 동안은 그리지 않는다 — 펼치는 순간 최신 상태로 그린다.
+        if (open) renderHistoryList();
+    }
+
+    function setupHistoryPanel() {
+        document.querySelectorAll(".history-mode-btn").forEach(function (b) {
+            b.addEventListener("click", function () { setHistoryMode(b.dataset.mode); });
+        });
+        applyHistoryPanelState(isHistoryPanelOpen());
+        if (!historyToggle) return;
+        historyToggle.addEventListener("click", function () {
+            var open = !isHistoryPanelOpen();
+            try {
+                localStorage.setItem(HISTORY_PANEL_KEY, open ? "1" : "0");
+            } catch (e) {
+                console.warn("[history] 패널 상태 저장 실패:", e);
+            }
+            applyHistoryPanelState(open);
+        });
+    }
+
+    function setupViewTabs() {
+        document.querySelectorAll(".view-tab").forEach(function (btn) {
+            btn.addEventListener("click", function () { setActiveView(btn.dataset.view); });
+        });
+        if (alarmClearBtn) {
+            alarmClearBtn.addEventListener("click", function () {
+                if (!alarmList) return;
+                alarmList.innerHTML = "";
+                // 목록을 비우면 필터도 푼다 — 남겨 두면 다음에 도착한 알람이 조용히 가려진다.
+                resetAlarmFilter();
+                alarmUnreadCount = 0;
+                renderAlarmBadge();
+                updateAlarmViewState();
+                alarmHasNew = false;
+                updateAlarmScrollBtn();   // 목록이 비면 버튼도 정리(스크롤 이벤트가 안 온다)
+            });
+        }
+        document.querySelectorAll(".alarm-chip").forEach(function (chip) {
+            chip.addEventListener("click", function () {
+                var sev = chip.dataset.severity || "";
+                // 고른 칩을 다시 누르면 전체로 돌아간다 — 해제하려고 "전체"를 찾을 필요가 없다.
+                alarmFilterSeverity = (alarmFilterSeverity === sev) ? "" : sev;
+                document.querySelectorAll(".alarm-chip").forEach(function (c) {
+                    var on = (c.dataset.severity || "") === alarmFilterSeverity;
+                    c.classList.toggle("active", on);
+                    c.setAttribute("aria-pressed", on ? "true" : "false");
+                });
+                updateAlarmViewState();
+            });
+        });
+        if (alarmSearch) {
+            alarmSearch.addEventListener("input", function () { updateAlarmViewState(); });
+        }
+        if (alarmFilterReset) {
+            alarmFilterReset.addEventListener("click", function () {
+                resetAlarmFilter();
+                updateAlarmViewState();
+            });
+        }
+        // Plan 86: 추천 질의 확인 바. [이대로 조회]만 전송하고, 전송은 handleSend 단일 진입점을 탄다.
+        if (promptConfirmRun) {
+            promptConfirmRun.addEventListener("click", function () {
+                if (isProcessing) return;
+                handleSend();
+            });
+        }
+        if (promptConfirmEdit) {
+            promptConfirmEdit.addEventListener("click", function () {
+                hidePromptConfirm();
+                if (promptEl) promptEl.focus();   // 내용·커서는 그대로 둔다
+            });
+        }
+        if (historyClearBtn) {
+            historyClearBtn.addEventListener("click", function () {
+                if (historyMode === "threads") clearThreads(); else clearHistory();
+            });
+        }
+        if (historySearch) {
+            historySearch.addEventListener("input", function () { renderHistoryList(); });
+        }
+        if (newChatBtn) newChatBtn.addEventListener("click", startNewChat);
+        updateAlarmViewState();
+        setupHistoryPanel();
+    }
+
+    // D-188: OS 배지 — 값이 있을 때만 렌더(현재 백엔드 미조회·2차 범위). 미매핑 값은 원문 텍스트.
+    var ALARM_OS_LABELS = [
+        [/linux|rhel|centos|ubuntu|rocky/i, "Linux", "linux"],
+        [/windows|win/i, "Windows", "windows"],
+        [/aix/i, "AIX", "unix"],
+        [/hp-?ux/i, "HP-UX", "unix"],
+        [/solaris|sunos/i, "Solaris", "unix"]
+    ];
+
+    // 배지 라벨은 OSType을 접은 계열명(Linux/Windows…), 툴팁은 OSVerson 상세("Red Hat Enterprise Linux 8.10 (Ootpa)") — 없으면 OSType 원값
+    function renderOsBadge(osType, osVersion) {
+        if (!osType) return "";
+        var label = String(osType), cls = "other";
+        for (var i = 0; i < ALARM_OS_LABELS.length; i++) {
+            if (ALARM_OS_LABELS[i][0].test(label)) { label = ALARM_OS_LABELS[i][1]; cls = ALARM_OS_LABELS[i][2]; break; }
+        }
+        var tip = osVersion ? String(osVersion) : String(osType);
+        return '<span class="alarm-os alarm-os--' + cls + '" title="OS: ' + escapeHtml(tip) + '">' + escapeHtml(label) + '</span>';
+    }
+
+    // D-188 부기: 발생(폴스타 alarmTime)·수신(워커 구성) 시각 — 둘이 60초 이상 벌어지면 수신 시각도 함께 표시(지연 진단).
+    function fmtAlarmTs(iso) {
+        // "2026-08-27T09:41:07" → "08-27 09:41:07" (타임존 변환 없이 문자열 슬라이스)
+        if (!iso || typeof iso !== "string" || iso.length < 19) return "";
+        return iso.slice(5, 19).replace("T", " ");
+    }
+
+    function renderAlarmTimes(alarmIso, receivedIso) {
+        var occurred = fmtAlarmTs(alarmIso);
+        var received = fmtAlarmTs(receivedIso);
+        if (!occurred && !received) return "";
+        var html = occurred ? escapeHtml(occurred) + ' 발생' : escapeHtml(received) + ' 수신';
+        if (occurred && received) {
+            var a = Date.parse(alarmIso), b = Date.parse(receivedIso);
+            if (!isNaN(a) && !isNaN(b) && Math.abs(b - a) >= 60000) {
+                html += ' <span class="alarm-time-recv">(' + escapeHtml(received.slice(6)) + ' 수신)</span>';
+            }
+        }
+        var title = (alarmIso ? '발생 ' + alarmIso : '') + (receivedIso ? ' / 수신 ' + receivedIso : '');
+        return '<span class="alarm-time" title="' + escapeHtml(title.trim()) + '">' + html + '</span>';
+    }
+
+    // D-188: 헤더 2줄 구조 — 1행 [심각도] 폴스타 등록 서버명 — 알람명 (자원), 2행 hostname · IP · OS · 존 · 시각.
+    // (2026-08-27 사용자 검토) 알람명을 1행으로 올려 "어느 서버의 어떤 알람"이 한 줄에서 읽히게 한다.
+    // 등록명은 server_identity(hostname 역조회)가 우선, 없으면 server_name, 그마저 없으면 hostname.
+    function renderAlarmIdentityHeader(data, severityColor, promptable) {
+        var ident = data.server_identity || {};
+        var hostname = data.hostname || "";
+        var title = ident.name || "";
+        if (!title && data.server_name && data.server_name !== hostname) title = data.server_name;
+        if (!title) title = hostname || data.server_name || "-";
+
+        var meta = [];
+        if (hostname && hostname !== title) meta.push('<span class="alarm-hostname">' + escapeHtml(hostname) + '</span>');
+        var ip = ident.ip_address || data.ip_address;
+        if (ip) meta.push('<span class="alarm-ip">' + escapeHtml(ip) + '</span>');
+        var os = renderOsBadge(ident.os_type, ident.os_version);
+        if (os) meta.push(os);
+        // 소스 배지: 제품명("폴스타") 표시, 위치·db_id는 툴팁("폴스타 — 공동존 김포; polestar_cm_gp") — 소스 확장 대비. 라벨 없으면 사이트 라벨 폴백
+        var site = ident.source_label || ident.site_label || ident.zone_label;
+        var siteTip = ident.source_detail || data.db_id || "";
+        if (site) meta.push('<span class="alarm-zone" title="' + escapeHtml(siteTip) + '">' + escapeHtml(site) + '</span>');
+        var ts = renderAlarmTimes(data.alarm_time, data.received_at);
+        if (ts) meta.push(ts);
+        var metaHtml = meta.length
+            ? '<div class="alarm-meta">' + meta.join('<span class="alarm-meta-sep">·</span>') + '</div>'
+            : "";
+        var warn = ident.ambiguous
+            ? ' <span class="alarm-ident-warn" title="동일 hostname의 서버가 2건 이상 — 등록명 미확정">?</span>'
+            : "";
+        var resource = data.resource_name
+            ? ' <span class="alarm-resource">(' + escapeHtml(data.resource_name) + ')</span>'
+            : "";
+        var alarmName = data.alarm_name
+            ? '<span class="alarm-title-sep">—</span><span class="alarm-title-alarm">' + escapeHtml(data.alarm_name) + '</span>' + resource
+            : resource;
+        // 추천 질의가 있을 때만 서버명을 버튼으로 만든다 — 누를 것이 없는데 눌리게 보이면
+        // 클릭이 무반응으로 끝난다(Plan 86 G-1).
+        var serverHtml = promptable
+            ? '<button type="button" class="alarm-server alarm-prompt-trigger" ' +
+                  'title="이 서버를 조회하는 추천 질의 보기">' + escapeHtml(title) + '</button>'
+            : '<span class="alarm-server">' + escapeHtml(title) + '</span>';
+        return '<div class="alarm-header">' +
+                '<span class="alarm-severity" style="color:' + severityColor + '">[' + escapeHtml(data.severity_label) + ']</span> ' +
+                serverHtml + warn + alarmName +
+            '</div>' +
+            metaHtml;
+    }
+
+    // 추천 섹션 골격. **칩은 여기서 만들지 않는다** — 프롬프트 전문에는 서버명(외부 데이터)이
+    // 들어가는데 escapeHtml은 따옴표를 이스케이프하지 않아 속성값으로 넣으면 마크업이 깨진다.
+    // 칩은 bindAlarmPrompts가 DOM으로 만들고 textContent로만 다룬다.
+    function renderAlarmPromptSection(prompts, collapsed) {
+        if (!prompts.length) return "";
+        return '<div class="alarm-section alarm-prompt-section' +
+                    (collapsed ? ' alarm-prompt-section--collapsed' : '') + '">' +
+                '<button type="button" class="alarm-prompt-toggle" aria-expanded="' +
+                    (collapsed ? 'false' : 'true') + '">이 알람을 조회해 볼까요?</button>' +
+                '<div class="alarm-prompt-chips"></div>' +
+            '</div>';
     }
 
     function renderAlarmMessage(data) {
         var el = document.createElement("div");
         el.className = "message message--alarm";
+        // 레벨·키워드 필터의 판정 키. 카드에 심어 두면 필터가 데이터를 다시 들추지 않는다.
+        el.dataset.severity = data.severity_label || "";
+        el.dataset.search = alarmSearchText(data);
 
         var severityColor = ALARM_SEVERITY_COLORS[data.severity_label] || "#fd7e14";
+        // Plan 86: 추천 질의. 노이즈 게이트가 "일상적 반복"으로 판정한 알람은 섹션을 접어 둔다 —
+        // 게이트의 판단을 UI가 뒤집어 조회를 권하지 않는다.
+        var alarmPrompts = buildAlarmPrompts(data);
+        var promptHtml = renderAlarmPromptSection(alarmPrompts, data.is_routine === true);
         var alarmSvg = '<svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>';
 
         // Plan 47: 패턴 분석 배지 — is_routine=true는 회색(일상), false는 강조색(확인 필요)
@@ -1985,16 +4387,38 @@
                 '</div>';
         }
 
+        // D-049: incident 확인(ack) 버튼 — incident_id가 있을 때만 표시(비-incident 알람 불변)
+        var ackHtml = "";
+        if (data.incident_id) {
+            ackHtml =
+                '<div class="alarm-section alarm-ack-section">' +
+                    '<button type="button" class="btn-alarm-ack">확인</button>' +
+                    '<span class="alarm-ack-msg"></span>' +
+                '</div>';
+        }
+
+        // Plan 52 E4: 운영자 피드백(유효/노이즈) 버튼.
+        // (Plan 83 T7) 게이트가 꺼져 있으면 아예 렌더하지 않는다 — 종전에는 버튼이 보이고
+        // 누르면 503이 떠서 운영자가 원인을 알 수 없었다. capabilities 조회 실패(null)면
+        // 종전대로 표시한다(폴백 — 기능을 조회 실패로 숨기지 않는다).
+        var feedbackHtml = "";
+        if (!alarmCapabilities || alarmCapabilities.feedback_enabled) {
+            feedbackHtml =
+                '<div class="alarm-section alarm-feedback-section">' +
+                    '<span class="alarm-feedback-label">이 알람이 유용했나요?</span>' +
+                    '<button type="button" class="btn-alarm-feedback" data-label="valid">유효</button>' +
+                    '<button type="button" class="btn-alarm-feedback" data-label="noise">노이즈</button>' +
+                    '<input type="text" class="alarm-feedback-note" maxlength="200" ' +
+                        'placeholder="메모(선택) — 민감정보·계정·키 입력 금지">' +
+                    '<span class="alarm-feedback-msg"></span>' +
+                '</div>';
+        }
+
         el.innerHTML =
             '<div class="message-avatar">' + alarmSvg + '</div>' +
             '<div class="message-content">' +
                 '<div class="message-bubble">' +
-                    '<div class="alarm-header">' +
-                        '<span style="color:' + severityColor + '">[' + escapeHtml(data.severity_label) + ']</span> ' +
-                        escapeHtml(data.resource_name) +
-                        '<span class="alarm-host"> (' + escapeHtml(data.hostname) + ')</span>' +
-                    '</div>' +
-                    '<div class="alarm-name">' + escapeHtml(data.alarm_name) + '</div>' +
+                    renderAlarmIdentityHeader(data, severityColor, alarmPrompts.length > 0) +
                     '<div class="alarm-section">' +
                         '<span class="alarm-section-label">요약</span>' +
                         '<p>' + escapeHtml(data.summary) + '</p>' +
@@ -2009,32 +4433,453 @@
                     '</div>' +
                     processHtml +
                     patternHtml +
+                    ackHtml +
+                    promptHtml +
+                    feedbackHtml +
                 '</div>' +
             '</div>';
 
-        if (chatWelcome && !chatWelcome.classList.contains("hidden")) {
-            chatWelcome.classList.add("hidden");
+        // 알람은 질의응답 스트림이 아니라 알람 뷰에 최신순(맨 위)으로 쌓는다.
+        // 채팅 웰컴 화면은 건드리지 않는다 — 알람 도착이 대화 시작으로 보이면 안 된다.
+        if (!alarmList) return;
+        alarmList.insertBefore(el, alarmList.firstChild);
+
+        // D-049: ack 버튼 이벤트 바인딩(closure로 incident_id 캡처 — 인라인 onclick 미사용)
+        if (data.incident_id) {
+            var ackBtn = el.querySelector(".btn-alarm-ack");
+            var ackMsg = el.querySelector(".alarm-ack-msg");
+            if (ackBtn) {
+                bindIncidentAck(ackBtn, ackMsg, data.incident_id);
+            }
         }
-        chatMessages.appendChild(el);
-        scrollToBottom();
+
+        // Plan 86: 추천 질의 바인딩(같은 closure 패턴). 결정적 추천이 없으면 LLM 보강을 시도한다.
+        bindAlarmPrompts(el, alarmPrompts);
+        if (!alarmPrompts.length) requestLlmPrompt(el, data);
+
+        // Plan 52 E4: 피드백 버튼 바인딩(closure로 data 캡처 — 인라인 onclick 미사용, D-049 패턴)
+        bindAlarmFeedback(el, data);
+
+        // 보고 있지 않은 동안 도착한 알람만 미확인으로 센다(채팅 스크롤은 건드리지 않는다).
+        if (activeView !== "alarm") {
+            alarmUnreadCount += 1;
+            renderAlarmBadge();
+        } else if (!isAlarmNearTop()) {
+            // 알람 뷰에서 아래(과거)를 보는 중 도착 — "맨 위로" 버튼에 신규 점 강조
+            alarmHasNew = true;
+        }
+        updateAlarmScrollBtn();
+        updateAlarmViewState();
+    }
+
+    // Plan 86: 추천 질의 칩을 DOM으로 만들고 closure로 프롬프트 전문을 캡친다.
+    // 속성(data-*)에 담지 않는 이유는 renderAlarmPromptSection 주석 참조.
+    function bindAlarmPrompts(el, prompts) {
+        var section = el.querySelector(".alarm-prompt-section");
+        if (!section || !prompts.length) return;
+
+        var toggle = section.querySelector(".alarm-prompt-toggle");
+        var chipBox = section.querySelector(".alarm-prompt-chips");
+        prompts.forEach(function (p) {
+            var chip = document.createElement("button");
+            chip.type = "button";
+            chip.className = "alarm-prompt-chip";
+            chip.textContent = p.label;        // textContent — 라벨을 마크업으로 해석하지 않는다
+            chip.title = p.text;               // 무엇이 나갈지 누르기 전에 보인다
+            chip.setAttribute("aria-label", "이 질의로 조회: " + p.text);
+            chip.addEventListener("click", function () { stageAlarmPrompt(p.text); });
+            chipBox.appendChild(chip);
+        });
+
+        function setCollapsed(on) {
+            section.classList.toggle("alarm-prompt-section--collapsed", on);
+            if (toggle) toggle.setAttribute("aria-expanded", on ? "false" : "true");
+        }
+        if (toggle) {
+            toggle.addEventListener("click", function () {
+                setCollapsed(!section.classList.contains("alarm-prompt-section--collapsed"));
+            });
+        }
+        // 헤더 서버명 트리거(G-1) — 펼치고 첫 칩으로 포커스를 준다. **전송하지 않는다.**
+        var trigger = el.querySelector(".alarm-prompt-trigger");
+        if (trigger) {
+            trigger.addEventListener("click", function () {
+                setCollapsed(false);
+                var first = section.querySelector(".alarm-prompt-chip");
+                if (first) first.focus();
+            });
+        }
+    }
+
+    // 결정적 추천이 **0건일 때만** 서버에 묻는다(Plan 86 T5). 추천이 이미 있으면 네트워크 요청
+    // 자체가 나가지 않는다 — 과금 경로를 미매핑 축(management.*/platform.*)으로 좁힌다.
+    // capabilities가 꺼졌다고 알려주면 아예 부르지 않는다(알람마다 503을 때리지 않게).
+    // 실패·비활성·권한없음은 조용히 넘긴다: 추천이 없다고 카드가 달라질 이유가 없다.
+    function requestLlmPrompt(el, data) {
+        if (!alarmCapabilities || !alarmCapabilities.prompt_suggest_enabled) return;
+        var target = alarmTargetName(data);
+        if (!target) return;
+        fetch("/api/v1/alarm/suggest-prompt", {
+            method: "POST",
+            headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
+            body: JSON.stringify({
+                target: target,
+                alarm_name: data.alarm_name || "",
+                resource_type: data.resource_type || "",
+                resource_name: data.resource_name || "",
+                severity_label: data.severity_label || "",
+                summary: data.summary || "",
+                probable_cause: data.probable_cause || "",
+                recommended_action: data.recommended_action || "",
+                pattern_type: data.pattern_type || "",
+                pattern_analysis: data.pattern_analysis || "",
+                db_id: data.db_id || ""
+            })
+        })
+            .then(function (resp) { return resp.ok ? resp.json() : null; })
+            .then(function (result) {
+                var sug = result && result.suggestion;
+                if (!sug || !sug.text) return;
+                insertAlarmPromptSection(el, [sug]);
+            })
+            .catch(function (err) {
+                console.warn("[alarm] 질의 추천 실패:", err);
+            });
+    }
+
+    // 뒤늦게 도착한 추천을 카드에 끼워 넣는다. 위치는 결정적 경로와 같다(피드백 섹션 위).
+    // 헤더 서버명은 버튼으로 바뀌지 않는다 — 렌더 시점에 확정되며, 트리거는 결정적 추천의 진입이다.
+    function insertAlarmPromptSection(el, prompts) {
+        var bubble = el.querySelector(".message-bubble");
+        if (!bubble || el.querySelector(".alarm-prompt-section")) return;
+        var holder = document.createElement("div");
+        holder.innerHTML = renderAlarmPromptSection(prompts, false);
+        var section = holder.firstChild;
+        if (!section) return;
+        var feedback = bubble.querySelector(".alarm-feedback-section");
+        if (feedback) bubble.insertBefore(section, feedback);
+        else bubble.appendChild(section);
+        bindAlarmPrompts(el, prompts);
+    }
+
+    // 추천 질의를 입력창에 올리고 **확인을 받는다**(G-2 확정 2026-08-31 · 안 C).
+    // 자동 전송하지 않는 이유: 시스템이 만든 문장을 사용자가 읽지도 않고 보내는 일이 없어야 한다.
+    // (질의 이력 재사용 reuseHistoryQuery는 확인 바 없이 채우기만 한다 — 그쪽 계약은 D-183이고,
+    //  여기를 고칠 때 저쪽을 "일관성 있게" 따라 고치면 안 된다. 두 경로는 의도가 다르다.)
+    function stageAlarmPrompt(text) {
+        if (!text || !promptEl) return;
+        setActiveView("chat");
+        promptEl.value = text;
+        autoResizeTextarea.call(promptEl);   // 인자 없이 부르면 TypeError 로 확인 바가 뜨지 않았다(plans/116)
+        showPromptConfirm(text);
+        promptEl.focus();
+    }
+
+    function showPromptConfirm(text) {
+        if (!promptConfirm) return;
+        var textEl = promptConfirm.querySelector(".prompt-confirm-text");
+        if (textEl) textEl.textContent = text;
+        promptConfirm.style.display = "flex";
+        // 진행 중이면 조회를 막는다 — 연타로 중복 전송되면 과금이 두 번이다.
+        if (promptConfirmRun) promptConfirmRun.disabled = !!isProcessing;
+    }
+
+    function hidePromptConfirm() {
+        if (promptConfirm) promptConfirm.style.display = "none";
+    }
+
+    // Plan 52 E4: 운영자 피드백(유효/노이즈) 버튼 핸들러를 바인딩한다.
+    // POST /api/v1/alarm/feedback → {recorded}. 성공 시 버튼 비활성 + "피드백 감사합니다",
+    // 503(비활성)이면 "피드백 비활성", 그 외 실패면 "전송 실패"(카드 유지·재시도 가능 — graceful).
+    function bindAlarmFeedback(el, data) {
+        var buttons = el.querySelectorAll(".btn-alarm-feedback");
+        var msgEl = el.querySelector(".alarm-feedback-msg");
+        buttons.forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                var label = btn.dataset.label;
+                buttons.forEach(function (b) { b.disabled = true; });
+                if (msgEl) msgEl.textContent = "";
+                var noteEl = el.querySelector(".alarm-feedback-note");
+                fetch("/api/v1/alarm/feedback", {
+                    method: "POST",
+                    headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
+                    body: JSON.stringify({
+                        alarm_name: data.alarm_name,
+                        resource_name: data.resource_name,
+                        // (Plan 83 T6) 결정적 사전분류를 저장 키로 쓴다 — LLM 산출 pattern_type과
+                        // 어긋나면 few-shot 조회 가점이 조용히 누락된다. 없으면 종전 값으로 폴백.
+                        pattern_type: data.pre_classification || data.pattern_type,
+                        severity: data.severity,
+                        // (Plan 83 T2·A-2) 존 판정·서버별 집계에 필요하다
+                        db_id: data.db_id || "",
+                        server_name: data.server_name || "",
+                        note: noteEl ? noteEl.value.trim() : "",
+                        // (plans/91 1-4) 조사 ID — 카드 페이로드에 있을 때만 값이 실린다("실제 원인은 X"를 조사와 잇는다)
+                        investigation_id: data.investigation_id || "",
+                        label: label
+                    })
+                })
+                    .then(function (resp) {
+                        if (resp.status === 503) throw new Error("disabled");
+                        if (resp.status === 403) throw new Error("forbidden");
+                        if (!resp.ok) throw new Error("HTTP " + resp.status);
+                        return resp.json();
+                    })
+                    .then(function (result) {
+                        if (noteEl) noteEl.disabled = true;
+                        if (msgEl) {
+                            msgEl.textContent = "피드백 감사합니다 ";
+                            // (Plan 83 A-5) 오클릭 되돌리기 — tombstone append로 후보에서 뺀다
+                            if (result && result.ts) {
+                                appendUndoLink(msgEl, result.ts, data, buttons, noteEl);
+                            }
+                        }
+                    })
+                    .catch(function (err) {
+                        buttons.forEach(function (b) { b.disabled = false; });
+                        if (msgEl) {
+                            msgEl.textContent =
+                                (err && err.message === "disabled") ? "피드백 비활성"
+                                : (err && err.message === "forbidden") ? "권한 없음(다른 존 알람)"
+                                : "전송 실패";
+                        }
+                    });
+            });
+        });
+    }
+
+    // Plan 83 A-5: 피드백 취소(철회) 링크를 붙인다.
+    // 서버는 tombstone 한 줄을 append할 뿐이라 원본 레코드는 감사용으로 남고,
+    // few-shot 후보에서만 빠진다(파일 재작성 없음).
+    function appendUndoLink(msgEl, ts, data, buttons, noteEl) {
+        var undo = document.createElement("a");
+        undo.href = "#";
+        undo.className = "alarm-feedback-undo";
+        undo.textContent = "취소";
+        undo.addEventListener("click", function (ev) {
+            ev.preventDefault();
+            undo.style.display = "none";
+            fetch("/api/v1/alarm/feedback/retract", {
+                method: "POST",
+                headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
+                body: JSON.stringify({
+                    target_ts: ts,
+                    alarm_name: data.alarm_name,
+                    db_id: data.db_id || ""
+                })
+            })
+                .then(function (resp) {
+                    if (!resp.ok) throw new Error("HTTP " + resp.status);
+                    msgEl.textContent = "피드백을 취소했습니다";
+                    // 다시 라벨을 남길 수 있게 되돌린다
+                    buttons.forEach(function (b) { b.disabled = false; });
+                    if (noteEl) noteEl.disabled = false;
+                })
+                .catch(function () {
+                    undo.style.display = "";
+                    msgEl.textContent = "취소 실패 · 다시 시도 ";
+                    msgEl.appendChild(undo);
+                });
+        });
+        msgEl.appendChild(undo);
+    }
+
+    // D-049: incident 확인(ack) 버튼 핸들러를 바인딩한다.
+    // POST /api/v1/alarm/incidents/{id}/ack → {acked, incident_id}.
+    // 성공(acked) 시 "확인됨 · HH:MM:SS" 비활성, 이미 처리됨(acked=false)이면 "이미 확인됨",
+    // 실패(네트워크/503)면 옆 에러 텍스트 + 재시도 가능(카드 자체는 유지 — graceful).
+    function bindIncidentAck(btn, msgEl, incidentId) {
+        btn.addEventListener("click", function () {
+            btn.disabled = true;
+            if (msgEl) msgEl.textContent = "";
+            fetch("/api/v1/alarm/incidents/" + encodeURIComponent(incidentId) + "/ack", {
+                method: "POST",
+                headers: getAuthHeaders()
+            })
+                .then(function (resp) {
+                    if (!resp.ok) throw new Error("HTTP " + resp.status);
+                    return resp.json();
+                })
+                .then(function (result) {
+                    btn.classList.add("btn-alarm-ack--done");
+                    btn.disabled = true;
+                    if (result && result.acked) {
+                        var now = new Date();
+                        var hh = String(now.getHours()).padStart(2, "0");
+                        var mm = String(now.getMinutes()).padStart(2, "0");
+                        var ss = String(now.getSeconds()).padStart(2, "0");
+                        btn.textContent = "확인됨 · " + hh + ":" + mm + ":" + ss;
+                    } else {
+                        btn.textContent = "이미 확인됨";
+                    }
+                })
+                .catch(function () {
+                    btn.disabled = false;
+                    if (msgEl) msgEl.textContent = "확인 실패 · 다시 시도";
+                });
+        });
+    }
+
+    // Plan 59 §17: 알림 지역 스코프. 수신 권한(존)이 있는 사용자만 구독하고,
+    // 개인 수신 토글(localStorage)로 켜고 끌 수 있다. 권한 없으면 EventSource를 아예 열지 않아
+    // 백엔드 403 재연결 루프를 방지한다(이중 방어). 인증은 HttpOnly 쿠키가 자동 전송된다.
+    var alarmCanReceive = false;
+    var alarmStreamSource = null;
+    var alarmReceiveEnabled = (localStorage.getItem("alarm_receive_enabled") !== "0");  // 기본 on
+
+    // Plan 83 T11: 개인 표시 레벨. 존(권한)은 서버가, 티어 표시(선호)는 여기서 판단한다.
+    // 저장소는 alarm_receive_enabled 전례를 따라 localStorage — 서버는 이 값을 모른다.
+    // 기본값 dashboard = 현행 동작 보존(지금 보이던 카드가 사라지지 않는다).
+    var ALARM_VIEW_LEVELS = ["page", "ticket", "dashboard", "suppress"];
+    var ALARM_LEVEL_LABELS = {
+        page: "긴급만", ticket: "통보 대상", dashboard: "전체", suppress: "억제 포함(감사)"
+    };
+    var alarmViewLevel = localStorage.getItem("alarm_view_level") || "dashboard";
+    if (ALARM_VIEW_LEVELS.indexOf(alarmViewLevel) < 0) alarmViewLevel = "dashboard";
+
+    // 서버가 내리는 게이트 상태(GET /alarm/capabilities). 앱 기동 시 1회 조회해 캐시한다.
+    var alarmCapabilities = null;
+
+    // 티어가 표시 레벨에 드는지 판정한다. tier 미상은 **항상 통과** —
+    // analyze 테스트 경로 payload에는 tier가 없어서, 막으면 테스트 카드가 사라진다.
+    function isTierVisible(tier) {
+        if (!tier) return true;
+        var allowed = ALARM_VIEW_LEVELS.indexOf(alarmViewLevel);
+        var actual = ALARM_VIEW_LEVELS.indexOf(tier);
+        return actual >= 0 && allowed >= 0 && actual <= allowed;
+    }
+
+    async function loadAlarmCapabilities() {
+        try {
+            var resp = await fetch("/api/v1/alarm/capabilities", { headers: getAuthHeaders() });
+            if (resp.ok) alarmCapabilities = await resp.json();
+        } catch (_) {
+            alarmCapabilities = null;   // 조회 실패 시 종전 동작(버튼 표시)으로 폴백
+        }
     }
 
     function connectAlarmStream() {
+        if (!alarmCanReceive || !alarmReceiveEnabled) return;
+        if (alarmStreamSource) return;  // 중복 연결 방지
         var es = new EventSource("/api/v1/alarm/notifications/stream");
+        alarmStreamSource = es;
         es.onmessage = function (e) {
             try {
                 var data = JSON.parse(e.data);
                 if (data.type === "alarm_notification") {
-                    renderAlarmMessage(data);
+                    // Plan 83 T11: 개인 표시 레벨 필터(권한 필터는 서버가 이미 적용)
+                    if (isTierVisible(data.tier)) renderAlarmMessage(data);
                 }
             } catch (_) {}
         };
         es.onerror = function () {
             es.close();
-            setTimeout(connectAlarmStream, 5000);
+            alarmStreamSource = null;
+            // 권한/토글이 유효할 때만 재연결(권한 회수·토글 off 시 루프 중단)
+            if (alarmCanReceive && alarmReceiveEnabled) {
+                setTimeout(connectAlarmStream, 5000);
+            }
         };
     }
 
-    connectAlarmStream();
+    function disconnectAlarmStream() {
+        if (alarmStreamSource) {
+            alarmStreamSource.close();
+            alarmStreamSource = null;
+        }
+    }
+
+    function setupAlarmToggle() {
+        var wrap = document.getElementById("alarmToggleWrap");
+        var cb = document.getElementById("alarmReceiveToggle");
+        if (!wrap || !cb) return;
+        if (!alarmCanReceive) { wrap.style.display = "none"; return; }
+        wrap.style.display = "inline-flex";
+        cb.checked = alarmReceiveEnabled;
+        cb.addEventListener("change", function () {
+            alarmReceiveEnabled = cb.checked;
+            localStorage.setItem("alarm_receive_enabled", cb.checked ? "1" : "0");
+            if (cb.checked) connectAlarmStream();
+            else disconnectAlarmStream();
+        });
+    }
+
+    // Plan 83 T11: 표시 레벨 셀렉트. 억제 포함(감사)은 관리자에게만 노출한다 —
+    // 서버도 SUPPRESS를 관리자에게만 보내므로(event_visible_to) UI는 그 사실을 반영만 한다.
+    function setupAlarmLevelSelect(userInfo, authEnabled) {
+        var sel = document.getElementById("alarmViewLevel");
+        if (!sel) return;
+        if (!alarmCanReceive) { sel.style.display = "none"; return; }
+        var isAdmin = !authEnabled || !!(userInfo && userInfo.role === "admin");
+        var suppressStream = !!(alarmCapabilities && alarmCapabilities.suppress_stream);
+
+        sel.innerHTML = "";
+        ALARM_VIEW_LEVELS.forEach(function (level) {
+            // 억제 포함은 관리자 + 서버 발행이 켜져 있을 때만 고를 수 있다(빈 선택지 방지)
+            if (level === "suppress" && !(isAdmin && suppressStream)) return;
+            var opt = document.createElement("option");
+            opt.value = level;
+            opt.textContent = ALARM_LEVEL_LABELS[level];
+            sel.appendChild(opt);
+        });
+        // 고를 수 없게 된 레벨이 저장돼 있으면 기본값으로 되돌린다
+        if (!Array.prototype.some.call(sel.options, function (o) { return o.value === alarmViewLevel; })) {
+            alarmViewLevel = "dashboard";
+            localStorage.setItem("alarm_view_level", alarmViewLevel);
+        }
+        sel.value = alarmViewLevel;
+        sel.style.display = "inline-block";
+        sel.addEventListener("change", function () {
+            alarmViewLevel = sel.value;
+            localStorage.setItem("alarm_view_level", alarmViewLevel);
+        });
+    }
+
+    // 존 코드 → 표시명 (백엔드 routing/zones.py의 존 코드와 대응; 표시 라벨만 프론트 소유)
+    var ALARM_ZONE_LABELS = {
+        gongjon: "공동존 (김포 · 여의도)",
+        bankjon: "은행존 (은행 레거시)"
+    };
+
+    // 호버 툴팁: 이 사용자가 수신 가능한 알림 존 리스트를 표시한다.
+    function renderAlarmZonesTooltip(userInfo, authEnabled) {
+        var tip = document.getElementById("alarmZonesTooltip");
+        if (!tip) return;
+        var zones;
+        var note = "";
+        if (!authEnabled || (userInfo && userInfo.role === "admin")) {
+            zones = Object.keys(ALARM_ZONE_LABELS);   // 관리자/인증 비활성 → 전 존 수신
+            if (userInfo && userInfo.role === "admin") note = "관리자는 전체 존의 알림을 수신합니다";
+        } else {
+            zones = (userInfo && userInfo.alarm_zones) || [];
+        }
+        if (!zones.length) { tip.innerHTML = ""; return; }
+        var html = '<div class="status-tooltip-title">수신 가능한 알림</div>';
+        zones.forEach(function (z) {
+            html += '<div class="status-tooltip-item">' +
+                '<span class="status-tooltip-dot status-tooltip-dot--online"></span>' +
+                escapeHtml(ALARM_ZONE_LABELS[z] || z) +
+                '</div>';
+        });
+        if (note) {
+            html += '<div class="status-tooltip-item">' + escapeHtml(note) + '</div>';
+        }
+        tip.innerHTML = html;
+    }
+
+    // 구독 시작은 checkAuthOnLoad가 존 권한을 확정한 뒤 initAlarmSubscription()으로 트리거한다.
+    function initAlarmSubscription(userInfo, authEnabled) {
+        alarmCanReceive = (!authEnabled) ||
+            !!(userInfo && (userInfo.role === "admin" ||
+                (userInfo.alarm_zones && userInfo.alarm_zones.length > 0)));
+        setupAlarmToggle();
+        setAlarmTabVisible(alarmCanReceive);
+        renderAlarmZonesTooltip(userInfo, authEnabled);
+        // (Plan 83) 게이트 상태를 먼저 받아야 레벨 선택지·피드백 버튼 노출을 정할 수 있다
+        loadAlarmCapabilities().then(function () {
+            setupAlarmLevelSelect(userInfo, authEnabled);
+        });
+        if (alarmCanReceive && alarmReceiveEnabled) connectAlarmStream();
+    }
 
 })();

@@ -1,0 +1,269 @@
+# 자동 생성 초안 (scripts/scenario/import_docs.py) - plans/94 §3.4
+#
+# expect 는 비어 있고 manual_review 만 들어 있다. 단언으로 옮긴 만큼만 자동 판정
+# 대상이 되며, 옮기지 않은 것은 리포트 9절 '수동 검토'에 계속 남는다.
+# plans 필드는 군 단위 기본값이다 - 시나리오별로 정확히 좁히는 것이 사람의 일이다.
+version: 1
+group:
+  id: C
+  name: "성능 통계 - 기간 파싱/집계"
+  latency_target_ms: 30000
+  policy_confirmed: false
+  source: "docs/29"
+scenarios:
+  - id: C-01
+    plans: [61, 69]
+    title: "전체 서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 10건만 조회해줘. 사용률은 지난달 1개월 통계 기준으로."
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "전체 서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 10건만 조회해줘. 사용률은 지난달 1개월 통계 기준으로."
+        expect:
+          status: completed
+          # plans/122 H-2: "지난달"을 턴 송신 시각 기준 창으로 본다(표기 무관 · 월 경계 ±1일 보류).
+          #   원식: "(?i)'20\\d{4}'"
+          sql_must_match: ["(?i)cmm_metric_stat_m"]
+          period_covers: {relative: last_month}
+          row_count: {min: 1}
+          # plans/122 H-1 보류 — "서버당 1행"을 `result.unique_by` 로 옮기지 않았다. 서버 식별 열이
+          #   유일하지 않다: 폐쇄망 cm_gp 전 서버 1,690행 산출물(run 20260923-140539 H-01 xlsx)에서
+          #   호스트명 중복 6건 · (호스트명, IP) 중복 2건. 같은 run 의 C-04 도 서버명 GROUP BY 1,579행 ·
+          #   서버 id GROUP BY 1,580행으로 갈렸다. 서버 id 로 옳게 묶은 결과가 떨어진다.
+          #   "avg/max 열"은 이관 대상이 아니었다(계획 §4). 기간(종전 첫 문장)은 위로 옮겼다.
+          manual_review: "서버당 1행 · avg/max 열"
+  - id: C-02
+    plans: [61, 69]
+    title: "지난 3개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 10건만 조회해줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "지난 3개월간 전체 서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 10건만 조회해줘"
+        expect:
+          status: completed
+          # plans/122 H-2: "지난 3개월"을 턴 송신 시각 기준 창으로 본다(표기 무관 · 월 경계 ±1일 보류).
+          #   원식: "(?i)between\\s+'20\\d{4}'\\s+and\\s+'20\\d{4}'"
+          sql_must_match: ["(?i)cmm_metric_stat_m"]
+          period_covers: {relative: last_n_months, n: 3}
+          row_count: {min: 1}
+          # plans/122 H-1 보류 — "서버×월 행"을 `result.unique_by` 로 옮기지 않았다(C-01 주석 —
+          #   서버 식별 열이 폐쇄망에서 유일하지 않다). 기간(종전 첫 문장)은 위로 옮겼다.
+          manual_review: "서버×월 행"
+  - id: C-03
+    plans: [61, 69]
+    title: "2026년 상반기 서버별 CPU 사용률 평균 10건만"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "2026년 상반기 서버별 CPU 사용률 평균 10건만"
+        expect:
+          status: completed
+          # plans/122 A-2: 날짜는 표기가 아니라 기간으로 본다(D-218 Y-5 · `to` 는 배타 경계).
+          #   원식: "(?i)'202601'", "(?i)'202606'"
+          sql_must_match: ["(?i)cmm_metric_stat_m"]
+          period_covers: {from: "2026-01-01", to: "2026-07-01"}
+          row_count: {min: 1}
+  - id: C-04
+    plans: [61, 69]
+    title: "2026년 1월부터 6월까지 메모리 사용률 최대값 10건만"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "2026년 1월부터 6월까지 메모리 사용률 최대값 10건만"
+        expect:
+          status: completed
+          # plans/122 A-2: 날짜는 표기가 아니라 기간으로 본다(D-218 Y-5 · `to` 는 배타 경계).
+          #   원식: "(?i)'202601'", "(?i)'202606'". 상한 초과는 아래 부정 단언이 계속 막는다.
+          sql_must_match: ["(?i)cmm_metric_stat_m"]
+          period_covers: {from: "2026-01-01", to: "2026-07-01"}
+          sql_must_not_match: ["(?i)'202607'"]
+          row_count: {min: 1}
+  - id: C-05
+    plans: [61, 69]
+    title: "11월부터 2월까지 CPU 사용률 10건만"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "11월부터 2월까지 CPU 사용률 10건만"
+        expect:
+          status: completed
+          # plans/122 H-2: 종전 수동 문구 "연도 넘김이 맞는지 - 11월의 연도가 2월보다 1년 앞서야 한다".
+          #   연도 없는 월 범위를 턴 송신 시각 기준(미래가 아닌 가장 최근)으로 풀어 창을 덮는지 본다.
+          #   원식: "(?i)'\\d{4}11'", "(?i)'\\d{4}02'"
+          sql_must_match: ["(?i)cmm_metric_stat_m"]
+          period_covers: {month_span: {from: 11, to: 2}}
+  - id: C-06
+    plans: [61, 69]
+    title: "이번 달 CPU 사용률 10건만"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "이번 달 CPU 사용률 10건만"
+        expect:
+          status: completed
+          # plans/120 U-7 - G-3(폐쇄망 읽기 전용 확인) 전까지 수동 판정으로 둔다. 진행 중 월에
+          #   월 통계(`cmm_metric_stat_m`) 행이 있는지는 폐쇄망 **데이터 사실**이다 - 없으면 일간 통계
+          #   집계(제품의 "이번 달 = stat_d 집계" 프로필 규칙 · `_append_current_month_partial_note`)가
+          #   정답이고 아래 단언이 틀린다. G-3 결과에 따라 복원하거나 고친다(종전 단언):
+          #   sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)'20\\d{4}'"]
+          manual_review: "진행 중 월이 실행 시점 기준으로 맞는지 · 기준 테이블(월/일 통계)은 plans/120 G-3 확인 전 수동 판정"
+  - id: C-07
+    plans: [61, 69]
+    title: "메모리 이용률이 90%를 초과한 적이 있는 서버를 10건만 조회해줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "메모리 이용률이 90%를 초과한 적이 있는 서버를 10건만 조회해줘"
+        expect:
+          status: completed
+          # plans/122 H-2: 종전 수동 문구 "'이용률' 동의어와 '~한 적이 있는'(기간 무제한)이 해석됐는지".
+          #   ① '이용률' = 사용률 지표(`definition_name = 'Utilization'` · 카탈로그 사용률 aliases [이용률])
+          #   ② '~한 적이 있는' = 날짜 한정 없음 — 관측 SQL 전부에 날짜 리터럴·DB 현재시각 함수가 없어야 한다.
+          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)max_val\\s*>\\s*90", "(?i)'Utilization'"]
+          period_covers: {unbounded: true}
+  # plans/122 K-1 (G-2 · D-275 ②): 관측 전용 — 판정 모집단(합격 가능 가드 · 벤치 정상군)에서 뺀다.
+  #   판정 어휘는 그대로이고 아래 수동 문구는 관측 메모로 남긴다.
+  - id: C-08
+    plans: [61, 69]
+    title: "지난달 통계 기준으로 가동률이 낮은 서버 순으로 정렬해서 보여줘"
+    kind: probe
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "지난달 통계 기준으로 가동률이 낮은 서버 순으로 정렬해서 보여줘"
+        expect:
+          manual_review: "'가동률' 의역 - coverage=outside. avg_val ASC 정렬이면 성공, 실패해도 기록만 한다(기계 판정하지 않는다)"
+  - id: C-09
+    plans: [61, 69]
+    title: "2026년 5월과 비교해서 6월에 CPU 사용률 평균이 가장 많이 상승한 서버와 상승폭을 알려줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "2026년 5월과 비교해서 6월에 CPU 사용률 평균이 가장 많이 상승한 서버와 상승폭을 알려줘"
+        expect:
+          status: completed
+          # plans/122 A-1 · A-2: 종전 수동 문구 "자기조인 또는 조건부 집계로 상승폭이 나왔는지".
+          #   두 번째 식은 대안식이다 — 월 통계를 두 번 읽는다(자기조인 · 월별 CTE) | 월 조건부 집계
+          #   (`CASE WHEN … stat_date` · `FILTER (WHERE … stat_date`) | `LAG(`. 실측 네 형태(run
+          #   20260922-093837 · 20260923-103638 · 20260923-140539 두 단)가 전부 여기에 든다.
+          #   날짜는 표기가 아니라 기간으로 본다(D-218 Y-5). 원식: "(?i)'202605'", "(?i)'202606'"
+          sql_must_match: ["(?i)cmm_metric_stat_m",
+                           "(?i)\\bcmm_metric_stat_m\\b[\\s\\S]*\\bcmm_metric_stat_m\\b|\\bcase\\s+when\\b[^()]*?\\bstat_date\\b|\\bfilter\\s*\\(\\s*where\\b[^()]*?\\bstat_date\\b|\\blag\\s*\\("]
+          period_covers: {from: "2026-05-01", to: "2026-07-01"}
+          row_count: {min: 1}
+  - id: C-10
+    plans: [61, 69]
+    title: "월 평균 CPU 사용률이 40%를 넘은 달이 2개월 이상인 서버와 그 개월 수를 보여줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "월 평균 CPU 사용률이 40%를 넘은 달이 2개월 이상인 서버와 그 개월 수를 보여줘"
+        expect:
+          status: completed
+          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)group\\s+by", "(?i)having"]
+          manual_review: "HAVING 조건이 '2개월 이상'을 정확히 표현했는지"
+  - id: C-11
+    plans: [61, 69]
+    title: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 10건만 보여줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 10건만 보여줘"
+        expect:
+          status: completed
+          # plans/120 U-3: 전체 평균을 따로 계산하는가를 본다 - 서브쿼리 **또는** CTE(`WITH x AS (`).
+          #   종전 구문 단언은 같은 결과(475행)를 낸 CTE 형태를 떨어뜨렸다(run 20260923-140539 2단).
+          # plans/122 A-2: 날짜는 표기가 아니라 기간으로 본다(D-218 Y-5). 원식: "(?i)'202606'"
+          sql_must_match: ["(?i)cmm_metric_stat_m",
+                           "(?i)select[\\s\\S]*\\(\\s*select|\\bwith\\s+\\w+(?:\\s*\\([^)]*\\))?\\s+as\\s*\\("]
+          period_covers: {from: "2026-06-01", to: "2026-07-01"}
+          # 수동 유지 — G-10(D-275 ⑩): "전체 평균" = 존별인가 3존 통합인가 · 행 평균인가 서버 평균인가 미정.
+          manual_review: "서브쿼리 또는 CTE 가 전체 평균을 계산하는지"
+  - id: C-12
+    plans: [61, 69]
+    title: "지금 CPU 사용률 높은 서버 알려줘 — 실시간 사용률 off"
+    kind: normal
+    env: closed
+    profile: optout_realtime
+    endpoint: stream
+    turns:
+      - send:
+          query: "지금 CPU 사용률 높은 서버 알려줘"
+        expect:
+          # plans/122 K-2(G-3 · D-220 ③ 선례): on 쪽(실시간 REST)은 C-12b(`optin_realtime`). 이 시나리오는
+          #   off 고정 프로파일 `optout_realtime`(2026-09-30 사용자 확정 · D-291)로 돈다 — 기준 프로파일은 운영
+          #   .env 그대로라 폐쇄망 실효값(POLESTAR_REST_REALTIME_USAGE_ENABLED=true)에서 off 가 고정되지 않았다.
+          #   off 면 실시간 분기(`src/orchestration/subagents.py` realtime_usage_enabled)를 타지 않고 통계
+          #   테이블 SQL 로 답한다 — 실시간 측정 표지(`[REALTIME-API] measurement` · `src/nodes/realtime_usage.py`)가
+          #   없어야 한다. D-289(10건 제한) 제외 ⓒ(정답이 대량 목록이 아님)라 질의는 그대로다.
+          #   종전 수동 문구: "플래그 off 쪽(통계 테이블) - baseline 은 운영 .env 값이라 off 가 고정되지 않는다
+          #   (폐쇄망 실효값 true). off 고정 프로파일 전까지 수동. on 쪽은 C-12b"
+          status: completed
+          sql_must_match: ["(?i)\\bcmm_metric_stat_[hdm]\\b"]
+          sql_must_not_match: ["(?i)\\[REALTIME-API\\]"]
+  # plans/122 K-2(G-3 · D-220 ③ 선례) — C-12 의 on 쪽. 실시간 사용률 분기는 2단 data_query 처리기에만
+  #   있다(`src/orchestration/subagents.py` realtime_usage_enabled 분기 · 의도 판정은 원문 결정적 규칙
+  #   `is_realtime_usage_query` — "지금" + 사용률). 성공하면 SQL 파이프라인을 건너뛰고 감사에
+  #   `[REALTIME-API] measurement …` 를 남긴다(`src/nodes/realtime_usage.py`). 3단(비교 arm)에는 이 분기가
+  #   없어 불합격이 난다 — 3단 기능 동등성은 plans/103 소관. 프로파일 1개 = 서버 기동 1회가 늘어난다.
+  - id: C-12b
+    plans: [61, 69, 71]
+    title: "지금 CPU 사용률 높은 서버 알려줘 — 실시간 사용률 on"
+    kind: normal
+    env: closed
+    profile: optin_realtime
+    endpoint: stream
+    turns:
+      - send:
+          query: "지금 CPU 사용률 높은 서버 알려줘"
+        expect:
+          status: completed
+          sql_must_match: ["(?i)\\[REALTIME-API\\]\\s+measurement\\b"]
+  - id: C-13
+    plans: [61, 69]
+    title: "김포 폴스타 전체 서버를 통틀은 지난달 평균 CPU 사용률을 단일 값 하나로 알려줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "김포 폴스타 전체 서버를 통틀은 지난달 평균 CPU 사용률을 단일 값 하나로 알려줘"
+        expect:
+          status: completed
+          sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)avg\\s*\\("]
+          sql_must_not_match: ["(?i)group\\s+by"]
+          # plans/122 A-1: 종전 수동 문구 "scope.global_aggregate_drop 가드 계측이 남았는지".
+          #   결과(단일 값)는 `row_count eq 1` 과 GROUP BY 부재가 본다. 가드 계측은 단위 테스트 소관.
+          row_count: {eq: 1}

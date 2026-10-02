@@ -61,21 +61,41 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "src.document":                  "infrastructure",
     "src.routing":                   "infrastructure",
     "src.infrastructure":            "infrastructure",
+    "src.observability":             "infrastructure",  # D-141: 실패 트레이스 수집·덤프
     "src.infrastructure.auth_provider":    "infrastructure",
     "src.infrastructure.user_repository":  "infrastructure",
     "src.infrastructure.audit_repository": "infrastructure",
     "src.nodes":                     "application",
+    # 문서 질의 엔진(plans/126 W2) — clients·infrastructure·prompts 를 조립하는 서비스 계층.
+    # 그래프 노드가 아니라 CLI·API·(후속) 노드가 함께 호출하는 순수 서비스라 nodes 와 같은 높이다.
+    "src.doc_qa":                    "application",
+    "src.db_adapters":               "application",
+    # 시맨틱 IR·커버리지 판정 계층(Plan 69 P5-1) — nodes에서 분리해 tools가 nodes를 거치지
+    # 않고 참조하게 한 조각. nodes·tools와 동일 계층.
+    "src.semantic":                  "application",
+    # SQL 검증 코어(Plan 69 후속 2단계) — 노드와 도구가 공유하는 상태 비결합 순수 함수.
+    # tools에 두면 그 계층의 DB-agnostic 테스트 가드에 걸려 독립 모듈로 분리했다.
+    "src.sql_validation":            "application",
+    # fine-grained 도구 계층(Plan 67 S1) — 노드·어댑터의 순수 함수를 재노출하므로
+    # db_adapters와 같은 application. 소비처(nodes·orchestration)에서 참조한다.
+    "src.tools":                     "application",
+    "src.orchestration":             "orchestration",
     "src.graph":                     "orchestration",
     "src.api":                       "interface",
     "src.main":                      "entry",
-    # alarm 서브패키지 계층 매핑
-    "src.alarm.domain":                         "domain",
-    "src.alarm.prompts":                        "prompts",
-    "src.alarm.infrastructure":                 "infrastructure",
-    "src.alarm.application.nodes":              "application",
-    "src.alarm.application.alarm_worker":       "orchestration",
-    "src.alarm.application":                    "application",
-    "src.alarm.orchestration":                  "orchestration",
+    # noise_gate 패키지 계층 매핑 (D-139 — 종전 src.alarm)
+    "noise_gate.domain":                         "domain",
+    "noise_gate.prompts":                        "prompts",
+    "noise_gate.infrastructure":                 "infrastructure",
+    "noise_gate.application.nodes":              "application",
+    "noise_gate.application.alarm_worker":       "orchestration",
+    "noise_gate.application":                    "application",
+    "noise_gate.orchestration":                  "orchestration",
+    # alarm_server: TCP 수신 → Redis XADD 독립 프로세스(진입점 `python -m noise_gate.alarm_server`).
+    # 수신·적재는 외부 I/O라 infrastructure, 기동부는 entry, 설정은 config로 본다.
+    "noise_gate.alarm_server.__main__":          "entry",
+    "noise_gate.alarm_server.config":            "config",
+    "noise_gate.alarm_server":                   "infrastructure",
 }
 
 # ──────────────────────────────────────────────
@@ -132,8 +152,17 @@ class ImportInfo:
     statement: str
 
 
+# 계층 규칙 대상 내부 패키지(D-139: noise_gate는 본체와 같은 프로세스·같은 계층 규칙).
+_INTERNAL_ROOTS: tuple[str, ...] = ("src.", "noise_gate.")
+
+
+def _is_internal(module: str) -> bool:
+    """내부 패키지 import인지 판정한다(외부 라이브러리는 계층 규칙 대상이 아니다)."""
+    return module.startswith(_INTERNAL_ROOTS)
+
+
 def extract_imports(file_path: Path) -> list[ImportInfo]:
-    """파일에서 src.* import 문을 추출한다."""
+    """파일에서 내부 패키지(src.*·noise_gate.*) import 문을 추출한다."""
     try:
         source = file_path.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(file_path))
@@ -144,14 +173,14 @@ def extract_imports(file_path: Path) -> list[ImportInfo]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.startswith("src."):
+                if _is_internal(alias.name):
                     imports.append(ImportInfo(
                         module=alias.name,
                         line=node.lineno,
                         statement=f"import {alias.name}",
                     ))
         elif isinstance(node, ast.ImportFrom):
-            if node.module and node.module.startswith("src."):
+            if node.module and _is_internal(node.module):
                 imports.append(ImportInfo(
                     module=node.module,
                     line=node.lineno,
@@ -243,20 +272,32 @@ def check_file(file_path: Path, project_root: Path) -> list[Violation]:
 
 
 def check_project(project_root: Path) -> CheckResult:
-    """프로젝트 전체의 의존성 규칙을 검사한다."""
-    src_dir = project_root / "src"
-    result = CheckResult()
+    """프로젝트 전체의 의존성 규칙을 검사한다.
 
-    for py_file in sorted(src_dir.rglob("*.py")):
-        if py_file.name == "__init__.py":
-            # __init__.py는 re-export 목적이므로 같은 패키지 내 참조 허용
+    `noise_gate/`는 최상위 패키지지만 본체와 같은 프로세스·같은 venv에서 돌고 동일한 계층
+    규칙을 따르므로 함께 검사한다(D-139). 자체 venv·별도 프로세스인 `sre_agent/`·`mcp_server/`는
+    각자 `scripts/arch_check.py`를 가지므로 여기서 스캔하지 않는다.
+    """
+    result = CheckResult()
+    scan_roots = [project_root / "src", project_root / "noise_gate"]
+
+    for root in scan_roots:
+        if not root.is_dir():
             continue
-        result.checked_files += 1
-        imports = extract_imports(py_file)
-        result.total_imports += len(imports)
-        file_violations = check_file(py_file, project_root)
-        result.violations.extend(file_violations)
-        result.allowed_imports += len(imports) - len(file_violations)
+        for py_file in sorted(root.rglob("*.py")):
+            if py_file.name == "__init__.py":
+                # __init__.py는 re-export 목적이므로 같은 패키지 내 참조 허용
+                continue
+            # 패키지 내부의 테스트·스크립트는 계층 규칙 대상이 아니다(noise_gate/tests 등).
+            rel_parts = py_file.relative_to(root).parts
+            if rel_parts and rel_parts[0] in ("tests", "scripts", "testdata"):
+                continue
+            result.checked_files += 1
+            imports = extract_imports(py_file)
+            result.total_imports += len(imports)
+            file_violations = check_file(py_file, project_root)
+            result.violations.extend(file_violations)
+            result.allowed_imports += len(imports) - len(file_violations)
 
     return result
 

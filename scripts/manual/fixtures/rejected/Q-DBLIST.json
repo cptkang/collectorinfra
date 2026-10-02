@@ -1,0 +1,42 @@
+{
+ "id": "Q-DBLIST",
+ "turns": [
+  {
+   "query": "조회 가능한 DB 목록과 설명을 알려줘",
+   "file": null,
+   "key": "14f917962b103f66",
+   "elapsed_s": 15.5,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "사용 가능한 DB 목록:\n\n- polestar (테이블 0개)\n\nDB 설명이 아직 생성되지 않았습니다. 'DB 설명을 생성해줘'로 생성할 수 있습니다.",
+    "row_count": 0,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": []
+  }
+ ],
+ "reviewed": false,
+ "recorded_at": "2026-09-23T10:56:33",
+ "review": {
+  "verdict": "wrong",
+  "notes": "polestar 「테이블 0개」 — 실제 394개. 결함 보고 · U-18 사례에서 제외",
+  "at": "2026-09-23"
+ }
+}

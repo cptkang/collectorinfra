@@ -2,6 +2,9 @@
 .env
 .encenv
 alarm_server/alarm_server.env
+# 웹UI 설정 저장 시 생성되는 백업·임시 파일 (.env와 동일한 값을 담는다)
+.env.bak
+.env.tmp
 
 # Python
 __pycache__/
@@ -10,11 +13,14 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+# 소개 페이지 three.js 벤더링 사본(D-277)은 build/ 규칙에서 제외 — 폐쇄망 반입 대상
+!src/static/vendor/three/build/
 *.egg
 
 # 체크포인트 DB
 *.db
 checkpoints.db
+checkpoints.db-*
 
 # 로그
 logs/
@@ -40,3 +46,24 @@ venv/
 env/
 temp/
 .kiro
+multilingual-e5-small/
+sre_agent/.data/
+*.log
+eval_results/
+# DRM 연동 가이드(내부 정보 포함 — 저장소 반입 금지, 로컬 별도 보관)
+docs/servicelinker_guide/
+
+# 벤치마크 산출물 (plans/93 · D-211) — 실행마다 쌓이는 생성물이라 추적하지 않는다
+results/bench/
+
+# 시나리오 스위트 산출물 (plans/94 · D-212) — raw.jsonl·리포트·분석은 실행 생성물이다
+results/scenario/
+
+# 실행·분석 산출물 전체 — 로컬에만 보관하고 저장소에 올리지 않는다 (2026-09-22 사용자 지시)
+results/
+reports/
+
+# 제니퍼 로컬 검증 환경(plans/87 §0.8) — 설치본·라이선스·녹화 원본은 커밋하지 않는다
+apm_gateway/testdata/jennifer/**/*.zip
+apm_gateway/testdata/jennifer/**/license*
+apm_gateway/testdata/jennifer/recorded/raw/

@@ -1,0 +1,123 @@
+{
+ "id": "F-SERVER-INFO",
+ "turns": [
+  {
+   "query": "첨부한 양식에 전체 서버의 정보를 넣어서 파일로 만들어줘",
+   "file": "서버정보_양식.xlsx",
+   "key": "a75fa44a303fec0f",
+   "elapsed_s": 147.1,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n총 54건의 서버 정보를 조회했습니다. 조회 기준일은 2026-09-23 입니다.\n\n| 서버명 | 비고 | OS버전 | 호스트명 | 메모리용량 | IP |\n|---|---|---|---|---|---|\n| svr-app-03 | null | 5.14.0-70.el9.x86_64 | svr-app-03 | 16.0 GB | null |\n| svr-web-08 | null | 4.18.0-305.el8.x86_64 | svr-web-08 | 8.0 GB | null |\n| svr-was-10 | null | 4.18.0-305.el8.x86_64 | svr-was-10 | 16.0 GB | null |\n| svr-web-09 | null | 5.14.0-70.el9.x86_64 | svr-web-09 | 8.0 GB | null |\n| SV-BATCH-009 | null | AIX 7.2 | svbatch009 | 16384 | null |\n| svr-web-02 | null | 4.18.0-305.el8.x86_64 | svr-web-02 | 4.0 GB | null |\n| svr-bat-02 | null | 3.10.0-957.el7.x86_64 | svr-bat-02 | 8.0 GB | null |\n| svr-was-01 | null | 4.18.0-305.el8.x86_64 | svr-was-01 | 8.0 GB | null |\n| svr-web-03 | null | 5.14.0-70.el9.x86_64 | svr-web-03 | 4.0 GB | null |\n| sbhdbo53 | null | Red Hat Enterprise Linux 8.6 | sbhdbo53 | 16384 | null |\n| svr-mid-01 | null | 3.10.0-957.el7.x86_64 | svr-mid-01 | 16.0 GB | null |\n| svr-was-02 | null | 5.14.0-70.el9.x86_64 | svr-was-02 | 8.0 GB | null |\n| svr-web-07 | null | 3.10.0-957.el7.x86_64 | svr-web-07 | 8.0 GB | null |\n| DB-ORA-023 | null | Red Hat Enterprise Linux 8.4 | dbora023 | 65536 | null |\n| svr-db-07 | null | 5.14.0-70.el9.x86_64 | svr-db-07 | 64.0 GB | null |\n| svr-was-05 | null | 5.14.0-70.el9.x86_64 | svr-was-05 | 8.0 GB | null |\n| SV-WEB-001 | null | Red Hat Enterprise Linux 8.6 | svweb001 | 32768 | null |\n| hostapo02 (빅데이터 까페 WAS#2) | hostapo02(vendor: Dell Inc., model:PowerEdge R730) | Red Hat Enterprise Linux Server release 7.3 (Maipo) | hostapo02 | 62.1 GB | 200.200.220.66 |\n| cob0-bnndbp01 | null | Red Hat Enterprise Linux 8.8 | cob0-bnndbp01 | 32768 | null |\n| cocm-hdkapp01 | null | Red Hat Enterprise Linux 8.6 | cocm-hdkapp01 | 65536 | null |\n\n참고사항\n- 조회된 데이터 중 '메모리용량' 값은 일부 서버에서 'GB' 단위가 아닌 숫자 (예: 16384, 65536) 로 표기되어 있습니다. 이는 16GB, 64GB 등을 의미할 가능성이 높으나, 원본 데이터의 문자열 그대로를 표기했습니다.\n- 'IP' 컬럼은 대부분의 서버에서 null 이며, 'hostapo02' 서버만 IP 주소 (200.200.220.66) 가 할당되어 있습니다.\n- '비고' 컬럼은 'hostapo02' 서버를 제외하고는 모두 null 입니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 54,
+    "executed_sql": null,
+    "has_file": true,
+    "file_name": "result_20260923_122851.xlsx",
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "서버명": "svr-app-03",
+     "비고": null,
+     "OS버전": "5.14.0-70.el9.x86_64",
+     "호스트명": "svr-app-03",
+     "메모리용량": "16.0 GB",
+     "IP": null
+    },
+    {
+     "서버명": "svr-web-08",
+     "비고": null,
+     "OS버전": "4.18.0-305.el8.x86_64",
+     "호스트명": "svr-web-08",
+     "메모리용량": "8.0 GB",
+     "IP": null
+    },
+    {
+     "서버명": "svr-was-10",
+     "비고": null,
+     "OS버전": "4.18.0-305.el8.x86_64",
+     "호스트명": "svr-was-10",
+     "메모리용량": "16.0 GB",
+     "IP": null
+    },
+    {
+     "서버명": "svr-web-09",
+     "비고": null,
+     "OS버전": "5.14.0-70.el9.x86_64",
+     "호스트명": "svr-web-09",
+     "메모리용량": "8.0 GB",
+     "IP": null
+    },
+    {
+     "서버명": "SV-BATCH-009",
+     "비고": null,
+     "OS버전": "AIX 7.2",
+     "호스트명": "svbatch009",
+     "메모리용량": "16384",
+     "IP": null
+    },
+    {
+     "서버명": "svr-web-02",
+     "비고": null,
+     "OS버전": "4.18.0-305.el8.x86_64",
+     "호스트명": "svr-web-02",
+     "메모리용량": "4.0 GB",
+     "IP": null
+    },
+    {
+     "서버명": "svr-bat-02",
+     "비고": null,
+     "OS버전": "3.10.0-957.el7.x86_64",
+     "호스트명": "svr-bat-02",
+     "메모리용량": "8.0 GB",
+     "IP": null
+    },
+    {
+     "서버명": "svr-was-01",
+     "비고": null,
+     "OS버전": "4.18.0-305.el8.x86_64",
+     "호스트명": "svr-was-01",
+     "메모리용량": "8.0 GB",
+     "IP": null
+    },
+    {
+     "서버명": "svr-web-03",
+     "비고": null,
+     "OS버전": "5.14.0-70.el9.x86_64",
+     "호스트명": "svr-web-03",
+     "메모리용량": "4.0 GB",
+     "IP": null
+    },
+    {
+     "서버명": "sbhdbo53",
+     "비고": null,
+     "OS버전": "Red Hat Enterprise Linux 8.6",
+     "호스트명": "sbhdbo53",
+     "메모리용량": "16384",
+     "IP": null
+    }
+   ]
+  }
+ ],
+ "reviewed": false,
+ "recorded_at": "2026-09-23T12:29:23",
+ "review": {
+  "verdict": "wrong",
+  "notes": "IP 2/50(원본 50) · 역질문 미발동 — 사례 교체(F-CLARIFY)",
+  "at": "2026-09-23"
+ }
+}

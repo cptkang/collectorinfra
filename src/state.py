@@ -6,7 +6,8 @@ LangGraph 에이전트의 전역 상태(AgentState)와 관련 타입을 정의�
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Optional, TypedDict
+import operator
+from typing import Annotated, Any, NotRequired, Optional, TypedDict
 
 from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph import add_messages
@@ -38,6 +39,34 @@ class OrganizedData(TypedDict):
     resolved_mapping: Optional[dict[str, str]]
     is_sufficient: bool
     sheet_mappings: Optional[list[SheetMappingResult]]
+    # 멀티 DB 순위 질의 전역 재정렬 경과(plans/113 S-1) — `rows`가 무엇인지(전역 상위 N ·
+    # 재정렬 미적용 사유)를 행과 함께 운반한다. 응답 미리보기 균형·존별 건수 줄이 읽는다.
+    # 없으면 종전과 같다.
+    merge_ranking: NotRequired[dict[str, Any] | None]
+    # 멀티 DB 집계 질의의 DB별·전체 값(plans/113 S-3) — 수치 요약·존별 줄이 읽는다.
+    merge_aggregates: NotRequired[dict[str, Any] | None]
+
+
+class SmqDerivation(TypedDict):
+    """단계적 컬럼 도출 루프 1회 실행 기록 (Plan 67 S2 / D-128).
+
+    감사·평가(S3 토큰·지연 상한 판정)와 미해결 사유 노출에 쓰는 관측 레코드다.
+    루프가 실제로 발동한 경로마다 1건 누적되며(단일 1건 / 멀티 DB는 DB별), 플래그 OFF나
+    미발동이면 ``AgentState.smq_derivation``이 None으로 남는다.
+    """
+
+    path: str                       # 발동 경로 라벨 ("single" | "multi_db")
+    db_id: str
+    smq: Optional[dict]             # 루프가 누적한 SMQ(도출 실패 시 None)
+    fields: list[dict]              # [{field, role, selection, evidence, confidence}]
+    unresolved: list[dict]          # [{field, reason}] — 미해결 필드의 구조화 사유
+    rounds: int                     # tool-calling 라운드 수
+    tool_calls: int                 # 누적 tool 호출 수
+    llm_calls: int                  # 누적 LLM 호출 수(요구 분해 포함)
+    elapsed_ms: float
+    stopped_reason: str             # completed | max_rounds | max_tool_calls | timeout | ...
+    covered: Optional[bool]         # 누적 SMQ의 커버리지 판정 결과(미판정 None)
+    guards: dict[str, int]          # 이 질의에서 발동한 교정 가드 {이름: 횟수} (Plan 67 R4)
 
 
 class QueryAttempt(TypedDict):
@@ -80,8 +109,16 @@ class AgentState(TypedDict):
     column_synonyms: dict[str, list[str]]    # 유사 단어 {table.column: [synonym, ...]}
     resource_type_synonyms: dict[str, list[str]]  # RESOURCE_TYPE 값 유사단어
     eav_name_synonyms: dict[str, list[str]]       # EAV NAME 값 유사단어
-    generated_sql: str                       # 현재 SQL 쿼리
+    generated_sql: str                       # 현재 SQL 쿼리 (다중 후보 경로에서는 선택 결과)
+    sql_candidates: Optional[list[dict]]     # 트랙 A(E2) 다중 후보 [{sql, strategy, confidence}]; 단일 경로는 None
+    text2sql_fallback: Optional[dict]        # 트랙 A 3단 폴백 결과 {tier, confidence, method, reason}; 미진입 None
+    smq_derivation: Optional[list[SmqDerivation]]  # 트랙 S(S2/D-128) 단계적 도출 기록; 미발동 None
+    column_value_index: Optional[dict[str, list[str]]]  # E5-2 실측 값 인덱스 런타임 주입 {column: [값,...]}
     synonym_usage: Optional[dict]            # SQL에 사용된 유사어 매핑 역조회 결과 (처리 현황 표시용)
+    # FabriX PII 필터 차단 시 프롬프트 섹션별 로컬 스캔 진단(D-155) — query_generator가
+    # 차단 감지 시 산출, query_validator가 에러 메시지에 노출(폐쇄망 UI 자가 진단).
+    # 생성 시도 스코프 값(차단 아닌 생성이 성공하면 의미 없음 — 소비부가 차단 시에만 읽음).
+    pii_block_diagnosis: Optional[str]
     validation_result: ValidationResult      # 검증 결과
     query_results: list[dict[str, Any]]      # 현재 쿼리 실행 결과
 
@@ -92,6 +129,22 @@ class AgentState(TypedDict):
     retry_count: int                         # 재시도 횟수 (최대 3)
     error_message: Optional[str]             # 에러 메시지 (재시도 시 참조)
     current_node: str                        # 현재 실행 중인 노드
+    # 원문 기준 LIMIT 확정값 (Plan 75 §3 / D-066 후속). 오케스트레이션이 user_query를
+    # sub_query/sub_query_context로 교체하기 전에 원문으로 계산해 승격한다 — 문자열 훼손과
+    # 무관하게 보존. None이면 소비부(resolve_effective_limit)가 user_query로 폴백 계산.
+    # 요청 스코프 값이므로 매 턴 초기화(create_initial_state/create_followup_input).
+    resolved_limit: Optional[int]
+    # === 의도 프레임 (plans/107 · INTENT_FRAME_ENABLED — 꺼져 있으면 전부 None) ===
+    # 전부 **요청 스코프**다(매 턴 create_initial_state/create_followup_input이 초기화).
+    #   raw_user_query: 라우트 진입 원문(body.query) — 어떤 코드도 덮지 않는다(P-2). 존 표기
+    #     치환(R3) 이전 값이다. user_query는 종전 의미(R3 치환본) 그대로 둔다.
+    #   display_query: R3 존 표기 치환본 — 화면 표시·병기 블록 원문 줄(G-7).
+    #   intent_frame: 확정 의도 프레임(IntentFrame.to_dict) — 감사·표시용 섀도 기록.
+    #   rewrite_trace: 재작성 감사 레코드(§4.9) — done 페이로드·감사 로그로 나간다.
+    raw_user_query: Optional[str]
+    display_query: Optional[str]
+    intent_frame: Optional[dict[str, Any]]
+    rewrite_trace: Optional[dict[str, Any]]
 
     # === 실행 이력 ===
     query_attempts: list[QueryAttempt]       # SQL 시도 이력 (디버깅/감사용)
@@ -104,6 +157,40 @@ class AgentState(TypedDict):
     pending_synonym_registrations: Optional[list[dict]]      # 유사어 등록 대기 [{index, field, column, db_id}]
     llm_inference_details: Optional[list[dict]]              # LLM 추론 매핑 상세 [{field, db_id, column, matched_synonym, confidence, reason}]
     mapping_report_md: Optional[str]                         # 매핑 보고서 Markdown 텍스트
+    # 폼필 월 시리즈(M~M+5) 인식 결과(D-146) — {start, end: YYYYMM, resource_type, fields}.
+    # output_generator가 기준월을 응답에 명시하고 인식 필드를 미작성 사유(D-147)에서 제외.
+    # 요청 스코프 값 — 매 턴 초기화.
+    form_month_anchor: Optional[dict]
+
+    # === 멀티턴 HITL 폼필 (Plan 73 Phase 2, D-151) ===
+    # 역질문 답변(요청 스코프 — route가 이번 턴 값 주입, followup에서 매 턴 초기화).
+    # {field: {"action": "blank"|"column"|"eav"|"literal", "value": str|None}}
+    form_fill_answers: Optional[dict[str, dict]]
+    # 검증 통과 오버라이드(요청 스코프, query_generator/multi 산출) — 사유 노출용.
+    # {field: {"action":..., "value":..., "applied": bool, "reason": str|None}}
+    form_fill_overrides: Optional[dict[str, dict]]
+    # 직접 입력 상수(요청 스코프) — writer가 전 데이터 행 동일값 기입. {field: value}
+    form_fill_literals: Optional[dict[str, str]]
+    # 역질문 드롭다운 후보(요청 스코프, 스키마 실측 산출) — [{value, label, kind}]
+    form_fill_candidates: Optional[list[dict]]
+    # 역질문 대기 상태(멀티턴 보존 — pending_synonym_registrations 동형).
+    # {uploaded_file: bytes, file_type: str, original_query: str,
+    #  unresolved: [필드명, ...], candidates: [...]}
+    # 정리: ①답변 적용 후 미해결 0 ②새 파일 업로드 턴(교체). output_generator가 관리.
+    pending_form_fill: Optional[dict]
+    # 역질문 페이로드(요청 스코프) — API 응답이 프론트 패널 렌더에 사용.
+    # {"question": str, "fields": [{"name", "reason"}], "candidates": [...]}
+    form_fill_clarification: Optional[dict]
+    # 저장 값 삭제 패널(요청 스코프, D-187) — '?' 조회 응답에 동봉. **스키마에 없는 키는
+    # LangGraph가 노드 반환 시 폐기**하므로 반드시 선언(라이브 실측 2026-08-26: 미선언 상태에서
+    # result_aggregator가 반환해도 라우트에 도달하지 않아 버튼 미표시).
+    form_memory_panel: Optional[dict]
+    # 기억 옵트인(요청 스코프, Phase 3) — 답변 턴에서만 라우트가 주입.
+    form_fill_remember: Optional[bool]
+    # 직전 양식 시그니처(멀티턴 보존, FIX-23) — 파일 재첨부 없는 "기억 보여줘/삭제"가
+    # 직전 양식을 가리키게 한다. 양식 턴(②.7 조회·③.5 채우기)마다 갱신(최신 승리),
+    # followup에서 비우지 않는다(pending_* 계열).
+    last_form_signature: Optional[str]
 
     # === 유사단어 재활용 대기 ===
     pending_synonym_reuse: Optional[dict]
@@ -116,12 +203,8 @@ class AgentState(TypedDict):
     # === DB 엔진 정보 ===
     active_db_engine: Optional[str]  # 현재 DB의 엔진 타입 ("db2", "postgresql", etc.)
 
-    # === Plan 48: 프로세스 조회 ===
-    process_query_target: Optional[dict]     # {"identifier": str, "metric": "cpu"|"memory"|"both", "top_n": int}
-    process_overview: Optional[dict]         # build_process_overview 결과(결정적, 마스킹 완료) — UI/엑셀/LLM 공용
-
     # === 시멘틱 라우팅 ===
-    routing_intent: Optional[str]            # 라우팅 의도 ("data_query" | "cache_management" | "process_query")
+    routing_intent: Optional[str]            # 라우팅 의도 ("data_query" | "cache_management")
     target_databases: list[dict]             # 라우팅된 대상 DB 목록 (DBRouteTarget)
     active_db_id: Optional[str]              # 현재 처리 중인 DB 식별자
     db_results: dict[str, list[dict]]        # DB별 쿼리 결과 {db_id: rows}
@@ -129,11 +212,87 @@ class AgentState(TypedDict):
     db_errors: dict[str, str]                # DB별 에러 메시지 {db_id: error_msg}
     is_multi_db: bool                        # 멀티 DB 쿼리 여부
     user_specified_db: Optional[str]         # 사용자가 직접 지정한 DB (없으면 None)
+    # 존 역질문(Plan 75 §4)에서 사용자가 체크박스로 선택한 DB 목록. LLM 재해석 없이
+    # semantic_router/intent_planner가 mapped_db_ids 선례로 결정적 고정한다.
+    # 요청 스코프 — 매 턴 라우트가 재공급(미선택 턴은 None).
+    selected_db_ids: Optional[list[str]]
+    # 소스 선택 칩(plans/132 N-10)에서 사용자가 고른 데이터 소스 시스템 코드. 요청 스코프 —
+    # 매 턴 라우트가 재공급(미선택 턴은 None). 비DB 소스면 2단 `intent_planner` ②.4가 그 처리기로
+    # 고정하고, DB 소스면 칩이 함께 보낸 `selected_db_ids`(②.5)가 처리한다.
+    selected_sources: list[str] | None
+    # 스레드 범위 소스 선택(plans/132 N-10) — `{"system": 코드}`. 칩 답변 턴에 2단 계획 출구가
+    # 쓰고, 같은 스레드의 다음 모호 판정이 다시 묻지 않고 쓴다(존 승계와 같은 자리 — 체크포인터
+    # 보존). 스코프 칩 해제(`reset_db_scope`)가 비운다.
+    source_choice: dict[str, Any] | None
+    # 이번 턴 2단 계획이 닿은 비DB 시스템(plans/132 · 처리기 고정·안내). 다음 턴
+    # `context_resolver`가 `conversation_context.previous_sources`로 옮긴다(G-15 유사어 등록 맥락).
+    # 2단 계획 출구가 쓴다 — 비DB 소스가 없는 턴은 직전 값이 있을 때만 비운다.
+    turn_sources: list[str] | None
+    # 소스 선택 기억(plans/132 W5) — 둘 다 **요청 스코프**.
+    #   source_selection_meta: 이번 턴 `selected_sources`가 직전 턴 소스 선택 칩·「다른 소스로
+    #     보기」의 응답일 때만 라우트가 싣는다(`{"origin": user_choice|feedback, "areas": [...]}`)
+    #     — 기억 쓰기 게이트.
+    #   source_switch: 기억을 써서 소스를 고른 턴의 「다른 소스로 보기」 칩 페이로드(응답 키 같음).
+    source_selection_meta: dict[str, Any] | None
+    source_switch: dict[str, Any] | None
+    # 존 역질문 후단 게이트 허용 채널 여부(D-143 후속2). 대화형 텍스트 라우트만 True로
+    # 주입 — API 직접 호출·배치·평가 하네스는 역질문에 답할 수 없어 기존 폴백 유지
+    # (§4.3-3 비대화 경로 분기). 요청 스코프 — 매 턴 라우트가 재공급.
+    zone_clarification_allowed: Optional[bool]
+    # 존 역질문 후단 게이트 발동 페이로드(D-143 후속2, 요청 스코프) — 라우트가
+    # status="clarification" 응답으로 변환(pre-gate와 동일 shape, 프론트 재사용).
+    zone_clarification: Optional[dict]
+    # 존 역질문 답변 턴의 파싱 재사용(plans/119 Q-2 · D-267 ③ · 요청 스코프) — 직전 턴이 후단
+    # 게이트로 존을 되물었고 이번 턴이 같은 원 질의 + 존 선택뿐이면 라우트가 직전 턴
+    # `parsed_requirements`를 싣는다. `input_parser`는 이것이 있으면 LLM 파싱을 건너뛴다.
+    reuse_parsed_requirements: Optional[dict]
+    # 존 재진입 계획 스냅샷(plans/121 TP-1.2 · G-30 · D-272 ⑪ · 요청 스코프) — 2단 집계기의 존
+    # 역질문 단락이 **복합 계획(task 2개 이상)**일 때만 쓴다:
+    # `{"tasks": [계획 필드만 — 상태·결과 없음], "gated_task_ids": [게이트에 걸린 task id]}`.
+    # 다음 턴 라우트가 입력 조립 **전에** 체크포인트에서 읽어 Q-2 조건일 때만 `reuse_task_plan`으로
+    # 옮기고, 입력 델타가 이 키를 None으로 덮는다(두 상태 생성 함수).
+    zone_reentry_plan: dict[str, Any] | None
+    # 존 답변 턴의 계획 복원 입력(plans/121 TP-1.2 · 요청 스코프) — 라우트가 Q-2 파싱 재사용
+    # (`reuse_parsed_requirements`)과 같은 조건에서만 직전 턴 `zone_reentry_plan`을 싣는다.
+    # 2단 `intent_planner` ②.5가 읽는다.
+    reuse_task_plan: dict[str, Any] | None
+    # 스레드 DB 스코프(plans/90 · D-205) — 둘 다 **요청 스코프**(매 턴 라우트가 재공급).
+    #   db_scope_source: 이번 턴 대상 DB가 어디서 왔나(selected|hint|inherited|planned|classified).
+    #     문자열 reason 매칭 대신 구조화 키 — 3단 semantic_router·2단 subagents(db_origin 승격)가 남긴다.
+    #   db_scope_reset: 사용자가 스코프 칩에서 "해제"한 턴. context_resolver가 sticky 승계를 건너뛴다.
+    db_scope_source: Optional[str]
+    db_scope_reset: Optional[bool]
+    # 교차 시스템 질의(plans/102 · D-224) — 전부 **요청 스코프**(라우트가 매 턴 명시 초기화).
+    #   required_capabilities: 라우터 구조화 출력의 답변 영역 합집합
+    #     (`ROUTER_CAPABILITY_OWNERSHIP_ENABLED` on일 때만). 소유 판정의 유일한 입력 —
+    #     질의 원문을 키워드로 보지 않는다(D-004).
+    #   capability_chain: 앞 영역의 결과가 뒤 영역의 조회 대상을 정할 때의 순서(독립이면 []).
+    #   entity_probe: `entity_locator` 소재 프로브 판정 경과
+    #     (`CROSS_SYSTEM_PROBE_ENABLED` on일 때만).
+    required_capabilities: list[str] | None
+    capability_chain: list[str] | None
+    entity_probe: dict[str, Any] | None
 
     # === [Phase 3] 멀티턴 대화 ===
     messages: Annotated[list[BaseMessage], add_messages]  # 대화 히스토리 (누적 reducer)
     thread_id: Optional[str]                              # 세션 식별자
     conversation_context: Optional[dict]                  # context_resolver가 추출한 이전 맥락
+    # conversation_context 구조 (context_resolver가 채움, 후속 턴에만 non-None):
+    #   previous_sql: str                  — 직전 턴 생성 SQL
+    #   previous_results_summary: str      — "N건 조회됨, 컬럼: ..."
+    #   previous_result_count: int
+    #   previous_tables: list[str]
+    #   previous_db_id: Optional[str]      — 직전 단일 DB 경로 active_db_id (레거시 호환)
+    #   turn_count: int
+    #   has_pending_synonym_reuse / has_pending_synonym_registrations / pending_synonym_reg_count
+    #   [Plan 50 / M3 신규]
+    #   previous_db_ids: list[str]         — 직전 턴 대상 DB 통합(target_databases∪active_db_id∪mapped_db_ids).
+    #                                        후속 턴 DB 승계 우선 후보 (M2).
+    #   previous_entities: list[dict]      — [{"field": "hostname", "value": "###"}] 직전 식별 서버/장비
+    #                                        (filter_conditions 식별 키 + 결과 식별 컬럼 값, 행수 상한). "해당 서버" 해소.
+    #   previous_entities_complete: bool   — 위 엔티티가 직전 턴 결과 전체를 담는가
+    #                                        (sticky·표본이면 False) — plans/120 PL-1 ⓐ.
+    #   previous_location: str             — 직전 폴스타 위치/환경 신호("김포 운영" 등). DB 식별 신호 승계.
 
     # === [Phase 3] Human-in-the-loop ===
     awaiting_approval: bool                    # 사용자 승인 대기 여부
@@ -144,17 +303,240 @@ class AgentState(TypedDict):
     # === 사용자 컨텍스트 (인증 시스템에서 주입) ===
     user_id: Optional[str]                   # "anonymous" 또는 실제 user_id
     user_department: Optional[str]
+    # 조사 인가 판정 재료 (Plan 78 W3-5 · C-4). **없으면 차단**된다(fail-closed) —
+    # 전파 누락이 곧 fail-open이 되지 않도록 판정 기본값을 거부로 두었다.
+    user_role: Optional[str]
     allowed_db_ids: Optional[list[str]]      # None=전체 허용
+    # 관측 소스 인가(plans/125 A-7 · D-272 ⑩) — DB 없는 소스 시스템 코드. None=전체 허용.
+    # 라우트가 매 턴 요청 토큰의 사용자 값으로 다시 싣는다(`_with_current_identity`).
+    allowed_sources: list[str] | None
 
     # === 감사 로깅 ===
     request_id: Optional[str]                # 요청 추적 ID
     client_ip: Optional[str]                 # 클라이언트 IP
-    accessed_tables: list[str]               # 실제 접근한 테이블 목록
+    accessed_tables: list[str]               # 실제 접근한 테이블 목록 (미소비 — 쓰기 없음, Plan 69 §1.6. 삭제는 별건)
+
+    # === [D-176] 실행 그룹 (plans/82 §4.7) — 전부 **요청 스코프**다 ===
+    # 라우트가 매 턴 명시 초기화해야 한다(체크포인터는 델타만 병합 — Known Mistakes).
+    execution_groups: Optional[list[dict]]   # 순서 확정된 실행 그룹 목록(미설정=단일 그룹 폴백)
+    group_results: Optional[dict[str, dict]] # {group_key: {row_count, elapsed_ms, errors, sqls}}
+    group_packets: Optional[list[dict]]      # peer 그룹의 부분 결과(완료 즉시 노출용 — 문헌 정정 ②)
+    db_result_summary: Optional[dict[str, dict]]  # result_merger의 DB별 요약(종전 폐기분 승격)
+    # (plans/113 S-1) DB별 실제 실행 SQL(multi_db_executor)과 순위 질의 전역 재정렬 결과
+    # (result_merger → result_organizer). 요청 스코프 — 라우트가 매 턴 명시 초기화한다.
+    db_executed_sqls: dict[str, str] | None
+    merged_ranking: dict[str, Any] | None
+    merged_aggregates: dict[str, Any] | None  # 집계 질의 DB별·전체 값(plans/113 S-3)
+    # 0건 원인 진단(D-176 후속1 · §6). `src.domain.empty_answer.as_payload()` 산출물 —
+    # 체크포인터 직렬화 대상이라 dataclass가 아니라 dict로 싣는다.
+    empty_diagnosis: Optional[dict]
+    # 급증 조회의 **한계 표기**(D-176 후속2 · §6.12) — 기본 임계값·용량 미대조·주 단위 차단.
+    # 응답에 결정적으로 덧붙인다(LLM에 맡기면 누락된다).
+    spike_notes: Optional[list[str]]
+    # 존 순회 탐색 경과(D-176 후속3 · §4.3) — 어느 존을 돌았고 어디가 실패했는지.
+    # `src.domain.host_discovery.trace_payload()` 산출물(체크포인터 직렬화 대상 dict).
+    discovery_trace: Optional[dict]
+    # 범위 축소 기록(D-176 후속4 · §5.3 불변식 6) — {selected, skipped, skipped_db_ids}.
+    # **미조회 범위를 남기지 않으면 침묵 절단이다**(복구 불가한 정보 손실).
+    scope_narrowed: Optional[dict]
+    # 결정적 고지(plans/123 W-8) — `src.domain.disclosure.Disclosure` 목록({kind, text, source}).
+    # `disclosures`는 이번 턴 응답의 구조화본(출구 노드가 쓴다), `turn_disclosures`는 라우트가
+    # 원문만으로 정한 턴 단위 고지(미등록 존 · 단위 의심) 입력이다. 둘 다 **요청 스코프** —
+    # 두 상태 생성 함수가 초기화한다. 미선언이면 LangGraph가 노드 출력을 버린다.
+    disclosures: list[dict[str, Any]] | None
+    turn_disclosures: list[dict[str, Any]] | None
+    # 선행 대상 없는 지시어(plans/123 S-7(b) · 123·G-6 (a)) — `context_resolver`가 매 턴 쓴다.
+    # 소비(되묻기 게이트)는 `plans/106` H1 몫이다. `clarification_needed`(D-270 ⑤)와 별도 키.
+    demonstrative_without_antecedent: bool | None
+    # 원문에 표면어가 없는 조회 대상(plans/123 S-7(a) — 해석 고지 트리거) — `input_parser`가 쓴다.
+    # 사전 = `config/query_target_surfaces.yaml`. 소비(해석 한 줄)는 121 TP-4.7 몫(123·G-15).
+    unanchored_query_targets: list[str] | None
 
     # === 출력 ===
     final_response: str                      # 자연어 응답
     output_file: Optional[bytes]             # 생성된 파일 바이너리
     output_file_name: Optional[str]          # 출력 파일명
+
+    # === [Plan 48] deepagents 의도 분해 오케스트레이션 ===
+    task_plan: list[dict]            # intent_planner 결과 (TaskSpec 목록; 각 항목에 status)
+    task_results: dict[str, dict]    # {task_id: {organized_data, query_results, source, error, ...}}
+    is_composite: bool               # task 2개 이상 여부
+    prior_rows: Optional[dict[str, list[dict]]]  # 선행 task 결과 식별 행 {task_id: [행, ...]} (input_from 주입, D-086)
+    # 선행 결과에서 해소한 **조사 대상** [{server_name, hostname, ip, db_id}] (Plan 78 W1-5).
+    # prior_rows(SQL 스코프 키)와 목적이 다르다 — 이쪽은 실호스트 조사의 대상 집합이다.
+    # 값은 dict 목록으로 싣는다(TargetRef.model_dump()) — 체크포인터 직렬화 대상이므로.
+    prior_targets: Optional[list[dict]]
+    # 순차 의존 경과·사유 채널(D-203 · plans/88 §4.10) — 게이트/대조/절단/충족도 미달/DB별 분할 노트.
+    # 요청 스코프(라우트·후속 턴 명시 초기화). agent_orchestrator가 쓰던 `sufficiency_shortfalls`는
+    # 선언·소비처가 없어 응답에 닿지 않았다 — 같은 내용을 이 채널에 병기하고 2027-03-09 폐기(D-161 ①).
+    dependency_notes: Optional[list[dict]]
+    # 분해 LLM이 낸 되묻기 후보 {question, options, reason}(plans/121 TP-1.4 · N-3). 선언·로그만 —
+    # 소비(되묻기 게이트)는 plans/106 H1과 함께 넣는다. 미선언이면 LangGraph가 버린다. 요청 스코프:
+    # 2단 계획 출구가 매 턴 쓰고(없으면 None), 두 상태 생성 함수가 None으로 초기화한다.
+    clarification_needed: dict[str, Any] | None
+    # 계획 경로 코드(plans/121 TP-0.1) — 2단 계획 본체가 어느 사전 처리 단락·LLM 분해로
+    # 계획을 냈는지. 계획 요약(`done.plan_summary`)이 읽는다. 요청 스코프(두 상태 생성 함수가
+    # None으로 초기화).
+    plan_path: str | None
+    # LLM 분해가 원문 단일 task로 폴백한 원인 코드(plans/121 TP-1.6 · 관측 전용 — `llm_error` ·
+    # `malformed_output` · `empty_structured`). 계획 요약이 코드만 읽는다. 요청 스코프(두 상태 생성
+    # 함수가 None으로 초기화 · 폴백이 없는 턴은 쓰지 않는다).
+    decompose_fallback: str | None
+
+    # === [Plan 49] 동적 재계획 ===
+    replan_count: int                # 결과 기반 재계획 반복 횟수 (MAX_REPLAN 상한)
+    needs_replan: bool               # replanner → 라우팅 신호 (True면 agent_orchestrator 재진입)
+    replan_history: list[dict]       # 재계획 이력 [{count, reason, added}] (처리 현황 표시용, 루프 누적)
+    # === [plans/118 P-1·P-2] 재계획 시간 예산 · 반복 0건 중단 — 전부 **요청 스코프** ===
+    # 요청 마감 시각(`time.monotonic()` 기준 초). 라우트가 매 턴 명시 초기화한다 — 없으면(CLI·옛
+    # 체크포인트) 재계획기는 종전 동작이다.
+    request_deadline: Optional[float]
+    # 직전 `agent_orchestrator` 한 바퀴 소요(초) — 재계획기가 남은 시간과 비교한다(추정 상수 금지).
+    orchestrator_round_sec: Optional[float]
+    # 재계획기가 결정적으로 멈춘 사유(시간 상한 · 전 DB 연속 0건). 집계기가 응답 말미에 싣는다.
+    replan_stop_notice: Optional[str]
+
+    # === [plans/103 P0-2 · P2] 3단 계획 루프 (`TIER3_PLAN_LOOP_ENABLED` · 기본 off) ===
+    # 라우터 구조화 출력의 계획 필요 신호(103 §3.2 · G-1) — 플래그 on일 때만 라우터가 쓴다.
+    # 요청 스코프.
+    needs_plan: Optional[bool]
+    # `Send`로 병렬 실행되는 task 서브그래프의 **유일한 팬인 키**(103 Q4). 기존 키에는 리듀서를
+    # 달지 않는다(2·4단 의미 불변). 턴 초기화는 루프 입구(`plan` 노드)가 `Overwrite([])`로 한다 —
+    # 이 키를 읽는 것은 같은 루프의 `join`뿐이고, 입력 델타는 평범한 값으로 둔다.
+    task_outcomes: Annotated[list[dict[str, Any]], operator.add]
+
+
+def create_followup_input(
+    user_query: str,
+    selected_db_ids: Optional[list[str]] = None,
+    allow_zone_clarification: bool = False,
+    reset_db_scope: bool = False,
+    raw_user_query: Optional[str] = None,
+    selected_sources: list[str] | None = None,
+) -> dict:
+    """후속(텍스트) 턴의 델타 입력을 생성한다 (D-064).
+
+    멀티턴에서 체크포인터는 이전 턴 State 전체를 복원하고, 텍스트 경로는 델타 키만
+    병합한다. 따라서 직전 폼업로드 턴의 **요청-스코프 폼필 트리거**(uploaded_file/
+    file_type/csv_sheet_data)가 새 텍스트 턴으로 잔존하면 input_parser가 옛 파일을
+    재파싱하여 template_structure를 되살리고(field_mapper 재실행) → intent_planner가
+    옛 mapped_db_ids로 DB를 고정한다(2026-07-09 버그). 이를 막기 위해 트리거를
+    명시적으로 비운다. 나머지 매핑 산출물(mapped_db_ids/column_mapping 등)은
+    field_mapper 스킵 경로가 정리한다(단일 출처, 진입 경로 무관).
+
+    세션 승계 신호(messages/conversation_context/pending_synonym_reuse/
+    pending_synonym_registrations/승인 컨텍스트)는 **보존**한다 — 멀티턴 지시어 해소
+    (D-055/D-056)와 유사어 등록 흐름이 이 신호에 의존한다.
+
+    Args:
+        user_query: 이번 턴 자연어 질의
+        reset_db_scope: 스코프 칩 "해제"(plans/90 · D-205). True면 승계 원천(active_db_id/
+            target_databases/mapped_db_ids)을 비우고 context_resolver의 sticky 폴백도 건너뛰게
+            db_scope_reset을 세운다(G-4: 폼필 고정 DB도 비운다 — 재업로드 시 다시 고정된다).
+
+    Returns:
+        graph.ainvoke에 전달할 델타 입력 dict
+    """
+    delta: dict = {
+        "user_query": user_query,
+        "messages": [HumanMessage(content=user_query)],
+        # 폼필 트리거 초기화 (input_parser 재파싱 방지). 파일 업로드 경로는 이 함수를
+        # 쓰지 않고 create_initial_state로 새 파일을 실어 보낸다.
+        "uploaded_file": None,
+        "file_type": None,
+        "csv_sheet_data": None,
+        # 원문 기준 LIMIT 확정값은 요청 스코프 — 직전 턴 값이 승계되지 않도록 명시 초기화
+        # (이번 턴 원문으로 오케스트레이션/소비부가 재계산·재승격한다. Plan 75 §3).
+        "resolved_limit": None,
+        # 폼필 월 시리즈 앵커(D-146)도 요청 스코프 — 직전 폼필 턴 값이 텍스트 턴 응답에
+        # 기준월 안내로 잔존하지 않도록 명시 초기화(field_mapper 산출물이 아니라 자기정리 필요).
+        "form_month_anchor": None,
+        # 존 선택(Plan 75 §4)도 요청 스코프 — 이번 턴 선택값 또는 None으로 매 턴 재공급
+        # (직전 턴 선택이 체크포인터로 승계돼 새 질의를 오염시키지 않도록).
+        "selected_db_ids": selected_db_ids,
+        # 소스 선택 칩 답변(plans/132 N-10) — 요청 스코프(이번 턴 선택값 또는 None).
+        "selected_sources": selected_sources,
+        # 소스 선택 기억(plans/132 W5) — 요청 스코프. 칩 응답 표지는 라우트가 이 델타 위에 싣는다.
+        "source_selection_meta": None,
+        "source_switch": None,
+        # 존 역질문 후단 게이트(D-143 후속2) — 채널 플래그·발동 페이로드 모두 요청 스코프.
+        # 직전 턴 발동 페이로드가 체크포인터로 승계돼 새 턴 응답을 오염시키지 않도록 초기화.
+        "zone_clarification_allowed": allow_zone_clarification,
+        "zone_clarification": None,
+        # 존 답변 턴 파싱 재사용(plans/119 Q-2) — 요청 스코프. 라우트가 조건을 맞출 때만 싣는다.
+        "reuse_parsed_requirements": None,
+        # 존 재진입 계획 스냅샷·복원 입력(plans/121 TP-1.2) — 요청 스코프. 라우트는 이 델타를 만들기
+        # 전에 체크포인트의 스냅샷을 읽고, Q-2 조건일 때만 복원 입력으로 옮긴다.
+        "zone_reentry_plan": None,
+        "reuse_task_plan": None,
+        # HITL 폼필(D-151) 요청 스코프 값들 — 직전 턴 산출이 새 턴을 오염시키지 않도록
+        # 매 턴 초기화. 답변 턴은 route가 이 델타 위에 form_fill_answers·복원 파일을 덮어쓴다.
+        # pending_form_fill(멀티턴 보존)은 여기서 비우지 않는다.
+        "form_fill_answers": None,
+        "form_fill_overrides": None,
+        "form_fill_literals": None,
+        "form_fill_candidates": None,
+        "form_fill_clarification": None,
+        "form_memory_panel": None,
+        "form_fill_remember": None,
+        # 순차 의존 경과 노트(D-203)도 요청 스코프 — 직전 턴 경과가 새 턴 응답에 붙지 않도록.
+        "dependency_notes": None,
+        # 분해 되묻기 후보(plans/121 TP-1.4)도 요청 스코프 — 1단·3단은 계획 출구를 거치지 않는다.
+        "clarification_needed": None,
+        "plan_path": None,  # 계획 경로 코드(plans/121 TP-0.1) — 요청 스코프
+        "decompose_fallback": None,  # 분해 폴백 원인 코드(plans/121 TP-1.6) — 요청 스코프
+        # 2단 계획·재계획 상태(plans/121 TP-1.1 · K-5 · D-272 ③ D-162 예외) — 요청 스코프.
+        # 비우지 않으면 앞 턴 결과가 재계획 스킵(존 역질문 대기)·권한 판정·경과 노트·「실행된 SQL」·
+        # 부분 결과를 오염시키고, 앞 턴이 재계획 상한이면 이번 턴 첫 재계획이 막힌다.
+        # 여섯 키만 비운다 — `query_results`·`target_databases`·`parsed_requirements` 등은
+        # 지시어·승계(PL-1·D-205·Q-2)가 쓴다.
+        "task_plan": [],
+        "task_results": {},
+        "replan_count": 0,
+        "replan_history": [],
+        "needs_replan": False,
+        "is_composite": False,
+        # 재계획 시간 예산·중단 사유(plans/118 P-1·P-2) — 요청 스코프. 마감은 라우트가 다시 싣는다.
+        "request_deadline": None,
+        "orchestrator_round_sec": None,
+        "replan_stop_notice": None,
+        # 스레드 DB 스코프(D-205) — 요청 스코프. source는 이번 턴 라우터/서브에이전트가 다시 남긴다.
+        "db_scope_source": None,
+        "db_scope_reset": bool(reset_db_scope),
+        # 교차 시스템 질의(plans/102) — 요청 스코프. 직전 턴 답변 영역·프로브가
+        # 새 턴 판정에 섞이지 않도록.
+        "required_capabilities": None,
+        "capability_chain": None,
+        "entity_probe": None,
+        # 의도 프레임(plans/107) — 요청 스코프. 직전 턴 프레임·감사가 새 턴에 붙지 않도록.
+        # 원문·표시문은 라우트가 INTENT_FRAME_ENABLED일 때만 싣는다(꺼져 있으면 None).
+        "raw_user_query": raw_user_query,
+        "display_query": user_query if raw_user_query is not None else None,
+        "intent_frame": None,
+        "rewrite_trace": None,
+        # 3단 계획 신호(plans/103 · 요청 스코프) — 라우터 사전 처리 분기는 이 값을 쓰지 않으므로
+        # 직전 턴 값이 남으면 양식·존 선택 턴이 계획 루프로 샌다.
+        "needs_plan": None,
+        # 멀티 DB 결과 요약·실행 SQL·전역 재정렬(plans/113 · 요청 스코프) — 단일 DB 턴은 이 키들을
+        # 쓰지 않으므로, 비우지 않으면 직전 멀티 DB 턴의 존별 건수가 새 턴 응답에 붙는다.
+        "db_result_summary": None,
+        "db_executed_sqls": None,
+        "merged_ranking": None,
+        "merged_aggregates": None,
+        # 결정적 고지(plans/123 W-8) — 요청 스코프. 직전 턴 고지가 새 턴 응답에 실리지 않도록.
+        "disclosures": None,
+        "turn_disclosures": None,
+        "demonstrative_without_antecedent": None,  # plans/123 S-7(b) — 요청 스코프
+        "unanchored_query_targets": None,  # plans/123 S-7(a) — 요청 스코프
+    }
+    if reset_db_scope:
+        # 승계 원천 3종을 비운다 — 체크포인터는 델타만 병합하므로 명시 초기화가 필요하다(D-064).
+        delta["active_db_id"] = None
+        delta["target_databases"] = []
+        delta["mapped_db_ids"] = None
+        # 스레드 소스 선택(plans/132 N-10)도 스코프다 — 해제하면 다음 모호 질의는 다시 묻는다.
+        delta["source_choice"] = None
+    return delta
 
 
 def create_initial_state(
@@ -165,9 +547,16 @@ def create_initial_state(
     csv_sheet_data: Optional[dict[str, Any]] = None,
     user_id: Optional[str] = None,
     user_department: Optional[str] = None,
+    user_role: Optional[str] = None,
     allowed_db_ids: Optional[list[str]] = None,
+    allowed_sources: list[str] | None = None,
     request_id: Optional[str] = None,
     client_ip: Optional[str] = None,
+    selected_db_ids: Optional[list[str]] = None,
+    resolved_limit: Optional[int] = None,
+    allow_zone_clarification: bool = False,
+    raw_user_query: Optional[str] = None,
+    selected_sources: list[str] | None = None,
 ) -> AgentState:
     """초기 State를 생성한다.
 
@@ -179,9 +568,14 @@ def create_initial_state(
         csv_sheet_data: 시트별 CsvSheetData dict (선택, Excel CSV 변환 결과)
         user_id: 인증된 사용자 ID (선택, 인증 비활성화 시 None)
         user_department: 사용자 부서 (선택)
+        user_role: 사용자 역할 (조사 인가 판정용 — 없으면 조사 차단)
         allowed_db_ids: 허용 DB 목록 (선택, None=전체 허용)
+        allowed_sources: 허용 관측 소스 시스템 코드 (선택, None=전체 허용 · plans/125 A-7)
         request_id: 요청 추적 ID (선택, 미들웨어에서 주입)
         client_ip: 클라이언트 IP (선택, 미들웨어에서 주입)
+        raw_user_query: 라우트 진입 원문(plans/107 — INTENT_FRAME_ENABLED일 때만 전달).
+            주어지면 ``user_query``(존 표기 치환본)를 ``display_query``로도 기록한다.
+        selected_sources: 소스 선택 칩 답변(plans/132 N-10 · 요청 스코프)
 
     Returns:
         초기화된 AgentState
@@ -204,13 +598,30 @@ def create_initial_state(
         pending_synonym_registrations=None,
         llm_inference_details=None,
         mapping_report_md=None,
+        form_month_anchor=None,
+        # HITL 폼필(D-151): answers는 라우트가 답변 턴에만 주입, pending은 멀티턴 보존
+        # (새 파일 업로드 턴은 output_generator가 새 미해결로 교체).
+        form_fill_answers=None,
+        form_fill_overrides=None,
+        form_fill_literals=None,
+        form_fill_candidates=None,
+        form_fill_clarification=None,
+        form_memory_panel=None,
+        form_fill_remember=None,
+        last_form_signature=None,
+        pending_form_fill=None,
         pending_synonym_reuse=None,
         column_descriptions={},
         column_synonyms={},
         resource_type_synonyms={},
         eav_name_synonyms={},
         generated_sql="",
+        sql_candidates=None,
+        text2sql_fallback=None,
+        smq_derivation=None,
+        column_value_index=None,
         synonym_usage=None,
+        pii_block_diagnosis=None,
         validation_result={"passed": False, "reason": "", "auto_fixed_sql": None},
         query_results=[],
         organized_data={
@@ -224,10 +635,15 @@ def create_initial_state(
         retry_count=0,
         error_message=None,
         current_node="",
+        # 라우트가 원문 기준으로 승격한 LIMIT 확정값(D-066 후속7). 파일(폼필) 경로는
+        # 전량 채움이 기본이라 라우트가 상향값을 명시 전달한다(Plan 71 후속 — 폼필 1000 절단).
+        resolved_limit=resolved_limit,
+        raw_user_query=raw_user_query,
+        display_query=user_query if raw_user_query is not None else None,
+        intent_frame=None,
+        rewrite_trace=None,
         query_attempts=[],
         active_db_engine=None,
-        process_query_target=None,
-        process_overview=None,
         routing_intent=None,
         target_databases=[],
         active_db_id=None,
@@ -236,6 +652,23 @@ def create_initial_state(
         db_errors={},
         is_multi_db=False,
         user_specified_db=None,
+        selected_db_ids=selected_db_ids,
+        selected_sources=selected_sources,  # 요청 스코프(plans/132 N-10)
+        source_choice=None,  # 스레드 범위(plans/132 N-10) — 새 스레드는 비어 있다
+        turn_sources=None,  # 2단 계획 출구가 매 턴 쓴다(plans/132)
+        source_selection_meta=None,  # 요청 스코프(plans/132 W5)
+        source_switch=None,  # 요청 스코프(plans/132 W5)
+        zone_clarification_allowed=allow_zone_clarification,
+        zone_clarification=None,
+        reuse_parsed_requirements=None,
+        zone_reentry_plan=None,  # 요청 스코프(plans/121 TP-1.2)
+        reuse_task_plan=None,  # 요청 스코프(plans/121 TP-1.2)
+        db_scope_source=None,
+        db_scope_reset=False,
+        # 교차 시스템 질의(plans/102) — 요청 스코프
+        required_capabilities=None,
+        capability_chain=None,
+        entity_probe=None,
         # Phase 3: 멀티턴 대화
         messages=[HumanMessage(content=user_query)],
         thread_id=thread_id,
@@ -248,13 +681,54 @@ def create_initial_state(
         # 사용자 컨텍스트
         user_id=user_id,
         user_department=user_department,
+        user_role=user_role,
         allowed_db_ids=allowed_db_ids,
+        allowed_sources=allowed_sources,
         # 감사 로깅
         request_id=request_id,
         client_ip=client_ip,
         accessed_tables=[],
+        # D-176 실행 그룹 — 요청 스코프(이전 턴 승계 차단)
+        execution_groups=None,
+        group_results=None,
+        group_packets=None,
+        db_result_summary=None,
+        db_executed_sqls=None,  # 요청 스코프(plans/113 S-1)
+        merged_ranking=None,  # 요청 스코프(plans/113 S-1)
+        merged_aggregates=None,  # 요청 스코프(plans/113 S-3)
+        empty_diagnosis=None,
+        spike_notes=None,
+        discovery_trace=None,
+        scope_narrowed=None,
+        disclosures=None,  # 요청 스코프(plans/123 W-8)
+        turn_disclosures=None,
+        demonstrative_without_antecedent=None,  # plans/123 S-7(b)
+        unanchored_query_targets=None,  # plans/123 S-7(a)
         # 출력
         final_response="",
         output_file=None,
         output_file_name=None,
+        # Plan 48: deepagents 오케스트레이션
+        task_plan=[],
+        task_results={},
+        is_composite=False,
+        prior_rows=None,  # 요청 스코프 — 명시 초기화로 이전 턴 승계 차단 (Plan 69 P0-⑥)
+        # 요청 스코프 — LangGraph 체크포인터는 델타만 병합하므로 명시 초기화가 없으면
+        # 이전 턴 대상이 승계돼 엉뚱한 호스트를 조사한다(Plan 78 W1-5).
+        prior_targets=None,
+        dependency_notes=None,  # 요청 스코프(D-203)
+        clarification_needed=None,  # 요청 스코프(plans/121 TP-1.4)
+        plan_path=None,  # 요청 스코프(plans/121 TP-0.1)
+        decompose_fallback=None,  # 요청 스코프(plans/121 TP-1.6)
+        # Plan 49: 동적 재계획
+        replan_count=0,
+        needs_replan=False,
+        replan_history=[],
+        # plans/118 P-1·P-2(요청 스코프) — 마감은 라우트가 싣는다. 없으면 재계획기는 종전 동작.
+        request_deadline=None,
+        orchestrator_round_sec=None,
+        replan_stop_notice=None,
+        # plans/103 3단 계획 루프(요청 스코프)
+        needs_plan=None,
+        task_outcomes=[],
     )

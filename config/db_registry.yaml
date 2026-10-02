@@ -1,0 +1,430 @@
+# ============================================================================
+# DB 레지스트리 — 신규 DB 편입 단일 등록점 (Plan 67 R2)
+# ============================================================================
+# 이 파일은 "어떤 DB가 등록돼 있는가"의 **정본**이다. 신규 DB 1개를 편입할 때
+# 수정하는 파일은 이 레지스트리와 `.env`(연결 문자열/ACTIVE_DB_IDS) 둘뿐이어야 한다.
+# (기존: domain_config·zones·process_query·field_mapper·input_parser·context_resolver·
+#  subagents·general_inference 등 9곳 이상 동시 수정 — Plan 67 §1.2-②)
+#
+# 소비처(전부 파생 — 사본 금지):
+#   - src/routing/domain_config.py  DB_DOMAINS         (라우팅 도메인 설명·별칭)
+#   - src/routing/zones.py          존↔db_id 매핑       (알림 지역 스코프 RBAC)
+#   - src/routing/registry.py       위치 어휘 파생 API  (아래 소비처가 전부 여기서 읽음)
+#       · src/nodes/input_parser.py        위치 표면어 → target_db_hints 보강(D-065)
+#       · src/nodes/field_mapper.py        지역 변별 토큰·제품 토큰·경쟁 지역 배제표
+#       · src/nodes/context_resolver.py    위치/환경 신호 추출(previous_location)
+#       · src/orchestration/subagents.py   새 DB 신호 판정(M2)·sub_query 위치어 제거
+#       · src/orchestration/process_query.py 위치→db_id 결정적 폴백
+#       · src/nodes/general_inference.py   안내 예시 위치 렌더
+#       · src/routing/semantic_router.py   라우팅 프롬프트의 DB·위치 어휘 렌더
+#
+# 경계(중요):
+#   - **D-004(LLM 전용 시멘틱 라우팅)**: 아래 `locations`의 위치 표면어는 라우팅 **의도
+#     분류**(intent/DB 선택)에 사용하지 않는다. 사용처는 ①사용자가 명시한 DB 힌트의
+#     결정적 보강 ②멀티턴 승계 신호 ③프롬프트 렌더 재료뿐이며, 키워드 기반 사전 분류
+#     재도입이 아니다.
+#   - **D-089(어댑터 레지스트리)**: 이 파일은 설정 일원화이지 어댑터 훅 확장이 아니다.
+#     DB별 SQL 특화 로직은 계속 `src/db_adapters/{db}/`에만 둔다.
+#   - 스키마 지식(테이블·컬럼·EAV 구조)은 여기가 아니라 `config/db_profiles/`·
+#     `config/semantic_models/`(R1 정본)에 둔다. 레지스트리는 "등록·라우팅 어휘"만 담는다.
+# ============================================================================
+
+version: 1
+
+# ── 존(zone) — 알림 지역 스코프 RBAC 단위. 선언 순서가 all_zones() 순서다.
+zones:
+  - code: gongjon
+    label: 공동존(K리전) — 김포 + 여의도
+  - code: bankjon
+    label: 은행존(K리전 은행/레거시)
+
+# ── 관측 솔루션(solution) — 실행 그룹의 1차 축 (D-176 · plans/82 §4.2).
+#    존 그룹(2차 축)과 함께 "무엇을 어떤 순서로 조회할 것인가"를 선언한다.
+#    order        : 솔루션 간 조회 순서(작을수록 먼저). 선언 순서가 아니라 이 값이 정본이다.
+#    backend      : 그룹 실행 주체 선택 키 — sql | rest | mcp
+#    capabilities : 이 솔루션이 답할 수 있는 관측 능력. 파이프라인 전개의 결정적 재료다.
+#    requires     : 이 솔루션을 쓰기 전에 해소돼야 하는 능력(예: apm은 host_location 선행)
+#
+#    views        : 비SQL 처리기가 부르는 고정 보기 표(plans/125 §4.2 · G-4 (a)) — 보기 id → 게이트웨이
+#                   도구 · 답변 영역 · 필수 입력 패싯 · 창 상한 · 첫 홉 가능 여부. LLM 이 고르는 유일한
+#                   비SQL 인자다(보기 id 닫힌 어휘). 벤더 중립 어휘(`apm.*`)만 둔다(D-274 ③).
+#
+#    sources      : 제니퍼 소스 표(plans/87 J8 · D-287 ④) — 제니퍼 소스 = 뷰 서버 하나(Open API URL+토큰
+#                   1쌍) ↔ 존의 **정본**. `views`(보기 표)와 다른 층이다. 선언 순서 = 조회·표시 순서.
+#                   id 는 게이트웨이 `.env` `JENNIFER_SOURCES` 의 id 와 같아야 하고(소문자 슬러그 ·
+#                   예약어 default·api 금지), 그 소스의 알람 dbId 는 `jennifer_<id>` 다. 게이트웨이는
+#                   존을 모른다(D-274 ③) — 소비자(본체 알람 존 판정·noise_gate)가 이 표로 존을 푼다.
+#                   zone 비움 = 존 없는 소스(전 존 구독자·관리자만 본다). 레거시 = 은행존(G-14 ①).
+#
+#    ⚠ 비DB 시스템(apm — DB 항목이 없는 솔루션)은 **등재돼도 엔드포인트가 설정돼야만 활성**이다
+#      (plans/125 A-1 · D-281 ② · 신규 `enable_*` 0 — D-162). 비활성이면 처리기 등록·분해
+#      프롬프트 렌더가 0이다. 존 그룹이 없어 실행 그룹(존 순회)에는 들지 않는다. dpm 은 아직
+#      주석 예시다(plans/55).
+solutions:
+  - code: polestar
+    label: 폴스타(인프라 모니터링)
+    order: 10
+    backend: sql
+    family: polestar
+    # server_status: plans/102 §3.1 답변 영역 소유표(D-224 ①) — 가용 상태·호스트·IP·OS 구성
+    capabilities: [server_status, server_spec, server_usage, alarm, host_location, process_list]
+
+  # plans/125 A-1(87 J5 본체 쪽 · D-281 ①②) — 제니퍼 APM 게이트웨이(`apm_gateway/` MCP · D-274).
+  # 활성 = `MCP_SOURCE_ENDPOINTS` 에 `apm` 이 있을 때만(두 번째 MCP 엔드포인트 · G-8).
+  - code: apm
+    label: 제니퍼(APM · WAS 모니터링)
+    order: 20
+    backend: mcp
+    family: jennifer
+    # 데이터 소스 유사어(plans/132 N-1 · D-293) — 사용자가 이 시스템을 부르는 이름. 원문에 있으면
+    # 입력 파서가 `target_db_hints`에 결정적으로 보강하고(위치어 D-065와 같은 방식), 계획이 그 task를
+    # 이 시스템 처리기로 고정한다. 비활성이면 조회하지 않고 안내만 한다(G-1). 라틴 표면어는 단어
+    # 경계·대소문자 무시(`term_in_text`). 일반어(「모니터링」·「서버」 등)는 넣지 않는다 — 오고정 위험.
+    aliases: ["제니퍼", "JENNIFER", "APM"]
+    capabilities: [was_instance, was_performance, was_runtime, was_activity, apm_event]
+    requires: [host_location]
+    views:
+      - {id: apm.instances, label: "WAS 인스턴스 목록·호스트 매핑", capability: was_instance,
+         tool: apm_instance_map, first_hop: true, limit: "전체 200개 상한"}
+      - {id: apm.app_health, label: "WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절",
+         capability: was_performance, tool: apm_app_health, required_input: hostname,
+         window_max_minutes: 10, limit: "구간 10분 상한"}
+      - {id: apm.runtime, label: "JVM 힙·GC 비중·프로세스 CPU·스레드 추세", capability: was_runtime,
+         tool: apm_runtime_health, required_input: hostname, limit: "5분 간격 추세"}
+      - {id: apm.pool, label: "DB 커넥션 풀·실행 모드별 액티브 서비스", capability: was_runtime,
+         tool: apm_resource_pool, required_input: hostname, limit: "현재값"}
+      - {id: apm.active, label: "지금 실행 중인 서비스", capability: was_activity,
+         tool: apm_active_services, required_input: hostname, limit: "현재값 · 상위 20"}
+      - {id: apm.slow_tx, label: "느린 트랜잭션(시간 분해)", capability: was_activity,
+         tool: apm_slow_transactions, required_input: hostname, limit: "상위 20"}
+      - {id: apm.events, label: "WAS 이벤트(fatal·warning 등)", capability: apm_event,
+         tool: apm_events, required_input: hostname, window_max_minutes: 1440,
+         limit: "기본 30분 · 최대 24시간"}
+    # plans/87 J8 · D-287 ④ — 제니퍼 소스 ↔ 존 정본(위 `sources` 설명). 단일 설정(게이트웨이
+    # `JENNIFER_API_URL`만 · 소스 `default` · dbId `jennifer`)은 이 표에 없고 존 없음으로 다룬다.
+    sources:
+      - {id: bank, label: 은행존 제니퍼, zone: bankjon}
+      - {id: common, label: 공동존 제니퍼, zone: gongjon}
+      - {id: legacy, label: 레거시 제니퍼, zone: bankjon}
+
+  # plans/127 W1(G-5 (a)) — 사내 문서 RAG(plans/126 엔진 · FabriX Retrieval Connector). 엔터티 계층이
+  # 아닌 «규정·설계 근거» 계층이라 간선(entity_edges)이 없다. 보기(문서군)는 여기 적지 않는다 —
+  # `config/rag_collections.yaml` 에서 파생한다(사본 금지 · D-131). 활성 = `RAG_ENABLED` ∧
+  # `RAG_CHAT_ROUTING_ENABLED` ∧ 보기로 오를 문서군(정본 enabled ∧ 비민감) ≥ 1 — 기본 off.
+  - code: doc
+    label: 사내 문서(규정·설계 근거)
+    order: 40
+    backend: rest
+    family: fabrix_rag
+    capabilities: [doc_regulation, doc_design]
+    # 데이터 소스 유사어(plans/132 N-1) — 문서 소스 **자체**를 부르는 이름만 둔다. 문서군 선택용 표면어
+    # (`config/rag_collections.yaml` surface_terms — 「지침」·「아키텍처」 등 일반어 포함)와 다르다.
+    aliases: ["전산관리매뉴얼", "본부매뉴얼", "전산관리규정", "설계문서"]
+
+  # plans/132 N-1(D-293) — Prometheus **명시 인식 전용** 항목. 본체 처리기·보기가 없어 활성이 될 수 없다
+  # (조회는 `sre_agent`의 `prom_*`만 — plans/121 §2.7.1). 사용자가 「프로메테우스에서 …」라고 하면 다른
+  # 소스(폴스타)로 대신 답하지 않고 「연결되어 있지 않음」을 안내하기 위해 등재한다(G-1). 답변 영역
+  # (`capabilities`)·보기는 비운다 — 등재 형식과 영역은 plans/92·121 TP-9.2가 정한다.
+  - code: prometheus
+    label: Prometheus(메트릭 시계열)
+    order: 50
+    backend: mcp
+    family: prometheus
+    aliases: ["프로메테우스", "Prometheus"]
+
+  # 향후 편입 예시 (현재 미등록 — plans/55 소관):
+  # - code: dpm
+  #   label: DPM(DB 성능)
+  #   order: 30
+  #   backend: rest
+  #   capabilities: [db_session, slow_query, lock_wait]
+  #   requires: [host_location]
+
+# ── 교차 계층 엔터티 간선(plans/125 §4.5 · E-2) — 한 시스템의 식별 패싯을 다른 패싯으로 옮기는
+#    결정적 대응. **간선마다 소유자(owner)**가 있다 — 본체는 이 표로 경로만 고르고 정합을 재구현하지
+#    않는다(D-274 ⑤). 패싯 변환 단계는 **교차 시스템**일 때만 삽입한다(같은 시스템 간선은 불변 ·
+#    121 G-26 · D-272 ⑦). 표 밖 경로는 계획 검증에서 거절한다(DM-5).
+#    via: 수단(게이트웨이 도구 · 어댑터 고정 조회 · 키 브리지 · 서버측 셀렉터) · grades: 판정 등급.
+entity_edges:
+  - {id: E1, from: apm_instance, to: hostname, owner: apm, via: apm_instance_map,
+     grades: [high, medium, unlinked]}
+  - {id: E1r, from: hostname, to: apm_instance, owner: apm, via: apm_instance_map,
+     grades: [high, medium, unlinked]}
+  - {id: E2, from: server_name, to: hostname, owner: polestar, via: hostname_lookup,
+     grades: [one, none, many]}
+  - {id: E2r, from: hostname, to: server_name, owner: polestar, via: hostname_lookup,
+     grades: [one, none, many]}
+  - {id: E3, from: server_name, to: asset_key, owner: itam, via: key_bridge,
+     grades: [one, none, many]}
+  - {id: E4, from: server_name, to: nodename, owner: prometheus, via: selector,
+     grades: [series, none]}
+  - {id: E5, from: hostname, to: asset_key, owner: itam, via: key_bridge,
+     grades: [one, none, many]}
+
+# ── 답변 영역(capability) 카탈로그 (plans/102 §3.1 · D-224 ①).
+#    **소유는 여기 적지 않는다** — 정본은 다중 존 시스템이면 `solutions[].capabilities`, 존이 없는
+#    단일 DB 시스템이면 `databases[].capabilities`다(두 번째 출처 금지 · D-053). 이 목록은 라우터·분해
+#    프롬프트의 소유표 렌더 재료(설명)뿐이며, 선언 순서가 렌더 순서다. 소유표는
+#    `ROUTER_CAPABILITY_OWNERSHIP_ENABLED`가 켜졌을 때만 프롬프트에 들어간다.
+#    server_spec의 정본은 G-1 기본 가정(폴스타 — 현재 구성 실측값)이다 · 사용자 미확정.
+#
+#    ambiguous_owner: true — **소유가 모호한 영역**(두 시스템이 같은 것을 답할 수 있어 위 정본
+#    선언이 기본값일 뿐이다). 소재 프로브(`CROSS_SYSTEM_PROBE_ENABLED`)가 결정표의 「소유 모호」
+#    행을 타는 조건이고, 소유 선언(누가 정본인가)과 경쟁하지 않는다. 기본값 false.
+capabilities:
+  - code: asset_inventory
+    label: HW/SW 자산 분류·물품 분류·시리얼 번호·자산 상태·자산 보유 부점
+  - code: asset_contract
+    label: 구매·유지보수 계약(기간·만료일·금액)·무상 보증 기간·취득금액
+  - code: asset_owner
+    label: 자산 담당자·담당 부점
+  - code: asset_lifecycle
+    label: HW/SW 지원 종료일(EOS/EOL)·경과년수·노후 교체 대상
+  - code: server_status
+    label: 서버 가용 상태·호스트명·IP·OS 구성
+  - code: server_spec
+    label: 서버 사양(CPU 코어·메모리·디스크 용량 — 현재 구성 실측값)
+    # R1 "하드웨어 자산 정보"와 R2 "서버 현황"이 겹친다 — 정본은 폴스타(G-1 기본 가정)지만
+    # 자산관리도 같은 것을 답할 수 있어 식별자 소재로 시스템을 고른다.
+    ambiguous_owner: true
+  - code: server_usage
+    label: CPU·메모리·디스크 사용률(모니터링 시계열)
+  - code: alarm
+    label: 모니터링 알람 현황·이력
+  - code: process_list
+    label: 서버 프로세스 목록
+  - code: host_location
+    label: 서버가 어느 존·인스턴스에 등록돼 있는지
+  # plans/125 §4.1 L3(애플리케이션·미들웨어) — 소유는 `solutions[apm]`. 비DB 시스템 영역이라 소유표
+  # 렌더(`owned_capability_rows`)는 활성 DB 가 없어 행을 내지 않는다 — 분해 프롬프트의 WAS 안내는
+  # 엔드포인트가 활성일 때만 붙는 `apm_query` 줄이 맡는다.
+  - code: was_instance
+    label: WAS 인스턴스 목록·호스트 매핑·도메인
+  - code: was_performance
+    label: WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절
+  - code: was_runtime
+    label: WAS JVM 힙·GC 비중·스레드·커넥션 풀
+  - code: was_activity
+    label: WAS 실행 중 서비스·느린 트랜잭션
+  - code: apm_event
+    label: WAS 이벤트(fatal·warning 등) — 폴스타 알람과 다른 영역
+  # plans/127 §4.1 R(규정·설계 근거) — 소유는 `solutions[doc]`. 비DB 시스템 영역이라 소유표 행을 내지
+  # 않는다(apm 과 같음) — 분해 프롬프트의 문서 안내는 라우팅 활성일 때만 붙는 `doc_query` 줄이 맡는다.
+  - code: doc_regulation
+    label: 사내 규정·업무 절차·승인 기준·보안지침(문서 내용)
+  - code: doc_design
+    label: 시스템 아키텍처·구성·연계 방식·설계 근거(문서 내용)
+
+# ── 존 그룹(zone_group) — 솔루션 내부의 2차 축. 담당 조직·DB 엔진이 갈리는 경계다.
+#    query_order가 **조회 순서의 정본**이다 — 사용자 요구(2026-08-28): 은행존을 먼저
+#    조회하고 완료되면 공동존을 조회한다.
+#
+#    ⚠ 위 `zones:` 선언 순서를 재정렬하지 않는다. all_zones()는 **알림 지역 스코프 RBAC의
+#      선택지 순서**를 만들고 있어 조회 순서와 용도가 다르다 — 두 순서를 한 리스트에
+#      겹치면 한쪽 요구가 다른 쪽을 흔든다(plans/82 §4.2).
+zone_groups:
+  - code: bank
+    label: 은행존
+    solution: polestar
+    zones: [bankjon]
+    query_order: 10
+  - code: common
+    label: 공동존
+    solution: polestar
+    zones: [gongjon]
+    query_order: 20
+
+# ── 제품군(family) — 같은 제품군 DB끼리만 "경쟁 지역" 배제 판정을 수행한다.
+#    product_terms: 제품명 단독 토큰(지역 변별력 없음 — 지역 토큰이 함께 있으면 제거 대상)
+#    signal_terms : "이번 턴에 사용자가 DB를 새로 지목했다"고 볼 표면어(멀티턴 승계 차단)
+families:
+  - name: polestar
+    product_terms: ["폴스타", "polestar"]
+    signal_terms: ["polestar", "폴스타"]
+  - name: cloud_portal
+    product_terms: ["포탈", "portal"]
+    signal_terms: ["cloud_portal", "클라우드"]
+
+# ── 환경 표면어(운영/개발/스테이징/DR) — 위치와 함께 DB 식별 신호로 승계된다.
+#    운영은 김포, 개발·스테이징·DR은 여의도 폴스타를 가리키는 기준 용어라 아래 `locations`에도
+#    배타 표면어로 둔다(D-271). "운영체제"(OS)·"운영 중"(상태)·"운영자"·"운영팀"의 "운영"은
+#    위치로 보지 않는다(`query_gen_common.term_in_text`의 제외 꼬리).
+environment_terms: ["운영", "개발", "스테이징", "DR"]
+
+# ── 위치 표면어 → db_id. 선언 순서가 소비처의 스캔/렌더 순서다.
+#    db_ids가 2개 이상이면 존 단위 표면어(예: 공동존=김포+여의도)이며,
+#    1개면 그 DB를 단독 지목하는 배타 표면어다(경쟁 지역 배제표의 원천).
+locations:
+  - term: 공동존
+    db_ids: [polestar_cm_gp, polestar_cm_yd]
+  - term: 김포
+    db_ids: [polestar_cm_gp]
+  # 김포 폴스타의 기준 용어(D-271 — 사용자 확정 2026-09-28 "운영은 김포로 매핑하면 된다").
+  - term: 운영
+    db_ids: [polestar_cm_gp]
+  - term: 여의도
+    db_ids: [polestar_cm_yd]
+  # 여의도 폴스타의 기준 용어(D-271 — 사용자 확정 2026-09-28 "DR은 여의도이다").
+  # 라틴 문자 표면어(DR)는 소비처가 단어 경계로 판정한다(DRM·ADDRESS 오탐 방지 —
+  # `query_gen_common.term_in_text`). 이 목록은 `LOCATION_HINT_TERMS`와 순서까지 같아야 한다.
+  - term: 개발
+    db_ids: [polestar_cm_yd]
+  - term: 스테이징
+    db_ids: [polestar_cm_yd]
+  - term: DR
+    db_ids: [polestar_cm_yd]
+  - term: 은행
+    db_ids: [polestar_b0]
+  - term: 레거시
+    db_ids: [polestar_b0]
+  - term: 은행존
+    db_ids: [polestar_b0]
+
+# ── DB 등록 목록. 선언 순서가 DB_DOMAINS 순서(라우팅 프롬프트 나열 순서)다.
+#    enabled: false 로 두면 등록 자체에서 제외된다. **런타임 활성 판정**(어느 DB에
+#    실제로 질의할지)은 `.env`의 ACTIVE_DB_IDS/연결 문자열이 단일 출처이며(D-006),
+#    이 플래그는 그보다 앞선 "등록 여부"만 결정한다.
+databases:
+  - db_id: polestar_b0
+    enabled: true
+    display_name: 은행 레거시 및 K리전(은행존) Polestar
+    description: >-
+      은행 레거시 및 K리전(은행존) 서버 물리 사양, 사용량 및 모니터링 데이터.
+      서버 사양(CPU, Core 수, Memory 크기, Disk 크기),
+      서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량),
+      서버 정보(hostname, IP, gateway),
+      모니터링 알람(alert) 정보: 현재 발생 알람(CMM_ALARM), 알람 이력,
+      알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME),
+      알람 담당자(ACKUSERNAME), 알람 대상 장비(CMM_RESOURCE)
+    # "은행존"/"은행존 폴스타"는 "은행 폴스타"와 부분매칭되지 않아(존이 붙은 별도 토큰)
+    # 단독 표면어로 등재해야 한다(D-065 교훈: gp/yd "공동존"과 동일 패턴, 2026-07-16 b0 미전파 수정).
+    aliases: ["polestar_b0", "은행 폴스타", "레거시 폴스타", "은행", "은행존", "은행존 폴스타"]
+    env_connection_key: POLESTAR_B0_CONNECTION
+    env_type_key: POLESTAR_B0_TYPE
+    engine: db2
+    # D-057(2026-07-02 실측): 운영 b0 DB2에서 cmm_resource 소유 스키마 = POLESTAR
+    #   (SYSCAT.TABLES 조회 결과 TABSCHEMA='POLESTAR'). 연결 계정 CURRENT SCHEMA는 SDQ000이라
+    #   무스키마 참조 시 SDQ000.CMM_RESOURCE로 해소되어 SQL0204N(-204) 발생 → 명시 스키마 한정 필수.
+    #   DB2는 미인용 식별자를 대문자로 저장하므로 스키마명도 대문자 POLESTAR로 지정한다.
+    db_schema: POLESTAR
+    family: polestar
+    zone: bankjon
+
+  - db_id: polestar_cm_gp
+    enabled: true
+    display_name: K리전(공동존) 김포(운영) Polestar
+    description: >-
+      K리전(공동존) 김포 운영 서버 물리 사양, 사용량 및 모니터링 데이터.
+      서버 사양(CPU, Core 수, Memory 크기, Disk 크기),
+      서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량),
+      서버 정보(hostname, IP, gateway),
+      모니터링 알람(alert) 정보: 현재 발생 알람(CMM_ALARM), 알람 이력,
+      알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME),
+      알람 담당자(ACKUSERNAME), 알람 상태(CURRENTALARMSTATUS),
+      알람 대상 장비(CMM_RESOURCE), 알람 유형(CMM_ALARM_DEF)
+    aliases: ["polestar_cm_gp", "공동존", "공동존 폴스타", "공동존 김포 폴스타", "공동존 운영 폴스타", "김포", "김포 폴스타", "운영"]
+    env_connection_key: POLESTAR_CM_GP_CONNECTION
+    env_type_key: POLESTAR_CM_GP_TYPE
+    engine: postgresql
+    db_schema: polestar
+    family: polestar
+    zone: gongjon
+
+  - db_id: polestar_cm_yd
+    enabled: true
+    display_name: K리전(공동존) 여의도(개발/스테이징/DR) Polestar
+    description: >-
+      K리전(공동존) 여의도 개발·스테이징 및 DR 서버 물리 사양, 사용량 및 모니터링 데이터.
+      서버 사양(CPU, Core 수, Memory 크기, Disk 크기),
+      서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량),
+      서버 정보(hostname, IP, gateway),
+      모니터링 알람(alert) 정보: 현재 발생 알람(CMM_ALARM), 알람 이력,
+      알람 심각도(0=해소/1=주의/2=경고/3=심각), 알람 발생 시각(CTIME),
+      알람 담당자(ACKUSERNAME), 알람 상태(CURRENTALARMSTATUS),
+      알람 대상 장비(CMM_RESOURCE), 알람 유형(CMM_ALARM_DEF)
+    aliases: ["polestar_cm_yd", "공동존", "공동존 폴스타", "공동존 여의도 폴스타", "공동존 개발 폴스타", "공동존 스테이징 폴스타", "공동존 DR 폴스타", "여의도", "여의도 폴스타", "개발", "스테이징", "DR"]
+    env_connection_key: POLESTAR_CM_YD_CONNECTION
+    env_type_key: POLESTAR_CM_YD_TYPE
+    engine: postgresql
+    db_schema: polestar
+    family: polestar
+    zone: gongjon
+
+  # 로컬 개발 샌드박스(도커 polestar_pg, testdata/pg/init 픽스처). 운영 폴스타(gp/yd/b0)와
+  # 동일 스키마. 트랙 C(D-076) 로컬 검증을 위해 재등재(2026-07-14) — engine/db_schema
+  # 결정적 주입(D-066 후속6)과 시맨틱 모델 로드(config/semantic_models/polestar.yaml)에 필요.
+  # 운영 .env는 ACTIVE_DB_IDS에 polestar를 넣지 않으므로 라우팅에 영향 없음(활성 DB만 순회).
+  - db_id: polestar
+    enabled: true
+    display_name: 로컬 개발 샌드박스 Polestar
+    description: >-
+      로컬 개발/테스트용 Polestar 샌드박스 (도커 testdata 픽스처).
+      운영 폴스타와 동일 스키마 — 서버 물리 사양, 사용량 및 모니터링 데이터.
+      서버 사양(CPU, Core 수, Memory 크기, Disk 크기),
+      서버 사용량(월 평균/최고 CPU 사용률, Disk 사용용량),
+      서버 정보(hostname, IP, gateway),
+      모니터링 알람(alert) 정보: 현재 발생 알람(CMM_ALARM), 알람 이력,
+      알람 심각도(0=해소/1=주의/2=경고/3=심각)
+    aliases: ["polestar", "로컬 폴스타", "테스트 폴스타"]
+    env_connection_key: POLESTAR_CONNECTION
+    env_type_key: POLESTAR_TYPE
+    engine: postgresql
+    db_schema: polestar
+    # 위치 표면어는 없지만(로컬 샌드박스) 폴스타 제품군이라 경쟁 지역 배제 판정에는 참여한다.
+    family: polestar
+
+  - db_id: cloud_portal
+    enabled: true
+    display_name: Cloud Portal DB
+    description: >-
+      가상화 인프라 데이터.
+      VM(가상머신) 정보, 데이터 스토어 정보,
+      전체 VM 대수,
+      영역별 VM 대수(김포, 여의도, DMZ, 내부망 등)
+    aliases: ["cloud_portal", "클라우드 포탈", "클라우드포탈", "Cloud Portal", "Cloud Portal DB"]
+    env_connection_key: CLOUD_PORTAL_DB_CONNECTION
+    env_type_key: CLOUD_PORTAL_DB_TYPE
+    engine: postgresql
+    db_schema: ""
+    family: cloud_portal
+
+  - db_id: itsm
+    enabled: true
+    display_name: ITSM DB
+    description: >-
+      IT 서비스 관리 데이터.
+      서비스 요청, 인시던트, 변경 관리, 문제 관리, SLA 등
+    aliases: ["itsm", "ITSM", "ITSM DB"]
+    env_connection_key: ITSM_DB_CONNECTION
+    env_type_key: ITSM_DB_TYPE
+    engine: postgresql
+    db_schema: ""
+    signal_terms: ["itsm"]
+
+  # 자산관리 DB(plans/95). 엔진은 벤더 스키마 시트의 DBMS구분 = MARIADB(D-214 예약).
+  # db_schema는 실 database명 미확정(G-2)이라 비워 둔다. 활성화(ACTIVE_DB_IDS)는 구조 정본
+  # config/db_profiles/itam.yaml(G-4 대기) 이후 — plans/95 §5 순서 불변식.
+  # description은 자산 축(계약·금액·지원 종료·자산 상태·분류·담당)만 적는다. 자산 DB에도 CPU·메모리·
+  # 스토리지 사용률·용량 컬럼이 있지만 사양·사용률은 관측 DB가 정본이다(G-8 기본 가정 (가) · 함정 T5) —
+  # 그 어휘를 여기 쓰면 "서버 CPU 사용률" 질의가 두 DB에 정당하게 매칭돼 답이 조용히 갈린다.
+  # 경계는 키워드 사전이 아니라 이 설명으로 푼다(D-004). 설명은 활성 DB만 프롬프트에 렌더된다.
+  - db_id: itam
+    enabled: true
+    display_name: ITAM DB
+    description: >-
+      IT 자산 관리(자산 원장) 데이터.
+      서버 자산의 구매 계약·취득일·취득금액·잔존 장부금액,
+      유지보수 계약(계약명·기간·만료일·계약금액)과 무상 보증 기간,
+      하드웨어/소프트웨어 지원 종료일(EOS/EOL),
+      자산 상태·자산 분류·경과년수·노후 교체 대상,
+      담당자·담당 부점·자산 보유 부점, 물품 분류·시리얼 번호 등
+    aliases: ["itam", "ITAM", "ITAM DB", "자산관리", "자산관리 DB"]
+    env_connection_key: ITAM_DB_CONNECTION
+    env_type_key: ITAM_DB_TYPE
+    engine: mariadb
+    db_schema: ""
+    signal_terms: ["itam"]
+    # 답변 영역 소유(plans/102 §3.1 · D-224 ①). 존이 없는 단일 시스템(D-214 ④)이라 `solutions`가 아니라
+    # DB 항목에 선언한다 — `solutions` 등재는 D-214 ④에서 기각됐다(G-4 기본 가정 이탈 · 사용자 미확정).
+    # asset_owner(담당자 성명)는 plans/95 G-9 확정(마스킹 없이 노출)으로 비활성 사유가 없다.
+    capabilities: [asset_inventory, asset_contract, asset_owner, asset_lifecycle]

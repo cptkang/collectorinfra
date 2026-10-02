@@ -39,6 +39,15 @@ def test_client():
         app.state.graph = mock_graph
         app.state.config = mock_config.return_value
 
+        # `/query` 계열은 Plan 39(사용자 인증)로 `require_user`가 필수가 됐다. 이 파일의
+        # 테스트는 그 이전 것이라 토큰 없이 호출해 **401로 실패**하고 있었다(2026-08-28 정리).
+        # 검증 대상은 라우트 동작이지 인증 자체가 아니므로(인증은 test_security·
+        # test_alarm_feedback_rbac 소관) 의존성을 주입해 통과시킨다 — 기존 선례와 동형.
+        from src.api.dependencies import require_user
+        app.dependency_overrides[require_user] = lambda: {
+            "sub": "test-user", "role": "user", "department": None, "allowed_db_ids": None,
+        }
+
         with TestClient(app) as client:
             yield client
 

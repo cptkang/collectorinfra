@@ -28,6 +28,100 @@ class ServerConfig:
     port: int = 9099
     transport: str = "sse"
     log_level: str = "info"
+    # execute_sql 저수준 도구 노출 여부 (기본 비노출 — 계획 §3/§6, D-022/D-028).
+    # 고수준 도구는 SQL을 받지 않으므로 항상 안전하다. raw SQL 실행이 필요한 탐색적
+    # 조사·본체 NL→SQL 파이프라인 배치에서만 config.toml/환경변수로 True 옵트인한다.
+    expose_execute_sql: bool = False
+    # 폴스타 도메인 deny(D-022/D-028)를 execute_sql에 적용할지 여부 (기본 True — 현행 동작 보존).
+    # 이 검증은 폴스타 스키마 전제라 폴스타가 아닌 소스에는 무의미하다. 폴스타 소스를
+    # 서빙하지 않는 배치에서만 config.toml/환경변수로 False 옵트아웃한다.
+    # env: POLESTAR_DOMAIN_GUARD.
+    polestar_domain_guard: bool = True
+    # 폴스타 고수준 도구 9종 등록 여부 (기본 True — 현행 동작 보존).
+    # 폴스타 소스가 없는 배치에서는 False로 두어 도구 표면을 줄인다(expose_execute_sql·
+    # expose_raw_promql과 동일한 게이트 패턴). env: EXPOSE_POLESTAR_TOOLS.
+    expose_polestar_tools: bool = True
+    # 폴스타 실시간 프로세스 API base_url (process_snapshot 도구용). 비면 도구가 오류 반환.
+    process_api_base_url: str = ""
+    # 전송 구간 정적 Bearer 토큰 (Plan 04 §6-4, D-015). 빈 값이면 무인증 통과
+    # (로컬/개발 — 네트워크 격리 전제). 설정 시 모든 HTTP 요청에
+    # `Authorization: Bearer <token>` 헤더를 요구하고 불일치 시 401을 반환한다.
+    # env: MCP_BEARER_TOKEN (또는 config.toml [server].bearer_token).
+    bearer_token: str = ""
+
+
+@dataclass
+class PrometheusConfig:
+    """Prometheus 접속 설정 (mcp_server 전용 — 소비자 미보유, Plan 06 §3 · D-119).
+
+    ``url``·``auth_header``는 서버 설정에만 존재한다(sre_agent 미보유 — 접근 경계
+    일원화). ``query_timeout``은 원시 패스스루를 포함한 모든 PromQL HTTP 호출에
+    서버가 강제하는 쿼리 timeout(초)이다. ``expose_raw_promql``은 원시 PromQL
+    패스스루 도구의 노출 여부로 기본 비노출이다(execute_sql 전례).
+    """
+
+    url: str = ""
+    auth_header: str = ""
+    query_timeout: int = 30
+    expose_raw_promql: bool = False
+
+
+#: `fallback_policy` 허용값 (plans/92 §4.8.3). off = 강등 없음 = 종전 PromQL 동작과 비트 동일.
+OPENMETRICS_FALLBACK_POLICIES: tuple[str, ...] = ("off", "on_unavailable", "on_empty")
+#: 스크레이프 타깃 종류 — exporter 직결 또는 Prometheus `/federate` (plans/92 §4.3 (c)).
+OPENMETRICS_TARGET_KINDS: tuple[str, ...] = ("exporter", "federate")
+
+
+@dataclass
+class OpenMetricsTarget:
+    """스크레이프 허용목록 1건 (plans/92 §4.3 (a) — LLM은 URL을 넘기지 못한다).
+
+    ``hostname``은 도구 인자와 같은 값 — 폴스타 ``server_name``이다(D-119 ③ 이름 과적).
+    ``os_hostname``은 선택이며 exporter가 보고하는 OS 호스트명(``node_uname_info``)과
+    대조해 타깃 신원을 확인하는 기준이다(§4.2 [v3] — 공동존은 server_name ≠ OS hostname).
+    """
+
+    hostname: str = ""
+    url: str = ""
+    kind: str = "exporter"
+    os_hostname: str = ""
+
+
+@dataclass
+class OpenMetricsBridgeSource:
+    """B-2 브리지가 읽는 데이터소스 1건 (plans/92 §4.5). ``name``은 ``[[sources]]`` 이름."""
+
+    name: str = ""
+    zone: str = ""
+
+
+@dataclass
+class OpenMetricsConfig:
+    """OpenMetrics 설정 (plans/92 · D-210). 기본값 = 도구 미등록·라우트 부재 = 현행과 비트 동일.
+
+    - 트랙 A(S0): ``expose_openmetrics_tools``·``scrape_timeout``·``max_body_bytes``·``max_series``·
+      ``targets``(정적 허용목록 — G-2 (i)).
+    - 병행 사다리(S1 · O2b): ``fallback_policy``·``coverage_ttl_seconds``·``cross_check_tolerance``·
+      ``scrape_interval_hint``. 확장 시그니처는 OM 켜짐 + ``PROMETHEUS_URL`` 설정일 때만 등록된다.
+    - 폴스타 브리지(B-2 · O5): ``expose_polestar_exporter``·``bridge_cache_seconds``·
+      ``bridge_sources``.
+
+    ``expose_*`` 두 키는 배치 표면 스위치다(D-122 ``expose_*`` 전례 — 만료일 없음 · D-210 ⑥).
+    """
+
+    expose_openmetrics_tools: bool = False
+    scrape_timeout: int = 10
+    max_body_bytes: int = 4 * 1024 * 1024
+    max_series: int = 200
+    targets: list[OpenMetricsTarget] = field(default_factory=list)
+    fallback_policy: str = "off"
+    coverage_ttl_seconds: int = 600
+    cross_check_tolerance: float = 0.05
+    scrape_interval_hint: int = 15
+    expose_polestar_exporter: bool = False
+    # 원천이 시간 통계라 스크레이프마다 SQL을 칠 이유가 없다(plans/92 §4.5 [v3] 3 — 300s 제안값).
+    bridge_cache_seconds: int = 300
+    bridge_sources: list[OpenMetricsBridgeSource] = field(default_factory=list)
 
 
 @dataclass
@@ -35,7 +129,7 @@ class SourceConfig:
     """데이터소스 설정."""
 
     name: str = ""
-    type: str = "postgresql"  # "postgresql" | "db2"
+    type: str = "postgresql"  # "postgresql" | "db2" | "mariadb"
     connection: str = ""
     readonly: bool = True
     query_timeout: int = 30
@@ -50,6 +144,8 @@ class AppServerConfig:
 
     server: ServerConfig = field(default_factory=ServerConfig)
     sources: list[SourceConfig] = field(default_factory=list)
+    prometheus: PrometheusConfig = field(default_factory=PrometheusConfig)
+    openmetrics: OpenMetricsConfig = field(default_factory=OpenMetricsConfig)
 
 
 def load_config(config_path: str | Path | None = None) -> AppServerConfig:
@@ -144,6 +240,11 @@ def _load_toml(path: Path) -> AppServerConfig:
         port=server_data.get("port", 9099),
         transport=server_data.get("transport", "sse"),
         log_level=server_data.get("log_level", "info"),
+        expose_execute_sql=server_data.get("expose_execute_sql", False),
+        polestar_domain_guard=server_data.get("polestar_domain_guard", True),
+        expose_polestar_tools=server_data.get("expose_polestar_tools", True),
+        process_api_base_url=server_data.get("process_api_base_url", ""),
+        bearer_token=server_data.get("bearer_token", ""),
     )
 
     # 소스 설정
@@ -161,7 +262,87 @@ def _load_toml(path: Path) -> AppServerConfig:
         )
         sources.append(src)
 
-    return AppServerConfig(server=server, sources=sources)
+    # Prometheus 설정 (PromQL 도구 — Plan 06 §3 · D-119)
+    prom_data = data.get("prometheus", {})
+    prometheus = PrometheusConfig(
+        url=prom_data.get("url", ""),
+        auth_header=prom_data.get("auth_header", ""),
+        query_timeout=prom_data.get("query_timeout", 30),
+        expose_raw_promql=prom_data.get("expose_raw_promql", False),
+    )
+
+    # OpenMetrics 설정 (plans/92 · D-210)
+    om_data = data.get("openmetrics", {})
+    openmetrics = OpenMetricsConfig(
+        expose_openmetrics_tools=om_data.get("expose_openmetrics_tools", False),
+        scrape_timeout=om_data.get("scrape_timeout", 10),
+        max_body_bytes=om_data.get("max_body_bytes", 4 * 1024 * 1024),
+        max_series=om_data.get("max_series", 200),
+        targets=_parse_openmetrics_targets(om_data.get("targets", [])),
+        fallback_policy=om_data.get("fallback_policy", "off"),
+        coverage_ttl_seconds=om_data.get("coverage_ttl_seconds", 600),
+        cross_check_tolerance=float(om_data.get("cross_check_tolerance", 0.05)),
+        scrape_interval_hint=om_data.get("scrape_interval_hint", 15),
+        expose_polestar_exporter=om_data.get("expose_polestar_exporter", False),
+        bridge_cache_seconds=om_data.get("bridge_cache_seconds", 300),
+        bridge_sources=[
+            OpenMetricsBridgeSource(name=str(b.get("name", "")), zone=str(b.get("zone", "")))
+            for b in om_data.get("bridge_sources", [])
+            if b.get("name")
+        ],
+    )
+
+    return AppServerConfig(
+        server=server, sources=sources, prometheus=prometheus, openmetrics=openmetrics
+    )
+
+
+def _parse_openmetrics_targets(raw: list[dict]) -> list[OpenMetricsTarget]:
+    """``[[openmetrics.targets]]`` 허용목록을 검증해 읽는다 (plans/92 §4.3 (a) · §7.2 SSRF).
+
+    잘못된 항목은 **경고를 남기고 건너뛴다** — http(s)가 아닌 URL·빈 값·모르는 kind·중복
+    hostname은 허용목록에 들어가지 않는다(먼저 온 항목이 이긴다).
+    """
+    targets: list[OpenMetricsTarget] = []
+    seen: set[str] = set()
+    for entry in raw:
+        hostname = str(entry.get("hostname", "")).strip()
+        url = str(entry.get("url", "")).strip()
+        kind = str(entry.get("kind", "exporter")).strip()
+        if not hostname or not url:
+            logger.warning("OpenMetrics 타깃 무시 — hostname·url 필수: %r", entry)
+            continue
+        if not url.lower().startswith(("http://", "https://")):
+            logger.warning("OpenMetrics 타깃 무시 — http(s) URL만 허용: %s", hostname)
+            continue
+        if kind not in OPENMETRICS_TARGET_KINDS:
+            logger.warning("OpenMetrics 타깃 무시 — 모르는 kind %r: %s", kind, hostname)
+            continue
+        if hostname in seen:
+            logger.warning("OpenMetrics 타깃 무시 — 중복 hostname: %s", hostname)
+            continue
+        seen.add(hostname)
+        targets.append(
+            OpenMetricsTarget(
+                hostname=hostname,
+                url=url,
+                kind=kind,
+                os_hostname=str(entry.get("os_hostname", "")).strip(),
+            )
+        )
+    return targets
+
+
+def _normalize_openmetrics(om: OpenMetricsConfig) -> None:
+    """env 오버라이드 뒤 OpenMetrics 설정의 열거값을 정규화한다 (침묵 폴백 금지 — 경고)."""
+    policy = str(om.fallback_policy).strip().lower()
+    if policy not in OPENMETRICS_FALLBACK_POLICIES:
+        logger.warning(
+            "OPENMETRICS_FALLBACK_POLICY 값 %r 무효 — off로 둔다 (허용: %s)",
+            om.fallback_policy, ", ".join(OPENMETRICS_FALLBACK_POLICIES),
+        )
+        policy = "off"
+    om.fallback_policy = policy
 
 
 def _apply_env_overrides(config: AppServerConfig) -> None:
@@ -180,12 +361,97 @@ def _apply_env_overrides(config: AppServerConfig) -> None:
         "SERVER_PORT": ("port", int),
         "SERVER_TRANSPORT": ("transport", str),
         "SERVER_LOG_LEVEL": ("log_level", str),
+        "PROCESS_API_BASE_URL": ("process_api_base_url", str),
+        "MCP_BEARER_TOKEN": ("bearer_token", str),
     }
     for env_key, (attr, cast) in _env_overrides.items():
         env_val = os.environ.get(env_key, "")
         if env_val:
             setattr(config.server, attr, cast(env_val))
             logger.debug("환경변수 오버라이드: %s = %s", env_key, env_val)
+
+    # expose_execute_sql은 불리언이라 별도 파싱 ("1"/"true"/"yes"/"on" → True)
+    expose_env = os.environ.get("EXPOSE_EXECUTE_SQL", "")
+    if expose_env:
+        config.server.expose_execute_sql = expose_env.strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        logger.debug("환경변수 오버라이드: EXPOSE_EXECUTE_SQL = %s",
+                     config.server.expose_execute_sql)
+
+    # 폴스타 게이트 2종도 불리언 — 기본 True라 "false"로 옵트아웃하는 방향으로 쓰인다.
+    _polestar_flags = {
+        "POLESTAR_DOMAIN_GUARD": "polestar_domain_guard",
+        "EXPOSE_POLESTAR_TOOLS": "expose_polestar_tools",
+    }
+    for env_key, attr in _polestar_flags.items():
+        env_val = os.environ.get(env_key, "")
+        if env_val:
+            setattr(
+                config.server,
+                attr,
+                env_val.strip().lower() in ("1", "true", "yes", "on"),
+            )
+            logger.debug("환경변수 오버라이드: %s = %s", env_key,
+                         getattr(config.server, attr))
+
+    # Prometheus 설정 오버라이드 (문자열/정수 — Plan 06 §3 · D-119)
+    _prom_overrides = {
+        "PROMETHEUS_URL": ("url", str),
+        "PROMETHEUS_AUTH_HEADER": ("auth_header", str),
+        "PROMETHEUS_QUERY_TIMEOUT": ("query_timeout", int),
+    }
+    for env_key, (attr, cast) in _prom_overrides.items():
+        env_val = os.environ.get(env_key, "")
+        if env_val:
+            setattr(config.prometheus, attr, cast(env_val))
+            logger.debug("환경변수 오버라이드: %s = %s", env_key, env_val)
+
+    # expose_raw_promql도 불리언이라 별도 파싱
+    raw_env = os.environ.get("EXPOSE_RAW_PROMQL", "")
+    if raw_env:
+        config.prometheus.expose_raw_promql = raw_env.strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        logger.debug("환경변수 오버라이드: EXPOSE_RAW_PROMQL = %s",
+                     config.prometheus.expose_raw_promql)
+
+    # OpenMetrics 설정 오버라이드 (plans/92 §4.7 [v3] — 단계별 키. 스크레이프 타깃은 TOML 전용)
+    _om_overrides = {
+        # S0 — 트랙 A 도구
+        "OPENMETRICS_SCRAPE_TIMEOUT": ("scrape_timeout", int),
+        "OPENMETRICS_MAX_BODY_BYTES": ("max_body_bytes", int),
+        "OPENMETRICS_MAX_SERIES": ("max_series", int),
+        # S1 — PromQL 병행 사다리·교차 검증(O2b)
+        "OPENMETRICS_FALLBACK_POLICY": ("fallback_policy", str),
+        "OPENMETRICS_COVERAGE_TTL_SECONDS": ("coverage_ttl_seconds", int),
+        "OPENMETRICS_CROSS_CHECK_TOLERANCE": ("cross_check_tolerance", float),
+        "OPENMETRICS_SCRAPE_INTERVAL_HINT": ("scrape_interval_hint", int),
+        # B-2 — 폴스타 브리지
+        "OPENMETRICS_BRIDGE_CACHE_SECONDS": ("bridge_cache_seconds", int),
+    }
+    for env_key, (attr, cast) in _om_overrides.items():
+        env_val = os.environ.get(env_key, "")
+        if env_val:
+            setattr(config.openmetrics, attr, cast(env_val))
+            logger.debug("환경변수 오버라이드: %s = %s", env_key, env_val)
+
+    # OpenMetrics 노출 스위치 2종도 불리언 (기본 False — 도구 미등록·라우트 부재)
+    _om_flags = {
+        "EXPOSE_OPENMETRICS_TOOLS": "expose_openmetrics_tools",
+        "EXPOSE_POLESTAR_EXPORTER": "expose_polestar_exporter",
+    }
+    for env_key, attr in _om_flags.items():
+        env_val = os.environ.get(env_key, "")
+        if env_val:
+            setattr(
+                config.openmetrics,
+                attr,
+                env_val.strip().lower() in ("1", "true", "yes", "on"),
+            )
+            logger.debug("환경변수 오버라이드: %s = %s", env_key,
+                         getattr(config.openmetrics, attr))
+    _normalize_openmetrics(config.openmetrics)
 
     # 소스별 연결 문자열 오버라이드
     for source in config.sources:

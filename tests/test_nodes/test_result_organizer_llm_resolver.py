@@ -194,3 +194,30 @@ class TestResolveUnmatchedViaLlm:
             )
 
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_list_value_is_skipped_without_losing_other_fields(
+        self, mock_llm: AsyncMock
+    ) -> None:
+        """LLM이 매핑 값으로 리스트를 줘도 그 필드만 건너뛴다(plans/114 P-8).
+
+        run 20260922-112010: `matched_key in result_keys`가 `unhashable type: 'list'`를 내
+        Layer 2 전체가 graceful 스킵됐다 — 정상 매핑된 다른 필드까지 잃었다.
+        """
+        column_mapping = {
+            "업무내용": "cmm_resource.description",
+            "에이전트버전": "EAV:AgentVersion",
+        }
+        mock_llm.ainvoke.return_value = _make_llm_response(json.dumps({
+            "cmm_resource.description": ["resource_desc", "os_type"],
+            "EAV:AgentVersion": "agent_ver",
+        }))
+
+        result = await _resolve_unmatched_via_llm(
+            llm=mock_llm,
+            column_mapping=column_mapping,
+            unresolved_fields=["업무내용", "에이전트버전"],
+            result_keys=RESULT_KEYS,
+        )
+
+        assert result == {"에이전트버전": "agent_ver"}

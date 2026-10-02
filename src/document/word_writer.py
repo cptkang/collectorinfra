@@ -29,6 +29,7 @@ def fill_word_template(
     column_mapping: dict[str, Optional[str]],
     rows: list[dict[str, Any]],
     single_row: dict[str, Any] | None = None,
+    literal_values: dict[str, str] | None = None,
 ) -> bytes:
     """Word 양식에 조회 결과를 채워넣는다.
 
@@ -38,6 +39,8 @@ def fill_word_template(
         column_mapping: 필드-컬럼 매핑 (field_mapper 출력)
         rows: 조회 결과 행 목록 (표 채우기용)
         single_row: 단일 행 데이터 (플레이스홀더 치환용, 없으면 rows[0] 사용)
+        literal_values: 본문 자리 표시 상수 {자리 표시명: 값} — 조회 행에 값이 없을 때만 쓴다
+            (`resolve_placeholder_literals` · D-151 역질문 답변)
 
     Returns:
         데이터가 채워진 Word 파일 바이너리
@@ -51,7 +54,10 @@ def fill_word_template(
         raise ValueError(f"Word 파일을 읽을 수 없습니다: {e}") from e
 
     # 단일 행 데이터 결정
-    fill_row = single_row or (rows[0] if rows else {})
+    fill_row = dict(single_row or (rows[0] if rows else {}))
+    for name, value in (literal_values or {}).items():
+        if fill_row.get(name) in (None, ""):
+            fill_row[name] = value
 
     # 1. 본문 플레이스홀더 치환
     _replace_paragraph_placeholders(doc, column_mapping, fill_row)
@@ -67,6 +73,38 @@ def fill_word_template(
 
     logger.info("Word 파일 생성 완료: %d건 데이터 채움", len(rows))
     return output.getvalue()
+
+
+# 행 수로 채우는 자리 표시 — 이름이 개수 명사로 끝나고 매핑·조회값이 없을 때(예: {{서버수}}).
+_COUNT_SUFFIXES = ("건수", "개수", "대수", "수")
+
+
+def resolve_placeholder_literals(
+    placeholders: list[str],
+    column_mapping: dict[str, Optional[str]],
+    rows: list[dict[str, Any]],
+    user_query: str,
+) -> dict[str, str]:
+    """매핑되지 않은 본문 자리 표시의 값을 결정적으로 정한다(LLM 0 · plans/116 §10.3).
+
+    우선순위: ①질의에 명시한 값(「부서는 인프라운영팀」·「부서: X」) ②개수 명사로 끝나는
+    이름이면 결과 행 수. 둘 다 아니면 넣지 않는다(빈칸 유지 — 값을 지어내지 않는다).
+    매핑된 자리 표시는 조회 값을 쓰므로 건드리지 않는다.
+    """
+    out: dict[str, str] = {}
+    for raw in placeholders or []:
+        name = str(raw).strip()
+        if not name or column_mapping.get(name):
+            continue
+        m = re.search(
+            re.escape(name) + r"\s*(?:은|는|이|가|:|=)\s*[\"'「『]?([^\s,.\"'」』]+)",
+            user_query or "",
+        )
+        if m:
+            out[name] = m.group(1)
+        elif name.endswith(_COUNT_SUFFIXES) and len(name) > 1:
+            out[name] = str(len(rows))
+    return out
 
 
 def _replace_paragraph_placeholders(

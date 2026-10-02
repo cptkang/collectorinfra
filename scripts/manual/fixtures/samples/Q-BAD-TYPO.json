@@ -1,0 +1,42 @@
+{
+ "id": "Q-BAD-TYPO",
+ "turns": [
+  {
+   "query": "cocm-hdkapp1 서버의 OS",
+   "file": null,
+   "key": "b306ef9077569872",
+   "elapsed_s": 402.2,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조건에 해당하는 서버 데이터가 없습니다.\n\n다음과 같은 방법을 시도해보세요:\n- 필터 조건을 완화해보세요 (예: 임계값 낮추기)\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 0,
+    "executed_sql": "-- [t1]\n-- cocm-hdkapp1 서버의 OS 정보 조회\n-- 폴스타(로컬 샌드박스) 전용: 서버 식별 필터는 장비명(r.name) 사용, 호스트명(r.hostname)은 출력용만 사용\nSELECT\n    COALESCE(c.platform_resource_id, c.id) AS id,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN COALESCE(c.name, c.hostname) END) AS server_name,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname END) AS hostname,\n    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSType' THEN cc.stringvalue_short END) AS ostype,\n    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSVerson' THEN cc.stringvalue_short END) AS osversion,\n    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'PatchLevel' THEN cc.stringvalue_short END) AS os_patchlevel\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc\n       ON c.resource_conf_id = cc.configuration_id\nWHERE c.resource_type = 'server.Server'\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nHAVING MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname END) = 'cocm-hdkapp1'\nLIMIT 1000;\n\n-- [t2]\n-- cocm-hdkapp1 호스트명 필터로 OS 정보 조회\n-- 폴스타(로컬 샌드박스) 규칙: 호스트명으로 필터링할 경우에만 cmm_resource.hostname 을 WHERE 조건에 사용\n-- OS 정보는 EAV(core_config_prop) 속성 'OSType' 및 'OSVerson' 을 조회\nSELECT\n    COALESCE(c.platform_resource_id, c.id) AS id,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN COALESCE(c.name, c.hostname) END) AS server_name,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname END) AS hostname,\n    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSType' THEN cc.stringvalue_short END) AS ostype,\n    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSVerson' THEN cc.stringvalue_short END) AS osversion\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc\n    ON c.resource_conf_id = cc.configuration_id\nWHERE c.resource_type = 'server.Server'\n  AND c.dtime IS NULL\n  AND c.hostname = 'cocm-hdkapp1'  -- 사용자 질의가 호스트명 필터이므로 WHERE 에 직접 적용\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nLIMIT 1000;\n\n-- [t3]\n-- cocm-hdkapp1 호스트명 필터로 서버의 OS 정보 조회\n-- 폴스타(로컬 샌드박스) 규칙: 호스트명으로 필터링할 경우 cmm_resource.hostname 컬럼 사용\n-- OS 정보 (OSType, OSVerson, PatchLevel) 는 EAV(core_config_prop) 속성으로 조회\nSELECT\n    COALESCE(c.platform_resource_id, c.id) AS id,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN COALESCE(c.name, c.hostname) END) AS server_name,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname END) AS hostname,\n    MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,\n    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSType' THEN cc.stringvalue_short END) AS ostype,\n    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSVerson' THEN cc.stringvalue_short END) AS osversion,\n    MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'PatchLevel' THEN cc.stringvalue_short END) AS os_patchlevel\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc\n    ON c.resource_conf_id = cc.configuration_id\nWHERE c.resource_type = 'server.Server'\n  AND c.dtime IS NULL\n  AND c.hostname = 'cocm-hdkapp1'\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nLIMIT 1000;",
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": []
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-28T08:11:56",
+ "review": {
+  "verdict": "ok",
+  "notes": "재녹화 — 틀린 이름은 결과 없음 + 대안 안내. 종전 결함(LIMIT 문법 오류 노출) 해소",
+  "at": "2026-09-28"
+ }
+}

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from src.api.dependencies import get_current_user, require_user
 from src.api.schemas import (
@@ -21,7 +21,9 @@ from src.api.schemas import (
     UserLoginResponse,
     UserRegisterRequest,
 )
+from src.domain.audit import AuditEvent
 from src.domain.user import User, UserRole, UserStatus
+from src.routing.db_authz import parse_allowed_db_ids, parse_allowed_sources
 from src.utils.password import hash_password, verify_password
 
 logger = logging.getLogger(__name__)
@@ -50,7 +52,8 @@ def _create_user_token(user_id: str, username: str, role: str, config) -> tuple[
         "iat": datetime.now(timezone.utc),
         "type": "user",
     }
-    token = jwt.encode(payload, config.admin.jwt_secret, algorithm="HS256")
+    # D-070: 사용자 토큰은 auth.jwt_secret으로 서명(운영자 시크릿과 분리)
+    token = jwt.encode(payload, config.auth.jwt_secret, algorithm="HS256")
     return token, expires_in
 
 
@@ -90,6 +93,37 @@ async def _log_audit_event(request: Request, event: dict) -> None:
             logger.error("감사 로그 기록 실패: %s", e)
 
 
+async def _audit_login_failure(
+    request: Request, user_id: str, fail_count: int, locked: bool
+) -> None:
+    """비밀번호 불일치를 감사에 남기고, 연속 실패가 임계에 닿으면 보안 경고를 남긴다.
+
+    연속 실패 수는 계정 잠금 카운터(`login_fail_count`)를 그대로 쓴다. 이 카운터는 로그인
+    성공·관리자 잠금 해제·잠금 만료 때 0으로 돌아가므로 누적 실패가 아니라 "연속" 실패다.
+    잠금과 경보가 같은 수를 세므로 두 임계를 같은 값으로 두면 잠김과 경보가 함께 남는다.
+    """
+    await _log_audit_event(request, {
+        "event_type": AuditEvent.LOGIN_FAIL.value,
+        "user_id": user_id,
+        "detail": {"fail_count": fail_count, "locked": locked},
+        "ip_address": _get_client_ip(request),
+    })
+
+    audit_service = getattr(request.app.state, "audit_service", None)
+    if not audit_service:
+        return
+    try:
+        await audit_service.alert_on_login_failures(
+            user_id=user_id,
+            client_ip=_get_client_ip(request),
+            consecutive_failures=fail_count,
+            locked=locked,
+            request_id=getattr(request.state, "request_id", None),
+        )
+    except Exception as e:
+        logger.error("로그인 실패 경고 기록 실패: %s", e)
+
+
 @router.get(
     "/auth/status",
     response_model=AuthStatusResponse,
@@ -112,6 +146,7 @@ async def auth_status(
             role=current_user.get("role", "user"),
             department=current_user.get("department"),
             allowed_db_ids=current_user.get("allowed_db_ids"),
+            alarm_zones=current_user.get("alarm_zones"),
         )
     elif current_user and current_user.get("sub") == "anonymous" and not config.auth.enabled:
         user_info = UserInfoResponse(
@@ -172,14 +207,21 @@ async def register(
         role=UserRole.USER,
         status=UserStatus.ACTIVE,
         department=body.department,
-        allowed_db_ids=None,
+        # 신규 가입자의 조회 가능 DB는 `AUTH_DEFAULT_ALLOWED_DB_IDS`로 정한다
+        # (plans/104 C-4 · D-232).
+        # 빈 설정이면 `[]` — 아무 DB도 열리지 않고 관리자가 명시 부여한다(안전 실패).
+        # 기존 사용자의 `None`(전체 허용)은 건드리지 않는다.
+        allowed_db_ids=parse_allowed_db_ids(config.auth.default_allowed_db_ids),
+        # 관측 소스(APM 등)도 같은 규칙 — `AUTH_DEFAULT_ALLOWED_SOURCES`
+        # (빈 값이면 없음 · plans/125 A-7)
+        allowed_sources=parse_allowed_sources(config.auth.default_allowed_sources),
         auth_method="local",
     )
     await user_repo.create(user)
 
     # 감사 로그
     await _log_audit_event(request, {
-        "event_type": "register",
+        "event_type": AuditEvent.REGISTER.value,
         "user_id": body.user_id,
         "detail": {"username": body.username, "department": body.department},
         "ip_address": _get_client_ip(request),
@@ -205,6 +247,7 @@ async def register(
 async def login(
     request: Request,
     body: UserLoginRequest,
+    response: Response,
 ) -> UserLoginResponse:
     """사용자 로그인.
 
@@ -248,6 +291,8 @@ async def login(
             user.status = UserStatus.LOCKED
             await user_repo.update(user)
             logger.warning("계정 잠금: %s (로그인 %d회 실패)", body.user_id, user.login_fail_count)
+            # 잠그는 실패도 감사에 남긴다 — 연속 실패 경보가 바로 이 시점에 판정된다
+            await _audit_login_failure(request, body.user_id, user.login_fail_count, locked=True)
             raise HTTPException(
                 status_code=423,
                 detail=f"로그인 {config.auth.max_login_attempts}회 실패로 계정이 잠겼습니다.",
@@ -256,12 +301,7 @@ async def login(
         await user_repo.update(user)
 
         # 감사 로그
-        await _log_audit_event(request, {
-            "event_type": "login_fail",
-            "user_id": body.user_id,
-            "detail": {"fail_count": user.login_fail_count},
-            "ip_address": _get_client_ip(request),
-        })
+        await _audit_login_failure(request, body.user_id, user.login_fail_count, locked=False)
 
         raise HTTPException(status_code=401, detail="ID 또는 비밀번호가 올바르지 않습니다.")
 
@@ -274,9 +314,21 @@ async def login(
         user.user_id, user.username, user.role.value, config
     )
 
+    # Plan 59 §17: 알림 SSE(EventSource)는 Authorization 헤더를 못 실으므로 HttpOnly 쿠키로도
+    # 토큰을 세팅한다. secure=False는 내부망 HTTP 배포 호환용(HTTPS 배포 시 True 권장).
+    response.set_cookie(
+        key="user_token",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=expires_in,
+        path="/",
+    )
+
     # 감사 로그
     await _log_audit_event(request, {
-        "event_type": "login",
+        "event_type": AuditEvent.USER_LOGIN.value,
         "user_id": body.user_id,
         "detail": {"role": user.role.value},
         "ip_address": _get_client_ip(request),
@@ -305,15 +357,17 @@ async def login(
 )
 async def logout(
     request: Request,
+    response: Response,
     current_user: dict = Depends(require_user),
 ) -> dict:
-    """로그아웃. 감사 로그를 기록한다.
+    """로그아웃. 감사 로그를 기록하고 SSE 인증 쿠키를 제거한다.
 
     Phase 1은 클라이언트 측 토큰 삭제 + DB 감사 로그 기록.
     향후 Redis 블랙리스트 확장 가능.
     """
+    response.delete_cookie(key="user_token", path="/")
     await _log_audit_event(request, {
-        "event_type": "logout",
+        "event_type": AuditEvent.USER_LOGOUT.value,
         "user_id": current_user.get("sub"),
         "detail": {},
         "ip_address": _get_client_ip(request),
@@ -336,6 +390,7 @@ async def get_me(
         role=current_user.get("role", "user"),
         department=current_user.get("department"),
         allowed_db_ids=current_user.get("allowed_db_ids"),
+        alarm_zones=current_user.get("alarm_zones"),
     )
 
 
@@ -374,7 +429,7 @@ async def change_password(
 
     # 감사 로그
     await _log_audit_event(request, {
-        "event_type": "password_change",
+        "event_type": AuditEvent.PASSWORD_CHANGE.value,
         "user_id": current_user["sub"],
         "detail": {},
         "ip_address": _get_client_ip(request),

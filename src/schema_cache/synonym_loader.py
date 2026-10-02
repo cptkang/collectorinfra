@@ -538,3 +538,189 @@ class SynonymLoader:
             result.errors.append(str(e))
             result.message = f"데이터 처리 실패: {e}"
             return result
+
+    # =========================================================================
+    # per-DB 시드 파일 로드/내보내기 (Plan 61 트랙 B 후속 — 시딩·마이그레이션)
+    # docs/synonym_seed_migration_review.md 설계. 시드 파일은
+    # scripts/synonym_seeds.py derive 가 시맨틱 모델·프로필에서 결정적으로 생성한다.
+    # =========================================================================
+
+    async def load_seed_yaml(
+        self,
+        file_path: str,
+        merge: bool = True,
+    ) -> SynonymLoadResult:
+        """per-DB 시드 파일(config/synonym_seeds/{db_id}.yaml)을 Redis에 로드한다.
+
+        시드 스키마:
+            db_id: polestar_cm_gp            # 필수
+            source_tag: operator             # E5-3 메타 source (감쇠 보호 — llm만 감쇠됨)
+            column_synonyms: {schema.table.column: [words]}   # per-DB 사전(E5-1 게이트 참여)
+            eav_names: {AttrName: [words]}                    # synonyms:eav_names 병합
+            column_values: {column: {word: {op, value}}}      # synonyms:column_values 병합
+
+        병합 정책(멱등·무손실):
+        - column_synonyms: ``add_synonyms``(단어 합집합, source 태깅) — 기존
+          LLM 발견·운영자 등록 단어를 절대 삭제하지 않는다. 재실행 안전.
+        - eav_names/column_values: 기존 값을 읽어 **합집합 후 저장**(HSET은
+          field 단위 덮어쓰기이므로 read-union-save로 무손실 보장).
+        - merge=False여도 삭제는 하지 않는다(시드는 추가 전용 — 사전 정리는
+          E5-3 감쇠/운영자 삭제 경로 소관).
+
+        Args:
+            file_path: 시드 YAML 경로
+            merge: 병합 모드(현재 추가 전용이므로 동작 동일 — 시그니처 일관용)
+
+        Returns:
+            로드 결과(columns_loaded=column_synonyms 키 수)
+        """
+        try:
+            import yaml
+        except ImportError:
+            return SynonymLoadResult(
+                status="error", file_path=file_path,
+                message="PyYAML이 설치되지 않았습니다.", errors=["PyYAML 미설치"],
+            )
+
+        result = SynonymLoadResult(
+            status="success", file_path=file_path, merge_mode=True
+        )
+        try:
+            resolved = Path(file_path).resolve()
+            if not resolved.exists():
+                result.status = "error"
+                result.message = f"파일을 찾을 수 없습니다: {file_path}"
+                result.errors.append(result.message)
+                return result
+
+            with open(resolved, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+
+            db_id = data.get("db_id")
+            if not db_id:
+                result.status = "error"
+                result.message = "시드 파일에 db_id가 없습니다."
+                result.errors.append(result.message)
+                return result
+
+            source_tag = str(data.get("source_tag") or "operator")
+
+            # 1. per-DB column_synonyms — 합집합 병합 + source 태깅(E5-3 감쇠 보호)
+            for column_key, words in (data.get("column_synonyms") or {}).items():
+                clean = [w.strip() for w in (words or []) if w and len(w.strip()) >= 2]
+                if not clean:
+                    continue
+                ok = await self._redis_cache.add_synonyms(
+                    db_id, column_key, clean, source=source_tag
+                )
+                if ok:
+                    result.columns_loaded += 1
+                    result.total_words += len(clean)
+                else:
+                    result.errors.append(f"column_synonyms 저장 실패: {column_key}")
+
+            # 2. eav_names — read-union-save (무손실)
+            seed_eav = data.get("eav_names") or {}
+            if seed_eav:
+                existing = await self._redis_cache.load_eav_name_synonyms()
+                merged: dict[str, list[str]] = {}
+                for name, words in seed_eav.items():
+                    clean = [w.strip() for w in (words or []) if w and len(w.strip()) >= 2]
+                    if not clean:
+                        continue
+                    union = list(dict.fromkeys((existing.get(name) or []) + clean))
+                    merged[name] = union
+                    # 기존 글로벌 로더와 동일하게 통합 비교 인프라 공유
+                    await self._redis_cache.add_global_synonym(name, clean)
+                if merged:
+                    await self._redis_cache.save_eav_name_synonyms(merged)
+                    result.eav_names_loaded = len(merged)
+                    result.total_words += sum(len(v) for v in merged.values())
+
+            # 3. column_values — read-union-save (word 단위 병합, 기존 값 우선)
+            seed_cv = data.get("column_values") or {}
+            if seed_cv:
+                existing_cv = await self._redis_cache.load_column_value_synonyms()
+                merged_cv: dict[str, dict[str, dict]] = {}
+                for col, value_map in seed_cv.items():
+                    key = col.upper()
+                    cur = dict(existing_cv.get(key) or {})
+                    for word, spec in (value_map or {}).items():
+                        cur.setdefault(word, spec)  # 기존 등록 우선(시드는 보충)
+                    merged_cv[key] = cur
+                if merged_cv:
+                    await self._redis_cache.save_column_value_synonyms(merged_cv)
+                    result.column_values_loaded = len(merged_cv)
+
+            result.message = (
+                f"시드 로드 완료(db={db_id}): columns={result.columns_loaded}, "
+                f"eav_names={result.eav_names_loaded}, "
+                f"column_values={result.column_values_loaded}, "
+                f"total_words={result.total_words}"
+            )
+            if result.errors:
+                result.status = "partial"
+            logger.info("per-DB 시드 로드: %s (%s)", file_path, result.message)
+            return result
+
+        except Exception as e:
+            logger.error("per-DB 시드 로드 실패 (%s): %s", file_path, e)
+            result.status = "error"
+            result.errors.append(str(e))
+            result.message = f"시드 로드 실패: {e}"
+            return result
+
+    async def export_seed_yaml(self, db_id: str, output_path: str) -> bool:
+        """운영 Redis의 per-DB 사전을 시드 형식 YAML로 내보낸다(마이그레이션용).
+
+        운영 중 LLM 발견→사람 승인으로 누적된 사전을 파일로 내려 다른 환경
+        (폐쇄망 프로덕션·신규 DB 편입)에 load_seed_yaml로 반입하는 왕복을 완성한다.
+        내보내는 범위: per-DB column_synonyms + 글로벌 eav_names/column_values 스냅샷.
+
+        Args:
+            db_id: DB 식별자
+            output_path: 출력 YAML 경로
+
+        Returns:
+            성공 여부
+        """
+        try:
+            import yaml
+        except ImportError:
+            logger.error("PyYAML이 설치되지 않았습니다: pip install pyyaml")
+            return False
+
+        try:
+            column_synonyms = await self._redis_cache.load_synonyms(db_id)
+            eav_names = await self._redis_cache.load_eav_name_synonyms()
+            column_values = await self._redis_cache.load_column_value_synonyms()
+
+            payload = {
+                "version": "1.0",
+                "db_id": db_id,
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "source_tag": "operator",
+                "column_synonyms": {
+                    k: sorted(v) for k, v in sorted(column_synonyms.items())
+                },
+                "eav_names": {k: sorted(v) for k, v in sorted(eav_names.items())},
+                "column_values": {
+                    k: dict(sorted(v.items()))
+                    for k, v in sorted(column_values.items())
+                },
+            }
+            out = Path(output_path)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with open(out, "w", encoding="utf-8") as f:
+                yaml.safe_dump(
+                    payload, f, allow_unicode=True, sort_keys=False,
+                    default_flow_style=False,
+                )
+            logger.info(
+                "per-DB 시드 내보내기 완료: db=%s → %s (columns=%d)",
+                db_id, output_path, len(column_synonyms),
+            )
+            return True
+        except Exception as e:
+            logger.error("per-DB 시드 내보내기 실패 (db=%s): %s", db_id, e)
+            return False

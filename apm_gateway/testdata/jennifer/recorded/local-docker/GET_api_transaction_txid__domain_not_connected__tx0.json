@@ -1,0 +1,31 @@
+{
+  "fixture_version": 1,
+  "source": "local-docker",
+  "jennifer_version": "5.7.0.1",
+  "recorded_at": "2026-09-29T12:53:40+0900",
+  "request": {
+    "method": "GET",
+    "template": "/api/transaction/txid",
+    "path": "/api/transaction/txid",
+    "query": {
+      "domain_id": "1000",
+      "txid": "1",
+      "time": "1790654020545"
+    },
+    "accept": "application/json"
+  },
+  "response": {
+    "status": 500,
+    "content_type": "application/json;charset=utf-8",
+    "body_json": {
+      "exception": {
+        "message": "1000 Domain is not connected"
+      }
+    }
+  },
+  "variant": "domain_not_connected",
+  "label": "tx0",
+  "masking": {
+    "masked_values": 0
+  }
+}

@@ -17,10 +17,24 @@ from langchain_core.language_models import BaseChatModel
 from src.config import AppConfig, load_config
 from src.document.field_mapper import extract_field_names, perform_3step_mapping
 from src.llm import create_llm
-from src.routing.domain_config import get_domain_by_id
+from src.routing.location_hints import resolve_priority_db_ids as resolve_priority_db_ids
 from src.state import AgentState
 
 logger = logging.getLogger(__name__)
+
+# 이번 턴에 양식(template_structure)이 없으면 폼필 매핑 산출물이 존재해선 안 된다(D-064).
+# 체크포인터가 직전 폼업로드 턴의 매핑을 복원해 잔존시키면 intent_planner가 옛 DB로
+# 고정된다([intent_planner] mapped_db_ids 단축). 스킵 경로에서 명시적으로 비워, 진입 경로와
+# 무관하게 "template 없음 → 매핑 없음" 불변식을 보장한다.
+# 단, pending_synonym_registrations 는 멀티턴 유사어 등록 흐름의 신호이므로 여기서 비우지 않는다.
+_CLEARED_MAPPING_FIELDS: dict[str, None] = {
+    "column_mapping": None,
+    "db_column_mapping": None,
+    "mapping_sources": None,
+    "mapped_db_ids": None,
+    "llm_inference_details": None,
+    "mapping_report_md": None,
+}
 
 
 async def field_mapper(
@@ -50,19 +64,57 @@ async def field_mapper(
     # 유사어 등록 요청 처리 (멀티턴 대화에서 이전 상태 참조)
     parsed = state.get("parsed_requirements", {})
     synonym_reg = parsed.get("synonym_registration")
-    if synonym_reg:
-        reg_result = await _handle_synonym_registration(
-            state, synonym_reg, app_config
+    # 결정적 가드(D-252 부기): 등록 대기 목록도 없고 질의에 「등록」도 없으면 LLM 의 등록 신호를
+    # 버린다. 양식 첨부 질의(「첨부한 양식을 채워줘」)를 입력 분석 LLM 이 {mode: all} 로 오분류해
+    # 「등록할 유사어 매핑이 없습니다」로 양식 채우기가 시작 전에 종결됐다
+    # (2026-09-23 로컬 MLX 실측).
+    if (
+        synonym_reg
+        and not state.get("pending_synonym_registrations")
+        and "등록" not in (state.get("user_query") or "")
+    ):
+        logger.warning(
+            "synonym_registration 신호 무시 — 대기 목록 없음·질의에 「등록」 없음"
+            "(LLM 오분류 가드): %r",
+            (state.get("user_query") or "")[:80],
         )
-        if reg_result:
-            return reg_result
+        synonym_reg = None
+    if synonym_reg:
+        # 신규 동의어 집합 선언("vcore, cpu, core은 동의어이다. 등록하라")은 이 분기의
+        # 소관이 아니다 — pending 없이 가로채면 "등록할 매핑 없음"으로 오종결되어
+        # cache_management의 결정적 셋 파서(D-142)에 도달하지 못한다(2026-09-01 라이브
+        # 실측 A-10). pending이 있거나 셋 선언이 아닐 때만 기존 등록 흐름을 처리한다.
+        from src.utils.synonym_set_parser import parse_synonym_set
+
+        if state.get("pending_synonym_registrations") or not parse_synonym_set(
+            state.get("user_query", "")
+        ):
+            reg_result = await _handle_synonym_registration(
+                state, synonym_reg, app_config
+            )
+            if reg_result:
+                return reg_result
 
     template = state.get("template_structure")
     if not template:
-        # 텍스트 출력 모드: 매핑 불필요, 스킵
+        # 텍스트 출력 모드: 매핑 불필요, 스킵. 잔존 매핑 산출물 정리(D-064).
         logger.debug("template_structure 없음, field_mapper 스킵")
         return {
             "current_node": "field_mapper",
+            **_CLEARED_MAPPING_FIELDS,
+        }
+
+    # 폼필 확인 이력 조회·삭제 턴(D-151, FIX-24): intent_planner ②.7이 결정적으로
+    # 단락하므로 매핑 산출물이 전부 불필요하다. 여기서 전체 매핑을 수행하면 —
+    # 이력 명령 질의에는 위치어가 없어 priority_db_ids가 비고 → 전 DB 유사어가 LLM
+    # 프롬프트에 실려 413(FabriX 95K) 재시도로 수십 초 낭비(라이브 실측 2026-08-03).
+    from src.utils.query_gen_common import is_form_memory_command
+
+    if is_form_memory_command(state.get("user_query", "")):
+        logger.info("field_mapper: 폼필 확인 이력 명령 감지 — 매핑 스킵(FIX-24, LLM 미호출)")
+        return {
+            "current_node": "field_mapper",
+            **_CLEARED_MAPPING_FIELDS,
         }
 
     if app_config is None:
@@ -76,6 +128,7 @@ async def field_mapper(
         logger.warning("양식에서 필드명을 추출할 수 없습니다. field_mapper 스킵")
         return {
             "current_node": "field_mapper",
+            **_CLEARED_MAPPING_FIELDS,
         }
 
     # 2. 파싱 결과에서 매핑 힌트와 대상 DB 추출
@@ -86,7 +139,8 @@ async def field_mapper(
     # 3. Redis 캐시에서 전체 DB의 synonyms/descriptions 로드
     active_db_ids = _get_active_db_ids(app_config)
     all_db_synonyms, all_db_descriptions, priority_db_ids, eav_name_synonyms, global_synonyms_raw, cache_mgr = await _load_db_cache_data(
-        app_config, active_db_ids, target_db_hints
+        app_config, active_db_ids, target_db_hints,
+        selected_db_ids=state.get("selected_db_ids"),
     )
 
     # 4. 3단계 매핑 수행 (cache_manager를 전달하여 LLM 매핑 즉시 Redis 등록)
@@ -103,12 +157,16 @@ async def field_mapper(
         global_synonyms=global_synonyms_raw,
     )
 
+    # 4.5. 다중 위치(공동존=김포+여의도) 대응 — 전 priority DB 조회.
+    _replicate_mapping_for_multi_location(mapping_result, priority_db_ids)
+
     # 5. LLM 추론 매핑에 대한 pending_synonym_registrations 생성
     pending = _build_pending_registrations(mapping_result)
 
     if llm_inference_details:
+        # 쓰기 가드(plans/120 F-4)가 막은 매핑은 등록되지 않는다 — 실제 건수·차단 사유는 등록 로그.
         logger.info(
-            "LLM 추론 매핑 %d건이 Redis에 즉시 등록되었습니다.",
+            "LLM 추론 매핑 %d건 — Redis 즉시 등록 시도(실제 등록·차단은 등록 로그 참조).",
             len(llm_inference_details),
         )
 
@@ -145,6 +203,33 @@ async def field_mapper(
     }
 
 
+def _replicate_mapping_for_multi_location(
+    mapping_result: Any,
+    priority_db_ids: list[str],
+) -> None:
+    """다중 위치(공동존=김포+여의도)일 때 매핑을 전 priority DB에 복제한다(in-place).
+
+    priority_db_ids가 여러 폴스타 DB를 포괄하면(공동존→[gp,yd]), 스키마가 동일해 각 필드가 첫
+    priority DB(gp)에만 매핑돼 mapped_db_ids=[gp]가 된다. 그러나 데이터(김포/여의도 서버)는 다르므로
+    둘 다 조회해야 한다. 매핑(union)을 모든 priority DB에 복제하고 mapped_db_ids를 priority 전체로
+    확장한다. 스키마가 다른 DB로 잘못 복제돼도 multi_db_executor의 테이블 존재 필터가 걸러낸다.
+
+    단일 위치(priority 1개)거나 매핑이 없으면 아무것도 하지 않는다.
+    """
+    if len(priority_db_ids) <= 1 or not mapping_result.db_column_mapping:
+        return
+    union_mapping: dict[str, str] = {}
+    for db_map in mapping_result.db_column_mapping.values():
+        union_mapping.update(db_map)
+    for db_id in priority_db_ids:
+        mapping_result.db_column_mapping[db_id] = dict(union_mapping)
+    mapping_result.mapped_db_ids = list(priority_db_ids)
+    logger.info(
+        "다중 위치 감지(priority=%s) → 매핑을 전 priority DB에 복제하여 모두 조회",
+        priority_db_ids,
+    )
+
+
 def _get_active_db_ids(app_config: AppConfig) -> list[str]:
     """활성 DB ID 목록을 반환한다.
 
@@ -160,73 +245,48 @@ def _get_active_db_ids(app_config: AppConfig) -> list[str]:
         return []
 
 
-def _resolve_priority_db_ids(
+# 결정적 위치→DB 해소 단일 출처 — 폼필(field_mapper)·텍스트 경로
+# (subagents._apply_turn_hint_pinning)·3단 라우터(semantic_router)가 같은 로직을 공유한다
+# (경로별 사본 금지). 본문은 3단 라우터가
+# infrastructure 계층이라 `src/routing/location_hints.py`로 옮겼다(plans/113 F-1 — 계층 규칙).
+# 두 이름(`_resolve_priority_db_ids`·`resolve_priority_db_ids`)은 기존 소비처를 위해 재노출한다.
+_resolve_priority_db_ids = resolve_priority_db_ids
+
+
+def _resolve_mapping_priority_db_ids(
     target_db_hints: list[str],
     active_db_ids: list[str],
+    selected_db_ids: list[str] | None,
 ) -> list[str]:
-    """target_db_hints의 DB명/별칭을 active_db_ids에 매핑하여 우선순위 DB ID 목록을 반환한다."""
-    if not target_db_hints:
-        return []
+    """매핑 우선 DB를 이번 턴 대상 DB로 정한다(plans/120 F-3).
 
-    priority_set = set()
-    normalized_hints = [hint.strip().lower() for hint in target_db_hints if hint.strip()]
+    존 선택(`selected_db_ids`)이 있으면 그것이 이번 턴 실행 DB다 — 2단 `intent_planner` ②.5와
+    3단 `semantic_router` 우선순위 2.5가 같은 값으로 DB를 고정한다. 폼필 답변 턴도 라우트가
+    역질문을 낸 런의 확정 존을 이 필드로 복원한다(인가 필터 통과분만). 질의 텍스트 힌트로 정하면
+    실행 DB와 다른 DB의 유사어로 매핑되므로 선택을 텍스트 힌트보다 앞에 둔다.
+    활성 DB 필터는 `semantic_router`와 같다. 선택이 없거나 필터 뒤 비면 종전대로 텍스트 힌트로
+    정한다.
 
-    for db_id in active_db_ids:
-        db_id_lower = db_id.lower()
+    Args:
+        target_db_hints: 프롬프트에서 추출한 대상 DB 힌트
+        active_db_ids: 활성 DB ID 목록
+        selected_db_ids: 이번 턴 존 선택(요청 스코프 · 없으면 None)
 
-        # default polestar DB는 힌트에 특정 지역/존(여의도, 김포, 은행, 레거시)이 명시되어 있을 때 매칭에서 제외
-        if db_id_lower == "polestar":
-            has_specific_region = False
-            for hint in normalized_hints:
-                if any(region in hint for region in ["여의도", "김포", "은행", "레거시"]):
-                    has_specific_region = True
-                    break
-            if has_specific_region:
-                continue
-        elif db_id_lower == "polestar_cm_gp":
-            has_other_region = False
-            for hint in normalized_hints:
-                if any(region in hint for region in ["여의도", "은행", "레거시"]):
-                    has_other_region = True
-                    break
-            if has_other_region:
-                continue
-        elif db_id_lower == "polestar_cm_yd":
-            has_other_region = False
-            for hint in normalized_hints:
-                if any(region in hint for region in ["김포", "은행", "레거시"]):
-                    has_other_region = True
-                    break
-            if has_other_region:
-                continue
-        elif db_id_lower == "polestar_b0":
-            has_other_region = False
-            for hint in normalized_hints:
-                if any(region in hint for region in ["여의도", "김포"]):
-                    has_other_region = True
-                    break
-            if has_other_region:
-                continue
-
-        # 1. raw db_id와 직접 비교 (대소문자 무시)
-        if db_id_lower in normalized_hints:
-            priority_set.add(db_id)
-            continue
-
-        # 2. 별칭(aliases)과 비교 (부분 일치 포함)
-        domain_cfg = get_domain_by_id(db_id)
-        if domain_cfg:
-            for alias in domain_cfg.aliases:
-                alias_lower = alias.strip().lower()
-                for hint in normalized_hints:
-                    if hint == alias_lower or hint in alias_lower or alias_lower in hint:
-                        priority_set.add(db_id)
-                        break
-                if db_id in priority_set:
-                    break
-
-    # 원래 active_db_ids의 순서를 유지하면서 필터링
-    return [db_id for db_id in active_db_ids if db_id in priority_set]
+    Returns:
+        우선순위 DB ID 목록
+    """
+    selected = [
+        d for d in dict.fromkeys(selected_db_ids or [])
+        if not active_db_ids or d in active_db_ids
+    ]
+    if selected:
+        logger.info(
+            "field_mapper: 매핑 우선 DB = 존 선택 %s "
+            "(질의 텍스트 힌트 %s보다 우선 — plans/120 F-3)",
+            selected, target_db_hints,
+        )
+        return selected
+    return _resolve_priority_db_ids(target_db_hints, active_db_ids)
 
 
 def _load_local_yaml_fallback(
@@ -310,16 +370,20 @@ async def _load_db_cache_data(
     app_config: AppConfig,
     active_db_ids: list[str],
     target_db_hints: list[str],
+    *,
+    selected_db_ids: list[str] | None = None,
 ) -> tuple[dict[str, dict[str, list[str]]], dict[str, dict[str, str]], list[str], dict[str, list[str]], dict[str, list[str]], Any]:
     """Redis 캐시에서 전체 DB의 synonyms/descriptions를 로드한다.
 
-    target_db_hints가 있으면 해당 DB를 우선 조회한다.
+    존 선택(selected_db_ids)이 있으면 그 DB를, 없고 target_db_hints가 있으면 해당 DB를
+    우선 조회한다(plans/120 F-3).
     Redis 미존재 시 로컬 YAML 파일에서 로드하여 폴백한다.
 
     Args:
         app_config: 앱 설정
         active_db_ids: 활성 DB ID 목록
         target_db_hints: 프롬프트에서 추출한 대상 DB 힌트
+        selected_db_ids: 이번 턴 존 선택(텍스트 힌트보다 우선)
 
     Returns:
         (all_db_synonyms, all_db_descriptions, priority_db_ids, eav_name_synonyms, global_synonyms, cache_manager)
@@ -328,7 +392,9 @@ async def _load_db_cache_data(
     all_descriptions: dict[str, dict[str, str]] = {}
 
     # 우선순위 DB 결정
-    priority_db_ids = _resolve_priority_db_ids(target_db_hints, active_db_ids)
+    priority_db_ids = _resolve_mapping_priority_db_ids(
+        target_db_hints, active_db_ids, selected_db_ids
+    )
     remaining_db_ids = [db_id for db_id in active_db_ids if db_id not in priority_db_ids]
 
     ordered_db_ids = priority_db_ids + remaining_db_ids
@@ -461,15 +527,17 @@ async def _handle_synonym_registration(
                 continue
 
             try:
-                # 기존 synonyms 로드
-                existing = await cache_mgr.get_synonyms(db_id)
-                col_synonyms = existing.get(column, [])
-
-                # 중복 체크 후 추가
-                if field not in col_synonyms:
-                    col_synonyms.append(field)
-                    existing[column] = col_synonyms
-                    await cache_mgr.save_synonyms(db_id, existing)
+                # 사용자가 확정한 단어라 `operator` 태그로 넣는다(plans/132 Y-8). 종전 전체
+                # 재저장은 기본 태그 `llm`이라 다음 LLM 재생성(`llm` 단어 교체)·감쇠 정리에서
+                # 이 단어가 사라졌다. Redis가 없으면(파일 캐시 — 태그 없음) 종전 저장으로 간다.
+                if not await cache_mgr.add_synonyms(db_id, column, [field], source="operator"):
+                    existing = await cache_mgr.get_synonyms(db_id)
+                    col_synonyms = existing.get(column, [])
+                    # 중복 체크 후 추가
+                    if field not in col_synonyms:
+                        col_synonyms.append(field)
+                        existing[column] = col_synonyms
+                        await cache_mgr.save_synonyms(db_id, existing)
 
                 registered_count += 1
                 registered_items.append(

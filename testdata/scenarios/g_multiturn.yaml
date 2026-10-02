@@ -1,0 +1,127 @@
+# 자동 생성 초안 (scripts/scenario/import_docs.py) - plans/94 §3.4
+#
+# expect 는 비어 있고 manual_review 만 들어 있다. 단언으로 옮긴 만큼만 자동 판정
+# 대상이 되며, 옮기지 않은 것은 리포트 9절 '수동 검토'에 계속 남는다.
+# plans 필드는 군 단위 기본값이다 - 시나리오별로 정확히 좁히는 것이 사람의 일이다.
+version: 1
+group:
+  id: G
+  name: "멀티턴 - 지시어/승계"
+  latency_target_ms: 30000
+  policy_confirmed: false
+  source: "docs/29"
+scenarios:
+  - id: G-01
+    plans: [50]
+    title: "cocm-hdkapp01 서버의 OS 확인"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "cocm-hdkapp01 서버의 OS 확인"
+        expect:
+          status: completed
+          # plans/120 U-1 - 장비명(`name`) 필터로 본다. B-03 주석 참조.
+          sql_must_match: ["(?i)\\bname\\b(?:\\s+END)?\\s*\\)?\\s*(?:=|\\bIN\\s*\\()\\s*'cocm-hdkapp01'",
+                           "(?i)cocm-hdkapp01"]
+          row_count_total: {eq: 1}
+      - send:
+          query: "해당 서버의 최근 1개월 CPU 사용률 평균/최대"
+        expect:
+          status: completed
+          sql_must_match: ["(?i)cocm-hdkapp01", "(?i)cmm_metric_stat_"]
+      - send:
+          query: "네 그럼 메모리도 보여줘"
+        expect:
+          status: completed
+          sql_must_match: ["(?i)cocm-hdkapp01"]
+      - send:
+          query: "해당 서버 프로세스 보여줘"
+        expect:
+          status: completed
+          # plans/122 A-1 - 승계 대상 = 앞 턴의 스레드 DB 범위. 위치어가 없어 t1~t3 은 3개 DB 로 팬아웃하고
+          #   (세 run 20260922-093837 · 20260923-103638 · 20260923-140539 의 2단 행 전부 db_ids 3개), 프로세스
+          #   턴은 SQL 이 없어 `db_ids` 는 스트림 `done.db_scope` 에서만 온다(plans/120 S-1 뒤 전체 상태 ·
+          #   sticky 승계 src/routing/db_scope.py:88-97). 과거 run 은 선행 턴 실패로 이 턴을 관측한 적이
+          #   없다 - R-2 에서 관측값을 확인한다. 원 수동 문구: "프로세스 조회가 대상 DB 를 승계했는지 —
+          #   프로세스는 SQL 경로가 아니다"
+          db_ids: ["polestar_b0", "polestar_cm_gp", "polestar_cm_yd"]
+      - send:
+          query: "지난 한 달 동안 해당 서버의 알람을 분석해줘"
+        expect:
+          status: completed
+          sql_must_match: ["(?i)\\bcmm_alarm\\w*\\b", "(?i)cocm-hdkapp01"]
+    teardown: [drop_thread]
+  - id: G-02
+    plans: [50]
+    title: "CPU 사용률 상위 3대 서버"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "CPU 사용률 상위 3대 서버"
+        expect:
+          status: completed
+          # plans/122 A-5 - 방언 중립. 원식: ["(?i)\\blimit\\s+3\\b"]
+          sql_must_match: ["(?i)\\blimit\\s+3\\b|\\bfetch\\s+first\\s+3\\s+rows\\b"]
+          row_count: {eq: 3}
+      # 선행 턴 3대로 좁혔는지를 **구문 형태가 아니라 결과**로 본다(plans/114 M-6 · H-8).
+      # run 20260922-112010: SQL 이 `IN (…)` 대신 `(name AND hostname AND ip) OR …` 3조로
+      # 같은 3행을 정확히 조회했는데 `\bin\s*\(` 단언에 걸렸다(직전 run pass 는 LLM 변동).
+      # 하네스에 선행 턴 결과를 참조하는 단언이 없어, 동치 형태(IN · = ANY · OR 등치 사슬)를
+      # 모두 받는 정규식 + 행 수 3 으로 판정한다.
+      - send:
+          query: "그 서버들의 제조사와 모델"
+        expect:
+          status: completed
+          sql_must_match: ["(?i)\\bin\\s*\\(|\\bany\\s*\\(|\\bor\\s*\\(?\\s*[\\w.]+\\s*=\\s*'"]
+          row_count: {eq: 3}
+      - send:
+          query: "전체 서버 제조사 분포"
+        expect:
+          status: completed
+          # plans/122 A-5 - 방언 중립. 원식: ["(?i)\\blimit\\s+10000\\b"]
+          sql_must_match: ["(?i)\\blimit\\s+10000\\b|\\bfetch\\s+first\\s+10000\\s+rows\\b"]
+          sql_must_not_match: ["(?i)\\bin\\s*\\("]
+    teardown: [drop_thread]
+  - id: G-03
+    plans: [50]
+    title: "그 장비 정보 (첫 턴, 이전 컨텍스트 없음)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "그 장비 정보 (첫 턴, 이전 컨텍스트 없음)"
+        expect:
+          http_status: 200
+          # plans/122 H-5 - 재질문 또는 안내(에러 아님). `status_any` 만 두면 run 20260923-103638 처럼 문맥 없는
+          #   지시어에 전 서버 1,690행을 덤프한 완료 응답도 합격한다 - 조회를 하지 않았음을 함께 본다(I-04 t3
+          #   선례 · 역질문으로 끝난 턴은 SQL·행이 없어 부정 단언이 통과한다).
+          #   원 수동 문구: "재질문 또는 안내로 처리됐는지(에러 아님)"
+          status_any: [clarification, completed]
+          sql_must_not_match: ["(?i)\\bselect\\b"]
+  - id: G-04
+    plans: [50]
+    title: "프로세스 결과 행이 서버 식별자로 수확되지 않는다"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "cocm-hdkapp01 서버의 프로세스 보여줘"
+        expect:
+          status: completed
+      - send:
+          query: "해당 서버 OS"
+        expect:
+          status: completed
+          # 앞 턴의 프로세스 행(name=mysql 등)이 서버 식별자로 수확되면 안 된다.
+          sql_must_match: ["(?i)cocm-hdkapp01"]
+          sql_must_not_match: ["(?i)\\bmysql\\b"]

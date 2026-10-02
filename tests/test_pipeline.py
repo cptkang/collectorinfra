@@ -17,11 +17,13 @@
 from __future__ import annotations
 
 import json
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from tests.conftest import RUN_E2E
 
 from src.config import (
     AppConfig,
@@ -54,6 +56,7 @@ from src.nodes.query_validator import query_validator
 from src.nodes.result_organizer import result_organizer
 from src.nodes.schema_analyzer import _schema_cache, schema_analyzer
 from src.state import create_initial_state
+from tests.mocks.streaming_llm import attach_astream
 
 
 # ──────────────────────────────────────────────
@@ -159,21 +162,65 @@ def _make_mock_db_client(
 
 
 def _make_mock_llm(responses: list[str]) -> AsyncMock:
-    """순서대로 응답을 반환하는 mock LLM을 생성한다."""
+    """순서대로 응답을 반환하는 mock LLM을 생성한다.
+
+    `ainvoke`와 `astream`이 같은 큐를 공유한다 — output_generator는 astream_text로
+    스트리밍하므로 ainvoke만 대역하면 `async for`가 코루틴을 받아 깨진다(2026-09-21).
+    """
     llm = AsyncMock()
-    side_effects = []
+    pending = []
     for resp in responses:
         msg = MagicMock()
         msg.content = resp
-        side_effects.append(msg)
-    llm.ainvoke = AsyncMock(side_effect=side_effects)
-    return llm
+        pending.append(msg)
+
+    def _next():
+        return pending.pop(0)
+
+    llm.ainvoke = AsyncMock(side_effect=lambda *a, **kw: _next())
+    return attach_astream(llm, _next)
 
 
 @asynccontextmanager
 async def _mock_db_context(client):
     """get_db_client 대체용 async context manager."""
     yield client
+
+
+def _patch_description_llm(run_e2e: bool | None = None):
+    """스키마 캐시 미스 시 자동 실행되는 컬럼 설명 생성의 LLM 획득을 대체한다.
+
+    `cache_manager`는 노드에 주입된 app_config가 아니라 자체 `load_config()`로
+    설정을 재독한 뒤 `create_llm`을 호출한다(실 `.env`의 provider 사용 = 외부 호출).
+    이 경로는 아래 테스트들의 단언 대상이 아니므로 빈 JSON을 돌려주는 stub으로 막는다.
+
+    이중 모드(D-127 · 사용자 확정 2026-07-29): 자동 실행(기본 스위트)만 stub으로
+    대체하고, 사용자 승인 실행(RUN_E2E=1)은 패치 없이 실 LLM 경로를 그대로 태운다.
+
+    `cache_manager`가 함수 안에서 `from src.llm import create_llm`으로 늦게 가져오므로
+    패치 대상은 소비 모듈이 아니라 **정의 모듈**(`src.llm`)이어야 한다.
+    """
+    if run_e2e is None:
+        run_e2e = RUN_E2E
+    if run_e2e:
+        return nullcontext()
+    stub = AsyncMock()
+    message = MagicMock()
+    message.content = "{}"  # extract_json_from_response가 파싱하는 실제 응답 형태
+    stub.ainvoke = AsyncMock(return_value=message)
+    return patch("src.llm.create_llm", return_value=stub)
+
+
+def test_patch_description_llm_dual_mode():
+    """이중 모드 배선: 자동 실행은 create_llm을 패치, 승인(RUN_E2E=1) 실행은 실 경로 유지."""
+    import src.llm as llm_module
+
+    original = llm_module.create_llm
+    with _patch_description_llm(run_e2e=True):
+        assert llm_module.create_llm is original
+    with _patch_description_llm(run_e2e=False):
+        assert llm_module.create_llm is not original
+    assert llm_module.create_llm is original
 
 
 CPU_QUERY_ROWS = [
@@ -231,15 +278,15 @@ class TestHappyPath:
         }
 
         mock_client = _make_mock_db_client(schema, [])
-        # schema_analyzer: table selection(쉼표 구분) + structure analysis(JSON)
+        # schema_analyzer: table selection(쉼표 구분)만 — 질의 경로 구조 분석 LLM 호출은 없다(plans/104)
         schema_llm_responses = [
             "servers, cpu_metrics",
-            json.dumps({"patterns": [], "query_guide": ""}, ensure_ascii=False),
         ]
         mock_llm = _make_mock_llm(schema_llm_responses)
 
         with patch("src.nodes.schema_analyzer.get_db_client", return_value=_mock_db_context(mock_client)):
-            result = await schema_analyzer(state, llm=mock_llm, app_config=cfg)
+            with _patch_description_llm():
+                result = await schema_analyzer(state, llm=mock_llm, app_config=cfg)
         state.update(result)
 
         assert state["current_node"] == "schema_analyzer"
@@ -377,11 +424,17 @@ class TestHappyPath:
         state.update(result)
 
         assert state["current_node"] == "output_generator"
-        assert state["final_response"] == nl_response
+        # plans/119 N-1(D-251 ④): 표는 코드가 렌더하고 LLM 요약은 그 아래에 붙는다.
+        assert state["final_response"] == (
+            "| hostname | usage_pct |\n|---|---|\n"
+            "| web-01 | 85.3% |\n| web-02 | 92.1% |\n| db-01 | 88.7% |\n\n"
+            + nl_response
+        )
         assert state["output_file"] is None
         assert state["error_message"] is None
 
     @pytest.mark.asyncio
+    @pytest.mark.live_llm
     async def test_full_pipeline_end_to_end(self):
         """전체 7단계를 하나의 State로 순차 실행하여 E2E를 검증한다."""
         _schema_cache.invalidate()
@@ -390,10 +443,9 @@ class TestHappyPath:
 
         state = create_initial_state(user_query="CPU 사용률이 80% 이상인 서버 목록을 보여줘")
 
-        # LLM 응답: input_parser(1) + schema_analyzer(최대 3: table selection, structure analysis, retry)
+        # LLM 응답: input_parser(1) + schema_analyzer(table selection 1 — 구조 분석 LLM 호출 없음 · plans/104)
         #           + query_generator(1) + output_generator(1)
-        # schema_analyzer table selection은 쉼표 구분 텍스트 기대 (line 995)
-        # schema_analyzer structure analysis는 JSON 기대
+        # schema_analyzer table selection은 쉼표 구분 텍스트 기대
         llm_responses = [
             # 1. input_parser
             json.dumps({
@@ -403,11 +455,9 @@ class TestHappyPath:
             }, ensure_ascii=False),
             # 2. schema_analyzer: table selection (쉼표 구분)
             "servers, cpu_metrics",
-            # 3. schema_analyzer: structure analysis (JSON)
-            json.dumps({"patterns": [], "query_guide": ""}, ensure_ascii=False),
-            # 4. query_generator
+            # 3. query_generator
             "```sql\nSELECT s.hostname, s.ip_address, c.usage_pct FROM servers s JOIN cpu_metrics c ON s.id = c.server_id WHERE c.usage_pct >= 80 LIMIT 1000;\n```",
-            # 5. output_generator
+            # 4. output_generator
             "CPU 사용률이 80% 이상인 서버 3대를 조회했습니다.",
         ]
         mock_llm = _make_mock_llm(llm_responses)
@@ -687,9 +737,7 @@ class TestEmptyResultFlow:
             }, ensure_ascii=False),
             # 2. schema_analyzer: table selection (쉼표 구분)
             "servers, cpu_metrics",
-            # 3. schema_analyzer: structure analysis (JSON)
-            json.dumps({"patterns": [], "query_guide": ""}, ensure_ascii=False),
-            # 4. query_generator
+            # 3. query_generator
             "```sql\nSELECT s.hostname, c.usage_pct FROM servers s JOIN cpu_metrics c ON s.id = c.server_id WHERE c.usage_pct >= 99 LIMIT 1000;\n```",
         ]
         mock_llm = _make_mock_llm(llm_responses)
@@ -703,7 +751,8 @@ class TestEmptyResultFlow:
         state.update(result)
 
         with patch("src.nodes.schema_analyzer.get_db_client", return_value=_mock_db_context(mock_client)):
-            result = await schema_analyzer(state, llm=mock_llm, app_config=cfg)
+            with _patch_description_llm():
+                result = await schema_analyzer(state, llm=mock_llm, app_config=cfg)
         state.update(result)
 
         result = await query_generator(state, llm=mock_llm, app_config=cfg)

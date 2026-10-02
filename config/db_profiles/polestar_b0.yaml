@@ -17,6 +17,21 @@ patterns:
     lob_value_column: stringvalue
     lob_flag_column: is_lob
 
+    # entity 테이블 직접 칼럼 설명 — 폼필 역질문 드롭다운(build_form_fill_candidates)
+    # 라벨에 병기된다(known_attributes description과 대칭). 칼럼명만으로는 의미를 알 수
+    # 없는 것(name=폴스타 등록명 등)의 사용자 혼동 대응. 여기 없는 칼럼은 이름만 표시.
+    entity_columns:
+      - name: id
+        description: "리소스 고유 ID"
+      - name: name
+        description: "VM명 — 폴스타 등록 이름(서버 식별 대표 칼럼)"
+      - name: hostname
+        description: "OS가 인식하는 실제 호스트명"
+      - name: ipaddress
+        description: "IP 주소"
+      - name: description
+        description: "리소스 설명(비고)"
+
     # JOIN 금지 컬럼 — 기존 3중 방어 체계(프롬프트 주석 + 구조 가이드 + validator)에 연동
     # cmm_vendor, cmm_os, cmm_os_param은 레거시 lookup 테이블로 실제 운영에서 사용하지 않음.
     # 해당 데이터는 core_config_prop EAV 속성(Vendor, OSType, OSParameter)으로 관리됨.
@@ -62,92 +77,121 @@ patterns:
     known_attributes:
       # --- server.Server / platform.server 속성 ---
       - name: OSType
+        resource_type: server.Server
         description: "운영체제 종류 (예: Linux, Windows) [resource_type: server.Server]"
         synonyms: ["운영체제", "OS종류", "OS 타입", "OS"]
       - name: OSVerson
+        resource_type: server.Server
         description: "운영체제 버전 (주의: Polestar 제품 오탈자 반영) [resource_type: server.Server]"
         synonyms: ["OS버전", "운영체제버전"]
       - name: OSParameter
+        resource_type: server.Server
+        lob: true
         description: "OS 파라미터 / 커널 파라미터 (LOB 값 — stringvalue 사용) [resource_type: server.Server]"
         synonyms: ["OS파라미터", "OS 파라미터", "OS설정", "OS 설정", "커널", "커널 파라미터", "커널파라미터", "시스템 파라미터", "커널 설정", "커널 설정값", "sysctl"]
       - name: PatchLevel
+        resource_type: server.Server
         description: "OS 패치 레벨 / 커널 버전 [resource_type: server.Server]"
         synonyms: ["패치레벨", "커널버전", "패치"]
       - name: Vendor
+        resource_type: server.Server
         description: "서버 제조사 (예: Dell, HP) [resource_type: server.Server]"
         synonyms: ["벤더", "제조사", "제조업체"]
       - name: Model
+        resource_type: server.Server
         description: "서버 모델명 [resource_type: server.Server]"
         synonyms: ["모델", "장비모델", "모델명"]
       - name: SerialNumber
+        resource_type: server.Server
         description: "시리얼 번호 [resource_type: server.Server]"
         synonyms: ["시리얼", "S/N", "일련번호", "시리얼번호"]
       - name: Hostname
-        description: "호스트명 (EAV, cmm_resource.hostname과 동일 값) [resource_type: server.Server]"
-        synonyms: ["EAV호스트명", "서버명", "호스트네임"]
+        resource_type: server.Server
+        description: "호스트명 (EAV). '서버명'은 여기가 아니라 cmm_resource.name(등록명)임 — 혼동 금지 [resource_type: server.Server]"
+        synonyms: ["EAV호스트명"]
       - name: IPaddress
+        resource_type: server.Server
         description: "IP 주소 (EAV, cmm_resource.ipaddress와 동일 값) [resource_type: server.Server]"
         synonyms: ["EAV IP", "IP"]
       - name: GMT
+        resource_type: server.Server
         description: "시간대 (GMT offset) [resource_type: server.Server]"
         synonyms: ["시간대", "타임존"]
       - name: AgentID
+        resource_type: server.Server
         description: "모니터링 에이전트 ID [resource_type: server.Server]"
         synonyms: ["에이전트ID", "에이전트", "Agent"]
       - name: AgentVersion
+        resource_type: server.Server
         description: "에이전트 버전 [resource_type: server.Server]"
         synonyms: ["에이전트버전", "Agent버전"]
       - name: InstallPath
+        resource_type: server.Server
         description: "에이전트 설치 경로 [resource_type: server.Server]"
         synonyms: ["설치경로", "설치 경로"]
       # --- server.Cpus 속성 (resource_type = 'server.Cpus') ---
       - name: MODEL
+        resource_type: server.Cpus
         description: "CPU 모델명 (예: Intel Xeon Gold 6248R) [resource_type: server.Cpus]"
         synonyms: ["CPU모델", "CPU 모델", "프로세서", "프로세서모델", "CPU_MODEL"]
       - name: LOGICALCORE
+        resource_type: server.Cpus
         description: "논리 CPU 코어 수 (하이퍼스레딩 포함) [resource_type: server.Cpus]"
         synonyms: ["논리코어", "논리 코어", "CPU", "CPU코어", "코어수", "코어"]
       - name: PHYSICALCORE
+        resource_type: server.Cpus
         description: "물리 CPU 코어 수 [resource_type: server.Cpus]"
         synonyms: ["물리코어", "물리 코어", "물리CPU"]
       - name: PHYSICALCPU
+        resource_type: server.Cpus
         description: "물리 CPU 소켓 수 [resource_type: server.Cpus]"
         synonyms: ["CPU소켓", "소켓", "소켓수", "CORESOCKET"]
       - name: SPEED
+        resource_type: server.Cpus
         description: "CPU 클럭 속도 MHz (예: 2100.0) [resource_type: server.Cpus]"
         synonyms: ["CPU속도", "클럭", "클럭속도", "CPU클럭"]
       - name: HYPERTHREADING
+        resource_type: server.Cpus
         description: "하이퍼스레딩 활성 여부 (on/off) [resource_type: server.Cpus]"
         synonyms: ["하이퍼스레딩", "HT"]
       # --- server.Memory 속성 (resource_type = 'server.Memory') ---
       - name: TotalSize
+        resource_type: server.Memory
         description: "총 물리 메모리 크기 (예: 62.1 GB) [resource_type: server.Memory] / 전체 디스크 용량 [resource_type: server.Disks]"
         synonyms: ["메모리", "MEMORY", "메모리크기", "총메모리", "메모리용량", "MEM", "디스크용량", "디스크크기"]
       # --- server.VirtualMemory 속성 (resource_type = 'server.VirtualMemory') ---
       - name: SwapTotalSize
+        resource_type: server.VirtualMemory
         description: "Swap 메모리 총 크기 (예: 3.9 GB) [resource_type: server.VirtualMemory]"
         synonyms: ["스왑", "스왑메모리", "SWAP", "스왑크기"]
       # --- server.Disks 속성 (resource_type = 'server.Disks') ---
       - name: DiskCount
+        resource_type: server.Disks
         description: "디스크 수 [resource_type: server.Disks]"
         synonyms: ["디스크수", "디스크개수", "디스크 수"]
       # --- server.NetworkInterface 속성 (resource_type = 'server.NetworkInterface') ---
       - name: IP
+        resource_type: server.NetworkInterface
         description: "네트워크 인터페이스 IP 주소 [resource_type: server.NetworkInterface]"
         synonyms: ["NIC IP", "인터페이스IP"]
       - name: MAC
+        resource_type: server.NetworkInterface
         description: "MAC 주소 (예: b4:96:91:0e:bd:a6) [resource_type: server.NetworkInterface]"
         synonyms: ["MAC주소", "맥주소", "MACAddress"]
       - name: BANDW
+        resource_type: server.NetworkInterface
         description: "대역폭 (예: 10 Gb) [resource_type: server.NetworkInterface]"
         synonyms: ["대역폭", "bandwidth", "네트워크속도"]
       - name: MTU
+        resource_type: server.NetworkInterface
         description: "MTU 크기 (예: 1500.0) [resource_type: server.NetworkInterface]"
         synonyms: ["MTU"]
       - name: NETMASK
+        resource_type: server.NetworkInterface
         description: "서브넷 마스크 (예: 255.255.255.0) [resource_type: server.NetworkInterface]"
         synonyms: ["서브넷", "넷마스크", "서브넷마스크"]
       - name: STATUS
+        resource_type: server.NetworkInterface
         description: "인터페이스 상태 (UP/DOWN) [resource_type: server.NetworkInterface]"
         synonyms: ["NIC상태", "인터페이스상태"]
 
@@ -164,6 +208,39 @@ patterns:
 
 query_guide: |
   Polestar DB는 cmm_resource(리소스 계층), core_config_prop(EAV 설정), cmm_metric_stat_m(성능 통계) 3개 테이블로 구성됩니다.
+
+  [★ 스키마 참조 — DB2 (D-057)]
+  이 DB는 DB2 엔진이며, 폴스타 테이블은 **POLESTAR 스키마**에 있습니다(2026-07-02 실측: SYSCAT.TABLES.TABSCHEMA='POLESTAR').
+  연결 계정의 CURRENT SCHEMA는 SDQ000이므로, **반드시 `POLESTAR.` 접두사로 한정**하세요 (예: POLESTAR.cmm_resource, POLESTAR.core_config_prop).
+  접두사를 생략하면 SDQ000.CMM_RESOURCE로 해소되어 SQL0204N(-204, undefined name)이 발생합니다.
+  (DB2는 미인용 식별자를 대문자로 저장하므로 스키마명은 대문자 POLESTAR 사용.)
+  행 수 제한은 `LIMIT`이 아니라 `FETCH FIRST n ROWS ONLY`를 사용하세요.
+
+  [★ 은행존 전용 — 서버명(등록명)과 호스트명 구분]
+  은행존(b0)은 cmm_resource.name(등록명)이 "<호스트명>(<설명>)" 또는 "<호스트명> (<설명>)" 구조인 경우가 많습니다
+  (예: name='sicwso01 (이미지 업무 WAS#1)', hostname='sicwso01').
+  - cmm_resource.name     → 폴스타 등록명. 사용자가 "서버명", "서버 이름", "장비명"이라고 지칭하는 컬럼(설명이 붙어 있음).
+  - cmm_resource.hostname → OS 호스트명(클린, 예: 'sicwso01'). 사용자가 "호스트명/호스트네임"이라고 할 때 사용.
+  **둘은 다른 값이므로 반드시 구분**하세요. "서버 이름"과 "호스트네임"을 함께 요청받으면 각각 r.name, r.hostname으로 출력합니다.
+  **호스트명·IP는 직접 컬럼(r.hostname / r.ipaddress)** 을 사용하세요 — 은행존은 두 컬럼에 클린 값이 들어 있음(실측 확인). (EAV Hostname/IPaddress 속성에도 동일 값이 있으나 직접 컬럼이 단순.)
+
+  [★ filter_conditions 필드명 재매핑 — 은행존 전용]
+  input_parser가 생성한 filter_conditions의 field 값이 무엇이든, 사용자의 원문이 "서버 이름", "서버명", "장비명", "장비 이름"에 해당하면
+  SQL에서 cmm_resource.name 컬럼으로 매핑한다. filter_conditions.field = "hostname"이 전달되더라도 예외 없이 적용한다.
+  **사용자가 "<값> 서버"(예: "cob0-bnndbp01 서버")처럼 값으로 서버를 지칭하면 그 값은 장비명이므로 아래 [장비명 비교 형태]로 거른다.**
+  **출력 컬럼으로 "호스트네임/IP"를 함께 요청하더라도 서버 식별 필터는 절대 hostname 으로 하지 말 것 (필터=r.name, 출력=r.hostname 은 별개).**
+  단, 사용자가 명시적으로 "호스트명/호스트네임이 XXX인 서버"처럼 호스트명 자체로 필터하라고 한 경우에만 cmm_resource.hostname 을 사용한다.
+  예: filter_conditions = [{"field": "hostname", "op": "=", "value": "cob0-bnndbp01"}] + 원문 "장비명이 cob0-bnndbp01인"
+      → 아래 OR 3분기로 r.name 을 거른다 (r.hostname 이 아님)
+
+  [★★ 장비명 비교 형태 — 은행존 전용 OR 3분기 고정]
+  은행존의 name은 "<호스트명>(<설명>)" 구조가 섞여 있어 **등호 단독 비교는 0건**을 반환한다.
+  장비명 값 `<값>`으로 서버를 거를 때는 **반드시** 아래 세 분기를 그대로 쓴다(괄호 포함):
+    WHERE (r.name = '<값>' OR r.name LIKE '<값> (%' OR r.name LIKE '<값>(%')
+  - 등호 분기: 설명이 붙지 않은 등록명을 잡는다(등호 결과의 초집합이므로 종전보다 나빠지지 않는다).
+  - LIKE 두 분기: 여는 괄호 앞 경계를 못 박아 'sicwso01'이 'sicwso011'을 함께 잡는 접두 충돌을 막는다.
+  - **`LIKE '<값>%'`(경계 없는 접두 매칭)은 금지** — 다른 서버를 섞어 잡는다.
+  - 값에 이미 "(설명)"이 붙어 있으면 등호 분기만으로 충분하다(세 분기를 써도 결과는 같다).
 
   [avail_status 값 의미]
   cmm_resource.avail_status 컬럼의 정수 값:
@@ -184,12 +261,12 @@ query_guide: |
   OSParameter(커널 파라미터, 시스템 파라미터 등)는 LOB 값으로 core_config_prop.stringvalue에 저장됩니다.
     - COALESCE(cc.stringvalue, cc.stringvalue_short) 사용 — OSParameter는 LOB로 저장될 수 있어 stringvalue_short가 빈 값일 수 있음
     - 필터: core_config_prop.name = 'OSParameter'
-  예시:
-    SELECT r.hostname, COALESCE(cc.stringvalue, cc.stringvalue_short) AS os_parameter
-    FROM cmm_resource r
-    JOIN core_config_prop cc ON r.resource_conf_id = cc.configuration_id
+  예시 (은행존 — 장비명으로 필터):
+    SELECT r.name AS server_name, r.hostname, COALESCE(cc.stringvalue, cc.stringvalue_short) AS os_parameter
+    FROM POLESTAR.cmm_resource r
+    JOIN POLESTAR.core_config_prop cc ON r.resource_conf_id = cc.configuration_id
     WHERE r.resource_type = 'server.Server'
-      AND r.hostname = '조회할_서버명'
+      AND (r.name = '조회할_장비명' OR r.name LIKE '조회할_장비명 (%' OR r.name LIKE '조회할_장비명(%')
       AND cc.name = 'OSParameter'
 
       AND r.dtime IS NULL;
@@ -200,21 +277,32 @@ query_guide: |
 
   주요 컬럼:
     - resource_id: cmm_resource.id와 조인
-    - definition_name: 지표 종류 ('Utilization' = 사용률, 'MaxIORate' = 디스크 IO)
+    - definition_name: 지표 종류 ('Utilization' = 사용률. 'MaxIORate'(디스크 IO)는 은행존 미수집)
     - stat_date: 통계 기준 월 (YYYYMM 형식 문자열, 예: '202601')
     - min_val, avg_val, max_val: 기간 내 최소/평균/최대값
 
-  resource_type별 조회 가능한 성능 지표:
+  [★ DB2 소수점 보존 — 집계 전 DECIMAL 캐스트 필수]
+  DB2의 AVG()는 정수 컬럼을 정수로 집계하여 소수점이 사라진다(0.35% → 0). 사용률 통계를 소수
+  2자리로 출력하려면 **집계 함수 내부에서 값을 DECIMAL로 먼저 캐스트**해야 한다:
+    ROUND(AVG(CASE WHEN ... THEN CAST(s.avg_val AS DOUBLE) END), 2)
+  (PostgreSQL식 `::numeric` 캐스트는 DB2에서 문법 오류이므로 사용 금지 — CAST(... AS DECIMAL) 사용.)
+
+  resource_type별 조회 가능한 성능 지표 (은행존 실측 2026-09-07 — stat_m 전수 집계):
     - 'server.Cpus'        + definition_name = 'Utilization'  → CPU 사용률 (%)
     - 'server.Memory'      + definition_name = 'Utilization'  → 메모리 사용률 (%)
-    - 'server.FileSystems' + definition_name = 'Utilization'  → 파일시스템 사용률 (%)
-    - 'server.Disks'       + definition_name = 'MaxIORate'    → 디스크 IO
+    - 'server.FileSystem'  + definition_name = 'Utilization'  → 파일시스템 사용률 (%)
+      ※ 은행존은 **단수형(server.FileSystem)** — 복수형(server.FileSystems) 통계 행이 없다
+        (공동존과 다름). 파일시스템별 행이므로 서버 단위 값은 MAX/AVG 집계로 얻는다.
+    - 디스크 IO(server.Disks + MaxIORate)는 **은행존 미수집**(stat_m 행 0건) — 조회를
+      생성하지 말고, 요청받으면 "은행존은 디스크 IO 통계를 수집하지 않습니다"로 안내한다.
 
   성능 지표 조회 시 조인 구조:
-    1. cmm_resource r: 서브 리소스 행 (Cpus, Memory, FileSystems, Disks)
+    1. cmm_resource r: 서브 리소스 행 (Cpus, Memory, FileSystem)
     2. cmm_resource svr: 서버 행 (r.platform_resource_id = svr.id, svr.resource_type = 'server.Server')
     3. cmm_metric_stat_m s: 성능 통계 (r.id = s.resource_id)
     4. 서브쿼리 hi: 하드웨어 설정 정보 (svr.ipaddress = hi.ipaddress 로 조인)
+    5. 삭제 리소스 제외: 바깥 WHERE에 **r.dtime IS NULL AND svr.dtime IS NULL 둘 다 필수**
+       (hi 서브쿼리를 생략해도 빠뜨리지 말 것 — 빠지면 삭제된 서버·리소스가 결과에 섞인다)
 
   [리소스 타입별 EAV 속성]
   cmm_resource의 resource_type에 따라 서로 다른 configuration_id 그룹을 가집니다.
@@ -228,32 +316,48 @@ query_guide: |
     - server.Disks: DiskCount(디스크수), TotalSize(전체 디스크용량)
     - server.NetworkInterface: IP, MAC, BANDW(대역폭), MTU, NETMASK, STATUS(UP/DOWN), DUPLEX, TYPE(Ethernet)
 
-  [★ 양식 채우기 / 성능 통계 조인 시 server.Server 행 탈락 주의]
-  cmm_metric_stat_[h,d,m]에는 server.Cpus/server.Memory 등 하위 리소스의 통계만 있고
-  server.Server(서버 본체) 행은 들어있지 않다. 메트릭 테이블을 cmm_resource와 단일 평면 조인
-  (JOIN ... ON r.id = s.resource_id)으로 묶으면 server.Server 행이 INNER JOIN으로 전부 탈락하여,
-  server.Server에서 뽑는 모든 CASE 컬럼(서버명/Hostname/IPaddress/OSType/OSVerson)이 NULL이 된다
-  (server.Cpus/server.Memory 컬럼과 사용률만 값이 나옴).
-  → 식별/OS 정보는 반드시 (a) 서버 행 svr(svr.id = r.platform_resource_id,
-    svr.resource_type='server.Server')의 직접 컬럼/EAV에서 가져오거나,
-    (b) 메트릭 조인과 분리된 서브쿼리에서 platform_resource_id로 조인해 가져온다.
-    단일 평면 조인에 server.Server CASE 피벗과 메트릭 조인을 함께 쓰지 말 것.
-  → OSVerson은 폴스타 제품 오탈자가 실제 EAV 속성명이다. 절대 'OSVersion'으로 정정하지 말 것.
-
   [서버 종합 정보 조회 패턴]
   한 서버의 서버정보 + CPU + 메모리를 한 행으로 조회하려면:
     GROUP BY platform_resource_id로 같은 서버의 모든 리소스를 집계하고,
     MAX(CASE WHEN resource_type = '...' AND name = '...' THEN stringvalue_short END)로 피벗합니다.
 
+  [★ 단일 서버 피벗 — 서버 식별은 HAVING, WHERE 금지]
+  위 피벗에서 **서버 식별 조건을 WHERE에 두면 server.Cpus/server.Memory 행이 GROUP BY 전에 제거되어
+  CPU·메모리가 전부 NULL이 됩니다.** 서버 식별은 반드시 **집계 후 HAVING**(server.Server 행 기준)으로 겁니다.
+  비교 형태는 위 [★★ 장비명 비교 형태]와 같은 OR 3분기입니다:
+    GROUP BY COALESCE(c.platform_resource_id, c.id)
+    HAVING (MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) = '<값>'
+         OR MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) LIKE '<값> (%'
+         OR MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) LIKE '<값>(%')
+  장비명이 아니라 "호스트명/호스트네임이 XXX인"이라고 명시한 경우에만 HAVING의 c.name을 c.hostname으로 바꾸고 등호 단독을 씁니다.
+
+  [EAV 숫자 값 캐스트 규칙 — 정수 캐스트 금지]
+  core_config_prop의 숫자 속성 값(stringvalue/stringvalue_short)은 부동소수 표기 문자열입니다(예: LOGICALCORE = '4.0').
+  집계(SUM/AVG)나 수치 비교에는 반드시 CAST(... AS NUMERIC) 또는 CAST(... AS DECIMAL)을 사용하세요(집계 함수 내부에서 캐스트).
+  INT/BIGINT 등 정수 캐스트는 '4.0' 파싱 실패로 실행 오류를 냅니다. (PostgreSQL식 ::numeric은 DB2 문법 오류 — 사용 금지)
+
   [날짜/시간 및 통계 테이블(cmm_metric_stat_[h,d,m]) 분기 처리]
   사용자가 요청하는 시간 단위에 따라 알맞은 통계 테이블을 조회합니다.
   - 시간 단위 ("현재", "실시간", "최근 N시간") → `cmm_metric_stat_h` 테이블 조인 (stat_date 형식: YYYYMMDDHH, 예: '2026052214')
-    * 예: s.stat_date = TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '1 hour', 'YYYYMMDDHH24')
+    * 예: s.stat_date = TO_CHAR(CURRENT_TIMESTAMP - 1 HOUR, 'YYYYMMDDHH24')
   - 일 단위 ("오늘", "어제", "최근 N일", "특정 일자") → `cmm_metric_stat_d` 테이블 조인 (stat_date 형식: YYYYMMDD, 예: '20260522')
-    * 예: s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 day', 'YYYYMMDD')
-  - 월 단위 ("이번 달", "최근 N개월", "특정 월", 시간 미지정) → `cmm_metric_stat_m` 테이블 조인 (stat_date 형식: YYYYMM, 예: '202605')
-    * 예: s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM')
-  주의: 하드코딩된 날짜를 절대 사용하지 않고, 항상 MAX(stat_date) 서브쿼리 또는 CURRENT_DATE 기반의 동적 계산을 사용합니다.
+    * 예: s.stat_date = TO_CHAR(CURRENT_DATE - 1 DAY, 'YYYYMMDD')
+  - 월 단위 ("최근 N개월", "특정 월", 시간 미지정) → `cmm_metric_stat_m` 테이블 조인 (stat_date 형식: YYYYMM, 예: '202605')
+    * 예: s.stat_date = TO_CHAR(CURRENT_DATE - 1 MONTH, 'YYYYMM')
+  - "이번 달"/"이번달"/"당월" 명시 → 월간 통계(stat_m)는 직전월까지만 집계되므로 현재 월을 stat_m으로 조회하면 전부 null이 됩니다.
+    대신 `cmm_metric_stat_d`(일간)를 당월 1일~어제 범위로 집계합니다(진행 중인 달의 근사 통계, 2026-09-07 결정):
+    * 예: s.stat_date BETWEEN TO_CHAR(CURRENT_DATE, 'YYYYMM') || '01' AND TO_CHAR(CURRENT_DATE - 1 DAY, 'YYYYMMDD')
+    * 서버별 GROUP BY로 AVG(s.avg_val)=월중 평균, MAX(s.max_val)=월중 최대를 집계합니다.
+    (매월 1일에는 어제가 전월이라 범위가 비어 0행 — "데이터 없음" 안내가 정상 동작입니다)
+  주의: 하드코딩된 날짜를 절대 사용하지 않고, 항상 CURRENT_DATE 기반의 동적 계산을 사용합니다.
+  통계 기간 미지정/"지난달"/"최근" 시 기본 관행은 직전월(s.stat_date = TO_CHAR(CURRENT_DATE - 1 MONTH, 'YYYYMM'))입니다.
+  (SELECT MAX(stat_date) ...) 서브쿼리는 진행 중인 미완성 월을 집계하므로 사용 금지.
+  단, "~한 적이 있는"(임계 초과/발생 이력의 존재 여부) 질의는 특정 월로 한정하지 말고 전 보관 기간을 검색합니다.
+  이때 반드시 보관 기간이 가장 긴 cmm_metric_stat_m(월간)을 사용합니다 — _d/_h는 보관 기간이 짧아 과거 이력이 누락됩니다(월간 max_val이 피크를 보존).
+  임계 비교(예: > 90)에는 쓰레기 값 오탐 방지를 위해 상한 게이트를 함께 적용합니다(예: AND s.max_val <= 1000).
+  월별 분해(stat_date를 SELECT/GROUP BY에 포함) 시 통계 테이블 조인은 INNER JOIN을 사용합니다 —
+  LEFT JOIN이면 통계 없는 조합이 stat_date가 빈(null) 유령 행으로 서버마다 추가됩니다(2차 실측 2026-09-07).
+  LEFT JOIN(통계 없는 서버 포함)은 서버당 1행 피벗(월별 분해 없음)에서만 사용합니다.
 
   [계층 구조]
   cmm_resource.resource_type으로 리소스 종류를 구분합니다:
@@ -276,12 +380,12 @@ query_examples:
         r.hostname,
         cc_ostype.stringvalue_short AS os_type,
         cc_vendor.stringvalue_short AS vendor
-      FROM polestar.cmm_resource r
-      LEFT JOIN polestar.core_config_prop cc_ostype
+      FROM POLESTAR.cmm_resource r
+      LEFT JOIN POLESTAR.core_config_prop cc_ostype
         ON r.resource_conf_id = cc_ostype.configuration_id AND cc_ostype.name = 'OSType'
-      LEFT JOIN polestar.core_config_prop cc_vendor
+      LEFT JOIN POLESTAR.core_config_prop cc_vendor
         ON r.resource_conf_id = cc_vendor.configuration_id AND cc_vendor.name = 'Vendor'
-      WHERE r.resource_type LIKE 'platform.server%'
+      WHERE r.resource_type = 'server.Server'
         AND r.dtime IS NULL
       FETCH FIRST 100 ROWS ONLY;
     explanation: "resource_conf_id = configuration_id 조인으로 서버의 EAV 속성을 조회"
@@ -293,12 +397,12 @@ query_examples:
         r.ipaddress,
         cc_osver.stringvalue_short AS os_version,
         cc_serial.stringvalue_short AS serial_number
-      FROM polestar.cmm_resource r
-      LEFT JOIN polestar.core_config_prop cc_osver
+      FROM POLESTAR.cmm_resource r
+      LEFT JOIN POLESTAR.core_config_prop cc_osver
         ON r.resource_conf_id = cc_osver.configuration_id AND cc_osver.name = 'OSVerson'
-      LEFT JOIN polestar.core_config_prop cc_serial
+      LEFT JOIN POLESTAR.core_config_prop cc_serial
         ON r.resource_conf_id = cc_serial.configuration_id AND cc_serial.name = 'SerialNumber'
-      WHERE r.resource_type LIKE 'platform.server%'
+      WHERE r.resource_type = 'server.Server'
         AND r.dtime IS NULL
       FETCH FIRST 100 ROWS ONLY;
     explanation: "resource_conf_id로 EAV 속성을 추가할 때마다 LEFT JOIN을 추가하는 패턴"
@@ -306,30 +410,53 @@ query_examples:
   - question: "서버 수를 조회해줘"
     sql: |
       SELECT COUNT(*) AS server_count
-      FROM polestar.cmm_resource r
-      WHERE r.resource_type LIKE 'platform.server%'
+      FROM POLESTAR.cmm_resource r
+      WHERE r.resource_type = 'server.Server'
         AND r.dtime IS NULL
       FETCH FIRST 1 ROWS ONLY;
     explanation: "EAV 조인이 필요 없는 단순 집계 — cmm_resource만 사용"
 
-  - question: "서버별 호스트명, IP, 시리얼번호, CPU모델, CPU코어수, 메모리를 조회해줘"
+  - question: "장비명이 'cob0-bnndbp01'인 서버의 가용성 상태와 IP를 조회해줘"
     sql: |
+      -- ★ 은행존: 장비명 필터는 r.name(등록명) — r.hostname 이 아니다
+      -- ★ 등록명이 "<호스트명>(<설명>)" 구조라 등호 단독은 0건 → OR 3분기 고정('(' 앞 경계로 접두 충돌 차단)
+      SELECT
+        r.name AS server_name,
+        r.hostname,
+        r.ipaddress,
+        r.avail_status
+      FROM POLESTAR.cmm_resource r
+      WHERE r.resource_type = 'server.Server'
+        AND (r.name = 'cob0-bnndbp01'
+             OR r.name LIKE 'cob0-bnndbp01 (%'
+             OR r.name LIKE 'cob0-bnndbp01(%')
+        AND r.dtime IS NULL
+      FETCH FIRST 100 ROWS ONLY;
+    explanation: |
+      장비명(서버명)으로 서버를 특정하는 기본형. 필터 컬럼은 cmm_resource.name 이고,
+      호스트명·IP는 출력 컬럼으로만 쓴다(필터=r.name, 출력=r.hostname 은 별개).
+      은행존 등록명에 "(설명)"이 붙는 경우가 있어 등호 단독이면 0건이 되므로 OR 3분기를 그대로 쓴다.
+
+  - question: "서버별 서버이름, 호스트네임, IP, 시리얼번호, CPU모델, CPU코어수, 메모리를 조회해줘"
+    sql: |
+      -- ★ 은행존: 서버이름=등록명(c.name, "<호스트명>(<설명>)"), 호스트네임=클린 OS 호스트명(c.hostname 직접 컬럼) — 둘은 다른 값
       SELECT
           COALESCE(c.platform_resource_id, c.id) AS id,
-          MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Hostname'      THEN cc.stringvalue_short END) AS hostname,
-          MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'IPaddress'    THEN cc.stringvalue_short END) AS ipaddress,
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name      END) AS server_name,  -- 등록명 "<호스트명>(<설명>)"
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.hostname  END) AS hostname,      -- 클린 OS 호스트명(직접 컬럼, 실측 확인)
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.ipaddress END) AS ipaddress,     -- 직접 컬럼(실측 확인: EAV와 동일 값)
           MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Model'        THEN cc.stringvalue_short END) AS model,
           MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serialnumber,
           MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'MODEL'        THEN cc.stringvalue_short END) AS cpu_model,
           MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
-          MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN cc.stringvalue_short END) AS physicalcore,
+          MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
           MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCPU'  THEN cc.stringvalue_short END) AS coresocket,
           MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size,
           MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSType'       THEN cc.stringvalue_short END) AS ostype,
           MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'OSVerson'     THEN cc.stringvalue_short END) AS osversion,
           MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'PatchLevel'   THEN cc.stringvalue_short END) AS os_patchlevel
-      FROM polestar.cmm_resource c
-      LEFT JOIN polestar.core_config_prop cc
+      FROM POLESTAR.cmm_resource c
+      LEFT JOIN POLESTAR.core_config_prop cc
             ON c.resource_conf_id = cc.configuration_id
       WHERE c.resource_type IN ('server.Server','server.Cpus','server.Memory')
         AND c.dtime IS NULL
@@ -341,58 +468,50 @@ query_examples:
   - question: "특정 서버의 CPU 리소스를 조회해줘"
     sql: |
       SELECT child.id, child.name, child.resource_type
-      FROM polestar.cmm_resource parent
-      JOIN polestar.cmm_resource child
+      FROM POLESTAR.cmm_resource parent
+      JOIN POLESTAR.cmm_resource child
         ON child.parent_resource_id = parent.id
-      WHERE parent.hostname = '서버명'
+      -- ★ 장비명 필터는 parent.name(등록명)이다 — parent.hostname 이 아니다.
+      -- ★ 은행존 등록명은 "<호스트명>(<설명>)" 구조가 섞여 있어 등호 단독은 0건 →
+      --    [★★ 장비명 비교 형태]의 OR 3분기를 그대로 쓴다.
+      WHERE (parent.name = '장비명'
+             OR parent.name LIKE '장비명 (%'
+             OR parent.name LIKE '장비명(%')
         AND child.resource_type = 'server.Cpu'
         AND child.dtime IS NULL
       FETCH FIRST 100 ROWS ONLY;
-    explanation: "계층 구조 조회 — parent_resource_id로 자기참조 조인"
+    explanation: |
+      계층 구조 조회 — parent_resource_id로 자기참조 조인.
+      ★ 필터 컬럼에 주의: 장비명(서버명)은 cmm_resource.name 이다. 이 예시가 hostname 으로
+      거르면 그것이 그대로 학습돼 "장비명 -> hostname" 오매핑을 재생산한다(P-1).
 
-  - question: "서버들의 CPU, 메모리 용량 및 사용률 리스트를 조회해줘"
+  - question: "서버들의 CPU, 메모리 용량 및 사용률(평균·최대) 리스트를 조회해줘"
     sql: |
       SELECT
-          svr.name AS pname,
-          svr.ipaddress AS ipaddress,
-          svr.hostname AS hostname,
-          DATE(s.stat_date || '01') AS stat_date,
-          hi.physicalcore,
-          hi.mem_size,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN s.min_val END), 2) AS cpu_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN s.avg_val END), 2) AS cpu_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' THEN s.max_val END), 2) AS cpu_max,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN s.min_val END), 2) AS mem_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN s.avg_val END), 2) AS mem_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' THEN s.max_val END), 2) AS mem_max
-      FROM polestar.cmm_resource r
-      JOIN polestar.cmm_resource svr
-          ON svr.id = r.platform_resource_id
-         AND svr.resource_type = 'server.Server'
-      JOIN polestar.cmm_metric_stat_m s
-          ON r.id = s.resource_id
-      LEFT JOIN (
-          SELECT
-              COALESCE(c.platform_resource_id, c.id) AS id,
-              MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'IPaddress'    THEN cc.stringvalue_short END) AS ipaddress,
-              MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN cc.stringvalue_short END) AS physicalcore,
-              MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size
-          FROM polestar.cmm_resource c
-          LEFT JOIN polestar.core_config_prop cc
-              ON c.resource_conf_id = cc.configuration_id
-          WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')
-            AND c.dtime IS NULL
-          GROUP BY COALESCE(c.platform_resource_id, c.id)
-      ) hi ON svr.ipaddress = hi.ipaddress
-      WHERE r.resource_type IN ('server.Cpus', 'server.Memory')
-        AND s.definition_name = 'Utilization'
-      GROUP BY svr.name, svr.ipaddress, svr.hostname, DATE(s.stat_date || '01'), hi.physicalcore, hi.mem_size
-      ORDER BY svr.hostname, stat_date
+          MAX(CASE WHEN c.resource_type = 'server.Server' THEN c.name END) AS pname,
+          MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE' THEN cc.stringvalue_short END) AS logicalcore,
+          MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'   THEN cc.stringvalue_short END) AS mem_size,
+          CAST(ROUND(AVG(CASE WHEN c.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN CAST(s.avg_val AS DOUBLE) END), 2) AS DECIMAL(31,2)) AS cpu_avg,
+          CAST(ROUND(MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN CAST(s.max_val AS DOUBLE) END), 2) AS DECIMAL(31,2)) AS cpu_max,
+          CAST(ROUND(AVG(CASE WHEN c.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN CAST(s.avg_val AS DOUBLE) END), 2) AS DECIMAL(31,2)) AS mem_avg,
+          CAST(ROUND(MAX(CASE WHEN c.resource_type = 'server.Memory' AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN CAST(s.max_val AS DOUBLE) END), 2) AS DECIMAL(31,2)) AS mem_max
+      FROM POLESTAR.cmm_resource c
+      LEFT JOIN POLESTAR.core_config_prop cc
+            ON cc.configuration_id = c.resource_conf_id
+      LEFT JOIN POLESTAR.cmm_metric_stat_m s
+            ON s.resource_id = c.id
+           AND s.definition_name = 'Utilization'
+           AND s.stat_date = TO_CHAR(CURRENT_DATE - 1 MONTH, 'YYYYMM')
+      WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')
+        AND c.dtime IS NULL
+      GROUP BY COALESCE(c.platform_resource_id, c.id)
       FETCH FIRST 100 ROWS ONLY;
     explanation: |
-      성능 지표 조회 — cmm_metric_stat_m에서 CPU/메모리 사용률을 조회.
-      cmm_resource r(서브 리소스) → cmm_resource svr(서버) → cmm_metric_stat_m s(통계) 3방향 조인.
-      하드웨어 설정(코어수, 메모리용량)은 서브쿼리 hi에서 EAV 피벗으로 조회 후 ipaddress로 조인.
+      용량+사용률 리스트 — 서버당 1행 피벗(D-068 정본). 통계는 cmm_resource 기준 LEFT JOIN이라
+      통계 없는 서버도 누락되지 않는다(INNER JOIN이면 통계 없는 서버가 조용히 빠진다).
+      DB2 소수 보존 — 집계 전 CAST DOUBLE, 최종 DECIMAL(31,2) 스케일 고정(D-086).
+      기간 미지정/"지난달"은 직전월(CURRENT_DATE - 1 MONTH). 월별 추이 명시 요청 시에만
+      아래 월간 통계 예시처럼 stat_date로 분해한다.
 
   - question: "서버별 월간 CPU, 메모리, 파일시스템, 디스크 IO 성능 통계를 조회해줘"
     sql: |
@@ -401,102 +520,49 @@ query_examples:
           svr.ipaddress AS ipaddress,
           svr.hostname AS hostname,
           DATE(s.stat_date || '01') AS stat_date,
-          hi.physicalcore,
+          hi.logicalcore,
           hi.mem_size,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.min_val END), 2) AS cpu_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.avg_val END), 2) AS cpu_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' THEN s.max_val END), 2) AS cpu_max,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.min_val END), 2) AS mem_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.avg_val END), 2) AS mem_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' THEN s.max_val END), 2) AS mem_max,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.min_val END), 2) AS fs_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.avg_val END), 2) AS fs_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.FileSystems' AND s.definition_name = 'Utilization' THEN s.max_val END), 2) AS fs_max,
-          ROUND(MIN(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.min_val END), 2) AS disks_io_min,
-          ROUND(AVG(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.avg_val END), 2) AS disks_io_avg,
-          ROUND(MAX(CASE WHEN r.resource_type = 'server.Disks'       AND s.definition_name = 'MaxIORate'   THEN s.max_val END), 2) AS disks_io_max
-      FROM polestar.cmm_resource r
-      JOIN polestar.cmm_resource svr
+          ROUND(MIN(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' AND s.min_val BETWEEN 0 AND 1000 THEN CAST(s.min_val AS DOUBLE) END), 2) AS cpu_min,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN CAST(s.avg_val AS DOUBLE) END), 2) AS cpu_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.Cpus'        AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN CAST(s.max_val AS DOUBLE) END), 2) AS cpu_max,
+          ROUND(MIN(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' AND s.min_val BETWEEN 0 AND 1000 THEN CAST(s.min_val AS DOUBLE) END), 2) AS mem_min,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN CAST(s.avg_val AS DOUBLE) END), 2) AS mem_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.Memory'      AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN CAST(s.max_val AS DOUBLE) END), 2) AS mem_max,
+          ROUND(MIN(CASE WHEN r.resource_type = 'server.FileSystem'  AND s.definition_name = 'Utilization' AND s.min_val BETWEEN 0 AND 1000 THEN CAST(s.min_val AS DOUBLE) END), 2) AS fs_min,
+          ROUND(AVG(CASE WHEN r.resource_type = 'server.FileSystem'  AND s.definition_name = 'Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN CAST(s.avg_val AS DOUBLE) END), 2) AS fs_avg,
+          ROUND(MAX(CASE WHEN r.resource_type = 'server.FileSystem'  AND s.definition_name = 'Utilization' AND s.max_val BETWEEN 0 AND 1000 THEN CAST(s.max_val AS DOUBLE) END), 2) AS fs_max
+      FROM POLESTAR.cmm_resource r
+      JOIN POLESTAR.cmm_resource svr
           ON svr.id = r.platform_resource_id
          AND svr.resource_type = 'server.Server'
-      JOIN polestar.cmm_metric_stat_m s
+      JOIN POLESTAR.cmm_metric_stat_m s
           ON r.id = s.resource_id
       LEFT JOIN (
           SELECT
               COALESCE(c.platform_resource_id, c.id) AS id,
               MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'IPaddress'    THEN cc.stringvalue_short END) AS ipaddress,
-              MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'PHYSICALCORE' THEN cc.stringvalue_short END) AS physicalcore,
+              MAX(CASE WHEN c.resource_type = 'server.Cpus'   AND cc.name = 'LOGICALCORE'  THEN cc.stringvalue_short END) AS logicalcore,
               MAX(CASE WHEN c.resource_type = 'server.Memory' AND cc.name = 'TotalSize'    THEN cc.stringvalue_short END) AS mem_size
-          FROM polestar.cmm_resource c
-          LEFT JOIN polestar.core_config_prop cc
+          FROM POLESTAR.cmm_resource c
+          LEFT JOIN POLESTAR.core_config_prop cc
               ON c.resource_conf_id = cc.configuration_id
           WHERE c.resource_type IN ('server.Server', 'server.Cpus', 'server.Memory')
             AND c.dtime IS NULL
           GROUP BY COALESCE(c.platform_resource_id, c.id)
       ) hi ON svr.ipaddress = hi.ipaddress
-      WHERE r.resource_type IN ('server.Cpus', 'server.Memory', 'server.FileSystems', 'server.Disks')
-        AND s.definition_name IN ('Utilization', 'MaxIORate')
-      GROUP BY svr.name, svr.ipaddress, svr.hostname, DATE(s.stat_date || '01'), hi.physicalcore, hi.mem_size
+      WHERE r.resource_type IN ('server.Cpus', 'server.Memory', 'server.FileSystem')
+        AND s.definition_name = 'Utilization'
+        AND r.dtime IS NULL
+        AND svr.dtime IS NULL
+      GROUP BY svr.name, svr.ipaddress, svr.hostname, DATE(s.stat_date || '01'), hi.logicalcore, hi.mem_size
       ORDER BY svr.hostname, stat_date
       FETCH FIRST 100 ROWS ONLY;
     explanation: |
-      월간 성능 통계 전체 조회 — CPU/메모리/파일시스템/디스크 IO를 한 행으로 피벗.
+      월간 성능 통계 전체 조회 — CPU/메모리/파일시스템을 한 행으로 피벗.
+      파일시스템은 은행존 실측(2026-09-07)상 단수형(server.FileSystem, 파일시스템별 행)만
+      존재하므로 서버 단위 집계(MAX/AVG)로 얻는다. 디스크 IO(MaxIORate)는 은행존 미수집 —
+      SELECT에 포함하지 말고 요청 시 미수집을 안내한다.
       시간 범위 필터가 필요하면 WHERE에 AND DATE(s.stat_date || '01') BETWEEN ... AND ... 추가.
-
-# === 성능 지표 메트릭 패턴 (D-038) ===
-# cmm_metric_stat_[h,d,m] 통계 테이블의 구조화 메타데이터.
-# 결정적 SQL 빌더가 "CPU 평균"/"메모리 최대 사용률" 같은 양식 필드를
-# (resource_type + definition_name + 집계종류 + 값컬럼)으로 분류하는 데 사용한다.
-# 분류 규칙은 src/utils/metric_classifier.py 참조.
-metric_patterns:
-  # 시간 단위별 통계 테이블 (stat_date 문자열 포맷 포함)
-  stat_tables:
-    hour:  {table: cmm_metric_stat_h, stat_date_format: YYYYMMDDHH}
-    day:   {table: cmm_metric_stat_d, stat_date_format: YYYYMMDD}
-    month: {table: cmm_metric_stat_m, stat_date_format: YYYYMM}
-  default_resolution: month
-  # 조인 키
-  join:
-    resource_id_column: resource_id           # cmm_resource.id = stat.resource_id
-    server_link_column: platform_resource_id  # 하위리소스 r.platform_resource_id = svr.id
-  # 집계종류 → 값 컬럼
-  value_columns:
-    min: min_val
-    avg: avg_val
-    max: max_val
-  # 집계종류 한국어 인식어 (필드명에서 감지)
-  aggregations:
-    avg: ["평균", "avg", "average", "mean"]
-    max: ["최대", "최고", "피크", "max", "peak"]
-    min: ["최소", "최저", "min"]
-  # 지표 정의: resource_type + definition_name + 단위 + 도메인어/동의어
-  #  - synonyms: "CPU 사용률"처럼 그 자체로 메트릭이 분명한 완전 표현
-  #  - domain_terms: "CPU"처럼 집계어(평균/최대)와 결합될 때만 메트릭으로 보는 도메인 단어
-  metrics:
-    - name: cpu_utilization
-      resource_type: server.Cpus
-      definition_name: Utilization
-      unit: "%"
-      domain_terms: ["CPU", "씨피유", "프로세서"]
-      synonyms: ["CPU 사용률", "CPU 사용율", "CPU 이용률", "프로세서 사용률"]
-    - name: memory_utilization
-      resource_type: server.Memory
-      definition_name: Utilization
-      unit: "%"
-      domain_terms: ["메모리", "MEM", "RAM"]
-      synonyms: ["메모리 사용률", "메모리 사용율", "메모리 이용률", "RAM 사용률", "MEM 사용률"]
-    - name: filesystem_utilization
-      resource_type: server.FileSystems
-      definition_name: Utilization
-      unit: "%"
-      domain_terms: ["파일시스템", "파일 시스템", "FS"]
-      synonyms: ["파일시스템 사용률", "파일 시스템 사용률", "디스크 사용률", "FS 사용률"]
-    - name: disk_io
-      resource_type: server.Disks
-      definition_name: MaxIORate
-      unit: ""
-      domain_terms: []
-      synonyms: ["디스크 IO", "디스크 I/O", "디스크 IO율", "IO율", "MaxIORate", "디스크 입출력"]
 
 # 허용 테이블 목록 — schema_analyzer가 이 목록에 없는 테이블을 relevant_tables에서 제외한다.
 # cmm_vendor, cmm_os, cmm_os_param 등 레거시 lookup 테이블은 조회 대상이 아니다.
@@ -521,3 +587,27 @@ alarm_allowed_tables:
   - acc_acl_resource_manager_type
   - acc_role
   - acc_user_group
+
+# DB별 컬럼 유사단어 — 글로벌 사전보다 우선 적용 (은행존 전용)
+# 은행존(b0)은 등록명(cmm_resource.name)이 "<호스트명> (<설명>)" 구조인 경우가 많아
+# 서버명(등록명)과 호스트네임(OS 호스트명)을 반드시 구분해야 한다.
+column_synonyms:
+  cmm_resource.name:
+    words: ["서버명", "서버 이름", "서버이름", "장비명", "장비 이름", "리소스명", "등록명", "폴스타 등록명"]
+    description: "폴스타에 등록된 이름 (은행존은 '<호스트명> (<설명>)' 구조인 경우가 많음). 호스트네임과 다름."
+  cmm_resource.hostname:
+    words: ["호스트명", "호스트네임", "호스트 이름", "hostname", "OS호스트명"]
+    description: "OS 호스트명. 은행존에서 등록명(name)과 다르며, 클린 호스트명 출력이 필요."
+
+# 서버 엔터티 키 매니페스트 (plans/102 §3.3-① · D-224 ③) — 시스템 간 키 브리지가 이 DB를 **대상**으로
+# 조회할 때 선행 결과의 서버 키를 어느 컬럼에 어떤 방식으로 비교할지 정한다
+# (`CROSS_SYSTEM_KEY_BRIDGE_ENABLED` on일 때만 읽힌다 · off면 소비처 0).
+# - hostname: OS 호스트명 — 대소문자 무시(casefold) 비교, FQDN은 단축명 비교를 병행한다.
+# - ipaddress: 2순위 보조 키(IP는 변할 수 있는 속성 — P4).
+# - name(등록명)은 hostname이 아니다(D-061) — 브리지 키로 쓰지 않는다(G-3 기본 가정: hostname만).
+entity_keys:
+  entity: server
+  table: cmm_resource
+  keys:
+    - {type: hostname, column: hostname, priority: 1, compare: casefold}
+    - {type: ip, column: ipaddress, priority: 2}

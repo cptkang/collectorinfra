@@ -1,0 +1,299 @@
+# Text-to-SQL EX 골드셋 — 로컬 샌드박스(polestar · testdata/pg/init) 전용 · SYN 계열
+#
+# 출처: testdata/scenarios/l_synonym.yaml(SYN A~I)의 manual_review 기대값 — 원문 docs/synonym_test_cases.md.
+# 목적: plans/107 의도 프레임·정규 질의 병기(augment)의 2·3단 효과를 **로컬 MLX로 상대 비교**한다
+#       (2026-09-21 사용자 지시). 폐쇄망 골드(testdata/text2sql_gold/)와 섞이지 않게 디렉터리를 나눴다.
+# 골드 SQL은 전부 로컬 샌드박스에서 실행해 기대값과 대조했다(2026-09-21). SYN-H-03만 문서 값
+# (HPE 16·Dell 1)과 다르다 — 09_plan67 픽스처가 서버를 보강한 뒤라 실 데이터(HPE 19·Dell 2)를 정답으로 둔다.
+#
+# 채점: 전부 subset(골드 컬럼 값 멀티셋이 pred 어느 컬럼과 일치) — 소규모 모델이 설명 컬럼을 덧붙여도
+# 핵심 값이 맞으면 통과. EAV 수치는 문자열이라 pred가 CAST하면 불일치하므로 가능한 한 서버명·등급 값을 골드 컬럼으로 쓴다.
+# 제외(판정 모호): A-02(LOB 키 추출 — 답이 텍스트) · A-05·C-03·I-04(hostapo 단위 문자열 '판정 제외') ·
+#   C-02(전체 서버 NULL 행 모호) · F-03·I-07(LEFT JOIN 여부 둘 다 허용) · H-04(멀티 의도 2 SQL) · I-03b · F-05(프롬프트 아님)
+items:
+  - id: syn-a01
+    query: "DB-ORA-023과 SV-WEB-001 두 서버의 커널 파라미터를 비교해서 보여줘"
+    db_id: polestar
+    category: server_config
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT cc.stringvalue AS osparameter
+      FROM polestar.cmm_resource r
+      JOIN polestar.core_config_prop cc ON cc.configuration_id = r.resource_conf_id AND cc.name = 'OSParameter'
+      WHERE r.resource_type = 'server.Server' AND r.dtime IS NULL AND r.name IN ('DB-ORA-023', 'SV-WEB-001');
+  - id: syn-a03
+    query: "SV-WEB-001, DB-ORA-023, cocm-hdkapp01 세 서버의 제조사, 일련번호, 모델명을 표로 보여줘"
+    db_id: polestar
+    category: server_config
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT MAX(CASE WHEN cc.name = 'Vendor' THEN cc.stringvalue_short END) AS vendor,
+             MAX(CASE WHEN cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serial,
+             MAX(CASE WHEN cc.name = 'MODEL' THEN cc.stringvalue_short END) AS model
+      FROM polestar.cmm_resource r
+      LEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = r.resource_conf_id
+      WHERE r.resource_type = 'server.Server' AND r.dtime IS NULL
+        AND r.name IN ('SV-WEB-001', 'DB-ORA-023', 'cocm-hdkapp01')
+      GROUP BY r.name;
+  - id: syn-a04
+    query: "hostapo01과 hostapo02의 타임존과 제조사를 함께 보여줘"
+    db_id: polestar
+    category: server_config
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT MAX(CASE WHEN cc.name = 'GMT' THEN cc.stringvalue_short END) AS gmt,
+             MAX(CASE WHEN cc.name = 'Vendor' THEN cc.stringvalue_short END) AS vendor
+      FROM polestar.cmm_resource r
+      LEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = r.resource_conf_id
+      WHERE r.resource_type = 'server.Server' AND r.dtime IS NULL AND r.hostname IN ('hostapo01', 'hostapo02')
+      GROUP BY r.hostname;
+  - id: syn-b01
+    query: "장비명이 SV-로 시작하는 서버의 장비명과 IP 주소를 보여줘"
+    db_id: polestar
+    category: server_config
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT r.name, r.ipaddress FROM polestar.cmm_resource r
+      WHERE r.resource_type = 'server.Server' AND r.dtime IS NULL AND r.name LIKE 'SV-%';
+  - id: syn-b02
+    query: "호스트네임에 batch가 포함된 서버의 장비명과 IP를 찾아줘"
+    db_id: polestar
+    category: server_config
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT r.name, r.ipaddress FROM polestar.cmm_resource r
+      WHERE r.resource_type = 'server.Server' AND r.dtime IS NULL AND r.hostname ILIKE '%batch%';
+  - id: syn-b03
+    query: "서버 이름과 호스트명이 서로 다른 서버 목록을 보여줘"
+    db_id: polestar
+    category: server_config
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT r.hostname FROM polestar.cmm_resource r
+      WHERE r.resource_type = 'server.Server' AND r.dtime IS NULL AND r.name <> r.hostname;
+  - id: syn-c01
+    query: "DB-ORA-023과 SV-WEB-001의 커널 파라메터를 비교해서 보여줘"
+    db_id: polestar
+    category: server_config
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT cc.stringvalue AS osparameter
+      FROM polestar.cmm_resource r
+      JOIN polestar.core_config_prop cc ON cc.configuration_id = r.resource_conf_id AND cc.name = 'OSParameter'
+      WHERE r.resource_type = 'server.Server' AND r.dtime IS NULL AND r.name IN ('DB-ORA-023', 'SV-WEB-001');
+  - id: syn-c04
+    query: "hostapo01과 hostapo02의 하이퍼 스레딩 설정을 비교해줘"
+    db_id: polestar
+    category: server_config
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT cc.stringvalue_short AS hyperthreading
+      FROM polestar.cmm_resource c
+      JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id AND cc.name = 'HYPERTHREADING'
+      JOIN polestar.cmm_resource svr ON svr.id = COALESCE(c.platform_resource_id, c.id) AND svr.resource_type = 'server.Server'
+      WHERE c.dtime IS NULL AND svr.hostname IN ('hostapo01', 'hostapo02');
+  - id: syn-e01
+    query: "2026년 6월 서버별 CPU 사용률 평균이 높은 상위 3대를 보여줘"
+    db_id: polestar
+    category: performance
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT svr.name, ROUND(AVG(s.avg_val)::numeric, 1) AS cpu_avg
+      FROM polestar.cmm_metric_stat_m s
+      JOIN polestar.cmm_resource c ON c.id = s.resource_id AND c.resource_type = 'server.Cpus' AND c.dtime IS NULL
+      JOIN polestar.cmm_resource svr ON svr.id = COALESCE(c.platform_resource_id, c.id) AND svr.resource_type = 'server.Server'
+      WHERE s.definition_name = 'Utilization' AND s.stat_date = '202606'
+      GROUP BY svr.name ORDER BY cpu_avg DESC LIMIT 3;
+  - id: syn-e02
+    query: "디스크 용량이 2TB 이상인 서버를 용량이 큰 순서로 보여줘"
+    db_id: polestar
+    category: server_config
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT svr.name
+      FROM polestar.cmm_resource c
+      JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id AND cc.name = 'TotalSize'
+      JOIN polestar.cmm_resource svr ON svr.id = COALESCE(c.platform_resource_id, c.id) AND svr.resource_type = 'server.Server'
+      WHERE c.resource_type = 'server.Disks' AND c.dtime IS NULL AND cc.stringvalue_short ~ '^[0-9.]+$'
+        AND CAST(cc.stringvalue_short AS NUMERIC) >= 2097152;
+  - id: syn-e03
+    query: "가용성 상태가 정상이 아닌 서버의 서버명과 제조사를 보여줘"
+    db_id: polestar
+    category: server_config
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT r.name, cc.stringvalue_short AS vendor
+      FROM polestar.cmm_resource r
+      LEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = r.resource_conf_id AND cc.name = 'Vendor'
+      WHERE r.resource_type = 'server.Server' AND r.dtime IS NULL AND r.avail_status <> 0;
+  - id: syn-f01
+    query: "2026년 6월에 메모리 사용률이 90%를 넘은 적이 있는 서버를 알려줘"
+    db_id: polestar
+    category: performance
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT DISTINCT svr.name
+      FROM polestar.cmm_metric_stat_m s
+      JOIN polestar.cmm_resource c ON c.id = s.resource_id AND c.resource_type = 'server.Memory' AND c.dtime IS NULL
+      JOIN polestar.cmm_resource svr ON svr.id = COALESCE(c.platform_resource_id, c.id) AND svr.resource_type = 'server.Server'
+      WHERE s.definition_name = 'Utilization' AND s.stat_date = '202606' AND s.max_val > 90;
+  - id: syn-f02
+    query: "2026년 7월에 발생한 심각 알람이 몇 건인지 알려줘"
+    db_id: polestar
+    category: alarm
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT COUNT(*) AS cnt FROM polestar.cmm_alarm a
+      WHERE a.alarmseverity = 3 AND a.ctime >= '2026-07-01' AND a.ctime < '2026-08-01';
+  - id: syn-f04
+    query: "2026년 6월 디스크 아이오가 가장 높았던 서버의 제조사와 일련번호를 알려줘"
+    db_id: polestar
+    category: complex
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      WITH top1 AS (
+        SELECT svr.id, svr.resource_conf_id
+        FROM polestar.cmm_metric_stat_m s
+        JOIN polestar.cmm_resource c ON c.id = s.resource_id AND c.resource_type = 'server.Disks'
+        JOIN polestar.cmm_resource svr ON svr.id = COALESCE(c.platform_resource_id, c.id) AND svr.resource_type = 'server.Server'
+        WHERE s.definition_name = 'MaxIORate' AND s.stat_date = '202606'
+        GROUP BY svr.id, svr.resource_conf_id ORDER BY MAX(s.max_val) DESC LIMIT 1)
+      SELECT MAX(CASE WHEN cc.name = 'Vendor' THEN cc.stringvalue_short END) AS vendor,
+             MAX(CASE WHEN cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serial
+      FROM top1 t JOIN polestar.core_config_prop cc ON cc.configuration_id = t.resource_conf_id;
+  - id: syn-h01
+    query: "심각 알람이 발생한 적이 있는 서버들의 제조사와 메모리 용량을 보여줘"
+    db_id: polestar
+    category: complex
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT svr.name,
+             MAX(CASE WHEN c.resource_type = 'server.Server' AND cc.name = 'Vendor' THEN cc.stringvalue_short END) AS vendor
+      FROM polestar.cmm_resource svr
+      JOIN polestar.cmm_resource c ON COALESCE(c.platform_resource_id, c.id) = svr.id AND c.dtime IS NULL
+      LEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id
+      WHERE svr.resource_type = 'server.Server' AND svr.dtime IS NULL
+        AND EXISTS (SELECT 1 FROM polestar.cmm_alarm a JOIN polestar.cmm_resource ar ON ar.id = a.resource_id
+                    WHERE a.alarmseverity = 3 AND COALESCE(ar.platform_resource_id, ar.id) = svr.id)
+      GROUP BY svr.name;
+  - id: syn-h02
+    query: "2026년 6월 CPU 사용률 평균이 40%를 넘은 서버의 서버명과 논리코어 수를 보여줘"
+    db_id: polestar
+    category: complex
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT svr.name
+      FROM polestar.cmm_metric_stat_m s
+      JOIN polestar.cmm_resource c ON c.id = s.resource_id AND c.resource_type = 'server.Cpus'
+      JOIN polestar.cmm_resource svr ON svr.id = COALESCE(c.platform_resource_id, c.id) AND svr.resource_type = 'server.Server'
+      WHERE s.definition_name = 'Utilization' AND s.stat_date = '202606'
+      GROUP BY svr.name HAVING AVG(s.avg_val) > 40;
+  - id: syn-h03
+    query: "제조사별 서버 대수를 집계해서 많은 순으로 보여줘"
+    db_id: polestar
+    category: server_config
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT cc.stringvalue_short AS vendor, COUNT(*) AS cnt
+      FROM polestar.cmm_resource r
+      JOIN polestar.core_config_prop cc ON cc.configuration_id = r.resource_conf_id AND cc.name = 'Vendor'
+      WHERE r.resource_type = 'server.Server' AND r.dtime IS NULL
+      GROUP BY cc.stringvalue_short ORDER BY cnt DESC;
+  - id: syn-i01
+    query: "2026년 6월 서버별 CPU 사용률과 메모리 사용률 평균을 CPU 사용률이 높은 순으로 함께 보여줘"
+    db_id: polestar
+    category: performance
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT svr.name,
+             ROUND(AVG(CASE WHEN c.resource_type = 'server.Cpus' THEN s.avg_val END)::numeric, 1) AS cpu_avg,
+             ROUND(AVG(CASE WHEN c.resource_type = 'server.Memory' THEN s.avg_val END)::numeric, 1) AS mem_avg
+      FROM polestar.cmm_metric_stat_m s
+      JOIN polestar.cmm_resource c ON c.id = s.resource_id AND c.dtime IS NULL
+      JOIN polestar.cmm_resource svr ON svr.id = COALESCE(c.platform_resource_id, c.id) AND svr.resource_type = 'server.Server'
+      WHERE s.definition_name = 'Utilization' AND s.stat_date = '202606' AND c.resource_type IN ('server.Cpus', 'server.Memory')
+      GROUP BY svr.name ORDER BY cpu_avg DESC;
+  - id: syn-i02
+    query: "2026년 5월과 비교해서 6월에 CPU 사용률 평균이 가장 많이 상승한 서버와 상승폭을 알려줘"
+    db_id: polestar
+    category: complex
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT svr.name,
+             ROUND((AVG(CASE WHEN s.stat_date = '202606' THEN s.avg_val END)
+                  - AVG(CASE WHEN s.stat_date = '202605' THEN s.avg_val END))::numeric, 1) AS delta
+      FROM polestar.cmm_metric_stat_m s
+      JOIN polestar.cmm_resource c ON c.id = s.resource_id AND c.resource_type = 'server.Cpus' AND c.dtime IS NULL
+      JOIN polestar.cmm_resource svr ON svr.id = COALESCE(c.platform_resource_id, c.id) AND svr.resource_type = 'server.Server'
+      WHERE s.definition_name = 'Utilization' AND s.stat_date IN ('202605', '202606')
+      GROUP BY svr.name ORDER BY delta DESC NULLS LAST LIMIT 1;
+  - id: syn-i03
+    query: "월 평균 CPU 사용률이 40%를 넘은 달이 2개월 이상인 서버와 그 개월 수를 보여줘"
+    db_id: polestar
+    category: complex
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      SELECT svr.name, COUNT(*) AS months
+      FROM (SELECT COALESCE(c.platform_resource_id, c.id) AS sid, s.stat_date, AVG(s.avg_val) AS a
+            FROM polestar.cmm_metric_stat_m s
+            JOIN polestar.cmm_resource c ON c.id = s.resource_id AND c.resource_type = 'server.Cpus'
+            WHERE s.definition_name = 'Utilization' GROUP BY 1, 2) t
+      JOIN polestar.cmm_resource svr ON svr.id = t.sid
+      WHERE t.a > 40 GROUP BY svr.name HAVING COUNT(*) >= 2;
+  - id: syn-i05
+    query: "2026년 6월에 전체 서버 평균보다 CPU 사용률이 높았던 서버를 사용률과 함께 보여줘"
+    db_id: polestar
+    category: complex
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      WITH x AS (
+        SELECT svr.name, AVG(s.avg_val) AS a
+        FROM polestar.cmm_metric_stat_m s
+        JOIN polestar.cmm_resource c ON c.id = s.resource_id AND c.resource_type = 'server.Cpus' AND c.dtime IS NULL
+        JOIN polestar.cmm_resource svr ON svr.id = COALESCE(c.platform_resource_id, c.id) AND svr.resource_type = 'server.Server'
+        WHERE s.definition_name = 'Utilization' AND s.stat_date = '202606' GROUP BY svr.name)
+      SELECT name, ROUND(a::numeric, 1) AS cpu_avg FROM x WHERE a > (SELECT AVG(a) FROM x);
+  - id: syn-i06
+    query: "현재 활성 상태인 심각 알람이 있는 서버 중 2026년 6월 CPU 사용률 평균이 가장 높았던 서버의 제조사와 일련번호를 알려줘"
+    db_id: polestar
+    category: complex
+    coverage: inside
+    scoring: subset
+    gold_sql: |
+      WITH act AS (
+        SELECT DISTINCT COALESCE(ar.platform_resource_id, ar.id) AS sid
+        FROM polestar.cmm_alarm a
+        JOIN polestar.cmm_alarm_active aa ON aa.alarm_id = a.id
+        JOIN polestar.cmm_resource ar ON ar.id = a.resource_id
+        WHERE a.alarmseverity = 3),
+      t AS (
+        SELECT svr.id, svr.resource_conf_id, AVG(s.avg_val) AS a
+        FROM polestar.cmm_metric_stat_m s
+        JOIN polestar.cmm_resource c ON c.id = s.resource_id AND c.resource_type = 'server.Cpus' AND c.dtime IS NULL
+        JOIN polestar.cmm_resource svr ON svr.id = COALESCE(c.platform_resource_id, c.id) AND svr.resource_type = 'server.Server'
+        WHERE s.definition_name = 'Utilization' AND s.stat_date = '202606' AND svr.id IN (SELECT sid FROM act)
+        GROUP BY svr.id, svr.resource_conf_id ORDER BY a DESC LIMIT 1)
+      SELECT MAX(CASE WHEN cc.name = 'Vendor' THEN cc.stringvalue_short END) AS vendor,
+             MAX(CASE WHEN cc.name = 'SerialNumber' THEN cc.stringvalue_short END) AS serial
+      FROM t JOIN polestar.core_config_prop cc ON cc.configuration_id = t.resource_conf_id;

@@ -1,0 +1,128 @@
+# plans/122 T-0 — 한국어 시간 표현 골드셋 ③: §10.1 오답 재현용 재생 케이스(두 run의 서버 로그)
+#
+# 대상: §10.1 「월 단위로 표현할 수 없는 시간 표현」 중 2단 로그가 있는 11턴 + R3-05(값 범위 밖 · 환각 기간).
+# M-03·M-04·M-07(최근 1시간)은 로컬 샌드박스 전용이라 두 run에 로그가 없다.
+#
+# 각 케이스:
+#   anchor         — 그 턴의 input_parser 로그 시각(KST · 요청 수신 직후) — 기대값의 기준 시각
+#   expect         — 새 해석기 기대값(§10.3.1 정책 표 · 그 기준 시각에서) — tests가 단언한다
+#   llm_time_range — 그 턴에 실행된 input_parser LLM `time_range`(로그 원문 그대로). 현행
+#                    `resolve_stat_month_range(query, parsed_time_range=…)` 재생 입력이다(스크래치 채점)
+#   domain         — 현행 월 투영이 소비된 경로: stat(월 통계 블록 · (당월, 당월)이면 D-201 일간 블록)
+#                    · alarm(`_month_range_to_ts_bounds` — 월 전체 ctime 구간)
+#   verdict_10_1   — §10.1의 실행 SQL 판정: wrong(오답) · function(의미는 맞지만 DB 함수식)
+#   log            — run 디렉터리 · 서버 로그 파일:줄(input_parser 줄 → 폴백 계측 줄)
+#
+# run: bench = results/bench/run-closed-20260928-triage.tar/20260923-140539(2단 baseline arm)
+#      scenario = results/scenario/20260923-103638(2단)
+version: 1
+cases:
+  - id: R-01
+    scenario: K-09
+    query: "전체 서버의 시간 단위 CPU 사용률을 최근 30일치 전부 보여줘"
+    anchor: "2026-09-23 16:47"
+    expect: {start: "2026-08-24", end: "2026-09-23", grain: hour, completeness: complete}
+    llm_time_range: {start: "2026-08-24", end: "2026-09-23"}
+    domain: stat
+    verdict_10_1: wrong
+    log: "bench server-baseline.log:6366 → :6384 ('202608','202608')"
+  - id: R-02
+    scenario: E-05
+    query: "해당 서버 프로세스 이력 지난 7일 보여줘"
+    anchor: "2026-09-23 15:07"
+    expect: {start: "2026-09-16", end: "2026-09-23", grain: day, completeness: complete}
+    llm_time_range: {start: "2026-09-15", end: "2026-09-22"}
+    domain: stat
+    verdict_10_1: function
+    log: "bench server-baseline.log:2009 → :2036 ('202609','202609')"
+  - id: R-03
+    scenario: H-14
+    query: "지난 반년 데이터로 채워줘"
+    anchor: "2026-09-23 16:00"
+    expect: {start: "2026-03-01", end: "2026-09-01", grain: month, completeness: complete}
+    llm_time_range: {start: "2026-03-23", end: "2026-09-23"}
+    domain: stat
+    verdict_10_1: wrong
+    log: "bench server-baseline.log:4236 → :4273 ('202603','202608') — SQL 기간 누락은 plans/120 사슬(해석기 하류)"
+  - id: R-04
+    scenario: R4-02C
+    query: "지난 30일 CPU 평균 알려줘"
+    anchor: "2026-09-23 19:36"
+    expect: {start: "2026-08-24", end: "2026-09-23", grain: day, completeness: complete}
+    llm_time_range: {start: "2026-08-24", end: "2026-09-23"}
+    domain: stat
+    verdict_10_1: wrong
+    log: "scenario server-baseline.log:19640 → :19658 ('202608','202608')"
+  - id: R-05
+    scenario: R4-03C
+    query: "최근 1시간 CPU 사용률 평균"
+    anchor: "2026-09-23 19:45"
+    expect: {start: "2026-09-23 18:00", end: "2026-09-23 19:00", grain: hour, completeness: rolling}
+    llm_time_range: {start: "2026-09-23T11:00:00Z", end: "2026-09-23T12:00:00Z"}
+    domain: stat
+    verdict_10_1: wrong
+    log: "scenario server-baseline.log:19795 → :19814 ('202609','202609')"
+  - id: R-06
+    scenario: R1-08
+    query: "어제 심각 알람이 3건 이상 난 서버의 메모리 용량과 벤더를 같이 보여줘"
+    anchor: "2026-09-23 16:50"
+    expect: {start: "2026-09-22", end: "2026-09-23", grain: day, completeness: complete}
+    llm_time_range: {start: "2026-09-22", end: "2026-09-22"}
+    domain: alarm
+    verdict_10_1: wrong
+    log: "scenario server-baseline.log:14576 → :14602 ('202609','202609') → :14604 [알람조립] months=('202609','202609')"
+  - id: R-07
+    scenario: R1-10
+    query: "어제 CPU가 급등한 서버를 찾고 왜 그랬는지도 분석해줘"
+    anchor: "2026-09-23 17:01"
+    expect: {start: "2026-09-22", end: "2026-09-23", grain: day, completeness: complete}
+    llm_time_range: {start: "2026-09-22", end: "2026-09-22"}
+    domain: alarm
+    verdict_10_1: wrong
+    log: "scenario server-baseline.log:15035 → :15061 ('202609','202609') — 알람 부분(§10.1)"
+  - id: R-08
+    scenario: R3-06C
+    query: "지난주 알람 보여줘"
+    anchor: "2026-09-23 18:44"
+    expect: {start: "2026-09-14", end: "2026-09-21", grain: day, completeness: complete}
+    llm_time_range: {start: "2026-09-16", end: "2026-09-23"}
+    domain: alarm
+    verdict_10_1: wrong
+    log: "scenario server-baseline.log:18045 → :18060 ('202609','202609') — 역질문 전 첫 파싱(:18039)은 {'2026-09-14','2026-09-20'}로 달력 주였다(LLM 비결정)"
+  - id: R-09
+    scenario: R2-05
+    query: "전체 서버의 전체 지표를 지난 2년치 시간 단위로 전부"
+    anchor: "2026-09-23 17:27"
+    expect: {start: "2024-09-01", end: "2026-09-01", grain: hour, completeness: complete}
+    llm_time_range: {start: "2024-09-23", end: "2026-09-23"}
+    domain: stat
+    verdict_10_1: wrong
+    log: "scenario server-baseline.log:15823 → :15842 ('202409','202608') — 구간은 맞고 입도(월 통계)가 틀림"
+  - id: R-10
+    scenario: R4-11
+    query: "어제 CPU 사용률이 제일 높았던 값 알려줘"
+    anchor: "2026-09-23 20:53"
+    expect: {start: "2026-09-22", end: "2026-09-23", grain: day, completeness: complete}
+    llm_time_range: {start: "2026-09-22", end: "2026-09-22"}
+    domain: stat
+    verdict_10_1: function
+    log: "scenario server-baseline.log:22086 → :22104 ('202609','202609')"
+  - id: R-11
+    scenario: R4-11C
+    query: "어제 CPU 사용률 최댓값 알려줘"
+    anchor: "2026-09-23 20:56"
+    expect: {start: "2026-09-22", end: "2026-09-23", grain: day, completeness: complete}
+    llm_time_range: {start: "2026-09-22", end: "2026-09-22"}
+    domain: stat
+    verdict_10_1: function
+    log: "scenario server-baseline.log:22252 → :22268 ('202609','202609')"
+  # §10.1 밖 — 값 범위 밖 표현을 LLM이 「13개월」로 읽었고 현행이 그대로 채택했다(침묵 · 환각 기간)
+  - id: R-12
+    scenario: R3-05
+    query: "지난 13월 CPU 사용률"
+    anchor: "2026-09-23 18:33"
+    expect: {unresolved: true}
+    llm_time_range: {start: "2025-08-23", end: "2026-09-23"}
+    domain: stat
+    verdict_10_1: null
+    log: "scenario server-baseline.log:17703 → :17727 ('202508','202608')"

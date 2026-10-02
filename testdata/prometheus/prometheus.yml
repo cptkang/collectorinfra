@@ -1,0 +1,29 @@
+# §8.1 스크레이프·라벨 규약 — nodename 값은 PG 픽스처 polestar.cmm_resource의
+# server_name(svr-web-01)과 동일하게 정렬해 D-119 서버측 {nodename=…} 조립과
+# 소스 교차 검증(§2)이 픽스처에서 실제로 단언 가능하게 한다.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # target-vm(우분투+node_exporter 설치·hostname=svr-web-01) — static 라벨(0차 결정적)에
+  # 더해 node_uname_info{nodename}이 실 uname으로 svr-web-01을 보고한다(§5-1 실측 경로).
+  - job_name: node
+    static_configs:
+      - targets: ["target-vm:9100"]
+        labels:
+          nodename: svr-web-01
+
+  - job_name: mock
+    static_configs:
+      - targets: ["mock-exporter:80"]
+        labels:
+          nodename: svr-web-01
+
+  # plans/92 O5(B-2) 폴스타 → OpenMetrics 브리지 — 호스트에서 EXPOSE_POLESTAR_EXPORTER=true로 띄운
+  # mcp_server(임시 포트 9098 · 9099/9097 상주 인스턴스와 별개)의 GET /metrics를 긁는다.
+  # 미기동이면 up{job="polestar"} == 0 — 나머지 job에는 영향 없다. 기동 절차는 docs/27 §4.1.
+  # MCP_BEARER_TOKEN을 켠 인스턴스면 authorization(credentials)을 추가한다.
+  - job_name: polestar
+    static_configs:
+      - targets: ["host.docker.internal:9098"]

@@ -1,0 +1,192 @@
+# ============================================================================
+# 유사어 시드 — polestar (생성물 — 직접 편집 금지)
+# ============================================================================
+# 생성: python scripts/synonym_seeds.py derive --db polestar
+# 원천(단일 출처): config/semantic_models/polestar.yaml (dimensions.aliases,
+#   pattern_b.measures.aliases, pattern_c.severity_map)
+#   + config/db_profiles/polestar.yaml (known_attributes[].synonyms)
+# 어휘를 추가하려면 이 파일이 아니라 **시맨틱 모델의 aliases**에 추가한 뒤
+# derive를 재실행한다(사전 이중 관리 금지 — D-067 단일 출처).
+# 반영: python scripts/synonym_seeds.py load --db polestar
+#   (합집합 병합 — 기존 LLM 발견·운영자 등록 단어 무손실, 재실행 안전)
+# ============================================================================
+version: '1.0'
+db_id: polestar
+derived_from:
+- file: config/semantic_models/polestar.yaml
+  sha256: 617ce842f991746c064837bada8b03111a4ba891074bf02ff8245710dbf9d5b3
+- file: config/db_profiles/polestar.yaml
+  sha256: 401a0ad0bd5818c2f79a1d44b88f8ff515468ffe48f22799c02ba072f56b7af1
+source_tag: operator
+column_synonyms:
+  polestar.cmm_alarm.alarmseverity:
+  - critical
+  - info
+  - resolved
+  - warning
+  - 경고
+  - 심각
+  - 주의
+  - 해소
+  polestar.cmm_metric_stat_d.avg_val:
+  - CPU
+  - CPU 사용률
+  - 디스크 IO
+  - 디스크 아이오
+  - 메모리
+  - 메모리 사용률
+  - 파일시스템
+  - 파일시스템 사용률
+  polestar.cmm_metric_stat_h.avg_val:
+  - CPU
+  - CPU 사용률
+  - 디스크 IO
+  - 디스크 아이오
+  - 메모리
+  - 메모리 사용률
+  - 파일시스템
+  - 파일시스템 사용률
+  polestar.cmm_metric_stat_m.avg_val:
+  - CPU
+  - CPU 사용률
+  - 디스크 IO
+  - 디스크 아이오
+  - 메모리
+  - 메모리 사용률
+  - 파일시스템
+  - 파일시스템 사용률
+  polestar.cmm_resource.avail_status:
+  - 가용성
+  - 가용성 상태
+  - 상태
+  polestar.cmm_resource.hostname:
+  - Hostname
+  - 호스트네임
+  - 호스트명
+  polestar.cmm_resource.ipaddress:
+  - IP
+  - IPaddress
+  - IP주소
+  polestar.cmm_resource.name:
+  - server_name
+  - 서버 이름
+  - 서버명
+  - 장비명
+  polestar.core_config_prop.name:
+  - CPU 모델
+  - CPU 코어 수
+  - CPU모델
+  - CPU소켓
+  - CPU속도
+  - CPU코어수
+  - OS
+  - OS버전
+  - OS종류
+  - OS파라미터
+  - 논리코어
+  - 메모리
+  - 메모리 용량
+  - 메모리용량
+  - 메모리크기
+  - 모델
+  - 모델명
+  - 물리코어
+  - 벤더
+  - 소켓수
+  - 시간대
+  - 시리얼
+  - 시리얼번호
+  - 에이전트ID
+  - 에이전트버전
+  - 운영체제
+  - 운영체제버전
+  - 일련번호
+  - 제조사
+  - 커널 파라미터
+  - 커널버전
+  - 커널파라미터
+  - 코어수
+  - 클럭
+  - 타임존
+  - 패치레벨
+  - 프로세서
+eav_names:
+  AgentID:
+  - 에이전트ID
+  AgentVersion:
+  - 에이전트버전
+  GMT:
+  - 시간대
+  - 타임존
+  LOGICALCORE:
+  - CPU 코어 수
+  - CPU코어수
+  - 논리코어
+  - 코어수
+  MODEL:
+  - CPU 모델
+  - CPU모델
+  - 프로세서
+  Model:
+  - 모델
+  - 모델명
+  OSParameter:
+  - OS파라미터
+  - 커널 파라미터
+  - 커널파라미터
+  OSType:
+  - OS
+  - OS종류
+  - 운영체제
+  OSVerson:
+  - OS버전
+  - 운영체제버전
+  PHYSICALCORE:
+  - 물리코어
+  PHYSICALCPU:
+  - CPU소켓
+  - 소켓수
+  PatchLevel:
+  - 커널버전
+  - 패치레벨
+  SPEED:
+  - CPU속도
+  - 클럭
+  SerialNumber:
+  - 시리얼
+  - 시리얼번호
+  - 일련번호
+  TotalSize:
+  - 메모리
+  - 메모리 용량
+  - 메모리용량
+  - 메모리크기
+  Vendor:
+  - 벤더
+  - 제조사
+column_values:
+  cmm_alarm.alarmseverity:
+    critical:
+      op: '='
+      value: 3
+    info:
+      op: '='
+      value: 1
+    resolved:
+      op: '='
+      value: 0
+    warning:
+      op: '='
+      value: 2
+    경고:
+      op: '='
+      value: 2
+    심각:
+      op: '='
+      value: 3
+    주의:
+      op: '='
+      value: 1
+    해소:
+      op: '='
+      value: 0

@@ -373,3 +373,99 @@ class TestHandleReuseSynonym:
         )
 
         assert "없습니다" in result
+
+
+# === 결정적 db_id 검증·제품군 전개 (2026-09-01 A-05 실측 재발 방지) ===
+
+
+class TestResolveCacheDbTarget:
+    """`_resolve_cache_db_target` — LLM 추출 db_id의 활성 목록 검증·프리픽스 전개."""
+
+    def _cfg(self, active):
+        config = MagicMock()
+        config.multi_db.get_active_db_ids.return_value = active
+        return config
+
+    def test_active_db_id_passes_through(self):
+        from src.nodes.cache_management import _resolve_cache_db_target
+
+        db_id, override, note = _resolve_cache_db_target(
+            "polestar_cm_gp", self._cfg(["polestar_cm_gp", "polestar_cm_yd"])
+        )
+        assert (db_id, override, note) == ("polestar_cm_gp", None, None)
+
+    def test_family_surface_word_expands_to_active(self):
+        """A-05 형태: 'polestar'(제품군 표면어)가 비활성 샌드박스로 가지 않고 활성 3종 전개."""
+        from src.nodes.cache_management import _resolve_cache_db_target
+
+        active = ["polestar_b0", "polestar_cm_gp", "polestar_cm_yd"]
+        db_id, override, note = _resolve_cache_db_target("polestar", self._cfg(active))
+        assert db_id is None
+        assert override == active
+        assert note and "제품군" in note
+
+    def test_sandbox_active_locally_unchanged(self):
+        """로컬 개발(ACTIVE=polestar)에서는 'polestar'가 활성이므로 전개하지 않는다."""
+        from src.nodes.cache_management import _resolve_cache_db_target
+
+        db_id, override, note = _resolve_cache_db_target(
+            "polestar", self._cfg(["polestar"])
+        )
+        assert (db_id, override, note) == ("polestar", None, None)
+
+    def test_unknown_db_id_aborts_with_guidance(self):
+        from src.nodes.cache_management import _resolve_cache_db_target
+
+        db_id, override, note = _resolve_cache_db_target(
+            "cloud_portal", self._cfg(["polestar_cm_gp"])
+        )
+        assert db_id is None
+        assert override is None
+        assert note and "활성 DB" in note
+
+    def test_none_db_id_unchanged(self):
+        from src.nodes.cache_management import _resolve_cache_db_target
+
+        assert _resolve_cache_db_target(None, self._cfg(["polestar_cm_gp"])) == (
+            None, None, None,
+        )
+
+
+class TestGenerateSkipsDb2:
+    """DB2 존 캐시 갱신 명시 안내 (2026-09-01 V2-1 실측 — 침묵 error 방지)."""
+
+    @pytest.mark.asyncio
+    async def test_db2_zone_skipped_with_notice(self, app_config, cache_mgr):
+        from src.nodes.cache_management import _handle_generate
+
+        db2_cfg = MagicMock()
+        db2_cfg.db_engine = "db2"
+        with patch(
+            "src.routing.domain_config.get_domain_by_id", return_value=db2_cfg
+        ):
+            result = await _handle_generate(cache_mgr, app_config, "polestar_b0")
+
+        assert "캐시 갱신 미지원" in result
+        assert "polestar_b0" in result
+        cache_mgr.refresh_cache.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pg_zone_still_refreshes(self, app_config, cache_mgr):
+        from src.nodes.cache_management import _handle_generate
+
+        pg_cfg = MagicMock()
+        pg_cfg.db_engine = "postgresql"
+        refresh_result = MagicMock()
+        refresh_result.status = "unchanged"
+        refresh_result.table_count = 384
+        refresh_result.fingerprint = "f" * 32
+        cache_mgr.refresh_cache = AsyncMock(return_value=refresh_result)
+        with patch(
+            "src.routing.domain_config.get_domain_by_id", return_value=pg_cfg
+        ), patch("src.db.get_db_client") as gc:
+            gc.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+            gc.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = await _handle_generate(cache_mgr, app_config, "polestar_cm_gp")
+
+        assert "unchanged" in result
+        cache_mgr.refresh_cache.assert_called_once()

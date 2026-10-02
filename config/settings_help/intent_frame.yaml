@@ -1,0 +1,129 @@
+# 설정 옵션 상세 설명 — 의도 프레임·정규 질의 (D-191)
+# 근거: src/config.py IntentFrameConfig 주석 · plans/107 §4·§5.1
+# ⚠ 전부 기본 off이고 off일 때 현행과 비트 단위로 같다. 소비자 프롬프트를 바꾸는 것은
+#   CANONICAL_QUERY_MODE=augment + CANONICAL_QUERY_CONSUMERS에 이름을 올린 소비자뿐이다.
+
+version: 1
+group: intent_frame
+
+settings:
+
+  INTENT_FRAME_ENABLED:
+    summary: 확정된 질의 의도를 구조(프레임)로 만들어 기록할지.
+    behavior: >-
+      켜면 SQL 생성 단계마다 "무엇을 어디서 어떤 조건으로 조회하는가"를 슬롯별 출처와 함께
+      기록하고, 재작성 감사 레코드를 감사 로그와 완료 응답에 싣는다. **이 값만 켜서는 어떤
+      프롬프트도 바뀌지 않는다** — 기록(섀도)만 한다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 프레임을 만들지도 기록하지도 않는다. 현행 동작과 비트 단위로 같다.
+      - value: "true"
+        effect: >-
+          프레임과 재작성 감사(게이트 판정·검증 결과)를 기록한다. 원문 전문은 싣지 않고
+          슬롯 값과 출처만 남긴다.
+    example: >-
+      "그 서버 메모리는?"이라는 후속 질문에서 대상 서버가 이번 발화가 아니라 직전 대화에서
+      왔다는 사실이 "출처: 직전 대화에서 이어받음"으로 남는다.
+    performance: SQL 생성 1회당 결정적 연산 몇 번과 감사 로그 1줄이 더해진다. LLM 호출은 없다.
+    stability: 기록 실패는 조회를 막지 않는다 — 실패 사유만 경고 로그로 남긴다.
+    recommendation: 시나리오 측정(plans/94 §19)으로 게이트 통과 비율을 볼 때 켠다.
+    caveats:
+      - 이 값은 기동 시 1회 해석된다 — 요청 중에 바꾸면 프롬프트 접두가 흔들려 캐시가 무효화된다.
+    related: [CANONICAL_QUERY_MODE, REWRITE_VERIFY_MODE]
+
+  CANONICAL_QUERY_MODE:
+    summary: 확정된 해석을 LLM 프롬프트에 함께 실을지(병기).
+    behavior: >-
+      augment면 지정한 소비자의 프롬프트에 "[확정된 해석]" 블록을 붙이고 원문은 그 아래에
+      그대로 둔다. 복합 계획(여러 작업으로 나뉜 질의)에는 붙이지 않는다 — 작업 범위를 좁힌
+      질의를 전체 해석으로 되돌리면 하위 결과로 전체 질문에 답하는 착오가 생긴다.
+    options:
+      - value: "off"
+        label: 기본
+        effect: 프롬프트를 바꾸지 않는다. 현행 동작과 비트 단위로 같다.
+      - value: "shadow"
+        effect: 해석을 만들어 기록만 하고 프롬프트는 바꾸지 않는다.
+      - value: "augment"
+        effect: >-
+          CANONICAL_QUERY_CONSUMERS에 오른 소비자에게만 해석 블록을 병기한다.
+          **기준선 측정 없이 켜지 말 것** — SQL·응답 품질 영향이 아직 측정되지 않았다.
+    example: >-
+      존 선택 뒤 "전체 서버 OS 종류"라고 물었다면 블록에 "대상 DB: … (출처: 사용자 선택)"이
+      붙고, 그 줄은 WHERE 조건으로 쓰지 말라는 안내가 함께 실린다.
+    performance: 병기 시 프롬프트가 슬롯 수만큼(수십 토큰 수준 — 추정) 길어진다.
+    stability: 대체(replace)는 받지 않는다 — 소비자별 측정 뒤에 연다(plans/107 G-2).
+    recommendation: 기준선 측정 전에는 off를 유지한다.
+    caveats:
+      - 지원하지 않는 값은 기동 시 경고를 남기고 off로 본다.
+    related: [CANONICAL_QUERY_CONSUMERS, REWRITE_GATE_MODE, INTENT_FRAME_ENABLED]
+
+  CANONICAL_QUERY_CONSUMERS:
+    summary: 해석 블록을 병기할 소비자 목록(쉼표 구분).
+    behavior: >-
+      CANONICAL_QUERY_MODE=augment일 때 이 목록에 있는 소비자만 병기한다. 한 번에 하나씩
+      켜고 측정하는 것이 원칙이다. 이름은 output_generator(응답 서술) · general_inference
+      (일반 추론) · query_generator(SQL 생성)다.
+    options:
+      - value: ""
+        label: 기본
+        effect: 아무 소비자도 병기하지 않는다.
+      - value: "output_generator"
+        effect: 응답 서술만 병기한다(조회 결과는 바뀌지 않는다 — 가장 먼저 켤 후보).
+      - value: "query_generator"
+        effect: SQL 생성 프롬프트에 병기한다. SQL 품질에 직접 영향이 있다.
+    example: >-
+      output_generator 하나만 켜서 응답 서술이 해석과 어긋나지 않는지 먼저 본 뒤,
+      general_inference · query_generator 순으로 넓힌다.
+    performance: 목록에 오른 소비자의 프롬프트만 길어진다.
+    stability: 목록에 없는 이름은 무시된다.
+    recommendation: 비워 둔다(기준선 측정 뒤 1곳씩).
+    caveats:
+      - JSON 배열이 아니라 쉼표로 구분한 문자열이다(.env list 필드의 JSON 형식 함정을 피한다).
+    related: [CANONICAL_QUERY_MODE]
+
+  REWRITE_GATE_MODE:
+    summary: 모호하지 않은 질의에는 병기하지 않도록 거를지(재작성 게이트).
+    behavior: >-
+      모든 슬롯이 이번 발화에서 나왔고 미해결이 없으면 "통과(pass_through)"로 판정한다.
+      enforce면 통과 판정인 질의에는 병기하지 않고 원문 그대로 둔다. 판정 결과는 모드와
+      관계없이 재작성 감사에 남는다.
+    options:
+      - value: "off"
+        label: 기본
+        effect: 게이트 판정을 병기 여부에 쓰지 않는다(감사에는 남는다).
+      - value: "shadow"
+        effect: 판정만 기록한다. 병기 여부에 쓰지 않는다.
+      - value: "enforce"
+        effect: 통과 판정인 질의에는 병기하지 않는다.
+    example: >-
+      "김포 서버 CPU 사용률 상위 10건"은 모든 조건이 발화에 있어 통과 판정이다. 존 선택
+      답변으로 대상이 정해진 질의는 발화 밖 출처가 섞여 병기 대상이 된다.
+    performance: 결정적 판정 1회 — 비용은 무시할 수준이다.
+    stability: 게이트는 라우팅 결정을 바꾸지 않는다 — 바꾸는 것은 프롬프트 텍스트뿐이다.
+    recommendation: 병기를 켤 때 함께 enforce를 검토한다. 통과 비율은 먼저 섀도로 잰다.
+    caveats:
+      - 병기 모드(CANONICAL_QUERY_MODE=augment)가 아니면 enforce여도 효과가 없다.
+    related: [CANONICAL_QUERY_MODE, INTENT_FRAME_ENABLED]
+
+  REWRITE_VERIFY_MODE:
+    summary: LLM이 다시 쓴 질의가 확정 해석과 어긋나는지 대조할지(섀도).
+    behavior: >-
+      shadow면 오케스트레이션이 넣은 재작성 질의와 SQL 프롬프트가 읽는 질의를 프레임과
+      대조해 식별자 누락 · 대상 밖 위치어 누출 · 직전 엔티티로의 범위 축소를 기록한다.
+      **결과를 기록만 하고 어떤 텍스트도 바꾸지 않는다.**
+    options:
+      - value: "off"
+        label: 기본
+        effect: 대조하지 않는다.
+      - value: "shadow"
+        effect: 대조 결과를 재작성 감사에 남긴다.
+    example: >-
+      "은행존 알람"이 "김포 … 공동존 알람"으로 재작성됐다면 대상 밖 위치어 누출
+      (fail:location_leak)로 기록된다.
+    performance: 대조 1회당 문자열 비교 몇 번 — LLM 호출은 없다.
+    stability: 교체(enforce)는 받지 않는다 — 섀도 실패율을 본 뒤 사용자 확인으로 연다(plans/107 G-5).
+    recommendation: INTENT_FRAME_ENABLED를 켤 때 함께 shadow로 둔다.
+    caveats:
+      - 지표·기간은 대조하지 않는다 — 표기 변형이 많아 사전 없이 비교하면 실패율이 거짓으로 부푼다.
+    related: [INTENT_FRAME_ENABLED]

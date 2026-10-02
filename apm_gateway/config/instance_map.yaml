@@ -1,0 +1,21 @@
+# 인스턴스 ↔ hostname 정합 규칙 (plans/87 §5.3 · 게이트웨이 소유 설정 — 루트 config/가 아니다).
+# 순서: overrides(수동 · 최우선) → match_rules(위에서부터 첫 성공).
+# hostname은 폴스타 OS hostname(cmm_resource.hostname)이다. 공동존은 name ≠ hostname(D-046) — J7 nodename 역해소는 별개.
+# kind 어휘:
+#   host_name — 제니퍼 Instance.hostName 직접 대조(대소문자·FQDN 정규화) · high
+#   exact     — 인스턴스명 == hostname(대소문자 무시) · high(정방향 전용)
+#   prefix    — 인스턴스명이 "hostname_" 또는 "hostname-"로 시작 · medium(정방향 전용)
+#   regex     — 명명 그룹 hostname을 뽑는다 · medium(정방향·역방향)
+# polestar_was_object(폴스타 was_object 브릿지)는 운영 실재(U-10)가 확인되지 않아 아직 없다 — 넣으면 경고 후 건너뛴다.
+version: 1
+match_rules:
+  - kind: host_name
+  - kind: exact
+  - kind: prefix
+overrides: []
+# 예시(플레이스홀더):
+#  - instance_name: "WAS-EXAMPLE-01"
+#    domain_id: 1000
+#    hostname: "example-host01"
+#    port: 8080
+#    kind: tomcat

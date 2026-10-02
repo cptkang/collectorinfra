@@ -7,14 +7,26 @@
 (function () {
     "use strict";
 
-    var token = localStorage.getItem("admin_token");
+    // 통합 RBAC(D-069): 사용자 로그인 토큰(role==admin)으로도 어드민 진입을 허용한다.
+    // break-glass 운영자 토큰(admin_token)이 있으면 우선, 없으면 사용자 토큰을 사용한다.
+    // 고른 토큰의 키 이름을 기억한다 — 401이면 바로 그 키를 지워야 한다(noise.js D-245 수정과 같은 이유:
+    // 만료 user_token을 남기면 로그인 화면이 그 토큰을 보고 곧바로 /admin으로 되돌려 무한 리다이렉트가 난다).
+    var TOKEN_KEYS = ["admin_token", "user_token"];
+    var tokenKey = null;
+    var token = null;
+    for (var i = 0; i < TOKEN_KEYS.length && !token; i++) {
+        token = localStorage.getItem(TOKEN_KEYS[i]);
+        if (token) tokenKey = TOKEN_KEYS[i];
+    }
     var alertError = document.getElementById("alertError");
     var alertSuccess = document.getElementById("alertSuccess");
 
     // --- 인증 확인 ---
 
+    // Plan 59-a §3: 미인증 진입은 break-glass(/admin/login)가 아니라 정상 로그인(/login)으로 유도한다.
+    // /admin/login은 DB 사용자를 인증하지 않으므로(운영자 env 계정 전용) 일반/관리자 계정이 로그인 실패한다.
     if (!token) {
-        window.location.href = "/admin/login";
+        window.location.href = "/login?next=/admin";
         return;
     }
 
@@ -23,18 +35,33 @@
 
     async function verifyToken() {
         try {
-            var response = await apiRequest("GET", "/api/v1/admin/me");
+            // require_admin_user로 보호된 엔드포인트로 검증(운영자 토큰·role==admin 사용자 모두 통과)
+            var response = await apiRequest("GET", "/api/v1/admin/users");
+            if (response.status === 403) {
+                // 로그인은 됐으나 관리자 권한 없음(role==user) → 메인 화면으로
+                window.location.href = "/";
+                return;
+            }
             if (!response.ok) {
-                localStorage.removeItem("admin_token");
-                window.location.href = "/admin/login";
+                redirectUnauthenticated();
             }
         } catch (err) {
-            localStorage.removeItem("admin_token");
-            window.location.href = "/admin/login";
+            redirectUnauthenticated();
         }
     }
 
+    function redirectUnauthenticated() {
+        // 미인증/만료 토큰 → 정상 로그인으로 유도(break-glass 아님). 실제로 보낸 토큰의 키를 지운다.
+        localStorage.removeItem(tokenKey);
+        if (tokenKey === "user_token") localStorage.removeItem("user_info");
+        window.location.href = "/login?next=/admin";
+    }
+
     // --- 헬스 체크 ---
+
+    // (plans/104 C-4) 사용자 DB 권한 편집의 후보 목록. 헬스 응답의 db_status_map 키를
+    // 그대로 쓴다(권한 편집 전용 API를 따로 두지 않는다). 헬스 조회 실패 시 빈 목록이다.
+    var activeDbIds = [];
 
     checkHealth();
 
@@ -59,6 +86,7 @@
             var badge = document.getElementById("healthStatus");
             var statusMap = data.db_status_map || {};
             var dbIds = Object.keys(statusMap);
+            activeDbIds = dbIds.slice();
             updateAdminTooltip(statusMap);
 
             if (dbIds.length > 0) {
@@ -103,7 +131,13 @@
         if (body) {
             options.body = JSON.stringify(body);
         }
-        return fetch(url, options);
+        // 토큰은 페이지 진입 시 1회만 캡처하므로, 만료 시 무안내 실패하지 않도록 401을 여기서 처리한다.
+        return fetch(url, options).then(function (response) {
+            if (response.status === 401) {
+                redirectUnauthenticated();
+            }
+            return response;
+        });
     }
 
     function showError(message) {
@@ -120,6 +154,15 @@
         setTimeout(function () { alertSuccess.classList.remove("active"); }, 5000);
     }
 
+    // (plans/104) 「DB 구조」 탭 스크립트(admin-db-structure.js)가 같은 토큰·401 처리·알림을 쓰도록
+    // 최소 헬퍼만 노출한다. 인증 게이트에서 return하면 이 줄에 도달하지 않아 탭 스크립트도 멈춘다.
+    window.AdminApi = {
+        request: apiRequest,
+        showError: showError,
+        showSuccess: showSuccess,
+        errorMessage: errorMessage,
+    };
+
     // --- 탭 전환 ---
 
     var tabs = document.querySelectorAll(".tab");
@@ -132,109 +175,1191 @@
                 c.classList.remove("active");
             });
             document.getElementById("tab-" + tab.dataset.tab).classList.add("active");
+
+            if (tab.dataset.tab === "settings") {
+                ensureSettingsLoaded();  // 최초 1회만 로드 — 미저장 편집을 보존한다
+            }
         });
     });
 
     // --- 로그아웃 ---
 
-    document.getElementById("logoutBtn").addEventListener("click", function () {
-        localStorage.removeItem("admin_token");
-        window.location.href = "/admin/login";
+    // Plan 59-a 후속: 대시보드 로그아웃은 **계정 전체 로그아웃**이어야 한다.
+    // - 일반(통합 RBAC) 세션: 서버 쿠키 정리(/auth/logout) + 로컬 토큰 제거 → 일반 로그인(/login).
+    // - break-glass 운영자 세션(admin_token): 운영자 로그인(/admin/login)으로 복귀.
+    document.getElementById("logoutBtn").addEventListener("click", async function () {
+        if (localStorage.getItem("admin_token")) {
+            localStorage.removeItem("admin_token");
+            window.location.href = "/admin/login";
+            return;
+        }
+        try {
+            await apiRequest("POST", "/api/v1/auth/logout");  // HttpOnly 쿠키 정리 + 감사 로그
+        } catch (e) { /* 무시 — 로컬 정리는 계속 진행 */ }
+        localStorage.removeItem("user_token");
+        localStorage.removeItem("user_info");
+        window.location.href = "/login";
     });
 
-    // --- 환경변수 설정 ---
+    // --- 테마 (전역 기본값) ---
 
-    var settingsData = [];
+    // 운영자 화면의 토글은 자기 브라우저가 아니라 **전체 기본 테마**(UI_DEFAULT_THEME)를 바꾼다.
+    // 즉시 반영 키라서 저장 후 새로 접속하는 화면부터 적용되며, 재시작·리로드가 필요 없다.
+    // 저장 후 개인 선택을 지워, 운영자 자신의 화면도 방금 정한 기본값을 따르게 한다.
+    var themeToggleBtn = document.getElementById("themeToggle");
+    if (themeToggleBtn && window.AppTheme) {
+        themeToggleBtn.addEventListener("click", async function () {
+            var next = window.AppTheme.toggleValue();
+            themeToggleBtn.disabled = true;
+            try {
+                var response = await apiRequest("PUT", "/api/v1/admin/settings", {
+                    settings: { UI_DEFAULT_THEME: next },
+                    reset_keys: [],
+                });
+                var data = await response.json();
+                if (!response.ok) {
+                    showError(errorMessage(data, "기본 테마 저장에 실패했습니다."));
+                    return;
+                }
+                window.AppTheme.cacheGlobalDefault(next);
+                window.AppTheme.clearPersonal();
+                showSuccess("기본 테마를 " + (next === "dark" ? "어둡게" : "밝게") + "로 저장했습니다.");
+                // 설정 목록이 옛 값을 보여주지 않도록 새로 읽는다 —
+                // 단, 저장하지 않은 편집이 있으면 덮어쓰지 않는다.
+                if (!Object.keys(settingsEdits).length) await loadSettings();
+            } catch (err) {
+                showError("서버와의 통신에 실패했습니다.");
+            } finally {
+                themeToggleBtn.disabled = false;
+            }
+        });
+    }
 
-    loadSettings();
+    // --- 환경변수 설정 (Plan 68: 카탈로그 기반 아코디언) ---
+    //
+    // 모든 렌더링은 createElement/textContent로 수행한다(innerHTML 금지 —
+    // escapeHtml이 작은따옴표를 이스케이프하지 않아 한국어 설명에서 위험하다).
+
+    var settingsGroups = [];      // 서버 카탈로그(그룹 배열)
+    var settingsItems = {};       // env_key -> 설정 항목
+    var settingsEdits = {};       // env_key -> {reset: true} | {value: "..."}
+    var settingsRows = {};        // env_key -> {row, state, error}
+    var groupExpanded = {};       // group_key -> 펼침 여부
+    var settingsFoldedCount = 0;  // 직전 렌더에서 고급(C등급)으로 접힌 항목 수
+    var settingsLoaded = false;
+    var settingsAllExpanded = false;
+    var settingsHelpCache = {};   // env_key -> 도움말 응답 (탭 체류 중 재조회 방지)
+    var settingsHelpKey = null;   // 현재 패널에 띄운 키 (null = 닫힘)
+
+    ensureSettingsLoaded();  // 설정 탭이 기본 활성 상태다
+
+    function ensureSettingsLoaded() {
+        if (settingsLoaded) return;
+        settingsLoaded = true;
+        loadSettings();
+    }
 
     async function loadSettings() {
         try {
-            var response = await apiRequest("GET", "/api/v1/admin/settings");
+            var response = await apiRequest("GET", "/api/v1/admin/settings/schema");
             var data = await response.json();
 
             if (!response.ok) {
-                showError(data.detail || "설정을 불러오는 데 실패했습니다.");
+                settingsLoaded = false;
+                showError(errorMessage(data, "설정을 불러오는 데 실패했습니다."));
                 return;
             }
 
-            settingsData = data.settings;
-            renderSettings(settingsData);
+            settingsGroups = data.groups || [];
+            settingsItems = {};
+            settingsEdits = {};
+            settingsGroups.forEach(function (group) {
+                (group.settings || []).forEach(function (item) {
+                    settingsItems[item.env_key] = item;
+                });
+            });
+
+            renderWarnings(data.warnings || [], data.env_file_path);
+            renderSettings();
         } catch (err) {
+            settingsLoaded = false;
             showError("서버와의 통신에 실패했습니다.");
         }
     }
 
-    function renderSettings(settings) {
-        var tbody = document.getElementById("settingsBody");
-        tbody.innerHTML = "";
-
-        settings.forEach(function (setting) {
-            var tr = document.createElement("tr");
-
-            var tdKey = document.createElement("td");
-            tdKey.textContent = setting.key;
-            tr.appendChild(tdKey);
-
-            var tdValue = document.createElement("td");
-            var input = document.createElement("input");
-            input.type = setting.is_sensitive ? "password" : "text";
-            input.className = "value-input";
-            input.value = setting.is_sensitive ? "" : setting.value;
-            input.placeholder = setting.is_sensitive ? "(변경하려면 새 값 입력)" : "";
-            input.dataset.key = setting.key;
-            input.dataset.sensitive = setting.is_sensitive;
-            input.dataset.original = setting.value;
-            tdValue.appendChild(input);
-            tr.appendChild(tdValue);
-
-            tbody.appendChild(tr);
-        });
-
-        document.getElementById("settingsLoading").classList.remove("active");
-        document.getElementById("settingsTable").style.display = "table";
+    function errorMessage(data, fallback) {
+        var detail = data && data.detail;
+        if (!detail) return fallback;
+        if (typeof detail === "string") return detail;
+        if (detail.message) return detail.message;
+        if (Array.isArray(detail)) {
+            return detail.map(function (e) { return e.msg || e.message || ""; })
+                .filter(Boolean).join(" / ") || fallback;
+        }
+        return fallback;
     }
 
-    document.getElementById("saveSettingsBtn").addEventListener("click", async function () {
-        var inputs = document.querySelectorAll(".value-input");
-        var updates = {};
+    function fieldErrors(data) {
+        var detail = data && data.detail;
+        if (detail && Array.isArray(detail.errors)) return detail.errors;
+        return [];
+    }
 
-        inputs.forEach(function (input) {
-            var key = input.dataset.key;
-            var isSensitive = input.dataset.sensitive === "true";
-            var value = input.value;
+    function renderWarnings(warnings, envFilePath) {
+        var banner = document.getElementById("settingsWarnings");
+        banner.textContent = "";
+        if (!warnings.length) {
+            banner.style.display = "none";
+            return;
+        }
+        warnings.forEach(function (text) {
+            var line = document.createElement("div");
+            line.textContent = "⚠ " + text;
+            banner.appendChild(line);
+        });
+        if (envFilePath) {
+            var path = document.createElement("div");
+            path.className = "settings-banner-path";
+            path.textContent = "대상 파일: " + envFilePath;
+            banner.appendChild(path);
+        }
+        banner.style.display = "block";
+    }
 
-            // 민감 값: 비어있으면 변경하지 않음
-            if (isSensitive && !value) return;
+    // --- 값 접근 ---
 
-            // 비민감 값: 변경된 경우만
-            if (!isSensitive && value === input.dataset.original) return;
+    function currentValue(item) {
+        var edit = settingsEdits[item.env_key];
+        if (edit) return edit.reset ? null : edit.value;
+        return item.file_value === undefined ? null : item.file_value;
+    }
 
-            updates[key] = value;
+    function isDirty(item) {
+        return Object.prototype.hasOwnProperty.call(settingsEdits, item.env_key);
+    }
+
+    function setValue(key, value) {
+        var item = settingsItems[key];
+        if (!item) return;
+        var original = item.file_value === undefined ? null : item.file_value;
+
+        if (value === null) {
+            // 기본값으로 되돌리기 = .env에서 줄 제거
+            if (original === null) delete settingsEdits[key];
+            else settingsEdits[key] = { reset: true };
+        } else if (value === original) {
+            delete settingsEdits[key];
+        } else {
+            settingsEdits[key] = { value: value };
+        }
+        refreshRow(key);
+        refreshGroupCounts();
+    }
+
+    function dirtyCount() {
+        return Object.keys(settingsEdits).length;
+    }
+
+    // --- 렌더링 ---
+
+    function renderSettings() {
+        var container = document.getElementById("settingsAccordion");
+        container.textContent = "";
+        settingsRows = {};
+
+        var query = document.getElementById("settingsSearch").value.trim().toLowerCase();
+        var filter = document.getElementById("settingsFilter").value;
+        var showUnconsumed = document.getElementById("showUnconsumed").checked;
+        var showAdvanced = document.getElementById("showAdvanced").checked;
+        var narrowed = query !== "" || filter !== "all";
+        var shown = 0;
+        settingsFoldedCount = 0;
+
+        settingsGroups.forEach(function (group) {
+            var items = (group.settings || []).filter(function (item) {
+                if (!matchesFilters(item, query, filter, showUnconsumed)) return false;
+                if (isFoldedAdvanced(item, query, showAdvanced)) {
+                    settingsFoldedCount += 1;
+                    return false;
+                }
+                return true;
+            });
+            if (!items.length) return;
+            shown += items.length;
+            container.appendChild(buildGroup(group, items, narrowed));
         });
 
-        if (Object.keys(updates).length === 0) {
-            showError("변경된 설정이 없습니다.");
+        if (!shown) {
+            var empty = document.createElement("p");
+            empty.className = "settings-empty";
+            empty.textContent = "조건에 맞는 설정이 없습니다.";
+            container.appendChild(empty);
+        }
+
+        updateCount(shown);
+        refreshGroupCounts();
+        // 행이 새로 그려지면 하이라이트가 사라지므로, 열려 있는 설명 대상에 다시 표시한다.
+        markHelpRow(settingsHelpKey);
+        document.getElementById("settingsLoading").classList.remove("active");
+    }
+
+    function matchesFilters(item, query, filter, showUnconsumed) {
+        if (!item.consumed && !showUnconsumed && !isDirty(item)) return false;
+
+        if (query) {
+            var haystack = (item.env_key + " " + (item.description || "")).toLowerCase();
+            if (haystack.indexOf(query) === -1) return false;
+        }
+
+        if (filter === "changed") return isDirty(item);
+        if (filter === "restart") return applyMode(item) === "restart" && !item.is_secret;
+        if (filter === "reload") return applyMode(item) === "reload" && !item.is_secret;
+        if (filter === "non-default") {
+            var value = currentValue(item);
+            return value !== null && value !== undefined;
+        }
+        return true;
+    }
+
+    // C등급(내부 상수급 — 기본값을 쓰는 설정)은 기본 화면에서 접는다(plans/109 §3.4.1 I-2).
+    // 이 설치가 이미 값을 정한 항목(.env 등재·OS/.encenv 오버라이드)·편집 중인 항목·검색 결과는
+    // 그대로 보인다. 미소비 항목은 자기 토글(showUnconsumed)만 따른다.
+    function isFoldedAdvanced(item, query, showAdvanced) {
+        if (showAdvanced || item.grade !== "C" || !item.consumed) return false;
+        if (query || isDirty(item) || item.override) return false;
+        return item.file_value === undefined || item.file_value === null;
+    }
+
+    function updateCount(shown) {
+        var total = Object.keys(settingsItems).length;
+        var label = document.getElementById("settingsCount");
+        var dirty = dirtyCount();
+        label.textContent = shown + " / " + total + "개 표시"
+            + (settingsFoldedCount ? " · 고급 " + settingsFoldedCount + "개 접힘" : "")
+            + (dirty ? " · 미저장 " + dirty + "건" : "");
+    }
+
+    function buildGroup(group, items, forceExpand) {
+        var section = document.createElement("section");
+        section.className = "settings-group";
+        var expanded = forceExpand || groupExpanded[group.group_key] === true;
+        if (expanded) section.classList.add("expanded");
+
+        var header = document.createElement("button");
+        header.type = "button";
+        header.className = "settings-group-header";
+
+        var title = document.createElement("span");
+        title.className = "settings-group-title";
+        title.textContent = group.title;
+        header.appendChild(title);
+
+        var count = document.createElement("span");
+        count.className = "settings-group-count";
+        count.textContent = items.length + "개";
+        header.appendChild(count);
+
+        var dirtyBadge = document.createElement("span");
+        dirtyBadge.className = "badge badge--dirty";
+        dirtyBadge.dataset.groupKey = group.group_key;
+        header.appendChild(dirtyBadge);
+
+        var chevron = document.createElement("span");
+        chevron.className = "settings-group-chevron";
+        chevron.textContent = "▾";
+        header.appendChild(chevron);
+
+        header.addEventListener("click", function () {
+            var nowExpanded = !section.classList.contains("expanded");
+            section.classList.toggle("expanded", nowExpanded);
+            groupExpanded[group.group_key] = nowExpanded;
+        });
+        section.appendChild(header);
+
+        var body = document.createElement("div");
+        body.className = "settings-group-body";
+        var lastSection = null;
+        items.forEach(function (item) {
+            if (item.section && item.section !== lastSection) {
+                var subtitle = document.createElement("div");
+                subtitle.className = "settings-subsection";
+                subtitle.textContent = item.section;
+                body.appendChild(subtitle);
+                lastSection = item.section;
+            }
+            body.appendChild(buildRow(item));
+        });
+        section.appendChild(body);
+
+        return section;
+    }
+
+    function buildRow(item) {
+        var row = document.createElement("div");
+        row.className = "setting-row";
+
+        // 좌: 키 + 뱃지 + 설명
+        var label = document.createElement("div");
+        label.className = "setting-label";
+
+        var keyLine = document.createElement("div");
+        keyLine.className = "setting-key";
+        var key = document.createElement("code");
+        key.textContent = item.env_key;
+        keyLine.appendChild(key);
+        buildBadges(item).forEach(function (badge) { keyLine.appendChild(badge); });
+
+        // D-191: 이 설정을 어떻게 두면 무엇이 달라지는지 오른쪽 패널로 연다.
+        // 위젯 조작과 섞이지 않도록 행 전체가 아니라 전용 버튼을 트리거로 둔다.
+        var helpBtn = document.createElement("button");
+        helpBtn.type = "button";
+        helpBtn.className = "setting-help-btn";
+        helpBtn.textContent = "?";
+        helpBtn.title = item.env_key + " 설명 보기";
+        helpBtn.setAttribute("aria-label", item.env_key + " 설명 보기");
+        helpBtn.addEventListener("click", function () { openSettingHelp(item.env_key); });
+        keyLine.appendChild(helpBtn);
+
+        label.appendChild(keyLine);
+
+        if (item.description) {
+            var description = document.createElement("div");
+            description.className = "setting-description";
+            description.textContent = item.description;
+            label.appendChild(description);
+        }
+        row.appendChild(label);
+
+        // 중: 위젯
+        var widget = document.createElement("div");
+        widget.className = "setting-widget";
+        widget.appendChild(buildWidget(item));
+        row.appendChild(widget);
+
+        // 우: 상태 + 기본값 복귀
+        var state = document.createElement("div");
+        state.className = "setting-state";
+        row.appendChild(state);
+
+        var error = document.createElement("div");
+        error.className = "setting-error";
+        row.appendChild(error);
+
+        settingsRows[item.env_key] = { row: row, state: state, error: error };
+        refreshRow(item.env_key);
+        return row;
+    }
+
+    // --- D-191: 설정 옵션 상세 설명 패널 ---
+    //
+    // "이 옵션을 이렇게 두면 무엇이 어떻게 동작하는가"를 오른쪽에 띄운다. 서버가
+    // 큐레이션(사람이 쓴 사례·성능·안정성)과 자동 파생(카탈로그 메타에서 결정적 생성)을
+    // 구분해 내려주며, 화면은 source 뱃지로 그 차이를 드러낸다.
+
+    var helpPanel = document.getElementById("settingsHelp");
+    var helpLayout = document.getElementById("settingsLayout");
+    var helpBody = document.getElementById("settingsHelpBody");
+    var helpKeyLabel = document.getElementById("settingsHelpKey");
+    var helpGroupLabel = document.getElementById("settingsHelpGroup");
+
+    document.getElementById("settingsHelpClose").addEventListener("click", closeSettingHelp);
+
+    document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape" && settingsHelpKey) closeSettingHelp();
+    });
+
+    function closeSettingHelp() {
+        settingsHelpKey = null;
+        helpPanel.hidden = true;
+        helpLayout.classList.remove("help-open");
+        markHelpRow(null);
+    }
+
+    function markHelpRow(key) {
+        Object.keys(settingsRows).forEach(function (rowKey) {
+            var nodes = settingsRows[rowKey];
+            if (nodes) nodes.row.classList.toggle("setting-row--help", rowKey === key);
+        });
+    }
+
+    async function openSettingHelp(key) {
+        settingsHelpKey = key;
+        helpPanel.hidden = false;
+        helpLayout.classList.add("help-open");
+        helpKeyLabel.textContent = key;
+        helpGroupLabel.textContent = "";
+        markHelpRow(key);
+
+        var row = settingsRows[key];
+        if (row) row.row.scrollIntoView({ block: "nearest" });
+
+        if (settingsHelpCache[key]) {
+            renderSettingHelp(settingsHelpCache[key]);
             return;
         }
 
+        helpBody.textContent = "";
+        var loading = document.createElement("p");
+        loading.className = "settings-help__loading";
+        loading.textContent = "설명을 불러오는 중...";
+        helpBody.appendChild(loading);
+
+        try {
+            var response = await apiRequest("GET", "/api/v1/admin/settings/help/" + encodeURIComponent(key));
+            if (!response.ok) throw new Error("HTTP " + response.status);
+            var data = await response.json();
+            settingsHelpCache[key] = data;
+            // 응답을 기다리는 동안 다른 항목으로 옮겨갔으면 늦게 온 결과로 덮지 않는다.
+            if (settingsHelpKey === key) renderSettingHelp(data);
+        } catch (err) {
+            if (settingsHelpKey !== key) return;
+            helpBody.textContent = "";
+            var failure = document.createElement("p");
+            failure.className = "settings-help__loading";
+            failure.textContent = "설명을 불러오지 못했습니다.";
+            helpBody.appendChild(failure);
+        }
+    }
+
+    function helpSection(title, text) {
+        if (!text) return null;
+        var section = document.createElement("section");
+        section.className = "settings-help__section";
+        var heading = document.createElement("h4");
+        heading.textContent = title;
+        section.appendChild(heading);
+        var body = document.createElement("p");
+        body.textContent = text;
+        section.appendChild(body);
+        return section;
+    }
+
+    function helpListSection(title, items, className) {
+        if (!items || !items.length) return null;
+        var section = document.createElement("section");
+        section.className = "settings-help__section";
+        var heading = document.createElement("h4");
+        heading.textContent = title;
+        section.appendChild(heading);
+        var list = document.createElement("ul");
+        list.className = className || "settings-help__list";
+        items.forEach(function (text) {
+            var entry = document.createElement("li");
+            entry.textContent = text;
+            list.appendChild(entry);
+        });
+        section.appendChild(list);
+        return section;
+    }
+
+    function renderSettingHelp(data) {
+        helpBody.textContent = "";
+        helpKeyLabel.textContent = data.env_key;
+        helpGroupLabel.textContent = data.group_title || "";
+
+        // 헤더 아래 메타 — 지금 무슨 값이고 기본값은 무엇인지
+        var item = settingsItems[data.env_key];
+        var meta = document.createElement("div");
+        meta.className = "settings-help__meta";
+        if (item) {
+            meta.appendChild(makeBadge(
+                data.source === "curated" ? "운영 설명" : "자동 생성",
+                data.source === "curated" ? "badge--curated" : "badge--derived",
+                data.source === "curated"
+                    ? "운영 지식을 바탕으로 작성된 설명입니다."
+                    : "설정의 타입·기본값·반영 시점에서 자동으로 만든 일반 설명입니다."));
+            var effective = item.is_secret
+                ? (item.is_set ? "설정됨" : "미설정")
+                : (item.effective_value === null || item.effective_value === undefined
+                    ? "(미설정)" : String(item.effective_value));
+            meta.appendChild(makeBadge("현재 " + effective, "badge--meta", "지금 적용 중인 값입니다."));
+            var fallback = item.default === null || item.default === undefined
+                ? "(없음)" : String(item.default);
+            meta.appendChild(makeBadge("기본 " + fallback, "badge--meta", "지정하지 않았을 때 쓰이는 값입니다."));
+        }
+        helpBody.appendChild(meta);
+
+        var summary = document.createElement("p");
+        summary.className = "settings-help__summary";
+        summary.textContent = data.summary || "";
+        helpBody.appendChild(summary);
+
+        var sections = [
+            helpSection("무엇을 제어하는가", data.behavior),
+        ];
+
+        if (data.options && data.options.length) {
+            var optionSection = document.createElement("section");
+            optionSection.className = "settings-help__section";
+            var optionHeading = document.createElement("h4");
+            optionHeading.textContent = "값에 따른 동작";
+            optionSection.appendChild(optionHeading);
+
+            data.options.forEach(function (option) {
+                var card = document.createElement("div");
+                card.className = "settings-help__option";
+                if (option.is_current) card.classList.add("settings-help__option--current");
+
+                var head = document.createElement("div");
+                head.className = "settings-help__option-head";
+                var value = document.createElement("code");
+                value.textContent = option.value;
+                head.appendChild(value);
+                if (option.label) {
+                    var label = document.createElement("span");
+                    label.className = "settings-help__option-label";
+                    label.textContent = option.label;
+                    head.appendChild(label);
+                }
+                if (option.is_current) head.appendChild(makeBadge("현재", "badge--meta", "지금 이 값으로 동작 중입니다."));
+                if (option.is_default) head.appendChild(makeBadge("기본", "badge--meta", "코드 기본값입니다."));
+                card.appendChild(head);
+
+                var effect = document.createElement("p");
+                effect.textContent = option.effect;
+                card.appendChild(effect);
+                optionSection.appendChild(card);
+            });
+            sections.push(optionSection);
+        }
+
+        sections.push(helpSection("이럴 때 이렇게 됩니다", data.example));
+        sections.push(helpSection("성능에 미치는 영향", data.performance));
+        sections.push(helpSection("안정성에 미치는 영향", data.stability));
+        sections.push(helpSection("권장 설정", data.recommendation));
+        sections.push(helpListSection("주의할 점", data.caveats));
+        sections.push(helpListSection("반영 시점과 제약", data.operational));
+
+        sections.forEach(function (section) {
+            if (section) helpBody.appendChild(section);
+        });
+
+        if (data.related && data.related.length) {
+            var relatedSection = document.createElement("section");
+            relatedSection.className = "settings-help__section";
+            var relatedHeading = document.createElement("h4");
+            relatedHeading.textContent = "함께 보는 설정";
+            relatedSection.appendChild(relatedHeading);
+            var links = document.createElement("div");
+            links.className = "settings-help__related";
+            data.related.forEach(function (relatedKey) {
+                var link = document.createElement("button");
+                link.type = "button";
+                link.className = "settings-help__related-link";
+                link.textContent = relatedKey;
+                link.addEventListener("click", function () { openSettingHelp(relatedKey); });
+                links.appendChild(link);
+            });
+            relatedSection.appendChild(links);
+            relatedSection.appendChild(document.createTextNode(""));
+            helpBody.appendChild(relatedSection);
+        }
+
+        var referenceSection = helpListSection("근거 문서", data.references, "settings-help__refs");
+        if (referenceSection) helpBody.appendChild(referenceSection);
+    }
+
+    function applyMode(item) {
+        // 서버가 apply_mode를 항상 내려주지만, 구버전 응답 캐시에 대비해 requires_restart로 폴백한다.
+        return item.apply_mode || (item.requires_restart ? "restart" : "immediate");
+    }
+
+    function buildBadges(item) {
+        var badges = [];
+        var mode = applyMode(item);
+        if (item.is_secret) {
+            badges.push(makeBadge("🔒 .encenv 관리", "badge--secret",
+                ".encenv에서 관리하는 시크릿입니다. .env 수정은 반영되지 않습니다."));
+        } else if (mode === "restart") {
+            badges.push(makeBadge("재시작", "badge--restart", "저장 후 서버 재시작이 필요합니다."));
+        } else if (mode === "reload") {
+            badges.push(makeBadge("리로드", "badge--reload",
+                "저장 후 [설정 리로드] 버튼(또는 서버 재시작)으로 반영됩니다."));
+        } else {
+            badges.push(makeBadge("즉시 반영", "badge--immediate", "저장 후 다음 요청부터 반영됩니다."));
+        }
+        if (!item.consumed) {
+            badges.push(makeBadge("미소비", "badge--unconsumed",
+                "현재 코드가 이 설정을 읽지 않습니다."));
+        }
+        if (item.override === "os") {
+            badges.push(makeBadge("OS 오버라이드", "badge--override",
+                "OS 환경변수가 .env 값을 덮어씁니다 — 저장해도 반영되지 않습니다."));
+        } else if (item.override === "encenv") {
+            badges.push(makeBadge(".encenv 우선", "badge--override",
+                ".encenv 값이 .env를 덮어씁니다 — 저장해도 반영되지 않습니다."));
+        }
+        return badges;
+    }
+
+    function makeBadge(text, className, title) {
+        var badge = document.createElement("span");
+        badge.className = "badge " + className;
+        badge.textContent = text;
+        if (title) badge.title = title;
+        return badge;
+    }
+
+    function refreshRow(key) {
+        var nodes = settingsRows[key];
+        var item = settingsItems[key];
+        if (!nodes || !item) return;
+
+        var dirty = isDirty(item);
+        nodes.row.classList.toggle("setting-row--dirty", dirty);
+        nodes.error.textContent = "";
+        nodes.row.classList.remove("setting-row--error");
+        nodes.state.textContent = "";
+
+        if (item.is_secret) {
+            var secretState = document.createElement("span");
+            secretState.className = "setting-state-text";
+            secretState.textContent = item.is_set ? "설정됨" : "미설정";
+            nodes.state.appendChild(secretState);
+            return;
+        }
+
+        var value = currentValue(item);
+        var stateText = document.createElement("span");
+        stateText.className = "setting-state-text";
+        if (dirty) {
+            stateText.textContent = "변경됨(미저장)";
+            stateText.classList.add("setting-state-text--dirty");
+        } else if (value === null || value === undefined) {
+            stateText.textContent = "기본값 사용 중";
+        } else {
+            stateText.textContent = "";
+        }
+        nodes.state.appendChild(stateText);
+
+        if (value !== null && value !== undefined) {
+            var resetBtn = document.createElement("button");
+            resetBtn.type = "button";
+            resetBtn.className = "setting-reset";
+            resetBtn.textContent = "기본값으로";
+            resetBtn.title = item.default === null
+                ? "이 설정을 .env에서 제거합니다(미설정)."
+                : "기본값(" + item.default + ")으로 되돌립니다.";
+            resetBtn.addEventListener("click", function () {
+                setValue(key, null);
+                rerenderWidget(key);
+            });
+            nodes.state.appendChild(resetBtn);
+        }
+    }
+
+    function rerenderWidget(key) {
+        var nodes = settingsRows[key];
+        var item = settingsItems[key];
+        if (!nodes || !item) return;
+        var widget = nodes.row.querySelector(".setting-widget");
+        widget.textContent = "";
+        widget.appendChild(buildWidget(item));
+    }
+
+    function refreshGroupCounts() {
+        var perGroup = {};
+        Object.keys(settingsEdits).forEach(function (key) {
+            var item = settingsItems[key];
+            if (!item) return;
+            perGroup[item.group_key] = (perGroup[item.group_key] || 0) + 1;
+        });
+        document.querySelectorAll(".badge--dirty").forEach(function (badge) {
+            var n = perGroup[badge.dataset.groupKey] || 0;
+            badge.textContent = n ? "변경 " + n : "";
+            badge.style.display = n ? "" : "none";
+        });
+        updateCount(document.querySelectorAll(".setting-row").length);
+    }
+
+    // --- 타입별 위젯 ---
+
+    function buildWidget(item) {
+        if (item.is_secret) return buildSecretWidget(item);
+        if (item.type === "bool") return buildToggle(item);
+        if (item.type === "tristate") return buildSegments(item, ["auto", "true", "false"]);
+        if (item.type === "enum") {
+            var choices = item.enum_choices || [];
+            if (!item.optional && choices.length <= 4) return buildSegments(item, choices);
+            return buildSelect(item, choices);
+        }
+        if (item.type === "int" || item.type === "float") return buildNumber(item);
+        if (item.type === "json_list" || item.type === "csv") return buildTagEditor(item);
+        return buildText(item);
+    }
+
+    function buildSecretWidget(item) {
+        var wrap = document.createElement("div");
+        wrap.className = "setting-secret";
+        var text = document.createElement("span");
+        text.textContent = item.is_set
+            ? "설정됨 — .encenv에서 관리합니다."
+            : "미설정 — .encenv에 값을 넣어야 합니다.";
+        wrap.appendChild(text);
+        return wrap;
+    }
+
+    function buildToggle(item) {
+        var value = currentValue(item);
+        var on = (value === null || value === undefined ? item.default : value) === "true";
+
+        var toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "toggle-switch" + (on ? " on" : "");
+        toggle.setAttribute("aria-pressed", on ? "true" : "false");
+        var knob = document.createElement("span");
+        knob.className = "toggle-knob";
+        toggle.appendChild(knob);
+
+        toggle.addEventListener("click", function () {
+            var next = toggle.classList.contains("on") ? "false" : "true";
+            toggle.classList.toggle("on", next === "true");
+            toggle.setAttribute("aria-pressed", next);
+            setValue(item.env_key, next);
+        });
+        return toggle;
+    }
+
+    function buildSegments(item, choices) {
+        var value = currentValue(item);
+        var selected = value === null || value === undefined
+            ? (item.type === "tristate" ? "auto" : item.default)
+            : value;
+
+        var group = document.createElement("div");
+        group.className = "segment-group";
+        choices.forEach(function (choice) {
+            var option = document.createElement("button");
+            option.type = "button";
+            option.className = "segment-option" + (choice === selected ? " selected" : "");
+            option.textContent = choice === "auto" ? "auto(미설정)" : choice;
+            option.addEventListener("click", function () {
+                group.querySelectorAll(".segment-option").forEach(function (o) {
+                    o.classList.remove("selected");
+                });
+                option.classList.add("selected");
+                setValue(item.env_key, choice === "auto" ? null : choice);
+            });
+            group.appendChild(option);
+        });
+        return group;
+    }
+
+    function buildSelect(item, choices) {
+        var value = currentValue(item);
+        var select = document.createElement("select");
+        select.className = "setting-input setting-select";
+
+        if (item.optional) {
+            var unset = document.createElement("option");
+            unset.value = "";
+            unset.textContent = "(미설정)";
+            select.appendChild(unset);
+        }
+        choices.forEach(function (choice) {
+            var option = document.createElement("option");
+            option.value = choice;
+            option.textContent = choice;
+            select.appendChild(option);
+        });
+        select.value = value === null || value === undefined
+            ? (item.optional ? "" : (item.default || "")) : value;
+
+        select.addEventListener("change", function () {
+            setValue(item.env_key, select.value === "" ? null : select.value);
+        });
+        return select;
+    }
+
+    function buildNumber(item) {
+        var value = currentValue(item);
+        var input = document.createElement("input");
+        input.type = "number";
+        input.className = "setting-input";
+        if (item.type === "float") input.step = "any";
+        input.value = value === null || value === undefined ? "" : value;
+        input.placeholder = item.default === null ? "(미설정)" : item.default;
+        input.addEventListener("input", function () {
+            setValue(item.env_key, input.value === "" ? null : input.value.trim());
+        });
+        return input;
+    }
+
+    function buildText(item) {
+        var value = currentValue(item);
+        var input = document.createElement("input");
+        input.type = "text";
+        input.className = "setting-input";
+        input.value = value === null || value === undefined ? "" : value;
+        input.placeholder = item.default === null || item.default === ""
+            ? "(미설정)" : item.default;
+        input.autocomplete = "off";
+        input.addEventListener("input", function () {
+            setValue(item.env_key, input.value === "" && item.file_value === null
+                ? null : input.value);
+        });
+        return input;
+    }
+
+    function parseListValue(item, value) {
+        if (value === null || value === undefined || value === "") return [];
+        if (item.type === "json_list") {
+            try {
+                var parsed = JSON.parse(value);
+                return Array.isArray(parsed) ? parsed.map(String) : [];
+            } catch (err) {
+                return [];
+            }
+        }
+        return value.split(",").map(function (part) { return part.trim(); })
+            .filter(function (part) { return part !== ""; });
+    }
+
+    function serializeListValue(item, values) {
+        if (item.type === "json_list") return JSON.stringify(values);
+        return values.join(",");
+    }
+
+    function buildTagEditor(item) {
+        var values = parseListValue(item, currentValue(item));
+
+        var editor = document.createElement("div");
+        editor.className = "tag-editor";
+
+        function commit() {
+            setValue(item.env_key, values.length || item.file_value !== null
+                ? serializeListValue(item, values) : null);
+        }
+
+        function renderChips(focusInput) {
+            editor.textContent = "";
+            values.forEach(function (value, position) {
+                var chip = document.createElement("span");
+                chip.className = "tag-chip";
+                var text = document.createElement("span");
+                text.textContent = value;
+                chip.appendChild(text);
+
+                var remove = document.createElement("button");
+                remove.type = "button";
+                remove.className = "tag-chip-remove";
+                remove.textContent = "×";
+                remove.title = "제거";
+                remove.addEventListener("click", function () {
+                    values.splice(position, 1);
+                    renderChips(true);
+                    commit();
+                });
+                chip.appendChild(remove);
+                editor.appendChild(chip);
+            });
+            editor.appendChild(input);
+            if (focusInput) input.focus();
+        }
+
+        var input = document.createElement("input");
+        input.type = "text";
+        input.className = "tag-input";
+        input.placeholder = values.length ? "추가…" : (item.default || "값 입력 후 Enter");
+        input.autocomplete = "off";
+        input.addEventListener("keydown", function (event) {
+            if (event.key === "Enter" || event.key === ",") {
+                event.preventDefault();
+                var text = input.value.trim();
+                if (!text) return;
+                values.push(text);
+                input.value = "";
+                renderChips(true);
+                commit();
+            } else if (event.key === "Backspace" && input.value === "" && values.length) {
+                values.pop();
+                renderChips(true);
+                commit();
+            }
+        });
+        input.addEventListener("blur", function () {
+            var text = input.value.trim();
+            if (!text) return;
+            values.push(text);
+            input.value = "";
+            renderChips(false);
+            commit();
+        });
+
+        renderChips(false);
+        return editor;
+    }
+
+    // --- 필터·툴바 ---
+
+    document.getElementById("settingsSearch").addEventListener("input", renderSettings);
+    document.getElementById("settingsFilter").addEventListener("change", renderSettings);
+    document.getElementById("showUnconsumed").addEventListener("change", renderSettings);
+    document.getElementById("showAdvanced").addEventListener("change", renderSettings);
+
+    document.getElementById("toggleAllGroupsBtn").addEventListener("click", function () {
+        settingsAllExpanded = !settingsAllExpanded;
+        settingsGroups.forEach(function (group) {
+            groupExpanded[group.group_key] = settingsAllExpanded;
+        });
+        this.textContent = settingsAllExpanded ? "모두 접기" : "모두 펼치기";
+        renderSettings();
+    });
+
+    // --- 저장 (diff 확인 → PUT) ---
+
+    function collectChanges() {
+        var settings = {};
+        var resetKeys = [];
+        var rows = [];
+
+        Object.keys(settingsEdits).forEach(function (key) {
+            var item = settingsItems[key];
+            if (!item) return;
+            var edit = settingsEdits[key];
+            var to = edit.reset ? null : edit.value;
+            if (edit.reset) resetKeys.push(key);
+            else settings[key] = edit.value;
+            rows.push({
+                key: key,
+                from: item.file_value,
+                to: to,
+                mode: applyMode(item),
+                fallback: item.default,
+            });
+        });
+
+        return { settings: settings, reset_keys: resetKeys, rows: rows };
+    }
+
+    var pendingChanges = null;
+
+    document.getElementById("saveSettingsBtn").addEventListener("click", function () {
+        var changes = collectChanges();
+        if (!changes.rows.length) {
+            showError("변경된 설정이 없습니다.");
+            return;
+        }
+        pendingChanges = changes;
+        openDiffModal(changes);
+    });
+
+    function openDiffModal(changes) {
+        var body = document.getElementById("settingsDiffBody");
+        body.textContent = "";
+
+        changes.rows.forEach(function (change) {
+            var entry = document.createElement("div");
+            entry.className = "diff-entry";
+
+            var head = document.createElement("div");
+            head.className = "diff-key";
+            var code = document.createElement("code");
+            code.textContent = change.key;
+            head.appendChild(code);
+            if (change.mode === "restart") {
+                head.appendChild(makeBadge("재시작", "badge--restart"));
+            } else if (change.mode === "reload") {
+                head.appendChild(makeBadge("리로드", "badge--reload"));
+            }
+            entry.appendChild(head);
+
+            var before = document.createElement("div");
+            before.className = "diff-line diff-line--old";
+            before.textContent = change.from === null || change.from === undefined
+                ? "(기본값 사용 중)" : change.from;
+            entry.appendChild(before);
+
+            var after = document.createElement("div");
+            after.className = "diff-line diff-line--new";
+            after.textContent = change.to === null
+                ? "(기본값으로 되돌림" + (change.fallback === null ? "" : ": " + change.fallback) + ")"
+                : change.to;
+            entry.appendChild(after);
+
+            body.appendChild(entry);
+        });
+
+        document.getElementById("settingsDiffModal").style.display = "flex";
+    }
+
+    function closeDiffModal() {
+        document.getElementById("settingsDiffModal").style.display = "none";
+    }
+
+    document.getElementById("diffCancelBtn").addEventListener("click", closeDiffModal);
+    document.getElementById("settingsDiffModal").addEventListener("click", function (event) {
+        if (event.target === this) closeDiffModal();
+    });
+
+    document.getElementById("diffConfirmBtn").addEventListener("click", async function () {
+        if (!pendingChanges) return;
+        var confirmBtn = this;
+        confirmBtn.disabled = true;
+
         try {
             var response = await apiRequest("PUT", "/api/v1/admin/settings", {
-                settings: updates,
+                settings: pendingChanges.settings,
+                reset_keys: pendingChanges.reset_keys,
             });
             var data = await response.json();
 
             if (!response.ok) {
-                showError(data.detail || "저장에 실패했습니다.");
+                closeDiffModal();
+                showValidationErrors(data);
                 return;
             }
 
+            closeDiffModal();
             showSuccess(data.message);
-            loadSettings(); // 새로고침
+            showRestartBanner(data);
+            showReadinessWarnings(data);
+            pendingChanges = null;
+            settingsEdits = {};
+            await loadSettings();
         } catch (err) {
             showError("서버와의 통신에 실패했습니다.");
+        } finally {
+            confirmBtn.disabled = false;
         }
     });
+
+    function showValidationErrors(data) {
+        var errors = fieldErrors(data);
+        showError(errorMessage(data, "저장에 실패했습니다."));
+        if (!errors.length) return;
+
+        // 오류 행이 필터·접힘으로 가려지지 않도록 조건을 초기화하고 해당 그룹을 펼친다
+        document.getElementById("settingsSearch").value = "";
+        document.getElementById("settingsFilter").value = "all";
+        document.getElementById("showUnconsumed").checked = true;
+        document.getElementById("showAdvanced").checked = true;
+        errors.forEach(function (error) {
+            var item = settingsItems[error.key];
+            if (item) groupExpanded[item.group_key] = true;
+        });
+        renderSettings();
+
+        errors.forEach(function (error) {
+            var nodes = settingsRows[error.key];
+            if (!nodes) return;
+            nodes.row.classList.add("setting-row--error");
+            nodes.error.textContent = error.message;
+        });
+    }
+
+    function showRestartBanner(data) {
+        var banner = document.getElementById("restartBanner");
+        banner.textContent = "";
+        var restartKeys = data.requires_restart_keys || [];
+        var reloadKeys = data.reload_keys || [];
+        var immediateKeys = data.applied_immediately_keys || [];
+        var ignoredKeys = data.ignored_keys || [];
+
+        if (!restartKeys.length && !reloadKeys.length && !immediateKeys.length && !ignoredKeys.length) {
+            banner.style.display = "none";
+            return;
+        }
+        if (restartKeys.length) {
+            var restartLine = document.createElement("div");
+            restartLine.textContent = "다음 항목은 서버 재시작 후 반영됩니다: " + restartKeys.join(", ");
+            banner.appendChild(restartLine);
+        }
+        if (reloadKeys.length) {
+            var reloadLine = document.createElement("div");
+            reloadLine.textContent = "다음 항목은 [설정 리로드] 버튼으로 반영할 수 있습니다: " + reloadKeys.join(", ");
+            banner.appendChild(reloadLine);
+        }
+        if (immediateKeys.length) {
+            var immediateLine = document.createElement("div");
+            immediateLine.textContent = "다음 항목은 다음 요청부터 반영됩니다: " + immediateKeys.join(", ");
+            banner.appendChild(immediateLine);
+        }
+        if (ignoredKeys.length) {
+            var ignoredLine = document.createElement("div");
+            ignoredLine.textContent = "마스킹 값이 그대로 전송되어 무시했습니다(원값 보존): " + ignoredKeys.join(", ");
+            banner.appendChild(ignoredLine);
+        }
+        banner.style.display = "block";
+    }
+
+    // (plans/104 B-7 · G-7 (a)) ACTIVE_DB_IDS에 준비도 필수 미충족 DB를 넣으면 경고만 보인다 — 저장은 이미 끝났다.
+    function showReadinessWarnings(data) {
+        var banner = document.getElementById("readinessBanner");
+        if (!banner) return;
+        banner.textContent = "";
+        var warnings = data.readiness_warnings;
+        if (!warnings || !Object.keys(warnings).length) {
+            banner.style.display = "none";
+            return;
+        }
+        var title = document.createElement("div");
+        title.textContent = "⚠ 활성화 준비도 경고 — 저장은 완료되었습니다. 아래 DB는 「DB 구조」 탭에서 필수 항목을 채우세요.";
+        banner.appendChild(title);
+        if (warnings._error) {
+            var errorLine = document.createElement("div");
+            errorLine.textContent = "준비도를 판정하지 못했습니다: " + warnings._error;
+            banner.appendChild(errorLine);
+        }
+        Object.keys(warnings).forEach(function (dbId) {
+            if (dbId === "_error") return;
+            var items = Array.isArray(warnings[dbId]) ? warnings[dbId] : [];
+            var line = document.createElement("div");
+            var code = document.createElement("code");
+            code.textContent = dbId;
+            line.appendChild(code);
+            line.appendChild(document.createTextNode(
+                " — 필수 미충족 " + items.length + "건: " + items.map(function (item) {
+                    return item.label + (item.detail ? " (" + item.detail + ")" : "");
+                }).join(" · ")
+            ));
+            banner.appendChild(line);
+        });
+        banner.style.display = "block";
+    }
+
+    // --- 설정 리로드 (Plan 68 §6 Phase 4) ---
+
+    document.getElementById("reloadSettingsBtn").addEventListener("click", async function () {
+        if (dirtyCount()) {
+            showError("저장되지 않은 변경이 있습니다 — 먼저 저장한 뒤 리로드하세요.");
+            return;
+        }
+        var reloadBtn = this;
+        reloadBtn.disabled = true;
+        reloadBtn.textContent = "리로드 중…";
+
+        try {
+            var response = await apiRequest("POST", "/api/v1/admin/settings/reload");
+            var data = await response.json();
+            if (!response.ok) {
+                showError(errorMessage(data, "설정 리로드에 실패했습니다."));
+                return;
+            }
+            showSuccess(data.message);
+            showReloadResultBanner(data);
+            await loadSettings();
+        } catch (err) {
+            showError("서버와의 통신에 실패했습니다.");
+        } finally {
+            reloadBtn.disabled = false;
+            reloadBtn.textContent = "설정 리로드";
+        }
+    });
+
+    function showReloadResultBanner(data) {
+        var banner = document.getElementById("restartBanner");
+        banner.textContent = "";
+        var restartKeys = data.restart_only_keys || [];
+        if (!restartKeys.length) {
+            banner.style.display = "none";
+            return;
+        }
+        var line = document.createElement("div");
+        line.textContent = "다음 항목은 서버 재시작 후 반영됩니다: " + restartKeys.join(", ");
+        banner.appendChild(line);
+        banner.style.display = "block";
+    }
 
     // --- DB 연결 설정 ---
 
@@ -389,28 +1514,72 @@
                 return;
             }
             var users = await response.json();
+            await loadSourceCandidates();
             usersBody.innerHTML = "";
 
             users.forEach(function(u) {
+                var uid = escapeHtml(u.user_id);
+                var prot = !!u.is_protected;                 // 보호 root 계정
+                var protAttr = prot ? " disabled" : "";
+                var isAdmin = u.role === "admin";
+                var zones = u.alarm_zones || [];
+                // 알림그룹: 관리자는 전 존 수신(체크 무의미), 보호 계정도 비활성
+                var zDis = (isAdmin || prot) ? " disabled" : "";
+                var zTitle = isAdmin ? ' title="관리자는 전 존 수신"' : (prot ? ' title="보호된 root 계정"' : "");
+
+                var inputStyle = 'width:100px;font-size:0.75rem;padding:2px 4px;' +
+                    'background:var(--bg-tertiary);color:var(--text-primary);' +
+                    'border:1px solid var(--border);border-radius:4px';
+
+                // 이름(표시명 username) 인라인 편집. 로그인 ID(user_id)는 불변이라 편집 대상 아님.
+                var nameCell =
+                    '<td><input type="text" class="name-input" data-uid="' + uid + '" value="' +
+                    escapeHtml(u.username) + '" style="' + inputStyle + '"></td>';
+
+                var deptCell =
+                    '<td><input type="text" class="dept-input" data-uid="' + uid + '" value="' +
+                    escapeHtml(u.department || "") + '" placeholder="-" style="' + inputStyle + '"></td>';
+
+                // 수평 배치 + 체크박스·텍스트 수직 중앙 정렬은 .zone-chk-group(style.css)이 담당
+                var zoneCell =
+                    '<td' + zTitle + '><div class="zone-chk-group">' +
+                        '<label><input type="checkbox" class="zone-chk" data-uid="' + uid +
+                            '" data-zone="gongjon"' + (zones.indexOf("gongjon") >= 0 ? " checked" : "") + zDis + '> 공동존</label>' +
+                        '<label><input type="checkbox" class="zone-chk" data-uid="' + uid +
+                            '" data-zone="bankjon"' + (zones.indexOf("bankjon") >= 0 ? " checked" : "") + zDis + '> 은행존</label>' +
+                    '</div></td>';
+
                 var tr = document.createElement("tr");
                 tr.innerHTML =
-                    "<td>" + escapeHtml(u.user_id) + "</td>" +
-                    "<td>" + escapeHtml(u.username) + "</td>" +
-                    "<td><select class='role-select' data-uid='" + escapeHtml(u.user_id) + "'>" +
+                    "<td>" + uid + (prot ? " 🔒" : "") + "</td>" +
+                    nameCell +
+                    '<td><select class="role-select" data-uid="' + uid + '"' + protAttr + ">" +
                         "<option value='user'" + (u.role === "user" ? " selected" : "") + ">user</option>" +
                         "<option value='admin'" + (u.role === "admin" ? " selected" : "") + ">admin</option>" +
                     "</select></td>" +
-                    "<td><select class='status-select' data-uid='" + escapeHtml(u.user_id) + "'>" +
+                    '<td><select class="status-select" data-uid="' + uid + '"' + protAttr + ">" +
                         "<option value='active'" + (u.status === "active" ? " selected" : "") + ">active</option>" +
                         "<option value='inactive'" + (u.status === "inactive" ? " selected" : "") + ">inactive</option>" +
                         "<option value='locked'" + (u.status === "locked" ? " selected" : "") + ">locked</option>" +
                     "</select></td>" +
-                    "<td>" + escapeHtml(u.department || "-") + "</td>" +
-                    "<td style='font-size:0.75rem'>" + (u.last_login_at ? u.last_login_at.substring(0, 19) : "-") + "</td>" +
+                    deptCell +
+                    zoneCell +
+                    "<td class='last-login-cell' style='font-size:0.75rem'>" + escapeHtml(formatTsKst(u.last_login_at)) + "</td>" +
                     "<td>" +
-                        "<button class='btn btn-secondary btn-sm reset-pw-btn' data-uid='" + escapeHtml(u.user_id) + "' style='font-size:0.7rem;padding:3px 8px;margin-right:4px'>PW초기화</button>" +
-                        "<button class='btn btn-secondary btn-sm delete-user-btn' data-uid='" + escapeHtml(u.user_id) + "' style='font-size:0.7rem;padding:3px 8px;color:#ef4444'>삭제</button>" +
+                        '<button class="btn btn-secondary btn-sm reset-pw-btn" data-uid="' + uid + '" style="font-size:0.7rem;padding:3px 8px;margin-right:4px"' + protAttr + ">PW초기화</button>" +
+                        '<button class="btn btn-secondary btn-sm delete-user-btn" data-uid="' + uid + '" style="font-size:0.7rem;padding:3px 8px;color:#ef4444"' + protAttr + ">삭제</button>" +
                     "</td>";
+
+                // (plans/104 C-4) 「조회 가능 DB」 셀 — 서버 값이 들어가므로 DOM API로만 만들고
+                // 「마지막 로그인」 앞에 끼운다(헤더 순서와 일치). 보호 계정도 DB 권한은 편집 가능(D-083은 역할·상태·삭제만 보호).
+                var permTd = document.createElement("td");
+                renderPermCell(permTd, u.user_id, u.allowed_db_ids, u.role === "admin");
+                tr.insertBefore(permTd, tr.querySelector(".last-login-cell"));
+                // (plans/125 A-7) 「조회 가능 소스」 셀 — DB 권한 셀 바로 뒤
+                var srcTd = document.createElement("td");
+                renderSourceCell(srcTd, u.user_id, u.allowed_sources, u.role === "admin");
+                tr.insertBefore(srcTd, tr.querySelector(".last-login-cell"));
+
                 usersBody.appendChild(tr);
             });
 
@@ -420,6 +1589,28 @@
             });
             usersBody.querySelectorAll(".status-select").forEach(function(sel) {
                 sel.addEventListener("change", function() { updateUser(sel.dataset.uid, {status: sel.value}); });
+            });
+            // 이름(username) 인라인 편집: 비우면(공백) 되돌림, 아니면 저장
+            usersBody.querySelectorAll(".name-input").forEach(function(inp) {
+                inp.addEventListener("change", function() {
+                    var v = inp.value.trim();
+                    if (!v) { loadUsers(); return; }   // username은 필수(min_length=1)
+                    updateUser(inp.dataset.uid, {username: v});
+                });
+            });
+            // 부서 인라인 편집(개선 4): 값 변경 시 저장
+            usersBody.querySelectorAll(".dept-input").forEach(function(inp) {
+                inp.addEventListener("change", function() { updateUser(inp.dataset.uid, {department: inp.value.trim()}); });
+            });
+            // 알림그룹 체크박스(개선 2): 해당 사용자의 체크 상태를 모아 alarm_zones로 저장(둘 다 해제=[])
+            usersBody.querySelectorAll(".zone-chk").forEach(function(chk) {
+                chk.addEventListener("change", function() {
+                    var uid = chk.dataset.uid;
+                    var sel = (window.CSS && CSS.escape) ? CSS.escape(uid) : uid.replace(/'/g, "\\'");
+                    var checked = usersBody.querySelectorAll(".zone-chk[data-uid='" + sel + "']:checked");
+                    var zones = Array.prototype.map.call(checked, function(c) { return c.dataset.zone; });
+                    updateUser(uid, {alarm_zones: zones});
+                });
             });
             usersBody.querySelectorAll(".reset-pw-btn").forEach(function(btn) {
                 btn.addEventListener("click", function() { resetPassword(btn.dataset.uid); });
@@ -483,6 +1674,317 @@
         }
     }
 
+    // --- 사용자 DB 접근 권한 (plans/104 C-4) ---
+    //
+    // 표시·편집 모두 DOM API(createElement·textContent)로만 만든다 — 서버 값(db_id·user_id)을
+    // HTML 문자열로 잇지 않는다. 편집 결과는 PUT /api/v1/admin/users/{id}/permissions로 저장한다.
+    // 관리자(admin) 역할은 이 목록과 무관하게 전체 조회가 허용된다(서버 판정과 동일).
+
+    function permLabel(allowed) {
+        if (allowed === null || allowed === undefined) return "전체";
+        if (allowed.length === 0) return "없음(관리자 지정 필요)";
+        return allowed.join(", ");
+    }
+
+    function renderPermCell(td, uid, allowed, isAdmin) {
+        td.textContent = "";
+        td.className = "perm-cell";
+
+        var value = document.createElement("span");
+        value.className = "perm-value";
+        value.style.fontSize = "0.72rem";
+        value.style.marginRight = "6px";
+        value.textContent = permLabel(allowed);
+        if (allowed === null || allowed === undefined) {
+            value.title = "제한 없음 — 모든 DB를 조회할 수 있습니다.";
+        } else if (allowed.length === 0) {
+            value.style.color = "var(--text-muted)";
+            value.title = "조회 가능한 DB가 없습니다 — 관리자가 지정해야 질의할 수 있습니다.";
+        }
+        td.appendChild(value);
+
+        if (isAdmin) {
+            var note = document.createElement("span");
+            note.style.fontSize = "0.68rem";
+            note.style.color = "var(--text-muted)";
+            note.style.marginRight = "6px";
+            note.textContent = "(관리자 전체 허용)";
+            note.title = "관리자 역할은 이 목록과 무관하게 전체 DB 조회가 허용됩니다.";
+            td.appendChild(note);
+        }
+
+        var editBtn = document.createElement("button");
+        editBtn.className = "btn btn-secondary btn-sm perm-edit-btn";
+        editBtn.style.fontSize = "0.7rem";
+        editBtn.style.padding = "3px 8px";
+        editBtn.textContent = "편집";
+        editBtn.addEventListener("click", function () {
+            openPermEditor(td, uid, allowed, isAdmin);
+        });
+        td.appendChild(editBtn);
+    }
+
+    function openPermEditor(td, uid, allowed, isAdmin) {
+        td.textContent = "";
+
+        // 후보 = 활성 DB + 이미 부여돼 있으나 지금은 비활성인 db_id(저장 시 조용히 사라지지 않도록 함께 보인다)
+        var candidates = activeDbIds.slice();
+        (allowed || []).forEach(function (dbId) {
+            if (candidates.indexOf(dbId) < 0) candidates.push(dbId);
+        });
+
+        var box = document.createElement("div");
+        box.className = "zone-chk-group";   // 기존 체크박스 그룹 스타일 재사용
+        box.style.flexWrap = "wrap";
+        box.style.whiteSpace = "normal";
+
+        var allLabel = document.createElement("label");
+        var allChk = document.createElement("input");
+        allChk.type = "checkbox";
+        allChk.className = "perm-all-chk";
+        allChk.checked = (allowed === null || allowed === undefined);
+        allLabel.title = "제한 없음(null)으로 저장합니다.";
+        allLabel.appendChild(allChk);
+        allLabel.appendChild(document.createTextNode("전체 허용"));
+        box.appendChild(allLabel);
+
+        var dbChks = [];
+        if (candidates.length === 0) {
+            var empty = document.createElement("span");
+            empty.style.color = "var(--text-muted)";
+            empty.textContent = "활성 DB 없음";
+            empty.title = "헬스 응답에 등록된 DB가 없습니다 — 「전체 허용」만 지정할 수 있습니다.";
+            box.appendChild(empty);
+        } else {
+            candidates.forEach(function (dbId) {
+                var label = document.createElement("label");
+                var chk = document.createElement("input");
+                chk.type = "checkbox";
+                chk.className = "perm-db-chk";
+                chk.value = dbId;
+                chk.checked = !!(allowed && allowed.indexOf(dbId) >= 0);
+                if (activeDbIds.indexOf(dbId) < 0) {
+                    label.title = "현재 비활성 DB(이미 부여된 값)";
+                    label.style.color = "var(--text-muted)";
+                }
+                label.appendChild(chk);
+                label.appendChild(document.createTextNode(dbId));
+                box.appendChild(label);
+                dbChks.push(chk);
+            });
+        }
+
+        function syncDisabled() {
+            dbChks.forEach(function (chk) { chk.disabled = allChk.checked; });
+        }
+        allChk.addEventListener("change", syncDisabled);
+        syncDisabled();
+
+        var saveBtn = document.createElement("button");
+        saveBtn.className = "btn btn-secondary btn-sm perm-save-btn";
+        saveBtn.style.fontSize = "0.7rem";
+        saveBtn.style.padding = "3px 8px";
+        saveBtn.textContent = "저장";
+        saveBtn.addEventListener("click", function () {
+            var selected = dbChks.filter(function (chk) { return chk.checked; })
+                .map(function (chk) { return chk.value; });
+            savePermissions(td, uid, allChk.checked ? null : selected, isAdmin);
+        });
+        box.appendChild(saveBtn);
+
+        var cancelBtn = document.createElement("button");
+        cancelBtn.className = "btn btn-secondary btn-sm perm-cancel-btn";
+        cancelBtn.style.fontSize = "0.7rem";
+        cancelBtn.style.padding = "3px 8px";
+        cancelBtn.textContent = "취소";
+        cancelBtn.addEventListener("click", function () {
+            renderPermCell(td, uid, allowed, isAdmin);
+        });
+        box.appendChild(cancelBtn);
+
+        td.appendChild(box);
+    }
+
+    async function savePermissions(td, uid, allowed, isAdmin) {
+        try {
+            var response = await apiRequest(
+                "PUT",
+                "/api/v1/admin/users/" + encodeURIComponent(uid) + "/permissions",
+                {allowed_db_ids: allowed}
+            );
+            var data = await response.json();
+            if (!response.ok) {
+                showError(errorMessage(data, "DB 권한 저장에 실패했습니다."));
+                return;   // 편집 상태를 유지해 사용자가 값을 다시 고칠 수 있게 둔다
+            }
+            // 서버가 돌려준 값으로 표를 갱신한다(클라이언트 추정값을 쓰지 않는다)
+            renderPermCell(td, uid, data.allowed_db_ids, data.role === "admin" || isAdmin);
+            showSuccess("사용자 '" + uid + "' DB 권한 저장 완료 (" + permLabel(data.allowed_db_ids) + ")");
+        } catch (e) {
+            showError("통신 실패");
+        }
+    }
+
+    // --- 사용자 관측 소스 권한 (plans/125 A-7 · D-272 ⑩) ---
+    //
+    // DB가 없는 관측 소스(APM 등)의 조회 권한이다. 값의 의미는 DB 권한과 같다(null=전체 · []=없음 ·
+    // 관리자 전체). 후보는 관리자 전용 GET /api/v1/admin/sources(활성 = 엔드포인트 설정) — 공개
+    // 헬스 응답에는 소스 목록이 없다. 저장은 DB 권한과 별도 요청(PUT …/source-permissions)이다.
+
+    var sourceCandidates = [];   // [{code, label, active}]
+
+    async function loadSourceCandidates() {
+        try {
+            var response = await apiRequest("GET", "/api/v1/admin/sources");
+            var data = response.ok ? await response.json() : {};
+            sourceCandidates = data.sources || [];
+        } catch (e) {
+            sourceCandidates = [];
+        }
+    }
+
+    function sourceLabel(code) {
+        var hit = sourceCandidates.filter(function (s) { return s.code === code; })[0];
+        return hit ? hit.label : code;
+    }
+
+    function sourcePermLabel(allowed) {
+        if (allowed === null || allowed === undefined) return "전체";
+        if (allowed.length === 0) return "없음";
+        return allowed.map(sourceLabel).join(", ");
+    }
+
+    function renderSourceCell(td, uid, allowed, isAdmin) {
+        td.textContent = "";
+        td.className = "src-perm-cell";
+
+        var value = document.createElement("span");
+        value.style.fontSize = "0.72rem";
+        value.style.marginRight = "6px";
+        value.textContent = sourcePermLabel(allowed);
+        if (allowed !== null && allowed !== undefined && allowed.length === 0) {
+            value.style.color = "var(--text-muted)";
+            value.title = "조회 가능한 관측 소스가 없습니다.";
+        }
+        td.appendChild(value);
+
+        if (isAdmin) {
+            var note = document.createElement("span");
+            note.style.fontSize = "0.68rem";
+            note.style.color = "var(--text-muted)";
+            note.style.marginRight = "6px";
+            note.textContent = "(관리자 전체 허용)";
+            td.appendChild(note);
+        }
+
+        var editBtn = document.createElement("button");
+        editBtn.className = "btn btn-secondary btn-sm src-perm-edit-btn";
+        editBtn.style.fontSize = "0.7rem";
+        editBtn.style.padding = "3px 8px";
+        editBtn.textContent = "편집";
+        editBtn.addEventListener("click", function () {
+            openSourceEditor(td, uid, allowed, isAdmin);
+        });
+        td.appendChild(editBtn);
+    }
+
+    function openSourceEditor(td, uid, allowed, isAdmin) {
+        td.textContent = "";
+
+        // 후보 = 활성 소스 + 이미 부여돼 있으나 지금은 비활성인 코드(저장 시 조용히 사라지지 않도록)
+        var candidates = sourceCandidates.filter(function (s) { return s.active; })
+            .map(function (s) { return s.code; });
+        (allowed || []).forEach(function (code) {
+            if (candidates.indexOf(code) < 0) candidates.push(code);
+        });
+
+        var box = document.createElement("div");
+        box.className = "zone-chk-group";
+        box.style.flexWrap = "wrap";
+        box.style.whiteSpace = "normal";
+
+        var allLabel = document.createElement("label");
+        var allChk = document.createElement("input");
+        allChk.type = "checkbox";
+        allChk.className = "src-perm-all-chk";
+        allChk.checked = (allowed === null || allowed === undefined);
+        allLabel.appendChild(allChk);
+        allLabel.appendChild(document.createTextNode("전체 허용"));
+        box.appendChild(allLabel);
+
+        var chks = [];
+        if (candidates.length === 0) {
+            var empty = document.createElement("span");
+            empty.style.color = "var(--text-muted)";
+            empty.textContent = "활성 관측 소스 없음";
+            empty.title = "엔드포인트가 설정된 관측 소스가 없습니다 — 「전체 허용」 또는 없음만 지정할 수 있습니다.";
+            box.appendChild(empty);
+        } else {
+            candidates.forEach(function (code) {
+                var label = document.createElement("label");
+                var chk = document.createElement("input");
+                chk.type = "checkbox";
+                chk.className = "src-perm-chk";
+                chk.value = code;
+                chk.checked = !!(allowed && allowed.indexOf(code) >= 0);
+                label.title = code;
+                label.appendChild(chk);
+                label.appendChild(document.createTextNode(sourceLabel(code)));
+                box.appendChild(label);
+                chks.push(chk);
+            });
+        }
+
+        function syncDisabled() {
+            chks.forEach(function (chk) { chk.disabled = allChk.checked; });
+        }
+        allChk.addEventListener("change", syncDisabled);
+        syncDisabled();
+
+        var saveBtn = document.createElement("button");
+        saveBtn.className = "btn btn-secondary btn-sm src-perm-save-btn";
+        saveBtn.style.fontSize = "0.7rem";
+        saveBtn.style.padding = "3px 8px";
+        saveBtn.textContent = "저장";
+        saveBtn.addEventListener("click", function () {
+            var selected = chks.filter(function (chk) { return chk.checked; })
+                .map(function (chk) { return chk.value; });
+            saveSourcePermissions(td, uid, allChk.checked ? null : selected, isAdmin);
+        });
+        box.appendChild(saveBtn);
+
+        var cancelBtn = document.createElement("button");
+        cancelBtn.className = "btn btn-secondary btn-sm src-perm-cancel-btn";
+        cancelBtn.style.fontSize = "0.7rem";
+        cancelBtn.style.padding = "3px 8px";
+        cancelBtn.textContent = "취소";
+        cancelBtn.addEventListener("click", function () {
+            renderSourceCell(td, uid, allowed, isAdmin);
+        });
+        box.appendChild(cancelBtn);
+
+        td.appendChild(box);
+    }
+
+    async function saveSourcePermissions(td, uid, allowed, isAdmin) {
+        try {
+            var response = await apiRequest(
+                "PUT",
+                "/api/v1/admin/users/" + encodeURIComponent(uid) + "/source-permissions",
+                {allowed_sources: allowed}
+            );
+            var data = await response.json();
+            if (!response.ok) {
+                showError(errorMessage(data, "관측 소스 권한 저장에 실패했습니다."));
+                return;
+            }
+            renderSourceCell(td, uid, data.allowed_sources, data.role === "admin" || isAdmin);
+            showSuccess("사용자 '" + uid + "' 관측 소스 권한 저장 완료 (" + sourcePermLabel(data.allowed_sources) + ")");
+        } catch (e) {
+            showError("통신 실패");
+        }
+    }
+
     function escapeHtml(str) {
         if (!str) return "";
         return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
@@ -508,6 +2010,29 @@
     }
     if (searchLogsBtn) {
         searchLogsBtn.addEventListener("click", function() { currentPage = 1; loadAuditLogs(); });
+    }
+    // 개선 5: 보관 기간 지난 감사 로그 수동 정리
+    var cleanupLogsBtn = document.getElementById("cleanupLogsBtn");
+    if (cleanupLogsBtn) {
+        cleanupLogsBtn.addEventListener("click", async function() {
+            if (!window.confirm("보관 기간이 지난 감사 로그를 삭제합니다. 계속할까요?")) return;
+            cleanupLogsBtn.disabled = true;
+            try {
+                var res = await apiRequest("POST", "/api/v1/admin/audit/cleanup");
+                if (res.ok) {
+                    var d = await res.json();
+                    showSuccess((d.deleted || 0) + "건 삭제 (보관 " + d.retention_days + "일)");
+                    currentPage = 1; loadAuditLogs();
+                } else {
+                    var err = await res.json();
+                    showError(err.detail || "로그 정리 실패");
+                }
+            } catch (e) {
+                showError("로그 정리 중 오류");
+            } finally {
+                cleanupLogsBtn.disabled = false;
+            }
+        });
     }
     if (logsPrevBtn) {
         logsPrevBtn.addEventListener("click", function() {
@@ -584,7 +2109,7 @@
         logsBody.innerHTML = "";
         logs.forEach(function(log) {
             var tr = document.createElement("tr");
-            var time = log.created_at ? log.created_at.substring(0, 19) : "-";
+            var time = formatTsKst(log.created_at);
             var eventType = log.event_type || "-";
             var userId = log.user_id || "-";
             var ip = log.ip_address || "-";
@@ -600,6 +2125,19 @@
         });
         if (logsLoading) logsLoading.classList.remove("active");
         if (logsTable) logsTable.style.display = "table";
+        renderAuditAnonymousNotice(logs);
+    }
+
+    // 인증이 꺼져 있으면 모든 요청이 anonymous로 기록된다(D-183). 사용자 열이 전부 같아
+    // 보이는 것이 버그로 읽히지 않도록, 실제로 그런 행이 있을 때만 사유를 밝힌다
+    // — 인증을 켜면 안내가 저절로 사라진다(정적 문구를 박아두지 않는 이유).
+    function renderAuditAnonymousNotice(logs) {
+        var notice = document.getElementById("auditAnonymousNotice");
+        if (!notice) return;
+        var hasAnonymous = (logs || []).some(function(log) {
+            return log.user_id === "anonymous";
+        });
+        notice.style.display = hasAnonymous ? "block" : "none";
     }
 
     // --- 감사 통계 ---
@@ -658,12 +2196,14 @@
 
             alerts.forEach(function(a) {
                 var tr = document.createElement("tr");
-                var time = a.created_at ? a.created_at.substring(0, 19) : "-";
+                var time = formatTsKst(a.created_at);
                 var severity = (a.detail && a.detail.severity) || "warning";
                 var sevColor = severity === "critical" ? "var(--error)" : severity === "warning" ? "#f59e0b" : "var(--text-muted)";
                 var userId = a.user_id || "-";
                 var ip = a.ip_address || "-";
-                var detail = (a.detail && a.detail.detail) || JSON.stringify(a.detail || {});
+                // AuditService.log_security_alert는 경고 문구를 상세의 extra.detail에 둔다
+                var detail = (a.detail && (a.detail.detail || (a.detail.extra && a.detail.extra.detail)))
+                    || JSON.stringify(a.detail || {});
                 tr.innerHTML =
                     "<td style='font-size:0.75rem;white-space:nowrap'>" + escapeHtml(time) + "</td>" +
                     "<td><span style='font-size:0.7rem;font-weight:600;padding:2px 8px;border-radius:3px;color:" + sevColor + ";background:color-mix(in srgb," + sevColor + " 15%,transparent)'>" + escapeHtml(severity.toUpperCase()) + "</span></td>" +
@@ -678,5 +2218,463 @@
         } catch (err) {
             if (alertsLoading) alertsLoading.classList.remove("active");
         }
+    }
+
+    // --- 알람 피드백 집계 — Plan 83 T13 ---
+    // 조회 전용이다. 상반된 라벨(같은 알람에 유효/노이즈가 함께 쌓인 경우)을 사람이 보고
+    // 판단하게 할 뿐, 발송 판정에는 관여하지 않는다.
+
+    var feedbackBody = document.getElementById("feedbackBody");
+    var feedbackTable = document.getElementById("feedbackTable");
+    var feedbackLoading = document.getElementById("feedbackLoading");
+    var feedbackEmpty = document.getElementById("feedbackEmpty");
+    var refreshFeedbackBtn = document.getElementById("refreshFeedbackBtn");
+
+    if (refreshFeedbackBtn) {
+        refreshFeedbackBtn.addEventListener("click", loadFeedbackSummary);
+    }
+    document.querySelectorAll('.tab[data-tab="feedback"]').forEach(function (tab) {
+        tab.addEventListener("click", loadFeedbackSummary);
+    });
+
+    async function loadFeedbackSummary() {
+        if (!feedbackBody) return;
+        if (feedbackLoading) feedbackLoading.classList.add("active");
+        if (feedbackTable) feedbackTable.style.display = "none";
+        if (feedbackEmpty) feedbackEmpty.style.display = "none";
+        try {
+            var response = await apiRequest("GET", "/api/v1/alarm/feedback/summary?limit=200");
+            if (!response.ok) {
+                if (feedbackLoading) feedbackLoading.classList.remove("active");
+                if (feedbackEmpty) feedbackEmpty.style.display = "block";
+                return;
+            }
+            var data = await response.json();
+            renderFeedbackSummary((data && data.items) || []);
+        } catch (e) {
+            if (feedbackLoading) feedbackLoading.classList.remove("active");
+            if (feedbackEmpty) feedbackEmpty.style.display = "block";
+        }
+    }
+
+    function renderFeedbackSummary(items) {
+        feedbackBody.innerHTML = "";
+        if (items.length === 0) {
+            if (feedbackLoading) feedbackLoading.classList.remove("active");
+            if (feedbackEmpty) feedbackEmpty.style.display = "block";
+            return;
+        }
+        items.forEach(function (it) {
+            var conflict = it.valid > 0 && it.noise > 0;   // 상충 표시 대상
+            var tr = document.createElement("tr");
+            tr.innerHTML =
+                "<td>" + escapeHtml(it.alarm_name || "-") + "</td>" +
+                "<td>" + escapeHtml(it.resource_name || "-") + "</td>" +
+                "<td>" + it.valid + "</td>" +
+                "<td>" + it.noise + "</td>" +
+                "<td>" + (it.last_label === "valid" ? "유효" : "노이즈") +
+                    (conflict ? " <span title='같은 알람에 상반된 라벨이 있습니다'>⚠</span>" : "") + "</td>" +
+                "<td>" + escapeHtml(it.last_labeled_by || "-") + "</td>" +
+                "<td>" + escapeHtml((it.last_ts || "").replace("T", " ").slice(0, 19)) + "</td>";
+            feedbackBody.appendChild(tr);
+        });
+        if (feedbackLoading) feedbackLoading.classList.remove("active");
+        if (feedbackTable) feedbackTable.style.display = "table";
+    }
+
+    // --- 열린 사건(incident) — D-049 ---
+
+    var incidentsBody = document.getElementById("incidentsBody");
+    var incidentsTable = document.getElementById("incidentsTable");
+    var incidentsLoading = document.getElementById("incidentsLoading");
+    var incidentsEmpty = document.getElementById("incidentsEmpty");
+    var refreshIncidentsBtn = document.getElementById("refreshIncidentsBtn");
+
+    var INCIDENT_SEVERITY_LABELS = { 0: "해소", 1: "주의", 2: "경고", 3: "심각" };
+
+    if (refreshIncidentsBtn) {
+        refreshIncidentsBtn.addEventListener("click", loadIncidents);
+    }
+
+    document.querySelectorAll('.tab[data-tab="incidents"]').forEach(function (tab) {
+        tab.addEventListener("click", loadIncidents);
+    });
+
+    function formatElapsed(createdAt) {
+        if (!createdAt) return "-";
+        var start = new Date(createdAt).getTime();
+        if (isNaN(start)) return "-";
+        var sec = Math.floor((Date.now() - start) / 1000);
+        if (sec < 0) sec = 0;
+        if (sec < 60) return sec + "초";
+        if (sec < 3600) return Math.floor(sec / 60) + "분";
+        if (sec < 86400) return Math.floor(sec / 3600) + "시간";
+        return Math.floor(sec / 86400) + "일";
+    }
+
+    // 시각 표시 헬퍼 — ISO 문자열을 "YYYY-MM-DD HH:mm (N분 전)"로 만든다.
+    // 서버 시각은 두 계열이 섞여 있다: 인증(last_login_at)·감사 로그는 aware UTC
+    // (+00:00 접미, datetime.now(timezone.utc).isoformat()), incident created_at은
+    // naive 서버 로컬(KST, alarm_notifier의 datetime.now()). 오프셋 유무로 분기해
+    // aware만 KST(UTC+9 고정 — 한국은 DST 없음)로 변환하고, naive는 벽시계 숫자를
+    // 그대로 쓴다(이중 변환 방지). 종전 substring(0,19)는 UTC를 표기 없이 노출했다.
+    function formatTsKst(iso) {
+        if (!iso) return "-";
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return String(iso).substring(0, 19);
+        var y, mo, da, h, mi;
+        if (/Z$|[+-]\d\d:?\d\d$/.test(String(iso))) {
+            var k = new Date(d.getTime() + 9 * 3600 * 1000);
+            y = k.getUTCFullYear(); mo = k.getUTCMonth() + 1; da = k.getUTCDate();
+            h = k.getUTCHours(); mi = k.getUTCMinutes();
+        } else {
+            y = d.getFullYear(); mo = d.getMonth() + 1; da = d.getDate();
+            h = d.getHours(); mi = d.getMinutes();
+        }
+        function p(n) { return n < 10 ? "0" + n : String(n); }
+        var sec = Math.floor((Date.now() - d.getTime()) / 1000);
+        if (sec < 0) sec = 0;
+        return y + "-" + p(mo) + "-" + p(da) + " " + p(h) + ":" + p(mi) +
+            " (" + formatAgo(sec) + ")";
+    }
+
+    // 상대시간 버킷: 1분 미만 / N분 전(1~59) / N시간 전(1~23) / N일 전(1~364) / N년 전
+    function formatAgo(sec) {
+        if (sec < 60) return "1분 미만";
+        var min = Math.floor(sec / 60);
+        if (min < 60) return min + "분 전";
+        var hr = Math.floor(min / 60);
+        if (hr < 24) return hr + "시간 전";
+        var day = Math.floor(hr / 24);
+        if (day < 365) return day + "일 전";
+        return Math.floor(day / 365) + "년 전";
+    }
+
+    async function loadIncidents() {
+        if (!incidentsBody) return;
+        if (incidentsLoading) incidentsLoading.classList.add("active");
+        if (incidentsTable) incidentsTable.style.display = "none";
+        if (incidentsEmpty) incidentsEmpty.style.display = "none";
+
+        try {
+            var response = await apiRequest("GET", "/api/v1/alarm/incidents?status=open&limit=100");
+            if (!response.ok) {
+                if (incidentsLoading) incidentsLoading.classList.remove("active");
+                showError("열린 사건을 불러오지 못했습니다.");
+                return;
+            }
+            var data = await response.json();
+            renderIncidents((data && data.incidents) || []);
+        } catch (err) {
+            if (incidentsLoading) incidentsLoading.classList.remove("active");
+            showError("열린 사건 로드 실패");
+        }
+    }
+
+    function renderIncidents(incidents) {
+        incidentsBody.innerHTML = "";
+        if (incidents.length === 0) {
+            if (incidentsLoading) incidentsLoading.classList.remove("active");
+            if (incidentsEmpty) incidentsEmpty.style.display = "block";
+            return;
+        }
+        incidents.forEach(function (inc) {
+            var tr = document.createElement("tr");
+            var time = inc.created_at ? inc.created_at.substring(0, 19) : "-";
+            var sevLabel = INCIDENT_SEVERITY_LABELS[inc.severity] || String(inc.severity);
+            var sevColor = inc.severity >= 3 ? "var(--error)" : inc.severity === 2 ? "#f59e0b" : "var(--text-muted)";
+            tr.innerHTML =
+                "<td style='font-size:0.75rem;white-space:nowrap'>" + escapeHtml(time) + "</td>" +
+                "<td style='font-size:0.75rem'>" + escapeHtml(formatElapsed(inc.created_at)) + "</td>" +
+                "<td style='font-size:0.8rem'>" + escapeHtml(inc.server_name || "-") +
+                    "<span style='color:var(--text-muted);font-size:0.7rem'> (" + escapeHtml(inc.db_id || "-") + ")</span></td>" +
+                "<td style='font-size:0.8rem'>" + escapeHtml(inc.alarm_name || "-") + "</td>" +
+                "<td><span style='font-size:0.7rem;font-weight:600;padding:2px 8px;border-radius:3px;color:" + sevColor +
+                    ";background:color-mix(in srgb," + sevColor + " 15%,transparent)'>" + escapeHtml(sevLabel) + "</span></td>" +
+                "<td style='font-size:0.75rem'>" + escapeHtml(inc.tier || "-") + "</td>" +
+                "<td><button class='btn btn-secondary btn-sm incident-ack-btn' data-iid='" + escapeHtml(String(inc.id)) +
+                    "' style='font-size:0.7rem;padding:3px 10px'>확인</button></td>";
+            incidentsBody.appendChild(tr);
+        });
+        incidentsBody.querySelectorAll(".incident-ack-btn").forEach(function (btn) {
+            btn.addEventListener("click", function () { ackIncident(btn.dataset.iid, btn); });
+        });
+        if (incidentsLoading) incidentsLoading.classList.remove("active");
+        if (incidentsTable) incidentsTable.style.display = "table";
+    }
+
+    async function ackIncident(incidentId, btn) {
+        if (btn) btn.disabled = true;
+        try {
+            var response = await apiRequest("POST", "/api/v1/alarm/incidents/" + incidentId + "/ack");
+            if (!response.ok) {
+                showError("확인 처리 실패");
+                if (btn) btn.disabled = false;
+                return;
+            }
+            var res = await response.json();
+            if (res && res.acked) {
+                showSuccess("사건 #" + incidentId + " 확인됨");
+            } else {
+                showError("이미 확인/해소된 사건입니다.");
+            }
+            loadIncidents();
+        } catch (err) {
+            showError("확인 처리 실패");
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    // --- DRM 연동 진단 (Plan 74 §4.2) ---
+    //
+    // 실기 환경이 운영계뿐이므로 셸 없이 연동 상태를 점검한다.
+    // 진단 응답은 실패도 200 + 구조화된 결과이므로, 화면은 항상 결과를 렌더한다.
+
+    var drmStatusBody = document.getElementById("drmStatusBody");
+    var drmStatusTable = document.getElementById("drmStatusTable");
+    var drmStatusLoading = document.getElementById("drmStatusLoading");
+    var drmSummary = document.getElementById("drmSummary");
+    var refreshDrmBtn = document.getElementById("refreshDrmBtn");
+    var drmVerifyBtn = document.getElementById("drmVerifyBtn");
+    var drmSampleInput = document.getElementById("drmSampleInput");
+    var drmVerifyLoading = document.getElementById("drmVerifyLoading");
+    var drmVerifyResult = document.getElementById("drmVerifyResult");
+
+    if (refreshDrmBtn) refreshDrmBtn.addEventListener("click", loadDrmStatus);
+    if (drmVerifyBtn) drmVerifyBtn.addEventListener("click", verifyDrmSample);
+
+    document.querySelectorAll('.tab[data-tab="drm"]').forEach(function (tab) {
+        tab.addEventListener("click", loadDrmStatus);
+    });
+
+    function escapeHtml(value) {
+        return String(value === null || value === undefined ? "" : value)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+    }
+
+    function drmBadge(ok) {
+        var color = ok ? "var(--success, #2e7d32)" : "var(--danger, #c62828)";
+        return '<span style="color: ' + color + '; font-weight: 600;">' +
+            (ok ? "정상" : "확인 필요") + "</span>";
+    }
+
+    async function loadDrmStatus() {
+        if (!drmStatusBody) return;
+        if (drmStatusLoading) drmStatusLoading.classList.add("active");
+        if (drmStatusTable) drmStatusTable.style.display = "none";
+        if (drmSummary) drmSummary.style.display = "none";
+
+        try {
+            var response = await apiRequest("GET", "/api/v1/admin/drm/status");
+            if (!response.ok) {
+                if (drmStatusLoading) drmStatusLoading.classList.remove("active");
+                showError("DRM 상태를 불러오지 못했습니다.");
+                return;
+            }
+            renderDrmStatus(await response.json());
+        } catch (err) {
+            if (drmStatusLoading) drmStatusLoading.classList.remove("active");
+            showError("DRM 상태를 불러오지 못했습니다.");
+        }
+    }
+
+    function renderDrmStatus(data) {
+        if (drmStatusLoading) drmStatusLoading.classList.remove("active");
+
+        if (drmSummary) {
+            var tone = data.enabled
+                ? (data.ready ? "rgba(46,125,50,0.12)" : "rgba(198,40,40,0.12)")
+                : "rgba(120,120,120,0.12)";
+            drmSummary.style.background = tone;
+            drmSummary.innerHTML =
+                "<strong>DRM_ENABLED = " + (data.enabled ? "true" : "false") + "</strong>" +
+                " &mdash; " + escapeHtml(data.summary);
+            drmSummary.style.display = "block";
+        }
+
+        var rows = [];
+        (data.checks || []).forEach(function (c) {
+            var ok = c.exists && c.readable && !c.stale;
+            var detail = escapeHtml(c.message || "");
+            if (c.path) detail += '<br><span style="color: var(--text-muted); font-size: 0.75rem;">' + escapeHtml(c.path) + "</span>";
+            rows.push([escapeHtml(c.label), drmBadge(ok), detail]);
+        });
+        if (data.java) {
+            rows.push([
+                escapeHtml(data.java.label || "Java 런타임"),
+                drmBadge(!!data.java.available),
+                escapeHtml(data.java.message || ""),
+            ]);
+        }
+        if (data.temp_dir) {
+            var t = data.temp_dir;
+            var tDetail = escapeHtml(t.message || "");
+            if (t.path) tDetail += '<br><span style="color: var(--text-muted); font-size: 0.75rem;">' + escapeHtml(t.path) + "</span>";
+            if (t.leftover_files) tDetail += " · 잔여 파일 " + t.leftover_files + "개";
+            rows.push([escapeHtml(t.label || "작업 디렉터리"), drmBadge(!t.exists || t.writable), tDetail]);
+        }
+        rows.push(["GroupID", "-", escapeHtml(data.group_id || "")]);
+        rows.push(["복호화 타임아웃", "-", escapeHtml(data.timeout_sec) + "초"]);
+
+        drmStatusBody.innerHTML = rows.map(function (r) {
+            return "<tr><td>" + r[0] + "</td><td>" + r[1] + "</td><td>" + r[2] + "</td></tr>";
+        }).join("");
+        if (drmStatusTable) drmStatusTable.style.display = "table";
+    }
+
+    async function verifyDrmSample() {
+        if (!drmSampleInput || !drmSampleInput.files || drmSampleInput.files.length === 0) {
+            showError("진단할 샘플 파일을 선택하세요.");
+            return;
+        }
+        var formData = new FormData();
+        formData.append("file", drmSampleInput.files[0]);
+
+        if (drmVerifyBtn) drmVerifyBtn.disabled = true;
+        if (drmVerifyLoading) drmVerifyLoading.classList.add("active");
+        if (drmVerifyResult) drmVerifyResult.style.display = "none";
+
+        try {
+            // FormData는 Content-Type을 브라우저가 boundary와 함께 설정해야 하므로
+            // apiRequest(JSON 전용)를 쓰지 않고 직접 호출한다.
+            var response = await fetch("/api/v1/admin/drm/verify", {
+                method: "POST",
+                headers: { "Authorization": "Bearer " + token },
+                body: formData,
+            });
+            if (!response.ok) {
+                showError("진단 요청에 실패했습니다 (HTTP " + response.status + ")");
+                return;
+            }
+            renderDrmVerify(await response.json());
+        } catch (err) {
+            showError("진단 요청에 실패했습니다.");
+        } finally {
+            if (drmVerifyBtn) drmVerifyBtn.disabled = false;
+            if (drmVerifyLoading) drmVerifyLoading.classList.remove("active");
+        }
+    }
+
+    function renderDrmVerify(result) {
+        if (!drmVerifyResult) return;
+
+        var DETECT_LABELS = { drm: "DRM 암호문 (SCDS)", plain: "평문 문서 (ZIP)", unknown: "판별 불가" };
+        var rows = [
+            ["파일", escapeHtml(result.file_name) + " (" + (result.file_size_bytes || 0).toLocaleString() + " bytes)"],
+            ["감지 결과", escapeHtml(DETECT_LABELS[result.detected] || result.detected || "-")],
+        ];
+        if (result.header_hex) rows.push(["선두 바이트", "<code>" + escapeHtml(result.header_hex) + "</code>"]);
+        if (result.ret !== null && result.ret !== undefined) rows.push(["scsl 반환값 (ret)", "<code>" + escapeHtml(result.ret) + "</code>"]);
+        if (result.elapsed_ms !== null && result.elapsed_ms !== undefined) rows.push(["소요 시간", escapeHtml(result.elapsed_ms) + " ms"]);
+
+        var out = result.output;
+        if (out) {
+            rows.push(["산출물 크기", (out.size_bytes || 0).toLocaleString() + " bytes"]);
+            rows.push(["ZIP 시그니처", out.is_zip ? "확인됨 (PK)" : "없음"]);
+            if (out.parse_message) {
+                rows.push(["문서 파싱", escapeHtml(out.parse_message)]);
+            }
+            if (out.sheet_names) rows.push(["시트", escapeHtml(out.sheet_names.join(", "))]);
+            if (out.paragraph_count !== undefined) {
+                rows.push(["문단/표", out.paragraph_count + "개 / " + (out.table_count || 0) + "개"]);
+            }
+        }
+        if (result.detail) rows.push(["상세", "<code>" + escapeHtml(result.detail) + "</code>"]);
+
+        var ok = !!result.success;
+        var tone = ok ? "rgba(46,125,50,0.12)" : "rgba(198,40,40,0.12)";
+        drmVerifyResult.innerHTML =
+            '<div style="padding: 12px 14px; border-radius: 6px; background: ' + tone + '; margin-bottom: 12px; font-size: 0.85rem;">' +
+            "<strong>" + (ok ? "성공" : "실패") + "</strong> &mdash; " + escapeHtml(result.message || "") +
+            "</div>" +
+            '<table class="settings-table"><tbody>' +
+            rows.map(function (r) {
+                return '<tr><td style="width: 22%;">' + r[0] + "</td><td>" + r[1] + "</td></tr>";
+            }).join("") +
+            "</tbody></table>";
+        drmVerifyResult.style.display = "block";
+    }
+
+    // ─── 소스 선택 기억 (plans/132 W5 · 조회·삭제·조직 공용 승격) ───
+    var sourceMemoryBody = document.getElementById("sourceMemoryBody");
+    var sourceMemoryTable = document.getElementById("sourceMemoryTable");
+    var sourceMemorySeedBody = document.getElementById("sourceMemorySeedBody");
+    var sourceMemoryLoading = document.getElementById("sourceMemoryLoading");
+    var sourceMemorySummary = document.getElementById("sourceMemorySummary");
+    var refreshSourceMemoryBtn = document.getElementById("refreshSourceMemoryBtn");
+    var SOURCE_MEMORY_ORIGINS = { user_choice: "칩 선택", feedback: "정정", curated: "관리자 정리" };
+
+    if (refreshSourceMemoryBtn) refreshSourceMemoryBtn.addEventListener("click", loadSourceMemory);
+    document.querySelectorAll('.tab[data-tab="sourcememory"]').forEach(function (tab) {
+        tab.addEventListener("click", loadSourceMemory);
+    });
+
+    async function loadSourceMemory() {
+        if (!sourceMemoryBody) return;
+        if (sourceMemoryLoading) sourceMemoryLoading.classList.add("active");
+        try {
+            var response = await apiRequest("GET", "/api/v1/admin/source-memory");
+            if (!response.ok) throw new Error(String(response.status));
+            renderSourceMemory(await response.json());
+        } catch (err) {
+            showError("소스 선택 기억을 불러오지 못했습니다.");
+        } finally {
+            if (sourceMemoryLoading) sourceMemoryLoading.classList.remove("active");
+        }
+    }
+
+    function renderSourceMemory(data) {
+        if (sourceMemorySummary) {
+            sourceMemorySummary.style.background = data.enabled ? "rgba(46,125,50,0.12)" : "rgba(120,120,120,0.12)";
+            sourceMemorySummary.innerHTML = data.enabled
+                ? "<strong>켜짐</strong> &mdash; 마지막 사용 뒤 " + escapeHtml(data.ttl_days) + "일 동안 쓰지 않으면 사라집니다(사용할 때마다 연장)." +
+                  (data.connected ? "" : " 저장소(Redis)에 연결되지 않아 사례를 읽지 못했습니다.")
+                : "<strong>꺼짐</strong> &mdash; ROUTER_SOURCE_MEMORY_TTL_DAYS 가 0입니다. 기억을 쓰지도 저장하지도 않습니다(모호한 질문은 매번 소스를 묻습니다).";
+            sourceMemorySummary.style.display = "block";
+        }
+        var rows = [];
+        (data.scopes || []).forEach(function (group) {
+            (group.cases || []).forEach(function (c) {
+                var actions = '<button class="btn btn-secondary" data-sm-action="delete" data-scope="' + escapeHtml(group.scope) + '" data-case="' + escapeHtml(c.case_id) + '" style="padding: 4px 10px; font-size: 0.75rem;">삭제</button>';
+                if (group.scope !== "org") {
+                    actions += ' <button class="btn" data-sm-action="promote" data-scope="' + escapeHtml(group.scope) + '" data-case="' + escapeHtml(c.case_id) + '" style="padding: 4px 10px; font-size: 0.75rem;">조직 공용</button>';
+                }
+                rows.push("<tr><td>" + escapeHtml(group.scope === "org" ? "조직 공용" : group.scope) + "</td><td>" +
+                    escapeHtml(c.text) + "</td><td>" + escapeHtml((c.source_labels || c.sources || []).join(", ")) +
+                    "</td><td>" + escapeHtml(SOURCE_MEMORY_ORIGINS[c.origin] || c.origin) + "</td><td>" +
+                    escapeHtml(c.use_count || 0) + "회</td><td>" + actions + "</td></tr>");
+            });
+        });
+        sourceMemoryBody.innerHTML = rows.length ? rows.join("")
+            : '<tr><td colspan="6" style="color: var(--text-muted); text-align: center;">저장된 사례가 없습니다.</td></tr>';
+        if (sourceMemoryTable) sourceMemoryTable.style.display = "table";
+        if (sourceMemorySeedBody) {
+            sourceMemorySeedBody.innerHTML = (data.seeds || []).map(function (seed) {
+                return "<tr><td>" + escapeHtml(seed.text) + "</td><td>" + escapeHtml((seed.source_labels || seed.sources || []).join(", ")) + "</td></tr>";
+            }).join("") || '<tr><td colspan="2" style="color: var(--text-muted);">시드가 없습니다.</td></tr>';
+        }
+        sourceMemoryBody.querySelectorAll("button[data-sm-action]").forEach(function (btn) {
+            btn.addEventListener("click", function () { sourceMemoryAction(btn); });
+        });
+    }
+
+    async function sourceMemoryAction(btn) {
+        var action = btn.getAttribute("data-sm-action");
+        var url = "/api/v1/admin/source-memory/" + encodeURIComponent(btn.getAttribute("data-scope")) +
+            "/" + encodeURIComponent(btn.getAttribute("data-case"));
+        if (action === "promote") {
+            if (!confirm("조직 공용으로 승격하면 모든 사용자의 소스 판정에 쓰입니다. 승격할까요?")) return;
+            url += "/promote";
+        } else if (!confirm("이 기억 사례를 지울까요?")) {
+            return;
+        }
+        var response = await apiRequest(action === "promote" ? "POST" : "DELETE", url);
+        if (!response.ok) {
+            showError("작업에 실패했습니다.");
+            return;
+        }
+        showSuccess(action === "promote" ? "조직 공용 사례로 승격했습니다." : "기억 사례를 지웠습니다.");
+        loadSourceMemory();
     }
 })();

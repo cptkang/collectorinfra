@@ -1,0 +1,89 @@
+{
+ "id": "Q-MULTI-HOST",
+ "turns": [
+  {
+   "query": "cocm-hdkapp01 서버의 OS 확인",
+   "file": null,
+   "key": "40fd09f47630a692",
+   "elapsed_s": 115.7,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회는 1건 수행되었으나, 값 칼럼(os_patchlevel, agent_version)이 전 행 null이어서 목록 표시를 생략합니다.\n원본 조회 데이터는 CSV 다운로드로 확인할 수 있습니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 1,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "server_name": "cocm-hdkapp01",
+     "os_hostname": "cocm-hdkapp01",
+     "ipaddress": "10.61.0.3",
+     "os_type": "Linux",
+     "os_version": "Red Hat Enterprise Linux 8.6",
+     "os_patchlevel": null,
+     "agent_version": null
+    }
+   ]
+  },
+  {
+   "query": "해당 서버의 메모리 용량도 보여줘",
+   "file": null,
+   "key": "c04feb20898de7eb",
+   "elapsed_s": 123.6,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\ncocm-hdkapp01 서버의 메모리 용량은 65,536 MB(64 GB) 입니다.\n\n| server_name | os_hostname | ipaddress | memory_size |\n|---|---|---|---|\n| cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | 65536 |\n\n참고사항\n- 메모리 용량 단위는 MB 로 표기된 값 (65536) 입니다.\n\n---\n## 순차 처리 경과\n- 순차 분해가 적용되지 않아 한 번의 조회로 처리했습니다(앞 결과 → 뒤 조회 대상 배선 없음).\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 1,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "server_name": "cocm-hdkapp01",
+     "os_hostname": "cocm-hdkapp01",
+     "ipaddress": "10.61.0.3",
+     "memory_size": "65536"
+    }
+   ]
+  }
+ ],
+ "reviewed": false,
+ "recorded_at": "2026-09-23T11:17:08",
+ "review": {
+  "verdict": "wrong",
+  "notes": "1턴이 OS 대신 os_patchlevel·agent_version 을 골라 전부 null · 2턴 메모리 65536 은 맞음. 1턴 문장 교체 후 재녹화",
+  "at": "2026-09-23"
+ }
+}

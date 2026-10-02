@@ -1,0 +1,93 @@
+{
+ "id": "Q-SERVER-LIST",
+ "turns": [
+  {
+   "query": "전체 서버의 호스트명, OS종류, 벤더를 조회해줘",
+   "file": null,
+   "key": "165073d402aba5ad",
+   "elapsed_s": 96.5,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n총 54건의 서버 정보를 조회했습니다. 호스트명은 대부분 'svr-' 또는 'host-'로 시작하는 형식이며, 운영체제는 LINUX 계열이 우세합니다. 벤더는 HPE, Dell Inc., VMware, Inc.로 구성되어 있습니다.\n\n| hostname | OSType | Vendor |\n|---|---|---|\n| svr-was-06 | LINUX | VMware, Inc. |\n| svr-web-06 | LINUX | VMware, Inc. |\n| svweb001 | Linux | HPE |\n| hostapo02 | LINUX | Dell Inc. |\n| null | null | null |\n| svr-bkp-01 | LINUX | Dell Inc. |\n| svr-was-03 | LINUX | HPE |\n| cob0-bnndbp01 | Linux | HPE |\n| svr-app-01 | LINUX | VMware, Inc. |\n| svr-was-08 | LINUX | Dell Inc. |\n| svr-web-10 | LINUX | VMware, Inc. |\n| svr-app-03 | LINUX | HPE |\n| cocm-hdkapp01 | Linux | HPE |\n| svr-mon-01 | LINUX | HPE |\n| cocm-ngcapo91 | Linux | HPE |\n| svr-db-05 | LINUX | HPE |\n| svr-db-04 | LINUX | Dell Inc. |\n| svr-web-08 | LINUX | HPE |\n| svr-was-10 | LINUX | HPE |\n| svr-web-09 | LINUX | VMware, Inc. |\n\n참고사항\n- 조회된 데이터 중 호스트명, OS 종류, 벤더가 모두 누락된 기록 (null) 이 1건 포함되어 있습니다.\n- 운영체제(OSType) 는 대문자 'LINUX' 와 소문자 'Linux' 가 혼용되어 있습니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 54,
+    "executed_sql": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.hostname END) AS \"hostname\",\n  MAX(CASE WHEN c.resource_type='server.Server' AND cc.name='OSType' THEN cc.stringvalue_short END) AS \"OSType\",\n  MAX(CASE WHEN c.resource_type='server.Server' AND cc.name='Vendor' THEN cc.stringvalue_short END) AS \"Vendor\"\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id\nWHERE c.resource_type IN ('server.Server')\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nLIMIT 10000;",
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "hostname": "svr-was-06",
+     "OSType": "LINUX",
+     "Vendor": "VMware, Inc."
+    },
+    {
+     "hostname": "svr-web-06",
+     "OSType": "LINUX",
+     "Vendor": "VMware, Inc."
+    },
+    {
+     "hostname": "svweb001",
+     "OSType": "Linux",
+     "Vendor": "HPE"
+    },
+    {
+     "hostname": "hostapo02",
+     "OSType": "LINUX",
+     "Vendor": "Dell Inc."
+    },
+    {
+     "hostname": null,
+     "OSType": null,
+     "Vendor": null
+    },
+    {
+     "hostname": "svr-bkp-01",
+     "OSType": "LINUX",
+     "Vendor": "Dell Inc."
+    },
+    {
+     "hostname": "svr-was-03",
+     "OSType": "LINUX",
+     "Vendor": "HPE"
+    },
+    {
+     "hostname": "cob0-bnndbp01",
+     "OSType": "Linux",
+     "Vendor": "HPE"
+    },
+    {
+     "hostname": "svr-app-01",
+     "OSType": "LINUX",
+     "Vendor": "VMware, Inc."
+    },
+    {
+     "hostname": "svr-was-08",
+     "OSType": "LINUX",
+     "Vendor": "Dell Inc."
+    }
+   ]
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-23T16:16:11",
+ "review": {
+  "verdict": "ok",
+  "notes": "재녹화(운영 설정) — 54행 = server.Server dtime null 54대 · hostname null 4대가 원본에도 null(독립 SQL) · 결정적 피벗 SQL",
+  "at": "2026-09-28"
+ }
+}

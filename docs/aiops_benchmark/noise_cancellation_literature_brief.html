@@ -1,0 +1,93 @@
+<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<title>노이즈 캔슬링 관련 학술 문헌 조사 — Plan 60 근거</title>
+<style>
+:root{--ink:#1a2230;--mut:#5a6577;--line:#e2e6ee;--accent:#2563eb;--bg:#f7f9fc}
+*{box-sizing:border-box}
+body{font-family:"Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;color:var(--ink);line-height:1.6;max-width:1160px;margin:0 auto;padding:38px 30px 80px;font-size:15px}
+h1{font-size:23px;margin:0 0 4px} .sub{color:var(--mut);font-size:13.5px;margin-bottom:20px}
+h2{font-size:18px;margin:30px 0 4px;padding-bottom:5px;border-bottom:2px solid var(--ink)}
+.intro{color:#3a4453;font-size:13px;margin:4px 0 10px}
+table{border-collapse:collapse;width:100%;margin:6px 0 4px;font-size:12px}
+th,td{border:1px solid var(--line);padding:7px 9px;vertical-align:top;text-align:left}
+th{background:var(--bg);font-weight:700}
+.ti{color:#33405a;font-size:11.5px} .ve{color:var(--mut);font-size:11px;font-style:italic}
+a{color:var(--accent);text-decoration:none;font-weight:600} a:hover{text-decoration:underline}
+.callout{background:var(--bg);border-left:4px solid var(--accent);padding:12px 16px;margin:16px 0;border-radius:0 6px 6px 0;font-size:13.5px}
+.foot{margin-top:36px;padding-top:14px;border-top:1px solid var(--line);color:var(--mut);font-size:11.5px}
+</style></head><body>
+<h1>노이즈 캔슬링 관련 학술 문헌 조사</h1>
+<div class="sub">collectorinfra Plan 60(노이즈 캔슬링 고도화)의 학술 근거 · OpenAlex 10개 쿼리·7개 기능영역 23편 · AIOps 아키텍트 · 2026-07</div>
+
+<div class="callout">
+<b>목적.</b> Plan 60의 E1~E5 구현 방향이 벤더 마케팅이 아니라 <b>동료심사 문헌의 방법론</b>에 근거함을 확인한다.
+가장 두꺼운 근거군은 <b>E2 이벤트 상관</b>(산업 알람 플러딩·상관 이론)과 <b>E4 토폴로지 RCA</b>(마이크로서비스 근본원인 지역화)이며,
+<b>E3 동적 baseline</b>은 Holt-Winters(Szmit 2012)로 직접 확증된다. 관통 결론: <b>결정적·경량 기법이 폐쇄망·해석성·재현성에서 유리</b>하며(ARIMA vs ML, 딥러닝 리뷰),
+딥러닝 옵션(Donut·MicroCause)은 장래 백로그로 분리한다.
+</div>
+
+<h2>E1 중복·노이즈억제</h2>
+<p class="intro">재발생 집계·도메인 독립 알람 집계 — 억제된 반복에 맥락(분류·카운트)을 부여하는 근거.</p>
+<table><tr><th style="width:16%">문헌</th><th style="width:8%">연도</th><th style="width:7%">피인용</th><th style="width:34%">방법론 요지</th><th style="width:35%">Plan 60 연결</th></tr>
+<tr><td><a href="https://doi.org/10.1016/j.cose.2020.101817">Kidwai 2020</a><br><span class="ti">SIEM alert metadata aggregation (kill-chain 분류)</span><br><span class="ve">Computers &amp; Security</span></td><td>2020</td><td>48</td><td>kill-chain 단계 기반 알람 메타데이터 집계·분류</td><td>E1 재발생 집계 시 컨텍스트 분류 참고</td></tr>
+<tr><td><a href="https://doi.org/10.1145/3510581">Vaarandi 2022</a><br><span class="ti">Security Alert Flooding — domain-independent ML 집계</span><br><span class="ve">ACM TOPS</span></td><td>2022</td><td>36</td><td>도메인 독립 알람 집계로 플러딩 완화</td><td>E1/E2 집계 정당성</td></tr>
+</table>
+<h2>E2 이벤트상관</h2>
+<p class="intro">상관의 이론적 기원부터 산업 알람 플러딩의 데이터 기반 그룹 발견(itemset mining)·순서 민감 유사도(local alignment)까지. E2 크로스-호스트 상관의 직접 근거군.</p>
+<table><tr><th style="width:16%">문헌</th><th style="width:8%">연도</th><th style="width:7%">피인용</th><th style="width:34%">방법론 요지</th><th style="width:35%">Plan 60 연결</th></tr>
+<tr><td><a href="https://doi.org/10.1109/65.244794">Jakobson 1993</a><br><span class="ti">Alarm correlation (기초)</span><br><span class="ve">IEEE Network</span></td><td>1993</td><td>261</td><td>상관 개념·규칙기반 상관 정의(AIOps 상관의 기원)</td><td>E2 상관 이론적 토대</td></tr>
+<tr><td><a href="https://doi.org/10.1109/tie.2018.2795573">Fan 2018</a><br><span class="ti">Industrial Alarm Floods — itemset mining 빈발패턴</span><br><span class="ve">IEEE TIE</span></td><td>2018</td><td>86</td><td>동적 알람 억제 + itemset mining으로 빈발 알람그룹 자동 발견</td><td>E2 크로스-호스트 군집을 데이터기반 패턴으로 확장(그룹 자동학습)</td></tr>
+<tr><td><a href="https://doi.org/10.1016/j.conengprac.2016.05.021">Cheng 2016</a><br><span class="ti">Alarm flood sequence — local alignment 유사도</span><br><span class="ve">Control Eng. Practice</span></td><td>2016</td><td>77</td><td>Smith-Waterman식 지역정렬로 알람 시퀀스 유사도</td><td>E2 Jaccard 대안/보완(순서 고려 유사도)</td></tr>
+<tr><td><a href="https://doi.org/10.1016/j.jprocont.2019.04.010">Lucke 2019</a><br><span class="ti">Advances in alarm data analysis (online flood)</span><br><span class="ve">J. Process Control</span></td><td>2019</td><td>75</td><td>온라인 알람플러딩 분류·실시간 적용</td><td>E2 실시간 사건창 처리</td></tr>
+</table>
+<h2>E3 이상탐지(계절)</h2>
+<p class="intro">계절성 KPI의 동적 baseline 이탈 탐지 — Holt-Winters(경량·결정적)와 Donut(VAE·비지도). E3 제안 기법의 확증.</p>
+<table><tr><th style="width:16%">문헌</th><th style="width:8%">연도</th><th style="width:7%">피인용</th><th style="width:34%">방법론 요지</th><th style="width:35%">Plan 60 연결</th></tr>
+<tr><td><a href="https://doi.org/10.1145/3178876.3185996">Xu 2018 (Donut)</a><br><span class="ti">Seasonal KPI 비지도 이상탐지 (VAE)</span><br><span class="ve">WWW</span></td><td>2018</td><td>769</td><td>VAE 재구성확률로 계절 KPI 이상탐지, F 0.75~0.9</td><td>E3 동적 baseline의 최신 대안(비지도)</td></tr>
+<tr><td><a href="https://doi.org/10.1109/access.2021.3107975">Choi 2021</a><br><span class="ti">Deep Learning TS Anomaly — review·guidelines</span><br><span class="ve">IEEE Access</span></td><td>2021</td><td>553</td><td>시계열 이상탐지 딥러닝 리뷰·가이드라인</td><td>E3 방법 선택 근거(경량 우선)</td></tr>
+<tr><td><a href="https://doi.org/10.3390/fi15080255">Kontaki 2023</a><br><span class="ti">ARIMA vs ML 시계열 예측 비교</span><br><span class="ve">Future Internet</span></td><td>2023</td><td>367</td><td>고전통계(ARIMA) vs ML 예측 트레이드오프</td><td>E3 폐쇄망 경량 통계 선택 정당화</td></tr>
+<tr><td><a href="https://doi.org/10.1155/2012/192913">Szmit 2012</a><br><span class="ti">Modified Holt-Winters 네트워크 트래픽 이상탐지</span><br><span class="ve">J. Comp. Networks</span></td><td>2012</td><td>47</td><td>Holt-Winters 3중지수평활 예측잔차 이상탐지</td><td>E3 제안 Holt-Winters 직접 근거</td></tr>
+</table>
+<h2>E4 토폴로지·RCA</h2>
+<p class="intro">속성 그래프로 이상 전파를 모델링하고 상관→인과를 분리. E4 토폴로지 그래프·Plan 50 결정적 RCA의 방법론적 토대.</p>
+<table><tr><th style="width:16%">문헌</th><th style="width:8%">연도</th><th style="width:7%">피인용</th><th style="width:34%">방법론 요지</th><th style="width:35%">Plan 60 연결</th></tr>
+<tr><td><a href="https://doi.org/10.1109/noms47738.2020.9110353">Wu 2020 (MicroRCA)</a><br><span class="ti">Attributed graph 이상전파 RCA</span><br><span class="ve">NOMS</span></td><td>2020</td><td>206</td><td>속성 그래프로 서비스·머신 간 이상전파 모델링, precision 89%</td><td>E4 토폴로지 그래프 기반 RCA 직접 근거</td></tr>
+<tr><td><a href="https://doi.org/10.1109/icse-seip52600.2021.00043">Gan 2021 (MicroHECL)</a><br><span class="ti">대규모 마이크로서비스 고효율 RCA</span><br><span class="ve">ICSE-SEIP</span></td><td>2021</td><td>153</td><td>이상전파 체인 탐색으로 대규모 실시간 RCA</td><td>E4 그래프 순회 확장성</td></tr>
+<tr><td><a href="https://doi.org/10.1109/iwqos49365.2020.9213058">Liu 2020 (MicroCause)</a><br><span class="ti">Causality inference RCA(PCTS+TCORW)</span><br><span class="ve">IWQoS</span></td><td>2020</td><td>147</td><td>시계열 인과 경로+시간순 random walk로 근본원인</td><td>E4 상관→인과 단계 근거</td></tr>
+<tr><td><a href="https://doi.org/10.1109/iwqos52092.2021.9521340">Li 2021</a><br><span class="ti">Trace 분석 기반 실용 RCA</span><br><span class="ve">IWQoS</span></td><td>2021</td><td>124</td><td>트레이스 기반 근본원인 실무 지역화</td><td>E4 근거(트레이스 없을 때 의존성그래프 대안)</td></tr>
+</table>
+<h2>예측·선제</h2>
+<p class="intro">클라우드 작업·디스크·VM 고장 예측 — 본 노이즈 계획 범위 밖, Plan 55 다중소스·선제탐지 근거.</p>
+<table><tr><th style="width:16%">문헌</th><th style="width:8%">연도</th><th style="width:7%">피인용</th><th style="width:34%">방법론 요지</th><th style="width:35%">Plan 60 연결</th></tr>
+<tr><td><a href="https://doi.org/10.1109/tsc.2020.2993728">Gao 2020</a><br><span class="ti">Cloud Task Failure Prediction (DL)</span><br><span class="ve">IEEE TSC</span></td><td>2020</td><td>213</td><td>딥러닝 클라우드 작업 실패 예측</td><td>예측(Plan 55 로드맵) 근거</td></tr>
+<tr><td><a href="https://doi.org/10.1109/bigdataservice.2016.10">Xu 2016</a><br><span class="ti">Hard Disk Failure Prediction (big data)</span><br><span class="ve">BigDataService</span></td><td>2016</td><td>41</td><td>SMART 지표 디스크 고장 예측</td><td>예측 선제탐지 근거</td></tr>
+</table>
+<h2>이상탐지(로그)</h2>
+<p class="intro">로그 시퀀스·템플릿 기반 이상탐지 — Plan 55 다중소스 관측(로그 신호) 근거.</p>
+<table><tr><th style="width:16%">문헌</th><th style="width:8%">연도</th><th style="width:7%">피인용</th><th style="width:34%">방법론 요지</th><th style="width:35%">Plan 60 연결</th></tr>
+<tr><td><a href="https://doi.org/10.1145/3338906.3338931">Zhang 2019 (LogRobust)</a><br><span class="ti">Unstable log data 이상탐지</span><br><span class="ve">ESEC/FSE</span></td><td>2019</td><td>680</td><td>로그 진화에 강건한 이상탐지</td><td>로그기반 신호(Plan 55 다중소스)</td></tr>
+<tr><td><a href="https://doi.org/10.24963/ijcai.2019/658">Meng 2019 (LogAnomaly)</a><br><span class="ti">비지도 순차·정량 로그 이상탐지</span><br><span class="ve">IJCAI</span></td><td>2019</td><td>623</td><td>템플릿2Vec 순차·정량 로그 이상</td><td>로그 신호 확장 근거</td></tr>
+<tr><td><a href="https://doi.org/10.1109/issre.2016.21">Du 2017 계열/He 2016</a><br><span class="ti">System Log Analysis for Anomaly Detection</span><br><span class="ve">ISSRE</span></td><td>2016</td><td>569</td><td>로그 이상탐지 실증 비교</td><td>로그 파이프라인 근거</td></tr>
+</table>
+<h2>AIOps 종합</h2>
+<p class="intro">AIOps를 개입시점×목표로 분류하는 서베이·산업 과제 — 성숙도·로드맵 프레임.</p>
+<table><tr><th style="width:16%">문헌</th><th style="width:8%">연도</th><th style="width:7%">피인용</th><th style="width:34%">방법론 요지</th><th style="width:35%">Plan 60 연결</th></tr>
+<tr><td><a href="https://doi.org/10.1109/icse-companion.2019.00023">Dang 2019</a><br><span class="ti">AIOps: Real-World Challenges (MSFT)</span><br><span class="ve">ICSE-Companion</span></td><td>2019</td><td>202</td><td>산업 AIOps 과제·연구방향</td><td>AIOps 정의·방향 근거</td></tr>
+<tr><td><a href="https://doi.org/10.1145/3483424">Notaro 2021</a><br><span class="ti">AIOps Failure Management 서베이(100편)</span><br><span class="ve">ACM CSUR</span></td><td>2021</td><td>102</td><td>5개 카테고리·14 서브·개입시점 윈도우 분류</td><td>성숙도·로드맵 분류 프레임</td></tr>
+<tr><td><a href="https://doi.org/10.1145/3625289">Lyu 2023</a><br><span class="ti">MLOps·AIOps 로드맵 공동연구</span><br><span class="ve">ACM CSUR</span></td><td>2023</td><td>61</td><td>MLOps/AIOps 도전·기회·로드맵</td><td>도입 로드맵 근거</td></tr>
+<tr><td><a href="https://doi.org/10.1145/3447876">Lyu 2021</a><br><span class="ti">AIOps 데이터 분할 영향 실증</span><br><span class="ve">ACM TOSEM</span></td><td>2021</td><td>58</td><td>데이터 분할이 AIOps 모델 성능에 미치는 영향</td><td>데이터품질 전제 근거</td></tr>
+</table>
+
+<div class="callout">
+<b>문헌이 계획에 추가한 것.</b>
+① 오프라인 <b>itemset mining으로 빈발 알람그룹 사전학습</b>(Fan 2018) → E2 상관 규칙 시드(하드코딩 회피).
+② <b>순서 민감 유사도(local alignment)</b>(Cheng 2016) → E2 유사도 대안.
+③ <b>Donut(VAE) 계절 KPI 이상탐지</b>(Xu 2018) → E3 장래 옵션(폐쇄망 모델 반입 검토).
+④ <b>attributed graph 엣지 가중(이상 전파 방향)</b>(Wu·Liu 2020) → E4/Plan 50 공용 자료구조.
+</div>
+
+<div class="foot">
+출처: OpenAlex(피인용·title.search), 10개 검색 쿼리 후 도메인 필터(의료·천문 등 오검색 제거)로 7개 기능영역 23편 선별. 링크는 DOI.
+한계: 산업 알람 플러딩 문헌은 공정제어(석유화학·발전) 맥락이 많아 IT 신호 특성과 다르며, 마이크로서비스 RCA는 트레이스·계측을 전제로 하는 경우가 많다 —
+트레이스 없는 collectorinfra에는 의존성 그래프+메트릭 상관으로 치환해 해석했다. 상세 매핑: plans/60-noise-cancellation-benchmark-refinement.md §13.
+</div>
+</body></html>

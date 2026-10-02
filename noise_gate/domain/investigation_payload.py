@@ -1,0 +1,204 @@
+"""자동 조사 트리거 페이로드 직렬화 (Plan 64 §0.2 CW-A · Plan 60 §14.2 · sre-agent/05 §4).
+
+게이트가 이미 보유한 값(`AlarmEvent` + `NotificationDecision` + E1 재발/E2 클러스터/E4 root
+메타)만 재사용해 `sre_agent` 조사 서비스의 트리거 페이로드(`contract_version: "1"`)로
+직렬화한다. 신규 수집·변환 계층은 없다(sre-agent/05 §4 — 게이트 보유값 그대로 직렬화).
+
+이 모듈은 domain 계층에 위치하므로 표준 라이브러리만 의존한다(src 내 다른 모듈 import 금지).
+event/decision은 덕 타이핑으로 소비하며 타입에 결합하지 않는다.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+
+from noise_gate.domain.process_rank import KIND_APM, is_apm_event
+
+# 트리거 페이로드 계약 버전 (sre-agent/05 §4). sre_agent JobStore.validate_payload가 이 값과
+# 일치할 때만 수용한다(불일치·event 결측·필수 필드 결측 시 rejected).
+CONTRACT_VERSION = "1"
+
+# 조사측 힌트 키(plans/87 J4 · SPEC-apm-sre-agent §7). 값은 원문 `raw_payload["apm"]`의 같은
+# 이름 필드다. `source_id`(제니퍼 소스 — 인스턴스 식별 = 소스·도메인·인스턴스)는
+# plans/87 J8 · D-287 ②.
+_APM_HINT_FIELDS: tuple[str, ...] = ("source_id", "instance_id", "domain_id", "event_type", "txid")
+
+
+def apm_trigger_hints(event) -> dict:  # noqa: ANN001 — AlarmEvent (덕 타이핑)
+    """APM 이벤트의 조사 힌트를 만든다.
+
+    모양: `{"solution": "apm", source_id, instance_id, domain_id, event_type, txid}`.
+
+    원문에 `apm` 객체가 없거나 필드가 비면 그 값은 None이다(키 집합은 고정 — 소비자가 키 부재와
+    값 부재를 구분하지 않아도 되게 한다).
+    """
+    raw = getattr(event, "raw_payload", None)
+    apm = raw.get("apm") if isinstance(raw, dict) else None
+    apm = apm if isinstance(apm, dict) else {}
+    hints: dict = {"solution": KIND_APM}
+    for key in _APM_HINT_FIELDS:
+        hints[key] = apm.get(key)
+    return hints
+
+
+def _fmt_alarm_time(value: object) -> str:
+    """alarm_time을 폴스타 원 이벤트 형식(yyyyMMddHHmmss)으로 직렬화한다.
+
+    datetime이면 strftime, 그 외(문자열 등)는 문자열화한다. None/빈 값은 빈 문자열.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.strftime("%Y%m%d%H%M%S")
+    return str(value)
+
+
+def build_trigger_payload(
+    event,  # noqa: ANN001 — AlarmEvent (덕 타이핑)
+    decision,  # noqa: ANN001 — NotificationDecision (덕 타이핑)
+    *,
+    recurrence: Optional[dict] = None,
+    correlation_meta: Optional[dict] = None,
+    root_resource: Optional[str] = None,
+    target_state: Optional[dict] = None,
+    root_resource_name: Optional[str] = None,
+) -> dict:
+    """게이트 보유값으로 조사 트리거 페이로드(`contract_version: "1"`)를 조립한다.
+
+    `event`는 폴스타 원 이벤트 스키마(Plan 01/05 §4)와 동일 키로 직렬화한다 — collectorinfra
+    `AlarmEvent`가 보유한 값을 그대로 옮기므로 변환 계층이 불필요하다. 필수 event 필드
+    (serverName/hostname/severity)는 결측 시 sre_agent가 거부하므로 이벤트가 값을 갖지 않으면
+    빈 값으로 직렬화되어(그대로 통과) 조사 서비스가 rejected로 응답한다(침묵 금지·계약 준수).
+
+    Args:
+        event: 알람 이벤트(db_id/server_name/hostname/severity/alarm_* 등 속성).
+        decision: 발송 판단(tier/reason/fingerprint/signals 속성).
+        recurrence: E1 재발생 메타(직전 창 count 등, 없으면 None).
+        correlation_meta: E2 크로스-호스트 클러스터 메타(대표 지문·멤버 순번 등, 없으면 None).
+        root_resource: E4 다홉 연쇄의 root 리소스 식별자(없으면 None).
+        root_resource_name: E4 root 리소스 NAME(plans/91 1-3 — 조사 측 연관 서버 소비용). 값이 있을 때만
+            `meta.root_resource_name` 키가 생긴다.
+        target_state: 대상 호스트 가용성 판정(Plan 81 · `HostAvailability.to_dict()`).
+            **값이 있을 때만 `meta.target_state` 키가 생긴다** — 없으면 페이로드가 종전과
+            바이트 동일하다. `validate_payload`가 여분 키를 거부하지 않으므로 구버전
+            수신자와도 호환된다(실측).
+
+    Returns:
+        `{contract_version, event, decision, meta}` 형태의 JSON 직렬화 가능 dict.
+    """
+    meta: dict = {
+        "recurrence": recurrence,
+        "cluster": correlation_meta,
+        "root_resource": root_resource,
+        "source": "collectorinfra",
+    }
+    # Plan 81: 판정이 **있을 때만** 키를 넣는다. 항상 넣으면 판정을 끈 상태·가용성 알람
+    # 예외 경로에서도 페이로드가 달라져 "미설정 시 종전과 동일"이 깨진다(회귀 0).
+    if target_state is not None:
+        meta["target_state"] = target_state
+    # plans/91 1-3(C′-1): E4 root 리소스 **이름** — `root_resource`는 ID라 조사 측이 서버명으로 쓸 수 없다.
+    # 값이 있을 때만 키를 넣는다(없으면 종전 바이트 동일). 클러스터 멤버명은 게이트가 보존하지 않아 싣지 않는다.
+    if root_resource_name:
+        meta["root_resource_name"] = str(root_resource_name)
+    # plans/87 J4: APM 게이트웨이 이벤트에만 조사측 플레이북 선택 힌트를 싣는다
+    # (SPEC-apm-sre-agent §7 계약). 값은 게이트웨이가 원문 `apm` 객체에 담은 것을 그대로 옮긴다.
+    # 그 밖의 이벤트는 키가 없어 바이트 동일.
+    if is_apm_event(event):
+        meta["hints"] = apm_trigger_hints(event)
+
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "event": {
+            "dbId": str(getattr(event, "db_id", "") or ""),
+            "serverName": str(getattr(event, "server_name", "") or ""),
+            "hostname": str(getattr(event, "hostname", "") or ""),
+            "alarmId": str(getattr(event, "alarm_id", "") or ""),
+            "severity": int(getattr(event, "severity", 0) or 0),
+            "alarmName": str(getattr(event, "alarm_name", "") or ""),
+            "resourceType": str(getattr(event, "resource_type", "") or ""),
+            "resourceName": str(getattr(event, "resource_name", "") or ""),
+            "alarmTime": _fmt_alarm_time(getattr(event, "alarm_time", None)),
+            "conditions": str(getattr(event, "conditions", "") or ""),
+            "conditionLog": str(getattr(event, "condition_log", "") or ""),
+        },
+        "decision": {
+            "tier": getattr(decision, "tier", ""),
+            "reason": getattr(decision, "reason", ""),
+            "fingerprint": getattr(decision, "fingerprint", ""),
+            "signals": dict(getattr(decision, "signals", None) or {}),
+        },
+        "meta": meta,
+    }
+
+
+#: 가용성(DOWN) 계열 알람을 알아보는 표면어 (Plan 81 G-3).
+#: **넓게 잡는 쪽이 안전하다** — 오탐(가용성 알람이 아닌데 그렇게 본다)의 대가는
+#: "사전 판정을 건너뛴다"(=종전 동작)뿐이지만, 누락의 대가는 **정작 필요한 다운 원인
+#: 조사를 막는 것**이다. 비대칭이 명확하므로 재현율을 택한다.
+_AVAILABILITY_ALARM_MARKERS: tuple[str, ...] = (
+    "down", "다운", "가용", "avail", "unreachable", "응답없음", "응답 없음",
+    "ping", "접속불가", "접속 불가", "통신", "connection", "connect fail",
+    "disconnect", "중지", "정지", "shutdown", "power",
+)
+
+
+def is_availability_alarm(event) -> bool:  # noqa: ANN001 — AlarmEvent (덕 타이핑)
+    """알람 자체가 **가용성/다운 계열**인지 결정적으로 판정한다 (Plan 81 G-3).
+
+    왜 필요한가: 다운 알람의 대상은 당연히 가용하지 않다. 여기에 가용성 사전 판정을
+    그대로 적용하면 **"서버가 왜 내려갔는지" 조사가 통째로 막힌다** — 정작 필요한 조사다.
+    이 판정이 True면 사전 판정을 건너뛰고 조사를 진행시킨다.
+
+    Args:
+        event: 알람 이벤트(alarm_name/conditions/resource_name/condition_log 사용)
+
+    Returns:
+        가용성 계열 알람이면 True
+    """
+    haystack = " ".join(
+        str(getattr(event, field, "") or "")
+        for field in ("alarm_name", "conditions", "condition_log", "resource_name")
+    ).lower()
+    return any(marker in haystack for marker in _AVAILABILITY_ALARM_MARKERS)
+
+
+def verdict_escalates(verdict: object) -> bool:
+    """poll verdict가 상향(escalate)을 지시하는지 판정한다 (Plan 64 CW-C · §5.1).
+
+    구조화 ImportanceVerdict(dict — sre-agent/02 §6)이면 `escalate` 불리언을, 문자열이면
+    'escalate' 여부를 본다(sre_get_investigation 반환 실측 방어 — sre-agent/05 §3).
+    그 외 타입/None이면 상향 아님.
+    """
+    if isinstance(verdict, dict):
+        return verdict.get("escalate") is True
+    if isinstance(verdict, str):
+        return verdict.strip().lower() == "escalate"
+    return False
+
+
+def build_escalation(verdict: object) -> Optional[dict]:
+    """escalate=True인 verdict에서 통보 승격 안내 블록 데이터를 만든다(아니면 None).
+
+    **escalate-only** — 게이트 판정(tier/routing/decision)은 소급 변경·하향하지 않고,
+    상향 신호만 통보에 첨부할 데이터를 반환한다(Plan 64 §5.1 역방향 계약). 구조화 verdict면
+    level/confidence/signals를 함께 실어 근거를 노출한다(문자열이면 escalate 플래그만).
+    """
+    if not verdict_escalates(verdict):
+        return None
+    escalation: dict[str, object] = {"escalate": True}
+    if isinstance(verdict, dict):
+        for key in ("level", "confidence", "signals"):
+            val = verdict.get(key)
+            if val not in (None, "", [], {}):
+                escalation[key] = val
+    return escalation
+
+
+__all__ = [
+    "CONTRACT_VERSION",
+    "apm_trigger_hints",
+    "build_escalation",
+    "build_trigger_payload",
+    "verdict_escalates",
+]

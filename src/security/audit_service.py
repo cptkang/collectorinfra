@@ -12,7 +12,7 @@ from typing import Optional
 from src.config import AuditConfig
 from src.domain.audit import AlertSeverity, AuditEvent, AuditLogEntry
 from src.domain.user import AuditRepository
-from src.security.audit_logger import AuditEntry, _write_audit_file
+from src.security.audit_logger import AuditEntry, _write_audit_file, register_db_mirror
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +27,17 @@ class AuditService:
     ) -> None:
         """서비스를 초기화한다.
 
+        DB 감사가 구성되면(`db_enabled` + 저장소) 자신을 노드 감사 함수의 DB 복제 대상으로
+        등록한다 — 노드는 `app.state`에 닿지 못하므로(D-183) 여기서 잇는다.
+
         Args:
             config: 감사 로그 설정
             audit_repo: DB 감사 저장소 (None이면 DB 기록 비활성화)
         """
         self._config = config
         self._audit_repo = audit_repo
+        if config.db_enabled and audit_repo is not None:
+            register_db_mirror(self)
 
     async def log(self, entry: AuditLogEntry) -> None:
         """감사 이벤트를 기록한다 (JSONL + DB).
@@ -48,7 +53,10 @@ class AuditService:
             except Exception as e:
                 logger.error("JSONL 감사 로그 기록 실패: %s", e)
 
-        # DB 기록
+        await self._log_db(entry)
+
+    async def _log_db(self, entry: AuditLogEntry) -> None:
+        """감사 이벤트를 DB에만 기록한다(구성돼 있을 때). 실패는 삼키고 로그로 남긴다."""
         if self._config.db_enabled and self._audit_repo:
             try:
                 # 기존 audit_logs 테이블 형식으로 변환
@@ -202,13 +210,69 @@ class AuditService:
             extra={"retry_attempt": retry_attempt} if retry_attempt else None,
         )
         await self.log(entry)
+        await self._alert_on_large_result(success, row_count, user_id, None, request_id)
 
-        # 대량 데이터 경고
+    async def mirror_query_execution(
+        self,
+        *,
+        sql: str,
+        row_count: int,
+        execution_time_ms: float,
+        success: bool,
+        error: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        request_id: str | None = None,
+        client_ip: str | None = None,
+        target_db: str | None = None,
+        retry_attempt: int = 0,
+        masked_columns: list[str] | None = None,
+        validation_warnings: list[str] | None = None,
+    ) -> None:
+        """노드 감사 함수가 JSONL에 이미 남긴 쿼리 실행을 **DB에만** 한 행 남긴다.
+
+        `log_query_execution`을 쓰면 JSONL에 같은 실행이 두 번 남는다(D-183이 막은 이중 기록).
+        대량 조회 경보는 JSONL에 없던 이벤트라 `log_security_alert`로 양쪽에 남긴다.
+        호출자(`audit_logger`)가 백그라운드 태스크로 시간 제한을 걸어 부른다 — 조회 경로는
+        이 메서드(행 + 경보 판정)를 기다리지 않는다.
+        """
+        extra: dict = {}
+        if retry_attempt:
+            extra["retry_attempt"] = retry_attempt
+        if validation_warnings:
+            extra["validation_warnings"] = validation_warnings
+        entry = AuditLogEntry(
+            event=AuditEvent.QUERY_EXECUTION.value,
+            user_id=user_id,
+            client_ip=client_ip,
+            session_id=session_id,
+            request_id=request_id,
+            generated_sql=sql,
+            row_count=row_count,
+            execution_time_ms=round(execution_time_ms, 2),
+            success=success,
+            error=error,
+            target_db=target_db,
+            masked_columns=masked_columns,
+            extra=extra or None,
+        )
+        await self._log_db(entry)
+        await self._alert_on_large_result(success, row_count, user_id, client_ip, request_id)
+
+    async def _alert_on_large_result(
+        self,
+        success: bool,
+        row_count: int,
+        user_id: str | None,
+        client_ip: str | None,
+        request_id: str | None,
+    ) -> None:
+        """조회 행 수가 `alert_on_large_result`를 넘으면 대량 조회 경고(info)를 남긴다."""
         if success and row_count > self._config.alert_on_large_result:
             await self.log_security_alert(
                 event_detail=f"대량 데이터 조회: {row_count}건",
                 user_id=user_id,
-                client_ip=None,
+                client_ip=client_ip,
                 request_id=request_id,
                 severity=AlertSeverity.INFO.value,
             )
@@ -300,6 +364,35 @@ class AuditService:
             extra={"severity": severity, "detail": event_detail},
         )
         await self.log(entry)
+
+    async def alert_on_login_failures(
+        self,
+        user_id: str,
+        client_ip: str | None,
+        consecutive_failures: int,
+        locked: bool = False,
+        request_id: str | None = None,
+    ) -> bool:
+        """연속 로그인 실패가 `alert_on_failed_login`에 닿으면 보안 경고(critical)를 남긴다.
+
+        연속 실패 수는 호출자가 계정 잠금 카운터(`User.login_fail_count`)로 넘긴다. DB의 최근
+        `login_fail` 행 수(`_check_login_failure_alert`)는 성공·잠금 해제로 초기화되지 않아
+        몇 달에 걸친 누적 실패로도 "연속 실패" 경고가 울리므로 쓰지 않는다.
+
+        Returns:
+            경고를 남겼는지
+        """
+        if consecutive_failures < self._config.alert_on_failed_login:
+            return False
+        suffix = " (계정 잠금)" if locked else ""
+        await self.log_security_alert(
+            event_detail=f"로그인 {consecutive_failures}회 연속 실패: {user_id}{suffix}",
+            user_id=user_id,
+            client_ip=client_ip,
+            request_id=request_id,
+            severity=AlertSeverity.CRITICAL.value,
+        )
+        return True
 
     async def _check_login_failure_alert(
         self,

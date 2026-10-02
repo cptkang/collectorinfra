@@ -1,0 +1,118 @@
+{
+ "id": "Q-ZONE",
+ "turns": [
+  {
+   "query": "ㅇㅇ존 서버 CPU 사용률",
+   "file": null,
+   "key": "91784c0be3271ccb",
+   "elapsed_s": 246.7,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\nㅇㅇ존 서버 3 대 (DB-ORA-023, SV-WEB-001) 의 CPU 최대 사용률이 70% 이상으로 임계치를 초과하거나 근접하여 주의가 필요하며, DB-ORA-023 서버는 평균 및 최대 사용률이 모두 68% 이상으로 높은 부하 상태를 보이고 있습니다.\n\n| server_name | os_hostname | ipaddress | stat_date | cpu_avg_utilization | cpu_max_utilization |\n|---|---|---|---|---|---|\n| cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | 202605 | 45.6 | 71.8 |\n| cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | 202606 | 48.9 | 75.4 |\n| cocm-hdkapp01 | cocm-hdkapp01 | 10.61.0.3 | 202607 | 47.2 | 73.1 |\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 202605 | 68.4 | 89.2 |\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 202606 | 72.1 | 91.6 |\n| DB-ORA-023 | dbora023 | 10.61.0.2 | 202607 | 70.5 | 88.9 |\n| SV-BATCH-009 | svbatch009 | 10.61.0.4 | 202605 | 15.8 | 42.6 |\n| SV-BATCH-009 | svbatch009 | 10.61.0.4 | 202606 | 18.3 | 48.1 |\n| SV-BATCH-009 | svbatch009 | 10.61.0.4 | 202607 | 16.9 | 45.3 |\n| SV-WEB-001 | svweb001 | 10.61.0.1 | 202605 | 35.2 | 61.7 |\n| SV-WEB-001 | svweb001 | 10.61.0.1 | 202606 | 42.8 | 72.4 |\n| SV-WEB-001 | svweb001 | 10.61.0.1 | 202607 | 38.5 | 66.2 |\n\n**참고사항**\n- **임계치 초과**: DB-ORA-023 서버의 202606 월 최대 사용률이 91.6%로 90% 임계치를 초과했습니다.\n- **고부하 경향**: DB-ORA-023 서버의 평균 사용률은 68.4%~72.1%로 70% 임계치에 근접하거나 초과하는 경향을 보입니다.\n- **주의 사항**: cocm-hdkapp01 서버의 202606 월 최대 사용률이 75.4%로 70% 임계치를 초과했습니다.\n- **정상 범위**: SV-BATCH-009 서버는 평균 및 최대 사용률이 50% 미만으로 정상 범위에 있습니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 12,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "server_name": "cocm-hdkapp01",
+     "os_hostname": "cocm-hdkapp01",
+     "ipaddress": "10.61.0.3",
+     "stat_date": "202605",
+     "cpu_avg_utilization": 45.6,
+     "cpu_max_utilization": 71.8
+    },
+    {
+     "server_name": "cocm-hdkapp01",
+     "os_hostname": "cocm-hdkapp01",
+     "ipaddress": "10.61.0.3",
+     "stat_date": "202606",
+     "cpu_avg_utilization": 48.9,
+     "cpu_max_utilization": 75.4
+    },
+    {
+     "server_name": "cocm-hdkapp01",
+     "os_hostname": "cocm-hdkapp01",
+     "ipaddress": "10.61.0.3",
+     "stat_date": "202607",
+     "cpu_avg_utilization": 47.2,
+     "cpu_max_utilization": 73.1
+    },
+    {
+     "server_name": "DB-ORA-023",
+     "os_hostname": "dbora023",
+     "ipaddress": "10.61.0.2",
+     "stat_date": "202605",
+     "cpu_avg_utilization": 68.4,
+     "cpu_max_utilization": 89.2
+    },
+    {
+     "server_name": "DB-ORA-023",
+     "os_hostname": "dbora023",
+     "ipaddress": "10.61.0.2",
+     "stat_date": "202606",
+     "cpu_avg_utilization": 72.1,
+     "cpu_max_utilization": 91.6
+    },
+    {
+     "server_name": "DB-ORA-023",
+     "os_hostname": "dbora023",
+     "ipaddress": "10.61.0.2",
+     "stat_date": "202607",
+     "cpu_avg_utilization": 70.5,
+     "cpu_max_utilization": 88.9
+    },
+    {
+     "server_name": "SV-BATCH-009",
+     "os_hostname": "svbatch009",
+     "ipaddress": "10.61.0.4",
+     "stat_date": "202605",
+     "cpu_avg_utilization": 15.8,
+     "cpu_max_utilization": 42.6
+    },
+    {
+     "server_name": "SV-BATCH-009",
+     "os_hostname": "svbatch009",
+     "ipaddress": "10.61.0.4",
+     "stat_date": "202606",
+     "cpu_avg_utilization": 18.3,
+     "cpu_max_utilization": 48.1
+    },
+    {
+     "server_name": "SV-BATCH-009",
+     "os_hostname": "svbatch009",
+     "ipaddress": "10.61.0.4",
+     "stat_date": "202607",
+     "cpu_avg_utilization": 16.9,
+     "cpu_max_utilization": 45.3
+    },
+    {
+     "server_name": "SV-WEB-001",
+     "os_hostname": "svweb001",
+     "ipaddress": "10.61.0.1",
+     "stat_date": "202605",
+     "cpu_avg_utilization": 35.2,
+     "cpu_max_utilization": 61.7
+    }
+   ]
+  }
+ ],
+ "reviewed": false,
+ "recorded_at": "2026-09-23T11:13:09"
+}

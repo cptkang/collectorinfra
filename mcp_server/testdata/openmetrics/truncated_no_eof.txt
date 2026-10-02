@@ -1,0 +1,7 @@
+# TYPE app_temperature_celsius gauge
+# UNIT app_temperature_celsius celsius
+# HELP app_temperature_celsius Current temperature.
+app_temperature_celsius{zone="front"} 21.5
+# TYPE app_requests counter
+# HELP app_requests Total HTTP requests.
+app_requests_total{code="200"} 1027

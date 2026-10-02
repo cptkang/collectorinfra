@@ -130,14 +130,11 @@ class DBRegistry:
 
         if self._config.db_backend == "dbhub" or db_id != "default":
             # MCP 서버를 통한 연결: source 이름을 해당 db_id로 설정
-            from src.config import DBHubConfig
             from src.dbhub.client import DBHubClient
 
-            dbhub_config = DBHubConfig(
-                server_url=self._config.dbhub.server_url,
-                source_name=db_id,
-                mcp_call_timeout=self._config.dbhub.mcp_call_timeout,
-            )
+            # source_name만 바꾸고 나머지 설정은 그대로 복사한다 — 필드를 하나씩 옮겨
+            # 적으면 새 필드가 조용히 빠진다(`bearer_token` 누락 사례 · plans/104 C-5).
+            dbhub_config = self._config.dbhub.model_copy(update={"source_name": db_id})
             client = DBHubClient(dbhub_config, self._config.query)
         else:
             # 레거시 direct 모드 (default DB)

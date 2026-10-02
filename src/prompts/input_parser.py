@@ -59,6 +59,7 @@ INPUT_PARSER_SYSTEM_PROMPT = """Role: 당신은 사용자의 자연어 요청을
 8. 작은따옴표나 큰따옴표로 감싼 시트명, 또는 "XX 시트" 패턴에서 시트명을 인식합니다.
 9. 사용자가 "서버명은 hostname 컬럼으로", "IP는 ip_address에서 가져와" 등 양식 필드와 DB 컬럼의 매핑을 명시하면 field_mapping_hints에 추출합니다.
 10. 사용자가 "폴스타에서 조회", "polestar DB에서", "클라우드 포탈 데이터", "여의도 폴스타" 등 특정 DB/서비스를 언급하면 target_db_hints에 추출합니다. (지역명 포함 시에도 filter_conditions의 location 등으로 빼지 말고 DB명으로 취급)
+    - **위치/존(zone) 표현도 반드시 target_db_hints로 추출**합니다: "김포", "여의도", "은행"/"레거시"(은행존), 그리고 **"공동존"**(=김포+여의도 K리전 공동존 전체). 예: "공동존 전체 서버" → target_db_hints: ["공동존"], "공동존 김포" → target_db_hints: ["공동존 김포"].
 11. "전체 등록", "모두 등록", "1, 3 등록", "1번 등록" 등의 유사어 등록 요청을 감지하면 synonym_registration 필드에 {mode: "all"} 또는 {mode: "selective", indices: [1, 3]} 형태로 추출합니다.
 12. 사용자가 "첨부 파일", "양식", "칼럼" 등을 언급하며 파일 데이터를 참조하도록 요청한 경우, 하단에 제공된 `## 첨부된 Excel 데이터`의 헤더(칼럼명)들을 반드시 분석하세요. 헤더에 CPU, 메모리, 디스크, 프로세스 등 특정 도메인과 관련된 항목이 포함되어 있다면, 사용자의 자연어 질의 텍스트에 해당 단어가 없더라도 `query_targets`에 그 도메인들을 모두 포함시켜야 합니다.
 13. **가용성 상태(avail_status) 값 변환**: 사용자가 가용 상태를 자연어로 표현하면 반드시 아래 규칙에 따라 filter_conditions에 추출합니다. 사용자는 숫자(0, 1, 2)를 직접 사용하지 않습니다.
@@ -67,21 +68,12 @@ INPUT_PARSER_SYSTEM_PROMPT = """Role: 당신은 사용자의 자연어 요청을
     예: "가용성 상태가 비정상인 서버" → filter_conditions: [{"field": "avail_status", "op": "!=", "value": 0}]
     예: "가용성이 정상인 서버" → filter_conditions: [{"field": "avail_status", "op": "=", "value": 0}]
     예: "가용성 상태가 정상이 아닌 서버" → filter_conditions: [{"field": "avail_status", "op": "!=", "value": 0}]
-14. **실시간 프로세스 조회 신호 (process_query)**: 사용자가 특정 자원(서버)에서 **실행 중인 프로세스 목록/현황**을 요청하면 선택적 `process_query` 필드를 추출합니다. 신호 키워드: "프로세스", "process", "실행 중인", "돌고 있는", "ps", "프로세스 목록", "프로세스 현황" 등이 **특정 서버/장비 식별자와 함께** 나타날 때.
-    - `identifier`: 사용자가 말한 **서버명/hostname 원문 그대로**(가공·번역·정규화 금지). 예: "saisvd01", "cop-was01". 지역/DB 수식어(여의도, 김포 등)는 identifier에 넣지 말고 기존 규칙대로 target_db_hints로 분리합니다.
-    - `metric`: 정렬 기준. "cpu 많이", "CPU 점유" → "cpu" / "메모리 많이", "메모리 사용" → "memory" / 둘 다 또는 미지정 → "both".
-    - `top_n`: "상위 10개", "top 5" 같은 표현에서 정수. 명시 없으면 null.
-    - process_query 신호가 없으면 이 필드를 출력하지 마세요(임의 추가 금지).
-    형식:
-    ```json
-    "process_query": {"identifier": "<서버명/hostname 원문>", "metric": "cpu | memory | both", "top_n": <정수 또는 null>}
-    ```
-    예: "saisvd01 서버에서 실행 중인 프로세스 목록 보여줘"
-      → "process_query": {"identifier": "saisvd01", "metric": "both", "top_n": null}
-    예: "cop-was01 의 메모리 많이 쓰는 프로세스 상위 10개"
-      → "process_query": {"identifier": "cop-was01", "metric": "memory", "top_n": 10}
-    예: "여의도 폴스타의 myhost 프로세스 현황 분석해줘"
-      → target_db_hints: ["여의도 폴스타"], "process_query": {"identifier": "myhost", "metric": "both", "top_n": null}
+14. **특정 서버 지목 시 식별자 추출**: 사용자가 하나의 특정 서버/장비를 지목하면(예: "XXX 서버", "XXX 장비", "XXX에 대한 프로세스/CPU/메모리", "XXX의 프로세스", "XXX 서버 프로세스 리스트") 그 서버 식별자(서버명 또는 호스트명)를 반드시 filter_conditions에 `{"field": "hostname", "op": "=", "value": "<서버식별자>"}` 형태로 추출하세요. 특히 "프로세스 리스트/조회" 질의는 대상 서버 식별이 필수이므로 빠뜨리지 마세요.
+    - 위치/DB 수식어(김포·여의도·폴스타 등)는 value에 포함하지 말고 규칙 10에 따라 target_db_hints로 분리합니다.
+    - value에는 서버 식별자만 담고, 일반 명사 "서버"/"장비"가 단순 수식어로 뒤에 붙은 경우(예: "webdb01 서버")에는 식별자("webdb01")만 추출합니다. 단, 식별자와 "서버"가 공백 없이 붙어 한 토큰처럼 보이면("webdb01서버") 원문 토큰 그대로 추출합니다.
+    - **지시어는 절대 식별자로 추출하지 마세요.** "해당 서버", "그 장비", "이 서버", "위 서버", "직전 서버"처럼 **구체적 서버명 없이 지시어(해당/그/이/저/위/직전 등)로만 지목**하는 경우에는 hostname filter를 만들지 말고 해당 서버 filter_conditions를 **비워 두세요**(멀티턴 후속 처리에서 직전 대상으로 해소됩니다). "previous_server" 같은 영문 플레이스홀더도 임의로 지어내지 마세요.
+    예: "김포 webdb01 서버 프로세스 리스트 조회" → filter_conditions: [{"field": "hostname", "op": "=", "value": "webdb01"}], target_db_hints: ["김포"]
+    예: "해당 서버의 프로세스 리스트를 확인해줘" → filter_conditions: [] (지시어만 있으므로 서버 식별자 추출 안 함)
 
 ## 예시
 
@@ -108,6 +100,20 @@ INPUT_PARSER_SYSTEM_PROMPT = """Role: 당신은 사용자의 자연어 요청을
     "output_format": "text",
     "aggregation": "top_n",
     "limit": 10
+}
+```
+
+입력: "김포 webdb01 서버에 대한 프로세스 리스트 조회"
+출력:
+```json
+{
+    "query_targets": ["프로세스"],
+    "filter_conditions": [{"field": "hostname", "op": "=", "value": "webdb01"}],
+    "time_range": null,
+    "output_format": "text",
+    "aggregation": null,
+    "limit": null,
+    "target_db_hints": ["김포"]
 }
 ```
 

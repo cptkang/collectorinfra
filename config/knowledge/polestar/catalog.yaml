@@ -1,0 +1,6 @@
+# 카탈로그 큐레이션 — 로컬 개발 샌드박스 Polestar (polestar)
+# 이 DB는 config/db_profiles/polestar.yaml 이 없다(도커 테스트 DB). 스키마가 운영 김포와 동일해
+# (core_config_prop·cmm_alarm/def/active·cmm_metric_stat_[h,d,m] 구조 일치, 2026-07-14 실측)
+# 구조 정본을 polestar_cm_gp 프로필에서 빌려 쓴다 — 카탈로그 사본을 만들지 않기 위함.
+extends: [_base]
+structure_from: polestar_cm_gp

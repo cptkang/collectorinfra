@@ -13,7 +13,7 @@
 - 자연어(한국어) → SQL 변환 및 실행
 - 멀티 DB 시멘틱 라우팅 (Polestar, Cloud Portal, ITSM, ITAM)
 - Excel/Word 양식 업로드 → 자동 데이터 채움
-- 멀티턴 대화 및 Human-in-the-Loop (SQL/구조 승인)
+- 멀티턴 대화 및 Human-in-the-Loop (SQL 승인 — 구조 승인은 질의 경로에서 제거하고 관리자 「DB 구조」 탭으로 이관, D-227)
 - 4계층 스키마 캐시 (Memory → Redis → File → DB)
 - 3계층 읽기 전용 보안 방어
 
@@ -174,7 +174,7 @@
 | `polestar` | Polestar DB | DB2 | 서버 물리 사양, CPU/Memory/Disk 사용량, 프로세스 |
 | `cloud_portal` | Cloud Portal DB | PostgreSQL | VM 정보, 데이터스토어, 영역별 VM 대수 |
 | `itsm` | ITSM DB | PostgreSQL | 서비스 요청, 인시던트, 변경/문제 관리, SLA |
-| `itam` | ITAM DB | PostgreSQL | IT 자산 목록, 라이프사이클, 라이선스, 하드웨어 |
+| `itam` | ITAM DB | MariaDB | 자산 원장 — 구매·유지보수 계약, 지원 종료일(EOS/EOL), 자산 상태·분류, 담당 (plans/95) |
 
 ---
 
@@ -214,11 +214,11 @@
 │  └────────────────────┘                                       │
 │                                                               │
 │  부가 데이터 (Redis에 저장):                                     │
-│  ├── 컬럼 설명 (LLM 생성)                                     │
-│  ├── 컬럼 유사어 (LLM 생성 + 사용자 등록)                       │
+│  ├── 컬럼 설명 (관리자 등록 — 질의 경로 LLM 생성 0, D-227)      │
+│  ├── 컬럼 유사어 (관리자 초안 적용 + 사용자 등록)               │
 │  ├── 글로벌 유사어 (전체 DB 공통)                               │
-│  ├── DB 설명 (라우팅 보강용)                                    │
-│  └── 구조 메타 (EAV/계층 분석 결과)                              │
+│  ├── DB 설명 (라우팅 보강용 · 출처 manual/llm)                  │
+│  └── 구조 메타 (적용본 캐시 — 정본은 config/db_profiles)        │
 │                                                               │
 │  Fingerprint 방식:                                             │
 │  - DB에서 테이블/컬럼 목록의 해시값 계산                          │
@@ -227,6 +227,20 @@
 │  - TTL(30분)마다 자동 재검증                                     │
 └───────────────────────────────────────────────────────────────┘
 ```
+
+### 4.1 관리자 「DB 구조」 기능 (plans/104 · D-227)
+
+질의 경로는 구조를 **분석하지 않고 읽기만** 한다(①`config/db_profiles/{db_id}.yaml` ②Redis 적용본 캐시 ③없음 → 응답에 사유 고지). 구조 분석·등록은 관리자 페이지 탭이 DB 단위로 명시 실행한다.
+
+| 영역 | 모듈 | 역할 |
+|---|---|---|
+| 도메인(순수) | `src/domain/schema_snapshot.py` · `db_readiness.py` · `profile_merge.py` | 스키마 스냅샷·diff·구조 영향 · 준비도 C1~C10 · 필드 단위 프로필 병합·diff |
+| 인프라 | `src/dbhub/client.py`(`list_sources`·`health_check_detail`·FK 파생 관계) · `src/schema_cache/structure_analysis.py`(LLM 분석·샘플·FK 묶음·결정적 검증 4종) · `structure_store.py`(초안·등록 상태·프로필 버전 `.cache/structure/{db_id}/versions/`·설명 백업) · `admin_jobs.py`(Redis 잡·소스당 락) · `db_structure_service.py` · `db_registration_service.py` | 소스 목록·변경 점검·구조 분석·승인·되돌리기 · 신규 연동 O-1~O-9 |
+| 인터페이스 | `src/api/routes/db_structure.py`(15 엔드포인트 · `require_admin_user` · `ADMIN_ACTION` 감사) · `src/api/admin_audit.py` · `src/static/js/admin-db-structure.js` | 관리자 탭 · 설정 탭 `ACTIVE_DB_IDS` 준비도 경고(G-7 (a)) |
+
+- 승인 적용은 `config/db_profiles/{db_id}.yaml`에 쓴다(`source: manual` · 수동 프로필 DB는 필드 단위 병합 · 적용 직전 현행 파일 v0 보관 · 원문 바이트 되돌리기). 질의 경로는 이 파일에 쓰지 않는다.
+- 레지스트리·`.env`·`mcp_server/`는 앱이 쓰지 않고 조각만 내보낸다(R11).
+- 캐시 무효화는 프로필 파일을 지우지 않고, 채팅 캐시 생성·무효화는 관리자만(인증 켜짐 기준) 할 수 있다.
 
 ---
 
@@ -280,8 +294,9 @@ AppConfig (pydantic-settings, 싱글톤)
 │
 ├── schema_cache: SchemaCacheConfig   # 스키마 캐시
 │   ├── backend: "redis"|"file"
-│   ├── auto_generate_descriptions: true
-│   └── fingerprint_ttl_seconds: 1800
+│   ├── fingerprint_ttl_seconds: 1800
+│   ├── admin_llm_concurrency: 2        # 관리자 설명 생성 동시성 (D-227)
+│   └── structure_group_max_tables: 40  # 구조 분석 FK 묶음 상한 (D-227)
 │
 ├── audit: AuditConfig                # 감사 로그
 │   ├── jsonl_enabled, db_enabled
@@ -292,7 +307,6 @@ AppConfig (pydantic-settings, 싱글톤)
 ├── db_backend: "dbhub"|"direct"
 ├── enable_semantic_routing: bool (자동 판단)
 ├── enable_sql_approval: bool
-├── enable_structure_approval: bool
 ├── polestar_db_ids: str          # 콤마 구분 (예: "polestar,polestar2")
 ├── conversation_max_turns: 20
 └── conversation_ttl_hours: 24

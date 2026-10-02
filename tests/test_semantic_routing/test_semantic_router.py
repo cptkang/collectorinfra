@@ -104,13 +104,14 @@ class TestBuildRouterPrompt:
     def test_subset_domains(self):
         """일부 도메인만 전달하면 DB 목록 영역에 해당 도메인만 포함된다."""
         subset = [d for d in DB_DOMAINS if d.db_id in ("polestar", "itsm")]
+        excluded = [d for d in DB_DOMAINS if d.db_id not in ("polestar", "itsm")]
         prompt = _build_router_prompt(subset)
         # DB 목록 영역에서 확인 (## 사용 가능한 데이터베이스 ~ ## 사용자 직접 DB 지정 규칙 사이)
         db_list_section = prompt.split("## 사용 가능한 데이터베이스")[1].split("## 사용자 직접 DB 지정")[0]
-        assert "Polestar DB" in db_list_section
-        assert "ITSM DB" in db_list_section
-        assert "Cloud Portal DB" not in db_list_section
-        assert "ITAM DB" not in db_list_section
+        for domain in subset:
+            assert domain.display_name in db_list_section
+        for domain in excluded:
+            assert domain.display_name not in db_list_section
 
 
 class TestExtractJsonFromResponse:
@@ -153,7 +154,9 @@ class TestLLMClassify:
             }
         ])
 
-        results = await _llm_classify(llm, "CPU 사용률이 80% 이상인 서버", DB_DOMAINS)
+        # _llm_classify는 {"intent", "databases"} dict를 반환한다 (의도 분류 추가 이후 현행 API)
+        classified = await _llm_classify(llm, "CPU 사용률이 80% 이상인 서버", DB_DOMAINS)
+        results = classified["databases"]
         assert len(results) == 1
         assert results[0]["db_id"] == "polestar"
         assert results[0]["relevance_score"] == 0.9
@@ -180,11 +183,12 @@ class TestLLMClassify:
             },
         ])
 
-        results = await _llm_classify(
+        classified = await _llm_classify(
             llm,
             "서버 사양과 해당 서버의 VM 정보를 보여줘",
             DB_DOMAINS,
         )
+        results = classified["databases"]
         assert len(results) == 2
         db_ids = [r["db_id"] for r in results]
         assert "polestar" in db_ids
@@ -204,7 +208,8 @@ class TestLLMClassify:
             }
         ])
 
-        results = await _llm_classify(llm, "polestar에서 서버 목록 조회해줘", DB_DOMAINS)
+        classified = await _llm_classify(llm, "polestar에서 서버 목록 조회해줘", DB_DOMAINS)
+        results = classified["databases"]
         assert len(results) == 1
         assert results[0]["db_id"] == "polestar"
         assert results[0]["user_specified"] is True
@@ -231,20 +236,22 @@ class TestLLMClassify:
             },
         ])
 
-        results = await _llm_classify(llm, "테스트 질의", DB_DOMAINS)
+        classified = await _llm_classify(llm, "테스트 질의", DB_DOMAINS)
+        results = classified["databases"]
         assert len(results) == 1
         assert results[0]["db_id"] == "polestar"
 
     @pytest.mark.asyncio
     async def test_empty_response(self):
-        """LLM이 빈 응답을 반환하면 빈 리스트를 반환한다."""
+        """LLM이 빈 응답을 반환하면 databases가 빈 목록이고 intent는 data_query로 폴백한다."""
         llm = AsyncMock()
         response = MagicMock()
         response.content = "잘 모르겠습니다"
         llm.ainvoke.return_value = response
 
-        results = await _llm_classify(llm, "날씨 알려줘", DB_DOMAINS)
-        assert len(results) == 0
+        classified = await _llm_classify(llm, "날씨 알려줘", DB_DOMAINS)
+        assert classified["databases"] == []
+        assert classified["intent"] == "data_query"
 
 
 class TestSemanticRouter:
@@ -252,8 +259,12 @@ class TestSemanticRouter:
 
     @pytest.mark.asyncio
     async def test_legacy_mode_no_active_dbs(self):
-        """활성 DB가 없으면 레거시 모드로 동작한다."""
-        config = AppConfig(multi_db=MultiDBConfig())
+        """활성 DB가 없으면 레거시 모드로 동작한다.
+
+        MultiDBConfig는 BaseSettings라 기본 생성 시 로컬 .env의 ACTIVE_DB_IDS가 누수된다
+        (Known Mistakes 2026-06-17) — 검증 대상 필드를 명시해 환경 비의존으로 고정한다.
+        """
+        config = AppConfig(multi_db=MultiDBConfig(active_db_ids_csv=""))
         llm = AsyncMock()
         state = create_initial_state(user_query="테스트 질의")
 

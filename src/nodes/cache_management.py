@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Any, Optional
@@ -15,10 +14,15 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.config import AppConfig, load_config
+from src.domain.user import UserRole
 from src.llm import create_llm
 from src.prompts.cache_management import CACHE_MANAGEMENT_PARSE_PROMPT
+from src.routing.db_authz import ACCESS_DENIED_MESSAGE, authorized_db_ids
+from src.routing.source_hints import non_db_synonym_context, non_db_synonym_guidance
 from src.schema_cache.cache_manager import get_cache_manager
 from src.state import AgentState
+from src.utils.json_extract import extract_json_from_response
+from src.utils.synonym_set_parser import parse_synonym_set
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +58,48 @@ async def cache_management(
     pending_reuse = state.get("pending_synonym_reuse")
 
     try:
+        # 결정적 선파서 1차 (D-142). "A, B, C는 동의어" 형태는 LLM을 거치지 않는다 —
+        # LLM이 임의의 한 단어를 앵커로 골라 나머지를 종속시키는 비결정성을 원천 차단한다.
+        # 미매칭이면 None을 돌려주므로 아래 LLM 파싱으로 넘어간다.
+        preparsed_set = parse_synonym_set(user_query)
+        if preparsed_set:
+            guidance = _non_db_synonym_guidance(state)
+            if guidance:
+                return guidance
+            logger.info("동의어 집합 결정적 파싱 (LLM 미사용): %s", preparsed_set)
+            response_text = await _handle_add_synonym_set(
+                cache_mgr, app_config, None, preparsed_set
+            )
+            return {
+                "final_response": response_text,
+                "current_node": "cache_management",
+                "error_message": None,
+            }
+
         # LLM으로 의도 파싱
         parsed = await _parse_cache_intent(llm, user_query)
         action = parsed.get("action", "status")
         db_id = parsed.get("db_id")
+
+        # 비DB 소스(제니퍼·문서 등) 맥락의 유사어 쓰기는 DB 사전에 넣지 않고 안내한다(plans/132
+        # G-15). DB 맥락이면 DB를 못 정해도 묻지 않고 DB 공용 사전 — 현행(G-13).
+        if action in _SYNONYM_WRITE_ACTIONS:
+            guidance = _non_db_synonym_guidance(state)
+            if guidance:
+                return guidance
+
+        # 생성·무효화는 관리자만(plans/104 S2) — 실행 경계에서 판정한다(UI 게이트 ≠ 인가).
+        # 3단 노드·2단 서브에이전트·1단 deep_agent 도구가 모두 이 함수를 지나므로 한 곳이면 된다.
+        if action in _ADMIN_ONLY_ACTIONS and not _is_cache_admin(state, app_config):
+            logger.info(
+                "cache_management: 비관리자 %s 요청 거절 (user_id=%s, role=%s)",
+                action, state.get("user_id"), state.get("user_role"),
+            )
+            return {
+                "final_response": _ADMIN_ONLY_MESSAGE,
+                "current_node": "cache_management",
+                "error_message": None,
+            }
 
         # 멀티턴: db_id가 없으면 이전 턴의 db_id를 자동 추론
         if not db_id:
@@ -67,6 +109,28 @@ async def cache_management(
                 logger.info(
                     "cache_management: db_id 자동 추론 (previous_db_id=%s)", db_id
                 )
+
+        # 결정적 db_id 검증·제품군 전개(2026-09-01 A-05 실측): LLM 추출 db_id가 활성
+        # 목록에 없으면 — 사용자 표면어 "polestar"(제품군)가 비활성 샌드박스 db_id와
+        # 문자열 일치하는 경우 — 캐시 작업이 존재하지 않는 DB로 나가 실패하고, 이후
+        # 재계획이 무관한 조회로 강등된다. 활성 목록 프리픽스로 전개하고, 전개 불가면
+        # 실행 없이 안내로 종결한다.
+        db_ids_override: Optional[list[str]] = None
+        db_note: Optional[str] = None
+        if action in _DB_SCOPED_ACTIONS:
+            db_id, db_ids_override, db_note = _resolve_cache_db_target(
+                db_id, app_config
+            )
+            if db_note and db_ids_override is None:
+                logger.info("cache_management: 미등록 db_id 안내 종결 — %s", db_note)
+                return {
+                    "final_response": db_note,
+                    "current_node": "cache_management",
+                    "error_message": None,
+                }
+            if db_note:
+                logger.info("cache_management: 제품군 전개 — %s", db_note)
+
         target_table = parsed.get("target_table")
         target_column = parsed.get("target_column")
         words = parsed.get("words")
@@ -101,7 +165,18 @@ async def cache_management(
             cache_mgr=cache_mgr,
             app_config=app_config,
             llm=llm,
+            db_ids_override=db_ids_override,
+            # DB 목록 안내는 활성∩허용(관리자 전체)만 — 권한 0 사용자에게 DB 이름을
+            # 노출하지 않는다(plans/116 §10.3 · D-232 규약)
+            visible_db_ids=authorized_db_ids(
+                app_config.multi_db.get_active_db_ids(),
+                state.get("allowed_db_ids"),
+                state.get("user_role"),
+            ),
         )
+        # 전개가 일어났으면 그 사실을 응답에 명시한다(침묵 확대 실행 금지)
+        if db_note and isinstance(result, str):
+            result = f"{db_note}\n\n{result}"
 
         # result가 dict면 pending_synonym_reuse 포함 가능
         if isinstance(result, dict):
@@ -143,24 +218,110 @@ async def _parse_cache_intent(
     prompt = CACHE_MANAGEMENT_PARSE_PROMPT.format(user_query=user_query)
     response = await llm.ainvoke([HumanMessage(content=prompt)])
 
-    # JSON 추출
-    content = response.content
-    json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
-    if json_match:
-        try:
-            return json.loads(json_match.group(1))
-        except json.JSONDecodeError:
-            pass
-
-    brace_match = re.search(r"\{.*\}", content, re.DOTALL)
-    if brace_match:
-        try:
-            return json.loads(brace_match.group())
-        except json.JSONDecodeError:
-            pass
+    parsed = extract_json_from_response(response.content)
+    if isinstance(parsed, dict):
+        return parsed
 
     # 파싱 실패 시 기본값
     return {"action": "status", "db_id": None}
+
+
+# 유사어 사전에 쓰는 채팅 작업(plans/132 G-15 — 실측 전수: 이 노드의 등록·삭제·수정·생성 경로).
+# 양식 경로(`synonym_registrar` · `field_mapper` 매핑·피드백)는 DB 컬럼 매핑이 구조상 정해져 있어
+# 대상이 아니다.
+_SYNONYM_WRITE_ACTIONS = (
+    "add-synonym", "add-synonym-set", "remove-synonym", "update-synonym",
+    "generate-global-synonyms", "generate-synonyms",
+)
+
+
+def _non_db_synonym_guidance(state: AgentState) -> dict[str, Any] | None:
+    """비DB 소스 맥락이면 등록하지 않고 안내하는 반환값(G-15), 아니면 None."""
+    name = non_db_synonym_context(
+        (state.get("parsed_requirements") or {}).get("target_db_hints"),
+        (state.get("conversation_context") or {}).get("previous_sources"),
+    )
+    if not name:
+        return None
+    logger.info("cache_management: 비DB 소스 맥락(%s) 유사어 쓰기 — DB 사전 미등록 안내(G-15)",
+                name)
+    return {
+        "final_response": non_db_synonym_guidance(name),
+        "current_node": "cache_management",
+        "error_message": None,
+    }
+
+
+# 관리자 역할만 수행하는 생성·무효화 작업(plans/104 S2). 조회·유사어 등록·설명 수정 등
+# 나머지 작업은 역할과 무관하게 종전대로 수행한다.
+_ADMIN_ONLY_ACTIONS = (
+    "generate",
+    "generate-descriptions",
+    "generate-synonyms",
+    "generate-global-synonyms",
+    "generate-db-description",
+    "invalidate",
+)
+
+_ADMIN_ONLY_MESSAGE = (
+    "캐시 생성·무효화는 관리자만 할 수 있습니다. "
+    "관리자 페이지(/admin) 「DB 구조」 탭을 이용하세요. "
+    "터미널에서는 `python scripts/schema_cache_cli.py`로 같은 작업을 할 수 있습니다 "
+    "(CLI 대화(`python -m src.main`)에는 역할 정보가 없어 이 경로로 거절됩니다)."
+)
+
+
+def _is_cache_admin(state: AgentState, app_config: AppConfig) -> bool:
+    """캐시 생성·무효화를 수행할 수 있는 요청인지 판정한다 (plans/104 S2).
+
+    인증이 꺼져 있으면(개발 모드) 허용한다 — 관리자 API의 개발 모드 우회(D-069 ①)와 같다.
+    인증이 켜져 있으면 라우트가 검증된 사용자 정보로 주입한 `user_role`이 admin일 때만
+    허용한다. 역할이 없으면 거절한다(fail-closed).
+    """
+    if not app_config.auth.enabled:
+        return True
+    return state.get("user_role") == UserRole.ADMIN.value
+
+
+# db_id 대상 검증·전개를 적용하는 작업 — 대상 DB로 introspection/삭제가 나가는 작업만.
+# (유사어·설명 계열은 캐시 키 조회라 미등록 db_id여도 "캐시 없음" 안내로 안전하게 끝난다)
+_DB_SCOPED_ACTIONS = ("generate", "generate-descriptions", "invalidate")
+
+
+def _resolve_cache_db_target(
+    db_id: Optional[str],
+    app_config: AppConfig,
+) -> tuple[Optional[str], Optional[list[str]], Optional[str]]:
+    """LLM이 추출한 db_id를 활성 DB 목록으로 결정적 검증·전개한다.
+
+    LLM 추출 결과를 그대로 신뢰하면 사용자 표면어("polestar" 등 제품군 이름)가
+    레지스트리의 비활성 db_id(로컬 샌드박스)와 문자열 일치해 존재하지 않는 DB로
+    작업이 나간다(2026-09-01 라이브 실측 — 캐시 갱신이 '테이블 0개' 오류로 실패).
+
+    Returns:
+        (db_id, db_ids_override, note) 3항:
+        - 활성 db_id → (그대로, None, None)
+        - 활성 목록 프리픽스와 일치(제품군) → (None, [활성 후보들], 전개 안내문)
+        - 미해석 → (None, None, 안내문) — 호출부는 실행하지 않고 안내로 종결한다
+    """
+    if not db_id:
+        return None, None, None
+    active = app_config.multi_db.get_active_db_ids()
+    if db_id in active:
+        return db_id, None, None
+    prefix = db_id.lower()
+    candidates = [d for d in active if d.lower().startswith(prefix)]
+    if candidates:
+        note = (
+            f"'{db_id}'은(는) 개별 DB 식별자가 아니라 제품군으로 해석되어 "
+            f"활성 DB {', '.join(candidates)} 전체를 대상으로 처리합니다."
+        )
+        return None, candidates, note
+    note = (
+        f"'{db_id}'은(는) 등록·활성 DB가 아니어서 작업을 수행하지 않았습니다. "
+        f"활성 DB: {', '.join(active) if active else '(없음)'}"
+    )
+    return None, None, note
 
 
 async def _execute_cache_action(
@@ -174,6 +335,8 @@ async def _execute_cache_action(
     cache_mgr: Any,
     app_config: AppConfig,
     llm: BaseChatModel,
+    db_ids_override: Optional[list[str]] = None,
+    visible_db_ids: Optional[list[str]] = None,
 ) -> str | dict:
     """캐시 관리 작업을 수행하고 응답 텍스트를 생성한다.
 
@@ -195,10 +358,12 @@ async def _execute_cache_action(
     if action == "status":
         return await _handle_status(cache_mgr, db_id)
     elif action == "generate":
-        return await _handle_generate(cache_mgr, app_config, db_id)
+        return await _handle_generate(
+            cache_mgr, app_config, db_id, db_ids_override=db_ids_override
+        )
     elif action == "generate-descriptions":
         return await _handle_generate_descriptions(
-            cache_mgr, app_config, llm, db_id
+            cache_mgr, app_config, llm, db_id, db_ids_override=db_ids_override
         )
     elif action == "generate-synonyms":
         return await _handle_generate_synonyms(
@@ -222,9 +387,11 @@ async def _execute_cache_action(
             cache_mgr, target_column, description
         )
     elif action == "db-guide":
-        return await _handle_db_guide(cache_mgr)
+        return await _handle_db_guide(cache_mgr, visible_db_ids or [])
     elif action == "invalidate":
-        return await _handle_invalidate(cache_mgr, db_id)
+        return await _handle_invalidate(
+            cache_mgr, db_id, db_ids_override=db_ids_override
+        )
     elif action == "list-synonyms":
         return await _handle_list_synonyms(
             cache_mgr, app_config, db_id, target_column
@@ -233,6 +400,8 @@ async def _execute_cache_action(
         return await _handle_add_synonym(
             cache_mgr, app_config, db_id, target_column, words
         )
+    elif action == "add-synonym-set":
+        return await _handle_add_synonym_set(cache_mgr, app_config, db_id, words)
     elif action == "remove-synonym":
         return await _handle_remove_synonym(
             cache_mgr, app_config, db_id, target_column, words
@@ -281,16 +450,31 @@ async def _handle_generate(
     cache_mgr: Any,
     app_config: AppConfig,
     db_id: Optional[str],
+    db_ids_override: Optional[list[str]] = None,
 ) -> str:
     """캐시 생성/갱신을 처리한다."""
     from src.db import get_db_client
+    from src.routing.domain_config import get_domain_by_id
+    from src.utils.sql_dialect import is_db2
 
-    db_ids = [db_id] if db_id else app_config.multi_db.get_active_db_ids()
+    db_ids = db_ids_override or (
+        [db_id] if db_id else app_config.multi_db.get_active_db_ids()
+    )
     if not db_ids:
         db_ids = ["_default"]
 
     results = []
     for did in db_ids:
+        # DB2 존은 fingerprint 조회가 PostgreSQL 전용(information_schema)이라 갱신이
+        # 성립하지 않는다 — 시도하면 침묵 error(테이블 0개)로 끝난다(2026-09-01 폐쇄망
+        # 실측 V2-1). 정식 DB2 분기(SYSCAT) 전까지 명시 안내로 대체한다.
+        domain_cfg = get_domain_by_id(did)
+        if domain_cfg and is_db2(domain_cfg.db_engine):
+            results.append(
+                f"- {did}: 건너뜀 — DB2 존은 캐시 갱신 미지원"
+                "(fingerprint 조회가 PostgreSQL 전용). 기존 캐시는 그대로 유지됩니다."
+            )
+            continue
         try:
             async with get_db_client(app_config, db_id=did) as client:
                 result = await cache_mgr.refresh_cache(did, client)
@@ -310,11 +494,14 @@ async def _handle_generate_descriptions(
     app_config: AppConfig,
     llm: BaseChatModel,
     db_id: Optional[str],
+    db_ids_override: Optional[list[str]] = None,
 ) -> str:
     """컬럼 설명 생성을 처리한다."""
     from src.schema_cache.description_generator import DescriptionGenerator
 
-    db_ids = [db_id] if db_id else app_config.multi_db.get_active_db_ids()
+    db_ids = db_ids_override or (
+        [db_id] if db_id else app_config.multi_db.get_active_db_ids()
+    )
     generator = DescriptionGenerator(llm)
     results = []
 
@@ -558,7 +745,11 @@ async def _handle_generate_db_description(
     llm: BaseChatModel,
     db_id: Optional[str],
 ) -> str:
-    """DB 설명을 LLM으로 자동 생성한다."""
+    """DB 설명을 LLM으로 자동 생성한다.
+
+    수동 설정된 설명(출처 `manual`)은 LLM을 부르기 전에 건너뛰고 응답에 보존 사실을
+    밝힌다(plans/104 S5). 저장은 출처 `llm`으로 남긴다.
+    """
     from src.schema_cache.description_generator import DescriptionGenerator
 
     generator = DescriptionGenerator(llm)
@@ -574,17 +765,25 @@ async def _handle_generate_db_description(
 
     results = []
     for did in db_ids:
+        if await cache_mgr.get_db_description_origin(did) == "manual":
+            results.append(f"- {did}: 건너뜀 — 수동 설정 설명 보존(LLM 재생성하지 않음)")
+            continue
+
         schema_dict = await cache_mgr.get_schema(did)
         if schema_dict is None:
             results.append(f"- {did}: 캐시 없음")
             continue
 
         description = await generator.generate_db_description(did, schema_dict)
-        if description:
-            await cache_mgr.save_db_description(did, description)
-            results.append(f"- {did}: {description}")
-        else:
+        if not description:
             results.append(f"- {did}: 설명 생성 실패")
+        elif await cache_mgr.save_db_description(did, description, origin="llm"):
+            results.append(f"- {did}: {description}")
+        elif await cache_mgr.get_db_description_origin(did) == "manual":
+            # 생성 도중 수동 설명이 설정된 경우 — 매니저가 저장을 거부한다
+            results.append(f"- {did}: 저장하지 않음 — 수동 설정 설명 보존")
+        else:
+            results.append(f"- {did}: 설명 저장 실패")
 
     return "DB 설명 생성 결과:\n" + "\n".join(results)
 
@@ -600,19 +799,32 @@ async def _handle_set_db_description(
     if not description:
         return "설명 텍스트를 입력해야 합니다."
 
-    success = await cache_mgr.save_db_description(db_id, description)
+    success = await cache_mgr.save_db_description(db_id, description, origin="manual")
     if success:
         return f"{db_id} DB 설명을 설정했습니다: {description}"
     return f"{db_id} DB 설명 설정에 실패했습니다."
 
 
-async def _handle_db_guide(cache_mgr: Any) -> str:
-    """DB 목록과 설명을 안내한다."""
-    db_descriptions = await cache_mgr.get_db_descriptions()
+async def _handle_db_guide(cache_mgr: Any, visible_db_ids: list[str]) -> str:
+    """DB 목록과 설명을 안내한다.
+
+    Args:
+        cache_mgr: 캐시 매니저
+        visible_db_ids: 이 사용자가 조회할 수 있는 DB(`authorized_db_ids` 결과) — 이 밖의
+            캐시된 DB 는 이름도 내보내지 않는다
+    """
+    if not visible_db_ids:
+        return ACCESS_DENIED_MESSAGE
+    visible = set(visible_db_ids)
+    db_descriptions = {
+        db_id: desc
+        for db_id, desc in (await cache_mgr.get_db_descriptions()).items()
+        if db_id in visible
+    }
 
     if not db_descriptions:
         # DB 설명이 없으면 캐시 상태에서 DB 목록만 반환
-        statuses = await cache_mgr.get_all_status()
+        statuses = [s for s in await cache_mgr.get_all_status() if s.db_id in visible]
         if not statuses:
             return "현재 등록된 DB가 없습니다."
         lines = ["사용 가능한 DB 목록:\n"]
@@ -631,8 +843,15 @@ async def _handle_db_guide(cache_mgr: Any) -> str:
 async def _handle_invalidate(
     cache_mgr: Any,
     db_id: Optional[str],
+    db_ids_override: Optional[list[str]] = None,
 ) -> str:
     """캐시 삭제를 처리한다 (글로벌 사전만 보존)."""
+    if db_ids_override:
+        lines = []
+        for did in db_ids_override:
+            success = await cache_mgr.invalidate(did)
+            lines.append(f"- {did}: 캐시 삭제 {'성공' if success else '실패'}")
+        return "캐시 삭제 결과 (글로벌 사전만 보존됩니다):\n" + "\n".join(lines)
     if db_id:
         success = await cache_mgr.invalidate(db_id)
         return (
@@ -730,6 +949,242 @@ async def _handle_list_synonyms(
                 line += f" ({desc})"
             lines.append(line)
         return "\n".join(lines) + redis_warning
+
+
+#: 동의어 집합 검증 규칙 (선파서와 동일 — LLM 폴백 경로에도 같은 가드를 적용한다).
+_SET_MIN_WORDS = 2
+_SET_MAX_WORDS = 20
+_SET_MAX_WORD_LEN = 64
+_SET_WORD_RE = re.compile(r"^[0-9A-Za-z_\-가-힣ㄱ-ㅎㅏ-ㅣ]+$")
+
+
+def _normalize_set_words(words: Optional[list[str]]) -> list[str]:
+    """공백 제거·중복 제거(대소문자 무시)로 집합을 정규화한다."""
+    if not words:
+        return []
+    seen: dict[str, str] = {}
+    for w in words:
+        if not isinstance(w, str):
+            continue
+        word = w.strip()
+        if word and word.lower() not in seen:
+            seen[word.lower()] = word
+    return list(seen.values())
+
+
+def _validate_set_words(words: list[str]) -> Optional[str]:
+    """검증 실패 사유를 반환한다. 통과하면 None.
+
+    LLM이 파싱한 경우에도 **쓰기 직전** 여기서 결정적으로 막는다 —
+    출력 교정만으로는 오염 자기강화 루프를 못 끊는다.
+    """
+    if len(words) < _SET_MIN_WORDS:
+        return (
+            f"동의어 집합은 최소 {_SET_MIN_WORDS}개가 필요합니다 "
+            f"(중복 제거 후 {len(words)}개). 예: `vcore, cpu, core은 동의어야. 등록해줘`"
+        )
+    if len(words) > _SET_MAX_WORDS:
+        return f"동의어는 한 번에 최대 {_SET_MAX_WORDS}개까지 등록할 수 있습니다 (요청 {len(words)}개)."
+    bad = [w for w in words if len(w) > _SET_MAX_WORD_LEN or not _SET_WORD_RE.match(w)]
+    if bad:
+        return (
+            f"허용되지 않는 형식의 단어가 있어 등록하지 않았습니다: {', '.join(bad[:5])}\n"
+            f"영문·숫자·한글·언더스코어·하이픈만, 단어당 {_SET_MAX_WORD_LEN}자 이내로 입력해 주세요."
+        )
+    return None
+
+
+async def _collect_anchor_sources(
+    cache_mgr: Any,
+    app_config: AppConfig,
+    db_id: Optional[str],
+) -> dict[str, tuple[str, str]]:
+    """앵커 후보가 될 수 있는 이름을 모은다.
+
+    소스는 우선순위대로 ①활성 DB 스키마 컬럼명 ②전역 유사어 사전 키 ③EAV NAME 값이다.
+    한 소스가 실패해도 나머지로 판정할 수 있도록 **개별 try/except**로 감싼다
+    (한 블록에 묶으면 첫 실패가 나머지 수집을 통째로 버린다).
+
+    Returns:
+        {소문자 이름: (실제 표기, 출처 라벨)}. 실제 표기를 함께 돌려주는 이유는
+        사전 키를 **스키마 표기로 통일**하기 위해서다 — 사용자가 `CPU`로 입력해도
+        컬럼이 `cpu`면 `cpu`로 등록해야 대소문자만 다른 중복 키가 생기지 않는다.
+    """
+    found: dict[str, tuple[str, str]] = {}
+
+    db_ids = [db_id] if db_id else app_config.multi_db.get_active_db_ids()
+    for did in db_ids:
+        try:
+            schema = await cache_mgr.get_schema(did)
+            for table_data in (schema or {}).get("tables", {}).values():
+                for col in table_data.get("columns", []):
+                    name = str(col.get("name", "")).strip()
+                    if name:
+                        found.setdefault(name.lower(), (name, f"{did} 스키마 컬럼"))
+        except Exception as e:
+            logger.warning("앵커 후보 수집 실패(스키마 %s): %s", did, e)
+
+    try:
+        for col in (await cache_mgr.get_global_synonyms() or {}):
+            name = str(col)
+            found.setdefault(name.lower(), (name, "글로벌 유사어 사전"))
+    except Exception as e:
+        logger.warning("앵커 후보 수집 실패(글로벌 사전): %s", e)
+
+    try:
+        redis_cache = getattr(cache_mgr, "_redis_cache", None)
+        loader = getattr(redis_cache, "load_eav_name_synonyms", None)
+        if loader is not None:
+            for raw_name in (await loader() or {}):
+                name = str(raw_name)
+                found.setdefault(name.lower(), (name, "EAV 속성명"))
+    except Exception as e:
+        logger.warning("앵커 후보 수집 실패(EAV 속성명): %s", e)
+
+    return found
+
+
+async def _infer_anchor(
+    cache_mgr: Any,
+    app_config: AppConfig,
+    words: list[str],
+    db_id: Optional[str] = None,
+) -> tuple[Optional[str], list[str], str]:
+    """집합 원소 중 실제 스키마에 존재하는 것을 앵커로 고른다 (D-142).
+
+    후보가 정확히 하나일 때만 확정한다. 0개면 어디에 붙일지 알 수 없고, 2개 이상이면
+    어느 쪽이 상위 개념인지 알 수 없다 — 어느 경우든 임의로 고르면 오등록이 조용히
+    쌓인다. 되묻는 편이 1턴 비싸지만 정확하다.
+
+    Returns:
+        (앵커 또는 None, 후보 목록, 사유). 사유는 "ok" | "not_found" | "ambiguous".
+        앵커·후보는 **스키마에 저장된 표기**로 돌려준다(사용자 입력 표기가 아님).
+    """
+    known = await _collect_anchor_sources(cache_mgr, app_config, db_id)
+    # 사용자 입력 표기가 아니라 **스키마에 저장된 표기**를 채택한다.
+    candidates = [known[w.lower()][0] for w in words if w.lower() in known]
+
+    if len(candidates) == 1:
+        return candidates[0], candidates, "ok"
+    if not candidates:
+        return None, [], "not_found"
+    return None, candidates, "ambiguous"
+
+
+async def _find_synonym_conflicts(
+    cache_mgr: Any,
+    anchor: str,
+    words: list[str],
+) -> dict[str, str]:
+    """등록할 단어가 **다른** 앵커에 이미 붙어 있는지 찾는다.
+
+    조용히 병합하면 같은 표현이 두 컬럼을 가리키게 되어 매칭이 어느 쪽으로 튈지
+    모르게 된다. 등록은 진행하되 사실을 응답에 노출한다.
+
+    Returns:
+        {단어: 이미 물려 있는 다른 앵커}
+    """
+    conflicts: dict[str, str] = {}
+    try:
+        existing = await cache_mgr.get_global_synonyms() or {}
+    except Exception as e:
+        logger.warning("유사어 충돌 검사 실패(등록은 계속): %s", e)
+        return conflicts
+
+    lowered = {w.lower() for w in words}
+    for other_anchor, other_words in existing.items():
+        if str(other_anchor).lower() == anchor.lower():
+            continue
+        for ow in other_words or []:
+            if str(ow).lower() in lowered:
+                conflicts[str(ow)] = str(other_anchor)
+    return conflicts
+
+
+async def _handle_add_synonym_set(
+    cache_mgr: Any,
+    app_config: AppConfig,
+    db_id: Optional[str],
+    words: Optional[list[str]],
+) -> str:
+    """앵커 없는 동의어 집합을 등록한다 (D-142).
+
+    `"vcore, cpu, core은 동의어이다. 캐시에 등록하라."`처럼 원소가 대등한 요청을 받아
+    실제 스키마에 있는 원소를 앵커로 삼고 나머지를 그 유사어로 등록한다.
+
+    Args:
+        cache_mgr: 스키마 캐시 매니저
+        app_config: 앱 설정
+        db_id: 대상 DB (None이면 활성 DB 전체)
+        words: 동의어 집합
+
+    Returns:
+        사용자에게 보여줄 응답. 등록하지 않은 경우 **사유를 반드시 담는다**.
+    """
+    if not cache_mgr.redis_available:
+        return "Redis에 연결할 수 없어 동의어를 등록할 수 없습니다. Redis 상태를 확인해 주세요."
+
+    normalized = _normalize_set_words(words)
+    invalid_reason = _validate_set_words(normalized)
+    if invalid_reason:
+        return invalid_reason
+
+    anchor, candidates, reason = await _infer_anchor(cache_mgr, app_config, normalized, db_id)
+
+    if reason == "not_found":
+        return (
+            f"'{', '.join(normalized)}' 중 **실제 컬럼(또는 등록된 속성)으로 찾지 못했습니다**.\n\n"
+            "동의어는 기준이 되는 컬럼에 붙여서 저장합니다. "
+            "어느 컬럼의 동의어인지 알려주시면 등록하겠습니다.\n"
+            f"예: `hostname에 '{normalized[0]}' 유사 단어를 추가해줘`"
+        )
+
+    if reason == "ambiguous":
+        return (
+            f"기준 컬럼을 하나로 정하지 못했습니다 — {', '.join(candidates)}가 모두 "
+            "실제 컬럼(또는 등록된 속성)입니다.\n\n"
+            "임의로 고르면 잘못된 매핑이 남을 수 있어 등록하지 않았습니다. "
+            "어느 것을 기준으로 할지 알려주세요.\n"
+            f"예: `{candidates[0]}에 "
+            f"'{', '.join(w for w in normalized if w != candidates[0])}' 유사 단어를 추가해줘`"
+        )
+
+    assert anchor is not None  # reason == "ok"
+    # 앵커는 스키마 표기이므로 입력 표기와 다를 수 있다 — 대소문자 무시로 제외한다
+    # (`["CPU", "vcore"]` + 앵커 `cpu`에서 CPU가 자기 유사어로 재등록되는 것을 막는다).
+    rest = [w for w in normalized if w.lower() != anchor.lower()]
+    conflicts = await _find_synonym_conflicts(cache_mgr, anchor, rest)
+
+    results: list[str] = []
+    if await cache_mgr.add_global_synonym(anchor, rest):
+        results.append("- 글로벌 사전에 등록 완료")
+
+    db_ids = [db_id] if db_id else app_config.multi_db.get_active_db_ids()
+    for did in db_ids:
+        try:
+            schema = await cache_mgr.get_schema(did)
+        except Exception as e:
+            logger.warning("동의어 DB 동기화 실패(%s): %s", did, e)
+            continue
+        for table_name, table_data in (schema or {}).get("tables", {}).items():
+            for col in table_data.get("columns", []):
+                if str(col.get("name", "")).lower() == anchor.lower():
+                    col_key = f"{table_name}.{col['name']}"
+                    await cache_mgr.add_synonyms(did, col_key, rest, source="operator")
+                    results.append(f"- {did} DB ({col_key})에 동기화 완료")
+
+    message = (
+        f"**{anchor}**를 기준으로 {', '.join(f"'{w}'" for w in rest)}을(를) "
+        f"동의어로 등록했습니다.\n" + "\n".join(results)
+    )
+    if conflicts:
+        detail = ", ".join(f"'{w}' → {other}" for w, other in conflicts.items())
+        message += (
+            f"\n\n⚠️ 아래 단어는 **이미 다른 컬럼의 유사어로 등록**되어 있습니다: {detail}\n"
+            "같은 표현이 두 컬럼을 가리키면 질의 매핑이 흔들릴 수 있습니다. "
+            "의도한 것이 아니라면 한쪽을 삭제해 주세요."
+        )
+    return message
 
 
 async def _handle_add_synonym(

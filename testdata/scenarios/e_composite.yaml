@@ -1,0 +1,122 @@
+# 자동 생성 초안 (scripts/scenario/import_docs.py) - plans/94 §3.4
+#
+# expect 는 비어 있고 manual_review 만 들어 있다. 단언으로 옮긴 만큼만 자동 판정
+# 대상이 되며, 옮기지 않은 것은 리포트 9절 '수동 검토'에 계속 남는다.
+# plans 필드는 군 단위 기본값이다 - 시나리오별로 정확히 좁히는 것이 사람의 일이다.
+version: 1
+group:
+  id: E
+  name: "복합/멀티인텐트"
+  latency_target_ms: 30000
+  policy_confirmed: false
+  source: "docs/29"
+scenarios:
+  - id: E-01
+    plans: [88, 82, 80, 78]
+    title: "polestar DB 캐시를 갱신하고 서버 목록도 10건만 조회해줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "polestar DB 캐시를 갱신하고 서버 목록도 10건만 조회해줘"
+        expect:
+          status: completed
+          sql_must_match: ["(?i)\\bcmm_resource\\b"]
+          # plans/121 TP-0.3 - 분해 프롬프트 예시 2 와 같은 질의다. 두 요구가 계획에 모두 있는지 본다.
+          # 병렬 여부(depends_on)는 보지 않는다 - 예시 2 자체가 depends_on 을 둔다(121 §2.2 예시 모순).
+          # 데이터 간선이 잘못 붙어 게이트가 서버 목록을 건너뛰면 위 sql_must_match 가 깨진다.
+          # (종전 수동 검토: "캐시 갱신과 조회 두 태스크가 병렬로 돌고 결과가 합산됐는지")
+          plan: {min_tasks: 2, agents: [cache_management, data_query]}
+  - id: E-02
+    plans: [88, 82, 80, 78]
+    title: "현재 활성 상태인 심각 알람이 있는 서버들의 최근 1개월 CPU 사용률을 10건만 보여줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "현재 활성 상태인 심각 알람이 있는 서버들의 최근 1개월 CPU 사용률을 10건만 보여줘"
+        expect:
+          status: completed
+          # plans/121 TP-0.3 - D-086 · 분해 프롬프트 예시 3-1(같은 질의): 알람 선별 → 지표 조회는
+          # 2 task 분해가 정답이다. 호스트 집합 전달은 input_from 간선으로 본다(주입은 D-086 스코프
+          # 블록, 선행 0건이면 D-203 게이트).
+          # (종전 수동 검토: "t1 알람 조회의 호스트 집합이 t2 WHERE IN 으로 전달됐는지")
+          plan: {min_tasks: 2, edges: [[alarm_query, data_query]]}
+  - id: E-03
+    plans: [88, 82, 80, 78]
+    title: "CPU 사용률이 높은 서버를 찾아 그 서버들의 프로세스를 분석해줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "CPU 사용률이 높은 서버를 찾아 그 서버들의 프로세스를 분석해줘"
+        expect:
+          status: completed
+          # plans/121 TP-0.3 - 분해 프롬프트 예시 3 과 같은 질의 + 순차 표지("찾아"·"그 서버" - D-203 ②).
+          # 뒤 task 는 시간성 신호가 없어 결정적 교정으로 process_query(실시간 API · D-046)가 된다.
+          # (종전 수동 검토: "프로세스 API 대상이 t1 결과 서버인지 — 프로세스는 SQL 경로가 아니다")
+          plan: {min_tasks: 2, edges: [[data_query, process_query]]}
+  - id: E-04
+    plans: [88, 82, 80, 78]
+    title: "김포 서버 목록과 여의도 서버 목록을 각각 10건씩 알려줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "김포 서버 목록과 여의도 서버 목록을 각각 10건씩 알려줘"
+        expect:
+          status: completed
+          db_ids: ["polestar_cm_gp", "polestar_cm_yd"]
+          # plans/123 CT-6(122 소유 카탈로그 - 123 요청분) - 「각각」 병합 결과가 DB별 조회 행을 잃지 않았다
+          #   (run 20260923-103638: 결과 2,442행 대 김포 1,690 + 여의도 759 = 2,449). 「표 2개」는 단언 키가 없어
+          #   수동으로 남긴다.
+          result: {matches_db_row_sum: true}
+          manual_review: "두 표가 존 라벨로 구분돼 나오는지"
+  - id: E-05
+    plans: [88, 82, 80, 78]
+    title: "해당 서버 프로세스 이력 지난 7일 보여줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "해당 서버 프로세스 이력 지난 7일 보여줘"
+        expect:
+          status: completed
+          sql_must_match: ["(?i)\\bselect\\b"]
+  - id: E-06
+    plans: [88, 82, 80, 78]
+    title: "논리코어가 8개 이상인 서버 중에서 지금까지 알람이 한 번도 발생하지 않은 서버를 알려줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "논리코어가 8개 이상인 서버 중에서 지금까지 알람이 한 번도 발생하지 않은 서버를 알려줘"
+        expect:
+          status: completed
+          manual_review: "단일 SQL NOT EXISTS 든 2태스크든 결과 집합이 같아야 한다"
+  - id: E-07
+    plans: [88, 82, 80, 78]
+    title: "심각 알람이 발생한 적이 있는 서버들의 제조사와 메모리 용량을 10건만 보여줘"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    turns:
+      - send:
+          query: "심각 알람이 발생한 적이 있는 서버들의 제조사와 메모리 용량을 10건만 보여줘"
+        expect:
+          status: completed
+          sql_must_match: ["(?i)\\bcmm_alarm\\w*\\b", "(?i)\\bcmm_resource\\b",
+                          "(?i)\\bcore_config_prop\\b"]

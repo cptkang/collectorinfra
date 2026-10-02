@@ -13,11 +13,31 @@ from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
 
-from src.clients.fabrix_kbgenai import KBGenAIChat
+from src.utils.json_extract import coerce_content_text
+from src.utils.llm_compat import is_kbgenai
 from src.config import AppConfig, load_config
+from src.db import get_db_client
+from src.db_adapters import get_adapter
+from src.domain.empty_answer import (
+    SINGLE_GROUP,
+    EntityCheck,
+    FunnelStage,
+    as_payload,
+    build_diagnosis,
+    detect_unexpressed_conditions,
+    entity_lines,
+    identifier_only_values,
+)
 from src.llm import create_llm
+from src.nodes.condition_probe import (
+    build_probe_sqls,
+    split_user_conditions,
+    truncated_stage_count,
+)
+from src.routing.domain_config import get_domain_by_id
 from src.security.data_masker import DataMasker
 from src.state import AgentState, OrganizedData, SheetMappingResult
+from src.utils.query_gen_common import HOST_IDENTIFIER_FIELDS, is_demonstrative_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +73,12 @@ async def result_organizer(
     parsed = state["parsed_requirements"]
     template = state.get("template_structure")
 
+    # 멀티 DB 순위 질의 전역 재정렬(plans/113 S-1) — 적용됐으면 응답용 행은 전역 상위 N이다.
+    # 원본 병합(query_results)은 그대로 둔다(CSV 다운로드 원천 · G-4).
+    ranking = _current_merge_ranking(state)
+    if ranking and ranking.get("applied"):
+        query_results = list(ranking.get("rows") or [])
+
     # 1. 민감 데이터 마스킹
     masker = DataMasker(app_config.security)
     masked_results = masker.mask_rows(query_results)
@@ -68,7 +94,36 @@ async def result_organizer(
         app_config=app_config,
     )
 
-    if not is_sufficient and state.get("retry_count", 0) < 3:
+    # 폼필 결정적 조립(D-146/D-149)이 발동해 행이 반환됐으면 부족 판정을 무시한다.
+    # 라이브 실측(2026-07-28 yd): 미수집 항목(구분/용도 등) 때문에 부족으로 판정 →
+    # 재시도에서 LLM 폴백이 **올바른 결정적 결과를 동일값 SQL로 덮어씀**. 이 쿼리는
+    # well-defined라 재생성이 개선을 만들 수 없고(D-068 원리), 미채움 필드는 미수집
+    # 항목이라 재조회 무의미 — 사유는 D-147 미작성 안내가 노출한다.
+    # D-149 확장(라이브 실측 2026-07-30 서버목록 양식 3존): 월 시리즈 없는 폼필도
+    # 의도적 공란(정책 필드) 다수가 부족으로 판정 → 재시도 턴이 결정적 조립을 스킵해
+    # LLM 폴백이 계약(공란·등록명 규칙)을 덮었다. 양식 턴 + 행 존재면 동일하게 억제한다.
+    if not is_sufficient and masked_results and (
+        state.get("form_month_anchor") or state.get("template_structure")
+    ):
+        logger.info(
+            "폼필 결정적 결과(D-146/D-149) %d행 — 부족 판정 무시(재시도 억제)",
+            len(masked_results),
+        )
+        is_sufficient = True
+
+    # 0건 원인 진단(D-176 후속1 · §6) — **0건일 때만** 발동한다. 결과가 있으면 프로브 호출 0회라
+    # 정상 경로 비용이 0이고, 플래그 OFF면 진단 자체가 없다(응답 문구 바이트 무변경).
+    diagnosis_delta: dict = {}
+    if not masked_results:
+        diagnosis = await _diagnose_empty_result(state, parsed, app_config)
+        if diagnosis is not None:
+            diagnosis_delta = {"empty_diagnosis": as_payload(diagnosis)}
+            if not diagnosis.regenerable:
+                # G-5: 상위 단계에는 데이터가 있다 = SQL은 정상 동작했다. 재생성은 토큰만 쓴다.
+                logger.info("0건 진단 — 재생성 중단(퍼널 상위 단계에 데이터 존재)")
+                is_sufficient = True
+
+    if not is_sufficient and state.get("retry_count", 0) < app_config.query.max_retry_count:
         logger.info("데이터 부족으로 재시도 요청")
         return {
             "organized_data": OrganizedData(
@@ -80,6 +135,7 @@ async def result_organizer(
             ),
             "error_message": "data_insufficient",
             "current_node": "result_organizer",
+            **diagnosis_delta,
         }
 
     # 3. 숫자 포맷팅 (텍스트 출력 시만)
@@ -161,18 +217,324 @@ async def result_organizer(
 
     logger.info(f"결과 정리 완료: {len(formatted_results)}건")
 
+    organized = OrganizedData(
+        summary=summary,
+        rows=formatted_results,
+        column_mapping=column_mapping,
+        resolved_mapping=resolved_mapping,
+        is_sufficient=True,
+        sheet_mappings=sheet_mappings,
+    )
+    if ranking:
+        # 행과 함께 경과를 운반한다(1·2·3단 공통 — organized_data는 모든 경로가 전달한다).
+        organized["merge_ranking"] = {k: v for k, v in ranking.items() if k != "rows"}
+        if ranking.get("applied"):
+            organized["summary"] = _ranking_summary(ranking, len(formatted_results)) + summary
+    aggregates = _current_merge_aggregates(state)
+    if aggregates:
+        organized["merge_aggregates"] = dict(aggregates)
     return {
-        "organized_data": OrganizedData(
-            summary=summary,
-            rows=formatted_results,
-            column_mapping=column_mapping,
-            resolved_mapping=resolved_mapping,
-            is_sufficient=True,
-            sheet_mappings=sheet_mappings,
-        ),
+        "organized_data": organized,
         "error_message": None,
         "current_node": "result_organizer",
+        **diagnosis_delta,
     }
+
+
+def _current_merge_ranking(state: AgentState) -> dict[str, Any] | None:
+    """이번 행에 해당하는 전역 재정렬 결과만 돌려준다(요청 안 재시도 경로의 잔존 방어).
+
+    `merged_ranking`은 `result_merger`가 매 실행 덮어쓰지만, 멀티 DB 결과가 데이터 부족으로
+    단일 경로(`query_generator → query_executor`)로 회귀하면 그 값이 state에 남는다. 병합 행
+    (`_source_db` 태그)이고 행 수가 재정렬 입력과 같을 때만 이번 행의 결과로 본다.
+    """
+    ranking = state.get("merged_ranking")
+    if not isinstance(ranking, dict):
+        return None
+    rows = state.get("query_results") or []
+    if not rows or not all(isinstance(r, dict) and "_source_db" in r for r in rows):
+        return None
+    if ranking.get("applied") and ranking.get("source_row_count") != len(rows):
+        return None
+    return ranking
+
+
+def _current_merge_aggregates(state: AgentState) -> dict[str, Any] | None:
+    """이번 행에 해당하는 집계 종합 결과만 돌려준다(plans/113 S-3).
+
+    재시도 잔존 방어는 전역 재정렬(`_current_merge_ranking`)과 같다.
+    """
+    aggregates = state.get("merged_aggregates")
+    if not isinstance(aggregates, dict):
+        return None
+    rows = state.get("query_results") or []
+    if not rows or not all(isinstance(r, dict) and "_source_db" in r for r in rows):
+        return None
+    if aggregates.get("applied") and aggregates.get("source_row_count") != len(rows):
+        return None
+    return aggregates
+
+
+def _ranking_summary(ranking: dict[str, Any], shown: int) -> str:
+    """전역 재정렬 요약 문장 — 응답 LLM이 표를 DB별 목록이 아니라 전체 순위로 읽게 한다."""
+    order = "큰" if ranking.get("descending") else "작은"
+    return (
+        f"{len(ranking.get('db_ids') or [])}개 DB에서 각각 상위 {ranking.get('limit')}건씩 조회한 "
+        f"{ranking.get('source_row_count')}건을 '{ranking.get('key')}' 값이 {order} 순으로 "
+        f"다시 정렬해 전체 기준 상위 {shown}건만 남겼습니다. "
+    )
+
+
+
+# ──────────────────────────────────────────────
+# 0건 원인 진단 (D-176 후속1 · plans/82 §6)
+# ──────────────────────────────────────────────
+
+#: 0단계(사용자 조건 0개) 라벨 — 원문 조건이 아니라 "무엇을 대상으로 셌는가"다.
+_P0_LABEL = "조건 없음(대상 전체)"
+
+
+def _probe_sources(state: AgentState) -> list[tuple[str, str, Optional[str]]]:
+    """퍼널을 그릴 (열 이름, SQL, db_id) 목록. 그룹이 있으면 **그룹별 열**로 나눈다.
+
+    존이 여럿이면 전역 퍼널보다 그룹별 퍼널이 정보량이 크다(§6.6) — 어느 존이 어디서
+    끊겼는지가 갈린다. 그룹 축은 `group_results`(1차 산출물)를 그대로 재사용하며
+    **재구현하지 않는다**.
+    """
+    groups = state.get("group_results") or {}
+    sources: list[tuple[str, str, Optional[str]]] = []
+    for key, info in groups.items():
+        if not isinstance(info, dict):
+            continue
+        sqls = [q for q in (info.get("sqls") or []) if q]
+        db_ids = info.get("db_ids") or []
+        if not sqls:
+            continue
+        sources.append((info.get("label") or key, sqls[-1], db_ids[0] if db_ids else None))
+    if sources:
+        return sources
+
+    sql = state.get("generated_sql")
+    if not sql:
+        return []
+    return [(SINGLE_GROUP, sql, state.get("active_db_id"))]
+
+
+async def _count_rows(app_config: AppConfig, db_id: Optional[str], sql: str) -> int:
+    """COUNT 프로브 1건을 실행한다. 읽기 전용이며 행을 가져오지 않는다(PII·전송량 0)."""
+    target = db_id if db_id and db_id not in ("_default", "default") else None
+    async with get_db_client(app_config, db_id=target) as client:
+        result = await client.execute_sql(sql)
+    rows = result.rows or []
+    if not rows:
+        return 0
+    first = rows[0]
+    values = list(first.values()) if isinstance(first, dict) else list(first)
+    return int(values[0]) if values else 0
+
+
+async def _probe_group(
+    app_config: AppConfig,
+    label: str,
+    sql: str,
+    db_id: Optional[str],
+    k_max: int,
+    notes: list[str],
+    report_missing: bool,
+) -> tuple[list[str], list[Optional[int]]]:
+    """그룹 하나의 (단계 라벨, 단계별 잔존 건수)를 만든다.
+
+    측정하지 못한 단계는 `None`으로 남긴다 — 0으로 채우면 "여기서 끊겼다"는 거짓말이 된다.
+    실패는 전부 사유와 함께 `notes`에 남긴다(침묵 폴백 금지).
+    """
+    conditions = split_user_conditions(sql)
+    if not conditions:
+        # 조건이 애초에 없던 질의("서버 목록 보여줘")까지 사유를 붙이면 소음이다 —
+        # 강등 사유는 **사용자가 조건을 걸었는데** 단계로 나누지 못한 경우에만 낸다.
+        if report_missing:
+            notes.append(
+                f"{label or '전체'}: 조회 조건에 단계로 나눌 수 있는 수치 비교가 없어 "
+                "단계별 진단을 수행하지 못했습니다."
+            )
+        return [], []
+
+    labels = [_P0_LABEL] + [c.text for c in conditions]
+    counts: list[Optional[int]] = [None] * len(labels)
+    # 마지막 단계(전 조건 적용)는 이번 조회가 0건이었다는 사실 그 자체다 — 다시 재지 않는다.
+    counts[-1] = 0
+
+    for probe in build_probe_sqls(sql, k_max):
+        try:
+            counts[probe.stage_index] = await _count_rows(app_config, db_id, probe.sql)
+        except Exception as e:  # noqa: BLE001 — 진단 실패가 응답을 막으면 안 된다
+            logger.warning("0건 진단 프로브 실패(%s, %d단계): %s", label, probe.stage_index, e)
+            notes.append(
+                f"{label or '전체'}: {probe.stage_index}단계 진단 프로브가 실패했습니다({type(e).__name__})."
+            )
+
+    truncated = truncated_stage_count(sql, k_max)
+    if truncated:
+        notes.append(
+            f"{label or '전체'}: 조건 {truncated}개는 프로브 상한({k_max})을 넘어 측정하지 않았습니다."
+        )
+    return labels, counts
+
+
+def _entity_probe_db_ids(state: AgentState) -> list[str]:
+    """존재 확인을 할 대상 DB — 멀티 DB면 라우팅된 대상 전부, 단일이면 활성 DB."""
+    if state.get("is_multi_db"):
+        return [
+            str(t["db_id"]) for t in (state.get("target_databases") or [])
+            if isinstance(t, dict) and t.get("db_id")
+        ]
+    db_id = state.get("active_db_id")
+    return [str(db_id)] if db_id else []
+
+
+async def _check_entities(
+    state: AgentState, app_config: AppConfig, values: tuple[str, ...], k_max: int
+) -> EntityCheck | None:
+    """식별자마다 대상 DB별 존재 확인 1회(plans/123 S-4a · LLM 0).
+
+    SQL은 담당 어댑터가 조립한다(D-089 — 공용 계층에 스키마 리터럴을 두지 않는다). 어댑터가
+    없거나 조회가 실패한 DB가 하나라도 있으면 None — 「확인하지 못함」은 「없음」이 아니므로
+    종전 0건 경로로 돌아가고, 사유는 WARNING으로 남긴다(침묵 폴백 금지). 식별자 수는 퍼널과
+    같은 프로브 상한(`empty_diagnosis_max_probes`)을 넘지 않을 때만 확인한다.
+    """
+    db_ids = _entity_probe_db_ids(state)
+    if not db_ids or len(values) > k_max:
+        logger.warning(
+            "식별자 존재 확인 생략 — 대상 DB %d곳 · 식별자 %d개(상한 %d) — 종전 0건 경로",
+            len(db_ids), len(values), k_max,
+        )
+        return None
+    polestar_ids = app_config.get_polestar_db_ids() or None
+    groups: list[str] = []
+    found: dict[str, list[str]] = {v: [] for v in values}
+    for db_id in db_ids:
+        adapter = get_adapter(db_id, polestar_ids)
+        build = getattr(adapter, "entity_probe_sql", None) if adapter else None
+        if not callable(build):
+            logger.warning(
+                "식별자 존재 확인 생략 — %s에는 존재 확인 어댑터가 없습니다(종전 0건 경로)", db_id
+            )
+            return None
+        domain = get_domain_by_id(db_id)
+        label = domain.display_name if domain else db_id
+        groups.append(label)
+        for value in values:
+            sql = build(
+                value,
+                db_engine=domain.db_engine if domain else state.get("active_db_engine"),
+                db_schema=(domain.db_schema if domain else "") or None,
+            )
+            try:
+                async with get_db_client(app_config, db_id=db_id) as client:
+                    result = await client.execute_sql(sql)
+            except Exception as e:  # noqa: BLE001 — 진단 실패가 응답을 막으면 안 된다
+                logger.warning(
+                    "식별자 존재 확인 실패(%s, '%s') — 종전 0건 경로: %s", db_id, value, e
+                )
+                return None
+            if result.rows:
+                found[value].append(label)
+    return EntityCheck(
+        values=values, groups=tuple(groups), found={v: tuple(g) for v, g in found.items()},
+    )
+
+
+async def _shadow_entity_check(
+    state: AgentState, app_config: AppConfig, values: tuple[str, ...], k_max: int
+) -> None:
+    """식별자 존재 확인 섀도(plans/123 S-4a · D-280 ⑧ · 123·G-8 (c)) — 응답 불변 · 로그만.
+
+    판정(`all_missing` · `partial` · `all_present`)을 한 줄로 남겨 run R5에서 과잉 판정(있는 서버를
+    없다고 말함)을 대조한다. 확인하지 못한 경우의 사유는 `_check_entities`가 WARNING으로 남긴다.
+    """
+    try:
+        checked = await _check_entities(state, app_config, values, k_max)
+    except Exception as e:  # noqa: BLE001 — 섀도 판정은 질의 경로를 막지 않는다
+        logger.warning("S-4a 섀도 판정 실패(plans/123): %s", e)
+        return
+    if checked is None:
+        return
+    lines = entity_lines(checked)
+    verdict = "all_missing" if checked.all_missing else ("partial" if lines else "all_present")
+    logger.info(
+        "S-4a 섀도(plans/123): 식별자 존재 확인 verdict=%s values=%s groups=%s found=%s"
+        " — 응답 불변",
+        verdict,
+        list(checked.values),
+        list(checked.groups),
+        {v: list(g) for v, g in checked.found.items()},
+    )
+
+
+async def _diagnose_empty_result(
+    state: AgentState, parsed: dict, app_config: AppConfig
+) -> Optional[Any]:
+    """0건 응답에 붙일 진단을 만든다(플래그 OFF·재료 부재면 None).
+
+    LLM을 호출하지 않는다 — 조건 제거는 SQL 텍스트 조작이고, `COUNT(*)`만 던진다.
+
+    조건이 서버 식별자 등호뿐이면(plans/123 S-4a) 대상 DB마다 존재 확인을 한다 — **섀도**다
+    (D-280 ⑧ · 123·G-8 (c)): 판정은 로그에만 남기고 진단·재생성·응답은 바꾸지 않는다. 기본 on은
+    run R5′ 섀도 대조 뒤이며, 그때 판정을 `build_diagnosis(entity=…)`로 넘기면 렌더·고지
+    (`entity_lines` · kind `entity_not_found`)가 이미 준비돼 있다. 식별자뿐인 조건의 완화 제안
+    문구(S-4b)는 섀도가 아니다.
+    """
+    if not app_config.text2sql.empty_diagnosis_enabled:
+        return None
+
+    k_max = app_config.text2sql.empty_diagnosis_max_probes
+    notes: list[str] = []
+    unexpressed = detect_unexpressed_conditions(
+        state.get("user_query"), parsed.get("filter_conditions")
+    )
+
+    identifiers = identifier_only_values(
+        parsed.get("filter_conditions"),
+        identity_fields=HOST_IDENTIFIER_FIELDS,
+        is_placeholder=is_demonstrative_identifier,
+    )
+    if identifiers:
+        await _shadow_entity_check(state, app_config, identifiers, k_max)
+
+    labels: list[str] = []
+    per_group: dict[str, list[Optional[int]]] = {}
+    for label, sql, db_id in _probe_sources(state):
+        group_labels, counts = await _probe_group(
+            app_config, label, sql, db_id, k_max, notes,
+            # 식별자뿐인 조건은 애초에 단계로 나눌 수치 비교가 없다 — 그 사유는 소음이다.
+            report_missing=bool(parsed.get("filter_conditions")) and not identifiers,
+        )
+        if not group_labels:
+            continue
+        per_group[label] = counts
+        if len(group_labels) > len(labels):
+            labels = group_labels
+
+    if not per_group:
+        if not unexpressed and not notes:
+            return None
+        # 퍼널을 못 그려도 **미반영 경고와 사유는 반드시 낸다** — 말하지 않는 것이 최악이다.
+        return build_diagnosis(
+            parsed=parsed, stage_counts=[], unexpressed=unexpressed, notes=notes,
+            identifier_only=bool(identifiers),
+        )
+
+    stages = [
+        FunnelStage(
+            label=labels[idx],
+            counts={g: (c[idx] if idx < len(c) else None) for g, c in per_group.items()},
+            source="probe",
+        )
+        for idx in range(len(labels))
+    ]
+    return build_diagnosis(
+        parsed=parsed, stage_counts=stages, unexpressed=unexpressed, notes=notes,
+        identifier_only=bool(identifiers),
+    )
 
 
 async def _resolve_unmatched_via_llm(
@@ -234,13 +596,13 @@ async def _resolve_unmatched_via_llm(
         messages = [
             SystemMessage(content=COLUMN_RESOLVER_SYSTEM_PROMPT),
             # Insert dummy AIMessage when using KBGenAIChat to satisfy required order
-            AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
+            AIMessage(content="") if is_kbgenai(llm) else None,
             HumanMessage(content=user_prompt),
         ]
         # Remove any None entries (no effect for other LLMs)
         messages = [m for m in messages if m is not None]
         response = await llm.ainvoke(messages)
-        content = response.content.strip()
+        content = coerce_content_text(response.content).strip()
 
         # JSON 블록 추출
         if "```json" in content:
@@ -257,7 +619,9 @@ async def _resolve_unmatched_via_llm(
         resolved: dict[str, str] = {}
         for field, db_col_val in unresolved_columns.items():
             matched_key = llm_mapping.get(db_col_val)
-            if matched_key and matched_key in result_keys:
+            # LLM이 값으로 리스트를 주면 `in result_keys`가 TypeError(unhashable)를 내 **나머지
+            # 필드까지** 스킵됐다(run 20260922-112010 · plans/114 P-8) — 문자열만 받는다.
+            if isinstance(matched_key, str) and matched_key in result_keys:
                 resolved[field] = matched_key
 
         return resolved if resolved else None
@@ -385,13 +749,13 @@ async def _llm_check_column_coverage(
         messages = [
             SystemMessage(content=system_prompt),
             # Insert dummy AIMessage when using KBGenAIChat to satisfy required order
-            AIMessage(content="") if isinstance(llm, KBGenAIChat) else None,
+            AIMessage(content="") if is_kbgenai(llm) else None,
             HumanMessage(content=user_prompt),
         ]
         # Remove any None entries (no effect for other LLMs)
         messages = [m for m in messages if m is not None]
         response = await llm.ainvoke(messages)
-        content = response.content.strip()
+        content = coerce_content_text(response.content).strip()
 
         if "```json" in content:
             content = content.split("```json", 1)[1].split("```", 1)[0].strip()

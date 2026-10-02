@@ -275,11 +275,17 @@ class TestFieldMapperNode:
 
     @pytest.mark.asyncio
     async def test_skip_without_template(self):
-        """template_structure가 없으면 스킵한다."""
+        """template_structure가 없으면 스킵하고 잔존 매핑 산출물을 비운다(D-064)."""
         state = _make_state()
         result = await field_mapper(state, llm=AsyncMock(), app_config=MagicMock())
         assert result["current_node"] == "field_mapper"
-        assert "column_mapping" not in result
+        # D-064: 텍스트 턴으로 잔존한 폼필 매핑을 None으로 정리(누수 차단)
+        assert result["mapped_db_ids"] is None
+        assert result["column_mapping"] is None
+        assert result["db_column_mapping"] is None
+        assert result["mapping_sources"] is None
+        # 멀티턴 유사어 등록 신호는 정리 대상이 아니다(반환 dict에 없음 → 보존)
+        assert "pending_synonym_registrations" not in result
 
     @pytest.mark.asyncio
     async def test_skip_with_empty_fields(self):
@@ -593,3 +599,50 @@ class TestServerNameVsHostname:
         assert result.mapping_sources["호스트네임"] in ("synonym", "eav_synonym")
 
 
+
+
+# === 동의어 집합 선언 가로채기 방지 (2026-09-01 A-10 실측 재발 방지) ===
+
+
+@pytest.mark.asyncio
+async def test_synonym_set_declaration_not_intercepted():
+    """pending 없는 신규 동의어 집합 선언은 등록 분기가 가로채지 않는다 (A-10).
+
+    가로채면 "등록할 매핑 없음"으로 오종결되어 cache_management의 결정적 셋 파서
+    (D-142)에 도달하지 못한다. 분기를 통과해 일반 스킵 경로(final_response 없음)로
+    흘러야 한다.
+    """
+    state = _make_state(
+        user_query="vcore, cpu, core은 동의어이다. 캐시에 등록하라.",
+        parsed_requirements={"synonym_registration": {"mode": "all"}},
+    )
+    result = await field_mapper(state)
+    assert "final_response" not in result
+
+
+@pytest.mark.asyncio
+async def test_registration_answer_without_pending_still_guided():
+    """셋 선언이 아닌 등록 답변("전체 등록")은 pending 부재 안내를 유지한다 (회귀 고정)."""
+    state = _make_state(
+        user_query="전체 등록",
+        parsed_requirements={"synonym_registration": {"mode": "all"}},
+    )
+    result = await field_mapper(state)
+    assert "등록할 유사어 매핑이 없습니다" in result["final_response"]
+
+
+@pytest.mark.asyncio
+async def test_misclassified_registration_on_form_query_is_ignored():
+    """양식 채우기 질의를 LLM 이 유사어 등록으로 오분류해도 등록 분기로 종결하지 않는다.
+
+    D-252 부기.
+
+    대기 목록이 없고 질의에 「등록」이 없으면 등록 신호를 버린다 — 2026-09-23 로컬 MLX 실측에서
+    「첨부한 양식을 채워줘」가 {mode: all} 로 분류되어 양식 채우기가 시작 전에 끝났다.
+    """
+    state = _make_state(
+        user_query="첨부한 양식에 전체 서버 정보를 넣어서 엑셀 파일로 만들어줘",
+        parsed_requirements={"synonym_registration": {"mode": "all"}},
+    )
+    result = await field_mapper(state)
+    assert "등록할 유사어 매핑이 없습니다" not in (result.get("final_response") or "")

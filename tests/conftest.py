@@ -1,7 +1,13 @@
 """공통 pytest fixture 모듈.
 
 테스트 전반에서 사용되는 mock state, mock config, 샘플 데이터를 정의한다.
+과금 외부 API 무단 호출을 막는 전역 가드(D-127)도 여기서 설치한다.
 """
+
+import ipaddress
+import json
+import os
+import socket
 
 import pytest
 
@@ -14,6 +20,236 @@ from src.config import (
     ServerConfig,
 )
 from src.state import AgentState, create_initial_state
+
+
+# ──────────────────────────────────────────────────────────────
+# 개발자 `.env`의 비SQL 소스 엔드포인트 누수 차단(plans/132 · D-293)
+#
+# `MCP_SOURCE_ENDPOINTS`는 dict 필드라 pydantic-settings(2.15)가 init 인자·OS env·`.env`를 **키
+# 단위로 병합**한다. 그래서 테스트가 `DBHubConfig(source_endpoints={})`로 「비활성」을 만들어도
+# 개발자 `.env`의 `{"apm": …}`가 남아 활성이 되고, 비활성 바이트 불변을 단언하는 테스트가 개발
+# 환경에 따라 깨진다 (2026-10-01 로컬 제니퍼 연결 직후 7건 실측 · docs/18). 등록된 비DB 시스템 키를
+# 빈 값(공백 — strip되어 비활성)으로 OS env에 깔아 `.env` 값을 덮는다. 테스트가 init 인자로 준
+# 엔드포인트는 OS env보다 우선이라 그대로 활성이다. 사용자가 OS env로 직접 준 값은 건드리지
+# 않는다(setdefault).
+# ──────────────────────────────────────────────────────────────
+def _neutral_source_endpoints() -> str:
+    from src.routing.registry import get_registry
+
+    return json.dumps({spec.code: " " for spec in get_registry().non_db_systems()})
+
+
+os.environ.setdefault("MCP_SOURCE_ENDPOINTS", _neutral_source_endpoints())
+
+# ──────────────────────────────────────────────────────────────
+# D-127 전역 가드 — 승인(RUN_E2E=1) 없는 외부 접속 차단
+#
+# 실 LLM 호출은 과금이 발생하므로 사용자 승인 없이 실행하면 안 된다. 파일 단위
+# skip 게이팅만으로는 새 테스트가 게이트 밖에서 호출을 내는 것을 막지 못하므로
+# (2026-07-29 실측: 게이트 누락 17건이 기본 스위트에서 실 Gemini 호출),
+# 소켓 레벨에서 **공인 IP 접속 자체를 차단**한다. connect 이전에 예외를 던지므로
+# 패킷이 나가지 않는다.
+#
+# - 루프백·사설 대역(docker 픽스처 PG 5433/5434·Redis 6380·Prometheus 9190 등)은 허용
+# - 차단 시 어떤 테스트가 어디로 나가려 했는지 명시해 실패시킨다(침묵 skip 금지)
+# - RUN_E2E=1(사용자 승인)이면 가드를 설치하지 않는다
+# - RUN_LOCAL_LLM=1(로컬 MLX 등 비과금 LLM · 승인 불요 · D-240)은 live_llm 테스트를 돌리되
+#   가드를 **그대로 둔다** — 로컬 LLM은 루프백이라 통과하고, 과금 외부 API는 차단된다
+# ──────────────────────────────────────────────────────────────
+
+
+def _test_modes(environ) -> tuple[bool, bool]:
+    """(외부 접속 가드 설치, live_llm 실행) — D-127 · D-240."""
+    run_e2e = environ.get("RUN_E2E") == "1"
+    run_local_llm = environ.get("RUN_LOCAL_LLM") == "1"
+    return not run_e2e, run_e2e or run_local_llm
+
+
+RUN_E2E = os.environ.get("RUN_E2E") == "1"
+GUARD_EXTERNAL, LIVE_LLM = _test_modes(os.environ)
+
+_CURRENT_TEST = {"nodeid": "<세션 초기화 단계>"}
+_BLOCKED_ATTEMPTS: list[tuple[str, str, int]] = []
+
+
+class ExternalConnectionBlocked(RuntimeError):
+    """승인 없이 외부(공인 IP)로 접속하려 할 때 발생한다."""
+
+
+def _target_addresses(address: object) -> list[str]:
+    """connect 인자에서 검사할 IP 목록을 뽑는다(호스트명은 해석한다)."""
+    if not isinstance(address, tuple) or len(address) < 2:
+        return []  # AF_UNIX 등 — 검사 대상 아님
+    host = address[0]
+    if not isinstance(host, str) or not host:
+        return []
+    try:
+        ipaddress.ip_address(host)
+        return [host]
+    except ValueError:
+        pass
+    try:
+        resolved = socket.getaddrinfo(host, None)
+    except OSError:
+        return []
+    return [info[4][0] for info in resolved]
+
+
+def _is_external(ip: str) -> bool:
+    """공인 IP인지 판정한다(루프백·사설·링크로컬은 내부로 본다)."""
+    try:
+        parsed = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return not (
+        parsed.is_private
+        or parsed.is_loopback
+        or parsed.is_link_local
+        or parsed.is_multicast
+        or parsed.is_reserved
+        or parsed.is_unspecified
+    )
+
+
+def _install_external_connection_guard() -> None:
+    """socket.connect / connect_ex를 감싸 외부 접속을 차단한다."""
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+
+    def check(address: object) -> None:
+        external = [ip for ip in _target_addresses(address) if _is_external(ip)]
+        if not external:
+            return
+        host, port = address[0], address[1]  # type: ignore[index]
+        _BLOCKED_ATTEMPTS.append((_CURRENT_TEST["nodeid"], str(host), int(port)))
+        raise ExternalConnectionBlocked(
+            f"승인 없는 외부 접속을 차단했습니다(D-127): {host}:{port} "
+            f"(해석된 공인 IP: {', '.join(external)})\n"
+            f"  테스트: {_CURRENT_TEST['nodeid']}\n"
+            "  과금 API 호출 가능성이 있는 테스트는 @pytest.mark.live_llm으로 표시하고, "
+            "실 LLM 테스트는 로컬 MLX(RUN_LOCAL_LLM=1 · 외부 차단 유지)로 돌리세요. "
+            "외부 API가 꼭 필요하면 사용자 승인 후 RUN_E2E=1로 실행하세요."
+        )
+
+    def guarded_connect(self, address):  # type: ignore[no-untyped-def]
+        check(address)
+        return real_connect(self, address)
+
+    def guarded_connect_ex(self, address):  # type: ignore[no-untyped-def]
+        check(address)
+        return real_connect_ex(self, address)
+
+    socket.socket.connect = guarded_connect
+    socket.socket.connect_ex = guarded_connect_ex
+
+
+if GUARD_EXTERNAL:
+    _install_external_connection_guard()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "live_llm: 실 LLM 호출 — RUN_LOCAL_LLM=1(로컬 MLX · 외부 차단 유지 · D-240) "
+        "또는 RUN_E2E=1(외부 허용 · 건별 사용자 승인 · D-127) 시에만 실행",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """RUN_LOCAL_LLM·RUN_E2E 둘 다 없으면 live_llm 표시 테스트를 건너뛴다."""
+    if LIVE_LLM:
+        return
+    skip_live = pytest.mark.skip(
+        reason="실 LLM 호출 — RUN_LOCAL_LLM=1(로컬 MLX · 승인 불요 · D-240) "
+               "또는 RUN_E2E=1(외부 · 건별 승인 · D-127) 시에만 실행",
+    )
+    for item in items:
+        if item.get_closest_marker("live_llm"):
+            item.add_marker(skip_live)
+
+
+def pytest_runtest_logstart(nodeid: str, location: object) -> None:
+    _CURRENT_TEST["nodeid"] = nodeid
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:  # type: ignore[no-untyped-def]
+    """차단된 외부 접속 시도를 요약한다(침묵 금지)."""
+    if not _BLOCKED_ATTEMPTS:
+        return
+    terminalreporter.write_sep("=", "D-127 외부 접속 차단", red=True)
+    for nodeid, host, port in _BLOCKED_ATTEMPTS:
+        terminalreporter.write_line(f"  {host}:{port}  <- {nodeid}")
+
+
+class ColumnCoverageStubLLM:
+    """`_llm_check_column_coverage` 프롬프트에 결정적으로 응답하는 stub LLM.
+
+    실 LLM이 하던 의미 매칭(정확 일치 + `table.column` ↔ `column` 폴백)을 그대로
+    재현한다. 프롬프트에 실린 매핑 컬럼·결과 키를 읽어 답을 만들기 때문에, 노드가
+    잘못된 값을 프롬프트에 넣으면 매칭 수가 달라져 테스트가 깨진다(응답 고정 mock과
+    달리 프롬프트 페이로드까지 검증된다).
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], list[str], list[str]]] = []
+
+    @staticmethod
+    def _extract_json_arrays(prompt: str) -> tuple[list[str], list[str]]:
+        arrays = []
+        for line in prompt.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                arrays.append(json.loads(stripped))
+        if len(arrays) != 2:
+            raise AssertionError(f"프롬프트에서 배열 2개를 찾지 못했습니다: {prompt!r}")
+        return arrays[0], arrays[1]
+
+    @staticmethod
+    def _matches(column: str, result_keys: list[str]) -> bool:
+        if column in result_keys:
+            return True
+        bare = column.split(".")[-1]
+        return any(bare == key.split(".")[-1] for key in result_keys)
+
+    async def ainvoke(self, messages):  # noqa: ANN001 - langchain 메시지 목록
+        from langchain_core.messages import AIMessage
+
+        mapped_cols, result_keys = self._extract_json_arrays(messages[-1].content)
+        matched = [col for col in mapped_cols if self._matches(col, result_keys)]
+        self.calls.append((mapped_cols, result_keys, matched))
+        return AIMessage(content=json.dumps(matched, ensure_ascii=False))
+
+
+def coverage_llm_for_mode(run_e2e: bool) -> ColumnCoverageStubLLM | None:
+    """컬럼 커버리지 LLM 이중 모드 선택 (D-127 · 사용자 확정 2026-07-29).
+
+    자동 실행(기본 스위트)은 스텁, 실 LLM 실행(RUN_LOCAL_LLM=1 · RUN_E2E=1)은 None을 반환한다 —
+    None이면 소비 코드(_check_data_sufficiency)가 내부 경로로 실 LLM을 획득한다.
+    """
+    return None if run_e2e else ColumnCoverageStubLLM()
+
+
+@pytest.fixture(autouse=True)
+def _restore_sql_file_logger_globals():
+    """SQL 파일 로거의 모듈 전역을 테스트마다 원복한다.
+
+    `init_sql_file_logger()`는 프로세스 전역(`_SQL_LOG_DIR`·`_enabled`)을 세운다.
+    FastAPI 앱 기동 경로를 밟는 테스트(`tests/test_api/test_routes.py`)가 이를 켠 채
+    두면, 이후 모든 테스트의 SQL 실행이 **저장소의 `logs/sql/`에 쓰인다**. 그래서
+    "tmp 밖에는 아무것도 쓰지 않는다"를 단언하는 테스트가 단독으로는 통과하고 전체
+    실행에서만 깨졌다(2026-09-21 — tests/test_schema_cache/test_plan104_service_registration.py).
+    """
+    from src.utils import sql_file_logger
+
+    saved = (sql_file_logger._SQL_LOG_DIR, sql_file_logger._enabled)
+    yield
+    sql_file_logger._SQL_LOG_DIR, sql_file_logger._enabled = saved
+
+
+@pytest.fixture
+def column_coverage_llm() -> ColumnCoverageStubLLM | None:
+    """컬럼 커버리지 판단 LLM(이중 모드) — 스텁 페이로드 단언은 `is not None` 가드 후 수행."""
+    return coverage_llm_for_mode(LIVE_LLM)
 
 
 @pytest.fixture

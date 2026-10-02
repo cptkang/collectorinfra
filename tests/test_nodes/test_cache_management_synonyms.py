@@ -138,19 +138,24 @@ class TestHandleAddSynonym:
 
     @pytest.mark.asyncio
     async def test_add_synonym_no_column(self, cache_mgr, app_config):
-        """컬럼 미지정 시 에러 메시지."""
+        """컬럼 미지정 시 **무엇이 빠졌는지** 지목해 되묻는다.
+
+        문구 원문("지정해야" → "지정해 주세요")이 바뀌어도 계약은 같으므로,
+        정확한 문장이 아니라 **빠진 항목이 지목되는지**를 단언한다 — 안내 문구를
+        다듬을 때마다 테스트가 깨지면 문구 개선이 억제된다.
+        """
         result = await _handle_add_synonym(
             cache_mgr, app_config, None, None, ["서버호스트"]
         )
-        assert "지정해야" in result
+        assert "컬럼명" in result and "지정해" in result
 
     @pytest.mark.asyncio
     async def test_add_synonym_no_words(self, cache_mgr, app_config):
-        """단어 미지정 시 에러 메시지."""
+        """단어 미지정 시 **무엇이 빠졌는지** 지목해 되묻는다."""
         result = await _handle_add_synonym(
             cache_mgr, app_config, None, "hostname", None
         )
-        assert "지정해야" in result
+        assert "유사 단어" in result and "지정해" in result
 
     @pytest.mark.asyncio
     async def test_add_synonym_specific_db(self, cache_mgr, app_config):
@@ -214,11 +219,11 @@ class TestHandleUpdateSynonym:
 
     @pytest.mark.asyncio
     async def test_update_synonym_no_column(self, cache_mgr, app_config):
-        """컬럼 미지정 시 에러."""
+        """컬럼 미지정 시 **무엇이 빠졌는지** 지목해 되묻는다."""
         result = await _handle_update_synonym(
             cache_mgr, app_config, None, None, ["새이름"]
         )
-        assert "지정해야" in result
+        assert "컬럼명" in result and "지정해" in result
 
 
 class TestHandleInvalidatePreservesSynonyms:

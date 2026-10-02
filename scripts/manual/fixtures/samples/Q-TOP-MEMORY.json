@@ -1,0 +1,55 @@
+{
+ "id": "Q-TOP-MEMORY",
+ "turns": [
+  {
+   "query": "2026년 6월 메모리 사용률 평균이 높은 순서로 상위 3대 서버를 보여줘",
+   "file": null,
+   "key": "3e60100feff12375",
+   "elapsed_s": 91.0,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "조회 결과\n\n2026 년 6 월 기준, 메모리 사용률 평균이 높은 순서로 상위 3 대 서버를 조회했습니다. DB-ORA-023 서버가 82.6% 로 가장 높은 사용률을 보이며, SV-WEB-001 서버가 58.7% 로 가장 낮습니다. 전체 평균 사용률은 68.53% 입니다.\n\n| name | memory_avg |\n|---|---|\n| DB-ORA-023 | 82.6 |\n| cocm-hdkapp01 | 64.3 |\n| SV-WEB-001 | 58.7 |\n\n참고사항\n- 조회 기간: 2026 년 6 월\n- 이상 징후: DB-ORA-023 서버의 메모리 사용률 (82.6%) 이 80% 임계치를 초과하여 주의가 필요합니다.\n\n---\n## 순차 처리 경과\n- polestar 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다.",
+    "row_count": 3,
+    "executed_sql": "SELECT\n  MAX(CASE WHEN c.resource_type='server.Server' THEN c.name END) AS \"name\",\n  ROUND(AVG(CASE WHEN c.resource_type='server.Memory' AND s.definition_name='Utilization' AND s.avg_val BETWEEN 0 AND 1000 THEN s.avg_val END)::numeric, 2) AS \"memory_avg\"\nFROM polestar.cmm_resource c\nLEFT JOIN polestar.core_config_prop cc ON cc.configuration_id = c.resource_conf_id\nLEFT JOIN polestar.cmm_metric_stat_m s ON s.resource_id = c.id AND s.definition_name = 'Utilization' AND s.stat_date = '202606'\nWHERE c.resource_type IN ('server.Memory', 'server.Server')\n  AND c.dtime IS NULL\nGROUP BY COALESCE(c.platform_resource_id, c.id)\nORDER BY \"memory_avg\" DESC NULLS LAST\nLIMIT 3;",
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": [
+    {
+     "name": "DB-ORA-023",
+     "memory_avg": 82.6
+    },
+    {
+     "name": "cocm-hdkapp01",
+     "memory_avg": 64.3
+    },
+    {
+     "name": "SV-WEB-001",
+     "memory_avg": 58.7
+    }
+   ]
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-09-23T16:17:42",
+ "review": {
+  "verdict": "ok",
+  "notes": "재녹화 — 2026-06 Memory 평균 82.6·64.3·58.7 원본 순서·값 일치(종전 판정과 동일)",
+  "at": "2026-09-28"
+ }
+}

@@ -17,6 +17,11 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 
 from src.clients.fabrix_kbgenai import KBGenAIChat
+from src.document.synonym_write_guard import (
+    BLOCK_REASON_LABELS,
+    eav_declared_tables,
+    synonym_registration_block_reason,
+)
 from src.prompts.field_mapper import (
     FIELD_MAPPER_SYSTEM_PROMPT,
     FIELD_MAPPER_USER_PROMPT,
@@ -29,8 +34,178 @@ from src.prompts.field_mapper import (
     FIELD_MAPPER_SYNONYM_DISCOVERY_USER_PROMPT,
 )
 from src.utils.json_extract import extract_json_from_response
+from src.utils.month_structure import is_month_structure_field
+from src.utils.query_gen_common import is_servername_to_hostname
 
 logger = logging.getLogger(__name__)
+
+# 사용률 통계 필드 판별용 (D-066 후속/RC2). 이런 필드는 cmm_metric_stat_[h,d,m]에서
+# resource_type + definition_name 피벗으로만 얻을 수 있어 단일 field→컬럼 매핑이 불가능하다.
+# 매핑을 시도하면 LLM이 존재하지 않는 컬럼(cpu_avg_val 등)을 지어내고, step 3 LLM 호출이
+# 응답 없이 멈춰(closed-net) 요청 전체가 hang될 수 있다. 이런 필드는 매핑을 건너뛰고
+# 미매핑(None)으로 두어 SQL 생성 단계의 쿼리 예시(cmm_metric_stat_m 피벗)에 위임한다.
+_METRIC_USAGE_NOUNS = ("cpu", "메모리", "mem", "디스크", "disk", "파일시스템", "filesystem")
+_METRIC_USAGE_AGG_TERMS = (
+    "평균", "최고", "최대", "최소", "사용률", "avg", "max", "min", "util", "usage",
+)
+
+
+def _is_metric_usage_field(field: str) -> bool:
+    """사용률 통계(평균/최고 등) 필드인지 판정한다.
+
+    metric 명사(CPU/메모리/디스크 등) + 집계·사용률 표현(평균/최고/사용률 등)이 함께 있을 때 True.
+    '메모리 용량'·'CPU 코어 수' 같은 사양(EAV) 필드는 집계어가 없어 False(정상 매핑 대상 유지).
+    명사가 없어도 월 구조 필드("월중평균사용률(최근 6개월간)|M+2")면 True다 — 리소스 명사는
+    양식 제목·질의에 있고 월 시리즈 인식기가 거기서 찾는다(plans/120 F-1: 명사 없는 월 필드가
+    스킵을 빠져나가 오염 유사어에 정확 매칭되면서 인식기가 16회 모두 미발동했다).
+    """
+    low = (field or "").lower()
+    if not any(noun in low for noun in _METRIC_USAGE_NOUNS):
+        return is_month_structure_field(field)
+    return any(term in low for term in _METRIC_USAGE_AGG_TERMS)
+
+
+async def _load_structure_declarations(
+    cache_manager: Any,
+    db_ids: list[str],
+) -> dict[str, dict]:
+    """대상 DB의 구조 선언(structure_meta)을 조회한다(실패는 DB별로 격리).
+
+    구조 선언은 `config/db_profiles/{db_id}.yaml`(수동 프로필)이 정본이고 캐시가 사본이라
+    캐시 매니저가 캐시→프로필 순으로 해소한다. 조회 실패·미선언 DB는 결과에서 빠진다.
+
+    Args:
+        cache_manager: SchemaCacheManager 인스턴스(없으면 빈 결과)
+        db_ids: 조회할 DB 식별자 목록
+
+    Returns:
+        {db_id: structure_meta} — 선언이 있는 DB만 포함
+    """
+    metas: dict[str, dict] = {}
+    if cache_manager is None:
+        return metas
+    getter = getattr(cache_manager, "get_structure_meta_or_profile", None)
+    if getter is None:
+        return metas
+    for db_id in db_ids:
+        try:
+            meta = await getter(db_id)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("구조 선언 조회 실패 (db=%s): %s", db_id, e)
+            continue
+        if isinstance(meta, dict) and meta:
+            metas[db_id] = meta
+    return metas
+
+
+def _structure_patterns(structure_metas: dict[str, dict] | None) -> list[dict]:
+    """구조 선언들에서 patterns 항목을 평탄화해 반환한다."""
+    patterns: list[dict] = []
+    for meta in (structure_metas or {}).values():
+        raw = meta.get("patterns") if isinstance(meta, dict) else None
+        if not isinstance(raw, (list, tuple)):
+            continue
+        patterns.extend(p for p in raw if isinstance(p, dict))
+    return patterns
+
+
+def _core_entity_tables(structure_metas: dict[str, dict] | None) -> set[str]:
+    """구조 선언의 EAV 패턴에서 핵심 엔터티 테이블명을 도출한다.
+
+    엔터티 테이블(속성이 매달리는 주 테이블)의 컬럼을 서브 테이블보다 먼저 매칭하기
+    위한 우선순위 집합이다. 선언이 없으면 빈 집합 — 이 경우 우선순위 구분 없이 전체
+    테이블을 한 번에 매칭한다(DB-agnostic, D-088).
+    """
+    return {
+        str(p["entity_table"]).lower()
+        for p in _structure_patterns(structure_metas)
+        if p.get("entity_table")
+    }
+
+
+def _schema_uses_eav_metric_pivot(structure_metas: dict[str, dict] | None) -> bool:
+    """스키마가 EAV 피벗 구조인지 판정한다(사용률 필드 스킵 게이트).
+
+    사용률이 **직접 컬럼**(예: cpu_metrics.usage_pct)인 스키마에서는 사용률 필드가 정상
+    매핑 대상이므로 스킵하면 안 된다. 지표를 속성 행으로 저장하는 EAV 피벗 스키마일 때만
+    스킵한다. 판정 근거는 구조 선언의 `patterns[].type == "eav"`이며, 특정 DB의 테이블명
+    리터럴에 의존하지 않는다(value_index.derive_value_specs와 동일 판정 방식).
+    """
+    return any(p.get("type") == "eav" for p in _structure_patterns(structure_metas))
+
+
+def _sub_table_scope(
+    structure_metas: dict[str, dict[str, Any]] | None,
+    db_ids: list[str],
+) -> dict[str, frozenset[str]]:
+    """EAV 피벗 DB별 서브 테이블 매칭 허용 테이블(구조 선언 테이블)을 만든다(plans/120 F-2).
+
+    선언 밖 테이블의 컬럼 매핑은 결정적 피벗이 스키마 검증에서 어차피 버린다. 그런 매핑을 유사어
+    정확 매칭으로 먼저 확정하지 않도록 EAV 피벗 DB의 서브 테이블 후보를 선언 안으로 좁힌다.
+    EAV 선언이 없는 DB는 제한하지 않는다. 선언을 얻지 못했거나 EAV 패턴은 있는데 테이블 선언이
+    없는 DB도 제한하지 않고(종전 동작) 그 사실을 로그로 남긴다.
+
+    Args:
+        structure_metas: {db_id: 구조 선언} — 선언이 있는 DB만 담긴다
+        db_ids: 매칭 대상 DB 목록
+
+    Returns:
+        {db_id: 선언 테이블 집합} — 제한을 적용할 DB만 담긴다
+    """
+    scope: dict[str, frozenset[str]] = {}
+    undeclared: list[str] = []
+    eav_without_tables: list[str] = []
+    for db_id in db_ids:
+        meta = (structure_metas or {}).get(db_id)
+        if meta is None:
+            undeclared.append(db_id)
+            continue
+        tables = eav_declared_tables(meta)
+        if tables is not None:
+            scope[db_id] = tables
+        elif _schema_uses_eav_metric_pivot({db_id: meta}):
+            eav_without_tables.append(db_id)
+    if undeclared:
+        logger.info(
+            "서브 테이블 후보 제한 미적용 — 구조 선언을 얻지 못함(종전 동작 · plans/120 F-2): %s",
+            undeclared,
+        )
+    if eav_without_tables:
+        logger.info(
+            "서브 테이블 후보 제한 미적용 — EAV 패턴은 있으나 테이블 선언(allowed_tables)이 없음"
+            "(종전 동작 · plans/120 F-2): %s",
+            eav_without_tables,
+        )
+    return scope
+
+
+def _scope_synonyms(
+    all_db_synonyms: dict[str, dict[str, list[str]]],
+    sub_table_scope: dict[str, frozenset[str]] | None,
+) -> dict[str, dict[str, list[str]]]:
+    """제한 대상 DB의 유사어에서 선언 밖 테이블 컬럼을 뺀 사본을 만든다(plans/120 F-2).
+
+    제한 대상이 없으면 입력을 그대로 돌려준다(종전 동작과 같은 객체).
+    """
+    if not sub_table_scope:
+        return all_db_synonyms
+    scoped: dict[str, dict[str, list[str]]] = {}
+    for db_id, synonyms in all_db_synonyms.items():
+        tables = sub_table_scope.get(db_id)
+        if tables is None:
+            scoped[db_id] = synonyms
+            continue
+        scoped[db_id] = {
+            col: words for col, words in synonyms.items()
+            if _synonym_key_table(col) in tables
+        }
+    return scoped
+
+
+def _synonym_key_table(col: str) -> str:
+    """유사어 키(``[schema.]table.column``)의 테이블명(소문자) — Pass 1·2와 같은 추출 규칙."""
+    parts = col.split(".")
+    return parts[-2].lower() if len(parts) >= 2 else parts[0].lower()
 
 
 # === 3-Step Mapping Results ===
@@ -228,6 +403,36 @@ async def perform_3step_mapping(
     remaining = set(field_names)
     llm_inference_details: list[dict] = []
 
+    # 대상 DB의 구조 선언(patterns)을 1회 조회해 아래 두 판정의 근거로 쓴다(편향 검토 §2-2·3).
+    # 특정 DB의 테이블명 리터럴 대신 선언을 읽어 판정한다(D-088 공용 계층 DB-agnostic).
+    structure_metas = await _load_structure_declarations(
+        cache_manager,
+        list(dict.fromkeys([
+            *priority_db_ids,
+            *(active_db_ids or []),
+            *all_db_synonyms,
+            *(all_db_descriptions or {}),
+        ])),
+    )
+
+    # 사용률 지표 필드는 매핑 대상에서 제외한다(D-066 후속/RC2). 피벗 파생이라 단일 컬럼 매핑이
+    # 불가능하며, 매핑 시도가 존재하지 않는 컬럼 환각·step3 LLM 호출 hang을 유발한다. 미매핑(None)으로
+    # 두면 뒤에서 column_mapping에 None으로 채워져 SQL 생성의 쿼리 예시(지표 피벗)로 위임된다.
+    # 단, 사용률이 직접 컬럼인 스키마(cpu_metrics.usage_pct 등)에서는 정상 매핑 대상이므로 스킵 금지 —
+    # EAV 피벗 구조로 선언된 스키마일 때만 스킵한다.
+    # 월 구조 필드(명사 없는 "…사용률|M+k")도 여기서 스킵된다 — 유사어 사전과 무관하게 None으로
+    # 남아야 월 시리즈 인식기가 발동한다(plans/120 F-1).
+    metric_usage_fields: set[str] = set()
+    if _schema_uses_eav_metric_pivot(structure_metas):
+        metric_usage_fields = {f for f in remaining if _is_metric_usage_field(f)}
+    if metric_usage_fields:
+        remaining -= metric_usage_fields
+        logger.info(
+            "사용률 지표 필드는 매핑 스킵 → 쿼리 예시 피벗에 위임: %s (월 구조 필드 %d개)",
+            sorted(metric_usage_fields),
+            sum(1 for f in metric_usage_fields if is_month_structure_field(f)),
+        )
+
     # EAV 폴백 DB ID 결정: priority > active > synonyms 키 > _default
     _fallback_db_id = _resolve_fallback_db_id(
         priority_db_ids, active_db_ids, all_db_synonyms
@@ -247,8 +452,24 @@ async def perform_3step_mapping(
 
     # --- 2.5단계: Redis synonyms 규칙 매핑 ---
     if remaining and all_db_synonyms:
+        # E5-1(퍼지)·E5-4(임베딩) 폴백 플래그를 config에서 읽어 계단 활성 여부를 결정한다
+        # (둘 다 기본 OFF — 정확→퍼지→임베딩 계단, D-075/D-084).
+        from src.config import load_config
+
+        _syn_cfg = load_config().synonym
         _apply_synonym_mapping(
-            remaining, all_db_synonyms, priority_db_ids, result
+            remaining,
+            all_db_synonyms,
+            priority_db_ids,
+            result,
+            fuzzy=_syn_cfg.fuzzy_match,
+            min_score=_syn_cfg.match_confidence_min,
+            semantic=_syn_cfg.semantic_match,
+            semantic_min=_syn_cfg.semantic_confidence_min,
+            core_tables=_core_entity_tables(structure_metas),
+            sub_table_scope=_sub_table_scope(
+                structure_metas, priority_db_ids or list(all_db_synonyms)
+            ),
         )
 
     # --- 2.8단계: LLM 유사어 발견 ---
@@ -262,6 +483,7 @@ async def perform_3step_mapping(
             result=result,
             cache_manager=cache_manager,
             fallback_db_id=_fallback_db_id,
+            structure_metas=structure_metas,
         )
 
     # --- 3단계: LLM 통합 추론 (강화된 컨텍스트) ---
@@ -290,7 +512,8 @@ async def perform_3step_mapping(
         # LLM 추론 결과를 즉시 Redis에 등록
         if llm_inference_details:
             await _register_llm_mappings_to_redis(
-                cache_manager, llm_inference_details, eav_name_synonyms
+                cache_manager, llm_inference_details, eav_name_synonyms,
+                structure_metas=structure_metas,
             )
 
     # mapped_db_ids 생성
@@ -430,16 +653,45 @@ def _apply_synonym_mapping(
     all_db_synonyms: dict[str, dict[str, list[str]]],
     priority_db_ids: list[str],
     result: MappingResult,
+    *,
+    fuzzy: bool = False,
+    min_score: float = 0.85,
+    semantic: bool = False,
+    semantic_min: float = 0.65,
+    core_tables: set[str] | None = None,
+    sub_table_scope: dict[str, frozenset[str]] | None = None,
 ) -> None:
     """Redis synonyms 기반 매핑을 수행한다.
 
     priority_db_ids를 먼저 검색하여 우선순위를 부여한다.
+
+    Plan 61 트랙 B(E5-1): ``fuzzy=True``이면 정확 동등 매칭(Pass 1/2)이 모두 실패한
+    잔여 필드에 대해 **유연 근사 매칭 폴백(Pass 3)**을 수행한다. 신뢰도가 ``min_score``
+    이상이면 확정 매핑(source="synonym")으로 채택하고, 미만이면 채택하지 않아 다운스트림
+    LLM 유사어 발견(2.8)·통합 추론(3) 경로가 그대로 ``pending_synonym_registrations``
+    승인 루프로 회부한다("임계 이하는 확정 아닌 후보 제시"의 결정적 실현). ``fuzzy=False``
+    (기본)이면 Pass 3은 실행되지 않아 기존 동작과 **바이트 단위 동일**하다(회귀 0).
+
+    Plan 61 트랙 B(E5-4, D-084): ``semantic=True``이면 정확·퍼지 계단이 모두 실패한
+    잔여 필드에 **임베딩 의미 매칭 폴백(Pass 4)**을 계단 마지막 단으로 수행한다.
+    코사인이 ``semantic_min`` 이상이면 확정 채택, 미만이면 동일하게 LLM 경로에 위임한다.
+    ``semantic=False``(기본)이면 Pass 4는 실행되지 않는다(회귀 0).
 
     Args:
         remaining: 매핑되지 않은 필드 set
         all_db_synonyms: DB별 synonyms {db_id: {table.column: [words]}}
         priority_db_ids: 우선순위 DB 목록
         result: 매핑 결과 객체
+        fuzzy: 유연 근사 매칭 폴백 활성화 여부(플래그, 기본 OFF)
+        min_score: 유연 매칭 확정 신뢰도 임계(fuzzy=True일 때만 사용)
+        semantic: 임베딩 의미 매칭 폴백 활성화 여부(플래그, 기본 OFF)
+        semantic_min: 임베딩 코사인 확정 임계(semantic=True일 때만 사용)
+        core_tables: 먼저 매칭할 핵심 엔터티 테이블명(소문자). 구조 선언에서 도출하며
+            (`_core_entity_tables`), 비어 있으면 우선순위 구분 없이 전체 테이블을
+            한 번에 매칭한다(Pass 1이 공집합이 되어 Pass 2가 전부 담당).
+        sub_table_scope: {db_id: 구조 선언 테이블} — 이 DB들은 Pass 2~4 후보를 선언 테이블로
+            한정한다(`_sub_table_scope` · plans/120 F-2). 선언 밖 정확 매칭은 거부 로그만 남기고
+            다음 단계(LLM · 역질문)로 넘긴다. 없거나 빈 dict면 종전 동작.
     """
     if priority_db_ids:
         ordered_db_ids = priority_db_ids
@@ -448,7 +700,8 @@ def _apply_synonym_mapping(
 
     from src.utils.schema_utils import normalize_field_name
 
-    CORE_TABLES = {"cmm_resource"}
+    CORE_TABLES = core_tables or set()
+    scope = sub_table_scope or {}
 
     for field in list(remaining):
         field_lower = normalize_field_name(field).lower()
@@ -469,26 +722,206 @@ def _apply_synonym_mapping(
                 result.mapping_sources[field] = "synonym"
                 remaining.discard(field)
                 matched = True
+                logger.info(
+                    "[동의어] 정확 매칭 확정(핵심 테이블): '%s' -> %s (db=%s)",
+                    field, matched_column, db_id,
+                )
                 break
 
         if matched:
             continue
 
         # Pass 2: 핵심 테이블에서 발견되지 않은 필드에 대해 기타 서브 테이블 컬럼 매칭 시도
+        # (EAV 피벗 DB는 구조 선언 테이블 안에서만 — plans/120 F-2)
         for db_id in ordered_db_ids:
             synonyms = all_db_synonyms.get(db_id, {})
+            declared = scope.get(db_id)
             non_core_syns = {}
+            outside_syns = {}
             for col, words in synonyms.items():
                 parts = col.split(".")
                 table_name = parts[-2].lower() if len(parts) >= 2 else parts[0].lower()
                 if table_name not in CORE_TABLES:
-                    non_core_syns[col] = words
+                    if declared is not None and table_name not in declared:
+                        outside_syns[col] = words
+                    else:
+                        non_core_syns[col] = words
             matched_column = _synonym_match(field_lower, non_core_syns)
             if matched_column:
                 result.db_column_mapping.setdefault(db_id, {})[field] = matched_column
                 result.mapping_sources[field] = "synonym"
                 remaining.discard(field)
+                logger.info(
+                    "[동의어] 정확 매칭 확정(서브 테이블): '%s' -> %s (db=%s)",
+                    field, matched_column, db_id,
+                )
                 break
+            rejected_column = _synonym_match(field_lower, outside_syns) if outside_syns else None
+            if rejected_column:
+                logger.info(
+                    "[동의어] 서브 테이블 매칭 거부(구조 선언 밖 — plans/120 F-2): "
+                    "'%s' -> %s (db=%s) → 다음 단계로",
+                    field, rejected_column, db_id,
+                )
+
+    # Pass 3 (E5-1 유연 매칭 폴백): 플래그 ON일 때만, 정확 매칭이 실패한 잔여 필드에
+    # 유연 근사 매칭을 시도한다. 임계 이상만 확정 채택하고, 미만은 다운스트림 LLM 경로에
+    # 위임(후보 제시)한다. fuzzy=False면 이 블록은 진입하지 않아 회귀가 없다.
+    # Pass 3·4도 Pass 2와 같은 후보 한정을 받는다 — 선언 밖 정확 일치 단어는 근사 점수 1.0이라
+    # 한정하지 않으면 Pass 2에서 거부한 매핑이 그대로 되살아난다(plans/120 F-2).
+    if fuzzy and remaining:
+        _apply_fuzzy_synonym_fallback(
+            remaining, _scope_synonyms(all_db_synonyms, scope), ordered_db_ids, result, min_score
+        )
+
+    # Pass 4 (E5-4 임베딩 의미 매칭 폴백, D-084): 정확·퍼지 계단이 모두 실패한 잔여
+    # 필드에 임베딩 의미 매칭을 마지막 보루로 시도한다. 임계 이상만 확정 채택하고,
+    # 미만은 다운스트림 LLM 경로에 위임(후보 제시)한다. semantic=False면 미진입(회귀 0).
+    if semantic and remaining:
+        _apply_semantic_synonym_fallback(
+            remaining, _scope_synonyms(all_db_synonyms, scope), ordered_db_ids, result,
+            semantic_min,
+        )
+
+
+def _apply_fuzzy_synonym_fallback(
+    remaining: set[str],
+    all_db_synonyms: dict[str, dict[str, list[str]]],
+    ordered_db_ids: list[str],
+    result: MappingResult,
+    min_score: float,
+) -> None:
+    """유연 근사 매칭으로 잔여 필드를 매핑한다(E5-1, 확정 임계 이상만 채택).
+
+    각 DB의 컬럼 유사어 단어들과 필드명을 flex 매칭하여 최고 신뢰도 후보를 찾는다.
+    신뢰도가 min_score 이상이면 확정 매핑(source="synonym")으로 채택한다. 미만이면
+    채택하지 않아 이후 LLM 유사어 발견/추론 경로가 승인 루프로 회부한다.
+
+    Args:
+        remaining: 매핑되지 않은 필드 set
+        all_db_synonyms: DB별 synonyms {db_id: {table.column: [words]}}
+        ordered_db_ids: 우선순위 정렬된 DB 목록
+        result: 매핑 결과 객체
+        min_score: 확정 채택 최소 신뢰도
+    """
+    from src.utils.flex_match import flex_match_score
+    from src.utils.schema_utils import normalize_field_name
+
+    for field in list(remaining):
+        field_lower = normalize_field_name(field).lower()
+        if len(field_lower) < 2:
+            continue
+
+        best_db: Optional[str] = None
+        best_col: Optional[str] = None
+        best_score = 0.0
+
+        for db_id in ordered_db_ids:
+            synonyms = all_db_synonyms.get(db_id, {})
+            for col_key, words in synonyms.items():
+                # 서버명류 필드의 hostname 컬럼 근사 매칭 차단 — 전역/EAV 유사어의
+                # `Hostname: [서버명, ...]` 미끼가 fuzzy 경로로 재유입되는 오염 방지
+                # (D-068 5·6차 등록 가드와 동일 계열, 정확일치 경로와 동일 규칙).
+                if is_servername_to_hostname(field, col_key):
+                    continue
+                # 등록 유사어 단어 + 컬럼명 자체를 후보로 삼는다.
+                candidates = list(words or [])
+                col_name = col_key.split(".", 1)[-1] if "." in col_key else col_key
+                candidates.append(col_name)
+                for cand in candidates:
+                    if not cand or len(str(cand)) < 2:
+                        continue
+                    score = flex_match_score(field_lower, str(cand))
+                    if score > best_score:
+                        best_score = score
+                        best_col = col_key
+                        best_db = db_id
+
+        if best_col and best_db and best_score >= min_score:
+            result.db_column_mapping.setdefault(best_db, {})[field] = best_col
+            result.mapping_sources[field] = "synonym"
+            remaining.discard(field)
+            logger.info(
+                "[동의어] 유연(퍼지) 매칭 확정: '%s' -> %s (db=%s, 신뢰도=%.2f)",
+                field, best_col, best_db, best_score,
+            )
+        elif best_col:
+            logger.info(
+                "[동의어] 유연(퍼지) 매칭 임계 미달(후보 제시로 위임): "
+                "'%s' ~ %s (신뢰도=%.2f < %.2f)",
+                field, best_col, best_score, min_score,
+            )
+
+
+def _apply_semantic_synonym_fallback(
+    remaining: set[str],
+    all_db_synonyms: dict[str, dict[str, list[str]]],
+    ordered_db_ids: list[str],
+    result: MappingResult,
+    min_score: float,
+) -> None:
+    """임베딩 의미 매칭으로 잔여 필드를 매핑한다(E5-4, 확정 임계 이상만 채택).
+
+    각 DB의 컬럼 유사어 단어들과 필드명을 임베딩 코사인으로 비교해 최고 신뢰도
+    후보를 찾는다. min_score 이상이면 확정 매핑(source="synonym")으로 채택하고,
+    미만이면 채택하지 않아 이후 LLM 유사어 발견/추론 경로가 승인 루프로 회부한다.
+    모델·의존성 미가용 시 semantic_match_candidates가 빈 리스트를 반환해 아무
+    것도 채택하지 않는다(미가용 사유는 모듈에서 경고 1회 가시화).
+
+    Args:
+        remaining: 매핑되지 않은 필드 set
+        all_db_synonyms: DB별 synonyms {db_id: {table.column: [words]}}
+        ordered_db_ids: 우선순위 정렬된 DB 목록
+        result: 매핑 결과 객체
+        min_score: 확정 채택 최소 코사인 유사도
+    """
+    from src.schema_cache.synonym_semantic import semantic_match_candidates
+    from src.utils.schema_utils import normalize_field_name
+
+    for field in list(remaining):
+        field_lower = normalize_field_name(field).lower()
+        if len(field_lower) < 2:
+            continue
+
+        best_db: Optional[str] = None
+        best_col: Optional[str] = None
+        best_score = 0.0
+
+        for db_id in ordered_db_ids:
+            synonyms = all_db_synonyms.get(db_id, {})
+            candidate_map: dict[str, list[str]] = {}
+            for col_key, words in synonyms.items():
+                # 서버명류 필드의 hostname 컬럼 근사 매칭 차단 — flex 폴백(Pass 3)과
+                # 동일 가드(D-068 계열). 임베딩 유사도로도 재유입되지 않게 원천 제외.
+                if is_servername_to_hostname(field, col_key):
+                    continue
+                # 등록 유사어 단어 + 컬럼명 자체를 후보로 삼는다(Pass 3과 동일 규칙).
+                candidates = [str(w) for w in (words or []) if w and len(str(w)) >= 2]
+                col_name = col_key.split(".", 1)[-1] if "." in col_key else col_key
+                if col_name and len(col_name) >= 2:
+                    candidates.append(col_name)
+                if candidates:
+                    candidate_map[col_key] = candidates
+
+            ranked = semantic_match_candidates(field_lower, candidate_map)
+            if ranked and ranked[0][1] > best_score:
+                best_col, best_score = ranked[0]
+                best_db = db_id
+
+        if best_col and best_db and best_score >= min_score:
+            result.db_column_mapping.setdefault(best_db, {})[field] = best_col
+            result.mapping_sources[field] = "synonym"
+            remaining.discard(field)
+            logger.info(
+                "[동의어] 의미(임베딩) 매칭 확정: '%s' -> %s (db=%s, 신뢰도=%.2f)",
+                field, best_col, best_db, best_score,
+            )
+        elif best_col:
+            logger.info(
+                "[동의어] 의미(임베딩) 매칭 임계 미달(후보 제시로 위임): "
+                "'%s' ~ %s (신뢰도=%.2f < %.2f)",
+                field, best_col, best_score, min_score,
+            )
 
 
 def _synonym_match(
@@ -564,21 +997,28 @@ def _apply_eav_synonym_mapping(
                         combined_words.append(gw)
 
             matched = False
+            matched_word = None
             for word in combined_words:
                 word_norm = normalize_field_name(word).lower()
                 if word_norm == field_norm or word_norm.replace(" ", "") == field_no_space:
                     matched = True
+                    matched_word = word
                     break
             # EAV 속성명 자체도 매칭 시도
             if not matched:
                 eav_norm = normalize_field_name(eav_name).lower()
                 if eav_norm == field_norm or eav_norm.replace(" ", "") == field_no_space:
                     matched = True
+                    matched_word = eav_name
             if matched:
                 eav_key = f"EAV:{eav_name}"
                 result.db_column_mapping.setdefault(eav_db_id, {})[field] = eav_key
                 result.mapping_sources[field] = "eav_synonym"
                 remaining.discard(field)
+                logger.info(
+                    "[동의어] EAV 유사어 매칭 확정: '%s' -> %s (단어='%s', db=%s)",
+                    field, eav_key, matched_word, eav_db_id,
+                )
                 break
 
 
@@ -594,6 +1034,8 @@ async def _apply_llm_synonym_discovery(
     result: MappingResult,
     cache_manager: Optional[Any] = None,
     fallback_db_id: str = "_default",
+    *,
+    structure_metas: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """LLM 1회 호출로 미매핑 필드의 이름 수준 유사어 매칭을 수행한다.
 
@@ -609,6 +1051,7 @@ async def _apply_llm_synonym_discovery(
         result: 매핑 결과 객체
         cache_manager: SchemaCacheManager 인스턴스 (선택, synonym 자동 등록용)
         fallback_db_id: EAV 매핑 시 사용할 폴백 DB 식별자
+        structure_metas: {db_id: 구조 선언} — 자동 등록 쓰기 가드 판정용(plans/120 F-4)
     """
     if not remaining:
         return
@@ -733,24 +1176,154 @@ async def _apply_llm_synonym_discovery(
 
     # 글로벌 synonym 자동 등록
     await _register_llm_synonym_discoveries_to_redis(
-        cache_manager, mapped_fields, eav_name_synonyms
+        cache_manager, mapped_fields, eav_name_synonyms, eav_db_id=eav_db_id,
+        structure_metas=structure_metas,
     )
+
+
+_NO_STRUCTURE_REASON = "수동 프로필·승인본 없음"
+_AUTHORITY_UNKNOWN_REASON = "구조 정보 판정 실패"
+_DB_SCOPE_REGISTERED_LOG = (
+    "양식 LLM 매핑 DB별 등록: db_id=%s, field=%s, column=%s (%s — 전역 대신 DB별)"
+)
+_DB_SCOPE_EAV_SKIPPED_LOG = (
+    "양식 LLM 매핑 EAV 등록 건너뜀: db_id=%s, field=%s, column=%s "
+    "(%s — EAV 매핑은 구조 정보가 있는 DB에서만 성립해 DB별로도 등록하지 않음)"
+)
+_NO_TARGET_DB_LOG = (
+    "양식 LLM 매핑 등록 건너뜀: field=%s, column=%s "
+    "(대상 db_id 없음 — 전역·DB별 모두 등록하지 않음)"
+)
+
+
+async def _structure_authority(
+    cache_manager: Any,
+    db_id: str,
+    memo: dict[str, bool | None],
+) -> bool | None:
+    """양식 LLM 매핑 대상 DB에 구조 정보(수동 프로필·승인본)가 있는지 판정한다 (plans/104 G-11 (b)).
+
+    전역 사전은 DB에 귀속되지 않아, 구조 정보가 없는 DB에서 나온 검증 안 된 LLM 매핑이
+    다른 DB의 매핑 재료로 번진다. 호출부는 참일 때만 전역에 쓰고, 그 밖에는 DB별 캐시에 쓴다.
+
+    Args:
+        cache_manager: SchemaCacheManager 인스턴스
+        db_id: 매핑 대상 DB 식별자 (비어 있지 않아야 한다)
+        memo: 한 번의 등록 호출 안에서 db_id별 판정을 재사용하는 저장소
+
+    Returns:
+        True(구조 정보 있음) · False(없음) · None(판정 자체가 실패 — 전역 쓰기 금지)
+    """
+    if db_id not in memo:
+        try:
+            memo[db_id] = bool(await cache_manager.has_structure_authority(db_id))
+        except Exception as e:
+            logger.warning(
+                "구조 정보 판정 실패 — 양식 LLM 매핑은 전역에 쓰지 않고 DB별로 처리: db_id=%s (%s)",
+                db_id, e,
+            )
+            memo[db_id] = None
+    return memo[db_id]
+
+
+async def _registration_blocked(
+    cache_manager: Any,
+    db_id: str,
+    field: str,
+    column: str,
+    structure_metas: dict[str, dict[str, Any]] | None,
+    memo: dict[str, dict[str, Any] | None],
+) -> bool:
+    """양식 LLM 매핑 자동 등록을 쓰기 가드가 막는지 판정하고 막으면 사유를 남긴다(plans/120 F-4).
+
+    판정은 `synonym_registration_block_reason` 하나다(오염 진단 도구와 공유). 전역·EAV·DB별 등록
+    분기보다 앞에서 부르므로 세 저장 공간이 같은 규칙을 받는다. 구조 선언은 호출부가 넘긴
+    `structure_metas`를 쓰고, 넘기지 않은 단독 호출이면 그 DB 선언을 1회 조회해 `memo`에 둔다.
+
+    Args:
+        cache_manager: SchemaCacheManager 인스턴스
+        db_id: 매핑 대상 DB 식별자
+        field: 양식 필드명(등록할 단어)
+        column: 매핑된 컬럼(`table.column`) 또는 `EAV:` 접두 속성명
+        structure_metas: {db_id: 구조 선언} 또는 None(단독 호출)
+        memo: 한 번의 등록 호출 안에서 db_id별 구조 선언을 재사용하는 저장소
+
+    Returns:
+        등록하지 말아야 하면 True
+    """
+    if db_id not in memo:
+        if structure_metas is not None:
+            memo[db_id] = structure_metas.get(db_id)
+        else:
+            loaded = await _load_structure_declarations(cache_manager, [db_id])
+            memo[db_id] = loaded.get(db_id)
+    reason = synonym_registration_block_reason(field, column, structure_meta=memo[db_id])
+    if reason is None:
+        return False
+    logger.info(
+        "양식 LLM 매핑 자동 등록 차단(%s — plans/120 F-4): db_id=%s, field=%s, column=%s",
+        BLOCK_REASON_LABELS[reason], db_id, field, column,
+    )
+    return True
+
+
+async def _register_llm_mapping_to_db_scope(
+    cache_manager: Any,
+    db_id: str,
+    field: str,
+    column: str,
+    reason: str,
+) -> bool:
+    """구조 정보를 확인하지 못한 DB의 양식 LLM 매핑을 그 DB의 유사어 캐시에 등록한다 (G-11 (b)).
+
+    전역 사전(`synonyms:global`·EAV 속성명 유사어)에는 쓰지 않는다. 오염이 그 DB 밖으로
+    번지지 않게 하면서 그 DB의 양식 매핑 학습은 남긴다(출처 태그 `llm`).
+    EAV 매핑(`EAV:` 접두)은 구조 정보(EAV 패턴)가 있는 DB에서만 성립하므로 등록하지 않는다.
+
+    Args:
+        cache_manager: SchemaCacheManager 인스턴스
+        db_id: 매핑 대상 DB 식별자
+        field: 양식 필드명
+        column: 매핑된 컬럼(`table.column`) 또는 `EAV:` 접두 속성명
+        reason: 로그에 남길 DB별 처리 사유
+
+    Returns:
+        등록 성공 여부
+    """
+    if column.startswith("EAV:"):
+        logger.warning(_DB_SCOPE_EAV_SKIPPED_LOG, db_id, field, column, reason)
+        return False
+    if not await cache_manager.add_synonyms(db_id, column, [field], source="llm"):
+        logger.warning(
+            "양식 LLM 매핑 DB별 등록 실패: db_id=%s, field=%s, column=%s", db_id, field, column
+        )
+        return False
+    logger.info(_DB_SCOPE_REGISTERED_LOG, db_id, field, column, reason)
+    return True
 
 
 async def _register_llm_synonym_discoveries_to_redis(
     cache_manager: Optional[Any],
     mapped_fields: list[tuple[str, str, str]],
     eav_name_synonyms: dict[str, list[str]] | None = None,
+    *,
+    eav_db_id: str = "",
+    structure_metas: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Step 2.8에서 발견한 유사어를 Redis에 자동 등록한다.
 
     컬럼 매핑의 경우 add_global_synonym()으로 등록하고,
     EAV 매핑의 경우 eav_name_synonyms에 필드명을 추가하여 저장한다.
+    둘 다 전역 저장소라 대상 DB에 구조 정보(수동 프로필·승인본)가 있을 때만 쓰고,
+    없으면 컬럼 매핑만 그 DB의 유사어 캐시에 등록한다(G-11 (b)).
+    쓰기 가드(plans/120 F-4)가 막는 매핑은 어느 저장 공간에도 쓰지 않는다.
 
     Args:
         cache_manager: SchemaCacheManager 인스턴스 (None 가능)
         mapped_fields: (field_name, matched_key, type) 튜플 리스트
         eav_name_synonyms: 기존 EAV 속성명 유사어 매핑 (선택)
+        eav_db_id: EAV 매핑의 대상 DB 식별자 (컬럼 매핑은 matched_key의 db_id를 쓴다)
+        structure_metas: {db_id: 구조 선언} — 쓰기 가드 판정용(없으면 DB별 1회 조회)
     """
     if not mapped_fields:
         return
@@ -765,10 +1338,38 @@ async def _register_llm_synonym_discoveries_to_redis(
 
     registered_count = 0
     eav_updated = False
+    authority: dict[str, bool | None] = {}
+    declarations: dict[str, dict[str, Any] | None] = {}
 
     for field, matched_key, match_type in mapped_fields:
+        # 재오염 차단: 서버명/서버이름류 → hostname(컬럼/EAV) 자동 등록 거부(D-068 후속).
+        if is_servername_to_hostname(field, matched_key):
+            logger.info(
+                "자동 유사어 등록 차단(서버명→hostname 오연관): %s -> %s", field, matched_key
+            )
+            continue
+        if match_type == "eav":
+            target_db_id, target_column = eav_db_id, matched_key
+        else:
+            target_db_id, _, target_column = matched_key.partition(":")
+        if not target_db_id:
+            logger.warning(_NO_TARGET_DB_LOG, field, target_column)
+            continue
+        if await _registration_blocked(
+            cache_manager, target_db_id, field, target_column, structure_metas, declarations
+        ):
+            continue
+        has_structure = await _structure_authority(cache_manager, target_db_id, authority)
         try:
-            if match_type == "eav":
+            if has_structure is not True:
+                reason = (
+                    _NO_STRUCTURE_REASON if has_structure is False else _AUTHORITY_UNKNOWN_REASON
+                )
+                if await _register_llm_mapping_to_db_scope(
+                    cache_manager, target_db_id, field, target_column, reason
+                ):
+                    registered_count += 1
+            elif match_type == "eav":
                 # EAV 매핑: eav_name_synonyms에 필드명 추가 + global에도 등록
                 eav_name = matched_key[4:]  # "EAV:" 접두사 제거
                 redis_cache = getattr(cache_manager, "_redis_cache", None)
@@ -1023,17 +1624,24 @@ async def _register_llm_mappings_to_redis(
     cache_manager: Optional[Any],
     llm_inference_details: list[dict],
     eav_name_synonyms: dict[str, list[str]] | None = None,
+    *,
+    structure_metas: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """LLM 추론 결과를 즉시 Redis에 등록한다.
 
     EAV 매핑(EAV: 접두사)은 eav_name_synonyms에 필드명을 추가하여 저장하고,
     일반 매핑은 cache_manager.add_synonyms()로 등록한다.
     cache_manager가 None이거나 redis_available이 False이면 스킵한다.
+    전역(EAV 속성명 사전·`synonyms:global`) 쓰기는 대상 db_id에 구조 정보(수동 프로필·승인본)가
+    있을 때만 하고, 없으면 일반 매핑만 그 DB의 유사어 캐시에 출처 `llm`으로 등록한다
+    (G-11 (b) — EAV는 등록하지 않음).
+    쓰기 가드(plans/120 F-4)가 막는 매핑은 어느 저장 공간에도 쓰지 않는다.
 
     Args:
         cache_manager: SchemaCacheManager 인스턴스 (None 가능)
         llm_inference_details: LLM 추론 상세 정보 리스트
         eav_name_synonyms: 기존 EAV 속성명 유사어 매핑 (선택)
+        structure_metas: {db_id: 구조 선언} — 쓰기 가드 판정용(없으면 DB별 1회 조회)
     """
     if not llm_inference_details:
         return
@@ -1048,6 +1656,8 @@ async def _register_llm_mappings_to_redis(
 
     registered_count = 0
     eav_updated = False
+    authority: dict[str, bool | None] = {}
+    declarations: dict[str, dict[str, Any] | None] = {}
 
     for detail in llm_inference_details:
         field = detail.get("field", "")
@@ -1057,8 +1667,32 @@ async def _register_llm_mappings_to_redis(
         if not field or not column:
             continue
 
+        # 재오염 차단: 서버명/서버이름류 → hostname(컬럼/EAV) 자동 등록 거부(D-068 후속).
+        if is_servername_to_hostname(field, column):
+            logger.info(
+                "자동 유사어 등록 차단(서버명→hostname 오연관): %s -> %s", field, column
+            )
+            continue
+
+        if not db_id:
+            logger.warning(_NO_TARGET_DB_LOG, field, column)
+            continue
+        if await _registration_blocked(
+            cache_manager, db_id, field, column, structure_metas, declarations
+        ):
+            continue
+        has_structure = await _structure_authority(cache_manager, db_id, authority)
+
         try:
-            if column.startswith("EAV:"):
+            if has_structure is not True:
+                reason = (
+                    _NO_STRUCTURE_REASON if has_structure is False else _AUTHORITY_UNKNOWN_REASON
+                )
+                if await _register_llm_mapping_to_db_scope(
+                    cache_manager, db_id, field, column, reason
+                ):
+                    registered_count += 1
+            elif column.startswith("EAV:"):
                 # EAV 매핑: eav_name_synonyms + global 양쪽 저장
                 eav_name = column[4:]
                 redis_cache = getattr(cache_manager, "_redis_cache", None)
@@ -1658,6 +2292,13 @@ async def apply_mapping_feedback_to_redis(
         db_id = item.get("db_id")
 
         if not field or not column:
+            continue
+
+        # 재오염 차단: 서버명/서버이름류 → hostname(컬럼/EAV) 등록 거부(D-068 후속).
+        if is_servername_to_hostname(field, column):
+            logger.info(
+                "유사어 피드백 등록 차단(서버명→hostname 오연관): %s -> %s", field, column
+            )
             continue
 
         try:
