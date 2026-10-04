@@ -2,14 +2,19 @@
 (plans/87 §5.2(c)).
 
 벤더 필드명(camelCase)·지표 식별자(snake_case)·이벤트 유형 명칭은 이 모듈에만 둔다.
-도메인·애플리케이션 계층은 여기서 만든 중립 키(`heap_used_mb` 등)만 본다. 필드 정의 원천은 Open API
-5.6.4 스키마
+도메인·애플리케이션 계층은 여기서 만든 중립 키(`heap_used_mb` 등)만 본다. plans/134 W1(N-1)로
+`spec/CAPABILITY-MAP-134.md` 표 C의 W1 필드와 SPEC §5 W1 행의 필드를 더 읽는다 — 마스킹·가림은
+애플리케이션 계층(`masking.py`)이 행을 만들 때 한다(여기서는 원값을 옮길 뿐이다). 필드 정의 원천은
+Open API 5.6.4 스키마
 (`RealtimeInstanceData`·`ActiveServiceData`·`TransactionData`·`EventData`·`ErrorData`·`ApplicationStatus`·
 `Instance`·`Domain`·`DBMetrics`)이고, **실데이터 모양은 J0-L-b 녹화 전까지 미검증**이다(§0.10 #19).
+W2(N-5~N-7)로 `SqlAndExternalCallStatus`·`Metrics`(카탈로그 — 로컬 5.7.0.1 녹화 모양)·v2 변경 이력
+(맨 배열 — v2 매뉴얼 `deploy.md`)을 더 읽는다.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 SOURCE = "jennifer"
@@ -72,6 +77,22 @@ def event_signal(event_type: Any) -> tuple[str, str, str] | None:
     return EVENT_TYPE_SIGNALS.get(normalize_event_type(event_type))
 
 
+def error_type_variants(error_type: Any) -> list[str]:
+    """오류 유형의 API 표기 후보(물어볼 순서) — 정규화 이름(접두 없음) → `ERROR_` → `WARNING_` 접두.
+    운영 명명이 미확정이라(U-13 · W10) 셋을 차례로 묻는다(W1 검증 M-1)."""
+    base = normalize_event_type(error_type)
+    if not base:
+        return []
+    return list(dict.fromkeys((base, f"ERROR_{base}", f"WARNING_{base}")))
+
+
+def same_error_type(actual: Any, wanted: Any) -> bool:
+    """오류 유형이 같은가 — 대문자·`ERROR_`·`WARNING_` 접두 차이는 같은 유형으로 본다
+    (U-13 미확정)."""
+    a, w = normalize_event_type(actual), normalize_event_type(wanted)
+    return bool(a) and a == w
+
+
 # ── 값 변환 헬퍼 ──────────────────────────────────────────────
 
 
@@ -90,6 +111,21 @@ def to_int(value: Any) -> int | None:
         return int(float(text))
     except ValueError:
         return None
+
+
+def to_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    return None
+
+
+def to_list(value: Any) -> list[Any]:
+    """배열 필드(업무 id·이름) — 배열이 아니면 빈 목록(단일 값이면 1원소)."""
+    if isinstance(value, list):
+        return list(value)
+    return [] if value is None or value == "" else [value]
 
 
 def to_float(value: Any) -> float | None:
@@ -114,7 +150,11 @@ def result_list(body: Any) -> list[dict[str, Any]]:
 
 
 def parse_domain(raw: dict[str, Any]) -> dict[str, Any]:
-    return {"domain_id": to_int(raw.get("domainId")), "domain_name": str(raw.get("name") or "")}
+    return {
+        "domain_id": to_int(raw.get("domainId")),
+        "domain_name": str(raw.get("name") or ""),
+        "domain_description": str(raw.get("description") or ""),
+    }
 
 
 def parse_instance(raw: dict[str, Any], domain_id: int | None, domain_name: str) -> dict[str, Any]:
@@ -128,7 +168,29 @@ def parse_instance(raw: dict[str, Any], domain_id: int | None, domain_name: str)
         "platform": str(raw.get("platform") or ""),
         "status": str(raw.get("status") or ""),
         "agent_version": str(raw.get("version") or ""),
+        "config_file_path": str(raw.get("configFilePath") or ""),
+        "description": str(raw.get("description") or ""),
+        "instance_oid": to_int(raw.get("instanceOid")),
     }
+
+
+# 실시간 인스턴스 — 지표 밖 W1 필드(중립 키 ← 벤더 필드). 방문·호출 수의 단위·「하루」 경계는
+# 미확인이다(COV E-07 — 도구가 `[한계]`로 알린다).
+REALTIME_EXTRA_FIELDS: dict[str, str] = {
+    "visit_day": "visitDay",
+    "visit_hour": "visitHour",
+    "hit_day": "hitDay",
+    "hit_hour": "hitHour",
+    "active_range_count_0": "activeServiceRangeCount0",
+    "active_range_count_1": "activeServiceRangeCount1",
+    "active_range_count_2": "activeServiceRangeCount2",
+    "active_range_count_3": "activeServiceRangeCount3",
+    "collection_count": "collectionCount",
+    "file_count": "fileCount",
+    "socket_count": "socketCount",
+    "thread_daemon": "threadDaemon",
+    "thread_started": "threadStarted",
+}
 
 
 def parse_realtime(raw: dict[str, Any]) -> dict[str, Any]:
@@ -136,36 +198,64 @@ def parse_realtime(raw: dict[str, Any]) -> dict[str, Any]:
         "instance_id": to_int(raw.get("instanceId")),
         "instance_name": str(raw.get("instanceName") or ""),
         "domain_id": to_int(raw.get("domainId")),
+        "instance_description": str(raw.get("instanceDescription") or ""),
+        "instance_oid": to_int(raw.get("instanceOid")),
+        # 구간별 서비스 비율(원형 객체 — 키 의미 미공개 · W10)
+        "service_rate_by_range": raw.get("serviceRateByRange")
+        if isinstance(raw.get("serviceRateByRange"), (dict, list))
+        else None,
     }
     for neutral, (field, _metric) in METRIC_FIELDS.items():
         out[neutral] = to_float(raw.get(field))
+    for neutral, field in REALTIME_EXTRA_FIELDS.items():
+        out[neutral] = to_int(raw.get(field))
     return out
 
 
 def parse_active_service(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "instance_id": to_int(raw.get("instanceId")),
+        "instance_name": str(raw.get("instanceName") or ""),
+        "instance_oid": to_int(raw.get("instanceOid")),
+        "domain_id": to_int(raw.get("domainId")),
+        "domain_name": str(raw.get("domainName") or ""),
         "application": str(raw.get("application") or ""),
+        "application_alias": str(raw.get("alias") or ""),
         "status": str(raw.get("status") or ""),
         "status_name": str(raw.get("statusName") or ""),
+        "status_message": str(raw.get("statusMessage") or ""),
         # elapseTime 단위는 스펙에 없다(U-12) — statusElapseTime(ms 명시)과 같은 ms로 가정한다.
         "elapsed_ms": to_int(raw.get("elapseTime")),
         "status_elapsed_ms": to_int(raw.get("statusElapseTime")),
+        "running_ms": to_int(raw.get("runningTime")),
+        "cpu_ms": to_int(raw.get("cpuTime")),
+        "sql_count": to_int(raw.get("sqls")),
+        "fetch_count": to_int(raw.get("fetches")),
         "running_mode": str(raw.get("runningMode") or ""),
         "running_text": str(raw.get("runningFullText") or ""),
+        "running_hash": to_int(raw.get("runningHash")),
+        "running_sherpa_oracle_instance": str(raw.get("runningSherpaOracleInstanceName") or ""),
+        "running_sherpa_oracle_seq": to_int(raw.get("runningSherpaOracleSequence")),
         "datasource": str(
             raw.get("runningDataSourceName") or raw.get("runningConnectionName") or ""
         ),
         "client_ip": str(raw.get("clientIp") or ""),
         "txid": str(raw.get("txid") or ""),
+        "session_id": to_int(raw.get("sessionId")),
+        "thread_hash": to_int(raw.get("threadHash")),
         "start_time_ms": to_int(raw.get("startTime")),
+        "business_ids": to_list(raw.get("businessId")),
+        "business_names": [str(x) for x in to_list(raw.get("businessName"))],
     }
 
 
 def parse_transaction(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "domain_id": to_int(raw.get("domainId")),
+        "domain_name": str(raw.get("domainName") or ""),
         "instance_id": to_int(raw.get("instanceId")),
+        "instance_name": str(raw.get("instanceName") or ""),
+        "instance_oid": to_int(raw.get("instanceOid")),
         "application": str(raw.get("applicationName") or ""),
         "response_time_ms": to_int(raw.get("responseTime")),
         "cpu_ms": to_int(raw.get("cpuTime")),
@@ -173,9 +263,24 @@ def parse_transaction(raw: dict[str, Any]) -> dict[str, Any]:
         "fetch_ms": to_int(raw.get("fetchTime")),
         "external_ms": to_int(raw.get("externalcallTime")),
         "network_ms": to_int(raw.get("networkTime")),
+        "frontend_ms": to_int(raw.get("frontendTime")),
+        "sql_count": to_int(raw.get("sqlCount")),
+        "fetch_count": to_int(raw.get("fetchCount")),
+        "external_call_count": to_int(raw.get("externalcallCount")),
         "error_type": str(raw.get("errorType") or ""),
+        "start_time_ms": to_int(raw.get("startTime")),
         "end_time_ms": to_int(raw.get("endTime")),
+        "collect_time_ms": to_int(raw.get("collectTime")),
         "txid": str(raw.get("txid") or ""),
+        "guid": str(raw.get("guid") or ""),
+        "client_ip": str(raw.get("clientIp") or ""),
+        "client_id": str(raw.get("clientId") or ""),
+        "user_id": str(raw.get("userId") or ""),
+        "is_async": to_bool(raw.get("async")),
+        "link_root": to_bool(raw.get("linkRoot")),
+        "has_stacktrace": to_bool(raw.get("hasStacktrace")),
+        "business_ids": to_list(raw.get("businessId")),
+        "business_names": [str(x) for x in to_list(raw.get("businessName"))],
     }
 
 
@@ -196,6 +301,7 @@ def parse_event(raw: dict[str, Any]) -> dict[str, Any]:
         "domain_name": str(raw.get("domainName") or ""),
         "application": str(raw.get("applicationName") or ""),
         "txid": str(raw.get("txid") or ""),
+        "instance_oid": to_int(raw.get("instanceOid")),
     }
 
 
@@ -204,9 +310,15 @@ def parse_error(raw: dict[str, Any]) -> dict[str, Any]:
         "time_ms": to_int(raw.get("time")),
         "error_type": str(raw.get("errorType") or ""),
         "message": str(raw.get("message") or ""),
+        "value": to_float(raw.get("value")),
+        "domain_id": to_int(raw.get("domainId")),
+        "domain_name": str(raw.get("domainName") or ""),
         "instance_id": to_int(raw.get("instanceId")),
+        "instance_name": str(raw.get("instanceName") or ""),
+        "instance_oid": to_int(raw.get("instanceOid")),
         "application": str(raw.get("applicationName") or ""),
         "txid": str(raw.get("txid") or ""),
+        "profile_index": to_int(raw.get("profileIndex")),
     }
 
 
@@ -214,8 +326,33 @@ def parse_metric_point(raw: dict[str, Any]) -> dict[str, Any]:
     return {"time_ms": to_int(raw.get("time")), "value": to_float(raw.get("value"))}
 
 
+# ApplicationStatus 25필드 중 아래 표 밖 6개(`name`·`calls`·`failures`·`badResponses`·
+# `responseTime`·`maxResponseTime`)는 종전 키 그대로다.
+APPLICATION_STATUS_EXTRA: dict[str, tuple[str, str]] = {
+    "response_time_stddev_ms": ("responseTimeStandardDeviation", "float"),
+    "cpu_ms_per_tx": ("cpuTimePerTransaction", "float"),
+    "sql_ms_per_tx": ("sqlTimePerTransaction", "float"),
+    "fetch_ms_per_tx": ("fetchTimePerTransaction", "float"),
+    "external_ms_per_tx": ("externalCallTimePerTransaction", "float"),
+    "sqls": ("sqls", "int"),
+    "sqls_per_tx": ("sqlsPerTransaction", "float"),
+    "fetches": ("fetches", "int"),
+    "fetches_per_tx": ("fetchesPerTransaction", "float"),
+    "external_calls": ("externalCalls", "int"),
+    "external_calls_per_tx": ("externalCallsPerTransaction", "float"),
+    "frontend_measurements": ("frontendMeasurements", "int"),
+    "frontend_ms": ("frontendTime", "int"),
+    "network_ms": ("networkTime", "int"),
+    "total_response_ms": ("totalResponseTime", "int"),
+    "total_cpu_ms": ("totalCpuTime", "int"),
+    "total_sql_ms": ("totalSqlTime", "int"),
+    "total_fetch_ms": ("totalFetchTime", "int"),
+    "total_external_ms": ("totalExternalCallTime", "int"),
+}
+
+
 def parse_application_status(raw: dict[str, Any]) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "application": str(raw.get("name") or ""),
         "calls": to_int(raw.get("calls")) or 0,
         "failures": to_int(raw.get("failures")) or 0,
@@ -223,14 +360,120 @@ def parse_application_status(raw: dict[str, Any]) -> dict[str, Any]:
         "response_time_avg_ms": to_float(raw.get("responseTime")),
         "max_response_time_ms": to_int(raw.get("maxResponseTime")),
     }
+    for neutral, (field, kind) in APPLICATION_STATUS_EXTRA.items():
+        out[neutral] = to_float(raw.get(field)) if kind == "float" else to_int(raw.get(field))
+    return out
 
 
-def extract_sql_texts(body: Any, limit: int) -> list[str]:
-    """`/api/transaction/sql` 응답(스키마 `object` — 모양 미공개)에서 SQL 문자열을 모은다."""
+# SqlAndExternalCallStatus 7필드(`/api/status/sql`·`/api/status/external_call` — plans/134 W2 N-5).
+# `name`은 SQL 문(sql) 또는 호출 대상(external_call) — 마스킹은 애플리케이션 계층.
+def parse_call_status(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": str(raw.get("name") or ""),
+        "calls": to_int(raw.get("calls")) or 0,
+        "failures": to_int(raw.get("failures")) or 0,
+        "bad_responses": to_int(raw.get("badResponses")) or 0,
+        "response_time_avg_ms": to_float(raw.get("responseTime")),
+        "max_response_time_ms": to_int(raw.get("maxResponseTime")),
+        "total_response_ms": to_int(raw.get("totalResponseTime")),
+    }
+
+
+# `/api/status/*` 정렬 기준 이름 → 행 칸(여러 (소스, 도메인) 결과를 합쳐 다시 정렬할 때만 쓴다 —
+# 서버에는 받은 이름 그대로 넘긴다). 응답 필드 이름과, 의미가 같은 카탈로그 이름(`count`·
+# `averageResponseTime`)을 받는다. 서버가 어느 이름 체계를 받는지는 미확인이다(COV E-05 · W10).
+_STATUS_SORT_COMMON: dict[str, str] = {
+    "calls": "calls",
+    "count": "calls",
+    "failures": "failures",
+    "badResponses": "bad_responses",
+    "responseTime": "response_time_avg_ms",
+    "averageResponseTime": "response_time_avg_ms",
+    "maxResponseTime": "max_response_time_ms",
+    "totalResponseTime": "total_response_ms",
+}
+STATUS_SORT_DEFAULT = "calls"  # 스펙 설명의 기본 정렬 기준
+
+
+def _camel(name: str) -> str:
+    """snake_case → camelCase(`response_time` → `responseTime`) — 표기 변환만(뜻은 추측하지
+    않는다)."""
+    head, *rest = name.split("_")
+    return head + "".join(part[:1].upper() + part[1:] for part in rest)
+
+
+def status_sort_field(kind: str, sort_by: str | None) -> str | None:
+    """정렬 기준 이름에 대응하는 행 칸(모르면 None). 받은 이름 그대로 → snake_case를 camelCase로
+    바꾼 이름 순으로 찾는다(W2V-B2 — 표기 정규화만 · 뜻 추측 금지)."""
+    name = sort_by or STATUS_SORT_DEFAULT
+    for candidate in dict.fromkeys((name, _camel(name))):
+        if candidate in _STATUS_SORT_COMMON:
+            return _STATUS_SORT_COMMON[candidate]
+        if kind == "application":
+            for neutral, (field, _kind) in APPLICATION_STATUS_EXTRA.items():
+                if field == candidate:
+                    return neutral
+    return None
+
+
+# 지표 카탈로그(`/api/metrics` — `result`가 배열이 아니라 **객체**다 · COV E-18) 군 → 중립 scope.
+METRIC_CATALOG_SCOPES: dict[str, str] = {
+    "domain": "domain",
+    "instance": "instance",
+    "business": "business",
+    "application": "application",
+    "sql": "sql",
+    "externalCall": "external_call",
+}
+
+
+def parse_metric_catalog(body: Any) -> tuple[dict[str, list[str]], list[str]] | None:
+    """`{"result": {군: [지표 식별자…]}}` → (`{scope: [지표 식별자…]}`, 모양 위반 scope 목록).
+
+    군 값이 목록이 아니거나 비어 있지 않은 문자열이 아닌 항목이 있으면 그 군은 **모양 위반**이다
+    (빈 군으로 받지 않는다 — 호출자가 「검증 불가」로 알린다 · W2V-G4). 결과가 객체가 아니거나 정상
+    군이 하나도 없으면 None(호출자가 오류로 올린다 — 빈 카탈로그로 강등하지 않는다 · E-18). 모르는
+    군은 snake_case 이름으로 싣는다."""
+    result = body.get("result") if isinstance(body, dict) else None
+    if not isinstance(result, dict):
+        return None
+    out: dict[str, list[str]] = {}
+    invalid: list[str] = []
+    for group, names in result.items():
+        scope = METRIC_CATALOG_SCOPES.get(str(group)) or re.sub(
+            r"(?<!^)(?=[A-Z])", "_", str(group)
+        ).lower()
+        if isinstance(names, list) and all(isinstance(n, str) and n.strip() for n in names):
+            out[scope] = list(names)
+        else:
+            invalid.append(scope)
+    return (out, invalid) if out else None
+
+
+def bare_list(body: Any) -> list[dict[str, Any]] | None:
+    """v2 응답(`{result: …}` 봉투 없는 맨 배열 — COV E-18). 배열이 아니거나 객체가 아닌 항목이
+    있으면 None(호출자가 오류로 올린다 — 조용히 0행으로 강등하지 않는다 · W2V-G2)."""
+    if isinstance(body, list) and all(isinstance(r, dict) for r in body):
+        return body
+    return None
+
+
+def parse_source_change(raw: dict[str, Any]) -> dict[str, Any]:
+    """소스코드(리소스) 변경 이력 1건 — `collectTime`은 데이터 서버가 변경을 **인지한** 시각이다
+    (배포 시각으로 확정하지 않는다 · plans/134 N-7)."""
+    return {
+        "instance_id": to_int(raw.get("instanceId")),
+        "change_detected_ms": to_int(raw.get("collectTime")),
+    }
+
+
+def extract_sql_texts(body: Any, limit: int | None = None) -> list[str]:
+    """`/api/transaction/sql` 응답(스키마 `object` — 모양 미공개)에서 SQL 문자열을 모은다
+    (`limit`이 없으면 전부)."""
     found: list[str] = []
 
     def walk(node: Any, key: str = "") -> None:
-        if len(found) >= limit:
+        if limit is not None and len(found) >= limit:
             return
         if isinstance(node, dict):
             for k, v in node.items():
@@ -244,4 +487,4 @@ def extract_sql_texts(body: Any, limit: int) -> list[str]:
                 found.append(node)
 
     walk(body)
-    return found[:limit]
+    return found if limit is None else found[:limit]

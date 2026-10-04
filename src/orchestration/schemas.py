@@ -133,9 +133,13 @@ class SpanDecomposedPlan(DecomposedPlan):
 
 @lru_cache(maxsize=8)
 def views_plan_model(
-    plan_model: type[DecomposedPlan], extra_agents: tuple[str, ...],
+    plan_model: type[DecomposedPlan], extra_agents: tuple[str, ...], view_args: bool = False,
 ) -> type[DecomposedPlan]:
-    """`plan_model`의 task 에 `views: list[str]`을 더하고 `extra_agents`를 담당 어휘에 더한 모델."""
+    """`plan_model`의 task 에 `views: list[str]`을 더하고 `extra_agents`를 담당 어휘에 더한 모델.
+
+    `view_args`가 참이면(보기 선택 조건을 쓰는 처리기가 활성 — plans/134 M-3) task 에
+    `view_args: {보기 id: {조건 이름: 값}}`도 더한다. 값 검증은 처리기가 보기 선언으로 한다.
+    """
     task_model = get_args(plan_model.model_fields["tasks"].annotation)[0]
     allowed = allowed_agents() | frozenset(extra_agents)
 
@@ -149,11 +153,17 @@ def views_plan_model(
                     f"(허용: {sorted(allowed)})"
                 )
 
-    ViewsTaskSpec.__name__ = f"Views{task_model.__name__}"
+    task_cls: type[Any] = ViewsTaskSpec
+    if view_args:
+        class ViewArgsTaskSpec(ViewsTaskSpec):
+            view_args: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+        task_cls = ViewArgsTaskSpec
+    task_cls.__name__ = f"Views{task_model.__name__}"
     return create_model(
         f"Views{plan_model.__name__}",
         __base__=plan_model,
-        tasks=(list[ViewsTaskSpec], Field(default_factory=list)),
+        tasks=(list[task_cls], Field(default_factory=list)),  # type: ignore[valid-type]
     )
 
 

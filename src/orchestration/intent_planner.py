@@ -1238,7 +1238,7 @@ def _planner_system_prompt(app_config: AppConfig) -> str:
     else:
         base = _render_planner_ownership_prompt(tuple(app_config.multi_db.get_active_db_ids()))
     # 답변 영역·요청 소스 칸(plans/132 N-5) — 항상. 골격 줄을 바꾸므로 다른 삽입 렌더보다 먼저다.
-    base = _render_areas_prompt(base, _area_rows())
+    base = _render_areas_prompt(base, _area_rows(_active_nonsql_systems(app_config)))
     if _task_frame_on(app_config):
         base = _render_task_frame_prompt(base)
     agents = _nonsql_agents(app_config)
@@ -1256,10 +1256,25 @@ def _planner_system_prompt(app_config: AppConfig) -> str:
     return _render_planner_environment_terms(base, get_registry().environment_terms)
 
 
-def _area_rows() -> str:
-    """영역 카탈로그 표 행 — 레지스트리 등록 전체(판정 재료 · G-7 (a) · 사본 금지 D-053)."""
+def _active_nonsql_systems(app_config: AppConfig) -> frozenset[str]:
+    """활성인 비DB 시스템 코드(plans/134 W2 — `active_only` 영역 렌더 판정 입력)."""
+    from src.orchestration.conditional_agents import active_conditional_systems  # 지연 — 순환 방지
+
+    return frozenset(active_conditional_systems(app_config))
+
+
+def _area_rows(active_systems: frozenset[str] = frozenset()) -> str:
+    """영역 카탈로그 표 행 — 레지스트리 등록 전체(판정 재료 · G-7 (a) · 사본 금지 D-053).
+
+    `active_only` 영역(plans/134 W2)은 소유 시스템이 활성일 때만 싣는다 — 비활성 배포의 분해
+    프롬프트는 종전 바이트 그대로다.
+    """
+    reg = get_registry()
     return "\n".join(
-        f"| {spec.code} | {spec.label or spec.code} |" for spec in get_registry().capability_specs()
+        f"| {spec.code} | {spec.label or spec.code} |" for spec in reg.capability_specs()
+        if not spec.active_only
+        or (active_systems
+            and any(owner in active_systems for owner in reg.capability_owners(spec.code)))
     )
 
 
@@ -1539,7 +1554,7 @@ async def _decompose_once(
     if extra_agents:
         # 비SQL 처리기 활성일 때만 `views` 슬롯 파생 모델(plans/125 A-5) — 비활성은 종전 모델
         # 그대로.
-        plan_model = views_plan_model(plan_model, extra_agents)
+        plan_model = views_plan_model(plan_model, extra_agents, "apm_query" in extra_agents)
     try:
         model = await try_structured_call(
             llm, messages,
@@ -1597,6 +1612,10 @@ async def _decompose_once(
         if extra_agents:
             # 보기 슬롯 보존(plans/125 A-5) — 정제는 `_sanitize_task_views`.
             task["views"] = raw.get("views") or []
+            if "apm_query" in extra_agents:
+                # 보기 선택 조건(plans/134 M-3) — 형태 정제는 `_sanitize_task_views`,
+                # 값 검증은 처리기.
+                task["view_args"] = raw.get("view_args") or {}
         # 답변 영역·요청 소스 칸 보존(plans/132 N-5) — 정제는 `_sanitize_task_areas`.
         task["areas"] = raw.get("areas")
         task["requested_source"] = raw.get("requested_source")

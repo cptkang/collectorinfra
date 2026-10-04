@@ -19,10 +19,14 @@ class Endpoint:
     needs_domain: bool = True  # 도메인 미연결이면 500 "<d> Domain is not connected"
     empty_when_disconnected: bool = False  # 미연결이어도 200 빈 결과(실측)
     param_types: dict = field(default_factory=dict)
+    # (변수 이름, 형식) — 정본 allowlist.py와 같은 선언(SPEC-apm-question-coverage §2.4)
+    path_vars: tuple = ()
 
 
 _RANGE = ("domain_id", "start_time", "end_time")
 _TX = ("domain_id", "txid", "time")
+# `/api/status/{sql,external_call}` 선택 키(plans/134 N-8 · COV-STAT-SQL·EXT)
+_STATUS_OPTIONAL = ("instance_id", "sort_by_metrics", "max_row")
 
 # §5.2(e) 허용목록 — GET만 · 경로 템플릿 정확 일치
 ALLOWED: dict[str, Endpoint] = {
@@ -44,11 +48,17 @@ ALLOWED: dict[str, Endpoint] = {
         Endpoint("/api/transaction/profile.txt", _TX, ("key",), accept="text/plain"),
         Endpoint("/api/transaction/sql", _TX),
         Endpoint("/api/dbsearch/event", _RANGE, ("level", "instance_id")),
-        Endpoint("/api/dbsearch/error", _RANGE, ("instance_id",)),
-        Endpoint("/api/status/application", _RANGE, ("instance_id", "max_row")),
-        Endpoint("/api/status/sql", _RANGE),
-        Endpoint("/api/status/external_call", _RANGE),
-        Endpoint("/api-v2/deploy/{domainId}", ("startTime", "endTime")),
+        Endpoint("/api/dbsearch/error", _RANGE, ("instance_id", "error_type")),
+        Endpoint(
+            "/api/status/application",
+            _RANGE,
+            ("instance_id", "sort_by_metrics", "max_row", "application_name"),
+        ),
+        Endpoint("/api/status/sql", _RANGE, _STATUS_OPTIONAL),
+        Endpoint("/api/status/external_call", _RANGE, _STATUS_OPTIONAL),
+        Endpoint(
+            "/api-v2/deploy/{domainId}", ("startTime", "endTime"), path_vars=(("domainId", "int"),)
+        ),
     )
 }
 

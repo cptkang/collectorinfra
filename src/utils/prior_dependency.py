@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 REASON_PRIOR_FAILED = "prior_failed"
 REASON_PRIOR_EMPTY = "prior_empty"
 REASON_PRIOR_NO_IDENTITY = "prior_no_identity"
+#: 선행이 오래 걸리는 조회라 작업으로 접수돼 아직 결과가 없다(진행 중 — 0건이 아니다 · plans/134
+#: W0-B). 처리기 결과의 `accepted_jobs`로 식별한다.
+REASON_PRIOR_PENDING = "prior_pending"
 
 # 노트 종류 — 응답 경과 블록·API 노출에 그대로 실린다(plans/88 §4.10).
 NOTE_GATE = "gate"              # 선행 결과 게이트로 후속 미실행
@@ -217,6 +220,7 @@ def assess_prior_dependency(
 
     prior = prior or {}
     failed: list[str] = []
+    pending: list[str] = []
     rows: list[dict] = []
     for tid in input_from:
         res = prior.get(tid)
@@ -224,6 +228,8 @@ def assess_prior_dependency(
         if not isinstance(res, dict) or res.get("error"):
             failed.append(tid)
             continue
+        if res.get("accepted_jobs"):
+            pending.append(tid)
         rows.extend(_result_rows(res))
 
     ids_text = ", ".join(input_from)
@@ -233,6 +239,14 @@ def assess_prior_dependency(
         return DependencyVerdict(
             ok=False, reason=REASON_PRIOR_FAILED, source_task_ids=input_from,
             detail=f"선행 작업({', '.join(failed)})이 실패해 이 단계를 실행하지 않았습니다: {err}",
+        )
+    if pending:
+        # 접수(진행 중)는 데이터 0건이 아니다 — 받은 일부 결과로 대상을 조용히 좁히지도 않는다.
+        return DependencyVerdict(
+            ok=False, reason=REASON_PRIOR_PENDING, source_task_ids=input_from,
+            detail=(f"선행 작업({', '.join(pending)})이 오래 걸리는 조회라 작업으로 접수돼 "
+                    "아직 결과가 없어 이 단계를 실행하지 않았습니다 — 작업이 끝나면 다시 요청해 "
+                    "주세요."),
         )
     if not rows:
         return DependencyVerdict(

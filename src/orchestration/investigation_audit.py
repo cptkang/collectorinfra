@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Callable
@@ -66,6 +67,16 @@ def _host_inspect_fields(result: dict[str, Any]) -> dict[str, Any]:
     return fields
 
 
+def _apm_command(provenance: dict[str, Any]) -> str:
+    """도구 호출 1건 — 대상 + 고정 인자·조건(plans/134 W1 검증 L-6 · 조건이 없으면 종전 모양)."""
+    parts = [f"hostname={provenance.get('hostname') or '*'}"]
+    args = provenance.get("args")
+    if isinstance(args, dict):
+        parts += [f"{k}={v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)}"
+                  for k, v in args.items()]
+    return f"{provenance.get('tool')}({', '.join(parts)})"
+
+
 def _apm_query_fields(result: dict[str, Any]) -> dict[str, Any]:
     """APM 보기 호출 감사(plans/125 A-3) — 대상 hostname · 도구 호출 요약 · 실패 사유."""
     meta = result.get("apm_query") or {}
@@ -73,18 +84,21 @@ def _apm_query_fields(result: dict[str, Any]) -> dict[str, Any]:
     fields: dict[str, Any] = {
         "targets": [{"hostname": h} for h in hosts] or None,
         "profile": ",".join(meta.get("views") or []) or None,
-        "commands": [
-            f"{p.get('tool')}(hostname={p.get('hostname') or '*'})"
-            for p in meta.get("provenance") or []
-        ] or None,
+        "commands": [_apm_command(p) for p in meta.get("provenance") or []] or None,
     }
     failures = meta.get("failures") or []
+    accepted = meta.get("accepted_jobs") or []
+    partial = [a for a in meta.get("aggregates") or [] if isinstance(a, dict) and a.get("partial")]
     if result.get("error"):
         fields["outcome"] = INVESTIGATION_FAILED
         fields["degraded"] = [{"reason": result.get(DEGRADED_KEY) or "error"}]
-    elif failures:
+    elif failures or accepted or partial:
+        # 작업 접수 · 게이트웨이 부분 결과(plans/134 W0-B)는 완료(ok)로 세지 않는다
         fields["outcome"] = INVESTIGATION_PARTIAL
-        fields["degraded"] = [{"reason": str(f.get("reason"))[:120]} for f in failures[:5]]
+        fields["degraded"] = [{"reason": str(f.get("reason"))[:120]} for f in failures[:5]] + [
+            {"reason": "apm_job_accepted", "detail": str(j)[:8]} for j in accepted[:5]] + [
+            {"reason": "apm_partial_sources", "detail": f"{a.get('view')}:{a.get('hostname')}"}
+            for a in partial[:5]]
     else:
         fields["outcome"] = INVESTIGATION_OK
     return fields

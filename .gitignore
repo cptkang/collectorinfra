@@ -67,3 +67,4 @@ reports/
 apm_gateway/testdata/jennifer/**/*.zip
 apm_gateway/testdata/jennifer/**/license*
 apm_gateway/testdata/jennifer/recorded/raw/
+apm_gateway/var/

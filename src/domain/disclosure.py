@@ -16,6 +16,8 @@
   (`tests/test_domain/test_disclosure.py`) — domain은 utils를 import할 수 없어 문자열로 둔다.
 - 턴 단위 고지의 우선순위·상한(W-9): 의무 고지는 모두 본문에, 그 밖은 **본문 최대 3줄**이고
   나머지는 구조 필드로만 남긴다(123 RK-5 — 고지 누적으로 응답이 장황해지는 것을 막는다).
+- 134 APM 고지 kind(SPEC-apm-question-coverage §7.5)와 선택 칸 `ref`(`{"apm_job_id": …}` — 화면이
+  작업 카드를 그리는 참조 · 134 W0-B). `make`·`dedupe`가 `ref`를 보존한다.
 
 계층: domain — 순수 · I/O·LLM·전역 상태 0.
 """
@@ -24,7 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 # ── 123 고지 kind (결과가 전부가 아님을 알리는 것) ─────────────────────────────
 
@@ -69,6 +71,27 @@ CONDITION_CONFLICT = "condition_conflict"
 #: `src.domain.time_spec.NOTE_FUTURE_PERIOD`(같은 값 — drift 테스트가 고정).
 FUTURE_PERIOD = "future_period"
 
+# ── 134 APM 고지 kind (SPEC-apm-question-coverage §7.5 — 각 Wave가 소비처를 붙인다) ──────────
+
+#: 오래 걸리는 조회를 작업으로 접수했다 — 데이터 답이 아니다(W0-B · `ref` = 작업 참조).
+APM_JOB_ACCEPTED = "apm_job_accepted"
+#: 화면·CSV는 앞 N행이고 전체 M행은 결과 파일이다(W0-B · `ref` = 작업 참조).
+APM_FULL_RESULT_FILE = "apm_full_result_file"
+#: 일부 소스·도메인·조각 조회가 실패했다(게이트웨이 봉투 `partial`).
+APM_PARTIAL_SOURCES = "apm_partial_sources"
+#: 기간을 말했지만 현재값만 있는 보기다.
+APM_CURRENT_ONLY = "apm_current_only"
+#: 시 단위 통계라 요청 구간보다 넓은 정시 경계로 집계했다.
+APM_HOURLY_RESOLUTION = "apm_hourly_resolution"
+#: 변경 감지 시각이며 배포 확정이 아니다(W2).
+APM_CHANGE_DETECTION = "apm_change_detection"
+#: 개인정보·자격증명을 가렸다(G-11 미결).
+APM_MASKED_FIELDS = "apm_masked_fields"
+#: 해석하지 못한 조건·기능이 있다 — 다른 조회로 대신하지 않았다.
+APM_UNRESOLVED_CONDITION = "apm_unresolved_condition"
+#: 고지 항목의 선택 칸 `ref`에서 작업 카드가 읽는 키(게이트웨이 작업 ID).
+REF_APM_JOB_ID = "apm_job_id"
+
 Grade = Literal["partial", "correct", "guide", "refuse", "error", "auxiliary", "neutral"]
 Scope = Literal["task", "turn", "shadow", "foreign"]
 
@@ -80,6 +103,8 @@ class Disclosure(TypedDict):
     text: str
     #: 어디서 생긴 사실인가 — `"turn"`(턴 전체) 또는 `"task:<task_id>"`·`"task"`(조회 한 건).
     source: str
+    #: 선택 — 화면이 따라갈 참조(예 `{"apm_job_id": "<32 hex>"}` — 134 W0-B 작업 카드).
+    ref: NotRequired[dict[str, str]]
 
 
 @dataclass(frozen=True)
@@ -146,6 +171,15 @@ KIND_TABLE: dict[str, KindSpec] = {
                 "event_no_default_period", "event_to_now",
             )
         ),
+        # 134 APM(SPEC-apm-question-coverage §7.5) — 등급·의무·범위는 SPEC 표 그대로
+        KindSpec(APM_JOB_ACCEPTED, "partial", True, "task", 5),
+        KindSpec(APM_FULL_RESULT_FILE, "neutral", True, "task", 10),
+        KindSpec(APM_PARTIAL_SOURCES, "partial", True, "task", 10),
+        KindSpec(APM_UNRESOLVED_CONDITION, "guide", True, "task", 15),
+        KindSpec(APM_CURRENT_ONLY, "neutral", False, "task", 30),
+        KindSpec(APM_HOURLY_RESOLUTION, "neutral", False, "task", 30),
+        KindSpec(APM_CHANGE_DETECTION, "neutral", False, "task", 30),
+        KindSpec(APM_MASKED_FIELDS, "neutral", False, "task", 40),
     )
 }
 
@@ -190,16 +224,36 @@ def failure_text(kind: str, *, subject: str, detail: str | None = None) -> str:
     return f"「{subj}」 조회 중 오류가 발생해 결과를 얻지 못했습니다. {_NOT_EMPTY_TAIL}{tail}"
 
 
-def make(kind: str, text: str, *, source: str = "turn") -> Disclosure:
-    """고지 한 건을 만든다 — kind는 표에 있어야 한다(오타가 조용히 새 kind가 되지 않게)."""
+def _clean_ref(ref: Any) -> dict[str, str] | None:
+    """`ref` 칸 — 문자열 키·값만 남긴다(비면 None)."""
+    if not isinstance(ref, Mapping):
+        return None
+    clean = {str(k): str(v) for k, v in ref.items() if k and v is not None and str(v)}
+    return clean or None
+
+
+def make(
+    kind: str, text: str, *, source: str = "turn", ref: Mapping[str, Any] | None = None
+) -> Disclosure:
+    """고지 한 건을 만든다 — kind는 표에 있어야 한다(오타가 조용히 새 kind가 되지 않게).
+
+    `ref`(선택)는 화면이 따라갈 참조다(134 W0-B 작업 카드 — `{"apm_job_id": …}`).
+    """
     if kind not in KIND_TABLE:
         raise ValueError(f"등록되지 않은 disclosure kind: {kind!r}")
-    return {"kind": kind, "text": " ".join(str(text).split()), "source": source}
+    item: Disclosure = {"kind": kind, "text": " ".join(str(text).split()), "source": source}
+    clean = _clean_ref(ref)
+    if clean:
+        item["ref"] = clean
+    return item
 
 
 def dedupe(items: Iterable[Mapping[str, Any] | None]) -> list[Disclosure]:
-    """(kind, text) 기준으로 중복을 지운다 — 처음 나온 순서를 지킨다. 형식이 틀린 항목은 버린다."""
-    seen: set[tuple[str, str]] = set()
+    """(kind, text, ref) 기준으로 중복을 지운다 — 처음 나온 순서를 지킨다.
+
+    형식이 틀린 항목은 버린다. 선택 칸 `ref`는 보존한다(없는 항목은 종전과 같은 세 칸 그대로).
+    """
+    seen: set[tuple[str, str, tuple[tuple[str, str], ...]]] = set()
     out: list[Disclosure] = []
     for item in items:
         if not isinstance(item, Mapping):
@@ -208,11 +262,15 @@ def dedupe(items: Iterable[Mapping[str, Any] | None]) -> list[Disclosure]:
         text = str(item.get("text") or "")
         if not kind or not text:
             continue
-        key = (kind, text)
+        ref = _clean_ref(item.get("ref"))
+        key = (kind, text, tuple(sorted(ref.items())) if ref else ())
         if key in seen:
             continue
         seen.add(key)
-        out.append({"kind": kind, "text": text, "source": str(item.get("source") or "turn")})
+        kept: Disclosure = {"kind": kind, "text": text, "source": str(item.get("source") or "turn")}
+        if ref:
+            kept["ref"] = ref
+        out.append(kept)
     return out
 
 

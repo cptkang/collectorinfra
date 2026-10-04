@@ -50,6 +50,7 @@ user:
   - {id: U-21, title: 실행된 SQL 보기, anchors: ["실행된 SQL 보기"], files: *IDX, captures: [answer-sql, progress-panel], case_na: "모든 조회 사례에 붙는 버튼 — 조작 화면만 싣는다(사례는 U-19~U-22)"}
   - {id: U-22, title: CSV로 내려받기, anchors: ["CSV 다운로드"], files: *IDX, captures: [answer-table], cases: [Q-SERVER-LIST]}
   - {id: U-23, title: 결과 파일 내려받기, anchors: ["다운로드"], files: *IDX, captures: [answer-file], cases: [Q-EXCEL-OUT]}
+  - {id: U-50, title: 오래 걸리는 제니퍼 조회 · 전체 결과 받기, anchors: ["제니퍼 조회 작업", "작업 취소", "결과 보기", "전체 결과 받기(CSV)", "다시 확인", "작업 접수"], files: *IDX, captures: [], case_na: "오래 걸리는 조회는 실제 제니퍼 연결과 큰 데이터가 있어야 생겨 녹화 사례·캡처를 만들 수 없다(로컬 제니퍼는 라이선스가 없어 도메인 0건) — 본문에 안내 문구와 카드 구성을 싣는다"}
   # 5. 조회 범위와 역질문
   - {id: U-24, title: 조회 대상(스코프) 칩, anchors: ["#dbScopeChip", "#dbScopePick", "#dbScopeClear"], files: *IDX, captures: [scope-chip], case_na: 칩 조작 — 질문과 함께 쓰는 법은 U-25 사례}
   - {id: U-25, title: 존 선택 역질문, anchors: ["선택한 존으로 조회", "건너뛰고 전체 조회"], files: *IDX, captures: [zone-clarify], case_na: "파이프라인 전에 라우트가 답하는 제어 화면 — 샌드박스 단일 DB 에서는 발동하지 않아 화면 예시로 싣는다(G-6)"}
@@ -74,6 +75,7 @@ user:
   - {id: U-47, title: 데이터 소스를 이름으로 지정해 묻기, anchors: ["#prompt"], files: *IDX, captures: [], case_na: "지정한 소스의 연결 상태(제니퍼·문서 검색은 환경마다 다르다)에 따라 결과가 갈려 녹화 사례 하나로 대표할 수 없다 — 본문에 예문과 안내 문구를 싣는다", no_ui: true}
   - {id: U-48, title: 데이터 소스 선택 칩, anchors: ["선택한 데이터 소스로 조회"], files: *IDX, captures: [], case_na: "칩은 질문 분석(LLM)이 여러 소스가 답할 수 있다고 판단할 때만 나와 결정적 녹화가 되지 않는다 — 위젯 모양은 U-25 존 선택과 같다"}
   - {id: U-49, title: 소스 선택 기억 보기·지우기, anchors: ["#prompt"], files: *IDX, captures: [], case_na: "기능이 관리자 설정(기본 꺼짐)과 이전 선택에 따라 달라 녹화 사례 하나로 대표할 수 없다 — 본문에 명령과 답을 싣는다", no_ui: true}
+  - {id: U-51, title: "제니퍼(WAS) 조회 — 기간·개수·조건 · 통계·지표 목록·소스 변경", anchors: ["#prompt"], files: *IDX, captures: [], case_na: "제니퍼 연결과 실데이터가 있어야 답이 나와 녹화 사례를 만들 수 없다(로컬 제니퍼는 라이선스가 없어 도메인 0건) — 본문에 질문 예와 조회 방식을 싣는다", no_ui: true}
   # 9. 이벤트 알람
   - {id: U-40, title: 알람 탭과 알람 카드, anchors: ["이벤트 알람", "#alarmList", "#alarmTabBadge", "data-view=\"alarm\""], files: *IDX, captures: [alarm-list], case_na: 수신 화면}
   - {id: U-41, title: 알람 거르기·찾기, anchors: ["#alarmSearch", "#alarmFilterReset", "#alarmClearBtn"], files: *IDX, captures: [alarm-list], case_na: 필터 조작}
@@ -153,6 +155,7 @@ admin:
   - {id: A-49, title: 사용자 활동 조회 API, anchors: ["/admin/audit/users/"], files: [src/api/routes/admin.py], captures: [], no_ui: true}
   - {id: A-50, title: 메트릭 엔드포인트, anchors: ["/metrics"], files: [src/api/server.py], captures: [], no_ui: true}
   - {id: A-51, title: API 문서(Swagger), anchors: ["/docs"], files: [src/api/server.py], captures: [swagger], no_ui: true}
+  - {id: A-69, title: 제니퍼 장기 조회 작업 API, anchors: ["/apm/jobs", "/apm/jobs/{job_id}/download"], files: [src/api/routes/apm_jobs.py], captures: [], no_ui: true}
   # 11. 운영
   - {id: A-52, title: 기동과 정지, anchors: ["--server"], files: [src/main.py], captures: [], no_ui: true}
   - {id: A-53, title: 새 DB 편입, anchors: ["env_connection_key"], files: [config/db_registry.yaml], captures: [], no_ui: true}

@@ -15,7 +15,9 @@ from src.routing import capability_ownership as own
 from src.routing.execution_groups import partition_execution_groups
 from src.routing.registry import get_registry, parse_registry
 
-WAS_AREAS = ("was_instance", "was_performance", "was_runtime", "was_activity", "apm_event")
+WAS_AREAS = ("was_instance", "was_performance", "was_runtime", "was_activity", "apm_event",
+             # plans/134 W2 — 통계·지표 목록·소스 변경 감지(의도된 갱신)
+             "was_statistics", "apm_metric_catalog", "was_change_detection")
 
 
 def test_apm_is_a_non_db_system_without_zone_groups() -> None:
@@ -42,10 +44,26 @@ def test_non_db_system_owns_was_areas_and_db_ownership_is_unchanged() -> None:
 def test_view_table_is_registry_data() -> None:
     views = {v.id: v for v in get_registry().views_of("apm")}
     assert list(views) == ["apm.instances", "apm.app_health", "apm.runtime", "apm.pool",
-                           "apm.active", "apm.slow_tx", "apm.events"]
+                           "apm.active", "apm.slow_tx", "apm.events",
+                           # plans/134 W2(SPEC §6.2 — 의도된 갱신)
+                           "apm.app_stats", "apm.sql_stats", "apm.external_stats",
+                           "apm.metrics", "apm.changes"]
     assert views["apm.instances"].first_hop and not views["apm.instances"].required_input
     assert views["apm.app_health"].required_input == "hostname"
-    assert views["apm.app_health"].window_max_minutes == 10
+    # plans/134 M-2 — 창은 상한이 아니라 의미(current·range·hourly·none) · window_max_minutes 폐지
+    assert views["apm.app_health"].window == "range"
+    assert [views[v].window for v in ("apm.instances", "apm.runtime", "apm.pool", "apm.active",
+                                      "apm.slow_tx", "apm.events")] == [
+        "none", "range", "current", "current", "range", "range"]
+    assert not hasattr(views["apm.app_health"], "window_max_minutes")
+    # plans/134 M-3 — 보기 선택 조건(SPEC §6.2 W1 행)
+    assert [a.name for a in views["apm.active"].args] == ["n", "full"]
+    assert [a.name for a in views["apm.slow_tx"].args] == ["n", "full"]
+    assert [a.name for a in views["apm.events"].args] == [
+        "level", "level_mode", "error_type", "record", "n", "full"]
+    stale = {"전체 200개 상한", "구간 10분 상한", "현재값 · 상위 20", "상위 20",
+             "기본 30분 · 최대 24시간"}
+    assert {v.limit for v in views.values()}.isdisjoint(stale), "사라진 자체 상한 표기"
     assert views["apm.events"].capability == "apm_event"
     assert {v.capability for v in views.values()} <= set(WAS_AREAS)
     assert get_registry().views_of("polestar") == ()

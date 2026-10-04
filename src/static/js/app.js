@@ -1127,6 +1127,7 @@
                 // data.time: 저장된 대화를 다시 그릴 때의 원래 시각(D-248)
                 '<div class="message-time">' + formatTime(data.time || new Date()) + '</div>' +
             '</div>';
+        appendApmJobCards(el.querySelector(".message-bubble"), data.disclosures);   // plans/134 W0-B
 
         chatMessages.appendChild(el);
         scrollToBottomIfSticky();
@@ -1360,6 +1361,7 @@
             // reason이 있으면 상태값과 무관하게 "건너뜀" 우선(88 R-A: skipped 도입이 미뤄지면 failed로 온다)
             var cls = (t.status === "skipped" || t.reason) ? "skipped"
                     : t.status === "failed" ? "failed"
+                    : t.status === "accepted" ? "accepted"
                     : t.status === "completed" ? "done" : "active";
             var mark = cls === "done" ? "\u2713" : cls === "skipped" ? "\u2298" : cls === "failed" ? "\u2715" : "\u25B8";
             var tail = "";
@@ -1369,6 +1371,7 @@
             if (cls === "skipped") tail += " — 건너뜀" + (t.error ? ": " + t.error : "");
             else if (cls === "failed" && t.error) tail += " — 실패: " + t.error;
             else if (cls === "active") tail += " · 진행 중";
+            else if (cls === "accepted") tail += " · 작업으로 접수(진행 중 — 작업 카드에서 확인)";
             html += '<li class="stream-task stream-task--' + cls + '"><span class="stream-task-mark" aria-hidden="true">' + mark + '</span> ' +
                     '<strong>' + escapeHtml(taskOrdinal(t)) + '</strong> ' +
                     escapeHtml(t.sub_query || agentLabel(t.agent)) + escapeHtml(tail) + '</li>';
@@ -1458,9 +1461,11 @@
         var status = "진행 중";
         if (event.phase === "end") {
             var ts = isTask ? event.task.status : (isGroup && groupFailed(event.group)) ? "failed" : "completed";
-            status = (ts === "skipped" || (isTask && event.task.reason)) ? "건너뜀" : ts === "failed" ? "실패" : "완료";
+            // plans/134 W0-B: 작업으로 접수된 조회는 「완료」가 아니다
+            status = (ts === "skipped" || (isTask && event.task.reason)) ? "건너뜀" : ts === "failed" ? "실패"
+                   : ts === "accepted" ? "작업 접수" : "완료";
         }
-        var badgeCls = status === "완료" ? "success" : status === "진행 중" ? "info" : "error";
+        var badgeCls = status === "완료" ? "success" : (status === "진행 중" || status === "작업 접수") ? "info" : "error";
         var elapsed = "";
         if (event.phase === "end") {
             var d = ((event.timestamp_ms || 0) - parseFloat(li.getAttribute("data-start") || "0")) / 1000;
@@ -1902,6 +1907,10 @@
             var bubbleClar = streamingMsgClar ? streamingMsgClar.querySelector(".message-bubble") : null;
             if (bubbleClar) renderZoneClarification(bubbleClar, meta.clarification);
         }
+
+        // plans/134 W0-B: 제니퍼 장기 조회 작업 카드(disclosures[].ref.apm_job_id)
+        var streamingMsgJob = document.getElementById("streamingMessage");
+        if (streamingMsgJob) appendApmJobCards(streamingMsgJob.querySelector(".message-bubble"), meta.disclosures);
 
         // Remove streaming IDs to prevent conflicts
         var streamingMsg = document.getElementById("streamingMessage");
@@ -2891,6 +2900,230 @@
         downloadWithAuth(href, nameEl ? nameEl.textContent : null);
     });
 
+    // ─── 제니퍼 장기 조회 작업 카드 (plans/134 W0-B · SPEC-apm-question-coverage §3.8) ───
+    // 응답 disclosures[] 중 ref.apm_job_id가 있는 항목을 작업 카드로 그린다. 상태 API를 폴링해
+    // 진행 막대·예상 시간을 갱신하고 끝나면 멈춘다(탭이 숨겨지면 간격을 늘린다). 접수·진행 카드는
+    // 「완료」로 표시하지 않는다. 결과는 헤더 인증으로 받아 Blob으로 저장한다(토큰 URL 미사용 · D-262).
+    var APM_JOB_LIVE = { queued: true, running: true };
+    var APM_JOB_LABELS = {
+        queued: "대기 중", running: "진행 중", completed: "완료", partial: "일부 결과",
+        failed: "실패", cancelled: "취소됨", interrupted: "중단됨"
+    };
+    var APM_JOB_PREVIEW_ROWS = 20;
+    var _apmJobStatus = {};   // job_id → 마지막 상태 응답(미리보기 표·다운로드 판단)
+
+    function apmJobRefs(disclosures) {
+        var seen = {};
+        var refs = [];
+        (disclosures || []).forEach(function (d) {
+            var id = d && d.ref && d.ref.apm_job_id;
+            if (!id || seen[id]) return;
+            seen[id] = true;
+            refs.push({ id: String(id), kind: d.kind, text: d.text || "" });
+        });
+        return refs;
+    }
+
+    function appendApmJobCards(bubble, disclosures) {
+        if (!bubble) return;
+        apmJobRefs(disclosures).forEach(function (ref) {
+            if (bubble.querySelector('.apm-job-card[data-job-id="' + ref.id + '"]')) return;
+            var card = document.createElement("div");
+            card.className = "apm-job-card";
+            card.setAttribute("data-job-id", ref.id);
+            card.setAttribute("data-state", "checking");
+            card.innerHTML =
+                '<div class="apm-job-head">' +
+                    '<span class="apm-job-title">제니퍼 조회 작업</span>' +
+                    '<span class="apm-job-badge" data-apm-field="badge">확인 중</span>' +
+                '</div>' +
+                '<div class="apm-job-scope" data-apm-field="scope">' + escapeHtml(ref.text) + '</div>' +
+                '<div class="apm-job-progress" role="progressbar" aria-label="작업 진행" aria-valuemin="0" aria-valuemax="100">' +
+                    '<div class="apm-job-progress-bar" data-apm-field="bar"></div>' +
+                '</div>' +
+                '<div class="apm-job-meta" data-apm-field="meta"></div>' +
+                '<div class="apm-job-note" data-apm-field="note" hidden></div>' +
+                '<div class="apm-job-actions">' +
+                    '<button type="button" class="apm-job-btn" data-apm-action="cancel" hidden>작업 취소</button>' +
+                    '<button type="button" class="apm-job-btn" data-apm-action="preview" hidden>결과 보기</button>' +
+                    '<button type="button" class="apm-job-btn apm-job-btn--primary" data-apm-action="download" hidden>전체 결과 받기(CSV)</button>' +
+                    '<button type="button" class="apm-job-btn" data-apm-action="refresh" hidden>다시 확인</button>' +
+                '</div>' +
+                '<div class="apm-job-preview" data-apm-field="preview" hidden></div>';
+            bubble.appendChild(card);
+            // 말풍선이 화면에 붙은 뒤 첫 확인(비스트림 렌더는 카드를 먼저 만들고 말풍선을 붙인다)
+            scheduleApmJobPoll(card, 0);
+        });
+    }
+
+    function apmJobProgressText(job) {
+        var parts = [];
+        var p = job.progress || {};
+        if (typeof p.done === "number") {
+            parts.push(p.total ? ("진행 " + p.done + "/" + p.total + " " + (p.label || "API 호출"))
+                               : ("진행 " + (p.label || "API 호출") + " " + p.done + "회"));
+        }
+        var e = job.estimate || {};
+        if (APM_JOB_LIVE[job.state]) {   // 끝난 작업에는 예상 시간을 싣지 않는다
+            if (typeof e.seconds === "number" && e.seconds > 0) {
+                parts.push(e.seconds >= 120 ? ("예상 약 " + (Math.round(e.seconds / 6) / 10) + "분")
+                                            : ("예상 약 " + e.seconds + "초"));
+            } else {
+                parts.push("예상 시간 미정");
+            }
+        }
+        if (typeof job.total_row_count === "number") parts.push("전체 " + job.total_row_count.toLocaleString() + "행");
+        return parts.join(" · ");
+    }
+
+    function renderApmJobCard(card, job) {
+        var state = job.state || "unknown";
+        card.setAttribute("data-state", state);
+        var field = function (name) { return card.querySelector('[data-apm-field="' + name + '"]'); };
+        var badge = field("badge");
+        badge.textContent = APM_JOB_LABELS[state] || state;
+        badge.className = "apm-job-badge apm-job-badge--" + state;
+        if (job.scope) field("scope").textContent = job.scope;
+        var p = job.progress || {};
+        var pct = APM_JOB_LIVE[state]
+            ? (p.total ? Math.min(99, Math.round(100 * (p.done || 0) / p.total)) : null)
+            : (state === "completed" || state === "partial" ? 100 : 0);
+        var bar = field("bar");
+        var track = bar.parentNode;
+        track.classList.toggle("apm-job-progress--indeterminate", pct === null);
+        bar.style.width = pct === null ? "" : (pct + "%");
+        if (pct !== null) track.setAttribute("aria-valuenow", String(pct));
+        else track.removeAttribute("aria-valuenow");
+        field("meta").textContent = apmJobProgressText(job);
+        var notes = [];
+        if (state === "partial") notes.push("일부 소스·구간 조회가 실패한 부분 결과입니다 — 전체 결과가 아닙니다.");
+        if (job.error && job.error.reason && !job.downloadable) notes.push(job.error.reason);
+        if (job.ledger === "memory") notes.push("작업 기록이 서버 메모리에만 있어 서버가 다시 시작되면 이 카드에서 결과를 받을 수 없습니다.");
+        var note = field("note");
+        note.textContent = notes.join(" ");
+        note.hidden = notes.length === 0;
+        card.querySelector('[data-apm-action="cancel"]').hidden = !APM_JOB_LIVE[state];
+        card.querySelector('[data-apm-action="refresh"]').hidden = true;
+        card.querySelector('[data-apm-action="preview"]').hidden = !job.downloadable;
+        card.querySelector('[data-apm-action="download"]').hidden = !job.downloadable;
+    }
+
+    function apmJobGone(card, message) {
+        card.setAttribute("data-state", "gone");
+        var badge = card.querySelector('[data-apm-field="badge"]');
+        badge.textContent = "확인 불가";
+        badge.className = "apm-job-badge apm-job-badge--failed";
+        var note = card.querySelector('[data-apm-field="note"]');
+        note.textContent = message;
+        note.hidden = false;
+        card.querySelectorAll("[data-apm-action]").forEach(function (b) { b.hidden = true; });
+    }
+
+    var APM_JOB_BACKOFF_MAX_MS = 60000;
+    var APM_JOB_RETRY_HINT_AFTER = 3;   // 연속 실패 이 횟수부터 「다시 확인」 안내
+
+    function scheduleApmJobPoll(card, delay) {
+        if (card._apmTimer) clearTimeout(card._apmTimer);
+        card._apmTimer = setTimeout(function () { card._apmTimer = null; pollApmJob(card); }, delay);
+    }
+
+    async function pollApmJob(card) {
+        var id = card.getAttribute("data-job-id");
+        if (!document.body.contains(card)) return;   // 대화가 바뀌어 카드가 사라졌다
+        var next = 10000;
+        try {
+            var res = await fetch("/api/v1/apm/jobs/" + encodeURIComponent(id), { headers: getAuthHeaders() });
+            if (res.status === 401) { redirectToLogin(); return; }
+            var body = null;
+            try { body = await res.json(); } catch (_e) { body = null; }
+            if (res.status === 403 || res.status === 404) {
+                apmJobGone(card, (body && body.detail) || "작업을 찾을 수 없습니다.");
+                return;
+            }
+            if (!res.ok || !body) throw new Error((body && body.detail) || ("HTTP " + res.status));
+            card._apmFailures = 0;
+            _apmJobStatus[id] = body;
+            renderApmJobCard(card, body);
+            if (!APM_JOB_LIVE[body.state]) return;   // 끝났으면 멈춘다
+            next = document.hidden ? 10000 : 3000;
+        } catch (err) {
+            // 서버·게이트웨이 오류(5xx·연결 실패) — 지수 백오프(10초부터 두 배 · 상한 60초)
+            card._apmFailures = (card._apmFailures || 0) + 1;
+            next = Math.min(APM_JOB_BACKOFF_MAX_MS, 10000 * Math.pow(2, card._apmFailures - 1));
+            var note = card.querySelector('[data-apm-field="note"]');
+            note.textContent = "작업 상태를 확인하지 못했습니다(" + err.message + ") — " +
+                Math.round(next / 1000) + "초 뒤 다시 확인합니다.";
+            note.hidden = false;
+            var retry = card.querySelector('[data-apm-action="refresh"]');
+            if (retry) retry.hidden = card._apmFailures < APM_JOB_RETRY_HINT_AFTER;
+        }
+        scheduleApmJobPoll(card, next);
+    }
+
+    function toggleApmJobPreview(card) {
+        var box = card.querySelector('[data-apm-field="preview"]');
+        if (!box.hidden) { box.hidden = true; return; }
+        var job = _apmJobStatus[card.getAttribute("data-job-id")] || {};
+        var rows = (job.preview_rows || []).slice(0, APM_JOB_PREVIEW_ROWS);
+        if (!rows.length) {
+            box.innerHTML = '<div class="apm-job-preview-caption">미리볼 행이 없습니다.</div>';
+        } else {
+            var cols = (job.columns && job.columns.length) ? job.columns : Object.keys(rows[0]);
+            var cell = function (v) {
+                if (v === null || v === undefined) return "";
+                return escapeHtml(typeof v === "object" ? JSON.stringify(v) : String(v));
+            };
+            box.innerHTML =
+                '<div class="apm-job-preview-caption">앞 ' + rows.length + '행 미리보기 · 전체 ' +
+                    (typeof job.total_row_count === "number" ? job.total_row_count.toLocaleString() : "?") +
+                    '행 — 전체는 「전체 결과 받기(CSV)」로 받으세요</div>' +
+                '<div class="apm-job-preview-scroll"><table class="apm-job-table"><thead><tr>' +
+                    cols.map(function (c) { return "<th>" + escapeHtml(c) + "</th>"; }).join("") +
+                '</tr></thead><tbody>' +
+                    rows.map(function (r) {
+                        return "<tr>" + cols.map(function (c) { return "<td>" + cell(r[c]) + "</td>"; }).join("") + "</tr>";
+                    }).join("") +
+                '</tbody></table></div>';
+        }
+        box.hidden = false;
+    }
+
+    async function cancelApmJob(card, button) {
+        var id = card.getAttribute("data-job-id");
+        button.disabled = true;
+        try {
+            var res = await fetch("/api/v1/apm/jobs/" + encodeURIComponent(id) + "/cancel",
+                                  { method: "POST", headers: getAuthHeaders() });
+            if (res.status === 401) { redirectToLogin(); return; }
+            var body = await res.json();
+            if (!res.ok) throw new Error(body && body.detail ? body.detail : ("HTTP " + res.status));
+            _apmJobStatus[id] = body;
+            renderApmJobCard(card, body);
+        } catch (err) {
+            showError("작업을 취소하지 못했습니다: " + err.message);
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    chatMessages.addEventListener("click", function (e) {
+        var button = e.target.closest(".apm-job-card [data-apm-action]");
+        if (!button) return;
+        var card = button.closest(".apm-job-card");
+        var id = card.getAttribute("data-job-id");
+        var action = button.getAttribute("data-apm-action");
+        if (action === "refresh") {
+            card._apmFailures = 0;
+            button.hidden = true;
+            scheduleApmJobPoll(card, 0);   // 예약된 확인을 지우고 바로 확인한다
+        } else if (action === "cancel") cancelApmJob(card, button);
+        else if (action === "preview") toggleApmJobPreview(card);
+        else if (action === "download") {
+            downloadWithAuth("/api/v1/apm/jobs/" + encodeURIComponent(id) + "/download?format=csv",
+                             "apm_job_" + id.substring(0, 8) + ".csv");
+        }
+    });
+
     // ─── Mapping Feedback Upload Handler ───
 
     window.handleMappingFeedbackUpload = async function (inputEl) {
@@ -3326,7 +3559,10 @@
             }
             var ordinal = t.order != null ? t.order : (idx + 1);
             var statusBadge = "";
-            if (t.status === "completed") {
+            if (t.accepted && t.status === "completed") {
+                // plans/134 W0-B: 작업으로 접수된 조회 — 데이터 완료가 아니다
+                statusBadge = ' <span class="step-data-badge step-data-badge--info">작업 접수</span>';
+            } else if (t.status === "completed") {
                 statusBadge = ' <span class="step-data-badge step-data-badge--success">완료</span>';
             } else if (t.status === "failed") {
                 statusBadge = ' <span class="step-data-badge step-data-badge--error">실패</span>';
@@ -4060,6 +4296,8 @@
                 row_count: t.row_count,
                 processing_time_ms: t.processing_time_ms,
                 time: at,
+                // 작업 카드(plans/134 W0-B) — 작업 결과는 서버 장부에 남아 있어 다시 이어 볼 수 있다
+                disclosures: t.disclosures,
             });
             // 역질문 턴은 db_scope가 없다 — 직전 보고값을 유지하는 renderDbScopeChip 규칙과 같다
             if (t.db_scope) lastScope = t.db_scope;

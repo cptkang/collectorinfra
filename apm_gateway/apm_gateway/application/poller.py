@@ -9,6 +9,8 @@ SPEC-apm-gateway §5).
   유실 방지 · 토큰 사용량은 실패 응답까지 센다(§0.10 #10). `contract_violation`은 폴러 버그이므로 그
   도메인 폴링을 멈춘다.
 - 상태는 `status()`로 드러낸다(`gateway_health`·기동 로그 — 침묵 금지).
+- 폴러의 API 호출은 우선순위 `poller`다 — 같은 토큰을 나누는 대화형·백그라운드 조회보다 먼저 나간다
+  (plans/134 W0-B N-14 · 소스 클라이언트의 우선순위 속도 제어).
 - 제니퍼 소스가 여럿이면(plans/87 J8 · D-287 ②) 소스 간은 병렬로, 소스 안은 도메인 순차로
   폴링한다(속도 상한은 소스 클라이언트마다). 커서 키·멱등 키·백오프·중지는 (소스, 도메인)별이다 —
   두 서버의 같은 도메인 id가 커서를 덮어쓰거나 같은 값 이벤트가 중복으로 버려지지 않게(S-6·S-7).
@@ -30,6 +32,7 @@ from apm_gateway.application.resolver import Inventory
 from apm_gateway.application.sources import JenniferSource, SourceSet
 from apm_gateway.config import GatewayConfig
 from apm_gateway.domain import signals as sig
+from apm_gateway.domain.call_context import PRIORITY_POLLER, CallScope, use_scope
 from apm_gateway.domain.errors import CONTRACT_VIOLATION, ApmError
 from apm_gateway.domain.events import build_alarm_payload, passes_min_level, severity_for_level
 
@@ -91,9 +94,10 @@ class EventPoller:
 
     async def poll_once(self) -> int:
         """한 주기 — 발행 건수를 돌려준다. 한 소스의 실패가 다른 소스 폴링을 막지 않는다."""
-        results = await asyncio.gather(
-            *(self._poll_source(src) for src in self.sources), return_exceptions=True
-        )
+        with use_scope(CallScope(PRIORITY_POLLER)):  # 소스 태스크들이 이 맥락을 물려받는다
+            results = await asyncio.gather(
+                *(self._poll_source(src) for src in self.sources), return_exceptions=True
+            )
         published = 0
         for src, result in zip(self.sources, results, strict=True):
             if isinstance(result, BaseException):

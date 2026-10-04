@@ -51,9 +51,11 @@ def test_sources_of_unknown_or_sourceless_system_is_empty() -> None:
 
 def test_views_are_untouched_by_sources() -> None:
     """`views`(보기 표)와 `sources`는 다른 층이다 — 소스를 더해도 보기 표는 그대로다."""
+    # plans/134 W2 — 보기 5종 추가(SPEC-apm-question-coverage §6.2 · 의도된 갱신)
     assert [v.id for v in get_registry().views_of("apm")] == [
         "apm.instances", "apm.app_health", "apm.runtime", "apm.pool",
         "apm.active", "apm.slow_tx", "apm.events",
+        "apm.app_stats", "apm.sql_stats", "apm.external_stats", "apm.metrics", "apm.changes",
     ]
 
 

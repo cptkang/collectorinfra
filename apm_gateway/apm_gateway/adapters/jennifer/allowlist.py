@@ -29,12 +29,29 @@ class NotAllowedError(ValueError):
     """허용목록 밖 요청 — 네트워크 호출 전에 올린다."""
 
 
+# 경로 변수 형식(SPEC-apm-question-coverage §2.4) — 형식 밖 값은 HTTP 0회로 거부한다. `enum:a|b`는
+# 열거(값 그대로 일치)다.
+PATH_VAR_FORMATS: dict[str, str] = {
+    "int": r"[0-9]+",
+    "token": r"[A-Z0-9_]{1,64}",
+    "account": r"[A-Za-z0-9._@-]{1,64}",
+}
+
+
+def _var_pattern(fmt: str) -> str:
+    if fmt.startswith("enum:"):
+        return "(?:" + "|".join(re.escape(v) for v in fmt[len("enum:") :].split("|")) + ")"
+    return PATH_VAR_FORMATS[fmt]
+
+
 @dataclass(frozen=True)
 class Endpoint:
     template: str
     required: tuple[str, ...] = ()
     optional: tuple[str, ...] = ()
     accept: str = ACCEPT_JSON
+    # (변수 이름, 형식) — 템플릿의 `{변수}`마다 하나씩 선언한다(§2.4)
+    path_vars: tuple[tuple[str, str], ...] = ()
 
     @property
     def query_keys(self) -> frozenset[str]:
@@ -43,6 +60,8 @@ class Endpoint:
 
 _RANGE = ("domain_id", "start_time", "end_time")
 _TX = ("domain_id", "txid", "time")
+# `/api/status/{sql,external_call}` 선택 키(plans/134 N-8 · COV-STAT-SQL·EXT)
+_STATUS_OPTIONAL = ("instance_id", "sort_by_metrics", "max_row")
 
 ALLOWED: dict[str, Endpoint] = {
     e.template: e
@@ -61,18 +80,33 @@ ALLOWED: dict[str, Endpoint] = {
         Endpoint("/api/transaction/profile.txt", _TX, ("key",), accept=ACCEPT_TEXT),
         Endpoint("/api/transaction/sql", _TX),
         Endpoint("/api/dbsearch/event", _RANGE, ("level", "instance_id")),
-        Endpoint("/api/dbsearch/error", _RANGE, ("instance_id",)),
-        Endpoint("/api/status/application", _RANGE, ("instance_id", "max_row")),
-        Endpoint("/api/status/sql", _RANGE),
-        Endpoint("/api/status/external_call", _RANGE),
-        Endpoint("/api-v2/deploy/{domainId}", ("startTime", "endTime")),
+        Endpoint("/api/dbsearch/error", _RANGE, ("instance_id", "error_type")),
+        Endpoint(
+            "/api/status/application",
+            _RANGE,
+            ("instance_id", "sort_by_metrics", "max_row", "application_name"),
+        ),
+        Endpoint("/api/status/sql", _RANGE, _STATUS_OPTIONAL),
+        Endpoint("/api/status/external_call", _RANGE, _STATUS_OPTIONAL),
+        Endpoint(
+            "/api-v2/deploy/{domainId}", ("startTime", "endTime"), path_vars=(("domainId", "int"),)
+        ),
     )
 }
 
-# 경로 변수는 숫자만 받는다(도메인 ID).
-_TEMPLATE_RES: dict[str, re.Pattern[str]] = {
-    t: re.compile("^" + re.sub(r"\\\{[^}]+\\\}", r"[0-9]+", re.escape(t)) + "$") for t in ALLOWED
-}
+
+def _template_re(ep: Endpoint) -> re.Pattern[str]:
+    names = re.findall(r"\{([^}]+)\}", ep.template)
+    if sorted(names) != sorted(n for n, _ in ep.path_vars):
+        raise ValueError(f"경로 변수 형식 선언이 템플릿과 다르다: {ep.template}")
+    pattern = re.escape(ep.template)
+    for name, fmt in ep.path_vars:
+        pattern = pattern.replace(re.escape("{" + name + "}"), _var_pattern(fmt))
+    return re.compile("^" + pattern + "$")
+
+
+# 경로 변수는 선언한 형식만 받는다(§2.4 — 도메인 ID는 숫자).
+_TEMPLATE_RES: dict[str, re.Pattern[str]] = {t: _template_re(ep) for t, ep in ALLOWED.items()}
 _FORBIDDEN_FRAGMENTS = ("//", "/../", "/./", "%", "\\", "?", "#", "://")
 
 
@@ -91,12 +125,16 @@ def match_template(path: str) -> str | None:
 
 
 def build_path(template: str, path_vars: dict[str, Any] | None = None) -> str:
-    """템플릿에 경로 변수를 채운다(숫자 문자열만 — 그 밖은 거부)."""
+    """템플릿에 경로 변수를 채운다(선언한 형식에 맞는 값만 — 그 밖은 거부 · §2.4)."""
     path = template
+    endpoint = ALLOWED.get(template)
     for name, value in (path_vars or {}).items():
         text = str(value)
-        if not text.isdigit():
-            raise NotAllowedError(f"경로 변수 {name}는 숫자여야 한다")
+        formats = dict(endpoint.path_vars) if endpoint is not None else {}
+        if name not in formats:
+            raise NotAllowedError(f"선언되지 않은 경로 변수: {name} ({template})")
+        if not re.fullmatch(_var_pattern(formats[name]), text):
+            raise NotAllowedError(f"경로 변수 {name}가 형식({formats[name]})에 맞지 않는다")
         path = path.replace("{" + name + "}", text)
     if "{" in path:
         raise NotAllowedError(f"경로 변수 누락: {template}")

@@ -97,9 +97,15 @@ def sanitize_task_views(result: dict[str, Any], app_config: Any) -> list[str]:
     cut: list[str] = []
     for task in tasks:
         raw = task.pop("views", None)
+        raw_args = task.pop("view_args", None)
         agent = task.get("agent")
         if agent == apm_query.APM_QUERY_AGENT:
             task["views"] = apm_query.sanitize_views(raw)
+            # 보기 선택 조건(plans/134 M-3) — 고른 보기의 조건 묶음만 남긴다(값 검증은 처리기가
+            # 보기 선언으로 하고 버린 조건을 고지한다).
+            args = apm_query.sanitize_view_args(raw_args, task["views"])
+            if args:
+                task["view_args"] = args
         elif agent == doc_query.DOC_QUERY_AGENT:
             task["views"] = doc_query.sanitize_views(raw, app_config)
         if not doc_ids:

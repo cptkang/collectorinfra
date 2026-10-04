@@ -437,31 +437,57 @@ WAS 인스턴스·응답시간·TPS·에러율·JVM 힙·GC·커넥션 풀·실�
 - 대상 서버가 필요한 보기에 서버가 정해지지 않았으면 실행기가 인스턴스 목록(`apm.instances`)을 먼저 조회합니다 — 그 task를 따로 만들지 마세요.
 - WAS 인스턴스 목록·인스턴스 리스트를 묻는 질의는 `"views": ["apm.instances"]`입니다.
 - 앞 task 결과의 서버들을 대상으로 하면 `depends_on`·`input_from`으로 잇습니다.
+- 보기에 「조건(view_args)」이 있으면 사용자가 **말한 조건만** `view_args`에 넣습니다: 보기 id → 조건 이름 → 값. 말하지 않은 조건은 넣지 마세요. 개수(「상위 5개」)는 `n`, 「전체·모두·전부」를 명시한 목록이면 `full: true`입니다. 표에 없는 조건 이름·값은 버려지고 해석하지 못했다고 안내됩니다.
+- 기간을 말하면 그대로 조회합니다(보기가 「기간 지정 가능」일 때). 「현재값」 보기는 지금 값만 있습니다.
 - 예: {{"task_id": "t1", "agent": "apm_query", "sub_query": "김포 WAS 응답시간 조회", "views": ["apm.app_health"],
        "depends_on": [], "input_from": [], "order": 1}}
+- 예: {{"task_id": "t1", "agent": "apm_query", "sub_query": "web01 fatal 이벤트만 조회", "views": ["apm.events"],
+       "view_args": {{"apm.events": {{"level": "fatal", "level_mode": "exact"}}}}, "depends_on": [], "input_from": [], "order": 1}}
 
 """  # noqa: E501
 
 
+# 「출력 형식」 골격 키(plans/134 W1 검증 H-1) — 로컬 9B는 골격에 없는 키를 내지 않았다
+# (`views` 0/15 · 조건 0/7 · 골격에 넣은 실험 14/15 · 7/7). 132 N-5(`areas`)와 같이 골격 task
+# 줄 끝에 두 키를 더하고 주의 목록의 영역 규칙 뒤에 한 줄을 더한다 — 활성 렌더에서만이다(비활성
+# 바이트 불변). 영역 칸 렌더(`render_intent_planner_areas_template` — 항상 켜짐)가 먼저 골격 줄을
+# 만든 뒤에 적용한다.
+APM_SKELETON_TAIL = '"areas": ["server_status"], "requested_source": ""}}'
+APM_SKELETON_TAIL_WITH_KEYS = (
+    '"areas": ["server_status"], "requested_source": "",\n'
+    '         "views": [], "view_args": {{}}}}'
+)
+APM_OUTPUT_RULE = (
+    "- `apm_query` task에는 `views`(보기 id 목록)와 `view_args`(사용자가 말한 조건 — 없으면"
+    " `{{}}`) 두 키를 **반드시** 적습니다. 기간·시간(「최근 3시간」·「오늘」)은 `view_args`가"
+    " 아닙니다 — 기간은 `sub_query`에 그대로 두고, 조건 이름은 보기 표의 「조건(view_args)」에 있는"
+    " 것만 씁니다.\n"
+)
+
+
 def render_intent_planner_apm_template(base: str, agent_line: str, view_rows: str) -> str:
-    """APM 활성 전용 — 담당 줄을 담당 목록 끝에, 보기 절을 「작업 분해 규칙」 앞에 **삽입만** 한다.
+    """APM 활성 전용 — 담당 줄을 담당 목록 끝에, 보기 절을 「작업 분해 규칙」 앞에 **삽입**하고,
+    「출력 형식」 골격 task 줄에 `views`·`view_args`를, 주의 목록에 그 규칙 한 줄을 더한다.
 
     Args:
-        base: 기본 템플릿 또는 다른 옵트인 렌더본(소유·task 프레임과 함께 켜질 수 있다)
+        base: 영역 칸 렌더본(골격 줄이 있어야 한다) — 소유·task 프레임과 함께 켜질 수 있다
         agent_line: 담당 목록 한 줄(`- **apm_query**: …`)
         view_rows: 레지스트리 보기 표 행
 
     Raises:
         RuntimeError: 앵커가 정확히 1회 나타나지 않는다(삽입 위치가 흔들림)
     """
-    for anchor in (_APM_AGENT_ANCHOR, _APM_SECTION_ANCHOR):
+    rule_anchor = _AREAS_RULE_ANCHOR + _AREAS_RULE
+    for anchor in (_APM_AGENT_ANCHOR, _APM_SECTION_ANCHOR, APM_SKELETON_TAIL, rule_anchor):
         if base.count(anchor) != 1:
             raise RuntimeError(f"분해 프롬프트 삽입 앵커가 1회가 아니다: {anchor!r}")
     head, sep, tail = base.partition(_APM_AGENT_ANCHOR)
     rendered = head + "\n" + agent_line + sep + tail
     section = INTENT_PLANNER_APM_SECTION.replace(APM_VIEW_ROWS_SLOT, view_rows)
     head, sep, tail = rendered.partition(_APM_SECTION_ANCHOR)
-    return head + section + sep + tail
+    rendered = head + section + sep + tail
+    rendered = rendered.replace(APM_SKELETON_TAIL, APM_SKELETON_TAIL_WITH_KEYS)
+    return rendered.replace(rule_anchor, rule_anchor + APM_OUTPUT_RULE)
 
 
 # ══════════════════════════════════════════════════════════════════════════ 비SQL 처리기 —

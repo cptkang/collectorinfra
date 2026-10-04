@@ -39,6 +39,10 @@ CREATE TABLE IF NOT EXISTS query_thread_turns (
 
 CREATE INDEX IF NOT EXISTS idx_query_thread_turns_owner
     ON query_thread_turns(owner_key, thread_id, id);
+
+-- plans/134 W0-B: 응답 고지(disclosures — 작업 카드 참조 ref 포함)를 함께 남겨 대화를 다시 불러도
+-- 작업 카드를 복원한다. 기존 테이블에는 열만 더한다.
+ALTER TABLE query_thread_turns ADD COLUMN IF NOT EXISTS disclosures JSONB;
 """
 
 
@@ -74,14 +78,16 @@ class PostgresThreadRepository:
     async def add_turn(self, owner_key: str, turn: dict[str, Any]) -> None:
         """턴 1건을 기록하고, 상한을 넘은 오래된 스레드를 지운다."""
         db_scope = turn.get("db_scope")
+        disclosures = turn.get("disclosures") or None
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
                     """
                     INSERT INTO query_thread_turns
                         (owner_key, thread_id, query_id, user_query, response, status,
-                         executed_sql, row_count, processing_time_ms, has_upload, db_scope)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                         executed_sql, row_count, processing_time_ms, has_upload, db_scope,
+                         disclosures)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                     """,
                     owner_key,
                     turn["thread_id"],
@@ -94,6 +100,7 @@ class PostgresThreadRepository:
                     turn.get("processing_time_ms"),
                     bool(turn.get("has_upload")),
                     json.dumps(db_scope, ensure_ascii=False) if db_scope is not None else None,
+                    json.dumps(disclosures, ensure_ascii=False) if disclosures else None,
                 )
                 await conn.execute(
                     """
@@ -150,7 +157,7 @@ class PostgresThreadRepository:
             rows = await conn.fetch(
                 """
                 SELECT query_id, user_query, response, status, executed_sql, row_count,
-                       processing_time_ms, has_upload, db_scope, created_at
+                       processing_time_ms, has_upload, db_scope, disclosures, created_at
                 FROM query_thread_turns
                 WHERE owner_key = $1 AND thread_id = $2
                 ORDER BY id
@@ -169,6 +176,7 @@ class PostgresThreadRepository:
                 "processing_time_ms": r["processing_time_ms"],
                 "has_upload": r["has_upload"],
                 "db_scope": json.loads(r["db_scope"]) if r["db_scope"] else None,
+                "disclosures": json.loads(r["disclosures"]) if r["disclosures"] else None,
                 "created_at": _iso(r["created_at"]),
             }
             for r in rows

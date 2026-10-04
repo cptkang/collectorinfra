@@ -69,6 +69,9 @@ def build_task_payload(
             payload["status"] = "skipped"
             if result.get("skip_reason"):
                 payload["reason"] = result["skip_reason"]
+        elif result.get("accepted_jobs") and not result.get("error"):
+            # 오래 걸리는 조회를 작업으로 접수했다 — 데이터 완료가 아니다(plans/134 W0-B)
+            payload["status"] = "accepted"
     # 1단은 verdict 노트를 task에 싣는다(deepagents_tools) — 같은 필드명으로 승격
     note = task.get("dependency_note")
     if isinstance(note, dict):

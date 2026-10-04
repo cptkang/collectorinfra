@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import re
 import time
@@ -36,12 +37,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from apm_gateway.adapters.jennifer.api import JenniferApi
+from apm_gateway.domain.call_context import SharedLoadScope, current_scope, set_scope
 from apm_gateway.domain.errors import SOURCE_UNAVAILABLE, ApmError
 from apm_gateway.domain.sources import DEFAULT_SOURCE_ID
 
 logger = logging.getLogger(__name__)
 
-MAX_INSTANCES_PER_HOST = 5
 # 백그라운드 갱신이 실패한 뒤 다시 시도하기까지(초) — 제니퍼가 멈춘 동안 요청마다 적재를 다시 걸지 않는다
 REFRESH_RETRY_SECONDS = 60
 HIGH = "high"
@@ -85,6 +86,8 @@ class Resolution:
     # 소스별 결과 `[{source_id, status, reason}]`(봉투 `sources`) · 정합된 소스 → (신뢰도, 근거)
     sources: list[dict[str, Any]] = field(default_factory=list)
     matches: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # 일부 소스·도메인을 쓸 수 없었다(봉투 `partial` — plans/134 W0-B)
+    partial: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -207,7 +210,12 @@ class InstanceResolver:
 
     def _load_once(self) -> asyncio.Task[Inventory]:
         if self._loading is None or self._loading.done():
-            self._loading = asyncio.create_task(self._load())
+            # 공유 적재는 따로 만든 맥락에서 돈다 — 적재를 시작한 작업의 우선순위(background)·동시
+            # 실행 슬롯 대기에 함께 기다리는 다른 요청이 끌려가지 않게. 호출 수·메모는 시작한
+            # 요청에만 센다(감사 `api_calls`·`sources` · plans/134 W0-B).
+            context = contextvars.Context()
+            context.run(set_scope, SharedLoadScope(current_scope()))
+            self._loading = asyncio.create_task(self._load(), context=context)
         return self._loading
 
     def _refresh_in_background(self) -> None:

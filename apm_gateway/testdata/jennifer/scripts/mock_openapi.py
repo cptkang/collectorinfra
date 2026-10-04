@@ -12,6 +12,13 @@
   → 게이트웨이 테스트는 `/__mock/hits`로 "허용목록 밖 호출 0회"를 단언한다.
 - 접근 기록의 `bearer_fp`는 요청 Bearer 값의 sha256 앞 12자리다(값 자체는 남기지 않는다) — 다중 소스
   테스트가 "소스 A 토큰이 소스 B 요청에 0회"를 단언한다(plans/87 J8 M-10).
+- 접근 기록의 `query`는 쿼리 키·값이다(`token` 값은 `***`) — 계약 테스트가 실제로 넘긴 인자 값을
+  단언한다(plans/134 W1 `T-COV-*-args`).
+- `/api/dbsearch/error`는 `error_type`(대문자 비교)으로, `/api/dbsearch/event`는 `level`(대소문자
+  무시 정확 일치)로 걸러 돌려준다 — 실서버 의미는 W10 확인 전 가정이다.
+- `/api/status/*`는 `max_row`만큼 앞 행을 돌려주고, `/api-v2/deploy/<도메인ID>`(맨 배열 응답)는
+  `collectTime`이 `startTime`~`endTime`(양 끝 포함)인 항목만 돌려준다(plans/134 W2 — 정렬·패턴
+  검색·25시간 초과 처리는 흉내 내지 않는다 · 실서버 동작은 W10 확인 전 가정).
 
 한계: 실제 EVENT 발생·필드 변형은 재현하지 못한다. 이벤트는 `/__mock/events`로 주입한다.
 
@@ -157,6 +164,7 @@ class Handler(BaseHTTPRequestHandler):
                     "template": template,
                     "allowlisted": allowlisted,
                     "query_keys": sorted(query),
+                    "query": {k: ("***" if k.lower() == "token" else v) for k, v in query.items()},
                     "query_token": query_token,
                     "bearer_fp": bearer_fingerprint(bearer) if bearer else "",
                     "status": status,
@@ -299,6 +307,11 @@ class Handler(BaseHTTPRequestHandler):
         fx = self.state.pick(template, query)
         if template == "/api/dbsearch/event":
             return self._events(fx, query)
+        if template == "/api/dbsearch/error" and fx is not None and query.get("error_type"):
+            wanted = query["error_type"].upper()
+            rows = (fx["response"].get("body_json") or {}).get("result") or []
+            kept = [r for r in rows if str(r.get("errorType") or "").upper() == wanted]
+            return self._send(fx["response"]["status"], {"result": kept})
         if fx is None:
             return self._send(
                 501, {"mock_error": f"fixture 없음: {template} (mode={self.state.mode})"}
@@ -306,7 +319,20 @@ class Handler(BaseHTTPRequestHandler):
         resp = fx["response"]
         ctype = resp.get("content_type") or "application/json"
         body = resp["body_json"] if "body_json" in resp else resp.get("body_text", "")
+        if resp["status"] == 200:
+            body = self._narrow(template, query, body)
         return self._send(resp["status"], body, ctype.split(";")[0])
+
+    @staticmethod
+    def _narrow(template: str, query: dict[str, str], body: Any) -> Any:
+        """선택 인자 흉내 — 통계 `max_row` · 변경 이력 구간(plans/134 W2)."""
+        if template.startswith("/api/status/") and query.get("max_row", "").isdigit():
+            rows = (body or {}).get("result") or []
+            return {**body, "result": rows[: int(query["max_row"])]}
+        if template == "/api-v2/deploy/{domainId}" and isinstance(body, list):
+            lo, hi = int(query["startTime"]), int(query["endTime"])
+            return [r for r in body if lo <= int(r.get("collectTime") or 0) <= hi]
+        return body
 
     def _events(self, fx: dict | None, query: dict[str, str]) -> int:
         base: list = []
@@ -323,7 +349,11 @@ class Handler(BaseHTTPRequestHandler):
             )
         with self.state.lock:
             injected = [e for e in self.state.events if lo <= int(e["time"]) <= hi]
-        return self._send(200, {"result": base + injected})
+        rows = base + injected
+        if query.get("level"):
+            wanted = query["level"].upper()
+            rows = [r for r in rows if str(r.get("eventLevel") or "").upper() == wanted]
+        return self._send(200, {"result": rows})
 
     def do_GET(self) -> None:  # noqa: N802
         self._dispatch("GET")

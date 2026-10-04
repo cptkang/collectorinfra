@@ -1000,6 +1000,8 @@ def _terminal_source_task_ids(
     """이번 계획에서 **소스 불가로 종결**된 task id(plans/132 N-3 · G-4).
 
     - 비SQL 처리기(`apm_query`·`doc_query`)가 실패(`error`)로 끝남 — 연결 안 됨·0건·도구 오류·창 밖
+    - 비SQL 처리기가 조회를 **작업으로 접수**함(`accepted_jobs` · plans/134 W0-B) — 다시 계획하면
+      같은 조회를 또 접수한다. 결과는 작업 카드가 받는다
     - 명시 소스 안내로 끝남(계획 출구 안내 task · SQL 처리기 안내 단락 — G-1 「안내만」)
 
     조회 권한 거부는 넣지 않는다 — 일부만 거부된 복합 계획은 종전대로 평가 LLM이 본다(D-251 ⑤ ·
@@ -1015,7 +1017,7 @@ def _terminal_source_task_ids(
             out.add(tid)
         elif not isinstance(res, dict) or is_access_denied_result(res):
             continue
-        elif task.get("agent") in _NONSQL_AGENTS and res.get("error"):
+        elif task.get("agent") in _NONSQL_AGENTS and (res.get("error") or res.get("accepted_jobs")):
             out.add(tid)
         elif res.get("degraded_reason") in _SOURCE_NOTICE_REASONS:
             out.add(tid)

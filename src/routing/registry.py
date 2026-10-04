@@ -66,6 +66,43 @@ class FamilySpec:
     signal_terms: tuple[str, ...] = ()
 
 
+#: 보기 창 의미(plans/134 M-2 · SPEC-apm-question-coverage §6.1) — 상한이 아니다.
+#: current = 현재값만 · range = 요청 기간을 그대로 넘김 · hourly = 시 단위 통계 ·
+#: none = 시간 무관(목록).
+VIEW_WINDOWS: frozenset[str] = frozenset({"current", "range", "hourly", "none"})
+#: 보기 선택 조건 형식(§6.1 `ViewArgSpec.type` + `text` — 식별자가 아닌 자유 문자열(예 URL 이름 ·
+#: plans/134 W2 확장)).
+VIEW_ARG_TYPES: frozenset[str] = frozenset(
+    {"int", "bool", "enum", "str", "str_list", "catalog", "text"}
+)
+
+
+@dataclass(frozen=True)
+class ViewArgSpec:
+    """보기 하나가 받는 선택 조건 1건(plans/134 M-3 · SPEC-apm-question-coverage §6.1).
+
+    계획 LLM 이 `view_args`로 값을 고르고 코드가 이 선언으로 형·범위·선택지를 검증한다
+    (`apm_query.validate_view_args`). 벤더 중립 어휘만 둔다(D-274 ③).
+
+    Attributes:
+        name: 조건 이름(분해 `view_args`의 키)
+        type: `int`·`bool`·`enum`·`str`(식별자 형식)·`str_list`·`catalog`(지표 군 이름 — W2)
+        choices: `enum` 선택지
+        min: `int` 하한
+        catalog: `catalog` 형식의 지표 군 이름
+        tool_arg: 도구 인자 이름(없으면 `name`)
+        label: 분해 프롬프트에 렌더하는 짧은 설명(SPEC 표 밖 확장 — 계획 LLM 재료)
+    """
+
+    name: str
+    type: str
+    choices: tuple[str, ...] = ()
+    min: int | None = None
+    catalog: str | None = None
+    tool_arg: str | None = None
+    label: str = ""
+
+
 @dataclass(frozen=True)
 class ViewSpec:
     """비SQL 처리기의 고정 보기 1건(plans/125 §4.2 · G-4 (a)) — LLM 이 고르는 유일한 비SQL 인자.
@@ -76,9 +113,13 @@ class ViewSpec:
         tool: 게이트웨이 MCP 도구 이름
         required_input: 반드시 있어야 하는 대상 패싯(예 `hostname`) — 비면 첫 홉 가능
         first_hop: 대상 없이 부를 수 있는가(전체 목록 보기)
-        window_max_minutes: 구간 조회 상한(분) — 넘는 요청은 자르고 고지한다
-        limit: 사용자 고지용 상한 설명
+        limit: 사용자 고지용 설명(기본 구간 등 사실 — 상한 표기 아님)
         label: 분해 프롬프트·요약에 쓰는 보기 설명(비면 답변 영역 설명)
+        window: 창 의미(`VIEW_WINDOWS` — plans/134 M-2 · 종전 `window_max_minutes` 상한 의미 폐지)
+        fixed_args: 도구 고정 인자(예 `kind`)
+        args: 허용 선택 조건(`view_args`)
+        examples: 계획 LLM 에 렌더하는 예문
+        notices: 결과가 있으면 붙이는 고지 kind(예 `apm_change_detection` — plans/134 W2)
     """
 
     id: str
@@ -87,8 +128,12 @@ class ViewSpec:
     tool: str = ""
     required_input: str = ""
     first_hop: bool = False
-    window_max_minutes: int | None = None
     limit: str = ""
+    window: str = "current"
+    fixed_args: dict[str, Any] = field(default_factory=dict, hash=False)
+    args: tuple[ViewArgSpec, ...] = ()
+    examples: tuple[str, ...] = ()
+    notices: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -173,6 +218,9 @@ class CapabilitySpec:
     label: str = ""
     #: 소유가 모호한 영역인가 — 소재 프로브 결정표의 "소유 모호" 행 판정 입력(G-1).
     ambiguous_owner: bool = False
+    #: 소유 시스템이 활성일 때만 분해 프롬프트 영역 카탈로그에 렌더한다(plans/134 W2 — 비활성 배포
+    #: 바이트 불변). 종전 영역은 False(늘 렌더 · 종전 바이트 그대로).
+    active_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -558,22 +606,72 @@ def _as_str_tuple(value: Any) -> tuple[str, ...]:
     return tuple(str(v) for v in value)
 
 
+def _parse_view_args(value: Any, view_id: str) -> tuple[ViewArgSpec, ...]:
+    """보기 `args:` 목록 → ViewArgSpec 튜플(plans/134 M-3). 형식이 틀리면 레지스트리 오류다."""
+    specs: list[ViewArgSpec] = []
+    for raw in value or []:
+        if not isinstance(raw, dict) or not raw.get("name"):
+            raise ValueError(f"보기 {view_id}: args 항목에 name이 없다: {raw!r}")
+        kind = str(raw.get("type") or "")
+        if kind not in VIEW_ARG_TYPES:
+            raise ValueError(f"보기 {view_id}: 조건 {raw['name']} 형식 {kind!r} — "
+                             f"{sorted(VIEW_ARG_TYPES)} 중 하나여야 한다")
+        choices = tuple(str(c) for c in raw.get("choices") or ())
+        if kind == "enum" and not choices:
+            raise ValueError(f"보기 {view_id}: enum 조건 {raw['name']}에 choices가 없다")
+        low = raw.get("min")
+        specs.append(ViewArgSpec(
+            name=str(raw["name"]),
+            type=kind,
+            choices=choices,
+            min=int(low) if low is not None else None,
+            catalog=str(raw["catalog"]) if raw.get("catalog") else None,
+            tool_arg=str(raw["tool_arg"]) if raw.get("tool_arg") else None,
+            label=str(raw.get("label", "")),
+        ))
+    return tuple(specs)
+
+
+def _parse_view_notices(value: Any, view_id: str) -> tuple[str, ...]:
+    """보기 `notices:` → 고지 kind 튜플.
+
+    kind 는 고지 표(`src/domain/disclosure.KIND_TABLE`)에 있어야 한다.
+    """
+    from src.domain.disclosure import KIND_TABLE
+
+    kinds = tuple(str(x) for x in value or ())
+    unknown = [k for k in kinds if k not in KIND_TABLE]
+    if unknown:
+        raise ValueError(f"보기 {view_id}: 모르는 고지 kind {unknown}")
+    return kinds
+
+
 def _parse_views(value: Any) -> tuple[ViewSpec, ...]:
     """솔루션 `views:` 목록 → ViewSpec 튜플(id 없는 항목은 버린다)."""
     views: list[ViewSpec] = []
     for raw in value or []:
         if not isinstance(raw, dict) or not raw.get("id"):
             continue
-        window = raw.get("window_max_minutes")
+        view_id = str(raw["id"])
+        window = str(raw.get("window") or "current")
+        if window not in VIEW_WINDOWS:
+            raise ValueError(f"보기 {view_id}: window {window!r} — {sorted(VIEW_WINDOWS)} 중 하나")
+        fixed = raw.get("fixed_args") or {}
+        if not isinstance(fixed, dict):
+            raise ValueError(f"보기 {view_id}: fixed_args는 매핑이어야 한다")
         views.append(ViewSpec(
-            id=str(raw["id"]),
+            id=view_id,
             label=str(raw.get("label", "")),
             capability=str(raw.get("capability", "")),
             tool=str(raw.get("tool", "")),
             required_input=str(raw.get("required_input", "")),
             first_hop=bool(raw.get("first_hop", False)),
-            window_max_minutes=int(window) if window is not None else None,
             limit=str(raw.get("limit", "")),
+            window=window,
+            fixed_args=dict(fixed),
+            args=_parse_view_args(raw.get("args"), view_id),
+            examples=tuple(str(x) for x in raw.get("examples") or ()),
+            notices=_parse_view_notices(raw.get("notices"), view_id),
         ))
     return tuple(views)
 
@@ -738,6 +836,7 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
             code=str(raw["code"]),
             label=str(raw.get("label", "")),
             ambiguous_owner=bool(raw.get("ambiguous_owner", False)),
+            active_only=bool(raw.get("active_only", False)),
         )
         for raw in data.get("capabilities") or []
         if isinstance(raw, dict) and raw.get("code")

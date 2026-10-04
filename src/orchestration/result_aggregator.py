@@ -153,8 +153,16 @@ async def result_aggregator(
     if suppress_stream:
         merged_rows = _merge_task_results_by_identity(ordered_tasks, task_results)
         if merged_rows:
+            # 표시용으로 셀을 줄인 원천이 있으면 CSV 원천은 전문 행으로 다시 병합한다(plans/134 W2)
+            csv_rows = (
+                _merge_task_results_by_identity(ordered_tasks, task_results, full=True)
+                if any(r.get(_DISPLAY_CUT_KEY) for r in task_results.values()
+                       if isinstance(r, dict))
+                else None
+            )
             merged_out = await _finalize_merged_path(
                 merged_rows, ordered_tasks, task_results, state, llm, app_config,
+                csv_rows=csv_rows,
             )
             return _with_answer_history(_apply_incomplete_notice(
                 {**merged_out, **db_promotion}, state,
@@ -244,8 +252,19 @@ def _identity_key(value: Any) -> str:
     return _IDENTITY_KEY_NOISE.sub("", str(value).strip().lower())
 
 
-def _extract_result_rows(res: dict) -> list[dict]:
-    """task 결과에서 행 리스트를 추출한다(organized_data.rows 우선, query_results 폴백)."""
+#: 처리기가 표시용 행(`organized_data.rows`)의 긴 셀을 줄였다는 표지(plans/134 W2 —
+#: `apm_query.DISPLAY_CUT_KEY`와 같은 값). 병합 표의 CSV 원천은 그 task의 `query_results`(전문)다.
+_DISPLAY_CUT_KEY = "display_rows_cut"
+
+
+def _extract_result_rows(res: dict, *, full: bool = False) -> list[dict]:
+    """task 결과에서 행 리스트를 추출한다(organized_data.rows 우선, query_results 폴백).
+
+    `full`이면 표시용으로 셀을 줄인 결과(`_DISPLAY_CUT_KEY`)만 `query_results`(전문)를 쓴다.
+    """
+    full_rows = res.get("query_results") if full and res.get(_DISPLAY_CUT_KEY) else None
+    if isinstance(full_rows, list):
+        return full_rows
     organized = res.get("organized_data") or {}
     rows = organized.get("rows")
     if rows is None:
@@ -270,7 +289,7 @@ def _find_identity_col(rows: list[dict]) -> Optional[str]:
 
 
 def _merge_task_results_by_identity(
-    ordered_tasks: list[dict], task_results: dict[str, dict]
+    ordered_tasks: list[dict], task_results: dict[str, dict], *, full: bool = False
 ) -> Optional[list[dict]]:
     """여러 하위 조회 결과를 공통 서버 식별 키로 병합해 단일 행 목록을 만든다(D-100).
 
@@ -293,6 +312,7 @@ def _merge_task_results_by_identity(
     Args:
         ordered_tasks: order 순으로 정렬된 task 목록
         task_results: {task_id: 정규화된 결과}
+        full: 표시용으로 셀을 줄인 결과는 전문 행으로 병합한다(CSV 원천 — plans/134 W2)
 
     Returns:
         병합된 행 목록(canonical 식별 컬럼 우선). 병합 불가 시 None.
@@ -300,7 +320,7 @@ def _merge_task_results_by_identity(
     sources: list[tuple[list[dict], str]] = []
     source_tasks: list[dict] = []
     for t in ordered_tasks:
-        rows = _extract_result_rows(task_results.get(t.get("task_id"), {}))
+        rows = _extract_result_rows(task_results.get(t.get("task_id"), {}), full=full)
         if not rows:
             continue
         idc = _find_identity_col(rows)
@@ -511,6 +531,8 @@ async def _finalize_merged_path(
     state: AgentState,
     llm: BaseChatModel,
     app_config: AppConfig,
+    *,
+    csv_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """병합 성립 경로의 마감 — 병합 표 1회 서술 + 병합 원천 밖 task의 결정적 문구.
 
@@ -536,9 +558,13 @@ async def _finalize_merged_path(
         merged_rows, state, llm, app_config,
         zone_state=_merged_zone_state(merged_rows, source_results),
         source_state=_merged_source_state(source_tasks, source_results),
+        csv_rows=csv_rows,
     )
     notes: list[str] = []
     disclosures = list(out.get("disclosures") or [])
+    # 병합 원천 task의 처리기 고지(plans/134 W0-B — 작업 참조 `ref` 포함)도 잃지 않는다
+    for res in source_results:
+        disclosures.extend(_handler_disclosures(res))
     for task in outside:
         f = await _finalize_task(
             task, task_results.get(task["task_id"], {}), state, llm, app_config,
@@ -550,6 +576,12 @@ async def _finalize_merged_path(
         if f.get("output_file") is not None and "output_file" not in out:
             out["output_file"] = f["output_file"]
             out["output_file_name"] = f.get("output_file_name")
+    lines = [line for res in source_results for line in _handler_answer_lines(res)]
+    if lines:  # 병합 원천 task의 결정적 판정·집계 줄(plans/134 M-1)
+        out["final_response"] = _with_answer_lines(out.get("final_response") or "", lines)
+    handler = [d for res in source_results for d in _handler_disclosures(res)]
+    if handler:  # 병합 원천 task의 비의무 처리기 고지(plans/134 W2 검증 B1)
+        out["final_response"] = _with_handler_notices(out.get("final_response") or "", handler)
     if notes:
         body = (out.get("final_response") or "").strip()
         out["final_response"] = "\n\n".join([body, *notes]) if body else "\n\n".join(notes)
@@ -601,6 +633,7 @@ async def _finalize_merged_rows(
     *,
     zone_state: dict[str, Any] | None = None,
     source_state: dict[str, Any] | None = None,
+    csv_rows: list[dict[str, Any]] | None = None,
 ) -> dict:
     """병합된 통합 행을 단일 output_generator로 최종 표/자연어 응답으로 만든다(D-100).
 
@@ -610,6 +643,7 @@ async def _finalize_merged_rows(
         llm: LLM 인스턴스
         app_config: 앱 설정
         zone_state: 병합 원천의 존 커버리지 재료(`_merged_zone_state` — plans/121 TP-11.6 ②)
+        csv_rows: CSV 원천 통합 행(표시용으로 줄인 셀을 전문으로 병합한 것 — 없으면 `merged_rows`)
 
     Returns:
         final_response/query_results/current_node(+ output_file)를 포함한 State 갱신 dict
@@ -628,11 +662,12 @@ async def _finalize_merged_rows(
         "sub_query": state.get("user_query", ""),
         "agent": src_state.get("agent") or "data_query",
     }
+    full_rows = csv_rows if csv_rows is not None else merged_rows
     out_state = _build_output_state(
         state, merge_task,
         {
             "organized_data": organized,
-            "query_results": merged_rows,
+            "query_results": full_rows,
             **(zone_state or {}),
             "executed_sqls": src_state.get("executed_sqls") or [],
             "spike_notes": src_state.get("spike_notes"),
@@ -650,7 +685,7 @@ async def _finalize_merged_rows(
     result: dict[str, Any] = {
         "final_response": text,
         "current_node": "result_aggregator",
-        "query_results": merged_rows,
+        "query_results": full_rows,
     }
     # 병합 표로 만든 파일을 버리지 않는다(plans/121 TP-11.6 ③ — 종전에는 텍스트만 돌려줬다).
     if out.get("output_file") is not None:
@@ -1129,12 +1164,16 @@ async def _finalize_task(
                 s, llm=llm, app_config=app_config,
                 stream_user_response=stream_user_response,
             )
-            base["text"] = out.get("final_response", "")
+            handler = _handler_disclosures(res)
+            base["text"] = _with_handler_notices(_with_answer_lines(
+                out.get("final_response", ""), _handler_answer_lines(res)), handler)
             base["output_file"] = out.get("output_file")
             base["output_file_name"] = out.get("output_file_name")
             # task 단위 결정적 고지의 구조화본(plans/123 W-8) — 집계기가 턴 단위로 모은다
             if out.get("disclosures"):
                 base["disclosures"] = list(out["disclosures"])
+            if handler:
+                base["disclosures"] = disc.dedupe([*(base.get("disclosures") or []), *handler])
             # HITL 폼필(D-151): 역질문 페이로드·대기 상태를 최종 응답까지 운반.
             # pending_form_fill은 None(해소·자기정리)도 유의미한 델타이므로 키 존재로 판별.
             if "form_fill_clarification" in out:
@@ -1154,8 +1193,10 @@ async def _finalize_task(
 
     # 텍스트 계열: final_response 직접 사용
     text = res.get("final_response")
+    handler = _handler_disclosures(res)
     if text:
-        base["text"] = text
+        base["text"] = _with_handler_notices(
+            _with_answer_lines(text, _handler_answer_lines(res)), handler)
     elif res.get("error"):
         base["text"] = f"작업 처리 중 오류가 발생했습니다: {res['error']}"
     else:
@@ -1164,7 +1205,59 @@ async def _finalize_task(
     # 남긴다(plans/123 W-8). 본문은 그 사유 문구 그대로다.
     if failure is not None and res.get("regen_stop"):
         base["disclosures"] = [failure]
+    if handler:
+        base["disclosures"] = disc.dedupe([*(base.get("disclosures") or []), *handler])
     return base
+
+
+#: 처리기가 결과에 싣는 결정적 판정·집계 줄의 키(plans/134 M-1 — `apm_query.ANSWER_LINES_KEY`와
+#: 같은 값). LLM 서술에 맡기지 않고 task 본문 뒤에 그대로 붙인다.
+_ANSWER_LINES_KEY = "answer_lines"
+_ANSWER_LINES_HEAD = "**판정·집계**"
+
+
+def _handler_answer_lines(res: dict[str, Any]) -> list[str]:
+    lines = res.get(_ANSWER_LINES_KEY)
+    return [str(line) for line in lines if str(line).strip()] if isinstance(lines, list) else []
+
+
+def _with_answer_lines(text: str, lines: list[str]) -> str:
+    """본문 뒤에 결정적 줄 블록을 붙인다 — 줄이 없으면 본문 그대로(종전 바이트)."""
+    if not lines:
+        return text
+    block = _ANSWER_LINES_HEAD + "\n" + "\n".join(f"- {line}" for line in lines)
+    body = (text or "").rstrip()
+    return f"{body}\n\n{block}" if body else block
+
+
+def _with_handler_notices(text: str, items: list[disc.Disclosure]) -> str:
+    """처리기 task 고지 중 의무가 아닌 것을 task 본문 뒤에 싣는다(plans/123 W-9 · 134 W2 검증 B1).
+
+    본문에 아직 없는 것만 우선순위 순으로 최대 `disc.TURN_BODY_MAX_OPTIONAL_LINES`줄 — 나머지는
+    구조 필드(`disclosures`)에만 남는다. 의무 고지는 단일 통과점(`_apply_disclosures`)이 본문에
+    없을 때 붙인다(종전 그대로). 실을 것이 없으면 본문 그대로(종전 바이트).
+    """
+    body = text or ""
+    pending = [
+        d for d in items
+        if not getattr(disc.KIND_TABLE.get(d["kind"]), "mandatory", False)
+        and _norm_text(d["text"]) not in _norm_text(body)
+    ]
+    shown = disc.body_lines_for_turn(pending)
+    if not shown:
+        return text
+    block = disc.render_lines(shown)
+    head = body.rstrip()
+    return f"{head}\n\n{block}" if head else block
+
+
+def _handler_disclosures(res: dict[str, Any]) -> list[disc.Disclosure]:
+    """처리기가 결과에 직접 실은 task 단위 고지(plans/134 W0-B — APM 작업 접수·결과 파일·부분 결과).
+
+    선택 칸 `ref`(작업 참조)를 보존한다. 의무 고지가 본문에 없으면 단일 통과점
+    (`_apply_disclosures`)이 되살린다. 없으면 빈 목록(종전 결과와 같다).
+    """
+    return disc.dedupe(res.get("disclosures") or [])
 
 
 #: `regen_stop` 사유 → 고지 kind(plans/123 W-6 — 119 계약 어휘 재사용).

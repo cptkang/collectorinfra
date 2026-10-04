@@ -360,7 +360,9 @@ async def test_tool_schemas_add_source_arguments_only(two):
     _, _, tools = two
     schemas = {t.name: t.inputSchema["properties"] for t in await create_server(tools).list_tools()}
     for name, props in schemas.items():
-        if name == "apm_transaction_profile":
+        if name.startswith("apm_job_"):  # 작업 도구(plans/134 W0-B)는 소스와 무관하다
+            assert "source_ids" not in props and "source_id" not in props, name
+        elif name == "apm_transaction_profile":
             assert "source_id" in props and "source_ids" not in props
         elif name.startswith("apm_"):
             assert "source_ids" in props, name

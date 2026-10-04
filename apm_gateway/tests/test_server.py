@@ -1,6 +1,7 @@
-"""MCP 서버 — 도구 표면 · 오류 계약 · 감사 · 정적 Bearer.
+"""MCP 서버 — 도구 표면 · 오류 계약 · 감사 · 주체별 Bearer.
 
-plans/87 §0.7 (3) · §5.8 · R-19 · D-125.
+plans/87 §0.7 (3) · §5.8 · R-19 · D-125 · plans/134 W0-B(작업 도구 3종 · 주체 토큰 — D-299 ③이
+D-195 ①의 APM 도구 8종 상한을 폐지했다).
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import pytest
 from conftest import TOKEN, make_tools
 from starlette.testclient import TestClient
 
-EXPECTED_TOOLS = {
+DATA_TOOLS = {
     "apm_instance_map",
     "apm_app_health",
     "apm_runtime_health",
@@ -21,8 +22,13 @@ EXPECTED_TOOLS = {
     "apm_active_services",
     "apm_events",
     "apm_transaction_profile",
-    "gateway_health",
+    # plans/134 W2(N-5~N-7)
+    "apm_status_stats",
+    "apm_metrics",
+    "apm_source_changes",
 }
+JOB_TOOLS = {"apm_job_status", "apm_job_cancel", "apm_job_read"}
+EXPECTED_TOOLS = DATA_TOOLS | JOB_TOOLS | {"gateway_health"}
 
 
 def _text(result) -> dict:
@@ -40,11 +46,16 @@ def server(mock_server_factory, synthetic_dir):
 
 
 @pytest.mark.asyncio
-async def test_tool_surface_is_eight_apm_tools_plus_health(server):
-    mcp, _ = server
+async def test_tool_surface_is_data_job_and_health_tools(server):
+    """데이터 도구 11종(W2 +3) + 작업 도구 3종 + 헬스(plans/134 W0-B) — 숫자 상한은 D-299 ③이
+    폐지했다."""
+    from apm_gateway.interface.server import register_tools
+    from mcp.server.fastmcp import FastMCP
+
+    mcp, tools = server
     names = {t.name for t in await mcp.list_tools()}
     assert names == EXPECTED_TOOLS
-    assert len([n for n in names if n.startswith("apm_")]) == 8  # P4 상한
+    assert set(register_tools(FastMCP("x"), tools)) == EXPECTED_TOOLS
 
 
 @pytest.mark.asyncio
@@ -97,7 +108,8 @@ def test_bearer_middleware_rejects_without_token(server):
 
 
 def test_bearer_middleware_matches_mcp_server_copy():
-    """복제한 Bearer 미들웨어가 원본과 같은 판정 문장을 쓴다(R-21 드리프트 감시 — 소스 비교)."""
+    """주체별 Bearer 미들웨어가 원본의 헤더 판독·401 응답 문장을 그대로 쓴다(R-21 드리프트 감시 —
+    소스 비교). 토큰 비교는 주체별 토큰으로 넓혀 원본과 다르다(plans/134 W0-B §3.6)."""
     from pathlib import Path
 
     here = Path(__file__).resolve().parents[2]
@@ -106,9 +118,58 @@ def test_bearer_middleware_matches_mcp_server_copy():
         encoding="utf-8"
     )
     for needle in (
-        'if scope["type"] != "http" or self.token is None:',
+        'if scope["type"] != "http"',
         'provided = headers.get(b"authorization", b"").decode("latin-1")',
-        'if provided != f"Bearer {self.token}":',
+        'body = json.dumps({"error": "unauthorized"}, ensure_ascii=False).encode("utf-8")',
         '"status": 401,',
     ):
         assert needle in original and needle in copy, needle
+
+
+# ── 주체별 Bearer (plans/134 W0-B §3.6) ──────────────────────
+
+
+def _echo_principal_app():
+    from apm_gateway.interface.server import PRINCIPAL_SCOPE_KEY
+
+    async def app(scope, receive, send):
+        body = str(scope.get(PRINCIPAL_SCOPE_KEY)).encode()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": body})
+
+    return app
+
+
+def test_principal_middleware_maps_token_to_principal():
+    from apm_gateway.interface.server import BearerPrincipalMiddleware
+
+    app = BearerPrincipalMiddleware(
+        _echo_principal_app(), {"chat": "tok-chat", "investigation": "tok-inv"}
+    )
+    client = TestClient(app)
+    assert client.get("/", headers={"Authorization": "Bearer tok-chat"}).text == "chat"
+    assert client.get("/", headers={"Authorization": "Bearer tok-inv"}).text == "investigation"
+    for headers in ({}, {"Authorization": "Bearer tok-chatx"}, {"Authorization": "tok-chat"}):
+        denied = client.get("/", headers=headers)
+        assert denied.status_code == 401 and denied.json() == {"error": "unauthorized"}
+    open_app = TestClient(BearerPrincipalMiddleware(_echo_principal_app(), {}))
+    assert open_app.get("/").text == "anonymous"  # 인증 꺼짐 = 주체 anonymous
+
+
+def test_build_asgi_app_single_token_is_default_principal(server):
+    from apm_gateway.interface.server import build_asgi_app
+
+    mcp, _ = server
+    client = TestClient(build_asgi_app(mcp, {"default": "gw-bearer"}))
+    assert client.get("/sse", headers={"Authorization": "Bearer other"}).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_data_tools_accept_owner_and_wait_seconds(server):
+    mcp, _ = server
+    for tool in await mcp.list_tools():
+        props = tool.inputSchema["properties"]
+        if tool.name in DATA_TOOLS:
+            assert {"owner", "wait_seconds"} <= set(props), tool.name
+        elif tool.name in JOB_TOOLS:
+            assert "job_id" in props and "owner" in props, tool.name

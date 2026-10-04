@@ -108,8 +108,11 @@ def test_slot_multiple_owners() -> None:
 def test_areas_prompt_lists_every_registered_area_without_system_names() -> None:
     rows = ip._area_rows()
     rendered = render_intent_planner_areas_template(INTENT_PLANNER_SYSTEM_TEMPLATE, rows)
+    # plans/134 W2 — `active_only` 영역은 소유 시스템이 활성일 때만 싣는다(비활성 바이트 불변)
     for spec in get_registry().capability_specs():
-        assert f"| {spec.code} |" in rendered, spec.code
+        assert (f"| {spec.code} |" in rendered) is not spec.active_only, spec.code
+    active_rows = ip._area_rows(frozenset({"apm"}))
+    assert all(f"| {s.code} |" in active_rows for s in get_registry().capability_specs())
     assert '"areas": ["server_status"], "requested_source": ""' in rendered
     assert "두 키를 **항상** 적습니다" in rendered
     # 영역 표는 소스 이름을 렌더하지 않는다(비활성 소스 비노출 — D-283 ②)

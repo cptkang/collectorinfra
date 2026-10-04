@@ -172,3 +172,4 @@ def test_catalog_copy_matches_canonical():
         assert tuple(copy.required) == ep.required, template
         assert tuple(copy.optional) == ep.optional, template
         assert copy.accept == ep.accept, template
+        assert tuple(copy.path_vars) == ep.path_vars, template

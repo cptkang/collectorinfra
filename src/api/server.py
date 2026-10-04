@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.api.routes import admin, admin_auth, alarm, conversation, db_structure, doc_search, health, noise_dashboard, query, schema_cache, scope, ui, user_auth
+from src.api.routes import admin, admin_auth, alarm, apm_jobs, conversation, db_structure, doc_search, health, noise_dashboard, query, schema_cache, scope, ui, user_auth
 from src.config import AppConfig, load_config
 from src.graph import build_graph
 from src.security.audit_logger import setup_logging
@@ -677,6 +677,8 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     application.include_router(doc_search.router, prefix="/api/v1", tags=["doc-search"])
     # (plans/90 · D-205) 스코프 칩 선택지 — 축 배열
     application.include_router(scope.router, prefix="/api/v1", tags=["scope"])
+    # (plans/134 W0-B) 제니퍼 장기 조회 작업 — 내 작업·상태·취소·전체 결과 받기(소유자·관리자)
+    application.include_router(apm_jobs.router, prefix="/api/v1", tags=["apm-jobs"])
     if metrics_enabled:
         from src.api.routes.metrics import build_metrics_router
 

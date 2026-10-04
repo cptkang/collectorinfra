@@ -122,6 +122,22 @@ def test_active_prompt_is_insertion_only() -> None:
     section_start = active.index("## WAS·미들웨어(APM) 조회")
     section_end = active.index("## 작업 분해 규칙\n")
     stripped = (active[:section_start] + active[section_end:]).replace("\n" + agent_line, "", 1)
+    # plans/134 W1 검증 H-1 — 「출력 형식」 골격 task 줄의 `views`·`view_args` 두 키와 그 규칙
+    # 한 줄도 활성 렌더에서만 더한다(골격 줄 끝 확장 + 주의 목록 삽입)
+    from src.prompts import intent_planner as prompts
+
+    assert active.count(prompts.APM_SKELETON_TAIL_WITH_KEYS) == 1
+    assert active.count(prompts.APM_OUTPUT_RULE) == 1
+    stripped = (stripped.replace(prompts.APM_SKELETON_TAIL_WITH_KEYS, prompts.APM_SKELETON_TAIL, 1)
+                .replace(prompts.APM_OUTPUT_RULE, "", 1))
+    # plans/134 W2 — 활성 배포에서만 렌더하는 답변 영역 행(`active_only`)도 삽입이다
+    from src.routing.registry import get_registry
+
+    for spec in get_registry().capability_specs():
+        if spec.active_only:
+            row = f"\n| {spec.code} | {spec.label} |"
+            assert row in stripped and row not in inactive, spec.code
+            stripped = stripped.replace(row, "", 1)
     assert stripped == inactive, "기존 줄은 한 글자도 바뀌지 않는다"
     assert "`apm.events`" in active and "`apm.app_health`" in active
 
@@ -209,7 +225,9 @@ async def test_no_target_inserts_instances_first_hop_and_caps(gateway) -> None:
     res = await aq.run_apm_query({"task_id": "t1", "agent": "apm_query",
                                   "views": ["apm.app_health"]},
                                  _isolated(), llm=None, app_config=_cfg(max_targets=3), now=NOW)
-    assert gw.calls[0] == ("apm_instance_map", {"thread_id": "th-1"}), "첫 홉 삽입(LLM 0)"
+    # plans/134 W0-B — 작업 인자 owner·wait_seconds가 함께 실린다(호출 상한 10초 − 2)
+    assert gw.calls[0] == ("apm_instance_map", {"thread_id": "th-1", "owner": "user:anonymous",
+                                                "wait_seconds": 8.0}), "첫 홉 삽입(LLM 0)"
     assert [c[1]["hostname"] for c in gw.calls[1:]] == ["was01", "was02", "was03"]
     step = res["apm_query"]["inserted_steps"][0]
     assert step == {"view": "apm.instances", "reason": step["reason"], "hosts": 5, "truncated": 2}
@@ -258,22 +276,36 @@ async def test_out_of_window_is_not_queried_and_not_substituted(gateway) -> None
         llm=None, app_config=_cfg(), now=NOW)
     assert gw.calls == [], "창 밖은 조회하지 않는다"
     assert res["degraded_reason"] == "apm_not_queried"
-    assert "조회 창" in res["final_response"] and res["source_status"][0]["status"] == "not_queried"
+    # plans/134 SPEC §7.2 — 문구는 「W6 전 미지원」이 아니라 사실(보존 기간 확인 전)
+    assert aq.OUT_OF_WINDOW_NOTE in res["final_response"]
+    assert res["source_status"][0]["status"] == "not_queried"
 
 
-def test_window_trim_and_current_value_views() -> None:
+def test_window_passes_period_and_current_value_views() -> None:
+    """plans/134 M-2 — range 보기는 요청 기간을 자르지 않고 넘긴다.
+
+    종전 10분 상한과 C-2 오고지(「기간 조회를 지원하지 않는 보기」)를 폐지했다.
+    """
     views = {v.id: v for v in aq.apm_views()}
     today = aq.plan_window(views["apm.app_health"], {"start": "2026-09-30", "end": "2026-09-30"},
                            NOW)
     assert today.mode == "window" and today.args == {"reference_time": None,
-                                                    "lookback_minutes": 10}
-    assert "마지막 10분만 조회" in today.note
+                                                    "lookback_minutes": 600}
+    assert today.note == "" and today.kind == ""
     short = aq.plan_window(views["apm.events"],
                            {"start": "2026-09-30 09:00", "end": "2026-09-30 09:30"}, NOW)
     assert short.args == {"reference_time": "2026-09-30T09:30:00", "lookback_minutes": 30}
+    for vid in ("apm.runtime", "apm.slow_tx"):  # C-2: 종전에는 현재값으로 바꾸고 잘못 고지했다
+        plan = aq.plan_window(views[vid], {"start": "2026-09-30 09:00", "end": "2026-09-30 10:00"},
+                              NOW)
+        assert plan.mode == "window" and plan.args["lookback_minutes"] == 60, vid
     assert aq.plan_window(views["apm.pool"], None, NOW).mode == "current"
-    assert "현재값 기준" in aq.plan_window(views["apm.pool"],
-                                          {"start": "2026-09-30", "end": "2026-09-30"}, NOW).note
+    pool = aq.plan_window(views["apm.pool"], {"start": "2026-09-30", "end": "2026-09-30"}, NOW)
+    assert pool.mode == "current" and "현재값 기준" in pool.note
+    assert pool.kind == "apm_current_only"
+    listing = aq.plan_window(views["apm.instances"], {"start": "2026-09-30", "end": "2026-09-30"},
+                             NOW)
+    assert listing.mode == "current" and listing.note == "", "시간 무관 목록은 기간을 쓰지 않는다"
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,13 @@
   `JENNIFER_<ID>_API_URL`·`_API_TOKEN`(필수)과 선택 키(비면 전역 `JENNIFER_*` 값).
   `JENNIFER_SOURCES`가 없으면 단일 설정(`JENNIFER_API_URL` → 소스 `default`). 두 방식을 함께 쓰면
   기동 실패다(정본 모호 — 침묵 선택 금지).
+- 장기 작업·스풀(plans/134 W0-B · SPEC-apm-question-coverage §2.3·§3): `APM_SPOOL_DIR`(상대 경로는
+  게이트웨이 루트 = 자체 cwd 기준) · 인라인·청크 행 수 · 보관 · 동시 실행 · 정체 · 우선순위 에이징.
+  `JENNIFER_MAX_RESPONSE_BYTES`는 **메모리 임계**다 — 넘는 응답은 스풀 임시 파일로 받는다(오류로
+  끊지 않는다 · D-296 ④).
+- 호출 주체(§3.6): `APM_GATEWAY_BEARER_TOKENS`(JSON 객체 `{주체: 토큰}`) + 종전 단일
+  `APM_GATEWAY_BEARER_TOKEN`(주체 `default`). 같은 토큰을 두 주체에 주면 기동 실패다(메시지에 토큰
+  값 없음).
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 
 from apm_gateway.domain.events import DEFAULT_LEVEL_SEVERITY, DEFAULT_UNKNOWN_SEVERITY
+from apm_gateway.domain.jobs import DEFAULT_PRINCIPAL, principal_error
 from apm_gateway.domain.signals import WasThresholds
 from apm_gateway.domain.sources import DEFAULT_SOURCE_ID, source_id_error
 
@@ -53,6 +61,7 @@ class JenniferApiConfig:
     domain_ids: tuple[int, ...] = ()
     timeout_seconds: float = 10.0
     rate_limit_per_sec: float = 5.0
+    # 메모리 임계(D-296 ④) — 넘는 응답 본문은 스풀 임시 파일로 받아 점진 파싱한다(오류 아님).
     max_response_bytes: int = 4 * 1024 * 1024
     source_id: str = DEFAULT_SOURCE_ID
 
@@ -63,6 +72,8 @@ class ServerConfig:
     port: int = 9096
     log_level: str = "INFO"
     bearer_token: str = ""
+    # 주체 → 토큰(단일 `bearer_token`은 주체 `default`로 들어 있다). 비면 무인증(주체 `anonymous`).
+    bearer_tokens: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -70,6 +81,21 @@ class RuntimeConfig:
     timezone: str = "Asia/Seoul"
     instance_cache_seconds: int = 600
     profile_calls_per_investigation: int = 5
+    # 소스별 지표 카탈로그 캐시 수명(plans/134 W2 N-6 — 지나면 다시 읽고 지문으로 변경을 알린다)
+    metric_catalog_ttl_seconds: int = 3600
+
+
+@dataclass
+class JobConfig:
+    """장기 작업·스풀(plans/134 W0-B) — 값은 전달 형태·자원 제어이고 조회 범위를 줄이지 않는다."""
+
+    spool_dir: Path = field(default_factory=lambda: PACKAGE_ROOT / "var" / "spool")
+    inline_rows: int = 500
+    chunk_rows: int = 2000
+    retention_seconds: int = 86400
+    max_concurrent: int = 4
+    stall_seconds: int = 300
+    priority_aging_seconds: float = 10.0
 
 
 @dataclass
@@ -104,6 +130,7 @@ class GatewayConfig:
     sources: tuple[JenniferApiConfig, ...] = ()
     server: ServerConfig = field(default_factory=ServerConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    jobs: JobConfig = field(default_factory=JobConfig)
     poller: PollerConfig = field(default_factory=PollerConfig)
     redis: RedisConfig = field(default_factory=RedisConfig)
     policies: Policies = field(default_factory=Policies)
@@ -177,6 +204,62 @@ def _load_sources(
             )
         )
     return tuple(sources)
+
+
+def _bearer_tokens(declared: str | None, single: str) -> dict[str, str]:
+    """`APM_GATEWAY_BEARER_TOKENS`(JSON 객체) + 단일 토큰(주체 `default`) → 주체별 토큰.
+
+    오류 메시지에는 주체 이름만 싣는다(토큰 값 없음 — R-20).
+    """
+    tokens: dict[str, str] = {}
+    if declared is not None and declared.strip():
+        try:
+            parsed = json.loads(declared)
+        except ValueError:
+            parsed = None
+        if not isinstance(parsed, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()
+        ):
+            raise ValueError(
+                'APM_GATEWAY_BEARER_TOKENS는 문자열 JSON 객체여야 한다(예: {"chat": "…"})'
+            )
+        for name, token in parsed.items():
+            principal = name.strip()
+            problem = principal_error(principal)
+            if problem:
+                raise ValueError(f"APM_GATEWAY_BEARER_TOKENS: {problem}")
+            if not token.strip():
+                raise ValueError(
+                    f"APM_GATEWAY_BEARER_TOKENS: 주체 {principal!r}의 토큰이 비어 있다"
+                )
+            tokens[principal] = token.strip()
+    if single:
+        if DEFAULT_PRINCIPAL in tokens:
+            raise ValueError(
+                "APM_GATEWAY_BEARER_TOKEN(주체 default)과 APM_GATEWAY_BEARER_TOKENS의 default를"
+                " 함께 쓸 수 없다(정본 모호)"
+            )
+        tokens[DEFAULT_PRINCIPAL] = single
+    owner_of: dict[str, str] = {}
+    for principal, token in tokens.items():
+        if token in owner_of:
+            raise ValueError(
+                f"같은 토큰을 두 주체({owner_of[token]}, {principal})에 줄 수 없다(주체 모호)"
+            )
+        owner_of[token] = principal
+    return tokens
+
+
+def _spool_dir(value: str | None) -> Path:
+    path = Path((value or "").strip() or "var/spool")
+    return path if path.is_absolute() else PACKAGE_ROOT / path
+
+
+def _positive(value: str | None, default: float, key: str) -> float:
+    number = float(value) if value is not None and value.strip() else default
+    if number <= 0:
+        raise ValueError(f"{key}는 0보다 커야 한다")
+    return number
 
 
 def _warn_unknown_policy_sources(instance_map: dict[str, Any], configured: set[str]) -> None:
@@ -258,6 +341,22 @@ def load_config(
         max_response_bytes=int(get("JENNIFER_MAX_RESPONSE_BYTES") or 4 * 1024 * 1024),
     )
     sources = _load_sources(get("JENNIFER_SOURCES"), jennifer, env)
+    bearer_token = (get("APM_GATEWAY_BEARER_TOKEN") or "").strip()
+    jobs = JobConfig(
+        spool_dir=_spool_dir(get("APM_SPOOL_DIR")),
+        inline_rows=int(_positive(get("APM_INLINE_ROWS"), 500, "APM_INLINE_ROWS")),
+        chunk_rows=int(_positive(get("APM_ARTIFACT_CHUNK_ROWS"), 2000, "APM_ARTIFACT_CHUNK_ROWS")),
+        retention_seconds=int(
+            _positive(
+                get("APM_ARTIFACT_RETENTION_SECONDS"), 86400, "APM_ARTIFACT_RETENTION_SECONDS"
+            )
+        ),
+        max_concurrent=int(_positive(get("APM_JOB_MAX_CONCURRENT"), 4, "APM_JOB_MAX_CONCURRENT")),
+        stall_seconds=int(_positive(get("APM_JOB_STALL_SECONDS"), 300, "APM_JOB_STALL_SECONDS")),
+        priority_aging_seconds=_positive(
+            get("APM_PRIORITY_AGING_SECONDS"), 10.0, "APM_PRIORITY_AGING_SECONDS"
+        ),
+    )
     policies = load_policies(policy_dir)
     _warn_unknown_policy_sources(policies.instance_map, {s.source_id for s in sources})
     return GatewayConfig(
@@ -267,13 +366,20 @@ def load_config(
             host=(get("APM_GATEWAY_HOST") or "127.0.0.1").strip(),
             port=int(get("APM_GATEWAY_PORT") or 9096),
             log_level=(get("APM_GATEWAY_LOG_LEVEL") or "INFO").strip(),
-            bearer_token=(get("APM_GATEWAY_BEARER_TOKEN") or "").strip(),
+            bearer_token=bearer_token,
+            bearer_tokens=_bearer_tokens(get("APM_GATEWAY_BEARER_TOKENS"), bearer_token),
         ),
         runtime=RuntimeConfig(
             timezone=(get("APM_TIMEZONE") or "Asia/Seoul").strip(),
             instance_cache_seconds=int(get("APM_INSTANCE_CACHE_SECONDS") or 600),
             profile_calls_per_investigation=int(get("APM_PROFILE_CALLS_PER_INVESTIGATION") or 5),
+            metric_catalog_ttl_seconds=int(
+                _positive(
+                    get("APM_METRIC_CATALOG_TTL_SECONDS"), 3600, "APM_METRIC_CATALOG_TTL_SECONDS"
+                )
+            ),
         ),
+        jobs=jobs,
         poller=PollerConfig(
             enabled=_bool(get("APM_EVENT_POLLER_ENABLED"), False),
             interval_seconds=interval,
@@ -291,7 +397,7 @@ def load_config(
 
 
 def describe(cfg: GatewayConfig) -> dict[str, Any]:
-    """기동 로그용 요약(비밀 값 없음 — 소스 id와 설정 여부만 · URL·토큰 값 없음)."""
+    """기동 로그용 요약(비밀 값 없음 — 소스 id와 설정 여부 · 주체 이름만 · URL·토큰 값 없음)."""
     return {
         "sources": [
             {
@@ -302,7 +408,14 @@ def describe(cfg: GatewayConfig) -> dict[str, Any]:
             }
             for s in cfg.sources
         ],
-        "bearer": bool(cfg.server.bearer_token),
+        "bearer": bool(cfg.server.bearer_tokens),
+        "bearer_principals": sorted(cfg.server.bearer_tokens),
+        "jobs": {
+            "inline_rows": cfg.jobs.inline_rows,
+            "chunk_rows": cfg.jobs.chunk_rows,
+            "max_concurrent": cfg.jobs.max_concurrent,
+            "retention_seconds": cfg.jobs.retention_seconds,
+        },
         "poller": cfg.poller.enabled,
         "poll_interval": cfg.poller.interval_seconds,
         "overrides": len(cfg.policies.instance_map.get("overrides") or []),

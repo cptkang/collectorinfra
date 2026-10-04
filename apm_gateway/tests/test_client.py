@@ -1,9 +1,10 @@
-"""Open API 클라이언트 — 오류 분류(본문 기준) · 크기 상한 · 토큰 비노출 · Accept 고정
-(plans/87 §5.2(c) [v3.3] · §8).
+"""Open API 클라이언트 — 오류 분류(본문 기준) · 큰 응답 스풀 · 토큰 비노출 · Accept 고정
+(plans/87 §5.2(c) [v3.3] · §8 · plans/134 W0-B N-18 — 응답 크기는 상한이 아니라 메모리 임계).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 
 import httpx
@@ -95,18 +96,42 @@ async def test_timeout_and_connect_error_are_source_unavailable():
 
 
 @pytest.mark.asyncio
-async def test_response_size_cap_declared_and_streamed():
-    big = b"x" * 5000
-    err = await _error(_client(lambda r: httpx.Response(200, content=big), max_response_bytes=1000))
-    assert err.code == API_ERROR and "상한" in err.reason
+async def test_response_over_memory_threshold_is_spooled_not_error(tmp_path):
+    """D-296 ④ 의도 변경 — 임계(종전 「응답 크기 상한」)를 넘으면 오류가 아니라 임시 파일로 받는다
+    (Content-Length 선언·스트림 누적 둘 다). 파싱 뒤 임시 파일은 남지 않는다."""
+    body = {"result": [{"domainId": i, "name": f"d{i}"} for i in range(300)]}
+    raw = json.dumps(body).encode()
+    assert len(raw) > 1000
+    spool = tmp_path / "tmp"
+
+    declared = JenniferClient(
+        JenniferApiConfig(
+            url="http://apm.test", token=TOKEN, rate_limit_per_sec=0, max_response_bytes=1000
+        ),
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, content=raw)),
+        spool_dir=spool,
+    )
+    assert await declared.get_json("/api/domain") == body
+    await declared.aclose()
 
     def streamed(request):
-        return httpx.Response(200, stream=httpx.ByteStream(big))
+        return httpx.Response(200, stream=httpx.ByteStream(raw))
 
-    client = _client(streamed, max_response_bytes=1000)
-    with pytest.raises(ApmError):
-        await client.get_json("/api/domain")
+    client = JenniferClient(
+        JenniferApiConfig(
+            url="http://apm.test", token=TOKEN, rate_limit_per_sec=0, max_response_bytes=1000
+        ),
+        transport=httpx.MockTransport(streamed),
+        spool_dir=spool,
+    )
+    assert await client.get_json("/api/domain") == body
     await client.aclose()
+    assert list(spool.iterdir()) == []
+    # 임계를 넘은 비JSON 본문은 「상한 초과」가 아니라 파싱 실패다(데이터 경로와 같은 분류)
+    err = await _error(
+        _client(lambda r: httpx.Response(200, content=b"x" * 5000), max_response_bytes=1000)
+    )
+    assert err.code == API_ERROR and "파싱 실패" in err.reason
 
 
 @pytest.mark.asyncio

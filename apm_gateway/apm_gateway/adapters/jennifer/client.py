@@ -3,9 +3,17 @@
 - 모든 요청은 `allowlist.check_request`를 **먼저** 통과해야 네트워크에 나간다(거부 = HTTP 0회).
 - 토큰은 `Authorization: Bearer` 헤더로만 싣는다. 로그·오류 사유에 토큰이 들어가지 않게 가린다.
 - `follow_redirects=False` — 리다이렉트를 따라가면 허용목록이 우회된다. 3xx는 오류로 돌려준다.
-- timeout은 서버가 강제하고, 응답 크기는 Content-Length 선검사 + 스트림 누적 검사로 막는다.
+- timeout은 서버가 강제한다. 응답 크기는 **메모리 임계**다(plans/134 W0-B N-18 · D-296 ④) —
+  Content-Length 선검사 또는 스트림 누적이 `max_response_bytes`를 넘으면 스풀 임시 파일로 받고
+  `{"result": [...]}` 배열을 원소 단위로 점진 디코드한다(오류로 끊지 않는다 · 파싱 뒤 파일 삭제).
 - 초당 호출 상한(토큰 사용량은 **실패 응답까지** 1건씩 센다 — §0.10 #10)을 클라이언트가 지킨다.
+  대기열은 호출 맥락의 우선순위(`poller` > `interactive` > `background` · 에이징)로 판다(N-14).
+- HTTP 직전에 호출 맥락의 훅을 부른다 — 작업의 동시 실행 슬롯 대기 · 호출 수·임대 시각 갱신.
 - 오류는 HTTP 상태가 아니라 본문으로 분류한다(도메인 미접속·파라미터 누락이 모두 500 — §0.10 #11).
+- **자격증명 제거**(N-17 · D-296 ③): JSON·텍스트를 파싱한 **직후** 이 클래스의 두 출구
+  (`get_json`·`get_text`)와 오류 사유에서 `domain.credentials`를 지난다 — 위 계층은 가린 값만 본다.
+  오류 사유는 **가린 뒤 자른다**(자른 뒤 가리면 `@`가 잘려 나간 비밀번호 앞부분이 남는다). 큰 본문의
+  자격증명 검사는 스레드에서 돌려 이벤트 루프를 오래 막지 않는다.
 """
 
 from __future__ import annotations
@@ -13,8 +21,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import tempfile
 import time
-from typing import Any
+from dataclasses import dataclass
+from pathlib import Path
+from typing import IO, Any
 
 import httpx
 
@@ -23,7 +34,11 @@ from apm_gateway.adapters.jennifer.allowlist import (
     build_path,
     check_request,
 )
+from apm_gateway.adapters.json_stream import load_json_file
+from apm_gateway.adapters.throttle import PriorityThrottle
 from apm_gateway.config import JenniferApiConfig
+from apm_gateway.domain.call_context import current_scope
+from apm_gateway.domain.credentials import ROOT_FIELD, scrub_detail, scrub_text
 from apm_gateway.domain.errors import (
     API_ERROR,
     CONTRACT_VIOLATION,
@@ -39,6 +54,35 @@ logger = logging.getLogger(__name__)
 _NOT_CONNECTED = "domain is not connected"
 _CONTRACT_MARKERS = ("required request parameter", "cannot parse null string")
 _REASON_MAX = 240
+_ERROR_HEAD_BYTES = 64 * 1024
+# 이보다 큰 본문의 자격증명 검사는 스레드에서 한다(정규식은 짧은 호출의 연속이라 GIL이 사이사이
+# 풀린다)
+_THREAD_SCRUB_BYTES = 256 * 1024
+
+
+@dataclass
+class _Body:
+    """응답 본문 — 메모리(`text`) 또는 임계를 넘어 받은 임시 파일(`path`)."""
+
+    text: str = ""
+    path: Path | None = None
+    encoding: str = "utf-8"
+    size: int = 0
+
+    def head(self) -> str:
+        if self.path is None:
+            return self.text
+        with self.path.open("rb") as fh:
+            return fh.read(_ERROR_HEAD_BYTES).decode(self.encoding, errors="replace")
+
+    def read_text(self) -> str:
+        if self.path is None:
+            return self.text
+        return self.path.read_text(encoding=self.encoding, errors="replace")
+
+    def discard(self) -> None:
+        if self.path is not None:
+            self.path.unlink(missing_ok=True)
 
 
 class JenniferClient:
@@ -49,12 +93,15 @@ class JenniferClient:
         cfg: JenniferApiConfig,
         *,
         transport: httpx.AsyncBaseTransport | None = None,
+        spool_dir: Path | None = None,
+        aging_seconds: float = 10.0,
     ) -> None:
         self._cfg = cfg
         self._transport = transport
         self._client: httpx.AsyncClient | None = None
-        self._rate_lock = asyncio.Lock()
-        self._last_start = 0.0
+        self._throttle = PriorityThrottle(float(cfg.rate_limit_per_sec), aging_seconds)
+        # 메모리 임계를 넘는 응답 본문의 임시 파일 위치(없으면 시스템 임시 디렉터리)
+        self._spool_dir = spool_dir
         self.calls_total = 0
 
     @property
@@ -88,15 +135,15 @@ class JenniferClient:
             out = out.replace(self._cfg.token, "***")
         return out[:_REASON_MAX]
 
-    async def _throttle(self) -> None:
-        rate = float(self._cfg.rate_limit_per_sec)
-        if rate <= 0:
-            return
-        async with self._rate_lock:
-            wait = self._last_start + 1.0 / rate - time.monotonic()
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._last_start = time.monotonic()
+    @staticmethod
+    def _absorb(notes: list[str], masked: set[str]) -> None:
+        """자격증명 검사 메모·가린 칸 이름을 호출 맥락에 넘긴다(작업이면 봉투 `limits`·고지 ·
+        아니면 메모는 경고 로그)."""
+        scope = current_scope()
+        for note in notes:
+            scope.note(note)
+        if masked:
+            scope.masked(sorted(masked))
 
     async def get_json(
         self,
@@ -104,12 +151,25 @@ class JenniferClient:
         params: dict[str, Any] | None = None,
         path_vars: dict[str, Any] | None = None,
     ) -> Any:
-        """허용 경로를 GET 해 JSON을 돌려준다. 실패는 `ApmError`."""
-        text = await self._get(template, params, path_vars)
+        """허용 경로를 GET 해 JSON을 돌려준다(자격증명 제거본). 실패는 `ApmError`."""
+        body = await self._get(template, params, path_vars)
         try:
-            return json.loads(text) if text else None
+            if body.path is not None:
+                parsed = await asyncio.to_thread(load_json_file, body.path, body.encoding)
+            else:
+                parsed = json.loads(body.text) if body.text else None
+            if body.size > _THREAD_SCRUB_BYTES:
+                cleaned, notes, masked = await asyncio.to_thread(scrub_detail, parsed)
+            else:
+                cleaned, notes, masked = scrub_detail(parsed)
+        except RecursionError as e:  # 지나치게 깊은 중첩 — 내부 오류가 아니라 응답 오류
+            raise ApmError(API_ERROR, f"JSON 파싱 실패(중첩 과다): {template}") from e
         except ValueError as e:
             raise ApmError(API_ERROR, f"JSON 파싱 실패: {template}") from e
+        finally:
+            body.discard()
+        self._absorb(notes, masked)
+        return cleaned
 
     async def get_text(
         self,
@@ -117,15 +177,29 @@ class JenniferClient:
         params: dict[str, Any] | None = None,
         path_vars: dict[str, Any] | None = None,
     ) -> str:
-        """허용 경로(텍스트 응답)를 GET 한다."""
-        return await self._get(template, params, path_vars)
+        """허용 경로(텍스트 응답)를 GET 한다(자격증명 제거본)."""
+        body = await self._get(template, params, path_vars)
+        try:
+            if body.path is None:
+                text = body.read_text()
+            else:
+                text = await asyncio.to_thread(body.read_text)
+        finally:
+            body.discard()
+        if len(text) > _THREAD_SCRUB_BYTES:
+            cleaned = await asyncio.to_thread(scrub_text, text)
+        else:
+            cleaned = scrub_text(text)
+        if cleaned != text:
+            self._absorb([], {ROOT_FIELD})
+        return cleaned
 
     async def _get(
         self,
         template: str,
         params: dict[str, Any] | None,
         path_vars: dict[str, Any] | None,
-    ) -> str:
+    ) -> _Body:
         if not self.configured:
             raise ApmError(NOT_CONFIGURED, "APM API URL 미설정 — 조회 불가")
         path = build_path(template, path_vars)
@@ -134,12 +208,15 @@ class JenniferClient:
         headers = {
             "Accept": endpoint.accept if endpoint.accept == ACCEPT_TEXT else "application/json"
         }
-        await self._throttle()
+        scope = current_scope()
+        # 작업: 동시 실행 슬롯 대기 · 소스별 호출 수·임대 시각(감사 `api_calls`·`sources`)
+        await scope.before_call(self._cfg.source_id)
+        await self._throttle.acquire(scope.priority)
         self.calls_total += 1
         started = time.monotonic()
         try:
             async with self._http().stream("GET", path, params=query, headers=headers) as resp:
-                body = await self._read_capped(resp)
+                body = await self._read_body(resp, path)
         except ApmError:
             raise
         except httpx.TimeoutException as e:
@@ -158,21 +235,56 @@ class JenniferClient:
         )
         if resp.status_code == 200:
             return body
-        raise self._classify(resp.status_code, body, path)
+        try:
+            head = body.head()
+        finally:
+            body.discard()
+        raise self._classify(resp.status_code, head, path)
 
-    async def _read_capped(self, resp: httpx.Response) -> str:
+    def _open_spill(self) -> IO[bytes]:
+        directory = self._spool_dir
+        if directory is not None:
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return tempfile.NamedTemporaryFile(  # noqa: SIM115 — 파싱 뒤 호출자가 지운다
+            mode="wb", dir=directory, prefix="apm-resp-", suffix=".body", delete=False
+        )
+
+    async def _read_body(self, resp: httpx.Response, path: str) -> _Body:
+        """본문을 메모리 임계까지 메모리에, 넘으면 임시 파일로 받는다(오류로 끊지 않는다)."""
         cap = int(self._cfg.max_response_bytes)
+        encoding = resp.encoding or "utf-8"
         declared = resp.headers.get("content-length")
+        spill: IO[bytes] | None = None
         if declared and declared.isdigit() and int(declared) > cap:
-            raise ApmError(API_ERROR, f"응답 크기 상한 초과(Content-Length {declared} > {cap})")
+            spill = self._open_spill()
         total = 0
         chunks: list[bytes] = []
-        async for chunk in resp.aiter_bytes():
-            total += len(chunk)
-            if total > cap:
-                raise ApmError(API_ERROR, f"응답 크기 상한 초과(> {cap} bytes)")
-            chunks.append(chunk)
-        return b"".join(chunks).decode(resp.encoding or "utf-8", errors="replace")
+        try:
+            async for chunk in resp.aiter_bytes():
+                total += len(chunk)
+                if spill is None and total > cap:
+                    spill = self._open_spill()
+                    spill.write(b"".join(chunks))
+                    chunks = []
+                if spill is None:
+                    chunks.append(chunk)
+                else:
+                    spill.write(chunk)
+        except BaseException:
+            if spill is not None:
+                spill.close()
+                Path(spill.name).unlink(missing_ok=True)
+            raise
+        if spill is None:
+            return _Body(text=b"".join(chunks).decode(encoding, errors="replace"), size=total)
+        spill.close()
+        logger.info(
+            "apm 응답 본문이 메모리 임계를 넘어 임시 파일로 받았다: path=%s bytes=%d > %d",
+            path,
+            total,
+            cap,
+        )
+        return _Body(path=Path(spill.name), encoding=encoding, size=total)
 
     def _classify(self, status: int, body: str, path: str) -> ApmError:
         """비200 응답을 오류 코드로 바꾼다 — 본문 기준(§0.10 #11)."""
@@ -186,7 +298,7 @@ class JenniferClient:
             return ApmError(
                 QUOTA_EXCEEDED, f"토큰 사용량 초과 응답(HTTP 429): {path}", status=status
             )
-        message = _exception_message(body)
+        message = scrub_text(_exception_message(body))
         lowered = message.lower()
         if _NOT_CONNECTED in lowered:
             return ApmError(
@@ -207,18 +319,21 @@ class JenniferClient:
 
 
 def _exception_message(body: str) -> str:
-    """v1 JSON `{"exception":{"message":…}}` · v2 문자열 본문 · 그 밖 텍스트에서 메시지를 뽑는다."""
+    """v1 JSON `{"exception":{"message":…}}` · v2 문자열 본문 · 그 밖 텍스트에서 메시지를 뽑는다.
+
+    자르지 않는다 — 호출자가 자격증명을 가린 **뒤** 자른다(본문 앞부분은 이미 64 KiB 상한).
+    """
     text = (body or "").strip()
     if not text:
         return ""
     try:
         parsed = json.loads(text)
-    except ValueError:
-        return text[:_REASON_MAX]
+    except (ValueError, RecursionError):
+        return text
     if isinstance(parsed, dict):
         exc = parsed.get("exception")
         if isinstance(exc, dict) and exc.get("message"):
-            return str(exc["message"])[:_REASON_MAX]
+            return str(exc["message"])
     if isinstance(parsed, str):
-        return parsed[:_REASON_MAX]
-    return text[:_REASON_MAX]
+        return parsed
+    return text

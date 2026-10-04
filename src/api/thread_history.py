@@ -103,6 +103,8 @@ class TurnRecorder:
             "processing_time_ms": payload.get("processing_time_ms"),
             "has_upload": self._has_upload,
             "db_scope": payload.get("db_scope"),
+            # 응답 고지(plans/134 W0-B) — 대화를 다시 불러도 작업 카드(ref)를 복원한다
+            "disclosures": payload.get("disclosures"),
         }
         try:
             await asyncio.wait_for(

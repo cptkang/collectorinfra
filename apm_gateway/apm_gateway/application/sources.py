@@ -10,7 +10,11 @@ D-287 ①②⑦ · SPEC-apm-gateway §2.1·§3).
   `sources[]`로 드러낸다. 고른 소스가 **전부** 실패하거나 도메인 0건이면 오류다(빈 결과를 정상으로
   보지 않는다) — 원인 코드가 모두 같으면 그 코드(소스 1개면 v4와 같은 코드·사유), 섞이면
   `source_unavailable`.
-- 한 hostname이 여러 소스에서 정합되면 모두 싣는다(상한 5 공유 · 행마다 `source_id`).
+- 한 hostname이 여러 소스에서 정합되면 모두 싣는다(행마다 `source_id` · 인스턴스 수 상한 없음 —
+  plans/134 W1 N-4 · D-296 ④에서 종전 「호스트당 5」를 걷었다).
+- 일부 소스·도메인을 쓸 수 없으면 봉투 `partial: true`의 근거가 된다(`partial_of` · plans/134 W0-B).
+- 소스 클라이언트는 메모리 임계를 넘는 응답을 스풀 `tmp/`에 받고, 호출 대기열을 우선순위·에이징으로
+  판다(plans/134 W0-B N-14·N-18).
 """
 
 from __future__ import annotations
@@ -25,12 +29,12 @@ from apm_gateway.adapters.jennifer.api import JenniferApi
 from apm_gateway.adapters.jennifer.client import JenniferClient
 from apm_gateway.application.resolver import (
     HIGH,
-    MAX_INSTANCES_PER_HOST,
     MEDIUM,
     InstanceResolver,
     Inventory,
     Resolution,
 )
+from apm_gateway.application.spool import TMP_DIR
 from apm_gateway.config import GatewayConfig
 from apm_gateway.domain.errors import (
     INSTANCE_UNRESOLVED,
@@ -56,6 +60,16 @@ class JenniferSource:
 
 def _status(inv: Inventory) -> str:
     return STATUS_EMPTY if not inv.error_code and not inv.domains else STATUS_UNAVAILABLE
+
+
+def partial_of(
+    usable: list[tuple[JenniferSource, Inventory]], statuses: list[dict[str, Any]]
+) -> bool:
+    """고른 소스 중 하나라도 빠졌거나(조회 불가·도메인 0건) 쓸 수 있는 소스에 조회 불가 도메인이
+    있으면 True — 결과가 전체가 아니다."""
+    return any(row["status"] in (STATUS_EMPTY, STATUS_UNAVAILABLE) for row in statuses) or any(
+        inv.unavailable for _, inv in usable
+    )
 
 
 class SourceSet:
@@ -158,7 +172,7 @@ class SourceSet:
         instance_id: int | None = None,
         source_ids: list[str] | None = None,
     ) -> Resolution:
-        """hostname → 인스턴스 목록(최대 5 · 소스 공유). 실패는
+        """hostname → 인스턴스 목록(정합된 전부 · 소스 공유). 실패는
         `ApmError`(instance_unresolved·source_unavailable·invalid_argument)."""
         usable, statuses, limits = await self.available(self.select(source_ids))
         matched: list[dict[str, Any]] = []
@@ -188,22 +202,19 @@ class SourceSet:
                     INSTANCE_UNRESOLVED,
                     f"instance_id {instance_id}는 hostname {hostname!r} 정합 결과에 없음",
                 )
-        if len(matched) > MAX_INSTANCES_PER_HOST:
-            limits.append(
-                f"[한계] 인스턴스 {len(matched)}개 중 {MAX_INSTANCES_PER_HOST}개만 조회(상한)"
-                " — instance_id로 좁힐 수 있다"
-            )
-            matched = matched[:MAX_INSTANCES_PER_HOST]
         kept = {i["source_id"] for i in matched}
         matches = {sid: m for sid, m in matches.items() if sid in kept}
         confidence = HIGH if all(c == HIGH for c, _ in matches.values()) else MEDIUM
         reason = "+".join(dict.fromkeys(r for _, r in matches.values()))
         if confidence != HIGH:
             limits.append(f"[한계] 정합 신뢰도 {confidence}({reason}) — 인스턴스명 규칙 기반 대응")
+        partial = partial_of(usable, statuses)
         for row in statuses:
             if row["status"] == STATUS_OK and row["source_id"] not in kept:
                 row["status"] = STATUS_NO_MATCH
-        return Resolution(hostname, matched, confidence, reason, limits, statuses, matches)
+        return Resolution(
+            hostname, matched, confidence, reason, limits, statuses, matches, partial=partial
+        )
 
 
 def _all_failed(failures: list[tuple[str, str, str]]) -> ApmError:
@@ -225,7 +236,13 @@ def build_source_set(
     """설정의 소스마다 클라이언트·조회 함수·정합기를 만든다(토큰은 그 소스 클라이언트에만)."""
     sources = []
     for api_cfg in cfg.sources:
-        api = JenniferApi(JenniferClient(api_cfg, transport=transport))
+        client = JenniferClient(
+            api_cfg,
+            transport=transport,
+            spool_dir=cfg.jobs.spool_dir / TMP_DIR,
+            aging_seconds=cfg.jobs.priority_aging_seconds,
+        )
+        api = JenniferApi(client)
         resolver = InstanceResolver(
             api,
             cfg.policies.instance_map,

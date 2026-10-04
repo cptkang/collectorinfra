@@ -1,38 +1,79 @@
-"""`apm_*` 도구 코어 8종 + `gateway_health` (plans/87 §5.2(c) · SPEC-apm-gateway §3).
+"""`apm_*` 도구 코어 11종 + `gateway_health` (plans/87 §5.2(c) · SPEC-apm-gateway §3 · plans/134
+W1·W2 — W2에서 통계·지표·변경 감지 3종).
 
 반환은 dict(정상 `{rows, row_count, …}` / 오류 `{error, reason}`)이고, MCP 등록·감사·JSON 직렬화는
 인터페이스 계층이 맡는다. 원칙:
 
-- 대상 인스턴스는 **결정적 정합**으로만 정한다(LLM이 인스턴스명을 추측하지 않는다) — 최대 5개.
-- 상위 N 축약·마스킹은 서버측에서 한다(원문은 반환·감사 어디에도 남기지 않는다).
-- 침묵 폴백 금지 — 일부 호출 실패·창 상한·과거 시점 등은 `limits`에 `[한계]`로 적고, 전부 실패면
-  오류를 돌려준다.
+- 대상 인스턴스는 **결정적 정합**으로만 정한다(LLM이 인스턴스명을 추측하지 않는다) — 정합된 전부.
+- 마스킹은 서버측에서 한다(원문은 반환·감사 어디에도 남기지 않는다). 사람·계정 식별자(`user_id`·
+  `client_id`)는 `mask_identifier`, IP는 `mask_ip`, URL은 `mask_url`, 자유 텍스트는 `mask_text`.
+  행 텍스트 칸(메시지·실행 텍스트·상태 메시지·설명)은 **마스킹한 전문**을 싣는다(plans/134 W2 —
+  화면·LLM 입력 절단은 본체 책임). 오류 사유(`reason`)만 길이를 자른다.
+- **자체 상한 없음**(D-296 ④ · plans/134 W1 N-4) — 기간·대상·건수·추세 인스턴스·SQL 수를 코드가
+  줄이지 않는다. 상위 N은 사용자가 정한 `n`(1 이상 · 기본은 도구별 종전 값)이고 `full=true`면
+  전체 행이다. 남는 한계는 제니퍼 쪽 사실(X-View 1분 창 · `/api/status/*` 시 단위 · 단위 미확인
+  필드)뿐이고 `[한계]`로 드러낸다. 큰 결과는 W0-B 작업·스풀이 `artifact`로 넘긴다.
+- **전체 파일 전용** 칸(`instance_oid` — 내부 OID)은 봉투의 `_file_only` 목록으로 표시한다. 작업
+  관리자가 결과 파일에는 남기고 화면용 `rows`(LLM 입력)에서는 뺀다.
+- 침묵 폴백 금지 — 일부 호출 실패·과거 시점 등은 `limits`에 `[한계]`로 적고, 전부 실패면 오류를
+  돌려준다. 일부 단위(소스·도메인·창 조각·호출) 조회 실패가 있으면 봉투 `partial: true`를 세운다.
+- 호출 계획(`expect_calls`)을 신고해 작업의 진행·비용 예측에 쓴다(작업 밖이면 아무 일도 없다).
 - WAS 판정은 `domain.signals` 한 곳에서만 한다(`was_signals`).
 - 제니퍼 소스가 여럿이면(plans/87 J8 · D-287) 인스턴스는 (`source_id`, `domain_id`, `instance_id`)로
-  식별하고 호출은 그 소스 서버로만 보낸다. 계약은 **추가만** 한다 — 선택 인자 `source_ids` · 행·
-  `profile_ref`의 `source_id` · `instance_resolution.instance_refs` · 봉투 `sources`. 봉투
-  `source_kind`·`source`는 그대로다(소비자 인식 키).
+  식별하고 호출은 그 소스 서버로만 보낸다. 봉투 `source_kind`·`source`는 그대로다(소비자 인식 키).
 """
 
 from __future__ import annotations
 
 import asyncio
+import difflib
+import hashlib
+import json
 import logging
+import math
+import re
 import time
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from apm_gateway.adapters.jennifer.allowlist import ALLOWED
-from apm_gateway.adapters.jennifer.api import SOURCE, XVIEW_WINDOW_MS, JenniferApi
-from apm_gateway.application.masking import mask_ip, mask_sql, mask_text, mask_url
+from apm_gateway.adapters.jennifer.api import (
+    CHANGES_WINDOW_MS,
+    SOURCE,
+    STATUS_KINDS,
+    XVIEW_WINDOW_MS,
+    JenniferApi,
+)
+from apm_gateway.application.jobs import (
+    FILE_ONLY_KEY,
+    MASKED_KEY,
+    TEXT_PARTS_KEY,
+    UNRESOLVED_KEY,
+)
+from apm_gateway.application.masking import (
+    mask_identifier,
+    mask_ip,
+    mask_sql,
+    mask_text,
+    mask_url,
+)
 from apm_gateway.application.resolver import SHORT_CACHE_SECONDS, Resolution
-from apm_gateway.application.sources import JenniferSource, SourceSet
+from apm_gateway.application.sources import (
+    STATUS_OK,
+    STATUS_UNAVAILABLE,
+    JenniferSource,
+    SourceSet,
+    partial_of,
+)
 from apm_gateway.config import GatewayConfig
 from apm_gateway.domain import signals as sig
+from apm_gateway.domain.call_context import expect_calls
 from apm_gateway.domain.errors import (
+    API_ERROR,
     CONTRACT_VIOLATION,
     INVALID_ARGUMENT,
     PROFILE_REF_MISMATCH,
@@ -45,19 +86,51 @@ from apm_gateway.domain.events import level_rank
 logger = logging.getLogger(__name__)
 
 SOURCE_KIND = "apm_api"
-XVIEW_MAX_MINUTES = 10
 EVENTS_DEFAULT_MINUTES = 30
-EVENTS_MAX_MINUTES = 24 * 60
 SLOW_TX_DEFAULT_MINUTES = 10
 HEALTH_DEFAULT_LOOKBACK = 30
+# 창이 이보다 길면 시 단위 애플리케이션 통계를 함께 싣는다(맥락 — 조회 상한이 아니다).
+HOURLY_AFTER_MINUTES = 10
 TREND_INTERVAL_MINUTE = 5
-TREND_MAX_INSTANCES = 2
-EVENT_ROWS_MAX = 50
-N_MAX = 20
-PROFILE_LINES_MAX = 60
-PROFILE_CHARS_MAX = 4000
+DEFAULT_N = 10
+# 화면용 발췌 — 전문은 결과 파일(`artifact.text_parts` profile)
+PROFILE_EXCERPT_LINES = 60
+PROFILE_EXCERPT_CHARS = 4000
+HOURLY_TOP_APPLICATIONS = 5
+LEVELS = ("fatal", "warning", "normal")
+LEVEL_MODES = ("min", "exact")
+RECORDS = ("event", "error")
+_ERROR_TYPE = re.compile(r"[A-Za-z0-9_]{1,64}")
+FILE_ONLY_COLUMNS = ("instance_oid",)
+# 프로파일 행은 트랜잭션이 중첩 칸이다(W1 검증 L-3)
+PROFILE_FILE_ONLY = ("transaction.instance_oid",)
+# `mask_identifier`로 가리는 칸(SPEC-coverage §4.3) — 원값이 있었으면 봉투 고지 대상(L-5)
+IDENTIFIER_FIELDS = ("client_id", "user_id")
 _PROFILE_BUDGET_TTL = 3600.0
 _HEALTH_CACHE_SECONDS = SHORT_CACHE_SECONDS
+# plans/134 W2(N-5~N-7)
+DEFAULT_TREND_METRICS = ("heap_used_mb", "heap_committed_mb", "gc_time_usage_pct")
+STATUS_DEFAULT_MINUTES = 60
+SERIES_DEFAULT_MINUTES = 60
+CHANGES_DEFAULT_MINUTES = 24 * 60
+METRIC_MODES = ("catalog", "series")
+METRIC_SCOPES = ("domain", "instance", "business", "application", "sql", "external_call")
+# 정렬 기준·지표 이름은 허용값이 미공개라(COV E-05·E-06) 식별자 형식만 본다
+# (값 검증은 카탈로그·서버).
+_IDENT = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,127}")
+_METRIC_SUGGESTIONS = 3
+
+
+@dataclass
+class _Catalog:
+    """소스 1개의 지표 카탈로그 캐시(TTL) — 다시 읽었을 때 지문이 바뀌었으면 `change_note`."""
+
+    fetched_at: float
+    scopes: dict[str, list[str]]
+    fingerprint: str
+    change_note: str | None = None
+    # 모양 위반 군(목록 아님·문자열 아닌 항목) — 빈 군이 아니라 「검증 불가」(W2V-G4)
+    invalid: tuple[str, ...] = ()
 
 
 def _now_iso(clock: Callable[[], float]) -> str:
@@ -86,11 +159,71 @@ class Window:
         }
 
 
-def _check_n(n: Any, default: int = 10) -> int:
-    value = default if n is None else int(n)
-    if not 1 <= value <= N_MAX:
-        raise ApmError(INVALID_ARGUMENT, f"n은 1~{N_MAX} 사이여야 한다: {n}")
+class _Limits(list[str]):
+    """`[한계]` 목록 — 일부 단위 조회 실패를 `fail`로 적으면 봉투 `partial`이 선다(문구 그대로).
+    선택 조건을 빼거나 바꿔 조회했으면 `unresolve`로 사용자용 한 줄을 남긴다(봉투 고지
+    `apm_unresolved_condition` — 값은 지표·정렬 이름만)."""
+
+    partial: bool = False
+
+    def __init__(self, *args: Any) -> None:
+        super().__init__(*args)
+        self.unresolved: list[str] = []
+
+    def fail(self, text: str) -> None:
+        self.partial = True
+        self.append(text)
+
+    def unresolve(self, text: str) -> None:
+        if text not in self.unresolved:
+            self.unresolved.append(text)
+
+
+def _positive_int(value: Any, name: str, default: int) -> int:
+    """양의 정수 인자(비면 기본값) — 1 미만·정수 아님은 `invalid_argument`."""
+    if value is None:
+        return default
+    if isinstance(value, int) and not isinstance(value, bool):
+        number = value
+    elif isinstance(value, str) and value.strip().isascii() and value.strip().isdigit():
+        number = int(value.strip())  # ASCII 숫자만(위첨자·전각 숫자는 int()가 못 읽는다 — W2V-G6)
+    else:
+        number = 0
+    if number < 1:
+        raise ApmError(INVALID_ARGUMENT, f"{name}는 양의 정수여야 한다: {value!r}")
+    return number
+
+
+def _identifier(value: Any, name: str) -> str | None:
+    """식별자 형식 인자(정렬 기준 등 — 허용값 미공개라 형식만 본다). 비면 None."""
+    if value is None or not str(value).strip():
+        return None
+    text = str(value).strip()
+    if not _IDENT.fullmatch(text):
+        raise ApmError(
+            INVALID_ARGUMENT, f"{name}는 영문으로 시작하는 영문·숫자·밑줄이어야 한다: {value!r}"
+        )
+    return text
+
+
+def _fingerprint(scopes: dict[str, list[str]]) -> str:
+    raw = json.dumps(scopes, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _check_n(n: Any, default: int | None = DEFAULT_N) -> int | None:
+    """상위 N — 1 이상이면 상한 없음(SPEC §2.1). 없으면 도구별 기본(None = 전부)."""
+    if n is None:
+        return default
+    value = int(n)
+    if value < 1:
+        raise ApmError(INVALID_ARGUMENT, f"n은 1 이상이어야 한다: {n}")
     return value
+
+
+def _select(rows: list[Any], n: int | None, full: bool) -> list[Any]:
+    """정렬된 행에서 화면 행을 고른다 — `full`이면 전부, 아니면 앞 `n`(None = 전부)."""
+    return list(rows) if full or n is None else rows[:n]
 
 
 InstKey = tuple[str, int]
@@ -109,8 +242,17 @@ def _group(resolution: Resolution) -> dict[tuple[str, int], list[int]]:
     return groups
 
 
-def _tag(records: list[dict[str, Any]], source_id: str) -> list[dict[str, Any]]:
-    return [{**r, "source_id": source_id} for r in records]
+def _tag(records: list[dict[str, Any]], source_id: str, domain_id: int | None = None) -> list[
+    dict[str, Any]
+]:
+    """소스 id를 붙인다 — 응답에 도메인 id가 없으면 호출 묶음의 도메인으로 채운다."""
+    out = []
+    for r in records:
+        rec = {**r, "source_id": source_id}
+        if domain_id is not None and rec.get("domain_id") is None:
+            rec["domain_id"] = domain_id
+        out.append(rec)
+    return out
 
 
 def _inst_meta(inst: dict[str, Any]) -> dict[str, Any]:
@@ -129,6 +271,63 @@ def _hour_floor(ms: int) -> int:
 def _hour_ceil(ms: int) -> int:
     floor = _hour_floor(ms)
     return floor if floor == ms else floor + 3_600_000
+
+
+def _full_text(text: str) -> str:
+    """원문 텍스트 전문(마스킹본) — 줄마다 자르지 않고 가린다."""
+    return "\n".join(mask_text(line, limit=max(len(line), 1)) for line in text.splitlines())
+
+
+def _tx_fields(tx: dict[str, Any]) -> dict[str, Any]:
+    """트랜잭션 레코드(X-View·상세) → 반환 칸(마스킹 · 식별자 가림)."""
+    return {
+        "domain_id": tx.get("domain_id"),
+        "domain_name": tx.get("domain_name", ""),
+        "instance_id": tx.get("instance_id"),
+        "instance_name": tx.get("instance_name", ""),
+        "instance_oid": tx.get("instance_oid"),
+        "application": mask_url(tx.get("application", "")),
+        "txid": tx.get("txid", ""),
+        "guid": tx.get("guid", ""),
+        "response_time_ms": tx.get("response_time_ms"),
+        "cpu_ms": tx.get("cpu_ms"),
+        "sql_ms": tx.get("sql_ms"),
+        "fetch_ms": tx.get("fetch_ms"),
+        "external_ms": tx.get("external_ms"),
+        "network_ms": tx.get("network_ms"),
+        "frontend_ms": tx.get("frontend_ms"),
+        "sql_count": tx.get("sql_count"),
+        "fetch_count": tx.get("fetch_count"),
+        "external_call_count": tx.get("external_call_count"),
+        "error_type": tx.get("error_type", ""),
+        "start_time_ms": tx.get("start_time_ms"),
+        "end_time_ms": tx.get("end_time_ms"),
+        "collect_time_ms": tx.get("collect_time_ms"),
+        "client_ip": mask_ip(tx.get("client_ip", "")),
+        "client_id": mask_identifier(tx.get("client_id", "")),
+        "user_id": mask_identifier(tx.get("user_id", "")),
+        "is_async": tx.get("is_async"),
+        "link_root": tx.get("link_root"),
+        "has_stacktrace": tx.get("has_stacktrace"),
+        "business_ids": list(tx.get("business_ids") or []),
+        "business_names": list(tx.get("business_names") or []),
+    }
+
+
+def _identifier_fields(records: list[dict[str, Any] | None]) -> set[str]:
+    """식별자 가림이 실제로 적용된 칸 이름(원값이 비어 있지 않은 칸)."""
+    return {f for rec in records if rec for f in IDENTIFIER_FIELDS if rec.get(f)}
+
+
+def _profile_ref(rec: dict[str, Any], time_key: str) -> dict[str, Any] | None:
+    if not rec.get("txid"):
+        return None
+    return {
+        "source_id": rec["source_id"],
+        "domain_id": rec.get("domain_id"),
+        "txid": rec["txid"],
+        "time_ms": rec.get(time_key),
+    }
 
 
 class ApmTools:
@@ -150,6 +349,7 @@ class ApmTools:
         self._tz = cfg.runtime.timezone
         self._profile_budget: dict[str, tuple[int, float]] = {}
         self._health_cache: tuple[float, dict[str, Any]] | None = None
+        self._catalogs: dict[str, _Catalog] = {}
 
     # ── 공통 ──────────────────────────────────────────────
 
@@ -163,6 +363,10 @@ class ApmTools:
         was_signals: list[dict[str, Any]] | None = None,
         limits: list[str] | None = None,
         sources: list[dict[str, Any]] | None = None,
+        partial: bool = False,
+        file_only: tuple[str, ...] = (),
+        text_parts: dict[str, str] | None = None,
+        masked: set[str] | None = None,
         **extra: Any,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -186,6 +390,16 @@ class ApmTools:
             sources = resolution.sources
         if sources is not None:
             payload["sources"] = sources
+        if partial or (resolution is not None and resolution.partial):
+            payload["partial"] = True
+        if file_only:
+            payload[FILE_ONLY_KEY] = list(file_only)
+        if text_parts:
+            payload[TEXT_PARTS_KEY] = dict(text_parts)
+        if masked:
+            payload[MASKED_KEY] = sorted(masked)
+        if isinstance(limits, _Limits) and limits.unresolved:
+            payload[UNRESOLVED_KEY] = list(limits.unresolved)
         payload.update(extra)
         return payload
 
@@ -259,20 +473,22 @@ class ApmTools:
         return "[" + ", ".join(sorted(self._inst_label(k) for k in keys)) + "]"
 
     async def _realtime(
-        self, resolution: Resolution, limits: list[str]
+        self, resolution: Resolution, limits: _Limits
     ) -> dict[InstKey, dict[str, Any]]:
-        """해소 인스턴스의 실시간 스냅샷((소스, 도메인)당 1호출)."""
+        """해소 인스턴스의 실시간 스냅샷((소스, 도메인)당 1호출 · 대상 인스턴스만 묻는다)."""
         wanted = {_key(i) for i in resolution.instances}
         out: dict[InstKey, dict[str, Any]] = {}
-        for sid, domain_id in _group(resolution):
+        groups = _group(resolution)
+        expect_calls(len(groups))
+        for (sid, domain_id), ids in groups.items():
             try:
-                for rec in _tag(await self._api(sid).realtime(domain_id), sid):
+                for rec in _tag(await self._api(sid).realtime(domain_id, ids), sid):
                     if _key(rec) in wanted:
                         out[_key(rec)] = rec
             except ApmError as e:
                 if e.code == CONTRACT_VIOLATION:
                     raise
-                limits.append(
+                limits.fail(
                     f"[한계] 실시간 조회 실패({self.sources.where(sid, domain_id)}): {e.code}"
                 )
         missing = wanted - set(out)
@@ -281,23 +497,18 @@ class ApmTools:
         return out
 
     async def _xview(
-        self, resolution: Resolution, window: Window, limits: list[str]
-    ) -> tuple[list[dict[str, Any]], Window, bool]:
-        """X-View 기본 데이터를 1분 창으로 나눠 모은다(상한 10분 — 사건 직전 구간). (거래, 실제 창,
-        성공 여부)."""
-        start = max(window.start_ms, window.end_ms - XVIEW_MAX_MINUTES * 60_000)
-        used = Window(start, window.end_ms, window.end_is_now, self._tz)
-        if start > window.start_ms:
-            limits.append(
-                f"[한계] 사건창 {window.minutes}분 > {XVIEW_MAX_MINUTES}분 — 트랜잭션 분석은 직전 "
-                f"{XVIEW_MAX_MINUTES}분만(1분 창 분할 상한), 나머지는 시 단위 통계"
-            )
+        self, resolution: Resolution, window: Window, limits: _Limits
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """X-View 기본 데이터를 1분 창으로 나눠 **창 전체**를 모은다(제니퍼 1분 창 제약 —
+        상한 없음). (거래, 성공 여부)."""
         wanted = {_key(i) for i in resolution.instances}
         seen: set[tuple[str, str]] = set()
         txs: list[dict[str, Any]] = []
         any_ok = False
-        for (sid, domain_id), ids in _group(resolution).items():
-            t = start
+        groups = _group(resolution)
+        expect_calls(math.ceil((window.end_ms - window.start_ms) / XVIEW_WINDOW_MS) * len(groups))
+        for (sid, domain_id), ids in groups.items():
+            t = window.start_ms
             while t < window.end_ms:
                 chunk_end = min(t + XVIEW_WINDOW_MS, window.end_ms)
                 query_end = chunk_end if chunk_end == window.end_ms else chunk_end - 1
@@ -307,11 +518,11 @@ class ApmTools:
                 except ApmError as e:
                     if e.code == CONTRACT_VIOLATION:
                         raise
-                    limits.append(
+                    limits.fail(
                         f"[한계] 트랜잭션 조회 실패({self.sources.where(sid, domain_id)}): {e.code}"
                     )
                     break
-                for tx in _tag(batch, sid):
+                for tx in _tag(batch, sid, domain_id):
                     key = (
                         sid,
                         tx.get("txid")
@@ -321,7 +532,7 @@ class ApmTools:
                         seen.add(key)
                         txs.append(tx)
                 t = chunk_end
-        return txs, used, any_ok
+        return txs, any_ok
 
     @staticmethod
     def _window_stats(txs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -338,38 +549,49 @@ class ApmTools:
         }
 
     async def _hourly(
-        self, resolution: Resolution, window: Window, limits: list[str]
+        self, resolution: Resolution, window: Window, limits: _Limits
     ) -> dict[str, Any] | None:
-        """시 단위 애플리케이션 통계(창 > 10분일 때 맥락) — 시 경계로 내림·올림."""
+        """시 단위 애플리케이션 통계(창이 길 때 맥락) — 시 경계로 내림·올림. 합계는 받은 **전**
+        애플리케이션 행으로 낸다(종전 `max_row=20` 합계 누락 교정 · plans/134 W1 N-2)."""
         start, end = _hour_floor(window.start_ms), _hour_ceil(window.end_ms)
         rows: list[dict[str, Any]] = []
-        for (sid, domain_id), ids in _group(resolution).items():
+        groups = _group(resolution)
+        expect_calls(len(groups))
+        for (sid, domain_id), ids in groups.items():
             try:
                 rows.extend(
-                    _tag(
-                        await self._api(sid).application_status(domain_id, ids, start, end, 20),
-                        sid,
-                    )
+                    _tag(await self._api(sid).application_status(domain_id, ids, start, end), sid)
                 )
             except ApmError as e:
                 if e.code == CONTRACT_VIOLATION:
                     raise
-                limits.append(
+                limits.fail(
                     f"[한계] 시 단위 통계 조회 실패({self.sources.where(sid, domain_id)}): {e.code}"
                 )
         if not rows:
             return None
         calls = sum(r["calls"] for r in rows)
         failures = sum(r["failures"] for r in rows)
-        weighted = sum((r["response_time_avg_ms"] or 0) * r["calls"] for r in rows)
-        top = sorted(rows, key=lambda r: r["response_time_avg_ms"] or 0, reverse=True)[:5]
+        if all(r.get("total_response_ms") is not None for r in rows):
+            weighted = float(sum(r["total_response_ms"] for r in rows))
+        else:
+            weighted = sum((r["response_time_avg_ms"] or 0) * r["calls"] for r in rows)
+        top = sorted(rows, key=lambda r: r["response_time_avg_ms"] or 0, reverse=True)[
+            :HOURLY_TOP_APPLICATIONS
+        ]
         limits.append("[한계] 시 단위 통계 — 사건창보다 넓은 시간 경계로 집계된 값")
+        limits.append(
+            "[한계] 시 단위 통계 행 수는 서버 기본값이다(미공개 — W10) · 합계는 받은 전"
+            " 애플리케이션 행으로 냈다 · top_applications는 평균 응답시간 상위 "
+            f"{HOURLY_TOP_APPLICATIONS}개 요약(전 애플리케이션 목록이 아니다)"
+        )
         return {
             "calls": calls,
             "failures": failures,
             "failure_rate": (failures / calls) if calls else None,
             "response_time_avg_ms": (weighted / calls) if calls else None,
             "max_response_time_ms": max((r["max_response_time_ms"] or 0) for r in rows),
+            "application_count": len(rows),
             "top_applications": [{**r, "application": mask_url(r["application"])} for r in top],
             "hour_start": datetime.fromtimestamp(start / 1000, ZoneInfo(self._tz)).isoformat(
                 timespec="seconds"
@@ -379,7 +601,192 @@ class ApmTools:
             ),
         }
 
-    # ── 도구 8종 ──────────────────────────────────────────
+    async def _domain_descriptions(self, source_ids: set[str]) -> dict[tuple[str, int], str]:
+        """도메인 설명(사용자 입력 자유 텍스트 — 마스킹본) — 캐시된 인벤토리에서 읽는다."""
+        out: dict[tuple[str, int], str] = {}
+        for sid in source_ids:
+            inv = await self.sources.get(sid).resolver.inventory()
+            for d in inv.domains:
+                out[(sid, d["domain_id"])] = mask_text(
+                    d.get("domain_description", ""), limit=None
+                )
+        return out
+
+    @staticmethod
+    def _instance_row(
+        inst: dict[str, Any], domain_description: str, **extra: Any
+    ) -> dict[str, Any]:
+        return {
+            "source_id": inst["source_id"],
+            "instance_id": inst["instance_id"],
+            "instance_name": inst["instance_name"],
+            "domain_id": inst["domain_id"],
+            "domain_name": inst["domain_name"],
+            "domain_description": domain_description,
+            "host_name": inst["host_name"],
+            "ip_address": inst["ip_address"],
+            "platform": inst["platform"],
+            "status": inst["status"],
+            "agent_version": inst["agent_version"],
+            "config_file_path": inst.get("config_file_path", ""),
+            "description": mask_text(inst.get("description", ""), limit=None),
+            "instance_oid": inst.get("instance_oid"),
+            **extra,
+        }
+
+    @staticmethod
+    def _reason_tail(e: ApmError) -> str:
+        """서버가 요청을 거부한 사유(`apm_api_error`)를 그대로 붙인다 — 허용값이 미공개인 인자
+        (정렬 기준·간격 — COV E-05·E-06)를 서버가 거부하면 그 사유가 사용자에게 보여야 한다."""
+        return f" — {mask_text(e.reason, limit=240)}" if e.code == API_ERROR else ""
+
+    @staticmethod
+    def _all_failed(failures: list[tuple[str, ApmError]]) -> ApmError:
+        """모든 단위가 실패했을 때의 오류 — 원인 코드가 모두 같으면 그 코드(서버 거부 사유 그대로),
+        섞이면 `source_unavailable`."""
+        codes = {e.code for _, e in failures}
+        return ApmError(
+            codes.pop() if len(codes) == 1 else SOURCE_UNAVAILABLE,
+            "; ".join(f"{where}: {e.reason}" if where else e.reason for where, e in failures),
+        )
+
+    def _where(self, source_id: str) -> str:
+        where = self.sources.where(source_id)
+        return f"({where})" if where else ""
+
+    async def _catalog(self, source_id: str) -> _Catalog:
+        """소스의 지표 카탈로그(TTL 캐시 · plans/134 N-6). 다시 읽어 지문이 바뀌었으면 그 수명 동안
+        `[한계]`로 알린다(지표 추가·삭제 수)."""
+        now = self.clock()
+        cur = self._catalogs.get(source_id)
+        if cur is not None and now - cur.fetched_at < self.cfg.runtime.metric_catalog_ttl_seconds:
+            return cur
+        expect_calls(1)
+        scopes, invalid = await self._api(source_id).metric_catalog()
+        fingerprint = _fingerprint(scopes)
+        note = None
+        if cur is not None and cur.fingerprint != fingerprint:
+            before = {(sc, m) for sc, names in cur.scopes.items() for m in names}
+            after = {(sc, m) for sc, names in scopes.items() for m in names}
+            note = (
+                f"[한계] 지표 카탈로그 변경 감지{self._where(source_id)} — 지문 {cur.fingerprint}"
+                f" → {fingerprint} · 추가 {len(after - before)} · 삭제 {len(before - after)}"
+            )
+        entry = _Catalog(now, scopes, fingerprint, note, tuple(invalid))
+        self._catalogs[source_id] = entry
+        return entry
+
+    @staticmethod
+    def _metric_names(metrics: list[str] | None) -> list[str]:
+        """요청 지표 이름(중복 제거 · 순서 유지) — 식별자 형식만 여기서 본다(값은 카탈로그)."""
+        if metrics is None:
+            return []
+        if isinstance(metrics, str) or not isinstance(metrics, list):
+            raise ApmError(INVALID_ARGUMENT, "metrics는 지표 이름 목록이어야 한다")
+        names: list[str] = []
+        for raw in metrics:
+            name = _identifier(raw, "metrics 항목")
+            if name is not None and name not in names:
+                names.append(name)
+        return names
+
+    async def _metric_plan(
+        self,
+        source_ids: list[str],
+        requested: list[str],
+        scope: str,
+        limits: _Limits,
+        *,
+        all_unknown_raises: bool,
+    ) -> dict[str, list[tuple[str, str]]] | None:
+        """요청 지표 → 소스별 `[(지표 식별자, 표시 이름)]`. 카탈로그(`scope` 군)로 검증한다.
+
+        - 중립 이름(`heap_used_mb`)은 식별자로 바꾸고 표시 이름은 중립 이름이다. 식별자로 주면
+          표시 이름은 대응 중립 이름(없으면 식별자 그대로)이다.
+        - 고른 소스 **전부**의 카탈로그에 없는 지표는 빼고 `[한계]`(difflib 후보 ≤3)에 적는다
+          (W2V-B2 — 선택 조건 하나로 보기를 막지 않는다). 요청 지표가 **전부** 그렇다면
+          `all_unknown_raises`면 `invalid_argument`(지표가 본질인 시계열), 아니면 None(호출자가
+          기본 지표로 조회).
+        - 일부 소스 카탈로그에만 없으면 그 소스만 생략하고 `[한계]`.
+        - 카탈로그를 읽지 못했거나 그 군이 모양 위반인 소스는 검증 없이 조회하고 `[한계]`
+          (partial)로 알린다.
+        """
+        wanted: list[tuple[str, str]] = []
+        for name in requested:
+            mapped = JenniferApi.metric_id(name)
+            pair = (mapped, name) if mapped else (name, JenniferApi.neutral_metric(name) or name)
+            if all(pair[0] != mid for mid, _ in wanted):
+                wanted.append(pair)
+        known: dict[str, set[str] | None] = {}
+        for sid in source_ids:
+            try:
+                entry = await self._catalog(sid)
+            except ApmError as e:
+                if e.code == CONTRACT_VIOLATION:
+                    raise
+                limits.fail(
+                    f"[한계] 지표 카탈로그 조회 실패{self._where(sid)}: {e.code} — 지표 이름을"
+                    " 검증하지 못하고 그대로 조회했다"
+                )
+                known[sid] = None
+                continue
+            if entry.change_note:
+                limits.append(entry.change_note)
+            if scope in entry.invalid:
+                limits.fail(
+                    f"[한계] 지표 카탈로그 {scope} 군 모양 위반{self._where(sid)} — 지표 이름을"
+                    " 검증하지 못하고 그대로 조회했다"
+                )
+                known[sid] = None
+                continue
+            known[sid] = set(entry.scopes.get(scope, []))
+        unknown = [
+            (mid, label)
+            for mid, label in wanted
+            if known and all(k is not None and mid not in k for k in known.values())
+        ]
+        if unknown:
+            ids = {m for k in known.values() if k for m in k}
+            pool = sorted(ids) + sorted(
+                n for n, mid in JenniferApi.neutral_metrics().items() if mid in ids
+            )
+            parts = []
+            for _mid, label in unknown:
+                close = difflib.get_close_matches(label, pool, n=_METRIC_SUGGESTIONS)
+                parts.append(f"{label}(후보: {', '.join(close) if close else '없음'})")
+            if len(unknown) == len(wanted) and all_unknown_raises:
+                raise ApmError(
+                    INVALID_ARGUMENT,
+                    f"{scope} 지표 카탈로그에 없는 지표: {'; '.join(parts)} — 전체 목록은"
+                    " apm_metrics(mode catalog)",
+                )
+            note = f"[한계] {scope} 지표 카탈로그에 없는 지표는 빼고 조회했다: {'; '.join(parts)}"
+            if len(unknown) < len(wanted):
+                limits.unresolve(
+                    f"요청한 지표 {', '.join(label for _, label in unknown)}는 지표 목록에 없어"
+                    " 빼고 조회했습니다"
+                )
+            if all_unknown_raises:
+                limits.fail(note)  # 시계열은 지표가 본질이다 — 일부가 빠진 결과
+            else:
+                limits.append(note)
+            if len(unknown) == len(wanted):
+                return None
+            wanted = [w for w in wanted if w not in unknown]
+        plan: dict[str, list[tuple[str, str]]] = {}
+        for sid, names in known.items():
+            plan[sid] = []
+            for mid, label in wanted:
+                if names is None or mid in names:
+                    plan[sid].append((mid, label))
+                else:
+                    limits.append(
+                        f"[한계] 지표 {label}는 {self.sources.where(sid) or '이 소스'} 카탈로그에"
+                        " 없어 그 소스 조회를 생략했다"
+                    )
+        return plan
+
+    # ── 도구 8종(W1까지) ────────────────────────────────────
 
     async def apm_instance_map(
         self, hostname: str | None = None, source_ids: list[str] | None = None
@@ -388,26 +795,51 @@ class ApmTools:
         self.sources.require_configured()
         if hostname and str(hostname).strip():
             res = await self.sources.resolve(str(hostname).strip(), None, source_ids)
+            descriptions = await self._domain_descriptions({i["source_id"] for i in res.instances})
             rows = []
             for inst in res.instances:
                 confidence, reason = res.match_of(inst)
-                rows.append({**inst, "match_confidence": confidence, "match_reason": reason})
-            return self.ok(tool, rows, resolution=res)
+                desc = descriptions.get((inst["source_id"], inst["domain_id"]), "")
+                rows.append(
+                    self._instance_row(
+                        inst,
+                        desc,
+                        port=inst.get("port"),
+                        kind=inst.get("kind"),
+                        match_confidence=confidence,
+                        match_reason=reason,
+                    )
+                )
+            return self.ok(tool, rows, resolution=res, file_only=FILE_ONLY_COLUMNS)
         usable, statuses, limits = await self.sources.available(self.sources.select(source_ids))
-        listed = [(src, inv, inst) for src, inv in usable for inst in inv.instances]
+        partial = partial_of(usable, statuses)
         rows = []
-        for src, inv, inst in listed[:200]:
-            host, conf, reason, _ = src.resolver.reverse(
-                inv, inst["domain_id"], inst["instance_id"]
-            )
-            rows.append(
-                {**inst, "hostname": host, "match_confidence": conf, "match_reason": reason}
-            )
-        if len(listed) > 200:
-            limits.append(
-                f"[한계] 인스턴스 {len(listed)}개 중 200개만 반환 — hostname으로 좁힐 수 있다"
-            )
-        return self.ok(tool, rows, limits=limits, sources=statuses)
+        for src, inv in usable:
+            descriptions = {
+                d["domain_id"]: mask_text(d.get("domain_description", ""), limit=None)
+                for d in inv.domains
+            }
+            for inst in inv.instances:
+                host, conf, reason, _ = src.resolver.reverse(
+                    inv, inst["domain_id"], inst["instance_id"]
+                )
+                rows.append(
+                    self._instance_row(
+                        inst,
+                        descriptions.get(inst["domain_id"], ""),
+                        hostname=host,
+                        match_confidence=conf,
+                        match_reason=reason,
+                    )
+                )
+        return self.ok(
+            tool,
+            rows,
+            limits=limits,
+            sources=statuses,
+            partial=partial,
+            file_only=FILE_ONLY_COLUMNS,
+        )
 
     async def apm_app_health(
         self,
@@ -420,23 +852,27 @@ class ApmTools:
         tool = "apm_app_health"
         res = await self._resolve(hostname, instance_id, source_ids)
         window = self.window(reference_time, lookback_minutes, default_minutes=None)
-        limits: list[str] = []
+        limits = _Limits()
         current: dict[InstKey, dict[str, Any]] = {}
         if window is None or window.end_is_now:
             current = await self._realtime(res, limits)
+            if current:
+                limits.append(
+                    "[한계] 방문·호출 수(visit_day·visit_hour·hit_day·hit_hour)는 단위·"
+                    "「하루」 경계(자정 기준인지 24시간 이동인지)가 미확인이다(W10)"
+                )
         else:
             limits.append(
                 "[한계] 과거 기준시각 — 실시간 스냅샷 생략(현재값은 사건 시점 증거가 아니다)"
             )
         per_inst_tx: dict[InstKey, list[dict[str, Any]]] = {}
         xview_ok = False
-        used_window = window
         hourly = None
         if window is not None:
-            txs, used_window, xview_ok = await self._xview(res, window, limits)
+            txs, xview_ok = await self._xview(res, window, limits)
             for tx in txs:
                 per_inst_tx.setdefault(_key(tx), []).append(tx)
-            if window.minutes > XVIEW_MAX_MINUTES:
+            if window.minutes > HOURLY_AFTER_MINUTES:
                 hourly = await self._hourly(res, window, limits)
         if not current and not xview_ok and hourly is None:
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits) or "APM 데이터 조회 실패")
@@ -455,8 +891,21 @@ class ApmTools:
                     "reject_rate",
                     "concurrent_users",
                     "arrival_rate",
+                    "visit_day",
+                    "visit_hour",
+                    "hit_day",
+                    "hit_hour",
+                    "active_range_count_0",
+                    "active_range_count_1",
+                    "active_range_count_2",
+                    "active_range_count_3",
+                    "service_rate_by_range",
+                    "instance_oid",
                 ):
                     row[field_name] = cur.get(field_name)
+                row["instance_description"] = mask_text(
+                    cur.get("instance_description", ""), limit=None
+                )
             stats = self._window_stats(per_inst_tx.get(key, [])) if window is not None else None
             if stats is not None:
                 row["window"] = stats
@@ -467,9 +916,11 @@ class ApmTools:
             tool,
             rows,
             resolution=res,
-            window=used_window,
+            window=window,
             was_signals=signals,
             limits=limits,
+            partial=limits.partial,
+            file_only=FILE_ONLY_COLUMNS,
             **extra,
         )
 
@@ -480,11 +931,21 @@ class ApmTools:
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
         source_ids: list[str] | None = None,
+        metrics: list[str] | None = None,
+        interval_minute: int | None = None,
     ) -> dict[str, Any]:
         tool = "apm_runtime_health"
+        interval = _positive_int(interval_minute, "interval_minute", TREND_INTERVAL_MINUTE)
+        requested = self._metric_names(metrics)
         res = await self._resolve(hostname, instance_id, source_ids)
-        window = self.window(reference_time, lookback_minutes, default_minutes=None)
-        limits: list[str] = []
+        # 지표·간격을 주면 추세가 목적이다 — 구간이 없으면 기본 구간으로 본다(침묵 무시 금지).
+        trend_wanted = bool(requested) or interval_minute is not None
+        window = self.window(
+            reference_time,
+            lookback_minutes,
+            default_minutes=HEALTH_DEFAULT_LOOKBACK if trend_wanted else None,
+        )
+        limits = _Limits()
         current: dict[InstKey, dict[str, Any]] = {}
         if window is None or window.end_is_now:
             current = await self._realtime(res, limits)
@@ -494,34 +955,55 @@ class ApmTools:
             )
         trends: dict[InstKey, dict[str, Any]] = {}
         if window is not None:
-            targets = res.instances[:TREND_MAX_INSTANCES]
-            if len(res.instances) > TREND_MAX_INSTANCES:
-                limits.append(
-                    f"[한계] 추세는 인스턴스 {TREND_MAX_INSTANCES}개만 조회"
-                    "(지표 1개/호출 부하 상한)"
+            plan = None
+            if requested:
+                plan = await self._metric_plan(
+                    sorted({i["source_id"] for i in res.instances}),
+                    requested,
+                    "instance",
+                    limits,
+                    all_unknown_raises=False,
                 )
-            for inst in targets:
+                if plan is None:  # 요청 지표를 모두 모른다 — 현재값은 버리지 않고 기본 추세로
+                    limits.append(
+                        "[한계] 요청한 지표를 모두 카탈로그에서 찾지 못해 기본 추세 지표"
+                        f"({'·'.join(DEFAULT_TREND_METRICS)})로 조회했다"
+                    )
+                    limits.unresolve(
+                        f"요청한 지표 {', '.join(requested)}를 지표 목록에서 찾지 못해 기본 지표"
+                        f"({', '.join(DEFAULT_TREND_METRICS)})로 조회했습니다"
+                    )
+            if plan is None:  # 기본 3종(중립 이름 — 식별자 매핑이 정해져 있다)
+                default = [
+                    (mid, m) for m in DEFAULT_TREND_METRICS if (mid := JenniferApi.metric_id(m))
+                ]
+                plan = {i["source_id"]: default for i in res.instances}
+            if interval_minute is not None:
+                limits.append(
+                    "[한계] interval_minute 허용값은 미공개다(W10) — 서버가 거부하면 그 사유를"
+                    " 그대로 싣는다"
+                )
+            expect_calls(sum(len(plan.get(i["source_id"], [])) for i in res.instances))
+            for inst in res.instances:  # 정합된 인스턴스 전부(종전 2개 상한 제거 · W1 N-4)
                 trend: dict[str, list[dict[str, Any]]] = {}
-                for metric in ("heap_used_mb", "heap_committed_mb", "gc_time_usage_pct"):
+                for metric_id, label in plan.get(inst["source_id"], []):
                     try:
-                        series = await self._api(inst["source_id"]).metric_series(
+                        trend[label] = await self._api(inst["source_id"]).instance_metric_series(
                             inst["domain_id"],
                             inst["instance_id"],
-                            metric,
-                            TREND_INTERVAL_MINUTE,
+                            metric_id,
+                            interval,
                             window.start_ms,
                             window.end_ms,
                         )
                     except ApmError as e:
                         if e.code == CONTRACT_VIOLATION:
                             raise
-                        limits.append(
-                            f"[한계] 추세 {metric} 조회 실패"
+                        limits.fail(
+                            f"[한계] 추세 {label} 조회 실패"
                             f"(인스턴스 {self._inst_label(_key(inst))}): {e.code}"
+                            + self._reason_tail(e)
                         )
-                        continue
-                    if series is not None:
-                        trend[metric] = series
                 if trend:
                     trends[_key(inst)] = trend
         if not current and not trends:
@@ -541,6 +1023,11 @@ class ApmTools:
                     "process_cpu_pct",
                     "process_memory_mb",
                     "thread_current",
+                    "thread_daemon",
+                    "thread_started",
+                    "socket_count",
+                    "file_count",
+                    "collection_count",
                 ):
                     row[field_name] = cur.get(field_name)
                 used, committed = cur.get("heap_used_mb"), cur.get("heap_committed_mb")
@@ -554,7 +1041,13 @@ class ApmTools:
                 sig.judge_runtime(cur, trends.get(key), self._th, instance_id=key[1]), key[0]
             )
         return self.ok(
-            tool, rows, resolution=res, window=window, was_signals=signals, limits=limits
+            tool,
+            rows,
+            resolution=res,
+            window=window,
+            was_signals=signals,
+            limits=limits,
+            partial=limits.partial,
         )
 
     async def apm_resource_pool(
@@ -565,14 +1058,19 @@ class ApmTools:
     ) -> dict[str, Any]:
         tool = "apm_resource_pool"
         res = await self._resolve(hostname, instance_id, source_ids)
-        limits = [
-            "[한계] 현재값 전용 — 과거 사건의 증거로 쓰지 않는다",
-            "[한계] WAS 스레드 풀 상한 필드 없음 — thread_current(JVM 전체)·active_services로 근사",
-        ]
+        limits = _Limits(
+            [
+                "[한계] 현재값 전용 — 과거 사건의 증거로 쓰지 않는다",
+                "[한계] WAS 스레드 풀 상한 필드 없음 — thread_current(JVM 전체)·active_services로"
+                " 근사",
+            ]
+        )
         current = await self._realtime(res, limits)
         services: dict[InstKey, list[dict[str, Any]]] = {}
         active_ok = False
-        for (sid, domain_id), ids in _group(res).items():
+        groups = _group(res)
+        expect_calls(len(groups))
+        for (sid, domain_id), ids in groups.items():
             try:
                 for svc in _tag(await self._api(sid).active_services(domain_id, ids), sid):
                     services.setdefault(_key(svc), []).append(svc)
@@ -581,7 +1079,7 @@ class ApmTools:
                 if e.code == CONTRACT_VIOLATION:
                     raise
                 where = self.sources.where(sid, domain_id)
-                limits.append(f"[한계] 액티브 서비스 조회 실패({where}): {e.code}")
+                limits.fail(f"[한계] 액티브 서비스 조회 실패({where}): {e.code}")
         if not current and not active_ok:
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits))
         rows: list[dict[str, Any]] = []
@@ -616,7 +1114,9 @@ class ApmTools:
                 sig.judge_active_services(svcs, self._th, instance_id=key[1], source_tool=tool),
                 key[0],
             )
-        return self.ok(tool, rows, resolution=res, was_signals=signals, limits=limits)
+        return self.ok(
+            tool, rows, resolution=res, was_signals=signals, limits=limits, partial=limits.partial
+        )
 
     async def apm_slow_transactions(
         self,
@@ -626,6 +1126,7 @@ class ApmTools:
         lookback_minutes: int | None = None,
         n: int | None = None,
         source_ids: list[str] | None = None,
+        full: bool = False,
     ) -> dict[str, Any]:
         tool = "apm_slow_transactions"
         top_n = _check_n(n)
@@ -634,51 +1135,47 @@ class ApmTools:
             reference_time, lookback_minutes, default_minutes=SLOW_TX_DEFAULT_MINUTES
         )
         assert window is not None
-        limits: list[str] = []
-        txs, used, ok = await self._xview(res, window, limits)
+        limits = _Limits()
+        txs, ok = await self._xview(res, window, limits)
         hourly = (
-            await self._hourly(res, window, limits) if window.minutes > XVIEW_MAX_MINUTES else None
+            await self._hourly(res, window, limits)
+            if window.minutes > HOURLY_AFTER_MINUTES
+            else None
         )
         if not ok and hourly is None:
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits) or "트랜잭션 조회 실패")
         ranked = sorted(txs, key=lambda t: t.get("response_time_ms") or 0, reverse=True)
-        rows = []
-        for tx in ranked[:top_n]:
-            rows.append(
-                {
-                    "source_id": tx["source_id"],
-                    "instance_id": tx["instance_id"],
-                    "application": mask_url(tx["application"]),
-                    "response_time_ms": tx["response_time_ms"],
-                    "cpu_ms": tx["cpu_ms"],
-                    "sql_ms": tx["sql_ms"],
-                    "fetch_ms": tx["fetch_ms"],
-                    "external_ms": tx["external_ms"],
-                    "network_ms": tx["network_ms"],
-                    "error_type": tx["error_type"],
-                    "end_time_ms": tx["end_time_ms"],
-                    "profile_ref": {
-                        "source_id": tx["source_id"],
-                        "domain_id": tx.get("domain_id"),
-                        "txid": tx["txid"],
-                        "time_ms": tx["end_time_ms"],
-                    }
-                    if tx.get("txid")
-                    else None,
-                }
-            )
+        selected = _select(ranked, top_n, full)
+        rows = [
+            {
+                "source_id": tx["source_id"],
+                **_tx_fields(tx),
+                "profile_ref": _profile_ref(tx, "end_time_ms"),
+            }
+            for tx in selected
+        ]
+        judged = ranked[:top_n] if top_n is not None else ranked
         signals: list[dict[str, Any]] = []
         per_inst: dict[InstKey, list[dict[str, Any]]] = {}
         for tx in ranked:
             per_inst.setdefault(_key(tx), []).append(tx)
         for (sid, iid), items in per_inst.items():
             signals += _tag(sig.judge_transactions(items[:top_n], self._th, instance_id=iid), sid)
-        summary = {**self._window_stats(txs), **sig.transaction_shares(ranked[:top_n])}
+        summary = {**self._window_stats(txs), **sig.transaction_shares(judged)}
         extra: dict[str, Any] = {"summary": summary}
         if hourly is not None:
             extra["hourly"] = hourly
         return self.ok(
-            tool, rows, resolution=res, window=used, was_signals=signals, limits=limits, **extra
+            tool,
+            rows,
+            resolution=res,
+            window=window,
+            was_signals=signals,
+            limits=limits,
+            partial=limits.partial,
+            file_only=FILE_ONLY_COLUMNS,
+            masked=_identifier_fields(selected),
+            **extra,
         )
 
     async def apm_active_services(
@@ -687,22 +1184,29 @@ class ApmTools:
         instance_id: int | None = None,
         n: int | None = None,
         source_ids: list[str] | None = None,
+        full: bool = False,
     ) -> dict[str, Any]:
         tool = "apm_active_services"
         top_n = _check_n(n)
         res = await self._resolve(hostname, instance_id, source_ids)
-        limits = [
-            "[한계] 현재값 전용 — 과거 사건의 증거로 쓰지 않는다",
-            "[한계] elapsed_ms는 경과 시간 필드 단위 미기재로 ms로 가정(U-12)",
-        ]
+        limits = _Limits(
+            [
+                "[한계] 현재값 전용 — 과거 사건의 증거로 쓰지 않는다",
+                "[한계] elapsed_ms는 경과 시간 필드 단위 미기재로 ms로 가정(U-12)",
+            ]
+        )
         wanted = {_key(i) for i in res.instances}
         services: list[dict[str, Any]] = []
         ok = False
-        for (sid, domain_id), ids in _group(res).items():
+        groups = _group(res)
+        expect_calls(len(groups))
+        for (sid, domain_id), ids in groups.items():
             try:
                 services += [
                     s
-                    for s in _tag(await self._api(sid).active_services(domain_id, ids), sid)
+                    for s in _tag(
+                        await self._api(sid).active_services(domain_id, ids), sid, domain_id
+                    )
                     if _key(s) in wanted
                 ]
                 ok = True
@@ -710,27 +1214,54 @@ class ApmTools:
                 if e.code == CONTRACT_VIOLATION:
                     raise
                 where = self.sources.where(sid, domain_id)
-                limits.append(f"[한계] 액티브 서비스 조회 실패({where}): {e.code}")
+                limits.fail(f"[한계] 액티브 서비스 조회 실패({where}): {e.code}")
         if not ok:
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits))
         ranked = sorted(services, key=lambda s: s.get("elapsed_ms") or 0, reverse=True)
         rows = [
             {
                 "source_id": s["source_id"],
+                "domain_id": s.get("domain_id"),
+                "domain_name": s.get("domain_name", ""),
                 "instance_id": s["instance_id"],
+                "instance_name": s.get("instance_name", ""),
+                "instance_oid": s.get("instance_oid"),
                 "application": mask_url(s["application"]),
+                "application_alias": mask_url(s.get("application_alias", "")),
                 "status": s["status"],
                 "status_name": s["status_name"],
+                "status_message": mask_text(s.get("status_message", ""), limit=None),
                 "elapsed_ms": s["elapsed_ms"],
                 "status_elapsed_ms": s["status_elapsed_ms"],
+                "running_ms": s.get("running_ms"),
+                "cpu_ms": s.get("cpu_ms"),
+                "sql_count": s.get("sql_count"),
+                "fetch_count": s.get("fetch_count"),
                 "running_mode": s["running_mode"],
-                "running_text": mask_text(s["running_text"]),
+                "running_text": mask_text(s["running_text"], limit=None),
+                "running_hash": s.get("running_hash"),
+                "running_sherpa_oracle_instance": s.get("running_sherpa_oracle_instance", ""),
+                "running_sherpa_oracle_seq": s.get("running_sherpa_oracle_seq"),
                 "datasource": s["datasource"],
                 "client_ip": mask_ip(s["client_ip"]),
                 "txid": s["txid"],
+                "session_id": s.get("session_id"),
+                "thread_hash": s.get("thread_hash"),
                 "start_time_ms": s["start_time_ms"],
+                "business_ids": list(s.get("business_ids") or []),
+                "business_names": list(s.get("business_names") or []),
+                # 실행 중 요청 상세(F-15 · W7)의 입력 — 소스·도메인·txid·세션·스레드 해시
+                "active_ref": {
+                    "source_id": s["source_id"],
+                    "domain_id": s.get("domain_id"),
+                    "txid": s["txid"],
+                    "session_id": s.get("session_id"),
+                    "thread_hash": s.get("thread_hash"),
+                }
+                if s.get("txid")
+                else None,
             }
-            for s in ranked[:top_n]
+            for s in _select(ranked, top_n, full)
         ]
         signals: list[dict[str, Any]] = []
         for key in sorted(wanted):
@@ -751,8 +1282,52 @@ class ApmTools:
             ),
         }
         return self.ok(
-            tool, rows, resolution=res, was_signals=signals, limits=limits, summary=summary
+            tool,
+            rows,
+            resolution=res,
+            was_signals=signals,
+            limits=limits,
+            partial=limits.partial,
+            file_only=FILE_ONLY_COLUMNS,
+            summary=summary,
         )
+
+    @staticmethod
+    def _event_options(
+        level: str | None,
+        level_mode: str | None,
+        error_type: str | None,
+        record: str | None,
+    ) -> tuple[str | None, str, str | None, str]:
+        lvl = str(level).strip().lower() if level is not None else None
+        if lvl is not None and lvl not in LEVELS:
+            raise ApmError(
+                INVALID_ARGUMENT, f"level은 fatal·warning·normal 중 하나여야 한다: {level}"
+            )
+        mode = str(level_mode).strip().lower() if level_mode else "min"
+        if mode not in LEVEL_MODES:
+            raise ApmError(
+                INVALID_ARGUMENT, f"level_mode는 min·exact 중 하나여야 한다: {level_mode}"
+            )
+        if mode == "exact" and lvl is None:
+            raise ApmError(INVALID_ARGUMENT, "level_mode=exact에는 level이 필요하다")
+        etype = None
+        if error_type is not None and str(error_type).strip():
+            etype = str(error_type).strip()
+            if not _ERROR_TYPE.fullmatch(etype):
+                raise ApmError(
+                    INVALID_ARGUMENT,
+                    f"error_type은 영문·숫자·밑줄 64자 이하여야 한다: {error_type}",
+                )
+            etype = etype.upper()
+            if not JenniferApi.error_type_variants(etype):
+                raise ApmError(
+                    INVALID_ARGUMENT, f"error_type에 유형 이름이 없다(접두뿐): {error_type}"
+                )
+        rec = str(record).strip().lower() if record else "event"
+        if rec not in RECORDS:
+            raise ApmError(INVALID_ARGUMENT, f"record는 event·error 중 하나여야 한다: {record}")
+        return lvl, mode, etype, rec
 
     async def apm_events(
         self,
@@ -761,77 +1336,77 @@ class ApmTools:
         lookback_minutes: int | None = None,
         level: str | None = None,
         source_ids: list[str] | None = None,
+        level_mode: str | None = None,
+        error_type: str | None = None,
+        record: str | None = None,
+        n: int | None = None,
+        full: bool = False,
     ) -> dict[str, Any]:
         tool = "apm_events"
-        if level is not None and str(level).strip().lower() not in ("fatal", "warning", "normal"):
-            raise ApmError(
-                INVALID_ARGUMENT, f"level은 fatal·warning·normal 중 하나(최소 레벨): {level}"
-            )
+        lvl, mode, etype, rec = self._event_options(level, level_mode, error_type, record)
+        top_n = _check_n(n, default=None)
         res = await self._resolve(hostname, None, source_ids)
-        limits: list[str] = []
-        if lookback_minutes is not None and int(lookback_minutes) > EVENTS_MAX_MINUTES:
-            limits.append(f"[한계] 이벤트 조회 창 상한 {EVENTS_MAX_MINUTES}분으로 줄였다")
-            lookback_minutes = EVENTS_MAX_MINUTES
+        limits = _Limits()
         window = self.window(
             reference_time, lookback_minutes, default_minutes=EVENTS_DEFAULT_MINUTES
         )
         assert window is not None
+        if mode == "exact":
+            limits.append(
+                f"[한계] level={lvl} 정확 일치 — API level 필터 의미 미확인(W10) · 응답을 다시"
+                " 정확 일치로 걸렀다"
+            )
         wanted = {_key(i) for i in res.instances}
         events: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
-        ok = False
-        for (sid, domain_id), ids in _group(res).items():
+        events_ok = errors_ok = False
+        groups = _group(res)
+        expect_calls(len(groups) * 2)
+        for (sid, domain_id), ids in groups.items():
             api = self._api(sid)
             where = self.sources.where(sid, domain_id)
             try:
-                batch = await api.events(domain_id, ids, window.start_ms, window.end_ms)
-                events += [e for e in _tag(batch, sid) if _key(e) in wanted]
-                ok = True
+                batch = await api.events(
+                    domain_id,
+                    ids,
+                    window.start_ms,
+                    window.end_ms,
+                    level=lvl if mode == "exact" else None,
+                )
+                events += [e for e in _tag(batch, sid, domain_id) if _key(e) in wanted]
+                events_ok = True
             except ApmError as e:
                 if e.code == CONTRACT_VIOLATION:
                     raise
-                limits.append(f"[한계] 이벤트 조회 실패({where}): {e.code}")
-                continue
+                limits.fail(f"[한계] 이벤트 조회 실패({where}): {e.code}")
             try:
-                batch = await api.errors(domain_id, ids, window.start_ms, window.end_ms)
-                errors += [e for e in _tag(batch, sid) if _key(e) in wanted]
+                batch = await self._errors(api, domain_id, ids, window, etype, where, limits)
+                errors += [e for e in _tag(batch, sid, domain_id) if _key(e) in wanted]
+                errors_ok = True
             except ApmError as e:
                 if e.code == CONTRACT_VIOLATION:
                     raise
-                limits.append(f"[한계] 오류 기록 조회 실패({where}): {e.code}")
-        if not ok:
+                limits.fail(f"[한계] 오류 기록 조회 실패({where}): {e.code}")
+        if (rec == "event" and not events_ok) or (rec == "error" and not errors_ok):
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits))
-        if level is not None:
-            floor = level_rank(level)
-            events = [e for e in events if level_rank(e["level"]) >= floor]
+        if lvl is not None:
+            floor = level_rank(lvl)
+            events = [
+                e
+                for e in events
+                if (e["level"] == lvl if mode == "exact" else level_rank(e["level"]) >= floor)
+            ]
+        if etype is not None:
+            events = [e for e in events if self._api(e["source_id"]).same_error_type(
+                e["event_type"], etype
+            )]
+            errors = [e for e in errors if self._api(e["source_id"]).same_error_type(
+                e["error_type"], etype
+            )]
         events.sort(key=lambda e: e.get("time_ms") or 0, reverse=True)
-        if len(events) > EVENT_ROWS_MAX:
-            limits.append(f"[한계] 이벤트 {len(events)}건 중 최근 {EVENT_ROWS_MAX}건만 반환")
-        rows = []
+        errors.sort(key=lambda e: e.get("time_ms") or 0, reverse=True)
         signals: list[dict[str, Any]] = []
-        for ev in events[:EVENT_ROWS_MAX]:
-            rows.append(
-                {
-                    "time_ms": ev["time_ms"],
-                    "level": ev["level"],
-                    "event_type": ev["event_type"],
-                    "event_kind": ev["event_kind"],
-                    "value": ev["value"],
-                    "message": mask_text(ev["message"]),
-                    "source_id": ev["source_id"],
-                    "instance_id": ev["instance_id"],
-                    "instance_name": ev["instance_name"],
-                    "application": mask_url(ev["application"]),
-                    "profile_ref": {
-                        "source_id": ev["source_id"],
-                        "domain_id": ev["domain_id"],
-                        "txid": ev["txid"],
-                        "time_ms": ev["time_ms"],
-                    }
-                    if ev["txid"]
-                    else None,
-                }
-            )
+        for ev in events:
             s = sig.signal_from_event(
                 self._api(ev["source_id"]).event_signal(ev["event_type"]),
                 ev["event_type"],
@@ -840,7 +1415,11 @@ class ApmTools:
             )
             if s is not None:
                 signals.append({**s, "source_id": ev["source_id"]})
-        error_summary = Counter(e["error_type"] or "(없음)" for e in errors).most_common(10)
+        if rec == "event":
+            rows = [self._event_row(ev) for ev in _select(events, top_n, full)]
+        else:
+            rows = [self._error_row(er) for er in _select(errors, top_n, full)]
+        error_summary = Counter(e["error_type"] or "(없음)" for e in errors).most_common()
         return self.ok(
             tool,
             rows,
@@ -848,8 +1427,85 @@ class ApmTools:
             window=window,
             was_signals=signals,
             limits=limits,
+            partial=limits.partial,
+            file_only=FILE_ONLY_COLUMNS,
+            record=rec,
             errors_by_type=[{"error_type": k, "count": v} for k, v in error_summary],
         )
+
+    @staticmethod
+    async def _errors(
+        api: JenniferApi,
+        domain_id: int,
+        ids: list[int],
+        window: Window,
+        etype: str | None,
+        where: str,
+        limits: _Limits,
+    ) -> list[dict[str, Any]]:
+        """오류 기록 1묶음. `error_type`이 있으면 API 표기 후보(정규화 이름 → `ERROR_` → `WARNING_`
+        접두 · 최대 3회)를 차례로 물어 처음 비지 않은 결과를 쓰고, 맞은 표기를 `[한계]`에 적는다
+        (운영 명명 U-13 미확정 · W1 검증 M-1 — 이벤트 쪽 접두 무시와 결과를 맞춘다)."""
+        if etype is None:
+            return await api.errors(domain_id, ids, window.start_ms, window.end_ms)
+        variants = api.error_type_variants(etype)
+        at = f"({where})" if where else ""
+        for i, spelled in enumerate(variants):
+            if i:
+                expect_calls(1)
+            batch = await api.errors(
+                domain_id, ids, window.start_ms, window.end_ms, error_type=spelled
+            )
+            if batch:
+                tried = f" — 앞 표기 {'·'.join(variants[:i])} 0건" if i else ""
+                limits.append(
+                    f"[한계] 오류 유형 API 표기 {spelled}로 조회{at}{tried} · 운영 명명 미확정"
+                    "(U-13 · W10)"
+                )
+                return batch
+        limits.append(
+            f"[한계] 오류 유형 API 표기 {'·'.join(variants)} 모두 오류 기록 0건{at} · 운영 명명"
+            " 미확정(U-13 · W10)"
+        )
+        return []
+
+    @staticmethod
+    def _event_row(ev: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "time_ms": ev["time_ms"],
+            "level": ev["level"],
+            "event_type": ev["event_type"],
+            "event_kind": ev["event_kind"],
+            "value": ev["value"],
+            "message": mask_text(ev["message"], limit=None),
+            "source_id": ev["source_id"],
+            "domain_id": ev.get("domain_id"),
+            "domain_name": ev.get("domain_name", ""),
+            "instance_id": ev["instance_id"],
+            "instance_name": ev["instance_name"],
+            "instance_oid": ev.get("instance_oid"),
+            "application": mask_url(ev["application"]),
+            "profile_ref": _profile_ref(ev, "time_ms"),
+        }
+
+    @staticmethod
+    def _error_row(er: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "time_ms": er["time_ms"],
+            "error_type": er["error_type"],
+            "value": er.get("value"),
+            "message": mask_text(er["message"], limit=None),
+            "source_id": er["source_id"],
+            "domain_id": er.get("domain_id"),
+            "domain_name": er.get("domain_name", ""),
+            "instance_id": er["instance_id"],
+            "instance_name": er.get("instance_name", ""),
+            "instance_oid": er.get("instance_oid"),
+            "application": mask_url(er["application"]),
+            "txid": er["txid"],
+            "profile_index": er.get("profile_index"),
+            "profile_ref": _profile_ref(er, "time_ms"),
+        }
 
     def _consume_profile_budget(self, investigation_id: str | None) -> None:
         now = self.clock()
@@ -877,7 +1533,7 @@ class ApmTools:
         source_id: str | None = None,
     ) -> dict[str, Any]:
         tool = "apm_transaction_profile"
-        k = _check_n(top_k)
+        k = _check_n(top_k, default=None)  # 없으면 SQL 전부(W1 — 종전 ≤20·기본 10 상한 제거)
         if domain_id is None or txid is None or time_ms is None:
             raise ApmError(
                 INVALID_ARGUMENT,
@@ -912,8 +1568,13 @@ class ApmTools:
         self._consume_profile_budget(investigation_id)
         api = self._api(sid)
         d, tx_id, t_ms = int(domain_id), int(txid), int(time_ms)
-        limits = ["[한계] 프로파일 텍스트 형식 미검증(J0-L-b 녹화 전) — 단계 요약 없이 마스킹 발췌"]
+        limits = _Limits(
+            ["[한계] 프로파일 텍스트 형식 미검증(J0-L-b 녹화 전) — 단계 요약 없이 마스킹 발췌"]
+        )
+        expect_calls(3)
         detail = excerpt = None
+        truncated = False
+        full_text: str | None = None
         sqls: list[str] = []
         ok = False
         try:
@@ -922,30 +1583,36 @@ class ApmTools:
         except ApmError as e:
             if e.code == CONTRACT_VIOLATION:
                 raise
-            limits.append(f"[한계] 트랜잭션 상세 조회 실패: {e.code}")
+            limits.fail(f"[한계] 트랜잭션 상세 조회 실패: {e.code}")
         try:
             text = await api.profile_text(d, tx_id, t_ms)
-            lines = [mask_text(line, limit=400) for line in text.splitlines()[:PROFILE_LINES_MAX]]
-            excerpt = "\n".join(lines)[:PROFILE_CHARS_MAX]
-            if len(text.splitlines()) > PROFILE_LINES_MAX:
-                limits.append(f"[한계] 프로파일 {PROFILE_LINES_MAX}줄까지만 발췌")
+            lines = text.splitlines()
+            shown = [mask_text(line, limit=400) for line in lines[:PROFILE_EXCERPT_LINES]]
+            excerpt = "\n".join(shown)[:PROFILE_EXCERPT_CHARS]
+            truncated = len(lines) > PROFILE_EXCERPT_LINES or any(
+                len(line) > 400 for line in lines[:PROFILE_EXCERPT_LINES]
+            ) or len("\n".join(shown)) > PROFILE_EXCERPT_CHARS
+            if truncated:
+                full_text = _full_text(text)
+                limits.append(
+                    f"[한계] profile_excerpt는 화면용 발췌(앞 {PROFILE_EXCERPT_LINES}줄) —"
+                    " 전문(마스킹본)은 결과 파일(artifact.text_parts profile)"
+                )
             ok = True
         except ApmError as e:
             if e.code == CONTRACT_VIOLATION:
                 raise
-            limits.append(f"[한계] 프로파일 텍스트 조회 실패: {e.code}")
+            limits.fail(f"[한계] 프로파일 텍스트 조회 실패: {e.code}")
         try:
-            sqls = [mask_sql(s)[:1000] for s in await api.transaction_sqls(d, tx_id, t_ms, k)]
+            sqls = [mask_sql(s) for s in await api.transaction_sqls(d, tx_id, t_ms, k)]
             ok = True
         except ApmError as e:
             if e.code == CONTRACT_VIOLATION:
                 raise
-            limits.append(f"[한계] SQL 조회 실패: {e.code}")
+            limits.fail(f"[한계] SQL 조회 실패: {e.code}")
         if not ok:
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits))
-        transaction = None
-        if detail:
-            transaction = {**detail, "application": mask_url(detail["application"])}
+        transaction = _tx_fields(detail) if detail else None
         row = {
             "source_id": sid,
             "domain_id": d,
@@ -953,9 +1620,459 @@ class ApmTools:
             "time_ms": t_ms,
             "transaction": transaction,
             "profile_excerpt": excerpt,
+            "profile_truncated": truncated,
             "sqls": sqls,
         }
-        return self.ok(tool, [row], resolution=res, limits=limits)
+        return self.ok(
+            tool,
+            [row],
+            resolution=res,
+            limits=limits,
+            partial=limits.partial,
+            file_only=PROFILE_FILE_ONLY,
+            text_parts={"profile": full_text} if full_text is not None else None,
+            masked=_identifier_fields([detail]),
+        )
+
+    # ── W2 도구(plans/134 N-5~N-7) ───────────────────────────
+
+    def _hour_window(self, window: Window, limits: _Limits) -> tuple[int, int]:
+        """`/api/status/*` 구간 — 시 경계로 내림·올림하고 넓혔으면 `[한계]`(제니퍼 시 단위 제약)."""
+        start, end = _hour_floor(window.start_ms), _hour_ceil(window.end_ms)
+        zone = ZoneInfo(self._tz)
+
+        def iso(ms: int) -> str:
+            return datetime.fromtimestamp(ms / 1000, zone).isoformat(timespec="minutes")
+
+        limits.append(
+            "[한계] 시 단위 통계 — 구간을 시 경계로 맞췄다"
+            + (
+                f"(요청 {iso(window.start_ms)}~{iso(window.end_ms)} → 조회 {iso(start)}~{iso(end)})"
+                if (start, end) != (window.start_ms, window.end_ms)
+                else f"({iso(start)}~{iso(end)})"
+            )
+        )
+        return start, end
+
+    @staticmethod
+    def _status_summary(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], bool]:
+        """합계 — 호출·실패·실패율·평균(= Σ총 응답시간 ÷ Σ호출 · 호출 수 가중). (요약, 총 응답시간
+        칸이 빠져 평균×호출 수로 가중했는가)."""
+        calls = sum(r["calls"] for r in rows)
+        failures = sum(r["failures"] for r in rows)
+        fallback = any(r.get("total_response_ms") is None for r in rows)
+        if fallback:
+            weighted = sum((r["response_time_avg_ms"] or 0) * r["calls"] for r in rows)
+        else:
+            weighted = float(sum(r["total_response_ms"] for r in rows))
+        maxima = [
+            r["max_response_time_ms"] for r in rows if r.get("max_response_time_ms") is not None
+        ]
+        return {
+            "row_count": len(rows),
+            "calls": calls,
+            "failures": failures,
+            "failure_rate": (failures / calls) if calls else None,
+            "bad_responses": sum(r["bad_responses"] for r in rows),
+            "response_time_avg_ms": (weighted / calls) if calls else None,
+            "max_response_time_ms": max(maxima) if maxima else None,
+        }, fallback
+
+    async def apm_status_stats(
+        self,
+        kind: str,
+        hostname: str,
+        instance_id: int | None = None,
+        reference_time: str | None = None,
+        lookback_minutes: int | None = None,
+        sort_by: str | None = None,
+        n: int | None = None,
+        full: bool = False,
+        application_name: str | None = None,
+        source_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """시 단위 통계(`kind` = application·sql·external_call · plans/134 N-5)."""
+        tool = "apm_status_stats"
+        kind = str(kind or "").strip().lower()
+        if kind not in STATUS_KINDS:
+            raise ApmError(
+                INVALID_ARGUMENT, f"kind는 {'·'.join(STATUS_KINDS)} 중 하나여야 한다: {kind!r}"
+            )
+        sort_name = _identifier(sort_by, "sort_by")
+        top_n = _check_n(n)
+        app_name = str(application_name).strip() if application_name is not None else ""
+        if app_name and kind != "application":
+            raise ApmError(INVALID_ARGUMENT, "application_name은 kind application에서만 쓴다")
+        res = await self._resolve(hostname, instance_id, source_ids)
+        window = self.window(
+            reference_time, lookback_minutes, default_minutes=STATUS_DEFAULT_MINUTES
+        )
+        assert window is not None
+        limits = _Limits()
+        start, end = self._hour_window(window, limits)
+        if full:
+            limits.append(
+                "[한계] full — 행 수를 지정하지 않아 서버 기본 행 수(미공개 · W10)만큼 받았다"
+                " · 서버가 잘랐을 수 있다"
+            )
+        if sort_name:
+            limits.append(
+                f"[한계] 정렬 기준 {sort_name} — 허용값 미공개(W10) · 원천이 거부하면 그 조건 없이"
+                " 다시 받아 로컬에서 정렬한다(거부 사유는 그대로 싣는다)"
+            )
+        received: list[list[dict[str, Any]]] = []  # (소스, 도메인) 묶음별 원천 순서
+        failures: list[tuple[str, ApmError]] = []
+        refused: list[tuple[str, ApmError]] = []  # 정렬 기준을 거부해 조건 없이 다시 받은 묶음
+        groups = _group(res)
+        expect_calls(len(groups))
+        for (sid, domain_id), ids in groups.items():
+            where = self.sources.where(sid, domain_id)
+            api = self._api(sid)
+            try:
+                try:
+                    batch = await api.status_stats(
+                        kind,
+                        domain_id,
+                        ids,
+                        start,
+                        end,
+                        sort_by=sort_name,
+                        max_row=None if full else top_n,
+                        application_name=app_name or None,
+                    )
+                except ApmError as e:
+                    if not (sort_name and e.code == API_ERROR):
+                        raise
+                    # 원천이 정렬 기준을 받지 않았다 — 그 조건 없이·행 수 없이 다시 받아
+                    # 로컬에서 정렬한다(W2V-B2 · 선택 조건 하나로 보기를 막지 않는다)
+                    expect_calls(1)
+                    batch = await api.status_stats(
+                        kind, domain_id, ids, start, end, application_name=app_name or None
+                    )
+                    refused.append((where, e))
+            except ApmError as e:
+                if e.code == CONTRACT_VIOLATION:
+                    raise
+                failures.append((where, e))
+                limits.fail(
+                    f"[한계] {kind} 통계 조회 실패({where}): {e.code}" + self._reason_tail(e)
+                )
+                continue
+            received.append([{"source_id": sid, "domain_id": domain_id, **r} for r in batch])
+        if failures and len(failures) == len(groups):
+            raise self._all_failed(failures)
+        field = JenniferApi.status_sort_field(kind, sort_name)
+        rows = [r for group in received for r in group]
+        if refused:
+            reasons = "; ".join(f"{w}: {mask_text(e.reason, limit=240)}" for w, e in refused)
+            how = (
+                "전체를 받아 정렬했다"
+                if field is not None
+                else "전체를 받았다 — 대응하는 행 칸이 없어 원천 기본 순서다"
+            )
+            limits.append(
+                f"[한계] 원천이 정렬 기준 {sort_name}를 받지 않아 {how}(그 조건·행 수 없이 다시"
+                f" 받음 — 행 수는 서버 기본값 · 미공개 W10 · 원천 사유 {reasons})"
+            )
+            limits.unresolve(
+                f"원천이 정렬 기준 {sort_name}을(를) 받지 않아 그 조건 없이 받아 "
+                + ("직접 정렬했습니다" if field is not None else "원천 기본 순서로 실었습니다")
+            )
+        if field is not None:
+            if len(received) > 1 or refused:  # 묶음을 합치거나 원천이 정렬하지 않았다
+                rows.sort(key=lambda r: r.get(field) or 0, reverse=True)
+            shown = _select(rows, top_n, full)
+        else:
+            # 정렬 기준을 행 칸에 대응하지 못한다 — 묶음마다 원천 순서의 상위 n을 모두 남긴다
+            # (뒤 묶음이 화면에서 사라지지 않게 · W2V-G3)
+            shown = [r for group in received for r in _select(group, top_n, full)]
+            if len(received) > 1:
+                limits.append(
+                    f"[한계] 정렬 기준 {sort_name}를 행 칸에 대응하지 못해 (소스, 도메인) 묶음별"
+                    " 원천 순서를 이어 붙였다 — 전역 순위 아님 — 묶음별 상위 "
+                    + ("전부" if full or top_n is None else str(top_n))
+                )
+        summary, fallback = self._status_summary(shown)
+        if fallback:
+            limits.append(
+                "[한계] 일부 행에 총 응답시간 칸이 없어 평균 응답시간 × 호출 수로 가중했다"
+            )
+        if not full and len(rows) > len(shown):
+            limits.append(
+                f"[한계] summary는 표시한 상위 {len(shown)}행의 합계다 — 전체 합계는 full"
+            )
+        out_rows = []
+        for r in shown:
+            row = dict(r)
+            if kind == "application":
+                row["application"] = mask_url(r["application"])
+            elif kind == "sql":
+                row["name"] = mask_sql(r["name"])
+            else:
+                row["name"] = mask_url(r["name"])
+            out_rows.append(row)
+        return self.ok(
+            tool,
+            out_rows,
+            resolution=res,
+            window=window,
+            limits=limits,
+            partial=limits.partial,
+            kind=kind,
+            hour_start=datetime.fromtimestamp(start / 1000, ZoneInfo(self._tz)).isoformat(
+                timespec="seconds"
+            ),
+            hour_end=datetime.fromtimestamp(end / 1000, ZoneInfo(self._tz)).isoformat(
+                timespec="seconds"
+            ),
+            summary=summary,
+        )
+
+    async def apm_metrics(
+        self,
+        mode: str = "catalog",
+        scope: str | None = None,
+        hostname: str | None = None,
+        instance_id: int | None = None,
+        metrics: list[str] | None = None,
+        interval_minute: int | None = None,
+        reference_time: str | None = None,
+        lookback_minutes: int | None = None,
+        source_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """지표 카탈로그·시계열(plans/134 N-6)."""
+        tool = "apm_metrics"
+        mode = str(mode or "catalog").strip().lower()
+        if mode not in METRIC_MODES:
+            raise ApmError(INVALID_ARGUMENT, f"mode는 catalog·series 중 하나여야 한다: {mode!r}")
+        scope_name = str(scope or "").strip().lower() or None
+        if scope_name is not None and scope_name not in METRIC_SCOPES:
+            raise ApmError(
+                INVALID_ARGUMENT, f"scope는 {'·'.join(METRIC_SCOPES)} 중 하나여야 한다: {scope!r}"
+            )
+        if mode == "catalog":
+            return await self._metric_catalog(tool, scope_name, source_ids)
+        scope_name = scope_name or "instance"
+        if scope_name == "domain":
+            raise ApmError(INVALID_ARGUMENT, "scope domain 시계열은 W3 예정이다(아직 없음)")
+        if scope_name == "business":
+            raise ApmError(INVALID_ARGUMENT, "scope business 시계열은 W4 예정이다(아직 없음)")
+        if scope_name != "instance":
+            raise ApmError(
+                INVALID_ARGUMENT,
+                f"scope {scope_name} 지표는 시계열이 아니다 — apm_status_stats(kind {scope_name})",
+            )
+        requested = self._metric_names(metrics)
+        if not requested:
+            raise ApmError(INVALID_ARGUMENT, "series에는 metrics(지표 이름 목록)가 필요하다")
+        interval = _positive_int(interval_minute, "interval_minute", TREND_INTERVAL_MINUTE)
+        res = await self._resolve(hostname, instance_id, source_ids)
+        window = self.window(
+            reference_time, lookback_minutes, default_minutes=SERIES_DEFAULT_MINUTES
+        )
+        assert window is not None
+        limits = _Limits(
+            [
+                "[한계] interval_minute 허용값·1회 조회 창 상한은 미공개다(W10) — 서버가 거부하면"
+                " 그 사유를 그대로 싣는다"
+            ]
+        )
+        plan = await self._metric_plan(
+            sorted({i["source_id"] for i in res.instances}),
+            requested,
+            "instance",
+            limits,
+            all_unknown_raises=True,
+        )
+        assert plan is not None  # 전부 모르면 위에서 invalid_argument
+        rows: list[dict[str, Any]] = []
+        empty: list[str] = []
+        failures: list[tuple[str, ApmError]] = []
+        attempted = 0
+        expect_calls(sum(len(plan.get(i["source_id"], [])) for i in res.instances))
+        for inst in res.instances:
+            label = self._inst_label(_key(inst))
+            for metric_id, _label in plan.get(inst["source_id"], []):
+                attempted += 1
+                try:
+                    points = await self._api(inst["source_id"]).instance_metric_series(
+                        inst["domain_id"],
+                        inst["instance_id"],
+                        metric_id,
+                        interval,
+                        window.start_ms,
+                        window.end_ms,
+                    )
+                except ApmError as e:
+                    if e.code == CONTRACT_VIOLATION:
+                        raise
+                    failures.append((f"인스턴스 {label} 지표 {metric_id}", e))
+                    limits.fail(
+                        f"[한계] 지표 {metric_id} 조회 실패(인스턴스 {label}): {e.code}"
+                        + self._reason_tail(e)
+                    )
+                    continue
+                if not points:
+                    empty.append(f"{label}:{metric_id}")
+                rows += [
+                    {
+                        **_inst_meta(inst),
+                        "metric": metric_id,
+                        "time_ms": p["time_ms"],
+                        "value": p["value"],
+                    }
+                    for p in points
+                ]
+        if attempted and len(failures) == attempted:
+            raise self._all_failed(failures)
+        if empty:
+            limits.append(f"[한계] 데이터 점이 없는 (인스턴스:지표): {', '.join(empty)}")
+        return self.ok(
+            tool,
+            rows,
+            resolution=res,
+            window=window,
+            limits=limits,
+            partial=limits.partial,
+            mode=mode,
+            scope=scope_name,
+            interval_minute=interval,
+        )
+
+    async def _metric_catalog(
+        self, tool: str, scope: str | None, source_ids: list[str] | None
+    ) -> dict[str, Any]:
+        """소스별 지표 카탈로그 → 행 `{source_id, scope, metric}`(TTL 캐시 · 변경 감지)."""
+        limits = _Limits()
+        rows: list[dict[str, Any]] = []
+        statuses: list[dict[str, Any]] = []
+        failures: list[tuple[str, ApmError]] = []
+        selected = self.sources.select(source_ids)
+        for src in selected:
+            try:
+                entry = await self._catalog(src.source_id)
+            except ApmError as e:
+                if e.code == CONTRACT_VIOLATION:
+                    raise
+                failures.append((self.sources.where(src.source_id), e))
+                statuses.append(
+                    {
+                        "source_id": src.source_id,
+                        "status": STATUS_UNAVAILABLE,
+                        "reason": f"{e.code}: {e.reason}",
+                    }
+                )
+                limits.fail(
+                    f"[한계] 지표 카탈로그 조회 실패{self._where(src.source_id)}: {e.code}"
+                    + self._reason_tail(e)
+                )
+                continue
+            statuses.append({"source_id": src.source_id, "status": STATUS_OK, "reason": ""})
+            if entry.change_note:
+                limits.append(entry.change_note)
+            broken = [sc for sc in entry.invalid if scope is None or sc == scope]
+            if broken:  # 군 단위 모양 위반 — 빈 군이 아니라 검증 불가(W2V-G4)
+                limits.fail(
+                    f"[한계] 지표 카탈로그 모양 위반{self._where(src.source_id)} — 군"
+                    f" {', '.join(broken)}(목록이 아니거나 문자열이 아닌 항목)은 목록을 싣지 못했다"
+                    " · 그 군의 지표 이름은 검증 불가"
+                )
+            for scope_name, names in entry.scopes.items():
+                if scope is None or scope_name == scope:
+                    rows += [
+                        {"source_id": src.source_id, "scope": scope_name, "metric": m}
+                        for m in names
+                    ]
+        if failures and len(failures) == len(selected):
+            raise self._all_failed(failures)
+        if scope in (None, *STATUS_KINDS):
+            limits.append(
+                "[한계] application·sql·external_call 지표 이름이 통계 정렬 기준(sort_by) 값인지는"
+                " 미확인이다(W10)"
+            )
+        return self.ok(
+            tool, rows, limits=limits, sources=statuses, partial=limits.partial, mode="catalog"
+        )
+
+    async def apm_source_changes(
+        self,
+        hostname: str,
+        reference_time: str | None = None,
+        lookback_minutes: int | None = None,
+        source_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """소스코드(리소스) 변경 감지 이력(plans/134 N-7) — 25시간 이하 조각 · 겹침 제거."""
+        tool = "apm_source_changes"
+        res = await self._resolve(hostname, None, source_ids)
+        window = self.window(
+            reference_time, lookback_minutes, default_minutes=CHANGES_DEFAULT_MINUTES
+        )
+        assert window is not None
+        limits = _Limits(
+            [
+                "[한계] 변경 감지(데이터 서버가 소스코드·리소스 변경을 인지한 시각) — 배포 확정"
+                " 아님"
+            ]
+        )
+        names = {_key(i): i["instance_name"] for i in res.instances}
+        seen: set[tuple[str, int, int | None, int | None]] = set()
+        rows: list[dict[str, Any]] = []
+        failures: list[tuple[str, ApmError]] = []
+        groups = _group(res)
+        span = window.end_ms - window.start_ms
+        chunks = max(1, math.ceil(span / CHANGES_WINDOW_MS))
+        expect_calls(chunks * len(groups))
+        zone = ZoneInfo(self._tz)
+        for sid, domain_id in groups:
+            t = window.start_ms
+            done = 0  # 이 묶음에서 받은 조각 수
+            while True:
+                chunk_end = min(t + CHANGES_WINDOW_MS, window.end_ms)
+                try:
+                    batch = await self._api(sid).source_changes(domain_id, t, chunk_end)
+                except ApmError as e:
+                    if e.code == CONTRACT_VIOLATION:
+                        raise
+                    where = self.sources.where(sid, domain_id)
+                    if not done:  # 받은 조각이 없으면 묶음 실패(전부 실패면 오류)
+                        failures.append((where, e))
+                    limits.fail(
+                        f"[한계] 변경 이력 조회 실패({where} · 조각 {done + 1}/{chunks}부터 —"
+                        f" 남은 조각 생략): {e.code}" + self._reason_tail(e)
+                    )
+                    # 받은 조각의 행은 남긴다(partial · W2V-G1). 남은 조각은 같은 원인으로
+                    # 실패할 가능성이 커 부르지 않는다(X-View 조각과 같은 처리).
+                    break
+                done += 1
+                for change in batch:
+                    key = (sid, domain_id, change["instance_id"], change["change_detected_ms"])
+                    if (sid, change["instance_id"]) not in names or key in seen:
+                        continue
+                    seen.add(key)
+                    rows.append(
+                        {
+                            "source_id": sid,
+                            "domain_id": domain_id,
+                            "instance_id": change["instance_id"],
+                            "instance_name": names[(sid, change["instance_id"])],
+                            "change_detected_ms": change["change_detected_ms"],
+                            # 사람이 읽는 시각(APM_TIMEZONE · W2V-B6) — 원시 epoch ms는 위 칸
+                            "change_detected_at": datetime.fromtimestamp(
+                                change["change_detected_ms"] / 1000, zone
+                            ).isoformat(timespec="seconds")
+                            if change["change_detected_ms"] is not None
+                            else None,
+                        }
+                    )
+                if chunk_end >= window.end_ms:
+                    break
+                t = chunk_end
+        if failures and len(failures) == len(groups):
+            raise self._all_failed(failures)
+        rows.sort(key=lambda r: r["change_detected_ms"] or 0, reverse=True)
+        return self.ok(
+            tool, rows, resolution=res, window=window, limits=limits, partial=limits.partial
+        )
 
     async def _source_health(self, src: JenniferSource) -> tuple[dict[str, Any], list[str]]:
         body: dict[str, Any] = {

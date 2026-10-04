@@ -12,6 +12,7 @@ dependencies = [
     "uvicorn",               # SSE ASGI 서빙(전송 Bearer 미들웨어 조립)
     "pyyaml>=6.0",           # 게이트웨이 정책 파일(config/*.yaml)
     "redis>=5.0",            # 이벤트 폴러 — alarm:raw XADD · 커서 · 멱등 키
+    "pydantic>=2",           # 도구 인자 설명(Field) — mcp의 필수 의존이라 이미 설치돼 있다(직접 import라 선언)
 ]
 
 [project.optional-dependencies]

@@ -46,8 +46,13 @@ zones:
 #    requires     : 이 솔루션을 쓰기 전에 해소돼야 하는 능력(예: apm은 host_location 선행)
 #
 #    views        : 비SQL 처리기가 부르는 고정 보기 표(plans/125 §4.2 · G-4 (a)) — 보기 id → 게이트웨이
-#                   도구 · 답변 영역 · 필수 입력 패싯 · 창 상한 · 첫 홉 가능 여부. LLM 이 고르는 유일한
-#                   비SQL 인자다(보기 id 닫힌 어휘). 벤더 중립 어휘(`apm.*`)만 둔다(D-274 ③).
+#                   도구 · 답변 영역 · 필수 입력 패싯 · 첫 홉 가능 여부. LLM 이 고르는 비SQL 인자다(보기
+#                   id 닫힌 어휘). 벤더 중립 어휘(`apm.*`)만 둔다(D-274 ③).
+#                   plans/134 W1(SPEC-apm-question-coverage §6.1) — window: current(현재값만) · range(요청
+#                   기간을 그대로 넘김 — 상한 아님 · 종전 window_max_minutes 폐지) · hourly · none(시간 무관) ·
+#                   fixed_args(도구 고정 인자) · args(계획 LLM이 고르는 선택 조건 view_args — name·type
+#                   [int|bool|enum|str|text|str_list|catalog]·choices·min·catalog·tool_arg·label) · examples(계획
+#                   프롬프트에 렌더하는 예문). limit 은 기본 구간 같은 사실만 적는다(자체 상한 없음 · D-296 ④).
 #
 #    sources      : 제니퍼 소스 표(plans/87 J8 · D-287 ④) — 제니퍼 소스 = 뷰 서버 하나(Open API URL+토큰
 #                   1쌍) ↔ 존의 **정본**. `views`(보기 표)와 다른 층이다. 선언 순서 = 조회·표시 순서.
@@ -81,25 +86,143 @@ solutions:
     # 이 시스템 처리기로 고정한다. 비활성이면 조회하지 않고 안내만 한다(G-1). 라틴 표면어는 단어
     # 경계·대소문자 무시(`term_in_text`). 일반어(「모니터링」·「서버」 등)는 넣지 않는다 — 오고정 위험.
     aliases: ["제니퍼", "JENNIFER", "APM"]
-    capabilities: [was_instance, was_performance, was_runtime, was_activity, apm_event]
+    capabilities: [was_instance, was_performance, was_runtime, was_activity, apm_event,
+                   was_statistics, apm_metric_catalog, was_change_detection]
     requires: [host_location]
     views:
       - {id: apm.instances, label: "WAS 인스턴스 목록·호스트 매핑", capability: was_instance,
-         tool: apm_instance_map, first_hop: true, limit: "전체 200개 상한"}
+         tool: apm_instance_map, first_hop: true, window: none}
       - {id: apm.app_health, label: "WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절",
          capability: was_performance, tool: apm_app_health, required_input: hostname,
-         window_max_minutes: 10, limit: "구간 10분 상한"}
-      - {id: apm.runtime, label: "JVM 힙·GC 비중·프로세스 CPU·스레드 추세", capability: was_runtime,
-         tool: apm_runtime_health, required_input: hostname, limit: "5분 간격 추세"}
+         window: range}
+      - id: apm.runtime
+        label: "JVM 힙·GC 비중·프로세스 CPU·스레드 추세"
+        capability: was_runtime
+        tool: apm_runtime_health
+        required_input: hostname
+        window: range
+        limit: "간격 미지정 = 5분"
+        args:
+          - {name: metrics, type: str_list, catalog: instance,
+             label: "추세로 볼 인스턴스 지표 이름들(지표 목록 보기의 이름)"}
+          - {name: interval_minute, type: int, min: 1, label: "추세 간격(분)"}
+        examples:
+          - "「web01 지난 6시간 힙 추세 10분 간격」 → interval_minute=10"
       - {id: apm.pool, label: "DB 커넥션 풀·실행 모드별 액티브 서비스", capability: was_runtime,
-         tool: apm_resource_pool, required_input: hostname, limit: "현재값"}
-      - {id: apm.active, label: "지금 실행 중인 서비스", capability: was_activity,
-         tool: apm_active_services, required_input: hostname, limit: "현재값 · 상위 20"}
-      - {id: apm.slow_tx, label: "느린 트랜잭션(시간 분해)", capability: was_activity,
-         tool: apm_slow_transactions, required_input: hostname, limit: "상위 20"}
-      - {id: apm.events, label: "WAS 이벤트(fatal·warning 등)", capability: apm_event,
-         tool: apm_events, required_input: hostname, window_max_minutes: 1440,
-         limit: "기본 30분 · 최대 24시간"}
+         tool: apm_resource_pool, required_input: hostname, window: current}
+      - id: apm.active
+        label: "지금 실행 중인 서비스"
+        capability: was_activity
+        tool: apm_active_services
+        required_input: hostname
+        window: current
+        args:
+          - {name: n, type: int, min: 1, label: "상위 N개(경과 시간 순)"}
+          - {name: full, type: bool, label: "true면 상위 N 대신 전부"}
+        examples:
+          - "「web01 실행 중 서비스 상위 5개」 → n=5"
+          - "「web01 지금 실행 중인 서비스 전부」 → full=true"
+      - id: apm.slow_tx
+        label: "느린 트랜잭션(시간 분해)"
+        capability: was_activity
+        tool: apm_slow_transactions
+        required_input: hostname
+        window: range
+        limit: "기간 미지정 = 최근 10분"
+        args:
+          - {name: n, type: int, min: 1, label: "상위 N개(응답시간 순)"}
+          - {name: full, type: bool, label: "true면 상위 N 대신 구간 트랜잭션 전부"}
+        examples:
+          - "「web01 지난 1시간 느린 트랜잭션 상위 5개」 → n=5"
+          - "「web01 최근 10분 트랜잭션 전부」 → full=true"
+      - id: apm.events
+        label: "WAS 이벤트(fatal·warning 등)"
+        capability: apm_event
+        tool: apm_events
+        required_input: hostname
+        window: range
+        limit: "기간 미지정 = 최근 30분"
+        args:
+          # 게이트웨이 도구 계약 값(대소문자 무시 — 원천 값이 아니다 · W1 검증 L-4)
+          - {name: level, type: enum, choices: [fatal, warning, normal], label: "이벤트 레벨"}
+          - {name: level_mode, type: enum, choices: [min, exact],
+             label: "min = 그 레벨 이상 · exact = 그 레벨만"}
+          - {name: error_type, type: str, label: "오류 유형 이름(대문자 · 예 OUTOFMEMORY)"}
+          - {name: record, type: enum, choices: [event, error],
+             label: "event = 이벤트 목록 · error = 오류 기록 목록"}
+          - {name: n, type: int, min: 1, label: "최근 N건"}
+          - {name: full, type: bool, label: "true면 구간 이벤트 전부"}
+        examples:
+          - "「web01 fatal 이벤트만」 → level=fatal · level_mode=exact"
+          - "「web01 warning 이상 이벤트」 → level=warning · level_mode=min"
+          - "「web01 OutOfMemory 오류 기록」 → error_type=OUTOFMEMORY · record=error"
+      # plans/134 W2(SPEC-apm-question-coverage §6.2) — 시 단위 통계 3종 · 지표 목록 · 소스 변경 감지
+      - id: apm.app_stats
+        label: "URL(애플리케이션)별 시 단위 통계 — 호출 수·실패·응답시간"
+        capability: was_statistics
+        tool: apm_status_stats
+        required_input: hostname
+        window: hourly
+        fixed_args: {kind: application}
+        args:
+          - {name: sort_by, type: str,
+             label: "정렬 기준 — 원천 필드 이름(calls·failures·responseTime·maxResponseTime·badResponses · 미지정 = calls)"}
+          - {name: n, type: int, min: 1, label: "상위 N개"}
+          - {name: full, type: bool, label: "true면 상위 N 대신 전부"}
+          - {name: application_name, type: text, label: "이 URL(애플리케이션) 이름만"}
+        examples:
+          - "「web01 오늘 호출 많은 URL 상위 10개」 → n=10 · sort_by=calls"
+          - "「web01 /order/list 응답 통계」 → application_name=/order/list"
+      - id: apm.sql_stats
+        label: "SQL별 시 단위 통계 — 호출 수·실패·응답시간"
+        capability: was_statistics
+        tool: apm_status_stats
+        required_input: hostname
+        window: hourly
+        fixed_args: {kind: sql}
+        args:
+          - {name: sort_by, type: str,
+             label: "정렬 기준 — 원천 필드 이름(calls·failures·responseTime·maxResponseTime·badResponses · 미지정 = calls)"}
+          - {name: n, type: int, min: 1, label: "상위 N개"}
+          - {name: full, type: bool, label: "true면 상위 N 대신 전부"}
+        examples:
+          - "「web01 지난 3시간 많이 호출된 SQL 상위 5개」 → n=5"
+          - "「web01 오늘 가장 오래 걸린 SQL 5개」 → n=5 · sort_by=responseTime"
+      - id: apm.external_stats
+        label: "외부 호출(연계 대상)별 시 단위 통계 — 호출 수·실패·응답시간"
+        capability: was_statistics
+        tool: apm_status_stats
+        required_input: hostname
+        window: hourly
+        fixed_args: {kind: external_call}
+        args:
+          - {name: sort_by, type: str,
+             label: "정렬 기준 — 원천 필드 이름(calls·failures·responseTime·maxResponseTime·badResponses · 미지정 = calls)"}
+          - {name: n, type: int, min: 1, label: "상위 N개"}
+          - {name: full, type: bool, label: "true면 상위 N 대신 전부"}
+        examples:
+          - "「web01 오늘 외부 호출 통계 전부」 → full=true"
+      - id: apm.metrics
+        label: "조회할 수 있는 APM 지표 목록(지표 이름)"
+        capability: apm_metric_catalog
+        tool: apm_metrics
+        window: none
+        fixed_args: {mode: catalog}
+        args:
+          - {name: scope, type: enum,
+             choices: [domain, instance, business, application, sql, external_call],
+             label: "지표 군(미지정 = 전부)"}
+        examples:
+          - "「인스턴스 지표로 뭘 볼 수 있어?」 → scope=instance"
+      - id: apm.changes
+        label: "WAS 소스(리소스) 변경 감지 시각"
+        capability: was_change_detection
+        tool: apm_source_changes
+        required_input: hostname
+        window: range
+        notices: [apm_change_detection]
+        examples:
+          - "「web01 어제 소스 변경 있었어?」"
     # plans/87 J8 · D-287 ④ — 제니퍼 소스 ↔ 존 정본(위 `sources` 설명). 단일 설정(게이트웨이
     # `JENNIFER_API_URL`만 · 소스 `default` · dbId `jennifer`)은 이 표에 없고 존 없음으로 다룬다.
     sources:
@@ -208,6 +331,17 @@ capabilities:
     label: WAS 실행 중 서비스·느린 트랜잭션
   - code: apm_event
     label: WAS 이벤트(fatal·warning 등) — 폴스타 알람과 다른 영역
+  # plans/134 W2 — 소유 시스템(apm)이 활성일 때만 분해 영역 카탈로그에 렌더한다(active_only ·
+  # 비활성 배포 바이트 불변).
+  - code: was_statistics
+    label: WAS 시 단위 통계 — URL(애플리케이션)·SQL·외부 호출별 호출 수·실패·응답시간
+    active_only: true
+  - code: apm_metric_catalog
+    label: APM 지표 목록(조회할 수 있는 지표 이름)
+    active_only: true
+  - code: was_change_detection
+    label: WAS 소스(리소스) 변경 감지 시각 — 배포 확정 아님
+    active_only: true
   # plans/127 §4.1 R(규정·설계 근거) — 소유는 `solutions[doc]`. 비DB 시스템 영역이라 소유표 행을 내지
   # 않는다(apm 과 같음) — 분해 프롬프트의 문서 안내는 라우팅 활성일 때만 붙는 `doc_query` 줄이 맡는다.
   - code: doc_regulation

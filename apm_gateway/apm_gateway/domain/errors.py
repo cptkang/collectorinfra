@@ -15,6 +15,10 @@ CONTRACT_VIOLATION = "contract_violation"
 QUOTA_EXCEEDED = "apm_quota_exceeded"
 API_ERROR = "apm_api_error"
 RATE_LIMITED = "rate_limited"
+# 작업 도구(plans/134 W0-B · SPEC-apm-question-coverage §2.2·§3.7) — `job_not_found`는 없음·남의
+# 작업·보관 기간 경과를 가리지 않는다(존재 여부를 드러내지 않는다).
+JOB_NOT_FOUND = "job_not_found"
+JOB_NOT_READY = "job_not_ready"
 
 ERROR_CODES: frozenset[str] = frozenset(
     {
@@ -27,6 +31,8 @@ ERROR_CODES: frozenset[str] = frozenset(
         QUOTA_EXCEEDED,
         API_ERROR,
         RATE_LIMITED,
+        JOB_NOT_FOUND,
+        JOB_NOT_READY,
     }
 )
 

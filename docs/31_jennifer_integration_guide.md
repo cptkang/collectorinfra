@@ -623,6 +623,33 @@ JENNIFER_LEGACY_DOMAIN_IDS=[3000]
 - 레지스트리 `sources[].id`와 `JENNIFER_SOURCES`가 다르면 `noise_gate`의 존 좁히기가 `invalid_argument`(모르는 `source_ids`)로 실패한다(판정은 그대로 · §4.7). 둘을 같이 바꾼다.
 - `JENNIFER_<ID>_*` 키도 R-29 대상이다 — 에이전트를 붙인 WAS JVM 환경에 두지 않는다.
 
+**장기 작업 · 결과 파일 · 호출 주체(`plans/134` W0-B · D-296 ④ · D-299 ④)** 【현재 가능 — `application/jobs.py`·`spool.py` · `interface/server.py` · 계약 `spec/SPEC-apm-question-coverage.md` §3】
+— 조회 범위 상한을 걷어낸 대신, 오래 걸리는 조회는 **작업**으로 돌고 큰 결과는 **결과 파일**(스풀)로 나간다.
+
+```dotenv
+# 결과 파일 위치 — 상대 경로는 게이트웨이 루트(apm_gateway/) 기준 · 디렉터리 0700 · 파일 0600 · 저장소에서는 gitignore
+APM_SPOOL_DIR=var/spool
+# 도구 응답에 바로 싣는 행 수(넘으면 나머지는 결과 파일 — 조회는 전량) · 결과 파일 청크 1개 행 수
+APM_INLINE_ROWS=500
+APM_ARTIFACT_CHUNK_ROWS=2000
+# 결과 보관 기간(초) — 지나면 지운다(조회 범위 축소 수단이 아니다)
+APM_ARTIFACT_RETENTION_SECONDS=86400
+# 백그라운드 작업 동시 실행 수 · 정체 판정(초) · 우선순위 에이징(초)
+APM_JOB_MAX_CONCURRENT=4
+APM_JOB_STALL_SECONDS=300
+APM_PRIORITY_AGING_SECONDS=10
+# 소비자별 전송 토큰(선택) — 호출 주체를 가른다. 단일 APM_GATEWAY_BEARER_TOKEN은 주체 default
+APM_GATEWAY_BEARER_TOKENS={"chat": "<본체용>", "investigation": "<sre_agent용>", "alarm": "<noise_gate용>"}
+```
+
+- **`wait_seconds`**: 본체 채팅은 데이터 도구에 `wait_seconds`(호출 상한 − 2초 · 조회 마감 이내)와 `owner`(`user:<sub>`)를 싣는다. 그 안에 끝나지 않으면 게이트웨이는 작업 ID를 돌려주고 백그라운드로
+  계속한다. `wait_seconds`를 안 넘기는 소비자(`sre_agent`·`noise_gate`)는 종전처럼 끝날 때까지 기다린다.
+- **작업 도구 3종** `apm_job_status`·`apm_job_cancel`·`apm_job_read`는 **같은 주체 + 같은 `owner`**일 때만 답한다(아니면 `job_not_found` — 존재를 드러내지 않는다). 본체는 그 위에 사용자 소유자 확인을 한 번 더 한다(작업 API `/api/v1/apm/jobs/*` · D-262 판정).
+- **호출 속도는 그대로 5회/초**(G-12 협의 전)다. 대기열은 폴러 > 대화형 > 백그라운드 순으로 판다(10초 넘게 기다리면 한 단계 올림) — 큰 작업이 폴러 알람 수집을 굶기지 않는다.
+- **`JENNIFER_MAX_RESPONSE_BYTES`의 뜻이 바뀌었다** — 종전 「넘으면 오류」 → 지금 「메모리 임계」(넘으면 스풀 임시 파일로 받아 원소 단위로 읽는다 · 오류로 끊지 않는다).
+- **재기동**: 진행 중이던 작업은 `interrupted`(「게이트웨이 재기동으로 중단 — 다시 요청해야 합니다」)가 되고, 끝난 작업의 결과는 보관 기간 동안 그대로 읽힌다. SIGTERM 정상 종료도 같은 기록을 남긴다.
+- 같은 토큰을 두 주체에 주면 기동 실패다. 감사 1줄에 `principal=`·`job_id=`가 붙는다(토큰 값 없음).
+
 ### 4.3 게이트웨이 기동 【현재 가능 — v4 · v5 기동 로그】
 
 ```bash
@@ -872,6 +899,13 @@ overrides: []
 - 마스킹 대상(v4 구현): `client_ip`(끝 두 옥텟) · URL 쿼리 값 · SQL 문자열·숫자 리터럴 · 자유 텍스트의 이메일·주민번호·휴대폰·IP. 운영 샘플이 없어 넓게 잡았다 —
   규칙은 J0-O 샘플로 `scripts/pii_probe.py`를 돌려 확정하고 `docs/pii_filtering_rules.md`에 반영한다(U-6). FabriX PII 필터 차단 덤프는 `logs/pii_block/`에만 남는다.
 - 실 운영 데이터를 외부 LLM(Gemini 등)에 보내지 않는다(D-120).
+- **자격증명 제거(`plans/134` W0-B · D-296 ③)** 【현재 가능 — `apm_gateway/apm_gateway/domain/credentials.py`】 — 민감·관리 조회를 열기 전에 경계부터 넣었다. 어댑터가 응답을 파싱한 **직후 모든 경로에 한 번** 적용하므로
+  도구 반환·결과 파일·감사·로그·오류 사유는 가린 값만 본다. 계정 객체의 `password` 필드는 키째 지우고, 비밀 패턴 키(붙여 쓴 `PGPASSWORD`·`DB_PW2`·`sshKey` 포함)의 값과
+  값 안의 자격증명(URL·JDBC 사용자 정보 · `Authorization`·`Cookie` 헤더 줄 · `-D…password=` · `--password`·붙은 `-p<값>` · Oracle `user/pw@db` 등)을 `[가림]`으로 바꾼다.
+  일반 설정값(`PATH`·`JAVA_HOME`)은 가리지 않는다. 규칙 정본은 `spec/SPEC-apm-question-coverage.md` §4.2다. 독립 보안 감사·검증의 우회 입력(카나리아)이 회귀 테스트로 고정돼 있다 —
+  다만 패턴 테스트만으로 모든 비밀을 보장했다고 선언하지 않는다(운영 마스킹 녹화본 대조는 W10).
+- **개인정보 식별자**(G-11 미결 동안): `userId`·`clientId`·계정 ID·이름은 앞 1자만 남기고 가린다(`mask_identifier`) · HTTP 쿼리 문자열은 첫 값까지 가린다(종전 `mask_url`이 첫 값을 남기던 결함 교정).
+  원값을 누가 어디서 보게 할지는 미결(G-11)이다.
 
 ### 5.6 부하 가드와 토큰 사용량 【현재 가능 — v4】
 
@@ -893,27 +927,33 @@ overrides: []
 
 ## 6. 도구 목록과 입출력 계약 【현재 가능 — v4 · 제공 주체 = `apm_gateway` · 계약 정본 `spec/SPEC-apm-gateway.md` §3~§5】
 
-### 6.1 `apm_*` 도구 8종 + `gateway_health` — 게이트웨이 MCP 서버가 노출
+### 6.1 데이터 도구 11종 + 작업 도구 3종 + `gateway_health` — 게이트웨이 MCP 서버가 노출 【`plans/134` W0-B~W2로 갱신 · D-299 ③ — 8종 상한 폐지】
 
 공통 인자: `investigation_id?`·`thread_id?`(감사 레코드에만 싣는다 — R-19). 구간 인자 `reference_time?`(ISO 8601 · naive면 `APM_TIMEZONE`) ·
 `lookback_minutes?` — 창은 `[reference_time − lookback, reference_time]`이고 `reference_time`을 빼면 "지금"이다(기존 사건 좌표계와 같다).
 
-**소스 인자(v5 · J8)** — `apm_transaction_profile`을 뺀 7종은 선택 인자 `source_ids`(소스 id 목록)를 받는다. 비면 전 소스(설정 선언 순서)이고, 모르는 id는 `invalid_argument`
+**공통 선택 인자(`plans/134` W0-B)** — `owner?`(결과·작업 소유자 · 불투명 문자열)·`wait_seconds?`(이 초 안에 못 끝나면 작업 ID를 돌려주고 백그라운드로 계속 — 생략하면 끝날 때까지 대기). 응답이 인라인 500행을 넘으면 앞 500행 + `artifact`(결과 파일 · 청크) + `total_row_count`. 큰 조회를 `wait_seconds` 없이 부르면 끝날 때까지 기다린다(조사·알람 소비자 종전 의미).
+
+**소스 인자(v5 · J8)** — `apm_transaction_profile`과 작업 도구를 뺀 데이터 도구는 선택 인자 `source_ids`(소스 id 목록)를 받는다. 비면 전 소스(설정 선언 순서)이고, 모르는 id는 `invalid_argument`
 (사유에 설정된 id 목록)다. 행·`profile_ref`에는 `source_id`가 붙고, 해소 결과에는 `instance_refs[]`(`{source_id, domain_id, instance_id}`)가, 봉투에는 `sources[]`
 (`{source_id, status, reason}` — `ok`·`no_match`·`empty`·`unavailable`)가 붙는다. 봉투의 `source_kind`·`source`는 그대로다(소비자 인식 키). 도메인·인스턴스 id는 서버마다
 따로 매겨 겹칠 수 있어, 게이트웨이는 인스턴스를 (소스, 도메인, 인스턴스)로 구분하고 호출을 그 소스 서버로만 보낸다.
 
 | 도구 | 인자(값만) | 뒷단 Open API(§5.3) | 반환 핵심 필드 |
 |---|---|---|---|
-| `apm_instance_map` | `hostname?`·`source_ids?` | 소스별 `/api/domain` → 도메인별 `/api/instance` | `source_id`·`instance_id`·`instance_name`·`domain_id`·`domain_name`·`host_name`·`ip_address`·`platform`·`status`·`agent_version`·`match_confidence`·`match_reason` (hostname 없이 부르면 전 인스턴스와 역해소 `hostname` · 200개 상한) |
-| `apm_app_health` | `hostname`·`instance_id?`·구간 | `/api/realtime/instance`(창 끝이 지금일 때) · `/api/transaction/time`(1분 분할 · 직전 10분) · `/api/status/application`(창 > 10분 — 시 단위) | 평균 응답시간(ms)·TPS·액티브 서비스·나쁜 응답 액티브·PLC 거절률·동시 사용자 + 행별 `window{calls, errors, error_rate, p50, p95, max}` + (창 > 10분) 최상위 `hourly` + `was_signals` |
-| `apm_runtime_health` | 같음 | `/api/realtime/instance` · `/api/dbmetrics/instance`(`interval_minute=5` · 지표 3종 각 1호출 · 인스턴스 2개까지) | 힙(MB)·힙 사용률·non-heap·GC 시간 비중(%)·프로세스 CPU(%)·메모리·스레드 + `trend{heap_used_mb, heap_committed_mb, gc_time_usage_pct}` + `was_signals` |
-| `apm_resource_pool` | `hostname`·`instance_id?` | `/api/realtime/instance` · `/api/activeService/list` | DB 풀 활성·유휴·설정·사용률 · 스레드 · 실행 모드별·데이터소스별 액티브 수 + `was_signals` · `[한계]` WAS 스레드 풀 상한 필드 없음(근사) · 현재값 전용 |
-| `apm_slow_transactions` | `hostname`·`instance_id?`·구간(기본 최근 10분)·`n≤20` | `/api/transaction/time`(1분 분할 · 상한 10분) · `/api/status/application`(창 > 10분) | 상위 N: `source_id`·애플리케이션(쿼리 값 마스킹)·응답·cpu·sql·fetch·external·network·오류 유형·`profile_ref{source_id, domain_id, txid, time_ms}` + `summary{calls, errors, error_rate, p50, p95, sql_fetch_share, external_share}` + `was_signals` |
-| `apm_active_services` | `hostname`·`instance_id?`·`n≤20` | `/api/activeService/list` | 경과 순 상위 N: 상태·경과·실행 모드·실행 텍스트(마스킹)·데이터소스·클라이언트 IP(마스킹)·txid + `summary` + `was_signals` · 현재값 전용 · `elapsed_ms`는 단위 미기재 필드를 ms로 가정(U-12) |
-| `apm_events` | `hostname`·구간(기본 최근 30분 · 상한 24시간)·`level?`(최소 레벨) | `/api/dbsearch/event` · `/api/dbsearch/error` | 최근 순 50건: 시각·레벨·유형(`errorType` 또는 `metricsName`)·종류(error/metric)·값·메시지(마스킹)·`profile_ref` + `errors_by_type`(오류 기록 유형별 상위 10) + `was_signals` |
-| `apm_transaction_profile` | `hostname`·`source_id`(v5 — 소스가 둘 이상이면 필수)·`domain_id`·`txid`·`time_ms`(앞 도구의 `profile_ref`를 그대로)·`top_k≤20` | 그 소스의 `/api/transaction/txid` · `/api/transaction/profile.txt`(`Accept: text/plain`) · `/api/transaction/sql` | 트랜잭션 분해 · 프로파일 **마스킹 발췌**(60줄·4000자 상한 — 텍스트 형식 미검증이라 단계 요약은 하지 않는다) · SQL(리터럴 마스킹 · 상위 K) |
-| `gateway_health` | 없음 | 소스마다 `/api/domain` 1회(병렬 · 30초 캐시) | **소스별 행**(`source_id`·상태 `ok`/`degraded`·설정·도달·도메인 수·허용 경로 수(16)·API 호출 수) + 최상위 `status`(`ok`·`degraded`·`not_configured`) · `poller`(`domains` 키 = `<source_id>:<domain_id>`) |
+| `apm_instance_map` | `hostname?`·`source_ids?` | 소스별 `/api/domain` → 도메인별 `/api/instance` | `source_id`·`instance_id`·`instance_name`·`domain_id`·`domain_name`·`host_name`·`ip_address`·`platform`·`status`·`agent_version`·`description`·`config_file_path`·`match_confidence`·`match_reason` (hostname 없이 부르면 **전 인스턴스** — 상한 없음 · 큰 목록은 결과 파일) |
+| `apm_app_health` | `hostname`·`instance_id?`·구간 | `/api/realtime/instance`(대상 `instance_id` · 창 끝이 지금일 때) · `/api/transaction/time`(1분 분할 · **창 전체**) · `/api/status/application`(창 > 10분 — 시 단위 · **전 애플리케이션**) | 평균 응답시간·TPS·액티브·PLC 거절률·동시 사용자·**방문·호출 수**(`visit_day`·`visit_hour`·`hit_day`·`hit_hour` — 단위·하루 경계 미확인 고지)·액티브 구간 4칸 + 행별 `window{…p50, p95…}` + `hourly`(합계 = Σtotal ÷ Σcalls · `top_applications`는 요약 5) + `was_signals` |
+| `apm_runtime_health` | 같음 + `metrics?`·`interval_minute?` | `/api/realtime/instance` · `/api/dbmetrics/instance`(기본 지표 3종 · 간격 5 · **정합 인스턴스 전부**) | 힙·GC·CPU·스레드·소켓·파일 + `trend{지표: [{time_ms, value}]}`(카탈로그의 인스턴스 지표 전부 지정 가능 · 모르는 이름은 빼고 후보 ≤3을 `[한계]`) + `was_signals` |
+| `apm_resource_pool` | `hostname`·`instance_id?` | `/api/realtime/instance` · `/api/activeService/list` | DB 풀·스레드·실행 모드별·데이터소스별 액티브 + `was_signals` · 현재값 전용 |
+| `apm_slow_transactions` | `hostname`·`instance_id?`·구간(기본 10분)·`n?`(기본 10 · 상한 없음)·`full?` | `/api/transaction/time`(1분 분할 · 창 전체) · `/api/status/application`(창 > 10분) | 상위 N(또는 전부): 시간 분해·오류 유형·`guid`·`client_ip`(마스킹)·`user_id`·`client_id`(식별자 가림)·`profile_ref` + `summary` + `was_signals` |
+| `apm_active_services` | `hostname`·`instance_id?`·`n?`·`full?` | `/api/activeService/list` | 경과 순: 상태·실행 모드·실행 텍스트(마스킹 전문)·`session_id`·`thread_hash`·`active_ref{source_id, domain_id, txid, session_id, thread_hash}` + `summary` + `was_signals` · 현재값 전용 |
+| `apm_events` | `hostname`·구간(기본 30분 · 상한 없음)·`level?`(fatal·warning·normal)·`level_mode?`(min·exact)·`error_type?`·`record?`(event·error)·`n?`(기본 전부)·`full?` | `/api/dbsearch/event` · `/api/dbsearch/error`(`error_type` — 정규화 이름 먼저, 0건이면 `ERROR_`·`WARNING_` 표기 재조회) | 이벤트 행(또는 `record=error`면 오류 기록 행) · 메시지 마스킹 전문 · `errors_by_type`(전 유형) + `was_signals` |
+| `apm_transaction_profile` | `hostname`·`source_id`·`domain_id`·`txid`·`time_ms`·`top_k?`(비우면 SQL 전부) | `/api/transaction/txid` · `/api/transaction/profile.txt` · `/api/transaction/sql` | 분해 · 화면용 발췌(60줄) · 발췌가 잘리면 **전문은 결과 파일 텍스트**(`artifact.text_parts["profile"]`) · SQL 전부(리터럴 마스킹) |
+| `apm_status_stats` | `kind`(application·sql·external_call)·`hostname`·`instance_id?`·구간(기본 60분)·`sort_by?`·`n?`·`full?`·`application_name?` | `/api/status/{application,sql,external_call}`(정시 경계 · `max_row`=n · `sort_by_metrics`) | URL·SQL·외부 호출별 시 단위 통계(이름 마스킹 · 25/7필드) + `summary`(평균 = Σ`total_response_ms` ÷ Σ`calls`) · 원천이 정렬 기준을 거부하면 전체를 받아 로컬 정렬 |
+| `apm_metrics` | `mode`(catalog·series)·`scope`·`metrics`·`interval_minute?`·대상·구간 | `/api/metrics` · `/api/dbmetrics/instance`(W2 — domain은 W3 · business는 W4) | 카탈로그 행 `{source_id, scope, metric}`(6군 · TTL 캐시·변경 감지) · 시계열 긴 형식 행 |
+| `apm_source_changes` | `hostname`·구간(기본 24시간) | `/api-v2/deploy/{domainId}`(25시간 이하 조각) | 변경 감지 행 `change_detected_ms`·`change_detected_at` · `[한계] 변경 감지 — 배포 확정 아님` |
+| `apm_job_status`·`apm_job_cancel`·`apm_job_read` | `job_id`·`owner?`·(`read`) `chunk?`·`part?` | 없음(제니퍼 호출 0) | 작업 상태·진행·예측·`result_meta`·미리보기 / 취소 / 결과 파일 청크·텍스트 — **같은 주체 + 같은 `owner`만**(아니면 `job_not_found`) |
+| `gateway_health` | 없음 | 소스마다 `/api/domain` 1회(병렬 · 30초 캐시) | **소스별 행**(`source_id`·상태·설정·도달·도메인 수·허용 경로 수(16)·API 호출 수) + 최상위 `status` · `poller` · `jobs`(running·queued·슬롯) |
 
 - 도구 설명문은 벤더 중립이다(`jennifer`·「제니퍼」 없음 — `apm_gateway/tests/test_server.py`).
 - **`was_signals`**는 게이트웨이 `domain/signals.py`의 **WAS 시그니처 결정적 판정 결과**다 — `kind`·`level`·`category`·`label`·`evidence`·`instance_id`·`source_tool`·`source_id`(v5).
@@ -952,13 +992,15 @@ overrides: []
 | `error` | 뜻 | 호출자가 할 일 |
 |---|---|---|
 | `not_configured` | 소스 0개(`JENNIFER_API_URL`·`JENNIFER_SOURCES` 모두 미설정) | §4.2 |
-| `invalid_argument` | 인자 오류(`hostname` 빈 값 · `profile_ref` 누락 · `n` 범위 밖 · 미지 `level` · (v5) 모르는 `source_ids` · 소스가 둘 이상인데 `source_id` 없음) | 인자를 고친다 · 소스 목록은 사유에 있다 |
+| `invalid_argument` | 인자 오류(`hostname` 빈 값 · `profile_ref` 누락 · `n < 1` · 미지 `level` · (v5) 모르는 `source_ids` · 소스가 둘 이상인데 `source_id` 없음 · (134) `wait_seconds` 음수·NaN · 모르는 지표만 준 series · 접두만 있는 `error_type` · 청크 범위 밖) | 인자를 고친다 · 소스 목록·지표 후보는 사유에 있다 |
 | `instance_unresolved` | hostname에 대응하는 인스턴스가 없다 | 정합 파일 확인(§4.5) — 상관 보류 |
 | `profile_ref_mismatch` | `apm_transaction_profile`의 (`source_id`, `domain_id`)가 그 소스에서의 hostname 정합 도메인이 아님 | 앞 도구의 `profile_ref`를 그대로 넘겼는지 확인 |
 | `source_unavailable` | 제니퍼 본문 *"… Domain is not connected"*(HTTP 500) · 도메인 0건 · 연결 실패 · timeout · (v5) 고른 소스 전부 실패(원인 코드가 섞일 때) | `[한계]`에 사유 — 빈 결과로 삼키지 않는다 |
 | `contract_violation` | 제니퍼 본문 *"Required request parameter …"*·*"Cannot parse null string"* | **게이트웨이 버그** — 재시도하지 않는다(경고 로그) |
 | `apm_quota_exceeded` | HTTP 429(초과 응답의 실제 모양은 U-5 — 잠정) | 사용량 협의 · `[한계]` |
-| `apm_api_error` | 그 밖의 비200 · 리다이렉트(비추종) · 응답 크기 상한 초과 · 파싱 실패 | §11 |
+| `apm_api_error` | 그 밖의 비200 · 리다이렉트(비추종) · 파싱 실패 · 응답 모양 위반(빈 결과로 강등하지 않음) — (134) 응답 크기는 더 이상 오류가 아니다(메모리 임계 넘으면 임시 파일로 받는다) | §11 |
+| `job_not_found` | (134) 작업이 없거나 남의 작업이거나 보관 기간(24시간)이 지났다 — 존재 여부를 드러내지 않는다 | 다시 요청 |
+| `job_not_ready` | (134) 아직 끝나지 않은 작업의 결과를 읽으려 했다 | `apm_job_status`로 진행을 본다 |
 | `rate_limited` | 조사당 프로파일 호출 상한 초과 | 다른 증거로 판단 |
 
 - **침묵 폴백 금지**: 일부 도메인·일부 호출 실패, 창 상한, 과거 기준시각(실시간 스냅샷 생략)은 `limits`에 `[한계]`로 적고, 쓸 데이터가 하나도 없으면 오류를 돌려준다.
@@ -1009,19 +1051,18 @@ overrides: []
 9. 감사는 두 프로세스(`mcp_server`·게이트웨이)에 나뉜다. 게이트웨이 감사 1줄에 `investigation_id`·`thread_id`가 실리므로(LLM이 인자를 넘겼을 때) 합쳐 볼 수 있다(87 R-19).
 10. 결정적 사전수집(`evidence_prefetch.py`)에는 APM 도구를 넣지 않았다(계획서 J3 선택 항목 — LLM이 ReAct로 부른다).
 
-### 7.2 채팅 질의 경로 【계획 — 87 §5.6 · J5 · 선행 `plans/121`】
+### 7.2 채팅 질의 경로 【현재 가능 — 2단 처리기 `apm_query`(`plans/125` A-3 · `plans/134` W0-B~W2) · 운영 2단 전환 전에는 효력 없음】
 
-**지금**: 채팅에서 "OO WAS 응답시간" 같은 질문은 **답할 수 없다.** 제니퍼 소스가 등록돼 있지 않다.
-
-**87 J5 이후(예정 형태)**:
-- 기준 경로는 사다리 2단 `intent_orchestration`이다(D-251). 운영 `.env`는 아직 1단이 확정되는 상태다(`docs/21_orchestration_ladder.md`).
-- APM 조회는 `plans/121`의 **처리기 계약**을 따르는 2단 처리기가 맡는다. 선례는 121 TP-10.5의 Prometheus `metric_query`다(LLM은 템플릿
-  id·기간·입도만 고르고 서버가 조립).
-- 처리기는 게이트웨이를 **두 번째 MCP 엔드포인트**로 부른다. 본체는 제니퍼 URL·토큰을 갖지 않는다.
-- **권한** — 소스 단위 인가 `allowed_sources`(D-270 ⑰ · 미구현)를 따른다. 권한 밖 사용자에게는 안내·역질문에도 APM이 보이지 않는다.
-- **한계** — `/api/dbmetrics/*` 보존 기간 안의 **지표 조회형 질의**만 답한다. "지난 분기 WAS별 일평균" 같은 자유 집계는 부분 응답과 사유로 끝난다
-  (87 §0.4 "SQL 경로를 빼는 비용" ①).
-- 응답에 소스 배지 "제니퍼"가 붙는다. 사용자 매뉴얼을 같은 작업에서 갱신한다(D-255).
+- 기준 경로는 사다리 2단 `intent_orchestration`이다(D-251). **운영 `.env`는 아직 1단이 확정되는 상태라**(`docs/21_orchestration_ladder.md`) 채팅 제니퍼 조회는 2단 전환 뒤에 효력이 난다.
+  APM 엔드포인트(`MCP_SOURCE_ENDPOINTS`의 `apm`)가 설정된 배포에서만 처리기·분해 프롬프트 줄이 붙는다(비활성 배포 바이트 불변).
+- 분해 LLM이 **보기**(`views` — 레지스트리 `solutions[apm].views` 닫힌 어휘 12종)와 **조건**(`view_args` — 개수·전체·레벨·오류 유형·정렬·지표 이름·간격 등)을 고르고, 코드가 형식을 검증한다.
+  모르는 조건은 버리고 고지한 채 조회한다. 보기가 요청 영역을 못 덮으면 보기 카탈로그로 **한 번 더** 고르고(LLM 1회), 그래도 못 덮은 부분만 후보를 들어 되묻는다.
+- 처리기는 게이트웨이를 **두 번째 MCP 엔드포인트**로 부른다(본체는 제니퍼 URL·토큰을 갖지 않는다). 데이터 도구에 `owner`(`user:<sub>`)와 `wait_seconds`(호출 상한 − 2초 · 조회 마감 이내)를 싣는다.
+  오래 걸리는 조회는 **작업으로 접수**하고(데이터 답 아님 — 작업 카드에서 진행·취소·결과 보기·전체 CSV) · 큰 결과는 화면 앞 500행 + 결과 파일이다(§4.2 「장기 작업」).
+- 답에는 게이트웨이 판정(`was_signals`)과 집계(구간 p50·p95·오류율 · 시 단위 합계 · 오류 유형별 건수)가 **`**판정·집계**` 블록**으로 그대로 실린다(LLM 산문에 맡기지 않음).
+- **권한** — 소스 단위 인가 `allowed_sources`(D-285 ①)를 실행 경계에서 판정한다. 작업 API·결과 파일 다운로드는 질의한 사용자(또는 관리자)만(D-262).
+- **한계** — 「하루 넘게 지난 기간」은 아직 조회하지 않는다(`plans/134` W6에서 해상도 선택과 함께 폐지) · 서비스·업무·전 대상 순위·GUID·설정/계정 조회는 W3~W7 잔여 ·
+  실 제니퍼 응답 모양은 미검증(W10). 사용자 매뉴얼 U-50·U-51(D-255).
 
 ### 7.3 사용자 pull 조사 위임 — 주의 【현재 가능 — 3단 한정】
 

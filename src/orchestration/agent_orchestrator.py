@@ -140,6 +140,10 @@ async def agent_orchestrator(
                 verdicts=verdicts, bridges=bridges, postcheck_on=postcheck_on,
             )
             task["status"] = "failed" if norm.get("error") else "completed"
+            if norm.get("accepted_jobs") and not norm.get("error"):
+                # 작업 접수(plans/134 W0-B) — 상태 어휘는 그대로 두고 화면 처리 현황이 「완료」로
+                # 보이지 않게 표지만 단다(재계획·집계는 `accepted_jobs`로 판정한다).
+                task["accepted"] = True
             results[task["task_id"]] = norm
             await emit_task_progress(task, "end", result=norm, total=len(tasks))
             if norm.get("error"):

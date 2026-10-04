@@ -146,3 +146,74 @@ def test_unknown_policy_source_warns(tmp_path, caplog):
     )
     load_config(_multi(), policy_dir=tmp_path)
     assert "['ghost', 'nope']" in caplog.text
+
+
+# ── 장기 작업 · 호출 주체 (plans/134 W0-B) ───────────────────
+
+
+def test_job_defaults_and_spool_dir_relative_to_gateway_root(tmp_path):
+    cfg = load_config({})
+    assert cfg.jobs.spool_dir == GATEWAY / "var" / "spool"
+    assert (
+        cfg.jobs.inline_rows,
+        cfg.jobs.chunk_rows,
+        cfg.jobs.retention_seconds,
+        cfg.jobs.max_concurrent,
+        cfg.jobs.stall_seconds,
+        cfg.jobs.priority_aging_seconds,
+    ) == (500, 2000, 86400, 4, 300, 10.0)
+    assert cfg.jennifer.max_response_bytes == 4 * 1024 * 1024  # 의미만 바뀐다(메모리 임계)
+    assert load_config({"APM_SPOOL_DIR": "x/y"}).jobs.spool_dir == GATEWAY / "x" / "y"
+    assert load_config({"APM_SPOOL_DIR": str(tmp_path)}).jobs.spool_dir == tmp_path
+    with pytest.raises(ValueError):
+        load_config({"APM_INLINE_ROWS": "0"})
+
+
+def test_principal_tokens_and_single_token_is_default():
+    cfg = load_config(
+        {
+            "APM_GATEWAY_BEARER_TOKENS": '{"chat": "tok-chat", "investigation": "tok-inv"}',
+            "APM_GATEWAY_BEARER_TOKEN": "tok-legacy",
+        }
+    )
+    assert cfg.server.bearer_tokens == {
+        "chat": "tok-chat",
+        "investigation": "tok-inv",
+        "default": "tok-legacy",
+    }
+    assert load_config({}).server.bearer_tokens == {}
+    text = str(describe(cfg))
+    assert "'bearer_principals': ['chat', 'default', 'investigation']" in text
+    for secret in ("tok-chat", "tok-inv", "tok-legacy"):
+        assert secret not in text
+
+
+@pytest.mark.parametrize(
+    ("env", "needle"),
+    [
+        (
+            {"APM_GATEWAY_BEARER_TOKENS": '{"chat": "same", "alarm": "same"}'},
+            "두 주체(chat, alarm)",
+        ),
+        (
+            {"APM_GATEWAY_BEARER_TOKENS": '{"chat": "same"}', "APM_GATEWAY_BEARER_TOKEN": "same"},
+            "두 주체(chat, default)",
+        ),
+        (
+            {"APM_GATEWAY_BEARER_TOKENS": '{"default": "a"}', "APM_GATEWAY_BEARER_TOKEN": "b"},
+            "함께 쓸 수 없다",
+        ),
+        ({"APM_GATEWAY_BEARER_TOKENS": '{"anonymous": "a"}'}, "예약어"),
+        ({"APM_GATEWAY_BEARER_TOKENS": '{"Chat": "a"}'}, "소문자 슬러그"),
+        ({"APM_GATEWAY_BEARER_TOKENS": '{"chat": " "}'}, "비어 있다"),
+        ({"APM_GATEWAY_BEARER_TOKENS": '["tok"]'}, "JSON 객체"),
+        ({"APM_GATEWAY_BEARER_TOKENS": "{not json tok-xyz"}, "JSON 객체"),
+    ],
+)
+def test_invalid_principal_tokens_fail_startup_without_values(env, needle):
+    with pytest.raises(ValueError) as exc:
+        load_config(env)
+    message = str(exc.value)
+    assert needle in message
+    for value in ("same", "tok-xyz", '"a"', '"b"'):
+        assert value not in message

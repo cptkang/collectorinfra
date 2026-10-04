@@ -137,12 +137,17 @@ async def test_app_health_past_reference_and_long_window(synth):
         "apm_app_health",
     )
     assert any("과거 기준시각" in x for x in out["limits"])
-    assert any("> 10분" in x for x in out["limits"])
-    assert out["window"]["minutes"] == 10  # X-View 분석은 직전 10분
+    # plans/134 W1 N-4 — X-View 10분 상한 제거: 창 30분 전체를 1분 조각 30개로 부른다
+    assert not any("> 10분" in x for x in out["limits"])
+    assert out["window"]["minutes"] == 30
+    xview = [h for h in _hits(base) if h["template"] == "/api/transaction/time"]
+    assert len(xview) == 30
     assert (
         out["hourly"]["calls"] == 300
         and "user=<v>" in out["hourly"]["top_applications"][0]["application"]
     )
+    assert out["hourly"]["application_count"] == 1
+    assert any("top_applications는 평균 응답시간 상위" in x for x in out["limits"])
     assert "response_time_avg_ms" not in out["rows"][0]
     _assert_clean(base, out)
 
@@ -201,12 +206,15 @@ async def test_slow_transactions_top_n_masking_profile_ref(synth):
 
 @pytest.mark.asyncio
 async def test_slow_transactions_rejects_bad_n(synth):
+    """plans/134 W1(SPEC §2.1) — `n`은 1 이상이면 상한 없음(종전 ≤20 폐지) · 0 이하는 거부."""
     from apm_gateway.domain.errors import ApmError
 
     _, tools, _ = synth
     with pytest.raises(ApmError) as exc:
-        await tools.apm_slow_transactions("was-host01", n=50)
+        await tools.apm_slow_transactions("was-host01", n=0)
     assert exc.value.code == "invalid_argument"
+    out = await tools.apm_slow_transactions("was-host01", lookback_minutes=5, n=50)
+    assert out["row_count"] == 6  # 원천 6건 전부(50 상한 아님)
 
 
 @pytest.mark.asyncio
