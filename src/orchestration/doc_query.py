@@ -30,6 +30,7 @@ from langchain_core.language_models import BaseChatModel
 from src.config import AppConfig
 from src.doc_qa.authz import allowed_collection_ids
 from src.doc_qa.service import answer_from_documents
+from src.llm import create_llm
 from src.infrastructure.doc_sources import (
     DocCollection,
     resolve_collections,
@@ -128,6 +129,20 @@ def _status(label: str, status: str, rows: int, reason: str = "") -> dict[str, A
     return {"system": DOC_SYSTEM, "label": label, "status": status, "rows": rows, "reason": reason}
 
 
+def _answer_llm(app_config: Any, *, fallback: Any) -> Any:
+    """문서 근거 서술 LLM — answer 프로파일(plans/138 W5 · D-194).
+
+    관리자 「문서 검색 시험」(`create_llm(purpose="answer")`)과 같은 프로파일로 서술해 두 표면의 답이
+    갈리지 않게 한다(`general_inference` 선례). 만들지 못하면 주입 LLM으로 서술하고 사유를 남긴다.
+    """
+    try:
+        return create_llm(app_config, purpose="answer")
+    except Exception as e:  # noqa: BLE001 — 서술 LLM 생성 실패가 문서 답을 막지 않는다(사유 로그)
+        logger.warning("%s answer 프로파일 LLM 생성 실패 — 주입 LLM으로 서술: %s: %s",
+                       DOC_QUERY_AGENT, type(e).__name__, e)
+        return fallback
+
+
 async def run_doc_query(
     task: dict[str, Any],
     isolated: dict[str, Any],
@@ -161,7 +176,8 @@ async def run_doc_query(
         chosen = list(candidates[:max_views(app_config)])
         if chosen:
             note = ("문서군을 지정하지 않아 등록 문서군 전체("
-                    + " · ".join(c.title for c in chosen) + ")에서 찾았습니다.")
+                    + " · ".join(c.title for c in chosen) + ")에서 찾았습니다. "
+                    + f"문서군을 지정하면 더 정확합니다(예: 「{chosen[0].title}에서 … 찾아줘」).")
 
     # 문서군 축 인가(민감 · 126 G-2) — 격리 입력의 신원 키를 문서 인가가 읽는 키로 옮긴다
     user = {"role": role, "sub": isolated.get("user_id")}
@@ -170,7 +186,7 @@ async def run_doc_query(
     query = str(task.get("sub_query") or isolated.get("user_query") or "")
 
     result = await answer_from_documents(
-        query, targets, llm=llm, app_config=app_config,
+        query, targets, llm=_answer_llm(app_config, fallback=llm), app_config=app_config,
         allowed_collection_ids=sorted(permitted),
         audit_context={
             "user_id": isolated.get("user_id"),

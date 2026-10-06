@@ -180,6 +180,7 @@
 | 135 | [`135-WIP-itam-query-benchmark-trace-log.md`](./135-WIP-itam-query-benchmark-trace-log.md) | 135. ITAM 자산 질의 벤치마크 — 사용자 프롬프트 시나리오를 실제 사용자 경로로 돌리고, 생성 SQL·실행 결과·스키마 맥락을 개인정보 없이 기록해 ITAM 프롬프트 개선 근거로 쓴다 | **WIP — v1.4 · W0~W6 완료 · W8 1회차 키트(작업 트리 · 커밋 없음 · D-301 부기)** *(상세: 계획서 머리)* | 2026-10-06 |
 | 136 | [`136-TODO-module-scoped-regression-policy.md`](./136-TODO-module-scoped-regression-policy.md) | 136. 회귀 테스트 간소화 — 구현 뒤에는 관련 모듈만, 전체는 사용자가 요청할 때만, 가능한 것은 병렬로 | **TODO — v1.0 · 정책 D-303 확정(사용자 지시) · 도구 코드 0** *(상세: 계획서 머리)* | 2026-10-06 |
 | 137 | [`137-WIP-per-db-hangul-identifier-policy.md`](./137-WIP-per-db-hangul-identifier-policy.md) | 137. DB별 한글 식별자 허용 정책 — SQL 한글 토큰 가드(D-104)를 DB 레지스트리 설정(`allow_hangul_identifiers`)으로 분기 · 허용 DB도 스키마 실재 식별자만 통과 · MariaDB 백틱 인용 인정 · 큰따옴표 컬럼(침묵 오답) 가드 | **WIP — v2 · W1~W8 구현(D-297) · 잔여: 폐쇄망 ITAM 실 질의 검증** *(상세: 계획서 머리)* | **WIP — v2.5** · W1~W8(D-297) · W9~W12(D-305) · W13(D-306 · 게이트 교정 §9.5) · 잔여: 폐쇄망 재검증 · #3 기준 테이블(41/80) 확인 |
+| 138 | [`138-WIP-rag-forced-doc-routing.md`](./138-WIP-rag-forced-doc-routing.md) | 138. RAG 문서 검색 라우팅 개선 — 명시 지목 강제 라우팅 · 문서군 고정 · R&R 설명 보강 · 원문 검색 | **WIP — v1.1 · W0~W6 구현(D-307) · 잔여: 폐쇄망 배포 후 §6 재확인** *(상세: 계획서 머리)* | 2026-10-06 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |
