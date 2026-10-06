@@ -223,12 +223,14 @@ def test_realtime_note_lists_active_detail() -> None:
 def test_on_render_is_pinned() -> None:
     """켜짐 렌더 고정(APM 사건 · 사건창 30분 · 게이트웨이 설정).
 
-    W7 이전 2,595자·29줄 → 3,310자·32줄 → 도구 결과는 데이터 1줄(LLM-1 · 2026-10-06) 3,370자·33줄.
+    W7 이전 2,595자·29줄 → 3,310자·32줄 → 도구 결과는 데이터 1줄(LLM-1 · 2026-10-06) 3,370자·33줄
+    → ① 줄 끝에 instance_name·apm_instance_map(query=…) 안내(plans/130 W5 · 같은 줄 — 줄 수 불변)
+    3,477자·33줄.
     """
     g = build_guidance(_on(), _apm_job())
     assert g is not None
-    assert (len(g), g.count("\n") + 1) == (3370, 33)
-    assert _sha(g) == "ab706755864743630f3c703181057fff09bd4fce1717e8f55851adf11d2221a3"
+    assert (len(g), g.count("\n") + 1) == (3477, 33)
+    assert _sha(g) == "7b29110b457f6788ed0ce6f23545865f7a0afb032c33f0e7b5d23c8aaf5776fd"
 
 
 def test_off_render_byte_identical_to_pre_w7() -> None:

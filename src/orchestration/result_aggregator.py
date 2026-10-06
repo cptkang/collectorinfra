@@ -619,14 +619,17 @@ async def _finalize_merged_path(
     # 병합 원천 task의 처리기 고지(plans/134 W0-B — 작업 참조 `ref` 포함)도 잃지 않는다
     for res in source_results:
         disclosures.extend(_handler_disclosures(res))
+    # 병합 표에 이미 실린 `[조회 기간]` 줄은 병합 밖 task 문단에서 다시 싣지 않는다(plans/122 T-8)
+    period_seen = _period_lines(out.get("final_response") or "")
     for task in outside:
         f = await _finalize_task(
             task, task_results.get(task["task_id"], {}), state, llm, app_config,
             stream_user_response=False,
         )
         disclosures.extend(f.get("disclosures") or [])
-        if f.get("text"):
-            notes.append(f["text"])
+        text = _drop_repeated_period_lines(f.get("text") or "", period_seen)
+        if text:
+            notes.append(text)
         if f.get("output_file") is not None and "output_file" not in out:
             out["output_file"] = f["output_file"]
             out["output_file_name"] = f.get("output_file_name")
@@ -653,13 +656,15 @@ def _merged_source_state(
       아니다(원천이 10,000행에 닿아도 병합 표는 3,000행일 수 있다).
     - `executed_sqls`: 원천 실행 SQL 전체(생성기 자기 고백 수집).
     - `spike_notes`: 원천 급증 한계 표기의 합집합(순서 보존).
+    - `period_sources`: 원천별 시간 해석·실행 SQL·의도 — `[조회 기간]` 고지 입력(plans/122 T-8).
     - 의도: 원천이 **모두** 알람 조회일 때만 알람(헤드라인·당월 각주 제외) — 섞인 병합 표는 지표
       값이 있어 당월 각주가 필요하고, 알람 건수 헤드라인은 병합 표 행 수와 뜻이 다르다.
     """
     executed: list[dict[str, Any]] = []
     spikes: list[str] = []
     limit_sources: list[dict[str, Any]] = []
-    for res in source_results:
+    period_sources: list[dict[str, Any]] = []
+    for task, res in zip(source_tasks, source_results):
         sqls = [e for e in (res.get("executed_sqls") or []) if isinstance(e, dict) and e.get("sql")]
         executed.extend(sqls)
         for note in res.get("spike_notes") or []:
@@ -670,12 +675,19 @@ def _merged_source_state(
             "query_results": res.get("query_results") or _extract_result_rows(res),
             "db_result_summary": res.get("db_result_summary"),
         })
+        # 원천 task별 기간 고지 입력(plans/122 T-8) — 해석이 없으면 출력 생성이 턴 해석을 쓴다
+        period_sources.append({
+            "time_resolution": res.get("time_resolution"),
+            "executed_sqls": sqls,
+            "routing_intent": "alarm_query" if task.get("agent") == "alarm_query" else None,
+        })
     all_alarm = bool(source_tasks) and all(t.get("agent") == "alarm_query" for t in source_tasks)
     return {
         "agent": "alarm_query" if all_alarm else "data_query",
         "executed_sqls": executed,
         "spike_notes": spikes or None,
         "limit_sources": limit_sources,
+        "period_sources": period_sources,
     }
 
 
@@ -727,6 +739,7 @@ async def _finalize_merged_rows(
             "spike_notes": src_state.get("spike_notes"),
         },
         limit_sources=src_state.get("limit_sources"),
+        period_sources=src_state.get("period_sources"),
     )
     # _build_output_state가 original_query를 sub_query(=전체 질의)로 세팅 — 그대로 사용.
     out: dict[str, Any] = {}
@@ -854,7 +867,7 @@ def _apply_disclosures(result: dict[str, Any], state: AgentState) -> dict[str, A
     for d in task_items:
         spec = disc.KIND_TABLE.get(d["kind"])
         if spec is not None and spec.mandatory and _norm_text(d["text"]) not in _norm_text(body):
-            tail.append(f"[안내] {d['text']}")
+            tail.append(disc.render_line(d))
     if narrowed:
         tail.append(narrowed)
     others = [d for d in disc.body_lines_for_turn(turn_items) if d["kind"] != disc.SCOPE_NARROWED]
@@ -1356,6 +1369,7 @@ def _build_output_state(
     *,
     condition_check: bool = False,
     limit_sources: list[dict[str, Any]] | None = None,
+    period_sources: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """output_generator 호출용 입력 state를 구성한다.
 
@@ -1367,6 +1381,7 @@ def _build_output_state(
         res: 해당 task 결과
         condition_check: 조건 반영 대조(plans/123 S-11 1차)를 켤지 — 단일 task 계획만
         limit_sources: 병합 경로의 원천 task별 상한 판정 입력(plans/123 W-1 ③)
+        period_sources: 병합 경로의 원천 task별 조회 기간 고지 입력(plans/122 T-8)
 
     Returns:
         output_generator 입력 state dict
@@ -1443,6 +1458,13 @@ def _build_output_state(
         "condition_check": condition_check,
         # 병합 경로의 원천 task별 상한 판정 입력(W-1 ③) — 병합 표 행 수는 표시용이라 쓰지 않는다
         "limit_sources": limit_sources,
+        # ── 시간 해석(plans/122 T-4·T-8 · D-306) ─────────────────────────────────────
+        # 허용목록이라 싣지 않으면 2단 출구에서 사라진다(D-186 사례) — 기준 정보(오늘·조회 기간)와
+        # `[조회 기간]` 고지가 이 값과 위 실행 SQL로 정해진다. task 문장에 명시 기간이 있어 task별로
+        # 해석했으면(`resolve_task_time`) task 결과의 값이 우선이다. 플래그 off면 둘 다 None.
+        "time_resolution": res.get("time_resolution") or state.get("time_resolution"),
+        # 병합 경로의 원천 task별 기간 고지 입력 — 원천마다 해석이 다를 수 있다
+        "period_sources": period_sources,
         "final_response": "",
         "output_file": None,
         "output_file_name": None,
@@ -1467,9 +1489,11 @@ def _merge_finalized(finalized: list[dict]) -> dict:
     output_file: Optional[bytes] = None
     output_file_name: Optional[str] = None
     merged_rows: list[dict] = []
+    period_seen: set[str] = set()
 
     for i, f in enumerate(finalized, 1):
-        text = f.get("text", "")
+        # 같은 `[조회 기간]` 줄은 처음 단계에만 남긴다(plans/122 T-8 — 기간이 다르면 모두 남는다)
+        text = _drop_repeated_period_lines(f.get("text", ""), period_seen)
         if f.get("error"):
             failed.append(f"- 작업 {i}: {f['error']}")
         if text:
@@ -1527,12 +1551,14 @@ async def _finalize_steps(
     *head, last = ordered_tasks
     finalized: list[dict[str, Any]] = []
     notice_seen = False
+    period_seen: set[str] = set()
     for task in head:
         step = await _finalize_task(
             task, task_results.get(task["task_id"], {}), state, llm, app_config,
             stream_user_response=False,
         )
         notice_seen = _drop_repeated_turn_notice(step, notice_seen)
+        step["text"] = _drop_repeated_period_lines(step.get("text") or "", period_seen)
         finalized.append(step)
     lead = "\n\n".join(f["text"] for f in finalized if f.get("text"))
     if lead:
@@ -1543,6 +1569,7 @@ async def _finalize_steps(
         stream_user_response=True,
     )
     _drop_repeated_turn_notice(step, notice_seen)
+    step["text"] = _drop_repeated_period_lines(step.get("text") or "", period_seen)
     finalized.append(step)
     return _merge_finalized(finalized)
 
@@ -1563,6 +1590,35 @@ def _drop_repeated_turn_notice(step: dict[str, Any], seen: bool) -> bool:
         _, sep, rest = text.partition("\n\n")
         step["text"] = rest if sep else ""
     return True
+
+
+def _period_lines(text: str) -> set[str]:
+    """본문의 `[조회 기간]` 고지 줄들(plans/122 T-8)."""
+    return {ln for ln in (text or "").split("\n") if ln.startswith(disc.QUERY_PERIOD_HEAD)}
+
+
+def _drop_repeated_period_lines(text: str, seen: set[str]) -> str:
+    """앞 단계에 이미 실린 `[조회 기간]` 줄을 이 단계 본문에서 뗀다(plans/122 T-8).
+
+    task마다 `output_generator`가 자기 실행 SQL로 기간 고지 줄을 붙인다(task 단위 고지). 단계별
+    조립·결정적 병합은 본문을 그대로 이어 붙여, 같은 기간이면 같은 줄이 단계 수만큼 나왔다 —
+    처음 나온 줄만 남긴다. task별 해석이 달라 줄이 다르면 모두 남는다. 처음 본 줄은 `seen`에
+    더한다. 뗄 것이 없으면 본문 그대로(종전 바이트).
+    """
+    if disc.QUERY_PERIOD_HEAD not in (text or ""):
+        return text
+    out = text
+    for line in text.split("\n"):
+        if not line.startswith(disc.QUERY_PERIOD_HEAD):
+            continue
+        if line not in seen:
+            seen.add(line)
+            continue
+        for piece in ("\n\n" + line, line + "\n\n", "\n" + line, line + "\n", line):
+            if piece in out:
+                out = out.replace(piece, "", 1)
+                break
+    return out
 
 
 _SYNTHESIS_SKIPPED_NOTE = (

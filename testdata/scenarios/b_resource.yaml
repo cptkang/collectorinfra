@@ -239,6 +239,8 @@ scenarios:
           #   원식: "(?i)202606"
           sql_must_match: ["(?i)cmm_metric_stat_m"]
           period_covers: {from: "2026-06-01", to: "2026-07-01"}
+          # plans/122 T-9 — 명시 기간은 리터럴만(§10.3 ④): DB 현재시각 함수식이 없어야 한다.
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           column_must_not_map: ["logicalcore"]
           row_count: {eq: 3}
           # plans/122 H-1 — 결과 행(download-csv)의 CPU 평균 열이 0~100(docs/29 B-12 「3행, 값 0~100」).

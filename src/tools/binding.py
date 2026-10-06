@@ -19,6 +19,7 @@ from typing import Any, Optional
 from langchain_core.tools import BaseTool, tool
 
 from src.db.interface import DBClient
+from src.domain.query_time import QueryTime
 from src.semantic import render_catalog
 from src.tools.catalog import check_smq_coverage, search_catalog
 from src.tools.interpretation import resolve_limit, resolve_time_range
@@ -56,6 +57,9 @@ class ToolContext:
     synonym_min_score: float = 0.85
     # 값 인덱스 유연 매칭 사용 여부
     value_fuzzy: bool = False
+    # 요청 시간 해석(state `time_resolution` 값 그대로 · plans/122 T-7 · D-306). None이면
+    # 기간 도구가 종전 월 해석을 쓴다.
+    time_resolution: dict[str, Any] | None = None
 
 
 def _dump(payload: Any) -> str:
@@ -143,6 +147,9 @@ def build_query_tools(context: ToolContext) -> list[BaseTool]:
 
         tools.append(search_value_index_tool)
 
+    # 요청 시간 해석이 컨텍스트에 있으면 도구는 그것을 돌려준다(plans/122 T-7 — 단일 출처).
+    query_time = QueryTime.from_state(context.time_resolution)
+
     @tool("resolve_time_range")
     def resolve_time_range_tool(query: str) -> str:
         """질의의 기간 표현("지난 3개월", "2026년 6월")을 통계 월 범위로 해석한다.
@@ -150,7 +157,7 @@ def build_query_tools(context: ToolContext) -> list[BaseTool]:
         resolved=false면 질의에 기간 표현이 없다는 뜻이다(기간 필터 없이 전 기간 대상).
         기간은 직접 계산하지 말고 이 도구의 결과를 쓰라.
         """
-        return _dump(resolve_time_range(query or context.user_query))
+        return _dump(resolve_time_range(query or context.user_query, query_time=query_time))
 
     tools.append(resolve_time_range_tool)
 
@@ -226,6 +233,7 @@ def build_query_tools(context: ToolContext) -> list[BaseTool]:
                     default_limit=context.default_limit,
                     db_id=context.db_id,
                     adapter_db_ids=context.adapter_db_ids,
+                    time_resolution=context.time_resolution,
                 )
             )
 

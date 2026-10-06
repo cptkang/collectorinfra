@@ -1,8 +1,13 @@
-"""DB 활성화 준비도 판정 C1~C10 (plans/104 §3.8.3 · D-227).
+"""DB 활성화 준비도 판정 C1~C11 (plans/104 §3.8.3 · D-227 · plans/138 W3).
 
 **무엇을 하나.** 신규 시스템을 `ACTIVE_DB_IDS`에 넣기 전에 갖춰야 할 항목(MCP 소스 · 레지스트리 ·
 라우팅 설명 · 스키마 한정 · 스키마 캐시 · 구조 정보 · 환경)과 권장 항목(컬럼 설명 · 유사어), 정보
-항목(권한·존)을 결정적으로 판정한다. D-214 ⑤(활성화 순서 불변식)를 화면 판정으로 대체한다.
+항목(권한·존 · 테이블 정의 경고)을 결정적으로 판정한다. D-214 ⑤(활성화 순서 불변식)를 화면 판정으로
+대체한다.
+
+- C11 테이블 정의(D-305 · 경고만): 조회 대상이 `TABLE_DEFINITION_MIN_ALLOWED`개를 넘는데 정의가
+  없거나 정의 범위가 조회 대상의 `TABLE_DEFINITION_MIN_COVERAGE` 미만이면 `ok=False`로 알린다.
+  정보 항목이라 필수·권장 집계와 활성화 판정에 들어가지 않는다.
 
 - 입력은 호출부(서비스)가 모은 값이다 — 이 모듈은 I/O·LLM 0이고 스키마 리터럴을 모른다.
 - `ok`는 3값이다: True(충족) · False(미충족) · None(확인 못 함 — 필수 항목이면 미충족으로 센다).
@@ -25,6 +30,11 @@ _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
 #: DB2만 스키마 한정이 필수다(대문자 한정 규칙 — CLAUDE.md 방언 분기)
 _SCHEMA_REQUIRED_ENGINES = frozenset({"db2"})
+
+#: C11 — 조회 대상이 이 수를 넘으면 테이블 정의 범위를 본다(D-305 · plans/138 W3)
+TABLE_DEFINITION_MIN_ALLOWED = 10
+#: C11 — 조회 대상 중 정의가 있어야 하는 비율 하한(미만이면 경고)
+TABLE_DEFINITION_MIN_COVERAGE = 0.8
 
 
 @dataclass(frozen=True)
@@ -52,6 +62,8 @@ class ReadinessInputs:
         seed_loaded_count: 유사어 시드 로드 건수
         llm_synonym_applied_count: LLM 유사어 적용 건수
         default_allowed_db_ids: `AUTH_DEFAULT_ALLOWED_DB_IDS` 파싱값
+        allowed_table_count: 현행 프로필 `allowed_tables` 수(C11)
+        defined_allowed_count: 그중 `table_definitions`에 정의가 있는 테이블 수(C11)
     """
 
     db_id: str
@@ -73,6 +85,8 @@ class ReadinessInputs:
     seed_loaded_count: int
     llm_synonym_applied_count: int
     default_allowed_db_ids: tuple[str, ...]
+    allowed_table_count: int = 0
+    defined_allowed_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -80,10 +94,10 @@ class ReadinessItem:
     """준비도 항목 1건.
 
     Attributes:
-        code: C1~C10
+        code: C1~C11
         label: 화면 표시 이름
         grade: required(필수) · recommended(권장) · info(정보)
-        ok: True 충족 · False 미충족 · None 확인 못 함(또는 정보 항목)
+        ok: True 충족 · False 미충족(정보 항목이면 경고) · None 확인 못 함(또는 정보 항목)
         detail: 판정 근거·다음 행동 안내
     """
 
@@ -368,14 +382,35 @@ def _c10_access(inp: ReadinessInputs) -> ReadinessItem:
     return ReadinessItem("C10", label, "info", None, f"{allowed} · {zone_note}")
 
 
+def _c11_table_definitions(inp: ReadinessInputs) -> ReadinessItem:
+    """C11 테이블 정의 — 조회 대상이 많은데 정의 범위가 좁으면 경고(정보 항목 · 차단 없음)."""
+    label = "테이블 정의"
+    allowed = inp.allowed_table_count
+    defined = inp.defined_allowed_count
+    if allowed <= TABLE_DEFINITION_MIN_ALLOWED:
+        return ReadinessItem(
+            "C11", label, "info", None,
+            f"해당 없음(조회 대상 {allowed}개 ≤ {TABLE_DEFINITION_MIN_ALLOWED})",
+        )
+    counts = f"조회 대상 {allowed} · 정의 {defined}"
+    if defined == 0 or defined < TABLE_DEFINITION_MIN_COVERAGE * allowed:
+        return ReadinessItem(
+            "C11", label, "info", False,
+            f"{counts} — 정의 범위가 조회 대상의 {int(TABLE_DEFINITION_MIN_COVERAGE * 100)}% "
+            "미만입니다. 「스키마 자산 자동 생성」에서 테이블 정의를 승인하세요(경고만 — 활성화를 "
+            "막지 않습니다).",
+        )
+    return ReadinessItem("C11", label, "info", True, counts)
+
+
 def evaluate_readiness(inputs: ReadinessInputs) -> ReadinessReport:
-    """준비도 C1~C10을 판정한다.
+    """준비도 C1~C11을 판정한다.
 
     Args:
         inputs: 호출부가 모은 판정 입력
 
     Returns:
-        ReadinessReport — 필수 7(C1~C7) · 권장 2(C8·C9) · 정보 1(C10)
+        ReadinessReport — 필수 7(C1~C7) · 권장 2(C8·C9) · 정보 2(C10 · C11 경고)
     """
     items = (
         _c1_mcp(inputs),
@@ -388,6 +423,7 @@ def evaluate_readiness(inputs: ReadinessInputs) -> ReadinessReport:
         _c8_descriptions(inputs),
         _c9_synonyms(inputs),
         _c10_access(inputs),
+        _c11_table_definitions(inputs),
     )
     required = [i for i in items if i.grade == "required"]
     recommended = [i for i in items if i.grade == "recommended"]

@@ -125,6 +125,8 @@ scenarios:
           # plans/122 A-2 - 날짜 리터럴 → 기간 의미(D-218 Y-5). 원식: ["(?i)cmm_metric_stat_m", "(?i)202606"]
           sql_must_match: ["(?i)cmm_metric_stat_m"]
           period_covers: {from: "2026-06-01", to: "2026-07-01"}
+          # plans/122 T-9 — 명시 기간은 리터럴만(§10.3 ④).
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           # 「서버당 1행」은 `unique_by: [호스트명]` 으로 옮기지 않았다 - 김포에는 호스트명이 같은 서로 다른
           #   서버가 실재한다(세 run 산출물 모두 호스트명 6개가 2~3행 · 행마다 값이 다르다 · D-148). 양식 키가
           #   호스트명뿐이라 서버 단위 유일성은 행 수 오라클(트랙 O · 활성 서버 수) 소관이다.
@@ -174,6 +176,8 @@ scenarios:
           # plans/122 A-2 - 날짜 리터럴 → 기간 의미. 원식: ["(?i)cmm_metric_stat_m", "(?i)202601", "(?i)202606"]
           sql_must_match: ["(?i)cmm_metric_stat_m"]
           period_covers: {from: "2026-01-01", to: "2026-07-01"}
+          # plans/122 T-9 — 명시 기간은 리터럴만(§10.3 ④).
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           # plans/122 A-1 - [기준월 안내]의 연도: 제품 문구 `**[기준월 안내]** 월별 사용률 칼럼은 {시작}부터
           #   {끝}까지 (…) 데이터로 채웠습니다`(src/nodes/output_generator.py:1548-1553 · 월 표기 `YYYY년 M월`
           #   :1050-1054). docs/29 H-10 M=202601 … M+5=202606.
@@ -223,7 +227,13 @@ scenarios:
           # plans/122 A-2 - 날짜 리터럴 → 기간 의미. 원식: sql_must_match: ["(?i)202601", "(?i)202606"]
           #   부정 단언(2~7월 밀림 D-176 가드)은 그대로 둔다 - period_covers 는 「덮는다」만 본다.
           period_covers: {from: "2026-01-01", to: "2026-07-01"}
-          sql_must_not_match: ["(?i)202607"]
+          # plans/122 T-9 — 월 칼럼은 월 통계(입도) · 리터럴만(§10.3 ④ — 함수식 부정 단언을 더했다).
+          #   7월 부정 단언(D-176 가드)은 **배타 끝 `< '202607'`** 을 허용하도록 좁혔다(종전 `(?i)202607`) — 시간
+          #   해석 기본 on(D-306) 표준형 `s.stat_date < '202607'` 이 7월을 읽지 않는데도 떨어졌다(C-04 와 같은 사유).
+          #   7월을 포함하는 표기('202607' · '20260701' · '2026070100' 등호·BETWEEN·`<=`)는 그대로 잡는다.
+          #   세 run 의 H-11 SQL 에 202607 은 0건이라 과거 판정은 같다.
+          sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
+          sql_must_not_match: ["(?i)(?:[^<\\s]|<=)\\s*'202607", "(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
   - id: H-12
     plans: [10, 19, 72, 73, 58, 35]
     title: "10건만 채워줘 (기간 없음)"
@@ -242,7 +252,11 @@ scenarios:
           # plans/122 H-2 - 지난달 끝 기준 6개월 = 앵커(턴 송신 시각 KST) 기준 완결 6개월
           #   (src/domain/time_spec.relative_window · 예: 앵커 2026-09-23 → [2026-03-01, 2026-09-01)).
           #   원 수동 문구: "기간 지정이 없으면 지난달 끝 기준 6개월인지(실행 시점 의존)"
-          period_covers: {relative: last_n_months, n: 6}
+          # plans/122 T-9 — 기간 없음 = 직전 완결 월(§10.3.1) → 양식 월 6칸을 끝 월 기준으로 채운 6개월과 같아야
+          #   한다 · 월 통계 · 리터럴만(§10.3 ④).
+          sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
+          period_covers: {relative: last_n_months, n: 6, exact: true}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
   - id: H-13
     plans: [10, 19, 72, 73, 58, 35]
     title: "1월부터 3월까지 10건만 채워줘"
@@ -262,6 +276,12 @@ scenarios:
           #   기준으로 정렬합니다.` src/nodes/output_generator.py:1559-1564). 선택지가 하나라 `_any` 가 아니라
           #   `response_must_contain` 에 더했다. 원 수동 문구: "나머지 3칸을 어떻게 처리했는지 응답에 명시됐는지"
           response_must_contain: ["[기간 불일치]", "끝 월을 기준으로 정렬합니다"]
+          # plans/122 T-9 — 「1월부터 3월까지」(연도 없는 월 범위 · 미래가 아닌 가장 최근)를 덮는가 · 월 통계 ·
+          #   리터럴만(§10.3 ④). 정확 창은 걸지 않는다 — 양식 월 6칸에 맞춰 끝 월 기준으로 앞 3개월을 더 채우는
+          #   것이 위 고지의 정상 동작이다.
+          sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
+          period_covers: {month_span: {from: 1, to: 3}}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
   - id: H-14
     plans: [10, 19, 72, 73, 58, 35]
     title: "지난 반년 데이터로 10건만 채워줘"
@@ -278,7 +298,11 @@ scenarios:
           has_file: true
           # plans/122 H-2 - 「반년」 = 지난 6개월(G-15 · D-275 ⑮ · docs/29 H-14 202602~202607 은 8월 실행 기준).
           #   원 수동 문구: "'지난 반년'이 실행 시점 기준 6개월 범위로 풀렸는지"
-          period_covers: {relative: last_n_months, n: 6}
+          # plans/122 T-9 — 지난 6개월과 같아야 한다 · 월 통계 · 리터럴만(§10.3 ④). §10.1 H-14 실측 오답(기간 조건
+          #   없음 — 월 칼럼 SQL 자체가 없었다)은 입도 단언과 정확 창(리터럴 없음 = 불합격)이 잡는다.
+          sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
+          period_covers: {relative: last_n_months, n: 6, exact: true}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
   - id: H-15
     plans: [10, 19, 72, 73, 58, 35]
     title: "2026년 6월 기준 메모리 양식을 10건만 채워줘"
@@ -298,6 +322,8 @@ scenarios:
           #   조회(세 run 전부 'server.Memory' 포함)로도 통과해 버려, 월 통계와 **같은 SQL** 에 있어야 하게 묶었다.
           sql_must_match: ["(?is)\\bcmm_metric_stat_m\\b.*'server\\.Memory'|'server\\.Memory'.*\\bcmm_metric_stat_m\\b"]
           period_covers: {from: "2026-06-01", to: "2026-07-01"}
+          # plans/122 T-9 — 명시 기간은 리터럴만(§10.3 ④).
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           # plans/122 H-4 - 처리능력(GB)=TotalSize 채움. 메모리_양식은 1행이 제목이고 머리글이 5·6행 2단이다 →
           #   `header_rows: [5, 6]`(처리능력 D5 · (GB) D6 → `처리능력/(GB)`). 처리능력 열이 채워진 행이 1행 이상.
           #   세 run 산출물은 1,689/1,690행이 "31.1 GB" 꼴로 채워졌다(이관하면 합격).
@@ -349,7 +375,11 @@ scenarios:
         expect:
           status: completed
           has_file: true
-          sql_must_not_match: ["(?i)\\blimit\\s+\\d"]
+          # plans/122 T-9 — H-10 과 같은 양식(CPU_양식 · 월 6칸)·같은 「2026년 6월 기준」 → 1~6월을 덮는가 · 월 통계 ·
+          #   리터럴만(§10.3 ④). DB2 는 `POLESTAR.CMM_METRIC_STAT_M` 대문자라 (?i) 로 본다.
+          sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
+          period_covers: {from: "2026-01-01", to: "2026-07-01"}
+          sql_must_not_match: ["(?i)\\blimit\\s+\\d", "(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           manual_review: "DB2 방언 피벗으로 2,328행이 나왔는지(절단 회귀 감시)"
   - id: H-18
     plans: [10, 19, 72, 73, 58, 35]

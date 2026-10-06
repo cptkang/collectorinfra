@@ -35,6 +35,8 @@ import os
 import re
 from typing import TYPE_CHECKING, Any, Optional
 
+from src.domain.query_time import QueryTime
+from src.domain.time_spec import TimeResolution
 from src.utils.llm_compat import is_kbgenai
 from src.routing.db_schema import get_schema_prefix
 from src.routing.domain_config import get_domain_by_id
@@ -48,6 +50,8 @@ from src.utils.query_gen_common import (
 )
 # 폴스타 피벗 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트(D-067 재사용).
 from src.db_adapters.polestar.assembler import build_semantic_pivot_sql
+# 알람 시각 리터럴 투영의 단일 출처(plans/122 T-7 — 결정적 조립 T-6·검증기와 같은 함수).
+from src.db_adapters.polestar.time_period import alarm_ts_bounds
 # IR·커버리지 판정·카탈로그 렌더·가드 계측은 `src.semantic`으로 이동했다(Plan 69 P5-1 — nodes↔
 # tools 순환 해소). 이 모듈이 쓰는 것과 하위호환 재노출분을 함께 임포트하고 `__all__`로 공표한다.
 from src.semantic import (
@@ -102,7 +106,12 @@ from src.semantic.coverage import (
     _shape_reason_ab,
     _validate_literals,
 )
-from src.semantic.guards import _GUARD_COUNTERS, _guard_delta
+from src.semantic.guards import (
+    _GUARD_COUNTERS,
+    GUARD_PERIOD_UNCOMPILABLE,
+    GUARD_TIME_GRAIN_OVERRIDE,
+    _guard_delta,
+)
 from src.semantic.ir import (
     _AGG_FN,
     _ALARM_COUNT_ALIAS,
@@ -138,7 +147,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     # 이 모듈의 자체 API
     "load_semantic_model", "compile_smq", "compile_from_nl", "normalize_smq",
-    "parse_smq_response",
+    "parse_smq_response", "PeriodUncompilableError",
     # src.semantic.ir
     "SMQ", "SMQFilter", "SMQMeasure", "SMQOrderBy", "CoverageResult",
     "_AGG_FN", "_ALARM_COUNT_ALIAS", "_FILTER_SQL_OPS", "_MAX_IR_LIMIT",
@@ -234,6 +243,38 @@ def load_semantic_model(db_id: str, *, use_cache: bool = True) -> Optional[dict]
 # 결정적 컴파일 (SMQ → SQL)
 # ──────────────────────────────────────────────
 
+
+class PeriodUncompilableError(ValueError):
+    """요청 기간 해석을 시맨틱 모델로 표현할 수 없다 — 커버리지 밖(LLM 폴백) 사유.
+
+    plans/122 T-7 · D-306. 조건을 버리고 조립하면 전 기간 집계라는 조용한 오답이 된다.
+    """
+
+
+def _metric_period(query_time: QueryTime | None) -> TimeResolution | None:
+    """요청 시간 해석에서 성능 통계 기간을 고른다(None이면 종전 경로 — plans/122 T-7).
+
+    「현재·지금」 질의의 기간 미지정 기본값은 강제하지 않는다 — 종전 경로(호출부 stat_month·IR
+    기간)에 맡긴다(D-291). 판정은 `QueryTime.metric_for_sql` 단일 출처(리뷰 m-2).
+    """
+    return query_time.metric_for_sql if query_time is not None else None
+
+
+def _event_period(query_time: QueryTime | None) -> TimeResolution | None:
+    """요청 시간 해석에서 사건(알람) 기간을 고른다(None이면 종전 경로 — plans/122 T-7).
+
+    사건 주체는 기간 미지정이 곧 기간 조건 없음이라(D-291) 「현재·지금」 예외가 없다.
+    """
+    return query_time.event if query_time is not None else None
+
+
+def _period_for_pattern(
+    pattern: str, query_time: QueryTime | None
+) -> TimeResolution | None:
+    """패턴별 해석 주체 — A/B(성능 통계)는 metric, C(알람)는 event."""
+    return _event_period(query_time) if pattern == "C" else _metric_period(query_time)
+
+
 def compile_smq(
     smq: SMQ,
     db_id: str,
@@ -244,6 +285,7 @@ def compile_smq(
     stat_month: StatMonth = None,
     server_scope: Optional[tuple[str, list[str]]] = None,
     surface_query: Optional[str] = None,
+    query_time: QueryTime | None = None,
 ) -> str:
     """SMQ를 방언별 SQL로 결정적 컴파일한다(패턴 A/B는 기존 엔진 재사용, C는 알람 조립).
 
@@ -259,9 +301,16 @@ def compile_smq(
         surface_query: 표면어 판정 입력(plans/107 W0.5 — 원문 기준). None이면 ``user_query``.
             순위·최상급 판정과 IR 부재 시의 LIMIT 표면어 해석(``resolve_query_limit``)이 함께 쓴다
             — 재작성문이 원문에 없던 "서버별·전체"를 얻어 LIMIT이 상향되던 확대 방향 오염(U-10)을 닫는다.
+        query_time: 요청 시간 해석(plans/122 T-7 · D-306). 주면 기간은 그것만으로 정한다 — 패턴
+            A/B는 ``metric``(해석 입도의 통계 테이블 + 반개구간 리터럴 · ``stat_month``·IR 기간·
+            ``time_grain``을 쓰지 않는다), 패턴 C는 ``event``(발생시각 TIMESTAMP 리터럴 · 기간
+            조건 없음이면 조건 없음). None이거나 「현재·지금」 기본값이면 종전 경로
 
     Returns:
         실행 가능한 SQL 문자열(세미콜론 종결)
+
+    Raises:
+        PeriodUncompilableError: query_time의 기간을 시맨틱 모델로 표현할 수 없다(커버리지 밖)
     """
     if model is None:
         model = load_semantic_model(db_id)
@@ -280,8 +329,10 @@ def compile_smq(
         limit = resolve_query_limit(
             user_query if surface_query is None else surface_query, default_limit
         )
+    period = _period_for_pattern(smq.pattern, query_time)
     # 호출부가 결정적으로 해석한 기간이 우선이고, 없을 때만 IR 기간을 쓴다(D-035 결정적 우선).
-    if stat_month is None and smq.time_range:
+    # 요청 시간 해석(period)이 있으면 그것이 단일 출처다(plans/122 T-7).
+    if period is None and stat_month is None and smq.time_range:
         stat_month = _stat_month_from_ir(smq.time_range)
         note_guard(GUARD_IR_TIME_RANGE, f"time_range={smq.time_range}")
 
@@ -289,10 +340,10 @@ def compile_smq(
         return _compile_ab(
             smq, model, db_engine, db_schema, limit, stat_month,
             server_scope=server_scope, user_query=user_query,
-            surface_query=surface_query,
+            surface_query=surface_query, period=period,
         )
     if smq.pattern == "C":
-        return _compile_c(smq, model, db_id, limit, db_engine=db_engine)
+        return _compile_c(smq, model, db_id, limit, db_engine=db_engine, event=period)
     raise ValueError(f"미지원 패턴: {smq.pattern}")
 
 
@@ -358,11 +409,18 @@ def _compile_ab(
     server_scope: Optional[tuple[str, list[str]]] = None,
     user_query: str = "",
     surface_query: Optional[str] = None,
+    period: TimeResolution | None = None,
 ) -> str:
     """패턴 A(서버설정)+B(성능지표)를 build_multi_resource_pivot_sql로 조립한다(D-067 재사용).
 
     dimension을 direct(cmm_resource 컬럼)/server_eav/child_eav로 나누고, measure를
     explicit_measures로 넘긴다 — resource_type 구분 CASE WHEN + 단일 GROUP BY(서버당 1행).
+
+    ``period``(plans/122 T-7)가 있으면 입도는 SMQ ``time_grain``이 아니라 기간 해석의 입도다 —
+    시간·일 입도에 월 리터럴을 거는 0행 결함(plans/122 §10.2 ⑧)을 막으려고 경계는 조립기가
+    해석에서 그 입도의 리터럴로 만든다. 모델이 그 입도의 통계 테이블을 선언하지 않았으면
+    ``PeriodUncompilableError``(커버리지 밖). 진행 중인 달의 일간 전환(D-201)은 해석기가 이미
+    「이번 달」을 일 입도로 내므로 이 경로에서는 하지 않는다.
     """
     pattern_a = model.get("pattern_a") or {}
     pattern_b = model.get("pattern_b") or {}
@@ -394,11 +452,21 @@ def _compile_ab(
         )
 
     metric_tables = pattern_b.get("metric_tables") or {}
-    grain = smq.time_grain or pattern_b.get("default_time_grain", "month")
+    grain: str
+    if period is not None:
+        grain = period.grain
+        if smq.time_grain and smq.time_grain != grain:
+            note_guard(GUARD_TIME_GRAIN_OVERRIDE, f"{smq.time_grain} → {grain}")
+        if explicit_measures and not metric_tables.get(grain):
+            raise PeriodUncompilableError(
+                f"기간 {period.label()}의 입도({grain}) 통계 테이블이 시맨틱 모델에 없음"
+            )
+    else:
+        grain = smq.time_grain or pattern_b.get("default_time_grain", "month")
     metric_table = metric_tables.get(grain, "cmm_metric_stat_m")
     # D-201: 진행 중인 달 단일 기간은 월간 통계에 값이 없고 검증기가 반려한다 — 일간 통계를
     # 당월 1일~어제로 집계한다. 일간 테이블을 선언하지 않은 모델은 그대로 둔다(검증기가 폴백시킨다).
-    daily = current_month_daily_range(stat_month) if grain == "month" else None
+    daily = current_month_daily_range(stat_month) if grain == "month" and period is None else None
     if daily and metric_tables.get("day"):
         logger.info(
             "시맨틱 컴파일: 진행 중인 달 %s → %s %s~%s 일간 집계(D-201)",
@@ -439,6 +507,7 @@ def _compile_ab(
         entity_count_alias=_entity_count_alias(pattern_a) if smq.entity_count else None,
         direct_having=direct_having or None,
         measure_having=measure_having or None,
+        period=period,
     )
 
 
@@ -520,12 +589,19 @@ _ALARM_CONTEXT_DIMS = ("server_name", "NAME", "ALARMSEVERITY")
 
 
 def _alarm_where_parts(
-    smq: SMQ, pattern_c: dict, dim_map: dict[str, str]
+    smq: SMQ,
+    pattern_c: dict[str, Any],
+    dim_map: dict[str, str],
+    *,
+    event: TimeResolution | None = None,
 ) -> list[str]:
-    """패턴 C(알람)의 WHERE 조건들을 만든다 — 모델 기본 조건 + 심각도 + IR 기간 창.
+    """패턴 C(알람)의 WHERE 조건들을 만든다 — 모델 기본 조건 + 심각도 + 기간 창.
 
     심각도 리터럴은 ``int()`` 캐스팅으로만 조립한다(주입 차단) — 활성 알람은 1~3,
     이력 포함은 0~3이 기본이고 명시 필터가 있으면 그 값을 쓴다.
+
+    기간: ``event``(요청 시간 해석의 사건 주체 · plans/122 T-7)가 있으면 그 발생시각 리터럴만
+    쓴다(IR 기간 무시 · 기간 조건 없음이면 조건 없음). None이면 종전 IR time_range 월 창.
     """
     where_parts = list(pattern_c.get("base_where") or [])
     sev_filter = next((f for f in smq.filters if f.field == "ALARMSEVERITY"), None)
@@ -539,13 +615,22 @@ def _alarm_where_parts(
         where_parts.append("CA.ALARMSEVERITY IN (1, 2, 3)")
     else:
         where_parts.append("CA.ALARMSEVERITY IN (0, 1, 2, 3)")
+    if event is not None:
+        where_parts.extend(_alarm_event_where(event, dim_map))
+        return where_parts
     # 기간은 IR time_range로 승격된 것만 결정적 창으로 적용한다(S-IR4/5).
     where_parts.extend(_alarm_time_where(smq.time_range, dim_map))
     return where_parts
 
 
 def _compile_c(
-    smq: SMQ, model: dict, db_id: str, limit: int, *, db_engine: str = ""
+    smq: SMQ,
+    model: dict[str, Any],
+    db_id: str,
+    limit: int,
+    *,
+    db_engine: str = "",
+    event: TimeResolution | None = None,
 ) -> str:
     """패턴 C(알람)를 정규화 조인으로 결정적 조립한다.
 
@@ -605,7 +690,7 @@ def _compile_c(
     if smq.active_only and pattern_c.get("active_join"):
         join_lines.append(pattern_c["active_join"].format(p=prefix))
 
-    where_parts = _alarm_where_parts(smq, pattern_c, dim_map)
+    where_parts = _alarm_where_parts(smq, pattern_c, dim_map, event=event)
 
     sql = "SELECT\n" + ",\n".join(select_lines) + "\n" + from_clause
     if join_lines:
@@ -660,6 +745,26 @@ def _alarm_time_where(
     ]
 
 
+def _alarm_event_where(event: TimeResolution, dim_map: dict[str, str]) -> list[str]:
+    """사건 기간 해석을 알람 발생시각 반개구간 조건으로 만든다(plans/122 T-7 · D-306).
+
+    경계는 ``alarm_ts_bounds``(결정적 조립 T-6과 같은 단일 출처)의 ``TIMESTAMP '…'`` 리터럴이다
+    (완결 월 절단 없음 · 진행 중 기간 = 기준 시각까지 · D-291). 기간 조건 없음(unbounded)이면
+    빈 목록. 경계가 있는데 카탈로그에 시각 컬럼이 없으면 ``PeriodUncompilableError``
+    (조건 누락 금지).
+    """
+    bounds = alarm_ts_bounds(event)
+    if bounds is None:
+        return []
+    col = dim_map.get("CTIME")
+    if not col:
+        raise PeriodUncompilableError(f"알람 기간 {event.label()} 조립 불가(카탈로그에 CTIME 없음)")
+    start, end = bounds
+    parts = [f"{col} >= TIMESTAMP '{start}'"] if start is not None else []
+    parts.append(f"{col} < TIMESTAMP '{end}'")
+    return parts
+
+
 def _month_first_day(ym: str) -> str:
     """YYYYMM을 그 달 1일의 ISO 날짜 문자열로 만든다."""
     return f"{ym[:4]}-{ym[4:6]}-01"
@@ -703,6 +808,7 @@ def normalize_smq(
     model: Optional[dict] = None,
     *,
     hypernym_ambiguity: bool = False,
+    query_time: QueryTime | None = None,
 ) -> SMQ:
     """LLM SMQ 선택의 알려진 비결정 오류를 결정적으로 교정한다(D-076 후속).
 
@@ -722,6 +828,7 @@ def normalize_smq(
         user_query: 원문 질의
         model: 시맨틱 모델(카탈로그) — 없으면 카탈로그 의존 교정을 건너뛴다
         hypernym_ambiguity: 상위어 단독 질의를 하위 전부로 확장할지(N4/D-133, 기본 OFF)
+        query_time: 요청 시간 해석(plans/122 T-7) — 기간 승격의 결정적 값으로 쓴다(None = 종전)
     """
     if hypernym_ambiguity:
         # 실측 관행이 확립된 아래 교정 가드들이 최종 중재자가 되도록 **가장 먼저** 돌린다.
@@ -755,7 +862,7 @@ def normalize_smq(
             note_guard(GUARD_CAPACITY_INJECT, ",".join(added))
             smq = smq.model_copy(update={"dimensions": list(smq.dimensions) + added})
 
-    smq = _promote_time_filters(smq, user_query, model)
+    smq = _promote_time_filters(smq, user_query, model, query_time=query_time)
     smq = _promote_time_breakdown(smq, user_query)
     return smq
 
@@ -776,7 +883,11 @@ def _is_time_filter(f: SMQFilter, model: Optional[dict]) -> bool:
 
 
 def _promote_time_filters(
-    smq: SMQ, user_query: str, model: Optional[dict] = None
+    smq: SMQ,
+    user_query: str,
+    model: dict[str, Any] | None = None,
+    *,
+    query_time: QueryTime | None = None,
 ) -> SMQ:
     """기간을 필터로 표현한 SMQ를 ``time_range`` IR로 승격한다 (S-IR4).
 
@@ -784,10 +895,20 @@ def _promote_time_filters(
     'between', 'value': ['202606','202606']}` 필터로 나와 "미지원 필터"로 전량 폴백했다.
     필터를 IR 기간으로 옮기고, 질의에서 기간을 결정적으로 해석할 수 있으면 **그 값으로
     교정**한다(LLM이 계산한 월보다 결정적 파서를 신뢰 — D-035).
+
+    ``query_time``(plans/122 T-7)이 있으면 결정적 값은 요청 시간 해석(패턴 A/B = metric,
+    C = event)의 월 투영이다(``resolve_stat_month_range`` 대신). 컴파일은 해석에서 경계를
+    직접 만들므로 월로 표현되지 않는 기간(일·시 입도)도 필터를 걷고 IR 기간을 비운다 —
+    단 기간을 적용할 통계 조인이 없는 형태(measure 없는 A/B)는 종전대로 필터를 남겨
+    커버리지가 폴백시킨다(조건 침묵 소실 금지).
     """
     time_filters = [f for f in smq.filters if _is_time_filter(f, model)]
     if not time_filters and not smq.time_range:
         return smq
+
+    period = _period_for_pattern(smq.pattern, query_time)
+    if period is not None:
+        return _promote_time_filters_resolved(smq, time_filters, period)
 
     resolved = resolve_stat_month_range(user_query)
     deterministic = (
@@ -812,6 +933,32 @@ def _promote_time_filters(
         note_guard(GUARD_TIME_RANGE_OVERRIDE, f"{llm_months} → {deterministic}")
     if months != list(smq.time_range or []):
         update["time_range"] = months
+    return smq.model_copy(update=update) if update else smq
+
+
+def _promote_time_filters_resolved(
+    smq: SMQ, time_filters: list[SMQFilter], period: TimeResolution
+) -> SMQ:
+    """``_promote_time_filters``의 요청 시간 해석 경로(plans/122 T-7 — 위 독스트링)."""
+    mr = period.month_range()
+    deterministic = ([mr[0]] if mr[0] == mr[1] else list(mr)) if mr else None
+    applies = bool(smq.measures) or smq.pattern == "C"
+    if time_filters and deterministic is None and not applies:
+        return smq
+    llm_months = _months_from_filters(time_filters) or list(smq.time_range or [])
+    update: dict[str, Any] = {}
+    if time_filters:
+        update["filters"] = [f for f in smq.filters if f not in time_filters]
+        note_guard(
+            GUARD_TIME_FILTER_PROMOTE,
+            "; ".join(f"{f.field} {f.op} {f.value}" for f in time_filters),
+        )
+    if llm_months and llm_months != (deterministic or []):
+        note_guard(
+            GUARD_TIME_RANGE_OVERRIDE, f"{llm_months} → {deterministic or period.label()}"
+        )
+    if deterministic != (list(smq.time_range) if smq.time_range else None):
+        update["time_range"] = deterministic
     return smq.model_copy(update=update) if update else smq
 
 
@@ -1119,6 +1266,7 @@ async def compile_from_nl(
     derivation_sink: Optional[list[dict]] = None,
     parsed_filters: list | None = None,
     surface_query: Optional[str] = None,
+    query_time: QueryTime | None = None,
 ) -> tuple[Optional[str], Optional[SMQ], Optional[CoverageResult]]:
     """coverage_router: 자연어 → (LLM)SMQ → 커버리지 판정 → 결정적 컴파일.
 
@@ -1142,6 +1290,9 @@ async def compile_from_nl(
             컴파일을 버리고 폴백한다(None이면 검사 없음)
         surface_query: 표면어 판정 입력(plans/107 W0.5 — 원문 기준). None이면 ``user_query``.
             순위·최상급과 IR 부재 시 LIMIT 해석이 쓴다(U-10). SMQ 선택 LLM 입력은 종전대로 ``user_query``
+        query_time: 요청 시간 해석(plans/122 T-7 · D-306 — state ``time_resolution``). 주면
+            기간은 그것만으로 정한다(``stat_month`` 무시 · ``compile_smq`` 참조). 기간을 표현할
+            수 없으면 커버리지 밖으로 폴백한다(사유 ``note_guard``). None이면 종전
 
     반환:
         (sql, smq, cov) — sql이 있으면 커버리지 내 결정적 조립 성공(LLM SQL 생성 우회).
@@ -1166,6 +1317,7 @@ async def compile_from_nl(
     smq = normalize_smq(
         smq, user_query, model,
         hypernym_ambiguity=_hypernym_ambiguity_enabled(app_config),
+        query_time=query_time,
     )
 
     # 월별 행 분해("월간/월별 통계·추이") 질의는 normalize가 time_breakdown으로 승격한다
@@ -1190,11 +1342,20 @@ async def compile_from_nl(
         logger.info("시맨틱 커버리지 밖(폴백): %s", cov.reason)
         _stamp_guards(derivation_sink, _guard_delta(guards_before))
         return None, smq, cov
-    sql = compile_smq(
-        smq, db_id, model, user_query=user_query,
-        default_limit=default_limit, stat_month=stat_month,
-        server_scope=server_scope, surface_query=surface_query,
-    )
+    try:
+        sql = compile_smq(
+            smq, db_id, model, user_query=user_query,
+            default_limit=default_limit, stat_month=stat_month,
+            server_scope=server_scope, surface_query=surface_query,
+            query_time=query_time,
+        )
+    except PeriodUncompilableError as e:
+        cov = CoverageResult(covered=False, reason=f"{e} - LLM 폴백")
+        note_guard(GUARD_PERIOD_UNCOMPILABLE, cov.reason)
+        logger.info("시맨틱 커버리지 밖(폴백): %s", cov.reason)
+        _stamp_coverage(derivation_sink, False)
+        _stamp_guards(derivation_sink, _guard_delta(guards_before))
+        return None, smq, cov
     # 선행 스코프가 있으면 식별 필터는 스코프 HAVING으로 대체된 것이다(_apply_server_scope_priority).
     dropped = (
         [] if (server_scope and server_scope[1])

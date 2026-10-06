@@ -76,6 +76,7 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     # SQL 검증 코어(Plan 69 후속 2단계) — 노드와 도구가 공유하는 상태 비결합 순수 함수.
     # tools에 두면 그 계층의 DB-agnostic 테스트 가드에 걸려 독립 모듈로 분리했다.
     "src.sql_validation":            "application",
+    "src.sql_time_conditions":       "application",
     # fine-grained 도구 계층(Plan 67 S1) — 노드·어댑터의 순수 함수를 재노출하므로
     # db_adapters와 같은 application. 소비처(nodes·orchestration)에서 참조한다.
     "src.tools":                     "application",

@@ -302,8 +302,9 @@ def test_loader_accepts_new_forms(scenario_dir: Path, profiles_path: Path, expec
 
 
 @pytest.mark.parametrize("expect, needle", [
-    ("{period_covers: {relative: last_week}}", "relative 는"),
-    ("{period_covers: {relative: last_month, n: 2}}", "n 은 relative=last_n_months 에서만"),
+    # plans/122 T-9 — last_week 는 이제 유효한 종류다(일·주·시 종류 추가). 정의 밖 종류로 바꿨다.
+    ("{period_covers: {relative: next_week}}", "relative 는"),
+    ("{period_covers: {relative: last_month, n: 2}}", "n 은 relative="),
     ("{period_covers: {relative: last_n_months}}", "n(1~120 정수)이 필요하다"),
     ("{period_covers: {relative: last_n_months, n: 0}}", "n(1~120 정수)"),
     ("{period_covers: {relative: last_n_months, n: 121}}", "n(1~120 정수)"),

@@ -197,7 +197,21 @@ scenarios:
                                          #   달라서 불합격했다
           # --- 상대 기간(plans/122 H-2) — 아래 형식 중 **하나만**(from·to 와 섞으면 로더가 거부) ---
           period_covers: {relative: last_month}      # last_month | this_month
+                                         #   (plans/122 T-9) | yesterday | last_week(직전 달력 주) |
+                                         #   this_week | today
           period_covers: {relative: last_n_months, n: 3}   # n 은 last_n_months 에서만(1~120)
+                                         #   (T-9) last_n_days(n 1~3660) · last_n_hours(n 1~8784) 도 n 을
+                                         #   받는다. 시 단위 창(today·last_n_hours)은 그 시각 창을 덮는
+                                         #   날짜 창으로 판정한다 — 시 정확성은 입도 단언(sql_must_match
+                                         #   `cmm_metric_stat_h`)이 본다
+          period_covers: {relative: last_n_days, n: 30, exact: true}
+                                         # (T-9) exact: true — relative·month_span 에만 · true 만. 「덮는다」
+                                         #   대신 **같다** — 실행 SQL 리터럴 구간(비교 연산자를 읽는다:
+                                         #   `<` 배타 끝 · `<=`·`=`·BETWEEN 포함)이 창과 날짜 단위로 같아야
+                                         #   통과(「어제 알람 → 9월 전체」 과대 확장이 불합격). 리터럴이 없으면
+                                         #   결과 행으로 가지 않고 불합격. 키가 없으면 종전 판정 그대로
+                                         # 일·시 단위 창(last_n_days·yesterday·last_week·this_week·today·
+                                         #   last_n_hours)은 앵커가 자정 ±10분이면 보류
           period_covers: {month_span: {from: 11, to: 2}}   # 연도 없는 월 범위(1~12) — 「11월~2월」.
                                          #   연 넘김은 해석기가 정한다(미래가 아닌 가장 최근)
           period_covers: {unbounded: true}           # 「~한 적이 있는」(C-07) — true 만

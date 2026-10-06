@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from src.api.admin_audit import log_admin_event
 from src.api.dependencies import require_admin_user
+from src.domain.table_definitions import IMPORT_MAX_CHARS as _DEFINITION_IMPORT_MAX_CHARS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -38,8 +39,10 @@ RegisterStep = Literal["probe", "schema", "descriptions", "db_description", "see
 DDLEngine = Literal["postgresql", "db2", "mariadb"]
 AssetKind = Literal[
     "relationships", "allowed_tables", "code_values", "entity_keys", "query_rules",
-    "query_examples", "seeds", "prompt_template",
+    "query_examples", "seeds", "prompt_template", "table_definitions",
 ]
+# 테이블 정의 편집 한 번에 고칠 수 있는 테이블 수 상한(D-305)
+_DEFINITION_EDITS_MAX = 1000
 # DDL 본문 상한(문자 수) — 화면의 파일 크기 상한(5MB)과 맞춘다
 _DDL_MAX_CHARS = 5_000_000
 
@@ -133,7 +136,48 @@ class AssetApproveRequest(BaseModel):
     allowed_tables: list[str] | None = Field(
         None, description="조회 대상 테이블 선택(없으면 초안 후보 그대로)"
     )
+    table_definition_tables: list[str] | None = Field(
+        None, description="승인할 테이블 정의 선택(없으면 초안 행 전부 — 검증 실패 행이 있으면 409)"
+    )
     reason: str = Field("", max_length=2000, description="사유(감사 기록에 남는다)")
+
+
+class TableDefinitionImportRequest(BaseModel):
+    """테이블 정의 가져오기 요청(D-305) — 시드 형식 YAML 원문(최상위 `tables:`)."""
+
+    text: str = Field(
+        ..., min_length=1, max_length=_DEFINITION_IMPORT_MAX_CHARS, description="YAML 원문"
+    )
+
+
+class TableDefinitionLlmRequest(BaseModel):
+    """테이블 정의 LLM 묶음 초안 요청."""
+
+    only_failed: bool = Field(False, description="실패 묶음만 다시 실행")
+
+
+class TableDefinitionEdit(BaseModel):
+    """테이블 정의 1행 편집 — 보낸 필드만 바꾸고 출처는 `manual`이 된다.
+
+    길이·형식은 서비스가 검증한다.
+    """
+
+    manages: str | None = Field(None, max_length=5000, description="관리 정보")
+    notes: str | None = Field(None, max_length=5000, description="주의")
+    kind: str | None = Field(None, max_length=50, description="성격")
+    key_columns: list[str] | None = Field(None, max_length=50, description="대표 컬럼")
+
+
+class TableDefinitionEditRequest(BaseModel):
+    """테이블 정의 편집 저장 요청 — ``{테이블: 편집}``."""
+
+    edits: dict[str, TableDefinitionEdit] = Field(..., description="테이블별 편집")
+
+    @model_validator(mode="after")
+    def _bounded(self) -> TableDefinitionEditRequest:
+        if not self.edits or len(self.edits) > _DEFINITION_EDITS_MAX:
+            raise ValueError(f"edits는 1~{_DEFINITION_EDITS_MAX}개여야 합니다")
+        return self
 
 
 class DDLImportRequest(DDLPreviewRequest):
@@ -817,11 +861,105 @@ async def approve_asset_draft(
     result = await _call(service.approve_asset_draft(
         source, draft_id, include=include, allowed_tables=body.allowed_tables,
         by=_admin.get("sub"), reason=body.reason,
+        table_definition_tables=body.table_definition_tables,
     ))
     audit_logged = await _audit(
         request, _admin, "approve_asset_draft", source=source, draft_id=draft_id,
         include=include, allowed_tables=body.allowed_tables, reason=body.reason,
+        table_definition_tables=body.table_definition_tables,
         applied=result.get("applied"),
+    )
+    return _with_audit(result, audit_logged)
+
+
+# --- 테이블 정의 (D-305 · plans/138 W3) ---
+
+
+@router.post(f"{_PREFIX}/{{source}}/table-definitions/import")
+async def import_table_definitions(
+    request: Request,
+    body: TableDefinitionImportRequest,
+    source: str = _SourcePath,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+    service: Any = Depends(get_asset_service),
+) -> dict[str, Any]:
+    """테이블 정의 YAML을 가져와 결정적 검증 뒤 자산 초안을 만든다(검증 실패는 오류 행)."""
+    result = await _call(
+        service.import_table_definitions(source, body.text, by=_admin.get("sub"))
+    )
+    audit_logged = await _audit(
+        request, _admin, "import_table_definitions", source=source,
+        draft_id=result.get("draft_id"), summary=result.get("summary"), chars=len(body.text),
+    )
+    return _with_audit(result, audit_logged)
+
+
+@router.get(f"{_PREFIX}/{{source}}/asset-drafts/{{draft_id}}/table-definitions/estimate")
+async def estimate_table_definition_llm(
+    request: Request,
+    source: str = _SourcePath,
+    draft_id: str = _DraftPath,
+    only_failed: bool = Query(False, description="실패 묶음만 다시 실행할 때의 예상"),
+    _admin: dict[str, Any] = Depends(require_admin_user),
+    service: Any = Depends(get_asset_service),
+) -> dict[str, Any]:
+    """테이블 정의 LLM 묶음 초안의 예상 호출 수(실행 전 표시 · LLM 0)."""
+    result = await _call(
+        service.estimate_table_definition_llm(source, draft_id, only_failed=only_failed)
+    )
+    audit_logged = await _audit(
+        request, _admin, "estimate_table_definition_llm", source=source, draft_id=draft_id,
+        only_failed=only_failed, calls=result.get("calls"),
+    )
+    return _with_audit(result, audit_logged)
+
+
+@router.post(
+    f"{_PREFIX}/{{source}}/asset-drafts/{{draft_id}}/table-definitions/llm", status_code=202
+)
+async def start_table_definition_llm(
+    request: Request,
+    source: str = _SourcePath,
+    draft_id: str = _DraftPath,
+    body: TableDefinitionLlmRequest | None = None,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+    service: Any = Depends(get_asset_service),
+    runner: Any = Depends(get_admin_job_runner),
+) -> dict[str, Any]:
+    """테이블 정의 LLM 묶음 초안 잡을 시작한다(주석 없는 테이블만 · 실패 묶음만 재실행 가능)."""
+    by = _admin.get("sub")
+    only_failed = bool(body.only_failed) if body else False
+    job = await _call(runner.start(
+        kind="asset_table_definitions", db_id=source, by=by,
+        params={"draft_id": draft_id, "only_failed": only_failed},
+        work=lambda ctx: service.run_table_definition_llm(
+            source, draft_id, only_failed=only_failed, by=by, ctx=ctx,
+        ),
+    ))
+    audit_logged = await _audit(
+        request, _admin, "asset_table_definitions", source=source, draft_id=draft_id,
+        only_failed=only_failed, job_id=job.get("job_id"),
+    )
+    return _with_audit(job, audit_logged)
+
+
+@router.put(f"{_PREFIX}/{{source}}/asset-drafts/{{draft_id}}/table-definitions")
+async def update_table_definitions(
+    request: Request,
+    body: TableDefinitionEditRequest,
+    source: str = _SourcePath,
+    draft_id: str = _DraftPath,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+    service: Any = Depends(get_asset_service),
+) -> dict[str, Any]:
+    """검토 화면 편집을 저장한다 — 고친 행은 출처 `manual`로 다시 검증한다(실패 시 422)."""
+    edits = {table: edit.model_dump(exclude_unset=True) for table, edit in body.edits.items()}
+    result = await _call(
+        service.update_table_definitions(source, draft_id, edits, by=_admin.get("sub"))
+    )
+    audit_logged = await _audit(
+        request, _admin, "update_table_definitions", source=source, draft_id=draft_id,
+        tables=sorted(edits),
     )
     return _with_audit(result, audit_logged)
 

@@ -30,6 +30,9 @@ GUARD_IR_ORDER_BY = "ir.order_by"                             # IR 정렬 사용
 GUARD_IR_LIMIT = "ir.limit"                                   # IR 상한 사용
 GUARD_IR_TIME_RANGE = "ir.time_range"                         # IR 기간 사용(호출부 미지정 시)
 GUARD_HYPERNYM_EXPAND = "taxonomy.hypernym_expand"            # 상위어 단독 질의 → 하위 전부 제시
+# plans/122 T-7 · D-306 — 요청 시간 해석(query_time) 경로
+GUARD_TIME_GRAIN_OVERRIDE = "normalize.time_grain_override"   # SMQ 입도를 기간 해석 입도로 교정
+GUARD_PERIOD_UNCOMPILABLE = "gate.period_uncompilable"        # 기간 해석을 표현 불가 → 폴백
 
 
 def note_guard(name: str, detail: str = "") -> None:

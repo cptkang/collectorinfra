@@ -91,8 +91,16 @@ solutions:
                    was_transaction, apm_management]
     requires: [host_location]
     views:
-      - {id: apm.instances, label: "WAS 인스턴스 목록·호스트 매핑", capability: was_instance,
-         tool: apm_instance_map, first_hop: true, window: none}
+      - id: apm.instances
+        label: "WAS 인스턴스 목록·호스트 매핑"
+        capability: was_instance
+        tool: apm_instance_map
+        first_hop: true
+        window: none
+        args:
+          - {name: domain_id, type: int, min: 0, label: "이 APM 도메인 ID(숫자)의 인스턴스만"}
+        examples:
+          - "「도메인 ID 1000인 인스턴스 목록」 → domain_id=1000"
       - {id: apm.app_health, label: "WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절",
          capability: was_performance, tool: apm_app_health, required_input: hostname,
          window: range}
@@ -425,6 +433,11 @@ entity_edges:
      grades: [series, none]}
   - {id: E5, from: hostname, to: asset_key, owner: itam, via: key_bridge,
      grades: [one, none, many]}
+  # plans/130 M-3 — 업무명(사용자 텍스트) → 서버: 폴스타 등록명·비고 부분 일치(E6) · 제니퍼 인스턴스(E7)
+  - {id: E6, from: business_name, to: hostname, owner: polestar, via: business_lookup,
+     grades: [one, many, none]}
+  - {id: E7, from: business_name, to: apm_instance, owner: apm, via: apm_instance_map,
+     grades: [high, medium, none]}
 
 # ── 답변 영역(capability) 카탈로그 (plans/102 §3.1 · D-224 ①).
 #    **소유는 여기 적지 않는다** — 정본은 다중 존 시스템이면 `solutions[].capabilities`, 존이 없는

@@ -1149,7 +1149,13 @@ def _docx_style_diff(
 
 
 #: SQL 안의 날짜 리터럴. `2026-07-01` · `20260701` · `202607`(월 파티션) 세 표기를 본다.
-_DATE_LITERAL_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b|\b(\d{4})(\d{2})(\d{2})\b|\b(\d{4})(\d{2})\b")
+#: (plans/122 T-9) 시간 통계 `stat_date` 리터럴 `2026070110`(YYYYMMDDHH · 10자리)은 그 날짜로
+#: 읽는다 — 종전에는 어느 갈래에도 걸리지 않아 리터럴 없음으로 샜다. `TIMESTAMP '… 10:00:00'`
+#: 의 시각은 종전대로 날짜 부분만 읽는다.
+_DATE_LITERAL_RE = re.compile(
+    r"\b(\d{4})-(\d{2})-(\d{2})\b|\b(\d{4})(\d{2})(\d{2})\b|\b(\d{4})(\d{2})\b"
+    r"|\b(\d{4})(\d{2})(\d{2})(\d{2})\b"
+)
 
 
 def sql_period_bounds(sqls: list[str]) -> tuple[Optional[date], Optional[date]]:
@@ -1166,6 +1172,11 @@ def sql_period_bounds(sqls: list[str]) -> tuple[Optional[date], Optional[date]]:
                     bounds.append(date(int(match.group(1)), int(match.group(2)), int(match.group(3))))
                 elif match.group(4):
                     bounds.append(date(int(match.group(4)), int(match.group(5)), int(match.group(6))))
+                elif match.group(9):
+                    if int(match.group(12)) > 23:
+                        continue  # 시가 아니면 날짜·시 리터럴이 아니다(식별자 등)
+                    bounds.append(date(int(match.group(9)), int(match.group(10)),
+                                       int(match.group(11))))
                 else:
                     year, month = int(match.group(7)), int(match.group(8))
                     start = date(year, month, 1)
@@ -1405,6 +1416,98 @@ def near_month_boundary(day: date) -> bool:
     return day.day in (1, 2) or (day + timedelta(days=1)).day == 1
 
 
+#: 일·주·시 단위 상대 기간(plans/122 T-9) — 창이 날짜로 정해진다(`relative_window` 독스트링).
+DAY_LEVEL_KINDS: frozenset[str] = frozenset(
+    {"last_n_days", "yesterday", "last_week", "this_week", "today", "last_n_hours"}
+)
+#: 일·시 단위 창의 자정 보류 폭(`near_day_boundary`).
+DAY_BOUNDARY_MARGIN = timedelta(minutes=10)
+
+
+def near_day_boundary(moment: datetime) -> bool:
+    """앵커 시각(KST)이 자정 ±`DAY_BOUNDARY_MARGIN` 안인가(plans/122 T-9 — 일·시 단위 창 보류).
+
+    시간 해석 기본 on(D-306)에서 시스템은 요청 수신 시각(KST)으로 기간을 푼다. 남는 어긋남은
+    러너·서버 시계 차와 턴 안 재송신(자동응답) 지연이라 「어제」·「지난주」·「최근 N시간」 창은
+    자정 앞뒤에서만 다른 날을 볼 수 있다. DB 현재시각 함수로 푼 SQL 은 함수식 부정 단언이
+    따로 잡는다.
+    """
+    since = moment - moment.replace(hour=0, minute=0, second=0, microsecond=0)
+    return since < DAY_BOUNDARY_MARGIN or since >= timedelta(days=1) - DAY_BOUNDARY_MARGIN
+
+
+#: `exact` 판정용 리터럴(plans/122 T-9) — 대시 날짜(시각 선택) · YYYYMMDD(HH) · YYYYMM.
+_EXTENT_LITERAL_RE = re.compile(
+    r"\b(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?\b"
+    r"|\b(\d{4})(\d{2})(\d{2})(\d{2})?\b"
+    r"|\b(\d{4})(\d{2})\b"
+)
+#: 리터럴 바로 앞의 비교 연산자 — `TIMESTAMP '…'`·`DATE '…'`·`TO_DATE('…'` 감싸개를 건너뛴다.
+_OP_BEFORE_RE = re.compile(
+    r"(<=|>=|<>|!=|<|>|=)\s*(?:(?:timestamp|date)\s*"
+    r"|(?:to_date|to_timestamp|timestamp|date|cast)\s*\(\s*)?'?$",
+    re.IGNORECASE,
+)
+
+
+def _literal_span(match: re.Match[str]) -> tuple[datetime, datetime] | None:
+    """리터럴 1개가 가리키는 구간 `[시작, 끝)` — 시각이 있는 TIMESTAMP 는 한 점(시작 = 끝)."""
+    g = match.group
+    try:
+        if g(1):
+            day = datetime(int(g(1)), int(g(2)), int(g(3)))
+            if g(4) is None:
+                return day, day + timedelta(days=1)
+            point = day.replace(hour=int(g(4)), minute=int(g(5)), second=int(g(6) or 0))
+            return point, point
+        if g(7):
+            day = datetime(int(g(7)), int(g(8)), int(g(9)))
+            if g(10) is None:
+                return day, day + timedelta(days=1)
+            hour = day.replace(hour=int(g(10)))
+            return hour, hour + timedelta(hours=1)
+        month = datetime(int(g(11)), int(g(12)), 1)
+        nxt = _next_month(month.date())
+        return month, datetime(nxt.year, nxt.month, nxt.day)
+    except ValueError:
+        return None  # 날짜가 아닌 숫자(식별자 등)는 경계가 아니다
+
+
+def sql_period_extent(sqls: list[str]) -> tuple[date | None, date | None]:
+    """SQL 리터럴이 정하는 조회 구간 `[시작일, 끝일)` — 비교 연산자를 읽는다(plans/122 T-9 `exact`).
+
+    `sql_period_bounds`(「덮는다」 판정)는 연산자를 보지 않아 배타 끝 `< '202609'` 를 9월
+    전체로 편다. 정확 창은 그 차이를 가려야 하므로 리터럴 앞 연산자로 끝을 읽는다:
+    `<` = 배타 끝(리터럴 시작) · `<=` = 포함 끝(리터럴 끝) · `>` = 리터럴 끝부터 · `>=` = 리터럴
+    시작부터 · 그 밖(`=`·BETWEEN·IN·연산자 없음) = 리터럴 구간 전체. 시작은 날짜로 내리고 끝은
+    자정으로 올린다(일 단위 판정). 한쪽 경계 리터럴이 없으면 그쪽은 None(열린 구간)이다.
+    """
+    lowers: list[datetime] = []
+    uppers: list[datetime] = []
+    for sql in sqls:
+        for match in _EXTENT_LITERAL_RE.finditer(sql):
+            span = _literal_span(match)
+            if span is None:
+                continue
+            lo, hi = span
+            op_match = _OP_BEFORE_RE.search(sql[max(0, match.start() - 48):match.start()])
+            op = op_match.group(1) if op_match else None
+            if op in ("<", "<="):
+                uppers.append(lo if op == "<" else hi)
+            elif op in (">", ">="):
+                lowers.append(hi if op == ">" else lo)
+            else:
+                lowers.append(lo)
+                uppers.append(hi)
+    low = min(lowers).date() if lowers else None
+    high: date | None = None
+    if uppers:
+        top = max(uppers)
+        midnight = top.replace(hour=0, minute=0, second=0, microsecond=0)
+        high = top.date() if top == midnight else top.date() + timedelta(days=1)
+    return low, high
+
+
 def _period_window(
     spec: dict[str, Any], anchor_at: str | None,
 ) -> tuple[tuple[date, date] | None, str]:
@@ -1424,6 +1527,10 @@ def _period_window(
     if near_month_boundary(moment.date()):
         return None, (f"앵커 {moment.date().isoformat()} 가 월 경계 ±1일(말일·1일·2일)"
                       "이다 - 시스템과 러너가 다른 달을 볼 수 있다")
+    if str(spec.get("relative")) in DAY_LEVEL_KINDS and near_day_boundary(moment):
+        return None, (f"앵커 {moment.isoformat(timespec='minutes')} 가 자정 ±"
+                      f"{DAY_BOUNDARY_MARGIN.seconds // 60}분이다 - 일·시 단위 창은 시스템과"
+                      " 러너가 다른 날을 볼 수 있다")
     try:
         if "month_span" in spec:
             span = spec["month_span"]
@@ -1468,6 +1575,28 @@ def _result_months(result: Any) -> tuple[str | None, list[tuple[int, int]], str]
     return column, months, ""
 
 
+def _check_exact_period(
+    spec: dict[str, Any], bodies: list[str], window: tuple[date, date], shown: dict[str, Any],
+    failures: list[Failure], manual: _Holds,
+) -> None:
+    """`period_covers.exact`(plans/122 T-9) — SQL 리터럴 구간이 창과 날짜 단위로 같은가."""
+    if not bodies:
+        manual.add(f"period_covers {spec} 를 확인하지 못했다 - 실행 SQL 을 관측하지 못했다"
+                   "(정확 창은 SQL 리터럴로만 판정한다)", "unobservable")
+        return
+    low, high = sql_period_extent(bodies)
+    if (low, high) == window:
+        return
+    actual: dict[str, Any] = {**shown, "sql_period": (
+        "날짜 리터럴 없음" if low is None and high is None
+        else f"{low.isoformat() if low else '…'}~{high.isoformat() if high else '…'}")}
+    functions = sorted({match.group(0).upper()
+                        for body in bodies for match in _DB_NOW_RE.finditer(body)})
+    if functions:
+        actual["db_time_functions"] = functions
+    failures.append(Failure("period_covers", spec, actual))
+
+
 def _check_relative_period(
     spec: Any, obs: Observation, sqls: list[str], failures: list[Failure], manual: _Holds,
 ) -> None:
@@ -1486,6 +1615,12 @@ def _check_relative_period(
       덮지 못하면 보류, 둘 다 없으면 보류다.
     - `unbounded: true` 는 관측 SQL 전부에 날짜 한정(날짜 리터럴 · DB 현재시각 함수)이
       **없어야** 통과한다. SQL 을 관측하지 못했으면 보류다.
+    - `exact: true`(plans/122 T-9 · relative·month_span 전용)는 「덮는다」 대신 **같다**를 본다 —
+      실행 SQL 리터럴이 정하는 구간(`sql_period_extent` · 연산자를 읽는다)이 창과 날짜 단위로
+      같아야 통과한다(「어제 알람 → 9월 전체」 같은 과대 확장이 불합격). 리터럴이 없으면 결과
+      행으로 가지 않고 불합격이다(정확 창은 리터럴로만 판정 · §10.3 ④). 시 단위 창은 날짜로
+      내려가므로(`relative_window`) 시 정확성은 입도 단언이 본다. 키가 없으면 종전 판정 그대로다.
+    - 일·시 단위 창(`DAY_LEVEL_KINDS`)은 앵커가 자정 ±`DAY_BOUNDARY_MARGIN` 이면 보류한다.
 
     불합격의 기대값은 선언 그대로 싣는다(재판정기가 기대값으로 카탈로그 변경을 가린다) —
     창·앵커·관측 기간은 실제값 쪽에 싣는다.
@@ -1518,6 +1653,9 @@ def _check_relative_period(
     start, end = window
     shown: dict[str, Any] = {"window": f"{start.isoformat()}~{end.isoformat()}",
                              "anchor_at": obs.anchor_at}
+    if spec.get("exact") is True:
+        _check_exact_period(spec, bodies, window, shown, failures, manual)
+        return
     low, high = sql_period_bounds(bodies)
     if low is not None and high is not None:
         if low > start or high < end - timedelta(days=1):

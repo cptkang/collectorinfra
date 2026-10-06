@@ -9,6 +9,10 @@ plans/135 §3.6 · W3.
 **이름**· 컬럼별 의미 보유 여부·표본 행 유무(불린)·구조 정보 유무만 복사해 한 줄 쓰고 놓는다. **값과
 사용자 필드(`user_id`·`user_department`)는 읽지 않는다.**
 
+plans/138 W6-d: DB 별로 프롬프트 크기·선별 결과도 옮긴다 — **숫자와 짧은 열거만**(추정 토큰 수 ·
+예산 단계 · 백엔드가 보고한 토큰 수 · 선별 출처 · 선별 수 · 재생성 종결 사유). 선별된 테이블 이름
+목록·사유 문구는 옮기지 않는다. 상태에 없으면 null 이다.
+
 수신 파일 경로는 벤치 부모 프로세스가 환경변수 `ITAM_BENCH_CAPTURE_PATH`로 넘긴다(세션 임시 디렉터리
 · 실행 종료 시 부모가 지운다). 없으면 설치하지 않는다.
 """
@@ -17,9 +21,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +34,14 @@ if str(_REPO_ROOT) not in sys.path:
 
 CAPTURE_ENV = "ITAM_BENCH_CAPTURE_PATH"
 CAPTURE_KIND = "task_pipeline_state"
+
+#: 상태 계약(plans/138 W2 `prompt_budget.stage` · W4 `table_selection.source`)의 열거값.
+#: 그 밖의 값은 null 로 옮긴다.
+BUDGET_STAGES: frozenset[str] = frozenset({"within", "materials", "samples", "exceeded"})
+SELECTION_SOURCES: frozenset[str] = frozenset({"llm", "lexical", "none"})
+#: 재생성 종결 사유(`regen_stop.reason`)는 코드 열거(`backend_limit` 등)만 옮긴다.
+#: 문구 모양이면 null 이다.
+_REASON_CODE = re.compile(r"^[a-z][a-z_]{0,39}$")
 
 
 def _schema_shape(schema: Any, descriptions: Any) -> dict[str, Any]:
@@ -66,6 +79,47 @@ def _schema_shape(schema: Any, descriptions: Any) -> dict[str, Any]:
     return {"tables": tables, "structure_meta": structure}
 
 
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _member(value: Any, allowed: Collection[str]) -> str | None:
+    return value if isinstance(value, str) and value in allowed else None
+
+
+def _prompt_shape(state: Mapping[str, Any], db_id: str, *, single: bool) -> dict[str, Any]:
+    """DB 하나의 프롬프트 크기·선별 결과 → 숫자·짧은 열거만(plans/138 W6-d).
+
+    예산(`prompt_budget`)·백엔드 보고(`validation_result.backend_error`)·종결 사유(`regen_stop`)는
+    단일 경로 상태의 몫이다. 멀티 DB 상태는 DB 별 종결 사유(`regen_stops`)와 선별만 읽는다.
+    선별(`table_selection`)은 두 경로 모두 DB id 키다.
+    """
+    budget = _mapping(state.get("prompt_budget")) if single else {}
+    backend = (
+        _mapping(_mapping(state.get("validation_result")).get("backend_error")) if single else {}
+    )
+    selection = _mapping(_mapping(state.get("table_selection")).get(db_id))
+    selected = selection.get("selected")
+    stop = (
+        _mapping(state.get("regen_stop"))
+        if single
+        else _mapping(_mapping(state.get("regen_stops")).get(db_id))
+    )
+    reason = stop.get("reason")
+    return {
+        "prompt_tokens_est": _count(budget.get("estimated_tokens")),
+        "budget_stage": _member(budget.get("stage"), BUDGET_STAGES),
+        "backend_reported_tokens": _count(backend.get("given")),
+        "selection_source": _member(selection.get("source"), SELECTION_SOURCES),
+        "selected_count": len(selected) if isinstance(selected, (list, tuple)) else None,
+        "stop_reason": reason if isinstance(reason, str) and _REASON_CODE.match(reason) else None,
+    }
+
+
 def schema_context_record(kind: str, state: Any) -> dict[str, Any] | None:
     """수신한 task 상태 → 스키마 맥락 레코드. 대상 종류가 아니면 None."""
     if kind != CAPTURE_KIND or not isinstance(state, Mapping):
@@ -74,12 +128,25 @@ def schema_context_record(kind: str, state: Any) -> dict[str, Any] | None:
     dbs: dict[str, Any] = {}
     db_schemas = state.get("db_schemas")
     if state.get("is_multi_db") and isinstance(db_schemas, Mapping):
-        for db_id, schema in db_schemas.items():
-            dbs[str(db_id)] = _schema_shape(schema, None)
-    else:
-        dbs[str(state.get("active_db_id") or "")] = _schema_shape(
-            state.get("schema_info"), state.get("column_descriptions")
+        # 선별·종결만 남은 DB(스키마 없이 끝난 DB)도 칸을 둔다
+        db_ids = dict.fromkeys(
+            [
+                *db_schemas,
+                *_mapping(state.get("table_selection")),
+                *_mapping(state.get("regen_stops")),
+            ]
         )
+        for db_id in db_ids:
+            dbs[str(db_id)] = {
+                **_schema_shape(db_schemas.get(db_id), None),
+                **_prompt_shape(state, str(db_id), single=False),
+            }
+    else:
+        active = str(state.get("active_db_id") or "")
+        dbs[active] = {
+            **_schema_shape(state.get("schema_info"), state.get("column_descriptions")),
+            **_prompt_shape(state, active, single=True),
+        }
     return {
         "kind": kind,
         "thread_id": thread_id if isinstance(thread_id, str) else None,

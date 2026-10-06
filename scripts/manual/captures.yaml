@@ -393,6 +393,18 @@ captures:
       - eval: "window.scrollBy(0, -90)"   # 상단 고정 헤더에 섹션 머리가 가리지 않게
     clip: "#dbs-sec-assets"
     callouts: [[1, "#dbs-sec-assets .dbs-form input"], [2, "#dbsAssetProfileBtn"]]
+  - id: dbs-table-definitions
+    login: admin
+    steps:
+      - goto: /admin
+      - click: "[data-tab='dbstructure']"
+      - wait: 1200
+      - click: "button:has-text('상세') >> nth=0"
+      - wait: 1500
+      - scroll: "#dbs-sec-assets"
+      - eval: "window.scrollBy(0, -90)"   # 상단 고정 헤더에 섹션 머리가 가리지 않게
+    clip: "#dbs-sec-assets"
+    callouts: [[1, "#dbs-sec-assets input[type='file']"], [2, "#dbsDefinitionImportBtn"]]
   - id: users
     login: admin
     steps:

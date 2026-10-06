@@ -25,5 +25,5 @@ pip install --no-index --find-links=wheels/windows/ -r wheels/requirements_all.t
 
 - Python 버전: 3.11
 - 다운로드 일시: 2026-04-16
-- 패키지 수: 101개 (각 플랫폼)
+- 패키지 수: 101개 (각 플랫폼) · 2026-10-06 `pytest-xdist`·`execnet` 추가로 103개(plans/136 · D-303)
 - 소스: `pyproject.toml` + `mcp_server/pyproject.toml` + `requirements.txt` 통합

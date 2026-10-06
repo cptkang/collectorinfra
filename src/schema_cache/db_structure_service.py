@@ -52,6 +52,8 @@ from src.domain.schema_snapshot import (
     diff_snapshots,
     structure_impact,
 )
+from src.domain.table_definitions import PROFILE_KEY as TABLE_DEFINITIONS_KEY
+from src.domain.table_definitions import defined_table_count
 from src.schema_cache.structure_analysis import (
     analyze_structure,
     generate_structure_samples,
@@ -711,7 +713,7 @@ class AdminServiceBase:
         registration: Mapping[str, Any] | None = None,
         snapshot_record: Mapping[str, Any] | None = None,
     ) -> ReadinessReport:
-        """준비도 C1~C10 입력을 모아 판정한다(이미 읽은 값은 인자로 받아 중복 조회를 피한다)."""
+        """준비도 C1~C11 입력을 모아 판정한다(이미 읽은 값은 인자로 받아 중복 조회를 피한다)."""
         registry = self._registry()
         entry = self._registry_entry_dict(registry.get(source) if registry else None)
         mcp_row = (view.get("sources") or {}).get(source)
@@ -734,6 +736,12 @@ class AdminServiceBase:
         )
         seeds = registration.get("seeds") or {}
         structure_status = (structure or {}).get("status")
+        current = self._store.read_current_profile(source) if valid else None
+        profile = (current or {}).get("profile") or {}
+        allowed_raw = profile.get("allowed_tables")
+        allowed = [t for t in allowed_raw if isinstance(t, str)] if isinstance(
+            allowed_raw, list
+        ) else []
         inputs = ReadinessInputs(
             db_id=source,
             mcp_available=bool(view.get("available")),
@@ -764,6 +772,8 @@ class AdminServiceBase:
                 s.strip() for s in str(self._config.auth.default_allowed_db_ids or "").split(",")
                 if s.strip()
             ),
+            allowed_table_count=len(allowed),
+            defined_allowed_count=defined_table_count(profile.get(TABLE_DEFINITIONS_KEY), allowed),
         )
         return evaluate_readiness(inputs)
 

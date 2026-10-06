@@ -22,6 +22,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -377,6 +378,39 @@ def _oracle_record(
     }
 
 
+#: 되물음 기록(plans/138 W6-e)에 옮기는 낱말 모양 — 종류는 코드 열거, 후보는 소스·DB id 만.
+_CLARIFY_KIND = re.compile(r"^[a-z][a-z_]{0,39}$")
+_CLARIFY_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+
+
+def clarification_record(payload: Any, status: str) -> dict[str, Any] | None:
+    """되물음 응답 → 종류 · 칩 표시 여부 · 선택지 수 · 후보 소스 id(plans/138 W6-e).
+
+    칩은 선택지(`options`)가 있을 때만 그려진다(웹 UI `renderZoneClarification`). 후보 id 는
+    선택지의 `source`(소스 코드), 없으면 `db_id`·`db_ids`다. 질문 문구·선택지 라벨·원 질의는
+    옮기지 않는다. 되물음이 아니면 None.
+    """
+    if status != "clarification":
+        return None
+    body = payload if isinstance(payload, Mapping) else {}
+    kind = body.get("kind")
+    options = [o for o in body.get("options") or [] if isinstance(o, Mapping)]
+    candidates: set[str] = set()
+    for option in options:
+        ids = (
+            [option["source"]]
+            if option.get("source")
+            else [option.get("db_id"), *(option.get("db_ids") or [])]
+        )
+        candidates |= {i for i in ids if isinstance(i, str) and _CLARIFY_ID.match(i)}
+    return {
+        "kind": kind if isinstance(kind, str) and _CLARIFY_KIND.match(kind) else None,
+        "chips": bool(options),
+        "options": len(options),
+        "candidate_sources": sorted(candidates),
+    }
+
+
 def run_turn(
     scenario: cat.Scenario,
     turn: cat.Turn,
@@ -480,6 +514,7 @@ def run_turn(
                 if isinstance(d, dict) and d.get("kind")
             }
         ),
+        "clarification": clarification_record(getattr(obs, "clarification", None), status),
         "executed_sqls": _redacted_sqls(
             executed,
             ctx,
@@ -672,6 +707,13 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 1
         say(f"[주의] 파일 스키마 캐시 없음 — 샌드박스 전사본으로 카탈로그를 만든다 ({exc})")
         schema = cat.load_schema_source("transcript")
+    # 설명·유사어는 서버와 같은 순서(Redis → 파일)로 다시 읽는다(plans/138 W6-a · 조회문 0)
+    cat.apply_server_annotations(schema, cfg=cfg)
+    if schema["annotation_sources"]["redis"] == "unavailable":
+        say(
+            "[주의] Redis 연결 불가 — 설명·유사어를 파일 캐시에서 읽었다"
+            "(annotation_sources 에 기록)"
+        )
     profile = cat.load_profile()
     catalog_doc = cat.build_schema_catalog(
         schema,

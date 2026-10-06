@@ -130,6 +130,7 @@ class TestSchemaCatalog:
         catalog = cat.build_schema_catalog(schema, policy, assets={})
         assert catalog["summary"] == {
             "tables": 2,
+            "tables_with_meaning": 0,
             "columns": 77,
             "columns_with_meaning": 0,
             "columns_with_synonyms": 0,

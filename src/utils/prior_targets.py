@@ -70,10 +70,12 @@ REASON_DEMONSTRATIVE = "demonstrative_value"
 REASON_EMPTY_VALUE = "empty_value"
 
 
-#: 교차 계층 패싯 필드(plans/125 E-1) — 값이 없으면 직렬화에서 뺀다.
+#: 교차 계층 패싯 필드(plans/125 E-1 · 130 M-5 `apm_source_id`) — 값이 없으면 직렬화에서 뺀다.
 FACET_FIELDS: tuple[str, ...] = (
-    "apm_domain_id", "apm_instance_id", "apm_instance_name", "asset_key",
+    "apm_domain_id", "apm_instance_id", "apm_instance_name", "apm_source_id", "asset_key",
 )
+#: APM 인스턴스만 지목한 대상(서버 식별자 없음)을 서버 대상 해소에서 뺀 사유(plans/130 M-5).
+REASON_APM_ONLY = "apm_only_target"
 
 
 class TargetRef(BaseModel):
@@ -102,6 +104,8 @@ class TargetRef(BaseModel):
     apm_domain_id: Optional[str] = None
     apm_instance_id: Optional[str] = None
     apm_instance_name: Optional[str] = None
+    #: APM 소스 id(plans/130 M-5) — 인스턴스·도메인 id는 소스마다 따로 매겨진다.
+    apm_source_id: str | None = None
     asset_key: Optional[str] = None
 
     @model_serializer(mode="wrap")
@@ -117,13 +121,23 @@ class TargetRef(BaseModel):
     def _require_identifier(self) -> "TargetRef":
         """식별자가 하나도 없는 대상은 만들지 않는다.
 
-        db_id만 있는 TargetRef는 "어느 호스트인지 모르는 조사 대상"이라 의미가 없다.
+        db_id만 있는 TargetRef는 "어느 호스트인지 모르는 조사 대상"이라 의미가 없다. APM 인스턴스
+        이름만 있는 대상은 유효하다(plans/130 M-5 — 서버가 정해지지 않은 WAS 인스턴스).
         """
-        if not (self.server_name or self.hostname or self.ip):
+        if not (self.has_host_identifier or self.apm_instance_name):
             raise ValueError(
-                "TargetRef에는 server_name·hostname·ip 중 최소 하나가 있어야 합니다"
+                "TargetRef에는 server_name·hostname·ip·apm_instance_name 중 최소 하나가 있어야"
+                " 합니다"
             )
         return self
+
+    @property
+    def has_host_identifier(self) -> bool:
+        """서버 식별자(server_name·hostname·ip)가 있는가.
+
+        서버 대상 소비처(폴스타 조회·프로세스·장애 조사)는 없는 대상을 건너뛴다.
+        """
+        return bool(self.server_name or self.hostname or self.ip)
 
     @property
     def key(self) -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -427,14 +441,20 @@ def resolve_targets(
     prior_dropped: list[dict[str, Any]] = []
     for item in prior_targets or []:
         if isinstance(item, TargetRef):
-            prior_refs.append(item)
+            ref = item
+        elif not isinstance(item, dict):
             continue
-        if not isinstance(item, dict):
+        else:
+            try:
+                ref = TargetRef(**item)
+            except Exception as exc:  # noqa: BLE001 — 계약 위반 항목만 격리 탈락(항목 단위)
+                prior_dropped.append(_drop("invalid_target_ref", detail=str(exc)))
+                continue
+        if not ref.has_host_identifier:
+            # APM 인스턴스만 지목한 대상은 서버 소비처가 쓸 수 없다(130 M-5)
+            prior_dropped.append(_drop(REASON_APM_ONLY, apm_instance_name=ref.apm_instance_name))
             continue
-        try:
-            prior_refs.append(TargetRef(**item))
-        except Exception as exc:  # noqa: BLE001 — 계약 위반 항목만 격리 탈락(항목 단위)
-            prior_dropped.append(_drop("invalid_target_ref", detail=str(exc)))
+        prior_refs.append(ref)
     if prior_refs:
         truncated = len(prior_refs) > max_targets
         return TargetResolution(

@@ -657,7 +657,7 @@ APM_GATEWAY_BEARER_TOKENS={"chat": "<본체용>", "investigation": "<sre_agent�
 # [CWD=apm_gateway/ · 루트 venv 공유 — mcp_server와 같은 방식(둘 다 Python ≥3.11) · 설정은 apm_gateway/.env]
 cd apm_gateway && ../.venv/bin/python -m apm_gateway
 # 기동 로그 예(v5 — 소스 id와 설정 여부만 · URL·토큰 값 없음):
-#   APM 게이트웨이 시작: 127.0.0.1:9096 · 허용 경로 36(134 W7 — 종전 16) · {'sources': [{'id': 'bank', 'url_set': True, 'token_set': True, 'domain_filter': []},
+#   APM 게이트웨이 시작: 127.0.0.1:9096 · 허용 경로 37(130 W2 — 종전 36 · v4 16) · {'sources': [{'id': 'bank', 'url_set': True, 'token_set': True, 'domain_filter': []},
 #   {'id': 'common', …}], 'bearer': True, 'poller': False, 'poll_interval': 30, 'overrides': 0}
 #   (단일 설정이면 sources = [{'id': 'default', …}] · 둘 다 비면 [])
 #   (Bearer가 비면) 전송 인증 off(APM_GATEWAY_BEARER_TOKEN 미설정) — 운영 배치에서는 필수
@@ -667,7 +667,7 @@ cd apm_gateway && ../.venv/bin/python -m apm_gateway
 - SSE 엔드포인트는 `http://<호스트>:9096/sse`다. 소비자(`sre_agent`·게이트)는 이 주소와 Bearer만 안다.
 - 헬스체크는 도구 `gateway_health`다(소스마다 `/api/domain` 1회 · 병렬 · 30초 캐시) — **소스별 행**(설정·도달·도메인 수·허용 경로 수)과 최상위 `status`(`ok` 모두 정상 ·
   `degraded` 하나라도 · `not_configured` 소스 0개)·폴러 상태를 돌려준다.
-- 제니퍼 **버전 에코는 없다**(87 R-12의 `api_version_expect`) — 허용목록 36템플릿에 버전 조회 경로가 없다. 에이전트 버전은 `apm_instance_map` 결과의 `agent_version`에 실린다.
+- 제니퍼 **버전 에코는 없다**(87 R-12의 `api_version_expect`) — 허용목록 37템플릿에 버전 조회 경로가 없다. 에이전트 버전은 `apm_instance_map` 결과의 `agent_version`에 실린다.
 - 로컬에는 `mcp_server`(9099)·조사 프로파일용(9097)·`sre_agent`(9098)·`alarm_server`(TCP 9100)가 장기 실행 중일 수 있다. 게이트웨이 기본 포트 9096은
   이들과 겹치지 않는다(2026-09-29 실측). 남이 띄운 프로세스는 건드리지 않는다.
 - `mcp` 패키지는 `<2`로 고정돼 있다(D-181 · 설치본 1.29.1). 게이트웨이 `pyproject.toml`도 같은 제약을 선언한다.
@@ -751,6 +751,7 @@ overrides: []
   `APM_INSTANCE_CACHE_SECONDS`는 이제 정상 명단의 **갱신 주기**다(명단이 자주 바뀌지 않으면 늘려도 된다). 뒤에서 갱신하는 것은 **정상 명단뿐**이다 — 위 30초 캐시
   인벤토리(도메인 목록 실패·도메인 0건·전 도메인 조회 불가)는 쓸 명단이 없으므로 30초가 지나면 요청이 적재를 기다린다. 갱신 결과가 그런 인벤토리면 기존 정상 명단을
   유지한다. 선적재·적재 로그·`[한계]` 고지는 소스마다다(로그 끝에 `· 소스 <id>` · 소스가 여럿이면 `[한계] 소스 <id> 인스턴스 목록이 …`).
+- **인스턴스 이름·업무명 → 인스턴스(`plans/130`)** — hostname 대신 정확한 인스턴스 이름(`instance_name`)으로 부르거나, 이름 일부·업무명으로 찾는 길은 §6.4다. 업무명 → 인스턴스 수동 매핑은 같은 파일의 선택 키 `business_map`이다(작성법 §6.4.6).
 - OpenMetrics 노출(§9)의 `nodename`(= 폴스타 `server_name`) 역해소는 J7 몫이다(보류).
 
 ### 4.6 `sre_agent` 【현재 가능 — v4 · J3】
@@ -860,6 +861,7 @@ overrides: []
 | GET | `/api/status/application` · `/api/status/sql` · `/api/status/external_call` | 시 단위 맥락(v4는 `application`만 사용) | 구간은 **시 단위만**(*"Units below hour must be set to zero"*) · `application`은 `instance_id`·`max_row` 선택(v4 추가 · `max_row=20`으로 호출) · `max_row` 기본값은 정본에 없음 · 스펙 5.6.4 확인 |
 | GET | `/api-v2/deploy/{domainId}` | `apm_source_changes`·`apm_change_impact`(134 W2·W6) | `startTime`·`endTime`(ms) · 25시간 이하 · 5.6.0.5+ · v2 매뉴얼(정본 미수록) — 실응답 「확인 불가 — J0-L」 |
 | GET | `/api/transaction/guid` | `apm_transaction_trace`(134 W5) | `domain_id`·`guid`·`start_time`·`end_time` · 스펙 5.6.4 확인 · `time_pattern` 거부 |
+| GET | `/api/business` | `apm_instance_map(business=…)` 업무 정의 근거(130 W2 · D-290 ④ · §6.4) | `domain_id` 필수 · 도메인별 10분 캐시 · `/api/realtime/business`·`/api/dbmetrics/business`는 계속 거부 |
 | GET | `/api/auth/userlist` · `/restapi/users` · `/restapi/user/{id}`(`account`) | `apm_users`(134 W7) | 없음 · 경로 `id` · **`password`는 중앙 자격증명 경계가 키째 제거** · ID·이름·이메일·휴대폰·허용 IP는 가림(G-11 미결) |
 | GET | `/api-v2/environment-variable/{domainId}` | `apm_environment`(134 W7) | 경로 `domainId` · 키를 줄이지 않고 비밀 값만 `[가림]` · 값의 이메일·주민번호·휴대폰 가림 |
 | GET | `/api-v2/active-service/detail/{domainId}/{txid}` | `apm_active_detail`(134 W7) | 경로 `domainId`·`txid`(`sint` — 음수 가능) · 선택 `sessionId`·`threadHash`(필수 여부 미기재 — 받은 값만 보낸다) |
@@ -882,7 +884,7 @@ overrides: []
 - **v4.1 실서버 확인**(로컬 5.7.0.1 · 87 §0.12): 위 거부 입력(비GET 9 · 민감 GET 9 · 변형 10 · 쿼리 `token`/`TOKEN` · 허용 밖 키 · 필수 키 누락 2) 34건을 게이트웨이
   클라이언트로 보내는 동안 로컬 제니퍼의 토큰 `usageCount`가 **한 번도 늘지 않았다**(반영 지연 대기 뒤 Δ=0) — 서버에 닿기 전에 막힌다는 실측이다. 허용 경로 16개는
   필수 키로 불렀을 때 계약 위반(`Required request parameter`) 0건이었고, 결과는 200(`domain`·`realtime/instance`·`metrics`·`transaction/time`) 또는 도메인 미접속 500뿐이었다.
-- ~~`GET /api-v2/manage/rule/event/…`·`GET /api-v2/manage/instance…`는 J0 수동 채집 전용~~ — **134 W7(2026-10-06)에서 허용목록에 넣었다**(D-296 ① · 위 표). 허용목록은 36템플릿이다.
+- ~~`GET /api-v2/manage/rule/event/…`·`GET /api-v2/manage/instance…`는 J0 수동 채집 전용~~ — **134 W7(2026-10-06)에서 허용목록에 넣었다**(D-296 ① · 위 표). 허용목록은 37템플릿이다(130 W2에서 `/api/business` 추가 — 업무명 해석 · §6.4).
 
 경로 이름과 필수 파라미터는 **정본 스펙 5.6.4로 대조를 마쳤다**([J-23] — 실 서버 호출 0회). 실응답과의 차이는 J0-L(로컬)·J0-O(운영)에서 recorded JSON으로 확인한다. 87의 진단 조회는 전부 v1(`/api/*`)이고, v1은
 *"not removed for compatibility, but are no longer maintained"* 상태다 [J-4] — 필드가 바뀔 수 있으므로 recorded JSON 계약 테스트로
@@ -951,7 +953,7 @@ overrides: []
 
 | 도구 | 인자(값만) | 뒷단 Open API(§5.3) | 반환 핵심 필드 |
 |---|---|---|---|
-| `apm_instance_map` | `hostname?`·`source_ids?` | 소스별 `/api/domain` → 도메인별 `/api/instance` | `source_id`·`instance_id`·`instance_name`·`domain_id`·`domain_name`·`host_name`·`ip_address`·`platform`·`status`·`agent_version`·`description`·`config_file_path`·`match_confidence`·`match_reason` (hostname 없이 부르면 **전 인스턴스** — 상한 없음 · 큰 목록은 결과 파일) |
+| `apm_instance_map` | `hostname?`·`query?`·`business?`·`source_ids?`·`domain_id?`(`hostname`·`query`·`business`는 셋 중 하나만) | 소스별 `/api/domain` → 도메인별 `/api/instance` · (`business`) 도메인별 `/api/business` + `/api/activeService/list`·`/api/transaction/time`(최근 5분) | `source_id`·`instance_id`·`instance_name`·`domain_id`·`domain_name`·`host_name`·`ip_address`·`platform`·`status`·`agent_version`·`description`·`config_file_path`·`match_confidence`·`match_reason` (hostname 없이 부르면 **전 인스턴스** — 상한 없음 · 큰 목록은 결과 파일 · `domain_id`를 주면 그 도메인 인스턴스만 — 없는 도메인은 행 0 + 「도메인 목록에 없음(있는 도메인 …)」 고지 · `plans/130` W1-D) · `query`(인스턴스 이름·설명 검색)·`business`(업무명 → 인스턴스)는 `match_kind`·`match_tier`·`search_confidence`·`hostname` 칸과 봉투 `search`·`business`·`suggestions`를 더한다(§6.4) |
 | `apm_app_health` | `hostname`·`instance_id?`·구간 | `/api/realtime/instance`(대상 `instance_id` · 창 끝이 지금일 때) · `/api/transaction/time`(1분 분할 · **창 전체**) · `/api/status/application`(창 > 10분 — 시 단위 · **전 애플리케이션**) | 평균 응답시간·TPS·액티브·PLC 거절률·동시 사용자·**방문·호출 수**(`visit_day`·`visit_hour`·`hit_day`·`hit_hour` — 단위·하루 경계 미확인 고지)·액티브 구간 4칸 + 행별 `window{…p50, p95…}` + `hourly`(합계 = Σtotal ÷ Σcalls · `top_applications`는 요약 5) + `was_signals` |
 | `apm_runtime_health` | 같음 + `metrics?`·`interval_minute?` | `/api/realtime/instance` · `/api/dbmetrics/instance`(기본 지표 3종 · 간격 5 · **정합 인스턴스 전부**) | 힙·GC·CPU·스레드·소켓·파일 + `trend{지표: [{time_ms, value}]}`(카탈로그의 인스턴스 지표 전부 지정 가능 · 모르는 이름은 빼고 후보 ≤3을 `[한계]`) + `was_signals` |
 | `apm_resource_pool` | `hostname`·`instance_id?` | `/api/realtime/instance` · `/api/activeService/list` | DB 풀·스레드·실행 모드별·데이터소스별 액티브 + `was_signals` · 현재값 전용 |
@@ -970,8 +972,9 @@ overrides: []
 | `apm_metrics` | `mode`(catalog·series)·`scope`·`metrics`·`interval_minute?`·대상·구간 | `/api/metrics` · `/api/dbmetrics/instance`(W2 — domain은 W3 · business는 W4) | 카탈로그 행 `{source_id, scope, metric}`(6군 · TTL 캐시·변경 감지) · 시계열 긴 형식 행 |
 | `apm_source_changes` | `hostname`·구간(기본 24시간) | `/api-v2/deploy/{domainId}`(25시간 이하 조각) | 변경 감지 행 `change_detected_ms`·`change_detected_at` · `[한계] 변경 감지 — 배포 확정 아님` |
 | `apm_job_status`·`apm_job_cancel`·`apm_job_read` | `job_id`·`owner?`·(`read`) `chunk?`·`part?` | 없음(제니퍼 호출 0) | 작업 상태·진행·예측·`result_meta`·미리보기 / 취소 / 결과 파일 청크·텍스트 — **같은 주체 + 같은 `owner`만**(아니면 `job_not_found`) |
-| `gateway_health` | 없음 | 소스마다 `/api/domain` 1회(병렬 · 30초 캐시) | **소스별 행**(`source_id`·상태·설정·도달·도메인 수·허용 경로 수(36)·API 호출 수) + 최상위 `status` · `poller` · `jobs`(running·queued·슬롯) |
+| `gateway_health` | 없음 | 소스마다 `/api/domain` 1회(병렬 · 30초 캐시) | **소스별 행**(`source_id`·상태·설정·도달·도메인 수·허용 경로 수(37)·API 호출 수) + 최상위 `status` · `poller` · `jobs`(running·queued·슬롯) |
 
+- **`instance_name?`(`plans/130` W1)** — 표에서 `hostname`을 받는 데이터 도구 13종(`apm_app_health`·`apm_runtime_health`·`apm_resource_pool`·`apm_slow_transactions`·`apm_active_services`·`apm_events`·`apm_transaction_profile`·`apm_status_stats`·`apm_metrics`·`apm_source_changes`·`apm_transaction_trace`·`apm_change_impact`·`apm_period_compare`)과 관리 도구 3종(`apm_config`·`apm_environment`·`apm_active_detail`)은 `hostname` 대신 **정확한 인스턴스 이름** `instance_name`으로도 부른다 — `hostname`은 선택이 됐고 대상이 필요한 도구는 둘 중 하나가 있어야 한다. 부분 이름은 `apm_instance_map(query=…)`로 먼저 찾는다(§6.4).
 - 도구 설명문은 벤더 중립이다(`jennifer`·「제니퍼」 없음 — `apm_gateway/tests/test_server.py`).
 - **`was_signals`**는 게이트웨이 `domain/signals.py`의 **WAS 시그니처 결정적 판정 결과**다 — `kind`·`level`·`category`·`label`·`evidence`·`instance_id`·`source_tool`·`source_id`(v5).
   kind 8종: `was_service_queuing` · `was_thread_pool_exhaustion` · `was_db_pool_exhaustion` · `was_gc_stall` · `was_heap_pressure` · `was_slow_sql` ·
@@ -1009,8 +1012,8 @@ overrides: []
 | `error` | 뜻 | 호출자가 할 일 |
 |---|---|---|
 | `not_configured` | 소스 0개(`JENNIFER_API_URL`·`JENNIFER_SOURCES` 모두 미설정) | §4.2 |
-| `invalid_argument` | 인자 오류(`hostname` 빈 값 · `profile_ref` 누락 · `n < 1` · 미지 `level` · (v5) 모르는 `source_ids` · 소스가 둘 이상인데 `source_id` 없음 · (134) `wait_seconds` 음수·NaN · 모르는 지표만 준 series · 접두만 있는 `error_type` · 청크 범위 밖) | 인자를 고친다 · 소스 목록·지표 후보는 사유에 있다 |
-| `instance_unresolved` | hostname에 대응하는 인스턴스가 없다 | 정합 파일 확인(§4.5) — 상관 보류 |
+| `invalid_argument` | 인자 오류(`hostname`·`instance_name` 둘 다 빈 값(130 — 「hostname 또는 instance_name이 필요하다(둘 다 비어 있음)」) · (130) `hostname`+`query`·`business` 조합 · 검색어가 비었거나 200자 초과 · `profile_ref` 누락 · `n < 1` · 미지 `level` · (v5) 모르는 `source_ids` · 소스가 둘 이상인데 `source_id` 없음 · (134) `wait_seconds` 음수·NaN · 모르는 지표만 준 series · 접두만 있는 `error_type` · 청크 범위 밖) | 인자를 고친다 · 소스 목록·지표 후보는 사유에 있다 |
+| `instance_unresolved` | hostname에 대응하는 인스턴스가 없다 · (130) `instance_name`과 정확히 같은 인스턴스가 없다(「… — apm_instance_map(query=…)로 검색」) · `instance_id`·`hostname`과의 교집합이 비었다 | 정합 파일 확인(§4.5) — 상관 보류 · 이름이면 `apm_instance_map(query=…)`로 후보를 찾는다(§6.4) |
 | `profile_ref_mismatch` | `apm_transaction_profile`의 (`source_id`, `domain_id`)가 그 소스에서의 hostname 정합 도메인이 아님 | 앞 도구의 `profile_ref`를 그대로 넘겼는지 확인 |
 | `source_unavailable` | 제니퍼 본문 *"… Domain is not connected"*(HTTP 500) · 도메인 0건 · 연결 실패 · timeout · (v5) 고른 소스 전부 실패(원인 코드가 섞일 때) | `[한계]`에 사유 — 빈 결과로 삼키지 않는다 |
 | `contract_violation` | 제니퍼 본문 *"Required request parameter …"*·*"Cannot parse null string"* | **게이트웨이 버그** — 재시도하지 않는다(경고 로그) |
@@ -1043,6 +1046,92 @@ overrides: []
 
 도구별 식별자가 다르다(D-046 — 공동존은 `server_name` ≠ OS hostname). 섞으면 0건이 된다.
 
+### 6.4 인스턴스 이름·업무명으로 조회 【현재 가능 — `plans/130` W1~W4(2026-10-06) · 게이트웨이 계약 `spec/SPEC-apm-gateway.md` §3.4 · 본체 `spec/SPEC-apm-question-coverage.md` §7.8】
+
+hostname을 모르는 사용자가 「abc-was 응답시간」·「결제 업무 WAS 힙 사용률」처럼 **제니퍼 인스턴스 이름이나 업무명으로** 묻는 경우다(이 절의 이름은 모두 가상). 정합(이름 → 인스턴스)은
+게이트웨이 한 곳에서 한다. 새 도구·새 플래그는 없다 — 새 인자를 주지 않으면 결과가 종전과 같다(D-299 ③). 찾은 인스턴스 수와 후보 수에 상한이 없다(D-296 ④).
+
+#### 6.4.1 무엇을 알고 있나 → 어떻게 부르나
+
+| 아는 것 | 부르는 법 | 결과 |
+|---|---|---|
+| 정확한 인스턴스 이름 | 데이터 도구에 `instance_name="abc-was-01"`(hostname 대신 · §6.1 표 아래 목록 16종) | **정확 일치만**(앞뒤 공백 제거 · 대소문자 무시). 여러 소스·도메인에 같은 이름이 있으면 모두. `hostname`과 함께 주면 AND |
+| 이름 일부·설명 | `apm_instance_map(query="abc-was")` → 행의 `instance_name`·`source_id`·`instance_id`로 데이터 도구를 다시 부른다 | 아래 검색 단계 |
+| 업무명 | `apm_instance_map(business="결제")` | 아래 업무명 근거 |
+
+`hostname`·`query`·`business`는 셋 중 하나만 준다(함께 주면 `invalid_argument`). `domain_id`·`source_ids`와는 AND다. 검색어는 앞뒤 공백을 지운 뒤 1~200자다.
+
+#### 6.4.2 인스턴스 이름 검색 단계 (`query`)
+
+결과가 있는 **첫 단계만** 쓴다(앞 단계에 맞는 인스턴스가 있으면 뒤 단계의 느슨한 일치는 섞지 않는다). 검색은 캐시한 인스턴스 명단에서만 한다 — 제니퍼 호출이 늘지 않는다.
+
+| 단계 | 일치 | 예(검색어 `abc-was`) | 신뢰도 |
+|---|---|---|---|
+| `exact` | 이름이 같다(대소문자 무시) | `ABC-WAS` | high |
+| `normalized` | `-`·`_`·`.`·공백을 빼고 같다 | `abc_was`·`abcwas` | high |
+| `prefix` | 이름이 검색어로 시작하고 바로 뒤가 끝이거나 구분자 | `abc-was-01`·`abc-was_02` | medium |
+| `contains` | 구분자를 뺀 검색어가 3자 이상일 때만 — 이름에 들어 있거나 **가린** 설명에 들어 있다 | `new-abc-was`·설명에 「abc-was 이중화」 | medium |
+
+행에는 `match_kind="instance_name"`·`match_tier`(단계)·`search_confidence`·`hostname`(역정합 — 없으면 빈 값)이 붙고, 봉투 `search`에 채택 단계와 단계별 인스턴스 수가 실린다(감사 꼬리 `search=prefix(exact:0,normalized:0,prefix:2,contains:0)`).
+
+#### 6.4.3 업무명 근거 (`business` · G-3 ①)
+
+| 근거 | 무엇을 보나 | 비고 |
+|---|---|---|
+| **B0 업무 수동 매핑** | 정합 파일 `business_map`의 업무명·별칭이 같으면 그 항목의 인스턴스 이름(정확 일치)만 | **B0가 맞으면 B0만 쓴다**(다른 근거 호출 없음 · high). 파일에 적었는데 명단에 없는 이름은 `[한계]` 1줄 — 작성법은 §6.4.6 |
+| B1 제니퍼 도메인 이름 | 도메인 이름이 업무명과 같다(대소문자·구분자 무시) → 그 도메인의 전 인스턴스 | medium |
+| B2 제니퍼 업무 정의 | 도메인마다 `GET /api/business`의 업무 이름·(가린) 설명에 업무명이 들어 있으면, 그 업무를 지금 처리 중(액티브 서비스)이거나 **최근 5분** 처리한(트랜잭션) 인스턴스 | medium · `[한계] 업무 정의 근거는 최근 처리한 인스턴스만 찾는다` — 한동안 그 업무를 처리하지 않은 인스턴스는 빠진다 |
+| B3 인스턴스 이름·설명 | §6.4.2 검색을 업무명으로 | medium |
+
+B0가 없으면 B1~B3의 **합집합**이다. 인스턴스마다 `match_kind`(첫 근거)·`match_kinds`(근거 전부)·`business_names`(B2로 맞은 업무 이름)가 붙고, 봉투 `business.counts`에 근거별 인스턴스 수가 실린다.
+B2 조회가 일부 실패하면 그 단위만 `[한계]`·부분 결과이고 B1·B3 결과는 그대로 온다.
+
+**채팅에서는 폴스타 근거가 하나 더 붙는다(E6)** — 본체가 게이트웨이 업무명 해석과 **동시에** 폴스타 서버 등록명·비고에서 업무명을 찾고(사용자가 권한을 가진 DB만 · 2자 이상), 그 서버의
+hostname으로 다시 `apm_instance_map(hostname=…)`을 불러(E1r) 인스턴스를 얻는다. 두 결과를 합치고 근거를 함께 알려 준다. 폴스타를 조회하지 못하면 근거에서만 빠진다.
+
+#### 6.4.4 찾지 못했을 때 — 대신 조회하지 않는다 (D-290 ⑥)
+
+- 게이트웨이: 행 0 + `[한계]` 「인스턴스 이름 '…'과(와) 일치하는 인스턴스를 찾지 못했습니다」(업무명이면 「업무명 '…'에 해당하는 APM 인스턴스를 찾지 못했습니다」) + 봉투 `suggestions`
+  — 구분자를 뺀 이름이 80% 이상 비슷한 인스턴스 **최대 3개**(`instance_name`·`source_id`·`domain_id`). 후보는 **자동으로 고르지 않는다**.
+- `instance_name`이 0건이면 `instance_unresolved`(「… — apm_instance_map(query=…)로 검색」)다. 부분 이름으로 여러 인스턴스를 부르지 않는다.
+- 채팅 답: 「'abc-wsa'에 해당하는 제니퍼 인스턴스를 찾지 못해 조회하지 않았습니다(검색: 제니퍼 인스턴스 이름·설명 · 제니퍼 업무명 · 폴스타 등록명·비고). 다른 인스턴스로 대신 조회하지 않았습니다.
+  비슷한 이름: abc-was-01 · abc-was-02 — 자동으로 고르지 않았습니다.」 — 사용자가 후보 이름으로 다시 묻는다.
+
+#### 6.4.5 채팅 흐름 (2단 `apm_query`)
+
+1. 분해 LLM이 `apm_query` task에 `targets: [{"text": "abc-was", "kind": "instance"}]`를 싣는다(`kind` = `instance`·`business`·`auto` · hostname·IP는 넣지 않는다 · APM 활성 배포에서만 프롬프트에 이 안내가 있다).
+   폴스타 등록명으로 hostname을 잇지 못한 서버 이름(연결 없음·조회 안 함·여러 hostname)도 `auto` 대상으로 더한다.
+2. `instance`·`auto` → 인스턴스 이름 검색. `business`, 또는 `auto`인데 0건 → 게이트웨이 업무명 해석 ∥ 폴스타 E6 → E1r. 근거마다 따로 시도한다(하나가 실패해도 계속 · 실패는 `apm_partial_sources` 고지).
+3. 찾은 인스턴스를 **전부** 부른다 — `instance_name` + `source_ids`(+ 인스턴스 id를 받는 도구면 `instance_id`). 인스턴스가 많으면 호출도 많아 느려질 수 있다(장기 작업으로 접수될 수 있다).
+4. 대상 이름을 말했으면 **인스턴스 목록 첫 홉을 끼우지 않는다** — 하나도 못 찾았으면 아무 인스턴스도 조회하지 않고 위 「찾지 못함」과 후보가 답이다.
+5. 답 머리에 근거 고지: 「'결제' → 제니퍼 인스턴스 3개(근거: 제니퍼 업무 정의 2 · 폴스타 비고 1)」.
+
+#### 6.4.6 `business_map` 작성법 (업무 수동 매핑 · B0)
+
+업무명이 제니퍼 도메인·업무 정의·인스턴스 이름 어디에도 드러나지 않거나, B2(최근 처리 한정)로는 빠지는 인스턴스가 있을 때 쓴다. 적으면 그 업무명은 **이 매핑만** 쓴다(다른 근거와 합치지 않는다).
+
+1. 게이트웨이 정책 파일 `apm_gateway/config/instance_map.yaml`의 `business_map`에 항목을 넣는다(루트 `config/`가 아니다).
+
+   ```yaml
+   business_map:
+     - business: "결제"                       # 필수 — 업무명(대소문자·구분자 무시로 비교)
+       aliases: ["페이", "payment"]           # 선택 — 같은 업무의 다른 이름
+       instances: ["abc-was-01", "abc-was-02"]  # 필수 — 제니퍼 인스턴스 이름(정확히 · 대소문자 무시)
+       source_id: bank                        # 선택 — 그 제니퍼 소스에서만 찾는다(없으면 전 소스)
+   ```
+
+2. **저장소의 기본값은 빈 목록(`business_map: []`)이다** — 운영 업무명·인스턴스 실명은 배포 환경의 파일에만 적는다(수동 `overrides`와 같다). 위 예는 가상 이름이다.
+3. 게이트웨이를 재기동한다(정책 파일은 기동 때 한 번 읽는다).
+4. 기동 로그를 본다 — 형식이 틀린 항목은 「정합 파일 business_map[N] 형식 오류 — 무시(…)」, 목록이 아니면 「business_map은 목록이어야 한다 — 무시」, 설정에 없는 `source_id`는 「정합 파일이 설정에 없는 소스를 가리킨다(쓰이지 않음)」.
+5. 확인: `apm_instance_map(business="결제")` → 행의 `match_kind="business_map"`·`search_confidence="high"`. 명단에 없는 이름은 `[한계] 업무 수동 매핑(business_map)의 인스턴스 이름을 조회한 APM 인벤토리에서 찾지 못했다: …`로 드러난다(오타·폐기 인스턴스 점검).
+
+#### 6.4.7 첫 질의 비용 — 업무명
+
+- 업무 정의(B2)는 도메인마다 `/api/business`를 1회 부르고, 업무가 맞은 도메인은 액티브 서비스 1회 + 최근 5분 트랜잭션(1분 창 5회)을 더 부른다.
+- **캐시가 빈 첫 업무명 질의는 도메인 수만큼 호출한다** — 운영처럼 도메인이 약 350개이고 호출 상한이 초당 5회면 수십 초(약 70초)가 걸린다(§4.5 부기와 같은 셈). 장기 작업 승격 판단에 호출 계획을 미리 알린다.
+- 업무 정의 목록과 관측 결과는 (소스, 도메인)마다 **10분** 캐시한다 — 그 안의 다른 업무명 질의는 제니퍼 호출이 없다. 관측 결과는 전부 성공했을 때만 캐시한다(일부 실패를 10분 동안 굳히지 않는다).
+- 인스턴스 이름 검색(`query`)과 `instance_name`은 인스턴스 명단 캐시만 쓴다 — 추가 호출이 없다.
+
 ---
 
 ## 7. 소비자별 사용 흐름
@@ -1054,7 +1143,7 @@ overrides: []
    (`sre_agent/sre_agent/application/investigation_guidance.py` `APM_ANCHORED_TOOLS`). 현재값 도구(`apm_active_services`·`apm_resource_pool`)는
    "현재 상태로만 서술" 노트를 받는다.
 3. 조사 순서 노트(`APM_FOCUS_NOTE_TEMPLATE`) — 대상 확정(`apm_instance_map`) → 선행 이벤트 → 골든 시그널·런타임 → 증상별 분기(큐잉·지연·풀 —
-   `profile_ref`의 `source_id`·`domain_id`·`txid`·`time_ms`를 그대로 넘긴다 · v5) → 인프라 대조 → 반증 도구 1회 · `apm_*`에 `investigation_id` 인자.
+   `profile_ref`의 `source_id`·`domain_id`·`txid`·`time_ms`를 그대로 넘긴다 · v5) → 인프라 대조 → 반증 도구 1회 · `apm_*`에 `investigation_id` 인자. `plans/130`부터 대상 확정 줄에 「이후 `apm_*`는 hostname 대신 정확한 인스턴스 이름(`instance_name`)으로도 부를 수 있다 — 부분 이름은 `apm_instance_map(query=…)`로 먼저 찾는다」가 붙는다(§6.4).
 4. **APM 사건**(`resourceType="apm.Instance"` 또는 트리거 `meta.hints.solution == "apm"`)이면 OS 플레이북 대신 **APM 플레이북** 하나만 싣고, 트리거 힌트
    (`event_type`·`source_id`(v5)·`instance_id`·`domain_id`·`txid`)를 한 줄로 붙인다.
 5. 판정은 결정적이다 — WAS 시그니처는 **게이트웨이가 판정해 `was_signals`로 넘기고**, `APM_SIGNATURES_ENABLED=true`면 `sre_agent`가
@@ -1077,6 +1166,7 @@ overrides: []
 - 처리기는 게이트웨이를 **두 번째 MCP 엔드포인트**로 부른다(본체는 제니퍼 URL·토큰을 갖지 않는다). 데이터 도구에 `owner`(`user:<sub>`)와 `wait_seconds`(호출 상한 − 2초 · 조회 마감 이내)를 싣는다.
   오래 걸리는 조회는 **작업으로 접수**하고(데이터 답 아님 — 작업 카드에서 진행·취소·결과 보기·전체 CSV) · 큰 결과는 화면 앞 500행 + 결과 파일이다(§4.2 「장기 작업」).
 - 답에는 게이트웨이 판정(`was_signals`)과 집계(구간 p50·p95·오류율 · 시 단위 합계 · 오류 유형별 건수)가 **`**판정·집계**` 블록**으로 그대로 실린다(LLM 산문에 맡기지 않음).
+- **인스턴스 이름·업무명 질문(`plans/130`)** — 분해 칸 `targets`로 받아 게이트웨이 검색·업무명 해석과 폴스타 업무명 간선(E6)으로 인스턴스를 찾고, 찾은 인스턴스를 상한 없이 전부 부른다. 못 찾으면 다른 인스턴스로 대신 조회하지 않고 비슷한 이름 후보를 보여 준다(§6.4.4·§6.4.5).
 - **권한** — 소스 단위 인가 `allowed_sources`(D-285 ①)를 실행 경계에서 판정한다. 작업 API·결과 파일 다운로드는 질의한 사용자(또는 관리자)만(D-262).
 - **한계** — 「하루 넘게 지난 기간」은 아직 조회하지 않는다(`plans/134` W6에서 해상도 선택과 함께 폐지) · 서비스·업무·전 대상 순위·GUID·설정/계정 조회는 W3~W7 잔여 ·
   실 제니퍼 응답 모양은 미검증(W10). 사용자 매뉴얼 U-50·U-51(D-255).
@@ -1638,3 +1728,4 @@ U-1~U-14 가운데 로컬(J0-L)에서 풀 수 있는 것과 운영(J0-O)에서�
 | 2026-09-29 | **v4 — J1~J4 구현 반영**(사용자 지시 *"87번 계획을 구현하라."*) — 게이트웨이 `apm_gateway/`(허용목록 정본·클라이언트·정합·`apm_*` 8종·`gateway_health`·WAS 판정·이벤트 폴러·MCP 서버·Bearer·감사) · `sre_agent` 소비측(두 번째 MCP 서버·APM 지침·판정 승격·WAS 권고·브리핑 라벨·정체 가드) · `noise_gate` 소비측(`apm` kind 선판정·배지·트리거 힌트·`app_impact` 승격). 머리말 · §0 · §1.1·§1.3 · §2 · §4.1~§4.3·§4.5~§4.7·§4.9(실제 키) · §5.2·§5.3·§5.5·§5.6 · **§6 실제 도구·반환·오류 계약** · §7.1 · §8.2·§8.4 · §10.1(테스트·G-11 판정) · §12. J5·J6·J7 보류와 사유 · `was_object` 정합 미구현 · 원시 API 도구 미구현 · 버전 에코 없음을 적었다. 게이트웨이는 운영자 도구라 화면 변화가 없고, 알람 화면의 배지 값(「제니퍼」) 반영은 `noise_gate` 작업의 매뉴얼 판정을 따른다 |
 | 2026-09-30 | **v5 — J8 다중 제니퍼 소스 구현 반영**(사용자 지시 *"87번 계획을 구현하라."* · 87 §0.14 · D-287) — 머리말 · §0(제니퍼 소스 행) · §4.1 · **§4.2 다중 소스 설정**(`JENNIFER_SOURCES`·접두 키·기동 실패·타임아웃 주의) · §4.3(기동 로그·헬스 소스별) · **§4.4 재작성**(`plans/125` A-1 등재 현황 + `sources[]` 정본·검증·조회 함수·소스 추가 절차) · §4.5(`overrides[].source_id`·`per_source` · F-3 해소) · §4.7(존 좁히기 · `invalid_argument` 시 재시도 없음 · 호스트 참고 표 키) · §4.9 · §6(소스 인자·`instance_refs`·`sources[]`·부분 실패 · 오류 표) · §7.1 · §8.2(커서·멱등·`dbId`·`resourceAncestry`) · §8.4(존 좁히기 · 툴팁 · 힌트 · **⑥ 알람 존 전달 F-7 해소**) · §10.1 · **§10.2 두 소스판**(절차 · 정상 응답 · 목 서버 25 + Docker 10 · IT 4 passed) · §11(6행 추가 · 2행 정정) · §12.2 · §13. 관리자 매뉴얼 A-30·9.5 동반 갱신(D-255) |
 | 2026-09-29 | **v4.1 — 구현 대조 · 실서버 검증 반영**(사용자 지시 *"구현한 내용을 확인하여 docs폴더의 31번 가이드도 업데이트하라."*) — 구현 코드와 절마다 다시 대조: G-3 「미결」 표기 → 확정 · 남은 「예정」 표기 정리(§3.2·§3.5·§3.7·§9.4 — J5·J6·J7과 `was_object` 브릿지 몫만 남김) · §3.5 정합·MCP 소비 행(v4 실제) · §3.8 카탈로그 정본 = `allowlist.py`·대조 테스트 이름 · 깨진 문장 1곳 · §4.2 `APM_GATEWAY_LOG_LEVEL` · §4.8 게이트웨이 로더 실제 동작 · §13 **구현 위치 표** 신설 · D-195 표기. **87 §0.12 실서버 검증 반영**: §3.8(사용량 반영 지연 · 목 서버 재확인 · Docker IT 2 passed · 이벤트 재현 발행처 주의) · §4.5(빈 인벤토리 캐시) · §5.3(거부 34건 `usageCount` Δ=0 · `profile.txt` `key` 형식) · §5.6 · §6.1(지표 식별자 13/13) · §8.4(지연 실측 · 401 사유) · **§10.2 게이트웨이 실서버 검증 절(절차 · 정상 응답 · 58항목 · 미확인)** · §10.3(목업 판정은 테스트로 있음 · 실 LLM 미실행) · §10.4 · §11(6행 추가 · 5행 정정) · §12.2. 코드 변경 없음 · 화면 변화 없음(D-255 매뉴얼 대상 아님) |
+| 2026-10-06 | **`plans/130` W1~W4 반영(W5 문서)** — 인스턴스 이름·업무명 조회: §4.3 기동 로그·버전 에코(허용 경로 37) · §4.5 교차 참조 · §5.3 `/api/business` 행(필수 `domain_id` · D-290 ④)·37템플릿 · §6.1 `apm_instance_map` `query?`·`business?` · `instance_name?`(데이터 13 + 관리 3) · `gateway_health` 허용 경로 수 37 · §6.2 오류 표(`invalid_argument`·`instance_unresolved` 추가 경우) · **§6.4 신설**(부르는 법 · 검색 단계 · 업무명 근거 B0~B3 + 폴스타 E6 · 찾지 못함과 후보 · 채팅 흐름 · `business_map` 작성법 · 첫 질의 비용) · §7.1 조사 지침 한 줄 · §7.2 채팅 질문. 예시 이름은 모두 가상 |

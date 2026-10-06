@@ -5,6 +5,8 @@ W1·W2 — W2에서 통계·지표·변경 감지 3종 · W5·W6에서 GUID 추�
 인터페이스 계층이 맡는다. 원칙:
 
 - 대상 인스턴스는 **결정적 정합**으로만 정한다(LLM이 인스턴스명을 추측하지 않는다) — 정합된 전부.
+  hostname 대신 인스턴스 이름 **정확 일치**(`instance_name`)로도 정한다 — 부분 이름은
+  `apm_instance_map(query=…)` 검색 몫이고 유사 후보는 자동 채택하지 않는다(plans/130 N-1·N-3).
 - 마스킹은 서버측에서 한다(원문은 반환·감사 어디에도 남기지 않는다). 사람·계정 식별자(`user_id`·
   `client_id`)는 `mask_identifier`, IP는 `mask_ip`, URL은 `mask_url`, 자유 텍스트는 `mask_text`.
   행 텍스트 칸(메시지·실행 텍스트·상태 메시지·설명)은 **마스킹한 전문**을 싣는다(plans/134 W2 —
@@ -66,12 +68,14 @@ from apm_gateway.application.masking import (
     mask_text,
     mask_url,
 )
-from apm_gateway.application.resolver import SHORT_CACHE_SECONDS, Resolution
+from apm_gateway.application.resolver import SHORT_CACHE_SECONDS, Inventory, Resolution
 from apm_gateway.application.sources import (
+    STATUS_NO_MATCH,
     STATUS_OK,
     STATUS_UNAVAILABLE,
     JenniferSource,
     SourceSet,
+    name_key,
     partial_of,
 )
 from apm_gateway.config import GatewayConfig
@@ -160,6 +164,23 @@ _IMPACT_METRICS = (
 # plans/134 W6 A-1 — 기간 비교 지표 · 구간 이름
 _PERIOD_METRICS = ("calls", "failures", "failure_rate", "avg_response_ms", "max_response_ms")
 _PERIOD_LABELS = {"current": "현재", "baseline": "기준"}
+# plans/130 N-1 — 인스턴스 이름 검색(단계 순서 · 단계별 신뢰도 · 검색어 길이 · 유사 후보)
+SEARCH_TIERS = ("exact", "normalized", "prefix", "contains")
+_SEARCH_CONFIDENCE = {
+    "exact": "high",
+    "normalized": "high",
+    "prefix": "medium",
+    "contains": "medium",
+}
+QUERY_MAX = 200
+CONTAINS_MIN = 3
+SUGGEST_RATIO = 0.8
+SUGGEST_MAX = 3
+_NAME_SEPARATORS = frozenset("-_.")
+# plans/130 N-2 — 업무명 해석 근거(우선순위 순) · 업무 정의 역추적 창(분) · 업무 표 캐시 수명(초)
+BUSINESS_KINDS = ("business_map", "domain", "business", "instance_text")
+BUSINESS_TRACE_MINUTES = 5
+BUSINESS_CACHE_SECONDS = 600.0
 
 
 @dataclass
@@ -384,6 +405,247 @@ def _profile_ref(rec: dict[str, Any], time_key: str) -> dict[str, Any] | None:
     }
 
 
+def _given(value: Any) -> bool:
+    """대상 인자(hostname·instance_name)가 비지 않았는가."""
+    return value is not None and bool(str(value).strip())
+
+
+def _target_text(hostname: str | None, instance_name: str | None) -> str:
+    """오류 문구의 대상 — hostname이 있으면 종전 문구 그대로."""
+    return f"hostname {hostname!r}" if _given(hostname) else f"instance_name {instance_name!r}"
+
+
+def _with_hostnames(rows: list[dict[str, Any]], resolution: Resolution) -> list[dict[str, Any]]:
+    """인스턴스 이름으로 찾은 조회 — (소스, 인스턴스) 행에 역정합 hostname을 붙인다(본체가 서버
+    기준 결과와 합친다 · plans/130 N-3). 이미 있는 `hostname` 칸은 두고, 인스턴스 칸이 없는 행
+    (묶음 합계 등)은 봉투 `instance_resolution.instance_refs[].hostname`으로 잇는다."""
+    hosts = {_key(i): str(i.get("hostname") or "") for i in resolution.instances}
+    out = []
+    for row in rows:
+        if isinstance(row, dict) and "hostname" not in row:
+            key = (row.get("source_id"), row.get("instance_id"))
+            if key in hosts:
+                row = {**row, "hostname": hosts[key]}
+        out.append(row)
+    return out
+
+
+def _is_separator(ch: str) -> bool:
+    return ch in _NAME_SEPARATORS or ch.isspace()
+
+
+def normalize_name(text: str) -> str:
+    """이름 정규화 — 소문자(casefold) + 구분자(`-`·`_`·`.`·공백) 제거. 정규식 없이 한 번 훑는다."""
+    return "".join(ch for ch in str(text or "").casefold() if not _is_separator(ch))
+
+
+def search_query(value: Any, name: str = "query") -> str:
+    """검색어 인자(`name` = 인자 이름 — query·business) — 앞뒤 공백 제거 뒤 1~`QUERY_MAX`자 문자열.
+    그 밖은 `invalid_argument`."""
+    if not isinstance(value, str):
+        raise ApmError(INVALID_ARGUMENT, f"{name}는 문자열이어야 한다")
+    text = value.strip()
+    if not text:
+        raise ApmError(INVALID_ARGUMENT, f"{name}가 비어 있다")
+    if len(text) > QUERY_MAX:
+        raise ApmError(INVALID_ARGUMENT, f"{name}는 {QUERY_MAX}자 이하여야 한다({len(text)}자)")
+    return text
+
+
+@dataclass
+class InstanceSearch:
+    """인스턴스 이름 검색 결과(plans/130 N-1)."""
+
+    tier: str | None  # 채택한 단계(0건이면 None)
+    # 채택 단계의 (소스, 인벤토리, 인스턴스) — 정렬: 소스 선언 순서·도메인·이름
+    matches: list[tuple[JenniferSource, Inventory, dict[str, Any]]]
+    counts: dict[str, int]  # 단계별 후보 수(인스턴스마다 가장 앞 단계 하나로 센다)
+    # 0건일 때만 — 정규화 이름 유사도 ≥ SUGGEST_RATIO 상위 SUGGEST_MAX(자동 채택 안 함)
+    suggestions: list[dict[str, Any]]
+
+
+def _search_tier(inst: dict[str, Any], q: str, q_norm: str) -> str | None:
+    """인스턴스 하나의 가장 앞 단계 — 설명은 화면에 싣는 마스킹본에서만 찾는다(가린 원문으로
+    일치 여부를 흘리지 않는다)."""
+    name = str(inst.get("instance_name") or "").strip().casefold()
+    if name == q:
+        return "exact"
+    norm = normalize_name(name)
+    if q_norm and norm == q_norm:
+        return "normalized"
+    if name.startswith(q) and (len(name) == len(q) or _is_separator(name[len(q)])):
+        return "prefix"
+    if len(q_norm) >= CONTAINS_MIN and (
+        q_norm in norm or q in mask_text(inst.get("description", ""), limit=None).casefold()
+    ):
+        return "contains"
+    return None
+
+
+def _domain_order(domain_id: Any) -> tuple[bool, int]:
+    return domain_id is None, domain_id if isinstance(domain_id, int) else 0
+
+
+def search_instances(
+    usable: list[tuple[JenniferSource, Inventory]], text: str, domain_id: int | None = None
+) -> InstanceSearch:
+    """고른 소스 인벤토리(캐시 · 새 HTTP 없음)에서 인스턴스 이름·설명을 찾는다. 단계 exact(이름
+    대소문자 무시 동일) → normalized(구분자 제거 동일) → prefix(앞부분 + 바로 뒤가 끝·구분자) →
+    contains(정규화 검색어 `CONTAINS_MIN`자 이상 · 정규화 이름 또는 설명에 포함) 중 **가장 앞
+    단계의 결과만** 채택한다. `domain_id`를 주면 그 도메인 안에서만 찾는다."""
+    q = text.strip().casefold()
+    q_norm = normalize_name(q)
+    counts = dict.fromkeys(SEARCH_TIERS, 0)
+    by_tier: dict[str, list[tuple[int, JenniferSource, Inventory, dict[str, Any]]]] = {}
+    for rank, (src, inv) in enumerate(usable):
+        for inst in inv.instances:
+            if domain_id is not None and inst["domain_id"] != domain_id:
+                continue
+            tier = _search_tier(inst, q, q_norm)
+            if tier is not None:
+                counts[tier] += 1
+                by_tier.setdefault(tier, []).append((rank, src, inv, inst))
+    chosen = next((t for t in SEARCH_TIERS if by_tier.get(t)), None)
+    if chosen is not None:
+        hits = sorted(
+            by_tier[chosen],
+            key=lambda h: (h[0], _domain_order(h[3]["domain_id"]), h[3]["instance_name"]),
+        )
+        return InstanceSearch(chosen, [(s, v, i) for _, s, v, i in hits], counts, [])
+    return InstanceSearch(None, [], counts, _suggest(usable, q_norm, domain_id))
+
+
+def _suggest(
+    usable: list[tuple[JenniferSource, Inventory]], q_norm: str, domain_id: int | None
+) -> list[dict[str, Any]]:
+    """정규화 이름 유사도(`difflib.SequenceMatcher`) ≥ SUGGEST_RATIO 상위 SUGGEST_MAX."""
+    if not q_norm:
+        return []
+    matcher = difflib.SequenceMatcher()
+    matcher.set_seq2(q_norm)  # 검색어 쪽을 캐시한다(difflib.get_close_matches와 같은 방식)
+    scored: list[tuple[float, int, tuple[bool, int], str, str, Any]] = []
+    for rank, (src, inv) in enumerate(usable):
+        for inst in inv.instances:
+            if domain_id is not None and inst["domain_id"] != domain_id:
+                continue
+            norm = normalize_name(inst["instance_name"])
+            if not norm:
+                continue
+            matcher.set_seq1(norm)
+            if (
+                matcher.real_quick_ratio() >= SUGGEST_RATIO
+                and matcher.quick_ratio() >= SUGGEST_RATIO
+                and (ratio := matcher.ratio()) >= SUGGEST_RATIO
+            ):
+                scored.append(
+                    (
+                        -ratio,
+                        rank,
+                        _domain_order(inst["domain_id"]),
+                        inst["instance_name"],
+                        src.source_id,
+                        inst["domain_id"],
+                    )
+                )
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, Any]] = set()
+    for _, _, _, name, sid, did in sorted(scored, key=lambda s: s[:4]):
+        if (name, sid, did) in seen:
+            continue
+        seen.add((name, sid, did))
+        out.append({"instance_name": name, "source_id": sid, "domain_id": did})
+        if len(out) == SUGGEST_MAX:
+            break
+    return out
+
+
+def _same_name(a: str, b: str) -> bool:
+    """이름이 같은가 — 대소문자 무시 또는 구분자(`-`·`_`·`.`·공백) 무시."""
+    norm = normalize_name(b)
+    return name_key(a) == name_key(b) or (bool(norm) and normalize_name(a) == norm)
+
+
+@dataclass(frozen=True)
+class BusinessMapping:
+    """정합 파일 `business_map` 항목 하나 — 업무명·별칭 → 인스턴스 이름(plans/130 N-2 B0 · 수동)."""
+
+    business: str
+    aliases: tuple[str, ...]
+    instances: tuple[str, ...]
+    source_id: str | None
+
+    def matches(self, text: str) -> bool:
+        return any(_same_name(n, text) for n in (self.business, *self.aliases))
+
+
+def _names(value: Any) -> tuple[str, ...] | None:
+    """비지 않은 문자열 목록 → 앞뒤 공백 제거 튜플. 형식이 다르면 None."""
+    if not isinstance(value, list) or not all(isinstance(x, str) and x.strip() for x in value):
+        return None
+    return tuple(x.strip() for x in value)
+
+
+def _business_entry(item: Any) -> BusinessMapping | None:
+    if not isinstance(item, dict):
+        return None
+    business, source_id = item.get("business"), item.get("source_id")
+    aliases = _names(item.get("aliases") if item.get("aliases") is not None else [])
+    instances = _names(item.get("instances"))
+    if not isinstance(business, str) or not business.strip() or aliases is None or not instances:
+        return None
+    if source_id is not None and not (isinstance(source_id, str) and source_id.strip()):
+        return None
+    return BusinessMapping(
+        business.strip(), aliases, instances, source_id.strip() if source_id else None
+    )
+
+
+def parse_business_map(instance_map: dict[str, Any]) -> list[BusinessMapping]:
+    """정합 파일의 선택 키 `business_map` — `[{business, aliases?, instances, source_id?}]`. 형식이
+    틀린 항목은 경고하고 뺀다(침묵 금지 · 로그에는 순번만)."""
+    raw = instance_map.get("business_map")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        logger.warning("정합 파일 business_map은 목록이어야 한다 — 무시")
+        return []
+    out = []
+    for idx, item in enumerate(raw):
+        entry = _business_entry(item)
+        if entry is None:
+            logger.warning(
+                "정합 파일 business_map[%d] 형식 오류 — 무시(business 문자열·instances 문자열 목록"
+                " 필수 · aliases는 문자열 목록 · source_id는 문자열)",
+                idx,
+            )
+            continue
+        out.append(entry)
+    return out
+
+
+def _business_key(value: Any) -> str:
+    """업무 id 비교 키 — 업무 목록(정수)과 거래·액티브 서비스의 업무 id(원값)를 맞춘다."""
+    return str(value).strip()
+
+
+def _fresh(entry: tuple[float, Any] | None, now: float) -> bool:
+    """업무 표 캐시 항목이 수명(`BUSINESS_CACHE_SECONDS`) 안인가."""
+    return entry is not None and now - entry[0] < BUSINESS_CACHE_SECONDS
+
+
+@dataclass
+class _BusinessHit:
+    """업무명 해석의 인스턴스 하나 — 근거·맞은 업무 이름·이름 검색 단계를 모은다."""
+
+    rank: int
+    src: JenniferSource
+    inv: Inventory
+    inst: dict[str, Any]
+    kinds: set[str]
+    business_names: list[str]
+    tier: str = ""
+
+
 class ApmTools:
     """도구 코어. 인스턴스 하나를 프로세스에서 공유한다."""
 
@@ -404,6 +666,11 @@ class ApmTools:
         self._profile_budget: dict[tuple[str, str], tuple[int, float]] = {}
         self._health_cache: tuple[float, dict[str, Any]] | None = None
         self._catalogs: dict[str, _Catalog] = {}
+        # 업무명 해석(plans/130 N-2) — 수동 매핑 · (소스, 도메인) → (읽은 시각, 업무 정의 목록 /
+        # 최근 처리 업무 id → 인스턴스 id)
+        self._business_map = parse_business_map(cfg.policies.instance_map)
+        self._business_defs: dict[tuple[str, int], tuple[float, list[dict[str, Any]]]] = {}
+        self._business_seen: dict[tuple[str, int], tuple[float, dict[str, set[int]]]] = {}
 
     # ── 공통 ──────────────────────────────────────────────
 
@@ -423,6 +690,8 @@ class ApmTools:
         masked: set[str] | None = None,
         **extra: Any,
     ) -> dict[str, Any]:
+        if resolution is not None and resolution.by_name:
+            rows = _with_hostnames(rows, resolution)
         payload: dict[str, Any] = {
             "rows": rows,
             "row_count": len(rows),
@@ -508,11 +777,20 @@ class ApmTools:
         hostname: str | None,
         instance_id: int | None = None,
         source_ids: list[str] | None = None,
+        instance_name: str | None = None,
     ) -> Resolution:
+        """대상 인스턴스 — hostname 정합 또는 인스턴스 이름 **정확 일치**(plans/130 N-3). 둘 다
+        주면 hostname 정합 결과 중 그 이름만 남긴다(AND)."""
         self.sources.require_configured()
-        if not hostname or not str(hostname).strip():
-            raise ApmError(INVALID_ARGUMENT, "hostname이 비어 있음")
-        return await self.sources.resolve(str(hostname).strip(), instance_id, source_ids)
+        host = str(hostname).strip() if _given(hostname) else ""
+        name = str(instance_name).strip() if _given(instance_name) else ""
+        if not host and not name:
+            raise ApmError(
+                INVALID_ARGUMENT, "hostname 또는 instance_name이 필요하다(둘 다 비어 있음)"
+            )
+        if not host:
+            return await self.sources.resolve_instance_name(name, instance_id, source_ids)
+        return await self.sources.resolve(host, instance_id, source_ids, name or None)
 
     def _api(self, source_id: str) -> JenniferApi:
         return self.sources.get(source_id).api
@@ -843,15 +1121,34 @@ class ApmTools:
     # ── 도구 8종(W1까지) ────────────────────────────────────
 
     async def apm_instance_map(
-        self, hostname: str | None = None, source_ids: list[str] | None = None
+        self,
+        hostname: str | None = None,
+        source_ids: list[str] | None = None,
+        domain_id: int | None = None,
+        query: str | None = None,
+        business: str | None = None,
     ) -> dict[str, Any]:
+        """`domain_id`를 주면 그 도메인의 인스턴스만 돌려준다(hostname과 함께 주면 둘 다 만족).
+        `query`를 주면 인스턴스 이름·설명 검색이다(`search_instances` · plans/130 N-1 —
+        hostname과 함께 줄 수 없고 `domain_id`와는 AND). `business`를 주면 업무명 → 인스턴스다
+        (`_business_search` · N-2 — query·hostname과 함께 줄 수 없고 `domain_id`·`source_ids`와는
+        AND)."""
         tool = "apm_instance_map"
+        domain = None if domain_id is None else _nonneg_int(domain_id, "domain_id")
+        text = None if query is None else search_query(query)
+        biz = None if business is None else search_query(business, "business")
+        if text is not None and _given(hostname):
+            raise ApmError(INVALID_ARGUMENT, "hostname과 query는 함께 줄 수 없다")
+        if biz is not None and (text is not None or _given(hostname)):
+            raise ApmError(INVALID_ARGUMENT, "business는 query·hostname과 함께 줄 수 없다")
         self.sources.require_configured()
         if hostname and str(hostname).strip():
             res = await self.sources.resolve(str(hostname).strip(), None, source_ids)
             descriptions = await self._domain_descriptions({i["source_id"] for i in res.instances})
             rows = []
             for inst in res.instances:
+                if domain is not None and inst["domain_id"] != domain:
+                    continue
                 confidence, reason = res.match_of(inst)
                 desc = descriptions.get((inst["source_id"], inst["domain_id"]), "")
                 rows.append(
@@ -865,8 +1162,22 @@ class ApmTools:
                     )
                 )
             return self.ok(tool, rows, resolution=res, file_only=FILE_ONLY_COLUMNS)
-        usable, statuses, limits = await self.sources.available(self.sources.select(source_ids))
+        usable, statuses, found = await self.sources.available(self.sources.select(source_ids))
+        limits = _Limits(found)
         partial = partial_of(usable, statuses)
+        known = sorted({d["domain_id"] for _, inv in usable for d in inv.domains})
+        if domain is not None and domain not in known:
+            listed = ", ".join(map(str, known)) or "없음"
+            limits.append(
+                f"[한계] 도메인 {domain}은 조회한 APM 소스의 도메인 목록에 없다({listed})"
+            )
+            limits.unresolve(
+                f"도메인 ID {domain}는 제니퍼 도메인 목록에 없습니다(있는 도메인: {listed})"
+            )
+        if text is not None:
+            return self._instance_search(tool, usable, statuses, limits, partial, text, domain)
+        if biz is not None:
+            return await self._business_search(tool, usable, statuses, limits, partial, biz, domain)
         rows = []
         for src, inv in usable:
             descriptions = {
@@ -874,6 +1185,8 @@ class ApmTools:
                 for d in inv.domains
             }
             for inst in inv.instances:
+                if domain is not None and inst["domain_id"] != domain:
+                    continue
                 host, conf, reason, _ = src.resolver.reverse(
                     inv, inst["domain_id"], inst["instance_id"]
                 )
@@ -895,16 +1208,346 @@ class ApmTools:
             file_only=FILE_ONLY_COLUMNS,
         )
 
+    def _instance_search(
+        self,
+        tool: str,
+        usable: list[tuple[JenniferSource, Inventory]],
+        statuses: list[dict[str, Any]],
+        limits: _Limits,
+        partial: bool,
+        text: str,
+        domain: int | None,
+    ) -> dict[str, Any]:
+        """`apm_instance_map(query=…)` 봉투 — 행은 목록 행 모양 + 검색 칸(`match_kind`·
+        `match_tier`·`search_confidence`) · 행 상한 없음(D-296 ④). 0건이면 유사 후보는 봉투
+        `suggestions`에만 싣고(행 아님) 사용자용 한 줄을 남긴다. `search`(채택 단계·단계별 후보
+        수)는 감사가 읽는다."""
+        found = search_instances(usable, text, domain)
+        tier = found.tier or ""  # 행이 있으면 채택 단계가 있다
+        rows = []
+        descriptions: dict[str, dict[Any, str]] = {}
+        for src, inv, inst in found.matches:
+            if src.source_id not in descriptions:
+                descriptions[src.source_id] = {
+                    d["domain_id"]: mask_text(d.get("domain_description", ""), limit=None)
+                    for d in inv.domains
+                }
+            host, conf, reason, _ = src.resolver.reverse(
+                inv, inst["domain_id"], inst["instance_id"]
+            )
+            rows.append(
+                self._instance_row(
+                    inst,
+                    descriptions[src.source_id].get(inst["domain_id"], ""),
+                    hostname=host,
+                    match_confidence=conf,
+                    match_reason=reason,
+                    match_kind="instance_name",
+                    match_tier=tier,
+                    search_confidence=_SEARCH_CONFIDENCE.get(tier, ""),
+                )
+            )
+        hit_sources = {src.source_id for src, _, _ in found.matches}
+        for row in statuses:
+            if row["status"] == STATUS_OK and row["source_id"] not in hit_sources:
+                row["status"] = STATUS_NO_MATCH
+        extra: dict[str, Any] = {"search": {"tier": found.tier, "counts": found.counts}}
+        if not rows:
+            extra["suggestions"] = found.suggestions
+            limits.unresolve(
+                f"인스턴스 이름 '{mask_text(text, limit=None)}'과(와) 일치하는 인스턴스를"
+                " 찾지 못했습니다"
+            )
+        return self.ok(
+            tool,
+            rows,
+            limits=limits,
+            sources=statuses,
+            partial=partial,
+            file_only=FILE_ONLY_COLUMNS,
+            **extra,
+        )
+
+    async def _business_search(
+        self,
+        tool: str,
+        usable: list[tuple[JenniferSource, Inventory]],
+        statuses: list[dict[str, Any]],
+        limits: _Limits,
+        partial: bool,
+        text: str,
+        domain: int | None,
+    ) -> dict[str, Any]:
+        """`apm_instance_map(business=…)` 봉투(plans/130 N-2 · G-3 ①). 수동 매핑(B0)이 업무명에
+        맞으면 **그것만**, 없으면 도메인 이름(B1)·제니퍼 업무 정의(B2)·인스턴스 이름/설명(B3)의
+        합집합이다. 인스턴스마다 1행 — 목록 행 모양 + `match_kind`(첫 근거 · `BUSINESS_KINDS` 순)·
+        `match_kinds`(근거 전부)·`business_names`(B2로 맞은 업무 이름) · 상한 없음(D-296 ④). B2
+        조회 실패는 부분 결과(`partial`)로 두고 다른 근거 행은 그대로 돌려준다. `business.counts`
+        (근거별 인스턴스 수)는 감사가 읽는다."""
+        hits: dict[tuple[str, Any, Any], _BusinessHit] = {}
+
+        def add(
+            rank: int,
+            src: JenniferSource,
+            inv: Inventory,
+            inst: dict[str, Any],
+            kind: str,
+            names: Iterable[str] = (),
+            tier: str = "",
+        ) -> None:
+            key = (src.source_id, inst["domain_id"], inst["instance_id"])
+            hit = hits.get(key)
+            if hit is None:
+                hit = hits[key] = _BusinessHit(rank, src, inv, inst, set(), [])
+            hit.kinds.add(kind)
+            hit.business_names.extend(n for n in names if n not in hit.business_names)
+            if tier:
+                hit.tier = tier
+
+        selected = {row["source_id"] for row in statuses}
+        mapped = [
+            m
+            for m in self._business_map
+            if (m.source_id is None or m.source_id in selected) and m.matches(text)
+        ]
+        suggestions: list[dict[str, Any]] = []
+        if mapped:  # B0 — 정확 일치 이름(`resolve_instance_name` 규칙)만 · 다른 근거 호출 없음
+            missing: list[str] = []
+            for m in mapped:
+                for name in m.instances:
+                    key, found = name_key(name), False
+                    for rank, (src, inv) in enumerate(usable):
+                        if m.source_id is not None and src.source_id != m.source_id:
+                            continue
+                        for inst in inv.instances:
+                            if name_key(inst["instance_name"]) != key:
+                                continue
+                            found = True
+                            if domain is None or inst["domain_id"] == domain:
+                                add(rank, src, inv, inst, "business_map")
+                    if not found and name not in missing:
+                        missing.append(name)
+            if missing:
+                limits.append(
+                    "[한계] 업무 수동 매핑(business_map)의 인스턴스 이름을 조회한 APM 인벤토리에서"
+                    f" 찾지 못했다: {', '.join(missing)}"
+                )
+        else:
+            for rank, (src, inv) in enumerate(usable):  # B1 — 도메인 이름 일치 → 전 인스턴스
+                named = {
+                    d["domain_id"]
+                    for d in inv.domains
+                    if _same_name(str(d.get("domain_name") or ""), text)
+                    and (domain is None or d["domain_id"] == domain)
+                }
+                for inst in inv.instances:
+                    if inst["domain_id"] in named:
+                        add(rank, src, inv, inst, "domain")
+            traced, defined = await self._business_trace(usable, text, domain, limits)
+            for rank, src, inv, inst, names in traced:
+                add(rank, src, inv, inst, "business", names)
+            if defined:
+                limits.append(
+                    "[한계] 업무 정의 근거는 최근 처리한 인스턴스만 찾는다(현재 액티브 서비스 +"
+                    f" 최근 {BUSINESS_TRACE_MINUTES}분 트랜잭션)"
+                )
+            searched = search_instances(usable, text, domain)  # B3 — W1 이름·설명 검색
+            rank_of = {src.source_id: i for i, (src, _) in enumerate(usable)}
+            tier = searched.tier or ""
+            for src, inv, inst in searched.matches:
+                add(rank_of[src.source_id], src, inv, inst, "instance_text", tier=tier)
+            suggestions = searched.suggestions
+        rows = []
+        descriptions: dict[str, dict[Any, str]] = {}
+        ordered = sorted(
+            hits.values(),
+            key=lambda h: (h.rank, _domain_order(h.inst["domain_id"]), h.inst["instance_name"]),
+        )
+        for hit in ordered:
+            src, inv, inst = hit.src, hit.inv, hit.inst
+            if src.source_id not in descriptions:
+                descriptions[src.source_id] = {
+                    d["domain_id"]: mask_text(d.get("domain_description", ""), limit=None)
+                    for d in inv.domains
+                }
+            host, conf, reason, _ = src.resolver.reverse(
+                inv, inst["domain_id"], inst["instance_id"]
+            )
+            kinds = [k for k in BUSINESS_KINDS if k in hit.kinds]
+            rows.append(
+                self._instance_row(
+                    inst,
+                    descriptions[src.source_id].get(inst["domain_id"], ""),
+                    hostname=host,
+                    match_confidence=conf,
+                    match_reason=reason,
+                    match_kind=kinds[0],
+                    match_kinds=kinds,
+                    match_tier=hit.tier if "instance_text" in hit.kinds else "",
+                    search_confidence="high" if kinds[0] == "business_map" else "medium",
+                    business_names=list(hit.business_names),
+                )
+            )
+        hit_sources = {h.src.source_id for h in ordered}
+        for row in statuses:
+            if row["status"] == STATUS_OK and row["source_id"] not in hit_sources:
+                row["status"] = STATUS_NO_MATCH
+        counts = {k: sum(1 for h in ordered if k in h.kinds) for k in BUSINESS_KINDS}
+        extra: dict[str, Any] = {"business": {"counts": counts}}
+        if not rows:
+            extra["suggestions"] = suggestions
+            limits.unresolve(
+                f"업무명 '{mask_text(text, limit=None)}'에 해당하는 APM 인스턴스를 찾지 못했습니다"
+            )
+        return self.ok(
+            tool,
+            rows,
+            limits=limits,
+            sources=statuses,
+            partial=partial or limits.partial,
+            file_only=FILE_ONLY_COLUMNS,
+            **extra,
+        )
+
+    async def _business_trace(
+        self,
+        usable: list[tuple[JenniferSource, Inventory]],
+        text: str,
+        domain: int | None,
+        limits: _Limits,
+    ) -> tuple[list[tuple[int, JenniferSource, Inventory, dict[str, Any], list[str]]], bool]:
+        """B2 — 도메인마다 업무 정의를 읽어 이름·설명(마스킹본)에 업무명이 든 것(대소문자 무시)을
+        찾고, 그 업무 id를 최근 처리한 인스턴스로 역추적한다(정의에 인스턴스 목록이 없다 —
+        D-290). (후보 (소스 순위, 소스, 인벤토리, 인스턴스, 맞은 업무 이름), 정의가 하나라도
+        맞았는가). 조회 실패는 단위마다 `[한계]`·부분 결과다."""
+        q = text.casefold()
+        now = self.clock()
+        targets = [
+            (rank, src, inv, d["domain_id"])
+            for rank, (src, inv) in enumerate(usable)
+            for d in inv.domains
+            if isinstance(d.get("domain_id"), int)
+            and d["domain_id"] not in inv.unavailable
+            and (domain is None or d["domain_id"] == domain)
+        ]
+        expect_calls(
+            sum(
+                1
+                for _, src, _, did in targets
+                if not _fresh(self._business_defs.get((src.source_id, did)), now)
+            )
+        )
+        matched: list[tuple[int, JenniferSource, Inventory, int, dict[str, str]]] = []
+        for rank, src, inv, did in targets:
+            names: dict[str, str] = {}
+            for b in await self._business_defs_of(src, did, now, limits) or []:
+                if b["business_id"] is not None and (
+                    q in b["business_name"].casefold()
+                    or q in mask_text(b["business_description"], limit=None).casefold()
+                ):
+                    names.setdefault(_business_key(b["business_id"]), b["business_name"])
+            if names:
+                matched.append((rank, src, inv, did, names))
+        per_domain = 1 + math.ceil(BUSINESS_TRACE_MINUTES * 60_000 / XVIEW_WINDOW_MS)
+        expect_calls(
+            per_domain
+            * sum(
+                1
+                for _, src, _, did, _ in matched
+                if not _fresh(self._business_seen.get((src.source_id, did)), now)
+            )
+        )
+        out: list[tuple[int, JenniferSource, Inventory, dict[str, Any], list[str]]] = []
+        for rank, src, inv, did, names in matched:
+            seen = await self._business_seen_of(src, did, now, limits)
+            by_inst: dict[int, list[str]] = {}
+            for bid, bname in names.items():
+                for iid in seen.get(bid, ()):
+                    by_inst.setdefault(iid, []).append(bname)
+            for inst in inv.instances:
+                if inst["domain_id"] == did and inst["instance_id"] in by_inst:
+                    out.append((rank, src, inv, inst, by_inst[inst["instance_id"]]))
+        return out, bool(matched)
+
+    async def _business_defs_of(
+        self, src: JenniferSource, domain_id: int, now: float, limits: _Limits
+    ) -> list[dict[str, Any]] | None:
+        """도메인의 업무 정의 목록(TTL `BUSINESS_CACHE_SECONDS` 캐시). 조회 실패는 `[한계]`(부분) —
+        None."""
+        key = (src.source_id, domain_id)
+        cached = self._business_defs.get(key)
+        if cached is not None and _fresh(cached, now):
+            return cached[1]
+        try:
+            defs = await src.api.businesses(domain_id)
+        except ApmError as e:
+            if e.code == CONTRACT_VIOLATION:
+                raise
+            limits.fail(
+                f"[한계] 업무 목록 조회 실패({self.sources.where(src.source_id, domain_id)}):"
+                f" {e.code}"
+            )
+            return None
+        self._business_defs[key] = (now, defs)
+        return defs
+
+    async def _business_seen_of(
+        self, src: JenniferSource, domain_id: int, now: float, limits: _Limits
+    ) -> dict[str, set[int]]:
+        """도메인에서 최근 처리한 업무 id → 인스턴스 id — 현재 액티브 서비스 + 최근
+        `BUSINESS_TRACE_MINUTES`분 트랜잭션(제니퍼 1분 창으로 나눠 묻는다 · `_xview`와 같은 경계).
+        전부 성공했을 때만 TTL 캐시한다(일부 실패는 `[한계]`(부분) · 다음 호출이 다시 묻는다)."""
+        key = (src.source_id, domain_id)
+        cached = self._business_seen.get(key)
+        if cached is not None and _fresh(cached, now):
+            return cached[1]
+        where = self.sources.where(src.source_id, domain_id)
+        seen: dict[str, set[int]] = {}
+        complete = True
+
+        def note(records: list[dict[str, Any]]) -> None:
+            for rec in records:
+                if rec.get("instance_id") is None:
+                    continue
+                for bid in rec.get("business_ids") or []:
+                    seen.setdefault(_business_key(bid), set()).add(rec["instance_id"])
+
+        try:
+            note(await src.api.active_services(domain_id, None))
+        except ApmError as e:
+            if e.code == CONTRACT_VIOLATION:
+                raise
+            complete = False
+            limits.fail(f"[한계] 업무 역추적 — 액티브 서비스 조회 실패({where}): {e.code}")
+        end_ms = int(now * 1000)
+        t = end_ms - BUSINESS_TRACE_MINUTES * 60_000
+        while t < end_ms:
+            chunk_end = min(t + XVIEW_WINDOW_MS, end_ms)
+            query_end = chunk_end if chunk_end == end_ms else chunk_end - 1
+            try:
+                note(await src.api.transactions(domain_id, None, t, query_end))
+            except ApmError as e:
+                if e.code == CONTRACT_VIOLATION:
+                    raise
+                complete = False
+                limits.fail(f"[한계] 업무 역추적 — 트랜잭션 조회 실패({where}): {e.code}")
+                break
+            t = chunk_end
+        if complete:
+            self._business_seen[key] = (now, seen)
+        return seen
+
     async def apm_app_health(
         self,
-        hostname: str,
+        hostname: str | None = None,
         instance_id: int | None = None,
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
         source_ids: list[str] | None = None,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
         tool = "apm_app_health"
-        res = await self._resolve(hostname, instance_id, source_ids)
+        res = await self._resolve(hostname, instance_id, source_ids, instance_name)
         window = self.window(reference_time, lookback_minutes, default_minutes=None)
         limits = _Limits()
         current: dict[InstKey, dict[str, Any]] = {}
@@ -980,18 +1623,19 @@ class ApmTools:
 
     async def apm_runtime_health(
         self,
-        hostname: str,
+        hostname: str | None = None,
         instance_id: int | None = None,
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
         source_ids: list[str] | None = None,
         metrics: list[str] | None = None,
         interval_minute: int | None = None,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
         tool = "apm_runtime_health"
         interval = _positive_int(interval_minute, "interval_minute", TREND_INTERVAL_MINUTE)
         requested = self._metric_names(metrics)
-        res = await self._resolve(hostname, instance_id, source_ids)
+        res = await self._resolve(hostname, instance_id, source_ids, instance_name)
         # 지표·간격을 주면 추세가 목적이다 — 구간이 없으면 기본 구간으로 본다(침묵 무시 금지).
         trend_wanted = bool(requested) or interval_minute is not None
         window = self.window(
@@ -1106,12 +1750,13 @@ class ApmTools:
 
     async def apm_resource_pool(
         self,
-        hostname: str,
+        hostname: str | None = None,
         instance_id: int | None = None,
         source_ids: list[str] | None = None,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
         tool = "apm_resource_pool"
-        res = await self._resolve(hostname, instance_id, source_ids)
+        res = await self._resolve(hostname, instance_id, source_ids, instance_name)
         limits = _Limits(
             [
                 "[한계] 현재값 전용 — 과거 사건의 증거로 쓰지 않는다",
@@ -1174,17 +1819,18 @@ class ApmTools:
 
     async def apm_slow_transactions(
         self,
-        hostname: str,
+        hostname: str | None = None,
         instance_id: int | None = None,
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
         n: int | None = None,
         source_ids: list[str] | None = None,
         full: bool = False,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
         tool = "apm_slow_transactions"
         top_n = _check_n(n)
-        res = await self._resolve(hostname, instance_id, source_ids)
+        res = await self._resolve(hostname, instance_id, source_ids, instance_name)
         window = self.window(
             reference_time, lookback_minutes, default_minutes=SLOW_TX_DEFAULT_MINUTES
         )
@@ -1234,15 +1880,16 @@ class ApmTools:
 
     async def apm_active_services(
         self,
-        hostname: str,
+        hostname: str | None = None,
         instance_id: int | None = None,
         n: int | None = None,
         source_ids: list[str] | None = None,
         full: bool = False,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
         tool = "apm_active_services"
         top_n = _check_n(n)
-        res = await self._resolve(hostname, instance_id, source_ids)
+        res = await self._resolve(hostname, instance_id, source_ids, instance_name)
         limits = _Limits(
             [
                 "[한계] 현재값 전용 — 과거 사건의 증거로 쓰지 않는다",
@@ -1385,7 +2032,7 @@ class ApmTools:
 
     async def apm_events(
         self,
-        hostname: str,
+        hostname: str | None = None,
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
         level: str | None = None,
@@ -1395,11 +2042,12 @@ class ApmTools:
         record: str | None = None,
         n: int | None = None,
         full: bool = False,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
         tool = "apm_events"
         lvl, mode, etype, rec = self._event_options(level, level_mode, error_type, record)
         top_n = _check_n(n, default=None)
-        res = await self._resolve(hostname, None, source_ids)
+        res = await self._resolve(hostname, None, source_ids, instance_name)
         limits = _Limits()
         window = self.window(
             reference_time, lookback_minutes, default_minutes=EVENTS_DEFAULT_MINUTES
@@ -1598,7 +2246,7 @@ class ApmTools:
 
     async def apm_transaction_profile(
         self,
-        hostname: str,
+        hostname: str | None = None,
         domain_id: int | None = None,
         txid: str | int | None = None,
         time_ms: int | None = None,
@@ -1607,6 +2255,7 @@ class ApmTools:
         source_id: str | None = None,
         profile_no: int | None = None,
         include_param_key: bool | None = None,
+        instance_name: str | None = None,
         *,
         owner: str | None = None,
         principal: str = js.ANONYMOUS_PRINCIPAL,
@@ -1642,11 +2291,11 @@ class ApmTools:
             source_id = self.sources.ids[0]
         sid = str(source_id).strip()
         # 정합은 그 소스에서만 한다 — profile_ref가 가리키지 않는 소스는 부르지 않는다.
-        res = await self._resolve(hostname, None, [sid])
+        res = await self._resolve(hostname, None, [sid], instance_name)
         if (sid, int(domain_id)) not in res.source_domains:
             raise ApmError(
                 PROFILE_REF_MISMATCH,
-                f"domain_id {domain_id}는 hostname {hostname!r}의 정합 도메인"
+                f"domain_id {domain_id}는 {_target_text(hostname, instance_name)}의 정합 도메인"
                 f" {sorted(d for _, d in res.source_domains)}이 아니다"
                 + (f"(소스 {sid})" if len(self.sources) > 1 else ""),
             )
@@ -1789,7 +2438,7 @@ class ApmTools:
     async def apm_status_stats(
         self,
         kind: str,
-        hostname: str,
+        hostname: str | None = None,
         instance_id: int | None = None,
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
@@ -1798,6 +2447,7 @@ class ApmTools:
         full: bool = False,
         application_name: str | None = None,
         source_ids: list[str] | None = None,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
         """시 단위 통계(`kind` = application·sql·external_call · plans/134 N-5)."""
         tool = "apm_status_stats"
@@ -1811,7 +2461,7 @@ class ApmTools:
         app_name = str(application_name).strip() if application_name is not None else ""
         if app_name and kind != "application":
             raise ApmError(INVALID_ARGUMENT, "application_name은 kind application에서만 쓴다")
-        res = await self._resolve(hostname, instance_id, source_ids)
+        res = await self._resolve(hostname, instance_id, source_ids, instance_name)
         window = self.window(
             reference_time, lookback_minutes, default_minutes=STATUS_DEFAULT_MINUTES
         )
@@ -1947,6 +2597,7 @@ class ApmTools:
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
         source_ids: list[str] | None = None,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
         """지표 카탈로그·시계열(plans/134 N-6)."""
         tool = "apm_metrics"
@@ -1974,7 +2625,7 @@ class ApmTools:
         if not requested:
             raise ApmError(INVALID_ARGUMENT, "series에는 metrics(지표 이름 목록)가 필요하다")
         interval = _positive_int(interval_minute, "interval_minute", TREND_INTERVAL_MINUTE)
-        res = await self._resolve(hostname, instance_id, source_ids)
+        res = await self._resolve(hostname, instance_id, source_ids, instance_name)
         window = self.window(
             reference_time, lookback_minutes, default_minutes=SERIES_DEFAULT_MINUTES
         )
@@ -2104,14 +2755,15 @@ class ApmTools:
 
     async def apm_source_changes(
         self,
-        hostname: str,
+        hostname: str | None = None,
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
         source_ids: list[str] | None = None,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
         """소스코드(리소스) 변경 감지 이력(plans/134 N-7) — 25시간 이하 조각 · 겹침 제거."""
         tool = "apm_source_changes"
-        res = await self._resolve(hostname, None, source_ids)
+        res = await self._resolve(hostname, None, source_ids, instance_name)
         window = self.window(
             reference_time, lookback_minutes, default_minutes=CHANGES_DEFAULT_MINUTES
         )
@@ -2242,10 +2894,12 @@ class ApmTools:
         around_ms: int | None = None,
         around_minutes: int | None = None,
         source_ids: list[str] | None = None,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
-        """GUID가 같은 거래 묶음(plans/134 W5 N-13 · A-3). 범위 = `hostname`의 정합 (소스, 도메인) ·
-        없으면 고른 소스의 전 도메인 — 도메인마다 1호출. (소스, 도메인, txid)로 중복을 지우고 원천
-        시작 시각 순으로 `trace_order`를 매긴다. 호출 관계는 만들지 않는다."""
+        """GUID가 같은 거래 묶음(plans/134 W5 N-13 · A-3). 범위 = `hostname`(·`instance_name`)의
+        정합 (소스, 도메인) · 없으면 고른 소스의 전 도메인 — 도메인마다 1호출. (소스, 도메인,
+        txid)로 중복을 지우고 원천 시작 시각 순으로 `trace_order`를 매긴다. 호출 관계는 만들지
+        않는다."""
         tool = "apm_transaction_trace"
         gid = self._guid(guid)
         limits = _Limits(
@@ -2257,8 +2911,8 @@ class ApmTools:
         res: Resolution | None = None
         statuses: list[dict[str, Any]] | None = None
         source_partial = False
-        if hostname is not None and str(hostname).strip():
-            res = await self._resolve(hostname, None, source_ids)
+        if _given(hostname) or _given(instance_name):
+            res = await self._resolve(hostname, None, source_ids, instance_name)
             groups = list(_group(res))
         else:
             usable, statuses, found = await self.sources.available(
@@ -2433,13 +3087,14 @@ class ApmTools:
 
     async def apm_change_impact(
         self,
-        hostname: str,
+        hostname: str | None = None,
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
         width_minutes: int | None = None,
         source_ids: list[str] | None = None,
         n: int | None = None,
         full: bool = False,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
         """소스 변경 감지 전후 비교(plans/134 W6 A-2 · F-09). 변경 목록은 `apm_source_changes`와
         같은 로직이고, 변경(인스턴스 단위)마다 전 `[t−w, t)` · 후 `[t, min(t+w, 지금))`의 그
@@ -2447,7 +3102,7 @@ class ApmTools:
         tool = "apm_change_impact"
         width = _positive_int(width_minutes, "width_minutes", CHANGE_WIDTH_MINUTES)
         top_n = _check_n(n, default=None)
-        res = await self._resolve(hostname, None, source_ids)
+        res = await self._resolve(hostname, None, source_ids, instance_name)
         window = self.window(
             reference_time, lookback_minutes, default_minutes=CHANGES_DEFAULT_MINUTES
         )
@@ -2632,7 +3287,7 @@ class ApmTools:
 
     async def apm_period_compare(
         self,
-        hostname: str,
+        hostname: str | None = None,
         current_start: str | None = None,
         current_end: str | None = None,
         baseline_start: str | None = None,
@@ -2640,6 +3295,7 @@ class ApmTools:
         source_ids: list[str] | None = None,
         n: int | None = None,
         full: bool = False,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
         """두 명시 구간 비교(plans/134 W6 A-1 — 조사 소비 · 채팅 배선 없음). 시 단위 애플리케이션
         통계를 인스턴스·구간마다 받아(시 경계로 넓힌다) 호출·실패·실패율·가중 평균·최대와 증감을
@@ -2658,7 +3314,7 @@ class ApmTools:
                     INVALID_ARGUMENT, f"{period}_start는 {period}_end보다 앞이어야 한다"
                 )
             requested[period] = (start, end)
-        res = await self._resolve(hostname, None, source_ids)
+        res = await self._resolve(hostname, None, source_ids, instance_name)
         limits = _Limits()
         hours: dict[str, tuple[int, int]] = {}
         for period, (start, end) in requested.items():

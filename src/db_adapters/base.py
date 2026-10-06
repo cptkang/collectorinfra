@@ -7,7 +7,8 @@
 
 from __future__ import annotations
 
-from typing import Callable, Protocol, runtime_checkable
+from collections.abc import Callable
+from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -29,12 +30,19 @@ class DBAdapter(Protocol):
         ...
 
     def validator_checks(
-        self, user_query: str | None = None
+        self,
+        user_query: str | None = None,
+        *,
+        time_resolution: dict[str, Any] | None = None,
     ) -> list[Callable[[str], list[str]]]:
         """SQL 문자열을 받아 오류 메시지 목록을 반환하는 전용 검증 함수들(없으면 []).
 
         user_query를 주면 질의 맥락 의존 검사가 추가될 수 있다(D-201). 미지정이면
         종전 목록 그대로다(하위 호환).
+
+        time_resolution은 state `time_resolution` 값(`QueryTime.to_state()` · plans/122 T-5b ·
+        D-306)이다. 주면 생성 SQL의 시간 조건을 해석 결과와 대조하는 검사가 추가될 수 있다.
+        None(플래그 off · 옛 체크포인트)이면 종전 목록 그대로다.
         """
         ...
 

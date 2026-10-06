@@ -45,6 +45,7 @@ user:
   - {id: U-17, title: 예시 질문 버튼, anchors: ["CPU 사용률 현황", "고사용 메모리 서버"], files: *IDX, captures: [main-welcome], case_na: "예시 문장의 「ㅇㅇ존」을 그대로 보내면 존 역질문 제어 화면이 뜬다 — U-25 화면 예시"}
   - {id: U-18, title: 사용법 묻기(❓ 사용법), anchors: ["❓ 사용법"], files: *IDX, captures: [main-welcome], case_na: "사용법 답변 샘플이 실제 데이터 원천과 맞지 않아 싣지 않는다(plans/116 §10.3 결함 보고)"}
   - {id: U-19, title: 질문 잘 쓰는 법, anchors: ["#prompt"], files: *IDX, captures: [answer-table], cases: [Q-TOP-MEMORY, Q-SERVER-DETAIL, Q-CORE-FILTER, Q-CPU-MONTH, Q-MEM-OVER, Q-ALARM-HISTORY, Q-COMPOSITE, Q-GENERAL, Q-BAD-DELETE, Q-BAD-UPTIME, Q-BAD-TYPO]}
+  - {id: U-53, title: 기간 표현과 「조회 기간」 안내, anchors: ["[조회 기간]"], files: [src/domain/disclosure.py], captures: [], case_na: "조회되는 기간이 질문을 보낸 시각에 따라 달라 녹화 사례 하나로 고정할 수 없다 — 본문에 기간 표현별 해석 표와 안내 문구 예를 싣는다", no_ui: true}
   # 4. 결과 읽기·내려받기
   - {id: U-20, title: 결과 읽기, anchors: ["ROWS", "TIME"], files: *IDX, captures: [answer-table], cases: [Q-SERVER-LIST]}
   - {id: U-21, title: 실행된 SQL 보기, anchors: ["실행된 SQL 보기"], files: *IDX, captures: [answer-sql, progress-panel], case_na: "모든 조회 사례에 붙는 버튼 — 조작 화면만 싣는다(사례는 U-19~U-22)"}
@@ -110,7 +111,7 @@ admin:
   - {id: A-18, title: 레거시 분석본으로 초안 만들기, anchors: ["레거시 분석본으로 초안 만들기"], files: *DBS, captures: [dbs-list]}
   - {id: A-19, title: 신규 연동 등록(O-1~O-9), anchors: ["신규 연동"], files: *DBS, captures: [dbs-register]}
   - {id: A-65, title: DDL로 스키마 등록, anchors: ["DDL로 스키마 등록", "DDL로 등록", "스키마 등록"], files: *DBS, captures: [dbs-ddl]}
-  - {id: A-67, title: 스키마 자산 자동 생성, anchors: ["스키마 자산 자동 생성", "프로파일링 실행", "LLM 보조 실행", "선택 자산 승인"], files: *DBS, captures: [dbs-assets]}
+  - {id: A-67, title: 스키마 자산 자동 생성, anchors: ["스키마 자산 자동 생성", "프로파일링 실행", "LLM 보조 실행", "선택 자산 승인", "테이블 정의 가져오기", "테이블 정의 LLM 초안", "테이블 정의 편집 저장"], files: *DBS, captures: [dbs-assets, dbs-table-definitions]}
   - {id: A-20, title: 변경 점검, anchors: ["변경 점검"], files: *DBS, captures: [dbs-detail]}
   - {id: A-21, title: 구조 분석, anchors: ["구조 분석"], files: *DBS, captures: [dbs-detail]}
   - {id: A-22, title: 구조 초안 승인·반려, anchors: ["승인", "반려", "차이 보고서"], files: *DBS, captures: []}
@@ -163,6 +164,7 @@ admin:
   - {id: A-66, title: 데이터 소스 이름·유사어 관리, anchors: ["aliases"], files: [config/db_registry.yaml], captures: [], no_ui: true}
   - {id: A-68, title: 소스 선택 기억 관리, anchors: ["data-tab=\"sourcememory\"", "#refreshSourceMemoryBtn"], files: *DASH, captures: [admin-source-memory]}
   - {id: A-54, title: 실행 경로(사다리) 확인, anchors: ["오케스트레이션 사다리 확정"], files: [src/observability/ladder.py], captures: [], no_ui: true}
+  - {id: A-70, title: 질의 기간 해석 설정, anchors: ["time_resolution_enabled"], files: [src/config.py], captures: [], no_ui: true}
   - {id: A-55, title: LLM 설정, anchors: ["LLM_PROVIDER"], files: [.env.example], captures: [], no_ui: true}
   - {id: A-56, title: Redis 백업·이관, anchors: ["redis"], files: [docs/14_redis_export_import_guide.md], captures: [], no_ui: true}
   - {id: A-57, title: 장애 조사(sre_agent) 연동, anchors: ["sre_agent"], files: [docs/26_sre_agent_guide.md], captures: [], no_ui: true}

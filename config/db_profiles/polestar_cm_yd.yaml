@@ -326,6 +326,7 @@ query_guide: |
     * 예: s.stat_date BETWEEN TO_CHAR(CURRENT_DATE, 'YYYYMM') || '01' AND TO_CHAR(CURRENT_DATE - INTERVAL '1 day', 'YYYYMMDD')
     * 서버별 GROUP BY로 AVG(s.avg_val)=월중 평균, MAX(s.max_val)=월중 최대를 집계합니다.
     (매월 1일에는 어제가 전월이라 범위가 비어 0행 — "데이터 없음" 안내가 정상 동작입니다)
+  (아래 두 규칙은 시스템 기간 조건 블록이 없을 때만 적용합니다 — 블록이 있으면 그 값을 그대로 씁니다)
   주의: 하드코딩된 날짜를 절대 사용하지 않고, 항상 CURRENT_DATE 기반의 동적 계산을 사용합니다.
   통계 기간 미지정/"지난달"/"최근" 시 기본 관행은 직전월(s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM'))입니다.
   (SELECT MAX(stat_date) ...) 서브쿼리는 진행 중인 미완성 월을 집계하므로 사용 금지.

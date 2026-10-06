@@ -294,6 +294,31 @@ def synthetic_fixtures() -> list[dict]:
         _fx("/api/realtime/instance", {"result": realtime}),
         _fx("/api/transaction/time", {"result": transactions}),
         _fx("/api/activeService/list", {"result": active}),
+        # plans/130 W2 — 업무 정의(`Business` 7필드) · 7·9는 위 거래·액티브 서비스의 업무 id ·
+        # 11은 최근 처리 거래가 없는 업무
+        _fx(
+            "/api/business",
+            {
+                "result": [
+                    {
+                        "businessId": bid,
+                        "name": name,
+                        "description": desc,
+                        "businessIndex": str(k),
+                        "businessOid": 70_000 + bid,
+                        "badResponseTime": 3000,
+                        "ruleList": [f"/{path}/*"],
+                    }
+                    for k, (bid, name, desc, path) in enumerate(
+                        [
+                            (7, "주문", "주문 처리 업무 담당 park@example.com", "order"),
+                            (9, "결제", "카드 결제 승인", "pay"),
+                            (11, "대출", "여신 심사", "loan"),
+                        ]
+                    )
+                ]
+            },
+        ),
         _fx("/api/dbsearch/event", {"result": events}),
         _fx("/api/dbsearch/error", {"result": errors}),
         _fx("/api/dbmetrics/instance", series([700, 910, 920, 950, 960, 990]), label="heap_used"),

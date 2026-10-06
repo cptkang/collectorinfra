@@ -103,7 +103,7 @@ def test_target_facets_are_dropped_when_empty() -> None:
 
 def test_edge_table_paths() -> None:
     edges = {e.id: e for e in get_registry().entity_edges()}
-    assert set(edges) == {"E1", "E1r", "E2", "E2r", "E3", "E4", "E5"}
+    assert set(edges) == {"E1", "E1r", "E2", "E2r", "E3", "E4", "E5", "E6", "E7"}
     assert edges["E2"].owner == "polestar" and edges["E1"].owner == "apm"
     assert [e.id for e in facet_path({"server_name"}, "hostname")] == ["E2"]
     assert [e.id for e in facet_path({"apm_instance"}, "asset_key")] == ["E1", "E5"]

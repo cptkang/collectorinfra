@@ -26,9 +26,10 @@ EXPECTED_ARGS = {
         "error_type",
         "process_id",
         "search",
+        "instance_name",  # plans/130 N-3
     }
     | COMMON,
-    "apm_environment": {"hostname", "source_ids", "scope", "key"} | COMMON,
+    "apm_environment": {"hostname", "instance_name", "source_ids", "scope", "key"} | COMMON,
     "apm_users": {"user_id", "source_ids"} | COMMON,
     "apm_active_detail": {
         "domain_id",
@@ -37,6 +38,7 @@ EXPECTED_ARGS = {
         "thread_hash",
         "source_id",
         "hostname",
+        "instance_name",
     }
     | COMMON,
 }

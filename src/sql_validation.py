@@ -37,6 +37,110 @@ from src.utils.query_gen_common import (
 logger = logging.getLogger(__name__)
 
 
+# ──────────────────────────────────────────────
+# LLM 백엔드 오류 응답 감지 (D-159 FIX-C → plans/138 W1 · D-305 ⑦ 단일·멀티·선별 공용)
+# ──────────────────────────────────────────────
+
+# LLM 백엔드(FabriX 오케스트레이터) 예외가 HTTP 에러가 아닌 **응답 content 텍스트**로
+# 반환되는 계약 결함의 감지 마커(D-159, 소문자 비교). 폐쇄망 실측(2026-08-21 공동존):
+# "An exception occurred in GptOssAdapter.llm_call: Input tokens must be <= 95232"가
+# 정상 응답으로 유입돼 "SELECT 문이 아닙니다"로 오표면화됐다. 정당한 SQL에 이 문구가
+# 들어갈 확률은 사실상 0이라 좁게 잡는다 — 문구 변경 시 감지 실패해도 현행 동작으로
+# 강등될 뿐이다(하방 안전).
+LLM_TOKEN_LIMIT_MARKERS: tuple[str, ...] = ("input tokens must be",)
+LLM_BACKEND_ERROR_MARKERS: tuple[str, ...] = (
+    "error occurred from orchestrator",
+    "gptossadapter.llm_call",
+)
+# 재시도 중단 판정용 구분 프리픽스 — 토큰 한도 초과는 같은 프롬프트 재생성이
+# 결정적으로 다시 초과하므로 재시도가 무의미하다(PII 차단 D-153 후속2와 동형).
+TOKEN_LIMIT_ERROR_PREFIX = "LLM 백엔드 입력 토큰 한도 초과"
+#: `LLMBackendError.kind` 값 — 입력 토큰 한도 초과 / 그 밖의 백엔드 예외.
+BACKEND_ERROR_TOKEN_LIMIT = "token_limit"
+BACKEND_ERROR_OTHER = "backend_error"
+
+# 한도 문구의 수치 — "Input tokens must be <= 95232. Given: 96858"(실측 형태).
+_TOKEN_LIMIT_VALUE_RE = re.compile(r"input tokens must be\s*<?=?\s*(\d[\d,]*)", re.IGNORECASE)
+_TOKEN_GIVEN_VALUE_RE = re.compile(r"given\s*:\s*(\d[\d,]*)", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class LLMBackendError:
+    """LLM 백엔드가 SQL 대신 돌려준 오류 응답의 판정 결과.
+
+    Attributes:
+        kind: ``"token_limit"``(입력 토큰 한도 초과) 또는 ``"backend_error"``(그 밖의 예외)
+        message: 검증 사유 문자열(멀티 간이 검증 시절과 바이트 동일 — 응답 원문 발췌 포함)
+        given: 백엔드가 보고한 입력 토큰 수(``Given: N`` — 없으면 None)
+        limit: 백엔드가 보고한 한도(``<= N`` — 없으면 None)
+    """
+
+    kind: str
+    message: str
+    given: int | None = None
+    limit: int | None = None
+
+    @property
+    def summary(self) -> str:
+        """응답 원문 없이 원인만 담은 한 줄 — 사용자 화면·종결 사유(detail)에 싣는다."""
+        if self.kind != BACKEND_ERROR_TOKEN_LIMIT:
+            return "LLM 백엔드 예외 응답(비-SQL)"
+        if self.given is not None and self.limit is not None:
+            return f"{TOKEN_LIMIT_ERROR_PREFIX}(보고 {self.given} > 한도 {self.limit})"
+        return TOKEN_LIMIT_ERROR_PREFIX
+
+    def as_marker(self) -> dict[str, str | int | None]:
+        """검증 결과 표지(`validation_result.backend_error`) — 값(응답 원문) 없이 수치만."""
+        return {"kind": self.kind, "given": self.given, "limit": self.limit}
+
+
+def _parse_token_count(pattern: re.Pattern[str], text: str) -> int | None:
+    """오류 문구에서 토큰 수 하나를 정수로 읽는다(없으면 None)."""
+    match = pattern.search(text)
+    if not match:
+        return None
+    return int(match.group(1).replace(",", ""))
+
+
+def detect_llm_backend_error(text: str) -> LLMBackendError | None:
+    """LLM 산출물이 SQL이 아니라 백엔드 오류 응답인지 판정한다(D-159 · D-305 ⑦).
+
+    단일 검증(`validate_sql`)·멀티 간이 검증·테이블 선별 호출이 같은 판정을 쓴다(D-066).
+    토큰 한도 마커가 백엔드 예외 마커보다 앞선다 — 같은 응답에 둘 다 있으면 원인(한도)을 낸다.
+
+    Args:
+        text: LLM 응답(또는 거기서 추출한 SQL 후보) 문자열
+
+    Returns:
+        판정 결과(해당 없으면 None)
+    """
+    if not text:
+        return None
+    lowered = text.lower()
+    if any(m in lowered for m in LLM_TOKEN_LIMIT_MARKERS):
+        kind = BACKEND_ERROR_TOKEN_LIMIT
+    elif any(m in lowered for m in LLM_BACKEND_ERROR_MARKERS):
+        kind = BACKEND_ERROR_OTHER
+    else:
+        return None
+    from src.security.pii_filter import scrub_pii
+
+    excerpt = scrub_pii(" ".join(text.split())[:200])
+    if kind == BACKEND_ERROR_TOKEN_LIMIT:
+        message = (
+            f"{TOKEN_LIMIT_ERROR_PREFIX} 응답(비-SQL) — 프롬프트가 데이터 평면 "
+            f"한도를 초과함(스키마 스코프·재료 축소 필요) | 응답 원문: {excerpt!r}"
+        )
+    else:
+        message = f"LLM 백엔드 예외 응답(비-SQL) | 응답 원문: {excerpt!r}"
+    return LLMBackendError(
+        kind=kind,
+        message=message,
+        given=_parse_token_count(_TOKEN_GIVEN_VALUE_RE, text),
+        limit=_parse_token_count(_TOKEN_LIMIT_VALUE_RE, text),
+    )
+
+
 @dataclass
 class SQLValidationOutcome:
     """상태 비결합 SQL 검증 결과.
@@ -47,6 +151,8 @@ class SQLValidationOutcome:
         auto_fixed_sql: 행 제한 절 자동 보정본(보정하지 않았으면 None)
         forbidden_keywords: 감지된 금지 키워드(감사 로그용)
         injection_count: 감지된 인젝션 패턴 수(감사 로그용)
+        backend_error: 산출물이 LLM 백엔드 오류 응답이었으면 그 판정(plans/138 W1 — 사유는
+            ``errors``에 하나만 실린다)
     """
 
     errors: list[str] = field(default_factory=list)
@@ -54,6 +160,7 @@ class SQLValidationOutcome:
     auto_fixed_sql: Optional[str] = None
     forbidden_keywords: list[str] = field(default_factory=list)
     injection_count: int = 0
+    backend_error: LLMBackendError | None = None
 
     @property
     def passed(self) -> bool:
@@ -90,6 +197,13 @@ def validate_sql(
     Returns:
         SQLValidationOutcome — 오류·경고·자동 보정 SQL·감사 신호
     """
+    # 0. LLM 백엔드 오류 응답(D-305 ⑦ · plans/138 W1) — SQL이 아니므로 SELECT 검사·테이블 추출
+    # 전에 판정해 사유 하나만 낸다. 오류 문구의 "from orchestrator"를 FROM 절로 읽어 「존재하지
+    # 않는 테이블 참조」가 함께 나가던 오표면화를 막는다. 멀티 간이 검증과 같은 함수·같은 문구다.
+    backend_error = detect_llm_backend_error(sql)
+    if backend_error is not None:
+        return SQLValidationOutcome(errors=[backend_error.message], backend_error=backend_error)
+
     guard = SQLGuard()
     errors: list[str] = []
     warnings: list[str] = []

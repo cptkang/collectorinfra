@@ -1616,6 +1616,8 @@ async def _decompose_once(
                 # 보기 선택 조건(plans/134 M-3) — 형태 정제는 `_sanitize_task_views`,
                 # 값 검증은 처리기.
                 task["view_args"] = raw.get("view_args") or {}
+                # 대상 텍스트(plans/130 M-1) — 형태 정제는 `_sanitize_task_views`, 해석은 처리기.
+                task["targets"] = raw.get("targets") or []
         # 답변 영역·요청 소스 칸 보존(plans/132 N-5) — 정제는 `_sanitize_task_areas`.
         task["areas"] = raw.get("areas")
         task["requested_source"] = raw.get("requested_source")

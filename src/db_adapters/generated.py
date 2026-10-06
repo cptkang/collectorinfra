@@ -59,7 +59,9 @@ class BoundGeneratedTemplate:
     def system_template(self, routing_intent: str | None) -> str | None:
         return compose_template(self.section)
 
-    def validator_checks(self, user_query: str | None = None) -> list[Callable[[str], list[str]]]:
+    def validator_checks(
+        self, user_query: str | None = None, *, time_resolution: dict[str, Any] | None = None,
+    ) -> list[Callable[[str], list[str]]]:
         return []
 
 
@@ -119,5 +121,7 @@ class GeneratedTemplateAdapter:
     def system_template(self, routing_intent: str | None) -> str | None:
         return None  # DB를 모르는 상태에서는 쓰지 않는다 — `bind`로 묶은 어댑터를 쓴다
 
-    def validator_checks(self, user_query: str | None = None) -> list[Callable[[str], list[str]]]:
+    def validator_checks(
+        self, user_query: str | None = None, *, time_resolution: dict[str, Any] | None = None,
+    ) -> list[Callable[[str], list[str]]]:
         return []

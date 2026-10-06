@@ -77,6 +77,7 @@ def register_manage_tools(mcp: FastMCP, manage: ManageTools, run_data: RunData) 
         search: Annotated[
             str | None, Field(description="loaded_classes 클래스 이름 일부(비우면 전체)")
         ] = None,
+        instance_name: str | None = None,
         investigation_id: str | None = None,
         thread_id: str | None = None,
         owner: OwnerArg = None,
@@ -84,12 +85,22 @@ def register_manage_tools(mcp: FastMCP, manage: ManageTools, run_data: RunData) 
     ) -> str:
         """APM 설정·관리 조회(읽기 전용) — 이벤트 룰·색상 경계·PID → 인스턴스·데이터 서버·
         DB 경로·로드된 클래스·RDB Export 상태. 자격증명 값은 가려져 온다. 행은 kind마다
-        다르다."""
+        다르다.
+        hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
+        apm_instance_map(query=…)로 먼저 찾는다."""
         return await run_data(
             "apm_config",
-            f"{kind}:{hostname or '*'}",
+            f"{kind}:{hostname or instance_name or '*'}",
             lambda: manage.apm_config(
-                kind, hostname, source_ids, rule_type, target, error_type, process_id, search
+                kind,
+                hostname,
+                source_ids,
+                rule_type,
+                target,
+                error_type,
+                process_id,
+                search,
+                instance_name=instance_name,
             ),
             owner=owner,
             wait_seconds=wait_seconds,
@@ -102,6 +113,7 @@ def register_manage_tools(mcp: FastMCP, manage: ManageTools, run_data: RunData) 
         hostname: Annotated[
             str | None, Field(description="그 서버 WAS 인스턴스만(비우면 고른 소스 전 도메인)")
         ] = None,
+        instance_name: str | None = None,
         source_ids: list[str] | None = None,
         scope: Annotated[
             str | None,
@@ -116,11 +128,15 @@ def register_manage_tools(mcp: FastMCP, manage: ManageTools, run_data: RunData) 
         wait_seconds: WaitArg = None,
     ) -> str:
         """WAS 인스턴스의 OS 환경변수·JVM 시스템 속성(JVM 옵션 포함) 전부 — 행 = 인스턴스·
-        묶음·이름·값. 비밀번호·토큰 등 비밀 값은 [가림]으로 온다(키 이름은 남는다)."""
+        묶음·이름·값. 비밀번호·토큰 등 비밀 값은 [가림]으로 온다(키 이름은 남는다).
+        hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
+        apm_instance_map(query=…)로 먼저 찾는다."""
         return await run_data(
             "apm_environment",
-            hostname or "*",
-            lambda: manage.apm_environment(hostname, source_ids, scope, key),
+            hostname or instance_name or "*",
+            lambda: manage.apm_environment(
+                hostname, source_ids, scope, key, instance_name=instance_name
+            ),
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -161,6 +177,7 @@ def register_manage_tools(mcp: FastMCP, manage: ManageTools, run_data: RunData) 
             str | None,
             Field(description="주면 domain_id가 그 서버의 정합 도메인인지 확인한다"),
         ] = None,
+        instance_name: str | None = None,
         investigation_id: str | None = None,
         thread_id: str | None = None,
         owner: OwnerArg = None,
@@ -168,12 +185,20 @@ def register_manage_tools(mcp: FastMCP, manage: ManageTools, run_data: RunData) 
     ) -> str:
         """지금 실행 중인 요청 1건의 상세(현재값 전용) — 사용자 ID(가림)·GUID·SQL(리터럴 가림)·HTTP
         메서드·쿼리(값 가림). source_id·domain_id·txid·session_id·thread_hash는 apm_active_services
-        행의 active_ref를 그대로 넘긴다(APM 소스가 둘 이상이면 source_id 필수)."""
+        행의 active_ref를 그대로 넘긴다(APM 소스가 둘 이상이면 source_id 필수).
+        hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
+        apm_instance_map(query=…)로 먼저 찾는다."""
         return await run_data(
             "apm_active_detail",
-            hostname or "*",
+            hostname or instance_name or "*",
             lambda: manage.apm_active_detail(
-                domain_id, txid, session_id, thread_hash, source_id, hostname
+                domain_id,
+                txid,
+                session_id,
+                thread_hash,
+                source_id,
+                hostname,
+                instance_name=instance_name,
             ),
             owner=owner,
             wait_seconds=wait_seconds,

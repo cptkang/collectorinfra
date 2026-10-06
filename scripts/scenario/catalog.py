@@ -106,10 +106,19 @@ STREAM_KEYS: frozenset[str] = frozenset({"ttft_ms", "max_event_gap_ms"})
 #   날짜 한정 없음     {unbounded: true} — 「~한 적이 있는」(C-07)
 # 상대 기간·월 범위의 창은 시간 해석기(`src/domain/time_spec.relative_window`)가
 # 턴 송신 시각으로 정한다.
+# (plans/122 T-9) 상대 기간 종류에 일·주·시 단위를 더했다(n 은 last_n_* 에서만) · 선택 키
+#   `exact: true` 는 relative·month_span 에만 붙는다 — 「덮는다」 대신 창과 같아야 통과한다.
 PERIOD_KEYS: frozenset[str] = frozenset(
-    {"from", "to", "relative", "n", "month_span", "unbounded"}
+    {"from", "to", "relative", "n", "month_span", "unbounded", "exact"}
 )
-RELATIVE_PERIODS: frozenset[str] = frozenset({"last_month", "this_month", "last_n_months"})
+RELATIVE_PERIODS: frozenset[str] = frozenset({
+    "last_month", "this_month", "last_n_months",
+    "last_n_days", "yesterday", "last_week", "this_week", "today", "last_n_hours",
+})
+#: `n` 을 받는 상대 기간 종류 → 해석기 단위(n 상한 `N_MAX[단위]`).
+RELATIVE_N_UNITS: dict[str, str] = {
+    "last_n_months": "month", "last_n_days": "day", "last_n_hours": "hour",
+}
 MONTH_SPAN_KEYS: frozenset[str] = frozenset({"from", "to"})
 # `status_any` 값 — 클라이언트 `_derive_status` 가 낼 수 있는 상태(done `status=partial` 포함).
 TURN_STATUSES: frozenset[str] = frozenset(
@@ -136,6 +145,7 @@ DISCLOSURE_KIND_GRADES: dict[str, str] = {
     # 123 — 턴 단위
     "scope_narrowed": "neutral", "scope_partial": "partial", "unregistered_zone": "correct",
     "unit_suspect": "correct",
+    "query_period": "neutral",  # 122 T-8 — 조회 기간 고지(등급 중립 · 의무)
     # 123 — 섀도(S-2 · S-6 — on 전에는 응답에 실리지 않는다)
     "blank_input": "guide", "sql_input": "refuse", "write_request": "refuse",
     "prompt_injection": "refuse", "credential_request": "refuse", "condition_conflict": "guide",
@@ -747,8 +757,11 @@ def _period_errors(spec: Any) -> list[str]:
     - 절대 기간: from·to 둘 다(YYYY-MM-DD · from < to) — 종전 규칙·문구 그대로
     - 상대 기간(H-2): relative 는 last_month·this_month·last_n_months · n 은 last_n_months 에서만
       (1 ≤ n ≤ 해석기 월 상한 `N_MAX["month"]`)
+      — (T-9) 일·주·시 종류 last_n_days·yesterday·last_week·this_week·today·last_n_hours 를
+      더했다. n 은 last_n_* 에서만(상한 `N_MAX[단위]`)
     - 월 범위: month_span 은 {from: 1~12, to: 1~12}
     - 날짜 한정 없음: unbounded 는 true 만
+    - (T-9) exact 는 true 만이고 relative·month_span 과만 쓴다
     """
     if not isinstance(spec, dict):
         return [f"매핑이어야 한다 - {spec!r}"]
@@ -759,6 +772,12 @@ def _period_errors(spec: Any) -> list[str]:
     if len(forms) > 1:
         return [f"형식 {forms} 을 섞어 쓰지 않는다 - from·to | relative | month_span | unbounded"
                 f" 중 하나 - {spec!r}"]
+    if "exact" in spec:
+        if forms not in (["relative"], ["month_span"]):
+            return [f"exact 는 relative·month_span 과만 쓴다 - {spec!r}"]
+        exact_errors = _true_only("exact", spec["exact"])
+        if exact_errors:
+            return exact_errors
     if forms == ["relative"]:
         return _relative_period_errors(spec)
     if forms == ["month_span"]:
@@ -779,11 +798,12 @@ def _relative_period_errors(spec: dict[str, Any]) -> list[str]:
     kind = spec.get("relative")
     if kind not in RELATIVE_PERIODS:
         return [f"relative 는 {'|'.join(sorted(RELATIVE_PERIODS))} 중 하나다 - {kind!r}"]
-    if kind != "last_n_months":
-        return [] if "n" not in spec else [f"n 은 relative=last_n_months 에서만 쓴다 - {spec!r}"]
-    n, cap = spec.get("n"), N_MAX["month"]
+    if kind not in RELATIVE_N_UNITS:
+        return [] if "n" not in spec else [
+            f"n 은 relative={'|'.join(sorted(RELATIVE_N_UNITS))} 에서만 쓴다 - {spec!r}"]
+    n, cap = spec.get("n"), N_MAX[RELATIVE_N_UNITS[kind]]
     if not (isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= cap):
-        return [f"relative=last_n_months 는 n(1~{cap} 정수)이 필요하다 - {n!r}"]
+        return [f"relative={kind} 는 n(1~{cap} 정수)이 필요하다 - {n!r}"]
     return []
 
 

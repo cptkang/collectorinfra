@@ -104,7 +104,7 @@ def _client(transport: httpx.MockTransport) -> JenniferClient:
 def test_w7_templates_are_the_19_tail_entries_and_mock_covers_them():
     """W7 19템플릿은 `ALLOWED` 끝에 있다(16 + 19 = 35 — gw-w5w6의 거래 경로와 병합 시 합산)."""
     assert list(ALLOWED)[-19:] == W7_ALLOWED
-    assert len(ALLOWED) == 36  # 16 + W5 guid 1 + W7 19
+    assert len(ALLOWED) == 37  # 16 + W5 guid 1 + plans/130 업무 1 + W7 19
     assert set(W7_ALLOWED) == set(W7_TEMPLATES)  # 목 서버 합성 응답이 전부 덮는다
 
 

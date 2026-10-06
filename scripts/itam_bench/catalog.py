@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -588,6 +589,16 @@ def _foreign_keys_from_cache(
     ]
 
 
+def _synonym_counts(synonyms: Any) -> dict[str, int]:
+    """유사어 → 컬럼별 **건수만**(낱말은 싣지 않는다). 값은 낱말 목록 또는 `{"words": [...]}`."""
+    counts: dict[str, int] = {}
+    for key, value in (synonyms or {}).items() if isinstance(synonyms, Mapping) else ():
+        words = value.get("words") if isinstance(value, Mapping) else value
+        if isinstance(words, (list, tuple)) and words:
+            counts[str(key)] = len(words)
+    return counts
+
+
 def _normalize_cache(data: Mapping[str, Any]) -> dict[str, Any]:
     """「DB 구조」 탭이 쓰는 파일 스키마 캐시(`.cache/schema/{db_id}_schema.json`) 전체를 읽는다.
 
@@ -621,14 +632,11 @@ def _normalize_cache(data: Mapping[str, Any]) -> dict[str, Any]:
             "columns": columns,
             "foreign_keys": _foreign_keys_from_cache(str(name), raw_columns, relationships),
         }
-    synonyms = data.get("_synonyms") or {}
     description = data.get("_db_description")
     return {
         "tables": tables,
         "descriptions": dict(data.get("_descriptions") or {}),
-        "synonym_counts": {
-            str(k): len(v) for k, v in synonyms.items() if isinstance(v, (list, tuple)) and v
-        },
+        "synonym_counts": _synonym_counts(data.get("_synonyms")),
         "db_description": (
             {"text": str(description), "origin": data.get("_db_description_origin")}
             if description
@@ -726,6 +734,79 @@ def load_schema_source(
     if not normalized["tables"]:
         raise ValueError(f"{normalized['source']}: 테이블이 0개다")
     return normalized
+
+
+async def _read_redis_annotations(
+    redis_cache: Any, db_id: str, *, owned: bool
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Redis 설명·유사어 → (상태 `ok`|`unavailable`, 설명, 유사어).
+
+    연결·읽기 실패는 예외 없이 `unavailable`로 돌려 파일 폴백에 넘긴다.
+    """
+    try:
+        if not await redis_cache.ensure_connected():
+            return "unavailable", {}, {}
+        descriptions = await redis_cache.load_descriptions(db_id)
+        synonyms = await redis_cache.load_synonyms(db_id)
+        return "ok", dict(descriptions or {}), dict(synonyms or {})
+    except Exception:  # noqa: BLE001 — 서버도 Redis 실패를 파일 폴백으로 넘긴다
+        return "unavailable", {}, {}
+    finally:
+        if owned:
+            await redis_cache.disconnect()
+
+
+def apply_server_annotations(
+    schema: dict[str, Any],
+    *,
+    cfg: Any,
+    db_id: str = DB_ID,
+    cache_dir: Path | None = None,
+    redis_cache: Any = None,
+) -> dict[str, Any]:
+    """컬럼 설명·유사어를 서버와 같은 순서(Redis → 파일)로 읽어 `schema`에 덮어쓴다(plans/138 W6-a).
+
+    서버(`SchemaCacheManager.get_descriptions`·`get_synonyms`)는 백엔드가 redis 이고 연결되며 결과가
+    비지 않으면 Redis 값을, 아니면 파일 스키마 캐시 값을 쓴다 — 설명·유사어 각각. 조회문 0(키
+    읽기만). 출처는 `annotation_sources`에 남긴다: `redis`(`off` 백엔드 file · `unavailable`
+    연결·읽기 실패 · `ok`) · `descriptions`·`synonyms`(`redis`|`file`|`none`). 유사어는 건수만
+    남는다.
+    """
+    from src.schema_cache.persistent_cache import PersistentSchemaCache
+
+    settings = getattr(cfg, "schema_cache", None)
+    redis_state, redis_desc, redis_syn = "off", {}, {}
+    if str(getattr(settings, "backend", "") or "") == "redis":
+        owned = redis_cache is None
+        if owned:
+            from src.schema_cache.redis_cache import RedisSchemaCache
+
+            redis_cache = RedisSchemaCache(redis_config=cfg.redis, schema_cache_config=settings)
+        redis_state, redis_desc, redis_syn = asyncio.run(
+            _read_redis_annotations(redis_cache, db_id, owned=owned)
+        )
+    directory = Path(cache_dir or getattr(settings, "cache_dir", None) or ".cache/schema")
+    if not directory.is_absolute():
+        directory = REPO_ROOT / directory
+    # 디렉터리가 없으면 만들지 않는다(enabled=False → 항상 빈 값)
+    file_cache = PersistentSchemaCache(cache_dir=str(directory), enabled=directory.is_dir())
+
+    def pick(from_redis: dict[str, Any], load_file: Any) -> tuple[dict[str, Any], str]:
+        if from_redis:
+            return from_redis, "redis"
+        from_file = dict(load_file(db_id) or {})
+        return from_file, "file" if from_file else "none"
+
+    descriptions, desc_origin = pick(redis_desc, file_cache.load_descriptions)
+    synonyms, syn_origin = pick(redis_syn, file_cache.load_synonyms)
+    schema["descriptions"] = descriptions
+    schema["synonym_counts"] = _synonym_counts(synonyms)
+    schema["annotation_sources"] = {
+        "redis": redis_state,
+        "descriptions": desc_origin,
+        "synonyms": syn_origin,
+    }
+    return schema
 
 
 def _fingerprint_file(path: Path) -> str | None:
@@ -942,6 +1023,25 @@ def _relations(
     return relations, [list(group) for group in groups]
 
 
+def _table_manages(profile: Mapping[str, Any] | None) -> dict[str, str]:
+    """승인 프로필 `table_definitions`의 테이블별 `manages` → {맨 이름 소문자: 문장}.
+
+    plans/138 W6-g. 비었거나 문자열이 아닌 `manages`는 건너뛴다.
+    """
+    from src.domain.table_definitions import PROFILE_KEY
+
+    definitions = (profile or {}).get(PROFILE_KEY)
+    if not isinstance(definitions, Mapping):
+        return {}
+    return {
+        _bare(str(name)).casefold(): entry["manages"].strip()
+        for name, entry in definitions.items()
+        if isinstance(entry, Mapping)
+        and isinstance(entry.get("manages"), str)
+        and entry["manages"].strip()
+    }
+
+
 def build_schema_catalog(
     schema: Mapping[str, Any],
     policy: ColumnPolicy,
@@ -955,7 +1055,8 @@ def build_schema_catalog(
 
     **테이블을 거르지 않는다**(운영 108테이블 전부 — 사용자 확정 2026-10-06). 값은 싣지 않는다(표본
     행 0 — 입력에 `sample_data`가 있어도 읽지 않는다 · 코드값·라벨·유사어는 건수만). 의미가 빈
-    컬럼이 곧 plans/133 A3(설명) 작업 목록이다.
+    컬럼이 곧 plans/133 A3(설명) 작업 목록이다. 테이블 의미는 승인 프로필 `table_definitions`의
+    `manages`가 먼저, 없으면 DB 주석이다(plans/138 W6-g).
     """
     descriptions = {
         str(k).casefold(): str(v) for k, v in (schema.get("descriptions") or {}).items()
@@ -973,8 +1074,9 @@ def build_schema_catalog(
         else None
     )
     entity_table = _bare(str(((structure or {}).get("entity_keys") or {}).get("table") or ""))
+    manages = _table_manages(profile)
     tables: dict[str, Any] = {}
-    total = with_meaning = unclassified = with_synonyms = 0
+    total = with_meaning = unclassified = with_synonyms = tables_with_meaning = 0
     for name in sorted(schema["tables"]):
         table = schema["tables"][name]
         columns = []
@@ -1007,9 +1109,15 @@ def build_schema_catalog(
             total += 1
             with_meaning += meaning is not None
             columns.append(entry)
+        table_meaning, table_source = None, "none"
+        if manages.get(_bare(name).casefold()):
+            table_meaning, table_source = manages[_bare(name).casefold()], "table_definitions"
+        elif table.get("comment"):
+            table_meaning, table_source = table["comment"], "db_comment"
+        tables_with_meaning += table_meaning is not None
         tables[name] = {
-            "meaning": table.get("comment") or None,
-            "meaning_source": "db_comment" if table.get("comment") else "none",
+            "meaning": table_meaning,
+            "meaning_source": table_source,
             "rows_estimate": table.get("rows_estimate"),
             "key": list(table["primary_key"]),
             "allowed": None if allowed is None else _bare(name).casefold() in allowed,
@@ -1023,15 +1131,19 @@ def build_schema_catalog(
         "assets": dict(assets),
         "meaning_sources": {
             "db_comment": "DB 주석(스냅숏 입력일 때만 구별된다)",
-            "cache_description": "「DB 구조」 탭 설명 적용본 — DB 주석 유래인지 "
-            "LLM 생성인지 파일에 "
+            "cache_description": "「DB 구조」 탭 설명 적용본(서버와 같은 순서 Redis → 파일 — "
+            "읽은 곳은 annotation_sources) — DB 주석 유래인지 LLM 생성인지 저장본에 "
             "출처가 없어 구별할 수 없다",
+            "table_definitions": "승인 프로필 테이블 정의(table_definitions.manages) — "
+            "테이블 의미만 · 컬럼 의미보다 앞선다",
             "none": "의미 없음 — plans/133 A3 설명 작업 대상",
         },
+        "annotation_sources": schema.get("annotation_sources"),
         "db_description": schema.get("db_description"),
         "approved_profile": structure,
         "summary": {
             "tables": len(tables),
+            "tables_with_meaning": tables_with_meaning,
             "columns": total,
             "columns_with_meaning": with_meaning,
             "columns_with_synonyms": with_synonyms,

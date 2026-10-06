@@ -301,7 +301,7 @@ async def test_gateway_health_ok(synth):
     body = out["rows"][0]
     assert body["status"] == "ok" and body["jennifer_reachable"] and body["domain_count"] == 1
     # 16 + plans/134 W5 `/api/transaction/guid` 1(W7 경로는 별도 — 병합 시 합산)
-    assert body["allowlist_size"] == 36  # 16 + W5 guid 1 + W7 19(plans/134)
+    assert body["allowlist_size"] == 37  # 16 + W5 guid 1 + W7 19(plans/134) + 업무 1(130)
     assert out["poller"] == {"enabled": False}
 
 

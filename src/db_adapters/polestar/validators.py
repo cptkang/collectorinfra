@@ -7,9 +7,41 @@ validator는 어댑터 `validator_checks()` 훅을 순회 실행하며, 담당 D
 
 from __future__ import annotations
 
+import logging
 import re
+from collections.abc import Callable
+from datetime import datetime, timedelta
+from typing import Any
 
 import sqlparse
+
+from src.db_adapters.polestar.time_period import (
+    STAT_DATE_FORMATS,
+    STAT_TABLES,
+    TS_FORMAT,
+    StatBounds,
+    alarm_ts_bounds,
+    stat_bounds,
+)
+from src.domain.query_time import QueryTime
+from src.domain.time_spec import (
+    KST,
+    NOTE_EVENT_TO_NOW,
+    NOTE_MULTIPLE_PERIODS,
+    TimeResolution,
+    shift_unit,
+)
+from src.sql_time_conditions import (
+    REASON_COLUMN,
+    REASON_OR,
+    ColumnCondition,
+    extract_column_conditions,
+    find_now_functions,
+    half_open_bounds,
+    table_qualifiers,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def check_routing_filter_misuse(sql: str) -> list[str]:
@@ -917,3 +949,363 @@ def check_current_month_stat_table(sql: str, user_query: str) -> list[str]:
     if not re.search(r"\bcmm_metric_stat_m\b", sql, re.IGNORECASE):
         return []
     return [_CURRENT_MONTH_STAT_GUIDE]
+
+
+# ── plans/122 T-5b: 생성 후 시간 조건 검증 (D-306 · 2026-10-06) ─────────────────
+# 실행 전 SQL의 시간 조건(통계 stat_date · 알람 ctime)을 요청 시간 해석(`QueryTime`)과 대조한다.
+# 경계 대조의 공용 틀은 `src.sql_validation`(DB 무관)이고, 테이블·stat_date 형식·TIMESTAMP 경계는
+# 생산자(프롬프트 기간 블록·결정적 조립)와 같은 투영 `time_period`에서 온다 — 「검증기가 반려하는
+# SQL = 생산자가 바꾸는 SQL」(D-231 교훈). 사용자가 기간을 말했을 때(`qt.explicit` · 비교 질의
+# 아님)만 반려하고, 기본값(지난달)·비교 질의·파싱 불가는 경고 로그만 남긴다(거짓 거부 방지 —
+# LLM이 합당한 이유로 다른 입도를 고를 수 있다). D-201(「이번 달」 stat_m 반려)은 ②③이 덮는다.
+
+_STAT_COLUMN = "stat_date"
+_ALARM_TIME_TABLES = ("cmm_alarm", "cmm_alarm_active")
+_ALARM_TIME_COLUMN = "ctime"
+_STAT_GRAIN_OF_TABLE = {table: grain for grain, table in STAT_TABLES.items()}
+_STAT_FORMAT_LABEL = {"hour": "YYYYMMDDHH", "day": "YYYYMMDD", "month": "YYYYMM"}
+_GRAIN_LABEL = {"hour": "시간", "day": "일", "month": "월"}
+_GRAIN_RANK = {"hour": 0, "day": 1, "month": 2}
+_SUPPORTED_OPS = frozenset({"=", "between", "in", ">=", ">", "<", "<="})
+#: 알람 경계 대조 허용 오차 — `<= '… 23:59:59'`·`> '… 23:59:59'` 같은 닫힌 끝 표기를
+#: 같은 경계로 본다.
+_TS_TOLERANCE = timedelta(seconds=1)
+_DB2_TS_FORMATS = ("%Y-%m-%d-%H.%M.%S.%f", "%Y-%m-%d-%H.%M.%S")
+_ISO_DATE_HEAD_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def _stat_key(grain: str) -> Callable[[str], str]:
+    """입도별 `stat_date` 키 함수 — 형식(자릿수·실재 날짜)이 어긋나면 ValueError."""
+    fmt = STAT_DATE_FORMATS[grain]
+    width = len(_STAT_FORMAT_LABEL[grain])
+
+    def key(value: str) -> str:
+        v = value.strip()
+        if len(v) != width or not v.isdigit():
+            raise ValueError(value)
+        datetime.strptime(v, fmt)  # 존재하지 않는 날짜·시각이면 ValueError
+        return v
+
+    return key
+
+
+def _stat_next(grain: str) -> Callable[[str], str]:
+    """입도별 다음 칸 함수(`2026083023` → `2026083100` · `202612` → `202701`)."""
+    fmt = STAT_DATE_FORMATS[grain]
+
+    def next_cell(value: str) -> str:
+        # 칸 이동은 도메인 단위 연산을 쓴다(리뷰 m-1 — 날짜 산술 사본 금지 D-131)
+        return shift_unit(datetime.strptime(value, fmt), grain, 1).strftime(fmt)
+
+    return next_cell
+
+
+def _parse_ts(value: str) -> datetime:
+    """알람 시각 리터럴 → naive KST 시각(`YYYY-MM-DD[ HH:MM[:SS[.f]]]`·`T` 구분·DB2 `-HH.MM.SS`)."""
+    v = value.strip()
+    if not _ISO_DATE_HEAD_RE.match(v):
+        raise ValueError(value)
+    for fmt in _DB2_TS_FORMATS:
+        try:
+            return datetime.strptime(v, fmt)
+        except ValueError:
+            pass
+    dt = datetime.fromisoformat(v)
+    return dt.astimezone(KST).replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
+def _same_instant(value: datetime) -> datetime:
+    """연속 시각의 「다음 칸」 = 자기 자신(닫힌 끝은 허용 오차로 맞춘다)."""
+    return value
+
+
+def _pick_alias(quals: set[str], tables: set[str]) -> str:
+    """메시지에 쓸 접두 — 별칭이 있으면 별칭, 없으면 테이블 이름."""
+    aliases = sorted(q for q in quals if q not in tables)
+    return aliases[0] if aliases else sorted(quals)[0]
+
+
+def _condition_groups(
+    conds: list[ColumnCondition], quals: set[str]
+) -> list[list[ColumnCondition]]:
+    """대상 테이블 접두의 조건을 (SELECT 블록, 접두)별로 묶는다.
+
+    대상 접두 조건이 하나도 없으면 전부를 본다(CTE 별칭 경유 등). 한 블록에 접두가 하나뿐이면
+    접두 없는 조건을 그 묶음에 합친다.
+    """
+    picked = [c for c in conds if not c.qualifier or c.qualifier in quals] or conds
+    by_scope: dict[tuple[int, int], dict[str, list[ColumnCondition]]] = {}
+    for c in picked:
+        by_scope.setdefault(c.scope, {}).setdefault(c.qualifier, []).append(c)
+    groups: list[list[ColumnCondition]] = []
+    for per_qual in by_scope.values():
+        named = [q for q in per_qual if q]
+        if len(named) == 1 and "" in per_qual:
+            per_qual[named[0]].extend(per_qual.pop(""))
+        groups.extend(per_qual.values())
+    return groups
+
+
+def _judge_groups(
+    groups: list[list[ColumnCondition]],
+    *,
+    key: Callable[[str], Any],
+    next_cell: Callable[[Any], Any],
+    equal: Callable[[tuple[Any, Any]], bool],
+) -> tuple[str, list[str], bool]:
+    """조건 묶음들을 기대 구간과 대조한다 → (상태, 묶음 원문 목록, 리터럴 형식 불일치 여부).
+
+    상태(앞이 우선): 묶음 하나라도 기대 구간과 같으면 "match" · OR로 묶인 시간 조건이 있으면 "or"
+    (기간을 보장하지 못한다 — 오류) · 읽지 못한 묶음이 있으면 "unparsable"(경고) · 전부 읽었는데
+    다르면 "mismatch"(오류) · 묶음이 없으면 "missing"(오류). 상대가 컬럼 참조인 조건(조인 키·CTE
+    컬럼)은 구간 계산에서 빼고, 그것만 있는 묶음은 리터럴 묶음이 하나도 없을 때만 "unparsable"로
+    본다(리뷰 m-4 — CTE 경유는 누락이 아니다 · 자기 조인 키가 다른 묶음의 불일치를 덮지 않는다).
+    """
+    if not groups:
+        return "missing", [], False
+    texts: list[str] = []
+    has_or = unparsable = bad_format = evaluated = False
+    for g in groups:
+        if any(c.reason == REASON_OR for c in g):
+            texts.append(" · ".join(c.text for c in g))  # OR 구조는 원문 그대로 재현하지 않는다
+            has_or = True
+            continue
+        texts.append(" AND ".join(c.text for c in g))
+        bounded = [c for c in g if c.reason != REASON_COLUMN]
+        if not bounded:
+            continue  # 컬럼 참조만 — 리터럴 묶음이 없을 때만 「읽기 불가」(아래)
+        if any(not c.literal or c.op not in _SUPPORTED_OPS for c in bounded):
+            unparsable = True
+            continue
+        evaluated = True
+        try:
+            for c in bounded:
+                for v in c.values:
+                    key(v)
+        except ValueError:
+            bad_format = True
+            continue
+        bounds = half_open_bounds(bounded, key=key, next_cell=next_cell)
+        if bounds is not None and equal(bounds):
+            return "match", texts, False
+    if has_or:
+        status = "or"
+    elif unparsable or not evaluated:
+        status = "unparsable"
+    else:
+        status = "mismatch"
+    return status, texts, bad_format
+
+
+def _or_error(subject: str, where: str, texts: list[str]) -> str:
+    """OR 결합 반려 문구(리뷰 m-5 · D6) — 다른 기간이 섞인 SQL이 실행되지 않게 한다."""
+    return (
+        f"{subject} 조건이 OR로 다른 조건과 묶여 기간을 보장하지 못합니다 — SQL: "
+        f"{' / '.join(texts[:3])} · 기대: {where}. OR 없이 기대 조건을 AND로 그대로 쓰세요."
+    )
+
+
+def _now_note(groups: list[list[ColumnCondition]]) -> list[str]:
+    funcs: list[str] = []
+    for g in groups:
+        for c in g:
+            funcs.extend(f for f in c.now_functions if f not in funcs)
+    return funcs
+
+
+def _now_function_error(subject: str, where: str, funcs: list[str]) -> str:
+    """① 현재시각 함수 반려 문구 — 재생성 프롬프트에 기대 리터럴을 그대로 싣는다."""
+    return (
+        f"{subject}은 시스템이 해석한 리터럴({where})을 그대로 쓰세요 — "
+        f"CURRENT_DATE 등 현재시각 함수 금지(감지: {', '.join(funcs)})."
+    )
+
+
+def _unparsable_finding(
+    sql: str, subject: str, where: str, texts: list[str]
+) -> tuple[str, str]:
+    """리터럴로 읽지 못한 조건 — 거부하지 않고 경고. 단, 조건이 CTE·서브쿼리를 거쳐 현재시각
+    함수로 기간을 계산했으면(`s.stat_date >= p.lo` · p가 `CURRENT_DATE`로 계산) ①로 반려한다."""
+    funcs = find_now_functions(sql)
+    if funcs:
+        return "error", _now_function_error(subject, where, funcs)
+    return "warn", (
+        f"{subject} 조건을 리터럴로 읽지 못해 대조하지 않았습니다(기대: {where}) — "
+        f"SQL: {' / '.join(texts[:3])}"
+    )
+
+
+def _stat_findings(
+    sql: str, metric: TimeResolution, sb: StatBounds, used: dict[str, set[str]],
+    *, present: bool = False,
+) -> list[tuple[str, str]]:
+    # 원문에 기간과 「현재·지금」이 함께 있고(「지난달 알람이 난 서버의 현재 CPU」) SQL이 시간
+    # 통계만 쓰면, 그 통계는 기간이 아니라 「현재」(프로필 규칙 — 최근 시간 통계) 몫으로 본다.
+    # 대조는 하되 경고만 남긴다(거짓 거부 방지). 「이번 달 현재까지」+월 통계는 그대로 반려한다.
+    if present and sb.grain != "hour" and set(used) == {STAT_TABLES["hour"]}:
+        return [
+            ("warn", f"「현재」 표현 — 시간 통계를 현재 값 조회로 보고 대조만 남깁니다: {m}")
+            for _kind, m in _stat_findings(sql, metric, sb, used)
+        ]
+    label = metric.label()
+    tables = set(used)
+    quals = set().union(*used.values())
+    alias = _pick_alias(used.get(sb.table) or quals, tables)
+    where = sb.where(f"{alias}.{_STAT_COLUMN}")
+    groups = _condition_groups(extract_column_conditions(sql, _STAT_COLUMN) or [], quals)
+    out: list[tuple[str, str]] = []
+    funcs = _now_note(groups)
+    if funcs:
+        out.append(("error", _now_function_error(f"기간 「{label}」", where, funcs)))
+    others = sorted(t for t in tables if t != sb.table)
+    if others:
+        msg = (
+            f"기간 「{label}」은 {sb.table}({_GRAIN_LABEL[sb.grain]} 통계)로 조회해야 합니다 — "
+            f"지금 SQL은 {', '.join(others)}을(를) 씁니다. {sb.table}을(를) 조인하고 기간 조건 "
+            f"{where}를 그대로 쓰세요."
+        )
+        if any(_GRAIN_RANK[_STAT_GRAIN_OF_TABLE[t]] > _GRAIN_RANK[sb.grain] for t in others):
+            msg += (
+                f" {_GRAIN_LABEL[sb.grain]} 통계는 칸마다 행이 있으니 서버별 GROUP BY로 "
+                "AVG(avg_val)·MAX(max_val)를 집계하세요."
+            )
+        if STAT_TABLES["month"] in others:
+            msg += f" {STAT_TABLES['month']}(월간)는 완결된 달만 집계됩니다."
+        out.append(("error", msg))
+        return out
+    status, texts, bad_format = _judge_groups(
+        groups,
+        key=_stat_key(sb.grain),
+        next_cell=_stat_next(sb.grain),
+        equal=lambda b: b == (sb.lo, sb.hi) or (
+            sb.is_empty and b[0] is not None and b[1] is not None and b[0] >= b[1]
+        ),
+    )
+    if status == "missing":
+        out.append(("error", (
+            f"{sb.table}에 기간 「{label}」 조건이 없습니다 — {where}를 넣으세요."
+        )))
+    elif status == "mismatch":
+        hint = (
+            f" stat_date는 {_STAT_FORMAT_LABEL[sb.grain]} 문자열입니다." if bad_format else ""
+        )
+        out.append(("error", (
+            f"기간 조건이 시스템이 해석한 기간 「{label}」과 다릅니다 — SQL: "
+            f"{' / '.join(texts[:3])} · 기대: {where}. 기대 조건을 그대로 쓰세요.{hint}"
+        )))
+    elif status == "or" and not funcs:
+        out.append(("error", _or_error(f"기간 「{label}」", where, texts)))
+    elif status == "unparsable" and not funcs:
+        out.append(_unparsable_finding(sql, f"기간 「{label}」", where, texts))
+    return out
+
+
+def _alarm_findings(
+    sql: str, event: TimeResolution, bounds: tuple[str | None, str], used: dict[str, set[str]],
+    *, present: bool = False,
+) -> list[tuple[str, str]]:
+    # 원문에 기간과 「현재·지금」이 함께 있고(「지난달 서버 CPU와 현재 활성 알람 수」) SQL이 활성
+    # 알람 스냅샷만 쓰면, 그 조회는 기간이 아니라 「현재」 몫으로 본다 — 통계의 「현재」 완화와 같은
+    # 규칙(리뷰 M-1 · 거짓 반려 방지). 알람 이력(`cmm_alarm`)을 쓰면 그대로 엄격하다.
+    if present and set(used) == {"cmm_alarm_active"}:
+        return [
+            ("warn", f"「현재」 표현 — 활성 알람을 현재 스냅샷 조회로 보고 대조만 남깁니다: {m}")
+            for _kind, m in _alarm_findings(sql, event, bounds, used)
+        ]
+    label = event.label()
+    start, end = bounds
+    tables = set(used)
+    quals = set().union(*used.values())
+    col = f"{_pick_alias(quals, tables)}.{_ALARM_TIME_COLUMN}"
+    where = (f"{col} >= TIMESTAMP '{start}' AND " if start else "") + (
+        f"{col} < TIMESTAMP '{end}'"
+    )
+    exp_lo = datetime.strptime(start, TS_FORMAT) if start else None
+    exp_hi = datetime.strptime(end, TS_FORMAT)
+    to_now = NOTE_EVENT_TO_NOW in event.notes
+
+    def equal(b: tuple[datetime | None, datetime | None]) -> bool:
+        lo, hi = b
+        lo_ok = (lo is None and exp_lo is None) or (
+            lo is not None and exp_lo is not None and abs(lo - exp_lo) <= _TS_TOLERANCE
+        )
+        # 진행 중 기간(기준 시각까지 · D-291)은 끝을 생략하거나 미래로 둬도 같은 행이다
+        hi_ok = (hi is not None and abs(hi - exp_hi) <= _TS_TOLERANCE) or (
+            to_now and (hi is None or hi >= exp_hi)
+        )
+        return lo_ok and hi_ok
+
+    groups = _condition_groups(extract_column_conditions(sql, _ALARM_TIME_COLUMN) or [], quals)
+    out: list[tuple[str, str]] = []
+    funcs = _now_note(groups)
+    if funcs:
+        out.append(("error", _now_function_error(f"알람 기간 「{label}」", where, funcs)))
+    status, texts, _bad = _judge_groups(groups, key=_parse_ts, next_cell=_same_instant, equal=equal)
+    if status == "missing":
+        out.append(("error", f"알람 기간 「{label}」 조건이 없습니다 — {where}를 넣으세요."))
+    elif status == "mismatch":
+        out.append(("error", (
+            f"알람 기간 조건이 시스템이 해석한 기간 「{label}」과 다릅니다 — SQL: "
+            f"{' / '.join(texts[:3])} · 기대: {where}. 기대 조건을 그대로 쓰세요."
+        )))
+    elif status == "or" and not funcs:
+        out.append(("error", _or_error(f"알람 기간 「{label}」", where, texts)))
+    elif status == "unparsable" and not funcs:
+        out.append(_unparsable_finding(sql, f"알람 기간 「{label}」", where, texts))
+    return out
+
+
+def check_time_conditions(sql: str, qt: QueryTime) -> list[str]:
+    """생성 SQL의 시간 조건을 요청 시간 해석과 대조한다(plans/122 T-5b · D-306).
+
+    대상은 SQL이 참조하는 통계 테이블(`time_period.STAT_TABLES` — `stat_date`)과 알람 테이블
+    (`cmm_alarm`·`cmm_alarm_active` — `ctime`)이다. 사용자가 기간을 말했고(`qt.explicit`) 비교
+    질의(`multiple_periods`)가 아니면 다음을 **오류**로 돌려 재생성 사유로 쓴다.
+
+    ① 기간 조건에 DB 현재시각 함수(`CURRENT_DATE`·`CURRENT DATE`·`NOW()`·`INTERVAL` 등)
+    ② 통계 테이블 입도가 `stat_bounds(qt.metric).table`과 다름(D-201 「이번 달」 stat_m 반려 포함)
+    ③ 통계 테이블의 `stat_date` 조건 누락·경계 불일치(=·BETWEEN·>=/< 를 입도 칸 집합으로
+       정규화해 비교 — 같은 집합이면 통과)
+    ④ 알람 `ctime` 조건이 `alarm_ts_bounds(qt.event)`와 다르거나 없음(사건 기간 조건 없음이면
+       요구하지 않는다 · TIMESTAMP 리터럴·문자열 리터럴 모두 인정)
+
+    기간 미지정 기본값(`uses_default_period`)·비교 질의는 같은 대조를 **경고 로그로만** 남기고,
+    「현재·지금」 질의(기본값을 강제하지 않는다)는 대조하지 않는다. 파싱 불가 조건도 경고만이다.
+    기간과 「현재·지금」이 함께 있는 질의에서 SQL이 시간 통계만 쓰면 통계 대조(①~③)는, 알람 활성
+    스냅샷(`cmm_alarm_active`)만 쓰면 알람 대조(④)는 경고만 남긴다(「현재」 값 조회로 본다 ·
+    리뷰 M-1). 시간 조건이 OR로 묶이면 읽지 못한 경우라도 오류다(다른 기간이 섞인다 · 리뷰 m-5).
+
+    Args:
+        sql: 검사할 SQL
+        qt: 요청 시간 해석(`QueryTime.from_state(state["time_resolution"])`)
+
+    Returns:
+        오류 메시지 목록(재생성 프롬프트에 그대로 들어간다 — 기대 테이블·조건 리터럴을 싣는다)
+    """
+    # 대조 대상 판정은 `QueryTime.metric_for_sql` 한 곳(리뷰 m-2) — 「현재·지금」(기간 없음)·되묻기
+    # 대상이면 None이라 대조하지 않는다(기본값을 강제하지 않는다 — 실시간·최근 시간 경로).
+    metric, event = qt.metric_for_sql, qt.event
+    if metric is None or event is None:
+        return []
+    strict = qt.explicit and NOTE_MULTIPLE_PERIODS not in metric.notes
+    mode = "explicit" if strict else ("multiple_periods" if qt.explicit else "default_period")
+
+    quals = table_qualifiers(sql, [*STAT_TABLES.values(), *_ALARM_TIME_TABLES])
+    found: list[tuple[str, str]] = []
+    if quals is None:
+        found.append(("warn", "SQL 구조(괄호·따옴표)를 읽지 못해 시간 조건을 대조하지 않았습니다."))
+    else:
+        stat_used = {t: q for t, q in quals.items() if t in _STAT_GRAIN_OF_TABLE}
+        sb = stat_bounds(metric)
+        if stat_used and sb is not None:
+            found.extend(_stat_findings(sql, metric, sb, stat_used, present=qt.present))
+        alarm_used = {t: q for t, q in quals.items() if t in _ALARM_TIME_TABLES}
+        ab = alarm_ts_bounds(event)
+        if alarm_used and ab is not None:
+            found.extend(_alarm_findings(sql, event, ab, alarm_used, present=qt.present))
+
+    errors = [msg for kind, msg in found if kind == "error"]
+    for kind, msg in found:
+        if kind == "warn" or not strict:
+            logger.warning("시간 조건 검증 경고(plans/122 T-5b · %s): %s", mode, msg)
+    return errors if strict else []

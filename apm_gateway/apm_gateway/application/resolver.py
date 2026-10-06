@@ -48,6 +48,8 @@ REFRESH_RETRY_SECONDS = 60
 HIGH = "high"
 MEDIUM = "medium"
 NONE = "none"
+# 인스턴스 이름 정확 일치로 찾은 정합의 근거(plans/130 N-3)
+BY_INSTANCE_NAME = "instance_name"
 # 실패·빈 인벤토리 재조회 간격(F-3) — `gateway_health` 캐시와 같은 값.
 SHORT_CACHE_SECONDS = 30.0
 EMPTY_REASON = (
@@ -88,6 +90,8 @@ class Resolution:
     matches: dict[str, tuple[str, str]] = field(default_factory=dict)
     # 일부 소스·도메인을 쓸 수 없었다(봉투 `partial` — plans/134 W0-B)
     partial: bool = False
+    # 인스턴스 이름으로 찾았다 — 인스턴스마다 역정합 `hostname` 칸이 있다(plans/130 N-3)
+    by_name: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -100,6 +104,7 @@ class Resolution:
                     "source_id": i["source_id"],
                     "domain_id": i["domain_id"],
                     "instance_id": i["instance_id"],
+                    **({"hostname": i.get("hostname", "")} if self.by_name else {}),
                 }
                 for i in self.instances
             ],

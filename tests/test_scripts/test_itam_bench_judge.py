@@ -387,7 +387,7 @@ class TestTaxonomy:
         assert _labels(facts, facts_catalog) == []
 
     def test_all_labels_have_fix_targets(self) -> None:
-        assert len(jd.TAXONOMY) == 14
+        assert len(jd.TAXONOMY) == 16  # plans/138 W6-f backend_limit·selection_none
         assert jd.SEPARATE <= set(jd.TAXONOMY)
 
 
@@ -422,6 +422,17 @@ class TestSchemaContext:
             "gold_tables_presented": True,
             "key_columns_presented": ["manmenCtrcEndYmd"],
             "key_columns_with_meaning": [],
+            # plans/138 W6-d 칸이 없던 레코드 — 칸은 두고 값은 null
+            "dbs": {
+                "itam": {
+                    "prompt_tokens_est": None,
+                    "budget_stage": None,
+                    "backend_reported_tokens": None,
+                    "selection_source": None,
+                    "selected_count": None,
+                    "stop_reasons": [],
+                }
+            },
         }
         assert jd.schema_context([], db_id="itam", gold_tables=[], key_refs=[]) is None
 

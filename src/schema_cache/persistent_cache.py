@@ -154,6 +154,9 @@ class PersistentSchemaCache:
     ) -> bool:
         """스키마 정보를 캐시 파일에 저장한다.
 
+        기존 파일의 부가 필드(설명·유사어·DB 설명 등 메타·`schema` 밖 키)는 보존한다 — 이 메서드가
+        새로 쓰는 키가 우선이다(plans/138 W6-a · D-305 ⑧).
+
         Args:
             db_id: DB 식별자
             schema_dict: 스키마 딕셔너리 (tables, relationships 등)
@@ -176,6 +179,11 @@ class PersistentSchemaCache:
             "_cached_at_iso": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "schema": schema_dict,
         }
+        # 스키마만으로 파일 전체를 다시 쓰면 부가 필드가 사라진다 — Redis 저장은 설명·유사어 키를
+        # 건드리지 않아 서버(Redis 우선)와 파일 폴백이 갈라졌다(plans/138 §2.4 재현).
+        cache_data.update(
+            {k: v for k, v in self._existing_fields(db_id).items() if k not in cache_data}
+        )
 
         cache_path = self._cache_file_path(db_id)
 
@@ -202,6 +210,27 @@ class PersistentSchemaCache:
             # 임시 파일 정리
             self._safe_delete(cache_path.with_suffix(".tmp"))
             return False
+
+    def _existing_fields(self, db_id: str) -> dict[str, Any]:
+        """디스크의 현재 캐시 파일 내용(같은 포맷 버전일 때만).
+
+        메모리 버퍼가 아니라 파일을 읽는다 — 다른 인스턴스가 지운 필드를 되살리지 않는다. 없거나
+        읽을 수 없으면 빈 dict(저장을 막지 않는다 · 손상 파일 삭제는 `load`의 몫).
+
+        Args:
+            db_id: DB 식별자
+
+        Returns:
+            파일 최상위 dict 또는 빈 dict
+        """
+        try:
+            with open(self._cache_file_path(db_id), encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict) or data.get("_cache_version") != CACHE_FORMAT_VERSION:
+            return {}
+        return data
 
     def get_cached_fingerprint(self, db_id: str) -> Optional[str]:
         """캐시된 스키마의 fingerprint를 반환한다.

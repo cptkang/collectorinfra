@@ -107,6 +107,13 @@ class TestSinkRecord:
                         }
                     },
                     "structure_meta": False,
+                    # plans/138 W6-d — 상태에 예산·선별·종결이 없으면 null
+                    "prompt_tokens_est": None,
+                    "budget_stage": None,
+                    "backend_reported_tokens": None,
+                    "selection_source": None,
+                    "selected_count": None,
+                    "stop_reason": None,
                 }
             },
         }

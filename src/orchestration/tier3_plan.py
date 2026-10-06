@@ -73,6 +73,8 @@ from src.orchestration.subagents import (
     _make_isolated_input,
     _normalize_targets,
     _pack_pipeline_result,
+    _request_query_text,
+    _scope_time_resolution,
 )
 from src.orchestration.task_progress import emit_task_progress
 from src.routing.location_hints import pin_targets_to_hints
@@ -89,7 +91,7 @@ _ROUTING_KEYS: tuple[str, ...] = (
     "target_databases", "is_multi_db", "active_db_id", "user_specified_db", "db_scope_source",
 )
 #: 서브그래프 전용 키 — 2단 핸들러에 넘기는 격리 입력에서는 뺀다.
-_TASK_KEYS: tuple[str, ...] = ("current_task", "task_total", "task_result")
+_TASK_KEYS: tuple[str, ...] = ("current_task", "task_total", "task_result", "request_query")
 
 
 class TaskRunState(AgentState, total=False):
@@ -98,6 +100,9 @@ class TaskRunState(AgentState, total=False):
     current_task: dict[str, Any]
     task_total: int
     task_result: dict[str, Any] | None
+    #: 요청 원문 — 서브그래프 안 `user_query`는 task 문장이라 원문을 따로 운반한다(LangGraph는
+    #: 선언하지 않은 키를 버린다). task 기간의 원문 대조(plans/122 T-4)에만 쓴다.
+    request_query: str
 
 
 class TaskOutcomeState(TypedDict):
@@ -245,8 +250,13 @@ def route_dispatch(state: AgentState) -> list[Send] | str:
 def task_payload(
     task: dict[str, Any], state: AgentState, prior: dict[str, Any], *, total: int,
 ) -> dict[str, Any]:
-    """task 서브그래프 입력 — 2단과 같은 격리 입력 + 이 task 사양 + 데이터 task의 조회 대상."""
-    payload = _make_isolated_input(task, dict(state), prior)
+    """task 서브그래프 입력 — 2단과 같은 격리 입력 + 이 task 사양 + 데이터 task의 조회 대상.
+
+    시간 해석은 원문 해석을 그대로 싣는다 — task 범위로 좁히는 것은 task 문장을 확정하는
+    `task_prompt`다(plans/122 T-4).
+    """
+    payload = _make_isolated_input(task, dict(state), prior, scope_time=False)
+    payload["request_query"] = _request_query_text(dict(state))
     payload["user_query"] = task.get("sub_query") or state.get("user_query", "")
     payload["current_task"] = dict(task)
     payload["task_total"] = total
@@ -319,7 +329,8 @@ async def task_prompt(state: TaskRunState) -> dict[str, Any]:
 
     조각(`spans`)이 있으면 원문 순서로 이어 붙인다(`render_task_query` — 선행 결과를 받는
     task만 고정 접두). 없으면 계획의 `sub_query`다. SQL 생성 입력
-    (`parsed_requirements.original_query`)과 질의 텍스트를 task 범위로 좁힌다(D-094).
+    (`parsed_requirements.original_query`)과 질의 텍스트를 task 범위로 좁힌다(D-094). 시간 해석
+    (`time_resolution`)도 같은 문장으로 좁힌다 — 명시 기간이 있을 때만 task별(plans/122 T-4).
     복합 계획의 멀티 DB task는 DB별 조회 설명도 task 질의로 바꾼다 — 라우터 설명은 턴 전체
     질의에 대한 것이라 그대로 두면 task 범위가 풀린다.
     """
@@ -333,6 +344,12 @@ async def task_prompt(state: TaskRunState) -> dict[str, Any]:
     parsed["original_query"] = text
     out: dict[str, Any] = {
         "user_query": text, "parsed_requirements": parsed, "current_node": "task_prompt",
+        # 시간 해석도 task 범위로(plans/122 §10.3 「2단 task」 — 2단 격리 입력과 같은 함수 · D-306).
+        # 입력은 원문 해석이다(`task_payload`가 좁히지 않고 넘긴다). 원문 대조는 서브그래프 밖에서
+        # 잡은 요청 원문으로 한다 — 없으면(빈 문자열) task별 해석을 하지 않는다.
+        "time_resolution": _scope_time_resolution(
+            dict(state), task, text, original=str(state.get("request_query") or ""),
+        ),
     }
     agent = task.get("agent")
     if agent in DATA_AGENTS:

@@ -19,9 +19,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 
 from src.config import AppConfig
+from src.domain.schema_snapshot import bare_name
+from src.domain.table_definitions import PROFILE_KEY as TABLE_DEFINITIONS_KEY
 from src.utils.query_gen_common import (
     build_query_examples_block,
     build_value_index_block,
@@ -644,6 +647,77 @@ def format_schema_text(
 
 
 # ──────────────────────────────────────────────
+# 테이블 용도 블록 (plans/138 W5 · D-305 ⑤)
+# ──────────────────────────────────────────────
+
+#: 「테이블 용도」 블록 머리말 — 단일·멀티 시스템 프롬프트에서 스키마 텍스트 바로 앞에
+#: 같은 바이트로 싣는다
+TABLE_PURPOSE_HEADER = (
+    "[테이블 용도] 선별된 조회 대상 테이블이 관리하는 정보 — "
+    "아래 스키마의 이 테이블들만 사용하세요."
+)
+
+
+def _one_line(value: Any) -> str:
+    """정의 텍스트 1칸을 한 줄로 접는다(문자열이 아니면 빈 문자열)."""
+    return " ".join(value.split()) if isinstance(value, str) else ""
+
+
+def build_table_purpose_block(schema_info: Mapping[str, Any] | None) -> str:
+    """선별 테이블의 「테이블 용도」 블록 — 단일·멀티 경로가 스키마 텍스트 바로 앞에 붙인다(D-066).
+
+    좁힌 스키마(`tables`) 중 테이블 정의(`_structure_meta.table_definitions`)가 있는 테이블만
+    이름순으로 ``- 테이블: 관리하는 정보 (주의: 주의 사항)`` 한 줄씩 싣는다(맨 이름 비교). 대표
+    컬럼·연결 상대·성격·업무 영역은 선별용이라 싣지 않는다(plans/138 §4.3).
+
+    정의가 하나도 없으면 빈 문자열이다 — 정의 없는 DB의 프롬프트 바이트는 종전과 같다(G-1).
+    질의 경로는 정의를 고치지 않는다(D-227). 승인 검증을 거치지 않은 파일 편집에 대비해 중괄호·
+    코드 펜스가 든 항목은 블록에서 빼고 WARNING을 남긴다.
+
+    정의는 `table_selection.definitions_of`와 같은 자리(구조 메타의 프로필 키)에서 읽는다 — 노드 간
+    직접 import를 피해 도메인 키로 읽는다(arch_check 노드 간 의존 경고).
+
+    Args:
+        schema_info: 이번 생성의 (선별로 좁힌) 스키마 — 예산 사다리의 얕은 사본도 같은 결과다
+
+    Returns:
+        머리말 + 항목 줄 + 빈 줄(스키마 텍스트와 구분) 또는 빈 문자열
+    """
+    meta = (schema_info or {}).get("_structure_meta")
+    defs = meta.get(TABLE_DEFINITIONS_KEY) if isinstance(meta, Mapping) else None
+    tables = (schema_info or {}).get("tables") or {}
+    if not isinstance(defs, Mapping) or not defs or not tables:
+        return ""
+    index: dict[str, Mapping[str, Any]] = {}
+    for name, entry in defs.items():
+        if isinstance(entry, Mapping):
+            index.setdefault(bare_name(str(name)), entry)
+    lines: list[str] = []
+    skipped: list[str] = []
+    for table in sorted(str(t) for t in tables):
+        entry = index.get(bare_name(table))
+        if entry is None:
+            continue
+        manages = _one_line(entry.get("manages"))
+        if not manages:
+            continue
+        notes = _one_line(entry.get("notes"))
+        text = manages + notes
+        if "{" in text or "}" in text or "```" in text:
+            skipped.append(table)
+            continue
+        lines.append(f"- {table}: {manages}" + (f" (주의: {notes})" if notes else ""))
+    if skipped:
+        logger.warning(
+            "[테이블용도] 중괄호·코드 펜스가 든 정의 %d개를 블록에서 뺌(승인 검증을 거치지 않은 "
+            "편집 의심): %s", len(skipped), skipped,
+        )
+    if not lines:
+        return ""
+    return TABLE_PURPOSE_HEADER + "\n" + "\n".join(lines) + "\n\n"
+
+
+# ──────────────────────────────────────────────
 # 경로 대칭 재료 (P3-2)
 # ──────────────────────────────────────────────
 
@@ -674,7 +748,23 @@ class PromptBudgetExceeded(RuntimeError):
     호출하지 않고 명시 실패한다: FabriX 데이터 평면은 한도 초과 예외를 HTTP 에러가
     아닌 **응답 content 텍스트**로 반환하므로("Input tokens must be <= 95232" 실측),
     보내면 그 텍스트가 SQL 검증으로 흘러가 "SELECT 문이 아닙니다"로 오표면화된다.
+
+    ``budget_state``는 단일 경로 상태 표지(`prompt_budget` — 추정치·예산·단계·테이블 수·표본
+    유무, 값 없음 · plans/138 W2)다. 노드가 예외를 받아 종결 상태로 바꿀 때 쓴다. 멀티 경로는
+    싣지 않는다(None).
     """
+
+    def __init__(self, message: str, *, budget_state: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.budget_state = budget_state
+
+
+#: 단일 경로 예산 사다리 단계(state `prompt_budget.stage` · plans/138 W2) — 벤치(W6)가 값을 그대로
+#: 읽는다. 예산 안 / 1단(유사어·설명 제거) / 2단(표본 제거) / 전송 전 중단.
+PROMPT_BUDGET_WITHIN = "within"
+PROMPT_BUDGET_MATERIALS = "materials"
+PROMPT_BUDGET_SAMPLES = "samples"
+PROMPT_BUDGET_EXCEEDED = "exceeded"
 
 
 def estimate_prompt_tokens(text: str) -> int:
@@ -861,6 +951,7 @@ def build_stepwise_deps(
     db_engine: str,
     default_limit: int,
     value_index: Optional[dict[str, list[str]]] = None,
+    time_resolution: dict[str, Any] | None = None,
 ) -> Optional["StepwiseDeps"]:
     """단계적 도출(S2/D-128) 도구 재료를 만든다(플래그 OFF면 None).
 
@@ -875,6 +966,8 @@ def build_stepwise_deps(
         db_engine: DB 엔진 타입
         default_limit: 결정적으로 해석된 기본 행 제한
         value_index: 컬럼 값 인덱스 (가용 경로만)
+        time_resolution: 요청 시간 해석(state `time_resolution` 값 · plans/122 T-4) — 도구
+            컨텍스트로 넘긴다(None이면 도구의 종전 해석)
 
     Returns:
         ``column_deriver.StepwiseDeps`` 또는 None(플래그 OFF)
@@ -893,4 +986,5 @@ def build_stepwise_deps(
         default_limit=default_limit,
         synonym_min_score=app_config.synonym.match_confidence_min,
         value_fuzzy=app_config.synonym.fuzzy_match,
+        time_resolution=time_resolution,
     )

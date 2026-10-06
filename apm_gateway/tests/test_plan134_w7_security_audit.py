@@ -401,7 +401,7 @@ def test_build_path_blocks_newline_and_encoded_variants_in_new_vars():
     for value in ("1\n", "-", "--1", "1e3", "１２"):  # 전각 숫자
         with pytest.raises(NotAllowedError):
             build_path(_ACTIVE, {"domainId": 1000, "txid": value})
-    assert len(ALLOWED) == 36
+    assert len(ALLOWED) == 37
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -16,10 +17,14 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from src.utils.llm_compat import is_kbgenai
 from src.config import AppConfig, load_config
 from src.domain.query_target_surfaces import surfaces_of
+from src.domain.query_time import clarify_message, resolve_query_time
+from src.domain.time_spec import KST
 from src.llm import create_llm
 from src.prompts.input_parser import (
     INPUT_PARSER_CSV_CONTEXT_PROMPT,
     INPUT_PARSER_SYSTEM_PROMPT,
+    INPUT_PARSER_TIME_SLOT_SECTION,
+    time_anchor_line,
 )
 from src.schema_cache.cache_manager import get_cache_manager
 from src.state import AgentState
@@ -132,6 +137,70 @@ def _apply_elliptical_succession(parsed: dict[str, Any], state: AgentState) -> d
     }
 
 
+def _now() -> datetime:
+    """요청 기준 시각(KST) — 노드 호출당 한 번 잡는다(plans/122 T-3 · D-306).
+
+    프롬프트의 「오늘」과 코드 시간 해석이 같은 값을 쓴다. 테스트는 이 함수를 바꿔 고정한다.
+    """
+    return datetime.now(KST)
+
+
+def _time_resolution_on(app_config: Any) -> bool:
+    """시간 해석 플래그(`QUERY_TIME_RESOLUTION_ENABLED` · D-306). 설정 대역에 필드가 없으면 off."""
+    return bool(getattr(getattr(app_config, "query", None), "time_resolution_enabled", False))
+
+
+def _time_slot_suffix(anchor_at: datetime | None) -> str:
+    """시스템 프롬프트 맨 끝에 붙일 [기간 슬롯 절 + 기준 시각 줄]. off(None)면 빈 문자열."""
+    if anchor_at is None:
+        return ""
+    return INPUT_PARSER_TIME_SLOT_SECTION + time_anchor_line(anchor_at.date())
+
+
+def _apply_time_slot_default(parsed: dict[str, Any], anchor_at: datetime | None) -> None:
+    """`time_expr` 기본값 — on이면 null을 채우고, off면 키를 싣지 않는다.
+
+    off에서 키를 빼는 것은 구조화 출력(`model_dump`)이 null 기본값을 싣기 때문이다 — 파싱본은
+    SQL 생성 프롬프트에 JSON으로 들어가므로 off에서 키가 생기면 종전 바이트가 깨진다.
+    """
+    if anchor_at is None:
+        parsed.pop("time_expr", None)
+    else:
+        parsed.setdefault("time_expr", None)
+
+
+def _time_resolution_fields(user_query: str, anchor_at: datetime, slot: Any) -> dict[str, Any]:
+    """원문 + 기준 시각 + LLM 슬롯 → state 갱신(plans/122 T-3 · D-306).
+
+    `time_resolution`(요청 스코프 단일 출처)을 싣고, 해석 불가(`clarify`)면 데이터를 조회하지 않고
+    되묻는 최종 응답을 함께 싣는다 — 그래프가 input_parser 뒤에서 끝난다
+    (`route_after_input_parser` · D-291 「해석 불가 = 되묻기」 · D-275 ⑪). 이 턴의 종결 노드라
+    답변을 대화 이력에도 누적한다(output_generator·result_aggregator와 같은 단일 append 원칙).
+
+    해석기 자체가 예외를 내면 `time_resolution`을 싣지 않는다 — 소비처가 종전 기간 경로로 돈다.
+    사유는 로그로 남긴다(침묵 폴백 금지).
+    """
+    try:
+        qt = resolve_query_time(user_query, anchor_at, slot=slot)
+    except Exception:  # noqa: BLE001 — 해석기 결함이 질의 경로 전체를 막지 않게(종전 기간 경로)
+        logger.exception("[시간해석] 실패 — time_resolution 미탑재(종전 기간 경로) slot=%r", slot)
+        return {}
+    metric = qt.metric
+    logger.info(
+        "[시간해석] source=%s grain=%s label=%s slot=%s reason=%s clarify=%s present=%s",
+        metric.source if metric else None,
+        metric.grain if metric else None,
+        metric.label() if metric else None,
+        qt.slot_status, qt.slot_reason, qt.clarify, qt.present,
+    )
+    fields: dict[str, Any] = {"time_resolution": qt.to_state()}
+    if qt.clarify is not None:
+        message = clarify_message(qt.clarify)
+        fields["final_response"] = message
+        fields["messages"] = [AIMessage(content=message)]
+    return fields
+
+
 async def input_parser(
     state: AgentState,
     *,
@@ -160,6 +229,10 @@ async def input_parser(
     if llm is None:
         llm = create_llm(app_config)
 
+    # 기준 시각(plans/122 T-3 · D-306) — 호출당 한 번. 프롬프트 날짜와 해석이 같은 값을 쓴다.
+    # off면 None — 프롬프트·반환 dict가 종전 바이트 그대로다.
+    anchor_at = _now() if _time_resolution_on(app_config) else None
+
     # 존 역질문 답변 턴(plans/119 Q-2 · D-267 ③): 라우트가 직전 턴 파싱본을 실었으면 LLM 파싱을
     # 건너뛴다. 원 질의가 같고 이번 턴 입력은 존 선택뿐이라 다시 파싱할 내용이 없다(4~7초 절감).
     # 직전 파싱본은 동의어 치환·위치 힌트 보강까지 끝난 값이라 후처리도 다시 하지 않는다.
@@ -180,7 +253,7 @@ async def input_parser(
             for s in ((state.get("template_structure") or {}).get("sheets") or [])
             if s.get("name")
         ]
-        return {
+        reuse_out: dict[str, Any] = {
             "parsed_requirements": parsed,
             "template_structure": None,
             "target_sheets": _extract_target_sheets(parsed, state["user_query"], _prior_sheets),
@@ -188,6 +261,13 @@ async def input_parser(
             "current_node": "input_parser",
             "error_message": None,
         }
+        # 시간 해석은 재사용 턴에도 매 턴 다시 한다(대칭 — `time_resolution`은 요청 스코프라
+        # 빠뜨리면 이 턴은 종전 기간 경로로 샌다). 슬롯은 재사용 파싱본의 것을 쓴다.
+        if anchor_at is not None:
+            reuse_out.update(
+                _time_resolution_fields(state["user_query"], anchor_at, parsed.get("time_expr"))
+            )
+        return reuse_out
 
     try:
         context = state.get("conversation_context")
@@ -201,12 +281,13 @@ async def input_parser(
                 sheet_parsed = await _parse_natural_language_with_csv(
                     llm, state["user_query"], csv_context,
                     sheet_name=sheet_name, conversation_context=context,
+                    anchor_at=anchor_at,
                 )
                 all_sheet_results.append(sheet_parsed)
             parsed = _merge_sheet_parse_results(all_sheet_results)
         else:
             parsed = await _parse_natural_language(
-                llm, state["user_query"], conversation_context=context
+                llm, state["user_query"], conversation_context=context, anchor_at=anchor_at
             )
     except Exception as e:
         logger.error(f"입력 파싱 실패: {e}")
@@ -265,7 +346,7 @@ async def input_parser(
     # 주체다. 노드는 app.state에 닿지 못해 client_ip·session_id를 채울 수 없고,
     # 여기서 파일에 쓰면 라우트의 AuditService 기록과 겹쳐 파일에 같은 질의가 두 번 남는다.
 
-    return {
+    out: dict[str, Any] = {
         "parsed_requirements": parsed,
         "template_structure": template,
         "target_sheets": target_sheets,
@@ -273,6 +354,10 @@ async def input_parser(
         "current_node": "input_parser",
         "error_message": None,
     }
+    # 시간 해석(plans/122 T-3) — LLM 예외로 최소 파싱본에 떨어졌어도 규칙 해석은 한다(slot=None)
+    if anchor_at is not None:
+        out.update(_time_resolution_fields(state["user_query"], anchor_at, parsed.get("time_expr")))
+    return out
 
 
 def _attachment_texts(state: AgentState, template: dict[str, Any] | None) -> list[str]:
@@ -372,6 +457,7 @@ async def _parse_natural_language(
     user_query: str,
     *,
     conversation_context: dict | None = None,
+    anchor_at: datetime | None = None,
 ) -> dict:
     """LLM을 사용하여 자연어 질의에서 요구사항을 추출한다.
 
@@ -382,6 +468,8 @@ async def _parse_natural_language(
         llm: LLM 인스턴스
         user_query: 사용자 자연어 질의 (한국어)
         conversation_context: 이전 대화 맥락 (멀티턴 시)
+        anchor_at: 기준 시각(plans/122 T-3). 있으면 시스템 프롬프트 맨 끝에 기간 슬롯 절과
+            기준 시각 줄을 붙인다. None(플래그 off)이면 종전 프롬프트 그대로
 
     Returns:
         구조화된 요구사항 딕셔너리
@@ -402,6 +490,9 @@ async def _parse_natural_language(
             "이전 SQL/테이블 정보를 활용하세요.\n"
         )
         system_prompt = system_prompt + context_section
+
+    # 기간 슬롯 절 + 기준 시각 줄(plans/122 T-3) — 맨 끝(멀티턴 맥락 절 뒤)이라 종전 접두가 유지된다
+    system_prompt = system_prompt + _time_slot_suffix(anchor_at)
 
     messages = [
         SystemMessage(content=system_prompt),
@@ -436,6 +527,7 @@ async def _parse_natural_language(
     parsed.setdefault("field_mapping_hints", [])
     parsed.setdefault("target_db_hints", [])
     parsed.setdefault("synonym_registration", None)
+    _apply_time_slot_default(parsed, anchor_at)
 
     return parsed
 
@@ -470,6 +562,7 @@ async def _parse_natural_language_with_csv(
     *,
     sheet_name: str = "",
     conversation_context: dict | None = None,
+    anchor_at: datetime | None = None,
 ) -> dict:
     """CSV 컨텍스트를 포함하여 자연어 질의를 파싱한다.
 
@@ -481,6 +574,7 @@ async def _parse_natural_language_with_csv(
         csv_context: 시트별 헤더+예시 데이터 텍스트
         sheet_name: 현재 분석 중인 시트명
         conversation_context: 이전 대화 맥락 (멀티턴 시)
+        anchor_at: 기준 시각(plans/122 T-3 — `_parse_natural_language`와 대칭)
 
     Returns:
         구조화된 요구사항 딕셔너리
@@ -505,6 +599,9 @@ async def _parse_natural_language_with_csv(
             "이전 맥락을 활용하여 요구사항을 해석하세요.\n"
         )
         system_prompt = system_prompt + context_section
+
+    # 기간 슬롯 절 + 기준 시각 줄(plans/122 T-3 — 자연어 경로와 대칭 · 맨 끝)
+    system_prompt = system_prompt + _time_slot_suffix(anchor_at)
 
     messages = [
         SystemMessage(content=system_prompt),
@@ -537,6 +634,7 @@ async def _parse_natural_language_with_csv(
     parsed.setdefault("target_db_hints", [])
     # 비대칭 해소(E-3c) — 종전 이 경로에만 이 기본값이 없어 CSV 질의에서 키가 사라졌다.
     parsed.setdefault("synonym_registration", None)
+    _apply_time_slot_default(parsed, anchor_at)
 
     return parsed
 
@@ -580,6 +678,13 @@ def _merge_sheet_parse_results(results: list[dict]) -> dict:
     for r in results:
         all_db_hints.update(r.get("target_db_hints", []))
     merged["target_db_hints"] = sorted(all_db_hints)
+
+    # 기간 슬롯(plans/122 T-3) — 시트마다 같은 원문을 파싱하므로 첫 non-null을 싣는다.
+    # off면 어느 결과에도 키가 없어 병합본도 종전 그대로다.
+    if any("time_expr" in r for r in results):
+        merged["time_expr"] = next(
+            (r["time_expr"] for r in results if r.get("time_expr") is not None), None
+        )
 
     return merged
 

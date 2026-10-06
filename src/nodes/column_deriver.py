@@ -77,6 +77,9 @@ class StepwiseDeps:
     row_masker: Optional["RowMasker"] = None
     synonym_min_score: float = 0.85
     value_fuzzy: bool = False
+    # 요청 시간 해석(state `time_resolution` 값 그대로 · plans/122 T-4 · D-306) — 기간 해석 도구가
+    # 요청 단위 해석을 쓰게 `ToolContext`로 넘긴다. None이면(플래그 off) 도구의 종전 해석 그대로.
+    time_resolution: dict[str, Any] | None = None
 
 
 @dataclass
@@ -142,6 +145,7 @@ def build_tool_context(
         default_limit=deps.default_limit,
         synonym_min_score=deps.synonym_min_score,
         value_fuzzy=deps.value_fuzzy,
+        time_resolution=deps.time_resolution,
     )
 
 

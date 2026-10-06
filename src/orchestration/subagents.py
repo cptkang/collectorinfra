@@ -25,20 +25,26 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
 from src.config import AppConfig, load_config
+from src.domain.query_time import QueryTime, resolve_task_time
 from src.nodes.cache_management import cache_management
 from src.nodes.general_inference import general_inference
 from src.nodes.multi_db_executor import multi_db_executor
 from src.nodes.query_executor import query_executor
 from src.nodes.query_generator import query_generator
 from src.nodes.query_validator import (
+    REGEN_STOP_BACKEND_LIMIT,
     REGEN_STOP_DEADLINE,
     REGEN_STOP_NON_SQL,
+    REGEN_STOP_SELECTION_NONE,
     REGEN_STOP_VALIDATION_BUDGET,
+    backend_limit_hit,
+    backend_limit_response,
     deadline_stop_message,
     non_sql_budget_exhausted,
     non_sql_prose_response,
     query_validator,
     retrieval_reserve_sec,
+    selection_none_hit,
 )
 from src.nodes.realtime_usage import realtime_usage_lookup
 from src.nodes.result_merger import result_merger
@@ -875,6 +881,10 @@ async def _run_single_db_pipeline(
     - **산문(비-SQL) 응답**은 전용 예산 `NON_SQL_RETRY_BUDGET`(1)으로 끝낸다(N-5). 그래프
       `route_after_validation`과 같은 판정(`non_sql_budget_exhausted`)이다. 일반 검증 실패는 종전
       예산(`QUERY_MAX_RETRY_COUNT`) 그대로다.
+    - **LLM 입력 한도 초과·백엔드 오류 응답**(백엔드 보고 · 전송 전 예산 초과)은 재생성 0회로
+      끝낸다(plans/138 W1·W2 — 그래프와 같은 판정 `backend_limit_hit`).
+    - **정의 기반 테이블 선별 0개**는 SQL 생성 없이 안내 문구로 끝낸다(plans/138 W4 —
+      `selection_none_hit` · 종결 사유 `selection_none`).
     - **조회 마감**(처리 마감 − 서술 예약): 스키마 분석·첫 생성 **진입 전** 마감이 지났으면
       시작하지 않고(T-1ⓑ), 재생성(검증 실패·실행 오류 모두)은 `남은 시간 < 방금 잰 직전 생성
       소요`면 하지 않는다(T-3). 마감(`request_deadline`)이 없는 상태(CLI·테스트·옛
@@ -945,6 +955,28 @@ async def _run_single_db_pipeline(
         ))
         if not state["validation_result"]["passed"]:
             _reason = state["validation_result"].get("reason", "SQL 검증 실패")
+            if selection_none_hit(state["validation_result"]):
+                # 정의 기반 테이블 선별 0개(plans/138 W4) — SQL 생성 LLM을 부르지 않았다.
+                # 재생성 없이 안내 문구(검증 사유 = `selection_none_guidance`)로 끝낸다
+                # (그래프와 같은 문구).
+                logger.info("단일 DB 파이프라인 테이블 선별 0개 종결(plans/138 W4)")
+                _stop_regen(state, REGEN_STOP_SELECTION_NONE, _reason, response=_reason)
+                break
+            if backend_limit_hit(state["validation_result"]):
+                # LLM 입력 한도 초과·백엔드 오류 응답(plans/138 W1·W2) — 같은 프롬프트 재생성은
+                # 결정적으로 다시 넘는다. 재생성 0회로 끝내고 그래프 `error_response`와 같은 문구를
+                # 싣는다. detail은 응답 원문 없는 요약(검증 노드의 실패 사유)이다.
+                logger.info(
+                    "단일 DB 파이프라인 입력 한도 종결(plans/138): retry=%s",
+                    state.get("retry_count", 0),
+                )
+                _stop_regen(
+                    state, REGEN_STOP_BACKEND_LIMIT, state.get("error_message") or _reason,
+                    response=backend_limit_response(
+                        state["validation_result"]["backend_error"].get("kind"),
+                    ),
+                )
+                break
             if non_sql_budget_exhausted(state["validation_result"], state.get("retry_count", 0)):
                 # N-5: 산문 전용 예산 소진 — 그래프 `error_response`와 같은 문구로 산문을 싣는다
                 logger.info(
@@ -1090,7 +1122,67 @@ def _scope_parsed_requirements(state: dict, task: dict) -> dict:
     return parsed
 
 
-def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
+def _request_query_text(state: dict[str, Any]) -> str:
+    """요청 원문 — 시간 해석이 읽은 사용자 문장(task 기간 원문 대조의 기준 · plans/122 T-4).
+
+    격리 입력의 `original_user_query`(교체 전 원문) → 그래프 `user_query`(그래프 노드는 원문을
+    덮지 않는다) → `parsed_requirements.original_query`(1단 ambient — `user_query`가 없다 ·
+    `input_parser`가 원문을 복사한다) 순. 없으면 빈 문자열.
+    """
+    parsed = state.get("parsed_requirements") or {}
+    return str(
+        state.get("original_user_query") or state.get("user_query")
+        or (parsed.get("original_query") if isinstance(parsed, dict) else None) or ""
+    )
+
+
+def _scope_time_resolution(
+    state: dict[str, Any], task: dict[str, Any], task_text: str | None = None,
+    *, original: str | None = None,
+) -> dict[str, Any] | None:
+    """요청 시간 해석을 task 범위로 좁힌 state 값을 만든다 (plans/122 §10.3 「2단 task」 · D-306).
+
+    원문 해석(state `time_resolution`)이 전역 기본이다. task 문장에 **명시 기간**이 있고 그 기간
+    표현이 **사용자 원문에도 있을 때만** 그 문장으로 다시 해석한다(기준 시각은 원문 해석과 같다 —
+    `resolve_task_time(original=)`). 분해 LLM이 원문에 없는 기간을 task 문장에 지어 넣으면 원문
+    해석을 유지한다 — 지어낸 기간이 명시 기간(엄격 검증)으로 승격되지 않게 한다(리뷰 상태 계약).
+    원문을 알 수 없으면(빈 문자열) task별 해석을 하지 않는다. 하류 노드는 task 재작성문
+    (`user_query`·`parsed_requirements.original_query`)을 다시 해석하지 않고 이 값을 읽는다 —
+    §10.2 ⑦ 「2단은 재작성문에서 해석」의 단일 출처 교정이다.
+
+    원문 해석이 없으면(플래그 off · 옛 체크포인트) None — 소비처는 종전 경로를 탄다.
+
+    Args:
+        state: 전체 에이전트 상태(원문 해석이 실린 상태)
+        task: 현재 TaskSpec
+        task_text: task 문장. 미지정이면 `task["sub_query"]`(3단은 조각으로 찍은 문장을 넘긴다)
+        original: 사용자 원문. 미지정이면 `_request_query_text(state)`(3단은 서브그래프 밖에서
+            잡아 둔 원문을 넘긴다 — 서브그래프의 `user_query`는 task 문장이다)
+    """
+    raw = state.get("time_resolution")
+    base = QueryTime.from_state(raw)
+    if base is None:
+        return None
+    text = str(task.get("sub_query") or "") if task_text is None else str(task_text)
+    source_text = _request_query_text(state) if original is None else str(original)
+    scoped = resolve_task_time(text, base, original=source_text) if text.strip() else base
+    # task 해석이 원문 해석과 같으면(원문 그대로인 단일 task 등) 원문 값을 그대로 쓴다 — 슬롯
+    # 처리 결과(`slot_status`)까지 원문 해석과 같은 값이 하류·하네스에 닿는다.
+    if scoped is not base and (scoped.metric, scoped.event) == (base.metric, base.event):
+        scoped = base
+    res = scoped.metric
+    logger.info(
+        "task 시간 해석(plans/122 T-4): task=%s scope=%s source=%s label=%s",
+        task.get("task_id"), "request" if scoped is base else "task",
+        res.source if res is not None else f"clarify:{scoped.clarify}",
+        res.label() if res is not None else "-",
+    )
+    return raw if scoped is base else scoped.to_state()
+
+
+def _make_isolated_input(
+    task: dict[str, Any], state: dict[str, Any], prior: dict[str, Any], *, scope_time: bool = True,
+) -> dict[str, Any]:
     """subagent에 전달할 필터된 얇은 컨텍스트를 만든다 (SubAgent S3 부분 격리).
 
     전체 AgentState를 넘기지 않고 실행에 필요한 필드 + 노드 KeyError 방지용 기본값만 포함한다.
@@ -1102,6 +1194,8 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         task: 현재 TaskSpec
         state: 전체 에이전트 상태
         prior: 지금까지 완료된 task 결과 {task_id: norm_result}
+        scope_time: 시간 해석을 task 문장으로 좁힐지(plans/122 T-4). 3단 계획 루프는 False로
+            원문 해석을 그대로 넘기고 `task_prompt`가 조각으로 찍은 문장으로 좁힌다.
 
     Returns:
         필터된 isolated state dict
@@ -1134,6 +1228,12 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
         # 전체 질문에 대한 SQL을 생성하고, data_query는 알람 테이블 접근이 없어 "알람 서버 중"
         # 같은 조건을 침묵 탈락시킨다(2026-07-20 라이브 실측 — 전 서버 기준 오답).
         "parsed_requirements": _scope_parsed_requirements(state, task),
+        # 요청 시간 해석(plans/122 T-4 · D-306) — 격리 입력이 키를 직접 고르므로 싣지 않으면 task
+        # 안의 모든 소비처(SQL 생성·검증·결정적 조립·APM 창)가 None을 받아 종전 경로로 돈다.
+        # task 문장에 명시 기간이 있을 때만 task별 해석이다(§10.3 「2단 task」).
+        "time_resolution": (
+            _scope_time_resolution(state, task) if scope_time else state.get("time_resolution")
+        ),
         "conversation_context": state.get("conversation_context"),
         "thread_id": state.get("thread_id"),
         "user_id": state.get("user_id"),
@@ -1934,6 +2034,11 @@ def _pack_pipeline_result(
     empty_diagnosis = s.get("empty_diagnosis")
     if empty_diagnosis:
         result["empty_diagnosis"] = empty_diagnosis
+    # task 시간 해석(plans/122 T-4·T-8 · D-306) — 집계기가 task 마감 입력·원천별 기간 고지
+    # (`period_sources`)에 쓴다. task 문장에 명시 기간이 있으면 원문 해석과 다르다. 없으면(플래그
+    # off) 싣지 않는다 — 집계기는 턴 해석으로 내려간다.
+    if isinstance(s.get("time_resolution"), dict):
+        result["time_resolution"] = s["time_resolution"]
     return result
 
 

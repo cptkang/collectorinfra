@@ -26,6 +26,12 @@ from src.db import get_db_client
 from src.dbhub.models import SchemaInfo, schema_to_dict
 from src.llm import create_llm
 from src.schema_cache.cache_manager import get_cache_manager
+from src.nodes.table_selection import (
+    TableSelection,
+    load_db_description,
+    select_tables,
+    uses_definition_selection,
+)
 from src.state import AgentState
 from src.utils.flex_match import best_flex_match
 from src.utils.json_extract import coerce_content_text
@@ -567,7 +573,9 @@ async def schema_analyzer(
     """DB 스키마를 분석하여 관련 테이블과 컬럼을 식별한다.
 
     1. 3단계 캐시를 활용하여 스키마를 조회한다.
-    2. LLM을 사용하여 query_targets 기반으로 관련 테이블을 선택한다.
+    2. LLM을 사용하여 query_targets 기반으로 관련 테이블을 선택한다. 프로필에 테이블 정의가
+       있으면(알람 의도 제외) 정의 기반 공용 선별(`select_tables`)을 쓰고 보충 단계를 건너뛴다
+       (plans/138 W4 · D-305).
     3. 관련 테이블의 샘플 데이터를 수집한다.
     4. 구조 정보를 **읽기만** 한다 — ①수동 프로필 ②관리자 승인 적용본 ③없음(plans/104 R1·R3).
        질의 중 LLM 구조 분석·승인 대기·프로필 파일 기록은 하지 않는다. 없으면 멈추지 않고
@@ -585,6 +593,7 @@ async def schema_analyzer(
         - schema_info: 스키마 상세 정보 딕셔너리
         - dependency_notes: 구조 정보가 없거나 컬럼 설명이 비었을 때만 —
           기존 노트 + `structure_missing`·`descriptions_missing` 노트(DB당 1건)
+        - table_selection: 정의 기반 선별일 때만 — ``{db_id: TableSelection.as_state()}``
         - current_node: "schema_analyzer"
         - error_message: 에러 발생 시 메시지, 정상 시 None
     """
@@ -615,7 +624,29 @@ async def schema_analyzer(
             _query_syn_tables: set[str] | None = None
             relevant: list[str] | None = None
             _intent = state.get("routing_intent")
-            if _table_select_skip_enabled(app_config) and _intent != "alarm_query":
+            # 2-0. 정의 기반 선별(plans/138 W4 · D-305 G-1) — 프로필에 테이블 정의가 있고
+            # 알람 의도가 아니면 공용 선별(`select_tables` — 멀티 경로와 같은 함수) 결과를
+            # 그대로 쓴다. 그때는 아래 Q-5 생략·LLM 선택·EAV 보충·허용 목록 필터/강제 보충·
+            # 유사어 동적 보완을 모두 건너뛴다. 정의가 없는 DB는 종전 경로 그대로다.
+            table_selection: TableSelection | None = None
+            _def_prof = _load_manual_profile(db_id)
+            if _def_prof is not None and uses_definition_selection(_def_prof, _intent):
+                table_selection = await select_tables(
+                    llm=llm,
+                    question=parsed.get("original_query", "") or "",
+                    sub_query_context=None,
+                    db_id=db_id,
+                    db_description=await load_db_description(cache_mgr, db_id),
+                    schema_tables=full_schema.tables,
+                    profile=_def_prof,
+                    app_config=app_config,
+                    relationships=full_schema.relationships,
+                )
+                relevant = list(table_selection.selected)
+            if (
+                relevant is None
+                and _table_select_skip_enabled(app_config) and _intent != "alarm_query"
+            ):
                 _skip_prof = _load_manual_profile(db_id)
                 if _skip_prof and "allowed_tables" in _skip_prof:
                     try:
@@ -641,12 +672,13 @@ async def schema_analyzer(
             # ★ DEBUG[2]: LLM이 선택한 테이블 확인
             logger.debug("DEBUG[2] LLM selected relevant: %s (query_targets=%s)", relevant, query_targets)
 
-            # 2-1. EAV 동반 테이블 자동 보충
-            relevant = _supplement_eav_tables(
-                relevant,
-                list(full_schema.tables.keys()),
-                db_id,
-            )
+            # 2-1. EAV 동반 테이블 자동 보충 (정의 기반 선별에서는 건너뛴다 — plans/138 W4)
+            if table_selection is None:
+                relevant = _supplement_eav_tables(
+                    relevant,
+                    list(full_schema.tables.keys()),
+                    db_id,
+                )
             # ★ DEBUG[3]: EAV 보충 후 테이블 확인
             logger.debug("DEBUG[3] after EAV supplement: %s", relevant)
 
@@ -657,7 +689,11 @@ async def schema_analyzer(
             #      (LLM 환각으로 누락되는 문제 방지)
             _manual_prof = _load_manual_profile(db_id)
             _routing_intent = state.get("routing_intent")
-            if _manual_prof and "allowed_tables" in _manual_prof and _routing_intent != "alarm_query":
+            if (
+                _manual_prof and "allowed_tables" in _manual_prof
+                and _routing_intent != "alarm_query"
+                and table_selection is None  # 정의 기반 선별은 후보 단계에서 이미 걸렀다(W4)
+            ):
                 _allowed = {t.lower() for t in _manual_prof["allowed_tables"]}
                 # 강제 보충 대상은 **수동 프로필에 적힌 테이블만**이다(plans/114 P-4①).
                 # 아래에서 `_allowed` 에 유사어 매칭 테이블이 합쳐지는데, 그것까지 보충하면
@@ -932,6 +968,16 @@ async def schema_analyzer(
                 "error_message": None,
                 # 구조 정보·컬럼 설명이 있으면 키를 싣지 않는다 — 반환 shape 현행 유지
                 **({"dependency_notes": asset_notes} if asset_notes else {}),
+                # 정의 기반 선별 결과(plans/138 W4) — 그 모드일 때만 싣는다
+                # (정의 없는 DB는 shape 현행).
+                # 리듀서가 없는 키라 같은 요청의 다른 DB 항목을 이어 붙인다.
+                **(
+                    {"table_selection": {
+                        **(state.get("table_selection") or {}),
+                        db_id: table_selection.as_state(),
+                    }}
+                    if table_selection is not None else {}
+                ),
             }
 
     except Exception as e:

@@ -571,7 +571,11 @@ def test_first_twelve_views_are_unchanged_from_baseline() -> None:
     old = apm_views_of(base.stdout)
     new = apm_views_of((ROOT / "config/db_registry.yaml").read_text(encoding="utf-8"))
     assert len(old) == 12
-    assert new[:12] == old
+    # plans/130 W1-D: apm.instances에 domain_id 조건(args·examples)만 더했다 — 나머지 칸은 그대로
+    head = [{k: v for k, v in view.items()
+             if not (view["id"] == "apm.instances" and k in ("args", "examples"))}
+            for view in new[:12]]
+    assert head == old
     assert [v["id"] for v in new[12:]] == list(NEW_VIEWS)
     for spec in aq.apm_views()[:12]:
         assert spec.target == "" and spec.reference == ""

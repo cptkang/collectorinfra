@@ -98,6 +98,7 @@ def sanitize_task_views(result: dict[str, Any], app_config: Any) -> list[str]:
     for task in tasks:
         raw = task.pop("views", None)
         raw_args = task.pop("view_args", None)
+        raw_targets = task.pop("targets", None)
         agent = task.get("agent")
         if agent == apm_query.APM_QUERY_AGENT:
             task["views"] = apm_query.sanitize_views(raw)
@@ -106,6 +107,10 @@ def sanitize_task_views(result: dict[str, Any], app_config: Any) -> list[str]:
             args = apm_query.sanitize_view_args(raw_args, task["views"])
             if args:
                 task["view_args"] = args
+            # 대상 텍스트(plans/130 M-1) — 형태만 정제한다(해석은 처리기 · D-004).
+            targets = apm_query.sanitize_targets(raw_targets)
+            if targets:
+                task["targets"] = targets
         elif agent == doc_query.DOC_QUERY_AGENT:
             task["views"] = doc_query.sanitize_views(raw, app_config)
         if not doc_ids:

@@ -11,6 +11,7 @@ import json
 import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from collections.abc import Callable
 from datetime import date
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -37,6 +38,16 @@ from src.domain.change_terms import (
     resolve_spike_request,
 )
 from src.db_adapters.polestar.spike_sql import CAPACITY_CHANGE_NOTE, build_spike_sql
+# 요청 시간 해석(state `time_resolution` · plans/122 T-4 · D-306) — 폴스타 기간 블록은 어댑터의
+# 단일 출처를 부르고(리터럴은 어댑터 소유 · D-089), DB 무관 소비 헬퍼는 공용 모듈을 쓴다.
+from src.db_adapters.polestar.time_period import build_period_block
+from src.db_adapters.time_hint import (
+    build_generic_time_hint,
+    metric_period,
+    stat_month_compat,
+    strip_raw_time_keys,
+)
+from src.domain.query_time import QueryTime
 from src.routing.domain_config import get_domain_by_id
 from src.utils.query_gen_common import (
     BlockedComparison,
@@ -75,11 +86,17 @@ from src.nodes.prompt_blocks import (
     build_profile_rules_block,
     CRITERIA_AND_GRAIN_RULE_BLOCK,
     EAV_JOIN_RULE_BLOCK,
+    PROMPT_BUDGET_EXCEEDED,
+    PROMPT_BUDGET_MATERIALS,
+    PROMPT_BUDGET_SAMPLES,
+    PROMPT_BUDGET_WITHIN,
+    PromptBudgetExceeded,
     build_eav_pivot_block,
     build_forbidden_join_block,
     build_query_examples,
     build_schema_prefix_rule,
     build_stepwise_deps,
+    build_table_purpose_block,
     build_unmapped_fields_block,
     build_value_index_injection,
     build_value_joins_block,
@@ -96,6 +113,7 @@ from src.nodes.prompt_blocks import (
     split_eav_by_resource_type,
     split_mapping_entries,
 )
+from src.nodes.table_selection import selection_none_active
 # 폴스타 EAV/피벗 결정적 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트.
 # 아래 4종은 `DBAdapter` 훅 표면(owns/system_template/validator_checks/classify_metric_field)에
 # 대응하는 훅이 없어 직접 임포트로 남긴다. 새 훅 신설은 두 번째 어댑터가 생기기 전까지 금지
@@ -256,6 +274,7 @@ def _try_build_form_fill_pivot_sql(
     user_query: str,
     *,
     adapter_db_ids: set[str] | None = None,
+    query_time: QueryTime | None = None,
 ) -> Optional[dict]:
     """폼필 결정적 피벗 SQL 조립 — 자식 리소스 EAV·월 시리즈·양식 업로드(D-068/D-146/D-149).
 
@@ -267,6 +286,8 @@ def _try_build_form_fill_pivot_sql(
 
     Args:
         adapter_db_ids: 어댑터 담당 db_id 집합 — 지표 필드 분류를 레지스트리로 디스패치한다.
+        query_time: 요청 시간 해석(plans/122 T-4). 있으면 월 시리즈 앵커·피벗 기간에 성능 통계
+            해석(`metric`)을 넘긴다. None이면 종전(표면어 → LLM time_range 2단 폴백) 그대로.
 
     Returns:
         {"sql": str, "month_anchor": dict|None, "mapping_updates": dict, "candidates": list,
@@ -307,6 +328,8 @@ def _try_build_form_fill_pivot_sql(
             )
 
     # 월 시리즈(가로 6개월 등) 인식 + 요청 스코프 규칙(D-146/D-148). 인식 실패는 폴백(무발동).
+    # 「현재·지금」+기간 미지정은 None — 기본값(지난달)을 강제하지 않는다(컴파일러·도구와 같은 규칙)
+    _metric_period = metric_period(query_time)
     month_series = recognize_month_series(
         column_mapping,
         context_text=template_context_text(state.get("template_structure")),
@@ -316,6 +339,8 @@ def _try_build_form_fill_pivot_sql(
         # 실행 DB 허용 테이블 밖 매핑(오염 유사어)은 미매핑으로 본다 — 멀티 경로와 대칭
         # (plans/120 F-1b)
         allowed_tables=(schema_info.get("tables") or {}).keys(),
+        # 요청 시간 해석(plans/122 T-4) — 있으면 위 폴백 대신 이 해석을 쓴다(멀티 경로와 대칭)
+        period=_metric_period,
     )
     mapping_updates: dict[str, Optional[str]] = {}
     # 채움 제외된 llm_inferred 필드는 state 매핑도 None으로 — writer가 낡은 매핑으로
@@ -444,12 +469,17 @@ def _try_build_form_fill_pivot_sql(
         # 폼필 피벗도 기간 2단 폴백에 **포함**한다(R3-(i), 2026-07-30 결정 변경). 제외하면
         # "지난 반년 + 양식 첨부"처럼 표면어가 미매칭인 질의에서 stat_date 필터가 통째로 빠져
         # 전 기간 평균으로 침묵 왜곡된다(D-099 계열). 멀티 경로 폼필 피벗도 동형(D-066).
-        stat_month=resolve_stat_month_range(
-            user_query,
-            parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
+        # 요청 시간 해석이 있으면(plans/122 T-4) 그 해석이 단일 출처다 — stat_month는 호환 값.
+        stat_month=(
+            stat_month_compat(query_time) if query_time is not None
+            else resolve_stat_month_range(
+                user_query,
+                parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
+            )
         ),
         month_measures=month_series.measures if month_series else None,
         concat_eav=concat_eav or None,
+        period=_metric_period,
     )
     month_anchor = None
     if month_series:
@@ -493,6 +523,9 @@ class _GenContext:
     #: 브리지는 대상 스코프를 잡았는데 종전(컬럼명 판정) 스코프가 없는가 — 결정적 컴파일을
     #: 건너뛰는 조건(권고 H).
     bridge_only_scope: bool = False
+    #: 요청 시간 해석(state `time_resolution` · plans/122 T-4 · D-306). None이면(플래그 off ·
+    #: 옛 체크포인트) 모든 기간 소비 지점이 종전 경로(`stat_month` 표면어 해석)를 탄다.
+    query_time: QueryTime | None = None
 
 
 def _prepare(
@@ -525,10 +558,23 @@ def _prepare(
         state, user_query, app_config.query.default_limit,
         parsed_limit=_parsed_req.get("limit"),
     )
-    # 기간 표현(지난 N개월/지난달 등)의 결정적 해석 — 트랙 C 컴파일과 LLM 폴백 프롬프트가 공유
-    stat_month = resolve_stat_month_range(
-        user_query, parsed_time_range=_parsed_req.get("time_range")
-    )
+    # 요청 시간 해석(plans/122 T-4) — input_parser가 요청마다 한 번 계산한 단일 출처. 있으면
+    # 기간을 쓰는 모든 지점(결정적 조립·컴파일·폴백 프롬프트·기간 대비)이 이것만 읽는다.
+    query_time = QueryTime.from_state(state.get("time_resolution"))
+    if query_time is None and state.get("time_resolution"):
+        # 침묵 폴백 금지 — 값은 있는데 모양이 어긋났다(버전 불일치 등). 종전 경로로 간다.
+        logger.warning(
+            "time_resolution 해석 불가(모양 불일치) — 종전 기간 해석으로 진행: %r",
+            str(state.get("time_resolution"))[:200],
+        )
+    # 기간 표현(지난 N개월/지난달 등)의 결정적 해석 — 트랙 C 컴파일과 LLM 폴백 프롬프트가 공유.
+    # 해석이 있으면 종전 인자 자리에는 호환 값(월 경계 해석만)을 싣는다.
+    if query_time is not None:
+        stat_month: Any = stat_month_compat(query_time)
+    else:
+        stat_month = resolve_stat_month_range(
+            user_query, parsed_time_range=_parsed_req.get("time_range")
+        )
     # 통계 테이블 강제 블록(build_stat_month_block)은 폴스타 월 통계 테이블(cmm_metric_stat_m)
     # 규약에 특화된 지시라, 그 테이블을 선언한 DB에만 주입한다(L2 일반화, P1-3/D-088). 현재는
     # 폴스타가 유일한 선언 DB이므로 폴스타 게이트(폴스타 시스템 템플릿과 동일 신호)로 판정하고,
@@ -555,6 +601,7 @@ def _prepare(
         bridge_only_scope=(
             _prior_scope is None and _bridge_only_scope(state, app_config)
         ),
+        query_time=query_time,
     )
 
 
@@ -580,6 +627,7 @@ def _try_deterministic(state: AgentState, ctx: _GenContext) -> Optional[dict]:
         return None
     form_fill = _try_build_form_fill_pivot_sql(
         state, ctx.limit_value, ctx.user_query, adapter_db_ids=ctx.adapter_db_ids,
+        query_time=ctx.query_time,
     )
     if form_fill and form_fill.get("sql"):
         logger.info(
@@ -632,7 +680,9 @@ def _try_spike(state: AgentState, ctx: _GenContext) -> Optional[dict]:
     if not request:
         return None
 
-    periods = resolve_comparison_periods(surface)
+    # 기준일 — 요청 시간 해석이 있으면 그 기준 시각(단일 기준 시각 · plans/122 T-4), 없으면 오늘
+    ref_day = ctx.query_time.anchor_at.date() if ctx.query_time is not None else date.today()
+    periods = resolve_comparison_periods(surface, today=ref_day)
     if isinstance(periods, BlockedComparison):
         # 약속하고 조용히 누락시키는 것이 최악이다 — 사유와 대체 제안을 응답에 남기고
         # SQL은 LLM 경로에 맡긴다(§6.12 ③).
@@ -656,7 +706,7 @@ def _try_spike(state: AgentState, ctx: _GenContext) -> Optional[dict]:
         # 비교 표현이 없으면 선언 파일의 기본 기준(month)을 쓴다 — 질의가 이미 해석한
         # 기간이 있으면 그 끝 월을 현재로 삼는다.
         rng = normalize_stat_month(ctx.stat_month)
-        cur_month = rng[1] if rng else previous_month(date.today().strftime("%Y%m"))
+        cur_month = rng[1] if rng else previous_month(ref_day.strftime("%Y%m"))
         base_month = previous_month(cur_month)
 
     domain = get_domain_by_id(db_id)
@@ -728,6 +778,9 @@ async def _try_semantic(
         derivation_sink=derivation_sink,
         parsed_filters=(state.get("parsed_requirements") or {}).get("filter_conditions"),
         surface_query=surface_query_for_judgment(state, ctx.user_query),
+        # 요청 시간 해석(plans/122 T-4) — 패턴별 주체(통계 metric · 알람 event)는 컴파일러가 고른다.
+        # getattr: `_try_semantic`만 부르는 테스트 대역 컨텍스트에 필드가 없을 수 있다.
+        query_time=getattr(ctx, "query_time", None),
     )
     if semantic_sql:
         logger.info("시맨틱 결정적 컴파일 SQL(LLM 우회): %s", semantic_sql[:500])
@@ -736,11 +789,17 @@ async def _try_semantic(
 
 async def _build_fallback_prompts(
     state: AgentState, ctx: _GenContext,
-) -> tuple[str, str]:
-    """트랙 A LLM 폴백에 쓸 (시스템, 사용자) 프롬프트를 조립한다.
+) -> tuple[str, str, dict[str, Any]]:
+    """트랙 A LLM 폴백에 쓸 (시스템, 사용자) 프롬프트와 예산 표지를 조립한다.
 
     사용자 프롬프트는 기본 조립 뒤 조건부 블록(기간 강제·값 인덱스·선행 스코프)을 순서대로
     덧붙인다 — 이 순서가 곧 프롬프트 바이트라 sha256 골든의 판정 대상이다.
+
+    두 프롬프트를 다 조립한 뒤 토큰 예산 사다리(`_fit_single_prompt_budget`)를 거친다 — 예산
+    안이면 바이트 무변경이고, 끝까지 넘으면 ``PromptBudgetExceeded``를 던진다(호출 없이 종결).
+
+    Returns:
+        (시스템 프롬프트, 사용자 프롬프트, 상태 표지 ``prompt_budget``)
     """
     app_config = ctx.app_config
     is_retry, user_query = ctx.is_retry, ctx.user_query
@@ -751,40 +810,15 @@ async def _build_fallback_prompts(
         state, user_query, app_config,
     )
 
-    # 프롬프트 구성
-    system_prompt = _build_system_prompt(
-        schema_info=state["schema_info"],
-        default_limit=ctx.limit_value,
-        column_descriptions=state.get("column_descriptions", {}),
-        column_synonyms=state.get("column_synonyms", {}),
-        resource_type_synonyms=state.get("resource_type_synonyms"),
-        eav_name_synonyms=state.get("eav_name_synonyms"),
-        active_db_id=state.get("active_db_id"),
-        polestar_db_ids=ctx.adapter_db_ids,
-        active_db_engine=state.get("active_db_engine"),
-        routing_intent=state.get("routing_intent"),
-        query_history_examples=history_examples,
-        path_parity=path_parity_enabled(app_config),
-    )
-
-    # 토큰 예산 가드(D-159, 단일·멀티 공통 후속 — W-6 예고분). 단일 경로는 relevant
-    # 게이트로 이미 좁혀져 발동이 이례적이므로 강등만 하고 실패시키지는 않는다 —
-    # 최종 초과분은 백엔드 예외 감지(멀티 D-159 FIX-C 대응)가 사후 방어한다.
-    # 예산 내면 바이트 무변경(프롬프트 sha256 스냅샷 계약 유지).
-    _budget = resolve_prompt_token_budget(app_config)
-    if _budget and estimate_prompt_tokens(system_prompt) > _budget:
-        _est_before = estimate_prompt_tokens(system_prompt)
-        logger.warning(
-            "[토큰예산] 단일 경로 초과(추정 %d > 예산 %d, db=%s) — 유사어·설명 재료 "
-            "제거 후 재조립", _est_before, _budget, state.get("active_db_id"),
-        )
-        system_prompt = _build_system_prompt(
-            schema_info=state["schema_info"],
+    def _render_system(schema_info: dict[str, Any], *, materials: bool) -> str:
+        """시스템 프롬프트 — ``materials=False``면 유사어·설명 재료를 뺀다(예산 사다리 1단)."""
+        return _build_system_prompt(
+            schema_info=schema_info,
             default_limit=ctx.limit_value,
-            column_descriptions=None,
-            column_synonyms=None,
-            resource_type_synonyms=None,
-            eav_name_synonyms=None,
+            column_descriptions=state.get("column_descriptions", {}) if materials else None,
+            column_synonyms=state.get("column_synonyms", {}) if materials else None,
+            resource_type_synonyms=state.get("resource_type_synonyms") if materials else None,
+            eav_name_synonyms=state.get("eav_name_synonyms") if materials else None,
             active_db_id=state.get("active_db_id"),
             polestar_db_ids=ctx.adapter_db_ids,
             active_db_engine=state.get("active_db_engine"),
@@ -792,19 +826,14 @@ async def _build_fallback_prompts(
             query_history_examples=history_examples,
             path_parity=path_parity_enabled(app_config),
         )
-        _est_after = estimate_prompt_tokens(system_prompt)
-        if _est_after > _budget:
-            # 재료 제거로도 초과 — 스키마 자체가 과대(스코프 미필터 캐시). 강등 사실과
-            # 잔여 초과를 로그로 남긴다(단일 경로는 여기서 실패시키지 않음 — 위 주석).
-            logger.error(
-                "[토큰예산] 단일 경로 재료 제거 후에도 초과(추정 %d > 예산 %d, db=%s, "
-                "테이블 %d개) — relevant 게이트/프로필 점검 필요",
-                _est_after, _budget, state.get("active_db_id"),
-                len((state["schema_info"] or {}).get("tables") or {}),
-            )
+
+    # 프롬프트 구성
+    system_prompt = _render_system(state["schema_info"], materials=True)
 
     user_prompt = _build_user_prompt(
-        parsed_requirements=state["parsed_requirements"],
+        # 시간 해석이 있으면 원시 기간 키(time_range 등)를 덤프에서 뺀다 — 아래 기간 블록과
+        # 이중 신호가 되지 않게(plans/122 §10.2 ⑦). 해석이 없으면 같은 객체(바이트 불변).
+        parsed_requirements=strip_raw_time_keys(state["parsed_requirements"], ctx.query_time),
         template_structure=state.get("template_structure"),
         error_message=state.get("error_message") if is_retry else None,
         previous_sql=state.get("generated_sql") if is_retry else None,
@@ -822,13 +851,24 @@ async def _build_fallback_prompts(
     # 기간 표현이 있으면 결정적으로 해석된 단일 월(YYYYMM)을 강제한다 — 시스템 템플릿의
     # "CURRENT_DATE 동적 계산" 일반 규칙을 LLM이 따르면 BETWEEN으로 진행 중인 달까지
     # 포함하는 실측 오류가 있었다(D-076 후속4).
-    _sm_block = build_stat_month_block(ctx.stat_month) if ctx.stat_block_db else ""
+    # 요청 시간 해석이 있으면(plans/122 T-5) 입도·테이블까지 해석기가 정한 기간 블록으로
+    # 바꾼다 — 멀티 경로(`_period_prompt_block`)와 같은 함수(D-066 단일 출처).
+    _qt = ctx.query_time
+    if not ctx.stat_block_db:
+        _sm_block = ""
+    elif _qt is not None:
+        _sm_block = build_period_block(_qt)
+    else:
+        _sm_block = build_stat_month_block(ctx.stat_month)
     if _sm_block:
         user_prompt += "\n\n" + _sm_block
     # 무선언(프로필 없음) DB: GENERIC_LLM_MAPPING 옵트인 시 범용 기간 힌트(폴스타 리터럴 없음).
     # 선언 우선 — 폴스타(stat_block_db)는 위 결정적 블록을 쓰므로 이 경로에 들어오지 않는다(P3/D-090).
     elif app_config.text2sql.generic_llm_mapping:
-        _gp_block = build_generic_period_hint(ctx.stat_month)
+        _gp_block = (
+            build_generic_time_hint(_qt.metric) if _qt is not None
+            else build_generic_period_hint(ctx.stat_month)
+        )
         if _gp_block:
             user_prompt += "\n\n" + _gp_block
 
@@ -841,6 +881,7 @@ async def _build_fallback_prompts(
             user_query=user_query,
             parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
             allowed_tables=((state.get("schema_info") or {}).get("tables") or {}).keys(),
+            period=metric_period(_qt),
         ))
         if _ms_block:
             user_prompt += "\n\n" + _ms_block
@@ -868,7 +909,94 @@ async def _build_fallback_prompts(
             _pr_block = scrub_pii(_pr_block)
         user_prompt += "\n\n" + _pr_block
 
-    return system_prompt, user_prompt
+    # 토큰 예산 사다리(D-305 ⑥ · plans/138 W2 — D-159 FIX-B 「단일은 강등만」 개정): 시스템 +
+    # 사용자 프롬프트를 추정해 넘으면 재료 → 표본 순으로 줄이고, 그래도 넘으면 보내지 않는다.
+    system_prompt, prompt_budget = _fit_single_prompt_budget(
+        _render_system, state["schema_info"], system_prompt, user_prompt,
+        budget=resolve_prompt_token_budget(app_config), db_id=state.get("active_db_id"),
+    )
+    return system_prompt, user_prompt, prompt_budget
+
+
+def _fit_single_prompt_budget(
+    render_system: Callable[..., str],
+    schema_info: dict[str, Any],
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    budget: int,
+    db_id: str | None,
+) -> tuple[str, dict[str, Any]]:
+    """단일 경로 프롬프트를 토큰 예산에 맞춘다 — 멀티(`_build_multi_system_prompt`)와 같은 사다리.
+
+    추정은 시스템 + 사용자 프롬프트다. 예산 안(또는 예산 0 = 가드 비활성)이면 시스템 프롬프트를
+    그대로 돌려준다(바이트 무변경). 넘으면 ①유사어·설명 재료 제거 ②표본(`sample_data`) 제거 —
+    스키마는 얕은 사본으로 바꿔 캐시 공유 객체를 건드리지 않는다 ③그래도 넘으면 LLM을 부르지
+    않도록 ``PromptBudgetExceeded``를 던진다. 강등·중단은 전부 ``[토큰예산]`` 로그로 남긴다
+    (침묵 강등 금지). 사용자 프롬프트는 줄이지 않는다.
+
+    Args:
+        render_system: ``(schema_info, *, materials: bool) -> str`` 시스템 프롬프트 렌더러
+        schema_info: 이번 생성의 스키마(테이블·표본·구조 메타)
+        system_prompt: 재료·표본을 모두 실은 시스템 프롬프트
+        user_prompt: 완성된 사용자 프롬프트
+        budget: 토큰 예산(0 이하 = 가드 비활성)
+        db_id: 로그용 대상 DB
+
+    Returns:
+        (보낼 시스템 프롬프트, 상태 표지 ``prompt_budget`` — 추정치·예산·단계·테이블 수·표본 유무)
+    """
+    tables = (schema_info or {}).get("tables") or {}
+    table_count = len(tables)
+    user_tokens = estimate_prompt_tokens(user_prompt)
+
+    def _mark(estimated: int, stage: str, samples: bool) -> dict[str, Any]:
+        return {
+            "estimated_tokens": estimated, "budget": budget, "stage": stage,
+            "table_count": table_count, "samples": samples,
+        }
+
+    has_samples = any(
+        isinstance(data, dict) and bool(data.get("sample_data")) for data in tables.values()
+    )
+    est = estimate_prompt_tokens(system_prompt) + user_tokens
+    if budget <= 0 or est <= budget:
+        return system_prompt, _mark(est, PROMPT_BUDGET_WITHIN, has_samples)
+
+    logger.warning(
+        "[토큰예산] 단일 경로 db=%s 초과(추정 %d > 예산 %d · 시스템+사용자) — 1단 절단: "
+        "유사어·설명 재료 제거", db_id, est, budget,
+    )
+    system_prompt = render_system(schema_info, materials=False)
+    est = estimate_prompt_tokens(system_prompt) + user_tokens
+    if est <= budget:
+        return system_prompt, _mark(est, PROMPT_BUDGET_MATERIALS, has_samples)
+
+    logger.warning(
+        "[토큰예산] 단일 경로 db=%s 여전히 초과(추정 %d > 예산 %d) — 2단 절단: 표본 데이터 제거",
+        db_id, est, budget,
+    )
+    no_samples = {
+        **schema_info,
+        "tables": {
+            name: {k: v for k, v in (data or {}).items() if k != "sample_data"}
+            for name, data in tables.items()
+        },
+    }
+    system_prompt = render_system(no_samples, materials=False)
+    est = estimate_prompt_tokens(system_prompt) + user_tokens
+    if est <= budget:
+        return system_prompt, _mark(est, PROMPT_BUDGET_SAMPLES, False)
+
+    logger.error(
+        "[토큰예산] 단일 경로 db=%s 절단 후에도 초과(추정 %d > 예산 %d, 테이블 %d개) — "
+        "전송 전 예산 초과: LLM 호출 중단", db_id, est, budget, table_count,
+    )
+    raise PromptBudgetExceeded(
+        f"전송 전 예산 초과(db={db_id}): 추정 {est} > 예산 {budget}, 테이블 {table_count}개 — "
+        "유사어·설명·표본을 빼도 한도를 넘습니다. 조회 대상 테이블 축소 필요",
+        budget_state=_mark(est, PROMPT_BUDGET_EXCEEDED, False),
+    )
 
 
 async def _llm_fallback(
@@ -885,7 +1013,14 @@ async def _llm_fallback(
     text2sql_fallback: dict | None = None
     extra_return: dict = {}
 
-    system_prompt, user_prompt = await _build_fallback_prompts(state, ctx)
+    try:
+        system_prompt, user_prompt, prompt_budget = await _build_fallback_prompts(state, ctx)
+    except PromptBudgetExceeded as exc:
+        # 전송 전 예산 초과(plans/138 W2 · D-305 ⑥) — LLM을 부르지 않고 빈 산출로 끝낸다.
+        # 검증 노드가 `prompt_budget.stage == "exceeded"`를 보고 재생성 없이 종결한다(백엔드
+        # 한도 초과와 같은 종결 — 그래프·2단 단일 루프 공통). 예외를 노드 밖으로 내보내지 않는다.
+        return "", None, None, {"prompt_budget": exc.budget_state}
+    extra_return["prompt_budget"] = prompt_budget
 
     # 트랙 A(E2~E4): 다중 후보 생성·선택. 재시도(에러 컨텍스트)에는 미진입(현행 단일 수정 경로).
     use_multi = (
@@ -1064,6 +1199,20 @@ async def query_generator(
         - error_message: None (초기화)
         - current_node: "query_generator"
     """
+    # 정의 기반 테이블 선별 0개(plans/138 W4 · D-305 G-2) — 조회 대상 테이블이 없으니 LLM을 부르지
+    # 않고 빈 산출로 끝낸다. 검증 노드가 같은 신호를 보고 재생성 없이 안내 문구로 종결한다.
+    if selection_none_active(state):
+        logger.warning("SQL 생성 생략: 정의 기반 테이블 선별 0개 — LLM 미호출")
+        return {
+            "generated_sql": "",
+            "sql_candidates": None,
+            "text2sql_fallback": None,
+            "smq_derivation": None,
+            "retry_count": state.get("retry_count", 0),
+            "error_message": None,
+            "current_node": "query_generator",
+        }
+
     ctx = _prepare(state, llm, app_config)
 
     # 폼필 확인 이력(D-151 Phase 3) — 시그니처 이력을 답변 형식으로 로드해 이번 턴
@@ -1188,6 +1337,8 @@ def _try_deterministic_alarm_single(state: AgentState, ctx: "_GenContext") -> Op
         limit=ctx.limit_value,
         enabled=True,
         parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
+        # 알람은 사건 주체 해석(D-291 — 기간 없음 = 조건 없음 · 진행 중 = 기준 시각까지)
+        period=ctx.query_time.event if ctx.query_time is not None else None,
     )
     if sql:
         logger.info("[알람조립] 단일 경로 결정적 SQL 사용(db=%s)", db_id)
@@ -1222,6 +1373,9 @@ def _build_stepwise_deps(
         schema_info=state.get("schema_info") or {},
         db_engine=state.get("active_db_engine") or "postgresql",
         default_limit=limit_value,
+        # 요청 시간 해석(plans/122 T-4) — 기간 해석 도구가 요청 단위 해석을 쓴다(2단 task는 격리
+        # state가 task별 값을 싣는다). 멀티 경로(`multi_db_executor._build_stepwise_deps`)와 대칭.
+        time_resolution=state.get("time_resolution"),
     )
 
 
@@ -1450,8 +1604,10 @@ def _build_system_prompt(
     if template is None:
         template = QUERY_GENERATOR_SYSTEM_TEMPLATE
 
+    # 선별 테이블의 「테이블 용도」 블록을 스키마 바로 앞에 붙인다 — 멀티 경로와 같은 빌더·같은
+    # 자리(plans/138 W5 · D-305 ⑤ · D-066). 정의 없는 DB는 빈 문자열이라 바이트 불변.
     return template.format(
-        schema=schema_text,
+        schema=build_table_purpose_block(schema_info) + schema_text,
         default_limit=default_limit,
         structure_guide=structure_guide,
         db_engine_hint=db_engine_hint,

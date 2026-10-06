@@ -27,6 +27,8 @@ from src.domain import disclosure as disc
 from src.domain.empty_answer import entity_lines, identifier_only_values, render_diagnosis
 from src.domain.empty_answer import from_payload as diagnosis_from_payload
 from src.domain.partial_result import render_markdown_table
+from src.domain.query_time import QueryTime
+from src.domain.time_spec import Subject, TimeResolution
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.nodes.intent_frame_builder import CONSUMER_OUTPUT_GENERATOR, get_prompt_query
 from src.prompts.output_generator import OUTPUT_SUMMARY_SYSTEM_PROMPT
@@ -150,6 +152,7 @@ async def _run_output_generator(
         response = await _generate_text_response(
             app_config, state, llm=llm, stream_user_response=stream_user_response
         )
+        response = _append_query_period_note(response, state)
         response = _append_inferred_mapping_info(response, state)
         response = _append_spike_notes(response, state)
         response = _append_scope_note(response, state)
@@ -199,6 +202,7 @@ async def _run_output_generator(
                 # 역질문 없이 끝나는 폼필 턴만 요약한다 — 채운 열 목록을 요약 입력에(plans/120 F-6)
                 form_fill_stats=None if clarification else file_result.get("fill_stats"),
             )
+            text_response = _append_query_period_note(text_response, state)
             text_response = _append_inferred_mapping_info(text_response, state)
             text_response = _append_spike_notes(text_response, state)
             text_response = _append_scope_note(text_response, state)
@@ -367,7 +371,11 @@ async def _generate_text_response(
 
     # 결과가 없는 경우
     if not organized["rows"]:
-        return _generate_empty_result_response(parsed, state.get("empty_diagnosis"))
+        qt = QueryTime.from_state(state.get("time_resolution"))
+        return _generate_empty_result_response(
+            parsed, state.get("empty_diagnosis"),
+            period_explicit=qt.explicit if qt is not None else None,
+        )
 
     # 전 행 null 강등(C-06): 값 칼럼이 전부 전 행 null이면 의미 없는 목록 표 대신 결정적
     # 안내로 응답한다(LLM 미호출). CSV 산출 원본(query_results)은 건드리지 않는다.
@@ -549,7 +557,10 @@ def _form_fill_pending_notice(unresolved: int) -> str:
 
 
 def _generate_empty_result_response(
-    parsed: dict, diagnosis_payload: dict | None = None
+    parsed: dict[str, Any],
+    diagnosis_payload: dict[str, Any] | None = None,
+    *,
+    period_explicit: bool | None = None,
 ) -> str:
     """결과가 0건일 때의 응답을 생성한다.
 
@@ -563,6 +574,8 @@ def _generate_empty_result_response(
     Args:
         parsed: 파싱된 요구사항
         diagnosis_payload: `state["empty_diagnosis"]`(없으면 None)
+        period_explicit: 사용자가 기간을 말했는가(시간 해석 `QueryTime.explicit` · plans/122 T-4).
+            None이면 종전대로 파서 `time_range` 유무로 본다(플래그 off).
 
     Returns:
         빈 결과 안내 텍스트
@@ -592,7 +605,8 @@ def _generate_empty_result_response(
             response += "\n- 대상 이름(서버명·호스트명·IP)이 정확한지 확인해보세요"
         else:
             response += "\n- 필터 조건을 완화해보세요 (예: 임계값 낮추기)"
-        if parsed.get("time_range"):
+        has_period = parsed.get("time_range") if period_explicit is None else period_explicit
+        if has_period:
             response += "\n- 시간 범위를 넓혀보세요"
 
     return response
@@ -707,12 +721,21 @@ def _generate_all_null_response(
         "목록 표시를 생략합니다.\n"
         "원본 조회 데이터는 CSV 다운로드로 확인할 수 있습니다."
     )
-    info = _build_reference_info(state)
-    period = info.get("period")
-    this_month = date.today().strftime("%Y%m")
-    if period and str(period[1]) >= this_month:
+    period_text: str | None = None
+    qt = QueryTime.from_state(state.get("time_resolution"))
+    if qt is not None:
+        # 시간 해석(plans/122 T-8 · 검증 D9) — 기준일은 해석 기준 시각, 판정은 「이번 달」 규칙
+        res = _month_to_date_period(qt)
+        if res is not None:
+            period_text = res.label()
+    else:
+        period = _build_reference_info(state).get("period")
+        this_month = date.today().strftime("%Y%m")
+        if period and str(period[1]) >= this_month:
+            period_text = f"{_format_ym(str(period[0]))}~{_format_ym(str(period[1]))}"
+    if period_text:
         response += (
-            f"\n\n[안내] 조회 기간({_format_ym(str(period[0]))}~{_format_ym(str(period[1]))})에 "
+            f"\n\n[안내] 조회 기간({period_text})에 "
             "진행 중인 달이 포함되어 있습니다. 폴스타 월간 통계는 직전월까지 집계되므로, "
             "직전월 기준으로 다시 질의하면 값이 조회될 수 있습니다."
         )
@@ -819,7 +842,10 @@ def _build_response_prompt(
                 "(M=첫 달, 이후 M+1, M+2 … 순)"
             )
         period = reference_info.get("period")
-        if period:
+        period_text = reference_info.get("period_text")
+        if period_text:  # 시간 해석(plans/122 T-8) — 응답 고지 `[조회 기간]`과 같은 표기
+            ref_lines.append(f"- 조회 기간: {period_text}")
+        elif period:
             ref_lines.append(f"- 조회 기간: {_format_ym(period[0])} ~ {_format_ym(period[1])}")
         parts.append(
             "## 기준 정보\n"
@@ -1033,7 +1059,14 @@ def _build_reference_info(state: AgentState) -> dict:
     앵커는 `form_month_anchor`(D-146/D-185), 조회 기간은 `resolve_stat_month_range`
     (정규식 1순위 → LLM time_range 폴백)로 SQL 필터와 같은 값을 쓴다. 기간 표현이 없으면
     오늘만 싣는다(비폼필 "지난달"류 서술의 연도 정확도도 함께 보강).
+
+    시간 해석(state `time_resolution` · plans/122 T-4·T-8)이 있으면 오늘 = 해석 기준 시각의 날짜,
+    조회 기간 = 이번 조회의 실행 SQL이 실제로 쓴 해석(없으면 사용자가 말한 기간)의 사람이 읽는 표기
+    (`period_text` — 응답 고지 `[조회 기간]`과 같은 표기 · 'YYYYMM' 노출 없음)다. 없으면 종전 경로.
     """
+    qt = QueryTime.from_state(state.get("time_resolution"))
+    if qt is not None:
+        return _reference_info_from_query_time(state, qt)
     today = date.today()
     info: dict = {"today": today.isoformat()}
     anchor = state.get("form_month_anchor") or {}
@@ -1047,6 +1080,23 @@ def _build_reference_info(state: AgentState) -> dict:
     )
     if period:
         info["period"] = period
+    return info
+
+
+def _reference_info_from_query_time(state: Mapping[str, Any], qt: QueryTime) -> dict[str, Any]:
+    """시간 해석 기준의 기준 정보(D-186 블록 재사용 · plans/122 T-8 · `_build_reference_info`)."""
+    info: dict[str, Any] = {"today": qt.anchor_at.date().isoformat()}
+    anchor = state.get("form_month_anchor") or {}
+    if anchor.get("start") and anchor.get("end"):
+        info["anchor"] = (str(anchor["start"]), str(anchor["end"]))
+    res: TimeResolution | None = qt.metric if qt.explicit else None
+    subject: Subject = "metric"
+    applied = applied_period(state)
+    if applied is not None:
+        res, subject = applied
+    if res is not None and not res.unbounded:
+        info["period_text"] = disc.period_label(res, subject=subject)
+        info["period_years"] = disc.period_years(res)
     return info
 
 
@@ -1067,6 +1117,7 @@ def _check_response_years(response: str, reference_info: dict | None) -> str | N
         rng = reference_info.get(key)
         if rng:
             years.update({str(rng[0])[:4], str(rng[1])[:4]})
+    years.update(reference_info.get("period_years") or ())  # 시간 해석 경로(plans/122 T-8)
     if not years:
         return None
     summary = response.split("\n|", 1)[0]
@@ -1395,9 +1446,13 @@ def _prepend_alarm_headline(response: str, state: AgentState, app_config) -> str
         return response
     from src.db_adapters.polestar.assembler import recognize_active_alarm_query
 
+    # 시간 해석(plans/122 T-6·T-8) — 알람은 사건 주체(`QueryTime.event`)다. 없으면 종전 경로.
+    qt = QueryTime.from_state(state.get("time_resolution"))
+    event = qt.event if qt is not None else None
     spec = recognize_active_alarm_query(
         state.get("user_query", ""),
         parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
+        period=event,
     )
     if spec is None:
         return response
@@ -1418,7 +1473,11 @@ def _prepend_alarm_headline(response: str, state: AgentState, app_config) -> str
         total, per_zone = len(rows), ""
 
     parts = [_ALARM_MODE_LABELS.get(spec.mode, spec.mode)]
-    if spec.mode == "history" and spec.month_range:
+    if qt is not None:
+        # 사람이 읽는 기간(plans/122 T-8 — 'YYYYMM' 노출 없음). 기간 조건 없음이면 싣지 않는다.
+        if spec.mode == "history" and event is not None and not event.unbounded:
+            parts.append(disc.period_label(event, subject="event"))
+    elif spec.mode == "history" and spec.month_range:
         parts.append(f"{spec.month_range[0]}~{spec.month_range[1]}")
     if spec.type_label:
         parts.append(f"{spec.type_label} 유형")
@@ -1781,6 +1840,23 @@ _CURRENT_MONTH_NOTE_METRIC_TERMS = (
 )
 
 
+def _month_to_date_period(qt: QueryTime) -> TimeResolution | None:
+    """성능 통계 해석이 「이번 달」(당월 1일부터 어제까지의 일 누적)이면 그 해석 — 아니면 None.
+
+    진행 중인 달 안내(「당월 1일부터 어제까지의 일간 통계」 각주 · 전 행 null 안내)의 발동 조건이다
+    (plans/122 T-8 · 검증 D4). 입도 일 · 시작 = 당월 1일 · 완결성 to_date일 때만 참이다 — 「최근
+    3시간」(시간 통계)·「어제」·「지난주」·「3일 전」은 당월에 걸쳐도 그 각주의 사실이 아니다. 매월
+    1일(빈 구간)은 집계된 날이 없어 None이다.
+    """
+    res = qt.metric
+    if res is None or res.start is None or res.end is None or res.is_empty:
+        return None
+    month_start = qt.anchor_at.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if res.grain == "day" and res.start == month_start and res.completeness == "to_date":
+        return res
+    return None
+
+
 def _append_current_month_partial_note(response: str, state: AgentState) -> str:
     """진행 중인 달이 조회 기간에 포함된 성능 통계 응답에 집계 기준을 결정적으로 명시한다.
 
@@ -1805,16 +1881,25 @@ def _append_current_month_partial_note(response: str, state: AgentState) -> str:
     )
     if not any(t in query.lower() for t in _CURRENT_MONTH_NOTE_METRIC_TERMS):
         return response
-    today = date.today()
-    parsed = state.get("parsed_requirements") or {}
-    period = resolve_stat_month_range(
-        query, today, parsed_time_range=parsed.get("time_range")
-    )
-    if not period or str(period[1]) != today.strftime("%Y%m"):
-        return response
+    qt = QueryTime.from_state(state.get("time_resolution"))
+    if qt is not None:
+        # 시간 해석(plans/122 T-4) — 성능 통계 해석이 「이번 달」(당월 1일부터의 일 누적)일 때만
+        res = _month_to_date_period(qt)
+        if res is None:
+            return response
+        current_ym = f"{qt.anchor_at:%Y%m}"
+    else:
+        today = date.today()
+        parsed = state.get("parsed_requirements") or {}
+        period = resolve_stat_month_range(
+            query, today, parsed_time_range=parsed.get("time_range")
+        )
+        if not period or str(period[1]) != today.strftime("%Y%m"):
+            return response
+        current_ym = str(period[1])
     return (
         response
-        + f"\n\n[안내] 조회 기간에 진행 중인 달({_format_ym(str(period[1]))})이 포함되어 "
+        + f"\n\n[안내] 조회 기간에 진행 중인 달({_format_ym(current_ym)})이 포함되어 "
         "있습니다. 진행 중인 달의 값은 확정 월간 통계가 아니라 당월 1일부터 어제까지의 "
         "일간 통계를 집계한 기준입니다."
     )
@@ -2035,6 +2120,99 @@ def executed_sql_list(state: Mapping[str, Any]) -> list[str]:
     return [str(chosen[-1]["sql"])] if chosen else []
 
 
+# ── 결정적 고지: 조회 기간 (plans/122 T-8 · §10.3 「고지」 · D-306) ──────────────────────
+
+
+def applied_period(state: Mapping[str, Any]) -> tuple[TimeResolution, Subject] | None:
+    """이번 조회의 실행 SQL이 **실제로 쓴** 기간 해석과 그 주체 — 없으면 None.
+
+    기간과 무관한 질의(「서버 목록」)에 「지난달 기준」을 붙이면 거짓 고지다. 그래서 해석 결과의
+    리터럴 경계가 실행 SQL(`executed_sql_list`)에 들어 있을 때만 그 해석을 돌려준다
+    (`time_period.sql_applies_period`). 성능 통계(`metric`)·사건(`event`) 둘 다 맞으면 통계가
+    우선이고, 알람 질의(`routing_intent == "alarm_query"`)면 사건이 우선이다. 시간 해석이 없으면
+    (플래그 off) None — 종전 응답과 같다. 비SQL 소스(APM·REST·PromQL)는 실행 SQL이 없어 None이다.
+
+    폼필 월 시리즈 앵커(`form_month_anchor`)가 있으면 None이다(검증 D10). 양식의 월 칼럼 수가 SQL
+    기간을 정해(예: 6칸 → 6개월) 해석과 다르고, 실제로 채운 월은 폼필 「[기준월 안내]」가
+    사람이 읽는 형식으로 이미 적는다 — 같은 사실을 두 줄로 싣지 않는다.
+    """
+    if _has_month_series_anchor(state):
+        return None
+    qt = QueryTime.from_state(state.get("time_resolution"))
+    if qt is None:
+        return None
+    sqls = executed_sql_list(state)
+    if not sqls:
+        return None
+    from src.db_adapters.polestar.time_period import sql_applies_period
+
+    def applies(res: TimeResolution | None) -> bool:
+        return res is not None and any(sql_applies_period(sql, res) for sql in sqls)
+
+    metric_hit = applies(qt.metric)
+    event_hit = applies(qt.event)
+    if event_hit and qt.event is not None and (
+        state.get("routing_intent") == "alarm_query" or not metric_hit
+    ):
+        return qt.event, "event"
+    if metric_hit and qt.metric is not None:
+        return qt.metric, "metric"
+    return None
+
+
+def _has_month_series_anchor(state: Mapping[str, Any]) -> bool:
+    """월 시리즈(폼필) 앵커가 SQL 기간을 정했는가 — `_append_form_fill_notes`와 같은 판정."""
+    anchor = state.get("form_month_anchor") or {}
+    return isinstance(anchor, Mapping) and bool(anchor.get("start") and anchor.get("end"))
+
+
+def _query_period_text_one(state: Mapping[str, Any]) -> str | None:
+    applied = applied_period(state)
+    if applied is None:
+        return None
+    res, subject = applied
+    return disc.query_period_text(res, subject=subject)
+
+
+def query_period_texts(state: Mapping[str, Any]) -> list[str]:
+    """조회 기간 고지 문장들(`[조회 기간] …`) — 실행 SQL이 쓴 해석이 없으면 빈 목록.
+
+    병합 경로(2단 공통 서버 키 병합)는 `period_sources`로 **원천 task별** 시간 해석·실행 SQL·의도를
+    받는다 — task 문장에 명시 기간이 있으면 task마다 해석이 다를 수 있다(plans/122 §10.3 「2단
+    task」). 원천에 해석이 없으면 이 상태의 해석을 쓴다. 같은 문장은 한 번만 싣는다.
+    """
+    if _has_month_series_anchor(state):
+        return []  # 기간은 폼필 [기준월 안내]가 말한다(검증 D10 — `applied_period`)
+    sources = state.get("period_sources")
+    if isinstance(sources, list) and sources:
+        texts: list[str] = []
+        for src in sources:
+            if not isinstance(src, Mapping):
+                continue
+            text = _query_period_text_one({
+                **src,
+                "time_resolution": src.get("time_resolution") or state.get("time_resolution"),
+            })
+            if text and text not in texts:
+                texts.append(text)
+        return texts
+    text = _query_period_text_one(state)
+    return [text] if text else []
+
+
+def _append_query_period_note(response: str, state: AgentState) -> str:
+    """이번 조회가 쓴 기간을 응답 본문 끝에 결정적으로 싣는다(plans/122 T-8).
+
+    해석 출처가 기본값(기간 미지정 = 지난달)·모델 해석이어도 조용히 넘어가지 않는다(침묵 폴백
+    금지). 고지 kind는 `disclosure.QUERY_PERIOD`(의무)이고 문구는 `disclosure.query_period_text`가
+    정한다. 실행 SQL이 그 해석의 경계를 쓰지 않았으면(기간과 무관한 질의 · 플래그 off) no-op.
+    """
+    texts = query_period_texts(state)
+    if not texts:
+        return response
+    return response + "\n\n" + disc.render_lines(disc.make(disc.QUERY_PERIOD, t) for t in texts)
+
+
 def _generator_note_texts(state: Mapping[str, Any]) -> list[str]:
     """SQL 주석의 자기 고백(「무시」·「생략」·「상충」 …)을 원문 인용한 고지 문장들(S-8)."""
     from src.domain.sql_disclosure import generator_confessions
@@ -2169,6 +2347,8 @@ def collect_disclosures(state: Mapping[str, Any], response: str) -> list[disc.Di
     )
     body = response or ""
     found: list[disc.Disclosure] = []
+    for text in query_period_texts(state):
+        found.append(disc.make(disc.QUERY_PERIOD, text, source=source))
     for text in _limit_truncation_texts(state):
         found.append(disc.make(disc.ROW_LIMIT_REACHED, text, source=source))
     for text in _generator_note_texts(state):

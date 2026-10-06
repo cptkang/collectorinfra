@@ -18,15 +18,21 @@
   나머지는 구조 필드로만 남긴다(123 RK-5 — 고지 누적으로 응답이 장황해지는 것을 막는다).
 - 134 APM 고지 kind(SPEC-apm-question-coverage §7.5)와 선택 칸 `ref`(`{"apm_job_id": …}` — 화면이
   작업 카드를 그리는 참조 · 134 W0-B). `make`·`dedupe`가 `ref`를 보존한다.
+- 122 조회 기간 고지 kind(`QUERY_PERIOD` · plans/122 T-8)와 그 문구(`query_period_text`) — 해석
+  결과(`TimeResolution`)를 사람이 읽는 한 줄로 바꾼다. 'YYYYMM'을 노출하지 않는다.
 
-계층: domain — 순수 · I/O·LLM·전역 상태 0.
+계층: domain — 순수 · I/O·LLM·전역 상태 0. `src.domain.time_spec`(domain)만 더 의존한다.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Literal, NotRequired, TypedDict
+
+from src.domain import time_spec as ts
+from src.domain.time_spec import Subject, TimeResolution
 
 # ── 123 고지 kind (결과가 전부가 아님을 알리는 것) ─────────────────────────────
 
@@ -92,6 +98,14 @@ APM_UNRESOLVED_CONDITION = "apm_unresolved_condition"
 #: 고지 항목의 선택 칸 `ref`에서 작업 카드가 읽는 키(게이트웨이 작업 ID).
 REF_APM_JOB_ID = "apm_job_id"
 
+# ── 122 조회 기간 고지 (plans/122 T-8 · §10.3 「고지」 · D-306) ──────────────────────────────
+
+#: 이번 조회의 실행 SQL이 실제로 쓴 기간 해석을 알린다 — 출처가 기본값(기간 미지정)·모델 해석이면
+#: 그 사실도 적는다(침묵 폴백 금지). 등급은 정하지 않고(neutral) 본문에서 생략하지 않는다(의무).
+QUERY_PERIOD = "query_period"
+#: 조회 기간 고지의 머리표 — 본문에는 `[안내]` 대신 이 머리표로 싣는다(§10.3.1 문구 그대로).
+QUERY_PERIOD_HEAD = "[조회 기간]"
+
 Grade = Literal["partial", "correct", "guide", "refuse", "error", "auxiliary", "neutral"]
 Scope = Literal["task", "turn", "shadow", "foreign"]
 
@@ -144,6 +158,10 @@ KIND_TABLE: dict[str, KindSpec] = {
         KindSpec(SCOPE_PARTIAL, "partial", True, "turn", 10),
         KindSpec(UNREGISTERED_ZONE, "correct", False, "turn", 20),
         KindSpec(UNIT_SUSPECT, "correct", False, "turn", 30),
+        # 122 T-8 — 조회 한 건(task)의 실행 SQL이 쓴 기간. 기본값·모델 해석도 본문에 반드시 나와야
+        # 하므로 의무 고지다(W-9 「본문 최대 3줄」 상한에 밀리지 않는다 · 1단 합성이 떨어뜨리면
+        # 집계기가 되살린다). 응답의 대응 등급은 정하지 않는다.
+        KindSpec(QUERY_PERIOD, "neutral", True, "task", 25),
         # 123 — 섀도(응답 불변 · S-2·S-6 · run R5′ 뒤 기본 on 판정)
         KindSpec(BLANK_INPUT, "guide", False, "shadow"),
         KindSpec(SQL_INPUT, "refuse", False, "shadow"),
@@ -299,10 +317,111 @@ def body_lines_for_turn(items: Iterable[Mapping[str, Any]]) -> list[Disclosure]:
     return body
 
 
+#: 문구가 자기 머리표를 가진 kind — 본문에 `[안내]`를 덧붙이지 않고 문구 그대로 싣는다.
+_SELF_HEADED_KINDS: frozenset[str] = frozenset({QUERY_PERIOD})
+
+
+def render_line(item: Mapping[str, Any]) -> str:
+    """고지 한 건의 본문 줄 — `[안내] …`(머리표를 가진 kind는 문구 그대로 · `[조회 기간] …`)."""
+    text = str(item.get("text") or "")
+    return text if item.get("kind") in _SELF_HEADED_KINDS else f"[안내] {text}"
+
+
 def render_lines(items: Iterable[Mapping[str, Any]]) -> str:
-    """고지 목록을 본문 꼬리 블록으로 렌더한다 — 한 줄에 하나(`[안내] …`). 없으면 빈 문자열."""
-    lines = [f"[안내] {d['text']}" for d in dedupe(items)]
+    """고지 목록을 본문 꼬리 블록으로 렌더한다 — 한 줄에 하나(`render_line`). 없으면 빈 문자열."""
+    lines = [render_line(d) for d in dedupe(items)]
     return "\n".join(lines)
+
+
+# ── 조회 기간 문구 (plans/122 T-8) ──────────────────────────────────────────────
+
+_GRAIN_LABELS: dict[str, str] = {"hour": "시간 단위", "day": "일 단위", "month": "월 단위"}
+#: 해석기 고지 코드(`TimeResolution.notes`) → 문구. 표에 없는 코드(기본값 표지 등)는 머리 문구가
+#: 이미 말하거나 싣지 않는다.
+_PERIOD_NOTE_PHRASES: dict[str, str] = {
+    ts.NOTE_CURRENT_MONTH_EXCLUDED: "이번 달 제외",
+    ts.NOTE_EMPTY_RANGE: "완결된 구간이 아직 없습니다",
+    ts.NOTE_EVENT_TO_NOW: "현재 시각까지",
+    ts.NOTE_PERIOD_IN_PROGRESS: "진행 중 기간",
+    ts.NOTE_MULTIPLE_PERIODS: "여러 기간을 모두 포함",
+    ts.NOTE_YEAR_INFERRED: "연도 미지정 — 가장 최근 연도로 해석",
+    ts.NOTE_DISPLAY_GRAIN_UNALIGNED: "요청한 집계 단위를 기간 경계에 맞춰 조정",
+    ts.NOTE_FUTURE_PERIOD: "아직 오지 않은 기간 포함",
+}
+_LLM_SOURCE_PHRASE = "모델 해석 — 다르면 날짜를 직접 적어 주세요"
+#: 원문 스팬 에코 상한(자) — LLM 슬롯 스팬은 길이 제한이 없다(리뷰 m-7).
+SPAN_MAX_CHARS = 40
+
+
+def _span_text(span: str) -> str:
+    """고지에 싣는 원문 스팬 — 공백·개행을 한 칸으로 접고 `SPAN_MAX_CHARS`자에서 말줄임한다.
+
+    개행이 남으면 `[조회 기간]` 줄이 쪼개져 줄 단위 중복 제거(집계기)가 어긋난다(리뷰 m-7).
+    """
+    text = " ".join(str(span or "").split())
+    return text if len(text) <= SPAN_MAX_CHARS else text[: SPAN_MAX_CHARS - 1] + "…"
+
+
+def _period_range_label(res: TimeResolution) -> str:
+    """기간 표기(`TimeResolution.label()`). 빈 구간은 날짜만 — 고지 문구가 따로 말한다."""
+    if res.is_empty and res.end is not None:
+        return f"{res.end:%Y-%m-%d %H:%M}" if res.grain == "hour" else f"{res.end:%Y-%m-%d}"
+    start, end = res.start, res.end
+    if (
+        start is not None and end is not None and end - start == timedelta(days=1)
+        and start == start.replace(hour=0, minute=0, second=0, microsecond=0)
+    ):
+        return f"{start:%Y-%m-%d}"  # 하루(「어제」·「9월 15일」)는 날짜 하나로
+    return res.label()
+
+
+def period_label(res: TimeResolution, *, subject: Subject = "metric") -> str:
+    """사람이 읽는 기간 + 집계 단위(`2026-08-30 ~ 2026-09-28 · 일 단위`) — 'YYYYMM' 노출 없음.
+
+    사건(`subject="event"` — 알람)은 통계 집계 단위가 없어 기간만 적는다. 응답 프롬프트의 기준 정보
+    (D-186)와 고지 문구가 같은 표기를 쓴다.
+    """
+    label = _period_range_label(res)
+    if subject == "metric" and not res.unbounded:
+        return f"{label} · {_GRAIN_LABELS[res.grain]}"
+    return label
+
+
+def query_period_text(res: TimeResolution, *, subject: Subject = "metric") -> str:
+    """조회 기간 고지 한 줄 — `[조회 기간] 2026-08-30 ~ 2026-09-28 · 일 단위 (「최근 30일」)`.
+
+    plans/122 §10.3 「고지」·§10.3.1.
+
+    - 기간 미지정(source=default): `[조회 기간] 기간 미지정 — 지난달 기준(2026-08-01 ~ 2026-08-31)
+      · 월 단위`
+    - 모델 해석(source=llm): 끝에 「모델 해석 — 다르면 날짜를 직접 적어 주세요」
+    - 해석기 고지 코드는 문구로 덧붙인다(「이번 달 제외」·「현재 시각까지」 등)
+    """
+    if res.source == "default":
+        if res.unbounded:
+            head = "기간 미지정 — 전체 보관 기간(기간 조건 없음)"
+        else:
+            head = f"기간 미지정 — 지난달 기준({_period_range_label(res)})"
+        if subject == "metric" and not res.unbounded:
+            head = f"{head} · {_GRAIN_LABELS[res.grain]}"
+    else:
+        head = period_label(res, subject=subject)
+        span = _span_text(res.span)
+        if span:
+            head = f"{head} (「{span}」)"
+    parts = [head]
+    parts.extend(_PERIOD_NOTE_PHRASES[n] for n in res.notes if n in _PERIOD_NOTE_PHRASES)
+    if res.source == "llm":
+        parts.append(_LLM_SOURCE_PHRASE)
+    return f"{QUERY_PERIOD_HEAD} " + " · ".join(parts)
+
+
+def period_years(res: TimeResolution) -> list[str]:
+    """기간이 걸친 연도(시작 · 끝을 포함하는 마지막 시각) — 응답 연도 사후 가드(D-186)의 기준."""
+    points = [res.start] if res.start is not None else []
+    if res.end is not None:
+        points.append(res.end - timedelta(microseconds=1) if not res.is_empty else res.end)
+    return sorted({f"{p.year:04d}" for p in points})
 
 
 _UNKNOWN = KindSpec("", "neutral", False, "foreign", 90)

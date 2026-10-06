@@ -4,6 +4,8 @@
 LLM 프롬프트를 정의한다.
 """
 
+from datetime import date
+
 INPUT_PARSER_SYSTEM_PROMPT = """Role: 당신은 사용자의 자연어 요청을 시스템이 이해할 수 있는 JSON 페이로드로 변환하는 'Middle-ware JSON Parser'입니다.
 당신은 실제 서버에 접속하거나 데이터를 조회하는 주체가 아닙니다. 사용자의 질의가 아무리 "조회해줘", "실행해줘" 같은 명령형이더라도, 당신의 유일한 임무는 그 의도를 분석해 JSON으로 파싱하는 것뿐입니다.
 
@@ -127,3 +129,118 @@ INPUT_PARSER_CSV_CONTEXT_PROMPT = """
 
 이 데이터의 헤더와 패턴을 참고하여 사용자의 질의를 분석하세요.
 """
+
+# ──────────────────────────────────────────────
+# 기간 슬롯 절 + 기준 시각 줄 (plans/122 T-3 · D-306 · D-291)
+# ──────────────────────────────────────────────
+# 「LLM은 슬롯, 코드는 계산」(plans/122 §10.3): LLM은 원문의 기간 표현을 enum 슬롯(`time_expr`)으로
+# 옮기기만 하고, 날짜 계산·검증은 `src.domain.time_expr.slot_to_spec` + `query_time`이 한다.
+# 슬롯 키·enum은 `time_expr.SLOT_KEYS`와 `time_spec`의 Literal 정의와 정확히 같아야 한다(검증기가
+# enum 밖 값을 폐기한다 — 일치는 테스트로 고정).
+#
+# `QUERY_TIME_RESOLUTION_ENABLED` on일 때만 시스템 프롬프트 **맨 끝**(멀티턴 맥락 절 뒤)에
+# [이 절 + 기준 시각 줄] 순서로 붙인다. 긴 종전 접두(`INPUT_PARSER_SYSTEM_PROMPT`)는 바이트 그대로라
+# off면 종전과 같고, on이어도 접두 KV 캐시가 유지된다. 기준 시각 줄은 날짜 단위(시각 미포함)라
+# 하루 동안 바뀌지 않는다.
+#
+# 종전 `time_range`(ISO) 출력 필드는 유지한다 — APM 조회 창(`src/orchestration/apm_query.py`
+# `plan_window` · plans/134 W6이 바꿀 예정)과 plans/121 `time_window`가 아직 그것을 읽는다.
+# SQL 경로는 `time_range`가 아니라 state `time_resolution`(이 슬롯 + 규칙 해석)을 쓴다.
+
+INPUT_PARSER_TIME_SLOT_SECTION = """
+
+## 기간 슬롯 (time_expr)
+
+출력 JSON에 `time_expr` 키를 하나 더 넣으세요. 값은 객체 하나 또는 null입니다.
+날짜 계산은 시스템이 하므로, 당신은 원문의 기간 표현을 아래 슬롯으로 옮기기만 합니다.
+위 `time_range`는 종전 규칙대로 함께 채웁니다.
+
+```json
+"time_expr": {
+    "relation": "last",
+    "n": 7,
+    "unit": "day",
+    "completeness": null,
+    "anchor": null,
+    "start": null,
+    "end": null,
+    "display_grain": "none",
+    "span": "최근 7일"
+}
+```
+
+- **relation**: 기간의 종류. 다음 중 하나
+  - last: 지난·최근 N 단위 (「지난주」는 n=1·unit=week, 「최근 7일」은 n=7·unit=day)
+  - this: 이번 단위 (「오늘」, 「이번 달」, 「올해」)
+  - next: 다음 단위 (「다음 달」, 「내년」)
+  - ago: N 단위 전의 한 칸 (「3일 전」은 n=3·unit=day)
+  - since: 특정 시점부터 지금까지 (start 필수)
+  - until: 특정 시점까지 (end 필수)
+  - between: A부터 B까지 (start·end 필수)
+  - to_date: 이번 단위의 지금까지 누적 (「올해 누적」)
+  - absolute: 달력 기간 하나 (「2026년 9월」, 「작년 6월」, 「9월 15일」 — start 필수)
+  - none: 기간은 없고 표시 입도만 있음 (「일별」, 「시간 단위」)
+- **n**: 단위 개수(정수). last·next·ago에서 씁니다. 없으면 null
+- **unit**: hour · day · week · month · quarter · half · year 중 하나.
+  last·this·next·ago·to_date에서 필수, 그 밖에는 null 가능
+- **completeness**: complete(끝난 단위만) · rolling(지금부터 거슬러 셈) ·
+  to_date(진행 중인 단위 포함) 중 하나 또는 null. 원문이 정하지 않으면 null
+- **anchor**: now(지금 기준) · explicit(원문의 특정 날짜 기준) 중 하나 또는 null.
+  「9월 15일 기준 최근 7일」이면 explicit이고 start에 그 날짜를 적습니다
+- **start** · **end**: 원문에 있는 키만 넣은 객체 또는 null.
+  키는 {"year": 숫자, "year_offset": 숫자, "month": 숫자, "day": 숫자, "hour": 숫자}
+- **display_grain**: hour(시간 단위·시간별) · day(일별·일 단위) · month(월별) · none 중 하나
+- **span**: 원문에서 기간 표현 부분을 글자 그대로 복사한 문자열
+
+기간 슬롯 규칙:
+1. 날짜를 계산하지 마세요. 「3일 전」을 날짜로 바꾸지 말고 relation=ago, n=3, unit=day로
+   적습니다.
+2. year는 연도가 숫자로 원문에 적혀 있을 때만 넣습니다(「2026년 9월」).
+   「작년」은 year_offset=-1, 「올해」는 year_offset=0으로 적고 year는 비웁니다.
+3. 「현재」·「지금」·「실시간」은 기간이 아닙니다. 이런 말만 있으면 time_expr는 null입니다.
+4. 원문에 기간 표현이 없으면 time_expr는 null입니다. 기간을 지어내지 마세요.
+5. 「시간 단위」·「일별」처럼 입도만 있고 기간이 없으면 relation=none으로 적고
+   display_grain에 그 입도를, span에 그 입도 표현을 적습니다.
+6. span은 원문에 실제로 있는 글자여야 합니다. 바꾸어 쓰거나 요약하지 마세요.
+
+기간 슬롯 예시 (time_expr 값만):
+
+입력: "3일 전 알람 목록"
+time_expr: {"relation": "ago", "n": 3, "unit": "day", "completeness": null, "anchor": null,
+            "start": null, "end": null, "display_grain": "none", "span": "3일 전"}
+
+입력: "그저께 CPU 사용률"
+time_expr: {"relation": "ago", "n": 2, "unit": "day", "completeness": null, "anchor": null,
+            "start": null, "end": null, "display_grain": "none", "span": "그저께"}
+
+입력: "지지난주 메모리 평균 사용률"
+time_expr: {"relation": "ago", "n": 2, "unit": "week", "completeness": null, "anchor": null,
+            "start": null, "end": null, "display_grain": "none", "span": "지지난주"}
+
+입력: "작년 6월 일별 CPU 추이"
+time_expr: {"relation": "absolute", "n": null, "unit": "month", "completeness": null,
+            "anchor": null, "start": {"year_offset": -1, "month": 6}, "end": null,
+            "display_grain": "day", "span": "작년 6월"}
+
+입력: "현재 CPU 사용률 상위 5대"
+time_expr: null
+"""
+
+_WEEKDAYS_KO = "월화수목금토일"
+
+
+def time_anchor_line(today: date) -> str:
+    """기준 시각 줄 — 시스템 프롬프트 맨 끝(기간 슬롯 절 뒤)에 붙인다(plans/122 T-3 · D-306).
+
+    날짜 단위다(시각 미포함) — 하루 동안 프롬프트 바이트가 같아 KV 캐시가 유지된다. 해석은
+    노드가 같은 기준 시각(`now`)으로 코드에서 한다.
+
+    Args:
+        today: 기준 시각의 KST 날짜
+    """
+    return (
+        "\n## 기준 시각\n"
+        f"오늘은 {today.isoformat()}({_WEEKDAYS_KO[today.weekday()]}) KST입니다. "
+        "time_expr에는 상대 기간(어제·지난주·3일 전 등)을 날짜로 바꾸지 말고 슬롯으로만 "
+        "표시하세요. time_range는 이 날짜를 오늘로 보고 채웁니다.\n"
+    )

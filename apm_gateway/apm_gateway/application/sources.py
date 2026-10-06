@@ -12,6 +12,7 @@ D-287 ①②⑦ · SPEC-apm-gateway §2.1·§3).
   `source_unavailable`.
 - 한 hostname이 여러 소스에서 정합되면 모두 싣는다(행마다 `source_id` · 인스턴스 수 상한 없음 —
   plans/134 W1 N-4 · D-296 ④에서 종전 「호스트당 5」를 걷었다).
+- hostname 대신 인스턴스 이름 정확 일치로도 찾는다(`resolve_instance_name` · plans/130 N-3).
 - 일부 소스·도메인을 쓸 수 없으면 봉투 `partial: true`의 근거가 된다(`partial_of` · plans/134 W0-B).
 - 소스 클라이언트는 메모리 임계를 넘는 응답을 스풀 `tmp/`에 받고, 호출 대기열을 우선순위·에이징으로
   판다(plans/134 W0-B N-14·N-18).
@@ -28,6 +29,7 @@ from typing import Any
 from apm_gateway.adapters.jennifer.api import JenniferApi
 from apm_gateway.adapters.jennifer.client import JenniferClient
 from apm_gateway.application.resolver import (
+    BY_INSTANCE_NAME,
     HIGH,
     MEDIUM,
     InstanceResolver,
@@ -60,6 +62,11 @@ class JenniferSource:
 
 def _status(inv: Inventory) -> str:
     return STATUS_EMPTY if not inv.error_code and not inv.domains else STATUS_UNAVAILABLE
+
+
+def name_key(value: Any) -> str:
+    """인스턴스 이름 정확 일치 키 — 앞뒤 공백 제거 + casefold(부분 일치는 이름 검색 몫)."""
+    return str(value or "").strip().casefold()
 
 
 def partial_of(
@@ -171,8 +178,10 @@ class SourceSet:
         hostname: str,
         instance_id: int | None = None,
         source_ids: list[str] | None = None,
+        instance_name: str | None = None,
     ) -> Resolution:
-        """hostname → 인스턴스 목록(정합된 전부 · 소스 공유). 실패는
+        """hostname → 인스턴스 목록(정합된 전부 · 소스 공유). `instance_name`을 주면 정합 결과 중
+        그 이름과 정확히 같은 인스턴스만 남긴다(AND). 실패는
         `ApmError`(instance_unresolved·source_unavailable·invalid_argument)."""
         usable, statuses, limits = await self.available(self.select(source_ids))
         matched: list[dict[str, Any]] = []
@@ -195,6 +204,14 @@ class SourceSet:
                 + (" · 일부 소스 조회 불가" if failed else "")
                 + ") — 정합 파일 overrides로 매핑할 수 있다",
             )
+        if instance_name is not None:
+            key = name_key(instance_name)
+            matched = [i for i in matched if name_key(i["instance_name"]) == key]
+            if not matched:
+                raise ApmError(
+                    INSTANCE_UNRESOLVED,
+                    f"instance_name {instance_name!r}은 hostname {hostname!r} 정합 결과에 없음",
+                )
         if instance_id is not None:
             matched = [i for i in matched if i["instance_id"] == instance_id]
             if not matched:
@@ -214,6 +231,56 @@ class SourceSet:
                 row["status"] = STATUS_NO_MATCH
         return Resolution(
             hostname, matched, confidence, reason, limits, statuses, matches, partial=partial
+        )
+
+    async def resolve_instance_name(
+        self,
+        instance_name: str,
+        instance_id: int | None = None,
+        source_ids: list[str] | None = None,
+    ) -> Resolution:
+        """인스턴스 이름 → 인스턴스 목록(고른 소스 전부 · **정확 일치만** — 앞뒤 공백 제거 +
+        대소문자 무시). 여러 소스·도메인에 같은 이름이 있으면 모두 싣는다. hostName이 빈
+        인스턴스도 찾는다. 인스턴스마다 역정합 hostname을 `hostname` 칸으로 붙이고(없으면 빈 값),
+        `Resolution.hostname`은 그 값이 하나로 정해질 때만 채운다(plans/130 N-3)."""
+        usable, statuses, limits = await self.available(self.select(source_ids))
+        key = name_key(instance_name)
+        matched: list[dict[str, Any]] = []
+        for src, inv in usable:
+            for inst in inv.instances:
+                if name_key(inst["instance_name"]) != key:
+                    continue
+                host, _, _, _ = src.resolver.reverse(inv, inst["domain_id"], inst["instance_id"])
+                matched.append({**inst, "hostname": host})
+        if not matched:
+            raise ApmError(
+                INSTANCE_UNRESOLVED,
+                f"instance_name {instance_name!r}에 해당하는 APM 인스턴스 없음"
+                " — apm_instance_map(query=…)로 검색",
+            )
+        if instance_id is not None:
+            matched = [i for i in matched if i["instance_id"] == instance_id]
+            if not matched:
+                raise ApmError(
+                    INSTANCE_UNRESOLVED,
+                    f"instance_id {instance_id}는 instance_name {instance_name!r} 결과에 없음",
+                )
+        kept = {i["source_id"] for i in matched}
+        hosts = {i["hostname"] for i in matched}
+        partial = partial_of(usable, statuses)
+        for row in statuses:
+            if row["status"] == STATUS_OK and row["source_id"] not in kept:
+                row["status"] = STATUS_NO_MATCH
+        return Resolution(
+            hosts.pop() if len(hosts) == 1 else "",
+            matched,
+            HIGH,
+            BY_INSTANCE_NAME,
+            limits,
+            statuses,
+            {sid: (HIGH, BY_INSTANCE_NAME) for sid in kept},
+            partial=partial,
+            by_name=True,
         )
 
 

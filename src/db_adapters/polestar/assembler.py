@@ -11,7 +11,7 @@ import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field as dc_field
-from datetime import date
+from datetime import date, timedelta
 
 # 기간 범위/값 타당성 게이트는 공용 코어(utils)에서 가져온다(application→config/utils 허용).
 from src.utils.sql_dialect import is_db2, row_limit_clause
@@ -28,6 +28,9 @@ from src.utils.query_gen_common import (
 from src.utils.month_structure import parse_month_structure_field
 # EAV 속성 메타 추출은 카탈로그 계층에 위임한다(application→infrastructure 허용).
 from src.schema_cache.catalog_builder import attribute_resource_types
+# 기간 해석 결과(plans/122 T-6·T-7 · D-306) — 리터럴 투영은 같은 어댑터의 단일 출처를 쓴다.
+from src.domain.time_spec import TimeResolution
+from src.db_adapters.polestar.time_period import STAT_TABLES, alarm_ts_bounds, stat_bounds
 
 
 def decimal_cast_example(db_engine: str | None) -> str:
@@ -176,6 +179,35 @@ def _last_complete_month(today: date | None = None) -> str:
     return _ym_add(f"{ref.year}{ref.month:02d}", -1)
 
 
+def _period_month_anchor(
+    period: TimeResolution, last_month: str
+) -> tuple[tuple[str, str] | None, str, str]:
+    """성능 통계 기간 해석 → 월 시리즈 (요청 월 범위, 앵커 끝 월, 앵커 출처) — plans/122 T-7.
+
+    - 기본값(기간 미지정 · `source=default`)·기간 조건 없음: 종전대로 지난달(`last_month`)
+    - 월 경계 구간: `month_range()` 그대로 — 끝 월이 M+max(종전 정규식 해석과 같은 계약 · D-185)
+    - 월 경계가 아닌 구간(일·시 입도 — 「최근 30일」·「지난주」·「어제」): 요청 범위는 구간을 덮는
+      월(시작 월, 끝을 포함하는 월)로 적고, 앵커 끝은 그 끝 월과 마지막 **완결** 월 중 이른 쪽이다
+      — 진행 중 달의 월 통계는 비어 있다(D-076 후속4). 요청 범위와 앵커가 다르면 응답의
+      [기간 불일치] 고지가 그 사실을 알린다(D-185)
+    """
+    if period.source == "default" or period.unbounded or period.end is None:
+        return None, last_month, "default"
+    mr = period.month_range()
+    if mr is not None:
+        return mr, mr[1], "query"
+    last_instant = period.end if period.is_empty else period.end - timedelta(microseconds=1)
+    end_ym = f"{last_instant:%Y%m}"
+    anchor_end = min(end_ym, last_month)
+    start_ym = f"{period.start:%Y%m}" if period.start is not None else anchor_end
+    logger.info(
+        "월 시리즈 앵커(plans/122 T-7): 월 경계가 아닌 기간 %s(입도 %s) — 요청 %s~%s, "
+        "앵커 끝 %s(마지막 완결 월 %s 이하 · 진행 중 달 월 통계 없음)",
+        period.label(), period.grain, start_ym, end_ym, anchor_end, last_month,
+    )
+    return (start_ym, end_ym), anchor_end, "query"
+
+
 @dataclass(frozen=True)
 class MonthSeries:
     """월 시리즈 양식 인식 결과.
@@ -221,6 +253,7 @@ def recognize_month_series(
     today: date | None = None,
     parsed_time_range: dict | None = None,
     allowed_tables: Iterable[str] | None = None,
+    period: TimeResolution | None = None,
 ) -> MonthSeries | None:
     """복합 필드명에서 월 시리즈(사용률 가로 전개) 패턴을 결정적으로 인식한다(D-146).
 
@@ -241,6 +274,11 @@ def recognize_month_series(
     stat_month 자리에는 배선됐으나 **앵커 산출 자리에는 빠져** "1월부터 6월까지"가 지난달
     기준(2~7월)으로 침묵 폴백한 라이브 실측(2026-08-25, D-185)의 대칭 보완.
 
+    `period`(요청 시간 해석의 성능 통계 주체 — `QueryTime.metric` · plans/122 T-7 · D-306)가
+    주어지면 기간은 그것만으로 정한다(정규식·`parsed_time_range`를 보지 않는다 — 단일 출처).
+    기준일도 그 해석의 기준 시각이다(`today`를 주면 `today`). 월 경계가 아닌 기간(일·시 입도)의
+    앵커 끝은 마지막 완결 월로 자른다 — `_period_month_anchor`.
+
     Args:
         column_mapping: field_mapper 산출 {필드명: 컬럼 또는 None}
         context_text: 양식 제목(title_text)·파일명 등 리소스 판정 문맥
@@ -249,6 +287,7 @@ def recognize_month_series(
         parsed_time_range: `parsed_requirements["time_range"]` — 정규식 미매칭 시에만 채택
         allowed_tables: 실행 DB의 허용 테이블(스키마 분석 결과 `tables` 키). None·빈 값이면
             허용 테이블 판정을 하지 않는다(종전 동작)
+        period: 성능 통계 기간 해석(`QueryTime.metric`). None이면 종전 정규식·LLM 2단 해석
 
     Returns:
         MonthSeries 또는 None(패턴 아님 — 기존 경로 유지)
@@ -326,6 +365,8 @@ def recognize_month_series(
         )
         return None
 
+    if today is None and period is not None:
+        today = period.anchor_at.date()  # 기준 시각 단일 출처(plans/122 T-7)
     last_month = _last_complete_month(today)
     month_by_field: dict[str, str] = {}
     requested: tuple[str, str] | None = None
@@ -333,12 +374,15 @@ def recognize_month_series(
     if kinds == {"rel"}:
         ks = [p[2][1] for p in parsed]
         max_k = max(ks)  # type: ignore[type-var]
-        rng = resolve_stat_month_range(
-            user_query, today, parsed_time_range=parsed_time_range
-        )
-        requested = rng
-        anchor_source = "query" if rng else "default"
-        anchor_end = rng[1] if rng else last_month
+        if period is not None:
+            requested, anchor_end, anchor_source = _period_month_anchor(period, last_month)
+        else:
+            rng = resolve_stat_month_range(
+                user_query, today, parsed_time_range=parsed_time_range
+            )
+            requested = rng
+            anchor_source = "query" if rng else "default"
+            anchor_end = rng[1] if rng else last_month
         base = _ym_add(anchor_end, -int(max_k))
         for fname, _vc, (_kind, k) in parsed:
             month_by_field[fname] = _ym_add(base, int(k))
@@ -957,6 +1001,7 @@ def _build_pivot_sql(
     entity_count_alias: str | None = None,
     direct_having: list[tuple[str, str, object]] | None = None,
     measure_having: list[tuple[str, str, object]] | None = None,
+    period: TimeResolution | None = None,
 ) -> str:
     """폼필/시맨틱 다중 리소스 피벗을 **runnable SQL로 결정적 조립**하는 공유 코어다.
 
@@ -998,6 +1043,12 @@ def _build_pivot_sql(
             HAVING으로 적용한다(WHERE는 자식 행을 탈락시킴 — D-096).
         measure_having: 측정치 임계 조건 [(measure alias, SQL 연산자, 값)] — SELECT와 동일한
             집계식을 HAVING에 재사용한다(Plan 67 S-IR4).
+        period: 성능 통계 기간 해석(plans/122 T-7 · D-306). 주면 통계 조인의 테이블·기간 조건을
+            `time_period.stat_bounds`의 입도 테이블과 반개구간 리터럴(`>= lo AND < hi`)로 정하고
+            `stat_month`·`metric_table`은 쓰지 않는다(기간 조건 없음이면 그 입도 테이블 + 조건
+            없음). **우선순위**: `month_measures` > `period` > `stat_month` — 월 시리즈는 항목별
+            월 CASE 피벗이라 월 통계 테이블과 항목 월 범위를 유지한다(period는 앵커 산출에서
+            이미 반영된다 — `recognize_month_series`).
 
     Returns:
         실행 가능한 SQL 문자열(세미콜론 종결).
@@ -1032,9 +1083,22 @@ def _build_pivot_sql(
             # 범위 밖 행을 조인에서 제외 — SELECT의 stat_date CASE 피벗과 이중 안전).
             months = sorted({m[3] for m in month_measures})
             month_rng = (months[0], months[-1])
+            if period is not None:
+                logger.info(
+                    "피벗 기간(plans/122 T-7): 월 시리즈 항목 월 %s~%s가 기간 해석 %s를 "
+                    "덮는다(월 통계 CASE 피벗 — 앵커에 반영됨)",
+                    month_rng[0], month_rng[1], period.label(),
+                )
+        elif period is not None:
+            month_rng = None
         else:
             month_rng = _normalize_stat_month(stat_month)
-        if not month_rng:
+        if period is not None and not month_measures:
+            # 기간 해석의 입도 테이블 + 반개구간 리터럴(plans/122 T-7 — 단일 출처 time_period)
+            sb = stat_bounds(period)
+            metric_table = sb.table if sb is not None else STAT_TABLES[period.grain]
+            month_cond = f" AND {sb.where('s.stat_date')}" if sb is not None else ""
+        elif not month_rng:
             month_cond = ""
         elif month_rng[0] == month_rng[1]:
             month_cond = f" AND s.stat_date = '{month_rng[0]}'"
@@ -1145,6 +1209,7 @@ def build_form_fill_pivot_sql(
     metric_table: str = _DEFAULT_METRIC_TABLE,
     month_measures: list[tuple[str, str, str, str]] | None = None,
     concat_eav: list[tuple[str, str, str]] | None = None,
+    period: TimeResolution | None = None,
 ) -> str:
     """폼필(양식 채우기) 경로의 다중 리소스 피벗 SQL을 조립한다.
 
@@ -1160,6 +1225,13 @@ def build_form_fill_pivot_sql(
         db_engine/db_schema/limit/stat_month/metric_table: ``_build_pivot_sql``과 동일
         month_measures: 월별 가로 피벗 명시 지정 (alias, resource_type, 값컬럼, YYYYMM)
         concat_eav: Vendor+Model 결합 지정 (필드, Vendor속성, Model속성)
+        period: 성능 통계 기간 해석(`QueryTime.metric` · plans/122 T-7 · D-306). 주면 통계 조인의
+            테이블·조건을 해석 입도(h/d/m)의 반개구간 리터럴로 정하고 `stat_month`·`metric_table`은
+            무시한다(월 입도면 종전 `stat_month` 표기와 같은 월 집합). 기간 조건 없음(unbounded)이면
+            조건 없음. **덮어쓰기**: `month_measures`가 있으면 월 시리즈 항목 월 범위가 조인 조건을
+            정한다(D-185 종전 우선순위 유지 — period는 `recognize_month_series(period=)` 앵커로
+            이미 반영된다). 호출부는 「현재·지금」 질의의 기간 미지정 기본값(`QueryTime.
+            uses_default_period`가 거짓)이면 period를 넘기지 않는다(None = 종전)
 
     Returns:
         실행 가능한 SQL 문자열(세미콜론 종결).
@@ -1174,6 +1246,7 @@ def build_form_fill_pivot_sql(
         metric_table=metric_table,
         month_measures=month_measures,
         concat_eav=concat_eav,
+        period=period,
     )
 
 
@@ -1196,6 +1269,7 @@ def build_semantic_pivot_sql(
     entity_count_alias: str | None = None,
     direct_having: list[tuple[str, str, object]] | None = None,
     measure_having: list[tuple[str, str, object]] | None = None,
+    period: TimeResolution | None = None,
 ) -> str:
     """시맨틱 컴파일러(트랙 C, D-076) 경로의 다중 리소스 피벗 SQL을 조립한다.
 
@@ -1206,6 +1280,8 @@ def build_semantic_pivot_sql(
     Args:
         regular_entries/server_eav/child_eav/eav_pattern: 피벗 구성요소
         explicit_measures: (alias, resource_type, agg_fn, val_col, definition_name) 목록
+        period: 성능 통계 기간 해석(plans/122 T-7) — 주면 ``stat_month``·``metric_table`` 대신
+            해석 입도 테이블과 반개구간 리터럴을 쓴다(``_build_pivot_sql`` 참조)
         나머지: ``_build_pivot_sql``과 동일
 
     Returns:
@@ -1226,6 +1302,7 @@ def build_semantic_pivot_sql(
         entity_count_alias=entity_count_alias,
         direct_having=direct_having,
         measure_having=measure_having,
+        period=period,
     )
 
 
@@ -1386,6 +1463,9 @@ class ActiveAlarmSpec:
     # 알람 유형 필터(D-202 4차) — res.resource_type IN (…) 결정적 한정. None이면 무필터.
     resource_types: tuple[str, ...] | None = None
     type_label: str | None = None  # 헤드라인 표기용 ("CPU" 등)
+    # 사건(알람) 기간 해석의 `ctime` 리터럴 [시작, 끝) — plans/122 T-6 · D-306. 있으면
+    # month_range보다 우선한다(완결 월 절단 없음 · 시작 None = 「~까지」). None이면 종전 경로.
+    ts_bounds: tuple[str | None, str] | None = None
 
 
 def _parse_alarm_severity(q: str) -> tuple[int | None, str]:
@@ -1408,6 +1488,8 @@ def _parse_alarm_severity(q: str) -> tuple[int | None, str]:
 def recognize_active_alarm_query(
     user_query: str,
     parsed_time_range: dict | None = None,
+    *,
+    period: TimeResolution | None = None,
 ) -> ActiveAlarmSpec | None:
     """알람 목록/건수 질의(활성 스냅샷·이력)를 결정적으로 인식한다. 미매칭이면 None.
 
@@ -1417,9 +1499,21 @@ def recognize_active_alarm_query(
     - 집계 축("서버별" 등)·유형/메트릭 필터("CPU 임계값" 등) 신호가 섞인 질의 —
       조립기가 표현할 수 없어 조립 시 해당 조건이 침묵 드롭된다(D-202, D군 실측)
 
+    기간(plans/122 T-6 · D-306): `period`(요청 시간 해석의 **사건** 주체 — `QueryTime.event`)가
+    주어지면 기간은 오직 그것으로 정한다 — `alarm_ts_bounds(period)`의 `[시작, 끝)`을
+    `spec.ts_bounds`에 싣고(완결 월 절단 없음 · 진행 중 기간 = 기준 시각까지), 기간 조건 없음
+    (unbounded — 기간 미지정 D-291 `event_no_default_period` · 「~한 적이 있는」)이면 기간 조건을
+    두지 않는다. 기간 신호 판정은 종전 이력 어휘 정규식(`_ALARM_PERIOD_RE`)을 유지하고, 종전의
+    「월 범위가 잡혔는가」 자리만 「해석이 경계를 가졌는가」로 바꾼다. 해석 불가(되묻기)는
+    input_parser가 그래프를 끝내므로 여기 오지 않는다 — 종전 결함 ⑧(이력 어휘가 있는데 월 범위가
+    None이면 전 이력 조회 · plans/122 §10.2)은 period 경로에서 생기지 않는다. `period`가 None이면
+    종전(`resolve_stat_month_range` 월 범위 → `month_range`) 그대로다.
+
     Args:
         user_query: 사용자 질의
-        parsed_time_range: input_parser LLM 산출 time_range(2단 폴백, D-136 대칭)
+        parsed_time_range: input_parser LLM 산출 time_range(2단 폴백, D-136 대칭) — period가
+            None일 때만 쓴다
+        period: 사건(알람) 기간 해석(`QueryTime.event`). None이면 종전 월 해석
     """
     q = user_query or ""
     if not _ALARM_NOUN_RE.search(q):
@@ -1457,8 +1551,14 @@ def recognize_active_alarm_query(
             return None
 
     has_active = bool(_ALARM_ACTIVE_RE.search(q))
-    month_range = resolve_stat_month_range(q, parsed_time_range=parsed_time_range)
-    has_period = bool(_ALARM_PERIOD_RE.search(q)) or month_range is not None
+    month_range: tuple[str, str] | None = None
+    ts_bounds: tuple[str | None, str] | None = None
+    if period is not None:
+        ts_bounds = alarm_ts_bounds(period)
+        has_period = bool(_ALARM_PERIOD_RE.search(q)) or ts_bounds is not None
+    else:
+        month_range = resolve_stat_month_range(q, parsed_time_range=parsed_time_range)
+        has_period = bool(_ALARM_PERIOD_RE.search(q)) or month_range is not None
     severity, severity_op = _parse_alarm_severity(q)
     unack = bool(_ALARM_UNACK_RE.search(q))
     count = bool(_ALARM_COUNT_RE.search(q))
@@ -1482,6 +1582,7 @@ def recognize_active_alarm_query(
             unack_only=False, count_only=count,
             mode="history", month_range=month_range,
             group_by=group_by, resource_types=resource_types, type_label=type_label,
+            ts_bounds=ts_bounds,
         )
     if group_by and not has_active:
         # 서버별 집계는 "발생 건수" 의미상 이력 집계가 자연 기본 — 활성 신호가 없으면
@@ -1492,6 +1593,7 @@ def recognize_active_alarm_query(
             unack_only=False, count_only=False,
             mode="history", month_range=month_range,
             group_by=group_by, resource_types=resource_types, type_label=type_label,
+            ts_bounds=ts_bounds,
         )
     return None  # 활성+기간 동시(모호) 또는 어느 신호도 없음
 
@@ -1523,6 +1625,9 @@ def build_active_alarm_sql(
         conds.append(f"a.alarmseverity {spec.severity_op} {spec.severity}")
     if spec.unack_only:
         conds.append("a.currentalarmstatus = 'NOT_ACK'")
+    # 인식기는 활성 스냅샷에 기간을 싣지 않지만(활성+기간 = 모호 → LLM), spec에 실린 조건을
+    # 빌더가 버리면 침묵 드롭이다 — 이력 빌더와 같은 리터럴로 건다(plans/122 T-6).
+    conds.extend(_ts_bounds_conds(spec.ts_bounds))
     where = ("WHERE " + " AND ".join(conds)) if conds else ""
 
     # 유형 필터는 자원 타입으로 한정하는 의도이므로 자원 조인이 INNER — 무필터면 종전
@@ -1577,6 +1682,20 @@ def build_active_alarm_sql(
     ).strip()
 
 
+def _ts_bounds_conds(ts_bounds: tuple[str | None, str] | None) -> list[str]:
+    """`ctime` 리터럴 경계 [시작, 끝) → WHERE 조건(시작 None이면 끝만 · None이면 빈 목록).
+
+    plans/122 T-6 · D-306 — 리터럴 형식은 `time_period.alarm_ts_bounds`(PG·DB2 공통
+    `TIMESTAMP '…'`)가 정한다.
+    """
+    if ts_bounds is None:
+        return []
+    ts_start, ts_end = ts_bounds
+    conds = [f"a.ctime >= TIMESTAMP '{ts_start}'"] if ts_start is not None else []
+    conds.append(f"a.ctime < TIMESTAMP '{ts_end}'")
+    return conds
+
+
 def _month_range_to_ts_bounds(month_range: tuple[str, str]) -> tuple[str, str]:
     """(YYYYMM, YYYYMM) 월 범위를 타임스탬프 리터럴 양단으로 바꾼다 — [시작월 1일, 끝월+1월 1일).
 
@@ -1607,7 +1726,8 @@ def build_alarm_history_sql(
     - 자원 INNER JOIN + WHERE dtime IS NULL (삭제 자원 알람 제외)
     - 부모 서버 승격 = LEFT JOIN + COALESCE(platform_resource_id,
       service_resource_id, id) **3단 사슬** (알람은 자식/비서버 자원에 붙는다)
-    - 기간 = ctime 타임스탬프 리터럴 양단 (월 경계, D-102)
+    - 기간 = ctime 타임스탬프 리터럴 양단 — `spec.ts_bounds`(사건 기간 해석 · plans/122 T-6)가
+      있으면 그것, 없으면 종전 월 경계(`month_range` · D-102)
     별칭은 활성 조립과 동일 집합 — 존 병합 CSV 칼럼 통일 유지.
     """
     prefix = f"{db_schema}." if db_schema else ""
@@ -1617,7 +1737,10 @@ def build_alarm_history_sql(
         conds.append(f"res.resource_type IN ({types})")
     if spec.severity is not None:
         conds.append(f"a.alarmseverity {spec.severity_op} {spec.severity}")
-    if spec.month_range is not None:
+    if spec.ts_bounds is not None:
+        # 사건 기간 해석(plans/122 T-6) — 해석기의 [시작, 끝)을 그대로(완결 월 절단 없음)
+        conds.extend(_ts_bounds_conds(spec.ts_bounds))
+    elif spec.month_range is not None:
         ts_start, ts_end = _month_range_to_ts_bounds(spec.month_range)
         conds.append(f"a.ctime >= TIMESTAMP '{ts_start}'")
         conds.append(f"a.ctime < TIMESTAMP '{ts_end}'")
@@ -1673,13 +1796,20 @@ def try_deterministic_alarm_sql(
     limit: int,
     enabled: bool,
     parsed_time_range: dict | None = None,
+    period: TimeResolution | None = None,
 ) -> str | None:
-    """알람 결정적 조립 진입점(활성+이력) — 미해당·플래그 OFF면 None(현행 무변경)."""
+    """알람 결정적 조립 진입점(활성+이력) — 미해당·플래그 OFF면 None(현행 무변경).
+
+    `period`는 사건(알람) 기간 해석(`QueryTime.event` · plans/122 T-6 · D-306) — 주어지면
+    기간은 그것만으로 정한다(`recognize_active_alarm_query` 참조). None이면 종전 월 해석.
+    """
     if not enabled:
         return None
     if routing_intent != "alarm_query":
         return None
-    spec = recognize_active_alarm_query(user_query, parsed_time_range=parsed_time_range)
+    spec = recognize_active_alarm_query(
+        user_query, parsed_time_range=parsed_time_range, period=period
+    )
     if spec is None:
         return None
     if spec.mode == "history":
@@ -1692,11 +1822,11 @@ def try_deterministic_alarm_sql(
         )
     logger.info(
         "[알람조립] 결정적 SQL 조립(LLM 미호출): mode=%s severity=%s%s "
-        "months=%s unack=%s count=%s group=%s types=%s",
+        "months=%s ts=%s unack=%s count=%s group=%s types=%s",
         spec.mode,
         spec.severity_op if spec.severity is not None else "",
         spec.severity if spec.severity is not None else "(무필터)",
-        spec.month_range, spec.unack_only, spec.count_only, spec.group_by,
+        spec.month_range, spec.ts_bounds, spec.unack_only, spec.count_only, spec.group_by,
         spec.resource_types,
     )
     return sql

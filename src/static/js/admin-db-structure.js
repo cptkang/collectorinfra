@@ -524,6 +524,10 @@
                 return item.label + (item.detail ? "(" + item.detail + ")" : "");
             }).join(" · ")));
         }
+        // 정보 항목의 경고(C11 테이블 정의 등 — 활성화를 막지 않는다)
+        items.filter(function (item) { return item.grade === "info" && item.ok === false; }).forEach(function (item) {
+            node.appendChild(muted("경고 — " + item.code + " " + item.label + (item.detail ? ": " + item.detail : "")));
+        });
         if (registration._error) node.appendChild(muted("등록 상태를 불러오지 못했습니다: " + registration._error));
 
         var estimate = registration.estimate || {};
@@ -856,6 +860,7 @@
         query_examples: "쿼리 예시(LLM · 실행 검증)",
         seeds: "유사어 시드",
         prompt_template: "DB 전용 규칙 섹션(LLM · 검증)",
+        table_definitions: "테이블 정의(테이블별 관리 정보)",
     };
     var ASSET_ORDER = Object.keys(ASSET_LABELS);
     var ASSET_FILE_LABELS = { seeds: "유사어 시드", prompt_template: "DB 전용 규칙 섹션" };
@@ -902,19 +907,26 @@
         form.appendChild(runBtn);
         node.appendChild(form);
 
+        var definitionInfo = assets.table_definitions || {};
+        node.appendChild(muted("테이블 정의 — 승인 " + valueOr(definitionInfo.approved) + "개 · 조회 대상 " + valueOr(definitionInfo.allowed)
+            + "개 중 " + valueOr(definitionInfo.covered) + "개 정의. 프로파일링은 테이블 주석을 정의 초안으로 넣고, 주석 없는 테이블은 초안 카드의 「테이블 정의 LLM 초안」으로 만듭니다."));
+        node.appendChild(definitionImportForm(detail, definitionInfo));
+
         var drafts = assets.drafts || [];
         if (!drafts.length) node.appendChild(muted("자산 초안이 없습니다 — 「프로파일링 실행」으로 만드세요."));
-        drafts.forEach(function (draft) { node.appendChild(assetDraftCard(detail, draft)); });
+        drafts.forEach(function (draft) { node.appendChild(assetDraftCard(detail, draft, definitionInfo)); });
         node.appendChild(assetFilesBlock(detail, assets.files || {}));
         return node;
     }
 
-    function assetDraftCard(detail, draft) {
+    function assetDraftCard(detail, draft, definitionInfo) {
         var card = el("div", "dbs-draft");
         var pending = draft.status === "pending";
+        var imported = draft.kind === "import";
         var head = el("div", "dbs-cell-stack");
         appendAll(head, [
             el("strong", null, "자산 초안 " + draft.draft_id),
+            imported ? pill("테이블 정의 가져오기", "info") : null,
             pill(DRAFT_STATUS_LABELS[draft.status] || draft.status || "-", pending ? "info" : statusTone(draft.status)),
             el("span", "dbs-muted", formatTime(draft.created_at) + " · " + (draft.created_by || "-") + " · 엔진 " + (draft.engine || "-") + " · env " + (draft.env || "-")),
         ]);
@@ -923,9 +935,10 @@
         var evidence = draft.evidence || {};
         var budget = evidence.budget || {};
         var provider = draft.provider ? (draft.provider.provider || "-") + "/" + (draft.provider.model || "-") : null;
-        card.appendChild(muted("데이터 조회 " + valueOr(budget.used) + "/" + valueOr(budget.limit) + "회"
+        card.appendChild(muted((imported ? "가져오기(데이터 조회 0)"
+            : "데이터 조회 " + valueOr(budget.used) + "/" + valueOr(budget.limit) + "회"
             + (budget.skipped ? " · 예산 초과로 생략 " + budget.skipped + "건" : "")
-            + " · 주석 " + valueOr((evidence.catalog || {}).comments) + "건"
+            + " · 주석 " + valueOr((evidence.catalog || {}).comments) + "건")
             + (draft.llm_calls ? " · LLM " + draft.llm_calls + "회(" + provider + ")" : " · LLM 0")));
         if (evidence.offline) card.appendChild(el("div", "dbs-unmet", "DB에 연결하지 못해 스키마만으로 만들었습니다(관계 검증·코드값·값 형식 없음): " + evidence.offline));
         if (draft.description_draft_id) card.appendChild(muted("주석으로 만든 컬럼 설명 초안 " + draft.description_draft_id + " — 아래 「컬럼 설명·유사어 초안」에서 검토·적용하세요."));
@@ -996,6 +1009,9 @@
                 + (currentAllowed ? " — 현행 프로필 목록으로 표시 · 승인하면 고른 목록으로 바뀝니다" : ""), wrap));
         }
 
+        var definitions = definitionTable(draft, pending && !envMismatch, (definitionInfo || {}).kinds || []);
+        if (definitions) card.appendChild(definitions.node);
+
         card.appendChild(collapsible("자산 내용 보기", preBlock(assetPreview(assets))));
         if (assets.prompt_template && assets.prompt_template.section) {
             card.appendChild(collapsible("DB 전용 규칙 섹션 미리보기", preBlock(assets.prompt_template.section)));
@@ -1003,20 +1019,41 @@
         if (validation.prompt_template || validation.query_examples) {
             card.appendChild(collapsible("LLM 자산 검증 결과", preBlock(validation)));
         }
-        card.appendChild(collapsible("근거(관계 값 겹침 · 코드 컬럼 · 값 형식 · 조회 예산)", preBlock(evidence)));
+        if (!imported) card.appendChild(collapsible("근거(관계 값 겹침 · 코드 컬럼 · 값 형식 · 조회 예산)", preBlock(evidence)));
 
         if (pending) {
             var reasonInput = textInput("사유(감사 기록)");
             var actions = el("div", "dbs-form");
             actions.appendChild(labeled("사유", reasonInput));
-            actions.appendChild(button("LLM 보조 실행", "btn-secondary", function () {
-                var info = detail.provider || {};
-                if (!window.confirm("LLM을 2회 호출합니다(쿼리 예시 · DB 전용 규칙 섹션) · provider " + (info.provider || "-") + "/" + (info.model || "-")
-                    + ".\n결과 SQL은 실제로 실행해 검증합니다(읽기 전용). 과금 provider라면 승인 절차를 확인하세요. 실행할까요?")) return;
-                startJob(detail.source, "asset_llm", "/asset-drafts/" + encodeURIComponent(draft.draft_id) + "/llm", null, "자산 LLM 보조");
-            }));
+            if (!imported) {
+                actions.appendChild(button("LLM 보조 실행", "btn-secondary", function () {
+                    var info = detail.provider || {};
+                    if (!window.confirm("LLM을 2회 호출합니다(쿼리 예시 · DB 전용 규칙 섹션) · provider " + (info.provider || "-") + "/" + (info.model || "-")
+                        + ".\n결과 SQL은 실제로 실행해 검증합니다(읽기 전용). 과금 provider라면 승인 절차를 확인하세요. 실행할까요?")) return;
+                    startJob(detail.source, "asset_llm", "/asset-drafts/" + encodeURIComponent(draft.draft_id) + "/llm", null, "자산 LLM 보조");
+                }));
+            }
+            var estimateNode = el("span", "dbs-muted", "예상 호출 수는 실행 전에 보여 줍니다.");
+            var definitionLlmBtn = button("테이블 정의 LLM 초안", "btn-secondary", function () {
+                startDefinitionLlm(detail, draft, false, estimateNode);
+            });
+            definitionLlmBtn.disabled = envMismatch;
+            actions.appendChild(definitionLlmBtn);
+            var definitionReport = (validation.table_definitions || {});
+            if ((definitionReport.batches || []).some(function (b) { return b.status !== "ok"; })) {
+                var retryBtn = button("실패 묶음만 재실행", "btn-secondary", function () {
+                    startDefinitionLlm(detail, draft, true, estimateNode);
+                });
+                retryBtn.disabled = envMismatch;
+                actions.appendChild(retryBtn);
+            }
+            if (definitions && definitions.editable) {
+                actions.appendChild(button("테이블 정의 편집 저장", "btn-secondary", function () {
+                    saveDefinitionEdits(detail.source, draft, definitions.inputs);
+                }));
+            }
             var approveBtn = button("선택 자산 승인", "btn-primary", function () {
-                approveAssets(detail.source, draft, checks, tableChecks, reasonInput.value);
+                approveAssets(detail.source, draft, checks, tableChecks, reasonInput.value, definitions ? definitions.checks : {});
             });
             approveBtn.disabled = envMismatch;
             actions.appendChild(approveBtn);
@@ -1024,13 +1061,14 @@
                 rejectAssets(detail.source, draft, reasonInput.value);
             }));
             card.appendChild(actions);
+            card.appendChild(estimateNode);
         } else if (draft.applied) {
             card.appendChild(muted("적용 결과: " + jsonText(draft.applied)));
         }
         return card;
     }
 
-    async function approveAssets(source, draft, checks, tableChecks, reason) {
+    async function approveAssets(source, draft, checks, tableChecks, reason, definitionChecks) {
         var include = ASSET_ORDER.filter(function (kind) { return checks[kind] && checks[kind].checked && !checks[kind].disabled; });
         if (!include.length) { api.showError("적용할 자산을 하나 이상 고르세요."); return; }
         var body = { include: include, reason: reason || "" };
@@ -1038,12 +1076,22 @@
             body.allowed_tables = Object.keys(tableChecks).filter(function (table) { return tableChecks[table].checked; });
             if (!body.allowed_tables.length) { api.showError("조회 대상 테이블을 하나 이상 고르세요."); return; }
         }
+        if (include.indexOf("table_definitions") >= 0) {
+            body.table_definition_tables = Object.keys(definitionChecks || {}).filter(function (table) {
+                return definitionChecks[table].checked && !definitionChecks[table].disabled;
+            });
+            if (!body.table_definition_tables.length) { api.showError("승인할 테이블 정의를 하나 이상 고르세요(오류 행은 고를 수 없습니다)."); return; }
+        }
         if (!window.confirm("선택한 자산(" + include.map(function (k) { return ASSET_LABELS[k]; }).join(", ") + ")을 적용합니다.\n"
             + "프로필 키는 사람이 쓴 값을 보존해 병합하고, 시드·DB 전용 규칙 파일은 새 버전으로 기록합니다. 계속할까요?")) return;
         try {
             var result = await call("POST", sourcePath(source) + "/asset-drafts/" + encodeURIComponent(draft.draft_id) + "/approve", body);
             var applied = result.applied || {};
             var unchanged = (applied.profile || {}).unchanged || [];
+            var keptManual = (applied.profile || {}).table_definitions_kept_manual || [];
+            if (keptManual.length) {
+                api.showSuccess("사람이 고친 테이블 정의는 보존했습니다: " + keptManual.join(", "));
+            }
             if (result.partial) {
                 api.showError("일부 자산만 적용됐습니다 — 실패: " + Object.keys(applied).filter(function (k) { return applied[k] && applied[k].error; })
                     .map(function (k) { return (ASSET_LABELS[k] || k) + "(" + applied[k].error + ")"; }).join(", ") + auditNote(result));
@@ -1057,6 +1105,170 @@
         } catch (err) {
             api.showError("자산 승인 실패: " + err.message);
         }
+    }
+
+    // --- 테이블 정의 (D-305 — 가져오기 · 주석 · LLM 묶음 초안 → 테이블 단위 검토·승인) ---
+
+    var DEFINITION_ORIGIN_LABELS = { "import": "가져오기", llm: "LLM", comment: "주석", manual: "사람" };
+
+    function definitionImportForm(detail, info) {
+        var form = el("div", "dbs-form");
+        var fileInput = document.createElement("input");
+        fileInput.type = "file";
+        fileInput.accept = ".yaml,.yml";
+        form.appendChild(labeled("테이블 정의 YAML(최상위 tables:)", fileInput));
+        var importBtn = button("테이블 정의 가져오기", "btn-secondary", async function () {
+            var file = fileInput.files && fileInput.files[0];
+            if (!file) { api.showError("가져올 YAML 파일을 고르세요."); return; }
+            var text = await file.text();
+            var max = info.import_max_chars || 1000000;
+            if (text.length > max) { api.showError("파일이 너무 큽니다(" + text.length + "자 · 상한 " + max + "자)."); return; }
+            try {
+                var result = await call("POST", sourcePath(detail.source) + "/table-definitions/import", { text: text });
+                var s = result.summary || {};
+                api.showSuccess("테이블 정의 초안 " + (result.draft_id || "-") + "을(를) 만들었습니다 — " + valueOr(s.total) + "행 · 유효 "
+                    + valueOr(s.valid) + " · 오류 " + valueOr(s.invalid) + auditNote(result));
+                refreshAfterChange(detail.source);
+            } catch (err) {
+                api.showError("테이블 정의 가져오기 실패: " + err.message);
+            }
+        });
+        importBtn.id = "dbsDefinitionImportBtn";
+        form.appendChild(importBtn);
+        return form;
+    }
+
+    function definitionKindSelect(kinds, value) {
+        var select = document.createElement("select");
+        var options = [""].concat(kinds);
+        if (value && options.indexOf(value) < 0) options.push(value);  // 허용 밖 값도 보이게(저장하면 검증이 거절)
+        options.forEach(function (kind) {
+            var option = el("option", null, kind || "(없음)");
+            option.value = kind;
+            select.appendChild(option);
+        });
+        select.value = value || "";
+        return select;
+    }
+
+    // 초안의 테이블 정의 표 — 사용자 입력은 textContent·입력 값으로만 렌더한다(HTML 문자열 삽입 금지)
+    function definitionTable(draft, editable, kinds) {
+        var rows = (draft.assets || {}).table_definitions || {};
+        var names = Object.keys(rows);
+        if (!names.length) return null;
+        var report = (draft.validation || {}).table_definitions || {};
+        var errors = report.errors || {};
+        var batches = report.batches || [];
+        var failedBatches = batches.filter(function (b) { return b.status !== "ok"; }).length;
+        var invalid = names.filter(function (name) { return (errors[name] || []).length > 0; }).length;
+        var result = { node: null, checks: {}, inputs: {}, editable: editable };
+        var wrap = el("div");
+        wrap.appendChild(muted(names.length + "행 · 유효 " + (names.length - invalid) + " · 오류 " + invalid
+            + (batches.length ? " · LLM 묶음 " + batches.length + "개(실패·부분 " + failedBatches + ")" : "")
+            + " — 오류 행은 승인할 수 없습니다. 고쳐 저장한 행은 출처가 「사람」이 되고 다시 만들어도 보존됩니다."));
+        var scroll = el("div", "users-table-scroll");
+        var grid = el("table", "settings-table");
+        var headRow = el("tr");
+        ["선택", "영역", "테이블", "관리 정보", "대표 컬럼", "성격", "출처", "주의", "검증"].forEach(function (title) { headRow.appendChild(el("th", null, title)); });
+        var thead = el("thead");
+        thead.appendChild(headRow);
+        grid.appendChild(thead);
+        var tbody = el("tbody");
+        names.forEach(function (name) {
+            var row = rows[name] || {};
+            var rowErrors = errors[name] || [];
+            var cb = document.createElement("input");
+            cb.type = "checkbox";
+            cb.checked = editable && !rowErrors.length;
+            cb.disabled = !editable || rowErrors.length > 0;
+            result.checks[name] = cb;
+            var keyText = (row.key_columns || []).join(", ");
+            var cells;
+            if (editable) {
+                var inputs = {
+                    row: row,
+                    manages: textInput("관리하는 정보(1~2문장)", row.manages || ""),
+                    key_columns: textInput("컬럼, 컬럼", keyText),
+                    kind: definitionKindSelect(kinds, row.kind || ""),
+                    notes: textInput("주의(선택)", row.notes || ""),
+                };
+                result.inputs[name] = inputs;
+                cells = [inputs.manages, inputs.key_columns, inputs.kind];
+            } else {
+                cells = [row.manages || "", keyText, row.kind || ""];
+            }
+            var tr = el("tr");
+            var pick = el("td");
+            pick.appendChild(cb);
+            tr.appendChild(pick);
+            tr.appendChild(el("td", null, row.group || "-"));
+            tr.appendChild(el("td", null, name));
+            cells.forEach(function (value) {
+                var td = el("td");
+                if (typeof value === "string") td.textContent = value; else td.appendChild(value);
+                tr.appendChild(td);
+            });
+            tr.appendChild(el("td", null, DEFINITION_ORIGIN_LABELS[row.origin] || row.origin || "-"));
+            var notesCell = el("td");
+            if (editable) notesCell.appendChild(result.inputs[name].notes); else notesCell.textContent = row.notes || "";
+            tr.appendChild(notesCell);
+            tr.appendChild(rowErrors.length ? el("td", "dbs-unmet", rowErrors.join(" / ")) : el("td", null, "통과"));
+            tbody.appendChild(tr);
+        });
+        grid.appendChild(tbody);
+        scroll.appendChild(grid);
+        wrap.appendChild(scroll);
+        result.node = collapsible("테이블 정의 (" + names.length + "행" + (invalid ? " · 오류 " + invalid : "") + ")", wrap);
+        return result;
+    }
+
+    async function saveDefinitionEdits(source, draft, inputs) {
+        var edits = {};
+        Object.keys(inputs).forEach(function (name) {
+            var input = inputs[name];
+            var row = input.row || {};
+            var next = {
+                manages: input.manages.value.trim(),
+                notes: input.notes.value.trim(),
+                kind: input.kind.value || null,
+                key_columns: splitList(input.key_columns.value),
+            };
+            var changed = next.manages !== (row.manages || "") || next.notes !== (row.notes || "")
+                || (next.kind || "") !== (row.kind || "") || next.key_columns.join(",") !== (row.key_columns || []).join(",");
+            if (changed) edits[name] = next;
+        });
+        var count = Object.keys(edits).length;
+        if (!count) { api.showError("바뀐 테이블 정의가 없습니다."); return; }
+        try {
+            var result = await call("PUT", sourcePath(source) + "/asset-drafts/" + encodeURIComponent(draft.draft_id) + "/table-definitions", { edits: edits });
+            api.showSuccess("테이블 정의 " + count + "행을 저장했습니다(출처: 사람)." + auditNote(result));
+            refreshAfterChange(source);
+        } catch (err) {
+            api.showError("테이블 정의 저장 실패: " + err.message);
+        }
+    }
+
+    async function startDefinitionLlm(detail, draft, onlyFailed, estimateNode) {
+        var path = "/asset-drafts/" + encodeURIComponent(draft.draft_id) + "/table-definitions";
+        var estimate;
+        try {
+            estimate = await call("GET", sourcePath(detail.source) + path + "/estimate" + (onlyFailed ? "?only_failed=true" : ""));
+        } catch (err) {
+            api.showError("예상 호출 수 조회 실패: " + err.message);
+            return;
+        }
+        var skipped = estimate.skipped || {};
+        var text = "테이블 정의 예상 LLM 호출 " + valueOr(estimate.calls) + "회(테이블 " + valueOr(estimate.tables) + "개 · 묶음당 최대 "
+            + valueOr(estimate.batch_size) + "개 · 동시성 " + valueOr(estimate.concurrency) + ")"
+            + (onlyFailed ? " — 실패 묶음만" : " — 건너뜀: 주석 " + valueOr(skipped.comment) + " · 다른 출처 정의 "
+                + valueOr(skipped.defined) + " · 사람 정의 " + valueOr(skipped.manual));
+        estimateNode.textContent = text;
+        if (!estimate.calls) { api.showError("LLM 초안을 만들 테이블이 없습니다."); return; }
+        var info = estimate.provider || {};
+        if (!window.confirm(text + "\nprovider " + (info.provider || "-") + "/" + (info.model || "-")
+            + " · 표본 값은 보내지 않습니다. 과금 provider라면 승인 절차를 확인하세요. 실행할까요?")) return;
+        startJob(detail.source, "asset_table_definitions", path + "/llm", { only_failed: onlyFailed },
+            onlyFailed ? "테이블 정의 LLM 재실행(실패 묶음)" : "테이블 정의 LLM 초안");
     }
 
     async function rejectAssets(source, draft, reason) {
@@ -1728,8 +1940,13 @@
         if (kind === "asset_profile") {
             var s = result.summary || {};
             return "자산 초안 " + (result.draft_id || "-") + " · 관계 " + valueOr(s.relationships) + " · 코드 컬럼 " + valueOr(s.code_values)
-                + " · 규칙 " + valueOr(s.query_rules) + " · 조회 " + ((result.budget || {}).used || 0) + "회"
+                + " · 규칙 " + valueOr(s.query_rules) + " · 테이블 정의(주석) " + valueOr(s.table_definitions) + " · 조회 " + ((result.budget || {}).used || 0) + "회"
                 + (result.offline ? " · DB 연결 없음(스키마만)" : "");
+        }
+        if (kind === "asset_table_definitions") {
+            var d = result.summary || {};
+            return result.note ? result.note : "테이블 정의 LLM 호출 " + valueOr(result.llm_calls) + "회 · 실패 묶음 " + valueOr(result.failed_batches)
+                + " · 정의 " + valueOr(d.total) + "행(유효 " + valueOr(d.valid) + " · 오류 " + valueOr(d.invalid) + ")";
         }
         if (kind === "asset_llm") {
             return "쿼리 예시 " + valueOr(result.query_examples) + "건 · DB 전용 규칙 " + (result.prompt_template_passed ? "검증 통과" : "검증 실패")

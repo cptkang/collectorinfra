@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from src.db_adapters import get_adapter
 from src.routing.registry import hangul_identifiers_allowed
@@ -23,6 +23,7 @@ def validate_sql_draft(
     default_limit: int = 100,
     db_id: Optional[str] = None,
     adapter_db_ids: Optional[set[str]] = None,
+    time_resolution: dict[str, Any] | None = None,
 ) -> dict:
     """SQL 초안을 실행 전에 검증한다(문법·안전성·스키마 정합·행 제한).
 
@@ -34,6 +35,9 @@ def validate_sql_draft(
         default_limit: 행 제한 자동 추가 시 기본값
         db_id: 대상 DB 식별자(어댑터 디스패치용)
         adapter_db_ids: 어댑터 담당 db_id 집합(런타임 설정에서 주입)
+        time_resolution: 요청 시간 해석(state `time_resolution` = `ToolContext.time_resolution`
+            · plans/122 T-5b · D-306) — 주면 어댑터가 시간 조건 대조 검사를 더한다(노드 경로와
+            같은 검사). None이면 종전 검사 목록 그대로
 
     Returns:
         {"valid": bool, "errors": [...], "warnings": [...], "fixed_sql": str}
@@ -41,7 +45,7 @@ def validate_sql_draft(
     """
     adapter = get_adapter(db_id, adapter_db_ids)
     adapter_checks = (
-        adapter.validator_checks(user_query=user_query)
+        adapter.validator_checks(user_query=user_query, time_resolution=time_resolution)
         if adapter is not None else []
     )
     outcome = validate_sql(

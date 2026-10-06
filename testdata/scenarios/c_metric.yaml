@@ -26,7 +26,10 @@ scenarios:
           # plans/122 H-2: "지난달"을 턴 송신 시각 기준 창으로 본다(표기 무관 · 월 경계 ±1일 보류).
           #   원식: "(?i)'20\\d{4}'"
           sql_must_match: ["(?i)cmm_metric_stat_m"]
-          period_covers: {relative: last_month}
+          # plans/122 T-9 — 「지난달 1개월 통계」 = 정확히 지난달(과대 확장하면 평균·최대가 달라진다) ·
+          #   리터럴만(§10.3 ④).
+          period_covers: {relative: last_month, exact: true}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           row_count: {min: 1}
           # plans/122 H-1 보류 — "서버당 1행"을 `result.unique_by` 로 옮기지 않았다. 서버 식별 열이
           #   유일하지 않다: 폐쇄망 cm_gp 전 서버 1,690행 산출물(run 20260923-140539 H-01 xlsx)에서
@@ -49,7 +52,9 @@ scenarios:
           # plans/122 H-2: "지난 3개월"을 턴 송신 시각 기준 창으로 본다(표기 무관 · 월 경계 ±1일 보류).
           #   원식: "(?i)between\\s+'20\\d{4}'\\s+and\\s+'20\\d{4}'"
           sql_must_match: ["(?i)cmm_metric_stat_m"]
-          period_covers: {relative: last_n_months, n: 3}
+          # plans/122 T-9 — 직전 완결 3개월과 같아야 한다 · 리터럴만(§10.3 ④).
+          period_covers: {relative: last_n_months, n: 3, exact: true}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           row_count: {min: 1}
           # plans/122 H-1 보류 — "서버×월 행"을 `result.unique_by` 로 옮기지 않았다(C-01 주석 —
           #   서버 식별 열이 폐쇄망에서 유일하지 않다). 기간(종전 첫 문장)은 위로 옮겼다.
@@ -70,6 +75,8 @@ scenarios:
           #   원식: "(?i)'202601'", "(?i)'202606'"
           sql_must_match: ["(?i)cmm_metric_stat_m"]
           period_covers: {from: "2026-01-01", to: "2026-07-01"}
+          # plans/122 T-9 — 명시 기간은 리터럴만(§10.3 ④).
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           row_count: {min: 1}
   - id: C-04
     plans: [61, 69]
@@ -87,7 +94,13 @@ scenarios:
           #   원식: "(?i)'202601'", "(?i)'202606'". 상한 초과는 아래 부정 단언이 계속 막는다.
           sql_must_match: ["(?i)cmm_metric_stat_m"]
           period_covers: {from: "2026-01-01", to: "2026-07-01"}
-          sql_must_not_match: ["(?i)'202607'"]
+          # plans/122 T-9 — 명시 기간은 리터럴만(§10.3 ④) — 함수식 부정 단언을 더했다.
+          #   7월 부정 단언은 **배타 끝 `< '202607'`** 을 허용하도록 좁혔다(종전 `(?i)'202607'`). 시간 해석
+          #   기본 on(D-306)의 기간 블록이 주는 표준형이 `s.stat_date >= '202601' AND s.stat_date < '202607'`
+          #   (`time_period.StatBounds.where`)이라 종전 식은 정답을 떨어뜨린다. 7월을 **포함**하는 표기
+          #   (`= '202607'` · BETWEEN … '202607' · `<= '202607'` · IN 목록)는 그대로 잡는다. 세 run 의 C-04 SQL 에
+          #   '202607' 은 0건이라 과거 판정은 같다.
+          sql_must_not_match: ["(?i)(?:[^<\\s]|<=)\\s*'202607'", "(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           row_count: {min: 1}
   - id: C-05
     plans: [61, 69]
@@ -105,7 +118,9 @@ scenarios:
           #   연도 없는 월 범위를 턴 송신 시각 기준(미래가 아닌 가장 최근)으로 풀어 창을 덮는지 본다.
           #   원식: "(?i)'\\d{4}11'", "(?i)'\\d{4}02'"
           sql_must_match: ["(?i)cmm_metric_stat_m"]
-          period_covers: {month_span: {from: 11, to: 2}}
+          # plans/122 T-9 — 11월~2월 그 넉 달과 같아야 한다 · 리터럴만(§10.3 ④).
+          period_covers: {month_span: {from: 11, to: 2}, exact: true}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
   - id: C-06
     plans: [61, 69]
     title: "이번 달 CPU 사용률 10건만"
@@ -123,6 +138,12 @@ scenarios:
           #   집계(제품의 "이번 달 = stat_d 집계" 프로필 규칙 · `_append_current_month_partial_note`)가
           #   정답이고 아래 단언이 틀린다. G-3 결과에 따라 복원하거나 고친다(종전 단언):
           #   sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)'20\\d{4}'"]
+          # plans/122 T-9 — 기간만 기계로 본다: 「이번 달」 창(해석기 · D-201 = 1일~어제)을 덮는가 + 리터럴만
+          #   (§10.1 C-06 실측 `TO_CHAR(date_trunc('month', CURRENT_DATE), …)` 함수식 → 부정 단언이 잡는다).
+          #   테이블(입도)과 정확 창은 붙이지 않는다 — 진행 중 월의 월/일 통계 선택이 아래 수동(G-3) 대상이다
+          #   (월 통계 '202609' 는 창을 덮어 통과 · 정확 창이면 거꾸로 떨어진다).
+          period_covers: {relative: this_month}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           manual_review: "진행 중 월이 실행 시점 기준으로 맞는지 · 기준 테이블(월/일 통계)은 plans/120 G-3 확인 전 수동 판정"
   - id: C-07
     plans: [61, 69]
@@ -175,6 +196,8 @@ scenarios:
           sql_must_match: ["(?i)cmm_metric_stat_m",
                            "(?i)\\bcmm_metric_stat_m\\b[\\s\\S]*\\bcmm_metric_stat_m\\b|\\bcase\\s+when\\b[^()]*?\\bstat_date\\b|\\bfilter\\s*\\(\\s*where\\b[^()]*?\\bstat_date\\b|\\blag\\s*\\("]
           period_covers: {from: "2026-05-01", to: "2026-07-01"}
+          # plans/122 T-9 — 명시 기간은 리터럴만(§10.3 ④).
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           row_count: {min: 1}
   - id: C-10
     plans: [61, 69]
@@ -208,6 +231,8 @@ scenarios:
           sql_must_match: ["(?i)cmm_metric_stat_m",
                            "(?i)select[\\s\\S]*\\(\\s*select|\\bwith\\s+\\w+(?:\\s*\\([^)]*\\))?\\s+as\\s*\\("]
           period_covers: {from: "2026-06-01", to: "2026-07-01"}
+          # plans/122 T-9 — 명시 기간은 리터럴만(§10.3 ④).
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           # 수동 유지 — G-10(D-275 ⑩): "전체 평균" = 존별인가 3존 통합인가 · 행 평균인가 서버 평균인가 미정.
           manual_review: "서브쿼리 또는 CTE 가 전체 평균을 계산하는지"
   - id: C-12
@@ -263,7 +288,9 @@ scenarios:
         expect:
           status: completed
           sql_must_match: ["(?i)cmm_metric_stat_m", "(?i)avg\\s*\\("]
-          sql_must_not_match: ["(?i)group\\s+by"]
+          # plans/122 T-9 — 「지난달」 = 정확히 지난달(단일 평균값이 기간에 따라 달라진다) · 리터럴만(§10.3 ④).
+          period_covers: {relative: last_month, exact: true}
+          sql_must_not_match: ["(?i)group\\s+by", "(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           # plans/122 A-1: 종전 수동 문구 "scope.global_aggregate_drop 가드 계측이 남았는지".
           #   결과(단일 값)는 `row_count eq 1` 과 GROUP BY 부재가 본다. 가드 계측은 단위 테스트 소관.
           row_count: {eq: 1}

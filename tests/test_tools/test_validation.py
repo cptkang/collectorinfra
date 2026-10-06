@@ -16,8 +16,9 @@ class FakeAdapter:
 
     name = "fake"
 
-    def validator_checks(self, user_query=None):
+    def validator_checks(self, user_query=None, *, time_resolution=None):
         # D-201이 훅 계약에 user_query 옵션 인자를 추가 — 실 어댑터 시그니처와 동기.
+        # plans/122 T-5b(D-306)가 time_resolution 키워드 인자를 추가 — 같은 이유로 동기.
         return [lambda sql: ["어댑터 전용 위반"] if "host" in sql else []]
 
 

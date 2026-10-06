@@ -29,8 +29,10 @@ from src.llm import create_llm
 from src.nodes.candidate_generator import classify_complexity
 from src.nodes.query_validator import (
     NON_SQL_RETRY_BUDGET,
+    REGEN_STOP_BACKEND_LIMIT,
     REGEN_STOP_DEADLINE,
     REGEN_STOP_NON_SQL,
+    REGEN_STOP_SELECTION_NONE,
     REGEN_STOP_VALIDATION_BUDGET,
     check_left_join_where_demotion as _check_left_join_where_demotion,
     deadline_stop_message,
@@ -38,6 +40,15 @@ from src.nodes.query_validator import (
     retrieval_reserve_sec,
 )
 from src.nodes.semantic_compiler import compile_from_nl
+from src.nodes.table_selection import (
+    SOURCE_NONE,
+    definitions_of,
+    load_db_description,
+    narrow_schema_dict,
+    select_tables,
+    selection_none_guidance,
+    uses_definition_selection,
+)
 from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
 from src.routing.db_registry import DBRegistry
 from src.routing.domain_config import get_domain_by_id
@@ -49,6 +60,7 @@ from src.security.pii_filter import (
     is_scrub_samples_enabled,
     scrub_pii,
 )
+from src.sql_validation import TOKEN_LIMIT_ERROR_PREFIX, detect_llm_backend_error
 from src.state import AgentState, QueryAttempt
 from src.utils.prior_dependency import (
     add_db_note,
@@ -86,6 +98,7 @@ from src.nodes.prompt_blocks import (
     build_query_examples,
     build_schema_prefix_rule,
     build_stepwise_deps,
+    build_table_purpose_block,
     build_unmapped_fields_block,
     build_value_index_injection,
     build_value_joins_block,
@@ -126,9 +139,19 @@ from src.db_adapters.polestar.assembler import (
 )
 # 순위 정렬 NULLS LAST 결정적 교정(D-202 2차) — 검증기와 같은 판정을 공유해 드리프트 방지.
 from src.db_adapters.polestar.validators import (
+    check_time_conditions,
     ensure_eav_value_order,
     ensure_ranking_nulls_last,
 )
+# 요청 시간 해석(state `time_resolution` · plans/122 T-4 · D-306) — 단일 경로와 같은 함수(D-066).
+from src.db_adapters.polestar.time_period import build_period_block
+from src.db_adapters.time_hint import (
+    build_generic_time_hint,
+    metric_period,
+    stat_month_compat,
+    strip_raw_time_keys,
+)
+from src.domain.query_time import QueryTime
 # 지표 필드 분류는 어댑터 레지스트리 경유 도구를 쓴다(D-089). 검증 코어가 도구 계층으로
 # 내려가 tools→nodes 역참조가 사라졌으므로 모듈 수준 임포트가 안전하다(후속 2단계).
 from src.tools.metrics import classify_metric_field
@@ -151,20 +174,10 @@ _FOREIGN_SCHEMA_PREFIX = "polestar."        # 붙이지 말아야 할 접두사 
 # 캐시 스키마 샘플 백필 시 턴당 최대 조회 테이블 수(순차 MCP 왕복 상한)
 _SAMPLE_BACKFILL_MAX = 50
 
-# LLM 백엔드(FabriX 오케스트레이터) 예외가 HTTP 에러가 아닌 **응답 content 텍스트**로
-# 반환되는 계약 결함의 감지 마커(D-159, 소문자 비교). 폐쇄망 실측(2026-08-21 공동존):
-# "An exception occurred in GptOssAdapter.llm_call: Input tokens must be <= 95232"가
-# 정상 응답으로 유입돼 "SELECT 문이 아닙니다"로 오표면화됐다. 정당한 SQL에 이 문구가
-# 들어갈 확률은 사실상 0이라 좁게 잡는다 — 문구 변경 시 감지 실패해도 현행 동작으로
-# 강등될 뿐이다(하방 안전).
-_LLM_TOKEN_LIMIT_MARKERS = ("input tokens must be",)
-_LLM_BACKEND_ERROR_MARKERS = (
-    "error occurred from orchestrator",
-    "gptossadapter.llm_call",
-)
-# 재시도 중단 판정용 구분 프리픽스 — 토큰 한도 초과는 같은 프롬프트 재생성이
-# 결정적으로 다시 초과하므로 재시도가 무의미하다(PII 차단 D-153 후속2와 동형).
-_TOKEN_LIMIT_ERROR_PREFIX = "LLM 백엔드 입력 토큰 한도 초과"
+# LLM 백엔드(FabriX 오케스트레이터) 예외가 응답 content 텍스트로 오는 변형의 감지 마커·판정은
+# 공용 함수로 옮겼다(`src.sql_validation.detect_llm_backend_error` · plans/138 W1 · D-305 ⑦ — 단일
+# 검증·테이블 선별과 같은 판정). 재시도 중단 판정용 구분 프리픽스는 종전 이름으로 재노출한다.
+_TOKEN_LIMIT_ERROR_PREFIX = TOKEN_LIMIT_ERROR_PREFIX
 
 # 방언 불일치 사유의 구분 프리픽스 — 호출부가 재생성 유도 대상으로 식별한다(D-176).
 _DIALECT_ERROR_PREFIX = "행 제한 절 방언 불일치"
@@ -322,8 +335,26 @@ class _MultiRun:
     # `{db_id: {"reason": validation_budget|non_sql|deadline, "detail": 마지막 사유}}`. 2단 핸들러가
     # 전 DB 실패 task의 `regen_stop`으로 접는다(`subagents._task_regen_stop`).
     regen_stops: dict[str, dict[str, str]] = field(default_factory=dict)
+    # 정의 기반 테이블 선별 결과(plans/138 W4) — `{db_id: TableSelection.as_state()}`.
+    # 그 모드인 DB만 싣고 반환 시 state `table_selection`으로 올린다(단일 경로와 같은 모양).
+    table_selections: dict[str, dict[str, Any]] = field(default_factory=dict)
     # DB별 직전 SQL 생성 소요(초) — 실행 오류 재생성의 시간 게이트 입력(추정 상수 금지 · T-3).
     gen_elapsed: dict[str, float] = field(default_factory=dict)
+    # 요청 시간 해석(state `time_resolution` · plans/122 T-4). None이면(플래그 off) 모든 기간
+    # 소비 지점이 종전 경로(원문·sub_query_context·LLM time_range 해석)를 탄다.
+    query_time: QueryTime | None = None
+
+
+def _run_query_time(run: Any) -> QueryTime | None:
+    """run의 시간 해석 — 테스트 대역(SimpleNamespace·MagicMock run)에서는 None(종전 경로)."""
+    qt = getattr(run, "query_time", None)
+    return qt if isinstance(qt, QueryTime) else None
+
+
+def _run_time_resolution(run: Any) -> dict[str, Any] | None:
+    """검증기 훅에 넘길 state 값(`time_resolution`) — 해석이 있을 때만(대역 run은 None)."""
+    qt = _run_query_time(run)
+    return qt.to_state() if qt is not None else None
 
 
 def _monotonic() -> float:
@@ -475,6 +506,15 @@ async def _prepare_multi_run(
         if _mem_answers:
             form_fill_answers = {**_mem_answers, **(form_fill_answers or {})}
 
+    # 요청 시간 해석(plans/122 T-4) — 단일 경로(`query_generator._prepare`)와 같은 출처·같은 해석.
+    query_time = QueryTime.from_state(state.get("time_resolution"))
+    if query_time is None and state.get("time_resolution"):
+        # 침묵 폴백 금지 — 값은 있는데 모양이 어긋났다(버전 불일치 등). 종전 경로로 간다.
+        logger.warning(
+            "time_resolution 해석 불가(모양 불일치) — 종전 기간 해석으로 진행: %r",
+            str(state.get("time_resolution"))[:200],
+        )
+
     return _MultiRun(
         state=state, llm=llm, app_config=app_config, registry=registry,
         parsed_requirements=parsed_requirements, effective_limit=effective_limit,
@@ -488,6 +528,7 @@ async def _prepare_multi_run(
         mapping_sources=mapping_sources, form_fill_answers=form_fill_answers,
         form_fill_out={},
         prior_scope_by_db=prior_scope_by_db,
+        query_time=query_time,
     )
 
 
@@ -581,6 +622,7 @@ def _deterministic_alarm_sql_or_none(
 
     domain_cfg = get_domain_by_id(db_id)
     db_schema = domain_cfg.db_schema if domain_cfg else ""
+    qt = _run_query_time(run)
     return try_deterministic_alarm_sql(
         run.state.get("user_query", ""),
         routing_intent="alarm_query",
@@ -589,6 +631,8 @@ def _deterministic_alarm_sql_or_none(
         limit=run.effective_limit,
         enabled=True,
         parsed_time_range=(run.parsed_requirements or {}).get("time_range"),
+        # 알람은 사건 주체 해석(D-291) — 단일 경로 `_try_deterministic_alarm_single`과 대칭
+        period=qt.event if qt is not None else None,
     )
 
 
@@ -630,6 +674,7 @@ async def _generate_validated_sql(
                 det_sql, schema_info, db_id=db_id, db_engine=db_engine,
                 user_query=run.state.get("user_query", ""), app_config=run.app_config,
                 surface_query=surface_query_for_judgment(run.state),
+                time_resolution=_run_time_resolution(run),
             )
             if not det_error:
                 logger.info("[알람조립] db=%s 결정적 SQL 사용(LLM 미호출)", db_id)
@@ -663,6 +708,7 @@ async def _generate_validated_sql(
         mapping_sources=run.mapping_sources,
         form_fill_answers=run.form_fill_answers,
         surface_query=surface_query_for_judgment(run.state),
+        query_time=_run_query_time(run),
     )
     _last_gen = _monotonic() - _gen_started
     _note_gen_elapsed(run, db_id, _last_gen)
@@ -675,6 +721,7 @@ async def _generate_validated_sql(
         sql, schema_info, db_id=db_id, db_engine=db_engine,
         user_query=run.state.get("user_query", ""), app_config=run.app_config,
         surface_query=surface_query_for_judgment(run.state),
+        time_resolution=_run_time_resolution(run),
     )
     # 보정본(행 상한 자동 추가)이 오면 갈아탄다 — 버리면 검증이 "통과만" 하고 끝난다(CU-16).
     sql = _fixed or sql
@@ -697,6 +744,8 @@ async def _generate_validated_sql(
                 "DB '%s' LLM 입력 토큰 한도 초과 — 재생성 중단(동일 프롬프트 재초과)",
                 db_id,
             )
+            # 종결 사유는 단일 경로와 같은 `backend_limit`(plans/138 W1 잔여 · D-066)
+            _stop_reason = REGEN_STOP_BACKEND_LIMIT
             break
         # N-5: 산문(비-SQL) 전용 예산 — 그래프·2단 단일 루프와 같은 상수·같은 판정
         # (`is_non_sql_prose`).
@@ -753,6 +802,7 @@ async def _generate_validated_sql(
             mapping_sources=run.mapping_sources,
             form_fill_answers=run.form_fill_answers,
             surface_query=surface_query_for_judgment(run.state),
+            query_time=_run_query_time(run),
         )
         _last_gen = _monotonic() - _gen_started
         _note_gen_elapsed(run, db_id, _last_gen)
@@ -760,12 +810,14 @@ async def _generate_validated_sql(
             sql, schema_info, db_id=db_id, db_engine=db_engine,
             user_query=run.state.get("user_query", ""), app_config=run.app_config,
             surface_query=surface_query_for_judgment(run.state),
+            time_resolution=_run_time_resolution(run),
         )
         sql = _fixed or sql
     if validation_error:
         # 유효 SQL 없이 끝났다 — 사유를 DB별로 남겨 2단 task의 `regen_stop`으로 접게 한다
         # (plans/119 Q-3).
-        # PII 차단·토큰 한도 중단도 "재생성이 무익해 멈춘 검증 실패"라 검증 소진으로 본다.
+        # PII 차단 중단도 "재생성이 무익해 멈춘 검증 실패"라 검증 소진으로 본다. 토큰 한도 중단은
+        # `backend_limit`이다(plans/138 W1 잔여 — 단일 경로와 같은 사유).
         _record_regen_stop(run, db_id, _stop_reason, _stop_detail or validation_error)
     return sql, validation_error
 
@@ -813,8 +865,21 @@ async def _run_single_target(target: dict, run: _MultiRun) -> None:
                 sub_query_context=sub_context,
                 routing_intent=run.state.get("routing_intent"),
                 dependency_notes=getattr(run, "dependency_notes", None),
+                llm=run.llm,
+                selection_sink=getattr(run, "table_selections", None),
             )
             run.db_schemas[db_id] = schema_info
+
+            # 정의 기반 테이블 선별 0개(plans/138 W4 · D-305 G-2) — SQL을 만들지 않고
+            # 안내 문구로 이 DB를 끝낸다(단일 경로와 같은 함수·같은 종결 사유).
+            _selections = getattr(run, "table_selections", None)
+            _selection = _selections.get(db_id) if isinstance(_selections, dict) else None
+            if isinstance(_selection, dict) and _selection.get("source") == SOURCE_NONE:
+                _guidance = selection_none_guidance(definitions_of(schema_info))
+                run.db_errors[db_id] = _guidance
+                _record_regen_stop(run, db_id, REGEN_STOP_SELECTION_NONE, _guidance)
+                logger.warning("DB '%s' 정의 기반 테이블 선별 0개 — SQL 생성 없이 안내 종결", db_id)
+                return
 
             if not schema_info.get("tables"):
                 run.db_errors[db_id] = f"DB '{db_id}'에서 테이블을 찾을 수 없습니다."
@@ -1190,6 +1255,11 @@ async def _run_groups(
                 getattr(run, "regen_stops", None), dict
             ):
                 merged.regen_stops.update(run.regen_stops)
+            # 정의 기반 선별 결과(plans/138 W4) — 뒤 그룹 DB의 선별이 빠지지 않게 합친다.
+            if isinstance(getattr(merged, "table_selections", None), dict) and isinstance(
+                getattr(run, "table_selections", None), dict
+            ):
+                merged.table_selections.update(run.table_selections)
 
     if merged is None:
         merged = await _prepare_multi_run(state, llm, app_config)
@@ -1350,6 +1420,13 @@ async def multi_db_executor(
     # 키라 버려진다 — 그쪽 사용자 사유는 `db_errors`(존 커버리지 각주)가 운반한다.
     if isinstance(getattr(run, "regen_stops", None), dict) and run.regen_stops:
         result["regen_stops"] = {d: dict(v) for d, v in run.regen_stops.items()}
+    # 정의 기반 선별 결과(plans/138 W4) — 그 모드인 DB가 있을 때만 싣는다(반환 shape 현행 유지).
+    # 단일 경로와 같은 키·모양이고, 리듀서가 없는 키라 같은 요청의 기존 항목을 이어 붙인다.
+    if isinstance(getattr(run, "table_selections", None), dict) and run.table_selections:
+        result["table_selection"] = {
+            **(state.get("table_selection") or {}),
+            **{d: dict(v) for d, v in run.table_selections.items()},
+        }
     # 폼필 월 시리즈 앵커·스코프 매핑 갱신분을 state에 반영(D-146/D-148 — 단일 경로와 대칭).
     if run.form_fill_out.get("month_anchor"):
         result["form_month_anchor"] = run.form_fill_out["month_anchor"]
@@ -1478,6 +1555,8 @@ async def _analyze_schema(
     sub_query_context: str = "",
     routing_intent: Optional[str] = None,
     dependency_notes: list[dict[str, Any]] | None = None,
+    llm: Any = None,
+    selection_sink: dict[str, dict[str, Any]] | None = None,
 ) -> dict:
     """DB 스키마를 분석하여 관련 테이블 정보를 수집한다.
 
@@ -1494,6 +1573,9 @@ async def _analyze_schema(
         dependency_notes: 사유 노트 채널(`run.dependency_notes`). 컬럼 설명이 비었으면(백업 복원 뒤)
             `descriptions_missing` 노트를 DB당 1건 더한다(plans/104 B-6 · 단일 DB 경로와 같은 조건).
             None이면 싣지 않는다.
+        llm: 정의 기반 테이블 선별 LLM(plans/138 W4). None이면 선별하지 않고 종전 게이트를 쓴다.
+        selection_sink: 선별 결과를 ``{db_id: TableSelection.as_state()}``로 담을 곳
+            (`run.table_selections`)
 
     Returns:
         스키마 정보 딕셔너리
@@ -1524,11 +1606,32 @@ async def _analyze_schema(
 
     # 관련 테이블 게이트(D-159) — 샘플 백필보다 먼저 적용해 백필 MCP 왕복·PII 스크럽·
     # 직렬화가 전부 좁힌 스키마 기준으로 돌게 한다.
-    schema_dict = _gate_schema_tables(
-        schema_dict, _manual_prof, _synonyms, parsed_requirements,
-        sub_query_context, db_id=db_id, app_config=app_config,
-        routing_intent=routing_intent,
-    )
+    if llm is not None and _manual_prof is not None and uses_definition_selection(
+        _manual_prof, routing_intent,
+    ):
+        # 정의 기반 선별(plans/138 W4 · D-305 G-3) — 단일 경로(`schema_analyzer`)와 같은 함수로
+        # 고르고 그 테이블로만 좁힌다(얕은 사본 — 캐시 공유 객체는 바꾸지 않는다). 정의가 없는 DB·
+        # 알람 의도는 아래 종전 게이트 그대로다.
+        selection = await select_tables(
+            llm=llm,
+            question=parsed_requirements.get("original_query", "") or "",
+            sub_query_context=sub_query_context,
+            db_id=db_id,
+            db_description=await load_db_description(cache_mgr, db_id),
+            schema_tables=schema_dict.get("tables") or {},
+            profile=_manual_prof,
+            app_config=app_config,
+            relationships=schema_dict.get("relationships"),
+        )
+        if isinstance(selection_sink, dict):
+            selection_sink[db_id] = selection.as_state()
+        schema_dict = narrow_schema_dict(schema_dict, selection.selected)
+    else:
+        schema_dict = _gate_schema_tables(
+            schema_dict, _manual_prof, _synonyms, parsed_requirements,
+            sub_query_context, db_id=db_id, app_config=app_config,
+            routing_intent=routing_intent,
+        )
 
     # 샘플 데이터 수집 (캐시에서 로드한 경우 샘플이 없을 수 있으므로 보충).
     # 상한 필수: 스코프 미필터 스키마(b0 408테이블 실측)는 무상한 순차 백필이
@@ -1601,7 +1704,8 @@ async def _build_stepwise_deps(
     db_engine: str,
     db_id: str,
     default_limit: int,
-) -> Optional["StepwiseDeps"]:
+    time_resolution: dict[str, Any] | None = None,
+) -> StepwiseDeps | None:
     """멀티 DB 경로(경로 C)의 단계적 도출 도구 재료를 만든다 (S2/D-128).
 
     플래그 OFF면 None(도구 조립 자체 없음). 단일 경로(`query_generator._build_stepwise_deps`)와
@@ -1615,6 +1719,8 @@ async def _build_stepwise_deps(
         db_engine: DB 엔진 타입
         db_id: DB 식별자
         default_limit: 기본 행 제한
+        time_resolution: 요청 시간 해석(state `time_resolution` 값 · plans/122 T-4) — 기간 해석
+            도구가 요청 단위 해석을 쓴다(단일 경로와 대칭). None이면 도구의 종전 해석
 
     Returns:
         ``column_deriver.StepwiseDeps`` 또는 None(플래그 OFF)
@@ -1639,6 +1745,7 @@ async def _build_stepwise_deps(
         schema_info=schema_info,
         db_engine=db_engine,
         default_limit=default_limit,
+        time_resolution=time_resolution,
     )
 
 
@@ -1674,12 +1781,13 @@ async def _invoke_llm_for_sql(
     app_config: AppConfig | None,
     execute: Callable[[str], Awaitable[dict]] | None,
     candidate_sink: list[dict] | None,
+    time_resolution: dict[str, Any] | None = None,
 ) -> str:
     """조립한 프롬프트로 LLM에서 SQL을 받는다(다중 후보 우선, 없으면 단일 호출).
 
     트랙 A(E2~E4): 멀티 DB 경로(C) 명시 이식 — NL 질의(폼필·재시도 아님)에만 다중 후보를
     돌린다. execute(읽기전용 실행 클로저)·검증 클로저를 주입해 경로 비대칭을 막는다
-    (§2.1 / D-066).
+    (§2.1 / D-066). `time_resolution`(state 값 · plans/122 T-4)은 후보 검증의 어댑터 훅에 넘긴다.
     """
     if app_config is None:
         app_config = load_config()
@@ -1703,6 +1811,7 @@ async def _invoke_llm_for_sql(
             return _validate_sql(
                 sql, schema_info, db_id=db_id, db_engine=db_engine,
                 user_query=sub_query_context, app_config=app_config,
+                time_resolution=time_resolution,
             )[0]
 
         selection = await run_candidate_pipeline(
@@ -1796,6 +1905,7 @@ async def _try_semantic_compile(
     *,
     parity: bool,
     surface_query: str | None = None,
+    query_time: QueryTime | None = None,
 ) -> str | None:
     """트랙 C(D-076) — 커버리지 내 정형 NL 질의를 시맨틱 결정적 컴파일한다(경로 C 이식).
 
@@ -1819,20 +1929,26 @@ async def _try_semantic_compile(
     semantic_sql, _smq, _cov = await compile_from_nl(
         llm, _uq, db_id,
         default_limit=default_limit,
-        # 표면어 미매칭 시 LLM 기간 산출물로 2단 폴백 — 단일 경로와 동일 규칙(R3-(i)/D-066)
-        stat_month=resolve_stat_month_range(
-            _uq, parsed_time_range=parsed_requirements.get("time_range")
+        # 표면어 미매칭 시 LLM 기간 산출물로 2단 폴백 — 단일 경로와 동일 규칙(R3-(i)/D-066).
+        # 요청 시간 해석이 있으면 그 해석이 단일 출처다(plans/122 T-4 — stat_month는 호환 값).
+        stat_month=(
+            stat_month_compat(query_time) if query_time is not None
+            else resolve_stat_month_range(
+                _uq, parsed_time_range=parsed_requirements.get("time_range")
+            )
         ),
         server_scope=prior_scope if parity else None,
         app_config=app_config,
         stepwise_deps=await _build_stepwise_deps(
             schema_info, app_config, db_engine, db_id, default_limit,
+            time_resolution=query_time.to_state() if query_time is not None else None,
         ),
         derivation_sink=derivation_sink,
         parsed_filters=parsed_requirements.get("filter_conditions"),
         # 순위·최상급 표면어 판정은 원문 기준(plans/107 W0.5 — 단일 경로와 대칭). _uq(R6)는 SMQ
         # 선택 LLM 입력이라 그대로 둔다.
         surface_query=surface_query,
+        query_time=query_time,
     )
     if semantic_sql:
         logger.info(
@@ -1949,8 +2065,12 @@ async def _build_multi_system_prompt(
     db_engine_hint = _build_multi_engine_hint(db_engine, db_id)
 
     def _render(schema_for_prompt: dict, materials: Optional[dict]) -> str:
+        # 「테이블 용도」 블록은 스키마 바로 앞 — 단일 경로와 같은 빌더·같은 자리이고, 예산
+        # 사다리 1·2단(재료·표본 제거)에서도 유지된다(plans/138 W5 · D-305 ⑤ · D-066).
+        # 정의 없는 DB는 빈 문자열이라 바이트 불변.
         return template.format(
-            schema=_format_schema(schema_for_prompt, materials),
+            schema=build_table_purpose_block(schema_for_prompt)
+            + _format_schema(schema_for_prompt, materials),
             default_limit=default_limit,
             structure_guide=structure_guide,
             db_engine_hint=db_engine_hint,
@@ -2046,6 +2166,7 @@ def _multi_resource_pivot_result(
     applied_overrides: set[str] | None = None,
     form_intent: bool = False,
     form_fill_out: dict | None = None,
+    query_time: QueryTime | None = None,
 ) -> tuple[str | None, str | None, list[str] | None]:
     """자식 리소스 EAV가 섞인 폼필을 결정적 SQL 또는 프롬프트 지침 블록으로 처리한다(D-068).
 
@@ -2144,22 +2265,29 @@ def _multi_resource_pivot_result(
     # 폼필 피벗도 기간 2단 폴백에 **포함**한다(R3-(i), 2026-07-30 결정 변경) — 표면어
     # 미매칭 시 stat_date 필터가 빠져 전 기간 평균으로 침묵 왜곡되는 것을 막는다.
     # 단일 경로 `query_generator._try_build_form_fill_pivot_sql`와 동형(D-066).
-    stat_month = resolve_stat_month_range(
-        parsed_requirements.get("original_query", ""),
-        parsed_time_range=parsed_requirements.get("time_range"),
-    )
+    # 요청 시간 해석이 있으면 그 해석이 단일 출처다(plans/122 T-4 — stat_month는 호환 값).
+    # 「현재·지금」+기간 미지정은 None(기본값 강제 안 함 — 단일 경로와 같은 `metric_period`)
+    _period = metric_period(query_time)
+    if query_time is not None:
+        stat_month = stat_month_compat(query_time)
+    else:
+        stat_month = resolve_stat_month_range(
+            parsed_requirements.get("original_query", ""),
+            parsed_time_range=parsed_requirements.get("time_range"),
+        )
     deterministic_sql = build_form_fill_pivot_sql(
         regular_entries, server_eav, child_eav, eav_pattern_mr,
         metric_fields=pivot_metric_fields, db_engine=db_engine,
         db_schema=db_schema, limit=default_limit, stat_month=stat_month,
         month_measures=month_series.measures if month_series else None,
         concat_eav=concat_eav or None,
+        period=_period,
     )
     logger.info(
         "DB '%s': 폼필 다중 리소스 피벗 SQL 결정적 조립(LLM 우회) — child=%d, metric=%d, "
         "month=%s, 월시리즈=%d, regular=%s, concat=%s",
         db_id, len(child_eav), len(pivot_metric_fields),
-        "~".join(stat_month) if stat_month else "전체",
+        _period.label() if _period is not None else "~".join(stat_month) if stat_month else "전체",
         len(month_series.fields) if month_series else 0,
         regular_entries, [c[0] for c in concat_eav],
     )
@@ -2266,6 +2394,7 @@ def _build_mapping_user_parts(
     form_intent: bool = False,
     mapping_sources: dict[str, str] | None = None,
     form_fill_answers: dict[str, dict] | None = None,
+    query_time: QueryTime | None = None,
 ) -> tuple[list[str], str | None, list[str] | None]:
     """양식 필드 매핑(column_mapping)에서 파생되는 사용자 프롬프트 섹션들을 만든다.
 
@@ -2321,6 +2450,8 @@ def _build_mapping_user_parts(
         # 실행 DB 허용 테이블 밖 매핑(오염 유사어)은 미매핑으로 본다 — 단일 경로와 대칭
         # (plans/120 F-1b)
         allowed_tables=((schema_info or {}).get("tables") or {}).keys(),
+        # 요청 시간 해석(plans/122 T-4) — 단일 경로와 같은 성능 통계 해석을 넘긴다
+        period=metric_period(query_time),
     )
     if month_series:
         # 단일 경로와 동일 관측 로그(D-185 — 멀티 경로만 인식 로그가 없어 폐쇄망 진단 불가였음)
@@ -2432,6 +2563,7 @@ def _build_mapping_user_parts(
             month_series=month_series, concat_eav=concat_eav,
             dropped_inferred=_dropped_inferred, applied_overrides=_applied_ov,
             form_intent=form_intent, form_fill_out=form_fill_out,
+            query_time=query_time,
         )
         if deterministic_sql:
             return parts, deterministic_sql, unmapped_fields
@@ -2483,6 +2615,7 @@ async def _generate_sql(
     mapping_sources: dict[str, str] | None = None,
     form_fill_answers: dict[str, dict] | None = None,
     surface_query: str | None = None,
+    query_time: QueryTime | None = None,
 ) -> str:
     """LLM을 사용하여 SQL을 생성한다.
 
@@ -2508,6 +2641,9 @@ async def _generate_sql(
         mapping_sources: 필드별 매핑 출처(hint/synonym/llm_inferred) — 폼필에서
             llm_inferred 매핑을 채움에서 제외(D-149, 침묵 오염 차단)
         form_fill_answers: 역질문 답변(D-151) — 오버라이드 최우선 적용
+        query_time: 요청 시간 해석(state `time_resolution` · plans/122 T-4). 있으면 시맨틱
+            컴파일·폼필 피벗·월 시리즈·기간 블록·검증기 훅이 이 해석만 쓴다(단일 경로와 대칭).
+            None이면 종전(원문 → sub_query_context → LLM time_range) 그대로
 
     Returns:
         생성된 SQL 문자열
@@ -2523,6 +2659,7 @@ async def _generate_sql(
             llm, parsed_requirements, schema_info, default_limit, error_context,
             column_mapping, db_engine, db_id, app_config, prior_block, prior_scope,
             derivation_sink, parity=_parity, surface_query=surface_query,
+            query_time=query_time,
         )
         if semantic_sql:
             return semantic_sql
@@ -2533,7 +2670,7 @@ async def _generate_sql(
         app_config, prior_block, value_index, parity=_parity,
         form_context_text=form_context_text, form_fill_out=form_fill_out,
         form_intent=form_intent, mapping_sources=mapping_sources,
-        form_fill_answers=form_fill_answers,
+        form_fill_answers=form_fill_answers, query_time=query_time,
     )
     if deterministic_sql:
         return deterministic_sql
@@ -2553,6 +2690,7 @@ async def _generate_sql(
         default_limit=default_limit,
         error_context=error_context, column_mapping=column_mapping,
         app_config=app_config, execute=execute, candidate_sink=candidate_sink,
+        time_resolution=query_time.to_state() if query_time is not None else None,
     )
 
 
@@ -2571,11 +2709,22 @@ def _unmapped_fields_section(unmapped_fields: list[str], db_engine: str) -> str:
     )
 
 
+def _is_polestar_db(db_id: str, app_config: AppConfig | None) -> bool:
+    """폴스타 게이트 — 기간 블록(`_period_prompt_block`)과 간이 검증의 시간 조건 대조가 같은 판정.
+
+    폴스타 월 통계 규약 특화 블록·검사라 폴스타 DB에만 건다(L2 일반화, 단일 경로와 대칭
+    P1-3/D-088). 생산자(블록)와 검증기가 같은 DB 집합을 보게 한 곳에 둔다(D-231 드리프트 방지).
+    """
+    return db_id in ((app_config.get_polestar_db_ids() if app_config else None) or set())
+
+
 def _period_prompt_block(
     parsed_requirements: dict,
     sub_query_context: str,
     db_id: str,
     app_config: AppConfig | None,
+    *,
+    query_time: QueryTime | None = None,
 ) -> str:
     """기간 표현의 결정적 해석을 프롬프트 블록으로 만든다(해당 없으면 빈 문자열).
 
@@ -2583,8 +2732,17 @@ def _period_prompt_block(
     우선하고, 라우터가 만든 sub_query_context에만 표현이 남은 경우로 폴백한다.
     폴스타 월 통계 테이블 규약 특화 블록이라 폴스타 DB에만 주입한다(L2 일반화, 단일 경로와
     대칭 P1-3/D-088). 프로필 부재 DB는 미주입 — 일반 기간 규칙만 남는다(프로필 선언 전환은 P3/D-090).
+
+    요청 시간 해석(`query_time` · plans/122 T-5)이 있으면 원문·sub_query_context를 다시 해석하지
+    않고 그 해석만 쓴다 — 단일 경로와 같은 `build_period_block`·`build_generic_time_hint`.
     """
-    _stat_block_db = db_id in ((app_config.get_polestar_db_ids() if app_config else None) or set())
+    _stat_block_db = _is_polestar_db(db_id, app_config)
+    if query_time is not None:
+        if _stat_block_db:
+            return build_period_block(query_time)
+        if app_config and app_config.text2sql.generic_llm_mapping:
+            return build_generic_time_hint(query_time.metric)
+        return ""
     # 폴백 순서: 원문 표면어 → sub_query_context 표면어 → LLM 기간 산출물(R3-(i)).
     # 폴백 인자는 마지막 호출에만 준다 — 앞 단계가 매칭되면 or 단축으로 폴백이 발동하지 않는다.
     _stat_month = (
@@ -2621,6 +2779,7 @@ def _build_multi_user_prompt(
     form_intent: bool = False,
     mapping_sources: dict[str, str] | None = None,
     form_fill_answers: dict[str, dict] | None = None,
+    query_time: QueryTime | None = None,
 ) -> tuple[str, str | None]:
     """멀티 DB 경로의 사용자 프롬프트를 조립한다(블록 순서가 곧 프롬프트 바이트다).
 
@@ -2630,13 +2789,18 @@ def _build_multi_user_prompt(
     Returns:
         (user_prompt, 결정적 SQL 또는 None)
     """
+    # 시간 해석이 있으면 원시 기간 키(time_range 등)를 덤프에서 뺀다 — 기간 블록과 이중 신호가
+    # 되지 않게(plans/122 §10.2 ⑦ · 단일 경로와 같은 함수). 해석이 없으면 같은 객체(바이트 불변).
+    _req_dump = json.dumps(
+        strip_raw_time_keys(parsed_requirements, query_time), ensure_ascii=False, indent=2
+    )
     user_parts = [
         f"## 사용자 질의\n{sub_query_context}",
-        f"## 파싱된 요구사항\n```json\n{json.dumps(parsed_requirements, ensure_ascii=False, indent=2)}\n```",
+        f"## 파싱된 요구사항\n```json\n{_req_dump}\n```",
     ]
 
     _period_block = _period_prompt_block(
-        parsed_requirements, sub_query_context, db_id, app_config,
+        parsed_requirements, sub_query_context, db_id, app_config, query_time=query_time,
     )
     if _period_block:
         user_parts.append(_period_block)
@@ -2669,7 +2833,7 @@ def _build_multi_user_prompt(
             app_config=app_config,
             form_context_text=form_context_text, form_fill_out=form_fill_out,
             form_intent=form_intent, mapping_sources=mapping_sources,
-            form_fill_answers=form_fill_answers,
+            form_fill_answers=form_fill_answers, query_time=query_time,
         )
         user_parts.extend(_parts)
         if _deterministic:
@@ -2721,7 +2885,8 @@ def _validate_sql(
     user_query: str = "",
     app_config: Optional[AppConfig] = None,
     surface_query: Optional[str] = None,
-) -> tuple[Optional[str], Optional[str]]:
+    time_resolution: dict[str, Any] | None = None,
+) -> tuple[str | None, str | None]:
     """멀티 DB 경로 검증 심 (Plan 69 P4-3 · CU-16으로 반환 계약 변경).
 
     기본은 종전 간이 검증(동작 불변). ``TEXT2SQL_MULTI_FULL_VALIDATION`` ON이면 단일
@@ -2738,6 +2903,12 @@ def _validate_sql(
 
     ``surface_query``는 "전체/모든" 행 상한 상향 판정 입력이다(plans/107 W0.5 — 원문 기준).
     None이면 ``user_query``. 어댑터 검증 훅은 종전대로 ``user_query``를 받는다.
+
+    ``time_resolution``(state 값 · plans/122 T-4)은 어댑터 검증 훅에 그대로 넘긴다 — 생산자
+    (기간 블록·결정적 조립)와 검증기가 같은 해석을 본다(단일 경로 query_validator와 대칭).
+    간이 모드(기본)에서도 해석이 있고 폴스타 DB면 **시간 조건 대조만** 돌린다(plans/122 T-5b —
+    단일 경로는 기본으로 거는 검사라 멀티 기본 경로만 빠지던 비대칭 해소). full 모드는 어댑터
+    훅이 같은 검사를 이미 등록하므로 여기서 따로 돌리지 않는다(중복 실행 없음).
     """
     limit_text = user_query if surface_query is None else surface_query
     # 한글 식별자 허용 정책(레지스트리 · plans/137) — 간이·full 양쪽에 같은 값을 넘긴다(D-066).
@@ -2754,6 +2925,11 @@ def _validate_sql(
         )
         if error:
             return error, None
+        time_errors = _simple_time_condition_errors(sql, db_id, app_config, time_resolution)
+        if time_errors:
+            reason = "; ".join(time_errors[:5])
+            logger.info("[멀티시간검증] 거부(db=%s): %s", db_id, reason)
+            return reason, None
         # 기본 경로에도 행 상한을 건다(CU-16) — `multi_full_validation` 기본값은 그대로다.
         return None, _auto_limit_or_none(sql, db_engine, limit_text, app_config)
     from src.db_adapters import get_adapter
@@ -2761,7 +2937,7 @@ def _validate_sql(
 
     adapter = get_adapter(db_id, app_config.get_polestar_db_ids() or None)
     adapter_checks = (
-        adapter.validator_checks(user_query=user_query)
+        adapter.validator_checks(user_query=user_query, time_resolution=time_resolution)
         if adapter is not None else []
     )
     outcome = validate_sql(
@@ -2776,6 +2952,26 @@ def _validate_sql(
         logger.info("[멀티검증강화] 거부(db=%s): %s", db_id, reason)
         return reason, None
     return None, outcome.auto_fixed_sql
+
+
+def _simple_time_condition_errors(
+    sql: str,
+    db_id: str,
+    app_config: AppConfig | None,
+    time_resolution: dict[str, Any] | None,
+) -> list[str]:
+    """간이 검증 모드의 시간 조건 대조(plans/122 T-5b · D-306) — 대상이 아니면 빈 목록.
+
+    해석(`QueryTime.from_state`)이 metric을 돌려주고 폴스타 DB(`_is_polestar_db` — 기간 블록과 같은
+    게이트)일 때만 어댑터 검증기의 `check_time_conditions`를 그대로 부른다. full 모드에서는
+    어댑터 훅이 같은 검사를 등록하므로 호출부가 이 함수를 부르지 않는다.
+    """
+    if time_resolution is None or not _is_polestar_db(db_id, app_config):
+        return []
+    qt = QueryTime.from_state(time_resolution)
+    if qt is None or qt.metric is None:
+        return []
+    return check_time_conditions(sql, qt)
 
 
 def _validate_sql_simple(
@@ -2816,15 +3012,10 @@ def _validate_sql_simple(
     # 감지(D-159) — SQL이 아니라 백엔드 에러이므로 "SELECT 문이 아닙니다"(증상)로
     # 오표면화하지 않고 원인을 정확히 노출한다(침묵 강등 금지). 토큰 한도 초과는
     # 구분 프리픽스로 반환해 호출부가 재시도를 중단한다(D-153 후속2와 동형).
-    _lowered = sql.lower()
-    _excerpt = scrub_pii(" ".join(sql.split())[:200])
-    if any(m in _lowered for m in _LLM_TOKEN_LIMIT_MARKERS):
-        return (
-            f"{_TOKEN_LIMIT_ERROR_PREFIX} 응답(비-SQL) — 프롬프트가 데이터 평면 "
-            f"한도를 초과함(스키마 스코프·재료 축소 필요) | 응답 원문: {_excerpt!r}"
-        )
-    if any(m in _lowered for m in _LLM_BACKEND_ERROR_MARKERS):
-        return f"LLM 백엔드 예외 응답(비-SQL) | 응답 원문: {_excerpt!r}"
+    # 판정·문구는 단일 검증과 같은 공용 함수다(plans/138 W1 · D-305 ⑦).
+    _backend_error = detect_llm_backend_error(sql)
+    if _backend_error is not None:
+        return _backend_error.message
 
     # SELECT 문 확인 — CTE(WITH ... SELECT)도 읽기 전용이므로 허용(2026-07-21 gp-014,
     # 단일 경로 _get_statement_type과 동일 규칙). DML은 아래 위험 키워드 검사가 차단.

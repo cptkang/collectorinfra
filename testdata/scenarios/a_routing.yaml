@@ -26,7 +26,12 @@ scenarios:
           # plans/122 A-1: 위치어 힌트의 결과는 `db_ids`(여의도 → polestar_cm_yd)가 이미 본다.
           #   종전 수동 문구 "위치어 결정적 힌트가 적용됐는지 기동 로그 확인"은 삭제했다.
           db_ids: ["polestar_cm_yd"]
-          sql_must_not_match: ["(?i)여의도"]
+          # plans/122 T-9 — 기간 없음 = 직전 완결 월(§10.3.1 마지막 행 · 해석기 default) · 월 통계 ·
+          #   리터럴만(§10.1 A-01 실측 `CURRENT_DATE - INTERVAL '1 month'` → 아래 함수식 부정 단언이 잡는다).
+          sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
+          period_covers: {relative: last_month, exact: true}
+          sql_must_not_match: ["(?i)여의도",
+                               "(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
   - id: A-02
     plans: [9, 79]
     title: "은행존 서버의 디스크 사용량 10건만 조회"

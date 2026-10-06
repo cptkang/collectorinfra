@@ -20,6 +20,7 @@ from langgraph.graph import END, START, StateGraph
 
 from src.config import AppConfig
 from src.db_adapters import log_adapter_ownership_startup
+from src.domain.query_time import QueryTime
 from src.llm import create_llm
 from src.nodes.approval_gate import approval_gate
 from src.nodes.cache_management import cache_management
@@ -34,9 +35,12 @@ from src.nodes.query_executor import query_executor
 from src.nodes.query_generator import query_generator
 from src.nodes.query_validator import (
     NON_SQL_RETRY_BUDGET as NON_SQL_RETRY_BUDGET,  # 재노출 — 종전 이름 유지(아래 주석)
+    backend_limit_hit,
+    backend_limit_response,
     non_sql_budget_exhausted,
     non_sql_prose_response,
     query_validator,
+    selection_none_hit,
 )
 from src.nodes.result_merger import result_merger
 from src.nodes.result_organizer import result_organizer
@@ -101,12 +105,18 @@ def route_after_validation(state: AgentState, max_retry: int = 3) -> str:
     """query_validator 이후 라우팅을 결정한다.
 
     - 검증 통과: query_executor (또는 approval_gate)로 진행
+    - LLM 입력 한도 초과·백엔드 오류 응답: error_response로 즉시 종료(재생성 0회 · plans/138)
+    - 정의 기반 테이블 선별 0개: error_response로 즉시 안내 종료(재생성 0회 · plans/138 W4)
     - 산문(비-SQL) 응답 + 전용 예산 소진: error_response로 조기 종료
     - 검증 실패 + 재시도 가능: query_generator로 회귀
     - 검증 실패 + 재시도 초과: error_response로 종료
     """
     if state["validation_result"]["passed"]:
         return "query_executor"
+    if selection_none_hit(state["validation_result"]):
+        return "error_response"
+    if backend_limit_hit(state["validation_result"]):
+        return "error_response"
     if _non_sql_exhausted(state):
         return "error_response"
     if state["retry_count"] >= max_retry:
@@ -117,10 +127,14 @@ def route_after_validation(state: AgentState, max_retry: int = 3) -> str:
 def route_after_validation_with_approval(state: AgentState, max_retry: int = 3) -> str:
     """query_validator 이후 라우팅 (SQL 승인 활성화 시).
 
-    검증 통과 시 approval_gate로 보낸다. 산문 예산은 기본 경로와 대칭이다.
+    검증 통과 시 approval_gate로 보낸다. 산문 예산·입력 한도 종결은 기본 경로와 대칭이다.
     """
     if state["validation_result"]["passed"]:
         return "approval_gate"
+    if selection_none_hit(state["validation_result"]):
+        return "error_response"
+    if backend_limit_hit(state["validation_result"]):
+        return "error_response"
     if _non_sql_exhausted(state):
         return "error_response"
     if state["retry_count"] >= max_retry:
@@ -309,6 +323,20 @@ def route_after_field_mapper_legacy(state: AgentState, *, config: AppConfig) -> 
     return "schema_analyzer"
 
 
+def route_after_input_parser(state: AgentState) -> str:
+    """input_parser 이후 — 조회 기간 되묻기면 END, 아니면 field_mapper (plans/122 T-3 · D-306).
+
+    공통 전단이라 사다리 네 단(deep_agent·intent_orchestration·semantic_router·legacy)이 모두 이
+    분기를 지난다. `time_resolution.clarify`만 본다 — 플래그 off(값 None)·옛 체크포인트는 항상
+    field_mapper(종전 직행 간선과 같다). 되묻기 문구는 input_parser가 `final_response`로 이미
+    실었다(D-291 「해석 불가 = 되묻기」 · D-275 ⑪).
+    """
+    qt = QueryTime.from_state(state.get("time_resolution"))
+    if qt is not None and qt.clarify is not None:
+        return END
+    return "field_mapper"
+
+
 def route_after_orchestrator(state: AgentState) -> str:
     """agent_orchestrator 이후 항상 replanner로 보내 종료/추가를 평가한다.
 
@@ -331,6 +359,26 @@ def route_after_replanner(state: AgentState) -> str:
 
 def _error_response_node(state: AgentState) -> dict:
     """최대 재시도 초과 시 에러 응답을 생성한다."""
+    _validation: dict[str, Any] = dict(state.get("validation_result") or {})
+    if selection_none_hit(_validation):
+        # 정의 기반 테이블 선별 0개(plans/138 W4) — 검증 사유가 곧 안내 문구다
+        # (`selection_none_guidance` — 2단 단일 DB·멀티 경로와 같은 함수).
+        response = append_structure_missing_note(str(_validation.get("reason") or ""), state)
+        return {
+            "final_response": response,
+            "current_node": "error_response",
+            "messages": [AIMessage(content=response)],
+        }
+    if backend_limit_hit(_validation):
+        # LLM 입력 한도 초과·백엔드 오류 응답(plans/138 W1·W2) — 백엔드 원문은 싣지 않고
+        # 원인만 알린다. 문구는 2단 단일 DB 경로와 같은 함수가 만든다(경로 대칭).
+        response = backend_limit_response((_validation.get("backend_error") or {}).get("kind"))
+        response = append_structure_missing_note(response, state)
+        return {
+            "final_response": response,
+            "current_node": "error_response",
+            "messages": [AIMessage(content=response)],
+        }
     if (state.get("validation_result") or {}).get("non_sql"):
         # 생성기가 남긴 되물음·불가 사유를 그대로 싣는다(침묵적 폐기 금지). 문구는 2단
         # 단일 DB 경로와 같은 함수가 만든다(plans/119 N-5 · 경로 대칭).
@@ -699,8 +747,12 @@ def build_graph(config: AppConfig, checkpointer=None):
     graph.add_edge(START, "context_resolver")
     graph.add_edge("context_resolver", "input_parser")
 
-    # input_parser -> field_mapper
-    graph.add_edge("input_parser", "field_mapper")
+    # input_parser -> field_mapper | END(조회 기간 되묻기 — plans/122 T-3 · 사다리 전 단 공통)
+    graph.add_conditional_edges(
+        "input_parser",
+        route_after_input_parser,
+        {"field_mapper": "field_mapper", END: END},
+    )
 
     if use_deep_agent:
         # Plan 49 트랙 B: field_mapper -> deep_agent -> END (모든 경로 중 최우선)

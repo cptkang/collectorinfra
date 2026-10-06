@@ -66,6 +66,8 @@ PUBLIC_LAYER_DIRS: tuple[str, ...] = (
     # Plan 69 후속 2단계로 query_validator에서 분리된 SQL 검증 코어(단일 파일) —
     # 이동 전과 동일하게 감시(리터럴의 어댑터 이관은 별건 D-088 작업)
     "src/sql_validation.py",
+    # plans/122 T-5b — sql_validation에서 분리한 시간 조건 공용 틀(이동 전과 동일하게 감시)
+    "src/sql_time_conditions.py",
     # plans/87 G-11(2026-09-29 확정) — APM 게이트웨이(D-274 독립 패키지). 벤더 어댑터는 아래 EXCLUDE 대칭
     "apm_gateway/apm_gateway",
 )

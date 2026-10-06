@@ -15,12 +15,21 @@ D-292 DDL 등록)과 **읽기 전용 데이터 조회**(`schema_probe`)로 결�
   `StructureStore.apply_profile` · 시드·전용 섹션은 `AssetFileStore`(버전 · 되돌리기). 시드는 기존
   O-7 로더(`SynonymLoader.load_seed_yaml`)로 적재한다 — DB별 `column_synonyms` + DB 공용 사전
   `column_values`(폴스타·ITAM 공유 · `plans/132` G-13 사용자 확정).
+- **테이블 정의(`table_definitions` · D-305 ① · plans/138 W3)**: 테이블마다 「관리하는 정보」.
+  초안 경로 3가지 — 가져오기(`import_table_definitions` · 시드 YAML 형식) · 주석(P1이 테이블
+  주석을 `comment`
+  정의로) · LLM 묶음 초안(`run_table_definition_llm` · 주석 없는 테이블만 · 군 접두 단위 묶음 ·
+  `admin_llm_concurrency` · 실행 전 `estimate_table_definition_llm` · 실패 묶음만 재실행).
+  형식·검증은
+  `src.domain.table_definitions`가 정하고, 검증 실패 행은 승인할 수 없다(테이블 단위 선택 승인 ·
+  사람 편집 `manual` 보존 병합 · 되돌리기는 프로필 「버전 이력」).
 
 계층: infrastructure(`src/schema_cache`). 스키마 리터럴 금지(`overfit_check` 스캔 대상).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -28,12 +37,32 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import yaml  # type: ignore[import-untyped]
 from langchain_core.messages import HumanMessage
 
 from src.domain import schema_inference as inference
 from src.domain.profile_merge import merge_profile, profile_field_diff
 from src.domain.schema_snapshot import bare_name
-from src.prompts.asset_generation import PROMPT_SECTION_PROMPT, QUERY_EXAMPLES_PROMPT
+from src.domain.table_definitions import (
+    FIELDS,
+    IMPORT_MAX_CHARS,
+    KEY_COLUMNS_MAX,
+    KINDS,
+    MANAGES_MAX_CHARS,
+    ORIGIN_COMMENT,
+    ORIGIN_IMPORT,
+    ORIGIN_LLM,
+    ORIGIN_MANUAL,
+    defined_table_count,
+    parse_import_document,
+    validate_table_definitions,
+)
+from src.domain.table_definitions import PROFILE_KEY as TABLE_DEFINITIONS_KEY
+from src.prompts.asset_generation import (
+    PROMPT_SECTION_PROMPT,
+    QUERY_EXAMPLES_PROMPT,
+    TABLE_DEFINITIONS_PROMPT,
+)
 from src.schema_cache import schema_probe as probe
 from src.schema_cache.asset_store import AssetFileStore
 from src.schema_cache.db_structure_service import (
@@ -62,12 +91,12 @@ SqlChecker = Callable[[str, Mapping[str, Any], str, str], list[str]]
 #: 승인 화면에서 고를 수 있는 자산
 ASSET_KINDS: tuple[str, ...] = (
     "relationships", "allowed_tables", "code_values", "entity_keys", "query_rules",
-    "query_examples", "seeds", "prompt_template",
+    "query_examples", "seeds", "prompt_template", TABLE_DEFINITIONS_KEY,
 )
 #: 프로필 키로 들어가는 자산(`code_values`는 `code_labels`와 함께 간다)
 PROFILE_ASSETS: tuple[str, ...] = (
     "relationships", "allowed_tables", "code_values", "entity_keys", "query_rules",
-    "query_examples",
+    "query_examples", TABLE_DEFINITIONS_KEY,
 )
 DEFAULT_PROBE_BUDGET = 400
 #: 추론 관계 채택 하한(자식 키 표본 중 부모에 있는 비율)
@@ -86,6 +115,14 @@ EXAMPLE_COUNT = 5
 SECTION_MAX_CHARS = 6000
 SUMMARY_MAX_CHARS = 12000
 SQL_CHECK_LIMIT = 50
+#: 테이블 정의 LLM 묶음 크기(군 접두 단위 · D-305)
+DEFINITION_BATCH_SIZE = 10
+#: 테이블 정의 LLM 입력의 컬럼 설명 길이 상한(자)
+DEFINITION_DESCRIPTION_MAX_CHARS = 100
+#: 테이블 정의 LLM 입력의 컬럼당 코드 라벨 수 상한
+DEFINITION_LABELS_MAX = 10
+#: 검토 화면에서 고칠 수 있는 정의 필드(고친 행은 출처 `manual`)
+EDITABLE_DEFINITION_FIELDS: tuple[str, ...] = ("manages", "notes", "kind", "key_columns")
 
 _STRING_TYPE_RE = re.compile(
     r"^(char|character|varchar|character varying|nchar|nvarchar|varchar2|text|graphic|"
@@ -140,7 +177,7 @@ class AssetGenerationService(AdminServiceBase):
     # --- 조회 ---
 
     async def overview(self, source: str) -> dict[str, Any]:
-        """자산 초안 목록 · 자산 파일 버전 · 현행 파일 유무."""
+        """자산 초안 목록 · 자산 파일 버전 · 현행 파일 유무 · 승인된 테이블 정의 범위."""
         validate_db_id(source)
         files: dict[str, Any] = {}
         for kind in ("seeds", "prompt_template"):
@@ -150,11 +187,21 @@ class AssetGenerationService(AdminServiceBase):
                 "exists": current is not None,
                 "versions": await self._assets.list_versions(source, kind),
             }
+        profile = (self._store.read_current_profile(source) or {}).get("profile") or {}
+        approved = profile.get(TABLE_DEFINITIONS_KEY)
+        allowed = _str_list(profile.get("allowed_tables"))
         return {
             "source": source, "env": self.env, "local_sandbox": self.local_sandbox,
             "provider": self.provider_info(),
             "drafts": await self._store.list_asset_drafts(source),
             "files": files,
+            "table_definitions": {
+                "approved": len(approved) if isinstance(approved, Mapping) else 0,
+                "allowed": len(allowed),
+                "covered": defined_table_count(approved, allowed),
+                "kinds": list(KINDS),
+                "import_max_chars": IMPORT_MAX_CHARS,
+            },
         }
 
     # --- P1 프로파일링 ---
@@ -224,6 +271,13 @@ class AssetGenerationService(AdminServiceBase):
         assets, evidence = _assemble(
             source, snapshot, scope, comments, catalog, relationships, columns, code_tables,
         )
+        # 테이블 주석 → 테이블 정의 초안(출처 `comment` · LLM 0 · 검증 실패는 오류 행)
+        definitions, definition_errors = _definition_rows(
+            {t: {"manages": comments[t], "origin": ORIGIN_COMMENT}
+             for t in scope if comments.get(t)},
+            _table_columns(snap_tables), ORIGIN_COMMENT,
+        )
+        assets[TABLE_DEFINITIONS_KEY] = definitions
         evidence.update({
             "relationships": relation_evidence,
             "catalog": {"comments": len(comments), "errors": catalog.errors},
@@ -240,7 +294,9 @@ class AssetGenerationService(AdminServiceBase):
             "snapshot_hash": record.get("hash"),
             "assets": assets,
             "evidence": evidence,
-            "validation": {},
+            "validation": {
+                TABLE_DEFINITIONS_KEY: {"errors": definition_errors, "batches": []},
+            } if definitions else {},
             "description_draft_id": description_draft_id,
             "llm_calls": 0,
             "provider": None,
@@ -480,8 +536,6 @@ class AssetGenerationService(AdminServiceBase):
         comments.update(_draft_comments(draft))
         summary = build_asset_summary(snapshot, draft.get("assets") or {}, comments)
         llm = self._llm_factory()
-        assets = dict(draft.get("assets") or {})
-        validation = dict(draft.get("validation") or {})
 
         await ctx.progress(0, 3, "쿼리 예시 생성")
         examples_raw = await _ask(llm, QUERY_EXAMPLES_PROMPT.format(
@@ -498,13 +552,19 @@ class AssetGenerationService(AdminServiceBase):
             check = _SqlCheck(client, self._sql_checker, schema_info, engine, source)
             examples, example_checks = await _validate_examples(check, examples_raw)
             section, section_check = await _validate_section(check, section_raw, snapshot)
+        # 잡이 도는 동안 바뀐 초안(테이블 정의 편집 등 — D-305)을 덮지 않도록
+        # 최신 초안에 이 두 자산만 얹는다
+        draft = await self._store.get_asset_draft(source, draft_id) or draft
+        assets = dict(draft.get("assets") or {})
+        validation = dict(draft.get("validation") or {})
         assets["query_examples"] = examples
         assets["prompt_template"] = {"section": section} if section_check["passed"] else None
         validation["query_examples"] = {"passed": bool(examples), "checks": example_checks}
         validation["prompt_template"] = section_check
         provider = self.provider_info()
         updated = await self._store.update_asset_draft(
-            source, draft_id, assets=assets, validation=validation, llm_calls=2,
+            source, draft_id, assets=assets, validation=validation,
+            llm_calls=int(draft.get("llm_calls") or 0) + 2,
             provider=provider, llm_at=_now_iso(), llm_by=by,
         )
         await ctx.progress(3, 3, "완료")
@@ -516,6 +576,305 @@ class AssetGenerationService(AdminServiceBase):
             "source": source, "draft_id": draft_id, "provider": provider, "llm_calls": 2,
             "query_examples": len(examples), "prompt_template_passed": section_check["passed"],
             "status": (updated or {}).get("status"),
+        }
+
+    # --- 테이블 정의 (D-305 ① · plans/138 W3) ---
+
+    async def import_table_definitions(
+        self, source: str, text: str, *, by: str | None
+    ) -> dict[str, Any]:
+        """가져오기 — 관리자가 올린 YAML(시드 형식)을 결정적으로 검증해 자산 초안을 만든다(LLM 0).
+
+        검증 실패 테이블은 오류 행으로 초안에 싣는다(승인 불가 — 편집하거나 고쳐 다시 가져온다).
+
+        Raises:
+            ValueError: 소스 이름 · 본문 상한 · YAML 문법 · 최상위 `tables:` 없음 · 스냅샷 없음
+            StructureStoreUnavailable: Redis 미연결
+        """
+        validate_db_id(source)
+        if len(text) > IMPORT_MAX_CHARS:
+            raise ValueError(f"가져오기 본문은 {IMPORT_MAX_CHARS:,}자 이하여야 합니다")
+        try:
+            document = yaml.safe_load(text)
+        except yaml.YAMLError as e:
+            raise ValueError(f"YAML을 읽지 못했습니다: {e}") from e
+        raw = parse_import_document(document)
+        await self._require_store()
+        record = await self._store.load_snapshot(source) or {}
+        snap_tables: Mapping[str, Any] = (record.get("snapshot") or {}).get("tables") or {}
+        if not snap_tables:
+            raise ValueError("스냅샷이 없습니다 — O-2 스키마 수집 또는 DDL 등록을 먼저 하세요")
+        rows, errors = _definition_rows(raw, _table_columns(snap_tables), ORIGIN_IMPORT)
+        profile = (self._store.read_current_profile(source) or {}).get("profile") or {}
+        raw_engine, _schema = await self._engine_and_schema(source, None)
+        draft = await self._store.add_asset_draft(source, {
+            "kind": "import",
+            "scope": _scope_tables(None, profile, snap_tables),
+            "engine": probe.engine_key(raw_engine),
+            "snapshot_hash": record.get("hash"),
+            "assets": {TABLE_DEFINITIONS_KEY: rows},
+            "evidence": {},
+            "validation": {TABLE_DEFINITIONS_KEY: {"errors": errors, "batches": []}},
+            "description_draft_id": None,
+            "llm_calls": 0,
+            "provider": None,
+            "created_by": by,
+            "env": self.env,
+            "local_sandbox": self.local_sandbox,
+        })
+        summary = _definition_summary(rows, errors)
+        logger.info("테이블 정의 가져오기 초안: source=%s, draft_id=%s, %s, by=%s",
+                    source, draft.get("draft_id"), summary, by)
+        return {
+            "source": source, "draft_id": draft.get("draft_id"), "env": self.env,
+            "summary": summary,
+        }
+
+    async def estimate_table_definition_llm(
+        self, source: str, draft_id: str, *, only_failed: bool = False
+    ) -> dict[str, Any]:
+        """테이블 정의 LLM 묶음 초안의 예상 호출 수 — 실행 전에 보여 준다(LLM 0).
+
+        Raises:
+            DraftNotApprovable: 초안 없음 · 대기 아님 · 환경 불일치
+            StructureStoreUnavailable: Redis 미연결
+        """
+        validate_db_id(source)
+        await self._require_store()
+        draft = await self._pending_asset_draft(source, draft_id)
+        plan = await self._definition_plan(source, draft, only_failed=only_failed)
+        return {
+            "source": source, "draft_id": draft_id, "only_failed": only_failed,
+            "calls": len(plan.batches),
+            "tables": sum(len(b) for b in plan.batches),
+            "batch_size": DEFINITION_BATCH_SIZE,
+            "concurrency": max(1, int(self._config.schema_cache.admin_llm_concurrency)),
+            "skipped": plan.skipped,
+            "provider": self.provider_info(),
+        }
+
+    async def run_table_definition_llm(
+        self, source: str, draft_id: str, *, only_failed: bool, by: str | None, ctx: JobContext
+    ) -> dict[str, Any]:
+        """테이블 정의 LLM 묶음 초안 잡 본문 — 묶음마다 1회 호출(동시성 `admin_llm_concurrency`).
+
+        응답은 결정적 검증을 거쳐 초안 행이 된다. 호출·JSON 파싱 실패와 검증 실패는 오류 행으로
+        남기고 묶음 상태(`ok`·`partial`·`failed`)를 기록한다 — `only_failed`면 실패 묶음만
+        다시 돈다.
+
+        Raises:
+            DraftNotApprovable: 초안 없음 · 대기 아님 · 환경 불일치
+            StructureStoreUnavailable: Redis 미연결
+        """
+        validate_db_id(source)
+        await self._require_store()
+        draft = await self._pending_asset_draft(source, draft_id)
+        plan = await self._definition_plan(source, draft, only_failed=only_failed)
+        total = len(plan.batches)
+        if not total:
+            await ctx.progress(0, 0, "대상 없음")
+            return {
+                "source": source, "draft_id": draft_id, "llm_calls": 0, "tables": 0,
+                "failed_batches": 0, "skipped": plan.skipped,
+                "note": "LLM 초안을 만들 테이블이 없습니다",
+            }
+        context = await self._definition_context(source, draft, plan)
+        llm = self._llm_factory()
+        semaphore = asyncio.Semaphore(
+            max(1, int(self._config.schema_cache.admin_llm_concurrency))
+        )
+        finished = 0
+        await ctx.progress(0, total, "테이블 정의 LLM 초안")
+
+        async def run(tables: list[str]) -> tuple[dict[str, Any], str | None]:
+            nonlocal finished
+            async with semaphore:
+                outcome = await _definition_batch(llm, tables, context)
+            finished += 1
+            await ctx.progress(finished, total, f"묶음 {finished}/{total}")
+            return outcome
+
+        outcomes = await asyncio.gather(*(run(batch) for batch in plan.batches))
+
+        # 잡이 도는 사이의 편집·반려를 반영한다 — 최신 초안에 얹고, LLM 행(또는 빈 자리)만 바꾼다
+        latest = await self._pending_asset_draft(source, draft_id)
+        assets = dict(latest.get("assets") or {})
+        validation = dict(latest.get("validation") or {})
+        rows = dict(assets.get(TABLE_DEFINITIONS_KEY) or {})
+        report = dict(validation.get(TABLE_DEFINITIONS_KEY) or {})
+        errors = {str(k): list(v) for k, v in (report.get("errors") or {}).items()}
+        table_columns = _table_columns(plan.snap_tables)
+        records = [
+            _merge_definition_batch(rows, errors, tables, raw, error, table_columns)
+            for tables, (raw, error) in zip(plan.batches, outcomes)
+        ]
+        kept = [
+            b for b in report.get("batches") or [] if only_failed and b.get("status") == "ok"
+        ]
+        assets[TABLE_DEFINITIONS_KEY] = rows
+        validation[TABLE_DEFINITIONS_KEY] = {**report, "errors": errors, "batches": kept + records}
+        provider = self.provider_info()
+        await self._store.update_asset_draft(
+            source, draft_id, assets=assets, validation=validation,
+            llm_calls=int(latest.get("llm_calls") or 0) + total, provider=provider,
+            definitions_llm_at=_now_iso(), definitions_llm_by=by,
+        )
+        failed = sum(1 for r in records if r["status"] != "ok")
+        await ctx.progress(total, total, "완료")
+        logger.info(
+            "테이블 정의 LLM 초안: source=%s, draft_id=%s, calls=%d, failed_batches=%d, "
+            "only_failed=%s, by=%s", source, draft_id, total, failed, only_failed, by,
+        )
+        return {
+            "source": source, "draft_id": draft_id, "provider": provider, "llm_calls": total,
+            "tables": sum(len(b) for b in plan.batches), "failed_batches": failed,
+            "skipped": plan.skipped, "summary": _definition_summary(rows, errors),
+        }
+
+    async def _definition_plan(
+        self, source: str, draft: Mapping[str, Any], *, only_failed: bool
+    ) -> _DefinitionPlan:
+        """LLM 대상 묶음 — 범위 중 테이블 주석 · 초안의 비-LLM 정의 · 승인된 사람 정의가 없는
+        테이블(`only_failed`면 실패 묶음 가운데 아직 실패한 LLM 행만)."""
+        record = await self._store.load_snapshot(source) or {}
+        snap_tables: Mapping[str, Any] = (record.get("snapshot") or {}).get("tables") or {}
+        comments = dict(await self._store.load_ddl_comments(source))
+        comments.update(_draft_comments(draft))
+        rows: Mapping[str, Any] = (draft.get("assets") or {}).get(TABLE_DEFINITIONS_KEY) or {}
+        report: Mapping[str, Any] = (
+            (draft.get("validation") or {}).get(TABLE_DEFINITIONS_KEY) or {}
+        )
+        errors: Mapping[str, Any] = report.get("errors") or {}
+        skipped = {"comment": 0, "defined": 0, "manual": 0}
+        if only_failed:
+            batches: list[list[str]] = []
+            for batch in report.get("batches") or []:
+                if not isinstance(batch, Mapping) or batch.get("status") == "ok":
+                    continue
+                still = [
+                    t for t in batch.get("tables") or []
+                    if t in snap_tables and _row_origin(rows.get(t)) == ORIGIN_LLM
+                    and (t in errors or t not in rows)
+                ]
+                if still:
+                    batches.append(still)
+            return _DefinitionPlan(batches, skipped, snap_tables, comments)
+        profile = (self._store.read_current_profile(source) or {}).get("profile") or {}
+        approved = profile.get(TABLE_DEFINITIONS_KEY)
+        manual = {
+            bare_name(str(t)) for t, item in (approved or {}).items()
+            if isinstance(item, Mapping) and item.get("origin") == ORIGIN_MANUAL
+        } if isinstance(approved, Mapping) else set()
+        targets: list[str] = []
+        scope = [t for t in draft.get("scope") or [] if t in snap_tables] or list(snap_tables)
+        for table in scope:
+            if comments.get(table):
+                skipped["comment"] += 1
+            elif _row_origin(rows.get(table)) != ORIGIN_LLM:
+                skipped["defined"] += 1
+            elif bare_name(table) in manual:
+                skipped["manual"] += 1
+            else:
+                targets.append(table)
+        return _DefinitionPlan(definition_batches(targets), skipped, snap_tables, comments)
+
+    async def _definition_context(
+        self, source: str, draft: Mapping[str, Any], plan: _DefinitionPlan
+    ) -> _DefinitionContext:
+        """LLM 입력 재료 — 컬럼 설명(승인 설명 → DDL 주석) · 코드 라벨 · 승인 관계 · DB 설명."""
+        descriptions: dict[str, str] = {}
+        try:
+            descriptions.update(await self._cache_mgr.get_descriptions(source) or {})
+        except Exception as e:  # noqa: BLE001 — 설명이 없어도 이름·타입으로 만든다
+            logger.warning("컬럼 설명 조회 실패 — 설명 없이 진행 (source=%s): %s", source, e)
+        for key, text in plan.comments.items():
+            descriptions.setdefault(key, text)
+        db_description = ""
+        try:
+            db_description = str(await self._cache_mgr.get_db_description(source) or "")
+        except Exception as e:  # noqa: BLE001 — DB 설명이 없으면 레지스트리 설명을 쓴다
+            logger.warning("DB 설명 조회 실패 (source=%s): %s", source, e)
+        if not db_description:
+            registry = self._registry()
+            entry = registry.get(source) if registry is not None else None
+            db_description = str(getattr(entry, "description", "") or "")
+        profile = (self._store.read_current_profile(source) or {}).get("profile") or {}
+        labels: dict[str, Any] = dict((draft.get("assets") or {}).get("code_labels") or {})
+        profile_labels = profile.get("code_labels")
+        if isinstance(profile_labels, Mapping):
+            labels.update(profile_labels)
+        relationships = [
+            (str(r["from"]), str(r["to"])) for r in profile.get("relationships") or []
+            if isinstance(r, Mapping) and isinstance(r.get("from"), str)
+            and isinstance(r.get("to"), str)
+        ]
+        return _DefinitionContext(
+            snap_tables=plan.snap_tables,
+            descriptions={k.casefold(): str(v) for k, v in descriptions.items() if v},
+            labels={k.casefold(): v for k, v in labels.items() if isinstance(v, Mapping)},
+            relationships=relationships,
+            db_description=db_description,
+        )
+
+    async def update_table_definitions(
+        self,
+        source: str,
+        draft_id: str,
+        edits: Mapping[str, Mapping[str, Any]],
+        *,
+        by: str | None,
+    ) -> dict[str, Any]:
+        """검토 화면 편집 저장 — 고친 행은 출처 `manual`로 다시 검증해 초안에 싣는다.
+
+        편집 필드는 `EDITABLE_DEFINITION_FIELDS`이고, 보내지 않은 필드는 기존 행 값을 쓴다. 검증에
+        실패하면 아무것도 저장하지 않는다.
+
+        Raises:
+            ValueError: 빈 편집 · 초안에 없는 테이블 · 검증 실패(사유 포함)
+            DraftNotApprovable: 초안 없음 · 대기 아님 · 환경 불일치
+            StructureStoreUnavailable: Redis 미연결
+        """
+        validate_db_id(source)
+        if not edits:
+            raise ValueError("편집할 테이블 정의가 없습니다")
+        await self._require_store()
+        draft = await self._pending_asset_draft(source, draft_id)
+        assets = dict(draft.get("assets") or {})
+        rows = dict(assets.get(TABLE_DEFINITIONS_KEY) or {})
+        unknown = sorted(t for t in edits if t not in rows)
+        if unknown:
+            raise ValueError(f"초안에 없는 테이블 정의: {', '.join(unknown[:10])}")
+        candidates: dict[str, dict[str, Any]] = {}
+        for table, fields in edits.items():
+            base = rows[table] if isinstance(rows[table], Mapping) else {}
+            row = {k: v for k, v in base.items() if k in FIELDS}
+            row.update({k: fields[k] for k in EDITABLE_DEFINITION_FIELDS if k in fields})
+            row["origin"] = ORIGIN_MANUAL
+            candidates[table] = row
+        record = await self._store.load_snapshot(source) or {}
+        valid, problems = validate_table_definitions(
+            candidates, _table_columns((record.get("snapshot") or {}).get("tables") or {}),
+        )
+        if problems:
+            detail = " / ".join(f"{t}: {'; '.join(p)}" for t, p in problems.items())
+            raise ValueError(f"편집 검증 실패 — {detail[:2000]}")
+        validation = dict(draft.get("validation") or {})
+        report = dict(validation.get(TABLE_DEFINITIONS_KEY) or {})
+        errors = {str(k): list(v) for k, v in (report.get("errors") or {}).items()}
+        for table in valid:
+            errors.pop(table, None)
+        rows.update(valid)
+        assets[TABLE_DEFINITIONS_KEY] = rows
+        validation[TABLE_DEFINITIONS_KEY] = {**report, "errors": errors}
+        await self._store.update_asset_draft(
+            source, draft_id, assets=assets, validation=validation,
+            definitions_edited_at=_now_iso(), definitions_edited_by=by,
+        )
+        logger.info("테이블 정의 편집: source=%s, draft_id=%s, tables=%d, by=%s",
+                    source, draft_id, len(valid), by)
+        return {
+            "source": source, "draft_id": draft_id, "updated": sorted(valid),
+            "summary": _definition_summary(rows, errors),
         }
 
     # --- 승인 · 반려 · 되돌리기 ---
@@ -543,11 +902,15 @@ class AssetGenerationService(AdminServiceBase):
         allowed_tables: list[str] | None,
         by: str | None,
         reason: str,
+        table_definition_tables: list[str] | None = None,
     ) -> dict[str, Any]:
         """고른 자산만 적용한다 — 프로필 키(사람 값 보존 병합) · 시드 · DB 전용 섹션.
 
+        테이블 정의는 `table_definition_tables`로 고른 테이블만 적용한다(없으면 초안 행 전부). 고른
+        행에 검증 실패 행이 있으면 `validation_failed`(409)다.
+
         Raises:
-            ValueError: 모르는 자산 · 빈 포함 목록
+            ValueError: 모르는 자산 · 빈 포함 목록 · 초안에 없는 테이블 정의
             DraftNotApprovable: 초안 상태·환경 · 자산 없음(`not_available`) · 검증 실패
         """
         validate_db_id(source)
@@ -584,6 +947,14 @@ class AssetGenerationService(AdminServiceBase):
             draft_meta["allowed_tables"] = selected_tables
         if "code_values" in chosen and assets.get("code_labels"):
             draft_meta["code_labels"] = assets["code_labels"]
+        approved_definitions: dict[str, Any] = {}
+        if TABLE_DEFINITIONS_KEY in chosen:
+            approved_definitions = _approvable_definitions(
+                assets.get(TABLE_DEFINITIONS_KEY) or {},
+                (validation.get(TABLE_DEFINITIONS_KEY) or {}).get("errors") or {},
+                table_definition_tables, _table_columns(snap_tables),
+            )
+            draft_meta[TABLE_DEFINITIONS_KEY] = approved_definitions
 
         steps: list[tuple[str, Callable[[], Any]]] = []
         if draft_meta:
@@ -611,9 +982,14 @@ class AssetGenerationService(AdminServiceBase):
                 applied[name] = {"error": f"{type(e).__name__}: {e}"}
                 failed.append(name)
         status = "partially_applied" if failed else "approved"
+        extra: dict[str, Any] = (
+            {"approved_table_definitions": list(approved_definitions)}
+            if TABLE_DEFINITIONS_KEY in chosen else {}
+        )
         updated = await self._store.update_asset_draft(
             source, draft_id, status=status, approved_by=by, approved_at=_now_iso(),
             approve_reason=reason, approved_assets=chosen, applied=applied, apply_errors=failed,
+            **extra,
         )
         logger.info("자산 초안 승인: source=%s, draft_id=%s, assets=%s, status=%s, by=%s",
                     source, draft_id, chosen, status, by)
@@ -652,6 +1028,17 @@ class AssetGenerationService(AdminServiceBase):
         if unchanged:
             result["unchanged"] = unchanged
             result["note"] = "기존 값을 보존해 바뀌지 않은 자산이 있습니다(사람이 쓴 값 우선)"
+        if TABLE_DEFINITIONS_KEY in draft_meta:
+            applied_defs = merged.get(TABLE_DEFINITIONS_KEY)
+            by_bare = {
+                bare_name(str(k)): v for k, v in applied_defs.items()
+            } if isinstance(applied_defs, Mapping) else {}
+            kept = [
+                t for t, item in draft_meta[TABLE_DEFINITIONS_KEY].items()
+                if by_bare.get(bare_name(t)) != item
+            ]
+            if kept:
+                result["table_definitions_kept_manual"] = kept
         return result
 
     async def _apply_prompt_template(
@@ -951,6 +1338,7 @@ def _asset_summary(assets: Mapping[str, Any]) -> dict[str, int]:
         "entity_keys": len((assets.get("entity_keys") or {}).get("keys") or []),
         "query_rules": len(assets.get("query_rules") or []),
         "seed_synonyms": len((assets.get("seeds") or {}).get("column_synonyms") or {}),
+        "table_definitions": len(assets.get(TABLE_DEFINITIONS_KEY) or {}),
     }
 
 
@@ -1004,6 +1392,279 @@ def build_asset_summary(
     if len(text) > SUMMARY_MAX_CHARS:
         text = text[:SUMMARY_MAX_CHARS] + "\n… (요약 상한에서 잘림)"
     return text
+
+
+# ──────────────────────────────────────────────
+# 테이블 정의 (D-305 ① · plans/138 W3)
+# ──────────────────────────────────────────────
+
+
+@dataclass
+class _DefinitionPlan:
+    """LLM 묶음 초안 계획 — 묶음 · 건너뛴 테이블 수(사유별) · 스냅샷 테이블 · 주석."""
+
+    batches: list[list[str]]
+    skipped: dict[str, int]
+    snap_tables: Mapping[str, Any]
+    comments: dict[str, str]
+
+
+@dataclass
+class _DefinitionContext:
+    """LLM 입력 재료(표본 값 없음) — 설명·라벨 키는 ``table.column``을 casefold한 것."""
+
+    snap_tables: Mapping[str, Any]
+    descriptions: dict[str, str]
+    labels: dict[str, Mapping[str, Any]]
+    relationships: list[tuple[str, str]]
+    db_description: str
+
+    def column_lookup(self, store: Mapping[str, Any], table: str, column: str) -> Any:
+        """스키마 키 · 맨 이름 어느 쪽으로 저장됐어도 찾는다."""
+        for key in (f"{table}.{column}", f"{bare_name(table)}.{column}"):
+            value = store.get(key.casefold())
+            if value:
+                return value
+        return None
+
+
+def _str_list(value: Any) -> list[str]:
+    return [t for t in value if isinstance(t, str)] if isinstance(value, list) else []
+
+
+def _row_origin(row: Any) -> str:
+    """초안 행의 출처(행이 없으면 LLM이 채울 빈 자리로 본다)."""
+    if not isinstance(row, Mapping):
+        return ORIGIN_LLM
+    return str(row.get("origin") or "")
+
+
+def _table_columns(snap_tables: Mapping[str, Any]) -> dict[str, list[str]]:
+    """스냅샷 → ``{테이블 키: [컬럼…]}``(정의 검증의 실존 기준)."""
+    return {
+        str(table): [str(c) for c in ((data or {}).get("columns") or {})]
+        for table, data in snap_tables.items()
+    }
+
+
+def _display_row(raw: Any, origin: str) -> dict[str, Any]:
+    """검증 실패 행의 표시용 사본 — 아는 필드만 · 글은 문자열로(JSON 저장 가능 · 승인 불가)."""
+    fields: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+    row: dict[str, Any] = {}
+    for name in FIELDS:
+        value = fields.get(name)
+        if value is None:
+            continue
+        if name == "key_columns":
+            row[name] = [str(v) for v in value] if isinstance(value, (list, tuple)) else [
+                str(value)
+            ]
+        elif name == "related":
+            row[name] = (
+                {str(k): str(v) for k, v in value.items()} if isinstance(value, Mapping) else {}
+            )
+        else:
+            row[name] = str(value)
+    row.setdefault("manages", "")
+    row.setdefault("origin", origin)
+    return row
+
+
+def _definition_rows(
+    raw: Mapping[str, Any], table_columns: Mapping[str, Sequence[str]], origin: str
+) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
+    """정의 원본 → ``(초안 행, 오류)`` — 유효 행은 정규화 값, 검증 실패 행은 표시용 사본이다.
+
+    행·오류 키는 스키마 테이블 키(스키마에 없는 테이블은 입력 이름)다.
+    """
+    valid, problems = validate_table_definitions(raw, table_columns)
+    index: dict[str, str] = {}
+    for key in table_columns:
+        index.setdefault(bare_name(key), key)
+    rows: dict[str, dict[str, Any]] = dict(valid)
+    errors: dict[str, list[str]] = {}
+    for label, messages in problems.items():
+        key = index.get(bare_name(label), label)
+        errors.setdefault(key, []).extend(messages)
+        rows.setdefault(key, _display_row(raw.get(label), origin))
+    return rows, errors
+
+
+def _definition_summary(
+    rows: Mapping[str, Any], errors: Mapping[str, Any]
+) -> dict[str, int]:
+    invalid = sum(1 for table in rows if errors.get(table))
+    return {"total": len(rows), "valid": len(rows) - invalid, "invalid": invalid}
+
+
+def definition_batches(
+    tables: Sequence[str], size: int = DEFINITION_BATCH_SIZE
+) -> list[list[str]]:
+    """LLM 묶음 — 군 접두(이름 끝 숫자를 뗀 앞부분) 단위로 `size`개씩 묶는다.
+
+    군마다 꽉 찬 묶음을 먼저 만들고, 남은 조각은 큰 것부터 들어갈 수 있는 묶음에 합친다(호출 수를
+    줄인다 — 조각은 쪼개지 않는다). 순서는 맨 이름 기준으로 결정적이다.
+    """
+    families: dict[str, list[str]] = {}
+    for table in sorted(tables, key=lambda t: (bare_name(t), t)):
+        families.setdefault(inference.table_family(bare_name(table)), []).append(table)
+    batches: list[list[str]] = []
+    rests: list[list[str]] = []
+    for family in sorted(families):
+        members = families[family]
+        full = len(members) // size * size
+        batches.extend(members[i:i + size] for i in range(0, full, size))
+        if full < len(members):
+            rests.append(members[full:])
+    packed: list[list[str]] = []
+    for rest in sorted(rests, key=len, reverse=True):
+        target = next((b for b in packed if len(b) + len(rest) <= size), None)
+        if target is None:
+            packed.append(list(rest))
+        else:
+            target.extend(rest)
+    return batches + packed
+
+
+def _render_definition_input(tables: Sequence[str], context: _DefinitionContext) -> str:
+    """LLM 입력 — 테이블마다 컬럼 이름/타입 · 컬럼 설명 · 코드 라벨 · 그 테이블의 승인 관계."""
+    lines: list[str] = []
+    for table in tables:
+        lines.append(f"### {table}")
+        columns = (context.snap_tables.get(table) or {}).get("columns") or {}
+        for column, attrs in columns.items():
+            line = f"- `{column}` {(attrs or {}).get('type') or ''}".rstrip()
+            note = context.column_lookup(context.descriptions, table, column)
+            if note:
+                text = " ".join(str(note).split())
+                if len(text) > DEFINITION_DESCRIPTION_MAX_CHARS:
+                    text = text[:DEFINITION_DESCRIPTION_MAX_CHARS] + "…"
+                line += f" — {text}"
+            labels = context.column_lookup(context.labels, table, column)
+            if labels:
+                names = list(dict.fromkeys(str(v) for v in labels.values()))
+                line += f" (코드 라벨: {', '.join(names[:DEFINITION_LABELS_MAX])})"
+            lines.append(line)
+        own = bare_name(table)
+        for left, right in context.relationships:
+            if own in (bare_name(left.rpartition(".")[0]), bare_name(right.rpartition(".")[0])):
+                lines.append(f"- 관계: `{left}` = `{right}`")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+async def _definition_batch(
+    llm: Any, tables: Sequence[str], context: _DefinitionContext
+) -> tuple[dict[str, Any], str | None]:
+    """LLM 묶음 1회 → ``(묶음 테이블의 정의 원본, 실패 사유)`` — 원본은 검증 전이다.
+
+    응답에서 `manages`·`kind`·`key_columns`만 읽고 출처는 `llm`으로 정한다.
+    """
+    prompt = TABLE_DEFINITIONS_PROMPT.format(
+        db_description=context.db_description or "(설명 없음)",
+        tables=_render_definition_input(tables, context),
+        manages_max=MANAGES_MAX_CHARS,
+        kinds=" · ".join(KINDS),
+        key_columns_max=KEY_COLUMNS_MAX,
+    )
+    try:
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        parsed = parse_llm_json(coerce_content_text(getattr(response, "content", response)))
+    except Exception as e:  # noqa: BLE001 — 호출·파싱 실패는 묶음 실패로 기록한다
+        logger.warning("테이블 정의 LLM 묶음 실패(%d개): %s", len(tables), e)
+        return {}, f"{type(e).__name__}: {e}"
+    if isinstance(parsed, Mapping) and set(parsed) == {"tables"} and isinstance(
+        parsed["tables"], Mapping
+    ):
+        parsed = parsed["tables"]
+    if not isinstance(parsed, Mapping):
+        return {}, "JSON 객체가 아닙니다"
+    answered = {bare_name(str(k)): v for k, v in parsed.items()}
+    raw: dict[str, Any] = {}
+    for table in tables:
+        item = answered.get(bare_name(table))
+        if item is None:
+            continue
+        if isinstance(item, Mapping):
+            item = {k: item[k] for k in ("manages", "kind", "key_columns") if k in item}
+            item["origin"] = ORIGIN_LLM
+        raw[table] = item
+    return raw, None
+
+
+def _merge_definition_batch(
+    rows: dict[str, Any],
+    errors: dict[str, list[str]],
+    tables: Sequence[str],
+    raw: Mapping[str, Any],
+    error: str | None,
+    table_columns: Mapping[str, Sequence[str]],
+) -> dict[str, Any]:
+    """LLM 묶음 1개의 결과를 초안 행·오류에 반영하고(제자리 갱신) 묶음 기록을 돌려준다.
+
+    LLM 행이나 빈 자리만 바꾼다 — 그 사이 사람이 고쳤거나 다른 경로로 정의된 테이블은 그대로 둔다.
+    호출·파싱이 실패하면 이미 유효한 LLM 행은 남기고 나머지를 오류 행으로 둔다.
+    """
+    targets = [t for t in tables if _row_origin(rows.get(t)) == ORIGIN_LLM]
+    if error is not None:
+        for table in targets:
+            if table in rows and not errors.get(table):
+                continue
+            rows[table] = {"manages": "", "origin": ORIGIN_LLM}
+            errors[table] = [f"LLM 초안 실패: {error}"]
+        status = "failed"
+    else:
+        answered = {t: raw[t] for t in targets if t in raw}
+        new_rows, new_errors = _definition_rows(answered, table_columns, ORIGIN_LLM)
+        for table in targets:
+            errors.pop(table, None)
+        rows.update(new_rows)
+        errors.update(new_errors)
+        for table in targets:
+            if table not in raw:
+                rows[table] = {"manages": "", "origin": ORIGIN_LLM}
+                errors[table] = ["LLM 응답에 이 테이블이 없습니다"]
+        status = "partial" if any(errors.get(t) for t in targets) else "ok"
+    return {
+        "tables": list(tables),
+        "families": sorted({inference.table_family(bare_name(t)) for t in tables}),
+        "status": status,
+        "error": error,
+    }
+
+
+def _approvable_definitions(
+    rows: Mapping[str, Any],
+    errors: Mapping[str, Any],
+    selected: list[str] | None,
+    table_columns: Mapping[str, Sequence[str]],
+) -> dict[str, dict[str, Any]]:
+    """승인할 테이블 정의 — 고른 행(없으면 전부)을 현재 스냅샷으로 다시 검증한 정규화 값.
+
+    Raises:
+        ValueError: 빈 선택 · 초안에 없는 테이블
+        DraftNotApprovable: 고른 행에 검증 실패 행이 있음(`validation_failed` → 409)
+    """
+    names = list(rows) if selected is None else list(dict.fromkeys(selected))
+    if not names:
+        raise ValueError("승인할 테이블 정의를 하나 이상 고르세요")
+    unknown = [n for n in names if n not in rows]
+    if unknown:
+        raise ValueError(f"초안에 없는 테이블 정의: {', '.join(unknown[:10])}")
+    failed = [n for n in names if errors.get(n)]
+    if failed:
+        raise DraftNotApprovable(
+            "validation_failed",
+            f"검증 실패 행은 승인할 수 없습니다({len(failed)}개): {', '.join(failed[:10])}",
+        )
+    valid, problems = validate_table_definitions({n: rows[n] for n in names}, table_columns)
+    if problems:
+        raise DraftNotApprovable(
+            "validation_failed",
+            f"현재 스키마로 다시 검증하지 못한 행({len(problems)}개): "
+            f"{', '.join(list(problems)[:10])}",
+        )
+    return valid
 
 
 async def _ask(llm: Any, prompt: str) -> str:

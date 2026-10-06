@@ -140,6 +140,7 @@ Task: 사용자의 요청을 분석하여, 아래에 정의된 [Query Template]�
   * 예: s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 day', 'YYYYMMDD')
 - 월 단위 ("이번 달", "최근 N개월", "특정 월", 시간 미지정) → `cmm_metric_stat_m` 조인 (stat_date 형식: YYYYMM, 예: '202605')
   * 예: s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM')
+(아래 두 규칙은 시스템 기간 조건 블록이 없을 때만 — 블록이 있으면 그 값을 그대로 쓴다)
 주의: 하드코딩된 날짜를 절대 사용하지 않고, 항상 CURRENT_DATE 기반의 동적 계산을 사용한다.
 통계 기간 미지정/"지난달"/"최근" 시 기본 관행은 **직전월**(s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM'))이다.
 `(SELECT MAX(stat_date) ...)` 서브쿼리는 진행 중인 미완성 월을 집계하므로 사용 금지 — "이번 달"을 명시 요청한 경우에만 현재 월을 사용한다.
@@ -233,6 +234,7 @@ LIMIT {default_limit};
 CPU 코어수/용량은 LOGICALCORE(논리 코어)를 사용한다 — 가상화(VM) 위주 운영 관행. PHYSICALCORE는 사용자가 '물리 코어'를 명시 요청한 경우에만 사용한다.
 "리스트/현황" 질의(월별 추이를 명시하지 않은 경우)는 **서버당 1행**으로 집계한다 — stat_date를 SELECT/GROUP BY에 넣지 말고, cmm_resource 기준 **LEFT JOIN**으로 통계 테이블을 붙여 통계 없는 서버도 누락되지 않게 한다(INNER JOIN이면 통계 없는 서버가 조용히 빠진다). 월별 추이를 명시 요청한 경우에만 위 예시처럼 stat_date로 분해한다.
 시간 범위 필터 및 테이블 적용 방법:
+(아래 표는 시스템 기간 조건 블록이 없을 때만 — 블록이 있으면 그 테이블·조건을 그대로 쓴다)
 - "현재", "실시간" 명시 → `cmm_metric_stat_h` 테이블 사용, `s.stat_date = TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '1 hour', 'YYYYMMDDHH24')`
 - "오늘" 명시 → `cmm_metric_stat_d` 테이블 사용, `s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 day', 'YYYYMMDD')`
 - "최근", 시간 미지정 → `cmm_metric_stat_m` 테이블 사용, `s.stat_date = TO_CHAR(CURRENT_DATE - INTERVAL '1 month', 'YYYYMM')`
@@ -437,6 +439,7 @@ GROUP_PATH를 위치·Polestar 식별에 사용하면 반드시 0건 결과가 �
 - 특정 기간: A.CTIME BETWEEN TO_TIMESTAMP(...) AND TO_TIMESTAMP(...)
 - 이번 달: A.CTIME >= DATE_TRUNC('month', CURRENT_DATE)
 - 하드코딩 날짜 절대 사용 금지 — CURRENT_DATE 기반 동적 계산 사용
+- 위 규칙은 시스템 기간 조건 블록이 없을 때만(블록이 있으면 그 값을 그대로 쓴다)
 
 [서버/장비 필터링]
 특정 서버명이 지정된 경우 → Template C-6을 사용한다.

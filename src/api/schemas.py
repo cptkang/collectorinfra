@@ -162,6 +162,13 @@ class QueryResponse(BaseModel):
         default=None,
         description="결정적 고지(상한 도달·좁힌 범위·미등록 존·단위 의심·조건 변경·조회 실패 등)",
     )
+    # plans/122 T-4 (D-306): 요청 시간 해석 — state `time_resolution` 그대로(`QueryTime.to_state()`
+    # 모양 · {version, anchor_at, metric, event, clarify, slot_status, slot_reason, present}).
+    # 선언하지 않으면 pydantic이 조용히 버린다. 플래그 off면 None.
+    time_resolution: dict[str, Any] | None = Field(
+        default=None,
+        description="요청 시간 해석(기준 시각·성능/알람 [start, end)·입도·출처·되묻기 사유)",
+    )
 
 
 class HealthResponse(BaseModel):

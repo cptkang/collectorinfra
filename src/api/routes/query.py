@@ -799,6 +799,70 @@ def _disclosures_field(state: dict[str, Any]) -> dict[str, Any]:
     return {"disclosures": items} if items else {}
 
 
+def _time_resolution_field(state: Mapping[str, Any]) -> dict[str, Any]:
+    """요청 시간 해석(plans/122 T-4 · D-306) — 네 진입점 응답·`done`에 같은 모양으로 싣는다.
+
+    값은 state `time_resolution` 그대로(`QueryTime.to_state()` 모양 — 하네스가 실행 SQL과 대조할
+    기준 `[start, end)`). 없으면(플래그 off · 해석 전 종료) 키를 싣지 않는다(바이트 불변).
+    astream 입력은 누적 상태(`_scope_state`)다 — 해석은 `input_parser` 델타에만 있다.
+    """
+    value = state.get("time_resolution")
+    return {"time_resolution": value} if isinstance(value, dict) else {}
+
+
+#: 기간 되묻기 역질문 kind — 존 역질문(`zone_select`)과 같은 채널이되 선택지가 없다(문구만).
+TIME_CLARIFY_KIND = "time_period"
+
+
+def _time_clarification(state: Mapping[str, Any]) -> dict[str, Any] | None:
+    """기간 해석 불가로 끝난 턴의 역질문 페이로드 — 아니면 None (plans/122 T-3·T-4 · D-306).
+
+    `input_parser`는 해석 불가(`time_resolution.clarify`)면 그래프를 끝내고 `final_response`에
+    되묻기 문구를 싣는다. 라우트는 이 턴을 존 역질문과 같은 채널(status="clarification" +
+    `clarification`)로 낸다 — 스트림 `done`에는 status 키가 없어 하네스·화면이 `clarification`
+    키로 역질문을 가린다. 선택지가 없어(`options=[]`) 화면은 체크박스 없이 문구만 보인다.
+    """
+    value = state.get("time_resolution")
+    if not isinstance(value, dict) or not value.get("clarify"):
+        return None
+    return {
+        "kind": TIME_CLARIFY_KIND,
+        "question": str(state.get("final_response") or ""),
+        "options": [],
+        "original_query": str(state.get("user_query") or ""),
+        "reason": str(value["clarify"]),
+    }
+
+
+def _clarify_turn_fields(clarification: Mapping[str, Any] | None) -> dict[str, Any]:
+    """기간 되묻기 턴 응답의 결과 칸 — 조회하지 않은 턴이다(plans/122 T-4 · D5).
+
+    후속 턴 입력(`create_followup_input`)은 지시어 승계용으로 `generated_sql`·`query_results`·
+    `output_file`을 비우지 않는다. 그래프가 `input_parser`에서 끝나면 `ainvoke` 결과에 직전 턴
+    값이 그대로 남아, 되묻기 응답에 직전 턴 SQL·행 수·파일이 실렸다. 되묻기 턴이면 그 칸을
+    비운 값으로 덮는다(응답 조립본 끝에 펼친다). 아니면 빈 dict(종전 그대로).
+    """
+    if not clarification:
+        return {}
+    return {
+        "executed_sql": None, "row_count": 0, "has_file": False, "file_name": None,
+        "has_mapping_report": False,
+    }
+
+
+def _clarify_store_fields(clarification: Mapping[str, Any] | None) -> dict[str, Any]:
+    """기간 되묻기 턴의 결과 저장 칸(D5) — 직전 턴 행·파일을 `/query/{id}/…`로 내주지 않는다."""
+    if not clarification:
+        return {}
+    return {"query_results": [], "output_file": None, "mapping_report_md": None}
+
+
+def _clarification_carry(response_data: Mapping[str, Any]) -> dict[str, Any]:
+    """파일 경로 `done`의 역질문 키 — 응답 조립본에 있을 때만 싣는다(종전 `done` 바이트 불변)."""
+    clarification = response_data.get("clarification")
+    return {"clarification": clarification} if clarification else {}
+
+
 def _scope_reexpand_field(state: dict[str, Any]) -> dict[str, Any]:
     """범위 재확장 패널을 스트림 `done`에도 싣는다(plans/123 W-2 ② — 비스트림과 대칭).
 
@@ -2321,7 +2385,9 @@ async def process_query(
     status = "awaiting_approval" if result.get("awaiting_approval") else "completed"
     # 존 역질문 후단 게이트(D-143 후속2): 파이프라인이 존 선택 요청으로 종결한 턴 —
     # pre-gate와 동일 shape(status="clarification" + clarification)로 프론트 UI 재사용.
-    zone_clarification = result.get("zone_clarification")
+    # 기간 되묻기(plans/122 T-3·T-4)도 같은 채널이다 — `input_parser → END`로 끝난 턴
+    time_clar = _time_clarification(result)
+    zone_clarification = result.get("zone_clarification") or time_clar
     if zone_clarification:
         status = "clarification"
     turn_count = _count_human_messages(result.get("messages", []))
@@ -2353,17 +2419,20 @@ async def process_query(
         # 순차 처리 경과 노트(plans/88 · D-203) — 본문 블록의 구조화본
         "dependency_notes": result.get("dependency_notes"),
         **_disclosures_field(result),  # plans/123 W-8
+        **_time_resolution_field(result),  # plans/122 T-4
         **_plan_summary_field(result),  # TP-0.1
         # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 키로 프론트 렌더
         "clarification": zone_clarification,
         # 소스 선택 기억을 쓴 턴의 「다른 소스로 보기」 칩(plans/132 W5)
         "source_switch": result.get("source_switch"),
+        **_clarify_turn_fields(time_clar),  # 기간 되묻기 턴 — 직전 턴 SQL·행·파일 미탑재(D5)
     }
     _store_result(query_id, {
         **response_data,
         "output_file": result.get("output_file"),
         "mapping_report_md": result.get("mapping_report_md"),
         "query_results": result.get("query_results", []),
+        **_clarify_store_fields(time_clar),
     }, owner=current_user.get("sub"))
 
     return await turn.response(QueryResponse(**response_data))
@@ -2657,7 +2726,9 @@ async def process_query_stream(
 
                                     status = "awaiting_approval" if output.get("awaiting_approval") else "completed"
                                     # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 shape
-                                    _zone_clar = output.get("zone_clarification")
+                                    # 기간 되묻기(plans/122 T-3·T-4) — 누적 상태에서 판정
+                                    _zone_clar = (output.get("zone_clarification")
+                                                  or _time_clarification(_scope_state))
                                     if _zone_clar:
                                         status = "clarification"
                                     turn_count = _count_human_messages(output.get("messages", []))
@@ -2682,6 +2753,7 @@ async def process_query_stream(
                                         "db_scope": build_db_scope(_scope_state, selected_db_ids=body.selected_db_ids),
                                         **_dependency_notes_field(_scope_state),  # TP-11.8
                                         **_disclosures_field(_scope_state),  # plans/123 W-8
+                                        **_time_resolution_field(_scope_state),  # plans/122 T-4
                                         **_scope_reexpand_field(_scope_state),  # plans/123 W-2 ②
                                         **_plan_summary_field(_scope_state),  # TP-0.1
                                         "clarification": _zone_clar,
@@ -2714,6 +2786,7 @@ async def process_query_stream(
                                         "db_scope": response_data.get("db_scope"),  # D-205
                                         **_dependency_notes_field(response_data),  # TP-11.8
                                         **_disclosures_field(response_data),  # plans/123 W-8
+                                        **_time_resolution_field(response_data),  # plans/122 T-4
                                         **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
                                         **_plan_summary_carry(response_data),  # TP-0.1
                                         # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
@@ -2742,16 +2815,20 @@ async def process_query_stream(
             final_response = result.get("final_response", "")
             _watch.answer_sent(final_response, final=True)
             yield _sse_event({"type": "token", "content": final_response})
+            # 기간 되묻기(plans/122 T-3·T-4) — 조회하지 않은 턴이라 직전 턴 SQL·행을 싣지 않는다(D5)
+            _time_clar = _time_clarification(result)
+            _turn_fields = _clarify_turn_fields(_time_clar)
 
             yield _sse_event({
                 "type": "meta",
                 "executed_sql": _executed_sql(result),
                 "row_count": len(result.get("query_results", [])),
+                **{k: v for k, v in _turn_fields.items() if k in ("executed_sql", "row_count")},
             })
 
             status = "awaiting_approval" if result.get("awaiting_approval") else "completed"
             # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 shape
-            _zone_clar = result.get("zone_clarification")
+            _zone_clar = result.get("zone_clarification") or _time_clar
             if _zone_clar:
                 status = "clarification"
             turn_count = _count_human_messages(result.get("messages", []))
@@ -2775,16 +2852,19 @@ async def process_query_stream(
                 "db_scope": build_db_scope(result, selected_db_ids=body.selected_db_ids),
                 "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
                 **_disclosures_field(result),  # plans/123 W-8
+                **_time_resolution_field(result),  # plans/122 T-4
                 **_scope_reexpand_field(result),  # plans/123 W-2 ②
                 **_plan_summary_field(result),  # TP-0.1
                 "clarification": _zone_clar,
                 "source_switch": result.get("source_switch"),  # plans/132 W5
+                **_turn_fields,  # 기간 되묻기 턴(D5)
             }
             _store_result(query_id, {
                 **response_data,
                 "output_file": result.get("output_file"),
                 "mapping_report_md": result.get("mapping_report_md"),
                 "query_results": result.get("query_results", []),
+                **_clarify_store_fields(_time_clar),
             }, owner=current_user.get("sub"))
 
             yield _sse_event({
@@ -2804,6 +2884,7 @@ async def process_query_stream(
                 "db_scope": response_data.get("db_scope"),  # D-205
                 **_dependency_notes_field(response_data),  # TP-11.8
                 **_disclosures_field(response_data),  # plans/123 W-8
+                **_time_resolution_field(response_data),  # plans/122 T-4
                 **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
                 **_plan_summary_carry(response_data),  # TP-0.1
                 # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
@@ -3007,10 +3088,12 @@ async def process_file_query(
 
     elapsed_ms = (time.time() - start_time) * 1000
     turn_count = _count_human_messages(result.get("messages", []))
+    # 기간 되묻기(plans/122 T-3·T-4) — 텍스트 경로와 같은 채널(파일 경로는 그 밖엔 역질문 없음)
+    time_clar = _time_clarification(result)
 
     response_data = {
         "query_id": query_id,
-        "status": "completed",
+        "status": "clarification" if time_clar else "completed",
         "response": result.get("final_response", ""),
         "thread_id": actual_thread_id,
         "has_file": result.get("output_file") is not None,
@@ -3027,14 +3110,18 @@ async def process_file_query(
         "db_scope": build_db_scope(result, selected_db_ids=selected_list),
         "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
         **_disclosures_field(result),  # plans/123 W-8
+        **_time_resolution_field(result),  # plans/122 T-4
         **_scope_reexpand_field(result),  # plans/123 W-2 ②
         **_plan_summary_field(result),  # TP-0.1
+        **({"clarification": time_clar} if time_clar else {}),  # plans/122 T-4
+        **_clarify_turn_fields(time_clar),  # 기간 되묻기 턴 — 직전 턴 SQL·행·파일 미탑재(D5)
     }
     _store_result(query_id, {
         **response_data,
         "output_file": result.get("output_file"),
         "mapping_report_md": result.get("mapping_report_md"),
         "query_results": result.get("query_results", []),
+        **_clarify_store_fields(time_clar),
         # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관한다.
         # TODO(§14.5): _results_store는 인메모리 dict이므로 원본 바이트 누적 시 메모리가 커진다.
         #   다중 워커 환경에서는 워커 간 유실 가능 — TTL/공유 스토리지 도입을 검토할 것.
@@ -3448,9 +3535,11 @@ async def process_file_query_stream(
                                     })
 
                                     turn_count = _count_human_messages(output.get("messages", []))
+                                    # 기간 되묻기(plans/122 T-3·T-4) — 누적 상태에서 판정
+                                    _time_clar = _time_clarification(_scope_state)
                                     response_data = {
                                         "query_id": query_id,
-                                        "status": "completed",
+                                        "status": "clarification" if _time_clar else "completed",
                                         "response": output.get("final_response", ""),
                                         "thread_id": actual_thread_id,
                                         "has_file": output.get("output_file") is not None,
@@ -3468,8 +3557,11 @@ async def process_file_query_stream(
                                         "db_scope": build_db_scope(_scope_state, selected_db_ids=selected_list),
                                         **_dependency_notes_field(_scope_state),  # TP-11.8
                                         **_disclosures_field(_scope_state),  # plans/123 W-8
+                                        **_time_resolution_field(_scope_state),  # plans/122 T-4
                                         **_scope_reexpand_field(_scope_state),  # plans/123 W-2 ②
                                         **_plan_summary_field(_scope_state),  # TP-0.1
+                                        # 기간 되묻기(plans/122 T-4)
+                                        **({"clarification": _time_clar} if _time_clar else {}),
                                     }
                                     _store_result(query_id, {
                                         **response_data,
@@ -3501,8 +3593,10 @@ async def process_file_query_stream(
                                         "db_scope": response_data.get("db_scope"),  # D-205
                                         **_dependency_notes_field(response_data),  # TP-11.8
                                         **_disclosures_field(response_data),  # plans/123 W-8
+                                        **_time_resolution_field(response_data),  # plans/122 T-4
                                         **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
                                         **_plan_summary_carry(response_data),  # TP-0.1
+                                        **_clarification_carry(response_data),  # plans/122 T-4
                                         **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
                                         # 단계 타임라인(plans/119 T-0)
                                         "timeline": _finish_timeline(_watch, query_id, done=True),
@@ -3525,15 +3619,19 @@ async def process_file_query_stream(
             _watch.answer_sent(final_response, final=True)
             yield _sse_event({"type": "token", "content": final_response})
             _final_row_count = len(result.get("query_results", []))
+            # 기간 되묻기(plans/122 T-3·T-4) — 조회하지 않은 턴이라 직전 턴 SQL·행을 싣지 않는다(D5)
+            _time_clar = _time_clarification(result)
+            _turn_fields = _clarify_turn_fields(_time_clar)
             yield _sse_event({
                 "type": "meta",
                 "executed_sql": _executed_sql(result),
                 "row_count": _final_row_count,
+                **{k: v for k, v in _turn_fields.items() if k in ("executed_sql", "row_count")},
             })
             turn_count = _count_human_messages(result.get("messages", []))
             response_data = {
                 "query_id": query_id,
-                "status": "completed",
+                "status": "clarification" if _time_clar else "completed",
                 "response": final_response,
                 "thread_id": actual_thread_id,
                 "has_file": result.get("output_file") is not None,
@@ -3550,14 +3648,18 @@ async def process_file_query_stream(
                 "db_scope": build_db_scope(result, selected_db_ids=selected_list),
                 "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
                 **_disclosures_field(result),  # plans/123 W-8
+                **_time_resolution_field(result),  # plans/122 T-4
                 **_scope_reexpand_field(result),  # plans/123 W-2 ②
                 **_plan_summary_field(result),  # TP-0.1
+                **({"clarification": _time_clar} if _time_clar else {}),  # plans/122 T-4
+                **_turn_fields,  # 기간 되묻기 턴(D5)
             }
             _store_result(query_id, {
                 **response_data,
                 "output_file": result.get("output_file"),
                 "mapping_report_md": result.get("mapping_report_md"),
                 "query_results": result.get("query_results", []),
+                **_clarify_store_fields(_time_clar),
                 # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관.
                 # TODO(§14.5): 인메모리 dict — 원본 누적 시 메모리 증가/다중 워커 유실 가능.
                 "uploaded_file": file_bytes,
@@ -3580,8 +3682,10 @@ async def process_file_query_stream(
                 "db_scope": response_data.get("db_scope"),  # D-205
                 **_dependency_notes_field(response_data),  # TP-11.8
                 **_disclosures_field(response_data),  # plans/123 W-8
+                **_time_resolution_field(response_data),  # plans/122 T-4
                 **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
                 **_plan_summary_carry(response_data),  # TP-0.1
+                **_clarification_carry(response_data),  # plans/122 T-4
                 **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
                 "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0
             })

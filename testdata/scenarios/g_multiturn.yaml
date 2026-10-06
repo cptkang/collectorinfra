@@ -31,12 +31,24 @@ scenarios:
           query: "해당 서버의 최근 1개월 CPU 사용률 평균/최대"
         expect:
           status: completed
-          sql_must_match: ["(?i)cocm-hdkapp01", "(?i)cmm_metric_stat_"]
+          # plans/122 T-9 — 「최근 1개월」 = 직전 완결 1개월 · 월 통계(§10.3.1) · 리터럴만(§10.3 ④). 세 run 의 이
+          #   턴은 '202608' 리터럴이었다 — 함수식은 다음 턴(t3)에서 나왔다(아래 주석).
+          sql_must_match: ["(?i)cocm-hdkapp01", "(?i)cmm_metric_stat_", "(?i)\\bcmm_metric_stat_m\\b"]
+          period_covers: {relative: last_n_months, n: 1, exact: true}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
       - send:
           query: "네 그럼 메모리도 보여줘"
         expect:
           status: completed
-          sql_must_match: ["(?i)cocm-hdkapp01"]
+          # plans/122 T-9 — 원문에 기간이 없어도 앞 턴 「최근 1개월」을 잇는 턴이다. 시간 해석은 턴마다 원문으로
+          #   하므로(요청 스코프 · D-306) 기간 없음 = 직전 완결 월(§10.3.1)이 되고, 그 창이 「최근 1개월」과 같다 —
+          #   어느 쪽으로 읽어도 정답 창은 하나다. §10.1 「G-01 — 리터럴과 함수식이 섞였다」의 함수식 쪽이 이
+          #   턴이다(run 20260922-093837 · 20260922-162132 · 20260923-140539 의 이 턴 SQL 이 `TO_CHAR(CURRENT_DATE -
+          #   INTERVAL '1 month', 'YYYYMM')` · DB2 `VARCHAR_FORMAT(…)` 함수식 — t2 는 '202608') → 함수식 부정 단언이
+          #   잡는다.
+          sql_must_match: ["(?i)cocm-hdkapp01", "(?i)\\bcmm_metric_stat_m\\b"]
+          period_covers: {relative: last_n_months, n: 1, exact: true}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
       - send:
           query: "해당 서버 프로세스 보여줘"
         expect:
@@ -53,6 +65,11 @@ scenarios:
         expect:
           status: completed
           sql_must_match: ["(?i)\\bcmm_alarm\\w*\\b", "(?i)cocm-hdkapp01"]
+          # plans/122 T-9 — 「지난 한 달」 = 직전 완결 1개월(§10.3.1)을 덮는가 + 리터럴만(§10.3 ④). 정확 창은
+          #   걸지 않는다 — 분석 턴은 알람 발생 시각 주변 창(사건 기준 · plans/121 TP-3.1)을 함께 조회할 수
+          #   있다. 다른 달로 어긋난 기간은 「덮는다」가 잡는다.
+          period_covers: {relative: last_n_months, n: 1}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
     teardown: [drop_thread]
   - id: G-02
     plans: [50]

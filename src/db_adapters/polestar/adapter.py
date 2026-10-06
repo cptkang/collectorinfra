@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
+from typing import Any
 
 from src.db_adapters.polestar.assembler import classify_metric_field as _classify_metric_field
 from src.db_adapters.polestar.entity_probe import (
+    build_business_lookup_sql,
     build_entity_probe_sql,
     build_hostname_lookup_sql,
 )
@@ -31,8 +33,10 @@ from src.db_adapters.polestar.validators import (
     check_scope_filter_where_demotion,
     check_scoped_pivot_missing_server_identity,
     check_severity_label_filter,
+    check_time_conditions,
     check_value_column_join,
 )
+from src.domain.query_time import QueryTime
 
 
 class PolestarAdapter:
@@ -80,8 +84,17 @@ class PolestarAdapter:
         """등록 서버명 → OS hostname 고정 조회(간선 E2 · plans/125 E-3 — 선택 훅 계약)."""
         return build_hostname_lookup_sql(names, db_engine=db_engine, db_schema=db_schema)
 
+    def business_lookup_sql(
+        self, terms: list[str], *, db_engine: str | None, db_schema: str | None
+    ) -> str:
+        """업무명 → 서버 행 고정 조회(간선 E6 · plans/130 M-3 — 선택 훅 계약)."""
+        return build_business_lookup_sql(terms, db_engine=db_engine, db_schema=db_schema)
+
     def validator_checks(
-        self, user_query: str | None = None
+        self,
+        user_query: str | None = None,
+        *,
+        time_resolution: dict[str, Any] | None = None,
     ) -> list[Callable[[str], list[str]]]:
         """폴스타 전용 SQL 검증 함수 목록(라우팅 필터 오용·피벗 스코프 WHERE 강등 탐지).
 
@@ -93,6 +106,9 @@ class PolestarAdapter:
         Args:
             user_query: 사용자 원문 질의 — 주면 질의 맥락 의존 검사(D-201 "이번 달"
                 stat_m 반려)가 추가된다. 미지정(None)이면 종전 목록 그대로(동작 불변).
+            time_resolution: state `time_resolution`(`QueryTime.to_state()` · plans/122 T-5b) —
+                주면 D-201 검사 대신 시간 조건 대조(`check_time_conditions`)를 등록한다.
+                None(플래그 off)이면 종전 목록 그대로.
         """
         checks = [
             check_routing_filter_misuse,
@@ -109,7 +125,13 @@ class PolestarAdapter:
         ]
         if knowledge_render_enabled():
             checks.append(check_value_column_join)
-        if user_query:
+        # 시간 조건 대조(plans/122 T-5b · D-306) — 요청 시간 해석이 있으면 생성 SQL의 기간 조건을
+        # 그 해석과 대조한다. D-201(「이번 달」 stat_m 반려)은 이 검증기의 ②③ 규칙이 덮으므로
+        # 중복 등록하지 않는다. 해석이 없으면(플래그 off · 옛 체크포인트) 종전 검사 그대로다.
+        qt = QueryTime.from_state(time_resolution) if time_resolution is not None else None
+        if qt is not None and qt.metric is not None:
+            checks.append(lambda sql: check_time_conditions(sql, qt))
+        elif user_query:
             checks.append(
                 lambda sql: check_current_month_stat_table(sql, user_query)
             )

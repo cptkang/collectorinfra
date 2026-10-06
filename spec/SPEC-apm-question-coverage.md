@@ -259,7 +259,7 @@ ViewArgSpec(name, type: "int"|"bool"|"enum"|"str"|"text"|"str_list"|"catalog",
 
 | Wave | 보기 | 도구(+고정 인자) | 창 | 대상 | view_args |
 |---|---|---|---|---|---|
-| 현행 | `apm.instances` | `apm_instance_map` | none | 없음(첫 홉) | — |
+| 현행 | `apm.instances` | `apm_instance_map` | none | `domain_id`(정수 0 이상 — 그 도메인 인스턴스만 · `plans/130` W1-D)(첫 홉) | — |
 | W1 | `apm.app_health` | `apm_app_health` | range | hostname | — |
 | W1 | `apm.runtime` | `apm_runtime_health` | range | hostname | W2 `metrics`(catalog=instance) · `interval_minute` |
 | 현행 | `apm.pool` | `apm_resource_pool` | current | hostname | — |
@@ -356,6 +356,32 @@ ViewArgSpec(name, type: "int"|"bool"|"enum"|"str"|"text"|"str_list"|"catalog",
 - **GUID 추적 호출 사이 중복 제거**(V-4): 여러 서버로 좁힌 호출의 결과를 (`source_id`, `domain_id`, `txid`)로 합치고 GUID 줄을 하나로.
 - **결정적 줄**: GUID 「GUID g: 거래 N건 · 도메인 H곳(조회 M곳 · 실패 K곳) · 조회 구간 {start} ~ {end}(기간 미지정이면 게이트웨이 고지 — 「앞 결과 시각 ±5분」·「최근 60분」) · 같은 GUID일 뿐 호출 관계가 아님 · 인스턴스 …」(0건 답에도 반드시 — 검증 V-3) · 변경 전후 「{인스턴스} 변경 감지 {시각} — 오류율 a → b(±%p) · 평균 응답 a → b(±%) · 오류 기록 a → b · 호출 a → b」(N/A 그대로 · 차이는 게이트웨이 `delta`) — `**판정·집계**` 블록.
 
+### 7.8 대상 텍스트 해석 — 인스턴스 이름 · 업무명 (`plans/130` W3·W4 · M-1·M-2·M-4·M-5·M-6 · D-290 ⑥ · D-296 ④)
+
+게이트웨이 계약은 `spec/SPEC-apm-gateway.md` §3.4(검색 `query` · 업무명 `business` · 정확 이름 `instance_name`)다. 본체는 LLM 0으로 해석·호출·고지만 한다. **대상 텍스트가 없으면 종전과 비트 동일**하다(테스트로 고정).
+
+- **분해 칸 `targets`**(M-1): `apm_query` task의 선택 칸 `[{text, kind}]` — `kind` ∈ `instance`(인스턴스 이름 · 일부만 말해도 됨)·`business`(업무명)·`auto`(모름). 계획 프롬프트의 이 안내는 **APM 섹션 안에만** 있어 APM이 활성일 때만 렌더된다. hostname·IP는 넣지 않는다. 정제(`sanitize_targets` — 분해 정제와 처리기 진입에서 두 번 · 멱등): dict 항목만 · 앞뒤 공백 제거 · 비었거나 200자(`TARGET_TEXT_MAX`) 초과는 버림 · casefold 중복 제거 · 모르는 `kind`는 `auto`. 스키마는 항목 하나가 형식 밖이라고 분해 전체를 버리지 않는다.
+- **이번 task의 대상 텍스트**(M-2 ①): `targets` ∪ 파서 서버명 대상 중 등록명 간선(E2)이 잇지 못한 것(`unlinked`·`not_queried`·**`ambiguous`** → `auto` — 여러 hostname이라 잇지 않은 이름도 첫 홉으로 보내지 않는다). 파서 hostname 대상과 E2가 이은 대상은 종전 hostname 호출이고, 같은 텍스트는 다시 해석하지 않는다. 해석은 대상을 쓰는 보기(대상 필수·선택 대상·첫 홉 목록)를 고른 task에서만 한다.
+- **해석 규칙**(M-2 ② · G-3 ① — 근거마다 따로 시도하고 한 근거 실패가 다른 근거를 막지 않는다):
+  - `instance`·`auto` → `apm_instance_map(query=<텍스트>)`.
+  - `business`, 또는 `auto`인데 0건 → `apm_instance_map(business=<텍스트>)` **∥** 업무명 간선 **E6**(폴스타 서버 등록명·비고 → hostname · 간선 소유자 어댑터 `link_business_names` · 이번 턴 사용자가 권한을 가진 DB만 — `authorized_db_ids` · 2자 이상) → **E1r** `apm_instance_map(hostname=<그 hostname>)`(그 서버에 인스턴스가 없으면 `instance_unresolved`를 조용히 0건으로).
+  - 합집합 키 = (`source_id`, `domain_id`, `instance_id`) · 합치는 순서는 게이트웨이 → 간선(결정적) · 인스턴스마다 근거 문구를 단다. 인스턴스 목록 보기의 검증된 `domain_id`가 있으면 검색에 AND로 싣는다. 종전 경로가 부르는 hostname에 있는 인스턴스는 뺀다(두 번 조회 없음).
+  - E6 조회는 등록명·비고 칸의 소문자 부분 일치(`LIKE … ESCAPE '!'` — 검색어의 `!`·`%`·`_`를 이스케이프) · 서버 유형·미삭제 · 1000행 상한(PG `LIMIT` / DB2 `FETCH FIRST`)이다. 장부 상태 `linked`(1·다수)·`unlinked`·`not_queried`. E6을 조회하지 못하면 장부·요약에만 남고 고지는 없다.
+- **첫 홉**(D-290 ⑥): 대상 텍스트가 **하나라도 있었으면**(해석 0건 포함) 인스턴스 목록 첫 홉을 끼우지 않는다 — 말한 대상과 무관한 인스턴스를 조회하지 않는다. 선택 대상 보기도 텍스트가 있으면 대상 없이 1회로 넓히지 않는다.
+- **호출**(M-4): 해석한 인스턴스를 **상한 없이 전부** 부른다(D-296 ④ — 「상한 초과 시 후보 제시」 없음). 인자는 `instance_name` + `source_ids=[<그 소스>]`이고, 인스턴스 id를 받는 도구(`apm_app_health`·`apm_runtime_health`·`apm_resource_pool`·`apm_slow_transactions`·`apm_active_services`·`apm_status_stats`·`apm_metrics` — `INSTANCE_ID_TOOLS`)는 `instance_id`를 더한다(받지 않는 도구는 (소스, 이름)당 1회). hostname은 보내지 않는다. 인스턴스 목록 보기 + 텍스트는 해석 행이 답이다(게이트웨이에 다시 묻지 않는 합성 호출 · 행에 `target_text`·`match_evidence` · 출처 인자 `{"targets": [...]}`).
+- **모두 0건**: 호출이 없고 텍스트가 전부 0건이면 거절 사유 `apm_target_unresolved` · `source_status` = `not_queried`(「대상 텍스트 해석 0건」) — 답 본문은 「찾지 못함」 고지와 후보다(다른 인스턴스로 대신 조회하지 않는다). 일부만 0건이면 0건 텍스트를 `failures`(`{view: null, hostname: null, target, reason}`)로 센다(부분 결과).
+- **고지**(M-6 · `disclosures[]`):
+
+| kind | 언제 | 문구 |
+|---|---|---|
+| `bridge`(중립) | 해석 성공 | 「'{텍스트}' → 제니퍼 인스턴스 N개(근거: 제니퍼 인스턴스 이름 2 · 폴스타 비고 1 …)」 |
+| `apm_unresolved_condition`(의무) | 0건 | 「'{텍스트}'에 해당하는 제니퍼 인스턴스를 찾지 못해 조회하지 않았습니다(검색: 제니퍼 인스턴스 이름·설명 · 제니퍼 업무명 · 폴스타 등록명·비고). 다른 인스턴스로 대신 조회하지 않았습니다. 비슷한 이름: a · b · c — 자동으로 고르지 않았습니다.」 — 「검색:」에는 답을 받은 검색만 · 후보는 게이트웨이 `suggestions` ≤3 · 검색이 모두 실패면 「…확인하지 못해 조회하지 않았습니다(검색 실패)」 |
+| `apm_partial_sources`(의무) | 근거 하나가 실패(다른 근거로 계속) | 「'{텍스트}' 대상 해석: <실패 사유>」 |
+
+  근거 문구: 제니퍼 인스턴스 이름 · 업무 수동 매핑 · 제니퍼 도메인 이름 · 제니퍼 업무 정의 · 제니퍼 인스턴스 이름·설명 · 폴스타 등록명 · 폴스타 비고(시스템 이름은 레지스트리 짧은 라벨).
+- **메타**: `meta.apm_query.targets` = `{texts: [{text, kind, searched, instances, evidence, suggestions, failures}], instances: [TargetRef…]}` · 요약 끝 「· 해석 인스턴스 N개」 · 게이트웨이 `[한계]`(B2 최근 처리 한정 등)는 `limits`로.
+- **대상 계약**(M-5): `TargetRef`에 `apm_instance_name`·`apm_source_id`(값 없으면 직렬화에서 빠짐 — 종전 바이트 불변). 서버 식별자 없이 `apm_instance_name`만 있어도 유효하고, 서버 대상 해소(`resolve_targets`)는 그런 대상을 `apm_only_target`으로 뺀다(폴스타 조회·프로세스·장애 조사는 건너뛴다).
+
 ## 8. 분석 계약 (W6 — 계획 §4.5 A-1~A-4를 그대로 정본으로 삼는다)
 
 W2~W5는 원자료 계약(시각 원값 · 호출 수 · 총 응답시간 · 단위 · 해상도 · 실패 단위)을 봉투에 남겨 W6 계산이 가중 평균·누락 구간·기준 0(N/A)을 다룰 수 있게 한다. 계산은 게이트웨이(도메인 집계 — D-274 ⑤)가 하고 본체는 단계 연결·조합만 한다.
@@ -402,3 +428,4 @@ W2~W5는 원자료 계약(시각 원값 · 호출 수 · 총 응답시간 · 단
 | 2026-10-02 | W1·W2 반영 — §5 도구 표(`apm_events` `n` 기본 전부·`level` 계약 값·`error_type` 접두 변형 재조회 · `profile_truncated` · `apm_status_stats` 전역 재정렬·원자료 칸 · `apm_metrics` 카탈로그 행·scope Wave · `change_detected_ms`) · §6.1 확장 칸(`label`·`text`·`notices`·`active_only`) · §6.3 선택 조건 무효는 고지 후 조회(H-2)·`null` 무고지·평면 view_args·골격 키(H-1)·`limit→n` 단일 task 한정·`level` enum · §6.4 일부 영역만 덮으면 덮은 보기 조회 · §7.1 `**판정·집계**` 블록·APM 표시 절단 |
 | 2026-10-02 | W2 검증 반영 — §6.1 `text` 거부 범주·식별자 형식(영문 시작) · §6.3 원천·게이트웨이가 거부한 선택 조건 처리(빼고 조회·로컬 정렬 · 고지) · §6.4 영역별 후보 · 합의 보기(`agreed`) · §7.5 비의무 고지 본문 3줄 · 게이트웨이 고지 통과 |
 | 2026-10-06 | **W5·W6(독립분)·W7 반영(D-302)** — §1.4 정정(`prior_rows`·`previous_entities`는 참조 칸을 나르지 않는다) · §2.4 `sint`·`.xml` 꼬리 거부 · §3.6 프로파일 예산 주체 분리 · §4.2·§4.3 W7 개정(보안 감사 AUDIT-1~12 · 재감사 REAUDIT-1·2·4·7 반영 · 남긴 모양) · §5 도구 7종 구현 행 · §6.1 `ViewSpec`·`ViewArgSpec` 확장 · §6.2 보기 10종 · §7.7 앞 결과 행 참조(표 단위 번호 · 형식 밖 `ref` 되묻기 · 단계별 답 · GUID 조회 구간) · §8 W6 분할 실측(파서 상대 기간 15/15 예시 날짜) · §9 W5~W7 소유 |
+| 2026-10-06 | **`plans/130` W3·W4 반영** — §7.8 대상 텍스트 해석(분해 칸 `targets` · E2 미연결·모호 서버명 포함 · 인스턴스 이름 검색 → 업무명 ∥ 업무명 간선 E6 → E1r 합집합 · 대상 텍스트가 있으면 첫 홉 없음 · 해석 인스턴스 전부 호출(상한 없음 · D-296 ④) · `instance_name`+`instance_id`+`source_ids` · `apm_target_unresolved` · 고지 `bridge`·`apm_unresolved_condition`·`apm_partial_sources` · `TargetRef.apm_instance_name`·`apm_source_id`) — 게이트웨이 계약은 `spec/SPEC-apm-gateway.md` §3.4 |

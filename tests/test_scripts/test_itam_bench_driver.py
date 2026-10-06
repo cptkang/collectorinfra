@@ -246,6 +246,7 @@ class TestTurnLoop:
             "http_status",
             "db_ids",
             "disclosure_kinds",
+            "clarification",  # plans/138 W6-e
             "executed_sqls",
             "result",
             "oracle",

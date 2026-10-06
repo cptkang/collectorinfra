@@ -10,6 +10,7 @@
 > **[134 W2 검증 수정 · 2026-10-02]** W2 통합 검증 결함 — 선택 조건이 보기를 막지 않는다(W2V-B2: 카탈로그에 없는 지표는 빼고 조회 · 원천이 정렬 기준을 거부하면 그 조건·행 수 없이 다시 받아 로컬 정렬) · 변경 감지 행 `change_detected_at`(ISO 8601 · B6) · 변경 이력 조각 일부 실패 = partial(G1) · 맨 배열의 비객체 원소 = 오류(G2) · 정렬 대응 불가 + 묶음 2개 = 묶음별 상위 n(G3) · 카탈로그 군 단위 모양 위반 = 검증 불가(G4) · 접두만 있는 `error_type` = `invalid_argument`(G5) · `interval_minute` ASCII 숫자만(G6). 계약은 **추가만**이다(종전 `invalid_argument`·오류이던 일부 입력이 이제 `[한계]`와 함께 성공한다 — 의도된 변경).
 > **[134 W2 후속 · 2026-10-02]** 선택 조건을 빼거나 바꿔 조회한 경우(모르는 지표 빼기 · 기본 추세 대체 · 정렬 기준 거부 뒤 재조회) 봉투 `disclosures`에 `apm_unresolved_condition`(의무 고지 · 사용자용 한 줄) — §3.1.
 > **[134 W5·W6·W7 · 2026-10-06]** 데이터 도구 7종 추가(`apm_transaction_trace` · `apm_change_impact` · `apm_period_compare` · `apm_config` · `apm_environment` · `apm_users` · `apm_active_detail` — §3 표) · `apm_transaction_profile` 선택 인자 `profile_no`·`include_param_key`와 **프로파일 예산 주체 분리**(전송 주체 `chat` 면제 · 칸 `(주체, 조사 ID → owner → 미지정)` · 종전 `_anonymous` 전 주체 공유 폐지) · 오류 기록 행 `profile_ref.profile_no` · 허용목록 16 → **36**템플릿(거래 GUID 1 + 관리·민감 조회 19 — 사용자 목록·계정·환경변수·실행 중 요청 상세 등 **민감 GET 허용**(D-296 ①) · 같은 경로의 비GET·`.xml` 변형·시험 경로는 계속 거부) · 경로 변수 형식 `sint`(부호 있는 정수 — 실행 중 요청 txid) · `.xml` 꼬리 일반 거부 · 계산 순수 함수 `domain/analysis.py`(가중 평균 · 비율 · 증감(기준 0 = N/A · 비율 차는 %p) · 원시 p95). 설정 값(환경변수·데이터 서버 설정)의 이메일·주민번호·휴대폰 `mask_pii` · 프로파일 SQL 응답에서 SQL 문 칸(출처 칸 이름 `SQL_STATEMENT_KEYS`)이 아닌 문자열(바인드 값일 수 있음)은 `mask_identifier`. 보안 감사(AUDIT-1~12) 뒤 자격증명 규칙 개정 — 명령 문맥 칸은 실행 파일만 남김 · 구분자를 걷은 전체 키 판정 · 값 단독 접속 문자열 · 콜론 없는 URL 사용자 정보 · 꼬리 없는 값 끝 · 묶음 칸 끝맺음 · 비200 JSON 오류 본문 · POSIX `PWD`·`OLDPWD`(절대 경로 값) 예외 · 사용자 전화·메일 칸 단위 · `match_template` 전체 일치 · 계정 ID 경로 로그·사유 템플릿 · httpx 로거 WARNING(정본 `spec/SPEC-apm-question-coverage.md` §4.2·§4.3 W7 개정). 계약은 **추가만**이다(결과가 늘어나는 것은 의도된 변경).
+> **[130 W1·W2 · 2026-10-06]** 대상 이름 해석(`plans/130` N-1~N-3·N-5·N-6 · D-290 · D-296 ④ · D-299 ③) — 계약은 **추가만** 했다(새 도구·새 플래그 없음 · 새 인자를 주지 않으면 비트 동일) — `apm_instance_map` 선택 인자 `query`(인스턴스 이름·설명 단계 검색)·`business`(업무명 → 인스턴스) · 데이터 도구 13종·관리 도구 3종 선택 인자 `instance_name`(정확 일치 — `hostname`은 선택이 됐고 둘 중 하나가 대상) · 봉투 `search`·`business.counts`·`suggestions` · 허용목록 **37템플릿**(`GET /api/business` + 필수 `domain_id`) · 감사 대상 `query:…`·`business:…`와 `search=` 꼬리 · 정합 파일 선택 키 `business_map`(§3.4).
 > 이 문서 §3~§5는 **소비자(`sre_agent`·`noise_gate`)와의 계약**이다. 소비자는 import 없이 이 계약을 복제해 테스트한다(R-21).
 
 ## 1. 목표 · 비목표
@@ -72,7 +73,7 @@ apm_gateway/                   자체 pyproject · 자체 cwd · 루트 venv 공
 
 | 도구 | 인자 | 뒷단(허용목록) | 반환 `rows[]` 핵심 필드 |
 |---|---|---|---|
-| `apm_instance_map` | `hostname?` · `source_ids?` | 소스별 `/api/domain` → 도메인별 `/api/instance` | `source_id` · `instance_id` · `instance_name` · `domain_id` · `domain_name` · `domain_description`(mask_text) · `host_name` · `ip_address` · `platform` · `status` · `agent_version` · `config_file_path` · `description`(mask_text) · `instance_oid`(전체 파일 전용) · `match_confidence` · `match_reason`(행마다 — 소스별 규칙이 다를 수 있다) · 목록은 **전부**(134 W1 — 종전 200 상한 제거 · 인라인 초과는 `artifact`) |
+| `apm_instance_map` | `hostname?` · `source_ids?` · `domain_id?`(130 W1-D — 정수 0 이상 · 그 도메인 인스턴스만 · hostname과 함께면 둘 다 만족 · 조회한 소스의 도메인 목록에 없으면 행 0 + `[한계]` + `_unresolved`) · `query?`(130 W1 — 인스턴스 이름·설명 단계 검색 · §3.4.1) · `business?`(130 W2 — 업무명 → 인스턴스 · §3.4.2) — `hostname`·`query`·`business`는 서로 함께 줄 수 없고 `domain_id`·`source_ids`와는 AND | 소스별 `/api/domain` → 도메인별 `/api/instance` | `source_id` · `instance_id` · `instance_name` · `domain_id` · `domain_name` · `domain_description`(mask_text) · `host_name` · `ip_address` · `platform` · `status` · `agent_version` · `config_file_path` · `description`(mask_text) · `instance_oid`(전체 파일 전용) · `match_confidence` · `match_reason`(행마다 — 소스별 규칙이 다를 수 있다) · 목록은 **전부**(134 W1 — 종전 200 상한 제거 · 인라인 초과는 `artifact`) · 검색·업무 모드의 추가 칸(`hostname`·`match_kind`·`match_tier`·`search_confidence`·`match_kinds`·`business_names`)과 봉투 키(`search`·`business`·`suggestions`)는 §3.4 |
 | `apm_app_health` | `hostname` · `instance_id?` · 구간 · `source_ids?` | `/api/realtime/instance`(구간 끝 = 지금일 때 · 대상 `instance_id`) · `/api/transaction/time`(1분 분할 · **창 전체** — 134 W1에서 10분 상한 제거 · 긴 창은 작업) · `/api/status/application`(창 > 10분 — 시 단위 · `max_row` 미지정 = 서버 기본 행 수) | `response_time_avg_ms` · `tps` · `active_services` · `bad_response_active_services` · `reject_rate` · `concurrent_users` · `arrival_rate` · `visit_day`·`visit_hour`·`hit_day`·`hit_hour`(단위·「하루」 경계 미확인 `[한계]` — COV E-07) · `active_range_count_0`~`3` · `service_rate_by_range`(원형) · `instance_description`(mask_text) · `instance_oid`(전체 파일 전용) · `window{calls, errors, error_rate, response_time_p50_ms, response_time_p95_ms, response_time_max_ms}`(행) · 최상위 `hourly{calls, failures, failure_rate, response_time_avg_ms, max_response_time_ms, application_count, top_applications, hour_start, hour_end}`(창 > 10분일 때 — 합계는 받은 **전** 애플리케이션 행 · 평균은 `total_response_ms ÷ calls` · `top_applications`는 평균 응답시간 상위 5개 **요약**이고 행마다 ApplicationStatus 25필드) |
 | `apm_runtime_health` | 같음(`source_ids?` 포함) · `metrics?: list[str]`(134 W2 — 인스턴스 지표 카탈로그 식별자 또는 중립 이름 · 카탈로그로 검증 · 비우면 기본 3종 · **카탈로그에 없는 지표는 빼고 조회**하고 `[한계]`에 후보 ≤3 — 전부 모르면 기본 3종 추세로 조회하고 `[한계]`(현재값은 그대로) · W2V-B2) · `interval_minute?`(양의 정수 · 기본 5 · 허용값 미공개 `[한계]`) — 둘 중 하나라도 주고 구간이 없으면 기본 30분 | `/api/realtime/instance` · `/api/dbmetrics/instance`(지표 1개/호출 · **정합된 인스턴스 전부** — 134 W1에서 2개 상한 제거) · `metrics`를 주면 `/api/metrics`(카탈로그 · TTL 캐시) | `heap_used_mb` · `heap_committed_mb` · `heap_usage_ratio` · `non_heap_used_mb` · `gc_time_usage_pct` · `process_cpu_pct` · `process_memory_mb` · `thread_current` · `thread_daemon` · `thread_started` · `socket_count` · `file_count` · `collection_count` · `trend{<지표>: [{time_ms, value}]}`(키 = 중립 이름이 있으면 중립 이름 · 없으면 지표 식별자 — 기본 `heap_used_mb`·`heap_committed_mb`·`gc_time_usage_pct`) |
 | `apm_resource_pool` | `hostname` · `instance_id?` · `source_ids?` | `/api/realtime/instance` · `/api/activeService/list` | `db_pool_active` · `db_pool_idle_avg` · `db_pool_configured_avg` · `db_pool_usage_ratio` · `thread_current` · `active_services` · `active_by_running_mode{}` · `active_by_datasource{}` |
@@ -99,7 +100,7 @@ apm_gateway/                   자체 pyproject · 자체 cwd · 루트 venv 공
 - 도구별 추가 최상위 필드: `apm_slow_transactions`·`apm_active_services`는 `summary` · `apm_app_health`·`apm_slow_transactions`는 창 > 10분일 때 `hourly`(맥락 — 조회 상한 아님) · `apm_events`는 `record` · `apm_events`는 `errors_by_type` · `apm_status_stats`는 `kind`·`hour_start`·`hour_end`·`summary` · `apm_metrics`는 `mode`(+ series `scope`·`interval_minute`) · `gateway_health`는 `poller`.
 - **[134 W2] 행 텍스트 칸은 마스킹한 전문**이다 — `message`(이벤트·오류 기록) · `running_text` · `status_message` · `description` · `instance_description` · `domain_description`. 종전 300자 절단을 걷었다(화면·LLM 입력 절단은 소비자 책임). 오류 사유(`reason`)와 `apm_transaction_profile`의 화면용 발췌(`profile_excerpt` — 전문은 결과 파일)만 자른다. 폴러가 싣는 `alarm:raw` `message`(§5)는 종전대로다.
 - **[134 W2] 서버가 거부한 사유** — 허용값이 미공개인 인자(`sort_by` · `interval_minute` — COV E-05·E-06)를 서버가 거부하면(`apm_api_error`) 그 사유(마스킹본)를 `[한계]`에 그대로 붙이고, 모든 묶음이 같은 코드로 실패하면 그 코드·사유로 오류를 돌려준다. 단 `sort_by` 거부는 보기를 실패시키지 않는다 — 그 조건 없이 다시 받는다(W2V-B2 · `apm_status_stats` 행).
-- 인스턴스 대상은 결정적으로 확정한다 — `hostname` 정합 결과(정합된 전부 · **소스 간 공유** — 134 W1에서 호스트당 5 상한 제거). `instance_id`를 주면 정합 결과 안에서만 좁힌다(여러 소스에 같은 id가 있으면 모두 남는다 — `source_ids`로 좁힌다).
+- 인스턴스 대상은 결정적으로 확정한다 — `hostname` 정합 결과(정합된 전부 · **소스 간 공유** — 134 W1에서 호스트당 5 상한 제거). `instance_id`를 주면 정합 결과 안에서만 좁힌다(여러 소스에 같은 id가 있으면 모두 남는다 — `source_ids`로 좁힌다). **[130 W1]** 표에서 `hostname`이라고 적은 대상은 `hostname?`·`instance_name?` 둘 중 하나다 — 정확한 인스턴스 이름으로도 정한다(§3.4.3).
 - **[J8] 소스 묶음 규칙**(D-287 ⑦): 고른 소스의 인벤토리를 병렬로 받는다. 한 소스가 실패하면(도메인 목록 실패 · 도메인 0건 · 전 도메인 조회 불가) 그 소스만 빠지고 `[한계] APM 소스 <id> 조회 불가(<code>) — 그 소스의 결과는 빠졌다` + `sources[]`로 드러낸다. **고른 소스가 전부 실패하면 오류** — 원인 코드가 모두 같으면 그 코드(소스 1개면 v4와 같은 코드·사유), 섞이면 `source_unavailable`(사유 = 소스별 나열). 실패·빈 인벤토리는 **30초만** 캐시한다(F-3 — 정상 인벤토리는 `APM_INSTANCE_CACHE_SECONDS`). 한 hostname이 여러 소스에서 정합되면 모두 싣는다. 정합 신뢰도는 정합된 소스가 모두 high일 때만 high이고, 근거는 소스별 근거를 `+`로 잇는다.
 - **[J8] 정합 규칙**(M-8): `overrides[].source_id`가 있으면 그 소스에만 적용 · `per_source.<id>.match_rules`가 있으면 그 소스는 전역 `match_rules` 대신 쓴다.
 - 소스가 1개면 `[한계]` 문구·오류 사유는 v4 문구 그대로다(소스 표기 없음). 2개 이상이면 위치에 `소스 <id> · 도메인 <n>`을 쓴다.
@@ -164,6 +165,8 @@ apm_gateway/                   자체 pyproject · 자체 cwd · 루트 venv 공
 
 `invalid_argument`에 더해진 경우(134 W0-B): `wait_seconds` 음수·NaN·무한대(끝까지 기다리려면 생략) · `owner` 200자 초과 · `apm_job_read`의 `chunk` 범위 밖·모르는 `part`·`chunk`와 `part` 동시 · 결과가 없는 작업(`failed`·`cancelled`·`interrupted`)의 읽기.
 
+`invalid_argument`·`instance_unresolved`·`profile_ref_mismatch`에 더해진 경우(130 W1·W2): `query`·`business` 형식과 조합 금지(§3.4.1·§3.4.2) · 대상이 필수인 도구에 `hostname`·`instance_name` 둘 다 없음 · `instance_name` 해소 실패(§3.4.3 오류 표). 종전 문구 「hostname이 비어 있음」은 「hostname 또는 instance_name이 필요하다(둘 다 비어 있음)」로 바뀌었다.
+
 ### 3.3 장기 작업 · 호출 주체 (134 W0-B — 정본 `spec/SPEC-apm-question-coverage.md` §3)
 
 - **실행**: 데이터 도구 호출 1회 = 작업 1개(`application/jobs.py`). `wait_seconds` 안에 끝나면 결과 봉투(인라인 초과 행·텍스트 부분은 스풀 → `artifact`·`job`), 못 끝나면 접수 봉투를 돌려주고 같은 코루틴을 백그라운드로 계속한다(승격 — 요청 태스크 그룹 밖 태스크 · 강참조). 승격 전에 호출이 취소되면(세션 끊김) 작업도 취소한다. 짧은 동기 작업은 스풀할 것이 없으면 디스크에 아무것도 쓰지 않는다.
@@ -176,6 +179,81 @@ apm_gateway/                   자체 pyproject · 자체 cwd · 루트 venv 공
 - **재기동**: 기동 시 스풀의 `queued`·`running` 기록을 `interrupted`(사유 「게이트웨이 재기동으로 중단 — 다시 요청해야 합니다」)로 바꾸고 결과 조각을 지운다. 끝난 작업은 만료 전까지 그대로 읽힌다. 정상 종료(SIGTERM·SIGINT) 때도 진행 중 백그라운드 작업을 `interrupted`로 끝내고 종료 감사를 남긴다 — uvicorn 0.52가 serve() 안에서 신호를 곧바로 다시 올려 정리가 돌지 않던 것을, 신호 재발생을 정리 뒤로 미뤄 고쳤다(종료 코드·신호 의미는 같다).
 - **만료**: 끝난 시각 + `APM_ARTIFACT_RETENTION_SECONDS` 뒤 기록·결과를 지운다(조회 시점 확인 + 주기 정리). 만료된 작업 조회는 `job_not_found`.
 - **호출 주체**: 전송 미들웨어가 요청 Bearer 토큰으로 주체를 정해(`APM_GATEWAY_BEARER_TOKENS` 주체 · 단일 토큰 = `default` · 무인증 = `anonymous` · 불일치 401) 요청 scope에 싣는다. 작업 기록에 `principal`을 남기고 작업 도구는 **같은 주체 + 같은 `owner`**일 때만 응답한다(아니면 `job_not_found`). 이 결정은 인가를 넓히지 않는다 — 사용자별 인가는 본체가 한다.
+
+### 3.4 대상 이름 해석 — 인스턴스 이름 검색 · 업무명 · `instance_name` (`plans/130` W1·W2 · D-290 · D-296 ④ · D-299 ③)
+
+정합(이름 → 인스턴스)은 게이트웨이 한 곳에서 한다(D-274 ⑤). 새 도구·새 플래그는 없다 — 아래 인자를 주지 않으면 반환이 종전과 비트 동일하다(테스트로 고정). 인자 검사는 모두 **HTTP 전에** 한다(1MB 검색어도 호출 0회). 행·후보 수 상한은 없다(D-296 ④ — 계획서 초안의 「후보 행 상한 50」은 쓰지 않는다).
+
+#### 3.4.1 `apm_instance_map(query=…)` — 인스턴스 이름·설명 검색 (N-1)
+
+- **인자**: 문자열 · 앞뒤 공백 제거 뒤 1~200자(`QUERY_MAX`) — 아니면 `invalid_argument`(「query는 문자열이어야 한다」·「query가 비어 있다」·「query는 200자 이하여야 한다(N자)」). 비지 않은 `hostname`과 함께 오면 `invalid_argument`(「hostname과 query는 함께 줄 수 없다」). `domain_id`·`source_ids`와는 AND.
+- **대상**: 고른 소스의 캐시 인벤토리뿐이다(새 HTTP 없음 — 인벤토리가 비었으면 종전 적재 규칙대로 채운다).
+- **단계**(결과가 있는 **첫 단계만** 채택 · 인스턴스마다 가장 앞 단계 하나로 센다):
+
+| 단계 | 일치 | `search_confidence` |
+|---|---|---|
+| `exact` | 이름 casefold가 같다 | `high` |
+| `normalized` | 구분자 `-`·`_`·`.`·공백을 뺀 이름이 같다 | `high` |
+| `prefix` | 이름이 검색어로 시작하고 바로 뒤가 이름 끝이거나 구분자 | `medium` |
+| `contains` | 정규화한 검색어가 3자 이상(`CONTAINS_MIN`)일 때만 — 정규화 이름에 들어 있거나 **마스킹한** 설명(casefold)에 검색어가 들어 있다(가린 원문으로 일치 여부를 흘리지 않는다) | `medium` |
+
+- **행**: 목록 행 모양(§3 표) + `hostname`(역정합 결과 · 없으면 `""`) · `match_confidence`·`match_reason`(역정합 근거 `host_name`·`override`·`regex`·`unresolved`) · `match_kind="instance_name"` · `match_tier`(위 단계) · `search_confidence`. 정렬 = (소스 선언 순서, `domain_id`, `instance_name`).
+- **봉투 키**:
+  - `search: {"tier": <단계|null>, "counts": {"exact": n, "normalized": n, "prefix": n, "contains": n}}` — `query`를 준 호출에는 항상 있다(감사가 읽는다 · 숫자뿐).
+  - `suggestions: [{"instance_name", "source_id", "domain_id"}]` — **0건일 때만**(후보가 없으면 `[]`). 정규화 이름의 difflib ratio ≥ 0.8 상위 3개 · 정렬 (-ratio, 소스 순서, 도메인, 이름). 행에 넣지 않고 자동 채택하지 않는다.
+  - 0건이면 `_unresolved`(작업 봉투에서는 `disclosures[{kind: "apm_unresolved_condition"}]`): 「인스턴스 이름 '<마스킹한 검색어>'과(와) 일치하는 인스턴스를 찾지 못했습니다」. 모르는 `domain_id`면 W1-D 문구가 한 줄 더 붙는다.
+  - `sources[].status` — 인벤토리는 정상인데 결과가 없는 소스는 `no_match`.
+
+#### 3.4.2 `apm_instance_map(business=…)` — 업무명 → 인스턴스 (N-2 · G-3 ①)
+
+- **인자**: `query`와 같은 형식 규칙(오류 문구의 인자 이름만 `business`). `query`나 비지 않은 `hostname`과 함께 오면 `invalid_argument`(「business는 query·hostname과 함께 줄 수 없다」). `domain_id`·`source_ids`와는 AND(모르는 `domain_id`는 W1-D와 같은 처리).
+- **근거**(G-3 ① — **B0가 맞으면 B0만**, 없으면 B1~B3 합집합):
+
+| 근거 | `match_kind` | 일치 규칙 | 신뢰도 |
+|---|---|---|---|
+| B0 수동 매핑 | `business_map` | 정합 파일 `business_map`의 `business`·`aliases` 중 하나가 업무명과 같다(대소문자·구분자 무시) → 그 항목 `instances`의 **정확한 이름**(strip+casefold)만. 항목에 `source_id`가 있으면 그 소스가 이번 선택에 들 때만 적용(적용되는 B0가 0건이면 B1~B3로 간다). 인벤토리에 없는 이름은 `[한계]` 1줄(쉼표로 이음) · 다른 근거 호출 없음 · `suggestions` = `[]` | `high` |
+| B1 도메인 이름 | `domain` | 제니퍼 도메인 이름이 업무명과 같다(대소문자·구분자 무시) → 그 도메인의 전 인스턴스 | `medium` |
+| B2 업무 정의 | `business` | 도메인마다 `GET /api/business`(업무 정의)의 이름 또는 **마스킹한** 설명에 업무명이 들어 있다(casefold) → 그 `businessId`를 현재 액티브 서비스 + 최근 5분 트랜잭션(1분 창 5회)으로 역추적한 인스턴스. 정의가 하나라도 맞으면 `[한계] 업무 정의 근거는 최근 처리한 인스턴스만 찾는다(현재 액티브 서비스 + 최근 5분 트랜잭션)` | `medium` |
+| B3 인스턴스 이름·설명 | `instance_text` | §3.4.1 검색을 업무명으로 | `medium` |
+
+- **행**: (`source_id`, `domain_id`, `instance_id`)당 1행 — 목록 행 모양 + `hostname`(역정합) · `match_kind`(첫 근거 — `business_map` → `domain` → `business` → `instance_text` 순) · `match_kinds`(근거 전부) · `match_tier`(`instance_text` 근거일 때 §3.4.1 단계 · 아니면 `""`) · `search_confidence`(`business_map`이면 `high` · 그 밖 `medium`) · `business_names`(B2로 맞은 업무 이름 · 아니면 `[]`) — 칸은 **항상** 싣는다. 정렬은 §3.4.1과 같다.
+- **봉투 키**: `business: {"counts": {"business_map": n, "domain": n, "business": n, "instance_text": n}}`(근거별 인스턴스 수 — 감사가 읽는다 · 이 모드에는 `search` 키가 없다) · 0건이면 `suggestions`(B3 검색의 후보)와 `_unresolved` 「업무명 '<마스킹>'에 해당하는 APM 인스턴스를 찾지 못했습니다」.
+- **부분 실패**: B2 업무 목록·추적 조회 실패는 단위마다 `[한계]`·`partial`이고 B1·B3 행은 그대로 돌려준다. 연결 끊긴 도메인(`inv.unavailable`)은 B2 추적에서 건너뛴다.
+- **캐시·비용**: 업무 정의 목록은 (소스, 도메인)별 10분(`BUSINESS_CACHE_SECONDS=600`) · 관측표(`businessId` → 인스턴스)는 (소스, 도메인)별 10분이며 액티브 + 5개 창이 **전부 성공했을 때만** 저장한다(일부 실패를 10분 동안 굳히지 않는다). **첫 질의 주의** — 캐시가 비면 도메인마다 `/api/business`를 1회 부른다(도메인 약 350개 · 초당 5회면 약 70초 — 장기 작업 승격 판단에 `expect_calls`로 호출 계획을 미리 알린다). 같은 도메인의 다른 업무명은 캐시로 HTTP 0회다.
+- **정합 파일 `business_map`**(`apm_gateway/config/instance_map.yaml` 선택 키 · 게이트웨이 소유):
+
+```yaml
+business_map:
+  - business: "대출"                     # 필수 · 비지 않은 문자열
+    aliases: ["여신"]                     # 선택 · 문자열 목록
+    instances: ["WAS-EXAMPLE-01", "WAS-EXAMPLE-02"]   # 필수 · 비지 않은 문자열 목록(정확한 인스턴스 이름)
+    source_id: bank                       # 선택 · 그 소스에서만 찾는다
+```
+  형식이 틀린 항목은 기동 시 순번만 경고하고 뺀다(침묵 금지 · 목록이 아니면 전체 무시). `source_id`가 설정 소스에 없으면 기동 경고(`overrides`의 미등록 소스 경고와 같은 방식). 운영 업무명·인스턴스 실명은 저장소 기본값에 넣지 않는다(기본 `business_map: []`).
+
+#### 3.4.3 `instance_name` — 인스턴스 이름으로 부르기 (N-3)
+
+- **적용**: 데이터 도구 13종(`apm_app_health`·`apm_runtime_health`·`apm_resource_pool`·`apm_slow_transactions`·`apm_active_services`·`apm_events`·`apm_transaction_profile`·`apm_status_stats`·`apm_metrics`·`apm_source_changes`·`apm_transaction_trace`·`apm_change_impact`·`apm_period_compare`) + 관리 도구 3종(`apm_config`(kind `event_rules`·`db_path`·`loaded_classes`)·`apm_environment`·`apm_active_detail`) — MCP에 `instance_name`이 있는 도구는 16종이다. MCP 스키마는 `hostname: str | None = None`·`instance_name: str | None = None`(hostname이 required에서 빠졌다 · `apm_period_compare`의 required는 `current_start`·`current_end`·`baseline_start`·`baseline_end`). 도구 설명 한 줄: 「hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은 apm_instance_map(query=…)로 먼저 찾는다」.
+- **해소**: **정확 일치만**(strip+casefold) — 부분 이름은 해소하지 않는다(부분 검색은 §3.4.1이 하고, 조회 도구가 부분 일치로 여러 인스턴스를 부르지 않게 한다). 같은 이름이 여러 소스·도메인에 있으면 모두 싣는다(`source_ids`·`instance_id`로 좁힌다). hostName이 빈 인스턴스도 찾는다. 빈 문자열·공백뿐이면 주지 않은 것으로 본다(길이 상한 없음 — 비교뿐).
+- **AND**: `hostname`과 함께 주면 hostname 정합 결과 중 그 이름만 남긴다.
+- **`instance_resolution`**: `confidence="high"` · `reason="instance_name"` · `instance_refs[]`에 `hostname`(역정합 — **이름으로 불렀을 때만**) · 봉투 `hostname`은 역정합 host가 하나로 정해질 때만 그 값(아니면 `""`).
+- **행**: 이름으로 불렀을 때만, (`source_id`, `instance_id`)가 있고 `hostname` 칸이 없는 행에 `hostname`(역정합 또는 `""`)을 붙인다 — 폴스타 결과와 합치는 결합 키다. hostname으로 부른 행·refs에는 이 칸이 생기지 않는다(비트 동일).
+- **대상이 선택인 도구**(`apm_metrics` catalog · `apm_transaction_trace` · `apm_config`의 그 밖 kind · `apm_environment` · `apm_active_detail`)는 둘 다 없으면 종전처럼 동작한다. `apm_config`의 프로세스·소스 단위 kind는 `instance_name`을 공통 `[한계]`(「kind X는 인자 instance_name를 쓰지 않는다 — 빼고 조회했다」)로 무시한다.
+- **오류**:
+
+| 상황 | code | 사유 |
+|---|---|---|
+| 이름 0건 | `instance_unresolved` | 「instance_name '<x>'에 해당하는 APM 인스턴스 없음 — apm_instance_map(query=…)로 검색」 |
+| `instance_id`가 이름 결과에 없음 | `instance_unresolved` | 「instance_id N는 instance_name '<x>' 결과에 없음」 |
+| hostname ∧ 이름 교집합이 빔 | `instance_unresolved` | 「instance_name '<x>'은 hostname '<h>' 정합 결과에 없음」 |
+| 대상 필수 도구에 둘 다 없음 | `invalid_argument` | 「hostname 또는 instance_name이 필요하다(둘 다 비어 있음)」 |
+| `apm_config(kind=loaded_classes)`에 둘 다 없음 | `invalid_argument` | 「kind loaded_classes에는 hostname 또는 instance_name이 필요하다」 |
+| `apm_active_detail`·`apm_transaction_profile`의 도메인 불일치 | `profile_ref_mismatch` | 대상 표시가 hostname 대신 「instance_name '<x>'」 |
+
+#### 3.4.4 감사 (N-6)
+
+- 대상 칸: `apm_instance_map`은 `hostname` → `query:<검색어>` → `business:<업무명>` → `*` 순(§6 8의 마스킹 · 이메일은 `query:<email>`로 남는다) · 데이터·관리 도구는 `hostname or instance_name or *`(`apm_config`는 `kind:<hostname or instance_name or *>`).
+- 정상 줄 끝 꼬리: 인스턴스 검색이면 ` search=<단계|none>(exact:n,normalized:n,prefix:n,contains:n)` · 업무명이면 ` search=business(business_map:n,domain:n,business:n,instance_text:n)`. 결과에 `search`·`business` 키가 있을 때만 붙고, 승격된 작업은 완료 줄에서 `result_meta`로 붙인다. 오류 줄 형식은 그대로다.
 
 ## 4. `was_signals` 항목 (소비자 계약 ②)
 
@@ -226,14 +304,14 @@ apm_gateway/                   자체 pyproject · 자체 cwd · 루트 venv 공
 
 ## 6. 안전 통제 (수용 기준)
 
-1. 허용목록 정본 = `adapters/jennifer/allowlist.py`의 **36템플릿**(134 W5 `/api/transaction/guid` + txid `key`·sql `profile_no`·`key`·`include_param_key` 선택 키 · **134 W7 관리·민감 조회 19** — `/api/auth/userlist` · `/restapi/users` · `/restapi/user/{id}`(`account`) · `/api-v2/manage/data-server/{domains,resource,system-property-config}` · `/api-v2/manage/rule/active-service-color-range-boundary` · `/api-v2/active-service/detail/{domainId}/{txid}`(`int`·`sint` · 선택 `sessionId`·`threadHash`) · `/api-v2/manage/db/path/{domainId}` · `/api-v2/environment-variable/{domainId}` · `/api-v2/manage/instance`(필수 `processId` · 선택 `hostname`) · `/api-v2/loaded-class/{domainId}/{instanceId}`(선택 `search`) · `/api-v2/manage/rule/event/error/{domainId}` · `…/metric/{domainId}/{targetType}`(`enum:domain|instance|business`) · `…/compare/…`·`…/comparing/…`(`enum:domain|instance` — COV E-01 두 표기 · 404 재질의 전용) · `…/error/{domainId}/{errorType}/applied`(`token`) · `…/individual-setting/{instanceId}` · `/api-v2/manual-rdb-export` — 종전 「민감 GET 거부」 단언은 허용 단언으로 반전(C-10) · 같은 경로의 PUT·POST·DELETE·PATCH · `.xml` 꼬리(경로 변수 `account`가 `.`을 받아 `/restapi/user/x.xml`이 맞던 틈을 막는 일반 거부) · 시험 경로는 거부 유지 · 종전 16템플릿: 메서드 GET · 경로 템플릿 정확 일치 · 경로별 쿼리 키 — 134 W1에서 `/api/dbsearch/error`에 선택 키 `error_type` 추가 · **134 W2**에서 `/api/status/application`에 `sort_by_metrics`·`application_name`, `/api/status/sql`·`/api/status/external_call`에 `instance_id`·`sort_by_metrics`·`max_row` 추가 · 카탈로그 사본 동기화). **[134 W2] 경로 변수 형식**(SPEC-coverage §2.4) — `Endpoint.path_vars`에 변수마다 `int`(숫자) · `token`(`[A-Z0-9_]{1,64}`) · `account`(`[A-Za-z0-9._@-]{1,64}`) · `enum:a|b`를 선언하고 템플릿 정규식·`build_path`가 그 형식만 받는다(선언 없는 변수는 기동 시점 실패 · 형식 밖 값은 HTTP 0회 — 134 W7에서 `sint`(`-?[0-9]{1,20}`) 추가 · 경로별 선언 완료). 목록 밖·비GET·`.xml`·`..`·`//`·`%`·쿼리 `token`·허용 밖 쿼리 키·필수 키 누락은 **HTTP 0회**로 `NotAllowedError`(계획서 §5.2(e) 거부 입력 23건 전부 + v1 POST 변형).
+1. 허용목록 정본 = `adapters/jennifer/allowlist.py`의 **37템플릿**(**[130 W2]** `GET /api/business`(업무 정의 · 필수 `domain_id` — D-290 ④ · §3.4.2 B2 · `/api/realtime/business`·`/api/dbmetrics/business`는 계속 거부) · 134 W5 `/api/transaction/guid` + txid `key`·sql `profile_no`·`key`·`include_param_key` 선택 키 · **134 W7 관리·민감 조회 19** — `/api/auth/userlist` · `/restapi/users` · `/restapi/user/{id}`(`account`) · `/api-v2/manage/data-server/{domains,resource,system-property-config}` · `/api-v2/manage/rule/active-service-color-range-boundary` · `/api-v2/active-service/detail/{domainId}/{txid}`(`int`·`sint` · 선택 `sessionId`·`threadHash`) · `/api-v2/manage/db/path/{domainId}` · `/api-v2/environment-variable/{domainId}` · `/api-v2/manage/instance`(필수 `processId` · 선택 `hostname`) · `/api-v2/loaded-class/{domainId}/{instanceId}`(선택 `search`) · `/api-v2/manage/rule/event/error/{domainId}` · `…/metric/{domainId}/{targetType}`(`enum:domain|instance|business`) · `…/compare/…`·`…/comparing/…`(`enum:domain|instance` — COV E-01 두 표기 · 404 재질의 전용) · `…/error/{domainId}/{errorType}/applied`(`token`) · `…/individual-setting/{instanceId}` · `/api-v2/manual-rdb-export` — 종전 「민감 GET 거부」 단언은 허용 단언으로 반전(C-10) · 같은 경로의 PUT·POST·DELETE·PATCH · `.xml` 꼬리(경로 변수 `account`가 `.`을 받아 `/restapi/user/x.xml`이 맞던 틈을 막는 일반 거부) · 시험 경로는 거부 유지 · 종전 16템플릿: 메서드 GET · 경로 템플릿 정확 일치 · 경로별 쿼리 키 — 134 W1에서 `/api/dbsearch/error`에 선택 키 `error_type` 추가 · **134 W2**에서 `/api/status/application`에 `sort_by_metrics`·`application_name`, `/api/status/sql`·`/api/status/external_call`에 `instance_id`·`sort_by_metrics`·`max_row` 추가 · 카탈로그 사본 동기화). **[134 W2] 경로 변수 형식**(SPEC-coverage §2.4) — `Endpoint.path_vars`에 변수마다 `int`(숫자) · `token`(`[A-Z0-9_]{1,64}`) · `account`(`[A-Za-z0-9._@-]{1,64}`) · `enum:a|b`를 선언하고 템플릿 정규식·`build_path`가 그 형식만 받는다(선언 없는 변수는 기동 시점 실패 · 형식 밖 값은 HTTP 0회 — 134 W7에서 `sint`(`-?[0-9]{1,20}`) 추가 · 경로별 선언 완료). 목록 밖·비GET·`.xml`·`..`·`//`·`%`·쿼리 `token`·허용 밖 쿼리 키·필수 키 누락은 **HTTP 0회**로 `NotAllowedError`(계획서 §5.2(e) 거부 입력 23건 전부 + v1 POST 변형).
 2. `follow_redirects=False` — 3xx는 `apm_api_error`, 리다이렉트 대상 호출 0회.
 3. 응답 본문 **메모리 임계**(134 W0-B · D-296 ④) — Content-Length 선검사 또는 스트림 누적이 `JENNIFER_MAX_RESPONSE_BYTES`를 넘으면 `APM_SPOOL_DIR/tmp`의 임시 파일로 받고 `{"result": [...]}`·최상위 배열은 원소 단위 점진 디코드(`json.JSONDecoder.raw_decode` — 표준 라이브러리)로 읽는다. 임시 파일은 파싱 뒤(오류여도) 지운다. 비200 큰 본문은 앞 64 KiB로만 분류한다.
 4. 토큰은 `Authorization` 헤더로만 — 로그·오류·감사·도구 반환·작업 기록에 0회(테스트로 고정). 게이트웨이 전송 토큰(주체별)도 같다 — 감사에는 주체 이름(`principal=`)만, 비교는 상수 시간. **[J8]** 토큰은 소스 클라이언트마다 따로이고 한 소스의 토큰이 다른 소스 요청에 실리지 않는다(목 서버 `/__mock/hits`의 Bearer 지문 `bearer_fp`로 단언 — 값은 기록하지 않는다). 거부 입력은 소스마다 HTTP 0회. 허용목록·거부 규칙은 전 소스 공통(M-10).
 5. 카탈로그 사본(`testdata/jennifer/scripts/jennifer_catalog.py`) ↔ 정본 대조 테스트(템플릿·필수/선택 키·Accept · 134 W2부터 경로 변수 형식 선언 · 134 W7에서 사본 템플릿 정규식을 이름 없는 묶음으로 — 변수 둘 이상 템플릿의 묶음 이름 중복으로 import가 깨졌다).
 6. 계약 테스트는 목 서버를 상대로 돌리고 끝에 `GET /__mock/hits`로 `allowlisted=false` 0건 · `query_token` 0건을 단언.
 7. 마스킹 — `client_ip`·URL 쿼리 값·SQL 리터럴·이메일·휴대폰·주민번호를 반환 전에 가린다. 감사에는 마스킹본만. **[134 W0-B]** `mask_url`은 앞 구분자 없이 시작하는 첫 쌍도 가린다(COV E-20 — 종전 `mask_url('a=1&b=2')` = `a=1&b=<v>`) · HTTP query 전용 `mask_query`(첫 값까지 전부) · 식별자 `mask_identifier`(앞 1자 + `***` · 2자 이하 `***`) — 두 함수의 필드별 적용은 W1. **[134 W2 수정]** 식별자 가림·자격증명 제거를 실제로 적용한 응답은 봉투 `disclosures`에 `apm_masked_fields`(칸 이름만 · §3.1)를 싣는다. **[134 W7]** 설정 값 전용 `mask_pii`(이메일·주민번호·휴대폰만 — `mask_text`의 SQL 리터럴·URL 쿼리 규칙이 `-Dport=8080` 같은 설정을 훼손하고, 서버 IP는 인프라 정보라 가리지 않는다 · 인스턴스 목록 `ip_address`와 같은 처분) · 사용자 계정 `id`·`name` `mask_identifier` · 실행 중 요청 `userId` `mask_identifier`·`sql` `mask_sql`·`http.query` `mask_query`. **[134 W5 · 수정]** 프로파일 SQL 응답(모양 미공개 — COV E-11)은 출처 칸 이름(`SQL_STATEMENT_KEYS`)이 SQL 문 칸이면 `mask_sql`(+ PG 달러 따옴표 · `mask_pii`), 그 밖 칸(바인드 값일 수 있음)은 `mask_identifier` + `[한계]` + `apm_masked_fields` `sqls` — 키워드 판정은 저장 프로시저 호출(`{call …}`·`EXEC`)을 훼손해 쓰지 않는다(VG-1). 클라이언트 DEBUG 로그는 계정 ID가 들어가는 경로(`account` 형식)를 원값 대신 템플릿으로 남긴다.
-8. **[J8] 감사** — 감사 1줄에 `sources=<소스 id>:<HTTP 호출 수>,…`(없으면 `-`)를 싣는다(도구 1회 전후 소스별 호출 수 차이 — 캐시로 호출이 없었으면 `-`). `api_calls`는 그 합이다(M-9). **[134 W0-B]** 끝에 `principal=<주체 이름>`·`job_id=<작업 ID 또는 ->`를 더한다. 데이터 도구의 `api_calls`·`sources`는 **그 작업의** 호출 수다(같은 시간에 도는 다른 작업의 호출이 섞이지 않는다 · 이 요청이 시작한 명단 적재 포함). 접수(승격) 때 1줄, 백그라운드 작업이 끝날 때 1줄(작업 수명 전체 `api_calls`·`sources` · `rows` = 전체 행 수 · 실패·취소·중단이면 `error=`), 작업 도구는 호출마다 1줄(`api_calls=0`), `gateway_health`도 요청 주체를 싣는다. 모든 칸의 제어·서식 문자는 이스케이프한다(`\n` → `\\n` — 대상·조사 ID 값으로 감사 줄을 위조하지 못하게).
+8. **[J8] 감사** — 감사 1줄에 `sources=<소스 id>:<HTTP 호출 수>,…`(없으면 `-`)를 싣는다(도구 1회 전후 소스별 호출 수 차이 — 캐시로 호출이 없었으면 `-`). `api_calls`는 그 합이다(M-9). **[134 W0-B]** 끝에 `principal=<주체 이름>`·`job_id=<작업 ID 또는 ->`를 더한다. 데이터 도구의 `api_calls`·`sources`는 **그 작업의** 호출 수다(같은 시간에 도는 다른 작업의 호출이 섞이지 않는다 · 이 요청이 시작한 명단 적재 포함). 접수(승격) 때 1줄, 백그라운드 작업이 끝날 때 1줄(작업 수명 전체 `api_calls`·`sources` · `rows` = 전체 행 수 · 실패·취소·중단이면 `error=`), 작업 도구는 호출마다 1줄(`api_calls=0`), `gateway_health`도 요청 주체를 싣는다. 모든 칸의 제어·서식 문자는 이스케이프한다(`\n` → `\\n` — 대상·조사 ID 값으로 감사 줄을 위조하지 못하게). **[130 W1·W2]** 대상 칸은 `apm_instance_map`이면 `hostname` → `query:<검색어>` → `business:<업무명>` → `*`, 데이터·관리 도구는 `hostname or instance_name or *`이고(마스킹 같음) 정상 줄 끝에 ` search=<단계|none>(exact:n,normalized:n,prefix:n,contains:n)` 또는 ` search=business(business_map:n,domain:n,business:n,instance_text:n)`를 붙인다(§3.4.4 · 오류 줄 형식은 그대로).
 9. **[134 W0-B] 자격증명 제거**(D-296 ③ · N-17) — 어댑터(`JenniferClient.get_json`·`get_text`·오류 사유)가 응답을 파싱한 **직후** `domain/credentials.py`를 지난다(새 경로도 이 두 출구를 지나므로 빠져나갈 수 없다). 오류 사유는 **가린 뒤 자른다**. 규칙:
    - **키**(NFKC + 서식·결합 문자 제거 → camelCase·`_ . - 공백 / :` 토큰 · 뒤 숫자 무시): 부분 문자열 PASSWORD·PASSWD·PASSPHRASE·SECRET·CREDENTIAL·APIKEY·ACCESSKEY·PRIVATEKEY·TOKEN·COOKIE·JSESSIONID·SESSID·JWT · 끝이 PASS·PWD·PW(`PGPASSWORD`·`dbpass`·`rootpw`) · 토큰 AUTH·AUTHORIZATION·BEARER·PRIVATE · `KEY`가 API·ACCESS·SECRET·PRIVATE·PRIV·ENCRYPT·ENCRYPTION·SIGNING·HMAC·MASTER·SSH 뒤(붙여 쓴 꼴 포함). **세션 식별자**(SESSION·SESSIONID·SID 토큰 — `ORACLE_SID` 제외)는 숫자가 아닌 값만 가린다(제니퍼 `ActiveServiceData.sessionId`는 int32 상세 조회 인자라 남는다). 계정 비밀번호 필드(`password`·`passwd`·`pwd`)는 키째 제거.
    - **구조**: dict · 이름/값 칸 묶음(이름 {key,name,k,id,label,propertyName,property} 중 하나라도 비밀이면 값 {value,val,v,values,propertyValue} 전부) · 2원소 리스트 `[이름, 값]` · 평행 배열 `{keys|names, values|vals}` · 비밀 키 아래 중첩 잎 전부 · JSON 문자열 값은 디코드해 같은 규칙을 다시(최대 8겹) · 깊이 제한 없음(반복 순회 — 32 넘는 중첩은 봉투 `limits` 메모 `[한계] 자격증명 검사: 예상 밖 응답 모양(<경로>) — …`).

@@ -7,7 +7,7 @@
   (Σtotal÷Σcalls · 시 경계 · 길이 차이 · 한쪽만 있는 인스턴스) · trace(중복 제거 키 · 정렬 ·
   trace_order · 창 우선순위 · 다른 GUID 제외 · 같은 txid 두 도메인 · 시작 시각 None).
 - 예산: TTL 고정 창(첫 호출 기준) · 단일 토큰 `default`·무인증 `anonymous`의 실 SSE 전송.
-- 허용목록·경계: 36템플릿 정본↔사본 · 거부 입력 HTTP 0회 · `compare`→`comparing`은 404일 때만 ·
+- 허용목록·경계: 37템플릿 정본↔사본 · 거부 입력 HTTP 0회 · `compare`→`comparing`은 404일 때만 ·
   개별 설정 404 · v2 모양 위반 = `apm_api_error`.
 - 발견 결함은 `xfail(strict=True, reason="VG-…")`로 재현한다(고치면 XPASS로 실패해 알린다).
 
@@ -70,6 +70,7 @@ CONTRACT = {
     "apm_transaction_trace": {
         "guid": ("string", True),
         "hostname": ("string|null", False),
+        "instance_name": ("string|null", False),  # plans/130 N-3
         "reference_time": ("string|null", False),
         "lookback_minutes": ("integer|null", False),
         "around_ms": ("integer|null", False),
@@ -77,7 +78,9 @@ CONTRACT = {
         "source_ids": ("array|null", False),
     },
     "apm_change_impact": {
-        "hostname": ("string", True),
+        # plans/130 N-3 — hostname 대신 instance_name으로도 부른다(둘 다 선택 · 둘 다 없으면 오류)
+        "hostname": ("string|null", False),
+        "instance_name": ("string|null", False),
         "reference_time": ("string|null", False),
         "lookback_minutes": ("integer|null", False),
         "width_minutes": ("integer|null", False),
@@ -86,7 +89,8 @@ CONTRACT = {
         "full": ("boolean", False),
     },
     "apm_period_compare": {
-        "hostname": ("string", True),
+        "hostname": ("string|null", False),
+        "instance_name": ("string|null", False),
         "current_start": ("string", True),
         "current_end": ("string", True),
         "baseline_start": ("string", True),
@@ -104,9 +108,11 @@ CONTRACT = {
         "error_type": ("string|null", False),
         "process_id": ("integer|null", False),
         "search": ("string|null", False),
+        "instance_name": ("string|null", False),
     },
     "apm_environment": {
         "hostname": ("string|null", False),
+        "instance_name": ("string|null", False),
         "source_ids": ("array|null", False),
         "scope": ("string|null", False),
         "key": ("string|null", False),
@@ -120,6 +126,7 @@ CONTRACT = {
         "thread_hash": ("integer|null", False),
         "source_id": ("string|null", False),
         "hostname": ("string|null", False),
+        "instance_name": ("string|null", False),
     },
 }
 
@@ -730,10 +737,10 @@ async def test_sse_no_token_anonymous_has_budget(tmp_path):
 # ── 4. 허용목록 · 경계 ─────────────────────────────────────
 
 
-def test_allowlist_is_36_templates_and_copy_matches_in_order():
+def test_allowlist_is_37_templates_and_copy_matches_in_order():
     from jennifer_catalog import ALLOWED as COPY
 
-    assert len(ALLOWED) == 36 and list(COPY) == list(ALLOWED)
+    assert len(ALLOWED) == 37 and list(COPY) == list(ALLOWED)
     for t, ep in ALLOWED.items():
         c = COPY[t]
         assert (c.required, c.optional, c.accept, tuple(c.path_vars)) == (

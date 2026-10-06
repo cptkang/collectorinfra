@@ -10,8 +10,8 @@ dev:
 test:
 	python scripts/regress.py --full
 
-regress:
-	python scripts/regress.py
+regress:  # 예: make regress ARGS="--base <세션 시작 SHA>"
+	python scripts/regress.py $(ARGS)
 
 lint:
 	ruff check src/ tests/

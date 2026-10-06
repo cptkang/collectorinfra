@@ -97,6 +97,9 @@ ALLOWED: dict[str, Endpoint] = {
         Endpoint(
             "/api-v2/deploy/{domainId}", ("startTime", "endTime"), path_vars=(("domainId", "int"),)
         ),
+        # 업무 정의 목록(plans/130 W2 N-5 · D-290 ④ · COV-BUSINESS) — 업무명 해석 근거 B2. 업무
+        # 지표 두 경로(`/api/realtime/business`·`/api/dbmetrics/business`)는 아직 거부한다
+        Endpoint("/api/business", ("domain_id",)),
         # plans/134 W7(N-15·N-16 · D-296 ① — 관리·민감 조회 GET · 응답은 자격증명 경계를
         # 지난다). `compare`·`comparing`은 같은 비교 룰의 두 표기다(COV E-01 — `compare` 먼저,
         # 404면 `comparing`). 실행 중 요청 상세의 `sessionId`·`threadHash`는 필수 여부

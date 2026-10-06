@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -455,6 +456,197 @@ def test_attribution_refuses_copy_resolving_elsewhere(
     with pytest.raises(rg.AttributionError):
         rg.attribute(root, "HEAD", {"본체": ["tests/test_calc.py::test_add"]}, groups, tmp_path)
     assert len(_worktrees(root)) == 1
+
+
+# ── 교정(F1~F8) ─────────────────────────────────────────────────────────────
+
+
+def _run_main(root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+              *files: str) -> tuple[int, str]:
+    monkeypatch.setattr(rg, "_find_tool", lambda name: None)
+    monkeypatch.chdir(root)
+    code = rg.main(["--root", str(root), "--base", "HEAD", "--files", *files])
+    return code, capsys.readouterr().out
+
+
+def test_link_env_files_symlinks_not_copies(tmp_path: Path) -> None:
+    root = make_repo(tmp_path / "r", ATTR_FILES)
+    _write(root, {".env": "FLAG=1\n", "src/.env": "A=1\n"})
+    wt = tmp_path / "wt"
+    (wt / "src").mkdir(parents=True)
+    rg.link_env_files(root, wt)
+    for rel in (".env", "src/.env"):
+        assert (wt / rel).is_symlink() and (wt / rel).resolve() == (root / rel).resolve()
+
+
+def test_attribute_skips_collect_when_no_failed_file_in_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F1 — 사본에 있는 실패 파일이 0개면 수집을 부르지 않는다."""
+    root = make_repo(tmp_path / "r", ATTR_FILES)
+    groups = {"본체": {"subdir": "", "python": sys.executable, "imports": []}}
+
+    def boom(*a: object, **k: object) -> set[str]:
+        raise AssertionError("_collected must not run")
+
+    monkeypatch.setattr(rg, "_collected", boom)
+    got = rg.attribute(root, "HEAD", {"본체": ["tests/test_new_only.py::test_x"]}, groups, tmp_path)
+    assert [(v.verdict, v.note) for v in got] == [(rg.NEW_TEST, "사본에 파일 없음")]
+
+
+def test_attribute_collect_timeout_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F2 — 사본 수집이 시간 초과면 그 ID는 「판정 불가」."""
+    files = dict(ATTR_FILES, **{"tests/test_slow.py": "import time\ntime.sleep(60)\n"})
+    root = make_repo(tmp_path / "r", files)
+    groups = {"본체": {"subdir": "", "python": sys.executable, "imports": []}}
+    monkeypatch.setattr(rg, "GROUP_TIMEOUT", 1)
+    got = rg.attribute(root, "HEAD", {"본체": ["tests/test_slow.py::test_x"]}, groups, tmp_path)
+    assert [(v.verdict, v.note) for v in got] == [(rg.UNKNOWN, "사본 수집 TIMEOUT")]
+    assert len(_worktrees(root)) == 1
+
+
+def test_attribute_probe_timeout_aborts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """F2 — 해소 경로 probe가 멈추면 귀속 중단으로 끝난다."""
+    root = make_repo(tmp_path / "r", ATTR_FILES)
+    slow = tmp_path / "slow_python"
+    slow.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    slow.chmod(slow.stat().st_mode | stat.S_IXUSR)
+    groups = {"본체": {"subdir": "", "python": str(slow), "imports": ["src"]}}
+    monkeypatch.setattr(rg, "PROBE_TIMEOUT", 1)
+    with pytest.raises(rg.AttributionError, match="귀속 중단"):
+        rg.attribute(root, "HEAD", {"본체": ["tests/test_calc.py::test_add"]}, groups, tmp_path)
+    assert len(_worktrees(root)) == 1
+
+
+def test_git_and_show_timeouts_become_usage_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_repo(tmp_path / "r", {"a.py": "x = 1\n"})
+
+    def hang(cmd: list[str], **kw: object) -> None:
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    monkeypatch.setattr(subprocess, "run", hang)
+    with pytest.raises(rg.UsageError, match="시간 초과"):
+        rg._git(root, "status")
+    with pytest.raises(rg.UsageError, match="시간 초과"):
+        rg._show(root, "HEAD", "a.py")
+
+
+def test_find_tool_probe_timeout_means_no_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uvx = tmp_path / "uvx"
+    uvx.write_text("", encoding="utf-8")
+    monkeypatch.setattr(shutil, "which", lambda n: str(uvx) if n == "uvx" else None)
+
+    def hang(cmd: list[str], **kw: object) -> None:
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    monkeypatch.setattr(subprocess, "run", hang)
+    assert rg._find_tool("ruff") is None
+    assert rg._find_tool("mypy") is None
+
+
+def test_attribute_partial_worktree_failure_names_leftover(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F3 — worktree add가 도중 실패해 디렉터리만 남으면 지우지 않고 경로를 알린다."""
+    root = make_repo(tmp_path / "r", ATTR_FILES)
+    wt = Path(tempfile.gettempdir()) / f"regress-{os.getpid()}"
+
+    def half_add(root_: Path, *args: str, check: bool = True) -> str:
+        wt.mkdir()
+        raise rg.UsageError("boom")
+
+    monkeypatch.setattr(rg, "_git", half_add)
+    try:
+        with pytest.raises(rg.AttributionError) as info:
+            rg.attribute(root, "HEAD", {"본체": ["tests/test_calc.py::test_add"]}, {}, tmp_path)
+        assert str(wt) in str(info.value) and wt.is_dir()
+    finally:
+        shutil.rmtree(wt, ignore_errors=True)
+
+
+def test_stale_worktrees_reports_dead_pid_only(tmp_path: Path) -> None:
+    root = make_repo(tmp_path / "r", {"a.py": "x = 1\n"})
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    temp = Path(tempfile.gettempdir())
+    stale, alive = temp / f"regress-{dead.pid}", temp / f"regress-{os.getppid()}"
+    other = temp / "regress-notapid"
+    made: list[Path] = []
+    try:
+        for wt in (stale, alive, other):
+            if wt.exists():
+                pytest.skip("같은 이름의 사본이 이미 있다")
+            _git(root, "worktree", "add", "--detach", str(wt), "HEAD")
+            made.append(wt)
+        assert [p.resolve() for p in rg.stale_worktrees(root)] == [stale.resolve()]
+    finally:
+        for wt in made:
+            _git(root, "worktree", "remove", "--force", str(wt))
+    assert len(_worktrees(root)) == 1
+
+
+def test_interrupt_prints_scope_line_and_exits_130(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = make_repo(tmp_path / "r", ATTR_FILES)
+
+    def interrupted(*a: object, **k: object) -> int:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(rg, "_execute", interrupted)
+    code, out = _run_main(root, monkeypatch, capsys, "tests/test_calc.py")
+    assert code == 130
+    assert out.rstrip().splitlines()[-1] == "범위: 중단됨 — 전체 미실행"
+    assert "Traceback" not in out
+
+
+def test_exit_1_when_static_gate_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    files = dict(ATTR_FILES, **{"scripts/arch_check.py": "import sys\nsys.exit(1)\n"})
+    root = make_repo(tmp_path / "r", files)
+    code, out = _run_main(root, monkeypatch, capsys, "tests/test_calc.py")
+    assert code == 1 and "arch_check: 실패" in out
+
+
+def test_exit_1_when_lane_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    files = dict(ATTR_FILES, **{"tests/test_sleep.py": "import time\n\ndef test_s():\n"
+                                                      "    time.sleep(60)\n"})
+    root = make_repo(tmp_path / "r", files)
+    monkeypatch.setattr(rg, "GROUP_TIMEOUT", 1)
+    code, out = _run_main(root, monkeypatch, capsys, "tests/test_sleep.py")
+    assert code == 1 and "! 본체 TIMEOUT(1초)" in out
+
+
+def test_exit_1_when_pytest_rc1_but_no_junit_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """F4 — 워커·프로세스가 junit 없이 rc=1로 죽으면 통과로 둔갑하지 않는다."""
+    files = dict(ATTR_FILES, **{"tests/test_crash.py": "import os\n\ndef test_c():\n"
+                                                       "    os._exit(1)\n"})
+    root = make_repo(tmp_path / "r", files)
+    code, out = _run_main(root, monkeypatch, capsys, "tests/test_crash.py")
+    assert code == 1 and "rc=1인데 junit에서 실패·에러 케이스를 읽지 못했다" in out
+
+
+def test_split_workers_normalizes_below_two_and_weights_by_time() -> None:
+    cpus = os.cpu_count() or 1
+    # 워커 1은 `-n`을 걸 수 없으므로 직렬(0)
+    assert rg.split_workers(10_000, 10_000, total=2) == (0, 0)
+    assert rg.split_workers(10_000, 0, total=1) == (0, 0)
+    # 본체 10,602건(≈742초) · apm 563건(≈113초) → 7 : 1 → apm 직렬
+    if cpus >= 8:
+        assert rg.split_workers(10_602, 563, total=8) == (7, 0)
+    body, apm = rg.split_workers(10_602, 563)
+    assert body + max(apm, 1) <= rg.MAX_WORKERS and (apm == 0 or apm >= 2)
 
 
 # ── 과거 누락 2건(A1) — 실제 저장소 ─────────────────────────────────────────

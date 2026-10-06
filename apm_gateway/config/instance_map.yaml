@@ -19,3 +19,12 @@ overrides: []
 #    hostname: "example-host01"
 #    port: 8080
 #    kind: tomcat
+# 업무 수동 매핑(plans/130 N-2 B0 · 선택) — apm_instance_map(business=…)에서 업무명·별칭이 같으면(대소문자·구분자 무시)
+# 이 인스턴스 이름(정확 일치)만 돌려준다. 맞는 항목이 없으면 도메인 이름·제니퍼 업무 정의·인스턴스 이름/설명 합집합이다.
+# 형식이 틀린 항목은 기동 시 경고하고 무시한다. source_id를 주면 그 소스에서만 찾는다.
+business_map: []
+# 예시(플레이스홀더):
+#  - business: "대출"
+#    aliases: ["여신"]
+#    instances: ["WAS-EXAMPLE-01", "WAS-EXAMPLE-02"]
+#    source_id: bank

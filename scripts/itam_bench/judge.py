@@ -21,6 +21,9 @@ TAXONOMY: dict[str, str] = {
     "permission_denied": "벤치 환경 문제(계정 인가 D-232) — 판정 제외",
     "routing_miss": "ITAM 프롬프트 밖 — 소스 선별(plans/132) · 분리 집계",
     "asked_back": "프롬프트 모호성 · 되묻기 규칙(plans/132) · 분리 집계",
+    "backend_limit": "plans/138 W1·W2 LLM 입력 한도 — 조회 대상 크기(`schema_context.dbs`) · "
+    "테이블 정의 선별(W4)",
+    "selection_none": "plans/138 W4 선별 0개 — 「DB 구조」 탭 테이블 정의(manages·key_columns)",
     "no_sql": "plans/133 A8 · 프로필 query_guide",
     "fabricated": "plans/133 A8 · 고지 규칙",
     "dialect_error": "plans/133 A8 DB 전용 프롬프트 섹션 · 프로필 방언 규칙",
@@ -372,6 +375,7 @@ def classify(facts: TurnFacts, analysis: Mapping[str, Any], *, db_id: str) -> li
         labels.add("dialect_error")
     if analysis.get("dialect_hazards"):
         labels.add("dialect_silent")
+    labels |= _prompt_stop_labels(facts.schema_context, db_id)
     rows = list((facts.result or {}).get("rows") or [])
     if facts.observe is not None:
         if facts.observe.get("no_data") and _fabricated(facts, rows):
@@ -380,7 +384,15 @@ def classify(facts: TurnFacts, analysis: Mapping[str, Any], *, db_id: str) -> li
             label
             for label in TAXONOMY
             if label in labels
-            and label in ("routing_miss", "fabricated", "dialect_error", "dialect_silent")
+            and label
+            in (
+                "routing_miss",
+                "backend_limit",
+                "selection_none",
+                "fabricated",
+                "dialect_error",
+                "dialect_silent",
+            )
         ]
     if facts.verdict == "pass":
         return []
@@ -415,6 +427,28 @@ def classify(facts: TurnFacts, analysis: Mapping[str, Any], *, db_id: str) -> li
     return [label for label in TAXONOMY if label in labels]
 
 
+def _prompt_stop_labels(context: Mapping[str, Any] | None, db_id: str) -> set[str]:
+    """측정 연결점이 옮긴 DB 별 프롬프트 칸(plans/138 W6-d) → `backend_limit`·`selection_none`.
+
+    입력 한도: 재생성 종결 사유 `backend_limit` · 예산 단계 `exceeded` · 백엔드 보고 토큰 수 있음.
+    선별 0개: 선별 출처 `none` · 종결 사유 `selection_none`. 이 벤치 DB 칸만 본다.
+    """
+    entry = ((context or {}).get("dbs") or {}).get(db_id)
+    if not isinstance(entry, Mapping):
+        return set()
+    reasons = set(entry.get("stop_reasons") or [])
+    labels: set[str] = set()
+    if (
+        "backend_limit" in reasons
+        or entry.get("budget_stage") == "exceeded"
+        or entry.get("backend_reported_tokens") is not None
+    ):
+        labels.add("backend_limit")
+    if "selection_none" in reasons or entry.get("selection_source") == "none":
+        labels.add("selection_none")
+    return labels
+
+
 def _unknown_code_value(sql: str, code_values: Mapping[str, frozenset[str]]) -> bool:
     """코드 컬럼과 비교한 리터럴이 승인된 코드값에 없는가(A4 미승인 = 판정하지 않음)."""
     from src.utils.synonym_usage import _extract_column_literals
@@ -447,6 +481,60 @@ def _fabricated(facts: TurnFacts, rows: list[Mapping[str, Any]]) -> bool:
     )
 
 
+#: 예산 단계·선별 출처의 「나쁜 정도」 순서.
+#: 한 턴에 같은 DB task 가 여럿이면 가장 나쁜 값을 남긴다.
+_STAGE_RANK = {"within": 0, "materials": 1, "samples": 2, "exceeded": 3}
+_SELECTION_RANK = {"llm": 0, "lexical": 1, "none": 2}
+
+
+def _worst(current: Any, new: Any, rank: Mapping[str, int]) -> Any:
+    if new not in rank:
+        return current
+    return new if current not in rank or rank[new] > rank[current] else current
+
+
+def _larger(current: Any, new: Any) -> Any:
+    if not isinstance(new, int) or isinstance(new, bool):
+        return current
+    return new if current is None else max(current, new)
+
+
+def prompt_by_db(records: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """측정 수신 레코드의 DB 별 프롬프트 칸(plans/138 W6-d) → 턴 단위 DB 별 요약.
+
+    같은 DB task 가 여럿이면 칸마다 따로 모은다 — 수는 최댓값, 예산 단계·선별 출처는 가장 나쁜 값,
+    종결 사유는 정렬한 합집합. 칸이 없던 옛 레코드는 null 로 남는다(숫자·열거만 · 값 없음).
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for record in records:
+        for db_id, shape in (record.get("dbs") or {}).items():
+            if not isinstance(shape, Mapping):
+                continue
+            entry = out.setdefault(
+                str(db_id),
+                {
+                    "prompt_tokens_est": None,
+                    "budget_stage": None,
+                    "backend_reported_tokens": None,
+                    "selection_source": None,
+                    "selected_count": None,
+                    "stop_reasons": [],
+                },
+            )
+            for key in ("prompt_tokens_est", "backend_reported_tokens", "selected_count"):
+                entry[key] = _larger(entry[key], shape.get(key))
+            entry["budget_stage"] = _worst(
+                entry["budget_stage"], shape.get("budget_stage"), _STAGE_RANK
+            )
+            entry["selection_source"] = _worst(
+                entry["selection_source"], shape.get("selection_source"), _SELECTION_RANK
+            )
+            reason = shape.get("stop_reason")
+            if isinstance(reason, str) and reason:
+                entry["stop_reasons"] = sorted({*entry["stop_reasons"], reason})
+    return out
+
+
 def schema_context(
     records: Sequence[Mapping[str, Any]],
     *,
@@ -456,7 +544,7 @@ def schema_context(
 ) -> dict[str, Any] | None:
     """측정 수신 레코드(같은 thread_id · 이 턴) → 턴의 스키마 맥락 요약(§3.4 (2)).
 
-    레코드가 없으면 None.
+    레코드가 없으면 None. `dbs`는 이 턴에 잡힌 DB 전부의 프롬프트 크기·선별 칸이다(`prompt_by_db`).
     """
     if not records:
         return None
@@ -498,4 +586,5 @@ def schema_context(
         "key_columns_with_meaning": None
         if meaning is None
         else sorted(c for c in keys_presented if c.casefold() in {m.casefold() for m in meaning}),
+        "dbs": prompt_by_db(records),
     }

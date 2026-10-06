@@ -156,6 +156,16 @@ def parse_domain(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def parse_business(raw: dict[str, Any]) -> dict[str, Any]:
+    """업무 정의(`Business` — plans/130 N-2 B2) 중 업무명 해석에 쓰는 셋. 나머지 칸은 업무 보기
+    (plans/134 W4) 몫이다."""
+    return {
+        "business_id": to_int(raw.get("businessId")),
+        "business_name": str(raw.get("name") or ""),
+        "business_description": str(raw.get("description") or ""),
+    }
+
+
 def parse_instance(raw: dict[str, Any], domain_id: int | None, domain_name: str) -> dict[str, Any]:
     return {
         "instance_id": to_int(raw.get("instanceId")),

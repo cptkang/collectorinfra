@@ -139,6 +139,9 @@ def views_plan_model(
 
     `view_args`가 참이면(보기 선택 조건을 쓰는 처리기가 활성 — plans/134 M-3) task 에
     `view_args: {보기 id: {조건 이름: 값}}`도 더한다. 값 검증은 처리기가 보기 선언으로 한다.
+    같은 때 대상 텍스트 `targets: [{text, kind}]`(plans/130 M-1)도 더한다 — 항목 형태는 느슨하게
+    받고(항목 하나가 형식 밖이라고 분해 전체를 버리지 않는다) 정제는 `apm_query.sanitize_targets`가
+    한다.
     """
     task_model = get_args(plan_model.model_fields["tasks"].annotation)[0]
     allowed = allowed_agents() | frozenset(extra_agents)
@@ -157,6 +160,7 @@ def views_plan_model(
     if view_args:
         class ViewArgsTaskSpec(ViewsTaskSpec):
             view_args: dict[str, dict[str, Any]] = Field(default_factory=dict)
+            targets: list[Any] = Field(default_factory=list)
 
         task_cls = ViewArgsTaskSpec
     task_cls.__name__ = f"Views{task_model.__name__}"

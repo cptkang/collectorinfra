@@ -25,6 +25,11 @@
    만들지 않으므로 O-6 병합 결과는 종전과 같다. base 값이 리스트·dict가 아닌 사람 편집값이어도
    그대로 둔다. `code_labels`(컬럼 → {코드값: 라벨})는 코드값 단위로 base 라벨을 우선하고 새
    코드값의 라벨만 더한다.
+8. (D-305 테이블 정의) `table_definitions`(테이블 → 정의)는 **테이블 단위**로 병합한다
+   (맨 이름 비교). base의 `origin: manual` 항목은 보존하고, 초안의 `import`·`llm`·`comment`
+   항목은 base의 비-manual 항목을 교체한다. 초안의 `manual` 항목(관리자가 검토 화면에서 고친
+   값)은 그대로 쓴다. 초안에만 있는 테이블은 더하고 base에만 있는 테이블은 그대로 둔다. 초안에
+   키가 없으면 base 값을 그대로 둔다 — 이 키가 없는 프로필의 병합 결과는 종전과 같다.
 
 계층: domain — 순수 함수 · I/O·LLM 0 · 표준 라이브러리만 · 스키마 리터럴 0.
 """
@@ -39,6 +44,7 @@ from types import MappingProxyType
 from typing import Any
 
 from src.domain.schema_snapshot import bare_name
+from src.domain.table_definitions import ORIGIN_MANUAL
 
 # 초안이 갱신하는 최상위 키
 LLM_TOP_LEVEL_KEYS: tuple[str, ...] = ("patterns", "code_values")
@@ -52,6 +58,8 @@ UNION_LIST_KEYS: Mapping[str, tuple[str, ...]] = MappingProxyType({
 })
 # 컬럼 키 단위로 base를 우선하고 초안에만 있는 키를 더하는 dict 자산 키(D-294)
 DICT_FILL_KEYS: tuple[str, ...] = ("code_labels",)
+# 테이블 단위로 병합하는 정의 자산 키(D-305 — base `manual` 항목 보존)
+TABLE_UNIT_KEYS: tuple[str, ...] = ("table_definitions",)
 # 병합이 직접 정하는 메타 키(base 값은 쓰지 않는다)
 METADATA_KEYS: tuple[str, ...] = ("source", "environment")
 
@@ -232,8 +240,40 @@ def _merge_code_values(base_values: Any, draft_values: Any) -> Any:
     return merged
 
 
+def _merge_table_definitions(base_value: Any, draft_value: Any, *, base_has_key: bool) -> Any:
+    """테이블 정의를 테이블 단위로 병합한다(모듈 docstring 규칙 8).
+
+    초안 값이 매핑이 아니거나, base 값이 매핑이 아닌 사람 편집값이면 base를 그대로 둔다. 교체는 base
+    키 자리에서 한다(키 순서 유지).
+    """
+    if not isinstance(draft_value, Mapping) or (
+        base_has_key and not isinstance(base_value, Mapping)
+    ):
+        return copy.deepcopy(base_value)
+    merged: dict[str, Any] = (
+        copy.deepcopy(dict(base_value)) if isinstance(base_value, Mapping) else {}
+    )
+    index = {bare_name(str(table)): table for table in merged}
+    for table, item in draft_value.items():
+        existing_key = index.get(bare_name(str(table)))
+        if existing_key is None:
+            merged[table] = copy.deepcopy(item)
+            index[bare_name(str(table))] = table
+            continue
+        existing = merged[existing_key]
+        draft_manual = isinstance(item, Mapping) and item.get("origin") == ORIGIN_MANUAL
+        base_manual = isinstance(existing, Mapping) and existing.get("origin") == ORIGIN_MANUAL
+        if draft_manual or not base_manual:
+            merged[existing_key] = copy.deepcopy(item)
+    return merged
+
+
 def _merge_top_key(key: str, base: Mapping[str, Any], draft: Mapping[str, Any]) -> Any:
     """LLM·채움·합집합 대상 최상위 키 1개의 병합값."""
+    if key in TABLE_UNIT_KEYS:
+        if key not in draft:
+            return copy.deepcopy(base.get(key))
+        return _merge_table_definitions(base.get(key), draft.get(key), base_has_key=key in base)
     if key in UNION_LIST_KEYS:
         base_value = base.get(key)
         # 초안에 키가 없거나, base 값이 리스트가 아닌 사람 편집값이면 그대로 둔다
@@ -290,7 +330,10 @@ def merge_profile(
         병합된 프로필 dict
     """
     base_map: Mapping[str, Any] = base if isinstance(base, Mapping) else {}
-    merge_keys = (*LLM_TOP_LEVEL_KEYS, *FILL_IF_ABSENT_KEYS, *UNION_LIST_KEYS, *DICT_FILL_KEYS)
+    merge_keys = (
+        *LLM_TOP_LEVEL_KEYS, *FILL_IF_ABSENT_KEYS, *UNION_LIST_KEYS, *DICT_FILL_KEYS,
+        *TABLE_UNIT_KEYS,
+    )
 
     result: dict[str, Any] = {"source": MANUAL_SOURCE}
     if local_sandbox:
@@ -430,10 +473,10 @@ def profile_field_diff(
     - 최상위 키: ``query_guide`` · ``allowed_tables`` 등(값 전체 비교)
     - 패턴: ``patterns[eav:<entity>/<config>]``(추가·삭제) · ``patterns[...].<키>``(변경)
     - 리스트 LLM 키 항목: ``patterns[...].value_joins[<식별 키 값>/...]``
-    - 코드값: ``code_values[<컬럼 키>]``
+    - 코드값: ``code_values[<컬럼 키>]`` · 테이블 정의: ``table_definitions[<테이블>]``
 
-    `patterns`·`code_values`는 양쪽 값이 각각 리스트·dict일 때만 항목 단위로 내려가고, 아니면 값
-    전체를 비교한다.
+    `patterns`·`code_values`·`table_definitions`는 양쪽 값이 각각 리스트·dict일 때만 항목 단위로
+    내려가고, 아니면 값 전체를 비교한다.
 
     Args:
         before: 적용 전 프로필(없으면 None — 모든 키가 추가)
@@ -452,7 +495,10 @@ def profile_field_diff(
             continue
         if key == "patterns" and isinstance(b_val, list) and isinstance(a_val, list):
             out.extend(_diff_patterns(b_val, a_val))
-        elif key == "code_values" and isinstance(b_val, Mapping) and isinstance(a_val, Mapping):
+        elif (
+            key in ("code_values", *TABLE_UNIT_KEYS)
+            and isinstance(b_val, Mapping) and isinstance(a_val, Mapping)
+        ):
             out.extend(_diff_mapping_by_key(key, b_val, a_val))
         else:
             out.append(_entry(key, b_val, a_val, present_before=in_b, present_after=in_a))

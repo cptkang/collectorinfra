@@ -31,6 +31,11 @@
   (`source_status.status = "accepted"` · 고지 `apm_job_accepted` + `ref`)이다. 인라인보다 큰
   결과는 `apm_full_result_file`, 일부 실패는 `apm_partial_sources` 고지
   (`src/orchestration/apm_jobs.py`).
+- **대상 텍스트**(plans/130 M-1·M-2·M-4): 분해 `targets`(인스턴스 이름·업무명 — 종류는 LLM,
+  해석은 코드 · D-004)와 등록명 간선이 잇지 못한 파서 서버명을 게이트웨이 검색(`query`·`business`)
+  ∥ 업무명 간선(E6 → E1r)으로 인스턴스로 풀고, 해석한 인스턴스마다 보기를 부른다(상한 없음 ·
+  D-296 ④). 텍스트가 있었는데 0건이면 첫 홉으로 가지 않고 「찾지 못함」과 후보를 답한다
+  (D-290 ⑥). 텍스트가 없으면 종전과 같다.
 - **대상 표현**(plans/134 W5·W7 · `ViewSpec.target`): 비면 종전(필수 대상·첫 홉).
   `optional`은 이번 턴 식별자·선행 task 결과가 있으면 대상별, 없으면 hostname 없이 1회다
   (첫 홉 삽입 없음 · 직전 턴 대상은 사용자가 지시어로 가리킬 때만). `reference`는 앞 결과 행의
@@ -67,18 +72,26 @@ from src.domain.result_refs import TABLE_LABELS_KEY, extract_result_refs, ref_la
 from src.orchestration import apm_jobs as jobs
 from src.orchestration.db_access import access_denied_result
 from src.orchestration.entity_link import (
+    AMBIGUOUS,
     LINKED,
+    NOT_QUERIED,
     UNLINKED,
     LinkEntry,
     ledger_line,
     ledger_summary,
+    link_business_names,
     link_hostnames,
 )
 from src.orchestration.investigation_audit import BACKEND_APM, audited_investigation
 from src.orchestration.subagents import SubAgentSpec
-from src.routing.db_authz import SOURCE_ACCESS_DENIED_MESSAGE, is_source_allowed
+from src.routing.db_authz import (
+    SOURCE_ACCESS_DENIED_MESSAGE,
+    authorized_db_ids,
+    is_source_allowed,
+)
 from src.routing.registry import ViewArgSpec, ViewSpec, get_registry
 from src.utils.json_extract import extract_json_from_response
+from src.utils.prior_dependency import NOTE_BRIDGE
 from src.utils.prior_targets import TargetRef, resolve_targets
 from src.utils.query_gen_common import refers_to_demonstrative_server
 
@@ -501,6 +514,83 @@ def _targeted(view: ViewSpec, args: dict[str, Any] | None) -> bool:
     return True
 
 
+# ── 대상 텍스트 (plans/130 M-1·M-2 — 인스턴스 이름·업무명) ──────────────────────────
+
+#: 분해 `targets`의 종류 — 종류는 분해 LLM이 고르고 해석은 코드가 한다(D-004). `auto`는 인스턴스
+#: 이름 먼저, 0건이면 업무명이다(종류 판단이 흔들려도 받친다 — R-5).
+TARGET_KINDS = ("instance", "business", "auto")
+#: 대상 텍스트 길이 상한(자) — 게이트웨이 검색어 상한과 같다.
+TARGET_TEXT_MAX = 200
+#: 인스턴스 id 인자를 받는 게이트웨이 도구 — 나머지 도구는 인스턴스 이름 + 소스로만 좁힌다
+#: (테스트가 게이트웨이 입력 스키마와 대조한다).
+INSTANCE_ID_TOOLS = frozenset({
+    "apm_app_health", "apm_runtime_health", "apm_resource_pool", "apm_slow_transactions",
+    "apm_active_services", "apm_status_stats", "apm_metrics",
+})
+#: 해석 근거 → 고지 문구(`{apm}` = APM 시스템 이름 · `{owner}` = 업무명 간선 소유 시스템 이름).
+_EVIDENCE_TEXT = {
+    "instance_name": "{apm} 인스턴스 이름",
+    "business_map": "업무 수동 매핑",
+    "domain": "{apm} 도메인 이름",
+    "business": "{apm} 업무 정의",
+    "instance_text": "{apm} 인스턴스 이름·설명",
+    "name": "{owner} 등록명",
+    "description": "{owner} 비고",
+}
+
+
+def sanitize_targets(raw: Any) -> list[dict[str, str]]:
+    """분해 `targets` → `[{text, kind}]` — 형태만 정제한다(해석은 처리기 · plans/130 M-1).
+
+    dict 항목만 받는다. 텍스트는 앞뒤 공백을 지우고, 비었거나 `TARGET_TEXT_MAX`자를 넘으면
+    버린다. 모르는 종류는 `auto`다. 같은 텍스트(대소문자 무시)는 처음 것만 남긴다. 다시 걸러도
+    결과가 같다(분해 정제 · 처리기 진입 두 곳에서 부른다 — 재계획 task도 처리기에서 걸러진다).
+    """
+    items = raw if isinstance(raw, (list, tuple)) else []
+    kept: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        raw_text, raw_kind = item.get("text"), item.get("kind")
+        text = raw_text.strip() if isinstance(raw_text, str) else ""
+        if not text or len(text) > TARGET_TEXT_MAX or text.casefold() in seen:
+            continue
+        kind = raw_kind.strip().lower() if isinstance(raw_kind, str) else ""
+        seen.add(text.casefold())
+        kept.append({"text": text, "kind": kind if kind in TARGET_KINDS else "auto"})
+    return kept
+
+
+def _uses_target(view: ViewSpec, args: dict[str, Any] | None) -> bool:
+    """대상으로 좁히는 보기인가 — 대상 필수 보기 · 첫 홉 목록 · 대상별로 부르는 `optional`."""
+    if view.target == "optional":
+        return _targeted(view, args)
+    return view.target == "" and bool(view.required_input or view.first_hop)
+
+
+def _target_texts(task: dict[str, Any], isolated: dict[str, Any], ledger: list[LinkEntry],
+                  legacy_hosts: list[str], max_targets: int) -> list[dict[str, str]]:
+    """이번 task의 대상 텍스트(plans/130 M-2 ①).
+
+    분해 `targets` ∪ 파서 서버명 대상 중 등록명 간선(E2)이 잇지 못한 것(`unlinked`·`not_queried`·
+    `ambiguous` → `auto` — 여러 hostname이라 잇지 않은 이름도 첫 홉으로 보내지 않는다 ·
+    D-290 ⑥)이다. 파서 hostname 대상과 E2가 이은 대상은 종전 경로(hostname 호출)이고, 그것과
+    같은 텍스트는 다시 해석하지 않는다(두 번 조회하지 않는다).
+    """
+    parsed = isolated.get("parsed_requirements") or {}
+    names = [t.server_name for t in resolve_targets(
+        filter_conditions=parsed.get("filter_conditions"), db_id=None,
+        max_targets=max_targets).targets if t.server_name and not t.hostname]
+    left = {e.key.casefold() for e in ledger
+            if e.facet == "server_name" and e.status in (UNLINKED, NOT_QUERIED, AMBIGUOUS)}
+    legacy = ({h.casefold() for h in legacy_hosts}
+              | {e.key.casefold() for e in ledger if e.status == LINKED})
+    unlinked = [{"text": n, "kind": "auto"} for n in names if n.casefold() in left]
+    texts = sanitize_targets([*sanitize_targets(task.get("targets")), *unlinked])
+    return [t for t in texts if t["text"].casefold() not in legacy]
+
+
 # ── 실행 ──────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -518,6 +608,8 @@ class _Call:
     ledger: str | None = None
     #: 앞 결과 행 참조로 부른 호출의 참조 경과(종류 · 출처 · 번호 — plans/134 M-6 · 감사 입력)
     reference: dict[str, Any] | None = None
+    #: 대상 텍스트를 해석한 인스턴스로 부른 호출의 대상(이름 · 소스 · 도메인 · id — plans/130 M-2)
+    instance: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -1233,6 +1325,13 @@ async def run_apm_query(
                              for v in views if windows[v].mode == "out"]
         meta["hostnames"] = hostnames
         return _blocked_refusal(label, blocked, meta, disc.dedupe(notices))
+    # 대상 텍스트(plans/130 M-2) — 대상으로 좁히는 보기가 있을 때만 해석한다. 없으면 종전과 같다.
+    live = [v for v in views if v not in blocked and windows[v].mode != "out"]
+    texts = (_target_texts(task, isolated, ledger, [*hostnames, *scoped_hosts], max_targets)
+             if any(_uses_target(by_id[v], view_args.get(v)) for v in live) else [])
+    resolved: list[_TargetText] = []
+    instances: list[dict[str, Any]] = []
+    answers: list[_Call] = []
     thread_id = isolated.get("thread_id")
     concurrency = _int_setting(app_config, "fanout_concurrency", 3)
     timeout = getattr(getattr(app_config, "dbhub", None), "source_call_timeout", 10.0)
@@ -1247,9 +1346,20 @@ async def run_apm_query(
     try:
         async with open_source_session(url, token, call_timeout=call_timeout, label=label,
                                        session_factory=_SESSION_FACTORY) as session:
+            if texts:
+                domain = (view_args.get(INSTANCES_VIEW) or {}).get("domain_id")
+                resolved = await _resolve_target_texts(
+                    session, texts, by_id.get(INSTANCES_VIEW), domain, scope, concurrency,
+                    isolated, app_config, ledger, meta)
+                instances = _merged_instances(
+                    resolved, {h.casefold() for h in [*hostnames, *scoped_hosts]})
+                notices += _target_notices(resolved, source)
+                meta["targets"] = _targets_meta(resolved)
             needs_host = [v for v in views if by_id[v].required_input
                           and windows[v].mode != "out" and v not in blocked]
-            if needs_host and not hostnames:
+            # 대상 텍스트가 있었으면(해석 0건 포함) 첫 홉으로 가지 않는다(D-290 ⑥ — 말한 대상과
+            # 무관한 인스턴스를 조회하지 않는다)
+            if needs_host and not hostnames and not texts:
                 hostnames, step = await _insert_instances_step(
                     session, max_targets, scope, by_id.get(INSTANCES_VIEW))
                 meta["inserted_steps"].append(step)
@@ -1282,6 +1392,12 @@ async def run_apm_query(
                     # 소스 범위 kind(예 색상 경계)는 대상과 무관하게 1회(`targeted_choices`).
                     opt_hosts: list[str | None] = (
                         list(scoped_hosts) if _targeted(view, args) else [])
+                    if texts and _targeted(view, args):
+                        # 대상 텍스트 — 대상별 + 해석 인스턴스별(대상 없이 1회로 넓히지 않는다)
+                        calls += [_Call(view, h, _call_args(view, h, plan, scope, args))
+                                  for h in opt_hosts]
+                        calls += _instance_calls(view, plan, scope, args, instances)
+                        continue
                     calls += [_Call(view, h, _call_args(view, h, plan, scope, args))
                               for h in opt_hosts or [None]]
                     continue
@@ -1291,10 +1407,16 @@ async def run_apm_query(
                 if view.required_input or (view.first_hop and hostnames):
                     calls += [_Call(view, h, _call_args(view, h, plan, scope, args))
                               for h in hostnames]
-                else:
+                elif not (texts and view.first_hop):
                     calls.append(_Call(view, None, _call_args(view, None, plan, scope, args)))
+                if texts and view.required_input:  # 해석 인스턴스마다 1호출(상한 없음 · D-296 ④)
+                    calls += _instance_calls(view, plan, scope, args, instances)
+                elif texts and view.first_hop and instances:  # 목록 질문 — 해석 행이 답이다
+                    answers.append(_answer_call(
+                        view, instances, [r.text for r in resolved if r.instances]))
             await _run_calls(session, calls, concurrency, scope)
             await _settle_jobs(session, calls, scope)
+            calls += answers  # 게이트웨이에 다시 묻지 않는다(해석 검색이 이미 부른 행)
     except SourceMcpError as e:
         meta["source_status"] = _status(label, "unavailable", 0, str(e))
         return _refusal(f"{label}에 연결하지 못해 조회하지 않았습니다({e}). 다른 소스의 값으로 대신"
@@ -1304,6 +1426,13 @@ async def run_apm_query(
     meta["hostnames"] = list(dict.fromkeys(
         [*hostnames, *(c.hostname for c in calls if c.hostname)]))
     rows = _collect(calls, meta)
+    unresolved = [r for r in resolved if not r.instances]
+    # 대상 텍스트 해석 0건은 조회하지 못한 대상으로 센다(부분 결과 · 감사 degraded)
+    meta["failures"] += [{"view": None, "hostname": None, "target": r.text,
+                          "reason": f"대상 '{r.text}' 해석 0건"} for r in unresolved]
+    for limit in (x for r in resolved for x in r.limits):
+        if limit not in meta["limits"]:
+            meta["limits"].append(limit)
     disclosures = disc.dedupe(
         [*notices, *_job_disclosures(calls, meta, str(task.get("task_id") or ""))])
     accepted = [c for c in calls if c.accepted]
@@ -1321,6 +1450,12 @@ async def run_apm_query(
                         "apm_calls_failed", meta, disclosures)
     if not calls and blocked:
         return _blocked_refusal(label, blocked, meta, disclosures)
+    if not calls and unresolved and len(unresolved) == len(resolved):
+        # 말한 대상을 하나도 풀지 못했다 — 「찾지 못함」과 후보가 답이다(D-290 ⑥ · 대신 조회 없음)
+        meta["source_status"] = _status(label, "not_queried", 0, "대상 텍스트 해석 0건")
+        text = "\n".join(d["text"] for d in disclosures if d["kind"] in (
+            disc.APM_UNRESOLVED_CONDITION, disc.APM_PARTIAL_SOURCES))
+        return _refusal(text, "apm_target_unresolved", meta, disclosures)
     if not calls:
         reason = "; ".join(f["reason"] for f in meta["failures"][:3]) or "조회 대상이 없습니다"
         meta["source_status"] = _status(label, "not_queried", 0, reason)
@@ -1400,6 +1535,321 @@ async def _insert_instances_step(
     return hosts, step
 
 
+# ── 대상 텍스트 해석 (plans/130 M-2·M-4·M-6 · LLM 0 · 상한 없음 — D-296 ④) ─────────────
+
+@dataclass
+class _Found:
+    """근거 1종의 조회 결과 — (인스턴스 행, 근거 문구) · 유사 이름 · 실패 사유 · 한계 문구."""
+
+    searched: str
+    rows: list[tuple[dict[str, Any], list[str]]] = field(default_factory=list)
+    suggestions: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    limits: list[str] = field(default_factory=list)
+    #: 조회가 답을 받았다(0건 포함) — 모두 실패면 「찾지 못함」이 아니라 「확인하지 못함」이다
+    answered: bool = False
+
+
+@dataclass
+class _TargetText:
+    """대상 텍스트 1건의 해석 결과 — 인스턴스는 (소스, 도메인, 인스턴스 id)로 한 번만 담는다."""
+
+    text: str
+    kind: str
+    instances: dict[tuple[Any, Any, Any], dict[str, Any]] = field(default_factory=dict)
+    #: 인스턴스 키 → 근거 문구(합집합 · 처음 나온 순서 — G-3 ①)
+    evidence: dict[tuple[Any, Any, Any], list[str]] = field(default_factory=dict)
+    suggestions: list[str] = field(default_factory=list)
+    searched: list[str] = field(default_factory=list)
+    failures: list[str] = field(default_factory=list)
+    limits: list[str] = field(default_factory=list)
+    answered: bool = False
+
+    def take(self, found: _Found) -> None:
+        """근거 하나를 합친다 — 소스·인스턴스 id·이름이 없는 행은 대상으로 부를 수 없어 버린다."""
+        for row, labels in found.rows:
+            if not row.get("source_id") or row.get("instance_id") is None \
+                    or not row.get("instance_name"):
+                continue
+            key = (row.get("source_id"), row.get("domain_id"), row.get("instance_id"))
+            if key not in self.instances:
+                self.instances[key] = dict(row)
+                self.evidence[key] = []
+            elif row.get("hostname") and not self.instances[key].get("hostname"):
+                self.instances[key]["hostname"] = row["hostname"]
+            self.evidence[key] += [x for x in labels if x not in self.evidence[key]]
+        if found.answered:  # 실패한 검색은 「검색:」에 넣지 않는다(실패 고지로 따로 싣는다)
+            self.searched.append(found.searched)
+        self.failures += found.errors
+        self.limits += [x for x in found.limits if x not in self.limits]
+        self.answered = self.answered or found.answered
+        self.suggestions = self.suggestions or found.suggestions
+
+
+def _short_label(system: str) -> str:
+    """시스템 표시 이름의 짧은 표기(괄호 설명 앞) — 고지 문구용."""
+    label = get_registry().system_label(system)
+    return label.split("(")[0].strip() or label
+
+
+def _authorized_db_ids(isolated: dict[str, Any], app_config: Any) -> list[str]:
+    """업무명 간선(E6)이 조회할 수 있는 DB — 활성 DB ∩ 이번 턴 사용자 DB 권한(D-232).
+
+    관리자는 권한 목록과 무관하게 활성 DB 전체다(`authorized_db_ids` 규약).
+    """
+    getter = getattr(getattr(app_config, "multi_db", None), "get_active_db_ids", None)
+    active = list(getter() or []) if callable(getter) else []
+    return authorized_db_ids(active, isolated.get("allowed_db_ids"), isolated.get("user_role"))
+
+
+async def _lookup(session: Any, calls: list[_Call], concurrency: int, scope: _JobScope) -> None:
+    """해석용 목록 조회 — 작업으로 승격되면 마감까지 기다리고 못 끝나면 취소한다(첫 홉과 같은
+    규칙 · 사용자가 맡긴 조회가 아니라 장부에 올리지 않는다). 예외는 호출 사유로 남긴다."""
+    try:
+        await _run_calls(session, calls, concurrency, scope)
+        live = [c for c in calls if c.error is None and jobs.is_live(c.envelope)]
+        if live:
+            await asyncio.gather(*(_await_first_hop(session, c, scope) for c in live))
+    except Exception as e:  # noqa: BLE001 — 근거 하나의 실패가 다른 근거를 막지 않는다
+        logger.warning("%s 대상 해석 조회 실패: %s", APM_QUERY_AGENT, type(e).__name__)
+        for call in calls:  # 답이 없거나 아직 작업 핸들뿐인 호출은 실패다(행 0건으로 읽지 않는다)
+            if call.error is None and (call.envelope is None or jobs.is_live(call.envelope)):
+                call.error = f"{type(e).__name__}: {str(e)[:120]}"
+
+
+def _search_args(scope: _JobScope, domain_id: Any, **target: Any) -> dict[str, Any]:
+    args: dict[str, Any] = {**target,
+                            "thread_id": str(scope.thread_id) if scope.thread_id else None,
+                            "owner": scope.owner}
+    if domain_id is not None:
+        args["domain_id"] = domain_id
+    return args
+
+
+async def _gateway_search(session: Any, arg: str, text: str, view: ViewSpec, domain_id: Any,
+                          scope: _JobScope, apm: str) -> _Found:
+    """게이트웨이 검색 1회 — `query`(인스턴스 이름·설명) 또는 `business`(업무명)."""
+    found = _Found(f"{apm} 인스턴스 이름·설명" if arg == "query" else f"{apm} 업무명")
+    call = _Call(view, None, _search_args(scope, domain_id, **{arg: text}))
+    await _lookup(session, [call], 1, scope)
+    if call.error:
+        found.errors.append(f"{found.searched} 검색 실패 — {call.error[:160]}")
+        return found
+    env = call.envelope or {}
+    found.answered = True
+    for row in env.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        kinds = (row.get("match_kinds") or [row.get("match_kind")]) if arg == "business" \
+            else ["instance_name"]
+        labels = [_EVIDENCE_TEXT[str(k)].format(apm=apm, owner="") for k in kinds
+                  if str(k) in _EVIDENCE_TEXT]
+        found.rows.append((row, labels or [found.searched]))
+    found.suggestions = list(dict.fromkeys(
+        str(s["instance_name"]) for s in env.get("suggestions") or []
+        if isinstance(s, dict) and s.get("instance_name")))[:MAX_SELECTION_CANDIDATES]
+    found.limits = [x for x in env.get("limits") or [] if isinstance(x, str)]
+    return found
+
+
+async def _business_hosts(session: Any, text: str, view: ViewSpec, domain_id: Any,
+                          scope: _JobScope, concurrency: int, isolated: dict[str, Any],
+                          app_config: Any, ledger: list[LinkEntry],
+                          meta: dict[str, Any]) -> _Found:
+    """업무명 간선 E6(등록명·비고 → hostname · 간선 소유자 어댑터) → 게이트웨이 정합 E1r
+    (hostname → 인스턴스). 그 서버에 인스턴스가 없으면(`instance_unresolved`) 0건이다."""
+    found = _Found("업무명 → 서버")
+    try:
+        hits, entries, steps = await link_business_names(
+            [text], app_config=app_config,
+            authorized_db_ids=_authorized_db_ids(isolated, app_config))
+    except Exception as e:  # noqa: BLE001 — 간선 실패여도 게이트웨이 근거로 계속한다
+        logger.warning("%s 업무명 간선(E6) 실패: %s", APM_QUERY_AGENT, type(e).__name__)
+        found.errors.append(f"업무명 → 서버 조회 실패({type(e).__name__})")
+        return found
+    ledger.extend(entries)
+    meta["inserted_steps"] += steps
+    owner_code = next((str(s["owner"]) for s in steps if s.get("owner")), "")
+    owner = _short_label(owner_code) if owner_code else ""
+    found.searched = f"{owner} 등록명·비고" if owner else found.searched
+    found.answered = any(e.status in (LINKED, UNLINKED) for e in entries)
+    errors = [str(x) for s in steps for x in s.get("errors") or []]
+    if errors:
+        found.errors.append(f"{found.searched} 조회 {'일부 ' if found.answered else ''}실패"
+                            f" — {'; '.join(errors)[:160]}")
+    hosts: dict[str, list[str]] = {}
+    for hit in hits.get(text) or []:
+        labels = hosts.setdefault(str(hit.get("hostname")), [])
+        label = _EVIDENCE_TEXT.get(str(hit.get("field")), "{owner} 등록명").format(
+            apm="", owner=owner)
+        if label not in labels:
+            labels.append(label)
+    calls = [_Call(view, h, _search_args(scope, domain_id, hostname=h)) for h in hosts]
+    if calls:
+        await _lookup(session, calls, concurrency, scope)
+    for call in calls:
+        if call.error:
+            if "instance_unresolved" not in call.error:
+                found.errors.append(f"{call.hostname} 인스턴스 정합 실패 — {call.error[:120]}")
+            continue
+        for row in (call.envelope or {}).get("rows") or []:
+            if isinstance(row, dict):  # 정합 행에는 hostname 칸이 없다 — 그 서버의 인스턴스다
+                found.rows.append(({**row, "hostname": row.get("hostname") or call.hostname},
+                                   hosts[str(call.hostname)]))
+    return found
+
+
+async def _resolve_target_texts(
+    session: Any, texts: list[dict[str, str]], view: ViewSpec | None, domain_id: Any,
+    scope: _JobScope, concurrency: int, isolated: dict[str, Any], app_config: Any,
+    ledger: list[LinkEntry], meta: dict[str, Any],
+) -> list[_TargetText]:
+    """대상 텍스트 → APM 인스턴스(plans/130 M-2 ②).
+
+    - `instance`·`auto` → 게이트웨이 인스턴스 이름 검색(`query`).
+    - `business`, 또는 `auto`인데 인스턴스 0건 → 게이트웨이 업무명(`business`) ∥ 업무명 간선
+      (E6 → E1r). 근거마다 따로 시도하고(한 근거 실패가 다른 근거를 막지 않는다) 합집합에 근거를
+      붙인다(G-3 ①). 합치는 순서는 게이트웨이 → 간선으로 고정한다(결정적).
+    - 인스턴스 목록 보기의 검증된 `domain_id`가 있으면 검색에 싣는다(AND).
+    """
+    apm = _short_label(APM_SYSTEM)
+    out: list[_TargetText] = []
+    for item in texts:
+        res = _TargetText(item["text"], item["kind"])
+        out.append(res)
+        if view is None:
+            res.failures.append("인스턴스 목록 보기가 레지스트리에 없다")
+            continue
+        if res.kind in ("instance", "auto"):
+            res.take(await _gateway_search(session, "query", res.text, view, domain_id, scope,
+                                           apm))
+        if res.kind == "business" or (res.kind == "auto" and not res.instances):
+            by_gateway, by_edge = await asyncio.gather(
+                _gateway_search(session, "business", res.text, view, domain_id, scope, apm),
+                _business_hosts(session, res.text, view, domain_id, scope, concurrency,
+                                isolated, app_config, ledger, meta))
+            res.take(by_gateway)
+            res.take(by_edge)
+    return out
+
+
+def _merged_instances(resolved: list[_TargetText], covered: set[str]) -> list[dict[str, Any]]:
+    """해석 인스턴스 합집합 — (소스, 도메인, 인스턴스 id)로 한 번 · 대상 텍스트·근거를 칸으로 단다.
+
+    종전 경로가 부르는 서버(hostname)에 있는 인스턴스는 그 호출이 덮으므로 뺀다(두 번 조회 없음).
+    """
+    merged: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
+    texts: dict[tuple[Any, Any, Any], list[str]] = {}
+    for res in resolved:
+        for key, row in res.instances.items():
+            host = str(row.get("hostname") or "").casefold()
+            if host and host in covered:
+                continue
+            if key not in merged:
+                merged[key] = {**row, "match_evidence": []}
+                texts[key] = []
+            if res.text not in texts[key]:
+                texts[key].append(res.text)
+            merged[key]["match_evidence"] += [x for x in res.evidence[key]
+                                              if x not in merged[key]["match_evidence"]]
+    return [{**row, "target_text": ", ".join(texts[key]),
+             "match_evidence": " · ".join(row["match_evidence"])} for key, row in merged.items()]
+
+
+def _instance_calls(view: ViewSpec, plan: WindowPlan, scope: _JobScope,
+                    args: dict[str, Any] | None, instances: list[dict[str, Any]]) -> list[_Call]:
+    """해석 인스턴스마다 1호출 — 인스턴스 이름 + 소스(+ 인스턴스 id를 받는 도구면 id).
+
+    id를 받지 않는 도구는 같은 소스의 같은 이름을 한 번만 부른다(중복 호출 없음).
+    """
+    by_id = view.tool in INSTANCE_ID_TOOLS
+    seen: set[tuple[Any, ...]] = set()
+    out: list[_Call] = []
+    for inst in instances:
+        key: tuple[Any, ...] = ((inst["source_id"], inst.get("domain_id"), inst["instance_id"])
+                                if by_id else
+                                (inst["source_id"], str(inst["instance_name"]).casefold()))
+        if key in seen:
+            continue
+        seen.add(key)
+        call_args = _call_args(view, None, plan, scope, args)
+        call_args.update({"instance_name": inst["instance_name"],
+                          "source_ids": [inst["source_id"]]})
+        if by_id:
+            call_args["instance_id"] = inst["instance_id"]
+        out.append(_Call(view, None, call_args, instance={
+            k: inst.get(k) for k in ("instance_name", "source_id", "domain_id", "instance_id")}))
+    return out
+
+
+def _answer_call(view: ViewSpec, instances: list[dict[str, Any]], texts: list[str]) -> _Call:
+    """인스턴스 목록 보기 + 대상 텍스트 — 해석한 인스턴스 행이 답이다(목록 전체를 부르지 않는다).
+
+    게이트웨이에 다시 묻지 않는 합성 호출이다 — 출처의 인자는 대상 텍스트(`targets`)다.
+    """
+    envelope = {"rows": instances, "row_count": len(instances), "tool": view.tool, "limits": []}
+    return _Call(view, None, {"targets": texts}, envelope=envelope)
+
+
+def _target_ref(row: dict[str, Any]) -> dict[str, Any]:
+    """해석 인스턴스 → 대상 계약(`TargetRef` · plans/130 M-5 — 서버가 없어도 유효)."""
+    return TargetRef(
+        hostname=str(row.get("hostname") or "").strip() or None,
+        apm_instance_name=str(row["instance_name"]),
+        apm_instance_id=str(row["instance_id"]),
+        apm_domain_id=None if row.get("domain_id") is None else str(row["domain_id"]),
+        apm_source_id=str(row["source_id"]),
+    ).model_dump()
+
+
+def _targets_meta(resolved: list[_TargetText]) -> dict[str, Any]:
+    """대상 텍스트 해석 경과(감사·계획 요약) — 텍스트별 근거 수 · 후보 · 실패와 인스턴스 계약."""
+    texts: list[dict[str, Any]] = []
+    instances: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
+    for res in resolved:
+        counts: dict[str, int] = {}
+        for labels in res.evidence.values():
+            for label in labels:
+                counts[label] = counts.get(label, 0) + 1
+        texts.append({"text": res.text, "kind": res.kind, "searched": list(res.searched),
+                      "instances": len(res.instances), "evidence": counts,
+                      "suggestions": list(res.suggestions), "failures": list(res.failures)})
+        for key, row in res.instances.items():
+            instances.setdefault(key, _target_ref(row))
+    return {"texts": texts, "instances": list(instances.values())}
+
+
+def _target_notices(resolved: list[_TargetText], source: str) -> list[disc.Disclosure]:
+    """대상 텍스트 고지(plans/130 M-6 · 123 `disclosures[]`).
+
+    - 해석: 「'텍스트' → APM 인스턴스 N개(근거: …)」 — 값 기반 키 연결 보고(`bridge` · 등급 중립).
+    - 찾지 못함: 검색한 근거 + 유사 이름 후보(≤3 · 자동 채택 안 함) — `apm_unresolved_condition`.
+    - 근거 조회 실패(다른 근거로 계속): `apm_partial_sources`.
+    """
+    apm = _short_label(APM_SYSTEM)
+    out: list[disc.Disclosure] = []
+    for res in resolved:
+        if res.instances:
+            counts = _targets_meta([res])["texts"][0]["evidence"]
+            basis = " · ".join(f"{label} {n}" for label, n in counts.items())
+            out.append(disc.make(NOTE_BRIDGE, f"'{res.text}' → {apm} 인스턴스"
+                                 f" {len(res.instances)}개" + (f"(근거: {basis})" if basis else ""),
+                                 source=source))
+        else:
+            how = " · ".join(res.searched)
+            head = (f"'{res.text}'에 해당하는 {apm} 인스턴스를 찾지 못해 조회하지 않았습니다"
+                    + (f"(검색: {how})" if how else "") if res.answered else
+                    f"'{res.text}'에 해당하는 {apm} 인스턴스를 확인하지 못해 조회하지 않았습니다"
+                    "(검색 실패)")
+            tail = (f" 비슷한 이름: {' · '.join(res.suggestions)} — 자동으로 고르지 않았습니다."
+                    if res.suggestions else "")
+            out.append(disc.make(disc.APM_UNRESOLVED_CONDITION,
+                                 f"{head}. 다른 인스턴스로 대신 조회하지 않았습니다.{tail}",
+                                 source=source))
+        out += [disc.make(disc.APM_PARTIAL_SOURCES, f"'{res.text}' 대상 해석: {failure}",
+                          source=source) for failure in res.failures]
+    return out
+
 
 # ── 장기 작업 (plans/134 W0-B · SPEC-apm-question-coverage §3.8) ───────────────
 
@@ -1413,6 +1863,8 @@ def _scope_text(call: _Call) -> str:
     parts = [_view_label(call.view)]
     if call.hostname:
         parts.append(call.hostname)
+    elif call.instance:  # 해석 인스턴스로 부른 호출(plans/130 M-2)
+        parts.append(str(call.instance.get("instance_name")))
     minutes = call.args.get("lookback_minutes")
     if minutes:
         reference = call.args.get("reference_time")
@@ -1751,8 +2203,11 @@ def _collect(calls: list[_Call], meta: dict[str, Any]) -> list[dict[str, Any]]:
     traces: dict[str, list[tuple[_Call, dict[str, Any], list[dict[str, Any]]]]] = {}
     for call in calls:
         if call.error:
-            meta["failures"].append({"view": call.view.id, "hostname": call.hostname,
-                                     "reason": call.error})
+            failure: dict[str, Any] = {"view": call.view.id, "hostname": call.hostname,
+                                       "reason": call.error}
+            if call.instance:
+                failure["instance"] = call.instance
+            meta["failures"].append(failure)
             continue
         if call.accepted:  # 접수 — 데이터가 아니다(`_job_disclosures`가 따로 싣는다)
             continue
@@ -1767,12 +2222,17 @@ def _collect(calls: list[_Call], meta: dict[str, Any]) -> list[dict[str, Any]]:
         }
         # 고정 인자 + 검증된 조건(감사 `commands` — W1 검증 L-6). 없으면 종전 모양 그대로다.
         names = {*call.view.fixed_args, *(a.tool_arg or a.name for a in call.view.args),
-                 *((call.reference or {}).get("fields") or [])}
+                 *((call.reference or {}).get("fields") or []),
+                 # 대상 텍스트(plans/130): 해석 인스턴스 인자 · 해석 행 답(`_answer_call`)의 텍스트
+                 *(("instance_name", "instance_id", "source_ids") if call.instance else ()),
+                 "targets"}
         used = {k: v for k, v in call.args.items() if k in names and v is not None}
         if used:
             entry["args"] = used
         if call.reference:  # 앞 결과 행 참조(plans/134 M-6) — 어느 결과의 몇 번째 행인가
             entry["reference"] = call.reference
+        if call.instance:
+            entry["instance"] = call.instance
         meta["provenance"].append(entry)
         for limit in env.get("limits") or []:
             if isinstance(limit, str) and limit not in limits:
@@ -2005,8 +2465,10 @@ def _summary(label: str, views: list[str], by_id: dict[str, ViewSpec], meta: dic
     )
     queried = sorted({p["queried_at"] for p in meta["provenance"] if p.get("queried_at")})
     hosts = len(meta["hostnames"])
-    parts = [f"{label} 조회 — {view_text}: 대상 {hosts}대 · {row_count}행"
-             + (f"(기준 시각 {queried[-1]})." if queried else ".")]
+    targets = meta.get("targets")
+    parts = [f"{label} 조회 — {view_text}: 대상 {hosts}대"
+             + (f" · 해석 인스턴스 {len(targets['instances'])}개" if targets else "")
+             + f" · {row_count}행" + (f"(기준 시각 {queried[-1]})." if queried else ".")]
     for step in meta["inserted_steps"]:
         if step.get("edge"):
             if step.get("error") or step.get("errors"):
@@ -2023,9 +2485,10 @@ def _summary(label: str, views: list[str], by_id: dict[str, ViewSpec], meta: dic
             parts.append(f"인스턴스 목록 조회 실패: {step['error']}")
     parts += meta["notes"][:3]
     parts += meta.get("limits", [])[:3]
-    failed = [f for f in meta["failures"] if f.get("hostname")]
+    failed = [f for f in meta["failures"] if f.get("hostname") or f.get("instance")]
     if failed:
-        shown = ", ".join(f"{f['hostname']}({f['reason'][:60]})" for f in failed[:3])
+        shown = ", ".join(f"{f['hostname'] or f['instance'].get('instance_name')}"
+                          f"({f['reason'][:60]})" for f in failed[:3])
         parts.append(f"조회하지 못한 대상 {len(failed)}건: {shown}")
     lines = _answer_lines(meta)
     if lines:  # 결정적 판정·집계(plans/134 M-1) — 요약 입력에도 싣는다
@@ -2069,5 +2532,6 @@ __all__ = [
     "apm_active",
     "plan_window",
     "run_apm_query",
+    "sanitize_targets",
     "sanitize_views",
 ]

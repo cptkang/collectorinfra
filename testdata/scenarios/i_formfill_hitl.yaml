@@ -241,6 +241,11 @@ scenarios:
           #   run 20260923-103638 산출물의 「처리능력 (TPMC)」 열에 메모리 GB 가 1,688행 채워졌다(오매핑).
           #   TPMC 는 공란이 정답이다(H-10 과 같은 양식 · 같은 머리글 규칙 `상위/하위`).
           file: {header_rows: [5, 6], empty_columns: ["처리능력/(TPMC)"]}
+          # plans/122 T-9 — H-10 과 같은 양식(CPU_양식 · 월 6칸)·같은 「2026년 6월 기준」 → 1~6월을 덮는가 · 월 통계 ·
+          #   리터럴만(§10.3 ④). 다음 턴의 「구조 채움 필드」 거절은 이 월 칼럼이 SQL 로 채워졌다는 전제다.
+          sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
+          period_covers: {from: "2026-01-01", to: "2026-07-01"}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
       - send:
           form_fill_answers: {"월중평균사용률(최근 6개월간)": {"action": "literal", "value": "99"}}
         endpoint: stream

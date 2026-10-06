@@ -15,7 +15,8 @@
   `mask_pii`로 가린다(G-11 미결 동안 — `mask_text`는 `-Dport=8080` 같은 설정을 훼손한다 ·
   서버 IP는 가리지 않는다).
 - 범위: 도메인(`hostname` → 정합 도메인 · 없으면 고른 소스의 전 도메인) · 인스턴스
-  (`hostname` 필수) · 소스(대상 무관). 단위마다 1호출 · 일부 실패 = `[한계]` + `partial` ·
+  (`hostname` 필수) · 소스(대상 무관). `hostname` 자리에 인스턴스 이름 정확 일치
+  (`instance_name` · plans/130 N-3)도 받는다. 단위마다 1호출 · 일부 실패 = `[한계]` + `partial` ·
   전부 실패 = 오류(0건으로 세지 않는다) · 자체 상한 없음(D-296 ④).
 - v2 경로의 404·405는 「이 제니퍼 버전이 경로를 지원하지 않을 수 있다」(COV E-28)로 적고
   실패로 센다. 예외는 어댑터가 정한다 — 인스턴스 개별 설정 404 = 「개별 설정 없음」(E-19) ·
@@ -48,7 +49,14 @@ from apm_gateway.application.masking import (
 )
 from apm_gateway.application.resolver import Resolution
 from apm_gateway.application.sources import STATUS_OK, STATUS_UNAVAILABLE
-from apm_gateway.application.tools import IDENTIFIER_FIELDS, ApmTools, _Limits, _positive_int
+from apm_gateway.application.tools import (
+    IDENTIFIER_FIELDS,
+    ApmTools,
+    _given,
+    _Limits,
+    _positive_int,
+    _target_text,
+)
 from apm_gateway.domain.call_context import expect_calls
 from apm_gateway.domain.errors import (
     API_ERROR,
@@ -73,12 +81,12 @@ KINDS = (
 RULE_TYPES = ("error", "metric", "compare")
 # kind별로 쓰는 인자(`source_ids`는 모두 쓴다) — 그 밖 인자는 빼고 조회하고 `[한계]`로 알린다
 _KIND_ARGS: dict[str, frozenset[str]] = {
-    "event_rules": frozenset({"hostname", "rule_type", "target", "error_type"}),
+    "event_rules": frozenset({"hostname", "instance_name", "rule_type", "target", "error_type"}),
     "color_boundary": frozenset(),
     "process_instance": frozenset({"process_id", "hostname"}),
     "data_server": frozenset(),
-    "db_path": frozenset({"hostname"}),
-    "loaded_classes": frozenset({"hostname", "search"}),
+    "db_path": frozenset({"hostname", "instance_name"}),
+    "loaded_classes": frozenset({"hostname", "instance_name", "search"}),
     "rdb_export": frozenset(),
 }
 # 색상 경계 3개 → 4구간(작은 순 · v2 매뉴얼 — 파랑/연두 · 연두/주황 · 주황/빨강)
@@ -282,12 +290,16 @@ class ManageTools:
         return done, failed
 
     async def _domains(
-        self, hostname: str | None, source_ids: list[str] | None, limits: _Limits
+        self,
+        hostname: str | None,
+        source_ids: list[str] | None,
+        limits: _Limits,
+        instance_name: str | None = None,
     ) -> _Scope:
-        """도메인 범위 — `hostname`이 있으면 정합된 (소스, 도메인) · 없으면 고른 소스의 전
-        도메인."""
-        if hostname is not None and str(hostname).strip():
-            res = await self.core._resolve(hostname, None, source_ids)
+        """도메인 범위 — `hostname`(·`instance_name` 정확 일치 · plans/130 N-3)이 있으면 정합된
+        (소스, 도메인) · 없으면 고른 소스의 전 도메인."""
+        if _given(hostname) or _given(instance_name):
+            res = await self.core._resolve(hostname, None, source_ids, instance_name)
             units: dict[tuple[str, int], str] = {}
             names: dict[tuple[str, int, int], str] = {}
             for inst in res.instances:
@@ -343,8 +355,10 @@ class ManageTools:
         error_type: str | None = None,
         process_id: int | None = None,
         search: str | None = None,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
-        """제니퍼 설정·관리 조회(`kind` 7종 — 모듈 설명)."""
+        """제니퍼 설정·관리 조회(`kind` 7종 — 모듈 설명). `instance_name`(정확 일치)은 hostname처럼
+        정합 범위를 정하는 kind(event_rules·db_path·loaded_classes)에서만 쓴다."""
         tool = "apm_config"
         name = str(kind or "").strip().lower()
         if name not in KINDS:
@@ -352,6 +366,7 @@ class ManageTools:
         limits = _Limits()
         given = {
             "hostname": hostname is not None and bool(str(hostname).strip()),
+            "instance_name": _given(instance_name),
             "rule_type": rule_type is not None and bool(str(rule_type).strip()),
             "target": target is not None and bool(str(target).strip()),
             "error_type": error_type is not None and bool(str(error_type).strip()),
@@ -367,9 +382,11 @@ class ManageTools:
             limits.append(
                 f"[한계] kind {name}는 인자 {'·'.join(ignored)}를 쓰지 않는다 — 빼고 조회했다"
             )
+        if "instance_name" in ignored:
+            instance_name = None
         if name == "event_rules":
             return await self._event_rules(tool, hostname, source_ids, rule_type, target,
-                                           error_type, limits)
+                                           error_type, limits, instance_name)
         if name == "color_boundary":
             return await self._color_boundary(tool, source_ids, limits)
         if name == "process_instance":
@@ -377,9 +394,11 @@ class ManageTools:
         if name == "data_server":
             return await self._data_server(tool, source_ids, limits)
         if name == "db_path":
-            return await self._db_path(tool, hostname, source_ids, limits)
+            return await self._db_path(tool, hostname, source_ids, limits, instance_name)
         if name == "loaded_classes":
-            return await self._loaded_classes(tool, hostname, source_ids, search, limits)
+            return await self._loaded_classes(
+                tool, hostname, source_ids, search, limits, instance_name
+            )
         return await self._rdb_export(tool, source_ids, limits)
 
     async def _event_rules(
@@ -391,6 +410,7 @@ class ManageTools:
         target: str | None,
         error_type: str | None,
         limits: _Limits,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
         rtype = str(rule_type).strip().lower() if rule_type is not None else ""
         if rtype and rtype not in RULE_TYPES:
@@ -425,7 +445,7 @@ class ManageTools:
             limits.append("[한계] ERROR 룰은 대상 종류가 없어 target과 무관하게 실었다")
         if not rtype and tgt and tgt not in RULE_TARGETS["compare"]:
             limits.append(f"[한계] compare 룰에는 {tgt} 대상이 없어 비교 룰은 조회하지 않았다")
-        scope = await self._domains(hostname, source_ids, limits)
+        scope = await self._domains(hostname, source_ids, limits, instance_name)
         res = scope.resolution
         # 호출 단위 (소스, 도메인, 도메인 이름, 룰 종류, 대상, 인스턴스)
         calls: list[tuple[str, int, str, str, str | None, dict[str, Any] | None]] = []
@@ -700,8 +720,9 @@ class ManageTools:
         hostname: str | None,
         source_ids: list[str] | None,
         limits: _Limits,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
-        scope = await self._domains(hostname, source_ids, limits)
+        scope = await self._domains(hostname, source_ids, limits, instance_name)
         expect_calls(len(scope.units))
         done, _ = await self._run(
             scope.units,
@@ -740,11 +761,14 @@ class ManageTools:
         source_ids: list[str] | None,
         search: str | None,
         limits: _Limits,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
-        if hostname is None or not str(hostname).strip():
-            raise ApmError(INVALID_ARGUMENT, "kind loaded_classes에는 hostname이 필요하다")
+        if not (_given(hostname) or _given(instance_name)):
+            raise ApmError(
+                INVALID_ARGUMENT, "kind loaded_classes에는 hostname 또는 instance_name이 필요하다"
+            )
         text = _text(search, "search")
-        res = await self.core._resolve(hostname, None, source_ids)
+        res = await self.core._resolve(hostname, None, source_ids, instance_name)
         expect_calls(len(res.instances))
         try:
             done, failed = await self._run(
@@ -818,6 +842,7 @@ class ManageTools:
         source_ids: list[str] | None = None,
         scope: str | None = None,
         key: str | None = None,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
         """환경변수(SYSTEM)·JVM 시스템 속성(JAVA) — 인스턴스별 긴 형식 행."""
         tool = "apm_environment"
@@ -828,7 +853,7 @@ class ManageTools:
             )
         needle = _text(key, "key")
         limits = _Limits()
-        dom = await self._domains(hostname, source_ids, limits)
+        dom = await self._domains(hostname, source_ids, limits, instance_name)
         wanted = set(dom.names) if dom.resolution is not None else None
         expect_calls(len(dom.units))
         done, _ = await self._run(
@@ -999,6 +1024,7 @@ class ManageTools:
         thread_hash: int | None = None,
         source_id: str | None = None,
         hostname: str | None = None,
+        instance_name: str | None = None,
     ) -> dict[str, Any]:
         """실행 중 요청 상세 — `apm_active_services` 행의 `active_ref`를 그대로 받는다."""
         tool = "apm_active_detail"
@@ -1026,12 +1052,13 @@ class ManageTools:
             source_id = self.core.sources.ids[0]
         sid = self.core.sources.select([str(source_id).strip()])[0].source_id
         res = None
-        if hostname is not None and str(hostname).strip():
-            res = await self.core._resolve(hostname, None, [sid])
+        if _given(hostname) or _given(instance_name):
+            res = await self.core._resolve(hostname, None, [sid], instance_name)
             if (sid, did) not in res.source_domains:
                 raise ApmError(
                     PROFILE_REF_MISMATCH,
-                    f"active_ref의 domain_id {did}는 hostname {hostname!r}의 정합 도메인"
+                    f"active_ref의 domain_id {did}는 {_target_text(hostname, instance_name)}의"
+                    " 정합 도메인"
                     f" {sorted(d for _, d in res.source_domains)}이 아니다"
                     + (f"(소스 {sid})" if len(self.core.sources) > 1 else ""),
                 )

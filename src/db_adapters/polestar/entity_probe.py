@@ -58,6 +58,61 @@ def build_hostname_lookup_sql(
     )
 
 
+#: 업무명 조회(간선 E6) 행 상한 — 시스템 기본 LIMIT 과 같은 값(D-296 ④ 대상 상한 제거 취지).
+#: 상한에 닿으면 호출부가 「잘림」을 사유로 남긴다.
+BUSINESS_LOOKUP_ROW_LIMIT = 1000
+#: 업무명 검색어 최소 길이 — 1자 부분 일치(`%a%`)는 등록 서버 대부분에 걸려 결과가 의미를 잃는다.
+BUSINESS_TERM_MIN_LEN = 2
+
+
+def _like_contains(term: str) -> str:
+    """부분 일치 LIKE 패턴 리터럴 — `!`·`%`·`_` 이스케이프 · 따옴표는 `sql_literal`."""
+    escaped = term.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+    return sql_literal(f"%{escaped}%")
+
+
+def build_business_lookup_sql(
+    terms: list[str], *, db_engine: str | None, db_schema: str | None
+) -> str:
+    """업무명(사용자 텍스트) → 서버 행 고정 조회(plans/130 M-3 간선 E6 · LLM 0 · 읽기 전용).
+
+    폴스타에는 업무 칼럼이 따로 없고 업무 표기가 등록명(`name` — 예 「<호스트명> (<설명>)」)이나
+    비고(`description`)에 들어 있다. 그래서 두 칼럼을 대소문자 무시 **부분 일치**로 대조한다
+    (`description`은 은행존·공동존·샌드박스 프로필 모두에 있다 — W0 실측). 어느 검색어에 걸렸는지는
+    호출부가 파이썬에서 다시 판정한다(SQL은 단순하게 둔다).
+
+    검색어의 `!`·`%`·`_`는 이스케이프하고(`ESCAPE '!'` — 역슬래시와 달리 PostgreSQL
+    `standard_conforming_strings` 설정에 기대지 않는다 · DB2 공통) 리터럴은
+    `sql_literal`을 거친다. 빈·공백 검색어와 2자 미만 검색어는 버린다 — 1자 부분 일치는 거의 모든
+    서버에 걸려 「업무로 좁힌다」는 목적이 사라진다. 남는 검색어가 없으면 0행 SELECT(`1 = 0`)다.
+    행 상한은 `BUSINESS_LOOKUP_ROW_LIMIT`(DB2 `FETCH FIRST` · 그 외 `LIMIT`).
+
+    Args:
+        terms: 업무명 검색어 목록
+        db_engine: 레지스트리 engine 값("db2"면 `FETCH FIRST`, 그 외 `LIMIT`)
+        db_schema: 스키마 한정자(DB2는 대문자 스키마 — D-057). 비면 무한정
+
+    Returns:
+        `server_name`·`hostname`·`description` 세 열을 돌려주는 SELECT
+    """
+    table = f"{db_schema}.{_RESOURCE_TABLE}" if db_schema else _RESOURCE_TABLE
+    lowered = list(dict.fromkeys(
+        t for t in (str(n).strip().lower() for n in terms) if len(t) >= BUSINESS_TERM_MIN_LEN
+    ))
+    matches = [
+        f"LOWER(r.{col}) LIKE {_like_contains(t)} ESCAPE '!'"
+        for t in lowered for col in ("name", "description")
+    ]
+    return (
+        "SELECT r.name AS server_name, r.hostname AS hostname, r.description AS description\n"
+        f"  FROM {table} r\n"
+        f" WHERE r.resource_type = '{_SERVER_TYPE}'\n"
+        "   AND r.dtime IS NULL\n"
+        f"   AND ({' OR '.join(matches) or '1 = 0'})\n"
+        f" {row_limit_clause(db_engine, BUSINESS_LOOKUP_ROW_LIMIT)}"
+    )
+
+
 def build_entity_probe_sql(
     value: str, *, db_engine: str | None, db_schema: str | None
 ) -> str:

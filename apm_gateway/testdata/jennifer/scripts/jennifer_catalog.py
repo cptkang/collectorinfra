@@ -61,6 +61,8 @@ ALLOWED: dict[str, Endpoint] = {
         Endpoint(
             "/api-v2/deploy/{domainId}", ("startTime", "endTime"), path_vars=(("domainId", "int"),)
         ),
+        # 업무 정의 목록(plans/130 W2 N-5 · COV-BUSINESS)
+        Endpoint("/api/business", ("domain_id",)),
         # plans/134 W7 — 관리·민감 조회 GET(정본 allowlist.py와 같은 순서·선언)
         Endpoint("/api/auth/userlist", needs_domain=False),
         Endpoint("/restapi/users", needs_domain=False),

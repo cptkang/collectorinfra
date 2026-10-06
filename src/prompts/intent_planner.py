@@ -435,6 +435,7 @@ WAS 인스턴스·응답시간·TPS·에러율·JVM 힙·GC·커넥션 풀·실�
 - **WAS 이벤트(fatal·warning 등)는 폴스타 서버 알람이 아닙니다** → `apm_query` + `"views": ["apm.events"]`. 서버 모니터링 알람은 종전대로 `alarm_query`입니다.
 - 서버 CPU·메모리·디스크 사용률(호스트)은 `data_query`이고, JVM 힙·프로세스 CPU(WAS)는 `apm_query`입니다. 둘 다 원하면 task를 나눕니다.
 - 대상 서버가 필요한 보기에 서버가 정해지지 않았으면 실행기가 인스턴스 목록(`apm.instances`)을 먼저 조회합니다 — 그 task를 따로 만들지 마세요.
+- 사용자가 WAS **인스턴스 이름**(일부만 말해도 됨)이나 **업무명**을 말했으면 `targets`에 `{{"text": "<말한 그대로>", "kind": "<종류>"}}`로 넣습니다. 종류는 인스턴스 이름이면 `instance`, 업무명이면 `business`, 어느 쪽인지 모르겠으면 `auto`입니다. hostname·IP는 `targets`에 넣지 마세요. 말하지 않았으면 `targets`는 비웁니다(해석은 실행기가 합니다).
 - WAS 인스턴스 목록·인스턴스 리스트를 묻는 질의는 `"views": ["apm.instances"]`입니다.
 - 앞 task 결과의 서버들을 대상으로 하면 `depends_on`·`input_from`으로 잇습니다.
 - 보기에 「조건(view_args)」이 있으면 사용자가 **말한 조건만** `view_args`에 넣습니다: 보기 id → 조건 이름 → 값. 말하지 않은 조건은 넣지 마세요. 개수(「상위 5개」)는 `n`, 「전체·모두·전부」를 명시한 목록이면 `full: true`입니다. 표에 없는 조건 이름·값은 버려지고 해석하지 못했다고 안내됩니다.
@@ -446,6 +447,8 @@ WAS 인스턴스·응답시간·TPS·에러율·JVM 힙·GC·커넥션 풀·실�
        "view_args": {{"apm.events": {{"level": "fatal", "level_mode": "exact"}}}}, "depends_on": [], "input_from": [], "order": 1}}
 - 예: {{"task_id": "t1", "agent": "apm_query", "sub_query": "앞 결과 두 번째 트랜잭션 프로파일", "views": ["apm.profile"],
        "view_args": {{"apm.profile": {{"ref": 2}}}}, "depends_on": [], "input_from": [], "order": 1}}
+- 예: {{"task_id": "t1", "agent": "apm_query", "sub_query": "abc-was 응답시간 조회", "views": ["apm.app_health"],
+       "targets": [{{"text": "abc-was", "kind": "instance"}}], "depends_on": [], "input_from": [], "order": 1}}
 
 """  # noqa: E501
 
@@ -454,17 +457,18 @@ WAS 인스턴스·응답시간·TPS·에러율·JVM 힙·GC·커넥션 풀·실�
 # (`views` 0/15 · 조건 0/7 · 골격에 넣은 실험 14/15 · 7/7). 132 N-5(`areas`)와 같이 골격 task
 # 줄 끝에 두 키를 더하고 주의 목록의 영역 규칙 뒤에 한 줄을 더한다 — 활성 렌더에서만이다(비활성
 # 바이트 불변). 영역 칸 렌더(`render_intent_planner_areas_template` — 항상 켜짐)가 먼저 골격 줄을
-# 만든 뒤에 적용한다.
+# 만든 뒤에 적용한다. plans/130 M-1 — 대상 텍스트 칸 `targets`도 같은 골격 줄에 더한다(활성만).
 APM_SKELETON_TAIL = '"areas": ["server_status"], "requested_source": ""}}'
 APM_SKELETON_TAIL_WITH_KEYS = (
     '"areas": ["server_status"], "requested_source": "",\n'
-    '         "views": [], "view_args": {{}}}}'
+    '         "views": [], "view_args": {{}}, "targets": []}}'
 )
 APM_OUTPUT_RULE = (
     "- `apm_query` task에는 `views`(보기 id 목록)와 `view_args`(사용자가 말한 조건 — 없으면"
     " `{{}}`) 두 키를 **반드시** 적습니다. 기간·시간(「최근 3시간」·「오늘」)은 `view_args`가"
     " 아닙니다 — 기간은 `sub_query`에 그대로 두고, 조건 이름은 보기 표의 「조건(view_args)」에 있는"
-    " 것만 씁니다.\n"
+    " 것만 씁니다. `targets`는 사용자가 인스턴스 이름·업무명을 말했을 때만 채웁니다(없으면"
+    " `[]`).\n"
 )
 
 

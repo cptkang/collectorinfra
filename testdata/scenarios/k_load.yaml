@@ -149,6 +149,12 @@ scenarios:
           #      평가기가 금지 등급으로 불합격시킨다 - 구조화된 타임아웃이 hang 으로 읽힌다(하네스 보고 사항).
           #   ③ 오류 문구는 행의 `error` 에만 실리고 `response`(토큰)에는 없다 - 응답 문구 단언으로 볼 수 없다.
           #   run 20260923-103638(API_QUERY_TIMEOUT=240)은 219초에 완료해 타임아웃이 유도되지 않았다(설정 의존).
+          # plans/122 T-9 — 「최근 24개월」 = 직전 완결 24개월과 같아야 한다 · 리터럴만(§10.3 ④). 입도 단언
+          #   (`sql_must_match`)은 붙이지 않는다 — 타임아웃 응답은 실행 SQL 이 감사에 남지 않을 수 있고, 그때
+          #   `sql_must_match` 는 보류가 아니라 불합격이다(타임아웃이 이 시나리오의 정상 응답 중 하나다).
+          #   기간·함수식 단언은 SQL 을 못 보면 보류다.
+          period_covers: {relative: last_n_months, n: 24, exact: true}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           manual_review: "전체 타임아웃 가드가 작동했는지 · 에러가 구조화돼 나왔는지"
   - id: K-09
     plans: [67, 84]
@@ -170,6 +176,12 @@ scenarios:
           #   수동에 가려져 있었다 → 이관 뒤 불합격이 정상이다.
           #   원 수동 문구: "max_rows 절단 사실이 응답에 명시됐는지"
           response_must_contain: ["이후 행이 절단되었을 수 있습니다"]
+          # plans/122 T-9 — 「시간 단위 + 최근 30일」 = 완결 30일(오늘 제외 · §10.3.1) · **시간 통계**(입도는 「시간
+          #   단위」가 정한다). §10.1 K-09 실측 오답(월 통계 '202608' 한 달 — 입도·기간 둘 다)은 입도 단언과
+          #   정확 창이 함께 잡는다. 시 단위 리터럴('2026082400' 꼴)도 날짜 단위로 읽는다 · 리터럴만(§10.3 ④).
+          sql_must_match: ["(?i)\\bcmm_metric_stat_h\\b"]
+          period_covers: {relative: last_n_days, n: 30, exact: true}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
   - id: K-10
     plans: [67, 84]
     title: "재시도 예산 소진(고의 오매핑 유사어 등록 후 조회)"

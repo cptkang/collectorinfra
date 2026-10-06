@@ -1,8 +1,8 @@
 """`report.md` · `--compare` (plans/135 §3.7 · W5·W6).
 
 입력은 이미 위생을 거친 레코드(`trace.jsonl` 행)·`run.json`·카탈로그뿐이다 — 값이 새로 생기지
-않는다. 숫자는 결정적으로 계산하고 문장은 고정 문구다(LLM 0). MLX 지연은 참고값이다 — 성능 결론은
-내지 않는다(D-240).
+않는다. 숫자는 결정적으로 계산하고 문장은 고정 문구다(LLM 0). 지연은 참고값이다 — 두 평면이
+mlx 면 성능 결론을 내지 않는다(D-240) · 그 밖의 평면은 평면 이름을 밝힌다(plans/138 W6-b).
 """
 
 from __future__ import annotations
@@ -168,6 +168,25 @@ def _row_counts(record: Mapping[str, Any]) -> str:
     return f"SQL {'/'.join(counts) or '—'} · 결과 {total if total is not None else '—'}"
 
 
+def _latency_note(run: Mapping[str, Any]) -> str:
+    """§9 지연 꼬리 문구 — run 메타의 두 평면을 보고 고른다(plans/138 W6-b).
+
+    두 평면이 모두 mlx 일 때만 「로컬 MLX 값」이라 쓴다. 하나만 mlx 면 그 사실을 적고, 아니면
+    평면 이름을 밝힌 중립 문구다.
+    """
+    planes = run.get("planes") or {}
+    worker = str(planes.get("worker") or "").strip().lower()
+    orchestrator = str(planes.get("orchestrator") or "").strip().lower()
+    if worker == orchestrator == "mlx":
+        return "로컬 MLX 값이라 성능 결론을 내지 않는다(D-240)."
+    if "mlx" in (worker, orchestrator):
+        return (
+            f"평면 워커 `{worker or '—'}` / 오케스트레이터 `{orchestrator or '—'}` — 로컬 MLX 가 "
+            "섞인 값이라 성능 결론을 내지 않는다(D-240)."
+        )
+    return f"평면 워커 `{worker or '—'}` / 오케스트레이터 `{orchestrator or '—'}`에서 잰 값(참고)."
+
+
 def render_report(
     run: Mapping[str, Any], catalog: Mapping[str, Any], records: Sequence[Mapping[str, Any]]
 ) -> str:
@@ -198,6 +217,14 @@ def render_report(
             "> 누출 관문 시험 성립 — 사람 정보 카나리아가 "
             f"결과 원문에 {run['canary_in_results']}건 "
             "나타났고 산출물 기록 전 관문을 통과했다(`leak_check.json`).",
+            "",
+        ]
+    elif run.get("policy_scope") == "closed":
+        # closed 정책은 카나리아를 두지 않는다 — 시험 성립 여부를 따질 대상이 없다
+        # (관문 판정은 그대로)
+        lines += [
+            "> 누출 관문 카나리아 시험 — **해당 없음**(closed 정책은 카나리아를 두지 않는다 · "
+            "관문 판정은 그대로 했다 — `leak_check.json`).",
             "",
         ]
     elif run:
@@ -342,7 +369,7 @@ def render_report(
         lines += [
             f"- 중앙값 {statistics.median(s['latency']) / 1000:.1f}s · "
             f"최대 {max(s['latency']) / 1000:.1f}s "
-            "— 로컬 MLX 값이라 성능 결론을 내지 않는다(D-240)."
+            f"— {_latency_note(run)}"
         ]
     else:
         lines += ["- (없음)"]

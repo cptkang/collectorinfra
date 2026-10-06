@@ -53,6 +53,17 @@ class JenniferApi:
         body = await self.client.get_json("/api/instance", {"domain_id": domain_id})
         return [jf.parse_instance(r, domain_id, domain_name) for r in jf.result_list(body)]
 
+    async def businesses(self, domain_id: int) -> list[dict[str, Any]]:
+        """도메인의 업무 정의 목록(id·이름·설명 — plans/130 N-2 B2). 정의에 인스턴스 목록은 없다 —
+        처리 인스턴스는 거래·액티브 서비스의 업무 id로 역추적한다. 모양 위반은 `apm_api_error`다
+        (0건으로 강등하지 않는다 — GUID 조회 선례)."""
+        body = await self.client.get_json("/api/business", {"domain_id": domain_id})
+        if not (isinstance(body, dict) and isinstance(body.get("result"), list)):
+            raise ApmError(
+                API_ERROR, "업무 목록 응답 모양이 예상과 다르다({result: [...]} 봉투가 아님)"
+            )
+        return [jf.parse_business(r) for r in jf.result_list(body)]
+
     async def realtime(
         self, domain_id: int, instance_ids: list[int] | None = None
     ) -> list[dict[str, Any]]:

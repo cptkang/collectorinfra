@@ -271,7 +271,9 @@ OPENMETRICS_NOTE: str = (
 
 APM_FOCUS_NOTE_TEMPLATE: str = (
     "APM(제니퍼 게이트웨이) 조사 순서 — 대상 호스트에 WAS 인스턴스가 있을 때(apm_* 도구):\n"
-    "① apm_instance_map(hostname)으로 대상 인스턴스를 확정한다(match_confidence 확인).\n"
+    "① apm_instance_map(hostname)으로 대상 인스턴스를 확정한다(match_confidence 확인). "
+    "이후 apm_* 도구는 hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — "
+    "부분 이름은 apm_instance_map(query=…)로 먼저 찾는다.\n"
     "② apm_events로 사건 구간의 선행 이벤트를 본다.\n"
     "③ apm_app_health · apm_runtime_health로 골든 시그널(응답시간·TPS·오류율)과 런타임(힙·GC·CPU·스레드)을 본다.\n"
     "④ 증상별로 한 갈래를 판다 — 큐잉이면 apm_active_services, 지연이면 apm_slow_transactions → "

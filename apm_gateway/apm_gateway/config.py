@@ -263,11 +263,19 @@ def _positive(value: str | None, default: float, key: str) -> float:
 
 
 def _warn_unknown_policy_sources(instance_map: dict[str, Any], configured: set[str]) -> None:
-    """정합 파일이 설정에 없는 소스를 가리키면 경고한다(그 항목은 쓰이지 않는다 — 침묵 금지)."""
+    """정합 파일이 설정에 없는 소스를 가리키면 경고한다(그 항목은 쓰이지 않는다 — 침묵 금지).
+    업무 수동 매핑 `business_map`(plans/130 N-2)의 `source_id`도 본다(형식 검사는 도구 코어)."""
     named = {
         str(ov["source_id"]) for ov in instance_map.get("overrides") or [] if ov.get("source_id")
     }
     named |= {str(k) for k in (instance_map.get("per_source") or {})}
+    business_map = instance_map.get("business_map")
+    if isinstance(business_map, list):
+        named |= {
+            str(bm["source_id"])
+            for bm in business_map
+            if isinstance(bm, dict) and bm.get("source_id")
+        }
     unknown = sorted(named - configured)
     if unknown:
         logger.warning("정합 파일이 설정에 없는 소스를 가리킨다(쓰이지 않음): %s", unknown)

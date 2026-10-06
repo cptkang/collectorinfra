@@ -45,8 +45,9 @@ MODULE_ROOTS = ("src", "noise_gate", "scripts", "tests")
 PACKAGES = ("apm_gateway", "mcp_server", "sre_agent")
 ROOT_CONFTESTS = frozenset({"conftest.py", "tests/conftest.py", "noise_gate/tests/conftest.py"})
 # 권고 조건 1 — 독립 패키지의 pyproject·conftest는 ④가 패키지 전체를 돌리므로 넣지 않는다
-TEST_INFRA_FILES = frozenset({"pyproject.toml", "uv.lock", "pytest.ini", "setup.cfg", "tox.ini"})
-TEST_INFRA_FILES = TEST_INFRA_FILES | ROOT_CONFTESTS
+TEST_INFRA_FILES = ROOT_CONFTESTS | {
+    "pyproject.toml", "uv.lock", "pytest.ini", "setup.cfg", "tox.ini",
+}
 DOTTED = re.compile(r"^(src|noise_gate|scripts|tests)(\.[A-Za-z_]\w*)+$")
 
 MAX_WORKERS = 8
@@ -61,6 +62,13 @@ HUB_THRESHOLD = 0.85
 DIRECT_THRESHOLD = 0.4
 GROUP_TIMEOUT = 1200
 FULL_TIMEOUT = 2400
+GIT_TIMEOUT = 300  # git 호출 하나(사본 체크아웃 포함)의 상한 — hang 방지
+PROBE_TIMEOUT = 30  # 도구 버전 확인 · 사본 패키지 해소 경로 확인의 상한
+# 레인별 정적 테스트 1건당 직렬 초(워커 분배 가중치) — 실측 plans/136 §1: 본체 직렬 전체
+# 644~751초 ÷ 정적 10,602건 ≈ 0.07 · apm_gateway 직렬 113.6초 ÷ 정적 563건 ≈ 0.20
+BODY_SEC_PER_TEST = 0.07
+APM_SEC_PER_TEST = 0.20
+INTERRUPT_CODE = 130
 
 ORIGINAL = "원래 실패"
 CAUSED = "이번 변경 탓"
@@ -84,10 +92,14 @@ class AttributionError(Exception):
 
 def _git(root: Path, *args: str, check: bool = True) -> str:
     """git 명령을 돌려 표준 출력을 돌려준다."""
-    proc = subprocess.run(
-        ["git", "-c", "core.quotepath=off", "-C", str(root), *args],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "-c", "core.quotepath=off", "-C", str(root), *args],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=GIT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise UsageError(f"git {' '.join(args)} 시간 초과({GIT_TIMEOUT}초)") from exc
     if check and proc.returncode != 0:
         raise UsageError(f"git {' '.join(args)} 실패: {proc.stderr.strip()}")
     return proc.stdout
@@ -95,10 +107,14 @@ def _git(root: Path, *args: str, check: bool = True) -> str:
 
 def _show(root: Path, ref: str, path: str) -> str | None:
     """커밋의 파일 내용(없으면 None)."""
-    proc = subprocess.run(
-        ["git", "-C", str(root), "show", f"{ref}:{path}"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "show", f"{ref}:{path}"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=GIT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise UsageError(f"git show {ref}:{path} 시간 초과({GIT_TIMEOUT}초)") from exc
     return proc.stdout if proc.returncode == 0 else None
 
 
@@ -845,14 +861,21 @@ def _find_tool(name: str) -> list[str] | None:
         return [found]
     uvx = shutil.which("uvx") or str(Path.home() / ".local" / "bin" / "uvx")
     if Path(uvx).is_file():
-        probe = subprocess.run([uvx, "--offline", name, "--version"], capture_output=True)
-        if probe.returncode == 0:
+        if _probe_ok([uvx, "--offline", name, "--version"]):
             return [uvx, "--offline", name]
     if name == "mypy":
         for cand in sorted((Path.home() / ".cache" / "uv" / "archive-v0").glob("*/bin/mypy")):
-            if subprocess.run([str(cand), "--version"], capture_output=True).returncode == 0:
+            if _probe_ok([str(cand), "--version"]):
                 return [str(cand)]
     return None
+
+
+def _probe_ok(cmd: list[str]) -> bool:
+    """도구 버전 확인 — 시간 초과면 「도구 없음」으로 본다."""
+    try:
+        return subprocess.run(cmd, capture_output=True, timeout=PROBE_TIMEOUT).returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
 
 
 def diff_lines(root: Path, base: str, files: list[str]) -> dict[str, set[int] | None]:
@@ -917,14 +940,27 @@ def env_files(root: Path) -> list[str]:
     return sorted(p for p in listed.split("\0") if p and (root / p).is_file())
 
 
+def link_env_files(root: Path, wt: Path) -> None:
+    """`.env` 계열을 사본에 심링크로 건다(복사하지 않는다 · 사본에 폴더가 있을 때만)."""
+    for rel in env_files(root):
+        dst = wt / rel
+        if dst.parent.is_dir() and not dst.exists():
+            dst.symlink_to(root / rel)
+
+
 def _collected(cmd_py: str, cwd: Path, env: dict[str, str], files: list[str],
-               log: Path) -> set[str]:
-    proc = subprocess.run(
-        [cmd_py, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider",
-         "--continue-on-collection-errors", *files],
-        cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=GROUP_TIMEOUT,
-    )
+               log: Path) -> set[str] | None:
+    """사본에서 수집되는 노드 ID(수집이 시간 초과면 None)."""
+    try:
+        proc = subprocess.run(
+            [cmd_py, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider",
+             "--continue-on-collection-errors", *files],
+            cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=GROUP_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        log.write_text(f"수집 TIMEOUT({GROUP_TIMEOUT}초)\n", encoding="utf-8")
+        return None
     log.write_text(proc.stdout + proc.stderr, encoding="utf-8")
     return {line.strip() for line in proc.stdout.splitlines() if "::" in line}
 
@@ -949,12 +985,10 @@ def attribute(root: Path, base: str, failed: dict[str, list[str]], groups: Group
         try:
             _git(root, "worktree", "add", "--detach", str(wt), base)
         except UsageError as exc:
-            raise AttributionError(f"기준 사본을 만들지 못했다 — {exc}") from exc
+            left = f" · 남은 디렉터리 {wt} (확인 후 직접 정리)" if wt.exists() else ""
+            raise AttributionError(f"기준 사본을 만들지 못했다 — {exc}{left}") from exc
         added = True
-        for rel in env_files(root):
-            dst = wt / rel
-            if dst.parent.is_dir() and not dst.exists():
-                dst.symlink_to(root / rel)
+        link_env_files(root, wt)
         for group, ids in failed.items():
             meta = groups[group]
             cwd = wt / meta["subdir"] if meta["subdir"] else wt
@@ -965,10 +999,16 @@ def attribute(root: Path, base: str, failed: dict[str, list[str]], groups: Group
             for pkg in meta["imports"]:
                 if not (cwd / pkg / "__init__.py").is_file():
                     continue
-                probe = subprocess.run(
-                    [meta["python"], "-c", f"import {pkg}; print({pkg}.__file__)"],
-                    cwd=cwd, env=env, capture_output=True, text=True,
-                )
+                try:
+                    probe = subprocess.run(
+                        [meta["python"], "-c", f"import {pkg}; print({pkg}.__file__)"],
+                        cwd=cwd, env=env, capture_output=True, text=True, timeout=PROBE_TIMEOUT,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise AttributionError(
+                        f"기준 사본의 `{pkg}` 해소 확인이 {PROBE_TIMEOUT}초 안에 끝나지 않았다"
+                        " — 귀속 중단"
+                    ) from exc
                 where = Path(probe.stdout.strip() or "/").resolve()
                 if not where.is_relative_to(cwd.resolve()):
                     raise AttributionError(
@@ -979,7 +1019,12 @@ def attribute(root: Path, base: str, failed: dict[str, list[str]], groups: Group
                        for i in ids if i not in present)
             files = sorted({i.split("::", 1)[0] for i in present})
             stem = f"attrib-{group}"
+            if not files:  # 사본에 있는 실패 파일이 없다 — 인자 없는 수집은 사본 전체를 훑는다
+                continue
             collected = _collected(meta["python"], cwd, env, files, run_dir / f"{stem}-collect.log")
+            if collected is None:
+                out.extend(Verdict(group, i, UNKNOWN, "사본 수집 TIMEOUT") for i in present)
+                continue
             runnable = [i for i in present if "::" not in i or i in collected]
             out.extend(Verdict(group, i, NEW_TEST, "사본에서 수집 안 됨")
                        for i in present if i not in runnable)
@@ -1012,8 +1057,11 @@ def attribute(root: Path, base: str, failed: dict[str, list[str]], groups: Group
                     out.append(Verdict(group, nodeid, CAUSED))
     finally:
         if added:
-            subprocess.run(["git", "-C", str(root), "worktree", "remove", "--force", str(wt)],
-                           capture_output=True)
+            try:
+                subprocess.run(["git", "-C", str(root), "worktree", "remove", "--force", str(wt)],
+                               capture_output=True, timeout=GIT_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                pass  # 다음 실행 시작 때 남은 사본으로 안내된다
     return out
 
 
@@ -1108,15 +1156,19 @@ def print_recommend(out: Printer, reasons: list[str]) -> None:
 
 
 def split_workers(body: int, apm: int, total: int = MAX_WORKERS) -> tuple[int, int]:
-    """본체·apm_gateway 워커 수(0 = 직렬). 합계 total 이하, 선택 규모에 비례."""
+    """본체·apm_gateway 워커 수(0 = 직렬). 합계 total 이하, 추정 소요 시간에 비례.
+
+    워커가 2 미만이면 `-n`을 걸지 않으므로 0(직렬)으로 정규화한다.
+    """
     total = max(1, min(total, (os.cpu_count() or 2)))
     want_body, want_apm = body >= SERIAL_THRESHOLD, apm >= SERIAL_THRESHOLD
-    if want_body and want_apm and total < 4:
-        return total, 0
     if want_body and want_apm:
-        wb = min(total - 2, max(2, round(total * body / (body + apm))))
-        return wb, total - wb
-    return (total if want_body else 0), (total if want_apm else 0)
+        body_s, apm_s = body * BODY_SEC_PER_TEST, apm * APM_SEC_PER_TEST
+        wb = min(total - 1, max(1, round(total * body_s / (body_s + apm_s))))
+        wa = total - wb
+    else:
+        wb, wa = (total if want_body else 0), (total if want_apm else 0)
+    return (wb if wb >= 2 else 0), (wa if wa >= 2 else 0)
 
 
 def _pytest(py: str, args: list[str], junit: Path, workers: int, marker: str | None) -> list[str]:
@@ -1154,7 +1206,9 @@ def build_jobs(root: Path, index: Index, sel: Selection, run_dir: Path, full: bo
         lane = [Job("본체", _pytest(py, sel.body, run_dir / "body.xml", wb,
                                     "not serial" if wb and serial else None),
                     root, run_dir / "body.log", run_dir / "body.xml", timeout=timeout)]
-        mode = f"-n {wb}" if wb else f"직렬(정적 {body_n:,}건 < 임계 {SERIAL_THRESHOLD})"
+        mode = f"-n {wb}" if wb else (
+            f"직렬(정적 {body_n:,}건 < 임계 {SERIAL_THRESHOLD})" if body_n < SERIAL_THRESHOLD
+            else "직렬(워커 분배 1)")
         plan.append(f"  본체: 대상 {len(sel.body)} · 정적 {body_n:,}건 · {mode}")
         if wb and serial:
             lane.append(Job("본체(serial)", _pytest(py, sel.body, run_dir / "body_serial.xml", 0,
@@ -1250,6 +1304,36 @@ def main(argv: list[str] | None = None) -> int:
     except UsageError as exc:
         out(f"사용법 오류: {exc}")
         return 2
+    except KeyboardInterrupt:  # 실행 단계 밖(색인 · 계획)에서 끊긴 경우
+        out(_INTERRUPTED)
+        return INTERRUPT_CODE
+
+
+_INTERRUPTED = "범위: 중단됨 — 전체 미실행"
+
+
+def stale_worktrees(root: Path) -> list[Path]:
+    """`<tempdir>/regress-<pid>` 형태인데 그 pid 프로세스가 없는 남은 사본."""
+    try:
+        listed = _git(root, "worktree", "list", "--porcelain", check=False)
+    except UsageError:
+        return []
+    temp = Path(tempfile.gettempdir()).resolve()
+    out: list[Path] = []
+    for line in listed.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        path = Path(line[len("worktree "):])
+        m = re.fullmatch(r"regress-(\d+)", path.name)
+        if not m or path.parent.resolve() != temp or int(m.group(1)) == os.getpid():
+            continue
+        try:
+            os.kill(int(m.group(1)), 0)
+        except ProcessLookupError:
+            out.append(path)
+        except PermissionError:
+            pass  # 다른 사용자의 살아 있는 프로세스
+    return out
 
 
 def _main(args: argparse.Namespace, root: Path, out: Printer) -> int:
@@ -1260,6 +1344,9 @@ def _main(args: argparse.Namespace, root: Path, out: Printer) -> int:
     if subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "-q",
                        f"{base}^{{commit}}"], capture_output=True).returncode != 0:
         raise UsageError(f"기준 커밋을 찾지 못했다: {base}")
+    for left in stale_worktrees(root):  # 지우지 않는다 — 안내만(prune 금지)
+        out(f"안내: 지난 실행이 남긴 기준 사본 {left} — 확인 후 "
+            f"`git worktree remove --force {left}`로 정리하라.")
     changes = collect_changes(root, base, args.files)
     gone = [module_name(p) for c in changes for p in (c.path, c.old)
             if p and not (root / p).is_file() and module_name(p)]
@@ -1294,12 +1381,17 @@ def _main(args: argparse.Namespace, root: Path, out: Printer) -> int:
     run_dir = root / "logs" / "regress" / f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
     run_dir.mkdir(parents=True, exist_ok=True)
     lanes, groups, _ = build_jobs(root, index, sel, run_dir, args.full, changed_py)
-    previous = signal.signal(signal.SIGTERM, _raise_interrupt)
+    handled = [signal.SIGTERM, *([signal.SIGHUP] if hasattr(signal, "SIGHUP") else [])]
+    previous = {num: signal.signal(num, _raise_interrupt) for num in handled}
     try:
         return _execute(args, root, base, out, index, sel, lanes, groups, run_dir, changed_py,
                         reasons)
+    except KeyboardInterrupt:
+        out("범위: 중단됨(전체 요청) — 결과 불완전" if args.full else _INTERRUPTED)
+        return INTERRUPT_CODE
     finally:
-        signal.signal(signal.SIGTERM, previous)
+        for num, handler in previous.items():
+            signal.signal(num, handler)
         (run_dir / "summary.txt").write_text("\n".join(out.lines) + "\n", encoding="utf-8")
 
 
@@ -1322,11 +1414,14 @@ def _execute(args: argparse.Namespace, root: Path, base: str, out: Printer, inde
         group = "본체" if name.startswith("본체") else name
         cases = parse_junit(job.junit)
         results.setdefault(group, []).extend(cases)
+        bad = [c.nodeid for c in cases if c.outcome in ("failed", "error")]
         if job.timed_out:
             problems.append(f"{name} TIMEOUT({job.timeout}초) — 로그 {job.log}")
         elif job.rc not in (0, 1, 5) and not cases:
             problems.append(f"{name} pytest 오류 rc={job.rc} — 로그 {job.log}")
-        bad = [c.nodeid for c in cases if c.outcome in ("failed", "error")]
+        elif job.rc == 1 and not bad:
+            problems.append(f"{name} pytest rc=1인데 junit에서 실패·에러 케이스를 읽지 못했다"
+                            f" — 로그 {job.log}")
         if bad:
             failed.setdefault(group, []).extend(bad)
     print_table(out, index, sel, results, plan=False)

@@ -223,6 +223,8 @@ scenarios:
           row_count: {eq: 3}
           sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
           period_covers: {from: "2026-06-01", to: "2026-07-01"}
+          # plans/122 T-9 — 명시 기간은 리터럴만(§10.3 ④).
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           response_must_contain: ["DB-ORA-023", "72.1", "cocm-hdkapp01", "48.9", "SV-WEB-001", "42.8"]
           manual_review: "\"CPU\"가 `LOGICALCORE` synonym에 포함 / 코어 수(EAV)가 아닌 **사용률 metric**(`cmm_metric_stat_m`, Utilization, server.Cpus) 경로 + `stat_date='202606'` + 내림차순 + TOP-3. 기대 순서: **DB-ORA-023(72.1) > cocm-hdkapp01(48.9) > SV-WEB-001(42.8)** (4위 SV-BATCH-009 18.3은 잘려야 함). 트랙 C(semantic compiler) 활성 시 결정적 피벗 SQL"
   - id: SYN-E-02
@@ -273,6 +275,8 @@ scenarios:
           row_count: {eq: 1}
           sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
           period_covers: {from: "2026-06-01", to: "2026-07-01"}
+          # plans/122 T-9 — 명시 기간은 리터럴만(§10.3 ④).
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           response_must_contain: ["DB-ORA-023", "95.2"]
   - id: SYN-F-02
     plans: [37, 61]
@@ -292,6 +296,8 @@ scenarios:
           #   미주입/환각. 날짜 조건 누락 시 4건으로 초과"
           sql_must_match: ["(?i)\\balarmseverity\\s*=\\s*3\\b"]
           period_covers: {from: "2026-07-01", to: "2026-08-01"}
+          # plans/122 T-9 — 명시 기간은 리터럴만(§10.3 ④).
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           response_must_contain: ["2건"]
   - id: SYN-F-03
     plans: [37, 61]
@@ -326,8 +332,10 @@ scenarios:
           #   원 수동 문구: "표기 변형 \"디스크 아이오\"가 시드에 **직접 등재** — fuzzy OFF에서도 정확일치. **metric TOP-1 →
           #   EAV 속성 크로스도메인 조인** / 디스크 IO metric(`MaxIORate`, 202606) 최고 서버 = **DB-ORA-023** → 제조사
           #   `Dell`, 일련번호 `KR2023ORA0023`"
-          sql_must_match: ["(?i)\\bMaxIORate\\b"]
+          # plans/122 T-9 — 「2026년 6월」 = 월 통계(입도) · 명시 기간은 리터럴만(§10.3 ④).
+          sql_must_match: ["(?i)\\bMaxIORate\\b", "(?i)\\bcmm_metric_stat_m\\b"]
           period_covers: {from: "2026-06-01", to: "2026-07-01"}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           response_must_contain: ["DB-ORA-023", "Dell", "KR2023ORA0023"]
   - id: SYN-F-05
     plans: [37, 61]
@@ -364,6 +372,9 @@ scenarios:
           row_count: {eq: 3}
           response_must_contain: ["SV-WEB-001", "DB-ORA-023", "SV-BATCH-009", "HPE", "Dell", "IBM",
                                   "32768", "65536", "16384"]
+          # plans/122 T-9 — 「~한 적이 있는」 = 기간 조건 없음(§10.3.1 · C-07 과 같다 — 날짜 리터럴·DB 현재시각 함수가
+          #   없어야 한다).
+          period_covers: {unbounded: true}
   - id: SYN-H-02
     plans: [37, 61]
     title: "2026년 6월 CPU 사용률 평균이 40%를 넘은 서버의 서버명과 논리코어 수를 보여줘"
@@ -376,6 +387,11 @@ scenarios:
           query: "2026년 6월 CPU 사용률 평균이 40%를 넘은 서버의 서버명과 논리코어 수를 보여줘"
         expect:
           # plans/122 C-3 - 옮기지 않음(④): 문구가 잘려 기대값(「/ 」 뒤)이 없다.
+          # plans/122 T-9 — 기간·입도만 기계로 본다(아래 수동 문구의 「cmm_metric_stat_m · 202606」과 같다) ·
+          #   명시 기간은 리터럴만(§10.3 ④).
+          sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
+          period_covers: {from: "2026-06-01", to: "2026-07-01"}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           manual_review: "**metric 조건(cmm_metric_stat_m, avg_val>40, 202606) → EAV(LOGICALCORE) 역방향 결합** — E-01 함정의 양방향 버전: 같은 질의 안에서 \"CPU 사용률\"은 metric, \"논리코어\"는 EAV로 분리 매핑돼야 함. 2026-07-16 실측 회귀: LEFT JOIN한 metric 필터를 WHERE에 둬 서버명 전체 NULL(LEFT JOIN 강등) → validator 6.7 가드+프롬프트 규칙 추가(D-085). 서버명 NULL 재발 시 D-085 가드 미작동 회귀로 분류 / "
   - id: SYN-H-03
     plans: [37, 61]
@@ -403,6 +419,11 @@ scenarios:
           query: "현재 활성 상태인 심각 알람이 있는 서버들의 2026년 7월 CPU 사용률을 보여줘"
         expect:
           # plans/122 C-3 - 옮기지 않음(④): 문구가 잘려 기대 결과값이 없다(판정 기준이 경로·SQL 모양 서술뿐).
+          # plans/122 T-9 — 「2026년 7월」 지표 = 월 통계가 7월을 덮는가 · 명시 기간은 리터럴만(§10.3 ④). 「현재 활성」
+          #   알람 조회는 상태 조회라 기간이 없다(§10.3.1 「현재·지금」).
+          sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
+          period_covers: {from: "2026-07-01", to: "2026-08-01"}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           manual_review: "**알람 상태 필터(ACTIVE + 심각=3) × metric 결합**. 멀티인텐트 분해 시 t1(alarm_query, 서버 선별)→t2(data_query, 지표) + **prior_rows 스코프 주입**(D-086)이 정답 경로 — t2 SQL에 `name IN ('SV-WEB-001','SV-BATCH-009')`가 있고 알람 테이블/환각 조건이 없어야 함. 2026-07-18 실측 회귀: prior_rows 죽은 배선으로 t2가 `resource_type='alarm.Alarm'` 환각 → 0건(CPU 미조회). 재발 시"
   - id: SYN-I-01
     plans: [37, 61]
@@ -418,7 +439,10 @@ scenarios:
           # plans/122 C-3 - 부분 이관: 07 픽스처 2026-06 Cpus/Memory Utilization avg 4대 값·행 수는 옮겼고(자원 타입을
           #   섞으면 다른 값이 된다), 「CPU 사용률 높은 순」 순서는 응답 문자열로 볼 수 없어 남긴다.
           row_count: {eq: 4}
+          # plans/122 T-9 — 월 통계(입도) · 명시 기간은 리터럴만(§10.3 ④).
+          sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
           period_covers: {from: "2026-06-01", to: "2026-07-01"}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           response_must_contain: ["DB-ORA-023", "72.1", "82.6", "cocm-hdkapp01", "48.9", "64.3",
                                   "SV-WEB-001", "42.8", "58.7", "SV-BATCH-009", "18.3", "40.7"]
           manual_review: "**동일 metric 테이블(Utilization) 2회 참조 — 자식 리소스 타입(server.Cpus/server.Memory) 분리 피벗**. 202606에는 server.FileSystems Utilization도 존재하므로 resource_type 미한정이면 세 값이 합산 평균으로 뭉개짐 / 4행: DB-ORA-023(72.1/82.6) > cocm-hdkapp01(48.9/64.3) > SV-WEB-001(42.8/58.7) > SV-BATCH-009(18.3/40.7). DB-ORA-023이 75.4 등 제3의 값이면 "
@@ -439,7 +463,10 @@ scenarios:
           #   원 수동 문구: "**동일 테이블 기간 셀프조인(또는 stat_date 조건부 집계) + 산술 + TOP-1** — 두 stat_date를 한
           #   쿼리에서 결합 / SV-WEB-001, +7.6%p(35.2→42.8, 소수 반올림 허용). DB-ORA-023(+4.3)이면 메모리 사용률
           #   오매핑, 상승폭이 전부 음수면 6→7월 기간 오독"
+          # plans/122 T-9 — 월 통계(입도) · 명시 기간은 리터럴만(§10.3 ④).
+          sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
           period_covers: {from: "2026-05-01", to: "2026-07-01"}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           response_must_contain: ["SV-WEB-001", "7.6"]
   - id: SYN-I-03
     plans: [37, 61]
@@ -483,6 +510,9 @@ scenarios:
         expect:
           # plans/122 C-3 - 옮기지 않음(②): 09 픽스처 4대(LOGICALCORE 8·8·8·16 · 알람 없음)가 조건을 만족해 기대
           #   「1건: cocm-hdkapp01」이 낡았다.
+          # plans/122 T-9 — 「지금까지 한 번도 발생하지 않은」 = 기간 조건 없음(§10.3.1 「~한 적이 있는」의 부정 ·
+          #   날짜 리터럴·DB 현재시각 함수가 없어야 한다). 「지금까지」는 기간이 아니다(「현재·지금」 행).
+          period_covers: {unbounded: true}
           manual_review: "**EAV 수치 조건 + NOT EXISTS 안티조인**(알람 부재 증명, 조인 키 `cmm_alarm.resource_id` = 서버 id). 더미 알람(resource_id 1~5)은 실서버 미매핑이라 무영향 / 1건: cocm-hdkapp01(16코어). DB-ORA-023·SV-WEB-001이 나오면 EXISTS 방향 반전, svr-* 서버가 나오면 platform 장부 미한정(B4 — platform 쪽 LOGICALCORE는 `8.0` 등 텍스트로 34대 존재). hostapo01/02 판정 제외"
   - id: SYN-I-05
     plans: [37, 61]
@@ -501,6 +531,10 @@ scenarios:
           #   DB-ORA-023(72.1)·cocm-hdkapp01(48.9). SV-WEB-001 포함 3건이면 임계를 40 안팎으로 환각, 1건이면 50 이상으로 환각"
           row_count: {eq: 2}
           response_must_contain: ["DB-ORA-023", "72.1", "cocm-hdkapp01", "48.9"]
+          # plans/122 T-9 — 「2026년 6월」 = 월 통계(입도)가 6월을 덮는가 · 명시 기간은 리터럴만(§10.3 ④).
+          sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
+          period_covers: {from: "2026-06-01", to: "2026-07-01"}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
   - id: SYN-I-06
     plans: [37, 61]
     title: "현재 활성 상태인 심각 알람이 있는 서버 중 2026년 6월 CPU 사용률 평균이 가장 높았던 서버의 제조사와 일련번호를 알려"
@@ -520,6 +554,11 @@ scenarios:
           #   결과로 즉시 드러남 / SV-WEB-001(42.8) → HPE / KR2024WEB0001. DB-ORA-023/Dell이면 알람 스코프(ACTIVE 또는
           #   심각=3) 누락, SV-BATCH-009(18.3)면 정렬 방향 반전"
           response_must_contain: ["SV-WEB-001", "HPE", "KR2024WEB0001"]
+          # plans/122 T-9 — 「2026년 6월」 = 월 통계(입도)가 6월을 덮는가 · 명시 기간은 리터럴만(§10.3 ④). 「현재 활성」
+          #   알람 조회는 상태 조회라 기간이 없다(§10.3.1 「현재·지금」).
+          sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
+          period_covers: {from: "2026-06-01", to: "2026-07-01"}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
   - id: SYN-I-07
     plans: [37, 61]
     title: "제조사별 2026년 6월 CPU 사용률 평균을 높은 순으로 보여줘"
@@ -536,4 +575,8 @@ scenarios:
           #   HPE 값은 반올림 자릿수에 따라 45.9 · 45.85 둘 다 받는다.
           response_must_contain: ["Dell", "72.1", "IBM", "18.3"]
           response_must_contain_any: ["45.9", "45.85"]
+          # plans/122 T-9 — 「2026년 6월」 = 월 통계(입도)가 6월을 덮는가 · 명시 기간은 리터럴만(§10.3 ④).
+          sql_must_match: ["(?i)\\bcmm_metric_stat_m\\b"]
+          period_covers: {from: "2026-06-01", to: "2026-07-01"}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           manual_review: "**EAV 값 GROUP BY × metric 집계 2단(서버→제조사)** — H-03(대수 집계)의 metric 결합판 / 3행: Dell 72.1 > HPE 45.9(42.8·48.9의 평균) > IBM 18.3. HPE 서버 2대가 개별 행으로 나오면 GROUP BY 미작동. metric 없는 제조사(VMware, Inc./Dell Inc. 등)의 NULL 행은 LEFT JOIN 여부에 따른 차이로 허용 — 값 있는 3개 벤더의 순서·값이 판정 기준"

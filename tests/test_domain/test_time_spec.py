@@ -291,7 +291,7 @@ class TestRelativeWindow:
         with pytest.raises(TimeSpecError):
             relative_window("month_span", NOW, month_from=1)
         with pytest.raises(TimeSpecError):
-            relative_window("last_week", NOW)
+            relative_window("next_week", NOW)  # last_week 는 T-9 에서 유효한 종류가 됐다
 
     def test_same_policy_as_resolver(self) -> None:
         """하네스와 제품이 같은 해석을 쓴다(단일 출처)."""

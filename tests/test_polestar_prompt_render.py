@@ -36,8 +36,13 @@ from src.schema_cache.catalog_builder import (
 #: LLM이 문자열 비교·합계를 따라 생성했다(B-07·B-08 2/2). 예시를 `CAST(... AS NUMERIC)`으로
 #: 고치고 방언 주석(PostgreSQL NUMERIC / DB2 DECIMAL)을 더했다. 알람 템플릿은 EAV 블록을 쓰지
 #: 않아 sha 불변 — 그 사실 자체가 변경 범위가 데이터 템플릿에 한정됐다는 근거다.
-_SHA_BEFORE_DATA = "0ca62e8e345ab1614fcca7c050eba17f02f173b467a08e1d27c6878d80cf7674"
-_SHA_BEFORE_ALARM = "81590b5335688931b9b4e491024828504b2cb367c294b298c1bd3230220d367c"
+#: 2026-10-06 갱신(plans/122 T-5 · D-306 — **의도한 프롬프트 변경**): 「하드코딩 날짜 금지·
+#: CURRENT_DATE 동적 계산」·「기본 관행 직전월」·「시간 범위 필터 및 테이블 적용 방법」(데이터)과
+#: 알람 템플릿의 같은 규칙 앞뒤에 「시스템 기간 조건 블록이 없을 때만」 한정 줄을 1줄씩 넣었다
+#: (데이터 2줄 · 알람 1줄 · 규칙 본문 불변). 시스템이 계산해 주입한 기간 블록과 일반 규칙이
+#: 경쟁하던 원인(§10.2 ⑤) 제거. 두 템플릿 모두 바뀌어 sha 둘 다 갱신.
+_SHA_BEFORE_DATA = "df3c317bf98360505e780ae973b621fb8c9b7c1914c4e9d0af84c20a50891aaa"
+_SHA_BEFORE_ALARM = "0ce949e0e15e0ccab705e9c83585f41f35077cf64abb7101b2e6b466dae37706"
 
 _POLESTAR_DB_IDS = ("polestar_cm_gp", "polestar_cm_yd", "polestar_b0")
 

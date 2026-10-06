@@ -100,6 +100,8 @@ scenarios:
           #   1,690 을 "심각 알람 건수"로 답했다(run 20260923-140539). 단과 무관하게 잡는다.
           sql_must_match: ["(?i)count\\s*\\(", "(?i)\\bcmm_alarm"]
           period_covers: {from: "2026-07-01", to: "2026-08-01"}
+          # plans/122 T-9 — 명시 기간은 리터럴만(§10.3 ④).
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           row_count_per_db: {eq: 1}
   - id: D-04
     plans: [44, 45]
@@ -118,7 +120,12 @@ scenarios:
           # plans/122 A-5: 행 제한은 방언 중립으로 본다(은행존 DB2 는 FETCH FIRST) — "상위 10개" 준수라는
           #   단언의 뜻은 그대로다. 원식: "(?i)\\blimit\\s+10\\b"
           sql_must_match: ["(?i)group\\s+by", "(?i)order\\s+by[\\s\\S]*\\bdesc\\b",
-                          "(?i)\\b(?:limit\\s+10|fetch\\s+first\\s+10\\s+rows?)\\b"]
+                          "(?i)\\b(?:limit\\s+10|fetch\\s+first\\s+10\\s+rows?)\\b",
+                          "(?i)\\bcmm_alarm"]
+          # plans/122 T-9 — 「최근 3개월」 = 직전 완결 3개월(§10.3.1 · 알람도 완결 기간은 통계와 같다 · D-291)과
+          #   같아야 한다(과대 확장하면 상위 10개가 달라진다) · 알람 테이블(D-03 U-6 선례) · 리터럴만(§10.3 ④).
+          period_covers: {relative: last_n_months, n: 3, exact: true}
+          sql_must_not_match: ["(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           row_count_per_db: {max: 10}
   - id: D-05
     plans: [44, 45]
@@ -143,8 +150,12 @@ scenarios:
           #   `resource_type`·`server.Cpus` 만으로는 통과했다(거짓 합격 위험 · D-03 U-6 선례 · plans/103 T3-10).
           sql_must_match: ["(?i)resource_type", "(?i)server\\.Cpus", "(?i)\\bcmm_alarm"]
           # 정의명 축으로 되돌아가면 D-202 4차를 조용히 뒤집는 것이다.
-          sql_must_not_match: ["(?i)cmm_alarm_def\\.name", "(?i)d\\.name\\s+(?i:i?like)"]
+          sql_must_not_match: ["(?i)cmm_alarm_def\\.name", "(?i)d\\.name\\s+(?i:i?like)",
+                               "(?i)\\bcurrent[_ ](?:date|timestamp)\\b|\\bnow\\s*\\(|\\bsysdate\\b|\\binterval\\b"]
           # plans/122 H-2: "이번 달"을 턴 송신 시각 기준 창으로 본다(월 경계 ±1일 보류).
+          # plans/122 T-9 — 정확 창은 걸지 않는다: 알람 「이번 달」은 1일 ~ 기준 시각(D-291 `event_to_now`)이라
+          #   통계 창(1일~어제)과 끝이 다르고, 달 끝까지 조회해도 미래 알람이 없어 결과가 같다(§10.1 D-05
+          #   `'2026-09-01'~'2026-10-01'` 을 정답으로 셌다). 함수식 부정 단언(§10.3 ④)만 더했다.
           period_covers: {relative: this_month}
           # 절단 고지는 옮기지 않았다 — 조건부다. 고지 문구는 `src/nodes/output_generator.py`
           #   `_append_limit_truncation_note`("[안내] … 조회가 상한(LIMIT n)에 도달해 이후 행이 절단되었을 수

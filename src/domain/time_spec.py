@@ -47,7 +47,7 @@ import calendar
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 
 KST = timezone(timedelta(hours=9))
 
@@ -319,6 +319,50 @@ class TimeResolution:
         last_day = self.end - timedelta(days=1)
         head = f"{self.start:%Y-%m-%d}" if self.start is not None else ""
         return f"{head} ~ {last_day:%Y-%m-%d}".strip()
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON 직렬화 — 체크포인터·스트림 `done`·하네스가 같은 모양을 읽는다(plans/122 T-4).
+
+        시각은 ISO 8601(+09:00). `label`은 사람이 읽는 표기로 덧붙이며 `from_dict`는 읽지 않는다.
+        """
+        def iso(dt: datetime | None) -> str | None:
+            return dt.isoformat() if dt is not None else None
+
+        return {
+            "start": iso(self.start), "end": iso(self.end), "grain": self.grain,
+            "completeness": self.completeness, "source": self.source,
+            "anchor_at": iso(self.anchor_at), "span": self.span, "unbounded": self.unbounded,
+            "notes": list(self.notes), "anchor": self.anchor, "label": self.label(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> TimeResolution:
+        """`to_dict` 역변환. 모양이 어긋나면 `TimeSpecError("invalid_resolution")`."""
+        if not isinstance(data, dict):
+            raise TimeSpecError("invalid_resolution", type(data).__name__)
+
+        def dt(key: str) -> datetime | None:
+            raw = data.get(key)
+            if raw is None:
+                return None
+            try:
+                return datetime.fromisoformat(str(raw))
+            except ValueError as exc:
+                raise TimeSpecError("invalid_resolution", f"{key}={raw!r}") from exc
+
+        anchor_at = dt("anchor_at")
+        if anchor_at is None:
+            raise TimeSpecError("invalid_resolution", "anchor_at missing")
+        try:
+            return cls(
+                start=dt("start"), end=dt("end"), grain=data["grain"],
+                completeness=data["completeness"], source=data["source"], anchor_at=anchor_at,
+                span=str(data.get("span") or ""), unbounded=bool(data.get("unbounded")),
+                notes=tuple(str(n) for n in data.get("notes") or ()),
+                anchor=data.get("anchor") or "now",
+            )
+        except KeyError as exc:
+            raise TimeSpecError("invalid_resolution", f"{exc.args[0]} missing") from exc
 
 
 # ──────────────────────────────────────────────
@@ -799,6 +843,27 @@ def _ceil(dt: datetime, grain: str) -> datetime:
     return floored if floored == dt else _shift(floored, grain, 1)
 
 
+def floor_to_unit(dt: datetime, unit: str) -> datetime:
+    """단위 칸 시작으로 내린다 — 소비처(리터럴 투영·검증기)용 공개 이름(D-131 사본 금지)."""
+    if unit not in UNITS:
+        raise TimeSpecError("invalid_unit", unit)
+    return _floor(dt, unit)
+
+
+def ceil_to_unit(dt: datetime, unit: str) -> datetime:
+    """단위 칸 경계로 올린다(이미 경계면 그대로)."""
+    if unit not in UNITS:
+        raise TimeSpecError("invalid_unit", unit)
+    return _ceil(dt, unit)
+
+
+def shift_unit(dt: datetime, unit: str, k: int) -> datetime:
+    """단위 k칸 이동(월 이상은 말일 보정)."""
+    if unit not in UNITS:
+        raise TimeSpecError("invalid_unit", unit)
+    return _shift(dt, unit, k)
+
+
 def window_around(
     center: datetime, before: timedelta, after: timedelta, grain: str
 ) -> TimeResolution:
@@ -822,7 +887,9 @@ def window_around(
 
 
 RELATIVE_WINDOW_KINDS: frozenset[str] = frozenset(
-    {"last_month", "this_month", "last_n_months", "month_span"}
+    {"last_month", "this_month", "last_n_months", "month_span",
+     # plans/122 T-9 — 일·주·시 단위(카탈로그 시간 턴에 실제로 나오는 표현 + 이번 주)
+     "last_n_days", "yesterday", "last_week", "this_week", "today", "last_n_hours"}
 )
 
 
@@ -836,10 +903,36 @@ def relative_window(
 ) -> tuple[date, date]:
     """하네스용 상대 기간 `[시작일, 끝일)`(plans/122 H-2 `period_covers.relative` · O-2 자리표).
 
-    kind = last_month · this_month · last_n_months(n) · month_span(month_from, month_to).
-    내부에서 `resolve`를 부른다 — 제품과 하네스가 같은 정책 표를 쓴다(단일 출처).
+    kind = last_month · this_month · last_n_months(n) · month_span(month_from, month_to) ·
+    (T-9) last_n_days(n) · yesterday · last_week · this_week · today · last_n_hours(n).
+    내부에서 `resolve`를 부른다 — 제품과 하네스가 같은 정책 표를 쓴다(단일 출처). 일·주·시
+    종류의 명세는 규칙 인식기(`time_expr.recognize`)가 그 표현에 만드는 명세와 같다
+    (「어제」 = 지난 1일 · 「지난주」 = 직전 달력 주 · 「오늘」 = 이번 일 · 「최근 N시간」 = 롤링).
     `anchor`는 턴 송신 시각(KST)이다.
+
+    시 단위 창(today · last_n_hours)은 반환 형태가 날짜라 **그 시각 창을 덮는 날짜 창**(시작은
+    그날 · 끝은 올림)으로 내려간다 — 예: 기준 9/29 10:00의 「최근 3시간」 `[07:00, 10:00)` →
+    `[9/29, 9/30)`. 하네스는 기간을 날짜 단위로만 판정하고, 시 단위 정확성은 실행 SQL의
+    입도 단언(시간 통계 테이블 `sql_must_match`)으로 보완한다(plans/122 T-9). 일·월 창은
+    끝이 자정이라 종전과 같다.
     """
+    if kind == "last_n_days":
+        if n is None:
+            raise TimeSpecError("n_missing", kind)
+        return _date_window(TimeSpec(relation="last", n=n, unit="day"), anchor)
+    if kind == "yesterday":
+        return _date_window(TimeSpec(relation="last", n=1, unit="day"), anchor)
+    if kind == "last_week":
+        return _date_window(TimeSpec(relation="last", n=1, unit="week"), anchor)
+    if kind == "this_week":
+        return _date_window(TimeSpec(relation="this", unit="week"), anchor)
+    if kind == "today":
+        return _date_window(TimeSpec(relation="this", unit="day"), anchor)
+    if kind == "last_n_hours":
+        if n is None:
+            raise TimeSpecError("n_missing", kind)
+        spec_h = TimeSpec(relation="last", n=n, unit="hour", completeness="rolling")
+        return _date_window(spec_h, anchor)
     if kind == "last_month":
         spec = TimeSpec(relation="last", n=1, unit="month")
     elif kind == "this_month":
@@ -863,6 +956,13 @@ def relative_window(
     return res.start.date(), res.end.date()
 
 
+def _date_window(spec: TimeSpec, anchor: datetime) -> tuple[date, date]:
+    """`resolve` 결과를 덮는 날짜 창 — 시작은 그날, 끝은 자정으로 올림(T-9 · `relative_window`)."""
+    res = resolve(spec, anchor)
+    assert res.start is not None and res.end is not None
+    return res.start.date(), _ceil(res.end, "day").date()
+
+
 __all__ = [
     "ANCHORS", "COMPLETENESS", "DISPLAY_GRAINS", "GRAINS", "KST", "N_MAX",
     "NOTE_CURRENT_MONTH_EXCLUDED", "NOTE_DEFAULT_PERIOD", "NOTE_DISPLAY_GRAIN_UNALIGNED",
@@ -871,5 +971,6 @@ __all__ = [
     "RELATIVE_WINDOW_KINDS", "SOURCES", "SUBJECTS", "UNITS",
     "Anchor", "Completeness", "DisplayGrain", "Grain", "PartialDate", "Relation", "Source",
     "Subject", "TimeResolution", "TimeSpec", "TimeSpecError", "Unit",
-    "cover", "default_resolution", "relative_window", "resolve", "window_around",
+    "ceil_to_unit", "cover", "default_resolution", "floor_to_unit", "relative_window", "resolve",
+    "shift_unit", "window_around",
 ]
