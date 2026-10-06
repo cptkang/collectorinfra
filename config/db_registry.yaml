@@ -707,6 +707,10 @@ databases:
     engine: mariadb
     db_schema: ""
     signal_terms: ["itam"]
+    # 물리 컬럼명이 한글이다(사용자 확인 2026-10-06 · 테이블명은 영문 TCDMS…). SQL 구조 영역의 한글 식별자를
+    # 허용하되 스키마에 실재하는 이름·SQL 안에서 선언한 별칭만 통과한다 — 그 밖의 한글 토큰(LLM이 남긴
+    # 자연어 조각)은 종전대로 재생성을 유도한다(plans/137 · D-104 개정).
+    allow_hangul_identifiers: true
     # 답변 영역 소유(plans/102 §3.1 · D-224 ①). 존이 없는 단일 시스템(D-214 ④)이라 `solutions`가 아니라
     # DB 항목에 선언한다 — `solutions` 등재는 D-214 ④에서 기각됐다(G-4 기본 가정 이탈 · 사용자 미확정).
     # asset_owner(담당자 성명)는 plans/95 G-9 확정(마스킹 없이 노출)으로 비활성 사유가 없다.

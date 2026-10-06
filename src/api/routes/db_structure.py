@@ -177,15 +177,20 @@ def get_registration_service(request: Request) -> Any:
     return build_registration_service(request.app.state.config)
 
 
-def asset_sql_checker(sql: str, schema_info: Any, engine: str) -> list[str]:
+def asset_sql_checker(sql: str, schema_info: Any, engine: str, db_id: str = "") -> list[str]:
     """LLM 자산 SQL 검증기 — 질의 경로 `validate_sql`(참조 테이블·컬럼 실존 · SELECT 전용)의 오류.
 
     서비스(`src/schema_cache`)는 application 계층의 `validate_sql`을 import할 수 없어 조립부가
-    주입한다(D-294).
+    주입한다(D-294). DB별 한글 식별자 허용 정책은 질의 경로와 같이 레지스트리로 해석한다
+    (plans/137 — 한글 컬럼 DB의 예시 SQL이 질의 경로와 다르게 거부되지 않게).
     """
+    from src.routing.registry import hangul_identifiers_allowed
     from src.sql_validation import validate_sql
 
-    return list(validate_sql(sql, dict(schema_info), db_engine=engine, default_limit=50).errors)
+    return list(validate_sql(
+        sql, dict(schema_info), db_engine=engine, default_limit=50,
+        allow_hangul_identifiers=hangul_identifiers_allowed(db_id),
+    ).errors)
 
 
 def build_asset_service(config: Any) -> Any:

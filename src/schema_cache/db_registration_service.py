@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import AsyncExitStack
@@ -106,6 +107,20 @@ def _engine_key(engine: str | None) -> str:
     """엔진 이름 정규화(별칭 흡수)."""
     text = str(engine or "").strip().lower()
     return _ENGINE_ALIASES.get(text, text)
+
+
+_HANGUL_CHAR_RE = re.compile(r"[가-힣]")
+
+
+def _hangul_column_count(snapshot_record: Mapping[str, Any] | None) -> int:
+    """스냅샷의 컬럼 중 이름에 한글이 들어간 것의 수(설정 조각 제안 근거 · plans/137 W8)."""
+    tables = (((snapshot_record or {}).get("snapshot") or {}).get("tables")) or {}
+    count = 0
+    for table in tables.values() if isinstance(tables, Mapping) else ():
+        columns = table.get("columns") if isinstance(table, Mapping) else None
+        names = columns.keys() if isinstance(columns, Mapping) else (columns or [])
+        count += sum(1 for name in names if _HANGUL_CHAR_RE.search(str(name)))
+    return count
 
 
 def assert_constant_select(sql: str) -> None:
@@ -1087,6 +1102,10 @@ class DBRegistrationService(AdminServiceBase):
             "db_schema": schema_candidate or (entry.db_schema if entry is not None else ""),
             "zone": entry.zone if entry is not None else "",
         }
+        # 한글 컬럼이 있으면 한글 식별자 허용을 제안한다(plans/137 W8 · 결정적 · LLM 0). 없으면 키를 싣지 않는다.
+        hangul_columns = _hangul_column_count(snapshot_record)
+        if hangul_columns or (entry is not None and entry.allow_hangul_identifiers):
+            item["allow_hangul_identifiers"] = True
 
         dumped = yaml.safe_dump({"databases": [item]}, allow_unicode=True, sort_keys=False)
         body: list[str] = []
@@ -1098,6 +1117,11 @@ class DBRegistrationService(AdminServiceBase):
                         "LLM 초안(O-5)" if draft_text
                         else "현행 레지스트리 값(비어 있으면 작성 필요)"
                     )
+                )
+            if line.startswith("  allow_hangul_identifiers:"):
+                body.append(
+                    f"  # 수집 스키마에 한글 컬럼 {hangul_columns}개 — SQL의 한글 컬럼명을 허용한다(plans/137)"
+                    if hangul_columns else "  # 현행 레지스트리 값 유지(plans/137)"
                 )
             body.append(line)
         header: list[str] = []
@@ -1128,6 +1152,11 @@ class DBRegistrationService(AdminServiceBase):
             )
         if _engine_key(engine) == "db2" and not item["db_schema"]:
             notes.append("DB2는 db_schema가 필요합니다(대문자 스키마 한정 — C4).")
+        if hangul_columns:
+            notes.append(
+                f"수집 스키마에 한글 컬럼이 {hangul_columns}개 있어 allow_hangul_identifiers: true를 "
+                "넣었습니다 — 넣지 않으면 한글 컬럼명을 쓴 SQL이 전부 검증에서 거부됩니다(plans/137)."
+            )
         if self.local_sandbox:
             notes.append("로컬 샌드박스에서 만든 조각입니다 — 운영 정본 재료로 쓰지 마세요.")
         return {
