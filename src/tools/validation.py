@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Optional
 
 from src.db_adapters import get_adapter
+from src.routing.registry import hangul_identifiers_allowed
 from src.sql_validation import validate_sql
 
 
@@ -50,6 +51,7 @@ def validate_sql_draft(
         user_query=user_query,
         default_limit=default_limit,
         adapter_checks=adapter_checks,
+        allow_hangul_identifiers=hangul_identifiers_allowed(db_id),
     )
     return {
         "valid": outcome.passed,

@@ -54,9 +54,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: LLM SQL 검증기 ``(sql, schema_info, engine) → 오류 목록`` — 질의 경로 `validate_sql`(참조
-#: 테이블·컬럼 실존 포함)은 application 계층이라 이 모듈이 import하지 않고 조립부(API)가 주입한다
-SqlChecker = Callable[[str, Mapping[str, Any], str], list[str]]
+#: LLM SQL 검증기 ``(sql, schema_info, engine, db_id) → 오류 목록`` — 질의 경로 `validate_sql`(참조
+#: 테이블·컬럼 실존 포함)은 application 계층이라 이 모듈이 import하지 않고 조립부(API)가 주입한다.
+#: ``db_id``는 DB별 검증 정책(한글 식별자 허용 — plans/137)을 조립부가 레지스트리에서 해석하는 데 쓴다
+SqlChecker = Callable[[str, Mapping[str, Any], str, str], list[str]]
 
 #: 승인 화면에서 고를 수 있는 자산
 ASSET_KINDS: tuple[str, ...] = (
@@ -494,7 +495,7 @@ class AssetGenerationService(AdminServiceBase):
         await ctx.progress(2, 3, "결정적 검증·실행")
         async with self._client_factory(source) as client:
             schema_info = schema_dict_from_snapshot(snapshot)
-            check = _SqlCheck(client, self._sql_checker, schema_info, engine)
+            check = _SqlCheck(client, self._sql_checker, schema_info, engine, source)
             examples, example_checks = await _validate_examples(check, examples_raw)
             section, section_check = await _validate_section(check, section_raw, snapshot)
         assets["query_examples"] = examples
@@ -1017,12 +1018,13 @@ async def _ask(llm: Any, prompt: str) -> str:
 
 @dataclass
 class _SqlCheck:
-    """LLM SQL 실행 검증 문맥 — 클라이언트 · 주입된 검증기 · 스냅샷 스키마 · 엔진."""
+    """LLM SQL 실행 검증 문맥 — 클라이언트 · 주입된 검증기 · 스냅샷 스키마 · 엔진 · 소스."""
 
     client: Any
     checker: SqlChecker | None
     schema_info: Mapping[str, Any]
     engine: str
+    db_id: str = ""
 
 
 async def _execute_check(check: _SqlCheck, sql: str) -> tuple[int | None, str | None]:
@@ -1042,7 +1044,7 @@ async def _execute_check(check: _SqlCheck, sql: str) -> tuple[int | None, str | 
     if check.checker is None:
         return None, "SQL 검증기가 없어 실행하지 않았습니다"
     try:
-        problems = check.checker(text, check.schema_info, check.engine)
+        problems = check.checker(text, check.schema_info, check.engine, check.db_id)
     except Exception as e:  # noqa: BLE001 — 검증기 실패는 실행하지 않는 쪽으로
         return None, f"SQL 검증 실패: {type(e).__name__}: {e}"
     if problems:

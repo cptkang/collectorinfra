@@ -2740,12 +2740,18 @@ def _validate_sql(
     None이면 ``user_query``. 어댑터 검증 훅은 종전대로 ``user_query``를 받는다.
     """
     limit_text = user_query if surface_query is None else surface_query
+    # 한글 식별자 허용 정책(레지스트리 · plans/137) — 간이·full 양쪽에 같은 값을 넘긴다(D-066).
+    from src.routing.registry import hangul_identifiers_allowed
+
+    allow_hangul = hangul_identifiers_allowed(db_id)
     if not getattr(
         getattr(app_config, "text2sql", None), "multi_full_validation", False
     ):
         # 간이 검증에도 엔진 방언 그물을 씌운다(D-176) — full validation을 켜지 않아도
         # DB2 대상의 LIMIT은 잡아야 한다(위양성이 구조적으로 없는 부분집합만 기본 ON).
-        error = _validate_sql_simple(sql, schema_info, db_engine=db_engine)
+        error = _validate_sql_simple(
+            sql, schema_info, db_engine=db_engine, allow_hangul_identifiers=allow_hangul,
+        )
         if error:
             return error, None
         # 기본 경로에도 행 상한을 건다(CU-16) — `multi_full_validation` 기본값은 그대로다.
@@ -2763,6 +2769,7 @@ def _validate_sql(
         db_engine=db_engine, user_query=limit_text,
         default_limit=app_config.query.default_limit,
         adapter_checks=adapter_checks,
+        allow_hangul_identifiers=allow_hangul,
     )
     if outcome.errors:
         reason = "; ".join(outcome.errors[:5])
@@ -2772,7 +2779,11 @@ def _validate_sql(
 
 
 def _validate_sql_simple(
-    sql: str, schema_info: dict, *, db_engine: str | None = None
+    sql: str,
+    schema_info: dict,
+    *,
+    db_engine: str | None = None,
+    allow_hangul_identifiers: bool = False,
 ) -> Optional[str]:
     """SQL을 간이 검증한다.
 
@@ -2781,6 +2792,7 @@ def _validate_sql_simple(
         schema_info: 스키마 정보
         db_engine: 대상 엔진(선택). 주면 행 제한 절 방언까지 검사한다(D-176).
             미전달 시 현행 동작 그대로 — 방언 판정이 발동하지 않는다.
+        allow_hangul_identifiers: 대상 DB의 한글 식별자 허용 정책(레지스트리 · plans/137).
 
     Returns:
         에러 메시지 (정상이면 None)
@@ -2842,15 +2854,22 @@ def _validate_sql_simple(
 
     # 따옴표 밖 자연어(한글) 토큰 잔존 검출 — 단일 경로(query_validator)와 동일 가드를
     # 멀티 경로에도 공유(D-066 경로 비대칭 방지, D-104). 검출 시 재시도 루프가 재생성 유도.
-    from src.nodes.query_validator import find_bare_hangul_tokens as _find_bare_hangul_tokens
+    # 한글 식별자 허용 DB는 스키마 실재 이름·선언 별칭을 통과시킨다(plans/137 — 단일과 같은 함수).
+    from src.sql_validation import check_double_quoted_identifiers, check_hangul_tokens
 
-    bare_hangul = _find_bare_hangul_tokens(sql)
-    if bare_hangul:
-        shown = ", ".join(sorted(set(bare_hangul))[:5])
-        return (
-            f"SQL 구조에 자연어(한글) 토큰이 남아 있습니다: {shown} - "
-            "따옴표 안 별칭/문자열 리터럴 외의 한글은 모두 제거하고 완전한 SQL로 다시 작성하세요."
-        )
+    hangul_errors, hangul_warnings = check_hangul_tokens(
+        sql, schema_info, db_engine=db_engine,
+        allow_hangul_identifiers=allow_hangul_identifiers,
+    )
+    for _warning in hangul_warnings:
+        logger.warning("[멀티검증] %s", _warning)
+    if hangul_errors:
+        return hangul_errors[0]
+
+    # MariaDB 큰따옴표 식별자(침묵 오답) — 단일 경로 4.55와 같은 함수(plans/137 W3 · D-066)
+    quoted_errors = check_double_quoted_identifiers(sql, schema_info, db_engine=db_engine)
+    if quoted_errors:
+        return quoted_errors[0]
 
     # cmm_resource 조회 시 dtime IS NULL 부재 검출 — 단일 경로(query_validator 4.6)와 공유
     # (D-066 경로 비대칭 방지). 폐쇄망 실측 2026-07-21 b0-005: 필터 누락 시 삭제 서버 혼입.

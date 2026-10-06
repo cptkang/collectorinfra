@@ -299,6 +299,9 @@ class DBEntry:
     #: (plans/102 X-T4). 생성 설명이 다른 시스템 소유 영역 어휘를 되살려 경계를 무너뜨릴 때 끈다.
     #: 기본 false = 현행.
     description_locked: bool = False
+    #: true면 SQL 구조 영역(따옴표 밖)의 한글 식별자를 허용한다 — 물리 컬럼명이 한글인 DB만 켠다
+    #: (plans/137). 허용해도 스키마에 실재하는 이름·SQL 안에서 선언한 별칭만 통과한다. 기본 false = 현행.
+    allow_hangul_identifiers: bool = False
 
 
 @dataclass(frozen=True)
@@ -856,6 +859,7 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
                 signal_terms=_as_str_tuple(raw.get("signal_terms")),
                 capabilities=_as_str_tuple(raw.get("capabilities")),
                 description_locked=bool(raw.get("description_locked", False)),
+                allow_hangul_identifiers=bool(raw.get("allow_hangul_identifiers", False)),
             )
         )
 
@@ -958,3 +962,19 @@ def reload_registry() -> DBRegistry:
     """레지스트리 캐시를 비우고 다시 읽는다(운영 중 갱신·테스트용)."""
     get_registry.cache_clear()
     return get_registry()
+
+
+def hangul_identifiers_allowed(db_id: str | None) -> bool:
+    """`db_id`의 레지스트리 항목이 한글 식별자를 허용하는지(plans/137).
+
+    미등록·빈 값·레지스트리 적재 실패는 모두 False(= 현행 한글 가드)다 — 검증을 느슨하게 하는
+    설정이라 확인할 수 없으면 닫힌 쪽으로 둔다. 적재 실패는 사유를 로그로 남긴다.
+    """
+    if not db_id:
+        return False
+    try:
+        entry = get_registry().get(db_id)
+    except RegistryError as e:
+        logger.warning("한글 식별자 정책 조회 실패(현행 가드 유지): db_id=%s · %s", db_id, e)
+        return False
+    return bool(entry is not None and entry.allow_hangul_identifiers)

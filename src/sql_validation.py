@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence
 
@@ -68,6 +69,7 @@ def validate_sql(
     user_query: str = "",
     default_limit: int = 100,
     adapter_checks: Sequence[Callable[[str], list[str]]] = (),
+    allow_hangul_identifiers: bool = False,
 ) -> SQLValidationOutcome:
     """생성된 SQL을 규칙 기반으로 검증한다(상태·설정 비결합 코어).
 
@@ -82,6 +84,8 @@ def validate_sql(
         user_query: 사용자 원문 질의("모든/전체" 조회면 행 제한을 ``_ALL_QUERY_LIMIT``으로 상향)
         default_limit: 행 제한 절 자동 추가 시 사용할 기본값
         adapter_checks: DB 어댑터 전용 검증 함수들(SQL → 오류 메시지 목록)
+        allow_hangul_identifiers: 대상 DB가 한글 식별자를 허용하는지(레지스트리 정책 — 호출부가
+            해석해 넘긴다 · plans/137). True면 스키마 실재 이름·선언 별칭인 한글만 통과한다.
 
     Returns:
         SQLValidationOutcome — 오류·경고·자동 보정 SQL·감사 신호
@@ -127,15 +131,17 @@ def validate_sql(
     # SQL 구조 영역에 남기면 DB 구문 오류로 실행이 실패한다(폐쇄망 실측 2026-07-20, 2회
     # 재현·토큰 가변 — 프롬프트로는 못 막는 비결정 오류라 결정적 가드로 재생성을 유도, D-104).
     # 따옴표 안 한글(별칭 "CPU 평균", 리터럴 '서울')은 정당하므로 제외한다.
-    bare_hangul = _find_bare_hangul_tokens(sql)
-    if bare_hangul:
-        shown = ", ".join(sorted(set(bare_hangul))[:5])
-        # 메시지는 ASCII 구두점만 사용 - 이 문자열은 평가 하네스 스킵 사유로 cp949 콘솔에
-        # 출력될 수 있음(em-dash는 UnicodeEncodeError, Known Mistakes 2026-07-16)
-        errors.append(
-            f"SQL 구조에 자연어(한글) 토큰이 남아 있습니다: {shown} - "
-            "따옴표 안 별칭/문자열 리터럴 외의 한글은 모두 제거하고 완전한 SQL로 다시 작성하세요."
-        )
+    # 한글 식별자 허용 DB(레지스트리 · plans/137)는 스키마 실재 이름·선언 별칭을 통과시킨다.
+    hangul_errors, hangul_warnings = check_hangul_tokens(
+        sql, schema_info, db_engine=db_engine,
+        allow_hangul_identifiers=allow_hangul_identifiers,
+    )
+    errors.extend(hangul_errors)
+    warnings.extend(hangul_warnings)
+
+    # 4.55. MariaDB 큰따옴표 식별자 — 기본 sql_mode(ANSI_QUOTES 없음)에서 큰따옴표는 문자열이라
+    # `SELECT "col"`이 오류 없이 글자를 돌려주는 침묵 오답이 된다(plans/137 W3 · 운영 ITAM 실측 off).
+    errors.extend(check_double_quoted_identifiers(sql, schema_info, db_engine=db_engine))
 
     # 4.6. 삭제 리소스 제외 필터(dtime IS NULL) 부재 검출 — LLM이 필수 필터를 통째로
     # 누락하면 삭제된 서버가 결과에 섞인다(폐쇄망 실측 2026-07-21 b0-005: +99대).
@@ -241,9 +247,42 @@ def validate_sql(
     )
 
 _HANGUL_RE = re.compile(r"[가-힣]+")
+#: 한글을 포함한 식별자 단위 토큰(`취득_금액2`를 한 토큰으로 — 스키마 대조용 · plans/137)
+_HANGUL_IDENT_RE = re.compile(r"\w*[가-힣]\w*")
+#: 백틱이 식별자 인용인 엔진(MariaDB·MySQL — 레지스트리 `engine` 값)
+_BACKTICK_ENGINES = frozenset({"mariadb", "mysql"})
+
+#: 한글 토큰 잔존 오류의 공통 접두 — 단일·멀티 경로가 같은 문구를 쓴다(D-066)
+HANGUL_TOKEN_ERROR_PREFIX = "SQL 구조에 자연어(한글) 토큰이 남아 있습니다"
+#: 한글 식별자 허용 DB인데 대조할 스키마가 없을 때의 경고(검사 생략 — 침묵 강등 금지)
+HANGUL_SCHEMA_MISSING_WARNING = (
+    "한글 식별자 허용 DB지만 대조할 스키마 정보가 없어 한글 토큰 검사를 건너뛰었습니다."
+)
 
 
-def find_bare_hangul_tokens(sql: str) -> list[str]:
+def _uses_backtick_quotes(engine: str | None) -> bool:
+    """엔진이 백틱을 식별자 인용으로 쓰는지(MariaDB·MySQL)."""
+    return str(engine or "").strip().lower() in _BACKTICK_ENGINES
+
+
+def _strip_comments_and_literals(sql: str) -> str:
+    """주석과 작은따옴표 문자열 리터럴(`''` 이스케이프 포함)을 공백으로 지운다."""
+    body = re.sub(r"--[^\n]*", " ", sql or "")
+    body = re.sub(r"/\*.*?\*/", " ", body, flags=re.S)
+    return re.sub(r"'(?:[^']|'')*'", " ", body)
+
+
+def _norm_ident(name: str) -> str:
+    """식별자 대조 정규형 — 유니코드 NFC + 대소문자 무시."""
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def find_bare_hangul_tokens(
+    sql: str,
+    *,
+    engine: str | None = None,
+    allowed_identifiers: Optional[set[str]] = None,
+) -> list[str]:
     """문자열 리터럴·따옴표 식별자·주석을 제거한 뒤 남는 한글 토큰을 찾는다(D-104).
 
     LLM 생성 SQL에 자연어 조각(지시어 "해당", "현재" 등)이 구조 영역에 잔존하면 DB가
@@ -252,15 +291,151 @@ def find_bare_hangul_tokens(sql: str) -> list[str]:
 
     Args:
         sql: 검사할 SQL 문자열
+        engine: 대상 엔진. MariaDB·MySQL이면 백틱 인용 식별자도 지운다(plans/137 W2).
+        allowed_identifiers: 한글 식별자 허용 DB의 허용 이름 집합(`_norm_ident` 정규형).
+            주면 토큰을 식별자 단위로 뽑아 이 집합에 든 것을 뺀다. None이면 현행 판정 그대로.
 
     Returns:
         구조 영역에 남은 한글 토큰 목록(없으면 빈 리스트)
     """
-    body = re.sub(r"--[^\n]*", " ", sql or "")
-    body = re.sub(r"/\*.*?\*/", " ", body, flags=re.S)
-    body = re.sub(r"'(?:[^']|'')*'", " ", body)  # 문자열 리터럴 ('' 이스케이프 포함)
+    body = _strip_comments_and_literals(sql)
     body = re.sub(r'"[^"]*"', " ", body)  # 따옴표 식별자(별칭)
-    return _HANGUL_RE.findall(body)
+    if _uses_backtick_quotes(engine):
+        body = re.sub(r"`[^`]*`", " ", body)  # MariaDB 백틱 인용 식별자
+    if allowed_identifiers is None:
+        return _HANGUL_RE.findall(body)
+    return [
+        token for token in _HANGUL_IDENT_RE.findall(body)
+        if _norm_ident(token) not in allowed_identifiers
+    ]
+
+
+def _schema_identifiers(schema_info: dict) -> set[str]:
+    """스키마의 테이블·컬럼 이름 집합(`_norm_ident` 정규형) — 테이블 키는 한정자 부분도 넣는다.
+
+    `columns`는 질의 경로의 목록(`[{"name": …}]`)과 스냅샷의 사전(`{name: {...}}`)을 모두 받는다.
+    """
+    names: set[str] = set()
+    tables = (schema_info or {}).get("tables") or {}
+    if not isinstance(tables, dict):
+        return names
+    for table_key, table_data in tables.items():
+        names.update(_norm_ident(part) for part in str(table_key).split(".") if part)
+        columns = (table_data or {}).get("columns") if isinstance(table_data, dict) else None
+        if isinstance(columns, dict):
+            names.update(_norm_ident(str(c)) for c in columns)
+        elif isinstance(columns, list):
+            for col in columns:
+                name = col.get("name") if isinstance(col, dict) else col
+                if name:
+                    names.add(_norm_ident(str(name)))
+    return names
+
+
+def _declared_aliases(sql: str) -> set[str]:
+    """SQL 안에서 선언한 별칭(`AS 별칭` · FROM/JOIN 테이블 별칭) 집합(`_norm_ident` 정규형).
+
+    한글 식별자 허용 DB에서 `SELECT 자산명 AS 자산이름 … ORDER BY 자산이름`처럼 정당하게 쓰인
+    따옴표 없는 한글 별칭을 거부하지 않기 위한 것이다(plans/137 §3.2 2-1). 선언 자리에서만 모은다.
+    """
+    body = _strip_comments_and_literals(sql)
+    body = re.sub(r'"[^"]*"', " ", body)
+    body = re.sub(r"`[^`]*`", " ", body)
+    aliases = set(re.findall(r"\bAS\s+(\w+)", body, flags=re.IGNORECASE))
+    aliases.update(_extract_alias_map(body))
+    return {_norm_ident(a) for a in aliases}
+
+
+def hangul_token_error(
+    tokens: Sequence[str], *, allow_hangul_identifiers: bool = False,
+    db_engine: str | None = None,
+) -> str:
+    """한글 토큰 잔존 오류 문구 — 단일·멀티 경로 공용(D-066).
+
+    허용 off DB는 종전 문구 그대로다. 메시지는 ASCII 구두점만 쓴다 - 평가 하네스 스킵 사유로
+    cp949 콘솔에 출력될 수 있다(em-dash는 UnicodeEncodeError, Known Mistakes 2026-07-16).
+    """
+    shown = ", ".join(sorted(set(tokens))[:5])
+    if not allow_hangul_identifiers:
+        return (
+            f"{HANGUL_TOKEN_ERROR_PREFIX}: {shown} - "
+            "따옴표 안 별칭/문자열 리터럴 외의 한글은 모두 제거하고 완전한 SQL로 다시 작성하세요."
+        )
+    message = (
+        f"{HANGUL_TOKEN_ERROR_PREFIX}: {shown} - 스키마에 없는 한글입니다. "
+        "실제 테이블/컬럼명과 AS로 선언한 별칭 외의 한글(자연어 조각)은 제거하고 "
+        "완전한 SQL로 다시 작성하세요."
+    )
+    if _uses_backtick_quotes(db_engine):
+        message += " 한글 컬럼명은 그대로 쓰거나 백틱(`)으로 감싸세요(큰따옴표 금지)."
+    return message
+
+
+def check_hangul_tokens(
+    sql: str,
+    schema_info: dict,
+    *,
+    db_engine: str | None = None,
+    allow_hangul_identifiers: bool = False,
+) -> tuple[list[str], list[str]]:
+    """한글 토큰 잔존 검사(D-104 · plans/137) — ``(오류, 경고)``.
+
+    허용 off DB는 종전 판정·문구 그대로다(MariaDB 백틱 인용 인정만 엔진으로 더해진다).
+    허용 on DB는 스키마 실재 이름·선언 별칭을 통과시키고, 대조할 스키마가 없으면 검사를
+    건너뛰고 경고를 남긴다(그대로 두면 한글 컬럼 DB의 모든 질의가 거부된다).
+    """
+    if not allow_hangul_identifiers:
+        tokens = find_bare_hangul_tokens(sql, engine=db_engine)
+        return ([hangul_token_error(tokens)] if tokens else []), []
+    known = _schema_identifiers(schema_info)
+    if not known:
+        logger.warning("한글 식별자 허용 DB인데 스키마 정보가 없어 한글 토큰 검사를 건너뜁니다.")
+        return [], [HANGUL_SCHEMA_MISSING_WARNING]
+    tokens = find_bare_hangul_tokens(
+        sql, engine=db_engine, allowed_identifiers=known | _declared_aliases(sql)
+    )
+    if not tokens:
+        return [], []
+    return [hangul_token_error(
+        tokens, allow_hangul_identifiers=True, db_engine=db_engine,
+    )], []
+
+
+#: MariaDB 큰따옴표 식별자 오류 문구 접두(단일·멀티 공용)
+DOUBLE_QUOTED_IDENTIFIER_ERROR_PREFIX = "MariaDB에서 큰따옴표는 문자열입니다"
+
+
+def check_double_quoted_identifiers(
+    sql: str, schema_info: dict, *, db_engine: str | None = None,
+) -> list[str]:
+    """MariaDB·MySQL에서 스키마 이름을 큰따옴표로 감싼 참조를 잡는다(plans/137 W3).
+
+    기본 sql_mode(ANSI_QUOTES 없음 — 운영 ITAM 실측 2026-10-06)에서 `"col"`은 문자열 리터럴이라
+    `SELECT "col"`은 글자를, `WHERE "col" = 'v'`는 0행을 돌려준다 — SQL 오류가 나지 않아
+    재생성 회귀조차 발동하지 않는 침묵 오답이다(`testdata/itam/README.md` 리허설 실측).
+    `AS "…"` 결과 별칭 자리는 정당하므로 제외한다(폼필이 한글 양식 필드명 별칭을 강제한다).
+    다른 엔진이거나 대조할 스키마가 없으면 검사하지 않는다.
+    """
+    if not _uses_backtick_quotes(db_engine):
+        return []
+    known = _schema_identifiers(schema_info)
+    if not known:
+        return []
+    body = _strip_comments_and_literals(sql)
+    found: list[str] = []
+    for match in re.finditer(r'"([^"]*)"', body):
+        if re.search(r"\bAS\s*$", body[: match.start()], flags=re.IGNORECASE):
+            continue
+        name = match.group(1)
+        if name and _norm_ident(name) in known and name not in found:
+            found.append(name)
+    if not found:
+        return []
+    shown = ", ".join(f'"{n}"' for n in found[:5])
+    return [
+        f"{DOUBLE_QUOTED_IDENTIFIER_ERROR_PREFIX}: {shown} - 컬럼/테이블명은 따옴표 없이 쓰거나 "
+        "백틱(`)으로 감싸세요. 큰따옴표는 AS 뒤 결과 별칭에만 쓸 수 있습니다."
+    ]
 
 
 #: 상수 SELECT 거부 사유 — 멀티 DB 간이 검증도 같은 문구를 쓴다(D-066 경로 대칭).

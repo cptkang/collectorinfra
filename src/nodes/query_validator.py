@@ -22,6 +22,7 @@ import structlog
 
 from src.config import AppConfig, load_config
 from src.db_adapters import get_adapter
+from src.routing.registry import hangul_identifiers_allowed
 from src.state import AgentState
 # 검증 코어는 도구 계층에 있다(위 참조). 이 모듈이 쓰는 것과 하위호환 재노출분을 함께
 # 임포트하고 `__all__`로 공표한다 — 노드 경로와 도구 경로가 같은 코어를 공유한다(D-067).
@@ -234,6 +235,8 @@ async def query_validator(
         user_query=surface_query_for_judgment(state),
         default_limit=app_config.query.default_limit,
         adapter_checks=adapter_checks,
+        # 한글 식별자 허용 정책(레지스트리 DB 항목 · plans/137) — 미등록·미선언 = 현행 가드
+        allow_hangul_identifiers=hangul_identifiers_allowed(state.get("active_db_id")),
     )
 
     # FabriX PII 필터 차단 안내문이 content로 온 변형 감지(D-153 후속2) — 검증 코어의
