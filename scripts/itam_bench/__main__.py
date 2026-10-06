@@ -378,13 +378,13 @@ def _oracle_record(
     }
 
 
-#: 되물음 기록(plans/138 W6-e)에 옮기는 낱말 모양 — 종류는 코드 열거, 후보는 소스·DB id 만.
+#: 되물음 기록(plans/139 W6-e)에 옮기는 낱말 모양 — 종류는 코드 열거, 후보는 소스·DB id 만.
 _CLARIFY_KIND = re.compile(r"^[a-z][a-z_]{0,39}$")
 _CLARIFY_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
 def clarification_record(payload: Any, status: str) -> dict[str, Any] | None:
-    """되물음 응답 → 종류 · 칩 표시 여부 · 선택지 수 · 후보 소스 id(plans/138 W6-e).
+    """되물음 응답 → 종류 · 칩 표시 여부 · 선택지 수 · 후보 소스 id(plans/139 W6-e).
 
     칩은 선택지(`options`)가 있을 때만 그려진다(웹 UI `renderZoneClarification`). 후보 id 는
     선택지의 `source`(소스 코드), 없으면 `db_id`·`db_ids`다. 질문 문구·선택지 라벨·원 질의는
@@ -707,7 +707,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 1
         say(f"[주의] 파일 스키마 캐시 없음 — 샌드박스 전사본으로 카탈로그를 만든다 ({exc})")
         schema = cat.load_schema_source("transcript")
-    # 설명·유사어는 서버와 같은 순서(Redis → 파일)로 다시 읽는다(plans/138 W6-a · 조회문 0)
+    # 설명·유사어는 서버와 같은 순서(Redis → 파일)로 다시 읽는다(plans/139 W6-a · 조회문 0)
     cat.apply_server_annotations(schema, cfg=cfg)
     if schema["annotation_sources"]["redis"] == "unavailable":
         say(

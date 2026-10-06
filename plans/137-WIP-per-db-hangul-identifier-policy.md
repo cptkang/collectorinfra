@@ -1,8 +1,8 @@
 # 137. DB별 한글 식별자 허용 정책 — SQL 한글 토큰 가드(D-104)를 DB 설정으로 분기
 
 > **작성일**: 2026-10-06
-> **상태**: **v2 · 구현 완료(W1~W8 · 작업 트리 · 커밋 없음 · D-297) · 잔여 = 폐쇄망 ITAM 실 질의 검증(§7)** — 파일명 `-WIP`
-> **개정 이력**: v1(2026-10-06 작성) → v1.1(2026-10-06 사용자 답 반영 — G-2 레지스트리 · G-4 폴스타 비고려 = 허용 off DB 현행 비트 동일 · G-5 테이블명 `TCDMS…` 영문 · DDL 불가 · SELECT 권한만 · 호출부 5번째(자산 생성 SQL 검증기) · 설정 조각 자동 제안 W8 추가) → v1.2(2026-10-06 — G-1 ⓐ 스키마 대조 · G-3 ⓐ 검증 오류 재생성 권고안 확정 · 허용 집합 출처·별칭 규칙 §3.2 2-1 · G-6 확인 방법) → v1.3(2026-10-06 — G-6 운영 `sql_mode` 실측값 수령 · ANSI_QUOTES off · W3 진행 확정) → v2(2026-10-06 — W1~W8 구현 · D-297 등재 · 파일명 `-TODO` → `-WIP`) → 번호 이동(2026-10-06 — 원 작성 번호 135가 `main`의 `plans/135`(ITAM 질의 벤치마크)와 겹쳐 137로 옮겨 `main` 최신 커밋 위에 다시 적용 · 내용 변경 없음)
+> **상태**: **v2.5 · W1~W8(D-297) · W9~W12(D-305) · W13(D-306 · `a8da41b`) · W13 게이트 교정(§9.5) · 잔여 = 폐쇄망 재검증 · #3 테이블 선택(41 vs 80) 사용자 확인** — 파일명 `-WIP`
+> **개정 이력**: v1(2026-10-06 작성) → v1.1(2026-10-06 사용자 답 반영 — G-2 레지스트리 · G-4 폴스타 비고려 = 허용 off DB 현행 비트 동일 · G-5 테이블명 `TCDMS…` 영문 · DDL 불가 · SELECT 권한만 · 호출부 5번째(자산 생성 SQL 검증기) · 설정 조각 자동 제안 W8 추가) → v1.2(2026-10-06 — G-1 ⓐ 스키마 대조 · G-3 ⓐ 검증 오류 재생성 권고안 확정 · 허용 집합 출처·별칭 규칙 §3.2 2-1 · G-6 확인 방법) → v1.3(2026-10-06 — G-6 운영 `sql_mode` 실측값 수령 · ANSI_QUOTES off · W3 진행 확정) → v2(2026-10-06 — W1~W8 구현 · D-297 등재 · 파일명 `-TODO` → `-WIP`) → 번호 이동(2026-10-06 — 원 작성 번호 135가 `main`의 `plans/135`(ITAM 질의 벤치마크)와 겹쳐 137로 옮겨 `main` 최신 커밋 위에 다시 적용 · 내용 변경 없음) → v2.1(2026-10-06 — 폐쇄망 1차 결과 반영: 원인 A `NULLS LAST` 결정적 부가가 MariaDB 구문 오류 · 원인 B 테이블 선택 요약 15컬럼 절단 · 추가 개선 W9~W12 · 게이트 G-7) → v2.2(2026-10-06 — G-7 ⓑ 확정 · D-202 2차 개정 승인 · W9~W12 구현 · D-305 등재) → v2.3(2026-10-06 — origin `71d7ff6`(결정 문서 구조 변경 D-304) 위로 재적용 · D-304 번호 선점으로 이 작업의 결정 번호를 D-305로 · 결정 문서를 새 구조로 재작성) → v2.4(2026-10-06 — 폐쇄망 재검증 2차: W9·W10 효과 확인 · 정합성 쿼리로 빈 줄 = NULL 묶음 확정 · W13 「(값 없음)」 표시 채택·구현 · D-306) → v2.5(2026-10-06 — 폐쇄망 재검증 3차: W13 미적용 원인 = 집계기 허용목록 state에 게이트 키 부재 → `executed_sqls` 우선으로 교정 · #3 `tcdmsif41` 선택 관찰)
 > **요청(사용자 2026-10-06)**: *"현재 프로젝트에서 DB 쿼리 생성시 SQL에 한글이 포함되어 있을 경우 생성 실패를 반환하도록 되어있음. 폴스타의 경우 문제 없었으나, ITAM의 경우 DB 칼럼명을 한글로 구성하였음을 확인하였음. 따라서 각 DB 설정에 따라 한글로 된 SQL을 허용할 것인지에 대한 여부를 설정하는 기능을 추가해야 함."* → *"plans에 계획으로 정리하고, 확인/검토가 필요한 내용은 별도로 보고하시오"*
 > **관련 계획**: `plans/95`(ITAM 편입 — **G-4 물리 식별자** 질문에 대한 사용자 답이 이번 요청의 전제) · `plans/133`(스키마 자산 자동 생성 — ITAM 프롬프트 섹션·`query_guide`) · `testdata/itam/README.md` 「리허설 기록」(MariaDB 큰따옴표 = 문자열 리터럴 실측)
 > **관련 결정**: **D-104(개정 대상 — 생성 SQL 한글 토큰 잔존 validator 차단 · 2026-07-22 「변경 이력」)** · D-066(단일·멀티 경로 대칭) · D-088/D-089(공용 검증 코어는 DB를 모른다 · DB 특화는 어댑터) · D-214(ITAM 엔진 = MariaDB) · D-292(DDL 스키마 등록) · 신규 기능 플래그 기본 off = 현행 동작(`plans/80` §5.4-③)
@@ -188,3 +188,180 @@
 - 폐쇄망 ITAM 실 질의 검증 — 배포 파일: `config/db_registry.yaml` · `src/routing/registry.py` · `src/sql_validation.py` · `src/nodes/query_validator.py` · `src/nodes/multi_db_executor.py` · `src/tools/validation.py` · `src/api/routes/db_structure.py` · `src/schema_cache/asset_generation_service.py` · `src/schema_cache/db_registration_service.py` · `src/static/manual/admin.html`·`user.html`. 확인 grep 심볼: `allow_hangul_identifiers` · `hangul_identifiers_allowed` · `check_hangul_tokens` · `check_double_quoted_identifiers` · `_hangul_column_count`.
 - 확인 항목: ① 한글 컬럼 질의가 한글 가드에 걸리지 않고 실행되는가 ② LLM이 `"컬럼"`을 쓰면 재생성 뒤 백틱/무인용으로 바뀌는가 ③ 「DB 구조」 O-8 조각에 `allow_hangul_identifiers: true`가 나오는가 ④ 앱 재기동 후 반영되는가.
 - §5 통지 항목(`plans/95` W-6 방언 규칙 · PII 필터 실측)은 각 소유 계획 소관.
+
+## 8. 추가 개선 (v2.1 · 2026-10-06 — 폐쇄망 1차 결과)
+
+W1~W8 반영 뒤 폐쇄망 ITAM에서 확인 질문 6건을 돌렸다(사용자 전달 2026-10-06). 한글 컬럼 SQL은 한글 가드를 통과해
+실행됐다(#1 정상 — W1~W8 목적 달성). 남은 실패는 **두 원인**으로 갈린다 — 둘 다 이 계획(ITAM 질의를 성립시키는 것)의
+연장이라 여기서 다룬다.
+
+### 8.1 폐쇄망 1차 결과 (사용자 전달 요약)
+
+| # | 질문(요지) | 결과 | 원인 |
+|---|---|---|---|
+| 1 | 자산 목록 10건 | 정상 | — |
+| 2 | 자산분류별 자산 수 | `1064 … near 'NULLS LAST LIMIT 10000'` 3회 반복 → 4회차 통과. 결과는 `tcdmsif78.물품분류번호` 기준 빈 값 1그룹 275,982건 | A(구문) · B(테이블) |
+| 3 | 담당 부점별 취득금액 상위 5 | `NULLS LAST LIMIT 5` 구문 오류로 재시도 → 통과. 1위가 빈 부점 `""` | A(구문) · 범위 밖(§8.5) |
+| 4 | 유지보수계약 종료일이 올해 안 | `tcdmsif72`(해당 컬럼 없음)의 `시스템등록처리일시`로 조회 → 오답. 재질의에서는 `tcdmsif80` 68컬럼 56건(정답 테이블) | B(테이블) |
+| 5 | 하드웨어 지원 종료 서버 호스트명 | 호스트명만 출력 → 추가 요청에 종료일 포함 정상 | 범위 밖(§8.5) |
+| 6 | 폴스타 회귀 | 정상 | — |
+
+### 8.2 원인 A — `NULLS LAST` 결정적 부가가 MariaDB 구문 오류를 만든다 (확정 · 코드)
+
+- `ensure_ranking_nulls_last()`(`src/db_adapters/polestar/validators.py:390` · D-202 2차)는 「집계 내림차순 + 행 제한」이면
+  `DESC` → `DESC NULLS LAST`로 **생성 직후 결정적으로 고친다**. 엔진을 보지 않는다 — 독스트링이 *"NULLS LAST는
+  PostgreSQL·DB2 공통 문법이라 방언 분기 불필요"*라고 적었고, MariaDB 편입(D-214) 전에 쓰인 문장이다.
+- 호출부 3곳이 DB를 가리지 않는다: `src/nodes/query_generator.py:966`(단일) · `src/nodes/multi_db_executor.py:1729`(다중 후보 선택) ·
+  `:1767`(멀티 생성). 2단 데이터 질의 task도 `subagents.py` → `schema_analyzer` → `query_generator`를 타므로 같은 지점을 지난다.
+- MariaDB에는 `NULLS LAST` 문법이 없다 → `1064`. 프롬프트에는 `NULLS LAST` 지시가 없다(grep 0건) — **LLM이 고쳐 와도
+  이 교정기가 다시 붙여** 재시도 예산을 소진했다. #2 4회차 통과는 LLM이 정렬 별칭을 백틱(`` `asset_count` ``)으로 감싸
+  교정기 패턴을 우연히 벗어난 결과다.
+- 의미: MariaDB는 NULL을 가장 작은 값으로 정렬한다 — `DESC`에서 NULL은 이미 맨 뒤다(`src/nodes/result_merger.py:174`
+  `_NULLS_SMALLEST_ENGINES`가 같은 사실을 쓴다). 교정기가 지키려던 의미(값 없는 행이 1위가 되지 않음)는 MariaDB에서
+  부가 없이 성립한다.
+- 검증기 쪽(`check_ranking_order_by_nulls_last`)은 폴스타 어댑터 훅이라 ITAM에는 걸리지 않는다 — 고칠 곳은 교정기뿐이다.
+
+### 8.3 원인 B — 테이블 선택 요약이 테이블당 앞 15컬럼만 보여 준다 (확정 · 로그)
+
+- 테이블 선택(`src/nodes/schema_analyzer.py` `_llm_select_relevant_tables`)은 테이블마다 **컬럼 순서상 앞 15개**만 싣고(테이블은 이름순, 컬럼은 수집 순서)
+  나머지는 `… (외 N개)`로 줄인다(`col_names[:15]`).
+- ITAM 실측(사용자 전달 2026-10-06):
+  - #4 로그 `관련 테이블:` = `tcdmsif44, 72~95`(25개 · 연속 번호). **정답 후보 `tcdmsif43`은 빠졌고 `tcdmsif80`은 들어 있다.**
+  - 컬럼 소재(`information_schema` · 사용자 전달): 유지보수계약 시작·종료·해지년월일 = `tcdmsif43`·`tcdmsif80` ·
+    자산분류구분명 = `tcdmsif41`·`tcdmsif80`.
+  - 벤더 시트 순서(`testdata/itam/schema.yaml` — 운영 `tcdmsif80` 68컬럼과 수 일치): `유지보수계약 종료년월일` 46번째 ·
+    `자산분류 구분명` 57번째 · `물품분류번호` 29번째 — **정답 컬럼이 전부 15번째 밖이라 선택 프롬프트에 보이지 않는다.**
+- 테이블명이 `TCDMSIF80` 같은 코드라 이름에 뜻도 없다 → LLM은 근거 없이 「IF 계열 통째로」를 골랐다(25개 연속 번호).
+  후보 25개의 전 컬럼이 SQL 생성 프롬프트에 실려 생성 단계가 흔들린다(#4 1회차 `tcdmsif72` 오답 · 재질의 `tcdmsif80` 정답).
+- 폴스타는 테이블명이 뜻을 가지고(`cmm_resource`) 테이블당 컬럼이 적어 이 절단이 드러나지 않았다.
+
+### 8.4 작업 단위
+
+| ID | 내용 | 파일 | verify |
+|---|---|---|---|
+| W9 | **원인 A** — `ensure_ranking_nulls_last(sql, *, db_engine=None)`: 엔진이 MariaDB·MySQL이면 원문 그대로 반환(의미 근거 §8.2). 호출부 3곳에 엔진 전달(단일 `state["active_db_engine"]` · 멀티 `db_engine` 인자). 미전달 = 현행(폴스타 비트 동일). 독스트링의 「방언 분기 불필요」 정정 | `src/db_adapters/polestar/validators.py` · `src/nodes/query_generator.py` · `src/nodes/multi_db_executor.py` | MariaDB: `ORDER BY cnt DESC LIMIT 5` 불변 · PostgreSQL·DB2: 종전대로 `NULLS LAST` 부가 · 기존 D-202 테스트 무변경 통과 |
+| W10 | **원인 B** — 테이블 선택 요약에 「질의 단어와 이름이 겹치는 15번째 밖 컬럼」 절을 **테이블 목록 뒤에** 덧붙인다(아래 설계). 결정적(LLM 0) · DB 리터럴 없음 · 적용 범위는 G-7 | `src/nodes/schema_analyzer.py` | 「유지보수계약 종료일」 질의 → `tcdmsif80: 유지보수계약종료년월일` 등이 선택 프롬프트에 실린다 · 겹침 없으면 프롬프트 바이트 불변 |
+| W11 | 회귀 — W9·W10 단위 테스트 · 폴스타 테이블 선택 프롬프트 렌더 불변(`scripts/prompt_render_diff.py`) | `tests/test_nodes/test_plan137_hangul_identifier_policy.py`(또는 신규) | 관련 모듈 회귀(D-303 — 모듈 단위) |
+| W12 | 결정·문서 — 신규 D(D-202 2차 「방언 분기 불필요」 개정 · 테이블 선택 요약 확장) · INDEX · 매뉴얼 대상 아님(화면·사용법 무변경) | `docs/02_decision.md` · `plans/INDEX.md` | — |
+
+**W10 설계**
+- 질의 단어: `user_query`·`query_targets`에서 한글 2자 이상·라틴 3자 이상 낱말(조사 등 꼬리 1자 제거 정도의 단순 규칙 ·
+  형태소 분석기 도입 없음).
+- 겹침 판정: 컬럼명(NFC·대소문자 무시)이 질의 낱말을 **포함**하면 겹침 — 「유지보수계약 종료일」 → 낱말 `유지보수계약` →
+  `유지보수계약종료년월일`·`유지보수계약시작년월일` 겹침.
+- 대상: 앞 15컬럼에 이미 보인 컬럼은 제외 · 테이블당 최대 10개 · 전체 상한(토큰 예산 — 108테이블 DB) 설정.
+- **위치는 테이블 목록 뒤 별도 절**(`질의 단어와 겹치는 컬럼(앞 15개 밖):`) — 테이블 목록 접두를 질의마다 바꾸지 않는다.
+  선택 프롬프트 접두는 KV 캐시 적중을 위해 순서까지 고정해 둔 부분이다(`plans/121` TP-11.10 · D-222 부기 ④).
+- 겹침이 없으면 절 자체를 싣지 않는다 → 프롬프트 바이트 불변.
+
+### 8.5 범위 밖 — 연결만
+
+| 항목 | 이유 · 소유 |
+|---|---|
+| 막연한 질문(「자산 목록」)의 테이블 선택 | 질의 단어와 컬럼명이 겹치지 않으면 W10이 돕지 못한다 — 테이블 설명이 필요하다. `main` `plans/133`(스키마 자산 자동 생성) · `plans/135`(ITAM 질의 벤치마크)가 근거·효과 측정 소유 |
+| #4 재질의 `SELECT *` 68컬럼 · #5 호스트명만 출력 | 출력 컬럼 선택은 ITAM 프롬프트 규칙 영역 — `plans/95` W-6 |
+| #3 빈 부점 `""` 1위 · 부점 코드로 집계(부점명 아님) | 데이터 실태(빈 문자열 다수)와 컬럼 의미 선택 — ITAM 지식(`plans/95` W-6 · `plans/135`) |
+| #2 `tcdmsif78.물품분류번호` 빈 값 275,982건 | W10으로 `자산분류구분명`이 보이면 해소될 것으로 본다 — 재검증에서 확인. 남으면 `plans/135` |
+
+### 8.6 게이트 — **G-7 ⓑ 확정**(사용자 2026-10-06 *"권장사항에 따라 (b)안 적용"*) · D-202 2차 개정 승인(*"당연히 지원하지 않는 문구를 그대로 사용하도록 하면 안되기 때문임"*)
+
+| ID | 질문 | 권고 | 영향 |
+|---|---|---|---|
+| **G-7** | W10(선택 요약 확장)의 적용 범위: ⓐ 전 DB(겹침이 있을 때만 절 추가 · 접두 불변) ⓑ 한글 식별자 허용 DB(`allow_hangul_identifiers: true`)만 | **ⓑ** — 폴스타는 고려하지 않는다는 G-4와 같은 원칙(허용 off DB 비트 동일). 문제(코드형 테이블명 + 한글 컬럼 + 넓은 테이블)도 ITAM 형태에 고유하다. 다른 DB에 필요해지면 ⓐ로 넓힌다 | W10 분기 조건 |
+
+W9는 게이트 없이 착수할 수 있다(구문 오류 교정 · 폴스타 비트 동일).
+
+### 8.7 폐쇄망 재검증 (W9·W10 반영 후)
+
+| # | 질문 | 기대 |
+|---|---|---|
+| 2 | `ITAM에서 자산분류별 자산 수를 많은 순으로 보여줘` | `NULLS LAST` 구문 오류 0회 · 테이블 `tcdmsif41` 또는 `tcdmsif80`의 `자산분류구분명` 기준 집계 |
+| 3 | `ITAM에서 담당 부점별 취득금액 합계 상위 5개` | 구문 오류 0회(값 해석은 §8.5) |
+| 4 | `ITAM에서 유지보수계약 종료일이 올해 안에 끝나는 자산 보여줘` | 로그 `관련 테이블:`에 `tcdmsif43` 또는 `tcdmsif80` 포함 · SQL이 `유지보수계약종료년월일` 조건 사용 |
+
+옮겨 적을 것: 위 3건의 성공·실패와, #4의 `관련 테이블:` 목록 1줄.
+
+### 8.8 구현 결과 (v2.2 · 2026-10-06)
+
+| ID | 반영 |
+|---|---|
+| W9 | `src/db_adapters/polestar/validators.py` — `ensure_ranking_nulls_last(sql, *, db_engine=None)` · `_NO_NULLS_ORDERING_ENGINES`(mariadb·mysql) · 독스트링 「방언 분기 불필요」 정정. 호출부: `src/nodes/query_generator.py`(`_dialect_engine(state)` — state 엔진, 없으면 레지스트리) · `src/nodes/multi_db_executor.py` 2곳(`db_engine` 인자) |
+| W10 | `src/nodes/schema_analyzer.py` — `_query_words` · `_query_matched_columns_text` · `_llm_select_relevant_tables(…, match_columns=)` · 호출부 `match_columns=hangul_identifiers_allowed(db_id)`(G-7 ⓑ). 상수 `_SELECT_SUMMARY_COLUMNS=15` · `_MATCH_COLUMNS_PER_TABLE=10` · `_MATCH_COLUMNS_TOTAL=80`. 낱말은 한글·라틴 3자 이상(구현 중 조정 — 2자 「자산」·「에서」가 108테이블에서 잡음) |
+| W11 | `tests/test_nodes/test_plan137_hangul_identifier_policy.py` +15건(총 54건 통과) — 엔진 분기 · 레지스트리 폴백 · 호출부 3곳 엔진 전달 · 겹침 절 내용·상한·꼬리 1자 · 접두 불변 · 허용 off 프롬프트 바이트 동일 · 호출부 레지스트리 게이트 |
+| W12 | `docs/decisions/D-305.md` 신설 · 색인(`docs/02_decision.md`) 행 · `docs/decisions/CHANGELOG.md` · D-202 부기(2차 개정) · D-297 상태 정정(커밋 `9e85556`) · 이 계획서 · INDEX(240자) · `plans/INDEX-CHANGELOG.md` — D-304 결정 문서 구조(색인 + 결정별 파일)에 맞춤 |
+
+**검증(로컬 · LLM 0 · DB 0)**: 변경 모듈을 import하는 테스트 122파일(D-303 모듈 단위) — 2,629 통과 · 실패 18 · 오류 10. 실패·오류 28건은 **변경 전 HEAD(`9e85556`) 격리 worktree에서도 동일**(파일 업로드 스트림 API `[file]` 변형 · e2e 브라우저 미설치 · `plan107_intent_frame` 설정 로그) — 이 변경과 무관. `prompt_render_diff --ci` 차이 0 · `arch_check --ci` 위반 0 · `overfit_check --ci` 신규 유입 0. `ruff`·`mypy`는 이 PC의 Python에 미설치라 미실행.
+
+**폐쇄망 반영(파일별 수동 복사)** — W1~W8 파일이 이미 반영돼 있어야 한다(`schema_analyzer.py`가 W1의 `src/routing/registry.py` `hangul_identifiers_allowed`를 import한다 — 없으면 기동 실패).
+
+| 파일 | 확인 grep 심볼 |
+|---|---|
+| `src/db_adapters/polestar/validators.py` | `_NO_NULLS_ORDERING_ENGINES` |
+| `src/nodes/query_generator.py` | `_dialect_engine` |
+| `src/nodes/multi_db_executor.py` | `ensure_ranking_nulls_last(sql, db_engine=db_engine)` |
+| `src/nodes/schema_analyzer.py` | `_query_matched_columns_text` · `match_columns=hangul_identifiers_allowed` |
+
+반영 뒤 앱 재기동 → §8.7 재검증.
+
+## 9. 추가 개선 2 — 집계 결과 표의 NULL 묶음 기준 표시 (v2.4 · 2026-10-06)
+
+### 9.1 폐쇄망 재검증 결과 (W9·W10 반영 후 · 사용자 전달)
+
+| # | 결과 | 판정 |
+|---|---|---|
+| 2 자산분류별 자산 수 | `NULLS LAST` 오류 0 · `t.자산분류구분`·`t.자산분류구분명` 두 컬럼으로 집계 · 표 가운데에 빈 분류 줄 | W9 효과 확인 · 빈 줄 = §9.2 |
+| 3 부점별 취득금액 | 같은 형태(부서 A · 부서 B · 빈칸) | 같음 |
+| 4 유지보수계약 종료일 | `관련 테이블:`에 `tcdmsif80` 포함 | W10 효과 확인 |
+
+### 9.2 정합성 확인 (DB 직접 조회 · 사용자 전달)
+
+- `tcdmsif80` 전체 3,843 = 기계장치 2,386 + NULL 1,419 + 부외자산 38 — 누락·중복 없음, 앱 SQL에 의도하지 않은 조건 없음.
+- 빈 줄은 빈 문자열이 아니라 **NULL**(`자산분류구분명` NULL 1,419 · 빈 문자열 0 · `담당부점명` NULL 1,616 · 빈 문자열 0).
+- `취득금액` = decimal(합계 정확) · `취득금액` NULL 1,419(분류 NULL과 같은 수 — 같은 행일 가능성).
+- 정렬은 건수·금액 순 그대로 — NULL 묶음도 제 크기 순서에 온다. `NULLS LAST`는 정렬 기준 값(집계)이 NULL일 때의 규칙이라 무관하다. **데이터·정렬은 정상이고 표시만 오해를 부른다.**
+
+### 9.3 W13 — 사용자 확정 사항과 구현
+
+| 항목 | 확정 |
+|---|---|
+| 적용 위치 | 화면 결과 표 렌더 직전(표시용 사본) — 저장 결과·CSV·양식 채우기·후속 질의 값은 NULL 그대로(출력 경로 전수 조사 근거 — D-306) |
+| 적용 DB | **(가) ITAM만** — 레지스트리 새 항목 `label_null_group_keys`(「한글 식별자 허용」과 뜻이 달라 분리) · 멀티 DB 병합 표 제외 |
+| 문구 | **「(값 없음)」** |
+| 묶음 기준 판정 | 실행 SQL 최상위 SELECT 목록의 집계 함수 아닌 항목(별칭·단순 컬럼). `GROUP BY` 없음·`WITH`·`*`·집계 없음이면 미적용 |
+| 행 조건 | 묶음 기준 NULL이고 같은 행의 집계 값이 있을 때만 |
+
+구현: `src/routing/registry.py`(`DBEntry.label_null_group_keys` · `null_group_label_enabled` · 공용 `_entry_flag`) · `config/db_registry.yaml`(ITAM `label_null_group_keys: true`) ·
+`src/nodes/output_generator.py`(`NULL_GROUP_LABEL` · `group_key_columns` · `_null_group_key_columns` · `_label_null_group_keys` · `_render_result_table(…, null_label_keys=)`) ·
+매뉴얼 U-20 주의 1줄(`scripts/manual/content/user.md` → 빌드) · 테스트 +18건(계획서 137 테스트 총 72건).
+2단 경로도 같은 함수로 최종 표를 만든다(`result_aggregator._finalize_merged_rows` → `output_generator`).
+
+남는 차이(D-306 주의): LLM 요약 입력은 NULL 그대로 · 시간 상한 부분 결과 표·진행 패널 미리보기는 빈칸 그대로 · 별칭 없는 계산식 묶음 기준은 미표시.
+
+### 9.4 폐쇄망 반영 · 재검증
+
+| 파일 | 확인 grep 심볼 |
+|---|---|
+| `config/db_registry.yaml` | `label_null_group_keys` (내부망에서 이 파일을 고친 적이 있으면 덮어쓰지 말고 ITAM 항목에 `label_null_group_keys: true` 한 줄만 추가) |
+| `src/routing/registry.py` | `null_group_label_enabled` |
+| `src/nodes/output_generator.py` | `NULL_GROUP_LABEL` |
+| `src/static/manual/user.html`·`admin.html` | (매뉴얼 — 선택) |
+
+재검증: #2 `ITAM에서 자산분류별 자산 수를 많은 순으로 보여줘` → 표의 NULL 줄이 `| (값 없음) | (값 없음) | 1419 |`로 보이는지 · CSV는 빈칸 그대로인지. #3 같은 확인.
+
+### 9.5 폐쇄망 재검증 3차와 게이트 교정 (v2.5 · 2026-10-06)
+
+**결과(사용자 전달)**: #2 — 표·CSV 모두 빈칸(라벨 미적용). #3 — 이번에는 `tcdmsif41`을 조회했고 부점명 5개가 모두 채워져 나옴(앞서 `tcdmsif80` 결과의 A·B 대신 C·D·E·F 등장).
+
+**#2 원인(확정 · 코드 — 구현 실수)**: W13 게이트(`_null_group_key_columns`)가 `state["active_db_id"]`·`state["generated_sql"]`만 읽었다.
+2단·1단 최종 응답은 `result_aggregator._build_output_state`가 **허용목록으로 새 state**를 만들어 `output_generator`를 부르는데(1단도
+수집기 결과를 같은 집계기로 마감 — `deep_agent.py` step6), 그 state에는 두 키가 없다. 실행 SQL·DB는 `executed_sqls`(`[{db_id, sql}]`)로만 온다.
+테스트가 두 키를 넣은 state로 노드를 직접 불러 통과해 배선 누락을 잡지 못했다(`docs/18_known_mistakes.md` 2026-10-06).
+CSV 빈칸은 설계대로다(D-306 ① — CSV는 원본 값).
+
+**교정**: 게이트가 `executed_sqls`를 먼저 본다 — 1건이면 그 `db_id`·`sql`, 여러 건이면 멀티 DB라 미적용, 없을 때만 종전 키(그래프 3·4단).
+테스트 +4건 — `_build_output_state`를 통과한 state로 게이트·최종 표 렌더를 검증(교정 전 코드에서는 실패하는 테스트).
+반입 파일은 `src/nodes/output_generator.py` 1개(확인 grep: `executed_sqls` 우선 주석 「한 번도 켜지지 않았다」 · 심볼 `_null_group_key_columns`).
+
+**#3 관찰(사용자 확인 필요)**: 같은 질문이 실행마다 다른 테이블(`tcdmsif80` ↔ `tcdmsif41`)로 답해 결과가 달라진다. 코드 결함이 아니라
+**어느 테이블이 그 질문의 정본인지에 대한 지식이 없어서**다 — 두 테이블 모두 자산분류·부점·금액 계열 컬럼이 있다. 「자산」 질문의 기준 테이블을
+정해 ITAM 지식(테이블 설명·규칙 — `plans/95` W-6 · `plans/133`)에 넣어야 고정된다. 판단 재료로 두 테이블의 성격(행 수 · 서버 자산만인가 전체 자산인가)이 필요하다.

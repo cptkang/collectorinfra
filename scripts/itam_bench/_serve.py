@@ -9,7 +9,7 @@ plans/135 §3.6 · W3.
 **이름**· 컬럼별 의미 보유 여부·표본 행 유무(불린)·구조 정보 유무만 복사해 한 줄 쓰고 놓는다. **값과
 사용자 필드(`user_id`·`user_department`)는 읽지 않는다.**
 
-plans/138 W6-d: DB 별로 프롬프트 크기·선별 결과도 옮긴다 — **숫자와 짧은 열거만**(추정 토큰 수 ·
+plans/139 W6-d: DB 별로 프롬프트 크기·선별 결과도 옮긴다 — **숫자와 짧은 열거만**(추정 토큰 수 ·
 예산 단계 · 백엔드가 보고한 토큰 수 · 선별 출처 · 선별 수 · 재생성 종결 사유). 선별된 테이블 이름
 목록·사유 문구는 옮기지 않는다. 상태에 없으면 null 이다.
 
@@ -35,7 +35,7 @@ if str(_REPO_ROOT) not in sys.path:
 CAPTURE_ENV = "ITAM_BENCH_CAPTURE_PATH"
 CAPTURE_KIND = "task_pipeline_state"
 
-#: 상태 계약(plans/138 W2 `prompt_budget.stage` · W4 `table_selection.source`)의 열거값.
+#: 상태 계약(plans/139 W2 `prompt_budget.stage` · W4 `table_selection.source`)의 열거값.
 #: 그 밖의 값은 null 로 옮긴다.
 BUDGET_STAGES: frozenset[str] = frozenset({"within", "materials", "samples", "exceeded"})
 SELECTION_SOURCES: frozenset[str] = frozenset({"llm", "lexical", "none"})
@@ -92,7 +92,7 @@ def _member(value: Any, allowed: Collection[str]) -> str | None:
 
 
 def _prompt_shape(state: Mapping[str, Any], db_id: str, *, single: bool) -> dict[str, Any]:
-    """DB 하나의 프롬프트 크기·선별 결과 → 숫자·짧은 열거만(plans/138 W6-d).
+    """DB 하나의 프롬프트 크기·선별 결과 → 숫자·짧은 열거만(plans/139 W6-d).
 
     예산(`prompt_budget`)·백엔드 보고(`validation_result.backend_error`)·종결 사유(`regen_stop`)는
     단일 경로 상태의 몫이다. 멀티 DB 상태는 DB 별 종결 사유(`regen_stops`)와 선별만 읽는다.

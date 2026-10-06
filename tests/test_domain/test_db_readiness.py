@@ -70,7 +70,7 @@ def _registry(**overrides: Any) -> dict[str, Any]:
 class TestAllMet:
     def test_ready_counts_and_dict(self) -> None:
         report = evaluate_readiness(_inputs())
-        # C11(테이블 정의 경고)은 plans/138 W3
+        # C11(테이블 정의 경고)은 plans/139 W3
         assert [i.code for i in report.items] == [f"C{n}" for n in range(1, 12)]
         assert report.required_total == 7 and report.required_met == 7
         assert report.recommended_total == 2 and report.recommended_met == 2

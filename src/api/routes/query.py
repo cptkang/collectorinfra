@@ -800,7 +800,7 @@ def _disclosures_field(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _time_resolution_field(state: Mapping[str, Any]) -> dict[str, Any]:
-    """요청 시간 해석(plans/122 T-4 · D-306) — 네 진입점 응답·`done`에 같은 모양으로 싣는다.
+    """요청 시간 해석(plans/122 T-4 · D-309) — 네 진입점 응답·`done`에 같은 모양으로 싣는다.
 
     값은 state `time_resolution` 그대로(`QueryTime.to_state()` 모양 — 하네스가 실행 SQL과 대조할
     기준 `[start, end)`). 없으면(플래그 off · 해석 전 종료) 키를 싣지 않는다(바이트 불변).
@@ -815,7 +815,7 @@ TIME_CLARIFY_KIND = "time_period"
 
 
 def _time_clarification(state: Mapping[str, Any]) -> dict[str, Any] | None:
-    """기간 해석 불가로 끝난 턴의 역질문 페이로드 — 아니면 None (plans/122 T-3·T-4 · D-306).
+    """기간 해석 불가로 끝난 턴의 역질문 페이로드 — 아니면 None (plans/122 T-3·T-4 · D-309).
 
     `input_parser`는 해석 불가(`time_resolution.clarify`)면 그래프를 끝내고 `final_response`에
     되묻기 문구를 싣는다. 라우트는 이 턴을 존 역질문과 같은 채널(status="clarification" +

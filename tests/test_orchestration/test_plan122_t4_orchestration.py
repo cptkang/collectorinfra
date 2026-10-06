@@ -1,4 +1,4 @@
-"""plans/122 T-4 — 2단·3단 task에 요청 시간 해석(`time_resolution`) 배선 (D-306).
+"""plans/122 T-4 — 2단·3단 task에 요청 시간 해석(`time_resolution`) 배선 (D-309).
 
 고정하는 계약:
 ① 2단 격리 입력(`_make_isolated_input`)이 `time_resolution`을 싣는다 — 격리 입력은 키를 직접

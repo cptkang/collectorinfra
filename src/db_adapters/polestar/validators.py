@@ -419,7 +419,12 @@ def check_ranking_order_by_nulls_last(sql: str) -> list[str]:
     ]
 
 
-def ensure_ranking_nulls_last(sql: str) -> str:
+#: `NULLS LAST` 문법이 없는 엔진 — NULL을 가장 작은 값으로 정렬해 `DESC`에서 이미 맨 뒤다
+#: (`src/nodes/result_merger.py` `_NULLS_SMALLEST_ENGINES`와 같은 사실 · plans/137 W9).
+_NO_NULLS_ORDERING_ENGINES = frozenset({"mariadb", "mysql"})
+
+
+def ensure_ranking_nulls_last(sql: str, *, db_engine: str | None = None) -> str:
     """집계 순위 정렬의 NULLS LAST 누락을 반려 대신 결정적으로 교정한다 (D-202 2차).
 
     D군 2차 폐쇄망 실측(D-04 CM) — LLM이 에러 힌트를 받고도 재시도 전부에서 NULLS LAST를
@@ -428,8 +433,14 @@ def ensure_ranking_nulls_last(sql: str) -> str:
     (Known Mistakes: 프롬프트 강제 반복 실패 형태는 결정적 처리 대상).
 
     check_ranking_order_by_nulls_last가 반려할 SQL만 대상 — 비대상은 바이트 불변.
-    NULLS LAST는 PostgreSQL·DB2 공통 문법이라 방언 분기 불필요.
+    NULLS LAST는 PostgreSQL·DB2 공통 문법이지만 **MariaDB·MySQL에는 없다**(D-305 — D-202 2차의
+    「방언 분기 불필요」 개정). 그 엔진은 원문 그대로 둔다 — 붙이면 1064 구문 오류가 나고, 이
+    교정기가 재시도마다 다시 붙여 예산을 소진했다(폐쇄망 ITAM 실측 2026-10-06). 그 엔진은 NULL을
+    가장 작게 정렬해 `DESC`에서 이미 맨 뒤라 교정이 지키려던 의미가 부가 없이 성립한다.
+    ``db_engine`` 미전달은 종전 동작(부가)이다.
     """
+    if str(db_engine or "").strip().lower() in _NO_NULLS_ORDERING_ENGINES:
+        return sql
     if not check_ranking_order_by_nulls_last(sql):
         return sql
     m = _ORDER_BY_RE.search(sql)
@@ -951,7 +962,7 @@ def check_current_month_stat_table(sql: str, user_query: str) -> list[str]:
     return [_CURRENT_MONTH_STAT_GUIDE]
 
 
-# ── plans/122 T-5b: 생성 후 시간 조건 검증 (D-306 · 2026-10-06) ─────────────────
+# ── plans/122 T-5b: 생성 후 시간 조건 검증 (D-309 · 2026-10-06) ─────────────────
 # 실행 전 SQL의 시간 조건(통계 stat_date · 알람 ctime)을 요청 시간 해석(`QueryTime`)과 대조한다.
 # 경계 대조의 공용 틀은 `src.sql_validation`(DB 무관)이고, 테이블·stat_date 형식·TIMESTAMP 경계는
 # 생산자(프롬프트 기간 블록·결정적 조립)와 같은 투영 `time_period`에서 온다 — 「검증기가 반려하는
@@ -1256,7 +1267,7 @@ def _alarm_findings(
 
 
 def check_time_conditions(sql: str, qt: QueryTime) -> list[str]:
-    """생성 SQL의 시간 조건을 요청 시간 해석과 대조한다(plans/122 T-5b · D-306).
+    """생성 SQL의 시간 조건을 요청 시간 해석과 대조한다(plans/122 T-5b · D-309).
 
     대상은 SQL이 참조하는 통계 테이블(`time_period.STAT_TABLES` — `stat_date`)과 알람 테이블
     (`cmm_alarm`·`cmm_alarm_active` — `ctime`)이다. 사용자가 기간을 말했고(`qt.explicit`) 비교

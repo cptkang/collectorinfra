@@ -82,14 +82,14 @@ REGEN_STOP_VALIDATION_BUDGET = "validation_budget"
 REGEN_STOP_NON_SQL = "non_sql"
 REGEN_STOP_DEADLINE = "deadline"
 #: LLM 입력 한도 초과(백엔드 보고 · 전송 전 예산 초과)·백엔드 오류 응답 — 재생성 0회 종결
-#: (plans/138 W1·W2 · D-305 ⑥⑦).
+#: (plans/139 W1·W2 · D-308 ⑥⑦).
 REGEN_STOP_BACKEND_LIMIT = "backend_limit"
 
-#: `validation_result.backend_error.kind` 중 전송 전 예산 초과(LLM 미호출 · plans/138 W2). 백엔드가
+#: `validation_result.backend_error.kind` 중 전송 전 예산 초과(LLM 미호출 · plans/139 W2). 백엔드가
 #: 보고한 두 종류(`token_limit`·`backend_error`)는 검증 코어의 `LLMBackendError.kind`다.
 BACKEND_ERROR_PROMPT_BUDGET = "prompt_budget"
 
-#: 정의 기반 테이블 선별 0개 — SQL 생성 없이 안내로 종결(plans/138 W4 · D-305 G-2). 검증 결과에는
+#: 정의 기반 테이블 선별 0개 — SQL 생성 없이 안내로 종결(plans/139 W4 · D-308 G-2). 검증 결과에는
 #: `selection_none: True` 표지가 실린다(`selection_none_hit`).
 REGEN_STOP_SELECTION_NONE = "selection_none"
 
@@ -133,7 +133,7 @@ def backend_limit_hit(validation_result: Mapping[str, Any] | None) -> bool:
     """LLM 입력 한도 초과·백엔드 오류 응답으로 검증에 실패했는가 — 재생성 0회 종결 신호.
 
     그래프(`route_after_validation`·`error_response`)·2단 단일 DB 루프가 같은 판정을 쓴다
-    (plans/138 W1·W2 · D-305 ⑥⑦ · D-066). 같은 프롬프트 재생성은 결정적으로 다시 넘는다.
+    (plans/139 W1·W2 · D-308 ⑥⑦ · D-066). 같은 프롬프트 재생성은 결정적으로 다시 넘는다.
     """
     return bool((validation_result or {}).get("backend_error"))
 
@@ -171,7 +171,7 @@ def prompt_budget_exceeded_detail(prompt_budget: Mapping[str, Any]) -> str:
 
 
 def selection_none_hit(validation_result: Mapping[str, Any] | None) -> bool:
-    """정의 기반 선별 0개로 검증에 실패했는가 — 재생성 0회 안내 종결 신호(plans/138 W4).
+    """정의 기반 선별 0개로 검증에 실패했는가 — 재생성 0회 안내 종결 신호(plans/139 W4).
 
     그래프(`route_after_validation`·`error_response`)·2단 단일 DB 루프가 같은 판정을 쓴다. 안내
     문구는 검증 사유(`reason`)에 실려 있다(`selection_none_guidance`).
@@ -293,7 +293,7 @@ async def query_validator(
     sql = state["generated_sql"]
     schema_info = state["schema_info"]
 
-    # 전송 전 예산 초과(plans/138 W2 · D-305 ⑥) — 생성기가 LLM을 부르지 않고 빈 산출로 끝냈다.
+    # 전송 전 예산 초과(plans/139 W2 · D-308 ⑥) — 생성기가 LLM을 부르지 않고 빈 산출로 끝냈다.
     # 백엔드 보고 한도 초과와 같은 종결(재생성 0회)이고 사유만 「전송 전 예산 초과」로 구분한다.
     _budget_mark = state.get("prompt_budget") or {}
     if _budget_mark.get("stage") == PROMPT_BUDGET_EXCEEDED and not (sql or "").strip():
@@ -305,7 +305,7 @@ async def query_validator(
             error_message=_detail,
         )
 
-    # 정의 기반 테이블 선별 0개(plans/138 W4 · D-305 G-2) — 생성기가 LLM을 부르지 않고 빈 산출로
+    # 정의 기반 테이블 선별 0개(plans/139 W4 · D-308 G-2) — 생성기가 LLM을 부르지 않고 빈 산출로
     # 끝냈다. 재생성하지 않고 안내 문구(그 DB 정의의 업무 영역 예시)로 종결한다.
     if selection_none_active(state) and not (sql or "").strip():
         _guidance = selection_none_guidance(definitions_of(schema_info))
@@ -320,7 +320,7 @@ async def query_validator(
     # DB 어댑터 전용 검증(폴스타 라우팅 필터 오용 등) — 담당 어댑터가 있으면 훅을 주입
     # (기존 _check_routing_filter_misuse를 폴스타 어댑터로 이동, Plan 63 P2/D-089).
     adapter = get_adapter(state.get("active_db_id"), app_config.get_polestar_db_ids() or None)
-    # 시간 해석(state `time_resolution` · plans/122 T-5b · D-306)을 넘기면 어댑터가 생성 SQL의
+    # 시간 해석(state `time_resolution` · plans/122 T-5b · D-309)을 넘기면 어댑터가 생성 SQL의
     # 시간 조건을 해석 결과와 대조한다. None(플래그 off)이면 종전 검사 목록 그대로다.
     adapter_checks = (
         adapter.validator_checks(
@@ -342,7 +342,7 @@ async def query_validator(
         allow_hangul_identifiers=hangul_identifiers_allowed(state.get("active_db_id")),
     )
 
-    # LLM 백엔드 오류 응답(plans/138 W1 · D-305 ⑦) — 코어가 사유 하나만 냈다. 산문(비-SQL) 판정·
+    # LLM 백엔드 오류 응답(plans/139 W1 · D-308 ⑦) — 코어가 사유 하나만 냈다. 산문(비-SQL) 판정·
     # PII 차단 진단과 섞지 않고(`non_sql` False) 재생성 0회 종결 표지(`backend_error`)를 싣는다.
     # 사용자에게 가는 실패 사유(`error_message`)는 응답 원문 없는 요약이다(원문은 검증 사유·
     # 로그에만).
@@ -457,7 +457,7 @@ def _log_backend_error(
 ) -> None:
     """백엔드 오류 응답 종결을 로그로 남긴다 — 한도 초과는 백엔드 보고치와 자기 추정치를 함께.
 
-    추정 계수 보정(D-305 주의)은 이 줄의 `Given`·자기 추정을 대조해 한다.
+    추정 계수 보정(D-308 주의)은 이 줄의 `Given`·자기 추정을 대조해 한다.
     """
     budget_mark = state.get("prompt_budget") or {}
     if kind == BACKEND_ERROR_TOKEN_LIMIT:
@@ -488,7 +488,7 @@ def _build_failure_result(
         errors: 에러 메시지 목록
         non_sql: 생성 산출물이 SQL이 아닌 산문이었는가(그래프 조기 종결 신호)
         backend_error: LLM 입력 한도 초과·백엔드 오류 표지(`{"kind", "given", "limit"}` — 재생성
-            0회 종결 신호 · plans/138 W1·W2). 없으면 키를 싣지 않는다(종전 결과와 같다).
+            0회 종결 신호 · plans/139 W1·W2). 없으면 키를 싣지 않는다(종전 결과와 같다).
         error_message: 실패 사유 문구를 바꿀 때(없으면 ``SQL 검증 실패: <사유>``)
 
     Returns:

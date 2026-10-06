@@ -1,4 +1,4 @@
-"""정의 기반 테이블 선별 프롬프트 (plans/138 W4 · D-305 G-1~G-3).
+"""정의 기반 테이블 선별 프롬프트 (plans/139 W4 · D-308 G-1~G-3).
 
 프로필에 테이블 정의(`table_definitions`)가 있는 DB에서, 질문에 필요한 조회 대상 테이블을 LLM이
 고르게 한다. 단일·멀티 경로가 같은 프롬프트를 쓴다(`src.nodes.table_selection.select_tables`).

@@ -647,7 +647,7 @@ def format_schema_text(
 
 
 # ──────────────────────────────────────────────
-# 테이블 용도 블록 (plans/138 W5 · D-305 ⑤)
+# 테이블 용도 블록 (plans/139 W5 · D-308 ⑤)
 # ──────────────────────────────────────────────
 
 #: 「테이블 용도」 블록 머리말 — 단일·멀티 시스템 프롬프트에서 스키마 텍스트 바로 앞에
@@ -668,7 +668,7 @@ def build_table_purpose_block(schema_info: Mapping[str, Any] | None) -> str:
 
     좁힌 스키마(`tables`) 중 테이블 정의(`_structure_meta.table_definitions`)가 있는 테이블만
     이름순으로 ``- 테이블: 관리하는 정보 (주의: 주의 사항)`` 한 줄씩 싣는다(맨 이름 비교). 대표
-    컬럼·연결 상대·성격·업무 영역은 선별용이라 싣지 않는다(plans/138 §4.3).
+    컬럼·연결 상대·성격·업무 영역은 선별용이라 싣지 않는다(plans/139 §4.3).
 
     정의가 하나도 없으면 빈 문자열이다 — 정의 없는 DB의 프롬프트 바이트는 종전과 같다(G-1).
     질의 경로는 정의를 고치지 않는다(D-227). 승인 검증을 거치지 않은 파일 편집에 대비해 중괄호·
@@ -750,7 +750,7 @@ class PromptBudgetExceeded(RuntimeError):
     보내면 그 텍스트가 SQL 검증으로 흘러가 "SELECT 문이 아닙니다"로 오표면화된다.
 
     ``budget_state``는 단일 경로 상태 표지(`prompt_budget` — 추정치·예산·단계·테이블 수·표본
-    유무, 값 없음 · plans/138 W2)다. 노드가 예외를 받아 종결 상태로 바꿀 때 쓴다. 멀티 경로는
+    유무, 값 없음 · plans/139 W2)다. 노드가 예외를 받아 종결 상태로 바꿀 때 쓴다. 멀티 경로는
     싣지 않는다(None).
     """
 
@@ -759,7 +759,7 @@ class PromptBudgetExceeded(RuntimeError):
         self.budget_state = budget_state
 
 
-#: 단일 경로 예산 사다리 단계(state `prompt_budget.stage` · plans/138 W2) — 벤치(W6)가 값을 그대로
+#: 단일 경로 예산 사다리 단계(state `prompt_budget.stage` · plans/139 W2) — 벤치(W6)가 값을 그대로
 #: 읽는다. 예산 안 / 1단(유사어·설명 제거) / 2단(표본 제거) / 전송 전 중단.
 PROMPT_BUDGET_WITHIN = "within"
 PROMPT_BUDGET_MATERIALS = "materials"

@@ -25,7 +25,7 @@
    만들지 않으므로 O-6 병합 결과는 종전과 같다. base 값이 리스트·dict가 아닌 사람 편집값이어도
    그대로 둔다. `code_labels`(컬럼 → {코드값: 라벨})는 코드값 단위로 base 라벨을 우선하고 새
    코드값의 라벨만 더한다.
-8. (D-305 테이블 정의) `table_definitions`(테이블 → 정의)는 **테이블 단위**로 병합한다
+8. (D-308 테이블 정의) `table_definitions`(테이블 → 정의)는 **테이블 단위**로 병합한다
    (맨 이름 비교). base의 `origin: manual` 항목은 보존하고, 초안의 `import`·`llm`·`comment`
    항목은 base의 비-manual 항목을 교체한다. 초안의 `manual` 항목(관리자가 검토 화면에서 고친
    값)은 그대로 쓴다. 초안에만 있는 테이블은 더하고 base에만 있는 테이블은 그대로 둔다. 초안에
@@ -58,7 +58,7 @@ UNION_LIST_KEYS: Mapping[str, tuple[str, ...]] = MappingProxyType({
 })
 # 컬럼 키 단위로 base를 우선하고 초안에만 있는 키를 더하는 dict 자산 키(D-294)
 DICT_FILL_KEYS: tuple[str, ...] = ("code_labels",)
-# 테이블 단위로 병합하는 정의 자산 키(D-305 — base `manual` 항목 보존)
+# 테이블 단위로 병합하는 정의 자산 키(D-308 — base `manual` 항목 보존)
 TABLE_UNIT_KEYS: tuple[str, ...] = ("table_definitions",)
 # 병합이 직접 정하는 메타 키(base 값은 쓰지 않는다)
 METADATA_KEYS: tuple[str, ...] = ("source", "environment")

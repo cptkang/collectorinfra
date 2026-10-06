@@ -519,6 +519,38 @@ def _source_reentry_plan(
     return _on_path(plan, SOURCE_REENTRY_PATH)
 
 
+def _doc_command_plan(
+    state: AgentState, app_config: AppConfig, user_query: str,
+) -> dict[str, Any] | None:
+    """문서 검색 명령 턴 — `doc_query` 단일 task(활성) 또는 안내만(비활성) · 아니면 None
+    (plans/138 W1·W2 · D-307).
+
+    양식·존·소스 선택 답변 턴은 판정하지 않는다(그 턴의 결정적 단락이 우선한다).
+    """
+    if (state.get("template_structure") or state.get("uploaded_file")
+            or state.get("selected_db_ids") or state.get("selected_sources")):
+        return None
+    from src.orchestration.conditional_agents import SOURCE_NOTICE_KEY  # 지연 — 순환 방지
+    from src.orchestration.doc_command import DOC_COMMAND_PATH, parse_doc_command
+    from src.orchestration.doc_query import DOC_QUERY_AGENT, DOC_SYSTEM
+    from src.routing.source_hints import source_notice_text
+
+    command = parse_doc_command(user_query, app_config)
+    if command is None:
+        return None
+    if not command.active:
+        logger.info("intent_planner: 문서 검색 명령 — 문서 검색 비활성 → 안내만(D-307 · D-293 G-1)")
+        plan = _single_task_plan("general_inference", user_query)
+        plan["task_plan"][0]["direct_response"] = source_notice_text([command.hint])
+        plan["task_plan"][0][SOURCE_NOTICE_KEY] = [DOC_SYSTEM]
+        return _on_path(plan, DOC_COMMAND_PATH)
+    logger.info("intent_planner: 문서 검색 명령 — doc_query 단일 task(D-307) 보기=%s 질의=%r",
+                command.views, command.query)
+    plan = _single_task_plan(DOC_QUERY_AGENT, command.query)
+    plan["task_plan"][0]["views"] = list(command.views)
+    return _on_path(plan, DOC_COMMAND_PATH)
+
+
 def _restored_zone_reentry_plan(
     state: AgentState, selected_db_ids: list[str], *, agent: str | None = None,
 ) -> dict[str, Any] | None:
@@ -666,6 +698,13 @@ async def _plan_turn(
         return _on_path(
             await _source_memory_command_plan(state, app_config, user_query), "source_memory",
         )
+
+    # ②.9 문서 검색 명령(plans/138 W1 · D-307) — 「RAG에서 … 검색해줘」처럼 등록 문서 소스 이름으로
+    # 지목하고 검색을 명령하면 LLM 분해 없이 doc_query 단일 task로 고정한다(D-004 부기 — 등록 이름
+    # 인식 · 내용어 판정 아님). 다른 소스 지목이 함께 있으면 판정하지 않는다(복합 질의는 종전 분해).
+    doc_plan = _doc_command_plan(state, app_config, user_query)
+    if doc_plan is not None:
+        return doc_plan
 
     # ②.4 소스 선택 칩 답변 턴(plans/132 N-10) — 비DB 소스를 골랐으면 LLM 분해 없이 그 처리기로
     # 결정적 고정한다(존 선택 ②.5와 같은 모양). DB 소스를 골랐으면 칩이 DB 선택지를 함께 보냈으므로
@@ -1164,6 +1203,7 @@ async def _llm_decompose(
         result = _apply_task_frames(result, user_query, context_block, fallback)
     if _nonsql_agents(app_config):
         _sanitize_task_views(result, app_config)
+        _restore_doc_query_text(result, user_query, conversation_context)
     return result
 
 
@@ -1191,6 +1231,24 @@ def _sanitize_task_views(result: dict[str, Any], app_config: AppConfig) -> None:
             "문서 답은 다른 조회의 입력으로 쓰지 않았습니다"
             "(문서 검색과 다른 조회는 따로 답합니다).",
         )]
+
+
+def _restore_doc_query_text(
+    result: dict[str, Any], user_query: str, conversation_context: Optional[dict],
+) -> None:
+    """첫 턴의 단일 문서 task는 분해 LLM이 다시 쓴 질의 대신 **원문**으로 검색한다(plans/138 W4).
+
+    문서 엔진은 받은 질의를 그대로 보낸다(plans/126 §4.5 규칙 1) — 재작성은 어휘 검색·HyDE 결과를
+    바꿔 관리자 「문서 검색 시험」과 다른 근거를 가져왔다. 후속 턴은 재작성이 생략된 맥락(「그럼 백업
+    담당자는?」)을 채우므로 종전대로 둔다. 복합 계획도 task 질의가 원문 일부라 그대로 둔다.
+    """
+    tasks = [t for t in result.get("tasks") or [] if isinstance(t, dict)]
+    if conversation_context or len(tasks) != 1 or tasks[0].get("agent") != "doc_query":
+        return
+    if tasks[0].get("sub_query") != user_query:
+        logger.info("intent_planner: 단일 문서 task 원문 검색(plans/138 W4) — 재작성 %r → 원문",
+                    tasks[0].get("sub_query"))
+        tasks[0]["sub_query"] = user_query
 
 
 def _apply_task_frames(

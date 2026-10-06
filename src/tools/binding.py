@@ -57,7 +57,7 @@ class ToolContext:
     synonym_min_score: float = 0.85
     # 값 인덱스 유연 매칭 사용 여부
     value_fuzzy: bool = False
-    # 요청 시간 해석(state `time_resolution` 값 그대로 · plans/122 T-7 · D-306). None이면
+    # 요청 시간 해석(state `time_resolution` 값 그대로 · plans/122 T-7 · D-309). None이면
     # 기간 도구가 종전 월 해석을 쓴다.
     time_resolution: dict[str, Any] | None = None
 

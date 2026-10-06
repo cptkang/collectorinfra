@@ -1,4 +1,4 @@
-"""plans/138 W3 — 테이블 정의 API(D-305 ①).
+"""plans/139 W3 — 테이블 정의 API(D-308 ①).
 
 - 흐름: 가져오기 → 예상 호출 수 → LLM 묶음 초안 202 → 폴링 → 편집 저장 →
   승인(검증 실패 행 409 → 고친 뒤 200)
@@ -26,15 +26,15 @@ from src.schema_cache.asset_generation_service import AssetGenerationService
 from src.schema_cache.db_registration_service import DBRegistrationService
 from src.schema_cache.db_structure_service import DBStructureService
 from tests.test_schema_cache.test_plan104_service_fixtures import make_env, make_registry
-from tests.test_schema_cache.test_plan138_table_definitions_asset import (
+from tests.test_schema_cache.test_plan139_table_definitions_asset import (
     SRC,
     DefinitionLLM,
     _wide_tables,
 )
 
 BASE = "/api/v1/admin/db-structure"
-AUTH_SECRET = "plan138-auth-secret-0123456789abcdef"
-ADMIN_SECRET = "plan138-admin-secret-0123456789abcdef"
+AUTH_SECRET = "plan139-auth-secret-0123456789abcdef"
+ADMIN_SECRET = "plan139-admin-secret-0123456789abcdef"
 
 IMPORT_TEXT = """
 tables:

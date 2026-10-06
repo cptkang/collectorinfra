@@ -155,7 +155,7 @@ class PersistentSchemaCache:
         """스키마 정보를 캐시 파일에 저장한다.
 
         기존 파일의 부가 필드(설명·유사어·DB 설명 등 메타·`schema` 밖 키)는 보존한다 — 이 메서드가
-        새로 쓰는 키가 우선이다(plans/138 W6-a · D-305 ⑧).
+        새로 쓰는 키가 우선이다(plans/139 W6-a · D-308 ⑧).
 
         Args:
             db_id: DB 식별자
@@ -180,7 +180,7 @@ class PersistentSchemaCache:
             "schema": schema_dict,
         }
         # 스키마만으로 파일 전체를 다시 쓰면 부가 필드가 사라진다 — Redis 저장은 설명·유사어 키를
-        # 건드리지 않아 서버(Redis 우선)와 파일 폴백이 갈라졌다(plans/138 §2.4 재현).
+        # 건드리지 않아 서버(Redis 우선)와 파일 폴백이 갈라졌다(plans/139 §2.4 재현).
         cache_data.update(
             {k: v for k, v in self._existing_fields(db_id).items() if k not in cache_data}
         )

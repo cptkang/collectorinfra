@@ -36,7 +36,7 @@ def validate_sql_draft(
         db_id: 대상 DB 식별자(어댑터 디스패치용)
         adapter_db_ids: 어댑터 담당 db_id 집합(런타임 설정에서 주입)
         time_resolution: 요청 시간 해석(state `time_resolution` = `ToolContext.time_resolution`
-            · plans/122 T-5b · D-306) — 주면 어댑터가 시간 조건 대조 검사를 더한다(노드 경로와
+            · plans/122 T-5b · D-309) — 주면 어댑터가 시간 조건 대조 검사를 더한다(노드 경로와
             같은 검사). None이면 종전 검사 목록 그대로
 
     Returns:

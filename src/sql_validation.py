@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────────
-# LLM 백엔드 오류 응답 감지 (D-159 FIX-C → plans/138 W1 · D-305 ⑦ 단일·멀티·선별 공용)
+# LLM 백엔드 오류 응답 감지 (D-159 FIX-C → plans/139 W1 · D-308 ⑦ 단일·멀티·선별 공용)
 # ──────────────────────────────────────────────
 
 # LLM 백엔드(FabriX 오케스트레이터) 예외가 HTTP 에러가 아닌 **응답 content 텍스트**로
@@ -103,7 +103,7 @@ def _parse_token_count(pattern: re.Pattern[str], text: str) -> int | None:
 
 
 def detect_llm_backend_error(text: str) -> LLMBackendError | None:
-    """LLM 산출물이 SQL이 아니라 백엔드 오류 응답인지 판정한다(D-159 · D-305 ⑦).
+    """LLM 산출물이 SQL이 아니라 백엔드 오류 응답인지 판정한다(D-159 · D-308 ⑦).
 
     단일 검증(`validate_sql`)·멀티 간이 검증·테이블 선별 호출이 같은 판정을 쓴다(D-066).
     토큰 한도 마커가 백엔드 예외 마커보다 앞선다 — 같은 응답에 둘 다 있으면 원인(한도)을 낸다.
@@ -151,7 +151,7 @@ class SQLValidationOutcome:
         auto_fixed_sql: 행 제한 절 자동 보정본(보정하지 않았으면 None)
         forbidden_keywords: 감지된 금지 키워드(감사 로그용)
         injection_count: 감지된 인젝션 패턴 수(감사 로그용)
-        backend_error: 산출물이 LLM 백엔드 오류 응답이었으면 그 판정(plans/138 W1 — 사유는
+        backend_error: 산출물이 LLM 백엔드 오류 응답이었으면 그 판정(plans/139 W1 — 사유는
             ``errors``에 하나만 실린다)
     """
 
@@ -197,7 +197,7 @@ def validate_sql(
     Returns:
         SQLValidationOutcome — 오류·경고·자동 보정 SQL·감사 신호
     """
-    # 0. LLM 백엔드 오류 응답(D-305 ⑦ · plans/138 W1) — SQL이 아니므로 SELECT 검사·테이블 추출
+    # 0. LLM 백엔드 오류 응답(D-308 ⑦ · plans/139 W1) — SQL이 아니므로 SELECT 검사·테이블 추출
     # 전에 판정해 사유 하나만 낸다. 오류 문구의 "from orchestrator"를 FROM 절로 읽어 「존재하지
     # 않는 테이블 참조」가 함께 나가던 오표면화를 막는다. 멀티 간이 검증과 같은 함수·같은 문구다.
     backend_error = detect_llm_backend_error(sql)

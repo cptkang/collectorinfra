@@ -1,6 +1,6 @@
-"""plans/138 독립 검증 — 실제 노드 경로 종단 · 경로 대칭 · 멀티턴 요청 스코프.
+"""plans/139 독립 검증 — 실제 노드 경로 종단 · 경로 대칭 · 멀티턴 요청 스코프.
 
-구현 측 테스트(`test_plan138_table_selection.py` 등)는 2단 단일 루프의 `schema_analyzer`를
+구현 측 테스트(`test_plan139_table_selection.py` 등)는 2단 단일 루프의 `schema_analyzer`를
 가짜로 바꿔 끼우고, 벤치 수신기(`schema_context_record`)는 합성 상태로만 검증한다. 여기서는
 **실제 노드**(schema_analyzer → query_generator → query_validator)를 2단 핸들러
 `run_data_query_pipeline`으로 돌려 `_pack_pipeline_result`가 내보내는 task 상태

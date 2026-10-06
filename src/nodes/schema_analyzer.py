@@ -15,7 +15,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
+import unicodedata
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -25,6 +27,7 @@ from src.config import AppConfig, load_config
 from src.db import get_db_client
 from src.dbhub.models import SchemaInfo, schema_to_dict
 from src.llm import create_llm
+from src.routing.registry import hangul_identifiers_allowed
 from src.schema_cache.cache_manager import get_cache_manager
 from src.nodes.table_selection import (
     TableSelection,
@@ -47,6 +50,16 @@ logger = logging.getLogger(__name__)
 
 # 유사어 기반 allowed_tables 동적 보완 상한 (D-051: 누적 유사어 전 테이블 유입 차단)
 _MAX_SYNONYM_SUPPLEMENT_TABLES = 15
+
+# 테이블 선택 요약에 싣는 테이블당 컬럼 수(앞에서부터) — 나머지는 「외 N개」로 줄인다
+_SELECT_SUMMARY_COLUMNS = 15
+# 질의 단어와 이름이 겹치는 「앞 15개 밖」 컬럼 절(plans/137 W10 · D-305) — 테이블당·전체 상한
+_MATCH_COLUMNS_PER_TABLE = 10
+_MATCH_COLUMNS_TOTAL = 80
+# 질의 낱말: 한글·라틴 3자 이상(2자 낱말 「자산」·「에서」는 108테이블 DB에서 잡음이 크다).
+# 한글 낱말 끝의 조사·접미 1자는 떼어 낸 형태도 쓴다(뗀 뒤에도 3자 이상일 때).
+_QUERY_WORD_RE = re.compile(r"[가-힣]{3,}|[A-Za-z][A-Za-z0-9_]{2,}")
+_KO_TAIL_CHARS = frozenset("이가을를은는의에로과와도만별")
 
 # 라이브 샘플 수집 타임박스 (D-154, 2026-08-05 폐쇄망 실측):
 # 샘플은 보조 정보인데 get_sample_data 1건이 mcp_call_timeout(60s)까지 침묵 대기하면
@@ -575,7 +588,7 @@ async def schema_analyzer(
     1. 3단계 캐시를 활용하여 스키마를 조회한다.
     2. LLM을 사용하여 query_targets 기반으로 관련 테이블을 선택한다. 프로필에 테이블 정의가
        있으면(알람 의도 제외) 정의 기반 공용 선별(`select_tables`)을 쓰고 보충 단계를 건너뛴다
-       (plans/138 W4 · D-305).
+       (plans/139 W4 · D-308).
     3. 관련 테이블의 샘플 데이터를 수집한다.
     4. 구조 정보를 **읽기만** 한다 — ①수동 프로필 ②관리자 승인 적용본 ③없음(plans/104 R1·R3).
        질의 중 LLM 구조 분석·승인 대기·프로필 파일 기록은 하지 않는다. 없으면 멈추지 않고
@@ -624,7 +637,7 @@ async def schema_analyzer(
             _query_syn_tables: set[str] | None = None
             relevant: list[str] | None = None
             _intent = state.get("routing_intent")
-            # 2-0. 정의 기반 선별(plans/138 W4 · D-305 G-1) — 프로필에 테이블 정의가 있고
+            # 2-0. 정의 기반 선별(plans/139 W4 · D-308 G-1) — 프로필에 테이블 정의가 있고
             # 알람 의도가 아니면 공용 선별(`select_tables` — 멀티 경로와 같은 함수) 결과를
             # 그대로 쓴다. 그때는 아래 Q-5 생략·LLM 선택·EAV 보충·허용 목록 필터/강제 보충·
             # 유사어 동적 보완을 모두 건너뛴다. 정의가 없는 DB는 종전 경로 그대로다.
@@ -668,11 +681,13 @@ async def schema_analyzer(
                     query_targets,
                     parsed.get("original_query", ""),
                     routing_intent=state.get("routing_intent"),
+                    # 한글 식별자 허용 DB만 「앞 15개 밖 겹침 컬럼」 절 추가(plans/137 W10 · G-7 ⓑ)
+                    match_columns=hangul_identifiers_allowed(db_id),
                 )
             # ★ DEBUG[2]: LLM이 선택한 테이블 확인
             logger.debug("DEBUG[2] LLM selected relevant: %s (query_targets=%s)", relevant, query_targets)
 
-            # 2-1. EAV 동반 테이블 자동 보충 (정의 기반 선별에서는 건너뛴다 — plans/138 W4)
+            # 2-1. EAV 동반 테이블 자동 보충 (정의 기반 선별에서는 건너뛴다 — plans/139 W4)
             if table_selection is None:
                 relevant = _supplement_eav_tables(
                     relevant,
@@ -968,7 +983,7 @@ async def schema_analyzer(
                 "error_message": None,
                 # 구조 정보·컬럼 설명이 있으면 키를 싣지 않는다 — 반환 shape 현행 유지
                 **({"dependency_notes": asset_notes} if asset_notes else {}),
-                # 정의 기반 선별 결과(plans/138 W4) — 그 모드일 때만 싣는다
+                # 정의 기반 선별 결과(plans/139 W4) — 그 모드일 때만 싣는다
                 # (정의 없는 DB는 shape 현행).
                 # 리듀서가 없는 키라 같은 요청의 다른 DB 항목을 이어 붙인다.
                 **(
@@ -994,12 +1009,79 @@ async def schema_analyzer(
         }
 
 
+def _norm_name(text: str) -> str:
+    """이름 대조 정규형 — 유니코드 NFC + 대소문자 무시."""
+    return unicodedata.normalize("NFC", text).casefold()
+
+
+def _query_words(text: str) -> set[str]:
+    """질의에서 컬럼명 대조용 낱말을 뽑는다(한글·라틴 3자↑ · 한글 꼬리 1자 뗀 형태 포함).
+
+    형태소 분석 없이 결정적으로 — 「자산분류별」→ `자산분류별`·`자산분류`, 「유지보수계약이」→
+    `유지보수계약이`·`유지보수계약`.
+    """
+    words: set[str] = set()
+    for word in _QUERY_WORD_RE.findall(unicodedata.normalize("NFC", text or "")):
+        words.add(_norm_name(word))
+        if len(word) >= 4 and word[-1] in _KO_TAIL_CHARS:
+            words.add(_norm_name(word[:-1]))
+    return words
+
+
+def _query_matched_columns_text(full_schema: SchemaInfo, query_text: str) -> str:
+    """테이블 선택 요약의 「앞 15개 밖」 컬럼 중 질의 낱말과 이름이 겹치는 것을 절로 만든다.
+
+    테이블 선택 요약은 테이블당 앞 15컬럼만 보여 준다. 테이블명이 코드(`TCDMSIF80`)이고 컬럼이
+    많은 DB(ITAM — 68컬럼)는 정답 컬럼이 15번째 밖이라 선택 LLM이 근거 없이 골랐다(폐쇄망 실측
+    2026-10-06 — 「유지보수계약 종료일」 질의가 해당 컬럼 보유 테이블을 빼고 72~95번을 통째로
+    선택 · plans/137 §8.3). 겹침 = 컬럼명이 낱말을 포함하거나 낱말이 컬럼명을 포함
+    (컬럼명 3자↑). 긴 낱말과 겹친 컬럼을 먼저 고르고 테이블당·전체 상한을 둔다. 결정적(LLM 0).
+
+    Returns:
+        ``"\\n\\n질의 단어와 …:\\n- 테이블: 컬럼, …"`` 또는 겹침이 없으면 빈 문자열
+    """
+    words = _query_words(query_text)
+    if not words:
+        return ""
+    lines: list[str] = []
+    total = 0
+    for table_name, table_info in sorted(full_schema.tables.items()):
+        hidden = [col.name for col in table_info.columns][_SELECT_SUMMARY_COLUMNS:]
+        scored: list[tuple[int, int, str]] = []
+        for idx, name in enumerate(hidden):
+            norm = _norm_name(name)
+            best = max(
+                (
+                    len(w) for w in words
+                    if w in norm or (len(norm) >= 3 and norm in w)
+                ),
+                default=0,
+            )
+            if best:
+                scored.append((-best, idx, name))
+        if not scored:
+            continue
+        room = min(_MATCH_COLUMNS_PER_TABLE, _MATCH_COLUMNS_TOTAL - total)
+        if room <= 0:
+            break
+        picked = sorted(sorted(scored)[:room], key=lambda t: t[1])
+        total += len(picked)
+        lines.append(f"- {table_name}: {', '.join(n for _, _, n in picked)}")
+    if not lines:
+        return ""
+    return (
+        "\n\n질의 단어와 이름이 겹치는 컬럼(위 목록의 앞 15개 밖 — 테이블 선택 근거로 쓰세요):\n"
+        + "\n".join(lines)
+    )
+
+
 async def _llm_select_relevant_tables(
     llm: BaseChatModel,
     full_schema: SchemaInfo,
     query_targets: list[str],
     user_query: str,
     routing_intent: str | None = None,
+    match_columns: bool = False,
 ) -> list[str]:
     """LLM을 사용하여 사용자 질의에 관련된 테이블을 선택한다.
 
@@ -1013,6 +1095,8 @@ async def _llm_select_relevant_tables(
         query_targets: 조회 대상 도메인 목록
         user_query: 원본 사용자 질의
         routing_intent: 시멘틱 라우터가 분류한 의도 (예: "alarm_query", "data_query")
+        match_columns: True면 질의 단어와 이름이 겹치는 「앞 15개 밖」 컬럼 절을 덧붙인다
+            (한글 식별자 허용 DB만 — 호출부가 레지스트리로 판정 · plans/137 W10 · G-7 ⓑ)
 
     Returns:
         LLM이 선택한 관련 테이블 이름 목록
@@ -1029,9 +1113,9 @@ async def _llm_select_relevant_tables(
     table_summaries: list[str] = []
     for table_name, table_info in sorted(full_schema.tables.items()):
         col_names = [col.name for col in table_info.columns]
-        col_summary = ", ".join(col_names[:15])
-        if len(col_names) > 15:
-            col_summary += f" ... (외 {len(col_names) - 15}개)"
+        col_summary = ", ".join(col_names[:_SELECT_SUMMARY_COLUMNS])
+        if len(col_names) > _SELECT_SUMMARY_COLUMNS:
+            col_summary += f" ... (외 {len(col_names) - _SELECT_SUMMARY_COLUMNS}개)"
         table_summaries.append(f"- {table_name}: [{col_summary}]")
 
     table_info_text = "\n".join(table_summaries)
@@ -1044,6 +1128,13 @@ async def _llm_select_relevant_tables(
             for rel in full_schema.relationships
         )
         relationship_text = "\n\nFK 관계:\n" + "\n".join(rel_lines)
+
+    # 질의 단어와 겹치는 「앞 15개 밖」 컬럼 — 위 목록·FK 관계 **뒤**에 둔다. 목록 접두는 질의마다
+    # 바꾸지 않는다(KV 캐시 적중 · plans/121 TP-11.10). 겹침이 없으면 절 자체가 없다(바이트 불변).
+    if match_columns:
+        relationship_text += _query_matched_columns_text(
+            full_schema, f"{user_query} {' '.join(query_targets)}"
+        )
 
     # routing_intent별 추가 힌트
     intent_hint = ""

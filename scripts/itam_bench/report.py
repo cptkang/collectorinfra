@@ -2,7 +2,7 @@
 
 입력은 이미 위생을 거친 레코드(`trace.jsonl` 행)·`run.json`·카탈로그뿐이다 — 값이 새로 생기지
 않는다. 숫자는 결정적으로 계산하고 문장은 고정 문구다(LLM 0). 지연은 참고값이다 — 두 평면이
-mlx 면 성능 결론을 내지 않는다(D-240) · 그 밖의 평면은 평면 이름을 밝힌다(plans/138 W6-b).
+mlx 면 성능 결론을 내지 않는다(D-240) · 그 밖의 평면은 평면 이름을 밝힌다(plans/139 W6-b).
 """
 
 from __future__ import annotations
@@ -169,7 +169,7 @@ def _row_counts(record: Mapping[str, Any]) -> str:
 
 
 def _latency_note(run: Mapping[str, Any]) -> str:
-    """§9 지연 꼬리 문구 — run 메타의 두 평면을 보고 고른다(plans/138 W6-b).
+    """§9 지연 꼬리 문구 — run 메타의 두 평면을 보고 고른다(plans/139 W6-b).
 
     두 평면이 모두 mlx 일 때만 「로컬 MLX 값」이라 쓴다. 하나만 mlx 면 그 사실을 적고, 아니면
     평면 이름을 밝힌 중립 문구다.

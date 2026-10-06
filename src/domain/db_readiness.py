@@ -1,11 +1,11 @@
-"""DB 활성화 준비도 판정 C1~C11 (plans/104 §3.8.3 · D-227 · plans/138 W3).
+"""DB 활성화 준비도 판정 C1~C11 (plans/104 §3.8.3 · D-227 · plans/139 W3).
 
 **무엇을 하나.** 신규 시스템을 `ACTIVE_DB_IDS`에 넣기 전에 갖춰야 할 항목(MCP 소스 · 레지스트리 ·
 라우팅 설명 · 스키마 한정 · 스키마 캐시 · 구조 정보 · 환경)과 권장 항목(컬럼 설명 · 유사어), 정보
 항목(권한·존 · 테이블 정의 경고)을 결정적으로 판정한다. D-214 ⑤(활성화 순서 불변식)를 화면 판정으로
 대체한다.
 
-- C11 테이블 정의(D-305 · 경고만): 조회 대상이 `TABLE_DEFINITION_MIN_ALLOWED`개를 넘는데 정의가
+- C11 테이블 정의(D-308 · 경고만): 조회 대상이 `TABLE_DEFINITION_MIN_ALLOWED`개를 넘는데 정의가
   없거나 정의 범위가 조회 대상의 `TABLE_DEFINITION_MIN_COVERAGE` 미만이면 `ok=False`로 알린다.
   정보 항목이라 필수·권장 집계와 활성화 판정에 들어가지 않는다.
 
@@ -31,7 +31,7 @@ _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 #: DB2만 스키마 한정이 필수다(대문자 한정 규칙 — CLAUDE.md 방언 분기)
 _SCHEMA_REQUIRED_ENGINES = frozenset({"db2"})
 
-#: C11 — 조회 대상이 이 수를 넘으면 테이블 정의 범위를 본다(D-305 · plans/138 W3)
+#: C11 — 조회 대상이 이 수를 넘으면 테이블 정의 범위를 본다(D-308 · plans/139 W3)
 TABLE_DEFINITION_MIN_ALLOWED = 10
 #: C11 — 조회 대상 중 정의가 있어야 하는 비율 하한(미만이면 경고)
 TABLE_DEFINITION_MIN_COVERAGE = 0.8

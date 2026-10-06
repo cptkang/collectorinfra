@@ -1,4 +1,4 @@
-"""plans/122 T-3 — input_parser 기간 슬롯 · 기준 시각 주입 · 해석 · 되묻기 (D-306).
+"""plans/122 T-3 — input_parser 기간 슬롯 · 기준 시각 주입 · 해석 · 되묻기 (D-309).
 
 가짜 LLM만 쓴다(실 LLM 호출 0). 기준 시각은 `input_parser._now`를 바꿔 고정한다.
 설정은 검증 대상 필드(`query.time_resolution_enabled`)를 명시해 `.env`와 무관하게 한다.

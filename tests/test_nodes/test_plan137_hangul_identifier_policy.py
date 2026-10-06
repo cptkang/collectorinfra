@@ -319,3 +319,294 @@ def _sql_rows(source: str, sql: str) -> list[dict[str, Any]]:
         return [{"version": "11.4.0-MariaDB", "sql_mode": "STRICT_TRANS_TABLES",
                  "lower_case_table_names": 0, "collation_server": "utf8mb4_general_ci"}]
     raise RuntimeError(f"예상하지 못한 SQL: {sql}")
+
+
+# ──────────────────────────────────────────────
+# W9 NULLS LAST 엔진 분기 (plans/137 §8.2 · D-305)
+# ──────────────────────────────────────────────
+
+_RANKING = "SELECT a, COUNT(*) AS cnt FROM t GROUP BY a ORDER BY cnt DESC LIMIT 5"
+
+
+class TestNullsLastEngineBranch:
+    @pytest.mark.parametrize("engine", ["mariadb", "MySQL", " mariadb "])
+    def test_no_nulls_ordering_engines_unchanged(self, engine):
+        from src.db_adapters.polestar.validators import ensure_ranking_nulls_last
+
+        assert ensure_ranking_nulls_last(_RANKING, db_engine=engine) == _RANKING
+
+    @pytest.mark.parametrize("engine", [None, "postgresql", "db2"])
+    def test_polestar_engines_keep_fix(self, engine):
+        from src.db_adapters.polestar.validators import ensure_ranking_nulls_last
+
+        assert "cnt DESC NULLS LAST" in ensure_ranking_nulls_last(_RANKING, db_engine=engine)
+
+    def test_query_generator_resolves_engine_from_registry(self):
+        """그래프 경로처럼 state에 엔진이 없어도 레지스트리(`active_db_id`)에서 찾는다."""
+        from src.nodes.query_generator import _dialect_engine
+
+        assert _dialect_engine({"active_db_engine": "db2"}) == "db2"
+        assert _dialect_engine({"active_db_engine": None, "active_db_id": "itam"}) == "mariadb"
+        assert _dialect_engine({}) is None
+
+    def test_all_call_sites_pass_engine(self):
+        """호출부 3곳이 모두 엔진을 넘긴다 — 하나라도 빠지면 MariaDB 1064가 재발한다."""
+        import importlib
+        import inspect
+
+        # `src.nodes` 패키지가 노드 함수 `query_generator`를 재노출해 `import … as`는 함수를 준다
+        qg = inspect.getsource(importlib.import_module("src.nodes.query_generator"))
+        mde = inspect.getsource(importlib.import_module("src.nodes.multi_db_executor"))
+
+        assert qg.count("ensure_ranking_nulls_last(") == 1
+        assert qg.count("ensure_ranking_nulls_last(sql, db_engine=_dialect_engine(state))") == 1
+        assert mde.count("ensure_ranking_nulls_last(") == 2
+        assert mde.count("), db_engine=db_engine)") == 1
+        assert mde.count("ensure_ranking_nulls_last(sql, db_engine=db_engine)") == 1
+
+
+# ──────────────────────────────────────────────
+# W10 테이블 선택 요약 — 앞 15개 밖 겹침 컬럼 (plans/137 §8.3 · G-7 ⓑ)
+# ──────────────────────────────────────────────
+
+
+def _schema_info_obj():
+    from src.dbhub.models import ColumnInfo, SchemaInfo, TableInfo
+
+    def table(name: str, cols: list[str]) -> TableInfo:
+        return TableInfo(name=name, schema_name="", columns=[
+            ColumnInfo(name=c, data_type="varchar", nullable=True, is_primary_key=False,
+                       is_foreign_key=False, references=None, comment=None)
+            for c in cols
+        ])
+
+    schema = SchemaInfo()
+    filler = [f"c{i:02d}" for i in range(44)]
+    schema.tables["TAB80"] = table(
+        "TAB80",
+        filler + ["유지보수계약시작년월일", "유지보수계약종료년월일", "자산분류구분명"]
+        + [f"d{i}" for i in range(20)],
+    )
+    schema.tables["TAB72"] = table("TAB72", ["시스템등록처리일시"] + [f"x{i}" for i in range(30)])
+    schema.tables["TAB01"] = table("TAB01", ["유지보수계약명"])  # 15개 이하 — 이미 보인다
+    return schema
+
+
+class _CaptureLLM:
+    def __init__(self, answer: str = "TAB80") -> None:
+        self.prompts: list[str] = []
+        self.answer = answer
+
+    async def ainvoke(self, messages):
+        self.prompts.append(messages[0].content)
+        return SimpleNamespace(content=self.answer)
+
+
+class TestSelectionSummaryMatchedColumns:
+    def test_matched_hidden_columns_listed(self):
+        from src.nodes.schema_analyzer import _query_matched_columns_text
+
+        text = _query_matched_columns_text(
+            _schema_info_obj(), "ITAM에서 유지보수계약 종료일이 올해 안에 끝나는 자산 보여줘",
+        )
+        assert "- TAB80: 유지보수계약시작년월일, 유지보수계약종료년월일" in text
+        assert "TAB01" not in text and "TAB72" not in text  # 이미 보인 컬럼 · 겹침 없음
+
+    def test_tail_particle_stripped(self):
+        from src.nodes.schema_analyzer import _query_matched_columns_text
+
+        text = _query_matched_columns_text(_schema_info_obj(), "자산분류별 자산 수")
+        assert "- TAB80: 자산분류구분명" in text
+
+    def test_no_match_is_empty(self):
+        from src.nodes.schema_analyzer import _query_matched_columns_text
+
+        assert _query_matched_columns_text(_schema_info_obj(), "server list 보여줘") == ""
+        # 2자 낱말(「자산」)만으로는 겹침을 만들지 않는다(잡음 차단)
+        assert _query_matched_columns_text(_schema_info_obj(), "자산 목록") == ""
+
+    def test_per_table_cap(self):
+        from src.dbhub.models import ColumnInfo, SchemaInfo, TableInfo
+        from src.nodes.schema_analyzer import _MATCH_COLUMNS_PER_TABLE, _query_matched_columns_text
+
+        cols = [f"f{i:02d}" for i in range(15)] + [f"유지보수항목{i:02d}" for i in range(30)]
+        schema = SchemaInfo()
+        schema.tables["W"] = TableInfo(name="W", schema_name="", columns=[
+            ColumnInfo(name=c, data_type="varchar", nullable=True, is_primary_key=False,
+                       is_foreign_key=False, references=None, comment=None) for c in cols
+        ])
+        line = _query_matched_columns_text(schema, "유지보수항목").splitlines()[-1]
+        assert line.count(",") + 1 == _MATCH_COLUMNS_PER_TABLE
+
+    async def test_prompt_prefix_unchanged_and_section_after(self):
+        from src.nodes.schema_analyzer import _llm_select_relevant_tables
+
+        query = "ITAM에서 유지보수계약 종료일이 올해 안에 끝나는 자산 보여줘"
+        off, on = _CaptureLLM(), _CaptureLLM()
+        await _llm_select_relevant_tables(off, _schema_info_obj(), ["자산"], query)
+        await _llm_select_relevant_tables(
+            on, _schema_info_obj(), ["자산"], query, match_columns=True,
+        )
+        before, after = off.prompts[0], on.prompts[0]
+        assert "질의 단어와 이름이 겹치는 컬럼" not in before
+        marker = "\n\n질의 단어와 이름이 겹치는 컬럼"
+        head = after[: after.index(marker)]
+        assert before.startswith(head)  # 테이블 목록 접두 불변(KV 캐시)
+        assert after.replace(after[after.index(marker): after.index("\n\n사용자 질의")], "") == before
+
+    async def test_policy_off_db_prompt_byte_identical(self):
+        """G-7 ⓑ — 허용 off DB(match_columns=False)는 종전 프롬프트 그대로."""
+        from src.nodes.schema_analyzer import _llm_select_relevant_tables
+
+        a, b = _CaptureLLM(), _CaptureLLM()
+        await _llm_select_relevant_tables(a, _schema_info_obj(), ["자산"], "유지보수계약 종료일")
+        await _llm_select_relevant_tables(
+            b, _schema_info_obj(), ["자산"], "유지보수계약 종료일", match_columns=False,
+        )
+        assert a.prompts == b.prompts
+        assert "외 " in a.prompts[0]  # 15개 절단 표기는 종전 그대로
+
+    def test_caller_gates_by_registry(self):
+        import inspect
+
+        import src.nodes.schema_analyzer as sa
+
+        assert "match_columns=hangul_identifiers_allowed(db_id)" in inspect.getsource(sa)
+
+
+# ──────────────────────────────────────────────
+# W13 집계 결과 표의 NULL 묶음 기준 「(값 없음)」 (plans/137 §9 · D-306)
+# ──────────────────────────────────────────────
+
+_GROUP_SQL = (
+    "SELECT t.`자산분류구분` AS asset_class_code, t.`자산분류구분명` AS asset_class_name, "
+    "COUNT(*) AS cnt FROM TAB80 t GROUP BY t.`자산분류구분`, t.`자산분류구분명` "
+    "ORDER BY cnt DESC LIMIT 1000"
+)
+_GROUP_ROWS = [
+    {"asset_class_code": "31", "asset_class_name": "기계장치", "cnt": 2386},
+    {"asset_class_code": None, "asset_class_name": None, "cnt": 1419},
+    {"asset_class_code": "54", "asset_class_name": "부외자산", "cnt": 38},
+]
+
+
+class TestNullGroupLabel:
+    def test_registry_field(self):
+        registry = parse_registry({"databases": [
+            {"db_id": "db_off"},
+            {"db_id": "db_on", "label_null_group_keys": True},
+        ]})
+        assert registry.get("db_off").label_null_group_keys is False
+        assert registry.get("db_on").label_null_group_keys is True
+        assert get_registry().get("itam").label_null_group_keys is True
+        for entry in get_registry().databases:
+            if entry.family == "polestar":
+                assert entry.label_null_group_keys is False, entry.db_id
+
+    @pytest.mark.parametrize("sql, expected", [
+        (_GROUP_SQL, {"asset_class_code", "asset_class_name"}),
+        ("SELECT 담당부점명, SUM(취득금액) FROM TAB80 GROUP BY 담당부점명", {"담당부점명"}),
+        ("SELECT t.a 부점, COUNT(*) n FROM T t GROUP BY t.a", {"부점"}),
+        ("SELECT a, b FROM t", None),  # GROUP BY 없음
+        ("WITH x AS (SELECT a, COUNT(*) c FROM t GROUP BY a) SELECT * FROM x", None),
+        ("SELECT * FROM t GROUP BY a", None),
+        ("SELECT a FROM t GROUP BY a", None),  # 집계 항목 없음
+        ("SELECT a, COUNT(*) FROM (SELECT a FROM t) s GROUP BY a", {"a"}),
+    ])
+    def test_group_key_columns(self, sql, expected):
+        from src.nodes.output_generator import group_key_columns
+
+        got = group_key_columns(sql)
+        assert (set(got) if got is not None else None) == expected
+
+    def test_table_labels_only_null_group_keys(self):
+        from src.nodes.output_generator import (
+            NULL_GROUP_LABEL,
+            _render_result_table,
+            group_key_columns,
+        )
+
+        table = _render_result_table(
+            _GROUP_ROWS, ranked=False, null_label_keys=group_key_columns(_GROUP_SQL),
+        )
+        assert f"| {NULL_GROUP_LABEL} | {NULL_GROUP_LABEL} | 1419 |" in table
+        assert "| 31 | 기계장치 | 2386 |" in table
+        assert _GROUP_ROWS[1]["asset_class_code"] is None  # 원본 행 불변(CSV·후속 질의)
+
+    def test_no_label_when_aggregate_also_null(self):
+        from src.nodes.output_generator import _label_null_group_keys
+
+        row = {"k": None, "cnt": None}
+        assert _label_null_group_keys(row, frozenset({"k"})) is row
+
+    def test_default_table_unchanged(self):
+        from src.nodes.output_generator import _render_result_table
+
+        assert "|  |  | 1419 |" in _render_result_table(_GROUP_ROWS, ranked=False)
+
+    @pytest.mark.parametrize("state, on", [
+        ({"active_db_id": "itam", "generated_sql": _GROUP_SQL}, True),
+        ({"active_db_id": "polestar_cm_gp", "generated_sql": _GROUP_SQL}, False),
+        ({"active_db_id": "itam", "generated_sql": _GROUP_SQL, "is_multi_db": True}, False),
+        ({"active_db_id": "itam", "generated_sql": "SELECT a FROM t"}, False),
+        ({"generated_sql": _GROUP_SQL}, False),
+    ])
+    def test_gate(self, state, on):
+        from src.nodes.output_generator import _null_group_key_columns
+
+        assert (_null_group_key_columns(state) is not None) is on
+
+    def test_text_response_wires_gate(self):
+        import importlib
+        import inspect
+
+        src_text = inspect.getsource(importlib.import_module("src.nodes.output_generator"))
+        assert "null_label_keys=_null_group_key_columns(state)" in src_text
+
+
+class TestNullGroupLabelRealWiring:
+    """2단·1단 최종 응답은 집계기가 허용목록으로 만든 state로 output_generator를 부른다 —
+    그 state에는 active_db_id·generated_sql이 없다(폐쇄망 재검증 2026-10-06에서 라벨 미적용 실측).
+    실제 배선(`_build_output_state`)을 통과한 state로 게이트를 검증한다."""
+
+    def _out_state(self, executed: list[dict]) -> dict:
+        from src.orchestration.result_aggregator import _build_output_state
+
+        res = {
+            "organized_data": {"rows": _GROUP_ROWS, "summary": ""},
+            "query_results": _GROUP_ROWS,
+            "executed_sqls": executed,
+            "target_db_ids": [e.get("db_id") for e in executed],
+        }
+        state = {"user_query": "자산분류별 자산 수", "parsed_requirements": {}}
+        return _build_output_state(state, {"sub_query": "자산분류별 자산 수"}, res)
+
+    def test_out_state_lacks_legacy_fields(self):
+        out = self._out_state([{"db_id": "itam", "sql": _GROUP_SQL}])
+        assert "generated_sql" not in out and not out.get("active_db_id")
+
+    def test_gate_on_through_aggregator_state(self):
+        from src.nodes.output_generator import _null_group_key_columns
+
+        keys = _null_group_key_columns(self._out_state([{"db_id": "itam", "sql": _GROUP_SQL}]))
+        assert keys == {"asset_class_code", "asset_class_name"}
+
+    def test_gate_off_for_polestar_and_multi(self):
+        from src.nodes.output_generator import _null_group_key_columns
+
+        assert _null_group_key_columns(
+            self._out_state([{"db_id": "polestar_cm_gp", "sql": _GROUP_SQL}])
+        ) is None
+        assert _null_group_key_columns(self._out_state([
+            {"db_id": "itam", "sql": _GROUP_SQL}, {"db_id": "itam2", "sql": _GROUP_SQL},
+        ])) is None
+
+    async def test_final_table_labels_through_aggregator_state(self):
+        from src.nodes.output_generator import NULL_GROUP_LABEL, _generate_text_response
+
+        out = self._out_state([{"db_id": "itam", "sql": _GROUP_SQL}])
+        text = await _generate_text_response(
+            AppConfig(), out, llm=None, stream_user_response=False,
+            summary_skip_notice="(요약 생략)",
+        )
+        assert f"| {NULL_GROUP_LABEL} | {NULL_GROUP_LABEL} | 1419 |" in text

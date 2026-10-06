@@ -105,8 +105,8 @@ def route_after_validation(state: AgentState, max_retry: int = 3) -> str:
     """query_validator 이후 라우팅을 결정한다.
 
     - 검증 통과: query_executor (또는 approval_gate)로 진행
-    - LLM 입력 한도 초과·백엔드 오류 응답: error_response로 즉시 종료(재생성 0회 · plans/138)
-    - 정의 기반 테이블 선별 0개: error_response로 즉시 안내 종료(재생성 0회 · plans/138 W4)
+    - LLM 입력 한도 초과·백엔드 오류 응답: error_response로 즉시 종료(재생성 0회 · plans/139)
+    - 정의 기반 테이블 선별 0개: error_response로 즉시 안내 종료(재생성 0회 · plans/139 W4)
     - 산문(비-SQL) 응답 + 전용 예산 소진: error_response로 조기 종료
     - 검증 실패 + 재시도 가능: query_generator로 회귀
     - 검증 실패 + 재시도 초과: error_response로 종료
@@ -324,7 +324,7 @@ def route_after_field_mapper_legacy(state: AgentState, *, config: AppConfig) -> 
 
 
 def route_after_input_parser(state: AgentState) -> str:
-    """input_parser 이후 — 조회 기간 되묻기면 END, 아니면 field_mapper (plans/122 T-3 · D-306).
+    """input_parser 이후 — 조회 기간 되묻기면 END, 아니면 field_mapper (plans/122 T-3 · D-309).
 
     공통 전단이라 사다리 네 단(deep_agent·intent_orchestration·semantic_router·legacy)이 모두 이
     분기를 지난다. `time_resolution.clarify`만 본다 — 플래그 off(값 None)·옛 체크포인트는 항상
@@ -361,7 +361,7 @@ def _error_response_node(state: AgentState) -> dict:
     """최대 재시도 초과 시 에러 응답을 생성한다."""
     _validation: dict[str, Any] = dict(state.get("validation_result") or {})
     if selection_none_hit(_validation):
-        # 정의 기반 테이블 선별 0개(plans/138 W4) — 검증 사유가 곧 안내 문구다
+        # 정의 기반 테이블 선별 0개(plans/139 W4) — 검증 사유가 곧 안내 문구다
         # (`selection_none_guidance` — 2단 단일 DB·멀티 경로와 같은 함수).
         response = append_structure_missing_note(str(_validation.get("reason") or ""), state)
         return {
@@ -370,7 +370,7 @@ def _error_response_node(state: AgentState) -> dict:
             "messages": [AIMessage(content=response)],
         }
     if backend_limit_hit(_validation):
-        # LLM 입력 한도 초과·백엔드 오류 응답(plans/138 W1·W2) — 백엔드 원문은 싣지 않고
+        # LLM 입력 한도 초과·백엔드 오류 응답(plans/139 W1·W2) — 백엔드 원문은 싣지 않고
         # 원인만 알린다. 문구는 2단 단일 DB 경로와 같은 함수가 만든다(경로 대칭).
         response = backend_limit_response((_validation.get("backend_error") or {}).get("kind"))
         response = append_structure_missing_note(response, state)

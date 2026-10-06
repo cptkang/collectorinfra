@@ -1,6 +1,6 @@
 """요청 단위 시간 해석 — 규칙 1순위 + LLM 슬롯 폴백 + 단일 출처 state 직렬화.
 
-plans/122 T-3·T-4 · D-306.
+plans/122 T-3·T-4 · D-309.
 
 「LLM은 슬롯, 코드는 계산」(plans/122 §10.3)의 합성 지점이다. `input_parser`가 요청마다 한 번
 `resolve_query_time`을 불러 state `time_resolution`(요청 스코프)에 싣고, 기간을 쓰는 모든
@@ -283,7 +283,7 @@ _CLARIFY_EXAMPLES = (
 def clarify_message(code: str) -> str:
     """되묻기 사유 코드(`QueryTime.clarify`) → 사용자에게 보일 되묻기 문구(결정적 · LLM 0).
 
-    plans/122 T-3 · D-306.
+    plans/122 T-3 · D-309.
 
     input_parser가 데이터를 조회하지 않고 이 문구로 턴을 끝낸다(D-291 · D-275 ⑪). 모르는 코드는
     「해석하지 못했다」 문구로 낸다.

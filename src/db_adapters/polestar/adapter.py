@@ -125,7 +125,7 @@ class PolestarAdapter:
         ]
         if knowledge_render_enabled():
             checks.append(check_value_column_join)
-        # 시간 조건 대조(plans/122 T-5b · D-306) — 요청 시간 해석이 있으면 생성 SQL의 기간 조건을
+        # 시간 조건 대조(plans/122 T-5b · D-309) — 요청 시간 해석이 있으면 생성 SQL의 기간 조건을
         # 그 해석과 대조한다. D-201(「이번 달」 stat_m 반려)은 이 검증기의 ②③ 규칙이 덮으므로
         # 중복 등록하지 않는다. 해석이 없으면(플래그 off · 옛 체크포인트) 종전 검사 그대로다.
         qt = QueryTime.from_state(time_resolution) if time_resolution is not None else None

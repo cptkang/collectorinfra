@@ -21,9 +21,9 @@ TAXONOMY: dict[str, str] = {
     "permission_denied": "벤치 환경 문제(계정 인가 D-232) — 판정 제외",
     "routing_miss": "ITAM 프롬프트 밖 — 소스 선별(plans/132) · 분리 집계",
     "asked_back": "프롬프트 모호성 · 되묻기 규칙(plans/132) · 분리 집계",
-    "backend_limit": "plans/138 W1·W2 LLM 입력 한도 — 조회 대상 크기(`schema_context.dbs`) · "
+    "backend_limit": "plans/139 W1·W2 LLM 입력 한도 — 조회 대상 크기(`schema_context.dbs`) · "
     "테이블 정의 선별(W4)",
-    "selection_none": "plans/138 W4 선별 0개 — 「DB 구조」 탭 테이블 정의(manages·key_columns)",
+    "selection_none": "plans/139 W4 선별 0개 — 「DB 구조」 탭 테이블 정의(manages·key_columns)",
     "no_sql": "plans/133 A8 · 프로필 query_guide",
     "fabricated": "plans/133 A8 · 고지 규칙",
     "dialect_error": "plans/133 A8 DB 전용 프롬프트 섹션 · 프로필 방언 규칙",
@@ -428,7 +428,7 @@ def classify(facts: TurnFacts, analysis: Mapping[str, Any], *, db_id: str) -> li
 
 
 def _prompt_stop_labels(context: Mapping[str, Any] | None, db_id: str) -> set[str]:
-    """측정 연결점이 옮긴 DB 별 프롬프트 칸(plans/138 W6-d) → `backend_limit`·`selection_none`.
+    """측정 연결점이 옮긴 DB 별 프롬프트 칸(plans/139 W6-d) → `backend_limit`·`selection_none`.
 
     입력 한도: 재생성 종결 사유 `backend_limit` · 예산 단계 `exceeded` · 백엔드 보고 토큰 수 있음.
     선별 0개: 선별 출처 `none` · 종결 사유 `selection_none`. 이 벤치 DB 칸만 본다.
@@ -500,7 +500,7 @@ def _larger(current: Any, new: Any) -> Any:
 
 
 def prompt_by_db(records: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
-    """측정 수신 레코드의 DB 별 프롬프트 칸(plans/138 W6-d) → 턴 단위 DB 별 요약.
+    """측정 수신 레코드의 DB 별 프롬프트 칸(plans/139 W6-d) → 턴 단위 DB 별 요약.
 
     같은 DB task 가 여럿이면 칸마다 따로 모은다 — 수는 최댓값, 예산 단계·선별 출처는 가장 나쁜 값,
     종결 사유는 정렬한 합집합. 칸이 없던 옛 레코드는 null 로 남는다(숫자·열거만 · 값 없음).

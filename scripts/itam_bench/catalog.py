@@ -764,7 +764,7 @@ def apply_server_annotations(
     cache_dir: Path | None = None,
     redis_cache: Any = None,
 ) -> dict[str, Any]:
-    """컬럼 설명·유사어를 서버와 같은 순서(Redis → 파일)로 읽어 `schema`에 덮어쓴다(plans/138 W6-a).
+    """컬럼 설명·유사어를 서버와 같은 순서(Redis → 파일)로 읽어 `schema`에 덮어쓴다(plans/139 W6-a).
 
     서버(`SchemaCacheManager.get_descriptions`·`get_synonyms`)는 백엔드가 redis 이고 연결되며 결과가
     비지 않으면 Redis 값을, 아니면 파일 스키마 캐시 값을 쓴다 — 설명·유사어 각각. 조회문 0(키
@@ -1026,7 +1026,7 @@ def _relations(
 def _table_manages(profile: Mapping[str, Any] | None) -> dict[str, str]:
     """승인 프로필 `table_definitions`의 테이블별 `manages` → {맨 이름 소문자: 문장}.
 
-    plans/138 W6-g. 비었거나 문자열이 아닌 `manages`는 건너뛴다.
+    plans/139 W6-g. 비었거나 문자열이 아닌 `manages`는 건너뛴다.
     """
     from src.domain.table_definitions import PROFILE_KEY
 
@@ -1056,7 +1056,7 @@ def build_schema_catalog(
     **테이블을 거르지 않는다**(운영 108테이블 전부 — 사용자 확정 2026-10-06). 값은 싣지 않는다(표본
     행 0 — 입력에 `sample_data`가 있어도 읽지 않는다 · 코드값·라벨·유사어는 건수만). 의미가 빈
     컬럼이 곧 plans/133 A3(설명) 작업 목록이다. 테이블 의미는 승인 프로필 `table_definitions`의
-    `manages`가 먼저, 없으면 DB 주석이다(plans/138 W6-g).
+    `manages`가 먼저, 없으면 DB 주석이다(plans/139 W6-g).
     """
     descriptions = {
         str(k).casefold(): str(v) for k, v in (schema.get("descriptions") or {}).items()

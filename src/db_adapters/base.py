@@ -41,7 +41,7 @@ class DBAdapter(Protocol):
         종전 목록 그대로다(하위 호환).
 
         time_resolution은 state `time_resolution` 값(`QueryTime.to_state()` · plans/122 T-5b ·
-        D-306)이다. 주면 생성 SQL의 시간 조건을 해석 결과와 대조하는 검사가 추가될 수 있다.
+        D-309)이다. 주면 생성 SQL의 시간 조건을 해석 결과와 대조하는 검사가 추가될 수 있다.
         None(플래그 off · 옛 체크포인트)이면 종전 목록 그대로다.
         """
         ...

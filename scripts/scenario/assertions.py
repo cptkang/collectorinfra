@@ -1427,7 +1427,7 @@ DAY_BOUNDARY_MARGIN = timedelta(minutes=10)
 def near_day_boundary(moment: datetime) -> bool:
     """앵커 시각(KST)이 자정 ±`DAY_BOUNDARY_MARGIN` 안인가(plans/122 T-9 — 일·시 단위 창 보류).
 
-    시간 해석 기본 on(D-306)에서 시스템은 요청 수신 시각(KST)으로 기간을 푼다. 남는 어긋남은
+    시간 해석 기본 on(D-309)에서 시스템은 요청 수신 시각(KST)으로 기간을 푼다. 남는 어긋남은
     러너·서버 시계 차와 턴 안 재송신(자동응답) 지연이라 「어제」·「지난주」·「최근 N시간」 창은
     자정 앞뒤에서만 다른 날을 볼 수 있다. DB 현재시각 함수로 푼 SQL 은 함수식 부정 단언이
     따로 잡는다.

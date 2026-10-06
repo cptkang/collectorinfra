@@ -1,4 +1,4 @@
-"""plans/122 T-4 — 응답 계약에 `time_resolution` · 기간 되묻기 종료 응답 (D-306).
+"""plans/122 T-4 — 응답 계약에 `time_resolution` · 기간 되묻기 종료 응답 (D-309).
 
 고정하는 계약:
 ① 네 진입점(비스트림·스트림 × 텍스트·파일)과 스트림 폴백(`ainvoke`)이 state `time_resolution`을

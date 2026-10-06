@@ -29,6 +29,6 @@ class ParsedRequirements(BaseModel):
     field_mapping_hints: list[Any] = Field(default_factory=list)
     target_db_hints: list[Any] = Field(default_factory=list)
     synonym_registration: Optional[Any] = None
-    # 기간 슬롯(plans/122 T-3 · D-306) — enum JSON. 검증은 `src.domain.time_expr.slot_to_spec`
+    # 기간 슬롯(plans/122 T-3 · D-309) — enum JSON. 검증은 `src.domain.time_expr.slot_to_spec`
     # 몫이라 여기서는 느슨하게 받는다(엄격 모델이면 슬롯 하나의 오류로 요구사항 전체가 거부된다).
     time_expr: Any | None = None

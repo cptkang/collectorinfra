@@ -1,4 +1,4 @@
-"""LLM 백엔드 오류 응답 감지 — 단일 경로 대칭 (plans/138 W1 · D-305 ⑦).
+"""LLM 백엔드 오류 응답 감지 — 단일 경로 대칭 (plans/139 W1 · D-308 ⑦).
 
 내부망 ITAM run `20261006-152938`: 단일 경로 프롬프트가 FabriX 한도를 넘자 FabriX가
 **응답 본문으로** `An exception occurred in GptOssAdapter.llm_call: Input tokens must be
@@ -42,7 +42,7 @@ qv = importlib.import_module("src.nodes.query_validator")
 sub = importlib.import_module("src.orchestration.subagents")
 replanner = importlib.import_module("src.orchestration.replanner")
 
-#: 내부망 실보고 형태(plans/138 §2.3)
+#: 내부망 실보고 형태(plans/139 §2.3)
 FABRIX_TEXT = (
     "An exception occurred in GptOssAdapter.llm_call: Input tokens must be <= 95232. "
     "Given: 96858. Please reduce the length of the messages. Error occurred from orchestrator"

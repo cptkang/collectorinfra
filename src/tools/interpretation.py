@@ -22,7 +22,7 @@ def resolve_time_range(
 ) -> dict[str, Any]:
     """질의의 기간 표현을 통계 월 범위로 해석한다.
 
-    `query_time`(요청 시간 해석 · plans/122 T-7 · D-306)이 있으면 그 성능 통계 해석을 돌려준다
+    `query_time`(요청 시간 해석 · plans/122 T-7 · D-309)이 있으면 그 성능 통계 해석을 돌려준다
     (도구 호출 문장을 다시 해석하지 않는다 — 요청 단위 단일 출처). 종전 키(`resolved`·`start`·
     `end` = YYYYMM 월 투영)는 형식 그대로 두고 키를 더한다:
     `time_range`(SMQ `time_range`에 그대로 쓰는 YYYYMM 목록 · 월로 표현되지 않는 기간이면 None) ·

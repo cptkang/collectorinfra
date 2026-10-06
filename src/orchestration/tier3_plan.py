@@ -344,7 +344,7 @@ async def task_prompt(state: TaskRunState) -> dict[str, Any]:
     parsed["original_query"] = text
     out: dict[str, Any] = {
         "user_query": text, "parsed_requirements": parsed, "current_node": "task_prompt",
-        # 시간 해석도 task 범위로(plans/122 §10.3 「2단 task」 — 2단 격리 입력과 같은 함수 · D-306).
+        # 시간 해석도 task 범위로(plans/122 §10.3 「2단 task」 — 2단 격리 입력과 같은 함수 · D-309).
         # 입력은 원문 해석이다(`task_payload`가 좁히지 않고 넘긴다). 원문 대조는 서브그래프 밖에서
         # 잡은 요청 원문으로 한다 — 없으면(빈 문자열) task별 해석을 하지 않는다.
         "time_resolution": _scope_time_resolution(

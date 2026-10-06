@@ -105,7 +105,7 @@ class AgentState(TypedDict):
     relevant_tables: list[str]               # 관련 테이블 목록
     schema_info: dict                        # 스키마 상세 (테이블, 컬럼, FK)
     schema_cache_source: Optional[str]       # 스키마 캐시 출처 ("메모리" | "Redis" | "DB 직접 조회")
-    # 정의 기반 테이블 선별 결과(plans/138 W4 · D-305) — DB id 키, 단일·멀티 같은 모양:
+    # 정의 기반 테이블 선별 결과(plans/139 W4 · D-308) — DB id 키, 단일·멀티 같은 모양:
     # {db_id: {"mode": "definitions", "source": "llm"|"lexical"|"none", "candidates": 후보 수,
     #  "selected": [최종 테이블], "bridged": [다리 테이블]}}. 그 모드인 DB만 싣고(없으면 None) 이름·
     # 개수만 담는다(값 없음). **요청 스코프** — 두 상태 생성 함수가 None으로 초기화한다.
@@ -124,7 +124,7 @@ class AgentState(TypedDict):
     # 차단 감지 시 산출, query_validator가 에러 메시지에 노출(폐쇄망 UI 자가 진단).
     # 생성 시도 스코프 값(차단 아닌 생성이 성공하면 의미 없음 — 소비부가 차단 시에만 읽음).
     pii_block_diagnosis: Optional[str]
-    # 단일 경로 SQL 생성 프롬프트 토큰 예산 표지(plans/138 W2 · D-305 ⑥) — `query_generator`가 LLM
+    # 단일 경로 SQL 생성 프롬프트 토큰 예산 표지(plans/139 W2 · D-308 ⑥) — `query_generator`가 LLM
     # 폴백마다 쓴다: {"estimated_tokens", "budget", "stage": within|materials|samples|exceeded,
     # "table_count", "samples"} — 수치만(값 없음). `stage == "exceeded"`면 LLM을 부르지 않았고
     # `query_validator`가 재생성 없이 종결한다. **요청 스코프** — 두 상태 생성 함수가 None으로
@@ -362,7 +362,7 @@ class AgentState(TypedDict):
     # 원문에 표면어가 없는 조회 대상(plans/123 S-7(a) — 해석 고지 트리거) — `input_parser`가 쓴다.
     # 사전 = `config/query_target_surfaces.yaml`. 소비(해석 한 줄)는 121 TP-4.7 몫(123·G-15).
     unanchored_query_targets: list[str] | None
-    # 요청 단위 시간 해석(plans/122 T-4 · D-306) — `src.domain.query_time.QueryTime.to_state()` 값.
+    # 요청 단위 시간 해석(plans/122 T-4 · D-309) — `src.domain.query_time.QueryTime.to_state()` 값.
     # `input_parser`가 매 턴 한 번 쓰고(`QUERY_TIME_RESOLUTION_ENABLED` off면 None), 기간을
     # 쓰는 모든 경로가 `QueryTime.from_state`로 이것만 읽는다(단일 출처). **요청 스코프** —
     # 두 상태 생성 함수가 None으로 초기화한다(체크포인터는 델타만 병합). 미선언이면 LangGraph가
@@ -546,8 +546,8 @@ def create_followup_input(
         "demonstrative_without_antecedent": None,  # plans/123 S-7(b) — 요청 스코프
         "unanchored_query_targets": None,  # plans/123 S-7(a) — 요청 스코프
         "time_resolution": None,  # plans/122 T-4 — 요청 스코프(input_parser가 매 턴 다시 쓴다)
-        "prompt_budget": None,  # plans/138 W2 — 요청 스코프(직전 턴 예산 표지 차단)
-        "table_selection": None,  # plans/138 W4 — 요청 스코프(직전 턴 선별 결과 차단)
+        "prompt_budget": None,  # plans/139 W2 — 요청 스코프(직전 턴 예산 표지 차단)
+        "table_selection": None,  # plans/139 W4 — 요청 스코프(직전 턴 선별 결과 차단)
     }
     if reset_db_scope:
         # 승계 원천 3종을 비운다 — 체크포인터는 델타만 병합하므로 명시 초기화가 필요하다(D-064).
@@ -611,7 +611,7 @@ def create_initial_state(
         relevant_tables=[],
         schema_info={},
         schema_cache_source=None,
-        table_selection=None,  # plans/138 W4 — 요청 스코프
+        table_selection=None,  # plans/139 W4 — 요청 스코프
         column_mapping=None,
         db_column_mapping=None,
         mapping_sources=None,
@@ -643,7 +643,7 @@ def create_initial_state(
         column_value_index=None,
         synonym_usage=None,
         pii_block_diagnosis=None,
-        prompt_budget=None,  # plans/138 W2 — 요청 스코프
+        prompt_budget=None,  # plans/139 W2 — 요청 스코프
         validation_result={"passed": False, "reason": "", "auto_fixed_sql": None},
         query_results=[],
         organized_data={

@@ -38,7 +38,7 @@ from src.domain.change_terms import (
     resolve_spike_request,
 )
 from src.db_adapters.polestar.spike_sql import CAPACITY_CHANGE_NOTE, build_spike_sql
-# 요청 시간 해석(state `time_resolution` · plans/122 T-4 · D-306) — 폴스타 기간 블록은 어댑터의
+# 요청 시간 해석(state `time_resolution` · plans/122 T-4 · D-309) — 폴스타 기간 블록은 어댑터의
 # 단일 출처를 부르고(리터럴은 어댑터 소유 · D-089), DB 무관 소비 헬퍼는 공용 모듈을 쓴다.
 from src.db_adapters.polestar.time_period import build_period_block
 from src.db_adapters.time_hint import (
@@ -523,7 +523,7 @@ class _GenContext:
     #: 브리지는 대상 스코프를 잡았는데 종전(컬럼명 판정) 스코프가 없는가 — 결정적 컴파일을
     #: 건너뛰는 조건(권고 H).
     bridge_only_scope: bool = False
-    #: 요청 시간 해석(state `time_resolution` · plans/122 T-4 · D-306). None이면(플래그 off ·
+    #: 요청 시간 해석(state `time_resolution` · plans/122 T-4 · D-309). None이면(플래그 off ·
     #: 옛 체크포인트) 모든 기간 소비 지점이 종전 경로(`stat_month` 표면어 해석)를 탄다.
     query_time: QueryTime | None = None
 
@@ -909,7 +909,7 @@ async def _build_fallback_prompts(
             _pr_block = scrub_pii(_pr_block)
         user_prompt += "\n\n" + _pr_block
 
-    # 토큰 예산 사다리(D-305 ⑥ · plans/138 W2 — D-159 FIX-B 「단일은 강등만」 개정): 시스템 +
+    # 토큰 예산 사다리(D-308 ⑥ · plans/139 W2 — D-159 FIX-B 「단일은 강등만」 개정): 시스템 +
     # 사용자 프롬프트를 추정해 넘으면 재료 → 표본 순으로 줄이고, 그래도 넘으면 보내지 않는다.
     system_prompt, prompt_budget = _fit_single_prompt_budget(
         _render_system, state["schema_info"], system_prompt, user_prompt,
@@ -999,6 +999,21 @@ def _fit_single_prompt_budget(
     )
 
 
+def _dialect_engine(state: AgentState) -> Optional[str]:
+    """생성 SQL 후처리의 방언 판단용 엔진 — state 값, 없으면 레지스트리(`active_db_id`)에서 찾는다.
+
+    2단·1단 데이터 질의는 `subagents`가 `active_db_engine`을 채우지만 그래프 경로(3·4단)는
+    쓰기 지점이 없다(`query_validator._engine_or_fallback` 주석). 엔진을 모르면 None — 소비처가
+    종전 동작을 유지한다(plans/137 W9).
+    """
+    engine = state.get("active_db_engine")
+    if engine:
+        return str(engine)
+    db_id = state.get("active_db_id")
+    domain = get_domain_by_id(db_id) if db_id else None
+    return getattr(domain, "db_engine", None) or None
+
+
 async def _llm_fallback(
     state: AgentState, ctx: _GenContext, coverage_outside: bool,
 ) -> tuple[str, Optional[list[dict]], Optional[dict], dict]:
@@ -1016,7 +1031,7 @@ async def _llm_fallback(
     try:
         system_prompt, user_prompt, prompt_budget = await _build_fallback_prompts(state, ctx)
     except PromptBudgetExceeded as exc:
-        # 전송 전 예산 초과(plans/138 W2 · D-305 ⑥) — LLM을 부르지 않고 빈 산출로 끝낸다.
+        # 전송 전 예산 초과(plans/139 W2 · D-308 ⑥) — LLM을 부르지 않고 빈 산출로 끝낸다.
         # 검증 노드가 `prompt_budget.stage == "exceeded"`를 보고 재생성 없이 종결한다(백엔드
         # 한도 초과와 같은 종결 — 그래프·2단 단일 루프 공통). 예외를 노드 밖으로 내보내지 않는다.
         return "", None, None, {"prompt_budget": exc.budget_state}
@@ -1098,7 +1113,8 @@ async def _llm_fallback(
     # EAV 숫자·크기 값(문자열) 순위 정렬을 값 크기 순으로(plans/116 §10.3 — 메모리 8GB 1위).
     sql = ensure_eav_value_order(sql)
     # 집계 순위 정렬 NULLS LAST 부가(D-202 2차) — LLM 반복 누락으로 재시도 소진 실측.
-    sql = ensure_ranking_nulls_last(sql)
+    # MariaDB·MySQL은 문법이 없어 부가하지 않는다(D-305 · plans/137 W9).
+    sql = ensure_ranking_nulls_last(sql, db_engine=_dialect_engine(state))
 
     return sql, sql_candidates, text2sql_fallback, extra_return
 
@@ -1199,7 +1215,7 @@ async def query_generator(
         - error_message: None (초기화)
         - current_node: "query_generator"
     """
-    # 정의 기반 테이블 선별 0개(plans/138 W4 · D-305 G-2) — 조회 대상 테이블이 없으니 LLM을 부르지
+    # 정의 기반 테이블 선별 0개(plans/139 W4 · D-308 G-2) — 조회 대상 테이블이 없으니 LLM을 부르지
     # 않고 빈 산출로 끝낸다. 검증 노드가 같은 신호를 보고 재생성 없이 안내 문구로 종결한다.
     if selection_none_active(state):
         logger.warning("SQL 생성 생략: 정의 기반 테이블 선별 0개 — LLM 미호출")
@@ -1605,7 +1621,7 @@ def _build_system_prompt(
         template = QUERY_GENERATOR_SYSTEM_TEMPLATE
 
     # 선별 테이블의 「테이블 용도」 블록을 스키마 바로 앞에 붙인다 — 멀티 경로와 같은 빌더·같은
-    # 자리(plans/138 W5 · D-305 ⑤ · D-066). 정의 없는 DB는 빈 문자열이라 바이트 불변.
+    # 자리(plans/139 W5 · D-308 ⑤ · D-066). 정의 없는 DB는 빈 문자열이라 바이트 불변.
     return template.format(
         schema=build_table_purpose_block(schema_info) + schema_text,
         default_limit=default_limit,

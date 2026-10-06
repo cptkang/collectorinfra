@@ -138,7 +138,7 @@ def _apply_elliptical_succession(parsed: dict[str, Any], state: AgentState) -> d
 
 
 def _now() -> datetime:
-    """요청 기준 시각(KST) — 노드 호출당 한 번 잡는다(plans/122 T-3 · D-306).
+    """요청 기준 시각(KST) — 노드 호출당 한 번 잡는다(plans/122 T-3 · D-309).
 
     프롬프트의 「오늘」과 코드 시간 해석이 같은 값을 쓴다. 테스트는 이 함수를 바꿔 고정한다.
     """
@@ -146,7 +146,7 @@ def _now() -> datetime:
 
 
 def _time_resolution_on(app_config: Any) -> bool:
-    """시간 해석 플래그(`QUERY_TIME_RESOLUTION_ENABLED` · D-306). 설정 대역에 필드가 없으면 off."""
+    """시간 해석 플래그(`QUERY_TIME_RESOLUTION_ENABLED` · D-309). 설정 대역에 필드가 없으면 off."""
     return bool(getattr(getattr(app_config, "query", None), "time_resolution_enabled", False))
 
 
@@ -170,7 +170,7 @@ def _apply_time_slot_default(parsed: dict[str, Any], anchor_at: datetime | None)
 
 
 def _time_resolution_fields(user_query: str, anchor_at: datetime, slot: Any) -> dict[str, Any]:
-    """원문 + 기준 시각 + LLM 슬롯 → state 갱신(plans/122 T-3 · D-306).
+    """원문 + 기준 시각 + LLM 슬롯 → state 갱신(plans/122 T-3 · D-309).
 
     `time_resolution`(요청 스코프 단일 출처)을 싣고, 해석 불가(`clarify`)면 데이터를 조회하지 않고
     되묻는 최종 응답을 함께 싣는다 — 그래프가 input_parser 뒤에서 끝난다
@@ -229,7 +229,7 @@ async def input_parser(
     if llm is None:
         llm = create_llm(app_config)
 
-    # 기준 시각(plans/122 T-3 · D-306) — 호출당 한 번. 프롬프트 날짜와 해석이 같은 값을 쓴다.
+    # 기준 시각(plans/122 T-3 · D-309) — 호출당 한 번. 프롬프트 날짜와 해석이 같은 값을 쓴다.
     # off면 None — 프롬프트·반환 dict가 종전 바이트 그대로다.
     anchor_at = _now() if _time_resolution_on(app_config) else None
 

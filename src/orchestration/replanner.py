@@ -1100,9 +1100,9 @@ _REGEN_STOP_REASON_TEXT = {
     "validation_budget": "SQL을 재시도 한도까지 다시 만들었지만 검증을 통과하지 못했습니다",
     "non_sql": "SQL이 아니라 설명문이 생성됐습니다",  # 「대신」은 하네스 교정 표지어(plans/123 W-6)
     "deadline": "응답 시간 상한이 가까워 SQL 재생성을 멈췄습니다",
-    # LLM 입력 한도 초과(백엔드 보고·전송 전 예산 초과)·백엔드 오류 응답(plans/138 W1·W2)
+    # LLM 입력 한도 초과(백엔드 보고·전송 전 예산 초과)·백엔드 오류 응답(plans/139 W1·W2)
     "backend_limit": "LLM 입력 한도 초과 등 LLM 백엔드 오류로 조회문을 만들지 못했습니다",
-    # 정의 기반 테이블 선별 0개(plans/138 W4)
+    # 정의 기반 테이블 선별 0개(plans/139 W4)
     "selection_none": "질문에 맞는 조회 대상 테이블을 찾지 못해 조회문을 만들지 않았습니다",
 }
 _REGEN_STOP_FALLBACK_TEXT = "SQL 재생성이 멈췄습니다"

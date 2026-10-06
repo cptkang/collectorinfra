@@ -28,7 +28,7 @@ from src.utils.query_gen_common import (
 from src.utils.month_structure import parse_month_structure_field
 # EAV 속성 메타 추출은 카탈로그 계층에 위임한다(application→infrastructure 허용).
 from src.schema_cache.catalog_builder import attribute_resource_types
-# 기간 해석 결과(plans/122 T-6·T-7 · D-306) — 리터럴 투영은 같은 어댑터의 단일 출처를 쓴다.
+# 기간 해석 결과(plans/122 T-6·T-7 · D-309) — 리터럴 투영은 같은 어댑터의 단일 출처를 쓴다.
 from src.domain.time_spec import TimeResolution
 from src.db_adapters.polestar.time_period import STAT_TABLES, alarm_ts_bounds, stat_bounds
 
@@ -274,7 +274,7 @@ def recognize_month_series(
     stat_month 자리에는 배선됐으나 **앵커 산출 자리에는 빠져** "1월부터 6월까지"가 지난달
     기준(2~7월)으로 침묵 폴백한 라이브 실측(2026-08-25, D-185)의 대칭 보완.
 
-    `period`(요청 시간 해석의 성능 통계 주체 — `QueryTime.metric` · plans/122 T-7 · D-306)가
+    `period`(요청 시간 해석의 성능 통계 주체 — `QueryTime.metric` · plans/122 T-7 · D-309)가
     주어지면 기간은 그것만으로 정한다(정규식·`parsed_time_range`를 보지 않는다 — 단일 출처).
     기준일도 그 해석의 기준 시각이다(`today`를 주면 `today`). 월 경계가 아닌 기간(일·시 입도)의
     앵커 끝은 마지막 완결 월로 자른다 — `_period_month_anchor`.
@@ -1043,7 +1043,7 @@ def _build_pivot_sql(
             HAVING으로 적용한다(WHERE는 자식 행을 탈락시킴 — D-096).
         measure_having: 측정치 임계 조건 [(measure alias, SQL 연산자, 값)] — SELECT와 동일한
             집계식을 HAVING에 재사용한다(Plan 67 S-IR4).
-        period: 성능 통계 기간 해석(plans/122 T-7 · D-306). 주면 통계 조인의 테이블·기간 조건을
+        period: 성능 통계 기간 해석(plans/122 T-7 · D-309). 주면 통계 조인의 테이블·기간 조건을
             `time_period.stat_bounds`의 입도 테이블과 반개구간 리터럴(`>= lo AND < hi`)로 정하고
             `stat_month`·`metric_table`은 쓰지 않는다(기간 조건 없음이면 그 입도 테이블 + 조건
             없음). **우선순위**: `month_measures` > `period` > `stat_month` — 월 시리즈는 항목별
@@ -1225,7 +1225,7 @@ def build_form_fill_pivot_sql(
         db_engine/db_schema/limit/stat_month/metric_table: ``_build_pivot_sql``과 동일
         month_measures: 월별 가로 피벗 명시 지정 (alias, resource_type, 값컬럼, YYYYMM)
         concat_eav: Vendor+Model 결합 지정 (필드, Vendor속성, Model속성)
-        period: 성능 통계 기간 해석(`QueryTime.metric` · plans/122 T-7 · D-306). 주면 통계 조인의
+        period: 성능 통계 기간 해석(`QueryTime.metric` · plans/122 T-7 · D-309). 주면 통계 조인의
             테이블·조건을 해석 입도(h/d/m)의 반개구간 리터럴로 정하고 `stat_month`·`metric_table`은
             무시한다(월 입도면 종전 `stat_month` 표기와 같은 월 집합). 기간 조건 없음(unbounded)이면
             조건 없음. **덮어쓰기**: `month_measures`가 있으면 월 시리즈 항목 월 범위가 조인 조건을
@@ -1463,7 +1463,7 @@ class ActiveAlarmSpec:
     # 알람 유형 필터(D-202 4차) — res.resource_type IN (…) 결정적 한정. None이면 무필터.
     resource_types: tuple[str, ...] | None = None
     type_label: str | None = None  # 헤드라인 표기용 ("CPU" 등)
-    # 사건(알람) 기간 해석의 `ctime` 리터럴 [시작, 끝) — plans/122 T-6 · D-306. 있으면
+    # 사건(알람) 기간 해석의 `ctime` 리터럴 [시작, 끝) — plans/122 T-6 · D-309. 있으면
     # month_range보다 우선한다(완결 월 절단 없음 · 시작 None = 「~까지」). None이면 종전 경로.
     ts_bounds: tuple[str | None, str] | None = None
 
@@ -1499,7 +1499,7 @@ def recognize_active_alarm_query(
     - 집계 축("서버별" 등)·유형/메트릭 필터("CPU 임계값" 등) 신호가 섞인 질의 —
       조립기가 표현할 수 없어 조립 시 해당 조건이 침묵 드롭된다(D-202, D군 실측)
 
-    기간(plans/122 T-6 · D-306): `period`(요청 시간 해석의 **사건** 주체 — `QueryTime.event`)가
+    기간(plans/122 T-6 · D-309): `period`(요청 시간 해석의 **사건** 주체 — `QueryTime.event`)가
     주어지면 기간은 오직 그것으로 정한다 — `alarm_ts_bounds(period)`의 `[시작, 끝)`을
     `spec.ts_bounds`에 싣고(완결 월 절단 없음 · 진행 중 기간 = 기준 시각까지), 기간 조건 없음
     (unbounded — 기간 미지정 D-291 `event_no_default_period` · 「~한 적이 있는」)이면 기간 조건을
@@ -1685,7 +1685,7 @@ def build_active_alarm_sql(
 def _ts_bounds_conds(ts_bounds: tuple[str | None, str] | None) -> list[str]:
     """`ctime` 리터럴 경계 [시작, 끝) → WHERE 조건(시작 None이면 끝만 · None이면 빈 목록).
 
-    plans/122 T-6 · D-306 — 리터럴 형식은 `time_period.alarm_ts_bounds`(PG·DB2 공통
+    plans/122 T-6 · D-309 — 리터럴 형식은 `time_period.alarm_ts_bounds`(PG·DB2 공통
     `TIMESTAMP '…'`)가 정한다.
     """
     if ts_bounds is None:
@@ -1800,7 +1800,7 @@ def try_deterministic_alarm_sql(
 ) -> str | None:
     """알람 결정적 조립 진입점(활성+이력) — 미해당·플래그 OFF면 None(현행 무변경).
 
-    `period`는 사건(알람) 기간 해석(`QueryTime.event` · plans/122 T-6 · D-306) — 주어지면
+    `period`는 사건(알람) 기간 해석(`QueryTime.event` · plans/122 T-6 · D-309) — 주어지면
     기간은 그것만으로 정한다(`recognize_active_alarm_query` 참조). None이면 종전 월 해석.
     """
     if not enabled:

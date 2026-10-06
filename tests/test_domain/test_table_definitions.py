@@ -1,4 +1,4 @@
-"""plans/138 W3 — 테이블 정의 자산 형식·검증(`src.domain.table_definitions`) · 테이블 단위 병합
+"""plans/139 W3 — 테이블 정의 자산 형식·검증(`src.domain.table_definitions`) · 테이블 단위 병합
 (`src.domain.profile_merge`) · 준비도 C11 경고(`src.domain.db_readiness`).
 
 확인하는 계약:

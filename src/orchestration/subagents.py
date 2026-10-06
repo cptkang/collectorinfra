@@ -882,8 +882,8 @@ async def _run_single_db_pipeline(
       `route_after_validation`과 같은 판정(`non_sql_budget_exhausted`)이다. 일반 검증 실패는 종전
       예산(`QUERY_MAX_RETRY_COUNT`) 그대로다.
     - **LLM 입력 한도 초과·백엔드 오류 응답**(백엔드 보고 · 전송 전 예산 초과)은 재생성 0회로
-      끝낸다(plans/138 W1·W2 — 그래프와 같은 판정 `backend_limit_hit`).
-    - **정의 기반 테이블 선별 0개**는 SQL 생성 없이 안내 문구로 끝낸다(plans/138 W4 —
+      끝낸다(plans/139 W1·W2 — 그래프와 같은 판정 `backend_limit_hit`).
+    - **정의 기반 테이블 선별 0개**는 SQL 생성 없이 안내 문구로 끝낸다(plans/139 W4 —
       `selection_none_hit` · 종결 사유 `selection_none`).
     - **조회 마감**(처리 마감 − 서술 예약): 스키마 분석·첫 생성 **진입 전** 마감이 지났으면
       시작하지 않고(T-1ⓑ), 재생성(검증 실패·실행 오류 모두)은 `남은 시간 < 방금 잰 직전 생성
@@ -956,18 +956,18 @@ async def _run_single_db_pipeline(
         if not state["validation_result"]["passed"]:
             _reason = state["validation_result"].get("reason", "SQL 검증 실패")
             if selection_none_hit(state["validation_result"]):
-                # 정의 기반 테이블 선별 0개(plans/138 W4) — SQL 생성 LLM을 부르지 않았다.
+                # 정의 기반 테이블 선별 0개(plans/139 W4) — SQL 생성 LLM을 부르지 않았다.
                 # 재생성 없이 안내 문구(검증 사유 = `selection_none_guidance`)로 끝낸다
                 # (그래프와 같은 문구).
-                logger.info("단일 DB 파이프라인 테이블 선별 0개 종결(plans/138 W4)")
+                logger.info("단일 DB 파이프라인 테이블 선별 0개 종결(plans/139 W4)")
                 _stop_regen(state, REGEN_STOP_SELECTION_NONE, _reason, response=_reason)
                 break
             if backend_limit_hit(state["validation_result"]):
-                # LLM 입력 한도 초과·백엔드 오류 응답(plans/138 W1·W2) — 같은 프롬프트 재생성은
+                # LLM 입력 한도 초과·백엔드 오류 응답(plans/139 W1·W2) — 같은 프롬프트 재생성은
                 # 결정적으로 다시 넘는다. 재생성 0회로 끝내고 그래프 `error_response`와 같은 문구를
                 # 싣는다. detail은 응답 원문 없는 요약(검증 노드의 실패 사유)이다.
                 logger.info(
-                    "단일 DB 파이프라인 입력 한도 종결(plans/138): retry=%s",
+                    "단일 DB 파이프라인 입력 한도 종결(plans/139): retry=%s",
                     state.get("retry_count", 0),
                 )
                 _stop_regen(
@@ -1140,7 +1140,7 @@ def _scope_time_resolution(
     state: dict[str, Any], task: dict[str, Any], task_text: str | None = None,
     *, original: str | None = None,
 ) -> dict[str, Any] | None:
-    """요청 시간 해석을 task 범위로 좁힌 state 값을 만든다 (plans/122 §10.3 「2단 task」 · D-306).
+    """요청 시간 해석을 task 범위로 좁힌 state 값을 만든다 (plans/122 §10.3 「2단 task」 · D-309).
 
     원문 해석(state `time_resolution`)이 전역 기본이다. task 문장에 **명시 기간**이 있고 그 기간
     표현이 **사용자 원문에도 있을 때만** 그 문장으로 다시 해석한다(기준 시각은 원문 해석과 같다 —
@@ -1228,7 +1228,7 @@ def _make_isolated_input(
         # 전체 질문에 대한 SQL을 생성하고, data_query는 알람 테이블 접근이 없어 "알람 서버 중"
         # 같은 조건을 침묵 탈락시킨다(2026-07-20 라이브 실측 — 전 서버 기준 오답).
         "parsed_requirements": _scope_parsed_requirements(state, task),
-        # 요청 시간 해석(plans/122 T-4 · D-306) — 격리 입력이 키를 직접 고르므로 싣지 않으면 task
+        # 요청 시간 해석(plans/122 T-4 · D-309) — 격리 입력이 키를 직접 고르므로 싣지 않으면 task
         # 안의 모든 소비처(SQL 생성·검증·결정적 조립·APM 창)가 None을 받아 종전 경로로 돈다.
         # task 문장에 명시 기간이 있을 때만 task별 해석이다(§10.3 「2단 task」).
         "time_resolution": (
@@ -2034,7 +2034,7 @@ def _pack_pipeline_result(
     empty_diagnosis = s.get("empty_diagnosis")
     if empty_diagnosis:
         result["empty_diagnosis"] = empty_diagnosis
-    # task 시간 해석(plans/122 T-4·T-8 · D-306) — 집계기가 task 마감 입력·원천별 기간 고지
+    # task 시간 해석(plans/122 T-4·T-8 · D-309) — 집계기가 task 마감 입력·원천별 기간 고지
     # (`period_sources`)에 쓴다. task 문장에 명시 기간이 있으면 원문 해석과 다르다. 없으면(플래그
     # off) 싣지 않는다 — 집계기는 턴 해석으로 내려간다.
     if isinstance(s.get("time_resolution"), dict):

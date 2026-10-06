@@ -41,7 +41,7 @@ AssetKind = Literal[
     "relationships", "allowed_tables", "code_values", "entity_keys", "query_rules",
     "query_examples", "seeds", "prompt_template", "table_definitions",
 ]
-# 테이블 정의 편집 한 번에 고칠 수 있는 테이블 수 상한(D-305)
+# 테이블 정의 편집 한 번에 고칠 수 있는 테이블 수 상한(D-308)
 _DEFINITION_EDITS_MAX = 1000
 # DDL 본문 상한(문자 수) — 화면의 파일 크기 상한(5MB)과 맞춘다
 _DDL_MAX_CHARS = 5_000_000
@@ -143,7 +143,7 @@ class AssetApproveRequest(BaseModel):
 
 
 class TableDefinitionImportRequest(BaseModel):
-    """테이블 정의 가져오기 요청(D-305) — 시드 형식 YAML 원문(최상위 `tables:`)."""
+    """테이블 정의 가져오기 요청(D-308) — 시드 형식 YAML 원문(최상위 `tables:`)."""
 
     text: str = Field(
         ..., min_length=1, max_length=_DEFINITION_IMPORT_MAX_CHARS, description="YAML 원문"
@@ -872,7 +872,7 @@ async def approve_asset_draft(
     return _with_audit(result, audit_logged)
 
 
-# --- 테이블 정의 (D-305 · plans/138 W3) ---
+# --- 테이블 정의 (D-308 · plans/139 W3) ---
 
 
 @router.post(f"{_PREFIX}/{{source}}/table-definitions/import")

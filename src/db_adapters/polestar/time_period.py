@@ -1,6 +1,6 @@
 """폴스타 시간 조건의 리터럴 경계 — `TimeResolution` → 통계·알람 SQL 리터럴.
 
-plans/122 T-4~T-6 · D-306.
+plans/122 T-4~T-6 · D-309.
 
 해석기(`src/domain/time_spec.py`)는 반개구간 `[start, end)`·입도만 정하고 테이블을 고르지 않는다
 (테이블명·`stat_date` 형식은 DB 특화라 어댑터 몫 — D-089). 이 모듈이 그 투영의 단일 출처다 —
@@ -176,7 +176,7 @@ def _alarm_line(event: TimeResolution | None) -> str:
 
 
 def build_period_block(qt: QueryTime | None) -> str:
-    """요청 시간 해석(`QueryTime`) → LLM 프롬프트 기간 블록(plans/122 T-5 · D-306).
+    """요청 시간 해석(`QueryTime`) → LLM 프롬프트 기간 블록(plans/122 T-5 · D-309).
 
     단일 DB(`query_generator`)·멀티 DB(`multi_db_executor`) LLM 경로가 **같은 함수**를 부른다.
     리터럴은 `stat_bounds`·`alarm_ts_bounds`(검증기·결정적 조립과 같은 투영)에서만 나온다.

@@ -15,7 +15,7 @@ D-292 DDL 등록)과 **읽기 전용 데이터 조회**(`schema_probe`)로 결�
   `StructureStore.apply_profile` · 시드·전용 섹션은 `AssetFileStore`(버전 · 되돌리기). 시드는 기존
   O-7 로더(`SynonymLoader.load_seed_yaml`)로 적재한다 — DB별 `column_synonyms` + DB 공용 사전
   `column_values`(폴스타·ITAM 공유 · `plans/132` G-13 사용자 확정).
-- **테이블 정의(`table_definitions` · D-305 ① · plans/138 W3)**: 테이블마다 「관리하는 정보」.
+- **테이블 정의(`table_definitions` · D-308 ① · plans/139 W3)**: 테이블마다 「관리하는 정보」.
   초안 경로 3가지 — 가져오기(`import_table_definitions` · 시드 YAML 형식) · 주석(P1이 테이블
   주석을 `comment`
   정의로) · LLM 묶음 초안(`run_table_definition_llm` · 주석 없는 테이블만 · 군 접두 단위 묶음 ·
@@ -115,7 +115,7 @@ EXAMPLE_COUNT = 5
 SECTION_MAX_CHARS = 6000
 SUMMARY_MAX_CHARS = 12000
 SQL_CHECK_LIMIT = 50
-#: 테이블 정의 LLM 묶음 크기(군 접두 단위 · D-305)
+#: 테이블 정의 LLM 묶음 크기(군 접두 단위 · D-308)
 DEFINITION_BATCH_SIZE = 10
 #: 테이블 정의 LLM 입력의 컬럼 설명 길이 상한(자)
 DEFINITION_DESCRIPTION_MAX_CHARS = 100
@@ -552,7 +552,7 @@ class AssetGenerationService(AdminServiceBase):
             check = _SqlCheck(client, self._sql_checker, schema_info, engine, source)
             examples, example_checks = await _validate_examples(check, examples_raw)
             section, section_check = await _validate_section(check, section_raw, snapshot)
-        # 잡이 도는 동안 바뀐 초안(테이블 정의 편집 등 — D-305)을 덮지 않도록
+        # 잡이 도는 동안 바뀐 초안(테이블 정의 편집 등 — D-308)을 덮지 않도록
         # 최신 초안에 이 두 자산만 얹는다
         draft = await self._store.get_asset_draft(source, draft_id) or draft
         assets = dict(draft.get("assets") or {})
@@ -578,7 +578,7 @@ class AssetGenerationService(AdminServiceBase):
             "status": (updated or {}).get("status"),
         }
 
-    # --- 테이블 정의 (D-305 ① · plans/138 W3) ---
+    # --- 테이블 정의 (D-308 ① · plans/139 W3) ---
 
     async def import_table_definitions(
         self, source: str, text: str, *, by: str | None
@@ -1395,7 +1395,7 @@ def build_asset_summary(
 
 
 # ──────────────────────────────────────────────
-# 테이블 정의 (D-305 ① · plans/138 W3)
+# 테이블 정의 (D-308 ① · plans/139 W3)
 # ──────────────────────────────────────────────
 
 

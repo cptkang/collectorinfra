@@ -247,7 +247,7 @@ def load_semantic_model(db_id: str, *, use_cache: bool = True) -> Optional[dict]
 class PeriodUncompilableError(ValueError):
     """요청 기간 해석을 시맨틱 모델로 표현할 수 없다 — 커버리지 밖(LLM 폴백) 사유.
 
-    plans/122 T-7 · D-306. 조건을 버리고 조립하면 전 기간 집계라는 조용한 오답이 된다.
+    plans/122 T-7 · D-309. 조건을 버리고 조립하면 전 기간 집계라는 조용한 오답이 된다.
     """
 
 
@@ -301,7 +301,7 @@ def compile_smq(
         surface_query: 표면어 판정 입력(plans/107 W0.5 — 원문 기준). None이면 ``user_query``.
             순위·최상급 판정과 IR 부재 시의 LIMIT 표면어 해석(``resolve_query_limit``)이 함께 쓴다
             — 재작성문이 원문에 없던 "서버별·전체"를 얻어 LIMIT이 상향되던 확대 방향 오염(U-10)을 닫는다.
-        query_time: 요청 시간 해석(plans/122 T-7 · D-306). 주면 기간은 그것만으로 정한다 — 패턴
+        query_time: 요청 시간 해석(plans/122 T-7 · D-309). 주면 기간은 그것만으로 정한다 — 패턴
             A/B는 ``metric``(해석 입도의 통계 테이블 + 반개구간 리터럴 · ``stat_month``·IR 기간·
             ``time_grain``을 쓰지 않는다), 패턴 C는 ``event``(발생시각 TIMESTAMP 리터럴 · 기간
             조건 없음이면 조건 없음). None이거나 「현재·지금」 기본값이면 종전 경로
@@ -746,7 +746,7 @@ def _alarm_time_where(
 
 
 def _alarm_event_where(event: TimeResolution, dim_map: dict[str, str]) -> list[str]:
-    """사건 기간 해석을 알람 발생시각 반개구간 조건으로 만든다(plans/122 T-7 · D-306).
+    """사건 기간 해석을 알람 발생시각 반개구간 조건으로 만든다(plans/122 T-7 · D-309).
 
     경계는 ``alarm_ts_bounds``(결정적 조립 T-6과 같은 단일 출처)의 ``TIMESTAMP '…'`` 리터럴이다
     (완결 월 절단 없음 · 진행 중 기간 = 기준 시각까지 · D-291). 기간 조건 없음(unbounded)이면
@@ -1290,7 +1290,7 @@ async def compile_from_nl(
             컴파일을 버리고 폴백한다(None이면 검사 없음)
         surface_query: 표면어 판정 입력(plans/107 W0.5 — 원문 기준). None이면 ``user_query``.
             순위·최상급과 IR 부재 시 LIMIT 해석이 쓴다(U-10). SMQ 선택 LLM 입력은 종전대로 ``user_query``
-        query_time: 요청 시간 해석(plans/122 T-7 · D-306 — state ``time_resolution``). 주면
+        query_time: 요청 시간 해석(plans/122 T-7 · D-309 — state ``time_resolution``). 주면
             기간은 그것만으로 정한다(``stat_month`` 무시 · ``compile_smq`` 참조). 기간을 표현할
             수 없으면 커버리지 밖으로 폴백한다(사유 ``note_guard``). None이면 종전
 

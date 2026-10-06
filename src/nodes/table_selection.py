@@ -1,4 +1,4 @@
-"""정의 기반 LLM 테이블 선별 — 단일·멀티 경로 공용 (plans/138 W4 · D-305 G-1~G-3).
+"""정의 기반 LLM 테이블 선별 — 단일·멀티 경로 공용 (plans/139 W4 · D-308 G-1~G-3).
 
 **발동**: 그 DB 프로필에 테이블 정의(`table_definitions`)가 있고 알람 의도가 아닐 때
 (`uses_definition_selection`). 단일 경로(`schema_analyzer`)와 멀티 경로

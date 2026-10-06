@@ -222,6 +222,8 @@ def engine(monkeypatch):
     def install(answer: DocAnswer) -> _Engine:
         fake = _Engine(answer)
         monkeypatch.setattr(dq, "answer_from_documents", fake)
+        # 서술 LLM(answer 프로파일 · plans/138 W5)은 주입 LLM으로 대역 — 실 LLM 생성 0
+        monkeypatch.setattr(dq, "_answer_llm", lambda app_config, *, fallback: fallback)
         return fake
     return install
 

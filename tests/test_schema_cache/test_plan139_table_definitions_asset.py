@@ -1,4 +1,4 @@
-"""plans/138 W3 — 테이블 정의 자산(`AssetGenerationService` · D-305 ①).
+"""plans/139 W3 — 테이블 정의 자산(`AssetGenerationService` · D-308 ①).
 
 초안 경로 3가지(가져오기 · 테이블 주석 · LLM 묶음)와 검토(편집 → `manual`) · 테이블 단위 선택 승인 ·
 되돌리기 · 준비도 C11 배선을 확인한다. LLM은 목, Redis는 페이크, MCP는 가짜 세션, 파일은 tmp —

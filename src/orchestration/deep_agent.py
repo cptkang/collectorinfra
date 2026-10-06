@@ -159,7 +159,7 @@ _AMBIENT_KEYS = (
     "column_mapping",
     "mapping_sources",
     "csv_sheet_data",
-    # 요청 단위 시간 해석(plans/122 T-4 · D-306). 빠지면 1단 도구의 task가 None을 받아 종전 기간
+    # 요청 단위 시간 해석(plans/122 T-4 · D-309). 빠지면 1단 도구의 task가 None을 받아 종전 기간
     # 해석으로 샌다 — 2단·3단과 비대칭.
     "time_resolution",
 )

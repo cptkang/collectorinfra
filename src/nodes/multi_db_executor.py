@@ -143,7 +143,7 @@ from src.db_adapters.polestar.validators import (
     ensure_eav_value_order,
     ensure_ranking_nulls_last,
 )
-# 요청 시간 해석(state `time_resolution` · plans/122 T-4 · D-306) — 단일 경로와 같은 함수(D-066).
+# 요청 시간 해석(state `time_resolution` · plans/122 T-4 · D-309) — 단일 경로와 같은 함수(D-066).
 from src.db_adapters.polestar.time_period import build_period_block
 from src.db_adapters.time_hint import (
     build_generic_time_hint,
@@ -175,7 +175,7 @@ _FOREIGN_SCHEMA_PREFIX = "polestar."        # 붙이지 말아야 할 접두사 
 _SAMPLE_BACKFILL_MAX = 50
 
 # LLM 백엔드(FabriX 오케스트레이터) 예외가 응답 content 텍스트로 오는 변형의 감지 마커·판정은
-# 공용 함수로 옮겼다(`src.sql_validation.detect_llm_backend_error` · plans/138 W1 · D-305 ⑦ — 단일
+# 공용 함수로 옮겼다(`src.sql_validation.detect_llm_backend_error` · plans/139 W1 · D-308 ⑦ — 단일
 # 검증·테이블 선별과 같은 판정). 재시도 중단 판정용 구분 프리픽스는 종전 이름으로 재노출한다.
 _TOKEN_LIMIT_ERROR_PREFIX = TOKEN_LIMIT_ERROR_PREFIX
 
@@ -335,7 +335,7 @@ class _MultiRun:
     # `{db_id: {"reason": validation_budget|non_sql|deadline, "detail": 마지막 사유}}`. 2단 핸들러가
     # 전 DB 실패 task의 `regen_stop`으로 접는다(`subagents._task_regen_stop`).
     regen_stops: dict[str, dict[str, str]] = field(default_factory=dict)
-    # 정의 기반 테이블 선별 결과(plans/138 W4) — `{db_id: TableSelection.as_state()}`.
+    # 정의 기반 테이블 선별 결과(plans/139 W4) — `{db_id: TableSelection.as_state()}`.
     # 그 모드인 DB만 싣고 반환 시 state `table_selection`으로 올린다(단일 경로와 같은 모양).
     table_selections: dict[str, dict[str, Any]] = field(default_factory=dict)
     # DB별 직전 SQL 생성 소요(초) — 실행 오류 재생성의 시간 게이트 입력(추정 상수 금지 · T-3).
@@ -744,7 +744,7 @@ async def _generate_validated_sql(
                 "DB '%s' LLM 입력 토큰 한도 초과 — 재생성 중단(동일 프롬프트 재초과)",
                 db_id,
             )
-            # 종결 사유는 단일 경로와 같은 `backend_limit`(plans/138 W1 잔여 · D-066)
+            # 종결 사유는 단일 경로와 같은 `backend_limit`(plans/139 W1 잔여 · D-066)
             _stop_reason = REGEN_STOP_BACKEND_LIMIT
             break
         # N-5: 산문(비-SQL) 전용 예산 — 그래프·2단 단일 루프와 같은 상수·같은 판정
@@ -817,7 +817,7 @@ async def _generate_validated_sql(
         # 유효 SQL 없이 끝났다 — 사유를 DB별로 남겨 2단 task의 `regen_stop`으로 접게 한다
         # (plans/119 Q-3).
         # PII 차단 중단도 "재생성이 무익해 멈춘 검증 실패"라 검증 소진으로 본다. 토큰 한도 중단은
-        # `backend_limit`이다(plans/138 W1 잔여 — 단일 경로와 같은 사유).
+        # `backend_limit`이다(plans/139 W1 잔여 — 단일 경로와 같은 사유).
         _record_regen_stop(run, db_id, _stop_reason, _stop_detail or validation_error)
     return sql, validation_error
 
@@ -870,7 +870,7 @@ async def _run_single_target(target: dict, run: _MultiRun) -> None:
             )
             run.db_schemas[db_id] = schema_info
 
-            # 정의 기반 테이블 선별 0개(plans/138 W4 · D-305 G-2) — SQL을 만들지 않고
+            # 정의 기반 테이블 선별 0개(plans/139 W4 · D-308 G-2) — SQL을 만들지 않고
             # 안내 문구로 이 DB를 끝낸다(단일 경로와 같은 함수·같은 종결 사유).
             _selections = getattr(run, "table_selections", None)
             _selection = _selections.get(db_id) if isinstance(_selections, dict) else None
@@ -1255,7 +1255,7 @@ async def _run_groups(
                 getattr(run, "regen_stops", None), dict
             ):
                 merged.regen_stops.update(run.regen_stops)
-            # 정의 기반 선별 결과(plans/138 W4) — 뒤 그룹 DB의 선별이 빠지지 않게 합친다.
+            # 정의 기반 선별 결과(plans/139 W4) — 뒤 그룹 DB의 선별이 빠지지 않게 합친다.
             if isinstance(getattr(merged, "table_selections", None), dict) and isinstance(
                 getattr(run, "table_selections", None), dict
             ):
@@ -1420,7 +1420,7 @@ async def multi_db_executor(
     # 키라 버려진다 — 그쪽 사용자 사유는 `db_errors`(존 커버리지 각주)가 운반한다.
     if isinstance(getattr(run, "regen_stops", None), dict) and run.regen_stops:
         result["regen_stops"] = {d: dict(v) for d, v in run.regen_stops.items()}
-    # 정의 기반 선별 결과(plans/138 W4) — 그 모드인 DB가 있을 때만 싣는다(반환 shape 현행 유지).
+    # 정의 기반 선별 결과(plans/139 W4) — 그 모드인 DB가 있을 때만 싣는다(반환 shape 현행 유지).
     # 단일 경로와 같은 키·모양이고, 리듀서가 없는 키라 같은 요청의 기존 항목을 이어 붙인다.
     if isinstance(getattr(run, "table_selections", None), dict) and run.table_selections:
         result["table_selection"] = {
@@ -1573,7 +1573,7 @@ async def _analyze_schema(
         dependency_notes: 사유 노트 채널(`run.dependency_notes`). 컬럼 설명이 비었으면(백업 복원 뒤)
             `descriptions_missing` 노트를 DB당 1건 더한다(plans/104 B-6 · 단일 DB 경로와 같은 조건).
             None이면 싣지 않는다.
-        llm: 정의 기반 테이블 선별 LLM(plans/138 W4). None이면 선별하지 않고 종전 게이트를 쓴다.
+        llm: 정의 기반 테이블 선별 LLM(plans/139 W4). None이면 선별하지 않고 종전 게이트를 쓴다.
         selection_sink: 선별 결과를 ``{db_id: TableSelection.as_state()}``로 담을 곳
             (`run.table_selections`)
 
@@ -1609,7 +1609,7 @@ async def _analyze_schema(
     if llm is not None and _manual_prof is not None and uses_definition_selection(
         _manual_prof, routing_intent,
     ):
-        # 정의 기반 선별(plans/138 W4 · D-305 G-3) — 단일 경로(`schema_analyzer`)와 같은 함수로
+        # 정의 기반 선별(plans/139 W4 · D-308 G-3) — 단일 경로(`schema_analyzer`)와 같은 함수로
         # 고르고 그 테이블로만 좁힌다(얕은 사본 — 캐시 공유 객체는 바꾸지 않는다). 정의가 없는 DB·
         # 알람 의도는 아래 종전 게이트 그대로다.
         selection = await select_tables(
@@ -1846,7 +1846,7 @@ async def _invoke_llm_for_sql(
                     ),
                     _eav_cols,
                 )
-            ))
+            ), db_engine=db_engine)
 
     messages: list[BaseMessage] = [
         SystemMessage(content=system_prompt)
@@ -1873,7 +1873,8 @@ async def _invoke_llm_for_sql(
     # EAV 숫자·크기 값(문자열) 순위 정렬을 값 크기 순으로(plans/116 §10.3) — 단일 대칭.
     sql = ensure_eav_value_order(sql)
     # 집계 순위 정렬 NULLS LAST 부가(D-202 2차) — LLM 반복 누락 재시도 소진 실측, 단일 대칭.
-    sql = ensure_ranking_nulls_last(sql)
+    # MariaDB·MySQL은 문법이 없어 부가하지 않는다(D-305 · plans/137 W9).
+    sql = ensure_ranking_nulls_last(sql, db_engine=db_engine)
     # FabriX PII 필터 차단 응답(비-SQL) — 원인 블록·값 즉시 특정(D-155, 단일 경로 대칭).
     # 이 함수가 프롬프트 재료를 가진 유일한 지점 — db_errors 발췌(D-153 후속2)와 별개로
     # 섹션별 로컬 스캔을 로그에 남겨 "어느 재료의 어떤 값"인지까지 특정한다.
@@ -2066,7 +2067,7 @@ async def _build_multi_system_prompt(
 
     def _render(schema_for_prompt: dict, materials: Optional[dict]) -> str:
         # 「테이블 용도」 블록은 스키마 바로 앞 — 단일 경로와 같은 빌더·같은 자리이고, 예산
-        # 사다리 1·2단(재료·표본 제거)에서도 유지된다(plans/138 W5 · D-305 ⑤ · D-066).
+        # 사다리 1·2단(재료·표본 제거)에서도 유지된다(plans/139 W5 · D-308 ⑤ · D-066).
         # 정의 없는 DB는 빈 문자열이라 바이트 불변.
         return template.format(
             schema=build_table_purpose_block(schema_for_prompt)
@@ -2960,7 +2961,7 @@ def _simple_time_condition_errors(
     app_config: AppConfig | None,
     time_resolution: dict[str, Any] | None,
 ) -> list[str]:
-    """간이 검증 모드의 시간 조건 대조(plans/122 T-5b · D-306) — 대상이 아니면 빈 목록.
+    """간이 검증 모드의 시간 조건 대조(plans/122 T-5b · D-309) — 대상이 아니면 빈 목록.
 
     해석(`QueryTime.from_state`)이 metric을 돌려주고 폴스타 DB(`_is_polestar_db` — 기간 블록과 같은
     게이트)일 때만 어댑터 검증기의 `check_time_conditions`를 그대로 부른다. full 모드에서는
@@ -3012,7 +3013,7 @@ def _validate_sql_simple(
     # 감지(D-159) — SQL이 아니라 백엔드 에러이므로 "SELECT 문이 아닙니다"(증상)로
     # 오표면화하지 않고 원인을 정확히 노출한다(침묵 강등 금지). 토큰 한도 초과는
     # 구분 프리픽스로 반환해 호출부가 재시도를 중단한다(D-153 후속2와 동형).
-    # 판정·문구는 단일 검증과 같은 공용 함수다(plans/138 W1 · D-305 ⑦).
+    # 판정·문구는 단일 검증과 같은 공용 함수다(plans/139 W1 · D-308 ⑦).
     _backend_error = detect_llm_backend_error(sql)
     if _backend_error is not None:
         return _backend_error.message

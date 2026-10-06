@@ -248,8 +248,8 @@ settings:
     recommendation: 기본 8로 둔다. 조인 상대 누락이 로그에 반복되면 늘린다.
     related: [TEXT2SQL_SCHEMA_TABLE_SELECT_SKIP_ENABLED, TEXT2SQL_PROMPT_TOKEN_BUDGET]
     references:
-      - plans/138 (W4)
-      - docs/02_decision.md (D-305)
+      - plans/139 (W4)
+      - docs/02_decision.md (D-308)
 
   TEXT2SQL_PROMPT_TOKEN_BUDGET:
     example: >-

@@ -247,15 +247,15 @@ class QueryConfig(BaseSettings):
     # 짧은 기본값이 안전측: 만료 비용(패널 재답변 1회) ≪ 부패 지속 비용(감사자료 오기재).
     form_memory_ttl_days: int = 7
 
-    # 시간 표현 정규화(plans/122 트랙 T · D-306) — input_parser가 요청마다 한 번 기간을 해석해
+    # 시간 표현 정규화(plans/122 트랙 T · D-309) — input_parser가 요청마다 한 번 기간을 해석해
     # state `time_resolution`에 싣고(규칙 1순위 + LLM `time_expr` 슬롯 폴백 · 기준 시각 주입),
     # 기간을 쓰는 모든 경로가 그 반개구간·입도를 리터럴로 쓴다. 해석 불가면 되묻는다.
     # **기본 ON — 「신규 플래그 기본 off」(plans/80 §5.4-③ · D-162)의 명시 예외**: 사용자 결정
-    # (2026-10-06 · D-306) *"구현하고 기본 on으로 둡니다. 날짜 해석이 바로 효력을 내고 134 W6도 바로
+    # (2026-10-06 · D-309) *"구현하고 기본 on으로 둡니다. 날짜 해석이 바로 효력을 내고 134 W6도 바로
     # 동작합니다."* — 섀도 단계(D-275 ⑬)를 건너뛴다. off면 `time_resolution`을 싣지 않고
     # input_parser 프롬프트도 종전 바이트 그대로라 모든 소비처가 종전 경로
     # (`resolve_stat_month_range`)로 돈다. 폐쇄망 run R2는 변경 전 커밋으로 고정해 전후를
-    # 비교한다(D-306).
+    # 비교한다(D-309).
     time_resolution_enabled: bool = True
 
     model_config = {"env_prefix": "QUERY_", "env_file": ".env", "extra": "ignore"}
@@ -472,7 +472,7 @@ class Text2SQLConfig(BaseSettings):
     # 기본 OFF = 현행 경로와 비트 동일. arm 측정으로 효과를 확인한 뒤 전환을 판단한다.
     schema_table_select_skip_enabled: bool = False
 
-    # === plans/138 W4 · D-305: 정의 기반 테이블 선별 상한 K (사용자 확정 2026-10-06) ===
+    # === plans/139 W4 · D-308: 정의 기반 테이블 선별 상한 K (사용자 확정 2026-10-06) ===
     # 프로필에 테이블 정의(`table_definitions`)가 있는 DB에서만 쓴다 — LLM 선별 결과를 이 개수에서
     # 자르고(LLM 순서), 다리 테이블은 남은 자리만큼만 더한다. 어휘 대체도 상위 이 개수까지다.
     # 정의가 없는 DB에는 영향이 없다.

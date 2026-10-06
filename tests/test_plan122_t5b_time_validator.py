@@ -1,4 +1,4 @@
-"""plans/122 T-5b — 생성 후 시간 조건 검증기 (D-306).
+"""plans/122 T-5b — 생성 후 시간 조건 검증기 (D-309).
 
 - 공용 틀(`src.sql_validation`): 현재시각 함수 탐지 · 컬럼 조건 추출 · 반개구간 정규화 · 테이블 접두
 - 폴스타 규칙(`check_time_conditions`): ①현재시각 함수 ②통계 입도 ③stat_date 경계 ④알람 ctime 경계
