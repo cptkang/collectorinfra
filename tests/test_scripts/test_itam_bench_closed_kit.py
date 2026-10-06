@@ -34,7 +34,7 @@ def closed_policy() -> cat.ColumnPolicy:
 class TestClosedScenarios:
     def test_draft_is_observe_only_user_prompts(self, closed_policy: cat.ColumnPolicy) -> None:
         scenarios = cat.load_scenarios(CLOSED_SCENARIOS_PATH, closed_policy)
-        assert len(scenarios) == 14
+        assert len(scenarios) == 18  # 1회차 14 + 2회차 관찰 4(서비스↔서버 단서 · plans/139 W7)
         assert all(s.env == ("closed",) and "초안" in s.title for s in scenarios)
         assert all(turn.oracle is None and turn.observe for s in scenarios for turn in s.turns)
         assert all(set(s.turns[0].send) == {"query"} for s in scenarios)
@@ -55,7 +55,7 @@ class TestClosedScenarios:
     def test_cli_defaults_follow_env(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert cli.main(["--dry-run", "--env", "closed"]) == 0
         out = capsys.readouterr().out
-        assert "시나리오   : 14건 (env=closed)" in out and "관측(observe) 15턴" in out
+        assert "시나리오   : 18건 (env=closed)" in out and "관측(observe) 19턴" in out
         assert cli.main(["--dry-run"]) == 0
         assert "시나리오   : 22건 (env=sandbox)" in capsys.readouterr().out
 

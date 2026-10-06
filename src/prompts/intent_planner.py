@@ -424,19 +424,24 @@ _TASK_FRAME_SECTION_ANCHOR = "## 출력 형식\n"
 _APM_AGENT_ANCHOR = "\n\n## agent 분류 우선순위\n"
 _APM_SECTION_ANCHOR = "## 작업 분해 규칙\n"
 APM_VIEW_ROWS_SLOT = "<apm_view_rows>"
+#: 소스 선택 안내 한 줄 자리(plans/134 M-5) — APM 소스가 2개 이상 선언됐을 때만 줄로 채운다
+#: (아니면 빈 문자열).
+APM_SOURCES_SLOT = "<apm_sources>"
 
 INTENT_PLANNER_APM_SECTION = """## WAS·미들웨어(APM) 조회 — `apm_query` 보기(views)
 
 WAS 인스턴스·응답시간·TPS·에러율·JVM 힙·GC·커넥션 풀·실행 중 서비스·느린 트랜잭션·WAS 이벤트·트랜잭션 프로파일·GUID 연계 거래·소스 변경 전후 비교·제니퍼 설정(이벤트 룰·PID→인스턴스·데이터 서버·로드된 클래스)·WAS 환경변수(JVM 옵션)·제니퍼 사용자 계정은 **`apm_query`** 담당입니다(폴스타 DB가 아닙니다).
-`apm_query` task에는 `views`에 아래 보기 id를 **1~2개** 넣으세요(목록 밖 id는 버려집니다). 비워 두면 대상 서버가 있을 때는 응답시간·TPS 보기(`apm.app_health`), 없을 때는 인스턴스 목록(`apm.instances`)입니다.
+`apm_query` task에는 `views`에 질문에 답하는 데 필요한 보기 id를 **모두** 넣으세요(개수 제한 없음 · 목록 밖 id는 버려집니다). 비워 두면 대상 서버가 있을 때는 응답시간·TPS 보기(`apm.app_health`), 없을 때는 인스턴스 목록(`apm.instances`)입니다.
 
 <apm_view_rows>
 
 - **WAS 이벤트(fatal·warning 등)는 폴스타 서버 알람이 아닙니다** → `apm_query` + `"views": ["apm.events"]`. 서버 모니터링 알람은 종전대로 `alarm_query`입니다.
 - 서버 CPU·메모리·디스크 사용률(호스트)은 `data_query`이고, JVM 힙·프로세스 CPU(WAS)는 `apm_query`입니다. 둘 다 원하면 task를 나눕니다.
 - 대상 서버가 필요한 보기에 서버가 정해지지 않았으면 실행기가 인스턴스 목록(`apm.instances`)을 먼저 조회합니다 — 그 task를 따로 만들지 마세요.
-- 사용자가 WAS **인스턴스 이름**(일부만 말해도 됨)이나 **업무명**을 말했으면 `targets`에 `{{"text": "<말한 그대로>", "kind": "<종류>"}}`로 넣습니다. 종류는 인스턴스 이름이면 `instance`, 업무명이면 `business`, 어느 쪽인지 모르겠으면 `auto`입니다. hostname·IP는 `targets`에 넣지 마세요. 말하지 않았으면 `targets`는 비웁니다(해석은 실행기가 합니다).
-- WAS 인스턴스 목록·인스턴스 리스트를 묻는 질의는 `"views": ["apm.instances"]`입니다.
+- 사용자가 WAS **인스턴스 이름**(일부만 말해도 됨)이나 **업무명**·**서비스 이름**을 말했으면 `targets`에 `{{"text": "<말한 그대로>", "kind": "<종류>"}}`로 넣습니다. 종류는 인스턴스 이름이면 `instance`, 업무명이면 `business`, 서비스 이름이거나 어느 쪽인지 모르겠으면 `auto`입니다. hostname·IP는 `targets`에 넣지 마세요. 말하지 않았으면 `targets`는 비웁니다(해석은 실행기가 합니다).
+<apm_sources>- WAS 인스턴스 목록·인스턴스 리스트를 묻는 질의는 `"views": ["apm.instances"]`입니다.
+- 서버를 정하지 않은 「전체 WAS 중 가장 느린·바쁜 N개」 같은 순위는 `apm.ranking`(정렬 지표 `metric` · 순서 `order` · 개수 `n`), 「전체·전부 WAS의 이벤트」는 `apm.fleet_events`입니다 — 인스턴스 목록 task를 먼저 만들지 마세요.
+- 서비스(APM 도메인) 단위 현재 상태는 `apm.service`, 추세는 `apm.service_trend`입니다. 업무 단위는 `apm.business`, 추세는 `apm.business_trend`입니다. 말한 서비스·업무 이름은 `targets`에 넣습니다(말하지 않았으면 전체).
 - 앞 task 결과의 서버들을 대상으로 하면 `depends_on`·`input_from`으로 잇습니다.
 - 보기에 「조건(view_args)」이 있으면 사용자가 **말한 조건만** `view_args`에 넣습니다: 보기 id → 조건 이름 → 값. 말하지 않은 조건은 넣지 마세요. 개수(「상위 5개」)는 `n`, 「전체·모두·전부」를 명시한 목록이면 `full: true`입니다. 표에 없는 조건 이름·값은 버려지고 해석하지 못했다고 안내됩니다.
 - 기간을 말하면 그대로 조회합니다(보기가 「기간 지정 가능」일 때). 「현재값」 보기는 지금 값만 있습니다.
@@ -449,6 +454,12 @@ WAS 인스턴스·응답시간·TPS·에러율·JVM 힙·GC·커넥션 풀·실�
        "view_args": {{"apm.profile": {{"ref": 2}}}}, "depends_on": [], "input_from": [], "order": 1}}
 - 예: {{"task_id": "t1", "agent": "apm_query", "sub_query": "abc-was 응답시간 조회", "views": ["apm.app_health"],
        "targets": [{{"text": "abc-was", "kind": "instance"}}], "depends_on": [], "input_from": [], "order": 1}}
+- 예: {{"task_id": "t1", "agent": "apm_query", "sub_query": "web01 응답시간과 힙 추세", "views": ["apm.app_health", "apm.runtime"],
+       "depends_on": [], "input_from": [], "order": 1}}
+- 예: {{"task_id": "t1", "agent": "apm_query", "sub_query": "전체 WAS 중 응답시간 가장 느린 5개", "views": ["apm.ranking"],
+       "view_args": {{"apm.ranking": {{"n": 5}}}}, "depends_on": [], "input_from": [], "order": 1}}
+- 예: {{"task_id": "t1", "agent": "apm_query", "sub_query": "결제 업무 TPS", "views": ["apm.business"],
+       "targets": [{{"text": "결제", "kind": "business"}}], "depends_on": [], "input_from": [], "order": 1}}
 
 """  # noqa: E501
 
@@ -467,12 +478,22 @@ APM_OUTPUT_RULE = (
     "- `apm_query` task에는 `views`(보기 id 목록)와 `view_args`(사용자가 말한 조건 — 없으면"
     " `{{}}`) 두 키를 **반드시** 적습니다. 기간·시간(「최근 3시간」·「오늘」)은 `view_args`가"
     " 아닙니다 — 기간은 `sub_query`에 그대로 두고, 조건 이름은 보기 표의 「조건(view_args)」에 있는"
-    " 것만 씁니다. `targets`는 사용자가 인스턴스 이름·업무명을 말했을 때만 채웁니다(없으면"
-    " `[]`).\n"
+    " 것만 씁니다. `targets`는 사용자가 인스턴스 이름·업무명·서비스 이름을 말했을 때만 채웁니다"
+    "(없으면 `[]`).\n"
+)
+# plans/134 M-5 — 소스 선택 칸 `sources`(활성 · APM 소스가 2개 이상 선언됐을 때만). 골격에 키가
+# 없으면 9B가 칸을 내지 않는다(2026-10-02 실측 — `views`와 같은 이유) — 골격 꼬리에 키를 더하고
+# 규칙 한 줄을 붙인다.
+APM_SKELETON_TAIL_WITH_SOURCES = (
+    APM_SKELETON_TAIL_WITH_KEYS.removesuffix("}}") + ', "sources": []}}'
+)
+APM_SOURCES_RULE = (
+    "- `sources`는 사용자가 조회할 APM 소스를 지목했을 때만 소스 id로 채웁니다(없으면 `[]`).\n"
 )
 
 
-def render_intent_planner_apm_template(base: str, agent_line: str, view_rows: str) -> str:
+def render_intent_planner_apm_template(base: str, agent_line: str, view_rows: str,
+                                       source_line: str = "") -> str:
     """APM 활성 전용 — 담당 줄을 담당 목록 끝에, 보기 절을 「작업 분해 규칙」 앞에 **삽입**하고,
     「출력 형식」 골격 task 줄에 `views`·`view_args`를, 주의 목록에 그 규칙 한 줄을 더한다.
 
@@ -480,6 +501,8 @@ def render_intent_planner_apm_template(base: str, agent_line: str, view_rows: st
         base: 영역 칸 렌더본(골격 줄이 있어야 한다) — 소유·task 프레임과 함께 켜질 수 있다
         agent_line: 담당 목록 한 줄(`- **apm_query**: …`)
         view_rows: 레지스트리 보기 표 행
+        source_line: 소스 선택 안내 한 줄(plans/134 M-5 — 소스 2개 이상일 때만 · 비면 `sources` 칸을
+            렌더하지 않는다)
 
     Raises:
         RuntimeError: 앵커가 정확히 1회 나타나지 않는다(삽입 위치가 흔들림)
@@ -490,11 +513,14 @@ def render_intent_planner_apm_template(base: str, agent_line: str, view_rows: st
             raise RuntimeError(f"분해 프롬프트 삽입 앵커가 1회가 아니다: {anchor!r}")
     head, sep, tail = base.partition(_APM_AGENT_ANCHOR)
     rendered = head + "\n" + agent_line + sep + tail
-    section = INTENT_PLANNER_APM_SECTION.replace(APM_VIEW_ROWS_SLOT, view_rows)
+    section = (INTENT_PLANNER_APM_SECTION.replace(APM_VIEW_ROWS_SLOT, view_rows)
+               .replace(APM_SOURCES_SLOT, source_line))
     head, sep, tail = rendered.partition(_APM_SECTION_ANCHOR)
     rendered = head + section + sep + tail
-    rendered = rendered.replace(APM_SKELETON_TAIL, APM_SKELETON_TAIL_WITH_KEYS)
-    return rendered.replace(rule_anchor, rule_anchor + APM_OUTPUT_RULE)
+    skeleton = APM_SKELETON_TAIL_WITH_SOURCES if source_line else APM_SKELETON_TAIL_WITH_KEYS
+    rendered = rendered.replace(APM_SKELETON_TAIL, skeleton)
+    rule = APM_OUTPUT_RULE + (APM_SOURCES_RULE if source_line else "")
+    return rendered.replace(rule_anchor, rule_anchor + rule)
 
 
 # ══════════════════════════════════════════════════════════════════════════ 비SQL 처리기 —

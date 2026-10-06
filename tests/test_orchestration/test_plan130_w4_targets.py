@@ -42,6 +42,7 @@ from src.orchestration.schemas import DecomposedPlan, views_plan_model
 from src.prompts import intent_planner as prompts
 from src.utils.prior_dependency import NOTE_BRIDGE
 from src.utils.prior_targets import REASON_APM_ONLY, TargetRef, resolve_targets
+from tests.test_orchestration import apm_batch_mock
 
 # 패키지 `__init__`이 같은 이름의 함수를 다시 내보내 `from … import 모듈`이 함수를 가리킨다
 ip = importlib.import_module("src.orchestration.intent_planner")
@@ -136,7 +137,8 @@ class _Gateway:
 
     async def call_tool(self, name: str, arguments: dict):
         self.calls.append((name, dict(arguments)))
-        reply = self._reply(name, arguments)
+        # plans/134 M-5 — 다건 대상은 `targets` 배치 1호출(계약 A-2 봉투로 흉내)
+        reply = apm_batch_mock.reply_for(name, arguments, lambda a: self._reply(name, a))
         return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(reply))], isError=False)
 
 
@@ -202,7 +204,9 @@ async def test_instance_target_calls_the_view_per_resolved_instance(gateway) -> 
     assert gw.searched("query") == ["abc"] and gw.searched("business") == []
     assert gw.listings() == [], "대상 텍스트가 있으면 첫 홉(목록)을 부르지 않는다"
     assert edge.seen == [], "인스턴스 이름이 맞으면 업무명 근거를 찾지 않는다"
-    calls = gw.named("apm_app_health")
+    # plans/134 M-5 — 해석 인스턴스 2개 = `targets` 배치 1호출(항목 = 이름 + 소스 + id)
+    assert len(gw.named("apm_app_health")) == 1
+    calls = apm_batch_mock.expanded(gw.calls, "apm_app_health")
     assert [(c["instance_name"], c["source_ids"], c["instance_id"]) for c in calls] == [
         ("abc-was01", ["default"], 1), ("abc-was02", ["default"], 2)]
     assert all("hostname" not in c for c in calls), "인스턴스로 부른다(hostname 없이)"
@@ -244,7 +248,7 @@ async def test_business_union_dedupes_and_discloses_evidence(gateway) -> None:
     e1r = gw.named("apm_instance_map")
     assert sorted(a["hostname"] for a in e1r if "hostname" in a) == ["h1", "h3", "h9"]
     assert all("query" not in a and "business" not in a for a in e1r if "hostname" in a)
-    calls = gw.named("apm_app_health")
+    calls = apm_batch_mock.expanded(gw.calls, "apm_app_health")  # plans/134 M-5 — 배치 항목
     assert sorted(c["instance_id"] for c in calls) == [1, 2, 3], "같은 인스턴스는 한 번만 부른다"
     bridge = _kinds(res, NOTE_BRIDGE)
     assert len(bridge) == 1 and bridge[0].startswith(f"'결제' → {APM} 인스턴스 3개(근거: ")
@@ -350,9 +354,11 @@ async def test_without_target_text_the_first_hop_is_unchanged(gateway) -> None:
     listing = [_inst(1, "was01_a", "was01"), _inst(2, "was02_a", "was02")]
     gw, edge = gateway(listing=listing)
     base = await _run(["apm.app_health"])
-    assert [n for n, _ in gw.calls] == ["apm_instance_map", "apm_app_health", "apm_app_health"]
+    # plans/134 M-5 — 첫 홉 대상 2대 = `targets` 배치 1호출
+    assert [n for n, _ in gw.calls] == ["apm_instance_map", "apm_app_health"]
     assert gw.listings() == [gw.calls[0][1]], "대상이 없으면 첫 홉 목록 그대로"
-    assert [c["hostname"] for c in gw.named("apm_app_health")] == ["was01", "was02"]
+    assert [c["hostname"] for c in apm_batch_mock.expanded(gw.calls, "apm_app_health")] == [
+        "was01", "was02"]
     assert edge.seen == [] and "targets" not in base["apm_query"]
     assert "해석 인스턴스" not in base["organized_data"]["summary"]
 
@@ -430,7 +436,10 @@ async def test_every_resolved_instance_is_queried_beyond_max_targets(gateway) ->
     gw, _ = gateway(search={"abc": (many, [])})
     res = await _run(["apm.app_health"], [{"text": "abc", "kind": "instance"}],
                      cfg=_cfg(max_targets=10))
-    assert len(gw.named("apm_app_health")) == 12, "해석 인스턴스는 상한 없이 모두 부른다"
+    # plans/134 M-5 — 12개(> max_targets 10) 전부가 `targets` 배치 1호출
+    assert len(gw.named("apm_app_health")) == 1
+    assert len(apm_batch_mock.expanded(gw.calls, "apm_app_health")) == 12, (
+        "해석 인스턴스는 상한 없이 모두 부른다")
     assert len(res["query_results"]) == 12
     assert f"{APM} 인스턴스 12개" in _kinds(res, NOTE_BRIDGE)[0]
 
@@ -663,8 +672,9 @@ async def test_demonstrative_keeps_the_previous_turn_host_beside_target_text(gat
     res = await _run(["apm.app_health"], [{"text": "abc-was01", "kind": "instance"}],
                      isolated=_second_turn("그 서버랑 abc-was01 응답시간 알려줘"))
     calls = sorted((c.get("hostname") or "", c.get("instance_name") or "")
-                   for c in gw.named("apm_app_health"))
+                   for c in apm_batch_mock.expanded(gw.calls, "apm_app_health"))
     assert calls == [("", "abc-was01"), ("web01", "")]
+    assert len(gw.named("apm_app_health")) == 1, "서버 + 인스턴스 = 한 보기 배치 1호출(M-5)"
     assert res["apm_query"]["hostnames"] == ["web01"]
 
 
@@ -694,9 +704,12 @@ def test_replanned_targets_are_sanitized_and_kept_only_on_apm_tasks() -> None:
     assert "targets" not in data
 
 
-async def test_server_names_beyond_the_legacy_cap_are_searched_not_dropped(
-        gateway, monkeypatch) -> None:
-    """종전 경로 상한 안 이름은 E2가 이으면 hostname 호출 · 상한 밖 이름은 텍스트다(V130-6)."""
+async def test_server_names_have_no_legacy_cap(gateway, monkeypatch) -> None:
+    """파서 서버명은 상한 없이 E2로 간다(plans/134 M-5 · D-296 ④ — 종전 `max_targets` 절단 폐지).
+
+    V130-6(상한 밖 이름이 조용히 빠짐)은 상한 자체가 없어져 생기지 않는다 — 이은 이름은 모두
+    hostname 대상이고 한 보기의 `targets` 배치 1호출이다.
+    """
     linked_names: list[str] = []
 
     async def linked(refs, *, consumer, app_config):
@@ -712,13 +725,13 @@ async def test_server_names_beyond_the_legacy_cap_are_searched_not_dropped(
     res = await _run(["apm.app_health"], isolated=_isolated(
         [{"field": "server_name", "op": "=", "value": n} for n in names]),
         cfg=_cfg(max_targets=2))
-    assert linked_names == names[:2]
-    assert gw.searched("query") == names[2:]
+    assert linked_names == names, "상한(2)으로 자르지 않는다"
+    assert gw.searched("query") == [], "모두 E2로 이어 대상 텍스트가 없다"
     called = sorted(c.get("hostname") or c.get("instance_name")
-                    for c in gw.named("apm_app_health"))
-    assert called == ["h-srv01", "h-srv02", "srv04-was"]
-    assert any("'srv03'" in t and "찾지 못" in t
-               for t in _kinds(res, disc.APM_UNRESOLVED_CONDITION))
+                    for c in apm_batch_mock.expanded(gw.calls, "apm_app_health"))
+    assert called == ["h-srv01", "h-srv02", "h-srv03", "h-srv04"]
+    assert len(gw.named("apm_app_health")) == 1
+    assert res["apm_query"]["hostnames"] == [f"h-{n}" for n in names]
 
 
 async def test_edge_row_cap_is_a_partial_notice_and_in_the_summary(gateway) -> None:

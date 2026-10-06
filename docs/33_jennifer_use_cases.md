@@ -9,6 +9,7 @@
 > **활용 계약(D-299 · 134 v1.2)**: 아래 43사례는 최소 회귀 집합이다. 전체 읽기 API·인자·필드, 복수 대상/보기/소스, 기간 비교·변경 전후·GUID 연계 분석까지 확장한다. 채팅·조사·알람 각각의 실제 경로로 검증하며 F-13 연동 전 전체 완료로 선언하지 않는다. 현재 상태 칸은 이 계획 개정으로 바뀌지 않는다.
 > **상태 칸은 시점 값이다.** `plans/134`의 Wave가 랜딩할 때마다 같은 작업에서 이 문서의 상태 칸을 고친다(`plans/134` W9).
 > **2026-10-06 갱신(W5·W6 독립분·W7 구현 · D-302)**: GUID 추적·앞 결과 행 참조(F-06·F-07·F-15) · 변경 전후(F-09) · 관리·민감 조회(O-11~O-17)를 올렸다. 근거 = 합성 픽스처 실프로세스 종단 + 로컬 MLX 9B 47문항 선택 측정(보기 47/47 · 무관한 기본 보기 대체 0). 수정 뒤 선택 정확도 재측정은 내부망 FabriX 몫이다(D-240 부기 — MLX 최소화).
+> **2026-10-06 갱신(W3·W4 구현 · D-310)**: 서비스·업무·전 인스턴스 순위·전 도메인 이벤트(S-06~S-09 · F-10)와 여러 대상 한 번에(`targets`)를 올렸다. 근거 = 합성 픽스처(목 Open API 2소스) ↔ 게이트웨이 실프로세스 ↔ 본체 2단 종단 검증(가짜 LLM) + 로컬 MLX 9B 보기 선택 실측(14문항 중 13 정답). **실 제니퍼 응답은 미검증(W10)** 이고 350도메인 규모의 실제 소요는 재지 않았다. 운영 사다리가 아직 1단이라 채팅 효력은 2단 전환 뒤다(D-251).
 > **2026-10-02 갱신(W0-B·W1·W2 구현 · D-300)**: 상태 칸은 **스펙 기반 합성 픽스처로 게이트웨이 실프로세스 ↔ 본체 처리기 종단 검증**과 **로컬 MLX 9B 보기 선택 실측(29문항)**으로 확인한 것만 올렸다. 실 제니퍼 응답은 미검증(W10)이고, 운영 사다리가 아직 1단이라 채팅 경로는 2단 전환 뒤 효력이 난다(D-251).
 
 ---
@@ -16,14 +17,14 @@
 ## 0. 30초 요약
 
 - 게이트웨이(`apm_gateway/`)는 제니퍼 Open API 중 **GET 16경로**를 부른다(허용목록 — `apm_gateway/apm_gateway/adapters/jennifer/allowlist.py`). **W2로 16경로 모두 부르는 도구가 생겼다** — 데이터 도구 11종 + 작업 도구 3종(종전 8종 상한 폐지 — D-299 ③).
-  D-296으로 나머지 읽기 경로도 허용하기로 정했다 — **W5·W7(2026-10-06)로 GUID·관리·민감 조회 20경로를 더해 허용목록 36템플릿 · 데이터 도구 18종**이다. `plans/130` W2(2026-10-06)로 업무 정의 `/api/business`를 더해 **37템플릿**이다(업무명 해석용 · 새 도구 없음). 서비스·업무 단위(W3·W4)는 `plans/130` 뒤.
+  D-296으로 나머지 읽기 경로도 허용하기로 정했다 — **W5·W7(2026-10-06)로 GUID·관리·민감 조회 20경로를 더해 허용목록 36템플릿 · 데이터 도구 18종**이다. `plans/130` W2(2026-10-06)로 업무 정의 `/api/business`를 더해 **37템플릿**이다(업무명 해석용 · 새 도구 없음). **`plans/134` W3·W4(2026-10-06)로 실시간 도메인·실시간 업무·도메인 시계열·업무 시계열 4경로를 더해 허용목록 41템플릿 · 데이터 도구 21종**(`apm_service_status`·`apm_business`·`apm_fleet` 추가 — 서비스·업무·전 인스턴스 순위·전 도메인 이벤트)이다.
 - 채팅은 2단 처리기 `apm_query`가 **보기 12종**(종전 7종 + W2 `apm.app_stats` · `apm.sql_stats` · `apm.external_stats` · `apm.metrics` · `apm.changes`)과 조건(`view_args` — 개수·전체·레벨·오류 유형·정렬·지표 이름·간격)으로 조회한다
-  (`config/db_registry.yaml` `solutions[apm].views`). **W5·W6·W7(2026-10-06)로 보기 22종** — 앞 결과 행을 번호로 골라 잇는 `apm.profile`·`apm.trace`·`apm.active_detail` · 변경 전후 `apm.change_impact` · 설정·관리 `apm.event_rules`·`apm.process`·`apm.jennifer_server`·`apm.loaded_classes`·`apm.environment`·`apm.users`.
+  (`config/db_registry.yaml` `solutions[apm].views`). **W3·W4(2026-10-06)로 보기 28종**(`apm.service`·`apm.service_trend`·`apm.ranking`·`apm.fleet_events`·`apm.business`·`apm.business_trend` 추가 — 아래 앞 22종 설명은 W5·W6·W7 시점)이다. **W5·W6·W7(2026-10-06)로 보기 22종** — 앞 결과 행을 번호로 골라 잇는 `apm.profile`·`apm.trace`·`apm.active_detail` · 변경 전후 `apm.change_impact` · 설정·관리 `apm.event_rules`·`apm.process`·`apm.jennifer_server`·`apm.loaded_classes`·`apm.environment`·`apm.users`.
 - **(W1로 교정)** 채팅은 봉투의 집계(`summary` · `hourly` · `errors_by_type`)와 WAS 판정(`was_signals`)을 (보기, 대상)별로 옮겨 답 끝 **「판정·집계」 블록**으로 그대로 싣는다. 보기 창 상한이 없어져 기간을 말하면 추세·시 단위 통계가 붙는다.
 - **(W0-B)** 오래 걸리는 조회는 **작업으로 접수**하고(작업 카드에서 진행·취소·결과 보기·전체 CSV), 큰 결과는 화면 앞 500행 + 전체 결과 파일이다.
 - 채팅 조회는 **사다리 2단(기준 경로)**에서만 된다. 1단(`deep_agent`)은 고정 처리기 목록만 도구로 쓰고, 3단은 계획 루프(`TIER3_PLAN_LOOP_ENABLED` · 기본 off)일 때만 같은 처리기를 부른다.
   또 제니퍼 엔드포인트(`MCP_SOURCE_ENDPOINTS`의 `apm`)가 설정된 배포에서만 동작한다.
-- 대상은 지금 **hostname**으로 지정한다. 인스턴스 이름(부분 일치)·업무명으로 묻는 기능은 `plans/130`(TODO)이다.
+- 대상은 지금 **hostname**으로 지정한다. 인스턴스 이름(부분 일치)·업무명으로 묻는 기능은 `plans/130`으로 구현됐다(2026-10-06). **`plans/134` W3: 대상이 여럿이어도(예 12대) 한 번에 조회**하고 대상 수·보기 수 절단이 없다. 대상을 말하지 않은 대상 필수 보기는 인스턴스 목록 **전부**를 조회한다.
 - **로컬 9B의 한계(W2 실측)** — 보기는 29문항 모두 냈고 무관한 기본 보기 대체는 0이지만, 말하지 않은 조건을 끼우는 일이 잦았다(조건이 필요 없는 12문항 중 10). 그중 F-01·F-03은 범위가 좁아졌다(◐). 운영 모델(FabriX)로 다시 재야 한다.
 - **실데이터로는 검증하지 않았다** — 로컬 Docker 제니퍼에 라이선스가 없어(도메인 0건) 응답 모양은 스펙으로 만든 합성 픽스처 기준이다(`plans/87` J0-L-b·J0-O).
 
@@ -55,10 +56,10 @@
 | S-03 | 「web01 최근 10분 에러율·p95」 | `/api/transaction/time`(1분 창을 나눠 부른다 — 게이트웨이가 p50·p95·에러율 계산) | `apm_app_health`(행의 `window`) | ✅ | 창 상한 제거(W1) — 요청 기간 전체를 1분 조각으로 조회(오래 걸리면 작업으로 접수 — W0-B) · p50·p95·오류율은 「판정·집계」 블록 · 합성 픽스처 종단·로컬 9B 선택 정답(W2 검증) |
 | S-04 | 「web01 오늘 오전 처리 건수와 실패율」 · 「지난 3시간 상위 애플리케이션」 | `/api/status/application`(시 단위 · `calls`·`failures`·`responseTime`·`maxResponseTime`) | `apm_app_health`의 `hourly` · `apm_status_stats`(kind=application) · `apm.app_stats` | ✅ | 시 단위 통계가 채팅에 실린다(W1 — 합계는 전 애플리케이션 행 · 정시 경계 고지) · URL별 통계 보기(W2) · 합성 픽스처 종단·로컬 9B 선택 정답(W2 검증) |
 | S-05 | 「web01 오늘 방문자 수·호출 수」 | `/api/realtime/instance`(`visitDay`·`visitHour`·`hitDay`·`hitHour`) | `apm_app_health` | ◐ | 기능은 됨 — 실시간 행에 방문·호출 수 4칸(W1 · 단위·「하루」 경계 미확인 고지). **로컬 9B는 이 질문에 통계 보기(`apm.app_stats`)를 골랐다**(W2 실측 오답) — 운영 모델 측정 필요 |
-| S-06 | 「인터넷뱅킹 서비스 지금 현황」 · 「오늘 서비스별 방문자」 | `/api/realtime/domain`(`visitDay`·`hitDay`·`tps`·`responseTime`·`concurrentUser`·`activeUser`·`rejectRate`) | — | ➕ | 도메인(서비스) 단위 현재값 · 한 번 호출로 전 도메인 → **W3** |
-| S-07 | 「인터넷뱅킹 오늘 시간대별 호출 수·응답시간」 | `/api/dbmetrics/domain`(도메인 지표 41종 — `service_count`·`service_time`·`service_err_count`·`visit_hour`·`max_tps` 등 · 지표 1개/호출) | — | ➕ | → **W3**(하루 안) · **W6**(더 긴 기간) |
-| S-08 | 「지금 응답시간 가장 느린 WAS 5개」 · 「TPS 높은 WAS 순위」 | `/api/realtime/instance`(`domain_id`만 주면 그 도메인 전 인스턴스) | — | ◐ | 지금은 대상이 없으면 인스턴스 목록 **앞 10대**만 골라 조회한다 — 순위가 아니다. D-296으로 전 도메인 전수 조회(운영 약 350개 — 호출 속도 상향·진행 표시) → **W3** |
-| S-09 | 「대출 업무 응답시간·TPS」 · 「업무별 현황」 | `/api/business` → `/api/realtime/business`(`businessName`·`responseTime`·`tps`·`activeService`) · `/api/dbmetrics/business`(추세) | — | ➕ | 업무 목록은 `plans/130`이, 업무 지표 두 경로는 D-296(D-290 ④ 개정)으로 허용 → **W4** · **`plans/130`(2026-10-06)**: 업무명 → 인스턴스 해석은 구현 — 「결제 업무 WAS 응답시간」(가상)은 그 업무의 **인스턴스별** 값으로 답한다(업무 단위 집계 지표는 계속 W4) |
+| S-06 | 「인터넷뱅킹 서비스 지금 현황」 · 「오늘 서비스별 방문자」 | `/api/realtime/domain`(`visitDay`·`hitDay`·`tps`·`responseTime`·`concurrentUser`·`activeUser`·`rejectRate`) | `apm_service_status` · `apm.service` | ✅ | 서비스(제니퍼 도메인) 현재값 — 이름 없음 = 한 번에 전 도메인 · 이름 = 단계 검색(못 찾으면 **데이터 호출 없이** 「찾지 못함」 + 비슷한 이름 ≤3 · 전체로 넓히지 않음) · **W3 구현** · 합성 픽스처 종단(실 제니퍼 미검증 — W10 · 무인자 호출의 전 도메인 응답 모양 미확인). 가동·중지·미라이선스 인스턴스 수(`instanceCount`)는 `/api/domain` 필드라 아직 안 싣는다 |
+| S-07 | 「인터넷뱅킹 오늘 시간대별 호출 수·응답시간」 | `/api/dbmetrics/domain`(도메인 지표 41종 — `service_count`·`service_time`·`service_err_count`·`visit_hour`·`max_tps` 등 · 지표 1개/호출) | `apm_metrics`(scope=domain) · `apm.service_trend` | ◐ | **W3 구현** — 서비스 시계열(지표를 말하지 않으면 기본 지표: 평균 응답시간·호출 수·오류 수 · 모르는 지표는 빼고 조회하고 고지) · 합성 픽스처 종단(실 제니퍼 미검증). **◐ 사유**: 로컬 9B가 「서비스 시간대별 추세」를 통계 보기(`apm.app_stats`)로 고른 1건(MLX 14문항 중 정답 13 — 운영 모델 FabriX 재측정 필요) · 하루 넘게 지난 기간은 **W6** |
+| S-08 | 「지금 응답시간 가장 느린 WAS 5개」 · 「TPS 높은 WAS 순위」 | `/api/realtime/instance`(`domain_id`만 주면 그 도메인 전 인스턴스) | `apm_fleet(mode=ranking)` · `apm.ranking` | ✅ | **W3 구현** — 범위 안 **모든** 도메인의 인스턴스를 모은 뒤 정렬(앞 10대 절단 제거 · 지표 30종 · 기본 응답시간) · 일부 도메인·소스가 실패하면 **「잠정 순위」**로 표시 · 값 없는 인스턴스는 순위 밖으로 세어 알림 · 서비스 이름으로 좁힐 수 있다 · 독립 오라클 대조(합성 도메인 120 × 소스 2) 통과. 운영 약 350도메인의 실제 소요는 **미측정**(오래 걸리면 작업으로 접수 — 진행 표시) |
+| S-09 | 「대출 업무 응답시간·TPS」 · 「업무별 현황」 | `/api/business` → `/api/realtime/business`(`businessName`·`responseTime`·`tps`·`activeService`) · `/api/dbmetrics/business`(추세) | `apm_business` · `apm.business` · `apm.business_trend` | ✅ | **W4 구현** — 업무 단위 현재값(TPS·응답시간·액티브·동시 사용자)·업무 목록(정의·규칙) · 추세 `apm.business_trend` · 업무 이름이 여러 업무에 맞으면 전부 조회하고 이름 목록을 알림 · 못 찾으면 데이터 호출 없이 「찾지 못함」. 합성 픽스처 종단(실 제니퍼 미검증 — `business_id` 존중 여부 W10) · `plans/130`: 업무명 → 인스턴스 해석(「결제 업무 WAS 응답시간」(가상)은 인스턴스별 값)은 그대로 |
 | S-10 | 「오늘 호출 많은 URL 상위 10」 · 「/login.do 응답시간」 | `/api/status/application`(`sort_by_metrics`·`application_name`·`max_row`) | `apm_status_stats`(kind=application · `sort_by`·`n`·`full`·`application_name`) · `apm.app_stats` | ✅ | URL별 시 단위 통계 상위 N·전체·이름 지정(W2) · 정렬 기준 예 calls·responseTime(원천이 거부하면 전체를 받아 로컬 정렬 + 고지) · 합성 픽스처 종단·로컬 9B 선택 정답(W2 검증) |
 | S-11 | 「지난달 web01 일평균 응답시간」 · 「지난주 대비 처리량」 | `/api/dbmetrics/instance`(`interval_minute` · `service_time`·`service_count` 등) | — | ✖ | 지금 채팅은 **기간 끝이 하루 넘게 지난 질문은 조회하지 않는다**(D-283 ④). D-296이 이 규칙을 폐지했다(제니퍼 보존 기간까지) → **W6** |
 
@@ -97,7 +98,7 @@
 | F-07 | 「이 GUID 거래가 어느 서버를 거쳤나」 | `/api/transaction/guid`(`domain_id`·`guid`·`start_time`·`end_time`) | `apm_transaction_trace` · `apm.trace` | ✅ | W5 — 허용된 전 소스·도메인에서 같은 GUID 거래(시작 시각순 · 중복 제거) · 결정적 줄에 조회 구간·「같은 GUID일 뿐 호출 관계 아님」 · 시계 차이 고지 · 로컬 9B 선택 정답 · GUID 형태·도메인 범위 W10 |
 | F-08 | 「web01 요청이 밀리고 있어?」 · 「DB 풀 고갈이야?」 · 「GC 지연이야?」 | 위 API 조합 → 게이트웨이 결정적 판정 8종(`was_service_queuing`·`was_thread_pool_exhaustion`·`was_db_pool_exhaustion`·`was_gc_stall`·`was_heap_pressure`·`was_slow_sql`·`was_external_call_delay`·`was_error_burst`) | 각 도구의 `was_signals` | ✅ | 판정(`was_signals`)을 버리지 않고 「판정·집계」 블록으로 결정적으로 싣는다(W1) · 임계는 잠정치 · 합성 픽스처 종단·로컬 9B 선택 정답(W2 검증)(보기) |
 | F-09 | 「배포 직후 오류가 늘었나」 | `/api-v2/deploy/{domainId}` + `/api/dbsearch/error` | `apm_change_impact` · `apm.change_impact` | ✅ | W6 — 변경 감지마다 전·후 호출·오류율·평균·p95·오류 기록과 증감(기준 0 = N/A · %p) · 「원인 확정 아님」 고지 · 기간 미지정 = 변경 탐색 24시간 · 로컬 9B 선택 정답(4/4). 「어제 배포 전후」처럼 상대 기간을 말하면 입력 파서 기준일 미주입(`plans/122` ⑥)으로 조회되지 않는다 |
-| F-10 | 「오늘 fatal 이벤트가 난 WAS 전부」 | 도메인별 `/api/dbsearch/event`(인스턴스 지정 없이) | — | ◐ | 지금은 대상 없으면 목록 앞 10대만 조회한다. D-296으로 전 도메인(폴러가 켜져 있으면 폴러가 모아 둔 기록) → **W3** |
+| F-10 | 「오늘 fatal 이벤트가 난 WAS 전부」 | 도메인별 `/api/dbsearch/event`(인스턴스 지정 없이) | `apm_fleet(mode=events)` · `apm.fleet_events` | ✅ | **W3 구현** — 전 도메인 이벤트: 폴러가 켜져 있으면 폴러가 받아 둔 구간은 **버퍼**(메모리)에서 · 나머지는 도메인마다 API(폴러가 꺼져 있거나 재기동 직후는 전부 API) · 실패한 도메인은 0건이 아니라 「확인하지 못함」 · 이벤트 건수는 「M건(표시 n건)」으로 구별. 합성 픽스처 종단(실 제니퍼 미검증 — 이벤트 구간 양끝 포함·늦게 들어오는 이벤트 W10 · 버퍼 20만 건 메모리 미측정) |
 | F-11 | (알람) 「이 서버 알람이 앱에 영향이 있나」 | `/api/dbsearch/event`(fatal) | `noise_gate` `app_impact` 승격 | ✅ | 채팅 질문이 아니라 알람 판정이다(옵트인 `NOISE_APP_IMPACT_ENABLED`) |
 | F-12 | (알람) 제니퍼 이벤트를 알람으로 받기 | `/api/dbsearch/event` 폴링 | 게이트웨이 폴러 → `alarm:raw` | ✅ | 옵트인 `APM_EVENT_POLLER_ENABLED` · 관제 화면 배지 「제니퍼」 |
 | F-13 | 「web01 장애 원인 조사해 줘」 | 위 전부 | `sre_agent` 조사 | 🔎 | 알람 → 자동 조사는 된다. 채팅에서 조사로 넘기는 경로(`fault_diagnosis`)는 3단에만 있고 2단 배선은 `plans/121` 소유(미착수) |
@@ -119,7 +120,7 @@
 
 ## 6. 묻는 요령 (지금 기준)
 
-1. **대상 서버(hostname)를 함께 적는다.** 예: 「web01 WAS 응답시간」. 대상이 없으면 인스턴스 목록을 보여 주거나(목록 질문), 목록 앞 10대를 골라 조회한다(전 대상 순위는 W3). 지표 목록처럼 대상이 필요 없는 질문은 대상 없이 조회한다.
+1. **대상 서버(hostname)를 함께 적는다.** 예: 「web01 WAS 응답시간」. 대상이 없으면 인스턴스 목록을 보여 주거나(목록 질문), **인스턴스 전부를 조회**한다(W3 — 앞 10대 절단 제거). 「전체 WAS 중 응답시간 가장 느린 5개」처럼 서버를 정하지 않은 순위는 전 인스턴스 순위(`apm.ranking`)로, 「주문 서비스 지금 상태」·「결제 업무 TPS」(가상 이름)는 서비스·업무 보기로 답한다. 지표 목록처럼 대상이 필요 없는 질문은 대상 없이 조회한다.
    **(`plans/130`)** hostname을 모르면 **인스턴스 이름이나 업무명**으로 물어도 된다. 예: 「abc-was 응답시간」·「결제 업무 WAS 힙 사용률」(가상 이름). 이름이 정확하지 않아도 비슷한 인스턴스를 찾아 조회하고 근거를 알려 준다. 찾지 못하면 다른 인스턴스로 대신 조회하지 않고 비슷한 이름 후보를 보여 준다(`docs/31` §6.4).
 2. 소스를 확실히 하려면 **「제니퍼」·「APM」을 넣는다**(데이터 소스 유사어 — D-293). 「WAS」만으로도 제니퍼로 간다(WAS 정보는 제니퍼 단독 소스).
 3. **(W1)** 기간·건수 상한이 없다 — 말한 기간 전체를 조회하고, 오래 걸리면 작업으로 접수한다. 「상위 5개」·「전부」·「fatal만」·「OutOfMemory 오류만」 같은 조건이 전달된다. 다만 **하루 넘게 지난 기간은 아직 조회하지 않는다**(W6에서 해상도 선택과 함께 폐지).
@@ -128,25 +129,25 @@
 
 ## 7. API 지도 — 제니퍼 읽기 경로와 이 저장소의 처리
 
-`.xml` 변형(5개)과 v1 POST 변형은 같은 데이터의 다른 표현이라 넣지 않는다(D-296 ②). 「허용」 = 지금 `allowlist.py`의 16템플릿. 「허용 확정」 = D-296으로 허용하기로 정했고 구현 전.
+`.xml` 변형(5개)과 v1 POST 변형은 같은 데이터의 다른 표현이라 넣지 않는다(D-296 ②). 「허용」 = 지금 `allowlist.py`의 **41템플릿**(2026-10-06 W3·W4 기준 — 표 아래 행들이 같은 날 W5~W7·130이 더한 경로를 포함한다). 「허용 확정」 = D-296으로 허용하기로 정했고 구현 전(W3·W4 이후 남은 행 없음).
 
 | 경로(GET) | 필수 · 선택 파라미터 | 지금 | 쓰는 곳 · 질문 ID |
 |---|---|---|---|
 | `/api/domain` | — | 허용 · 사용 | 인스턴스 목록 1단계 · `gateway_health` · S-01 |
 | `/api/instance` | `domain_id` | 허용 · 사용 | `apm_instance_map` · S-01 |
-| `/api/realtime/instance` | `domain_id` · (`instance_id`) | 허용 · 사용 | `apm_app_health`·`apm_runtime_health`·`apm_resource_pool` · S-02·S-05·S-08·O-01·O-05 |
-| `/api/realtime/domain` | (`domain_id`) | 허용 확정 | S-06·S-08 → W3 |
-| `/api/realtime/business` | `domain_id` · (`business_id`) | 허용 확정(D-290 ④ 개정) | S-09 → W4 |
+| `/api/realtime/instance` | `domain_id` · (`instance_id`) | 허용 · 사용 | `apm_app_health`·`apm_runtime_health`·`apm_resource_pool`·`apm_fleet(mode=ranking)`(W3) · S-02·S-05·S-08·O-01·O-05 |
+| `/api/realtime/domain` | (`domain_id`) | 허용 · 사용(W3) | `apm_service_status`·`apm_fleet(service=…)` · S-06·S-08 |
+| `/api/realtime/business` | `domain_id` · (`business_id`) | 허용 · 사용(W4 · D-290 ④ 개정) | `apm_business(mode=current)` · S-09 |
 | `/api/dbmetrics/instance` | `domain_id`·`instance_id`·`interval_minute`·`metrics`·`start_time`·`end_time` | 허용 · 3지표만 사용 | `apm_runtime_health` 추세 · O-02·O-03·S-11 |
-| `/api/dbmetrics/domain` | `domain_id`·`interval_minute`·`metrics`·`start_time`·`end_time` | 허용 확정 | S-07 → W3·W6 |
-| `/api/dbmetrics/business` | `domain_id`·`business_id`·`interval_minute`·`metrics`·`start_time`·`end_time` | 허용 확정(D-290 ④ 개정) | S-09 → W4 |
+| `/api/dbmetrics/domain` | `domain_id`·`interval_minute`·`metrics`·`start_time`·`end_time` | 허용 · 사용(W3) | `apm_metrics(scope=domain)` · S-07(하루 넘는 기간 W6) |
+| `/api/dbmetrics/business` | `domain_id`·`business_id`·`interval_minute`·`metrics`·`start_time`·`end_time` | 허용 · 사용(W4 · D-290 ④ 개정) | `apm_metrics(scope=business)` · S-09 |
 | `/api/metrics` | — | 허용 · 사용(W2) | `apm_metrics`(카탈로그 · 지표 이름 검증) · O-03·O-10 |
-| `/api/business` | `domain_id` | 허용 확정(`plans/130` — D-290 ④) | 업무명 해석 · S-09 |
+| `/api/business` | `domain_id` | 허용 · 사용(`plans/130` W2 · D-290 ④) | 업무명 해석 · `apm_business(mode=list)`(W4) · S-09 |
 | `/api/activeService/list` | `domain_id` · (`instance_id`) | 허용 · 사용 | `apm_active_services`·`apm_resource_pool` · O-05·O-06 |
 | `/api/transaction/time` | `domain_id`·`start_time`·`end_time` · (`instance_id`) · 1분 창 | 허용 · 사용 | `apm_slow_transactions`·`apm_app_health` · S-03·F-05 |
 | `/api/transaction/guid` | `domain_id`·`guid`·`start_time`·`end_time` | 허용 · 사용(W5) | `apm_transaction_trace` · F-07 |
 | `/api/transaction/txid` · `/profile.txt` · `/sql` | `domain_id`·`txid`·`time` · (sql `profile_no`·`include_param_key`) | 허용 · 사용(W5 — 채팅 `apm.profile`·조사) | `apm_transaction_profile` · F-06 |
-| `/api/dbsearch/event` | `domain_id`·`start_time`·`end_time` · (`instance_id`·`level`) | 허용 · 사용 | `apm_events` · 폴러 · F-01·F-02·F-10·F-11·F-12 |
+| `/api/dbsearch/event` | `domain_id`·`start_time`·`end_time` · (`instance_id`·`level`) | 허용 · 사용 | `apm_events` · `apm_fleet(mode=events)`(W3) · 폴러 · F-01·F-02·F-10·F-11·F-12 |
 | `/api/dbsearch/error` | 같음 · (`instance_id`·`error_type`) | 허용 · 사용(`error_type` W1) | `apm_events`(`record=error`) · F-03·F-04 |
 | `/api/status/application` | `domain_id`·`start_time`·`end_time`(시 단위) · (`instance_id`·`max_row`·`sort_by_metrics`·`application_name`) | 허용 · 사용(선택 키 전부 W2) | `apm_app_health`·`apm_slow_transactions`의 `hourly` · `apm_status_stats` · S-04·S-10 |
 | `/api/status/sql` · `/api/status/external_call` | 같음(시 단위) · (`instance_id`·`sort_by_metrics`·`max_row`) | 허용 · 사용(W2 · 선택 키 전부) | `apm_status_stats` · O-07·O-08 |
@@ -193,3 +194,4 @@
 | 2026-10-02 | **`plans/134` W0-B·W1·W2 구현 반영(D-300)** — 상태 갱신: ✅ S-01·S-03·S-04·S-10·O-02·O-04·O-06·O-07·O-08·O-09·O-10·F-02·F-04·F-05·F-08 · ◐(기능은 됨 · 로컬 9B 선택·조건 오답) S-05·O-03·F-01·F-03 · ◐ F-09(전후 분석 W6). 근거 = 합성 픽스처 실프로세스 종단 + 로컬 MLX 9B 29문항 실측(실 제니퍼 미검증 — W10). §0·§6·§7 갱신(도구 11+3 · 보기 12 · 작업 접수·결과 파일 · 기간 상한 제거 · 하루 넘은 기간은 W6). 새로 찾은 GET 3경로(이벤트 룰 `applied`·`individual-setting` · 수동 RDB Export 상태)는 `spec/CAPABILITY-MAP-134.md` — W7 |
 | 2026-10-06 | **`plans/134` W5·W6(독립분)·W7 구현 반영(D-302)** — 상태 갱신: ✅ F-06·F-07·F-09·F-15·O-12·O-13·O-14·O-16·O-17 · ◐ O-11(조건 누락 — 결과가 넓어지는 쪽) · ◐ O-15(PID 없는 질문 결함 수정 뒤 MLX 미재측정). §0 갱신 행 · API 지도(GUID·거래 상세·deploy·v2 관리·민감 경로 → 허용·사용). 근거 = 합성 픽스처 실프로세스 종단 + 로컬 MLX 9B 47문항(실 제니퍼 미검증 — W10 · 운영 사다리 1단 — D-251) |
 | 2026-10-06 | **`plans/130` W1~W4 반영(W5 문서)** — §0 허용목록 37템플릿(`/api/business`) · S-09 비고(업무명 → 인스턴스 해석 구현 · 업무 단위 지표는 W4) · §6 묻는 요령 1에 인스턴스 이름·업무명 질문 예(가상 이름) |
+| 2026-10-06 | **`plans/134` W3·W4 구현 반영(D-310)** — 상태 갱신: ✅ S-06·S-08·S-09·F-10 · ◐ S-07(로컬 9B 선택 오답 1건 · 하루 넘는 기간 W6). §0 허용목록 41템플릿 · 데이터 도구 21종 · 보기 28종 · 대상 여럿 한 번에 · §6 묻는 요령 1 · §7 API 지도 4경로 「허용 확정」 → 「허용 · 사용」(+ `apm_fleet`·`apm_business` 사용처). 근거 = 목 Open API 2소스 합성 픽스처 실프로세스 종단(실 제니퍼 미검증 — W10) + 로컬 MLX 9B 14문항 중 13 정답(운영 모델 FabriX 재측정 필요) · 350도메인 실제 소요·버퍼 20만 건 메모리 미측정 · 채팅 효력은 2단 전환 뒤(D-251). 운영자 문서·사례표라 화면·버튼 추가가 아니다(사용자 매뉴얼 U-54는 별도 — D-255) |

@@ -572,14 +572,33 @@ def test_allowlist_business_requires_domain_id():
         check_request("POST", "/api/business", {"domain_id": "1000"})
 
 
-# 업무 지표 두 경로는 D-296(D-290 ④ 부기)이 허용으로 바꿨다 — `plans/134` W4가 열면 여기서 뺀다
-@pytest.mark.parametrize(
-    "path",
-    ["/api/realtime/business", "/api/dbmetrics/business", "/api/business.xml", "/api/business/"],
-)
+# 업무 지표 두 경로(`/api/realtime/business`·`/api/dbmetrics/business`)는 D-296(D-290 ④ 부기)대로
+# `plans/134` W4가 열었다 — 허용·필수/선택 키는 `test_plan134_w34_scope.py`가 검증한다
+@pytest.mark.parametrize("path", ["/api/business.xml", "/api/business/"])
 def test_other_business_paths_are_still_rejected(path):
     with pytest.raises(NotAllowedError):
         check_request("GET", path, {"domain_id": "1000"})
+
+
+def test_business_metric_paths_are_open_with_declared_keys():
+    """plans/134 W4가 연 두 경로 — 선언 키만 · `time_pattern`·`token` 거부."""
+    ep = check_request("GET", "/api/realtime/business", {"domain_id": "1000", "business_id": "7"})
+    assert ep.required == ("domain_id",) and ep.optional == ("business_id",)
+    keys = {
+        "domain_id": "1000",
+        "business_id": "7",
+        "interval_minute": "5",
+        "metrics": "service_count",
+        "start_time": "1",
+        "end_time": "2",
+    }
+    assert check_request("GET", "/api/dbmetrics/business", keys).optional == ()
+    for extra in ({"time_pattern": "YYYYMMdd"}, {"token": "x"}):
+        with pytest.raises(NotAllowedError):
+            check_request("GET", "/api/dbmetrics/business", {**keys, **extra})
+    missing = {k: v for k, v in keys.items() if k != "business_id"}
+    with pytest.raises(NotAllowedError, match="필수 쿼리 키 누락: business_id"):
+        check_request("GET", "/api/dbmetrics/business", missing)
 
 
 @pytest.mark.asyncio

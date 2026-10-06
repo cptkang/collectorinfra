@@ -36,6 +36,7 @@ from src.orchestration import apm_query as aq
 from src.orchestration import subagents
 from src.orchestration.conditional_agents import sanitize_task_views
 from src.orchestration.schemas import DecomposedPlan, views_plan_model
+from tests.test_orchestration import apm_batch_mock
 
 ip = importlib.import_module("src.orchestration.intent_planner")
 
@@ -75,8 +76,9 @@ class _Gateway:
     async def call_tool(self, name: str, arguments: dict):
         self.calls.append((name, dict(arguments)))
         reply = self.replies[name]
-        if callable(reply):
-            reply = reply(arguments)
+        # plans/134 M-5 — 다건 대상은 `targets` 배치 1호출(계약 A-2 봉투로 흉내)
+        reply = apm_batch_mock.reply_for(name, arguments,
+                                         reply if callable(reply) else (lambda a: reply))
         return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(reply))], isError=False)
 
     def named(self, tool: str) -> list[dict]:

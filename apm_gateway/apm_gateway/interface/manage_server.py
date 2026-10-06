@@ -2,7 +2,9 @@
 
 `register_tools`(같은 계층의 MCP 서버 모듈)가 데이터 도구 실행기(`run_data` — 작업 · 감사 ·
 오류 봉투)를 넘겨 부른다. 도구 설명(docstring)은 조사 LLM이 읽는다 — 짧게, 인자의 출처를 적는다.
-감사 대상 문자열에는 계정 ID를 싣지 않는다(개인정보 · G-11).
+감사 대상 문자열에는 계정 ID를 싣지 않는다(개인정보 · G-11). `hostname`을 받는 도구(`apm_config`·
+`apm_environment`·`apm_active_detail`)는 다건 대상 `targets`도 받는다(`application.batch` ·
+plans/134 W3).
 """
 
 from __future__ import annotations
@@ -13,8 +15,9 @@ from typing import Annotated, Any, Protocol
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
+from apm_gateway.application.batch import targeted
 from apm_gateway.application.manage_tools import ManageTools
-from apm_gateway.interface.server import OwnerArg, WaitArg
+from apm_gateway.interface.server import OwnerArg, TargetsArg, WaitArg
 
 TOOL_NAMES = ("apm_config", "apm_environment", "apm_users", "apm_active_detail")
 
@@ -82,26 +85,38 @@ def register_manage_tools(mcp: FastMCP, manage: ManageTools, run_data: RunData) 
         thread_id: str | None = None,
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
+        targets: TargetsArg = None,
     ) -> str:
         """APM 설정·관리 조회(읽기 전용) — 이벤트 룰·색상 경계·PID → 인스턴스·데이터 서버·
         DB 경로·로드된 클래스·RDB Export 상태. 자격증명 값은 가려져 온다. 행은 kind마다
         다르다.
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다."""
-        return await run_data(
+        label, call = targeted(
+            manage.core,
             "apm_config",
-            f"{kind}:{hostname or instance_name or '*'}",
-            lambda: manage.apm_config(
+            targets,
+            lambda t: manage.apm_config(
                 kind,
-                hostname,
-                source_ids,
+                t.hostname,
+                t.sources(source_ids),
                 rule_type,
                 target,
                 error_type,
                 process_id,
                 search,
-                instance_name=instance_name,
+                instance_name=t.instance_name,
             ),
+            label=f"{kind}:{hostname or instance_name or '*'}",
+            hostname=hostname,
+            instance_name=instance_name,
+            source_ids=source_ids,
+            label_prefix=f"{kind}:",
+        )
+        return await run_data(
+            "apm_config",
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -126,17 +141,28 @@ def register_manage_tools(mcp: FastMCP, manage: ManageTools, run_data: RunData) 
         thread_id: str | None = None,
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
+        targets: TargetsArg = None,
     ) -> str:
         """WAS 인스턴스의 OS 환경변수·JVM 시스템 속성(JVM 옵션 포함) 전부 — 행 = 인스턴스·
         묶음·이름·값. 비밀번호·토큰 등 비밀 값은 [가림]으로 온다(키 이름은 남는다).
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다."""
+        label, call = targeted(
+            manage.core,
+            "apm_environment",
+            targets,
+            lambda t: manage.apm_environment(
+                t.hostname, t.sources(source_ids), scope, key, instance_name=t.instance_name
+            ),
+            label=hostname or instance_name or "*",
+            hostname=hostname,
+            instance_name=instance_name,
+            source_ids=source_ids,
+        )
         return await run_data(
             "apm_environment",
-            hostname or instance_name or "*",
-            lambda: manage.apm_environment(
-                hostname, source_ids, scope, key, instance_name=instance_name
-            ),
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -182,24 +208,34 @@ def register_manage_tools(mcp: FastMCP, manage: ManageTools, run_data: RunData) 
         thread_id: str | None = None,
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
+        targets: TargetsArg = None,
     ) -> str:
         """지금 실행 중인 요청 1건의 상세(현재값 전용) — 사용자 ID(가림)·GUID·SQL(리터럴 가림)·HTTP
         메서드·쿼리(값 가림). source_id·domain_id·txid·session_id·thread_hash는 apm_active_services
         행의 active_ref를 그대로 넘긴다(APM 소스가 둘 이상이면 source_id 필수).
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다."""
-        return await run_data(
+        label, call = targeted(
+            manage.core,
             "apm_active_detail",
-            hostname or instance_name or "*",
-            lambda: manage.apm_active_detail(
+            targets,
+            lambda t: manage.apm_active_detail(
                 domain_id,
                 txid,
                 session_id,
                 thread_hash,
-                source_id,
-                hostname,
-                instance_name=instance_name,
+                t.source(source_id),
+                t.hostname,
+                instance_name=t.instance_name,
             ),
+            label=hostname or instance_name or "*",
+            hostname=hostname,
+            instance_name=instance_name,
+        )
+        return await run_data(
+            "apm_active_detail",
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,

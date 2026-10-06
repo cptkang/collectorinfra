@@ -229,3 +229,68 @@ scenarios:
           observe:
             what: "자산 DB 스냅숏으로 추이를 꾸며내지 않는가(관측 DB로 넘기거나 없음을 말하면 정상)"
             no_data: true
+
+  # ── 2회차 관찰 추가 — 서비스↔서버 연결 단서(plans/139 W7 · §4.2 · 2026-10-06) ──────────────
+  # 1회차는 ITAM SQL 0건이라 연결 위치를 찾지 못했다(plans/139 §1). 서버 원장에는 어플리케이션 코드 칸이 없고,
+  # 후보는 서버의 용도·분류 경로·구성 설명 기재와 스토리지 할당의 업무 이름이다(시드 정의 `notes`). 아래 4건은
+  # 그 후보를 하나씩 건드리는 관찰 질문이다 — 반출 뒤 어느 칸에 서비스 이름이 실제로 들어 있는지 보고 정답 SQL을 쓴다.
+
+  - id: ITAM-115
+    title: "서비스 단서 — 서버 용도 기재 · 2회차 관찰 초안"
+    category: service
+    env: [closed]
+    traps: [service_concept]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리에서 용도에 통합인증이 적힌 서버 목록 보여줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "서버 원장의 용도·구성 설명 칸을 서비스 단서로 거는가 · 현행 원장을 고르는가(적재본·수집 이력 아님) · 결과 건수"
+            no_data: false
+
+  - id: ITAM-116
+    title: "서비스 단서 — 서버 분류 경로별 분포 · 2회차 관찰 초안"
+    category: service
+    env: [closed]
+    traps: [service_concept, group_aggregate]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리 시스템에서 서버 분류 경로별 서버 수 알려줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "서버 분류 경로 칸을 집계 축으로 고르는가 · 경로 값 모양이 서비스 단위로 쓰일 수 있는가"
+            no_data: false
+
+  - id: ITAM-117
+    title: "서비스 단서 — 스토리지 할당의 업무 이름 · 2회차 관찰 초안"
+    category: service
+    env: [closed]
+    traps: [service_concept]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리에서 통합인증 업무에 할당된 스토리지 목록 보여줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "스토리지 할당 현황의 업무 이름 칸을 고르는가 · 현행과 수집 이력 중 무엇을 쓰는가"
+            no_data: false
+
+  - id: ITAM-118
+    title: "서비스 단서 — 스토리지 업무 → 서버 연결 · 2회차 관찰 초안"
+    category: service
+    env: [closed]
+    traps: [service_concept]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리에서 통합인증 업무 스토리지를 쓰는 서버들의 운영체제 알려줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "스토리지 할당과 서버 원장을 무엇으로 잇는가(호스트 이름·IP) · 연결 건수"
+            no_data: false

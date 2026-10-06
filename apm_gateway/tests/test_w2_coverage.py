@@ -421,8 +421,19 @@ async def test_metric_argument_validation(synth):
     cases = [
         ({"mode": "graph"}, ""),
         ({"mode": "catalog", "scope": "cpu"}, ""),
-        ({"mode": "series", "scope": "domain", "metrics": ["service_count"]}, "W3"),
-        ({"mode": "series", "scope": "business", "metrics": ["service_count"]}, "W4"),
+        # plans/134 W3·W4가 domain·business 시계열을 열었다 — 대상은 hostname이 아니다
+        (
+            {"mode": "series", "scope": "domain", "metrics": ["service_count"], "hostname": "h"},
+            "service·domain_id",
+        ),
+        (
+            {"mode": "series", "scope": "business", "metrics": ["service_count"], "instance_id": 1},
+            "business_id+domain_id",
+        ),
+        (
+            {"mode": "series", "hostname": "was-host01", "metrics": ["heap_used"], "domain_id": 1},
+            "scope domain·business 시계열에서만",
+        ),
         ({"mode": "series", "scope": "sql", "metrics": ["count"]}, "apm_status_stats"),
         ({"mode": "series", "hostname": "was-host01"}, "metrics"),
         ({"mode": "series", "hostname": "was-host01", "metrics": ["a b"]}, ""),

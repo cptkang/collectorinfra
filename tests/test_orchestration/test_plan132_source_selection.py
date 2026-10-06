@@ -298,11 +298,11 @@ def test_followups_replacing_terminal_tasks_are_dropped() -> None:
 
 def test_default_view_is_instance_list_without_targets() -> None:
     no_target = {"parsed_requirements": {"filter_conditions": []}}
-    assert aq.default_views(no_target, 10) == [aq.INSTANCES_VIEW]
+    assert aq.default_views(no_target) == [aq.INSTANCES_VIEW]
     named = {"parsed_requirements": {"filter_conditions": [
         {"field": "hostname", "op": "=", "value": "web01"}]}}
-    assert aq.default_views(named, 10) == [aq.DEFAULT_VIEW]
+    assert aq.default_views(named) == [aq.DEFAULT_VIEW]
     # 직전 턴 대상만 있으면 목록(대상 없는 목록 질문이 직전 서버로 좁혀지지 않는다)
     previous = {**no_target, "conversation_context": {
         "previous_entities": [{"field": "hostname", "value": "web09"}]}}
-    assert aq.default_views(previous, 10) == [aq.INSTANCES_VIEW]
+    assert aq.default_views(previous) == [aq.INSTANCES_VIEW]

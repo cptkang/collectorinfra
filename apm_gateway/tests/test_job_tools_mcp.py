@@ -148,7 +148,8 @@ async def test_gateway_health_reports_job_summary(tmp_path):
     out = _json(await mcp.call_tool("gateway_health", {}))
     assert out["jobs"] == {"running": 0, "queued": 0, "slots_in_use": 0, "max_concurrent": 2}
     # 16 + plans/134 W5 `/api/transaction/guid` 1(W7 경로는 별도 — 병합 시 합산)
-    assert out["rows"][0]["allowlist_size"] == 37  # 16 + W5 guid 1 + W7 19(plans/134) + 업무 1(130)
+    assert out["rows"][0]["allowlist_size"] == 41  # 16 + W5 guid 1 + W7 19(plans/134) + 업무 1(130)
+    # + W3·W4 서비스·업무 4(plans/134)
 
 
 # ── 실 SSE 전송 — 주체 토큰 ─────────────────────────────────

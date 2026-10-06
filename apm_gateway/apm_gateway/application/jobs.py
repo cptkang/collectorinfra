@@ -121,6 +121,28 @@ def masked_disclosure(fields: set[str]) -> dict[str, str]:
     }
 
 
+def settle_notices(
+    result: dict[str, Any], notes: Iterable[str], masked_fields: Iterable[str]
+) -> None:
+    """정상 봉투의 메모·고지 정리(작업 마감 · 다건 대상 하위 봉투 공용) — 호출 맥락 메모를
+    `limits`에 잇고, 예약 키(미해결 조건·가린 칸)를 고지 `disclosures`로 바꾼다(제자리 수정)."""
+    result["limits"] = list(dict.fromkeys(list(result.get("limits") or []) + list(notes)))
+    unresolved = list(dict.fromkeys(result.pop(UNRESOLVED_KEY, None) or ()))
+    masked = set(result.pop(MASKED_KEY, None) or ()) | set(masked_fields)
+    added = [{"kind": UNRESOLVED_KIND, "text": str(text)} for text in unresolved]
+    if masked:
+        added.append(masked_disclosure(masked))
+    if added:
+        result["disclosures"] = [
+            *(
+                d
+                for d in result.get("disclosures") or []
+                if d.get("kind") not in (MASKED_KIND, UNRESOLVED_KIND)
+            ),
+            *added,
+        ]
+
+
 def _epoch(value: Any) -> float | None:
     if not value:
         return None
@@ -441,21 +463,7 @@ class JobManager:
             job.error = {"code": str(result["error"]), "reason": str(result.get("reason") or "")}
             self._finish(job, js.FAILED)
             return result
-        result["limits"] = list(dict.fromkeys(list(result.get("limits") or []) + job.notes))
-        unresolved = list(dict.fromkeys(result.pop(UNRESOLVED_KEY, None) or ()))
-        masked = set(result.pop(MASKED_KEY, None) or ()) | job.masked_fields
-        added = [{"kind": UNRESOLVED_KIND, "text": str(text)} for text in unresolved]
-        if masked:
-            added.append(masked_disclosure(masked))
-        if added:
-            result["disclosures"] = [
-                *(
-                    d
-                    for d in result.get("disclosures") or []
-                    if d.get("kind") not in (MASKED_KIND, UNRESOLVED_KIND)
-                ),
-                *added,
-            ]
+        settle_notices(result, job.notes, job.masked_fields)
         text_parts: dict[str, str] = result.pop(TEXT_PARTS_KEY, None) or {}
         file_only = frozenset(result.pop(FILE_ONLY_KEY, None) or ())
         rows = list(result.get("rows") or [])

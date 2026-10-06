@@ -9,7 +9,8 @@ Open API 5.6.4 스키마
 (`RealtimeInstanceData`·`ActiveServiceData`·`TransactionData`·`EventData`·`ErrorData`·`ApplicationStatus`·
 `Instance`·`Domain`·`DBMetrics`)이고, **실데이터 모양은 J0-L-b 녹화 전까지 미검증**이다(§0.10 #19).
 W2(N-5~N-7)로 `SqlAndExternalCallStatus`·`Metrics`(카탈로그 — 로컬 5.7.0.1 녹화 모양)·v2 변경 이력
-(맨 배열 — v2 매뉴얼 `deploy.md`)을 더 읽는다.
+(맨 배열 — v2 매뉴얼 `deploy.md`)을 더 읽는다. W3·W4(N-9·N-12)로 `RealtimeDomainData`·
+`RealtimeBusinessData`·`Business` 전 필드를 더 읽는다(도메인·업무 시계열은 `DBMetrics` 그대로).
 """
 
 from __future__ import annotations
@@ -45,6 +46,14 @@ METRIC_FIELDS: dict[str, tuple[str, str | None]] = {
 
 # apm_runtime_health 구간 추세로 부르는 지표(지표 1개/호출 — §0.9 (2) #21).
 RUNTIME_TREND_METRICS: tuple[str, ...] = ("heap_used_mb", "heap_committed_mb", "gc_time_usage_pct")
+
+# 도메인·업무 시계열에서 지표를 지정하지 않았을 때의 기본 지표(dbmetrics 식별자 · plans/134
+# W3·W4 V34-1) — 응답시간(중립 이름 response_time_avg_ms)·호출 수·오류 수. 카탈로그 그 군에
+# 있는 것만 쓴다.
+SERIES_DEFAULT_METRICS: dict[str, tuple[str, ...]] = {
+    "domain": ("service_time", "service_count", "service_err_count"),
+    "business": ("service_time", "service_count", "service_err_count"),
+}
 
 # 이벤트 유형(접두 `ERROR_`·`WARNING_` 제거 후 대문자) → (시그니처 kind, level, category).
 # 운영 유형 명칭은 U-1·U-13 미확정 — 두 표기(접두 유무)를 모두 받는다.
@@ -157,13 +166,81 @@ def parse_domain(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def parse_business(raw: dict[str, Any]) -> dict[str, Any]:
-    """업무 정의(`Business` — plans/130 N-2 B2) 중 업무명 해석에 쓰는 셋. 나머지 칸은 업무 보기
-    (plans/134 W4) 몫이다."""
+    """업무 정의(`Business` 7필드) — 앞 셋은 업무명 해석(plans/130 N-2 B2), 나머지는 업무 목록 보기
+    (plans/134 W4 N-12 · COV-BUSINESS). 설명·규칙 마스킹과 `business_oid` 전체 파일 전용 표시는
+    애플리케이션 계층 몫이다."""
     return {
         "business_id": to_int(raw.get("businessId")),
         "business_name": str(raw.get("name") or ""),
         "business_description": str(raw.get("description") or ""),
+        "bad_response_time_ms": to_int(raw.get("badResponseTime")),
+        "business_index": str(raw.get("businessIndex") or ""),
+        "business_oid": to_int(raw.get("businessOid")),
+        "rules": [str(x) for x in to_list(raw.get("ruleList"))],
     }
+
+
+# 실시간 도메인(서비스) `RealtimeDomainData` 18필드(plans/134 W3 N-9 · COV-RT-DOMAIN) — 중립 키 ←
+# (벤더 필드, 형). 방문·호출 수의 단위·「하루」 경계는 미확인이다(COV E-07 — 도구가 `[한계]`로
+# 알린다).
+REALTIME_DOMAIN_FIELDS: dict[str, tuple[str, str]] = {
+    "domain_id": ("domainId", "int"),
+    "domain_name": ("domainName", "str"),
+    "tps": ("tps", "float"),
+    "response_time_avg_ms": ("responseTime", "float"),
+    "active_services": ("activeService", "int"),
+    "active_users": ("activeUser", "int"),
+    "concurrent_users": ("concurrentUser", "float"),
+    "reject_rate": ("rejectRate", "float"),
+    "visit_day": ("visitDay", "int"),
+    "visit_hour": ("visitHour", "int"),
+    "hit_day": ("hitDay", "int"),
+    "hit_hour": ("hitHour", "int"),
+    "active_range_count_0": ("activeServiceRangeCount0", "int"),
+    "active_range_count_1": ("activeServiceRangeCount1", "int"),
+    "active_range_count_2": ("activeServiceRangeCount2", "int"),
+    "active_range_count_3": ("activeServiceRangeCount3", "int"),
+    "data_server_ip": ("ipAddress", "str"),
+    "data_server_port": ("port", "int"),
+}
+
+# 실시간 업무 `RealtimeBusinessData` 11필드(plans/134 W4 N-12 · COV-RT-BUSINESS).
+REALTIME_BUSINESS_FIELDS: dict[str, tuple[str, str]] = {
+    "domain_id": ("domainId", "int"),
+    "business_id": ("businessId", "int"),
+    "business_name": ("businessName", "str"),
+    "tps": ("tps", "float"),
+    "response_time_avg_ms": ("responseTime", "float"),
+    "active_services": ("activeService", "int"),
+    "concurrent_users": ("concurrentUser", "float"),
+    "active_range_count_0": ("activeServiceRangeCount0", "int"),
+    "active_range_count_1": ("activeServiceRangeCount1", "int"),
+    "active_range_count_2": ("activeServiceRangeCount2", "int"),
+    "active_range_count_3": ("activeServiceRangeCount3", "int"),
+}
+
+
+def _typed(raw: dict[str, Any], table: dict[str, tuple[str, str]]) -> dict[str, Any]:
+    """표(중립 키 ← (벤더 필드, 형))대로 옮긴다 — 형이 맞지 않는 값은 그 칸만 None(문자열은 빈
+    값)."""
+    out: dict[str, Any] = {}
+    for neutral, (name, kind) in table.items():
+        value = raw.get(name)
+        if kind == "int":
+            out[neutral] = to_int(value)
+        elif kind == "float":
+            out[neutral] = to_float(value)
+        else:
+            out[neutral] = str(value or "")
+    return out
+
+
+def parse_realtime_domain(raw: dict[str, Any]) -> dict[str, Any]:
+    return _typed(raw, REALTIME_DOMAIN_FIELDS)
+
+
+def parse_realtime_business(raw: dict[str, Any]) -> dict[str, Any]:
+    return _typed(raw, REALTIME_BUSINESS_FIELDS)
 
 
 def parse_instance(raw: dict[str, Any], domain_id: int | None, domain_name: str) -> dict[str, Any]:

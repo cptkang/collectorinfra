@@ -35,6 +35,11 @@ DATA_TOOLS = {
     "apm_environment",
     "apm_users",
     "apm_active_detail",
+    # plans/134 W3·W4(N-9·N-12 — 서비스·업무)
+    "apm_service_status",
+    "apm_business",
+    # plans/134 W3(N-10 — 전 대상 순위·이벤트)
+    "apm_fleet",
 }
 JOB_TOOLS = {"apm_job_status", "apm_job_cancel", "apm_job_read"}
 EXPECTED_TOOLS = DATA_TOOLS | JOB_TOOLS | {"gateway_health"}
@@ -56,8 +61,8 @@ def server(mock_server_factory, synthetic_dir):
 
 @pytest.mark.asyncio
 async def test_tool_surface_is_data_job_and_health_tools(server):
-    """데이터 도구 18종(W2 +3 · W5·W6 +3 · W7 +4) + 작업 도구 3종 + 헬스(plans/134 W0-B) — 숫자
-    상한은 D-299 ③이 폐지했다."""
+    """데이터 도구 21종(W2 +3 · W5·W6 +3 · W7 +4 · W3 +1 · W3·W4 +2) + 작업 도구 3종 + 헬스
+    (plans/134 W0-B) — 숫자 상한은 D-299 ③이 폐지했다."""
     from apm_gateway.interface.server import register_tools
     from mcp.server.fastmcp import FastMCP
 

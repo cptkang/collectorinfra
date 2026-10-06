@@ -83,10 +83,14 @@ VIEW_ARG_TYPES: frozenset[str] = frozenset(
 #: 보기 대상 표현(plans/134 W5·W7 · 계약 §4.1) — 비면 종전(필수 대상 `required_input` · 첫 홉
 #: `first_hop`이 정한다 · 기존 12개 보기). `optional` = 이번 턴 대상이 있으면 대상별 · 없으면
 #: hostname 없이 1회(첫 홉 삽입 없음) · `reference` = 앞 결과 행의 참조 칸(`ViewSpec.reference`)
-#: · `none` = 대상을 쓰지 않는 보기(대상 해석을 하지 않는다).
-VIEW_TARGETS: frozenset[str] = frozenset({"", "optional", "reference", "none"})
+#: · `none` = 대상을 쓰지 않는 보기(대상 해석을 하지 않는다) · `named` = 이번 task 대상
+#: 텍스트(서비스·업무 이름)를 도구 인자 `target_arg`에 목록으로 싣는 보기 — 없으면 전체 1회
+#: (plans/134 W3·W4 M-5).
+VIEW_TARGETS: frozenset[str] = frozenset({"", "optional", "reference", "none", "named"})
 #: 참조 보기가 고르는 행 칸(게이트웨이 도구 계약 이름 — 벤더 중립).
 VIEW_REFERENCES: frozenset[str] = frozenset({"profile_ref", "active_ref", "guid"})
+#: `named` 보기가 이름 목록을 싣는 도구 인자(게이트웨이 도구 계약 이름 — 이름 해석은 게이트웨이).
+VIEW_TARGET_ARGS: frozenset[str] = frozenset({"service", "business"})
 
 
 @dataclass(frozen=True)
@@ -143,6 +147,8 @@ class ViewSpec:
         notices: 결과가 있으면 붙이는 고지 kind(예 `apm_change_detection` — plans/134 W2)
         target: 대상 표현(`VIEW_TARGETS` — plans/134 W5·W7 · 비면 종전 규칙)
         reference: 참조 보기(`target: reference`)가 앞 결과 행에서 고르는 칸(`VIEW_REFERENCES`)
+        target_arg: 이름 보기(`target: named`)가 대상 텍스트 목록을 싣는 도구 인자
+            (`VIEW_TARGET_ARGS` — plans/134 W3·W4)
     """
 
     id: str
@@ -159,6 +165,7 @@ class ViewSpec:
     notices: tuple[str, ...] = ()
     target: str = ""
     reference: str = ""
+    target_arg: str = ""
 
 
 @dataclass(frozen=True)
@@ -712,6 +719,11 @@ def _parse_views(value: Any) -> tuple[ViewSpec, ...]:
                 reference and reference not in VIEW_REFERENCES):
             raise ValueError(f"보기 {view_id}: target reference에는 reference"
                              f"({sorted(VIEW_REFERENCES)} 중 하나)가 필요하다")
+        target_arg = str(raw.get("target_arg") or "")
+        if (target == "named") != bool(target_arg) or (
+                target_arg and target_arg not in VIEW_TARGET_ARGS):
+            raise ValueError(f"보기 {view_id}: target named에는 target_arg"
+                             f"({sorted(VIEW_TARGET_ARGS)} 중 하나)가 필요하다")
         views.append(ViewSpec(
             id=view_id,
             label=str(raw.get("label", "")),
@@ -727,6 +739,7 @@ def _parse_views(value: Any) -> tuple[ViewSpec, ...]:
             notices=_parse_view_notices(raw.get("notices"), view_id),
             target=target,
             reference=reference,
+            target_arg=target_arg,
         ))
     return tuple(views)
 

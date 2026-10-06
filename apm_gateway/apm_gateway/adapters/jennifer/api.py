@@ -33,6 +33,15 @@ def _ids(instance_ids: list[int] | None) -> dict[str, str]:
     return {"instance_id": ",".join(str(i) for i in instance_ids)} if instance_ids else {}
 
 
+def _result_rows(body: Any, what: str) -> list[dict[str, Any]]:
+    """`{result: [...]}` 봉투의 항목 — 봉투가 아니면 `apm_api_error`(빈 결과로 강등하지 않는다)."""
+    if not (isinstance(body, dict) and isinstance(body.get("result"), list)):
+        raise ApmError(
+            API_ERROR, f"{what} 응답 모양이 예상과 다르다({{result: [...]}} 봉투가 아님)"
+        )
+    return jf.result_list(body)
+
+
 class JenniferApi:
     def __init__(self, client: JenniferClient) -> None:
         self.client = client
@@ -105,7 +114,24 @@ class JenniferApi:
         level: str | None = None,
     ) -> list[dict[str, Any]]:
         """이벤트 — `level`(중립 소문자)을 주면 API `level`로 넘긴다(대문자 — 의미는 W10 확인 ·
-        호출자가 응답을 다시 거른다)."""
+        호출자가 응답을 다시 거른다). 모양이 다른 응답은 빈 목록이다(관대 — 실 응답의 빈 결과
+        모양 미확인 · W10)."""
+        records, _known = await self.events_checked(
+            domain_id, instance_ids, start_ms, end_ms, level
+        )
+        return records
+
+    async def events_checked(
+        self,
+        domain_id: int,
+        instance_ids: list[int] | None,
+        start_ms: int,
+        end_ms: int,
+        level: str | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """`events`와 같은 조회(같은 요청 · 같은 레코드) + 응답이 `{result: [...]}` 봉투(빈 목록
+        포함)로 판독됐는가 — 조회용 버퍼 확정·전 대상 이벤트가 「알아본 0건」과 「모르는 모양」을
+        가른다(plans/134 W3 R34-3)."""
         body = await self.client.get_json(
             "/api/dbsearch/event",
             {
@@ -116,7 +142,8 @@ class JenniferApi:
                 **({"level": level.upper()} if level else {}),
             },
         )
-        return [jf.parse_event(r) for r in jf.result_list(body)]
+        known = isinstance(body, dict) and isinstance(body.get("result"), list)
+        return [jf.parse_event(r) for r in jf.result_list(body)], known
 
     async def errors(
         self,
@@ -145,6 +172,11 @@ class JenniferApi:
         return jf.METRIC_FIELDS.get(neutral_metric, (None, None))[1]
 
     @staticmethod
+    def default_series_metrics(scope: str) -> list[str]:
+        """도메인·업무 시계열의 기본 지표 식별자(지표 미지정·전부 모름 — 그 군 밖은 빈 목록)."""
+        return list(jf.SERIES_DEFAULT_METRICS.get(scope, ()))
+
+    @staticmethod
     def neutral_metrics() -> dict[str, str]:
         """중립 지표 이름 → 구간 시계열 식별자(매핑이 있는 것만)."""
         return {n: m for n, (_field, m) in jf.METRIC_FIELDS.items() if m}
@@ -168,6 +200,28 @@ class JenniferApi:
             )
         return catalog
 
+    async def _metric_points(
+        self,
+        path: str,
+        target: dict[str, int],
+        metric_id: str,
+        interval_minute: int,
+        start_ms: int,
+        end_ms: int,
+    ) -> list[dict[str, Any]]:
+        """`/api/dbmetrics/*` 시계열 1지표/호출 — 대상 키(`target`)만 경로마다 다르다."""
+        body = await self.client.get_json(
+            path,
+            {
+                **target,
+                "interval_minute": interval_minute,
+                "metrics": metric_id,
+                "start_time": start_ms,
+                "end_time": end_ms,
+            },
+        )
+        return [jf.parse_metric_point(r) for r in jf.result_list(body)]
+
     async def instance_metric_series(
         self,
         domain_id: int,
@@ -178,18 +232,65 @@ class JenniferApi:
         end_ms: int,
     ) -> list[dict[str, Any]]:
         """인스턴스 지표 시계열(지표 식별자 그대로 — 호출자가 카탈로그로 검증 · 1지표/호출)."""
-        body = await self.client.get_json(
+        return await self._metric_points(
             "/api/dbmetrics/instance",
-            {
-                "domain_id": domain_id,
-                "instance_id": instance_id,
-                "interval_minute": interval_minute,
-                "metrics": metric_id,
-                "start_time": start_ms,
-                "end_time": end_ms,
-            },
+            {"domain_id": domain_id, "instance_id": instance_id},
+            metric_id,
+            interval_minute,
+            start_ms,
+            end_ms,
         )
-        return [jf.parse_metric_point(r) for r in jf.result_list(body)]
+
+    async def domain_metric_series(
+        self, domain_id: int, metric_id: str, interval_minute: int, start_ms: int, end_ms: int
+    ) -> list[dict[str, Any]]:
+        """도메인(서비스) 지표 시계열(plans/134 W3 · COV-DBM-DOMAIN · 카탈로그 domain 군)."""
+        return await self._metric_points(
+            "/api/dbmetrics/domain",
+            {"domain_id": domain_id},
+            metric_id,
+            interval_minute,
+            start_ms,
+            end_ms,
+        )
+
+    async def business_metric_series(
+        self,
+        domain_id: int,
+        business_id: int,
+        metric_id: str,
+        interval_minute: int,
+        start_ms: int,
+        end_ms: int,
+    ) -> list[dict[str, Any]]:
+        """업무 지표 시계열(plans/134 W4 · COV-DBM-BUSINESS · 카탈로그 business 군)."""
+        return await self._metric_points(
+            "/api/dbmetrics/business",
+            {"domain_id": domain_id, "business_id": business_id},
+            metric_id,
+            interval_minute,
+            start_ms,
+            end_ms,
+        )
+
+    async def realtime_domains(self, domain_id: int | None = None) -> list[dict[str, Any]]:
+        """실시간 도메인(서비스) 현재값 — `domain_id`가 없으면 그 서버의 전 도메인(1호출 ·
+        COV-RT-DOMAIN). 모양 위반은 `apm_api_error`(0건으로 강등하지 않는다)."""
+        body = await self.client.get_json(
+            "/api/realtime/domain", {} if domain_id is None else {"domain_id": domain_id}
+        )
+        return [jf.parse_realtime_domain(r) for r in _result_rows(body, "실시간 도메인")]
+
+    async def realtime_business(
+        self, domain_id: int, business_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """실시간 업무 현재값 — `business_id`가 없으면 그 도메인의 전 업무(COV-RT-BUSINESS). 모양
+        위반은 `apm_api_error`."""
+        optional = {} if business_id is None else {"business_id": business_id}
+        body = await self.client.get_json(
+            "/api/realtime/business", {"domain_id": domain_id, **optional}
+        )
+        return [jf.parse_realtime_business(r) for r in _result_rows(body, "실시간 업무")]
 
     async def metric_series(
         self,

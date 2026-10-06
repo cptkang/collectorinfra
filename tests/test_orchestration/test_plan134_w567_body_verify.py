@@ -48,6 +48,7 @@ from src.orchestration.agent_orchestrator import agent_orchestrator
 from src.orchestration.replanner import replanner
 from src.orchestration.result_aggregator import result_aggregator
 from src.state import create_followup_input, create_initial_state
+from tests.test_orchestration import apm_batch_mock
 
 ip = importlib.import_module("src.orchestration.intent_planner")
 cr = importlib.import_module("src.nodes.context_resolver")
@@ -116,6 +117,11 @@ class _Gateway:
 
     async def call_tool(self, name: str, arguments: dict):
         self.calls.append((name, dict(arguments)))
+        # plans/134 M-5 — 다건 대상은 `targets` 배치 1호출(계약 A-2 봉투로 흉내)
+        reply = apm_batch_mock.reply_for(name, arguments, lambda a: self._single(name, a))
+        return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(reply))], isError=False)
+
+    def _single(self, name: str, arguments: dict) -> dict:
         reply = self.replies.get(name)
         if callable(reply):
             reply = reply(arguments)
@@ -123,7 +129,7 @@ class _Gateway:
             rows = ([{"hostname": "web01", "instance_id": 11, "match_confidence": "exact"}]
                     if name == "apm_instance_map" else [])
             reply = _env(name, rows)
-        return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(reply))], isError=False)
+        return reply
 
     def named(self, tool: str) -> list[dict]:
         return [a for n, a in self.calls if n == tool]
@@ -576,7 +582,11 @@ def test_first_twelve_views_are_unchanged_from_baseline() -> None:
              if not (view["id"] == "apm.instances" and k in ("args", "examples"))}
             for view in new[:12]]
     assert head == old
-    assert [v["id"] for v in new[12:]] == list(NEW_VIEWS)
+    # plans/134 W3·W4 — 보기 6종을 뒤에 더했다(계약 B-1 · 앞 22개 선언은 그대로)
+    assert [v["id"] for v in new[12:22]] == list(NEW_VIEWS)
+    assert [v["id"] for v in new[22:]] == ["apm.service", "apm.service_trend", "apm.ranking",
+                                          "apm.fleet_events", "apm.business",
+                                          "apm.business_trend"]
     for spec in aq.apm_views()[:12]:
         assert spec.target == "" and spec.reference == ""
 

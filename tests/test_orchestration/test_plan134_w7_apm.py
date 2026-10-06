@@ -34,6 +34,7 @@ from src.domain import disclosure as disc
 from src.domain.result_refs import extract_result_refs
 from src.orchestration import apm_query as aq
 from src.routing.registry import get_registry, parse_registry
+from tests.test_orchestration import apm_batch_mock
 
 ip = importlib.import_module("src.orchestration.intent_planner")
 
@@ -74,8 +75,9 @@ class _Gateway:
 
     async def call_tool(self, name: str, arguments: dict):
         self.calls.append((name, dict(arguments)))
-        return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(self.replies[name]))],
-                               isError=False)
+        # plans/134 M-5 — 다건 대상은 `targets` 배치 1호출(계약 A-2 봉투로 흉내)
+        reply = apm_batch_mock.reply_for(name, arguments, lambda a: self.replies[name])
+        return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(reply))], isError=False)
 
     def named(self, tool: str) -> list[dict]:
         return [a for n, a in self.calls if n == tool]
@@ -208,7 +210,10 @@ async def test_optional_target_without_target_calls_once_without_hostname(gatewa
 async def test_optional_target_fans_out_over_this_turns_hosts(gateway) -> None:
     gw = gateway()
     await _run(["apm.environment"], _isolated("web01", "web02"))
-    assert [a["hostname"] for a in gw.named("apm_environment")] == ["web01", "web02"]
+    # plans/134 M-5 — 대상 2대 = `targets` 배치 1호출
+    assert len(gw.named("apm_environment")) == 1
+    assert [a["hostname"] for a in apm_batch_mock.expanded(gw.calls, "apm_environment")] == [
+        "web01", "web02"]
 
 
 @pytest.mark.asyncio
@@ -239,7 +244,8 @@ async def test_kind_default_and_source_scoped_kinds(gateway) -> None:
     await _run(["apm.event_rules"], _isolated("web01", "web02"),
                {"apm.event_rules": {"rule_type": "metric", "target": "instance",
                                     "error_type": "OutOfMemory"}})
-    calls = gw.named("apm_config")
+    assert len(gw.named("apm_config")) == 1, "대상 2대 = `targets` 배치 1호출(plans/134 M-5)"
+    calls = apm_batch_mock.expanded(gw.calls, "apm_config")
     assert [(a["kind"], a["hostname"]) for a in calls] == [
         ("event_rules", "web01"), ("event_rules", "web02")], \
         "미지정 kind = event_rules · 도메인 범위"

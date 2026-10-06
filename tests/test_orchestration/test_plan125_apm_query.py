@@ -29,6 +29,7 @@ from src.orchestration.investigation_audit import _apm_query_fields
 from src.orchestration.replanner import _validate_replanned_tasks
 from src.orchestration.schemas import DecomposedPlan, views_plan_model
 from src.orchestration.subagents import SUBAGENT_REGISTRY, resolve_subagent
+from tests.test_orchestration import apm_batch_mock
 
 # 패키지 `__init__`이 같은 이름의 함수를 다시 내보내 `from … import 모듈`이 함수를 가리킨다
 ip = importlib.import_module("src.orchestration.intent_planner")
@@ -77,8 +78,9 @@ class _Gateway:
     async def call_tool(self, name: str, arguments: dict):
         self.calls.append((name, arguments))
         reply = self.replies[name]
-        if callable(reply):
-            reply = reply(arguments)
+        # plans/134 M-5 — 다건 대상은 `targets` 배치 1호출(계약 A-2 봉투로 흉내)
+        reply = apm_batch_mock.reply_for(name, arguments,
+                                         reply if callable(reply) else (lambda a: reply))
         return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(reply))], isError=False)
 
 
@@ -126,10 +128,13 @@ def test_active_prompt_is_insertion_only() -> None:
     # 한 줄도 활성 렌더에서만 더한다(골격 줄 끝 확장 + 주의 목록 삽입)
     from src.prompts import intent_planner as prompts
 
-    assert active.count(prompts.APM_SKELETON_TAIL_WITH_KEYS) == 1
-    assert active.count(prompts.APM_OUTPUT_RULE) == 1
-    stripped = (stripped.replace(prompts.APM_SKELETON_TAIL_WITH_KEYS, prompts.APM_SKELETON_TAIL, 1)
-                .replace(prompts.APM_OUTPUT_RULE, "", 1))
+    # plans/134 M-5 — 소스 2개 이상 선언(레지스트리 `solutions[apm].sources`)이면 골격 꼬리에
+    # `sources` 키와 규칙 한 줄이 더 붙는다(활성만)
+    assert active.count(prompts.APM_SKELETON_TAIL_WITH_SOURCES) == 1
+    assert active.count(prompts.APM_OUTPUT_RULE + prompts.APM_SOURCES_RULE) == 1
+    stripped = (stripped.replace(prompts.APM_SKELETON_TAIL_WITH_SOURCES,
+                                 prompts.APM_SKELETON_TAIL, 1)
+                .replace(prompts.APM_OUTPUT_RULE + prompts.APM_SOURCES_RULE, "", 1))
     # plans/134 W2 — 활성 배포에서만 렌더하는 답변 영역 행(`active_only`)도 삽입이다
     from src.routing.registry import get_registry
 
@@ -204,8 +209,10 @@ async def test_named_hosts_fan_out_with_one_session(gateway) -> None:
         {"task_id": "t1", "agent": "apm_query", "views": []},
         _isolated([_host("web01"), _host("web02")]), llm=None, app_config=_cfg(), now=NOW)
     assert gw.opened == 1 and gw.headers == {"Authorization": "Bearer gw-token"}
-    assert [c[0] for c in gw.calls] == ["apm_app_health", "apm_app_health"], "기본 보기"
-    assert {c[1]["hostname"] for c in gw.calls} == {"web01", "web02"}
+    # plans/134 M-5 — 대상 2대는 `targets` 배치 1호출(종전 대상별 2호출)
+    assert [c[0] for c in gw.calls] == ["apm_app_health"], "기본 보기"
+    assert gw.calls[0][1]["targets"] == [{"hostname": "web01"}, {"hostname": "web02"}]
+    assert "hostname" not in gw.calls[0][1]
     assert all(c[1]["thread_id"] == "th-1" for c in gw.calls), "thread_id 전파(감사 연결)"
     rows = res["organized_data"]["rows"]
     assert [r["hostname"] for r in rows] == ["web01", "web02"] and rows[0]["tps"] == 3.5
@@ -216,7 +223,8 @@ async def test_named_hosts_fan_out_with_one_session(gateway) -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_target_inserts_instances_first_hop_and_caps(gateway) -> None:
+async def test_no_target_inserts_instances_first_hop_without_cap(gateway) -> None:
+    """plans/134 M-5 — 첫 홉은 절단 없이 전부다(종전 `max_targets` 앞부분 절단 폐지 · D-296 ④)."""
     inventory = [{"instance_id": i, "hostname": f"was{i:02d}", "match_confidence": "high"}
                  for i in range(1, 6)] + [{"instance_id": 99, "hostname": None,
                                             "match_confidence": None}]
@@ -228,10 +236,16 @@ async def test_no_target_inserts_instances_first_hop_and_caps(gateway) -> None:
     # plans/134 W0-B — 작업 인자 owner·wait_seconds가 함께 실린다(호출 상한 10초 − 2)
     assert gw.calls[0] == ("apm_instance_map", {"thread_id": "th-1", "owner": "user:anonymous",
                                                 "wait_seconds": 8.0}), "첫 홉 삽입(LLM 0)"
-    assert [c[1]["hostname"] for c in gw.calls[1:]] == ["was01", "was02", "was03"]
+    assert len(gw.calls) == 2, "대상 5대 = 배치 1호출"
+    assert [t["hostname"] for t in gw.calls[1][1]["targets"]] == [
+        "was01", "was02", "was03", "was04", "was05"], "상한(3)으로 자르지 않는다"
     step = res["apm_query"]["inserted_steps"][0]
-    assert step == {"view": "apm.instances", "reason": step["reason"], "hosts": 5, "truncated": 2}
-    assert "조회한 범위 안의 결과" in res["organized_data"]["summary"]
+    # 이름·소스가 없는 행(#99)은 부를 수 없어 수로 남긴다(조용히 빠지지 않는다)
+    assert step == {"view": "apm.instances", "reason": step["reason"], "hosts": 5,
+                    "instances": 6, "unaddressed": 1}
+    summary = res["organized_data"]["summary"]
+    assert "전체 인스턴스 6개(호스트 5대) 조회" in summary
+    assert "부를 수 없는 인스턴스 1개" in summary
 
 
 class _SlowGateway(_Gateway):

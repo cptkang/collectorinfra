@@ -556,7 +556,11 @@ def _assign_ids(new_tasks: list[dict], *, existing: list[dict]) -> list[dict]:
     Returns:
         task_id/order/status가 부여된 신규 task 목록
     """
-    from src.orchestration.apm_query import APM_QUERY_AGENT, sanitize_targets  # 지연 — 순환 방지
+    from src.orchestration.apm_query import (  # 지연 — 순환 방지
+        APM_QUERY_AGENT,
+        sanitize_sources,
+        sanitize_targets,
+    )
 
     existing_ids = {t.get("task_id") for t in existing if t.get("task_id")}
 
@@ -596,6 +600,10 @@ def _assign_ids(new_tasks: list[dict], *, existing: list[dict]) -> list[dict]:
         targets = sanitize_targets(raw.get("targets"))
         if task["agent"] == APM_QUERY_AGENT and targets:
             task["targets"] = targets
+        # 소스 선택(plans/134 M-5) — 재계획 APM task도 지목한 소스를 잃지 않는다(V130-4와 같은 이유)
+        sources = sanitize_sources(raw.get("sources"))
+        if task["agent"] == APM_QUERY_AGENT and sources:
+            task["sources"] = sources
         assigned.append(task)
 
     # 신규 task끼리의 상대 참조(임시 id)를 실제 id로 재매핑

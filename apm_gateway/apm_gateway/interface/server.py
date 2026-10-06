@@ -7,9 +7,12 @@ SPEC-apm-gateway §3 · plans/134 W0-B SPEC-apm-question-coverage §2.1·§3.6·
 주체로 작업을 만들고 찾는다. 도구는 예외를 전파하지 않고 `{"error": code, "reason": …}` JSON을
 돌려준다.
 
-- 데이터 도구 18종(W2에서 통계·지표·변경 감지 3종 · W5·W6에서 GUID 추적·변경 전후·기간 비교 3종 ·
-  W7에서 관리·민감 조회 4종 — `manage_server` 모듈이 등록)은 모두 작업(`JobManager.execute`)으로
-  돈다 — 선택 인자 `owner`·`wait_seconds`.
+- 데이터 도구 21종(W2에서 통계·지표·변경 감지 3종 · W5·W6에서 GUID 추적·변경 전후·기간 비교 3종 ·
+  W7에서 관리·민감 조회 4종 — `manage_server` 모듈이 등록 · W3에서 전 대상 순위·이벤트 1종 —
+  `fleet_server` 모듈이 등록 · W3·W4에서 서비스·업무 2종 — `scope_server` 모듈이
+  등록)은 모두 작업(`JobManager.execute`)으로 돈다 — 선택 인자 `owner`·`wait_seconds`.
+  `hostname`을 받는 데이터 도구는 다건 대상 `targets`도 받는다(한 호출 = 작업 1개 · 감사 대상
+  `targets(N)` · plans/134 W3).
   `apm_transaction_profile`에는 요청 주체(`request_principal`)를 도구 코어로 넘긴다 — 프로파일
   예산을 주체로 가른다(채팅 `chat` 면제 · plans/134 W5).
   `wait_seconds`가 없으면 끝날 때까지 기다린다(기존 소비자 의미 그대로).
@@ -32,8 +35,11 @@ from starlette.applications import Starlette
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from apm_gateway.adapters.jennifer.allowlist import NotAllowedError
+from apm_gateway.application.batch import HOSTNAME_KEYS, TARGET_KEYS_WITH_ID, targeted
+from apm_gateway.application.event_buffer import EventBuffer
 from apm_gateway.application.jobs import Job, JobManager
 from apm_gateway.application.masking import mask_text
+from apm_gateway.application.scope_tools import ScopeTools, scope_target
 from apm_gateway.application.tools import ApmTools
 from apm_gateway.domain import jobs as js
 from apm_gateway.domain.errors import API_ERROR, CONTRACT_VIOLATION, INVALID_ARGUMENT, ApmError
@@ -74,6 +80,15 @@ WaitArg = Annotated[
     Field(
         description="이 초 안에 끝나지 않으면 작업 핸들(job)을 돌려주고 백그라운드로 계속한다"
         "(apm_job_status로 확인). 비우면 끝날 때까지 기다린다"
+    ),
+]
+TargetsArg = Annotated[
+    list[dict[str, Any]] | None,
+    Field(
+        description="여러 대상을 한 번에(작업 1개 — 예상·진행·대상별 부분 실패 · 개수 상한"
+        " 없음). 항목 = {hostname 또는 instance_name(둘 다 = AND) · source_id(선택) ·"
+        " instance_id(이 도구가 받을 때만)}. 최상위 hostname·instance_name·instance_id와 함께 줄"
+        " 수 없다. 행에 target_index, 대상별 요약·실패는 batch"
     ),
 ]
 
@@ -313,10 +328,18 @@ def audit_job_finished(job: Job) -> None:
     )
 
 
-def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None) -> list[str]:
-    """`apm_*` 데이터 도구 18종(W7 4종은 `register_manage_tools`) + 작업 도구 3종 +
-    `gateway_health`를 등록하고 이름 목록을
-    돌려준다."""
+def register_tools(
+    mcp: FastMCP,
+    tools: ApmTools,
+    jobs: JobManager | None = None,
+    *,
+    event_buffer: EventBuffer | None = None,
+) -> list[str]:
+    """`apm_*` 데이터 도구 21종(W7 4종은 `register_manage_tools` · 전 대상 순위·이벤트
+    `apm_fleet`은 `register_fleet_tools` — `event_buffer`는 폴러의 조회용 이벤트 버퍼 · 서비스·업무
+    2종은 `register_scope_tools`) + 작업 도구
+    3종 + `gateway_health`를 등록하고 이름 목록을 돌려준다. `hostname`을 받는 데이터 도구는
+    `targets`(다건 대상 — 작업 1개)도 받는다(`application.batch`)."""
     if jobs is None:
         jobs = JobManager.from_config(
             tools.cfg, envelope=tools.ok, error_envelope=tools.err, on_finish=audit_job_finished
@@ -357,6 +380,7 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         thread_id: str | None = None,
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
+        targets: TargetsArg = None,
     ) -> str:
         """APM 인스턴스 목록(전부 — 큰 목록은 결과 파일)과 hostname 정합 결과. hostname을 주면 그
         서버의 WAS 인스턴스만(정합 신뢰도·근거 포함). domain_id를 주면 그 도메인의 인스턴스만.
@@ -365,11 +389,23 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         · 0건이면 비슷한 이름 후보 suggestions · hostname과 함께 줄 수 없다).
         business를 주면 업무명 → 인스턴스(수동 매핑 우선 · 없으면 도메인 이름·APM 업무 정의·
         인스턴스 이름/설명 합집합 · 근거 match_kinds) · query·hostname과 함께 줄 수 없다."""
+        label, call = targeted(
+            tools,
+            "apm_instance_map",
+            targets,
+            lambda t: tools.apm_instance_map(
+                t.hostname, t.sources(source_ids), domain_id, query, business
+            ),
+            label=hostname
+            or (f"query:{query}" if query else (f"business:{business}" if business else "*")),
+            keys=HOSTNAME_KEYS,
+            hostname=hostname,
+            source_ids=source_ids,
+        )
         return await run_data(
             "apm_instance_map",
-            hostname
-            or (f"query:{query}" if query else (f"business:{business}" if business else "*")),
-            lambda: tools.apm_instance_map(hostname, source_ids, domain_id, query, business),
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -388,22 +424,35 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         thread_id: str | None = None,
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
+        targets: TargetsArg = None,
     ) -> str:
         """WAS 골든 시그널 — 평균 응답시간·TPS·액티브 서비스·PLC 거절률·방문·호출 수·액티브 구간
         4칸(현재) + 구간 p50/p95·에러율(1분 조각으로 창 전체) + 긴 창은 시 단위 합계 + 판정.
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다."""
-        return await run_data(
+        label, call = targeted(
+            tools,
             "apm_app_health",
-            hostname or instance_name or "*",
-            lambda: tools.apm_app_health(
-                hostname,
-                instance_id,
+            targets,
+            lambda t: tools.apm_app_health(
+                t.hostname,
+                t.instance_id,
                 reference_time,
                 lookback_minutes,
-                source_ids,
-                instance_name=instance_name,
+                t.sources(source_ids),
+                instance_name=t.instance_name,
             ),
+            label=hostname or instance_name or "*",
+            keys=TARGET_KEYS_WITH_ID,
+            hostname=hostname,
+            instance_name=instance_name,
+            instance_id=instance_id,
+            source_ids=source_ids,
+        )
+        return await run_data(
+            "apm_app_health",
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -424,25 +473,38 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         wait_seconds: WaitArg = None,
         metrics: MetricsArg = None,
         interval_minute: IntervalArg = None,
+        targets: TargetsArg = None,
     ) -> str:
         """JVM 런타임 — 힙 사용량(MB)·GC 시간 비중(%)·프로세스 CPU·스레드·소켓·파일 수 + 구간
         추세(기본 힙 사용·힙 할당·GC 시간 비중 3종 · 5분 간격 · 정합된 인스턴스 전부 · metrics로
         지표를 바꾼다) + 판정(힙 압박·GC 지연).
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다."""
-        return await run_data(
+        label, call = targeted(
+            tools,
             "apm_runtime_health",
-            hostname or instance_name or "*",
-            lambda: tools.apm_runtime_health(
-                hostname,
-                instance_id,
+            targets,
+            lambda t: tools.apm_runtime_health(
+                t.hostname,
+                t.instance_id,
                 reference_time,
                 lookback_minutes,
-                source_ids,
+                t.sources(source_ids),
                 metrics,
                 interval_minute,
-                instance_name=instance_name,
+                instance_name=t.instance_name,
             ),
+            label=hostname or instance_name or "*",
+            keys=TARGET_KEYS_WITH_ID,
+            hostname=hostname,
+            instance_name=instance_name,
+            instance_id=instance_id,
+            source_ids=source_ids,
+        )
+        return await run_data(
+            "apm_runtime_health",
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -459,17 +521,30 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         thread_id: str | None = None,
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
+        targets: TargetsArg = None,
     ) -> str:
         """자원 풀(현재값 전용) — DB 커넥션 풀 사용률·실행 모드별 액티브 서비스 수 + 판정(DB 풀
         고갈·스레드 정체).
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다."""
+        label, call = targeted(
+            tools,
+            "apm_resource_pool",
+            targets,
+            lambda t: tools.apm_resource_pool(
+                t.hostname, t.instance_id, t.sources(source_ids), instance_name=t.instance_name
+            ),
+            label=hostname or instance_name or "*",
+            keys=TARGET_KEYS_WITH_ID,
+            hostname=hostname,
+            instance_name=instance_name,
+            instance_id=instance_id,
+            source_ids=source_ids,
+        )
         return await run_data(
             "apm_resource_pool",
-            hostname or instance_name or "*",
-            lambda: tools.apm_resource_pool(
-                hostname, instance_id, source_ids, instance_name=instance_name
-            ),
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -490,25 +565,38 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
         full: FullArg = False,
+        targets: TargetsArg = None,
     ) -> str:
         """느린 트랜잭션 상위 N(기본 10 · full이면 전부) — 시간 분해(cpu·sql·fetch·external·
         network)·SQL/fetch/외부 호출 건수·guid·오류 유형·profile_ref + 판정(SQL 지연·외부 호출
         지연). 사용자·클라이언트 식별자는 가린다.
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다."""
-        return await run_data(
+        label, call = targeted(
+            tools,
             "apm_slow_transactions",
-            hostname or instance_name or "*",
-            lambda: tools.apm_slow_transactions(
-                hostname,
-                instance_id,
+            targets,
+            lambda t: tools.apm_slow_transactions(
+                t.hostname,
+                t.instance_id,
                 reference_time,
                 lookback_minutes,
                 n,
-                source_ids,
+                t.sources(source_ids),
                 full,
-                instance_name=instance_name,
+                instance_name=t.instance_name,
             ),
+            label=hostname or instance_name or "*",
+            keys=TARGET_KEYS_WITH_ID,
+            hostname=hostname,
+            instance_name=instance_name,
+            instance_id=instance_id,
+            source_ids=source_ids,
+        )
+        return await run_data(
+            "apm_slow_transactions",
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -527,18 +615,36 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
         full: FullArg = False,
+        targets: TargetsArg = None,
     ) -> str:
         """지금 실행 중인 서비스 상위 N(경과 시간 순 · 기본 10 · full이면 전부 · 현재값 전용) —
         상태·실행 모드·실행 텍스트(마스킹)·CPU·SQL·fetch 건수·active_ref(실행 중 요청 상세 입력) +
         판정(스레드 정체).
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다."""
+        label, call = targeted(
+            tools,
+            "apm_active_services",
+            targets,
+            lambda t: tools.apm_active_services(
+                t.hostname,
+                t.instance_id,
+                n,
+                t.sources(source_ids),
+                full,
+                instance_name=t.instance_name,
+            ),
+            label=hostname or instance_name or "*",
+            keys=TARGET_KEYS_WITH_ID,
+            hostname=hostname,
+            instance_name=instance_name,
+            instance_id=instance_id,
+            source_ids=source_ids,
+        )
         return await run_data(
             "apm_active_services",
-            hostname or instance_name or "*",
-            lambda: tools.apm_active_services(
-                hostname, instance_id, n, source_ids, full, instance_name=instance_name
-            ),
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -576,27 +682,38 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
             Field(description="최근 N건(1 이상). 비우면 전부"),
         ] = None,
         full: FullArg = False,
+        targets: TargetsArg = None,
     ) -> str:
         """APM 이벤트·오류 기록(기본 최근 30분 · 기간 상한 없음) — 유형·레벨·값·메시지(마스킹)·
         profile_ref + 오류 유형별 건수(전 유형) + 판정. level은 fatal·warning·normal.
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다."""
-        return await run_data(
+        label, call = targeted(
+            tools,
             "apm_events",
-            hostname or instance_name or "*",
-            lambda: tools.apm_events(
-                hostname,
+            targets,
+            lambda t: tools.apm_events(
+                t.hostname,
                 reference_time,
                 lookback_minutes,
                 level,
-                source_ids,
+                t.sources(source_ids),
                 level_mode,
                 error_type,
                 record,
                 n,
                 full,
-                instance_name=instance_name,
+                instance_name=t.instance_name,
             ),
+            label=hostname or instance_name or "*",
+            hostname=hostname,
+            instance_name=instance_name,
+            source_ids=source_ids,
+        )
+        return await run_data(
+            "apm_events",
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -627,6 +744,7 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         include_param_key: Annotated[
             bool | None, Field(description="SQL 파라미터 키 포함(값은 리터럴 마스킹)")
         ] = None,
+        targets: TargetsArg = None,
     ) -> str:
         """개별 트랜잭션 프로파일(화면용 마스킹 발췌 — 전문은 결과 파일)·SQL 전부(리터럴 마스킹).
         source_id·domain_id·txid·time_ms(·profile_no)는 앞 도구의 profile_ref를 그대로 넘긴다
@@ -634,23 +752,32 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다."""
         principal = request_principal(mcp)
-        return await run_data(
+        label, call = targeted(
+            tools,
             "apm_transaction_profile",
-            hostname or instance_name or "*",
-            lambda: tools.apm_transaction_profile(
-                hostname,
+            targets,
+            lambda t: tools.apm_transaction_profile(
+                t.hostname,
                 domain_id,
                 txid,
                 time_ms,
                 top_k,
                 investigation_id,
-                source_id,
+                t.source(source_id),
                 profile_no,
                 include_param_key,
                 owner=owner,
                 principal=principal,
-                instance_name=instance_name,
+                instance_name=t.instance_name,
             ),
+            label=hostname or instance_name or "*",
+            hostname=hostname,
+            instance_name=instance_name,
+        )
+        return await run_data(
+            "apm_transaction_profile",
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -685,28 +812,41 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         thread_id: str | None = None,
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
+        targets: TargetsArg = None,
     ) -> str:
         """시 단위 통계 상위 N(기본 10 · full이면 서버가 주는 전부) — 서비스·SQL·외부 호출별 호출·
         실패·응답시간(평균·최대·합계) + 합계(호출 수 가중 평균). 구간은 정시 경계로 맞춘다. SQL
         리터럴·URL 쿼리 값은 가린다.
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다."""
-        return await run_data(
+        label, call = targeted(
+            tools,
             "apm_status_stats",
-            hostname or instance_name or "*",
-            lambda: tools.apm_status_stats(
+            targets,
+            lambda t: tools.apm_status_stats(
                 kind,
-                hostname,
-                instance_id,
+                t.hostname,
+                t.instance_id,
                 reference_time,
                 lookback_minutes,
                 sort_by,
                 n,
                 full,
                 application_name,
-                source_ids,
-                instance_name=instance_name,
+                t.sources(source_ids),
+                instance_name=t.instance_name,
             ),
+            label=hostname or instance_name or "*",
+            keys=TARGET_KEYS_WITH_ID,
+            hostname=hostname,
+            instance_name=instance_name,
+            instance_id=instance_id,
+            source_ids=source_ids,
+        )
+        return await run_data(
+            "apm_status_stats",
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -723,7 +863,8 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
             str | None,
             Field(
                 description="지표 군 — catalog는 domain·instance·business·application·sql·"
-                "external_call 중 거르기(비우면 전부) · series는 instance"
+                "external_call 중 거르기(비우면 전부) · series는 instance(기본)·domain(서비스)·"
+                "business(업무)"
             ),
         ] = None,
         hostname: Annotated[
@@ -738,30 +879,71 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
             int | None, Field(description="series 구간 길이(분 · 기본 60)")
         ] = None,
         source_ids: list[str] | None = None,
+        service: Annotated[
+            str | list[str] | None,
+            Field(description="series domain·business — 서비스(APM 도메인) 이름(하나 또는 목록)"),
+        ] = None,
+        business: Annotated[
+            str | list[str] | None,
+            Field(description="series business — 업무 이름(하나 또는 목록 · 비우면 전 업무)"),
+        ] = None,
+        business_id: Annotated[
+            int | None, Field(description="series business — 업무 ID(domain_id와 함께)")
+        ] = None,
+        domain_id: Annotated[
+            int | None, Field(description="series domain·business — 도메인 ID로 좁힘")
+        ] = None,
         investigation_id: str | None = None,
         thread_id: str | None = None,
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
+        targets: TargetsArg = None,
     ) -> str:
         """APM 지표 — catalog: 소스별 지표 이름 전부(행 = 소스·군·지표) · series: 지표 시계열
         (행 = 인스턴스·지표·시각·값 · 지표 이름은 카탈로그로 검증).
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
-        apm_instance_map(query=…)로 먼저 찾는다."""
-        return await run_data(
+        apm_instance_map(query=…)로 먼저 찾는다. scope domain(서비스)·business(업무) 시계열은
+        hostname 대신 service·business·domain_id로 정하고, 비우면 고른 범위 전부다 — metrics를
+        비우면 기본 지표(응답시간·호출 수·오류 수)로 조회한다. targets는 instance 시계열에서만."""
+        mode_name = str(mode or "catalog").strip().lower()
+        scope_name = str(scope or "").strip().lower() or "instance"
+        label, call = targeted(
+            tools,
             "apm_metrics",
-            hostname or instance_name or "*",
-            lambda: tools.apm_metrics(
+            targets,
+            lambda t: tools.apm_metrics(
                 mode,
                 scope,
-                hostname,
-                instance_id,
+                t.hostname,
+                t.instance_id,
                 metrics,
                 interval_minute,
                 reference_time,
                 lookback_minutes,
-                source_ids,
-                instance_name=instance_name,
+                t.sources(source_ids),
+                instance_name=t.instance_name,
+                service=service,
+                business=business,
+                business_id=business_id,
+                domain_id=domain_id,
             ),
+            label=hostname
+            or instance_name
+            or scope_target(service, business, domain_id, business_id),
+            keys=TARGET_KEYS_WITH_ID,
+            hostname=hostname,
+            instance_name=instance_name,
+            instance_id=instance_id,
+            source_ids=source_ids,
+            # 카탈로그는 대상과 무관하고 도메인·업무 시계열은 hostname을 받지 않는다(R34-9)
+            reject=None
+            if (mode_name, scope_name) == ("series", "instance")
+            else "targets는 apm_metrics mode series · scope instance(인스턴스 시계열)에서만 쓴다",
+        )
+        return await run_data(
+            "apm_metrics",
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -781,21 +963,32 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         thread_id: str | None = None,
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
+        targets: TargetsArg = None,
     ) -> str:
         """소스코드·리소스 변경 감지 이력(인스턴스·감지 시각) — 데이터 서버가 변경을 인지한
         시각이며 배포 확정이 아니다.
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다."""
-        return await run_data(
+        label, call = targeted(
+            tools,
             "apm_source_changes",
-            hostname or instance_name or "*",
-            lambda: tools.apm_source_changes(
-                hostname,
+            targets,
+            lambda t: tools.apm_source_changes(
+                t.hostname,
                 reference_time,
                 lookback_minutes,
-                source_ids,
-                instance_name=instance_name,
+                t.sources(source_ids),
+                instance_name=t.instance_name,
             ),
+            label=hostname or instance_name or "*",
+            hostname=hostname,
+            instance_name=instance_name,
+            source_ids=source_ids,
+        )
+        return await run_data(
+            "apm_source_changes",
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -831,25 +1024,36 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         thread_id: str | None = None,
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
+        targets: TargetsArg = None,
     ) -> str:
         """GUID가 같은 거래 묶음(전 소스·도메인 · 시작 시각 순 trace_order · 중복 제거) + 요약.
         호출 관계가 아니라 같은 GUID일 뿐이다. 기간 우선순위: reference_time·lookback_minutes >
         around_ms ± around_minutes > 최근 60분.
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다."""
-        return await run_data(
+        label, call = targeted(
+            tools,
             "apm_transaction_trace",
-            hostname or instance_name or "*",
-            lambda: tools.apm_transaction_trace(
+            targets,
+            lambda t: tools.apm_transaction_trace(
                 guid,
-                hostname,
+                t.hostname,
                 reference_time,
                 lookback_minutes,
                 around_ms,
                 around_minutes,
-                source_ids,
-                instance_name=instance_name,
+                t.sources(source_ids),
+                instance_name=t.instance_name,
             ),
+            label=hostname or instance_name or "*",
+            hostname=hostname,
+            instance_name=instance_name,
+            source_ids=source_ids,
+        )
+        return await run_data(
+            "apm_transaction_trace",
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -876,25 +1080,36 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         thread_id: str | None = None,
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
+        targets: TargetsArg = None,
     ) -> str:
         """소스코드 변경 감지 전후 비교 — 변경마다 그 인스턴스의 전·후 구간 호출·트랜잭션 오류·
         오류율·평균/p95/최대 응답시간·오류 기록 수와 증감(기준 0 = N/A). 동반 변화이며 원인
         확정이 아니다(변경 감지 = 데이터 서버 인지 시각).
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다."""
-        return await run_data(
+        label, call = targeted(
+            tools,
             "apm_change_impact",
-            hostname or instance_name or "*",
-            lambda: tools.apm_change_impact(
-                hostname,
+            targets,
+            lambda t: tools.apm_change_impact(
+                t.hostname,
                 reference_time,
                 lookback_minutes,
                 width_minutes,
-                source_ids,
+                t.sources(source_ids),
                 n,
                 full,
-                instance_name=instance_name,
+                instance_name=t.instance_name,
             ),
+            label=hostname or instance_name or "*",
+            hostname=hostname,
+            instance_name=instance_name,
+            source_ids=source_ids,
+        )
+        return await run_data(
+            "apm_change_impact",
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -920,25 +1135,36 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         thread_id: str | None = None,
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
+        targets: TargetsArg = None,
     ) -> str:
         """두 명시 구간 비교(평소 대비) — 시 단위 통계로 인스턴스별·전체 호출·실패·실패율·호출 수
         가중 평균·최대 응답시간과 증감(기준 0 = N/A). 구간은 정시 경계로 넓힌다 · p95 없음.
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다."""
-        return await run_data(
+        label, call = targeted(
+            tools,
             "apm_period_compare",
-            hostname or instance_name or "*",
-            lambda: tools.apm_period_compare(
-                hostname,
+            targets,
+            lambda t: tools.apm_period_compare(
+                t.hostname,
                 current_start,
                 current_end,
                 baseline_start,
                 baseline_end,
-                source_ids,
+                t.sources(source_ids),
                 n,
                 full,
-                instance_name=instance_name,
+                instance_name=t.instance_name,
             ),
+            label=hostname or instance_name or "*",
+            hostname=hostname,
+            instance_name=instance_name,
+            source_ids=source_ids,
+        )
+        return await run_data(
+            "apm_period_compare",
+            label,
+            call,
             owner=owner,
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
@@ -951,6 +1177,15 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
     from apm_gateway.interface.manage_server import register_manage_tools
 
     manage_names = register_manage_tools(mcp, ManageTools(tools), run_data)
+    # plans/134 W3·W4 — 서비스·업무 조회 2종(같은 이유로 여기서 불러온다)
+    from apm_gateway.interface.scope_server import register_scope_tools
+
+    scope_names = register_scope_tools(mcp, ScopeTools(tools), run_data)
+    # plans/134 W3 — 전 대상 순위·이벤트(같은 이유로 여기서 불러온다)
+    from apm_gateway.application.fleet_tools import FleetTools
+    from apm_gateway.interface.fleet_server import register_fleet_tools
+
+    fleet_names = register_fleet_tools(mcp, FleetTools(tools, event_buffer), run_data)
 
     @mcp.tool()
     async def apm_job_status(job_id: str, owner: OwnerArg = None) -> str:
@@ -998,7 +1233,7 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
     @mcp.tool()
     async def gateway_health() -> str:
         """게이트웨이 상태 — APM 소스별 설정·도달 여부·도메인 수 · 허용 경로 수 · 전체 상태 ·
-        폴러 상태 · 작업 실행 현황(헬스체크용)."""
+        폴러 상태(조회용 이벤트 버퍼 포함) · 작업 실행 현황(헬스체크용)."""
 
         async def health() -> dict[str, Any]:
             return {**await tools.gateway_health(), "jobs": manager.summary()}
@@ -1023,6 +1258,8 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         "apm_change_impact",
         "apm_period_compare",
         *manage_names,
+        *scope_names,
+        *fleet_names,
         *JOB_TOOLS,
         "gateway_health",
     ]
@@ -1034,8 +1271,9 @@ def create_server(
     jobs: JobManager | None = None,
     host: str = "127.0.0.1",
     port: int = 9096,
+    event_buffer: EventBuffer | None = None,
 ) -> FastMCP:
     mcp = FastMCP(SERVER_NAME, host=host, port=port)
-    names = register_tools(mcp, tools, jobs)
+    names = register_tools(mcp, tools, jobs, event_buffer=event_buffer)
     logger.info("APM 게이트웨이 MCP 서버 생성: 도구 %d종(%s)", len(names), ", ".join(names))
     return mcp

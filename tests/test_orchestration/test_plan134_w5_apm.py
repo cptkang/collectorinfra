@@ -40,6 +40,7 @@ from src.orchestration import investigation_audit as ia
 from src.orchestration.agent_orchestrator import agent_orchestrator
 from src.orchestration.result_aggregator import result_aggregator
 from src.state import create_followup_input, create_initial_state
+from tests.test_orchestration import apm_batch_mock
 
 ip = importlib.import_module("src.orchestration.intent_planner")
 cr = importlib.import_module("src.nodes.context_resolver")
@@ -83,8 +84,9 @@ class _Gateway:
     async def call_tool(self, name: str, arguments: dict):
         self.calls.append((name, dict(arguments)))
         reply = self.replies[name]
-        if callable(reply):
-            reply = reply(arguments)
+        # plans/134 M-5 — 다건 대상은 `targets` 배치 1호출(계약 A-2 봉투로 흉내)
+        reply = apm_batch_mock.reply_for(name, arguments,
+                                         reply if callable(reply) else (lambda a: reply))
         return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(reply))], isError=False)
 
     def named(self, tool: str) -> list[dict]:
@@ -390,7 +392,10 @@ async def test_trace_narrows_only_by_hosts_the_user_named(gateway) -> None:
     gw = _trace_gateway(gateway)
     await _run(["apm.trace"], _isolated("web01", "web02"),
                view_args={"apm.trace": {"guid": "g-9"}})
-    assert [a.get("hostname") for a in gw.named("apm_transaction_trace")] == ["web01", "web02"]
+    # plans/134 M-5 — 좁힘 서버 2대 = `targets` 배치 1호출
+    assert len(gw.named("apm_transaction_trace")) == 1
+    assert [a.get("hostname") for a in apm_batch_mock.expanded(gw.calls, "apm_transaction_trace")
+            ] == ["web01", "web02"]
     gw2 = _trace_gateway(gateway)
     await _run(["apm.trace"], _isolated("web01", is_composite=True),
                view_args={"apm.trace": {"guid": "g-9"}})

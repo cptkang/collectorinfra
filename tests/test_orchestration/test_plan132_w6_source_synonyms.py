@@ -187,10 +187,10 @@ def test_apm_handler_reads_only_server_identifiers_from_filters() -> None:
         {"field": "avail_status", "op": "!=", "value": 0},
         {"field": "hostname", "op": "=", "value": "web01"},
     ]}}
-    targets = aq.resolve_apm_targets(isolated, 10)
+    targets = aq.resolve_apm_targets(isolated)
     assert [t.hostname for t in targets] == ["web01"]
     assert aq.resolve_apm_targets({"parsed_requirements": {"filter_conditions": [
-        {"field": "avail_status", "op": "!=", "value": 0}]}}, 10) == []
+        {"field": "avail_status", "op": "!=", "value": 0}]}}) == []
 
 
 # ── 4. Y-8 양식 「유사어 등록」 = operator ─────────────────────────────────────

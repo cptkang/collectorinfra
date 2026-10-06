@@ -99,6 +99,7 @@ def sanitize_task_views(result: dict[str, Any], app_config: Any) -> list[str]:
         raw = task.pop("views", None)
         raw_args = task.pop("view_args", None)
         raw_targets = task.pop("targets", None)
+        raw_sources = task.pop("sources", None)
         agent = task.get("agent")
         if agent == apm_query.APM_QUERY_AGENT:
             task["views"] = apm_query.sanitize_views(raw)
@@ -111,6 +112,10 @@ def sanitize_task_views(result: dict[str, Any], app_config: Any) -> list[str]:
             targets = apm_query.sanitize_targets(raw_targets)
             if targets:
                 task["targets"] = targets
+            # 소스 선택(plans/134 M-5) — 형태만 정제한다(레지스트리 id 검증·되묻기는 처리기).
+            sources = apm_query.sanitize_sources(raw_sources)
+            if sources:
+                task["sources"] = sources
         elif agent == doc_query.DOC_QUERY_AGENT:
             task["views"] = doc_query.sanitize_views(raw, app_config)
         if not doc_ids:

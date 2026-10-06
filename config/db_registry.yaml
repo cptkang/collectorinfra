@@ -373,6 +373,107 @@ solutions:
              label: "앞 결과에서 몇 번째 실행 중 서비스인지(1부터 · 말하지 않았으면 넣지 않는다)"}
         examples:
           - "(실행 중 서비스 목록에 이어) 「첫 번째 요청 상세 보여줘」 → ref=1"
+      # plans/134 W3·W4(N-9·N-10·N-12 · M-5) — 서비스·업무 이름(`target: named` — 이번 task 대상 텍스트를
+      # `target_arg` 도구 인자에 목록으로 · 이름 해석은 게이트웨이 · 없으면 전체 1회)과 전 대상 순위·이벤트
+      # (`target: none` — 첫 홉 없음). 영역은 기존 영역만 쓴다(영역 카탈로그 불변).
+      - id: apm.service
+        label: "서비스(APM 도메인) 현재 상태 — TPS·응답시간·액티브 서비스·방문자"
+        capability: was_performance
+        tool: apm_service_status
+        window: current
+        target: named
+        target_arg: service
+        examples:
+          - "「주문 서비스 지금 상태」 → targets에 「주문」"
+          - "「서비스별 현재 TPS」(이름 없음 = 전체 서비스)"
+      - id: apm.service_trend
+        label: "서비스(APM 도메인) 지표 추세"
+        capability: was_performance
+        tool: apm_metrics
+        window: range
+        target: named
+        target_arg: service
+        fixed_args: {mode: series, scope: domain}
+        limit: "기간 미지정 = 최근 60분 · 간격 미지정 = 5분"
+        args:
+          - {name: metrics, type: str_list, catalog: domain,
+             label: "추세로 볼 도메인 지표 이름들(지표 목록 보기의 이름 · 미지정 = 기본 지표)"}
+          - {name: interval_minute, type: int, min: 1, label: "추세 간격(분)"}
+        examples:
+          - "「주문 서비스 지난 3시간 응답시간 추세 10분 간격」 → interval_minute=10"
+      - id: apm.ranking
+        label: "전체 WAS 인스턴스 순위 — 서버를 정하지 않은 「가장 느린·바쁜 N개」"
+        capability: was_performance
+        tool: apm_fleet
+        window: current
+        target: none
+        fixed_args: {mode: ranking}
+        args:
+          - {name: metric, type: enum, default: response_time_avg_ms,
+             choices: [response_time_avg_ms, tps, active_services, bad_response_active_services,
+                       reject_rate, concurrent_users, arrival_rate, heap_used_mb, heap_committed_mb,
+                       non_heap_used_mb, gc_time_usage_pct, process_cpu_pct, process_memory_mb,
+                       thread_current, db_pool_active, db_pool_idle_avg, db_pool_configured_avg,
+                       visit_day, visit_hour, hit_day, hit_hour, active_range_count_0,
+                       active_range_count_1, active_range_count_2, active_range_count_3,
+                       collection_count, file_count, socket_count, thread_daemon, thread_started],
+             label: "순위 지표(미지정 = response_time_avg_ms 평균 응답시간)"}
+          - {name: order, type: enum, choices: [desc, asc], default: desc,
+             label: "desc = 큰 값부터 · asc = 작은 값부터(미지정 = desc)"}
+          - {name: n, type: int, min: 1, label: "상위 N개"}
+          - {name: full, type: bool, label: "true면 상위 N 대신 전부"}
+          - {name: service, type: text, label: "이 서비스(APM 도메인) 이름으로 좁힘"}
+        examples:
+          - "「전체 WAS 중 응답시간 가장 느린 5개」 → n=5"
+          - "「힙 가장 많이 쓰는 WAS 10개」 → metric=heap_used_mb · n=10"
+          - "「TPS 낮은 순 WAS 3개」 → metric=tps · order=asc · n=3"
+      - id: apm.fleet_events
+        label: "전체 WAS 이벤트 — 서버를 정하지 않은 「전부·전체 WAS의 fatal 등」"
+        capability: apm_event
+        tool: apm_fleet
+        window: range
+        target: none
+        fixed_args: {mode: events}
+        limit: "기간 미지정 = 최근 30분"
+        args:
+          - {name: level, type: enum, choices: [fatal, warning, normal], label: "이벤트 레벨"}
+          - {name: level_mode, type: enum, choices: [min, exact],
+             label: "min = 그 레벨 이상 · exact = 그 레벨만"}
+          - {name: error_type, type: token, label: "오류 유형 이름(대문자 · 예 OUTOFMEMORY)"}
+          - {name: n, type: int, min: 1, label: "최근 N건(미지정 = 전부)"}
+          - {name: full, type: bool, label: "true면 구간 이벤트 전부"}
+          - {name: service, type: text, label: "이 서비스(APM 도메인) 이름으로 좁힘"}
+        examples:
+          - "「오늘 fatal 난 WAS 전부」 → level=fatal · level_mode=exact · full=true"
+          - "「전체 WAS OutOfMemory 이벤트」 → error_type=OUTOFMEMORY"
+      - id: apm.business
+        label: "업무 현재 상태(TPS·응답시간·액티브 서비스)·업무 목록"
+        capability: was_performance
+        tool: apm_business
+        window: current
+        target: named
+        target_arg: business
+        args:
+          - {name: mode, type: enum, choices: [current, list], default: current,
+             label: "current = 업무 현재 상태 · list = 업무 정의 목록(미지정 = current)"}
+        examples:
+          - "「결제 업무 TPS」 → targets에 「결제」"
+          - "「업무 목록 보여줘」 → mode=list"
+      - id: apm.business_trend
+        label: "업무 지표 추세"
+        capability: was_performance
+        tool: apm_metrics
+        window: range
+        target: named
+        target_arg: business
+        fixed_args: {mode: series, scope: business}
+        limit: "기간 미지정 = 최근 60분 · 간격 미지정 = 5분"
+        args:
+          - {name: metrics, type: str_list, catalog: business,
+             label: "추세로 볼 업무 지표 이름들(지표 목록 보기의 이름 · 미지정 = 기본 지표)"}
+          - {name: interval_minute, type: int, min: 1, label: "추세 간격(분)"}
+        examples:
+          - "「결제 업무 지난 6시간 응답시간 추세」"
     # plans/87 J8 · D-287 ④ — 제니퍼 소스 ↔ 존 정본(위 `sources` 설명). 단일 설정(게이트웨이
     # `JENNIFER_API_URL`만 · 소스 `default` · dbId `jennifer`)은 이 표에 없고 존 없음으로 다룬다.
     sources:

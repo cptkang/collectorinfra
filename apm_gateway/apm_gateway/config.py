@@ -104,6 +104,10 @@ class PollerConfig:
     interval_seconds: int = 30
     min_level: str = "warning"
     stream_key: str = "alarm:raw"
+    # 조회용 이벤트 버퍼(plans/134 W3 N-11) — 보관 분·최대 건수는 메모리 한도이지 조회 범위 상한이
+    # 아니다(밖은 API로 묻는다). 폴러가 꺼져 있으면 쓰지 않는다.
+    buffer_minutes: int = 60
+    buffer_max_events: int = 200_000
 
 
 @dataclass
@@ -393,6 +397,14 @@ def load_config(
             interval_seconds=interval,
             min_level=(get("APM_EVENT_MIN_LEVEL") or "warning").strip().lower(),
             stream_key=(get("APM_EVENT_STREAM_KEY") or "alarm:raw").strip(),
+            buffer_minutes=int(
+                _positive(get("APM_EVENT_BUFFER_MINUTES"), 60, "APM_EVENT_BUFFER_MINUTES")
+            ),
+            buffer_max_events=int(
+                _positive(
+                    get("APM_EVENT_BUFFER_MAX_EVENTS"), 200_000, "APM_EVENT_BUFFER_MAX_EVENTS"
+                )
+            ),
         ),
         redis=RedisConfig(
             host=(get("REDIS_HOST") or "localhost").strip(),

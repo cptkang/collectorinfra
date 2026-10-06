@@ -1,7 +1,7 @@
 # 139. ITAM 내부망 1회차 결과 교정 — 테이블 관리 정보 정의 기반 조회 대상 선별 · 입력 한도 초과 · 오류 응답 오표면화
 
-> **작성일**: 2026-10-06 · **v1.2**
-> **상태**: **TODO — 계획 확정(코드 0) · 게이트 G-1~G-7·상한 답 받음(인터뷰 2026-10-06 · §5) · D-308 등재 · 시드 자산 2파일(`testdata/itam_bench/closed/` · git 추적 결정 · 미커밋)**
+> **작성일**: 2026-10-06 · **v1.2** · **v1.3**(구현 기록 §9 · 2026-10-06)
+> **상태**: **WIP — W1~W7 구현 완료(사용자 커밋 `9cc8c6b`·`8f9b1c4`·`bac814c` · W7 문서·시드·시나리오는 작업 트리) · 독립 검증·보안 감사 1라운드 교정 완료 · 잔여: 내부망 2회차(시드 정의 가져오기 → 정의서 대조 → 승인 → `--run --env closed`) · §9** · ~~TODO — 계획 확정(코드 0)~~ · 게이트 G-1~G-7·상한 답 받음(인터뷰 2026-10-06 · §5) · 시드 자산 2파일 git 추적
 > **요청(사용자 2026-10-06)**:
 > ① *"「20261006-152938」 폴더에 135번 실행 결과가 있다. 수정계획을 수립하라."* — 화면 보고: ITAM 질의가 *"An exception occurred in GptOssAdapter.llm_call: Input tokens must be <= 95232. Given: 96858."* 와 *"존재하지 않는 테이블 참조: orchestrator"* 로 끝남(v1.0).
 > ② *"테이블에 따라 해당 테이블에서 관리하는 정보를 먼저 정의하여 관리하고 LLM을 통해 사용자의 프롬프트에 맞는 조회대상 테이블을 선별하고 해당 테이블을 통해 쿼리를 생성하는 방식으로 동작해야 한다. 이 방식으로 계획을 업데이트하라."* (v1.1 — §4)
@@ -9,7 +9,7 @@
 > **입력**: `results/itam_bench/20261006-152938/`(반출 5파일 — `run.json`·`report.md`·`trace.jsonl`·`schema_catalog.yaml`·`leak_check.json` · 누출 관문 통과 · `.gitignore` 대상) — `~/Downloads/20261006-152938`과 동일(`diff -rq` 0).
 > **관련 계획**: `plans/135`(ITAM 벤치 — 이 run의 생산자) · `plans/133`(스키마 자산 자동 생성 — A2 「조회 대상 테이블」이 99개를 승인 · 정의 생성은 그 흐름에 붙인다) · `plans/104`(「DB 구조」 탭 — 질의 경로는 읽기만) · `plans/137`(한글 식별자 — 잔여 「폐쇄망 ITAM 실 질의 검증」이 같은 결함으로 막힘) · `plans/119` Q-5(테이블 선택 생략 플래그) · `plans/114` P-4①(강제 보충) · `plans/132`·`plans/122`(통지) · `plans/57`(같은 증상의 선례)
 > **관련 결정**: **D-159**(토큰 예산·백엔드 예외 감지 — FIX-B 「단일 경로는 강등만」·대안 기각 「단일 `_llm_select_relevant_tables`를 멀티에 이식」 두 조항을 D-308로 부분 개정) · **D-227**(질의 경로는 구조를 읽기만 — 정의 생성은 관리자 탭) · **D-294**(자산 자동 생성 — 새 자산 키·병합 규칙) · D-051 · D-066(경로 대칭) · D-153 후속2·D-155 · D-301(벤치 계약 ③⑥ · 부기 G-7 「정의서로 싱크」) · D-255(매뉴얼) · D-303(회귀)
-> **D-번호**: **D-308 등재**(`docs/decisions/D-308.md` · 확정 · 구현 대기) · D-159 부분 개정 · D-294 부기
+> **D-번호**: **D-308**(`docs/decisions/D-308.md` · 확정 · 구현 완료 · 내부망 확인 대기 · 검증 교정 부기) · D-159 부분 개정 · D-294 부기 · D-301 부기(W6)
 
 ---
 
@@ -209,3 +209,56 @@
 | v1.0 | 2026-10-06 | 작성 — run `20261006-152938` 반출물 분석 · 원인 사슬 §2 · W1~W5 · G-1~G-5 · D-308 예약 |
 | v1.1 | 2026-10-06 | 사용자 지시 ②③ 반영 — **테이블 관리 정보 정의 → LLM 선별 → 선별 테이블로 생성** 구조로 개편: §2.6(테이블 의미 부재) · §4.1 흐름 · §4.2 시드 2파일(`itam_schema.json` · `table_definitions.yaml` — 대조 오류 0 · 선별 목록 6,257토큰 실측) · §4.3 자산 형식 · W3 정의 자산 · W4 정의 기반 선별(단일·멀티 공용) · W5 선별 테이블 생성 · W2(예산 사다리)는 안전망으로 앞당김. **v1.0 G-1(강제 보충 상한 10)은 폐기** — 정의 모드에서는 강제 보충 자체가 없다. 게이트 재편 G-1~G-7(G-7 시드 파일 git 추적 신설) · `tcdmsif81` 비밀번호 컬럼 관찰 추가 |
 | v1.2 | 2026-10-06 | 인터뷰 답 반영 — G-1 (a) · G-2 (a) · G-3 (a) · G-4 (a) · G-5 (a) · **G-6 (b) 사용률 정본은 관측 DB**(ITAM-114 기대값 유지 · W7 통지·시드 `notes`) · **G-7 (a) 시드 2파일 git 추적** · 상한 K=8 확정 · D-308 등재(D-159 부분 개정 · D-294 부기) · 「G-7」 표기 중 `plans/135` 소관 2곳을 구분 |
+| v1.3 | 2026-10-06 | **구현**(W1~W7 · §9) — 사용자 지시 *"138번 계획을 구현하라."*(병합 재부여 전 번호) · Wave별 구현 에이전트 6 · 독립 검증·보안 감사 1라운드(발견 F-1~F-8 → F-5 제외 교정) · MLX 선별 4문항 + 정의 초안 1묶음 1회 · W7: 132·122·135 통지 · 시드 `notes` 13테이블 · 2회차 관찰 4건(ITAM-115~118) · 파일명 `-TODO` → `-WIP`(잔여 = 내부망 2회차) |
+
+## 9. 구현 기록 (v1.3 · 2026-10-06 · 세션 시작 `71d7ff6` · 사용자 커밋 `9cc8c6b`(W1~W6·검증) · `42deda2`(병합 — 138 → 139 · D-305 → D-308 재부여) · `8f9b1c4`·`bac814c`(검증 교정) · W7은 작업 트리)
+
+### 9.1 Wave별 결과
+
+| W | 결과 | 주요 파일 · 테스트 |
+|---|---|---|
+| W1 | **완료** — 공용 판정 `detect_llm_backend_error`·`LLMBackendError`(멀티 문구 비트 동일) · `validate_sql`이 SELECT 검사 전에 사유 하나만 낸다 · `query_validator` `backend_error` 표지·`backend_limit_hit`·`[토큰예산]` 로그(보고 토큰·한도·자체 추정) · 그래프·2단 단일 루프·멀티 모두 재생성 0 · 종결 사유 `backend_limit` | `src/sql_validation.py` · `src/nodes/{query_validator,multi_db_executor}.py` · `src/graph.py` · `src/orchestration/{subagents,replanner}.py` · `test_plan139_backend_error.py` 22 |
+| W2 | **완료** — `_fit_single_prompt_budget`(시스템+사용자 추정 · ①유사어·설명 ②표본 ③`PromptBudgetExceeded` → LLM 0) · state `prompt_budget`(두 생성자에서 초기화) · 예산 안 바이트 동일 | `src/nodes/{query_generator,prompt_blocks}.py` · `src/state.py` · `test_plan139_single_budget_ladder.py` 13 |
+| W3 | **완료** — 도메인 `table_definitions`(종류 12 · 한도 · 가져오기 파싱) · 테이블 단위 병합(`manual` 보존) · 준비도 C11 · 초안 3경로(가져오기·주석·LLM 묶음 — 추정 먼저 · 실패 묶음 재실행) · 편집 → `manual` · 승인 409 · API 4경로(관리자 전용) · 화면 · **매뉴얼 A-67**(캡처 `dbs-table-definitions`) | `src/domain/{table_definitions,profile_merge,db_readiness}.py` · `src/schema_cache/{asset_generation_service,db_structure_service}.py` · `src/prompts/asset_generation.py` · `src/api/routes/db_structure.py` · `src/static/js/admin-db-structure.js` · 테스트 46 + 16 + 37 |
+| W4 | **완료** — `select_tables`(단일 `schema_analyzer`·멀티 `_analyze_schema` 공용 · 후보 = 스키마 ∩ `allowed_tables` · 강제 보충·Q-5·EAV 보충 없음 · 중간 테이블은 승인 관계 → `related` 순 · 상한 8 · 실패 → 어휘 대체(가중 manages 3·대표 컬럼 2·notes 1·컬럼 1 · 수집적재 제외) → 0이면 `selection_none` 안내 종결) · state `table_selection` · 설정 `TEXT2SQL_SCHEMA_TABLE_SELECT_MAX` | `src/nodes/table_selection.py` · `src/prompts/table_selection.py` · `src/config.py` · `.env.example` · `config/settings_help/text2sql.yaml` · `test_plan139_table_selection.py` 44 |
+| W5 | **완료** — 「테이블 용도」 블록(`build_table_purpose_block` · 선별 테이블의 `manages`·`notes`) · 단일·멀티 `schema=` 맨 앞 같은 자리 · 정의 없는 DB 빈 블록 | `src/nodes/prompt_blocks.py` · `test_plan139_definition_block.py` 33 |
+| W6 | **완료** — §6 W6 a~f 전부 · G-5 유실 **재현됨** → `save()`가 `schema` 밖 키 보존 · D-301 부기 | `src/schema_cache/persistent_cache.py` · `scripts/itam_bench/{catalog,__main__,report,_serve,judge}.py` · `test_plan139_w6_persistent_extras.py` · `test_itam_bench_plan139_w6.py` 38 |
+| 검증·감사 | **1라운드** — 수용 기준 §6 충족(폐쇄망 제외) · 경로 대칭 실제 노드 3경로 · 요청 스코프 2턴 체크포인터 · 발견 8건 중 7건 교정(F-1 한글 민감 컬럼 표본 마스킹 · F-2 YAML 앵커/별칭·깊은 중첩 422 · F-3 NFKC·서식 문자·`~~~`·영역 30자 · F-4 질의 경로 정의 재정제 · F-6 블록 머리말 · F-7 어휘 대체에서 수집적재 제외 · F-8 LLM 대표 컬럼 10개 절단) · F-5는 범위 밖(§9.4) | `src/security/data_masker.py` 외 · `test_plan139_verify_paths.py` 9 · `test_plan139_findings_fix.py` 35 · `test_plan139_findings_fix_assets.py` 31 · 매뉴얼 `admin.md` 검증 문단 · `config/settings_help/security.yaml` |
+| W7 | **완료** — 132·122·135 통지 · ITAM-114 기대값 유지 · 시드 `notes` 13테이블 「사용률 정본 아님 — 관측 DB」 · 2회차 관찰 4건(ITAM-115~118 — 용도 기재 · 분류 경로 · 스토리지 업무 이름 · 스토리지 → 서버) · 내부망 관리자 절차(135 부록 A 2a) | `testdata/itam_bench/closed/table_definitions.yaml` · `testdata/itam_bench/scenarios.closed.yaml` · `tests/test_scripts/test_itam_bench_closed_kit.py`(개수 14 → 18) |
+
+### 9.2 검증
+
+- **정의 없는 DB 비트 동일(G-1)**: `prompt_render_diff --ci` 차이 0(데이터 조회 13,959자 · 알람 24,103자) · 6프로필(polestar 4종·itam·test_db) × 2문항 × 단일/멀티 × 선별/생성 하네스 바이트 동일(`PYTHONHASHSEED=0` · 기준 worktree 대조).
+- **회귀**(D-303 · 모듈 단위): 검증 라운드 본체 파일·폴더 342 — 통과 8,365 · 실패 1 · 에러 19 · 건너뜀 49 · 실패 귀속 전부 「원래 실패」(`test_e2e_polestar.py` 19 실 DB 픽스처 · `test_plan104_local_sandbox_profile_gate` 1) · 정적 게이트 diff 줄 위반은 모두 `plans/122` 줄. 교정 라운드 통과 2,194 · 실패 0(ruff 1줄 `query_generator.py:1003` UP045는 `1ac2f93` 줄). W7 통과 349 · 실패 0 · 정적 게이트 통과. 각 라운드 마지막 줄 `범위: 모듈 단위 — 전체 미실행`. W4·검증 라운드는 `[전체 회귀 권고]`(허브 모듈 `src.config` 87% · 직접 선택 55%)를 냈고 전체는 돌리지 않았다.
+- **정적 게이트**: arch_check 위반 0 · 경고 106(기준 101 · +5는 `table_selection` application→application import) · overfit_check 신규 유입 0(공용 계층에 ITAM 테이블명 리터럴 0).
+- **MLX**(D-240 · 두 평면 `mlx` 확인 · 검증자가 캐시 모델 `Qwen3.5-9B-OptiQ-4bit`를 127.0.0.1:8080에 직접 띄우고 끝나고 종료): 선별 4문항 — JSON 파싱 4/4 · 후보 안 이름 4/4 · 상한 이하 4/4 · 출처 `llm` · 문항당 25~28초. 정의 초안 1묶음 — 응답 10/10 파싱 · 유효 4 · 무효 6(전부 대표 컬럼 11~12개 → F-8로 절단 처리). 합계 2분 27초. 정확도·지연 결론은 내지 않는다.
+- **반출 구조 재현**(LLM 0 · DB 0): 선별 후보 목록 **7,437토큰**(§6 기준 ≈6.3K보다 18% 큼 — 렌더러가 줄마다 `[성격]`·`연결:`을 싣는다 · 계획 형식으로 줄이면 5,919) · 선별 3/5/8개 시스템 프롬프트 1,881/3,570/4,693(≤13K · 표본 5행 가정 3,496/6,888/9,997).
+
+### 9.3 계획과 다르게 한 것
+
+- **용도 블록이 정의를 읽는 함수**: `table_selection.definitions_of` 대신 같은 위치(`_structure_meta[PROFILE_KEY]`)를 도메인 키로 직접 읽는다 — 노드 간 import가 arch 경고를 1건 더 늘려서다. 같은 위치·같은 의미는 대조 테스트로 고정했다.
+- **한글 민감 표현은 설정이 아니라 `data_masker` 내장**(F-1): 운영 `.env`가 `SECURITY_SENSITIVE_COLUMNS`를 영문 6종으로 덮어써 설정 기본값을 바꿔도 운영에 닿지 않는다. 폴스타 조회 대상 컬럼과 대조해 걸리는 컬럼 0건을 확인한 뒤 적용했다.
+- **질의 경로 정제는 테이블 단위로 뺀다**(F-4): 한 칸이라도 어긋나면 그 테이블 정의를 통째로 뺀다(필드 단위 아님) — 승인 검증과 W5 테스트가 이미 그 방식이다.
+- **시드 `manages` 2곳 문구 정리**(W7): `tcdmsif73` 「사용률 추이·과거 시점 질문용」 → 「과거 시점 질문용」 · `tcdmsif90` 「호스트 사용률 추이 질문용」 삭제 — G-6 (b)와 반대로 선별을 이끄는 문구라 `notes` 추가와 함께 고쳤다. `tcdmsif90` `notes`는 1회차 오답 사실을 적었다.
+- **설정 카탈로그 개수 단언**(`test_settings_catalog.py` 391 → 392): 병행 `plans/122` 세션도 같은 줄을 쓰는 공유 단언이다 — `plans/122`에 통지했다.
+
+### 9.4 잔여 · 내부망
+
+| 잔여 | 처분 |
+|---|---|
+| **내부망 2회차**(사용자) | 반입 → 관리자 「DB 구조」 탭 시드 정의 가져오기 → 내부망 정의서와 대조·수정 → 테이블 단위 승인(`tcdmsif81` 조회 대상 제외 권고) → `python -m scripts.itam_bench --run --env closed`(18건 · 19턴). 기준: ITAM 단일 턴 `non_sql`·`backend_limit` 0 · SQL 관측 턴 ≥ 10 · `selection_source=llm` 비율 · 턴당 지연 |
+| 2회차 반입 뒤(우리) | 정답 SQL·`gold_tables` 작성 → 선별 재현율 · `[토큰예산]` 로그로 토큰 추정 계수 대조(D-159 주의) · 재현율이 낮으면 「검증이 선별 밖 테이블을 지목하면 1회 재선별」 검토(§7) · `plans/137` 잔여(폐쇄망 ITAM 실 질의)도 같은 run으로 확인 |
+| 선별 프롬프트 7.4K | 예산 안이라 그대로 — 2회차 지연을 보고 줄 형식 축소(5.9K) 검토 |
+| F-5 기존 인증 결함 | `src/api/dependencies.py` `_verify_user_token`이 `type` 클레임을 보지 않는다(공용 인증 · 이 계획 전부터) — 별도 작업 |
+| 마스킹 범위 밖 | 관리자 설명 생성기 표본 · `structure_meta.samples` · EAV 값 수준 비밀(속성명이 비밀번호인 행의 값) · 「암호」 부분 매칭으로 「암호화여부」 같은 컬럼도 가려짐 |
+| `selection_none` 안내 | 안내 문구가 정제하지 않은 원본 `group`을 읽는다 — 파일을 직접 고친 경우에만 해당(승인 경로는 30자·금지 검사) |
+| 분류 중복 | 벤치에서 `backend_limit` 턴이 `no_sql`로도 함께 잡힐 수 있다 — 2회차 리포트에서 확인 |
+| 카탈로그 DB 설명 | 벤치 카탈로그의 DB 설명은 아직 파일만 읽는다(컬럼 설명·유사어만 Redis → 파일) |
+| 기존 비결정성 | `schema_analyzer` 강제 보충의 set 순회로 폴스타 relevant 순서가 `PYTHONHASHSEED`에 따라 바뀐다(이 계획 전부터 · KV 캐시 재사용에 불리 — `plans/121` TP-11.10) |
+| arch 경고 +5 | 노드 4곳(`schema_analyzer`·`query_generator`·`query_validator`·`multi_db_executor`)이 `table_selection`을, `table_selection`이 `sql_validation`을 import(application → application) — 선별은 노드 안 호출이라 그래프 라우팅으로 풀 구조가 아니어서 그대로 둔다 |
+
+### 9.5 측정 못 한 것
+
+- 내부망 FabriX/vllm에서의 선별 정확도·재현율·지연 — MLX 9B는 형식만 봤다.
+- 실제 108테이블 정의(내부망 정의서 대조 후)로 만든 선별 목록 크기 — 시드 초안 기준 수치만 있다.
+- `related`의 값 겹침(D-294 ② ≥ 0.9) — 반출물에 값이 없다.

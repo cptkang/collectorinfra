@@ -36,6 +36,7 @@ from src.orchestration import apm_query as aq
 from src.orchestration import investigation_audit as ia
 from src.orchestration.replanner import _terminal_source_task_ids
 from src.utils.deadline import bind_request_deadline, unbind_request_deadline
+from tests.test_orchestration import apm_batch_mock
 
 JOB = "0123456789abcdef0123456789abcdef"
 JOB2 = "fedcba9876543210fedcba9876543210"
@@ -105,8 +106,9 @@ class _Gateway:
             if self.delay:
                 await asyncio.sleep(self.delay)
             reply = self.replies[name]
-            if callable(reply):
-                reply = reply(arguments)
+            # plans/134 M-5 — 다건 대상은 `targets` 배치 1호출(계약 A-2 봉투로 흉내)
+            reply = apm_batch_mock.reply_for(name, arguments,
+                                             reply if callable(reply) else (lambda a: reply))
         return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(reply))], isError=False)
 
     def named(self, tool: str) -> list[dict]:
@@ -172,12 +174,15 @@ def _accepted(tool: str, job_id: str = JOB) -> dict:
 
 @pytest.mark.asyncio
 async def test_wait_seconds_is_recomputed_right_before_each_call(gateway, deadline) -> None:
-    """동시 1 · 호출마다 0.4초 — 뒤 호출의 wait_seconds는 앞 호출이 쓴 시간만큼 줄어든다."""
+    """동시 1 · 호출마다 0.4초 — 뒤 호출의 wait_seconds는 앞 호출이 쓴 시간만큼 줄어든다.
+
+    plans/134 M-5 — 같은 보기의 다건 대상은 배치 1호출이라 호출 3개는 보기 3개로 만든다.
+    """
     deadline(4.0)
-    gw = gateway({"apm_slow_transactions": _env("apm_slow_transactions", [{"x": 1}])},
-                 delay=0.4)
-    await _run(["apm.slow_tx"], "web01", "web02", "web03", cfg=_cfg(concurrency=1))
-    waits = [a["wait_seconds"] for a in gw.named("apm_slow_transactions")]
+    tools = ("apm_slow_transactions", "apm_active_services", "apm_events")
+    gw = gateway({t: _env(t, [{"x": 1}]) for t in tools}, delay=0.4)
+    await _run(["apm.slow_tx", "apm.active", "apm.events"], "web01", cfg=_cfg(concurrency=1))
+    waits = [a["wait_seconds"] for name, a, _ in gw.calls if name in tools]
     assert len(waits) == 3 and all(isinstance(w, float) for w in waits)
     assert waits[0] > waits[1] > waits[2], waits
     assert waits[0] - waits[2] >= 0.6, "두 호출(0.8초)만큼 줄었다(반올림 0.1초)"
@@ -266,14 +271,11 @@ async def test_audit_wrapper_records_accepted_as_partial(gateway, deadline, monk
 @pytest.mark.asyncio
 async def test_mixed_result_is_terminal_for_replanning(gateway, deadline) -> None:
     deadline(0.15)
-
-    def health(args):
-        return (_accepted("apm_app_health", JOB2) if args["hostname"] == "web02"
-                else _env("apm_app_health", [{"tps": 2}]))
-
-    gateway({"apm_app_health": health},
+    # plans/134 M-5 — 한 보기의 다건 대상은 배치(작업 1개)라 행·접수 혼합은 보기 둘로 만든다
+    gateway({"apm_app_health": _env("apm_app_health", [{"tps": 2}]),
+             "apm_slow_transactions": _accepted("apm_slow_transactions", JOB2)},
             {JOB2: [_env("apm_job_status", [], job=_handle("running", JOB2))]})
-    res = await _run(["apm.app_health"], "web01", "web02")
+    res = await _run(["apm.app_health", "apm.slow_tx"], "web01")
     assert res["organized_data"]["rows"] and res["accepted_jobs"] == [JOB2]
     tasks = [{"task_id": "t1", "agent": "apm_query"}]
     assert _terminal_source_task_ids(tasks, {"t1": res}) == {"t1"}
@@ -414,14 +416,16 @@ async def test_gateway_partial_envelope_is_partial_in_status_and_audit(gateway) 
 
 @pytest.mark.asyncio
 async def test_several_accepted_jobs_wait_in_parallel(gateway, deadline) -> None:
-    """접수 3건 — 조회 마감을 건마다 따로 쓰지 않는다(병렬 재확인 · 처리 상한을 늘리지 않음)."""
+    """접수 3건 — 조회 마감을 건마다 따로 쓰지 않는다(병렬 재확인 · 처리 상한을 늘리지 않음).
+
+    plans/134 M-5 — 같은 보기의 다건 대상은 배치(작업 1개)라 작업 3건은 보기 3개로 만든다.
+    """
     deadline(0.5)
-    ids = {"web01": JOB, "web02": JOB2, "web03": JOB3}
-    gateway({"apm_slow_transactions": lambda a: _accepted("apm_slow_transactions",
-                                                          ids[a["hostname"]])},
+    ids = {"apm_slow_transactions": JOB, "apm_active_services": JOB2, "apm_events": JOB3}
+    gateway({tool: _accepted(tool, job) for tool, job in ids.items()},
             {j: [_env("apm_job_status", [], job=_handle("running", j))] for j in ids.values()})
     started = time.monotonic()
-    res = await _run(["apm.slow_tx"], *ids)
+    res = await _run(["apm.slow_tx", "apm.active", "apm.events"], "web01")
     elapsed = time.monotonic() - started
     assert sorted(res["accepted_jobs"]) == sorted(ids.values())
     assert elapsed < 1.0, f"마감 0.5초 × 3건이 아니라 한 번분이어야 한다(실측 {elapsed:.2f}초)"

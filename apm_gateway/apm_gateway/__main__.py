@@ -1,7 +1,9 @@
 """게이트웨이 엔트리 — `cd apm_gateway && ../.venv/bin/python -m apm_gateway` (plans/87 §0.7 ·
 SPEC-apm-gateway §2).
 
-SSE MCP 서버(uvicorn · 주체별 Bearer)와 이벤트 폴러(옵트인)를 한 이벤트 루프에서 함께 돌린다. 기동
+SSE MCP 서버(uvicorn · 주체별 Bearer)와 이벤트 폴러(옵트인)를 한 이벤트 루프에서 함께 돌린다.
+폴러가 켜져 있으면 조회용 이벤트 버퍼(프로세스 메모리 · 재기동하면 빈다)를 만들어 폴러와 전 대상
+이벤트 조회(`apm_fleet`)에 함께 넘긴다(plans/134 W3 N-11). 기동
 로그 1줄에 허용 경로 수 · 폴러 상태 · 소스 id와 설정 여부 · 호출 주체 이름을 남긴다(비밀 값 없음 —
 R-20). 설정 오류(단일·다중 설정 동시 · 소스 필수 키 누락 · id 형식 · 같은 토큰 두 주체)는
 기동 실패다(plans/87 J8 · D-287 ③ · plans/134 W0-B). 기동 시 작업 스풀을 훑어 남은 진행 중 작업을
@@ -76,6 +78,7 @@ async def _serve() -> list[int]:
     import uvicorn
 
     from apm_gateway.adapters.jennifer.allowlist import ALLOWED
+    from apm_gateway.application.event_buffer import EventBuffer
     from apm_gateway.application.jobs import JobManager
     from apm_gateway.application.poller import EventPoller
     from apm_gateway.application.sources import build_source_set
@@ -99,6 +102,7 @@ async def _serve() -> list[int]:
 
     sources = build_source_set(cfg)
     poller: EventPoller | None = None
+    event_buffer: EventBuffer | None = None
     redis_client = None
     if cfg.poller.enabled:
         import redis.asyncio as aioredis
@@ -109,13 +113,23 @@ async def _serve() -> list[int]:
             db=cfg.redis.db,
             password=cfg.redis.password or None,
         )
-        poller = EventPoller(sources, cfg, redis_client)
+        event_buffer = EventBuffer(
+            retention_minutes=cfg.poller.buffer_minutes,
+            max_events=cfg.poller.buffer_max_events,
+        )
+        poller = EventPoller(sources, cfg, redis_client, event_buffer=event_buffer)
     tools = ApmTools(sources, cfg, poller_status=poller.status if poller else None)
     jobs = JobManager.from_config(
         cfg, envelope=tools.ok, error_envelope=tools.err, on_finish=audit_job_finished
     )
     await jobs.start()  # 스풀 기동 스캔(남은 진행 중 작업 → interrupted) + 정체·만료 감시
-    mcp = create_server(tools, jobs=jobs, host=cfg.server.host, port=cfg.server.port)
+    mcp = create_server(
+        tools,
+        jobs=jobs,
+        host=cfg.server.host,
+        port=cfg.server.port,
+        event_buffer=event_buffer,
+    )
     app = build_asgi_app(mcp, cfg.server.bearer_tokens)
 
     logger.info(

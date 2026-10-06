@@ -35,6 +35,7 @@ from src.orchestration import subagents
 from src.orchestration.investigation_audit import _apm_query_fields
 from src.orchestration.replanner import _terminal_source_task_ids
 from src.utils.deadline import bind_request_deadline, unbind_request_deadline
+from tests.test_orchestration import apm_batch_mock
 
 ra = importlib.import_module("src.orchestration.result_aggregator")
 
@@ -116,8 +117,9 @@ class _Gateway:
             reply = _env("apm_job_cancel", [], job=_handle("cancelled", arguments["job_id"]))
         else:
             reply = self.replies[name]
-            if callable(reply):
-                reply = reply(arguments)
+            # plans/134 M-5 — 다건 대상은 `targets` 배치 1호출(계약 A-2 봉투로 흉내)
+            reply = apm_batch_mock.reply_for(name, arguments,
+                                             reply if callable(reply) else (lambda a: reply))
         return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(reply))], isError=False)
 
     def named(self, tool: str) -> list[dict]:
@@ -282,15 +284,11 @@ async def test_accepted_is_terminal_for_replanning_and_partial_in_audit(gateway,
 @pytest.mark.asyncio
 async def test_mixed_rows_and_accepted_keep_data_and_notice(gateway, deadline) -> None:
     deadline(0.15)
-
-    def health(args):
-        if args["hostname"] == "web02":
-            return _accepted("apm_app_health", JOB2)
-        return _env("apm_app_health", [{"tps": 2}])
-
-    gateway({"apm_app_health": health},
+    # plans/134 M-5 — 한 보기의 다건 대상은 배치(작업 1개)라 행·접수 혼합은 보기 둘로 만든다
+    gateway({"apm_app_health": _env("apm_app_health", [{"tps": 2}]),
+             "apm_slow_transactions": _accepted("apm_slow_transactions", JOB2)},
             {JOB2: [_env("apm_job_status", [], job=_handle("running", JOB2))]})
-    res = await _run(["apm.app_health"], "web01", "web02")
+    res = await _run(["apm.app_health", "apm.slow_tx"], "web01")
 
     assert [r["hostname"] for r in res["organized_data"]["rows"]] == ["web01"]
     assert res["source_status"][0]["status"] == "partial"

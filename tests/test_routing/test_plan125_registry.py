@@ -53,7 +53,10 @@ def test_view_table_is_registry_data() -> None:
                            # plans/134 W5·W6·W7(계약 §4.1 — 의도된 갱신)
                            "apm.profile", "apm.trace", "apm.change_impact", "apm.event_rules",
                            "apm.process", "apm.jennifer_server", "apm.loaded_classes",
-                           "apm.environment", "apm.users", "apm.active_detail"]
+                           "apm.environment", "apm.users", "apm.active_detail",
+                           # plans/134 W3·W4(계약 B-1 — 의도된 갱신)
+                           "apm.service", "apm.service_trend", "apm.ranking", "apm.fleet_events",
+                           "apm.business", "apm.business_trend"]
     assert views["apm.instances"].first_hop and not views["apm.instances"].required_input
     assert views["apm.app_health"].required_input == "hostname"
     # plans/134 M-2 — 창은 상한이 아니라 의미(current·range·hourly·none) · window_max_minutes 폐지

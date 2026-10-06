@@ -63,6 +63,17 @@ ALLOWED: dict[str, Endpoint] = {
         ),
         # 업무 정의 목록(plans/130 W2 N-5 · COV-BUSINESS)
         Endpoint("/api/business", ("domain_id",)),
+        # 서비스(도메인)·업무 현재값·시계열(plans/134 W3·W4 — 정본 allowlist.py와 같은 순서·선언)
+        Endpoint("/api/realtime/domain", optional=("domain_id",)),
+        Endpoint(
+            "/api/dbmetrics/domain",
+            ("domain_id", "interval_minute", "metrics", "start_time", "end_time"),
+        ),
+        Endpoint("/api/realtime/business", ("domain_id",), ("business_id",)),
+        Endpoint(
+            "/api/dbmetrics/business",
+            ("domain_id", "business_id", "interval_minute", "metrics", "start_time", "end_time"),
+        ),
         # plans/134 W7 — 관리·민감 조회 GET(정본 allowlist.py와 같은 순서·선언)
         Endpoint("/api/auth/userlist", needs_domain=False),
         Endpoint("/restapi/users", needs_domain=False),

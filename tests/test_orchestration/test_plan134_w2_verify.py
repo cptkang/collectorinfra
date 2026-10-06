@@ -29,6 +29,7 @@ from src.config import DBHubConfig
 from src.domain import disclosure as disc
 from src.orchestration import apm_query as aq
 from src.prompts import intent_planner as pip
+from tests.test_orchestration import apm_batch_mock
 
 ip = importlib.import_module("src.orchestration.intent_planner")
 
@@ -74,8 +75,9 @@ class _Gateway:
     async def call_tool(self, name: str, arguments: dict):
         self.calls.append((name, dict(arguments)))
         reply = self.replies[name]
-        if callable(reply):
-            reply = reply(arguments)
+        # plans/134 M-5 — 다건 대상은 `targets` 배치 1호출(계약 A-2 봉투로 흉내)
+        reply = apm_batch_mock.reply_for(name, arguments,
+                                         reply if callable(reply) else (lambda a: reply))
         return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(reply))], isError=False)
 
     def named(self, tool: str) -> list[dict]:
@@ -287,7 +289,10 @@ async def test_targetless_metrics_with_host_view_first_hop_only_for_host_view(ga
     assert [n for n, _ in gw.calls].count("apm_instance_map") == 1, "첫 홉은 대상이 필요한 보기 몫"
     assert len(gw.named("apm_metrics")) == 1
     assert gw.named("apm_metrics")[0].get("hostname") is None, "전체 보기는 hostname 없이 1회"
-    assert [a["hostname"] for a in gw.named("apm_status_stats")] == ["web01", "web02"]
+    # plans/134 M-5 — 첫 홉 대상 2대 = `targets` 배치 1호출
+    assert len(gw.named("apm_status_stats")) == 1
+    assert [a["hostname"] for a in apm_batch_mock.expanded(gw.calls, "apm_status_stats")] == [
+        "web01", "web02"]
     assert res["apm_query"]["hostnames"] == ["web01", "web02"]
 
 
@@ -473,7 +478,10 @@ def test_inactive_decomposition_prompt_fingerprint_is_baseline() -> None:
 
 def test_active_skeleton_carries_keys_once_and_rule_once() -> None:
     prompt = ip._planner_system_prompt(_cfg(active=True))
-    assert prompt.count(pip.APM_SKELETON_TAIL_WITH_KEYS) == 1
+    # plans/134 M-5 — 소스가 2개 이상 선언된 레지스트리라 골격 꼬리에 `sources` 키가 더 붙는다
+    assert prompt.count(pip.APM_SKELETON_TAIL_WITH_SOURCES) == 1
+    assert pip.APM_SKELETON_TAIL_WITH_SOURCES.startswith(
+        pip.APM_SKELETON_TAIL_WITH_KEYS.removesuffix("}}"))
     assert prompt.count(pip.APM_OUTPUT_RULE) == 1
     skeleton = prompt[prompt.index("## 출력 형식"):]
     skeleton = skeleton[:skeleton.index("```", skeleton.index("```json") + 7)]

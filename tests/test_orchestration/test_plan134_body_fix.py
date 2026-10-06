@@ -26,6 +26,7 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from src.domain import disclosure as disc
 from src.orchestration import apm_query as aq
 from src.orchestration import subagents as sa
+from tests.test_orchestration import apm_batch_mock
 from tests.test_orchestration.test_plan134_w567_body_verify import (
     T0,
     _active,
@@ -286,7 +287,9 @@ async def test_trace_over_hosts_is_one_deduplicated_result(gateway, domains, lin
     gw = gateway({"apm_transaction_trace": reply})
     res = await _run(["apm.trace"], _isolated("web01", "web02"),
                      view_args={"apm.trace": {"guid": "g-1"}})
-    assert len(gw.named("apm_transaction_trace")) == 2
+    # plans/134 M-5 — 좁힘 서버 2대 = `targets` 배치 1호출 → 대상별 가상 호출로 복원해 합친다
+    assert len(gw.named("apm_transaction_trace")) == 1
+    assert len(apm_batch_mock.expanded(gw.calls, "apm_transaction_trace")) == 2
     assert len(res["query_results"]) == rows
     (line,) = [x for x in res["answer_lines"] if x.startswith("GUID g-1")]
     assert line.startswith(line_head), line

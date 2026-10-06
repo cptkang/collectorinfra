@@ -1,7 +1,7 @@
 # 134. 제니퍼 전체 읽기 기능 활용 — 조회·조합·분석과 채팅·조사·알람 연계
 
-> **작성일**: 2026-10-02 · **v1.2**(2026-10-02 재검토 권고 반영) · **v1.3**(2026-10-02 W0·W0-B·W1·W2 구현 — §12) · **v1.4**(2026-10-06 W5·W6 독립분·W7 구현 — §12.6 · 검증 정책 개정 2건: MLX 최소화(D-240 부기) · 회귀 모듈 단위(D-303))
-> **상태**: **WIP — W0·W0-B·W1·W2 구현(`da3ea4f` 커밋 · D-300) · W5·W6(독립분)·W7 구현·검증 완료(2026-10-06 · 작업 트리 · 커밋 없음 · D-302)**, W3·W4(130 선행) · W6 잔여(M-7·A-1 채팅·A-4 — `plans/122` ⑥ 선행) · W8 잔여 · W10 외부 전제 대기(§12). 범위 결정 **D-296**, 광범위 활용·구현 계약 **D-299**, 구현 결정 **D-300**·**D-302**. 과거 v1.0·v1.1 게이트의 현행 처분은 §10이 정본이다. 계약 정본 `spec/SPEC-apm-question-coverage.md` · 전수 대응표 `spec/CAPABILITY-MAP-134.md`.
+> **작성일**: 2026-10-02 · **v1.2**(2026-10-02 재검토 권고 반영) · **v1.3**(2026-10-02 W0·W0-B·W1·W2 구현 — §12) · **v1.4**(2026-10-06 W5·W6 독립분·W7 구현 — §12.6 · 검증 정책 개정 2건: MLX 최소화(D-240 부기) · 회귀 모듈 단위(D-303)) · **v1.5**(2026-10-06 W3·W4 구현 — §12.7 · D-310)
+> **상태**: **WIP — W0·W0-B·W1·W2 구현(`da3ea4f` 커밋 · D-300) · W5·W6(독립분)·W7 구현·검증 완료(2026-10-06 · D-302) · W3·W4 구현·검증 완료(2026-10-06 · 작업 트리 · 커밋 없음 · D-310 · §12.7)** · W6 잔여(M-7·A-1 채팅·A-4 — `plans/122` ⑥ 충족 · `apm_fleet` 충족) · W8 잔여 · W10 외부 전제 대기(§12). 범위 결정 **D-296**, 광범위 활용·구현 계약 **D-299**, 구현 결정 **D-300**·**D-302**. 과거 v1.0·v1.1 게이트의 현행 처분은 §10이 정본이다. 계약 정본 `spec/SPEC-apm-question-coverage.md` · 전수 대응표 `spec/CAPABILITY-MAP-134.md`.
 > - **통지(2026-10-06 · `plans/122` 트랙 T 기본 on · D-309 · 본문 불변)**: W6 잔여의 선행 「122 ⑥ 기준일 주입」이 충족됐다 — input_parser 프롬프트 끝에 기준 날짜(KST)를 넣어 LLM ISO `time_range`도 실행일 기준이 된다(로컬 MLX 6문항 실측) · 요청 단위 해석이 state `time_resolution`(`QueryTime.to_state()` · metric/event)으로 1단·2단(task별 `_scope_time_resolution`)·3단 격리 입력까지 실려 `run_apm_query`(`apm_query.py` 1188행 부근)에 이미 도달한다. **M-7 착수 시**: `plan_window(view, parsed.get("time_range"), now)` 대신 `QueryTime.from_state(isolated.get("time_resolution"))`의 **`event`**(기간 없음 = 조건 없음 · 진행 중 = 기준 시각까지 — 현행 current 모드와 맞음)를 쓰고, `qt.present`면 현재값 · `now`는 naive `datetime.now()` 대신 `qt.anchor_at`(KST aware — 섞으면 TypeError) · `_parse_bound(end=True)`의 끝 23:59:59 포함과 해석값 반개구간 `[start, end)`의 차이를 맞출 것. 134 쪽에 해석기 사본을 만들지 않는다(D-131). ISO `time_range`는 M-7 전환 뒤 제거 검토(D-309 주의 ③)
 > **요청 원문**: “조사한 사용가능한 질문들은 docs폴더의 사용 사례를 별도로 정리하고 사용가능한 질문을 모두 사용할 수 있도록 구현할 계획을 plans폴더에 계획파일을 정리하라.” → “모든 api는 허용하고 조회할 수 있는 범위는 모두 가능하도록 정한다.” → “계획에서 조회 기능을 광범위하게 사용해야 한다. 이에 맞게 재 검토하라.” → **“권고에 맞게 계획을 수정하라.”**
 > **산출 짝**: `docs/33_jennifer_use_cases.md`(S-01~S-11·O-01~O-17·F-01~F-15의 43사례, X 4건). 43사례는 필수 회귀 집합이며 기능 범위의 상한이 아니다.
@@ -312,12 +312,12 @@ APM 도메인별 정합·판정·집계는 게이트웨이가 소유(D-274 ⑤).
 
 | Wave | 남은 것 | 선행·막힌 것 |
 |---|---|---|
-| W3 | N-9 서비스(`/api/realtime/domain`·`/api/dbmetrics/domain` — COV-DBM-DOMAIN 인자 5) · N-10 전 대상 순위(`apm_fleet`) · N-11 폴러 조회 버퍼 · M-5(`MAX_VIEWS=3` 절단 제거 · 다건 hostname · 대상 없는 전체 보기) | 서비스 이름 해석은 **130 검색기 재사용** — 130(TODO · 코드 0) 착수 순서 결정 필요(§12.3) |
-| W4 | N-12 업무(`apm_business` · 시계열은 `apm_metrics(scope=business)`) | 130 업무 해석 |
+| ~~W3~~ | **완료(2026-10-06 · §12.7 · D-310)** — 남은 것: 실 제니퍼 응답 모양(무인자 `/api/realtime/domain` · 이벤트 구간 양끝 · 늦은 이벤트 60초 · 빈 결과 모양 — W10) · 버퍼 메모리·시계 오차 · 실 속도(5회/초) 아래 대상 수백·350도메인 소요 · 3단 운반 · 결과 파일 `target_index` 칸 표시(O-1) · 레지스트리에만 있는 소스 지목 시 내부 문구(O-6) · 9B 「서비스 시간대별 추세」 보기 오선택 1/14(내부망 FabriX 재측정) · COV-DOMAIN `/api/domain` 메타(`instanceCount`·`groupHierarchy` 등 — Q-134-04 서비스별 가동·중지 인스턴스 수)는 `apm_service_status`에 싣지 않음(미구현) | — |
+| ~~W4~~ | **완료(2026-10-06 · §12.7 · D-310)** — 남은 것: 제니퍼 업무 실데이터 모양(J0-L-b·J0-O · W10) · 업무 정의 콜드 캐시 비용(도메인 수 비례) · `ActiveServiceData.businessOid`(COV W4 배정) 미구현 | — |
 | ~~W5~~ | **완료(2026-10-06 · §12.6)** — 남은 것: `key` 인자 의미·값 출처(W10) · 프로파일 예산 칸 위조(조사 LLM이 매 호출 새 `investigation_id` — 사용자 결정) · 표를 고르는 조건 칸(되묻기 뒤 한 턴 더 · 프롬프트 변경 필요) | — |
-| W6(잔여) | **A-2 변경 전후·A-1 게이트웨이 계산·A-3 완료(§12.6)** — 남은 것: M-7 「하루 넘게 지난 기간」 규칙 폐지 + 해상도 자동 선택(`interval_minute` 허용값 W10) · A-1 채팅 배선(두 구간 해석 — `apm_period_compare`) · A-4 전체 순위(W3 `apm_fleet` 선행) · 빈 결과 ≠ 보존 만료 고지 | `plans/122` ⑥ 기준일 주입(실측: 상대 기간 15/15가 예시 날짜 — §12.6) · W3 |
+| W6(잔여) | **A-2 변경 전후·A-1 게이트웨이 계산·A-3 완료(§12.6)** — 남은 것: M-7 「하루 넘게 지난 기간」 규칙 폐지 + 해상도 자동 선택(`interval_minute` 허용값 W10) · A-1 채팅 배선(두 구간 해석 — `apm_period_compare`) · A-4 전체 순위(실시간 순위·전 대상 이벤트는 W3 `apm_fleet`로 구현 — **기간 순위**는 `apm.ranking` 창 의미와 게이트웨이 순위 모드를 함께 정해야 함 · §12.7 인계) · 빈 결과 ≠ 보존 만료 고지 | 선행 충족(`plans/122` ⑥ D-309 · W3 D-310) |
 | ~~W7~~ | **완료(2026-10-06 · §12.6)** — 남은 것: 자격증명 경계의 남긴 모양(문장 속 접속 문자열 · 줄 중간 공백 있는 비밀 값 · 큰따옴표·SQL 주석 속 이름 — SPEC §4.2) · `mask_pii` 숫자 설정 오인(가리는 방향 · VG-8) · 실응답 모양(W10) · G-11 원값 | G-11 · W10 |
-| W8 | COV 전체 통합 · `testdata/scenarios/fs_apm_questions.yaml` 진입점별 골드(**아직 없음**) · 121 F-13 연동 · 바뀐 프롬프트 MLX 최소 스모크 · 선택 정확도 내부망 FabriX(사용자) | 121 F-13 · 130 |
+| W8 | COV 전체 통합 · `testdata/scenarios/fs_apm_questions.yaml` 진입점별 골드(**아직 없음**) · 121 F-13 연동 · 바뀐 프롬프트 MLX 최소 스모크 · 선택 정확도 내부망 FabriX(사용자) | 121 F-13(130 대상 계약은 W3·W4로 연결 — 130 잔여 M-5 승계·3단 운반은 130 소유) |
 | W9 | 매 Wave 문서·매뉴얼 — 매뉴얼 **화면 캡처 없음**(U-50·U-51·U-52 · 제니퍼 실데이터·녹화 재생 프로필 필요) | — |
 | W10 | 실응답 shape·허용값(`sort_by_metrics`·`interval_minute`·`max_row`)·보존 기간·오류 유형 명명·운영 속도(G-12)·운영 350도메인 소요 | 실 제니퍼 라이선스 · 운영 협의 |
 
@@ -365,6 +365,40 @@ APM 도메인별 정합·판정·집계는 게이트웨이가 소유(D-274 ⑤).
 
 **로컬 MLX 사용**(두 평면 `mlx` 루프백 확인 뒤 · 팀 리드 서버 1개 · 끝나고 종료): 총 109호출 — 생존 확인 1 · W6 분할 입력 파서 실측 36(12문항 × 3 · 약 2분) · 본체 선택 측정 72(47문항 + PID·복합 보충 · 약 12분). 이후 사용자 지시(MLX 최소화)로 추가 실행 없음 — 수정(V-2 선택 재시도 프롬프트 1줄 · R-1 표 경계 · V-1 병합 제외)의 실모델 확인은 **내부망 FabriX 측정 잔여**다.
 
+### 12.7 W3·W4 진행 기록 (2026-10-06 · 작업 트리 · 커밋 없음 · D-310)
+
+사용자 지시 *"134번 계획을 구현하라."*(팀 리드 경유 · 2026-10-06). 사용자 확정 착수 순서(① `plans/122` ⑥ → ② `plans/130` → ③ W3·W4)의 ③이다 — ①은 D-309, ②는 `plans/130` 구현(사용자 커밋 `9cc8c6b`·`8f9b1c4`·`bac814c`)으로 충족. 세션 시작 커밋 `bac814c`. 130 검색기(`search_instances`·`search_query`·`normalize_name` · `apm_instance_map(query/business)` · `instance_name`)는 다시 구현하지 않고 불렀다. 여기의 M-5는 134 M-5(복수 보기·대상)이고, 130 계획서의 M-5(대상 계약·멀티턴 승계)는 130 잔여로 그대로 둔다.
+
+**구성**: 게이트웨이 2(worktree 격리 · 병렬 — 서비스·업무 / 배치·순위·버퍼) ∥ 본체 1(메인 트리) — 공용 인터페이스 계약 1장(scratchpad `contract-134-w34.md`)을 셋이 함께 썼다 → 팀 리드 병합(겹친 4파일 3-way) → 독립 검증 1 ∥ 코드·보안 리뷰 1 → 교정(본체 · 게이트웨이 각 1회) → MLX 최소 스모크.
+
+| 영역 | 산출 | 수용 증거 |
+|---|---|---|
+| M-5 복수 보기·대상(본체) | `MAX_VIEWS = 3` 삭제(분해 「1~2개」 → 「필요한 보기를 모두」) · APM hostname `max_targets` 절단 삭제(폴스타 공유 설정 불변) · 한 보기의 대상 2개 이상 = 게이트웨이 배치 `targets` 1호출 → `batch[i]`로 대상별 복원(집계·판정·출처·실패 대상별) · 1개 = 종전 호출 모양 · 배치 접수 = 작업 1건 접수 답(예상·진행) · 결과 파일에만 있는 대상 행 표지 | 실프로세스 E1(hostname 12 × 보기 4 — **`plans/125` A-6 ② 증거** `test_plan134_w34_verify_real.py::test_e1_twelve_hosts_four_views_one_batch_each` · `test_plan134_w34_apm.py::test_plan125_a6_2_twelve_hostnames_one_batch_per_view`) · E5 배치 승격 「대상 12개 … 예상 약 …(API 호출 22회) · 진행 11/22」 → 작업 API로 회수 · E8 단건 바이트 동일(`bac814c` 대비 본체 인자 8사례 · 게이트웨이 접근 기록 10호출 diff 0) |
+| 첫 홉 정리(기존 12개 보기) | 대상 필수 보기에 대상이 없을 때만 목록을 먼저 · **절단 없이 전부**(호스트 없는 인스턴스는 이름·소스·id 대상) · 목록이 인라인 상한을 넘으면 결과 파일 청크를 끝까지 읽음(실패면 「전체」라 쓰지 않고 의무 고지) · 범위 고지 · 대상 텍스트가 있으면 첫 홉 없음 · 전 대상·이름·지표 목록 보기는 첫 홉 없음 | E7 · V34-2 교정(`test_v34_2_first_hop_beyond_inline_rows_is_not_silently_cut`) |
+| N-9 서비스 | `apm_service_status`(`/api/realtime/domain` · 이름 없음 = 소스당 1호출 전 도메인 · 이름 = 도메인 이름 단계 검색) · `apm_metrics(series, scope=domain)`(`/api/dbmetrics/domain`) · 보기 `apm.service`·`apm.service_trend` | E4 이름 지정·전체·추세 · 이름 전부 미해결 = 데이터 호출 0 「찾지 못함」 · 일부 미해결 = 찾은 것만 + 고지 |
+| N-10 전 대상 순위·이벤트 | `apm_fleet`(ranking = 전 (source, domain) `/api/realtime/instance` 수집 뒤 정렬 · `RANKING_METRICS` 30 = 레지스트리 enum · 실패 있으면 `provisional` / events = 버퍼 확정 구간 + API 보충 · 실패 도메인 ≠ 0건) · `service` 좁힘 · 보기 `apm.ranking`·`apm.fleet_events` · 본체: 전 대상 보기 task의 비인스턴스 대상 텍스트 → `service` · 말한 서버로 좁히지 않았음을 의무 고지 | E2(도메인 120 × 소스 2 · 1곳 실패 → 「잠정 순위 — 조회 실패 도메인 1곳 제외」 · 독립 오라클 일치 · 서비스 좁힘 · 미해결 = 실시간 호출 0) · E3(실패 도메인 「0건이 아니라 확인하지 못함」) · 350 × 2 합성 정렬 오라클(게이트웨이 시험) |
+| N-11 조회 버퍼 | 폴러가 레벨 필터 전 기록 · 확정 = `[cursor, end − 60초]`(모양을 알아본 응답만) · 보관 60분·최대 20만 건(메모리 한도 — 범위 상한 아님) · 밀어내기·sweep · 재기동·실패 = API · 원자적 기록 | 알람 발행 바이트 동일(버퍼 없음·있음·밀어내기·기록 예외 4경우 독립 재현) · 버퍼 행 == API 행 · 경계 1ms · 재기동 |
+| N-12 업무 | `apm_business`(list·current · 업무 정의 이름 단계 검색 · 여럿 일치 = 전부 + `[한계]`) · `apm_metrics(series, scope=business)` · 보기 `apm.business`·`apm.business_trend` · 허용목록 `/api/realtime/business`·`/api/dbmetrics/business`(130 테스트의 거부 고정 단언 → 허용 검증으로) | E4 current·list·추세 · 미해결 데이터 호출 0 |
+| 시계열 지표 | 지표 미지정 = 게이트웨이 기본 지표(`response_time_avg_ms`·`service_count`·`service_err_count`) · 일부 모름 = 빼고 고지 · 전부 모름 = 기본 지표 + 고지 · instance 시계열 불변 | V34-1 교정(`test_v34_1_trend_without_metric_is_answered` 통과 · MLX가 낸 `responseTime`도 답함) |
+| 소스 지목 | 분해 task 칸 `sources`(레지스트리 소스 ≥2일 때만 렌더 · 골격 키) · 검증 → 모든 게이트웨이 호출에 `source_ids` · 전부 무효 = 게이트웨이 없이 되묻기 | E6(`sources=["bank"]` → common 접근 0 · 무효 id → 세션 열기 0) |
+| 허용목록·조사 | 37 → **41** · `sre_agent` 조사 순서 ⑥에 `apm_fleet`·`apm_service_status`·`apm_business`·`targets` | 정적 대조 · 켜짐 렌더 고정 3,657자·33줄(줄 수 불변) |
+
+**본체 ↔ 게이트웨이 실계약**: 레지스트리 보기 28종 × 대상 모양 × 조건 전 선택지 × `sources`로 만든 **336사례(본체 실제 인자 403호출 · 배치 142)**를 게이트웨이 실제 MCP 입력 스키마와 대조 — 모르는 키·빠진 필수·형 불일치 0 · `targets` 항목 키를 도구마다 실제로 받는 키와 대조 위반 0(`tests/test_orchestration/test_plan134_w34_verify_schema.py`).
+
+**검증·리뷰가 찾아 고친 것**: V34-1 Major(추세 보기 — 지표 미지정·`tps`·`responseTime`이 `invalid_argument` · 레지스트리 예시가 카탈로그에 없는 `tps`를 가르침) · V34-2 Major(첫 홉이 인라인 상한 500에서 조용히 잘림 — W3가 대상 10 절단을 걷으며 드러난 경로) · V34-4 Major(전 대상 보기가 말한 서비스·서버를 조용히 버림) · V34-5/R34-6(이벤트 건수 = 잘린 행 수) · V34-6(병합 독스트링 E501 2건 — 팀 리드) · R34-1(결과 파일 대상 표지) · R34-2(버퍼 기록 원자성) · R34-3(알아볼 수 없는 응답을 확정 0건으로) · R34-5(같은 출처 안 서로 다른 이벤트를 합침) · R34-7(소스 표 없는 배포의 지목 무시 고지) · R34-8(배치 최상위 `limits` 합집합) · R34-9(`apm_metrics` `targets`는 instance 시계열만) · R34-10 ①②⑥ · R34-11 · 항목 `hostname` 200자. 유지: R34-4(`result_meta.batch[].target` 원문 — D-310 ⑩) · R34-12(시계 오차 — W10).
+
+**회귀·게이트(D-303 · 모듈 단위 · 전체 미실행 · 2026-10-06 23:03)**: `scripts/regress.py --base bac814c --files <71개>` rc=0 — 본체 **8,470 passed · 0 failed · 24 skipped** · `apm_gateway` 패키지 전체 **1,541 passed · 12 skipped**(pytest 직접 1,541 passed · 4 skipped · 8 xfailed — 기준 1,327) · `sre_agent` **766 passed · 3 skipped** · 저장소 전역 가드 130 · `arch_check` 0 · `overfit_check` 신규 0(기준선 무변경) · ruff·mypy 이번 diff 줄 0 · 비활성 분해 프롬프트 `06da76f1a17e4090`(8,032자) 불변 · 활성 `2334153a4f19b752`(17,287자) → `c336e53f4ea98eb9`(20,957자) · 매뉴얼 U-54 — `tests/test_manual` 555 passed.
+
+```
+[전체 회귀 권고] 사유: 공개 시그니처·반환 형태 변경(--wide 자동 적용) — src.orchestration.apm_query.default_views(매개변수 삭제 max_targets); src.orchestration.apm_query.resolve_apm_targets(매개변수 삭제 max_targets); src.orchestration.apm_query.scoped_targets(매개변수 삭제 max_targets); src.orchestration.apm_query.explicit_targets(매개변수 삭제 max_targets)
+  → 사용자가 요청하면: python scripts/regress.py --full
+범위: 모듈 단위 — 전체 미실행
+```
+
+**로컬 MLX 사용**(두 평면 `mlx` 루프백 확인 · 8080 비어 있음 확인 · 캐시 모델 · 띄운 PID만 종료): 2회 기동 · 분해 14문항 1회씩 + 생존 확인 2. ① 검증 8문항(73.7초 · 콜드 28.2초 포함) — 보기 8/8 · 무관한 기본 보기 대체 0 · `sources=["bank"]` 정상 · ⑤ `metrics=["responseTime"]`(무효 이름 → V34-1) · 보기 여럿을 보기당 task로 나눔(절단 0). ② 교정 뒤 바뀐 프롬프트 6문항(54.8초 · 콜드 29.3초 포함) — 추세 2/2 · 서비스 순위(대상 텍스트 → `service` 경로) · 은행존 순위 `sources` · 「주문 서비스에서 fatal 난 WAS 전부」는 `apm.events` + 업무 대상(130 해석 경로 — 허용 가능한 다른 보기) · **「인터넷뱅킹 서비스 오늘 시간대별 추세」 → `apm.app_stats`(오선택 1/14)**. 정확도·지연 결론은 내지 않는다 — 내부망 FabriX 측정 잔여.
+
+**W6 잔여(M-7) 인계**(다음 team-lead): `plan_window`가 `time_resolution`을 쓰는 방법은 lead-122 인계 그대로다 — `QueryTime.from_state(isolated["time_resolution"]).event` · `qt.present`면 현재값 · `now = qt.anchor_at`(KST aware — naive와 섞으면 TypeError) · `_parse_bound(end=True)` 23:59:59 끝 포함과 해석값 반개구간 `[start, end)`의 차이. W3에서 바뀐 점: ① 창 계산 위치는 그대로(세션 열기 전 `windows = {vid: plan_window(...)}` · 새 보기 6종 포함) — 「하루 넘게」 규칙을 걷으면 새 range 보기(`apm.fleet_events`·`apm.service_trend`·`apm.business_trend`)도 바로 긴 창을 받는다(전 대상 이벤트는 버퍼 밖을 API로 채운다) ② 배치는 대상 인자를 뺀 공통 인자로 묶인다 — `WindowPlan.args`(`reference_time`·`lookback_minutes`)가 묶음 키에 들어가므로 창·해상도를 **보기 단위**로 정하면 배치가 1호출로 유지된다 ③ 자동 `interval_minute`은 `WindowPlan.args`에 둔다(`_call_args` 합성 순서 `window.args → fixed_args → view_args` — 사용자가 말한 값이 이긴다) ④ 첫 홉은 창을 쓰지 않는다 ⑤ `apm.service`·`apm.business`·`apm.ranking`은 `window: current` — A-4 기간 순위는 `apm.ranking` 창 의미와 게이트웨이 순위 모드를 함께 정해야 한다.
+
 ---
 
 ## 변경 이력
@@ -376,3 +410,4 @@ APM 도메인별 정합·판정·집계는 게이트웨이가 소유(D-274 ⑤).
 | 2026-10-02 | **v1.2 · D-299** — 사용자 “조회 기능을 광범위하게 사용” 및 재검토 권고 반영 지시. 43예문 상한 폐지·전 API/인자/필드 COV, metrics 보기·복수 보기/대상·비교/변경 전후/GUID 분석, W0-B 장기 작업·전체 파일 기반 선행, 조사 읽기 활용·도구 숫자 상한 폐지, 선택 재시도/미해결, 진입점별 골드·121 필수 연동, G-11 원값 정책 분리. 코드 0·사용 사례 현재 상태 유지 |
 | 2026-10-02 | **v1.3 · D-300** — 사용자 지시 *"134번 계획을 구현하라."*(팀 리드 경유). W0(COV·SPEC)·W0-B(장기 작업·결과 파일·자격증명 경계·작업 API/카드)·W1(상한 제거·집계 운반·창 의미·조건)·W2(통계·지표 목록·소스 변경·선택 재시도) 구현과 독립 검증 4회·보안 감사 1회·로컬 MLX 29문항 실측. 잔여 W3~W8·W10(§12.2). 파일명 `-TODO` → `-WIP` |
 | 2026-10-06 | **v1.4 · D-302** — 사용자 지시 *"134번 계획을 구현하라."*(팀 리드 경유). 사용자 확정 착수 순서(① 122 ⑥ → ② 130 → ③ W3·W4)를 지켜 **W5**(GUID 추적 · 앞 결과 행 참조 M-6 · 프로파일 예산 주체 분리) · **W6 독립분**(A-2 변경 전후 채팅 · A-1 게이트웨이 계산 · A-3) · **W7**(관리·민감 조회 19 GET · 도구 4 · 보기 7 · COV E-01 확정 · 조사 지침)을 구현했다(§12.6). W6 분할은 로컬 MLX 입력 파서 실측(상대 기간 15/15 예시 날짜)으로 정했다 — M-7·A-1 채팅은 122 ⑥ 뒤. 독립 검증 2회 · 보안 감사 2회 · 코드 리뷰 1회의 지적을 같은 작업에서 고쳤다(§12.6). **검증 방식 개정**(§5 · M-8 · W8 · §11) — 사용자 *"MLX는 속도가 느리다 MLX로 검증하는것은 최소한으로 검증하는 방식으로 계획이 작성되어야 한다."*(메인 세션 경유 · D-240 부기): 기본 검증 = 가짜 LLM·목 API·실프로세스 종단 · MLX = 바뀐 프롬프트·선택 경로 최소 스모크(문항 수·예상 소요 명시) · 선택 정확도·재선택률·지연 = 내부망 FabriX(사용자 실행). **회귀 정책 개정**(§5 ④ · §6 ⑧ · M-8 · W8 — D-303 · 피어 세션 collectorinfra-fd가 등재한 사용자 지시 · 메인 세션 경유): 모듈 단위 회귀(바꾼 모듈 직접 import 테스트 · 바꾼 독립 패키지 전체) · 정적 게이트 매번 · 실패분만 세션 시작 커밋 재대조 · 전체 회귀는 사용자 요청 시만. 파일명 `-WIP` 유지 |
+| 2026-10-06 | **v1.5 · D-310** — 사용자 지시 *"134번 계획을 구현하라."*(팀 리드 경유). 사용자 확정 착수 순서의 ③ **W3·W4**를 구현했다(§12.7): 게이트웨이 배치 `targets`(17도구 · 한 호출 = 작업 1개) · `apm_fleet`(전 대상 순위·이벤트 · 잠정) · 조회용 이벤트 버퍼 · `apm_service_status`·`apm_business`·도메인/업무 시계열(기본 지표) · 허용목록 41 · 본체 보기 28 · `MAX_VIEWS`·대상 10 절단 제거 · 첫 홉 전부 · `sources` · 매뉴얼 U-54 · 조사 지침 ⑥. 독립 검증 1(실프로세스 E1~E8 · 정적 대조 336사례) ∥ 코드·보안 리뷰 1 → Major 4·Minor 다수 교정 · MLX 14문항. 125 A-6 ①②·130 업무 지표 경로 이행. 파일명 `-WIP` 유지 |

@@ -60,6 +60,9 @@ def test_views_are_untouched_by_sources() -> None:
         "apm.profile", "apm.trace", "apm.change_impact", "apm.event_rules", "apm.process",
         "apm.jennifer_server", "apm.loaded_classes", "apm.environment", "apm.users",
         "apm.active_detail",
+        # plans/134 W3·W4 — 보기 6종 추가(계약 B-1 순서 · 의도된 갱신)
+        "apm.service", "apm.service_trend", "apm.ranking", "apm.fleet_events", "apm.business",
+        "apm.business_trend",
     ]
 
 

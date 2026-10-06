@@ -28,6 +28,7 @@ from src.routing.entity_edges import cross_system_only, facet_path
 from src.routing.registry import get_registry
 from src.security.sql_guard import SQLGuard
 from src.utils.prior_targets import TargetRef
+from tests.test_orchestration import apm_batch_mock
 
 NOW = datetime(2026, 9, 30, 10, 0, 0)
 DOMAINS = {
@@ -181,16 +182,19 @@ async def test_prior_server_names_flow_through_e2_to_apm(polestar, monkeypatch) 
     polestar({"polestar_cm_gp": [("svr-web-1", "web01.local"), ("svr-web-2", "web02.local")]})
     calls: list[tuple[str, dict]] = []
 
+    def single(arguments):
+        if arguments["hostname"] == "web02.local":
+            return _env("apm_app_health", [], instance_resolution={
+                "matched": False, "confidence": None, "reason": "no match", "instances": []})
+        return _env("apm_app_health", [{"instance_id": 7, "response_time_avg_ms": 180}],
+                    instance_resolution={"matched": True, "confidence": "medium",
+                                         "reason": "prefix", "instances": [7]})
+
     class _Gw:
         async def call_tool(self, name, arguments):
             calls.append((name, arguments))
-            if arguments["hostname"] == "web02.local":
-                env = _env(name, [], instance_resolution={"matched": False, "confidence": None,
-                                                          "reason": "no match", "instances": []})
-            else:
-                env = _env(name, [{"instance_id": 7, "response_time_avg_ms": 180}],
-                           instance_resolution={"matched": True, "confidence": "medium",
-                                                "reason": "prefix", "instances": [7]})
+            # plans/134 M-5 — 다건 대상은 `targets` 배치 1호출(계약 A-2 봉투로 흉내)
+            env = apm_batch_mock.reply_for(name, arguments, single)
             return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(env))], isError=False)
 
     @asynccontextmanager
@@ -208,7 +212,9 @@ async def test_prior_server_names_flow_through_e2_to_apm(polestar, monkeypatch) 
     res = await aq.run_apm_query({"task_id": "t2", "agent": "apm_query",
                                   "views": ["apm.app_health"]},
                                  isolated, llm=None, app_config=cfg, now=NOW)
-    assert [c[1]["hostname"] for c in calls] == ["web01.local", "web02.local"]
+    # plans/134 M-5 — 대상 2대 = `targets` 배치 1호출(종전 대상별 2호출)
+    assert [t["hostname"] for t in calls[0][1]["targets"]] == ["web01.local", "web02.local"]
+    assert len(calls) == 1
     meta = res["apm_query"]
     assert meta["link_summary"] == {"server_name": {"linked:one": 2},
                                     "apm_instance": {"linked:medium": 1, "unlinked": 1}}

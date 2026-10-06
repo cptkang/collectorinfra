@@ -9,6 +9,10 @@ SPEC-apm-gateway §5).
   유실 방지 · 토큰 사용량은 실패 응답까지 센다(§0.10 #10). `contract_violation`은 폴러 버그이므로 그
   도메인 폴링을 멈춘다.
 - 상태는 `status()`로 드러낸다(`gateway_health`·기동 로그 — 침묵 금지).
+- 조회용 이벤트 버퍼(`event_buffer` · plans/134 W3 N-11)가 있으면 도메인을 받을 때마다 **최소 레벨
+  필터 전** 전 이벤트와 확정 구간 `[커서, 끝 − 겹침]`을 넣는다. 수집 실패·백오프·중지 구간과 모양을
+  알아보지 못한 응답(`{result: [...]}` 봉투가 아님)은 넣지 않는다(확정 없음 — R34-3). 발행(최소 레벨
+  필터·멱등·XADD 페이로드)은 버퍼 유무·응답 모양 판독과 무관하게 같다(같은 레코드 목록).
 - 폴러의 API 호출은 우선순위 `poller`다 — 같은 토큰을 나누는 대화형·백그라운드 조회보다 먼저 나간다
   (plans/134 W0-B N-14 · 소스 클라이언트의 우선순위 속도 제어).
 - 제니퍼 소스가 여럿이면(plans/87 J8 · D-287 ②) 소스 간은 병렬로, 소스 안은 도메인 순차로
@@ -24,7 +28,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from apm_gateway.adapters.jennifer.api import SOURCE, SOURCE_LABEL
 from apm_gateway.application.masking import mask_text, mask_url
@@ -35,6 +39,9 @@ from apm_gateway.domain import signals as sig
 from apm_gateway.domain.call_context import PRIORITY_POLLER, CallScope, use_scope
 from apm_gateway.domain.errors import CONTRACT_VIOLATION, ApmError
 from apm_gateway.domain.events import build_alarm_payload, passes_min_level, severity_for_level
+
+if TYPE_CHECKING:
+    from apm_gateway.application.event_buffer import EventBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -53,17 +60,19 @@ class EventPoller:
         redis: Any,
         *,
         clock: Callable[[], float] = time.time,
+        event_buffer: EventBuffer | None = None,
     ) -> None:
         self.sources = sources
         self.cfg = cfg
         self.redis = redis
         self.clock = clock
+        self.event_buffer = event_buffer
         self._state: dict[tuple[str, int], dict[str, Any]] = {}
         self.published_total = 0
         self.duplicates_total = 0
 
     def status(self) -> dict[str, Any]:
-        return {
+        status: dict[str, Any] = {
             "enabled": self.cfg.poller.enabled,
             "interval_seconds": self.cfg.poller.interval_seconds,
             "min_level": self.cfg.poller.min_level,
@@ -74,6 +83,9 @@ class EventPoller:
                 for (sid, domain_id), st in self._state.items()
             },
         }
+        if self.event_buffer is not None:
+            status["event_buffer"] = self.event_buffer.status()
+        return status
 
     async def run_forever(self) -> None:
         interval = self.cfg.poller.interval_seconds
@@ -144,7 +156,7 @@ class EventPoller:
         cursor_raw = await self.redis.get(cursor_key)
         cursor = int(cursor_raw) if cursor_raw else end_ms - interval * 1000
         try:
-            events = await src.api.events(domain_id, None, cursor, end_ms)
+            events, known = await src.api.events_checked(domain_id, None, cursor, end_ms)
         except ApmError as e:
             if e.code == CONTRACT_VIOLATION:
                 state.update(state="stopped", reason=e.reason)
@@ -166,6 +178,17 @@ class EventPoller:
                 interval * factor,
             )
             return 0
+        if self.event_buffer is not None and known:  # 최소 레벨 필터 전 전부 — 조회용(발행과 무관)
+            try:
+                self.event_buffer.record(
+                    src.source_id, domain_id, cursor, end_ms - OVERLAP_MS, events
+                )
+            except Exception:  # 조회용 버퍼 결함이 알람 발행을 막지 않게 — 사유는 로그로 남긴다
+                logger.exception(
+                    "폴러: 조회용 이벤트 버퍼 기록 실패(소스 %s 도메인 %s) — 발행은 계속",
+                    src.source_id,
+                    domain_id,
+                )
         published = 0
         publish_failed = False
         for event in sorted(events, key=lambda e: e.get("time_ms") or 0):

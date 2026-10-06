@@ -44,7 +44,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, TypeVar
 from zoneinfo import ZoneInfo
 
 from apm_gateway.adapters.jennifer.allowlist import ALLOWED
@@ -129,6 +129,17 @@ CHANGE_DETECTION_NOTE = (
 )
 METRIC_MODES = ("catalog", "series")
 METRIC_SCOPES = ("domain", "instance", "business", "application", "sql", "external_call")
+# 시계열이 있는 군(plans/134 W2 instance · W3 domain · W4 business)
+SERIES_SCOPES = ("instance", "domain", "business")
+SERIES_INTERVAL_NOTE = (
+    "[한계] interval_minute 허용값·1회 조회 창 상한은 미공개다(W10) — 서버가 거부하면"
+    " 그 사유를 그대로 싣는다"
+)
+# 방문·호출 수 칸을 싣는 보기 공용(인스턴스 건강·서비스 현재값·전 대상 순위 — 사본 금지)
+VISIT_HIT_NOTE = (
+    "[한계] 방문·호출 수(visit_day·visit_hour·hit_day·hit_hour)는 단위·「하루」 경계(자정 기준인지"
+    " 24시간 이동인지)가 미확인이다(W10)"
+)
 # 정렬 기준·지표 이름은 허용값이 미공개라(COV E-05·E-06) 식별자 형식만 본다
 # (값 검증은 카탈로그·서버).
 _IDENT = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,127}")
@@ -464,22 +475,80 @@ class InstanceSearch:
     suggestions: list[dict[str, Any]]
 
 
-def _search_tier(inst: dict[str, Any], q: str, q_norm: str) -> str | None:
-    """인스턴스 하나의 가장 앞 단계 — 설명은 화면에 싣는 마스킹본에서만 찾는다(가린 원문으로
-    일치 여부를 흘리지 않는다)."""
-    name = str(inst.get("instance_name") or "").strip().casefold()
-    if name == q:
+def name_tier(name: Any, q: str, q_norm: str, description: Any = "") -> str | None:
+    """이름 하나(+설명)의 가장 앞 검색 단계(plans/130 N-1 규칙 — 인스턴스·서비스(도메인)·업무
+    이름 공용 · plans/134 W3·W4). `q`는 앞뒤 공백 제거·casefold한 검색어, `q_norm`은 그 정규화.
+    단계: exact(대소문자 무시 동일) → normalized(구분자 제거 동일) → prefix(앞부분 + 바로 뒤가
+    끝·구분자) → contains(정규화 검색어 `CONTAINS_MIN`자 이상 · 정규화 이름 또는 설명에 포함).
+    설명은 화면에 싣는 마스킹본에서만 찾는다(가린 원문으로 일치 여부를 흘리지 않는다) — 비우면
+    이름만 본다."""
+    text = str(name or "").strip().casefold()
+    if text == q:
         return "exact"
-    norm = normalize_name(name)
+    norm = normalize_name(text)
     if q_norm and norm == q_norm:
         return "normalized"
-    if name.startswith(q) and (len(name) == len(q) or _is_separator(name[len(q)])):
+    if text.startswith(q) and (len(text) == len(q) or _is_separator(text[len(q)])):
         return "prefix"
     if len(q_norm) >= CONTAINS_MIN and (
-        q_norm in norm or q in mask_text(inst.get("description", ""), limit=None).casefold()
+        q_norm in norm or (bool(description) and q in mask_text(description, limit=None).casefold())
     ):
         return "contains"
     return None
+
+
+Hit = TypeVar("Hit")
+
+
+def search_names(
+    text: str, candidates: Iterable[tuple[Hit, Any, Any]]
+) -> tuple[str | None, list[Hit], dict[str, int]]:
+    """후보 `(항목, 이름, 설명)`에서 **가장 앞 단계의 항목만** 고른다(`name_tier` · 후보 순서
+    유지) → (채택 단계 · 채택 항목 · 단계별 후보 수(항목마다 가장 앞 단계 하나로 센다)). 0건이면
+    (None, [], 단계별 0)."""
+    q = text.strip().casefold()
+    q_norm = normalize_name(q)
+    counts = dict.fromkeys(SEARCH_TIERS, 0)
+    by_tier: dict[str, list[Hit]] = {}
+    for item, name, description in candidates:
+        tier = name_tier(name, q, q_norm, description)
+        if tier is not None:
+            counts[tier] += 1
+            by_tier.setdefault(tier, []).append(item)
+    chosen = next((t for t in SEARCH_TIERS if by_tier.get(t)), None)
+    return chosen, (by_tier[chosen] if chosen is not None else []), counts
+
+
+def suggest_names(
+    q_norm: str, candidates: Iterable[tuple[tuple[Any, ...], Any, dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    """유사 이름 후보(자동 채택 안 함) — 후보 `(정렬 키, 이름, 제안 항목)` 중 정규화 이름 유사도
+    (`difflib.SequenceMatcher`) ≥ SUGGEST_RATIO 상위 SUGGEST_MAX. 순서는 유사도 → 정렬 키 → 이름 ·
+    같은 제안 항목은 한 번."""
+    if not q_norm:
+        return []
+    matcher = difflib.SequenceMatcher()
+    matcher.set_seq2(q_norm)  # 검색어 쪽을 캐시한다(difflib.get_close_matches와 같은 방식)
+    scored: list[tuple[float, tuple[Any, ...], str, dict[str, Any]]] = []
+    for order, name, item in candidates:
+        norm = normalize_name(name)
+        if not norm:
+            continue
+        matcher.set_seq1(norm)
+        if (
+            matcher.real_quick_ratio() >= SUGGEST_RATIO
+            and matcher.quick_ratio() >= SUGGEST_RATIO
+            and (ratio := matcher.ratio()) >= SUGGEST_RATIO
+        ):
+            scored.append((-ratio, order, str(name), item))
+    out: list[dict[str, Any]] = []
+    for *_, item in sorted(scored, key=lambda s: s[:3]):
+        if item in out:
+            continue
+        out.append(item)
+        if len(out) == SUGGEST_MAX:
+            break
+    return out
 
 
 def _domain_order(domain_id: Any) -> tuple[bool, int]:
@@ -489,74 +558,47 @@ def _domain_order(domain_id: Any) -> tuple[bool, int]:
 def search_instances(
     usable: list[tuple[JenniferSource, Inventory]], text: str, domain_id: int | None = None
 ) -> InstanceSearch:
-    """고른 소스 인벤토리(캐시 · 새 HTTP 없음)에서 인스턴스 이름·설명을 찾는다. 단계 exact(이름
-    대소문자 무시 동일) → normalized(구분자 제거 동일) → prefix(앞부분 + 바로 뒤가 끝·구분자) →
-    contains(정규화 검색어 `CONTAINS_MIN`자 이상 · 정규화 이름 또는 설명에 포함) 중 **가장 앞
-    단계의 결과만** 채택한다. `domain_id`를 주면 그 도메인 안에서만 찾는다."""
-    q = text.strip().casefold()
-    q_norm = normalize_name(q)
-    counts = dict.fromkeys(SEARCH_TIERS, 0)
-    by_tier: dict[str, list[tuple[int, JenniferSource, Inventory, dict[str, Any]]]] = {}
-    for rank, (src, inv) in enumerate(usable):
-        for inst in inv.instances:
-            if domain_id is not None and inst["domain_id"] != domain_id:
-                continue
-            tier = _search_tier(inst, q, q_norm)
-            if tier is not None:
-                counts[tier] += 1
-                by_tier.setdefault(tier, []).append((rank, src, inv, inst))
-    chosen = next((t for t in SEARCH_TIERS if by_tier.get(t)), None)
-    if chosen is not None:
-        hits = sorted(
-            by_tier[chosen],
-            key=lambda h: (h[0], _domain_order(h[3]["domain_id"]), h[3]["instance_name"]),
+    """고른 소스 인벤토리(캐시 · 새 HTTP 없음)에서 인스턴스 이름·설명을 찾는다(`search_names` —
+    **가장 앞 단계의 결과만** 채택). `domain_id`를 주면 그 도메인 안에서만 찾는다."""
+    tier, hits, counts = search_names(
+        text,
+        (
+            ((rank, src, inv, inst), inst.get("instance_name"), inst.get("description", ""))
+            for rank, (src, inv) in enumerate(usable)
+            for inst in inv.instances
+            if domain_id is None or inst["domain_id"] == domain_id
+        ),
+    )
+    if tier is not None:
+        ordered = sorted(
+            hits, key=lambda h: (h[0], _domain_order(h[3]["domain_id"]), h[3]["instance_name"])
         )
-        return InstanceSearch(chosen, [(s, v, i) for _, s, v, i in hits], counts, [])
+        return InstanceSearch(tier, [(s, v, i) for _, s, v, i in ordered], counts, [])
+    q_norm = normalize_name(text.strip().casefold())
     return InstanceSearch(None, [], counts, _suggest(usable, q_norm, domain_id))
 
 
 def _suggest(
     usable: list[tuple[JenniferSource, Inventory]], q_norm: str, domain_id: int | None
 ) -> list[dict[str, Any]]:
-    """정규화 이름 유사도(`difflib.SequenceMatcher`) ≥ SUGGEST_RATIO 상위 SUGGEST_MAX."""
-    if not q_norm:
-        return []
-    matcher = difflib.SequenceMatcher()
-    matcher.set_seq2(q_norm)  # 검색어 쪽을 캐시한다(difflib.get_close_matches와 같은 방식)
-    scored: list[tuple[float, int, tuple[bool, int], str, str, Any]] = []
-    for rank, (src, inv) in enumerate(usable):
-        for inst in inv.instances:
-            if domain_id is not None and inst["domain_id"] != domain_id:
-                continue
-            norm = normalize_name(inst["instance_name"])
-            if not norm:
-                continue
-            matcher.set_seq1(norm)
-            if (
-                matcher.real_quick_ratio() >= SUGGEST_RATIO
-                and matcher.quick_ratio() >= SUGGEST_RATIO
-                and (ratio := matcher.ratio()) >= SUGGEST_RATIO
-            ):
-                scored.append(
-                    (
-                        -ratio,
-                        rank,
-                        _domain_order(inst["domain_id"]),
-                        inst["instance_name"],
-                        src.source_id,
-                        inst["domain_id"],
-                    )
-                )
-    out: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, Any]] = set()
-    for _, _, _, name, sid, did in sorted(scored, key=lambda s: s[:4]):
-        if (name, sid, did) in seen:
-            continue
-        seen.add((name, sid, did))
-        out.append({"instance_name": name, "source_id": sid, "domain_id": did})
-        if len(out) == SUGGEST_MAX:
-            break
-    return out
+    """인스턴스 이름 유사 후보(`suggest_names` — 소스 선언 순서·도메인·이름으로 동률을 가른다)."""
+    return suggest_names(
+        q_norm,
+        (
+            (
+                (rank, _domain_order(inst["domain_id"])),
+                inst["instance_name"],
+                {
+                    "instance_name": inst["instance_name"],
+                    "source_id": src.source_id,
+                    "domain_id": inst["domain_id"],
+                },
+            )
+            for rank, (src, inv) in enumerate(usable)
+            for inst in inv.instances
+            if domain_id is None or inst["domain_id"] == domain_id
+        ),
+    )
 
 
 def _same_name(a: str, b: str) -> bool:
@@ -1031,6 +1073,7 @@ class ApmTools:
         limits: _Limits,
         *,
         all_unknown_raises: bool,
+        candidates: dict[str, list[str]] | None = None,
     ) -> dict[str, list[tuple[str, str]]] | None:
         """요청 지표 → 소스별 `[(지표 식별자, 표시 이름)]`. 카탈로그(`scope` 군)로 검증한다.
 
@@ -1043,6 +1086,8 @@ class ApmTools:
         - 일부 소스 카탈로그에만 없으면 그 소스만 생략하고 `[한계]`.
         - 카탈로그를 읽지 못했거나 그 군이 모양 위반인 소스는 검증 없이 조회하고 `[한계]`
           (partial)로 알린다.
+        - `candidates`를 주면 모르는 지표마다 후보(≤3)를 담고, 일부만 모를 때의 미해결 고지에도
+          후보를 싣는다(도메인·업무 시계열 — 인스턴스·런타임 경로는 주지 않아 종전 그대로).
         """
         wanted: list[tuple[str, str]] = []
         for name in requested:
@@ -1087,6 +1132,8 @@ class ApmTools:
             for _mid, label in unknown:
                 close = difflib.get_close_matches(label, pool, n=_METRIC_SUGGESTIONS)
                 parts.append(f"{label}(후보: {', '.join(close) if close else '없음'})")
+                if candidates is not None:
+                    candidates[label] = close
             if len(unknown) == len(wanted) and all_unknown_raises:
                 raise ApmError(
                     INVALID_ARGUMENT,
@@ -1095,10 +1142,10 @@ class ApmTools:
                 )
             note = f"[한계] {scope} 지표 카탈로그에 없는 지표는 빼고 조회했다: {'; '.join(parts)}"
             if len(unknown) < len(wanted):
-                limits.unresolve(
-                    f"요청한 지표 {', '.join(label for _, label in unknown)}는 지표 목록에 없어"
-                    " 빼고 조회했습니다"
+                shown = "; ".join(parts) if candidates is not None else ", ".join(
+                    label for _, label in unknown
                 )
+                limits.unresolve(f"요청한 지표 {shown}는 지표 목록에 없어 빼고 조회했습니다")
             if all_unknown_raises:
                 limits.fail(note)  # 시계열은 지표가 본질이다 — 일부가 빠진 결과
             else:
@@ -1471,10 +1518,15 @@ class ApmTools:
         return out, bool(matched)
 
     async def _business_defs_of(
-        self, src: JenniferSource, domain_id: int, now: float, limits: _Limits
+        self,
+        src: JenniferSource,
+        domain_id: int,
+        now: float,
+        limits: _Limits,
+        failures: list[tuple[str, ApmError]] | None = None,
     ) -> list[dict[str, Any]] | None:
         """도메인의 업무 정의 목록(TTL `BUSINESS_CACHE_SECONDS` 캐시). 조회 실패는 `[한계]`(부분) —
-        None."""
+        None(`failures`를 주면 (위치, 오류)도 모은다 — 전부 실패 판정용 · plans/134 W4)."""
         key = (src.source_id, domain_id)
         cached = self._business_defs.get(key)
         if cached is not None and _fresh(cached, now):
@@ -1484,6 +1536,8 @@ class ApmTools:
         except ApmError as e:
             if e.code == CONTRACT_VIOLATION:
                 raise
+            if failures is not None:
+                failures.append((self.sources.where(src.source_id, domain_id), e))
             limits.fail(
                 f"[한계] 업무 목록 조회 실패({self.sources.where(src.source_id, domain_id)}):"
                 f" {e.code}"
@@ -1555,10 +1609,7 @@ class ApmTools:
         if window is None or window.end_is_now:
             current = await self._realtime(res, limits)
             if current:
-                limits.append(
-                    "[한계] 방문·호출 수(visit_day·visit_hour·hit_day·hit_hour)는 단위·"
-                    "「하루」 경계(자정 기준인지 24시간 이동인지)가 미확인이다(W10)"
-                )
+                limits.append(VISIT_HIT_NOTE)
         else:
             limits.append(
                 "[한계] 과거 기준시각 — 실시간 스냅샷 생략(현재값은 사건 시점 증거가 아니다)"
@@ -2092,17 +2143,8 @@ class ApmTools:
                 limits.fail(f"[한계] 오류 기록 조회 실패({where}): {e.code}")
         if (rec == "event" and not events_ok) or (rec == "error" and not errors_ok):
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits))
-        if lvl is not None:
-            floor = level_rank(lvl)
-            events = [
-                e
-                for e in events
-                if (e["level"] == lvl if mode == "exact" else level_rank(e["level"]) >= floor)
-            ]
+        events = self._filter_events(events, lvl, mode, etype)
         if etype is not None:
-            events = [e for e in events if self._api(e["source_id"]).same_error_type(
-                e["event_type"], etype
-            )]
             errors = [e for e in errors if self._api(e["source_id"]).same_error_type(
                 e["error_type"], etype
             )]
@@ -2135,6 +2177,25 @@ class ApmTools:
             record=rec,
             errors_by_type=[{"error_type": k, "count": v} for k, v in error_summary],
         )
+
+    def _filter_events(
+        self, events: list[dict[str, Any]], lvl: str | None, mode: str, etype: str | None
+    ) -> list[dict[str, Any]]:
+        """이벤트 레벨(`min` 그 레벨 이상 · `exact` 그 레벨만)·오류 유형 거르기 — `apm_events`와
+        전 대상 이벤트(`apm_fleet`)가 같은 규칙을 쓴다(이벤트 레코드·이벤트 행 모두 `level`·
+        `event_type`·`source_id` 칸이 있다)."""
+        if lvl is not None:
+            floor = level_rank(lvl)
+            events = [
+                e
+                for e in events
+                if (e["level"] == lvl if mode == "exact" else level_rank(e["level"]) >= floor)
+            ]
+        if etype is not None:
+            events = [e for e in events if self._api(e["source_id"]).same_error_type(
+                e["event_type"], etype
+            )]
+        return events
 
     @staticmethod
     async def _errors(
@@ -2599,8 +2660,15 @@ class ApmTools:
         lookback_minutes: int | None = None,
         source_ids: list[str] | None = None,
         instance_name: str | None = None,
+        service: str | list[str] | None = None,
+        business: str | list[str] | None = None,
+        business_id: int | None = None,
+        domain_id: int | None = None,
     ) -> dict[str, Any]:
-        """지표 카탈로그·시계열(plans/134 N-6)."""
+        """지표 카탈로그·시계열(plans/134 N-6). 도메인(서비스)·업무 시계열(W3·W4)은 scope_tools
+        모듈이 같은 지표 검증(`_metric_plan`)으로 조회한다 — 대상은 `service`·`domain_id`(업무는
+        `business` 또는 `business_id`+`domain_id`). 인스턴스 시계열은 `metrics`가 필요하고,
+        도메인·업무 시계열은 비우면 군별 기본 지표로 조회한다(그 모듈)."""
         tool = "apm_metrics"
         mode = str(mode or "catalog").strip().lower()
         if mode not in METRIC_MODES:
@@ -2613,30 +2681,48 @@ class ApmTools:
         if mode == "catalog":
             return await self._metric_catalog(tool, scope_name, source_ids)
         scope_name = scope_name or "instance"
-        if scope_name == "domain":
-            raise ApmError(INVALID_ARGUMENT, "scope domain 시계열은 W3 예정이다(아직 없음)")
-        if scope_name == "business":
-            raise ApmError(INVALID_ARGUMENT, "scope business 시계열은 W4 예정이다(아직 없음)")
-        if scope_name != "instance":
+        if scope_name not in SERIES_SCOPES:
             raise ApmError(
                 INVALID_ARGUMENT,
                 f"scope {scope_name} 지표는 시계열이 아니다 — apm_status_stats(kind {scope_name})",
             )
         requested = self._metric_names(metrics)
-        if not requested:
+        if not requested and scope_name == "instance":
             raise ApmError(INVALID_ARGUMENT, "series에는 metrics(지표 이름 목록)가 필요하다")
         interval = _positive_int(interval_minute, "interval_minute", TREND_INTERVAL_MINUTE)
+        if scope_name != "instance":
+            if _given(hostname) or _given(instance_name) or instance_id is not None:
+                raise ApmError(
+                    INVALID_ARGUMENT,
+                    f"scope {scope_name} 시계열은 hostname·instance_name·instance_id를 쓰지 않는다"
+                    " — service·domain_id(업무는 business 또는 business_id+domain_id)로 정한다",
+                )
+            # 그 모듈이 이 모듈을 쓴다 — 순환 import를 피해 여기서 불러온다
+            from apm_gateway.application.scope_tools import ScopeTools
+
+            return await ScopeTools(self).metric_series(
+                scope_name,
+                requested,
+                interval,
+                reference_time,
+                lookback_minutes,
+                source_ids,
+                service=service,
+                business=business,
+                business_id=business_id,
+                domain_id=domain_id,
+            )
+        if any(v is not None for v in (service, business, business_id, domain_id)):
+            raise ApmError(
+                INVALID_ARGUMENT,
+                "service·business·business_id·domain_id는 scope domain·business 시계열에서만 쓴다",
+            )
         res = await self._resolve(hostname, instance_id, source_ids, instance_name)
         window = self.window(
             reference_time, lookback_minutes, default_minutes=SERIES_DEFAULT_MINUTES
         )
         assert window is not None
-        limits = _Limits(
-            [
-                "[한계] interval_minute 허용값·1회 조회 창 상한은 미공개다(W10) — 서버가 거부하면"
-                " 그 사유를 그대로 싣는다"
-            ]
-        )
+        limits = _Limits([SERIES_INTERVAL_NOTE])
         plan = await self._metric_plan(
             sorted({i["source_id"] for i in res.instances}),
             requested,

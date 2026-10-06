@@ -70,7 +70,7 @@
 | 연동 구조(확정) | **독립 최상위 패키지 `apm_gateway/`** — 자체 MCP 서버 · 독립 프로세스. 제니퍼 Open API(REST · Bearer 토큰)를 게이트웨이가 직접 호출한다(G-1 · G-8 · D-274) |
 | 제니퍼 설정 키 | 제니퍼 URL·토큰은 **`apm_gateway/.env`에만**(예시 `apm_gateway/.env.example` · §4.2). 소비자는 게이트웨이 MCP 주소·Bearer만 갖는다(`sre_agent/.env` `APM_MCP_*` · 루트 `.env` `NOISE_APM_MCP_*` — §4.6·§4.7). 전부 기본 off·빈 값 = 현행과 비트 동일 |
 | 재사용할 기존 기계 | **전례로 있다** — `mcp_server`의 HTTP 도구·반환 계약·Bearer 미들웨어(게이트웨이가 **복제**), `sre_agent`의 MCP 서버 등록, `noise_gate`의 `alarm:raw` 형식·MCP 클라이언트, OpenMetrics 노출 기계(`om_exposition.py` — 복제 또는 추출은 G-12) |
-| 지금 WAS를 볼 수 있는 길 | 게이트웨이를 띄우면 `apm_*` 8종으로 앱 계층(골든 시그널·힙/GC·풀·느린 트랜잭션·액티브 서비스·이벤트·프로파일)을 본다(§6). 게이트웨이가 없으면 종전대로 호스트(OS) 관점뿐 |
+| 지금 WAS를 볼 수 있는 길 | 게이트웨이를 띄우면 `apm_*` 데이터 도구 21종(허용목록 41템플릿)으로 앱 계층(골든 시그널·힙/GC·풀·느린 트랜잭션·액티브 서비스·이벤트·프로파일 · 서비스·업무 · 전 인스턴스 순위 · 여러 대상 한 번에)을 본다(§6 · §6.5). 게이트웨이가 없으면 종전대로 호스트(OS) 관점뿐 |
 | 운영 조사(원격) 셸 | **없다**(D-233 — 2026-09-21부터 bash off). 조사 LLM이 대상 호스트를 보는 길은 MCP 도구뿐이다 |
 | 채팅 질의 편입 | **보류** — 87 J5는 `plans/121` TP-9.1·9.2·10.5(처리기 계약)가 선행인데 코드 0건이다(2026-09-29 실측 — `metric_query`·`config/task_routines.yaml` 없음) |
 | 표준 노출(OpenMetrics) | 87 J7(선택) — 게이트웨이가 낸다. 공유 기계의 OpenMetrics **2.0** 협상은 **2026-09-29 수정 완료**(1.0 상한 · G-10) — 장기 실행 중인 `mcp_server`는 재기동해야 반영된다(§9.3) |
@@ -584,6 +584,10 @@ APM_EVENT_POLLER_ENABLED=false
 APM_EVENT_POLL_INTERVAL_SECONDS=30
 APM_EVENT_MIN_LEVEL=warning
 APM_EVENT_STREAM_KEY=alarm:raw
+# 조회용 이벤트 버퍼(폴러가 켜졌을 때만 쓴다 · 134 W3) — 전 대상 이벤트 조회가 폴러가 이미 받은 이벤트를 다시 묻지 않게 하는 메모리 버퍼
+# 둘 다 메모리 한도이지 조회 범위 상한이 아니다(범위 밖은 API로 묻는다) · 재기동하면 비어서 시작한다 · 1 이상
+APM_EVENT_BUFFER_MINUTES=60
+APM_EVENT_BUFFER_MAX_EVENTS=200000
 REDIS_HOST=redis.example.internal
 REDIS_PORT=6379
 REDIS_DB=0
@@ -657,7 +661,7 @@ APM_GATEWAY_BEARER_TOKENS={"chat": "<본체용>", "investigation": "<sre_agent�
 # [CWD=apm_gateway/ · 루트 venv 공유 — mcp_server와 같은 방식(둘 다 Python ≥3.11) · 설정은 apm_gateway/.env]
 cd apm_gateway && ../.venv/bin/python -m apm_gateway
 # 기동 로그 예(v5 — 소스 id와 설정 여부만 · URL·토큰 값 없음):
-#   APM 게이트웨이 시작: 127.0.0.1:9096 · 허용 경로 37(130 W2 — 종전 36 · v4 16) · {'sources': [{'id': 'bank', 'url_set': True, 'token_set': True, 'domain_filter': []},
+#   APM 게이트웨이 시작: 127.0.0.1:9096 · 허용 경로 41(134 W3·W4 — 종전 37 · 134 W5~W7 36 · v4 16) · {'sources': [{'id': 'bank', 'url_set': True, 'token_set': True, 'domain_filter': []},
 #   {'id': 'common', …}], 'bearer': True, 'poller': False, 'poll_interval': 30, 'overrides': 0}
 #   (단일 설정이면 sources = [{'id': 'default', …}] · 둘 다 비면 [])
 #   (Bearer가 비면) 전송 인증 off(APM_GATEWAY_BEARER_TOKEN 미설정) — 운영 배치에서는 필수
@@ -667,7 +671,7 @@ cd apm_gateway && ../.venv/bin/python -m apm_gateway
 - SSE 엔드포인트는 `http://<호스트>:9096/sse`다. 소비자(`sre_agent`·게이트)는 이 주소와 Bearer만 안다.
 - 헬스체크는 도구 `gateway_health`다(소스마다 `/api/domain` 1회 · 병렬 · 30초 캐시) — **소스별 행**(설정·도달·도메인 수·허용 경로 수)과 최상위 `status`(`ok` 모두 정상 ·
   `degraded` 하나라도 · `not_configured` 소스 0개)·폴러 상태를 돌려준다.
-- 제니퍼 **버전 에코는 없다**(87 R-12의 `api_version_expect`) — 허용목록 37템플릿에 버전 조회 경로가 없다. 에이전트 버전은 `apm_instance_map` 결과의 `agent_version`에 실린다.
+- 제니퍼 **버전 에코는 없다**(87 R-12의 `api_version_expect`) — 허용목록 41템플릿에 버전 조회 경로가 없다. 에이전트 버전은 `apm_instance_map` 결과의 `agent_version`에 실린다.
 - 로컬에는 `mcp_server`(9099)·조사 프로파일용(9097)·`sre_agent`(9098)·`alarm_server`(TCP 9100)가 장기 실행 중일 수 있다. 게이트웨이 기본 포트 9096은
   이들과 겹치지 않는다(2026-09-29 실측). 남이 띄운 프로세스는 건드리지 않는다.
 - `mcp` 패키지는 `<2`로 고정돼 있다(D-181 · 설치본 1.29.1). 게이트웨이 `pyproject.toml`도 같은 제약을 선언한다.
@@ -813,6 +817,7 @@ overrides: []
 | `APM_GATEWAY_BEARER_TOKEN` | `apm_gateway/.env` | 빈 값 | 게이트웨이 MCP 서버 전송 인증 — 비면 무인증(운영 필수) |
 | `APM_TIMEZONE` · `APM_INSTANCE_CACHE_SECONDS` · `APM_PROFILE_CALLS_PER_INVESTIGATION` | `apm_gateway/.env` | Asia/Seoul · 600 · 5 | 시각 해석·렌더 · 정합 캐시 · 조사당 프로파일 상한 |
 | `APM_EVENT_POLLER_ENABLED` · `APM_EVENT_POLL_INTERVAL_SECONDS` · `APM_EVENT_MIN_LEVEL` · `APM_EVENT_STREAM_KEY` | `apm_gateway/.env` | false · 30(하한 10) · warning · `alarm:raw` | 이벤트 폴러 |
+| `APM_EVENT_BUFFER_MINUTES` · `APM_EVENT_BUFFER_MAX_EVENTS` | `apm_gateway/.env` | 60 · 200000 | (134 W3) 조회용 이벤트 버퍼 보관 분 · 최대 건수 — **폴러가 켜졌을 때만** 쓴다 · 메모리 한도이지 조회 범위 상한이 아니다 · 재기동 = 빈 버퍼 · 0 이하는 기동 실패 — §6.5 |
 | `REDIS_HOST` · `REDIS_PORT` · `REDIS_DB` · `REDIS_PASSWORD` | `apm_gateway/.env` | localhost · 6379 · 0 · 빈 값 | 폴러 XADD·커서·멱등 키 |
 | `APM_MCP_URL` · `APM_MCP_TOKEN` | `sre_agent/.env` | 빈 값 | 조사의 두 번째 MCP 서버 |
 | `APM_GUIDANCE_ENABLED` · `APM_SIGNATURES_ENABLED` | `sre_agent/.env` | false | 조사 지침 · 판정 결과 승격 |
@@ -861,7 +866,11 @@ overrides: []
 | GET | `/api/status/application` · `/api/status/sql` · `/api/status/external_call` | 시 단위 맥락(v4는 `application`만 사용) | 구간은 **시 단위만**(*"Units below hour must be set to zero"*) · `application`은 `instance_id`·`max_row` 선택(v4 추가 · `max_row=20`으로 호출) · `max_row` 기본값은 정본에 없음 · 스펙 5.6.4 확인 |
 | GET | `/api-v2/deploy/{domainId}` | `apm_source_changes`·`apm_change_impact`(134 W2·W6) | `startTime`·`endTime`(ms) · 25시간 이하 · 5.6.0.5+ · v2 매뉴얼(정본 미수록) — 실응답 「확인 불가 — J0-L」 |
 | GET | `/api/transaction/guid` | `apm_transaction_trace`(134 W5) | `domain_id`·`guid`·`start_time`·`end_time` · 스펙 5.6.4 확인 · `time_pattern` 거부 |
-| GET | `/api/business` | `apm_instance_map(business=…)` 업무 정의 근거(130 W2 · D-290 ④ · §6.4) | `domain_id` 필수 · 도메인별 10분 캐시 · `/api/realtime/business`·`/api/dbmetrics/business`는 계속 거부 |
+| GET | `/api/business` | `apm_instance_map(business=…)` 업무 정의 근거(130 W2 · D-290 ④ · §6.4) · `apm_business(mode=list)`(134 W4) | `domain_id` 필수 · 도메인별 10분 캐시 |
+| GET | `/api/realtime/domain` | `apm_service_status`(134 W3) · `apm_fleet(service=…)` | `domain_id` 선택(없으면 전 도메인) · 스펙 5.6.4 확인 — 실 응답 모양은 W10 |
+| GET | `/api/dbmetrics/domain` | `apm_metrics(series, scope=domain)`(134 W3) | `domain_id`·`interval_minute`·`metrics`·`start_time`·`end_time` · 지표 1개/호출 · `time_pattern` 거부 |
+| GET | `/api/realtime/business` | `apm_business(mode=current)`(134 W4) | `domain_id` 필수 · `business_id` 선택 |
+| GET | `/api/dbmetrics/business` | `apm_metrics(series, scope=business)`(134 W4) | `domain_id`·`business_id`·`interval_minute`·`metrics`·`start_time`·`end_time` · `time_pattern` 거부 |
 | GET | `/api/auth/userlist` · `/restapi/users` · `/restapi/user/{id}`(`account`) | `apm_users`(134 W7) | 없음 · 경로 `id` · **`password`는 중앙 자격증명 경계가 키째 제거** · ID·이름·이메일·휴대폰·허용 IP는 가림(G-11 미결) |
 | GET | `/api-v2/environment-variable/{domainId}` | `apm_environment`(134 W7) | 경로 `domainId` · 키를 줄이지 않고 비밀 값만 `[가림]` · 값의 이메일·주민번호·휴대폰 가림 |
 | GET | `/api-v2/active-service/detail/{domainId}/{txid}` | `apm_active_detail`(134 W7) | 경로 `domainId`·`txid`(`sint` — 음수 가능) · 선택 `sessionId`·`threadHash`(필수 여부 미기재 — 받은 값만 보낸다) |
@@ -884,7 +893,7 @@ overrides: []
 - **v4.1 실서버 확인**(로컬 5.7.0.1 · 87 §0.12): 위 거부 입력(비GET 9 · 민감 GET 9 · 변형 10 · 쿼리 `token`/`TOKEN` · 허용 밖 키 · 필수 키 누락 2) 34건을 게이트웨이
   클라이언트로 보내는 동안 로컬 제니퍼의 토큰 `usageCount`가 **한 번도 늘지 않았다**(반영 지연 대기 뒤 Δ=0) — 서버에 닿기 전에 막힌다는 실측이다. 허용 경로 16개는
   필수 키로 불렀을 때 계약 위반(`Required request parameter`) 0건이었고, 결과는 200(`domain`·`realtime/instance`·`metrics`·`transaction/time`) 또는 도메인 미접속 500뿐이었다.
-- ~~`GET /api-v2/manage/rule/event/…`·`GET /api-v2/manage/instance…`는 J0 수동 채집 전용~~ — **134 W7(2026-10-06)에서 허용목록에 넣었다**(D-296 ① · 위 표). 허용목록은 37템플릿이다(130 W2에서 `/api/business` 추가 — 업무명 해석 · §6.4).
+- ~~`GET /api-v2/manage/rule/event/…`·`GET /api-v2/manage/instance…`는 J0 수동 채집 전용~~ — **134 W7(2026-10-06)에서 허용목록에 넣었다**(D-296 ① · 위 표). 허용목록은 41템플릿이다(130 W2에서 `/api/business` 추가 — 업무명 해석 · §6.4 · **134 W3·W4에서 실시간 도메인·실시간 업무·도메인 시계열·업무 시계열 4경로 추가** — §5.3 · §6.5).
 
 경로 이름과 필수 파라미터는 **정본 스펙 5.6.4로 대조를 마쳤다**([J-23] — 실 서버 호출 0회). 실응답과의 차이는 J0-L(로컬)·J0-O(운영)에서 recorded JSON으로 확인한다. 87의 진단 조회는 전부 v1(`/api/*`)이고, v1은
 *"not removed for compatibility, but are no longer maintained"* 상태다 [J-4] — 필드가 바뀔 수 있으므로 recorded JSON 계약 테스트로
@@ -939,7 +948,7 @@ overrides: []
 
 ## 6. 도구 목록과 입출력 계약 【현재 가능 — v4 · 제공 주체 = `apm_gateway` · 계약 정본 `spec/SPEC-apm-gateway.md` §3~§5】
 
-### 6.1 데이터 도구 18종 + 작업 도구 3종 + `gateway_health` — 게이트웨이 MCP 서버가 노출 【`plans/134` W0-B~W2 · W5~W7(2026-10-06)로 갱신 · D-299 ③ — 8종 상한 폐지】
+### 6.1 데이터 도구 21종 + 작업 도구 3종 + `gateway_health` — 게이트웨이 MCP 서버가 노출 【`plans/134` W0-B~W2 · W3·W4 · W5~W7(2026-10-06)로 갱신 · D-299 ③ — 8종 상한 폐지】
 
 공통 인자: `investigation_id?`·`thread_id?`(감사 레코드에만 싣는다 — R-19). 구간 인자 `reference_time?`(ISO 8601 · naive면 `APM_TIMEZONE`) ·
 `lookback_minutes?` — 창은 `[reference_time − lookback, reference_time]`이고 `reference_time`을 빼면 "지금"이다(기존 사건 좌표계와 같다).
@@ -969,12 +978,16 @@ overrides: []
 | `apm_users` | `user_id?` | `/api/auth/userlist` · `/restapi/users` · `/restapi/user/{id}` | 사용자·계정 행(ID·이름·이메일·휴대폰·허용 IP 가림 · 비밀번호 없음) |
 | `apm_active_detail` | `active_ref` 칸(`domain_id`·`txid`·`session_id`·`thread_hash`·`source_id`)·`hostname?` | `/api-v2/active-service/detail/{d}/{txid}` | 실행 중 요청 1건(사용자 ID 가림·GUID·SQL 리터럴 가림·HTTP 메서드·쿼리 값 가림) · 현재값 전용 |
 | `apm_status_stats` | `kind`(application·sql·external_call)·`hostname`·`instance_id?`·구간(기본 60분)·`sort_by?`·`n?`·`full?`·`application_name?` | `/api/status/{application,sql,external_call}`(정시 경계 · `max_row`=n · `sort_by_metrics`) | URL·SQL·외부 호출별 시 단위 통계(이름 마스킹 · 25/7필드) + `summary`(평균 = Σ`total_response_ms` ÷ Σ`calls`) · 원천이 정렬 기준을 거부하면 전체를 받아 로컬 정렬 |
-| `apm_metrics` | `mode`(catalog·series)·`scope`·`metrics`·`interval_minute?`·대상·구간 | `/api/metrics` · `/api/dbmetrics/instance`(W2 — domain은 W3 · business는 W4) | 카탈로그 행 `{source_id, scope, metric}`(6군 · TTL 캐시·변경 감지) · 시계열 긴 형식 행 |
+| `apm_metrics` | `mode`(catalog·series)·`scope`(instance·domain·business)·`metrics`·`interval_minute?`·대상(instance는 `hostname`·`instance_name` · domain·business는 `service`·`business`·`business_id`·`domain_id`)·구간 | `/api/metrics` · `/api/dbmetrics/instance`(W2) · `/api/dbmetrics/domain`(W3) · `/api/dbmetrics/business`(W4) | 카탈로그 행 `{source_id, scope, metric}`(6군 · TTL 캐시·변경 감지) · 시계열 긴 형식 행 |
 | `apm_source_changes` | `hostname`·구간(기본 24시간) | `/api-v2/deploy/{domainId}`(25시간 이하 조각) | 변경 감지 행 `change_detected_ms`·`change_detected_at` · `[한계] 변경 감지 — 배포 확정 아님` |
+| `apm_service_status`(134 W3) | `service?`(이름 문자열 또는 목록)·`domain_id?`·`source_ids?` | `/api/realtime/domain`(이름 없음 = 소스당 1호출로 전 도메인 · 이름 = 찾은 도메인마다) | 서비스(제니퍼 도메인)별 TPS·응답시간·액티브·동시 사용자·거절률·방문·호출 수·액티브 구간 4칸 · 이름을 줬는데 못 찾으면 **데이터 호출 없이** 「찾지 못함」 + 비슷한 이름 ≤3 |
+| `apm_business`(134 W4) | `mode?`(current·list)·`business?`·`service?`·`domain_id?`·`source_ids?` | `/api/business`(`list`) · `/api/realtime/business`(`current`) | 업무별 TPS·응답시간·액티브·동시 사용자·액티브 구간 4칸(`current`) · 업무 정의·규칙(`list`) · 한 이름에 업무가 여럿이면 전부 조회하고 이름 목록을 `[한계]`로 |
+| `apm_fleet`(134 W3) | `mode`(ranking·events)·`metric?`(30종)·`order?`·`n?`·`full?`·`level?`·`level_mode?`·`error_type?`·구간·`service?`·`domain_id?`·`source_ids?` | ranking: 전 도메인 `/api/realtime/instance` · events: 폴러 버퍼 + 도메인마다 `/api/dbsearch/event` | ranking: 전 인스턴스를 모은 **뒤** 정렬한 순위(실패한 도메인이 있으면 `provisional` 잠정) · events: 전 도메인 이벤트(실패한 도메인은 0건이 아니라 「확인하지 못함」) |
 | `apm_job_status`·`apm_job_cancel`·`apm_job_read` | `job_id`·`owner?`·(`read`) `chunk?`·`part?` | 없음(제니퍼 호출 0) | 작업 상태·진행·예측·`result_meta`·미리보기 / 취소 / 결과 파일 청크·텍스트 — **같은 주체 + 같은 `owner`만**(아니면 `job_not_found`) |
-| `gateway_health` | 없음 | 소스마다 `/api/domain` 1회(병렬 · 30초 캐시) | **소스별 행**(`source_id`·상태·설정·도달·도메인 수·허용 경로 수(37)·API 호출 수) + 최상위 `status` · `poller` · `jobs`(running·queued·슬롯) |
+| `gateway_health` | 없음 | 소스마다 `/api/domain` 1회(병렬 · 30초 캐시) | **소스별 행**(`source_id`·상태·설정·도달·도메인 수·허용 경로 수(41)·API 호출 수) + 최상위 `status` · `poller`(폴러가 켜졌으면 `event_buffer` 포함 — §6.5) · `jobs`(running·queued·슬롯) |
 
 - **`instance_name?`(`plans/130` W1)** — 표에서 `hostname`을 받는 데이터 도구 13종(`apm_app_health`·`apm_runtime_health`·`apm_resource_pool`·`apm_slow_transactions`·`apm_active_services`·`apm_events`·`apm_transaction_profile`·`apm_status_stats`·`apm_metrics`·`apm_source_changes`·`apm_transaction_trace`·`apm_change_impact`·`apm_period_compare`)과 관리 도구 3종(`apm_config`·`apm_environment`·`apm_active_detail`)은 `hostname` 대신 **정확한 인스턴스 이름** `instance_name`으로도 부른다 — `hostname`은 선택이 됐고 대상이 필요한 도구는 둘 중 하나가 있어야 한다. 부분 이름은 `apm_instance_map(query=…)`로 먼저 찾는다(§6.4).
+- **`targets?`(134 W3)** — 위 표에서 `hostname`을 받는 데이터 도구 **17종**(`instance_name?` 항목의 13종 + 관리 3종 + `apm_instance_map`)은 여러 대상을 한 번에 줄 수 있다: `targets: [{hostname?, instance_name?, instance_id?, source_id?}]`(개수 상한 없음 · 항목 키와 검증은 §6.5). 한 호출 = 작업 1개이고 대상별 결과는 `batch[]`로 돌아온다. 최상위 `hostname`·`instance_name`·`instance_id`와 함께 줄 수 없다. `apm_metrics`는 인스턴스 시계열에서만 받는다.
 - 도구 설명문은 벤더 중립이다(`jennifer`·「제니퍼」 없음 — `apm_gateway/tests/test_server.py`).
 - **`was_signals`**는 게이트웨이 `domain/signals.py`의 **WAS 시그니처 결정적 판정 결과**다 — `kind`·`level`·`category`·`label`·`evidence`·`instance_id`·`source_tool`·`source_id`(v5).
   kind 8종: `was_service_queuing` · `was_thread_pool_exhaustion` · `was_db_pool_exhaustion` · `was_gc_stall` · `was_heap_pressure` · `was_slow_sql` ·
@@ -1134,6 +1147,34 @@ hostname으로 다시 `apm_instance_map(hostname=…)`을 불러(E1r) 인스턴�
 
 ---
 
+### 6.5 여러 대상 한 번에 · 전 인스턴스 순위·이벤트 · 서비스·업무 【현재 가능 — `plans/134` W3·W4(2026-10-06) · D-310 · 계약 정본 `spec/SPEC-apm-gateway.md` §3.5】
+
+운영자가 알아 둘 것만 적는다(인자·봉투 전부는 계약 정본). 이 절의 숫자·이름은 코드 기준이고, **실 제니퍼 응답 모양은 W10에서 확인한다**(지금은 목 서버·합성 픽스처).
+
+| 질문 모양 | 쓰는 도구 | 비고 |
+|---|---|---|
+| 서버·인스턴스 여럿(예: 12대)의 응답시간·힙·이벤트 | 같은 도구 + `targets` | 한 호출 = 작업 1개 · 대상 수만큼 제니퍼 호출 |
+| 「전체 WAS 중 가장 느린 5개」 · 「힙 많이 쓰는 10개」 | `apm_fleet(mode=ranking)` | 범위 안 **모든** 도메인의 인스턴스를 모은 뒤 정렬(30개 지표 중 선택) |
+| 「오늘 fatal 난 WAS 전부」 | `apm_fleet(mode=events)` | 폴러가 받아 둔 구간은 버퍼에서, 나머지는 API |
+| 「주문 서비스 지금 상태」 · 「서비스별 현재 TPS」 | `apm_service_status` | 서비스 = 제니퍼 도메인 |
+| 「결제 업무 TPS」 · 「업무 목록」 | `apm_business`(`current`·`list`) | 업무 정의 이름으로 찾는다 |
+| 서비스·업무의 시간대별 추세 | `apm_metrics(mode=series)` + `scope` `domain` 또는 `business` | 지표를 말하지 않으면 기본 지표 3종(`response_time_avg_ms`·`service_count`·`service_err_count`) |
+
+**오래 걸리는 조회는 작업으로 접수된다.** 대상이 수십 개이거나 전 인스턴스 순위·전 도메인 이벤트는 제니퍼 호출이 많다(호출 수 ÷ 초당 상한 — 소스당 기본 초당 5회, `JENNIFER_RATE_LIMIT_PER_SEC`). 마감(채팅은 호출 상한 − 2초) 안에 못 끝나면 **작업 1건**으로 접수하고(데이터 답 아님) 작업 카드에 예상 시간과 진행(`done/total` API 호출)이 보인다. 배치는 대상 수만큼 작업이 늘지 않는다. 도메인 350개 × 소스 규모의 실제 소요는 아직 재지 않았다(예상은 호출 수 ÷ 속도일 뿐 — W10). 작업 목록·감사 줄에는 대상 원문이 아니라 `targets(N)`만 나가지만, **작업 기록(`result_meta.batch[].target`)에는 사용자가 가리킨 hostname·인스턴스 이름·소스 id가 남는다**(비밀 값이 아니며 소유자 확인·보관 기간 `APM_ARTIFACT_RETENTION_SECONDS`를 따른다).
+
+**일부 실패는 0건이 아니다.** `targets`에서 일부 대상만 실패하면 `partial` + 대상별 사유가 돌아오고, 전부 실패하면 오류다. 전 인스턴스 순위에서 일부 도메인·소스가 실패하면 **「잠정 순위」**로 표시한다(실패한 곳은 순위에 없다). 전 도메인 이벤트에서 실패했거나 응답 모양을 알아보지 못한 도메인은 「0건」이 아니라 「확인하지 못함」이다.
+
+**이름을 줬는데 하나도 못 찾으면 넓히지 않는다.** 서비스·업무 이름이 어느 도메인·업무와도 맞지 않으면 제니퍼 데이터 API를 한 번도 부르지 않고(이름 해석용 인벤토리·업무 정의 조회만 나간다) 「찾지 못함」과 비슷한 이름 후보(≤3)를 돌려준다. 다른 서비스로 대신 조회하지 않는다. 한 이름이 여러 도메인·업무에 맞으면 전부 조회하고 이름 목록을 `[한계]`에 싣는다.
+
+**조회용 이벤트 버퍼(폴러가 켜졌을 때만).**
+- 폴러(§8.2)가 도메인별로 받은 이벤트를 **최소 레벨로 거르기 전에** 메모리에도 둔다. `apm_fleet(mode=events)`가 그 구간을 다시 묻지 않으려는 것이다. 폴러가 꺼져 있으면 버퍼가 없고 이벤트는 전부 API로 묻는다.
+- 설정: `APM_EVENT_BUFFER_MINUTES`(기본 60 — 보관 분) · `APM_EVENT_BUFFER_MAX_EVENTS`(기본 200000 — 전 도메인 합계 최대 건수). **메모리 한도이지 조회 범위 상한이 아니다** — 버퍼 밖 구간은 API로 묻는다. 가득 차면 가장 오래된 이벤트부터 밀어낸다. 20만 건일 때의 실제 메모리는 **측정하지 않았다**.
+- 폴러가 성공적으로 받아 응답 모양을 알아본 구간(`[커서, 지금 − 60초]`)만 「확정」으로 보고 그 구간은 API 없이 답한다. 폴링 실패·백오프·중지·**재기동 직후(빈 버퍼)**는 확정이 아니므로 API로 묻는다.
+- **알람 발행(`alarm:raw`)은 버퍼가 있든 없든 바이트 동일하다** — 최소 레벨·멱등 키·페이로드는 바뀌지 않았다(독립 검증 4경우).
+- 상태는 `gateway_health`의 `poller.event_buffer`(`events`·`domains`·`domains_confirmed`·`retention_minutes`·`max_events`·`evicted_total`)로 본다.
+
+**아직 확인하지 못한 것(W10).** 무인자 `/api/realtime/domain`이 정말 전 도메인을 돌려주는지 · `/api/realtime/business`의 `business_id` 존중 · 이벤트 조회 구간 양끝 포함 여부와 늦게 들어오는 이벤트(60초 겹침으로 충분한지) · 빈 결과 모양 · 기본 지표 3종이 운영 지표 카탈로그에 있는지 · 방문·호출 수 단위. 이 값들은 계약 테스트가 합성 픽스처로만 고정한다.
+
 ## 7. 소비자별 사용 흐름
 
 ### 7.1 `sre_agent` 조사 【현재 가능 — v4 · J3 · 설정 §4.6】
@@ -1161,14 +1202,15 @@ hostname으로 다시 `apm_instance_map(hostname=…)`을 불러(E1r) 인스턴�
 
 - 기준 경로는 사다리 2단 `intent_orchestration`이다(D-251). **운영 `.env`는 아직 1단이 확정되는 상태라**(`docs/21_orchestration_ladder.md`) 채팅 제니퍼 조회는 2단 전환 뒤에 효력이 난다.
   APM 엔드포인트(`MCP_SOURCE_ENDPOINTS`의 `apm`)가 설정된 배포에서만 처리기·분해 프롬프트 줄이 붙는다(비활성 배포 바이트 불변).
-- 분해 LLM이 **보기**(`views` — 레지스트리 `solutions[apm].views` 닫힌 어휘 12종)와 **조건**(`view_args` — 개수·전체·레벨·오류 유형·정렬·지표 이름·간격 등)을 고르고, 코드가 형식을 검증한다.
+- 분해 LLM이 **보기**(`views` — 레지스트리 `solutions[apm].views` 닫힌 어휘 28종 · 개수 제한 없이 필요한 보기를 모두)와 **조건**(`view_args` — 개수·전체·레벨·오류 유형·정렬·지표 이름·간격 등)을 고르고, 코드가 형식을 검증한다.
   모르는 조건은 버리고 고지한 채 조회한다. 보기가 요청 영역을 못 덮으면 보기 카탈로그로 **한 번 더** 고르고(LLM 1회), 그래도 못 덮은 부분만 후보를 들어 되묻는다.
 - 처리기는 게이트웨이를 **두 번째 MCP 엔드포인트**로 부른다(본체는 제니퍼 URL·토큰을 갖지 않는다). 데이터 도구에 `owner`(`user:<sub>`)와 `wait_seconds`(호출 상한 − 2초 · 조회 마감 이내)를 싣는다.
   오래 걸리는 조회는 **작업으로 접수**하고(데이터 답 아님 — 작업 카드에서 진행·취소·결과 보기·전체 CSV) · 큰 결과는 화면 앞 500행 + 결과 파일이다(§4.2 「장기 작업」).
 - 답에는 게이트웨이 판정(`was_signals`)과 집계(구간 p50·p95·오류율 · 시 단위 합계 · 오류 유형별 건수)가 **`**판정·집계**` 블록**으로 그대로 실린다(LLM 산문에 맡기지 않음).
 - **인스턴스 이름·업무명 질문(`plans/130`)** — 분해 칸 `targets`로 받아 게이트웨이 검색·업무명 해석과 폴스타 업무명 간선(E6)으로 인스턴스를 찾고, 찾은 인스턴스를 상한 없이 전부 부른다. 못 찾으면 다른 인스턴스로 대신 조회하지 않고 비슷한 이름 후보를 보여 준다(§6.4.4·§6.4.5).
+- **여러 대상·전 대상(`plans/134` W3·W4)** — 한 보기의 대상이 2개 이상이면 게이트웨이에 `targets` **한 호출**로 보내고 대상별 결과를 복원한다(대상이 1개면 종전과 같은 호출). 대상을 말하지 않은 대상 필수 보기는 인스턴스 목록 **전부**를 대상으로 쓴다(목록이 인라인 상한을 넘으면 결과 파일을 끝까지 읽는다). 「전체 순위」·「전체 이벤트」 보기는 서버로 좁히지 않고(말한 서버가 있으면 그 사실을 고지) 서비스 이름으로만 좁힌다. 소스를 지목하면(`sources` — 소스가 2개 이상 등록된 배포) 그 소스만 조회한다(§6.5).
 - **권한** — 소스 단위 인가 `allowed_sources`(D-285 ①)를 실행 경계에서 판정한다. 작업 API·결과 파일 다운로드는 질의한 사용자(또는 관리자)만(D-262).
-- **한계** — 「하루 넘게 지난 기간」은 아직 조회하지 않는다(`plans/134` W6에서 해상도 선택과 함께 폐지) · 서비스·업무·전 대상 순위·GUID·설정/계정 조회는 W3~W7 잔여 ·
+- **한계** — 「하루 넘게 지난 기간」은 아직 조회하지 않는다(`plans/134` W6에서 해상도 선택과 함께 폐지) · 서비스·업무·전 대상 순위·이벤트(W3·W4)와 GUID·설정/계정 조회(W5~W7)는 구현됐다 · M-7·A-1 채팅·A-4는 잔여 ·
   실 제니퍼 응답 모양은 미검증(W10). 사용자 매뉴얼 U-50·U-51(D-255).
 
 ### 7.3 사용자 pull 조사 위임 — 주의 【현재 가능 — 3단 한정】
@@ -1199,6 +1241,7 @@ hostname으로 다시 `apm_instance_map(hostname=…)`을 불러(E1r) 인스턴�
 | 형식 | `alarm_server`와 같은 `{"data": <json>}` 레코드(스트림 기본 `alarm:raw`) — 소비자(게이트·트리거)는 폴스타 알람과 같은 파서로 받는다 |
 | 오류 처리 | 도메인 미접속(`source_unavailable`) → **커서 유지** · 백오프(주기 ×2 · 최대 ×8) · 상태 `unavailable` · 계약 위반(`contract_violation`) → 그 도메인 폴링 **중지**(경고 로그 · 게이트웨이 버그) · Redis XADD 실패 → 멱등 키를 지우고 커서를 유지해 다음 주기에 다시 발행. 백오프·중지는 (소스, 도메인)별이고 한 소스의 실패(도메인 목록 실패 포함)가 다른 소스 폴링을 막지 않는다. 상태는 `gateway_health`의 `poller.domains`(`"<source_id>:<domain_id>"`)에 보인다 |
 | 호출 경로 | 게이트웨이 안에서 끝난다(토큰 한 곳 — G-4 해소 · D-274 ④) |
+| 조회용 버퍼(134 W3) | 폴러가 받은 이벤트를 레벨 필터 **전**에 메모리 버퍼(`event_buffer.py` · 설정 `APM_EVENT_BUFFER_*`)에도 기록한다 — 전 대상 이벤트 조회용이다(§6.5). 기록에 실패해도 발행은 계속하고 로그만 남기며, **발행은 버퍼 유무와 바이트 동일**하다 |
 | 제니퍼 측 준비 | 없음(Java 코드 0) — Open API 토큰과 네트워크(§3)뿐 |
 
 **정규화(`domain/events.py` `build_alarm_payload` · 계약 정본 `spec/SPEC-apm-gateway.md` §5)**:
@@ -1729,3 +1772,4 @@ U-1~U-14 가운데 로컬(J0-L)에서 풀 수 있는 것과 운영(J0-O)에서�
 | 2026-09-30 | **v5 — J8 다중 제니퍼 소스 구현 반영**(사용자 지시 *"87번 계획을 구현하라."* · 87 §0.14 · D-287) — 머리말 · §0(제니퍼 소스 행) · §4.1 · **§4.2 다중 소스 설정**(`JENNIFER_SOURCES`·접두 키·기동 실패·타임아웃 주의) · §4.3(기동 로그·헬스 소스별) · **§4.4 재작성**(`plans/125` A-1 등재 현황 + `sources[]` 정본·검증·조회 함수·소스 추가 절차) · §4.5(`overrides[].source_id`·`per_source` · F-3 해소) · §4.7(존 좁히기 · `invalid_argument` 시 재시도 없음 · 호스트 참고 표 키) · §4.9 · §6(소스 인자·`instance_refs`·`sources[]`·부분 실패 · 오류 표) · §7.1 · §8.2(커서·멱등·`dbId`·`resourceAncestry`) · §8.4(존 좁히기 · 툴팁 · 힌트 · **⑥ 알람 존 전달 F-7 해소**) · §10.1 · **§10.2 두 소스판**(절차 · 정상 응답 · 목 서버 25 + Docker 10 · IT 4 passed) · §11(6행 추가 · 2행 정정) · §12.2 · §13. 관리자 매뉴얼 A-30·9.5 동반 갱신(D-255) |
 | 2026-09-29 | **v4.1 — 구현 대조 · 실서버 검증 반영**(사용자 지시 *"구현한 내용을 확인하여 docs폴더의 31번 가이드도 업데이트하라."*) — 구현 코드와 절마다 다시 대조: G-3 「미결」 표기 → 확정 · 남은 「예정」 표기 정리(§3.2·§3.5·§3.7·§9.4 — J5·J6·J7과 `was_object` 브릿지 몫만 남김) · §3.5 정합·MCP 소비 행(v4 실제) · §3.8 카탈로그 정본 = `allowlist.py`·대조 테스트 이름 · 깨진 문장 1곳 · §4.2 `APM_GATEWAY_LOG_LEVEL` · §4.8 게이트웨이 로더 실제 동작 · §13 **구현 위치 표** 신설 · D-195 표기. **87 §0.12 실서버 검증 반영**: §3.8(사용량 반영 지연 · 목 서버 재확인 · Docker IT 2 passed · 이벤트 재현 발행처 주의) · §4.5(빈 인벤토리 캐시) · §5.3(거부 34건 `usageCount` Δ=0 · `profile.txt` `key` 형식) · §5.6 · §6.1(지표 식별자 13/13) · §8.4(지연 실측 · 401 사유) · **§10.2 게이트웨이 실서버 검증 절(절차 · 정상 응답 · 58항목 · 미확인)** · §10.3(목업 판정은 테스트로 있음 · 실 LLM 미실행) · §10.4 · §11(6행 추가 · 5행 정정) · §12.2. 코드 변경 없음 · 화면 변화 없음(D-255 매뉴얼 대상 아님) |
 | 2026-10-06 | **`plans/130` W1~W4 반영(W5 문서)** — 인스턴스 이름·업무명 조회: §4.3 기동 로그·버전 에코(허용 경로 37) · §4.5 교차 참조 · §5.3 `/api/business` 행(필수 `domain_id` · D-290 ④)·37템플릿 · §6.1 `apm_instance_map` `query?`·`business?` · `instance_name?`(데이터 13 + 관리 3) · `gateway_health` 허용 경로 수 37 · §6.2 오류 표(`invalid_argument`·`instance_unresolved` 추가 경우) · **§6.4 신설**(부르는 법 · 검색 단계 · 업무명 근거 B0~B3 + 폴스타 E6 · 찾지 못함과 후보 · 채팅 흐름 · `business_map` 작성법 · 첫 질의 비용) · §7.1 조사 지침 한 줄 · §7.2 채팅 질문. 예시 이름은 모두 가상 |
+| 2026-10-06 | **`plans/134` W3·W4 반영(D-310)** — 여러 대상 한 번에(`targets`)·전 인스턴스 순위·이벤트(`apm_fleet`)·서비스(`apm_service_status`)·업무(`apm_business`)·도메인/업무 시계열: §0 요약 · §4.2 설정 블록·§4.9 신규 키(`APM_EVENT_BUFFER_MINUTES`·`APM_EVENT_BUFFER_MAX_EVENTS` — 폴러가 켜졌을 때만 · 메모리 한도 · 재기동 = 빈 버퍼) · §4.3·§5.3 허용 경로 **37 → 41**(실시간 도메인·실시간 업무·도메인 시계열·업무 시계열) · §6.1 데이터 도구 **18 → 21종**·`targets` 17도구·`apm_metrics` 범위·`gateway_health` · **§6.5 신설**(질문 모양별 도구 · 작업 접수 · 일부 실패 · 이름 미해결 · 이벤트 버퍼 · W10 미확인) · §7.2 보기 28종·여러 대상 · §8.2 버퍼 행. 사용자 지시 *"134번 계획을 구현하라."*(팀 리드 경유) · 운영자 문서이며 화면·버튼 추가가 아니다(사용자 매뉴얼 U-54는 별도 — D-255) |

@@ -3,6 +3,7 @@
 > 계획서 `plans/134-WIP-jennifer-question-coverage.md` v1.2 · 전수 대응표 `spec/CAPABILITY-MAP-134.md`(COV) · 사용 사례 `docs/33_jennifer_use_cases.md` · 결정 **D-296**(범위) · **D-299**(광범위 활용·구현 계약)
 > 게이트웨이 도구 계약의 정본은 `spec/SPEC-apm-gateway.md` §3이다. 이 문서는 134가 그 계약에 **더하는 것**(인자·봉투·작업·도구·보기·본체 흐름)과 Wave별 소유를 정한다. 게이트웨이 구현 Wave는 같은 작업에서 `SPEC-apm-gateway.md` §2.1·§3·§6을 맞춘다.
 > 기준 커밋 `54e1597`(main) · 작성 2026-10-02 · 실 제니퍼·LLM 호출 0으로 정한 계약이다(실응답 shape는 W10).
+> **[W3·W4 구현 · 2026-10-06 · D-310]** 아래 §5·§6·§7.4가 「목표」이던 W3·W4 행은 구현 사실로 바꿨다(도구 3종 · `apm_metrics` domain·business · `targets` · 보기 6종 · 소스 지목 `sources`). 게이트웨이 계약 정본은 `spec/SPEC-apm-gateway.md` §3.5이고 본체 흐름은 §7.4다.
 
 ## 0. 불변 조건 (모든 Wave)
 
@@ -215,18 +216,19 @@ D-195 ①의 8종 상한을 D-299 ③이 폐지했다. 기능 응집으로 묶�
 | `apm_events` | W1 | dbsearch/event·error | `level_mode?: min\|exact` · `error_type?` · `record?: event\|error` · `full?`·`n?` | 24시간·50건 상한 제거(`n` 기본 = **전부** — 종전 50은 상한이었다) · `level`은 게이트웨이 계약 값 fatal·warning·normal · `exact`는 API `level`(대문자) + 재검증 · `error_type`은 정규화 이름 먼저, 0건이면 접두 변형(`ERROR_`·`WARNING_`)을 차례로 다시 묻고 맞은 표기를 `[한계]`에(U-13 · W10) · 이벤트도 같은 유형으로 거른다 · `record=error`면 행 = 오류 기록 · `errors_by_type` = 전 유형 |
 | `apm_transaction_profile` | W1·**W5 구현** | txid·profile.txt·sql | W5 `profile_no?`·`include_param_key?`(sql만) | 발췌(앞 60줄)는 화면용으로 남고 발췌가 잘렸으면(`profile_truncated`) **전문은 `artifact.text_parts["profile"]`**(마스킹본) · SQL 전부(`top_k` 비우면 전부) · `key`는 허용만(미전달 + `[한계]` — W10) · SQL 문 칸이 아닌 문자열(바인드 값일 수 있음 — 출처 칸 이름으로 판정)은 `mask_identifier` · **예산 분리(W5 구현)**: 전송 주체 `chat` 면제 · 칸 `(주체, 조사 ID → owner → 미지정)` · 인자로 면제 불가(§3.6) |
 | `apm_status_stats` | W2 | `/api/status/{application,sql,external_call}` | `kind` · `hostname`·`instance_id?` · 구간(기본 60분) · `sort_by?` · `n?`·`full?` · `application_name?` | 시 경계 고지 · `name` 마스킹(SQL·URL) · 도메인별 `max_row=n` 뒤 전역 재정렬(정렬 기준 대응을 모르면 「전역 순위 아님」 `[한계]`) · `summary` 평균 = Σ`total_response_ms` ÷ Σ`calls`(원자료 칸은 행에 남김 — W6 가중 평균 입력) · 표시 행 기준 합계면 그 사실을 `[한계]`에 |
-| `apm_metrics` | W2(instance)·W3(domain)·W4(business) | `/api/metrics` · `/api/dbmetrics/{instance,domain,business}` | `mode=catalog\|series` · `scope` · `metrics` · `interval_minute?`(기본 5) · 대상 · 구간(기본 60분) | 카탈로그 = 소스별 전 지표 군 행 `{source_id, scope, metric}`(`externalCall` → `external_call` · TTL `APM_METRIC_CATALOG_TTL_SECONDS` · 지문 변경 감지 · 모양이 다르면 오류) · 시계열 정본(업무 포함 — E-24) · 긴 형식 행 · 모르는 지표 = 후보 ≤3 + `invalid_argument` · 카탈로그를 못 읽은 소스는 검증 없이 조회하고 `[한계]`·partial |
+| `apm_metrics` | W2(instance)·**W3·W4 구현**(domain·business) | `/api/metrics` · `/api/dbmetrics/{instance,domain,business}` | `mode=catalog\|series` · `scope` · `metrics` · `interval_minute?`(기본 5) · 대상 · 구간(기본 60분) · **W3·W4** `service?`·`business?`·`business_id?`·`domain_id?` · **W3** `targets?`(instance 시계열만) | 카탈로그 = 소스별 전 지표 군 행 `{source_id, scope, metric}`(`externalCall` → `external_call` · TTL `APM_METRIC_CATALOG_TTL_SECONDS` · 지문 변경 감지 · 모양이 다르면 오류) · 시계열 정본(업무 포함 — E-24) · 긴 형식 행 · **instance 시계열**: 모르는 지표 = 후보 ≤3 + `invalid_argument` · **domain·business 시계열(W3·W4)**: 지표 미지정 = 게이트웨이 기본 지표(`response_time_avg_ms`·`service_count`·`service_err_count`) · 일부 모름 = 빼고 조회 + 고지 · 전부 모름 = 기본 지표 + 고지(`partial`) · 카탈로그를 못 읽은 소스는 검증 없이 조회하고 `[한계]`·partial · 이름을 줬는데 못 찾으면 데이터 API 0회 |
 | `apm_source_changes` | W2 | `/api-v2/deploy/{domainId}` | 대상 · 구간(기본 24시간) | 25시간 조각 · v2 맨 배열 전용 파서 · 겹침 제거 · 원시 시각 `change_detected_ms` 보존 · 「변경 감지(데이터 서버 인지 시각) — 배포 확정 아님」 |
-| `apm_service_status` | W3 | `/api/realtime/domain` | `service?` · `source_ids?` | 도메인(서비스) 현재값 전부 · 서비스 해석은 130 검색기 |
-| `apm_fleet` | W3 | realtime/instance 전 도메인 · dbsearch/event 전 도메인(+ 폴러 버퍼 N-11) | `mode=ranking\|events` · `metric`·`order`·`n`·`full` · `level`… | 전 대상 수집 뒤 정렬 · 실패 대상 있으면 `partial` + 「잠정 순위」 |
-| `apm_business` | W4 | `/api/business` · `/api/realtime/business` | 업무 · 도메인 | 업무 정의·현재값 · 시계열은 `apm_metrics(scope=business)` |
+| `apm_service_status` | **W3 구현**(N-9) | `/api/realtime/domain` | `service?`(str\|list) · `domain_id?` · `source_ids?` | 이름 없음 = 소스당 1호출 전 도메인 · 이름 = 도메인 이름 단계 검색(130 판정을 공용 함수로 뽑아 재사용 — 인스턴스·도메인·업무 같은 코드) · 한 이름에 여럿 = 전부 조회 + `[한계]` · **이름을 줬는데 하나도 못 찾으면 데이터 API 0회 · 행 0 · 전체로 넓히지 않음** + `apm_unresolved_condition` + 후보 ≤3 |
+| `apm_fleet` | **W3 구현**(N-10·N-11) | realtime/instance 전 도메인 · dbsearch/event 전 도메인(+ 폴러 버퍼 N-11) | `mode=ranking\|events`(필수) · `metric`(30종 `RANKING_METRICS`)·`order`·`n`·`full` · `level`·`level_mode`·`error_type`·`reference_time`·`lookback_minutes` · `service?`·`domain_id?`·`source_ids?` | **ranking**: 전 도메인을 모은 뒤 정렬 · 실패 도메인·소스가 있으면 `provisional` + `partial` + 「잠정 순위」 · 값 없음은 순위 밖 · `summary`(도메인·인스턴스 수) · **events**: 버퍼가 확정한 구간은 버퍼 · 나머지는 도메인마다 API 1회 · 중복 제거는 버퍼↔API 겹침만 · 응답 모양을 모르는 도메인·실패 도메인은 0건이 아니라 「확인하지 못함」(`coverage.failed`) · `summary.events_total` · `service`로 좁힘 |
+| `apm_business` | **W4 구현**(N-12) | `/api/business` · `/api/realtime/business` | `mode`(`current` 기본·`list`) · `business?`(str\|list) · `service?` · `domain_id?` · `source_ids?` | 업무 정의(`list` — 행에 `bad_response_time_ms`·`business_index`·`business_oid`(파일 전용)·`rules[]` 포함)·현재값 · 이름 해석 규칙은 `apm_service_status`와 같다(한 이름에 여럿 = 전부 조회 + `[한계]` · 못 찾으면 데이터 API 0회) · 시계열은 `apm_metrics(scope=business)` |
+| 모든 `hostname` 데이터 도구 17종 | **W3 구현**(N-9 · M-5) | 각 도구 그대로 | `targets?: [{hostname?, instance_name?, instance_id?(7도구만), source_id?}]` | 한 호출 = 작업 1개 · 항목마다 도구 코어 호출 · 봉투 `batch[]`(`target_index` 행) · 일부 실패 `partial` · 전부 실패 오류 + `batch` · 최상위 `limits` 합집합 · 예상·진행은 배치 전체 · 감사 `targets(N)` · `apm_metrics`는 instance 시계열만 |
 | `apm_transaction_trace` | **W5 구현** | `/api/transaction/guid` | `guid`(필수) · `hostname?` · 구간 · `around_ms?`·`around_minutes?`(기본 5) · `source_ids?` | 허용된 전 소스·도메인(호스트를 주면 그 정합 도메인) · 창 = 명시 > `around_ms ± 5분` > 최근 60분(기본이면 `[한계]`) · 중복 제거 (`source_id`, `domain_id`, `txid`) · 시작 시각순 `trace_order` · 다른 GUID 행 제외 · 토폴로지 아님·시계 차이 고지 · 부분 실패 partial (A-3) |
 | `apm_change_impact` | **W6 구현**(A-2) | deploy + X-View + dbsearch/error | `hostname` · 구간(변경 탐색 · 기본 24시간) · `width_minutes?`(기본 60) · `n?`·`full?` | 변경마다 전 `[t−w, t)`·후 `[t, min(t+w, 지금))` 호출·오류·평균(Σ÷calls)·원시 p95·오류 기록 · `delta`(기준 0 = N/A · 비율 차 %p) · 조각 실패 = 그 구간 None · 원인 확정 아님 고지 |
 | `apm_period_compare` | **W6 구현**(A-1 · 게이트웨이만 — 채팅 배선 없음) | status/application(인스턴스 × 구간) | `hostname` · `current_*`·`baseline_*`(ISO 절대 구간) · `n?`·`full?` | 시 경계 · Σtotal÷Σcalls(재료 없으면 계산 불가) · 한쪽만 있는 인스턴스 N/A · 길이 차이·p95 미제공 고지 — 조사(MCP)가 소비. 채팅은 두 구간 해석이 `plans/122` ⑥ 기준일 주입·M-7에 달려 잔여 |
 | `apm_config` | **W7 구현** | 룰(error·metric·compare·applied·individual-setting) · 색상 경계 · 프로세스→인스턴스 · 데이터 서버(domains·resource·system-property-config) · DB 경로 · 로드된 클래스 · 수동 RDB Export 상태 | `kind`(7종) · `hostname?` · `rule_type?`·`target?`·`error_type?` · `process_id?` · `search?` · `source_ids?` | 자격증명 제거(§4) 통과 · **COV E-01 확정: `compare` 먼저, 404일 때만 `comparing`으로 다시 묻고 답한 표기를 `[한계]`에**(W1 `error_type` 표기 재질의 선례) · 개별 설정 404 = 설정 없음 · v2 404·405 = 버전 미지원 가능 · kind에 안 쓰는 인자는 빼고 조회 + `[한계]` · 설정 값 `mask_pii` · 행 칸 정본은 `spec/SPEC-apm-gateway.md` §3 |
 | `apm_environment` · `apm_users` · `apm_active_detail` | **W7 구현** | environment-variable · auth/userlist·restapi/users·user/{id} · active-service/detail | `hostname?`·`scope?`·`key?` · `user_id?` · `active_ref` 칸(`domain_id`·`txid`·`session_id`·`thread_hash`·`source_id`) + `hostname?` | §4 자격증명 제거 · §4.3 식별자 가림 · 환경변수 키를 줄이지 않음 · 값의 이메일·주민번호·휴대폰 `mask_pii` · 계정 ID 원값은 감사·`[한계]`·오류 사유·DEBUG 로그에 없음 · 조사에서도 노출(일괄 비노출 금지 — D-299 ③ · `sre_agent` ⑥) |
 | `apm_job_status`·`apm_job_cancel`·`apm_job_read` | W0-B | — | §3.7 | 작업 관리 |
-| `gateway_health` | — | — | — | `allowlist_size` 값이 늘어난다 |
+| `gateway_health` | — | — | — | `allowlist_size` 값이 늘어난다(W3·W4에서 41) · `poller.event_buffer`(폴러가 켜졌을 때 — 보관·최대 건수·확정 도메인 수) |
 
 ## 6. 채팅 보기 (레지스트리 `solutions[apm].views`)
 
@@ -246,6 +248,9 @@ ViewArgSpec(name, type: "int"|"bool"|"enum"|"str"|"text"|"str_list"|"catalog",
 #          ViewArgSpec.required(무효·없음 = 그 보기만 조회하지 않고 되묻기) · default · targeted_choices(대상별 호출을 허용하는 kind 값 —
 #          소스 범위 kind는 대상이 여럿이어도 1회) · 형식 opaque(공백·제어 문자 없음 1~256자 — GUID) · account(`[A-Za-z0-9._@-]{1,64}`) ·
 #          token(대문자 `[A-Z0-9_]{1,64}` — 대소문자만 맞춤) — 게이트웨이 형식과 같게(본체 통과값이 게이트웨이에서 보기 전체를 실패시키지 않게)
+# W3·W4 확장(2026-10-06): ViewSpec.target `named`(이름으로 찾는 보기 — 서비스·업무) + ViewSpec.target_arg(`service`|`business` — 이번 task 대상 텍스트 중
+#          `instance` 종류가 아닌 것을 이 도구 인자의 목록으로 싣고, 이름이 없으면 인자 없이 전체 1회) · `named`가 아니면 target_arg를 받지 않고
+#          `named`면 target_arg가 꼭 있다(파서 검증) · ViewArgSpec 형식 `enum`의 default(순위 지표·정렬) — 영역은 기존 `was_performance`·`apm_event`만 쓴다
 # W2 확장: ViewSpec.notices(보기가 늘 붙이는 고지 kind — KIND_TABLE 대조) ·
 #          CapabilitySpec.active_only(소유 시스템이 활성일 때만 분해 영역 카탈로그에 렌더 — 비활성 바이트 불변)
 #          `text` = 1~200자 · 유니코드 Cc·Cf·Zl·Zp 문자 거부(URL 이름 등 식별자 형식이 아닌 값)
@@ -255,7 +260,7 @@ ViewArgSpec(name, type: "int"|"bool"|"enum"|"str"|"text"|"str_list"|"catalog",
 - `window_max_minutes`는 **창 상한 의미를 폐지**한다(M-2). 레지스트리에서 지우고 `window`로 바꾼다. 소비처·테스트(C-18)를 같이 고친다.
 - 레지스트리 YAML 형식은 위 칸을 그대로 쓴다(`args: [{name: n, type: int, min: 1}, …]`). 벤더 중립 어휘만(D-274 ③).
 
-### 6.2 보기 목록 (출발 25 — 계획 §4.2)
+### 6.2 보기 목록 (출발 25 — 계획 §4.2 · 현재 레지스트리 **28** — W3·W4에서 6종 더함)
 
 | Wave | 보기 | 도구(+고정 인자) | 창 | 대상 | view_args |
 |---|---|---|---|---|---|
@@ -271,8 +276,12 @@ ViewArgSpec(name, type: "int"|"bool"|"enum"|"str"|"text"|"str_list"|"catalog",
 | W2 | `apm.external_stats` | `apm_status_stats`(kind=external_call) | hourly | hostname | `sort_by` · `n` · `full` |
 | W2 | `apm.metrics` | `apm_metrics`(mode=catalog) | none | 없음 | `scope` |
 | W2 | `apm.changes` | `apm_source_changes` | range | hostname | — |
-| W3 | `apm.service` · `apm.ranking` · `apm.fleet_events` | `apm_service_status` · `apm_fleet`(mode=ranking) · `apm_fleet`(mode=events) | current/range | 없음(전체) | W3 SPEC |
-| W4 | `apm.business` | `apm_business` | current/range | 업무 | W4 SPEC |
+| **W3 구현** | `apm.service` | `apm_service_status` | current | **named**(`service` — 도메인 이름 · 없으면 전체 1회) · 영역 `was_performance` | — |
+| **W3 구현** | `apm.service_trend` | `apm_metrics`(mode=series · scope=domain) | range | named(`service`) · `was_performance` | `metrics`(catalog=domain · 미지정 = 게이트웨이 기본 지표) · `interval_minute` |
+| **W3 구현** | `apm.ranking` | `apm_fleet`(mode=ranking) | current | none(대상 해석 안 함) · `was_performance` | `metric`(30종 enum · 기본 `response_time_avg_ms`) · `order`(`desc` 기본) · `n` · `full` · `service`(text) |
+| **W3 구현** | `apm.fleet_events` | `apm_fleet`(mode=events) | range(기본 30분) | none · 영역 `apm_event` | `level` · `level_mode` · `error_type`(token) · `n` · `full` · `service`(text) |
+| **W4 구현** | `apm.business` | `apm_business` | current | **named**(`business`) · `was_performance` | `mode`(`current` 기본·`list`) |
+| **W4 구현** | `apm.business_trend` | `apm_metrics`(mode=series · scope=business) | range | named(`business`) · `was_performance` | `metrics`(catalog=business · 미지정 = 기본 지표) · `interval_minute` |
 | **W5 구현** | `apm.profile` | `apm_transaction_profile` | none | **reference**(`profile_ref`) · 영역 `was_transaction`(신규 · active_only) | `ref`(int ≥1) · `top_k` · `include_param_key` |
 | **W5 구현** | `apm.trace` | `apm_transaction_trace` | range | **reference**(`guid`) 또는 GUID 직접(`guid` opaque) · 사용자가 이번 턴에 말한 서버로만 좁힘 · `was_transaction` | `guid` · `ref` |
 | **W6 구현** | `apm.change_impact` | `apm_change_impact` | range(변경 탐색) | hostname(종전 필수 규칙) · `was_change_detection` | `width_minutes` · `n` · `full` · 고정 고지 `apm_change_detection` |
@@ -316,9 +325,18 @@ ViewArgSpec(name, type: "int"|"bool"|"enum"|"str"|"text"|"str_list"|"catalog",
 
 §6.3. 도구 호출 인자 = 대상 + 창 + `fixed_args` + 검증된 `view_args` + `owner` + `wait_seconds`.
 
-### 7.4 복수 보기·대상 (M-5 · W3)
+### 7.4 복수 보기·대상 (M-5 · **W3·W4 구현 2026-10-06 · D-310 ①②③⑦**)
 
-`MAX_VIEWS = 3` 절단 제거 · 다건 hostname 전부 · 대상 없는 전체 보기(`apm.ranking`·`apm.fleet_events`·`apm.service`·`apm.metrics`)에는 인스턴스 앞부분 삽입 금지 · 명시 대상 미해결을 첫 홉으로 대체 금지.
+- **절단 제거**(D-296 ④ · D-299 ②): `MAX_VIEWS = 3` 상수를 지웠다(닫힌 어휘 검사·중복 제거는 유지). 분해 지시 「1~2개」는 「필요한 보기 id를 모두(개수 제한 없음)」로 바꿨다 — **활성 분해 절만**이고 비활성 렌더 바이트는 그대로다. APM 경로 hostname 대상의 `max_targets` 절단도 지웠다(`resolve_apm_targets`·`scoped_targets`·`explicit_targets`·`default_views`에서 매개변수 삭제 — 폴스타 공유 설정 `composite.max_targets`는 그대로).
+- **다건 대상 = 배치 1호출**: 같은 보기 + 같은 공통 인자(대상 인자 `hostname`·`instance_name`·`instance_id`·`source_ids`를 뺀 나머지)이고 대상이 **2개 이상**이면 `targets` 한 번으로 부른다(hostname 항목과 해석 인스턴스 항목 `{instance_name, source_id, instance_id?}`가 한 배치에 섞일 수 있다 · 고른 소스는 배치 최상위 `source_ids`). **대상이 1개면 묶지 않는다 — 호출 인자가 종전과 같다**(`bac814c` 대비 본체 인자 8사례 · 게이트웨이 접근 기록 10호출 대조).
+- **대상별 복원**: `batch[i]`와 `target_index == i` 행으로 i번째 대상의 가상 호출을 복원해 집계·판정·출처·정합 장부·감사 명령을 **종전처럼 대상별로** 남긴다. 항목 `status=error`는 그 대상의 호출 오류가 된다. 항목이 없는 경우(배치 자체 실패 · `batch` 없는 봉투 · 옛 게이트웨이)는 대상별 `batch_missing` 실패이고 **행 0건으로 읽지 않는다**. 배치 경과는 `meta["batches"]`(보기·도구·대상 수·실패 수·`job_id`·`accepted`). 결과 파일로 간 행은 대상별 봉투에 `rows_in_file`(= `row_count − 인라인 행 수`)을 달아 구별하고, 배치 단위 `apm_full_result_file` 고지 끝에 「일부 대상의 행은 결과 파일에만 있습니다(k개 대상)」를 붙인다(행 0 · 건수 양수 모순 없음 · 그 대상을 `empty`로 세지 않는다).
+- **작업 승격**: 배치가 마감 안에 끝나지 않으면 작업 **1건** 접수 답이다(풀지 않는다 — 예상·진행은 배치 전체 · 대상 N개 · 재승인 질문 없음). 마감 안에 끝난 배치 작업은 `result_meta`에서 복원한다.
+- **첫 홉 정리**(D-310 ③): 대상 필수 보기에 대상이 없을 때만 인스턴스 목록을 먼저 부르고 **절단 없이 전부** 대상으로 쓴다 — 호스트 정합 인스턴스 = hostname 대상(서버당 1개) · 호스트 없는 인스턴스 = `{instance_name, source_id, domain_id, instance_id}`. 목록이 인라인 상한을 넘으면(`total_row_count > len(rows)`) `apm_job_read`로 **결과 파일을 청크 0부터 끝까지** 읽는다. 끝까지 읽지 못하면 「전체」라고 쓰지 않고 「대상 서버 미지정 — 인스턴스 T개 중 M개(호스트 H대)만 조회 — 나머지는 목록 결과 파일을 끝까지 읽지 못했습니다」를 의무 `apm_partial_sources`로 낸다(상태 `partial`). 범위 고지 「대상 서버 미지정 — 전체 인스턴스 N개(호스트 H대) 조회」는 비의무이고 인스턴스가 0개면 내지 않는다. 대상 텍스트가 있었으면 첫 홉이 없고(D-290 ⑥) 명시 hostname 정합 실패는 그 대상의 실패로 끝난다. 전 대상 보기(`apm.ranking`·`apm.fleet_events`)·이름 보기·`apm.metrics`에는 첫 홉이 없다 — **명시 대상 미해결을 첫 홉으로 대체하지 않는다.**
+- **이름 보기(`target: named`)**: 이름은 분해 `targets` 중 `kind != instance`인 텍스트다. 한 번 호출하면서 `{target_arg: [이름…]}`을 싣고 이름이 없으면 인자 없이 전체 1회를 부른다. 게이트웨이 검색어 상한(200자)을 넘는 이름은 싣지 않고 고지하며, 말한 이름이 모두 그렇다면 그 보기는 부르지 않는다(넓히지 않음). **「찾지 못함」** = 행 0건 + 봉투 고지에 `apm_unresolved_condition` → 실패 `{view, target, "대상 '…' 해석 0건"}` + 본체 고지 「… 찾지 못해 다른 서비스로 대신 조회하지 않았습니다. 비슷한 이름: … — 자동으로 고르지 않았습니다」(봉투 `suggestions` ≤3). 모든 호출이 실패했거나 「찾지 못함」뿐이면 `apm_target_unresolved` 답이고, 다른 보기에 행이 있으면 부분 결과로 답한다.
+- **전 대상 보기(`target: none` + `service` 조건)의 대상 텍스트**(검증 V34-4): 이번 task 대상 텍스트 중 `instance` 종류가 아닌 것은 `service` 인자 목록에 **싣는다**(조건 `service`와 함께 오면 대소문자 무시로 중복을 지운 합친 목록 — 조건 값이 앞). 서비스가 있는 전 대상 호출도 이름 보기와 같은 「찾지 못함」 판정을 건다(조건 `service`만 있어도). **사용자가 말한 서버(이번 턴 식별자 `explicit_targets`와 `instance` 종류 대상 텍스트)로는 좁히지 않는다** — 조회는 전체(또는 서비스) 범위로 하고 의무 고지 `apm_unresolved_condition` 「{보기}: 말한 서버(…)로는 좁히지 않았습니다 — 서버별 값은 응답시간 등 서버 보기로 물어 주세요.」를 남긴다(조용히 버리지 않는다 · 복합 계획의 파서 식별자는 제외 · 직전 턴 대상은 지시어일 때만).
+- **소스 지목 `sources`**(D-310 ⑦): 분해 task 칸 `sources`는 활성 + 레지스트리 소스가 **2개 이상**일 때만 렌더한다(골격 키·규칙 줄 포함). 처리기 `_plan_sources`는 레지스트리 id로 검증한다 — 모르는 id는 빼고 고지(`apm_unresolved_condition`) · 전부 무효면 **게이트웨이를 열지 않고** 되묻기(선택지 = 소스 표 라벨 · 전 소스로 넓히지 않음) · 소스 표가 없는 배포(소스 0개 — 단일 설정)는 쓰지 않고 비의무 고지(kind `trace`)로 알린다. 유효한 id는 그 task의 모든 게이트웨이 호출(해석 검색·E1r·첫 홉·배치 최상위·이름 보기)에 `source_ids`로 실린다. 운반 경로는 `targets`와 같다(`sanitize_sources` 형태 정제 → 분해 task 보존 → 구조화 스키마 → 재계획). `meta["source_selection"] = {given, used}`.
+- **결정적 줄**(`**판정·집계**` 블록 · `_fleet_lines`): 순위 「{metric} 내림차순|오름차순 순위 — 전체 인스턴스 N개 중 상위 n[ · 값 없는 인스턴스 u개는 순위에서 뺐습니다]」 · `provisional`이면 「잠정 순위 — 조회 실패 도메인 k곳 제외」를 더하고 의무 `apm_partial_sources` + 상태 `partial`(`empty`로 세지 않음). 이벤트 「이벤트 M건 · 도메인 D곳(버퍼 b · API a[ · 혼합 m] · 실패 f)」 — M은 `summary.events_total`이고 표시 행 수와 다르면 **「이벤트 total건(표시 n건)」**(V34-5) · f > 0이면 「 — 실패 도메인은 0건이 아니라 확인하지 못함」을 붙인다. 지표 이름은 중립 이름 그대로다(본체에 표시 이름표 없음).
+- **분해 프롬프트**: 비활성 렌더 지문은 불변(`06da76f1a17e4090` · 8,032자). 활성 지문은 `c336e53f4ea98eb9`(20,957자 — 세션 시작 대비 +3,670자: 보기 표 6행 · 소스 줄 · 지침 2줄 · 예시 3줄 · 골격 `sources` 키 · 규칙 1줄).
 
 ### 7.5 고지 kind (M-9 · 각 Wave — `src/domain/disclosure.py` `KIND_TABLE`에 등재 · drift 테스트)
 
@@ -386,7 +404,7 @@ ViewArgSpec(name, type: "int"|"bool"|"enum"|"str"|"text"|"str_list"|"catalog",
 
 W2~W5는 원자료 계약(시각 원값 · 호출 수 · 총 응답시간 · 단위 · 해상도 · 실패 단위)을 봉투에 남겨 W6 계산이 가중 평균·누락 구간·기준 0(N/A)을 다룰 수 있게 한다. 계산은 게이트웨이(도메인 집계 — D-274 ⑤)가 하고 본체는 단계 연결·조합만 한다.
 
-**W6 구현 범위(2026-10-06 · 실측으로 분할)**: 계산 정본은 `apm_gateway/domain/analysis.py`(순수 함수 — `weighted_mean`·`rate`·`delta`(기준 0 = `pct` None)·`rate_delta`(%p)·원시 `p95`). **A-2** 변경 전후 = `apm_change_impact`(게이트웨이 + 채팅 보기 `apm.change_impact`) · **A-1** 기간 비교 = `apm_period_compare`(게이트웨이 · 조사 소비 — 채팅 배선 없음) · **A-3** = `apm_transaction_trace`(W5). **하지 않은 것**: M-7(「하루 넘게 지난 기간」 폐지 · 해상도 자동 선택 · 빈 결과 ≠ 보존 만료 고지) · A-1 채팅 배선 · A-4(W3 `apm_fleet` 선행). 근거 실측(로컬 MLX 9B 입력 파서 12문항 × 3회 · 2026-10-06): 기간 없는 질문 21/21은 `time_range = null`(변경 전후 기본 경로 · GUID · 참조 · 설정은 파서 기간을 쓰지 않는다), **상대 기간(어제·지난주·오늘 오전과 어제 오전·지난 3시간·최근 1시간) 15/15가 프롬프트 예시 날짜(2026-03-12~13)로 풀려** 현행 규칙에서 전부 「하루 넘게 지난 기간」으로 조회되지 않았다. 규칙을 폐지하면 15/15가 엉뚱한 과거를 조회한다 — `plans/122` ⑥(기준일 주입) 선행이 필요하다. 「오늘 오전과 어제 오전」은 구간 하나로만 풀렸다(두 구간 해석은 파서 계약 밖).
+**W6 구현 범위(2026-10-06 · 실측으로 분할)**: 계산 정본은 `apm_gateway/domain/analysis.py`(순수 함수 — `weighted_mean`·`rate`·`delta`(기준 0 = `pct` None)·`rate_delta`(%p)·원시 `p95`). **A-2** 변경 전후 = `apm_change_impact`(게이트웨이 + 채팅 보기 `apm.change_impact`) · **A-1** 기간 비교 = `apm_period_compare`(게이트웨이 · 조사 소비 — 채팅 배선 없음) · **A-3** = `apm_transaction_trace`(W5). **하지 않은 것**: M-7(「하루 넘게 지난 기간」 폐지 · 해상도 자동 선택 · 빈 결과 ≠ 보존 만료 고지) · A-1 채팅 배선 · A-4(W3 `apm_fleet` 선행). **[2026-10-06 W3·W4 이후]** A-4의 선행 원자료 `apm_fleet`은 구현됐다(`ranking`·`events`). 잔여는 그대로 M-7 · A-1 채팅 · A-4 분석 보기이고 W8 · W10도 남는다(D-310 상태 줄). 근거 실측(로컬 MLX 9B 입력 파서 12문항 × 3회 · 2026-10-06): 기간 없는 질문 21/21은 `time_range = null`(변경 전후 기본 경로 · GUID · 참조 · 설정은 파서 기간을 쓰지 않는다), **상대 기간(어제·지난주·오늘 오전과 어제 오전·지난 3시간·최근 1시간) 15/15가 프롬프트 예시 날짜(2026-03-12~13)로 풀려** 현행 규칙에서 전부 「하루 넘게 지난 기간」으로 조회되지 않았다. 규칙을 폐지하면 15/15가 엉뚱한 과거를 조회한다 — `plans/122` ⑥(기준일 주입) 선행이 필요하다. 「오늘 오전과 어제 오전」은 구간 하나로만 풀렸다(두 구간 해석은 파서 계약 밖).
 
 ## 9. Wave · 파일 소유 · 인계
 
@@ -397,11 +415,11 @@ W2~W5는 원자료 계약(시각 원값 · 호출 수 · 총 응답시간 · 단
 | W1 | `fields.py` · `tools.py` · `masking.py` · `allowlist.py`(`error_type`) · `sources.py`(호스트당 5 상한) · 카탈로그 사본 · tests | `apm_query.py`(M-1·M-2·M-3) · `src/routing/registry.py`(`ViewSpec`) · `config/db_registry.yaml` · `src/prompts/intent_planner.py`(APM 절 view_args) · `tests/test_routing/test_plan125_registry.py` 등 | docs/33 상태 |
 | W2 | `allowlist.py`(status 선택 키 · 경로 변수 형식) · `api.py`·`fields.py`(v2 파서) · `tools.py`(신규 3도구) · 목 서버 · tests | 보기 5종 · 선택 재시도(M-8) · tests | |
 | W5·W6·W7(2026-10-06) | `tools.py`(trace·change_impact·period_compare·예산) · `domain/analysis.py` · `api.py`·`fields.py`·`allowlist.py` · `manage_api.py`·`manage_fields.py`·`manage_tools.py`·`manage_server.py`(신규) · `credentials.py`·`masking.py`·`client.py`·`__main__.py`(감사 수정) · 목 서버·카탈로그 사본 · tests | `apm_query.py`(보기 10 · 참조 M-6 · 선택 대상 · 필수 조건 · 결정적 줄) · `registry.py`(`target`·`reference`·`required`·`default`·`targeted_choices`·형식 3) · `db_registry.yaml` · `src/domain/result_refs.py`(신규) · `context_resolver.py` · `subagents.py` · `result_aggregator.py`(V-1·표 경계) · `agent_orchestrator.py`(경과 노트) · `output_generator.py`(C-06 범위) · `intent_planner.py` · 매뉴얼 U-52 · `sre_agent` 지침 | SPEC 3종 · COV · `docs/31`·`docs/33` · D-302 |
-| W3~ | 130 대상 계약 선행 확인 | | |
+| **W3·W4**(2026-10-06 · D-310) | `application/batch.py`·`fleet_tools.py`·`event_buffer.py`·`scope_tools.py`(신규) · `tools.py`(이름 검색 공용 함수 · `apm_metrics` domain·business · `_filter_events`) · `interface/fleet_server.py`·`scope_server.py`(신규) · `server.py`·`manage_server.py`(`targets`) · `jobs.py`(`settle_notices`) · `poller.py`(버퍼 기록) · `config.py`·`__main__.py`·`.env.example`(버퍼 설정) · `allowlist.py`·`api.py`·`fields.py`(허용 4경로 · 실시간 파서 · 기본 지표) · 카탈로그 사본 · tests | `apm_query.py`(배치·복원·named·첫 홉·소스 지목·결정적 줄) · `registry.py`(`named`·`target_arg`) · `intent_planner.py`(프롬프트·분해 정제)·`conditional_agents.py`·`schemas.py`·`replanner.py`(`sources` 운반) · `config/db_registry.yaml`(보기 6) · 매뉴얼 U-54 · `tests/test_orchestration/test_plan134_w34_*.py` | SPEC-apm-gateway §3.5 · 이 SPEC · COV · docs/31·33 · 조사 지침 한 줄(`sre_agent` `investigation_guidance.py` — D-310 ⑨) |
 
-- **130 인계**: 130(TODO · 코드 0)이 `apm_instance_map` 인자 확장(인스턴스 이름 단계 검색·업무 해석)을 소유한다. 134 W1·W2는 `apm_instance_map`의 **반환 칸·상한만** 바꾸고 인자·정합 규칙은 건드리지 않는다. 134 W3(서비스 해석)·W4(업무)는 130 검색기를 재사용해야 하므로 **130 W1 착수 뒤**로 둔다(같은 파일 동시 수정 회피).
+- **130 인계**: 130(TODO · 코드 0)이 `apm_instance_map` 인자 확장(인스턴스 이름 단계 검색·업무 해석)을 소유한다. 134 W1·W2는 `apm_instance_map`의 **반환 칸·상한만** 바꾸고 인자·정합 규칙은 건드리지 않는다. 134 W3(서비스 해석)·W4(업무)는 130 검색기를 재사용해야 하므로 **130 W1 착수 뒤**로 둔다(같은 파일 동시 수정 회피 — **130 구현 완료 뒤 W3·W4를 구현했다**: 130 판정을 `name_tier`·`search_names`·`suggest_names`로 뽑아 인스턴스·도메인·업무가 함께 쓴다).
 - **132**: 소스 선택·소스 어휘(`aliases`)는 132 소유 — 134는 보기·view_args만.
-- **125**: A-6 ①(순위 = `apm_fleet` W3) · ②(다건 hostname = M-5 W3) · ③(PID 연계 = `apm_config(kind=process_instance)` W7) · A-8(매뉴얼)을 134가 수행하고 125 장부에 증거를 남긴다.
+- **125**: A-6 ①(순위 = `apm_fleet` W3 — **구현 2026-10-06**) · ②(다건 hostname = M-5 W3 — **구현 2026-10-06** · 증거 `tests/test_orchestration/test_plan134_w34_apm.py::test_plan125_a6_2_twelve_hostnames_one_batch_per_view`) · ③(PID 연계 = `apm_config(kind=process_instance)` W7) · A-8(매뉴얼)을 134가 수행하고 125 장부에 증거를 남긴다.
 - **121**: F-13(2단 → 조사 위임) 소유. 134는 확장 도구·참조·권한 계약과 통합 테스트를 제공한다 — 연동 전 134 전체 완료 선언 금지.
 
 ## 10. 테스트 · 수용 대응
@@ -412,12 +430,13 @@ W2~W5는 원자료 계약(시각 원값 · 호출 수 · 총 응답시간 · 단
 | ③ 잘리지 않음 | 게이트웨이 계약 테스트: 목 서버 대량 합성(인스턴스 1,200 · 이벤트 5,000 · X-View 60분) → `total_row_count` = 원천 수 · 청크 합 = 원천 수 · 순서 보존 |
 | ④ 장기 작업 | 가상 시계·지연 목 서버: 10초 초과 → 작업 핸들 · 120초 초과 작업 완료 · 취소 · 정체 · 재기동(`interrupted`) · 소유자 불일치 `job_not_found` · 만료 정리 · 본체 작업 API 소유자 403/404 · 다운로드 감사 |
 | ⑥ 자격증명 카나리아 | §4.2 카나리아 전 형태 × (도구 반환 · 스풀 · 감사 · `limits` · 오류 사유) 부재 단언 |
+| W3·W4 수용(D-310) | 독립 검증 실프로세스 종단(게이트웨이 ↔ MCP SSE ↔ 본체 2단 · 가짜 LLM · 목 Open API 2소스) E1~E8 성립 — hostname 12 × 보기 4 배치 1호출 · 전 대상 순위 독립 오라클 대조 · 이벤트 실패 도메인 ≠ 0건 · 서비스·업무 현재값·추세 · 배치 작업 승격 · `sources` 지목 · 첫 홉 전부 · 대상 1개 = 종전 모양 · 정적 계약 대조 336사례(본체 실제 인자 403호출 — 모르는 키·빠진 필수·형 불일치 0) · 적대 58건 · 자격증명 카나리아 배치 경로 0 |
 | ⑦ 통제 유지 | 허용목록 정본 ↔ 사본 · 비GET·`token`·리다이렉트·형식 밖 경로 변수 HTTP 0회 · 비활성 렌더 바이트 불변 |
 | ⑧ 게이트 | `arch_check --ci` · `overfit_check --ci` · `apm_gateway/tests/test_boundary.py` · ruff·mypy(기준선 대조) · 본체·게이트웨이·조사·noise_gate 테스트 · D-255 매뉴얼 |
 
 ## 11. 측정하지 못한 것 (W10 · 외부 전제)
 
-실 제니퍼 응답 shape·단위·보존 기간·`sort_by_metrics`·`interval_minute` 허용값 · 운영 호출 속도(G-12) · 큰 응답의 실제 크기 · 운영 도메인 350개 실소요 · 개인정보 원값 정책(G-11) · v2 매뉴얼 원천 불일치(COV E-01·E-02). 로컬 Docker 제니퍼는 라이선스가 없어 도메인 0건이다 — 계약 테스트는 스펙 기반 합성 픽스처다.
+**[W3·W4]** 무인자 `/api/realtime/domain`이 전 도메인을 돌려주는지 · `/api/realtime/business`의 `business_id` 존중 · 이벤트 구간 양끝 포함 · 이벤트 `time` 축 · 늦게 들어오는 이벤트가 60초 겹침 안인지 · 빈 결과 모양 · 같은 이벤트의 중복 응답 · 기본 지표 3종이 운영 카탈로그에 있는지 · 버퍼 20만 건 실제 메모리 · 실 속도(5회/초) 아래 대상 수백 개·350도메인 소요(예상 시간은 호출 수/속도 모델일 뿐) · 로컬 MLX 9B 분해 실측(보기 14문항 중 13 정답 — 「서비스 시간대별 추세」를 `apm.app_stats`로 고른 1건)은 로직 확인용이고 선택 정확도·지연은 내부망 FabriX 측정 잔여 · 3단 경로의 `targets`·`sources` 운반 미구현 · 운영 사다리 1단(D-251)이라 채팅 효력은 2단 전환 뒤. 실 제니퍼 응답 shape·단위·보존 기간·`sort_by_metrics`·`interval_minute` 허용값 · 운영 호출 속도(G-12) · 큰 응답의 실제 크기 · 운영 도메인 350개 실소요 · 개인정보 원값 정책(G-11) · v2 매뉴얼 원천 불일치(COV E-01·E-02). 로컬 Docker 제니퍼는 라이선스가 없어 도메인 0건이다 — 계약 테스트는 스펙 기반 합성 픽스처다.
 
 ## 변경 이력
 
@@ -429,3 +448,4 @@ W2~W5는 원자료 계약(시각 원값 · 호출 수 · 총 응답시간 · 단
 | 2026-10-02 | W2 검증 반영 — §6.1 `text` 거부 범주·식별자 형식(영문 시작) · §6.3 원천·게이트웨이가 거부한 선택 조건 처리(빼고 조회·로컬 정렬 · 고지) · §6.4 영역별 후보 · 합의 보기(`agreed`) · §7.5 비의무 고지 본문 3줄 · 게이트웨이 고지 통과 |
 | 2026-10-06 | **W5·W6(독립분)·W7 반영(D-302)** — §1.4 정정(`prior_rows`·`previous_entities`는 참조 칸을 나르지 않는다) · §2.4 `sint`·`.xml` 꼬리 거부 · §3.6 프로파일 예산 주체 분리 · §4.2·§4.3 W7 개정(보안 감사 AUDIT-1~12 · 재감사 REAUDIT-1·2·4·7 반영 · 남긴 모양) · §5 도구 7종 구현 행 · §6.1 `ViewSpec`·`ViewArgSpec` 확장 · §6.2 보기 10종 · §7.7 앞 결과 행 참조(표 단위 번호 · 형식 밖 `ref` 되묻기 · 단계별 답 · GUID 조회 구간) · §8 W6 분할 실측(파서 상대 기간 15/15 예시 날짜) · §9 W5~W7 소유 |
 | 2026-10-06 | **`plans/130` W3·W4 반영** — §7.8 대상 텍스트 해석(분해 칸 `targets` · E2 미연결·모호 서버명 포함 · 인스턴스 이름 검색 → 업무명 ∥ 업무명 간선 E6 → E1r 합집합 · 대상 텍스트가 있으면 첫 홉 없음 · 해석 인스턴스 전부 호출(상한 없음 · D-296 ④) · `instance_name`+`instance_id`+`source_ids` · `apm_target_unresolved` · 고지 `bridge`·`apm_unresolved_condition`·`apm_partial_sources` · `TargetRef.apm_instance_name`·`apm_source_id`) — 게이트웨이 계약은 `spec/SPEC-apm-gateway.md` §3.4 |
+| 2026-10-06 | **W3·W4 반영(D-310)** — §5 도구 표(`apm_service_status`·`apm_fleet`·`apm_business` 구현 행 · `apm_metrics` domain·business · `targets` 행 · `gateway_health.poller.event_buffer`) · §6.1 `ViewSpec.target: named`·`target_arg` · §6.2 보기 6종(`apm.service`·`apm.service_trend`·`apm.ranking`·`apm.fleet_events`·`apm.business`·`apm.business_trend` — 레지스트리 22 → 28) · §7.4 복수 보기·대상(절단 제거 · 배치 1호출 · 대상별 복원 · 결과 파일 표지 · 첫 홉 전부 · named 보기 · 전 대상 보기의 대상 텍스트 · 소스 지목 `sources` · 결정적 줄 · 활성 프롬프트 지문) · §8 이후 상태 · §9 W3·W4 소유 · §10 수용 증거 · §11 W10 잔여 — 게이트웨이 계약은 `spec/SPEC-apm-gateway.md` §3.5 |

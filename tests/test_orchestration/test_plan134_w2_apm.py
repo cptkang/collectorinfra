@@ -35,6 +35,7 @@ from src.config import DBHubConfig
 from src.domain import disclosure as disc
 from src.orchestration import apm_query as aq
 from src.routing.registry import get_registry
+from tests.test_orchestration import apm_batch_mock
 
 ip = importlib.import_module("src.orchestration.intent_planner")
 
@@ -75,8 +76,9 @@ class _Gateway:
     async def call_tool(self, name: str, arguments: dict):
         self.calls.append((name, dict(arguments)))
         reply = self.replies[name]
-        if callable(reply):
-            reply = reply(arguments)
+        # plans/134 M-5 — 다건 대상은 `targets` 배치 1호출(계약 A-2 봉투로 흉내)
+        reply = apm_batch_mock.reply_for(name, arguments,
+                                         reply if callable(reply) else (lambda a: reply))
         return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(reply))], isError=False)
 
     def named(self, tool: str) -> list[dict]:
@@ -187,7 +189,9 @@ async def test_metrics_view_has_no_first_hop_and_no_per_host_calls(gateway) -> N
                    "apm_app_health": _env("apm_app_health", [{"tps": 1}])})
     await _run(["apm.metrics", "apm.app_health"], "web01", "web02")
     assert len(gw2.named("apm_metrics")) == 1, "대상이 있어도 전체 보기는 한 번"
-    assert len(gw2.named("apm_app_health")) == 2
+    # plans/134 M-5 — 대상 보기의 2대는 `targets` 배치 1호출(대상 2개)
+    (health,) = gw2.named("apm_app_health")
+    assert [t["hostname"] for t in health["targets"]] == ["web01", "web02"]
 
 
 @pytest.mark.asyncio

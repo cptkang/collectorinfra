@@ -27,9 +27,11 @@ EXPECTED_ARGS = {
         "process_id",
         "search",
         "instance_name",  # plans/130 N-3
+        "targets",  # plans/134 W3 다건 대상(A-2)
     }
     | COMMON,
-    "apm_environment": {"hostname", "instance_name", "source_ids", "scope", "key"} | COMMON,
+    "apm_environment": {"hostname", "instance_name", "source_ids", "scope", "key", "targets"}
+    | COMMON,
     "apm_users": {"user_id", "source_ids"} | COMMON,
     "apm_active_detail": {
         "domain_id",
@@ -39,6 +41,7 @@ EXPECTED_ARGS = {
         "source_id",
         "hostname",
         "instance_name",
+        "targets",
     }
     | COMMON,
 }

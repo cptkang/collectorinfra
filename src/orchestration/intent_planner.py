@@ -1301,9 +1301,14 @@ def _planner_system_prompt(app_config: AppConfig) -> str:
         base = _render_task_frame_prompt(base)
     agents = _nonsql_agents(app_config)
     if "apm_query" in agents:
-        from src.orchestration.apm_query import render_agent_line, render_view_rows
+        from src.orchestration.apm_query import (
+            render_agent_line,
+            render_source_line,
+            render_view_rows,
+        )
 
-        base = _render_apm_prompt(base, render_agent_line(), render_view_rows())
+        base = _render_apm_prompt(base, render_agent_line(), render_view_rows(),
+                                  render_source_line())
     if "doc_query" in agents:
         from src.orchestration import doc_query
 
@@ -1343,9 +1348,12 @@ def _render_areas_prompt(base: str, area_rows: str) -> str:
 
 
 @lru_cache(maxsize=8)
-def _render_apm_prompt(base: str, agent_line: str, view_rows: str) -> str:
-    """APM 활성 렌더 캐시(plans/125 A-5) — 기동 시 1회 렌더(프롬프트 접두 고정 · KV 캐시)."""
-    return render_intent_planner_apm_template(base, agent_line, view_rows)
+def _render_apm_prompt(base: str, agent_line: str, view_rows: str, source_line: str = "") -> str:
+    """APM 활성 렌더 캐시(plans/125 A-5) — 기동 시 1회 렌더(프롬프트 접두 고정 · KV 캐시).
+
+    `source_line`은 소스 선택 안내(plans/134 M-5 — 소스 2개 이상일 때만 · 비면 `sources` 칸 없음).
+    """
+    return render_intent_planner_apm_template(base, agent_line, view_rows, source_line)
 
 
 @lru_cache(maxsize=8)
@@ -1676,6 +1684,8 @@ async def _decompose_once(
                 task["view_args"] = raw.get("view_args") or {}
                 # 대상 텍스트(plans/130 M-1) — 형태 정제는 `_sanitize_task_views`, 해석은 처리기.
                 task["targets"] = raw.get("targets") or []
+                # 소스 선택(plans/134 M-5) — 형태 정제는 `_sanitize_task_views`, 검증은 처리기.
+                task["sources"] = raw.get("sources") or []
         # 답변 영역·요청 소스 칸 보존(plans/132 N-5) — 정제는 `_sanitize_task_areas`.
         task["areas"] = raw.get("areas")
         task["requested_source"] = raw.get("requested_source")
