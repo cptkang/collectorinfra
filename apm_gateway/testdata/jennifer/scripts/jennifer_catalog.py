@@ -44,9 +44,11 @@ ALLOWED: dict[str, Endpoint] = {
         Endpoint("/api/metrics", needs_domain=False),
         Endpoint("/api/activeService/list", ("domain_id",), ("instance_id",)),
         Endpoint("/api/transaction/time", _RANGE, ("instance_id",), empty_when_disconnected=True),
-        Endpoint("/api/transaction/txid", _TX),
+        Endpoint("/api/transaction/txid", _TX, ("key",)),
         Endpoint("/api/transaction/profile.txt", _TX, ("key",), accept="text/plain"),
-        Endpoint("/api/transaction/sql", _TX),
+        Endpoint("/api/transaction/sql", _TX, ("profile_no", "key", "include_param_key")),
+        # GUID 연계 거래(plans/134 W5 N-13 · COV-TX-GUID)
+        Endpoint("/api/transaction/guid", ("domain_id", "guid", "start_time", "end_time")),
         Endpoint("/api/dbsearch/event", _RANGE, ("level", "instance_id")),
         Endpoint("/api/dbsearch/error", _RANGE, ("instance_id", "error_type")),
         Endpoint(
@@ -59,6 +61,50 @@ ALLOWED: dict[str, Endpoint] = {
         Endpoint(
             "/api-v2/deploy/{domainId}", ("startTime", "endTime"), path_vars=(("domainId", "int"),)
         ),
+        # plans/134 W7 — 관리·민감 조회 GET(정본 allowlist.py와 같은 순서·선언)
+        Endpoint("/api/auth/userlist", needs_domain=False),
+        Endpoint("/restapi/users", needs_domain=False),
+        Endpoint("/restapi/user/{id}", needs_domain=False, path_vars=(("id", "account"),)),
+        Endpoint("/api-v2/manage/data-server/domains", needs_domain=False),
+        Endpoint("/api-v2/manage/data-server/resource", needs_domain=False),
+        Endpoint("/api-v2/manage/data-server/system-property-config", needs_domain=False),
+        Endpoint("/api-v2/manage/rule/active-service-color-range-boundary", needs_domain=False),
+        Endpoint(
+            "/api-v2/active-service/detail/{domainId}/{txid}",
+            optional=("sessionId", "threadHash"),
+            path_vars=(("domainId", "int"), ("txid", "sint")),
+        ),
+        Endpoint("/api-v2/manage/db/path/{domainId}", path_vars=(("domainId", "int"),)),
+        Endpoint("/api-v2/environment-variable/{domainId}", path_vars=(("domainId", "int"),)),
+        Endpoint("/api-v2/manage/instance", ("processId",), ("hostname",), needs_domain=False),
+        Endpoint(
+            "/api-v2/loaded-class/{domainId}/{instanceId}",
+            optional=("search",),
+            path_vars=(("domainId", "int"), ("instanceId", "int")),
+        ),
+        Endpoint("/api-v2/manage/rule/event/error/{domainId}", path_vars=(("domainId", "int"),)),
+        Endpoint(
+            "/api-v2/manage/rule/event/metric/{domainId}/{targetType}",
+            path_vars=(("domainId", "int"), ("targetType", "enum:domain|instance|business")),
+        ),
+        Endpoint(
+            "/api-v2/manage/rule/event/compare/{domainId}/{targetType}",
+            path_vars=(("domainId", "int"), ("targetType", "enum:domain|instance")),
+        ),
+        Endpoint(
+            "/api-v2/manage/rule/event/comparing/{domainId}/{targetType}",
+            path_vars=(("domainId", "int"), ("targetType", "enum:domain|instance")),
+        ),
+        Endpoint(
+            "/api-v2/manage/rule/event/error/{domainId}/{errorType}/applied",
+            path_vars=(("domainId", "int"), ("errorType", "token")),
+        ),
+        Endpoint(
+            "/api-v2/manage/rule/event/error/{domainId}/{errorType}"
+            "/individual-setting/{instanceId}",
+            path_vars=(("domainId", "int"), ("errorType", "token"), ("instanceId", "int")),
+        ),
+        Endpoint("/api-v2/manual-rdb-export", needs_domain=False),
     )
 }
 
@@ -125,7 +171,8 @@ WRITE_PATHS_ON_GET = {
 }
 
 _TEMPLATE_RES = {
-    t: re.compile("^" + re.sub(r"\\\{[^}]+\\\}", r"(?P<p>[^/]+)", re.escape(t)) + "$")
+    # 이름 없는 묶음 — 경로 변수가 둘 이상인 템플릿(W7)에서 같은 이름 묶음이 겹치지 않게
+    t: re.compile("^" + re.sub(r"\\\{[^}]+\\\}", r"[^/]+", re.escape(t)) + "$")
     for t in ALLOWED
 }
 
@@ -134,8 +181,10 @@ def match_template(path: str) -> str | None:
     """구체 경로를 허용목록 템플릿에 정확 일치로 대응시킨다(정규화 뒤 · 변형 거부)."""
     if "//" in path or "/../" in path or path.endswith("/..") or "%" in path:
         return None
+    if path.lower().endswith(".xml"):  # 정본과 같다(W7 — 계정 ID 형식이 `.`을 받는다)
+        return None
     for template, rx in _TEMPLATE_RES.items():
-        if rx.match(path):
+        if rx.fullmatch(path):  # 정본과 같다(`$`는 끝 개행을 받는다 — AUDIT-11)
             return template
     return None
 

@@ -35,8 +35,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +45,86 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # 1. 로컬 판정 규칙 (docs/pii_filtering_rules.md 의 정규식을 그대로 이식)
 # ---------------------------------------------------------------------------
+class RulePattern(Protocol):
+    """규칙 탐색기 — `re.Pattern` 또는 같은 일치를 내는 탐색기(:class:`ChainStartSearch`)."""
+
+    @property
+    def pattern(self) -> str: ...
+
+    def finditer(self, string: str) -> Iterator[re.Match[str]]: ...
+
+    def sub(self, repl: Callable[[re.Match[str]], str], string: str) -> str: ...
+
+
 @dataclass(frozen=True)
 class PiiRule:
     name: str          # PII 유형명
     rule_id: str       # docs/pii_filtering_rules.md 기준 룰 ID
-    pattern: "re.Pattern[str]"
+    pattern: RulePattern
     whole_line: bool = False  # True면 값 전체가 한 필드인 규칙 → 긴 라인엔 미적용
+
+
+class ChainStartSearch:
+    """원 정규식과 **같은 일치**(같은 위치·같은 범위·같은 순서)를 선형 시간에 찾는 탐색기.
+
+    이메일 규칙(853)은 왼쪽 경계가 없어, 긴 영숫자 연속열에서 시작 위치마다 끝까지 다시 훑는다
+    (제곱 시간 — 20KB 한 줄 5.7초 실측 2026-10-06 · plans/135 v1.4). 정규식은 바꾸지 않고 **시도할
+    시작 위치만** 줄인다. 근거(탐색 시작점 `pos` 이후 위치 p):
+
+    - p-1(≥ pos)이 영숫자면, p 에서의 일치는 p-1 에서도 성립한다 — 로컬 파트 첫 토큰
+      `[A-Za-z0-9]+`를 한 글자 앞으로 늘이면 된다.
+    - p-1 이 구분자 `[._%+-]`이고 p-2(≥ pos)가 영숫자면, 그 영숫자 묶음의 시작(≥ pos)에서도 성립한다
+      — `[A-Za-z0-9]+(?:[._%+-][A-Za-z0-9]+)*`의 반복 한 번을 앞에 붙이면 된다.
+
+    `(?<!\\n)@` 판정은 `@` 앞 두 글자만, 도메인 조건은 `@` 뒤만 보므로 두 경우 모두 그대로다.
+    원 정규식은 `pos`부터 왼쪽으로 차례로 시도하므로 위 p 에서 일치를 **보고하는 일이 없다**(더
+    앞에서 먼저 성립한다). 그래서 그런 p 만 건너뛰고, 나머지 위치는 같은 정규식으로 `match`한다.
+    앞 일치가 끝난 자리에서 다시 시작하는 `finditer` 의미도 같다(`pos`를 기준으로만 건너뛴다).
+    """
+
+    _CHAIN_INTERIOR_SKIP = re.compile(r"(?<![A-Za-z0-9])(?<![A-Za-z0-9][._%+-])[A-Za-z0-9]")
+
+    def __init__(self, compiled: re.Pattern[str]) -> None:
+        self._compiled = compiled
+
+    @property
+    def pattern(self) -> str:
+        return self._compiled.pattern
+
+    def __repr__(self) -> str:
+        return f"ChainStartSearch({self._compiled!r})"
+
+    def search(self, string: str, pos: int = 0) -> re.Match[str] | None:
+        """`pos`부터 첫 일치 — 원 정규식 `search(string, pos)`와 같다."""
+        for start in (pos, pos + 1):
+            if start < len(string):
+                found = self._compiled.match(string, start)
+                if found:
+                    return found
+        for candidate in self._CHAIN_INTERIOR_SKIP.finditer(string, pos + 2):
+            found = self._compiled.match(string, candidate.start())
+            if found:
+                return found
+        return None
+
+    def finditer(self, string: str) -> Iterator[re.Match[str]]:
+        pos = 0
+        while pos <= len(string):
+            found = self.search(string, pos)
+            if found is None:
+                return
+            yield found
+            pos = found.end() if found.end() > found.start() else found.end() + 1
+
+    def sub(self, repl: Callable[[re.Match[str]], str], string: str) -> str:
+        pieces: list[str] = []
+        last = 0
+        for found in self.finditer(string):
+            pieces.append(string[last:found.start()])
+            pieces.append(repl(found))
+            last = found.end()
+        pieces.append(string[last:])
+        return "".join(pieces)
 
 
 PII_RULES: List[PiiRule] = [
@@ -117,12 +192,15 @@ PII_RULES: List[PiiRule] = [
         # 2026-08-05 가이드 개정 반영: 로컬파트 말미 리터럴 "\n" 제외 룩비하인드 추가.
         # 제외 도메인(kbonecloud/kbfg)은 종전 가이드 유지분 — 개정본에서 해당 위치가
         # 절단되어 확인 불가, 폐쇄망 실측으로 검증 필요.
+        # 2026-10-06(plans/135 v1.4): 정규식 원문은 그대로 두고 탐색기만 감쌌다 — 긴 영숫자
+        # 연속열에서의 제곱 시간 제거(일치 결과 비트 동일 ·
+        # tests/test_security/test_pii_filter_linear.py).
         "이메일 주소", "853",
-        re.compile(
+        ChainStartSearch(re.compile(
             r"[A-Za-z0-9]+(?:[._%+-][A-Za-z0-9]+)*(?<!\\n)@"
             r"(?!(?:kbonecloud\.com|kbfg\.com)\b)"
             r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:\.[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)+"
-        ),
+        )),
     ),
 ]
 

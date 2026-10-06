@@ -427,7 +427,7 @@ APM_VIEW_ROWS_SLOT = "<apm_view_rows>"
 
 INTENT_PLANNER_APM_SECTION = """## WAS·미들웨어(APM) 조회 — `apm_query` 보기(views)
 
-WAS 인스턴스·응답시간·TPS·에러율·JVM 힙·GC·커넥션 풀·실행 중 서비스·느린 트랜잭션·WAS 이벤트는 **`apm_query`** 담당입니다(폴스타 DB가 아닙니다).
+WAS 인스턴스·응답시간·TPS·에러율·JVM 힙·GC·커넥션 풀·실행 중 서비스·느린 트랜잭션·WAS 이벤트·트랜잭션 프로파일·GUID 연계 거래·소스 변경 전후 비교·제니퍼 설정(이벤트 룰·PID→인스턴스·데이터 서버·로드된 클래스)·WAS 환경변수(JVM 옵션)·제니퍼 사용자 계정은 **`apm_query`** 담당입니다(폴스타 DB가 아닙니다).
 `apm_query` task에는 `views`에 아래 보기 id를 **1~2개** 넣으세요(목록 밖 id는 버려집니다). 비워 두면 대상 서버가 있을 때는 응답시간·TPS 보기(`apm.app_health`), 없을 때는 인스턴스 목록(`apm.instances`)입니다.
 
 <apm_view_rows>
@@ -439,10 +439,13 @@ WAS 인스턴스·응답시간·TPS·에러율·JVM 힙·GC·커넥션 풀·실�
 - 앞 task 결과의 서버들을 대상으로 하면 `depends_on`·`input_from`으로 잇습니다.
 - 보기에 「조건(view_args)」이 있으면 사용자가 **말한 조건만** `view_args`에 넣습니다: 보기 id → 조건 이름 → 값. 말하지 않은 조건은 넣지 마세요. 개수(「상위 5개」)는 `n`, 「전체·모두·전부」를 명시한 목록이면 `full: true`입니다. 표에 없는 조건 이름·값은 버려지고 해석하지 못했다고 안내됩니다.
 - 기간을 말하면 그대로 조회합니다(보기가 「기간 지정 가능」일 때). 「현재값」 보기는 지금 값만 있습니다.
+- 「앞 결과의 행을 가리킴(ref)」 보기(프로파일·GUID 연계 거래·실행 중 요청 상세)는 앞 결과(직전 답의 표 또는 같은 질의의 앞 task 결과)의 행을 씁니다. 사용자가 몇 번째인지 말하면(「두 번째 트랜잭션」) 그 보기의 `view_args`에 `ref`(1부터)를 넣고, 말하지 않았으면 넣지 않습니다(후보가 여럿이면 실행기가 되묻습니다). 같은 질의의 앞 task 결과를 가리키면 `input_from`으로 잇습니다. GUID 값을 직접 적었으면 `guid`에 그대로 넣습니다.
 - 예: {{"task_id": "t1", "agent": "apm_query", "sub_query": "김포 WAS 응답시간 조회", "views": ["apm.app_health"],
        "depends_on": [], "input_from": [], "order": 1}}
 - 예: {{"task_id": "t1", "agent": "apm_query", "sub_query": "web01 fatal 이벤트만 조회", "views": ["apm.events"],
        "view_args": {{"apm.events": {{"level": "fatal", "level_mode": "exact"}}}}, "depends_on": [], "input_from": [], "order": 1}}
+- 예: {{"task_id": "t1", "agent": "apm_query", "sub_query": "앞 결과 두 번째 트랜잭션 프로파일", "views": ["apm.profile"],
+       "view_args": {{"apm.profile": {{"ref": 2}}}}, "depends_on": [], "input_from": [], "order": 1}}
 
 """  # noqa: E501
 

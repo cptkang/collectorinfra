@@ -1,7 +1,7 @@
 """실 DB 읽기 전용 오라클 — 수동 판정 자동화 (plans/122 트랙 O · O-1~O-4 · D-275 ⑨ G-9).
 
 시나리오 턴이 끝난 뒤(계측 구간 밖 · 직렬) 러너가 **정본 SQL**(`testdata/scenarios/oracles/
-{id}.{pg|db2}.sql`)을 대상 DB 에서 읽기 전용으로 돌려 정답을 구하고, 시스템 결과 행
+{id}.{pg|db2|mariadb}.sql`)을 대상 DB 에서 읽기 전용으로 돌려 정답을 구하고, 시스템 결과 행
 (`Observation.result` — `download-csv`)과 비교한다. 정적 정답표(`source: fixture` — M군
 `m_cross_system_oracle.yaml`)도 같은 비교기로 판정한다(plans/122 §13.2 X-4).
 
@@ -63,7 +63,7 @@ __all__ = [
 
 # --- 상수 (plans/122 O-1·O-2) ------------------------------------------------
 
-#: 오라클 SQL 정본 폴더 — 파일명 `{id}.{pg|db2}.sql`(엔진별 한 벌).
+#: 오라클 SQL 정본 폴더 — 파일명 `{id}.{pg|db2|mariadb}.sql`(엔진별 한 벌).
 ORACLE_DIR: Path = REPO_ROOT / "testdata" / "scenarios" / "oracles"
 
 #: `source: fixture` 의 기본 정답표(plans/121 TP-0.7 · 122 §13.2 X-4).
@@ -98,8 +98,9 @@ SYSTEM_COUNTS: tuple[str, ...] = ("result", "row_counts_by_db")
 FIXTURE_COMPARES: tuple[str, ...] = ("keyset", "count")
 PRE_POST_COMPARES: tuple[str, ...] = ("count", "keyset", "value")
 
-#: 레지스트리 엔진 → 정본 파일 접미사. 여기 없는 엔진(mariadb 등)은 오라클 대상이 아니다.
-ENGINE_SUFFIX: dict[str, str] = {"postgresql": "pg", "db2": "db2"}
+#: 레지스트리 엔진 → 정본 파일 접미사. 여기 없는 엔진은 오라클 대상이 아니다.
+#: mariadb 는 ITAM 질의 벤치(plans/135 · D-301)가 쓴다 — 행 상한은 PG 와 같은 `LIMIT n` 분기다.
+ENGINE_SUFFIX: dict[str, str] = {"postgresql": "pg", "db2": "db2", "mariadb": "mariadb"}
 
 #: 오라클 행 상한 — MCP `max_rows`(10,000)와 같다. MCP 는 전량을 읽은 뒤 자르므로(`tools.py`)
 #: SQL 의 LIMIT/FETCH FIRST 가 실제 상한이다.
@@ -354,7 +355,7 @@ def _fixture_values(spec: dict[str, Any]) -> tuple[list[Any] | None, str | None]
 def validate_oracle_spec(spec: Any, *, scenario_id: str, db_ids: list[str] | None) -> list[str]:
     """`expect.oracle` 모양 오류 목록(빈 목록이면 통과) — 로더가 로드 시점에 부른다.
 
-    source=sql: 대상 DB(인자 `db_ids` — 없으면 spec `db_ids`)의 엔진 전부에 `{id}.{pg|db2}.sql` 이
+    source=sql: 대상 DB(인자 `db_ids` — 없으면 spec `db_ids`)의 엔진 전부에 `{id}.<접미사>.sql` 이
     있고, 자리표가 전부 알려진 것이며, SELECT 전용 · 마지막 절 행 상한을 지키는가.
     source=fixture: 정답표 파일 · 시나리오 id · field 경로가 있는가. 정의 밖 하위 키는 거부한다.
     `oracle:` 키를 넣었는데 평가가 조용히 건너뛰면 그 턴은 pass 로 샌다(D-275 주의 ③) — 그래서

@@ -1,0 +1,53 @@
+# ITAM 질의 벤치 컬럼 기록 정책 — 샌드박스 (plans/135 §3.5.1 · W0 · D-301 ②)
+#
+# 「이 컬럼의 값을 벤치 로그에 남겨도 되는가」를 컬럼마다 정한다. **기본 거부** — 여기 없는 컬럼은
+# `unclassified`(값 미기록 · 리포트 「분류 필요 컬럼」)이고, `general`은 이 파일로만 준다(휴리스틱은
+# `pii` 쪽으로만 올릴 수 있다). 제품 응답의 노출 방침(plans/95 G-9)과는 별개다 — 이 파일은 로그 파일 규칙이다.
+#
+# 등급: general(값 · 표본 5행·상위 값 10) · network(IP 끝자리 가림) · amount(합계·최소·최대·건수)
+#       free_text(건수·빈값·길이) · pii(건수·빈값만 — 값·가린 값·해시 모두 없음) · unclassified(free_text와 같음)
+#
+# 근거: 전사본 `testdata/itam/schema.yaml`의 `grp`·`sensitive`(pii·amount·contract_identifiable·
+# employee_identifiable) 77컬럼 전수 검토(2026-10-06). 부점(조직)은 사람이 아니라 general.
+# 운영(108테이블) 정책은 W8에서 따로 만든다 — 이 파일을 운영에 쓰지 않는다.
+version: 1
+db_id: itam
+scope: sandbox
+reviewed: "2026-10-06 plans/135 W0 — 전사본 77컬럼 전수"
+
+# 누출 관문 카나리아(§3.5.5 ①) — 샌드박스 합성 성명 3종(generate_init.py `_SYNTH_NAMES`)과
+# 합성 직원번호·사용자번호 패턴(`T` + 6자리). 산출 파일에 1건이라도 있으면 관문 실패다.
+canaries:
+  literals: [홍길동, 김철수, 이영희]
+  patterns: ['(?<![A-Za-z0-9])T\d{6}(?![0-9])']
+
+tables:
+  TCDMSIF80:
+    general: [
+      groupCoCd, sevrHostName,
+      vrtlMgtSevrID, clstRefID, vrtlSevrRefID,
+      oSTypzCtnt, vndrCtnt, oSVsnCtnt,
+      sevrPtrnDstcd, inttAreaCtnt, sevrMdelName, asstMdelName,
+      cPUCnt, cPUSocktCnt, sevrCPUSped, sevrCPUUseQanty, sevrCPUUseRt,
+      sevrMmryCapc, sevrMmryUseQanty, sevrMmryUseRt,
+      wholStrgeCapc, wholStrgeUseQanty, wholStrgeUseRt,
+      rspblBrncd, rspblBrnName,
+      cmdtsClsfiNo, cmdtsUniqno, cmdtsName, vrtlSevrMapngYn,
+      byCtrcNo, byCmdtsDtalsSerno, acqsiYmd,
+      asstManmenDstcd, sevrOperEvirnDstcd, elapsNoy, osoaRplacMchtlDstcd, asstStusDstcd,
+      manmenCtrcStartYmd, manmenCtrcEndYmd, manmenCtrcTermiYmd, sevrManmenCtrcNo, manmenCmdtsDtalsSerno,
+      asstMapngYn, asstHoldBrncd, asstHoldBrnName, stohusAsstYn,
+      asstClsfiDstcd, asstClsfiDsticName, dtalsAsstClsfiDstcd, dtalsAsstClsfiDsticName,
+      manmenHopeYm, grttStartYmd, grttEndYmd, srialNoCtnt,
+      sysRegiPrcssYMS, sysLastPrcssYMS,
+    ]
+    network: [iPCtnt]
+    amount: [acqsiAmt, manmenCnpr, rmainAcbkAmt]
+    # 계약명(공급사명 포함 가능)·용도·구성 설명 — 사람 이름·연락처가 섞일 수 있는 서술형
+    free_text: [cmdtsUseUsagCtnt, byCtrcName, manmenCtrcName, cnfgItemDescCtnt]
+    # 담당자 직원번호·성명 · 시스템 등록/최종 사용자번호
+    pii: [rspblPsnEmpid, rspblPsnEmnm, sysRegiUno, sysLastUno]
+  TCDMSIF79:
+    general: [groupCoCd, sevrHostName, hWSportEndYmd, sWSportEndYmd, sysRegiPrcssYMS, sysLastPrcssYMS]
+    network: [iPCtnt]
+    pii: [sysRegiUno, sysLastUno]

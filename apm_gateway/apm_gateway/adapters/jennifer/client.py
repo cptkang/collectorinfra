@@ -13,7 +13,12 @@
 - **자격증명 제거**(N-17 · D-296 ③): JSON·텍스트를 파싱한 **직후** 이 클래스의 두 출구
   (`get_json`·`get_text`)와 오류 사유에서 `domain.credentials`를 지난다 — 위 계층은 가린 값만 본다.
   오류 사유는 **가린 뒤 자른다**(자른 뒤 가리면 `@`가 잘려 나간 비밀번호 앞부분이 남는다). 큰 본문의
-  자격증명 검사는 스레드에서 돌려 이벤트 루프를 오래 막지 않는다.
+  자격증명 검사는 스레드에서 돌려 이벤트 루프를 오래 막지 않는다. JSON 오류 본문에
+  `exception.message`가 없으면 구조 규칙(`scrub_detail`)을 지난 직렬화본을 사유로 쓴다
+  (이름/값 묶음 · `[이름, 값]` 배열 — plans/134 W7 AUDIT-6).
+- 계정 ID가 경로에 들어가는 템플릿(`account` 형식)은 로그·오류 사유에 원 경로 대신 템플릿을 쓰고,
+  서버가 오류 메시지에 되울린 계정 ID도 자르기 **전에** 변수 표기(`{id}`)로 바꾼다(G-11 미결 동안 ·
+  plans/134 W7 AUDIT-10 · VG-4·VG-5).
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import tempfile
 import time
 from dataclasses import dataclass
@@ -205,6 +211,14 @@ class JenniferClient:
         path = build_path(template, path_vars)
         query = {k: str(v) for k, v in (params or {}).items()}
         endpoint = check_request("GET", path, query)  # 거부 = 네트워크 0회
+        # 계정 ID가 경로에 들어가는 템플릿(`account` 형식)은 로그·사유에 원값 대신 템플릿을 남긴다
+        # (G-11 미결 동안)
+        hidden = [
+            (str(path_vars[name]), "{" + name + "}")
+            for name, fmt in endpoint.path_vars
+            if fmt == "account" and path_vars and name in path_vars
+        ]
+        shown = template if hidden else path
         headers = {
             "Accept": endpoint.accept if endpoint.accept == ACCEPT_TEXT else "application/json"
         }
@@ -216,19 +230,19 @@ class JenniferClient:
         started = time.monotonic()
         try:
             async with self._http().stream("GET", path, params=query, headers=headers) as resp:
-                body = await self._read_body(resp, path)
+                body = await self._read_body(resp, shown)
         except ApmError:
             raise
         except httpx.TimeoutException as e:
-            raise ApmError(SOURCE_UNAVAILABLE, f"APM API timeout: {path}") from e
+            raise ApmError(SOURCE_UNAVAILABLE, f"APM API timeout: {shown}") from e
         except httpx.HTTPError as e:
             raise ApmError(
-                SOURCE_UNAVAILABLE, self.redact(f"APM API 연결 실패: {path} ({type(e).__name__})")
+                SOURCE_UNAVAILABLE, self.redact(f"APM API 연결 실패: {shown} ({type(e).__name__})")
             ) from e
         elapsed_ms = (time.monotonic() - started) * 1000
         logger.debug(
             "apm http: path=%s keys=%s status=%s elapsed_ms=%.1f",
-            path,
+            shown,
             sorted(query),
             resp.status_code,
             elapsed_ms,
@@ -239,7 +253,7 @@ class JenniferClient:
             head = body.head()
         finally:
             body.discard()
-        raise self._classify(resp.status_code, head, path)
+        raise self._classify(resp.status_code, head, shown, hidden)
 
     def _open_spill(self) -> IO[bytes]:
         directory = self._spool_dir
@@ -249,8 +263,9 @@ class JenniferClient:
             mode="wb", dir=directory, prefix="apm-resp-", suffix=".body", delete=False
         )
 
-    async def _read_body(self, resp: httpx.Response, path: str) -> _Body:
-        """본문을 메모리 임계까지 메모리에, 넘으면 임시 파일로 받는다(오류로 끊지 않는다)."""
+    async def _read_body(self, resp: httpx.Response, shown: str) -> _Body:
+        """본문을 메모리 임계까지 메모리에, 넘으면 임시 파일로 받는다(오류로 끊지 않는다). `shown`은
+        로그에 남기는 경로(계정 형식 경로는 템플릿)다."""
         cap = int(self._cfg.max_response_bytes)
         encoding = resp.encoding or "utf-8"
         declared = resp.headers.get("content-length")
@@ -280,25 +295,32 @@ class JenniferClient:
         spill.close()
         logger.info(
             "apm 응답 본문이 메모리 임계를 넘어 임시 파일로 받았다: path=%s bytes=%d > %d",
-            path,
+            shown,
             total,
             cap,
         )
         return _Body(path=Path(spill.name), encoding=encoding, size=total)
 
-    def _classify(self, status: int, body: str, path: str) -> ApmError:
-        """비200 응답을 오류 코드로 바꾼다 — 본문 기준(§0.10 #11)."""
+    def _classify(
+        self, status: int, body: str, shown: str, hidden: list[tuple[str, str]] | None = None
+    ) -> ApmError:
+        """비200 응답을 오류 코드로 바꾼다 — 본문 기준(§0.10 #11). `shown`은 사유·로그에 쓰는
+        경로(계정 형식 경로는 템플릿) · `hidden`은 메시지에서 변수 표기로 바꿀 (원값, 표기)다."""
         if 300 <= status < 400:
             return ApmError(
-                API_ERROR, f"리다이렉트 응답(비추종): HTTP {status} {path}", status=status
+                API_ERROR, f"리다이렉트 응답(비추종): HTTP {status} {shown}", status=status
             )
         if status in (401, 403):
             return ApmError(API_ERROR, f"인증 실패(HTTP {status}) — 토큰 확인 필요", status=status)
         if status == 429:
             return ApmError(
-                QUOTA_EXCEEDED, f"토큰 사용량 초과 응답(HTTP 429): {path}", status=status
+                QUOTA_EXCEEDED, f"토큰 사용량 초과 응답(HTTP 429): {shown}", status=status
             )
-        message = scrub_text(_exception_message(body))
+        message = _exception_message(body)
+        for raw, placeholder in hidden or []:  # 자르기 전에 — 잘린 원값 앞부분이 남지 않게(VG-5)
+            message = re.sub(
+                rf"(?<![A-Za-z0-9]){re.escape(raw)}(?![A-Za-z0-9])", placeholder, message
+            )
         lowered = message.lower()
         if _NOT_CONNECTED in lowered:
             return ApmError(
@@ -307,19 +329,21 @@ class JenniferClient:
         if any(marker in lowered for marker in _CONTRACT_MARKERS):
             logger.warning(
                 "apm 계약 위반(게이트웨이 버그 의심): path=%s message=%s",
-                path,
+                shown,
                 self.redact(message),
             )
             return ApmError(
                 CONTRACT_VIOLATION, self.redact(f"요청 계약 위반: {message}"), status=status
             )
         return ApmError(
-            API_ERROR, self.redact(f"APM API 오류 HTTP {status}: {message or path}"), status=status
+            API_ERROR, self.redact(f"APM API 오류 HTTP {status}: {message or shown}"), status=status
         )
 
 
 def _exception_message(body: str) -> str:
-    """v1 JSON `{"exception":{"message":…}}` · v2 문자열 본문 · 그 밖 텍스트에서 메시지를 뽑는다.
+    """v1 JSON `{"exception":{"message":…}}` · v2 문자열 본문 · 그 밖 텍스트에서 메시지를 뽑아
+    자격증명을 가린다. `exception.message`가 없는 JSON 객체·배열은 구조 규칙(`scrub_detail` —
+    이름/값 묶음·`[이름, 값]` 배열)을 지난 직렬화본이다(AUDIT-6).
 
     자르지 않는다 — 호출자가 자격증명을 가린 **뒤** 자른다(본문 앞부분은 이미 64 KiB 상한).
     """
@@ -329,11 +353,17 @@ def _exception_message(body: str) -> str:
     try:
         parsed = json.loads(text)
     except (ValueError, RecursionError):
-        return text
+        return scrub_text(text)
     if isinstance(parsed, dict):
         exc = parsed.get("exception")
         if isinstance(exc, dict) and exc.get("message"):
-            return str(exc["message"])
+            return scrub_text(str(exc["message"]))
     if isinstance(parsed, str):
-        return parsed
-    return text
+        return scrub_text(parsed)
+    if isinstance(parsed, (dict, list)):
+        try:
+            cleaned, _, _ = scrub_detail(parsed)
+        except RecursionError:
+            return scrub_text(text)
+        return json.dumps(cleaned, ensure_ascii=False)
+    return scrub_text(text)

@@ -1,0 +1,50 @@
+# ITAM 질의 벤치 컬럼 기록 정책 — 폐쇄망(운영) 1회차 (plans/135 W8 · D-301 ②)
+#
+# **기본 거부.** 운영 ITAM 은 108테이블이지만 검토된 것은 벤더 시트 전사본이 있는 두 테이블뿐이다
+# (`testdata/itam/schema.yaml` — 샌드박스 정책과 같은 등급 · 둘 중 하나를 바꾸면 다른 쪽도 바꾼다:
+# `tests/test_scripts/test_itam_bench_closed_kit.py`가 같음을 고정). 나머지 106테이블의 컬럼은
+# `unclassified`(값 미기록 · 건수·길이만)이고, 이름 토큰·의미 낱말 휴리스틱이 사람 정보로 보이는
+# 컬럼만 `pii`로 올린다. 1회차 반출 후 `python -m scripts.itam_bench --sync <run>`이 정책 밖 컬럼을
+# 뽑아 주면 사용자 검토로 `general`을 더한다(휴리스틱은 `general`을 만들지 않는다).
+#
+# 카나리아: 운영에는 합성 성명이 없다 — 비워 둔다. 관문은 결과에서 모은 사람 값·정규식 규칙·
+# 사용자 정보로 막는다.
+version: 1
+db_id: itam
+scope: closed
+reviewed: "2026-10-06 plans/135 W8 — 전사본 두 테이블(77항목)만 검토 · 나머지는 기본 거부"
+
+canaries:
+  literals: []
+  patterns: []
+
+tables:
+  TCDMSIF80:
+    general: [
+      groupCoCd, sevrHostName,
+      vrtlMgtSevrID, clstRefID, vrtlSevrRefID,
+      oSTypzCtnt, vndrCtnt, oSVsnCtnt,
+      sevrPtrnDstcd, inttAreaCtnt, sevrMdelName, asstMdelName,
+      cPUCnt, cPUSocktCnt, sevrCPUSped, sevrCPUUseQanty, sevrCPUUseRt,
+      sevrMmryCapc, sevrMmryUseQanty, sevrMmryUseRt,
+      wholStrgeCapc, wholStrgeUseQanty, wholStrgeUseRt,
+      rspblBrncd, rspblBrnName,
+      cmdtsClsfiNo, cmdtsUniqno, cmdtsName, vrtlSevrMapngYn,
+      byCtrcNo, byCmdtsDtalsSerno, acqsiYmd,
+      asstManmenDstcd, sevrOperEvirnDstcd, elapsNoy, osoaRplacMchtlDstcd, asstStusDstcd,
+      manmenCtrcStartYmd, manmenCtrcEndYmd, manmenCtrcTermiYmd, sevrManmenCtrcNo, manmenCmdtsDtalsSerno,
+      asstMapngYn, asstHoldBrncd, asstHoldBrnName, stohusAsstYn,
+      asstClsfiDstcd, asstClsfiDsticName, dtalsAsstClsfiDstcd, dtalsAsstClsfiDsticName,
+      manmenHopeYm, grttStartYmd, grttEndYmd, srialNoCtnt,
+      sysRegiPrcssYMS, sysLastPrcssYMS,
+    ]
+    network: [iPCtnt]
+    amount: [acqsiAmt, manmenCnpr, rmainAcbkAmt]
+    # 계약명(공급사명 포함 가능)·용도·구성 설명 — 사람 이름·연락처가 섞일 수 있는 서술형
+    free_text: [cmdtsUseUsagCtnt, byCtrcName, manmenCtrcName, cnfgItemDescCtnt]
+    # 담당자 직원번호·성명 · 시스템 등록/최종 사용자번호
+    pii: [rspblPsnEmpid, rspblPsnEmnm, sysRegiUno, sysLastUno]
+  TCDMSIF79:
+    general: [groupCoCd, sevrHostName, hWSportEndYmd, sWSportEndYmd, sysRegiPrcssYMS, sysLastPrcssYMS]
+    network: [iPCtnt]
+    pii: [sysRegiUno, sysLastUno]

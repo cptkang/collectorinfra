@@ -87,7 +87,8 @@ solutions:
     # 경계·대소문자 무시(`term_in_text`). 일반어(「모니터링」·「서버」 등)는 넣지 않는다 — 오고정 위험.
     aliases: ["제니퍼", "JENNIFER", "APM"]
     capabilities: [was_instance, was_performance, was_runtime, was_activity, apm_event,
-                   was_statistics, apm_metric_catalog, was_change_detection]
+                   was_statistics, apm_metric_catalog, was_change_detection,
+                   was_transaction, apm_management]
     requires: [host_location]
     views:
       - {id: apm.instances, label: "WAS 인스턴스 목록·호스트 매핑", capability: was_instance,
@@ -223,6 +224,147 @@ solutions:
         notices: [apm_change_detection]
         examples:
           - "「web01 어제 소스 변경 있었어?」"
+      # plans/134 W5(N-13 · M-6) — 앞 결과 행 참조 · GUID 연계 거래. `target: reference` 보기는 앞 결과
+      # (같은 계획의 선행 task 행 → 없으면 직전 턴 결과)에서 `reference` 칸이 있는 행을 고른다 —
+      # `ref`(사용자에게 보인 순서 1부터)는 계획 LLM이 내고 코드가 범위·참조 종류를 검증한다.
+      - id: apm.profile
+        label: "트랜잭션 프로파일(실행 구간 발췌·실행 SQL) — 앞 결과의 트랜잭션"
+        capability: was_transaction
+        tool: apm_transaction_profile
+        window: none
+        target: reference
+        reference: profile_ref
+        args:
+          - {name: ref, type: int, min: 1,
+             label: "앞 결과에서 몇 번째 행인지(사용자에게 보인 순서 · 1부터 · 말하지 않았으면 넣지 않는다)"}
+          - {name: top_k, type: int, min: 1, label: "실행 SQL 개수(미지정 = 전부)"}
+          - {name: include_param_key, type: bool, label: "true면 SQL 바인드 파라미터 키 포함(값은 가린다)"}
+        examples:
+          - "(느린 트랜잭션 목록에 이어) 「두 번째 트랜잭션 프로파일 보여줘」 → ref=2"
+          - "「그 트랜잭션 실행 SQL 5개만」 → top_k=5"
+      - id: apm.trace
+        label: "같은 GUID의 연계 거래 추적(거쳐 간 인스턴스·시각순 — 호출 관계 아님)"
+        capability: was_transaction
+        tool: apm_transaction_trace
+        window: range
+        target: reference
+        reference: guid
+        limit: "기간 미지정 = 앞 결과 거래 시각 ±5분(없으면 최근 60분)"
+        args:
+          - {name: guid, type: opaque, label: "사용자가 직접 적은 GUID 값"}
+          - {name: ref, type: int, min: 1,
+             label: "앞 결과에서 몇 번째 행의 GUID인지(1부터 · 말하지 않았으면 넣지 않는다)"}
+        examples:
+          - "「GUID 0a1b2c3d 거래가 어느 서버를 거쳤어?」 → guid=0a1b2c3d"
+          - "(트랜잭션 목록에 이어) 「세 번째 거래 GUID로 연계 거래 찾아줘」 → ref=3"
+      - id: apm.change_impact
+        label: "소스 변경 감지 전후 비교 — 오류율·평균 응답·오류 기록·호출 수(원인 확정 아님)"
+        capability: was_change_detection
+        tool: apm_change_impact
+        required_input: hostname
+        window: range
+        limit: "기간 미지정 = 변경 탐색 최근 24시간 · 전후 비교 폭 60분"
+        notices: [apm_change_detection]
+        args:
+          - {name: width_minutes, type: int, min: 1, label: "변경 전후 비교 폭(분 · 미지정 = 60)"}
+          - {name: n, type: int, min: 1, label: "최근 변경 N건만"}
+          - {name: full, type: bool, label: "true면 구간 변경 전부"}
+        examples:
+          - "「web01 배포 전후 에러율 비교」"
+          - "「web01 어제 변경 전후 30분 응답시간 비교」 → width_minutes=30"
+      # plans/134 W7(N-15·N-16) — 설정·관리·민감 조회(자격증명 값은 게이트웨이가 제거 · 개인정보는 현행
+      # 마스킹). `target: optional` = 서버를 말하면 그 서버 · 없으면 hostname 없이 1회(첫 홉 삽입 없음).
+      - id: apm.event_rules
+        label: "제니퍼 이벤트 룰(오류·지표·비교)·응답시간 색상 경계"
+        capability: apm_management
+        tool: apm_config
+        window: none
+        target: optional
+        args:
+          - {name: kind, type: enum, choices: [event_rules, color_boundary], default: event_rules,
+             targeted_choices: [event_rules],
+             label: "event_rules = 이벤트 룰 · color_boundary = 실행 중 서비스 색상 경계(미지정 = event_rules)"}
+          - {name: rule_type, type: enum, choices: [error, metric, compare],
+             label: "룰 종류(미지정 = 셋 다)"}
+          - {name: target, type: enum, choices: [domain, instance, business],
+             label: "룰 대상 종류(metric·compare 룰 — business는 metric만)"}
+          - {name: error_type, type: token,
+             label: "오류 유형 이름(대문자 · 예 OUTOFMEMORY) — 그 유형의 적용 룰·인스턴스별 개별 설정"}
+        examples:
+          - "「web01 이벤트 룰 보여줘」"
+          - "「제니퍼 오류 이벤트 룰 전체」 → rule_type=error"
+          - "「응답시간 색상 경계 설정」 → kind=color_boundary"
+      - id: apm.process
+        label: "프로세스 ID(PID) → WAS 인스턴스 찾기"
+        capability: apm_management
+        tool: apm_config
+        window: none
+        target: optional
+        fixed_args: {kind: process_instance}
+        args:
+          - {name: process_id, type: int, min: 1, required: true, label: "프로세스 ID(PID)"}
+        examples:
+          - "「web01 PID 12345는 어느 WAS 인스턴스야?」 → process_id=12345"
+      - id: apm.jennifer_server
+        label: "제니퍼 데이터 서버(도메인 배치·자원·설정)·DB 경로·수동 RDB Export 상태"
+        capability: apm_management
+        tool: apm_config
+        window: none
+        target: optional
+        args:
+          - {name: kind, type: enum, choices: [data_server, db_path, rdb_export], default: data_server,
+             targeted_choices: [db_path],
+             label: "data_server = 데이터 서버 · db_path = 도메인 DB 경로 · rdb_export = 수동 RDB Export 상태(미지정 = data_server)"}
+        examples:
+          - "「제니퍼 데이터 서버 상태」"
+          - "「web01 도메인 DB 경로」 → kind=db_path"
+      - id: apm.loaded_classes
+        label: "WAS 인스턴스에 로드된 클래스 목록"
+        capability: apm_management
+        tool: apm_config
+        required_input: hostname
+        window: none
+        fixed_args: {kind: loaded_classes}
+        args:
+          - {name: search, type: text, label: "클래스 이름 검색어"}
+        examples:
+          - "「web01 로드된 클래스 중 OrderService」 → search=OrderService"
+      - id: apm.environment
+        label: "WAS 환경변수·JVM 시스템 속성(비밀 값은 가림)"
+        capability: apm_management
+        tool: apm_environment
+        window: none
+        target: optional
+        args:
+          - {name: scope, type: enum, choices: [SYSTEM, JAVA],
+             label: "SYSTEM = 환경변수 · JAVA = JVM 시스템 속성(미지정 = 둘 다)"}
+          - {name: key, type: text, label: "변수 이름 일부(예 JAVA_OPTS · 대소문자 무시)"}
+        examples:
+          - "「web01 JVM 시스템 속성 보여줘」 → scope=JAVA"
+          - "「web01 환경변수 JAVA_OPTS」 → key=JAVA_OPTS"
+      - id: apm.users
+        label: "제니퍼 사용자 계정 목록·계정 정보(개인정보 가림)"
+        capability: apm_management
+        tool: apm_users
+        window: none
+        target: none
+        args:
+          - {name: user_id, type: account, label: "이 계정 ID 하나만"}
+        examples:
+          - "「제니퍼 사용자 목록」"
+          - "「제니퍼 계정 admin 정보」 → user_id=admin"
+      - id: apm.active_detail
+        label: "실행 중 요청 상세(SQL·HTTP 파라미터·사용자 — 가림) — 앞 결과의 실행 중 서비스"
+        capability: was_activity
+        tool: apm_active_detail
+        window: none
+        target: reference
+        reference: active_ref
+        args:
+          - {name: ref, type: int, min: 1,
+             label: "앞 결과에서 몇 번째 실행 중 서비스인지(1부터 · 말하지 않았으면 넣지 않는다)"}
+        examples:
+          - "(실행 중 서비스 목록에 이어) 「첫 번째 요청 상세 보여줘」 → ref=1"
     # plans/87 J8 · D-287 ④ — 제니퍼 소스 ↔ 존 정본(위 `sources` 설명). 단일 설정(게이트웨이
     # `JENNIFER_API_URL`만 · 소스 `default` · dbId `jennifer`)은 이 표에 없고 존 없음으로 다룬다.
     sources:
@@ -341,6 +483,13 @@ capabilities:
     active_only: true
   - code: was_change_detection
     label: WAS 소스(리소스) 변경 감지 시각 — 배포 확정 아님
+    active_only: true
+  # plans/134 W5·W7 — 소유 시스템(apm)이 활성일 때만 렌더(active_only · 비활성 배포 바이트 불변).
+  - code: was_transaction
+    label: WAS 개별 트랜잭션 상세 — 트랜잭션 프로파일·실행 SQL·같은 GUID 연계 거래
+    active_only: true
+  - code: apm_management
+    label: 제니퍼 설정·관리 조회 — 이벤트 룰·색상 경계·PID→인스턴스·데이터 서버·DB 경로·로드된 클래스·WAS 환경변수(JVM 옵션)·제니퍼 사용자 계정
     active_only: true
   # plans/127 §4.1 R(규정·설계 근거) — 소유는 `solutions[doc]`. 비DB 시스템 영역이라 소유표 행을 내지
   # 않는다(apm 과 같음) — 분해 프롬프트의 문서 안내는 라우팅 활성일 때만 붙는 `doc_query` 줄이 맡는다.

@@ -220,7 +220,7 @@ async def test_rejected_input_is_zero_http_per_source(two):
     _reset(base_a, base_b)
     for src in tools.sources:
         for path, query in (
-            ("/api/auth/userlist", {}),
+            ("/api/auth/userlist.xml", {}),  # 민감 GET JSON은 W7에서 허용 — XML 변형은 거부
             ("/api/domain", {"token": "x"}),
             ("/api/instance", {}),
         ):
@@ -362,7 +362,7 @@ async def test_tool_schemas_add_source_arguments_only(two):
     for name, props in schemas.items():
         if name.startswith("apm_job_"):  # 작업 도구(plans/134 W0-B)는 소스와 무관하다
             assert "source_ids" not in props and "source_id" not in props, name
-        elif name == "apm_transaction_profile":
+        elif name in ("apm_transaction_profile", "apm_active_detail"):  # 앞 결과 참조 1건(W7)
             assert "source_id" in props and "source_ids" not in props
         elif name.startswith("apm_"):
             assert "source_ids" in props, name

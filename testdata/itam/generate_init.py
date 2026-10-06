@@ -140,6 +140,38 @@ USAGE_RATE_FRACTION = "37"
 
 _SYNTH_NAMES = ("홍길동", "김철수", "이영희")  # 성명 형태의 합성값(실존 인물 아님)
 
+#: ITAM 질의 벤치(plans/135 W0) 시드 보강 — 사양·운영체제 질문에 정답이 서도록
+#: **기존 비코드 컬럼에만** 편차를 넣는다. 세 로컬 오라클(README)·M군 정답표가 쓰는 컬럼과
+#: 겹치지 않아야 한다(`tests/test_testdata/test_itam_generate_init.py` 가 고정).
+#: 코드 컬럼(가상화 여부 등)은 코드값 미확보(G-5)라 넣지 않는다 — 표식(`Z…`) 규칙 그대로다.
+SEED_BOOST_COLUMNS = ("oSTypzCtnt", "cPUCnt", "sevrMmryCapc")
+#: 30행 분포 14·9·7 — 그룹 집계 정답이 서로 갈린다
+_SYNTH_OS = (("Linux", 14), ("AIX", 9), ("Windows", 7))
+_CPU_COUNTS = (4, 8, 16, 32, 64)
+
+
+def _synth_os(i: int) -> str:
+    bound = 0
+    for name, count in _SYNTH_OS:
+        bound += count
+        if i < bound:
+            return name
+    raise ValueError(f"운영체제 분포 밖 행 번호 {i}")
+
+
+def _boost(i: int) -> dict[str, Any]:
+    """행 번호별 사양·운영체제.
+
+    메모리는 `(7i + 28) mod 30` 순열이라 30행 모두 다르고, 상위 5대가 취득금액 상위 5대·호스트 키
+    함정 행(web-02~04)과 겹치지 않는다 — 열을 헷갈리거나 키 함정에 걸린 답이 메모리 순위 판정에
+    섞이지 않는다.
+    """
+    return {
+        "oSTypzCtnt": _synth_os(i),
+        "cPUCnt": _CPU_COUNTS[i % len(_CPU_COUNTS)],
+        "sevrMmryCapc": 32 + ((i * 7 + 28) % 30) * 8,
+    }
+
 
 def ymd(expr: str) -> Sql:
     return Sql(f"DATE_FORMAT({expr}, '%Y%m%d')")
@@ -201,8 +233,6 @@ def _base_main(i: int, host: str, ip: str) -> dict[str, Any]:
     return {
         "sevrHostName": host,
         "iPCtnt": ip,
-        "cPUCnt": 8,
-        "sevrMmryCapc": 64,
         "wholStrgeCapc": 500,
         "sevrCPUUseRt": Sql(f"{10 + i}.{USAGE_RATE_FRACTION}"),
         "sevrMmryUseRt": Sql(f"{40 + i}.{USAGE_RATE_FRACTION}"),
@@ -223,6 +253,7 @@ def _base_main(i: int, host: str, ip: str) -> dict[str, Any]:
         "sysRegiPrcssYMS": _NOW_YMS,
         "sysLastUno": "T000000",
         "sysLastPrcssYMS": _NOW_YMS,
+        **_boost(i),
     }
 
 

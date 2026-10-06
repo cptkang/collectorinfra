@@ -220,8 +220,9 @@ async def test_partial_cover_never_queries_off_area_retry_views(gateway) -> None
     assert len(llm.messages) == 1
     assert [n for n, _ in gw.calls] == ["apm_status_stats"], "영역 밖 재시도 보기는 조회하지 않는다"
     sel = res["apm_query"]["selection"]
+    # plans/134 W6 — 변경 전후 비교(`apm.change_impact`)가 같은 영역을 재사용한다(의도된 갱신)
     assert (sel["result"], sel["uncovered"], sel["candidates"]) == (
-        "partial", ["was_change_detection"], ["apm.changes"])
+        "partial", ["was_change_detection"], ["apm.changes", "apm.change_impact"])
     notice = [d for d in res["disclosures"] if d["kind"] == disc.APM_UNRESOLVED_CONDITION]
     assert len(notice) == 1 and "WAS 소스(리소스) 변경 감지 시각" in notice[0]["text"]
 

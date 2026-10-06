@@ -220,7 +220,8 @@ def test_command_context_forms():
         "java.vendor=Eclipse Adoptium",
         "KEYBOARD_LAYOUT=us",
         "user=kim&page=2",
-        "http://host:8080/path@x",
+        # `http://host:8080/path@x`는 2026-10-06 처분(AUDIT-3 (3))으로 가린다 —
+        # test_credentials.py::test_port_like_prefix_with_at_sign_is_masked_as_password
         "file://C:/temp/a.txt",
         "monkey=1 author=lee",
         "ORACLE_SID=orcl",

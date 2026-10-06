@@ -4,7 +4,9 @@
 거부한다. 같은 토큰에 쓰기·제어 API와 민감 GET(`/api/auth/userlist` 등)이 함께 열려 있고 서버가 막아
 주지 않는다(§0.10 #9·#14·#15 실측). 그래서:
 
-- GET만 통과한다(v1 조회 API의 POST 변형도 거부).
+- GET만 통과한다(v1 조회 API의 POST 변형도 거부). plans/134 W7(D-296 ①)부터 민감·관리
+  **조회** GET도 목록에 있다 — 같은 경로의 PUT·POST·DELETE와 시험 경로는 계속 거부한다.
+  응답은 어댑터가 파싱한 직후 자격증명 경계(`domain/credentials.py`)를 지난다.
 - 경로는 템플릿과 **정확히** 일치해야 한다 — 와일드카드 없음 · `.xml` 변형 없음 · `..`·`//`·`%`·`\\`
   거부.
 - 쿼리 키는 경로별 허용 키만 · `token` 키는 항상 거부(URL·접근 로그에 토큰이 남는다) · 필수 키 누락
@@ -35,6 +37,8 @@ PATH_VAR_FORMATS: dict[str, str] = {
     "int": r"[0-9]+",
     "token": r"[A-Z0-9_]{1,64}",
     "account": r"[A-Za-z0-9._@-]{1,64}",
+    # 부호 있는 정수 — 실행 중 요청 txid는 음수일 수 있다(plans/134 W7 · COV-ACTIVE-DETAIL)
+    "sint": r"-?[0-9]{1,20}",
 }
 
 
@@ -76,9 +80,11 @@ ALLOWED: dict[str, Endpoint] = {
         Endpoint("/api/metrics"),
         Endpoint("/api/activeService/list", ("domain_id",), ("instance_id",)),
         Endpoint("/api/transaction/time", _RANGE, ("instance_id",)),
-        Endpoint("/api/transaction/txid", _TX),
+        Endpoint("/api/transaction/txid", _TX, ("key",)),
         Endpoint("/api/transaction/profile.txt", _TX, ("key",), accept=ACCEPT_TEXT),
-        Endpoint("/api/transaction/sql", _TX),
+        Endpoint("/api/transaction/sql", _TX, ("profile_no", "key", "include_param_key")),
+        # GUID 연계 거래(plans/134 W5 N-13 · COV-TX-GUID) — `time_pattern`은 계속 거부(epoch ms만)
+        Endpoint("/api/transaction/guid", ("domain_id", "guid", "start_time", "end_time")),
         Endpoint("/api/dbsearch/event", _RANGE, ("level", "instance_id")),
         Endpoint("/api/dbsearch/error", _RANGE, ("instance_id", "error_type")),
         Endpoint(
@@ -91,6 +97,53 @@ ALLOWED: dict[str, Endpoint] = {
         Endpoint(
             "/api-v2/deploy/{domainId}", ("startTime", "endTime"), path_vars=(("domainId", "int"),)
         ),
+        # plans/134 W7(N-15·N-16 · D-296 ① — 관리·민감 조회 GET · 응답은 자격증명 경계를
+        # 지난다). `compare`·`comparing`은 같은 비교 룰의 두 표기다(COV E-01 — `compare` 먼저,
+        # 404면 `comparing`). 실행 중 요청 상세의 `sessionId`·`threadHash`는 필수 여부
+        # 미기재(E-15)라 선택이다.
+        Endpoint("/api/auth/userlist"),
+        Endpoint("/restapi/users"),
+        Endpoint("/restapi/user/{id}", path_vars=(("id", "account"),)),
+        Endpoint("/api-v2/manage/data-server/domains"),
+        Endpoint("/api-v2/manage/data-server/resource"),
+        Endpoint("/api-v2/manage/data-server/system-property-config"),
+        Endpoint("/api-v2/manage/rule/active-service-color-range-boundary"),
+        Endpoint(
+            "/api-v2/active-service/detail/{domainId}/{txid}",
+            optional=("sessionId", "threadHash"),
+            path_vars=(("domainId", "int"), ("txid", "sint")),
+        ),
+        Endpoint("/api-v2/manage/db/path/{domainId}", path_vars=(("domainId", "int"),)),
+        Endpoint("/api-v2/environment-variable/{domainId}", path_vars=(("domainId", "int"),)),
+        Endpoint("/api-v2/manage/instance", ("processId",), ("hostname",)),
+        Endpoint(
+            "/api-v2/loaded-class/{domainId}/{instanceId}",
+            optional=("search",),
+            path_vars=(("domainId", "int"), ("instanceId", "int")),
+        ),
+        Endpoint("/api-v2/manage/rule/event/error/{domainId}", path_vars=(("domainId", "int"),)),
+        Endpoint(
+            "/api-v2/manage/rule/event/metric/{domainId}/{targetType}",
+            path_vars=(("domainId", "int"), ("targetType", "enum:domain|instance|business")),
+        ),
+        Endpoint(
+            "/api-v2/manage/rule/event/compare/{domainId}/{targetType}",
+            path_vars=(("domainId", "int"), ("targetType", "enum:domain|instance")),
+        ),
+        Endpoint(
+            "/api-v2/manage/rule/event/comparing/{domainId}/{targetType}",
+            path_vars=(("domainId", "int"), ("targetType", "enum:domain|instance")),
+        ),
+        Endpoint(
+            "/api-v2/manage/rule/event/error/{domainId}/{errorType}/applied",
+            path_vars=(("domainId", "int"), ("errorType", "token")),
+        ),
+        Endpoint(
+            "/api-v2/manage/rule/event/error/{domainId}/{errorType}"
+            "/individual-setting/{instanceId}",
+            path_vars=(("domainId", "int"), ("errorType", "token"), ("instanceId", "int")),
+        ),
+        Endpoint("/api-v2/manual-rdb-export"),
     )
 }
 
@@ -118,8 +171,11 @@ def match_template(path: str) -> str | None:
         return None
     if path.endswith(("/..", "/.")):
         return None
+    if path.lower().endswith(".xml"):  # 같은 데이터의 XML 변형(계정 ID 형식이 `.`을 받는다 — W7)
+        return None
     for template, rx in _TEMPLATE_RES.items():
-        if rx.match(path):
+        # `$`는 끝 개행을 받는다 — 전체 일치(AUDIT-11 · `jobs.is_job_id` 전례)
+        if rx.fullmatch(path):
             return template
     return None
 

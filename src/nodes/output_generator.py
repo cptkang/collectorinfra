@@ -372,7 +372,8 @@ async def _generate_text_response(
     # 전 행 null 강등(C-06): 값 칼럼이 전부 전 행 null이면 의미 없는 목록 표 대신 결정적
     # 안내로 응답한다(LLM 미호출). CSV 산출 원본(query_results)은 건드리지 않는다.
     # text 전용 — 폼필(xlsx/docx) 동반 텍스트는 의도적 공란(H-06 도메인 밖 열)이 있어 제외.
-    if parsed.get("output_format", "text") == "text":
+    # 집계기가 SQL이 아닌 처리기 결과(APM — plans/134 V-7)에는 끈다(`all_null_downgrade`).
+    if parsed.get("output_format", "text") == "text" and _all_null_downgrade_on(state):
         all_null_cols = _all_null_value_columns(organized["rows"])
         if all_null_cols is not None:
             return _generate_all_null_response(all_null_cols, organized["rows"], state)
@@ -640,6 +641,11 @@ def _numeric_summary_lines(rows: list) -> list[str]:
             line += f" (null {null_count}건)"
         lines.append(line)
     return lines
+
+
+def _all_null_downgrade_on(state: Mapping[str, Any]) -> bool:
+    """전 행 null 강등(C-06)을 적용하는가 — 집계기가 끈 결과(`all_null_downgrade=False`)만 뺀다."""
+    return state.get("all_null_downgrade") is not False
 
 
 def _all_null_value_columns(rows: list) -> list[str] | None:

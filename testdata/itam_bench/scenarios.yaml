@@ -1,0 +1,357 @@
+# ITAM 질의 벤치 시나리오 — 샌드박스 (plans/135 §3.2 · W0 · D-301 ①)
+#
+# **사용자 프롬프트로만 쓴다.** 자산관리 포탈 사용자가 채팅창에 칠 말 그대로 — 테이블·컬럼 식별자와
+# SQL 용어, 사람 이름·사번을 넣지 않는다(로더 린트가 거부한다 · `scripts/itam_bench/catalog.py`).
+# 대상 DB·스키마를 요청에 고정하지 않는다 — 첫 턴의 요청 본문은 `query` 하나다.
+#
+# 이 파일은 시나리오 하네스 카탈로그 폴더(`testdata/scenarios/`) **밖**에 둔다. 하네스 러너는 응답 원문을
+# `raw.jsonl`에 남기므로(plans/135 §2.2 L1) 이 시나리오가 실수로 그쪽에서 돌지 않게 한다.
+#
+# 형식(하네스 `turns`·`send`·`expect.oracle` 모양을 따른다):
+#   id · title · category · env([sandbox|closed]) · traps(이 시나리오가 재는 함정 — 리포트 집계용)
+#   key_columns  정답에 꼭 필요한 컬럼(분석용 · 프롬프트에는 안 나간다). 항목 = 컬럼 이름 또는 「같은 뜻」 후보 목록
+#   gold_tables  정답 테이블(스키마 선택 판정 `schema_miss`)
+#   turns[].send     첫 턴은 {query}만. 뒤 턴은 query 또는 되묻기 응답(selected_db_ids · selected_sources —
+#                    reply_to: clarification 을 함께 적는다)
+#   turns[].expect   db_ids(조회 DB에 들어가야 할 소스 — 라우팅은 따로 분류) · key_columns·gold_tables(턴별 덮어쓰기) ·
+#                    oracle(하네스 오라클 명세 그대로 — 정본 testdata/scenarios/oracles/{id}.mariadb.sql) 또는
+#                    observe({what, no_data}) — 정답이 데이터로 정해지지 않는 턴. no_data: true 면 값을 지어낸 답을
+#                    `fabricated`로 분류한다 · count_rows_ok(건수 질문에 목록으로 답하면 행 수로 판정 — plans/135 §3.3)
+#   판정 키(oracle.key)는 general 등급 컬럼만 — 불일치 상세가 키 값을 싣는다(§3.5.6). 사람 열은 키가 될 수 없다.
+#
+# 폐쇄망(운영) 시나리오는 `scenarios.closed.yaml`(1회차 = 관찰 · 사용자 검토 대기 초안)에 따로 둔다.
+#
+# 날짜가 걸린 정답은 실행 시점에 계산된다(오라클 자리표 :today — 턴 송신 KST). 샌드박스 시드는 init 시점
+# 상대값이라 실행 전 testdata/itam/setup.sh 로 다시 만든다(plans/135 W7).
+version: 1
+db_id: itam
+
+aliases:
+  host_key: &host_key [sevrHostName, 호스트명, 서버명, 호스트, 서버, 서버호스트명, hostname, host_name, server_name, host]
+
+scenarios:
+  - id: ITAM-01
+    title: "서비스 → 서버리스트 (사용자 예시 원문 · G-7 미응답 — 관측)"
+    category: service
+    env: [sandbox]
+    traps: [service_concept]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리 시스템에서 통합인증 서비스의 서버리스트를 보여줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "샌드박스에 서비스↔서버 연결 데이터가 없다 — 없는 정보를 꾸며내지 않는가 · 어느 컬럼으로 서비스를 찾으려 했는가"
+            no_data: true
+
+  - id: ITAM-02
+    title: "등록 서버 전체 목록"
+    category: inventory
+    env: [sandbox]
+    traps: []
+    key_columns: [sevrHostName]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "자산관리 시스템에 등록된 서버 목록 보여줘"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-02, compare: count, db_ids: [itam]}
+
+  - id: ITAM-03
+    title: "단건 상세 — 호스트 키 정확 일치"
+    category: detail
+    env: [sandbox]
+    traps: [abbrev_columns]
+    key_columns: [sevrHostName]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "자산관리에서 svr-web-01 서버 정보 알려줘"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-03, compare: keyset, key: [*host_key], db_ids: [itam]}
+
+  - id: ITAM-04
+    title: "단건 상세 — 저장값 대문자(호스트 키 ②) · 소스 생략형"
+    category: detail
+    env: [sandbox]
+    traps: [host_key_case]
+    key_columns: [sevrHostName]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "SVR-WEB-02 서버 자산 정보 조회해줘"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-04, compare: keyset, key: [*host_key], db_ids: [itam]}
+
+  - id: ITAM-05
+    title: "단건 값 — FQDN 저장(호스트 키 ③)"
+    category: detail
+    env: [sandbox]
+    traps: [host_key_fqdn]
+    key_columns: [srialNoCtnt]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "svr-web-03 서버 시리얼 번호 알려줘"}
+        expect:
+          db_ids: [itam]
+          oracle:
+            id: ITAM-05
+            compare: keyset
+            key: [[srialNoCtnt, 시리얼번호, 시리얼 번호, 시리얼, 일련번호, serial, serial_no, serial_number]]
+            db_ids: [itam]
+
+  - id: ITAM-06
+    title: "담당자 — 결과에 성명(누출 관문 카나리아)"
+    category: owner
+    env: [sandbox]
+    traps: [pii_canary]
+    key_columns: [[rspblPsnEmnm, rspblPsnEmpid]]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "svr-db-03 담당자가 누구야?"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-06, compare: count, db_ids: [itam]}
+
+  - id: ITAM-07
+    title: "이번 분기 유지보수 계약 만료 (로컬 오라클 ②)"
+    category: maintenance
+    env: [sandbox]
+    traps: [date_text, quarter_boundary]
+    key_columns: [manmenCtrcEndYmd]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "이번 분기에 유지보수 계약이 끝나는 서버 있어?"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-07, compare: keyset, key: [*host_key], db_ids: [itam]}
+
+  - id: ITAM-08
+    title: "모호한 기간 — 최근 만료"
+    category: maintenance
+    env: [sandbox]
+    traps: [ambiguous_period]
+    key_columns: [manmenCtrcEndYmd]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "ITAM에서 유지보수 계약 끝난 지 얼마 안 된 서버 보여줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "되묻는가 · 어떤 기간을 가정하는가(가정했다면 고지하는가)"
+            no_data: false
+
+  - id: ITAM-09
+    title: "6개월 내 지원 종료 (로컬 오라클 ①) · 소스 생략형"
+    category: eol
+    env: [sandbox]
+    traps: [join_3col, or_condition, date_text]
+    key_columns: [[hWSportEndYmd, sWSportEndYmd]]
+    gold_tables: [TCDMSIF79]
+    turns:
+      - send: {query: "6개월 안에 지원 종료(EOS)되는 서버 알려줘"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-09, compare: keyset, key: [*host_key], db_ids: [itam]}
+
+  - id: ITAM-10
+    title: "하드웨어 지원 종료 경과"
+    category: eol
+    env: [sandbox]
+    traps: [date_text]
+    key_columns: [hWSportEndYmd]
+    gold_tables: [TCDMSIF79]
+    turns:
+      - send: {query: "자산관리 시스템에서 하드웨어 지원이 이미 끝난 서버는?"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-10, compare: keyset, key: [*host_key], db_ids: [itam]}
+
+  - id: ITAM-11
+    title: "노후 5년 이상 (로컬 오라클 ③)"
+    category: lifecycle
+    env: [sandbox]
+    traps: [boundary_inclusive, null_value]
+    key_columns: [[elapsNoy, acqsiYmd]]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "도입한 지 5년 이상 된 노후 서버 리스트 보여줘"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-11, compare: keyset, key: [*host_key], db_ids: [itam]}
+
+  - id: ITAM-12
+    title: "서버별 담당 부서(조직 ≠ 개인)"
+    category: owner
+    env: [sandbox]
+    traps: [org_not_person]
+    key_columns: [[rspblBrnName, rspblBrncd]]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "서버별 담당 부서 알려줘"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-02, compare: count, db_ids: [itam]}
+
+  - id: ITAM-13
+    title: "취득금액 상위 3"
+    category: amount
+    env: [sandbox]
+    traps: [order_limit]
+    key_columns: [acqsiAmt]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "자산관리에서 취득금액 제일 큰 서버 3대랑 금액 보여줘"}
+        expect:
+          db_ids: [itam]
+          oracle:
+            id: ITAM-13
+            compare: argmax
+            top: 3
+            key: [*host_key]
+            value: [acqsiAmt, 취득금액, 금액, 취득가액, amount, acquisition_amount]
+            db_ids: [itam]
+
+  - id: ITAM-14
+    title: "취득금액 합계"
+    category: amount
+    env: [sandbox]
+    traps: [aggregate]
+    key_columns: [acqsiAmt]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "전체 서버 취득금액 합계 얼마야?"}
+        expect:
+          db_ids: [itam]
+          oracle:
+            id: ITAM-14
+            compare: value
+            value: [total, 합계, 취득금액합계, 취득금액 합계, 총취득금액, 총액, sum, total_amount]
+            db_ids: [itam]
+
+  - id: ITAM-15
+    title: "지원 종료 짝 없는 서버 — 정보 없음을 말하는가"
+    category: eol
+    env: [sandbox]
+    traps: [missing_pair]
+    key_columns: [[hWSportEndYmd, sWSportEndYmd]]
+    gold_tables: [TCDMSIF79]
+    turns:
+      - send: {query: "svr-was-06 지원 종료일 알려줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "지원 종료일 등록이 없는 서버 — 「정보 없음」을 말하는가, 날짜를 지어내는가"
+            no_data: true
+
+  - id: ITAM-16
+    title: "문자열 결합 — `||` 침묵 오답"
+    category: dialect
+    env: [sandbox]
+    traps: [pipes_concat]
+    key_columns: [sevrHostName, iPCtnt]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "자산관리 시스템에서 호스트명이랑 IP를 '호스트(IP)' 형태로 붙여서 보여줘"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-16, compare: rowset, db_ids: [itam]}
+
+  - id: ITAM-17
+    title: "범위 밖 — 사용률 추이(T5 경계)"
+    category: out_of_scope
+    env: [sandbox]
+    traps: [scope_t5]
+    key_columns: [sevrCPUUseRt]
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리에서 지난주 CPU 사용률 추이 보여줘"}
+        expect:
+          observe:
+            what: "자산 DB는 사용률 스냅숏뿐 — 스냅숏 값으로 추이를 꾸며내지 않는가(관측 DB로 넘기거나 없음을 말하면 정상)"
+            no_data: true
+
+  - id: ITAM-18
+    title: "메모리 용량 상위 5"
+    category: spec
+    env: [sandbox]
+    traps: [order_limit]
+    key_columns: [sevrMmryCapc]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "자산관리 기준으로 메모리가 제일 큰 서버 5대"}
+        expect:
+          db_ids: [itam]
+          oracle:
+            id: ITAM-18
+            compare: argmax
+            top: 5
+            key: [*host_key]
+            value: [sevrMmryCapc, 메모리, 메모리용량, 메모리 용량, 메모리크기, memory, memory_capacity]
+            db_ids: [itam]
+
+  - id: ITAM-19
+    title: "CPU 개수 조건 건수"
+    category: spec
+    env: [sandbox]
+    traps: [numeric_compare]
+    key_columns: [cPUCnt]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "자산관리에서 CPU가 16개 이상인 서버 몇 대야?"}
+        expect:
+          db_ids: [itam]
+          count_rows_ok: true
+          oracle:
+            id: ITAM-19
+            compare: value
+            value: [n, 서버수, 서버 수, 대수, 건수, count, cnt, server_count]
+            db_ids: [itam]
+
+  - id: ITAM-20
+    title: "운영체제별 서버 수"
+    category: spec
+    env: [sandbox]
+    traps: [group_aggregate]
+    key_columns: [oSTypzCtnt]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "자산관리 시스템에서 운영체제별 서버 수 알려줘"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-20, compare: rowset, db_ids: [itam]}
+
+  - id: ITAM-21
+    title: "가상 서버 — 코드값 미확보(G-5 · 관측)"
+    category: code_value
+    env: [sandbox]
+    traps: [code_value]
+    key_columns: [[vrtlSevrMapngYn, vrtlSevrRefID]]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "자산관리에서 가상 서버로 등록된 서버 목록 보여줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "여부 코드값 목록이 없다(G-5) — 'Y' 같은 코드값을 지어내 비교하는가 · 코드값 미확인을 고지하는가"
+            no_data: false
+
+  - id: ITAM-22
+    title: "멀티턴 승계 — 만료 서버의 지원 종료일"
+    category: multiturn
+    env: [sandbox]
+    traps: [succession, join_3col]
+    key_columns: [manmenCtrcEndYmd]
+    gold_tables: [TCDMSIF80]
+    turns:
+      - send: {query: "이번 분기에 유지보수 계약 끝나는 서버 보여줘"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-07, compare: keyset, key: [*host_key], db_ids: [itam]}
+      - send: {query: "그 서버들 지원 종료일도 알려줘"}
+        expect:
+          db_ids: [itam]
+          key_columns: [[hWSportEndYmd, sWSportEndYmd]]   # 턴별 덮어쓰기
+          gold_tables: [TCDMSIF79]
+          oracle: {id: ITAM-22, compare: keyset, key: [*host_key], db_ids: [itam]}

@@ -1,5 +1,5 @@
-"""`apm_*` 도구 코어 11종 + `gateway_health` (plans/87 §5.2(c) · SPEC-apm-gateway §3 · plans/134
-W1·W2 — W2에서 통계·지표·변경 감지 3종).
+"""`apm_*` 도구 코어 14종 + `gateway_health` (plans/87 §5.2(c) · SPEC-apm-gateway §3 · plans/134
+W1·W2 — W2에서 통계·지표·변경 감지 3종 · W5·W6에서 GUID 추적·변경 전후·기간 비교 3종).
 
 반환은 dict(정상 `{rows, row_count, …}` / 오류 `{error, reason}`)이고, MCP 등록·감사·JSON 직렬화는
 인터페이스 계층이 맡는다. 원칙:
@@ -18,7 +18,11 @@ W1·W2 — W2에서 통계·지표·변경 감지 3종).
 - 침묵 폴백 금지 — 일부 호출 실패·과거 시점 등은 `limits`에 `[한계]`로 적고, 전부 실패면 오류를
   돌려준다. 일부 단위(소스·도메인·창 조각·호출) 조회 실패가 있으면 봉투 `partial: true`를 세운다.
 - 호출 계획(`expect_calls`)을 신고해 작업의 진행·비용 예측에 쓴다(작업 밖이면 아무 일도 없다).
-- WAS 판정은 `domain.signals` 한 곳에서만 한다(`was_signals`).
+- WAS 판정은 `domain.signals` 한 곳에서만 한다(`was_signals`). 비교 계산(가중 평균·비율·증감·
+  원시 p95)은 `domain.analysis` 한 곳에서만 한다(plans/134 W6).
+- 프로파일 예산(조사당 `APM_PROFILE_CALLS_PER_INVESTIGATION`)은 호출 주체로 가른다 — 채팅 주체
+  `chat`(전송 토큰으로 정해진다 · 인자로 얻을 수 없다)은 쓰지 않고, 그 밖 주체는 (주체,
+  `investigation_id` → `owner` → `_unspecified`) 칸마다 센다(plans/134 W5 · D-296 ④).
 - 제니퍼 소스가 여럿이면(plans/87 J8 · D-287) 인스턴스는 (`source_id`, `domain_id`, `instance_id`)로
   식별하고 호출은 그 소스 서버로만 보낸다. 봉투 `source_kind`·`source`는 그대로다(소비자 인식 키).
 """
@@ -33,8 +37,9 @@ import logging
 import math
 import re
 import time
+import unicodedata
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -70,6 +75,8 @@ from apm_gateway.application.sources import (
     partial_of,
 )
 from apm_gateway.config import GatewayConfig
+from apm_gateway.domain import analysis as an
+from apm_gateway.domain import jobs as js
 from apm_gateway.domain import signals as sig
 from apm_gateway.domain.call_context import expect_calls
 from apm_gateway.domain.errors import (
@@ -113,12 +120,46 @@ DEFAULT_TREND_METRICS = ("heap_used_mb", "heap_committed_mb", "gc_time_usage_pct
 STATUS_DEFAULT_MINUTES = 60
 SERIES_DEFAULT_MINUTES = 60
 CHANGES_DEFAULT_MINUTES = 24 * 60
+CHANGE_DETECTION_NOTE = (
+    "[한계] 변경 감지(데이터 서버가 소스코드·리소스 변경을 인지한 시각) — 배포 확정 아님"
+)
 METRIC_MODES = ("catalog", "series")
 METRIC_SCOPES = ("domain", "instance", "business", "application", "sql", "external_call")
 # 정렬 기준·지표 이름은 허용값이 미공개라(COV E-05·E-06) 식별자 형식만 본다
 # (값 검증은 카탈로그·서버).
 _IDENT = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,127}")
 _METRIC_SUGGESTIONS = 3
+# plans/134 W5 — 프로파일 예산을 쓰지 않는 주체(채팅 전용 토큰 · `APM_GATEWAY_BEARER_TOKENS`의 키)
+CHAT_PRINCIPAL = "chat"
+_UNSPECIFIED = "_unspecified"
+KEY_ARG_NOTE = "[한계] key 인자는 의미·값 출처 미확인(W10) — 보내지 않았다"
+# plans/134 W5 N-13 — GUID 추적 창 기본값
+TRACE_DEFAULT_MINUTES = 60
+TRACE_AROUND_MINUTES = 5
+GUID_MAX = 256
+# plans/134 W6 A-1 — 명시 시각 상한(9999-01-01 UTC · 시 경계 올림·표시가 넘치지 않게)
+_ABSOLUTE_MAX_MS = 253370764800000
+# plans/134 W6 A-2 — 변경 전후 비교 폭 기본값(분) · 구간 지표(X-View 칸) · 증감을 내는 지표
+CHANGE_WIDTH_MINUTES = 60
+_XVIEW_SIDE_METRICS = (
+    "calls",
+    "tx_errors",
+    "error_rate",
+    "avg_response_ms",
+    "p95_response_ms",
+    "max_response_ms",
+)
+_IMPACT_METRICS = (
+    "calls",
+    "tx_errors",
+    "error_rate",
+    "avg_response_ms",
+    "p95_response_ms",
+    "error_records",
+)
+# plans/134 W6 A-1 — 기간 비교 지표 · 구간 이름
+_PERIOD_METRICS = ("calls", "failures", "failure_rate", "avg_response_ms", "max_response_ms")
+_PERIOD_LABELS = {"current": "현재", "baseline": "기준"}
 
 
 @dataclass
@@ -191,6 +232,19 @@ def _positive_int(value: Any, name: str, default: int) -> int:
         number = 0
     if number < 1:
         raise ApmError(INVALID_ARGUMENT, f"{name}는 양의 정수여야 한다: {value!r}")
+    return number
+
+
+def _nonneg_int(value: Any, name: str) -> int:
+    """0 이상의 정수 인자(프로파일 번호 등) — 그 밖은 `invalid_argument`."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        number = value
+    elif isinstance(value, str) and value.strip().isascii() and value.strip().isdigit():
+        number = int(value.strip())
+    else:
+        number = -1
+    if number < 0:
+        raise ApmError(INVALID_ARGUMENT, f"{name}는 0 이상의 정수여야 한다: {value!r}")
     return number
 
 
@@ -314,7 +368,7 @@ def _tx_fields(tx: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _identifier_fields(records: list[dict[str, Any] | None]) -> set[str]:
+def _identifier_fields(records: Iterable[dict[str, Any] | None]) -> set[str]:
     """식별자 가림이 실제로 적용된 칸 이름(원값이 비어 있지 않은 칸)."""
     return {f for rec in records if rec for f in IDENTIFIER_FIELDS if rec.get(f)}
 
@@ -347,7 +401,7 @@ class ApmTools:
         self.poller_status = poller_status
         self._th = cfg.policies.thresholds
         self._tz = cfg.runtime.timezone
-        self._profile_budget: dict[str, tuple[int, float]] = {}
+        self._profile_budget: dict[tuple[str, str], tuple[int, float]] = {}
         self._health_cache: tuple[float, dict[str, Any]] | None = None
         self._catalogs: dict[str, _Catalog] = {}
 
@@ -1490,6 +1544,10 @@ class ApmTools:
 
     @staticmethod
     def _error_row(er: dict[str, Any]) -> dict[str, Any]:
+        ref = _profile_ref(er, "time_ms")
+        if ref is not None and er.get("profile_index") is not None:
+            # 오류가 난 프로파일 번호 — apm_transaction_profile `profile_no`로 그대로 넘긴다(W5)
+            ref["profile_no"] = er["profile_index"]
         return {
             "time_ms": er["time_ms"],
             "error_type": er["error_type"],
@@ -1504,21 +1562,37 @@ class ApmTools:
             "application": mask_url(er["application"]),
             "txid": er["txid"],
             "profile_index": er.get("profile_index"),
-            "profile_ref": _profile_ref(er, "time_ms"),
+            "profile_ref": ref,
         }
 
-    def _consume_profile_budget(self, investigation_id: str | None) -> None:
+    def _consume_profile_budget(
+        self, principal: str, investigation_id: str | None, owner: str | None
+    ) -> None:
+        """프로파일 예산 1회 — 채팅 주체는 쓰지 않는다. 그 밖 주체의 칸은 (주체, `investigation_id`
+        → `owner` → `_unspecified`)이고 주체가 다르면 같은 칸을 쓰지 않는다(종전 `_anonymous` 전
+        주체 공유 폐지). 주체는 전송 토큰에서만 온다 — 인자(`investigation_id`·`owner`)는 칸을 고를
+        뿐 면제를 주지 않는다."""
+        if principal == CHAT_PRINCIPAL:
+            return
         now = self.clock()
         for key in [
             k for k, (_, t0) in self._profile_budget.items() if now - t0 > _PROFILE_BUDGET_TTL
         ]:
             del self._profile_budget[key]
-        key = investigation_id or "_anonymous"
+        inv = str(investigation_id).strip() if investigation_id is not None else ""
+        own = str(owner).strip() if owner is not None else ""
+        key = (principal, inv or own or _UNSPECIFIED)
         count, t0 = self._profile_budget.get(key, (0, now))
         limit = self.cfg.runtime.profile_calls_per_investigation
         if count >= limit:
+            which = (
+                f"investigation_id={inv}"
+                if inv
+                else (f"owner={own}" if own else "investigation_id·owner 없음")
+            )
             raise ApmError(
-                RATE_LIMITED, f"조사당 프로파일 호출 상한 {limit}회 초과(investigation_id={key})"
+                RATE_LIMITED,
+                f"조사당 프로파일 호출 상한 {limit}회 초과(주체 {principal} · {which})",
             )
         self._profile_budget[key] = (count + 1, t0)
 
@@ -1531,9 +1605,20 @@ class ApmTools:
         top_k: int | None = None,
         investigation_id: str | None = None,
         source_id: str | None = None,
+        profile_no: int | None = None,
+        include_param_key: bool | None = None,
+        *,
+        owner: str | None = None,
+        principal: str = js.ANONYMOUS_PRINCIPAL,
     ) -> dict[str, Any]:
+        """개별 트랜잭션 프로파일. `profile_no`(오류 행 `profile_ref.profile_no`)와
+        `include_param_key`는 SQL 조회에만 싣는다. `principal`은 서버가 전송 토큰으로 정한 호출
+        주체다(MCP 인자 아님)."""
         tool = "apm_transaction_profile"
         k = _check_n(top_k, default=None)  # 없으면 SQL 전부(W1 — 종전 ≤20·기본 10 상한 제거)
+        pno = None if profile_no is None else _nonneg_int(profile_no, "profile_no")
+        if include_param_key is not None and not isinstance(include_param_key, bool):
+            raise ApmError(INVALID_ARGUMENT, "include_param_key는 true·false여야 한다")
         if domain_id is None or txid is None or time_ms is None:
             raise ApmError(
                 INVALID_ARGUMENT,
@@ -1565,17 +1650,26 @@ class ApmTools:
                 f" {sorted(d for _, d in res.source_domains)}이 아니다"
                 + (f"(소스 {sid})" if len(self.sources) > 1 else ""),
             )
-        self._consume_profile_budget(investigation_id)
+        self._consume_profile_budget(principal, investigation_id, owner)
         api = self._api(sid)
         d, tx_id, t_ms = int(domain_id), int(txid), int(time_ms)
         limits = _Limits(
-            ["[한계] 프로파일 텍스트 형식 미검증(J0-L-b 녹화 전) — 단계 요약 없이 마스킹 발췌"]
+            [
+                "[한계] 프로파일 텍스트 형식 미검증(J0-L-b 녹화 전) — 단계 요약 없이 마스킹 발췌",
+                KEY_ARG_NOTE,
+            ]
         )
+        if include_param_key:
+            limits.append(
+                "[한계] include_param_key 응답 모양은 미공개다(W10) — SQL 문자열 칸만 읽어 리터럴을"
+                " 가렸다(mask_sql)"
+            )
         expect_calls(3)
         detail = excerpt = None
         truncated = False
         full_text: str | None = None
         sqls: list[str] = []
+        bind_masked = False
         ok = False
         try:
             detail = await api.transaction_detail(d, tx_id, t_ms)
@@ -1604,7 +1698,20 @@ class ApmTools:
                 raise
             limits.fail(f"[한계] 프로파일 텍스트 조회 실패: {e.code}")
         try:
-            sqls = [mask_sql(s) for s in await api.transaction_sqls(d, tx_id, t_ms, k)]
+            raw_sqls = await api.transaction_sqls(
+                d, tx_id, t_ms, k, profile_no=pno, include_param_key=include_param_key
+            )
+            # 응답 모양이 미공개라(COV E-11) SQL 칸으로 모은 문자열에 바인드 값이 섞일 수 있다 —
+            # 문인지는 **출처 칸 이름**으로 가른다(키워드로 가르면 `{call …}`·`BEGIN … END`가
+            # 훼손되고 키워드가 섞인 바인드 값이 새어 나간다 · plans/134 W7 AUDIT-8 · VG-1). SQL 문
+            # 칸은 리터럴·개인정보를 가리고, 그 밖 칸은 앞 1자만 남긴다(G-11 미결 동안).
+            sqls = [mask_sql(s) if is_sql else mask_identifier(s) for is_sql, s in raw_sqls]
+            if any(not is_sql for is_sql, _ in raw_sqls):
+                bind_masked = True
+                limits.append(
+                    "[한계] SQL 응답에 SQL 문 칸이 아닌 문자열(바인드 값일 수 있음)이 있어"
+                    " 앞 1자만 남기고 가렸다(응답 모양 미공개 — W10)"
+                )
             ok = True
         except ApmError as e:
             if e.code == CONTRACT_VIOLATION:
@@ -1618,6 +1725,7 @@ class ApmTools:
             "domain_id": d,
             "txid": str(tx_id),
             "time_ms": t_ms,
+            "profile_no": pno,
             "transaction": transaction,
             "profile_excerpt": excerpt,
             "profile_truncated": truncated,
@@ -1631,7 +1739,7 @@ class ApmTools:
             partial=limits.partial,
             file_only=PROFILE_FILE_ONLY,
             text_parts={"profile": full_text} if full_text is not None else None,
-            masked=_identifier_fields([detail]),
+            masked=_identifier_fields([detail]) | ({"sqls"} if bind_masked else set()),
         )
 
     # ── W2 도구(plans/134 N-5~N-7) ───────────────────────────
@@ -2008,12 +2116,17 @@ class ApmTools:
             reference_time, lookback_minutes, default_minutes=CHANGES_DEFAULT_MINUTES
         )
         assert window is not None
-        limits = _Limits(
-            [
-                "[한계] 변경 감지(데이터 서버가 소스코드·리소스 변경을 인지한 시각) — 배포 확정"
-                " 아님"
-            ]
+        limits = _Limits([CHANGE_DETECTION_NOTE])
+        rows = await self._change_rows(res, window, limits)
+        return self.ok(
+            tool, rows, resolution=res, window=window, limits=limits, partial=limits.partial
         )
+
+    async def _change_rows(
+        self, res: Resolution, window: Window, limits: _Limits
+    ) -> list[dict[str, Any]]:
+        """변경 감지 행(최근 순) — 25시간 이하 조각 · 겹침 제거 · 받은 조각의 행은 남긴다
+        (`apm_source_changes`·`apm_change_impact` 공용 · 묶음이 전부 실패하면 오류)."""
         names = {_key(i): i["instance_name"] for i in res.instances}
         seen: set[tuple[str, int, int | None, int | None]] = set()
         rows: list[dict[str, Any]] = []
@@ -2070,8 +2183,609 @@ class ApmTools:
         if failures and len(failures) == len(groups):
             raise self._all_failed(failures)
         rows.sort(key=lambda r: r["change_detected_ms"] or 0, reverse=True)
+        return rows
+
+    # ── W5·W6 도구(plans/134 N-13 · A-1~A-3) ───────────────────
+
+    def _at(self, ms: int) -> str:
+        """epoch ms → 사람이 읽는 시각(APM_TIMEZONE · 초 단위)."""
+        return datetime.fromtimestamp(ms / 1000, ZoneInfo(self._tz)).isoformat(timespec="seconds")
+
+    @staticmethod
+    def _guid(value: Any) -> str:
+        """GUID 인자 — 앞뒤 공백 제거 뒤 1~256자 · 공백·제어·서식 문자 없음. GUID 형식은 미검증이라
+        (W10) 그 밖 형식 제한은 두지 않는다. 길이를 먼저 본다(긴 입력을 끝까지 훑지 않는다)."""
+        text = str(value).strip() if value is not None else ""
+        if not text or len(text) > GUID_MAX:
+            raise ApmError(
+                INVALID_ARGUMENT, f"guid는 공백 제거 뒤 1~{GUID_MAX}자여야 한다({len(text)}자)"
+            )
+        if any(ch.isspace() or unicodedata.category(ch) in ("Cc", "Cf") for ch in text):
+            raise ApmError(INVALID_ARGUMENT, "guid에 공백·제어 문자를 둘 수 없다")
+        return text
+
+    def _trace_window(
+        self,
+        reference_time: str | None,
+        lookback_minutes: int | None,
+        around_ms: int | None,
+        around_minutes: int | None,
+        limits: _Limits,
+    ) -> Window:
+        """GUID 추적 창 — 명시 기간 > 앞 결과 시각(`around_ms`) ± `around_minutes`(기본 5) > 최근
+        60분. 명시 기간이 아니면 그 사실을 `[한계]`로 적는다(N-13). `around_ms` 없이 받은
+        `around_minutes`는 쓰지 않고 그 사실을 적는다(VG-3)."""
+        if around_minutes is not None and around_ms is None:
+            limits.append("[한계] around_minutes는 around_ms 없이 쓰지 않았다")
+        if reference_time is not None or lookback_minutes is not None:
+            window = self.window(
+                reference_time, lookback_minutes, default_minutes=TRACE_DEFAULT_MINUTES
+            )
+            assert window is not None
+            return window
+        if around_ms is not None:
+            center = _positive_int(around_ms, "around_ms", 0)
+            minutes = _positive_int(around_minutes, "around_minutes", TRACE_AROUND_MINUTES)
+            limits.append(f"[한계] 기간 미지정 — ±{minutes}분(앞 결과 시각 기준)")
+            return Window(center - minutes * 60_000, center + minutes * 60_000, False, self._tz)
+        limits.append(f"[한계] 기간 미지정 — 최근 {TRACE_DEFAULT_MINUTES}분")
+        window = self.window(None, TRACE_DEFAULT_MINUTES, default_minutes=TRACE_DEFAULT_MINUTES)
+        assert window is not None
+        return window
+
+    async def apm_transaction_trace(
+        self,
+        guid: str,
+        hostname: str | None = None,
+        reference_time: str | None = None,
+        lookback_minutes: int | None = None,
+        around_ms: int | None = None,
+        around_minutes: int | None = None,
+        source_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """GUID가 같은 거래 묶음(plans/134 W5 N-13 · A-3). 범위 = `hostname`의 정합 (소스, 도메인) ·
+        없으면 고른 소스의 전 도메인 — 도메인마다 1호출. (소스, 도메인, txid)로 중복을 지우고 원천
+        시작 시각 순으로 `trace_order`를 매긴다. 호출 관계는 만들지 않는다."""
+        tool = "apm_transaction_trace"
+        gid = self._guid(guid)
+        limits = _Limits(
+            ["[한계] GUID가 같은 거래 묶음이다 — 호출 관계(토폴로지)를 뜻하지 않는다"]
+        )
+        window = self._trace_window(
+            reference_time, lookback_minutes, around_ms, around_minutes, limits
+        )
+        res: Resolution | None = None
+        statuses: list[dict[str, Any]] | None = None
+        source_partial = False
+        if hostname is not None and str(hostname).strip():
+            res = await self._resolve(hostname, None, source_ids)
+            groups = list(_group(res))
+        else:
+            usable, statuses, found = await self.sources.available(
+                self.sources.select(source_ids)
+            )
+            limits.extend(found)
+            source_partial = any(row["status"] != STATUS_OK for row in statuses)
+            groups = [
+                (src.source_id, d["domain_id"])
+                for src, inv in usable
+                for d in inv.domains
+                if d.get("domain_id") is not None
+            ]
+        expect_calls(len(groups))
+        hits: list[dict[str, Any]] = []
+        failures: list[tuple[str, ApmError]] = []
+        foreign = 0
+        for sid, domain_id in groups:
+            where = self.sources.where(sid, domain_id)
+            try:
+                batch = await self._api(sid).transactions_by_guid(
+                    domain_id, gid, window.start_ms, window.end_ms
+                )
+            except ApmError as e:
+                if e.code == CONTRACT_VIOLATION:
+                    raise
+                failures.append((where, e))
+                limits.fail(f"[한계] GUID 거래 조회 실패({where}): {e.code}" + self._reason_tail(e))
+                continue
+            for tx in _tag(batch, sid, domain_id):
+                if tx.get("guid") and tx["guid"] != gid:
+                    foreign += 1  # 원천이 다른 GUID를 섞어 돌려줬다 — 묶음이 아니다
+                    continue
+                hits.append(tx)
+        if failures and len(failures) == len(groups):
+            raise self._all_failed(failures)
+        seen: set[tuple[str, Any, str]] = set()
+        unique: list[dict[str, Any]] = []
+        for tx in hits:
+            if tx.get("txid"):
+                key = (tx["source_id"], tx.get("domain_id"), tx["txid"])
+                if key in seen:
+                    continue
+                seen.add(key)
+            unique.append(tx)
+        # 히트가 걸친 (소스, 도메인)은 질의 묶음이 아니라 중복 제거 뒤 행으로 센다 — 원천이
+        # domain_id를 무시하고 같은 거래를 두 도메인 질의에 돌려줘도 한 번이다(VG-6)
+        with_hits = {(tx["source_id"], tx.get("domain_id")) for tx in unique}
+        unique.sort(
+            key=lambda t: (
+                t.get("start_time_ms") is None,
+                t.get("start_time_ms") or 0,
+                t["source_id"],
+                t.get("domain_id") or 0,
+                t.get("txid") or "",
+            )
+        )
+        rows = [
+            {
+                "source_id": tx["source_id"],
+                **_tx_fields(tx),
+                "profile_ref": _profile_ref(tx, "end_time_ms"),
+                "trace_order": order,
+            }
+            for order, tx in enumerate(unique, 1)
+        ]
+        if len(with_hits) > 1:
+            limits.append(
+                "[한계] 소스·도메인 시계 차이를 보정하지 않았다 — 순서는 각 원천 시각 기준"
+            )
+        if foreign:
+            limits.append(
+                f"[한계] 원천이 다른 GUID의 거래 {foreign}건을 함께 돌려줘 뺐다 — guid 인자 의미"
+                " 확인 필요(W10)"
+            )
+        if not rows:
+            limits.append(
+                "[한계] 구간 안에서 GUID 거래를 찾지 못했다"
+                f"(구간 {self._at(window.start_ms)}~{self._at(window.end_ms)})"
+            )
+        starts = [t["start_time_ms"] for t in unique if t.get("start_time_ms") is not None]
+        ends = [t["end_time_ms"] for t in unique if t.get("end_time_ms") is not None]
+        first = min(starts) if starts else None
+        last = max(ends) if ends else None
+        summary = {
+            "guid": gid,
+            "transactions": len(rows),
+            "domains_queried": len(groups),
+            "domains_with_hits": len(with_hits),
+            "domains_failed": len(failures),
+            "sources": [sid for sid in self.sources.ids if any(g[0] == sid for g in with_hits)],
+            "first_start_ms": first,
+            "last_end_ms": last,
+            "span_ms": (last - first) if first is not None and last is not None else None,
+            "instances": list(
+                dict.fromkeys(t["instance_name"] for t in unique if t.get("instance_name"))
+            ),
+        }
         return self.ok(
-            tool, rows, resolution=res, window=window, limits=limits, partial=limits.partial
+            tool,
+            rows,
+            resolution=res,
+            window=window,
+            limits=limits,
+            sources=statuses,
+            partial=limits.partial or source_partial,
+            file_only=FILE_ONLY_COLUMNS,
+            masked=_identifier_fields(unique),
+            summary=summary,
+        )
+
+    async def _impact_side(
+        self,
+        res: Resolution,
+        start_ms: int,
+        end_ms: int,
+        *,
+        inclusive_end: bool,
+        what: str,
+        limits: _Limits,
+    ) -> tuple[dict[str, Any], int, int]:
+        """변경 전/후 구간 1개(인스턴스 1개)의 지표 → (지표, 원천 시도 수, 실패 수). X-View(호출·
+        오류·응답시간 — 1분 조각)와 오류 기록을 따로 받고, 실패한 원천의 칸만 None으로 둔다
+        (0으로 세지 않는다 · 조각 하나라도 실패하면 X-View 칸 전부 None)."""
+        inst = res.instances[0]
+        sid, domain_id = inst["source_id"], inst["domain_id"]
+        where = self.sources.where(sid, domain_id)
+        win = Window(start_ms, end_ms if inclusive_end else end_ms - 1, False, self._tz)
+        side: dict[str, Any] = {"start_ms": start_ms, "end_ms": end_ms}
+        fails = 0
+        sub = _Limits()
+        txs, ok = await self._xview(res, win, sub)
+        limits.extend(sub)
+        if sub.partial or not ok:
+            fails += 1
+            limits.fail(f"[한계] {what} X-View 조회 실패 — 호출·오류·응답시간 N/A")
+            side.update(dict.fromkeys(_XVIEW_SIDE_METRICS))
+        else:
+            times = [t["response_time_ms"] for t in txs if t.get("response_time_ms") is not None]
+            errors = sum(1 for t in txs if t.get("error_type"))
+            side.update(
+                calls=len(txs),
+                tx_errors=errors,
+                error_rate=an.rate(errors, len(txs)),
+                avg_response_ms=an.weighted_mean(float(sum(times)), len(times)),
+                p95_response_ms=an.p95(times),
+                max_response_ms=max(times) if times else None,
+            )
+        expect_calls(1)
+        try:
+            records = await self._errors(
+                self._api(sid), domain_id, [inst["instance_id"]], win, None, where, limits
+            )
+        except ApmError as e:
+            if e.code == CONTRACT_VIOLATION:
+                raise
+            fails += 1
+            limits.fail(
+                f"[한계] {what} 오류 기록 조회 실패({where}): {e.code}" + self._reason_tail(e)
+            )
+            side.update(error_records=None, errors_by_type=None)
+        else:
+            mine = [r for r in _tag(records, sid, domain_id) if _key(r) == _key(inst)]
+            side.update(
+                error_records=len(mine),
+                errors_by_type=[
+                    {"error_type": k, "count": v}
+                    for k, v in Counter(r["error_type"] or "(없음)" for r in mine).most_common()
+                ],
+            )
+        return side, 2, fails
+
+    async def apm_change_impact(
+        self,
+        hostname: str,
+        reference_time: str | None = None,
+        lookback_minutes: int | None = None,
+        width_minutes: int | None = None,
+        source_ids: list[str] | None = None,
+        n: int | None = None,
+        full: bool = False,
+    ) -> dict[str, Any]:
+        """소스 변경 감지 전후 비교(plans/134 W6 A-2 · F-09). 변경 목록은 `apm_source_changes`와
+        같은 로직이고, 변경(인스턴스 단위)마다 전 `[t−w, t)` · 후 `[t, min(t+w, 지금))`의 그
+        인스턴스 지표를 받아 증감을 낸다. 동반 변화일 뿐 원인 확정이 아니다."""
+        tool = "apm_change_impact"
+        width = _positive_int(width_minutes, "width_minutes", CHANGE_WIDTH_MINUTES)
+        top_n = _check_n(n, default=None)
+        res = await self._resolve(hostname, None, source_ids)
+        window = self.window(
+            reference_time, lookback_minutes, default_minutes=CHANGES_DEFAULT_MINUTES
+        )
+        assert window is not None
+        limits = _Limits(
+            [
+                "[한계] 변경 감지 시각 전후의 동반 변화다 — 원인 확정이 아니다",
+                CHANGE_DETECTION_NOTE,
+            ]
+        )
+        changes = await self._change_rows(res, window, limits)
+        selected = _select(changes, top_n, full)
+        if not changes:
+            limits.append("[한계] 구간 안 변경 감지 0건")
+        elif len(selected) < len(changes):
+            limits.append(
+                f"[한계] 변경 감지 {len(changes)}건 중 최근 {len(selected)}건을 비교했다(n)"
+                " — 전부는 full"
+            )
+        by_key = {_key(i): i for i in res.instances}
+        now_ms = int(self.clock() * 1000)
+        w_ms = width * 60_000
+        rows: list[dict[str, Any]] = []
+        attempts = fails = 0
+        for change in selected:
+            t = change["change_detected_ms"]
+            label = f"{change['instance_name']} {change['change_detected_at'] or ''}".strip()
+            if t is None:
+                limits.fail(f"[한계] 감지 시각이 없는 변경은 비교하지 못했다({label})")
+                continue
+            one = Resolution(
+                res.hostname,
+                [by_key[(change["source_id"], change["instance_id"])]],
+                res.confidence,
+                res.reason,
+            )
+            before, tried, failed = await self._impact_side(
+                one, t - w_ms, t, inclusive_end=False, what=f"{label} 변경 전", limits=limits
+            )
+            attempts, fails = attempts + tried, fails + failed
+            after_end = min(t + w_ms, now_ms)
+            if after_end - t < w_ms:
+                limits.append(
+                    f"[한계] 변경 뒤 구간이 아직 {round(max(0, after_end - t) / 60_000, 1):g}분이다"
+                    f"(비교 폭 {width}분) — {label}"
+                )
+            if after_end > t:
+                after, tried, failed = await self._impact_side(
+                    one,
+                    t,
+                    after_end,
+                    inclusive_end=after_end == now_ms,
+                    what=f"{label} 변경 후",
+                    limits=limits,
+                )
+                attempts, fails = attempts + tried, fails + failed
+            else:  # 감지 시각이 지금 이후(시계 차이) — 뒤 구간이 없다
+                after = {
+                    "start_ms": t,
+                    "end_ms": t,
+                    **dict.fromkeys(_XVIEW_SIDE_METRICS),
+                    "error_records": None,
+                    "errors_by_type": None,
+                }
+            rows.append(
+                {
+                    "source_id": change["source_id"],
+                    "domain_id": change["domain_id"],
+                    "instance_id": change["instance_id"],
+                    "instance_name": change["instance_name"],
+                    "change_detected_ms": t,
+                    "change_detected_at": change["change_detected_at"],
+                    "width_minutes": width,
+                    "before": before,
+                    "after": after,
+                    "delta": {
+                        m: (an.rate_delta if m == "error_rate" else an.delta)(after[m], before[m])
+                        for m in _IMPACT_METRICS
+                    },
+                }
+            )
+        if attempts and fails == attempts:
+            raise ApmError(
+                SOURCE_UNAVAILABLE, "변경 전후 지표 조회가 모두 실패했다: " + "; ".join(limits)
+            )
+        return self.ok(
+            tool,
+            rows,
+            resolution=res,
+            window=window,
+            limits=limits,
+            partial=limits.partial,
+            summary={
+                "changes": len(changes),
+                "compared": len(rows),
+                "window": window.as_dict(),
+                "width_minutes": width,
+            },
+        )
+
+    def _absolute_ms(self, value: Any, name: str) -> int:
+        """명시 시각(ISO 8601 · 시간대 없으면 APM_TIMEZONE) → epoch ms. 비었거나 형식 밖이면
+        `invalid_argument`."""
+        text = str(value).strip() if value is not None else ""
+        if not text:
+            raise ApmError(INVALID_ARGUMENT, f"{name}가 필요하다(ISO 8601)")
+        try:
+            at = datetime.fromisoformat(text)
+        except ValueError as e:
+            raise ApmError(
+                INVALID_ARGUMENT, f"{name}는 ISO 8601이어야 한다: {text[:64]!r}"
+            ) from e
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=ZoneInfo(self._tz))
+        try:
+            ms = int(at.timestamp() * 1000)
+        except (OverflowError, ValueError, OSError):
+            ms = -1
+        # 시 경계로 넓힌 뒤에도 시각으로 다시 나타낼 수 있는 범위만(9999-12-31 근처는 올림에서
+        # 넘친다 — 내부 오류·스택 대신 인자 오류 · plans/134 W7 I-2)
+        if not 0 <= ms < _ABSOLUTE_MAX_MS:
+            raise ApmError(
+                INVALID_ARGUMENT, f"{name}는 1970~9998년 범위여야 한다: {text[:64]!r}"
+            )
+        return ms
+
+    @staticmethod
+    def _period_stats(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], bool]:
+        """시 단위 애플리케이션 행 → 구간 합계(호출·실패·실패율·가중 평균·최대 · 원자료
+        `total_response_ms`). (합계, 가중 평균 재료가 빠졌는가) — 호출이 있는 행에 총 응답시간
+        칸이 없으면 평균은 None(계산 불가)이다."""
+        calls = sum(r["calls"] for r in rows)
+        failures = sum(r["failures"] for r in rows)
+        missing = any(r.get("total_response_ms") is None for r in rows if r["calls"])
+        total = None if missing else float(sum(r.get("total_response_ms") or 0 for r in rows))
+        maxima = [
+            r["max_response_time_ms"] for r in rows if r.get("max_response_time_ms") is not None
+        ]
+        return {
+            "calls": calls,
+            "failures": failures,
+            "failure_rate": an.rate(failures, calls),
+            "avg_response_ms": an.weighted_mean(total, calls),
+            "max_response_ms": max(maxima) if maxima else None,
+            "total_response_ms": total,
+            "application_count": len(rows),
+        }, missing
+
+    @staticmethod
+    def _sum_stats(parts: list[dict[str, Any]]) -> dict[str, Any]:
+        """인스턴스 합계 → 전체 합계(가중 평균 = Σ총 응답시간 ÷ Σ호출 — 재료가 하나라도 없으면
+        None)."""
+        calls = sum(p["calls"] for p in parts)
+        failures = sum(p["failures"] for p in parts)
+        totals = [p["total_response_ms"] for p in parts if p["calls"]]
+        total = None if any(t is None for t in totals) else float(sum(totals))
+        maxima = [p["max_response_ms"] for p in parts if p["max_response_ms"] is not None]
+        return {
+            "calls": calls,
+            "failures": failures,
+            "failure_rate": an.rate(failures, calls),
+            "avg_response_ms": an.weighted_mean(total, calls),
+            "max_response_ms": max(maxima) if maxima else None,
+            "total_response_ms": total,
+        }
+
+    @staticmethod
+    def _stats_delta(
+        current: dict[str, Any] | None, baseline: dict[str, Any] | None
+    ) -> dict[str, dict[str, float | None]]:
+        """지표별 증감(실패율은 %p) — 한쪽이 없으면 N/A(0으로 채우지 않는다)."""
+
+        def get(d: dict[str, Any] | None, k: str) -> Any:
+            return d.get(k) if d else None
+
+        return {
+            m: (an.rate_delta if m == "failure_rate" else an.delta)(
+                get(current, m), get(baseline, m)
+            )
+            for m in _PERIOD_METRICS
+        }
+
+    async def apm_period_compare(
+        self,
+        hostname: str,
+        current_start: str | None = None,
+        current_end: str | None = None,
+        baseline_start: str | None = None,
+        baseline_end: str | None = None,
+        source_ids: list[str] | None = None,
+        n: int | None = None,
+        full: bool = False,
+    ) -> dict[str, Any]:
+        """두 명시 구간 비교(plans/134 W6 A-1 — 조사 소비 · 채팅 배선 없음). 시 단위 애플리케이션
+        통계를 인스턴스·구간마다 받아(시 경계로 넓힌다) 호출·실패·실패율·가중 평균·최대와 증감을
+        낸다. p95는 시 단위 통계에 분포가 없어 싣지 않는다. 한쪽에만 있는 인스턴스는 N/A다."""
+        tool = "apm_period_compare"
+        top_n = _check_n(n, default=None)
+        requested: dict[str, tuple[int, int]] = {}
+        for period, start_raw, end_raw in (
+            ("current", current_start, current_end),
+            ("baseline", baseline_start, baseline_end),
+        ):
+            start = self._absolute_ms(start_raw, f"{period}_start")
+            end = self._absolute_ms(end_raw, f"{period}_end")
+            if start >= end:
+                raise ApmError(
+                    INVALID_ARGUMENT, f"{period}_start는 {period}_end보다 앞이어야 한다"
+                )
+            requested[period] = (start, end)
+        res = await self._resolve(hostname, None, source_ids)
+        limits = _Limits()
+        hours: dict[str, tuple[int, int]] = {}
+        for period, (start, end) in requested.items():
+            hours[period] = (_hour_floor(start), _hour_ceil(end))
+            span = f"{self._at(hours[period][0])}~{self._at(hours[period][1])}"
+            limits.append(
+                f"[한계] 시 단위 통계 — {_PERIOD_LABELS[period]} 구간을 시 경계로 맞췄다"
+                + (
+                    f"(요청 {self._at(start)}~{self._at(end)} → 조회 {span})"
+                    if hours[period] != (start, end)
+                    else f"({span})"
+                )
+            )
+        lengths = {p: (e - s) / 3_600_000 for p, (s, e) in hours.items()}
+        if lengths["current"] != lengths["baseline"]:
+            limits.append(
+                "[한계] 두 구간 길이가 다르다 — 합계 비교 주의(평균·비율은 비교 가능)"
+                f"(현재 {lengths['current']:g}시간 · 기준 {lengths['baseline']:g}시간)"
+            )
+        limits.append(
+            "[한계] p95는 싣지 않았다 — 시 단위 통계에는 응답시간 분포가 없다(구간 p95의 평균은"
+            " 계산하지 않는다)"
+        )
+        limits.append(
+            "[한계] 시 단위 통계 행 수는 서버 기본값이다(미공개 — W10) · 합계는 받은 전"
+            " 애플리케이션 행으로 냈다"
+        )
+        stats: dict[tuple[InstKey, str], dict[str, Any] | None] = {}
+        failed: dict[str, list[str]] = {"current": [], "baseline": []}
+        failures: list[tuple[str, ApmError]] = []
+        unweighted: list[str] = []
+        expect_calls(len(res.instances) * len(hours))
+        for inst in res.instances:
+            label = self._inst_label(_key(inst))
+            for period, (start, end) in hours.items():
+                try:
+                    app_rows = await self._api(inst["source_id"]).application_status(
+                        inst["domain_id"], [inst["instance_id"]], start, end
+                    )
+                except ApmError as e:
+                    if e.code == CONTRACT_VIOLATION:
+                        raise
+                    failures.append((f"인스턴스 {label} {_PERIOD_LABELS[period]} 구간", e))
+                    failed[period].append(label)
+                    limits.fail(
+                        f"[한계] {_PERIOD_LABELS[period]} 구간 통계 조회 실패(인스턴스 {label}):"
+                        f" {e.code}" + self._reason_tail(e)
+                    )
+                    stats[(_key(inst), period)] = None
+                    continue
+                if not app_rows:
+                    stats[(_key(inst), period)] = None
+                    limits.append(
+                        f"[한계] 인스턴스 {inst['instance_name'] or label}은"
+                        f" {_PERIOD_LABELS[period]} 구간 통계 행이 없다 — 증감 N/A(0으로 채우지"
+                        " 않았다)"
+                    )
+                    continue
+                stat, missing = self._period_stats(app_rows)
+                stats[(_key(inst), period)] = stat
+                if missing:
+                    unweighted.append(f"{label} {_PERIOD_LABELS[period]}")
+        if failures and len(failures) == len(res.instances) * len(hours):
+            raise self._all_failed(failures)
+        if unweighted:
+            limits.append(
+                "[한계] 평균 응답시간 계산 불가 — 총 응답시간 칸이 없는 통계 행이 있다(가중 평균"
+                f" 재료 없음 · {', '.join(unweighted)})"
+            )
+        summary: dict[str, Any] = {}
+        overall: dict[str, dict[str, Any] | None] = {}
+        for period, (start, end) in requested.items():
+            present = [
+                s for i in res.instances if (s := stats.get((_key(i), period))) is not None
+            ]
+            if failed[period]:
+                overall[period] = None
+                limits.append(
+                    f"[한계] {_PERIOD_LABELS[period]} 구간 전체 합계 계산 불가 — 조회 실패"
+                    f" 인스턴스 {', '.join(failed[period])}(0으로 세지 않았다)"
+                )
+            elif not present:
+                overall[period] = None
+            else:
+                overall[period] = self._sum_stats(present)
+            summary[period] = {
+                "start": self._at(start),
+                "end": self._at(end),
+                "hour_start": self._at(hours[period][0]),
+                "hour_end": self._at(hours[period][1]),
+                "hours": lengths[period],
+                **(overall[period] or dict.fromkeys((*_PERIOD_METRICS, "total_response_ms"))),
+            }
+        summary["delta"] = self._stats_delta(overall["current"], overall["baseline"])
+        summary["instances"] = len(res.instances)
+        rows = [
+            {
+                **_inst_meta(inst),
+                "current": stats.get((_key(inst), "current")),
+                "baseline": stats.get((_key(inst), "baseline")),
+                "delta": self._stats_delta(
+                    stats.get((_key(inst), "current")), stats.get((_key(inst), "baseline"))
+                ),
+            }
+            for inst in res.instances
+        ]
+        rows.sort(
+            key=lambda r: (
+                r["current"] is None,
+                -(r["current"]["calls"] if r["current"] else 0),
+                r["source_id"],
+                r["instance_id"],
+            )
+        )
+        shown = _select(rows, top_n, full)
+        if len(shown) < len(rows):
+            limits.append(
+                f"[한계] 인스턴스 {len(rows)}개 중 현재 구간 호출 수 상위 {len(shown)}개 행만"
+                " 실었다 — summary는 전 인스턴스 합계 · 전부는 full"
+            )
+        return self.ok(
+            tool,
+            shown,
+            resolution=res,
+            limits=limits,
+            partial=limits.partial,
+            summary=summary,
         )
 
     async def _source_health(self, src: JenniferSource) -> tuple[dict[str, Any], list[str]]:

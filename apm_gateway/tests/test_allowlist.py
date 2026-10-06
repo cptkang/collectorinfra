@@ -1,7 +1,9 @@
-"""허용목록 정본 (plans/87 §5.2(e) · §6 [v3.2]·[v3.3] 수용 기준).
+"""허용목록 정본 (plans/87 §5.2(e) · §6 [v3.2]·[v3.3] 수용 기준 · plans/134 W7 C-10).
 
-- §5.2(e) 거부 입력 23건(비GET 9 · 민감 GET 9 · 변형·우회 5) + v1 POST 변형 + 쿼리 `token` → **HTTP
-  0회**로 거부.
+- §5.2(e) 거부 입력(비GET 9 · 변형·우회) + v1 POST 변형 + 쿼리 `token` → **HTTP 0회**로 거부.
+- **민감 GET 9건(§5.2(e) (b))은 plans/134 W7(D-296 ①)에서 허용으로 반전했다** — JSON GET 8건은
+  허용 템플릿에 맞고, 같은 데이터의 XML 변형(`/api/auth/userlist.xml`)은 계속 거부한다. 실제로
+  나가는 쿼리 키·값과 자격증명 경계 통과는 `test_plan134_w7_*.py`가 목 서버로 단언한다.
 - 카탈로그 사본(`testdata/jennifer/scripts/jennifer_catalog.py`) ↔ 정본 대조(템플릿·필수/선택
   키·Accept).
 """
@@ -34,7 +36,7 @@ NON_GET = [
     ("POST", "/api-v2/manual-rdb-export"),
     ("POST", "/api/domain"),  # v1 조회 API의 POST 변형
 ]
-# (b) 민감 GET 9
+# (b) 민감 GET 9 — plans/134 W7(D-296 ①)에서 JSON GET 8건은 허용으로 반전(C-10) · XML 변형은 거부
 SENSITIVE_GET = [
     "/api/auth/userlist",
     "/api/auth/userlist.xml",
@@ -46,6 +48,8 @@ SENSITIVE_GET = [
     "/api-v2/manage/data-server/system-property-config",
     "/api-v2/manage/rule/event/error/1000",
 ]
+SENSITIVE_GET_ALLOWED = [p for p in SENSITIVE_GET if not p.endswith(".xml")]
+SENSITIVE_GET_REJECTED = [p for p in SENSITIVE_GET if p.endswith(".xml")]
 # (c) 변형·우회 — 경로 3건(쿼리 token·리다이렉트는 아래 별도 테스트)
 VARIANTS = [
     "/api/domain.xml",
@@ -86,16 +90,28 @@ def test_non_get_rejected(method, path):
         check_request(method, path.split("?")[0], {})
 
 
-@pytest.mark.parametrize("path", SENSITIVE_GET + VARIANTS + EXTRA_VARIANTS)
+@pytest.mark.parametrize("path", SENSITIVE_GET_REJECTED + VARIANTS + EXTRA_VARIANTS)
 def test_paths_outside_allowlist_rejected(path):
     assert match_template(path) is None
     with pytest.raises(NotAllowedError):
         check_request("GET", path, {})
 
 
+@pytest.mark.parametrize("path", SENSITIVE_GET_ALLOWED)
+def test_sensitive_gets_are_allowed_since_w7(path):
+    """C-10 반전(plans/134 W7 · D-296 ①) — 민감 GET JSON은 허용 템플릿에 정확히 맞는다(GET만)."""
+    assert match_template(path) is not None
+    check_request("GET", path, {})
+    for method in ("POST", "PUT", "DELETE"):
+        with pytest.raises(NotAllowedError):
+            check_request(method, path, {})
+
+
 def test_rejection_inputs_cover_plan_table():
-    """§5.2(e) 거부 입력 표의 개수 — 비GET 9(v1 POST 변형 포함) · 민감 GET 9 · 변형 경로 3."""
+    """§5.2(e) 입력 표의 개수 — 비GET 9(v1 POST 변형 포함) · 민감 GET 9(허용 8 · XML 거부 1 —
+    W7) · 변형 경로 3."""
     assert (len(NON_GET), len(SENSITIVE_GET), len(VARIANTS)) == (9, 9, 3)
+    assert (len(SENSITIVE_GET_ALLOWED), len(SENSITIVE_GET_REJECTED)) == (8, 1)
 
 
 @pytest.mark.parametrize("key", ["token", "TOKEN", "Token"])
@@ -132,7 +148,9 @@ def test_build_path_requires_numeric_vars():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path", SENSITIVE_GET + VARIANTS + ["/api-v2/manage/data-server/control"])
+@pytest.mark.parametrize(
+    "path", SENSITIVE_GET_REJECTED + VARIANTS + ["/api-v2/manage/data-server/control"]
+)
 async def test_client_rejects_with_zero_http_calls(path):
     transport = CountingTransport()
     client = _client(transport)

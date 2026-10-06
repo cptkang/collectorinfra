@@ -166,6 +166,7 @@ async def test_error_record_rows(synth):
         "domain_id": DOMAIN,
         "txid": "9000",
         "time_ms": NOW_MS - 60_000,
+        "profile_no": 14,  # plans/134 W5 — 오류 행 profile_index를 프로파일 SQL 조회로 넘긴다
     }
     assert "user=<v>" in row["application"] and "kim@example.com" not in row["message"]
 

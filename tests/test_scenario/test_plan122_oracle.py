@@ -123,7 +123,9 @@ def test_canon_passes_loader_check_for_all_target_engines(oracle_id: str) -> Non
 
 
 def test_canon_pairs_and_dialect_rules() -> None:
-    files = sorted(ORACLE_DIR.glob("*.sql"))
+    # MariaDB 정본(ITAM 질의 벤치 · plans/135)은 PG·DB2 짝 규칙 밖이다 —
+    # `tests/test_scripts/test_itam_bench_catalog.py` 가 같은 머리·현재시각 금지 규칙으로 고정한다.
+    files = sorted(p for p in ORACLE_DIR.glob("*.sql") if not p.name.endswith(".mariadb.sql"))
     ids = {path.name.split(".")[0] for path in files}
     assert ids == set(CANON)
     for oracle_id in ids:
@@ -178,7 +180,9 @@ def test_validate_requires_target_dbs_and_known_engines() -> None:
                                 scenario_id="B-01", db_ids=None) == []
     errors = validate_oracle_spec({"id": "B-01", "compare": "count"}, scenario_id="B-01",
                                   db_ids=["itam", "no_such_db"])
-    assert sum("오라클 대상 엔진이 아니다" in e for e in errors) == 2
+    # mariadb(itam)는 plans/135 부터 오라클 대상 엔진이다 — B-01 정본이 없어 파일 부재로 거부된다.
+    assert sum("오라클 대상 엔진이 아니다" in e for e in errors) == 1
+    assert any("B-01.mariadb.sql" in e for e in errors)
 
 
 def test_validate_engine_coverage_and_sql_guards(tmp_path: Path,
@@ -386,7 +390,7 @@ def test_run_oracle_rejects_before_any_connection(tmp_path: Path,
     fake = _FakeDb({})
     monkeypatch.setattr(oracle, "_open_client", fake.factory)
     log = tmp_path / "l.jsonl"
-    # gp 는 정본이 있지만 itam(mariadb)은 오라클 대상이 아니다 → 아무 DB 도 열지 않는다.
+    # gp 는 정본이 있지만 itam(mariadb)은 B-01 정본이 없다 → 아무 DB 도 열지 않는다.
     out = _run({"id": "B-01"}, ["polestar_cm_gp", "itam"], log)
     assert out["status"] == "unavailable" and "itam" in out["reason"]
     assert fake.opened == 0

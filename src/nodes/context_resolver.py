@@ -13,10 +13,12 @@ Plan 50 (M3) 확장: 후속 턴 분해(intent_planner)·DB 승계(data_query)를
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from langchain_core.messages import HumanMessage
 
 from src.config import AppConfig
+from src.domain.result_refs import RESULT_TABLES_KEY, TABLE_LABELS_KEY, extract_table_refs
 from src.routing.db_scope import extract_state_db_ids
 from src.routing.registry import get_registry
 from src.state import AgentState
@@ -152,6 +154,10 @@ async def context_resolver(
         "previous_sources": (
             [] if state.get("db_scope_reset") else list(state.get("turn_sources") or [])
         ),
+        # 앞 결과 행 참조(plans/134 M-6) — 「두 번째 트랜잭션 프로파일」의 후보(표시 순서 · 참조
+        # 칸 원값). 스레드 상태 안에만 있다(다른 스레드의 참조는 닿지 않는다). 프롬프트에 렌더하지
+        # 않는다.
+        "previous_result_refs": _previous_result_refs(previous_results, prior_ctx, turn_count),
     }
 
     logger.info(
@@ -181,6 +187,27 @@ async def context_resolver(
         result["messages"] = trimmed
 
     return result
+
+
+def _previous_result_refs(
+    previous_results: list[Any], prior_ctx: dict[str, Any], turn_count: int
+) -> dict[str, Any]:
+    """직전 턴 결과 행의 참조 후보(plans/134 M-6) — `{"turn": 만든 턴, <종류>: [후보…]}`.
+
+    직전 턴 결과에 참조 칸이 있는 행이 하나도 없으면(폴스타 조회·프로파일 상세·거부·접수) 그 앞에
+    보존한 후보를 그대로 잇는다 — 「두 번째 프로파일」 다음 턴의 「세 번째도」가 목록을 잃지 않게
+    (`previous_entities` sticky와 같은 규칙). 참조 칸이 있는 행이 새로 나오면 종류와 무관하게 전부
+    갈아 끼운다 — 이전 목록의 다른 종류가 섞여 엉뚱한 행을 고르지 않게 한다.
+
+    직전 턴이 표 여러 개(복합 계획)였으면 집계기가 직전 맥락에 남긴 표 경계(`RESULT_TABLES_KEY`)로
+    표마다 추리고 표 이름을 함께 싣는다 — 번호가 화면의 표 안 순서와 같다(plans/134 R-1). 경계는 그
+    턴의 집계기만 남기고 이 함수가 다음 맥락으로 옮기지 않으므로 다른 턴의 결과에 잘못 붙지 않는다.
+    """
+    fresh, labels = extract_table_refs(previous_results, prior_ctx.get(RESULT_TABLES_KEY))
+    if fresh:
+        return {"turn": turn_count - 1, **fresh, **({TABLE_LABELS_KEY: labels} if labels else {})}
+    kept = prior_ctx.get("previous_result_refs")
+    return dict(kept) if isinstance(kept, dict) else {}
 
 
 def _demonstrative_without_antecedent(state: AgentState, previous_entities: list) -> bool:

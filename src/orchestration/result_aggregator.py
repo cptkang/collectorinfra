@@ -25,12 +25,15 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.domain import disclosure as disc
+from src.domain.result_refs import RESULT_TABLES_KEY
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.nodes.output_generator import (
     NO_TEMPLATE_NOTICE_HEAD,
     narration_limit_sec,
     output_generator,
 )
+from src.orchestration.apm_query import APM_QUERY_AGENT, reference_views_only, table_label
+from src.orchestration.apm_query import META_KEY as APM_META_KEY
 from src.orchestration.host_inspect import HOST_INSPECT_AGENT
 from src.prompts.result_synthesizer import RESULT_SYNTHESIZER_SYSTEM_PROMPT
 from src.state import AgentState
@@ -170,9 +173,9 @@ async def result_aggregator(
         # 병합 불성립 + 2단(TP-4.5): 합성 LLM 없이 단계별 결과를 순서대로 잇는다.
         if step_answers:
             steps_out = await _finalize_steps(ordered_tasks, task_results, state, llm, app_config)
-            return _with_answer_history(_apply_incomplete_notice(
-                {**steps_out, **db_promotion}, state,
-            ))
+            return _with_answer_history(_apply_incomplete_notice(_with_result_tables(
+                {**steps_out, **db_promotion}, ordered_tasks, task_results, state,
+            ), state))
 
     # 각 task 결과를 최종화 (텍스트 응답 + 선택적 output_file)
     finalized: list[dict] = []
@@ -188,10 +191,10 @@ async def result_aggregator(
 
     # 공통 키가 없으면(도메인 이질) LLM 1회 합성으로 폴백한다(D-062).
     if synthesize and len(finalized) > 1:
-        return _with_answer_history(_apply_incomplete_notice(
-            {**await _synthesize_finalized(finalized, state, llm, app_config), **db_promotion},
-            state,
-        ))
+        synthesized = await _synthesize_finalized(finalized, state, llm, app_config)
+        return _with_answer_history(_apply_incomplete_notice(_with_result_tables(
+            {**synthesized, **db_promotion}, ordered_tasks, task_results, state,
+        ), state))
 
     # 단일 task: 그대로 최종화
     if len(finalized) == 1:
@@ -223,9 +226,37 @@ async def result_aggregator(
         return _with_answer_history(_apply_incomplete_notice(out, state))
 
     # 복합 task: order 순으로 묶어 통합
-    return _with_answer_history(
-        _apply_incomplete_notice({**_merge_finalized(finalized), **db_promotion}, state)
-    )
+    return _with_answer_history(_apply_incomplete_notice(_with_result_tables(
+        {**_merge_finalized(finalized), **db_promotion}, ordered_tasks, task_results, state,
+    ), state))
+
+
+def _with_result_tables(
+    out: dict[str, Any], ordered_tasks: list[dict[str, Any]],
+    task_results: dict[str, dict[str, Any]], state: AgentState,
+) -> dict[str, Any]:
+    """이어 붙인 `query_results`의 표 경계를 다음 턴 맥락에 남긴다(plans/134 R-1).
+
+    복합 턴은 task별 표를 따로 보이고 `query_results`는 그 행을 task 순으로 잇는다 — 다음 턴의
+    「N번째」가 표를 넘어 세지 않게 표마다 이름(APM 보기 라벨 · 없으면 task 질의)과 행 수를
+    `conversation_context[RESULT_TABLES_KEY]`에 싣는다. 행이 있는 표가 둘 이상이고 행 수의 합이
+    `query_results`와 같을 때만이다(그 밖은 종전 그대로). 맥락은 다음 턴 `context_resolver`가 새로
+    만들므로 이 경계는 바로 다음 턴만 본다. 행·화면 표·CSV에는 칸을 더하지 않는다.
+    """
+    tables: list[dict[str, Any]] = []
+    for task in ordered_tasks:
+        res = task_results.get(task["task_id"]) or {}
+        rows = res.get("query_results")
+        if isinstance(rows, list) and rows:
+            views = (res.get(APM_META_KEY) or {}).get("views") or task.get("views")
+            tables.append({"label": table_label(views, task.get("sub_query")),
+                           "rows": len(rows)})
+    merged = out.get("query_results")
+    if len(tables) < 2 or not isinstance(merged, list) or sum(
+            t["rows"] for t in tables) != len(merged):
+        return out
+    ctx = state.get("conversation_context") or {}
+    return {**out, "conversation_context": {**ctx, RESULT_TABLES_KEY: tables}}
 
 
 # 서버 식별 컬럼 후보(병합 키 탐지 우선순위). server_name을 canonical로 선호한다.
@@ -270,6 +301,13 @@ def _extract_result_rows(res: dict, *, full: bool = False) -> list[dict]:
     if rows is None:
         rows = res.get("query_results")
     return rows if isinstance(rows, list) else []
+
+
+def _repeats_identity(rows: list[dict[str, Any]], idc: str) -> bool:
+    """같은 식별 키를 가진 행이 둘 이상인가(키 없는 행은 세지 않는다)."""
+    keys = [_identity_key(r.get(idc)) for r in rows if isinstance(r, dict)]
+    present = [k for k in keys if k]
+    return len(present) != len(set(present))
 
 
 def _find_identity_col(rows: list[dict]) -> Optional[str]:
@@ -329,6 +367,22 @@ def _merge_task_results_by_identity(
         sources.append((rows, idc))
         source_tasks.append(t)
     if len(sources) < 2:
+        return None
+    # APM 처리기 행은 거래·요청 단위 관측이다 — 서버 키당 여러 행을 서버 단위로 접으면 다른 거래의
+    # 상세가 첫 행에 붙고 나머지 행이 사라진다(plans/134 V-1). 앞 결과 행 참조 보기(프로파일·요청
+    # 상세)는 서버당 1행이어도 base 좁히기가 목록의 다른 서버 행을 지운다. 둘 다 병합하지 않고
+    # 단계별 답으로 넘긴다. 그 밖 서버당 1행인 APM 결과의 병합(폴스타 결과와의 서버 키 병합 포함)은
+    # 종전대로다.
+    per_row = [str(t.get("task_id")) for t, (rows, idc) in zip(source_tasks, sources)
+               if t.get("agent") == APM_QUERY_AGENT
+               and (_repeats_identity(rows, idc) or reference_views_only(t))]
+    if per_row:
+        logger.info(
+            "result_aggregator 병합 취소: APM 처리기 결과(task %s)가 거래·요청 단위 행"
+            "(서버 키당 여러 행 또는 앞 결과 행 참조)이라 서버 단위로 접지 않음 — 단계별 답"
+            "(plans/134 V-1)",
+            ", ".join(per_row),
+        )
         return None
 
     # 공통 서버가 하나도 없으면 결정적 병합은 뜻이 없다 — 각 조회가 서로 다른 서버를
@@ -1377,6 +1431,9 @@ def _build_output_state(
         ],
         "spike_notes": res.get("spike_notes"),
         "routing_intent": "alarm_query" if task.get("agent") == "alarm_query" else None,
+        # 전 행 null 강등(C-06)은 SQL 조회 결과용이다 — APM 처리기 행은 원천이 늘 비우는 칸(계정
+        # 행의 email·phone 등)이 있어 끈다(plans/134 V-7). 없으면 종전대로 적용한다.
+        "all_null_downgrade": task.get("agent") != APM_QUERY_AGENT,
         # 턴 원문 — 명시 건수 판정(W-1 ②)·「전체」 판정의 입력(task 질의는 재작성될 수 있다)
         "original_user_query": state.get("user_query", ""),
         # task 마감 표지 — 턴 단위 고지는 집계기가 턴당 한 번 붙인다(W-9 · 단계마다 반복 금지)

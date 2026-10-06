@@ -645,6 +645,7 @@ APM_GATEWAY_BEARER_TOKENS={"chat": "<본체용>", "investigation": "<sre_agent�
 - **`wait_seconds`**: 본체 채팅은 데이터 도구에 `wait_seconds`(호출 상한 − 2초 · 조회 마감 이내)와 `owner`(`user:<sub>`)를 싣는다. 그 안에 끝나지 않으면 게이트웨이는 작업 ID를 돌려주고 백그라운드로
   계속한다. `wait_seconds`를 안 넘기는 소비자(`sre_agent`·`noise_gate`)는 종전처럼 끝날 때까지 기다린다.
 - **작업 도구 3종** `apm_job_status`·`apm_job_cancel`·`apm_job_read`는 **같은 주체 + 같은 `owner`**일 때만 답한다(아니면 `job_not_found` — 존재를 드러내지 않는다). 본체는 그 위에 사용자 소유자 확인을 한 번 더 한다(작업 API `/api/v1/apm/jobs/*` · D-262 판정).
+- **프로파일 예산(134 W5)**: 주체 `chat`(본체 채팅 전용 토큰)은 `apm_transaction_profile` 예산을 쓰지 않는다. 그 밖 주체(`investigation`·단일 토큰 `default`·무인증 `anonymous`)는 칸(주체 · 조사 ID → 없으면 `owner` → 없으면 미지정)마다 `APM_PROFILE_CALLS_PER_INVESTIGATION`(기본 5)회/1시간이다. 주체는 전송 토큰으로만 정해진다 — 인자로 면제를 얻을 수 없다. 단일 토큰으로 운영하면 채팅도 사용자별 5회 제한에 걸리므로, 채팅 면제가 필요하면 위처럼 `chat` 토큰을 따로 두고 본체 `MCP_SOURCE_TOKENS`(`{"apm": "<토큰>"}`)의 APM 토큰을 그 값으로 맞춘다.
 - **호출 속도는 그대로 5회/초**(G-12 협의 전)다. 대기열은 폴러 > 대화형 > 백그라운드 순으로 판다(10초 넘게 기다리면 한 단계 올림) — 큰 작업이 폴러 알람 수집을 굶기지 않는다.
 - **`JENNIFER_MAX_RESPONSE_BYTES`의 뜻이 바뀌었다** — 종전 「넘으면 오류」 → 지금 「메모리 임계」(넘으면 스풀 임시 파일로 받아 원소 단위로 읽는다 · 오류로 끊지 않는다).
 - **재기동**: 진행 중이던 작업은 `interrupted`(「게이트웨이 재기동으로 중단 — 다시 요청해야 합니다」)가 되고, 끝난 작업의 결과는 보관 기간 동안 그대로 읽힌다. SIGTERM 정상 종료도 같은 기록을 남긴다.
@@ -656,7 +657,7 @@ APM_GATEWAY_BEARER_TOKENS={"chat": "<본체용>", "investigation": "<sre_agent�
 # [CWD=apm_gateway/ · 루트 venv 공유 — mcp_server와 같은 방식(둘 다 Python ≥3.11) · 설정은 apm_gateway/.env]
 cd apm_gateway && ../.venv/bin/python -m apm_gateway
 # 기동 로그 예(v5 — 소스 id와 설정 여부만 · URL·토큰 값 없음):
-#   APM 게이트웨이 시작: 127.0.0.1:9096 · 허용 경로 16 · {'sources': [{'id': 'bank', 'url_set': True, 'token_set': True, 'domain_filter': []},
+#   APM 게이트웨이 시작: 127.0.0.1:9096 · 허용 경로 36(134 W7 — 종전 16) · {'sources': [{'id': 'bank', 'url_set': True, 'token_set': True, 'domain_filter': []},
 #   {'id': 'common', …}], 'bearer': True, 'poller': False, 'poll_interval': 30, 'overrides': 0}
 #   (단일 설정이면 sources = [{'id': 'default', …}] · 둘 다 비면 [])
 #   (Bearer가 비면) 전송 인증 off(APM_GATEWAY_BEARER_TOKEN 미설정) — 운영 배치에서는 필수
@@ -666,7 +667,7 @@ cd apm_gateway && ../.venv/bin/python -m apm_gateway
 - SSE 엔드포인트는 `http://<호스트>:9096/sse`다. 소비자(`sre_agent`·게이트)는 이 주소와 Bearer만 안다.
 - 헬스체크는 도구 `gateway_health`다(소스마다 `/api/domain` 1회 · 병렬 · 30초 캐시) — **소스별 행**(설정·도달·도메인 수·허용 경로 수)과 최상위 `status`(`ok` 모두 정상 ·
   `degraded` 하나라도 · `not_configured` 소스 0개)·폴러 상태를 돌려준다.
-- 제니퍼 **버전 에코는 없다**(87 R-12의 `api_version_expect`) — 허용목록 16템플릿에 버전 조회 경로가 없다. 에이전트 버전은 `apm_instance_map` 결과의 `agent_version`에 실린다.
+- 제니퍼 **버전 에코는 없다**(87 R-12의 `api_version_expect`) — 허용목록 36템플릿에 버전 조회 경로가 없다. 에이전트 버전은 `apm_instance_map` 결과의 `agent_version`에 실린다.
 - 로컬에는 `mcp_server`(9099)·조사 프로파일용(9097)·`sre_agent`(9098)·`alarm_server`(TCP 9100)가 장기 실행 중일 수 있다. 게이트웨이 기본 포트 9096은
   이들과 겹치지 않는다(2026-09-29 실측). 남이 띄운 프로세스는 건드리지 않는다.
 - `mcp` 패키지는 `<2`로 고정돼 있다(D-181 · 설치본 1.29.1). 게이트웨이 `pyproject.toml`도 같은 제약을 선언한다.
@@ -857,7 +858,13 @@ overrides: []
 | GET | `/api/transaction/txid` · `/api/transaction/profile.txt` · `/api/transaction/sql` | `apm_transaction_profile` | `domain_id`·`txid`·**`time`** · 스펙 5.6.4 확인 · `profile.txt`의 선택 키 `key`는 **16진수 8자리 이상**만 받는다(v4.1 로컬 실측 — 그 밖이면 500) · 게이트웨이는 `key`를 보내지 않는다 |
 | GET | `/api/dbsearch/event` · `/api/dbsearch/error` | `apm_events` · 폴러 | `domain_id`·`start_time`·`end_time`(ms) · `level`은 event 전용 · `error_type`은 error 전용(대문자) · 스펙 5.6.4 확인 |
 | GET | `/api/status/application` · `/api/status/sql` · `/api/status/external_call` | 시 단위 맥락(v4는 `application`만 사용) | 구간은 **시 단위만**(*"Units below hour must be set to zero"*) · `application`은 `instance_id`·`max_row` 선택(v4 추가 · `max_row=20`으로 호출) · `max_row` 기본값은 정본에 없음 · 스펙 5.6.4 확인 |
-| GET | `/api-v2/deploy/{domainId}` | `was_error_burst` 근거(최근 배포) | `startTime`·`endTime`(ms) · 25시간 이하 · 5.6.0.5+ · v2 매뉴얼(정본 미수록) — 실응답 「확인 불가 — J0-L」 |
+| GET | `/api-v2/deploy/{domainId}` | `apm_source_changes`·`apm_change_impact`(134 W2·W6) | `startTime`·`endTime`(ms) · 25시간 이하 · 5.6.0.5+ · v2 매뉴얼(정본 미수록) — 실응답 「확인 불가 — J0-L」 |
+| GET | `/api/transaction/guid` | `apm_transaction_trace`(134 W5) | `domain_id`·`guid`·`start_time`·`end_time` · 스펙 5.6.4 확인 · `time_pattern` 거부 |
+| GET | `/api/auth/userlist` · `/restapi/users` · `/restapi/user/{id}`(`account`) | `apm_users`(134 W7) | 없음 · 경로 `id` · **`password`는 중앙 자격증명 경계가 키째 제거** · ID·이름·이메일·휴대폰·허용 IP는 가림(G-11 미결) |
+| GET | `/api-v2/environment-variable/{domainId}` | `apm_environment`(134 W7) | 경로 `domainId` · 키를 줄이지 않고 비밀 값만 `[가림]` · 값의 이메일·주민번호·휴대폰 가림 |
+| GET | `/api-v2/active-service/detail/{domainId}/{txid}` | `apm_active_detail`(134 W7) | 경로 `domainId`·`txid`(`sint` — 음수 가능) · 선택 `sessionId`·`threadHash`(필수 여부 미기재 — 받은 값만 보낸다) |
+| GET | `/api-v2/manage/rule/event/error/{d}` · `…/metric/{d}/{targetType}` · `…/compare/{d}/{targetType}` · `…/comparing/{d}/{targetType}` · `…/error/{d}/{errorType}/applied` · `…/error/{d}/{errorType}/individual-setting/{i}` | `apm_config(kind=event_rules)`(134 W7) | 경로 변수 형식 `enum`·`token`·`int` · `compare` 404일 때만 `comparing` 재질의(매뉴얼 표기 불일치 COV E-01) · 개별 설정 404 = 설정 없음 |
+| GET | `/api-v2/manage/rule/active-service-color-range-boundary` · `/api-v2/manage/instance`(`processId` 필수 · `hostname` 선택) · `/api-v2/manage/data-server/{domains,resource,system-property-config}` · `/api-v2/manage/db/path/{d}` · `/api-v2/loaded-class/{d}/{i}`(`search` 선택) · `/api-v2/manual-rdb-export` | `apm_config(kind=color_boundary·process_instance·data_server·db_path·loaded_classes·rdb_export)`(134 W7) | v2 맨 배열·객체 · 모양이 다르면 `apm_api_error` · 404·405 = 버전 미지원 가능(COV E-28) |
 
 - **규칙**: 표에 없는 메서드·경로는 전부 거부한다. `.xml` 변형(`/api/domain.xml` 등 5개) 제외 · 와일드카드 없음 · v1 조회 API의 **POST 변형도 거부**(게이트웨이는 GET만) ·
   경로 정규화(`..`·중복 슬래시·퍼센트 인코딩) 뒤 대조 · 쿼리 **`token` 키 거부** · 3xx 비추종.
@@ -866,7 +873,7 @@ overrides: []
 | 분류 | 요청 |
 |---|---|
 | 비GET | `POST /api-v2/manage/data-server/control` · `POST /api-v2/manage/data-server/db/property/1000/copy` · `POST /api-v2/manage/domain-group` · `PUT /api-v2/manage/domain/put` · `POST /restapi/user/` · `PUT /api-v2/configuration/rdb-export-password-override` · `PUT /api-v2/manage/rule/event/error/1000/ERROR_X/applied` · `POST /api-v2/manual-rdb-export?date=2026-01-01` · `POST /api/domain` |
-| 민감 GET | `/api/auth/userlist` · `/api/auth/userlist.xml` · `/restapi/users` · `/restapi/user/1` · `/api-v2/environment-variable/1000` · `/api-v2/active-service/detail/1000/1` · `/api-v2/loaded-class/1000/1` · `/api-v2/manage/data-server/system-property-config` · `/api-v2/manage/rule/event/error/1000` |
+| ~~민감 GET~~ → **허용(134 W7 · D-296 ①)** | `/api/auth/userlist` · `/restapi/users` · `/restapi/user/1` · `/api-v2/environment-variable/1000` · `/api-v2/active-service/detail/1000/1` · `/api-v2/loaded-class/1000/1` · `/api-v2/manage/data-server/system-property-config` · `/api-v2/manage/rule/event/error/1000`은 이제 허용(자격증명 제거·식별자 가림 뒤 반환) — **거부 유지**: `/api/auth/userlist.xml`(`.xml` 꼬리 일반 거부) · 같은 경로의 PUT·POST·DELETE·PATCH · 형식 밖 경로 변수 |
 | 변형·우회 | `/api/domain.xml` · `/api/realtime/instance.xml` · `/api/transaction/time/../../auth/userlist` · 허용 경로 + `?token=…` · 3xx 리다이렉트 응답 |
 
 - **v3.3 로컬 실측**(5.7.0.1 · 87 §0.10): 쿼리 `?token=` 200 · 민감 GET 200(`/api/auth/userlist` → `email`·`phoneNumber` · `/restapi/users` → `allowIp`·`password` 키) ·
@@ -875,8 +882,7 @@ overrides: []
 - **v4.1 실서버 확인**(로컬 5.7.0.1 · 87 §0.12): 위 거부 입력(비GET 9 · 민감 GET 9 · 변형 10 · 쿼리 `token`/`TOKEN` · 허용 밖 키 · 필수 키 누락 2) 34건을 게이트웨이
   클라이언트로 보내는 동안 로컬 제니퍼의 토큰 `usageCount`가 **한 번도 늘지 않았다**(반영 지연 대기 뒤 Δ=0) — 서버에 닿기 전에 막힌다는 실측이다. 허용 경로 16개는
   필수 키로 불렀을 때 계약 위반(`Required request parameter`) 0건이었고, 결과는 200(`domain`·`realtime/instance`·`metrics`·`transaction/time`) 또는 도메인 미접속 500뿐이었다.
-- `GET /api-v2/manage/rule/event/…`(EVENT 룰 조회)와 `GET /api-v2/manage/instance?processId=&hostname=`(5.6.0.21+ · `processId` 필수)는 **J0 수동 채집 전용**이다 —
-  게이트웨이 허용목록에는 넣지 않는다.
+- ~~`GET /api-v2/manage/rule/event/…`·`GET /api-v2/manage/instance…`는 J0 수동 채집 전용~~ — **134 W7(2026-10-06)에서 허용목록에 넣었다**(D-296 ① · 위 표). 허용목록은 36템플릿이다.
 
 경로 이름과 필수 파라미터는 **정본 스펙 5.6.4로 대조를 마쳤다**([J-23] — 실 서버 호출 0회). 실응답과의 차이는 J0-L(로컬)·J0-O(운영)에서 recorded JSON으로 확인한다. 87의 진단 조회는 전부 v1(`/api/*`)이고, v1은
 *"not removed for compatibility, but are no longer maintained"* 상태다 [J-4] — 필드가 바뀔 수 있으므로 recorded JSON 계약 테스트로
@@ -906,6 +912,10 @@ overrides: []
   다만 패턴 테스트만으로 모든 비밀을 보장했다고 선언하지 않는다(운영 마스킹 녹화본 대조는 W10).
 - **개인정보 식별자**(G-11 미결 동안): `userId`·`clientId`·계정 ID·이름은 앞 1자만 남기고 가린다(`mask_identifier`) · HTTP 쿼리 문자열은 첫 값까지 가린다(종전 `mask_url`이 첫 값을 남기던 결함 교정).
   원값을 누가 어디서 보게 할지는 미결(G-11)이다.
+- **관리·민감 조회(`plans/134` W7 · 2026-10-06)** — 사용자 목록·계정·환경변수·JVM 속성·데이터 서버 설정·실행 중 요청 상세·룰을 이제 조회한다(§5.3). 보안 감사 뒤 규칙을 넓혔다:
+  룰 스크립트 같은 **명령 문맥 칸은 실행 파일만 남기고 인자 전체를 `[가림]`** · 키 판정은 구분자를 걷은 전체 키에도(`APIkey`·`dbPASSword` · `DB_CREDS`·`비밀번호`) · 값만 있는 접속 문자열(`scott/<pw>@ORCL`)·콜론 없는 URL 토큰도 가림 ·
+  `,`·`;`에서 끊긴 꼬리를 남기지 않음. 사용자 전화는 `<phone>` · 메일은 `@` 앞만 가림 · 설정 값의 이메일·주민번호·휴대폰은 가리되 서버 IP·경로·포트는 남긴다 · 프로파일 SQL은 SQL 문 칸이면 리터럴만, 그 밖(바인드 값)은 앞 1자만.
+  계정 ID가 든 요청 경로는 로그·오류 사유에 템플릿(`/restapi/user/{id}`)으로 남고, httpx 라이브러리 요청 로그는 꺼 둔다(INFO 로그에 URL 원값이 찍히던 것 — 2026-10-06 실측). 남은 모양은 `spec/SPEC-apm-question-coverage.md` §4.2(W10 녹화본으로 판단).
 
 ### 5.6 부하 가드와 토큰 사용량 【현재 가능 — v4】
 
@@ -913,7 +923,7 @@ overrides: []
 |---|---|
 | 호출별 타임아웃 | 10초(`JENNIFER_API_TIMEOUT_SECONDS`) |
 | 초당 호출 상한 | 5(`JENNIFER_RATE_LIMIT_PER_SEC` — 게이트웨이 전체 공유) |
-| 조사당 `apm_transaction_profile` 호출 | 5(`APM_PROFILE_CALLS_PER_INVESTIGATION` · `investigation_id` 기준 · 1시간 뒤 만료 · 넘으면 `rate_limited`) |
+| 조사당 `apm_transaction_profile` 호출 | 5(`APM_PROFILE_CALLS_PER_INVESTIGATION` · 칸 = (주체, `investigation_id` → `owner` → 미지정) · 1시간 뒤 만료 · 넘으면 `rate_limited` · **주체 `chat`은 면제** — 134 W5) |
 | 트랜잭션 시간 검색 | 1분 창으로 게이트웨이가 분할 · 최대 10분(사건 직전) · 넘는 창은 시 단위 통계로 보충 |
 | 조사 동시성 | 현행 `investigation_max_concurrent=2`(`sre_agent/sre_agent/settings.py:109`) |
 | 폴링 주기 | 기본 30초 · 하한 10초 · 도메인 미접속 시 백오프(×2 · 최대 ×8) |
@@ -927,14 +937,14 @@ overrides: []
 
 ## 6. 도구 목록과 입출력 계약 【현재 가능 — v4 · 제공 주체 = `apm_gateway` · 계약 정본 `spec/SPEC-apm-gateway.md` §3~§5】
 
-### 6.1 데이터 도구 11종 + 작업 도구 3종 + `gateway_health` — 게이트웨이 MCP 서버가 노출 【`plans/134` W0-B~W2로 갱신 · D-299 ③ — 8종 상한 폐지】
+### 6.1 데이터 도구 18종 + 작업 도구 3종 + `gateway_health` — 게이트웨이 MCP 서버가 노출 【`plans/134` W0-B~W2 · W5~W7(2026-10-06)로 갱신 · D-299 ③ — 8종 상한 폐지】
 
 공통 인자: `investigation_id?`·`thread_id?`(감사 레코드에만 싣는다 — R-19). 구간 인자 `reference_time?`(ISO 8601 · naive면 `APM_TIMEZONE`) ·
 `lookback_minutes?` — 창은 `[reference_time − lookback, reference_time]`이고 `reference_time`을 빼면 "지금"이다(기존 사건 좌표계와 같다).
 
 **공통 선택 인자(`plans/134` W0-B)** — `owner?`(결과·작업 소유자 · 불투명 문자열)·`wait_seconds?`(이 초 안에 못 끝나면 작업 ID를 돌려주고 백그라운드로 계속 — 생략하면 끝날 때까지 대기). 응답이 인라인 500행을 넘으면 앞 500행 + `artifact`(결과 파일 · 청크) + `total_row_count`. 큰 조회를 `wait_seconds` 없이 부르면 끝날 때까지 기다린다(조사·알람 소비자 종전 의미).
 
-**소스 인자(v5 · J8)** — `apm_transaction_profile`과 작업 도구를 뺀 데이터 도구는 선택 인자 `source_ids`(소스 id 목록)를 받는다. 비면 전 소스(설정 선언 순서)이고, 모르는 id는 `invalid_argument`
+**소스 인자(v5 · J8)** — `apm_transaction_profile`·`apm_active_detail`(단수 `source_id`)과 작업 도구를 뺀 데이터 도구는 선택 인자 `source_ids`(소스 id 목록)를 받는다. 비면 전 소스(설정 선언 순서)이고, 모르는 id는 `invalid_argument`
 (사유에 설정된 id 목록)다. 행·`profile_ref`에는 `source_id`가 붙고, 해소 결과에는 `instance_refs[]`(`{source_id, domain_id, instance_id}`)가, 봉투에는 `sources[]`
 (`{source_id, status, reason}` — `ok`·`no_match`·`empty`·`unavailable`)가 붙는다. 봉투의 `source_kind`·`source`는 그대로다(소비자 인식 키). 도메인·인스턴스 id는 서버마다
 따로 매겨 겹칠 수 있어, 게이트웨이는 인스턴스를 (소스, 도메인, 인스턴스)로 구분하고 호출을 그 소스 서버로만 보낸다.
@@ -948,12 +958,19 @@ overrides: []
 | `apm_slow_transactions` | `hostname`·`instance_id?`·구간(기본 10분)·`n?`(기본 10 · 상한 없음)·`full?` | `/api/transaction/time`(1분 분할 · 창 전체) · `/api/status/application`(창 > 10분) | 상위 N(또는 전부): 시간 분해·오류 유형·`guid`·`client_ip`(마스킹)·`user_id`·`client_id`(식별자 가림)·`profile_ref` + `summary` + `was_signals` |
 | `apm_active_services` | `hostname`·`instance_id?`·`n?`·`full?` | `/api/activeService/list` | 경과 순: 상태·실행 모드·실행 텍스트(마스킹 전문)·`session_id`·`thread_hash`·`active_ref{source_id, domain_id, txid, session_id, thread_hash}` + `summary` + `was_signals` · 현재값 전용 |
 | `apm_events` | `hostname`·구간(기본 30분 · 상한 없음)·`level?`(fatal·warning·normal)·`level_mode?`(min·exact)·`error_type?`·`record?`(event·error)·`n?`(기본 전부)·`full?` | `/api/dbsearch/event` · `/api/dbsearch/error`(`error_type` — 정규화 이름 먼저, 0건이면 `ERROR_`·`WARNING_` 표기 재조회) | 이벤트 행(또는 `record=error`면 오류 기록 행) · 메시지 마스킹 전문 · `errors_by_type`(전 유형) + `was_signals` |
-| `apm_transaction_profile` | `hostname`·`source_id`·`domain_id`·`txid`·`time_ms`·`top_k?`(비우면 SQL 전부) | `/api/transaction/txid` · `/api/transaction/profile.txt` · `/api/transaction/sql` | 분해 · 화면용 발췌(60줄) · 발췌가 잘리면 **전문은 결과 파일 텍스트**(`artifact.text_parts["profile"]`) · SQL 전부(리터럴 마스킹) |
+| `apm_transaction_profile` | `hostname`·`source_id`·`domain_id`·`txid`·`time_ms`·`top_k?`(비우면 SQL 전부)·`profile_no?`·`include_param_key?`(134 W5) | `/api/transaction/txid` · `/api/transaction/profile.txt` · `/api/transaction/sql` | 분해 · 화면용 발췌(60줄) · 발췌가 잘리면 **전문은 결과 파일 텍스트**(`artifact.text_parts["profile"]`) · SQL 전부(리터럴 마스킹 · SQL 문 칸이 아닌 문자열은 바인드 값으로 보고 앞 1자만) · **예산**: 채팅 전용 토큰(주체 `chat`)이면 없음 · 조사·단일 토큰은 칸(주체·조사 ID/owner)당 기본 5회/시간 |
+| `apm_transaction_trace` | `guid`·`hostname?`·구간·`around_ms?`·`around_minutes?`(기본 5)·`source_ids?` | `/api/transaction/guid`(도메인마다 1회 · 호스트 미지정이면 전 도메인) | 같은 GUID 거래(시작 시각순 `trace_order` · 중복 제거) + `summary` · 「호출 관계 아님」·시계 차이 고지 · 부분 실패 partial |
+| `apm_change_impact` | `hostname`·구간(변경 탐색 · 기본 24시간)·`width_minutes?`(기본 60)·`n?`·`full?` | `/api-v2/deploy/{domainId}` + `/api/transaction/time` + `/api/dbsearch/error` | 변경마다 전·후 호출·오류·오류율·평균·p95·오류 기록과 증감(기준 0 = N/A · 오류율 차 %p) · 「원인 확정 아님」 |
+| `apm_period_compare` | `hostname`·`current_start/end`·`baseline_start/end`(ISO)·`n?` | `/api/status/application`(인스턴스 × 구간 · 시 단위) | 인스턴스별·전체 호출·실패·실패율·가중 평균 응답(Σ÷호출)·최대 + 증감 · p95 없음 고지 — **조사용**(채팅 배선 없음) |
+| `apm_config` | `kind`(event_rules·color_boundary·process_instance·data_server·db_path·loaded_classes·rdb_export)·`hostname?`·`rule_type?`·`target?`·`error_type?`·`process_id?`·`search?` | 이벤트 룰·색상 경계·프로세스→인스턴스·데이터 서버·DB 경로·로드된 클래스·수동 RDB Export(§5.3) | kind별 행(긴 형식 · 표 밖 키는 `extra`) · 자격증명 제거 · 설정 값 개인정보 가림 · 버전 조건 고지 |
+| `apm_environment` | `hostname?`·`scope?`(SYSTEM·JAVA)·`key?` | `/api-v2/environment-variable/{d}` | 인스턴스별 긴 형식(`scope`·`name`·`value`) — 키 전부 · 비밀 값 `[가림]` |
+| `apm_users` | `user_id?` | `/api/auth/userlist` · `/restapi/users` · `/restapi/user/{id}` | 사용자·계정 행(ID·이름·이메일·휴대폰·허용 IP 가림 · 비밀번호 없음) |
+| `apm_active_detail` | `active_ref` 칸(`domain_id`·`txid`·`session_id`·`thread_hash`·`source_id`)·`hostname?` | `/api-v2/active-service/detail/{d}/{txid}` | 실행 중 요청 1건(사용자 ID 가림·GUID·SQL 리터럴 가림·HTTP 메서드·쿼리 값 가림) · 현재값 전용 |
 | `apm_status_stats` | `kind`(application·sql·external_call)·`hostname`·`instance_id?`·구간(기본 60분)·`sort_by?`·`n?`·`full?`·`application_name?` | `/api/status/{application,sql,external_call}`(정시 경계 · `max_row`=n · `sort_by_metrics`) | URL·SQL·외부 호출별 시 단위 통계(이름 마스킹 · 25/7필드) + `summary`(평균 = Σ`total_response_ms` ÷ Σ`calls`) · 원천이 정렬 기준을 거부하면 전체를 받아 로컬 정렬 |
 | `apm_metrics` | `mode`(catalog·series)·`scope`·`metrics`·`interval_minute?`·대상·구간 | `/api/metrics` · `/api/dbmetrics/instance`(W2 — domain은 W3 · business는 W4) | 카탈로그 행 `{source_id, scope, metric}`(6군 · TTL 캐시·변경 감지) · 시계열 긴 형식 행 |
 | `apm_source_changes` | `hostname`·구간(기본 24시간) | `/api-v2/deploy/{domainId}`(25시간 이하 조각) | 변경 감지 행 `change_detected_ms`·`change_detected_at` · `[한계] 변경 감지 — 배포 확정 아님` |
 | `apm_job_status`·`apm_job_cancel`·`apm_job_read` | `job_id`·`owner?`·(`read`) `chunk?`·`part?` | 없음(제니퍼 호출 0) | 작업 상태·진행·예측·`result_meta`·미리보기 / 취소 / 결과 파일 청크·텍스트 — **같은 주체 + 같은 `owner`만**(아니면 `job_not_found`) |
-| `gateway_health` | 없음 | 소스마다 `/api/domain` 1회(병렬 · 30초 캐시) | **소스별 행**(`source_id`·상태·설정·도달·도메인 수·허용 경로 수(16)·API 호출 수) + 최상위 `status` · `poller` · `jobs`(running·queued·슬롯) |
+| `gateway_health` | 없음 | 소스마다 `/api/domain` 1회(병렬 · 30초 캐시) | **소스별 행**(`source_id`·상태·설정·도달·도메인 수·허용 경로 수(36)·API 호출 수) + 최상위 `status` · `poller` · `jobs`(running·queued·슬롯) |
 
 - 도구 설명문은 벤더 중립이다(`jennifer`·「제니퍼」 없음 — `apm_gateway/tests/test_server.py`).
 - **`was_signals`**는 게이트웨이 `domain/signals.py`의 **WAS 시그니처 결정적 판정 결과**다 — `kind`·`level`·`category`·`label`·`evidence`·`instance_id`·`source_tool`·`source_id`(v5).

@@ -19,6 +19,10 @@
 - `/api/status/*`는 `max_row`만큼 앞 행을 돌려주고, `/api-v2/deploy/<도메인ID>`(맨 배열 응답)는
   `collectTime`이 `startTime`~`endTime`(양 끝 포함)인 항목만 돌려준다(plans/134 W2 — 정렬·패턴
   검색·25시간 초과 처리는 흉내 내지 않는다 · 실서버 동작은 W10 확인 전 가정).
+- `/api/transaction/guid`(plans/134 W5)는 픽스처의 거래 중 `domainId`·`guid`가 쿼리와 같고 구간
+  (`startTime`~`endTime`)이 `start_time`~`end_time`과 겹치는 것만 돌려준다 — 여러 도메인에 같은 GUID
+  거래를 두는 합성 응답이다. `/__mock/guid_fail_domains`로 고른 도메인만 500 "Domain is not
+  connected"로 답하게 할 수 있다(일부 도메인 실패 · 실서버 의미는 W10 확인 전 가정).
 
 한계: 실제 EVENT 발생·필드 변형은 재현하지 못한다. 이벤트는 `/__mock/events`로 주입한다.
 
@@ -27,6 +31,7 @@
     POST /__mock/events   EventData 목록 주입(13필드 부분집합 · time 필수)
     GET  /__mock/usage    토큰 사용량
     POST /__mock/mode     {"mode": "fixtures|connected|disconnected"}
+    POST /__mock/guid_fail_domains  {"domains": [2000]} — GUID 조회만 그 도메인을 실패시킨다
 
 사용:
     python mock_openapi.py --fixtures ../recorded/local-docker --port 17901 --token mock-token
@@ -75,6 +80,7 @@ class MockState:
         self.events: list[dict] = []
         self.hits: list[dict] = []
         self.usage = 0
+        self.guid_fail_domains: set[str] = set()
         self.lock = threading.Lock()
         if fixtures_dir is not None:
             self.load(fixtures_dir)
@@ -187,6 +193,7 @@ class Handler(BaseHTTPRequestHandler):
                 st.hits.clear()
                 st.events.clear()
                 st.usage = 0
+                st.guid_fail_domains.clear()
             return self._send(200, {"reset": True})
         if method == "POST" and path == "/__mock/mode":
             mode = (self._body_json() or {}).get("mode")
@@ -194,6 +201,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": f"mode는 {MODES} 중 하나"})
             st.mode = mode
             return self._send(200, {"mode": mode})
+        if method == "POST" and path == "/__mock/guid_fail_domains":
+            domains = (self._body_json() or {}).get("domains")
+            if not isinstance(domains, list):
+                return self._send(400, {"error": "domains는 도메인 ID 목록이어야 한다"})
+            with st.lock:
+                st.guid_fail_domains = {str(d) for d in domains}
+            return self._send(200, {"guid_fail_domains": sorted(st.guid_fail_domains)})
         if method == "POST" and path == "/__mock/events":
             events = self._body_json()
             if not isinstance(events, list):
@@ -244,6 +258,8 @@ class Handler(BaseHTTPRequestHandler):
     def _route(self, method: str, path: str, query: dict[str, str], template: str | None) -> int:
         if path == "/api-v2/auth-test":
             return self._send(200, "OK")
+        if template in W7_TEMPLATES:  # plans/134 W7 관리·민감 조회 합성 응답(파일 끝)
+            return self._send(*w7_response(self.state, method, template, query, path))
         if template is not None and method in ("GET", "POST"):
             return self._allowed(template, query, path)
         if method == "GET" and path.endswith(".xml"):
@@ -307,6 +323,8 @@ class Handler(BaseHTTPRequestHandler):
         fx = self.state.pick(template, query)
         if template == "/api/dbsearch/event":
             return self._events(fx, query)
+        if template == "/api/transaction/guid":
+            return self._guid(fx, query)
         if template == "/api/dbsearch/error" and fx is not None and query.get("error_type"):
             wanted = query["error_type"].upper()
             rows = (fx["response"].get("body_json") or {}).get("result") or []
@@ -333,6 +351,29 @@ class Handler(BaseHTTPRequestHandler):
             lo, hi = int(query["startTime"]), int(query["endTime"])
             return [r for r in body if lo <= int(r.get("collectTime") or 0) <= hi]
         return body
+
+    def _guid(self, fx: dict[str, Any] | None, query: dict[str, str]) -> int:
+        """GUID 거래 흉내 — 도메인·GUID 일치 + 구간 겹침만(plans/134 W5 · 합성)."""
+        domain = query["domain_id"]
+        if domain in self.state.guid_fail_domains:
+            return self._send(500, {"exception": {"message": f"{domain} Domain is not connected"}})
+        if fx is None:
+            return self._send(501, {"mock_error": "fixture 없음: /api/transaction/guid"})
+        try:
+            lo, hi = int(query["start_time"]), int(query["end_time"])
+        except ValueError:
+            return self._send(
+                500, {"exception": {"message": "For input string: start_time/end_time"}}
+            )
+        rows = [
+            r
+            for r in (fx["response"].get("body_json") or {}).get("result") or []
+            if str(r.get("domainId")) == domain
+            and str(r.get("guid") or "") == query["guid"]
+            and int(r.get("startTime") or 0) <= hi
+            and int(r.get("endTime") or r.get("startTime") or 0) >= lo
+        ]
+        return self._send(fx["response"]["status"], {"result": rows})
 
     def _events(self, fx: dict | None, query: dict[str, str]) -> int:
         base: list = []
@@ -366,6 +407,261 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802
         self._dispatch("DELETE")
+
+
+# ── plans/134 W7 — 관리·민감 조회 합성 응답 ────────────────────────────────────
+# 스펙 5.6.4 인라인 스키마·v2 매뉴얼 응답 예의 필드명으로 만든 **합성** 응답이다(실응답 모양은
+# W10). v2는 `{result: …}` 봉투 없이 맨 배열·객체·불리언을 돌려준다(COV E-18). 비밀 자리에는
+# 카나리아(`W7Mock.secret`)를 넣어 게이트웨이 자격증명 경계를 시험한다. 테스트는
+# `w7_state(state)`의 칸을 바꿔 404(개별 설정 없음 E-19 · 버전 미지원 E-28)·`compare`/
+# `comparing` 표기(E-01)·모양 위반을 흉내 낸다. `w7_response`는 순수 함수라
+# `httpx.MockTransport` 테스트도 같은 본문을 쓴다.
+
+W7_TEMPLATES: frozenset[str] = frozenset(
+    {
+        "/api/auth/userlist",
+        "/restapi/users",
+        "/restapi/user/{id}",
+        "/api-v2/manage/data-server/domains",
+        "/api-v2/manage/data-server/resource",
+        "/api-v2/manage/data-server/system-property-config",
+        "/api-v2/manage/rule/active-service-color-range-boundary",
+        "/api-v2/active-service/detail/{domainId}/{txid}",
+        "/api-v2/manage/db/path/{domainId}",
+        "/api-v2/environment-variable/{domainId}",
+        "/api-v2/manage/instance",
+        "/api-v2/loaded-class/{domainId}/{instanceId}",
+        "/api-v2/manage/rule/event/error/{domainId}",
+        "/api-v2/manage/rule/event/metric/{domainId}/{targetType}",
+        "/api-v2/manage/rule/event/compare/{domainId}/{targetType}",
+        "/api-v2/manage/rule/event/comparing/{domainId}/{targetType}",
+        "/api-v2/manage/rule/event/error/{domainId}/{errorType}/applied",
+        "/api-v2/manage/rule/event/error/{domainId}/{errorType}/individual-setting/{instanceId}",
+        "/api-v2/manual-rdb-export",
+    }
+)
+W7_SECRET = "CANARY-w7-mock-9Qx"
+# 프로세스 ID → 인스턴스가 있는 PID(그 밖 PID는 `{}`)
+W7_PROCESS_ID = "4242"
+
+
+class W7Mock:
+    """W7 경로 합성 응답 상태(토글) — 목 서버는 `state.w7`에 둔다."""
+
+    def __init__(self, secret: str = W7_SECRET) -> None:
+        self.secret = secret
+        # True면 `compare` 표기는 404 · `comparing`만 답한다(COV E-01)
+        self.compare_404 = False
+        # "<domainId>/<errorType>/<instanceId>" → 개별 설정 값 · 없는 키는 404(설정 없음 · E-19)
+        self.individual: dict[str, bool] = {}
+        # 템플릿 → 404(이 버전이 경로를 지원하지 않는 흉내 · E-28)
+        self.not_found: set[str] = set()
+        # 템플릿 → (상태, 본문) 덮어쓰기(모양 위반·서버 오류 시험)
+        self.bodies: dict[str, tuple[int, Any]] = {}
+
+
+def w7_state(state: Any) -> W7Mock:
+    mock = getattr(state, "w7", None)
+    if mock is None:
+        mock = W7Mock()
+        state.w7 = mock
+    return mock
+
+
+def _w7_vars(template: str, path: str) -> dict[str, str]:
+    return {t[1:-1]: p for t, p in zip(template.split("/"), path.split("/")) if t.startswith("{")}
+
+
+def w7_body(mock: W7Mock, template: str, query: dict[str, str], path: str) -> tuple[int, Any]:
+    """W7 경로의 (상태, 본문) — 404는 본문 None."""
+    s = mock.secret
+    v = _w7_vars(template, path)
+    if template in mock.bodies:
+        return mock.bodies[template]
+    if template in mock.not_found:
+        return 404, None
+    if template.endswith("/compare/{domainId}/{targetType}") and mock.compare_404:
+        return 404, None
+    if template == "/api/auth/userlist":
+        return 200, {
+            "result": [
+                {
+                    "id": "canary",
+                    "name": "CANARY",
+                    "email": "canary@example.invalid",
+                    "phoneNumber": "010-1234-5678",
+                }
+            ]
+        }
+    account = {
+        "id": "canary",
+        "name": "CANARY",
+        "group": "admin",
+        "password": s,
+        "allowIp": "192.168.10.77",
+        "creationTime": 0,
+        "lastLoginTime": 0,
+    }
+    if template == "/restapi/users":
+        return 200, [account, {**account, "id": "op01", "name": "Operator", "password": s}]
+    if template == "/restapi/user/{id}":
+        return (404, None) if v["id"] == "nobody" else (200, {**account, "id": v["id"]})
+    if template == "/api-v2/manage/data-server/domains":
+        return 200, {
+            "count": 1,
+            "list": [{"address": "ds01:5555", "domain": [{"id": 1000, "name": "demo-domain"}]}],
+        }
+    if template == "/api-v2/manage/data-server/resource":
+        return 200, {
+            "ds01:5555": {
+                "cpu": {
+                    "core": 8,
+                    "system": 12,
+                    "process": 5,
+                    "steal": 0,
+                    "loadAverage": {"1m": 1, "5m": 2, "15m": 3},
+                },
+                "memory": {"total": 16384, "used": 4096},
+            }
+        }
+    if template == "/api-v2/manage/data-server/system-property-config":
+        return 200, {
+            "ds01:5555": {
+                "keepAliveTimeout": 60000,
+                "dbPath": "/data/jennifer/db",
+                "logPath": "/data/jennifer/log",
+                "listenAddress": "0.0.0.0",
+                "listenPort": 5555,
+                "backupPath": "/backup/jennifer",
+                "warningUsableSizeInMB": 1024,
+                "memoryLock": False,
+                "bootstrapCheck": True,
+                "otelPort": 4317,
+                "otelProtocol": "grpc",
+                "rdbExportPassword": s,
+                "rdbUrl": f"jdbc:postgresql://jennifer:{s}@rdb.example/export",
+            }
+        }
+    if template == "/api-v2/manage/rule/active-service-color-range-boundary":
+        return 200, [3000, 8000, 15000]
+    if template == "/api-v2/active-service/detail/{domainId}/{txid}":
+        return 200, {
+            "userId": "kimcs01",
+            "guid": "guid-active-0001",
+            "sql": f"select * from users where password = '{s}' and id = 42",
+            "http": {"method": "POST", "query": f"user=kim&password={s}&page=2"},
+            "elapsedTime": 700000,
+        }
+    if template == "/api-v2/manage/db/path/{domainId}":
+        return 200, {
+            "main": "/data/jennifer/db/main",
+            "backup": f"jdbc:postgresql://backup:{s}@db.example/x",
+        }
+    if template == "/api-v2/environment-variable/{domainId}":
+        return 200, {
+            "1001": {
+                "SYSTEM": {
+                    "PATH": "/usr/local/bin:/usr/bin",
+                    "JAVA_HOME": "/opt/java/openjdk",
+                    "DB_PW2": s,
+                    "PGPASSWORD": s,
+                    "JAVA_OPTS": f"-Xmx1g -Ddb.password={s} -Dfile.encoding=UTF-8",
+                },
+                "JAVA": {
+                    "java.vendor": "Eclipse Adoptium",
+                    "db.password": s,
+                    "spring.datasource.url": f"jdbc:mysql://app:{s}@db.example:3306/x",
+                },
+            },
+            "1002": {"SYSTEM": {"PATH": "/usr/bin"}, "JAVA": {"java.vendor": "Eclipse Adoptium"}},
+        }
+    if template == "/api-v2/manage/instance":
+        if "processId" not in query:
+            return 500, {"exception": {"message": missing_param_message("processId")}}
+        if query["processId"] != W7_PROCESS_ID:
+            return 200, {}
+        return 200, {"1000": {"1001": {"hostname": query.get("hostname") or "was-host01"}}}
+    if template == "/api-v2/loaded-class/{domainId}/{instanceId}":
+        classes = [
+            {
+                "className": "com.example.order.OrderService",
+                "superClassName": "java.lang.Object",
+                "interfaceClassNames": ["java.io.Serializable"],
+                "classLoaderName": "app",
+            },
+            {
+                "className": "com.example.pay.PayClient",
+                "superClassName": "java.lang.Object",
+                "interfaceClassNames": [],
+                "classLoaderName": "app",
+            },
+        ]
+        needle = query.get("search", "")
+        return 200, [c for c in classes if needle in c["className"]]
+    if template == "/api-v2/manage/rule/event/error/{domainId}":
+        return 200, [
+            {
+                "errorType": "OUTOFMEMORY",
+                "level": "FATAL",
+                "applied": True,
+                "checkTimeRange": 60000,
+                "thresholdErrorCount": 1,
+                "iconRecoveryTime": 300000,
+                "customMessage": "OOM 담당 kim@example.com",
+                "autoScriptCommand": f"/opt/jennifer/restart.sh --password {s} --user admin",
+            }
+        ]
+    if template == "/api-v2/manage/rule/event/metric/{domainId}/{targetType}":
+        return 200, [
+            {
+                "metricId": "heap_used",
+                "level": "WARNING",
+                "applied": True,
+                "expression": "value>30",
+                "checkTimeRange": 60000,
+                "thresholdErrorCount": 3,
+                "iconRecoveryTime": 300000,
+                "customMessage": "",
+                "autoScriptCommand": None,
+            }
+        ]
+    if "/rule/event/compar" in template:
+        return 200, [
+            {
+                "metricId": "service_time",
+                "level": "WARNING",
+                "applied": False,
+                "iconRecoveryTime": 300000,
+                "target": {"operator": ">", "period": "PREVIOUS_WEEK", "ratioInPercent": 130},
+                "filter": {"metricId": "service_count", "minimumValue": 10},
+            }
+        ]
+    if template.endswith("/applied"):
+        return 200, True
+    if template.endswith("/individual-setting/{instanceId}"):
+        key = f"{v['domainId']}/{v['errorType']}/{v['instanceId']}"
+        return (200, mock.individual[key]) if key in mock.individual else (404, None)
+    return 200, [{"id": "311d6aaa", "date": "2026-10-01", "statusDescription": "COMPLETED"}]
+
+
+def w7_response(
+    state: Any, method: str, template: str, query: dict[str, str], path: str
+) -> tuple[int, Any, str]:
+    """목 서버 W7 응답 — (상태, 본문, Content-Type). 비GET은 쓰기 거부(403)."""
+    if method != "GET":
+        return 403, "mock refuses write", "application/json"
+    if getattr(state, "mode", "") == "disconnected" and "{domainId}" in template:
+        domain = _w7_vars(template, path).get("domainId", "")
+        return (
+            500,
+            f"500 500 com.aries.view.core.nio.DataServerDownException: {domain} Domain is not"
+            " connected",
+            "application/json",
+        )
+    status, body = w7_body(w7_state(state), template, query, path)
+    if status == 404 and body is None:
+        return 404, NOT_FOUND_HTML, "text/html"
+    return status, body, "application/json"
 
 
 def make_server(

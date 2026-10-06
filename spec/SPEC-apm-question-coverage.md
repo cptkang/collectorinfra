@@ -55,6 +55,7 @@
 ### 1.4 직전 결과 참조 · 조사 주체 전달 경로 (W5·W7 입력)
 
 - **직전 결과 참조**: 본체는 행을 `prior_rows`·`conversation_context.previous_entities`로 다음 턴에 넘긴다(`resolve_apm_targets` — `apm_query.py:206`). `profile_ref`·`active_ref`는 행 안의 dict 칸이라 행이 넘어가면 같이 간다. 순번·지시어("그 트랜잭션")를 행 하나로 고르는 결정적 선택기는 없다 → M-6(W5).
+  - **정정(W5 실측 · 2026-10-06)**: 위 「행이 넘어가면 같이 간다」는 사실이 아니었다 — `prior_rows`(`_make_isolated_input`)·`previous_entities`(`context_resolver`)는 **식별 키·값만** 나른다(APM 행 → `{hostname}`). W5 운반 경로: 같은 계획 선행 task의 원 행 `isolated.prior_result_rows`(`apm_query` task 한정 · LLM 입력 아님) · 직전 턴 결과의 참조 후보 `conversation_context.previous_result_refs`(`context_resolver` — 후속 턴 입력 `create_followup_input`이 `query_results`를 비우지 않아 2단 집계기가 올린 표시 순서 원 행이 다음 턴에 보인다 · 프롬프트에 렌더하지 않는다). 번호 규칙은 `src/domain/result_refs.py` 한 곳(§7.7).
 - **조사 주체**: `sre_agent`는 게이트웨이를 HolmesGPT MCP 도구로 등록하고(`sre_agent/sre_agent/interface/mcp_service.py:128`), `investigation_id`는 **조사 LLM이 인자로 채운다**(`investigation_guidance.py:262` 지시문). 빠뜨리면 게이트웨이가 `_anonymous` 예산으로 묶는다(`tools.py:860`). 게이트웨이 전송 인증은 정적 Bearer 1개(`APM_GATEWAY_BEARER_TOKEN`)라 **호출 주체를 구별하지 못한다** → §3.6 주체 토큰(W0-B)으로 구별하고, 예산 분리는 W5.
 
 ## 2. 공통 계약 — 인자 · 봉투
@@ -92,7 +93,7 @@
 
 ### 2.4 허용목록 경로 변수 형식 (W2·W7에서 넓힌다)
 
-`Endpoint`에 경로 변수별 형식을 선언한다: `int`(종전 숫자) · `enum[...]`(예 `targetType ∈ {domain, instance, business}`) · `token`(`[A-Z0-9_]{1,64}` — `errorType`) · `account`(`[A-Za-z0-9._@-]{1,64}` — 계정 ID). 템플릿 정규식도 변수 형식에 맞춘다. `..`·`//`·`%`·`\`·`?`·`#`·`://` 거부는 그대로이고, 형식 밖 값은 HTTP 0회로 `NotAllowedError`. 카탈로그 사본(`testdata/jennifer/scripts/jennifer_catalog.py`)도 같은 선언을 갖고 대조 테스트가 둘을 맞춘다.
+`Endpoint`에 경로 변수별 형식을 선언한다: `int`(종전 숫자) · `enum[...]`(예 `targetType ∈ {domain, instance, business}`) · `token`(`[A-Z0-9_]{1,64}` — `errorType`) · `account`(`[A-Za-z0-9._@-]{1,64}` — 계정 ID). 템플릿 정규식도 변수 형식에 맞춘다. `..`·`//`·`%`·`\`·`?`·`#`·`://` 거부는 그대로이고, 형식 밖 값은 HTTP 0회로 `NotAllowedError`. 카탈로그 사본(`testdata/jennifer/scripts/jennifer_catalog.py`)도 같은 선언을 갖고 대조 테스트가 둘을 맞춘다. **W7 구현(2026-10-06)**: `sint`(`-?[0-9]{1,20}` — 실행 중 요청 상세의 txid는 음수일 수 있다) 추가 · 경로별 선언 완료(`account` — 계정 · `enum:domain|instance|business` · `enum:domain|instance` · `token` — 오류 유형) · **`.xml` 꼬리 일반 거부**(`account`가 `.`을 받아 `/restapi/user/x.xml`이 템플릿에 맞던 틈) · 허용목록 36템플릿.
 
 ## 3. 장기 작업 · 대용량 전달 (W0-B — N-14 · N-18 · M-10 · M-11)
 
@@ -143,6 +144,7 @@
 - 전송 미들웨어가 요청 토큰으로 주체를 정해 컨텍스트에 싣는다. 작업 기록에 `principal`을 남기고 작업 도구는 **같은 주체 + 같은 `owner`**일 때만 응답한다(아니면 `job_not_found`).
 - 감사 1줄에 `principal=`·`job_id=`를 더한다(토큰 값 없음).
 - 이 결정은 인가를 넓히지 않는다 — 게이트웨이 도구 접근은 여전히 Bearer 보유자 전원이다. 사용자별 인가는 본체(`allowed_sources` · 작업 장부 소유자)가 한다.
+- **W5 구현(2026-10-06) — 프로파일 예산 분리**: 전송 주체 `chat`(상수 · `APM_GATEWAY_BEARER_TOKENS`의 키)은 프로파일 예산을 쓰지 않는다. 그 밖 주체(`investigation`·`default`·`anonymous` 등)는 칸 `(주체, investigation_id → owner → "_unspecified")`마다 `APM_PROFILE_CALLS_PER_INVESTIGATION`(기본 5)회/1시간(TTL 종전). 주체는 서버가 전송 토큰으로만 정해 도구 코어에 넘긴다(MCP 스키마에 `principal` 없음) — `owner`·`investigation_id`·스키마 밖 인자로 면제를 얻을 수 없다. 종전 `_anonymous` 전 주체 공유 칸은 폐지. 단일 토큰 배포(`default`)는 채팅·조사를 가를 수 없어 면제가 없다(사용자별 owner 칸으로 격리) — 채팅 면제는 본체가 `chat` 토큰을 쓸 때만. **남는 위험**: 조사 LLM이 호출마다 새 `investigation_id`를 지어내면 칸이 새로 생긴다(서버가 조사 ID를 직접 받을 경로가 없다 — sre_agent는 프로세스당 정적 토큰 1개).
 
 ### 3.7 작업 도구 (MCP · W0-B)
 
@@ -188,14 +190,15 @@
 | 성능·순회 | 정규식은 앞쪽 고정·길이 상한(제곱 시간 금지 — 100KB 공격 문자열 1초 이내 회귀) · 큰 본문(256 KiB 초과) 검사는 이벤트 루프 밖 스레드 · 순회는 명시 스택(깊이와 무관하게 같은 규칙) |
 | 오류 사유 | **가린 뒤 자른다**(제니퍼 오류 본문 → `scrub_text` → 240자) — `sources[].reason`·`result_meta`도 같다 |
 | 처리하지 못한 모양(깊이 32 초과 등) | 같은 규칙을 적용하고 봉투 `limits`에 `[한계] 자격증명 검사: 예상 밖 응답 모양(<경로>) — 깊이 32 넘는 중첩도 같은 규칙으로 검사했다(응답 모양 확인 필요)` |
-| 남긴 모양(W10 녹화본으로 판단) | `token C`·`api_key C`(구분자 없음) · `password -> C`·`password is C` · URL 인코딩·HTML 엔티티 변형 · 명령 문맥 밖 띄어 쓴 `-p 값`(`ssh -p 22`와 구분 불가) |
+| 남긴 모양(W10 녹화본으로 판단) | `token C`·`api_key C`(구분자 없음) · `password -> C`·`password is C` · URL 인코딩·HTML 엔티티 변형 · 명령 문맥 밖 띄어 쓴 `-p 값`(`ssh -p 22`와 구분 불가) · (W7 수정 뒤) 명령 문맥의 구조화 객체 안 단일 토큰 인자 · 줄 중간 따옴표 없는 비밀 값의 공백 뒤 · 문장 안 접속 문자열(전체 일치가 아님) · `?`·`#` 뒤에만 `@`가 있는 숫자 시작 URL 비밀번호 |
+| **W7 개정(2026-10-06 · 보안 감사 AUDIT-1~6 · D-302 ⑦)** | ① **명령 문맥 칸**(키에 COMMAND·SCRIPT·ARGS·EXEC… — 룰 `autoScriptCommand` 등)은 도구별 비밀번호 표기를 쫓지 않고 **첫 토큰(실행 파일 · 따옴표 경로 포함)만 남기고 나머지 인자를 통째로 `[가림]`** — 첫 토큰이 `NAME=값` 대입이면 값도 가린다 · 배열 명령은 첫 원소 뒤 전부 ② 키 판정은 토큰 단위에 더해 **구분자를 걷은 대문자 전체 키**에도 부분 문자열·끝맺음 규칙(약어+소문자 `APIkey`·`dbPASSword` 분할 우회 차단) · 어휘 `CREDS`·`PASSCODE`·`비밀번호`·`암호`·`패스워드` 추가 · **POSIX `PWD`·`OLDPWD`는 값이 절대 경로일 때만 비밀이 아니다**(작업 디렉터리 — 종전 「과잉 가림 의도」를 개정 · ODBC `PWD=<비밀>`은 종전대로 가림 · 소문자 `pwd` 계정 필드는 키째 제거) ③ 값 **전체**가 `name/secret@host…`이면 문맥 무관 가림 · 콜론 없는 `scheme://<토큰>@`도 사용자 정보 통째 · `?`·`#` 앞에 `@`가 있으면 포트로 보지 않는다 ④ 따옴표 값은 백슬래시 이스케이프 지원 · JVM `-D<비밀 키>=` 값은 공백까지 · 따옴표 없는 KV 비밀 값은 연결 문자열 문맥(`;키=`)이면 `;`까지 · 줄 머리 키면 줄 끝까지 · 그 밖 공백까지(종전 `; & ,` 구분자 꼬리 차단 — 과잉 가림 허용) ⑤ 이름/값 묶음 칸은 끝맺음(`…name`·`…key`·`…field`·`…param` / `…value`·`…val`)으로 ⑥ 비200 JSON 오류 본문은 `scrub_detail` 뒤 직렬화 · **재감사(REAUDIT) 반영**: ⑦ 명령 키가 아닌 칸에도 도구별 표기(`connect`/`attach … user X using <pw>` 같은 줄 · `-P <pw>`/`-P<pw>` · 띄어 쓴 `-a`·`-w` · `-u user,<pw>`·`-U user%<pw>`)를 가린다 — 명령 키 「첫 토큰만」과 **겹쳐** 적용(대체 아님 · `wget -w 5`·`mvn -P prod` 과잉 가림 허용 · `-agentlib`·`ls -al`·`JOIN … USING` 보존) ⑧ 명령 키 아래 값이 객체·맵이면 통째로 가림(불리언·None은 그대로) ⑨ 어휘 `CRED`(토큰 정확 일치 — `CREDIT` 아님)·`시크릿`·끝맺음 `…ASSERTION`·키 한정어 X509·RSA·DSA·ECDSA·ED25519·PGP·GPG(TLS·SSL 제외 — `javax.net.ssl.keyStore` 보존) ⑩ 운영 엔트리는 HTTP 클라이언트·MCP 전송(`mcp` 부모 로거)·`sse_starlette`·`uvicorn.access` 로거를 WARNING 이상으로(INFO·DEBUG 기동 모두 — DEBUG에서 들어온 도구 인자 본문이 찍히던 채널 차단). **남긴 모양(처분 · W10)**: 문장 속 접속 문자열(전체 일치만 봄 — REAUDIT-3) · 줄 중간 공백 있는 따옴표 없는 비밀 값(REAUDIT-5) · 큰따옴표·SQL 주석 속 사람 이름(G-11 — REAUDIT-6) · 다른 줄에 있는 DB2 `using` · 붙여 쓴 `-a<pw>` |
 
 - **카나리아 테스트**(필수): 중첩 dict/list · `SYSTEM`/`JAVA` 묶음 · 키-값 배열 · `KEY=VALUE` 자유 텍스트 · JDBC URL · `-Ddb.password=` · `DB_PW2` · `autoScriptCommand` 인자 · `password` 필드 · 대소문자 변형. 카나리아 값이 도구 반환·스풀 파일·감사 로그·`limits`·오류 사유 어디에도 없음을 단언한다. 일반 설정값(`PATH`·`JAVA_HOME`·`java.vendor`)은 그대로임을 함께 단언한다.
 - 패턴 테스트만으로 모든 비밀을 보장했다고 선언하지 않는다(계획 §9) — 운영 마스킹 녹화본 대조는 W10.
 
 ### 4.3 개인정보 식별자 (G-11 미결 동안)
 
-`mask_text`의 이메일·휴대폰·주민번호·IP 규칙에 더해, 식별자 필드(`userId`·`clientId`·계정 `id`·사람 `name`)는 `mask_identifier`(앞 1자 + `***` · 2자 이하는 `***`)로 가린다. HTTP query 문자열(`http.query`)은 전용 규칙으로 **첫 값까지** 가린다(E-20 교정). SQL은 `mask_sql`(리터럴 `?`). 원값 표시 경로는 G-11 결정 뒤 별도 개정이다(D-262 · D-299 ⑦).
+`mask_text`의 이메일·휴대폰·주민번호·IP 규칙에 더해, 식별자 필드(`userId`·`clientId`·계정 `id`·사람 `name`)는 `mask_identifier`(앞 1자 + `***` · 2자 이하는 `***`)로 가린다. HTTP query 문자열(`http.query`)은 전용 규칙으로 **첫 값까지** 가린다(E-20 교정 · W7: `=` 없는 맨 항목도 식별자형이 아니면 `<v>`). SQL은 `mask_sql`(리터럴 `?` · W7: PG 달러 따옴표 · 결과에 `mask_pii`). **W7 개정(AUDIT-7·8 · VG-1)**: 사용자 `phone_number`는 값이 있으면 `<phone>` · `email`은 `@` 앞 `mask_identifier` · 사용자·실행 중 요청 `extra`의 식별자형 키(`…Id`·`…ID`·`…Name`·`nickname`·`emp…`) 문자열은 `mask_identifier` · 설정 값(환경변수·데이터 서버 설정)은 `mask_pii`(이메일·주민번호·휴대폰만 — 서버 IP는 인프라 정보라 가리지 않는다) · 프로파일 SQL 응답은 **출처 칸 이름**(`SQL_STATEMENT_KEYS` — `sql`·`sqlText`·`statement`·`query`… · 응답 모양 미공개라 추정 · W10)이면 `mask_sql`, 그 밖 칸(바인드 값일 수 있음)은 `mask_identifier` + `[한계]`(키워드 판정 금지 — 저장 프로시저 호출 보존). 계정 ID가 든 경로는 로그·사유에 템플릿으로 남기고, HTTP 클라이언트 라이브러리 로거(`httpx`·`httpcore`)는 운영 엔트리에서 WARNING이다. 원값 표시 경로는 G-11 결정 뒤 별도 개정이다(D-262 · D-299 ⑦).
 
 ## 5. 도구 표면 (목표 — Wave별)
 
@@ -210,16 +213,18 @@ D-195 ①의 8종 상한을 D-299 ③이 폐지했다. 기능 응집으로 묶�
 | `apm_slow_transactions` | W1 | X-View·status/application | `full?` | `n` 상한 제거 · 10분 상한 제거 · `guid`·`client_ip`(마스킹)·`user_id`·`client_id`(식별자 가림)·`start_time_ms`·SQL/fetch/외부 호출 건수 보존 |
 | `apm_active_services` | W1 | activeService/list | `full?` | `session_id`·`thread_hash`·`active_ref{source_id, domain_id, txid, session_id, thread_hash}`(F-15 입력) · CPU·SQL·fetch 건수 · `status_message`(마스킹) |
 | `apm_events` | W1 | dbsearch/event·error | `level_mode?: min\|exact` · `error_type?` · `record?: event\|error` · `full?`·`n?` | 24시간·50건 상한 제거(`n` 기본 = **전부** — 종전 50은 상한이었다) · `level`은 게이트웨이 계약 값 fatal·warning·normal · `exact`는 API `level`(대문자) + 재검증 · `error_type`은 정규화 이름 먼저, 0건이면 접두 변형(`ERROR_`·`WARNING_`)을 차례로 다시 묻고 맞은 표기를 `[한계]`에(U-13 · W10) · 이벤트도 같은 유형으로 거른다 · `record=error`면 행 = 오류 기록 · `errors_by_type` = 전 유형 |
-| `apm_transaction_profile` | W1·W5 | txid·profile.txt·sql | — | 발췌(앞 60줄)는 화면용으로 남고 발췌가 잘렸으면(`profile_truncated`) **전문은 `artifact.text_parts["profile"]`**(마스킹본) · SQL 전부(`top_k` 비우면 전부) · W5 예산 분리 |
+| `apm_transaction_profile` | W1·**W5 구현** | txid·profile.txt·sql | W5 `profile_no?`·`include_param_key?`(sql만) | 발췌(앞 60줄)는 화면용으로 남고 발췌가 잘렸으면(`profile_truncated`) **전문은 `artifact.text_parts["profile"]`**(마스킹본) · SQL 전부(`top_k` 비우면 전부) · `key`는 허용만(미전달 + `[한계]` — W10) · SQL 문 칸이 아닌 문자열(바인드 값일 수 있음 — 출처 칸 이름으로 판정)은 `mask_identifier` · **예산 분리(W5 구현)**: 전송 주체 `chat` 면제 · 칸 `(주체, 조사 ID → owner → 미지정)` · 인자로 면제 불가(§3.6) |
 | `apm_status_stats` | W2 | `/api/status/{application,sql,external_call}` | `kind` · `hostname`·`instance_id?` · 구간(기본 60분) · `sort_by?` · `n?`·`full?` · `application_name?` | 시 경계 고지 · `name` 마스킹(SQL·URL) · 도메인별 `max_row=n` 뒤 전역 재정렬(정렬 기준 대응을 모르면 「전역 순위 아님」 `[한계]`) · `summary` 평균 = Σ`total_response_ms` ÷ Σ`calls`(원자료 칸은 행에 남김 — W6 가중 평균 입력) · 표시 행 기준 합계면 그 사실을 `[한계]`에 |
 | `apm_metrics` | W2(instance)·W3(domain)·W4(business) | `/api/metrics` · `/api/dbmetrics/{instance,domain,business}` | `mode=catalog\|series` · `scope` · `metrics` · `interval_minute?`(기본 5) · 대상 · 구간(기본 60분) | 카탈로그 = 소스별 전 지표 군 행 `{source_id, scope, metric}`(`externalCall` → `external_call` · TTL `APM_METRIC_CATALOG_TTL_SECONDS` · 지문 변경 감지 · 모양이 다르면 오류) · 시계열 정본(업무 포함 — E-24) · 긴 형식 행 · 모르는 지표 = 후보 ≤3 + `invalid_argument` · 카탈로그를 못 읽은 소스는 검증 없이 조회하고 `[한계]`·partial |
 | `apm_source_changes` | W2 | `/api-v2/deploy/{domainId}` | 대상 · 구간(기본 24시간) | 25시간 조각 · v2 맨 배열 전용 파서 · 겹침 제거 · 원시 시각 `change_detected_ms` 보존 · 「변경 감지(데이터 서버 인지 시각) — 배포 확정 아님」 |
 | `apm_service_status` | W3 | `/api/realtime/domain` | `service?` · `source_ids?` | 도메인(서비스) 현재값 전부 · 서비스 해석은 130 검색기 |
 | `apm_fleet` | W3 | realtime/instance 전 도메인 · dbsearch/event 전 도메인(+ 폴러 버퍼 N-11) | `mode=ranking\|events` · `metric`·`order`·`n`·`full` · `level`… | 전 대상 수집 뒤 정렬 · 실패 대상 있으면 `partial` + 「잠정 순위」 |
 | `apm_business` | W4 | `/api/business` · `/api/realtime/business` | 업무 · 도메인 | 업무 정의·현재값 · 시계열은 `apm_metrics(scope=business)` |
-| `apm_transaction_trace` | W5 | `/api/transaction/guid` | `guid` · 소스/도메인? · 구간 | 허용된 전 소스·도메인 · 시각순·중복 제거·부분 실패 고지 |
-| `apm_config` | W7 | 룰(error·metric·compare·applied·individual-setting) · 색상 경계 · 프로세스→인스턴스 · 데이터 서버(domains·resource·system-property-config) · DB 경로 · 로드된 클래스 · 수동 RDB Export 상태 | `kind` · 대상 · `search?`·`process_id?`… | 자격증명 제거(§4) 통과 · `compare`/`comparing` 원천 불일치는 W7 착수 때 확정(COV E-01) |
-| `apm_environment` · `apm_users` · `apm_active_detail` | W7 | environment-variable · auth/userlist·restapi/users·user/{id} · active-service/detail | 대상 · 계정 ID · `active_ref` | §4 자격증명 제거 · §4.3 식별자 가림 · 조사에서도 노출(일괄 비노출 금지 — D-299 ③) |
+| `apm_transaction_trace` | **W5 구현** | `/api/transaction/guid` | `guid`(필수) · `hostname?` · 구간 · `around_ms?`·`around_minutes?`(기본 5) · `source_ids?` | 허용된 전 소스·도메인(호스트를 주면 그 정합 도메인) · 창 = 명시 > `around_ms ± 5분` > 최근 60분(기본이면 `[한계]`) · 중복 제거 (`source_id`, `domain_id`, `txid`) · 시작 시각순 `trace_order` · 다른 GUID 행 제외 · 토폴로지 아님·시계 차이 고지 · 부분 실패 partial (A-3) |
+| `apm_change_impact` | **W6 구현**(A-2) | deploy + X-View + dbsearch/error | `hostname` · 구간(변경 탐색 · 기본 24시간) · `width_minutes?`(기본 60) · `n?`·`full?` | 변경마다 전 `[t−w, t)`·후 `[t, min(t+w, 지금))` 호출·오류·평균(Σ÷calls)·원시 p95·오류 기록 · `delta`(기준 0 = N/A · 비율 차 %p) · 조각 실패 = 그 구간 None · 원인 확정 아님 고지 |
+| `apm_period_compare` | **W6 구현**(A-1 · 게이트웨이만 — 채팅 배선 없음) | status/application(인스턴스 × 구간) | `hostname` · `current_*`·`baseline_*`(ISO 절대 구간) · `n?`·`full?` | 시 경계 · Σtotal÷Σcalls(재료 없으면 계산 불가) · 한쪽만 있는 인스턴스 N/A · 길이 차이·p95 미제공 고지 — 조사(MCP)가 소비. 채팅은 두 구간 해석이 `plans/122` ⑥ 기준일 주입·M-7에 달려 잔여 |
+| `apm_config` | **W7 구현** | 룰(error·metric·compare·applied·individual-setting) · 색상 경계 · 프로세스→인스턴스 · 데이터 서버(domains·resource·system-property-config) · DB 경로 · 로드된 클래스 · 수동 RDB Export 상태 | `kind`(7종) · `hostname?` · `rule_type?`·`target?`·`error_type?` · `process_id?` · `search?` · `source_ids?` | 자격증명 제거(§4) 통과 · **COV E-01 확정: `compare` 먼저, 404일 때만 `comparing`으로 다시 묻고 답한 표기를 `[한계]`에**(W1 `error_type` 표기 재질의 선례) · 개별 설정 404 = 설정 없음 · v2 404·405 = 버전 미지원 가능 · kind에 안 쓰는 인자는 빼고 조회 + `[한계]` · 설정 값 `mask_pii` · 행 칸 정본은 `spec/SPEC-apm-gateway.md` §3 |
+| `apm_environment` · `apm_users` · `apm_active_detail` | **W7 구현** | environment-variable · auth/userlist·restapi/users·user/{id} · active-service/detail | `hostname?`·`scope?`·`key?` · `user_id?` · `active_ref` 칸(`domain_id`·`txid`·`session_id`·`thread_hash`·`source_id`) + `hostname?` | §4 자격증명 제거 · §4.3 식별자 가림 · 환경변수 키를 줄이지 않음 · 값의 이메일·주민번호·휴대폰 `mask_pii` · 계정 ID 원값은 감사·`[한계]`·오류 사유·DEBUG 로그에 없음 · 조사에서도 노출(일괄 비노출 금지 — D-299 ③ · `sre_agent` ⑥) |
 | `apm_job_status`·`apm_job_cancel`·`apm_job_read` | W0-B | — | §3.7 | 작업 관리 |
 | `gateway_health` | — | — | — | `allowlist_size` 값이 늘어난다 |
 
@@ -236,6 +241,11 @@ ViewSpec(id, label, capability, tool, required_input, first_hop, limit,      # �
 ViewArgSpec(name, type: "int"|"bool"|"enum"|"str"|"text"|"str_list"|"catalog",
             choices: tuple[str, ...] = (), min: int|None, catalog: str|None,   # catalog = 지표 군 이름
             tool_arg: str|None, label: str = "")                             # 도구 인자 이름 · 계획 LLM용 설명
+# W5·W7 확장(2026-10-06): ViewSpec.target(""=종전 규칙 · optional=이번 턴 대상이 있으면 대상별 · 없으면 hostname 없이 1회(첫 홉 삽입 없음) ·
+#          직전 턴 대상은 원문이 지시어일 때만 · reference=앞 결과 행의 참조 칸 · none=대상 해석 안 함) · ViewSpec.reference(profile_ref·active_ref·guid) ·
+#          ViewArgSpec.required(무효·없음 = 그 보기만 조회하지 않고 되묻기) · default · targeted_choices(대상별 호출을 허용하는 kind 값 —
+#          소스 범위 kind는 대상이 여럿이어도 1회) · 형식 opaque(공백·제어 문자 없음 1~256자 — GUID) · account(`[A-Za-z0-9._@-]{1,64}`) ·
+#          token(대문자 `[A-Z0-9_]{1,64}` — 대소문자만 맞춤) — 게이트웨이 형식과 같게(본체 통과값이 게이트웨이에서 보기 전체를 실패시키지 않게)
 # W2 확장: ViewSpec.notices(보기가 늘 붙이는 고지 kind — KIND_TABLE 대조) ·
 #          CapabilitySpec.active_only(소유 시스템이 활성일 때만 분해 영역 카탈로그에 렌더 — 비활성 바이트 불변)
 #          `text` = 1~200자 · 유니코드 Cc·Cf·Zl·Zp 문자 거부(URL 이름 등 식별자 형식이 아닌 값)
@@ -263,8 +273,16 @@ ViewArgSpec(name, type: "int"|"bool"|"enum"|"str"|"text"|"str_list"|"catalog",
 | W2 | `apm.changes` | `apm_source_changes` | range | hostname | — |
 | W3 | `apm.service` · `apm.ranking` · `apm.fleet_events` | `apm_service_status` · `apm_fleet`(mode=ranking) · `apm_fleet`(mode=events) | current/range | 없음(전체) | W3 SPEC |
 | W4 | `apm.business` | `apm_business` | current/range | 업무 | W4 SPEC |
-| W5 | `apm.profile` · `apm.trace` | `apm_transaction_profile` · `apm_transaction_trace` | — | 참조(`profile_ref` · `guid`) | W5 SPEC |
-| W7 | `apm.event_rules` · `apm.process` · `apm.jennifer_server` · `apm.loaded_classes` · `apm.environment` · `apm.users` · `apm.active_detail` | `apm_config`(kind …) · `apm_environment` · `apm_users` · `apm_active_detail` | none | 도메인·인스턴스·참조 | `kind` 선택지(E-25) · W7 SPEC |
+| **W5 구현** | `apm.profile` | `apm_transaction_profile` | none | **reference**(`profile_ref`) · 영역 `was_transaction`(신규 · active_only) | `ref`(int ≥1) · `top_k` · `include_param_key` |
+| **W5 구현** | `apm.trace` | `apm_transaction_trace` | range | **reference**(`guid`) 또는 GUID 직접(`guid` opaque) · 사용자가 이번 턴에 말한 서버로만 좁힘 · `was_transaction` | `guid` · `ref` |
+| **W6 구현** | `apm.change_impact` | `apm_change_impact` | range(변경 탐색) | hostname(종전 필수 규칙) · `was_change_detection` | `width_minutes` · `n` · `full` · 고정 고지 `apm_change_detection` |
+| **W7 구현** | `apm.event_rules` | `apm_config`(kind는 view_args) | none | optional · 영역 `apm_management`(신규 · active_only) | `kind`(event_rules·color_boundary · 기본 event_rules · 대상별 호출은 event_rules만) · `rule_type` · `target` · `error_type`(token) |
+| **W7 구현** | `apm.process` | `apm_config`(kind=process_instance) | none | optional · `apm_management` | `process_id`(int ≥1 · **필수**) |
+| **W7 구현** | `apm.jennifer_server` | `apm_config`(kind는 view_args) | none | optional · `apm_management` | `kind`(data_server·db_path·rdb_export · 기본 data_server · 대상별은 db_path만) |
+| **W7 구현** | `apm.loaded_classes` | `apm_config`(kind=loaded_classes) | none | hostname(종전 필수 규칙) · `apm_management` | `search` |
+| **W7 구현** | `apm.environment` | `apm_environment` | none | optional · `apm_management` | `scope`(SYSTEM·JAVA) · `key` |
+| **W7 구현** | `apm.users` | `apm_users` | none | none · `apm_management` | `user_id`(account) |
+| **W7 구현** | `apm.active_detail` | `apm_active_detail` | none | **reference**(`active_ref`) · `was_activity` | `ref` |
 
 ### 6.3 view_args 검증 (M-3)
 
@@ -323,9 +341,26 @@ ViewArgSpec(name, type: "int"|"bool"|"enum"|"str"|"text"|"str_list"|"catalog",
 - 후속 턴 참조(`profile_ref`·`active_ref`·`guid`)는 그 턴의 권한으로 다시 판정한다(W5).
 - LLM 입력에는 게이트웨이 마스킹본·요약만 들어간다. 다운로드 파일도 D-262 마스킹(`DataMasker`)을 거친다.
 
+### 7.7 앞 결과 행 참조 (M-6 · W5 구현 2026-10-06)
+
+- **후보 원천**: ① 같은 계획 선행 task의 원 행(`prior_result_rows` — `input_from` 먼저, 없으면 `depends_on`이 가리키는 APM task(검증 V-5) · 두 목록을 한 번호로 섞지 않는다) → 그 행들에 그 종류 참조 칸이 없으면 ② 직전 턴 참조 후보(`conversation_context.previous_result_refs` — `{turn, <종류>: [후보…], tables?}`).
+- **표 단위 번호(코드 리뷰 R-1)**: 앞 결과가 **표 여러 개**(복합 턴)였으면 번호는 표 안 순서다. 집계기가 복합 턴 끝에 그 턴의 `conversation_context.result_tables`(`[{label, rows}]` — 행 수 합이 `query_results`와 같을 때만)를 남기고, 다음 턴 `context_resolver`가 한 번만 읽는다(구조적으로 그 다음 턴에는 남지 않는다 · 행·화면 표·CSV 칸 불변 — 행 표지·새 상태 키는 CSV 칸 증가·턴 시작 초기화 불가로 택하지 않았다). 요청한 참조 종류의 후보가 **표 둘 이상**에 걸치면 추측하지 않고 표(보기 라벨)마다 후보 ≤3을 들어 되묻는다(의무 고지 · 「원하는 목록만 다시 조회한 뒤 몇 번째인지」). 표를 고르는 조건 칸(`view_args.table` 등)은 두지 않았다(활성 프롬프트 변경 · 잔여).
+- **번호**: 그 참조 칸(`profile_ref`·`active_ref`·`guid`)이 **있는** 행 사이의 표시 순서(1부터). 값이 null인 행도 자리를 지켜 화면 표 번호와 같다(그 행을 고르면 「…번째 행에는 참조가 없어」 되묻기).
+- **선택**: `ref`(계획 LLM 값)를 코드가 범위·종류로 검증 → 밖이면 되묻기(후보 ≤3 라벨 + 「외 N건」) · `ref` 없음 + 후보 1 = 그 행 · 여럿 = 되묻기 · 0 = 조회하지 않고 사유(다른 보기·첫 홉으로 대신하지 않는다). 한국어 순번을 정규식으로 읽지 않는다 — **계획 LLM이 낸 `ref`가 형식·범위 밖이면 후보 수와 무관하게 되묻는다**(코드 리뷰 R-2 · 검증 V-8 — 종전 「후보 1개면 그 행」이 「5번째」·0·-1을 무시하고 조회했다) · 형식 밖 `ref`(「두번째」)는 되묻기 문구 하나에 합친다.
+- **인자**: 행의 참조 칸을 **키 변환 없이** 도구 인자로 펼치고 행의 `hostname`을 함께 넘긴다(게이트웨이가 정합을 다시 검사). `ref`·`investigation_id`는 보내지 않는다.
+- **인가**: 처리기 진입의 `is_source_allowed`(이번 턴 권한) · 참조는 스레드 체크포인트 상태 안에만 있다. **주의**: 스레드 소유 확인은 라우트 몫이다(`plans/134` §12.3 — 사용자 결정 필요).
+- **유지·교체**: 직전 턴에 참조 칸 행이 없으면 그 앞 후보를 잇는다(`previous_entities` sticky와 같은 규칙) · 참조 칸 행이 새로 나오면 종류 무관 통째 교체 · 2턴 이상 전 목록이면 경과 노트.
+- **GUID 추적 창**: 사용자 기간(range 규칙 · 「하루 넘게」 규칙 유지) > 참조 행 시각(`around_ms` = 시작 → 끝 → `profile_ref.time_ms`) > 게이트웨이 기본 60분. GUID 직접 지정이 `ref`보다 앞선다. 좁힘은 이번 턴 사용자가 말한 서버(단일 task)·지시어 직전 대상만 — 선행 task 행의 서버로 좁히지 않는다(연계 추적이 한 도메인으로 줄지 않게).
+- **되묻기만 남으면 게이트웨이를 열지 않는다**(게이트웨이 가용성에 되묻기가 가려지지 않게).
+- **같은 계획 「목록 → N번째 상세」는 단계별 답**(검증 V-1 · D-100 부기): APM 결과가 식별 키당 2행 이상이거나 참조 보기만 고른 task이면 서버 키 병합을 하지 않는다(접힌 행에 다른 거래의 상세가 붙던 침묵 손실).
+- **GUID 추적 호출 사이 중복 제거**(V-4): 여러 서버로 좁힌 호출의 결과를 (`source_id`, `domain_id`, `txid`)로 합치고 GUID 줄을 하나로.
+- **결정적 줄**: GUID 「GUID g: 거래 N건 · 도메인 H곳(조회 M곳 · 실패 K곳) · 조회 구간 {start} ~ {end}(기간 미지정이면 게이트웨이 고지 — 「앞 결과 시각 ±5분」·「최근 60분」) · 같은 GUID일 뿐 호출 관계가 아님 · 인스턴스 …」(0건 답에도 반드시 — 검증 V-3) · 변경 전후 「{인스턴스} 변경 감지 {시각} — 오류율 a → b(±%p) · 평균 응답 a → b(±%) · 오류 기록 a → b · 호출 a → b」(N/A 그대로 · 차이는 게이트웨이 `delta`) — `**판정·집계**` 블록.
+
 ## 8. 분석 계약 (W6 — 계획 §4.5 A-1~A-4를 그대로 정본으로 삼는다)
 
 W2~W5는 원자료 계약(시각 원값 · 호출 수 · 총 응답시간 · 단위 · 해상도 · 실패 단위)을 봉투에 남겨 W6 계산이 가중 평균·누락 구간·기준 0(N/A)을 다룰 수 있게 한다. 계산은 게이트웨이(도메인 집계 — D-274 ⑤)가 하고 본체는 단계 연결·조합만 한다.
+
+**W6 구현 범위(2026-10-06 · 실측으로 분할)**: 계산 정본은 `apm_gateway/domain/analysis.py`(순수 함수 — `weighted_mean`·`rate`·`delta`(기준 0 = `pct` None)·`rate_delta`(%p)·원시 `p95`). **A-2** 변경 전후 = `apm_change_impact`(게이트웨이 + 채팅 보기 `apm.change_impact`) · **A-1** 기간 비교 = `apm_period_compare`(게이트웨이 · 조사 소비 — 채팅 배선 없음) · **A-3** = `apm_transaction_trace`(W5). **하지 않은 것**: M-7(「하루 넘게 지난 기간」 폐지 · 해상도 자동 선택 · 빈 결과 ≠ 보존 만료 고지) · A-1 채팅 배선 · A-4(W3 `apm_fleet` 선행). 근거 실측(로컬 MLX 9B 입력 파서 12문항 × 3회 · 2026-10-06): 기간 없는 질문 21/21은 `time_range = null`(변경 전후 기본 경로 · GUID · 참조 · 설정은 파서 기간을 쓰지 않는다), **상대 기간(어제·지난주·오늘 오전과 어제 오전·지난 3시간·최근 1시간) 15/15가 프롬프트 예시 날짜(2026-03-12~13)로 풀려** 현행 규칙에서 전부 「하루 넘게 지난 기간」으로 조회되지 않았다. 규칙을 폐지하면 15/15가 엉뚱한 과거를 조회한다 — `plans/122` ⑥(기준일 주입) 선행이 필요하다. 「오늘 오전과 어제 오전」은 구간 하나로만 풀렸다(두 구간 해석은 파서 계약 밖).
 
 ## 9. Wave · 파일 소유 · 인계
 
@@ -335,6 +370,7 @@ W2~W5는 원자료 계약(시각 원값 · 호출 수 · 총 응답시간 · 단
 | W0-B | `application/jobs.py`·`spool.py` · `domain/credentials.py`(신규) · `adapters/jennifer/client.py`(우선순위 throttle · 큰 응답 스풀) · `interface/server.py`(작업 도구 · 주체 토큰 · `owner`·`wait_seconds`) · `interface/audit.py` · `config.py` · `.env.example` · tests | `apm_query.py`(owner·wait·작업 처리) · 작업 장부·서비스(신규) · `src/api/routes/apm_jobs.py`(신규) · `src/domain/disclosure.py` · 화면 작업 카드 · 매뉴얼 · tests | SPEC-apm-gateway §2.1·§3·§6 |
 | W1 | `fields.py` · `tools.py` · `masking.py` · `allowlist.py`(`error_type`) · `sources.py`(호스트당 5 상한) · 카탈로그 사본 · tests | `apm_query.py`(M-1·M-2·M-3) · `src/routing/registry.py`(`ViewSpec`) · `config/db_registry.yaml` · `src/prompts/intent_planner.py`(APM 절 view_args) · `tests/test_routing/test_plan125_registry.py` 등 | docs/33 상태 |
 | W2 | `allowlist.py`(status 선택 키 · 경로 변수 형식) · `api.py`·`fields.py`(v2 파서) · `tools.py`(신규 3도구) · 목 서버 · tests | 보기 5종 · 선택 재시도(M-8) · tests | |
+| W5·W6·W7(2026-10-06) | `tools.py`(trace·change_impact·period_compare·예산) · `domain/analysis.py` · `api.py`·`fields.py`·`allowlist.py` · `manage_api.py`·`manage_fields.py`·`manage_tools.py`·`manage_server.py`(신규) · `credentials.py`·`masking.py`·`client.py`·`__main__.py`(감사 수정) · 목 서버·카탈로그 사본 · tests | `apm_query.py`(보기 10 · 참조 M-6 · 선택 대상 · 필수 조건 · 결정적 줄) · `registry.py`(`target`·`reference`·`required`·`default`·`targeted_choices`·형식 3) · `db_registry.yaml` · `src/domain/result_refs.py`(신규) · `context_resolver.py` · `subagents.py` · `result_aggregator.py`(V-1·표 경계) · `agent_orchestrator.py`(경과 노트) · `output_generator.py`(C-06 범위) · `intent_planner.py` · 매뉴얼 U-52 · `sre_agent` 지침 | SPEC 3종 · COV · `docs/31`·`docs/33` · D-302 |
 | W3~ | 130 대상 계약 선행 확인 | | |
 
 - **130 인계**: 130(TODO · 코드 0)이 `apm_instance_map` 인자 확장(인스턴스 이름 단계 검색·업무 해석)을 소유한다. 134 W1·W2는 `apm_instance_map`의 **반환 칸·상한만** 바꾸고 인자·정합 규칙은 건드리지 않는다. 134 W3(서비스 해석)·W4(업무)는 130 검색기를 재사용해야 하므로 **130 W1 착수 뒤**로 둔다(같은 파일 동시 수정 회피).
@@ -365,3 +401,4 @@ W2~W5는 원자료 계약(시각 원값 · 호출 수 · 총 응답시간 · 단
 | 2026-10-02 | W0-B 반영 — §2.2 `artifact.chunks` 모양·`job.error` · §3.7 읽기 기본값·구현 세부 · §3.8 본체 구현 세부(재확인 마감·첫 홉·혼합 결과·partial 상태·감사·중첩 마스킹·카드 복원) · §4.2 자격증명 규칙 확대(검증·보안 감사 발견 High 2·Medium 5 반영: 붙여 쓴 비밀 단어 · 헤더 줄 끝까지 · 세션 쿠키 · 키-값 묶음 모양 · 가린 뒤 자르기 · 제곱 시간 정규식 · 정규화 · 숫자 세션 ID 보존) |
 | 2026-10-02 | W1·W2 반영 — §5 도구 표(`apm_events` `n` 기본 전부·`level` 계약 값·`error_type` 접두 변형 재조회 · `profile_truncated` · `apm_status_stats` 전역 재정렬·원자료 칸 · `apm_metrics` 카탈로그 행·scope Wave · `change_detected_ms`) · §6.1 확장 칸(`label`·`text`·`notices`·`active_only`) · §6.3 선택 조건 무효는 고지 후 조회(H-2)·`null` 무고지·평면 view_args·골격 키(H-1)·`limit→n` 단일 task 한정·`level` enum · §6.4 일부 영역만 덮으면 덮은 보기 조회 · §7.1 `**판정·집계**` 블록·APM 표시 절단 |
 | 2026-10-02 | W2 검증 반영 — §6.1 `text` 거부 범주·식별자 형식(영문 시작) · §6.3 원천·게이트웨이가 거부한 선택 조건 처리(빼고 조회·로컬 정렬 · 고지) · §6.4 영역별 후보 · 합의 보기(`agreed`) · §7.5 비의무 고지 본문 3줄 · 게이트웨이 고지 통과 |
+| 2026-10-06 | **W5·W6(독립분)·W7 반영(D-302)** — §1.4 정정(`prior_rows`·`previous_entities`는 참조 칸을 나르지 않는다) · §2.4 `sint`·`.xml` 꼬리 거부 · §3.6 프로파일 예산 주체 분리 · §4.2·§4.3 W7 개정(보안 감사 AUDIT-1~12 · 재감사 REAUDIT-1·2·4·7 반영 · 남긴 모양) · §5 도구 7종 구현 행 · §6.1 `ViewSpec`·`ViewArgSpec` 확장 · §6.2 보기 10종 · §7.7 앞 결과 행 참조(표 단위 번호 · 형식 밖 `ref` 되묻기 · 단계별 답 · GUID 조회 구간) · §8 W6 분할 실측(파서 상대 기간 15/15 예시 날짜) · §9 W5~W7 소유 |

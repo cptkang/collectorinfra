@@ -389,8 +389,9 @@ async def test_retry_covering_some_areas_queries_them_and_asks_the_rest(gateway)
     assert "그 부분은 조회하지 않았습니다" in item["text"]
     assert "WAS 소스(리소스) 변경 감지 시각" in item["text"] and "다시 물어 주세요" in item["text"]
     sel = res["apm_query"]["selection"]
+    # plans/134 W6 — 변경 전후 비교(`apm.change_impact`)가 같은 영역을 재사용한다(의도된 갱신)
     assert (sel["result"], sel["uncovered"], sel["candidates"]) == (
-        "partial", ["was_change_detection"], ["apm.changes"])
+        "partial", ["was_change_detection"], ["apm.changes", "apm.change_impact"])
     assert res["apm_query"]["views"] == ["apm.app_health", "apm.sql_stats"]
 
 

@@ -45,6 +45,7 @@ from src.nodes.result_merger import result_merger
 from src.nodes.result_organizer import result_organizer
 from src.nodes.schema_analyzer import schema_analyzer
 from src.nodes.synonym_registrar import synonym_registrar
+from src.observability import run_capture
 from src.orchestration.process_query import (
     _DEMONSTRATIVE_NOUNS,
     _DEMONSTRATIVE_PREFIXES,
@@ -1243,6 +1244,25 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
                 rows = organized.get("rows", [])
             prior_rows[tid] = _extract_identity_rows(rows or [])
         base["prior_rows"] = prior_rows
+    # 앞 결과 행 참조(plans/134 M-6) — 식별 키만 남긴 prior_rows에는 행 참조 칸
+    # (profile_ref 등)이 없다(실측: APM 행 → {hostname}). 참조 처리기는 LLM 0이라(행이
+    # 프롬프트에 들어가지 않는다) 선행 행을 그대로 넘긴다. `depends_on`만 건 선행 APM task도
+    # 원천이다(V-5 — 없으면 이번 턴 표가 아니라 직전 턴 목록에서 행을 골랐다).
+    if task.get("agent") in _ROW_REF_CONSUMER_AGENTS:
+        ref_from = list(dict.fromkeys([*input_from, *_row_ref_dependencies(task, state)]))
+        if ref_from:
+            base["prior_result_rows"] = {
+                tid: _prior_result_rows(prior.get(tid) or {}) for tid in ref_from
+            }
+            # 선행 task마다 한 표다 — 후보가 표를 넘으면 되묻는 문구의 표 이름 재료(R-1)
+            plan = {str(t.get("task_id")): t for t in state.get("task_plan") or []
+                    if isinstance(t, dict)}
+            base["prior_result_tables"] = {
+                tid: {"views": ((prior.get(tid) or {}).get("apm_query") or {}).get("views")
+                      or (plan.get(str(tid)) or {}).get("views"),
+                      "sub_query": (plan.get(str(tid)) or {}).get("sub_query")}
+                for tid in ref_from
+            }
 
     # 조사 대상 전달 (Plan 78 W1 · G2). 소비 방식이 agent별로 다르다 —
     # data_query/alarm_query는 위의 prior_rows(SQL 스코프, D-086)를 그대로 쓰고,
@@ -1261,6 +1281,16 @@ def _make_isolated_input(task: dict, state: dict, prior: dict) -> dict:
 
 # 선행 결과를 **조사 대상 집합**으로 소비하는 agent (Plan 78 W1-2).
 _TARGET_CONSUMER_AGENTS: tuple[str, ...] = ("process_query", "fault_diagnosis")
+# 선행 결과 행의 **참조 칸**(profile_ref·active_ref·guid)을 순번으로 고르는 agent(plans/134 M-6).
+_ROW_REF_CONSUMER_AGENTS: tuple[str, ...] = ("apm_query",)
+
+
+def _row_ref_dependencies(task: dict[str, Any], state: dict[str, Any]) -> list[str]:
+    """`depends_on`이 가리키는 선행 task 중 참조 칸 행을 내는 task(같은 처리기 — plans/134 V-5)."""
+    agents = {str(t.get("task_id")): t.get("agent")
+              for t in state.get("task_plan") or [] if isinstance(t, dict)}
+    return [str(d) for d in task.get("depends_on") or []
+            if agents.get(str(d)) in _ROW_REF_CONSUMER_AGENTS]
 
 
 def _prior_result_rows(res: dict) -> list[dict]:
@@ -1800,6 +1830,8 @@ def _pack_pipeline_result(
     2단 핸들러(``run_data_query_pipeline``)와 3단 task 서브그래프의 ``pack_outcome``
     (plans/103 P1-1)이 같은 함수를 쓴다 — 결과 모양이 두 경로에서 갈라지지 않게 한다(D-053).
     """
+    # 측정 연결점(D-301 ⑥) — 수신 함수가 설치된 측정 전용 서버에서만 동작한다(기본 no-op).
+    run_capture.emit("task_pipeline_state", s)
     result: dict = {
         "organized_data": s.get("organized_data"),
         "query_results": s.get("query_results"),

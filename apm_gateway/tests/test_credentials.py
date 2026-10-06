@@ -71,12 +71,21 @@ def test_short_p_only_in_command_context():
         "KEYSTORE_TYPE=PKCS12",
         "user=kim&page=2",
         "select * from orders where user_email = 'kim@example.com' and id = 42",
-        "http://host:8080/path@x",
+        # `http://host:8080/path@x`는 2026-10-06 처분(AUDIT-3 (3))으로 가린다 — 아래 시험
+        "http://host:8080/a?email=x@y.com",  # `?` 뒤의 `@`는 포트 판정에 쓰지 않는다
         "monkey=1 author=lee",
     ],
 )
 def test_text_rules_keep_general_values(text):
     assert scrub_text(text) == text
+
+
+def test_port_like_prefix_with_at_sign_is_masked_as_password():
+    """`?`·`#` 앞에 `@`가 있으면 숫자로 시작해도 포트가 아니라 비밀번호다(plans/134 W7 AUDIT-3 (3)
+    · 팀 리드 처분). `scheme://user:12/pw@db`와 경로에 `@`가 든 URL은 문법상 구별되지 않아 경로
+    쪽을 과잉 가림으로 받아들인다(덜 가리는 쪽으로 틀리지 않는다)."""
+    assert scrub_text(f"jdbc:mysql://app:12/{C}@db01:3306/x") == "jdbc:mysql://app:[가림]@db01:3306/x"
+    assert scrub_text("http://host:8080/path@x") == "http://host:[가림]@x"
 
 
 @pytest.mark.parametrize(

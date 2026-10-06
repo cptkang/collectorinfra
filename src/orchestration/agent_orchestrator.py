@@ -24,6 +24,7 @@ from src.nodes.key_bridge import (
     key_bridge_enabled,
     resolve_gate_identity,
 )
+from src.orchestration.apm_query import reference_views_only
 from src.orchestration.subagents import (
     SUBAGENT_REGISTRY,
     resolve_subagent,
@@ -328,7 +329,10 @@ def _gate_level(
                 logger.info("순차 게이트 관측(off) task=%s reason=%s", tid, verdict.reason)
             runnable.append(task)
             continue
-        notes.append(verdict_note(verdict, tid))
+        if not (verdict.ok and reference_views_only(task)):
+            # 앞 결과 행 참조 보기만 고른 task는 선행 결과로 대상을 좁히지 않는다 — 「N대로 대상을
+            # 한정」 경과 노트를 싣지 않는다(게이트 미실행 노트는 종전대로)
+            notes.append(verdict_note(verdict, tid))
         if verdict.ok:
             runnable.append(task)
             continue

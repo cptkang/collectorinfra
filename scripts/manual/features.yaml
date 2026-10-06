@@ -76,6 +76,7 @@ user:
   - {id: U-48, title: 데이터 소스 선택 칩, anchors: ["선택한 데이터 소스로 조회"], files: *IDX, captures: [], case_na: "칩은 질문 분석(LLM)이 여러 소스가 답할 수 있다고 판단할 때만 나와 결정적 녹화가 되지 않는다 — 위젯 모양은 U-25 존 선택과 같다"}
   - {id: U-49, title: 소스 선택 기억 보기·지우기, anchors: ["#prompt"], files: *IDX, captures: [], case_na: "기능이 관리자 설정(기본 꺼짐)과 이전 선택에 따라 달라 녹화 사례 하나로 대표할 수 없다 — 본문에 명령과 답을 싣는다", no_ui: true}
   - {id: U-51, title: "제니퍼(WAS) 조회 — 기간·개수·조건 · 통계·지표 목록·소스 변경", anchors: ["#prompt"], files: *IDX, captures: [], case_na: "제니퍼 연결과 실데이터가 있어야 답이 나와 녹화 사례를 만들 수 없다(로컬 제니퍼는 라이선스가 없어 도메인 0건) — 본문에 질문 예와 조회 방식을 싣는다", no_ui: true}
+  - {id: U-52, title: "제니퍼(WAS) 이어 묻기 · 변경 전후 비교 · 설정·관리 조회", anchors: ["#prompt"], files: *IDX, captures: [], case_na: "제니퍼 연결과 실데이터(트랜잭션·실행 중 요청·설정)가 있어야 답이 나와 녹화 사례를 만들 수 없다(로컬 제니퍼는 라이선스가 없어 도메인 0건) — 본문에 질문 예와 되묻기 문구를 싣는다", no_ui: true}
   # 9. 이벤트 알람
   - {id: U-40, title: 알람 탭과 알람 카드, anchors: ["이벤트 알람", "#alarmList", "#alarmTabBadge", "data-view=\"alarm\""], files: *IDX, captures: [alarm-list], case_na: 수신 화면}
   - {id: U-41, title: 알람 거르기·찾기, anchors: ["#alarmSearch", "#alarmFilterReset", "#alarmClearBtn"], files: *IDX, captures: [alarm-list], case_na: 필터 조작}

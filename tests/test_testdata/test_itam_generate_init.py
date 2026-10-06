@@ -118,3 +118,45 @@ class TestSeedDesign:
         assert {"svr-web-01", "SVR-WEB-02", "svr-web-03.synth.example"} <= set(main)
         assert "," in main["svr-web-04"]["iPCtnt"]
         assert set(main) - eol_hosts == {"svr-was-06"}
+
+
+class TestBenchSeedBoost:
+    """ITAM 질의 벤치(plans/135 W0) 시드 보강 — 기존 오라클을 움직이지 않는다."""
+
+    _README = _ROOT / "testdata" / "itam" / "README.md"
+    _M_FIXTURE = _ROOT / "testdata" / "scenarios" / "fixtures" / "m_cross_system_oracle.yaml"
+
+    def _main_rows(self, transcript):
+        columns = [c["var"] for c in transcript["tables"]["TCDMSIF80"]["columns"]]
+        return [dict(zip(columns, values))
+                for _, values in gen.build_seed_rows(transcript)["TCDMSIF80"]]
+
+    def _referenced(self, text: str, transcript) -> set[str]:
+        names = {c["var"] for t in transcript["tables"].values() for c in t["columns"]}
+        return {name for name in names if re.search(rf"\b{re.escape(name)}\b", text)}
+
+    def test_boost_columns_are_existing_non_code_columns(self, transcript):
+        columns = {c["var"]: c for c in transcript["tables"]["TCDMSIF80"]["columns"]}
+        for name in gen.SEED_BOOST_COLUMNS:
+            assert name in columns and not columns[name].get("code")
+
+    def test_boost_does_not_touch_readme_or_m_group_oracle_columns(self, transcript):
+        readme = self._README.read_text(encoding="utf-8")
+        readme_sql = "\n".join(re.findall(r"```sql\n(.*?)```", readme, flags=re.S))
+        used = self._referenced(readme_sql, transcript)
+        used |= self._referenced(self._M_FIXTURE.read_text(encoding="utf-8"), transcript)
+        assert {"manmenCtrcEndYmd", "elapsNoy", "hWSportEndYmd"} <= used  # 파서가 실제로 읽었다
+        assert not used & set(gen.SEED_BOOST_COLUMNS)
+
+    def test_boost_gives_distinct_answers(self, transcript):
+        rows = self._main_rows(transcript)
+        os_counts: dict[str, int] = {}
+        for row in rows:
+            os_counts[row["oSTypzCtnt"]] = os_counts.get(row["oSTypzCtnt"], 0) + 1
+        assert sorted(os_counts.values()) == [7, 9, 14]
+        memory = [row["sevrMmryCapc"] for row in rows]
+        assert len(set(memory)) == len(rows)  # 상위 N 경계 동점 없음
+        top_memory = {r["sevrHostName"] for r in sorted(rows, key=lambda r: -r["sevrMmryCapc"])[:5]}
+        top_amount = {r["sevrHostName"] for r in sorted(rows, key=lambda r: -r["acqsiAmt"])[:5]}
+        assert not top_memory & top_amount  # 열을 헷갈리면 드러난다
+        assert 0 < sum(1 for r in rows if r["cPUCnt"] >= 16) < len(rows)

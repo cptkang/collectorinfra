@@ -73,8 +73,20 @@ VIEW_WINDOWS: frozenset[str] = frozenset({"current", "range", "hourly", "none"})
 #: 보기 선택 조건 형식(§6.1 `ViewArgSpec.type` + `text` — 식별자가 아닌 자유 문자열(예 URL 이름 ·
 #: plans/134 W2 확장)).
 VIEW_ARG_TYPES: frozenset[str] = frozenset(
-    {"int", "bool", "enum", "str", "str_list", "catalog", "text"}
+    {"int", "bool", "enum", "str", "str_list", "catalog", "text",
+     # plans/134 W5·W7 — 게이트웨이 형식을 그대로 옮긴 값 형식(본체가 통과시킨 값이 게이트웨이에서
+     # 보기 전체를 실패시키지 않게 — W2 검증 B4): `opaque` = 공백·제어 문자 없는 1~256자(GUID 등
+     # 형식 미공개 값) · `account` = 계정 ID 형식 `[A-Za-z0-9._@-]{1,64}` · `token` = 대문자 토큰
+     # `[A-Z0-9_]{1,64}`(값은 대문자로 맞춘다 — 경로 변수 `errorType`)
+     "opaque", "account", "token"}
 )
+#: 보기 대상 표현(plans/134 W5·W7 · 계약 §4.1) — 비면 종전(필수 대상 `required_input` · 첫 홉
+#: `first_hop`이 정한다 · 기존 12개 보기). `optional` = 이번 턴 대상이 있으면 대상별 · 없으면
+#: hostname 없이 1회(첫 홉 삽입 없음) · `reference` = 앞 결과 행의 참조 칸(`ViewSpec.reference`)
+#: · `none` = 대상을 쓰지 않는 보기(대상 해석을 하지 않는다).
+VIEW_TARGETS: frozenset[str] = frozenset({"", "optional", "reference", "none"})
+#: 참조 보기가 고르는 행 칸(게이트웨이 도구 계약 이름 — 벤더 중립).
+VIEW_REFERENCES: frozenset[str] = frozenset({"profile_ref", "active_ref", "guid"})
 
 
 @dataclass(frozen=True)
@@ -86,12 +98,18 @@ class ViewArgSpec:
 
     Attributes:
         name: 조건 이름(분해 `view_args`의 키)
-        type: `int`·`bool`·`enum`·`str`(식별자 형식)·`str_list`·`catalog`(지표 군 이름 — W2)
+        type: `int`·`bool`·`enum`·`str`(식별자 형식)·`str_list`·`catalog`(지표 군 이름 — W2)·
+            `text`·`opaque`·`account`·`token`(W5·W7)
         choices: `enum` 선택지
         min: `int` 하한
         catalog: `catalog` 형식의 지표 군 이름
         tool_arg: 도구 인자 이름(없으면 `name`)
         label: 분해 프롬프트에 렌더하는 짧은 설명(SPEC 표 밖 확장 — 계획 LLM 재료)
+        required: 필수 조건(plans/134 W7) — 없거나 무효면 그 보기는 조회하지 않고 되묻는다
+            (선택 조건 무효는 버리고 고지한 채 조회 — W1 검증 H-2)
+        default: 미지정일 때 도구에 싣는 값(`enum`은 선택지 중 하나)
+        targeted_choices: `enum` 값 중 **대상별로 부르는** 값(대상 표현 `optional` 보기 — 그 밖 값은
+            대상과 무관한 소스 범위라 hostname 없이 1회). 비면 늘 대상별이다
     """
 
     name: str
@@ -101,6 +119,9 @@ class ViewArgSpec:
     catalog: str | None = None
     tool_arg: str | None = None
     label: str = ""
+    required: bool = False
+    default: Any = None
+    targeted_choices: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -120,6 +141,8 @@ class ViewSpec:
         args: 허용 선택 조건(`view_args`)
         examples: 계획 LLM 에 렌더하는 예문
         notices: 결과가 있으면 붙이는 고지 kind(예 `apm_change_detection` — plans/134 W2)
+        target: 대상 표현(`VIEW_TARGETS` — plans/134 W5·W7 · 비면 종전 규칙)
+        reference: 참조 보기(`target: reference`)가 앞 결과 행에서 고르는 칸(`VIEW_REFERENCES`)
     """
 
     id: str
@@ -134,6 +157,8 @@ class ViewSpec:
     args: tuple[ViewArgSpec, ...] = ()
     examples: tuple[str, ...] = ()
     notices: tuple[str, ...] = ()
+    target: str = ""
+    reference: str = ""
 
 
 @dataclass(frozen=True)
@@ -620,6 +645,15 @@ def _parse_view_args(value: Any, view_id: str) -> tuple[ViewArgSpec, ...]:
         if kind == "enum" and not choices:
             raise ValueError(f"보기 {view_id}: enum 조건 {raw['name']}에 choices가 없다")
         low = raw.get("min")
+        default = raw.get("default")
+        if default is not None and (not isinstance(default, (str, int, bool))
+                                    or (kind == "enum" and str(default) not in choices)):
+            raise ValueError(f"보기 {view_id}: 조건 {raw['name']} 기본값 {default!r}이"
+                             " 형식·선택지 밖이다")
+        targeted = tuple(str(c) for c in raw.get("targeted_choices") or ())
+        if targeted and (kind != "enum" or not set(targeted) <= set(choices)):
+            raise ValueError(f"보기 {view_id}: 조건 {raw['name']} targeted_choices는 enum 선택지의"
+                             " 부분집합이어야 한다")
         specs.append(ViewArgSpec(
             name=str(raw["name"]),
             type=kind,
@@ -628,6 +662,9 @@ def _parse_view_args(value: Any, view_id: str) -> tuple[ViewArgSpec, ...]:
             catalog=str(raw["catalog"]) if raw.get("catalog") else None,
             tool_arg=str(raw["tool_arg"]) if raw.get("tool_arg") else None,
             label=str(raw.get("label", "")),
+            required=bool(raw.get("required", False)),
+            default=default,
+            targeted_choices=targeted,
         ))
     return tuple(specs)
 
@@ -659,6 +696,16 @@ def _parse_views(value: Any) -> tuple[ViewSpec, ...]:
         fixed = raw.get("fixed_args") or {}
         if not isinstance(fixed, dict):
             raise ValueError(f"보기 {view_id}: fixed_args는 매핑이어야 한다")
+        target = str(raw.get("target") or "")
+        reference = str(raw.get("reference") or "")
+        if target not in VIEW_TARGETS:
+            raise ValueError(f"보기 {view_id}: target {target!r} — {sorted(VIEW_TARGETS)} 중 하나")
+        if target and raw.get("required_input"):
+            raise ValueError(f"보기 {view_id}: target과 required_input을 함께 쓸 수 없다")
+        if (target == "reference") != bool(reference) or (
+                reference and reference not in VIEW_REFERENCES):
+            raise ValueError(f"보기 {view_id}: target reference에는 reference"
+                             f"({sorted(VIEW_REFERENCES)} 중 하나)가 필요하다")
         views.append(ViewSpec(
             id=view_id,
             label=str(raw.get("label", "")),
@@ -672,6 +719,8 @@ def _parse_views(value: Any) -> tuple[ViewSpec, ...]:
             args=_parse_view_args(raw.get("args"), view_id),
             examples=tuple(str(x) for x in raw.get("examples") or ()),
             notices=_parse_view_notices(raw.get("notices"), view_id),
+            target=target,
+            reference=reference,
         ))
     return tuple(views)
 

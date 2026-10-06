@@ -1,0 +1,231 @@
+# ITAM 질의 벤치 시나리오 — 폐쇄망(운영) 1회차 초안 (plans/135 W8 · G-1 · D-301 ①)
+#
+# ★ **초안 · 사용자 검토 대기**(2026-10-06 인터뷰 G-1 — 「우리가 운영 시나리오 초안을 쓰고 사용자가
+#   검토한다」). 자산관리 포탈 사용자가 칠 법한 말로 썼다. 테이블·컬럼·SQL 용어·사람 이름은 넣지 않는다
+#   (로더 린트 + 실행 시 운영 카탈로그 기준 린트).
+#
+# **1회차 = 관찰**(G-7 답 — 2026-10-06): 운영 108테이블 중 서비스↔서버 연결이 어디 있는지 아직 모른다.
+# 그래서 전부 `observe`다(정답 대조 없음). 관찰 턴에서도 시스템이 조회한 테이블·컬럼(가린 SQL)·행 수·
+# 스키마 맥락이 반출 로그에 남는다 → 반출 뒤 우리가 연결 위치를 찾아 정답 SQL 을 쓰고, 2회차부터
+# `oracle`로 바꿔 자동 대조한다(정답 SQL 은 `testdata/scenarios/oracles/ITAM-1NN.mariadb.sql`).
+#
+# `no_data: false` — 운영에는 데이터가 있을 수 있어 「지어냄」 판정을 하지 않는다(범위 밖 질문만 true).
+# 실행: `python -m scripts.itam_bench --run --env closed` (이 파일·`column_policy.closed.yaml`이 기본값).
+version: 1
+db_id: itam
+
+scenarios:
+  - id: ITAM-101
+    title: "서비스 → 서버리스트 (사용자 예시 원문) · 초안"
+    category: service
+    env: [closed]
+    traps: [service_concept]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리 시스템에서 통합인증 서비스의 서버리스트를 보여줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "서비스와 서버를 어느 테이블·컬럼으로 잇는가 · 결과 건수 — 2회차 정답 SQL 의 재료"
+            no_data: false
+
+  - id: ITAM-102
+    title: "서비스 서버의 담당 부서 · 초안"
+    category: service
+    env: [closed]
+    traps: [service_concept, org_not_person]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "통합인증 서비스 서버들 담당 부서 알려줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "서비스 연결 + 담당 부점(조직) 컬럼을 고르는가 · 사람 컬럼을 고르지 않는가"
+            no_data: false
+
+  - id: ITAM-103
+    title: "서비스 서버 중 지원 종료 임박 · 초안"
+    category: service
+    env: [closed]
+    traps: [service_concept, join_3col, date_text]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리에서 인터넷뱅킹 시스템 서버 중에 6개월 안에 지원 종료되는 서버 알려줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "서비스 연결 + 지원 종료일 테이블 조인(복합 키) · 날짜 문자열 비교"
+            no_data: false
+
+  - id: ITAM-104
+    title: "서비스별 서버 수 · 초안"
+    category: service
+    env: [closed]
+    traps: [service_concept, group_aggregate]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리 시스템에서 서비스별 서버 수 알려줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "서비스 단위를 무엇으로 보는가(코드·이름) · 집계 대상 테이블"
+            no_data: false
+
+  - id: ITAM-105
+    title: "서비스 서버의 유지보수 계약 만료일 · 초안"
+    category: service
+    env: [closed]
+    traps: [service_concept, date_text]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "통합인증 서비스 서버들의 유지보수 계약 만료일 알려줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "서비스 연결 + 유지보수 계약 컬럼"
+            no_data: false
+
+  - id: ITAM-106
+    title: "멀티턴 — 서비스 서버의 지원 종료일 · 초안"
+    category: multiturn
+    env: [closed]
+    traps: [service_concept, succession]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리에서 통합인증 서비스 서버 목록 보여줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "1턴 서비스 서버 목록"
+            no_data: false
+      - send: {query: "그 서버들 지원 종료일도 알려줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "앞 턴 서버를 승계해 지원 종료일을 붙이는가"
+            no_data: false
+
+  - id: ITAM-107
+    title: "등록 서버 수 · 초안"
+    category: inventory
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리 시스템에 등록된 서버 몇 대야?"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "서버 자산의 기준 테이블을 무엇으로 보는가"
+            no_data: false
+
+  - id: ITAM-108
+    title: "이번 분기 유지보수 계약 만료 · 초안"
+    category: maintenance
+    env: [closed]
+    traps: [date_text, quarter_boundary]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "이번 분기에 유지보수 계약이 끝나는 서버 있어?"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "날짜 문자열 비교 · 분기 경계"
+            no_data: false
+
+  - id: ITAM-109
+    title: "6개월 내 지원 종료 · 초안"
+    category: eol
+    env: [closed]
+    traps: [join_3col, or_condition, date_text]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "6개월 안에 지원 종료(EOS)되는 서버 알려줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "지원 종료일 테이블과 3열 복합 키 조인 · 하드웨어/소프트웨어 OR"
+            no_data: false
+
+  - id: ITAM-110
+    title: "노후 5년 이상 · 초안"
+    category: lifecycle
+    env: [closed]
+    traps: [boundary_inclusive]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리에서 도입한 지 5년 이상 된 노후 서버 리스트 보여줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "경과년수·취득일자 중 무엇을 쓰는가 · 경계 포함"
+            no_data: false
+
+  - id: ITAM-111
+    title: "취득금액 상위 3 · 초안"
+    category: amount
+    env: [closed]
+    traps: [order_limit]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리에서 취득금액 제일 큰 서버 3대랑 금액 보여줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "금액 컬럼 · 정렬과 행 제한(금액은 합계·최소·최대만 기록)"
+            no_data: false
+
+  - id: ITAM-112
+    title: "운영체제별 서버 수 · 초안"
+    category: spec
+    env: [closed]
+    traps: [group_aggregate]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리 시스템에서 운영체제별 서버 수 알려줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "운영체제 컬럼 · 그룹 집계"
+            no_data: false
+
+  - id: ITAM-113
+    title: "가상 서버 — 코드값 · 초안"
+    category: code_value
+    env: [closed]
+    traps: [code_value]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리에서 가상 서버로 등록된 서버 목록 보여줘"}
+        expect:
+          db_ids: [itam]
+          observe:
+            what: "여부 코드값을 지어내는가 · 승인 코드값(A4)을 쓰는가"
+            no_data: false
+
+  - id: ITAM-114
+    title: "범위 밖 — 사용률 추이 · 초안"
+    category: out_of_scope
+    env: [closed]
+    traps: [scope_t5]
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "자산관리에서 지난주 CPU 사용률 추이 보여줘"}
+        expect:
+          observe:
+            what: "자산 DB 스냅숏으로 추이를 꾸며내지 않는가(관측 DB로 넘기거나 없음을 말하면 정상)"
+            no_data: true

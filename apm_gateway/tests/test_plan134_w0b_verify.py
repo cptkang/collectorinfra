@@ -1037,6 +1037,10 @@ def test_jennifer_field_vocabulary_is_not_secret_classified():
         GATEWAY_ROOT / "testdata" / "jennifer" / "scripts" / "jennifer_catalog.py",
     ):
         names |= set(re.findall(r'"([A-Za-z_][A-Za-z0-9_]*)"', path.read_text(encoding="utf-8")))
+    # 경로 변수 형식 이름(`token` 등 — 허용목록 선언)은 응답 필드가 아니다(plans/134 W7 사본 동기)
+    from apm_gateway.adapters.jennifer.allowlist import PATH_VAR_FORMATS
+
+    names -= set(PATH_VAR_FORMATS)
     for fx in synthetic_fixtures():
         body = fx["response"].get("body_json")
         stack = [body]

@@ -29,6 +29,10 @@ _SQL_NUM = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?![\w.])")
 # 빈 키(`?=v`)도 값을 가린다.
 _URL_QUERY = re.compile(r"(^|[?&;])([^=&#;?\s]*)=([^&#\s]*)")
 _SQL_HINT = re.compile(r"\b(select|insert|update|delete|merge|where|values|from)\b", re.IGNORECASE)
+# PG 달러 따옴표 여는 표지(`$$`·`$tag$`) — 식별자 안의 `$`(`V$SESSION`·`a$b$c`)는 아니다
+_DOLLAR_OPEN = re.compile(r"(?<![\w$])\$(?:[A-Za-z_][A-Za-z0-9_]{0,62})?\$")
+# HTTP query의 값 없는 맨 항목 중 남기는 꼴(플래그 이름)
+_QUERY_FLAG = re.compile(r"[A-Za-z_][\w.\-]{0,63}", re.ASCII)
 
 TEXT_MAX = 300
 # 길이 상한(`limit`)이 있으면 그 몇 배까지만 처리한다 — 처리하지 않은 원문은 출력에 나오지 않는다
@@ -52,13 +56,16 @@ def mask_url(text: str) -> str:
 def mask_query(query: str) -> str:
     """HTTP query 문자열 전용 — `?`를 떼고 `&`·`;`로 나눈 쌍의 값을 **첫 값까지** 모두 가린다.
 
-    값 없는 항목(`flag`)은 그대로 둔다. 키는 남긴다.
+    값 없는 항목은 플래그 이름 꼴(`flag` — 영문자로 시작하는 64자 이하 식별자)만 남기고 그 밖
+    (`010-1234-5678`·한글 이름)은 `<v>`로 바꾼다(plans/134 W7 AUDIT-8). 키는 남긴다.
     """
     text = str(query or "")
     lead = "?" if text.startswith("?") else ""
     parts = re.split(r"([&;])", text[len(lead) :])
     out = [
-        part if part in ("&", ";") or "=" not in part else part.split("=", 1)[0] + "=<v>"
+        part
+        if part in ("&", ";", "") or ("=" not in part and _QUERY_FLAG.fullmatch(part))
+        else (part.split("=", 1)[0] + "=<v>" if "=" in part else "<v>")
         for part in parts
     ]
     return lead + "".join(out)
@@ -72,9 +79,49 @@ def mask_identifier(value: object) -> str:
     return "***" if len(text) <= 2 else text[0] + "***"
 
 
+def mask_pii(text: str) -> str:
+    """설정 값 전용 개인정보 가림 — 이메일·주민번호·휴대폰만(plans/134 W7 · G-11 미결 동안).
+
+    환경변수·JVM 시스템 속성·데이터 서버 설정 값은 `k=v`·숫자·SQL 단어가 섞인 설정 문자열이라
+    `mask_text`(SQL 리터럴·URL 쿼리 값까지 가림)를 쓰면 `-Dport=8080` 같은 일반 설정이 훼손된다.
+    서버 IP는 인프라 정보라 가리지 않는다(인스턴스 목록 `ip_address`와 같은 처분).
+    """
+    out = _EMAIL.sub("<email>", str(text or ""))
+    out = _RRN.sub("<rrn>", out)
+    return _PHONE.sub("<phone>", out)
+
+
+def _mask_dollar_quotes(text: str) -> str:
+    """PG 달러 따옴표 리터럴(`$$…$$`·`$tag$…$tag$`)을 `?`로 — 닫는 표지가 없으면 끝까지 가린다.
+    여는 표지를 찾은 자리부터만 닫는 표지를 찾아 선형이다."""
+    out: list[str] = []
+    pos = 0
+    while True:
+        opener = _DOLLAR_OPEN.search(text, pos)
+        if opener is None:
+            break
+        close = text.find(opener.group(0), opener.end())
+        out.append(text[pos : opener.start()])
+        out.append("?")
+        if close < 0:
+            pos = len(text)
+            break
+        pos = close + len(opener.group(0))
+    if not out:
+        return text
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def mask_sql(text: str) -> str:
-    """SQL 문자열·숫자 리터럴을 `?`로 바꾼다(바인드 값 노출 방지)."""
-    return _SQL_NUM.sub("?", _SQL_STR.sub("?", str(text or "")))
+    """SQL 리터럴을 `?`로 바꾼다(바인드 값 노출 방지) — PG 달러 따옴표 · 작은따옴표 문자열 · 숫자.
+    큰따옴표는 DB2·PG 식별자(`"SCHEMA"."TABLE"`)와 겹쳐 가리지 않는 대신, 리터럴 밖에 남은
+    이메일·주민번호·휴대폰을 `mask_pii`로 한 번 더 가린다(MySQL 큰따옴표 문자열 · plans/134 W7
+    AUDIT-8)."""
+    out = str(text or "")
+    if "$" in out:
+        out = _mask_dollar_quotes(out)
+    return mask_pii(_SQL_NUM.sub("?", _SQL_STR.sub("?", out)))
 
 
 def mask_text(text: str, limit: int | None = TEXT_MAX) -> str:

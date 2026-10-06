@@ -565,12 +565,13 @@ def test_status_keys_are_exact_per_kind_and_v2_query_keys_are_exact():
 
 
 def test_template_match_with_trailing_newline_is_preexisting_and_unreachable():
-    """기존 템플릿 정규식(`^…$`)은 끝 줄바꿈을 받는다(54e1597 부터 · W2 신규 아님).
+    """기존 템플릿 정규식(`^…$`)은 끝 줄바꿈을 받았다(54e1597 부터 · W2 신규 아님).
 
     경로는 코드 템플릿 + 형식 검사한 경로 변수로만 만들어져 외부 입력이 줄바꿈을 넣을 수 없다 —
-    기록용(결함 아님). `build_path`는 줄바꿈 값을 거부한다.
+    기록용(결함 아님). `build_path`는 줄바꿈 값을 거부한다. 2026-10-06 `fullmatch`로 바꿔 끝
+    줄바꿈도 거부한다(plans/134 W7 AUDIT-11).
     """
-    assert match_template("/api/domain\n") == "/api/domain"
+    assert match_template("/api/domain\n") is None
     with pytest.raises(NotAllowedError):
         build_path("/api-v2/deploy/{domainId}", {"domainId": "1000\n"})
 

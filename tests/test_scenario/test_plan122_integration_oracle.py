@@ -79,7 +79,9 @@ def test_loader_accepts_canon_and_fixture_oracle(scenario_dir: Path, profiles_pa
     ("{db_ids: [polestar_cm_gp], oracle: {id: B-01, compare: count, snapshots: once}}",
      "정의 밖 키 ['snapshots']"),
     ("{oracle: {id: B-01, compare: count}}", "대상 DB 가 없다"),
-    ("{db_ids: [itam], oracle: {id: B-01, compare: count}}", "오라클 대상 엔진이 아니다"),
+    ("{db_ids: [no_such_db], oracle: {id: B-01, compare: count}}", "오라클 대상 엔진이 아니다"),
+    # mariadb(itam)는 plans/135 부터 오라클 대상 엔진이다 — 정본이 없으면 파일 부재로 거부한다.
+    ("{db_ids: [itam], oracle: {id: B-01, compare: count}}", "B-01.mariadb.sql"),
     ("{db_ids: [polestar_cm_gp], oracle: {id: B-01, compare: median}}", "compare 는"),
     ("{oracle: {}}", "oracle 은 비지 않은 매핑"),
 ])

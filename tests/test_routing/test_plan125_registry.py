@@ -17,7 +17,9 @@ from src.routing.registry import get_registry, parse_registry
 
 WAS_AREAS = ("was_instance", "was_performance", "was_runtime", "was_activity", "apm_event",
              # plans/134 W2 — 통계·지표 목록·소스 변경 감지(의도된 갱신)
-             "was_statistics", "apm_metric_catalog", "was_change_detection")
+             "was_statistics", "apm_metric_catalog", "was_change_detection",
+             # plans/134 W5·W7 — 개별 트랜잭션 상세 · 설정·관리 조회(의도된 갱신)
+             "was_transaction", "apm_management")
 
 
 def test_apm_is_a_non_db_system_without_zone_groups() -> None:
@@ -47,7 +49,11 @@ def test_view_table_is_registry_data() -> None:
                            "apm.active", "apm.slow_tx", "apm.events",
                            # plans/134 W2(SPEC §6.2 — 의도된 갱신)
                            "apm.app_stats", "apm.sql_stats", "apm.external_stats",
-                           "apm.metrics", "apm.changes"]
+                           "apm.metrics", "apm.changes",
+                           # plans/134 W5·W6·W7(계약 §4.1 — 의도된 갱신)
+                           "apm.profile", "apm.trace", "apm.change_impact", "apm.event_rules",
+                           "apm.process", "apm.jennifer_server", "apm.loaded_classes",
+                           "apm.environment", "apm.users", "apm.active_detail"]
     assert views["apm.instances"].first_hop and not views["apm.instances"].required_input
     assert views["apm.app_health"].required_input == "hostname"
     # plans/134 M-2 — 창은 상한이 아니라 의미(current·range·hourly·none) · window_max_minutes 폐지

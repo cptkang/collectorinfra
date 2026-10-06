@@ -89,6 +89,8 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov",
+    # D-303 병렬 회귀 — 워커 수는 scripts/regress.py가 인자로 건다(addopts에 -n을 넣지 않는다)
+    "pytest-xdist>=3.5",
     "ruff>=0.4.0",
     "mypy>=1.10",
 ]
@@ -129,3 +131,8 @@ warn_return_any = true
 # (sre_agent/mcp_server는 자체 venv라 각자 디렉토리에서 별도 실행).
 testpaths = ["tests", "noise_gate/tests"]
 asyncio_mode = "auto"
+# D-303 — 두 testpaths 모두에 걸리도록 conftest가 아니라 여기서 등록한다
+markers = [
+    "serial: 병렬(xdist)로 못 도는 테스트 — scripts/regress.py가 따로 직렬 실행한다",
+    "repo_guard: 소스 트리 전체를 훑는 저장소 전역 가드 — 모듈 단위 회귀에 항상 포함",
+]

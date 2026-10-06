@@ -22,7 +22,9 @@
 3. **지침**(`APM_GUIDANCE_ENABLED`일 때만 — 끄면 조립 문자열 바이트 동일)
    - 사건창 앵커 도구에 `apm_app_health`·`apm_runtime_health`·`apm_events`·`apm_slow_transactions` 추가.
    - `APM_FOCUS_NOTE`(조사 순서): ① `apm_instance_map` → ② `apm_events` → ③ `apm_app_health`·`apm_runtime_health` → ④ 증상별(큐잉 `apm_active_services` · 지연 `apm_slow_transactions` → `apm_transaction_profile`(앞 도구가 준 `profile_ref`의 **`source_id`**·`domain_id`·`txid`·`time_ms`를 그대로 — J8: 소스가 둘 이상이면 게이트웨이가 `source_id`를 요구한다) · 풀 `apm_resource_pool`) → ⑤ 인프라 대조(`polestar_metric_trend`·`prom_metric_range`) · 반증 도구 1회 · `apm_*`에 `investigation_id` 인자를 넣는다.
-   - 실시간 전용 노트: `apm_active_services`·`apm_resource_pool`은 현재값 — 과거 사건의 증거로 서술하지 않는다(`OPENMETRICS_NOTE` 전례).
+   - **[134 W7 · 2026-10-06]** 사건창 앵커에 구간 도구 `apm_status_stats`·`apm_metrics`(series만 창이 의미 있음 — catalog는 인자를 무시할 뿐 오류 아님)·`apm_transaction_trace`를 더해 7종. **변경 탐색 2종(`apm_source_changes`·`apm_change_impact`)은 앵커에 넣지 않는다** — 앵커 lookback(기본 120분)을 넘기면 게이트웨이 탐색 창(기준시각 끝 24시간 · `CHANGES_DEFAULT_MINUTES`)이 줄어 사건보다 몇 시간 앞선 배포를 놓친다. 대신 ⑥에 「reference_time=사건 기준시각만 넘긴다 — lookback을 비우면 탐색 24시간」을 적는다. `apm_period_compare`는 절대 구간 4개를 받아 앵커 대상이 아니다.
+   - **[134 W7]** 조사 순서 ⑥(근거가 더 필요할 때 맞는 도구만): GUID 연계 `apm_transaction_trace`(앞 결과의 guid) · 변경 감지·전후 `apm_source_changes`·`apm_change_impact` · 평소 대비 `apm_period_compare`(current_*=사건 구간 · baseline_*=평소 구간 · ISO 절대 시각) · 실행 중 요청 상세 `apm_active_detail`(`apm_active_services`의 `active_ref` 그대로) · 설정·룰·색상 경계·PID→인스턴스·데이터 서버 `apm_config`(kind) · JVM 옵션·환경변수 `apm_environment`(비밀 값은 가려져 온다) — `apm_config`·`apm_environment`는 **조회 시점의 설정**(사건 뒤에 바뀌었을 수 있다 · 변경 감지로 확인). `apm_users`는 선조회하지 않는다(계정·권한 문제가 의심될 때만). `apm_transaction_profile`은 조사당 프로파일 호출 상한(기본 5회 — 넘으면 `rate_limited`) 안에서 가장 의심되는 거래부터 고른다(D-296 ④ 예산 유지 — 종전 노트에 숫자 문구가 없어 신설). 켜짐 렌더는 +3줄(대표 조합 2,595자 → 3,310자).
+   - 실시간 전용 노트: `apm_active_services`·`apm_resource_pool`·`apm_active_detail`(134 W7)은 현재값 — 과거 사건의 증거로 서술하지 않는다(`OPENMETRICS_NOTE` 전례).
    - **폴백 노트**: `apm_*`가 없거나 오류(`source_unavailable`·`instance_unresolved`·`not_configured`)면 폴스타 MCP 도구(프로세스·OS 구성·메트릭 추세)로 대체하고 브리핑 `[한계]`에 사유를 적는다(D-233 — 셸 없음).
    - kind `"apm"`(또는 트리거 `meta.hints.solution == "apm"`)이면 APM 플레이북 1개만 주입한다(OS 플레이북 대신).
    - **정체 가드(P15)**: 같은 도구·같은 인자 호출이 3회 이상이면 조사를 "미결"로 표기하고 `[한계]`에 사유(가능한 범위 — 사후 판정 허용).
@@ -40,4 +42,5 @@
 - 브리핑에 APM 증거가 인용되면 "애플리케이션(APM)" 라벨로 판정된다 · APM 미가용이면 폴백 사유가 지침·`[한계]`에 나온다.
 - 정체 가드 — 같은 도구·인자 3회 → "미결" 표기 테스트.
 - **[J8]** 지침 문구에 `profile_ref`의 `source_id` · 힌트 줄에 `source_id=…`(없으면 종전 줄) · `APM_GUIDANCE_ENABLED` off 바이트 불변(`sre_agent/tests/test_plan87_j8_source_id.py`).
+- **[134 W7]** 앵커 튜플(기존 4종이 앞 · 새 3종) · 변경 탐색 2종 앵커 제외와 「reference_time만」 문구 · ⑥ 도구 문구 · 계정 선조회 금지 · 예산 문구 · 켜짐 렌더 sha256 고정 · 꺼짐 해시 `da3ea4f`와 동일(`sre_agent/tests/test_plan134_w7_guidance.py`).
 - `cd sre_agent && .venv/bin/python -m pytest tests -q` 신규 실패 0(기준선 대조).

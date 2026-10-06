@@ -179,11 +179,15 @@ class ServerHandle:
         port: int,
         log_path: Path,
         mock: bool = False,
+        entry_module: str = "scripts.scenario._serve",
     ) -> None:
         self.profile = profile
         self.port = port
         self.log_path = log_path
         self.mock = mock
+        #: 실 서버 진입 모듈 — 기본은 하네스 진입점. ITAM 질의 벤치(plans/135)는 측정 수신기를
+        #: 설치하는 자기 진입점(`scripts.itam_bench._serve`)을 넘긴다. 모의 실행이면 무시한다.
+        self.entry_module = entry_module
         self._env = self._build_env(env_overrides, port)
         self._proc: Optional[subprocess.Popen] = None
         self._ladder: Optional[tuple[str, str]] = None
@@ -231,7 +235,7 @@ class ServerHandle:
                   f"{self.log_path.name} 를 덮어쓴다", flush=True)
 
     def start(self) -> None:
-        module = "scripts.scenario.mockserver" if self.mock else "scripts.scenario._serve"
+        module = "scripts.scenario.mockserver" if self.mock else self.entry_module
         self._health = None   # 기동마다 새로 판정한다
         self._keep_previous_log()
         creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP if IS_WINDOWS else 0

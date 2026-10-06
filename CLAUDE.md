@@ -168,6 +168,11 @@ ruff check src/ tests/ && mypy src/
 # 평가 하네스 (실 파이프라인 구동 — 과금 경로다. 먼저 --dry-run/--mock으로 확인할 것)
 python scripts/eval_text2sql.py --dry-run
 python scripts/eval_routing.py --help
+
+# ITAM 질의 벤치 (plans/135 · D-301 — 사용자 프롬프트 시나리오 · 로그 위생·누출 관문 · LLM 0인 두 모드부터)
+python -m scripts.itam_bench --dry-run          # 시나리오·프롬프트 린트·실행 계획만
+python -m scripts.itam_bench --check-oracle     # 정답 SQL만 읽기 전용 실행 (ITAM 샌드박스 3307 + MCP 9099 필요)
+python -m scripts.itam_bench --run              # 벤치 서버로 사용자 경로 실행 — 두 평면 비과금일 때만(과금 평면은 거부)
 ```
 
 **실 LLM 테스트는 로컬 MLX로 돌린다(D-240).** `tests/conftest.py`가 전역 네트워크 가드(공인 IP 차단)를
@@ -273,6 +278,29 @@ RUN_LOCAL_LLM=1 pytest tests/test_pipeline.py -m live_llm   # 로컬 MLX 실 LLM
 `overfit_check`의 기준선은 `scripts/overfit_baseline.json`이다 — **전면 재생성 금지**,
 자기 델타만 소거한다. 스캔 대상에 `noise_gate/domain`·`mcp_server/mcp_server`가 포함되므로
 **독스트링의 스키마 리터럴도 게이트에 걸린다**(D-179 실사례).
+
+## 회귀 테스트 정책 (D-303)
+
+구현·교정 뒤 회귀는 **바꾼 모듈 단위**로 돌린다. **전체 회귀는 사용자가 요청할 때만** 돌린다. 근거·실측·도구 계획은 `plans/136`에 있다.
+
+1. **선택** — 다음을 합쳐 돌린다.
+   - 바꾼 테스트 파일
+   - 바꾼 Python 모듈을 **직접 import**하는 테스트. 함수 안의 import와 `patch("src.x.y")` 같은 문자열 모듈 경로도 포함한다
+   - 바꾼 비Python 파일의 경로·파일명을 적은 테스트
+   - 바꾼 독립 패키지(apm_gateway·mcp_server·sre_agent)의 테스트 전체
+
+   공개 함수의 시그니처·반환 형태를 바꿨으면 그 모듈을 import하는 모듈의 테스트까지 넓힌다. 결과는 모듈별로 보고한다.
+2. **전체는 요청 시만** — 계획 완료·Wave 종료·커밋 전에도 자동으로 돌리지 않는다. 필요하다고 판단하면 이유와 함께 제안만 한다.
+3. **병렬** — 독립 패키지는 별도 프로세스로 동시에 돌린다. 본체·apm_gateway는 `pytest-xdist` 도입(`plans/136` W1) 뒤 워커 합계 최대 8로 돌린다. 병렬로 못 도는 테스트만 `serial` 마커로 직렬 분리하되, 원인(전역 상태 미원복 등) 교정이 먼저다.
+4. **정적 게이트는 매번** — `arch_check --ci`·`overfit_check --ci`(합계 약 5초). ruff·mypy는 바꾼 파일만 검사하고, 이번 diff 줄에 걸린 위반만 신규로 본다.
+5. **실패분만 재대조** — 실패 ID만 세션 시작 커밋 worktree에서 다시 돌린다(`.env`·`.encenv` 심링크 · `PYTHONPATH`=사본). 결과는 「원래 실패 / 이번 변경 탓 / 새 테스트」로 가른다. 교정 라운드에서는 실패했던 테스트와 그 모듈 선택분만 다시 돌린다.
+6. **보고에 범위를 적는다** — 예: *"모듈 단위 회귀 — 대상 모듈 3 · 412건 통과 · 정적 게이트 통과 · 전체 미실행"*. 모듈 단위 결과를 전체 무회귀처럼 쓰지 않는다.
+
+도구(`scripts/regress.py` — `plans/136` W2)가 나오기 전에는 손으로 고른다. 바꾼 모듈마다 아래 명령으로 찾고, 찾은 파일과 바꾼 테스트를 `pytest` 한 번으로 돌린다.
+
+```bash
+grep -rlE "src\.<패키지>\.<모듈>\b|from src\.<패키지> import [^#]*\b<모듈>\b" tests noise_gate/tests
+```
 
 ## Multi-Agent Build System
 
@@ -380,6 +408,7 @@ Claude Code 스킬: `/arch-check` 로 호출 가능 (`.claude/skills/arch-check.
   - 실행 전 두 평면이 모두 `mlx`로 해석되는지 설정 해석 출력(`python -m scripts.bench --show-env` · `--preflight`)으로 확인한다. 하나라도 과금 평면(gemini 등)이면 실행하지 않는다(`.encenv`에 Gemini 키가 상존한다)
   - 진입점: pytest `live_llm`은 `RUN_LOCAL_LLM=1`(외부 차단 가드 유지 — 과금 호출은 구조적으로 나가지 않고 시도하면 차단 실패로 드러난다) · 시나리오 `--run`·벤치 `--mode run`은 두 평면이 비과금이면 이미 승인·`RUN_E2E` 없이 돈다(D-216 · D-222). `scripts/eval_routing.py`도 두 평면이 `mlx` 루프백이면 `RUN_E2E` 없이 돈다(`local_mlx_mode()` · D-240 부기) — 하나라도 과금 평면이면 종전대로 `RUN_E2E=1` 과 건별 승인이 필요하다
   - MLX 서버는 캐시 모델로만 기동(다운로드 금지)·127.0.0.1 바인딩·자기가 띄운 PID만 종료한다. MLX 결과는 로직 확인용이다 — 성능(지연) 결론은 내부망 결과로만 낸다
+  - **MLX 검증은 최소로 계획한다**(2026-10-06 사용자 — *"MLX는 속도가 느리다"*). 기본 검증은 가짜 LLM·목 API·실프로세스 종단이고, MLX는 그걸로 증명 못 하는 것(바뀐 프롬프트·선택 경로가 실 모델에서 도는지)만 대표 문항 소수로 1회 스모크한다. 계획서에 MLX 문항 수·예상 소요를 적고, Wave마다 골드 전수 재측정·반복 실행을 넣지 않는다. 선택 정확도·지연은 내부망 FabriX 측정 잔여로 남긴다
 - Gemini 등 **과금이 발생하는 외부 API는 사용자의 명시 승인 없이 호출 금지** — 실행 건마다 승인을 받는다(포괄 승인 없음). 가드를 끄는 `RUN_E2E=1`은 그 승인 뒤에만 설정한다
 - 실 호출 경로는 전부 옵트인(`RUN_LOCAL_LLM=1` · `RUN_E2E=1`) 뒤에 두고, **키 존재만으로 실행되는 게이팅 금지**(키는 `.encenv`에 상존한다는 전제) — 수동 스크립트도 코드 게이트로 강제
 

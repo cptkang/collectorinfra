@@ -8,6 +8,7 @@
 > **범위 결정(D-296 · 2026-10-02)**: 제니퍼 Open API의 **읽기(GET) 경로는 민감·관리 조회까지 전부 허용**하고 **쓰기·제어는 계속 막는다**. 비밀번호·비밀 환경변수 값은 어떤 경로로도 내보내지 않는다. **조회 범위의 자체 상한(기간·대상·건수)은 없앤다**. 이 결정은 계획 단계이고 **코드는 아직 그대로**다 — 아래 「지금」 칸은 현재 동작이다.
 > **활용 계약(D-299 · 134 v1.2)**: 아래 43사례는 최소 회귀 집합이다. 전체 읽기 API·인자·필드, 복수 대상/보기/소스, 기간 비교·변경 전후·GUID 연계 분석까지 확장한다. 채팅·조사·알람 각각의 실제 경로로 검증하며 F-13 연동 전 전체 완료로 선언하지 않는다. 현재 상태 칸은 이 계획 개정으로 바뀌지 않는다.
 > **상태 칸은 시점 값이다.** `plans/134`의 Wave가 랜딩할 때마다 같은 작업에서 이 문서의 상태 칸을 고친다(`plans/134` W9).
+> **2026-10-06 갱신(W5·W6 독립분·W7 구현 · D-302)**: GUID 추적·앞 결과 행 참조(F-06·F-07·F-15) · 변경 전후(F-09) · 관리·민감 조회(O-11~O-17)를 올렸다. 근거 = 합성 픽스처 실프로세스 종단 + 로컬 MLX 9B 47문항 선택 측정(보기 47/47 · 무관한 기본 보기 대체 0). 수정 뒤 선택 정확도 재측정은 내부망 FabriX 몫이다(D-240 부기 — MLX 최소화).
 > **2026-10-02 갱신(W0-B·W1·W2 구현 · D-300)**: 상태 칸은 **스펙 기반 합성 픽스처로 게이트웨이 실프로세스 ↔ 본체 처리기 종단 검증**과 **로컬 MLX 9B 보기 선택 실측(29문항)**으로 확인한 것만 올렸다. 실 제니퍼 응답은 미검증(W10)이고, 운영 사다리가 아직 1단이라 채팅 경로는 2단 전환 뒤 효력이 난다(D-251).
 
 ---
@@ -15,9 +16,9 @@
 ## 0. 30초 요약
 
 - 게이트웨이(`apm_gateway/`)는 제니퍼 Open API 중 **GET 16경로**를 부른다(허용목록 — `apm_gateway/apm_gateway/adapters/jennifer/allowlist.py`). **W2로 16경로 모두 부르는 도구가 생겼다** — 데이터 도구 11종 + 작업 도구 3종(종전 8종 상한 폐지 — D-299 ③).
-  D-296으로 나머지 읽기 경로(서비스·업무·GUID·민감·관리 조회)도 허용하기로 정했다(W3~W7 — 구현 전).
+  D-296으로 나머지 읽기 경로도 허용하기로 정했다 — **W5·W7(2026-10-06)로 GUID·관리·민감 조회 20경로를 더해 허용목록 36템플릿 · 데이터 도구 18종**이다. 서비스·업무 단위(W3·W4)는 `plans/130` 뒤.
 - 채팅은 2단 처리기 `apm_query`가 **보기 12종**(종전 7종 + W2 `apm.app_stats` · `apm.sql_stats` · `apm.external_stats` · `apm.metrics` · `apm.changes`)과 조건(`view_args` — 개수·전체·레벨·오류 유형·정렬·지표 이름·간격)으로 조회한다
-  (`config/db_registry.yaml` `solutions[apm].views`). 트랜잭션 프로파일(`apm_transaction_profile`)은 채팅 보기가 없어 **장애 조사(`sre_agent`)에서만** 쓴다.
+  (`config/db_registry.yaml` `solutions[apm].views`). **W5·W6·W7(2026-10-06)로 보기 22종** — 앞 결과 행을 번호로 골라 잇는 `apm.profile`·`apm.trace`·`apm.active_detail` · 변경 전후 `apm.change_impact` · 설정·관리 `apm.event_rules`·`apm.process`·`apm.jennifer_server`·`apm.loaded_classes`·`apm.environment`·`apm.users`.
 - **(W1로 교정)** 채팅은 봉투의 집계(`summary` · `hourly` · `errors_by_type`)와 WAS 판정(`was_signals`)을 (보기, 대상)별로 옮겨 답 끝 **「판정·집계」 블록**으로 그대로 싣는다. 보기 창 상한이 없어져 기간을 말하면 추세·시 단위 통계가 붙는다.
 - **(W0-B)** 오래 걸리는 조회는 **작업으로 접수**하고(작업 카드에서 진행·취소·결과 보기·전체 CSV), 큰 결과는 화면 앞 500행 + 전체 결과 파일이다.
 - 채팅 조회는 **사다리 2단(기준 경로)**에서만 된다. 1단(`deep_agent`)은 고정 처리기 목록만 도구로 쓰고, 3단은 계획 루프(`TIER3_PLAN_LOOP_ENABLED` · 기본 off)일 때만 같은 처리기를 부른다.
@@ -75,13 +76,13 @@
 | O-08 | 「web01 외부 호출 중 느린 곳」 | `/api/status/external_call`(시 단위 · 같은 필드) | `apm_status_stats`(kind=external_call) · `apm.external_stats` | ✅ | 외부 호출별 시 단위 통계(W2) · URL 값 마스킹 · 합성 픽스처 종단·로컬 9B 선택 정답(W2 검증)(보기) |
 | O-09 | 「web01 최근 하루 배포(소스 변경) 있었나」 | `/api-v2/deploy/{domainId}`(`collectTime`·`instanceId` · 25시간 이하 · 5.6.0.5+) | `apm_source_changes` · `apm.changes` | ✅ | 변경 감지 시각(25시간 조각 · `change_detected_at` — W2) · 「배포 확정 아님」 고지 · 변경 전후 분석은 **W6** · 합성 픽스처 종단·로컬 9B 선택 정답(W2 검증) |
 | O-10 | 「제니퍼에서 볼 수 있는 지표 목록」 | `/api/metrics`(domain 41 · instance 60 · business 29 · application · sql · externalCall — 로컬 5.7.0.1 녹화본) | `apm_metrics`(mode=catalog) · `apm.metrics` | ✅ | 전 지표 군 목록(소스별 · 6군 — 로컬 녹화본 169개 · W2) · 대상 없이 조회 · 합성 픽스처 종단·로컬 9B 선택 정답(W2 검증) |
-| O-11 | 「제니퍼 이벤트 룰·임계값이 어떻게 설정돼 있나」 · 「힙 경고 기준이 몇 %야?」 | `/api-v2/manage/rule/event/error/{d}` · `…/metric/{d}/{대상}` · `…/compare/{d}/{대상}`(`errorType`·`metricId`·`level`·`applied`·`expression`·`thresholdErrorCount`·`checkTimeRange`) | — | ➕ | 조회만 — 룰 **변경**은 X-03 · `autoScriptCommand`(서버 스크립트 경로)는 자격증명 제거 규칙을 거친다 → **W7** |
-| O-12 | 「액티브 서비스 느림(빨간색) 기준이 몇 초야?」 | `/api-v2/manage/rule/active-service-color-range-boundary`(경과 시간 경계 4색) | — | ➕ | → **W7** |
-| O-13 | 「web01 WAS 환경변수·JVM 시스템 속성」 | `/api-v2/environment-variable/{d}`(`SYSTEM`·`JAVA`) | — | ➕ | **비밀번호·토큰 같은 값은 가린다**(D-296 ③) · 누가 볼 수 있는지는 `plans/134` G-11 → **W7** |
-| O-14 | 「web01에 로드된 클래스 중 OOO 찾아줘」 | `/api-v2/loaded-class/{d}/{i}?search=`(`className`·`superClassName`·`interfaceClassNames`·`classLoaderName`) | — | ➕ | 로드된 클래스가 6만 개 이하일 때만 응답(제니퍼 제약) → **W7** |
-| O-15 | 「web01의 프로세스 1234는 어느 WAS 인스턴스야?」 | `/api-v2/manage/instance?processId=&hostname=`(`instanceId` → `hostname`) | — | ➕ | `processId` 필수 · Java 에이전트 5.6.0.8+ · 호스트 + PID 정합(`plans/125` A-6 ③) → **W7** |
-| O-16 | 「제니퍼 데이터 서버 자원·도메인 배치·저장 경로」 | `/api-v2/manage/data-server/domains` · `…/resource`(CPU·메모리·디스크) · `…/system-property-config` · `/api-v2/manage/db/path/{d}` | — | ➕ | 시스템 속성 값은 자격증명 제거 규칙을 거친다 → **W7** |
-| O-17 | 「제니퍼 사용자 목록」 · 「OOO 계정 정보」 | `/api/auth/userlist`(`id`·`name`·`email`·`phoneNumber`) · `/restapi/users` · `/restapi/user/{id}`(`id`·`name`·`group`·`allowIp`) | — | ➕ | **비밀번호 필드는 항상 버린다** · 이메일·휴대폰 표시·권한은 `plans/134` G-11 → **W7** |
+| O-11 | 「제니퍼 이벤트 룰·임계값이 어떻게 설정돼 있나」 · 「힙 경고 기준이 몇 %야?」 | `/api-v2/manage/rule/event/error/{d}` · `…/metric/{d}/{대상}` · `…/compare/{d}/{대상}`(`errorType`·`metricId`·`level`·`applied`·`expression`·`thresholdErrorCount`·`checkTimeRange`) | `apm_config(kind=event_rules)` · `apm.event_rules` | ◐ | 조회됨(W7 · 2026-10-06) — error·metric·compare 룰 · `compare` 먼저/404면 `comparing` · 오류 유형 `applied`·인스턴스 개별 설정 · `autoScriptCommand`는 실행 파일만 남기고 인자 가림. **로컬 9B가 「인스턴스 대상 지표 룰」의 `rule_type`·「OOM 룰 적용 여부」의 `error_type`을 빠뜨렸다**(결과가 넓어지는 쪽 · 내부망 재측정 잔여) · 실응답 W10 |
+| O-12 | 「액티브 서비스 느림(빨간색) 기준이 몇 초야?」 | `/api-v2/manage/rule/active-service-color-range-boundary`(경과 시간 경계 4색) | `apm_config(kind=color_boundary)` · `apm.event_rules`(kind=color_boundary) | ✅ | W7 — 경계 4색 행 · 합성 픽스처 실프로세스 종단 · 로컬 9B 선택 정답 · 경계값 단위 미확인(W10) |
+| O-13 | 「web01 WAS 환경변수·JVM 시스템 속성」 | `/api-v2/environment-variable/{d}`(`SYSTEM`·`JAVA`) | `apm_environment` · `apm.environment` | ✅ | W7 — 키를 줄이지 않고 비밀 값만 `[가림]` · 값의 이메일·주민번호·휴대폰 가림 · `scope`·`key` 조건 · 로컬 9B 선택 정답(`scope=SYSTEM`을 덧붙이는 경향) · 원값 표시는 G-11 |
+| O-14 | 「web01에 로드된 클래스 중 OOO 찾아줘」 | `/api-v2/loaded-class/{d}/{i}?search=`(`className`·`superClassName`·`interfaceClassNames`·`classLoaderName`) | `apm_config(kind=loaded_classes)` · `apm.loaded_classes` | ✅ | W7 — `search` 전달 · 6만 개 초과 거부 사유 고지 · 로컬 9B 선택 정답 |
+| O-15 | 「web01의 프로세스 1234는 어느 WAS 인스턴스야?」 | `/api-v2/manage/instance?processId=&hostname=`(`instanceId` → `hostname`) | `apm_config(kind=process_instance)` · `apm.process` | ◐ | W7 — `process_id` 필수(없으면 되묻기) · 버전 조건(서버 5.6.0.21+ · Java 5.6.0.8+) 고지. 로컬 9B에서 **PID 없는 질문이 보기 예문 값으로 채워지던 결함**(선택 재시도 합의)을 고쳤으나 수정 뒤 MLX 재측정은 하지 않았다(내부망 잔여) |
+| O-16 | 「제니퍼 데이터 서버 자원·도메인 배치·저장 경로」 | `/api-v2/manage/data-server/domains` · `…/resource`(CPU·메모리·디스크) · `…/system-property-config` · `/api-v2/manage/db/path/{d}` | `apm_config(kind=data_server·db_path·rdb_export)` · `apm.jennifer_server` | ✅ | W7 — 데이터 서버 도메인·자원·시스템 속성(비밀 값 가림 · 설정 값 개인정보 가림) · DB 경로 · 수동 RDB Export 상태 · 로컬 9B 선택 정답 · 메모리·디스크 칸 실재 미확인(W10) |
+| O-17 | 「제니퍼 사용자 목록」 · 「OOO 계정 정보」 | `/api/auth/userlist`(`id`·`name`·`email`·`phoneNumber`) · `/restapi/users` · `/restapi/user/{id}`(`id`·`name`·`group`·`allowIp`) | `apm_users` · `apm.users` | ✅ | W7 — 사용자 목록 + 계정 목록 · 계정 1건(`user_id`) · **비밀번호는 키째 제거** · ID·이름 앞 1자 · 메일 `@` 앞 가림 · 전화 `<phone>` · 허용 IP 가림 · 계정 ID 원값은 로그·감사·사유에 없음 · 원값 표시는 G-11 |
 
 ## 4. 장애
 
@@ -92,16 +93,16 @@
 | F-03 | 「web01 오늘 어떤 예외가 많았어」 | `/api/dbsearch/error`(`errorType`·`message`) | `apm_events`의 `errors_by_type`(유형별 상위 10) | ◐ | 기능은 됨 — 오류 유형별 건수 전 유형이 「판정·집계」 블록에(W1). **로컬 9B가 `level=fatal`을 끼워 범위를 좁혔다**(W2 실측) — 운영 모델 측정 필요 |
 | F-04 | 「web01 OutOfMemory 오류만」 | `/api/dbsearch/error`(`error_type` — 대문자) | `apm_events`(`error_type` · `record=error`) | ✅ | `error_type` 전달(W1 — 정규화 이름 먼저, 0건이면 `ERROR_`·`WARNING_` 표기 재조회 + 맞은 표기 고지) · 오류 기록 행(`record=error`) · 합성 픽스처 종단·로컬 9B 선택 정답(W2 검증) |
 | F-05 | 「web01 지금 왜 느려?」 · 「느린 트랜잭션 상위 10」 | `/api/transaction/time`(`responseTime`·`cpuTime`·`sqlTime`·`fetchTime`·`externalcallTime`·`networkTime`·`errorType`) | `apm_slow_transactions` · `apm.slow_tx` | ✅ | 기간 전달(종전 「현재값 기준」 오고지 제거) · 상위 N·전부 · p95·SQL/외부 호출 비중·시 단위 보충이 「판정·집계」 블록에(W1) · 합성 픽스처 종단·로컬 9B 선택 정답(W2 검증) |
-| F-06 | 「그 트랜잭션 프로파일 보여줘」 · 「그때 실행된 SQL」 | `/api/transaction/txid` · `/api/transaction/profile.txt` · `/api/transaction/sql` | `apm_transaction_profile`(앞 결과의 `profile_ref`를 그대로) | 🔎 | 채팅 보기 없음 → **W5**(D-296 — 채팅에서도 허용) |
-| F-07 | 「이 GUID 거래가 어느 서버를 거쳤나」 | `/api/transaction/guid`(`domain_id`·`guid`·`start_time`·`end_time`) | — | ➕ | 허용된 소스·도메인 전체의 연계 거래 추적 → **W5**(조회) · **W6**(시간순 연결·누락 고지) |
+| F-06 | 「그 트랜잭션 프로파일 보여줘」 · 「그때 실행된 SQL」 | `/api/transaction/txid` · `/api/transaction/profile.txt` · `/api/transaction/sql` | `apm_transaction_profile` · `apm.profile`(앞 결과 행 참조) | ✅ | W5 — 「두 번째 트랜잭션 프로파일」을 앞 결과 표의 번호로 고른다(LLM `ref` · 코드 검증 · 모호하면 되묻기 · 표가 여럿이면 어느 표인지 되묻기) · 오류 기록 행이면 `profile_no` · 2턴·3턴 실 게이트웨이 종단 · 로컬 9B 참조 선택 8/9(누락 1 = 안전한 되묻기) · 채팅은 프로파일 예산 없음(`chat` 토큰일 때) |
+| F-07 | 「이 GUID 거래가 어느 서버를 거쳤나」 | `/api/transaction/guid`(`domain_id`·`guid`·`start_time`·`end_time`) | `apm_transaction_trace` · `apm.trace` | ✅ | W5 — 허용된 전 소스·도메인에서 같은 GUID 거래(시작 시각순 · 중복 제거) · 결정적 줄에 조회 구간·「같은 GUID일 뿐 호출 관계 아님」 · 시계 차이 고지 · 로컬 9B 선택 정답 · GUID 형태·도메인 범위 W10 |
 | F-08 | 「web01 요청이 밀리고 있어?」 · 「DB 풀 고갈이야?」 · 「GC 지연이야?」 | 위 API 조합 → 게이트웨이 결정적 판정 8종(`was_service_queuing`·`was_thread_pool_exhaustion`·`was_db_pool_exhaustion`·`was_gc_stall`·`was_heap_pressure`·`was_slow_sql`·`was_external_call_delay`·`was_error_burst`) | 각 도구의 `was_signals` | ✅ | 판정(`was_signals`)을 버리지 않고 「판정·집계」 블록으로 결정적으로 싣는다(W1) · 임계는 잠정치 · 합성 픽스처 종단·로컬 9B 선택 정답(W2 검증)(보기) |
-| F-09 | 「배포 직후 오류가 늘었나」 | `/api-v2/deploy/{domainId}` + `/api/dbsearch/error` | — | ◐ | 변경 감지 수집은 됨(W2 `apm.changes`) · 변경 전후 오류 비교는 **W6** · 로컬 9B는 이벤트 보기만 골랐다(W2 실측) |
+| F-09 | 「배포 직후 오류가 늘었나」 | `/api-v2/deploy/{domainId}` + `/api/dbsearch/error` | `apm_change_impact` · `apm.change_impact` | ✅ | W6 — 변경 감지마다 전·후 호출·오류율·평균·p95·오류 기록과 증감(기준 0 = N/A · %p) · 「원인 확정 아님」 고지 · 기간 미지정 = 변경 탐색 24시간 · 로컬 9B 선택 정답(4/4). 「어제 배포 전후」처럼 상대 기간을 말하면 입력 파서 기준일 미주입(`plans/122` ⑥)으로 조회되지 않는다 |
 | F-10 | 「오늘 fatal 이벤트가 난 WAS 전부」 | 도메인별 `/api/dbsearch/event`(인스턴스 지정 없이) | — | ◐ | 지금은 대상 없으면 목록 앞 10대만 조회한다. D-296으로 전 도메인(폴러가 켜져 있으면 폴러가 모아 둔 기록) → **W3** |
 | F-11 | (알람) 「이 서버 알람이 앱에 영향이 있나」 | `/api/dbsearch/event`(fatal) | `noise_gate` `app_impact` 승격 | ✅ | 채팅 질문이 아니라 알람 판정이다(옵트인 `NOISE_APP_IMPACT_ENABLED`) |
 | F-12 | (알람) 제니퍼 이벤트를 알람으로 받기 | `/api/dbsearch/event` 폴링 | 게이트웨이 폴러 → `alarm:raw` | ✅ | 옵트인 `APM_EVENT_POLLER_ENABLED` · 관제 화면 배지 「제니퍼」 |
 | F-13 | 「web01 장애 원인 조사해 줘」 | 위 전부 | `sre_agent` 조사 | 🔎 | 알람 → 자동 조사는 된다. 채팅에서 조사로 넘기는 경로(`fault_diagnosis`)는 3단에만 있고 2단 배선은 `plans/121` 소유(미착수) |
 | F-14 | 「web01 CPU랑 WAS 힙 같이」 · 「서버 상태 종합(OS·WAS·담당자)」 | 폴스타 + 제니퍼 (+ ITAM) | `data_query` + `apm_query` | ✅ | `plans/125` 조합 응답 · 4소스 시나리오 `testdata/scenarios/fs_four_source.yaml` |
-| F-15 | 「지금 걸려 있는 그 요청의 SQL·파라미터 상세」 | `/api-v2/active-service/detail/{d}/{txid}?sessionId=&threadHash=`(`userId`·`guid`·`sql`·`http.method`·`http.query`) | — | ➕ | 실행 중 서비스 목록(O-06)의 행에서 이어 묻는다 · 사용자 ID·SQL·HTTP 파라미터 표시와 권한은 `plans/134` G-11 → **W7** |
+| F-15 | 「지금 걸려 있는 그 요청의 SQL·파라미터 상세」 | `/api-v2/active-service/detail/{d}/{txid}?sessionId=&threadHash=`(`userId`·`guid`·`sql`·`http.method`·`http.query`) | `apm_active_detail` · `apm.active_detail`(앞 결과 행 참조) | ✅ | W7 — 실행 중 서비스 목록 행의 `active_ref`를 그대로 · 사용자 ID 가림 · SQL 리터럴 가림 · HTTP 쿼리 값 가림 · 현재값 전용 · 로컬 9B 참조 선택 정답 · `sessionId` 필수 여부 W10 |
 
 ## 5. 답할 수 없는 질문
 
@@ -142,23 +143,23 @@
 | `/api/business` | `domain_id` | 허용 확정(`plans/130` — D-290 ④) | 업무명 해석 · S-09 |
 | `/api/activeService/list` | `domain_id` · (`instance_id`) | 허용 · 사용 | `apm_active_services`·`apm_resource_pool` · O-05·O-06 |
 | `/api/transaction/time` | `domain_id`·`start_time`·`end_time` · (`instance_id`) · 1분 창 | 허용 · 사용 | `apm_slow_transactions`·`apm_app_health` · S-03·F-05 |
-| `/api/transaction/guid` | `domain_id`·`guid`·`start_time`·`end_time` | 허용 확정 | F-07 → W5 |
-| `/api/transaction/txid` · `/profile.txt` · `/sql` | `domain_id`·`txid`·`time` | 허용 · 조사에서만 | `apm_transaction_profile` · F-06 |
+| `/api/transaction/guid` | `domain_id`·`guid`·`start_time`·`end_time` | 허용 · 사용(W5) | `apm_transaction_trace` · F-07 |
+| `/api/transaction/txid` · `/profile.txt` · `/sql` | `domain_id`·`txid`·`time` · (sql `profile_no`·`include_param_key`) | 허용 · 사용(W5 — 채팅 `apm.profile`·조사) | `apm_transaction_profile` · F-06 |
 | `/api/dbsearch/event` | `domain_id`·`start_time`·`end_time` · (`instance_id`·`level`) | 허용 · 사용 | `apm_events` · 폴러 · F-01·F-02·F-10·F-11·F-12 |
 | `/api/dbsearch/error` | 같음 · (`instance_id`·`error_type`) | 허용 · 사용(`error_type` W1) | `apm_events`(`record=error`) · F-03·F-04 |
 | `/api/status/application` | `domain_id`·`start_time`·`end_time`(시 단위) · (`instance_id`·`max_row`·`sort_by_metrics`·`application_name`) | 허용 · 사용(선택 키 전부 W2) | `apm_app_health`·`apm_slow_transactions`의 `hourly` · `apm_status_stats` · S-04·S-10 |
 | `/api/status/sql` · `/api/status/external_call` | 같음(시 단위) · (`instance_id`·`sort_by_metrics`·`max_row`) | 허용 · 사용(W2 · 선택 키 전부) | `apm_status_stats` · O-07·O-08 |
-| `/api-v2/deploy/{domainId}` | `startTime`·`endTime`(25시간 이하 · 정본 미수록) | 허용 · 사용(W2 · 25시간 조각) | `apm_source_changes` · O-09·F-09(전후 분석 W6) |
-| `/api-v2/manage/rule/event/{error/{d} · metric/{d}/{대상} · compare/{d}/{대상}}` | 경로 변수 | 허용 확정(v2 매뉴얼) | O-11 → W7 |
-| `/api-v2/manage/rule/active-service-color-range-boundary` | — | 허용 확정(v2 매뉴얼) | O-12 → W7 |
-| `/api-v2/manage/rule/event/error/{d}/{errorType}/applied` · `…/{errorType}/individual-setting/{instanceId}` | 경로 변수(`errorType` 대문자 · 인스턴스 개별 설정은 없으면 404) | 허용 확정(D-296 ① · v2 매뉴얼 — 2026-10-02 W0에서 새로 찾음) | O-11 → W7 |
-| `/api-v2/manual-rdb-export` | — | 허용 확정(D-296 ① · v2 매뉴얼 5.6.0.1+ — 2026-10-02 W0에서 새로 찾음) | 수동 RDB Export 작업 상태 · O-16 확장 → W7(`apm_config` kind) |
-| `/api-v2/environment-variable/{d}` | 경로 `domainId` | 허용 확정(민감 · v2 매뉴얼) | O-13 → W7 |
-| `/api-v2/loaded-class/{d}/{i}` | (`search`) | 허용 확정(v2 매뉴얼) | O-14 → W7 |
-| `/api-v2/manage/instance` | `processId` · (`hostname`) | 허용 확정(v2 매뉴얼) | O-15 → W7 |
-| `/api-v2/manage/data-server/{domains · resource · system-property-config}` · `/api-v2/manage/db/path/{d}` | — · 경로 `domainId` | 허용 확정(스펙 · v2 매뉴얼) | O-16 → W7 |
-| `/api/auth/userlist` · `/restapi/users` · `/restapi/user/{id}` | — · 경로 `id` | 허용 확정(민감 · `password` 필드는 버림) | O-17 → W7 |
-| `/api-v2/active-service/detail/{d}/{txid}` | `sessionId`·`threadHash` | 허용 확정(민감 · v2 매뉴얼) | F-15 → W7 |
+| `/api-v2/deploy/{domainId}` | `startTime`·`endTime`(25시간 이하 · 정본 미수록) | 허용 · 사용(W2 · 25시간 조각) | `apm_source_changes`·`apm_change_impact`(W6) · O-09·F-09 |
+| `/api-v2/manage/rule/event/{error/{d} · metric/{d}/{대상} · compare/{d}/{대상}}` | 경로 변수 | 허용 · 사용(W7) | `apm_config(kind=event_rules)` · O-11 |
+| `/api-v2/manage/rule/active-service-color-range-boundary` | — | 허용 · 사용(W7) | `apm_config(kind=color_boundary)` · O-12 |
+| `/api-v2/manage/rule/event/error/{d}/{errorType}/applied` · `…/{errorType}/individual-setting/{instanceId}` | 경로 변수(`errorType` 대문자 · 인스턴스 개별 설정은 없으면 404) | 허용 · 사용(W7 · 개별 설정 404 = 설정 없음) | `apm_config(kind=event_rules, error_type)` · O-11 |
+| `/api-v2/manual-rdb-export` | — | 허용 · 사용(W7) | `apm_config(kind=rdb_export)` · O-16 |
+| `/api-v2/environment-variable/{d}` | 경로 `domainId` | 허용 · 사용(W7 · 비밀 값 가림) | `apm_environment` · O-13 |
+| `/api-v2/loaded-class/{d}/{i}` | (`search`) | 허용 · 사용(W7) | `apm_config(kind=loaded_classes)` · O-14 |
+| `/api-v2/manage/instance` | `processId` · (`hostname`) | 허용 · 사용(W7) | `apm_config(kind=process_instance)` · O-15 |
+| `/api-v2/manage/data-server/{domains · resource · system-property-config}` · `/api-v2/manage/db/path/{d}` | — · 경로 `domainId` | 허용 · 사용(W7) | `apm_config(kind=data_server·db_path)` · O-16 |
+| `/api/auth/userlist` · `/restapi/users` · `/restapi/user/{id}` | — · 경로 `id` | 허용 · 사용(W7 · `password` 키째 제거) | `apm_users` · O-17 |
+| `/api-v2/active-service/detail/{d}/{txid}` | `sessionId`·`threadHash` | 허용 · 사용(W7) | `apm_active_detail` · F-15 |
 | `/api-v2/test-response/json` · `/api-v2/auth-test` | — | 넣지 않음(시험 경로 — 데이터 없음) | — |
 | 쓰기·제어(POST·PUT·DELETE 전부) | — | **거부 유지**(D-296 ② · D-003) | X-02·X-03 |
 
@@ -189,3 +190,4 @@
 | 2026-10-02 | **D-296 반영**(사용자 *"모든 api는 허용하고 조회할 수 있는 범위는 모두 가능하도록 정한다."* · 「민감 조회 API까지」 · 「보호 한도도 올림」) — 읽기 API 전부 허용(쓰기·제어 차단 · 비밀번호·비밀 값 제거) · 자체 상한 제거. 질문 43건으로 확대: O-11(이벤트 룰 조회) · O-12(액티브 색상 경계) · O-13(환경변수) · O-14(로드된 클래스) · O-15(프로세스 → 인스턴스) · O-16(데이터 서버) · O-17(사용자 목록) · F-15(실행 중 요청 상세) 신설 · X-04·X-06 흡수 · X-03은 변경만 남김 · S-09 ⛔ → ➕ · 표지 ⛔ 삭제 · Wave 번호를 `plans/134` v1.1에 맞춤(W7 = 설정·관리·민감 · W8 = 보기 선택) · API 지도에 v2 매뉴얼 읽기 경로 추가 |
 | 2026-10-02 | **D-299 · plans/134 v1.2** — 43사례는 최소 회귀 집합, 전체 읽기 기능·복수 조회·분석으로 확장. metrics 직접 보기, GUID/변경 전후 분석 Wave 연결, 진입점별 검증·121 필수 연동. 코드 0이므로 현재 상태 표기는 유지 |
 | 2026-10-02 | **`plans/134` W0-B·W1·W2 구현 반영(D-300)** — 상태 갱신: ✅ S-01·S-03·S-04·S-10·O-02·O-04·O-06·O-07·O-08·O-09·O-10·F-02·F-04·F-05·F-08 · ◐(기능은 됨 · 로컬 9B 선택·조건 오답) S-05·O-03·F-01·F-03 · ◐ F-09(전후 분석 W6). 근거 = 합성 픽스처 실프로세스 종단 + 로컬 MLX 9B 29문항 실측(실 제니퍼 미검증 — W10). §0·§6·§7 갱신(도구 11+3 · 보기 12 · 작업 접수·결과 파일 · 기간 상한 제거 · 하루 넘은 기간은 W6). 새로 찾은 GET 3경로(이벤트 룰 `applied`·`individual-setting` · 수동 RDB Export 상태)는 `spec/CAPABILITY-MAP-134.md` — W7 |
+| 2026-10-06 | **`plans/134` W5·W6(독립분)·W7 구현 반영(D-302)** — 상태 갱신: ✅ F-06·F-07·F-09·F-15·O-12·O-13·O-14·O-16·O-17 · ◐ O-11(조건 누락 — 결과가 넓어지는 쪽) · ◐ O-15(PID 없는 질문 결함 수정 뒤 MLX 미재측정). §0 갱신 행 · API 지도(GUID·거래 상세·deploy·v2 관리·민감 경로 → 허용·사용). 근거 = 합성 픽스처 실프로세스 종단 + 로컬 MLX 9B 47문항(실 제니퍼 미검증 — W10 · 운영 사다리 1단 — D-251) |

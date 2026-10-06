@@ -56,6 +56,10 @@ def test_views_are_untouched_by_sources() -> None:
         "apm.instances", "apm.app_health", "apm.runtime", "apm.pool",
         "apm.active", "apm.slow_tx", "apm.events",
         "apm.app_stats", "apm.sql_stats", "apm.external_stats", "apm.metrics", "apm.changes",
+        # plans/134 W5·W6·W7 — 보기 10종 추가(계약 §4.1 순서 · 의도된 갱신)
+        "apm.profile", "apm.trace", "apm.change_impact", "apm.event_rules", "apm.process",
+        "apm.jennifer_server", "apm.loaded_classes", "apm.environment", "apm.users",
+        "apm.active_detail",
     ]
 
 

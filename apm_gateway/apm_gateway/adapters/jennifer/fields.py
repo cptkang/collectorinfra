@@ -97,19 +97,18 @@ def same_error_type(actual: Any, wanted: Any) -> bool:
 
 
 def to_int(value: Any) -> int | None:
-    """숫자·숫자 문자열(epoch ms 문자열 포함)을 int로. 아니면 None."""
+    """숫자·숫자 문자열(epoch ms 문자열 포함)을 int로. 아니면 None — 원천 값 하나(`'²'`·`Infinity`·
+    `NaN`)가 도구 전체를 오류로 만들지 않는다(그 칸만 None · plans/134 W7 I-3)."""
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, int):
         return value
-    if isinstance(value, float):
-        return int(value)
     text = str(value).strip()
-    if text.lstrip("-").isdigit():
+    if text.isascii() and text.lstrip("-").isdecimal():
         return int(text)
     try:
         return int(float(text))
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
 
 
@@ -467,10 +466,36 @@ def parse_source_change(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def extract_sql_texts(body: Any, limit: int | None = None) -> list[str]:
-    """`/api/transaction/sql` 응답(스키마 `object` — 모양 미공개)에서 SQL 문자열을 모은다
-    (`limit`이 없으면 전부)."""
-    found: list[str] = []
+# `/api/transaction/sql` 응답에서 SQL **문**을 담는 칸 이름(소문자 · `_`·`-`·`.` 제거 뒤 정확 일치).
+# 응답 모양이 미공개라(COV E-11 · W10) 키에 sql·query·text가 든 문자열을 모으되, 문 칸은 관례상
+# 문을 담는 이름만 고른다 — 제니퍼의 다른 응답이 SQL 문을 `sql`로 싣고(실행 중 요청 상세), 그 밖은
+# 흔한 표기(`sqlText`·`statement`·`query`)다. `sqlParams`·`paramText`·`bindText` 같은 칸은 바인드
+# 값일 수 있어 문으로 보지 않는다(plans/134 W7 AUDIT-8 · VG-1 — SQL 키워드로 가르지 않는다).
+SQL_STATEMENT_KEYS = frozenset(
+    {
+        "sql",
+        "sqls",
+        "sqltext",
+        "sqlstring",
+        "sqlstatement",
+        "statement",
+        "statements",
+        "query",
+        "querytext",
+    }
+)
+
+
+def is_sql_statement_key(key: str) -> bool:
+    """SQL 문을 담는 칸 이름인가(`SQL_STATEMENT_KEYS`)."""
+    return re.sub(r"[_.\-]", "", str(key)).lower() in SQL_STATEMENT_KEYS
+
+
+def extract_sql_texts(body: Any, limit: int | None = None) -> list[tuple[str, str]]:
+    """`/api/transaction/sql` 응답(스키마 `object` — 모양 미공개)에서 SQL 칸 문자열을 (가장 가까운
+    칸 이름, 값)으로 모은다(`limit`이 없으면 전부). 문인지는 칸 이름으로 가른다
+    (`is_sql_statement_key`)."""
+    found: list[tuple[str, str]] = []
 
     def walk(node: Any, key: str = "") -> None:
         if limit is not None and len(found) >= limit:
@@ -484,7 +509,7 @@ def extract_sql_texts(body: Any, limit: int | None = None) -> list[str]:
         elif isinstance(node, str) and node.strip():
             lowered = key.lower()
             if "sql" in lowered or "query" in lowered or "text" in lowered:
-                found.append(node)
+                found.append((key, node))
 
     walk(body)
     return found if limit is None else found[:limit]

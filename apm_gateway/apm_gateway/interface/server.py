@@ -7,8 +7,11 @@ SPEC-apm-gateway §3 · plans/134 W0-B SPEC-apm-question-coverage §2.1·§3.6·
 주체로 작업을 만들고 찾는다. 도구는 예외를 전파하지 않고 `{"error": code, "reason": …}` JSON을
 돌려준다.
 
-- 데이터 도구 11종(W2에서 통계·지표·변경 감지 3종 추가)은 모두 작업(`JobManager.execute`)으로
+- 데이터 도구 18종(W2에서 통계·지표·변경 감지 3종 · W5·W6에서 GUID 추적·변경 전후·기간 비교 3종 ·
+  W7에서 관리·민감 조회 4종 — `manage_server` 모듈이 등록)은 모두 작업(`JobManager.execute`)으로
   돈다 — 선택 인자 `owner`·`wait_seconds`.
+  `apm_transaction_profile`에는 요청 주체(`request_principal`)를 도구 코어로 넘긴다 — 프로파일
+  예산을 주체로 가른다(채팅 `chat` 면제 · plans/134 W5).
   `wait_seconds`가 없으면 끝날 때까지 기다린다(기존 소비자 의미 그대로).
 - 작업 도구 3종(`apm_job_status`·`apm_job_cancel`·`apm_job_read`)은 같은 주체 + 같은 `owner`일 때만
   응답하고(아니면 `job_not_found`) 외부 API를 부르지 않는다(감사 `api_calls=0`).
@@ -294,7 +297,8 @@ def audit_job_finished(job: Job) -> None:
 
 
 def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None) -> list[str]:
-    """`apm_*` 데이터 도구 11종 + 작업 도구 3종 + `gateway_health`를 등록하고 이름 목록을
+    """`apm_*` 데이터 도구 18종(W7 4종은 `register_manage_tools`) + 작업 도구 3종 +
+    `gateway_health`를 등록하고 이름 목록을
     돌려준다."""
     if jobs is None:
         jobs = JobManager.from_config(
@@ -551,15 +555,35 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         thread_id: str | None = None,
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
+        profile_no: Annotated[
+            int | None,
+            Field(
+                description="프로파일 번호(0 이상) — 오류 기록 행 profile_ref의 profile_no 그대로"
+            ),
+        ] = None,
+        include_param_key: Annotated[
+            bool | None, Field(description="SQL 파라미터 키 포함(값은 리터럴 마스킹)")
+        ] = None,
     ) -> str:
         """개별 트랜잭션 프로파일(화면용 마스킹 발췌 — 전문은 결과 파일)·SQL 전부(리터럴 마스킹).
-        source_id·domain_id·txid·time_ms는 앞 도구의 profile_ref를 그대로 넘긴다(APM 소스가 둘
-        이상이면 source_id 필수)."""
+        source_id·domain_id·txid·time_ms(·profile_no)는 앞 도구의 profile_ref를 그대로 넘긴다
+        (APM 소스가 둘 이상이면 source_id 필수). 조사당 호출 수 예산이 있다(채팅 주체 제외)."""
+        principal = request_principal(mcp)
         return await run_data(
             "apm_transaction_profile",
             hostname,
             lambda: tools.apm_transaction_profile(
-                hostname, domain_id, txid, time_ms, top_k, investigation_id, source_id
+                hostname,
+                domain_id,
+                txid,
+                time_ms,
+                top_k,
+                investigation_id,
+                source_id,
+                profile_no,
+                include_param_key,
+                owner=owner,
+                principal=principal,
             ),
             owner=owner,
             wait_seconds=wait_seconds,
@@ -697,6 +721,138 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
             thread_id=thread_id,
         )
 
+    # plans/134 W5·W6 — GUID 추적 · 변경 전후 · 기간 비교
+    @mcp.tool()
+    async def apm_transaction_trace(
+        guid: Annotated[
+            str,
+            Field(description="GUID — 앞 도구 행(apm_slow_transactions 등)의 guid 그대로"),
+        ],
+        hostname: Annotated[
+            str | None,
+            Field(description="이 서버의 정합 도메인만 찾는다. 비우면 고른 소스의 전 도메인"),
+        ] = None,
+        reference_time: str | None = None,
+        lookback_minutes: int | None = None,
+        around_ms: Annotated[
+            int | None,
+            Field(
+                description="기간을 모를 때 기준 시각(epoch ms) — 앞 행의 start_time_ms·"
+                "end_time_ms·profile_ref.time_ms 그대로"
+            ),
+        ] = None,
+        around_minutes: Annotated[
+            int | None, Field(description="around_ms 앞뒤 폭(분 · 기본 5)")
+        ] = None,
+        source_ids: list[str] | None = None,
+        investigation_id: str | None = None,
+        thread_id: str | None = None,
+        owner: OwnerArg = None,
+        wait_seconds: WaitArg = None,
+    ) -> str:
+        """GUID가 같은 거래 묶음(전 소스·도메인 · 시작 시각 순 trace_order · 중복 제거) + 요약.
+        호출 관계가 아니라 같은 GUID일 뿐이다. 기간 우선순위: reference_time·lookback_minutes >
+        around_ms ± around_minutes > 최근 60분."""
+        return await run_data(
+            "apm_transaction_trace",
+            hostname or "*",
+            lambda: tools.apm_transaction_trace(
+                guid,
+                hostname,
+                reference_time,
+                lookback_minutes,
+                around_ms,
+                around_minutes,
+                source_ids,
+            ),
+            owner=owner,
+            wait_seconds=wait_seconds,
+            investigation_id=investigation_id,
+            thread_id=thread_id,
+        )
+
+    @mcp.tool()
+    async def apm_change_impact(
+        hostname: str,
+        reference_time: str | None = None,
+        lookback_minutes: Annotated[
+            int | None, Field(description="변경 탐색 구간(분 · 기본 1440 = 24시간 · 상한 없음)")
+        ] = None,
+        width_minutes: Annotated[
+            int | None, Field(description="변경 전후 비교 폭(분 · 1 이상 · 기본 60)")
+        ] = None,
+        source_ids: list[str] | None = None,
+        n: Annotated[
+            int | None, Field(description="비교할 최근 변경 N건(1 이상). 비우면 전부")
+        ] = None,
+        full: FullArg = False,
+        investigation_id: str | None = None,
+        thread_id: str | None = None,
+        owner: OwnerArg = None,
+        wait_seconds: WaitArg = None,
+    ) -> str:
+        """소스코드 변경 감지 전후 비교 — 변경마다 그 인스턴스의 전·후 구간 호출·트랜잭션 오류·
+        오류율·평균/p95/최대 응답시간·오류 기록 수와 증감(기준 0 = N/A). 동반 변화이며 원인
+        확정이 아니다(변경 감지 = 데이터 서버 인지 시각)."""
+        return await run_data(
+            "apm_change_impact",
+            hostname,
+            lambda: tools.apm_change_impact(
+                hostname, reference_time, lookback_minutes, width_minutes, source_ids, n, full
+            ),
+            owner=owner,
+            wait_seconds=wait_seconds,
+            investigation_id=investigation_id,
+            thread_id=thread_id,
+        )
+
+    @mcp.tool()
+    async def apm_period_compare(
+        hostname: str,
+        current_start: Annotated[
+            str, Field(description="비교 구간 시작(ISO 8601 · 시간대 없으면 APM_TIMEZONE)")
+        ],
+        current_end: Annotated[str, Field(description="비교 구간 끝(ISO 8601)")],
+        baseline_start: Annotated[str, Field(description="기준 구간 시작(ISO 8601 · 예 지난주)")],
+        baseline_end: Annotated[str, Field(description="기준 구간 끝(ISO 8601)")],
+        source_ids: list[str] | None = None,
+        n: Annotated[
+            int | None, Field(description="인스턴스 행 N개(현재 구간 호출 수 순). 비우면 전부")
+        ] = None,
+        full: FullArg = False,
+        investigation_id: str | None = None,
+        thread_id: str | None = None,
+        owner: OwnerArg = None,
+        wait_seconds: WaitArg = None,
+    ) -> str:
+        """두 명시 구간 비교(평소 대비) — 시 단위 통계로 인스턴스별·전체 호출·실패·실패율·호출 수
+        가중 평균·최대 응답시간과 증감(기준 0 = N/A). 구간은 정시 경계로 넓힌다 · p95 없음."""
+        return await run_data(
+            "apm_period_compare",
+            hostname,
+            lambda: tools.apm_period_compare(
+                hostname,
+                current_start,
+                current_end,
+                baseline_start,
+                baseline_end,
+                source_ids,
+                n,
+                full,
+            ),
+            owner=owner,
+            wait_seconds=wait_seconds,
+            investigation_id=investigation_id,
+            thread_id=thread_id,
+        )
+
+    # plans/134 W7 — 관리·민감 조회 4종(`manage_server`가 이 모듈의 인자 주석을 쓰므로 여기서
+    # 불러온다 — 순환 import 회피)
+    from apm_gateway.application.manage_tools import ManageTools
+    from apm_gateway.interface.manage_server import register_manage_tools
+
+    manage_names = register_manage_tools(mcp, ManageTools(tools), run_data)
+
     @mcp.tool()
     async def apm_job_status(job_id: str, owner: OwnerArg = None) -> str:
         """오래 걸린 조회 작업의 상태·진행·예상 시간. 끝났으면 결과 요약(result_meta)·결과 파일
@@ -764,6 +920,10 @@ def register_tools(mcp: FastMCP, tools: ApmTools, jobs: JobManager | None = None
         "apm_status_stats",
         "apm_metrics",
         "apm_source_changes",
+        "apm_transaction_trace",
+        "apm_change_impact",
+        "apm_period_compare",
+        *manage_names,
         *JOB_TOOLS,
         "gateway_health",
     ]

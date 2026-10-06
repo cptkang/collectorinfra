@@ -283,12 +283,49 @@ class JenniferApi:
         )
 
     async def transaction_sqls(
-        self, domain_id: int, txid: int, time_ms: int, limit: int | None = None
-    ) -> list[str]:
+        self,
+        domain_id: int,
+        txid: int,
+        time_ms: int,
+        limit: int | None = None,
+        *,
+        profile_no: int | None = None,
+        include_param_key: bool | None = None,
+    ) -> list[tuple[bool, str]]:
+        """트랜잭션 SQL 칸 문자열 (SQL 문 칸인가, 값) — 선택 인자는 준 것만 싣는다(plans/134 W5 ·
+        COV-TX-SQL). 문인지는 칸 이름으로 가른다(`fields.is_sql_statement_key` — 그 밖 칸은 바인드
+        값일 수 있다). `key`는 허용목록에 있지만 의미·값 출처가 미공개라(W10) 보내지 않는다."""
         body: Any = await self.client.get_json(
-            "/api/transaction/sql", {"domain_id": domain_id, "txid": txid, "time": time_ms}
+            "/api/transaction/sql",
+            {
+                "domain_id": domain_id,
+                "txid": txid,
+                "time": time_ms,
+                **({"profile_no": profile_no} if profile_no is not None else {}),
+                **(
+                    {"include_param_key": "true" if include_param_key else "false"}
+                    if include_param_key is not None
+                    else {}
+                ),
+            },
         )
-        return jf.extract_sql_texts(body, limit)
+        return [(jf.is_sql_statement_key(k), v) for k, v in jf.extract_sql_texts(body, limit)]
+
+    async def transactions_by_guid(
+        self, domain_id: int, guid: str, start_ms: int, end_ms: int
+    ) -> list[dict[str, Any]]:
+        """GUID가 같은 거래(도메인 1개 · plans/134 W5 N-13 · COV-TX-GUID) — `TransactionData`
+        모양이라 X-View와 같은 파서를 쓴다(실응답 모양은 W10)."""
+        body = await self.client.get_json(
+            "/api/transaction/guid",
+            {"domain_id": domain_id, "guid": guid, "start_time": start_ms, "end_time": end_ms},
+        )
+        if not (isinstance(body, dict) and isinstance(body.get("result"), list)):
+            # 모양 위반을 0건(「찾지 못했다」)으로 강등하지 않는다(W2 `bare_list` 선례 · VG-2)
+            raise ApmError(
+                API_ERROR, "GUID 거래 응답 모양이 예상과 다르다({result: [...]} 봉투가 아님)"
+            )
+        return [jf.parse_transaction(r) for r in jf.result_list(body)]
 
     def event_signal(self, event_type: str) -> tuple[str, str, str] | None:
         return jf.event_signal(event_type)

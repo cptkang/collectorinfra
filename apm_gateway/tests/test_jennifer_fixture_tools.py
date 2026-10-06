@@ -86,7 +86,10 @@ def _bearer(extra: dict | None = None) -> dict:
         ("/api/domain.xml", None),
         ("/api/transaction/time/../../auth/userlist", None),
         ("/api//domain", None),
-        ("/api/auth/userlist", None),
+        # 민감 GET은 plans/134 W7에서 허용(C-10 반전) — XML 변형은 계속 밖
+        ("/api/auth/userlist", "/api/auth/userlist"),
+        ("/api/auth/userlist.xml", None),
+        ("/restapi/user/canary.xml", None),
         ("/api/transaction/%2e%2e/x", None),
     ],
 )
@@ -104,7 +107,7 @@ def test_fixture_stem():
 @pytest.mark.parametrize(
     "template,params,path_vars",
     [
-        ("/api/auth/userlist", None, None),
+        ("/api-v2/manage/data-server/control", None, None),  # 쓰기·제어(민감 GET은 W7에서 허용)
         ("/api/domain", {"token": "x"}, None),
         ("/api/instance", {"domain_id": 1, "evil": 1}, None),
         ("/api-v2/deploy/{domainId}", {"startTime": 1, "endTime": 2}, None),
@@ -217,13 +220,14 @@ def test_mock_disconnected_mode(mock):
 
 def test_mock_non_allowlisted_access_is_recorded(mock):
     base, state = mock
-    assert _call(base + "/api/auth/userlist", headers=_bearer())[0] == 200
+    # 민감 GET JSON은 plans/134 W7에서 허용 목록이다(C-10 반전) — XML 변형은 계속 밖
+    assert _call(base + "/api/auth/userlist.xml", headers=_bearer())[0] == 200
     assert _call(base + "/api-v2/manage/data-server/control", headers=_bearer())[0] == 400
     assert _call(base + "/api-v2/manage/data-server/control", "POST", _bearer(), b"{}")[0] == 403
     assert _call(base + "/api/domain", "POST", _bearer())[0] == 200
     outside = [h for h in state.hits if not h["allowlisted"]]
     assert [h["path"] for h in outside] == [
-        "/api/auth/userlist",
+        "/api/auth/userlist.xml",
         "/api-v2/manage/data-server/control",
         "/api-v2/manage/data-server/control",
         "/api/domain",
