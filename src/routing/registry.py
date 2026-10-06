@@ -302,6 +302,9 @@ class DBEntry:
     #: true면 SQL 구조 영역(따옴표 밖)의 한글 식별자를 허용한다 — 물리 컬럼명이 한글인 DB만 켠다
     #: (plans/137). 허용해도 스키마에 실재하는 이름·SQL 안에서 선언한 별칭만 통과한다. 기본 false = 현행.
     allow_hangul_identifiers: bool = False
+    #: true면 집계(GROUP BY) 결과 표에서 묶음 기준 값이 NULL인 칸을 「(값 없음)」으로 표시한다
+    #: (plans/137 W13). 화면 결과 표에만 적용 — 저장 결과·CSV·양식 채우기는 그대로다. 기본 false = 현행.
+    label_null_group_keys: bool = False
 
 
 @dataclass(frozen=True)
@@ -860,6 +863,7 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
                 capabilities=_as_str_tuple(raw.get("capabilities")),
                 description_locked=bool(raw.get("description_locked", False)),
                 allow_hangul_identifiers=bool(raw.get("allow_hangul_identifiers", False)),
+                label_null_group_keys=bool(raw.get("label_null_group_keys", False)),
             )
         )
 
@@ -964,17 +968,30 @@ def reload_registry() -> DBRegistry:
     return get_registry()
 
 
+def _entry_flag(db_id: str | None, attr: str, what: str) -> bool:
+    """`db_id` 레지스트리 항목의 bool 필드 — 미등록·빈 값·적재 실패는 False(현행 동작)."""
+    if not db_id:
+        return False
+    try:
+        entry = get_registry().get(db_id)
+    except RegistryError as e:
+        logger.warning("%s 조회 실패(현행 동작 유지): db_id=%s · %s", what, db_id, e)
+        return False
+    return bool(entry is not None and getattr(entry, attr, False))
+
+
 def hangul_identifiers_allowed(db_id: str | None) -> bool:
     """`db_id`의 레지스트리 항목이 한글 식별자를 허용하는지(plans/137).
 
     미등록·빈 값·레지스트리 적재 실패는 모두 False(= 현행 한글 가드)다 — 검증을 느슨하게 하는
     설정이라 확인할 수 없으면 닫힌 쪽으로 둔다. 적재 실패는 사유를 로그로 남긴다.
     """
-    if not db_id:
-        return False
-    try:
-        entry = get_registry().get(db_id)
-    except RegistryError as e:
-        logger.warning("한글 식별자 정책 조회 실패(현행 가드 유지): db_id=%s · %s", db_id, e)
-        return False
-    return bool(entry is not None and entry.allow_hangul_identifiers)
+    return _entry_flag(db_id, "allow_hangul_identifiers", "한글 식별자 정책")
+
+
+def null_group_label_enabled(db_id: str | None) -> bool:
+    """`db_id`의 집계 결과 표에서 NULL 묶음 기준을 「(값 없음)」으로 표시하는지(plans/137 W13).
+
+    미등록·빈 값·적재 실패는 False(= 현행 빈칸 표시)다.
+    """
+    return _entry_flag(db_id, "label_null_group_keys", "NULL 묶음 표시 정책")

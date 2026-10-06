@@ -472,3 +472,93 @@ class TestSelectionSummaryMatchedColumns:
         import src.nodes.schema_analyzer as sa
 
         assert "match_columns=hangul_identifiers_allowed(db_id)" in inspect.getsource(sa)
+
+
+# ──────────────────────────────────────────────
+# W13 집계 결과 표의 NULL 묶음 기준 「(값 없음)」 (plans/137 §9 · D-306)
+# ──────────────────────────────────────────────
+
+_GROUP_SQL = (
+    "SELECT t.`자산분류구분` AS asset_class_code, t.`자산분류구분명` AS asset_class_name, "
+    "COUNT(*) AS cnt FROM TAB80 t GROUP BY t.`자산분류구분`, t.`자산분류구분명` "
+    "ORDER BY cnt DESC LIMIT 1000"
+)
+_GROUP_ROWS = [
+    {"asset_class_code": "31", "asset_class_name": "기계장치", "cnt": 2386},
+    {"asset_class_code": None, "asset_class_name": None, "cnt": 1419},
+    {"asset_class_code": "54", "asset_class_name": "부외자산", "cnt": 38},
+]
+
+
+class TestNullGroupLabel:
+    def test_registry_field(self):
+        registry = parse_registry({"databases": [
+            {"db_id": "db_off"},
+            {"db_id": "db_on", "label_null_group_keys": True},
+        ]})
+        assert registry.get("db_off").label_null_group_keys is False
+        assert registry.get("db_on").label_null_group_keys is True
+        assert get_registry().get("itam").label_null_group_keys is True
+        for entry in get_registry().databases:
+            if entry.family == "polestar":
+                assert entry.label_null_group_keys is False, entry.db_id
+
+    @pytest.mark.parametrize("sql, expected", [
+        (_GROUP_SQL, {"asset_class_code", "asset_class_name"}),
+        ("SELECT 담당부점명, SUM(취득금액) FROM TAB80 GROUP BY 담당부점명", {"담당부점명"}),
+        ("SELECT t.a 부점, COUNT(*) n FROM T t GROUP BY t.a", {"부점"}),
+        ("SELECT a, b FROM t", None),  # GROUP BY 없음
+        ("WITH x AS (SELECT a, COUNT(*) c FROM t GROUP BY a) SELECT * FROM x", None),
+        ("SELECT * FROM t GROUP BY a", None),
+        ("SELECT a FROM t GROUP BY a", None),  # 집계 항목 없음
+        ("SELECT a, COUNT(*) FROM (SELECT a FROM t) s GROUP BY a", {"a"}),
+    ])
+    def test_group_key_columns(self, sql, expected):
+        from src.nodes.output_generator import group_key_columns
+
+        got = group_key_columns(sql)
+        assert (set(got) if got is not None else None) == expected
+
+    def test_table_labels_only_null_group_keys(self):
+        from src.nodes.output_generator import (
+            NULL_GROUP_LABEL,
+            _render_result_table,
+            group_key_columns,
+        )
+
+        table = _render_result_table(
+            _GROUP_ROWS, ranked=False, null_label_keys=group_key_columns(_GROUP_SQL),
+        )
+        assert f"| {NULL_GROUP_LABEL} | {NULL_GROUP_LABEL} | 1419 |" in table
+        assert "| 31 | 기계장치 | 2386 |" in table
+        assert _GROUP_ROWS[1]["asset_class_code"] is None  # 원본 행 불변(CSV·후속 질의)
+
+    def test_no_label_when_aggregate_also_null(self):
+        from src.nodes.output_generator import _label_null_group_keys
+
+        row = {"k": None, "cnt": None}
+        assert _label_null_group_keys(row, frozenset({"k"})) is row
+
+    def test_default_table_unchanged(self):
+        from src.nodes.output_generator import _render_result_table
+
+        assert "|  |  | 1419 |" in _render_result_table(_GROUP_ROWS, ranked=False)
+
+    @pytest.mark.parametrize("state, on", [
+        ({"active_db_id": "itam", "generated_sql": _GROUP_SQL}, True),
+        ({"active_db_id": "polestar_cm_gp", "generated_sql": _GROUP_SQL}, False),
+        ({"active_db_id": "itam", "generated_sql": _GROUP_SQL, "is_multi_db": True}, False),
+        ({"active_db_id": "itam", "generated_sql": "SELECT a FROM t"}, False),
+        ({"generated_sql": _GROUP_SQL}, False),
+    ])
+    def test_gate(self, state, on):
+        from src.nodes.output_generator import _null_group_key_columns
+
+        assert (_null_group_key_columns(state) is not None) is on
+
+    def test_text_response_wires_gate(self):
+        import importlib
+        import inspect
+
+        src_text = inspect.getsource(importlib.import_module("src.nodes.output_generator"))
+        assert "null_label_keys=_null_group_key_columns(state)" in src_text

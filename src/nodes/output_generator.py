@@ -31,6 +31,7 @@ from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.nodes.intent_frame_builder import CONSUMER_OUTPUT_GENERATOR, get_prompt_query
 from src.prompts.output_generator import OUTPUT_SUMMARY_SYSTEM_PROMPT
 from src.routing.domain_config import get_domain_by_id
+from src.routing.registry import null_group_label_enabled
 from src.schema_cache.form_memory import save_form_memory_entries
 from src.state import AgentState
 from src.utils.deadline import (
@@ -380,7 +381,9 @@ async def _generate_text_response(
 
     # 멀티 DB 순위 전역 재정렬(plans/113 S-1)이 적용된 행은 이미 전체 순위다 — 앞 행 그대로.
     ranked = bool((organized.get("merge_ranking") or {}).get("applied"))
-    table = _render_result_table(organized["rows"], ranked=ranked)
+    table = _render_result_table(
+        organized["rows"], ranked=ranked, null_label_keys=_null_group_key_columns(state),
+    )
 
     if summary_skip_notice is not None:
         if stream_user_response and table:
@@ -519,15 +522,23 @@ def _join_table_and_summary(table: str, summary: str) -> str:
     return f"{table}\n\n{summary}" if table else summary
 
 
-def _render_result_table(rows: list[Any], *, ranked: bool) -> str:
+def _render_result_table(
+    rows: list[Any], *, ranked: bool, null_label_keys: Optional[frozenset[str]] = None,
+) -> str:
     """응답 결과 표를 코드로 렌더한다(plans/119 N-1 ① · D-100 컬럼 전부 · LLM 0).
 
     행은 `_preview_rows`(최대 20행 · 멀티 DB 균형 · 전역 순위면 앞 행)로 고르고 헤더는
     `_display_row` 표시명(복합 필드명 `A > B` · 출처 DB 표시명)이다. 20행을 넘으면 몇 건 중
     몇 건인지 한 줄로 밝힌다 — 전체는 CSV 다운로드다. dict 행이 없으면 빈 문자열이다.
+
+    ``null_label_keys``(집계 묶음 기준 컬럼 — `_null_group_key_columns`)가 오면 그 컬럼의 NULL을
+    표에서만 「(값 없음)」으로 보인다(plans/137 W13). 행 원본은 바꾸지 않는다.
     """
     preview, balanced = _preview_rows(rows, ranked=ranked)
-    display = [_display_row(r) for r in preview if isinstance(r, dict)]
+    display = [
+        _display_row(_label_null_group_keys(r, null_label_keys))
+        for r in preview if isinstance(r, dict)
+    ]
     lines = render_markdown_table(display)
     if not lines:
         return ""
@@ -538,6 +549,113 @@ def _render_result_table(rows: list[Any], *, ranked: bool) -> str:
             f"전체 {len(rows):,}건 중 {how}{len(preview):,}건 표시(전체는 CSV 다운로드)"
         )
     return "\n".join(lines)
+
+
+#: 집계 결과 표의 NULL 묶음 기준 표시 문구(plans/137 W13 · 사용자 확정 2026-10-06)
+NULL_GROUP_LABEL = "(값 없음)"
+#: SELECT 목록 항목이 집계 값인지 판정하는 함수 이름(엔진 공통 부분집합)
+_AGG_FUNC_RE = re.compile(
+    r"\b(?:COUNT|SUM|AVG|MIN|MAX|GROUP_CONCAT|LISTAGG|STRING_AGG|STDDEV\w*|VARIANCE|VAR_\w+)\s*\(",
+    re.IGNORECASE,
+)
+_SELECT_ITEM_ALIAS_RE = re.compile(
+    r"\bAS\s+(`[^`]+`|\"[^\"]+\"|[^\s,()]+)\s*$", re.IGNORECASE,
+)
+_PLAIN_REF_RE = re.compile(r"^[\w`\".]+$")
+
+
+def _strip_quotes(name: str) -> str:
+    return name.strip().strip("`\"").strip()
+
+
+def _split_top_level(text: str) -> list[str]:
+    """괄호 깊이 0의 쉼표로 나눈다."""
+    parts, depth, start = [], 0, 0
+    for i, ch in enumerate(text):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return [p.strip() for p in parts if p.strip()]
+
+
+def group_key_columns(sql: str) -> Optional[frozenset[str]]:
+    """집계 SQL의 묶음 기준(SELECT 목록 중 집계 함수가 아닌 항목) 결과 컬럼 이름(casefold).
+
+    결정적·보수적으로 판정한다 — 최상위가 `SELECT`가 아니거나(WITH 등) `GROUP BY`가 없거나
+    `*`가 있거나 집계 항목이 하나도 없으면 None(표시를 바꾸지 않는다). 별칭 없는 식은 이름을
+    알 수 없어 뺀다. 값 형식이 아니라 SQL로 고르는 이유: 코드값(`'31'`)이 숫자처럼 보여 형식으로는
+    묶음 기준과 집계 값을 가를 수 없다(plans/137 W13).
+    """
+    body = re.sub(r"--[^\n]*", " ", sql or "")
+    body = re.sub(r"/\*.*?\*/", " ", body, flags=re.S)
+    body = re.sub(r"'(?:[^']|'')*'", "''", body).strip()
+    m = re.match(r"SELECT\s+(?:DISTINCT\s+)?", body, re.IGNORECASE)
+    if not m or not re.search(r"\bGROUP\s+BY\b", body, re.IGNORECASE):
+        return None
+    depth, end = 0, None
+    for i in range(m.end(), len(body)):
+        ch = body[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif depth == 0 and re.match(r"FROM\b", body[i:i + 5], re.IGNORECASE) and (
+            i == 0 or not (body[i - 1].isalnum() or body[i - 1] == "_")
+        ):
+            end = i
+            break
+    if end is None:
+        return None
+    keys: set[str] = set()
+    has_agg = False
+    for item in _split_top_level(body[m.end():end]):
+        if item == "*" or item.endswith(".*"):
+            return None
+        if _AGG_FUNC_RE.search(item):
+            has_agg = True
+            continue
+        alias = _SELECT_ITEM_ALIAS_RE.search(item)
+        if alias:
+            keys.add(_strip_quotes(alias.group(1)).casefold())
+            continue
+        tokens = item.split()
+        if len(tokens) == 2 and _PLAIN_REF_RE.match(tokens[0]) and _PLAIN_REF_RE.match(tokens[1]):
+            keys.add(_strip_quotes(tokens[1]).casefold())  # `t.col 별칭`
+        elif len(tokens) == 1 and _PLAIN_REF_RE.match(tokens[0]):
+            keys.add(_strip_quotes(tokens[0].rsplit(".", 1)[-1]).casefold())
+    if not has_agg or not keys:
+        return None
+    return frozenset(keys)
+
+
+def _null_group_key_columns(state: Any) -> Optional[frozenset[str]]:
+    """이번 응답 표에서 「(값 없음)」을 붙일 묶음 기준 컬럼 — 대상이 아니면 None(현행 표시).
+
+    레지스트리 `label_null_group_keys`가 켜진 DB(사용자 확정 (가) — ITAM만)의 단일 DB 집계 결과만이다.
+    멀티 DB 병합 표는 행마다 출처가 달라 끈다(보수).
+    """
+    if state.get("is_multi_db") or not null_group_label_enabled(state.get("active_db_id")):
+        return None
+    return group_key_columns(state.get("generated_sql") or "")
+
+
+def _label_null_group_keys(
+    row: dict[str, Any], keys: Optional[frozenset[str]],
+) -> dict[str, Any]:
+    """묶음 기준 컬럼의 NULL을 「(값 없음)」으로 바꾼 **표시용 사본**(집계 값이 있는 행만)."""
+    if not keys:
+        return row
+    key_cols = [k for k in row if str(k).casefold() in keys]
+    if not any(row[k] is None for k in key_cols):
+        return row
+    if all(row[k] is None for k in row if k not in key_cols):
+        return row  # 집계 값도 비면 그대로(전 행 null 강등 등 다른 규칙 소관)
+    return {k: (NULL_GROUP_LABEL if k in key_cols and v is None else v) for k, v in row.items()}
 
 
 def _form_fill_pending_notice(unresolved: int) -> str:
