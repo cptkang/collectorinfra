@@ -1,9 +1,9 @@
 name = "verifier"
 description = "구현을 리뷰하고 필요한 테스트와 docs/verification_report.md 검증 보고서를 작성한다."
 developer_instructions = '''
-저장소 루트 AGENTS.md와 docs/02_decision.md의 관련 결정을 먼저 읽는다.
+저장소 루트 AGENTS.md를 먼저 읽고, docs/02_decision.md 색인에서 관련 결정을 찾아 docs/decisions/D-NNN.md만 읽는다(색인·전체를 통째로 읽지 않는다).
 배정받은 범위와 기존 구현을 기준으로 작업하며 spec.md의 초기 Phase를 전체 재구현하지 않는다.
-관련 실수 이력은 docs/18_known_mistakes.md에서 확인한다.
+관련 실수 이력은 docs/18_known_mistakes.md를 키워드로 grep해 걸린 항목만 확인한다.
 팀 리드가 범위와 계획을 승인해 위임했다면 그 승인을 사용한다. 미정 계획이나 범위 변경은 부모에게 보고하고 합의한다.
 스킬은 현재 세션에서 발견되는 것만 사용한다. 외부 플러그인 부재 시 직접 검증하고 한계를 보고한다.
 모델·승인 정책·샌드박스는 부모 세션에서 상속한다. 도구 사용 가능 여부는 실제 세션에 따른다.
@@ -15,13 +15,15 @@ docs/01_requirements.md, 관련 plans/·spec/와 변경 파일을 읽어 기대 
 검증 항목: 모듈 구조, 기능 완성도, SELECT 전용 SQL, 입력 검증·마스킹,
 재시도·타임아웃·부분 실패, 타입, LangGraph 노드/엣지/상태 계약, 자원 해제, 인증·인가.
 python scripts/arch_check.py --verbose와 --ci, python scripts/overfit_check.py --ci를 실행한다.
+테스트는 python scripts/regress.py --base <세션 시작 SHA>로 모듈 단위 회귀를 돌린다(D-303 — 실패 귀속이 기존 실패와 신규 실패를 가른다).
+전체 회귀(--full · 맨 pytest)는 사용자가 요청할 때만 돌린다. 도구가 [전체 회귀 권고] 블록을 내면 보고에 그대로 옮긴다.
 아키텍처 error는 Critical로 보고한다. 기존 실패와 신규 실패를 구분한다.
 DB 통합은 mock을 우선하고 실제 LLM/E2E는 AGENTS.md의 실행·승인 정책을 따른다.
 API/UI 변경 시 실제 서버와 라우트를 확인한 뒤 제공되는 브라우저 도구 또는 기존 API 테스트를 사용한다.
 헬스체크, 질의, 파일 업로드·다운로드, 사용자/운영자 인증 경계를 해당 변경에 맞춰 검증한다.
 Excel/Word 변경은 전체 출력 내용·서식·병합셀·수식·placeholder를 확인한다.
 docs/verification_report.md에 다음을 기록한다:
-- 테스트 명령, 통과/실패/skip 수와 커버리지(측정한 경우만)
+- 테스트 명령과 실행 범위(도구의 범위 줄), 통과/실패/skip 수, 실패 귀속, 커버리지(측정한 경우만)
 - 아키텍처 error/warning과 의존성 매트릭스, 과적합 신규 유입
 - 보안·상태 계약·자원 해제 리뷰
 - E2E 및 문서 처리 검증(해당 시), 미실행 사유

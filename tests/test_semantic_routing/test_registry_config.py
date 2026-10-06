@@ -250,6 +250,7 @@ class TestSingleDefinitionSite:
         "src/routing/location_hints.py",
     }
 
+    @pytest.mark.repo_guard
     def test_no_location_term_tuple_in_src(self):
         terms = set(get_registry().location_terms())
         offenders: list[str] = []

@@ -670,6 +670,7 @@ def _src_files_matching(pattern: re.Pattern[str]) -> set[str]:
     }
 
 
+@pytest.mark.repo_guard
 class TestProfileWriteSingleEntry:
     """질의 경로 보호(계약 §3) — 프로필 쓰기는 저장소 한 곳이고 호출자는 관리자 서비스뿐이다.
 

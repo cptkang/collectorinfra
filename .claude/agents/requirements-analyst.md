@@ -1,5 +1,6 @@
 ---
 name: requirements-analyst
+model: sonnet
 description: spec.md를 분석하여 구조화된 요구사항 문서(docs/01_requirements.md)를 작성하는 에이전트
 tools:
   - Read

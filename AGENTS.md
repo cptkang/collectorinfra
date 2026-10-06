@@ -16,7 +16,7 @@ Codex용 저장소 지침. 한국어로 소통한다. 포팅 구성과 사용법
 도메인 판정이나 별도 자격증명을 가진 관측 소스는 독립 게이트웨이 패키지로 둔다(D-274) — 제니퍼 APM은 `apm_gateway/`.
 
 - 원 요구사항: `spec.md` (초기 스펙 — 현 구현은 이보다 훨씬 확장됨)
-- **의사결정 정본: `docs/02_decision.md`** — 작업 전 필독, 작업 후 갱신 (아래 「의사결정 기록」 참조)
+- **의사결정: 색인 `docs/02_decision.md` + 본문 `docs/decisions/D-NNN.md`** — 작업 전 관련 결정 확인, 작업 후 갱신 (아래 「의사결정 기록」 참조)
 - 계획서 전건 인덱스: `plans/INDEX.md` (113건) — **미완 계획서는 파일명의 번호 바로 뒤에 상태 태그를 단다**(`NN-TODO-slug.md` / `NN-WIP-slug.md`): `TODO`(코드 0건) · `WIP`(잔여 있음) · 무표기(완료·로드맵). 파일을 열기 전에 목록만으로 잔여를 판단할 수 있다(규칙: INDEX 「파일명 상태 접미사」) · 실행 경로 단일 출처: `docs/21_orchestration_ladder.md`
 - 최근 작업 단위는 `plans/NN-*.md` + `spec/SPEC-*.md` + `spec/CAPABILITY-MAP-*.md` 조합으로 진행된다
   (스펙 산출물은 `spec/`에만 둔다 — 아래 「SDD 산출물 위치」).
@@ -130,6 +130,8 @@ APM: `cd apm_gateway && ../.venv/bin/python -m apm_gateway`.
 DB2 대상 MCP 기동 전 `ibm-db` 설치 여부를 확인한다.
 
 ```bash
+python scripts/regress.py --base <세션 시작 SHA>
+python scripts/regress.py --full
 pytest
 pytest tests/test_graph.py -v
 cd sre_agent && .venv/bin/python -m pytest tests -q
@@ -137,6 +139,7 @@ cd mcp_server && ../.venv/bin/python -m pytest
 cd apm_gateway && ../.venv/bin/python -m pytest -q
 ```
 
+구현·교정 뒤 기본은 `scripts/regress.py` 모듈 단위 회귀다. `--full`과 맨 `pytest`(전체)는 사용자가 요청할 때만 쓴다(아래 「회귀 테스트 정책」 · D-303).
 각 `cd` 명령은 루트에서 개별 실행한다. 루트 pytest는 본체와 noise_gate를 수집한다.
 코드 변경 시 `python scripts/arch_check.py --ci`와 `python scripts/overfit_check.py --ci`를 실행한다.
 린트·타입 검사: `ruff check src/ tests/`, `mypy src/`.
@@ -226,6 +229,7 @@ cd apm_gateway && ../.venv/bin/python -m pytest -q
 |---|---|---|
 | `arch_check.py` | Clean Architecture 계층 의존 방향 (`src/` + `noise_gate/` 동시) | `--ci` |
 | `overfit_check.py` | 공용 계층의 폴스타 스키마 리터럴·운영 도메인 누수 (기준선 대비 신규 유입 차단) | `--ci` |
+| `regress.py` | 모듈 단위 회귀 + 위 두 게이트 + 바꾼 파일 ruff·mypy + 실패 귀속 (D-303) | 기본 · `--full`은 사용자 요청 시 |
 | `catalog_diff.py` | 시맨틱 모델 사본 ↔ profiles+knowledge 파생 동등성 | |
 | `prompt_render_diff.py` | 프롬프트 렌더 회귀 | |
 | `pii_probe.py` / `pii_regex_check.py` | PII 규칙 점검 | |
@@ -236,22 +240,36 @@ cd apm_gateway && ../.venv/bin/python -m pytest -q
 
 ## 회귀 테스트 정책 (D-303)
 
-구현·교정 뒤 회귀는 **바꾼 모듈 단위**로 돌린다. **전체 회귀는 사용자가 요청할 때만** 돌린다. 근거·실측·도구 계획은 `plans/136`에 있다.
+구현·교정 뒤 회귀는 **바꾼 모듈 단위**로 돌린다. **전체 회귀는 사용자가 요청할 때만** 돌린다. 도구는 `scripts/regress.py`이고 근거·실측은 `plans/136`에 있다.
 
-1. **선택** — 다음을 합쳐 돌린다.
+```bash
+python scripts/regress.py --base <세션 시작 SHA>                 # 기본 — 모듈 단위 · 병렬 · 정적 게이트 · 실패 귀속
+python scripts/regress.py --base <SHA> --files <내가 바꾼 파일…>  # 병행 세션 변경을 빼고 내 파일만 기준으로
+python scripts/regress.py --plan                                  # 무엇을 돌릴지 목록만(실행 안 함)
+python scripts/regress.py --wide                                  # 1단계 확장(공개 시그니처를 바꾸면 자동 적용)
+python scripts/regress.py --full                                  # 사용자가 요청할 때만 — 전 패키지 전체 · 병렬
+```
+
+`--base`는 세션 시작 SHA로 준다. 생략하면 `HEAD` 기준이라 병행 세션이 커밋했으면 범위가 틀린다(도구가 경고한다).
+
+1. **선택** — 다음을 합쳐 돌린다. 결과는 모듈별 표로 나온다.
    - 바꾼 테스트 파일
    - 바꾼 Python 모듈을 **직접 import**하는 테스트. 함수 안의 import와 `patch("src.x.y")` 같은 문자열 모듈 경로도 포함한다
    - 바꾼 비Python 파일의 경로·파일명을 적은 테스트
    - 바꾼 독립 패키지(apm_gateway·mcp_server·sre_agent)의 테스트 전체
+   - 저장소 전역 가드(`@pytest.mark.repo_guard` — 소스 트리 전체를 훑는 테스트)
+2. **전체는 요청 시만** — 계획 완료·Wave 종료·커밋 전에도 자동으로 돌리지 않는다. 도구가 출력 끝에 `[전체 회귀 권고]` 블록을 내면 **그 블록을 사용자 보고에 그대로 옮기고**, 전체 회귀는 스스로 돌리지 않는다. 권고는 실패가 아니라 종료 코드에 영향이 없다. 권고 조건(결정적):
+   - 테스트 기반 파일 변경 — `pyproject.toml`·`uv.lock`·pytest 설정·루트 conftest
+   - 허브 모듈 변경 — 전이 import가 테스트의 85% 이상에 닿는 모듈(예: `src/config.py`)
+   - 공개 함수·클래스의 시그니처·반환 형태를 깨는 변경 — 이때는 `--wide`도 자동 적용된다
+   - Python 모듈 이동·삭제
+   - 직접 import 선택이 테스트의 40% 이상
+3. **병렬** — 본체·apm_gateway는 `pytest-xdist` 워커(합계 최대 8), mcp_server·sre_agent는 별도 프로세스로 동시에 돈다. 선택이 100건(정적 테스트 함수 수) 미만이면 직렬이다. 병렬로 못 도는 테스트만 `serial` 마커로 직렬 분리하되, 원인(전역 상태 미원복 등) 교정이 먼저다. `addopts`에 `-n`을 넣지 않는다.
+4. **정적 게이트는 매번** — 도구가 `arch_check --ci`·`overfit_check --ci`를 함께 돌린다. ruff·mypy는 바꾼 파일만 검사하고, 이번 diff 줄에 걸린 위반만 신규로 센다.
+5. **실패분만 재대조** — 도구가 실패 ID만 `--base` 커밋의 격리 worktree(`.env` 계열 심링크 · `PYTHONPATH`=사본)에서 다시 돌려 「원래 실패 / 이번 변경 탓 / 새 테스트 실패」로 가른다. 이번 변경 탓·새 테스트 실패·정적 게이트 실패가 있으면 종료 코드 1, 원래 실패뿐이면 0이다. 실패 ID 목록 등 산출물은 `logs/regress/<시각>-<pid>/`에 남는다. 교정 라운드에서는 실패했던 테스트와 그 모듈 선택분만 다시 돌린다.
+6. **보고에 범위를 적는다** — 도구 출력 마지막 줄(`범위: 모듈 단위 — 전체 미실행`)을 옮긴다. 예: *"모듈 단위 회귀 — 대상 모듈 3 · 412건 통과 · 정적 게이트 통과 · 전체 미실행"*. 모듈 단위 결과를 전체 무회귀처럼 쓰지 않는다.
 
-   공개 함수의 시그니처·반환 형태를 바꿨으면 그 모듈을 import하는 모듈의 테스트까지 넓힌다. 결과는 모듈별로 보고한다.
-2. **전체는 요청 시만** — 계획 완료·Wave 종료·커밋 전에도 자동으로 돌리지 않는다. 필요하다고 판단하면 이유와 함께 제안만 한다.
-3. **병렬** — 독립 패키지는 별도 프로세스로 동시에 돌린다. 본체·apm_gateway는 `pytest-xdist` 도입(`plans/136` W1) 뒤 워커 합계 최대 8로 돌린다. 병렬로 못 도는 테스트만 `serial` 마커로 직렬 분리하되, 원인(전역 상태 미원복 등) 교정이 먼저다.
-4. **정적 게이트는 매번** — `arch_check --ci`·`overfit_check --ci`(합계 약 5초). ruff·mypy는 바꾼 파일만 검사하고, 이번 diff 줄에 걸린 위반만 신규로 본다.
-5. **실패분만 재대조** — 실패 ID만 세션 시작 커밋 worktree에서 다시 돌린다(`.env`·`.encenv` 심링크 · `PYTHONPATH`=사본). 결과는 「원래 실패 / 이번 변경 탓 / 새 테스트」로 가른다. 교정 라운드에서는 실패했던 테스트와 그 모듈 선택분만 다시 돌린다.
-6. **보고에 범위를 적는다** — 예: *"모듈 단위 회귀 — 대상 모듈 3 · 412건 통과 · 정적 게이트 통과 · 전체 미실행"*. 모듈 단위 결과를 전체 무회귀처럼 쓰지 않는다.
-
-도구(`scripts/regress.py` — `plans/136` W2)가 나오기 전에는 손으로 고른다. 바꾼 모듈마다 아래 명령으로 찾고, 찾은 파일과 바꾼 테스트를 `pytest` 한 번으로 돌린다.
+**도구를 쓸 수 없을 때(대체 절차)** — 바꾼 모듈마다 아래 grep으로 직접 import하는 테스트를 찾아 바꾼 테스트와 함께 `pytest` 한 번으로 돌리고, 정적 게이트를 따로 돌린다. 위 2의 권고 조건을 손으로 판단해 하나라도 걸리면 같은 형식의 `[전체 회귀 권고]` 블록을 보고에 적는다.
 
 ```bash
 grep -rlE "src\.<패키지>\.<모듈>\b|from src\.<패키지> import [^#]*\b<모듈>\b" tests noise_gate/tests
@@ -323,33 +341,32 @@ Codex 스킬: `$arch-check` (`.agents/skills/arch-check/SKILL.md`)
 
 ## 실수 방지 및 의사결정 관리
 
-### 에이전트 실수 이력 관리
+### 에이전트 실수 이력 (`docs/18_known_mistakes.md`)
 
-에이전트가 작업 중 실수한 항목은 `docs/18_known_mistakes.md`의 표에 기록하여 동일 실수가 반복되지 않도록 한다.
+- 실수 발생 시 원인과 수정 내용을 **파일 맨 아래에 항목 블록으로** 즉시 추가한다: `### YYYY-MM-DD · 한 줄 요약` 다음 줄에 `- **실수**:` · `- **원인**:` · `- **방지책**:`
+- 작업 시작 시 아래 「Known Mistakes 핵심 원칙」을 확인하고, 관련 영역이면 키워드로 grep해 걸린 항목만 읽는다(목록은 `grep -n '^### '`). 통째로 읽지 않는다.
 
-- 실수 발생 시: 원인과 수정 내용을 `docs/18_known_mistakes.md`에 즉시 기록
-- 작업 시작 시: 아래 "Known Mistakes 핵심 원칙"을 확인하고, 관련 영역 작업 시 `docs/18_known_mistakes.md`의 상세 이력 참조
-- 형식: `[날짜] 실수 내용 — 원인 — 방지책`
-
-### 의사결정 기록 (`docs/02_decision.md`)
-
-프로젝트의 아키텍처·설계 의사결정은 `docs/02_decision.md`에 일원화하여 관리한다.
+### 의사결정 기록 — 색인 `docs/02_decision.md` + 본문 `docs/decisions/D-NNN.md` (D-304)
 
 **작업 전 (필수)**:
-1. `docs/02_decision.md`를 읽고 기존 결정 사항을 확인한다.
+1. 작업 영역의 키워드로 색인을 grep하고, 관련 결정 파일만 읽는다. 색인이나 `docs/decisions/` 전체를 통째로 읽지 않는다.
 2. 수행할 작업이 기존 결정과 충돌하는지 검토한다.
 3. **충돌이 발견되면 임의로 진행하지 말고 사용자에게 문의**하여 결정을 받는다.
 
 **작업 후 (필수)**:
-1. 작업 중 새로운 의사결정이 발생하면 `docs/02_decision.md`에 추가한다.
-2. 기존 결정이 변경되었으면 해당 항목의 상태를 갱신한다.
-3. 형식: 기존 `D-NNN` 번호 체계를 따른다 (결정일, 상태, 결정 내용, 근거, 대안).
+1. 새 결정은 `docs/decisions/D-NNN.md` 새 파일 + 색인 표 끝 1행 + `docs/decisions/CHANGELOG.md` 맨 위 1행으로 등재한다.
+2. 기존 결정이 바뀌면 그 파일의 상태·부기와 색인 행의 상태 칸을 고치고 CHANGELOG에 1행을 넣는다.
+3. 형식(결정일·상태·결정·근거·구현·주의·관련)과 채번 규칙(색인 표 최댓값 + 1 · 예약은 색인 행)은 색인의 「쓰는 법」을 따른다.
+
+### 계획서 인덱스 (`plans/INDEX.md`)
+
+상태 칸은 240자 이내 요약으로 쓰고 상세는 계획서 머리에 둔다. INDEX 머리에는 최종 갱신 날짜만 두고, 갱신 이력은 `plans/INDEX-CHANGELOG.md` 맨 위에 한 줄씩 추가한다(D-304).
 
 ---
 
 ## Known Mistakes 핵심 원칙
 
-> 전체 실수 이력(50여 건, 원인·방지책 상세)은 `docs/18_known_mistakes.md` 참조. 아래는 반복 실수에서 추출한 예방 원칙 요약.
+> 전체 실수 이력은 `docs/18_known_mistakes.md`(grep으로 조회). 아래는 반복 실수에서 추출한 예방 원칙 요약.
 
 **과금 외부 API 승인 게이트 · 실 LLM 테스트는 로컬 MLX 기준 (D-127 · D-240 개정 — 2026-09-21 사용자 정책)**
 - **실 LLM이 필요한 테스트·스모크·검증은 로컬 MLX로 진행한다** — 워커·오케스트레이터 두 평면이 모두 `mlx`(127.0.0.1 루프백 `mlx_lm.server`)면 비과금이라(D-222) **사용자 승인 없이** 에이전트가 실행한다
@@ -365,7 +382,7 @@ Codex 스킬: `$arch-check` (`.agents/skills/arch-check/SKILL.md`)
 - 결정적 게이트가 의존하는 데이터는 실 런타임 shape로 검증 — mock 통과 ≠ 프로덕션 동작(로더가 구조를 변형할 수 있음)
 - 0건/실패 진단은 안쪽 단계부터 추정 수정하지 말고 진입·게이트별 로그로 끊긴 지점부터 확정(증상보다 라우팅 먼저). 필드 null은 데이터 부재가 아니라 생성 SQL 오류일 수 있음
 - **경로·모듈 폐기 제안은 D-161 ② 4항 실측 첨부 필수** — ①`.env` 운영 실제값(코드 기본값 아님) ②관련 패키지의 실 설치·서빙 상태 ③대상 파일 `git log` 최종 수정일(**`--all` 사용 시 `git merge-base --is-ancestor`로 현 브랜치 소속 확인**) ④역방향 import(다른 경로가 이 모듈을 재사용하는지). 하나라도 누락된 폐기 제안은 반려한다 — "죽은 경로처럼 보이는 것"과 "실제로 죽은 경로"는 정적 읽기로 구별되지 않는다
-- **D-번호 예약은 `docs/02_decision.md` 안내 라인에 등재해야 효력이 있다** — 계획서에만 적은 예약은 채번 grep 대상이 아니라 소진된다(D-161 부기)
+- **D-번호 예약은 `docs/02_decision.md` 색인 표에 `예약` 행을 넣어야 효력이 있다** — 계획서에만 적은 예약은 소진된다(D-161 · D-304)
 
 **pydantic-settings / .env**
 - `.env`의 list/dict 필드는 JSON 배열 형식(`["a","b"]`)으로 작성
@@ -404,6 +421,6 @@ Codex 스킬: `$arch-check` (`.agents/skills/arch-check/SKILL.md`)
 - 대량 테스트 실패는 원인별 분류부터(`--tb=line` 후 유형 카운트) — 한 유형이 지배적이면 단일 오염원 의심. e2e는 `RUN_E2E=1` 옵트인
 - 결정적 상수·매트릭스 값 변경 시 그 값을 단언하는 테스트를 repo 전체 grep으로 일괄 갱신. 기존 테스트가 버그를 정답으로 굳혔는지도 점검
 - 클린 기준선 검증은 `git stash`가 아니라 `git worktree add <dir> HEAD`(격리 사본)
-- 신규 D-번호는 `docs/02_decision.md`의 `## D-` 헤더·「변경 이력」 표·「채번 이력」 표를 모두 grep해 실제 최댓값+1 부여(예약은 「채번 이력」 표에 등재해야 효력)
+- 신규 D-번호는 `docs/02_decision.md` 색인 표(예약 행 포함)의 최댓값+1 — 등재 직전 `ls docs/decisions/ | tail -3`으로 병행 세션 선점을 확인한다(D-304)
 - 산출물 검증은 미리보기 일부가 아니라 실제 산출 파일의 전 칼럼 확인
 

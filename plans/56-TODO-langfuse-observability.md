@@ -4,6 +4,7 @@
 > **관련 Plan**: 49(deepagents 오케스트레이션), 50(멀티턴·제어 평면 토큰), 52(알람 노이즈 캔슬링), 55(멀티소스 관측 로드맵)
 > **관련 결정**: D-050 (신규 예정 — §9. **등재 직전 `## D-` 헤더와 「변경 이력」 표를 모두 grep하여 실제 최대 번호 재확인** 필수, Known Mistakes 2026-06-29 참조)
 > **상태**: 계획 (Phase L1~L4 미착수)
+> **2026-10-06 — D-303 회귀 정책 반영**: 성공 기준 4·Phase 7 검증·회귀 항목(7)의 전체 스위트 → 모듈 단위 회귀(전체는 사용자 요청 시).
 
 ---
 
@@ -42,7 +43,7 @@
 1. `/query/stream` 1회 호출 시 Langfuse UI에서 **하나의 trace** 안에 context_resolver→…→output_generator 노드 span과 각 LLM generation(입출력 포함)이 계층 구조로 보인다
 2. 같은 thread_id로 2턴 대화 시 Langfuse **session 뷰**에 두 trace가 묶여 보인다
 3. FabriX(KBGenAIChat) 호출의 generation에 **input/output 토큰 수**가 표시된다 (API가 usage를 반환하는 경우)
-4. `LANGFUSE_ENABLED=false` 상태에서 전체 테스트 스위트가 기존과 동일하게 통과하고, SSE 토큰 스트리밍이 회귀 없이 동작한다
+4. `LANGFUSE_ENABLED=false` 상태에서 모듈 단위 회귀(`python scripts/regress.py` — D-303 · 범위 명시)가 기존과 동일하게 통과하고, SSE 토큰 스트리밍이 회귀 없이 동작한다
 5. Langfuse 서버 다운 시에도 질의 처리는 정상 동작한다 (관측 실패가 서비스 실패로 전파되지 않음)
 6. 마스킹: 감사 로그와 동일 수준으로 민감 데이터(비밀번호·키 패턴)가 Langfuse 저장 전 마스킹된다
 
@@ -430,7 +431,7 @@ collector(원본 결과 수집, `deepagents_tools.py:159`)는 관측과 무관�
 | 4 | `src/infrastructure/observability.py` (§4.1) | 신규 모듈 | `arch_check --ci` exit 0 |
 | 5 | 진입점 주입: query.py 4곳 + main.py + server.py lifespan (§4.3) | 수정 diff | E2E: trace 계층 확인 (성공 기준 1) |
 | 6 | 멀티턴 session 매핑 확인 | — | 성공 기준 2 |
-| 7 | 무회귀 검증 | — | `LANGFUSE_ENABLED=false`로 전체 스위트 + SSE 스트리밍 수동 확인 (성공 기준 4) |
+| 7 | 무회귀 검증 | — | `LANGFUSE_ENABLED=false`로 모듈 단위 회귀(D-303) + SSE 스트리밍 수동 확인 (성공 기준 4) |
 
 ### Phase L2 — 토큰 계측 (커스텀 클라이언트)
 
@@ -489,7 +490,7 @@ collector(원본 결과 수집, `deepagents_tools.py:159`)는 관측과 무관�
 4. **통합 — 콜백 전파**: fake LLM + 실제 `build_graph`로 `ainvoke(config={"callbacks":[수집 핸들러]})` → 주요 노드의 chat_model 이벤트 수집 단언 (Langfuse 서버 불필요 — 수집용 BaseCallbackHandler 사용)
 5. **회귀 — D-009 스트리밍**: callbacks 주입 상태에서 `astream_events`의 `on_chat_model_stream`+USER_RESPONSE_TAG 이벤트가 기존과 동일하게 발생하는지 단언 (기존 스트리밍 테스트에 callbacks 케이스 추가). **deep_agent 경로 포함**: `result_aggregator(synthesize=True)`의 합성 generation 태그(D-062)도 동일 단언
 6. **통합 — deepagents 3계층 귀속 (§2.6/§4.9)**: fake 오케스트레이터(tool-calling 1회 후 종료하는 fake `BaseChatModel`) + fake 워커로 `run_deep_agent`를 callbacks 포함 config로 실행 → 수집 핸들러에 (a) 오케스트레이터 chat_model 이벤트 (b) 도구 내부 워커 이벤트 (c) 합성 경로 이벤트가 모두 도달하는지 단언 (deepagents 미설치 환경에서는 skip 마킹 — 기존 트랙 B 테스트의 skip 패턴 계승)
-7. **회귀 — 전체 스위트**: `LANGFUSE_ENABLED=false` 기본값으로 전체 통과. 테스트 픽스처에서 `LangfuseConfig(enabled=False)` **명시**하여 로컬 `.env` 누수 차단 (Known Mistakes 2026-06-17 — BaseSettings 테스트 누수)
+7. **회귀 — 모듈 단위(D-303)**: `LANGFUSE_ENABLED=false` 기본값으로 모듈 단위 회귀(`python scripts/regress.py`) · 정적 게이트(arch·overfit) 통과. 실패분만 세션 시작 커밋에서 재대조한다. 전체 회귀는 사용자 요청 시(도구가 「[전체 회귀 권고]」를 내면 그 블록을 사용자에게 그대로 전달). 테스트 픽스처에서 `LangfuseConfig(enabled=False)` **명시**하여 로컬 `.env` 누수 차단 (Known Mistakes 2026-06-17 — BaseSettings 테스트 누수)
 8. **수동 E2E**: 로컬 Langfuse 기동 → `/query/stream` 1회 → UI에서 성공 기준 1·2·3 확인, 스크린샷을 `docs/`에 보관. 트랙 B 활성 환경에서는 §4.6 deep_agent trace 계층도 함께 확인
 
 ---

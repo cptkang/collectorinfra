@@ -71,6 +71,7 @@ def _anchor_present(anchor: str, texts: list[str]) -> bool:
     return any(anchor in t for t in texts)
 
 
+@pytest.mark.repo_guard
 @pytest.mark.parametrize(
     "manual,item", _all_items(), ids=lambda v: v["id"] if isinstance(v, dict) else v
 )
@@ -296,6 +297,7 @@ def _html_escape(s: str) -> str:
     return html.escape(s, quote=True)  # build.py 의 esc() 와 같은 규칙
 
 
+@pytest.mark.repo_guard
 def test_reverse_every_button_and_tab_is_documented() -> None:
     """④ 화면의 버튼 id·탭 값 중 manifest 에 없는 것이 없다(새 기능 누락 감시)."""
     anchors = {a for _, i in _all_items() for a in i["anchors"]}

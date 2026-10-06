@@ -1,5 +1,6 @@
 ---
 name: implementer
+model: opus
 description: 구현 계획에 따라 src/ 디렉토리에 실제 코드를 작성하는 에이전트
 tools:
   - Read
@@ -41,6 +42,7 @@ tools:
 ### 필수: 코드 작성 후 자체 점검
 - **arch-check**: `python scripts/arch_check.py --ci` 실행하여 계층 위반 0건을 확인한 뒤 팀 리드에 보고
   - 위반 발견 시 팀 리드 보고 전에 직접 수정 (패턴 A/B/C 참조: `.claude/skills/arch-check.md`)
+- **regress**: `python scripts/regress.py --base <세션 시작 SHA> --files <내가 바꾼 파일…>`로 모듈 단위 회귀를 돌리고 범위 줄을 보고에 옮깁니다(D-303). 전체 회귀(`--full`)는 돌리지 않습니다 — `[전체 회귀 권고]` 블록이 나오면 그대로 보고합니다
 
 ### 조건부: 작업 영역에 따라
 | 작업 영역 | 스킬 | 활용 방법 |

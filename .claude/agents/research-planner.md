@@ -1,5 +1,6 @@
 ---
 name: research-planner
+model: opus
 description: 요구사항을 바탕으로 기술 조사 및 영역별 상세 구현 계획(plans/*.md)을 수립하는 에이전트
 tools:
   - Read

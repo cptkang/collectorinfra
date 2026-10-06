@@ -126,6 +126,7 @@ def test_facts_match_code() -> None:
     assert facts["ops_dbs"] == sum(1 for db in registry["databases"] if db.get("zone"))
 
 
+@pytest.mark.repo_guard
 def test_linked_only_from_main_page() -> None:
     """② 메인 화면에서만 새 탭으로 연다 — 머리글 제목 · 「매뉴얼 ▾」 메뉴.
 

@@ -338,6 +338,7 @@ def test_multi_db_note_is_same_and_once():
 # ⑥ 삭제된 게이트·설정 참조 0
 # ──────────────────────────────────────────────
 
+@pytest.mark.repo_guard
 def test_deleted_gate_references_zero():
     pattern = re.compile(re.escape(_DELETED_GATE[: -len("_gate")]) + "|" + _DELETED_FIELD.upper())
     hits = [
