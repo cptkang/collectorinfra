@@ -638,10 +638,29 @@ def _null_group_key_columns(state: Any) -> Optional[frozenset[str]]:
 
     레지스트리 `label_null_group_keys`가 켜진 DB(사용자 확정 (가) — ITAM만)의 단일 DB 집계 결과만이다.
     멀티 DB 병합 표는 행마다 출처가 달라 끈다(보수).
+
+    DB·SQL은 **`executed_sqls`(`[{db_id, sql}]` — 실제 실행 SQL)를 먼저** 본다. 2단·1단 최종 응답은
+    집계기가 허용목록으로 새 state를 만들어(`result_aggregator._build_output_state`) 이 노드를 부르는데,
+    거기에는 `active_db_id`·`generated_sql`이 실리지 않는다 — 그 둘만 보던 첫 구현은 폐쇄망에서 한 번도
+    켜지지 않았다(2026-10-06 재검증 · plans/137 §9.5). `executed_sqls`가 없을 때만(그래프 3·4단)
+    `active_db_id`·`generated_sql`로 판정한다.
     """
-    if state.get("is_multi_db") or not null_group_label_enabled(state.get("active_db_id")):
+    executed = [
+        e for e in (state.get("executed_sqls") or [])
+        if isinstance(e, Mapping) and e.get("sql")
+    ]
+    if executed:
+        if len(executed) != 1:
+            return None  # 여러 DB의 실행 SQL — 멀티 DB
+        db_id = executed[0].get("db_id") or state.get("active_db_id")
+        sql = str(executed[0].get("sql") or "")
+    else:
+        if state.get("is_multi_db"):
+            return None
+        db_id, sql = state.get("active_db_id"), state.get("generated_sql") or ""
+    if not null_group_label_enabled(db_id):
         return None
-    return group_key_columns(state.get("generated_sql") or "")
+    return group_key_columns(sql)
 
 
 def _label_null_group_keys(

@@ -562,3 +562,51 @@ class TestNullGroupLabel:
 
         src_text = inspect.getsource(importlib.import_module("src.nodes.output_generator"))
         assert "null_label_keys=_null_group_key_columns(state)" in src_text
+
+
+class TestNullGroupLabelRealWiring:
+    """2단·1단 최종 응답은 집계기가 허용목록으로 만든 state로 output_generator를 부른다 —
+    그 state에는 active_db_id·generated_sql이 없다(폐쇄망 재검증 2026-10-06에서 라벨 미적용 실측).
+    실제 배선(`_build_output_state`)을 통과한 state로 게이트를 검증한다."""
+
+    def _out_state(self, executed: list[dict]) -> dict:
+        from src.orchestration.result_aggregator import _build_output_state
+
+        res = {
+            "organized_data": {"rows": _GROUP_ROWS, "summary": ""},
+            "query_results": _GROUP_ROWS,
+            "executed_sqls": executed,
+            "target_db_ids": [e.get("db_id") for e in executed],
+        }
+        state = {"user_query": "자산분류별 자산 수", "parsed_requirements": {}}
+        return _build_output_state(state, {"sub_query": "자산분류별 자산 수"}, res)
+
+    def test_out_state_lacks_legacy_fields(self):
+        out = self._out_state([{"db_id": "itam", "sql": _GROUP_SQL}])
+        assert "generated_sql" not in out and not out.get("active_db_id")
+
+    def test_gate_on_through_aggregator_state(self):
+        from src.nodes.output_generator import _null_group_key_columns
+
+        keys = _null_group_key_columns(self._out_state([{"db_id": "itam", "sql": _GROUP_SQL}]))
+        assert keys == {"asset_class_code", "asset_class_name"}
+
+    def test_gate_off_for_polestar_and_multi(self):
+        from src.nodes.output_generator import _null_group_key_columns
+
+        assert _null_group_key_columns(
+            self._out_state([{"db_id": "polestar_cm_gp", "sql": _GROUP_SQL}])
+        ) is None
+        assert _null_group_key_columns(self._out_state([
+            {"db_id": "itam", "sql": _GROUP_SQL}, {"db_id": "itam2", "sql": _GROUP_SQL},
+        ])) is None
+
+    async def test_final_table_labels_through_aggregator_state(self):
+        from src.nodes.output_generator import NULL_GROUP_LABEL, _generate_text_response
+
+        out = self._out_state([{"db_id": "itam", "sql": _GROUP_SQL}])
+        text = await _generate_text_response(
+            AppConfig(), out, llm=None, stream_user_response=False,
+            summary_skip_notice="(요약 생략)",
+        )
+        assert f"| {NULL_GROUP_LABEL} | {NULL_GROUP_LABEL} | 1419 |" in text
