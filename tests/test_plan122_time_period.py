@@ -111,3 +111,25 @@ class TestSqlAppliesPeriod:
         assert qt.metric is not None
         assert not sql_applies_period("SELECT name FROM cmm_resource", qt.metric)
         assert not sql_applies_period("", qt.metric)
+
+
+def test_period_block_exempts_present_active_alarms() -> None:
+    """리뷰 M-1 — 검증기와 같은 규칙: 「현재」 질의면 활성 알람 스냅샷에는 기간을 넣지 말라고
+    지시한다."""
+    from src.db_adapters.polestar.time_period import build_period_block
+
+    present = build_period_block(resolve_query_time("지난달 서버 CPU와 현재 활성 알람 수", NOW))
+    assert "「현재」 활성 알람(cmm_alarm_active) 스냅샷만 묻는 부분에는 기간 조건을 넣지" in present
+    plain = build_period_block(resolve_query_time("지난달 알람 목록", NOW))
+    assert "cmm_alarm_active) 스냅샷만" not in plain
+
+
+def test_span_display_is_single_source() -> None:
+    """리뷰 m-7 — 고지·프롬프트 블록의 스팬 정규화는 도메인 함수 하나다(사본 금지)."""
+    from src.db_adapters.polestar import time_period
+    from src.domain import disclosure, time_spec
+
+    assert time_period._span_label is time_spec.display_span
+    assert disclosure._span_text is time_spec.display_span
+    assert time_spec.display_span("최근\n 30일") == "최근 30일"
+    assert len(time_spec.display_span("가" * 60)) == time_spec.SPAN_MAX_CHARS

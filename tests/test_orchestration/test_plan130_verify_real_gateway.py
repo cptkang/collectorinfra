@@ -13,7 +13,7 @@ FastMCP는 **모르는 인자를 조용히 버린다** — 키 이름이 어긋�
 - `instance_id` — 같은 이름·다른 id 인스턴스 둘. 호출마다 1행이어야 한다(버려지면 2배).
 
 결함 재현 V130-2(같은 이름·같은 id · 두 도메인 → 같은 인자 두 번 → 행 중복)는 실프로세스에서도
-`xfail(strict=True)`로 고정한다. 실 제니퍼·외부 네트워크·실 LLM·실 DB 0 · 포트 9096·9097·9099·8080
+고정한다(W4 교정 뒤 통과 — `xfail` 표지는 걷었다). 실 제니퍼·외부 네트워크·실 LLM·실 DB 0 · 포트 9096·9097·9099·8080
 미사용.
 """
 
@@ -203,9 +203,6 @@ async def test_instance_id_narrows_same_named_instances(live) -> None:
                                   ("common", 1000, 6001), ("common", 1000, 6002)]
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "V130-2(Minor · 실프로세스): 같은 소스의 두 도메인에 같은 이름·같은 id — 본체가 같은 인자로"
-    " 두 번 부르고 게이트웨이는 호출마다 두 도메인 행을 다 돌려줘 결과 행이 중복된다"))
 async def test_same_name_and_id_in_two_domains_is_not_duplicated(live) -> None:
     url, _ = live
     res = await _real(url, ["apm.app_health"], [{"text": "dup-was", "kind": "instance"}])

@@ -32,7 +32,8 @@ from datetime import timedelta
 from typing import Any, Literal, NotRequired, TypedDict
 
 from src.domain import time_spec as ts
-from src.domain.time_spec import Subject, TimeResolution
+from src.domain.time_spec import SPAN_MAX_CHARS as SPAN_MAX_CHARS  # 재노출(테스트·소비처)
+from src.domain.time_spec import Subject, TimeResolution, display_span
 
 # ── 123 고지 kind (결과가 전부가 아님을 알리는 것) ─────────────────────────────
 
@@ -349,17 +350,9 @@ _PERIOD_NOTE_PHRASES: dict[str, str] = {
     ts.NOTE_FUTURE_PERIOD: "아직 오지 않은 기간 포함",
 }
 _LLM_SOURCE_PHRASE = "모델 해석 — 다르면 날짜를 직접 적어 주세요"
-#: 원문 스팬 에코 상한(자) — LLM 슬롯 스팬은 길이 제한이 없다(리뷰 m-7).
-SPAN_MAX_CHARS = 40
-
-
-def _span_text(span: str) -> str:
-    """고지에 싣는 원문 스팬 — 공백·개행을 한 칸으로 접고 `SPAN_MAX_CHARS`자에서 말줄임한다.
-
-    개행이 남으면 `[조회 기간]` 줄이 쪼개져 줄 단위 중복 제거(집계기)가 어긋난다(리뷰 m-7).
-    """
-    text = " ".join(str(span or "").split())
-    return text if len(text) <= SPAN_MAX_CHARS else text[: SPAN_MAX_CHARS - 1] + "…"
+#: 원문 스팬 에코 상한·정규화는 `time_spec.display_span`이 단일 출처다
+#: (리뷰 m-7 · 프롬프트 블록과 공용).
+_span_text = display_span
 
 
 def _period_range_label(res: TimeResolution) -> str:

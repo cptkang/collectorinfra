@@ -16,13 +16,17 @@ D-308 ① · plans/139 W3.
 | `related` | — | ``{상대 테이블: 연결 설명}`` — 상대 실존 · 설명 ≤ 100자 · 금지 텍스트 없음 |
 | `notes` | — | ≤ 300자 · 금지 텍스트 없음 |
 | `origin` | ✓ | `ORIGINS` 값만 |
-| `group` | — | 관리 화면 묶음용 문자열(프롬프트 미사용) |
+| `group` | — | 관리 화면 묶음용 문자열 · ≤ 30자 · 금지 텍스트 없음(0개 안내 문구에 실린다) |
 
-- **금지 텍스트**(프롬프트 주입 방지): 중괄호 · 코드 펜스 · 닫히지 않은 백틱 · SQL 문 키워드를 담은
-  백틱 구간. 백틱으로 감싼 식별자는 허용한다. 제어문자는 거절하고 연속 공백·줄바꿈은 한 칸으로
+- **금지 텍스트**(프롬프트 주입 방지): 중괄호 · 코드 펜스(```` ``` ```` · ``~~~``) · 닫히지 않은 백틱 ·
+  SQL 문 키워드를 담은 백틱 구간. 검사는 NFKC 정규화 뒤에 한다(전각 문자 우회 차단). 백틱으로 감싼
+  식별자는 허용한다. 제어문자(Cc)·서식 문자(Cf — 영폭 공백 등)는 거절하고 연속 공백·줄바꿈은 한 칸으로
   접는다.
 - **값(표본·코드값)은 정의에 넣지 않는다** — 형식이 그런 칸을 두지 않는다.
 - 테이블 이름 비교는 맨 이름 소문자(`bare_name`)로 한다. 정규화한 결과의 키는 스키마 쪽 테이블 키다.
+- 오류 문구는 값을 `describe_value`로 짧게 싣는다 — 별칭으로 부푼 중첩 값을 펼치지 않는다.
+- 질의 경로(선별 프롬프트·용도 블록)는 승인 검증을 거치지 않은 파일 편집에 대비해
+  `sanitize_definitions_for_prompt`로 한 번 더 거른다(두 소비처가 같은 함수 — D-066).
 
 계층: domain — 순수 함수 · I/O·LLM 0 · 표준 라이브러리와 domain만 import · 스키마 리터럴 0.
 """
@@ -30,6 +34,7 @@ D-308 ① · plans/139 W3.
 from __future__ import annotations
 
 import re
+import reprlib
 import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -39,9 +44,11 @@ from src.domain.schema_snapshot import bare_name
 #: 프로필 키
 PROFILE_KEY = "table_definitions"
 
+#: 테이블 성격 「수집적재」 — 선별(LLM 프롬프트 규칙 · 어휘 대체)이 고르지 않는다
+KIND_COLLECT_LOAD = "수집적재"
 #: 테이블 성격 — 시드 머리 주석의 목록(`신청·처리`·`기준·코드`는 한 값이다)
 KINDS: tuple[str, ...] = (
-    "현행", "수집적재", "수집이력", "변경이력", "신청·처리", "점검", "매핑", "기준·코드",
+    "현행", KIND_COLLECT_LOAD, "수집이력", "변경이력", "신청·처리", "점검", "매핑", "기준·코드",
     "로그", "게시판", "통계", "설정",
 )
 #: 정의 출처 — 사람이 쓴 값(`manual`)은 재생성 병합에서 보존한다
@@ -54,9 +61,14 @@ ORIGIN_MANUAL = "manual"
 MANAGES_MAX_CHARS = 300
 NOTES_MAX_CHARS = 300
 RELATED_TEXT_MAX_CHARS = 100
+GROUP_MAX_CHARS = 30
 KEY_COLUMNS_MAX = 10
 #: 가져오기 YAML 본문 상한(문자 수 — API 요청 모델과 서비스가 함께 쓴다)
 IMPORT_MAX_CHARS = 1_000_000
+#: 오류 문구·표시용 사본에 싣는 값 발췌 상한(문자)
+VALUE_EXCERPT_MAX_CHARS = 60
+#: 프롬프트용 정제에서 대표 컬럼·연결 상대 이름 1개의 길이 상한(파일 직접 편집 방어)
+_PROMPT_IDENTIFIER_MAX_CHARS = 128
 
 #: 정규화 결과의 필드 순서(없는 선택 필드는 싣지 않는다)
 FIELDS: tuple[str, ...] = (
@@ -75,17 +87,43 @@ _SQL_KEYWORD_RE = re.compile(
 )
 _BACKTICK_SPAN_RE = re.compile(r"`([^`]*)`")
 _ALLOWED_CONTROL = frozenset("\t\n\r")
+_CODE_FENCES: tuple[str, ...] = ("```", "~~~")
+
+# 값 발췌 — 앞쪽 몇 개 원소·두 단계까지만 본다(별칭으로 부푼 중첩 값도 펼치지 않는다)
+_EXCERPT_REPR = reprlib.Repr()
+_EXCERPT_REPR.maxlevel = 2
+_EXCERPT_REPR.maxlist = _EXCERPT_REPR.maxtuple = _EXCERPT_REPR.maxdict = 3
+_EXCERPT_REPR.maxset = _EXCERPT_REPR.maxfrozenset = 3
+_EXCERPT_REPR.maxstring = _EXCERPT_REPR.maxother = 30
+
+
+def describe_value(value: Any) -> str:
+    """오류 문구·표시용 사본에 싣는 값 표기(≤ `VALUE_EXCERPT_MAX_CHARS`자 남짓).
+
+    문자열은 `repr`(길면 앞부분 + ``…``), 그 밖의 값은 ``타입 이름 + 짧은 발췌``다. 가져오기 YAML의
+    별칭으로 부푼 중첩 값도 앞쪽 몇 개 원소만 보므로 펼치지 않는다.
+    """
+    if isinstance(value, str):
+        if len(value) <= VALUE_EXCERPT_MAX_CHARS:
+            return repr(value)
+        return repr(value[:VALUE_EXCERPT_MAX_CHARS]) + "…"
+    text = f"{type(value).__name__} {_EXCERPT_REPR.repr(value)}"
+    if len(text) > VALUE_EXCERPT_MAX_CHARS:
+        text = text[: VALUE_EXCERPT_MAX_CHARS - 1] + "…"
+    return text
 
 
 def _forbidden_reason(text: str) -> str | None:
-    """프롬프트 주입 금지 텍스트 사유(없으면 None)."""
-    if "{" in text or "}" in text:
+    """프롬프트 주입 금지 텍스트 사유(없으면 None) — NFKC 정규화한 글로 본다(전각 우회 차단)."""
+    folded = unicodedata.normalize("NFKC", text)
+    if "{" in folded or "}" in folded:
         return "중괄호({ })를 쓸 수 없습니다"
-    if "```" in text:
-        return "코드 펜스(```)를 쓸 수 없습니다"
-    if text.count("`") % 2:
+    for fence in _CODE_FENCES:
+        if fence in folded:
+            return f"코드 펜스({fence})를 쓸 수 없습니다"
+    if folded.count("`") % 2:
         return "닫히지 않은 백틱(`)이 있습니다"
-    for span in _BACKTICK_SPAN_RE.findall(text):
+    for span in _BACKTICK_SPAN_RE.findall(folded):
         found = _SQL_KEYWORD_RE.search(span)
         if found is not None:
             return f"백틱 구간에 SQL 키워드({found.group(1).upper()})를 쓸 수 없습니다"
@@ -93,11 +131,18 @@ def _forbidden_reason(text: str) -> str | None:
 
 
 def _clean_text(value: Any, label: str) -> tuple[str, str | None]:
-    """문자열 확인 · 제어문자 거절 · 연속 공백·줄바꿈을 한 칸으로 접는다 → ``(정규화 값, 오류)``."""
+    """문자열 확인 · 제어문자·서식 문자 거절 · 연속 공백·줄바꿈을 한 칸으로 접는다.
+
+    Returns:
+        ``(정규화 값, 오류)`` — 서식 문자(Cf)는 영폭 공백처럼 보이지 않게 금지 검사를 피하는 데 쓰일
+        수 있어 거절한다.
+    """
     if not isinstance(value, str):
         return "", f"{label}은(는) 문자열이어야 합니다"
     if any(unicodedata.category(ch) == "Cc" and ch not in _ALLOWED_CONTROL for ch in value):
         return "", f"{label}에 제어문자가 있습니다"
+    if any(unicodedata.category(ch) == "Cf" for ch in value):
+        return "", f"{label}에 보이지 않는 서식 문자(영폭 공백 등)가 있습니다"
     return " ".join(value.split()), None
 
 
@@ -184,16 +229,17 @@ def _validate_entry(
 
     group = raw.get("group")
     if not _is_absent(group):
-        text, error = _clean_text(group, "group")
-        if error:
-            problems.append(error)
-        elif text:
+        text, errors = _checked_text(group, "group", GROUP_MAX_CHARS, required=False)
+        problems.extend(errors)
+        if text and not errors:
             fields["group"] = text
 
     kind = raw.get("kind")
     if not _is_absent(kind):
         if not isinstance(kind, str) or kind.strip() not in KINDS:
-            problems.append(f"kind는 {'·'.join(KINDS)} 중 하나여야 합니다: {kind!r}")
+            problems.append(
+                f"kind는 {'·'.join(KINDS)} 중 하나여야 합니다: {describe_value(kind)}"
+            )
         else:
             fields["kind"] = kind.strip()
 
@@ -223,7 +269,9 @@ def _validate_entry(
 
     origin = raw.get("origin")
     if not isinstance(origin, str) or origin not in ORIGINS:
-        problems.append(f"origin은 {'·'.join(ORIGINS)} 중 하나여야 합니다: {origin!r}")
+        problems.append(
+            f"origin은 {'·'.join(ORIGINS)} 중 하나여야 합니다: {describe_value(origin)}"
+        )
     else:
         fields["origin"] = origin
 
@@ -306,3 +354,107 @@ def defined_table_count(definitions: Any, tables: Sequence[str]) -> int:
         return 0
     defined = {bare_name(str(k)) for k, v in definitions.items() if isinstance(v, Mapping)}
     return len({bare_name(str(t)) for t in tables} & defined)
+
+
+def _prompt_entry(raw: Any) -> dict[str, Any] | None:
+    """정의 1건을 프롬프트용으로 정제한다 — 한 칸이라도 어긋나면 None(그 테이블 정의를 쓰지 않는다).
+
+    승인 검증과 같은 텍스트 규칙(줄 접기 · 길이 상한 · 금지 텍스트 · kind 허용값 · 대표 컬럼 수)을
+    적용한다. 스키마를 보지 않으므로 컬럼·상대 테이블 실존은 따지지 않고 이름 길이만 묶는다.
+    `origin`은 프롬프트에 싣지 않으므로 필수로 보지 않는다(허용값일 때만 남긴다).
+    """
+    if not isinstance(raw, Mapping):
+        return None
+    out: dict[str, Any] = {}
+
+    manages, errors = _checked_text(
+        raw.get("manages"), "manages", MANAGES_MAX_CHARS, required=True,
+    )
+    if errors:
+        return None
+    out["manages"] = manages
+
+    if not _is_absent(raw.get("group")):
+        group, errors = _checked_text(raw.get("group"), "group", GROUP_MAX_CHARS, required=False)
+        if errors:
+            return None
+        out["group"] = group
+
+    kind = raw.get("kind")
+    if not _is_absent(kind):
+        if not isinstance(kind, str) or kind.strip() not in KINDS:
+            return None
+        out["kind"] = kind.strip()
+
+    keys = raw.get("key_columns")
+    if keys is not None:
+        if not isinstance(keys, (list, tuple)) or len(keys) > KEY_COLUMNS_MAX:
+            return None
+        cleaned: list[str] = []
+        for item in keys:
+            text, errors = _checked_text(
+                item, "key_columns", _PROMPT_IDENTIFIER_MAX_CHARS, required=True,
+            )
+            if errors:
+                return None
+            cleaned.append(text)
+        if cleaned:
+            out["key_columns"] = cleaned
+
+    related = raw.get("related")
+    if related is not None:
+        if not isinstance(related, Mapping):
+            return None
+        pairs: dict[str, str] = {}
+        for other, text in related.items():
+            name, errors = _checked_text(
+                other, "related", _PROMPT_IDENTIFIER_MAX_CHARS, required=True,
+            )
+            note, note_errors = _checked_text(
+                text, "related", RELATED_TEXT_MAX_CHARS, required=True,
+            )
+            if errors or note_errors:
+                return None
+            pairs[name] = note
+        if pairs:
+            out["related"] = pairs
+
+    if not _is_absent(raw.get("notes")):
+        notes, errors = _checked_text(raw.get("notes"), "notes", NOTES_MAX_CHARS, required=False)
+        if errors:
+            return None
+        out["notes"] = notes
+
+    origin = raw.get("origin")
+    if isinstance(origin, str) and origin in ORIGINS:
+        out["origin"] = origin
+    return {k: out[k] for k in FIELDS if k in out}
+
+
+def sanitize_definitions_for_prompt(
+    defs: Any,
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """질의 경로가 프롬프트에 싣기 전 테이블 정의를 거른다 — 선별 프롬프트·용도 블록 공용(D-066).
+
+    승인 경로(`validate_table_definitions`)를 거친 정의는 그대로 통과한다(같은 값 · 같은 필드 순서).
+    프로필 파일을 직접 고쳐 검증을 거치지 않은 정의는 줄을 접고, 길이 상한(manages·notes
+    `MANAGES_MAX_CHARS`·`NOTES_MAX_CHARS` · related `RELATED_TEXT_MAX_CHARS` · group
+    `GROUP_MAX_CHARS`)·kind 허용값·금지 텍스트 중 하나라도 어긋나면 그 테이블 정의를 통째로 뺀다.
+
+    Args:
+        defs: 프로필 `table_definitions` 값(매핑이 아니면 정의 없음으로 본다)
+
+    Returns:
+        ``(정제한 정의, 뺀 테이블 이름 목록)`` — 키는 입력 키 그대로다. 호출부가 뺀 목록을 로그로 남긴다.
+    """
+    if not isinstance(defs, Mapping):
+        return {}, []
+    clean: dict[str, dict[str, Any]] = {}
+    dropped: list[str] = []
+    for name, raw in defs.items():
+        entry = _prompt_entry(raw)
+        if entry is None:
+            dropped.append(str(name))
+        else:
+            clean[str(name)] = entry
+    return clean, dropped

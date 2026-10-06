@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 from src.config import AppConfig
 from src.domain.schema_snapshot import bare_name
 from src.domain.table_definitions import PROFILE_KEY as TABLE_DEFINITIONS_KEY
+from src.domain.table_definitions import sanitize_definitions_for_prompt
 from src.utils.query_gen_common import (
     build_query_examples_block,
     build_value_index_block,
@@ -651,16 +652,9 @@ def format_schema_text(
 # ──────────────────────────────────────────────
 
 #: 「테이블 용도」 블록 머리말 — 단일·멀티 시스템 프롬프트에서 스키마 텍스트 바로 앞에
-#: 같은 바이트로 싣는다
-TABLE_PURPOSE_HEADER = (
-    "[테이블 용도] 선별된 조회 대상 테이블이 관리하는 정보 — "
-    "아래 스키마의 이 테이블들만 사용하세요."
-)
-
-
-def _one_line(value: Any) -> str:
-    """정의 텍스트 1칸을 한 줄로 접는다(문자열이 아니면 빈 문자열)."""
-    return " ".join(value.split()) if isinstance(value, str) else ""
+#: 같은 바이트로 싣는다. 배타 표현을 쓰지 않는다 — 정의가 없는 선별 테이블은 블록에 나오지 않아도
+#: 스키마에는 있고 쓸 수 있다.
+TABLE_PURPOSE_HEADER = "[테이블 용도] 선별된 조회 대상 테이블이 관리하는 정보"
 
 
 def build_table_purpose_block(schema_info: Mapping[str, Any] | None) -> str:
@@ -671,8 +665,9 @@ def build_table_purpose_block(schema_info: Mapping[str, Any] | None) -> str:
     컬럼·연결 상대·성격·업무 영역은 선별용이라 싣지 않는다(plans/139 §4.3).
 
     정의가 하나도 없으면 빈 문자열이다 — 정의 없는 DB의 프롬프트 바이트는 종전과 같다(G-1).
-    질의 경로는 정의를 고치지 않는다(D-227). 승인 검증을 거치지 않은 파일 편집에 대비해 중괄호·
-    코드 펜스가 든 항목은 블록에서 빼고 WARNING을 남긴다.
+    질의 경로는 정의를 고치지 않는다(D-227). 승인 검증을 거치지 않은 파일 편집에 대비해 선별
+    프롬프트와 같은 정제(`sanitize_definitions_for_prompt` — 줄 접기·길이 상한·금지 텍스트)를
+    통과하지 못한 항목은 블록에서 빼고 WARNING을 남긴다.
 
     정의는 `table_selection.definitions_of`와 같은 자리(구조 메타의 프로필 키)에서 읽는다 — 노드 간
     직접 import를 피해 도메인 키로 읽는다(arch_check 노드 간 의존 경고).
@@ -688,28 +683,24 @@ def build_table_purpose_block(schema_info: Mapping[str, Any] | None) -> str:
     tables = (schema_info or {}).get("tables") or {}
     if not isinstance(defs, Mapping) or not defs or not tables:
         return ""
+    clean, dropped = sanitize_definitions_for_prompt(defs)
     index: dict[str, Mapping[str, Any]] = {}
-    for name, entry in defs.items():
-        if isinstance(entry, Mapping):
-            index.setdefault(bare_name(str(name)), entry)
+    for name, entry in clean.items():
+        index.setdefault(bare_name(name), entry)
+    dropped_bare = {bare_name(name) for name in dropped}
     lines: list[str] = []
     skipped: list[str] = []
     for table in sorted(str(t) for t in tables):
         entry = index.get(bare_name(table))
         if entry is None:
+            if bare_name(table) in dropped_bare:
+                skipped.append(table)
             continue
-        manages = _one_line(entry.get("manages"))
-        if not manages:
-            continue
-        notes = _one_line(entry.get("notes"))
-        text = manages + notes
-        if "{" in text or "}" in text or "```" in text:
-            skipped.append(table)
-            continue
-        lines.append(f"- {table}: {manages}" + (f" (주의: {notes})" if notes else ""))
+        notes = entry.get("notes")
+        lines.append(f"- {table}: {entry['manages']}" + (f" (주의: {notes})" if notes else ""))
     if skipped:
         logger.warning(
-            "[테이블용도] 중괄호·코드 펜스가 든 정의 %d개를 블록에서 뺌(승인 검증을 거치지 않은 "
+            "[테이블용도] 검증을 통과하지 못한 정의 %d개를 블록에서 뺌(승인 검증을 거치지 않은 "
             "편집 의심): %s", len(skipped), skipped,
         )
     if not lines:

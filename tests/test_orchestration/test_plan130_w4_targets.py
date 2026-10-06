@@ -481,8 +481,10 @@ def test_sanitize_targets_keeps_shape_only() -> None:
            {"text": "x" * (aq.TARGET_TEXT_MAX + 1)}, {"text": "b", "kind": "weird"},
            {"text": "c", "kind": "business"}, {"kind": "auto"}, {"text": 3}]
     clean = aq.sanitize_targets(raw)
-    assert clean == [{"text": "a", "kind": "instance"}, {"text": "b", "kind": "auto"},
-                     {"text": "c", "kind": "business"}]
+    # 길이 초과는 버리지 않고 줄여 남긴다 — 처리기가 「대상 있음」으로 세고 해석 없이 고지(V130-7)
+    assert clean == [{"text": "a", "kind": "instance"},
+                     {"text": "x" * aq.TARGET_TEXT_MAX + "…", "kind": "auto"},
+                     {"text": "b", "kind": "auto"}, {"text": "c", "kind": "business"}]
     assert aq.sanitize_targets(clean) == clean, "다시 걸러도 같다"
     assert aq.sanitize_targets(None) == [] and aq.sanitize_targets("abc") == []
 

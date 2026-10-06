@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from conftest import make_tools, synthetic_handler
-
 from apm_gateway.domain.errors import ApmError
+from conftest import make_tools, synthetic_handler
 
 
 def _inst(instance_id: int, name: str, host: str) -> dict:
@@ -72,7 +71,8 @@ async def test_unknown_domain_is_reported_not_silent(tools):
     out = await tools.apm_instance_map(domain_id=9999)
     assert out["rows"] == []
     assert any("도메인 9999" in x and "1000, 1130" in x for x in out["limits"])
-    assert out["_unresolved"] == ["도메인 ID 9999는 제니퍼 도메인 목록에 없습니다(있는 도메인: 1000, 1130)"]
+    assert out["_unresolved"] == [
+        "도메인 ID 9999는 제니퍼 도메인 목록에 없습니다(있는 도메인: 1000, 1130)"]
 
 
 @pytest.mark.asyncio

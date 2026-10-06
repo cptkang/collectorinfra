@@ -12,8 +12,12 @@
 3. 결정적 후처리 — 후보에 있는 이름만 남긴다(맨 이름 비교) → 상한 K로 자른다(LLM 순서) → 선별
    테이블 둘을 잇는 중간 테이블(다리)을 보완한다 → 다리를 포함해 K를 넘으면 다리부터 자른다.
 4. 실패(호출 예외 · 백엔드 오류 응답 · 유효 0개) → 질문 어휘로 정의·컬럼 이름을 매칭한 상위 K개
-   (`source="lexical"` · `[테이블선별] 폴백` 경고). 그것도 0개면 `source="none"` — 호출부는 SQL을
-   만들지 않고 `selection_none_guidance` 문구로 끝낸다. **전체 테이블을 돌려주지 않는다.**
+   (`source="lexical"` · `[테이블선별] 폴백` 경고 · 프롬프트 규칙처럼 「수집적재」 성격은 제외).
+   그것도 0개면 `source="none"` — 호출부는 SQL을 만들지 않고 `selection_none_guidance` 문구로
+   끝낸다. **전체 테이블을 돌려주지 않는다.**
+
+정의는 용도 블록과 같은 정제(`sanitize_definitions_for_prompt`)를 거친 것만 쓴다 — 승인 검증을
+거치지 않은 파일 편집 정의가 프롬프트에 원문 그대로 실리지 않게 한다(뺀 테이블은 WARNING).
 
 결과(`TableSelection.as_state`)는 상태 `table_selection[db_id]`에 실린다 — 테이블 이름·개수만이고
 데이터 값은 없다.
@@ -31,7 +35,12 @@ from typing import Any
 from langchain_core.messages import HumanMessage
 
 from src.domain.schema_snapshot import bare_name
-from src.domain.table_definitions import PROFILE_KEY, has_table_definitions
+from src.domain.table_definitions import (
+    KIND_COLLECT_LOAD,
+    PROFILE_KEY,
+    has_table_definitions,
+    sanitize_definitions_for_prompt,
+)
 from src.prompts.table_selection import (
     NO_DB_DESCRIPTION,
     SUB_QUERY_CONTEXT_LINE,
@@ -213,14 +222,17 @@ def _candidate_tables(
     return [t for t in names if bare_name(t) in allowed]
 
 
-def _definition_index(profile: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
-    """맨 이름 → 정의 항목."""
-    defs = profile.get(PROFILE_KEY)
+def _definition_index(profile: Mapping[str, Any], db_id: str) -> dict[str, Mapping[str, Any]]:
+    """맨 이름 → 정의 항목 — 프롬프트용 정제를 통과한 것만(뺀 테이블은 WARNING 1줄)."""
+    clean, dropped = sanitize_definitions_for_prompt(profile.get(PROFILE_KEY))
+    if dropped:
+        logger.warning(
+            "[테이블선별] db=%s 검증을 통과하지 못한 정의 %d개를 선별 재료에서 뺌(승인 검증을 거치지 "
+            "않은 편집 의심): %s", db_id, len(dropped), dropped[:20],
+        )
     out: dict[str, Mapping[str, Any]] = {}
-    if isinstance(defs, Mapping):
-        for name, entry in defs.items():
-            if isinstance(entry, Mapping):
-                out.setdefault(bare_name(str(name)), entry)
+    for name, entry in clean.items():
+        out.setdefault(bare_name(name), entry)
     return out
 
 
@@ -439,13 +451,17 @@ def _lexical_select(
     columns: Mapping[str, Sequence[str]],
     k: int,
 ) -> list[str]:
-    """질문 어휘로 정의(관리하는 정보·주의·대표 컬럼)·컬럼 이름을 매칭해 점수 상위 K개(점수 > 0)."""
+    """질문 어휘로 정의(관리하는 정보·주의·대표 컬럼)·컬럼 이름을 매칭해 점수 상위 K개(점수 > 0).
+
+    「수집적재」 성격 테이블은 후보에서 뺀다 — LLM 선별 프롬프트 규칙과 같은 결정적 필터다.
+    """
     terms = _query_terms(query_text)
     if not terms:
         return []
     scored = [
         (_lexical_score(terms, def_index.get(bare_name(t)), columns[t]), t)
         for t in candidates
+        if (def_index.get(bare_name(t)) or {}).get("kind") != KIND_COLLECT_LOAD
     ]
     ranked = sorted((pair for pair in scored if pair[0] > 0), key=lambda p: (-p[0], p[1]))
     return [t for _, t in ranked[:k]]
@@ -485,7 +501,7 @@ async def select_tables(
         선별 결과 — 실패해도 예외를 내지 않는다(`source`로 구분).
     """
     k = select_max(app_config)
-    def_index = _definition_index(profile)
+    def_index = _definition_index(profile, db_id)
     candidates = _candidate_tables(schema_tables, profile)
     if not candidates:
         logger.warning(

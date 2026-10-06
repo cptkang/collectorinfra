@@ -2,17 +2,79 @@
 
 쿼리 결과에서 비밀번호, 토큰 등 민감 정보를 마스킹 처리한다.
 컬럼명 기반 마스킹과 값 패턴 기반 마스킹을 모두 지원한다.
+
+컬럼명 판정(`is_sensitive_column`)은 결과 행 마스킹과 SQL 생성 프롬프트의 표본 렌더(단일·멀티
+경로 — `mask_sensitive_sample_columns`)가 함께 쓴다.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 from typing import Any
 
-from src.config import SecurityConfig
+from src.config import SecurityConfig, load_config
 
 logger = logging.getLogger(__name__)
+
+#: 한글 민감 컬럼 표현 — 설정 목록(`SECURITY_SENSITIVE_COLUMNS`)과 별개로 항상 본다(부분 매칭).
+#: 운영 `.env`가 설정 목록을 영문 목록으로 덮어쓰므로 설정 기본값에 두면 운영에 닿지 않는다.
+KOREAN_SENSITIVE_COLUMN_TERMS: tuple[str, ...] = (
+    "비밀번호", "패스워드", "암호", "비밀키", "인증키",
+)
+
+
+def is_sensitive_column(column_name: Any, sensitive_columns: Iterable[str]) -> bool:
+    """컬럼명이 민감 데이터에 해당하는지 판단한다 — 결과 행 마스킹·표본 렌더 공용 규칙.
+
+    설정 목록(소문자 비교 · 정확·부분 매칭 — password_hash, api_key_value 등)과 내장 한글 표현
+    (`KOREAN_SENSITIVE_COLUMN_TERMS` · 부분 매칭)을 본다.
+
+    Args:
+        column_name: 컬럼명
+        sensitive_columns: 설정의 민감 컬럼 목록
+
+    Returns:
+        민감 컬럼이면 True
+    """
+    lower = str(column_name).lower()
+    for sensitive in sensitive_columns:
+        if sensitive.lower() in lower:
+            return True
+    return any(term in lower for term in KOREAN_SENSITIVE_COLUMN_TERMS)
+
+
+def mask_sensitive_sample_columns(samples: list[Any]) -> list[Any]:
+    """프롬프트에 싣는 표본 행에서 민감 컬럼 값을 마스크 문자열로 바꾼다(단일·멀티 표본 렌더 공용).
+
+    판정은 결과 행 마스킹과 같은 `is_sensitive_column`이고, 목록·마스크 문자열은 앱 설정
+    (`security`)에서 읽는다 — 읽지 못하면 코드 기본값으로 가린다. 민감 컬럼이 없으면 입력 목록을
+    그대로 돌려준다(프롬프트 바이트 불변).
+
+    Args:
+        samples: 표본 행 목록(dict 행 · 그 외 값은 그대로 둔다)
+
+    Returns:
+        민감 컬럼 값을 가린 표본 행 목록
+    """
+    try:
+        security = load_config().security
+    except Exception:  # noqa: BLE001 — 설정을 못 읽으면 코드 기본값으로 가린다(가리는 쪽)
+        security = SecurityConfig.model_construct()
+    columns = list(security.sensitive_columns)
+    masked: list[Any] = []
+    changed = False
+    for row in samples:
+        if isinstance(row, dict) and any(is_sensitive_column(k, columns) for k in row):
+            masked.append({
+                k: security.mask_pattern if is_sensitive_column(k, columns) else v
+                for k, v in row.items()
+            })
+            changed = True
+        else:
+            masked.append(row)
+    return masked if changed else samples
 
 
 class DataMasker:
@@ -95,9 +157,7 @@ class DataMasker:
         return masked
 
     def _is_sensitive_column(self, column_name: str) -> bool:
-        """컬럼명이 민감 데이터에 해당하는지 판단한다.
-
-        정확한 매칭과 부분 매칭을 모두 수행한다.
+        """컬럼명이 민감 데이터에 해당하는지 판단한다(공용 규칙 `is_sensitive_column`).
 
         Args:
             column_name: 컬럼명
@@ -105,15 +165,7 @@ class DataMasker:
         Returns:
             민감 컬럼이면 True
         """
-        lower = column_name.lower()
-        # 정확한 매칭
-        if lower in self._sensitive_columns:
-            return True
-        # 부분 매칭 (password_hash, api_key_value 등)
-        for sensitive in self._sensitive_columns:
-            if sensitive in lower:
-                return True
-        return False
+        return is_sensitive_column(column_name, self._sensitive_columns)
 
     def _is_sensitive_value(self, value: str) -> bool:
         """값 자체가 민감 데이터 패턴인지 판단한다.

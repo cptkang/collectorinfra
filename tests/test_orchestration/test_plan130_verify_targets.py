@@ -1,6 +1,6 @@
 """plans/130 독립 검증(verify-130 · 2026-10-06) — 본체 대상 해석의 결함 재현과 경계.
 
-1. **결함 재현**(`xfail(strict=True)` — 고치면 XPASS로 실패하니 표지를 걷는다):
+1. **결함 재현**(W4 교정 뒤 통과 — `xfail(strict=True)` 표지는 걷었다):
    - V130-1(Major) 대상 텍스트가 있는 턴에 직전 턴 서버(`previous_entities`)로 대신·함께 조회한다.
    - V130-2(Minor) 같은 소스의 두 도메인에 같은 이름·같은 id 인스턴스가 있으면 같은 인자로 두 번
      부른다(게이트웨이 데이터 도구는 `domain_id`를 받지 않는다).
@@ -71,11 +71,6 @@ async def test_unresolved_text_without_previous_turn_makes_no_view_call(gateway)
     assert any("찾지 못" in t for t in _kinds(res, disc.APM_UNRESOLVED_CONDITION))
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "V130-1(Major): 대상 텍스트 해석 0건인데 `resolve_apm_targets`가 직전 턴 `previous_entities`"
-    "(지시어 판정 없음)로 떨어져 그 서버를 조회한다 — 고지는 「다른 인스턴스로 대신 조회하지"
-    " 않았습니다」라고 말한다(A-1 · D-290 ⑥ 위반 · apm_query.py run_apm_query `hostnames = await"
-    " hosts_of(resolve_apm_targets(...))`)"))
 async def test_unresolved_text_does_not_query_the_previous_turn_host(gateway) -> None:
     gw, _ = gateway(search={}, hosts={"web01": [_inst(9, "old-was", "web01")]})
     res = await _run(["apm.app_health"], [{"text": "abc-was", "kind": "instance"}],
@@ -85,9 +80,6 @@ async def test_unresolved_text_does_not_query_the_previous_turn_host(gateway) ->
     assert res["apm_query"]["hostnames"] == []
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "V130-1(Major): 대상 텍스트가 풀려도 직전 턴 서버가 함께 조회된다 — 말한 대상 밖으로 범위가"
-    " 넓어진다(D-290 ⑥)"))
 async def test_resolved_text_does_not_widen_to_the_previous_turn_host(gateway) -> None:
     gw, _ = gateway(search={"abc-was01": ([_inst(1, "abc-was01", "h1")], [])},
                     hosts={"web01": [_inst(9, "old-was", "web01")]})
@@ -100,10 +92,6 @@ async def test_resolved_text_does_not_widen_to_the_previous_turn_host(gateway) -
 
 # ── V130-2 (Minor) 같은 이름·같은 id · 두 도메인 → 같은 인자 두 번 ─────────────────
 
-@pytest.mark.xfail(strict=True, reason=(
-    "V130-2(Minor): `_instance_calls` 중복 키가 (소스, 도메인, id)인데 게이트웨이 데이터 도구는"
-    " domain_id를 받지 않아 같은 인자(instance_name·instance_id·source_ids)로 두 번 부른다 —"
-    " 게이트웨이는 호출마다 두 도메인 인스턴스를 다 돌려줘 행이 중복된다"))
 async def test_same_name_and_id_in_two_domains_is_called_once(gateway) -> None:
     gw, _ = gateway(search={"pay-was": ([_inst(5, "pay-was", "h1", did=10),
                                          _inst(5, "pay-was", "h2", did=20)], [])})
@@ -129,9 +117,6 @@ class _TruncatedEdge(_Edge):
         return found, entries, steps
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "V130-3(Minor): E6이 1000행 상한에 닿아도 `_business_hosts`·`_summary`가 `truncated`를 읽지"
-    " 않아 고지·요약에 「일부만 확인」이 없다 — 상한 없음(D-296 ④) 원칙의 예외인 E6 상한이 침묵"))
 async def test_edge_row_cap_reaches_the_user(gateway) -> None:
     gw, _ = gateway(_TruncatedEdge(), hosts={"h1": [_inst(1, "pay-was", None)]})
     res = await _run(["apm.app_health"], [{"text": "결제", "kind": "business"}])
@@ -143,10 +128,6 @@ async def test_edge_row_cap_reaches_the_user(gateway) -> None:
 
 # ── V130-4 (Minor · B-7 잔여) 재계획 task의 targets ─────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason=(
-    "V130-4(Minor · plans/125 B-7 잔여): replanner `_assign_ids`가 task를 고정 키로 다시 만들어"
-    " `targets`(views·view_args와 함께)를 버린다 — 재계획 APM task는 말한 인스턴스 대신 첫 홉으로"
-    " 간다(처리기 진입 `sanitize_targets` 주석의 「재계획 task도 처리기에서 걸러진다」와 어긋남)"))
 def test_replanned_apm_task_keeps_targets() -> None:
     targets = [{"text": "abc-was01", "kind": "instance"}]
     (task,) = _assign_ids([{"agent": "apm_query", "sub_query": "abc-was01 응답시간",
@@ -157,10 +138,6 @@ def test_replanned_apm_task_keeps_targets() -> None:
 
 # ── V130-6 (Minor) 파서 서버명 대상의 max_targets 절단 ─────────────────────────
 
-@pytest.mark.xfail(strict=True, reason=(
-    "V130-6(Minor): `_target_texts`가 파서 서버명을 `resolve_targets(max_targets=…)`로 모아 11번째"
-    " 이후 이름을 검색조차 하지 않고 고지도 없다 — 상한 없음(D-296 ④)·침묵 강등 금지와 어긋남"
-    "(분해 `targets`에 같은 이름이 있으면 그쪽은 상한 없이 해석된다)"))
 async def test_every_unlinked_server_name_is_searched_beyond_max_targets(gateway,
                                                                          monkeypatch) -> None:
     async def unlinked(refs, *, consumer, app_config):
@@ -178,10 +155,6 @@ async def test_every_unlinked_server_name_is_searched_beyond_max_targets(gateway
 
 # ── V130-7 (Minor) 길이 초과 대상 텍스트 → 첫 홉 ───────────────────────────────
 
-@pytest.mark.xfail(strict=True, reason=(
-    "V130-7(Minor): `sanitize_targets`가 200자 초과 텍스트를 조용히 버려 `texts`가 비고,"
-    " 종전 첫 홉이 임의 인스턴스를 조회한다 — 고지 없음(A-1 · D-290 ⑥ · 침묵 강등 금지)."
-    " 현실 빈도는 낮다"))
 async def test_over_length_target_text_does_not_fall_back_to_the_first_hop(gateway) -> None:
     gw, _ = gateway(listing=[_inst(1, "first-was", "h1")],
                     hosts={"h1": [_inst(1, "first-was", "h1")]})

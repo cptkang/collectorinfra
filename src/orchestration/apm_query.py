@@ -542,9 +542,11 @@ _EVIDENCE_TEXT = {
 def sanitize_targets(raw: Any) -> list[dict[str, str]]:
     """분해 `targets` → `[{text, kind}]` — 형태만 정제한다(해석은 처리기 · plans/130 M-1).
 
-    dict 항목만 받는다. 텍스트는 앞뒤 공백을 지우고, 비었거나 `TARGET_TEXT_MAX`자를 넘으면
-    버린다. 모르는 종류는 `auto`다. 같은 텍스트(대소문자 무시)는 처음 것만 남긴다. 다시 걸러도
-    결과가 같다(분해 정제 · 처리기 진입 두 곳에서 부른다 — 재계획 task도 처리기에서 걸러진다).
+    dict 항목만 받는다. 텍스트는 앞뒤 공백을 지우고, 비었으면 버린다. `TARGET_TEXT_MAX`자를 넘으면
+    앞 `TARGET_TEXT_MAX`자 + 「…」로 줄여 남긴다 — 버리면 대상을 말한 턴이 첫 홉(임의 인스턴스)으로
+    가므로 처리기가 「대상 있음」으로 세고 해석 없이 고지한다(V130-7 · 길이로 다시 판정 ·
+    `_too_long`). 모르는 종류는 `auto`다. 같은 텍스트(대소문자 무시)는 처음 것만 남긴다. 다시
+    걸러도 결과가 같다(분해 정제 · 재계획 · 처리기 진입에서 부른다).
     """
     items = raw if isinstance(raw, (list, tuple)) else []
     kept: list[dict[str, str]] = []
@@ -554,12 +556,24 @@ def sanitize_targets(raw: Any) -> list[dict[str, str]]:
             continue
         raw_text, raw_kind = item.get("text"), item.get("kind")
         text = raw_text.strip() if isinstance(raw_text, str) else ""
-        if not text or len(text) > TARGET_TEXT_MAX or text.casefold() in seen:
+        if _too_long(text):
+            text = text[:TARGET_TEXT_MAX] + "…"
+        if not text or text.casefold() in seen:
             continue
         kind = raw_kind.strip().lower() if isinstance(raw_kind, str) else ""
         seen.add(text.casefold())
         kept.append({"text": text, "kind": kind if kind in TARGET_KINDS else "auto"})
     return kept
+
+
+def _too_long(text: str) -> bool:
+    """게이트웨이 검색어 상한을 넘는 대상 텍스트인가 — 해석하지 않고 고지만 한다(V130-7)."""
+    return len(text) > TARGET_TEXT_MAX
+
+
+def _shown(text: str) -> str:
+    """고지·실패 사유에 싣는 대상 텍스트 — 길이 초과 텍스트는 앞 30자만."""
+    return text[:30] + "…" if _too_long(text) else text
 
 
 def _uses_target(view: ViewSpec, args: dict[str, Any] | None) -> bool:
@@ -570,23 +584,27 @@ def _uses_target(view: ViewSpec, args: dict[str, Any] | None) -> bool:
 
 
 def _target_texts(task: dict[str, Any], isolated: dict[str, Any], ledger: list[LinkEntry],
-                  legacy_hosts: list[str], max_targets: int) -> list[dict[str, str]]:
+                  legacy_hosts: list[str]) -> list[dict[str, str]]:
     """이번 task의 대상 텍스트(plans/130 M-2 ①).
 
     분해 `targets` ∪ 파서 서버명 대상 중 등록명 간선(E2)이 잇지 못한 것(`unlinked`·`not_queried`·
     `ambiguous` → `auto` — 여러 hostname이라 잇지 않은 이름도 첫 홉으로 보내지 않는다 ·
     D-290 ⑥)이다. 파서 hostname 대상과 E2가 이은 대상은 종전 경로(hostname 호출)이고, 그것과
-    같은 텍스트는 다시 해석하지 않는다(두 번 조회하지 않는다).
+    같은 텍스트는 다시 해석하지 않는다(두 번 조회하지 않는다). 파서 서버명은 상한 없이 모은다 —
+    종전 경로 상한(`max_targets`) 밖이라 E2에 가지 않은 이름도 텍스트다(D-296 ④ · V130-6).
     """
     parsed = isolated.get("parsed_requirements") or {}
+    conditions = parsed.get("filter_conditions") or []
     names = [t.server_name for t in resolve_targets(
-        filter_conditions=parsed.get("filter_conditions"), db_id=None,
-        max_targets=max_targets).targets if t.server_name and not t.hostname]
+        filter_conditions=conditions, db_id=None,
+        max_targets=len(conditions)).targets if t.server_name and not t.hostname]
     left = {e.key.casefold() for e in ledger
             if e.facet == "server_name" and e.status in (UNLINKED, NOT_QUERIED, AMBIGUOUS)}
+    seen = {e.key.casefold() for e in ledger if e.facet == "server_name"}
     legacy = ({h.casefold() for h in legacy_hosts}
               | {e.key.casefold() for e in ledger if e.status == LINKED})
-    unlinked = [{"text": n, "kind": "auto"} for n in names if n.casefold() in left]
+    unlinked = [{"text": n, "kind": "auto"} for n in names
+                if n.casefold() in left or n.casefold() not in seen]
     texts = sanitize_targets([*sanitize_targets(task.get("targets")), *unlinked])
     return [t for t in texts if t["text"].casefold() not in legacy]
 
@@ -1270,8 +1288,12 @@ async def run_apm_query(
         return list(linked[key])
 
     kinds = {by_id[v].target for v in views}
-    # 종전 보기(대상 표현 없음)는 종전 규칙 그대로 — 선행 결과 → 이번 턴 식별자 → 직전 대상
-    hostnames = await hosts_of(resolve_apm_targets(isolated, max_targets)) if "" in kinds else []
+    # 종전 보기(대상 표현 없음)는 종전 규칙 그대로 — 선행 결과 → 이번 턴 식별자 → 직전 대상.
+    # 이번 턴에 대상 텍스트(분해 `targets`)를 말했으면 직전 턴 대상은 지시어로 가리킬 때만 잇는다
+    # (`scoped_targets` 규칙 — 말한 대상 대신·함께 직전 서버를 조회하지 않는다 · D-290 ⑥ · V130-1)
+    named = bool(sanitize_targets(task.get("targets")))
+    pick_targets = scoped_targets if named else resolve_apm_targets
+    hostnames = await hosts_of(pick_targets(isolated, max_targets)) if "" in kinds else []
     scoped_hosts = (await hosts_of(scoped_targets(isolated, max_targets))
                     if "optional" in kinds else [])
     explicit_hosts = (await hosts_of(explicit_targets(isolated, max_targets))
@@ -1327,7 +1349,7 @@ async def run_apm_query(
         return _blocked_refusal(label, blocked, meta, disc.dedupe(notices))
     # 대상 텍스트(plans/130 M-2) — 대상으로 좁히는 보기가 있을 때만 해석한다. 없으면 종전과 같다.
     live = [v for v in views if v not in blocked and windows[v].mode != "out"]
-    texts = (_target_texts(task, isolated, ledger, [*hostnames, *scoped_hosts], max_targets)
+    texts = (_target_texts(task, isolated, ledger, [*hostnames, *scoped_hosts])
              if any(_uses_target(by_id[v], view_args.get(v)) for v in live) else [])
     resolved: list[_TargetText] = []
     instances: list[dict[str, Any]] = []
@@ -1428,8 +1450,10 @@ async def run_apm_query(
     rows = _collect(calls, meta)
     unresolved = [r for r in resolved if not r.instances]
     # 대상 텍스트 해석 0건은 조회하지 못한 대상으로 센다(부분 결과 · 감사 degraded)
-    meta["failures"] += [{"view": None, "hostname": None, "target": r.text,
-                          "reason": f"대상 '{r.text}' 해석 0건"} for r in unresolved]
+    meta["failures"] += [{"view": None, "hostname": None, "target": _shown(r.text),
+                          "reason": f"대상 '{_shown(r.text)}' "
+                                    + ("이름 길이 초과" if _too_long(r.text) else "해석 0건")}
+                         for r in unresolved]
     for limit in (x for r in resolved for x in r.limits):
         if limit not in meta["limits"]:
             meta["limits"].append(limit)
@@ -1677,6 +1701,9 @@ async def _business_hosts(session: Any, text: str, view: ViewSpec, domain_id: An
     if errors:
         found.errors.append(f"{found.searched} 조회 {'일부 ' if found.answered else ''}실패"
                             f" — {'; '.join(errors)[:160]}")
+    if any(s.get("truncated") for s in steps):  # 간선 행 상한 — 침묵하지 않는다(V130-3)
+        found.errors.append(f"{found.searched} 조회 상한에 닿아 일부만 확인 — 빠진 서버가 있을 수"
+                            " 있습니다")
     hosts: dict[str, list[str]] = {}
     for hit in hits.get(text) or []:
         labels = hosts.setdefault(str(hit.get("hostname")), [])
@@ -1717,6 +1744,8 @@ async def _resolve_target_texts(
     for item in texts:
         res = _TargetText(item["text"], item["kind"])
         out.append(res)
+        if _too_long(res.text):  # 게이트웨이 검색어 상한 밖 — 부르지 않는다(고지만 · V130-7)
+            continue
         if view is None:
             res.failures.append("인스턴스 목록 보기가 레지스트리에 없다")
             continue
@@ -1760,15 +1789,15 @@ def _instance_calls(view: ViewSpec, plan: WindowPlan, scope: _JobScope,
                     args: dict[str, Any] | None, instances: list[dict[str, Any]]) -> list[_Call]:
     """해석 인스턴스마다 1호출 — 인스턴스 이름 + 소스(+ 인스턴스 id를 받는 도구면 id).
 
-    id를 받지 않는 도구는 같은 소스의 같은 이름을 한 번만 부른다(중복 호출 없음).
+    중복은 실제로 보내는 인자(소스 · 이름 · id를 받는 도구면 id)로 가린다 — 데이터 도구는
+    `domain_id`를 받지 않아 두 도메인의 같은 이름·같은 id는 한 호출이 둘 다 돌려준다(V130-2).
     """
     by_id = view.tool in INSTANCE_ID_TOOLS
     seen: set[tuple[Any, ...]] = set()
     out: list[_Call] = []
     for inst in instances:
-        key: tuple[Any, ...] = ((inst["source_id"], inst.get("domain_id"), inst["instance_id"])
-                                if by_id else
-                                (inst["source_id"], str(inst["instance_name"]).casefold()))
+        key = (inst["source_id"], str(inst["instance_name"]).casefold(),
+               inst["instance_id"] if by_id else None)
         if key in seen:
             continue
         seen.add(key)
@@ -1829,6 +1858,13 @@ def _target_notices(resolved: list[_TargetText], source: str) -> list[disc.Discl
     apm = _short_label(APM_SYSTEM)
     out: list[disc.Disclosure] = []
     for res in resolved:
+        if _too_long(res.text):
+            out.append(disc.make(
+                disc.APM_UNRESOLVED_CONDITION,
+                f"대상 이름이 너무 길어({TARGET_TEXT_MAX}자 초과) {apm} 인스턴스를 조회하지"
+                f" 않았습니다('{_shown(res.text)}'). 다른 인스턴스로 대신 조회하지 않았습니다.",
+                source=source))
+            continue
         if res.instances:
             counts = _targets_meta([res])["texts"][0]["evidence"]
             basis = " · ".join(f"{label} {n}" for label, n in counts.items())
@@ -2475,6 +2511,8 @@ def _summary(label: str, views: list[str], by_id: dict[str, ViewSpec], meta: dic
                 parts.append(f"{step['edge']} 변환 실패: "
                              + "; ".join([step.get("error") or ""] + (step.get("errors") or []))
                              .strip("; "))
+            if step.get("truncated"):
+                parts.append(f"{step['edge']} 변환이 조회 상한에 닿아 일부만 확인했습니다.")
             continue
         if step.get("hosts") is not None:
             tail = (f"(상한으로 {step['truncated']}대 제외 — 조회한 범위 안의 결과입니다)."

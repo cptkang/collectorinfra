@@ -1012,7 +1012,7 @@ overrides: []
 | `error` | 뜻 | 호출자가 할 일 |
 |---|---|---|
 | `not_configured` | 소스 0개(`JENNIFER_API_URL`·`JENNIFER_SOURCES` 모두 미설정) | §4.2 |
-| `invalid_argument` | 인자 오류(`hostname`·`instance_name` 둘 다 빈 값(130 — 「hostname 또는 instance_name이 필요하다(둘 다 비어 있음)」) · (130) `hostname`+`query`·`business` 조합 · 검색어가 비었거나 200자 초과 · `profile_ref` 누락 · `n < 1` · 미지 `level` · (v5) 모르는 `source_ids` · 소스가 둘 이상인데 `source_id` 없음 · (134) `wait_seconds` 음수·NaN · 모르는 지표만 준 series · 접두만 있는 `error_type` · 청크 범위 밖) | 인자를 고친다 · 소스 목록·지표 후보는 사유에 있다 |
+| `invalid_argument` | 인자 오류(`hostname`·`instance_name` 둘 다 빈 값(130 — 「hostname 또는 instance_name이 필요하다(둘 다 비어 있음)」) · (130) `hostname`+`query`·`business` 조합 · 검색어(`query`·`business`)나 `instance_name`이 비었거나(검색어) 200자 초과 · `profile_ref` 누락 · `n < 1` · 미지 `level` · (v5) 모르는 `source_ids` · 소스가 둘 이상인데 `source_id` 없음 · (134) `wait_seconds` 음수·NaN · 모르는 지표만 준 series · 접두만 있는 `error_type` · 청크 범위 밖) | 인자를 고친다 · 소스 목록·지표 후보는 사유에 있다 |
 | `instance_unresolved` | hostname에 대응하는 인스턴스가 없다 · (130) `instance_name`과 정확히 같은 인스턴스가 없다(「… — apm_instance_map(query=…)로 검색」) · `instance_id`·`hostname`과의 교집합이 비었다 | 정합 파일 확인(§4.5) — 상관 보류 · 이름이면 `apm_instance_map(query=…)`로 후보를 찾는다(§6.4) |
 | `profile_ref_mismatch` | `apm_transaction_profile`의 (`source_id`, `domain_id`)가 그 소스에서의 hostname 정합 도메인이 아님 | 앞 도구의 `profile_ref`를 그대로 넘겼는지 확인 |
 | `source_unavailable` | 제니퍼 본문 *"… Domain is not connected"*(HTTP 500) · 도메인 0건 · 연결 실패 · timeout · (v5) 고른 소스 전부 실패(원인 코드가 섞일 때) | `[한계]`에 사유 — 빈 결과로 삼키지 않는다 |

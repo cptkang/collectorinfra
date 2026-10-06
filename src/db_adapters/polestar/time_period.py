@@ -22,7 +22,14 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from src.domain.query_time import QueryTime
-from src.domain.time_spec import Grain, TimeResolution, ceil_to_unit, floor_to_unit
+from src.domain.time_spec import (
+    SPAN_MAX_CHARS,
+    Grain,
+    TimeResolution,
+    ceil_to_unit,
+    display_span,
+    floor_to_unit,
+)
 
 #: 입도 → 통계 테이블(스키마 접두 없음 — 호출부가 붙인다).
 STAT_TABLES: dict[str, str] = {
@@ -136,15 +143,8 @@ _PRIORITY_LINES = (
 _ALARM_NO_PERIOD = (
     "- 알람 이력·활성 알람을 조회하면 기간 조건을 넣지 마세요(최신순으로 조회)."
 )
-#: 블록에 싣는 질의 표현(span) 상한 — 공백 정규화 후 이 길이를 넘으면 말줄임(리뷰 m-7 · 응답
-#: 고지 문구와 같은 상한 40자 · 말줄임표 포함).
-SPAN_MAX_CHARS = 40
-
-
-def _span_label(span: str) -> str:
-    """질의 표현 표기 — 공백·줄바꿈을 한 칸으로 접고 `SPAN_MAX_CHARS`자 상한(넘으면 `…`)."""
-    text = " ".join(span.split())
-    return text if len(text) <= SPAN_MAX_CHARS else text[: SPAN_MAX_CHARS - 1] + "…"
+#: 블록에 싣는 질의 표현(span) 정규화·상한은 `time_spec.display_span`(응답 고지와 공용 · 리뷰 m-7).
+_span_label = display_span
 
 
 def _stat_line(sb: StatBounds, *, prefix: str) -> str:
@@ -161,7 +161,7 @@ def _stat_line(sb: StatBounds, *, prefix: str) -> str:
     return line
 
 
-def _alarm_line(event: TimeResolution | None) -> str:
+def _alarm_line(event: TimeResolution | None, *, present: bool = False) -> str:
     bounds = alarm_ts_bounds(event) if event is not None else None
     if bounds is None:
         return _ALARM_NO_PERIOD
@@ -169,10 +169,17 @@ def _alarm_line(event: TimeResolution | None) -> str:
     cond = f"a.ctime < TIMESTAMP '{end}'"
     if start is not None:
         cond = f"a.ctime >= TIMESTAMP '{start}' AND {cond}"
-    return (
+    line = (
         f"- 알람 이력·활성 알람을 조회하면 발생 시각 조건 `{cond}`를 그대로 넣으세요"
         "(a는 알람 테이블 별칭 — 쿼리의 실제 별칭을 쓰세요)."
     )
+    if present:
+        # 검증기와 같은 규칙(리뷰 M-1): 「현재」 활성 알람 스냅샷은 발생 시각 기간과 뜻이 다르다
+        line += (
+            " 단, 「현재」 활성 알람(cmm_alarm_active) 스냅샷만 묻는 부분에는 기간 조건을 넣지"
+            " 마세요."
+        )
+    return line
 
 
 def build_period_block(qt: QueryTime | None) -> str:
@@ -204,14 +211,14 @@ def build_period_block(qt: QueryTime | None) -> str:
         lines.append(
             "- 통계·알람이 필요 없는 질의(구성·목록 등)에는 기간 조건을 넣지 마세요."
         )
-        lines.append(_alarm_line(qt.event))
+        lines.append(_alarm_line(qt.event, present=qt.present))
     elif metric.unbounded:
         lines.append(f"조회 기간: {metric.label()}")
         lines.append(
             "- 성능 통계를 조회하면 기간 조건 없이 전 보관 기간을 검색하세요 — 보관 기간이 "
             f"가장 긴 `{STAT_TABLES['month']}`(월간 통계)를 사용합니다."
         )
-        lines.append(_alarm_line(qt.event))
+        lines.append(_alarm_line(qt.event, present=qt.present))
     else:
         span = _span_label(metric.span)
         origin = f" (질의 표현 「{span}」 · 시스템 해석)" if span else ""
@@ -230,7 +237,7 @@ def build_period_block(qt: QueryTime | None) -> str:
                     "- 진행 중인 기간이라 어제까지의 일간 통계로 집계합니다 — 서버별 GROUP BY로 "
                     "AVG(s.avg_val)=기간 평균, MAX(s.max_val)=기간 최대를 집계하세요."
                 )
-        lines.append(_alarm_line(qt.event))
+        lines.append(_alarm_line(qt.event, present=qt.present))
     lines.extend(_PRIORITY_LINES)
     return "\n".join(lines)
 

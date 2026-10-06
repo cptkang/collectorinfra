@@ -53,7 +53,7 @@ from src.prompts.query_generator import QUERY_GENERATOR_SYSTEM_TEMPLATE
 from src.routing.db_registry import DBRegistry
 from src.routing.domain_config import get_domain_by_id
 from src.security.audit_logger import log_group_execution, log_query_execution
-from src.security.data_masker import DataMasker
+from src.security.data_masker import DataMasker, mask_sensitive_sample_columns
 from src.security.pii_filter import (
     diagnose_blocked_prompt,
     is_filter_blocked,
@@ -3172,8 +3172,11 @@ def _format_schema(schema_info: dict, materials: dict[str, dict] | None = None) 
 
 
 def _render_samples_secure(samples: list) -> str:
-    """스키마 샘플을 상한 프리뷰로 만들고 PII를 스크럽한다(멀티 경로 프롬프트 방어)."""
-    preview = safe_sample_preview(samples)
+    """스키마 샘플을 상한 프리뷰로 만들고 PII를 스크럽한다(멀티 경로 프롬프트 방어).
+
+    민감 컬럼(비밀번호 등) 값은 결과 행 마스킹과 같은 판정으로 먼저 가린다(단일 경로와 같은 함수).
+    """
+    preview = safe_sample_preview(mask_sensitive_sample_columns(samples))
     if is_scrub_samples_enabled():
         preview = scrub_pii(preview)  # 라이브 샘플 PII → FabriX 필터 오탐 차단 예방
     return preview

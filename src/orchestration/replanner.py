@@ -556,6 +556,8 @@ def _assign_ids(new_tasks: list[dict], *, existing: list[dict]) -> list[dict]:
     Returns:
         task_id/order/status가 부여된 신규 task 목록
     """
+    from src.orchestration.apm_query import APM_QUERY_AGENT, sanitize_targets  # 지연 — 순환 방지
+
     existing_ids = {t.get("task_id") for t in existing if t.get("task_id")}
 
     # 기존 t번호 최대값 → 신규 id 시작점
@@ -590,6 +592,10 @@ def _assign_ids(new_tasks: list[dict], *, existing: list[dict]) -> list[dict]:
             "order": max_order + 1 + len(assigned),
             "status": "pending",
         }
+        # 대상 텍스트(plans/130 M-1) — 재계획 APM task도 말한 대상을 잃지 않는다(V130-4 · 형태 정제만)
+        targets = sanitize_targets(raw.get("targets"))
+        if task["agent"] == APM_QUERY_AGENT and targets:
+            task["targets"] = targets
         assigned.append(task)
 
     # 신규 task끼리의 상대 참조(임시 id)를 실제 id로 재매핑

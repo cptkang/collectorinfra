@@ -843,6 +843,20 @@ def _ceil(dt: datetime, grain: str) -> datetime:
     return floored if floored == dt else _shift(floored, grain, 1)
 
 
+#: 응답 고지·프롬프트 기간 블록이 원문 스팬을 에코할 때의 상한(자 · 말줄임표 포함) — LLM 슬롯
+#: 스팬은 길이 제한이 없다(리뷰 m-7). 두 출력 지점이 이 한 함수를 쓴다(사본 금지 D-131).
+SPAN_MAX_CHARS = 40
+
+
+def display_span(span: str | None) -> str:
+    """원문 스팬 표기 — 공백·개행을 한 칸으로 접고 `SPAN_MAX_CHARS`자에서 말줄임(`…` 포함)한다.
+
+    개행이 남으면 `[조회 기간]` 줄이 쪼개져 줄 단위 중복 제거(집계기)가 어긋난다.
+    """
+    text = " ".join(str(span or "").split())
+    return text if len(text) <= SPAN_MAX_CHARS else text[: SPAN_MAX_CHARS - 1] + "…"
+
+
 def floor_to_unit(dt: datetime, unit: str) -> datetime:
     """단위 칸 시작으로 내린다 — 소비처(리터럴 투영·검증기)용 공개 이름(D-131 사본 금지)."""
     if unit not in UNITS:
@@ -971,6 +985,6 @@ __all__ = [
     "RELATIVE_WINDOW_KINDS", "SOURCES", "SUBJECTS", "UNITS",
     "Anchor", "Completeness", "DisplayGrain", "Grain", "PartialDate", "Relation", "Source",
     "Subject", "TimeResolution", "TimeSpec", "TimeSpecError", "Unit",
-    "ceil_to_unit", "cover", "default_resolution", "floor_to_unit", "relative_window", "resolve",
-    "shift_unit", "window_around",
+    "SPAN_MAX_CHARS", "ceil_to_unit", "cover", "default_resolution", "display_span",
+    "floor_to_unit", "relative_window", "resolve", "shift_unit", "window_around",
 ]

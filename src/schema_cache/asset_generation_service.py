@@ -54,6 +54,7 @@ from src.domain.table_definitions import (
     ORIGIN_LLM,
     ORIGIN_MANUAL,
     defined_table_count,
+    describe_value,
     parse_import_document,
     validate_table_definitions,
 )
@@ -594,11 +595,7 @@ class AssetGenerationService(AdminServiceBase):
         validate_db_id(source)
         if len(text) > IMPORT_MAX_CHARS:
             raise ValueError(f"가져오기 본문은 {IMPORT_MAX_CHARS:,}자 이하여야 합니다")
-        try:
-            document = yaml.safe_load(text)
-        except yaml.YAMLError as e:
-            raise ValueError(f"YAML을 읽지 못했습니다: {e}") from e
-        raw = parse_import_document(document)
+        raw = parse_import_document(load_import_yaml(text))
         await self._require_store()
         record = await self._store.load_snapshot(source) or {}
         snap_tables: Mapping[str, Any] = (record.get("snapshot") or {}).get("tables") or {}
@@ -1447,6 +1444,40 @@ def _table_columns(snap_tables: Mapping[str, Any]) -> dict[str, list[str]]:
     }
 
 
+class _NoAliasSafeLoader(yaml.SafeLoader):  # type: ignore[misc]  # yaml 스텁 없음(Any)
+    """앵커(&)·별칭(*)을 거절하는 SafeLoader — 작은 입력이 별칭 펼치기로 거대한 값이 되는 것을 막는다.
+
+    노드를 만들기 전(펼치기 전)에 이벤트를 보고 거절한다.
+    """
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        event = self.peek_event()
+        if isinstance(event, yaml.AliasEvent) or getattr(event, "anchor", None) is not None:
+            raise yaml.composer.ComposerError(
+                None, None, "앵커(&)·별칭(*)은 쓸 수 없습니다", event.start_mark,
+            )
+        return super().compose_node(parent, index)
+
+
+def load_import_yaml(text: str) -> Any:
+    """테이블 정의 가져오기 YAML을 읽는다 — 앵커·별칭 거절 · 문법 오류·깊은 중첩은 사용자 오류.
+
+    Raises:
+        ValueError: YAML 문법 오류 · 앵커·별칭 · 중첩이 너무 깊음(API는 422로 돌려준다)
+    """
+    try:
+        return yaml.load(text, Loader=_NoAliasSafeLoader)
+    except yaml.YAMLError as e:
+        raise ValueError(f"YAML을 읽지 못했습니다: {e}") from e
+    except RecursionError as e:
+        raise ValueError("YAML을 읽지 못했습니다: 중첩이 너무 깊습니다") from e
+
+
+def _display_text(value: Any) -> str:
+    """표시용 사본의 글 한 칸 — 문자열은 그대로, 그 밖의 값은 타입 이름 + 짧은 발췌(펼치지 않는다)."""
+    return value if isinstance(value, str) else describe_value(value)
+
+
 def _display_row(raw: Any, origin: str) -> dict[str, Any]:
     """검증 실패 행의 표시용 사본 — 아는 필드만 · 글은 문자열로(JSON 저장 가능 · 승인 불가)."""
     fields: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
@@ -1456,15 +1487,16 @@ def _display_row(raw: Any, origin: str) -> dict[str, Any]:
         if value is None:
             continue
         if name == "key_columns":
-            row[name] = [str(v) for v in value] if isinstance(value, (list, tuple)) else [
-                str(value)
-            ]
+            row[name] = [_display_text(v) for v in value] if isinstance(
+                value, (list, tuple)
+            ) else [_display_text(value)]
         elif name == "related":
             row[name] = (
-                {str(k): str(v) for k, v in value.items()} if isinstance(value, Mapping) else {}
+                {str(k): _display_text(v) for k, v in value.items()}
+                if isinstance(value, Mapping) else {}
             )
         else:
-            row[name] = str(value)
+            row[name] = _display_text(value)
     row.setdefault("manages", "")
     row.setdefault("origin", origin)
     return row
@@ -1592,6 +1624,22 @@ async def _definition_batch(
     return raw, None
 
 
+def _cap_llm_key_columns(table: str, item: Any) -> Any:
+    """LLM 초안 1건의 대표 컬럼이 상한을 넘으면 앞 `KEY_COLUMNS_MAX`개로 자른다(거절 대신 교정).
+
+    LLM은 프롬프트의 개수 지시를 어기기도 한다 — 결정적으로 자르고 로그를 남긴다. 가져오기·편집
+    경로는 자르지 않고 종전대로 검증에서 거절한다.
+    """
+    if not isinstance(item, Mapping):
+        return item
+    keys = item.get("key_columns")
+    if not isinstance(keys, (list, tuple)) or len(keys) <= KEY_COLUMNS_MAX:
+        return item
+    logger.info("테이블 정의 LLM 초안 key_columns 절단: table=%s, %d개 → 앞 %d개",
+                table, len(keys), KEY_COLUMNS_MAX)
+    return {**item, "key_columns": list(keys[:KEY_COLUMNS_MAX])}
+
+
 def _merge_definition_batch(
     rows: dict[str, Any],
     errors: dict[str, list[str]],
@@ -1614,7 +1662,7 @@ def _merge_definition_batch(
             errors[table] = [f"LLM 초안 실패: {error}"]
         status = "failed"
     else:
-        answered = {t: raw[t] for t in targets if t in raw}
+        answered = {t: _cap_llm_key_columns(t, raw[t]) for t in targets if t in raw}
         new_rows, new_errors = _definition_rows(answered, table_columns, ORIGIN_LLM)
         for table in targets:
             errors.pop(table, None)

@@ -234,7 +234,7 @@ business_map:
 #### 3.4.3 `instance_name` — 인스턴스 이름으로 부르기 (N-3)
 
 - **적용**: 데이터 도구 13종(`apm_app_health`·`apm_runtime_health`·`apm_resource_pool`·`apm_slow_transactions`·`apm_active_services`·`apm_events`·`apm_transaction_profile`·`apm_status_stats`·`apm_metrics`·`apm_source_changes`·`apm_transaction_trace`·`apm_change_impact`·`apm_period_compare`) + 관리 도구 3종(`apm_config`(kind `event_rules`·`db_path`·`loaded_classes`)·`apm_environment`·`apm_active_detail`) — MCP에 `instance_name`이 있는 도구는 16종이다. MCP 스키마는 `hostname: str | None = None`·`instance_name: str | None = None`(hostname이 required에서 빠졌다 · `apm_period_compare`의 required는 `current_start`·`current_end`·`baseline_start`·`baseline_end`). 도구 설명 한 줄: 「hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은 apm_instance_map(query=…)로 먼저 찾는다」.
-- **해소**: **정확 일치만**(strip+casefold) — 부분 이름은 해소하지 않는다(부분 검색은 §3.4.1이 하고, 조회 도구가 부분 일치로 여러 인스턴스를 부르지 않게 한다). 같은 이름이 여러 소스·도메인에 있으면 모두 싣는다(`source_ids`·`instance_id`로 좁힌다). hostName이 빈 인스턴스도 찾는다. 빈 문자열·공백뿐이면 주지 않은 것으로 본다(길이 상한 없음 — 비교뿐).
+- **해소**: **정확 일치만**(strip+casefold) — 부분 이름은 해소하지 않는다(부분 검색은 §3.4.1이 하고, 조회 도구가 부분 일치로 여러 인스턴스를 부르지 않게 한다). 같은 이름이 여러 소스·도메인에 있으면 모두 싣는다(`source_ids`·`instance_id`로 좁힌다). hostName이 빈 인스턴스도 찾는다. 빈 문자열·공백뿐이면 주지 않은 것으로 본다. 값이 있으면 `query`와 같은 형식 검사를 HTTP 전에 한다(문자열 · 앞뒤 공백 제거 뒤 200자 이하 — 아니면 `invalid_argument` 「instance_name는 200자 이하여야 한다(N자)」 · 검증 V130-5).
 - **AND**: `hostname`과 함께 주면 hostname 정합 결과 중 그 이름만 남긴다.
 - **`instance_resolution`**: `confidence="high"` · `reason="instance_name"` · `instance_refs[]`에 `hostname`(역정합 — **이름으로 불렀을 때만**) · 봉투 `hostname`은 역정합 host가 하나로 정해질 때만 그 값(아니면 `""`).
 - **행**: 이름으로 불렀을 때만, (`source_id`, `instance_id`)가 있고 `hostname` 칸이 없는 행에 `hostname`(역정합 또는 `""`)을 붙인다 — 폴스타 결과와 합치는 결합 키다. hostname으로 부른 행·refs에는 이 칸이 생기지 않는다(비트 동일).
@@ -247,6 +247,7 @@ business_map:
 | `instance_id`가 이름 결과에 없음 | `instance_unresolved` | 「instance_id N는 instance_name '<x>' 결과에 없음」 |
 | hostname ∧ 이름 교집합이 빔 | `instance_unresolved` | 「instance_name '<x>'은 hostname '<h>' 정합 결과에 없음」 |
 | 대상 필수 도구에 둘 다 없음 | `invalid_argument` | 「hostname 또는 instance_name이 필요하다(둘 다 비어 있음)」 |
+| 이름이 문자열이 아니거나 200자 초과 | `invalid_argument` | 「instance_name는 문자열이어야 한다」·「instance_name는 200자 이하여야 한다(N자)」(HTTP 0) |
 | `apm_config(kind=loaded_classes)`에 둘 다 없음 | `invalid_argument` | 「kind loaded_classes에는 hostname 또는 instance_name이 필요하다」 |
 | `apm_active_detail`·`apm_transaction_profile`의 도메인 불일치 | `profile_ref_mismatch` | 대상 표시가 hostname 대신 「instance_name '<x>'」 |
 

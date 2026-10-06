@@ -496,3 +496,53 @@ scenarios:
           # 일반 지식으로 지어내지 않은 응답이다.
           response_must_contain_any: [["「전산관리매뉴얼」", "연결되어 있지 않"], "지원하지 않"]
     teardown: [drop_thread]
+  # ── 대상 이름 해석(plans/130 · FS-34~FS-36) ─────────────────────────────────────
+  # 파서가 이름을 hostname으로 잡으면 hostname 경로로 간다(A-3 겹침) — 그때는 고지 단언이 달라질 수 있다.
+  - id: FS-34
+    plans: [130, 125, 87]
+    title: "인스턴스 이름 · 못 찾으면 다른 인스턴스로 대신 조회하지 않고 후보만(D-290 ⑥)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm]
+    turns:
+      - send: {query: "제니퍼에서 zzq-nowas 인스턴스 응답시간 보여줘"}
+        expect:
+          status: completed
+          sql_executed: false
+          plan: {agents: [apm_query]}
+          disclosures_contains: [apm_unresolved_condition]
+          response_must_contain: ["zzq-nowas", "대신 조회하지 않았습니다"]
+    teardown: [drop_thread]
+  - id: FS-35
+    plans: [130, 125, 87]
+    title: "업무명 → 인스턴스(수동 매핑 우선 · 없으면 APM 근거 ∪ 폴스타 등록명·비고)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm]
+    turns:
+      - send: {query: "결제 업무 WAS 힙 사용률 보여줘"}
+        expect:
+          status: completed
+          sql_executed: false
+          plan: {agents: [apm_query]}
+          response_must_contain: ["결제"]
+    teardown: [drop_thread]
+  - id: FS-36
+    plans: [130, 125, 87]
+    title: "이름 일부로 인스턴스 목록(검색 결과가 답 · 첫 홉 없음)"
+    kind: normal
+    env: closed
+    profile: baseline
+    endpoint: stream
+    requires_sources: [apm]
+    turns:
+      - send: {query: "이름에 abc가 들어가는 제니퍼 인스턴스 목록"}
+        expect:
+          status: completed
+          sql_executed: false
+          plan: {agents: [apm_query], max_tasks: 1}
+    teardown: [drop_thread]

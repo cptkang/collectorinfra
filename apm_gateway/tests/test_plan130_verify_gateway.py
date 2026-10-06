@@ -4,9 +4,8 @@
    대소문자만 다른 쿼리 키·GET 외 메서드는 거절한다(W2 테스트가 덮지 않은 변형).
 2. 업무 캐시(TTL 10분)가 소스·도메인 경계를 넘지 않는다 — 한 소스의 업무 정의로 다른 소스 인스턴스를
    업무 근거로 잡지 않는다 · 다른 도메인 질의가 앞 도메인 캐시를 쓰지 않는다.
-3. 큰 입력 — `business` 1MB는 HTTP 0 · 데이터 도구 `instance_name` 1MB는 사유(400자)·감사(마스킹·
-   상한)로 묶인다. 단 `query`·`business`와 달리 길이 검증 없이 인벤토리를 조회한다(V130-5 ·
-   `xfail(strict=True)`).
+3. 큰 입력 — `business` 1MB는 HTTP 0 · 데이터 도구 `instance_name` 1MB도 `query`·`business`처럼
+   HTTP 전에 `invalid_argument`(V130-5 교정) · 사유(400자)·감사(마스킹·상한)로 묶인다.
 실 제니퍼 0 — httpx MockTransport(W2 테스트의 합성 데이터)만 쓴다.
 """
 
@@ -90,12 +89,11 @@ async def test_megabyte_instance_name_is_bounded_in_reason_and_audit(tmp_path, c
         result = await mcp.call_tool("apm_app_health", {"instance_name": "a" * 1_000_000})
     text = (result[0] if isinstance(result, tuple) else result)[0].text
     payload = json.loads(text)
-    assert payload["error"] == "instance_unresolved"
+    assert payload["error"] == "invalid_argument"  # V130-5 교정 — 길이 검사(HTTP 전)
     assert len(payload["reason"]) <= 400 and len(text) < 2_000
     lines = [r.getMessage() for r in caplog.records if r.name == "apm_gateway.audit"]
     assert lines and all(len(line) < 1_000 for line in lines)
-    # 데이터 경로는 부르지 않는다(인벤토리만)
-    assert {r.url.path for r in calls} <= {"/api/domain", "/api/instance"}
+    assert calls == []
 
 
 async def test_instance_name_pii_is_masked_in_reason_and_audit(tmp_path, calls, caplog) -> None:
@@ -110,9 +108,6 @@ async def test_instance_name_pii_is_masked_in_reason_and_audit(tmp_path, calls, 
     assert lines and all("kim@example.com" not in line for line in lines)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "V130-5(Minor): 데이터 도구 `instance_name`에는 길이·형식 검증이 없어 1MB 값도 인벤토리 HTTP를"
-    " 부른다 — `query`·`business`(200자 · HTTP 0)와 비대칭(tools.py `_resolve`)"))
 async def test_megabyte_instance_name_is_rejected_before_http(tmp_path, calls) -> None:
     tools = _one(tmp_path, calls)
     with pytest.raises(ApmError) as exc:

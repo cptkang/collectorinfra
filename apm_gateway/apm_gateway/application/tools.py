@@ -780,10 +780,11 @@ class ApmTools:
         instance_name: str | None = None,
     ) -> Resolution:
         """대상 인스턴스 — hostname 정합 또는 인스턴스 이름 **정확 일치**(plans/130 N-3). 둘 다
-        주면 hostname 정합 결과 중 그 이름만 남긴다(AND)."""
+        주면 hostname 정합 결과 중 그 이름만 남긴다(AND). 이름은 `query`와 같은 형식 검사를 HTTP
+        전에 한다(문자열 · `QUERY_MAX`자 이하)."""
         self.sources.require_configured()
         host = str(hostname).strip() if _given(hostname) else ""
-        name = str(instance_name).strip() if _given(instance_name) else ""
+        name = search_query(instance_name, "instance_name") if _given(instance_name) else ""
         if not host and not name:
             raise ApmError(
                 INVALID_ARGUMENT, "hostname 또는 instance_name이 필요하다(둘 다 비어 있음)"
