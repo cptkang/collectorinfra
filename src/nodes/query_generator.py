@@ -871,6 +871,21 @@ async def _build_fallback_prompts(
     return system_prompt, user_prompt
 
 
+def _dialect_engine(state: AgentState) -> Optional[str]:
+    """생성 SQL 후처리의 방언 판단용 엔진 — state 값, 없으면 레지스트리(`active_db_id`)에서 찾는다.
+
+    2단·1단 데이터 질의는 `subagents`가 `active_db_engine`을 채우지만 그래프 경로(3·4단)는
+    쓰기 지점이 없다(`query_validator._engine_or_fallback` 주석). 엔진을 모르면 None — 소비처가
+    종전 동작을 유지한다(plans/137 W9).
+    """
+    engine = state.get("active_db_engine")
+    if engine:
+        return str(engine)
+    db_id = state.get("active_db_id")
+    domain = get_domain_by_id(db_id) if db_id else None
+    return getattr(domain, "db_engine", None) or None
+
+
 async def _llm_fallback(
     state: AgentState, ctx: _GenContext, coverage_outside: bool,
 ) -> tuple[str, Optional[list[dict]], Optional[dict], dict]:
@@ -963,7 +978,8 @@ async def _llm_fallback(
     # EAV 숫자·크기 값(문자열) 순위 정렬을 값 크기 순으로(plans/116 §10.3 — 메모리 8GB 1위).
     sql = ensure_eav_value_order(sql)
     # 집계 순위 정렬 NULLS LAST 부가(D-202 2차) — LLM 반복 누락으로 재시도 소진 실측.
-    sql = ensure_ranking_nulls_last(sql)
+    # MariaDB·MySQL은 문법이 없어 부가하지 않는다(D-305 · plans/137 W9).
+    sql = ensure_ranking_nulls_last(sql, db_engine=_dialect_engine(state))
 
     return sql, sql_candidates, text2sql_fallback, extra_return
 

@@ -1737,7 +1737,7 @@ async def _invoke_llm_for_sql(
                     ),
                     _eav_cols,
                 )
-            ))
+            ), db_engine=db_engine)
 
     messages: list[BaseMessage] = [
         SystemMessage(content=system_prompt)
@@ -1764,7 +1764,8 @@ async def _invoke_llm_for_sql(
     # EAV 숫자·크기 값(문자열) 순위 정렬을 값 크기 순으로(plans/116 §10.3) — 단일 대칭.
     sql = ensure_eav_value_order(sql)
     # 집계 순위 정렬 NULLS LAST 부가(D-202 2차) — LLM 반복 누락 재시도 소진 실측, 단일 대칭.
-    sql = ensure_ranking_nulls_last(sql)
+    # MariaDB·MySQL은 문법이 없어 부가하지 않는다(D-305 · plans/137 W9).
+    sql = ensure_ranking_nulls_last(sql, db_engine=db_engine)
     # FabriX PII 필터 차단 응답(비-SQL) — 원인 블록·값 즉시 특정(D-155, 단일 경로 대칭).
     # 이 함수가 프롬프트 재료를 가진 유일한 지점 — db_errors 발췌(D-153 후속2)와 별개로
     # 섹션별 로컬 스캔을 로그에 남겨 "어느 재료의 어떤 값"인지까지 특정한다.

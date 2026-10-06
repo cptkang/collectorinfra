@@ -319,3 +319,156 @@ def _sql_rows(source: str, sql: str) -> list[dict[str, Any]]:
         return [{"version": "11.4.0-MariaDB", "sql_mode": "STRICT_TRANS_TABLES",
                  "lower_case_table_names": 0, "collation_server": "utf8mb4_general_ci"}]
     raise RuntimeError(f"예상하지 못한 SQL: {sql}")
+
+
+# ──────────────────────────────────────────────
+# W9 NULLS LAST 엔진 분기 (plans/137 §8.2 · D-305)
+# ──────────────────────────────────────────────
+
+_RANKING = "SELECT a, COUNT(*) AS cnt FROM t GROUP BY a ORDER BY cnt DESC LIMIT 5"
+
+
+class TestNullsLastEngineBranch:
+    @pytest.mark.parametrize("engine", ["mariadb", "MySQL", " mariadb "])
+    def test_no_nulls_ordering_engines_unchanged(self, engine):
+        from src.db_adapters.polestar.validators import ensure_ranking_nulls_last
+
+        assert ensure_ranking_nulls_last(_RANKING, db_engine=engine) == _RANKING
+
+    @pytest.mark.parametrize("engine", [None, "postgresql", "db2"])
+    def test_polestar_engines_keep_fix(self, engine):
+        from src.db_adapters.polestar.validators import ensure_ranking_nulls_last
+
+        assert "cnt DESC NULLS LAST" in ensure_ranking_nulls_last(_RANKING, db_engine=engine)
+
+    def test_query_generator_resolves_engine_from_registry(self):
+        """그래프 경로처럼 state에 엔진이 없어도 레지스트리(`active_db_id`)에서 찾는다."""
+        from src.nodes.query_generator import _dialect_engine
+
+        assert _dialect_engine({"active_db_engine": "db2"}) == "db2"
+        assert _dialect_engine({"active_db_engine": None, "active_db_id": "itam"}) == "mariadb"
+        assert _dialect_engine({}) is None
+
+    def test_all_call_sites_pass_engine(self):
+        """호출부 3곳이 모두 엔진을 넘긴다 — 하나라도 빠지면 MariaDB 1064가 재발한다."""
+        import importlib
+        import inspect
+
+        # `src.nodes` 패키지가 노드 함수 `query_generator`를 재노출해 `import … as`는 함수를 준다
+        qg = inspect.getsource(importlib.import_module("src.nodes.query_generator"))
+        mde = inspect.getsource(importlib.import_module("src.nodes.multi_db_executor"))
+
+        assert qg.count("ensure_ranking_nulls_last(") == 1
+        assert qg.count("ensure_ranking_nulls_last(sql, db_engine=_dialect_engine(state))") == 1
+        assert mde.count("ensure_ranking_nulls_last(") == 2
+        assert mde.count("), db_engine=db_engine)") == 1
+        assert mde.count("ensure_ranking_nulls_last(sql, db_engine=db_engine)") == 1
+
+
+# ──────────────────────────────────────────────
+# W10 테이블 선택 요약 — 앞 15개 밖 겹침 컬럼 (plans/137 §8.3 · G-7 ⓑ)
+# ──────────────────────────────────────────────
+
+
+def _schema_info_obj():
+    from src.dbhub.models import ColumnInfo, SchemaInfo, TableInfo
+
+    def table(name: str, cols: list[str]) -> TableInfo:
+        return TableInfo(name=name, schema_name="", columns=[
+            ColumnInfo(name=c, data_type="varchar", nullable=True, is_primary_key=False,
+                       is_foreign_key=False, references=None, comment=None)
+            for c in cols
+        ])
+
+    schema = SchemaInfo()
+    filler = [f"c{i:02d}" for i in range(44)]
+    schema.tables["TAB80"] = table(
+        "TAB80",
+        filler + ["유지보수계약시작년월일", "유지보수계약종료년월일", "자산분류구분명"]
+        + [f"d{i}" for i in range(20)],
+    )
+    schema.tables["TAB72"] = table("TAB72", ["시스템등록처리일시"] + [f"x{i}" for i in range(30)])
+    schema.tables["TAB01"] = table("TAB01", ["유지보수계약명"])  # 15개 이하 — 이미 보인다
+    return schema
+
+
+class _CaptureLLM:
+    def __init__(self, answer: str = "TAB80") -> None:
+        self.prompts: list[str] = []
+        self.answer = answer
+
+    async def ainvoke(self, messages):
+        self.prompts.append(messages[0].content)
+        return SimpleNamespace(content=self.answer)
+
+
+class TestSelectionSummaryMatchedColumns:
+    def test_matched_hidden_columns_listed(self):
+        from src.nodes.schema_analyzer import _query_matched_columns_text
+
+        text = _query_matched_columns_text(
+            _schema_info_obj(), "ITAM에서 유지보수계약 종료일이 올해 안에 끝나는 자산 보여줘",
+        )
+        assert "- TAB80: 유지보수계약시작년월일, 유지보수계약종료년월일" in text
+        assert "TAB01" not in text and "TAB72" not in text  # 이미 보인 컬럼 · 겹침 없음
+
+    def test_tail_particle_stripped(self):
+        from src.nodes.schema_analyzer import _query_matched_columns_text
+
+        text = _query_matched_columns_text(_schema_info_obj(), "자산분류별 자산 수")
+        assert "- TAB80: 자산분류구분명" in text
+
+    def test_no_match_is_empty(self):
+        from src.nodes.schema_analyzer import _query_matched_columns_text
+
+        assert _query_matched_columns_text(_schema_info_obj(), "server list 보여줘") == ""
+        # 2자 낱말(「자산」)만으로는 겹침을 만들지 않는다(잡음 차단)
+        assert _query_matched_columns_text(_schema_info_obj(), "자산 목록") == ""
+
+    def test_per_table_cap(self):
+        from src.dbhub.models import ColumnInfo, SchemaInfo, TableInfo
+        from src.nodes.schema_analyzer import _MATCH_COLUMNS_PER_TABLE, _query_matched_columns_text
+
+        cols = [f"f{i:02d}" for i in range(15)] + [f"유지보수항목{i:02d}" for i in range(30)]
+        schema = SchemaInfo()
+        schema.tables["W"] = TableInfo(name="W", schema_name="", columns=[
+            ColumnInfo(name=c, data_type="varchar", nullable=True, is_primary_key=False,
+                       is_foreign_key=False, references=None, comment=None) for c in cols
+        ])
+        line = _query_matched_columns_text(schema, "유지보수항목").splitlines()[-1]
+        assert line.count(",") + 1 == _MATCH_COLUMNS_PER_TABLE
+
+    async def test_prompt_prefix_unchanged_and_section_after(self):
+        from src.nodes.schema_analyzer import _llm_select_relevant_tables
+
+        query = "ITAM에서 유지보수계약 종료일이 올해 안에 끝나는 자산 보여줘"
+        off, on = _CaptureLLM(), _CaptureLLM()
+        await _llm_select_relevant_tables(off, _schema_info_obj(), ["자산"], query)
+        await _llm_select_relevant_tables(
+            on, _schema_info_obj(), ["자산"], query, match_columns=True,
+        )
+        before, after = off.prompts[0], on.prompts[0]
+        assert "질의 단어와 이름이 겹치는 컬럼" not in before
+        marker = "\n\n질의 단어와 이름이 겹치는 컬럼"
+        head = after[: after.index(marker)]
+        assert before.startswith(head)  # 테이블 목록 접두 불변(KV 캐시)
+        assert after.replace(after[after.index(marker): after.index("\n\n사용자 질의")], "") == before
+
+    async def test_policy_off_db_prompt_byte_identical(self):
+        """G-7 ⓑ — 허용 off DB(match_columns=False)는 종전 프롬프트 그대로."""
+        from src.nodes.schema_analyzer import _llm_select_relevant_tables
+
+        a, b = _CaptureLLM(), _CaptureLLM()
+        await _llm_select_relevant_tables(a, _schema_info_obj(), ["자산"], "유지보수계약 종료일")
+        await _llm_select_relevant_tables(
+            b, _schema_info_obj(), ["자산"], "유지보수계약 종료일", match_columns=False,
+        )
+        assert a.prompts == b.prompts
+        assert "외 " in a.prompts[0]  # 15개 절단 표기는 종전 그대로
+
+    def test_caller_gates_by_registry(self):
+        import inspect
+
+        import src.nodes.schema_analyzer as sa
+
+        assert "match_columns=hangul_identifiers_allowed(db_id)" in inspect.getsource(sa)
