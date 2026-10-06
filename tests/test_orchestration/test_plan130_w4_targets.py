@@ -37,6 +37,7 @@ from src.orchestration import apm_query as aq
 from src.orchestration.conditional_agents import sanitize_task_views
 from src.orchestration.entity_link import AMBIGUOUS, LINKED, UNLINKED, LinkEntry
 from src.orchestration.investigation_audit import _apm_query_fields
+from src.orchestration.replanner import _assign_ids
 from src.orchestration.schemas import DecomposedPlan, views_plan_model
 from src.prompts import intent_planner as prompts
 from src.utils.prior_dependency import NOTE_BRIDGE
@@ -645,3 +646,94 @@ def test_instance_id_tools_match_the_gateway_schema(gw_schema) -> None:
         assert {"instance_name", "source_ids"} <= set(props), (tool, sorted(props))
     search = gw_schema["apm_instance_map"]["properties"]
     assert {"query", "business", "hostname", "domain_id"} <= set(search)
+
+
+# ── 12. W4 교정(verify-130 · V130-1·3·4·6·7) ──────────────────────────────────
+
+def _second_turn(query: str) -> dict:
+    """2턴째 — 직전 턴이 web01을 조회했다."""
+    return _isolated(conversation_context={
+        "previous_entities": [{"field": "hostname", "value": "web01"}], "turn_count": 2},
+        original_user_query=query, user_query=query)
+
+
+async def test_demonstrative_keeps_the_previous_turn_host_beside_target_text(gateway) -> None:
+    """대상 텍스트가 있어도 지시어(「그 서버」)로 가리키면 직전 턴 서버를 잇는다(V130-1 대조군)."""
+    gw, _ = gateway(search={"abc-was01": ([_inst(1, "abc-was01", "h1")], [])})
+    res = await _run(["apm.app_health"], [{"text": "abc-was01", "kind": "instance"}],
+                     isolated=_second_turn("그 서버랑 abc-was01 응답시간 알려줘"))
+    calls = sorted((c.get("hostname") or "", c.get("instance_name") or "")
+                   for c in gw.named("apm_app_health"))
+    assert calls == [("", "abc-was01"), ("web01", "")]
+    assert res["apm_query"]["hostnames"] == ["web01"]
+
+
+async def test_over_length_target_survives_decomposition_and_is_disclosed(gateway) -> None:
+    """분해 정제가 길이 초과 텍스트를 버리지 않아 처리기가 첫 홉을 막고 고지한다(V130-7)."""
+    plan = {"tasks": [{"task_id": "t1", "agent": "apm_query", "views": ["apm.app_health"],
+                       "targets": [{"text": "가" * 500, "kind": "instance"}]}]}
+    sanitize_task_views(plan, _cfg())
+    (task,) = plan["tasks"]
+    assert len(task["targets"][0]["text"]) == aq.TARGET_TEXT_MAX + 1
+    gw, edge = gateway(listing=[_inst(1, "first-was", "h1")])
+    res = await aq.run_apm_query(task, _isolated(), llm=None, app_config=_cfg(), now=NOW)
+    assert gw.calls == [] and edge.seen == [], "해석 호출도 첫 홉도 없다"
+    assert res["degraded_reason"] == "apm_target_unresolved"
+    (notice,) = _kinds(res, disc.APM_UNRESOLVED_CONDITION)
+    assert notice.startswith(f"대상 이름이 너무 길어({aq.TARGET_TEXT_MAX}자 초과)")
+    assert len(notice) < 150, "원문 전체를 싣지 않는다"
+
+
+def test_replanned_targets_are_sanitized_and_kept_only_on_apm_tasks() -> None:
+    apm, data = _assign_ids([
+        {"agent": "apm_query", "sub_query": "q",
+         "targets": [{"text": " abc ", "kind": "INSTANCE"}, "junk"]},
+        {"agent": "data_query", "sub_query": "q", "targets": [{"text": "abc"}]},
+    ], existing=[])
+    assert apm["targets"] == [{"text": "abc", "kind": "instance"}]
+    assert "targets" not in data
+
+
+async def test_server_names_beyond_the_legacy_cap_are_searched_not_dropped(
+        gateway, monkeypatch) -> None:
+    """종전 경로 상한 안 이름은 E2가 이으면 hostname 호출 · 상한 밖 이름은 텍스트다(V130-6)."""
+    linked_names: list[str] = []
+
+    async def linked(refs, *, consumer, app_config):
+        names = [str(r.server_name) for r in refs if r.server_name]
+        linked_names.extend(names)
+        return [f"h-{n}" for n in names], [
+            LinkEntry(n, "server_name", "E2", LINKED, grade="one", value=f"h-{n}")
+            for n in names], []
+
+    monkeypatch.setattr(aq, "link_hostnames", linked)
+    names = [f"srv{i:02d}" for i in range(1, 5)]
+    gw, _ = gateway(search={"srv04": ([_inst(4, "srv04-was")], [])})
+    res = await _run(["apm.app_health"], isolated=_isolated(
+        [{"field": "server_name", "op": "=", "value": n} for n in names]),
+        cfg=_cfg(max_targets=2))
+    assert linked_names == names[:2]
+    assert gw.searched("query") == names[2:]
+    called = sorted(c.get("hostname") or c.get("instance_name")
+                    for c in gw.named("apm_app_health"))
+    assert called == ["h-srv01", "h-srv02", "srv04-was"]
+    assert any("'srv03'" in t and "찾지 못" in t
+               for t in _kinds(res, disc.APM_UNRESOLVED_CONDITION))
+
+
+async def test_edge_row_cap_is_a_partial_notice_and_in_the_summary(gateway) -> None:
+    class Capped(_Edge):
+        async def __call__(self, terms, *, app_config, authorized_db_ids):
+            found, entries, steps = await super().__call__(
+                terms, app_config=app_config, authorized_db_ids=authorized_db_ids)
+            return found, entries, [{**s, "truncated": True} for s in steps]
+
+    edge = Capped({"결제": [{"hostname": "h3", "server_name": "결제서버",
+                             "db_id": "polestar_cm_gp", "field": "name"}]})
+    gw, _ = gateway(edge, hosts={"h3": [_inst(3, "pay-was03")]})
+    res = await _run(["apm.app_health"], [{"text": "결제", "kind": "business"}])
+    assert [c["instance_name"] for c in gw.named("apm_app_health")] == ["pay-was03"]
+    assert _kinds(res, disc.APM_PARTIAL_SOURCES) == [
+        f"'결제' 대상 해석: {OWNER} 등록명·비고 조회 상한에 닿아 일부만 확인 — 빠진 서버가 있을 수"
+        " 있습니다"]
+    assert "E6 변환이 조회 상한에 닿아 일부만 확인했습니다." in res["organized_data"]["summary"]

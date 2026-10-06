@@ -572,6 +572,7 @@ def test_allowlist_business_requires_domain_id():
         check_request("POST", "/api/business", {"domain_id": "1000"})
 
 
+# 업무 지표 두 경로는 D-296(D-290 ④ 부기)이 허용으로 바꿨다 — `plans/134` W4가 열면 여기서 뺀다
 @pytest.mark.parametrize(
     "path",
     ["/api/realtime/business", "/api/dbmetrics/business", "/api/business.xml", "/api/business/"],

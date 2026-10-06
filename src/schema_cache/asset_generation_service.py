@@ -1445,9 +1445,10 @@ def _table_columns(snap_tables: Mapping[str, Any]) -> dict[str, list[str]]:
 
 
 class _NoAliasSafeLoader(yaml.SafeLoader):  # type: ignore[misc]  # yaml 스텁 없음(Any)
-    """앵커(&)·별칭(*)을 거절하는 SafeLoader — 작은 입력이 별칭 펼치기로 거대한 값이 되는 것을 막는다.
+    """앵커(&)·별칭(*)을 거절하는 SafeLoader.
 
-    노드를 만들기 전(펼치기 전)에 이벤트를 보고 거절한다.
+    작은 입력이 별칭 펼치기로 거대한 값이 되는 것을 막는다 — 노드를 만들기 전(펼치기 전)에
+    이벤트를 보고 거절한다.
     """
 
     def compose_node(self, parent: Any, index: Any) -> Any:
@@ -1474,7 +1475,7 @@ def load_import_yaml(text: str) -> Any:
 
 
 def _display_text(value: Any) -> str:
-    """표시용 사본의 글 한 칸 — 문자열은 그대로, 그 밖의 값은 타입 이름 + 짧은 발췌(펼치지 않는다)."""
+    """표시용 사본의 글 한 칸 — 문자열은 그대로, 그 밖의 값은 타입 이름 + 짧은 발췌."""
     return value if isinstance(value, str) else describe_value(value)
 
 

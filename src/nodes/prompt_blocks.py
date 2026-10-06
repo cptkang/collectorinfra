@@ -685,8 +685,8 @@ def build_table_purpose_block(schema_info: Mapping[str, Any] | None) -> str:
         return ""
     clean, dropped = sanitize_definitions_for_prompt(defs)
     index: dict[str, Mapping[str, Any]] = {}
-    for name, entry in clean.items():
-        index.setdefault(bare_name(name), entry)
+    for name, item in clean.items():
+        index.setdefault(bare_name(name), item)
     dropped_bare = {bare_name(name) for name in dropped}
     lines: list[str] = []
     skipped: list[str] = []

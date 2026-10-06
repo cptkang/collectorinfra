@@ -592,7 +592,7 @@ def _assign_ids(new_tasks: list[dict], *, existing: list[dict]) -> list[dict]:
             "order": max_order + 1 + len(assigned),
             "status": "pending",
         }
-        # 대상 텍스트(plans/130 M-1) — 재계획 APM task도 말한 대상을 잃지 않는다(V130-4 · 형태 정제만)
+        # 대상 텍스트(plans/130 M-1) — 재계획 APM task도 말한 대상을 잃지 않는다(V130-4)
         targets = sanitize_targets(raw.get("targets"))
         if task["agent"] == APM_QUERY_AGENT and targets:
             task["targets"] = targets

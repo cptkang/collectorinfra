@@ -178,7 +178,7 @@
 - 연동 절차·통제·도구 계약: `docs/31_jennifer_integration_guide.md` §5·§6 · 계약 정본 `spec/SPEC-apm-gateway.md`
 - 설계·제품 조사: `plans/87-WIP-jennifer-apm-integration.md` §2.2(데이터 카탈로그) · §0.9(스펙 대조)
 - 채팅 처리기: `plans/125-WIP-four-source-intent-routing-and-composed-answer.md` · `src/orchestration/apm_query.py` · 보기 정본 `config/db_registry.yaml` `solutions[apm].views`
-- 대상 해석(인스턴스 이름·업무명): `plans/130-TODO-apm-instance-and-business-name-targeting.md` · 소스 선별: `plans/132-WIP-source-first-selection.md`
+- 대상 해석(인스턴스 이름·업무명): `plans/130-WIP-apm-instance-and-business-name-targeting.md` · 소스 선별: `plans/132-WIP-source-first-selection.md`
 - 이 표의 빈칸을 채우는 계획: **`plans/134-WIP-jennifer-question-coverage.md`**
 - 제니퍼 원천: Open API 스펙 5.6.4 `https://raw.githubusercontent.com/jennifersoft/jennifer5-open-api/gh-pages/index.html`(`plans/87` [J-4]·[J-23]) · v2 매뉴얼 `https://github.com/jennifersoft/jennifer5-open-api-v2-manual`의 `spec/*.md`(`plans/87` [J-5])
 - 결정: **D-296**(조회 범위) · D-003 · D-195 · D-274 · D-281 · D-283 · D-287 · D-290 · D-293 · D-295

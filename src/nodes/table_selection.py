@@ -227,8 +227,8 @@ def _definition_index(profile: Mapping[str, Any], db_id: str) -> dict[str, Mappi
     clean, dropped = sanitize_definitions_for_prompt(profile.get(PROFILE_KEY))
     if dropped:
         logger.warning(
-            "[테이블선별] db=%s 검증을 통과하지 못한 정의 %d개를 선별 재료에서 뺌(승인 검증을 거치지 "
-            "않은 편집 의심): %s", db_id, len(dropped), dropped[:20],
+            "[테이블선별] db=%s 검증을 통과하지 못한 정의 %d개를 선별 재료에서 뺌"
+            "(승인 검증을 거치지 않은 편집 의심): %s", db_id, len(dropped), dropped[:20],
         )
     out: dict[str, Mapping[str, Any]] = {}
     for name, entry in clean.items():
