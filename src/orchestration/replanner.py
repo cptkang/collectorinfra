@@ -169,8 +169,9 @@ async def replanner(
         }
 
     # 문서 전용 계획(plans/127 G-12 (a) — 플래그 없음 · 문서 task 가 있는 계획에서만 발동):
-    # 문서 답은 완결이다. 재계획이 붙일 수 있는 후속은 같은 문서 재검색(0건·색인 폐기는
-    # 다시 물어도 같다 — 126 §4.7)이거나 일반 안내 보충뿐이라 평가 LLM 을 생략한다.
+    # 문서 답은 완결이다. 재계획이 붙일 수 있는 후속은 같은 문서 재검색(0건 재시도는 엔진이 이미
+    # 한다 — plans/141 W2 · D-314 · 색인 폐기는 다시 물어도 같다)이거나 일반 안내 보충뿐이라 평가
+    # LLM 을 생략한다.
     if _tasks_now and all(
         isinstance(t, dict) and t.get("agent") == _DOC_AGENT for t in _tasks_now
     ) and all(isinstance(_results_now.get(str(t.get("task_id"))), dict) for t in _tasks_now):

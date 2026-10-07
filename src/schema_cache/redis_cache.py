@@ -545,7 +545,7 @@ class RedisSchemaCache:
         db_id: str,
         descriptions: dict[str, str],
     ) -> list[str]:
-        """Redis에 없는 컬럼 설명만 추가한다(HSETNX — 기존 설명은 덮지 않는다 · D-314 ④).
+        """Redis에 없는 컬럼 설명만 추가한다(HSETNX — 기존 설명은 덮지 않는다 · D-316 ④).
 
         한 번 적재한 키는 DB별 집합(`schema:{db_id}:knowledge_seeded`)에 남기고 다시 채우지 않는다 —
         운영자가 지운 설명이 재기동 때 되살아나지 않게. 해시에 없고 집합에도 없는 키만 채운다.

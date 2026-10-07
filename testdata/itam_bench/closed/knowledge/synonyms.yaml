@@ -1,4 +1,4 @@
-# K3 — ITAM 유사어 시드 원천 (plans/141 W3 · D-314 · 작성 스킬 .claude/skills/itam-knowledge)
+# K3 — ITAM 유사어 시드 원천 (plans/143 W3 · D-316 · 작성 스킬 .claude/skills/itam-knowledge)
 # 빌드 → config/synonym_seeds/itam.yaml `column_synonyms`. 시나리오 질문 어휘 ↔ 컬럼 연결 근거가 있는 것만 둔다.
 # 쓰기 가드(D-142): 2자 미만 · 다른 컬럼 이름과 같은 낱말 · 여러 컬럼에 걸리는 다의어 금지. 값 0.
 version: 1

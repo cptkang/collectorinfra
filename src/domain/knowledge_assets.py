@@ -1,6 +1,6 @@
 """지식 자산 원천 파일 — 형식 파싱 · 결정적 정적 검사 · 정의 파생 쿼리 규칙.
 
-plans/141 W2 · D-314 ①②.
+plans/143 W2 · D-316 ①②.
 
 **원천 파일 계약**(Claude Code 스킬·검증 CLI·빌더가 함께 쓴다). 디렉터리
 `testdata/itam_bench/closed/knowledge/` · 파일 6종. 모든 파일 머리는 ``version: 1``이고 ``items``

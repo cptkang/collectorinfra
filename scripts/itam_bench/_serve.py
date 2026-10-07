@@ -16,7 +16,7 @@ plans/139 W6-d: DB 별로 프롬프트 크기·선별 결과도 옮긴다 — **
 수신 파일 경로는 벤치 부모 프로세스가 환경변수 `ITAM_BENCH_CAPTURE_PATH`로 넘긴다(세션 임시 디렉터리
 · 실행 종료 시 부모가 지운다). 없으면 설치하지 않는다.
 
-plans/141 W1 · D-314 ⑤ — **자산 사용 표지**. DB 별 칸에 둘을 더한다(실렸을 때만 칸이 생긴다 — 자산이
+plans/143 W1 · D-316 ⑤ — **자산 사용 표지**. DB 별 칸에 둘을 더한다(실렸을 때만 칸이 생긴다 — 자산이
 없는 DB의 레코드 모양은 그대로다).
 
 - `assets`: 이번 턴 그 DB 스키마에 붙은 구조 메타(`_structure_meta`)의 지식 자산 —
@@ -31,7 +31,7 @@ plans/141 W1 · D-314 ⑤ — **자산 사용 표지**. DB 별 칸에 둘을 더
 직접 읽는다) · 질의 이력 few-shot 치환 여부. 이 둘은 run 단위 자산 지문(`run.json` `assets`)으로
 갈음한다. 컬럼 설명(K3)·유사어는 별도 표지 없이 기존 칸(`with_meaning` — 단일 경로만)으로 본다.
 
-plans/141 W8 — **자산 끄기**(`ITAM_BENCH_ASSET_ABLATION`). 벤치 서버 프로세스에서만 지정 자산 하나를
+plans/143 W8 — **자산 끄기**(`ITAM_BENCH_ASSET_ABLATION`). 벤치 서버 프로세스에서만 지정 자산 하나를
 비운다(요청 단위 오버라이드가 없어 run 단위 · 제품 코드 무변경): 구조 메타 키는 수동 프로필·승인
 적용본 로더 결과에서 그 키만 빼고, `prompt_template`은 생성 템플릿 어댑터의 섹션을 없음으로,
 `query_templates`는 `TEXT2SQL_TEMPLATE_ASSEMBLY=false`로 끈다. 모르는 키는 기동을 멈춘다.
@@ -64,7 +64,7 @@ SELECTION_SOURCES: frozenset[str] = frozenset({"llm", "lexical", "none"})
 #: 문구 모양이면 null 이다.
 _REASON_CODE = re.compile(r"^[a-z][a-z_]{0,39}$")
 
-#: 자산 사용 표지 대상 — 구조 메타 키(plans/141 W1).
+#: 자산 사용 표지 대상 — 구조 메타 키(plans/143 W1).
 ASSET_MARKER_KEYS: tuple[str, ...] = (
     "query_guide",
     "query_examples",
@@ -214,7 +214,7 @@ def _template_shape(state: Mapping[str, Any], db_id: str) -> dict[str, Any] | No
 
 
 def _usage_shape(state: Mapping[str, Any], db_id: str, schema: Any) -> dict[str, Any]:
-    """자산 사용 표지 — 실렸을 때만 칸을 만든다(plans/141 W1)."""
+    """자산 사용 표지 — 실렸을 때만 칸을 만든다(plans/143 W1)."""
     out: dict[str, Any] = {}
     assets = _asset_shape(schema)
     if assets:
@@ -306,7 +306,7 @@ def _patch(*targets: tuple[Any, str, Any]) -> Callable[[], None]:
 
 
 def install_ablation(key: str, db_id: str = ABLATION_DB_ID) -> Callable[[], None]:
-    """자산 하나를 벤치 서버 프로세스에서만 끈다(plans/141 W8) → 되돌리는 함수.
+    """자산 하나를 벤치 서버 프로세스에서만 끈다(plans/143 W8) → 되돌리는 함수.
 
     Raises:
         ValueError: 모르는 키(`ABLATION_KEYS` 밖)

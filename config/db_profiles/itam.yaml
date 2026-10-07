@@ -6,7 +6,7 @@
 #   table_definitions  시드 초안 108건(이름 기반 「(추정)」 포함 · D-308) + 반출 내부망 편집분(manual) 0건
 #   → table_definitions가 있으면 정의 기반 선별(최대 8개 · D-308)이 켜진다. 없으면 조회 대상이
 #     프롬프트에 전부 실려 입력 한도를 넘을 수 있다(plans/139)
-# 지식 오버레이(plans/141 W4 · D-314 ②) — 원천 testdata/itam_bench/closed/knowledge 검증 통과 active 항목만
+# 지식 오버레이(plans/143 W4 · D-316 ②) — 원천 testdata/itam_bench/closed/knowledge 검증 통과 active 항목만
 #   원천 근거 run 20261006-152938 · 검증 정적 검사만 — 모의 DB 미실행
 #   query_guide        K1 가이드 10건
 #   query_rules        K6 정의 kind 파생(P1 규칙 우선 합집합) 3건

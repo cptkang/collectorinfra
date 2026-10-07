@@ -186,7 +186,7 @@ def test_blank_query_is_error(manifest, monkeypatch):
 
 # ── 근거 0건: LLM 호출 0회 ──────────────────────────────────────────
 
-def test_empty_results_calls_no_llm_and_says_it_is_final(manifest, monkeypatch):
+def test_empty_results_calls_no_llm_and_suggests_retry_or_rephrase(manifest, monkeypatch):
     _patch_search(monkeypatch, [RetrievalOutcome("hq_manual", STATUS_EMPTY)])
     llm = _LLM()
     out = run(svc.answer_from_documents(
@@ -194,7 +194,9 @@ def test_empty_results_calls_no_llm_and_says_it_is_final(manifest, monkeypatch):
     assert out.status == STATUS_EMPTY
     assert llm.calls == 0                       # ★ 지어내지 않는다
     assert out.diagnostics["llm_calls"] == 0
-    assert "같은 질문을 다시 물어도 같은 답" in out.answer
+    # 0건은 «확정 판정»이 아니다 — 플랫폼 HyDE 변동으로 회차마다 갈린다(plans/141 · D-314)
+    assert "같은 답" not in out.answer
+    assert "잠시 뒤 다시 물어보시거나" in out.answer
     assert "본부 전산관리매뉴얼" in out.answer
 
 
@@ -358,3 +360,99 @@ def test_cache_errors_do_not_break_query(manifest, monkeypatch):
                                         app_config=_cfg(cache_ttl=300), cache=Broken(),
                                         collections_path=manifest))
     assert out.status == STATUS_OK
+
+
+# ── 전체 0건 재시도 (plans/141 W2 · D-314) ───────────────────────────────────
+
+def _patch_search_seq(monkeypatch, rounds):
+    """회차별로 다른 결과를 돌려주는 검색 대역 — rounds[i] = 그 회차의 {문서군: outcome}."""
+    calls = {"n": 0, "kwargs": []}
+
+    async def fake(collections, query, **kw):
+        idx = min(calls["n"], len(rounds) - 1)
+        calls["n"] += 1
+        calls["kwargs"].append(kw)
+        by_id = rounds[idx]
+        return [by_id.get(c.id, RetrievalOutcome(c.id, STATUS_EMPTY)) for c in collections]
+    monkeypatch.setattr(svc, "retrieve_many", fake)
+    return calls
+
+
+def test_all_empty_retries_once_and_recovers(manifest, monkeypatch):
+    calls = _patch_search_seq(monkeypatch, [
+        {"hq_manual": RetrievalOutcome("hq_manual", STATUS_EMPTY)},
+        {"hq_manual": RetrievalOutcome("hq_manual", STATUS_OK, hits=[_hit()])},
+    ])
+    llm = _LLM()
+    out = run(svc.answer_from_documents(
+        "계정 신청 승인자", ["hq_manual"], llm=llm, app_config=_cfg(empty_retries=1),
+        collections_path=manifest))
+    assert calls["n"] == 2
+    assert out.status == STATUS_OK and llm.calls == 1
+    assert out.diagnostics["retries"] == 1 and out.diagnostics["recovered_by_retry"] is True
+
+
+def test_retry_still_empty_gives_notice_without_llm(manifest, monkeypatch):
+    calls = _patch_search_seq(monkeypatch, [{}])
+    llm = _LLM()
+    out = run(svc.answer_from_documents(
+        "없는 내용", ["hq_manual"], llm=llm, app_config=_cfg(empty_retries=1),
+        collections_path=manifest))
+    assert calls["n"] == 2                       # 1회만 다시 한다
+    assert out.status == STATUS_EMPTY and llm.calls == 0
+    assert out.diagnostics["retries"] == 1 and out.diagnostics["recovered_by_retry"] is False
+
+
+def test_partial_empty_does_not_retry(manifest, monkeypatch):
+    """한 문서군이라도 결과가 있으면 다시 하지 않는다(원래 0건이 정상인 문서군 헛호출 방지)."""
+    calls = _patch_search_seq(monkeypatch, [
+        {"hq_manual": RetrievalOutcome("hq_manual", STATUS_OK, hits=[_hit()]),
+         "arch_docs": RetrievalOutcome("arch_docs", STATUS_EMPTY)},
+    ])
+    out = run(svc.answer_from_documents(
+        "계정 신청 승인자", ["hq_manual", "arch_docs"], llm=_LLM(),
+        app_config=_cfg(empty_retries=1), collections_path=manifest))
+    assert calls["n"] == 1 and out.diagnostics["retries"] == 0
+
+
+@pytest.mark.parametrize("status", [STATUS_ERROR, STATUS_TIMEOUT, STATUS_STALE_ID, STATUS_BLOCKED_PII])
+def test_failures_are_not_retried(manifest, monkeypatch, status):
+    calls = _patch_search_seq(monkeypatch, [
+        {"hq_manual": RetrievalOutcome("hq_manual", status, reason="사유")},
+    ])
+    out = run(svc.answer_from_documents(
+        "q", ["hq_manual"], llm=_LLM(), app_config=_cfg(empty_retries=1),
+        collections_path=manifest))
+    assert calls["n"] == 1 and out.status == status
+
+
+def test_zero_retries_keeps_previous_behavior(manifest, monkeypatch):
+    calls = _patch_search_seq(monkeypatch, [{}])
+    out = run(svc.answer_from_documents(
+        "q", ["hq_manual"], llm=_LLM(), app_config=_cfg(empty_retries=0),
+        collections_path=manifest))
+    assert calls["n"] == 1 and out.diagnostics["retries"] == 0
+
+
+def test_retry_respects_total_timeout_budget(manifest, monkeypatch):
+    """재시도는 남은 시간(총상한 − 경과)을 상한으로 받고, 남은 시간이 짧으면 생략한다."""
+    calls = _patch_search_seq(monkeypatch, [{}])
+    out = run(svc.answer_from_documents(
+        "q", ["hq_manual"], llm=_LLM(), app_config=_cfg(empty_retries=1, total_timeout=20),
+        collections_path=manifest))
+    assert calls["n"] == 2
+    assert calls["kwargs"][1]["total_timeout_sec"] <= 20
+    assert calls["kwargs"][1]["timeout_sec"] <= 12
+
+    calls = _patch_search_seq(monkeypatch, [{}])
+    monkeypatch.setattr(svc, "_MIN_RETRY_BUDGET_SEC", 10_000.0)   # 남은 시간이 늘 부족한 상황
+    out = run(svc.answer_from_documents(
+        "q", ["hq_manual"], llm=_LLM(), app_config=_cfg(empty_retries=1),
+        collections_path=manifest))
+    assert calls["n"] == 1 and out.diagnostics["retries"] == 0
+
+
+def test_real_config_default_is_one_retry():
+    """기본 1회(D-314 ② — 신규 플래그 기본 off의 명시 예외)."""
+    from src.config import RagConfig
+    assert RagConfig(_env_file=None).empty_retries == 1

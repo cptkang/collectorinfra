@@ -1,4 +1,4 @@
-"""`--verify-assets` — 반입된 지식 자산 SQL 읽기 전용 실행 검증 (plans/141 W5 · D-314 ⑤).
+"""`--verify-assets` — 반입된 지식 자산 SQL 읽기 전용 실행 검증 (plans/143 W5 · D-316 ⑤).
 
 현재 저장소의 반입본을 읽어 SQL을 모은다.
 
@@ -18,7 +18,7 @@ MCP readonly 클라이언트(`scripts.scenario.oracle._open_client`)로 돌린�
 산출 `asset_verification.yaml`(7번째 반출 파일)은 항목 ID · 종류 · 지문(SQL 해시 앞 12자) · ok ·
 오류 범주(짧은 열거 — DB 오류 원문 없음) · 행 수 구간(`0`·`1~10`·`11~100`·`100+`)만 싣는다. 결과
 행·값·SQL 원문은 남기지 않는다. 누출 관문을 통과해야 `run.json`·`report.md`와 함께 쓴다(실패면
-`leak_check.json`만). 이 모드의 SQL 실행은 D-301 ③ 「벤치 DB 조회 0」의 명시 예외다(D-314 ⑤).
+`leak_check.json`만). 이 모드의 SQL 실행은 D-301 ③ 「벤치 DB 조회 0」의 명시 예외다(D-316 ⑤).
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""plans/141 W5 — `--verify-assets`(반입 K2·K4·K8 SQL 읽기 전용 실행 · 7번째 반출 파일) · D-314 ⑤.
+"""plans/143 W5 — `--verify-assets`(반입 K2·K4·K8 SQL 읽기 전용 실행 · 7번째 반출 파일) · D-316 ⑤.
 
 실 DB·MCP 0 — 실행기는 가짜(`execute_sql`)로 주입한다. 값·SQL 원문·DB 오류 문구가 산출물에 실리지
 않는지, 쓰기 SQL이 실행 전에 거절되는지, 행 수 구간 경계를 본다.

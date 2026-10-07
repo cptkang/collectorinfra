@@ -381,7 +381,7 @@ def test_first_export_reproduces_committed_files():
     def body(text: str) -> str:
         return "\n".join(line for line in text.splitlines() if not line.startswith("#"))
 
-    # 커밋 파일 = 빌더 + 지식 오버레이(정적 전용) 산출(D-314 ②가 D-311 ③을 부분 개정 · plans/141
+    # 커밋 파일 = 빌더 + 지식 오버레이(정적 전용) 산출(D-316 ②가 D-311 ③을 부분 개정 · plans/143
     # W4) — 같은 원천으로 오버레이를 재현해 비교한다(위 근거 단언은 오버레이 전 빌더 산출 기준)
     from scripts.itam_bench.knowledge import KNOWLEDGE_DIR_REL
 

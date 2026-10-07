@@ -58,8 +58,8 @@ MSG_NO_COLLECTION = (
 )
 MSG_EMPTY = (
     "질문과 관련한 내용을 {names}에서 찾지 못했습니다.\n"
-    "검색 서비스가 관련 근거를 판정하지 못한 결과이므로 같은 질문을 다시 물어도 같은 답입니다 — "
-    "문서에 쓰인 용어·조항 번호를 그대로 넣어 질문을 바꿔 보시거나, 다른 문서군을 지정해 보세요."
+    "잠시 뒤 다시 물어보시거나, 문서에 쓰인 용어·조항 번호를 그대로 넣어 질문을 바꿔 보세요. "
+    "다른 문서군을 지정해 보셔도 됩니다."
 )
 MSG_STALE = (
     "문서 색인이 갱신되어 현재 설정으로는 조회할 수 없습니다. 관리자에게 알려 주세요"
@@ -177,6 +177,50 @@ def _aggregate_status(outcomes: Sequence[RetrievalOutcome]) -> tuple[str, str]:
         if picked:
             return want, picked[0].reason
     return STATUS_EMPTY, ""
+
+
+#: 재시도에 남은 시간이 이보다 짧으면 다시 하지 않는다(초) — 의미 있는 응답을 기대할 수 없다.
+_MIN_RETRY_BUDGET_SEC = 2.0
+
+
+async def _retry_if_all_empty(
+    outcomes: list[RetrievalOutcome],
+    collections: Sequence[DocCollection],
+    query: str,
+    *,
+    rag: Any,
+    read_to: float,
+    total_to: float,
+    include_raw: bool,
+    started: float,
+) -> tuple[list[RetrievalOutcome], int]:
+    """모든 대상이 0건(`empty`)이면 `RAG_EMPTY_RETRIES`회까지 다시 검색한다(plans/141 W2 · D-314).
+
+    총 시간 상한(`RAG_TOTAL_TIMEOUT`)은 첫 검색을 포함해 지킨다 — 남은 시간이 짧으면 다시 하지
+    않는다. 결과가 하나라도 나오면 그 회차 결과를 쓴다.
+
+    Returns:
+        (최종 outcomes, 실제로 다시 한 횟수)
+    """
+    limit = getattr(rag, "empty_retries", 0)
+    limit = limit if isinstance(limit, int) and limit > 0 else 0
+    retries = 0
+    while (retries < limit and outcomes
+           and all(o.status == STATUS_EMPTY for o in outcomes)):
+        remaining = total_to - (time.monotonic() - started)
+        if remaining < _MIN_RETRY_BUDGET_SEC:
+            logger.info("문서 검색 전체 0건 — 남은 시간 %.1f초라 재시도 생략", remaining)
+            break
+        retries += 1
+        outcomes = await retrieve_many(
+            collections, query, timeout_sec=min(read_to, remaining),
+            total_timeout_sec=remaining, include_raw=include_raw,
+        )
+        logger.info(
+            "문서 검색 전체 0건 → 재시도 %d/%d 결과: %s", retries, limit,
+            {o.collection_id: f"{o.status}:{len(o.hits)}" for o in outcomes},
+        )
+    return outcomes, retries
 
 
 async def _audit(
@@ -306,10 +350,18 @@ async def _answer_impl(
 
     # 5) 검색(병렬 · 컬렉션마다 독립 처리로 부분 반환 보장)
     outcomes: list[RetrievalOutcome] = []
+    retries = 0
     if to_search:
         outcomes = await retrieve_many(
             to_search, text, timeout_sec=read_to,
             total_timeout_sec=total_to, include_raw=include_raw,
+        )
+        # 5-b) 전체 0건 재시도(plans/141 W2 · D-314) — 플랫폼 HyDE가 호출마다 달라 같은 요청이
+        # 회차마다 0건/정상으로 갈린다. **모든 대상이 `empty`일 때만** 다시 한다(오류·폐기·차단은
+        # 그 판정 그대로 · 원래 0건이 정상인 문서군에 헛호출하지 않도록 문서군별 재시도는 없다).
+        outcomes, retries = await _retry_if_all_empty(
+            outcomes, to_search, text, rag=rag, read_to=read_to, total_to=total_to,
+            include_raw=include_raw, started=started,
         )
         await _store_cached(cache if ttl > 0 else None, outcomes,
                             {c.id: c for c in usable}, text, ttl)
@@ -345,6 +397,8 @@ async def _answer_impl(
         "truncated_docs": evidence.truncated_docs,
         "dropped_docs": evidence.dropped_docs,
         "cached_collections": sorted(cached),
+        "retries": retries,
+        "recovered_by_retry": bool(retries) and bool(hits),
         "search_ms": int((time.monotonic() - started) * 1000),
     }
     raw = None

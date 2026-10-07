@@ -31,7 +31,7 @@
 (`config/knowledge/itam/prompt_template.yaml`)에 쓴다. 근거(검증 통과분)가 0이면 키·파일을
 만들지 않는다. LLM 과금 평면이면 실행하지 않는다(D-127).
 
-**지식 오버레이(plans/141 W4 · D-314 ②)** — 원천 디렉터리(기본
+**지식 오버레이(plans/143 W4 · D-316 ②)** — 원천 디렉터리(기본
 `testdata/itam_bench/closed/knowledge`)가 있으면 `knowledge.avalidate_dir`로 검증해 **통과한 active
 항목만** 옮긴다: 프로필 `query_guide`(K1) · `query_examples`(K2 — P2 예시 뒤 · 같은 질문은
 앞선 것) · `query_rules`(K6 정의 파생 — P1 규칙 우선 합집합) ·
@@ -98,12 +98,12 @@ INSTALL_CACHE_REL = Path(".cache/schema") / f"{DB_ID}_schema.json"
 #: DB 전용 규칙 섹션 파일 — 「DB 구조」 탭 승인과 같은 경로
 #: (`AssetFileStore` · 생성 템플릿 어댑터가 읽음)
 SECTION_REL = Path(ASSET_PATHS["prompt_template"].format(db_id=DB_ID))
-#: 설명 정본 파일(D-314 ④ — 스키마 로드 때 Redis에 없는 컬럼만 채운다)
+#: 설명 정본 파일(D-316 ④ — 스키마 로드 때 Redis에 없는 컬럼만 채운다)
 DESCRIPTIONS_REL = Path("config/knowledge") / DB_ID / DESCRIPTIONS_FILE_NAME
-#: 조립 템플릿 파일(D-314 ③ — `template_assembler.TEMPLATE_PATH`와 같은 경로)
+#: 조립 템플릿 파일(D-316 ③ — `template_assembler.TEMPLATE_PATH`와 같은 경로)
 TEMPLATES_REL = Path("config/knowledge") / DB_ID / "query_templates.yaml"
 #: 지식 오버레이가 쓴 파일(K3 설명 · K4 섹션 · K8 템플릿)의 머리 주석 첫 줄 접두 — 철회 정리 판별
-KNOWLEDGE_FILE_MARKER = "# plans/141 W4 외부망 자산 빌더"
+KNOWLEDGE_FILE_MARKER = "# plans/143 W4 외부망 자산 빌더"
 #: P2 기본 엔진(레지스트리 `itam` 엔진)
 P2_ENGINE = "mariadb"
 
@@ -451,7 +451,7 @@ def knowledge_header_lines(knowledge: Mapping[str, Any]) -> list[str]:
     """지식 오버레이 근거 줄 — 원천 run · 검증 방식 · 자산별 건수(0건 자산은 뺀다)."""
     c = knowledge["counts"]
     lines = [
-        "# 지식 오버레이(plans/141 W4 · D-314 ②) — 원천 testdata/itam_bench/closed/knowledge"
+        "# 지식 오버레이(plans/143 W4 · D-316 ②) — 원천 testdata/itam_bench/closed/knowledge"
         " 검증 통과 active 항목만",
         f"#   원천 근거 run {', '.join(knowledge['runs']) or '-'}"
         f" · 검증 {knowledge['verification']}",
@@ -479,7 +479,7 @@ def knowledge_file_header(title: str, run_id: str, generated_at: str,
         f" — {title} — {DB_ID}\n"
         f"# 출처 반출 run {run_id} · 원천 근거 run {', '.join(knowledge['runs']) or '-'}"
         f" · 생성 {generated_at}\n"
-        "# 직접 커밋 경로 — D-314 ② · 원천 testdata/itam_bench/closed/knowledge"
+        "# 직접 커밋 경로 — D-316 ② · 원천 testdata/itam_bench/closed/knowledge"
         " 검증 통과 active 항목만"
         f" · 검증 {knowledge['verification']}\n"
     )
@@ -493,7 +493,7 @@ def seeds_header(run_id: str, generated_at: str, knowledge: Mapping[str, Any] | 
     )
     if knowledge and knowledge["counts"].get("synonyms"):
         text += (
-            "# 지식 오버레이(plans/141 W4 · D-314 ②) — K3 유사어 "
+            "# 지식 오버레이(plans/143 W4 · D-316 ②) — K3 유사어 "
             f"{knowledge['counts']['synonyms']}건 · 원천 근거 run "
             f"{', '.join(knowledge['runs']) or '-'} · 검증 {knowledge['verification']}"
             " · 기존 낱말 우선\n"
@@ -530,7 +530,7 @@ def render_knowledge_section_file(
     body = {
         "db_id": DB_ID,
         "section": knowledge["section"],
-        "generated": {"builder": "plans/141 W4", "run_id": run_id, "snapshot_hash": snapshot_hash},
+        "generated": {"builder": "plans/143 W4", "run_id": run_id, "snapshot_hash": snapshot_hash},
     }
     return knowledge_file_header("DB 전용 규칙 섹션(K4)", run_id, generated_at, knowledge) + (
         _dump_yaml_exact(body)

@@ -1,4 +1,4 @@
-# K4 — ITAM DB 전용 규칙 섹션 원천 (plans/141 W3 · D-314 · 작성 스킬 .claude/skills/itam-knowledge)
+# K4 — ITAM DB 전용 규칙 섹션 원천 (plans/143 W3 · D-316 · 작성 스킬 .claude/skills/itam-knowledge)
 # 통과한 active `text`를 연결 → config/knowledge/itam/prompt_template.yaml 섹션(≤ 6,000자 · 펜스 SQL ≤ 5블록).
 # 1회차(20261006-152938)는 모의 DB 실행 검증이 없어 SQL 펜스 없이 규칙 문장만 둔다. K6 파생 규칙(활성 여부 ·
 # 수집 이력 기준일 · 적재본 선택 금지)은 되풀이하지 않는다. 값 0.

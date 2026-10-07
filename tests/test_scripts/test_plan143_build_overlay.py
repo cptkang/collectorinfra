@@ -1,4 +1,4 @@
-"""plans/141 W4 — K8 템플릿 검증 연결 · 빌더 지식 오버레이(`--build-assets`) · D-314 ②③④.
+"""plans/143 W4 — K8 템플릿 검증 연결 · 빌더 지식 오버레이(`--build-assets`) · D-316 ②③④.
 
 원천 디렉터리는 tmp, 모의 DB는 가짜 실행기(테스트 더블)다 — 실 DB·LLM 0. SQL 검사기는 「DB 구조」
 탭과 같은 `asset_sql_checker`(validate_sql)를 그대로 쓴다. 실제 `config/**`는 읽지도 쓰지도
@@ -388,7 +388,7 @@ class TestOverlay:
             "explanation": "원장 호스트", "id": "e_ok",
         }]
         text = (repo / ba.PROFILE_REL).read_text(encoding="utf-8")
-        assert "# 지식 오버레이(plans/141 W4 · D-314 ②)" in text
+        assert "# 지식 오버레이(plans/143 W4 · D-316 ②)" in text
         assert f"#   원천 근거 run {_RUN_ID} · 검증 {kn.VERIFIED_DB}" in text
         assert "#   query_guide        K1 가이드 1건" in text
         # K3 설명 — 카탈로그 원 이름으로 · 정본 파일 로더 형식
@@ -500,7 +500,7 @@ class TestOverlay:
         assert kn.overlay_size(overlay) == 1
         text = ba.render_knowledge_section_file(_RUN_ID, _STAMP, overlay, "h")
         assert yaml.safe_load(text)["section"] == _SECTION_OK
-        assert text.startswith("# plans/141 W4")
+        assert text.startswith("# plans/143 W4")
 
     def test_history_seed_reads_overlaid_examples(self, tmp_path, fixed_time) -> None:
         from scripts.query_history_seed import collect_profile_entries

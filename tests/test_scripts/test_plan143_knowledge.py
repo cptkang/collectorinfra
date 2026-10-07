@@ -1,4 +1,4 @@
-"""plans/141 W1·W2 — 근거 묶음(`--evidence`) · 원천 파일 검증(`--validate-knowledge`).
+"""plans/143 W1·W2 — 근거 묶음(`--evidence`) · 원천 파일 검증(`--validate-knowledge`).
 
 DB·LLM 0 — 검증의 DB 실행은 가짜 실행기(테스트 더블)로 시험한다. SQL 검사기는 「DB 구조」 탭과 같은
 `asset_sql_checker`(validate_sql · 한글 식별자 허용)를 그대로 쓴다. 실 반출 run은 있을 때만 본다.
@@ -217,7 +217,7 @@ class TestValidate:
         assert result["withdrawn"] == [
             {"file": ka.GUIDE_FILE, "id": "g_old", "reason": "내부망 회귀"}
         ]
-        assert result["skipped"] == []  # K8은 W4에서 연결 — test_plan141_build_overlay
+        assert result["skipped"] == []  # K8은 W4에서 연결 — test_plan143_build_overlay
         assert len(result["derived"]["query_rules"]) == 3 and result["derived"]["issues"] == []
         # 정적 통과분만 실행하고 바깥 행 제한을 씌운다(읽기 전용)
         assert all(s.lstrip().upper().startswith("SELECT") and "LIMIT" in s for s in executor.sqls)

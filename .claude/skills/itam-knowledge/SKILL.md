@@ -1,11 +1,11 @@
 ---
 name: itam-knowledge
-description: ITAM 반출 run의 근거 묶음으로 지식 자산 원천 파일(K1 가이드·K4 규칙 섹션·K3 설명·유사어·K2 예시·K8 템플릿)을 쓰고 검증한다. 「ITAM 반출 run이 왔다」「ITAM 지식 자산 갱신」「itam knowledge」「근거 묶음으로 가이드 써 줘」처럼 폐쇄망 ITAM 반출물을 받아 자산을 고칠 때 쓴다(plans/141 · D-314).
+description: ITAM 반출 run의 근거 묶음으로 지식 자산 원천 파일(K1 가이드·K4 규칙 섹션·K3 설명·유사어·K2 예시·K8 템플릿)을 쓰고 검증한다. 「ITAM 반출 run이 왔다」「ITAM 지식 자산 갱신」「itam knowledge」「근거 묶음으로 가이드 써 줘」처럼 폐쇄망 ITAM 반출물을 받아 자산을 고칠 때 쓴다(plans/143 · D-316).
 ---
 
 # ITAM 지식 자산 작성
 
-D-314 ①에 따라 앱 안에는 LLM 생성기가 없다. 이 스킬을 실행하는 Claude Code가 작성자다. 값을 보지 못하므로 근거 묶음에 있는 것만 쓴다.
+D-316 ①에 따라 앱 안에는 LLM 생성기가 없다. 이 스킬을 실행하는 Claude Code가 작성자다. 값을 보지 못하므로 근거 묶음에 있는 것만 쓴다.
 
 ## 언제
 

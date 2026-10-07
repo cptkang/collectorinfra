@@ -394,6 +394,7 @@ RELOADABLE_KEYS: frozenset[str] = frozenset({
     "RAG_MAX_CONTEXT_CHARS",
     "RAG_ANSWER_MAX_CHARS",
     "RAG_CACHE_TTL",
+    "RAG_EMPTY_RETRIES",
     "RAG_DOC_URL_BASE",
     # RAG_CHAT_ROUTING_ENABLED(plans/127)는 여기 두지 않는다 — 분해 프롬프트 접두를 바꾸는 값이라
     # 기동 시 1회 해석한다(재시작 반영 · KV 캐시).

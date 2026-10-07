@@ -187,7 +187,7 @@ class SchemaCacheManager:
         self._redis_available = False
         self._memory_cache = SchemaMemoryCache(ttl_seconds=300)
         self._structure_store: StructureStore | None = None
-        # 설명 정본 파일 적재(D-314 ④) — 루트 · 끝난 DB · Redis 불가를 이미 알린 DB
+        # 설명 정본 파일 적재(D-316 ④) — 루트 · 끝난 DB · Redis 불가를 이미 알린 DB
         self._knowledge_root: Path = KNOWLEDGE_ROOT
         self._knowledge_done: set[str] = set()
         self._knowledge_warned: set[str] = set()
@@ -1343,7 +1343,7 @@ class SchemaCacheManager:
           3차: DB 전체 스키마 조회 (캐시 미스) — 스키마 저장까지만(LLM 0 · plans/104 B-6).
                컬럼 설명이 비었으면 설명 백업에서만 복원한다.
           설명 정본 파일이 있는 DB는 단계와 무관하게 1회, Redis에 없는 컬럼 설명만 채운다
-          (`_seed_knowledge_descriptions` · D-314 ④).
+          (`_seed_knowledge_descriptions` · D-316 ④).
 
         Args:
             client: DB 클라이언트 (execute_sql, get_full_schema 메서드 필요)
@@ -1547,7 +1547,7 @@ class SchemaCacheManager:
     async def _seed_knowledge_descriptions(
         self, db_id: str, schema_dict: dict[str, Any] | None, descriptions: dict[str, str]
     ) -> dict[str, str]:
-        """설명 정본 파일(`config/knowledge/{db_id}/column_descriptions.yaml` · D-314 ④)에서
+        """설명 정본 파일(`config/knowledge/{db_id}/column_descriptions.yaml` · D-316 ④)에서
         Redis에 없는 컬럼 설명만 채운다 — 스키마 로드 때 프로세스당 DB별 1회(설명 백업 복원 뒤).
 
         - 파일 없음(폴스타 등)·형식 오류: 무동작(Redis 쓰기 0).

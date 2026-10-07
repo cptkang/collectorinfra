@@ -1,6 +1,6 @@
 """설명 정본 파일 읽기 — ``config/knowledge/{db_id}/column_descriptions.yaml``.
 
-D-314 ④ · plans/141 §4.5.
+D-316 ④ · plans/143 §4.5.
 
 외부망에서 Claude Code가 쓰고 빌더가 내는 컬럼 설명 파일이다. 형식(빌더와의 계약)::
 

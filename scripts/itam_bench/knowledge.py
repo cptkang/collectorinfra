@@ -1,6 +1,6 @@
 """지식 자산 근거 묶음(`--evidence`) · 원천 파일 검증(`--validate-knowledge`).
 
-plans/141 W1·W2 · D-314.
+plans/143 W1·W2 · D-316.
 
 **근거 묶음** — 반출 run(`schema_catalog.yaml`·`trace.jsonl` · 있으면 `code_samples.yaml`)과 저장소
 현행 정의(`config/db_profiles/itam.yaml`)·시드 업무 영역·폐쇄망 시나리오·정답 SQL·원천 지식

@@ -8,13 +8,13 @@
     --build-assets RUN  반출 run → itam 프로필·유사어 시드·시드 스키마 캐시 직접 쓰기
                     (LLM·DB 0 · D-311 ③ · plans/140 W3)
     --evidence RUN  반출 run → 지식 자산 근거 묶음(<run>/knowledge_evidence/ · 값 0 · 누출 관문 ·
-                    LLM·DB 0 · plans/141 W1)
+                    LLM·DB 0 · plans/143 W1)
     --validate-knowledge [DIR]  지식 자산 원천 파일 결정적 검증 + 모의 DB 실행(`--static-only`면
-                    정적 검사만 · `--out`이면 결과 YAML · plans/141 W2)
+                    정적 검사만 · `--out`이면 결과 YAML · plans/143 W2)
     --verify-assets 반입된 K2·K4·K8 SQL 읽기 전용 실행 → asset_verification.yaml(7번째 반출 파일 ·
-                    값 0 · 누출 관문 · plans/141 W5 · D-301 ③ 예외는 이 모드뿐)
+                    값 0 · 누출 관문 · plans/143 W5 · D-301 ③ 예외는 이 모드뿐)
     --ablation-report BASE RUN...  기준 run ↔ 자산별 끈 run(`--run --asset-ablation KEY`) 효과 표·
-                    유지 판정 (LLM·DB 0 · plans/141 W8)
+                    유지 판정 (LLM·DB 0 · plans/143 W8)
 
 기본 동작(인자 없음)은 `--dry-run` 이다 — 모르고 실행해도 LLM·DB 를 부르지 않는다.
 
@@ -874,7 +874,7 @@ def _run_with_server(
         **expected,
         "CHECKPOINT_DB_URL": str(session / "checkpoints.db"),
         CAPTURE_ENV: str(session / "capture.jsonl"),
-        # plans/141 W8 — 빈 값이면 끄지 않는다(부모 환경 누수 차단)
+        # plans/143 W8 — 빈 값이면 끄지 않는다(부모 환경 누수 차단)
         ABLATION_ENV: getattr(args, "asset_ablation", None) or "",
     }
     port = pick_port(args.port)
@@ -1074,7 +1074,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
 
 def cmd_ablation_report(args: argparse.Namespace) -> int:
-    """기준 run ↔ 자산별 끈 run 효과 표·유지 판정(plans/141 W8) — LLM·DB 0."""
+    """기준 run ↔ 자산별 끈 run 효과 표·유지 판정(plans/143 W8) — LLM·DB 0."""
     from .report import ablation_report
 
     if len(args.ablation_report) < 2:
@@ -1090,7 +1090,7 @@ def cmd_ablation_report(args: argparse.Namespace) -> int:
 
 
 def cmd_verify_assets(args: argparse.Namespace) -> int:
-    """반입된 K2·K4·K8 SQL 읽기 전용 실행 검증(plans/141 W5) → asset_verification.yaml."""
+    """반입된 K2·K4·K8 SQL 읽기 전용 실행 검증(plans/143 W5) → asset_verification.yaml."""
     from .asset_verify import run_verify
 
     try:
@@ -1162,7 +1162,7 @@ def cmd_build_assets(args: argparse.Namespace, cfg: Any = None) -> int:
 
 
 def cmd_evidence(args: argparse.Namespace) -> int:
-    """반출 run → 지식 자산 근거 묶음(plans/141 W1) — LLM·DB 0 · 누출 관문 통과 때만 쓴다."""
+    """반출 run → 지식 자산 근거 묶음(plans/143 W1) — LLM·DB 0 · 누출 관문 통과 때만 쓴다."""
     from .knowledge import run_evidence
 
     run_dir = Path(args.evidence)
@@ -1177,7 +1177,7 @@ def cmd_evidence(args: argparse.Namespace) -> int:
 
 
 def cmd_validate_knowledge(args: argparse.Namespace) -> int:
-    """지식 자산 원천 파일 검증(plans/141 W2) — 정적 검사 + `itam` 소스(모의 DB) 실행."""
+    """지식 자산 원천 파일 검증(plans/143 W2) — 정적 검사 + `itam` 소스(모의 DB) 실행."""
     from .knowledge import KNOWLEDGE_DIR_REL, default_deps, run_validate
 
     knowledge_dir = Path(args.validate_knowledge or REPO_ROOT / KNOWLEDGE_DIR_REL)
@@ -1206,28 +1206,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--build-assets", metavar="RUN", help="반출 run → itam 프로필·시드 직접 쓰기(D-311 ③)"
     )
     mode.add_argument(
-        "--evidence", metavar="RUN", help="반출 run → 지식 자산 근거 묶음(plans/141 W1)"
+        "--evidence", metavar="RUN", help="반출 run → 지식 자산 근거 묶음(plans/143 W1)"
     )
     mode.add_argument(
         "--validate-knowledge", nargs="?", const="", default=None, metavar="DIR",
-        help="지식 자산 원천 파일 검증(기본 testdata/itam_bench/closed/knowledge · plans/141 W2)",
+        help="지식 자산 원천 파일 검증(기본 testdata/itam_bench/closed/knowledge · plans/143 W2)",
     )
     mode.add_argument(
         "--verify-assets",
         action="store_true",
-        help="반입된 K2·K4·K8 SQL 읽기 전용 실행 → asset_verification.yaml(plans/141 W5)",
+        help="반입된 K2·K4·K8 SQL 읽기 전용 실행 → asset_verification.yaml(plans/143 W5)",
     )
     mode.add_argument(
         "--ablation-report",
         nargs="+",
         metavar="RUN",
-        help="기준 run ↔ 자산별 끈 run 효과 표·유지 판정(첫 RUN 이 기준 · plans/141 W8)",
+        help="기준 run ↔ 자산별 끈 run 효과 표·유지 판정(첫 RUN 이 기준 · plans/143 W8)",
     )
     parser.add_argument(
         "--asset-ablation",
         default=None,
         metavar="KEY",
-        help="--run: 이 자산만 끈 run(벤치 서버 프로세스에서만 · run.json 에 기록 · plans/141 W8)",
+        help="--run: 이 자산만 끈 run(벤치 서버 프로세스에서만 · run.json 에 기록 · plans/143 W8)",
     )
     parser.add_argument("--env", default="sandbox", choices=sorted(cat.ENVS), help="실행 환경")
     parser.add_argument("--only", default=None, help="시나리오 ID 쉼표 목록")
@@ -1274,7 +1274,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="DIR",
         help="--build-assets: 지식 원천 디렉터리(기본 testdata/itam_bench/closed/knowledge — 검증 "
-        "통과 active 항목만 오버레이 · plans/141 W4)",
+        "통과 active 항목만 오버레이 · plans/143 W4)",
     )
     parser.add_argument(
         "--knowledge-static-only",

@@ -542,7 +542,7 @@ MIXED_FINGERPRINT = "mixed"
 
 
 def _merge_usage(entry: dict[str, Any], shape: Mapping[str, Any]) -> None:
-    """자산 사용 표지(plans/141 W1)를 턴 칸에 모은다 — 실렸을 때만 칸이 생긴다.
+    """자산 사용 표지(plans/143 W1)를 턴 칸에 모은다 — 실렸을 때만 칸이 생긴다.
 
     `assets`는 키별 지문(다르면 `mixed`)·건수 최댓값, `templates`는 task 별 템플릿 표지(중복 제거 ·
     `final_sql_from_template` False면 「적중 후 LLM 수정」 — 같은 템플릿이라도 따로 남는다).

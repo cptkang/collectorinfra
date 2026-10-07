@@ -145,7 +145,7 @@ from src.db_adapters.polestar.validators import (
 )
 # 요청 시간 해석(state `time_resolution` · plans/122 T-4 · D-309) — 단일 경로와 같은 함수(D-066).
 from src.db_adapters.polestar.time_period import build_period_block
-# 조회 템플릿 결정적 조립(plans/141 W6 · D-314 ③) — 단일 경로와 같은 함수(D-066).
+# 조회 템플릿 결정적 조립(plans/143 W6 · D-316 ③) — 단일 경로와 같은 함수(D-066).
 from src.db_adapters.template_assembler import assemble_from_template, mark_regenerated
 from src.db_adapters.time_hint import (
     build_generic_time_hint,
@@ -342,7 +342,7 @@ class _MultiRun:
     table_selections: dict[str, dict[str, Any]] = field(default_factory=dict)
     # DB별 직전 SQL 생성 소요(초) — 실행 오류 재생성의 시간 게이트 입력(추정 상수 금지 · T-3).
     gen_elapsed: dict[str, float] = field(default_factory=dict)
-    # 조회 템플릿 조립 표지(plans/141 W6) — `{db_id: TemplateOutcome.as_state()}`. 템플릿 파일이
+    # 조회 템플릿 조립 표지(plans/143 W6) — `{db_id: TemplateOutcome.as_state()}`. 템플릿 파일이
     # 있는 DB만 싣고 반환 시 state `template_assembly`로 올린다(단일 경로와 같은 모양).
     template_assembly: dict[str, dict[str, Any]] = field(default_factory=dict)
     # 요청 시간 해석(state `time_resolution` · plans/122 T-4). None이면(플래그 off) 모든 기간
@@ -1269,7 +1269,7 @@ async def _run_groups(
                 getattr(run, "table_selections", None), dict
             ):
                 merged.table_selections.update(run.table_selections)
-            # 템플릿 조립 표지(plans/141 W6) — 뒤 그룹 DB의 표지가 빠지지 않게 합친다.
+            # 템플릿 조립 표지(plans/143 W6) — 뒤 그룹 DB의 표지가 빠지지 않게 합친다.
             if isinstance(getattr(merged, "template_assembly", None), dict) and isinstance(
                 getattr(run, "template_assembly", None), dict
             ):
@@ -1441,7 +1441,7 @@ async def multi_db_executor(
             **(state.get("table_selection") or {}),
             **{d: dict(v) for d, v in run.table_selections.items()},
         }
-    # 템플릿 조립 표지(plans/141 W6) — 템플릿 파일이 있는 DB가 있을 때만 싣는다(반환 shape 현행
+    # 템플릿 조립 표지(plans/143 W6) — 템플릿 파일이 있는 DB가 있을 때만 싣는다(반환 shape 현행
     # 유지). 단일 경로와 같은 키·모양이고, 리듀서가 없는 키라 같은 요청의 기존 항목을 이어 붙인다.
     if isinstance(getattr(run, "template_assembly", None), dict) and run.template_assembly:
         result["template_assembly"] = {
@@ -2667,7 +2667,7 @@ async def _generate_sql(
         query_time: 요청 시간 해석(state `time_resolution` · plans/122 T-4). 있으면 시맨틱
             컴파일·폼필 피벗·월 시리즈·기간 블록·검증기 훅이 이 해석만 쓴다(단일 경로와 대칭).
             None이면 종전(원문 → sub_query_context → LLM time_range) 그대로
-        template_sink: 템플릿 조립 표지 out-param(선택 · plans/141 W6) — 발동한 DB의
+        template_sink: 템플릿 조립 표지 out-param(선택 · plans/143 W6) — 발동한 DB의
             ``{db_id: TemplateOutcome.as_state()}``를 담는다
 
     Returns:
@@ -2710,7 +2710,7 @@ async def _generate_sql(
     if deterministic_sql:
         return _regenerated(deterministic_sql)
 
-    # 조회 템플릿 결정적 조립(plans/141 W6) — LLM 생성 직전 · 단일 경로와 같은 함수·같은 진입 조건
+    # 조회 템플릿 결정적 조립(plans/143 W6) — LLM 생성 직전 · 단일 경로와 같은 함수·같은 진입 조건
     # (재생성·양식 턴 미진입). 템플릿 파일이 없는 DB는 None(LLM 호출 0 · 표지 없음).
     if error_context is None and not column_mapping and not form_intent:
         _uq = parsed_requirements.get("original_query", "") or ""

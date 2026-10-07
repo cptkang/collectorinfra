@@ -1,4 +1,4 @@
-"""조회 템플릿 선택 프롬프트 (plans/141 W6 · D-314 ③).
+"""조회 템플릿 선택 프롬프트 (plans/143 W6 · D-316 ③).
 
 LLM은 템플릿 목록에서 ID 하나와 슬롯 값만 JSON으로 고른다 — SQL은 코드가 조립한다
 (`src.db_adapters.template_assembler`). 맞는 템플릿이 없으면 「none」을 고르게 해 오적중을 줄인다.

@@ -1,13 +1,13 @@
-# 141. ITAM 지식 자산 폴스타 동등화 — 폴스타 자산 전수 대응표 · 반출 근거로 Claude Code가 자산을 쓰고 외부망에서 바로 커밋 · ITAM 결정적 조립(데이터 템플릿) · 벤치 폐루프로 효과 판정
+# 143. ITAM 지식 자산 폴스타 동등화 — 폴스타 자산 전수 대응표 · 반출 근거로 Claude Code가 자산을 쓰고 외부망에서 바로 커밋 · ITAM 결정적 조립(데이터 템플릿) · 벤치 폐루프로 효과 판정
 
 > **작성일**: 2026-10-07 · **v1.1**(게이트 답 반영)
-> **상태**: **WIP — 외부망 구현 완료(2026-10-07 · 작업 트리 · 커밋 없음)** · 완료 W1·W2·W3(첫 원천 K1·K4·K3 — 정적 검증만)·W4·W5·W6·W7·W8 코드·W9 · **잔여(내부망)**: W0 폴스타 기준선 · 2·3회차 반출 · 모의 DB(3308) 상대 `--validate-knowledge` 실행 검증 · `--verify-assets` · K2·K8 원천(2회차 뒤) · W8 효과 판정·절제 run · 착수 조건 `plans/140` 커밋은 충족(`b1fabf4`에 포함 — 메인 세션 확인) — 상세 D-314 「구현」 부기
+> **상태**: **WIP — 외부망 구현 완료(2026-10-07 · 작업 트리 · 커밋 없음)** · 완료 W1·W2·W3(첫 원천 K1·K4·K3 — 정적 검증만)·W4·W5·W6·W7·W8 코드·W9 · **잔여(내부망)**: W0 폴스타 기준선 · 2·3회차 반출 · 모의 DB(3308) 상대 `--validate-knowledge` 실행 검증 · `--verify-assets` · K2·K8 원천(2회차 뒤) · W8 효과 판정·절제 run · 착수 조건 `plans/140` 커밋은 충족(`b1fabf4`에 포함 — 메인 세션 확인) — 상세 D-316 「구현」 부기
 > **요청(사용자 2026-10-07)**: *"폴스타 db와 관련되어 정리되어 있는 정보들(config/db_prfiles/polestar_b0.yaml, knowledge/catalog.yaml, semantic_model/polestar_b0.yaml, synonym/polestar_b0.yaml 등)을 모두 리스트업하고 itam db에 맞게 생성하기 위한 정보를 itam_bench를 구동시 수집하고 저장된 로그를 외부망으로 반출하여 llm에서 자동으로 생성할 수 있게 해야 한다. 또는 관련 정보를 관리자 페이지의 DB 구조 탭에서 생성할 수 있도록 하여 itam의 조회성능을 polestar의 조회성능 방큼 높일려고 한다. 이 요건에 맞게 계획을 수립하라."*
 > **게이트 답(2026-10-07)**: G-1 *외부망에서 바로 커밋* · G-2/G-3 *"claude code 내에서 돌린다."* · G-4 *폴스타 기준선과 비교* · G-5 *이번에 포함*
 > **입력**: 저장소 `b1fabf4` 실측(서브에이전트 2갈래 — 폴스타 자산 전수 · 기존 생성 경로) · 1회차 반출 `results/itam_bench/20261006-152938/`
 > **관련 계획**: `plans/140`(외부망 빌더 · P1 근거 반출 — **선행**) · `plans/139`(테이블 정의·선별) · `plans/133`(「DB 구조」 탭 P1·P2 — 내부망 경로는 그대로 둔다) · `plans/135`(ITAM 벤치·반출 · 부록 A v1.5 = 2회차 반출 형식) · `plans/132`(소스 선별·되물음) · `plans/67`(지식 카탈로그 R1)
 > **관련 결정**: **D-311 ③ 부분 개정**(G-1) · **D-294**(G-1 Python 코드 생성 기각 유지 — 템플릿은 데이터) · **D-301 ②③**(값 반출 금지 · 벤치 DB 조회 0 — 검증 모드는 부기) · D-227(질의 경로 읽기만) · D-308(정의 선별 · 존재 기반 발동) · D-142(유사어 오염 차단) · D-133(질의 이력) · D-066(단일·멀티 대칭) · D-004(LLM 출력은 정합성 근거 아님) · D-255(매뉴얼) · D-303(회귀) · D-312(스킬 형식)
-> **D-번호**: **D-314**(`docs/decisions/D-314.md` · 확정 · 외부망 구현 완료)
+> **D-번호**: **D-316**(`docs/decisions/D-316.md` · 확정 · 외부망 구현 완료)
 
 ---
 
@@ -123,7 +123,7 @@
 
 #### 4.2.1 실행 절차 — 따라 하는 명령어
 
-> 저장소 루트에서 실행한다. `<run>`은 반출 run 디렉터리 이름(예: `20261006-152938`), `<run_N>`·`<run_N1>`은 연속한 두 회차다. **표지**: ✅ 지금 쓸 수 있음(v1.3 외부망 구현 기준 — 옵션 이름은 `python -m scripts.itam_bench --help`와 대조했다). 과금 API·`RUN_E2E=1`은 쓰지 않는다. 내부망 단계는 `plans/135` 부록 A(0~10)를 그대로 따르고, 아래는 141이 더하는 것만 적는다.
+> 저장소 루트에서 실행한다. `<run>`은 반출 run 디렉터리 이름(예: `20261006-152938`), `<run_N>`·`<run_N1>`은 연속한 두 회차다. **표지**: ✅ 지금 쓸 수 있음(v1.3 외부망 구현 기준 — 옵션 이름은 `python -m scripts.itam_bench --help`와 대조했다). 과금 API·`RUN_E2E=1`은 쓰지 않는다. 내부망 단계는 `plans/135` 부록 A(0~10)를 그대로 따르고, 아래는 143이 더하는 것만 적는다.
 
 **A. 내부망 — run N (사용자 실행)**
 
@@ -203,19 +203,19 @@
 | W | 내용 | 파일 | 결정 |
 |---|---|---|---|
 | **W0** | **기준선** — 2회차 반출(`plans/140` 잔여)로 ITAM 정답률·실패 분포·지연 · 같은 내부망에서 폴스타 하네스 기준선(시나리오 · `eval_text2sql`) — 사용자 실행 | 리포트 | G-4 |
-| **W1** | 근거 묶음 `--evidence` + 반출 확장(자산 사용 표지 · 실패 증거) | `src/domain/knowledge_evidence.py`(신규 · 순수) · `scripts/itam_bench/{catalog,__main__,redact}.py` | D-314 · D-301 부기 |
-| **W2** | 원천 파일 형식 + 검증 CLI `--validate-knowledge`(K1·K3·K4·K6 결정적 검증 · K2·K4·K8 모의 DB 실행) | `src/domain/knowledge_assets.py`(신규 · 검증 순수 함수) · `scripts/itam_bench/knowledge.py` | D-314 |
+| **W1** | 근거 묶음 `--evidence` + 반출 확장(자산 사용 표지 · 실패 증거) | `src/domain/knowledge_evidence.py`(신규 · 순수) · `scripts/itam_bench/{catalog,__main__,redact}.py` | D-316 · D-301 부기 |
+| **W2** | 원천 파일 형식 + 검증 CLI `--validate-knowledge`(K1·K3·K4·K6 결정적 검증 · K2·K4·K8 모의 DB 실행) | `src/domain/knowledge_assets.py`(신규 · 검증 순수 함수) · `scripts/itam_bench/knowledge.py` | D-316 |
 | **W3** | 작성 스킬 `.claude/skills/itam-knowledge/` + 1회차 반출로 첫 원천(K6·K1·K4·K3) 작성 — Claude Code | 스킬 · `testdata/itam_bench/closed/knowledge/*` | D-312 형식 |
 | **W4** | 빌더 지식 오버레이 + 설명 정본 파일 적재 지점(§4.5) | `scripts/itam_bench/build_assets.py`(140 세션 통지) · `src/schema_cache/*` 적재 1곳 | D-311 ③ 개정 |
 | **W5** | 검증 모드 `--verify-assets` + 7번째 반출 파일 + K2 예시·질의 이력 시드 연결 | `scripts/itam_bench/*` · `scripts/query_history_seed.py` | D-301 부기 |
-| **W6** | K8 결정적 조립 — 템플릿 계약·선택 프롬프트·조립기·단일/멀티 배선·폴백 사유 | `src/db_adapters/template_assembler.py` · `src/prompts/template_selection.py` · `src/nodes/{query_generator,multi_db_executor}.py` · `src/config.py` | D-314 |
+| **W6** | K8 결정적 조립 — 템플릿 계약·선택 프롬프트·조립기·단일/멀티 배선·폴백 사유 | `src/db_adapters/template_assembler.py` · `src/prompts/template_selection.py` · `src/nodes/{query_generator,multi_db_executor}.py` · `src/config.py` | D-316 |
 | **W7** | K5 공통코드 후보(정의 `kind` 단서 · 기본키 없는 코드/이름 쌍) — 내부망 P1 보강 · 모의 DB 검증 | `src/domain/schema_inference.py` · `asset_generation_service.py` | D-294 부기 |
 | **W8** | 효과 측정 `--asset-ablation` · 리포트 자산별 표 · 유지 규칙 | `scripts/itam_bench/report.py` | G-4 |
-| **W9** | 문서 — D-314 구현 기록 · D-301·D-294 부기 · INDEX · 매뉴얼(관리자: 반입 절차 · 사용자: 영향 없음 확인 — D-255) | 문서 | — |
+| **W9** | 문서 — D-316 구현 기록 · D-301·D-294 부기 · INDEX · 매뉴얼(관리자: 반입 절차 · 사용자: 영향 없음 확인 — D-255) | 문서 | — |
 
 **순서**: `plans/140` 커밋 → W1 → W2 → W3 → W4 → W5 ∥ W6 → W7 → (내부망 2·3회차) → W8 → W9. W0은 내부망 2회차와 함께. W3 첫 원천은 1회차 반출물로 시작하고 2회차 반출이 오면 근거를 갱신한다.
 
-**병행 세션 경계**: `plans/140`(collectorinfra-b5)이 `scripts/itam_bench/{build_assets,code_samples,catalog,redact,__main__,report}.py`·`config/db_profiles/itam.yaml`·시드를 소유한다(미커밋). 141은 140 커밋 통지 뒤 착수하고, `itam.yaml`은 빌더(오버레이)로만 바꾼다.
+**병행 세션 경계**: `plans/140`(collectorinfra-b5)이 `scripts/itam_bench/{build_assets,code_samples,catalog,redact,__main__,report}.py`·`config/db_profiles/itam.yaml`·시드를 소유한다(미커밋). 143은 140 커밋 통지 뒤 착수하고, `itam.yaml`은 빌더(오버레이)로만 바꾼다.
 
 ## 5. 게이트 — 답 (2026-10-07)
 
@@ -256,8 +256,8 @@
 
 | 버전 | 날짜 | 내용 |
 |---|---|---|
-| v1.0 | 2026-10-07 | 신규 — 폴스타 자산 전수(설정 17 · 코드 5 · 런타임 5 · 평가) 대조 · 격차 3종 · K1~K8 대응표 · 생성기 하나·진입점 둘 · 반출 확장 · 자산별 켜고 끄기 · 게이트 G-1~G-6 · D-314 예약 |
-| v1.1 | 2026-10-07 | 게이트 답 반영 — G-1 외부망 직접 커밋(D-311 ③ 개정) · G-2/G-3 Claude Code 작성(앱 내 생성기·탭 진입점 제거 · 스킬 + 원천 파일 + 검증 CLI + 빌더 오버레이) · G-4 폴스타 기준선 비교 · G-5 결정적 조립 포함(K8 데이터 템플릿 · §4.6 · W6) · 설명 정본 파일(§4.5) · 착수 조건 = `plans/140` 커밋 뒤(병행 세션 요청) · D-314 확정 |
+| v1.0 | 2026-10-07 | 신규 — 폴스타 자산 전수(설정 17 · 코드 5 · 런타임 5 · 평가) 대조 · 격차 3종 · K1~K8 대응표 · 생성기 하나·진입점 둘 · 반출 확장 · 자산별 켜고 끄기 · 게이트 G-1~G-6 · D-316 예약 |
+| v1.1 | 2026-10-07 | 게이트 답 반영 — G-1 외부망 직접 커밋(D-311 ③ 개정) · G-2/G-3 Claude Code 작성(앱 내 생성기·탭 진입점 제거 · 스킬 + 원천 파일 + 검증 CLI + 빌더 오버레이) · G-4 폴스타 기준선 비교 · G-5 결정적 조립 포함(K8 데이터 템플릿 · §4.6 · W6) · 설명 정본 파일(§4.5) · 착수 조건 = `plans/140` 커밋 뒤(병행 세션 요청) · D-316 확정 |
 | v1.2 | 2026-10-07 | §4.2.1 실행 절차 신설 — 내부망 A0~A9 · 외부망 B0~B9 · 효과 판정 C1~C4 명령어(✅ 지금 사용 · ⏳ W3·W4·W5·W6·W8 구현 뒤 — 옵션 이름은 구현 결과로 확정) |
 | v1.3 | 2026-10-07 | 외부망 구현(`-TODO`→`-WIP`) — 근거 묶음 `--evidence` · 원천 검증 `--validate-knowledge` · 빌더 지식 오버레이(`--knowledge` · 철회 시 산출 삭제) · 설명 정본 파일 적재(Redis HSETNX) · K8 템플릿 조립(`src/db_adapters/template_assembler.py` · 단일·멀티 공용 · `TEXT2SQL_TEMPLATE_ASSEMBLY`) · 자산 사용 표지 · `--verify-assets` · `--asset-ablation` · W7 정의 기반 공통코드 쌍 · 첫 원천 4종(K1 10 · K4 9 · K3 설명 54·유사어 3) · 잔여는 내부망 |
 | v1.4 | 2026-10-07 | §4.2.1 명령을 구현 옵션과 대조해 ⏳ 전부 ✅로(`--verify-assets` · `--asset-ablation` · `--ablation-report` · 빌더 `--knowledge` · 스킬) · 머리 상태의 착수 조건 문구 정정(140은 `b1fabf4`에 커밋돼 있었음) |

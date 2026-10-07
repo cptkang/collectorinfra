@@ -498,7 +498,7 @@ def compare_runs(dir_a: Path, dir_b: Path) -> str:
     ablation_a, ablation_b = run_a.get("asset_ablation"), run_b.get("asset_ablation")
     if ablation_a != ablation_b:
         lines += [
-            f"- 끈 자산(run 단위 · plans/141 W8): `{ablation_a or '없음'}` → "
+            f"- 끈 자산(run 단위 · plans/143 W8): `{ablation_a or '없음'}` → "
             f"`{ablation_b or '없음'}` — 자산 지문은 파일 기준이라 끈 자산을 반영하지 않는다",
             "",
         ]
@@ -538,7 +538,7 @@ def compare_runs(dir_a: Path, dir_b: Path) -> str:
         )
         or []
     )
-    # 한쪽만 자산을 껐으면 그 자산의 유지 판정을 덧붙인다(plans/141 §4.7)
+    # 한쪽만 자산을 껐으면 그 자산의 유지 판정을 덧붙인다(plans/143 §4.7)
     if bool(ablation_a) != bool(ablation_b):
         if ablation_b:
             lines += ["", *ablation_section(run_a, records_a, [(run_b, records_b)])]
@@ -547,7 +547,7 @@ def compare_runs(dir_a: Path, dir_b: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
-# --- 자산별 켜고 끄기 (plans/141 W8 · §4.7) -----------------------------------------
+# --- 자산별 켜고 끄기 (plans/143 W8 · §4.7) -----------------------------------------
 
 KEEP = "유지"
 WITHDRAW = "철회 후보"
@@ -641,7 +641,7 @@ def ablation_section(
     )
     lines += [
         "",
-        "유지 규칙(plans/141 §4.7): 켠 쪽이 SQL 관측 턴 정답률을 낮추지 않고, 끈 쪽 실패 분류 "
+        "유지 규칙(plans/143 §4.7): 켠 쪽이 SQL 관측 턴 정답률을 낮추지 않고, 끈 쪽 실패 분류 "
         "상위 2종(소스 선별·되물음·권한 제외) 중 하나를 줄일 때만 `유지`. 아니면 `철회 후보` — "
         "원천 항목 `withdrawn` → 빌더 재실행 → 커밋.",
     ]
@@ -683,7 +683,7 @@ def ablation_report(base_dir: Path, ablation_dirs: Sequence[Path]) -> str:
     return render_ablation(base_run, base_records, loaded)
 
 
-# --- --verify-assets (plans/141 W5) ------------------------------------------------
+# --- --verify-assets (plans/143 W5) ------------------------------------------------
 
 
 def render_verification_report(run: Mapping[str, Any], document: Mapping[str, Any]) -> str:

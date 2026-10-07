@@ -1,4 +1,4 @@
-"""plans/141 §4.5 · D-314 ④ — 설명 정본 파일(`column_descriptions.yaml`) 적재.
+"""plans/143 §4.5 · D-316 ④ — 설명 정본 파일(`column_descriptions.yaml`) 적재.
 
 고정하는 계약:
   ① Redis에 없는 컬럼만 채운다 — 기존 설명(내부망 LLM·운영자 편집 등)은 덮지 않는다(HSETNX)

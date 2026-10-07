@@ -39,7 +39,7 @@ from src.domain.change_terms import (
     resolve_spike_request,
 )
 from src.db_adapters.polestar.spike_sql import CAPACITY_CHANGE_NOTE, build_spike_sql
-# 조회 템플릿 결정적 조립(plans/141 W6 · D-314 ③) — 멀티 경로와 같은 함수(D-066).
+# 조회 템플릿 결정적 조립(plans/143 W6 · D-316 ③) — 멀티 경로와 같은 함수(D-066).
 from src.db_adapters.template_assembler import (
     TemplateOutcome,
     assemble_from_template,
@@ -1007,7 +1007,7 @@ def _fit_single_prompt_budget(
 
 
 async def _try_template(state: AgentState, ctx: _GenContext) -> TemplateOutcome | None:
-    """조회 템플릿 조립(plans/141 W6 · D-314 ③) — 미발동이면 None.
+    """조회 템플릿 조립(plans/143 W6 · D-316 ③) — 미발동이면 None.
 
     재시도 턴은 진입하지 않는다(LLM이 오류를 고치게). 양식 턴(매핑·양식 구조)도 진입하지 않는다 —
     템플릿 SQL은 양식 필드 계약(한글 alias)을 모른다(시맨틱 컴파일과 같은 규칙).
@@ -1294,7 +1294,7 @@ async def query_generator(
     sql_candidates: list[dict] | None = None
     text2sql_fallback: dict | None = None
     extra_return: dict = {}
-    # 조회 템플릿 결정적 조립(plans/141 W6) — 앞 결정적 경로가 비었을 때 LLM 폴백 직전. 템플릿
+    # 조회 템플릿 결정적 조립(plans/143 W6) — 앞 결정적 경로가 비었을 때 LLM 폴백 직전. 템플릿
     # 파일이 없는 DB는 None(LLM 호출 0 · 표지 없음). 폴백이면 사유 표지만 남기고 LLM 생성으로 간다.
     template = await _try_template(state, ctx) if not sql else None
     if template is not None:
