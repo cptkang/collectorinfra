@@ -145,6 +145,8 @@ from src.db_adapters.polestar.validators import (
 )
 # 요청 시간 해석(state `time_resolution` · plans/122 T-4 · D-309) — 단일 경로와 같은 함수(D-066).
 from src.db_adapters.polestar.time_period import build_period_block
+# 조회 템플릿 결정적 조립(plans/141 W6 · D-314 ③) — 단일 경로와 같은 함수(D-066).
+from src.db_adapters.template_assembler import assemble_from_template, mark_regenerated
 from src.db_adapters.time_hint import (
     build_generic_time_hint,
     metric_period,
@@ -340,6 +342,9 @@ class _MultiRun:
     table_selections: dict[str, dict[str, Any]] = field(default_factory=dict)
     # DB별 직전 SQL 생성 소요(초) — 실행 오류 재생성의 시간 게이트 입력(추정 상수 금지 · T-3).
     gen_elapsed: dict[str, float] = field(default_factory=dict)
+    # 조회 템플릿 조립 표지(plans/141 W6) — `{db_id: TemplateOutcome.as_state()}`. 템플릿 파일이
+    # 있는 DB만 싣고 반환 시 state `template_assembly`로 올린다(단일 경로와 같은 모양).
+    template_assembly: dict[str, dict[str, Any]] = field(default_factory=dict)
     # 요청 시간 해석(state `time_resolution` · plans/122 T-4). None이면(플래그 off) 모든 기간
     # 소비 지점이 종전 경로(원문·sub_query_context·LLM time_range 해석)를 탄다.
     query_time: QueryTime | None = None
@@ -709,6 +714,10 @@ async def _generate_validated_sql(
         form_fill_answers=run.form_fill_answers,
         surface_query=surface_query_for_judgment(run.state),
         query_time=_run_query_time(run),
+        template_sink=(
+            run.template_assembly
+            if isinstance(getattr(run, "template_assembly", None), dict) else None
+        ),
     )
     _last_gen = _monotonic() - _gen_started
     _note_gen_elapsed(run, db_id, _last_gen)
@@ -1260,6 +1269,11 @@ async def _run_groups(
                 getattr(run, "table_selections", None), dict
             ):
                 merged.table_selections.update(run.table_selections)
+            # 템플릿 조립 표지(plans/141 W6) — 뒤 그룹 DB의 표지가 빠지지 않게 합친다.
+            if isinstance(getattr(merged, "template_assembly", None), dict) and isinstance(
+                getattr(run, "template_assembly", None), dict
+            ):
+                merged.template_assembly.update(run.template_assembly)
 
     if merged is None:
         merged = await _prepare_multi_run(state, llm, app_config)
@@ -1426,6 +1440,13 @@ async def multi_db_executor(
         result["table_selection"] = {
             **(state.get("table_selection") or {}),
             **{d: dict(v) for d, v in run.table_selections.items()},
+        }
+    # 템플릿 조립 표지(plans/141 W6) — 템플릿 파일이 있는 DB가 있을 때만 싣는다(반환 shape 현행
+    # 유지). 단일 경로와 같은 키·모양이고, 리듀서가 없는 키라 같은 요청의 기존 항목을 이어 붙인다.
+    if isinstance(getattr(run, "template_assembly", None), dict) and run.template_assembly:
+        result["template_assembly"] = {
+            **(state.get("template_assembly") or {}),
+            **{d: dict(v) for d, v in run.template_assembly.items()},
         }
     # 폼필 월 시리즈 앵커·스코프 매핑 갱신분을 state에 반영(D-146/D-148 — 단일 경로와 대칭).
     if run.form_fill_out.get("month_anchor"):
@@ -2617,6 +2638,7 @@ async def _generate_sql(
     form_fill_answers: dict[str, dict] | None = None,
     surface_query: str | None = None,
     query_time: QueryTime | None = None,
+    template_sink: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     """LLM을 사용하여 SQL을 생성한다.
 
@@ -2645,6 +2667,8 @@ async def _generate_sql(
         query_time: 요청 시간 해석(state `time_resolution` · plans/122 T-4). 있으면 시맨틱
             컴파일·폼필 피벗·월 시리즈·기간 블록·검증기 훅이 이 해석만 쓴다(단일 경로와 대칭).
             None이면 종전(원문 → sub_query_context → LLM time_range) 그대로
+        template_sink: 템플릿 조립 표지 out-param(선택 · plans/141 W6) — 발동한 DB의
+            ``{db_id: TemplateOutcome.as_state()}``를 담는다
 
     Returns:
         생성된 SQL 문자열
@@ -2652,6 +2676,16 @@ async def _generate_sql(
     if app_config is None:
         app_config = load_config()
     _parity = path_parity_enabled(app_config)
+
+    def _regenerated(sql: str) -> str:
+        """템플릿 밖에서 만든 SQL — 같은 run에서 그 DB를 템플릿으로 조립했었다면 표지를
+        「적중 뒤 최종 SQL은 템플릿 아님」으로 바꾼다(단일 경로 `query_generator`와 대칭 ·
+        D-066)."""
+        if template_sink is not None:
+            revised = mark_regenerated(template_sink.get(db_id))
+            if revised is not None:
+                template_sink[db_id] = revised
+        return sql
 
     # D-149: 양식 업로드 턴은 결정적 폼필 조립 대상 — 시맨틱 컴파일(SMQ)은 양식 계약
     # (한글 alias·공란 규칙)을 표현하지 못하므로 우회한다(ux_improvement 병합 승계).
@@ -2663,7 +2697,7 @@ async def _generate_sql(
             query_time=query_time,
         )
         if semantic_sql:
-            return semantic_sql
+            return _regenerated(semantic_sql)
 
     user_prompt, deterministic_sql = _build_multi_user_prompt(
         parsed_requirements, schema_info, sub_query_context, default_limit,
@@ -2674,7 +2708,22 @@ async def _generate_sql(
         form_fill_answers=form_fill_answers, query_time=query_time,
     )
     if deterministic_sql:
-        return deterministic_sql
+        return _regenerated(deterministic_sql)
+
+    # 조회 템플릿 결정적 조립(plans/141 W6) — LLM 생성 직전 · 단일 경로와 같은 함수·같은 진입 조건
+    # (재생성·양식 턴 미진입). 템플릿 파일이 없는 DB는 None(LLM 호출 0 · 표지 없음).
+    if error_context is None and not column_mapping and not form_intent:
+        _uq = parsed_requirements.get("original_query", "") or ""
+        template = await assemble_from_template(
+            llm=llm, question=_uq, db_id=db_id, schema_info=schema_info,
+            app_config=app_config, db_engine=db_engine, user_query=_uq,
+            default_limit=default_limit, sub_query_context=sub_query_context,
+        )
+        if template is not None:
+            if template_sink is not None:
+                template_sink[db_id] = template.as_state()
+            if template.sql:
+                return template.sql
 
     # 시스템 프롬프트는 LLM 경로에서만 구성한다(지연 구성) — 결정적 조립이 발동하는
     # 폼필 턴이 스코프 미필터 스키마(b0 408테이블+샘플)의 직렬화+PII 스크럽 비용을
@@ -2684,7 +2733,7 @@ async def _generate_sql(
         default_limit, db_engine, db_id, app_config,
     )
 
-    return await _invoke_llm_for_sql(
+    return _regenerated(await _invoke_llm_for_sql(
         llm, system_prompt, user_prompt,
         parsed_requirements=parsed_requirements, schema_info=schema_info,
         sub_query_context=sub_query_context, db_engine=db_engine, db_id=db_id,
@@ -2692,7 +2741,7 @@ async def _generate_sql(
         error_context=error_context, column_mapping=column_mapping,
         app_config=app_config, execute=execute, candidate_sink=candidate_sink,
         time_resolution=query_time.to_state() if query_time is not None else None,
-    )
+    ))
 
 
 def _unmapped_fields_section(unmapped_fields: list[str], db_engine: str) -> str:

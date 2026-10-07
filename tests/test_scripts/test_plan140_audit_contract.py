@@ -276,7 +276,11 @@ def test_committed_profile_loads_as_current() -> None:
     assert current and isinstance(current["profile"], dict)
     profile = current["profile"]
     assert current["source"] == "manual" and current["environment"] is None
-    assert "query_guide" not in profile
+    # D-314 ②가 D-311 ③을 부분 개정 — 커밋 프로필의 query_guide는 지식 오버레이(plans/141)로만
+    # 들어온다(빌더 W3 산출에는 없다)
+    if "query_guide" in profile:
+        header = (REPO_ROOT / ba.PROFILE_REL).read_text(encoding="utf-8")
+        assert "# 지식 오버레이(plans/141 W4 · D-314 ②)" in header
     assert len(profile["table_definitions"]) == 108
     assert len(profile["allowed_tables"]) == 98
     assert not any("tcdmsif81" in str(t) for t in profile["allowed_tables"])

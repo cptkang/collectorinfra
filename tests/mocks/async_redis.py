@@ -5,7 +5,8 @@
 
 지원 명령
     ping · get · set(ex, nx) · delete · exists · expire · ttl · hget · hset(key/value · mapping) ·
-    hgetall · hdel · hlen · scan_iter(match) · pipeline(execute) · flushdb · aclose
+    hsetnx · hgetall · hdel · hlen · sadd · smembers · scan_iter(match) · pipeline(execute) ·
+    flushdb · aclose
 
 사용법 — `RedisSchemaCache`에 붙이기::
 
@@ -58,7 +59,7 @@ class FakeAsyncRedis:
     """`redis.asyncio.Redis(decode_responses=True)`의 인메모리 대역."""
 
     def __init__(self) -> None:
-        self._data: dict[str, Any] = {}  # str 또는 dict[str, str](Hash)
+        self._data: dict[str, Any] = {}  # str · dict[str, str](Hash) · set[str](Set)
         self._expire_at: dict[str, float] = {}
         self._clock_offset = 0.0
         self.closed = False
@@ -89,6 +90,17 @@ class FakeAsyncRedis:
             raise FakeRedisError(_WRONGTYPE)
         return entry
 
+    def _set(self, key: str, *, create: bool = False) -> set[str] | None:
+        entry = self._get_entry(key)
+        if entry is None:
+            if not create:
+                return None
+            entry = set()
+            self._data[key] = entry
+        if not isinstance(entry, set):
+            raise FakeRedisError(_WRONGTYPE)
+        return entry
+
     # --- 테스트 보조 ---
 
     def advance(self, seconds: float) -> None:
@@ -99,7 +111,10 @@ class FakeAsyncRedis:
         """만료되지 않은 전체 키·값 사본(Hash는 dict 사본)."""
         for key in list(self._data):
             self._purge(key)
-        return {k: (dict(v) if isinstance(v, dict) else v) for k, v in self._data.items()}
+        return {
+            k: (dict(v) if isinstance(v, dict) else set(v) if isinstance(v, set) else v)
+            for k, v in self._data.items()
+        }
 
     # --- 연결 ---
 
@@ -120,7 +135,7 @@ class FakeAsyncRedis:
         entry = self._get_entry(name)
         if entry is None:
             return None
-        if isinstance(entry, dict):
+        if not isinstance(entry, str):
             raise FakeRedisError(_WRONGTYPE)
         return entry
 
@@ -218,6 +233,15 @@ class FakeAsyncRedis:
             h[field] = _to_str(v)
         return added
 
+    async def hsetnx(self, name: str, key: str, value: Any) -> int:
+        h = self._hash(name, create=True)
+        assert h is not None
+        field = _to_str(key)
+        if field in h:
+            return 0
+        h[field] = _to_str(value)
+        return 1
+
     async def hgetall(self, name: str) -> dict[str, str]:
         h = self._hash(name)
         return {} if h is None else dict(h)
@@ -239,6 +263,21 @@ class FakeAsyncRedis:
     async def hlen(self, name: str) -> int:
         h = self._hash(name)
         return 0 if h is None else len(h)
+
+    # --- Set ---
+
+    async def sadd(self, name: str, *values: Any) -> int:
+        if not values:
+            raise FakeRedisError("wrong number of arguments for 'sadd' command")
+        members = self._set(name, create=True)
+        assert members is not None
+        before = len(members)
+        members.update(_to_str(v) for v in values)
+        return len(members) - before
+
+    async def smembers(self, name: str) -> set[str]:
+        members = self._set(name)
+        return set() if members is None else set(members)
 
     # --- pipeline ---
 

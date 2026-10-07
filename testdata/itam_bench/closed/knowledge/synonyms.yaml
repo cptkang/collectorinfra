@@ -1,0 +1,29 @@
+# K3 — ITAM 유사어 시드 원천 (plans/141 W3 · D-314 · 작성 스킬 .claude/skills/itam-knowledge)
+# 빌드 → config/synonym_seeds/itam.yaml `column_synonyms`. 시나리오 질문 어휘 ↔ 컬럼 연결 근거가 있는 것만 둔다.
+# 쓰기 가드(D-142): 2자 미만 · 다른 컬럼 이름과 같은 낱말 · 여러 컬럼에 걸리는 다의어 금지. 값 0.
+version: 1
+items:
+  # ITAM-116 「서버 분류 경로별」 — 시나리오 주석·정의 notes가 분류 경로 = 서버 원장 그룹경로내용으로 짚는다
+  - id: tcdmsif72.그룹경로내용
+    table: tcdmsif72
+    column: 그룹경로내용
+    words: [서버 분류 경로, 분류 경로]
+    origin: claude_code
+    evidence: 20261006-152938
+    status: active
+  # ITAM-105·108 「유지보수 계약 만료일」·「유지보수 계약이 끝나는」 — 정의 tcdmsif43 manages(계약 종료일)
+  - id: tcdmsif43.유지보수계약종료년월일
+    table: tcdmsif43
+    column: 유지보수계약종료년월일
+    words: [유지보수 계약 만료일, 유지보수 만료일]
+    origin: claude_code
+    evidence: 20261006-152938
+    status: active
+  # ITAM-102 「담당 부서」 — 함정 org_not_person(부서는 사람 칸이 아님) · 군 정의 부점(부서)
+  - id: tcdmsif80.담당부점명
+    table: tcdmsif80
+    column: 담당부점명
+    words: [담당 부서, 담당부서]
+    origin: claude_code
+    evidence: 20261006-152938
+    status: active

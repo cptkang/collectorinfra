@@ -15,16 +15,37 @@ plans/139 W6-d: DB 별로 프롬프트 크기·선별 결과도 옮긴다 — **
 
 수신 파일 경로는 벤치 부모 프로세스가 환경변수 `ITAM_BENCH_CAPTURE_PATH`로 넘긴다(세션 임시 디렉터리
 · 실행 종료 시 부모가 지운다). 없으면 설치하지 않는다.
+
+plans/141 W1 · D-314 ⑤ — **자산 사용 표지**. DB 별 칸에 둘을 더한다(실렸을 때만 칸이 생긴다 — 자산이
+없는 DB의 레코드 모양은 그대로다).
+
+- `assets`: 이번 턴 그 DB 스키마에 붙은 구조 메타(`_structure_meta`)의 지식 자산 —
+  `{키: {"fp": 내용 해시 앞 12자, "n": 건수}}`. 키는 `ASSET_MARKER_KEYS`(`query_guide`·
+  `query_examples`·`query_rules`·`table_definitions`)이고 단일·멀티 같은 자리에서 읽는다. LLM SQL
+  생성이 실제로 불렸는지는 `template.outcome`(`assembled`면 생성 생략)·`budget_stage`로 함께 본다.
+- `template`: 상태 `template_assembly`의 그 DB 항목 — `outcome`·`template_id`·`slot_names`·`reason`·
+  `final_sql_from_template`(bool — 조립 뒤 같은 요청에서 LLM이 SQL을 다시 만들면 False)만,
+  열거·식별자·bool 모양 검사를 통과한 것만(슬롯 **값**은 상태에도 없다).
+
+**표지 불가**(상태에 없다): DB 전용 규칙 섹션(`prompt_template.yaml` — 어댑터가 파일에서
+직접 읽는다) · 질의 이력 few-shot 치환 여부. 이 둘은 run 단위 자산 지문(`run.json` `assets`)으로
+갈음한다. 컬럼 설명(K3)·유사어는 별도 표지 없이 기존 칸(`with_meaning` — 단일 경로만)으로 본다.
+
+plans/141 W8 — **자산 끄기**(`ITAM_BENCH_ASSET_ABLATION`). 벤치 서버 프로세스에서만 지정 자산 하나를
+비운다(요청 단위 오버라이드가 없어 run 단위 · 제품 코드 무변경): 구조 메타 키는 수동 프로필·승인
+적용본 로더 결과에서 그 키만 빼고, `prompt_template`은 생성 템플릿 어댑터의 섹션을 없음으로,
+`query_templates`는 `TEXT2SQL_TEMPLATE_ASSEMBLY=false`로 끈다. 모르는 키는 기동을 멈춘다.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sys
 import threading
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +63,24 @@ SELECTION_SOURCES: frozenset[str] = frozenset({"llm", "lexical", "none"})
 #: 재생성 종결 사유(`regen_stop.reason`)는 코드 열거(`backend_limit` 등)만 옮긴다.
 #: 문구 모양이면 null 이다.
 _REASON_CODE = re.compile(r"^[a-z][a-z_]{0,39}$")
+
+#: 자산 사용 표지 대상 — 구조 메타 키(plans/141 W1).
+ASSET_MARKER_KEYS: tuple[str, ...] = (
+    "query_guide",
+    "query_examples",
+    "query_rules",
+    "table_definitions",
+)
+#: 템플릿 표지 모양 — ID는 글자로 시작(숫자·IP 같은 값 모양 탈락) · 슬롯 이름은 도메인 계약과 같다.
+_TEMPLATE_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+_SLOT_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+ABLATION_ENV = "ITAM_BENCH_ASSET_ABLATION"
+#: 끌 수 있는 자산 — 구조 메타 키 + DB 전용 규칙 섹션 + 결정적 조립 템플릿. 컬럼 설명·유사어는 Redis
+#: 에 이미 적재돼 있어 벤치가 쓰기 없이 뺄 수 없다(지원 안 함).
+ABLATION_KEYS: tuple[str, ...] = (*ASSET_MARKER_KEYS, "prompt_template", "query_templates")
+ABLATION_DB_ID = "itam"
+TEMPLATE_SWITCH_ENV = "TEXT2SQL_TEMPLATE_ASSEMBLY"
 
 
 def _schema_shape(schema: Any, descriptions: Any) -> dict[str, Any]:
@@ -120,6 +159,72 @@ def _prompt_shape(state: Mapping[str, Any], db_id: str, *, single: bool) -> dict
     }
 
 
+def fingerprint(value: Any) -> str:
+    """내용 해시 앞 12자(글은 그대로 · 그 밖은 키 정렬 JSON) — 값은 남기지 않는다."""
+    text = (
+        value
+        if isinstance(value, str)
+        else json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    )
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def _asset_shape(schema: Any) -> dict[str, Any]:
+    """구조 메타의 지식 자산 → `{키: {"fp", "n"}}`(비었거나 없는 키는 싣지 않는다)."""
+    meta = _mapping(_mapping(schema).get("_structure_meta"))
+    out: dict[str, Any] = {}
+    for key in ASSET_MARKER_KEYS:
+        value = meta.get(key)
+        if isinstance(value, str):
+            count = 1 if value.strip() else 0
+        elif isinstance(value, (list, tuple, Mapping)):
+            count = len(value)
+        else:
+            count = 0
+        if count:
+            out[key] = {"fp": fingerprint(value), "n": count}
+    return out
+
+
+def _template_shape(state: Mapping[str, Any], db_id: str) -> dict[str, Any] | None:
+    """상태 `template_assembly[db_id]` → 열거·식별자 모양 검사를 통과한 칸만. 없으면 None."""
+    from src.domain import query_templates as qt
+
+    entry = _mapping(_mapping(state.get("template_assembly")).get(db_id))
+    outcome = _member(entry.get("outcome"), {qt.OUTCOME_ASSEMBLED, qt.OUTCOME_FALLBACK})
+    if outcome is None:
+        return None
+    reasons = {v for k, v in vars(qt).items() if k.startswith("REASON_") and isinstance(v, str)}
+    template_id = entry.get("template_id")
+    slots = entry.get("slot_names")
+    final = entry.get("final_sql_from_template")
+    return {
+        "outcome": outcome,
+        "template_id": template_id
+        if isinstance(template_id, str) and _TEMPLATE_ID.match(template_id)
+        else None,
+        "slot_names": [
+            s for s in slots if isinstance(s, str) and _SLOT_NAME.match(s)
+        ]
+        if isinstance(slots, (list, tuple))
+        else [],
+        "reason": _member(entry.get("reason"), reasons),
+        "final_sql_from_template": final if isinstance(final, bool) else None,
+    }
+
+
+def _usage_shape(state: Mapping[str, Any], db_id: str, schema: Any) -> dict[str, Any]:
+    """자산 사용 표지 — 실렸을 때만 칸을 만든다(plans/141 W1)."""
+    out: dict[str, Any] = {}
+    assets = _asset_shape(schema)
+    if assets:
+        out["assets"] = assets
+    template = _template_shape(state, db_id)
+    if template is not None:
+        out["template"] = template
+    return out
+
+
 def schema_context_record(kind: str, state: Any) -> dict[str, Any] | None:
     """수신한 task 상태 → 스키마 맥락 레코드. 대상 종류가 아니면 None."""
     if kind != CAPTURE_KIND or not isinstance(state, Mapping):
@@ -140,12 +245,14 @@ def schema_context_record(kind: str, state: Any) -> dict[str, Any] | None:
             dbs[str(db_id)] = {
                 **_schema_shape(db_schemas.get(db_id), None),
                 **_prompt_shape(state, str(db_id), single=False),
+                **_usage_shape(state, str(db_id), db_schemas.get(db_id)),
             }
     else:
         active = str(state.get("active_db_id") or "")
         dbs[active] = {
             **_schema_shape(state.get("schema_info"), state.get("column_descriptions")),
             **_prompt_shape(state, active, single=True),
+            **_usage_shape(state, active, state.get("schema_info")),
         }
     return {
         "kind": kind,
@@ -181,7 +288,87 @@ def install_from_env() -> bool:
     return True
 
 
+def _without(meta: Any, key: str) -> Any:
+    return {k: v for k, v in meta.items() if k != key} if isinstance(meta, Mapping) else meta
+
+
+def _patch(*targets: tuple[Any, str, Any]) -> Callable[[], None]:
+    """속성을 바꿔 끼우고 되돌리는 함수를 돌려준다."""
+    originals = [(owner, name, getattr(owner, name)) for owner, name, _ in targets]
+    for owner, name, value in targets:
+        setattr(owner, name, value)
+
+    def undo() -> None:
+        for owner, name, value in originals:
+            setattr(owner, name, value)
+
+    return undo
+
+
+def install_ablation(key: str, db_id: str = ABLATION_DB_ID) -> Callable[[], None]:
+    """자산 하나를 벤치 서버 프로세스에서만 끈다(plans/141 W8) → 되돌리는 함수.
+
+    Raises:
+        ValueError: 모르는 키(`ABLATION_KEYS` 밖)
+    """
+    if key not in ABLATION_KEYS:
+        raise ValueError(f"모르는 자산 키 {key!r} — 지원: {', '.join(ABLATION_KEYS)}")
+    if key == "query_templates":
+        previous = os.environ.get(TEMPLATE_SWITCH_ENV)
+        os.environ[TEMPLATE_SWITCH_ENV] = "false"
+
+        def undo_env() -> None:
+            if previous is None:
+                os.environ.pop(TEMPLATE_SWITCH_ENV, None)
+            else:
+                os.environ[TEMPLATE_SWITCH_ENV] = previous
+
+        return undo_env
+    if key == "prompt_template":
+        from src.db_adapters.generated import GeneratedTemplateAdapter
+
+        section = GeneratedTemplateAdapter.section
+
+        def no_section(self: Any, target: str | None) -> str | None:
+            return None if target == db_id else section(self, target)
+
+        return _patch((GeneratedTemplateAdapter, "section", no_section))
+    # 구조 메타 키 — 질의 경로의 두 출처(①수동 프로필 ②승인 적용본) 결과에서 그 키만 뺀다.
+    # `src.nodes`가 같은 이름의 노드 함수를 재노출하므로 모듈은 import_module 로 잡는다.
+    import importlib
+
+    from src.schema_cache.cache_manager import SchemaCacheManager
+
+    schema_analyzer = importlib.import_module("src.nodes.schema_analyzer")
+    load_manual = schema_analyzer._load_manual_profile
+    applied = SchemaCacheManager.get_applied_structure_meta
+
+    def manual_without(target: str) -> Any:
+        profile = load_manual(target)
+        return _without(profile, key) if target == db_id else profile
+
+    async def applied_without(self: Any, target: str) -> Any:
+        meta = await applied(self, target)
+        return _without(meta, key) if target == db_id else meta
+
+    return _patch(
+        (schema_analyzer, "_load_manual_profile", manual_without),
+        (SchemaCacheManager, "get_applied_structure_meta", applied_without),
+    )
+
+
+def install_ablation_from_env() -> str | None:
+    """환경변수가 있으면 그 자산을 끈다 → 끈 키(없으면 None). 모르는 키면 ValueError(기동 중단)."""
+    key = (os.environ.get(ABLATION_ENV) or "").strip()
+    if not key:
+        return None
+    install_ablation(key)
+    return key
+
+
 def main() -> None:
+    # 끄기를 앱·설정 로드보다 먼저 건다(템플릿 스위치는 설정 로드 때 읽힌다)
+    install_ablation_from_env()
     install_from_env()
     from scripts.scenario._serve import main as serve
 

@@ -7,6 +7,14 @@
     --compare A B   두 run 의 시나리오별 전이 (LLM·DB 0)
     --build-assets RUN  반출 run → itam 프로필·유사어 시드·시드 스키마 캐시 직접 쓰기
                     (LLM·DB 0 · D-311 ③ · plans/140 W3)
+    --evidence RUN  반출 run → 지식 자산 근거 묶음(<run>/knowledge_evidence/ · 값 0 · 누출 관문 ·
+                    LLM·DB 0 · plans/141 W1)
+    --validate-knowledge [DIR]  지식 자산 원천 파일 결정적 검증 + 모의 DB 실행(`--static-only`면
+                    정적 검사만 · `--out`이면 결과 YAML · plans/141 W2)
+    --verify-assets 반입된 K2·K4·K8 SQL 읽기 전용 실행 → asset_verification.yaml(7번째 반출 파일 ·
+                    값 0 · 누출 관문 · plans/141 W5 · D-301 ③ 예외는 이 모드뿐)
+    --ablation-report BASE RUN...  기준 run ↔ 자산별 끈 run(`--run --asset-ablation KEY`) 효과 표·
+                    유지 판정 (LLM·DB 0 · plans/141 W8)
 
 기본 동작(인자 없음)은 `--dry-run` 이다 — 모르고 실행해도 LLM·DB 를 부르지 않는다.
 
@@ -853,7 +861,7 @@ def _run_with_server(
         authorized_db_ids,
     )
 
-    from ._serve import CAPTURE_ENV
+    from ._serve import ABLATION_ENV, CAPTURE_ENV
 
     started = _now()
     run_id = started.strftime("%Y%m%d-%H%M%S")
@@ -866,6 +874,8 @@ def _run_with_server(
         **expected,
         "CHECKPOINT_DB_URL": str(session / "checkpoints.db"),
         CAPTURE_ENV: str(session / "capture.jsonl"),
+        # plans/141 W8 — 빈 값이면 끄지 않는다(부모 환경 누수 차단)
+        ABLATION_ENV: getattr(args, "asset_ablation", None) or "",
     }
     port = pick_port(args.port)
     handle = ServerHandle(
@@ -1016,6 +1026,7 @@ def _run_with_server(
         "policy_scope": policy.scope,
         "schema_source": catalog_doc.get("source"),
         "assets": catalog_doc.get("assets"),
+        "asset_ablation": getattr(args, "asset_ablation", None),
         "vault_values": len(vault),
         "canary_in_results": ctx.counters["canary_in_results"],
         "results_dir": rd.display_path(
@@ -1062,6 +1073,42 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ablation_report(args: argparse.Namespace) -> int:
+    """기준 run ↔ 자산별 끈 run 효과 표·유지 판정(plans/141 W8) — LLM·DB 0."""
+    from .report import ablation_report
+
+    if len(args.ablation_report) < 2:
+        say("[중단] --ablation-report 는 기준 run 과 자산을 끈 run 1개 이상을 받는다")
+        return 1
+    base, *others = (RESULTS_ROOT / name for name in args.ablation_report)
+    try:
+        say(ablation_report(base, others))
+    except (FileNotFoundError, ValueError) as exc:
+        say(f"[중단] {exc}")
+        return 1
+    return 0
+
+
+def cmd_verify_assets(args: argparse.Namespace) -> int:
+    """반입된 K2·K4·K8 SQL 읽기 전용 실행 검증(plans/141 W5) → asset_verification.yaml."""
+    from .asset_verify import run_verify
+
+    try:
+        policy = cat.load_policy(Path(args.policy))
+    except cat.CatalogError as exc:
+        say(f"[중단] 컬럼 정책 검증 실패 {len(exc.errors)}건")
+        return 1
+    dsn = _itam_dsn()
+    return run_verify(
+        policy=policy,
+        env=args.env,
+        provenance=_git_provenance(),
+        user_values=user_values(login_id=None, dsn=dsn),
+        dsn=dsn,
+        say=say,
+    )
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
     """반출 후 싱크 보조 — 반출 카탈로그와 로컬 전사본·컬럼 정책의 차이.
 
@@ -1103,9 +1150,43 @@ def cmd_build_assets(args: argparse.Namespace, cfg: Any = None) -> int:
             say(f"[build-assets] 거부: {refusal}")
             return EXIT_REFUSED
         deps = default_p2_deps(cfg)
+    from .knowledge import default_deps
+
     return run_build(
         run_dir, install_cache=args.install_cache, keep_excluded=args.keep_excluded,
         p2=args.p2, p2_deps=deps,
+        knowledge_dir=Path(args.knowledge) if args.knowledge else None,
+        knowledge_static_only=args.knowledge_static_only,
+        knowledge_deps=default_deps(cfg),
+    )
+
+
+def cmd_evidence(args: argparse.Namespace) -> int:
+    """반출 run → 지식 자산 근거 묶음(plans/141 W1) — LLM·DB 0 · 누출 관문 통과 때만 쓴다."""
+    from .knowledge import run_evidence
+
+    run_dir = Path(args.evidence)
+    if not run_dir.is_absolute() and not run_dir.exists():
+        run_dir = RESULTS_ROOT / args.evidence
+    return run_evidence(
+        run_dir,
+        policy_path=Path(args.policy or CLOSED_POLICY_PATH),
+        scenarios_path=Path(args.scenarios or CLOSED_SCENARIOS_PATH),
+        user_values=user_values(login_id=None, dsn=None),
+    )
+
+
+def cmd_validate_knowledge(args: argparse.Namespace) -> int:
+    """지식 자산 원천 파일 검증(plans/141 W2) — 정적 검사 + `itam` 소스(모의 DB) 실행."""
+    from .knowledge import KNOWLEDGE_DIR_REL, default_deps, run_validate
+
+    knowledge_dir = Path(args.validate_knowledge or REPO_ROOT / KNOWLEDGE_DIR_REL)
+    return run_validate(
+        knowledge_dir,
+        catalog_path=Path(args.catalog) if args.catalog else None,
+        static_only=args.static_only,
+        out=Path(args.out) if args.out else None,
+        deps=default_deps(),
     )
 
 
@@ -1123,6 +1204,30 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--sync", metavar="RUN", help="반출 run 카탈로그 ↔ 로컬 전사본·정책 차이")
     mode.add_argument(
         "--build-assets", metavar="RUN", help="반출 run → itam 프로필·시드 직접 쓰기(D-311 ③)"
+    )
+    mode.add_argument(
+        "--evidence", metavar="RUN", help="반출 run → 지식 자산 근거 묶음(plans/141 W1)"
+    )
+    mode.add_argument(
+        "--validate-knowledge", nargs="?", const="", default=None, metavar="DIR",
+        help="지식 자산 원천 파일 검증(기본 testdata/itam_bench/closed/knowledge · plans/141 W2)",
+    )
+    mode.add_argument(
+        "--verify-assets",
+        action="store_true",
+        help="반입된 K2·K4·K8 SQL 읽기 전용 실행 → asset_verification.yaml(plans/141 W5)",
+    )
+    mode.add_argument(
+        "--ablation-report",
+        nargs="+",
+        metavar="RUN",
+        help="기준 run ↔ 자산별 끈 run 효과 표·유지 판정(첫 RUN 이 기준 · plans/141 W8)",
+    )
+    parser.add_argument(
+        "--asset-ablation",
+        default=None,
+        metavar="KEY",
+        help="--run: 이 자산만 끈 run(벤치 서버 프로세스에서만 · run.json 에 기록 · plans/141 W8)",
     )
     parser.add_argument("--env", default="sandbox", choices=sorted(cat.ENVS), help="실행 환경")
     parser.add_argument("--only", default=None, help="시나리오 ID 쉼표 목록")
@@ -1164,11 +1269,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="--build-assets: P2 LLM 초안(쿼리 예시·DB 전용 규칙 섹션)을 itam 소스(모의 DB)로 "
         "검증해 함께 쓴다 — 두 LLM 평면이 비과금일 때만(plans/140 W5)",
     )
+    parser.add_argument(
+        "--knowledge",
+        default=None,
+        metavar="DIR",
+        help="--build-assets: 지식 원천 디렉터리(기본 testdata/itam_bench/closed/knowledge — 검증 "
+        "통과 active 항목만 오버레이 · plans/141 W4)",
+    )
+    parser.add_argument(
+        "--knowledge-static-only",
+        action="store_true",
+        help="--build-assets: 모의 DB 없이 정적 검사 통과분만 오버레이(머리 주석에 표기 · 없으면 "
+        "모의 DB 미연결 때 오버레이를 건너뛴다)",
+    )
+    parser.add_argument(
+        "--static-only",
+        action="store_true",
+        help="--validate-knowledge: 모의 DB 실행 없이 정적 검사만"
+        "(db_unverified를 실패로 치지 않음)",
+    )
+    parser.add_argument(
+        "--out", default=None, help="--validate-knowledge: 결과 YAML 경로"
+    )
+    parser.add_argument(
+        "--catalog",
+        default=None,
+        help="--validate-knowledge: 대조 카탈로그(itam_schema.json · schema_catalog.yaml · "
+        "반출 run 디렉터리 — 기본 testdata/itam_bench/closed/itam_schema.json)",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # 지식 자산 모드는 폐쇄망 반출 전용 — 정책·시나리오 기본값이 환경과 무관하다
+    if args.evidence:
+        return cmd_evidence(args)
+    if args.validate_knowledge is not None:
+        return cmd_validate_knowledge(args)
     closed = args.env == "closed"
     if args.scenarios is None:
         args.scenarios = str(CLOSED_SCENARIOS_PATH if closed else SCENARIOS_PATH)
@@ -1179,6 +1317,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.repeat < 1:
         say("[중단] --repeat 는 1 이상")
         return 1
+    if args.asset_ablation is not None:
+        from ._serve import ABLATION_KEYS
+
+        if not args.run:
+            say("[중단] --asset-ablation 은 --run 과 함께 쓴다")
+            return 1
+        if args.asset_ablation not in ABLATION_KEYS:
+            say(
+                f"[중단] 모르는 자산 키 {args.asset_ablation!r} — 지원: {', '.join(ABLATION_KEYS)}"
+            )
+            return 1
+    if args.verify_assets:
+        return cmd_verify_assets(args)
+    if args.ablation_report:
+        return cmd_ablation_report(args)
     if args.check_oracle:
         return cmd_check_oracle(args)
     if args.run:

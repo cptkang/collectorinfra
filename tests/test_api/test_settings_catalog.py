@@ -198,8 +198,9 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     # plans/132 W5 ROUTER_SOURCE_MEMORY_TTL_DAYS +1 ·
     # plans/122 T-4 QUERY_TIME_RESOLUTION_ENABLED +1 ·
     # plans/139 W4 TEXT2SQL_SCHEMA_TABLE_SELECT_MAX +1 ·
-    # plans/134 W6 ④ COMPOSITE_APM_UNTARGETED_TOP_N +1
-    assert len(items) == 393
+    # plans/134 W6 ④ COMPOSITE_APM_UNTARGETED_TOP_N +1 ·
+    # plans/141 W6 TEXT2SQL_TEMPLATE_ASSEMBLY +1
+    assert len(items) == 394
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -352,8 +353,9 @@ def test_t2_group_and_field_counts():
     # plans/132 W5 ROUTER_SOURCE_MEMORY_TTL_DAYS +1(router 기존 그룹 — 그룹 수 불변) ·
     # plans/122 T-4 QUERY_TIME_RESOLUTION_ENABLED +1(query 기존 그룹 — 그룹 수 불변) ·
     # plans/139 W4 TEXT2SQL_SCHEMA_TABLE_SELECT_MAX +1(text2sql 기존 그룹 — 그룹 수 불변) ·
-    # plans/134 W6 ④ COMPOSITE_APM_UNTARGETED_TOP_N +1(composite 기존 그룹 — 그룹 수 불변)
-    assert len(index) == 393
+    # plans/134 W6 ④ COMPOSITE_APM_UNTARGETED_TOP_N +1(composite 기존 그룹 — 그룹 수 불변) ·
+    # plans/141 W6 TEXT2SQL_TEMPLATE_ASSEMBLY +1(text2sql 기존 그룹 — 그룹 수 불변)
+    assert len(index) == 394
     # plans/103 TIER3_PLAN_LOOP_ENABLED +1 · plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1
     assert len([s for s in index.values() if s.group_key == "general"]) == 21
 

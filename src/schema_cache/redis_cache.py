@@ -540,6 +540,44 @@ class RedisSchemaCache:
             logger.warning("Redis 컬럼 설명 로드 실패: %s", e)
             return {}
 
+    async def add_missing_descriptions(
+        self,
+        db_id: str,
+        descriptions: dict[str, str],
+    ) -> list[str]:
+        """Redis에 없는 컬럼 설명만 추가한다(HSETNX — 기존 설명은 덮지 않는다 · D-314 ④).
+
+        한 번 적재한 키는 DB별 집합(`schema:{db_id}:knowledge_seeded`)에 남기고 다시 채우지 않는다 —
+        운영자가 지운 설명이 재기동 때 되살아나지 않게. 해시에 없고 집합에도 없는 키만 채운다.
+        주의: 정본 파일 내용이 바뀌어도 이미 적재한 키는 다시 채우지 않는다(전체 캐시 삭제
+        `invalidate_all`은 집합도 지운다). `meta.description_status`는 건드리지 않는다(관리자 등록
+        상태가 아니다).
+
+        Args:
+            db_id: DB 식별자
+            descriptions: {table.column: description} 매핑
+
+        Returns:
+            실제로 추가한 키 목록(미연결·실패면 빈 목록)
+        """
+        if not self._connected or self._redis is None or not descriptions:
+            return []
+
+        key = self._key(db_id, "descriptions")
+        seeded_key = self._key(db_id, "knowledge_seeded")
+        added: list[str] = []
+        try:
+            seeded = await self._redis.smembers(seeded_key)
+            for field_name, text in descriptions.items():
+                if field_name in seeded:
+                    continue
+                if await self._redis.hsetnx(key, field_name, text):
+                    added.append(field_name)
+                    await self._redis.sadd(seeded_key, field_name)
+        except Exception as e:
+            logger.warning("Redis 컬럼 설명 추가 실패 (db_id=%s): %s", db_id, e)
+        return added
+
     async def get_description(
         self,
         db_id: str,

@@ -3660,7 +3660,7 @@ Prometheus 지표를 PromQL로 조회하는 연동이다. MCP 서버의 도구�
 | `orchestrator.yaml` | 오케스트레이터(제어 평면) 모델의 공급자·주소·시간 제한·토큰 예산(`ORCHESTRATOR_*`) |
 | `router.yaml` | 시멘틱 라우터 2단 분류·신뢰도·조기 종료(`ROUTER_*`) |
 | `intent_frame.yaml` | 의도 프레임 기록과 정규 질의 모드·소비자, 재작성 게이트·검증 |
-| `text2sql.yaml` | SQL 생성 방식 — 시맨틱 조립, 후보 생성·선택, 관련 테이블 게이트, 0건 진단, 단계적 컬럼 도출, 질의 이력 예시(`TEXT2SQL_*`) |
+| `text2sql.yaml` | SQL 생성 방식 — 시맨틱 조립, 후보 생성·선택, 관련 테이블 게이트, 0건 진단, 단계적 컬럼 도출, 질의 이력 예시, 조회 템플릿 조립(템플릿 파일이 있는 DB만 — `TEXT2SQL_TEMPLATE_ASSEMBLY`)(`TEXT2SQL_*`) |
 | `query.yaml` | 기본 LIMIT, 충분성 임계, 재시도 예산, 양식 기억 보존 일수(`QUERY_*`) |
 | `composite.yaml` | 복합 질의·호스트 조사 — 대상 수·동시성·시간 제한, 가용성 사전 판정, 존 순회, 범위 역질문, 순차 실행 계약(`COMPOSITE_*`) |
 | `multi_db.yaml` | 활성 DB 목록(`ACTIVE_DB_IDS`)과 존 그룹 상호배타(`ZONE_GROUP_EXCLUSIVE`) |

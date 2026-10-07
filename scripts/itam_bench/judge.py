@@ -532,7 +532,44 @@ def prompt_by_db(records: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, An
             reason = shape.get("stop_reason")
             if isinstance(reason, str) and reason:
                 entry["stop_reasons"] = sorted({*entry["stop_reasons"], reason})
+            _merge_usage(entry, shape)
     return out
+
+
+_FINGERPRINT = re.compile(r"^[0-9a-f]{12}$")
+#: 같은 턴의 task 들이 서로 다른 지문을 실었을 때
+MIXED_FINGERPRINT = "mixed"
+
+
+def _merge_usage(entry: dict[str, Any], shape: Mapping[str, Any]) -> None:
+    """자산 사용 표지(plans/141 W1)를 턴 칸에 모은다 — 실렸을 때만 칸이 생긴다.
+
+    `assets`는 키별 지문(다르면 `mixed`)·건수 최댓값, `templates`는 task 별 템플릿 표지(중복 제거 ·
+    `final_sql_from_template` False면 「적중 후 LLM 수정」 — 같은 템플릿이라도 따로 남는다).
+    """
+    assets = shape.get("assets")
+    if isinstance(assets, Mapping):
+        merged = entry.setdefault("assets", {})
+        for key, mark in assets.items():
+            if not isinstance(mark, Mapping):
+                continue
+            fp = mark.get("fp")
+            fp = fp if isinstance(fp, str) and _FINGERPRINT.match(fp) else None
+            count = _larger(None, mark.get("n"))
+            if key in merged:
+                if merged[key]["fp"] != fp:
+                    fp = MIXED_FINGERPRINT
+                count = _larger(merged[key]["n"], count)
+            merged[str(key)] = {"fp": fp, "n": count}
+    template = shape.get("template")
+    if isinstance(template, Mapping):
+        templates = entry.setdefault("templates", [])
+        item = {
+            k: template.get(k)
+            for k in ("outcome", "template_id", "slot_names", "reason", "final_sql_from_template")
+        }
+        if item not in templates:
+            templates.append(item)
 
 
 def schema_context(

@@ -7,7 +7,8 @@ D-292 DDL 등록)과 **읽기 전용 데이터 조회**(`schema_probe`)로 결�
 - **P1 프로파일링 잡(`run_asset_profile` · LLM 0)**: 카탈로그 주석·행 수 → 관계(선언 FK · 기본키
   일치 추론 · 같은 기본키 군 · 기본키 없는 테이블 쌍의 이름 일치(부모 유일성 확인 · plans/140
   W1-2) — 추론은 값 겹침 ≥ `OVERLAP_MIN`만 채택) → 코드 컬럼(`DISTINCT` ≤ 50) · 값 형식 → 코드
-  라벨(주석 열거 · 공통코드 테이블) · 식별 키 · 쿼리 규칙 · 조회 대상 후보 → **자산 초안**. 조회
+  라벨(주석 열거 · 공통코드 테이블 — 승인 테이블 정의 `kind` 기준·코드 테이블은 기본키 없이
+  코드/이름 컬럼 쌍으로 · plans/141 W7) · 식별 키 · 쿼리 규칙 · 조회 대상 후보 → **자산 초안**. 조회
   예산은 필요량을 미리 세어 정한다(기본 `DEFAULT_PROBE_BUDGET` · 상한 `PROBE_BUDGET_CAP` ·
   plans/140 W1-3). 주석이 있으면 **설명 초안**(출처 `comment`)도 기존 「설명 초안 검토·적용」에
   넣는다. DB에 닿지 못하면 스키마만으로 만들 수 있는 것(선언 관계 · 주석)만 만든다(`offline`).
@@ -119,6 +120,8 @@ FORMAT_SAMPLE = 200
 CODE_VALUE_MAX_LENGTH = 40
 CODE_TABLE_PAIRS = 1000
 MAX_CODE_TABLES = 10
+#: 테이블 정의 기준·코드 쌍(plans/141 W7) 상한 — 쌍마다 조회 1회(예산 산정에 포함)
+MAX_DEFINED_CODE_PAIRS = 20
 #: 공통코드 라벨 채택 하한(코드 컬럼 값 중 코드 테이블에 있는 비율)
 CODE_TABLE_COVERAGE = 0.9
 EXAMPLE_COUNT = 5
@@ -267,7 +270,9 @@ class AssetGenerationService(AdminServiceBase):
             relation_candidates = _relation_candidates(shapes)
             name_columns = _name_match_candidates(snap_tables, scope, shapes)
             column_plan = _column_candidates(snap_tables, scope, comments)
-            code_table_plan = _code_table_candidates(snapshot, comments)
+            code_table_plan = _code_table_candidates(
+                snapshot, comments, profile.get(TABLE_DEFINITIONS_KEY)
+            )
             requested = _requested_queries(
                 probe.catalog_query_count(snapshot, db_schema), relation_candidates,
                 name_columns, column_plan, code_table_plan,
@@ -1350,10 +1355,11 @@ def _column_candidates(
 
 
 def _code_table_candidates(
-    snapshot: Mapping[str, Any], comments: Mapping[str, str]
+    snapshot: Mapping[str, Any], comments: Mapping[str, str], definitions: Any = None
 ) -> list[tuple[str, str, str]]:
     """공통코드 테이블 후보 ``(테이블, 코드 컬럼, 이름 컬럼)`` — 이름·주석에 코드 단서가 있고 코드
-    컬럼(기본키의 마지막 코드 컬럼)과 이름 컬럼을 가진 테이블(최대 `MAX_CODE_TABLES`)."""
+    컬럼(기본키의 마지막 코드 컬럼)과 이름 컬럼을 가진 테이블(최대 `MAX_CODE_TABLES`) 뒤에
+    테이블 정의 기준·코드 쌍(`_defined_code_table_candidates`)을 붙인다."""
     out: list[tuple[str, str, str]] = []
     for table, data in (snapshot.get("tables") or {}).items():
         if len(out) >= MAX_CODE_TABLES:
@@ -1371,6 +1377,29 @@ def _code_table_candidates(
         if not code_col or not name_col or code_col == name_col:
             continue
         out.append((table, code_col, name_col))
+    out.extend(_defined_code_table_candidates(snapshot, definitions, {t for t, _c, _n in out}))
+    return out
+
+
+def _defined_code_table_candidates(
+    snapshot: Mapping[str, Any], definitions: Any, taken: set[str]
+) -> list[tuple[str, str, str]]:
+    """테이블 정의 `kind`가 기준·코드인 테이블의 코드/이름 컬럼 쌍(plans/141 W7 — 최대
+    `MAX_DEFINED_CODE_PAIRS`). 기본키를 보지 않는다 — 선언 기본키 0인 DB용. 이미 후보인 테이블은
+    건너뛴다. 정의가 없거나 그 `kind`가 없으면 빈 목록(종전 그대로)."""
+    kinds = inference.defined_code_tables(definitions)
+    out: list[tuple[str, str, str]] = []
+    if not kinds:
+        return out
+    for table, data in (snapshot.get("tables") or {}).items():
+        if table in taken or bare_name(table) not in kinds:
+            continue
+        columns = [(c, str((a or {}).get("type") or ""))
+                   for c, a in (data.get("columns") or {}).items()]
+        for code_col, name_col in inference.code_name_pairs(columns):
+            if len(out) >= MAX_DEFINED_CODE_PAIRS:
+                return out
+            out.append((table, code_col, name_col))
     return out
 
 

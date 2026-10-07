@@ -27,14 +27,11 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from itertools import zip_longest
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import yaml
 
 from . import DB_ID, REPO_ROOT
-
-if TYPE_CHECKING:
-    from .redact import CodeOriginals
 
 #: 기록 등급 — 엄격도 오름차순(여럿이면 가장 엄격한 것을 쓴다 · §3.5.1 「결과 열 → 원 컬럼 해석」).
 GRADES: tuple[str, ...] = ("general", "network", "amount", "free_text", "unclassified", "pii")
@@ -1134,7 +1131,7 @@ def profile_structure(
     - 건수만: `code_values`·`code_labels`(컬럼별 — 코드값·라벨은 데이터다) · `query_rules`·
       `query_examples`·`patterns`(문장·예시 SQL 에 값이 섞일 수 있다) · `query_guide`(글자 수)
     - 테이블 정의(`table_definitions`): 사람이 쓴 정의 7칸(plans/140 W2-3 · `group` 감사 M-2) — 누출
-      관문 규칙에 걸리거나 P1 원 코드값·라벨을 품은 행은 `gate_table_definitions`가 빼고
+      관문 규칙에 걸린 행은 `gate_table_definitions`가 빼고
       `table_definitions_withheld`에 수만 남긴다
     - 그 밖의 키는 이름만
     """
@@ -1206,9 +1203,6 @@ DEFINITION_EXPORT_FIELDS: tuple[str, ...] = (
     "origin",
     "group",
 )
-#: 원 코드값 대조에서 빼는 정의 칸 — 고정 열거(`kind`·`origin`)와 스키마 식별자(`key_columns`).
-#: 식별자는 카탈로그에도 나가고, 열거는 데이터가 아니다.
-_DEFINITION_NON_TEXT_FIELDS = frozenset({"kind", "origin", "key_columns"})
 
 
 def _definition_structure(profile: Mapping[str, Any]) -> dict[str, Any]:
@@ -1244,37 +1238,16 @@ def _string_leaves(node: Any) -> Iterable[str]:
         yield str(node)
 
 
-def _definition_text_leaves(row: Any) -> list[str]:
-    """정의 행에서 사람이 쓴 글 칸(`manages`·`notes`·`group`·`related` 설명 등)의 문자열.
-
-    고정 열거·스키마 식별자 칸(`_DEFINITION_NON_TEXT_FIELDS`)과 `related`의 상대 테이블 이름(키)은
-    뺀다 — 원 코드값 대조 전용.
-    """
-    if not isinstance(row, Mapping):
-        return list(_string_leaves(row))
-    out: list[str] = []
-    for name, value in row.items():
-        if name in _DEFINITION_NON_TEXT_FIELDS:
-            continue
-        if name == "related" and isinstance(value, Mapping):
-            out += [str(v) for v in value.values() if v is not None]
-            continue
-        out += list(_string_leaves(value))
-    return out
-
-
 def gate_table_definitions(
     catalog: Mapping[str, Any],
     reject: Callable[[str], bool],
-    *,
-    originals: CodeOriginals | None = None,
 ) -> dict[str, Any]:
     """승인 프로필 테이블 정의 행마다 관문 규칙(`reject`)을 미리 대 보고 걸린 행을 뺀다.
 
     행의 잎 하나하나와 잎을 이어 붙인 글을 함께 본다(관문의 「이어 붙인 잎」 검사와 같은 쪽).
-    `originals`(`redact.CodeOriginals`)가 있으면 사람이 쓴 글 칸을 P1 원 코드값·라벨과도 대조해 걸린
-    행을 뺀다(감사 L-6 — 원값 반출 금지 쪽 기본값). 걸린 행은 이름도 싣지 않고
-    `table_definitions_withheld`에 수만 더한다. 새 카탈로그를 돌려준다.
+    걸린 행은 이름도 싣지 않고 `table_definitions_withheld`에 수만 더한다. 새 카탈로그를 돌려준다.
+    사람이 쓴 정의 글 속 P1 원 코드값·라벨은 대조하지 않는다 — 그대로 반출한다(D-311 부기 ⓑ
+    2026-10-07 사용자 결정 「정의 글은 그대로 반출해도 된다」).
     """
     structure = catalog.get("approved_profile")
     definitions = (structure or {}).get("table_definitions")
@@ -1285,11 +1258,6 @@ def gate_table_definitions(
     for name, row in definitions.items():
         leaves = list(_string_leaves({name: row}))
         if any(reject(leaf) for leaf in leaves) or reject("\n".join(leaves)):
-            withheld += 1
-            continue
-        if originals is not None and any(
-            originals.hit(text) for text in _definition_text_leaves(row)
-        ):
             withheld += 1
             continue
         kept[name] = row
@@ -1501,17 +1469,6 @@ def build_schema_catalog(
     )
     relations, groups = _relations(schema, profile)
     draft = schema.get("_p1_draft")
-    if draft and structure is not None:
-        # 사람이 쓴 정의 속 P1 원 코드값·라벨은 반출하지 않는다(감사 L-6)
-        # — 원 집합은 여기(메모리)에만 있다
-        from .code_samples import original_values
-        from .redact import CodeOriginals
-
-        structure = gate_table_definitions(
-            {"approved_profile": structure},
-            lambda _text: False,
-            originals=CodeOriginals(original_values(draft)),
-        )["approved_profile"]
     relations += _p1_relations(draft)
     profiles = {
         str(item.get("key")): _column_profile(item)

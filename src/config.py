@@ -478,6 +478,14 @@ class Text2SQLConfig(BaseSettings):
     # 정의가 없는 DB에는 영향이 없다.
     schema_table_select_max: int = 8
 
+    # === plans/141 W6 · D-314 ③: 조회 템플릿 결정적 조립 (기본 ON — 예외 근거 아래) ===
+    # ON이면 `config/knowledge/{db_id}/query_templates.yaml`이 있는 DB에서 LLM이 템플릿 ID·슬롯만
+    # 고르고 코드가 SQL을 조립한다(실패 시 사유를 남기고 기존 LLM SQL 생성으로 폴백).
+    # **기본 ON 예외**: 발동이 템플릿 파일 존재에 묶여 있어 파일이 없는 DB(폴스타 등)는 LLM 호출 0 ·
+    # 프롬프트·상태 비트 동일이다 — 「기본 off = 현행 동일」과 같은 효과. 끄려면
+    # `TEXT2SQL_TEMPLATE_ASSEMBLY=false`.
+    template_assembly: bool = True
+
     model_config = {"env_prefix": "TEXT2SQL_", "env_file": ".env", "extra": "ignore"}
 
 

@@ -26,6 +26,11 @@ from src.schema_cache.fingerprint import (
     compute_fingerprint,
     compute_fingerprint_from_schema_dict,
 )
+from src.schema_cache.knowledge_descriptions import (
+    KNOWLEDGE_ROOT,
+    descriptions_path,
+    load_knowledge_descriptions,
+)
 from src.schema_cache.persistent_cache import PersistentSchemaCache
 from src.schema_cache.redis_cache import RedisSchemaCache
 from src.schema_cache.structure_store import StructureStore
@@ -182,6 +187,10 @@ class SchemaCacheManager:
         self._redis_available = False
         self._memory_cache = SchemaMemoryCache(ttl_seconds=300)
         self._structure_store: StructureStore | None = None
+        # 설명 정본 파일 적재(D-314 ④) — 루트 · 끝난 DB · Redis 불가를 이미 알린 DB
+        self._knowledge_root: Path = KNOWLEDGE_ROOT
+        self._knowledge_done: set[str] = set()
+        self._knowledge_warned: set[str] = set()
 
         if self._backend == "redis":
             self._redis_cache = RedisSchemaCache(
@@ -1333,6 +1342,8 @@ class SchemaCacheManager:
           2차-B: fingerprint TTL 만료 시 DB fingerprint 재검증
           3차: DB 전체 스키마 조회 (캐시 미스) — 스키마 저장까지만(LLM 0 · plans/104 B-6).
                컬럼 설명이 비었으면 설명 백업에서만 복원한다.
+          설명 정본 파일이 있는 DB는 단계와 무관하게 1회, Redis에 없는 컬럼 설명만 채운다
+          (`_seed_knowledge_descriptions` · D-314 ④).
 
         Args:
             client: DB 클라이언트 (execute_sql, get_full_schema 메서드 필요)
@@ -1354,6 +1365,9 @@ class SchemaCacheManager:
         if cached_mem is not None:
             logger.debug("메모리 캐시 히트: db_id=%s", db_id)
             descriptions = await self.get_descriptions(db_id)
+            descriptions = await self._seed_knowledge_descriptions(
+                db_id, cached_mem, descriptions
+            )
             synonyms = await self.load_synonyms_with_global_fallback(
                 db_id, cached_mem
             )
@@ -1367,6 +1381,9 @@ class SchemaCacheManager:
                 if cached_schema is not None:
                     self._memory_cache.set(cached_schema, db_id)
                     descriptions = await self.get_descriptions(db_id)
+                    descriptions = await self._seed_knowledge_descriptions(
+                        db_id, cached_schema, descriptions
+                    )
                     synonyms = await self.load_synonyms_with_global_fallback(
                         db_id, cached_schema
                     )
@@ -1390,6 +1407,9 @@ class SchemaCacheManager:
                     if cached_schema is not None:
                         self._memory_cache.set(cached_schema, db_id)
                         descriptions = await self.get_descriptions(db_id)
+                        descriptions = await self._seed_knowledge_descriptions(
+                            db_id, cached_schema, descriptions
+                        )
                         synonyms = await self.load_synonyms_with_global_fallback(
                             db_id, cached_schema
                         )
@@ -1446,6 +1466,7 @@ class SchemaCacheManager:
         descriptions = await self.get_descriptions(db_id)
         if not descriptions:
             descriptions = await self._restore_descriptions_backup(db_id, schema_dict)
+        descriptions = await self._seed_knowledge_descriptions(db_id, schema_dict, descriptions)
         if not descriptions:
             logger.warning(
                 "컬럼 설명 미등록 — 질의 경로는 LLM으로 생성하지 않는다"
@@ -1522,6 +1543,84 @@ class SchemaCacheManager:
             backup.get("saved_at"),
         )
         return descriptions
+
+    async def _seed_knowledge_descriptions(
+        self, db_id: str, schema_dict: dict[str, Any] | None, descriptions: dict[str, str]
+    ) -> dict[str, str]:
+        """설명 정본 파일(`config/knowledge/{db_id}/column_descriptions.yaml` · D-314 ④)에서
+        Redis에 없는 컬럼 설명만 채운다 — 스키마 로드 때 프로세스당 DB별 1회(설명 백업 복원 뒤).
+
+        - 파일 없음(폴스타 등)·형식 오류: 무동작(Redis 쓰기 0).
+        - 기존 설명(내부망 LLM·주석·관리자 적용·운영자 편집)은 HSETNX로 덮지 않는다. 컬럼 설명에는
+          항목별 출처 칸이 없어 출처 `claude_code`는 로그로만 남는다.
+        - 한 번 적재한 키는 다시 채우지 않는다(`add_missing_descriptions`의 적재 기록 집합) —
+          운영자가 지운 설명은 재기동 뒤에도 비어 있다. 정본 파일 내용이 바뀌어도 이미 적재한
+          키는 그대로다.
+        - 현재 스키마에 없는 컬럼은 건너뛴다(건수 로그). 스키마 컬럼을 알 수 없으면 다음 로드에
+          다시.
+        - Redis 불가: 파일 백엔드면 끝냄, 미연결이면 다음 로드에 다시 — 둘 다 WARNING 1회. 파일
+          캐시는 Redis 사본이라 쓰지 않는다.
+        - Redis가 비었는데 파일 캐시 폴백 설명이 있으면 무동작 — Redis에 쓰면 폴백 설명이 가려진다.
+
+        Returns:
+            채운 설명을 합친 descriptions(채운 것이 없으면 입력 그대로)
+        """
+        if db_id in self._knowledge_done:
+            return descriptions
+        try:
+            if not descriptions_path(self._knowledge_root, db_id).is_file():
+                self._knowledge_done.add(db_id)
+                return descriptions
+            if self._backend != "redis" or not await self.ensure_redis_connected():
+                if self._backend != "redis":
+                    self._knowledge_done.add(db_id)
+                if db_id not in self._knowledge_warned:
+                    self._knowledge_warned.add(db_id)
+                    logger.warning(
+                        "설명 정본 파일 적재 보류 — Redis 불가(backend=%s, db_id=%s)",
+                        self._backend, db_id,
+                    )
+                return descriptions
+            assert self._redis_cache is not None
+            tables = (schema_dict or {}).get("tables")
+            if not tables:
+                tables = ((await self._redis_cache.load_schema(db_id)) or {}).get("tables")
+            valid_keys = {
+                f"{table_name}.{col.get('name')}"
+                for table_name, table_data in (tables or {}).items()
+                for col in (table_data or {}).get("columns", [])
+                if isinstance(col, Mapping)
+            }
+            if not valid_keys:
+                logger.debug("설명 정본 파일 적재 보류 — 스키마 컬럼 없음 (db_id=%s)", db_id)
+                return descriptions
+            self._knowledge_done.add(db_id)
+            loaded = load_knowledge_descriptions(self._knowledge_root, db_id)
+            if not loaded:
+                return descriptions
+            existing = await self._redis_cache.load_descriptions(db_id)
+            if not existing and descriptions:
+                logger.warning(
+                    "설명 정본 파일 적재 안 함 — Redis 설명이 비고 파일 캐시 설명을 쓰는 중"
+                    "(덮어 가리지 않음 · db_id=%s)", db_id,
+                )
+                return descriptions
+            missing = {k: v for k, v in loaded.items() if k not in existing}
+            target = {k: v for k, v in missing.items() if k in valid_keys}
+            added = await self._redis_cache.add_missing_descriptions(db_id, target)
+            logger.info(
+                "설명 정본 파일 적재: db_id=%s, origin=claude_code, file=%d, kept=%d, "
+                "not_in_schema=%d, added=%d",
+                db_id, len(loaded), len(loaded) - len(missing), len(missing) - len(target),
+                len(added),
+            )
+            if not added:
+                return descriptions
+            return {**descriptions, **{k: target[k] for k in added}}
+        except Exception as e:  # noqa: BLE001 — 적재 실패가 스키마 로드를 막지 않는다
+            self._knowledge_done.add(db_id)
+            logger.warning("설명 정본 파일 적재 실패 (db_id=%s): %s", db_id, e)
+            return descriptions
 
     async def cleanup_stale_entries(
         self,

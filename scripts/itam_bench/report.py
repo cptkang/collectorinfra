@@ -495,6 +495,13 @@ def compare_runs(dir_a: Path, dir_b: Path) -> str:
             if (run_a.get("assets") or {}).get(k) != (run_b.get("assets") or {}).get(k)
         )
         lines += [f"- 바뀐 자산: {', '.join(f'`{k}`' for k in changed)}", ""]
+    ablation_a, ablation_b = run_a.get("asset_ablation"), run_b.get("asset_ablation")
+    if ablation_a != ablation_b:
+        lines += [
+            f"- 끈 자산(run 단위 · plans/141 W8): `{ablation_a or '없음'}` → "
+            f"`{ablation_b or '없음'}` — 자산 지문은 파일 기준이라 끈 자산을 반영하지 않는다",
+            "",
+        ]
     if (run_a.get("tier"), run_a.get("env")) != (run_b.get("tier"), run_b.get("env")):
         lines += [
             f"> 주의 — 확정 단·환경이 다르다({run_a.get('tier')}/{run_a.get('env')} → "
@@ -531,6 +538,199 @@ def compare_runs(dir_a: Path, dir_b: Path) -> str:
         )
         or []
     )
+    # 한쪽만 자산을 껐으면 그 자산의 유지 판정을 덧붙인다(plans/141 §4.7)
+    if bool(ablation_a) != bool(ablation_b):
+        if ablation_b:
+            lines += ["", *ablation_section(run_a, records_a, [(run_b, records_b)])]
+        else:
+            lines += ["", *ablation_section(run_b, records_b, [(run_a, records_a)])]
+    return "\n".join(lines) + "\n"
+
+
+# --- 자산별 켜고 끄기 (plans/141 W8 · §4.7) -----------------------------------------
+
+KEEP = "유지"
+WITHDRAW = "철회 후보"
+UNDECIDED = "판정 불가"
+
+
+def sql_turn_accuracy(records: Sequence[Mapping[str, Any]]) -> tuple[int, int]:
+    """SQL 관측 턴 정답률 재료 → ``(통과, 분모)``. 분모 = 오라클 턴 중 실행 SQL이 잡힌 턴
+    (권한 거부 제외)."""
+    observed = [r for r in _oracle_records(records) if r.get("executed_sqls")]
+    passed = sum(1 for r in observed if (r.get("oracle") or {}).get("verdict") == "pass")
+    return passed, len(observed)
+
+
+def failure_counts(records: Sequence[Mapping[str, Any]]) -> Counter[str]:
+    """실패 분류 턴 수 — 프롬프트 밖 분리 집계(`SEPARATE`)는 뺀다."""
+    return Counter(
+        label for r in records for label in r.get("taxonomy") or [] if label not in SEPARATE
+    )
+
+
+def top_failures(counts: Counter[str], n: int = 2) -> list[str]:
+    """상위 n종 — 턴 수 내림차순 · 같으면 이름순(결정적)."""
+    return [k for k, _ in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:n]]
+
+
+def ablation_verdict(
+    on: Sequence[Mapping[str, Any]], off: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """유지 규칙 — 켠 쪽(`on`)이 SQL 관측 턴 정답률을 낮추지 않고, 끈 쪽(`off`) 실패 분류 상위 2종
+    중 하나를 줄일 때만 `유지`. 아니면 `철회 후보`. 어느 쪽이든 분모가 0이면 `판정 불가`."""
+    on_pass, on_total = sql_turn_accuracy(on)
+    off_pass, off_total = sql_turn_accuracy(off)
+    on_fail, off_fail = failure_counts(on), failure_counts(off)
+    top = top_failures(off_fail)
+    reduced = [label for label in top if on_fail.get(label, 0) < off_fail.get(label, 0)]
+    if not on_total or not off_total:
+        verdict = UNDECIDED
+    elif on_pass * off_total >= off_pass * on_total and reduced:
+        verdict = KEEP
+    else:
+        verdict = WITHDRAW
+    return {
+        "on": (on_pass, on_total),
+        "off": (off_pass, off_total),
+        "top": [(label, off_fail.get(label, 0), on_fail.get(label, 0)) for label in top],
+        "reduced": reduced,
+        "verdict": verdict,
+    }
+
+
+def _rate(part: int, whole: int) -> float | None:
+    return part / whole if whole else None
+
+
+def ablation_section(
+    base_run: Mapping[str, Any],
+    base_records: Sequence[Mapping[str, Any]],
+    ablations: Sequence[tuple[Mapping[str, Any], Sequence[Mapping[str, Any]]]],
+) -> list[str]:
+    """기준 run(전 자산 켬) ↔ 자산별 끈 run → 「자산별 효과」 절 줄 목록(LLM·DB 0)."""
+    lines: list[str] = []
+    rows = []
+    notes = []
+    for run, records in ablations:
+        result = ablation_verdict(base_records, records)
+        on_rate, off_rate = _rate(*result["on"]), _rate(*result["off"])
+        diff = (
+            "—" if on_rate is None or off_rate is None else f"{(on_rate - off_rate) * 100:+.0f}%p"
+        )
+        rows.append(
+            [
+                run.get("asset_ablation") or "(없음)",
+                run.get("run_id"),
+                _pct(*result["on"]),
+                _pct(*result["off"]),
+                diff,
+                [f"{label} {off}→{on}" for label, off, on in result["top"]] or "(없음)",
+                result["verdict"],
+            ]
+        )
+        same = all(
+            run.get(k) == base_run.get(k) for k in ("env", "tier", "scenario_file", "repeat")
+        )
+        if not same:
+            notes.append(str(run.get("run_id")))
+    lines += ["## 자산별 효과", ""]
+    lines += _table(
+        ["끈 자산", "run", "정답률(켬)", "정답률(끔)", "차이", "상위 실패 2종(끔→켬)", "판정"],
+        rows or [["(없음)", "", "", "", "", "", ""]],
+    )
+    lines += [
+        "",
+        "유지 규칙(plans/141 §4.7): 켠 쪽이 SQL 관측 턴 정답률을 낮추지 않고, 끈 쪽 실패 분류 "
+        "상위 2종(소스 선별·되물음·권한 제외) 중 하나를 줄일 때만 `유지`. 아니면 `철회 후보` — "
+        "원천 항목 `withdrawn` → 빌더 재실행 → 커밋.",
+    ]
+    if notes:
+        lines += [
+            "",
+            f"> 주의 — 환경·확정 단·시나리오·반복이 기준과 다른 run: {', '.join(notes)}. "
+            "같은 조건 비교가 아니다.",
+        ]
+    return lines
+
+
+def render_ablation(
+    base_run: Mapping[str, Any],
+    base_records: Sequence[Mapping[str, Any]],
+    ablations: Sequence[tuple[Mapping[str, Any], Sequence[Mapping[str, Any]]]],
+) -> str:
+    """`--ablation-report` 본문 — 제목 + 「자산별 효과」 절."""
+    lines = [f"# 자산별 효과 — 기준 {base_run.get('run_id')}", ""]
+    return "\n".join(lines + ablation_section(base_run, base_records, ablations)) + "\n"
+
+
+def ablation_report(base_dir: Path, ablation_dirs: Sequence[Path]) -> str:
+    """`--ablation-report` — 기준 run 디렉터리와 자산별 끈 run 디렉터리들을 읽어 표를 낸다.
+
+    Raises:
+        FileNotFoundError: 산출물 없음
+        ValueError: 기준 run이 자산을 껐거나 비교 run이 자산을 끄지 않음
+    """
+    base_run, base_records = _load_run(Path(base_dir))
+    if base_run.get("asset_ablation"):
+        raise ValueError(f"기준 run 이 자산을 껐다({base_run['asset_ablation']}) — {base_dir}")
+    loaded = []
+    for directory in ablation_dirs:
+        run, records = _load_run(Path(directory))
+        if not run.get("asset_ablation"):
+            raise ValueError(f"자산을 끈 run 이 아니다(asset_ablation 없음) — {directory}")
+        loaded.append((run, records))
+    return render_ablation(base_run, base_records, loaded)
+
+
+# --- --verify-assets (plans/141 W5) ------------------------------------------------
+
+
+def render_verification_report(run: Mapping[str, Any], document: Mapping[str, Any]) -> str:
+    """검증 모드 `report.md` — 항목 ID·종류·결과 범주·행 수 구간만(값·SQL 원문 없음)."""
+    summary = document.get("summary") or {}
+    lines = [
+        f"# ITAM 지식 자산 검증 — {run.get('run_id')}",
+        "",
+        f"- 환경 `{run.get('env')}` · DB 백엔드 `{run.get('db_backend')}` · 커밋 "
+        f"`{(run.get('git') or {}).get('sha')}`"
+        f"{' (dirty)' if (run.get('git') or {}).get('dirty') else ''}",
+        f"- 원천 지문 `{json.dumps(document.get('sources'), ensure_ascii=False)}`",
+        f"- 반출 파일: {', '.join(f'`{f}`' for f in run.get('files') or [])}",
+        "",
+        "## 요약",
+        "",
+    ]
+    lines += _table(
+        ["항목", "값"],
+        [
+            ["전체", summary.get("total", 0)],
+            ["성공", summary.get("ok", 0)],
+            ["오류", summary.get("error", 0)],
+            ["보류(code 슬롯 대표값 없음 등)", summary.get("pending", 0)],
+            ["오류 범주", [f"{k} {v}" for k, v in (summary.get("by_error") or {}).items()] or "—"],
+        ],
+    )
+    lines += ["", "## 항목", ""]
+    lines += _table(
+        ["ID", "종류", "결과", "오류 범주", "행 수 구간"],
+        [
+            [
+                item.get("id"),
+                item.get("kind"),
+                "보류" if item.get("ok") is None else ("성공" if item.get("ok") else "오류"),
+                item.get("error") or "",
+                item.get("rows") or "",
+            ]
+            for item in document.get("items") or []
+        ]
+        or [["(없음)", "", "", "", ""]],
+    )
+    lines += [
+        "",
+        "오류 항목은 원천 파일에서 `withdrawn`(또는 삭제)하고 다음 사이클 빌더로 걷어낸다. "
+        "행 수 구간 `0`은 조건이 맞는 행이 없다는 뜻이다 — 조건·날짜 경계를 확인한다.",
+    ]
     return "\n".join(lines) + "\n"
 
 

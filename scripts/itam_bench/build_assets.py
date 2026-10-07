@@ -30,6 +30,23 @@
 `query_examples`, 섹션은 `AssetFileStore`와 같은 경로·형식
 (`config/knowledge/itam/prompt_template.yaml`)에 쓴다. 근거(검증 통과분)가 0이면 키·파일을
 만들지 않는다. LLM 과금 평면이면 실행하지 않는다(D-127).
+
+**지식 오버레이(plans/141 W4 · D-314 ②)** — 원천 디렉터리(기본
+`testdata/itam_bench/closed/knowledge`)가 있으면 `knowledge.avalidate_dir`로 검증해 **통과한 active
+항목만** 옮긴다: 프로필 `query_guide`(K1) · `query_examples`(K2 — P2 예시 뒤 · 같은 질문은
+앞선 것) · `query_rules`(K6 정의 파생 — P1 규칙 우선 합집합) ·
+`config/knowledge/itam/prompt_template.yaml`(K4 — P2 섹션보다 우선) ·
+`column_descriptions.yaml`(K3 설명) · `query_templates.yaml`(K8 — 통과분 0이면 파일을 만들지
+않는다) · 유사어 시드(K3 — DB 주석 근거·기존 파일 우선 합집합). 검증 실패 항목은 빼고
+사유를 출력한다. 모의 DB에 못 붙으면 `knowledge_static_only`일 때만 정적 통과분을 쓰고, 아니면
+오버레이를 건너뛴다고 출력한다. 원천이 없거나 통과 항목 0이면 종전 산출과 바이트 같다.
+
+**철회 반영** — 검증을 실제로 한 빌드(정적 전용 포함)에서 이번 통과분이 0인 지식 산출 파일
+(K3 설명 · K8 템플릿 · K4 섹션)은 머리 주석 첫 줄이 오버레이 표지(`KNOWLEDGE_FILE_MARKER`)일 때만
+지운다(런타임은 「파일 없음 = 무동작」) — 표지가 없으면(P2 · 「DB 구조」 탭 승인본 등) 남기고
+출력한다. 유사어 시드는 원천에 있으나 이번에 통과하지 못한 낱말을 기존 파일에서 걷어 낸다(DB 주석
+근거 낱말은 남긴다 · 남는 낱말이 0이면 파일을 지운다). 원천이 없거나 모의 DB 미연결로 건너뛴
+빌드는 아무것도 지우지 않는다.
 """
 
 from __future__ import annotations
@@ -58,6 +75,9 @@ from src.domain.table_definitions import (
     validate_table_definitions,
 )
 from src.schema_cache.asset_store import ASSET_PATHS
+from src.schema_cache.knowledge_descriptions import FILE_NAME as DESCRIPTIONS_FILE_NAME
+from src.schema_cache.knowledge_descriptions import FORMAT_VERSION as DESCRIPTIONS_VERSION
+from src.schema_cache.knowledge_descriptions import ORIGIN_CLAUDE_CODE
 from src.schema_cache.persistent_cache import PersistentSchemaCache
 from src.schema_cache.structure_store import _dump_yaml_exact
 
@@ -78,6 +98,12 @@ INSTALL_CACHE_REL = Path(".cache/schema") / f"{DB_ID}_schema.json"
 #: DB 전용 규칙 섹션 파일 — 「DB 구조」 탭 승인과 같은 경로
 #: (`AssetFileStore` · 생성 템플릿 어댑터가 읽음)
 SECTION_REL = Path(ASSET_PATHS["prompt_template"].format(db_id=DB_ID))
+#: 설명 정본 파일(D-314 ④ — 스키마 로드 때 Redis에 없는 컬럼만 채운다)
+DESCRIPTIONS_REL = Path("config/knowledge") / DB_ID / DESCRIPTIONS_FILE_NAME
+#: 조립 템플릿 파일(D-314 ③ — `template_assembler.TEMPLATE_PATH`와 같은 경로)
+TEMPLATES_REL = Path("config/knowledge") / DB_ID / "query_templates.yaml"
+#: 지식 오버레이가 쓴 파일(K3 설명 · K4 섹션 · K8 템플릿)의 머리 주석 첫 줄 접두 — 철회 정리 판별
+KNOWLEDGE_FILE_MARKER = "# plans/141 W4 외부망 자산 빌더"
 #: P2 기본 엔진(레지스트리 `itam` 엔진)
 P2_ENGINE = "mariadb"
 
@@ -378,10 +404,12 @@ def schema_cache_diff(old_text: str | None, new_text: str) -> list[str]:
 def profile_header(
     run_id: str, generated_at: str, *, counts: Mapping[str, int], dropped: Sequence[str],
     evidence: Mapping[str, Any], p2: Mapping[str, Any] | None = None,
+    knowledge: Mapping[str, Any] | None = None,
 ) -> str:
     """프로필 머리말 — 출처 run · 빌더 · 생성 시각 · 직접 커밋 경로 · 자산별 근거 종류.
 
-    `p2`(`build_p2` 결과)가 있으면 쓰는 P2 자산 줄을 더한다(없으면 W3 머리말과 바이트 동일).
+    `p2`(`build_p2` 결과)가 있으면 쓰는 P2 자산 줄을, `knowledge`(지식 오버레이)가 있으면 원천 run ·
+    자산별 건수 · 검증 방식 줄을 더한다(둘 다 없으면 W3 머리말과 바이트 동일).
     """
     seed_count = sum(n for origin, n in counts.items() if origin != ORIGIN_MANUAL)
     lines = [
@@ -413,16 +441,64 @@ def profile_header(
             "#   prompt_template    P2 LLM 초안(구조 검사·섹션 SQL 모의 DB 실행 통과) → "
             f"{SECTION_REL}"
         )
+    if knowledge:
+        lines += knowledge_header_lines(knowledge)
     lines.append("# 코드값·코드 라벨은 반입 뒤 내부망 P1 승인으로 넣는다(이 파일에 없음)")
     return "\n".join(lines) + "\n"
 
 
-def seeds_header(run_id: str, generated_at: str) -> str:
-    """유사어 시드 머리말."""
+def knowledge_header_lines(knowledge: Mapping[str, Any]) -> list[str]:
+    """지식 오버레이 근거 줄 — 원천 run · 검증 방식 · 자산별 건수(0건 자산은 뺀다)."""
+    c = knowledge["counts"]
+    lines = [
+        "# 지식 오버레이(plans/141 W4 · D-314 ②) — 원천 testdata/itam_bench/closed/knowledge"
+        " 검증 통과 active 항목만",
+        f"#   원천 근거 run {', '.join(knowledge['runs']) or '-'}"
+        f" · 검증 {knowledge['verification']}",
+    ]
+    rows = (
+        ("query_guide", "query_guide", "K1 가이드"),
+        ("query_examples", "query_examples", "K2 예시"),
+        ("query_rules", "query_rules", "K6 정의 kind 파생(P1 규칙 우선 합집합)"),
+        ("prompt_section", "prompt_template", f"K4 규칙 섹션 → {SECTION_REL}"),
+        ("column_descriptions", "descriptions", f"K3 설명 → {DESCRIPTIONS_REL}"),
+        ("synonyms", "synonyms", f"K3 유사어 → {SYNONYM_SEED_REL}"),
+        ("query_templates", "templates", f"K8 조립 템플릿 → {TEMPLATES_REL}"),
+    )
+    for key, label, text in rows:
+        if c.get(key):
+            lines.append(f"#   {label:<18} {text} {c[key]}건")
+    return lines
+
+
+def knowledge_file_header(title: str, run_id: str, generated_at: str,
+                          knowledge: Mapping[str, Any]) -> str:
+    """지식 오버레이 파일(K3 설명 · K4 섹션 · K8 템플릿) 머리말."""
     return (
+        f"{KNOWLEDGE_FILE_MARKER}(python -m scripts.itam_bench --build-assets)"
+        f" — {title} — {DB_ID}\n"
+        f"# 출처 반출 run {run_id} · 원천 근거 run {', '.join(knowledge['runs']) or '-'}"
+        f" · 생성 {generated_at}\n"
+        "# 직접 커밋 경로 — D-314 ② · 원천 testdata/itam_bench/closed/knowledge"
+        " 검증 통과 active 항목만"
+        f" · 검증 {knowledge['verification']}\n"
+    )
+
+
+def seeds_header(run_id: str, generated_at: str, knowledge: Mapping[str, Any] | None = None) -> str:
+    """유사어 시드 머리말(`knowledge`가 유사어를 실으면 원천 줄을 더한다)."""
+    text = (
         f"# plans/140 W3 외부망 자산 빌더 · 출처 반출 run {run_id} · 생성 {generated_at}\n"
         "# 직접 커밋 경로 — D-311 · 근거: 반출 컬럼 DB 주석 라벨\n"
     )
+    if knowledge and knowledge["counts"].get("synonyms"):
+        text += (
+            "# 지식 오버레이(plans/141 W4 · D-314 ②) — K3 유사어 "
+            f"{knowledge['counts']['synonyms']}건 · 원천 근거 run "
+            f"{', '.join(knowledge['runs']) or '-'} · 검증 {knowledge['verification']}"
+            " · 기존 낱말 우선\n"
+        )
+    return text
 
 
 def render_section_file(run_id: str, generated_at: str, p2: Mapping[str, Any]) -> str:
@@ -444,6 +520,47 @@ def render_section_file(run_id: str, generated_at: str, p2: Mapping[str, Any]) -
         },
     }
     return header + _dump_yaml_exact(body)
+
+
+def render_knowledge_section_file(
+    run_id: str, generated_at: str, knowledge: Mapping[str, Any], snapshot_hash: Any
+) -> str:
+    """K4 섹션 파일 — `render_section_file`과 같은 본문 형식
+    (``db_id``·``section``·``generated``)."""
+    body = {
+        "db_id": DB_ID,
+        "section": knowledge["section"],
+        "generated": {"builder": "plans/141 W4", "run_id": run_id, "snapshot_hash": snapshot_hash},
+    }
+    return knowledge_file_header("DB 전용 규칙 섹션(K4)", run_id, generated_at, knowledge) + (
+        _dump_yaml_exact(body)
+    )
+
+
+def render_descriptions_file(
+    run_id: str, generated_at: str, knowledge: Mapping[str, Any]
+) -> str:
+    """K3 설명 정본 파일 — `knowledge_descriptions.load_knowledge_descriptions` 형식."""
+    body = {
+        "version": DESCRIPTIONS_VERSION,
+        "origin": ORIGIN_CLAUDE_CODE,
+        "descriptions": dict(knowledge["descriptions"]),
+    }
+    return knowledge_file_header("컬럼 설명 정본(K3)", run_id, generated_at, knowledge) + (
+        _dump_yaml_exact(body)
+    )
+
+
+def render_templates_file(run_id: str, generated_at: str, knowledge: Mapping[str, Any]) -> str:
+    """K8 조립 템플릿 파일 — 런타임 형식(``version: 1`` · ``templates``) · 원천 항목 그대로."""
+    from src.domain.query_templates import TEMPLATE_FILE_VERSION
+
+    body = {
+        "version": TEMPLATE_FILE_VERSION, "templates": [dict(t) for t in knowledge["templates"]],
+    }
+    return knowledge_file_header("조립 템플릿(K8)", run_id, generated_at, knowledge) + (
+        _dump_yaml_exact(body)
+    )
 
 
 # ──────────────────────────────────────────────
@@ -799,15 +916,19 @@ def preserve_local_sandbox(repo_root: Path) -> str:
 def build(
     run_dir: Path, *, keep_excluded: bool = False, repo_root: Path = REPO_ROOT,
     generated_at: str | None = None, p2_result: Mapping[str, Any] | None = None,
+    knowledge: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """쓰기 없이 산출물 텍스트와 요약을 만든다(검사 포함).
 
     `p2_result`(`build_p2` 결과)가 있으면 근거 있는 예시를 프로필 `query_examples`에, 섹션을
     `SECTION_REL`에 더한다(근거 0이면 키·파일 없음). 치환값 차단 검사는 섹션 파일까지 덮는다.
-    없으면 W3 산출과 바이트 동일하다.
+    `knowledge`(`knowledge.overlay_from_result` — 통과한 active 항목만)가 있으면 지식 오버레이를
+    더한다(모듈 독스트링). 둘 다 없으면 W3 산출과 바이트 동일하다. `knowledge`가 있으면(검증 수행 —
+    통과 0이어도) 철회 반영 대상도 고른다(통과 0이면 산출 파일은 오버레이 없는 빌드와 같다).
 
     Returns:
-        ``{"files": {상대 경로: 텍스트}, "summary": {...}}``
+        ``{"files": {상대 경로: 텍스트}, "remove": [지울 상대 경로], "summary": {...}}`` —
+        표지가 없어 남긴 파일은 ``summary["knowledge_kept"]``
 
     Raises:
         BuildError: 입력 오류 · 정의 검증 오류 · 치환값 검출
@@ -830,11 +951,25 @@ def build(
     evidence = evidence_assets(catalog, allowed)
     profile: dict[str, Any] = {"source": MANUAL_SOURCE, "allowed_tables": allowed}
     profile.update(evidence)
-    if p2_result and p2_result.get("query_examples"):
-        profile["query_examples"] = [dict(e) for e in p2_result["query_examples"]]
+    validated = knowledge is not None
+    withdrawn_synonyms = (knowledge or {}).get("withdrawn_synonyms") or {}
+    if knowledge is not None and not _overlay_size(knowledge):
+        knowledge = None  # 통과 0 — 산출은 오버레이 없는 빌드와 같다(철회 반영만)
+    k = knowledge or {}
+    if k.get("query_rules"):  # K6 — P1 규칙 우선 합집합
+        rules = list(profile.get("query_rules") or [])
+        profile["query_rules"] = rules + [r for r in k["query_rules"] if r not in rules]
+    if k.get("query_guide"):
+        profile["query_guide"] = k["query_guide"]
+    examples = [dict(e) for e in (p2_result or {}).get("query_examples") or []]
+    seen = {str(e.get("question") or "").strip() for e in examples}
+    examples += [dict(e) for e in k.get("query_examples") or [] if e["question"] not in seen]
+    if examples:
+        profile["query_examples"] = examples
     profile[PROFILE_KEY] = definitions
     profile_text = profile_header(
-        run_id, stamp, counts=def_counts, dropped=dropped, evidence=evidence, p2=p2_result
+        run_id, stamp, counts=def_counts, dropped=dropped, evidence=evidence, p2=p2_result,
+        knowledge=knowledge,
     ) + _dump_yaml_exact(profile)
 
     files: dict[str, str] = {
@@ -845,21 +980,72 @@ def build(
         str(SCHEMA_SEED_REL): (files[str(SCHEMA_SEED_REL)], None),
         str(PROFILE_REL): (profile_text, profile),
     }
+    remove: list[str] = []
     seeds = synonym_seeds(catalog)
+    p1_words = {
+        key: set(words) for key, words in ((seeds or {}).get("column_synonyms") or {}).items()
+    }
+    if k.get("synonyms"):  # K3 — DB 주석 근거 낱말 우선 합집합
+        if seeds is None:
+            seeds = _empty_seeds()
+        for key, words in k["synonyms"].items():
+            merged = seeds["column_synonyms"].setdefault(key, [])
+            merged += [w for w in words if w not in merged]
+    # 철회 반영 — 원천에 있으나 이번에 통과하지 못한 낱말(DB 주석 근거 낱말은 남긴다)
+    retract = {
+        key: {w for w in words if w not in p1_words.get(key, set())}
+        for key, words in withdrawn_synonyms.items()
+    }
+    existing = repo_root / SYNONYM_SEED_REL
+    base_synonyms: Mapping[str, Any] = {}
+    if existing.is_file() and (seeds is not None or retract):
+        base = yaml.safe_load(existing.read_text(encoding="utf-8")) or {}
+        base_synonyms = base.get("column_synonyms") or {}
+    retracting = any(
+        w in retract.get(key, ()) for key, words in base_synonyms.items() for w in words or []
+    )
+    if seeds is None and retracting:
+        seeds = _empty_seeds()
     if seeds is not None:
-        existing = repo_root / SYNONYM_SEED_REL
-        if existing.is_file():
-            base = yaml.safe_load(existing.read_text(encoding="utf-8")) or {}
-            for key, words in (base.get("column_synonyms") or {}).items():
-                merged = seeds["column_synonyms"].setdefault(key, [])
-                merged[:0] = [w for w in words if w not in merged]
-        seeds_text = seeds_header(run_id, stamp) + _dump_yaml_exact(seeds)
+        for key, words in base_synonyms.items():
+            merged = seeds["column_synonyms"].setdefault(key, [])
+            merged[:0] = [w for w in words if w not in merged and w not in retract.get(key, ())]
+        if retracting:
+            seeds["column_synonyms"] = {
+                key: words for key, words in seeds["column_synonyms"].items() if words
+            }
+            if not seeds["column_synonyms"]:
+                seeds = None
+                remove.append(str(SYNONYM_SEED_REL))
+    if seeds is not None:
+        seeds_text = seeds_header(run_id, stamp, knowledge) + _dump_yaml_exact(seeds)
         files[str(SYNONYM_SEED_REL)] = seeds_text
         parsed[str(SYNONYM_SEED_REL)] = (seeds_text, seeds)
-    if p2_result and p2_result.get("section"):
+    section_text = None
+    if k.get("section"):  # K4가 P2 섹션보다 우선
+        section_text = render_knowledge_section_file(
+            run_id, stamp, k, _p2_snapshot(catalog, allowed).get("hash")
+        )
+    elif p2_result and p2_result.get("section"):
         section_text = render_section_file(run_id, stamp, p2_result)
+    if section_text is not None:
         files[str(SECTION_REL)] = section_text
         parsed[str(SECTION_REL)] = (section_text, yaml.safe_load(section_text))
+    for rel, key, render in (
+        (DESCRIPTIONS_REL, "descriptions", render_descriptions_file),
+        (TEMPLATES_REL, "templates", render_templates_file),
+    ):
+        if k.get(key):
+            text = render(run_id, stamp, k)
+            files[str(rel)] = text
+            parsed[str(rel)] = (text, yaml.safe_load(text))
+    kept: list[str] = []
+    if validated:  # 철회 반영 — 이번에 쓰지 않는 지식 산출 파일
+        for rel in (SECTION_REL, DESCRIPTIONS_REL, TEMPLATES_REL):
+            path = repo_root / rel
+            if str(rel) in files or not path.is_file():
+                continue
+            (remove if _overlay_written(path) else kept).append(str(rel))
 
     schema_cache = json.loads(files[str(SCHEMA_SEED_REL)])
     for key in _TIMESTAMP_KEYS:  # 저장 시각은 빌더가 찍는 값이다
@@ -895,17 +1081,110 @@ def build(
             "section": bool(p2_result.get("section")),
             "section_substituted": bool(p2_result.get("section_substituted")),
         }} if p2_result is not None else {}),
+        **({"knowledge": {
+            **dict(knowledge["counts"]),
+            "runs": list(knowledge["runs"]),
+            "verification": knowledge["verification"],
+            "p2_section_replaced": bool(k.get("section") and (p2_result or {}).get("section")),
+        }} if knowledge is not None else {}),
         "schema_cache_diff": schema_cache_diff(
             old_cache.read_text(encoding="utf-8") if old_cache.is_file() else None,
             files[str(SCHEMA_SEED_REL)],
         ),
+        "knowledge_kept": kept,
     }
-    return {"files": files, "summary": summary}
+    return {"files": files, "remove": remove, "summary": summary}
+
+
+def _overlay_size(knowledge: Mapping[str, Any]) -> int:
+    from .knowledge import overlay_size
+
+    return overlay_size(knowledge)
+
+
+def _empty_seeds() -> dict[str, Any]:
+    return {"version": "1.0", "db_id": DB_ID, "source_tag": "operator", "column_synonyms": {}}
+
+
+def _overlay_written(path: Path) -> bool:
+    """머리 주석 첫 줄이 지식 오버레이 표지인가(읽지 못하면 False — 지우지 않는다)."""
+    try:
+        with path.open(encoding="utf-8") as f:
+            return f.readline().startswith(KNOWLEDGE_FILE_MARKER)
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def knowledge_overlay(
+    run_dir: Path,
+    *,
+    repo_root: Path,
+    knowledge_dir: Path,
+    static_only: bool,
+    deps: Any,
+    keep_excluded: bool,
+) -> dict[str, Any] | None:
+    """원천 디렉터리를 검증해 통과한 active 항목만 오버레이 재료로 돌려준다(쓰기 없음).
+
+    대조 기준은 이번 빌드와 같다 — 반출 카탈로그 · 조회 대상 · 병합한 정의. 치환값 대조는 이번
+    반출과 원천 근거 run(반출 run 디렉터리의 형제)의 `code_samples.yaml`, 근거 리터럴 대조도 같은
+    run들(`knowledge.load_evidence_literals`). 사유는 모두 출력한다
+    (침묵 없음).
+
+    Returns:
+        오버레이 재료(`knowledge.overlay_from_result` — 통과 항목 0이어도 돌려준다: 검증을 했으니
+        `build`가 철회를 반영한다) 또는 None — 원천 없음 · 모의 DB 미연결(정적 전용 아님) — 검증
+        미수행이라 아무것도 지우지 않는다
+
+    Raises:
+        BuildError: 반출·시드 입력 오류(`build`와 같은 검사)
+    """
+    from . import knowledge as kn
+
+    if not Path(knowledge_dir).is_dir():
+        print(f"  지식 오버레이: 원천 디렉터리 없음({knowledge_dir}) — 종전 산출 그대로")
+        return None
+    catalog, samples = load_export(Path(run_dir))
+    allowed, _ = allowed_tables(catalog, keep_excluded=keep_excluded)
+    seed_doc = yaml.safe_load((repo_root / SEED_DEFINITIONS_REL).read_text(encoding="utf-8"))
+    definitions = table_definitions(seed_doc, catalog)[0]
+    schema = schema_cache_dict(catalog)
+    runs = kn.evidence_runs(Path(knowledge_dir))
+    results_root = Path(run_dir).parent
+    code_values = blocked_values(samples, catalog, catalog_texts(catalog))[0]
+    code_values |= kn.load_code_values(runs, results_root)[0]
+    code_samples = kn.code_samples_map(samples)
+    for key, values in kn.load_code_samples(runs, results_root).items():
+        merged = code_samples.setdefault(key, [])
+        merged += [v for v in values if v not in merged]
+    result, reason = asyncio.run(kn._run_with_db(
+        Path(knowledge_dir), deps, static_only,
+        catalog=schema, allowed=allowed, definitions=definitions,
+        code_values=code_values, code_samples=code_samples,
+        evidence_literals=kn.load_evidence_literals(runs | {Path(run_dir).name}, results_root)[0],
+    ))
+    print(f"  지식 오버레이 검증 — 원천 {knowledge_dir}")
+    kn.print_summary(result, reason=reason)
+    if reason and not static_only:
+        print(
+            f"  지식 오버레이: 건너뜀 — 모의 DB 미연결({reason}). 정적 검사 통과분만 쓰려면 "
+            "--knowledge-static-only"
+        )
+        return None
+    overlay = kn.overlay_from_result(
+        Path(knowledge_dir), result, kn.schema_columns(schema),
+        verification=kn.VERIFIED_STATIC if static_only else kn.VERIFIED_DB,
+    )
+    if not kn.overlay_size(overlay):
+        print("  지식 오버레이: 통과 항목 0 — 종전 산출 그대로(기존 지식 산출 파일은 철회 반영)")
+    return overlay
 
 
 def run_build(
     run_dir: Path, *, install_cache: bool = False, keep_excluded: bool = False,
     repo_root: Path = REPO_ROOT, p2: bool = False, p2_deps: P2Deps | None = None,
+    knowledge_dir: Path | None = None, knowledge_static_only: bool = False,
+    knowledge_deps: Any = None,
 ) -> int:
     """반출 run으로 자산을 만들어 쓰고 요약을 출력한다 → 종료 코드(0 성공 · 1 거부 · 2 입력·연결
     오류).
@@ -918,9 +1197,17 @@ def run_build(
         p2: P2 LLM 초안(쿼리 예시·DB 전용 규칙 섹션)도 만들어 쓴다 — `p2_deps` 필수(과금 평면
             판정은 호출부 `p2_billing_refusal`)
         p2_deps: P2 의존성(`default_p2_deps(cfg)` · 테스트는 가짜)
+        knowledge_dir: 지식 원천 디렉터리(기본 ``repo_root/testdata/itam_bench/closed/knowledge``
+            — 없으면 오버레이 없음)
+        knowledge_static_only: 모의 DB 없이 정적 검사 통과분만 오버레이한다(머리 주석에 표기)
+        knowledge_deps: 지식 검증 DB 의존성(`knowledge.default_deps()` · 없으면 정적 전용이 아닐 때
+            오버레이를 건너뛴다)
     """
+    from .knowledge import KNOWLEDGE_DIR_REL
+
     repo_root = Path(repo_root)
     p2_result: dict[str, Any] | None = None
+    overlay: dict[str, Any] | None = None
     try:
         result = build(run_dir, keep_excluded=keep_excluded, repo_root=repo_root)
         if p2:
@@ -935,6 +1222,17 @@ def run_build(
             result = build(
                 run_dir, keep_excluded=keep_excluded, repo_root=repo_root, p2_result=p2_result
             )
+        # 지식 오버레이도 W3 검사를 통과한 뒤에만 검증한다
+        overlay = knowledge_overlay(
+            run_dir, repo_root=repo_root,
+            knowledge_dir=Path(knowledge_dir) if knowledge_dir else repo_root / KNOWLEDGE_DIR_REL,
+            static_only=knowledge_static_only, deps=knowledge_deps, keep_excluded=keep_excluded,
+        )
+        if overlay is not None:
+            result = build(
+                run_dir, keep_excluded=keep_excluded, repo_root=repo_root, p2_result=p2_result,
+                knowledge=overlay,
+            )
     except BuildError as e:
         print(f"[build-assets] 거부: {e}")
         return e.exit_code
@@ -945,6 +1243,8 @@ def run_build(
         if rel == str(SCHEMA_SEED_REL) and not s["schema_cache_diff"]:
             continue  # 저장 시각만 다르면 다시 쓰지 않는다(커밋 파일 잡음 방지)
         _atomic_write(repo_root / rel, text)
+    for rel in result["remove"]:
+        (repo_root / rel).unlink(missing_ok=True)
     installed = None
     if install_cache:
         target = repo_root / INSTALL_CACHE_REL
@@ -982,11 +1282,35 @@ def run_build(
         print(f"  {'그대로(저장 시각 외 차이 없음)' if unchanged else '씀'}: {rel}")
     if installed:
         print(f"  씀: {installed}")
-    if str(SYNONYM_SEED_REL) not in result["files"]:
+    for rel in result["remove"]:
+        print(f"  지움(철회 반영 — 이번 지식 통과분 0): {rel}")
+    for rel in s["knowledge_kept"]:
+        print(
+            f"  주의: {rel} 남김 — 지식 오버레이 산출 표지가 없다"
+            "(P2 · 「DB 구조」 탭 승인본일 수 있다 · 이번 지식 통과분 0)"
+        )
+    if str(SYNONYM_SEED_REL) not in (*result["files"], *result["remove"]):
         print("  유사어 시드: DB 주석 근거 0 — 파일을 만들지 않음")
     if p2_result is not None:
         _print_p2(p2_result)
+    if "knowledge" in s:
+        _print_knowledge(s["knowledge"])
     return EXIT_OK
+
+
+def _print_knowledge(k: Mapping[str, Any]) -> None:
+    """지식 오버레이 요약 — 건수만."""
+    print(
+        f"  지식 오버레이({k['verification']} · 원천 근거 run {', '.join(k['runs']) or '-'}) — "
+        f"K1 가이드 {k['query_guide']} · K2 예시 {k['query_examples']} · "
+        f"K6 파생 규칙 {k['query_rules']} · K4 섹션 {k['prompt_section']} · "
+        f"K3 설명 {k['column_descriptions']} · K3 유사어 {k['synonyms']} · "
+        f"K8 템플릿 {k['query_templates']}"
+    )
+    if not k["query_templates"]:
+        print(f"  K8 템플릿: 통과분 0 — {TEMPLATES_REL}을 만들지 않음(런타임 무동작)")
+    if k["p2_section_replaced"]:
+        print("  P2 DB 전용 규칙 섹션은 K4 섹션으로 대체했다")
 
 
 def _print_p2(p2_result: Mapping[str, Any]) -> None:

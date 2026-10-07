@@ -130,6 +130,11 @@ class AgentState(TypedDict):
     # `query_validator`가 재생성 없이 종결한다. **요청 스코프** — 두 상태 생성 함수가 None으로
     # 초기화한다.
     prompt_budget: dict[str, Any] | None
+    # 조회 템플릿 결정적 조립 표지(plans/141 W6 · D-314 ③) — DB id 키, 단일·멀티 같은 모양:
+    # {db_id: {"outcome": assembled|fallback, "template_id", "slot_names": [...], "reason"}}.
+    # 템플릿 파일이 있는 DB만 싣고(없으면 None) 슬롯 이름만 담는다(값 없음). **요청 스코프** —
+    # 두 상태 생성 함수가 None으로 초기화한다.
+    template_assembly: dict[str, dict[str, Any]] | None
     validation_result: ValidationResult      # 검증 결과
     query_results: list[dict[str, Any]]      # 현재 쿼리 실행 결과
 
@@ -548,6 +553,7 @@ def create_followup_input(
         "time_resolution": None,  # plans/122 T-4 — 요청 스코프(input_parser가 매 턴 다시 쓴다)
         "prompt_budget": None,  # plans/139 W2 — 요청 스코프(직전 턴 예산 표지 차단)
         "table_selection": None,  # plans/139 W4 — 요청 스코프(직전 턴 선별 결과 차단)
+        "template_assembly": None,  # plans/141 W6 — 요청 스코프(직전 턴 조립 표지 차단)
     }
     if reset_db_scope:
         # 승계 원천 3종을 비운다 — 체크포인터는 델타만 병합하므로 명시 초기화가 필요하다(D-064).
@@ -644,6 +650,7 @@ def create_initial_state(
         synonym_usage=None,
         pii_block_diagnosis=None,
         prompt_budget=None,  # plans/139 W2 — 요청 스코프
+        template_assembly=None,  # plans/141 W6 — 요청 스코프
         validation_result={"passed": False, "reason": "", "auto_fixed_sql": None},
         query_results=[],
         organized_data={

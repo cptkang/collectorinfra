@@ -467,17 +467,18 @@ def test_six_files_carry_no_p1_originals(tmp_path: Path) -> None:
     assert owner["profile"]["error"] == "조회 실패:OperationalError"
 
 
-def test_definition_notes_with_original_code_withheld(tmp_path: Path) -> None:
-    """감사 L-6 — 사람이 쓴 정의 글 칸에 P1 원 코드값이 있으면 그 행을 보류하고 수만 센다."""
+def test_definition_notes_with_original_code_exported(tmp_path: Path) -> None:
+    """D-311 부기 ⓑ(2026-10-07 사용자 결정 「정의 글은 그대로 반출해도 된다」) — 사람이 쓴 정의 글
+    칸에 P1 원 코드값이 있어도 행을 보류하지 않고 그대로 반출한다."""
     policy = _policy()
     schema = cat.load_schema_source("structure_store", store=_canary_store())
     draft = schema["_p1_draft"]
+    notes = f"stat_cd 가 {_CANARY_CODES[0]} 이면 가동"
     profile = {
         "source": "manual",
         "allowed_tables": ["t_srv"],
         "table_definitions": {
-            "t_srv": {"kind": "현행", "manages": "서버 원장",
-                      "notes": f"stat_cd 가 {_CANARY_CODES[0]} 이면 가동", "origin": "manual"},
+            "t_srv": {"kind": "현행", "manages": "서버 원장", "notes": notes, "origin": "manual"},
         },
     }
     catalog = cat.build_schema_catalog(
@@ -490,41 +491,12 @@ def test_definition_notes_with_original_code_withheld(tmp_path: Path) -> None:
     )
     ok, violations = rd.write_gated(tmp_path / "run", staged, gate)
     assert ok, violations
-    blob = "\n".join(p.read_text(encoding="utf-8") for p in (tmp_path / "run").iterdir())
-    assert _CANARY_CODES[0] not in blob
-    structure = catalog["approved_profile"]
-    assert structure["table_definitions"] == {} and structure["table_definitions_withheld"] == 1
-    # 보류한 정의의 `manages`는 테이블 의미로도 싣지 않는다
-    assert catalog["tables"]["t_srv"]["meaning_source"] != "table_definitions"
-
-
-def test_definition_manages_with_original_code_not_table_meaning(tmp_path: Path) -> None:
-    """`manages`에 원 라벨이 있으면 정의와 테이블 의미 둘 다 싣지 않는다 · 고정 열거·식별자 칸은
-    대조하지 않는다."""
-    schema = cat.load_schema_source("structure_store", store=_canary_store())
-    draft = schema["_p1_draft"]
-    label = _CANARY_LABELS[_CANARY_CODES[0]]
-    profile = {
-        "source": "manual", "allowed_tables": ["t_srv"],
-        "table_definitions": {
-            "t_srv": {"kind": "현행", "manages": f"{label} 서버 원장", "origin": "manual"},
-        },
-    }
-    catalog = cat.build_schema_catalog(
-        schema, _policy(), assets={"p1": cat.p1_asset(draft)}, profile=profile, repo_root=tmp_path
-    )
-    assert catalog["approved_profile"]["table_definitions_withheld"] == 1
-    assert label not in yaml.safe_dump(catalog, allow_unicode=True)
-    # 원 코드값이 `kind`(고정 열거)·`key_columns`(식별자)와 같아도 행은 남는다
-    originals = rd.CodeOriginals(["현행", "srv_id"])
-    gated = cat.gate_table_definitions(
-        {"approved_profile": {"table_definitions": {
-            "t_srv": {"kind": "현행", "manages": "서버 원장", "key_columns": ["srv_id"],
-                      "origin": "manual"},
-        }}},
-        lambda _t: False, originals=originals,
-    )
-    assert list(gated["approved_profile"]["table_definitions"]) == ["t_srv"]
+    structure = yaml.safe_load((tmp_path / "run" / "schema_catalog.yaml").read_text("utf-8"))[
+        "approved_profile"
+    ]
+    assert structure["table_definitions"]["t_srv"]["notes"] == notes
+    assert structure["table_definitions_withheld"] == 0
+    assert catalog["tables"]["t_srv"]["meaning_source"] == "table_definitions"
 
 
 # --- 5. 빌더 치환값 차단 ---------------------------------------------------------------

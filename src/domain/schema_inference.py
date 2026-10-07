@@ -12,6 +12,8 @@
   끌 수 있다.
 - 값 형식: `YYYYMMDD`·`YYYYMMDDHH24MISS` 문자열 날짜 · IPv4 · 호스트명 · 플래그 · 쉼표 다중값 비율.
 - 코드값: 이름·주석 단서로 후보를 고르고(값 조회는 호출자), 주석의 `1:정상, 2:장애` 열거를 읽는다.
+  테이블 정의 `kind`가 기준·코드인 테이블은 기본키 없이 코드/이름 컬럼 쌍을 공통코드 후보로
+  낸다(plans/141 W7).
 - 이름 일치 관계 후보(plans/140 W1-2): 기본키 없는 테이블끼리 같은 이름의 식별자형 컬럼(값 조회는
   호출자).
 - 자산 조립 순수 함수(관계 채택 행 · 쿼리 규칙과 식별 키 후보 · `entity_keys` · 주석 유사어) —
@@ -27,6 +29,8 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+
+from src.domain.schema_snapshot import bare_name
 
 #: 공통 컬럼 판정 비율 — 이 비율을 넘는 테이블에 나오는 컬럼만으로 된 기본키는 부모가 아니다
 DEFAULT_COMMON_RATIO = 0.5
@@ -88,6 +92,11 @@ _KEY_NUMBER_TYPE_RE = re.compile(
     re.IGNORECASE,
 )
 _DOTTED_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_$#]*)\.([A-Za-z_][A-Za-z0-9_$#]*)\b")
+# 공통코드 쌍의 줄기 — 코드 컬럼 끝 식별자 낱말 · 이름 컬럼 끝 이름 낱말(plans/141 W7)
+_CODE_STEM_SUFFIX_RE = re.compile(r"(?:_?(?i:id|no|cd|code)|번호|코드|식별자)$")
+_NAME_STEM_SUFFIX_RE = re.compile(r"(?:_?(?i:nm|name)|명|이름)$")
+#: 테이블 정의 `kind` 중 공통코드 테이블 후보로 보는 값(`table_definitions.KINDS`의 한 값)
+CODE_TABLE_KIND = "기준·코드"
 
 
 # ──────────────────────────────────────────────
@@ -465,6 +474,44 @@ def code_value_labels(
         if label:
             labels[value] = label
     return labels
+
+
+def defined_code_tables(definitions: Any) -> set[str]:
+    """테이블 정의 ``kind``가 기준·코드(`CODE_TABLE_KIND`)인 테이블 — 공통코드 테이블 후보
+    (맨 이름 · plans/141 W7). 정의가 없거나 형식이 다르면 빈 집합."""
+    if not isinstance(definitions, Mapping):
+        return set()
+    return {
+        bare_name(str(table)) for table, row in definitions.items()
+        if isinstance(row, Mapping) and row.get("kind") == CODE_TABLE_KIND
+    }
+
+
+def code_name_pairs(columns: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
+    """한 테이블 안의 코드 컬럼/이름 컬럼 쌍 — 기본키 없이 이름 줄기로 짝짓는다(plans/141 W7).
+
+    코드 컬럼은 이름 끝이 식별자형(`is_identifier_name` — ``코드``·``번호``·``식별자``·``ID`` ·
+    라틴 ``cd``·``id``·``no``)이고 키 타입(문자열·수)인 컬럼, 이름 컬럼은 이름 끝이
+    ``명``·``이름`` · 라틴 ``nm``·``name``인 문자열 컬럼이다. 이름 컬럼의 줄기(끝 낱말을 뗀
+    것)가 코드 컬럼 이름이나 그 줄기와 같으면(대소문자 무시) 짝이다 — ``구분코드``/``구분명`` ·
+    ``codeId``/``codeIdNm``. 코드 컬럼마다 첫 짝 하나만 · 입력 순서.
+
+    Args:
+        columns: ``[(컬럼, 타입)]``
+    """
+    pairs: list[tuple[str, str]] = []
+    for code, code_type in columns:
+        if not is_identifier_name(code) or key_type_class(code_type) is None:
+            continue
+        stems = {code.casefold(), _CODE_STEM_SUFFIX_RE.sub("", code).casefold()} - {""}
+        for name, name_type in columns:
+            if name == code or key_type_class(name_type) != "string":
+                continue
+            stem = _NAME_STEM_SUFFIX_RE.sub("", name)
+            if stem != name and stem.casefold() in stems:
+                pairs.append((code, name))
+                break
+    return pairs
 
 
 # ──────────────────────────────────────────────
