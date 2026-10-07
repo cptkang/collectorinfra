@@ -47,17 +47,18 @@ items:
   origin: claude_code
   evidence: 20261006-152938
   status: active
+# 이력: 자산 원장 0행 조인 관측은 2회차(20261007-152223) 내부망 run이다(물품분류번호·물품고유번호 공통).
 - id: tcdmsif72.물품분류번호
   table: tcdmsif72
   column: 물품분류번호
-  text: 자산 원장 tcdmsif41 행을 물품고유번호와 함께 가리키는 키의 앞 칸(정의 관계 · 추정). 2회차 내부망에서 자산 원장과의 조인이 조건 없이도 0행이라 연결은 미확정이다.
+  text: 자산 원장 tcdmsif41 행을 물품고유번호와 함께 가리키는 키의 앞 칸(정의 관계 · 추정). 자산 원장과의 조인이 조건 없이도 0행이라 연결은 미확정이다.
   origin: claude_code
   evidence: 20261007-152223
   status: active
 - id: tcdmsif72.물품고유번호
   table: tcdmsif72
   column: 물품고유번호
-  text: 물품분류번호와 함께 자산 원장 tcdmsif41 한 행을 가리키는 키의 뒤 칸(정의 관계 · 추정). 2회차 내부망에서 자산 원장과의 조인이 0행이라 연결은 미확정이다.
+  text: 물품분류번호와 함께 자산 원장 tcdmsif41 한 행을 가리키는 키의 뒤 칸(정의 관계 · 추정). 자산 원장과의 조인이 0행이라 연결은 미확정이다.
   origin: claude_code
   evidence: 20261007-152223
   status: active
@@ -355,10 +356,11 @@ items:
   origin: claude_code
   evidence: 20261006-152938
   status: active
+# 이력: 1회차(20261006-152938) 오답 사례.
 - id: tcdmsif90.CPU사용률
   table: tcdmsif90
   column: CPU사용률
-  text: 가상화 호스트의 수집 시점 CPU 사용률 기록 — 사용률 질문의 정본이 아니다. 사용률·추이는 관측 DB로 답한다(1회차 오답 사례 · D-308).
+  text: 가상화 호스트의 수집 시점 CPU 사용률 기록 — 사용률 질문의 정본이 아니다. 사용률·추이는 관측 DB로 답한다(D-308).
   origin: claude_code
   evidence: 20261006-152938
   status: active

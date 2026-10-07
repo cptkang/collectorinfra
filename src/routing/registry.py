@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -427,6 +428,10 @@ class DBRegistry:
             return entry.db_id
         solution = self._solution_of_family(entry.family)
         return solution.code if solution and solution.capabilities else None
+
+    def systems_of(self, db_ids: Iterable[str]) -> frozenset[str]:
+        """db_id들의 소유 시스템 묶음 — 선언 없는·미등록 DB는 세지 않는다(`system_of` None 제외)."""
+        return frozenset(s for s in (self.system_of(d) for d in db_ids) if s)
 
     def capabilities_of(self, db_id: str) -> tuple[str, ...]:
         """db_id가 답할 수 있는 답변 영역(DB 항목 선언 우선, 없으면 솔루션 선언)."""

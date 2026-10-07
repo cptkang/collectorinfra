@@ -4,7 +4,8 @@ ITAM 벤치 2회차(`results/itam_bench/20261007-152223`) ITAM-118:
 「자산관리에서 … 서버들의 운영체제」가 그래프 진입 전 라우트 게이트에서 폴스타 존 선택
 역질문(18ms)으로 끝났다. 자산관리에는 존이 없으므로 답할 수 없는 질문이다.
 존 보유 시스템을 함께 지목했거나 소스 지목이 없으면 종전대로 묻는다
-(102·105 「통합인증 서비스 서버들 담당 부서」는 이번 범위 밖 — 종전 동작 유지).
+(102·105 「통합인증 서비스 서버들 담당 부서」는 이번 범위 밖 — 종전 동작 유지. 2단 다중 시스템
+배포에서는 라우트가 묻지 않는다 — plans/132 v1.5 후속 ①, `test_plan132_zone_gate_defer.py`).
 
 레지스트리는 실제 `config/db_registry.yaml`, 활성 DB는 테스트 config로 명시한다(.env 누수 방지).
 LLM·DB 0.
@@ -38,6 +39,16 @@ ASKS_AS_BEFORE = [
     Q102,
     "자산관리와 폴스타 서버들 비교",
 ]
+
+
+@pytest.fixture(autouse=True)
+def _ladder_unresolved(monkeypatch):
+    """래더 미확정(종전 동작)으로 고정한다 — 2단 다중 시스템이면 라우트 게이트가 묻지 않으므로
+    (plans/132 v1.5 후속 ① · `test_plan132_zone_gate_defer.py`) 다른 테스트의 build_graph 확정이
+    새면 「종전대로 묻는다」 단언이 흔들린다."""
+    import src.observability.ladder as ladder
+
+    monkeypatch.setattr(ladder, "_resolution", None)
 
 
 def _config(*, scope_select: bool = True):

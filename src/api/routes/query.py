@@ -1607,6 +1607,38 @@ def build_scope_reexpand(record: dict | None, original_query: str) -> dict | Non
     }
 
 
+def _zone_gate_deferred_to_tasks(config: Any, gate: str) -> bool:
+    """2단 다중 시스템 배포면 라우트 존 게이트를 task 단위 게이트에 미룬다(plans/132 v1.5 후속 ①).
+
+    소스 지목이 없는 「…서버들 담당 부서」 같은 질문은 라우트 시점에 어느 시스템인지 모른다 —
+    여기서 폴스타 존을 물으면 ITAM 질문에 오답 되물음이 된다. 2단(`intent_orchestration`)은
+    분류 뒤 task 게이트(`_zone_clarification_or_none_task`)가 대상이 전부 폴스타 존일 때만
+    묻는다. 활성 시스템이 하나뿐이거나 2단이 아니면(확정 전 포함) 종전대로 라우트가 판정한다.
+
+    활성 시스템 = 활성 DB의 소유 시스템(`registry.systems_of` — 분류 경로 `_multiple_systems_active`
+    와 같은 재료 · 선언 없는·미등록 DB 제외) ∪ **서버 엔터티를 가진** 활성 비DB 시스템(엔터티 간선
+    `owner`로 등장하는 시스템 — 간선이 없는 문서 검색은 서버 질문의 대상이 아니라 세지 않는다).
+    """
+    from src.observability.ladder import current_ladder
+
+    if (current_ladder() or {}).get("tier") != "intent_orchestration":
+        return False
+    from src.orchestration.conditional_agents import active_conditional_systems
+    from src.routing.registry import get_registry
+
+    registry = get_registry()
+    owners = {e.owner for e in registry.entity_edges()}
+    systems = set(registry.systems_of(config.multi_db.get_active_db_ids() or []))
+    systems |= {s for s in active_conditional_systems(config) if s in owners}
+    if len(systems) < 2:
+        return False
+    logger.info(
+        "라우트 %s 생략(plans/132 v1.5): 2단 · 활성 시스템 %s — task 단위 존 게이트에 위임",
+        gate, sorted(systems),
+    )
+    return True
+
+
 def _scope_select_or_none(
     body, checkpoint_state: dict | None, config, current_user: dict | None
 ) -> dict | None:
@@ -1649,6 +1681,9 @@ def _scope_select_or_none(
     # 존 없는 소스만 지목한 질의는 존 게이트와 같이 묻지 않는다(plans/132 N-10 — 대칭).
     from src.routing.db_scope import names_only_zoneless_sources
     if names_only_zoneless_sources(query):
+        return None
+    # 2단 다중 시스템이면 존 게이트와 같이 묻지 않는다(plans/132 v1.5 — 대칭).
+    if _zone_gate_deferred_to_tasks(config, "범위 사전 선택"):
         return None
 
     allowed = (current_user or {}).get("allowed_db_ids")
@@ -2007,6 +2042,9 @@ def _zone_clarification_or_none(
         # 존 없는 소스만 이름으로 지목했으면 비발동(plans/132 N-10) — 그 소스에는 고를 존이 없다.
         from src.routing.db_scope import names_only_zoneless_sources
         if names_only_zoneless_sources(query):
+            return None
+        # 2단 다중 시스템이면 분류 뒤 task 게이트가 판정한다(plans/132 v1.5 후속 ①).
+        if _zone_gate_deferred_to_tasks(config, "존 게이트"):
             return None
     # 페이로드 조립은 공용 헬퍼로(D-143 후속3 — 상호배타 시 안내 문구·그룹 렌더 일원화)
     return _authorized_zone_clarification(
