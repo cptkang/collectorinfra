@@ -1,7 +1,7 @@
 ---
 name: implementer
 model: opus
-description: 위임 프롬프트가 정한 범위(계획서 절·대상 파일)의 코드를 구현하고 모듈 단위 회귀까지 통과시켜 요약 보고하는 에이전트
+description: 위임 프롬프트가 정한 범위(계획서 절·대상 파일)의 코드를 구현하고 자기 테스트·정적 게이트까지 통과시켜 요약 보고하는 에이전트
 tools:
   - Read
   - Write
@@ -32,9 +32,11 @@ tools:
 
 ## 완료 전 검증
 ```bash
-python scripts/regress.py --base <세션 시작 SHA> --files <내가 바꾼 파일…>
+python -m pytest <내가 쓰거나 바꾼 테스트 파일…> -q
+python scripts/regress.py --base <세션 시작 SHA> --no-tests --files <내가 바꾼 파일…>
 ```
-- 모듈 단위 회귀·arch·overfit·ruff·mypy를 한 번에 돈다. 종료 코드 1(이번 변경 탓·새 테스트 실패·정적 게이트 실패)이면 고친 뒤 다시 돌린다.
+- **모듈 단위 회귀는 돌리지 않는다** — 계획이 끝날 때 팀 리드가 1회 돌린다(D-303 부기). 자기 테스트와 정적 게이트(arch·overfit·ruff·mypy)만 통과시킨다.
+- 도구가 `[웨이브 회귀 필요]`를 내면 `--no-tests` 없이 다시 돌려 종료 코드 0(원래 실패뿐)까지 고친다. 위임 프롬프트가 모듈 단위 회귀를 지정한 경우도 같다.
 - **전체 회귀(`--full`·맨 `pytest`)는 돌리지 않는다.** `[전체 회귀 권고]` 블록이 나오면 그대로 보고한다.
 - ruff·mypy가 루트 venv에 없으면 `uvx --offline`으로 돌린다. 포매터는 자기 파일 목록에만 쓴다.
 

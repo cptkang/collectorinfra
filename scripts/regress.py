@@ -9,6 +9,7 @@
     python scripts/regress.py --base <sha>        # 세션 시작 커밋(변경 목록 · 실패 귀속 기준)
     python scripts/regress.py --wide              # 공개 시그니처를 바꿨을 때 — 1단계 확장
     python scripts/regress.py --plan              # 무엇을 돌릴지 목록만(실행 안 함)
+    python scripts/regress.py --no-tests          # 웨이브 중간 — 정적 게이트만(D-303 부기)
     python scripts/regress.py --full              # 사용자가 요청할 때만 — 전 패키지 전체
 
 선택 규칙(plans/136 §3): ① 바뀐 테스트 파일 ② 바뀐 Python 모듈을 직접 import하는 테스트
@@ -48,6 +49,8 @@ ROOT_CONFTESTS = frozenset({"conftest.py", "tests/conftest.py", "noise_gate/test
 TEST_INFRA_FILES = ROOT_CONFTESTS | {
     "pyproject.toml", "uv.lock", "pytest.ini", "setup.cfg", "tox.ini",
 }
+# 웨이브 중간(--no-tests)이라도 그 웨이브 끝에 모듈 단위 회귀를 돌려야 하는 공유 파일(D-303 부기)
+WAVE_REGRESS_FILES = TEST_INFRA_FILES | {"src/config.py", "src/state.py"}
 DOTTED = re.compile(r"^(src|noise_gate|scripts|tests)(\.[A-Za-z_]\w*)+$")
 
 MAX_WORKERS = 8
@@ -1295,6 +1298,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wide", action="store_true", help="1단계 확장")
     parser.add_argument("--plan", action="store_true", help="계획만 출력(실행 안 함)")
     parser.add_argument("--full", action="store_true", help="전 패키지 전체(사용자 요청 시만)")
+    parser.add_argument("--no-tests", action="store_true",
+                        help="정적 게이트만(웨이브 중간 — 테스트 미실행)")
     parser.add_argument("--root", default=str(REPO), help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
@@ -1310,6 +1315,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 _INTERRUPTED = "범위: 중단됨 — 전체 미실행"
+_STATIC_ONLY = "범위: 정적 게이트만 — 테스트 미실행"
 
 
 def stale_worktrees(root: Path) -> list[Path]:
@@ -1337,6 +1343,8 @@ def stale_worktrees(root: Path) -> list[Path]:
 
 
 def _main(args: argparse.Namespace, root: Path, out: Printer) -> int:
+    if args.full and args.no_tests:
+        raise UsageError("--full과 --no-tests는 함께 쓸 수 없다")
     base = args.base or "HEAD"
     if not args.base:
         out("경고: --base 생략 — HEAD 기준이다. 병행 세션이 세션 중에 커밋했으면 변경 목록·"
@@ -1361,6 +1369,13 @@ def _main(args: argparse.Namespace, root: Path, out: Printer) -> int:
         rows = [Row("본체 전체", "--full", set(roots))]
         rows += [Row(f"{p}/", "--full", package=p) for p in pkgs]
         sel = Selection(rows, roots, pkgs, set(), False, False)
+    elif args.no_tests:
+        sel = Selection([], [], [], set(), True, False)
+        wide = signature_breaks(root, base, changes) + sorted(
+            c.path for c in changes if c.path in WAVE_REGRESS_FILES)
+        if wide:
+            out("[웨이브 회귀 필요] 공개 시그니처·공유 파일 변경 — 이 웨이브 끝에 --no-tests 없이 "
+                "모듈 단위 회귀를 돌린다(D-303 부기): " + ", ".join(wide))
     else:
         sig = signature_breaks(root, base, changes)
         sel = select(index, changes, wide=args.wide or bool(sig))
@@ -1369,14 +1384,17 @@ def _main(args: argparse.Namespace, root: Path, out: Printer) -> int:
             out("선택된 테스트 없음" + (" — 바뀐 파일의 테스트 폴더로 대체한다"
                                        if any(r.rule.startswith("⑥") for r in sel.rows) else ""))
     if args.plan:
-        print_table(out, index, sel, None, plan=True)
+        if not args.no_tests:
+            print_table(out, index, sel, None, plan=True)
         _, _, plan = build_jobs(root, index, sel, root / "logs" / "regress" / "plan", args.full,
                                 changed_py)
         out("실행 계획")
         for line in plan:
             out(line)
         print_recommend(out, reasons)
-        out("범위: 계획만(전체) — 실행 안 함" if args.full else "범위: 계획만 — 실행 안 함")
+        out("범위: 계획만(전체) — 실행 안 함" if args.full else
+            "범위: 계획만(정적 게이트만) — 실행 안 함" if args.no_tests else
+            "범위: 계획만 — 실행 안 함")
         return 0
     run_dir = root / "logs" / "regress" / f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -1424,7 +1442,8 @@ def _execute(args: argparse.Namespace, root: Path, base: str, out: Printer, inde
                             f" — 로그 {job.log}")
         if bad:
             failed.setdefault(group, []).extend(bad)
-    print_table(out, index, sel, results, plan=False)
+    if not args.no_tests:
+        print_table(out, index, sel, results, plan=False)
     out(f"  소요 {time.monotonic() - start:.0f}초 · 산출물 {run_dir}")
     for line in problems:
         out(f"  ! {line}")
@@ -1444,7 +1463,7 @@ def _execute(args: argparse.Namespace, root: Path, base: str, out: Printer, inde
         tally = Counter(v.verdict for v in verdicts)
         out("  합계: " + " · ".join(f"{k} {tally[k]}" for k in (ORIGINAL, CAUSED, NEW_TEST, UNKNOWN)
                                     if tally[k]))
-    else:
+    elif not args.no_tests:
         out("② 실패 귀속: 실패 없음")
     gates = judge_gates(root, base, jobs, changed_py)
     out("③ 정적 게이트")
@@ -1453,7 +1472,8 @@ def _execute(args: argparse.Namespace, root: Path, base: str, out: Printer, inde
         for line in gate.lines[:30]:
             out(f"      {line}")
     print_recommend(out, reasons)
-    out("범위: 전체(사용자 요청)" if args.full else "범위: 모듈 단위 — 전체 미실행")
+    out("범위: 전체(사용자 요청)" if args.full else
+        _STATIC_ONLY if args.no_tests else "범위: 모듈 단위 — 전체 미실행")
     bad_verdict = any(v.verdict in (CAUSED, NEW_TEST, UNKNOWN) for v in verdicts)
     bad_gate = any(g.status in ("실패", "TIMEOUT") for g in gates)
     return 1 if bad_verdict or bad_gate or problems else 0

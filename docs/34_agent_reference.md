@@ -297,10 +297,13 @@ RUN_LOCAL_LLM=1 pytest tests/test_pipeline.py -m live_llm   # 로컬 MLX 실 LLM
 
 구현·교정 뒤 회귀는 **바꾼 모듈 단위**로 돌린다. **전체 회귀는 사용자가 요청할 때만** 돌린다. 도구는 `scripts/regress.py`이고 근거·실측은 `plans/136`에 있다.
 
+> **실행 시점 (D-303 부기 2026-10-07)** — 모듈 단위 회귀는 **계획서 하나가 끝날 때(마지막 Wave) 팀 리드가 1회** `--base <계획 시작 SHA> --files <계획서 머리 회귀 대상 파일…>`로 돌린다. Wave 중간에는 implementer가 자기 테스트(`pytest <파일>`)와 `--no-tests`(정적 게이트만)만 돌리고, verifier는 팀 리드의 결과를 받아 쓴다. 도구가 `[웨이브 회귀 필요]`(공개 시그니처·`src/config.py`·`src/state.py`·테스트 기반 파일 변경)를 내면 그 Wave 끝에 모듈 단위 회귀를 돌린다. 아래 원문의 「구현·교정 뒤」는 이 시점으로 읽는다.
+
 ```bash
 python scripts/regress.py --base <세션 시작 SHA>                 # 기본 — 모듈 단위 · 병렬 · 정적 게이트 · 실패 귀속
 python scripts/regress.py --base <SHA> --files <내가 바꾼 파일…>  # 병행 세션 변경을 빼고 내 파일만 기준으로
 python scripts/regress.py --plan                                  # 무엇을 돌릴지 목록만(실행 안 함)
+python scripts/regress.py --no-tests --files <파일…>              # Wave 중간 — 정적 게이트만(테스트 미실행)
 python scripts/regress.py --wide                                  # 1단계 확장(공개 시그니처를 바꾸면 자동 적용)
 python scripts/regress.py --full                                  # 사용자가 요청할 때만 — 전 패키지 전체 · 병렬
 ```

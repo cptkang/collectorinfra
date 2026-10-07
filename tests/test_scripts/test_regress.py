@@ -637,6 +637,38 @@ def test_exit_1_when_pytest_rc1_but_no_junit_failures(
     assert code == 1 and "rc=1인데 junit에서 실패·에러 케이스를 읽지 못했다" in out
 
 
+def test_no_tests_runs_static_gates_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """D-303 부기 — 웨이브 중간은 테스트 없이 정적 게이트만, 게이트 실패는 여전히 1."""
+    files = dict(ATTR_FILES, **{"scripts/arch_check.py": "import sys\nsys.exit(0)\n"})
+    root = make_repo(tmp_path / "r", files)
+    code, out = _run_main(root, monkeypatch, capsys, "tests/test_orig.py", "--no-tests")
+    assert code == 0  # test_always_broken은 돌지 않는다
+    assert "① 모듈별" not in out and "② 실패 귀속" not in out
+    assert "arch_check: 통과" in out
+    assert out.rstrip().splitlines()[-1] == rg._STATIC_ONLY
+    _write(root, {"scripts/arch_check.py": "import sys\nsys.exit(1)\n"})
+    code, out = _run_main(root, monkeypatch, capsys, "tests/test_orig.py", "--no-tests")
+    assert code == 1 and "arch_check: 실패" in out
+
+
+def test_no_tests_flags_signature_and_shared_file_changes(tmp_path: Path) -> None:
+    root = make_repo(tmp_path / "r", dict(BASE_FILES, **{"src/config.py": "A = 1\n"}))
+    _write(root, {"src/pkg/mod.py": "def f(a):\n    return a\n", "src/config.py": "A = 2\n"})
+    out = _main_plan(root, ["--no-tests", "--files", "src/pkg/mod.py", "src/config.py"])
+    assert "[웨이브 회귀 필요]" in out
+    assert "src.pkg.mod.f(매개변수 삭제 b)" in out and "src/config.py" in out
+    assert "① 모듈별" not in out
+    assert out.rstrip().endswith("범위: 계획만(정적 게이트만) — 실행 안 함")
+    out = _main_plan(root, ["--no-tests", "--files", "tests/test_user.py"])
+    assert "[웨이브 회귀 필요]" not in out
+
+
+def test_no_tests_with_full_is_usage_error(repo: Path) -> None:
+    assert rg.main(["--root", str(repo), "--base", "HEAD", "--plan", "--full", "--no-tests"]) == 2
+
+
 def test_split_workers_normalizes_below_two_and_weights_by_time() -> None:
     cpus = os.cpu_count() or 1
     # 워커 1은 `-n`을 걸 수 없으므로 직렬(0)
