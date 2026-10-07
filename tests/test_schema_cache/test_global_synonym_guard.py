@@ -230,9 +230,10 @@ def test_repository_manual_profiles_are_detected():
     from src.schema_cache.cache_manager import _has_manual_profile
     from src.schema_cache.catalog_builder import load_structure_profile
 
-    for db_id in ("polestar_b0", "polestar_cm_gp", "polestar_cm_yd", "polestar"):
+    # itam은 외부망 빌더가 내부망본을 직접 커밋한다(plans/140 W3 · D-311 ③)
+    for db_id in ("polestar_b0", "polestar_cm_gp", "polestar_cm_yd", "polestar", "itam"):
         assert _has_manual_profile(db_id), db_id
-    for db_id in ("itam", "itsm", "cloud_portal", "test_db"):
+    for db_id in ("itsm", "cloud_portal", "test_db"):
         # 로컬 관리자 승인본(plans/104 · 추적 금지)은 이 머신에서만 수동 프로필이다
         profile = load_structure_profile(db_id)
         if isinstance(profile, dict) and profile.get("environment") == LOCAL_SANDBOX_ENVIRONMENT:

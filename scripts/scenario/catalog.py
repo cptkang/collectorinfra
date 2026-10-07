@@ -163,6 +163,7 @@ DISCLOSURE_KIND_GRADES: dict[str, str] = {
     "apm_partial_sources": "partial", "apm_unresolved_condition": "guide",
     "apm_current_only": "neutral", "apm_hourly_resolution": "neutral",
     "apm_change_detection": "neutral", "apm_masked_fields": "neutral",
+    "apm_untargeted_scope": "neutral",
 }
 # 불변식(plans/123 V-4) — 이름 → 활성화를 좌우하는 소유 제품 항목. 판정기(`invariants.py`)가 모든
 # 턴에 계산해 `invariant_violations` 칸(트리아지)에 싣고, 군 헤더 `invariants:` 가 `active_from`(첫

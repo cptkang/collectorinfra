@@ -7,7 +7,7 @@
     null 값.
   - 파서 `limit` → `n`(보기에 `n`이 있을 때만) · 「전체」 단어 매칭 부재.
   - 창: range 보기(app_health·runtime·slow_tx·events)는 기간을 자르지 않는다 · current 보기는
-    `apm_current_only` · none 보기는 기간 무시 · 하루 넘게 지난 기간 문구.
+    `apm_current_only` · none 보기는 기간 무시 · 하루 넘게 지난 기간도 조회(W6 M-7).
   - 집계: 같은 보기를 여러 대상에 불러도 (보기, 대상)마다 한 항목(값이 서로 다름) · 판정 중복 제거 ·
     오류 유형 전부.
   - 결정적 줄(판정·집계)이 2단 최종 답에 실린다 — 단일 · 병합(공통 hostname) ·
@@ -306,13 +306,14 @@ async def test_current_and_none_views_with_period(gw) -> None:
 
 
 @pytest.mark.asyncio
-async def test_more_than_a_day_ago_is_not_queried_with_fact_wording(gw) -> None:
+async def test_more_than_a_day_ago_is_queried(gw) -> None:
+    """plans/134 W6 M-7 — 종전 「하루 넘게 지난 기간」 거부를 폐지했다(기간 그대로 조회)."""
     g = gw(_ALL)
     res = await _run(["apm.slow_tx"], "web01",
                      time_range={"start": "2026-09-29 09:00", "end": "2026-09-29 10:00"})
-    assert g.named("apm_slow_transactions") == []
-    assert aq.OUT_OF_WINDOW_NOTE in res["final_response"]
-    assert "W6" not in res["final_response"]
+    (args,) = g.named("apm_slow_transactions")
+    assert args["lookback_minutes"] == 60 and args["reference_time"] == "2026-09-29T10:00:00"
+    assert "W6" not in json.dumps(res, ensure_ascii=False)
 
 
 # ── M-1 집계 운반 · 결정적 줄 ────────────────────────────────────────────

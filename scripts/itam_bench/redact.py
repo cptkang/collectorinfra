@@ -16,7 +16,8 @@ plans/135 §3.5 · W2 · D-301.
   그대로다.
 - 결과에서 본 사람 값은 **메모리에만** 모아(`PiiVault`) 다른 칸·SQL·오류 문구에 나타나면 가린다.
 - 누출 관문(`LeakGate`)이 산출물 전부를 디코드한 값 단위로 다시 훑는다 — 실패하면 산출물을 쓰지 않고
-  위치만 적는다(값일 수 있는 키는 경로에 순번으로).
+  위치만 적는다(값일 수 있는 키는 경로에 순번으로). 치환 코드값 파일(`code_samples.yaml`)에는 「원
+  코드값 출현 0」 규칙(`code_original`)을 더한다 — 원 집합은 메모리에서만 넘긴다(plans/140 W2-5).
 
 정규식은 중첩 수량자 없는 패턴만 쓴다(docs/18 2026-08-19 ReDoS 사례). `scan_pii`의 이메일 규칙 제곱
 시간(20KB 한 줄 5.7초)은 제품 쪽에서 고쳤다(plans/135 v1.4 · `ChainStartSearch`).
@@ -28,6 +29,7 @@ import bisect
 import json
 import os
 import re
+import unicodedata
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
@@ -802,14 +804,203 @@ def redact_text(
 # --- 누출 관문 (§3.5.5) -------------------------------------------------------------
 
 
+#: 누출 관문 규칙 — 앞 5개는 모든 산출 파일 · `code_original`은 치환 코드값 파일만.
+GATE_RULES: tuple[str, ...] = (
+    "canary",
+    "pii_value",
+    "pii_regex",
+    "schema_form",
+    "user_info",
+    "code_original",
+)
+CODE_SAMPLES_FILE = "code_samples.yaml"
+#: 원값 부분 문자열 대조 하한(이보다 짧은 원값은 casefold 같음만 본다).
+CODE_ORIGINAL_MIN_SUBSTRING = 3
+
+# `code_samples.yaml` 형식 어휘 — 관문이 구조 칸의 **값 형태**를 검증하는 단일 출처다(감사 L-2).
+# 생성기(`code_samples.py`)가 같은 상수를 쓴다.
+#: 파일 머리 고정 문구
+CODE_SAMPLES_NOTE = (
+    "형식 보존 치환값 — 원값 아님 · 대응표 없음 · 외부망 쿼리 생성 테스트 전용(D-311 ②) · "
+    "설정 파일에 넣지 않는다"
+)
+#: 치환 대상에서 빼는 정책 등급 · 제외 사유(등급 + 사람 정보 휴리스틱)
+CODE_SAMPLES_EXCLUDED_GRADES: tuple[str, ...] = ("pii", "free_text", "amount", "network")
+CODE_SAMPLES_EXCLUDE_REASONS: tuple[str, ...] = (*CODE_SAMPLES_EXCLUDED_GRADES, "person_hint")
+#: 컬럼 `substitution` 판정 열거
+CODE_SAMPLES_SUBSTITUTIONS: tuple[str, ...] = ("ok", "exhausted", "flag")
+#: `summary` 칸(전부 정수) — `excluded`는 제외 사유별 정수 사전
+CODE_SAMPLES_SUMMARY_KEYS: tuple[str, ...] = (
+    "columns", "substituted", "exhausted", "flag", "excluded",
+)
+#: 머리 식별자 칸(`db_id`·`run_id`·`p1_draft_id`) 값 형태 — 원값 대조 대신 형식만 본다
+_CODE_SAMPLES_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+#: 컬럼 키 `table.column` 식별자 형식(이 형식이면 원값 대조를 하지 않는다 — 스키마 이름은
+#: 카탈로그에도 나간다)
+_CODE_COLUMN_KEY = re.compile(
+    r"^[A-Za-z_가-힣][A-Za-z0-9_$#가-힣]*\.[A-Za-z_가-힣][A-Za-z0-9_$#가-힣]*$"
+)
+#: 컬럼 항목의 생성기 칸 이름(키 대조 제외 · 값은 칸별로 검증)
+_CODE_COLUMN_FIELDS = frozenset({"distinct", "substitution", "values", "labels"})
+
+
+def _fold(text: object) -> str:
+    """원값 대조 정규화 — NFKC(전각·호환 문자 접기) 뒤 casefold."""
+    return unicodedata.normalize("NFKC", str(text)).casefold()
+
+
+class CodeOriginals:
+    """원 코드값·라벨 집합(**메모리 전용** — 파일·로그에 쓰지 않는다 · repr 에 값이 없다 ·
+    피클 거부).
+
+    `hit(text)`: NFKC + casefold 기준으로 원값과 같거나 3자 이상 원값을 부분 문자열로 품으면 True.
+    """
+
+    __slots__ = ("_equal", "_long", "_lengths")
+
+    def __init__(self, values: Iterable[object]) -> None:
+        folded = {_fold(v) for v in values if str(v or "").strip()}
+        self._equal = frozenset(folded)
+        self._long = frozenset(f for f in folded if len(f) >= CODE_ORIGINAL_MIN_SUBSTRING)
+        self._lengths = tuple(sorted({len(f) for f in self._long}))
+
+    def __len__(self) -> int:
+        return len(self._equal)
+
+    def __repr__(self) -> str:
+        return f"<CodeOriginals {len(self._equal)}건>"
+
+    def __reduce__(self) -> Any:
+        raise TypeError("CodeOriginals 는 직렬화할 수 없다(원값 보유 · 메모리 전용)")
+
+    def __getstate__(self) -> Any:
+        raise TypeError("CodeOriginals 는 직렬화할 수 없다(원값 보유 · 메모리 전용)")
+
+    def count_matching(self, pattern: re.Pattern[str]) -> int:
+        """정규화한 원값 중 `pattern`에 전체 일치하는 수 — 치환 공간 계산용(값 비노출)."""
+        return sum(1 for folded in self._equal if pattern.fullmatch(folded))
+
+    def hit(self, text: object) -> bool:
+        folded = _fold(text)
+        if folded in self._equal:
+            return True
+        for length in self._lengths:
+            if length > len(folded):
+                break
+            if any(folded[i : i + length] in self._long for i in range(len(folded) - length + 1)):
+                return True
+        return False
+
+
+def _is_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _summary_shape_ok(summary: Any) -> bool:
+    """`summary` 값 형태 — 고정 칸 · 정수 · `excluded`는 제외 사유별 정수."""
+    if not isinstance(summary, Mapping) or not set(summary) <= set(CODE_SAMPLES_SUMMARY_KEYS):
+        return False
+    for key, value in summary.items():
+        if key == "excluded":
+            if not isinstance(value, Mapping) or not set(value) <= set(
+                CODE_SAMPLES_EXCLUDE_REASONS
+            ):
+                return False
+            if not all(_is_count(v) for v in value.values()):
+                return False
+        elif not _is_count(value):
+            return False
+    return True
+
+
+def _head_shape_ok(key: str, value: Any) -> bool:
+    """머리 칸 값 형태 — 고정 문구 · 식별자 형식(`p1_draft_id`는 None 허용)."""
+    if key == "note":
+        return value == CODE_SAMPLES_NOTE
+    if key == "p1_draft_id" and value is None:
+        return True
+    return isinstance(value, str) and bool(_CODE_SAMPLES_ID.match(value))
+
+
+def _code_sample_leaves(doc: Any) -> Iterable[tuple[str, str | None]]:
+    """`code_samples.yaml`의 원값 대조 대상 — ``(경로, 대조할 글)``.
+
+    대조할 글이 None 이면 **값 형태 위반**(대조 없이 위반)이다(감사 L-2).
+
+    - 머리 칸(`db_id`·`run_id`·`p1_draft_id`·`note`)·`summary`·컬럼 `distinct`·`substitution`은
+      원값 대조 대신 값 형태(고정 문구·식별자 형식·정수·고정 열거)를 본다 — 아니면 위반.
+    - 그 밖의 잎과 **매핑 키**는 전부 대조한다. 컬럼 키는 `table.column` 식별자 형식이면 통과,
+      아니면 대조한다. 생성기 칸 이름(`values`·`labels` 등)은 키 대조를 하지 않는다.
+    - 경로에는 컬럼 이름·매핑 키 대신 순번(`[#n]`)을 쓴다 — 고정 칸 이름만 싣는다.
+    """
+
+    def leaves(node: Any, path: str) -> Iterable[tuple[str, str | None]]:
+        if isinstance(node, Mapping):
+            for position, (key, value) in enumerate(node.items()):
+                label = f"{path}[#{position}]"  # 키는 값일 수 있다 — 경로에 싣지 않는다
+                yield label, str(key)
+                yield from leaves(value, label)
+        elif isinstance(node, (list, tuple)):
+            for position, value in enumerate(node):
+                yield from leaves(value, f"{path}[{position}]")
+        elif node is not None:
+            yield path, str(node)
+
+    if not isinstance(doc, Mapping):
+        yield from leaves(doc, "")
+        return
+    for position, (key, value) in enumerate(doc.items()):
+        if key in ("db_id", "run_id", "p1_draft_id", "note"):
+            if not _head_shape_ok(key, value):
+                yield str(key), None
+            continue
+        if key == "summary":
+            if not _summary_shape_ok(value):
+                yield "summary", None
+            continue
+        if key == "columns" and isinstance(value, Mapping):
+            for number, (column_key, entry) in enumerate(value.items()):
+                base = f"columns[#{number}]"
+                if not _CODE_COLUMN_KEY.match(str(column_key)):
+                    yield base, str(column_key)
+                if not isinstance(entry, Mapping):
+                    yield from leaves(entry, base)
+                    continue
+                for field_number, (field, item) in enumerate(entry.items()):
+                    if field == "distinct":
+                        if not _is_count(item):
+                            yield f"{base}.distinct", None
+                        continue
+                    if field == "substitution":
+                        if item not in CODE_SAMPLES_SUBSTITUTIONS:
+                            yield f"{base}.substitution", None
+                        continue
+                    if field in _CODE_COLUMN_FIELDS:
+                        field_path = f"{base}.{field}"
+                    else:
+                        field_path = f"{base}[#{field_number}]"
+                        yield field_path, str(field)
+                    yield from leaves(item, field_path)
+            continue
+        label = f"[#{position}]"
+        yield label, str(key)
+        yield from leaves(value, label)
+
+
 class LeakGate:
     """산출 텍스트 전부를 기록 직전에 다시 훑는다. 걸리면 **위치만** 돌려준다(값 없음)."""
 
     def __init__(
-        self, *, policy: ColumnPolicy, vault: PiiVault, user_values: Mapping[str, str | None]
+        self,
+        *,
+        policy: ColumnPolicy,
+        vault: PiiVault,
+        user_values: Mapping[str, str | None],
+        code_originals: CodeOriginals | None = None,
     ) -> None:
         self._policy = policy
         self._vault = vault
+        self._code_originals = code_originals
         # 너무 짧은 값은 무관한 문자열과 겹친다 — 3자 이상만 원값 대조(가린 형태 `5***`는 원값이
         # 아니다)
         self._user_values = [str(v) for v in user_values.values() if v and len(str(v)) >= 3]
@@ -878,9 +1069,29 @@ class LeakGate:
         for number, line in enumerate(text.splitlines(), start=1):
             yield number, "", line
 
+    def code_original_hit(self, text: str) -> bool:
+        """원 코드값·라벨 대조(`code_original`) — 원 집합이 없으면 닫힌 쪽(True)."""
+        return self._code_originals is None or self._code_originals.hit(text)
+
+    def _check_code_samples(self, name: str, text: str) -> list[dict[str, Any]]:
+        try:
+            doc = yaml.safe_load(text)
+        except yaml.YAMLError:
+            doc = None
+        if doc is None or self._code_originals is None:
+            # 원 집합 없이 치환 파일을 쓰려 하거나 읽을 수 없으면 닫힌 쪽으로 실패한다
+            return [{"file": name, "record": None, "field": None, "rule": "code_original"}]
+        return [
+            {"file": name, "record": None, "field": field or None, "rule": "code_original"}
+            for field, leaf in _code_sample_leaves(doc)
+            if leaf is None or self._code_originals.hit(leaf)
+        ]
+
     def check(self, files: Mapping[str, str]) -> list[dict[str, Any]]:
         violations: list[dict[str, Any]] = []
         for name, text in files.items():
+            if name == CODE_SAMPLES_FILE:
+                violations += self._check_code_samples(name, text)
             whole_schema = name.startswith("schema_catalog")
             seen_rules: set[str] = set()
             decoded: list[str] = []
@@ -915,7 +1126,7 @@ def write_gated(
         "passed": not violations,
         "checked_files": sorted(staged),
         "violations": violations,
-        "rules": ["canary", "pii_value", "pii_regex", "schema_form", "user_info"],
+        "rules": list(GATE_RULES),
     }
     targets = {} if violations else dict(staged)
     targets["leak_check.json"] = json.dumps(report, ensure_ascii=False, indent=2) + "\n"

@@ -401,11 +401,13 @@ solutions:
           - {name: interval_minute, type: int, min: 1, label: "추세 간격(분)"}
         examples:
           - "「주문 서비스 지난 3시간 응답시간 추세 10분 간격」 → interval_minute=10"
+      # plans/134 W6 A-4 — 기간을 말하면 기간 순위(게이트웨이가 시 단위 통계를 모두 모은 뒤 정렬 ·
+      # 기간으로 계산할 수 없는 지표는 현재값 순위 + 고지) · 기간이 없으면 실시간 순위(종전).
       - id: apm.ranking
         label: "전체 WAS 인스턴스 순위 — 서버를 정하지 않은 「가장 느린·바쁜 N개」"
         capability: was_performance
         tool: apm_fleet
-        window: current
+        window: range
         target: none
         fixed_args: {mode: ranking}
         args:
@@ -416,8 +418,9 @@ solutions:
                        thread_current, db_pool_active, db_pool_idle_avg, db_pool_configured_avg,
                        visit_day, visit_hour, hit_day, hit_hour, active_range_count_0,
                        active_range_count_1, active_range_count_2, active_range_count_3,
-                       collection_count, file_count, socket_count, thread_daemon, thread_started],
-             label: "순위 지표(미지정 = response_time_avg_ms 평균 응답시간)"}
+                       collection_count, file_count, socket_count, thread_daemon, thread_started,
+                       calls, failures, failure_rate, max_response_time_ms],
+             label: "순위 지표(미지정 = response_time_avg_ms 평균 응답시간 · calls·failures·failure_rate·max_response_time_ms는 기간을 말했을 때만)"}
           - {name: order, type: enum, choices: [desc, asc], default: desc,
              label: "desc = 큰 값부터 · asc = 작은 값부터(미지정 = desc)"}
           - {name: n, type: int, min: 1, label: "상위 N개"}
@@ -427,6 +430,8 @@ solutions:
           - "「전체 WAS 중 응답시간 가장 느린 5개」 → n=5"
           - "「힙 가장 많이 쓰는 WAS 10개」 → metric=heap_used_mb · n=10"
           - "「TPS 낮은 순 WAS 3개」 → metric=tps · order=asc · n=3"
+          - "「어제 응답시간 가장 느렸던 WAS 5개」 → n=5"
+          - "「어제 실패율 높은 WAS 5개」 → metric=failure_rate · n=5"
       - id: apm.fleet_events
         label: "전체 WAS 이벤트 — 서버를 정하지 않은 「전부·전체 WAS의 fatal 등」"
         capability: apm_event
@@ -474,6 +479,21 @@ solutions:
           - {name: interval_minute, type: int, min: 1, label: "추세 간격(분)"}
         examples:
           - "「결제 업무 지난 6시간 응답시간 추세」"
+      # plans/134 W6 A-1 — 두 기간 비교(평소 대비). 기준·비교 구간은 처리기가 질문의 기간에서 정한다
+      # (`window: compare` — 기간 2개 = 이른 쪽이 기준 · 1개 = 그 기간 대비 다음 기간을 지금까지 ·
+      # 진행 중 구간은 같은 경과 시간으로 맞춤 · 「최근 N일」 = 바로 앞 같은 길이와 · 기간 없음 =
+      # 되묻기 — 교정 2). 계산은 게이트웨이(가중 평균 ·
+      # 기준 0 = N/A · 누락 0 채움 없음).
+      - id: apm.period_compare
+        label: "두 기간 비교(지난주 대비 등) — 호출 수·실패율·호출 수 가중 평균 응답·최대 응답의 증감"
+        capability: was_performance
+        tool: apm_period_compare
+        required_input: hostname
+        window: compare
+        limit: "시 단위 통계 · 기간 하나면 그 기간과 바로 앞·뒤 같은 단위 기간을 같은 경과 시간으로 비교"
+        examples:
+          - "「web01 지난주 대비 처리량」"
+          - "「web01 어제와 오늘 응답시간 비교」"
     # plans/87 J8 · D-287 ④ — 제니퍼 소스 ↔ 존 정본(위 `sources` 설명). 단일 설정(게이트웨이
     # `JENNIFER_API_URL`만 · 소스 `default` · dbId `jennifer`)은 이 표에 없고 존 없음으로 다룬다.
     sources:

@@ -7,7 +7,8 @@
   중괄호·코드 펜스가 든 항목은 빼고 WARNING.
 - 단일 `_build_system_prompt`·멀티 `_build_multi_system_prompt`의 **같은 자리**(스키마 텍스트 바로
   앞)에 **같은 내용**
-- 정의 없는 DB는 바이트 불변 — 블록 외 차이 0 · 운영 프로필(폴스타 4종·로컬 itam·test_db)은 빈 블록
+- 정의 없는 DB는 바이트 불변 — 블록 외 차이 0 · 운영 프로필(폴스타 4종·test_db)은 빈 블록
+  (itam은 plans/140 W3 직접 커밋 정의 보유)
 - 예산 사다리 1·2단(재료·표본 제거) 뒤에도 블록 유지(단일·멀티)
 - 표본 수집 대상 = 선별 테이블(단일·멀티) · 설명 재료도 선별 테이블 것만 렌더
 - 선별 밖 테이블을 참조한 SQL → 「존재하지 않는 테이블 참조」 → 재생성(재선별 없음 · plans/139 §7)
@@ -273,7 +274,10 @@ class TestSamePlace:
         assert TABLE_PURPOSE_HEADER not in single_without + multi_without
 
     @pytest.mark.parametrize(
-        "profile_path", sorted(_PROFILE_DIR.glob("*.yaml")), ids=lambda p: p.stem,
+        "profile_path",
+        # itam은 외부망 빌더가 정의를 직접 커밋한다(plans/140 W3 · D-311 ③) — 블록이 있는 쪽이 정상
+        sorted(p for p in _PROFILE_DIR.glob("*.yaml") if p.stem != "itam"),
+        ids=lambda p: p.stem,
     )
     def test_runtime_profiles_have_no_block(self, profile_path):
         """G-1 — 정의가 승인되지 않은 운영·로컬 프로필은 빈 블록(프롬프트 바이트 불변)."""

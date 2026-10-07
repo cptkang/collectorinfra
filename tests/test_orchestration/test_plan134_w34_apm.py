@@ -6,7 +6,8 @@
   2. 한 보기의 대상 2개 이상 = `targets` 배치 1호출 → `batch[i]`·`target_index`로 대상별 가상 호출을
      복원(집계·판정·출처·실패가 대상별) · 대상 1개 = 종전 호출 모양 그대로 · 배치 부분/전부 실패 ·
      배치 접수(작업 승격) = 작업 1건 접수 답(예상·진행).
-  3. 첫 홉 = 절단 없이 전 인스턴스(호스트 없는 인스턴스도 대상 · 범위 고지) · `target: none`·
+  3. 첫 홉 = 절단 없이 전 인스턴스(호스트 없는 인스턴스도 대상 · 범위 고지 — W6 ④부터는 부하 순위
+     상위 N · 순위를 못 받으면 목록 앞 N · `test_plan134_w6_body.py`) · `target: none`·
      `named`·지표 목록 보기는 첫 홉 없음 · 명시 대상 미해결은 첫 홉·다른 조회로 대신하지 않는다.
   4. 이름 보기(서비스·업무) — 이름 목록 1호출 · 없으면 전체 · 전부 미해결 = 「찾지 못함」.
   5. 전 대상 순위 `provisional` → 「잠정 순위」 줄 · 전 대상 이벤트 실패 도메인 ≠ 0건.
@@ -55,6 +56,8 @@ RANKING_METRICS = (
     "active_range_count_1", "active_range_count_2", "active_range_count_3", "collection_count",
     "file_count", "socket_count", "thread_daemon", "thread_started",
 )
+#: 게이트웨이 `PERIOD_RANKING_METRICS` 중 기간 전용 이름(plans/134 W6 A-4)
+PERIOD_ONLY_METRICS = ("calls", "failures", "failure_rate", "max_response_time_ms")
 W34_VIEWS = ("apm.service", "apm.service_trend", "apm.ranking", "apm.fleet_events",
              "apm.business", "apm.business_trend")
 
@@ -147,6 +150,10 @@ async def _run(views: list[str], isolated: dict | None = None, **task: Any) -> d
 
 def _kinds(res: dict, kind: str) -> list[str]:
     return [d["text"] for d in res.get("disclosures") or [] if d["kind"] == kind]
+
+
+#: 부하 순위 실패 봉투(plans/134 W6 ④ — 첫 홉이 목록 폴백으로 가는 사례)
+_NO_RANK = {"error": "api_error", "reason": "순위 실패", "tool": "apm_fleet"}
 
 
 def _inst(iid: int, name: str | None, host: str | None, *, sid: str | None = "default",
@@ -353,7 +360,8 @@ async def test_first_hop_takes_every_instance_including_hostless_ones(gateway) -
     inventory = [_inst(1, "a1", "h1"), _inst(2, "a2", "h1"), _inst(3, "b3", None, did=20),
                  {**_inst(4, "c4", "h4"), "match_confidence": None},  # 호스트 정합 안 됨
                  _inst(5, None, None, sid=None)]
-    gw = gateway({"apm_instance_map": _env("apm_instance_map", inventory)})
+    # plans/134 W6 ④ — 부하 순위를 받지 못하면 목록(종전 첫 홉)의 앞 N개(기본 20 — 여기선 전부)
+    gw = gateway({"apm_instance_map": _env("apm_instance_map", inventory), "apm_fleet": _NO_RANK})
     res = await _run(["apm.app_health", "apm.events"])
     (health,) = gw.named("apm_app_health")
     assert health["targets"] == [
@@ -369,7 +377,8 @@ async def test_first_hop_takes_every_instance_including_hostless_ones(gateway) -
     assert {k: step[k] for k in ("hosts", "instances", "hostless", "unaddressed")} == {
         "hosts": 1, "instances": 5, "hostless": 2, "unaddressed": 1}
     (notice,) = _kinds(res, NOTE_TRACE)
-    assert notice == ("대상 서버 미지정 — 전체 인스턴스 5개(호스트 1대) 조회 · 이름·소스가 없어"
+    assert notice == ("대상 서버 미지정 — 전체 인스턴스 5개(호스트 1대) 조회 — 부하 순위를 받지"
+                      " 못해(api_error: 순위 실패) 목록으로 골랐습니다 · 이름·소스가 없어"
                       " 부를 수 없는 인스턴스 1개는 빠졌습니다")
 
 
@@ -546,8 +555,10 @@ async def test_sources_scope_every_gateway_call(gateway) -> None:
     gw = gateway({"apm_instance_map": _env("apm_instance_map", [_inst(1, "a1", "h1"),
                                                                  _inst(2, "a2", "h2")])})
     await _run(["apm.app_health"], sources=["common"])
+    (ranking,) = gw.named("apm_fleet")
+    assert ranking["source_ids"] == ["common"], "첫 홉(부하 순위 · W6 ④)도 고른 소스 안에서"
     (first_hop,) = gw.named("apm_instance_map")
-    assert first_hop["source_ids"] == ["common"], "첫 홉도 고른 소스 안에서"
+    assert first_hop["source_ids"] == ["common"], "순위 폴백 목록도 고른 소스 안에서"
     (batch,) = gw.named("apm_app_health")
     assert batch["source_ids"] == ["common"] and len(batch["targets"]) == 2
     gw2 = gateway({"apm_instance_map": _env("apm_instance_map", [_inst(1, "abc", None)])})
@@ -621,7 +632,7 @@ async def test_json_decomposition_keeps_sources_only_for_apm_tasks() -> None:
 
 def test_w34_views_are_registry_data() -> None:
     views = {v.id: v for v in aq.apm_views()}
-    assert [v.id for v in aq.apm_views()][22:] == list(W34_VIEWS)
+    assert [v.id for v in aq.apm_views()][22:28] == list(W34_VIEWS)
     table = {vid: (views[vid].tool, views[vid].fixed_args, views[vid].window, views[vid].target,
                    views[vid].target_arg, views[vid].capability) for vid in W34_VIEWS}
     assert table == {
@@ -629,7 +640,7 @@ def test_w34_views_are_registry_data() -> None:
                         "was_performance"),
         "apm.service_trend": ("apm_metrics", {"mode": "series", "scope": "domain"}, "range",
                               "named", "service", "was_performance"),
-        "apm.ranking": ("apm_fleet", {"mode": "ranking"}, "current", "none", "",
+        "apm.ranking": ("apm_fleet", {"mode": "ranking"}, "range", "none", "",
                         "was_performance"),
         "apm.fleet_events": ("apm_fleet", {"mode": "events"}, "range", "none", "", "apm_event"),
         "apm.business": ("apm_business", {}, "current", "named", "business", "was_performance"),
@@ -638,7 +649,8 @@ def test_w34_views_are_registry_data() -> None:
     }
     args = {vid: {a.name: a for a in views[vid].args} for vid in W34_VIEWS}
     metric = args["apm.ranking"]["metric"]
-    assert metric.type == "enum" and metric.choices == RANKING_METRICS
+    # plans/134 W6 A-4 — 기간 전용 지표 4개가 뒤에 붙는다(게이트웨이 `ALL_RANKING_METRICS`)
+    assert metric.type == "enum" and metric.choices == (*RANKING_METRICS, *PERIOD_ONLY_METRICS)
     assert metric.default == "response_time_avg_ms"
     assert args["apm.ranking"]["order"].choices == ("desc", "asc")
     assert args["apm.ranking"]["order"].default == "desc"
@@ -737,13 +749,14 @@ async def test_b2_first_hop_reads_the_whole_result_file(gateway) -> None:
     """V34-2 — 첫 홉 목록이 결과 파일로 가면 청크를 끝까지 읽어 전부 대상으로 쓴다."""
     inventory = [_inst(i, f"w{i}", f"h{i}") for i in range(1, 9)]
     gw = gateway({"apm_instance_map": _spooled("apm_instance_map", inventory, 2),
-                  "apm_job_read": _reader(inventory)})
+                  "apm_job_read": _reader(inventory), "apm_fleet": _NO_RANK})
     res = await _run(["apm.app_health"])
     assert [a["chunk"] for a in gw.named("apm_job_read")] == [0, 1, 2]
     (batch,) = gw.named("apm_app_health")
     assert [t["hostname"] for t in batch["targets"]] == [f"h{i}" for i in range(1, 9)]
     (notice,) = _kinds(res, NOTE_TRACE)
-    assert notice == "대상 서버 미지정 — 전체 인스턴스 8개(호스트 8대) 조회"
+    assert notice == ("대상 서버 미지정 — 전체 인스턴스 8개(호스트 8대) 조회 — 부하 순위를 받지"
+                      " 못해(api_error: 순위 실패) 목록으로 골랐습니다")
     assert res["source_status"][0]["status"] == "ok"
 
 
@@ -751,7 +764,7 @@ async def test_b2_first_hop_reads_the_whole_result_file(gateway) -> None:
 async def test_b2_unreadable_result_file_is_disclosed_not_called_whole(gateway) -> None:
     inventory = [_inst(i, f"w{i}", f"h{i}") for i in range(1, 9)]
     gw = gateway({"apm_instance_map": _spooled("apm_instance_map", inventory, 2),
-                  "apm_job_read": _reader(inventory, fail_at=1)})
+                  "apm_job_read": _reader(inventory, fail_at=1), "apm_fleet": _NO_RANK})
     res = await _run(["apm.app_health"])
     (batch,) = gw.named("apm_app_health")
     assert len(batch["targets"]) == 3, "읽은 청크(0)의 3대 — 미리보기 2대보다 많은 쪽"
@@ -764,7 +777,7 @@ async def test_b2_unreadable_result_file_is_disclosed_not_called_whole(gateway) 
 
 @pytest.mark.asyncio
 async def test_b7_no_scope_notice_for_zero_instances(gateway) -> None:
-    gateway({"apm_instance_map": _env("apm_instance_map", [])})
+    gateway({"apm_instance_map": _env("apm_instance_map", []), "apm_fleet": _env("apm_fleet", [])})
     res = await _run(["apm.app_health"])
     assert _kinds(res, NOTE_TRACE) == [] and res["degraded_reason"] == "apm_not_queried"
 

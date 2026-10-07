@@ -586,7 +586,9 @@ def test_first_twelve_views_are_unchanged_from_baseline() -> None:
     assert [v["id"] for v in new[12:22]] == list(NEW_VIEWS)
     assert [v["id"] for v in new[22:]] == ["apm.service", "apm.service_trend", "apm.ranking",
                                           "apm.fleet_events", "apm.business",
-                                          "apm.business_trend"]
+                                          "apm.business_trend",
+                                          # plans/134 W6 A-1 — 두 기간 비교(뒤에 덧붙임)
+                                          "apm.period_compare"]
     for spec in aq.apm_views()[:12]:
         assert spec.target == "" and spec.reference == ""
 

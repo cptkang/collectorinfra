@@ -3,7 +3,8 @@
 `register_tools`(같은 계층의 MCP 서버 모듈)가 데이터 도구 실행기(`run_data` — 작업 · 감사 ·
 오류 봉투)를 넘겨 부른다. `service` 인자 주석은 서비스 도구 모듈(`scope_server`)의 것을 쓴다(같은
 뜻·같은 해석). 순위 지표(`metric`)는 MCP 스키마 enum으로 드러낸다 — 허용값은 도구
-코어의 `RANKING_METRICS`(실시간 인스턴스 수치 칸 중립 이름 전부)다.
+코어의 `ALL_RANKING_METRICS`(실시간 인스턴스 수치 칸 중립 이름 `RANKING_METRICS` 전부 + 기간 순위
+전용 지표)다. ranking은 `reference_time`·`lookback_minutes`를 받으면 기간 순위다(plans/134 W6 A-4).
 """
 
 from __future__ import annotations
@@ -14,8 +15,8 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 from apm_gateway.application.fleet_tools import (
+    ALL_RANKING_METRICS,
     DEFAULT_RANKING_METRIC,
-    RANKING_METRICS,
     FleetTools,
 )
 from apm_gateway.application.scope_tools import scope_target
@@ -25,7 +26,7 @@ from apm_gateway.interface.server import FullArg, OwnerArg, WaitArg
 
 TOOL_NAMES = ("apm_fleet",)
 # 런타임 enum — 튜플을 Literal에 넘기면 각 값이 허용값이 된다(정적 검사기는 값 목록을 모른다)
-RankingMetric = Literal[RANKING_METRICS]  # type: ignore[valid-type]
+RankingMetric = Literal[ALL_RANKING_METRICS]  # type: ignore[valid-type]
 
 
 def register_fleet_tools(mcp: FastMCP, fleet: FleetTools, run_data: RunData) -> list[str]:
@@ -36,13 +37,19 @@ def register_fleet_tools(mcp: FastMCP, fleet: FleetTools, run_data: RunData) -> 
         mode: Annotated[
             Literal["ranking", "events"],
             Field(
-                description="ranking(전 인스턴스 실시간 지표 순위 — 서버를 정하지 않은 「가장 느린·"
-                "바쁜」) · events(전 도메인 이벤트)"
+                description="ranking(전 인스턴스 지표 순위 — 서버를 정하지 않은 「가장 느린·"
+                "바쁜」 · 기간을 주면 기간 순위) · events(전 도메인 이벤트)"
             ),
         ],
         metric: Annotated[
             RankingMetric,
-            Field(description="ranking 지표(실시간 인스턴스 수치 칸 · 기본 평균 응답시간)"),
+            Field(
+                description="ranking 지표(기본 평균 응답시간). 실시간 순위는 실시간 인스턴스"
+                " 수치 칸 · 기간 순위는 response_time_avg_ms(호출 수 가중 평균)·tps(호출 수 ÷"
+                " 조회 구간 초)·calls·failures·failure_rate·max_response_time_ms만 기간 값이다"
+                "(calls·failures·failure_rate·max_response_time_ms는 기간 전용 — 기간 없이 주면"
+                " 인자 오류)"
+            ),
         ] = DEFAULT_RANKING_METRIC,
         order: Annotated[
             Literal["desc", "asc"], Field(description="ranking 정렬 — desc(큰 값부터 · 기본)·asc")
@@ -62,9 +69,19 @@ def register_fleet_tools(mcp: FastMCP, fleet: FleetTools, run_data: RunData) -> 
         error_type: Annotated[
             str | None, Field(description="events 오류 유형(대문자로 맞춘다)")
         ] = None,
-        reference_time: str | None = None,
+        reference_time: Annotated[
+            str | None,
+            Field(
+                description="events·ranking 구간 끝(ISO 8601 · 비우면 지금). ranking에 이것이나"
+                " lookback_minutes를 주면 기간 순위"
+            ),
+        ] = None,
         lookback_minutes: Annotated[
-            int | None, Field(description="events 구간 길이(분 · 기본 30 · 상한 없음)")
+            int | None,
+            Field(
+                description="events·ranking 구간 길이(분 · 기본 30 · 상한 없음). ranking 기간"
+                " 순위는 시 단위 통계라 시 경계로 넓혀 조회한다"
+            ),
         ] = None,
         domain_id: Annotated[
             int | None,
@@ -84,7 +101,11 @@ def register_fleet_tools(mcp: FastMCP, fleet: FleetTools, run_data: RunData) -> 
         지표로 정렬한 상위 N(조회 실패 도메인이 있으면 잠정 순위 provisional) · events: 전 도메인의
         이벤트(최근 30분 기본 · 시각 내림차순 · 실패 도메인은 0건이 아니라 domains_failed ·
         coverage는 답한 출처). service(서비스 이름)를 주면 그 서비스의 도메인으로만 좁힌다.
-        한 서버·인스턴스를 볼 때는 다른 도구를 쓴다."""
+        ranking에 reference_time·lookback_minutes를 주면 기간 순위다 — 그 구간(시 경계로 넓힘)의
+        시 단위 애플리케이션 통계를 인스턴스마다 받아 모은 뒤 정렬한다(summary.window_mode=period ·
+        통계 행 없는 인스턴스는 순위 밖). 기간 값이 없는 지표(힙·스레드 등)는 현재값 순위로 내고
+        [한계]와 summary.window_mode=current로 알린다. 한 서버·인스턴스를 볼 때는 다른 도구를
+        쓴다."""
         target_text = scope_target(service, None, domain_id)
         if mode == "events":
             ignored = tuple(
@@ -123,8 +144,6 @@ def register_fleet_tools(mcp: FastMCP, fleet: FleetTools, run_data: RunData) -> 
                 ("level", level),
                 ("level_mode", level_mode),
                 ("error_type", error_type),
-                ("reference_time", reference_time),
-                ("lookback_minutes", lookback_minutes),
             )
             if value is not None
         )
@@ -133,7 +152,16 @@ def register_fleet_tools(mcp: FastMCP, fleet: FleetTools, run_data: RunData) -> 
             "apm_fleet",
             label,
             lambda: fleet.ranking(
-                metric, order, n, full, domain_id, source_ids, ignored=ignored, service=service
+                metric,
+                order,
+                n,
+                full,
+                domain_id,
+                source_ids,
+                ignored=ignored,
+                service=service,
+                reference_time=reference_time,
+                lookback_minutes=lookback_minutes,
             ),
             owner=owner,
             wait_seconds=wait_seconds,

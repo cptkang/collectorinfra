@@ -26,6 +26,22 @@ testdata/itam/setup.sh     # down -v → up → itam_ro TCP 접속 대기 → �
 | `init/03_readonly_user.sql` | 수기 — SELECT 전용 `itam_ro` |
 | `docker-compose.yml` · `setup.sh` | 컨테이너 구성 · 기동 스크립트 |
 
+## 로컬 2테이블 샌드박스로 돌릴 때 되돌리는 법 (plans/140 W3 · D-311 ⑤)
+
+`config/db_profiles/itam.yaml`은 외부망 자산 빌더(`python -m scripts.itam_bench --build-assets <반출 run>`)가
+쓰는 **내부망본**(108테이블 정의 · 조회 대상 98)이다. 이 샌드박스(2테이블)에서 돌리면 프로필의 조회 대상·정의가
+맞지 않는다. 로컬에서 샌드박스로 돌릴 때만 아래처럼 바꾸고, 끝나면 되돌린다.
+
+1. 프로필: `cp testdata/itam/db_profile.local_sandbox.yaml config/db_profiles/itam.yaml`
+   (보존본 = 빌더 첫 실행 직전의 로컬 승인본 · 바이트 동일 · `environment: local_sandbox`)
+2. 스키마 캐시: `cp .cache/schema/itam_schema.json .cache/schema/itam_schema.json.bak-closed` 뒤
+   `cp .cache/schema/itam_schema.json.bak-sandbox-20260917 .cache/schema/itam_schema.json`
+3. 되돌리기: 프로필은 빌더를 다시 돌리거나 git 추적본으로 되돌리고, 캐시는 `.bak-closed`를 다시 복사한다.
+
+**바꾼 프로필은 커밋하지 않는다** — `environment: local_sandbox` 프로필은 추적 금지 게이트
+(`tests/test_schema_cache/test_plan104_local_sandbox_profile_gate.py`)에 걸린다. 108테이블 구조로 외부망에서 쿼리
+생성을 시험할 때는 이 샌드박스가 아니라 모의 DB `testdata/itam_closed_sim/`(3308)를 쓴다.
+
 ## 접속 정보
 
 | 항목 | 값 |

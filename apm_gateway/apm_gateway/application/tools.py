@@ -3384,9 +3384,10 @@ class ApmTools:
         full: bool = False,
         instance_name: str | None = None,
     ) -> dict[str, Any]:
-        """두 명시 구간 비교(plans/134 W6 A-1 — 조사 소비 · 채팅 배선 없음). 시 단위 애플리케이션
-        통계를 인스턴스·구간마다 받아(시 경계로 넓힌다) 호출·실패·실패율·가중 평균·최대와 증감을
-        낸다. p95는 시 단위 통계에 분포가 없어 싣지 않는다. 한쪽에만 있는 인스턴스는 N/A다."""
+        """두 명시 구간 비교(plans/134 W6 A-1 — 조사 소비 · 채팅 배선은 본체 보기
+        `apm.period_compare`). 시 단위 애플리케이션 통계를 인스턴스·구간마다 받아(시 경계로
+        넓힌다) 호출·실패·실패율·가중 평균·최대와 증감을 낸다. p95는 시 단위 통계에 분포가
+        없어 싣지 않는다. 한쪽에만 있는 인스턴스는 N/A다."""
         tool = "apm_period_compare"
         top_n = _check_n(n, default=None)
         requested: dict[str, tuple[int, int]] = {}

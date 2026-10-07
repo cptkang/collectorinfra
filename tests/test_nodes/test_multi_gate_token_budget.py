@@ -157,11 +157,26 @@ class TestGateSchemaTables:
 class TestTokenEstimate:
     """FIX-B 프리미티브: 보수 토큰 추정기·예산 해석."""
 
-    def test_ascii_quarter(self):
-        assert estimate_prompt_tokens("a" * 400) == 100
+    def test_ascii_word_six_chars(self):
+        assert estimate_prompt_tokens("a" * 400) == 67
 
     def test_korean_weighted_heavier(self):
-        assert estimate_prompt_tokens("가" * 300) == 200
+        assert estimate_prompt_tokens("가" * 300) == 250
+
+    def test_itam_shaped_prompt_not_underestimated(self):
+        """한글 컬럼 이름 + 타입 + 숫자 표본(ITAM 모양)을 o200k 실측에 가깝게 센다(D-159 부기).
+
+        o200k_base 실측 4,600토큰(2026-10-07) — 종전 문자 비율은 2,966으로 과소
+        추정해 예산 안으로 보고 FabriX 한도를 넘는 프롬프트를 보냈다.
+        예산 여유(90,000 / 95,232 ≈ 5.5%) 안의 오차만 허용한다.
+        """
+        fragment = (
+            "### tcdmsif72\n  - 서버메모리사용율: decimal\n"
+            "  - 시스템등록사용자번호: char NOT NULL\n"
+            "  - 담당부점코드: char\n  샘플: {'서버CPU사용률': 37.25, '담당자직원번호': 'KB10342', "
+            "'최종변경일시': '2026-10-01 09:30:00'}\n"
+        )
+        assert estimate_prompt_tokens(fragment * 50) >= 4600 * 0.95
 
     def test_empty_zero(self):
         assert estimate_prompt_tokens("") == 0
@@ -185,14 +200,14 @@ class TestMultiPromptBudget:
         """렌더 크기를 결정적으로 만든다: 본문 100tok, 재료 +1000tok, 샘플 +1000tok."""
 
         def fake_format(schema, materials=None):
-            text = "S" * 400
+            text = "SSSS " * 100
             if materials:
-                text += "M" * 4000
+                text += "MMMM " * 1000
             if any(
                 (data or {}).get("sample_data")
                 for data in (schema.get("tables") or {}).values()
             ):
-                text += "D" * 4000
+                text += "DDDD " * 1000
             return text
 
         async def fake_materials(db_id, app_config):

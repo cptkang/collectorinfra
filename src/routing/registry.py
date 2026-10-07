@@ -68,8 +68,9 @@ class FamilySpec:
 
 #: 보기 창 의미(plans/134 M-2 · SPEC-apm-question-coverage §6.1) — 상한이 아니다.
 #: current = 현재값만 · range = 요청 기간을 그대로 넘김 · hourly = 시 단위 통계 ·
-#: none = 시간 무관(목록).
-VIEW_WINDOWS: frozenset[str] = frozenset({"current", "range", "hourly", "none"})
+#: none = 시간 무관(목록) · compare = 두 기간 비교(기준·비교 구간을 코드가 정해 넘김 — plans/134
+#: W6 A-1).
+VIEW_WINDOWS: frozenset[str] = frozenset({"current", "range", "hourly", "none", "compare"})
 #: 보기 선택 조건 형식(§6.1 `ViewArgSpec.type` + `text` — 식별자가 아닌 자유 문자열(예 URL 이름 ·
 #: plans/134 W2 확장)).
 VIEW_ARG_TYPES: frozenset[str] = frozenset(
@@ -114,6 +115,9 @@ class ViewArgSpec:
         default: 미지정일 때 도구에 싣는 값(`enum`은 선택지 중 하나)
         targeted_choices: `enum` 값 중 **대상별로 부르는** 값(대상 표현 `optional` 보기 — 그 밖 값은
             대상과 무관한 소스 범위라 hostname 없이 1회). 비면 늘 대상별이다
+        verified_values: `int` 조건의 **검증된 원천 허용값**(오름차순 · plans/134 W6 M-7) — 사용자가
+            값을 말하지 않았을 때 처리기가 조회 구간 길이로 이 중 하나를 고른다. 비면 자동 선택하지
+            않는다(허용값 미확인 — W10). 사용자가 말한 값을 이 목록으로 거르지 않는다
     """
 
     name: str
@@ -126,6 +130,7 @@ class ViewArgSpec:
     required: bool = False
     default: Any = None
     targeted_choices: tuple[str, ...] = ()
+    verified_values: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -667,6 +672,12 @@ def _parse_view_args(value: Any, view_id: str) -> tuple[ViewArgSpec, ...]:
         if targeted and (kind != "enum" or not set(targeted) <= set(choices)):
             raise ValueError(f"보기 {view_id}: 조건 {raw['name']} targeted_choices는 enum 선택지의"
                              " 부분집합이어야 한다")
+        verified = tuple(raw.get("verified_values") or ())
+        if verified and (kind != "int" or not all(
+                isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in verified)
+                or list(verified) != sorted(set(verified))):
+            raise ValueError(f"보기 {view_id}: 조건 {raw['name']} verified_values는 int 조건의"
+                             " 양의 정수 오름차순 목록이어야 한다")
         specs.append(ViewArgSpec(
             name=str(raw["name"]),
             type=kind,
@@ -678,6 +689,7 @@ def _parse_view_args(value: Any, view_id: str) -> tuple[ViewArgSpec, ...]:
             required=bool(raw.get("required", False)),
             default=default,
             targeted_choices=targeted,
+            verified_values=verified,
         ))
     return tuple(specs)
 

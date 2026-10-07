@@ -5,6 +5,8 @@
     --run           벤치 서버 기동 → 로그인 → 시나리오 → 산출물 (두 평면 비과금일 때만 ·
     D-127·D-240)
     --compare A B   두 run 의 시나리오별 전이 (LLM·DB 0)
+    --build-assets RUN  반출 run → itam 프로필·유사어 시드·시드 스키마 캐시 직접 쓰기
+                    (LLM·DB 0 · D-311 ③ · plans/140 W3)
 
 기본 동작(인자 없음)은 `--dry-run` 이다 — 모르고 실행해도 LLM·DB 를 부르지 않는다.
 
@@ -636,19 +638,73 @@ def _git_provenance() -> dict[str, Any]:
 
 
 def build_artifacts(
-    *, run_meta: Mapping[str, Any], catalog_doc: Mapping[str, Any], records: list[dict[str, Any]]
+    *,
+    run_meta: Mapping[str, Any],
+    catalog_doc: Mapping[str, Any],
+    records: list[dict[str, Any]],
+    code_samples: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
-    """메모리의 산출물 4종(관문 전). `leak_check.json`은 관문이 쓴다."""
+    """메모리의 산출물 4종(+ P1 근거가 있으면 치환 코드값 `code_samples.yaml` · 관문 전).
+
+    `leak_check.json`은 관문이 쓴다.
+    """
     from .report import render_report
 
-    return {
+    staged = {
         "run.json": json.dumps(run_meta, ensure_ascii=False, indent=2) + "\n",
         "schema_catalog.yaml": yaml.safe_dump(
             dict(catalog_doc), allow_unicode=True, sort_keys=False
         ),
         "trace.jsonl": "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records),
-        "report.md": render_report(run_meta, catalog_doc, records),
+        "report.md": render_report(run_meta, catalog_doc, records, code_samples=code_samples),
     }
+    if code_samples is not None:
+        staged[rd.CODE_SAMPLES_FILE] = yaml.safe_dump(
+            dict(code_samples), allow_unicode=True, sort_keys=False
+        )
+    return staged
+
+
+def stage_gated(
+    *,
+    run_meta: Mapping[str, Any],
+    catalog_doc: Mapping[str, Any],
+    records: list[dict[str, Any]],
+    policy: cat.ColumnPolicy,
+    vault: rd.PiiVault,
+    user_values: Mapping[str, str | None],
+    p1_draft: Mapping[str, Any] | None,
+) -> tuple[dict[str, str], rd.LeakGate]:
+    """관문을 만들고 관문 규칙으로 미리 거른 산출물을 짠다(plans/140 W2-3·4·5).
+
+    - 승인 프로필 테이블 정의: 관문 규칙에 걸린 행은 빼고 수만(`gate_table_definitions`)
+    - P1 근거가 있으면 치환 코드값(`code_samples.yaml`) — 후보가 관문 규칙(코드값 대조 포함)에
+      걸리면 재추첨. 원 코드값·라벨 집합은 이 함수와 관문 안(메모리)에만 있다.
+    """
+    from . import code_samples as cs
+
+    originals = rd.CodeOriginals(cs.original_values(p1_draft)) if p1_draft else None
+    gate = rd.LeakGate(
+        policy=policy, vault=vault, user_values=user_values, code_originals=originals
+    )
+    catalog_doc = cat.gate_table_definitions(
+        catalog_doc, lambda text: bool(gate.rules(text, schema_section=True))
+    )
+    samples = None
+    if p1_draft and originals is not None:
+        samples = cs.build_code_samples(
+            p1_draft,
+            policy,
+            db_id=DB_ID,
+            run_id=str(run_meta.get("run_id")),
+            comments=cs.column_comments(catalog_doc),
+            originals=originals,
+            reject=lambda text: bool(gate.rules(text, schema_section=False)),
+        )
+    staged = build_artifacts(
+        run_meta=run_meta, catalog_doc=catalog_doc, records=records, code_samples=samples
+    )
+    return staged, gate
 
 
 def user_values(
@@ -699,14 +755,23 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
     try:
         schema = cat.load_schema_source(
-            args.schema_source, path=Path(args.schema_snapshot) if args.schema_snapshot else None
+            args.schema_source,
+            path=Path(args.schema_snapshot) if args.schema_snapshot else None,
+            cfg=cfg,
         )
     except (FileNotFoundError, ValueError) as exc:
-        if args.schema_source != "schema_cache" or args.env != "sandbox":
+        if args.schema_source not in ("schema_cache", "structure_store") or args.env != "sandbox":
             say(f"[중단] 스키마 입력: {exc}")
             return 1
         say(f"[주의] 파일 스키마 캐시 없음 — 샌드박스 전사본으로 카탈로그를 만든다 ({exc})")
         schema = cat.load_schema_source("transcript")
+        if args.schema_source == "structure_store":
+            schema["p1_fallback"] = "스냅샷·스키마 캐시 없음"
+    if schema.get("p1_fallback"):
+        say(f"[주의] {cat.P1_MISSING_WARNING} — {schema['p1_fallback']}")
+    for warning in schema.get("p1_warnings") or []:
+        say(f"[주의] {warning}")
+    p1_draft = schema.get("_p1_draft")
     # 설명·유사어는 서버와 같은 순서(Redis → 파일)로 다시 읽는다(plans/139 W6-a · 조회문 0)
     cat.apply_server_annotations(schema, cfg=cfg)
     if schema["annotation_sources"]["redis"] == "unavailable":
@@ -715,12 +780,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             "(annotation_sources 에 기록)"
         )
     profile = cat.load_profile()
-    catalog_doc = cat.build_schema_catalog(
-        schema,
-        policy,
-        assets=cat.asset_fingerprints(descriptions=len(schema.get("descriptions") or {})),
-        profile=profile,
-    )
+    assets = cat.asset_fingerprints(descriptions=len(schema.get("descriptions") or {}))
+    assets["p1"] = cat.p1_asset(p1_draft)
+    catalog_doc = cat.build_schema_catalog(schema, policy, assets=assets, profile=profile)
     # 실행 환경의 카탈로그(운영이면 108테이블)로 프롬프트를 한 번 더 거른다 — 로더 린트는 정책에
     # 적힌 이름만 안다. 걸린 낱말은 출력하지 않는다(시나리오 id 만). 짧은 이름(`IP`·`OS` 같은
     # 컬럼)은 사용자 말과 겹치므로 5자 이상만 본다.
@@ -750,7 +812,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     session = Path(tempfile.mkdtemp(prefix="itam-bench-"))
     try:
-        return _run_with_server(args, cfg, policy, scenarios, catalog_doc, facts, session)
+        return _run_with_server(
+            args, cfg, policy, scenarios, catalog_doc, facts, session, p1_draft=p1_draft
+        )
     finally:
         # 서버 원시 로그(감사 줄의 사용자 칸)·체크포인트(응답 원문)·측정 수신·오라클 로그 — 산출물이
         # 아니다.
@@ -765,6 +829,8 @@ def _run_with_server(
     catalog_doc: Mapping[str, Any],
     facts: jd.CatalogFacts,
     session: Path,
+    *,
+    p1_draft: Mapping[str, Any] | None = None,
 ) -> int:
     import httpx
 
@@ -956,8 +1022,10 @@ def _run_with_server(
             RESULTS_ROOT / run_id, repo_root=REPO_ROOT, home=Path.home()
         ),
     }
-    staged = build_artifacts(run_meta=run_meta, catalog_doc=catalog_doc, records=records)
-    gate = rd.LeakGate(
+    staged, gate = stage_gated(
+        run_meta=run_meta,
+        catalog_doc=catalog_doc,
+        records=records,
         policy=policy,
         vault=vault,
         user_values=user_values(
@@ -965,6 +1033,7 @@ def _run_with_server(
             dsn=_itam_dsn(),
             password=password if status.auth_enabled else None,
         ),
+        p1_draft=p1_draft,
     )
     ok, violations = rd.write_gated(RESULTS_ROOT / run_id, staged, gate)
     say(f"[4/4] 산출물 {'기록' if ok else '미기록(누출 관문 실패)'} — {run_meta['results_dir']}")
@@ -1012,6 +1081,34 @@ def cmd_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_build_assets(args: argparse.Namespace, cfg: Any = None) -> int:
+    """반출 run 으로 외부망 자산을 만들어 쓴다(D-311 ③) — 기본 LLM·DB 0.
+
+    `--p2`면 쿼리 예시·DB 전용 규칙 섹션 LLM 초안을 `itam` 소스(모의 DB)로 검증해 함께 쓴다
+    (plans/140 W5). 두 LLM 평면 중 과금 평면이 있으면 실행하지 않는다(종료 1 · D-127).
+    """
+    from .build_assets import EXIT_REFUSED, default_p2_deps, p2_billing_refusal, run_build
+
+    run_dir = Path(args.build_assets)
+    if not run_dir.is_absolute() and not run_dir.exists():
+        run_dir = RESULTS_ROOT / args.build_assets
+    deps = None
+    if args.p2:
+        if cfg is None:
+            from src.config import load_config
+
+            cfg = load_config()
+        refusal = p2_billing_refusal(cfg)
+        if refusal:
+            say(f"[build-assets] 거부: {refusal}")
+            return EXIT_REFUSED
+        deps = default_p2_deps(cfg)
+    return run_build(
+        run_dir, install_cache=args.install_cache, keep_excluded=args.keep_excluded,
+        p2=args.p2, p2_deps=deps,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m scripts.itam_bench",
@@ -1024,6 +1121,9 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--run", action="store_true", help="벤치 서버로 사용자 경로 실행")
     mode.add_argument("--compare", nargs=2, metavar=("RUN_A", "RUN_B"), help="두 run 비교")
     mode.add_argument("--sync", metavar="RUN", help="반출 run 카탈로그 ↔ 로컬 전사본·정책 차이")
+    mode.add_argument(
+        "--build-assets", metavar="RUN", help="반출 run → itam 프로필·시드 직접 쓰기(D-311 ③)"
+    )
     parser.add_argument("--env", default="sandbox", choices=sorted(cat.ENVS), help="실행 환경")
     parser.add_argument("--only", default=None, help="시나리오 ID 쉼표 목록")
     parser.add_argument(
@@ -1038,15 +1138,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=None, help="벤치 서버 포트(기본 빈 포트)")
     parser.add_argument(
         "--schema-source",
-        default="schema_cache",
-        choices=("schema_cache", "snapshot", "transcript"),
-        help="카탈로그 입력",
+        default=None,
+        choices=("schema_cache", "snapshot", "transcript", "structure_store"),
+        help="카탈로그 입력(기본: sandbox=schema_cache · closed=structure_store — 「DB 구조」 탭 "
+        "스냅샷·P1 초안 · plans/140 W2)",
     )
     parser.add_argument(
         "--schema-snapshot", default=None, help="itam_erd 스냅숏 JSON(--schema-source snapshot)"
     )
     parser.add_argument("--scenarios", default=None, help="시나리오 YAML(기본: 환경별)")
     parser.add_argument("--policy", default=None, help="컬럼 기록 정책 YAML(기본: 환경별)")
+    parser.add_argument(
+        "--install-cache",
+        action="store_true",
+        help="--build-assets: .cache/schema/itam_schema.json 에도 쓴다(기존 파일 백업)",
+    )
+    parser.add_argument(
+        "--keep-excluded",
+        action="store_true",
+        help="--build-assets: 기본 제외 테이블을 조회 대상에 남긴다",
+    )
+    parser.add_argument(
+        "--p2",
+        action="store_true",
+        help="--build-assets: P2 LLM 초안(쿼리 예시·DB 전용 규칙 섹션)을 itam 소스(모의 DB)로 "
+        "검증해 함께 쓴다 — 두 LLM 평면이 비과금일 때만(plans/140 W5)",
+    )
     return parser
 
 
@@ -1057,6 +1174,8 @@ def main(argv: list[str] | None = None) -> int:
         args.scenarios = str(CLOSED_SCENARIOS_PATH if closed else SCENARIOS_PATH)
     if args.policy is None:
         args.policy = str(CLOSED_POLICY_PATH if closed else POLICY_PATH)
+    if args.schema_source is None:
+        args.schema_source = "structure_store" if closed else "schema_cache"
     if args.repeat < 1:
         say("[중단] --repeat 는 1 이상")
         return 1
@@ -1068,6 +1187,11 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_compare(args)
     if args.sync:
         return cmd_sync(args)
+    if args.build_assets:
+        return cmd_build_assets(args)
+    if args.p2:
+        say("[중단] --p2 는 --build-assets 와 함께 쓴다")
+        return 1
     return cmd_dry_run(args)
 
 

@@ -4,7 +4,7 @@
   1. 보기 = `apm_change_impact` · range(변경 탐색 구간) · 대상 hostname(필수 — 종전 필수 대상
      규칙) · 조건 `width_minutes`·`n`·`full` · 고정 고지 `apm_change_detection`.
   2. 기간 미지정이면 파서 기간을 쓰지 않는다(게이트웨이 기본 24시간) · 기간을 말하면 그대로 넘기고
-     「하루 넘게 지난 기간」 규칙(D-283 ④ · W6 M-7 전까지)은 그대로 막는다.
+     오래된 기간도 조회한다(「하루 넘게 지난 기간」 거부는 W6 M-7에서 폐지).
   3. 결정적 줄: 변경마다 「{인스턴스} 변경 감지 {시각} — 오류율 a → b(±%p) · 평균 응답 a → b(±%) ·
      오류 기록 a → b · 호출 a → b」(값이 없으면 N/A — 0으로 세지 않는다) → `**판정·집계**` 블록.
 게이트웨이는 모의 MCP 세션이다(봉투 모양은 계약 §2.5 — 게이트웨이 실코드는 병합 뒤 대조).
@@ -143,11 +143,12 @@ async def test_no_period_leaves_the_gateway_default(gateway) -> None:
 
 
 @pytest.mark.asyncio
-async def test_period_older_than_a_day_is_still_refused(gateway) -> None:
+async def test_period_older_than_a_day_is_queried(gateway) -> None:
+    """plans/134 W6 M-7 — 하루 넘게 지난 기간도 조회한다(종전 거부 폐지)."""
     gw = gateway({"apm_change_impact": _env("apm_change_impact", [])})
-    res = await _run("web01", time_range={"start": "2026-09-28 00:00", "end": "2026-09-29 00:00"})
-    assert gw.calls == [] and res["degraded_reason"] == "apm_not_queried"
-    assert aq.OUT_OF_WINDOW_NOTE in res["final_response"]
+    await _run("web01", time_range={"start": "2026-09-28 00:00", "end": "2026-09-29 00:00"})
+    (args,) = gw.named("apm_change_impact")
+    assert args["lookback_minutes"] == 1440 and args["reference_time"] == "2026-09-29T00:00:00"
 
 
 @pytest.mark.asyncio

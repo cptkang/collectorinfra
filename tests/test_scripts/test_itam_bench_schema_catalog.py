@@ -136,6 +136,10 @@ class TestSchemaCatalog:
             "columns_with_synonyms": 0,
             "unclassified_columns": 0,
             "relations": {},
+            # plans/140 W2-2 — P1 근거가 없는 입력은 0
+            "comment_enum_columns": 0,
+            "p1_profiled_columns": 0,
+            "p1_code_columns": 0,
         }
         assert catalog["same_key_groups"] == [["TCDMSIF79", "TCDMSIF80"]]  # 3열 동일 기본키
         cols = {c["name"]: c for c in catalog["tables"]["TCDMSIF80"]["columns"]}

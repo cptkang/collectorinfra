@@ -1,0 +1,31 @@
+# ITAM 외부망 모의 DB (plans/140 W4 · D-311 ⑤ · G-4) — 외부망 쿼리 자동 생성 테스트 전용
+# 초기화 SQL은 generate.py가 generated/(gitignore)에 만든다 — 기동 전에 먼저 생성한다(README).
+# 로컬 샌드박스(testdata/itam · 3307 · itam_mariadb)와 컨테이너·볼륨·포트를 나눈다.
+services:
+  itam-closed-sim:
+    # 로컬 샌드박스와 같은 메이저(latest 금지)
+    image: mariadb:11.4
+    container_name: itam_closed_sim_mariadb
+    environment:
+      MARIADB_ROOT_PASSWORD: itam_sim_root_pass
+      MARIADB_DATABASE: INST1
+    command:
+      - --lower-case-table-names=0
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+    ports:
+      # 루프백 바인딩 필수 — 치환 코드값·합성 행을 외부에 노출하지 않는다
+      - "127.0.0.1:3308:3306"
+    volumes:
+      - ./generated:/docker-entrypoint-initdb.d:ro
+      # named volume — macOS bind mount는 대소문자 비구분이라 테이블명 대소문자 구분을 재현하지 못한다
+      - itam_closed_sim_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+volumes:
+  itam_closed_sim_data:
+    name: itam_closed_sim_data

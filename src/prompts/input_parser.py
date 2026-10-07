@@ -144,7 +144,8 @@ INPUT_PARSER_CSV_CONTEXT_PROMPT = """
 # 하루 동안 바뀌지 않는다.
 #
 # 종전 `time_range`(ISO) 출력 필드는 유지한다 — APM 조회 창(`src/orchestration/apm_query.py`
-# `plan_window` · plans/134 W6이 바꿀 예정)과 plans/121 `time_window`가 아직 그것을 읽는다.
+# `plan_window`)은 plans/134 W6 M-7부터 `time_resolution`을 쓰고 해석이 없을 때(옛 체크포인트)만
+# 이것을 읽는다. plans/121 `time_window` 슬롯은 아직 그것을 읽는다(D-309 ③).
 # SQL 경로는 `time_range`가 아니라 state `time_resolution`(이 슬롯 + 규칙 해석)을 쓴다.
 
 INPUT_PARSER_TIME_SLOT_SECTION = """

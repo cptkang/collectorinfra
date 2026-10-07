@@ -2,8 +2,9 @@
 
 자산 자동 생성(`asset_generation_service`)이 DB에 묻는 것은 전부 여기를 거친다. 규칙:
 
-- **SELECT만 · 코드가 조립한다**(LLM SQL 없음). 식별자는 조각마다 `^[A-Za-z_][A-Za-z0-9_$#]*$`이고
-  스냅샷에 실존해야 한다(`db_structure_service._resolve_column`).
+- **SELECT만 · 코드가 조립한다**(LLM SQL 없음). 테이블·컬럼은 스냅샷에 실존해야 하고
+  (`db_structure_service._resolve_column`) 조각마다 `snapshot_identifier`를 지난다 — 라틴 조각은
+  인용 없이 그대로, 한글 음절이 든 조각만 엔진 인용으로 감싼다(plans/140 W1-0). 스키마명은 라틴만.
 - 카탈로그 조회(주석·행 수)는 **엔진별 모듈 상수 SQL**이다. `SQLGuard`의 금지어·인젝션 검사를 그대로
   쓰되 카탈로그 직접 조회 패턴(`INFORMATION_SCHEMA.`)만 예외로 둔다 — 서버 변수 조회
   `assert_constant_select`(`@@`만 예외)와 같은 방식이다. 넣는 값은 식별자 정규식을 통과한
@@ -11,6 +12,7 @@
 - 값 표본·코드값은 기존 `collect_code_values`(`SELECT DISTINCT … IS NOT NULL` + 엔진별 행 제한)를
   쓴다.
 - 관계 값 겹침은 자식 키 표본(`DISTINCT` · 행 제한)을 부모 기본키에 `LEFT JOIN`해 센다.
+- 컬럼 유일성(이름 일치 관계의 부모 확인 · plans/140 W1-2)은 비NULL 행 수와 서로 다른 값 수를 센다.
 - 조회 수는 `ProbeBudget`이 센다 — 넘으면 남은 대상을 「예산 초과」로 표시한다(침묵 생략 금지).
 - 대상별 실패는 사유로 남기고 다음 대상으로 간다(독립 신호 · 부분 결과 보존).
 
@@ -29,6 +31,7 @@ from src.schema_cache.db_structure_service import (
     _resolve_column,
     collect_code_values,
     resolve_table,
+    snapshot_identifier,
 )
 from src.security.sql_guard import INJECTION_PATTERNS, SQLGuard
 from src.utils.sql_dialect import is_db2, row_limit_clause
@@ -184,6 +187,11 @@ def _snapshot_schemas(snapshot: Mapping[str, Any], db_schema: str | None) -> lis
     return schemas
 
 
+def catalog_query_count(snapshot: Mapping[str, Any], db_schema: str | None) -> int:
+    """`read_catalog`가 쓸 조회 수(스키마마다 2회) — 조회 예산 산정용."""
+    return 2 * len(_snapshot_schemas(snapshot, db_schema))
+
+
 def _table_key(snap_tables: Mapping[str, Any], schema: str | None, name: str) -> str | None:
     """카탈로그 행의 (스키마, 테이블)을 스냅샷 키로 — `schema.table` → 정확 → 대소문자 무시 유일.
 
@@ -297,16 +305,14 @@ async def sample_distinct(
 
 def _qualified(table_key: str, engine: str, db_schema: str | None, table_schema: str | None) -> str:
     """테이블 참조 — DB2는 접두 없는 키에 스키마를 붙인다(코드값 조립과 같은 규칙)."""
-    for part in table_key.split("."):
-        if not _IDENT_RE.fullmatch(part):
-            raise ValueError(f"허용되지 않는 식별자: {part!r}")
+    ref = ".".join(snapshot_identifier(part, engine) for part in table_key.split("."))
     if is_db2(engine) and "." not in table_key:
         schema = (db_schema or table_schema or "").strip()
         if schema:
             if not _IDENT_RE.fullmatch(schema):
                 raise ValueError(f"허용되지 않는 스키마 식별자: {schema!r}")
-            return f"{schema}.{table_key}"
-    return table_key
+            return f"{schema}.{ref}"
+    return ref
 
 
 def build_overlap_sql(
@@ -334,13 +340,10 @@ def build_overlap_sql(
     resolved_parent = [_resolve_column(snapshot, parent, c) for c in parent_columns]
     child_key, _, child_schema = resolved_child[0]
     parent_key, _, parent_schema = resolved_parent[0]
-    for _table, column, _schema in [*resolved_child, *resolved_parent]:
-        if not _IDENT_RE.fullmatch(column):
-            raise ValueError(f"허용되지 않는 식별자: {column!r}")
+    c_cols = [snapshot_identifier(c, engine) for _t, c, _s in resolved_child]
+    p_cols = [snapshot_identifier(c, engine) for _t, c, _s in resolved_parent]
     child_ref = _qualified(child_key, engine, db_schema, child_schema)
     parent_ref = _qualified(parent_key, engine, db_schema, parent_schema)
-    c_cols = [c for _t, c, _s in resolved_child]
-    p_cols = [c for _t, c, _s in resolved_parent]
     select_cols = ", ".join(f"c.{c} AS k{i}" for i, c in enumerate(c_cols))
     not_null = " AND ".join(f"c.{c} IS NOT NULL" for c in c_cols)
     on = " AND ".join(f"p.{p} = s.k{i}" for i, p in enumerate(p_cols))
@@ -401,6 +404,77 @@ async def check_overlap(
     return out
 
 
+def build_unique_sql(
+    table: str,
+    column: str,
+    *,
+    snapshot: Mapping[str, Any],
+    engine: str,
+    db_schema: str | None,
+) -> str:
+    """컬럼 유일성 조회 — 비NULL 행 수와 서로 다른 값 수.
+
+    ``SELECT COUNT(*) AS non_null, COUNT(DISTINCT c) AS distinct_count FROM t WHERE c IS NOT NULL``
+
+    Raises:
+        ValueError: 스냅샷에 없는 식별자 · 허용되지 않는 식별자 · 안전성 검사 불통과
+    """
+    table_key, column_name, table_schema = _resolve_column(snapshot, table, column)
+    col = snapshot_identifier(column_name, engine)
+    ref = _qualified(table_key, engine, db_schema, table_schema)
+    sql = (
+        f"SELECT COUNT(*) AS non_null, COUNT(DISTINCT {col}) AS distinct_count FROM {ref} "
+        f"WHERE {col} IS NOT NULL"
+    )
+    safe, reason = SQLGuard().is_safe_select(sql)
+    if not safe:
+        raise ValueError(f"조립 SQL이 안전성 검사를 통과하지 못했습니다: {reason}")
+    return sql
+
+
+async def check_unique(
+    client: Any,
+    *,
+    table: str,
+    column: str,
+    snapshot: Mapping[str, Any],
+    engine: str,
+    db_schema: str | None,
+    budget: ProbeBudget,
+) -> dict[str, Any]:
+    """컬럼 값이 테이블 안에서 유일한지 잰다(이름 일치 관계의 부모 후보 확인 · plans/140 W1-2).
+
+    Returns:
+        ``{"non_null", "distinct", "unique", "sql", "error"}`` — ``unique``는 서로 다른 값 수 =
+        비NULL 행 수(> 0)일 때 True, 조회하지 못했으면 None
+    """
+    out: dict[str, Any] = {"non_null": None, "distinct": None, "unique": None, "sql": None,
+                           "error": None}
+    try:
+        out["sql"] = build_unique_sql(
+            table, column, snapshot=snapshot, engine=engine, db_schema=db_schema,
+        )
+    except ValueError as e:
+        out["error"] = str(e)
+        return out
+    if not budget.take(f"unique:{table}.{column}"):
+        out["error"] = "예산 초과"
+        return out
+    try:
+        result = await client.execute_sql(out["sql"])
+    except Exception as e:  # noqa: BLE001 — 컬럼별 실패는 사유로 돌려준다
+        out["error"] = f"{type(e).__name__}: {e}"
+        logger.warning("컬럼 유일성 조회 실패 (%s.%s): %s", table, column, e)
+        return out
+    rows = getattr(result, "rows", None) or []
+    values = _lower_keys(rows[0]) if rows else {}
+    non_null, distinct = _to_int(values.get("non_null")), _to_int(values.get("distinct_count"))
+    out.update(non_null=non_null, distinct=distinct)
+    if non_null is not None and distinct is not None:
+        out["unique"] = non_null > 0 and distinct == non_null
+    return out
+
+
 async def sample_pairs(
     client: Any,
     table: str,
@@ -422,9 +496,8 @@ async def sample_pairs(
     try:
         table_key, key_col, table_schema = _resolve_column(snapshot, table, key_column)
         _t, label_col, _s = _resolve_column(snapshot, table, label_column)
-        for column in (key_col, label_col):
-            if not _IDENT_RE.fullmatch(column):
-                raise ValueError(f"허용되지 않는 식별자: {column!r}")
+        key_col = snapshot_identifier(key_col, engine)
+        label_col = snapshot_identifier(label_col, engine)
         ref = _qualified(table_key, engine, db_schema, table_schema)
         out["sql"] = (
             f"SELECT DISTINCT {key_col} AS code_value, {label_col} AS code_label FROM {ref} "

@@ -187,12 +187,73 @@ def _latency_note(run: Mapping[str, Any]) -> str:
     return f"평면 워커 `{worker or '—'}` / 오케스트레이터 `{orchestrator or '—'}`에서 잰 값(참고)."
 
 
+def _p1_warnings(catalog: Mapping[str, Any]) -> list[str]:
+    """첫머리 경고 — P1 근거 없음(폴백 사유) · 스냅샷 해시 불일치(plans/140 W2-7 · 고정 문구)."""
+    lines = []
+    if catalog.get("p1_fallback"):
+        lines.append(
+            f"> **P1 근거 없음 — 자산 없는 기준선** (사유: {catalog['p1_fallback']} · "
+            f"스키마 입력 `{catalog.get('source')}`). 내부망에서 「DB 구조」 탭 자산 자동 생성 "
+            "1단계(P1)를 먼저 돌린 뒤 다시 실행하면 근거가 실린다(D-311 ①)."
+        )
+    lines += [f"> 주의 — {warning}" for warning in catalog.get("p1_warnings") or []]
+    return lines + [""] if lines else []
+
+
+def _p1_section(catalog: Mapping[str, Any], code_samples: Mapping[str, Any] | None) -> list[str]:
+    """P1 근거 요약 · 주석 열거 보유 컬럼 수 · 치환 코드값 요약(수만)."""
+    from .code_samples import summary_line
+
+    summary = catalog.get("summary") or {}
+    p1 = catalog.get("p1")
+    if not p1 and "comment_enum_columns" not in summary:
+        return []
+    rows: list[list[Any]] = []
+    if p1:
+        budget = p1.get("budget") or {}
+        p1_rel = [
+            r
+            for t in (catalog.get("tables") or {}).values()
+            for r in t.get("relations") or []
+            if r.get("kind") == "p1"
+        ]
+        rows += [
+            ["초안", f"{p1.get('draft_id')} · {p1.get('status')} · {p1.get('created_at')}"],
+            ["엔진 · DB 미연결", f"{p1.get('engine')} · {'예' if p1.get('offline') else '아니오'}"],
+            ["프로파일 컬럼", summary.get("p1_profiled_columns", 0)],
+            ["코드 컬럼", summary.get("p1_code_columns", 0)],
+            ["관계 후보 · 채택", f"{len(p1_rel)} · {sum(1 for r in p1_rel if r.get('accepted'))}"],
+            [
+                "조회 예산(사용/한도 · 요청 · 상한 · 생략)",
+                f"{budget.get('used')}/{budget.get('limit')} · {budget.get('requested')} · "
+                f"{budget.get('cap')} · {budget.get('skipped')}",
+            ],
+        ]
+    rows.append(["주석 코드 열거 보유 컬럼", summary.get("comment_enum_columns", 0)])
+    if p1:
+        rows.append(["치환 코드값(code_samples.yaml)", summary_line(code_samples)])
+    lines = ["## 0. P1 근거(「DB 구조」 탭 결과 읽기 · 값 0)", ""]
+    lines += _table(["항목", "값"], rows)
+    if summary.get("comment_enum_columns"):
+        lines += [
+            "",
+            "> 주석에 코드 열거가 있는 컬럼은 원 코드가 주석(DB 정의)으로 반출된다 — 같은 컬럼의 "
+            "치환값과 어긋난다(D-311 주의 ③).",
+        ]
+    return lines + [""]
+
+
 def render_report(
-    run: Mapping[str, Any], catalog: Mapping[str, Any], records: Sequence[Mapping[str, Any]]
+    run: Mapping[str, Any],
+    catalog: Mapping[str, Any],
+    records: Sequence[Mapping[str, Any]],
+    *,
+    code_samples: Mapping[str, Any] | None = None,
 ) -> str:
-    """`report.md` 본문."""
+    """`report.md` 본문. `code_samples`는 치환 코드값 파일 본문(요약 수만 옮긴다)."""
     s = summarize(records)
     lines = [f"# ITAM 질의 벤치 리포트 — {run.get('run_id')}", ""]
+    lines += _p1_warnings(catalog)
     lines += [
         f"- 환경 `{run.get('env')}` · 프로파일 `{run.get('profile')}` · "
         f"확정 단 `{run.get('tier')}` · "
@@ -234,6 +295,7 @@ def render_report(
             "관문 통과가 위생의 증거가 되지 못한다.",
             "",
         ]
+    lines += _p1_section(catalog, code_samples)
     lines += ["## 1. 점수", ""]
     lines += _table(
         ["항목", "값"],

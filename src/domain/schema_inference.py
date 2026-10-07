@@ -12,6 +12,10 @@
   끌 수 있다.
 - 값 형식: `YYYYMMDD`·`YYYYMMDDHH24MISS` 문자열 날짜 · IPv4 · 호스트명 · 플래그 · 쉼표 다중값 비율.
 - 코드값: 이름·주석 단서로 후보를 고르고(값 조회는 호출자), 주석의 `1:정상, 2:장애` 열거를 읽는다.
+- 이름 일치 관계 후보(plans/140 W1-2): 기본키 없는 테이블끼리 같은 이름의 식별자형 컬럼(값 조회는
+  호출자).
+- 자산 조립 순수 함수(관계 채택 행 · 쿼리 규칙과 식별 키 후보 · `entity_keys` · 주석 유사어) —
+  P1과 외부망 빌더가 같이 쓴다.
 
 계층: domain. 특정 DB의 스키마 리터럴을 두지 않는다(`overfit_check` 스캔 대상).
 """
@@ -50,7 +54,10 @@ _FLAG_SETS: tuple[frozenset[str], ...] = (
 _CODE_NAME_RE = re.compile(
     r"(?i)(?:^|_|[a-z])(cd|code|yn|type|typ|stat|status|gb|gbn|div|kind|cls|grp|flag|lvl|grade)$"
 )
-_CODE_COMMENT_RE = re.compile(r"코드|구분|여부|상태|유형|종류|등급|분류|단계")
+_CODE_WORDS = r"코드|구분|여부|상태|유형|종류|등급|분류|단계"
+_CODE_COMMENT_RE = re.compile(_CODE_WORDS)
+# 한글 이름은 끝 낱말로 본다(plans/140 W1-1) — 라틴 이름 판정은 그대로다
+_CODE_NAME_KO_RE = re.compile(rf"(?:{_CODE_WORDS})$")
 _CODE_TYPE_RE = re.compile(
     r"^(char|character|varchar|character varying|nchar|nvarchar|graphic|vargraphic|"
     r"tinyint|smallint|int|integer|mediumint|bit|boolean|bool|enum|set)\b",
@@ -65,6 +72,21 @@ _ENUM_PAIR_RE = re.compile(
 # 주석 라벨 — 괄호·콜론·쉼표 앞 첫 마디
 _LABEL_CUT_RE = re.compile(r"[(\[:,/;]")
 _BACKTICK_RE = re.compile(r"`([^`\n]{1,128})`")
+# 이름 일치 관계 후보의 식별자형 이름 끝(plans/140 W1-2)
+# — 라틴 `_id`·`No`·`cd`류 · 한글 `번호`·`코드`·`식별자`·`ID`
+_ID_NAME_RE = re.compile(
+    r"(?i:(?:^|_)(?:id|no|cd|code))$|[a-z0-9](?:Id|ID|No|NO|Cd|CD|Code)$"
+    r"|[\uac00-\ud7a3](?:ID|Id|id)$|(?:번호|코드|식별자)$"
+)
+_KEY_STRING_TYPE_RE = re.compile(
+    r"^(char|character|varchar|character varying|nchar|nvarchar|varchar2|text|graphic|"
+    r"vargraphic)\b",
+    re.IGNORECASE,
+)
+_KEY_NUMBER_TYPE_RE = re.compile(
+    r"^(tinyint|smallint|int|integer|mediumint|bigint|decimal|numeric|number|dec)\b",
+    re.IGNORECASE,
+)
 _DOTTED_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_$#]*)\.([A-Za-z_][A-Za-z0-9_$#]*)\b")
 
 
@@ -214,6 +236,105 @@ def shapes_from_snapshot(snapshot: Mapping[str, Any]) -> dict[str, TableShape]:
     return shapes
 
 
+def key_type_class(data_type: str | None) -> str | None:
+    """키 비교용 타입 군 — ``string``(문자열) · ``number``(정수·소수) · 그 밖은 None."""
+    text = str(data_type or "").strip()
+    if _KEY_STRING_TYPE_RE.match(text):
+        return "string"
+    if _KEY_NUMBER_TYPE_RE.match(text):
+        return "number"
+    return None
+
+
+def is_identifier_name(name: str) -> bool:
+    """이름 끝이 식별자형(``ID``·``번호``·``코드``·``식별자`` · 라틴 ``id``·``no``·``cd``류)인지."""
+    return bool(_ID_NAME_RE.search(name))
+
+
+@dataclass(frozen=True)
+class NameMatchColumn:
+    """이름 일치 관계 후보 컬럼(plans/140 W1-2).
+
+    Attributes:
+        name: 컬럼 이름(소문자 · 비교 키)
+        type_class: ``string`` · ``number``
+        members: 참여 테이블과 그 테이블의 실제 컬럼 표기 ``(테이블, 컬럼)`` — 선언 기본키가 없는
+            테이블만 · 테이블 이름순
+        table_count: 그 이름이 나오는 범위 테이블 수(타입·기본키 무관)
+    """
+
+    name: str
+    type_class: str
+    members: tuple[tuple[str, str], ...]
+    table_count: int
+
+
+def name_match_columns(
+    columns: Mapping[str, Sequence[tuple[str, str]]],
+    primary_keyed: Iterable[str] = (),
+    common_ratio: float = DEFAULT_COMMON_RATIO,
+) -> list[NameMatchColumn]:
+    """기본키 없는 테이블 쌍의 관계 후보 컬럼을 고른다(값 조회는 호출자).
+
+    - 범위 테이블에서 같은 이름(대소문자 무시)이 2개 이상 · 범위 테이블 수 × ``common_ratio``
+      **미만** 테이블에 나오고, 이름 끝이 식별자형인 컬럼.
+    - 같은 타입 군(문자열끼리 · 정수/소수끼리)으로 묶는다 — 군이 다른 테이블끼리는 잇지 않는다.
+    - 선언 기본키가 있는 테이블(``primary_keyed``)은 참여하지 않는다 — 그 쌍은 종전 경로(선언 ·
+      기본키 일치 추론 · 같은 기본키 군)가 맡는다. 참여 테이블이 2개 미만이면 후보가 아니다.
+
+    Args:
+        columns: 범위 테이블 ``{테이블: [(컬럼, 타입)]}``
+        primary_keyed: 선언 기본키가 있는 테이블
+        common_ratio: 공통 컬럼 판정 비율
+
+    Returns:
+        (이름, 타입 군) 순 정렬된 후보 목록
+    """
+    keyed = set(primary_keyed)
+    by_name: dict[str, dict[str, tuple[str, str]]] = defaultdict(dict)
+    for table, cols in columns.items():
+        for column, data_type in cols:
+            by_name[column.lower()].setdefault(table, (column, data_type))
+    limit = common_ratio * len(columns)
+    out: list[NameMatchColumn] = []
+    for name in sorted(by_name):
+        found = by_name[name]
+        if not (2 <= len(found) < limit):
+            continue
+        if not any(is_identifier_name(column) for column, _t in found.values()):
+            continue
+        groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for table, (column, data_type) in found.items():
+            type_class = key_type_class(data_type)
+            if type_class and table not in keyed:
+                groups[type_class].append((table, column))
+        for type_class in sorted(groups):
+            members = tuple(sorted(groups[type_class]))
+            if len(members) >= 2:
+                out.append(NameMatchColumn(name, type_class, members, len(found)))
+    return out
+
+
+def accepted_relationships(evidence: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """관계 근거 항목 → 채택 관계 행 ``{"from", "to", "origin", "overlap"}``(컬럼 쌍 단위).
+
+    근거 항목은 ``child``·``parent``·``child_columns``·``parent_columns``·``origin``·``overlap``·
+    ``accepted``를 가진다. 채택(``accepted``)된 항목만 근거 순서대로 펼친다.
+    """
+    rows: list[dict[str, Any]] = []
+    for item in evidence:
+        if not item.get("accepted"):
+            continue
+        for child_col, parent_col in zip(
+            item.get("child_columns") or [], item.get("parent_columns") or []
+        ):
+            rows.append({
+                "from": f"{item['child']}.{child_col}", "to": f"{item['parent']}.{parent_col}",
+                "origin": item.get("origin"), "overlap": item.get("overlap"),
+            })
+    return rows
+
+
 # ──────────────────────────────────────────────
 # 값 형식
 # ──────────────────────────────────────────────
@@ -283,10 +404,17 @@ def classify_values(values: Iterable[Any]) -> ValueProfile:
 
 
 def is_code_candidate(name: str, data_type: str, comment: str | None = None) -> bool:
-    """코드성 컬럼 후보인지 — 짧은 문자열·작은 정수 타입이면서 이름·주석 단서가 있어야 한다."""
+    """코드성 컬럼 후보인지 — 짧은 문자열·작은 정수 타입이면서 이름·주석 단서가 있어야 한다.
+
+    이름 단서는 라틴 끝 조각(``cd``·``yn``·``type``…)이나 한글 끝 낱말(``코드``·``구분``·
+    ``여부``…)이다.
+    """
     if not _CODE_TYPE_RE.match(str(data_type or "").strip()):
         return False
-    return bool(_CODE_NAME_RE.search(name) or (comment and _CODE_COMMENT_RE.search(comment)))
+    return bool(
+        _CODE_NAME_RE.search(name) or _CODE_NAME_KO_RE.search(name)
+        or (comment and _CODE_COMMENT_RE.search(comment))
+    )
 
 
 def parse_comment_enum(comment: str | None) -> dict[str, str]:
@@ -310,6 +438,21 @@ def comment_label(comment: str | None, max_length: int = 20) -> str | None:
     if not head or len(head) > max_length:
         return None
     return head
+
+
+def comment_synonyms(comments: Mapping[str, str]) -> dict[str, list[str]]:
+    """컬럼 주석 → 유사어 시드 ``{"table.column": [라벨]}`` (P1과 외부망 빌더가 같이 쓴다).
+
+    라벨은 `comment_label`이고, 컬럼 이름과 같으면(대소문자 무시) 싣지 않는다. 테이블 주석(점 없는
+    키)은 건너뛴다. 입력 순서를 지킨다.
+    """
+    out: dict[str, list[str]] = {}
+    for key, text in comments.items():
+        table, _, column = key.rpartition(".")
+        label = comment_label(text)
+        if table and column and label and label.casefold() != column.casefold():
+            out[key] = [label]
+    return out
 
 
 def code_value_labels(
@@ -344,6 +487,64 @@ def entity_key_kind(name: str, comment: str | None, profile: ValueProfile) -> st
     ):
         return "hostname"
     return None
+
+
+def rules_and_entity_candidates(
+    columns: Mapping[str, Mapping[str, Any]],
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """컬럼별 값 형식에서 쿼리 규칙 목록과 식별 키 후보를 만든다.
+
+    Args:
+        columns: ``{"table.column": {"type", "comment", "profile": ValueProfile|None, "error"}}`` —
+            ``profile``이 None인 컬럼(조회 못 함)은 건너뛴다
+
+    Returns:
+        (쿼리 규칙 목록 — 컬럼 순서대로, 식별 키 후보 ``{테이블: {종류: {"column", "ratio",
+        "multi_value"}}}`` — 같은 테이블·종류는 뒤 컬럼이 이긴다)
+    """
+    rules: list[str] = []
+    entity: dict[str, dict[str, Any]] = {}
+    for key, item in columns.items():
+        profile: ValueProfile | None = item.get("profile")
+        if profile is None:
+            continue
+        table, _, column = key.rpartition(".")
+        rules.extend(query_rules_for_column(table, column, profile))
+        kind = entity_key_kind(column, item.get("comment"), profile)
+        if kind:
+            entity.setdefault(table, {})[kind] = {
+                "column": column, "ratio": profile.ipv4 if kind == "ip" else profile.hostname,
+                "multi_value": profile.multi_value >= 0.05,
+            }
+    return rules, entity
+
+
+def entity_keys_asset(
+    entity: Mapping[str, Mapping[str, Any]], rows: Mapping[str, int | None]
+) -> dict[str, Any] | None:
+    """식별 키 후보 중 호스트명을 가진(있으면 IP도 가진) 테이블 하나를 골라 `entity_keys` 자산으로.
+
+    Args:
+        entity: `rules_and_entity_candidates`의 식별 키 후보
+        rows: 테이블 행 수(모르면 None) — IP 보유 → 행 수 큰 순 → 이름순으로 고른다
+    """
+    candidates = [t for t, kinds in entity.items() if "hostname" in kinds]
+    if not candidates:
+        return None
+    table = sorted(
+        candidates, key=lambda t: ("ip" not in entity[t], -(rows.get(t) or 0), t)
+    )[0]
+    kinds = entity[table]
+    keys: list[dict[str, Any]] = []
+    # 호스트명은 DNS처럼 대소문자를 가리지 않고 비교한다
+    keys.append({"type": "hostname", "column": kinds["hostname"]["column"], "priority": 1,
+                 "compare": "casefold"})
+    if "ip" in kinds:
+        ip: dict[str, Any] = {"type": "ip", "column": kinds["ip"]["column"], "priority": 2}
+        if kinds["ip"]["multi_value"]:
+            ip["multi_value"] = True
+        keys.append(ip)
+    return {"entity": "server", "table": table, "keys": keys}
 
 
 def query_rules_for_column(table: str, column: str, profile: ValueProfile) -> list[str]:

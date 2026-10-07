@@ -11,8 +11,9 @@
 준다. 휴리스틱(`pii_suggestion`)은 정책 밖 컬럼을 `pii` 쪽으로만 올린다(§3.5.1).
 
 스키마 카탈로그는 조회문이 아니라 구조화 YAML 이다(D-301 ③). 벤치는 스키마를 얻으려고 DB에 조회문을
-따로 날리지 않는다 — 입력은 파일 스키마 캐시 · `scripts/itam_erd.py` 스냅숏 · 샌드박스 전사본 중
-하나다.
+따로 날리지 않는다 — 입력은 파일 스키마 캐시 · `scripts/itam_erd.py` 스냅숏 · 샌드박스 전사본 ·
+「DB 구조」 탭 저장소(`structure_store` — 스냅샷·DDL 주석·최신 P1 초안 · plans/140 W2 · D-311 ①)
+중 하나다. P1 초안의 값(코드값·라벨)은 메모리에만 두고 카탈로그에는 비율·수·판정만 싣는다.
 """
 
 from __future__ import annotations
@@ -22,14 +23,18 @@ import hashlib
 import json
 import re
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from itertools import zip_longest
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from . import DB_ID, REPO_ROOT
+
+if TYPE_CHECKING:
+    from .redact import CodeOriginals
 
 #: 기록 등급 — 엄격도 오름차순(여럿이면 가장 엄격한 것을 쓴다 · §3.5.1 「결과 열 → 원 컬럼 해석」).
 GRADES: tuple[str, ...] = ("general", "network", "amount", "free_text", "unclassified", "pii")
@@ -696,17 +701,26 @@ def _normalize_transcript(data: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def load_schema_source(
-    kind: str, *, db_id: str = DB_ID, path: Path | None = None, cache_dir: Path | None = None
+    kind: str,
+    *,
+    db_id: str = DB_ID,
+    path: Path | None = None,
+    cache_dir: Path | None = None,
+    cfg: Any = None,
+    store: Any = None,
 ) -> dict[str, Any]:
-    """스키마 입력을 정규화한다 — **파일만 읽는다**(조회문 0 · D-301 ③).
+    """스키마 입력을 정규화한다 — **파일·Redis 키만 읽는다**(조회문 0 · D-301 ③).
 
     kind: `schema_cache`(파일 스키마 캐시 · 기본) | `snapshot`(`scripts/itam_erd.py` 스냅숏 JSON) |
-          `transcript`(샌드박스 전사본 YAML).
+          `transcript`(샌드박스 전사본 YAML) | `structure_store`(「DB 구조」 탭 저장소 —
+          `load_structure_store_source` · `cfg` 또는 `store` 필요).
 
     Raises:
         FileNotFoundError: 입력 파일이 없다.
         ValueError: 모르는 kind · 캐시 포맷 불일치.
     """
+    if kind == "structure_store":
+        return load_structure_store_source(db_id=db_id, cfg=cfg, store=store, cache_dir=cache_dir)
     if kind == "schema_cache":
         from src.schema_cache.persistent_cache import PersistentSchemaCache
 
@@ -733,6 +747,229 @@ def load_schema_source(
         raise ValueError(f"모르는 스키마 입력 {kind!r}")
     if not normalized["tables"]:
         raise ValueError(f"{normalized['source']}: 테이블이 0개다")
+    return normalized
+
+
+# --- 「DB 구조」 탭 저장소 입력 (plans/140 W2-1 · D-311 ①) ------------------------------
+
+#: P1 근거가 없을 때 리포트 첫머리 경고(고정 문구).
+P1_MISSING_WARNING = "P1 근거 없음 — 자산 없는 기준선"
+P1_HASH_MISMATCH = "P1 초안의 스냅샷 해시가 현 스냅샷과 다르다 — 초안 뒤 스키마가 바뀌었을 수 있다"
+#: P1 예산 칸 중 카탈로그·run.json 에 싣는 것(`skipped_sample`은 이름 목록이라 뺀다).
+P1_BUDGET_KEYS: tuple[str, ...] = ("limit", "used", "skipped", "requested", "cap")
+
+
+def _resolve(directory: Any, default: str) -> Path:
+    path = Path(directory or default)
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
+def app_structure_store(cfg: Any) -> Any:
+    """앱(`SchemaCacheManager.structure_store`)과 같은 설정의 `StructureStore`.
+
+    Redis 는 백엔드가 `redis`일 때만 붙인다(앱과 같다) · 백업 루트는 스키마 파일 캐시 디렉터리의
+    형제 `structure` · 프로필 디렉터리는 `config/db_profiles` — 상대 경로는 저장소 루트 기준이다.
+    """
+    from src.schema_cache.structure_store import DEFAULT_PROFILES_DIR, StructureStore
+
+    settings = getattr(cfg, "schema_cache", None)
+    redis_cache = None
+    if str(getattr(settings, "backend", "") or "") == "redis":
+        from src.schema_cache.redis_cache import RedisSchemaCache
+
+        redis_cache = RedisSchemaCache(redis_config=cfg.redis, schema_cache_config=settings)
+    cache_dir = _resolve(getattr(settings, "cache_dir", None), ".cache/schema")
+    return StructureStore(
+        redis_cache,
+        cache_dir.parent / "structure",
+        profiles_dir=_resolve(DEFAULT_PROFILES_DIR, str(DEFAULT_PROFILES_DIR)),
+    )
+
+
+async def _read_structure_store(store: Any, db_id: str, *, owned: bool) -> dict[str, Any]:
+    """저장소에서 스냅샷 · DDL 주석 · 최신 P1 초안 · 그 설명 초안을 읽는다(읽기만 · 쓰기 0).
+
+    실패는 예외 없이 `{"error": 사유}`(고정 문구)로 돌려 폴백에 넘긴다 — 원 예외 메시지는 싣지
+    않는다.
+    """
+    redis_cache = getattr(store, "redis_cache", None)
+    try:
+        if hasattr(store, "redis_cache"):
+            if redis_cache is None:
+                return {"error": "Redis 백엔드 아님"}
+            if not await redis_cache.ensure_connected():
+                return {"error": "Redis 연결 불가"}
+        record = await store.load_snapshot(db_id)
+        if not record or not ((record.get("snapshot") or {}).get("tables")):
+            return {"error": "스냅샷 없음"}
+        comments = dict(await store.load_ddl_comments(db_id) or {})
+        draft = next(
+            (d for d in await store.list_asset_drafts(db_id) if d.get("kind") == "profile"), None
+        )
+        descriptions: dict[str, str] = {}
+        if draft and draft.get("description_draft_id"):
+            description = await store.get_description_draft(db_id, draft["description_draft_id"])
+            for per_table in ((description or {}).get("descriptions") or {}).values():
+                if isinstance(per_table, Mapping):
+                    descriptions.update({str(k): str(v) for k, v in per_table.items() if v})
+        return {
+            "record": record,
+            "comments": comments,
+            "draft": draft,
+            "descriptions": descriptions,
+        }
+    except Exception as exc:  # noqa: BLE001 — Redis 실패는 파일 폴백으로 넘긴다
+        return {"error": f"Redis 읽기 실패:{type(exc).__name__}"}
+    finally:
+        if owned and redis_cache is not None:
+            await redis_cache.disconnect()
+
+
+def _foreign_keys_from_snapshot(raw: Iterable[Any]) -> list[dict[str, Any]]:
+    """스냅샷 FK(`"col->table.col"` — 컬럼 단위) → 대상 테이블별
+    `{columns, ref_table, ref_columns}`."""
+    grouped: dict[str, dict[str, list[str]]] = {}
+    for item in raw or []:
+        column, _, target = str(item).partition("->")
+        ref_table, _, ref_column = target.strip().rpartition(".")
+        if column.strip() and ref_table and ref_column:
+            entry = grouped.setdefault(ref_table, {"columns": [], "ref_columns": []})
+            entry["columns"].append(column.strip())
+            entry["ref_columns"].append(ref_column)
+    return [{"ref_table": t, **pair} for t, pair in grouped.items()]
+
+
+def _normalize_structure_store(data: Mapping[str, Any]) -> dict[str, Any]:
+    """저장소 읽기 결과 → 정규화 스키마.
+
+    타입은 스냅샷 원문 그대로(정규화 표기 — 길이가 빠져 있다) · 주석은 DDL 주석이 먼저, 없으면 P1
+    설명 초안(둘 다 DB 주석) · 행 수 추정은 P1 `allowed_tables[].rows`.
+    """
+    comments: Mapping[str, str] = data.get("comments") or {}
+    descriptions: Mapping[str, str] = data.get("descriptions") or {}
+    evidence = (data.get("draft") or {}).get("evidence") or {}
+    rows = {
+        str(row.get("table")): row
+        for row in evidence.get("allowed_tables") or []
+        if isinstance(row, Mapping)
+    }
+    tables: dict[str, dict[str, Any]] = {}
+    for name, table in (data["record"]["snapshot"].get("tables") or {}).items():
+        name = str(name)
+        raw_columns = table.get("columns") or {}
+        columns = []
+        for col_name, meta in raw_columns.items():
+            meta = meta if isinstance(meta, Mapping) else {}
+            key = f"{name}.{col_name}"
+            columns.append(
+                {
+                    "name": str(col_name),
+                    "type": str(meta.get("type") or ""),
+                    "nullable": bool(meta.get("nullable", True)),
+                    "is_key": bool(meta.get("primary_key", False)),
+                    "comment": str(comments.get(key) or descriptions.get(key) or ""),
+                }
+            )
+        row = rows.get(name) or {}
+        tables[name] = {
+            "comment": str(comments.get(name) or row.get("comment") or ""),
+            "rows_estimate": row.get("rows"),
+            "primary_key": [c["name"] for c in columns if c["is_key"]],
+            "columns": columns,
+            "foreign_keys": _foreign_keys_from_snapshot(table.get("foreign_keys") or []),
+        }
+    return {"tables": tables, "descriptions": {}}
+
+
+def p1_summary(draft: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """카탈로그 최상위 `p1` — 초안 메타·예산만(값 0)."""
+    if not draft:
+        return None
+    evidence = draft.get("evidence") or {}
+    budget = evidence.get("budget") or {}
+    return {
+        "draft_id": draft.get("draft_id"),
+        "created_at": draft.get("created_at"),
+        "status": draft.get("status"),
+        "snapshot_hash": draft.get("snapshot_hash"),
+        "engine": draft.get("engine"),
+        "offline": bool(evidence.get("offline")),
+        "budget": {k: budget.get(k) for k in P1_BUDGET_KEYS},
+    }
+
+
+def p1_asset(draft: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """`run.json` `assets.p1` — 초안 지문(assets·evidence 정규 JSON sha256 앞 12자)·시각·예산."""
+    summary = p1_summary(draft)
+    if summary is None or draft is None:
+        return None
+    canonical = json.dumps(
+        {"assets": draft.get("assets"), "evidence": draft.get("evidence")},
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    return {
+        "draft_id": summary["draft_id"],
+        "fingerprint": hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12],
+        "created_at": summary["created_at"],
+        "status": summary["status"],
+        "budget": summary["budget"],
+    }
+
+
+def load_structure_store_source(
+    *,
+    db_id: str = DB_ID,
+    cfg: Any = None,
+    store: Any = None,
+    cache_dir: Path | None = None,
+) -> dict[str, Any]:
+    """「DB 구조」 탭 저장소 입력(plans/140 W2-1 · D-311 ①) — 스냅샷·DDL 주석·최신 P1 초안.
+
+    - 스냅샷이 없거나 Redis 를 못 쓰면 파일 스키마 캐시로 내려간다(`source: schema_cache`).
+    - 스냅샷은 있는데 P1 초안이 없으면 스냅샷 구조만 쓴다(`source: structure_store`).
+    - 두 경우 모두 `p1: None` · `p1_fallback: 사유`(고정 문구) — 리포트 첫머리 경고 재료다.
+    - P1 초안의 `snapshot_hash`가 현 스냅샷 해시와 다르면 `p1_warnings`에 남긴다.
+
+    P1 초안 원본(코드값·라벨 포함)은 `_p1_draft`에 **메모리로만** 둔다 — 카탈로그 조립과 치환
+    코드값 생성(`code_samples`)의 재료이고 산출물에 그대로 쓰지 않는다.
+
+    Raises:
+        FileNotFoundError: 폴백할 파일 스키마 캐시도 없다.
+    """
+    owned = store is None
+    if owned:
+        if cfg is None:
+            raise ValueError("structure_store 는 설정(cfg) 또는 저장소(store)가 필요하다")
+        store = app_structure_store(cfg)
+    data = asyncio.run(_read_structure_store(store, db_id, owned=owned))
+    if data.get("error"):
+        reason = str(data["error"])
+        directory = cache_dir
+        if directory is None and cfg is not None:
+            directory = _resolve(getattr(cfg.schema_cache, "cache_dir", None), ".cache/schema")
+        try:
+            normalized = load_schema_source("schema_cache", db_id=db_id, cache_dir=directory)
+        except (FileNotFoundError, ValueError) as exc:
+            raise FileNotFoundError(f"structure_store 불가({reason}) · {exc}") from None
+        normalized.update(p1=None, p1_fallback=reason, p1_warnings=[], _p1_draft=None)
+        return normalized
+    normalized = _normalize_structure_store(data)
+    normalized["source"] = "structure_store"
+    draft = data.get("draft")
+    warnings: list[str] = []
+    if draft and draft.get("snapshot_hash") != data["record"].get("hash"):
+        warnings.append(P1_HASH_MISMATCH)
+    normalized.update(
+        p1=p1_summary(draft),
+        p1_fallback=None if draft else "P1 초안 없음",
+        p1_warnings=warnings,
+        _p1_draft=draft,
+    )
+    if not normalized["tables"]:
+        raise ValueError("structure_store: 테이블이 0개다")
     return normalized
 
 
@@ -896,6 +1133,9 @@ def profile_structure(
       (조인 컬럼 쌍·출처·겹침 비율)
     - 건수만: `code_values`·`code_labels`(컬럼별 — 코드값·라벨은 데이터다) · `query_rules`·
       `query_examples`·`patterns`(문장·예시 SQL 에 값이 섞일 수 있다) · `query_guide`(글자 수)
+    - 테이블 정의(`table_definitions`): 사람이 쓴 정의 7칸(plans/140 W2-3 · `group` 감사 M-2) — 누출
+      관문 규칙에 걸리거나 P1 원 코드값·라벨을 품은 행은 `gate_table_definitions`가 빼고
+      `table_definitions_withheld`에 수만 남긴다
     - 그 밖의 키는 이름만
     """
     if not profile:
@@ -939,6 +1179,7 @@ def profile_structure(
             "query_guide_chars": len(str(profile.get("query_guide") or "")),
         },
     }
+    out.update(_definition_structure(profile))
     known = {
         "source",
         "environment",
@@ -946,10 +1187,195 @@ def profile_structure(
         "entity_keys",
         "relationships",
         "query_guide",
+        "table_definitions",
         *PROFILE_COUNT_KEYS,
         *PROFILE_COLUMN_COUNT_KEYS,
     }
     out["other_keys"] = sorted(str(k) for k in profile if k not in known)
+    return out
+
+
+#: 승인 프로필 테이블 정의에서 반출하는 칸(plans/140 W2-3 · `group`은 감사 M-2 — 내부망 편집 묶음이
+#: 반입 병합에서 사라지지 않게).
+DEFINITION_EXPORT_FIELDS: tuple[str, ...] = (
+    "manages",
+    "kind",
+    "key_columns",
+    "related",
+    "notes",
+    "origin",
+    "group",
+)
+#: 원 코드값 대조에서 빼는 정의 칸 — 고정 열거(`kind`·`origin`)와 스키마 식별자(`key_columns`).
+#: 식별자는 카탈로그에도 나가고, 열거는 데이터가 아니다.
+_DEFINITION_NON_TEXT_FIELDS = frozenset({"kind", "origin", "key_columns"})
+
+
+def _definition_structure(profile: Mapping[str, Any]) -> dict[str, Any]:
+    """`table_definitions` 반출 칸(`DEFINITION_EXPORT_FIELDS`) · 보류 수(관문 전 0).
+
+    키가 없으면 None.
+    """
+    from src.domain.table_definitions import PROFILE_KEY
+
+    definitions = profile.get(PROFILE_KEY)
+    if not isinstance(definitions, Mapping):
+        return {"table_definitions": None, "table_definitions_withheld": 0}
+    return {
+        "table_definitions": {
+            str(name): {k: entry[k] for k in DEFINITION_EXPORT_FIELDS if k in entry}
+            for name, entry in definitions.items()
+            if isinstance(entry, Mapping)
+        },
+        "table_definitions_withheld": 0,
+    }
+
+
+def _string_leaves(node: Any) -> Iterable[str]:
+    """중첩 구조의 키·값 문자열(관문 사전 대조용)."""
+    if isinstance(node, Mapping):
+        for key, value in node.items():
+            yield str(key)
+            yield from _string_leaves(value)
+    elif isinstance(node, (list, tuple)):
+        for value in node:
+            yield from _string_leaves(value)
+    elif node is not None:
+        yield str(node)
+
+
+def _definition_text_leaves(row: Any) -> list[str]:
+    """정의 행에서 사람이 쓴 글 칸(`manages`·`notes`·`group`·`related` 설명 등)의 문자열.
+
+    고정 열거·스키마 식별자 칸(`_DEFINITION_NON_TEXT_FIELDS`)과 `related`의 상대 테이블 이름(키)은
+    뺀다 — 원 코드값 대조 전용.
+    """
+    if not isinstance(row, Mapping):
+        return list(_string_leaves(row))
+    out: list[str] = []
+    for name, value in row.items():
+        if name in _DEFINITION_NON_TEXT_FIELDS:
+            continue
+        if name == "related" and isinstance(value, Mapping):
+            out += [str(v) for v in value.values() if v is not None]
+            continue
+        out += list(_string_leaves(value))
+    return out
+
+
+def gate_table_definitions(
+    catalog: Mapping[str, Any],
+    reject: Callable[[str], bool],
+    *,
+    originals: CodeOriginals | None = None,
+) -> dict[str, Any]:
+    """승인 프로필 테이블 정의 행마다 관문 규칙(`reject`)을 미리 대 보고 걸린 행을 뺀다.
+
+    행의 잎 하나하나와 잎을 이어 붙인 글을 함께 본다(관문의 「이어 붙인 잎」 검사와 같은 쪽).
+    `originals`(`redact.CodeOriginals`)가 있으면 사람이 쓴 글 칸을 P1 원 코드값·라벨과도 대조해 걸린
+    행을 뺀다(감사 L-6 — 원값 반출 금지 쪽 기본값). 걸린 행은 이름도 싣지 않고
+    `table_definitions_withheld`에 수만 더한다. 새 카탈로그를 돌려준다.
+    """
+    structure = catalog.get("approved_profile")
+    definitions = (structure or {}).get("table_definitions")
+    if not isinstance(definitions, Mapping):
+        return dict(catalog)
+    kept: dict[str, Any] = {}
+    withheld = int((structure or {}).get("table_definitions_withheld") or 0)
+    for name, row in definitions.items():
+        leaves = list(_string_leaves({name: row}))
+        if any(reject(leaf) for leaf in leaves) or reject("\n".join(leaves)):
+            withheld += 1
+            continue
+        if originals is not None and any(
+            originals.hit(text) for text in _definition_text_leaves(row)
+        ):
+            withheld += 1
+            continue
+        kept[name] = row
+    return {
+        **catalog,
+        "approved_profile": {
+            **(structure or {}),
+            "table_definitions": kept,
+            "table_definitions_withheld": withheld,
+        },
+    }
+
+
+# --- P1 근거 → 카탈로그 칸 (plans/140 W2-2) -----------------------------------------
+
+#: P1 오류 범주 — 원 예외 메시지(SQL·값이 섞일 수 있다)는 싣지 않는다.
+ERROR_CATEGORIES: tuple[str, ...] = (
+    "예산 초과",
+    "후보 상한 초과",
+    "부모 유일성 없음",
+    "DB 연결 없음",
+)
+_EXCEPTION_PREFIX = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*:")
+
+
+def error_category(raw: Any) -> str | None:
+    """P1 오류 문구 → 범주(`예산 초과`·`후보 상한 초과`·`부모 유일성 없음`·`DB 연결 없음`·
+    `식별자 거부`·`조회 실패:<예외 클래스 이름>`). 클래스 이름을 못 읽으면 `조회 실패:미상`."""
+    if raw is None or raw == "":
+        return None
+    text = str(raw).strip()
+    for category in ERROR_CATEGORIES:
+        if text.startswith(category):
+            return category
+    if "식별자" in text:
+        return "식별자 거부"
+    match = _EXCEPTION_PREFIX.match(text)
+    return f"조회 실패:{match.group(1).rsplit('.', 1)[-1]}" if match else "조회 실패:미상"
+
+
+#: 값 형식 비율 칸(P1 `evidence.columns[]`).
+FORMAT_KEYS: tuple[str, ...] = ("date8", "datetime14", "ipv4", "hostname", "multi_value")
+
+
+def _column_profile(item: Mapping[str, Any]) -> dict[str, Any]:
+    """P1 컬럼 근거 1행 → 카탈로그 `columns[i].profile`(비율·수·판정 — 값 0)."""
+    return {
+        "candidate": item.get("candidate"),
+        "code": bool(item.get("code")),
+        "distinct": item.get("distinct"),
+        "truncated": bool(item.get("truncated")),
+        "total": item.get("total"),
+        "formats": {k: item.get(k) for k in FORMAT_KEYS},
+        "mixed_case": bool(item.get("mixed_case")),
+        "flag": [str(v) for v in item.get("flag") or []],
+        "entity_key": item.get("entity_key"),
+        "error": error_category(item.get("error")),
+    }
+
+
+def _p1_relations(draft: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """P1 `evidence.relationships[]` → 카탈로그 관계 항목(`kind: p1`)."""
+    out: list[dict[str, Any]] = []
+    evidence = (draft or {}).get("evidence") or {}
+    for rel in evidence.get("relationships") or []:
+        if not isinstance(rel, Mapping) or not rel.get("child"):
+            continue
+        out.append(
+            {
+                "from": str(rel["child"]),
+                "to": None if rel.get("parent") is None else str(rel["parent"]),
+                "columns": [
+                    list(pair)
+                    for pair in zip_longest(
+                        rel.get("child_columns") or [], rel.get("parent_columns") or []
+                    )
+                ],
+                "kind": "p1",
+                "origin": rel.get("origin"),
+                "overlap": rel.get("overlap"),
+                "sampled": rel.get("sampled"),
+                "accepted": bool(rel.get("accepted")),
+                "unique_parent": rel.get("unique_parent"),
+                "error": error_category(rel.get("error")),
+            }
+        )
     return out
 
 
@@ -1057,7 +1483,13 @@ def build_schema_catalog(
     행 0 — 입력에 `sample_data`가 있어도 읽지 않는다 · 코드값·라벨·유사어는 건수만). 의미가 빈
     컬럼이 곧 plans/133 A3(설명) 작업 목록이다. 테이블 의미는 승인 프로필 `table_definitions`의
     `manages`가 먼저, 없으면 DB 주석이다(plans/139 W6-g).
+
+    `structure_store` 입력이면 P1 근거를 더한다(plans/140 W2-2): 최상위 `p1`·`p1_fallback`·
+    `p1_warnings` · 관계 `kind: p1` · 컬럼 `profile`(비율·수·판정 · 오류는 범주만) · 주석 코드 열거
+    쌍 수 `comment_enum`. P1 의 코드값·라벨은 싣지 않는다.
     """
+    from src.domain.schema_inference import parse_comment_enum
+
     descriptions = {
         str(k).casefold(): str(v) for k, v in (schema.get("descriptions") or {}).items()
     }
@@ -1068,6 +1500,24 @@ def build_schema_catalog(
         else None
     )
     relations, groups = _relations(schema, profile)
+    draft = schema.get("_p1_draft")
+    if draft and structure is not None:
+        # 사람이 쓴 정의 속 P1 원 코드값·라벨은 반출하지 않는다(감사 L-6)
+        # — 원 집합은 여기(메모리)에만 있다
+        from .code_samples import original_values
+        from .redact import CodeOriginals
+
+        structure = gate_table_definitions(
+            {"approved_profile": structure},
+            lambda _text: False,
+            originals=CodeOriginals(original_values(draft)),
+        )["approved_profile"]
+    relations += _p1_relations(draft)
+    profiles = {
+        str(item.get("key")): _column_profile(item)
+        for item in ((draft or {}).get("evidence") or {}).get("columns") or []
+        if isinstance(item, Mapping) and item.get("key")
+    }
     allowed = (
         {_bare(t).casefold() for t in structure["allowed_tables"]}
         if structure and structure.get("allowed_tables") is not None
@@ -1075,8 +1525,14 @@ def build_schema_catalog(
     )
     entity_table = _bare(str(((structure or {}).get("entity_keys") or {}).get("table") or ""))
     manages = _table_manages(profile)
+    kept_definitions = (structure or {}).get("table_definitions")
+    # 보류한 정의의 `manages`는 테이블 의미로도 싣지 않는다
+    if isinstance(kept_definitions, Mapping):
+        kept_names = {_bare(str(n)).casefold() for n in kept_definitions}
+        manages = {k: v for k, v in manages.items() if k in kept_names}
     tables: dict[str, Any] = {}
     total = with_meaning = unclassified = with_synonyms = tables_with_meaning = 0
+    comment_enums = profiled = code_columns = 0
     for name in sorted(schema["tables"]):
         table = schema["tables"][name]
         columns = []
@@ -1102,6 +1558,15 @@ def build_schema_catalog(
             if synonyms.get(key):
                 entry["synonyms"] = synonyms[key]
                 with_synonyms += 1
+            enum_pairs = len(parse_comment_enum(meaning)) if meaning else 0
+            if enum_pairs:
+                entry["comment_enum"] = enum_pairs
+                comment_enums += 1
+            column_profile = profiles.get(f"{name}.{col['name']}")
+            if column_profile is not None:
+                entry["profile"] = column_profile
+                profiled += 1
+                code_columns += column_profile["code"]
             if grade == "unclassified":
                 unclassified += 1
                 if pii_suggestion(col["name"], meaning or ""):
@@ -1130,7 +1595,7 @@ def build_schema_catalog(
         "source": schema["source"],
         "assets": dict(assets),
         "meaning_sources": {
-            "db_comment": "DB 주석(스냅숏 입력일 때만 구별된다)",
+            "db_comment": "DB 주석(스냅숏·structure_store 입력일 때만 구별된다)",
             "cache_description": "「DB 구조」 탭 설명 적용본(서버와 같은 순서 Redis → 파일 — "
             "읽은 곳은 annotation_sources) — DB 주석 유래인지 LLM 생성인지 저장본에 "
             "출처가 없어 구별할 수 없다",
@@ -1140,6 +1605,9 @@ def build_schema_catalog(
         },
         "annotation_sources": schema.get("annotation_sources"),
         "db_description": schema.get("db_description"),
+        "p1": schema.get("p1"),
+        "p1_fallback": schema.get("p1_fallback"),
+        "p1_warnings": list(schema.get("p1_warnings") or []),
         "approved_profile": structure,
         "summary": {
             "tables": len(tables),
@@ -1149,6 +1617,9 @@ def build_schema_catalog(
             "columns_with_synonyms": with_synonyms,
             "unclassified_columns": unclassified,
             "relations": dict(Counter(r["kind"] for r in relations)),
+            "comment_enum_columns": comment_enums,
+            "p1_profiled_columns": profiled,
+            "p1_code_columns": code_columns,
         },
         "same_key_groups": groups,
         "tables": tables,

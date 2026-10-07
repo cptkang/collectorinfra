@@ -4,6 +4,9 @@
 
 ## 갱신 이력
 
+- 2026-10-07 — **140 v1.0 구현(`-TODO` → `-WIP` · D-311)**: W1 P1 한글 단서(코드 후보 0 → 371 · 이름 일치 관계 · 한글 식별자 인용) · W2 반출 확장(`structure_store` 입력 · P1 근거 칸 · `code_samples.yaml` 6번째 파일 · 관문 `code_original`) · W3 빌더 `--build-assets`(1회차: 조회 대상 98 · 정의 108 · 오류 0) · W4 모의 DB 생성기 · W5 `--p2` 빌더 경로(가짜 LLM만) · 135 부록 A v1.5 · 139 통지
+- 2026-10-07 — **134 v1.6 W6 잔여 + ④ 구현(`-WIP` 유지 · D-313)**: APM 창 = `time_resolution.event`(하루 밖 거부 폐지) · `apm.period_compare` 두 구간 비교 채팅 · `apm_fleet` 기간 순위(기간 전용 지표 4) · 서버 미지정 = 현재 TPS 상위 N(20) + `apm_untargeted_scope` · D-310 ③ 개정 · 매뉴얼 U-51·U-52·U-54·A-69
+- 2026-10-07 — **140 v1.0 신규(`-TODO`)**: ITAM 자산 외부망 생성 — 반출에 P1 근거·치환 코드값(`code_samples.yaml`) · 빌더 `--build-assets` 직접 커밋 · P1 한글 단서 · 모의 DB · D-311
 - 2026-10-06 — **134 v1.5 W3·W4 구현(`-WIP` 유지 · D-310)**: 게이트웨이 배치 `targets`(17도구 · 작업 1개) · `apm_fleet`(전 대상 순위·이벤트 · 잠정) · 조회용 이벤트 버퍼 · `apm_service_status`·`apm_business`·도메인/업무 시계열 · 허용목록 41 · 본체 보기 28 · `MAX_VIEWS`·대상 10 절단 제거 · 첫 홉 전부 · `sources` · 매뉴얼 U-54 · 125 A-6 ①② · 130 통지
 - 2026-10-06 — **139 구현(`-TODO` → `-WIP`)**: W1 백엔드 오류 감지 단일 대칭(`backend_limit`) · W2 단일 예산 사다리 · W3 정의 자산 `table_definitions`(「DB 구조」 탭 · 매뉴얼 A-67) · W4 정의 기반 LLM 선별(상한 8 · 단일·멀티 공용) · W5 「테이블 용도」 블록 · W6 벤치(D-301 부기) · 검증·보안 감사 교정 7건 · W7 132·122·135 통지 · 시드 `notes` 13테이블 · 2회차 관찰 ITAM-115~118 · D-308 구현 · 잔여 내부망 2회차
 - 2026-10-06 — **130 v1.3 구현(`-TODO` → `-WIP`)**: W1-D·W0~W6 — 게이트웨이 `apm_instance_map` `domain_id`·`query`·`business` · `instance_name` 16종 · 허용목록 `/api/business`(37) · 본체 분해 `targets` · 대상 텍스트 해석 → 상한 없이 전건(D-296) · 임의 첫 홉 금지 · E6 업무명 → hostname · 매뉴얼 U-51 · FS-34~36 · D-290 부기 · 87·125 통지 · 참조 3곳 파일명 갱신 · 커밋 없음(사용자 커밋 `9cc8c6b`·`8f9b1c4`)

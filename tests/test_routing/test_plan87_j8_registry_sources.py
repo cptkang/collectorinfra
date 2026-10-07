@@ -63,6 +63,8 @@ def test_views_are_untouched_by_sources() -> None:
         # plans/134 W3·W4 — 보기 6종 추가(계약 B-1 순서 · 의도된 갱신)
         "apm.service", "apm.service_trend", "apm.ranking", "apm.fleet_events", "apm.business",
         "apm.business_trend",
+        # plans/134 W6 A-1 — 두 기간 비교(뒤에 덧붙임 · 의도된 갱신)
+        "apm.period_compare",
     ]
 
 
