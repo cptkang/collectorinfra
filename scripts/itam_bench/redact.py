@@ -151,6 +151,16 @@ def mask_dsn(dsn: str) -> str:
     return f"{scheme}{'***:***' if ':' in userinfo else '***'}@{host}"
 
 
+def dsn_scheme(dsn: str | None) -> str | None:
+    """접속 문자열의 스킴만 — run.json 기록용.
+
+    호스트·포트·DB 이름은 남기지 않는다. ITAM은 자산 대장이라 결과 칼럼에서 수집한
+    값(호스트명·DB명)이 그 토큰과 겹쳐 누출 관문 `pii_value`가 산출물 전체를 막는다.
+    """
+    parts = _userinfo(str(dsn or ""))
+    return parts[0].removesuffix("://") if parts else None
+
+
 def dsn_credentials(dsn: str | None) -> tuple[str | None, str | None]:
     """누출 관문 대조용 (계정, 비밀번호) — 산출물에는 쓰지 않는다."""
     parts = _userinfo(str(dsn or ""))

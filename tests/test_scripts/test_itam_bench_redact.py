@@ -78,6 +78,26 @@ class TestUserInfoMasking:
         assert rd.mask_dsn("http://127.0.0.1:9099/sse") == "http://127.0.0.1:9099/sse"
         assert "admin" not in rd.mask_dsn("http://admin@127.0.0.1:9099/sse")
 
+    def test_dsn_scheme_keeps_only_scheme(self) -> None:
+        dsn = "mariadb://itam_ro:pw@itam-db01:3307/INST1"
+        assert rd.dsn_scheme(dsn) == "mariadb"
+        assert rd.dsn_scheme("http://127.0.0.1:9099/sse") == "http"
+        assert rd.dsn_scheme("") is None and rd.dsn_scheme(None) is None
+
+    def test_run_meta_endpoint_survives_harvested_host_values(
+        self, policy: cat.ColumnPolicy
+    ) -> None:
+        # 20261007-141833 재현 — ITAM 결과에서 수집한 호스트·DB 이름이 마스킹 DSN 토큰과 겹쳤다
+        vault = rd.PiiVault.from_policy(policy)
+        for value in ("itam-db01", "INST1", "sse"):
+            vault.add(value)
+        gate = rd.LeakGate(policy=policy, vault=vault, user_values={})
+        dsn = "mariadb://itam_ro:pw@itam-db01:3307/INST1"
+        before = {"itam_dsn": rd.mask_dsn(dsn), "mcp_endpoint": rd.mask_dsn("http://h:9099/sse")}
+        assert {v["rule"] for v in gate.check({"run.json": _dump(before)})} == {"pii_value"}
+        after = {"itam_dsn": rd.dsn_scheme(dsn), "mcp_endpoint": rd.dsn_scheme("http://h:9099/sse")}
+        assert gate.check({"run.json": _dump(after)}) == []
+
     def test_display_path_relative_and_home(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
         home = tmp_path

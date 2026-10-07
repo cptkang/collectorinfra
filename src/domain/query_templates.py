@@ -220,7 +220,8 @@ def referenced_tables(sql: str) -> set[str]:
 def has_executable_comment(sql: str) -> bool:
     """MariaDB·MySQL 실행 주석(`/*! … */`·`/*M! … */`)을 담았는가 — 주석 안이 실행된다.
 
-    `SQLGuard`가 이 주석 안을 보지 못하므로 이번 계획의 실행 경로가 실행 전에 따로 거절한다.
+    `SQLGuard`도 실행 주석을 인젝션 패턴으로 거절하지만, 템플릿 계약 검사는 SQL 검증 전에 이유를
+    따로 밝혀 거절한다.
     문자열 리터럴 안까지 보수적으로 본다.
     """
     return _EXEC_COMMENT_RE.search(sql or "") is not None

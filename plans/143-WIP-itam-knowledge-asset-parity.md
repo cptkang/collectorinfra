@@ -133,11 +133,11 @@
 | A1 | 본체·MCP 재기동 | 본체 `python -m src.main --server` · MCP `cd mcp_server && python -m mcp_server` | 설명 정본 파일은 스키마 첫 로드 때 Redis에 없는 컬럼만 채운다(§4.5) | ✅ |
 | A2 | 「DB 구조」 탭 | `plans/135` 부록 A 1 → 2b(P1 · **필수**) → 2c(코드값·코드 라벨만 승인 — K5 공통코드 후보 포함) → 2a(정의 확인) | P1 초안이 있어야 반출에 근거가 실린다 | ✅ |
 | A3 | 과금 평면 확인 | `python -m scripts.bench --show-env` | 워커 FabriX · 오케스트레이터 vllm 등 비과금 | ✅ |
-| A4 | 반입 자산 검증 모드 | `python -m scripts.itam_bench --verify-assets --env closed` | 반입한 K2(`itam.yaml` 예시)·K4(섹션 펜스 SQL)·K8(템플릿 × 슬롯 대표값) SQL을 읽기 전용 실행 → `results/itam_bench/<run>/asset_verification.yaml`(항목 ID·지문·성공·오류 범주·행 수 구간 · 값·SQL 원문 0 · 누출 관문 통과분만) · `DB_BACKEND=direct`면 멈춤 | ✅ |
+| A4 | 반입 자산 검증 모드 | `python -m scripts.itam_bench --verify-assets --env closed` | 반입한 K2(`itam.yaml` 예시)·K4(섹션 펜스 SQL)·K8(템플릿 × 슬롯 대표값) SQL을 읽기 전용 실행 → `results/itam_bench/<run>/asset_verification.yaml`(항목 ID·지문·성공·오류 범주·행 수 구간 · 값·SQL 원문 0 · 누출 관문 통과분만) · `DB_BACKEND=direct`면 멈춤 · **SQL 자산이 0건이면 「[중단] 검증할 자산 SQL이 없다」(종료 1)로 끝나는 것이 정상** — 1회차 반입본(K1 가이드 · K3 설명·유사어 · K4 산문 섹션 · K6 규칙)에는 SQL이 없다. K2 예시·K8 템플릿은 2회차 반출 뒤 작성 → 그때부터 실행 대상이 생긴다. 이 경우 A4는 건너뛴다 | ✅ |
 | A5 | 점검 | `python -m scripts.itam_bench --dry-run --env closed` | 린트 통과 | ✅ |
 | A6 | 벤치 실행 | `python -m scripts.itam_bench --run --env closed --user <계정>` | 사다리 `intent_orchestration` · 끝에 「산출물 기록」 · 턴별 자산 사용 표지 | ✅ |
 | A7 | (선택) 자산 끄고 다시 실행 | `python -m scripts.itam_bench --run --env closed --user <계정> --asset-ablation <키>` | 같은 시나리오 · 그 자산만 꺼짐(벤치 서버 프로세스에서만 · `run.json`에 기록) — 키마다 run 하나 | ✅ |
-| A8 | (첫 사이클만) 폴스타 기준선 | `python scripts/eval_text2sql.py --dry-run` → `python scripts/eval_text2sql.py --db all --path orchestration` | 같은 내부망 FabriX에서 폴스타 정답률(G-4 · W0) | ✅ |
+| A8 | (첫 사이클만) 폴스타 기준선 | ① `python scripts/eval_text2sql.py --dry-run`(골드셋 점검만 · LLM·DB 0 — 「총 항목 26건 · 검증 통과」) ② `python scripts/eval_text2sql.py --path graph --db all > results/eval_polestar_baseline.txt` — **`--path graph`**: 본체 그래프를 `.env` 사다리대로 돈다(내부망 2단 = ITAM 벤치 `--profile tier2_intent`와 같은 단). 기본값 `orchestration`은 단일 DB 파이프라인 직접 구동이라 사다리 단과 무관해 기준선으로 쓰지 않는다 | 기동 로그 사다리 줄이 `intent_orchestration` · 리포트 「EX 정확도」(골드 26건 — b0 5 · gp 15 · yd 6) · 「스킵」 0이어야 함(접속 실패는 조용히 스킵돼 정확도 분모에서 빠진다) · A3 비과금 확인 뒤 실행(G-4 · W0) | ✅ |
 | A9 | 반출 | `results/itam_bench/<run>/`의 파일만 — `plans/140` 6파일 + `asset_verification.yaml`(A4를 돌렸으면) | 누출 관문 통과(`leak_check.json`) · 제품 로그·`.cache/` 반출 금지 | ✅ |
 
 **B. 외부망 — 근거 → 작성 → 검증 → 빌드 → 커밋 (우리 · Claude Code)**

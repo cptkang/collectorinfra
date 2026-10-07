@@ -178,3 +178,45 @@ class TestEdgeCases:
         )
         is_safe, reason = guard.is_safe_select(sql)
         assert is_safe is True
+
+
+class TestExecutableCommentBlocked:
+    """MariaDB·MySQL 실행 주석(`/*! … */`·`/*M! … */`) — 주석처럼 보이지만 안이 실행된다.
+
+    금지 키워드 검사는 주석을 지운 뒤 보므로 실행 주석 안의 쓰기·잠금 구문을 놓친다.
+    인젝션 패턴이 실행 주석 자체를 걸어 `is_safe_select`·`validate_sql` 양쪽에서 막는다.
+    """
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT 1 FROM servers /*! FOR UPDATE */",
+            "SELECT * FROM servers /*!50000 UNION SELECT password FROM users */",
+            "SELECT * FROM servers /*M!100100 LIMIT 1 */",
+            "SELECT * FROM servers /*m! LIMIT 1 */",
+            "SELECT /*!SLEEP(5)*/ hostname FROM servers",
+        ],
+    )
+    def test_executable_comment_rejected(self, guard, sql):
+        is_safe, _reason = guard.is_safe_select(sql)
+        assert is_safe is False
+        assert guard.detect_injection_patterns(sql)
+
+    def test_inner_injection_pattern_also_detected(self, guard):
+        """실행 주석은 지우지 않으므로 안의 인젝션 패턴(UNION SELECT)도 함께 걸린다."""
+        sql = "SELECT * FROM servers /*!50000 UNION SELECT password FROM users */"
+        found = guard.detect_injection_patterns(sql)
+        assert r"UNION\s+(ALL\s+)?SELECT" in found
+        assert r"/\*M?!" in found
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT * FROM servers /* 일반 주석 ! 느낌표 */ LIMIT 10",
+            "SELECT * FROM servers WHERE memo = '/*! 리터럴 */' LIMIT 10",
+            "SELECT * FROM servers -- /*! 라인 주석 안 */\nLIMIT 10",
+        ],
+    )
+    def test_ordinary_comment_and_literal_allowed(self, guard, sql):
+        is_safe, reason = guard.is_safe_select(sql)
+        assert is_safe is True, reason

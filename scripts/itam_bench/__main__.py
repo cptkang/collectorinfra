@@ -1013,10 +1013,10 @@ def _run_with_server(
         "operator": rd.mask_identifier(getpass.getuser()),
         "host": rd.mask_identifier(socket.gethostname()),
         "db_backend": getattr(cfg, "db_backend", None),
-        "mcp_endpoint": rd.mask_dsn(
+        "mcp_endpoint": rd.dsn_scheme(
             str(getattr(getattr(cfg, "dbhub", None), "server_url", "") or "")
         ),
-        "itam_dsn": rd.mask_dsn(_itam_dsn() or "") or None,
+        "itam_dsn": rd.dsn_scheme(_itam_dsn()),
         "scenarios": len(scenarios),
         "repeat": args.repeat,
         "turns": ctx.counters["turns"],

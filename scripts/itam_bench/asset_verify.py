@@ -11,7 +11,7 @@
   code 슬롯 대표값이 없으면(외부망) 그 몫을 「보류」(`<템플릿 id>#pending`)로 남긴다.
 
 실행은 `--check-oracle`과 같은 읽기 전용 경로다 — 러너 선검사(`is_select_only`) + `SQLGuard` +
-부수효과 함수 · MariaDB 실행 주석(`/*! … */` — `SQLGuard`가 안을 보지 못한다) 차단을 통과한 SQL만
+부수효과 함수 · MariaDB 실행 주석(`/*! … */` — `SQLGuard`도 거절 · 사유는 따로) 차단을 통과한 SQL만
 MCP readonly 클라이언트(`scripts.scenario.oracle._open_client`)로 돌린다. `DB_BACKEND=direct`면
 멈춘다. 바깥 행 제한(`LIMIT 101`)으로 감싸 행 수 구간만 잰다.
 
@@ -431,10 +431,10 @@ def run_verify(
         "git": dict(provenance),
         "env": env,
         "db_backend": getattr(cfg, "db_backend", None),
-        "mcp_endpoint": rd.mask_dsn(
+        "mcp_endpoint": rd.dsn_scheme(
             str(getattr(getattr(cfg, "dbhub", None), "server_url", "") or "")
         ),
-        "itam_dsn": rd.mask_dsn(dsn or "") or None,
+        "itam_dsn": rd.dsn_scheme(dsn),
         "operator": rd.mask_identifier(getpass.getuser()),
         "host": rd.mask_identifier(socket.gethostname()),
         "policy_scope": getattr(policy, "scope", None),

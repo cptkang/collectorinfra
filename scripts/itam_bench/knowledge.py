@@ -472,7 +472,7 @@ class _Context:
         return _SqlCheck(client, self.sql_checker, self.schema_info, self.engine, DB_ID)
 
 
-#: MariaDB 실행 주석 — `SQLGuard`가 주석 안을 보지 못하므로 실행 전에 따로 거절한다
+#: MariaDB 실행 주석 — `SQLGuard`도 거절하나 사유를 밝히려고 실행 전에 따로 거절한다
 _EXEC_COMMENT_REASON = "MariaDB 실행 주석(/*! … */)은 쓸 수 없습니다 — 주석 안이 실행된다"
 
 

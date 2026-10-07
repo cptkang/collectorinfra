@@ -40,6 +40,7 @@ INJECTION_PATTERNS: list[str] = [
     r"LOAD_FILE\s*\(",            # 파일 읽기 시도
     r"@@\w+",                     # 시스템 변수 접근
     r"INFORMATION_SCHEMA\.",      # 스키마 직접 접근 시도
+    r"/\*M?!",                    # MariaDB·MySQL 실행 주석 `/*! … */`·`/*M! … */` — 안이 실행된다
 ]
 
 
@@ -92,6 +93,9 @@ class SQLGuard:
         설명 주석이 인젝션으로 오탐되지 않게 하기 위해서다(2026-05-29 결정).
         주석은 **빈 문자열이 아니라 공백 한 칸**으로 치환한다. 지우면 `UNION/**/SELECT`가
         `UNIONSELECT`로 붙어 공백을 요구하는 UNION 패턴을 빠져나간다(2026-09-21 실측).
+        단 MariaDB·MySQL 실행 주석(`/*! … */`·`/*M! … */`)은 주석이 아니라 실행되는 SQL이라
+        지우지 않는다 — 실행 주석 패턴과 그 안의 인젝션 패턴이 함께 걸린다(금지 키워드 검사는
+        주석을 지우므로 이 패턴이 유일한 차단 지점이다).
 
         Args:
             sql: SQL 쿼리
@@ -108,8 +112,8 @@ class SQLGuard:
         # 단일행 주석 제거 (LLM이 생성하는 -- 주석은 안전)
         sql_clean = re.sub(r"--[^\n]*", "", sql_clean)
         # 블록 주석 → 공백 (LLM이 생성하는 /* ... */ 주석은 안전하나, 토큰을 이어 붙이면
-        # 주석으로 쪼갠 키워드가 패턴을 빠져나간다)
-        sql_clean = re.sub(r"/\*.*?\*/", " ", sql_clean, flags=re.DOTALL)
+        # 주석으로 쪼갠 키워드가 패턴을 빠져나간다). 실행 주석 /*! … */ 은 남긴다
+        sql_clean = re.sub(r"/\*(?![Mm]?!).*?\*/", " ", sql_clean, flags=re.DOTALL)
 
         detected: list[str] = []
         for pattern in patterns:
