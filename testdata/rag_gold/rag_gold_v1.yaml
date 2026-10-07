@@ -1,0 +1,145 @@
+# RAG 기준 질의 세트 v1 (plans/141 W5 · G-6 (a) · 질의 초안 2026-10-07 → 사용자 질의·기대 문서 기입 2026-10-07)
+#
+# 용도(plans/141 §4.2): 리트리벌 설정 교체 전·후의 「맞는 문서가 나오는가(적중률)」 비교 ·
+# 문서 갱신·재청킹 때 회귀 점검 · 질의 형태 A/B 판단.
+#
+# 작성 방법(사용자):
+#   1. 각 질의의 `expected`에 **나와야 할 문서의 제목 또는 소제목 일부**를 적는다(여러 개면 그중
+#      하나라도 결과에 들면 적중). 문서 검색 시험 화면 결과의 「참고 문서」 제목을 그대로 옮기면 된다.
+#   2. 문서에 없는 주제면 `query`를 문서에 있는 주제로 바꾸거나 항목을 지운다.
+#   3. 최소 10개만 채워도 비교는 성립한다. `expected`가 빈 항목은 적중률 계산에서 빠지고
+#      0건률·안정성에만 쓰인다.
+#
+# 적중 판정(scripts/rag_hyde_repeat.py --gold): 결과 문서의 제목·소제목·파일명 중 하나에 `expected`
+# 항목이 **공백·대소문자 무시 부분 일치**로 들어 있으면 적중이다(「인프라 변경관리」 ≡ 「인프라변경관리」 ·
+# 「TIME OUT」 ≡ 「timeout」). 너무 일반적인 말(예: 「테스트」)은 아무 문서에나 걸려 적중률을 부풀린다.
+#
+# 질의는 검색 서비스에 그대로 보내는 문장이다(문서군 이름 없이). `form`은 같은 주제의
+# 명사형/의문형 짝을 표시한다(질의 형태 A/B용).
+
+version: 1
+queries:
+  # ── 본부 전산관리매뉴얼 (hq_manual) — 12 ───────────────────────────────────
+  - id: H01
+    collection: hq_manual
+    type: rnr
+    form: noun
+    query: 서버 관리자의 역할
+    expected: ["서버시스템 관리"]
+  - id: H02
+    collection: hq_manual
+    type: rnr
+    form: noun
+    query: 백업 담당자의 역할
+    expected: ["백업운영"]
+  - id: H03
+    collection: hq_manual
+    type: rnr
+    form: question
+    query: 데이터베이스 관리자는 어떤 업무를 하나요?
+    expected: ["데이터베이스 관리"]
+  - id: H04
+    collection: hq_manual
+    type: definition
+    form: noun
+    query: 인프라변경관리
+    expected: ["인프라 변경관리"]
+  - id: H05
+    collection: hq_manual
+    type: procedure
+    form: question
+    query: 인프라변경관리는 어떻게 하나요?
+    expected: ["인프라 변경관리"]
+  - id: H06
+    collection: hq_manual
+    type: rnr
+    form: question
+    query: 용량산정은 누가 처리하는지?
+    expected: ["용량산정"]
+  - id: H07
+    collection: hq_manual
+    type: procedure
+    form: noun
+    query: 저장매체 폐기 절차
+    expected: ["저장매체 관리"]
+  - id: H08
+    collection: hq_manual
+    type: procedure
+    form: question
+    query: 인프라테스트는 어떤 절차로 진행하나요?
+    # 주의: 「테스트」는 일반어라 다른 문서 제목에도 걸릴 수 있다 — 정확한 문서 제목을 알면 교체
+    expected: ["테스트"]
+  - id: H09
+    collection: hq_manual
+    type: definition
+    form: noun
+    query: 전산 센터의 정의
+    expected: ["전산센터 관리 및 운영"]
+  - id: H10
+    collection: hq_manual
+    type: procedure
+    form: question
+    query: 시스템 로그 백업은 얼마나 보관해야 하나요?
+    expected: ["백업운영"]
+  - id: H11
+    collection: hq_manual
+    type: procedure
+    form: question
+    query: VPN 접근 처리 절차는?
+    expected: ["정보통신망 관리"]
+  - id: H12
+    collection: hq_manual
+    type: procedure
+    form: noun
+    query: 인시던트 처리 절차
+    expected: ["IT서비스관리"]
+
+  # ── 아키텍처 설계문서 (arch_docs) — 8 ──────────────────────────────────────
+  - id: A01
+    collection: arch_docs
+    type: structure
+    form: noun
+    query: 서버 구성 단위
+    expected: ["서버시스템구성지침"]
+  - id: A02
+    collection: arch_docs
+    type: structure
+    form: question
+    query: 서버 구성 단위는 어떻게 되는지?
+    expected: ["서버시스템구성지침"]
+  - id: A03
+    collection: arch_docs
+    type: rationale
+    form: question
+    query: 운영시스템은 개발시스템과 꼭 구분이 필요한지?
+    expected: ["서버시스템구성지침"]
+  - id: A04
+    collection: arch_docs
+    type: rationale
+    form: question
+    query: 클라우드 인프라의 인프라 제약조건은?
+    expected: ["클라우드시스템 구성 지침"]
+  - id: A05
+    collection: arch_docs
+    type: structure
+    form: noun
+    query: 전행공통 데이터 배포 고려사항
+    expected: ["전행공통 데이터 배포 지침"]
+  - id: A06
+    collection: arch_docs
+    type: structure
+    form: question
+    query: 기반인프라의 주요 기능은?
+    expected: ["기반인프라적용 지침"]
+  - id: A07
+    collection: arch_docs
+    type: structure
+    form: noun
+    query: 업무용 컨테이너 구성 가이드
+    expected: ["클라우드시스템 구성 지침"]
+  - id: A08
+    collection: arch_docs
+    type: rationale
+    form: question
+    query: 타임아웃의 필요성은 무엇인가요?
+    expected: ["TIME OUT 설정 지침"]
