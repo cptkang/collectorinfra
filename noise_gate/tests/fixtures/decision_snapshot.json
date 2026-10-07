@@ -649,10 +649,10 @@
     "stage": "matrix",
     "tier": "dashboard"
   },
-  "matrix/non_routine_promote": {
+  "matrix/non_routine_no_promote": {
     "fingerprint": "a56d20f9147338f249b45e37e203238780715215",
-    "priority": 212,
-    "reason": "매트릭스(심각도1×중요도보통) → dashboard · 승격: 비일상 패턴(is_routine=False) → 최종 ticket",
+    "priority": 112,
+    "reason": "매트릭스(심각도1×중요도보통) → dashboard → 최종 dashboard",
     "signals": {
       "ai_severity": null,
       "cascaded": null,
@@ -672,7 +672,7 @@
       "storm": false
     },
     "stage": "matrix",
-    "tier": "ticket"
+    "tier": "dashboard"
   },
   "matrix/promote_and_many_demotes": {
     "fingerprint": "a56d20f9147338f249b45e37e203238780715215",

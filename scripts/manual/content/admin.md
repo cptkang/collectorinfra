@@ -2806,7 +2806,6 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 | 방향 | 신호 | 조건 |
 |---|---|---|
 | 승격 | 폴스타 통보 정책 `notify` | — |
-| 승격 | LLM `is_routine=false`(평소와 다른 패턴) | — |
 | 승격 | LLM 액션가능성 `actionable` | `NOISE_ENABLE_LLM_ACTIONABILITY` |
 | 승격 | 변경 근접(알람 직전 변경 이력) | `NOISE_CHANGE_CORRELATION_ENABLED` |
 | 강등 | 폴스타 비통보 정책 `suppress` | 현재 수집 코드는 이 값을 만들지 않으므로 발생하지 않는다 |
@@ -2963,10 +2962,10 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - **근거**: `stage_evidence`에 `base_tier`·`promote`·`demote`(신호 이름 목록).
 
 ##### 9 보조 조정 (`matrix` 안)
-- **승격 신호**: 폴스타 통보 정책 `notify`(알람 정의에 통보 대상이 한 건 이상), 분석 LLM `is_routine=false`, LLM 액션가능성 `actionable`(`NOISE_ENABLE_LLM_ACTIONABILITY`), 변경 근접(`NOISE_CHANGE_CORRELATION_ENABLED`, 창 `NOISE_CHANGE_WINDOW_SECONDS` 3600).
+- **승격 신호**: 폴스타 통보 정책 `notify`(알람 정의에 통보 대상이 한 건 이상), LLM 액션가능성 `actionable`(`NOISE_ENABLE_LLM_ACTIONABILITY`), 변경 근접(`NOISE_CHANGE_CORRELATION_ENABLED`, 창 `NOISE_CHANGE_WINDOW_SECONDS` 3600).
 - **강등 신호**: 폴스타 비통보 정책 `suppress`(현재 수집 코드가 이 값을 만들지 않아 발생하지 않는다), `is_routine=true`, LLM 액션가능성 `noise`. 뒤의 둘은 실효 심각도가 `NOISE_SUPPRESS_MAX_SEVERITY` 이하일 때만 목록에 들어간다.
 - **규칙**: 승격이 하나라도 있으면 1단계 승격(강등 무시), 승격 없이 강등만 있으면 1단계 강등. 상한 PAGE·하한 SUPPRESS.
-- **주의**: 통보 대상이 지정된 알람은 통보 정책 신호 하나로 매번 한 단계 오른다. 분석 프롬프트는 이력 통계가 없으면 `is_routine=false`를 내도록 지시하므로, 이력 조회가 꺼지거나 실패하면 승격 쪽으로 기운다.
+- **주의**: 통보 대상이 지정된 알람은 통보 정책 신호 하나로 매번 한 단계 오른다. 분석 LLM `is_routine=false`는 승격 근거가 아니다(D-318 — 프롬프트가 이력 통계가 없으면 false를 내도록 지시해 사실상 상시 참이었고, 운영 24시간 매트릭스 PAGE 66건 전부가 이 승격이었다).
 
 ##### 9.5 앱 영향 승격 (`matrix` 안)
 - **켜는 키**: `NOISE_APP_IMPACT_ENABLED`(false) + `NOISE_APM_MCP_URL`(APM 게이트웨이 SSE 주소 · 인증 `NOISE_APM_MCP_TOKEN`). 켰는데 주소가 비면 워커 기동 로그에 경고가 남고 승격하지 않는다.

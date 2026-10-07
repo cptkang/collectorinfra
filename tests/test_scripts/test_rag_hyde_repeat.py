@@ -233,3 +233,54 @@ def test_compare_cli_needs_no_config(tmp_path, capsys) -> None:
     (tmp_path / "a.json").write_text(json.dumps(rep), encoding="utf-8")
     assert rhr.main(["--compare", str(tmp_path / "b.json"), str(tmp_path / "a.json")]) == 0
     assert "■ 비교 판정 hq_manual: A0" in capsys.readouterr().out
+
+
+# ── plans/141 §11 — 지연 비교 보정(결과 있는 회차 · 대조군) ──────────────────
+
+def _lat_case(label, col, tail, runs):
+    """runs = [(hits, ms)]"""
+    return {"label": label, "collection": col, "retrieval_id_tail": tail, "runs": [
+        {"hits": h, "hit": bool(h), "elapsed_ms": ms, "doc_label": "1" if h else "-",
+         "retried": False, "retry_hits": None, "retry_hit": None} for h, ms in runs]}
+
+
+def test_median_ok_ms_ignores_fast_empty_runs() -> None:
+    m = rhr.collection_metrics([_lat_case("H01", "hq_manual", "old1",
+                                          [(0, 400), (0, 420), (3, 2500), (3, 2600)])])["hq_manual"]
+    assert m["median_ms"] == 1460.0          # 0건이 섞여 빨라 보인다
+    assert m["median_ok_ms"] == 2550.0       # 결과 있는 회차만
+
+
+def test_compare_does_not_flag_latency_when_before_was_failing_fast() -> None:
+    """실측(2026-10-07) 형태 — 교체 전 45% 0건(빠름) → 교체 후 2% 0건. 전체 중앙값은 1.8배지만
+    결과 있는 회차끼리는 비슷하다 → A3가 아니라 A0."""
+    before_runs = [(0, 450)] * 9 + [(3, 2450)] * 11
+    after_runs = [(3, 2525)] * 20
+    before = {"started_at": "t0", "repeat": 5, "cases": [
+        _lat_case("H", "hq_manual", "66bd", before_runs),
+        _lat_case("A", "arch_docs", "9b06", [(3, 3183)] * 10)]}
+    after = {"started_at": "t1", "repeat": 5, "cases": [
+        _lat_case("H", "hq_manual", "0ae9", after_runs),
+        _lat_case("A", "arch_docs", "9b06", [(3, 3180)] * 10)]}
+    text = "\n".join(rhr.compare_reports(before, after))
+    assert "■ 비교 판정 hq_manual: A0" in text
+    assert "대조군 지연 비율(후/전): 1.00" in text
+
+
+def test_compare_flags_real_latency_regression_after_control_correction() -> None:
+    before = {"cases": [_lat_case("H", "hq_manual", "old1", [(3, 1000)] * 4),
+                        _lat_case("A", "arch_docs", "same", [(3, 1000)] * 4)]}
+    after = {"cases": [_lat_case("H", "hq_manual", "new1", [(3, 2000)] * 4),
+                       _lat_case("A", "arch_docs", "same", [(3, 1000)] * 4)]}
+    assert "■ 비교 판정 hq_manual: A3" in "\n".join(rhr.compare_reports(before, after))
+    # 대조군도 같이 느려졌으면(플랫폼 상태) 교체 탓이 아니다
+    after["cases"][1] = _lat_case("A", "arch_docs", "same", [(3, 2000)] * 4)
+    assert "■ 비교 판정 hq_manual: A0" in "\n".join(rhr.compare_reports(before, after))
+
+
+def test_compare_recomputes_old_result_files_without_new_metric() -> None:
+    """예전 결과 파일(metrics에 median_ok_ms 없음)도 회차 기록으로 다시 집계한다."""
+    before = {"metrics": {"hq_manual": {"median_ms": 1}},
+              "cases": [_lat_case("H", "hq_manual", "old1", [(0, 400), (3, 2500)])]}
+    after = {"cases": [_lat_case("H", "hq_manual", "new1", [(3, 2500), (3, 2500)])]}
+    assert "■ 비교 판정 hq_manual: A0" in "\n".join(rhr.compare_reports(before, after))

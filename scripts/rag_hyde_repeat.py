@@ -75,7 +75,7 @@ ADOPT_CODES: dict[str, str] = {
     "A0": "채택 — 0건률 ≤ 5% · 적중률 유지 이상 · 지연 1.5배 이내",
     "A1": "보류(0건) — 재시도 없는 0건률이 5% 초과 → 다음 후보 R3(HyDE off)",
     "A2": "보류(적중) — 적중률이 5%p 넘게 하락 → 다음 후보 R4(Top K 5 · 후보 30) 또는 되돌림",
-    "A3": "보류(지연) — 중앙 지연이 1.5배 초과",
+    "A3": "보류(지연) — 결과가 있는 회차의 중앙 지연이 1.5배 초과(대조군 변화분 보정)",
     "AX": "판정 불가 — 같은 리트리벌 ID(교체 전·후가 아님) 또는 측정 없음",
 }
 EMPTY_RATE_MAX = 0.05
@@ -213,7 +213,8 @@ def collection_metrics(cases: Sequence[dict]) -> dict[str, dict[str, Any]]:
         col = case["collection"]
         a = acc.setdefault(col, {"runs": 0, "empty": 0, "empty_after": 0, "retried": 0,
                                  "hit_n": 0, "hit": 0, "hit_after": 0, "doc_kinds": [],
-                                 "ms": [], "retrieval_id_tail": case.get("retrieval_id_tail", "")})
+                                 "ms": [], "ms_ok": [],
+                                 "retrieval_id_tail": case.get("retrieval_id_tail", "")})
         runs = case.get("runs") or []
         a["doc_kinds"].append(len({r["doc_label"] for r in runs if r.get("doc_label") not in (None, "-")}))
         for r in runs:
@@ -231,6 +232,8 @@ def collection_metrics(cases: Sequence[dict]) -> dict[str, dict[str, Any]]:
                 a["hit_after"] += bool(after_hit)
             if r.get("elapsed_ms"):
                 a["ms"].append(r["elapsed_ms"])
+                if not empty:
+                    a["ms_ok"].append(r["elapsed_ms"])
     out: dict[str, dict[str, Any]] = {}
     for col, a in acc.items():
         n = a["runs"] or 1
@@ -243,13 +246,32 @@ def collection_metrics(cases: Sequence[dict]) -> dict[str, dict[str, Any]]:
             "hit_after_retry_rate": (a["hit_after"] / a["hit_n"]) if a["hit_n"] else None,
             "doc_kinds_avg": statistics.mean(a["doc_kinds"]) if a["doc_kinds"] else 0.0,
             "median_ms": statistics.median(a["ms"]) if a["ms"] else None,
+            # 결과가 있는 회차만의 중앙 지연 — 0건 응답은 리랭크 없이 빨리 끝나 전체 중앙값을
+            # 끌어내린다(plans/141 §11 — 0건률 45%였던 교체 전이 「빨라 보인」 원인).
+            "median_ok_ms": statistics.median(a["ms_ok"]) if a["ms_ok"] else None,
             "retrieval_id_tail": a["retrieval_id_tail"],
         }
     return out
 
 
-def adopt_verdict(before: dict[str, Any] | None, after: dict[str, Any] | None) -> str:
-    """문서군 하나의 교체 전·후 채택 판정 코드(plans/141 §6.3)."""
+def latency_ratio(before: dict[str, Any] | None, after: dict[str, Any] | None) -> float | None:
+    """교체 전 대비 후 지연 비율 — 결과가 있는 회차의 중앙값 우선(없으면 전체 중앙값)."""
+    if not before or not after:
+        return None
+    for key in ("median_ok_ms", "median_ms"):
+        b, a = before.get(key), after.get(key)
+        if b and a:
+            return a / b
+    return None
+
+
+def adopt_verdict(before: dict[str, Any] | None, after: dict[str, Any] | None,
+                  *, control_ratio: float | None = None) -> str:
+    """문서군 하나의 교체 전·후 채택 판정 코드(plans/141 §6.3).
+
+    지연은 결과가 있는 회차끼리 비교하고, 바꾸지 않은 문서군(대조군)의 지연 비율로 나눠 두 측정
+    사이 플랫폼 상태 차이를 걷어낸다(plans/141 §11).
+    """
     if not before or not after:
         return "AX"
     if before.get("retrieval_id_tail") and before.get("retrieval_id_tail") == after.get("retrieval_id_tail"):
@@ -259,8 +281,10 @@ def adopt_verdict(before: dict[str, Any] | None, after: dict[str, Any] | None) -
     hb, ha = before.get("hit_rate"), after.get("hit_rate")
     if hb is not None and ha is not None and ha < hb - HIT_DROP_TOL:
         return "A2"
-    mb, ma = before.get("median_ms"), after.get("median_ms")
-    if mb and ma and ma > mb * LATENCY_RATIO_MAX:
+    ratio = latency_ratio(before, after)
+    if ratio is not None and control_ratio:
+        ratio /= control_ratio
+    if ratio is not None and ratio > LATENCY_RATIO_MAX:
         return "A3"
     return "A0"
 
@@ -271,18 +295,26 @@ def _pct(v: float | None) -> str:
 
 def compare_reports(before: dict, after: dict) -> list[str]:
     """교체 전·후 결과 JSON → 출력 줄(옮겨 적을 줄 포함)."""
-    mb = before.get("metrics") or collection_metrics(before.get("cases") or [])
-    ma = after.get("metrics") or collection_metrics(after.get("cases") or [])
+    # 회차 기록이 있으면 늘 다시 집계한다 — 예전 결과 파일에는 새 지표(median_ok_ms)가 없다
+    mb = collection_metrics(before["cases"]) if before.get("cases") else (before.get("metrics") or {})
+    ma = collection_metrics(after["cases"]) if after.get("cases") else (after.get("metrics") or {})
     lines = [
         f"전: {before.get('started_at', '?')} · 코드 {before.get('code', '-')} · 반복 {before.get('repeat')}회",
         f"후: {after.get('started_at', '?')} · 코드 {after.get('code', '-')} · 반복 {after.get('repeat')}회",
         "",
-        "문서군        id(전→후)      0건률(전→후)  재시도후 0건률  적중률(전→후)  문서묶음 평균  중앙ms(전→후)",
+        "문서군        id(전→후)      0건률(전→후)  재시도후 0건률  적중률(전→후)  문서묶음 평균  "
+        "중앙ms 결과있는 회차(전→후)  중앙ms 전체(전→후)",
     ]
+    cols = sorted(set(mb) | set(ma))
+    # 대조군 = 리트리벌 ID가 그대로인 문서군 — 그 지연 비율이 두 측정 사이 플랫폼 상태 차이다
+    control = [latency_ratio(mb.get(c), ma.get(c)) for c in cols
+               if adopt_verdict(mb.get(c), ma.get(c)) == "AX" and mb.get(c) and ma.get(c)]
+    control = [r for r in control if r]
+    control_ratio = statistics.median(control) if control else None
     codes: dict[str, str] = {}
-    for col in sorted(set(mb) | set(ma)):
+    for col in cols:
         b, a = mb.get(col), ma.get(col)
-        code = adopt_verdict(b, a)
+        code = adopt_verdict(b, a, control_ratio=control_ratio)
         codes[col] = code
         if not b or not a:
             lines.append(f"{col:<13} (한쪽 측정 없음)")
@@ -293,8 +325,11 @@ def compare_reports(before: dict, after: dict) -> list[str]:
             f"{_pct(b['empty_after_retry_rate'])}→{_pct(a['empty_after_retry_rate']):<9} "
             f"{_pct(b['hit_rate'])}→{_pct(a['hit_rate']):<9} "
             f"{b['doc_kinds_avg']:.1f}→{a['doc_kinds_avg']:.1f}{'':<8} "
+            f"{b.get('median_ok_ms') or '-'}→{a.get('median_ok_ms') or '-'}{'':<14} "
             f"{b['median_ms'] or '-'}→{a['median_ms'] or '-'}"
         )
+    if control_ratio:
+        lines.append(f"대조군 지연 비율(후/전): {control_ratio:.2f} — 문서군별 지연 판정은 이 값으로 보정")
     # 질의별 적중 하락(원인 추적용)
     def per_case(rep: dict) -> dict[str, float]:
         out = {}

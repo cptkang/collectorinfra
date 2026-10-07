@@ -28,10 +28,12 @@ collections:
     sensitive: false
     # 플랫폼 설정 기록(사람이 읽는 메모 · 코드는 필터·제어에 쓰지 않는다).
     # 파라미터가 바뀌면 플랫폼이 새 retrieval_id 를 발급하므로 ID 교체와 함께 갱신한다.
+    # 2026-10-07 재생성(plans/141 R2 · D-314): vector threshold 0.5 → 0.0 · 나머지 그대로.
+    # 교체 전·후 측정(기준 질의 20개 × 5회): 0건률 45% → 2% · 적중률 47% → 98%.
     platform_params_snapshot:
-      recorded_at: "2026-09-29"
+      recorded_at: "2026-10-07"
       search: hybrid(lexical+vector) · exact KNN · RRF
-      vector_threshold: 0.5
+      vector_threshold: 0.0
       top_k: 3
       rerank: BGE-M3 · threshold 0.3 · candidates 15
       hyde: enabled(Llama3.1)
@@ -46,10 +48,11 @@ collections:
     sibling_note: 규정·승인 절차는 본부 전산관리매뉴얼 소유다
     surface_terms: [아키텍처, 설계문서, 구성도, 연계설계, 표준아키텍처]
     sensitive: false
+    # 2026-10-07 정정(사용자 제공 · plans/141 §2.3): 종전 기록(vector 0.5 · rerank 0.3)은 틀렸다.
     platform_params_snapshot:
-      recorded_at: "2026-09-29"
+      recorded_at: "2026-10-07"
       search: hybrid(lexical+vector) · exact KNN · RRF
-      vector_threshold: 0.5
+      vector_threshold: 0.0
       top_k: 3
-      rerank: BGE-M3 · threshold 0.3 · candidates 15
+      rerank: BGE-M3 · threshold 0.5 · candidates 15
       hyde: enabled(Llama3.1)
