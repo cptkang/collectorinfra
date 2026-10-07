@@ -955,7 +955,7 @@ class NoiseGateConfig(BaseSettings):
     business_hours_csv: str = ""              # (E3) 업무시간 (시간대 강등용)
     repeat_interval_seconds: int = 14400      # 재발생 재통보 간격 (4h, E1 dedup TTL)
     sev3_repeat_interval_seconds: int = 14400  # (§6.1) 심각도3 재통보 간격(기본=공통, 운영서 단축)
-    # (plans/144 Q-4 · D-318) 같은 지문이 재통보 간격 안에 **직전 통보보다 높은 심각도**로 오면
+    # (plans/144 Q-4 · D-320) 같은 지문이 재통보 간격 안에 **직전 통보보다 높은 심각도**로 오면
     # 지문 dedup에서 버리지 않고 게이트까지 보낸다(예: sev2 → sev3면 심각도3 단락으로 PAGE).
     # **기본 on — 「신규 플래그 기본 off = 비트 동일」 원칙의 예외**: off(종전 동작)는 같은 지문의
     # sev2가 통보된 뒤 4h 안에 온 sev3를 버려 D-048 「심각도3 절대 PAGE」가 깨진 채로 남는다.

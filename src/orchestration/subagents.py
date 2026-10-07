@@ -25,6 +25,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
 from src.config import AppConfig, load_config
+from src.domain.knowledge_assets import mentions_utilization
 from src.domain.query_time import QueryTime, resolve_task_time
 from src.nodes.cache_management import cache_management
 from src.nodes.general_inference import general_inference
@@ -70,6 +71,7 @@ from src.orchestration.investigation_audit import (
 from src.routing.capability_ownership import (
     REASON_LLM_ERROR,
     REASON_NO_CLASSIFICATION,
+    _corrected_note,
     owner_inactive_note,
     resolve_capability_owner,
     restrict_targets_to_owner,
@@ -92,10 +94,13 @@ from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
 from src.routing.source_hints import (
     KIND_DB,
     KIND_NON_DB,
+    SourceMention,
     is_mention_active,
     mention_in_text,
+    mentions_for_task,
     resolve_source_mentions,
     source_notice_text,
+    utilization_notice_text,
 )
 from src.utils.deadline import has_time_for, retrieval_remaining
 from src.utils.prior_dependency import NOTE_SOURCE_UNAVAILABLE
@@ -632,6 +637,10 @@ def _apply_selection_to_zone_groups(
 #: 명시 소스 안내 단락의 사유 코드(plans/132 · 재계획이 종결로 본다 — N-3).
 REASON_SOURCE_INACTIVE = "source_inactive"
 REASON_SOURCE_UNSUPPORTED = "source_unsupported"
+#: 사용률을 갖지 않은 소스에 사용률을 물어 조회하지 않은 결과의 사유 코드(D-308 ⑨ · plans/132).
+REASON_SOURCE_NOT_CANONICAL = "source_not_canonical"
+#: 사용률의 답변 영역 코드(레지스트리 `capabilities`) — 이 영역 소유 시스템이 사용률 정본이다.
+_UTILIZATION_CAPABILITY = "server_usage"
 
 
 def _explicit_source_notice(
@@ -670,6 +679,117 @@ def _explicit_source_notice(
         "degraded_reason": reason,
         "query_results": [],
     }
+
+
+def _utilization_source_guard(
+    task: dict[str, Any], sub_query: str, isolated: dict[str, Any],
+    targets: list[dict[str, Any]], app_config: AppConfig,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None, list[dict[str, Any]]]:
+    """사용률 task 대상에서 사용률 정본이 아닌 DB 시스템을 결정적으로 뺀다(D-308 ⑨ · plans/132).
+
+    플래그를 두지 않는다 — D-308 ⑨ 확정 규칙의 구현이고, 사용률 비소유 DB가 없는 배포(관측
+    DB 전용)는 판정이 늘 불성립이라 종전과 바이트 동일하다. 표 선별 LLM이 비소유 DB의 수집
+    이력 표로 사용률을 지어내는 실패(ITAM-114)를 LLM 출력과 무관하게 막는다.
+
+    판정 텍스트는 task 질의다(복합 계획의 사용률 아닌 task는 건드리지 않는다). 비소유 = 선언된
+    소유 시스템(`system_of`)이 있고 사용률 영역(`server_usage`) 소유자가 아닌 DB — 선언 없는 DB는
+    판정 밖이다.
+
+    - 비소유 시스템을 사용자가 이름으로 지목했고(task 귀속 지목) 소유 시스템은 지목하지 않았으면
+      조회하지 않고 안내만 한다(다른 소스로 대신 답하지 않는다 — G-1). 대상 목록과 무관하게
+      판정한다 — 상류(소유 제한 등)가 지목된 DB를 먼저 뺐어도 안내만이다.
+    - 그 밖(분류·승계가 끌어온 경우)은 비소유 DB만 뺀다. 다 빠지면 안내만 한다. 교정 노트는
+      인가 뒤 확정 대상 기준으로 호출부가 만든다(`_utilization_correction_note` — D-264).
+    - 사용률 소유 시스템이 레지스트리에 없거나 활성 소유 DB가 없으면 아무것도 하지 않는다(로그만).
+
+    Returns:
+        (대상 목록, 안내 결과 또는 None, 뺀 비소유 대상 목록)
+    """
+    if not mentions_utilization(sub_query):
+        return targets, None, []
+    reg = get_registry()
+    owners = set(reg.capability_owners(_UTILIZATION_CAPABILITY))
+
+    def _non_owner_system(system: str | None) -> bool:
+        return system is not None and system not in owners
+
+    non_owner = [t for t in targets if _non_owner_system(reg.system_of(str(t.get("db_id") or "")))]
+    single = not isolated.get("is_composite")
+    hints = (isolated.get("parsed_requirements") or {}).get("target_db_hints")
+    mentions = [m for m in mentions_for_task(
+        resolve_source_mentions(hints if isinstance(hints, list) else []), sub_query,
+        single_task=single,
+    ) if m.kind == KIND_DB]
+    named = [m for m in mentions
+             if any(_non_owner_system(reg.system_of(d)) for d in m.db_ids)]
+    if not non_owner and not named:
+        return targets, None, []
+    active_owner = [
+        d for d in app_config.multi_db.get_active_db_ids() if reg.system_of(d) in owners
+    ]
+    if not active_owner:
+        logger.info("사용률 소스 가드 미적용(D-308): 활성 소유 DB 없음 (task=%s, targets=%s)",
+                    task.get("task_id"), [t.get("db_id") for t in targets])
+        return targets, None, []
+    kept = [t for t in targets if t not in non_owner]
+    if (named and not _owner_named(mentions, owners, isolated, sub_query, single)) or not kept:
+        logger.info("사용률 소스 가드 — 안내만(D-308): task=%s 지목=%s 대상=%s",
+                    task.get("task_id"), [m.system for m in named],
+                    [t.get("db_id") for t in targets])
+        return [], {
+            "final_response": utilization_notice_text([m.hint for m in named]),
+            "degraded_reason": REASON_SOURCE_NOT_CANONICAL,
+            "query_results": [],
+        }, []
+    if non_owner:
+        logger.info("사용률 소스 가드 — 비소유 DB 제외(D-308): task=%s %s → %s",
+                    task.get("task_id"), [t.get("db_id") for t in non_owner],
+                    [t.get("db_id") for t in kept])
+    return kept, None, non_owner
+
+
+def _owner_named(
+    mentions: list[SourceMention], owners: set[str], isolated: dict[str, Any],
+    sub_query: str, single: bool,
+) -> bool:
+    """사용률 소유 시스템도 지목했는가 — 힌트 지목 ∪ 원문의 제품·DB 신호 표면어 스캔.
+
+    소유 시스템의 제품명은 입력 파서의 결정적 소스 보강 대상이 아니라 힌트에 없을 수 있다. 스캔
+    재료는 `db_scope.names_only_zoneless_sources`와 같은 레지스트리 접근자다(리터럴 0). 단일 task는
+    원문, 복합 계획은 task 질의를 본다(지목 귀속 규칙과 같다).
+    """
+    if any(m.system in owners for m in mentions):
+        return True
+    reg = get_registry()
+    text = (str(isolated.get("original_user_query") or "") or sub_query) if single else sub_query
+    signals = [t for t in (*reg.product_terms(), *reg.db_signal_terms()) if term_in_text(t, text)]
+    return any(m.kind == KIND_DB and m.system in owners for m in resolve_source_mentions(signals))
+
+
+def _utilization_correction_note(
+    task: dict[str, Any], removed: list[dict[str, Any]], targets: list[dict[str, Any]],
+    isolated: dict[str, Any], app_config: AppConfig,
+) -> dict[str, Any] | None:
+    """사용률 가드가 뺀 비소유 DB의 교정 노트 — 인가 뒤 확정 대상 기준(D-264 ② · TP-1.6 선례).
+
+    뺀 DB 중 인가 밖 DB는 이름을 싣지 않는다(어차피 조회되지 않았다). 남는 것이 없으면 None.
+    """
+    reg = get_registry()
+    shown = authorize_targets(removed, isolated) or []
+    if not shown or not targets:
+        return None
+    owners = reg.capability_owners(_UTILIZATION_CAPABILITY)
+    owner_system = next(
+        (reg.system_of(d) for d in app_config.multi_db.get_active_db_ids()
+         if reg.system_of(d) in owners),
+        None,
+    ) or owners[0]
+    return _corrected_note(
+        reg, _UTILIZATION_CAPABILITY, owner_system,
+        [str(t.get("db_id") or "") for t in shown],
+        [str(t.get("db_id") or "") for t in targets],
+        task.get("task_id"),
+    )
 
 
 def _source_unavailable_notes(
@@ -1718,6 +1838,14 @@ async def run_data_query_pipeline(
     else:
         db_origin = "classified"
 
+    # 사용률 소스 가드(D-308 ⑨ · plans/132) — 대상 출처와 무관하게 확정된 대상에 건다. 존 역질문
+    # 앞에 둔다(비소유 DB를 뺀 뒤 관측 DB 존이 남으면 존 질문이 맞다).
+    targets, _util_notice, _util_removed = _utilization_source_guard(
+        task, sub_query, isolated, targets, app_config,
+    )
+    if _util_notice is not None:
+        return _util_notice
+
     if not targets:
         # 방어적 폴백 (classify_dbs가 항상 1개 이상 반환하지만 안전 차원)
         targets = [{
@@ -1755,6 +1883,13 @@ async def run_data_query_pipeline(
         and pending_fallback_note["db_id"] in {t.get("db_id") for t in targets}
     ):
         ownership_notes.append(pending_fallback_note)
+    # 사용률 가드 교정 노트(D-308) — 같은 이유로 인가 뒤 확정 대상 기준으로 싣는다(D-264 ②).
+    if _util_removed:
+        _util_note = _utilization_correction_note(
+            task, _util_removed, targets, isolated, app_config,
+        )
+        if _util_note is not None:
+            ownership_notes.append(_util_note)
 
     # Plan 71: 실시간 사용률 분기 (옵트인 기본 OFF, B안 게이트 — 원문 기준 승격 신호).
     # 대상이 전부 폴스타이고 measurement 조회가 성공하면 SQL 파이프라인을 건너뛴다.

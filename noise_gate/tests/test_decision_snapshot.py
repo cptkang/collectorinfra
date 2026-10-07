@@ -240,7 +240,7 @@ def _cases() -> dict[str, dict]:
         "matrix/routine_above_cap_no_demote": dict(
             event=ev(severity=2), ctx=_ctx(importance_id="MID"),
             config=cfg(suppress_max_severity=1), analysis=_analysis(is_routine=True)),
-        "matrix/non_routine_promote": dict(
+        "matrix/non_routine_no_promote": dict(
             event=ev(severity=1), ctx=_ctx(importance_id="MID"), config=cfg(),
             analysis=_analysis(is_routine=False)),
         "matrix/history_pattern_fallback": dict(

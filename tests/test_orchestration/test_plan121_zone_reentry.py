@@ -378,6 +378,7 @@ async def test_non_gated_restored_task_is_not_pinned_at_execution():
     """복원 계획(실제 `intent_planner` 출력) → 격리 입력(실제 `_make_isolated_input`) → 배관.
 
     게이트에 걸리지 않았던 t2는 분류 결과(존 없는 다른 시스템)로 간다 — 선택 존으로 끌려가지 않는다.
+    t2 질의는 사용률이 아닌 것으로 바꾼다(D-308 가드 — 사용률 task는 비소유 DB 제외).
     """
     from unittest.mock import patch
 
@@ -394,6 +395,7 @@ async def test_non_gated_restored_task_is_not_pinned_at_execution():
     state.update(plan_out)
     t2 = next(t for t in state["task_plan"] if t["task_id"] == "t2")
     assert "db_ids" not in t2                                   # 계획 단은 비고정이다
+    t2 = {**t2, "sub_query": "서버별 OS 버전"}
     isolated = subagents._make_isolated_input(t2, state, {})
 
     config = MagicMock()
@@ -425,6 +427,8 @@ async def _run_t2(active: list[str], classified_ids: list[str]) -> list[str]:
     plan_out, _ = await _plan(state)
     state.update(plan_out)
     t2 = next(t for t in state["task_plan"] if t["task_id"] == "t2")
+    # 사용률이 아닌 질의로 바꾼다(D-308 가드 — 사용률 task는 비소유 DB 제외 · 여기 의도는 존 배관)
+    t2 = {**t2, "sub_query": "서버별 OS 버전"}
     isolated = subagents._make_isolated_input(t2, state, {})
     config = MagicMock()
     config.multi_db.get_active_db_ids.return_value = active
@@ -446,7 +450,10 @@ async def _run_t2(active: list[str], classified_ids: list[str]) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_non_gated_task_zone_group_targets_follow_selection():
-    """분류가 존 그룹 DB를 고르면 사용자가 고른 존으로 바뀐다(존 없는 DB는 유지)."""
+    """분류가 존 그룹 DB를 고르면 사용자가 고른 존으로 바뀐다(존 없는 DB는 유지).
+
+    t2 질의는 `_run_t2`가 사용률이 아닌 것으로 바꾼다(D-308 가드 — 사용률 task는 비소유 DB 제외).
+    """
     ids, _ = await _run_t2(["polestar_b0", _ZONE, "itam"], ["polestar_b0", "itam"])
     assert ids == [_ZONE, "itam"]
 

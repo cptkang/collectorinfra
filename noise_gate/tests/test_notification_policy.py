@@ -324,6 +324,15 @@ class TestNotiPolicyAnchor:
         d = decide_notification(event, None, analysis, make_ctx(importance_id="MID"), cfg)
         assert d.tier == TIER_DASHBOARD
 
+    def test_non_routine_does_not_promote(self):
+        # D-318: 운영 24h 매트릭스 PAGE 66건 전부가 sev2/보통 TICKET → is_routine=False 승격이었다.
+        cfg = make_config(importance_value_map=IMP_MAP)
+        analysis = SimpleNamespace(pattern_type="이력 정보 없음", is_routine=False)
+        event = make_event(severity=2)
+        d = decide_notification(event, None, analysis, make_ctx(importance_id="MID"), cfg)
+        assert d.tier == TIER_TICKET
+        assert d.evidence["promote"] == []
+
     def test_adjustment_clamped_at_page(self):
         # 이미 PAGE(sev2/높음) + notify → PAGE 유지(상한 클램프)
         cfg = make_config(importance_value_map=IMP_MAP)

@@ -134,6 +134,20 @@ def source_notice_text(hints: Iterable[str], *, unsupported_path: bool = False) 
             "다른 데이터 소스의 값으로 대신 답하지 않았습니다.")
 
 
+def utilization_notice_text(hints: Iterable[str]) -> str:
+    """사용률을 갖지 않은 소스에 사용률을 물었을 때의 안내(D-308 ⑨ · plans/132 G-1 「안내만」).
+
+    사용자가 쓴 표현만 싣는다(D-264). 지목이 없으면(분류가 고른 소스뿐) 소스 이름 없이 안내한다.
+    """
+    names = ", ".join(f"「{h}」" for h in dict.fromkeys(hints))
+    if not names:
+        return ("요청하신 사용률 정보는 조회 대상으로 정해진 데이터 소스에 없어 조회하지 "
+                "않았습니다. 사용률은 관측 데이터가 기준이라, 관측 데이터에서 조회하려면 다시 "
+                "질문해 주세요.")
+    return (f"요청하신 사용률 정보는 {names}에 없습니다. 사용률은 관측 데이터가 기준이라, "
+            f"관측 데이터에서 조회하려면 {names} 없이 다시 질문해 주세요.")
+
+
 def _area_names(labels: Iterable[str]) -> str:
     return " · ".join(dict.fromkeys(label for label in labels if label))
 
@@ -208,4 +222,5 @@ __all__ = [
     "resolve_source_mentions",
     "source_choice_question",
     "source_notice_text",
+    "utilization_notice_text",
 ]

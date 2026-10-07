@@ -49,6 +49,7 @@ NOTE_SUFFICIENCY = "sufficiency"  # 78 W5 충족도 미달(병기)
 NOTE_SCOPE_DB = "scope_db"      # DB별 스코프 분할로 미조회한 DB
 NOTE_DECOMPOSE = "decompose"    # 분해 단계 경과(재분해·미적용·DAG 보정·폴백 사유)
 # 교차 시스템 질의(plans/102 · D-224) — 각 플래그가 켜졌을 때만 생긴다(off면 이 종류의 노트 0건).
+# 단 소유 교정 노트는 사용률 가드(D-319)가 플래그와 무관하게 낸다.
 NOTE_OWNERSHIP = "ownership"          # 답변 영역 소유 교정(선택 DB ↔ 정본 시스템)
 NOTE_ROUTING_FALLBACK = "routing_fallback"  # 빈 분류·LLM 실패로 첫 활성 DB 폴백
 NOTE_BRIDGE = "bridge"                # 값 기반 키 브리지 매칭 보고(일치·가능·미발견·모호)

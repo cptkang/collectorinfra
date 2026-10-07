@@ -417,10 +417,11 @@ class TestPersistencePolicy:
         assert d.tier == TIER_SUPPRESS
 
     def test_promotion_wins_over_unmet(self):
-        # 승격 우선 규칙 그대로 — 비일상 패턴(is_routine=False) 승격이면 지속 조건 강등은 무시.
+        # 승격 우선 규칙 그대로 — 변경 근접 승격이면 지속 조건 강등은 무시.
+        # (is_routine=False는 D-318로 승격 근거가 아니다 — 그래서 승격 신호로 변경 근접을 쓴다.)
         ev, ctx, p = self._metric()
-        analysis = SimpleNamespace(is_routine=False, pattern_type="", ai_message_severity=None)
-        d = _decide(ev, ctx, apm_policy=_apm_policy(ev, p, _persist(1, False)), analysis=analysis)
+        ctx = {**ctx, "change_nearby": True}
+        d = _decide(ev, ctx, apm_policy=_apm_policy(ev, p, _persist(1, False)))
         assert d.tier == TIER_PAGE
 
     def test_severity3_unchanged(self):

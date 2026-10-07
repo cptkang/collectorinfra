@@ -801,8 +801,8 @@ def decide_notification(
             demote.append("폴스타 비통보 정책(suppress)")
         if is_routine is True and effective_severity <= suppress_max_severity:
             demote.append("일상 반복 패턴(is_routine)")
-        if is_routine is False:
-            promote.append("비일상 패턴(is_routine=False)")
+        # (D-318) is_routine=False는 승격 근거가 아니다 — 분석 프롬프트가 이력 부재 시 false를
+        # 지시해 사실상 상시 참이고, 운영 24h 매트릭스 PAGE 66건 전부가 이 승격 하나로 났다.
         # E4: LLM 액션가능성(피드백 few-shot) — 승격 비대칭(재현율 우선).
         # actionable → promote(항상 안전). noise → demote(is_routine과 동일하게 SUPPRESS 하한 가드).
         # 아래 승격우선 기계가 promote 신호와 공존 시 noise demote를 무시한다.

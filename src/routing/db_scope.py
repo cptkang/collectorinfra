@@ -17,6 +17,8 @@ import re
 from typing import Any, Mapping, Optional, Sequence
 
 from src.routing.registry import get_registry
+from src.routing.source_hints import KIND_DB, resolve_source_mentions
+from src.utils.query_gen_common import term_in_text
 
 #: `db_scope.source` 값 — 문자열 필드이며 닫힌 enum이 아니다(`dependent`는 plans/82 파이프라인용 예약).
 SOURCE_SELECTED = "selected"      # 이번 턴 selected_db_ids(역질문 답·스코프 칩)
@@ -263,3 +265,40 @@ def find_unregistered_zone_terms(query: str | None) -> list[str]:
             continue
         found.append(token)
     return found
+
+
+def names_only_zoneless_sources(query: str | None) -> bool:
+    """원문이 이름·유사어로 **존 없는 소스만** 지목했는가 (plans/132 N-10 — 명시 소스 존 게이트).
+
+    존 선택 역질문은 존을 가진 시스템(존 그룹 보유 · 존 배정 DB)의 범위를 묻는다. 사용자가 존 없는
+    소스(존 미배정 DB 시스템 · 비DB 시스템)를 이미 이름으로 골랐다면 그 질문은 답할 수 없는 질문이다
+    — 「사용자가 소스를 이미 말했으면 묻지 않는다」. 존 보유 시스템을 함께 지목하면 종전대로 묻는다.
+
+    스캔은 입력 파서 소스 보강(`_ensure_source_hints`)과 같은 레지스트리 유사어 + 제품·DB 신호
+    표면어(존 보유 시스템 지목 탐지)이고, 해소는 `resolve_source_mentions`다(리터럴 0 — 레지스트리
+    접근자만).
+
+    Args:
+        query: 사용자 원문 질의
+
+    Returns:
+        지목된 소스가 1건 이상이고 그 전부가 존 없는 시스템이면 True.
+    """
+    text = query or ""
+    reg = get_registry()
+    named = [t for t in reg.source_alias_terms() if term_in_text(t, text)]
+    if not named:
+        return False
+    signals = [t for t in (*reg.product_terms(), *reg.db_signal_terms()) if term_in_text(t, text)]
+    mentions = resolve_source_mentions([*named, *signals])
+    if not mentions:
+        return False
+
+    def _zoned(db_id: str) -> bool:
+        entry = reg.get(db_id)
+        return bool(entry and entry.zone)
+
+    return not any(
+        m.kind == KIND_DB and (reg.is_zoned_system(m.system) or any(map(_zoned, m.db_ids)))
+        for m in mentions
+    )

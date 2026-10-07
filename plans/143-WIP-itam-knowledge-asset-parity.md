@@ -1,7 +1,8 @@
 # 143. ITAM 지식 자산 폴스타 동등화 — 폴스타 자산 전수 대응표 · 반출 근거로 Claude Code가 자산을 쓰고 외부망에서 바로 커밋 · ITAM 결정적 조립(데이터 템플릿) · 벤치 폐루프로 효과 판정
 
-> **작성일**: 2026-10-07 · **v1.1**(게이트 답 반영)
-> **상태**: **WIP — 외부망 구현 완료(2026-10-07 · 작업 트리 · 커밋 없음)** · 완료 W1·W2·W3(첫 원천 K1·K4·K3 — 정적 검증만)·W4·W5·W6·W7·W8 코드·W9 · **잔여(내부망)**: W0 폴스타 기준선 · 2·3회차 반출 · 모의 DB(3308) 상대 `--validate-knowledge` 실행 검증 · `--verify-assets` · K2·K8 원천(2회차 뒤) · W8 효과 판정·절제 run · 착수 조건 `plans/140` 커밋은 충족(`b1fabf4`에 포함 — 메인 세션 확인) — 상세 D-316 「구현」 부기
+> **작성일**: 2026-10-07 · **v1.6**(3회차 반출 준비 — 외부망)
+> **2회차 사이클 시작 SHA**: `c161bfd` · **회귀 대상 파일**(2회차): `src/domain/knowledge_assets.py` · `tests/test_domain/test_plan143_knowledge_assets.py` · `tests/test_domain/test_plan143_k6_active_rule_verify.py` · `testdata/itam_bench/closed/knowledge/{guide,prompt_section,descriptions}.yaml` · `config/db_profiles/itam.yaml` · `config/knowledge/itam/{prompt_template,column_descriptions}.yaml` · `config/synonym_seeds/itam.yaml`(머리 주석만) · (3회차 준비 추가) `scripts/itam_bench/redact.py` · `scripts/itam_bench/catalog.py` · `tests/test_scripts/test_itam_bench_redact_identifiers.py` · `tests/test_scripts/test_plan143_p1_outdated_warning.py`
+> **상태**: **WIP — 외부망 구현 완료 · 2회차 사이클 외부망분 완료 · 3회차 반출 준비 외부망분 완료(2026-10-07 · 작업 트리 · 커밋 없음 — §9.1: 반출 SQL 식별자 남김(D-301 부기) · 구버전 P1 초안 경고 · `### 코드값` 표현 통일)** · 2회차(`20261007-152223` · fabrix/vllm · 1회차 원천 반입 확인 — query_guide 지문 일치) 근거로 K1·K4·K3 갱신 + K6 활성 여부 문장 개정(안내 없으면 거르지 않음) · 정적 검증만 · 빌더 기본 산출은 1회차 기준 유지(재기저는 사용자 판단) · **K2·K8 미작성**(정답 판정 0 · 실행 SQL 컬럼 가림 · P1 근거 0) · **잔여**: P1 재실행(구버전 초안 — `b1fabf4` 이후 빌드) · 3회차 반출 · W0 · 모의 DB 실행 검증 · `--verify-assets` · K2·K8 · W8 효과 판정 — 상세 §9
 > **요청(사용자 2026-10-07)**: *"폴스타 db와 관련되어 정리되어 있는 정보들(config/db_prfiles/polestar_b0.yaml, knowledge/catalog.yaml, semantic_model/polestar_b0.yaml, synonym/polestar_b0.yaml 등)을 모두 리스트업하고 itam db에 맞게 생성하기 위한 정보를 itam_bench를 구동시 수집하고 저장된 로그를 외부망으로 반출하여 llm에서 자동으로 생성할 수 있게 해야 한다. 또는 관련 정보를 관리자 페이지의 DB 구조 탭에서 생성할 수 있도록 하여 itam의 조회성능을 polestar의 조회성능 방큼 높일려고 한다. 이 요건에 맞게 계획을 수립하라."*
 > **게이트 답(2026-10-07)**: G-1 *외부망에서 바로 커밋* · G-2/G-3 *"claude code 내에서 돌린다."* · G-4 *폴스타 기준선과 비교* · G-5 *이번에 포함*
 > **입력**: 저장소 `b1fabf4` 실측(서브에이전트 2갈래 — 폴스타 자산 전수 · 기존 생성 경로) · 1회차 반출 `results/itam_bench/20261006-152938/`
@@ -261,3 +262,50 @@
 | v1.2 | 2026-10-07 | §4.2.1 실행 절차 신설 — 내부망 A0~A9 · 외부망 B0~B9 · 효과 판정 C1~C4 명령어(✅ 지금 사용 · ⏳ W3·W4·W5·W6·W8 구현 뒤 — 옵션 이름은 구현 결과로 확정) |
 | v1.3 | 2026-10-07 | 외부망 구현(`-TODO`→`-WIP`) — 근거 묶음 `--evidence` · 원천 검증 `--validate-knowledge` · 빌더 지식 오버레이(`--knowledge` · 철회 시 산출 삭제) · 설명 정본 파일 적재(Redis HSETNX) · K8 템플릿 조립(`src/db_adapters/template_assembler.py` · 단일·멀티 공용 · `TEXT2SQL_TEMPLATE_ASSEMBLY`) · 자산 사용 표지 · `--verify-assets` · `--asset-ablation` · W7 정의 기반 공통코드 쌍 · 첫 원천 4종(K1 10 · K4 9 · K3 설명 54·유사어 3) · 잔여는 내부망 |
 | v1.4 | 2026-10-07 | §4.2.1 명령을 구현 옵션과 대조해 ⏳ 전부 ✅로(`--verify-assets` · `--asset-ablation` · `--ablation-report` · 빌더 `--knowledge` · 스킬) · 머리 상태의 착수 조건 문구 정정(140은 `b1fabf4`에 커밋돼 있었음) |
+| v1.5 | 2026-10-07 | 2회차 사이클(외부망) — run `20261007-152223` 검토 · K1 g03~g06·g08·g09 · K4 s01·s03~s05·s07·s09 · K3 3건 갱신 · K6 활성 여부 문장 개정 · §9 신설(발견·남은 것·사용자 판단) |
+| v1.6 | 2026-10-07 | 3회차 반출 준비(외부망 · 사용자 인터뷰) — 3회차 = 정답 판정 가능 회차 · 반출 SQL 테이블·컬럼 식별자·별칭 남김(D-301 부기 · F8 해소) · 카탈로그 구버전 P1 초안 경고(F7) · 원천 규칙 표현 「### 코드값」 통일 · 내부망 P1 재실행 체크리스트 · 재기저 조건 기록 · 사용률 차단·명시 소스 되물음은 `plans/132` 이관 · §9.1 신설 |
+
+## 9. 2회차 사이클 — run `20261007-152223` (2026-10-07 · 외부망)
+
+**입력**: 내부망 run `20261007-152223`(closed · `tier2_intent` · 워커 fabrix / 오케스트레이터 vllm · 시나리오 18 · 턴 19 · SQL 관측 14 · 실행 성공 17/17 · 오라클 판정 0/0 · 누출 관문 통과). 턴 자산 표지의 `query_guide` 지문 `6296dc04ec9b`가 1회차 원천 빌드본과 같다 — 1회차 반입이 실렸다. 외부망 B1(`--sync`)·B2(`--evidence`)·C1(`--compare 20261006-152938 20261007-152223`) 실행.
+
+**발견(근거 = 근거 묶음 `turns.yaml` · `report.md`)**
+
+| # | 발견 | 처분 |
+|---|---|---|
+| F1 | 현행 원장 조건에 코드 리터럴을 턴마다 다르게 지어냄(두 값 혼용) — K6 「이 칸으로 활성 행만 고른다」가 코드값 안내 없는 상태에서 조건을 강요(추정 · 조건 칸은 반출 가림) | K6 문장 개정(안내에 활성 값이 있을 때만 거름) · K1 g08 · K4 s04·s05 · K3 |
+| F2 | `tcdmsif72`↔`tcdmsif41` 세 칸 조인이 조건 없이도 0행(ITAM-111) · 같은 턴 `tcdmsif80` 단독은 행 반환 · `tcdmsif72`↔`tcdmsif79` 세 칸 조인은 행 반환(ITAM-106 2턴) | K1 g03·g04·g05 · K4 s03 — 서버 단위는 `tcdmsif80` · 연결 키 미확정 |
+| F3 | 서비스 이름 등호 조건·부분 일치 조건 모두 0행인 턴이 있고(101·106·115·117), 어플리케이션명 부분 일치 집계(104)는 행 반환 | K1 g06 · K4 s07 (추정 유지) |
+| F4 | 사용률 추이(ITAM-114)를 `tcdmsif73`으로 ITAM SQL 생성 — 1회차(`tcdmsif90`)에 이어 fabricated 반복. 프롬프트 지식만으로는 막지 못함 | K1 g09 · K4 s09 보강 · 결정적 차단은 사용자 판단 |
+| F5 | 큰따옴표 별칭(`AS "…"`) 4턴 · dialect_silent 1 | K4 s01 |
+| F6 | routing_miss 2 → 5 — 「자산관리에서」를 명시한 ITAM-103·118도 되물음(103·109는 1회차 completed → 2회차 clarification) | ITAM 지식 자산 밖(`plans/132` 소스 선별) — 사용자 판단 |
+| F7 | P1 근거 0(프로파일 컬럼 0 · 코드 컬럼 0 · 관계 0) — P1 초안(09:17:39)이 `b1fabf4`(09:32:57) 이전 서버로 생성돼 evidence `columns`·`budget.requested` 없음. 108테이블 기본키 0이라 구버전은 관계 후보도 0 | 내부망 P1 재실행 필요 · 카탈로그에 「구버전 초안」 경고가 없음(`catalog.py` p1_warnings — 후속 후보) |
+| F8 | 실행 SQL의 컬럼 식별자가 반출 가림(정책 밖 컬럼 → `<가림>`) — 어떤 칸을 썼는지 몰라 K2·K8 정답 SQL 근거가 되지 못함 | D-301 ② 범위 — 카탈로그 실존 식별자 보존은 사용자 판단 |
+| F9 | 지연 중앙값 45.4s · 최대 117.0s(FabriX) — G-4 단순 질의 <10s와 거리 큼 | W0·W8에서 판정 |
+
+**이번에 한 것**: K1 g03·g04·g05·g06·g08·g09 · K4 s01·s03·s04·s05·s07·s09 · K3 `tcdmsif72` 3건(근거 run `20261007-152223`) · K6 활성 여부 문장(`src/domain/knowledge_assets.py`) · 정적 검증(`--static-only` — 모의 DB 3308 미기동 · SQL 항목 0) · 빌드는 **1회차 run 기준 기본 산출 + 새 지식 오버레이**(2회차 재기저는 시드 +127(조회 대상 밖 `tcdmsif81` 계정 비밀번호 칸 유사어 포함) · `itam_schema.json` `_db_description` 소실 · `test_first_export_reproduces_committed_files` 기준 run 고정 문제를 동반해 보류).
+
+**K2·K8 미작성 사유**: 정답 판정 0(폐쇄망 시나리오 관측 전용) · 실행 SQL 컬럼 가림(F8) · 코드값 0(F7) — 스킬 규칙 「정답 SQL 근거가 없으면 만들지 않는다」.
+
+**다음 회차 전 내부망 할 일**: `b1fabf4` 이후 빌드로 기동 → 「DB 구조」 탭 P1 재실행·승인(새 초안 `budget.requested`·`cap`이 채워졌는지 확인 · 2c에서 `활성화여부` 계열 코드값 승인) → A4는 SQL 자산 0이라 생략 → 3회차 run 반출.
+
+### 9.1 3회차 반출 준비 (2026-10-07 · 외부망 · v1.6)
+
+**목표(사용자 인터뷰 2026-10-07)**: 3회차는 **정답 판정 가능 회차**다 — 3회차 반출 SQL로 정답 SQL·K2·K8을 만들고 4회차부터 대조한다.
+
+| # | 항목 | 처분 |
+|---|---|---|
+| ② | 반출 SQL 식별자 가림 완화(F8) — 사용자 원문 *"데이터만 가리면된다. 테이블, 컬럼 이름은 가리지 않아도 된다."* | **완료** — `scripts/itam_bench/redact.py` `_identifier_judge`: 백틱 이름·`AS` 뒤 별칭·따옴표 없는 비ASCII 낱말을 카탈로그 실존과 무관하게 남긴다. **식별자 자리에 쓴 값은 가림** — 식별자 모양 아님 · 값 자리(비교·`LIKE`·`BETWEEN`·`IN` 목록·`THEN`/`ELSE`/`WHEN` 직후·값 비교 뒤 하위 질의 SELECT 목록) · 같은 조각에 사람·서술형 또는 정책 밖 카탈로그 칼럼 · 별칭은 가린 리터럴과 겹침·상수 단독·사람 칼럼 단독 항목일 때. 리터럴·주석·사람 정보·결과 값·`safe_label`·`redact_text`·누출 관문 불변. 수용 잔여: 값 리터럴 없는 별칭 · 선택 목록·ORDER BY·OFFSET 무따옴표 낱말 · D-301 부기. 보안 감사 3라운드(최종 Critical·High 0) · 회귀 테스트 45건 |
+| ⑥ | 카탈로그 구버전 P1 초안 경고(F7) | **완료** — `scripts/itam_bench/catalog.py` `P1_OUTDATED_DRAFT`·`p1_outdated()` — evidence `columns`·`budget.requested`·`budget.cap` 중 하나라도 없으면(`b1fabf4`가 더한 키) `p1_warnings`에 추가 · 리포트 첫머리 `> 주의 — …` |
+| ⑦ | 원천 규칙 문장 「코드값 안내(블록)」 → 실제 머리말 `### 코드값` | **완료** — `src/domain/knowledge_assets.py` `CODE_VALUES_HEADING` · K6 문장 · 원천 K4 2·K1 1·K3 10건 · 빌더 재산출(1회차 run 기준 + 오버레이 · `--knowledge-static-only` · 차이는 문구 줄·생성 시각뿐) · `validate-knowledge --static-only` 76/76 · `prompt_render_diff --ci` 차이 0 |
+| ⑤ | 빌더 기본 산출 2회차 재기저 | **보류 — 3회차 반출 뒤** 재기저한다. 그때 함께: 조회 대상 밖 테이블(예: `tcdmsif81` 계정 비밀번호 칸) 유사어 시드 제외 · 스키마 캐시 `_db_description` 보존 · `test_first_export_reproduces_committed_files` 기준 run 갱신 |
+| ① | 내부망 P1 재실행 | 사용자 몫 — 아래 체크리스트 |
+| ③④ | 사용률 질문 ITAM 결정적 차단(F4) · 「자산관리에서」 명시 질문 되물음 회귀(F6 · ITAM-103·118) | **`plans/132`로 이관**(병행 진행 — D-319) · 132 lead 실측: 되물음 원인은 143 지식 자산이 아니다(118·102·105 = 라우트 존 게이트가 명시 「자산관리」 무시 · 103·109 = 시간 해석기 「N개월 안에 … 종료」 거짓 되물음) · 132 가드가 `knowledge_assets.mentions_utilization`을 import한다(이름·판정 정규식 변경 시 132에 통지) |
+
+**3회차 전 내부망 체크리스트(①)**
+- [ ] 반입 커밋(이번 3회차 준비분 포함)으로 빌드 · 기동 — `b1fabf4` 이후 빌드인지 확인
+- [ ] 「DB 구조」 탭에서 ITAM P1 재실행 → 새 초안의 `budget.requested`·`budget.cap`이 채워졌는지 확인(벤치 카탈로그에 「구버전 빌드」 경고가 없어야 한다)
+- [ ] 2c 코드값 단계에서 `활성화여부`·`활성여부` 계열 코드값 승인(K6 활성 여부 규칙이 `### 코드값` 블록을 근거로 동작)
+- [ ] 3회차 run 반출(`--env closed`) — trace의 실행 SQL에 테이블·컬럼 이름이 보이는지 확인
+
+**검증(3회차 준비분)**: `regress --base c161bfd --files`(2회차+3회차 준비 14파일) 본체 통과 917 · 실패 0 · arch·overfit·ruff·mypy 통과 · 권고 블록 없음(범위: 모듈 단위 — 전체 미실행) · verifier(⑥⑦) Critical·High·Medium 0(Low: `catalog.py` `p1_outdated`에 매핑 가드 없음 — evidence·budget이 dict가 아닐 때 AttributeError · 원천·산출물에 회차 이력 서술이 프롬프트로 섞임 → 머리 주석 이동 검토 — 둘 다 잔여) · security-auditor 3라운드(최종 Critical·High 0) · 실 LLM 호출 0 · 매뉴얼(D-255) 대상 아님(벤치 하네스·내부 프롬프트 지식).

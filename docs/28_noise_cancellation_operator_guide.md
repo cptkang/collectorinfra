@@ -149,8 +149,8 @@ promote가 하나라도 있으면 → 1단계 승격, demote는 전부 무시
 promote가 없고 demote만 있으면 → 1단계 강등 (하한 SUPPRESS)
 ```
 
-`promote`에는 피드백 말고도 `폴스타 통보 정책(notify)`, `비일상 패턴(is_routine=False)`,
-`변경 근접(원인성)`이 들어온다. **이 중 하나라도 있으면 `노이즈` 라벨은 그 회차에 무시된다.**
+`promote`에는 피드백 말고도 `폴스타 통보 정책(notify)`,
+`변경 근접(원인성)`이 들어온다(`is_routine=False`는 승격 근거가 아니다 — D-318). **이 중 하나라도 있으면 `노이즈` 라벨은 그 회차에 무시된다.**
 
 **④ 감사 기록** — 실제로 소비된 값이 `logs/alarm_decisions.jsonl`의 `signals.llm_actionability`에
 남는다. 피드백이 반영됐는지 확인하는 유일한 확실한 방법이다(§8.3).

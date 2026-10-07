@@ -67,8 +67,11 @@ _DOC_AGENT = "doc_query"
 #: 됨 · 0건 · 도구 오류 · 창 밖)는 **소스 불가 종결**이다 — 다른 소스로 바꾸면 침묵 대체가 된다(125
 #: §4.6).
 _NONSQL_AGENTS = frozenset({"apm_query", _DOC_AGENT})
-#: 명시 소스 안내로 끝난 결과의 사유(plans/132 — `subagents.REASON_SOURCE_*`와 같은 값).
-_SOURCE_NOTICE_REASONS = frozenset({"source_inactive", "source_unsupported"})
+#: 명시 소스 안내로 끝난 결과의 사유(plans/132 — `subagents.REASON_SOURCE_*`와 같은 값 ·
+#: `source_not_canonical`은 사용률 비정본 소스 안내 — D-308 ⑨).
+_SOURCE_NOTICE_REASONS = frozenset(
+    {"source_inactive", "source_unsupported", "source_not_canonical"}
+)
 #: 안내만 하는 task 표지(`conditional_agents.SOURCE_NOTICE_KEY`와 같은 값).
 _SOURCE_NOTICE_KEY = "source_notice"
 

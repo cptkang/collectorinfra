@@ -11,9 +11,12 @@ plans/135 §3.5 · W2 · D-301.
   합집합에서 가장 엄격한 등급을 쓴다. 열 이름(별칭)도 값일 수 있어 근거가 있을 때만 남긴다.
 - SQL: 주석·문자열·백틱을 한 번에 토큰으로 나눈다(주석 속 따옴표가 짝을 뒤집지 않게). 주석은 가리고,
   리터럴은 남길 근거(그 턴 프롬프트의 말 · 일반 컬럼 비교 · 날짜/짧은 수 · 날짜 서식 · 식별자
-  따옴표)가 있고 같은 술어에 사람·서술형 컬럼이 없을 때만 남긴다. 따옴표 없는 비ASCII 낱말도
-  프롬프트에 없으면 가린다. IP 는 어디서든 끝자리를 가린다. SQL 구조(테이블·컬럼·조건 형태)는
-  그대로다.
+  따옴표)가 있고 같은 술어에 사람·서술형 컬럼이 없을 때만 남긴다. 테이블·컬럼 식별자(백틱 ·
+  `AS` 뒤 따옴표 별칭 · 따옴표 없는 비ASCII 낱말)는 카탈로그 실존과 무관하게 이름으로 남긴다(D-301
+  부기 2026-10-07 — 데이터만 가린다). 다만 비한정·비카탈로그 낱말이 식별자 모양이 아니거나, 값
+  자리(비교 연산자·LIKE·BETWEEN·THEN·ELSE 뒤 · IN 목록)에 있거나, 사람·서술형·미검토 카탈로그
+  컬럼과 같은 술어에 있으면 값으로 보고 가린다. 별칭은 가린 리터럴과 겹치거나 상수 항목일 때만
+  가린다. IP 는 어디서든 끝자리를 가린다. SQL 구조(테이블·컬럼·조건 형태)는 그대로다.
 - 결과에서 본 사람 값은 **메모리에만** 모아(`PiiVault`) 다른 칸·SQL·오류 문구에 나타나면 가린다.
 - 누출 관문(`LeakGate`)이 산출물 전부를 디코드한 값 단위로 다시 훑는다 — 실패하면 산출물을 쓰지 않고
   위치만 적는다(값일 수 있는 키는 경로에 순번으로). 치환 코드값 파일(`code_samples.yaml`)에는 「원
@@ -64,7 +67,39 @@ _SQL_TOKEN = re.compile(
 #: 술어 조각 경계(리터럴이 어느 컬럼과 같은 조건에 있는가를 볼 때).
 _BOUNDARY = re.compile(r"(?i)\b(?:and|or|where|on|having|when|then|else|select|from|set|join)\b|;")
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+#: 식별자 자리 값 판정용 낱말(한글 포함) — 리터럴 처분은 `_IDENT`(ASCII) 그대로(리터럴 규칙 불변).
+_IDENT_ANY = re.compile(r"[^\W\d]\w*")
+_AS_BEFORE = re.compile(r"(?i)\bAS\s*$")
+#: 식별자 모양 — 숫자로 시작하지 않고 공백·특수문자 없음(아니면 식별자 자리의 값으로 본다).
+_IDENT_SHAPE = re.compile(r"^[^\W\d]\w*$")
+#: 값 자리 — 바로 앞이 LIKE·BETWEEN·WHEN·THEN·ELSE 또는 BETWEEN 뒤의 AND(창 안에서만 본다).
+#: `WHEN` 직후는 단순 CASE 의 비교값이다(검색형 CASE 의 칼럼은 카탈로그·정책 이름으로 이미 남는다).
+_VALUE_WORD_BEFORE = re.compile(
+    r"(?is)(?:\b(?:LIKE|BETWEEN|WHEN|THEN|ELSE)|\bBETWEEN\b(?:(?!\bAND\b).){0,200}\bAND)\s*$"
+)
+_IN_BEFORE = re.compile(r"(?i)\bIN\s*$")
+#: 값 하위 질의 — `(` 바로 앞이 비교 연산자·IN·ANY·ALL·SOME 이고 `(` 바로 뒤가 SELECT.
+_VALUE_OPEN_BEFORE = re.compile(r"(?i)(?:[=<>]|\b(?:IN|ANY|ALL|SOME))\s*$")
+_SELECT_HEAD = re.compile(r"(?i)\s*select\b")
+_FROM_WORD = re.compile(r"(?i)\bfrom\b")
+#: SELECT 목록에서 정의한 별칭(`AS` 뒤 백틱·따옴표·낱말).
+_ALIAS_DEF = re.compile(
+    r"(?i)\bAS\s*(`(?:[^`]|``)*`|\"(?:[^\"\\]|\\.|\"\")*\"|'(?:[^'\\]|\\.|'')*'|[^\W\d]\w*)"
+)
+#: SELECT 항목 경계(별칭의 항목 — 깊이 0 쉼표와 함께 쓴다).
+_ITEM_BOUNDARY = re.compile(r"(?i)\b(?:select|from)\b|;")
+#: 칼럼 하나만인 SELECT 항목(한정 · 백틱 · DISTINCT · 앞뒤 괄호 허용 · 함수 없음) — `AS` 앞까지.
+_SINGLE_COLUMN_ITEM = re.compile(
+    r"(?i)[(\s]*(?:distinct\s+)?(?:(?:`[^`]*`|[^\W\d]\w*)\.)?(?:`([^`]*)`|([^\W\d]\w*))[)\s]*"
+)
+#: 상수만인 SELECT 항목(숫자 · 따옴표 리터럴 하나 · 앞뒤 괄호만) — `AS` 앞까지.
+_CONST_ITEM = re.compile(
+    r"[(\s]*(?:[-+]?\d+(?:\.\d+)?|'(?:[^'\\]|\\.|'')*'|\"(?:[^\"\\]|\\.|\"\")*\")[)\s]*"
+)
 _NON_ASCII_WORD = re.compile(r"[^\x00-\x7F\s]+")
+#: SQL 본문의 따옴표 없는 비ASCII 낱말 — 붙은 ASCII 영숫자·`_`까지 한 낱말(`박서준1234567`).
+#: 앞의 `\b`로 시도 위치를 낱말 머리로 묶어 선형이다. 비ASCII 기호 연속은 예전처럼 따로 잡는다.
+_PLAIN_WORD = re.compile(r"\b\w*[^\W\x00-\x7F]\w*|[^\x00-\x7F\s\w]+")
 #: 남겨도 되는 수·날짜 모양 — 짧은 수(4자리 이하)·날짜·연월·시각. 7자리 사번 모양은 남기지 않는다.
 _SAFE_NUMBERISH = re.compile(
     r"^(?:\d{1,4}(?:\.\d+)?"
@@ -636,14 +671,234 @@ def _segment_grades(
     return grade_at
 
 
+def _paren_marks(plain: str) -> tuple[list[int], set[int], bytearray]:
+    """(괄호 깊이 0 쉼표, `IN (` 목록의 여는 괄호·목록 쉼표, 값 하위 질의 SELECT 목록 표지).
+
+    `plain`은 토큰(문자열·주석·백틱)을 같은 길이 공백으로 지운 SQL 이다 — 토큰 안 괄호·쉼표는
+    세지 않는다. 함수 인자 쉼표는 어느 쪽에도 들지 않는다. 표지는 `= ANY (SELECT 박서준 FROM u)`·
+    `IN (SELECT 박서준)`처럼 값 자리 하위 질의의 SELECT 목록(같은 깊이의 FROM 또는 닫는 괄호까지)
+    위치에 1을 둔다.
+    """
+    # 여는 괄호마다 (`IN (` 목록인가, 값 하위 질의 목록 시작 | -1)
+    stack: list[tuple[bool, int]] = []
+    depths: list[int] = []
+    commas: list[int] = []
+    in_list: set[int] = set()
+    ranges: list[tuple[int, int, int]] = []
+    for index, char in enumerate(plain):
+        depths.append(len(stack))
+        if char == "(":
+            window = plain[max(0, index - 16) : index]
+            is_in = bool(_IN_BEFORE.search(window))
+            head = _SELECT_HEAD.match(plain, index + 1)
+            value_start = head.end() if head and _VALUE_OPEN_BEFORE.search(window) else -1
+            stack.append((is_in, value_start))
+            if is_in:
+                in_list.add(index)
+        elif char == ")":
+            if stack:
+                _is_in, value_start = stack.pop()
+                if value_start >= 0:
+                    ranges.append((value_start, index, len(stack) + 1))
+        elif char == ",":
+            if not stack:
+                commas.append(index)
+            elif stack[-1][0]:
+                in_list.add(index)
+    marks = bytearray(len(plain))
+    for begin, close, depth in ranges:
+        stop = close
+        for match in _FROM_WORD.finditer(plain, begin, close):
+            if depths[match.start()] == depth:
+                stop = match.start()
+                break
+        marks[begin:stop] = b"\x01" * (stop - begin)
+    return commas, in_list, marks
+
+
+def _spans(
+    boundaries: Iterable[re.Match[str]], commas: Sequence[int], length: int
+) -> tuple[list[int], list[int]]:
+    """조각 경계 → (조각 시작 후보, 조각 끝 후보) — `bisect`로 위치의 조각을 찾는다."""
+    found = list(boundaries)
+    bounds = sorted([0] + [m.end() for m in found] + [c + 1 for c in commas] + [length])
+    starts = sorted([m.start() for m in found] + list(commas) + [length])
+    return bounds, starts
+
+
+def _identifier_judge(
+    sql: str,
+    *,
+    policy: ColumnPolicy | None,
+    catalog: frozenset[str] = frozenset(),
+    masked_literals: Iterable[str] = (),
+    prompt: str = "",
+) -> Callable[[int, int, str], bool]:
+    """식별자 자리(백틱 · `AS` 뒤 따옴표 별칭 · 따옴표 없는 비ASCII 낱말)에 쓴 **값**인가.
+
+    True 면 가린다.
+
+    D-301 부기(2026-10-07) — 식별자는 이름으로 남긴다. 프롬프트 말 여부는 호출부가 먼저 본다.
+
+    - 남김: 정책 컬럼·테이블·카탈로그 컬럼 이름 · 한정(바로 앞이나 뒤에 `.`).
+    - A 모양: 식별자 모양(`_IDENT_SHAPE`)이 아니면 가린다.
+    - 별칭(`AS` 뒤): 같은 SQL 에서 가린 리터럴(`masked_literals`)과 내용이 겹치거나(2자 이상 ·
+      casefold · 같음/포함/피포함 — ASCII 리터럴의 포함은 낱말 경계로), 그 SELECT 항목이 상수
+      하나뿐이거나 사람·서술형 칼럼 하나뿐이면 가린다. 그 밖의 별칭은 남긴다(`SELECT 서버명 AS
+      박서준`은 수용 잔여).
+    - 그 밖: 값 자리(비교 연산자·LIKE·BETWEEN·BETWEEN 뒤 AND·WHEN·THEN·ELSE 뒤 · `IN (` 목록 ·
+      값 하위 질의의 SELECT 목록)면 가린다. 아니면 이 SQL 에서 정의해 남긴 별칭의 참조(ORDER BY·
+      GROUP BY·HAVING)는 남기고, 같은 술어 조각(`_BOUNDARY` + 괄호 깊이 0 쉼표)에 사람·서술형
+      컬럼(정책 밖은 사람 정보 휴리스틱) 또는 정책 밖 카탈로그 컬럼이 있으면(자기 자신 제외) 가린다.
+
+    조각마다 위험 낱말 수를 누적합으로 한 번 계산하고, 낱말 등급은 지역 사전에 담는다(선형).
+    """
+    identifiers: set[str] = set()
+    if policy is not None:
+        identifiers = {n.casefold() for n in policy.column_names() | policy.table_names()}
+    names = identifiers | set(catalog)
+    skeleton = _same_length_skeleton(sql, identifiers)
+    plain = _SQL_TOKEN.sub(lambda m: " " * len(m.group(0)), sql)
+    commas, in_list, value_selects = _paren_marks(plain)
+    seg_bounds, seg_starts = _spans(_BOUNDARY.finditer(skeleton), commas, len(sql))
+    item_bounds, item_starts = _spans(_ITEM_BOUNDARY.finditer(skeleton), commas, len(sql))
+    literals = [
+        (v, re.compile(_value_pattern(v)) if v.isascii() else None)
+        for v in {str(v).casefold() for v in masked_literals}
+        if len(v) >= MIN_VALUE_LEN
+    ]
+
+    # 정책 등급 색인 — `ColumnPolicy.grade`(테이블 모름 = 가장 엄격)와 같은 값을 한 번만 만든다
+    folded_grades: dict[str, str] = {}
+    for columns in (policy.tables.values() if policy is not None else ()):
+        for column, column_grade in columns.items():
+            key = column.casefold()
+            folded_grades[key] = strictest([folded_grades.get(key, ""), column_grade])
+    grades: dict[str, str] = {}
+
+    def grade_of(word: str) -> str:
+        key = word.casefold()
+        if key not in grades:
+            grade = folded_grades.get(key, "unclassified")
+            if grade == "unclassified" and pii_suggestion(word, word):
+                grade = "pii"
+            grades[key] = grade
+        return grades[key]
+
+    def risky(word: str) -> bool:
+        grade = grade_of(word)
+        return grade in ("pii", "free_text") or (
+            grade == "unclassified" and word.casefold() in catalog
+        )
+
+    words = list(_IDENT_ANY.finditer(skeleton))
+    word_starts = [m.start() for m in words]
+    word_ends = [m.end() for m in words]
+    # 별칭 자리(`AS` 뒤) 낱말은 칼럼이 아니다 — 조각 위험에 세지 않는다(「서버이름」 별칭이 「이름」
+    # 휴리스틱으로 같은 항목의 칼럼을 가리지 않게)
+    word_risk = [
+        not _AS_BEFORE.search(skeleton[max(0, m.start() - 64) : m.start()]) and risky(m.group(0))
+        for m in words
+    ]
+    prefix = [0]
+    for flag in word_risk:
+        prefix.append(prefix[-1] + flag)
+
+    def segment(bounds: list[int], starts: list[int], start: int, end: int) -> tuple[int, int]:
+        left = bounds[bisect.bisect_right(bounds, start) - 1]
+        return left, starts[bisect.bisect_left(starts, end)]
+
+    def value_slot(start: int) -> bool:
+        index = start - 1
+        while index >= 0 and skeleton[index].isspace():
+            index -= 1
+        if index < 0:
+            return False
+        if skeleton[index] in "=<>":
+            return True
+        if value_selects[start] if start < len(value_selects) else False:
+            return True
+        if skeleton[index] in "(,":
+            return index in in_list
+        window = skeleton[max(0, index - 255) : index + 1]
+        return bool(_VALUE_WORD_BEFORE.search(window))
+
+    def alias_masked(start: int, content: str) -> bool:
+        folded = content.casefold()
+        if len(folded) >= MIN_VALUE_LEN and literals:
+            inner = re.compile(_value_pattern(folded)) if folded.isascii() else None
+            for text, pattern in literals:
+                if (pattern.search(folded) if pattern else text in folded) or (
+                    inner.search(text) if inner else folded in text
+                ):
+                    return True
+        left, _right = segment(item_bounds, item_starts, start, start)
+        if start - left > 300:  # 상수 하나짜리 항목은 짧다
+            return False
+        head = _AS_BEFORE.sub("", sql[left:start].rstrip())
+        if _CONST_ITEM.fullmatch(head):
+            return True
+        single = _SINGLE_COLUMN_ITEM.fullmatch(head)  # 사람·서술형 칼럼 하나만인 항목
+        column = (single.group(1) or single.group(2)) if single else None
+        return bool(column) and grade_of(str(column)) in ("pii", "free_text")
+
+    def common_kept(start: int, end: int, content: str) -> bool:
+        qualified = sql[start - 1 : start] == "." or sql[end : end + 1] == "."
+        return qualified or content.casefold() in names
+
+    # 이 SQL 에서 정의해 남긴 별칭 이름 — ORDER BY·GROUP BY·HAVING 참조를 남긴다(값 자리는 제외)
+    defined_aliases: set[str] = set()
+    for match in _ALIAS_DEF.finditer(sql):
+        if not plain[match.start() : match.start() + 2].isalpha():
+            continue  # 문자열·주석 안의 AS
+        token = match.group(1)
+        content = token[1:-1] if token[0] in "`\"'" else token
+        begin, finish = match.start(1), match.end(1)
+        if _prompt_word(content, prompt) or (
+            common_kept(begin, finish, content)
+            or (_IDENT_SHAPE.match(content) and not alias_masked(begin, content))
+        ):
+            defined_aliases.add(content.casefold())
+
+    def masked(start: int, end: int, content: str) -> bool:
+        if common_kept(start, end, content):
+            return False
+        if not _IDENT_SHAPE.match(content):
+            return True
+        if _AS_BEFORE.search(skeleton[max(0, start - 64) : start]):
+            return alias_masked(start, content)
+        if value_slot(start):
+            return True
+        if content.casefold() in defined_aliases:
+            return False
+        left, right = segment(seg_bounds, seg_starts, start, end)
+        total = prefix[bisect.bisect_left(word_starts, right)] - prefix[
+            bisect.bisect_left(word_starts, left)
+        ]
+        own = 0
+        index = bisect.bisect_left(word_starts, end) - 1
+        while index >= 0 and word_ends[index] > start:
+            own += word_risk[index]
+            index -= 1
+        return total - own > 0
+
+    return masked
+
+
 def _literal_plan(
     sql: str,
     *,
     policy: ColumnPolicy | None,
     prompt: str,
     catalog: frozenset[str] = frozenset(),
+    identifier_mode: bool = False,
 ) -> list[tuple[re.Match[str], str]]:
-    """토큰마다 처분 — `comment`·`keep`·`mask`. 근거 없는 리터럴은 전부 `mask`."""
+    """토큰마다 처분 — `comment`·`keep`·`mask`. 근거 없는 리터럴은 전부 `mask`.
+
+    `identifier_mode`(`redact_sql`만 켠다)면 백틱·`AS` 뒤 따옴표 별칭은 `ident`로 두고 처분을
+    `_identifier_judge`에 맡긴다. 끄면(`redact_text`) 예전처럼 백틱은 ASCII 이름·프롬프트 말만
+    남긴다.
+    """
     from src.utils.synonym_usage import _extract_column_literals
 
     identifiers: set[str] = set()
@@ -672,6 +927,11 @@ def _literal_plan(
         content = token[1:-1]
         if token[0] in '"`' and content.casefold() in identifiers:
             decision = "keep"
+        elif identifier_mode and (
+            token[0] == "`"
+            or _AS_BEFORE.search(skeleton[max(0, match.start() - 64) : match.start()])
+        ):
+            decision = "ident"
         elif token[0] == "`":
             decision = (
                 "keep" if (_ASCII_LABEL.match(content) or _prompt_word(content, prompt)) else "mask"
@@ -694,17 +954,27 @@ def _literal_plan(
     return plan
 
 
-def _redact_plain(text: str, prompt: str, allowed: frozenset[str] = frozenset()) -> str:
-    """토큰 사이 SQL 본문 — 따옴표 없는 비ASCII 낱말은 근거가 없으면 가린다(별칭·잘못 쓴 값).
+def _redact_plain(
+    text: str,
+    offset: int,
+    prompt: str,
+    allowed: frozenset[str],
+    in_identifier_slot: Callable[[int, int, str], bool],
+) -> str:
+    """토큰 사이 SQL 본문 — 따옴표 없는 비ASCII 낱말은 식별자로 남기고 식별자 자리의 값만 가린다.
 
-    근거: 그 턴 프롬프트에 있는 말 · 결과 요약이 열 이름으로 남긴 별칭(`allowed`).
+    그 턴 프롬프트에 있는 말 · 결과 요약이 열 이름으로 남긴 별칭(`allowed`)은 판정 없이 남긴다.
+    `offset`은 `text`가 원 SQL 에서 시작하는 위치다.
     """
 
     def keep(match: re.Match[str]) -> str:
         word = match.group(0)
-        return word if (word in (prompt or "") or word in allowed) else MASK
+        if word in (prompt or "") or word in allowed:
+            return word
+        start = offset + match.start()
+        return MASK if in_identifier_slot(start, start + len(word), word) else word
 
-    return _NON_ASCII_WORD.sub(keep, text)
+    return _PLAIN_WORD.sub(keep, text)
 
 
 def redact_sql(
@@ -716,24 +986,50 @@ def redact_sql(
     allowed_words: Iterable[str] = (),
     catalog_columns: Iterable[str] = (),
 ) -> str:
-    """실행 SQL — 구조는 남기고 리터럴·주석·낱말은 근거 있을 때만 남긴다.
+    """실행 SQL — 구조와 식별자는 남기고 리터럴·주석은 근거 있을 때만 남긴다.
 
-    남긴 리터럴도 사람 값·카나리아·정규식과 대조하고, IP 는 어디서든 끝자리를 가린다.
+    식별자(백틱 · `AS` 뒤 따옴표 별칭 · 따옴표 없는 비ASCII 낱말)는 카탈로그 실존과 무관하게
+    이름으로 남긴다 — 지어낸 칼럼명도 진단에 보여야 한다(D-301 부기 2026-10-07). 사람·서술형
+    값 자리·사람 컬럼 곁·값 리터럴과 겹치는 별칭처럼 값 근거가 있는 비한정·비카탈로그 낱말만 가린다
+    (`_identifier_judge`).
+    남긴 리터럴·식별자도 사람 값·카나리아·정규식과 대조하고, IP 는 어디서든 끝자리를 가린다.
     `allowed_words`는 결과 요약이 근거를 확인해 남긴 열 이름(별칭)이고, `catalog_columns`는 스키마
     카탈로그의 컬럼 이름이다(정책에 없는 컬럼과 같은 술어의 리터럴은 프롬프트 말이 아니면 가린다).
     """
     text = str(sql or "")[:INPUT_MAX]
     allowed = frozenset(word for word in allowed_words if word and not _value_unsafe(word, vault))
+    catalog = frozenset(c.casefold() for c in catalog_columns)
     plan = _literal_plan(
-        text, policy=policy, prompt=prompt, catalog=frozenset(c.casefold() for c in catalog_columns)
+        text, policy=policy, prompt=prompt, catalog=catalog, identifier_mode=True
     )
+    in_slot = _identifier_judge(
+        text,
+        policy=policy,
+        catalog=catalog,
+        masked_literals=[m.group(0)[1:-1] for m, decision in plan if decision == "mask"],
+        prompt=prompt,
+    )
+    plan = [
+        (
+            match,
+            (
+                "mask"
+                if not _prompt_word(match.group(0)[1:-1], prompt)
+                and in_slot(match.start(), match.end(), match.group(0)[1:-1])
+                else "keep"
+            )
+            if decision == "ident"
+            else decision,
+        )
+        for match, decision in plan
+    ]
     kept = [m.group(0)[1:-1] for m, decision in plan if decision == "keep"]
     unsafe = dict(zip(kept, _unsafe_flags(kept, vault), strict=True))
     pieces: list[str] = []
     cursor = 0
     for match, decision in plan:
         token = match.group(0)
-        pieces.append(_redact_plain(text[cursor : match.start()], prompt, allowed))
+        pieces.append(_redact_plain(text[cursor : match.start()], cursor, prompt, allowed, in_slot))
         if decision == "comment":
             opener = "/*" if token.startswith("/*") else ("--" if token.startswith("--") else "#")
             replacement = f"/*{MASK}*/" if opener == "/*" else f"{opener} {MASK}"
@@ -745,7 +1041,7 @@ def redact_sql(
             replacement = token
         pieces.append(replacement)
         cursor = match.end()
-    pieces.append(_redact_plain(text[cursor:], prompt, allowed))
+    pieces.append(_redact_plain(text[cursor:], cursor, prompt, allowed, in_slot))
     return _scrub_free_text(vault.scrub(mask_ip("".join(pieces))))
 
 

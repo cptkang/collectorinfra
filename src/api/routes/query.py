@@ -1646,6 +1646,10 @@ def _scope_select_or_none(
     from src.utils.query_gen_common import LOCATION_HINT_TERMS, term_in_text
     if any(term_in_text(t, query) for t in LOCATION_HINT_TERMS):
         return None
+    # 존 없는 소스만 지목한 질의는 존 게이트와 같이 묻지 않는다(plans/132 N-10 — 대칭).
+    from src.routing.db_scope import names_only_zoneless_sources
+    if names_only_zoneless_sources(query):
+        return None
 
     allowed = (current_user or {}).get("allowed_db_ids")
     active = config.multi_db.get_active_db_ids() or []
@@ -1999,6 +2003,10 @@ def _zone_clarification_or_none(
         # 위치 표면어가 하나라도 해소되면 비발동 (D-065 결정적 보강이 처리)
         from src.utils.query_gen_common import LOCATION_HINT_TERMS, term_in_text
         if any(term_in_text(t, query) for t in LOCATION_HINT_TERMS):
+            return None
+        # 존 없는 소스만 이름으로 지목했으면 비발동(plans/132 N-10) — 그 소스에는 고를 존이 없다.
+        from src.routing.db_scope import names_only_zoneless_sources
+        if names_only_zoneless_sources(query):
             return None
     # 페이로드 조립은 공용 헬퍼로(D-143 후속3 — 상호배타 시 안내 문구·그룹 렌더 일원화)
     return _authorized_zone_clarification(
