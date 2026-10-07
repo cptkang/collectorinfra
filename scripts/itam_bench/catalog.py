@@ -752,6 +752,10 @@ def load_schema_source(
 #: P1 근거가 없을 때 리포트 첫머리 경고(고정 문구).
 P1_MISSING_WARNING = "P1 근거 없음 — 자산 없는 기준선"
 P1_HASH_MISMATCH = "P1 초안의 스냅샷 해시가 현 스냅샷과 다르다 — 초안 뒤 스키마가 바뀌었을 수 있다"
+P1_OUTDATED_DRAFT = "P1 초안이 구버전 빌드(b1fabf4 이전)로 생성됨 — 내부망에서 P1 재실행 필요"
+#: 현행 P1 초안 표지 — b1fabf4(plans/140)가 evidence `columns`·`budget.requested/cap`을 더했다.
+P1_CURRENT_EVIDENCE_KEYS: tuple[str, ...] = ("columns",)
+P1_CURRENT_BUDGET_KEYS: tuple[str, ...] = ("requested", "cap")
 #: P1 예산 칸 중 카탈로그·run.json 에 싣는 것(`skipped_sample`은 이름 목록이라 뺀다).
 P1_BUDGET_KEYS: tuple[str, ...] = ("limit", "used", "skipped", "requested", "cap")
 
@@ -895,6 +899,15 @@ def p1_summary(draft: Mapping[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def p1_outdated(draft: Mapping[str, Any]) -> bool:
+    """P1 초안이 b1fabf4 이전 빌드로 만들어졌나 — 현행 evidence 표지 키가 하나라도 없으면 참."""
+    evidence = draft.get("evidence") or {}
+    budget = evidence.get("budget") or {}
+    return any(k not in evidence for k in P1_CURRENT_EVIDENCE_KEYS) or any(
+        k not in budget for k in P1_CURRENT_BUDGET_KEYS
+    )
+
+
 def p1_asset(draft: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """`run.json` `assets.p1` — 초안 지문(assets·evidence 정규 JSON sha256 앞 12자)·시각·예산."""
     summary = p1_summary(draft)
@@ -929,6 +942,7 @@ def load_structure_store_source(
     - 스냅샷은 있는데 P1 초안이 없으면 스냅샷 구조만 쓴다(`source: structure_store`).
     - 두 경우 모두 `p1: None` · `p1_fallback: 사유`(고정 문구) — 리포트 첫머리 경고 재료다.
     - P1 초안의 `snapshot_hash`가 현 스냅샷 해시와 다르면 `p1_warnings`에 남긴다.
+    - P1 초안이 구버전 빌드 모양(`p1_outdated`)이면 `p1_warnings`에 따로 남긴다.
 
     P1 초안 원본(코드값·라벨 포함)은 `_p1_draft`에 **메모리로만** 둔다 — 카탈로그 조립과 치환
     코드값 생성(`code_samples`)의 재료이고 산출물에 그대로 쓰지 않는다.
@@ -959,6 +973,8 @@ def load_structure_store_source(
     warnings: list[str] = []
     if draft and draft.get("snapshot_hash") != data["record"].get("hash"):
         warnings.append(P1_HASH_MISMATCH)
+    if draft and p1_outdated(draft):
+        warnings.append(P1_OUTDATED_DRAFT)
     normalized.update(
         p1=p1_summary(draft),
         p1_fallback=None if draft else "P1 초안 없음",

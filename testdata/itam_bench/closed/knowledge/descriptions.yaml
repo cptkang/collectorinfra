@@ -2,19 +2,20 @@
 # 설명 정본 파일로 빌드되어 Redis에 설명이 없는 컬럼만 채운다(내부망 설명·운영자 편집 우선 — plans/143 §4.5).
 # 범위: 1회차(20261006-152938) 시나리오·실패 턴에 걸린 테이블에서 이름만으로 뜻이 모호한 칸(코드·여부·구분·
 # 날짜·식별자·서비스 연결 후보). 항목당 ≤ 200자 · 값 0. 이름만 보고 판단한 의미는 (추정).
+# 2회차(20261007-152223)로 tcdmsif72의 물품분류번호·물품고유번호·활성화여부를 다시 썼다.
 version: 1
 items:
 - id: tcdmsif72.서버운영환경구분
   table: tcdmsif72
   column: 서버운영환경구분
-  text: 서버가 속한 운영 환경을 나타내는 코드(추정). 이 테이블에 이름 칸이 없어 리터럴 조건은 코드값 안내가 있을 때만 건다. 적재본 tcdmsif74에는 같은 뜻의 원문 칸 서버운영환경내용이 있다.
+  text: 서버가 속한 운영 환경을 나타내는 코드(추정). 이 테이블에 이름 칸이 없어 리터럴 조건은 「### 코드값」 블록에 이 칸이 있을 때만 건다. 적재본 tcdmsif74에는 같은 뜻의 원문 칸 서버운영환경내용이 있다.
   origin: claude_code
   evidence: 20261006-152938
   status: active
 - id: tcdmsif72.서버유형구분
   table: tcdmsif72
   column: 서버유형구분
-  text: 서버 유형을 나타내는 코드(추정). 리터럴 조건은 코드값 안내가 있을 때만 건다. 적재본 tcdmsif74에는 원문 칸 서버유형내용이 있다.
+  text: 서버 유형을 나타내는 코드(추정). 리터럴 조건은 「### 코드값」 블록에 이 칸이 있을 때만 건다. 적재본 tcdmsif74에는 원문 칸 서버유형내용이 있다.
   origin: claude_code
   evidence: 20261006-152938
   status: active
@@ -49,16 +50,16 @@ items:
 - id: tcdmsif72.물품분류번호
   table: tcdmsif72
   column: 물품분류번호
-  text: 이 서버에 대응하는 자산 원장 tcdmsif41 행을 물품고유번호와 함께 가리키는 키의 앞 칸(정의 관계 · 값 겹침 미확인).
+  text: 자산 원장 tcdmsif41 행을 물품고유번호와 함께 가리키는 키의 앞 칸(정의 관계 · 추정). 2회차 내부망에서 자산 원장과의 조인이 조건 없이도 0행이라 연결은 미확정이다.
   origin: claude_code
-  evidence: 20261006-152938
+  evidence: 20261007-152223
   status: active
 - id: tcdmsif72.물품고유번호
   table: tcdmsif72
   column: 물품고유번호
-  text: 물품분류번호와 함께 자산 원장 tcdmsif41 한 행을 가리키는 키의 뒤 칸(정의 관계 · 값 겹침 미확인).
+  text: 물품분류번호와 함께 자산 원장 tcdmsif41 한 행을 가리키는 키의 뒤 칸(정의 관계 · 추정). 2회차 내부망에서 자산 원장과의 조인이 0행이라 연결은 미확정이다.
   origin: claude_code
-  evidence: 20261006-152938
+  evidence: 20261007-152223
   status: active
 - id: tcdmsif72.담당부점코드
   table: tcdmsif72
@@ -77,9 +78,9 @@ items:
 - id: tcdmsif72.활성화여부
   table: tcdmsif72
   column: 활성화여부
-  text: 현행 원장에서 지금 유효한 행인지 나타내는 여부 칸(추정). 현재 목록·대수는 이 칸으로 활성 행만 센다 — 활성 값은 코드값 안내를 따른다.
+  text: 현행 원장 행의 활성 표시 코드(추정) — 값 뜻은 「### 코드값」 블록이 있어야 안다(활성 여부 규칙 참조).
   origin: claude_code
-  evidence: 20261006-152938
+  evidence: 20261007-152223
   status: active
 - id: tcdmsif72.서버CPU사용률
   table: tcdmsif72
@@ -98,7 +99,7 @@ items:
 - id: tcdmsif80.노후교체기기구분
   table: tcdmsif80
   column: 노후교체기기구분
-  text: 노후 교체 대상 기기인지 나타내는 코드(추정). 이 테이블에 이름 칸이 없어 리터럴 조건은 코드값 안내가 있을 때만 건다.
+  text: 노후 교체 대상 기기인지 나타내는 코드(추정). 이 테이블에 이름 칸이 없어 리터럴 조건은 「### 코드값」 블록에 이 칸이 있을 때만 건다.
   origin: claude_code
   evidence: 20261006-152938
   status: active
@@ -112,7 +113,7 @@ items:
 - id: tcdmsif80.가상화서버매핑여부
   table: tcdmsif80
   column: 가상화서버매핑여부
-  text: 이 서버가 가상 서버(tcdmsif92)와 연결됐는지 나타내는 여부 칸(추정). 값은 코드값 안내를 따른다.
+  text: 이 서버가 가상 서버(tcdmsif92)와 연결됐는지 나타내는 여부 칸(추정). 값은 「### 코드값」 블록을 따른다.
   origin: claude_code
   evidence: 20261006-152938
   status: active
@@ -126,7 +127,7 @@ items:
 - id: tcdmsif80.자산매핑여부
   table: tcdmsif80
   column: 자산매핑여부
-  text: 서버가 자산 원장과 연결됐는지 나타내는 여부 칸(추정). 값은 코드값 안내를 따른다.
+  text: 서버가 자산 원장과 연결됐는지 나타내는 여부 칸(추정). 값은 「### 코드값」 블록을 따른다.
   origin: claude_code
   evidence: 20261006-152938
   status: active
@@ -161,7 +162,7 @@ items:
 - id: tcdmsif80.창고자산여부
   table: tcdmsif80
   column: 창고자산여부
-  text: 전산 창고에 보관 중인 자산인지 나타내는 여부 칸(추정). 값은 코드값 안내를 따른다.
+  text: 전산 창고에 보관 중인 자산인지 나타내는 여부 칸(추정). 값은 「### 코드값」 블록을 따른다.
   origin: claude_code
   evidence: 20261006-152938
   status: active
@@ -266,7 +267,7 @@ items:
 - id: tcdmsif41.센터자산구분
   table: tcdmsif41
   column: 센터자산구분
-  text: 센터 자산 여부·종류를 나타내는 코드(추정). 리터럴 조건은 코드값 안내가 있을 때만 건다.
+  text: 센터 자산 여부·종류를 나타내는 코드(추정). 리터럴 조건은 「### 코드값」 블록에 이 칸이 있을 때만 건다.
   origin: claude_code
   evidence: 20261006-152938
   status: active
@@ -364,7 +365,7 @@ items:
 - id: tcdmsbr01.폐점여부
   table: tcdmsbr01
   column: 폐점여부
-  text: 폐점된 부점인지 나타내는 여부 칸 — 현재 부점만 볼 때 확인한다(값은 코드값 안내를 따른다). 폐점일은 폐점년월일 칸에 있다.
+  text: 폐점된 부점인지 나타내는 여부 칸 — 현재 부점만 볼 때 확인한다(값은 「### 코드값」 블록을 따른다). 폐점일은 폐점년월일 칸에 있다.
   origin: claude_code
   evidence: 20261006-152938
   status: active
@@ -378,7 +379,7 @@ items:
 - id: tcdmshr01.근무상태구분
   table: tcdmshr01
   column: 근무상태구분
-  text: 직원 근무 상태 코드(추정). 리터럴 조건은 코드값 안내가 있을 때만 건다.
+  text: 직원 근무 상태 코드(추정). 리터럴 조건은 「### 코드값」 블록에 이 칸이 있을 때만 건다.
   origin: claude_code
   evidence: 20261006-152938
   status: active

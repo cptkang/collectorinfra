@@ -8,12 +8,15 @@
 from __future__ import annotations
 
 import copy
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from src.domain import knowledge_assets as ka
 from src.domain import knowledge_evidence as ke
+from src.nodes.prompt_blocks import build_profile_rules_block
 
 _COLUMNS = {
     "zzab01": ["그룹코드", "서버호스트명", "활성화여부", "상태구분"],
@@ -79,7 +82,7 @@ class TestGuide:
     def test_normal_passes(self, catalog: ka.Catalog) -> None:
         text = (
             "서버 원장은 `zzab01`이다 — 호스트는 zzab01.서버호스트명으로 찾고 "
-            "`WHERE 활성화여부 = 'x'` 조건은 코드값 안내를 따른다. "
+            "`WHERE 활성화여부 = 'x'` 조건은 「### 코드값」 블록을 따른다. "
             "CPU 사용률은 관측 DB가 정본이라 이 DB에서 답하지 않는다."
         )
         assert ka.guide_item_issues(text, catalog) == []
@@ -246,6 +249,9 @@ class TestDeriveKindRules:
         rules = ka.derive_kind_rules(self._DEFS, _COLUMNS, allowed=_ALLOWED)
         assert len(rules) == 3
         assert "`zzab01.활성화여부`" in rules[0]
+        # 코드값 블록에 활성 값이 없으면 거르지 않고 칸을 보여 준다(2회차 근거 20261007-152223)
+        assert "「### 코드값」 블록에 이 칸의 활성 값이 있으면" in rules[0]
+        assert "거르지 않은 채 이 칸을 결과에 함께 보여 준다" in rules[0]
         assert "`zzab03.기준년월일`(YYYYMMDD 추정)" in rules[1]
         assert "`zzab02`" in rules[2] and "zzab09" not in rules[2]
         for rule in rules:
@@ -262,6 +268,52 @@ class TestDeriveKindRules:
 
     def test_no_kinds_no_rules(self) -> None:
         assert ka.derive_kind_rules({"zzab01": {"kind": "로그"}}, _COLUMNS) == []
+
+
+_ROOT = Path(__file__).resolve().parents[2]
+# 원천(K1·K4·K3) + 빌더 산출물 — 규칙 문장이 코드값 블록을 가리키는 곳
+_HEADING_FILES = [
+    *sorted((_ROOT / "testdata" / "itam_bench" / "closed" / "knowledge").glob("*.yaml")),
+    _ROOT / "config" / "db_profiles" / "itam.yaml",
+    _ROOT / "config" / "knowledge" / "itam" / "prompt_template.yaml",
+    _ROOT / "config" / "knowledge" / "itam" / "column_descriptions.yaml",
+    _ROOT / "config" / "synonym_seeds" / "itam.yaml",
+]
+
+
+class TestCodeValuesHeading:
+    """규칙이 가리키는 코드값 블록 머리말 = 프롬프트 실제 머리말(plans/143 3회차 ⑦)."""
+
+    def test_heading_matches_prompt_block(self) -> None:
+        block = build_profile_rules_block({"code_values": {"zzab01.상태구분": ["A"]}})
+        assert f"\n{ka.CODE_VALUES_HEADING} " in block
+        rule = ka.derive_kind_rules({"zzab01": {"kind": "현행"}}, _COLUMNS)[0]
+        assert f"「{ka.CODE_VALUES_HEADING}」 블록" in rule
+
+    @pytest.mark.parametrize("path", _HEADING_FILES, ids=lambda p: str(p.relative_to(_ROOT)))
+    def test_sources_and_outputs_use_heading(self, path: Path) -> None:
+        text = path.read_text(encoding="utf-8")
+        assert "코드값 안내" not in text
+        assert set(re.findall(r"「(#[^」]*)」", text)) <= {ka.CODE_VALUES_HEADING}
+
+    @pytest.mark.parametrize("path", _HEADING_FILES, ids=lambda p: str(p.relative_to(_ROOT)))
+    def test_parsed_strings_use_heading(self, path: Path) -> None:
+        """YAML 접힘(줄바꿈 → 공백)을 풀고 본다 — 원문 검사는 줄 경계에서 갈린 옛 표현을 놓친다."""
+        import yaml
+
+        def strings(node: Any) -> list[str]:
+            if isinstance(node, str):
+                return [node]
+            if isinstance(node, dict):
+                return [s for k, v in node.items() for s in (*strings(k), *strings(v))]
+            if isinstance(node, list):
+                return [s for v in node for s in strings(v)]
+            return []
+
+        for text in strings(yaml.safe_load(path.read_text(encoding="utf-8"))):
+            flat = re.sub(r"\s+", " ", text)
+            assert "코드값 안내" not in flat
+            assert set(re.findall(r"「(#[^」]*)」", flat)) <= {ka.CODE_VALUES_HEADING}
 
 
 # ──────────────────────────────────────────────

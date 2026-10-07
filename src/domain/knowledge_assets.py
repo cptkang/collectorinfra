@@ -78,6 +78,9 @@ ITEM_FIELDS: Mapping[str, Mapping[str, str]] = {
 GUIDE_MAX_CHARS = 8000
 DESCRIPTION_MAX_CHARS = 200
 SYNONYM_MIN_CHARS = 2
+#: 규칙 문장이 가리키는 프롬프트 코드값 블록 머리말 — `build_profile_rules_block`의
+#: `### 코드값 (컬럼: 값=의미)`와 앞부분이 같아야 LLM이 둘을 같은 블록으로 잇는다
+CODE_VALUES_HEADING = "### 코드값"
 
 # 문제 코드(짧은 열거)
 FILE_INVALID = "file_invalid"
@@ -663,8 +666,8 @@ def derive_kind_rules(
 ) -> list[str]:
     """테이블 정의 `kind`에서 `query_rules` 문장을 결정적으로 만든다(값 0 · 테이블 이름 순).
 
-    - `현행` + 활성 여부 칸(`활성여부`·`활성화여부`) — 지금 상태는 그 칸으로 활성 행만 센다(값은
-      코드값 안내를 따른다).
+    - `현행` + 활성 여부 칸(`활성여부`·`활성화여부`) — 프롬프트의 「### 코드값」 블록에 활성 값이
+      있을 때만 그 값으로 활성 행만 센다. 없으면 거르지 않고 그 칸을 결과에 함께 보인다.
     - `수집이력` + 기준일 칸(`기준년월일`·`기준년월`·`기준일자` · 문자열 타입) — 날짜 문자열
       형식(이름 기준 추정) · 같은 형식 문자열 비교 · 현재 상태는 현행 원장 먼저, 이력은 최신
       기준일 조건.
@@ -704,9 +707,11 @@ def derive_kind_rules(
     rules: list[str] = []
     if active_refs:
         rules.append(
-            "현행 원장의 활성 여부 칸 — 지금 상태(현재 대수·목록)를 물으면 이 칸으로 활성 행만 "
-            f"고른다: {', '.join(active_refs)}. "
-            "활성을 뜻하는 값은 코드값 안내를 따르고 짐작하지 않는다."
+            f"현행 원장의 활성 여부 칸: {', '.join(active_refs)}. "
+            f"지금 상태(현재 대수·목록)를 물을 때 프롬프트의 「{CODE_VALUES_HEADING}」 블록에 "
+            "이 칸의 활성 값이 있으면 그 값으로 활성 행만 고른다. "
+            "그 블록에 활성 값이 없으면 값을 짐작해 조건을 걸지 말고, "
+            "활성 여부로 거르지 않은 채 이 칸을 결과에 함께 보여 준다."
         )
     if date_refs:
         rules.append(

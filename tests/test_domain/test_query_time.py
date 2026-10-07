@@ -170,3 +170,50 @@ class TestPresent:
     def test_present_survives_state_round_trip(self) -> None:
         qt = resolve_query_time("실시간 메모리", NOW)
         assert QueryTime.from_state(qt.to_state()) == qt
+
+
+class TestDeadlineWithinFilter:
+    """plans/132 ITAM 벤치 2회차 — 「N개월 안에 … 종료」·「N개월 내 만료」는 만료 필터다.
+
+    D-309 부기(「6개월 안 남은」·「3개월 이내」)와 같은 성격 — 마감 동사가 짧은 거리 안에 올 때만
+    흔적에서 뺀다. 맨 「안에」는 계속 흔적이다.
+    """
+
+    @pytest.mark.parametrize("query", [
+        "자산관리에서 인터넷뱅킹 시스템 서버 중에 6개월 안에 지원 종료되는 서버 알려줘",  # ITAM-103
+        "6개월 안에 지원 종료(EOS)되는 서버 알려줘",  # ITAM-109
+        "향후 6개월 내 만료 예정 서버",
+        "6개월 내에 EOL 도래 서버",
+        "3개월 안으로 유지보수 계약이 끝나는 서버",
+    ])
+    def test_deadline_within_is_not_clarified(self, query: str) -> None:
+        qt = resolve_query_time(query, NOW)
+        assert qt.clarify is None
+        assert qt.metric is not None and qt.metric.source == "default"
+
+    @pytest.mark.parametrize("query", [
+        "3개월 안에 발생한 알람",
+        "3개월 내 장애 이력",
+        "최근 5분 CPU 사용률",
+        "최근 5분 내 종료된 프로세스",
+        "3개월 안에 만료된 인증서",
+        "6개월 내에 계약이 끝난 서버",
+        "1년 안에 기한이 도래한 점검 건",
+    ])
+    def test_plain_within_stays_trace(self, query: str) -> None:
+        assert resolve_query_time(query, NOW).clarify == "unresolved"
+
+    @pytest.mark.parametrize(
+        "query", ["이번 분기에 유지보수 계약이 끝나는 서버", "5년 이상 된 서버"]
+    )
+    def test_unchanged_neighbours(self, query: str) -> None:
+        assert resolve_query_time(query, NOW).clarify is None
+
+    def test_future_slot_on_deadline_within_is_dropped(self) -> None:
+        """흔적이 아니면 미래 슬롯은 버리고 기본값으로 간다(기존 `_resolve` 규칙 — 확인)."""
+        qt = resolve_query_time(
+            "6개월 안에 지원 종료되는 서버", NOW,
+            slot=slot(relation="next", n=6, unit="month", display_grain="none", span="6개월"),
+        )
+        assert qt.clarify is None and qt.slot_status == SLOT_REJECTED
+        assert qt.metric is not None and qt.metric.source == "default"
