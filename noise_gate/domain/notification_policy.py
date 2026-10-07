@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from noise_gate.domain.cross_source import ACTION_DEMOTE, MODE_ENFORCE
 from noise_gate.domain.silence import match_rules
 
 # ── E7-b 비알람 사전분류 마커(§17.4, 결정적·재현율 우선) ──────────────────
@@ -49,6 +50,14 @@ _RANK_TIER: dict[int, str] = {rank: tier for tier, rank in _TIER_RANK.items()}
 _IMPORTANCE_WEIGHT: dict[str, int] = {"낮음": 1, "보통": 2, "높음": 3}
 _VALID_IMPORTANCE = frozenset(_IMPORTANCE_WEIGHT.keys())
 
+# (plans/144 §4.1) 제니퍼 유형 정책 공급자가 noise_ctx["source"]에 싣는 값. 이 출처의
+# `importance_id`는 코드가 아니라 **라벨**(높음|보통|낮음)이다 — importance_value_map을
+# 거치지 않는다.
+NOISE_SOURCE_APM_POLICY = "apm_policy"
+
+# (plans/144 §4.2) 지속 조건 미달 강등 사유 — 이 사유만으로 강등할 때 하한은 DASHBOARD다(G-1 (b)).
+_PERSISTENCE_UNMET = "지속 조건 미달(제니퍼 지표형)"
+
 # ── 결정 단계 라벨 (Plan 54 모듈 1 — 퍼널의 근거 데이터) ─────────────────
 # "어느 단계가 이 알람을 잘랐는가"를 레코드에 남기기 위한 **닫힌 집합**이다.
 # reason 문자열 역추정 대신 이 라벨을 쓰는 이유: 사유 문구를 고치면 퍼널이 조용히 깨진다.
@@ -65,6 +74,7 @@ STAGE_INHIBITION = "inhibition"                # step 6.5 인히비션
 STAGE_FLAPPING = "flapping"                    # step 6   플래핑
 STAGE_STORM = "storm"                          # step 7   스톰 그룹핑
 STAGE_CORRELATION = "correlation"              # step 7.5 크로스-호스트 상관
+STAGE_CROSS_SOURCE = "cross_source"            # step 7.6 크로스소스 사건 상관(plans/144 W3)
 STAGE_ANNOTATION = "annotation"                # step 7.7 계획-무해 주석 강등
 STAGE_MATRIX = "matrix"                        # step 8~9 매트릭스 + 보조 조정(최종 관문)
 
@@ -83,6 +93,7 @@ STAGE_ORDER: tuple[str, ...] = (
     STAGE_FLAPPING,
     STAGE_STORM,
     STAGE_CORRELATION,
+    STAGE_CROSS_SOURCE,
     STAGE_ANNOTATION,
     STAGE_MATRIX,
 )
@@ -101,6 +112,7 @@ STAGE_LABELS: dict[str, str] = {
     STAGE_FLAPPING: "플래핑",
     STAGE_STORM: "스톰",
     STAGE_CORRELATION: "크로스-호스트 상관",
+    STAGE_CROSS_SOURCE: "크로스소스 사건 상관",
     STAGE_ANNOTATION: "계획-무해 주석",
     STAGE_MATRIX: "우선순위 매트릭스",
 }
@@ -123,6 +135,7 @@ _REASON_STAGE_PREFIXES: tuple[tuple[str, str], ...] = (
     ("플래핑", STAGE_FLAPPING),
     ("스톰", STAGE_STORM),
     ("크로스-호스트 상관", STAGE_CORRELATION),
+    ("크로스소스 사건 상관", STAGE_CROSS_SOURCE),
     ("계획-무해 주석", STAGE_ANNOTATION),
     ("매트릭스", STAGE_MATRIX),
 )
@@ -184,6 +197,14 @@ STAGE_DESCRIPTIONS: dict[str, str] = {
         "같은 존의 여러 호스트 알람을 유사도로 묶어, 먼저 온 대표 외 알람을 억제합니다"
         "(같은 서버 다발인 스톰과 구분)."
     ),
+    STAGE_CROSS_SOURCE: (
+        "같은 존·같은 호스트의 인프라 알람(원인)과 APM 알람(증상)을 한 사건으로 묶습니다. "
+        "규칙 표의 방향(원인 → 증상)과 시간 창이 맞고, 양쪽 호스트 정합이 강하며, 원인이 이미 "
+        "PAGE·TICKET으로 통보돼 해소되지 않았고, 증상 심각도가 3 미만일 때만 증상을 화면 "
+        "표시(DASHBOARD)로 낮춥니다. 실제로 낮추는 것은 강제 모드에서 규칙 단위로 켠 행뿐이며, "
+        "티어를 올리지 않고 앞 단계 억제가 우선합니다. 그 밖에는 사건 묶음과 「했을 조치」만 "
+        "근거로 남깁니다."
+    ),
     STAGE_ANNOTATION: (
         "계획 작업 주석이 있고 해소·상관·변경 근접 중 하나가 함께 뒷받침하면 화면 표시로 "
         "낮춥니다. 주석만으로는 낮추지 않습니다."
@@ -192,7 +213,9 @@ STAGE_DESCRIPTIONS: dict[str, str] = {
         "앞 단계를 모두 지난 알람의 최종 관문입니다. 심각도×중요도 표로 기본 티어를 정하고, "
         "보조 신호(통보 정책·일상 패턴·LLM 판단·변경 근접)로 최대 한 단계 올리거나 내립니다. "
         "둘이 충돌하면 올립니다. 앱 영향 승격이 켜져 있으면 같은 호스트에 사건창 안 APM fatal "
-        "이벤트가 있을 때 DASHBOARD·TICKET을 PAGE로 올립니다(SUPPRESS는 그대로)."
+        "이벤트가 있을 때 DASHBOARD·TICKET을 PAGE로 올립니다(SUPPRESS는 그대로). 제니퍼 유형 "
+        "정책이 켜져 있으면 지표형 경고(심각도 2)가 창 안에 반복되지 않았을 때 한 단계 내립니다"
+        "(이 사유만으로는 DASHBOARD 아래로 내리지 않습니다)."
     ),
     STAGE_UNKNOWN: (
         "단계 라벨이 없고 사유 문구로도 판별되지 않은 옛 레코드입니다. 버리지 않고 모아 "
@@ -236,17 +259,22 @@ class NotificationDecision:
     evidence: dict[str, Any] = field(default_factory=dict)
 
 
-def compute_fingerprint(event) -> str:
+def compute_fingerprint(event: Any, *, alarm_key: str | None = None) -> str:
     """재발생 dedup용 안정 식별자를 산출한다.
 
     `f(db_id, server_name|hostname, alarm_name, resource_name)` 조합의 SHA-1 해시.
     server_name을 우선 사용하고, 없으면 hostname으로 대체한다(§6.1).
+
+    alarm_key(plans/144 §4.3)가 주어지면 alarm_name 대신 쓴다 — 제니퍼 정책 경로가 정규화 유형을
+    넘겨 `ERROR_X` 발생과 `X` 회복이 같은 지문이 되게 한다. 미지정(기본)이면 현행과 비트 동일.
     """
     db_id = str(getattr(event, "db_id", "") or "")
     server = str(getattr(event, "server_name", "") or "") or str(
         getattr(event, "hostname", "") or ""
     )
-    alarm_name = str(getattr(event, "alarm_name", "") or "")
+    alarm_name = (
+        alarm_key if alarm_key is not None else str(getattr(event, "alarm_name", "") or "")
+    )
     resource_name = str(getattr(event, "resource_name", "") or "")
     raw = "\x1f".join([db_id, server, alarm_name, resource_name])
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
@@ -378,6 +406,8 @@ def decide_notification(
     annotation: dict | None = None,
     silence_rules=None,  # noqa: ANN001 — list[SilenceRule] | None (Plan 54 모듈 4)
     now: datetime | None = None,
+    apm_policy: dict[str, Any] | None = None,
+    cross_source: dict[str, Any] | None = None,
 ) -> NotificationDecision:
     """E1 결정 파이프라인(순서형·결정적, 첫 종착 확정) + E2 의존성/인히비션/플래핑/스톰 단계.
 
@@ -449,6 +479,27 @@ def decide_notification(
           annotation(dict|None)은 워커가 extract_annotation_signal로 산출해 주입한다 — 이 모듈은
           annotation_signal을 import하지 않고 값만 소비한다(정책 순수성·§17.7). signals 동결
           스키마는 확장하지 않는다(change_nearby 전례 — 감사는 reason·record_recurrence가 담당).
+
+    plans/144 제니퍼 유형 정책(apm_noise_policy_enabled 뒤 — 워커가 제니퍼 알람에만 apm_policy를
+    넘긴다. None(기본·폴스타·off)이면 아래 전부 미평가로 비트동일):
+        - noise_ctx["source"]=="apm_policy"면 importance_id를 라벨로 읽는다(미지 라벨은 보통).
+        - 지문은 apm_policy["event_type_norm"]으로 만든다(워커 지문·해소 짝맞춤과 같은 값).
+        - step 9: apm_policy["persistence"]["met"] is False AND 실효 심각도 2 → demote에
+          "지속 조건 미달". 승격 우선 규칙 그대로이며, 강등 사유가 이것뿐이면 하한은 DASHBOARD다.
+          카운트는 워커가 계산한다 — 이 모듈은 bool·숫자만 소비한다(D-109 sig_label 전례).
+        - evidence["apm_policy"]에 정규화 유형·적용 행·지속 조건 카운트를 싣는다(감사 전용).
+
+    plans/144 W3 크로스소스 사건 상관(step 7.6 — cross_source_mode≠off일 때 워커가 사건에 붙은
+    알람에만 cross_source를 넘긴다. None(기본·off)이면 아래 전부 미평가로 비트동일):
+        - cross_source는 워커가 사건 추적기(cross_source.py)로 산출한 신호다 — 이 모듈은 값만
+          읽는다.
+        - 상한 조건: mode=="enforce" AND action=="demote"(결합 조건 전부 충족) AND 규칙 enforce
+          is True. 이때 step 8~9.5 결과가 DASHBOARD보다 높을 때만 DASHBOARD로 **낮춘다**(티어를
+          올리지 않는다 — 매트릭스 결과가 DASHBOARD 이하면 그대로 다음 단계로 간다). 앞 단계
+          억제(유지보수·침묵·의존성·인히비션·플래핑·스톰·상관)가 우선이고 심각도3은 step3에서
+          끝난다.
+        - 그 밖(shadow·annotate·enforce인데 규칙 enforce false·조건 미충족·link)은 판정 불변이다.
+        - evidence에 결정 단계와 무관하게 episode_id·cross_source(applied=실제 상한 여부)를 싣는다.
     """
     suppress_max_severity = int(getattr(config, "suppress_max_severity", 2))
     importance_value_map = getattr(config, "importance_value_map", {}) or {}
@@ -487,6 +538,12 @@ def decide_notification(
         importance = "보통"
         maintenance = False
         noti_policy = None
+    elif noise_ctx.get("source") == NOISE_SOURCE_APM_POLICY:
+        # (plans/144 §4.1) 제니퍼 유형 정책 — importance_id가 이미 라벨이다(미지 값은 보통 보수).
+        label = noise_ctx.get("importance_id")
+        importance = label if label in _VALID_IMPORTANCE else "보통"
+        maintenance = bool(noise_ctx.get("maintenance"))
+        noti_policy = noise_ctx.get("noti_policy")
     else:
         importance = map_importance(noise_ctx.get("importance_id"), importance_value_map)
         maintenance = bool(noise_ctx.get("maintenance"))
@@ -510,6 +567,11 @@ def decide_notification(
     )
     if not enable_actionability:
         llm_actionability = None
+
+    # (plans/144 §4.3) 제니퍼 정책 경로면 정규화 유형으로 지문을 만든다(None = 현행 alarm_name).
+    apm_alarm_key: str | None = None
+    if apm_policy and apm_policy.get("event_type_norm"):
+        apm_alarm_key = str(apm_policy["event_type_norm"])
 
     def _signals() -> dict:
         """§8.2 동결 스키마(모든 키 필수)로 신호 스냅샷을 구성한다."""
@@ -539,6 +601,14 @@ def decide_notification(
             "correlated": bool(correlated),
         }
 
+    # (plans/144 W3) 크로스소스 상한 조건 — 모드·결합 판정·규칙 단위 enforce가 모두 맞을 때만.
+    cross_source_cap = bool(
+        cross_source
+        and cross_source.get("mode") == MODE_ENFORCE
+        and cross_source.get("action") == ACTION_DEMOTE
+        and cross_source.get("enforce") is True
+    )
+
     def _decision(
         tier: str, reason: str, stage: str, evidence: dict[str, Any] | None = None
     ) -> NotificationDecision:
@@ -547,14 +617,27 @@ def decide_notification(
         stage는 관측 전용(Plan 54 퍼널)이며 tier/reason/priority/signals 산출에 관여하지 않는다.
         evidence(plans/112 S6)도 같다 — 결정 지점이 이미 계산한 값을 옮겨 담을 뿐이다.
         """
+        merged = dict(evidence or {})
+        if apm_policy:
+            # (plans/144 §6.2) 제니퍼 정책 근거 — 결정 단계와 무관하게 싣는다(감사 전용).
+            merged["apm_policy"] = dict(apm_policy)
+        if cross_source:
+            # (plans/144 §6.2 · W3) 사건 id와 크로스소스 근거 — 결정 단계와 무관하게 싣는다.
+            # applied는 이 판단에서 상한이 실제로 티어를 낮췄을 때만 True다.
+            if cross_source.get("episode_id"):
+                merged["episode_id"] = cross_source["episode_id"]
+            merged["cross_source"] = {
+                **{k: v for k, v in cross_source.items() if k != "episode_id"},
+                "applied": stage == STAGE_CROSS_SOURCE,
+            }
         return NotificationDecision(
             tier=tier,
             reason=reason,
             priority=_priority(tier, effective_severity, importance),
             signals=_signals(),
-            fingerprint=compute_fingerprint(event),
+            fingerprint=compute_fingerprint(event, alarm_key=apm_alarm_key),
             stage=stage,
-            evidence=dict(evidence or {}),
+            evidence=merged,
         )
 
     # ── step 0.5(E7-b): 비알람 사전분류 — 승인/안내성 메시지 억제(§17.4) ──
@@ -701,6 +784,122 @@ def decide_notification(
             TIER_SUPPRESS, "크로스-호스트 상관 — 클러스터 대표 외 억제", STAGE_CORRELATION
         )
 
+    # ── step 8~9.5: 우선순위 매트릭스 · 보조 조정 · 앱 영향 승격 ──
+    # (plans/144 W3) step 7.6 상한이 매트릭스 결과를 봐야 하므로 함수로 묶는다. 순수 계산이라
+    # 호출 시점·횟수와 무관하게 같은 결과이며, 단계 순서(7.6 → 7.7 → 8)는 아래 호출 순서 그대로다.
+    def _matrix_decision() -> NotificationDecision:
+        """step 8~9.5 결과(매트릭스 단계 판단)를 만든다."""
+        # ── step 8: 우선순위 매트릭스(§3.2) ─────────────────────
+        base_tier = _matrix_tier(effective_severity, importance)
+
+        # ── step 9: 보조 조정(1단계 이내·보수적, 승격 우선) ──────
+        promote: list[str] = []
+        demote: list[str] = []
+        if noti_policy == "notify":
+            promote.append("폴스타 통보 정책(notify)")
+        if noti_policy == "suppress":
+            demote.append("폴스타 비통보 정책(suppress)")
+        if is_routine is True and effective_severity <= suppress_max_severity:
+            demote.append("일상 반복 패턴(is_routine)")
+        if is_routine is False:
+            promote.append("비일상 패턴(is_routine=False)")
+        # E4: LLM 액션가능성(피드백 few-shot) — 승격 비대칭(재현율 우선).
+        # actionable → promote(항상 안전). noise → demote(is_routine과 동일하게 SUPPRESS 하한 가드).
+        # 아래 승격우선 기계가 promote 신호와 공존 시 noise demote를 무시한다.
+        if llm_actionability == "actionable":
+            promote.append("LLM 액션가능성(피드백)")
+        if llm_actionability == "noise" and effective_severity <= suppress_max_severity:
+            demote.append("LLM 노이즈 판단(피드백)")
+        # Plan 60 E5(§7.2): 변경 근접 알람은 **억제가 아니라 승격** — 원인성 판단·PAGE 근거 보강
+        # (재현율 우선). change_correlation off·미근접이면 change_nearby 키 부재/None → 무영향
+        # (회귀 0).
+        # 이 모듈은 change 모듈을 import하지 않고 noise_ctx의 bool만 소비한다(순수성).
+        if noise_ctx and noise_ctx.get("change_nearby"):
+            promote.append("변경 근접(원인성)")
+        # plans/144 §4.2: 제니퍼 지표형 경고가 지속 조건(창 안 반복)을 못 채우면 강등 후보. 워커가
+        # 지표형·정책 행 persistence 보유일 때만 persistence를 싣는다(off·폴스타면 None → 무영향).
+        persistence = apm_policy.get("persistence") if apm_policy else None
+        if (
+            isinstance(persistence, dict)
+            and persistence.get("met") is False
+            and effective_severity == 2
+        ):
+            demote.append(_PERSISTENCE_UNMET)
+
+        tier = base_tier
+        adjust_note = ""
+        if promote:  # 승격/강등 충돌 시 승격 우선(재현율 우선)
+            adjusted = min(_TIER_RANK[base_tier] + 1, _TIER_RANK[TIER_PAGE])
+            tier = _RANK_TIER[adjusted]
+            adjust_note = " · 승격: " + ", ".join(promote)
+            if demote:
+                adjust_note += f" (강등 신호 {', '.join(demote)}는 승격 우선으로 무시)"
+        elif demote:
+            # 지속 조건 미달만으로 내릴 때는 DASHBOARD가 하한이다(G-1 (b) — 완전 억제 미확정).
+            # 다른 강등 사유가 함께 있으면 현행 하한(SUPPRESS) 그대로다.
+            floor = TIER_DASHBOARD if set(demote) == {_PERSISTENCE_UNMET} else TIER_SUPPRESS
+            adjusted = max(_TIER_RANK[base_tier] - 1, _TIER_RANK[floor])
+            tier = _RANK_TIER[adjusted]
+            adjust_note = " · 강등: " + ", ".join(demote)
+
+        # ── step 9.5(plans/87 J4 · R-7 · D-195 ②): 앱 영향 승격 — **승격 전용 비대칭** ──
+        # noise_ctx["app_impact"](Plan 55 예약키)는 게이트 노드가 APM 게이트웨이 `apm_events`로
+        # 채운다(같은 hostname·사건창의 fatal 이벤트 1건 이상). 위 조정 결과가 DASHBOARD·TICKET일
+        # 때만 PAGE로 올린다 — SUPPRESS(강등 결과 포함)는 되살리지 않고 PAGE는 그대로다. 억제
+        # 단계와 심각도3 단락은 이 지점 앞에서 끝나므로 영향이 없다. 키 부재·None(off·미수집·
+        # agentic 예약값)이면 무영향(회귀 0).
+        # signals 동결 스키마는 확장하지 않는다(change_nearby 전례 — 근거는 reason·evidence).
+        app_impact_note = ""
+        app_impact_evidence: dict[str, Any] = {}
+        app_impact: Any = noise_ctx.get("app_impact") if noise_ctx else None
+        fatal_events = _app_impact_fatal_events(app_impact)
+        if fatal_events and tier in (TIER_DASHBOARD, TIER_TICKET):
+            tier = TIER_PAGE
+            app_impact_note = f" · 앱 영향 승격: APM fatal {fatal_events}건"
+            app_impact_evidence = {
+                "app_impact_fatal_events": fatal_events,
+                "app_impact_event_types": list(app_impact.get("event_types") or []),
+                "app_impact_was_signals": list(app_impact.get("was_signals") or []),
+                "app_impact_source": str(app_impact.get("source") or ""),
+            }
+
+        reason = (
+            f"매트릭스(심각도{effective_severity}×중요도{importance}) → {base_tier}{adjust_note}"
+            f"{app_impact_note} → 최종 {tier}"
+        )
+        # (plans/112 S6) 사유 문자열에 합쳐 있던 산식 조각을 구조화해 함께 남긴다(판정 무관).
+        return _decision(
+            tier,
+            reason,
+            STAGE_MATRIX,
+            {
+                "base_tier": base_tier,
+                "promote": list(promote),
+                "demote": list(demote),
+                **app_impact_evidence,
+            },
+        )
+
+    # ── step 7.6(plans/144 W3): 크로스소스 사건 상관 — 증상 DASHBOARD 상한(§5.2 · G-2) ──
+    # cross_source는 워커가 사건 추적기로 산출해 넘긴다(None·off면 미평가 → 비트동일). 상한은
+    # 강제 모드 + 결합 조건 전부 충족 + 규칙 단위 enforce일 때만 건다. **티어를 올리지 않는다** —
+    # 매트릭스 결과가 DASHBOARD보다 높을 때만 낮추고, 이미 DASHBOARD 이하면 다음 단계(7.7·8)로
+    # 그대로 간다(7.7처럼 terminal DASHBOARD를 반환하면 매트릭스 SUPPRESS가 DASHBOARD로
+    # 올라간다). 앞 단계 억제가 우선이고 심각도3은 step3에서 이미 단락되어 이 단계에 도달하지
+    # 않는다.
+    if cross_source_cap:
+        matrix_decision = _matrix_decision()
+        if _TIER_RANK[matrix_decision.tier] > _TIER_RANK[TIER_DASHBOARD]:
+            cs = cross_source or {}
+            return _decision(
+                TIER_DASHBOARD,
+                f"크로스소스 사건 상관 — 원인 {cs.get('cause_alarm_id', '')} 통보 중, 증상 "
+                f"대시보드 강등(규칙 {cs.get('rule_id', '')} · 호스트 {cs.get('host_key', '')} · "
+                f"시차 {cs.get('lag_seconds', '')}초 · 매트릭스 {matrix_decision.tier})",
+                STAGE_CROSS_SOURCE,
+                {"capped_from": matrix_decision.tier},
+            )
+
     # ── step 7.7(E7-a·B-9): 계획-무해 주석 코로보레이션 게이팅 DASHBOARD 강등(§17.3) ──
     # 텍스트 단독으로는 절대 억제강화 금지 — planned_work **AND** (resolution 또는 E2 클러스터
     # 소속(correlated) 또는 E5 change_nearby)가 동시 충족될 때만 DASHBOARD 강등(SUPPRESS 아님·
@@ -731,83 +930,7 @@ def decide_notification(
                 {"corroborated_by": corroborated_by},
             )
 
-    # ── step 8: 우선순위 매트릭스(§3.2) ─────────────────────
-    base_tier = _matrix_tier(effective_severity, importance)
-
-    # ── step 9: 보조 조정(1단계 이내·보수적, 승격 우선) ──────
-    promote: list[str] = []
-    demote: list[str] = []
-    if noti_policy == "notify":
-        promote.append("폴스타 통보 정책(notify)")
-    if noti_policy == "suppress":
-        demote.append("폴스타 비통보 정책(suppress)")
-    if is_routine is True and effective_severity <= suppress_max_severity:
-        demote.append("일상 반복 패턴(is_routine)")
-    if is_routine is False:
-        promote.append("비일상 패턴(is_routine=False)")
-    # E4: LLM 액션가능성(피드백 few-shot) — 승격 비대칭(재현율 우선).
-    # actionable → promote(항상 안전). noise → demote(is_routine과 동일하게 SUPPRESS 하한 가드).
-    # 아래 승격우선 기계가 promote 신호와 공존 시 noise demote를 무시한다.
-    if llm_actionability == "actionable":
-        promote.append("LLM 액션가능성(피드백)")
-    if llm_actionability == "noise" and effective_severity <= suppress_max_severity:
-        demote.append("LLM 노이즈 판단(피드백)")
-    # Plan 60 E5(§7.2): 변경 근접 알람은 **억제가 아니라 승격** — 원인성 판단·PAGE 근거 보강
-    # (재현율 우선). change_correlation off·미근접이면 change_nearby 키 부재/None → 무영향(회귀 0).
-    # 이 모듈은 change 모듈을 import하지 않고 noise_ctx의 bool만 소비한다(순수성).
-    if noise_ctx and noise_ctx.get("change_nearby"):
-        promote.append("변경 근접(원인성)")
-
-    tier = base_tier
-    adjust_note = ""
-    if promote:  # 승격/강등 충돌 시 승격 우선(재현율 우선)
-        adjusted = min(_TIER_RANK[base_tier] + 1, _TIER_RANK[TIER_PAGE])
-        tier = _RANK_TIER[adjusted]
-        adjust_note = " · 승격: " + ", ".join(promote)
-        if demote:
-            adjust_note += f" (강등 신호 {', '.join(demote)}는 승격 우선으로 무시)"
-    elif demote:
-        adjusted = max(_TIER_RANK[base_tier] - 1, _TIER_RANK[TIER_SUPPRESS])
-        tier = _RANK_TIER[adjusted]
-        adjust_note = " · 강등: " + ", ".join(demote)
-
-    # ── step 9.5(plans/87 J4 · R-7 · D-195 ②): 앱 영향 승격 — **승격 전용 비대칭** ──
-    # noise_ctx["app_impact"](Plan 55 예약키)는 게이트 노드가 APM 게이트웨이 `apm_events`로 채운다
-    # (같은 hostname·사건창의 fatal 이벤트 1건 이상). 위 조정 결과가 DASHBOARD·TICKET일 때만 PAGE로
-    # 올린다 — SUPPRESS(강등 결과 포함)는 되살리지 않고 PAGE는 그대로다. 억제 단계와 심각도3 단락은
-    # 이 지점 앞에서 끝나므로 영향이 없다. 키 부재·None(off·미수집·agentic 예약값)이면 무영향
-    # (회귀 0).
-    # signals 동결 스키마는 확장하지 않는다(change_nearby 전례 — 근거는 reason·evidence).
-    app_impact_note = ""
-    app_impact_evidence: dict[str, Any] = {}
-    app_impact = noise_ctx.get("app_impact") if noise_ctx else None
-    fatal_events = _app_impact_fatal_events(app_impact)
-    if fatal_events and tier in (TIER_DASHBOARD, TIER_TICKET):
-        tier = TIER_PAGE
-        app_impact_note = f" · 앱 영향 승격: APM fatal {fatal_events}건"
-        app_impact_evidence = {
-            "app_impact_fatal_events": fatal_events,
-            "app_impact_event_types": list(app_impact.get("event_types") or []),
-            "app_impact_was_signals": list(app_impact.get("was_signals") or []),
-            "app_impact_source": str(app_impact.get("source") or ""),
-        }
-
-    reason = (
-        f"매트릭스(심각도{effective_severity}×중요도{importance}) → {base_tier}{adjust_note}"
-        f"{app_impact_note} → 최종 {tier}"
-    )
-    # (plans/112 S6) 사유 문자열에 합쳐 있던 산식 조각을 구조화해 함께 남긴다(판정 무관).
-    return _decision(
-        tier,
-        reason,
-        STAGE_MATRIX,
-        {
-            "base_tier": base_tier,
-            "promote": list(promote),
-            "demote": list(demote),
-            **app_impact_evidence,
-        },
-    )
+    return _matrix_decision()
 
 
 def _app_impact_fatal_events(app_impact: object) -> int:

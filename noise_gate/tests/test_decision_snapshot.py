@@ -69,6 +69,17 @@ def _rule(**kwargs) -> SilenceRule:
     return SilenceRule(**base)
 
 
+def _cross_source(**kwargs) -> dict:
+    """워커 사건 추적기 신호 모양(plans/144 W3) — 기본은 강제 모드·결합 조건 충족·규칙 enforce."""
+    base = dict(
+        episode_id="ep-snap", mode="enforce", host_key="cop0", rule_id="r_snap",
+        cause_alarm_id="c-1", lag_seconds=45.0, action="demote", enforce=True, missing=[],
+        applied=False,
+    )
+    base.update(kwargs)
+    return base
+
+
 def _cases() -> dict[str, dict]:
     """케이스 ID → decide_notification 인자. ID는 픽스처 키라 바꾸지 않는다."""
     cfg = _cfg
@@ -164,6 +175,19 @@ def _cases() -> dict[str, dict]:
         "correlation/on": dict(
             event=ev(severity=2), ctx=_ctx(), config=cfg(cross_host_correlation_enabled=True),
             kw=dict(correlated=True)),
+        # ── 크로스소스 사건 상관(plans/144 W3 — 신규 단계 · 기존 케이스 불변) ──
+        "cross_source/enforce_cap": dict(
+            event=ev(severity=2), ctx=_ctx(), config=cfg(),
+            kw=dict(cross_source=_cross_source())),
+        "cross_source/enforce_rule_off": dict(
+            event=ev(severity=2), ctx=_ctx(), config=cfg(),
+            kw=dict(cross_source=_cross_source(enforce=False))),
+        "cross_source/shadow": dict(
+            event=ev(severity=2), ctx=_ctx(), config=cfg(),
+            kw=dict(cross_source=_cross_source(mode="shadow"))),
+        "cross_source/enforce_matrix_dashboard_kept": dict(
+            event=ev(severity=1), ctx=_ctx(importance_id="LOW", noti_policy="suppress"),
+            config=cfg(), kw=dict(cross_source=_cross_source())),
         # ── 계획-무해 주석 ──
         "annotation/resolution": dict(
             event=ev(severity=2), ctx=_ctx(), config=cfg(annotation_planned_suppress=True),
@@ -278,7 +302,7 @@ def test_decision_snapshot_is_bit_identical():
 
 
 def test_snapshot_covers_every_stage():
-    # 스냅샷이 14단계를 모두 밟는지 고정한다 — 케이스가 조용히 빠지면 비트 동일이 공허해진다.
+    # 스냅샷이 15단계를 모두 밟는지 고정한다 — 케이스가 조용히 빠지면 비트 동일이 공허해진다.
     from noise_gate.domain.notification_policy import STAGE_ORDER
 
     expected = json.loads(FIXTURE.read_text(encoding="utf-8"))

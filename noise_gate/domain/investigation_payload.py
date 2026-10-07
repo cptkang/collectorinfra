@@ -63,6 +63,7 @@ def build_trigger_payload(
     root_resource: Optional[str] = None,
     target_state: Optional[dict] = None,
     root_resource_name: Optional[str] = None,
+    episode_id: str | None = None,
 ) -> dict:
     """게이트 보유값으로 조사 트리거 페이로드(`contract_version: "1"`)를 조립한다.
 
@@ -79,6 +80,8 @@ def build_trigger_payload(
         root_resource: E4 다홉 연쇄의 root 리소스 식별자(없으면 None).
         root_resource_name: E4 root 리소스 NAME(plans/91 1-3 — 조사 측 연관 서버 소비용). 값이 있을 때만
             `meta.root_resource_name` 키가 생긴다.
+        episode_id: 크로스소스 사건 id(plans/144 §5.3 · §4.5). 값이 있을 때만 `meta.episode_id` 키가
+            생긴다(cross_source_mode off·사건 미소속이면 종전 바이트 동일).
         target_state: 대상 호스트 가용성 판정(Plan 81 · `HostAvailability.to_dict()`).
             **값이 있을 때만 `meta.target_state` 키가 생긴다** — 없으면 페이로드가 종전과
             바이트 동일하다. `validate_payload`가 여분 키를 거부하지 않으므로 구버전
@@ -106,6 +109,9 @@ def build_trigger_payload(
     # 그 밖의 이벤트는 키가 없어 바이트 동일.
     if is_apm_event(event):
         meta["hints"] = apm_trigger_hints(event)
+    # plans/144 §4.5: 사건 id — 조사 서비스·plans/117 라벨 조인 키. 값이 있을 때만 키를 넣는다.
+    if episode_id:
+        meta["episode_id"] = str(episode_id)
 
     return {
         "contract_version": CONTRACT_VERSION,

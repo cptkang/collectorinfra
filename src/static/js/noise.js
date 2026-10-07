@@ -1032,8 +1032,8 @@
         var evidence = evidenceOf(record);
         var evidenceKeys = Object.keys(evidence);
         drawerEvidenceBody.innerHTML = "";
-        evidenceKeys.forEach(function (key) {
-            addFactRow(drawerEvidenceBody, evidenceLabel(key), evidenceValue(key, evidence[key]));
+        flattenEvidence("", evidence).forEach(function (pair) {
+            addFactRow(drawerEvidenceBody, evidenceLabel(pair[0]), evidenceValue(pair[0], pair[1]));
         });
         drawerEvidenceHead.style.display = evidenceKeys.length ? "" : "none";
         drawerEvidence.style.display = evidenceKeys.length ? "" : "none";
@@ -1054,6 +1054,7 @@
         if (IS_ADMIN) {
             document.getElementById("silenceThisBtn").style.display = isSev3(record) ? "none" : "";
         }
+        renderEpisodeFeedback(record);
     }
 
     function showDrawer(trigger) {
@@ -1120,6 +1121,69 @@
         prepareSilence(drawerContext);
     });
 
+    // ── 사건 피드백 (plans/144 W5 · §6.3) ─────────────────────────────
+    // 크로스소스 사건에 묶인 판단(`stage_evidence.episode_id`)에만 두 동작을 연다 — 「이 묶음은
+    // 틀렸다(분리)」·「강등된 증상이 실제로 조치가 필요했다」. 거짓 강등률·사건 순도 지표의 분자다.
+    // 쓰기는 운영자 경로에만 있다(D-245 — 사용자 화면은 읽기 전용이라 버튼 DOM이 없다).
+    var episodeBox = document.getElementById("episodeFeedback");
+    var episodeSplitBtn = document.getElementById("episodeSplitBtn");
+    var episodeNeededBtn = document.getElementById("episodeNeededBtn");
+    var episodeMsg = document.getElementById("episodeFeedbackMsg");
+
+    // 강등(또는 shadow·annotate의 「했을 강등」)이었던 증상에만 「조치 필요」를 준다.
+    function isDemotedSymptom(record) {
+        return record.stage === "cross_source" || crossSource(record).action === "demote";
+    }
+
+    function renderEpisodeFeedback(record) {
+        if (!episodeBox) return;
+        var episodeId = evidenceOf(record).episode_id;
+        episodeBox.style.display = episodeId ? "" : "none";
+        if (!episodeId) return;
+        episodeSplitBtn.disabled = false;
+        episodeNeededBtn.disabled = false;
+        episodeNeededBtn.style.display = isDemotedSymptom(record) ? "" : "none";
+        if (episodeMsg) episodeMsg.textContent = "";
+    }
+
+    async function sendEpisodeFeedback(label) {
+        var record = drawerContext;
+        var episodeId = record && evidenceOf(record).episode_id;
+        if (!episodeId) return;
+        episodeSplitBtn.disabled = true;
+        episodeNeededBtn.disabled = true;
+        var cs = crossSource(record);
+        try {
+            var res = await apiRequest("POST", API + "/episode-feedback", {
+                label: label,
+                episode_id: episodeId,
+                alarm_id: record.alarm_id || "",
+                alarm_name: record.alarm_name || "",
+                server_name: record.server_name || "",
+                db_id: record.db_id || "",
+                tier: record.tier || "",
+                stage: record.stage || "",
+                applied: cs.applied === true || cs.applied === false ? cs.applied : null,
+            });
+            if (!res.ok) {
+                var detail = await res.json().catch(function () { return {}; });
+                throw new Error(detail.detail || ("요청 실패 (" + res.status + ")"));
+            }
+            if (episodeMsg) episodeMsg.textContent = "피드백을 남겼습니다";
+        } catch (err) {
+            episodeSplitBtn.disabled = false;
+            episodeNeededBtn.disabled = false;
+            if (episodeMsg) episodeMsg.textContent = "전송 실패 — " + err.message;
+        }
+    }
+
+    if (episodeSplitBtn) episodeSplitBtn.addEventListener("click", function () {
+        sendEpisodeFeedback("episode_split");
+    });
+    if (episodeNeededBtn) episodeNeededBtn.addEventListener("click", function () {
+        sendEpisodeFeedback("demotion_needed");
+    });
+
     function prepareSilence(record) {
         if (!IS_ADMIN || !record || isSev3(record)) return;
         closeDrawer();
@@ -1166,7 +1230,27 @@
 
     function evidenceLabel(key) {
         var labels = HELP.evidence || {};
-        return labels[key] || key;
+        if (labels[key]) return labels[key];
+        // 중첩 근거(plans/144 — apm_policy·cross_source 등)는 `부모.자식` 키로 라벨을 찾고, 없으면
+        // 부모 라벨 뒤에 자식 키를 붙인다(같은 자식 이름이 다른 단계 근거와 겹쳐도 섞이지 않게).
+        var dot = key.lastIndexOf(".");
+        if (dot < 0) return key;
+        return evidenceLabel(key.slice(0, dot)) + " · " + key.slice(dot + 1);
+    }
+
+    // 근거 dict를 [키, 값] 줄로 편다 — 중첩 dict는 `부모.자식` 키로 한 줄씩(배열·원시값은 그대로).
+    function flattenEvidence(prefix, obj) {
+        var out = [];
+        Object.keys(obj).forEach(function (k) {
+            var key = prefix ? prefix + "." + k : k;
+            var v = obj[k];
+            if (v && typeof v === "object" && !Array.isArray(v)) {
+                out = out.concat(flattenEvidence(key, v));
+            } else {
+                out.push([key, v]);
+            }
+        });
+        return out;
     }
 
     // 신호 스냅샷 16키 — 영문 키 대신 한국어 이름·설명을 앞에 둔다(키는 대조용으로 남긴다).
@@ -1186,6 +1270,23 @@
     var EVIDENCE_VALUE_WORDS = {
         mode: { multi_hop: "다홉", one_hop: "1홉" },
         corroborated_by: { resolution: "해소", correlation: "상관", change_nearby: "변경 근접" },
+        // plans/144 W5 — 크로스소스 사건 근거(키는 `부모.자식`)
+        "cross_source.mode": {
+            off: "끔(off)", shadow: "기록만(shadow)", annotate: "표시(annotate)", enforce: "강제(enforce)",
+        },
+        "cross_source.action": { demote: "증상 강등", link: "묶음만(강등 안 함)" },
+        // 결손 라벨 — 강등 조건 중 무엇이 빠져 `묶음만`으로 내려갔나
+        "cross_source.missing": {
+            zone: "존 불일치·미상",
+            host_key: "호스트 키 불일치",
+            host_key_strength: "호스트 정합 약함",
+            db_ambiguous: "인프라 DB 모호",
+            window: "시간 창 밖",
+            cause_tier: "원인 미통보(PAGE·TICKET 아님)",
+            cause_resolved: "원인 해소됨",
+            severity: "증상 심각도 3",
+        },
+        "apm_healthy_shadow.source": { mcp: "APM 조회", episode: "사건 저장소" },
     };
 
     function evidenceValue(key, value) {
@@ -1199,8 +1300,9 @@
         if (value === false) return "아니오";
         if (value === null || value === undefined || value === "") return "—";
         if (key === "expires_at") return fmtTime(value);
-        if (key === "base_tier") return TIER_NAMES[value] || String(value);
+        if (key === "base_tier" || key === "capped_from") return TIER_NAMES[value] || String(value);
         if (/_seconds$/.test(key)) return fmtDuration(value);
+        if (/_minutes$/.test(key)) return value + "분";
         return words[value] || String(value);
     }
 
@@ -1310,6 +1412,31 @@
         return "억제 — 부모 비정상(연쇄 노이즈)";
     }
 
+    // 크로스소스 사건 근거(plans/144 §6.2) — 판정은 서버가 했다. 여기서는 읽기만 한다.
+    function crossSource(item) {
+        var cs = evidenceOf(item).cross_source;
+        return cs && typeof cs === "object" ? cs : {};
+    }
+
+    function crossSourceCause(item) {
+        var cs = crossSource(item);
+        if (!cs.cause_alarm_id) return "";
+        return "원인 " + cs.cause_alarm_id + (cs.rule_id ? " (" + cs.rule_id + ")" : "")
+            + (cs.lag_seconds !== undefined ? " · 시차 " + fmtDuration(cs.lag_seconds) : "");
+    }
+
+    function crossSourceCap(item) {
+        var from = evidenceOf(item).capped_from;
+        if (!from) return "";
+        return (TIER_NAMES[from] || from) + " → " + (TIER_NAMES[item.tier] || item.tier);
+    }
+
+    function crossSourceEpisode(item) {
+        var e = evidenceOf(item);
+        var cs = crossSource(item);
+        return [e.episode_id, cs.host_key].filter(Boolean).join(" · ");
+    }
+
     // 단계별 근거를 한 칸에 요약한다(SUPPRESS·DASHBOARD 목록의 "단계 근거" 칸 · §2.2).
     function stageBasis(item) {
         var e = evidenceOf(item);
@@ -1343,6 +1470,8 @@
         case "correlation":
             if (item.related) return relatedText(item);
             return meta.member_seq !== undefined ? "멤버 #" + meta.member_seq : "";
+        case "cross_source":
+            return crossSourceCause(item);
         case "annotation":
             return Array.isArray(e.corroborated_by) && e.corroborated_by.length
                 ? "뒷받침: " + evidenceValue("corroborated_by", e.corroborated_by) : "";
@@ -1729,6 +1858,10 @@
             when: function (it) { return Array.isArray(evidenceOf(it).corroborated_by); },
             render: function (it) { return evidenceValue("corroborated_by", evidenceOf(it).corroborated_by); },
         },
+        // plans/144 W5 — 크로스소스 사건 상관 단계 칸
+        csCause: { head: "원인 알람 (규칙)", cls: "wrap", render: crossSourceCause },
+        csCap: { head: "매트릭스 → 상한", render: crossSourceCap },
+        csEpisode: { head: "사건 · 호스트 키", cls: "k", render: crossSourceEpisode },
         llm: {
             head: "LLM 액션가능성",
             render: function (it) {
@@ -1766,6 +1899,10 @@
         correlation: {
             question: "어느 대표 알람에 묶였나",
             cols: ["representative", "memberSeq", "similarity"],
+        },
+        cross_source: {
+            question: "어느 원인 알람 아래 묶여 화면 표시로 내려갔나",
+            cols: ["csCause", "csCap", "csEpisode"],
         },
         annotation: { question: "무엇이 계획 작업임을 뒷받침했나", cols: ["reason", "evAnnotation"] },
         matrix: {

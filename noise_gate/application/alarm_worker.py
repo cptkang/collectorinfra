@@ -19,6 +19,7 @@ import json
 import logging
 import time
 from collections import deque
+from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -38,22 +39,47 @@ from noise_gate.domain.correlation import (
     match_cluster,
     signature_tokens,
 )
+from noise_gate.domain.cross_source import (
+    MODE_ANNOTATE,
+    MODE_ENFORCE,
+    MODE_OFF,
+    Episode,
+    EpisodeTracker,
+    apm_alarms_in_window,
+    app_impact_from_alarms,
+    late_promotion_targets,
+)
 from noise_gate.domain.flapping import MAX_STATES, flap_percent, update_flap_state
 from noise_gate.domain.notification_policy import (
     STAGE_FLAPPING,
     STAGE_INHIBITION,
+    STAGE_MATRIX,
     STAGE_SELF_HEAL,
     STAGE_STORM,
+    TIER_DASHBOARD,
+    TIER_TICKET,
     compute_fingerprint,
 )
-from noise_gate.application.server_identity import attach_server_identity
+from noise_gate.application.server_identity import attach_server_identity, is_apm_source
 from noise_gate.domain.severity import coerce_severity
 from noise_gate.domain.severity_signatures import scan_signature_severity
+from noise_gate.infrastructure.apm_noise_context import (
+    EVENT_KIND_METRIC,
+    ApmNoiseContext,
+    ApmPolicyMatch,
+    correlation_extra,
+    event_kind,
+)
+from noise_gate.infrastructure.cross_source_rules import episode_alarm, load_rules
 from noise_gate.infrastructure.redis_queue import (
     ack_message,
     dead_letter_message,
     ensure_consumer_group,
     read_messages,
+)
+from noise_gate.application.nodes.alarm_notifier import (
+    late_promotion_reason,
+    send_late_promotion,
 )
 from noise_gate.orchestration.alarm_graph import build_alarm_graph
 from noise_gate.orchestration.ticket_summary import run_ticket_summary_loop
@@ -68,6 +94,48 @@ _TOPOLOGY_NEGATIVE_TTL_SECONDS = 60
 # (Plan 60 B-7 L-2) db_id 스코프별 최근 이벤트 텍스트 deque 상한 — 근접중복 후보 비교 대상
 # 개수(maxlen). 스코프별 in-memory 성장 차단(Known Mistakes 키·값 bound). 만료 sweep과 병행.
 _RECENT_TEXTS_MAX_PER_SCOPE = 50
+
+# (plans/144 §4.2) 제니퍼 지속 조건 카운터·재판정 보류·보낸 심각도의 지문 키 상한 — 넘치면
+# 가장 오래된 지문부터 버린다(경고 로그). 창 밖 타임스탬프 정리·키 만료 sweep과 병행하는
+# 메모리 가드다.
+_APM_PERSIST_MAX_KEYS = 10000
+
+# (plans/144 Q-4) 지문 dedup 레코드의 마지막 통보 심각도 키 — dedup_severity_rise_bypass가 켜져
+# 있을 때만 기록한다(off면 레코드 모양이 종전과 같다).
+_DEDUP_SEVERITY_KEY = "notified_severity"
+
+# (plans/144 W4 §5.6 · G-6) 사후 승격 후보(원 판정 결과 보관) 상한 — 넘치면 가장 오래된 것부터
+# 버린다(경고 로그). 사건 종료·멤버 해소 시 정리하는 sweep과 병행하는 메모리 가드다.
+_LATE_PROMOTION_MAX = 2000
+# 트리거 1건이 순차 발송하는 사후 승격 상한 — 대상 N건 × workb 타임아웃만큼 처리 루프가 밀리지
+# 않게 한다. 넘친 대상은 표시하지 않고 후보로 남겨 같은 사건의 다음 심각 이벤트에 기회를 준다.
+_LATE_PROMOTION_PER_TRIGGER_MAX = 5
+# 후보 전수 sweep(사건 종료·해소·승격 정리) 최소 간격(초) — 메모리 위생용이라 정확성과 무관하다
+# (대상 판정은 late_promotion_targets가 멤버 상태로 다시 거른다). 상한 검사는 매번 한다.
+_LATE_PROMOTION_SWEEP_SECONDS = 60.0
+
+
+def _dedup_severity_rises(rec: dict[str, Any], severity: int) -> bool:
+    """들어온 심각도가 레코드의 마지막 통보 심각도보다 높은가. 키 없는 구 레코드는 False."""
+    notified = rec.get(_DEDUP_SEVERITY_KEY)
+    return notified is not None and severity > notified
+
+
+def _dedup_meta(rec: dict[str, Any]) -> dict[str, Any]:
+    """dedup 레코드의 재발생 메타 스냅샷 — 심각도 키는 빼서 recurrence 메타 모양을 종전대로 둔다."""
+    return {k: v for k, v in rec.items() if k != _DEDUP_SEVERITY_KEY}
+
+
+def _evict_oldest(store: dict[str, Any], last_ts: Callable[[Any], float], label: str) -> None:
+    """지문 dict가 `_APM_PERSIST_MAX_KEYS`를 넘으면 `last_ts`가 가장 이른 키부터 지운다(경고)."""
+    overflow = len(store) - _APM_PERSIST_MAX_KEYS
+    if overflow <= 0:
+        return
+    for k in sorted(store, key=lambda k: last_ts(store[k]))[:overflow]:
+        del store[k]
+    logger.warning(
+        "제니퍼 %s 상한(%d) 초과 — 오래된 지문 %d건 정리", label, _APM_PERSIST_MAX_KEYS, overflow
+    )
 
 
 class AlarmWorker:
@@ -120,6 +188,8 @@ class AlarmWorker:
         #   판정 필드 last_notified = 마지막 *통보* 시각(중복 판정 시 갱신 안 함 → 고정창).
         #   정리 필드 last_seen     = 마지막 *목격* 시각(중복마다 갱신 → 만료 sweep 기준).
         # 둘의 의미가 다름에 주의(§3.3): last_seen으로 TTL 비교하면 슬라이딩 창 회귀 발생.
+        # (plans/144 Q-4) dedup_severity_rise_bypass가 켜져 있으면 레코드에 마지막 통보 심각도
+        # (_DEDUP_SEVERITY_KEY)를 함께 둔다 — 반환 메타(recurrence)에는 싣지 않는다.
         self._gate_dedup: dict[str, dict] = {}
         # 자가복구 상관용 발생 레지스트리(§3.7): fingerprint → (발생시각, severity).
         self._firing_registry: dict[str, tuple[float, int]] = {}
@@ -152,6 +222,35 @@ class AlarmWorker:
         # 상한(maxlen=_RECENT_TEXTS_MAX_PER_SCOPE)·만료 sweep(repeat_interval_seconds 밖 popleft·빈
         # 스코프 키 삭제)으로 메모리 가드. provider 미주입(off/inert)이면 항상 비어 회귀 0.
         self._recent_event_texts: dict[str, deque] = {}
+        # (plans/144 §4.1) 제니퍼 유형 정책 공급자 — apm_noise_policy_enabled(+게이트) 시에만
+        # 기동 시 1회 생성. None이면 제니퍼 알람도 현행 경로(지문 원문 · enricher 미주입 →
+        # unavailable PAGE).
+        self._apm_noise_ctx: ApmNoiseContext | None = None
+        # (plans/144 §4.2) 지속 조건 카운터: 지문 → (창 초, 창 안 발생 타임스탬프 deque).
+        # 창 밖 popleft + 마지막 발생이 창 밖인 키 만료 sweep + 키 상한(_APM_PERSIST_MAX_KEYS).
+        self._apm_persist: dict[str, tuple[int, deque[float]]] = {}
+        # (plans/144 §4.2) 지속 조건 미달로 그래프에 보낸(=강등 판정 대상) 심각도2 지문 → 그 시각.
+        # 지문 dedup이 같은 지문의 다음 이벤트를 repeat_interval 동안 버리므로, 창 안 반복으로
+        # 조건이 채워지는 순간 1회만 dedup을 건너뛰어 매트릭스대로 다시 판정한다(지연 0 · 첫
+        # 이벤트를 붙잡지 않는다). 실제로 그래프에 가는(dedup 비중복) 미달 이벤트만 세우므로
+        # 재판정은 dedup 창마다 최대 1회다. 해소 이벤트가 오면 그 지문의 카운터와 함께 지운다.
+        # repeat_interval_seconds 밖 항목은 sweep하고 키 상한을 둔다.
+        self._apm_persist_pending: dict[str, float] = {}
+        # (plans/144 §4.2) 정책 경로에서 마지막으로 게이트에 보낸 심각도: 지문 → (심각도, 시각).
+        # 강등된 sev2 뒤 같은 지문의 상위 심각도(sev3)가 지문 dedup에 버려지지 않게 한다.
+        # 폴스타·플래그 off는 기록하지 않는다(dedup 비트 동일). sweep·키 상한은 위와 같다.
+        self._apm_sent_severity: dict[str, tuple[int, float]] = {}
+        # (plans/144 W3) 크로스소스 사건 추적기 — cross_source_mode≠off(+게이트)이고 규칙 표가
+        # 적재됐을 때만 기동 시 1회 생성. None이면 사건 추적·state 키 모두 없다(비트 동일).
+        # 상태는 워커 메모리(G-8 (a) — 재기동 시 초기화). idle 종료·만료 sweep·사건 수 상한은
+        # 추적기가 한다.
+        self._episodes: EpisodeTracker | None = None
+        # (plans/144 W4 §5.6 · G-6) 사후 승격 후보: 폴스타 alarm_id →
+        # (사건 id, 원 분석 결과, 원 판정, 보관 시각). app_impact_late_promotion_enabled +
+        # app_impact_enabled + 추적기가 있을 때만 매트릭스 DASHBOARD·TICKET 판정을 담는다.
+        # 사건 종료·멤버 해소·승격 완료 시 sweep하고 상한(_LATE_PROMOTION_MAX)을 둔다.
+        self._late_promotion: dict[str, tuple[str, Any, Any, float]] = {}
+        self._late_promotion_swept_at = 0.0
 
     def _build_history_repo(self):  # noqa: ANN202
         """이력 조회 리포지토리를 생성한다 (Plan 47).
@@ -229,6 +328,298 @@ class AlarmWorker:
         except Exception:
             logger.exception("노이즈 컨텍스트 리포지토리 생성 실패 — 보수적(수집 없이) 진행")
             return None
+
+    def _build_apm_noise_ctx(self) -> ApmNoiseContext | None:
+        """제니퍼 유형 정책 공급자를 생성한다 (plans/144 §4.1 · 기동 시 1회).
+
+        enable_noise_gate AND apm_noise_policy_enabled일 때만 만든다(기본 off → None → 현행
+        비트 동일). 정책 파일 적재 실패는 공급자 안에서 경고 1줄 후 unavailable 공급자가 된다
+        (제니퍼 = 보수 PAGE).
+        """
+        gate = self._config.noise_gate
+        if not gate.enable_noise_gate or not getattr(gate, "apm_noise_policy_enabled", False):
+            return None
+        return ApmNoiseContext.load()
+
+    def _build_episode_tracker(self) -> EpisodeTracker | None:
+        """크로스소스 사건 추적기를 생성한다 (plans/144 W3 · 기동 시 1회).
+
+        enable_noise_gate AND cross_source_mode≠off일 때만 만든다(기본 off → None → 비트 동일).
+        규칙 표 적재 실패는 적재기가 경고 1줄을 남기고 None — 사건 상관 전체가 꺼진다.
+        """
+        gate = self._config.noise_gate
+        mode = str(getattr(gate, "cross_source_mode", MODE_OFF) or MODE_OFF)
+        if not gate.enable_noise_gate or mode == MODE_OFF:
+            return None
+        rules = load_rules(
+            getattr(gate, "cross_source_rules_path", "config/cross_source_rules.yaml")
+        )
+        if rules is None:
+            return None
+        logger.info("크로스소스 사건 상관 활성: mode=%s 규칙=%d", mode, len(rules))
+        return EpisodeTracker(
+            rules,
+            mode=mode,
+            idle_seconds=float(getattr(gate, "episode_idle_seconds", 900)),
+            on_evict=lambda what, n: logger.warning(
+                "크로스소스 사건 상한 초과(%s) — 오래된 %d건 정리", what, n
+            ),
+        )
+
+    def _observe_episode(
+        self, event: AlarmEvent, fingerprint: str, now: float
+    ) -> dict[str, Any] | None:
+        """게이트로 가는 알람을 사건에 반영한다 — 해소는 멤버 해소 처리, 그 밖은 크로스소스 신호."""
+        if self._episodes is None:
+            return None
+        alarm = episode_alarm(event, fingerprint=fingerprint, is_apm=is_apm_source(event))
+        if event.is_clear:
+            self._episodes.resolve(alarm, now)
+            return None
+        return self._episodes.observe(alarm, now)
+
+    def _record_episode_tier(
+        self, cross_source: dict[str, Any], event: AlarmEvent, result: Any
+    ) -> None:
+        """그래프 반환값의 최종 티어를 사건 멤버에 기록한다(원인 조건 ④ 재료)."""
+        if self._episodes is None:
+            return
+        decision = result.get("notification_decision") if isinstance(result, dict) else None
+        self._episodes.record_tier(
+            str(cross_source.get("episode_id") or ""),
+            event.alarm_id,
+            getattr(decision, "tier", None),
+        )
+
+    def _episode_of(self, cross_source: dict[str, Any] | None) -> Episode | None:
+        """크로스소스 신호의 사건(열려 있지 않으면 None)."""
+        if self._episodes is None or not cross_source:
+            return None
+        return self._episodes.get(str(cross_source.get("episode_id") or ""))
+
+    def _late_promotion_on(self) -> bool:
+        """사후 승격 활성 — 플래그 AND app_impact_enabled AND 모드 ∈ {annotate, enforce}.
+
+        shadow는 판정·통보 불변이 원칙이라 재통보(PAGE)를 내지 않는다 — 사건 저장소 우선 조회와
+        같은 모드 범위다.
+        """
+        gate = self._config.noise_gate
+        return (
+            self._episodes is not None
+            and self._episodes.mode in (MODE_ANNOTATE, MODE_ENFORCE)
+            and bool(getattr(gate, "app_impact_late_promotion_enabled", False))
+            and bool(getattr(gate, "app_impact_enabled", False))
+        )
+
+    def _episode_app_impact(
+        self, cross_source: dict[str, Any] | None, event: AlarmEvent
+    ) -> dict[str, Any] | None:
+        """폴스타 알람의 앱 영향을 사건 저장소에서 미리 산출한다 (plans/144 W4 §5.6).
+
+        cross_source_mode ∈ {annotate, enforce} AND app_impact_enabled이고 사건에 붙은 폴스타
+        알람일 때만 `{app_impact, window_events, window_minutes}`를 돌려준다. shadow·off는 None —
+        게이트 노드가 현행 게이트웨이 조회만 한다(판정 비트 동일 · 사건 저장소가 더 승격하지
+        않는다).
+        """
+        gate = self._config.noise_gate
+        if (
+            self._episodes is None
+            or self._episodes.mode not in (MODE_ANNOTATE, MODE_ENFORCE)
+            or not getattr(gate, "app_impact_enabled", False)
+            or is_apm_source(event)
+        ):
+            return None
+        ep = self._episode_of(cross_source)
+        member = ep.member(event.alarm_id) if ep is not None else None
+        if ep is None or member is None:
+            return None
+        window = int(getattr(gate, "app_impact_window_minutes", 10))
+        alarms = apm_alarms_in_window(ep, member.alarm.occurred_at, window * 60)
+        return {
+            "app_impact": app_impact_from_alarms(alarms),
+            "window_events": len(alarms),
+            "window_minutes": window,
+        }
+
+    def _episode_summary(self, cross_source: dict[str, Any] | None) -> dict[str, Any] | None:
+        """통보문 사건 묶음 표시용 요약 `{episode_id, member_count}` (plans/144 W5 · §5.4).
+
+        annotate·enforce에서 사건에 붙은 알람일 때만 만든다(off·shadow는 None → 통보 본문 비트
+        동일). member_count는 이 알람을 포함한 현재 멤버 수다(멤버 상한으로 잘린 만큼은 빠진다).
+        판정에는 쓰지 않는다 — notifier가 표시에만 쓴다.
+        """
+        if self._episodes is None or self._episodes.mode not in (MODE_ANNOTATE, MODE_ENFORCE):
+            return None
+        ep = self._episode_of(cross_source)
+        if ep is None:
+            return None
+        return {"episode_id": ep.id, "member_count": len(ep.members)}
+
+    def _episode_investigation(
+        self, cross_source: dict[str, Any] | None, event: AlarmEvent
+    ) -> dict[str, Any] | None:
+        """같은 사건에서 APM 알람이 이미 제출한 조사(plans/144 §4.5) — APM 알람에만."""
+        if not is_apm_source(event):
+            return None
+        ep = self._episode_of(cross_source)
+        if ep is None or not ep.apm_investigation_id:
+            return None
+        return {"episode_id": ep.id, "investigation_id": ep.apm_investigation_id}
+
+    def _record_apm_investigation(
+        self, cross_source: dict[str, Any], event: AlarmEvent, result: Any
+    ) -> None:
+        """APM 알람이 제출한 조사 id를 사건에 기록한다 — 사건당 1회 제출의 기준(§4.5)."""
+        if not is_apm_source(event) or not isinstance(result, dict):
+            return
+        pending = result.get("investigation_pending")
+        inv = result.get("investigation_id") or (
+            pending.get("investigation_id") if isinstance(pending, dict) else None
+        )
+        ep = self._episode_of(cross_source)
+        if inv and ep is not None and not ep.apm_investigation_id:
+            ep.apm_investigation_id = str(inv)
+
+    def _remember_late_candidate(
+        self, cross_source: dict[str, Any], event: AlarmEvent, result: Any, now: float
+    ) -> None:
+        """매트릭스 DASHBOARD·TICKET 폴스타 판정을 사후 승격 후보로 보관한다(§5.6 · G-6)."""
+        if is_apm_source(event) or not isinstance(result, dict) or event.severity >= 3:
+            return
+        decision = result.get("notification_decision")
+        analysis = result.get("analysis_result")
+        if (
+            decision is None
+            or analysis is None
+            or getattr(decision, "stage", "") != STAGE_MATRIX
+            or getattr(decision, "tier", "") not in (TIER_DASHBOARD, TIER_TICKET)
+        ):
+            return
+        self._late_promotion[event.alarm_id] = (
+            str(cross_source.get("episode_id") or ""), analysis, decision, now
+        )
+        self._sweep_late_promotion(now)
+
+    def _sweep_late_promotion(self, now: float) -> None:
+        """사건이 닫혔거나 멤버가 해소·승격된 후보를 지우고 상한을 지킨다.
+
+        전수 순회는 `_LATE_PROMOTION_SWEEP_SECONDS`마다 1회만 한다(후보 추가마다 돌지 않는다).
+        상한 검사는 매번 한다.
+        """
+        if self._episodes is None:
+            self._late_promotion.clear()
+            return
+        if now - self._late_promotion_swept_at >= _LATE_PROMOTION_SWEEP_SECONDS:
+            self._late_promotion_swept_at = now
+            for alarm_id, (episode_id, *_rest) in list(self._late_promotion.items()):
+                ep = self._episodes.get(episode_id)
+                member = ep.member(alarm_id) if ep is not None else None
+                if member is None or member.resolved or member.late_promoted:
+                    del self._late_promotion[alarm_id]
+        overflow = len(self._late_promotion) - _LATE_PROMOTION_MAX
+        if overflow > 0:
+            oldest = sorted(self._late_promotion, key=lambda k: self._late_promotion[k][3])
+            for alarm_id in oldest[:overflow]:
+                del self._late_promotion[alarm_id]
+            logger.warning(
+                "사후 승격 후보 상한(%d) 초과 — 오래된 %d건 정리", _LATE_PROMOTION_MAX, overflow
+            )
+
+    async def _late_promote(
+        self, cross_source: dict[str, Any], event: AlarmEvent, now: float
+    ) -> None:
+        """APM 심각 이벤트가 붙은 사건의 낮게 판정된 폴스타 알람을 PAGE로 다시 통보한다.
+
+        plans/144 W4 §5.6 · G-6 (a) — 알람당 1회(멤버 `late_promoted`) · 사건이 열려 있을 때만 ·
+        원 판정 감사 레코드는 고치지 않고 `type="late_promotion"` 레코드를 따로 남긴다.
+        트리거 1건당 `_LATE_PROMOTION_PER_TRIGGER_MAX`건까지만 보낸다 — 넘친 대상은 표시하지 않고
+        후보로 남긴다(알람당 최대 1회는 그대로 · 다음 트리거에 기회).
+        """
+        if not is_apm_source(event):
+            return
+        ep = self._episode_of(cross_source)
+        trigger = ep.member(event.alarm_id) if ep is not None else None
+        if ep is None or trigger is None:
+            return
+        self._sweep_late_promotion(now)
+        window = int(getattr(self._config.noise_gate, "app_impact_window_minutes", 10)) * 60
+        promoted = skipped = 0
+        for member in late_promotion_targets(ep, trigger.alarm, window):
+            alarm_id = member.alarm.alarm_id
+            cand = self._late_promotion.get(alarm_id)
+            if cand is None or cand[0] != ep.id:
+                continue  # 매트릭스 판정이 아니었거나 결과가 없다 — 대상 아님
+            if promoted >= _LATE_PROMOTION_PER_TRIGGER_MAX:
+                skipped += 1  # 표시하지 않는다 — 후보로 남아 다음 트리거에 기회
+                continue
+            del self._late_promotion[alarm_id]
+            promoted += 1
+            _, analysis, decision, _ = cand
+            member.late_promoted = True  # 발송 성패와 무관하게 1회 — 재시도 폭주 방지
+            reason = late_promotion_reason(trigger.alarm.alarm_name, ep.id)
+            promotion = {
+                "episode_id": ep.id,
+                "trigger_alarm_id": trigger.alarm.alarm_id,
+                "trigger_event_type": trigger.alarm.alarm_name,
+                "trigger_level": trigger.alarm.level,
+                "from_tier": str(getattr(decision, "tier", "")),
+                "reason": reason,
+            }
+            try:
+                sent = await send_late_promotion(
+                    analysis, decision, promotion, self._config, self._incident_publisher
+                )
+            except Exception:  # noqa: BLE001 — 사후 통보 실패가 다음 알람 처리를 막지 않는다
+                logger.warning("사후 승격 통보 실패: alarm_id=%s", alarm_id, exc_info=True)
+                sent = {}
+            logger.info(
+                "사후 승격 통보: alarm_id=%s %s→page episode=%s trigger=%s sent=%s",
+                alarm_id, promotion["from_tier"], ep.id, trigger.alarm.alarm_id, sent,
+            )
+            if self._decision_store is not None:
+                try:
+                    self._decision_store.record_late_promotion(
+                        alarm_id=alarm_id,
+                        fingerprint=str(getattr(decision, "fingerprint", "") or ""),
+                        episode_id=ep.id,
+                        trigger_alarm_id=trigger.alarm.alarm_id,
+                        trigger_event_type=trigger.alarm.alarm_name,
+                        trigger_level=trigger.alarm.level,
+                        from_tier=promotion["from_tier"],
+                        reason=reason,
+                        sent=sent,
+                    )
+                except Exception:  # noqa: BLE001 — 감사 실패는 무시(통보는 이미 나갔다)
+                    logger.warning("사후 승격 감사 기록 실패(무시): alarm_id=%s", alarm_id)
+        if skipped:
+            logger.warning(
+                "사후 승격 트리거당 상한(%d) 초과 — %d건 건너뜀(후보 유지 · 다음 트리거에 재시도): "
+                "episode=%s trigger=%s",
+                _LATE_PROMOTION_PER_TRIGGER_MAX, skipped, ep.id, trigger.alarm.alarm_id,
+            )
+
+    async def _after_episode_graph(
+        self, cross_source: dict[str, Any], event: AlarmEvent, result: Any, now: float
+    ) -> None:
+        """그래프 뒤 사건 후처리(W4) — 조사 id 기록 · 사후 승격 후보 보관 · 사후 승격 통보.
+
+        각 신호는 독립이라 개별 try/except로 감싼다 — 하나의 실패가 다른 것을 막지 않고, 이미 끝난
+        알람 처리를 dead-letter로 돌리지 않는다(사유는 경고 로그).
+        """
+        try:
+            self._record_apm_investigation(cross_source, event, result)
+        except Exception:  # noqa: BLE001
+            logger.warning("사건 조사 id 기록 실패: alarm_id=%s", event.alarm_id, exc_info=True)
+        if not self._late_promotion_on():
+            return
+        try:
+            self._remember_late_candidate(cross_source, event, result, now)
+        except Exception:  # noqa: BLE001
+            logger.warning("사후 승격 후보 보관 실패: alarm_id=%s", event.alarm_id, exc_info=True)
+        try:
+            await self._late_promote(cross_source, event, now)
+        except Exception:  # noqa: BLE001
+            logger.warning("사후 승격 처리 실패: alarm_id=%s", event.alarm_id, exc_info=True)
 
     def _build_metric_baseline(self):  # noqa: ANN202
         """동적 baseline 이상탐지 어댑터를 생성한다 (Plan 60 E3 · D-079).
@@ -573,6 +964,8 @@ class AlarmWorker:
         self._identity_resolver = self._build_identity_resolver()
         self._process_client = self._build_process_client()
         self._noise_repo = self._build_noise_repo()
+        self._apm_noise_ctx = self._build_apm_noise_ctx()
+        self._episodes = self._build_episode_tracker()
         self._metric_baseline = self._build_metric_baseline()
         # (Plan 60 B-7 L-2/L-4) 로컬 임베딩 provider — 두 주석 플래그 모두 off면 None(회귀 0).
         self._embedding_provider = self._build_embedding_provider()
@@ -721,11 +1114,33 @@ class AlarmWorker:
             # (plans/112 S6) 탐지가 True였던 단계의 구체 근거 {stage: dict} — 게이트가 결정 단계의
             # 것만 골라 감사에 남긴다(판정 무관). 탐지 미수행·미탐지면 비어 None으로 넘긴다.
             detection_evidence: dict[str, dict[str, Any]] = {}
+            # (plans/144 §4.2·4.3) 제니퍼 정책 근거 {event_type_norm, policy_row, persistence} —
+            # 공급자 주입(apm_noise_policy_enabled) + 제니퍼 알람일 때만.
+            # off/폴스타면 None(비트 동일).
+            apm_policy: dict[str, Any] | None = None
+            # (plans/144 W3) 크로스소스 사건 신호 — 추적기(cross_source_mode≠off)가 있고 사건에 붙은
+            # 비해소 알람일 때만. 추적기가 없으면 그래프 입력에 키 자체를 넣지 않는다(비트 동일).
+            cross_source: dict[str, Any] | None = None
+            # (plans/144 W4) 사건 저장소 앱 영향 · 사건 내 기존 APM 조사(해당 없으면 None).
+            episode_app_impact: dict[str, Any] | None = None
+            episode_investigation: dict[str, Any] | None = None
+            # (plans/144 W5) 통보문 사건 묶음 표시용 요약(annotate·enforce + 사건 소속일 때만).
+            episode_summary: dict[str, Any] | None = None
 
             if gate_on:
                 # ── Plan 52 게이트 활성 경로 ──
                 now = time.time()
-                fingerprint = compute_fingerprint(event)
+                if self._apm_noise_ctx is not None and is_apm_source(event):
+                    # (plans/144 §4.3) 지문·해소 짝맞춤·정책 조회에 정규화 유형을 쓴다
+                    # (`ERROR_X` 발생 ↔ `X` 회복이 같은 지문).
+                    match = self._apm_noise_ctx.match(event)
+                    # 빈 유형이면 None — 정책(decide_notification)과 같은 규칙(현행 alarm_name)
+                    fingerprint = compute_fingerprint(
+                        event, alarm_key=match.event_type_norm or None
+                    )
+                    apm_policy = self._apm_policy_signal(event, fingerprint, match, now)
+                else:
+                    fingerprint = compute_fingerprint(event)
 
                 # 핑거프린트 dedup(재발생 억제, §6.1). 해소 이벤트(severity 0)는
                 # 자가복구 상관을 위해 dedup에서 제외하여 게이트까지 전달한다.
@@ -734,7 +1149,7 @@ class AlarmWorker:
                 # 직전 창 재발 메타(prev)를 그래프 state로 전달(대표 알람 표기).
                 if not event.is_clear:
                     is_dup, rec_meta = self._is_duplicate_fingerprint(
-                        fingerprint, now, event.severity
+                        fingerprint, now, event.severity, alarm_id=event.alarm_id
                     )
                     if is_dup:
                         logger.debug(
@@ -763,6 +1178,10 @@ class AlarmWorker:
                         return
                     # 비중복(재통보) — 직전 창 재발 메타가 있으면 대표 알람 표기용으로 보관.
                     recurrence_prev = rec_meta
+                    if apm_policy is not None:
+                        # (plans/144 §4.2) 심각도 상승 판별용 — 정책 경로만 기록한다.
+                        self._apm_sent_severity[fingerprint] = (event.severity, now)
+                        self._cap_apm_persistence()
 
                 # min_severity 역할 분리(§4.8): severity 0(해소)·3은 절대 드롭 금지.
                 # 1 <= severity < min_severity 인 경우만 드롭(강등·억제는 게이트가 수행).
@@ -863,6 +1282,13 @@ class AlarmWorker:
                         sig = await self._annotation_signal(event)
                         if sig.has_signal():
                             annotation_signal_dict = sig.to_dict()
+
+                # (plans/144 W3) 크로스소스 사건 — 게이트로 가는 알람만(dedup·심각도 미달은 위에서
+                # 이미 빠졌다). 해소는 멤버 해소 처리, 비해소는 사건에 붙이고 신호를 만든다.
+                cross_source = self._observe_episode(event, fingerprint, now)
+                episode_app_impact = self._episode_app_impact(cross_source, event)
+                episode_investigation = self._episode_investigation(cross_source, event)
+                episode_summary = self._episode_summary(cross_source)
             else:
                 # ── 기존 경로 (게이트 off — 무변경) ──
                 if self._is_duplicate(event, dedup):
@@ -887,7 +1313,7 @@ class AlarmWorker:
                 event.alarm_name,
             )
 
-            await self._graph.ainvoke(
+            graph_result = await self._graph.ainvoke(  # type: ignore[attr-defined]
                 {
                     "alarm_event": event,
                     "history_stats": None,
@@ -914,12 +1340,25 @@ class AlarmWorker:
                     "silence_rules": silence_rules,
                     # (plans/112 S6) 탐지가 True였던 단계의 근거(감사 전용·판정 무관, 없으면 None).
                     "detection_evidence": detection_evidence or None,
+                    # (plans/144) 제니퍼 정책 근거·지속 조건(off/폴스타면 None → 게이트 비트 동일).
+                    "apm_policy": apm_policy,
                     # (Plan 60 E6) 메시지 기반 L1 보강 블록(enricher가 채움, off면 None).
                     "enrichment": None,
                     # (Plan 60 E3) 동적 baseline 이상 상향 후보(enricher가 채움, off면 None).
                     "anomaly_severity": None,
                     # (Plan 64 CW-A) sre_agent 조사 브리핑(트리거 노드가 채움, off면 None).
                     "investigation_briefing": None,
+                    # (plans/144 W3) 크로스소스 사건 신호 — 추적기가 있을 때만 키를 넣는다.
+                    **({"cross_source": cross_source} if self._episodes is not None else {}),
+                    # (plans/144 W4) 사건 저장소 앱 영향(annotate·enforce) · 사건 내 기존 APM 조사 —
+                    # 값이 있을 때만 키를 넣는다(off·shadow·해당 없음이면 키 없음 → 비트 동일).
+                    **({"episode_app_impact": episode_app_impact} if episode_app_impact else {}),
+                    **(
+                        {"episode_investigation": episode_investigation}
+                        if episode_investigation else {}
+                    ),
+                    # (plans/144 W5) 통보문 사건 묶음 표시 요약 — 값이 있을 때만 키(비트 동일).
+                    **({"episode_summary": episode_summary} if episode_summary else {}),
                 },
                 config={
                     "configurable": {
@@ -928,6 +1367,9 @@ class AlarmWorker:
                         "history_redis": self._redis,
                         "process_client": self._process_client,
                         "noise_repo": self._noise_repo,
+                        # (plans/144 §4.1) 제니퍼 유형 정책 공급자 — off면 None →
+                        # enricher 분기 없음.
+                        "apm_noise_ctx": self._apm_noise_ctx,
                         # (Plan 60 E3) 동적 baseline 이상탐지 어댑터 — off/미생성 시 None →
                         # enricher는 이상탐지 태스크 미추가(anomaly_severity 미산출·회귀 0).
                         "metric_baseline": self._metric_baseline,
@@ -962,6 +1404,11 @@ class AlarmWorker:
                     }
                 },
             )
+            # (plans/144 W3) 최종 티어를 사건 멤버에 기록 — 뒤에 오는 증상의 원인 조건(④) 재료.
+            if cross_source is not None:
+                self._record_episode_tier(cross_source, event, graph_result)
+                # (plans/144 W4) 조사 id 기록 · 사후 승격 후보·통보 — 개별 try/except(내부).
+                await self._after_episode_graph(cross_source, event, graph_result, now)
         except Exception as exc:
             logger.exception("알람 처리 실패: msg_id=%s", msg_id)
             # (D-184) ACK 전에 dead-letter 스트림에 원문+사유를 보관한다 — 실패 건이 흔적 없이
@@ -1048,7 +1495,7 @@ class AlarmWorker:
         return False
 
     def _is_duplicate_fingerprint(
-        self, fingerprint: str, now: float, severity: int
+        self, fingerprint: str, now: float, severity: int, *, alarm_id: str = ""
     ) -> tuple[bool, Optional[dict]]:
         """게이트 활성 시 핑거프린트 기반 재발생 dedup + count 집계 (Plan 52 §6.1 · Plan 60 E1).
 
@@ -1068,10 +1515,18 @@ class AlarmWorker:
             (최초 발생 sev3는 항상 PAGE — 이 dedup은 *이미 PAGE한 같은 알람의 반복 빈도*
             조절이지 발송 판단 억제가 아니다, §4.8/§6.1.)
 
+        심각도 상승 우회(plans/144 Q-4 · `dedup_severity_rise_bypass`): 켜져 있으면 레코드에 마지막
+        통보 심각도를 기록하고, TTL 안이라도 들어온 심각도가 그보다 **높으면** 비중복 경로(레코드
+        리셋 · 새 심각도 기록)로 보낸다 — 같은 지문 sev2 통보 뒤의 sev3가 버려져 D-048 「심각도3
+        절대 PAGE」가 깨지지 않게 한다. 같거나 낮은 심각도는 종전대로 버리므로 창당 추가 통과는
+        최대 2회(1→2→3)다. 심각도 키가 없는 레코드(플래그 off 때 만든 것)는 우회하지 않는다.
+        플래그 off(경량 설정 포함)면 레코드에 키를 두지 않아 종전과 비트 동일하다.
+
         Args:
             fingerprint: compute_fingerprint(event) 결과
             now: 현재 시각(time.time())
-            severity: 알람 심각도 (TTL 분기용)
+            severity: 알람 심각도 (TTL 분기 · 심각도 상승 우회용)
+            alarm_id: 심각도 상승 우회 로그용 알람 id
 
         Returns:
             (is_dup, meta) 튜플.
@@ -1089,24 +1544,37 @@ class AlarmWorker:
             )
         else:
             ttl = repeat_ttl
+        bypass = bool(getattr(self._config.noise_gate, "dedup_severity_rise_bypass", False))
         rec = self._gate_dedup.get(fingerprint)
         # 억제 판정 — 반드시 last_notified(통보 시각) 기준(고정창). 갱신하지 않는다.
         if rec is not None and now - rec["last_notified"] < ttl:
-            # 억제(중복) — 통보 시각은 고정, 집계(count)·정리(last_seen)만 갱신.
-            rec["count"] += 1
-            rec["last_seen"] = now
-            return True, dict(rec)
-        # 신규(비중복, TTL 만료 후 재통보 포함) — 리셋 직전 창 메타를 prev로 캡처.
+            if bypass and _dedup_severity_rises(rec, severity):
+                logger.info(
+                    "심각도 상승 — 지문 dedup 우회: fingerprint=%s %d→%d alarm_id=%s",
+                    fingerprint,
+                    rec[_DEDUP_SEVERITY_KEY],
+                    severity,
+                    alarm_id,
+                )
+            else:
+                # 억제(중복) — 통보 시각은 고정, 집계(count)·정리(last_seen)만 갱신.
+                rec["count"] += 1
+                rec["last_seen"] = now
+                return True, _dedup_meta(rec)
+        # 신규(비중복 · TTL 만료 후 재통보 · 심각도 상승 우회) — 리셋 직전 창 메타를 prev로 캡처.
         # prev는 직전 창 count>1(억제 이력 있음)일 때만 의미 있다(대표 알람 표기용).
         prev: Optional[dict] = None
         if rec is not None and rec["count"] > 1:
-            prev = dict(rec)
-        self._gate_dedup[fingerprint] = {
+            prev = _dedup_meta(rec)
+        new_rec: dict[str, Any] = {
             "first_seen": now,
             "last_notified": now,
             "last_seen": now,
             "count": 1,
         }
+        if bypass:
+            new_rec[_DEDUP_SEVERITY_KEY] = severity
+        self._gate_dedup[fingerprint] = new_rec
         # 만료 sweep은 last_seen 기준(연속 재발 레코드의 count 보존) — 현행(통보시각 기준)보다
         # 레코드 수명이 길어지는 메모리 의미 변화(§3.3). 판정(last_notified)과 정리(last_seen) 상이.
         expired = [
@@ -1306,6 +1774,123 @@ class AlarmWorker:
         for k in expired:
             del self._firing_registry[k]
         return self_heal
+
+    def _apm_policy_signal(
+        self, event: AlarmEvent, fingerprint: str, match: ApmPolicyMatch, now: float
+    ) -> dict[str, Any]:
+        """제니퍼 알람의 정책 근거와 지속 조건 신호를 만든다 (plans/144 §4.2·§6.2).
+
+        지속 조건 대상 = 비해소 · `event_kind="metric"` · 정책 행에 persistence 있음. 대상이면
+        지문별 창 안 발생 수를 세고(현재 건 포함) `{count, min_count, window_seconds, met}`을
+        싣는다 — 판정(실효 심각도 2일 때만 강등 · 하한 DASHBOARD)은 정책 계층이 한다. 첫 이벤트를
+        붙잡지 않는다.
+
+        지문 dedup과의 연동(정책 경로만 — 폴스타·플래그 off는 호출되지 않는다):
+
+        - 재판정(심각도 2): 조건 미달로 **실제로 그래프에 간**(dedup 비중복) 지문을 기억해 두고,
+          창 안 반복으로 조건이 채워지는 이벤트가 오면 그 지문의 dedup 기록을 1회 지워 매트릭스대로
+          다시 판정되게 한다(`reevaluated=True`). dedup에 버려질 미달 이벤트는 보류를 세우지
+          않으므로 재판정은 dedup 창마다 최대 1회다.
+        - 심각도 상승: 마지막으로 게이트에 보낸 심각도보다 높은 이벤트는 dedup 기록을 지워
+          게이트까지 보낸다(`escalated_from`) — 강등된 sev2 뒤 sev3가 버려져 끝내 PAGE되지 않는
+          일을 막는다.
+        - 해소 이벤트는 그 지문의 카운터·보류를 지운다(발생→해소→재발이 「충족」으로 dedup을
+          건너뛰지 않게).
+
+        dedup 판정 **전**에 호출된다 — 중복으로 버려질 이벤트도 지속 조건 카운트에는 들어간다.
+        """
+        signal: dict[str, Any] = {
+            "event_type_norm": match.event_type_norm,
+            "policy_row": match.row_key,
+            "persistence": None,
+        }
+        if self._apm_noise_ctx is not None and self._apm_noise_ctx.error:
+            signal["policy_error"] = self._apm_noise_ctx.error
+        self._sweep_apm_persistence(now)
+        if event.is_clear:
+            self._apm_persist.pop(fingerprint, None)
+            self._apm_persist_pending.pop(fingerprint, None)
+            return signal
+
+        sent = self._apm_sent_severity.get(fingerprint)
+        if sent is not None and event.severity > sent[0]:
+            self._gate_dedup.pop(fingerprint, None)
+            self._apm_persist_pending.pop(fingerprint, None)
+            signal["escalated_from"] = sent[0]
+            logger.info(
+                "제니퍼 심각도 상승 — 지문 dedup 해제: fingerprint=%s %d→%d alarm_id=%s",
+                fingerprint,
+                sent[0],
+                event.severity,
+                event.alarm_id,
+            )
+
+        rule = match.row.persistence if match.row is not None else None
+        if rule is None or event_kind(event) != EVENT_KIND_METRIC:
+            return signal
+
+        entry = self._apm_persist.get(fingerprint)
+        win: deque[float] = entry[1] if entry is not None else deque()
+        win.append(now)
+        while win and now - win[0] > rule.window_seconds:
+            win.popleft()
+        self._apm_persist[fingerprint] = (rule.window_seconds, win)
+
+        count = len(win)
+        persistence: dict[str, Any] = {
+            "count": count,
+            "min_count": rule.min_count,
+            "window_seconds": rule.window_seconds,
+            "met": count >= rule.min_count,
+        }
+        if event.severity == 2:
+            if not persistence["met"]:
+                if not self._apm_dedup_active(fingerprint, now):
+                    self._apm_persist_pending[fingerprint] = now
+            elif self._apm_persist_pending.pop(fingerprint, None) is not None:
+                self._gate_dedup.pop(fingerprint, None)
+                persistence["reevaluated"] = True
+        self._cap_apm_persistence()
+        signal["persistence"] = persistence
+        return signal
+
+    def _apm_dedup_active(self, fingerprint: str, now: float) -> bool:
+        """심각도 2 이벤트가 지문 dedup에 버려질지 미리 본다(상태 변경 없음).
+
+        `_is_duplicate_fingerprint`의 비-sev3 판정(last_notified 고정창 · repeat_interval ·
+        심각도 상승 우회)과 같다.
+        """
+        rec = self._gate_dedup.get(fingerprint)
+        ttl = self._config.noise_gate.repeat_interval_seconds
+        if rec is None or now - rec["last_notified"] >= ttl:
+            return False
+        bypass = bool(getattr(self._config.noise_gate, "dedup_severity_rise_bypass", False))
+        return not (bypass and _dedup_severity_rises(rec, 2))
+
+    def _sweep_apm_persistence(self, now: float) -> None:
+        """지속 조건 카운터·보류 지문·보낸 심각도의 만료 키를 정리한다 (Known Mistakes — 데몬 dict).
+
+        카운터는 마지막 발생이 자기 창 밖이면 키째 지우고, 보류 지문·보낸 심각도는
+        repeat_interval_seconds(그 뒤엔 dedup이 어차피 풀린다) 밖이면 지운다.
+        """
+        expired = [
+            k for k, (window, win) in self._apm_persist.items() if not win or now - win[-1] > window
+        ]
+        for k in expired:
+            del self._apm_persist[k]
+        ttl = getattr(self._config.noise_gate, "repeat_interval_seconds", 14400)
+        stale = [k for k, ts in self._apm_persist_pending.items() if now - ts >= ttl]
+        for k in stale:
+            del self._apm_persist_pending[k]
+        stale = [k for k, (_, ts) in self._apm_sent_severity.items() if now - ts >= ttl]
+        for k in stale:
+            del self._apm_sent_severity[k]
+
+    def _cap_apm_persistence(self) -> None:
+        """카운터·보류 지문·보낸 심각도 키가 상한을 넘으면 가장 오래된 지문부터 버린다(경고)."""
+        _evict_oldest(self._apm_persist, lambda v: v[1][-1], "지속 조건 카운터")
+        _evict_oldest(self._apm_persist_pending, lambda v: v, "재판정 보류 지문")
+        _evict_oldest(self._apm_sent_severity, lambda v: v[1], "보낸 심각도 기록")
 
     def _detect_inhibition(self, event: AlarmEvent, now: float) -> bool:
         """인히비션(§3.4·E2): 동일 서버 상위 심각도 발생 중인지 결정적으로 탐지한다.
@@ -1633,6 +2218,11 @@ class AlarmWorker:
                 getattr(event, "server_name", "") or "",
                 getattr(event, "resource_name", "") or "",
             )
+        # (plans/144 §4.4 · D-195 ② 개정) 제니퍼 정책 경로면 게이트웨이가 실어 보낸 was kind·
+        # domain_id 값을 토큰으로 더한다 — 같은 도메인·같은 kind의 인스턴스 폭풍을 묶는다. 스코프는
+        # 그대로 db_id(B-6). 폴스타·정책 off면 site_extra 그대로(비트 동일).
+        if self._apm_noise_ctx is not None and is_apm_source(event):
+            site_extra = " ".join(t for t in (site_extra, correlation_extra(event)) if t)
         tokens = signature_tokens(
             event.alarm_name, event.resource_type, sig_label, extra=site_extra
         )

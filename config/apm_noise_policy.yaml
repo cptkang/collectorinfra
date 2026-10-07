@@ -1,0 +1,57 @@
+# 제니퍼(APM) 알람 유형 정책 표 — 노이즈 게이트 제니퍼 단독 경로 (plans/144 §4.1~4.3)
+#
+# **설계 가정이다.** 아래 값은 설치본 기본 룰(apm_gateway 어댑터 EVENT_TYPE_SIGNALS 11종)의
+# 레벨(CRITICAL/WARNING)에서 보수적으로 옮겨 적은 초기값이며, 운영 제니퍼 이벤트 실측
+# (plans/87 J0-L-b — 유형 전 목록·레벨·recovery 형식)이 오면 다시 잰다.
+#
+# 소비처: noise_gate/infrastructure/apm_noise_context.py (NOISE_APM_NOISE_POLICY_ENABLED=true일 때만).
+# 플래그 off면 이 파일은 읽히지 않는다(현행: 제니퍼 알람 = 신호 수집 실패 → 보수적 PAGE).
+# 파일 없음·YAML 오류·스키마 위반이면 현행과 같이 보수적 PAGE로 가고 기동 로그에 경고 1줄을 남긴다.
+#
+# types — 키 = 정규화 유형(대문자 · `ERROR_`/`WARNING_` 접두 1회 제거). `default` = 표에 없는 유형.
+#   notify       page | dashboard | suppress
+#                  page      → 통보 정책 신호(우선순위 매트릭스 보조 조정에서 한 단계 승격)
+#                  dashboard → 보조 신호 없음(매트릭스 결과 그대로)
+#                  suppress  → **쓰지 않는다**(G-1 미확정). 적혀 있으면 경고 후 dashboard로 취급한다.
+#   importance   높음 | 보통 | 낮음 — 우선순위 매트릭스의 중요도 축(instances 오버라이드가 우선).
+#   persistence  {window_seconds, min_count} — 지표형(event_kind=metric) 심각도2 이벤트에만 적용.
+#                같은 지문이 창 안에 min_count회 미만이면 한 단계 강등(하한 DASHBOARD · 첫 이벤트를
+#                붙잡지 않는다). 오류형(event_kind=error)으로 오는 유형에서는 효과가 없다.
+#   kind         게이트웨이 was_signals kind와 같은 어휘 — **정보용 메타데이터**, 판정에 쓰지 않는다
+#                (WAS 판정은 게이트웨이 소관).
+#
+# instances — 키 = 제니퍼 인스턴스 이름(raw.apm.instance_name), 값 = 중요도(높음|보통|낮음).
+#   업무 중요 인스턴스를 유형 행의 중요도보다 우선해 지정한다.
+
+version: 1
+
+types:
+  # ── 게이트웨이 CRITICAL 유형 → 통보(page) · 중요도 높음 ──
+  SERVICE_QUEUING:      {notify: page, importance: 높음, kind: was_service_queuing}
+  PLC_REJECTED:         {notify: page, importance: 높음, kind: was_service_queuing}
+  HIGH_RATE_REJECT:     {notify: page, importance: 높음, kind: was_service_queuing}
+  JDBC_CONNECTION_FAIL: {notify: page, importance: 높음, kind: was_db_pool_exhaustion}
+  DB_CONNECTION_FAIL:   {notify: page, importance: 높음, kind: was_db_pool_exhaustion}
+  DB_CONN_UNCLOSED:     {notify: page, importance: 높음, kind: was_db_pool_exhaustion}
+  OUTOFMEMORY:          {notify: page, importance: 높음, kind: was_heap_pressure}
+  HIGH_RATE_FAIL:       {notify: page, importance: 높음, kind: was_error_burst}
+
+  # ── 게이트웨이 WARNING 유형 → 화면(dashboard) · 중요도 보통 ──
+  # 지표성 유형(GC 지연·힙 사용률)에만 지속 조건을 둔다. HTTP_IO_EXCEPTION은 예외(오류형)라 두지 않는다.
+  MAYBE_GC_TIME_DELAY:
+    notify: dashboard
+    importance: 보통
+    persistence: {window_seconds: 300, min_count: 2}
+    kind: was_gc_stall
+  JVM_HEAP_MEM_HIGH:
+    notify: dashboard
+    importance: 보통
+    persistence: {window_seconds: 300, min_count: 2}
+    kind: was_heap_pressure
+  HTTP_IO_EXCEPTION:    {notify: dashboard, importance: 보통, kind: was_external_call_delay}
+
+  # ── 표에 없는 유형(미지 유형) — 중요도 보통(미매핑 = 보통 보수) · 통보 정책 신호 없음 ──
+  default:              {notify: dashboard, importance: 보통}
+
+instances: {}
+  # 예) was-order-01_8080: 높음

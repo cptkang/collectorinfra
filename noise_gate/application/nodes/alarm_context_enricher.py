@@ -32,6 +32,7 @@ from typing import Any, Optional
 
 from langchain_core.runnables import RunnableConfig
 
+from noise_gate.application.server_identity import is_apm_source
 from noise_gate.domain.alarm import (
     AlarmEvent,
     AlarmHistoryStats,
@@ -486,10 +487,17 @@ async def alarm_context_enricher_node(
     # (Plan 60 B-7 L-4) 로컬 임베딩 provider(주석 전용) — topology_text_fusion_enabled 시 워커가
     # 주입. 미주입/off/inert면 root_text_similarity 미첨부(회귀 0). repo는 provider를 생성하지 않는다.
     embedding_provider = configurable.get("embedding_provider")
+    # (plans/144 §4.1) 제니퍼 유형 정책 공급자 — apm_noise_policy_enabled 시 워커가 기동 시 1회
+    # 생성해 주입한다. 미주입(off·기본)이면 아래 분기가 없어 현행과 비트 동일
+    # (제니퍼 = unavailable → PAGE).
+    apm_noise_ctx = configurable.get("apm_noise_ctx")
 
-    # 게이트 활성 + noise_repo 주입 시에만 noise_context 수집(그 외 기존 2키 반환 유지).
+    # 게이트 활성 + 공급자 주입 시에만 noise_context 수집(그 외 기존 2키 반환 유지).
+    # APM 정책 공급자는 제니퍼 알람에만 게이트를 켠다 — 폴스타 알람은 noise_repo 유무 그대로.
     gate_cfg = getattr(cfg, "noise_gate", None)
-    gate_on = bool(getattr(gate_cfg, "enable_noise_gate", False)) and noise_repo is not None
+    gate_on = bool(getattr(gate_cfg, "enable_noise_gate", False)) and (
+        noise_repo is not None or (apm_noise_ctx is not None and is_apm_source(event))
+    )
 
     async def _history() -> Optional[AlarmHistoryStats]:
         """이력 통계 수집 — 게이팅·실패 시 None (독립 degradation)."""
@@ -549,6 +557,20 @@ async def alarm_context_enricher_node(
         """
         if not gate_on:
             return None
+        # (plans/144 §4.1) 제니퍼 알람은 정책 표 공급자(메모리 조회 · 캐시 불필요). 적재 실패면
+        # 공급자가 unavailable을 돌려준다(현행 PAGE). 폴스타 알람은 아래 기존 경로 그대로.
+        if apm_noise_ctx is not None and is_apm_source(event):
+            try:
+                apm_ctx: dict[str, Any] = apm_noise_ctx.fetch(event)
+                return apm_ctx
+            except Exception:
+                logger.exception(
+                    "APM 노이즈 컨텍스트 조회 실패 — 보수적 처리로 진행: alarm_id=%s",
+                    event.alarm_id,
+                )
+                return _noise_unavailable()
+        if noise_repo is None:
+            return None  # APM 공급자만 주입된 경우의 폴스타 알람 — 수집 없음(정책이 보수 PAGE)
         # E2 §3.6: dependency_suppression=True일 때만 의존성 SQL 실행(기본 off → E1 무변경).
         dep = bool(getattr(gate_cfg, "dependency_suppression", False))
         # E4 §6.2: 다홉은 의존성 억제의 상위 모드 — dependency_suppression AND multi_hop_cascade_enabled.

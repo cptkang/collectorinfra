@@ -585,3 +585,126 @@ settings:
     performance: 창이 넓을수록 게이트웨이가 제니퍼에서 읽는 이벤트가 늘어난다(상한 24시간).
     recommendation: 기본 10분 유지.
     related: [NOISE_APP_IMPACT_ENABLED]
+
+  # ── plans/144 W1: 제니퍼 알람 유형 정책 ──
+  NOISE_APM_NOISE_POLICY_ENABLED:
+    summary: 제니퍼(APM) 알람을 유형별 정책 표로 판정할지.
+    behavior: >-
+      켜면 제니퍼 알람의 중요도·통보 정책을 정책 표(config/apm_noise_policy.yaml)에서 읽어
+      우선순위 매트릭스로 판정한다. 유형 표기의 ERROR_·WARNING_ 접두 차이는 같은 유형으로 보아
+      발생과 회복을 짝짓는다. 지표형 경고(심각도2)가 짧은 창 안에 반복되지 않으면 한 단계 내리되
+      DASHBOARD 아래로는 내리지 않는다. 심각도3은 언제나 PAGE이고 폴스타 알람 판정은 바뀌지 않는다.
+      정책 표를 읽지 못하면 끈 것과 같이 보수적으로 PAGE다(기동 로그에 경고).
+    options:
+      - value: "false"
+        label: 기본
+        effect: >-
+          제니퍼 알람은 부가 신호를 모르는 것으로 보아 심각도 1 이상이 모두 PAGE다. 지금과 같다.
+      - value: "true"
+        effect: >-
+          치명 유형(큐잉·DB 연결 실패·OOM 등)은 그대로 PAGE, 경고 유형은 중요도 보통으로 매트릭스를
+          거쳐 TICKET·DASHBOARD로 내려갈 수 있다. 정책 표에서 업무 중요 인스턴스를 높음으로 지정할 수 있다.
+    example: >-
+      JVM 힙 사용률 경고(심각도2)가 한 번 뜨고 사라지면 화면 표시(DASHBOARD)로 남고, 5분 안에 다시
+      뜨면 그때 TICKET으로 판정된다. 끈 상태에서는 두 번 모두 PAGE다.
+    performance: 정책 표는 기동 시 1회 읽는다. 알람마다 DB 조회가 없다.
+    stability: >-
+      표의 값은 운영 제니퍼 이벤트 실측 전 설계 가정이다 — 켜기 전에 정책 표의 유형·중요도를
+      운영 환경 기준으로 확인한다. 바꾼 표는 재기동 후 반영된다.
+    recommendation: 제니퍼 이벤트 폴러가 배포된 환경에서 정책 표를 검토한 뒤 켠다.
+    related: [NOISE_ENABLE_NOISE_GATE, NOISE_APP_IMPACT_ENABLED]
+
+  # ── plans/144 W3·W4: 폴스타×제니퍼 복합 판정 ──
+  NOISE_CROSS_SOURCE_MODE:
+    summary: 같은 서버의 폴스타 알람과 제니퍼 이벤트를 한 사건으로 묶어 판정할지, 어디까지 적용할지.
+    behavior: >-
+      같은 존·같은 서버(호스트 키)·사건창 안의 폴스타 알람과 제니퍼 이벤트를 사건으로 묶는다. 규칙 표가 정한
+      원인(예: 서버 CPU 포화)이 이미 통보된 상태에서 그 결과로 보이는 증상(예: WAS 지연)이 오면 증상을 화면
+      표시(DASHBOARD)로 내린다. 완전 억제는 하지 않고 심각도 3은 언제나 PAGE다. 서버 이름 대응이 정확하지
+      않으면(정규식 대응·미해소) 묶기만 하고 내리지 않는다.
+    options:
+      - value: "off"
+        label: 기본
+        effect: 사건을 만들지 않는다. 지금과 같다.
+      - value: "shadow"
+        effect: 판정은 그대로 두고 「내렸을 것」만 결정 기록에 남긴다. 켜기 전 효과 측정용이다.
+      - value: "annotate"
+        effect: 판정은 그대로 두고 통보문·관제 화면에 사건 묶음을 표시한다.
+      - value: "enforce"
+        effect: 규칙 표에서 enforce로 지정한 규칙만 증상을 DASHBOARD로 내린다.
+    example: >-
+      김포 WAS 서버 CPU 경고가 PAGE로 나간 뒤 3분 안에 같은 서버 제니퍼 인스턴스의 서비스 큐잉 경고가 오면,
+      enforce에서는 큐잉 경고를 화면 표시로 내리고 사유에 원인 알람 번호를 남긴다.
+    performance: 사건은 워커 메모리에만 둔다(재기동 시 초기화). 알람마다 외부 조회가 늘지 않는다.
+    stability: >-
+      규칙의 원인·증상 조합과 창 값은 운영 측정 전 설계 가정이다 — shadow로 2주 측정한 뒤 규칙 단위로
+      enforce를 켠다.
+    recommendation: 제니퍼 이벤트 폴러가 배포된 환경에서 shadow로 시작한다.
+    related: [NOISE_CROSS_SOURCE_RULES_PATH, NOISE_EPISODE_IDLE_SECONDS, NOISE_APM_NOISE_POLICY_ENABLED]
+
+  NOISE_CROSS_SOURCE_RULES_PATH:
+    summary: 폴스타×제니퍼 원인→증상 규칙 표 파일 경로.
+    behavior: >-
+      규칙마다 원인(소스·종류)·증상(소스·종류)·같아야 할 키(존·호스트)·창·조치(묶기만 / 증상 강등)를 적는다.
+      파일을 읽지 못하면 경고 1줄을 남기고 사건 상관을 끈 것과 같이 동작한다.
+    options:
+      - value: config/cross_source_rules.yaml
+        label: 기본
+        effect: 저장소 기본 규칙 표를 쓴다.
+    example: 운영에서 규칙을 고친 사본을 따로 두려면 그 파일 경로를 적는다.
+    performance: 기동 시 1회 읽는다.
+    stability: 바꾼 표는 재기동 후 반영된다.
+    recommendation: 기본 경로 유지.
+    related: [NOISE_CROSS_SOURCE_MODE]
+
+  NOISE_EPISODE_IDLE_SECONDS:
+    summary: 사건에 새 알람이 이 초 동안 없으면 사건을 닫는다.
+    behavior: 닫힌 사건 뒤에 온 알람은 새 사건이 된다. 소속 알람이 모두 해소돼도 닫힌다.
+    options:
+      - value: "900"
+        label: 기본 (15분)
+        effect: 15분 동안 조용하면 사건을 닫는다.
+      - value: "1800"
+        effect: 30분. 느리게 번지는 장애를 한 사건으로 더 잘 묶지만 무관한 알람이 섞일 수 있다.
+    example: CPU 경고 뒤 20분 만에 같은 서버에서 WAS 경고가 오면 기본값에서는 별개 사건이다.
+    performance: 길수록 워커 메모리에 사건이 오래 남는다(사건 수 상한 있음).
+    stability: 너무 짧으면 원인과 증상이 다른 사건으로 갈라진다.
+    recommendation: 기본 15분 유지.
+    related: [NOISE_CROSS_SOURCE_MODE]
+
+  NOISE_APP_IMPACT_LATE_PROMOTION_ENABLED:
+    summary: 늦게 도착한 제니퍼 심각 이벤트로 이미 낮게 판정된 폴스타 알람을 다시 PAGE로 통보할지.
+    behavior: >-
+      폴스타 알람이 화면 표시(DASHBOARD)·티켓(TICKET)으로 판정된 뒤 같은 사건에 제니퍼 fatal·critical 이벤트가
+      오면, 그 폴스타 알람을 PAGE로 한 번 더 통보한다. 알람마다 한 번만, 사건이 열려 있을 때만 한다.
+      앱 영향 승격(NOISE_APP_IMPACT_ENABLED)이 켜져 있고 사건 상관(NOISE_CROSS_SOURCE_MODE)이 annotate 또는 enforce여야 동작한다(shadow는 통보를 바꾸지 않으므로 다시 알리지 않는다).
+    options:
+      - value: "false"
+        label: 기본
+        effect: 늦게 온 제니퍼 이벤트는 폴스타 알람 판정에 반영되지 않는다. 지금과 같다.
+      - value: "true"
+        effect: 같은 알람이 두 번 울릴 수 있지만 WAS 장애와 겹친 서버 알람을 놓치지 않는다.
+    example: >-
+      서버 메모리 경고가 TICKET으로 판정된 뒤 2분 만에 같은 서버 제니퍼 인스턴스의 OOM 이벤트(fatal)가 오면 그
+      메모리 경고를 PAGE로 다시 알린다.
+    performance: 추가 외부 조회는 없다(워커가 이미 받은 제니퍼 이벤트로 판단).
+    stability: 사후 통보는 알람당 1회다.
+    recommendation: 앱 영향 승격을 쓰는 환경에서 켠다.
+    related: [NOISE_APP_IMPACT_ENABLED, NOISE_CROSS_SOURCE_MODE]
+
+  NOISE_APM_HEALTHY_DEMOTION_SHADOW:
+    summary: 제니퍼가 정상인데 폴스타 CPU·메모리 경고가 난 경우를 「내렸을 것」으로 기록만 할지.
+    behavior: >-
+      폴스타 CPU·메모리 경고(심각도 2) 때 같은 서버의 제니퍼 인스턴스가 사건창 안에 이벤트가 없고 게이트웨이가
+      정상 응답하면 결정 기록에 표지만 남긴다. 판정은 바뀌지 않는다 — 실제 강등 여부는 측정 뒤 따로 정한다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 기록하지 않는다.
+      - value: "true"
+        effect: 결정 기록에 「제니퍼 정상 — 강등했을 것」 표지를 남긴다.
+    example: 업무시간 배치로 CPU 경고가 났지만 WAS 응답이 정상이면 표지가 남는다.
+    performance: 대상 알람마다 게이트웨이 이벤트 조회 1회가 늘 수 있다(앱 영향 승격과 같은 조회).
+    stability: 판정에 영향이 없다.
+    recommendation: 측정이 필요할 때만 켠다.
+    related: [NOISE_APP_IMPACT_ENABLED, NOISE_CROSS_SOURCE_MODE]

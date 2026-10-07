@@ -494,6 +494,13 @@ class AlarmFeedbackSummaryResponse(BaseModel):
     items: list[dict[str, Any]] = Field(
         description="(알람명, 자원명)별 valid/noise 카운트 + 최근 라벨·작성자·시각"
     )
+    episode_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "크로스소스 사건 피드백 건수 {episode_split, demotion_needed} (plans/144 W5) — "
+            "items(유효/노이즈)와 섞지 않고 따로 센다"
+        ),
+    )
 
 
 class AlarmCapabilitiesResponse(BaseModel):
@@ -1552,11 +1559,11 @@ async def alarm_feedback_summary(
         getattr(ng, "feedback_store_enabled", True),
         getattr(ng, "feedback_store_max_lines", 20000),
     )
-    items = store.summarize(
-        limit=limit,
-        db_id_filter=None if scope is None else (lambda db_id: _zone_permits(scope, db_id)),
-    )
-    return AlarmFeedbackSummaryResponse(items=items)
+    db_id_filter = None if scope is None else (lambda db_id: _zone_permits(scope, db_id))
+    items = store.summarize(limit=limit, db_id_filter=db_id_filter)
+    # (plans/144 W5) 사건 피드백은 유효/노이즈 집계와 섞지 않고 건수만 따로 준다(같은 존 판정).
+    episode_counts = store.summarize_episode_feedback(db_id_filter=db_id_filter)
+    return AlarmFeedbackSummaryResponse(items=items, episode_counts=episode_counts)
 
 
 @router.get(

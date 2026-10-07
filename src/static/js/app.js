@@ -4625,6 +4625,18 @@
                 '</div>';
         }
 
+        // plans/144 W5: 크로스소스 사건 묶음 — 서버가 줄을 만들어 줄 때만(annotate·enforce) 표시한다.
+        var episodeHtml = "";
+        if (Array.isArray(data.episode_lines) && data.episode_lines.length) {
+            episodeHtml =
+                '<div class="alarm-section alarm-episode-section">' +
+                    '<span class="alarm-section-label">사건 묶음</span>' +
+                    data.episode_lines.map(function (line) {
+                        return '<p>' + escapeHtml(line) + '</p>';
+                    }).join("") +
+                '</div>';
+        }
+
         // D-049: incident 확인(ack) 버튼 — incident_id가 있을 때만 표시(비-incident 알람 불변)
         var ackHtml = "";
         if (data.incident_id) {
@@ -4671,6 +4683,7 @@
                     '</div>' +
                     processHtml +
                     patternHtml +
+                    episodeHtml +
                     ackHtml +
                     promptHtml +
                     feedbackHtml +

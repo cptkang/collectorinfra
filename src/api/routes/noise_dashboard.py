@@ -9,7 +9,8 @@
       스트림은 걸지 않는다 — 운영 통제와 설정값은 운영자에게 남는다.
 
 원칙:
-    - **읽기 우선**: 변경은 침묵 생성/해제 둘뿐이며 전부 감사에 남는다.
+    - **읽기 우선**: 변경은 침묵 생성/해제와 사건 피드백(plans/144 W5 · 운영자 경로만) 셋뿐이다.
+      침묵은 감사 로그에, 사건 피드백은 피드백 저장소(작성자 포함)에 남는다.
     - **정책은 읽기 전용**: 쓰기 경로는 `/admin/settings` 하나다(검증·dry-run·백업·감사·리로드가
       거기 있다). 두 번째 쓰기 경로를 내면 안전 가드와 감사가 갈라진다(Plan 54 G-3).
     - **안전 가드는 서버가 강제**: 전체 침묵 금지·심각도 상한·만료 필수를 여기서 막는다.
@@ -234,6 +235,59 @@ class SilenceCreateResponse(BaseModel):
 
 class SilenceRevokeResponse(BaseModel):
     revoked: bool
+
+
+# 사건 피드백 입력 경계 — 피드백 JSONL·로그(`logger.info`)에 들어가는 값이라 길이와 제어문자를
+# 막는다(로그 줄 위조·파일 비대 방지). 사건 id는 `cross_source.episode_id_for` 형식만 받는다.
+_EPISODE_ID_PATTERN = r"^ep-[0-9a-f]{12}$"
+_NO_CONTROL_CHARS = r"^[^\x00-\x1f\x7f]*$"
+
+
+class EpisodeFeedbackRequest(BaseModel):
+    """크로스소스 사건 단위 피드백 (plans/144 W5 · §6.3) — 거짓 강등률·사건 순도 지표의 분자.
+
+    결정 추적 드로어가 그 판단 레코드의 값을 그대로 되돌려 보낸다. few-shot 후보와는 섞이지
+    않는다(라벨이 유효/노이즈와 다르다 — `feedback_store.EPISODE_FEEDBACK_LABELS`).
+    """
+
+    label: str = Field(
+        description="episode_split(이 묶음은 틀렸다) | demotion_needed(강등된 증상이 조치 필요)"
+    )
+    episode_id: str = Field(
+        pattern=_EPISODE_ID_PATTERN,
+        description="사건 id(판단 레코드 stage_evidence.episode_id · `ep-` + 16진 12자리)",
+    )
+    alarm_id: str = Field(
+        default="", max_length=128, pattern=_NO_CONTROL_CHARS,
+        description="피드백 대상 판단의 alarm_id",
+    )
+    alarm_name: str = Field(
+        default="", max_length=256, pattern=_NO_CONTROL_CHARS, description="알람명(표시·집계용)"
+    )
+    server_name: str = Field(
+        default="", max_length=256, pattern=_NO_CONTROL_CHARS, description="서버명"
+    )
+    db_id: str = Field(
+        default="", max_length=128, pattern=_NO_CONTROL_CHARS, description="dbId(존 집계용)"
+    )
+    tier: str = Field(
+        default="", max_length=128, pattern=_NO_CONTROL_CHARS, description="판단 티어"
+    )
+    stage: str = Field(
+        default="", max_length=128, pattern=_NO_CONTROL_CHARS, description="결정 단계"
+    )
+    applied: bool | None = Field(
+        default=None, description="크로스소스 강등이 실제로 적용됐는지(cross_source.applied)"
+    )
+    note: str = Field(
+        default="", max_length=200, pattern=_NO_CONTROL_CHARS,
+        description="메모(선택 · 민감정보 금지)",
+    )
+
+
+class EpisodeFeedbackResponse(BaseModel):
+    recorded: bool
+    ts: str = ""
 
 
 class PolicySetting(BaseModel):
@@ -814,6 +868,67 @@ async def revoke_silence(
     )
     logger.info("침묵 규칙 해제: id=%s by=%s", rule_id, _actor(admin))
     return SilenceRevokeResponse(revoked=True)
+
+
+# ─── 사건 피드백 (쓰기 — 운영자 경로만 · plans/144 W5) ───────────────────
+
+
+@router.post(
+    "/admin/noise/episode-feedback",
+    response_model=EpisodeFeedbackResponse,
+    summary="크로스소스 사건 피드백",
+    description=(
+        "결정 추적에서 크로스소스 사건 단위 피드백 2종을 남깁니다 — "
+        "`episode_split`(이 묶음은 틀렸다 · 분리) · `demotion_needed`(강등된 증상이 실제로 조치가 "
+        "필요했다).<br/>거짓 강등률·사건 순도 지표의 분자이며 LLM few-shot 후보에는 들어가지 "
+        "않습니다. 피드백 저장소가 꺼져 있으면 503입니다."
+    ),
+    tags=["noise-console"],
+)
+async def submit_episode_feedback(
+    body: EpisodeFeedbackRequest,
+    request: Request,
+    admin: dict[str, Any] = Depends(require_admin_user),
+) -> EpisodeFeedbackResponse:
+    """사건 피드백을 검증해 피드백 저장소에 적재한다(작성자 = 운영자 · 감사 전용)."""
+    from noise_gate.infrastructure.feedback_store import (
+        EPISODE_FEEDBACK_LABELS,
+        FeedbackStore,
+    )
+
+    ng = _gate_cfg(request)
+    if not getattr(ng, "feedback_store_enabled", True):
+        raise HTTPException(status_code=503, detail="피드백 저장소 비활성")
+    if body.label not in EPISODE_FEEDBACK_LABELS:
+        raise HTTPException(
+            status_code=400, detail="label은 'episode_split' 또는 'demotion_needed'만 허용"
+        )
+
+    store = FeedbackStore(
+        ng.feedback_store_path,
+        getattr(ng, "feedback_store_enabled", True),
+        getattr(ng, "feedback_store_max_lines", 20000),
+    )
+    recorded_ts = datetime.now(UTC)
+    recorded = store.record_episode_feedback(
+        label=body.label,
+        episode_id=body.episode_id,
+        alarm_id=body.alarm_id,
+        alarm_name=body.alarm_name,
+        server_name=body.server_name,
+        db_id=body.db_id,
+        tier=body.tier,
+        stage=body.stage,
+        applied=body.applied,
+        note=body.note,
+        labeled_by=_actor(admin),
+        ts=recorded_ts,
+    )
+    logger.info(
+        "사건 피드백: label=%s episode=%s alarm_id=%s by=%s",
+        body.label, body.episode_id, body.alarm_id, _actor(admin),
+    )
+    return EpisodeFeedbackResponse(recorded=recorded, ts=recorded_ts.isoformat())
 
 
 # ─── 정책 (읽기 전용) ───────────────────────────────────────────────────

@@ -378,6 +378,8 @@ def parse_event(raw: dict[str, Any]) -> dict[str, Any]:
         "level": str(raw.get("eventLevel") or "").strip().lower(),
         # ERROR 기반은 errorType, 지표 기반은 metricsName이 찬다(§0.9 판단 ③).
         "event_type": error_type or metrics_name,
+        # 소비측 상관·억제 키 — 접두 차이를 같은 유형으로 본다(plans/144 §4.3). 원문은 위 칸에 둔다.
+        "event_type_norm": normalize_event_type(error_type or metrics_name),
         "event_kind": "error" if error_type else ("metric" if metrics_name else ""),
         "value": to_float(raw.get("value")),
         "message": str(raw.get("message") or ""),
