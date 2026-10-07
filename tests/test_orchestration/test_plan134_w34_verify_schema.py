@@ -13,7 +13,7 @@ FastMCP는 **모르는 최상위 인자를 조용히 버린다**(검증 오류 �
 사례 = 레지스트리 보기 28종 × (대상 모양: 대상 1개 · 다건 hostname 배치 · 해석 인스턴스 배치 ·
 첫 홉 · 이름 · 참조 · 없음) × (선택 조건 전 이름 · enum 전 선택지) × (`sources` 있음/없음).
 사례 목록은 레지스트리에서 만든다 — 보기·조건이 늘면 사례도 는다. `apm.ranking` `metric`
-enum == 게이트웨이 `RANKING_METRICS`도 함께 본다.
+enum == 게이트웨이 `ALL_RANKING_METRICS`(실시간 + 기간 전용)도 함께 본다.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from typing import Any
 import pytest
 
 from src.config import DBHubConfig
+from src.domain.query_time import resolve_query_time
 from src.infrastructure import apm_job_store as store_mod
 from src.infrastructure.apm_job_store import ApmJobStore
 from src.orchestration import apm_query as aq
@@ -49,6 +50,7 @@ _RANGE = {"start": (NOW - timedelta(hours=3)).isoformat(), "end": (NOW - timedel
 
 _DUMP = """
 import asyncio, json, sys, tempfile
+from apm_gateway.application import fleet_tools
 from apm_gateway.application.fleet_tools import RANKING_METRICS
 from apm_gateway.application.jobs import JobManager
 from apm_gateway.application.sources import build_source_set
@@ -90,7 +92,10 @@ async def main():
         tail = reason.split("받는 키:")[-1].strip()
         keys[name] = sorted(json.loads(tail.replace("'", '"'))) if "받는 키" in reason else reason
     sys.stdout.write(json.dumps({"schemas": schemas, "target_keys": keys,
-                                 "ranking_metrics": list(RANKING_METRICS)}, ensure_ascii=False))
+                                 "ranking_metrics": list(RANKING_METRICS),
+                                 "all_ranking_metrics": list(getattr(
+                                     fleet_tools, "ALL_RANKING_METRICS", RANKING_METRICS))},
+                                ensure_ascii=False))
     await jobs.aclose()
 
 asyncio.run(main())
@@ -300,9 +305,11 @@ async def test_every_view_argument_shape_matches_the_gateway(case, contract, mon
         task["view_args"] = {vid: args}
     if sources:
         task["sources"] = sources
-    res = await aq.run_apm_query(task, _isolated(iso_extra), llm=None, app_config=_cfg(),
-                                 now=NOW)
     view = next(v for v in get_registry().views_of("apm") if v.id == vid)
+    isolated = _isolated(iso_extra)
+    if view.window == "compare":  # 두 기간 비교(plans/134 W6 A-1) — 기간 해석이 있어야 부른다
+        isolated["time_resolution"] = resolve_query_time("지난주 대비", NOW).to_state()
+    res = await aq.run_apm_query(task, isolated, llm=None, app_config=_cfg(), now=NOW)
     sent = [(n, a) for n, a in cap.calls if not n.startswith("apm_job_")]
     if not sent:  # 되묻기(필수 조건) 사례만 호출 0이 정상
         assert any(a.required for a in view.args) or view.target == "reference", (cid, res)
@@ -331,7 +338,7 @@ async def test_every_view_argument_shape_matches_the_gateway(case, contract, mon
 
 def test_case_matrix_covers_every_view_and_every_choice() -> None:
     views = get_registry().views_of("apm")
-    assert len(views) == 28
+    assert len(views) == 29  # plans/134 W6 A-1 — apm.period_compare
     covered = {c[1] for c in _CASES}
     assert covered == {v.id for v in views}
     for v in views:
@@ -344,11 +351,15 @@ def test_case_matrix_covers_every_view_and_every_choice() -> None:
 def test_ranking_metric_enum_equals_gateway_ranking_metrics(contract) -> None:
     view = next(v for v in get_registry().views_of("apm") if v.id == "apm.ranking")
     choices = next(a.choices for a in view.args if a.name == "metric")
-    assert list(choices) == contract["ranking_metrics"], "순서까지 같다"
+    # plans/134 W6 A-4 교정 — 레지스트리도 기간 전용 지표 4개를 싣는다(실시간 지표가 앞 ·
+    # 순서까지 같다)
+    assert list(choices) == contract["all_ranking_metrics"], "순서까지 같다"
+    assert list(choices)[:len(contract["ranking_metrics"])] == contract["ranking_metrics"]
     prop = contract["schemas"]["apm_fleet"]["properties"]["metric"]
     enum = prop.get("enum") or next((x.get("enum") for x in prop.get("anyOf") or []
                                      if x.get("enum")), None)
-    assert list(enum or []) == contract["ranking_metrics"], prop
+    # plans/134 W6 A-4 — 게이트웨이 스키마 enum = 실시간 지표 + 기간 전용 지표 = 레지스트리 enum
+    assert list(enum or []) == contract["all_ranking_metrics"] == list(choices), prop
 
 
 def test_every_targets_tool_accepts_the_body_item_keys(contract) -> None:

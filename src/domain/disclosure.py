@@ -96,6 +96,10 @@ APM_CHANGE_DETECTION = "apm_change_detection"
 APM_MASKED_FIELDS = "apm_masked_fields"
 #: 해석하지 못한 조건·기능이 있다 — 다른 조회로 대신하지 않았다.
 APM_UNRESOLVED_CONDITION = "apm_unresolved_condition"
+#: 대상 서버를 정하지 않아 부하 순위 상위 N개만 골라 조회했다 — 실패가 아니라 의도된 범위
+#: 제한이다(W6 ④ · 사용자 결정 2026-10-07). 진짜 실패(잠정 순위·순위 실패 폴백·결과 파일 읽기
+#: 실패)는 `APM_PARTIAL_SOURCES`다.
+APM_UNTARGETED_SCOPE = "apm_untargeted_scope"
 #: 고지 항목의 선택 칸 `ref`에서 작업 카드가 읽는 키(게이트웨이 작업 ID).
 REF_APM_JOB_ID = "apm_job_id"
 
@@ -195,6 +199,7 @@ KIND_TABLE: dict[str, KindSpec] = {
         KindSpec(APM_FULL_RESULT_FILE, "neutral", True, "task", 10),
         KindSpec(APM_PARTIAL_SOURCES, "partial", True, "task", 10),
         KindSpec(APM_UNRESOLVED_CONDITION, "guide", True, "task", 15),
+        KindSpec(APM_UNTARGETED_SCOPE, "neutral", True, "task", 10),
         KindSpec(APM_CURRENT_ONLY, "neutral", False, "task", 30),
         KindSpec(APM_HOURLY_RESOLUTION, "neutral", False, "task", 30),
         KindSpec(APM_CHANGE_DETECTION, "neutral", False, "task", 30),

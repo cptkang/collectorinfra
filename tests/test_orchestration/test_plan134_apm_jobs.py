@@ -342,24 +342,32 @@ async def test_failed_job_is_a_failure_not_data(gateway, deadline) -> None:
 
 @pytest.mark.asyncio
 async def test_unfinished_first_hop_job_is_cancelled(gateway, store, deadline) -> None:
+    """첫 홉(부하 순위 · plans/134 W6 ④)이 마감 안에 끝나지 않으면 취소하고 목록 폴백도 같다."""
     deadline(0.1)
-    gw = gateway({"apm_instance_map": _accepted("apm_instance_map")},
-                 {JOB: [_env("apm_job_status", [], job=_handle("running"))]})
+    gw = gateway({"apm_fleet": _accepted("apm_fleet"),
+                  "apm_instance_map": _accepted("apm_instance_map", JOB2)},
+                 {JOB: [_env("apm_job_status", [], job=_handle("running"))],
+                  JOB2: [_env("apm_job_status", [], job=_handle("running", JOB2))]})
     res = await _run(["apm.app_health"])
 
-    assert gw.named("apm_job_cancel") == [{"job_id": JOB, "owner": "user:alice"}]
+    assert gw.named("apm_job_cancel") == [{"job_id": JOB, "owner": "user:alice"},
+                                          {"job_id": JOB2, "owner": "user:alice"}]
     assert res["degraded_reason"] == "apm_not_queried"
     assert "처리 시간 안에 끝나지 않아" in res["final_response"]
     assert await store.get(JOB) is None, "대상 선정 단계 작업은 장부에 올리지 않는다"
+    assert await store.get(JOB2) is None
 
 
 @pytest.mark.asyncio
 async def test_first_hop_job_finished_in_time_selects_hosts(gateway, deadline) -> None:
     deadline(5.0)
-    inventory = [{"instance_id": 1, "hostname": "was01", "match_confidence": "high"}]
-    gw = gateway({"apm_instance_map": _accepted("apm_instance_map"),
+    ranked = [{"rank": 1, "source_id": "bank", "domain_id": 1, "instance_id": 1,
+               "instance_name": "w1", "hostname": "was01", "value": 12.0}]
+    gw = gateway({"apm_fleet": _accepted("apm_fleet"),
                   "apm_app_health": _env("apm_app_health", [{"tps": 1}])},
-                 {JOB: [_done_status("apm_instance_map", inventory)]})
+                 {JOB: [_done_status("apm_fleet", ranked, summary={
+                     "metric": "tps", "order": "desc", "instances_total": 1,
+                     "instances_ranked": 1, "instances_unranked": 0, "domains_failed": 0})]})
     res = await _run(["apm.app_health"])
     assert gw.named("apm_app_health")[0]["hostname"] == "was01"
     assert res["source_status"][0]["status"] == "ok"
@@ -374,6 +382,7 @@ def test_spec_kind_table_rows() -> None:
         "apm_partial_sources": ("partial", True), "apm_current_only": ("neutral", False),
         "apm_hourly_resolution": ("neutral", False), "apm_change_detection": ("neutral", False),
         "apm_masked_fields": ("neutral", False), "apm_unresolved_condition": ("guide", True),
+        "apm_untargeted_scope": ("neutral", True),  # W6 ④ 교정 1 — 의도된 범위 제한(실패 아님)
     }
     for kind, (grade, mandatory) in expected.items():
         spec = disc.KIND_TABLE[kind]

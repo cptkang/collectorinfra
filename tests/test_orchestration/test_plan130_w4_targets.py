@@ -354,9 +354,10 @@ async def test_without_target_text_the_first_hop_is_unchanged(gateway) -> None:
     listing = [_inst(1, "was01_a", "was01"), _inst(2, "was02_a", "was02")]
     gw, edge = gateway(listing=listing)
     base = await _run(["apm.app_health"])
-    # plans/134 M-5 — 첫 홉 대상 2대 = `targets` 배치 1호출
-    assert [n for n, _ in gw.calls] == ["apm_instance_map", "apm_app_health"]
-    assert gw.listings() == [gw.calls[0][1]], "대상이 없으면 첫 홉 목록 그대로"
+    # plans/134 M-5 — 첫 홉 대상 2대 = `targets` 배치 1호출 · W6 ④ — 첫 홉은 부하 순위이고 여기
+    # 모의는 부를 수 있는 순위 행이 없어 목록(종전 첫 홉)으로 폴백한다
+    assert [n for n, _ in gw.calls] == ["apm_fleet", "apm_instance_map", "apm_app_health"]
+    assert gw.listings() == [gw.calls[1][1]], "대상이 없으면 첫 홉 목록 그대로"
     assert [c["hostname"] for c in apm_batch_mock.expanded(gw.calls, "apm_app_health")] == [
         "was01", "was02"]
     assert edge.seen == [] and "targets" not in base["apm_query"]

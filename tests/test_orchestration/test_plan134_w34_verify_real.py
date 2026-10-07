@@ -42,7 +42,7 @@ from typing import Any
 import pytest
 
 from src.clients import source_mcp_client as smc
-from src.config import AppConfig, DBHubConfig, LLMConfig, ServerConfig
+from src.config import AppConfig, CompositeConfig, DBHubConfig, LLMConfig, ServerConfig
 from src.domain import disclosure as disc
 from src.infrastructure import apm_job_store as store_mod
 from src.infrastructure.apm_job_store import ApmJobStore
@@ -407,9 +407,10 @@ class _NoEdge:
 
 
 def _config(url: str, *, call_timeout: float = 60.0, query_timeout: int = 120,
-            reserve: int = 15) -> AppConfig:
+            reserve: int = 15, top_n: int = 20) -> AppConfig:
     return AppConfig(
         _env_file=None,
+        composite=CompositeConfig(_env_file=None, apm_untargeted_top_n=top_n),
         llm=LLMConfig(_env_file=None, provider="ollama", model="none",
                       ollama_base_url="http://127.0.0.1:9"),
         dbhub=DBHubConfig(_env_file=None, server_url="http://127.0.0.1:9/sse",
@@ -858,11 +859,17 @@ def _all_instances(stack: _Stack) -> set[tuple[str, int]]:
 
 
 async def test_e7_first_hop_takes_every_instance_including_hostless(small_stack) -> None:
+    """plans/134 W6 ④ — 첫 홉은 부하(TPS) 순위다. 상위 N(여기선 100)이 전 인스턴스보다 크면
+    전부다."""
     stack, rec = small_stack(500)
-    state = await _turn(stack, "WAS 응답시간", _task(["apm.app_health"]))
+    state = await _turn(stack, "WAS 응답시간", _task(["apm.app_health"]),
+                        config=_config(stack.url, top_n=100))
     res = _apm_result(state)
     first = rec.calls[0]
-    assert first[0] == "apm_instance_map" and "hostname" not in first[1]
+    assert first[0] == "apm_fleet" and "hostname" not in first[1]
+    assert (first[1]["mode"], first[1]["metric"], first[1]["order"], first[1]["n"]) == (
+        "ranking", "tps", "desc", 100)
+    assert "lookback_minutes" not in first[1] and "reference_time" not in first[1], "실시간"
     (batch,) = rec.named("apm_app_health")
     items = batch["targets"]
     hosts = {t["hostname"] for t in items if "hostname" in t}
@@ -880,7 +887,8 @@ async def test_e7_first_hop_takes_every_instance_including_hostless(small_stack)
 
 async def test_v34_2_first_hop_beyond_inline_rows_is_not_silently_cut(small_stack) -> None:
     stack, rec = small_stack(5)
-    state = await _turn(stack, "WAS 응답시간", _task(["apm.app_health"]))
+    state = await _turn(stack, "WAS 응답시간", _task(["apm.app_health"]),
+                        config=_config(stack.url, top_n=100))
     (batch,) = rec.named("apm_app_health")
     total = len(_all_instances(stack))
     sent = len(batch["targets"])
@@ -889,6 +897,33 @@ async def test_v34_2_first_hop_beyond_inline_rows_is_not_silently_cut(small_stac
     assert sent >= len({i["hostName"] for m in stack.models.values()
                         for recs in m.instances.values() for i in recs if i["hostName"]}) + 1, (
         sent, total, notes)
+
+
+async def test_w6_untargeted_default_queries_only_the_top_n_by_load(small_stack) -> None:
+    """plans/134 W6 ④ — 기본 상위 N(20)이 전 인스턴스보다 작으면 그 N개만 · 의무 고지(중립 —
+    건강한 순위로 고른 범위 제한은 부분 실패가 아니다 · 교정 1)."""
+    stack, rec = small_stack(5)
+    state = await _turn(stack, "WAS 응답시간", _task(["apm.app_health"]))
+    res = _apm_result(state)
+    (ranking,) = rec.named("apm_fleet")
+    assert ranking["n"] == 20
+    assert rec.named("apm_instance_map") == [], "순위로 골랐으면 목록을 부르지 않는다"
+    (batch,) = rec.named("apm_app_health")
+    total = len(_all_instances(stack))
+    assert total > 20
+    step = res["apm_query"]["inserted_steps"][0]
+    assert step["instances"] == 20 and step["fleet_total"] == total, step
+    # hostname 대상은 (호스트 · 순위 행 소스)마다 1개(W6 교정 2 V6-3) · 나머지는 호스트 없는
+    # 인스턴스
+    host_items = [t for t in batch["targets"] if "hostname" in t]
+    assert len({t["hostname"] for t in host_items}) == step["hosts"]
+    assert all(t.get("source_id") for t in host_items), host_items
+    assert len({(t["hostname"], t["source_id"]) for t in host_items}) == len(host_items)
+    assert len(batch["targets"]) - len(host_items) == step.get("hostless", 0)
+    (note,) = [d for d in res.get("disclosures") or [] if "대상 서버 미지정" in d["text"]]
+    assert note["kind"] == "apm_untargeted_scope"
+    assert f"전체 인스턴스 {total}개 중 현재 부하(TPS) 상위 20개" in note["text"]
+    assert "특정 서버(또는 업무)를 지정하면 그 대상만 정확히 조회합니다" in note["text"]
 
 
 async def test_e7_batch_rows_beyond_inline_are_disclosed_not_zero(small_stack) -> None:

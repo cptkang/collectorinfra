@@ -37,12 +37,12 @@ _BUDGET_KEYS = {"estimated_tokens", "budget", "stage", "table_count", "samples"}
 # ──────────────────────────────────────────────
 
 def _fake_render(schema_info, *, materials):
-    """본문 100tok · 재료 +1000tok · 표본 +1000tok(ASCII 4자/토큰)."""
-    text = "S" * 400
+    """본문 100tok · 재료 +1000tok · 표본 +1000tok(4자 영문 단어 = 1토큰)."""
+    text = "SSSS " * 100
     if materials:
-        text += "M" * 4000
+        text += "MMMM " * 1000
     if any((t or {}).get("sample_data") for t in (schema_info.get("tables") or {}).values()):
-        text += "D" * 4000
+        text += "DDDD " * 1000
     return text
 
 
@@ -53,7 +53,7 @@ def _ladder_schema() -> dict:
     }
 
 
-def _fit(budget, *, schema=None, user="U" * 400):
+def _fit(budget, *, schema=None, user="UUUU " * 100):
     schema = schema if schema is not None else _ladder_schema()
     full = _fake_render(schema, materials=True)
     return qg._fit_single_prompt_budget(
@@ -67,7 +67,7 @@ class TestLadderUnit:
         schema = _ladder_schema()
         full = _fake_render(schema, materials=True)
         prompt, mark = qg._fit_single_prompt_budget(
-            _fake_render, schema, full, "U" * 400, budget=budget, db_id="itam",
+            _fake_render, schema, full, "UUUU " * 100, budget=budget, db_id="itam",
         )
         assert prompt is full, "예산 안(또는 가드 비활성)이면 같은 문자열 그대로"
         assert mark == {
@@ -104,7 +104,7 @@ class TestLadderUnit:
 
         schema = _ladder_schema()
         qg._fit_single_prompt_budget(
-            render, schema, _fake_render(schema, materials=True), "U" * 400,
+            render, schema, _fake_render(schema, materials=True), "UUUU " * 100,
             budget=500, db_id="itam",
         )
         assert seen[-1]["_structure_meta"] == {"kept": True}

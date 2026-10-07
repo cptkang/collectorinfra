@@ -193,12 +193,17 @@ async def test_wait_seconds_is_recomputed_right_before_each_call(gateway, deadli
 async def test_first_hop_instance_list_carries_owner_and_wait(gateway, deadline) -> None:
     deadline(30.0)
     inventory = [{"instance_id": 1, "hostname": "was01", "match_confidence": "high"}]
+    ranked = [{"rank": 1, "source_id": "bank", "instance_id": 1, "instance_name": "w1",
+               "hostname": "was01", "value": 3.0}]
     gw = gateway({"apm_instance_map": _env("apm_instance_map", inventory),
+                  "apm_fleet": _env("apm_fleet", ranked),
                   "apm_app_health": _env("apm_app_health", [{"tps": 1}])})
     await _run(["apm.app_health"])
-    (first,) = gw.named("apm_instance_map")
+    # plans/134 W6 ④ — 첫 홉은 부하 순위(`apm_fleet`) · 같은 작업 인자를 싣는다
+    (first,) = gw.named("apm_fleet")
     assert first["owner"] == "user:alice"
     assert isinstance(first["wait_seconds"], float) and 1.0 <= first["wait_seconds"] < 10.0
+    assert gw.named("apm_instance_map") == [], "순위로 대상을 골랐으면 목록은 부르지 않는다"
 
 
 @pytest.mark.parametrize("timeout", [3.5, 5.0, 10.0, 30.0, 120.0])

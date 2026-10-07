@@ -142,6 +142,14 @@ _ALL_REPLIES = {
     "apm_instance_map": _env("apm_instance_map", [
         {"hostname": "web01", "match_confidence": "exact"},
         {"hostname": "web02", "match_confidence": "exact"}]),
+    # plans/134 W6 ④ — 대상 미지정 첫 홉 = 현재 부하(TPS) 순위
+    "apm_fleet": _env("apm_fleet", [
+        {"rank": 1, "source_id": "default", "instance_id": 11, "instance_name": "web01_a",
+         "hostname": "web01", "value": 9.0},
+        {"rank": 2, "source_id": "default", "instance_id": 12, "instance_name": "web02_a",
+         "hostname": "web02", "value": 3.0}],
+        summary={"metric": "tps", "order": "desc", "instances_total": 2,
+                 "instances_ranked": 2, "instances_unranked": 0, "domains_failed": 0}),
     "apm_app_health": _env("apm_app_health", [{"tps": 1.0}]),
     "apm_status_stats": _env("apm_status_stats", [{"name": "select ?", "calls": 1}]),
     "apm_metrics": _env("apm_metrics", [{"source_id": "default", "scope": "instance",
@@ -286,7 +294,7 @@ def test_selection_code_has_no_wording_tables() -> None:
 async def test_targetless_metrics_with_host_view_first_hop_only_for_host_view(gateway) -> None:
     gw = gateway(_ALL_REPLIES)
     res = await _run(["apm.metrics", "apm.sql_stats"])  # 대상 없음
-    assert [n for n, _ in gw.calls].count("apm_instance_map") == 1, "첫 홉은 대상이 필요한 보기 몫"
+    assert [n for n, _ in gw.calls].count("apm_fleet") == 1, "첫 홉은 대상이 필요한 보기 몫"
     assert len(gw.named("apm_metrics")) == 1
     assert gw.named("apm_metrics")[0].get("hostname") is None, "전체 보기는 hostname 없이 1회"
     # plans/134 M-5 — 첫 홉 대상 2대 = `targets` 배치 1호출

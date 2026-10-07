@@ -5,10 +5,12 @@ D-292 DDL 등록)과 **읽기 전용 데이터 조회**(`schema_probe`)로 결�
 없는 것(쿼리 예시 · DB 전용 규칙 섹션)만 LLM 초안을 쓴 뒤 결정적 검증과 실제 실행으로 거른다.
 
 - **P1 프로파일링 잡(`run_asset_profile` · LLM 0)**: 카탈로그 주석·행 수 → 관계(선언 FK · 기본키
-  일치 추론 · 같은 기본키 군 — 추론은 값 겹침 ≥ `OVERLAP_MIN`만 채택) → 코드 컬럼(`DISTINCT` ≤ 50) ·
-  값 형식 → 코드 라벨(주석 열거 · 공통코드 테이블) · 식별 키 · 쿼리 규칙 · 조회 대상 후보 → **자산
-  초안**. 주석이 있으면 **설명 초안**(출처 `comment`)도 기존 「설명 초안 검토·적용」에 넣는다. DB에
-  닿지 못하면 스키마만으로 만들 수 있는 것(선언 관계 · 주석)만 만든다(`offline`).
+  일치 추론 · 같은 기본키 군 · 기본키 없는 테이블 쌍의 이름 일치(부모 유일성 확인 · plans/140
+  W1-2) — 추론은 값 겹침 ≥ `OVERLAP_MIN`만 채택) → 코드 컬럼(`DISTINCT` ≤ 50) · 값 형식 → 코드
+  라벨(주석 열거 · 공통코드 테이블) · 식별 키 · 쿼리 규칙 · 조회 대상 후보 → **자산 초안**. 조회
+  예산은 필요량을 미리 세어 정한다(기본 `DEFAULT_PROBE_BUDGET` · 상한 `PROBE_BUDGET_CAP` ·
+  plans/140 W1-3). 주석이 있으면 **설명 초안**(출처 `comment`)도 기존 「설명 초안 검토·적용」에
+  넣는다. DB에 닿지 못하면 스키마만으로 만들 수 있는 것(선언 관계 · 주석)만 만든다(`offline`).
 - **P2 LLM 보조 잡(`run_asset_llm`)**: 초안 자산 요약 → 쿼리 예시(안전성 · 실제 실행 성공만) · DB
   전용 규칙 섹션(중괄호 금지 · 식별자 실존 · 섹션 안 SQL 실행 성공 · 길이 상한).
 - **승인(`approve_asset_draft`)**: 자산별 포함 목록 → 프로필 키는 `merge_profile`(사람 값 보존) →
@@ -31,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
@@ -100,6 +103,12 @@ PROFILE_ASSETS: tuple[str, ...] = (
     "query_examples", TABLE_DEFINITIONS_KEY,
 )
 DEFAULT_PROBE_BUDGET = 400
+#: 조회 예산 상한 — 필요량이 기본 예산을 넘으면 이 값까지 늘린다(plans/140 W1-3)
+PROBE_BUDGET_CAP = 2000
+#: 이름 일치 관계(plans/140 W1-2) — 컬럼당 값 겹침 조회 상한
+NAME_MATCH_MAX_OVERLAPS_PER_COLUMN = 30
+#: 이름 일치 관계 — 잡 전체 조회(유일성 + 값 겹침) 상한
+NAME_MATCH_MAX_QUERIES = 600
 #: 추론 관계 채택 하한(자식 키 표본 중 부모에 있는 비율)
 OVERLAP_MIN = 0.9
 #: 공통 컬럼 제외를 적용할 최소 테이블 수(그보다 적으면 함께 있는 컬럼이 전부 공통이 된다 —
@@ -253,19 +262,31 @@ class AssetGenerationService(AdminServiceBase):
                 comments.update(catalog.table_comments)
                 comments.update(catalog.column_comments)
 
+            # 조회 계획 — 필요량을 미리 세어 예산을 정한다(필요량 ≤ 기본 예산이면 종전 그대로)
+            shapes = inference.shapes_from_snapshot(snapshot)
+            relation_candidates = _relation_candidates(shapes)
+            name_columns = _name_match_candidates(snap_tables, scope, shapes)
+            column_plan = _column_candidates(snap_tables, scope, comments)
+            code_table_plan = _code_table_candidates(snapshot, comments)
+            requested = _requested_queries(
+                probe.catalog_query_count(snapshot, db_schema), relation_candidates,
+                name_columns, column_plan, code_table_plan,
+            )
+            budget.limit = min(max(DEFAULT_PROBE_BUDGET, requested), PROBE_BUDGET_CAP)
+
             await ctx.progress(1, total, "관계 추론·값 겹침")
             relationships, relation_evidence = await self._relationships(
-                client, snapshot, engine, db_schema, budget,
+                client, snapshot, relation_candidates, name_columns, engine, db_schema, budget,
             )
 
             await ctx.progress(2, total, "코드값·값 형식")
             columns = await self._profile_columns(
-                client, snapshot, scope, comments, engine, db_schema, budget,
+                client, snapshot, column_plan, engine, db_schema, budget,
             )
 
             await ctx.progress(3, total, "공통코드 라벨")
             code_tables = await self._code_tables(
-                client, snapshot, comments, engine, db_schema, budget,
+                client, snapshot, code_table_plan, engine, db_schema, budget,
             )
 
         await ctx.progress(4, total, "자산 조립")
@@ -279,10 +300,11 @@ class AssetGenerationService(AdminServiceBase):
             _table_columns(snap_tables), ORIGIN_COMMENT,
         )
         assets[TABLE_DEFINITIONS_KEY] = definitions
+        budget_evidence = {**budget.to_dict(), "requested": requested, "cap": PROBE_BUDGET_CAP}
         evidence.update({
             "relationships": relation_evidence,
             "catalog": {"comments": len(comments), "errors": catalog.errors},
-            "budget": budget.to_dict(),
+            "budget": budget_evidence,
             "offline": offline,
         })
         description_draft_id = await self._comment_description_draft(source, comments, by)
@@ -317,40 +339,29 @@ class AssetGenerationService(AdminServiceBase):
             "source": source, "draft_id": draft.get("draft_id"), "env": self.env,
             "summary": _asset_summary(assets),
             "description_draft_id": description_draft_id,
-            "budget": budget.to_dict(), "offline": offline,
+            "budget": budget_evidence, "offline": offline,
         }
 
     async def _relationships(
         self,
         client: Any,
         snapshot: Mapping[str, Any],
+        candidates: Sequence[inference.InferredRelation],
+        name_columns: Sequence[inference.NameMatchColumn],
         engine: str,
         db_schema: str | None,
         budget: probe.ProbeBudget,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """관계 후보(선언 · 추론 · 같은 기본키 군) → 값 겹침 검증 → 채택 관계(컬럼 쌍 단위)."""
-        shapes = inference.shapes_from_snapshot(snapshot)
-        relations, groups = inference.infer_relations(
-            shapes, min_tables_for_common=MIN_TABLES_FOR_COMMON,
-        )
-        candidates = list(relations)
-        for group in groups:
-            hub = group[0]
-            hub_pk = list(shapes[hub].primary_key)
-            for other in group[1:]:
-                other_cols = {c.lower(): c for c in shapes[other].columns}
-                candidates.append(inference.InferredRelation(
-                    other, hub, tuple(other_cols[c.lower()] for c in hub_pk), tuple(hub_pk),
-                    "same_key",
-                ))
-        accepted: list[dict[str, Any]] = []
+        """관계 후보(선언 · 추론 · 같은 기본키 군 · 이름 일치) → 값 겹침 검증 → 채택 관계(컬럼 쌍
+        단위)."""
         evidence: list[dict[str, Any]] = []
+        known_pairs: set[frozenset[str]] = set()
         for rel in candidates:
-            item: dict[str, Any] = {
-                "child": rel.child, "parent": rel.parent, "child_columns": list(rel.child_columns),
-                "parent_columns": list(rel.parent_columns), "origin": rel.origin,
-                "overlap": None, "sampled": None, "accepted": False, "error": None,
-            }
+            known_pairs.add(frozenset((rel.child, rel.parent)))
+            item = _relation_item(
+                rel.child, rel.parent, list(rel.child_columns), list(rel.parent_columns),
+                rel.origin,
+            )
             evidence.append(item)
             if rel.origin == "declared":
                 item["accepted"] = bool(rel.parent_columns)
@@ -380,61 +391,137 @@ class AssetGenerationService(AdminServiceBase):
                                     parent_columns=list(rel.parent_columns))
                 item.update(overlap=ov["ratio"], sampled=ov["sampled"], error=ov["error"])
                 item["accepted"] = ov["ratio"] is not None and ov["ratio"] >= OVERLAP_MIN
-            if item["accepted"]:
-                for child_col, parent_col in zip(rel.child_columns, rel.parent_columns):
-                    accepted.append({
-                        "from": f"{rel.child}.{child_col}", "to": f"{rel.parent}.{parent_col}",
-                        "origin": rel.origin, "overlap": item["overlap"],
-                    })
-        return accepted, evidence
+        evidence.extend(await self._name_match_relations(
+            client, snapshot, name_columns, known_pairs, engine, db_schema, budget,
+        ))
+        return inference.accepted_relationships(evidence), evidence
+
+    async def _name_match_relations(
+        self,
+        client: Any,
+        snapshot: Mapping[str, Any],
+        name_columns: Sequence[inference.NameMatchColumn],
+        known_pairs: set[frozenset[str]],
+        engine: str,
+        db_schema: str | None,
+        budget: probe.ProbeBudget,
+    ) -> list[dict[str, Any]]:
+        """기본키 없는 테이블 쌍의 이름 일치 관계(origin ``name_match`` · plans/140 W1-2).
+
+        ① 참여 테이블마다 컬럼 유일성 1회 → 유일하면 부모 후보. ② 부모 후보 P마다 다른 참여
+        테이블 C에서 C → P 값 겹침 — `OVERLAP_MIN` 이상이면 채택. 둘 다 유일하면(1:1) 양방향을
+        재 높은 쪽을 쓰고 같으면 이름순 앞 테이블이 부모다. 기존 후보가 있는 테이블 쌍은 건너뛴다.
+        부모 후보가 없으면 참여 테이블마다 「부모 유일성 없음」 항목을, 상한·예산을 넘은 쌍은
+        「후보 상한 초과」·「예산 초과」 항목을 남긴다(침묵 생략 금지).
+        """
+        evidence: list[dict[str, Any]] = []
+        spent = 0  # 이름 일치 조회 수(유일성 + 값 겹침)
+
+        async def counted(call: Any) -> dict[str, Any]:
+            nonlocal spent
+            before = budget.used
+            result: dict[str, Any] = await call
+            spent += budget.used - before
+            return result
+
+        for col in name_columns:
+            members = dict(col.members)
+            tables = [table for table, _column in col.members]
+            if client is None:
+                evidence.extend(
+                    _relation_item(t, None, [members[t]], [], "name_match",
+                                   error="DB 연결 없음 — 값 겹침을 확인하지 못했습니다")
+                    for t in tables
+                )
+                continue
+            unique: dict[str, bool | None] = {}
+            unique_errors: dict[str, str | None] = {}
+            for table in tables:
+                if spent >= NAME_MATCH_MAX_QUERIES:
+                    unique[table], unique_errors[table] = None, "후보 상한 초과"
+                    continue
+                result = await counted(probe.check_unique(
+                    client, table=table, column=members[table], snapshot=snapshot, engine=engine,
+                    db_schema=db_schema, budget=budget,
+                ))
+                unique[table], unique_errors[table] = result["unique"], result["error"]
+            parents = [t for t in tables if unique[t]]
+            if not parents:
+                evidence.extend(
+                    _relation_item(t, None, [members[t]], [], "name_match",
+                                   error=unique_errors[t] or "부모 유일성 없음",
+                                   unique_parent=unique[t])
+                    for t in tables
+                )
+                continue
+            column_spent = 0
+            measured: set[frozenset[str]] = set()
+            for parent in parents:
+                for child in tables:
+                    pair = frozenset((child, parent))
+                    if child == parent or pair in known_pairs or pair in measured:
+                        continue
+                    measured.add(pair)
+                    # 둘 다 유일하면 반대 방향도 잰다 — 부모를 이름순으로 돌므로 첫 방향의 부모가
+                    # 이름순 앞이다(같으면 첫 방향을 쓴다)
+                    directions = [(child, parent)] + ([(parent, child)] if unique[child] else [])
+                    best: tuple[str, str, dict[str, Any]] | None = None
+                    for c, p in directions:
+                        if (column_spent >= NAME_MATCH_MAX_OVERLAPS_PER_COLUMN
+                                or spent >= NAME_MATCH_MAX_QUERIES):
+                            ov: dict[str, Any] = {"ratio": None, "sampled": None,
+                                                  "error": "후보 상한 초과"}
+                        else:
+                            before = spent
+                            ov = await counted(probe.check_overlap(
+                                client, child=c, child_columns=[members[c]], parent=p,
+                                parent_columns=[members[p]], snapshot=snapshot, engine=engine,
+                                db_schema=db_schema, budget=budget, sample=OVERLAP_SAMPLE,
+                            ))
+                            column_spent += spent - before
+                        if best is None or (ov["ratio"] or 0) > (best[2]["ratio"] or 0):
+                            best = (c, p, ov)
+                    assert best is not None
+                    c, p, ov = best
+                    item = _relation_item(
+                        c, p, [members[c]], [members[p]], "name_match",
+                        error=ov["error"], unique_parent=True,
+                    )
+                    item.update(overlap=ov["ratio"], sampled=ov["sampled"])
+                    item["accepted"] = ov["ratio"] is not None and ov["ratio"] >= OVERLAP_MIN
+                    evidence.append(item)
+        return evidence
 
     async def _profile_columns(
         self,
         client: Any,
         snapshot: Mapping[str, Any],
-        scope: Sequence[str],
-        comments: Mapping[str, str],
+        plan: _ColumnPlan,
         engine: str,
         db_schema: str | None,
         budget: probe.ProbeBudget,
     ) -> dict[str, dict[str, Any]]:
-        """범위 컬럼의 코드 후보·형식 후보 값 표본 → ``{key: {type, comment, code, values, profile,
-        error}}``."""
-        snap_tables: Mapping[str, Any] = snapshot["tables"]
-        code_keys: list[str] = []
-        format_keys: list[str] = []
-        meta: dict[str, dict[str, Any]] = {}
-        for table in scope:
-            for column, attrs in (snap_tables[table].get("columns") or {}).items():
-                key = f"{table}.{column}"
-                dtype = str((attrs or {}).get("type") or "")
-                comment = comments.get(key)
-                is_code = inference.is_code_candidate(column, dtype, comment)
-                hint = f"{column} {comment or ''}"
-                is_format = bool(_STRING_TYPE_RE.match(dtype)) and bool(
-                    _DATE_HINT_RE.search(column) or _DATE_HINT_RE.search(comment or "")
-                    or _HOST_IP_HINT_RE.search(hint)
-                )
-                if is_code or is_format:
-                    meta[key] = {"type": dtype, "comment": comment, "code": is_code,
-                                 "values": [], "profile": None, "error": None}
-                    (code_keys if is_code else format_keys).append(key)
+        """범위 컬럼의 코드 후보·형식 후보 값 표본 → ``{key: {type, comment, candidate, code,
+        values, distinct, truncated, profile, error}}``."""
+        meta = plan.meta
         if client is None or not meta:
             for item in meta.values():
                 item["error"] = "DB 연결 없음" if client is None else None
             return meta
         samples = await probe.sample_distinct(
-            client, code_keys, snapshot=snapshot, engine=engine, db_schema=db_schema,
+            client, plan.code_keys, snapshot=snapshot, engine=engine, db_schema=db_schema,
             limit=inference.CODE_MAX_DISTINCT + 1, budget=budget,
         )
         samples.update(await probe.sample_distinct(
-            client, format_keys, snapshot=snapshot, engine=engine, db_schema=db_schema,
+            client, plan.format_keys, snapshot=snapshot, engine=engine, db_schema=db_schema,
             limit=FORMAT_SAMPLE, budget=budget,
         ))
         for key, item in meta.items():
             sample = samples.get(key) or {}
             values = [str(v) for v in sample.get("values") or []]
             item["error"] = sample.get("error")
+            item["distinct"] = None if item["error"] else len(values)
+            item["truncated"] = bool(sample.get("truncated"))
             item["profile"] = inference.classify_values(values)
             if item["code"]:
                 is_code_column = (
@@ -450,30 +537,16 @@ class AssetGenerationService(AdminServiceBase):
         self,
         client: Any,
         snapshot: Mapping[str, Any],
-        comments: Mapping[str, str],
+        plan: Sequence[tuple[str, str, str]],
         engine: str,
         db_schema: str | None,
         budget: probe.ProbeBudget,
     ) -> list[dict[str, Any]]:
-        """공통코드 테이블 후보(이름·주석에 코드 단서 + 코드 컬럼 · 이름 컬럼) → (코드, 이름) 쌍."""
+        """공통코드 테이블 후보 ``(테이블, 코드 컬럼, 이름 컬럼)`` → (코드, 이름) 쌍."""
         if client is None:
             return []
         out: list[dict[str, Any]] = []
-        for table, data in (snapshot.get("tables") or {}).items():
-            if len(out) >= MAX_CODE_TABLES:
-                break
-            if not (_CODE_TABLE_HINT_RE.search(bare_name(table))
-                    or _CODE_TABLE_HINT_RE.search(comments.get(table) or "")):
-                continue
-            columns = list((data.get("columns") or {}).items())
-            # 기본키의 마지막 코드 컬럼(앞쪽은 보통 그룹 코드다)
-            code_col = next((c for c, a in reversed(columns) if (a or {}).get("primary_key")
-                             and inference.is_code_candidate(c, str((a or {}).get("type")),
-                                                             comments.get(f"{table}.{c}"))), None)
-            name_col = next((c for c, _a in columns if _NAME_COL_RE.search(c)
-                             or _NAME_COL_RE.search(comments.get(f"{table}.{c}") or "")), None)
-            if not code_col or not name_col or code_col == name_col:
-                continue
+        for table, code_col, name_col in plan:
             pairs = await probe.sample_pairs(
                 client, table, code_col, name_col, snapshot=snapshot, engine=engine,
                 db_schema=db_schema, limit=CODE_TABLE_PAIRS, budget=budget,
@@ -1184,6 +1257,184 @@ def _scope_tables(
     return from_profile or list(snap_tables)
 
 
+def _relation_item(
+    child: str,
+    parent: str | None,
+    child_columns: list[str],
+    parent_columns: list[str],
+    origin: str,
+    *,
+    error: str | None = None,
+    unique_parent: bool | None = None,
+) -> dict[str, Any]:
+    """관계 근거 항목 1건(`evidence.relationships[]`).
+
+    ``unique_parent``는 이름 일치 후보만 채운다(그 밖은 None).
+    """
+    return {
+        "child": child, "parent": parent, "child_columns": child_columns,
+        "parent_columns": parent_columns, "origin": origin, "overlap": None, "sampled": None,
+        "accepted": False, "error": error, "unique_parent": unique_parent,
+    }
+
+
+def _relation_candidates(
+    shapes: Mapping[str, inference.TableShape],
+) -> list[inference.InferredRelation]:
+    """관계 후보 — 선언 FK · 기본키 일치 추론 · 같은 기본키 군(군의 첫 테이블을 부모로)."""
+    relations, groups = inference.infer_relations(
+        shapes, min_tables_for_common=MIN_TABLES_FOR_COMMON,
+    )
+    candidates = list(relations)
+    for group in groups:
+        hub = group[0]
+        hub_pk = list(shapes[hub].primary_key)
+        for other in group[1:]:
+            other_cols = {c.lower(): c for c in shapes[other].columns}
+            candidates.append(inference.InferredRelation(
+                other, hub, tuple(other_cols[c.lower()] for c in hub_pk), tuple(hub_pk),
+                "same_key",
+            ))
+    return candidates
+
+
+def _name_match_candidates(
+    snap_tables: Mapping[str, Any],
+    scope: Sequence[str],
+    shapes: Mapping[str, inference.TableShape],
+) -> list[inference.NameMatchColumn]:
+    """범위 테이블의 이름 일치 관계 후보 컬럼(선언 기본키 있는 테이블은 참여하지 않는다)."""
+    columns = {
+        table: [(column, str((attrs or {}).get("type") or ""))
+                for column, attrs in (snap_tables[table].get("columns") or {}).items()]
+        for table in scope
+    }
+    keyed = [t for t in scope if t in shapes and shapes[t].primary_key]
+    return inference.name_match_columns(columns, keyed)
+
+
+@dataclass
+class _ColumnPlan:
+    """값 표본을 읽을 컬럼 — 근거 틀(``meta``)과 코드 후보·형식 후보 키."""
+
+    meta: dict[str, dict[str, Any]]
+    code_keys: list[str]
+    format_keys: list[str]
+
+
+def _column_candidates(
+    snap_tables: Mapping[str, Any], scope: Sequence[str], comments: Mapping[str, str]
+) -> _ColumnPlan:
+    """범위 컬럼 중 코드 후보(이름·주석 단서 + 타입)·형식 후보(문자열 + 날짜·호스트·IP 단서)."""
+    plan = _ColumnPlan(meta={}, code_keys=[], format_keys=[])
+    for table in scope:
+        for column, attrs in (snap_tables[table].get("columns") or {}).items():
+            key = f"{table}.{column}"
+            dtype = str((attrs or {}).get("type") or "")
+            comment = comments.get(key)
+            is_code = inference.is_code_candidate(column, dtype, comment)
+            hint = f"{column} {comment or ''}"
+            is_format = bool(_STRING_TYPE_RE.match(dtype)) and bool(
+                _DATE_HINT_RE.search(column) or _DATE_HINT_RE.search(comment or "")
+                or _HOST_IP_HINT_RE.search(hint)
+            )
+            if is_code or is_format:
+                plan.meta[key] = {
+                    "type": dtype, "comment": comment,
+                    "candidate": "code" if is_code else "format", "code": is_code,
+                    "values": [], "distinct": None, "truncated": False, "profile": None,
+                    "error": None,
+                }
+                (plan.code_keys if is_code else plan.format_keys).append(key)
+    return plan
+
+
+def _code_table_candidates(
+    snapshot: Mapping[str, Any], comments: Mapping[str, str]
+) -> list[tuple[str, str, str]]:
+    """공통코드 테이블 후보 ``(테이블, 코드 컬럼, 이름 컬럼)`` — 이름·주석에 코드 단서가 있고 코드
+    컬럼(기본키의 마지막 코드 컬럼)과 이름 컬럼을 가진 테이블(최대 `MAX_CODE_TABLES`)."""
+    out: list[tuple[str, str, str]] = []
+    for table, data in (snapshot.get("tables") or {}).items():
+        if len(out) >= MAX_CODE_TABLES:
+            break
+        if not (_CODE_TABLE_HINT_RE.search(bare_name(table))
+                or _CODE_TABLE_HINT_RE.search(comments.get(table) or "")):
+            continue
+        columns = list((data.get("columns") or {}).items())
+        # 기본키의 마지막 코드 컬럼(앞쪽은 보통 그룹 코드다)
+        code_col = next((c for c, a in reversed(columns) if (a or {}).get("primary_key")
+                         and inference.is_code_candidate(c, str((a or {}).get("type")),
+                                                         comments.get(f"{table}.{c}"))), None)
+        name_col = next((c for c, _a in columns if _NAME_COL_RE.search(c)
+                         or _NAME_COL_RE.search(comments.get(f"{table}.{c}") or "")), None)
+        if not code_col or not name_col or code_col == name_col:
+            continue
+        out.append((table, code_col, name_col))
+    return out
+
+
+def _requested_queries(
+    catalog: int,
+    relation_candidates: Sequence[inference.InferredRelation],
+    name_columns: Sequence[inference.NameMatchColumn],
+    column_plan: _ColumnPlan,
+    code_table_plan: Sequence[tuple[str, str, str]],
+) -> int:
+    """잡이 쓸 조회 수의 상한 추정(plans/140 W1-3).
+
+    카탈로그 + 관계 값 겹침(같은 기본키 군은 반대 방향 포함) + 이름 일치(유일성 + 컬럼당 겹침
+    상한 · 전체 상한) + 코드·형식 후보 + 공통코드 테이블.
+
+    이름 일치는 관계 단계(코드·형식 표본보다 먼저)에서 돌므로 상한으로 세야 뒤 단계 예산을 잠식하지
+    않는다."""
+    overlaps = sum(
+        0 if rel.origin == "declared" else 2 if rel.origin == "same_key" else 1
+        for rel in relation_candidates
+    )
+    name_match = sum(
+        len(col.members) + min(
+            NAME_MATCH_MAX_OVERLAPS_PER_COLUMN, len(col.members) * (len(col.members) - 1)
+        )
+        for col in name_columns
+    )
+    return (
+        catalog + overlaps + min(name_match, NAME_MATCH_MAX_QUERIES)
+        + len(column_plan.meta) + len(code_table_plan)
+    )
+
+
+def _column_evidence(
+    key: str, item: Mapping[str, Any], entity_key: str | None
+) -> dict[str, Any]:
+    """컬럼별 근거 1행(`evidence.columns[]` · plans/140 W1-4) — 값은 담지 않는다(비율·수·판정만).
+
+    값 표본을 못 읽은 컬럼(``profile`` 없음)은 비율·``total``이 None이다. 비율은 소수 셋째 자리
+    **내림**이다 — 반올림하면 경계(예: 0.94987)가 문턱(0.95) 위로 올라가 이 근거로 판정하는 쪽이
+    원 비율 판정보다 관대해진다(D-311 감사 L-4).
+    """
+
+    def _floor3(x: float) -> float:
+        return math.floor(x * 1000) / 1000
+
+    p: inference.ValueProfile | None = item.get("profile")
+    return {
+        # 최종 판정 — 값 표본으로 확인된 코드 컬럼만(DB에 못 닿으면 후보여도 False)
+        "key": key, "candidate": item.get("candidate"),
+        "code": bool(item.get("code") and item.get("values")),
+        "distinct": item.get("distinct"), "truncated": bool(item.get("truncated")),
+        "total": p.total if p else None,
+        "date8": _floor3(p.date8) if p else None,
+        "datetime14": _floor3(p.datetime14) if p else None,
+        "ipv4": _floor3(p.ipv4) if p else None,
+        "hostname": _floor3(p.hostname) if p else None,
+        "multi_value": _floor3(p.multi_value) if p else None,
+        "mixed_case": bool(p.mixed_case) if p else False,
+        "flag": list(p.flag) if p else [],
+        "entity_key": entity_key, "error": item.get("error"),
+    }
+
+
 def _assemble(
     source: str,
     snapshot: Mapping[str, Any],
@@ -1199,9 +1450,9 @@ def _assemble(
     code_labels: dict[str, dict[str, str]] = {}
     column_values: dict[str, dict[str, Any]] = {}
     code_evidence: list[dict[str, Any]] = []
-    rules: list[str] = []
     format_evidence: list[dict[str, Any]] = []
-    entity: dict[str, dict[str, Any]] = {}
+    column_evidence: list[dict[str, Any]] = []
+    rules, entity = inference.rules_and_entity_candidates(columns)
     for key, item in columns.items():
         table, _, column = key.rpartition(".")
         profile: inference.ValueProfile | None = item.get("profile")
@@ -1227,17 +1478,13 @@ def _assemble(
                 "labels_from": labels_from if labels else None,
             })
         if profile is None:
+            column_evidence.append(_column_evidence(key, item, None))
             if item.get("error"):
                 format_evidence.append({"key": key, "error": item["error"]})
             continue
         column_rules = inference.query_rules_for_column(table, column, profile)
-        rules.extend(column_rules)
         kind = inference.entity_key_kind(column, item.get("comment"), profile)
-        if kind:
-            entity.setdefault(table, {})[kind] = {
-                "column": column, "ratio": profile.ipv4 if kind == "ip" else profile.hostname,
-                "multi_value": profile.multi_value >= 0.05,
-            }
+        column_evidence.append(_column_evidence(key, item, kind))
         if column_rules or kind or item.get("error"):
             format_evidence.append({
                 "key": key, "total": profile.total, "date8": round(profile.date8, 3),
@@ -1248,12 +1495,7 @@ def _assemble(
                 "error": item.get("error"),
             })
 
-    column_synonyms: dict[str, list[str]] = {}
-    for key, text in comments.items():
-        table, _, column = key.rpartition(".")
-        label = inference.comment_label(text)
-        if table and column and label and label.casefold() != column.casefold():
-            column_synonyms[key] = [label]
+    column_synonyms = inference.comment_synonyms(comments)
 
     connected = {r["from"].rpartition(".")[0] for r in relationships} | {
         r["to"].rpartition(".")[0] for r in relationships
@@ -1274,7 +1516,7 @@ def _assemble(
         "allowed_tables": allowed,
         "code_values": code_values,
         "code_labels": code_labels,
-        "entity_keys": _entity_keys(entity, catalog.row_estimates),
+        "entity_keys": inference.entity_keys_asset(entity, catalog.row_estimates),
         "query_rules": rules,
         "seeds": {"column_synonyms": column_synonyms, "column_values": column_values}
         if (column_synonyms or column_values) else None,
@@ -1286,6 +1528,7 @@ def _assemble(
         "code_tables": [{k: v for k, v in t.items() if k != "labels"} | {"labels": len(t["labels"])}
                         for t in code_tables],
         "formats": format_evidence,
+        "columns": column_evidence,
     }
     return assets, evidence
 
@@ -1301,29 +1544,6 @@ def _best_code_table(
         if cover >= CODE_TABLE_COVERAGE and cover > best_cover:
             best, best_cover = table, cover
     return best
-
-
-def _entity_keys(
-    entity: Mapping[str, Mapping[str, Any]], rows: Mapping[str, int | None]
-) -> dict[str, Any] | None:
-    """식별 키 후보 중 호스트명을 가진(있으면 IP도 가진) 테이블 하나를 고른다."""
-    candidates = [t for t, kinds in entity.items() if "hostname" in kinds]
-    if not candidates:
-        return None
-    table = sorted(
-        candidates, key=lambda t: ("ip" not in entity[t], -(rows.get(t) or 0), t)
-    )[0]
-    kinds = entity[table]
-    keys: list[dict[str, Any]] = []
-    # 호스트명은 DNS처럼 대소문자를 가리지 않고 비교한다(폴스타 `entity_keys`와 같은 표기)
-    keys.append({"type": "hostname", "column": kinds["hostname"]["column"], "priority": 1,
-                 "compare": "casefold"})
-    if "ip" in kinds:
-        ip: dict[str, Any] = {"type": "ip", "column": kinds["ip"]["column"], "priority": 2}
-        if kinds["ip"]["multi_value"]:
-            ip["multi_value"] = True
-        keys.append(ip)
-    return {"entity": "server", "table": table, "keys": keys}
 
 
 def _asset_summary(assets: Mapping[str, Any]) -> dict[str, int]:

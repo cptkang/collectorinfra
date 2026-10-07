@@ -224,27 +224,35 @@ async def test_named_hosts_fan_out_with_one_session(gateway) -> None:
 
 @pytest.mark.asyncio
 async def test_no_target_inserts_instances_first_hop_without_cap(gateway) -> None:
-    """plans/134 M-5 — 첫 홉은 절단 없이 전부다(종전 `max_targets` 앞부분 절단 폐지 · D-296 ④)."""
+    """plans/134 M-5 — 첫 홉 대상은 `max_targets`로 자르지 않는다(D-296 ④).
+
+    plans/134 W6 ④ — 첫 홉은 현재 부하(TPS) 순위다. 순위를 받지 못하면 인스턴스 목록(종전 첫
+    홉)으로 받되 앞 N개(`apm_untargeted_top_n` 기본 20)만이다 — 여기서는 6개라 전부다.
+    """
     inventory = [{"instance_id": i, "hostname": f"was{i:02d}", "match_confidence": "high"}
                  for i in range(1, 6)] + [{"instance_id": 99, "hostname": None,
                                             "match_confidence": None}]
-    gw = gateway({"apm_instance_map": _env("apm_instance_map", inventory),
+    gw = gateway({"apm_fleet": {"error": "api_error", "reason": "x", "tool": "apm_fleet"},
+                  "apm_instance_map": _env("apm_instance_map", inventory),
                   "apm_app_health": lambda a: _env("apm_app_health", [{"tps": 1}])})
     res = await aq.run_apm_query({"task_id": "t1", "agent": "apm_query",
                                   "views": ["apm.app_health"]},
                                  _isolated(), llm=None, app_config=_cfg(max_targets=3), now=NOW)
+    assert gw.calls[0][0] == "apm_fleet" and gw.calls[0][1]["mode"] == "ranking"
     # plans/134 W0-B — 작업 인자 owner·wait_seconds가 함께 실린다(호출 상한 10초 − 2)
-    assert gw.calls[0] == ("apm_instance_map", {"thread_id": "th-1", "owner": "user:anonymous",
-                                                "wait_seconds": 8.0}), "첫 홉 삽입(LLM 0)"
-    assert len(gw.calls) == 2, "대상 5대 = 배치 1호출"
-    assert [t["hostname"] for t in gw.calls[1][1]["targets"]] == [
+    assert gw.calls[1] == ("apm_instance_map", {"thread_id": "th-1", "owner": "user:anonymous",
+                                                "wait_seconds": 8.0}), "첫 홉 폴백(LLM 0)"
+    assert len(gw.calls) == 3, "대상 5대 = 배치 1호출"
+    assert [t["hostname"] for t in gw.calls[2][1]["targets"]] == [
         "was01", "was02", "was03", "was04", "was05"], "상한(3)으로 자르지 않는다"
     step = res["apm_query"]["inserted_steps"][0]
     # 이름·소스가 없는 행(#99)은 부를 수 없어 수로 남긴다(조용히 빠지지 않는다)
     assert step == {"view": "apm.instances", "reason": step["reason"], "hosts": 5,
-                    "instances": 6, "unaddressed": 1}
+                    "instances": 6, "unaddressed": 1, "listed": 6, "mode": "list",
+                    "rank_error": step["rank_error"],
+                    "tool": "apm_instance_map"}  # 감사 명령용 호출(W6 교정 2 V6-8)
     summary = res["organized_data"]["summary"]
-    assert "전체 인스턴스 6개(호스트 5대) 조회" in summary
+    assert "전체 인스턴스 6개(호스트 5대) 조회 — 부하 순위를 받지 못해" in summary
     assert "부를 수 없는 인스턴스 1개" in summary
 
 
@@ -271,10 +279,14 @@ async def test_failed_instances_step_reports_its_reason(gateway, monkeypatch, sl
         gw = gateway({"apm_instance_map": {"error": "source_unavailable",
                                             "reason": "APM 도메인 0건", "tool": "apm_instance_map"}})
         expected = "source_unavailable"
+        gw.replies["apm_fleet"] = {"error": "source_unavailable", "reason": "APM 도메인 0건",
+                                   "tool": "apm_fleet"}
     res = await aq.run_apm_query({"task_id": "t1", "agent": "apm_query",
                                   "views": ["apm.app_health"]},
                                  _isolated(), llm=None, app_config=cfg, now=NOW)
-    assert [c[0] for c in gw.calls] == ["apm_instance_map"], "대상이 없으니 본 조회는 하지 않는다"
+    # plans/134 W6 ④ — 부하 순위 → 실패 → 목록 폴백 → 실패(조용히 넓히지 않는다)
+    assert [c[0] for c in gw.calls] == ["apm_fleet", "apm_instance_map"], \
+        "대상이 없으니 본 조회는 하지 않는다"
     assert res["degraded_reason"] == "apm_not_queried"
     assert expected in res["final_response"]
     assert "조회 대상이 없습니다" not in res["final_response"]
@@ -282,17 +294,24 @@ async def test_failed_instances_step_reports_its_reason(gateway, monkeypatch, sl
 
 
 @pytest.mark.asyncio
-async def test_out_of_window_is_not_queried_and_not_substituted(gateway) -> None:
+async def test_old_period_is_queried_and_empty_is_not_called_expired(gateway) -> None:
+    """plans/134 W6 M-7 — 「하루 넘게 지난 기간」 거부 폐지 — 오래된 기간도 그대로 조회한다.
+
+    날짜만 준 끝은 다음 날 0시(반개구간)다. 빈 결과를 「보존 기간 만료」라고 부르지 않는다(W10).
+    """
     gw = gateway({"apm_app_health": _env("apm_app_health", [])})
     res = await aq.run_apm_query(
         {"task_id": "t1", "agent": "apm_query", "views": ["apm.app_health"]},
         _isolated([_host("web01")], {"start": "2026-09-20", "end": "2026-09-26"}),
         llm=None, app_config=_cfg(), now=NOW)
-    assert gw.calls == [], "창 밖은 조회하지 않는다"
-    assert res["degraded_reason"] == "apm_not_queried"
-    # plans/134 SPEC §7.2 — 문구는 「W6 전 미지원」이 아니라 사실(보존 기간 확인 전)
-    assert aq.OUT_OF_WINDOW_NOTE in res["final_response"]
-    assert res["source_status"][0]["status"] == "not_queried"
+    (call,) = gw.calls
+    assert call[0] == "apm_app_health"
+    assert (call[1]["reference_time"], call[1]["lookback_minutes"]) == (
+        "2026-09-27T00:00:00", 7 * 1440)
+    assert not hasattr(aq, "OUT_OF_WINDOW_NOTE")
+    assert aq.EMPTY_PERIOD_NOTE in res["apm_query"]["notes"]
+    assert aq.EMPTY_PERIOD_NOTE in [d["text"] for d in res["disclosures"]]
+    assert "보존 기간 만료" not in json.dumps(res, ensure_ascii=False)
 
 
 def test_window_passes_period_and_current_value_views() -> None:

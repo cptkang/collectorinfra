@@ -10,6 +10,13 @@
   → 전 인스턴스를 **모은 뒤** 지표로 정렬해 상위 `n`(또는 `full` 전부). 지표 값이 없는 인스턴스는
   순위에서 빼고 센다(`instances_unranked`). 조회 실패 도메인·소스가 하나라도 있으면 `partial` +
   `provisional`(잠정 순위) + `[한계]` — 실패한 도메인의 인스턴스는 순위에 없다.
+- **ranking 기간 순위**(plans/134 W6 A-4): `reference_time`·`lookback_minutes` 중 하나라도 오면
+  창(`events`와 같은 해석)의 시 단위 애플리케이션 통계로 순위를 낸다(시 경계로 넓힌다). 통계 행은
+  애플리케이션별이고 인스턴스 칸이 없어(인스턴스를 여럿 주면 합쳐진다) **인스턴스마다 1호출**이다 —
+  대상은 범위 안 도메인의 인스턴스 목록(인벤토리) 전부, 호출 계획 = 그 인스턴스 수. 지표는
+  `PERIOD_RANKING_METRICS`만(호출 수 가중 평균·합계·최대 · 기간 tps = 호출 수 ÷ 조회 구간 초).
+  기간 통계가 없는 실시간 지표는 현재값 순위로 내고 `[한계]` + `summary.window_mode="current"`.
+  둘 다 없으면 종전 실시간 순위 그대로(`window_mode` 칸 없음).
 - **events**: (소스, 도메인)마다 창 `[시작, 끝]`의 이벤트 — 조회용 이벤트 버퍼(폴러가 받은 것)가
   확정한 부분은 버퍼, 덮지 못한 부분은 이벤트 API 1호출(덮지 못한 구간 전체를 감싸는 한 구간)로
   보충한다. 합칠 때는 **버퍼↔API 겹침만** 지운다(합치기 키 = 멱등 키 칸 + 레벨·값·메시지 — 같은
@@ -36,14 +43,39 @@ from apm_gateway.application.tools import (
     EVENTS_DEFAULT_MINUTES,
     FILE_ONLY_COLUMNS,
     VISIT_HIT_NOTE,
+    _ABSOLUTE_MAX_MS,
     ApmTools,
+    Window,
     _check_n,
+    _hour_ceil,
+    _hour_floor,
 )
 from apm_gateway.domain.call_context import expect_calls
-from apm_gateway.domain.errors import API_ERROR, CONTRACT_VIOLATION, INVALID_ARGUMENT, ApmError
+from apm_gateway.domain.errors import (
+    API_ERROR,
+    CONTRACT_VIOLATION,
+    ERROR_CODES,
+    INVALID_ARGUMENT,
+    ApmError,
+)
 
 # 순위 지표 = 실시간 인스턴스 수치 칸의 중립 이름 전부(MCP 스키마 enum · 본체 레지스트리와 대조)
 RANKING_METRICS: tuple[str, ...] = (*METRIC_FIELDS, *REALTIME_EXTRA_FIELDS)
+# 기간 순위 지표 = 시 단위 애플리케이션 통계로 계산할 수 있는 것만(plans/134 W6 A-4). 앞 둘은
+# 실시간 지표와 같은 이름(뜻: 호출 수 가중 평균 · 호출 수 ÷ 조회 구간 초), 나머지는 기간 전용이다.
+PERIOD_RANKING_METRICS: tuple[str, ...] = (
+    "response_time_avg_ms",
+    "tps",
+    "calls",
+    "failures",
+    "failure_rate",
+    "max_response_time_ms",
+)
+# MCP 스키마 enum — 실시간 지표 + 기간 전용 지표(기간 전용 지표는 기간 인자가 있어야 한다)
+ALL_RANKING_METRICS: tuple[str, ...] = (
+    *RANKING_METRICS,
+    *(m for m in PERIOD_RANKING_METRICS if m not in RANKING_METRICS),
+)
 DEFAULT_RANKING_METRIC = "response_time_avg_ms"
 FLEET_MODES = ("ranking", "events")
 ORDERS = ("desc", "asc")
@@ -113,25 +145,64 @@ class FleetTools:
         *,
         ignored: tuple[str, ...] = (),
         service: str | list[str] | None = None,
+        reference_time: str | None = None,
+        lookback_minutes: int | None = None,
     ) -> dict[str, Any]:
-        """전 인스턴스 실시간 순위. `service`·`domain_id`로 도메인을 좁힌다(`_groups`). `ignored`는
-        이 모드가 쓰지 않는데 받은 인자 이름이다."""
+        """전 인스턴스 순위. `reference_time`·`lookback_minutes` 중 하나라도 있으면 기간 순위
+        (`_period_ranking` — 기간 통계가 없는 지표는 현재값 순위 + `[한계]`), 없으면 실시간 순위.
+        `service`·`domain_id`로 도메인을 좁힌다(`_groups` — 두 모드 같음). `ignored`는 이 모드가
+        쓰지 않는데 받은 인자 이름이다."""
         tool = "apm_fleet"
         name = str(metric or DEFAULT_RANKING_METRIC).strip()
-        if name not in RANKING_METRICS:
+        period = reference_time is not None or lookback_minutes is not None
+        if name not in RANKING_METRICS and not (period and name in PERIOD_RANKING_METRICS):
+            if name in PERIOD_RANKING_METRICS:
+                raise ApmError(
+                    INVALID_ARGUMENT,
+                    f"metric {name}은 기간 순위 전용이다 — reference_time·lookback_minutes(기간)를"
+                    " 함께 주어야 한다",
+                )
             raise ApmError(
                 INVALID_ARGUMENT,
                 f"metric은 실시간 인스턴스 지표 중 하나여야 한다: {metric!r}"
-                f"(허용값: {', '.join(RANKING_METRICS)})",
+                f"(허용값: {', '.join(RANKING_METRICS)}"
+                + (f" · 기간 순위: {', '.join(PERIOD_RANKING_METRICS)}" if period else "")
+                + ")",
             )
         direction = str(order or "desc").strip().lower()
         if direction not in ORDERS:
             raise ApmError(INVALID_ARGUMENT, f"order는 desc·asc 중 하나여야 한다: {order!r}")
         top_n = _check_n(n, default=RANKING_DEFAULT_N)
+        window = (
+            self.core.window(
+                reference_time, lookback_minutes, default_minutes=EVENTS_DEFAULT_MINUTES
+            )
+            if period
+            else None
+        )
+        # 시 경계로 넓힌 뒤에도 시각으로 나타낼 수 있는 범위만(`apm_period_compare`와 같은 상한 —
+        # 9999-12-31 근처는 올림·표시에서 넘친다 · 내부 오류 대신 인자 오류 · HTTP 0 · V6-7)
+        if window is not None and not 0 <= window.start_ms <= window.end_ms < _ABSOLUTE_MAX_MS:
+            raise ApmError(
+                INVALID_ARGUMENT,
+                "reference_time·lookback_minutes 구간은 1970~9998년 범위여야 한다:"
+                f" {str(reference_time)[:64]!r}",
+            )
         self.core.sources.require_configured()
         scope, groups, down = await self._groups(service, domain_id, source_ids)
+        if window is not None and name in PERIOD_RANKING_METRICS:
+            return await self._period_ranking(
+                name, direction, top_n, full, window, scope, groups, down, ignored
+            )
         limits = scope.limits
         limits.insert(0, _CURRENT_ONLY)
+        if window is not None:  # 기간을 받았지만 이 지표는 기간 통계가 없다 — 침묵 대체 금지
+            requested = window.as_dict()
+            limits.insert(
+                1,
+                f"[한계] 지표 {name}는 기간 통계가 없어 현재값 순위다 — 요청 기간의 값이 아니다"
+                f"(요청 {requested['start']}~{requested['end']})",
+            )
         if ignored:
             limits.append(
                 f"[한계] mode ranking은 인자 {'·'.join(ignored)}를 쓰지 않는다 — 빼고 조회했다"
@@ -203,6 +274,9 @@ class FleetTools:
             "instances_ranked": len(ranked),
             "instances_unranked": unranked,
         }
+        if window is not None:  # 기간 인자가 없는 종전 호출에는 이 칸을 싣지 않는다(바이트 동일)
+            summary["window_mode"] = "current"
+            summary["requested"] = window.as_dict()
         return self._scope.envelope(  # 못 찾은 서비스 이름이 있으면 suggestions(같은 모양)
             tool,
             rows,
@@ -212,6 +286,230 @@ class FleetTools:
             provisional=provisional,
             summary=summary,
         )
+
+    async def _period_ranking(
+        self,
+        name: str,
+        direction: str,
+        top_n: int | None,
+        full: bool,
+        window: Window,
+        scope: ServiceScope,
+        groups: list[Group],
+        down: list[str],
+        ignored: tuple[str, ...],
+    ) -> dict[str, Any]:
+        """기간 순위 — 범위 안 도메인의 인스턴스(인벤토리 명단) 전부의 시 단위 애플리케이션 통계를
+        인스턴스마다 1호출로 받아 **모두 모은 뒤** 정렬한다. 통계 행이 없거나 지표 값이 없는
+        인스턴스는 순위 밖으로 센다(0으로 채우지 않는다). 인스턴스 목록을 못 받은 도메인과 인스턴스
+        호출이 전부 실패한 도메인은 실패 도메인이다."""
+        tool = "apm_fleet"
+        core = self.core
+        limits = scope.limits
+        start, end = window.start_ms, window.end_ms
+        lo, hi = _hour_floor(start), _hour_ceil(end)
+        span = f"{core._at(lo)}~{core._at(hi)}"
+        limits.insert(
+            0,
+            "[한계] 시 단위 통계 — 기간 순위 구간을 시 경계로 맞췄다"
+            + (
+                f"(요청 {core._at(start)}~{core._at(end)} → 조회 {span})"
+                if (lo, hi) != (start, end)
+                else f"({span})"
+            ),
+        )
+        if ignored:
+            limits.append(
+                f"[한계] mode ranking은 인자 {'·'.join(ignored)}를 쓰지 않는다 — 빼고 조회했다"
+            )
+        limits.append(
+            "[한계] 시 단위 통계 행 수는 서버 기본값이다(미공개 — W10) · 인스턴스 합계는 받은 전"
+            " 애플리케이션 행으로 냈다"
+        )
+        limits.append(
+            "[한계] 대상 인스턴스는 현재 인스턴스 목록 기준이다 — 기간 중 없어진 인스턴스는 순위에"
+            " 없다"
+        )
+        failures: list[tuple[str, ApmError]] = []  # 도메인 전체 실패 + 인스턴스 실패
+        plans: list[tuple[Group, list[dict[str, Any]]]] = []
+        domains_failed: list[str] = []
+        for group in groups:
+            src, inv, d = group
+            did = d["domain_id"]
+            if did in inv.unavailable:  # 인스턴스 목록을 못 받았다 — 0개가 아니라 실패
+                where = core.sources.where(src.source_id, did)
+                code, _, reason = inv.unavailable[did].partition(": ")
+                failures.append(
+                    (
+                        where,
+                        ApmError(
+                            code if code in ERROR_CODES else API_ERROR,
+                            f"인스턴스 목록 조회 실패: {reason or inv.unavailable[did]}",
+                        ),
+                    )
+                )
+                domains_failed.append(where)
+                continue
+            plans.append((group, [i for i in inv.instances if i.get("domain_id") == did]))
+        # 통계 행은 애플리케이션별이고 인스턴스 칸이 없다 — 인스턴스마다 1호출
+        expect_calls(sum(len(insts) for _, insts in plans))
+        seconds = (hi - lo) / 1000
+        records: list[tuple[Group, dict[str, Any], dict[str, Any]]] = []
+        seen: set[tuple[str, Any, Any]] = set()
+        inst_failed: list[str] = []
+        no_rows: list[str] = []
+        unweighted: list[str] = []
+        for group, insts in plans:
+            src, _inv, d = group
+            sid, did = src.source_id, d["domain_id"]
+            where = core.sources.where(sid, did)
+            answered = 0
+            errors: list[tuple[str, ApmError]] = []
+            for inst in insts:
+                iid = inst.get("instance_id")
+                ident = (sid, did, iid)
+                if ident in seen:  # 같은 인스턴스가 명단에 두 번 — 한 번만 묻는다
+                    continue
+                seen.add(ident)
+                label = f"{where} 인스턴스 {inst.get('instance_name') or iid}".strip()
+                try:
+                    app_rows = await src.api.application_status(did, [iid], lo, hi)
+                except ApmError as e:
+                    if e.code == CONTRACT_VIOLATION:
+                        raise
+                    errors.append((label, e))
+                    continue
+                answered += 1
+                if not app_rows:
+                    no_rows.append(label)
+                    continue
+                stat, missing = core._period_stats(app_rows)
+                if missing:
+                    unweighted.append(label)
+                records.append((group, inst, self._period_values(stat, seconds)))
+            failures += errors
+            if errors and not answered:
+                domains_failed.append(where)
+            else:
+                inst_failed += [label for label, _ in errors]
+        if failures and len(domains_failed) == len(groups):
+            raise self._all_failed(failures)
+        order_of = {core.sources.where(g[0].source_id, g[2]["domain_id"]): i
+                    for i, g in enumerate(groups)}
+        domains_failed.sort(key=lambda w: order_of.get(w, len(order_of)))  # 범위 순서로
+        rank_of = {sid: i for i, sid in enumerate(core.sources.ids)}
+        ranked = [rec for rec in records if rec[2][name] is not None]
+        valueless = [
+            f"{core.sources.where(g[0].source_id, g[2]['domain_id'])} 인스턴스"
+            f" {inst.get('instance_name') or inst.get('instance_id')}".strip()
+            for g, inst, values in records
+            if values[name] is None
+        ]
+        sign = -1 if direction == "desc" else 1
+        ranked.sort(
+            key=lambda r: (
+                sign * r[2][name],
+                rank_of.get(r[0][0].source_id, len(rank_of)),
+                r[0][2]["domain_id"] or 0,
+                r[1].get("instance_id") or 0,
+            )
+        )
+        selected = ranked if full or top_n is None else ranked[:top_n]
+        rows = [
+            self._period_row(position, group, inst, values, name)
+            for position, (group, inst, values) in enumerate(selected, 1)
+        ]
+        if rows:
+            limits.append(
+                f"[한계] 기간 tps = 조회 구간 호출 수 ÷ 조회 구간 초({seconds:g}초 · 시 경계로"
+                " 넓힌 구간) — 실시간 tps(현재 처리량)와 정의가 다르다"
+            )
+        if unweighted:
+            limits.append(
+                f"[한계] 평균 응답시간 계산 불가 인스턴스 {len(unweighted)}개 — 총 응답시간 칸이"
+                f" 없는 통계 행이 있다(가중 평균 재료 없음 · {_shown(unweighted)})"
+            )
+        if no_rows:
+            limits.append(
+                f"[한계] 통계 행이 없는 인스턴스 {len(no_rows)}개는 순위 밖이다 — 0으로 채우지"
+                f" 않았다({_shown(no_rows)})"
+            )
+        if valueless:
+            limits.append(
+                f"[한계] 지표 {name} 값을 낼 수 없는 인스턴스 {len(valueless)}개는 순위 밖이다"
+                f"(호출 0 또는 가중치 없음 · {_shown(valueless)})"
+            )
+        provisional = bool(failures or down)
+        if provisional:
+            parts = []
+            if domains_failed:
+                parts.append(f"도메인 {len(domains_failed)}곳({_shown(domains_failed)})")
+            if inst_failed:
+                parts.append(f"인스턴스 {len(inst_failed)}개({_shown(inst_failed)})")
+            if down:
+                parts.append(f"소스 {len(down)}개({', '.join(down)})")
+            limits.fail(f"[한계] 잠정 순위 — 조회 실패 {' · '.join(parts)}은 순위에 없습니다")
+        summary = {
+            "metric": name,
+            "order": direction,
+            "window_mode": "period",
+            "requested": {"start": core._at(start), "end": core._at(end)},
+            "queried": {"start": core._at(lo), "end": core._at(hi), "seconds": seconds},
+            "domains_total": len(groups),
+            "domains_ok": len(groups) - len(domains_failed),
+            "domains_failed": len(domains_failed),
+            "instances_total": len(no_rows) + len(records),
+            "instances_ranked": len(ranked),
+            "instances_unranked": len(no_rows) + len(valueless),
+            "instances_failed": len(inst_failed),
+        }
+        return self._scope.envelope(
+            tool,
+            rows,
+            scope,
+            window=window,
+            mode="ranking",
+            provisional=provisional,
+            summary=summary,
+        )
+
+    @staticmethod
+    def _period_values(stat: dict[str, Any], seconds: float) -> dict[str, Any]:
+        """구간 합계(`ApmTools._period_stats`) → 기간 순위 지표 값(`PERIOD_RANKING_METRICS`)."""
+        return {
+            "response_time_avg_ms": stat["avg_response_ms"],
+            "tps": stat["calls"] / seconds,
+            "calls": stat["calls"],
+            "failures": stat["failures"],
+            "failure_rate": stat["failure_rate"],
+            "max_response_time_ms": stat["max_response_ms"],
+            "application_count": stat["application_count"],
+        }
+
+    @staticmethod
+    def _period_row(
+        position: int,
+        group: Group,
+        inst: dict[str, Any],
+        values: dict[str, Any],
+        metric: str,
+    ) -> dict[str, Any]:
+        src, inv, d = group
+        hostname, _conf, _reason, _inst = src.resolver.reverse(
+            inv, d["domain_id"], inst.get("instance_id"), inst.get("instance_name", "")
+        )
+        return {
+            "rank": position,
+            "source_id": src.source_id,
+            "domain_id": d["domain_id"],
+            "domain_name": d.get("domain_name", ""),
+            "instance_id": inst.get("instance_id"),
+            "instance_name": inst.get("instance_name", ""),
+            "hostname": hostname,
+            "metric": metric,
+            "value": values[metric],
+            **values,
+        }
 
     @staticmethod
     def _ranking_row(

@@ -92,6 +92,10 @@ _REPLIES = {
     "apm_instance_map": _env("apm_instance_map", [
         {"hostname": "web01", "match_confidence": "high"}]),
     "apm_app_health": _env("apm_app_health", [{"tps": 1}]),
+    # plans/134 W6 ④ — 대상 미지정 첫 홉 = 현재 부하(TPS) 순위
+    "apm_fleet": _env("apm_fleet", [{"rank": 1, "source_id": "default", "instance_id": 1,
+                                     "instance_name": "web01_a", "hostname": "web01",
+                                     "value": 1.0}]),
 }
 
 
@@ -233,7 +237,7 @@ async def test_existing_required_views_keep_their_target_rules(gateway) -> None:
     assert gw.named("apm_app_health")[0]["hostname"] == "web09", "종전 명시 보기 규칙 그대로"
     gw2 = gateway()
     await _run(["apm.loaded_classes"], _isolated(), {"apm.loaded_classes": {"search": "Order"}})
-    assert gw2.named("apm_instance_map"), "hostname 필수 보기는 종전 첫 홉 규칙"
+    assert gw2.named("apm_fleet"), "hostname 필수 보기는 첫 홉 규칙(W6 ④ — 부하 순위)"
     (args,) = gw2.named("apm_config")
     assert (args["kind"], args["hostname"], args["search"]) == ("loaded_classes", "web01", "Order")
 

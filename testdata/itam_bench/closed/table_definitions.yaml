@@ -700,7 +700,7 @@ tables:
     manages: 가상화 관리 서버(수집 대상) — 관리 서버명·API 주소·수집 버전·인증서 만료일·IP·수집 활성화
     key_columns: [가상화관리서버ID, 가상화관리서버명, 수집버전내용, 인증서만료년월일, 활성화여부, 수집활성화여부]
     related: {tcdmsif83: 가상화관리서버ID, tcdmsif89: 가상화관리서버ID, tcdmsif92: 가상화관리서버ID}
-    notes: 계정명·계정비밀번호EC(암호화된 비밀번호)가 있다 — 조회 대상에서 빼는 것을 권고(현재 allowed_tables에 포함)
+    notes: 계정명·계정비밀번호EC(암호화된 비밀번호)가 있다 — 조회 대상에서 뺀다(외부망 빌더 기본 제외 · plans/139)
   tcdmsif82:
     group: 가상화
     kind: 수집적재

@@ -19,9 +19,15 @@
 - **소스 선택**(plans/134 M-5): 분해 `sources`(레지스트리 `solutions[apm].sources` id)를 코드가
   검증해 그 task의 모든 게이트웨이 호출에 `source_ids`로 싣는다. 모르는 id는 버리고 알리며, 준
   id가 전부 무효면 조회하지 않고 되묻는다(전 소스로 넓히지 않는다).
-- **창**(plans/134 M-2): 보기 창 의미(`ViewSpec.window`)대로 파서 기간(`time_range`)을 **자르지
-  않고** 넘긴다(range). 현재값 전용 보기(current)에 기간을 말하면 그 사실을 고지한다. 하루 넘게
-  지난 기간은 W6 전까지 조회하지 않고 사유를 남긴다 — **폴스타 값으로 대신하지 않는다**.
+- **창**(plans/134 M-2 · W6 M-7): 보기 창 의미(`ViewSpec.window`)대로 요청 시간 해석(state
+  `time_resolution`의 `event` — D-309 단일 출처 · 반개구간)을 **자르지 않고** 넘긴다(range). 기간이
+  없거나 「현재·지금」이면 현재값이다. 현재값 전용 보기(current)에 기간을 말하면 그 사실을 고지한다.
+  오래된 기간도 조회한다(종전 「하루 넘게 지난 기간」 거부 폐지) — 행이 없으면 「그 기간에 행 없음
+  · 보존 기간 미확인」까지만 말한다. 해석이 없으면(옛 체크포인트) 파서 `time_range`(ISO)를 쓴다.
+  추세 간격을 말하지 않은 긴 구간은 검증된 허용값(`ViewArgSpec.verified_values`)에서 고른다.
+- **두 기간 비교**(plans/134 W6 A-1 · `window: compare`): 기준·비교 구간을 코드가 해석에서 정한다
+  (`plan_compare_window` — 진행 중 · 롤링 · 지난 기간별 규칙) — 계산은 게이트웨이
+  `apm_period_compare`.
 - **선택 조건**(plans/134 M-3): 분해의 `view_args`를 보기 선언(`ViewArgSpec`)으로 검증해 도구 인자로
   싣는다. 모르는 이름·값은 버리고 `apm_unresolved_condition`으로 알린다. 파서 `limit`은 보기에
   `n`이 있고 조건에 없을 때 `n`이 된다. 「전체」는 계획 LLM이 낸 `full`뿐이다(단어 매칭 없음).
@@ -79,7 +85,18 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from src.clients.source_mcp_client import SessionFactory, SourceMcpError, open_source_session
 from src.config import AppConfig
 from src.domain import disclosure as disc
+from src.domain.query_time import QueryTime
 from src.domain.result_refs import TABLE_LABELS_KEY, extract_result_refs, ref_label, ref_time_ms
+from src.domain.time_expr import recognize
+from src.domain.time_spec import (
+    KST,
+    NOTE_MULTIPLE_PERIODS,
+    UNITS,
+    TimeSpecError,
+    floor_to_unit,
+    resolve,
+    shift_unit,
+)
 from src.orchestration import apm_jobs as jobs
 from src.orchestration.db_access import access_denied_result
 from src.orchestration.entity_link import (
@@ -124,10 +141,30 @@ _NO_CAP = sys.maxsize
 DEGRADED_KEY = "degraded_reason"
 #: 결과 메타(감사·계획 요약·후속 조합이 읽는다).
 META_KEY = "apm_query"
-#: 창 밖 판정 — 기간 끝이 지금보다 이만큼 이전이면 창 밖으로 본다(보존 기간 미확인 — plans/125 U-3).
-#: 폐지와 해상도 자동 선택은 W6(plans/134 M-7)이다.
-_OUT_OF_WINDOW_AFTER = timedelta(days=1)
-OUT_OF_WINDOW_NOTE = "하루 넘게 지난 기간은 아직 조회하지 않습니다 — 보존 기간 확인 전"
+#: 대상 미지정 첫 홉의 부하 순위 보기(plans/134 W6 ④ — 현재 부하 상위 N개만 대상).
+RANKING_VIEW = "apm.ranking"
+#: 기간 순위 전용 지표(게이트웨이 `PERIOD_RANKING_METRICS` 중 실시간 이름이 아닌 것 · W6 A-4) —
+#: 기간 없이 보내면 게이트웨이가 `invalid_argument`로 거부하므로 조회하지 않고 되묻는다(기본 지표로
+#: 바꿔 조회하지 않는다).
+PERIOD_ONLY_RANKING_METRICS = ("calls", "failures", "failure_rate", "max_response_time_ms")
+PERIOD_ONLY_ASK_NOTE = ("실패 수·실패율·최대 응답시간·호출 수 순위는 기간 통계로만 냅니다 — 기간을"
+                        " 함께 알려 주세요(예 「어제 실패율 높은 WAS 5개」)")
+#: 비교 구간을 정하지 못한 기간 비교 — 조회하지 않고 되묻는다(plans/134 W6 A-1).
+COMPARE_ASK_NOTE = ("비교할 두 기간을 정하지 못해 조회하지 않았습니다 — 「지난주 대비」·"
+                    "「어제와 오늘」처럼 기간을 말해 주세요")
+#: 비교할 기간의 경과 시간이 0(정시 직후 「지난주 대비」·「이번 주」) — 조회하지 않고
+#: 되묻는다(V6-5).
+COMPARE_ELAPSED_NOTE = ("이번 기간은 아직 지난 시간이 없어 비교할 수 없습니다 — "
+                        "「지난주와 지지난주」처럼 비교할 기간을 지정해 주세요")
+#: 기간을 줬는데 행이 0건일 때의 고지 — 보존 기간 만료로 단정하지 않는다(plans/134 W6 M-7 · W10).
+EMPTY_PERIOD_NOTE = ("요청 기간에 행이 없습니다 — 원천 보존 기간은 확인 전(W10)이라 기간 밖인지는"
+                     " 단정하지 않습니다")
+#: 추세 간격 자동 선택(plans/134 W6 M-7) — 이보다 긴 구간에서만 고른다(짧은 구간은 종전 기본 간격).
+_AUTO_INTERVAL_AFTER_MINUTES = 1440
+#: 자동 선택한 간격의 점 수 상한(하루 · 5분 간격과 같은 점 수).
+_AUTO_INTERVAL_POINTS = 288
+#: 추세 간격 조건 이름(레지스트리 보기 `args`).
+_INTERVAL_ARG = "interval_minute"
 CURRENT_ONLY_NOTE = "현재값 기준입니다 — 현재값만 있는 보기라 요청 기간의 값이 아닙니다"
 HOURLY_NOTE = "시 단위 통계라 요청 구간보다 넓은 정시 경계로 집계한 값입니다"
 #: 결과에 싣는 결정적 줄(판정·집계)의 키 — 집계기가 최종 답에 그대로 붙인다(plans/134 M-1).
@@ -277,7 +314,7 @@ def render_source_line() -> str:
 
 
 _WINDOW_TEXT = {"range": "기간 지정 가능", "current": "현재값", "hourly": "시 단위 통계",
-                "none": ""}
+                "none": "", "compare": "두 기간 비교 — 기간은 질문에서"}
 
 
 def _arg_text(arg: ViewArgSpec) -> str:
@@ -426,7 +463,7 @@ def validate_view_args(view: ViewSpec, raw: Any) -> tuple[dict[str, Any], list[s
 
 @dataclass(frozen=True)
 class WindowPlan:
-    """보기 1개의 조회 창 — mode: current(현재·도구 기본) · window(구간) · out(조회 안 함).
+    """보기 1개의 조회 창 — mode: current(현재·도구 기본) · window(구간) · ask(조회 안 함 · 되묻기).
 
     `kind`는 그 창에 붙는 고지 kind(예 `apm_current_only`)다 — 없으면 빈 문자열.
     """
@@ -438,51 +475,271 @@ class WindowPlan:
 
 
 def _parse_bound(value: Any, *, end: bool) -> datetime | None:
+    """파서 ISO 경계 → naive 시각(옛 경로). 날짜만이면 끝은 **다음 날 0시**(반개구간 — 해석값과 같은
+    규칙 · 종전 23:59:59 포함을 바꿨다 · plans/134 W6 M-7)."""
     text = str(value or "").strip().replace("T", " ")
     if not text:
         return None
     try:
         if len(text) == 10:
             day = datetime.fromisoformat(text)
-            return day + timedelta(days=1) - timedelta(seconds=1) if end else day
+            return day + timedelta(days=1) if end else day
         return datetime.fromisoformat(text).replace(tzinfo=None)
     except ValueError:
         return None
 
 
-def plan_window(view: ViewSpec, time_range: Any, now: datetime) -> WindowPlan:
-    """파서 기간(`time_range` {start, end})을 보기 창 의미(`ViewSpec.window`)대로 넘긴다.
+def _resolved_bounds(query_time: QueryTime) -> tuple[datetime | None, datetime] | None:
+    """요청 시간 해석(D-309)의 사건 주체 구간 — 기간이 없거나 「현재·지금」이면 None(현재값).
 
-    - range·hourly: 요청 기간을 **자르지 않고** `reference_time`·`lookback_minutes`로 넘긴다
-      (plans/134 M-2 — 종전 창 상한 폐지). hourly 는 시 단위 고지를 붙인다.
-    - current: 현재값만 있는 보기 — 기간을 말했으면 `apm_current_only`로 알린다.
-    - none: 시간과 무관한 목록 — 기간을 쓰지 않는다.
-    - 기간 끝이 하루 넘게 지났으면 조회하지 않는다(W6 M-7 전까지 · 보존 기간 확인 전).
+    사건 주체(`event`)는 기간 미지정 = 기간 조건 없음 · 진행 중 기간 = 기준 시각까지다(D-291) —
+    현재값 조회와 같은 뜻이다. 반개구간 `[start, end)` 그대로 쓴다.
     """
-    if not isinstance(time_range, dict) or view.window == "none":
-        return WindowPlan("current")
+    event = query_time.event
+    if event is None or event.unbounded or event.end is None:
+        return None
+    if query_time.present and not query_time.explicit:
+        return None
+    return event.start, event.end
+
+
+def _legacy_bounds(time_range: Any, now: datetime) -> tuple[datetime | None, datetime] | None:
+    """파서 기간(`time_range` {start, end} ISO) — 해석이 없을 때(옛 체크포인트)의 종전 경로.
+
+    파서 경계는 naive(KST 벽시계)다. `now`가 aware면 경계에 KST를 붙여 같은 정책으로 맞춘다
+    (naive·aware 비교 TypeError 방지 · V6-6). `now`가 naive면 종전대로 naive다.
+    """
+    if not isinstance(time_range, dict):
+        return None
     start = _parse_bound(time_range.get("start"), end=False)
     end = _parse_bound(time_range.get("end"), end=True)
     if start is None and end is None:
+        return None
+    if now.tzinfo is not None:
+        start, end = (None if b is None else b.replace(tzinfo=KST) for b in (start, end))
+    return start, end or now
+
+
+def plan_window(view: ViewSpec, time_range: Any, now: datetime, *,
+                query_time: QueryTime | None = None) -> WindowPlan:
+    """요청 기간을 보기 창 의미(`ViewSpec.window`)대로 넘긴다.
+
+    기간은 요청 시간 해석(`query_time` — state `time_resolution` · D-309)이 있으면 그것, 없으면 파서
+    `time_range`(종전)다. 기준 시각은 해석의 `anchor_at`(KST aware) · 없으면 `now`.
+
+    - range·hourly: 요청 기간을 **자르지 않고** `reference_time`(구간 끝 · 기준 시각과 1분 안이면
+      null)·`lookback_minutes`(구간 길이 분)로 넘긴다(plans/134 M-2). 오래된 기간도 넘긴다 — 종전
+      「하루 넘게 지난 기간」 거부는 폐지했다(W6 M-7). range 보기의 롤링 기간(「최근 3시간」 —
+      해석은 직전 정시에서 끝난다)은 같은 길이를 기준 시각까지 민다(`reference_time` null ·
+      V6-2).
+    - current: 현재값만 있는 보기 — 기간을 말했으면 `apm_current_only`로 알린다.
+    - none: 시간과 무관한 목록 — 기간을 쓰지 않는다.
+    - compare: 두 기간 비교 — `plan_compare_window`.
+    """
+    if view.window == "compare":
+        return plan_compare_window(query_time)
+    if view.window == "none":
         return WindowPlan("current")
-    end = min(end or now, now)
-    if now - end > _OUT_OF_WINDOW_AFTER:
-        return WindowPlan("out", note=OUT_OF_WINDOW_NOTE)
+    anchor = query_time.anchor_at if query_time is not None else now
+    bounds = (_resolved_bounds(query_time) if query_time is not None
+              else _legacy_bounds(time_range, now))
+    if bounds is None:
+        return WindowPlan("current")
     if view.window == "current":
         return WindowPlan("current", note=CURRENT_ONLY_NOTE, kind=disc.APM_CURRENT_ONLY)
+    start, end = bounds
+    end = min(end, anchor)
+    if (view.window == "range" and query_time is not None and query_time.event is not None
+            and query_time.event.completeness == "rolling" and start is not None
+            and end == floor_to_unit(anchor, "hour")):
+        # 롤링(「최근 3시간」)은 해석상 직전 정시에서 끝난다(시 단위 통계 기준). 실시간 구간 보기는
+        # 같은 길이를 기준 시각까지 민다 — 최근 최대 59분이 빠지지 않게(V6-2). hourly 보기는 그대로
+        start, end = anchor - (end - start), anchor
     span = max(1, int(((end - (start or end)).total_seconds()) // 60))
-    reference = None if now - end <= timedelta(minutes=1) else end.isoformat(timespec="seconds")
+    reference = None if anchor - end <= timedelta(minutes=1) else end.isoformat(timespec="seconds")
     args = {"reference_time": reference, "lookback_minutes": span}
     # hourly 보기의 시 단위 고지는 조회한 대상마다 붙인다(`_job_disclosures`) — 기간이 없어도
     # 시 경계로 모인다
     return WindowPlan("window", args)
 
 
+#: 비교 기간의 성격(plans/134 W6 A-1 · 교정 2) — 진행 중(기준 시각까지) · 롤링(「최근 N일」) ·
+#: 지난 기간.
+_IN_PROGRESS, _ROLLING, _PAST = "in_progress", "rolling", "past"
+
+
+@dataclass(frozen=True)
+class _Period:
+    """비교 질의의 개별 기간 — 반개구간 `[start, end)` · 단위(모르면 None) · 성격."""
+
+    start: datetime
+    end: datetime
+    unit: str | None
+    kind: str
+
+
+def _period_kind(res: Any, spec: Any, anchor: datetime) -> str:
+    """기간 성격 — 진행 중 = 해석 완결성 `to_date` 또는 끝이 기준 시각 **뒤**(끝 = 기준 시각인
+    기간은 지난 기간이다 · V6-1). 롤링 = 해석 완결성 `rolling`(「최근 3시간」) 또는 「최근·지난
+    N단위」(N ≥ 2 — 「최근 7일」 · V6-4). 「지난주」·「어제」(N = 1)는 지난 기간이다."""
+    if res.completeness == "to_date" or (res.end is not None and res.end > anchor):
+        return _IN_PROGRESS
+    if res.completeness == "rolling" or (
+            spec is not None and spec.relation == "last" and (spec.n or 1) > 1):
+        return _ROLLING
+    return _PAST
+
+
+def _period_list(query_time: QueryTime) -> list[_Period] | None:
+    """해석된 기간 목록 — 비교 질의의 개별 기간(plans/134 W6 A-1).
+
+    해석기는 여러 기간을 덮는 구간 하나(`multiple_periods`)만 싣는다. 개별 기간은 그 원문 스팬을
+    공용 인식기(`recognize`)·해석기(`resolve`)로 같은 기준 시각에서 다시 계산한다(사본 금지 —
+    D-131). 다시 계산한 기간들이 덮는 구간이 요청 해석과 다르면 쓰지 않는다(None — 되묻기).
+    단위는 인식한 명세의 단위(「이번 주」 = week)이고 모르면 None이다.
+    """
+    event = query_time.event
+    if event is None or event.unbounded or event.start is None or event.end is None:
+        return None
+    anchor = query_time.anchor_at
+    found: list[tuple[_Period, Any]] = []
+    for spec in (s for s in recognize(event.span or "") if s.relation != "none"):
+        try:
+            res = resolve(spec, anchor, subject="event")
+        except TimeSpecError:
+            found = []
+            break
+        if res.start is None or res.end is None or res.unbounded:
+            found = []
+            break
+        found.append((_Period(res.start, res.end, spec.unit, _period_kind(res, spec, anchor)),
+                      spec))
+    if NOTE_MULTIPLE_PERIODS not in event.notes:
+        same = len(found) == 1 and (found[0][0].start, found[0][0].end) == (event.start,
+                                                                            event.end)
+        matched = found[0][1] if same else None
+        return [_Period(event.start, event.end, matched.unit if matched is not None else None,
+                        _period_kind(event, matched, anchor))]
+    periods = [p for p, _ in found]
+    if len(periods) < 2 or (min(p.start for p in periods), max(p.end for p in periods)) != (
+            event.start, event.end):
+        return None
+    return periods
+
+
+def _stamp(at: datetime) -> str:
+    return f"{at:%Y-%m-%d %H:%M}"
+
+
+def plan_compare_window(query_time: QueryTime | None) -> WindowPlan:
+    """두 기간 비교 창 — 기준(baseline)·비교(current) 구간을 해석에서 결정적으로 정한다(A-1).
+
+    - **기간 2개**: 이른 구간 = 기준, 늦은 구간 = 비교. 셋 이상이면 되묻는다.
+    - **기간 1개 · 진행 중**(「이번 주」 — 끝이 기준 시각 뒤이거나 기준 시각까지인 기간): 그
+      기간이 비교이고 기준은 한 단위 앞(지난주) 시작부터 **같은 경과 시간**이다. 앞 단위가 더
+      짧아 같은 경과 시간이 이번 기간 시작을 넘으면 기준 끝을 이번 기간 시작에서 자른다(앞 기간
+      전체 · 겹침 없음 — V6-1).
+    - **기간 1개 · 롤링**(「최근 7일」·「최근 3시간」): 그 기간이 비교이고 기준은 **바로 앞 같은
+      길이** 구간이다(`start − 길이 ~ start` · V6-4).
+    - **기간 1개 · 지난 기간**(「지난주 대비」 — 끝이 기준 시각과 같아도 지난 기간이다): 그 기간이
+      기준이고 비교는 바로 뒤 같은 길이 구간을 기준 시각까지(이번 주 지금까지)다.
+    - **길이 맞춤**: 진행 중인 구간의 끝은 기준 시각의 정시다(시 단위 통계라 진행 중인 시간대는
+      뺀다). 비교 구간이 기준보다 짧으면 기준을 **같은 경과 시간**으로 자른다(「이번 주 지금까지 vs
+      지난주 같은 경과 시간」 — 합계를 같은 길이로 비교한다). 둘 다 지난 기간이면 자르지 않는다
+      (길이가 다르면 게이트웨이가 고지한다).
+    - 기간이 없거나 해석이 없으면 되묻는다(`COMPARE_ASK_NOTE`). 비교 구간의 경과 시간이 0이면(정시
+      직후 「지난주 대비」) 사유를 따로 말하고 되묻는다(`COMPARE_ELAPSED_NOTE` · V6-5).
+    계산(가중 평균·증감·기준 0 = N/A)은 게이트웨이가 한다 — 본체는 구간만 정한다.
+    """
+    periods = _period_list(query_time) if query_time is not None else None
+    if not periods or len(periods) > 2 or query_time is None:
+        return WindowPlan("ask", note=COMPARE_ASK_NOTE)
+    hour = floor_to_unit(query_time.anchor_at, "hour")
+    rule = ""
+    rolling = False
+    if len(periods) == 2:
+        first, last = sorted(periods, key=lambda p: (p.start, p.end))
+        if first.start == last.start:
+            return WindowPlan("ask", note=COMPARE_ASK_NOTE)
+        base, cur = (first.start, first.end), (last.start, min(last.end, hour))
+        in_progress = last.kind == _IN_PROGRESS
+    else:
+        (period,) = periods
+        start, end = period.start, period.end
+        in_progress = period.kind == _IN_PROGRESS
+        if in_progress:  # 그 기간이 비교, 기준은 한 단위 앞 같은 경과 시간(이번 기간 시작에서 자름)
+            cur = (start, hour)
+            elapsed = cur[1] - cur[0]
+            back = (shift_unit(start, period.unit, -1)
+                    if period.unit is not None and period.unit in UNITS else start - elapsed)
+            base = (back, min(back + elapsed, start))
+            rule = "앞 기간의 같은 경과 시간과 비교"
+            if back + elapsed > start:
+                rule = "앞 기간이 더 짧아 앞 기간 전체와 비교"
+        elif period.kind == _ROLLING:  # 그 기간이 비교, 기준은 바로 앞 같은 길이
+            cur = (start, min(end, hour))
+            base = (start - (cur[1] - cur[0]), start)
+            rule = "요청 기간과 바로 앞 같은 길이 기간을 비교"
+            rolling = True
+        else:  # 지난 기간 — 그 기간이 기준, 비교는 바로 뒤 같은 길이를 기준 시각까지
+            base = (start, end)
+            cur = (end, min(end + (end - start), hour))
+            in_progress = cur[1] < end + (end - start)
+            rule = "바로 뒤 기간(지금까지)과 비교"
+    elapsed = cur[1] - cur[0]
+    if elapsed <= timedelta(0):
+        return WindowPlan("ask", note=COMPARE_ELAPSED_NOTE if in_progress else COMPARE_ASK_NOTE)
+    if in_progress and base[1] - base[0] > elapsed:
+        base = (base[0], base[0] + elapsed)
+        rule = (f"{rule} · " if rule else "") + "기준 구간을 같은 경과 시간으로 맞춤"
+    args = {"current_start": cur[0].isoformat(timespec="seconds"),
+            "current_end": cur[1].isoformat(timespec="seconds"),
+            "baseline_start": base[0].isoformat(timespec="seconds"),
+            "baseline_end": base[1].isoformat(timespec="seconds")}
+    note = (f"기준 {_stamp(base[0])} ~ {_stamp(base[1])} · 비교 {_stamp(cur[0])} ~ {_stamp(cur[1])}"
+            + (f"({rule})" if rule else "")
+            + (" · 진행 중인 시간대는 시 단위 통계라 뺐습니다"
+               if (in_progress or rolling) and cur[1] == hour and query_time.anchor_at > hour
+               else ""))
+    return WindowPlan("window", args, note=note, kind=NOTE_TRACE)
+
+
+def auto_interval(view: ViewSpec, plan: WindowPlan,
+                  given: dict[str, Any] | None) -> tuple[WindowPlan, str]:
+    """추세 간격 자동 선택(plans/134 W6 M-7) — (창, 고지 문구 · 없으면 빈 값).
+
+    사용자가 간격을 말했으면(검증된 조건에 있으면) 그대로 둔다 — 긴 구간이라고 바꾸지 않는다.
+    말하지 않았고 구간이 하루보다 길고 보기가 간격 조건을 받으면, 검증된 허용값
+    (`ViewArgSpec.verified_values`) 중 점 수가 하루치(288) 이하가 되는 가장 작은 값을 창 인자에
+    둔다(보기 단위 — 배치 1호출 유지). 허용값이 선언되지 않았으면 고르지 않고 그 사실을 알린다.
+    """
+    spec = next((a for a in view.args if a.name == _INTERVAL_ARG), None)
+    minutes = plan.args.get("lookback_minutes")
+    if (spec is None or plan.mode != "window" or not isinstance(minutes, int)
+            or minutes <= _AUTO_INTERVAL_AFTER_MINUTES
+            or (given or {}).get(spec.tool_arg or spec.name) is not None):
+        return plan, ""
+    if not spec.verified_values:
+        return plan, ("추세 간격 미지정 — 허용 간격 값이 확인되지 않아(W10) 자동으로 고르지 않고"
+                      " 기본 간격으로 조회했습니다 · 긴 구간이면 「1시간 간격」처럼 간격을"
+                      " 말해 주세요")
+    fits = [v for v in spec.verified_values if minutes / v <= _AUTO_INTERVAL_POINTS]
+    value = fits[0] if fits else spec.verified_values[-1]
+    args = {**plan.args, spec.tool_arg or spec.name: value}
+    return (WindowPlan(plan.mode, args, plan.note, plan.kind),
+            f"추세 간격 미지정 — 조회 구간 {minutes:,}분에 맞춰 {value}분 간격으로 조회했습니다")
+
+
 # ── 대상 ──────────────────────────────────────────────────────────────────────
 
 def _int_setting(app_config: Any, name: str, default: int) -> int:
+    """`composite.<name>` 양의 정수 설정 — 아니면 기본값이다. 설정된 값(수·문자열)이 잘못됐으면
+    경고 1줄을 남긴다(값은 비밀이 아니다 · V6-8 ②). 설정 대역(MagicMock)은 경고하지 않는다."""
     value = getattr(getattr(app_config, "composite", None), name, default)
     valid = isinstance(value, int) and not isinstance(value, bool) and value > 0
+    if not valid and isinstance(value, (int, float, str)):
+        logger.warning("composite.%s=%r 은 양의 정수가 아니라 기본값 %d을 씁니다", name, value,
+                       default)
     return value if valid else default
 
 
@@ -803,6 +1060,9 @@ class _Call:
     batch_of: _Call | None = None
     #: 이름 보기(`target: named`)에 실은 대상 이름 목록(서비스·업무 — 해석은 게이트웨이)
     named: list[str] | None = None
+    #: hostname 대상의 소스(첫 홉 부하 순위 행의 소스 — 그 호스트의 다른 소스 인스턴스를 부르지
+    #: 않게 · plans/134 W6 V6-3)
+    host_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -884,8 +1144,26 @@ def _target_item(call: _Call) -> dict[str, Any] | None:
             item["instance_id"] = call.args["instance_id"]
         return item
     if call.hostname:
+        if call.host_source:
+            return {"hostname": call.hostname, "source_id": call.host_source}
         return {"hostname": call.hostname}
     return None
+
+
+def _host_calls(view: ViewSpec, hostnames: list[str], plan: WindowPlan, scope: _JobScope,
+                view_args: dict[str, Any] | None,
+                host_sources: dict[str, list[str]]) -> list[_Call]:
+    """hostname 대상별 호출 — 첫 홉 부하 순위가 그 호스트의 소스를 정했으면 (호스트 · 소스)마다
+    1호출(`source_ids` = 그 소스 · 배치 항목 `source_id`)이다. 소스를 모르면 종전 그대로(V6-3)."""
+    calls: list[_Call] = []
+    for host in hostnames:
+        sources: list[str | None] = [*host_sources.get(host, [])] or [None]
+        for sid in sources:
+            args = _call_args(view, host, plan, scope, view_args)
+            if sid is not None:
+                args["source_ids"] = [sid]
+            calls.append(_Call(view, host, args, host_source=sid))
+    return calls
 
 
 def _batched(calls: list[_Call], scope: _JobScope) -> list[_Call]:
@@ -1611,7 +1889,10 @@ async def run_apm_query(
     if not is_source_allowed(APM_SYSTEM, isolated.get("allowed_sources"), role):
         logger.info("%s 인가 거부: 관측 소스 권한 없음(역할=%s)", APM_QUERY_AGENT, role)
         return access_denied_result(SOURCE_ACCESS_DENIED_MESSAGE)
-    now = now or datetime.now()
+    # 요청 시간 해석(D-309) — 있으면 그 기준 시각(KST aware)이 창의 기준이다. 없으면(옛 체크포인트·
+    # 해석 off) 종전 naive 현재 시각과 파서 `time_range`다(aware·naive를 섞지 않는다)
+    query_time = QueryTime.from_state(isolated.get("time_resolution"))
+    now = query_time.anchor_at if query_time is not None else (now or datetime.now())
     label = get_registry().system_label(APM_SYSTEM)
     by_id = {v.id: v for v in apm_views()}
     meta: dict[str, Any] = {"views": sanitize_views(task.get("views")), "hostnames": [],
@@ -1670,23 +1951,44 @@ async def run_apm_query(
                       if any(by_id[v].reference == "guid" for v in views) else [])
 
     parsed = isolated.get("parsed_requirements") or {}
-    windows = {vid: plan_window(by_id[vid], parsed.get("time_range"), now) for vid in views}
+    windows = {vid: plan_window(by_id[vid], parsed.get("time_range"), now, query_time=query_time)
+               for vid in views}
+    blocked: dict[str, str] = {}
     for vid, plan in windows.items():
+        if plan.mode == "ask":  # 비교 구간 미해결 — 그 보기만 조회하지 않고 되묻는다(A-1)
+            blocked[vid] = f"{_view_label(by_id[vid])}: {plan.note}"
+            meta.setdefault("unresolved", []).append({"view": vid, "conditions": ["period"],
+                                                      "queried": False})
+            notices.append(disc.make(disc.APM_UNRESOLVED_CONDITION, blocked[vid], source=source))
+            continue
         if plan.note:
             meta["notes"].append(f"{vid}: {plan.note}")
         if plan.kind:
             notices.append(disc.make(plan.kind, f"{_view_label(by_id[vid])}: {plan.note}",
                                      source=source))
-    blocked: dict[str, str] = {}
     deferred: dict[str, list[str]] = {}
     bad_refs: dict[str, Any] = {}
     view_args = _plan_view_args(task, views, by_id, parsed, meta, notices, source,
                                 composite=bool(isolated.get("is_composite")), blocked=blocked,
                                 deferred=deferred, bad_refs=bad_refs)
+    for vid in views:  # 추세 간격 자동 선택(M-7) — 보기 단위라 배치가 1호출로 유지된다
+        windows[vid], interval_note = auto_interval(by_id[vid], windows[vid], view_args.get(vid))
+        if interval_note:
+            meta["notes"].append(f"{vid}: {interval_note}")
+            notices.append(disc.make(NOTE_TRACE, f"{_view_label(by_id[vid])}: {interval_note}",
+                                     source=source))
+    metric = (view_args.get(RANKING_VIEW) or {}).get("metric")
+    if (RANKING_VIEW in windows and RANKING_VIEW not in blocked
+            and metric in PERIOD_ONLY_RANKING_METRICS and windows[RANKING_VIEW].mode != "window"):
+        # 기간 전용 지표인데 기간이 없다 — 그 보기만 되묻는다(침묵 대체 금지 · W6 A-4)
+        blocked[RANKING_VIEW] = f"{_view_label(by_id[RANKING_VIEW])}: {PERIOD_ONLY_ASK_NOTE}"
+        meta.setdefault("unresolved", []).append(
+            {"view": RANKING_VIEW, "conditions": ["period"], "queried": False})
+        notices.append(disc.make(disc.APM_UNRESOLVED_CONDITION, blocked[RANKING_VIEW],
+                                 source=source))
     picks = {vid: _resolve_reference(by_id[vid], dict(view_args.get(vid) or {}), task, isolated,
                                      windows[vid], bad_refs.get(vid))
-             for vid in views if by_id[vid].target == "reference" and vid not in blocked
-             and windows[vid].mode != "out"}
+             for vid in views if by_id[vid].target == "reference" and vid not in blocked}
     for vid in views:
         if by_id[vid].target != "reference":
             continue
@@ -1711,20 +2013,22 @@ async def run_apm_query(
                 source=source))
         if pick is not None and pick.note:
             meta["notes"].append(pick.note)
-    if blocked and all(v in blocked or windows[v].mode == "out" for v in views):
+    if blocked and all(v in blocked for v in views):
         # 되묻기만 남았다 — 게이트웨이를 열지 않는다(되묻기가 게이트웨이 가용성에 좌우되지 않게)
-        meta["failures"] += [{"view": v, "hostname": None, "reason": windows[v].note}
-                             for v in views if windows[v].mode == "out"]
         meta["hostnames"] = hostnames
         return _blocked_refusal(label, blocked, meta, disc.dedupe(notices))
     # 대상 텍스트(plans/130 M-2) — 대상으로 좁히는 보기가 있을 때만 해석한다. 없으면 종전과 같다.
-    live = [v for v in views if v not in blocked and windows[v].mode != "out"]
+    live = [v for v in views if v not in blocked]
     texts = (_target_texts(task, isolated, ledger, [*hostnames, *scoped_hosts])
              if any(_uses_target(by_id[v], view_args.get(v)) for v in live) else [])
     resolved: list[_TargetText] = []
     instances: list[dict[str, Any]] = []
     hostless: list[dict[str, Any]] = []
     answers: list[_Call] = []
+    #: 첫 홉 부하 순위가 정한 호스트별 소스 · 첫 홉 단계와 그 범위 고지 위치(V6-3)
+    host_sources: dict[str, list[str]] = {}
+    first_hop: dict[str, Any] | None = None
+    first_hop_notice: int | None = None
     named_given, named_texts = _named_texts(task, [by_id[v] for v in live], meta, notices, source)
     notices += _unscoped_notices(task, isolated, [by_id[v] for v in live], meta, source)
     thread_id = isolated.get("thread_id")
@@ -1751,31 +2055,36 @@ async def run_apm_query(
                     resolved, {h.casefold() for h in [*hostnames, *scoped_hosts]})
                 notices += _target_notices(resolved, source)
                 meta["targets"] = _targets_meta(resolved)
-            needs_host = [v for v in views if by_id[v].required_input
-                          and windows[v].mode != "out" and v not in blocked]
+            needs_host = [v for v in views if by_id[v].required_input and v not in blocked]
             # 대상 텍스트가 있었으면(해석 0건 포함) 첫 홉으로 가지 않는다(D-290 ⑥ — 말한 대상과
             # 무관한 인스턴스를 조회하지 않는다)
             if needs_host and not hostnames and not texts:
-                hostnames, hostless, step = await _insert_instances_step(
-                    session, scope, by_id.get(INSTANCES_VIEW))
+                # 서버 미지정 = 현재 부하 상위 N개(plans/134 W6 ④) · 분해가 `full`을 냈으면 전부
+                full = any((view_args.get(v) or {}).get("full") is True for v in needs_host)
+                top_n = None if full else _int_setting(app_config, "apm_untargeted_top_n", 20)
+                hostnames, hostless, step = await _untargeted_step(session, scope, by_id, top_n)
+                host_sources = step.pop("_host_sources", None) or {}
+                first_hop = step
                 meta["inserted_steps"].append(step)
                 if step.get("error"):
                     # 대상 선정이 실패한 사유를 결과에 싣는다 — 없으면 "조회 대상이 없습니다"로 가려진다
                     meta["failures"].append(
-                        {"view": INSTANCES_VIEW, "hostname": None, "reason": step["error"]})
-                elif step.get("read_error"):  # 목록 결과 파일을 끝까지 못 읽음 — 부분(의무 고지)
+                        {"view": step["view"], "hostname": None, "reason": step["error"]})
+                elif step.get("read_error"):  # 첫 홉 결과 파일을 끝까지 못 읽음 — 부분(의무 고지)
                     notices.append(disc.make(disc.APM_PARTIAL_SOURCES, _first_hop_text(step),
                                              source=source))
-                    meta["failures"].append({"view": INSTANCES_VIEW, "hostname": None,
-                                             "reason": f"인스턴스 목록 {step['read_error']}"})
-                elif step.get("instances"):  # 범위 고지(비의무 · M-5 · 0개면 내지 않음 R34-11)
-                    notices.append(disc.make(NOTE_TRACE, _first_hop_text(step), source=source))
+                    what = "부하 순위" if step.get("mode") == "ranking" else "인스턴스 목록"
+                    meta["failures"].append({"view": step["view"], "hostname": None,
+                                             "reason": f"{what} {step['read_error']}"})
+                elif step.get("instances"):
+                    # 범위 고지 — 상위 N만이면 의무 중립 · 실패가 섞이면(목록 앞 N · 잠정 순위) 의무
+                    # 부분 · 전부면 비의무(M-5 · 0개면 내지 않음 R34-11)
+                    first_hop_notice = len(notices)
+                    notices.append(disc.make(_first_hop_kind(step), _first_hop_text(step),
+                                             source=source))
             calls: list[_Call] = []
             for vid in views:
                 view, plan = by_id[vid], windows[vid]
-                if plan.mode == "out":
-                    meta["failures"].append({"view": vid, "hostname": None, "reason": plan.note})
-                    continue
                 if vid in blocked:  # 필수 조건·참조 미해결 — 되묻기(고지는 위에서 실었다)
                     continue
                 args = view_args.get(vid)
@@ -1831,8 +2140,7 @@ async def run_apm_query(
                 # 대상이 없는 전체 보기(예 지표 목록)는 대상과 무관하게 한 번만 부른다
                 # (plans/134 W2).
                 if view.required_input or (view.first_hop and hostnames):
-                    calls += [_Call(view, h, _call_args(view, h, plan, scope, args))
-                              for h in hostnames]
+                    calls += _host_calls(view, hostnames, plan, scope, args, host_sources)
                 elif not (texts and view.first_hop):
                     calls.append(_Call(view, None, _call_args(view, None, plan, scope, args)))
                 if texts and view.required_input:  # 해석 인스턴스마다 1호출(상한 없음 · D-296 ④)
@@ -1857,6 +2165,13 @@ async def run_apm_query(
     meta["hostnames"] = list(dict.fromkeys(
         [*hostnames, *(c.hostname for c in calls if c.hostname)]))
     rows = _collect(calls, meta)
+    if first_hop is not None and first_hop_notice is not None:
+        actual = _queried_instances(calls)
+        if actual > (first_hop.get("instances") or 0) and first_hop.get("mode") == "ranking":
+            # 상위 N의 hostname 대상이 같은 호스트의 순위 밖 인스턴스까지 불렀다 — 실제 수를 적는다
+            first_hop["queried"] = actual
+            notices[first_hop_notice] = disc.make(_first_hop_kind(first_hop),
+                                                  _first_hop_text(first_hop), source=source)
     unresolved = [r for r in resolved if not r.instances]
     # 대상 텍스트 해석 0건은 조회하지 못한 대상으로 센다(부분 결과 · 감사 degraded)
     meta["failures"] += [{"view": None, "hostname": None, "target": _shown(r.text),
@@ -1919,6 +2234,12 @@ async def run_apm_query(
     if partial_calls:
         reasons.append(f"일부 소스·구간 조회 실패 {len(partial_calls)}건(부분 결과)")
     meta["source_status"] = _status(label, status, len(rows), "; ".join(reasons))
+    if status == "empty" and any(windows[v].args.get("reference_time") or by_id[v].window
+                                 == "compare" for v in live):
+        # 지난 기간에 행이 없다 — 보존 기간 만료로 단정하지 않는다(M-7 · 보존 기간은 W10)
+        meta["notes"].append(EMPTY_PERIOD_NOTE)
+        disclosures = disc.dedupe([*disclosures, disc.make(NOTE_TRACE, EMPTY_PERIOD_NOTE,
+                                                           source=source)])
     extra: dict[str, Any] = {}
     if disclosures:
         extra["disclosures"] = disclosures
@@ -1947,12 +2268,152 @@ async def run_apm_query(
     }
 
 
+async def _untargeted_step(
+    session: Any, scope: _JobScope, by_id: dict[str, ViewSpec], top_n: int | None,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    """대상 미지정 첫 홉(plans/134 W6 ④ — 2026-10-07 사용자 결정 · LLM 0).
+
+    `top_n`이 있으면 현재 부하(TPS) 순위(`apm_fleet` ranking · 실시간 — 기간 인자 없음)로 상위 N개
+    인스턴스만 대상으로 삼는다. 순위가 실패하거나 부를 수 있는 대상이 0건이면 **조용히 전체로
+    넓히지 않고** 인스턴스 목록(종전 첫 홉)의 앞 N개만 대상으로 삼고 그 사실(부하 순이 아님)을
+    단계에 남긴다. `top_n`이 None(분해가 `full`을 냄)이면 종전대로 전 인스턴스다.
+    """
+    if top_n is None:
+        hosts, hostless, step = await _insert_instances_step(session, scope,
+                                                             by_id.get(INSTANCES_VIEW))
+        step["mode"] = "full"
+        return hosts, hostless, step
+    hosts, hostless, step = await _ranking_step(session, scope, by_id.get(RANKING_VIEW), top_n)
+    if hosts or hostless:
+        return hosts, hostless, step
+    why = step.get("error") or ("순위 행에 부를 수 있는 대상 없음" if step.get("instances")
+                                else "순위에 오른 인스턴스 0개")
+    hosts, hostless, step = await _insert_instances_step(session, scope,
+                                                         by_id.get(INSTANCES_VIEW), limit=top_n)
+    step["mode"] = "list"
+    step["rank_error"] = str(why)[:120]
+    return hosts, hostless, step
+
+
+def _queried_instances(calls: list[_Call]) -> int:
+    """대상별 호출(hostname · 인스턴스)이 실제로 돌려준 인스턴스 수 — (소스 · 인스턴스 id) 기준."""
+    seen: set[tuple[Any, Any]] = set()
+    for call in calls:
+        if call.error is not None or not (call.hostname or call.instance):
+            continue
+        for row in (call.envelope or {}).get("rows") or []:
+            if isinstance(row, dict) and row.get("instance_id") is not None:
+                seen.add((row.get("source_id"), row.get("instance_id")))
+    return len(seen)
+
+
+def _host_sources(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """순위 행 → 호스트별 소스 목록(행 순서 · 중복 없음) — 소스가 없는 행의 호스트는 싣지 않는다."""
+    out: dict[str, list[str]] = {}
+    for row in rows:
+        host = str(row.get("hostname") or "").strip()
+        sid = row.get("source_id")
+        if host and isinstance(sid, str) and sid and sid not in out.setdefault(host, []):
+            out[host].append(sid)
+    return {h: sids for h, sids in out.items() if sids}
+
+
+def _target_rows(rows: list[dict[str, Any]], *, host_ok: Any
+                 ) -> tuple[list[str], list[dict[str, Any]], int]:
+    """첫 홉 행 → (hostname 대상, 호스트 없는 인스턴스 대상, 부를 수 없는 행 수).
+
+    호스트가 정합된 행(`host_ok`)은 hostname 대상(서버당 하나 — 그 서버의 인스턴스를 게이트웨이가
+    정합한다), 호스트가 없는 행은 (이름 · 소스 · id) 대상이다.
+    """
+    hosts: list[str] = []
+    hostless: list[dict[str, Any]] = []
+    unaddressed = 0
+    for row in rows:
+        host = str(row.get("hostname") or "").strip()
+        if host and host_ok(row):
+            if host not in hosts:
+                hosts.append(host)
+        elif row.get("source_id") and row.get("instance_id") is not None \
+                and row.get("instance_name"):
+            hostless.append({k: row.get(k)
+                             for k in ("instance_name", "source_id", "domain_id", "instance_id")})
+        else:
+            unaddressed += 1
+    return hosts, hostless, unaddressed
+
+
+def _step_call(step: dict[str, Any], view: ViewSpec, args: dict[str, Any]) -> None:
+    """첫 홉 단계에 게이트웨이 호출(도구 · 인자 — 스레드·owner 제외)을 남긴다 — 본체 감사
+    `commands`가 대상 조회 호출과 같은 모양으로 싣는다(V6-8 ①)."""
+    step["tool"] = view.tool
+    used = {k: v for k, v in args.items() if k not in ("thread_id", "owner") and v is not None}
+    if used:
+        step["args"] = used
+
+
+async def _ranking_step(
+    session: Any, scope: _JobScope, view: ViewSpec | None, top_n: int,
+) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
+    """대상 미지정 — 현재 부하(TPS) 내림차순 상위 `top_n`개 인스턴스를 대상으로 고른다(④).
+
+    순위 행의 hostname은 게이트웨이가 정합한 값이다(없으면 이름·소스·id 대상 — 종전 첫 홉 규칙).
+    단계에 전체 인스턴스 수(`fleet_total`)·순위 밖 수(`unranked`)·잠정(`provisional`)을 남긴다.
+    """
+    step: dict[str, Any] = {"view": RANKING_VIEW, "mode": "ranking", "top_n": top_n,
+                            "reason": "대상 서버 미지정 — 현재 부하(TPS) 상위 인스턴스 조회"}
+    if view is None:
+        step["error"] = "순위 보기가 레지스트리에 없다"
+        return [], [], step
+    args: dict[str, Any] = {**view.fixed_args, "metric": "tps", "order": "desc", "n": top_n,
+                            "thread_id": str(scope.thread_id) if scope.thread_id else None,
+                            "owner": scope.owner}
+    if scope.source_ids:
+        args["source_ids"] = list(scope.source_ids)
+    _step_call(step, view, args)
+    call = _Call(view, None, args)
+    await _run_calls(session, [call], 1, scope)
+    if call.error is None and jobs.is_live(call.envelope):
+        await _await_first_hop(session, call, scope)
+    if call.error:
+        step["error"] = call.error
+        return [], [], step
+    env = call.envelope or {}
+    rows = [r for r in env.get("rows") or [] if isinstance(r, dict)]
+    total_rows = env.get("total_row_count")
+    if (isinstance(total_rows, int) and not isinstance(total_rows, bool)
+            and total_rows > len(rows) and len(rows) < top_n):
+        # 순위가 인라인 행 상한을 넘어 결과 파일로 갔다 — 상위 N까지 끝까지 읽는다(V34-2 규칙)
+        rows, short = await _read_result_file(session, env, scope, rows, total_rows)
+        if short:
+            step["read_error"] = short
+    rows = rows[:top_n]
+    raw_summary = env.get("summary")
+    summary: dict[str, Any] = raw_summary if isinstance(raw_summary, dict) else {}
+    hosts, hostless, unaddressed = _target_rows(rows, host_ok=lambda _row: True)
+    # 호스트별 소스 — 호출부가 꺼내 (호스트 · 소스) 대상으로 부른다(메타에는 남기지 않는다 · V6-3)
+    step["_host_sources"] = _host_sources(rows)
+    total = _num(summary.get("instances_total"))
+    step.update({"hosts": len(hosts), "instances": len(rows),
+                 "fleet_total": int(total) if total is not None else len(rows)})
+    unranked = _num(summary.get("instances_unranked"))
+    if unranked:
+        step["unranked"] = int(unranked)
+    if env.get("provisional"):
+        step["provisional"] = int(_num(summary.get("domains_failed")) or 0)
+    if hostless:
+        step["hostless"] = len(hostless)
+    if unaddressed:
+        step["unaddressed"] = unaddressed
+    return hosts, hostless, step
+
+
 async def _insert_instances_step(
-    session: Any, scope: _JobScope, view: ViewSpec | None,
+    session: Any, scope: _JobScope, view: ViewSpec | None, *, limit: int | None = None,
 ) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
     """대상 미지정 — 인스턴스 목록 보기를 먼저 불러 대상을 고른다(첫 홉 삽입 · LLM 0).
 
-    **절단 없이 전부**다(plans/134 M-5 · D-296 ④ — 종전 `max_targets` 앞부분 절단 폐지).
+    `limit`이 없으면 **절단 없이 전부**다(plans/134 M-5 · D-296 ④). `limit`은 부하 순위를 받지
+    못했을 때의 폴백(④)이다 — 목록 순서 앞 `limit`개만 대상이고 전체 수를 `listed`로 남긴다.
     호스트가 정합된 인스턴스는 hostname 대상(서버당 하나 — 그 서버의 인스턴스를 게이트웨이가
     정합한다), 호스트가 없는 인스턴스는 (이름 · 소스 · id) 대상이다 — 조용히 빠지는 인스턴스가
     없다. 이름·소스·id가 없어 부를 수 없는 행은 단계에 수(`unaddressed`)로 남겨 고지한다.
@@ -1977,6 +2438,7 @@ async def _insert_instances_step(
                             "owner": scope.owner}
     if scope.source_ids:
         args["source_ids"] = list(scope.source_ids)
+    _step_call(step, view, args)
     call = _Call(view, None, args)
     await _run_calls(session, [call], 1, scope)
     if call.error is None and jobs.is_live(call.envelope):
@@ -1986,26 +2448,18 @@ async def _insert_instances_step(
         return [], [], step
     env = call.envelope or {}
     rows = [r for r in env.get("rows") or [] if isinstance(r, dict)]
-    total = env.get("total_row_count")
-    if isinstance(total, int) and not isinstance(total, bool) and total > len(rows):
+    raw_total = env.get("total_row_count")
+    total = raw_total if isinstance(raw_total, int) and not isinstance(raw_total, bool) else None
+    if total is not None and total > len(rows) and (limit is None or len(rows) < limit):
         rows, short = await _read_result_file(session, env, scope, rows, total)
         step["total"] = total
         if short:
             step["read_error"] = short
-    hosts: list[str] = []
-    hostless: list[dict[str, Any]] = []
-    unaddressed = 0
-    for row in rows:
-        host = str(row.get("hostname") or "").strip()
-        if host and row.get("match_confidence"):
-            if host not in hosts:
-                hosts.append(host)
-        elif row.get("source_id") and row.get("instance_id") is not None \
-                and row.get("instance_name"):
-            hostless.append({k: row.get(k)
-                             for k in ("instance_name", "source_id", "domain_id", "instance_id")})
-        else:
-            unaddressed += 1
+    if limit is not None:  # 폴백 — 목록 앞 `limit`개(결과 파일 나머지는 읽지 않는다)
+        step["listed"] = max(total, len(rows)) if total is not None else len(rows)
+        rows = rows[:limit]
+    hosts, hostless, unaddressed = _target_rows(
+        rows, host_ok=lambda row: bool(row.get("match_confidence")))
     step["hosts"] = len(hosts)
     step["instances"] = len(rows)
     if hostless:
@@ -2049,19 +2503,74 @@ async def _read_result_file(session: Any, env: dict[str, Any], scope: _JobScope,
     return out, ""
 
 
-def _first_hop_text(step: dict[str, Any]) -> str:
-    """첫 홉 범위 고지 — 「대상 서버 미지정 — 전체 인스턴스 N개(호스트 H대) 조회」(비의무).
+#: 대상 미지정 상위 N 고지의 안내 꼬리(plans/134 W6 ④).
+_NAME_TARGET_TAIL = "특정 서버(또는 업무)를 지정하면 그 대상만 정확히 조회합니다"
 
-    결과 파일을 끝까지 읽지 못했으면 「전체」라고 쓰지 않고 읽은 범위와 사유를 쓴다(의무 고지 —
-    호출부가 `apm_partial_sources`로 싣는다).
+
+def _first_hop_kind(step: dict[str, Any]) -> str:
+    """첫 홉 범위 고지의 kind — 실패가 섞이면 `apm_partial_sources`, 건강한 순위로 상위 N개만
+    고른 것은 의도된 범위 제한이라 `apm_untargeted_scope`(둘 다 의무), 전부 조회면 비의무 `trace`.
+
+    실패 = 결과 파일 읽기 실패 · 잠정 순위 · 순위를 받지 못해 목록 앞 N개로 대신한 경우(④).
     """
     if step.get("read_error"):
+        return disc.APM_PARTIAL_SOURCES
+    if step.get("mode") == "ranking":
+        if "provisional" in step:
+            return disc.APM_PARTIAL_SOURCES
+        total, shown = step.get("fleet_total") or 0, step.get("instances") or 0
+        return disc.APM_UNTARGETED_SCOPE if total > shown else NOTE_TRACE
+    if step.get("mode") == "list" and (step.get("listed") or 0) > (step.get("instances") or 0):
+        return disc.APM_PARTIAL_SOURCES
+    return NOTE_TRACE
+
+
+def _first_hop_text(step: dict[str, Any]) -> str:
+    """첫 홉 범위 고지 — 「대상 서버 미지정 — 전체 인스턴스 N개(호스트 H대) 조회」.
+
+    - 부하 순위(④): 전체 M개 중 상위 N개만이면 그 사실과 대상 지정 안내 · M ≤ N이면 「전체 M개」 ·
+      순위 밖(값 없음)·잠정(조회 실패 도메인 제외)을 덧붙인다.
+    - 순위 폴백(④): 「부하 순위를 받지 못해 목록 순서 앞 N개 — 부하 순이 아님」(전체·순위라고
+      부르지 않는다).
+    - 결과 파일을 끝까지 읽지 못했으면 「전체」라고 쓰지 않고 읽은 범위와 사유를 쓴다.
+    고지 kind는 `_first_hop_kind`가 정한다(상위 N = `apm_untargeted_scope` · 실패 =
+    `apm_partial_sources`).
+    """
+    hosts = step.get("hosts", 0)
+    if step.get("mode") == "ranking":
+        total, shown = step.get("fleet_total", 0), step.get("instances", 0)
+        if total > shown:
+            actual = (f" · 실제 조회 인스턴스 {step['queried']}개"
+                      if step.get("queried") else "")
+            text = (f"대상 서버 미지정 — 전체 인스턴스 {total}개 중 현재 부하(TPS) 상위 {shown}개"
+                    f"(호스트 {hosts}대{actual})만 조회했습니다")
+            if step.get("unranked") and shown < step.get("top_n", shown):
+                text += f" · TPS 값이 없는 인스턴스 {step['unranked']}개는 순위에 없어 빠졌습니다"
+            text += f" · {_NAME_TARGET_TAIL}"
+        else:
+            text = f"대상 서버 미지정 — 전체 인스턴스 {total}개(호스트 {hosts}대) 조회"
+        if "provisional" in step:
+            failed = f" {step['provisional']}곳" if step["provisional"] else ""
+            text += f" · 잠정 — 조회 실패 도메인{failed}의 인스턴스는 부하 순위에 없습니다"
+        if step.get("read_error"):
+            text += f" · 순위 결과 파일을 끝까지 읽지 못했습니다({step['read_error']})"
+    elif step.get("read_error"):
         text = (f"대상 서버 미지정 — 인스턴스 {step.get('total')}개 중 {step.get('instances', 0)}개"
                 f"(호스트 {step.get('hosts', 0)}대)만 조회 — 나머지는 목록 결과 파일을 끝까지"
                 f" 읽지 못했습니다({step['read_error']})")
+        if step.get("mode") == "list":
+            text += f" · 부하 순위를 받지 못해({step.get('rank_error')}) 목록으로 골랐습니다"
+    elif step.get("mode") == "list" and (step.get("listed") or 0) > step.get("instances", 0):
+        text = (f"대상 서버 미지정 — 부하 순위를 받지 못해({step.get('rank_error')}) 인스턴스 목록"
+                f" 순서 앞 {step.get('instances', 0)}개(호스트 {hosts}대)만 조회했습니다 — 부하"
+                f" 순이 아닙니다 · 목록 인스턴스 {step['listed']}개 · {_NAME_TARGET_TAIL}")
     else:
         text = (f"대상 서버 미지정 — 전체 인스턴스 {step.get('instances', 0)}개"
-                f"(호스트 {step.get('hosts', 0)}대) 조회")
+                f"(호스트 {hosts}대) 조회")
+        if step.get("mode") == "full":
+            text += "(전부 조회 요청)"
+        elif step.get("mode") == "list":
+            text += f" — 부하 순위를 받지 못해({step.get('rank_error')}) 목록으로 골랐습니다"
     if step.get("unaddressed"):
         text += f" · 이름·소스가 없어 부를 수 없는 인스턴스 {step['unaddressed']}개는 빠졌습니다"
     return text
@@ -2706,6 +3215,8 @@ def _aggregate_of(call: _Call, env: dict[str, Any]) -> dict[str, Any]:
         total = env.get("total_row_count")
         agg["row_count"] = total if isinstance(total, int) and not isinstance(total, bool) \
             else env.get("row_count")
+        if call.args.get("lookback_minutes") is not None:  # 기간 순위를 요청했다(W6 A-4)
+            agg["period_requested"] = True
     if isinstance(summary, dict) and summary.get("guid"):
         # GUID 추적의 기본 창 고지(V-3) — 게이트웨이 `[한계]` 문구 그대로 결정적 줄에 옮긴다
         agg["window_notes"] = [
@@ -2904,6 +3415,10 @@ def _answer_lines(meta: dict[str, Any]) -> list[str]:
         if fleet is not None:  # 전 대상 순위·이벤트(plans/134 W3) — 다른 집계 줄과 섞지 않는다
             lines += fleet
             continue
+        compare = _compare_line(agg, scope)
+        if compare:  # 두 기간 비교(plans/134 W6 A-1) — 게이트웨이 값 그대로
+            lines.append(compare)
+            continue
         for win in agg.get("row_windows") or []:
             text = _stats_text(win)
             name = win.get("instance_name") or win.get("instance_id")
@@ -2981,16 +3496,79 @@ def _fleet_lines(agg: dict[str, Any], scope: Any) -> list[str] | None:
     if "instances_ranked" not in summary:
         return None
     order = str(summary.get("order") or "")
-    head = (f"{scope}: {summary.get('metric')} {_ORDER_TEXT.get(order, order)} 순위 — 전체 인스턴스"
-            f" {_num(summary.get('instances_total')) or 0:,.0f}개 중 상위 {count or 0:,.0f}")
+    period = summary.get("window_mode") == "period"
+    kind = "순위"
+    if period:  # 기간 순위(plans/134 W6 A-4 — 게이트웨이가 시 단위 통계를 모두 모은 뒤 정렬)
+        span = _span_text(agg.get("window"), summary)
+        kind = "기간 순위(시 단위 통계" + (f" · 조회 구간 {span}" if span else "") + ")"
+    metric = summary.get("metric")
+    if metric == "failure_rate":  # 게이트웨이 값은 0~1 비율 — 표의 값을 %로 읽게 단위를 밝힌다
+        metric = "failure_rate(실패율 · 표의 값은 0~1 비율 — 0.05 = 5%)"
+    head = (f"{scope}: {metric} {_ORDER_TEXT.get(order, order)} {kind} — 전체"
+            f" 인스턴스 {_num(summary.get('instances_total')) or 0:,.0f}개 중 상위"
+            f" {count or 0:,.0f}")
     unranked = _num(summary.get("instances_unranked")) or 0
     if unranked:
         head += f" · 값 없는 인스턴스 {unranked:,.0f}개는 순위에서 뺐습니다"
     lines = [head]
+    if agg.get("period_requested") and not period:
+        # 기간을 말했는데 기간으로 계산할 수 없는 지표(또는 기간 순위를 모르는 게이트웨이) — 현재값
+        lines.append(f"{scope}: 요청 기간의 순위가 아니라 현재값 순위입니다 — 이 지표는 기간으로"
+                     " 계산하지 못했습니다")
     if agg.get("provisional"):
         lines.append(f"{scope}: 잠정 순위 — 조회 실패 도메인"
                      f" {_num(summary.get('domains_failed')) or 0:,.0f}곳 제외")
     return lines
+
+
+def _span_text(window: Any, summary: dict[str, Any]) -> str:
+    """기간 순위의 조회 구간 — 게이트웨이가 시 경계로 넓혀 실제 조회한 `summary.queried` → 봉투
+    `window`(start·end) → 요약 `hour_start`·`hour_end` 순(없으면 빈 값)."""
+    for source, (a, b) in ((summary.get("queried"), ("start", "end")),
+                           (window, ("start", "end")), (summary, ("hour_start", "hour_end")),
+                           (summary.get("window"), ("start", "end"))):
+        if isinstance(source, dict) and source.get(a) and source.get(b):
+            return f"{source[a]} ~ {source[b]}"
+    return ""
+
+
+def _compare_line(agg: dict[str, Any], scope: Any) -> str:
+    """두 기간 비교 한 줄(plans/134 W6 A-1 · `apm_period_compare` 요약) — 비교 요약이 아니면 빈 값.
+
+    값·증감은 게이트웨이가 계산한 그대로다(가중 평균 · 실패율 차 = %p · 기준 0 = N/A · 한쪽 없음 =
+    N/A — 0으로 채우지 않는다). 조회 구간은 게이트웨이가 시 경계로 맞춘 구간이다.
+    """
+    raw = agg.get("summary")
+    summary: dict[str, Any] = raw if isinstance(raw, dict) else {}
+    base, cur, delta = (summary.get(k) for k in ("baseline", "current", "delta"))
+    if not (isinstance(base, dict) and isinstance(cur, dict) and isinstance(delta, dict)):
+        return ""
+
+    def span(part: dict[str, Any]) -> str:
+        a, b = part.get("hour_start") or part.get("start"), part.get("hour_end") or part.get("end")
+        return f"{a} ~ {b}" if a and b else "?"
+
+    def value(part: dict[str, Any], key: str) -> str:
+        num = _num(part.get(key))
+        if num is None:
+            return "N/A"
+        if key == "failure_rate":
+            return f"{num:.1%}"
+        return f"{num:,.0f}ms" if key.endswith("_ms") else f"{num:,.0f}"
+
+    def change(key: str) -> str:
+        item = delta.get(key)
+        if key == "failure_rate":
+            num = _num(item.get("abs")) if isinstance(item, dict) else None
+            return f"{num:+.1f}%p" if num is not None else "N/A"
+        num = _num(item.get("pct")) if isinstance(item, dict) else None
+        return f"{num:+.1f}%" if num is not None else "N/A"
+
+    parts = [f"{label} {value(base, key)} → {value(cur, key)}({change(key)})"
+             for key, label in (("calls", "호출"), ("failure_rate", "실패율"),
+                                ("avg_response_ms", "평균 응답(호출 수 가중)"),
+                                ("max_response_ms", "최대 응답"))]
+    return (f"{scope}: 기준 {span(base)} → 비교 {span(cur)} — " + " · ".join(parts))
 
 
 def _clock_text(ms: Any) -> str:
@@ -3135,7 +3713,9 @@ APM_QUERY_SPEC = SubAgentSpec(
     ),
     backend="mcp",
     input_slots=("entity_set", "time_window"),
-    required_inputs=(),  # 대상이 없으면 인스턴스 목록 보기를 코드가 먼저 부른다(첫 홉)
+    # 대상이 없으면 부하(TPS) 순위 상위 N(실패하면 인스턴스 목록 앞 N)을 코드가 먼저 부른다(첫 홉 ·
+    # plans/134 W6 ④)
+    required_inputs=(),
     output_type="rows",
     key_facets_out=("hostname", "apm_instance_id", "apm_domain_id"),
     self_filters=("host", "time"),

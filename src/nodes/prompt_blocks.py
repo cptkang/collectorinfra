@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
@@ -758,13 +759,27 @@ PROMPT_BUDGET_SAMPLES = "samples"
 PROMPT_BUDGET_EXCEEDED = "exceeded"
 
 
+#: 토크나이저 사전 분할을 흉내 낸 조각 — 영문 단어 · 숫자 3자리 · 비ASCII 연속 · 기호 연속 · 공백.
+#: 모든 문자가 어느 한 조각에 들어간다(빠지는 문자 없음).
+_TOKEN_PIECE_RE = re.compile(
+    r"[A-Za-z]+|\d{1,3}|[^\x00-\x7f]+|[^\sA-Za-z\d\x80-\U0010ffff]+|\s+"
+)
+#: 조각별 문자/토큰 — 비ASCII(한글 합성 명사) 1.2 · 영문 단어 6 · 기호 2 (o200k 실측 · D-159 부기).
+_NON_ASCII_CHARS_PER_TOKEN = 1.2
+_WORD_CHARS_PER_TOKEN = 6
+_SYMBOL_CHARS_PER_TOKEN = 2
+
+
 def estimate_prompt_tokens(text: str) -> int:
     """FabriX 데이터 평면 입력 한도 대비 보수 토큰 추정치를 계산한다 (D-159).
 
-    폐쇄망 백엔드 토크나이저를 밖에서 실측할 수 없으므로 보수 가중을 쓴다 —
-    ASCII 4자/토큰, 비ASCII(한글 등) 1.5자/토큰. 실측 대조(2026-08-21 공동존):
-    FabriX 실보고 136,707tok 프롬프트가 종전 len//4 추정으로는 과소평가됐다.
-    계수 보정은 폐쇄망 [토큰예산] 로그의 추정치와 FabriX 실보고 값을 대조해 수행한다.
+    폐쇄망 백엔드 토크나이저를 밖에서 실측할 수 없으므로 같은 계열(GptOss = o200k)의 사전
+    분할을 흉내 낸 조각 단위로 센다 — 비ASCII 연속은 1.2자/토큰, 영문 단어는 6자/토큰(최소 1),
+    숫자는 3자리마다 1, 기호 연속은 2자/토큰, 줄바꿈·연속 공백은 1(단어 사이 공백 하나는 0).
+    종전 문자 비율(ASCII 4자·비ASCII 1.5자)은 한글 컬럼 이름에 `: char NOT NULL`·숫자 표본이
+    섞인 ITAM 프롬프트를 실측의 1/1.28~1/1.47로 과소 추정해, 예산 90K 안으로 보고 한도 95,232를
+    넘는 프롬프트를 보냈다(2026-10-07 · o200k 대조 — ITAM 98테이블 실측/추정 0.95~0.98 ·
+    폴스타 0.86 · 한글 산문 0.79 · 최대 과소 1.02).
 
     Args:
         text: 추정 대상 텍스트
@@ -772,10 +787,20 @@ def estimate_prompt_tokens(text: str) -> int:
     Returns:
         보수 추정 토큰 수 (빈 문자열은 0)
     """
-    if not text:
-        return 0
-    ascii_chars = sum(1 for ch in text if ord(ch) < 128)
-    return int(ascii_chars / 4 + (len(text) - ascii_chars) / 1.5)
+    tokens = 0
+    for piece in _TOKEN_PIECE_RE.findall(text or ""):
+        head = piece[0]
+        if ord(head) >= 128:
+            tokens += math.ceil(len(piece) / _NON_ASCII_CHARS_PER_TOKEN)
+        elif head.isspace():
+            tokens += 1 if ("\n" in piece or len(piece) > 1) else 0
+        elif head.isalpha():
+            tokens += math.ceil(len(piece) / _WORD_CHARS_PER_TOKEN)
+        elif head.isdigit():
+            tokens += 1
+        else:
+            tokens += math.ceil(len(piece) / _SYMBOL_CHARS_PER_TOKEN)
+    return tokens
 
 
 def resolve_prompt_token_budget(app_config: Optional["AppConfig"]) -> int:

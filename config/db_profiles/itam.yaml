@@ -1,20 +1,1744 @@
-# plans/104 관리자 승인 적용 v1 · 2026-09-23T08:17:37+09:00 · anonymous · env=http://localhost:9099/sse
+# plans/140 W3 외부망 자산 빌더(python -m scripts.itam_bench --build-assets)
+# 출처 반출 run 20261006-152938 · 생성 2026-10-07T09:28:39+0900
+# 직접 커밋 경로 — D-311 · 내부망 승인·실행 검증 없음
+# 자산별 근거
+#   allowed_tables     반출 승인 프로필(기본 제외 tcdmsif81 — 계정 비밀번호 칸 · plans/139)
+#   table_definitions  시드 초안 108건(이름 기반 「(추정)」 포함 · D-308) + 반출 내부망 편집분(manual) 0건
+#   → table_definitions가 있으면 정의 기반 선별(최대 8개 · D-308)이 켜진다. 없으면 조회 대상이
+#     프롬프트에 전부 실려 입력 한도를 넘을 수 있다(plans/139)
+# 코드값·코드 라벨은 반입 뒤 내부망 P1 승인으로 넣는다(이 파일에 없음)
 source: manual
-environment: local_sandbox
-patterns: []
-query_guide: '제공된 DB 스키마 분석 결과, 감지할 수 있는 특수한 구조적 패턴 (EAV, 계층형, 복잡한 JOIN 관계) 은 없습니다.
-
-
-  1. **EAV 패턴 부재**: 스키마는 모든 속성이 테이블의 고정된 열 (column) 로 정의되어 있으며, ''entity'', ''config'',
-  ''attribute'', ''value'' 와 같은 EAV 구조를 위한 별도의 테이블이나 동적 열 구조가 존재하지 않습니다. 각 행은 고정된
-  스키마를 따릅니다.
-
-  2. **계층형 패턴 부재**: 같은 테이블 내에서 자신을 참조하는 부모-자식 관계 (Self-referencing FK, 예: id -> parent_id)
-  나, ''type'' 컬럼을 통한 계층 분류 구조는 발견되지 않았습니다. 모든 테이블은 독립적인 엔티티를 나타내는 것으로 보입니다.
-
-  3. **JOIN 관계 부재**: 제공된 스키마는 단일 테이블의 컬럼 정의만 포함하고 있으며, 테이블 간의 외래 키 (FK) 관계나 주석 (Comment)
-  을 통해 연결된 다른 테이블에 대한 정보가 없습니다. 따라서 테이블 간 JOIN 패턴을 추론할 수 없습니다.
-
-
-  따라서 이 스키마는 표준적인 관계형 데이터 모델 (Relational Model) 을 따르며, 추가적인 메타데이터나 관계 정의가 없으면 위 패턴들은
-  적용되지 않습니다.'
+allowed_tables:
+- tcdmsam01
+- tcdmsam02
+- tcdmsam03
+- tcdmsam50
+- tcdmsam51
+- tcdmsam52
+- tcdmsam54
+- tcdmsam56
+- tcdmsam57
+- tcdmsam58
+- tcdmsam62
+- tcdmsam63
+- tcdmsam65
+- tcdmsam66
+- tcdmsam67
+- tcdmsam68
+- tcdmsam69
+- tcdmsam70
+- tcdmsam72
+- tcdmsbr01
+- tcdmsbr02
+- tcdmscm01
+- tcdmscm11
+- tcdmscm13
+- tcdmscm14
+- tcdmscm21
+- tcdmscm30
+- tcdmscm31
+- tcdmscm32
+- tcdmscm33
+- tcdmscm40
+- tcdmscm51
+- tcdmscm52
+- tcdmscm53
+- tcdmscm54
+- tcdmscm61
+- tcdmscm62
+- tcdmscm91
+- tcdmscm92
+- tcdmscm93
+- tcdmscm94
+- tcdmscm95
+- tcdmscm96
+- tcdmsgt81
+- tcdmsgt82
+- tcdmsgt83
+- tcdmshr01
+- tcdmshr02
+- tcdmsif01
+- tcdmsif02
+- tcdmsif11
+- tcdmsif12
+- tcdmsif13
+- tcdmsif21
+- tcdmsif22
+- tcdmsif31
+- tcdmsif32
+- tcdmsif41
+- tcdmsif42
+- tcdmsif43
+- tcdmsif44
+- tcdmsif45
+- tcdmsif46
+- tcdmsif51
+- tcdmsif52
+- tcdmsif53
+- tcdmsif54
+- tcdmsif55
+- tcdmsif56
+- tcdmsif57
+- tcdmsif58
+- tcdmsif61
+- tcdmsif62
+- tcdmsif63
+- tcdmsif71
+- tcdmsif72
+- tcdmsif73
+- tcdmsif74
+- tcdmsif75
+- tcdmsif76
+- tcdmsif77
+- tcdmsif78
+- tcdmsif79
+- tcdmsif80
+- tcdmsif82
+- tcdmsif83
+- tcdmsif84
+- tcdmsif85
+- tcdmsif86
+- tcdmsif87
+- tcdmsif88
+- tcdmsif89
+- tcdmsif90
+- tcdmsif91
+- tcdmsif92
+- tcdmsif93
+- tcdmsif94
+- tcdmsif95
+table_definitions:
+  tcdmsam01:
+    group: 도입대상
+    kind: 기준·코드
+    manages: 도입 대상 기기 목록 — 기기 식별자·기기명·도입 대상 구분
+    key_columns:
+    - 도입대상기기식별자
+    - 도입대상기기명
+    - 도입대상구분
+    related:
+      tcdmsam02: 도입대상기기식별자
+    origin: import
+  tcdmsam02:
+    group: 도입대상
+    kind: 현행
+    manages: 기기별 도입 대상 건 — 도입 대상 ID와 도입 년월
+    key_columns:
+    - 도입대상기기식별자
+    - 도입대상ID
+    - 도입년월
+    - 비고
+    related:
+      tcdmsam01: 도입대상기기식별자
+      tcdmsam03: 도입대상ID
+    origin: import
+  tcdmsam03:
+    group: 도입대상
+    kind: 기준·코드
+    manages: 도입 대상별 세부 항목(상위 항목으로 이어지는 계층) 내용
+    key_columns:
+    - 도입대상ID
+    - 항목식별자
+    - 상위항목식별자
+    - 항목내용
+    - 정렬순서
+    related:
+      tcdmsam02: 도입대상ID
+    origin: import
+  tcdmsam50:
+    group: SW사용신청
+    kind: 신청·처리
+    manages: 소프트웨어 사용 신청서(머리) — 신청일·신청 유형·신청자/부점·책임자·실사용자 및 소프트웨어 신청 건수·진행 상태
+    key_columns:
+    - 사용신청년월일
+    - 사용신청일련번호
+    - 사용신청유형구분
+    - 사용신청자직원번호
+    - 사용신청자부점코드
+    - 책임자직원번호
+    - 등록상태진행구분
+    related:
+      tcdmsam51: 사용신청년월일·사용신청일련번호
+      tcdmsam54: 사용신청년월일·사용신청일련번호
+    origin: import
+  tcdmsam51:
+    group: SW사용신청
+    kind: 신청·처리
+    manages: 소프트웨어 사용 신청의 실사용자별 내역 — 실사용자·IP·사용 기간·용도, 책임자/관리자 결재·승인·반려, 라이선스 배정·회수
+    key_columns:
+    - 사용신청번호
+    - 소프트웨어신청상태구분
+    - 실사용자직원번호
+    - 실사용자부점코드
+    - 실사용자IP주소
+    - 소프트웨어사용시작년월일
+    - 소프트웨어사용종료년월일
+    - 소프트웨어영구사용여부
+    - 관리자승인여부
+    related:
+      tcdmsam50: 사용신청년월일·사용신청일련번호
+    notes: 개인정보 컬럼(외부웹사이트이메일주소·실사용자 IP) 포함
+    origin: import
+  tcdmsam54:
+    group: SW사용신청
+    kind: 신청·처리
+    manages: 소프트웨어 사용 신청의 소프트웨어별 내역 — 신청 소프트웨어·구매/소프트웨어 ID·분류·신청 가능 수량·버전
+    key_columns:
+    - 사용신청년월일
+    - 사용신청일련번호
+    - 소프트웨어신청일련번호
+    - 소프트웨어명
+    - 구매ID
+    - 소프트웨어ID
+    - 소프트웨어분류구분
+    - 신청가능수량
+    - 소프트웨어버전번호
+    related:
+      tcdmsam50: 사용신청년월일·사용신청일련번호
+      tcdmsam56: 구매ID·소프트웨어ID
+    notes: 라이센스키내용(라이선스 키) 포함
+    origin: import
+  tcdmsam60:
+    group: SW사용신청
+    kind: 변경이력
+    manages: 실사용자별 외부 웹사이트 ID 부여·해지 등록 이력(추정)
+    key_columns:
+    - 등록년월일
+    - 실사용자직원번호
+    - 사용신청번호
+    - 소프트웨어명
+    - 외부웹사이트ID부여년월일
+    - 외부웹사이트ID해지년월일
+    related:
+      tcdmsam51: 사용신청년월일·사용신청일련번호
+    notes: 개인정보 컬럼(외부웹사이트이메일주소) 포함
+    origin: import
+  tcdmsam64:
+    group: SW사용신청
+    kind: 변경이력
+    manages: 소프트웨어 사용 신청의 등록 이력 — 신청·결재·배정·회수 항목을 한 행에 텍스트로 보관(구 시스템 이관본 추정)
+    key_columns:
+    - 등록년월일
+    - 사용신청일련번호
+    - 사용신청자직원번호
+    - 실사용자직원번호
+    - 소프트웨어명
+    - 소프트웨어신청상태구분
+    origin: import
+  tcdmsam68:
+    group: SW사용신청
+    kind: 신청·처리
+    manages: 소프트웨어 도입(사용) 요청 — 요청 소프트웨어·사유·요청 직원/부점·실사용 인원·승인/반려
+    key_columns:
+    - 신청년월일
+    - 신청일련번호
+    - 사용신청유형구분
+    - 소프트웨어명
+    - 직원번호
+    - 부점코드
+    - 실사용인원수
+    - 승인구분
+    - 승인처리일시
+    notes: 개인정보 컬럼(직원명) 포함
+    origin: import
+  tcdmsam69:
+    group: SW사용신청
+    kind: 매핑
+    manages: 대기(신청 가능) 소프트웨어와 구매 소프트웨어의 연결 · 숨김/삭제 여부
+    key_columns:
+    - 대기소프트웨어ID
+    - 구매소프트웨어ID
+    - 숨김여부
+    - 삭제여부
+    related:
+      tcdmsam70: 대기소프트웨어ID
+    origin: import
+  tcdmsam70:
+    group: SW사용신청
+    kind: 신청·처리
+    manages: 대기 소프트웨어 사용 신청 — 신청자/부점·신청일·신청 상태·결재자·결재일
+    key_columns:
+    - 소프트웨어대기신청ID
+    - 대기소프트웨어ID
+    - 신청자직원번호
+    - 신청자부점코드
+    - 신청년월일
+    - 대기신청상태구분
+    - 결재년월일
+    related:
+      tcdmsam69: 대기소프트웨어ID
+    origin: import
+  tcdmsam52:
+    group: SW구매·라이선스
+    kind: 신청·처리
+    manages: 소프트웨어 근기 문서 등록 — 구매ID·소프트웨어ID·분류·계약번호/계약명·제어판 표시명·처리 진행 상태
+    key_columns:
+    - 소프트웨어근기문서등록년월일
+    - 구매ID
+    - 소프트웨어ID
+    - 소프트웨어분류구분
+    - 계약번호
+    - 계약명
+    - 소프트웨어명
+    - 처리진행상태구분
+    - 취소여부
+    related:
+      tcdmsam56: 구매ID·소프트웨어ID
+      tcdmsif12: 계약번호·물품세부일련번호
+    origin: import
+  tcdmsam55:
+    group: SW구매·라이선스
+    kind: 신청·처리
+    manages: 소프트웨어 구매 요청 — 요청 직원/부점·소프트웨어명·제조사·기능·사유·요청 건수
+    key_columns:
+    - 구매요청년월일
+    - 구매요청직원번호
+    - 구매요청부점코드
+    - 구매요청소프트웨어명
+    - 구매요청소프트웨어제조사명
+    - 구매요청건수
+    origin: import
+  tcdmsam56:
+    group: SW구매·라이선스
+    kind: 현행
+    manages: 소프트웨어 라이선스 등록 현황 — 구매/소프트웨어 ID별 사용 주체·실사용자/부점·등록 수량·도입일
+    key_columns:
+    - 구매ID
+    - 소프트웨어ID
+    - 소프트웨어명
+    - 구매소프트웨어명
+    - 라이센스사용주체구분
+    - 실사용부점코드
+    - 라이센스등록수량
+    - 도입년월일
+    related:
+      tcdmsam57: 구매ID·소프트웨어ID
+      tcdmsam54: 구매ID·소프트웨어ID
+      tcdmsam72: 구매ID
+    notes: 라이센스키내용(라이선스 키) 포함
+    origin: import
+  tcdmsam57:
+    group: SW구매·라이선스
+    kind: 변경이력
+    manages: 소프트웨어 라이선스 등록 수량 변경 이력 — 변경 전/후 등록 수량·등록 부점/직원·변경 일시
+    key_columns:
+    - 구매ID
+    - 소프트웨어ID
+    - 등록년월일
+    - 등록시각
+    - 소프트웨어명
+    - 변경전라이센스등록수량
+    - 변경후라이센스등록수량
+    related:
+      tcdmsam56: 구매ID·소프트웨어ID
+    origin: import
+  tcdmsam66:
+    group: SW구매·라이선스
+    kind: 현행
+    manages: 계약 물품별 소프트웨어 라이선스 명세 — 제품·제조사·버전·라이선스 유형/수량/사용 가능 수량·사용 기간·서비스 종료일·설치
+      환경·대상 OS
+    key_columns:
+    - 계약번호
+    - 물품세부일련번호
+    - 라이센스일련번호
+    - 소프트웨어명
+    - 제조사명
+    - 라이센스유형구분
+    - 라이센스수량
+    - 사용가능수량
+    - 라이센스사용종료년월일
+    - 서비스종료년월일
+    related:
+      tcdmsif12: 계약번호·물품세부일련번호
+      tcdmsam67: 계약번호·물품세부일련번호·라이센스일련번호
+    origin: import
+  tcdmsam67:
+    group: SW구매·라이선스
+    kind: 현행
+    manages: 라이선스별 설치 경로
+    key_columns:
+    - 계약번호
+    - 물품세부일련번호
+    - 라이센스일련번호
+    - 라이센스설치일련번호
+    - 라이센스설치경로내용
+    related:
+      tcdmsam66: 계약번호·물품세부일련번호·라이센스일련번호
+    origin: import
+  tcdmsam72:
+    group: SW구매·라이선스
+    kind: 현행
+    manages: 구매 소프트웨어 부가 정보 — 언어·계약 수량·기능 설명
+    key_columns:
+    - 구매ID
+    - 언어구분내용
+    - 계약수량
+    - 기능설명내용
+    - 비고내용
+    related:
+      tcdmsam56: 구매ID
+    origin: import
+  tcdmsam62:
+    group: 불법SW점검
+    kind: 점검
+    manages: 불법 소프트웨어 점검 결과 — PC(컴퓨터명·에이전트·IP)별 설치 소프트웨어·라이선스 유형·부점/직원·점검자 확인
+    key_columns:
+    - 불법소프트웨어점검일시
+    - 컴퓨터명
+    - 에이전트번호
+    - IP주소
+    - 부점명
+    - 직원번호
+    - 소프트웨어명
+    - 라이센스유형구분명
+    - 설치일시
+    related:
+      tcdmsam63: 불법소프트웨어점검일시·불법소프트웨어점검일련번호
+    notes: 개인정보 컬럼(직원명) 포함
+    origin: import
+  tcdmsam63:
+    group: 불법SW점검
+    kind: 점검
+    manages: 불법 소프트웨어 점검 회차 — 점검 일시·점검자·점검 부점
+    key_columns:
+    - 불법소프트웨어점검일시
+    - 불법소프트웨어점검일련번호
+    - 점검자직원번호
+    - 점검부점코드
+    - 점검부점명
+    related:
+      tcdmsam62: 불법소프트웨어점검일시·불법소프트웨어점검일련번호
+    notes: 개인정보 컬럼(점검자성명) 포함
+    origin: import
+  tcdmsam58:
+    group: 전산창고
+    kind: 현행
+    manages: 전산 창고 보관 물품 — 자산(물품분류·고유번호)별 보관 장소·신규/반출 수리/재사용 가능 여부
+    key_columns:
+    - 물품분류번호
+    - 물품고유번호
+    - 보관장소번호
+    - 상세보관장소번호
+    - 신규여부
+    - 반출수리여부
+    - 재사용가능여부
+    related:
+      tcdmsif41: 물품분류번호·물품고유번호
+      tcdmsam65: 보관장소번호 ↔ 전산창고번호(추정)
+    origin: import
+  tcdmsam59:
+    group: 전산창고
+    kind: 현행
+    manages: 미등록 자산 창고 현황 — 물품·모델·보관 장소·취득 연도·창고/재사용 가능/불가 수량
+    key_columns:
+    - 미등록자산창고현황일련번호
+    - 물품분류번호
+    - 물품명
+    - 모델명
+    - 보관장소번호
+    - 전산창고수량
+    - 재사용가능수량
+    origin: import
+  tcdmsam65:
+    group: 전산창고
+    kind: 기준·코드
+    manages: 전산 창고(보관 장소) 코드 — 창고 번호·이름·상위 창고·레벨·사용 여부
+    key_columns:
+    - 전산창고번호
+    - 전산창고명
+    - 상위전산창고번호
+    - 레벨순서
+    - 사용여부
+    related:
+      tcdmsam58: 전산창고번호 ↔ 보관장소번호(추정)
+    origin: import
+  tcdmsam53:
+    group: 메시지
+    kind: 기준·코드
+    manages: 메시지 발송 구분별 템플릿 — 별칭·발송 직원·제목·내용
+    key_columns:
+    - 메시지발송구분명
+    - 별칭명
+    - 발송직원번호
+    - 메시지제목
+    origin: import
+  tcdmsam61:
+    group: 메시지
+    kind: 로그
+    manages: 직원별 메시지 발송 기록 — 발송 구분·등록일·제목·내용
+    key_columns:
+    - 메시지발송구분명
+    - 등록년월일
+    - 직원번호
+    - 메시지제목
+    origin: import
+  tcdmscm61:
+    group: 메시지
+    kind: 신청·처리
+    manages: 메시지 발송 건 — 제목·내용·발송 직원·수신자 수·발송 요청 수·팩스 발송 결과
+    key_columns:
+    - 메시지ID
+    - 메시지제목
+    - 발송직원번호
+    - 수신자수
+    - 발송요청수
+    - 팩스발송결과구분
+    related:
+      tcdmscm62: 메시지ID
+    origin: import
+  tcdmscm62:
+    group: 메시지
+    kind: 로그
+    manages: 메시지 발송 요청별 결과 — 수신자·성공 여부·재시도 횟수·실패 사유
+    key_columns:
+    - 메시지ID
+    - 메시지발송요청일련번호
+    - 수신자수
+    - 발송요청성공여부
+    - 오류재시도횟수
+    - 발송실패사유내용
+    related:
+      tcdmscm61: 메시지ID
+    notes: 수신자내용(수신자 정보) 포함
+    origin: import
+  tcdmsbr01:
+    group: 부점
+    kind: 기준·코드
+    manages: 부점(부서) 정보 — 부점코드·인사 부점코드·부점명·상위 본부/그룹/공동영업권·직할점·폐점 여부·주소·연락처
+    key_columns:
+    - 부점코드
+    - 은행인사부점코드
+    - 부점명
+    - 본부부점명
+    - 그룹부점명
+    - 직할점여부
+    - 부서유형내용
+    - 폐점여부
+    related:
+      tcdmsbr02: 부점코드
+    notes: 다른 테이블의 `~부점코드` 컬럼을 부점명으로 풀 때 쓴다
+    origin: import
+  tcdmsbr02:
+    group: 부점
+    kind: 기준·코드
+    manages: 부점 조직 계층·회계 정보 — 부점 구분·개점/폐기일·회계처리 부점·사업본부/영업지원본부
+    key_columns:
+    - 부점코드
+    - 부점명
+    - 부점구분
+    - 회계처리부점코드
+    - 사업본부부점코드
+    - 영업지원본부부점코드
+    - 개점년월일
+    - 폐기년월일
+    related:
+      tcdmsbr01: 부점코드
+    origin: import
+  tcdmshr01:
+    group: 직원
+    kind: 현행
+    manages: 직원 인사 정보 — 직원번호·이름·소속 부점·직무·직급/직위·부점장 여부·겸직·파견·근무 상태
+    key_columns:
+    - 직원번호
+    - 직원명
+    - 부점코드
+    - 은행인사부점코드
+    - 주직무명
+    - 직급코드
+    - 직위코드명
+    - 부점장여부
+    - 근무상태구분
+    related:
+      tcdmsbr01: 부점코드
+      tcdmshr02: 직원번호
+    notes: 개인정보(이름·내선번호) 포함 — 다른 테이블의 `~직원번호`를 이름으로 풀 때 쓴다
+    origin: import
+  tcdmshr02:
+    group: 직원
+    kind: 수집적재
+    manages: 직원 인사 정보 적재본(추정 — tcdmshr01과 같은 구성에 시스템 등록/수정 컬럼이 없음)
+    key_columns:
+    - 직원번호
+    - 직원명
+    - 부점코드
+    - 주직무명
+    - 직위코드명
+    - 근무상태구분
+    related:
+      tcdmshr01: 직원번호
+    notes: 개인정보(이름·내선번호) 포함
+    origin: import
+  tcdmscm01:
+    group: 게시판·파일
+    kind: 게시판
+    manages: 공지 게시판 — 제목·내용·첨부·조회수·팝업 여부/기간·열람 권한
+    key_columns:
+    - 게시판번호
+    - 게시판명
+    - 게시판내용
+    - 게시판조회수
+    - 팝업여부
+    - 팝업시작일시
+    - 팝업종료일시
+    related:
+      tcdmscm30: 파일번호
+    origin: import
+  tcdmscm11:
+    group: 게시판·파일
+    kind: 게시판
+    manages: 담당 구분이 있는 게시판(문의 게시판 추정) — 제목·내용·첨부·조회수·담당 구분·열람 권한
+    key_columns:
+    - 게시판번호
+    - 게시판명
+    - 게시판내용
+    - 게시판조회수
+    - 게시판담당구분
+    related:
+      tcdmscm12: 게시판번호
+      tcdmscm30: 파일번호
+    origin: import
+  tcdmscm12:
+    group: 게시판·파일
+    kind: 게시판
+    manages: 게시글 답변 — 답변 번호·답변 내용·첨부
+    key_columns:
+    - 게시판번호
+    - 게시판답변번호
+    - 답변번호
+    - 답변내용
+    related:
+      tcdmscm11: 게시판번호
+    origin: import
+  tcdmscm13:
+    group: 게시판·파일
+    kind: 게시판
+    manages: 소프트웨어 도입 안내 게시판(추정) — 제목·내용·소프트웨어명·도입 년월
+    key_columns:
+    - 게시판번호
+    - 게시판명
+    - 소프트웨어명
+    - 도입년월
+    - 게시판조회수
+    related:
+      tcdmscm30: 파일번호
+    origin: import
+  tcdmscm14:
+    group: 게시판·파일
+    kind: 게시판
+    manages: 소프트웨어 관련 게시판(추정) — 제목·내용·담당 구분·소프트웨어명
+    key_columns:
+    - 게시판번호
+    - 게시판명
+    - 게시판담당구분
+    - 소프트웨어명
+    - 게시판조회수
+    related:
+      tcdmscm30: 파일번호
+    origin: import
+  tcdmscm21:
+    group: 게시판·파일
+    kind: 게시판
+    manages: 소프트웨어 도입 자료 게시판(추정 — 첨부 필수) — 제목·내용·소프트웨어명·도입 년월·열람 권한
+    key_columns:
+    - 게시판번호
+    - 게시판명
+    - 소프트웨어명
+    - 도입년월
+    - 게시판권한구분
+    related:
+      tcdmscm30: 파일번호
+    origin: import
+  tcdmscm30:
+    group: 게시판·파일
+    kind: 현행
+    manages: 첨부 파일 — 파일 번호별 실제 파일명·표시 파일명·확장자·경로·크기
+    key_columns:
+    - 파일번호
+    - 파일일련번호
+    - 파일명
+    - 파일확장자명
+    - 파일크기내용
+    notes: 게시판·신청 테이블의 `파일번호`가 가리킨다
+    origin: import
+  tcdmscm31:
+    group: 관리자·메뉴·접속
+    kind: 기준·코드
+    manages: 관리자 그룹 — 그룹 이름·구분·설명·권한 부여/회수일
+    key_columns:
+    - 관리자그룹식별자
+    - 관리자그룹명
+    - 관리자그룹구분
+    - 권한부여년월일
+    - 권한회수년월일
+    related:
+      tcdmscm32: 관리자그룹식별자
+      tcdmscm33: 관리자그룹식별자
+    origin: import
+  tcdmscm32:
+    group: 관리자·메뉴·접속
+    kind: 매핑
+    manages: 관리자 그룹별 메뉴 권한
+    key_columns:
+    - 관리자그룹식별자
+    - 메뉴파일식별자
+    - 권한여부
+    related:
+      tcdmscm31: 관리자그룹식별자
+      tcdmscm40: 메뉴파일식별자
+    origin: import
+  tcdmscm33:
+    group: 관리자·메뉴·접속
+    kind: 매핑
+    manages: 관리자 그룹 소속 관리자 — 관리자 ID·권한 부여/회수일
+    key_columns:
+    - 관리자그룹식별자
+    - 관리자ID
+    - 권한부여년월일
+    - 권한회수년월일
+    related:
+      tcdmscm31: 관리자그룹식별자
+      tcdmscm34: 관리자ID
+    origin: import
+  tcdmscm34:
+    group: 관리자·메뉴·접속
+    kind: 기준·코드
+    manages: 관리자 계정 — 관리자 ID·직원번호·계정 인증 정보
+    key_columns:
+    - 관리자ID
+    - 직원번호
+    - 계정비고내용
+    related:
+      tcdmscm33: 관리자ID
+    notes: 계정인증번호내용(인증 정보) 포함
+    origin: import
+  tcdmscm40:
+    group: 관리자·메뉴·접속
+    kind: 기준·코드
+    manages: 화면 메뉴 — 메뉴 식별자·상위 메뉴·메뉴명·파일 경로·공개 여부·순서
+    key_columns:
+    - 메뉴파일식별자
+    - 상위메뉴파일식별자
+    - 메뉴명
+    - 메뉴파일경로명
+    - 공개여부
+    origin: import
+  tcdmscm92:
+    group: 관리자·메뉴·접속
+    kind: 로그
+    manages: 관리자 로그인 기록 — 관리자 ID·로그인 방법·접속 IP·일시
+    key_columns:
+    - 로그식별자
+    - 관리자ID
+    - 로그인방법내용
+    - 실사용자IP주소
+    - 시스템등록처리일시
+    origin: import
+  tcdmscm93:
+    group: 관리자·메뉴·접속
+    kind: 로그
+    manages: 관리자 메뉴 접근 기록 — 관리자 ID·메뉴·접속 IP·일시
+    key_columns:
+    - 로그식별자
+    - 관리자ID
+    - 메뉴파일식별자
+    - 메뉴명
+    - 실사용자IP주소
+    - 시스템등록처리일시
+    related:
+      tcdmscm40: 메뉴파일식별자
+    origin: import
+  tcdmscm94:
+    group: 관리자·메뉴·접속
+    kind: 매핑
+    manages: 직원별 메뉴 설정(즐겨찾기 등 추정) — 직원·관리자 ID·메뉴·최상위 메뉴
+    key_columns:
+    - 직원번호
+    - 메뉴파일식별자
+    - 관리자ID
+    - 최상위메뉴파일식별자
+    related:
+      tcdmscm40: 메뉴파일식별자
+    origin: import
+  tcdmscm51:
+    group: 배치
+    kind: 기준·코드
+    manages: 배치 거래 정의 — 배치 ID·영문/한글 배치명·설명·사용 여부
+    key_columns:
+    - 배치ID
+    - 배치일련번호
+    - 영문배치거래명
+    - 한글배치거래명
+    - 배치사용여부
+    related:
+      tcdmscm52: 배치ID
+    origin: import
+  tcdmscm52:
+    group: 배치
+    kind: 로그
+    manages: 배치 실행 이력 — 배치별 실행일·정상 여부·실행 스크립트·시작/종료 시각
+    key_columns:
+    - 배치ID
+    - 실행년월일
+    - 거래정상여부
+    - 거래시작시각
+    - 거래종료시각
+    - 실행내용
+    related:
+      tcdmscm51: 배치ID
+    origin: import
+  tcdmscm55:
+    group: 배치
+    kind: 설정
+    manages: 배치별 조회 조건 값(1~5)
+    key_columns:
+    - 배치ID
+    - 조회조건값내용1
+    - 조회조건값내용2
+    related:
+      tcdmscm51: 배치ID
+    origin: import
+  tcdmscm53:
+    group: 공통코드·설정
+    kind: 기준·코드
+    manages: 공통코드 그룹(추정 — 인스턴스 ID = 코드 그룹) — 그룹 이름·설명·사용 여부
+    key_columns:
+    - 인스턴스ID
+    - 인스턴스ID명
+    - 인스턴스내용
+    - 사용여부
+    related:
+      tcdmscm54: 인스턴스ID
+    origin: import
+  tcdmscm54:
+    group: 공통코드·설정
+    kind: 기준·코드
+    manages: 공통코드 값(추정) — 코드 그룹별 코드값·코드명·설명·순서. 다른 테이블 `~구분` 컬럼 값 풀이 후보
+    key_columns:
+    - 인스턴스ID
+    - 인스턴스코드ID
+    - 인스턴스코드ID명
+    - 인스턴스코드내용
+    - 인스턴스순서번호
+    - 사용여부
+    related:
+      tcdmscm53: 인스턴스ID
+    origin: import
+  tcdmscm91:
+    group: 공통코드·설정
+    kind: 설정
+    manages: 채번 현재값(추정) — 컬럼 이름별 현재 일련번호
+    key_columns:
+    - 컬럼명
+    - 현재값
+    origin: import
+  tcdmscm95:
+    group: 공통코드·설정
+    kind: 기준·코드
+    manages: 외부(타) 사이트 링크 — 이름·주소·순서·사용 여부
+    key_columns:
+    - 타사이트식별자
+    - 타사이트명
+    - 타사이트주소내용
+    - 사용여부
+    origin: import
+  tcdmscm96:
+    group: 통계
+    kind: 통계
+    manages: 부점별 현황 통계 — 현황 항목 구분별 통계 결과값
+    key_columns:
+    - 현황항목구분
+    - 부점코드
+    - 은행인사부점코드
+    - 통계결과값
+    related:
+      tcdmsbr01: 부점코드
+    origin: import
+  tcdmsgt82:
+    group: 어플리케이션
+    kind: 현행
+    manages: 어플리케이션(업무 시스템) 목록 — 코드·이름·주 어플리케이션·도메인/서브 도메인·시스템 구분/분류·OS·IT 담당 부점/담당자·현업
+      주무 부점/담당자
+    key_columns:
+    - 어플리케이션코드
+    - 어플리케이션명
+    - 주어플리케이션코드
+    - 도메인구분명
+    - 시스템계코드
+    - 시스템구분명
+    - IT담당부점명
+    - IT담당자성명
+    - 현업주무부점명
+    related:
+      tcdmsgt83: 어플리케이션코드
+    notes: 개인정보(담당자 성명) 포함. 서버 테이블(tcdmsif72·tcdmsif80 등)에 어플리케이션코드 컬럼이 없다 — 서비스↔서버
+      연결은 서버 쪽 그룹경로내용·용도내용·구성항목설명내용, 스토리지 쪽 업무명의 값을 확인해야 한다(plans/135 G-7)
+    origin: import
+  tcdmsgt83:
+    group: 어플리케이션
+    kind: 기준·코드
+    manages: 어플리케이션 기준 정보 — 그룹 공통 여부·도메인·담당 부점/IT·현업 담당자·사용 여부(tcdmsgt82와 같은 코드 체계
+      추정)
+    key_columns:
+    - 어플리케이션코드
+    - 어플리케이션명
+    - 그룹공통구분
+    - 도메인내용
+    - 담당부점명
+    - 업무주무부점명
+    - 사용여부
+    related:
+      tcdmsgt82: 어플리케이션코드
+    origin: import
+  tcdmsgt81:
+    group: 기기·IP연계
+    kind: 수집이력
+    manages: 월별 IP·기기 현황(연계 수신 추정) — 기준 년월마다 IP별 관리 부서·기기 구분·OS·컴퓨터명
+    key_columns:
+    - 기준년월
+    - IP주소
+    - 관리부서명
+    - 기기구분명
+    - 운영체제명
+    - 운영체제상세내용
+    - 컴퓨터명
+    related:
+      tcdmsif21: IP주소
+    origin: import
+  tcdmsif01:
+    group: 전산기기신청
+    kind: 신청·처리
+    manages: 전산기기 신청·설치 — 신청 물품·신청 부점/직원·접수·배정·용도·설치 장소/업체/설치일·승인/거절·반송
+    key_columns:
+    - 신청일련번호
+    - 물품분류번호
+    - 물품고유번호
+    - 물품명
+    - 물품신청구분명
+    - 신청부점코드
+    - 접수년월일
+    - 설치장소구분명
+    - 설치년월일
+    - 설치여부
+    related:
+      tcdmsif41: 물품분류번호·물품고유번호
+    notes: 개인정보(설치자성명) 포함
+    origin: import
+  tcdmsif02:
+    group: 전산기기신청
+    kind: 신청·처리
+    manages: 전산기기 불용·반납 신청 — 처리 상태·신청 구분·사용 연수·신청 부점/직원·부점 승인·매각 손익
+    key_columns:
+    - 물품분류번호
+    - 물품고유번호
+    - 신청년월일
+    - 불용처리상태구분명
+    - 불용신청구분명
+    - 물품명
+    - 사용년수
+    - 신청부점코드
+    - 매각손익금액
+    related:
+      tcdmsif41: 물품분류번호·물품고유번호
+    origin: import
+  tcdmsif11:
+    group: 계약
+    kind: 현행
+    manages: 계약 — 계약 번호/이름·상세 구분·계약일·금액·업체·변경/보충·해지 여부·의뢰 부점·계약 기간·보수 계약
+    key_columns:
+    - 계약번호
+    - 계약명
+    - 계약상세구분명
+    - 계약년월일
+    - 계약금액
+    - 업체명
+    - 계약시작년월일
+    - 계약종료년월일
+    - 계약해지여부
+    related:
+      tcdmsif12: 계약번호
+    origin: import
+  tcdmsif12:
+    group: 계약
+    kind: 현행
+    manages: 계약별 물품 명세 — 모델·수량·단가/총금액·연/월 보수료·사용 기간·자동 연장/해지·담당자(수요/IT/유지보수)
+    key_columns:
+    - 계약번호
+    - 물품세부일련번호
+    - 물품분류번호
+    - 모델명
+    - 물품수량
+    - 물품총금액
+    - 월보수료
+    - 사용종료년월일
+    - 자동연장여부
+    - 물품해지여부
+    related:
+      tcdmsif11: 계약번호
+      tcdmsif41: 계약번호·물품세부일련번호
+      tcdmsif43: 계약번호·물품세부일련번호
+      tcdmsam66: 계약번호·물품세부일련번호
+    origin: import
+  tcdmsif13:
+    group: 계약
+    kind: 신청·처리
+    manages: 계약 물품 점검 대가 지급(추정) — 점검 수량·지급 예정 금액·지체 금액·담당·점검 기간
+    key_columns:
+    - 지원번호
+    - 계약번호
+    - 물품세부일련번호
+    - 점검수량
+    - 지급예정금액
+    - 지체금액
+    - 점검시작년월
+    - 점검종료년월
+    related:
+      tcdmsif12: 계약번호·물품세부일련번호
+    origin: import
+  tcdmsif21:
+    group: IP관리
+    kind: 현행
+    manages: IP 주소 사용처 — IP별 건물·상세 위치·사용처
+    key_columns:
+    - IP주소
+    - IP주소일련번호
+    - 건물명
+    - 상세내용
+    - 사용처명
+    related:
+      tcdmsif22: IP주소·IP주소일련번호
+    origin: import
+  tcdmsif22:
+    group: IP관리
+    kind: 현행
+    manages: IP 주소별 장비 — MAC 주소·제품명·장비명
+    key_columns:
+    - IP주소
+    - IP주소일련번호
+    - MAC주소내용
+    - 제품명
+    - 장비명
+    related:
+      tcdmsif21: IP주소·IP주소일련번호
+    origin: import
+  tcdmsif31:
+    group: 장애
+    kind: 신청·처리
+    manages: 전산기기 장애 접수 — 물품·문의 부점/직원·진행 상태·증상·접수/완료/종료 일시·출동 업체·경과/페널티 시간
+    key_columns:
+    - 장애접수번호
+    - 물품분류번호
+    - 물품고유번호
+    - 물품명
+    - 장애진행상태구분명
+    - 장애증상구분명
+    - 장애접수일시
+    - 장애처리완료일시
+    - 장애경과시간수
+    related:
+      tcdmsif32: 장애접수번호
+      tcdmsif41: 물품분류번호·물품고유번호
+    origin: import
+  tcdmsif32:
+    group: 장애
+    kind: 신청·처리
+    manages: 장애 처리 내역 — 처리 구분·조치 불가 판정·조치 내용·등록 일시
+    key_columns:
+    - 장애접수번호
+    - 처리일련번호
+    - 장애처리구분명
+    - 조치불가판정여부
+    - 장애조치내용
+    - 등록일시
+    related:
+      tcdmsif31: 장애접수번호
+    origin: import
+  tcdmsif41:
+    group: 자산
+    kind: 현행
+    manages: 전산 자산 원장 — 자산(물품분류·고유번호)별 분류·물품명/모델/시리얼·보유 부점·취득일/금액·감가상각·잔존 장부금액·상태·관리/실사용자·무상
+      기간·교체 예정
+    key_columns:
+    - 물품분류번호
+    - 물품고유번호
+    - 물품명
+    - 모델명
+    - 물품고유시리얼번호
+    - 자산보유부점코드
+    - 자산분류구분명
+    - 취득년월일
+    - 자산상태구분명
+    - 잔존장부금액
+    related:
+      tcdmsif46: 물품분류번호
+      tcdmsif12: 계약번호·물품세부일련번호
+      tcdmsif42: 물품분류번호·물품고유번호
+      tcdmsif43: 물품분류번호·물품고유번호
+      tcdmsif72: 물품분류번호·물품고유번호
+    notes: 다른 테이블의 물품분류번호+물품고유번호가 이 원장을 가리키는 것으로 보인다(값 겹침 미확인)
+    origin: import
+  tcdmsif42:
+    group: 자산
+    kind: 변경이력
+    manages: 자산 전출·전입 이력 — 전출일·전출 구분·전출/전입 부점·신청/승인 직원·사유
+    key_columns:
+    - 전출년월일
+    - 물품분류번호
+    - 물품고유번호
+    - 물품전출구분
+    - 전출부점코드
+    - 전입부점코드
+    - 전입전출사유내용
+    related:
+      tcdmsif41: 물품분류번호·물품고유번호
+    origin: import
+  tcdmsif43:
+    group: 자산
+    kind: 현행
+    manages: 자산별 유지보수 계약 — 유지보수 구분·담당자(유지보수/수요/IT)·희망 년월·계약 시작/종료/해지일
+    key_columns:
+    - 물품분류번호
+    - 물품고유번호
+    - 계약번호
+    - 자산유지보수구분명
+    - 유지보수담당자직원번호
+    - 유지보수계약시작년월일
+    - 유지보수계약종료년월일
+    - 유지보수계약해지년월일
+    related:
+      tcdmsif41: 물품분류번호·물품고유번호
+      tcdmsif12: 계약번호·물품세부일련번호
+    origin: import
+  tcdmsif44:
+    group: 자산
+    kind: 점검
+    manages: 자산 유지보수 월 점검 — 기준 년월·점검일·등록 방식/구분·점검/승인/담당 직원·부점
+    key_columns:
+    - 물품분류번호
+    - 물품고유번호
+    - 기준년월
+    - 점검년월일
+    - 점검등록구분명
+    - 유지보수점검직원번호
+    - 유지보수담당부점코드
+    related:
+      tcdmsif41: 물품분류번호·물품고유번호
+      tcdmsif43: 물품분류번호·물품고유번호
+    origin: import
+  tcdmsif45:
+    group: 자산
+    kind: 현행
+    manages: 임차 소프트웨어 자산 — 계약·물품·수량·사용 범위/기간·수요/IT 담당·자동 연장/해지
+    key_columns:
+    - 물품분류번호
+    - 물품고유번호
+    - 계약번호
+    - 임차SW계약명
+    - 물품명
+    - 임차소프트웨어수량
+    - 사용시작년월일
+    - 사용종료년월일
+    - 계약해지여부
+    related:
+      tcdmsif41: 물품분류번호·물품고유번호
+      tcdmsif12: 계약번호·물품세부일련번호
+    origin: import
+  tcdmsif46:
+    group: 자산
+    kind: 기준·코드
+    manages: 물품 분류 기준 — 물품분류번호별 대/중/소/세부 분류·물품명·자산/회계 분류·기준 사용 연수·감가상각 방법/률·각종 승인
+      대상 여부
+    key_columns:
+    - 물품분류번호
+    - 물품명
+    - 물품대분류번호
+    - 물품중분류번호
+    - 물품소분류번호
+    - 자산분류구분
+    - 기준사용년수
+    - 감가상각률
+    - 센터자산구분
+    related:
+      tcdmsif41: 물품분류번호
+    origin: import
+  tcdmsif71:
+    group: 자산
+    kind: 매핑
+    manages: 자산(물품분류·고유번호)과 장비 시리얼 번호의 연결 · 활성화 여부
+    key_columns:
+    - 물품분류번호
+    - 물품고유번호
+    - 시리얼번호
+    - 활성화여부
+    related:
+      tcdmsif41: 물품분류번호·물품고유번호
+      tcdmsif61: 시리얼번호
+    origin: import
+  tcdmsif51:
+    group: 스토리지
+    kind: 현행
+    manages: 스토리지 장비 현황 — 시리얼·장비 구분·용도·운영 상태·모델·파티션/실사용/장비 할당량·사용량
+    key_columns:
+    - 시리얼번호
+    - 스토리지장비구분
+    - 용도구분명
+    - 운영상태명
+    - 모델명
+    - 장비할당량
+    - 장비사용량
+    - 활성화여부
+    related:
+      tcdmsif52: 시리얼번호
+      tcdmsif54: 시리얼번호
+      tcdmsif57: 시리얼번호
+      tcdmsif58: 시리얼번호
+    origin: import
+  tcdmsif52:
+    group: 스토리지
+    kind: 현행
+    manages: 스토리지별 서버 할당 현황 — 스토리지 시리얼·서버 호스트명·업무명·할당/사용량·단독/공유 할당
+    key_columns:
+    - 시리얼번호
+    - 호스트명
+    - 업무명
+    - 장비할당량
+    - 장비사용량
+    - 단독할당량
+    - 공유할당량
+    - 활성화여부
+    related:
+      tcdmsif51: 시리얼번호
+      tcdmsif72: 호스트명 ↔ 서버호스트명
+    notes: 업무명이 서비스↔서버 연결 후보다
+    origin: import
+  tcdmsif53:
+    group: 스토리지
+    kind: 수집적재
+    manages: 스토리지 장비 현황 적재본(tcdmsif51과 같은 구성 · 활성화 여부 없음)
+    key_columns:
+    - 시리얼번호
+    - 스토리지장비구분
+    - 용도구분명
+    - 운영상태명
+    - 모델명
+    - 장비할당량
+    - 장비사용량
+    related:
+      tcdmsif51: 시리얼번호
+    origin: import
+  tcdmsif54:
+    group: 스토리지
+    kind: 수집이력
+    manages: 스토리지 장비 날짜별 수집 이력 — 기준 년월일마다 할당량·사용량
+    key_columns:
+    - 기준년월일
+    - 시리얼번호
+    - 스토리지장비구분
+    - 모델명
+    - 장비할당량
+    - 장비사용량
+    - 운영상태명
+    related:
+      tcdmsif51: 시리얼번호
+    origin: import
+  tcdmsif55:
+    group: 스토리지
+    kind: 수집적재
+    manages: 스토리지별 서버 할당 적재본(tcdmsif52와 같은 구성 · 활성화 여부 없음)
+    key_columns:
+    - 시리얼번호
+    - 호스트명
+    - 업무명
+    - 장비할당량
+    - 장비사용량
+    related:
+      tcdmsif52: 시리얼번호·호스트명
+    origin: import
+  tcdmsif56:
+    group: 스토리지
+    kind: 수집이력
+    manages: 스토리지별 서버 할당 날짜별 수집 이력 — 기준 년월일마다 서버 호스트명·업무명·할당/사용량
+    key_columns:
+    - 기준년월일
+    - 시리얼번호
+    - 호스트명
+    - 업무명
+    - 장비할당량
+    - 장비사용량
+    related:
+      tcdmsif52: 시리얼번호·호스트명
+    origin: import
+  tcdmsif57:
+    group: 스토리지
+    kind: 매핑
+    manages: 스토리지 장비와 자산 원장의 연결 — 임대 장비 여부·사용 계약 번호·활성화 여부
+    key_columns:
+    - 시리얼번호
+    - 물품분류번호
+    - 물품고유번호
+    - 임대장비여부
+    - 사용계약번호
+    - 활성화여부
+    related:
+      tcdmsif51: 시리얼번호
+      tcdmsif41: 물품분류번호·물품고유번호
+    origin: import
+  tcdmsif58:
+    group: 스토리지
+    kind: 현행
+    manages: 스토리지 장비 지원 종료(EOS) — 하드웨어/소프트웨어 지원 종료일
+    key_columns:
+    - 시리얼번호
+    - 스토리지장비구분
+    - 하드웨어지원종료년월일
+    - 소프트웨어지원종료년월일
+    related:
+      tcdmsif51: 시리얼번호
+    origin: import
+  tcdmsif61:
+    group: 네트워크
+    kind: 현행
+    manages: 네트워크 장비 현황 — 장비 유형·위치·호스트명·IP·제조사/모델/시리얼·OS 버전·HW/SW 지원 종료·도입/유지보수 계약
+    key_columns:
+    - 네트워크리소스ID
+    - 호스트명
+    - IP주소내용
+    - 장비유형내용
+    - 장비위치내용
+    - 제조사명
+    - 모델명
+    - 운영체제버전내용
+    - 하드웨어지원종료내용
+    - 활성화여부
+    related:
+      tcdmsif62: 네트워크리소스ID
+      tcdmsif63: 네트워크리소스ID
+      tcdmsif41: 물품분류번호·물품고유번호
+    origin: import
+  tcdmsif62:
+    group: 네트워크
+    kind: 수집이력
+    manages: 네트워크 장비 날짜별 수집 이력 — 기준 년월일마다 tcdmsif61 항목 보관
+    key_columns:
+    - 기준년월일
+    - 네트워크리소스ID
+    - 호스트명
+    - IP주소내용
+    - 장비유형내용
+    - 모델명
+    - 운영체제버전내용
+    related:
+      tcdmsif61: 네트워크리소스ID
+    origin: import
+  tcdmsif63:
+    group: 네트워크
+    kind: 수집적재
+    manages: 네트워크 장비 현황 적재본(tcdmsif61과 같은 구성 · 활성화 여부 없음)
+    key_columns:
+    - 네트워크리소스ID
+    - 호스트명
+    - IP주소내용
+    - 장비유형내용
+    - 모델명
+    related:
+      tcdmsif61: 네트워크리소스ID
+    origin: import
+  tcdmsif72:
+    group: 서버
+    kind: 현행
+    manages: 서버 원장 — 호스트명·IP·운영 환경·용도·설치 지역·OS/버전·벤더/모델·CPU/메모리/디스크 사양·CPU/메모리 사용률·스토리지
+      용량/사용량·서버 유형·자산번호·담당 부점/직원
+    key_columns:
+    - 서버호스트명
+    - IP주소내용
+    - 서버운영환경구분
+    - 용도내용
+    - 그룹경로내용
+    - 운영체제타입내용
+    - 서버CPU사용률
+    - 서버메모리사용율
+    - 담당부점코드
+    - 활성화여부
+    related:
+      tcdmsif73: 서버호스트명·IP주소내용
+      tcdmsif75: 서버호스트명·IP주소내용
+      tcdmsif78: 서버호스트명·IP주소내용
+      tcdmsif79: 서버호스트명·IP주소내용
+      tcdmsif80: 서버호스트명·IP주소내용
+      tcdmsif41: 물품분류번호·물품고유번호
+    notes: 메모리 사용률 컬럼 표기는 `서버메모리사용율`(율)이다 — tcdmsif80은 `서버메모리사용률`(률). 어플리케이션코드 컬럼이
+      없다 — 서비스 연결 후보는 그룹경로내용·용도내용·구성항목설명내용(값 확인 필요). 사용률 정본 아님 — 관측 DB
+    origin: import
+  tcdmsif73:
+    group: 서버
+    kind: 수집이력
+    manages: 서버 날짜별 수집 이력 — 기준 년월일마다 tcdmsif72 항목(사양·사용률·스토리지 사용량) 보관 · 과거 시점 질문용
+    key_columns:
+    - 기준년월일
+    - 서버호스트명
+    - IP주소내용
+    - 서버운영환경구분
+    - 서버CPU사용률
+    - 서버메모리사용율
+    - 전체스토리지사용량
+    related:
+      tcdmsif72: 서버호스트명·IP주소내용
+    notes: 메모리 사용률 컬럼 표기는 `서버메모리사용율`(율) · 사용률 정본 아님 — 관측 DB
+    origin: import
+  tcdmsif74:
+    group: 서버
+    kind: 수집적재
+    manages: 서버 현황 적재본 — tcdmsif72와 같은 구성이되 구분 코드 대신 원문(서버운영환경내용·서버유형내용) · 활성화 여부
+      없음
+    key_columns:
+    - 서버호스트명
+    - IP주소내용
+    - 서버운영환경내용
+    - 용도내용
+    - 운영체제타입내용
+    - 서버유형내용
+    related:
+      tcdmsif72: 서버호스트명·IP주소내용
+    notes: 사용률 정본 아님 — 관측 DB
+    origin: import
+  tcdmsif75:
+    group: 서버
+    kind: 현행
+    manages: 서버별 설치 소프트웨어 — 소프트웨어명·버전·설치 경로·구분·설치/확인일
+    key_columns:
+    - 서버호스트명
+    - IP주소내용
+    - 서버소프트웨어명
+    - 서버소프트웨어버전내용
+    - 서버소프트웨어구분
+    - 서버소프트웨어설치년월일
+    - 활성화여부
+    related:
+      tcdmsif72: 서버호스트명·IP주소내용
+      tcdmsif76: 서버호스트명·서버소프트웨어명
+    origin: import
+  tcdmsif76:
+    group: 서버
+    kind: 수집이력
+    manages: 서버 설치 소프트웨어 날짜별 수집 이력
+    key_columns:
+    - 기준년월일
+    - 서버호스트명
+    - IP주소내용
+    - 서버소프트웨어명
+    - 서버소프트웨어구분
+    - 서버소프트웨어버전내용
+    related:
+      tcdmsif75: 서버호스트명·서버소프트웨어명
+    origin: import
+  tcdmsif77:
+    group: 서버
+    kind: 수집적재
+    manages: 서버 설치 소프트웨어 적재본 — 구분 코드 대신 분류 원문 · 활성화 여부 없음
+    key_columns:
+    - 서버호스트명
+    - IP주소내용
+    - 서버소프트웨어명
+    - 서버소프트웨어버전내용
+    - 서버소프트웨어분류내용
+    related:
+      tcdmsif75: 서버호스트명·서버소프트웨어명
+    origin: import
+  tcdmsif78:
+    group: 서버
+    kind: 매핑
+    manages: 수집 서버와 자산 원장의 매핑 결과 — 매핑 상태·실패 사유·연결 자산번호·수집 일시·조치 상태/메모/조치자
+    key_columns:
+    - 서버호스트명
+    - IP주소내용
+    - 시리얼번호
+    - 서버자산매핑상태구분
+    - 매핑실패사유
+    - 물품분류번호
+    - 물품고유번호
+    - 서버자산매핑조치상태구분
+    - 서버수집일시
+    related:
+      tcdmsif72: 서버호스트명·IP주소내용
+      tcdmsif41: 물품분류번호·물품고유번호
+    origin: import
+  tcdmsif79:
+    group: 서버
+    kind: 현행
+    manages: 서버 지원 종료(EOS) — 하드웨어/소프트웨어 지원 종료일
+    key_columns:
+    - 서버호스트명
+    - IP주소내용
+    - 하드웨어지원종료년월일
+    - 소프트웨어지원종료년월일
+    related:
+      tcdmsif72: 서버호스트명·IP주소내용
+    origin: import
+  tcdmsif80:
+    group: 서버
+    kind: 현행
+    manages: 서버 통합 현황 — 서버별 OS/모델·CPU/메모리/스토리지 용량·사용량·사용률·가상화 연결·담당자/부점· 자산(물품·취득·잔존
+      장부금액·상태·노후 교체)·구매/유지보수 계약을 한 행에 모음
+    key_columns:
+    - 서버호스트명
+    - IP주소내용
+    - 서버운영환경구분
+    - 운영체제타입내용
+    - 서버CPU사용률
+    - 서버메모리사용률
+    - 담당부점명
+    - 자산상태구분
+    - 노후교체기기구분
+    - 유지보수계약종료년월일
+    related:
+      tcdmsif72: 서버호스트명·IP주소내용
+      tcdmsif92: 가상화서버참조ID
+      tcdmsif41: 물품분류번호·물품고유번호
+      tcdmsif43: 물품분류번호·물품고유번호
+    notes: 여러 원장을 합친 마트 성격(추정) — 서버 단위 질문은 이 테이블 하나로 답할 수 있는 경우가 많다. 개인정보(담당자직원명)
+      포함. 메모리 사용률 표기는 `서버메모리사용률`(률). 사용률 정본 아님 — 관측 DB
+    origin: import
+  tcdmsif81:
+    group: 가상화
+    kind: 설정
+    manages: 가상화 관리 서버(수집 대상) — 관리 서버명·API 주소·수집 버전·인증서 만료일·IP·수집 활성화
+    key_columns:
+    - 가상화관리서버ID
+    - 가상화관리서버명
+    - 수집버전내용
+    - 인증서만료년월일
+    - 활성화여부
+    - 수집활성화여부
+    related:
+      tcdmsif83: 가상화관리서버ID
+      tcdmsif89: 가상화관리서버ID
+      tcdmsif92: 가상화관리서버ID
+    notes: 계정명·계정비밀번호EC(암호화된 비밀번호)가 있다 — 조회 대상에서 뺀다(외부망 빌더 기본 제외 · plans/139)
+    origin: import
+  tcdmsif82:
+    group: 가상화
+    kind: 수집적재
+    manages: 가상화 데이터센터 적재본(활성화 여부 없음)
+    key_columns:
+    - 가상화관리서버ID
+    - 데이터센터참조ID
+    - 데이터센터명
+    related:
+      tcdmsif83: 가상화관리서버ID·데이터센터참조ID
+    origin: import
+  tcdmsif83:
+    group: 가상화
+    kind: 현행
+    manages: 가상화 데이터센터 — 관리 서버별 데이터센터 이름·활성화 여부
+    key_columns:
+    - 가상화관리서버ID
+    - 데이터센터참조ID
+    - 데이터센터명
+    - 활성화여부
+    related:
+      tcdmsif81: 가상화관리서버ID
+      tcdmsif86: 데이터센터참조ID
+    origin: import
+  tcdmsif84:
+    group: 가상화
+    kind: 수집이력
+    manages: 가상화 데이터센터 날짜별 수집 이력
+    key_columns:
+    - 기준년월일
+    - 데이터센터수집이력ID
+    - 가상화관리서버ID
+    - 데이터센터참조ID
+    - 데이터센터명
+    related:
+      tcdmsif83: 가상화관리서버ID·데이터센터참조ID
+      tcdmsif87: 데이터센터수집이력ID
+    origin: import
+  tcdmsif85:
+    group: 가상화
+    kind: 수집적재
+    manages: 가상화 군집(클러스터) 적재본(활성화 여부 없음)
+    key_columns:
+    - 가상화관리서버ID
+    - 군집참조ID
+    - 데이터센터참조ID
+    - 군집명
+    - CPU사용률
+    - 메모리사용률
+    related:
+      tcdmsif86: 가상화관리서버ID·군집참조ID
+    notes: 사용률 정본 아님 — 관측 DB
+    origin: import
+  tcdmsif86:
+    group: 가상화
+    kind: 현행
+    manages: 가상화 군집(클러스터) — 군집명·소속 데이터센터·CPU/메모리/스토리지 용량·사용량·사용률
+    key_columns:
+    - 군집참조ID
+    - 군집명
+    - 데이터센터참조ID
+    - CPU용량
+    - CPU사용률
+    - 메모리사용률
+    - 스토리지사용률
+    - 활성화여부
+    related:
+      tcdmsif83: 데이터센터참조ID
+      tcdmsif87: 군집참조ID
+      tcdmsif89: 군집참조ID
+    notes: 사용률 정본 아님 — 관측 DB
+    origin: import
+  tcdmsif87:
+    group: 가상화
+    kind: 수집이력
+    manages: 가상화 군집 날짜별 수집 이력 — 기준 년월일마다 용량·사용량·사용률
+    key_columns:
+    - 기준년월일
+    - 군집수집이력ID
+    - 군집참조ID
+    - 군집명
+    - CPU사용률
+    - 메모리사용률
+    - 스토리지사용률
+    related:
+      tcdmsif86: 가상화관리서버ID·군집참조ID
+      tcdmsif90: 군집수집이력ID
+    notes: 사용률 정본 아님 — 관측 DB
+    origin: import
+  tcdmsif88:
+    group: 가상화
+    kind: 수집적재
+    manages: 가상화 호스트 적재본(tcdmsif89와 같은 구성 · 활성화 여부 없음)
+    key_columns:
+    - 호스트참조ID
+    - 호스트명
+    - 서버호스트명
+    - IP주소내용
+    - CPU사용률
+    - 메모리사용률
+    related:
+      tcdmsif89: 가상화관리서버ID·호스트참조ID
+    notes: 사용률 정본 아님 — 관측 DB
+    origin: import
+  tcdmsif89:
+    group: 가상화
+    kind: 현행
+    manages: 가상화 호스트(물리 서버) — 호스트명·가상화 종류·모델·CPU 개수/소켓/논리·상태·가동 시간·CPU/메모리/스토리지 용량·사용량·사용률·자산번호
+    key_columns:
+    - 호스트참조ID
+    - 호스트명
+    - 서버호스트명
+    - IP주소내용
+    - 가상화종류내용
+    - 호스트상태내용
+    - CPU사용률
+    - 메모리사용률
+    - 스토리지사용률
+    - 활성화여부
+    related:
+      tcdmsif86: 군집참조ID
+      tcdmsif90: 호스트참조ID
+      tcdmsif92: 호스트참조ID
+      tcdmsif72: 서버호스트명
+      tcdmsif41: 물품분류번호·물품고유번호
+    notes: 사용률 정본 아님 — 관측 DB
+    origin: import
+  tcdmsif90:
+    group: 가상화
+    kind: 수집이력
+    manages: 가상화 호스트 날짜별 수집 이력 — 기준 년월일마다 CPU/메모리/스토리지 사용량·사용률
+    key_columns:
+    - 기준년월일
+    - 호스트수집이력ID
+    - 호스트참조ID
+    - 호스트명
+    - 서버호스트명
+    - CPU사용률
+    - 메모리사용률
+    - 스토리지사용률
+    related:
+      tcdmsif89: 가상화관리서버ID·호스트참조ID
+      tcdmsif87: 군집수집이력ID
+      tcdmsif93: 호스트수집이력ID
+    notes: 사용률 정본 아님 — 관측 DB · 1회차 ITAM-114(「지난주 CPU 사용률 추이」)에서 이 테이블로 답했으나 오답이다(D-308
+      ⑨)
+    origin: import
+  tcdmsif91:
+    group: 가상화
+    kind: 수집적재
+    manages: 가상 서버(VM) 적재본(tcdmsif92와 같은 구성 · 활성화 여부 없음)
+    key_columns:
+    - 가상화서버참조ID
+    - 가상화서버명
+    - 서버호스트명
+    - IP주소내용
+    - 실행상태내용
+    - CPU사용률
+    related:
+      tcdmsif92: 가상화관리서버ID·가상화서버참조ID
+    notes: 사용률 정본 아님 — 관측 DB
+    origin: import
+  tcdmsif92:
+    group: 가상화
+    kind: 현행
+    manages: 가상 서버(VM) — VM 이름·실행 상태·소속 호스트·서버 호스트명/IP·vCPU/메모리/스토리지 용량·사용량·사용률
+    key_columns:
+    - 가상화서버참조ID
+    - 가상화서버명
+    - 서버호스트명
+    - IP주소내용
+    - 실행상태내용
+    - 호스트참조ID
+    - CPU사용률
+    - 메모리사용률
+    - 활성화여부
+    related:
+      tcdmsif89: 호스트참조ID
+      tcdmsif93: 가상화서버참조ID
+      tcdmsif94: 가상화서버참조ID
+      tcdmsif72: 서버호스트명
+    notes: 사용률 정본 아님 — 관측 DB
+    origin: import
+  tcdmsif93:
+    group: 가상화
+    kind: 수집이력
+    manages: 가상 서버(VM) 날짜별 수집 이력 — 기준 년월일마다 사용량·사용률
+    key_columns:
+    - 기준년월일
+    - 가상화서버수집이력ID
+    - 가상화서버참조ID
+    - 가상화서버명
+    - 서버호스트명
+    - CPU사용률
+    - 메모리사용률
+    related:
+      tcdmsif92: 가상화관리서버ID·가상화서버참조ID
+      tcdmsif90: 호스트수집이력ID
+    notes: 사용률 정본 아님 — 관측 DB
+    origin: import
+  tcdmsif94:
+    group: 가상화
+    kind: 매핑
+    manages: 가상 서버(VM)별 IP 주소 목록(VM 하나에 여러 IP)
+    key_columns:
+    - 가상화관리서버ID
+    - 가상화서버참조ID
+    - IP주소내용
+    related:
+      tcdmsif92: 가상화관리서버ID·가상화서버참조ID
+    origin: import
+  tcdmsif95:
+    group: 가상화
+    kind: 매핑
+    manages: 가상화 호스트와 자산 원장의 연결 — 관리 서버·호스트명·운영 환경·IP·시리얼·임대 장비 여부·사용 계약
+    key_columns:
+    - 호스트자산매핑ID
+    - 가상화관리서버명
+    - 호스트명
+    - 서버운영환경구분
+    - IP주소내용
+    - 시리얼번호
+    - 물품분류번호
+    - 물품고유번호
+    related:
+      tcdmsif89: 호스트명
+      tcdmsif41: 물품분류번호·물품고유번호
+    origin: import

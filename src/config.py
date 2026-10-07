@@ -1233,6 +1233,10 @@ class CompositeConfig(BaseSettings):
     max_targets: int = 10
     # W2 — 동시 조사 수 / 대상별 타임아웃 / fan-out 전체 타임아웃
     fanout_concurrency: int = 3
+    # plans/134 W6 ④ — APM 대상 필수 보기에 서버를 말하지 않았을 때 현재 부하(TPS) 상위 N개
+    # 인스턴스만 조회한다(2026-10-07 사용자 결정 — 전 인스턴스 조회는 운영 수백 대에서 느리고
+    # 답이 읽히지 않는다). 서버·업무를 말했거나 분해가 `full`을 냈으면 종전대로 전부다.
+    apm_untargeted_top_n: int = 20
     target_timeout_seconds: float = 10.0
     total_timeout_seconds: float = 45.0
     # W2-8 — 단기 조사 캐시 TTL(Tier 2). **기본 0 = 끔.**

@@ -91,6 +91,12 @@ LOCAL_SANDBOX_HEADER = "# LOCAL SANDBOX — 운영 정본 재료로 쓰지 말 �
 
 # SQL에 넣는 식별자(스키마·테이블·컬럼 한 조각) — 따옴표·공백·구분자를 허용하지 않는다
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$#]*$")
+# 스냅샷에서 확인한 테이블·컬럼 조각은 한글 음절(U+AC00–U+D7A3)도 받는다(plans/140 W1-0)
+_SNAPSHOT_IDENT_RE = re.compile(r"^[A-Za-z_가-힣][A-Za-z0-9_$#가-힣]*$")
+# 비ASCII 조각을 감싸는 엔진별 인용 문자
+_IDENT_QUOTES: Mapping[str, str] = {
+    "mariadb": "`", "mysql": "`", "postgresql": '"', "postgres": '"', "db2": '"',
+}
 _DB_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 ClientFactory = Callable[[str | None], AbstractAsyncContextManager[Any]]
@@ -300,6 +306,26 @@ def _dedupe_targets(targets: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]
     return list(merged.values())
 
 
+def snapshot_identifier(part: str, engine: str | None) -> str:
+    """스냅샷에서 확인한 식별자 한 조각을 SQL 표기로 만든다(plans/140 W1-0).
+
+    라틴 조각(`^[A-Za-z_][A-Za-z0-9_$#]*$`)은 인용 없이 그대로 둔다 — 종전 조립 SQL과 바이트
+    동일하다. 한글 음절이 든 조각만 엔진 인용으로 감싼다(MariaDB·MySQL 백틱 · PostgreSQL·DB2
+    큰따옴표). 인용 문자·공백·구분자가 든 이름은 거부한다.
+
+    Raises:
+        ValueError: 허용되지 않는 식별자 · 한글 조각의 인용 방식을 모르는 엔진
+    """
+    if _IDENT_RE.fullmatch(part):
+        return part
+    if not _SNAPSHOT_IDENT_RE.fullmatch(part):
+        raise ValueError(f"허용되지 않는 식별자: {part!r}")
+    quote = _IDENT_QUOTES.get(str(engine or "").strip().lower())
+    if quote is None:
+        raise ValueError(f"한글 식별자의 인용 방식을 모르는 엔진입니다: {engine!r}")
+    return f"{quote}{part}{quote}"
+
+
 def build_code_value_sql(
     table_key: str,
     column: str,
@@ -311,22 +337,21 @@ def build_code_value_sql(
 ) -> str:
     """코드값 `SELECT DISTINCT` 문을 조립하고 안전성 검사를 통과시킨다.
 
-    식별자는 조각마다 `^[A-Za-z_][A-Za-z0-9_$#]*$`여야 한다. DB2는 테이블 키에 스키마가 없으면
-    레지스트리 `db_schema`(없으면 스냅샷 테이블 스키마)로 한정한다.
+    테이블·컬럼 조각은 `snapshot_identifier`를 지난다(라틴은 그대로 · 한글은 엔진 인용). DB2는
+    테이블 키에 스키마가 없으면 레지스트리 `db_schema`(없으면 스냅샷 테이블 스키마)로 한정한다 —
+    스키마명은 라틴 식별자만 받는다.
 
     Raises:
         ValueError: 식별자 형식 오류 · `SQLGuard.is_safe_select` 불통과
     """
-    for part in [*table_key.split("."), column]:
-        if not _IDENT_RE.fullmatch(part):
-            raise ValueError(f"허용되지 않는 식별자: {part!r}")
-    table_ref = table_key
+    table_ref = ".".join(snapshot_identifier(part, engine) for part in table_key.split("."))
+    column = snapshot_identifier(column, engine)
     if is_db2(engine) and "." not in table_key:
         schema = (db_schema or table_schema or "").strip()
         if schema:
             if not _IDENT_RE.fullmatch(schema):
                 raise ValueError(f"허용되지 않는 스키마 식별자: {schema!r}")
-            table_ref = f"{schema}.{table_key}"
+            table_ref = f"{schema}.{table_ref}"
     sql = build_distinct_values_sql(table_ref, column, engine, limit)
     safe, reason = SQLGuard().is_safe_select(sql)
     if not safe:

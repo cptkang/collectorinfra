@@ -84,7 +84,11 @@ def _apm_query_fields(result: dict[str, Any]) -> dict[str, Any]:
     fields: dict[str, Any] = {
         "targets": [{"hostname": h} for h in hosts] or None,
         "profile": ",".join(meta.get("views") or []) or None,
-        "commands": [_apm_command(p) for p in meta.get("provenance") or []] or None,
+        # 첫 홉 삽입 호출(부하 순위 · 인스턴스 목록 — V6-8 ①) 뒤에 대상 조회 호출
+        "commands": [_apm_command({"tool": s["tool"], "args": s.get("args")})
+                     for s in meta.get("inserted_steps") or []
+                     if isinstance(s, dict) and s.get("tool")]
+                    + [_apm_command(p) for p in meta.get("provenance") or []] or None,
     }
     failures = meta.get("failures") or []
     accepted = meta.get("accepted_jobs") or []

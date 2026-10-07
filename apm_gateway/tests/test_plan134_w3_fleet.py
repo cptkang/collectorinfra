@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 from apm_gateway.application.event_buffer import EventBuffer
-from apm_gateway.application.fleet_tools import RANKING_METRICS, FleetTools
+from apm_gateway.application.fleet_tools import ALL_RANKING_METRICS, RANKING_METRICS, FleetTools
 from apm_gateway.application.jobs import JobManager
 from apm_gateway.application.poller import EventPoller
 from apm_gateway.application.sources import build_source_set
@@ -222,7 +222,9 @@ async def test_fleet_mcp_schema_exposes_metric_enum(tmp_path):
     await jobs.aclose()
     schema = {t.name: t.inputSchema for t in await mcp.list_tools()}["apm_fleet"]
     props = schema["properties"]
-    assert props["metric"]["enum"] == list(RANKING_METRICS) and len(RANKING_METRICS) == 30
+    # 실시간 30종 + 기간 순위 전용 4종(plans/134 W6 A-4 — 기간 인자와 함께만 받는다)
+    assert props["metric"]["enum"] == list(ALL_RANKING_METRICS) and len(RANKING_METRICS) == 30
+    assert ALL_RANKING_METRICS[:30] == RANKING_METRICS and len(ALL_RANKING_METRICS) == 34
     assert props["metric"]["default"] == "response_time_avg_ms"
     assert props["mode"]["enum"] == ["ranking", "events"] and schema["required"] == ["mode"]
     assert props["order"]["enum"] == ["desc", "asc"]

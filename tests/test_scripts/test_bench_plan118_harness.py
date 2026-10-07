@@ -221,7 +221,9 @@ def test_현_작업_트리_실측() -> None:
     primary = {a.env_key for a in found if a.tier == "primary" and not a.structural}
     by_key = {a.env_key: a for a in found}
 
-    assert primary == _PRIMARY_BEFORE_B3 - {"COMPOSITE_TARGET_COLUMN_LLM_ENABLED"}
+    # plans/134 W6 ④(2026-10-07) — 무대상 APM 첫 홉 부하 순위 개수가 새 동작 축으로 들어왔다.
+    assert primary == (_PRIMARY_BEFORE_B3 - {"COMPOSITE_TARGET_COLUMN_LLM_ENABLED"}
+                       | {"COMPOSITE_APM_UNTARGETED_TOP_N"})
     assert set(axes.consumer_exclusions()) == {"COMPOSITE_TARGET_COLUMN_LLM_ENABLED"}
     assert by_key["COMPOSITE_PRIOR_SCOPE_LATEST_ONLY"].tier_only == TIER1
     assert by_key["COMPOSITE_PRIOR_SCOPE_LATEST_ONLY"].consumers == (
