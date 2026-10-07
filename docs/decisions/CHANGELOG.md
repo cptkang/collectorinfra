@@ -8,6 +8,8 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-07 | D-318 | 신규 — 노이즈 게이트 `is_routine=False` 승격 제거(운영 24h 매트릭스 PAGE 66건 전부가 이 승격) · D-048 step 9 부분 개정 |
+| 2026-10-07 | D-048 부기 | step 9 보조 조정에서 `is_routine=False` 승격 삭제(D-318) |
 | 2026-10-07 | D-303 부기 | 회귀 실행 시점 개정 — 모듈 단위 회귀는 계획 끝(마지막 Wave)에 팀 리드 1회 · Wave 중간은 자기 테스트 + `regress.py --no-tests`(정적 게이트만) · verifier는 팀 리드 결과 재사용 · `[웨이브 회귀 필요]`(시그니처·config/state·테스트 기반 파일)만 Wave 끝 회귀 |
 | 2026-10-07 | D-304 부기 | code-reviewer·security-auditor 정의 파일에 `model: sonnet` 명시 — 기본값(`CLAUDE_CODE_SUBAGENT_MODEL`) 의존 제거 · 모델 변화 없음 · security-auditor opus 상향은 사용자 결정으로 보류 |
 | 2026-10-07 | D-317 | 예약 — `plans/144` 제니퍼 노이즈 캔슬링·폴스타×제니퍼 복합 캔슬링(게이트 답 뒤 본문 등재) |
