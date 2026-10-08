@@ -21,6 +21,11 @@ plans/135 §3.5 · W2 · D-301.
 - 누출 관문(`LeakGate`)이 산출물 전부를 디코드한 값 단위로 다시 훑는다 — 실패하면 산출물을 쓰지 않고
   위치만 적는다(값일 수 있는 키는 경로에 순번으로). 치환 코드값 파일(`code_samples.yaml`)에는 「원
   코드값 출현 0」 규칙(`code_original`)을 더한다 — 원 집합은 메모리에서만 넘긴다(plans/140 W2-5).
+- **가짜 값 치환**(plans/145 W2 · D-321) — `PiiVault`가 run 의 형식 보존 가짜 값 생성기
+  (`substitute.FakeValues`)를 품으면 가리던 자리(SQL 리터럴·주석·식별자 자리 값·사람 값·오류 문구
+  조각·비일반 결과 열 표본·IP 끝자리)에 표지 대신 가짜 값을 낸다. 생성기가 없으면 현행 표지
+  그대로다. 정규식 PII(`_scrub_free_text`)는 현행 모양 가림이다(U-1). 관문 `substitution` 규칙이
+  충돌·원값 통과·치환값 목록(`substitutions.yaml`)을 본다.
 
 정규식은 중첩 수량자 없는 패턴만 쓴다(docs/18 2026-08-19 ReDoS 사례). `scan_pii`의 이메일 규칙 제곱
 시간(20KB 한 줄 5.7초)은 제품 쪽에서 고쳤다(plans/135 v1.4 · `ChainStartSearch`).
@@ -36,12 +41,15 @@ import unicodedata
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
 import yaml
 
 from .catalog import SCHEMA_QUERY_FORMS, ColumnPolicy, pii_suggestion, strictest
+
+if TYPE_CHECKING:  # `substitute`가 이 모듈을 import 한다 — 실행 시 import 는 순환이다
+    from .substitute import FakeValues
 
 MASK = "<가림>"
 MASK_PII = "<가림:pii>"
@@ -58,7 +66,37 @@ MIN_DIGIT_VALUE_LEN = 5
 UNKNOWN = "?"
 COMPUTED = "#computed"
 
-_IPV4 = re.compile(r"(?<![\d.])(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}(?![\d.])")
+#: 점으로 나뉜 네 덩이 — 앞이 숫자이거나 「숫자.」면(긴 점 연쇄의 중간) 시작하지 않는다. 문장 끝
+#: 마침표(`… 172.31.45.67.`)는 IP 뒤 구두점으로 본다(감사 M-A — 예전 `(?<![\d.])`·`(?![\d.])`는
+#: 마침표 하나로 IP 전체를 놓쳤다). 다섯 덩이 이상 점 연쇄(`IP.port` — netstat·tcpdump
+#: 표기 `172.31.45.67.8080` · 버전 `1.2.3.4.5.6` · OID)는 **앞 네 덩이만** 바꾸거나 가린다
+#: (교정 3차 M-A2 — 연쇄를 통째로 놓치면 관문까지 함께 놓쳤다). 연쇄 길이 상한은 두지 않는다 —
+#: 상한 밖 연쇄는 관문(`_IP_LEFT`)에 막혀 run 이 서므로, 가림 쪽이 넓은 편이 가용성에 낫다.
+#: 구분자는 ASCII 점과 전각 점(`．` U+FF0E · `。` U+3002 · `｡` U+FF61)이다 — 전각 점 IP 셀
+#: 하나가 관문에서 run 전체를 세우지 않게 가림·치환도 같은 구분자를 본다(교정 3차b). 가린 꼴은
+#: `a．b．c.***`, 가짜 값은 ASCII 점이다(`ip_key`로 접어 같은 IP 와 메모를 함께 쓴다).
+#: 잔여(교정 3차d): 점으로 이어진 IP 두 개(`a.b.c.d.e.f.g.h`)는 앞 네 덩이만 바뀌고 뒤 네
+#: 덩이가 원문으로 남아 관문(`_IP_LEFT`)이 run 을 막는다 — 누출은 아니고 가용성 잔여다.
+#: 고정 폭 뒤보기 둘로 쓴다.
+_IP_DOTS = "[.\uff0e\u3002\uff61]"
+_IPV4 = re.compile(
+    rf"(?<!\d)(?<!\d{_IP_DOTS})(\d{{1,3}}{_IP_DOTS}\d{{1,3}}{_IP_DOTS}\d{{1,3}}){_IP_DOTS}\d{{1,3}}"
+    r"(?!\d)"
+)
+#: 관문 전용 남은 IPv4 — 가림(`_IPV4`)보다 느슨하다: 점 연쇄 중간에서도 시작한다(앞이 숫자만
+#: 아니면 · 교정 3차 M-A2). 잡힌 네 덩이가 이 run 가짜 값이 아니면 위반이다(가짜 IP 는 ASCII
+#: 점이라 전각 점 꼴이 남았으면 가림이 빠진 것 — 닫힌 쪽).
+_IP_LEFT = re.compile(
+    rf"(?<!\d)\d{{1,3}}{_IP_DOTS}\d{{1,3}}{_IP_DOTS}\d{{1,3}}{_IP_DOTS}\d{{1,3}}(?!\d)"
+)
+#: 전각 점 → ASCII 점(IP 메모 키 · `ip_key`).
+_IP_DOT_FOLD = str.maketrans({"\uff0e": ".", "\u3002": ".", "\uff61": "."})
+
+
+def ip_key(text: str) -> str:
+    """IP 글의 전각 점을 ASCII 점으로 접는다(가짜 IP 메모 키 — 같은 IP 는 같은 가짜 값)."""
+    return text.translate(_IP_DOT_FOLD)
+#: IPv4 접두 리터럴(`10.0.1.%` · `%10.0.`) — 1~3 옥텟 + 끝 점 + 선택 `%`(전체 일치로 쓴다).
 #: SQL 토큰 — 주석 · 작은따옴표 · 큰따옴표(MariaDB 기본 모드에서는 문자열) · 백틱. 왼쪽부터 한 번에.
 _SQL_TOKEN = re.compile(
     r"/\*.*?\*/|--[^\n]*|#[^\n]*|'(?:[^'\\]|\\.|'')*'|\"(?:[^\"\\]|\\.|\"\")*\"|`(?:[^`]|``)*`",
@@ -78,9 +116,19 @@ _VALUE_WORD_BEFORE = re.compile(
     r"(?is)(?:\b(?:LIKE|BETWEEN|WHEN|THEN|ELSE)|\bBETWEEN\b(?:(?!\bAND\b).){0,200}\bAND)\s*$"
 )
 _IN_BEFORE = re.compile(r"(?i)\bIN\s*$")
+#: 비교 자리 수(감사 M-B) — 앞 낱말이 LIKE·BETWEEN·WHEN(단순 CASE 비교값)이거나, AND 앞 창
+#: 안에 짝 BETWEEN 이 있다(위쪽 경계). 공백·부호는 부르는 쪽이 건너뛴 뒤 끝에서 본다.
+_COMPARE_WORD_BEFORE = re.compile(r"(?i)\b(?:LIKE|BETWEEN|WHEN|AND)$")
+_BETWEEN_AND_BEFORE = re.compile(r"(?is)\bBETWEEN\b(?:(?!\bAND\b).){0,200}\bAND$")
+#: 가짜 값으로 바꾸는 비교 자리 수의 술어 등급 — None 은 근거 없음(가장 엄격).
+_COMPARE_FAKE_GRADES = frozenset({"pii", "free_text", "unclassified", "amount", None})
+#: 비교 자리를 감싸는 호출(교정 3차) — `= CAST(N AS …)`의 첫 인자 · `= COALESCE(x, N)`의 인자.
+_WRAP_CALL_BEFORE = re.compile(r"(?i)\b(CAST|COALESCE)\s*$")
 #: 값 하위 질의 — `(` 바로 앞이 비교 연산자·IN·ANY·ALL·SOME 이고 `(` 바로 뒤가 SELECT.
 _VALUE_OPEN_BEFORE = re.compile(r"(?i)(?:[=<>]|\b(?:IN|ANY|ALL|SOME))\s*$")
 _SELECT_HEAD = re.compile(r"(?i)\s*select\b")
+#: 테이블 자리 — `FROM`·`JOIN` 바로 뒤(교정 1차 F9)
+_TABLE_KEYWORD_BEFORE = re.compile(r"(?i)\b(?:from|join)\s*$")
 _FROM_WORD = re.compile(r"(?i)\bfrom\b")
 #: SELECT 목록에서 정의한 별칭(`AS` 뒤 백틱·따옴표·낱말).
 _ALIAS_DEF = re.compile(
@@ -111,7 +159,7 @@ _SAFE_NUMBERISH = re.compile(
 _FORMAT = re.compile(r"^(?:%[A-Za-z]|[-/:. ]){1,40}$")
 _IPISH = re.compile(r"^%?[0-9.]{1,15}%?$")
 _JWT = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.")
-_NEAR = re.compile(r"near '[^\n]*?' at line (\d+)|near '[^\n]*$")
+_NEAR = re.compile(r"near '(?P<body>[^\n]*?)' at line (?P<line>\d+)|near '(?P<tail>[^\n]*)$")
 _ERROR_QUOTED = re.compile(r"'([^'\n]{0,200})'")
 _ASCII_LABEL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\([^()]{0,40}\))?$")
 #: MariaDB 오류 문구의 고정 어구(따옴표 안이지만 값이 아니다).
@@ -127,6 +175,9 @@ _ERROR_PHRASES = frozenset(
         "IN/ALL/ANY subquery",
     }
 )
+#: 오류 문구 속 키 이름 고정 어구 — 가짜 값 경로에서만 남긴다(생성기 없는 경로는 기준선 그대로
+#: 가림 · verifier Low-4).
+_ERROR_KEY_NAMES = frozenset({"PRIMARY"})
 #: 결과 열 식에서 컬럼이 아닌 낱말(키워드). 함수는 뒤의 `(`로, 테이블 별칭은 뒤의 `.`으로 거른다.
 _SQL_WORDS = frozenset(
     "select from where and or not as on join left right inner outer cross full group by order "
@@ -216,6 +267,25 @@ def display_path(path: Path | str, *, repo_root: Path, home: Path) -> str:
     return str(target)
 
 
+def ip_prefix(text: str) -> tuple[str, list[str], str] | None:
+    """IP 접두 리터럴(`10.0.1.%` · `%10.0.` — 옥텟 1~3개 + 끝 `.`) → (앞 `%`, 옥텟, 뒤 `%`).
+
+    아니면 None(정규식 대신 쪼개 본다 — 중첩 수량자 없음).
+    """
+    head = "%" if text.startswith("%") else ""
+    body = text[len(head) :]
+    tail = "%" if body.endswith("%") else ""
+    body = body[: len(body) - len(tail)]
+    if not body.endswith("."):
+        return None
+    octets = body[:-1].split(".")
+    if not 1 <= len(octets) <= 3:
+        return None
+    if not all(1 <= len(o) <= 3 and o.isascii() and o.isdigit() for o in octets):
+        return None
+    return head, octets, tail
+
+
 def mask_ip(value: str) -> str:
     """IPv4 끝자리를 가린다(`10.0.1.4` → `10.0.1.***`). 한 칸의 여러 IP 도 각각."""
     return _IPV4.sub(lambda m: f"{m.group(1)}.***", str(value))
@@ -259,10 +329,18 @@ class PiiVault:
     """턴 처리 중 `pii` 열에서 본 값 + 정책 카나리아.
 
     **메모리 전용** — 파일에 쓰지 않고 run 종료 시 버린다.
+
+    `fakes`(run 의 가짜 값 생성기 · plans/145)를 품으면 가리던 자리에 표지 대신 가짜 값을 낸다
+    (`substitute`·`mask_ip`·`scrub`). 생성기의 「알려진 값」 판정을 이 vault 의 수집 값·카나리아
+    대조(`hits`)로 잇는다. 없으면(근거 묶음·검증 모드) 현행 표지 그대로다.
     """
 
     def __init__(
-        self, canary_literals: Iterable[str] = (), canary_patterns: Iterable[re.Pattern[str]] = ()
+        self,
+        canary_literals: Iterable[str] = (),
+        canary_patterns: Iterable[re.Pattern[str]] = (),
+        *,
+        fakes: FakeValues | None = None,
     ) -> None:
         self._canaries = {str(v) for v in canary_literals if len(str(v)) >= MIN_VALUE_LEN}
         self._patterns = tuple(canary_patterns)
@@ -270,10 +348,38 @@ class PiiVault:
         self._regex: re.Pattern[str] | None = None
         self._harvested_regex: re.Pattern[str] | None = None
         self._canary_regex = self._compile(self._canaries)
+        self._fakes = fakes
+        if fakes is not None:
+            fakes.set_known(lambda text: self.hits(text) > 0)
 
     @classmethod
-    def from_policy(cls, policy: ColumnPolicy) -> PiiVault:
-        return cls(policy.canary_literals, policy.canary_patterns)
+    def from_policy(cls, policy: ColumnPolicy, *, fakes: FakeValues | None = None) -> PiiVault:
+        return cls(policy.canary_literals, policy.canary_patterns, fakes=fakes)
+
+    @property
+    def fakes(self) -> FakeValues | None:
+        """run 의 가짜 값 생성기(없으면 None — 현행 표지)."""
+        return self._fakes
+
+    def substitute(self, text: str, marker: str = MASK) -> str:
+        """가릴 값 → 가짜 값. 생성기가 없거나 치환 불가면 `marker`."""
+        if self._fakes is None:
+            return marker
+        out = self._fakes.fake_or_none(text)
+        return marker if out is None else out
+
+    def is_fake(self, text: str) -> bool:
+        """이 run 생성기가 낸 가짜 값인가(생성기 없으면 False)."""
+        return self._fakes is not None and self._fakes.is_fake(text)
+
+    def mask_ip(self, text: str) -> str:
+        """IPv4 — 생성기가 있으면 계층 일관 가짜 IP(`FakeValues.fake_ip`), 없으면 끝자리 `***`.
+
+        원값 글에만 쓴다 — 이번 호출이 이미 만든 가짜 값 구간은 부르는 쪽이 빼고 넘긴다.
+        """
+        if self._fakes is None:
+            return mask_ip(text)
+        return self._fakes.fake_ip(str(text))
 
     def __len__(self) -> int:
         return len(self._values)
@@ -312,9 +418,12 @@ class PiiVault:
             return text
         if self._regex is None:
             self._regex = self._compile(self._values | self._canaries)
-        out = self._regex.sub(MASK_PII, text) if self._regex else text
+        replace: str | Callable[[re.Match[str]], str] = MASK_PII
+        if self._fakes is not None:
+            replace = lambda m: self.substitute(m.group(0), MASK_PII)  # noqa: E731
+        out = self._regex.sub(replace, text) if self._regex else text
         for pattern in self._patterns:
-            out = pattern.sub(MASK_PII, out)
+            out = pattern.sub(replace, out)
         return out
 
 
@@ -340,7 +449,7 @@ def scrub_tree(node: Any, vault: PiiVault) -> Any:
     if isinstance(node, list):
         return [scrub_tree(value, vault) for value in node]
     if isinstance(node, str):
-        return _scrub_free_text(vault.scrub(mask_ip(node)))
+        return _scrub_free_text(vault.scrub(vault.mask_ip(node)))
     return node
 
 
@@ -424,36 +533,53 @@ def _alias_expressions(skeleton: str, alias: str) -> list[str]:
     return expressions
 
 
-def _expression_sources(expression: str, folded: Mapping[str, str]) -> list[str]:
-    """식 → 원 컬럼(카탈로그 이름) · 모르는 낱말(`?:이름`·`?`) · 컬럼 없는 계산(`#computed`)."""
+def _expression_sources(
+    expression: str, folded: Mapping[str, str], catalog: frozenset[str] = frozenset()
+) -> list[str]:
+    """식 → 원 컬럼(정책 이름) · 모르는 낱말(`?:이름`·`?`) · 컬럼 없는 계산(`#computed`).
+
+    낱말은 유니코드 단위로 끊는다(`IP주소내용`을 `IP`로 자르지 않는다 · 교정 1차 F12). 정책에 없는
+    낱말은 ASCII 식별자이거나 카탈로그 컬럼 이름일 때만 이름을 남기고(`?:이름`), 그 밖의 비ASCII
+    낱말은 값일 수 있어 이름 없이 `?`다.
+    """
     out: list[str] = []
     has_literal = "''" in expression
-    for match in _IDENT.finditer(expression):
+    anonymous = False
+    for match in _IDENT_ANY.finditer(expression):
         word = match.group(0)
         tail = expression[match.end() :].lstrip()
         if tail.startswith("(") or tail.startswith(".") or word.casefold() in _SQL_WORDS:
             continue
         canonical = folded.get(word.casefold())
-        item = canonical if canonical else f"{UNKNOWN}:{word}"
+        if canonical:
+            item = canonical
+        elif word.isascii() or word.casefold() in catalog:
+            item = f"{UNKNOWN}:{word}"
+        else:
+            anonymous = True
+            continue
         if item not in out:
             out.append(item)
-    if _NON_ASCII_WORD.search(expression):
-        out.append(UNKNOWN)
-    if has_literal:
+    if anonymous or has_literal:
         out.append(UNKNOWN)
     return out or [COMPUTED]
 
 
 def resolve_result_columns(
-    columns: Iterable[str], sqls: Iterable[str], known_columns: Iterable[str]
+    columns: Iterable[str],
+    sqls: Iterable[str],
+    known_columns: Iterable[str],
+    catalog_columns: Iterable[str] = (),
 ) -> dict[str, list[str]]:
     """결과(CSV) 열 이름 → 원 컬럼 목록. **별칭 식이 먼저**이고 실행 SQL 전부의 합집합이다.
 
     ①실행 SQL 어디서든 `<식> AS <별칭>`(AS 생략 포함)이면 그 식들의 컬럼 합집합(실패한 시도 포함 —
     가장 엄격한 쪽이 이긴다) ②별칭이 아니고 카탈로그 이름과 같으면 그 컬럼 ③못 찾으면 빈 목록.
-    정책에 없는 낱말·문자열 리터럴이 섞인 식은 `?`(미분류)를 함께 싣는다.
+    정책에 없는 낱말·문자열 리터럴이 섞인 식은 `?`(미분류)를 함께 싣는다. `catalog_columns`(카탈로그
+    컬럼 이름)에 든 정책 밖 이름은 비ASCII 라도 `?:이름`으로 남는다(값이 아니라 이름이다).
     """
     folded = {str(name).casefold(): str(name) for name in known_columns}
+    catalog = frozenset(str(name).casefold() for name in catalog_columns)
     skeletons = [_skeleton(str(sql)[:INPUT_MAX], set(folded)) for sql in sqls if sql]
     out: dict[str, list[str]] = {}
     for column in columns:
@@ -461,11 +587,14 @@ def resolve_result_columns(
         found: list[str] = []
         for skeleton in skeletons:
             for expression in _alias_expressions(skeleton, name):
-                for item in _expression_sources(expression, folded):
+                for item in _expression_sources(expression, folded, catalog):
                     if item not in found:
                         found.append(item)
         if not found and name.casefold() in folded:
             found = [folded[name.casefold()]]
+        elif not found and name.casefold() in catalog:
+            # 정책 밖 카탈로그 컬럼 — 「분류 필요 컬럼」에 이름을 싣는다
+            found = [f"{UNKNOWN}:{name}"]
         out[name] = found
     return out
 
@@ -476,6 +605,9 @@ def _column_grade(name: str, sources: Sequence[str], policy: ColumnPolicy) -> st
         for source in sources:
             if source == COMPUTED:
                 grades.append("general")
+            elif source.startswith(f"{UNKNOWN}:"):
+                # 정책 밖 컬럼 — 원 정책은 `unclassified`, 유효 정책은 관계로 올린 등급(plans/145)
+                grades.append(policy.grade(source[len(UNKNOWN) + 1 :]))
             elif source.startswith(UNKNOWN):
                 grades.append("unclassified")
             else:
@@ -503,6 +635,11 @@ def safe_label(
     if _value_unsafe(name, vault):
         return f"열#{index}"
     if name.casefold() in {c.casefold() for c in policy.column_names()}:
+        return name
+    if any(  # 정책 밖 카탈로그 컬럼 이름 그대로(`resolve_result_columns`의 `?:이름` · 교정 1차 F12)
+        s.startswith(f"{UNKNOWN}:") and s.split(":", 1)[1].casefold() == name.casefold()
+        for s in sources
+    ):
         return name
     if prompt and name.strip() and name.strip() in prompt:
         return name
@@ -541,6 +678,23 @@ def result_column_names(result: Mapping[str, Any] | None) -> list[str]:
     return names
 
 
+def _fill_substituted(entry: dict[str, Any], present: Sequence[str], fakes: FakeValues) -> None:
+    """비일반 열(+강등 열) — `general`과 같은 모양(표본 5 · 범주형 상위 10)으로 가짜 값을 채운다.
+
+    빈도는 원값 기준 수다(같은 원값 → 같은 가짜 값). 보여 줄 원값만 생성기에 넣는다.
+    """
+    counts = Counter(present)
+    if counts and len(counts) <= TOP_VALUES and len(present) > len(counts):
+        top: Counter[str] = Counter()
+        for value, number in counts.items():
+            top[fakes.fake(value)] += number
+        entry["top_values"] = dict(sorted(top.items(), key=lambda kv: (-kv[1], kv[0])))
+    else:
+        shown = [fakes.fake(value) for value in list(counts)[:SAMPLE_ROWS]]
+        entry["sample"] = list(dict.fromkeys(shown))
+    entry["substituted"] = True
+
+
 def summarize_result(
     result: Mapping[str, Any] | None,
     *,
@@ -549,7 +703,12 @@ def summarize_result(
     vault: PiiVault,
     prompt: str = "",
 ) -> dict[str, Any]:
-    """사용자가 받은 결과(`download-csv`) → 등급별 요약. 사람 값은 먼저 vault 로 모은다(메모리)."""
+    """사용자가 받은 결과(`download-csv`) → 등급별 요약. 사람 값은 먼저 vault 로 모은다(메모리).
+
+    vault 가 가짜 값 생성기를 품으면 비일반 등급·강등 열에도 가짜 값 표본을 싣고
+    `substituted: true`를 단다(기존 통계 칸은 그대로 · plans/145 L7).
+    """
+    fakes = vault.fakes
     result = dict(result or {})
     status = str(result.get("status") or "unavailable")
     out: dict[str, Any] = {
@@ -591,8 +750,10 @@ def summarize_result(
         if grade in ("general", "network"):
             if any(_unsafe_flags(present, vault)):
                 entry["demoted"] = "pii_value_match"
+                if fakes is not None:
+                    _fill_substituted(entry, present, fakes)
             else:
-                shown = [mask_ip(v) for v in present]
+                shown = [vault.mask_ip(v) for v in present]
                 counts = Counter(shown)
                 if counts and len(counts) <= TOP_VALUES and len(shown) > len(counts):
                     entry["top_values"] = dict(
@@ -608,12 +769,18 @@ def summarize_result(
                     min=_num_out(min(numbers)),
                     max=_num_out(max(numbers)),
                 )
+            if fakes is not None:
+                _fill_substituted(entry, present, fakes)
         elif grade == "pii":
             entry["distinct"] = len(set(present))
+            if fakes is not None:
+                _fill_substituted(entry, present, fakes)
         else:  # free_text · unclassified
             if present:
                 lengths = [len(v) for v in present]
                 entry["length"] = [min(lengths), max(lengths)]
+            if fakes is not None:
+                _fill_substituted(entry, present, fakes)
         out["columns"].append(entry)
     return out
 
@@ -740,7 +907,8 @@ def _identifier_judge(
 
     D-301 부기(2026-10-07) — 식별자는 이름으로 남긴다. 프롬프트 말 여부는 호출부가 먼저 본다.
 
-    - 남김: 정책 컬럼·테이블·카탈로그 컬럼 이름 · 한정(바로 앞이나 뒤에 `.`).
+    - 남김: 정책 컬럼·테이블·카탈로그 컬럼 이름 · 한정(바로 앞이나 뒤에 `.`) · 테이블 자리(`FROM`·
+      `JOIN` 바로 뒤 · `FROM` 쉼표 조인 목록 — 교정 1차 F9: 술어 조각 위험을 보지 않는다).
     - A 모양: 식별자 모양(`_IDENT_SHAPE`)이 아니면 가린다.
     - 별칭(`AS` 뒤): 같은 SQL 에서 가린 리터럴(`masked_literals`)과 내용이 겹치거나(2자 이상 ·
       casefold · 같음/포함/피포함 — ASCII 리터럴의 포함은 낱말 경계로), 그 SELECT 항목이 상수
@@ -823,6 +991,35 @@ def _identifier_judge(
         window = skeleton[max(0, index - 255) : index + 1]
         return bool(_VALUE_WORD_BEFORE.search(window))
 
+    def table_slot(start: int) -> bool:
+        """테이블 이름 자리 — `FROM`·`JOIN` 바로 뒤, 또는 `FROM` 쉼표 조인 목록의 쉼표 뒤.
+
+        목록 항목은 `이름` · `이름 별칭` · `이름 AS 별칭`(괄호·다른 낱말이 끼면 목록이 아니다).
+        """
+        index = start - 1
+        while index >= 0 and skeleton[index].isspace():
+            index -= 1
+        if index < 0:
+            return False
+        if _TABLE_KEYWORD_BEFORE.search(skeleton[max(0, index - 63) : index + 1]):
+            return True
+        if skeleton[index] != "," or index in in_list:
+            return False
+        window = skeleton[max(0, index - 1023) : index]
+        froms = list(_FROM_WORD.finditer(window))
+        if not froms:
+            return False
+        between = window[froms[-1].end() :]
+        if "(" in between or ")" in between:
+            return False
+        for item in between.split(","):
+            parts = item.split()
+            if not 1 <= len(parts) <= 3 or not _IDENT_SHAPE.match(parts[0].replace(".", "_")):
+                return False
+            if len(parts) == 3 and parts[1].casefold() != "as":
+                return False
+        return True
+
     def alias_masked(start: int, content: str) -> bool:
         folded = content.casefold()
         if len(folded) >= MIN_VALUE_LEN and literals:
@@ -869,7 +1066,7 @@ def _identifier_judge(
             return alias_masked(start, content)
         if value_slot(start):
             return True
-        if content.casefold() in defined_aliases:
+        if table_slot(start) or content.casefold() in defined_aliases:
             return False
         left, right = segment(seg_bounds, seg_starts, start, end)
         total = prefix[bisect.bisect_left(word_starts, right)] - prefix[
@@ -960,11 +1157,13 @@ def _redact_plain(
     prompt: str,
     allowed: frozenset[str],
     in_identifier_slot: Callable[[int, int, str], bool],
+    replace: Callable[[str], str] = lambda _word: MASK,
 ) -> str:
     """토큰 사이 SQL 본문 — 따옴표 없는 비ASCII 낱말은 식별자로 남기고 식별자 자리의 값만 가린다.
 
     그 턴 프롬프트에 있는 말 · 결과 요약이 열 이름으로 남긴 별칭(`allowed`)은 판정 없이 남긴다.
-    `offset`은 `text`가 원 SQL 에서 시작하는 위치다.
+    `offset`은 `text`가 원 SQL 에서 시작하는 위치다. 가린 낱말 자리는 `replace(낱말)`(기본 표지 ·
+    생성기가 있으면 가짜 값)이다.
     """
 
     def keep(match: re.Match[str]) -> str:
@@ -972,9 +1171,111 @@ def _redact_plain(
         if word in (prompt or "") or word in allowed:
             return word
         start = offset + match.start()
-        return MASK if in_identifier_slot(start, start + len(word), word) else word
+        return replace(word) if in_identifier_slot(start, start + len(word), word) else word
 
     return _PLAIN_WORD.sub(keep, text)
+
+
+def _operator_before(plain: str, index: int) -> bool:
+    """`index` 앞(공백 건너뜀)이 비교 연산자 글자인가."""
+    while index and plain[index - 1].isspace():
+        index -= 1
+    return bool(index) and plain[index - 1] in "=<>"
+
+
+def _wrapped_compare(plain: str, paren: int | None, *, first: bool) -> bool:
+    """여는 괄호 `paren` 안의 수가 비교 자리인가 — `= (N)` · `= CAST(N …)` · `= COALESCE(…, N)`.
+
+    `first`는 수가 괄호 바로 뒤(첫 인자)인가다. 그 밖의 함수 인자(`ROUND(x, 2)`)는 구조다.
+    """
+    if paren is None:
+        return False
+    call = _WRAP_CALL_BEFORE.search(plain, max(0, paren - 16), paren)
+    if call is None:
+        return first and _operator_before(plain, paren)
+    if call.group(1).upper() == "CAST" and not first:
+        return False
+    return _operator_before(plain, call.start())
+
+
+def _compare_numbers(
+    sql: str, policy: ColumnPolicy | None, catalog: frozenset[str]
+) -> list[tuple[int, int]]:
+    """따옴표 없는 수 중 가짜 값으로 바꿀 비교 자리 구간(감사 M-B · 생성기 경로만).
+
+    비교 자리 = 공백·부호를 건너뛴 바로 앞이 비교 연산자(`= <> != < > <= >=`) · `IN (` 목록의 여는
+    괄호나 목록 쉼표 · LIKE · BETWEEN · BETWEEN 짝 AND · WHEN(단순 CASE 비교값). 그 술어 조각의
+    가장 엄격한 등급(`_segment_grades` — BETWEEN 위쪽 경계는 BETWEEN 자리 조각)이 pii·free_text·
+    unclassified·amount 이거나 근거 없음(None)이면 바꾼다.
+
+    경계 근거 — 비교 자리 수는 조회 조건으로 쓴 **데이터 값**(사번·금액)이라 결과 셀과 같은 값이다.
+    그 밖의 수는 구조다: LIMIT·OFFSET·`LIMIT n, m`·FETCH FIRST n·TOP n·INTERVAL n(앞이 키워드),
+    함수 인자(`ROUND(x, 2)`·`SUBSTRING(x, 1, 3)` — 여는 괄호·쉼표가 `IN (` 목록이 아님),
+    산술 피연산자(`b * 100`)·ORDER/GROUP BY 순번·THEN/ELSE 결과값. 등급이 general·network 인
+    조각의 비교값(`use_yn = 1`)도 진단용으로 남긴다(network 는 끝의 IP 패스가 가린다).
+
+    비교 연산자 바로 뒤 괄호 한 겹(`= (N)`)과 그 자리의 `CAST(N AS …)` 첫 인자 ·
+    `COALESCE(x, N)` 인자도 비교 자리다(교정 3차). 남긴 잔여(감사 재확인 2차 — 값싼 판정 밖):
+    - 산술 둘째 이후 피연산자(`= 1 + N`)
+    - 왼쪽 리터럴(`N = col`)
+    - `IS NOT DISTINCT FROM N`
+    - 값 하위 질의 목록(`= ANY (SELECT N)`)
+    - THEN/ELSE 결과값(`CASE … THEN N`)
+    - 지수·16진 꼴(`1e5` · `0x1F` — `_SQL_NUMBER`가 잡지 않는다)
+    - 두 겹 이상 감싼 꼴(`= (CAST(N AS CHAR))`)
+
+    자릿수 하한은 두지 않는다 — 1~2자리 값도 등급 규칙대로 바꾸고, 공간이 모자라면 `<가림>`
+    표지로 내린다(A8 설계 · 유용성 손실이지 누출이 아니다). 교정 3차b 에서 1~2자리를 남겼다가
+    3차e 에 철회했다(verifier Minor-D — SQL `= 12` 원문과 같은 레코드 표본의 가짜 값 `78`이 짝을
+    이뤄 run 전체의 `78`이 실제 `12`로 풀렸다).
+    """
+    identifiers: set[str] = set()
+    if policy is not None:
+        identifiers = {n.casefold() for n in policy.column_names() | policy.table_names()}
+    grade_at = _segment_grades(_same_length_skeleton(sql, identifiers), policy, catalog)
+    plain = _SQL_TOKEN.sub(lambda m: " " * len(m.group(0)), sql)
+    in_list = _paren_marks(plain)[1]
+    # 쉼표 → 그 쉼표를 감싼 여는 괄호(`COALESCE(x, N)` 판정용)
+    owner: dict[int, int] = {}
+    stack: list[int] = []
+    for index, char in enumerate(plain):
+        if char == "(":
+            stack.append(index)
+        elif char == ")" and stack:
+            stack.pop()
+        elif char == "," and stack:
+            owner[index] = stack[-1]
+    spans: list[tuple[int, int]] = []
+    for match in _SQL_NUMBER.finditer(plain):
+        start, end = match.span()
+        cut = start
+        while cut and plain[cut - 1].isspace():
+            cut -= 1
+        if cut and plain[cut - 1] in "+-":
+            cut -= 1
+            while cut and plain[cut - 1].isspace():
+                cut -= 1
+        if not cut:
+            continue
+        before = plain[cut - 1]
+        anchor = start
+        if before in "=<>" or (before in "(," and cut - 1 in in_list):
+            pass
+        elif before in "(," and _wrapped_compare(
+            plain, cut - 1 if before == "(" else owner.get(cut - 1), first=before == "("
+        ):
+            pass
+        elif word := _COMPARE_WORD_BEFORE.search(plain, max(0, cut - 8), cut):
+            if word.group(0).upper() == "AND":
+                pair = _BETWEEN_AND_BEFORE.search(plain, max(0, cut - 220), cut)
+                if pair is None:
+                    continue
+                anchor = pair.start()
+        else:
+            continue
+        if grade_at(anchor, anchor + 1 if anchor != start else end) in _COMPARE_FAKE_GRADES:
+            spans.append((start, end))
+    return spans
 
 
 def redact_sql(
@@ -995,6 +1296,8 @@ def redact_sql(
     남긴 리터럴·식별자도 사람 값·카나리아·정규식과 대조하고, IP 는 어디서든 끝자리를 가린다.
     `allowed_words`는 결과 요약이 근거를 확인해 남긴 열 이름(별칭)이고, `catalog_columns`는 스키마
     카탈로그의 컬럼 이름이다(정책에 없는 컬럼과 같은 술어의 리터럴은 프롬프트 말이 아니면 가린다).
+    vault 가 가짜 값 생성기를 품으면 가린 리터럴·주석 내용·식별자 자리 값은 가짜 값(리터럴은 내용
+    전체가 키)이고, 사람 값이 든 남긴 리터럴은 그 값 자리만 가짜 값이다(정규식 PII 는 현행 가림).
     """
     text = str(sql or "")[:INPUT_MAX]
     allowed = frozenset(word for word in allowed_words if word and not _value_unsafe(word, vault))
@@ -1025,24 +1328,81 @@ def redact_sql(
     ]
     kept = [m.group(0)[1:-1] for m, decision in plan if decision == "keep"]
     unsafe = dict(zip(kept, _unsafe_flags(kept, vault), strict=True))
-    pieces: list[str] = []
+    generating = vault.fakes is not None
+    #: (글, 이번 호출이 만든 가짜 값인가) — 끝의 IP 패스는 만든 조각을 다시 바꾸지 않는다(HIGH-1)
+    pieces: list[tuple[str, bool]] = []
+    #: 비교 자리 데이터 수(감사 M-B) — 생성기 경로만 가짜 값(생성기 없는 경로는 현행 유지)
+    numbers = _compare_numbers(text, policy, catalog) if generating else []
+
+    def add_plain(start: int, stop: int) -> None:
+        index = bisect.bisect_left(numbers, (start, start))
+        while index < len(numbers) and numbers[index][0] < stop:
+            number_start, number_end = numbers[index]
+            pieces.append(
+                (
+                    _redact_plain(
+                        text[start:number_start], start, prompt, allowed, in_slot, vault.substitute
+                    ),
+                    False,
+                )
+            )
+            pieces.append((vault.substitute(text[number_start:number_end]), True))
+            start = number_end
+            index += 1
+        rest = _redact_plain(text[start:stop], start, prompt, allowed, in_slot, vault.substitute)
+        pieces.append((rest, False))
+
     cursor = 0
     for match, decision in plan:
         token = match.group(0)
-        pieces.append(_redact_plain(text[cursor : match.start()], cursor, prompt, allowed, in_slot))
+        add_plain(cursor, match.start())
+        made = generating
         if decision == "comment":
             opener = "/*" if token.startswith("/*") else ("--" if token.startswith("--") else "#")
-            replacement = f"/*{MASK}*/" if opener == "/*" else f"{opener} {MASK}"
+            inner = vault.substitute(_token_content(token))
+            replacement = f"/*{inner}*/" if opener == "/*" else f"{opener} {inner}"
         elif decision == "mask":
-            replacement = f"{token[0]}{MASK}{token[-1]}"
+            replacement = f"{token[0]}{vault.substitute(token[1:-1])}{token[-1]}"
         elif unsafe.get(token[1:-1]):
-            replacement = f"{token[0]}{MASK_PII}{token[-1]}"
+            inner = (
+                MASK_PII
+                if not generating
+                else _scrub_free_text(vault.scrub(vault.mask_ip(token[1:-1])))
+            )
+            replacement = f"{token[0]}{inner}{token[-1]}"
+        elif (
+            generating
+            and ip_prefix(token[1:-1]) is not None
+            and not _prompt_word(token[1:-1], prompt)
+        ):
+            # IP 접두 리터럴(`10.0.1.%`)은 가짜 IP 와 같은 계층 메모로 바꾼다(실 접두 짝 노출 방지)
+            replacement = f"{token[0]}{vault.substitute(token[1:-1])}{token[-1]}"
         else:
-            replacement = token
-        pieces.append(replacement)
+            replacement, made = token, False
+        pieces.append((replacement, made))
         cursor = match.end()
-    pieces.append(_redact_plain(text[cursor:], cursor, prompt, allowed, in_slot))
-    return _scrub_free_text(vault.scrub(mask_ip("".join(pieces))))
+    add_plain(cursor, len(text))
+    if not generating:
+        return _scrub_free_text(vault.scrub(vault.mask_ip("".join(p for p, _ in pieces))))
+    joined = "".join(piece if made else vault.mask_ip(piece) for piece, made in pieces)
+    return _scrub_free_text(vault.scrub(joined))
+
+
+_SQL_NUMBER = re.compile(r"(?<![\w.])[0-9][0-9.]*(?<!\.)(?![\w.])")
+
+
+def sql_literal_contents(sql: str) -> list[str]:
+    """SQL 의 문자열 리터럴 내용과 수 리터럴(2단계 1차 등록용 원값 — 산출물에 쓰지 않는다)."""
+    out: list[str] = []
+    last = 0
+    for match in _SQL_TOKEN.finditer(sql):
+        out += _SQL_NUMBER.findall(sql, last, match.start())
+        token = match.group(0)
+        if token[0] in "'\"":
+            out.append(token[1:-1].replace(token[0] * 2, token[0]))
+        last = match.end()
+    out += _SQL_NUMBER.findall(sql, last)
+    return out
 
 
 def _token_content(token: str) -> str:
@@ -1053,6 +1413,46 @@ def _token_content(token: str) -> str:
     if token.startswith("#"):
         return token[1:].strip()
     return token[1:-1]
+
+
+def _overlaps(spans: Sequence[tuple[int, int]], start: int, end: int) -> bool:
+    """정렬된 서로 겹치지 않는 구간 목록에 [start, end)와 겹치는 구간이 있는가."""
+    index = bisect.bisect_left(spans, (end, -1)) - 1
+    return index >= 0 and spans[index][1] > start
+
+
+def _sub_outside(
+    pattern: re.Pattern[str],
+    text: str,
+    spans: list[tuple[int, int]],
+    replace: Callable[[re.Match[str]], tuple[str, bool]],
+) -> tuple[str, list[tuple[int, int]]]:
+    """`re.sub`과 같되 이번 호출이 만든 가짜 값 구간(`spans`)과 겹치는 매치는 그대로 둔다.
+
+    `replace(match)` → ``(바꾼 글, 만든 가짜 값 구간인가)``. 구간은 새 글 기준으로 다시 잡는다.
+    """
+    edits = [(start, end, text[start:end], True) for start, end in spans]
+    for match in pattern.finditer(text):
+        if spans and _overlaps(spans, match.start(), match.end()):
+            continue
+        replacement, made = replace(match)
+        edits.append((match.start(), match.end(), replacement, made))
+    if len(edits) == len(spans):
+        return text, spans
+    edits.sort(key=lambda edit: edit[0])
+    pieces: list[str] = []
+    out_spans: list[tuple[int, int]] = []
+    cursor = position = 0
+    for start, end, replacement, made in edits:
+        pieces.append(text[cursor:start])
+        position += start - cursor
+        if made and replacement:
+            out_spans.append((position, position + len(replacement)))
+        pieces.append(replacement)
+        position += len(replacement)
+        cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces), out_spans
 
 
 def redact_text(
@@ -1068,13 +1468,27 @@ def redact_text(
     ①`near '…' at line N` 조각은 통째로 가린다(따옴표 짝이 어긋나 와도) ②그 턴 SQL 들의 가린 리터럴
     내용을 문구 어디서든 지운다 ③남은 작은따옴표 조각은 SQL 식별자·오류 고정 어구·날짜/짧은 수·
     프롬프트 말일 때만 남긴다 ④IP·수집 값·카나리아·정규식 ⑤`limit`자 절단.
+
+    vault 가 가짜 값 생성기를 품으면 ①~④의 가린 자리는 가짜 값이다 — ②는 내용이 키라 같은 턴
+    SQL 의 가린 리터럴과 같은 가짜 값이다. 뒤 단계는 **이 호출이 앞 단계에서 만든 가짜 값 구간**만
+    다시 바꾸지 않는다(전역 가짜 값 등록부로 통과시키지 않는다 — 원값이 우연히 가짜 값과 같아도 원값
+    등록 경로를 거친다 · 감사 HIGH-1). 키 이름 `PRIMARY`는 고정 어구로 남긴다(verifier Low-4).
     """
     # 남길 앞부분 + 여유만 본다 — 가림은 자르기 전에 끝내므로 경계에 걸린 값 조각은 버려지는 쪽에
     # 있다.
     out = str(text or "")[: limit + 1000]
-    out = _NEAR.sub(
-        lambda m: f"near '{MASK}'" + (f" at line {m.group(1)}" if m.group(1) else ""), out
-    )
+    generating = vault.fakes is not None
+    phrases = _ERROR_PHRASES | _ERROR_KEY_NAMES if generating else _ERROR_PHRASES
+    spans: list[tuple[int, int]] = []
+
+    def near(match: re.Match[str]) -> tuple[str, bool]:
+        body = match.group("body")
+        content = body if body is not None else match.group("tail")
+        line = match.group("line")
+        inner = vault.substitute(content)
+        return f"near '{inner}'" + (f" at line {line}" if line else ""), generating
+
+    out, spans = _sub_outside(_NEAR, out, spans, near)
     sqls = [sql] if isinstance(sql, str) else list(sql)
     sql_idents: set[str] = set()
     for one in sqls:
@@ -1088,38 +1502,65 @@ def redact_text(
         for content in sorted(
             (c for c in masked if len(c) >= MIN_VALUE_LEN), key=len, reverse=True
         ):
-            out = out.replace(content, MASK)
+            if content not in out:
+                continue  # 문구에 없는 내용은 생성기에 넣지 않는다
+            replacement: list[str] = []
+
+            def literal(_match: re.Match[str], content: str = content) -> tuple[str, bool]:
+                if not replacement:  # 문구에 실제로 남아 있을 때만 한 번 치환한다
+                    replacement.append(vault.substitute(content))
+                return replacement[0], generating
+
+            out, spans = _sub_outside(re.compile(re.escape(content)), out, spans, literal)
         sql_idents |= set(_IDENT.findall(_skeleton(str(one)[:INPUT_MAX])))
 
-    def quoted(match: re.Match[str]) -> str:
+    def quoted(match: re.Match[str]) -> tuple[str, bool]:
         content = match.group(1)
         if (
             content in sql_idents
-            or content in _ERROR_PHRASES
+            or content in phrases
             or content == MASK
             or _trivially_safe(content, prompt)
         ):
-            return match.group(0)
-        return f"'{MASK}'"
+            return match.group(0), False
+        return f"'{vault.substitute(content)}'", generating
 
-    out = _ERROR_QUOTED.sub(quoted, out)
-    out = _scrub_free_text(vault.scrub(mask_ip(out)))
+    out, spans = _sub_outside(_ERROR_QUOTED, out, spans, quoted)
+    if generating:
+        out, spans = _sub_outside(_IPV4, out, spans, lambda m: (vault.mask_ip(m.group(0)), True))
+        out = _scrub_free_text(vault.scrub(out))
+    else:
+        out = _scrub_free_text(vault.scrub(vault.mask_ip(out)))
     return out if len(out) <= limit else out[:limit] + "…"
 
 
 # --- 누출 관문 (§3.5.5) -------------------------------------------------------------
 
 
-#: 누출 관문 규칙 — 앞 5개는 모든 산출 파일 · `code_original`은 치환 코드값 파일만.
+#: 누출 관문 규칙 — 앞 5개는 모든 산출 파일 · `substitution`은 가짜 값 등록부 충돌·`trace.jsonl`
+#: 치환 열 양성 검사·`substitutions.yaml`(plans/145) · `code_original`은 치환 코드값 파일만.
 GATE_RULES: tuple[str, ...] = (
     "canary",
     "pii_value",
     "pii_regex",
     "schema_form",
     "user_info",
+    "substitution",
     "code_original",
 )
 CODE_SAMPLES_FILE = "code_samples.yaml"
+#: 가짜 값 목록 반출 파일(plans/145 §2.6 — 형식은 하류 차단(W3)이 읽는다 · 바꾸지 않는다)
+SUBSTITUTIONS_FILE = "substitutions.yaml"
+#: 가짜 값 반출 표기 고정 문구(`run.json` `substitution_note` · `report.md` 첫머리 ·
+#: `substitutions.yaml` `note` — 관문이 값 형태로 검증한다)
+SUBSTITUTION_NOTE = (
+    "형식 보존 치환값 — 원값 아님 · 대응표 없음 · run마다 새 난수 · 외부망 테스트 전용 · "
+    "설정 파일에 넣지 않는다"
+)
+#: `substitutions.yaml` 머리 칸
+SUBSTITUTIONS_KEYS: tuple[str, ...] = ("db_id", "run_id", "note", "summary", "values")
+#: `run.json` 사용자 정보 칸 — 생성기가 있으면 None 또는 이 run 가짜 값(관문 `substitution`)
+RUN_USER_FIELDS: tuple[str, ...] = ("login_user", "operator", "host")
 #: 원값 부분 문자열 대조 하한(이보다 짧은 원값은 casefold 같음만 본다).
 CODE_ORIGINAL_MIN_SUBSTRING = 3
 
@@ -1186,6 +1627,10 @@ class CodeOriginals:
         """정규화한 원값 중 `pattern`에 전체 일치하는 수 — 치환 공간 계산용(값 비노출)."""
         return sum(1 for folded in self._equal if pattern.fullmatch(folded))
 
+    def equal(self, folded: str) -> bool:
+        """정규화한 글(`_fold`)이 원값과 같은가 — 부분 문자열은 보지 않는다(긴 값 대조용)."""
+        return folded in self._equal
+
     def hit(self, text: object) -> bool:
         folded = _fold(text)
         if folded in self._equal:
@@ -1200,6 +1645,55 @@ class CodeOriginals:
 
 def _is_count(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def substitutions_document(fakes: FakeValues, *, db_id: str, run_id: str) -> dict[str, Any]:
+    """`substitutions.yaml` 본문 — 이 run 가짜 값 정렬 목록과 수만(원값·컬럼 연결 없음)."""
+    values = fakes.fakes()
+    return {
+        "db_id": db_id,
+        "run_id": run_id,
+        "note": SUBSTITUTION_NOTE,
+        "summary": {"values": len(values), "fallback": fakes.fallback_counts()},
+        "values": values,
+    }
+
+
+def _substitutions_fields(doc: Any, is_fake: Callable[[str], bool]) -> Iterable[str]:
+    """`substitutions.yaml` 형태 위반 칸(경로만 — 값 없음).
+
+    머리 칸 정확히 5개 · 식별자 형식 · 고정 문구 · `summary` = 값 수(=목록 길이)·사유별 정수 ·
+    `values`는 전부 이 run 생성기가 낸 가짜 값.
+    """
+    from .substitute import FALLBACK_REASONS
+
+    if not isinstance(doc, Mapping) or set(doc) != set(SUBSTITUTIONS_KEYS):
+        yield "keys"
+        return
+    for key in ("db_id", "run_id"):
+        if not (isinstance(doc[key], str) and _CODE_SAMPLES_ID.match(doc[key])):
+            yield key
+    if doc["note"] != SUBSTITUTION_NOTE:
+        yield "note"
+    values = doc["values"]
+    if not isinstance(values, list):
+        yield "values"
+        values = []
+    summary = doc["summary"]
+    fallback = summary.get("fallback") if isinstance(summary, Mapping) else None
+    if (
+        not isinstance(summary, Mapping)
+        or set(summary) != {"values", "fallback"}
+        or summary.get("values") != len(values)
+        or not _is_count(summary.get("values"))
+        or not isinstance(fallback, Mapping)
+        or not set(fallback) <= set(FALLBACK_REASONS)
+        or not all(_is_count(v) for v in fallback.values())
+    ):
+        yield "summary"
+    for index, value in enumerate(values):
+        if not (isinstance(value, str) and is_fake(value)):
+            yield f"values[{index}]"
 
 
 def _summary_shape_ok(summary: Any) -> bool:
@@ -1293,6 +1787,18 @@ def _code_sample_leaves(doc: Any) -> Iterable[tuple[str, str | None]]:
         yield from leaves(value, label)
 
 
+def _detail_leaves(node: Any) -> Iterable[Any]:
+    """판정 상세 하위 트리의 잎(목록·사전 값을 따라 내려간다)."""
+    if isinstance(node, Mapping):
+        for value in node.values():
+            yield from _detail_leaves(value)
+    elif isinstance(node, (list, tuple)):
+        for value in node:
+            yield from _detail_leaves(value)
+    else:
+        yield node
+
+
 class LeakGate:
     """산출 텍스트 전부를 기록 직전에 다시 훑는다. 걸리면 **위치만** 돌려준다(값 없음)."""
 
@@ -1303,10 +1809,13 @@ class LeakGate:
         vault: PiiVault,
         user_values: Mapping[str, str | None],
         code_originals: CodeOriginals | None = None,
+        fakes: FakeValues | None = None,
     ) -> None:
         self._policy = policy
         self._vault = vault
         self._code_originals = code_originals
+        #: 가짜 값 등록부(`substitution` 규칙) — 없으면 vault 의 생성기
+        self._fakes = fakes if fakes is not None else vault.fakes
         # 너무 짧은 값은 무관한 문자열과 겹친다 — 3자 이상만 원값 대조(가린 형태 `5***`는 원값이
         # 아니다)
         self._user_values = [str(v) for v in user_values.values() if v and len(str(v)) >= 3]
@@ -1324,6 +1833,34 @@ class LeakGate:
             found.append("schema_form")
         if any(value in text for value in self._user_values) or _JWT.search(text):
             found.append("user_info")
+        return found
+
+    def _ip_left(self, text: str) -> bool:
+        """IPv4 모양(`_IP_LEFT`)이 남았는데 이 run 가짜 값이 아닌가(생성기 없으면 모양만으로 — 그
+        경로는 IP 를 `a.b.c.***`로 가리므로 네 덩이가 남으면 가림이 빠진 것이다 · 감사 M-A·M-A2).
+
+        처분 — 다섯·여섯 덩이 연쇄(`172.31.45.67.8080` · 버전 `1.2.3.4.5.6`)는 가림이 앞 네 덩이를
+        바꾸므로 통과하고, 원문 그대로 남았으면 막는다. 네 덩이 뒤에 다시 네 덩이가 남는 긴 연쇄
+        (`1.3.6.1.4.1.9.9.1` 같은 OID)는 앞 네 덩이만 가려져 뒤 네 덩이가 남으므로 막는다(닫힌
+        쪽 — 중간에 박힌 실 IP 와 구분할 근거가 없다). 세 자리 넘는 덩이(`10.0.19041.1`)는 IP
+        모양이 아니다.
+        전각 점 IP(`172．31．45．67`)는 가림·치환이 같은 구분자를 보므로 원문으로 남지 않아
+        통과하고, 가림이 빠져 남았을 때만 막는다(교정 3차b).
+        """
+        fakes = self._fakes
+        return any(
+            fakes is None or not fakes.is_fake(match.group(0)) for match in _IP_LEFT.finditer(text)
+        )
+
+    def leaf_rules(self, text: str, *, schema_section: bool) -> list[str]:
+        """산출물 잎 하나의 규칙 — `rules` + 남은 IPv4(`pii_regex` 확장).
+
+        IP 검사는 생성기 거절 판정(`rules`)에 넣지 않는다 — 막 뽑은 가짜 IP 후보는 아직 이 run
+        가짜 값이 아니라 전부 거절되기 때문이다.
+        """
+        found = self.rules(text, schema_section=schema_section)
+        if "pii_regex" not in found and self._ip_left(text):
+            found.append("pii_regex")
         return found
 
     def _label(self, key: str, position: int, parent: str) -> str:
@@ -1393,18 +1930,174 @@ class LeakGate:
             if leaf is None or self._code_originals.hit(leaf)
         ]
 
+    def _substituted_ok(self, value: Any) -> bool:
+        """치환 열 표본 원소 — 이 run 가짜 값 · 가림 표지만 통과(생성기 경로는 IP 도 가짜 값이라
+        `a.b.c.***` 형태가 나오지 않는다)."""
+        if not isinstance(value, str):
+            return False
+        if value in (MASK, MASK_PII):
+            return True
+        return self._fakes is not None and self._fakes.is_fake(value)
+
+    def _detail_leaf_ok(self, value: Any) -> bool:
+        """판정 상세 치환 칸의 잎 — 빈 값 · 표지 · 이 run 가짜 값(수는 글로 바꿔 본다)."""
+        if value is None or value == "":
+            return True
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, (int, float)):
+            value = str(value)
+        return self._substituted_ok(value)
+
+    def _check_oracle(self, name: str, number: int, oracle: Any) -> list[dict[str, Any]]:
+        """`substitution` ② — 판정 상세(`oracle.detail`)의 치환 칸(`oracle.substituted_fields`) 잎은
+        전부 가짜 값·표지여야 한다. 키를 남기지 않는 기록(`keys_recorded: false`)이 키 목록을 싣는데
+        치환 칸 표지가 없어도 위반이다. 생성기 없이 치환 칸 표지가 있으면 닫힌 쪽으로 실패한다.
+        `key_tagged`(per_db) 기록은 키 맨 앞 태그가 **등록 DB id**(`judge.registered_db_ids`)일
+        때만 치환 칸에서 뺀다 — 표지만 믿지 않고 `map_detail`이 태그마다 집합을 다시 본다. 등록
+        밖 태그는 가짜 값이어야 하고, 태그도 일반 규칙(`leaf_rules`)은 그대로 받는다
+        (교정 3차b·c)."""
+        from .judge import DETAIL_FIELDS, detail_key_fields, map_detail
+
+        if not isinstance(oracle, Mapping):
+            return []
+        fields = oracle.get("substituted_fields")
+        detail = oracle.get("detail")
+
+        def violation(field: str) -> dict[str, Any]:
+            return {"file": name, "record": number, "field": field, "rule": "substitution"}
+
+        if fields is None or fields == []:
+            fields = []
+        elif (
+            self._fakes is None
+            or not isinstance(fields, list)
+            or not set(fields) <= set(DETAIL_FIELDS)
+        ):
+            return [violation("oracle.substituted_fields")]
+        out: list[dict[str, Any]] = []
+        if oracle.get("keys_recorded") is False:
+            out += [
+                violation(f"oracle.detail.{field.split('.')[0]}")
+                for field in detail_key_fields(detail)
+                if field not in fields
+            ]
+        if not isinstance(detail, Mapping):
+            return out
+        for key, node in detail.items():
+            found: list[Any] = []
+
+            def grab(part: Any, found: list[Any] = found) -> Any:
+                found.append(part)
+                return part
+
+            map_detail(
+                {key: node, "compare": detail.get("compare")},
+                fields,
+                substituted=grab,
+                other=lambda part: part,
+                key_tagged=oracle.get("key_tagged") is True,
+            )
+            leaves = (leaf for part in found for leaf in _detail_leaves(part))
+            if not all(self._detail_leaf_ok(leaf) for leaf in leaves):
+                out.append(violation(f"oracle.detail.{key}"))
+        return out
+
+    def _check_run(self, name: str, text: str) -> list[dict[str, Any]]:
+        """`substitution` — `run.json` 사용자 정보 칸은 None 또는 이 run 가짜 값(생성기 있을 때)."""
+        if self._fakes is None:
+            return []
+        try:
+            meta = json.loads(text)
+        except json.JSONDecodeError:
+            meta = None
+        if not isinstance(meta, Mapping):
+            return [{"file": name, "record": None, "field": None, "rule": "substitution"}]
+        return [
+            {"file": name, "record": None, "field": field, "rule": "substitution"}
+            for field in RUN_USER_FIELDS
+            if meta.get(field) is not None and not self._substituted_ok(meta.get(field))
+        ]
+
+    def _check_trace(self, name: str, text: str) -> list[dict[str, Any]]:
+        """`substitution` ② — 결과 열 표본·상위 값 양성 검사.
+
+        `substituted: true` 열의 `sample` 원소·`top_values` 키는 전부 가짜 값(또는 표지)이어야 한다.
+        비일반 등급·강등 열이 값을 싣는데 `substituted: true`가 아니어도 위반이다. 생성기 없이 치환
+        열이 있으면 닫힌 쪽으로 실패한다.
+        """
+        violations: list[dict[str, Any]] = []
+        for number, line in enumerate(text.splitlines(), start=1):
+            try:
+                record = json.loads(line) if line.strip() else None
+            except json.JSONDecodeError:
+                continue  # 줄 단위 규칙이 따로 본다
+            if isinstance(record, Mapping):
+                violations += self._check_oracle(name, number, record.get("oracle"))
+            result = record.get("result") if isinstance(record, Mapping) else None
+            columns = result.get("columns") if isinstance(result, Mapping) else None
+            for index, column in enumerate(columns if isinstance(columns, list) else []):
+                if not isinstance(column, Mapping):
+                    continue
+                substituted = column.get("substituted") is True
+                plain = column.get("log_policy") in ("general", "network") and not column.get(
+                    "demoted"
+                )
+                for key in ("sample", "top_values"):
+                    if key not in column:
+                        continue
+                    items = column[key]
+                    values = list(items) if isinstance(items, (list, Mapping)) else [items]
+                    if substituted:
+                        ok = self._fakes is not None and all(map(self._substituted_ok, values))
+                    else:
+                        ok = plain
+                    if not ok:
+                        violations.append(
+                            {
+                                "file": name,
+                                "record": number,
+                                "field": f"result.columns[{index}].{key}",
+                                "rule": "substitution",
+                            }
+                        )
+        return violations
+
+    def _check_substitutions(self, name: str, text: str) -> list[dict[str, Any]]:
+        """`substitution` ③ — 가짜 값 목록 파일 형태·값(생성기 없으면 닫힌 쪽 실패)."""
+        try:
+            doc = yaml.safe_load(text)
+        except yaml.YAMLError:
+            doc = None
+        fakes = self._fakes
+        if fakes is None or doc is None:
+            return [{"file": name, "record": None, "field": None, "rule": "substitution"}]
+        return [
+            {"file": name, "record": None, "field": field, "rule": "substitution"}
+            for field in _substitutions_fields(doc, fakes.is_fake)
+        ]
+
     def check(self, files: Mapping[str, str]) -> list[dict[str, Any]]:
         violations: list[dict[str, Any]] = []
+        # `substitution` ① — 낸 가짜 값이 나중에 본 원값·수집 값과 같아졌으면 닫힌 쪽 실패(값 없음)
+        if self._fakes is not None and self._fakes.collisions() > 0:
+            violations.append({"file": None, "record": None, "field": None, "rule": "substitution"})
         for name, text in files.items():
             if name == CODE_SAMPLES_FILE:
                 violations += self._check_code_samples(name, text)
+            if name == SUBSTITUTIONS_FILE:
+                violations += self._check_substitutions(name, text)
+            if name == "trace.jsonl":
+                violations += self._check_trace(name, text)
+            if name == "run.json":
+                violations += self._check_run(name, text)
             whole_schema = name.startswith("schema_catalog")
             seen_rules: set[str] = set()
             decoded: list[str] = []
             for record, field, leaf in self._units(name, text):
                 decoded.append(leaf)
                 section = whole_schema or field.split(".")[0].split("[")[0] == "schema_context"
-                for rule in self.rules(leaf, schema_section=section):
+                for rule in self.leaf_rules(leaf, schema_section=section):
                     seen_rules.add(rule)
                     violations.append(
                         {"file": name, "record": record, "field": field or None, "rule": rule}
@@ -1412,7 +2105,7 @@ class LeakGate:
             # 닫힌 쪽으로 실패: 잎을 이어 붙였을 때만 걸리는 규칙(잎 경계에 걸친 값)도 위반이다.
             if len(decoded) < 2:
                 continue
-            for rule in self.rules("\n".join(decoded), schema_section=whole_schema):
+            for rule in self.leaf_rules("\n".join(decoded), schema_section=whole_schema):
                 if rule not in seen_rules:
                     violations.append({"file": name, "record": None, "field": None, "rule": rule})
         return violations

@@ -43,6 +43,13 @@ from src.utils.deadline import (
     call_timeout,
     remaining_sec,
 )
+from src.utils.empty_antecedent import (
+    EMPTY_ANTECEDENT_KEY,
+    ZERO_ROW_TURN_KEY,
+    carried_zero_row_turn,
+    empty_antecedent_note,
+    widened_beyond_antecedent,
+)
 from src.utils.month_structure import is_month_structure_field
 from src.utils.prior_dependency import ADMIN_ASSET_NOTE_KINDS, CROSS_SYSTEM_NOTE_KINDS
 from src.utils.progress_events import emit_answer_prefix
@@ -150,6 +157,23 @@ async def _run_output_generator(
         state = {**state, "parsed_requirements": parsed}
 
     if output_format == "text":
+        # 앞 턴 0행 지시어 승계(plans/146 W3) — 3·4단 그래프 경로(1·2단은 집계기가 같은 규칙).
+        sql_outcome = _graph_sql_outcome(state)
+        executed, row_count = sql_outcome if sql_outcome else ([], -1)
+        antecedent = (
+            (state.get("conversation_context") or {}).get(EMPTY_ANTECEDENT_KEY)
+            if sql_outcome else None
+        )
+        # 조건 없이 넓힘 — 행은 그대로 보이고 맨 앞에 안내를 싣는다
+        # (교정 1 · 판정이 근사라 숨기지 않음)
+        widened = bool(
+            antecedent and row_count > 0 and widened_beyond_antecedent(antecedent, executed)
+        )
+        if widened:
+            logger.info(
+                "앞 턴 0행 지시어 — 이번 조회 %d행이 앞 턴 조건을 잇지 않아 맨 앞에 안내"
+                "(plans/146 W3)", row_count,
+            )
         response = await _generate_text_response(
             app_config, state, llm=llm, stream_user_response=stream_user_response
         )
@@ -167,9 +191,14 @@ async def _run_output_generator(
         response = append_structure_missing_note(response, state)
         response = _append_cross_system_notes(response, state)
         response = _append_turn_notices(response, state)
+        zero_rows = row_count == 0
+        if antecedent and zero_rows:
+            response = f"{response}\n\n{empty_antecedent_note(antecedent, widened=False)}"
         response = _prepend_alarm_headline(response, state, app_config)
         if no_template_notice:
             response = f"{no_template_notice}\n\n{response}"
+        if antecedent and widened:
+            response = f"{empty_antecedent_note(antecedent, widened=True)}\n\n{response}"
         return {
             "final_response": response,
             "output_file": None,
@@ -178,6 +207,7 @@ async def _run_output_generator(
             "error_message": None,
             # 결정적 고지의 구조화본(plans/123 W-8) — 본문에 실린 고지만 싣는다.
             "disclosures": collect_disclosures(state, response),
+            **(_zero_row_turn_delta(state, antecedent, executed) if zero_rows else {}),
         }
 
     elif output_format in ("xlsx", "docx"):
@@ -310,6 +340,31 @@ async def _run_output_generator(
             "current_node": "output_generator",
             "error_message": None,
         }
+
+
+def _graph_sql_outcome(state: Mapping[str, Any]) -> tuple[list[str], int] | None:
+    """3·4단 그래프 경로 이번 턴 SQL 조회 결과 — (실행 SQL, 행 수) (plans/146 W3).
+
+    1·2단 task 마감 입력(`per_task_finalize` — 집계기가 턴 단위로 판정)·조회 오류·DB별 오류·
+    실행 SQL 없음이면 None이다.
+    """
+    if state.get("per_task_finalize") or state.get("error_message") or state.get("db_errors"):
+        return None
+    sqls = executed_sql_list(state)
+    if not sqls:
+        return None
+    return sqls, len((state.get("organized_data") or {}).get("rows") or [])
+
+
+def _zero_row_turn_delta(
+    state: Mapping[str, Any], antecedent: Mapping[str, Any] | None, sqls: list[str],
+) -> dict[str, Any]:
+    """0행으로 보인 턴의 기록을 맥락에 남기는 상태 갱신 — 다음 턴 지시어가 잇는다(plans/146 W3)."""
+    record = carried_zero_row_turn(antecedent, str(state.get("user_query") or ""), sqls)
+    if not record:
+        return {}
+    ctx = state.get("conversation_context") or {}
+    return {"conversation_context": {**ctx, ZERO_ROW_TURN_KEY: record}}
 
 
 #: 양식 없는 파일 요청 안내의 머리(D-264 ④). 턴 단위 안내라 2단 단계별 답변은 이 머리로 찾아

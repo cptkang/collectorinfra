@@ -40,6 +40,7 @@ import yaml
 
 from . import DB_ID, REPO_ROOT, RESULTS_ROOT
 from . import redact as rd
+from .substitute import FakeValues
 
 VERIFICATION_FILE = "asset_verification.yaml"
 FORMAT_VERSION = 1
@@ -423,6 +424,12 @@ def run_verify(
     results = _run_coroutine(lambda: averify_with_client(items, opener))
     document = build_document(run_id=run_id, results=results, sources=sources)
     out_dir = results_root / run_id
+    # 머리의 실행자·머신 이름은 이 run 전용 가짜 값(plans/145 L9) — 콘솔 출력은 없다
+    fakes = FakeValues()
+    fakes.register(v for v in user_values.values() if v)  # 가짜 값을 내기 전에 원값부터
+    vault = rd.PiiVault.from_policy(policy, fakes=fakes)
+    gate = rd.LeakGate(policy=policy, vault=vault, user_values=user_values)
+    fakes.set_reject(lambda text: bool(gate.rules(text, schema_section=False)))
     run_meta = {
         "run_id": run_id,
         "mode": "verify_assets",
@@ -435,16 +442,14 @@ def run_verify(
             str(getattr(getattr(cfg, "dbhub", None), "server_url", "") or "")
         ),
         "itam_dsn": rd.dsn_scheme(dsn),
-        "operator": rd.mask_identifier(getpass.getuser()),
-        "host": rd.mask_identifier(socket.gethostname()),
+        "operator": fakes.fake(getpass.getuser()),
+        "host": fakes.fake(socket.gethostname()),
+        "substitution_note": rd.SUBSTITUTION_NOTE,
         "policy_scope": getattr(policy, "scope", None),
         "files": ["run.json", VERIFICATION_FILE, "report.md", "leak_check.json"],
         "summary": document["summary"],
         "results_dir": rd.display_path(out_dir, repo_root=repo_root, home=Path.home()),
     }
-    gate = rd.LeakGate(
-        policy=policy, vault=rd.PiiVault.from_policy(policy), user_values=user_values
-    )
     ok, violations = rd.write_gated(out_dir, stage_files(run_meta, document), gate)
     summary = document["summary"]
     say(

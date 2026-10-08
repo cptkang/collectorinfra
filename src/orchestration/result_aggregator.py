@@ -38,7 +38,15 @@ from src.orchestration.host_inspect import HOST_INSPECT_AGENT
 from src.prompts.result_synthesizer import RESULT_SYNTHESIZER_SYSTEM_PROMPT
 from src.state import AgentState
 from src.utils.deadline import MIN_CALL_TIMEOUT_SEC
-from src.utils.prior_dependency import render_dependency_notes
+from src.utils.empty_antecedent import (
+    EMPTY_ANTECEDENT_KEY,
+    ZERO_ROW_TURN_KEY,
+    carried_zero_row_turn,
+    carried_zone_turn_context,
+    empty_antecedent_note,
+    widened_beyond_antecedent,
+)
+from src.utils.prior_dependency import REASON_PRIOR_EMPTY, render_dependency_notes
 from src.utils.progress_events import emit_answer_prefix
 
 logger = logging.getLogger(__name__)
@@ -779,6 +787,8 @@ def _apply_incomplete_notice(result: dict, state: AgentState) -> dict:
     Returns:
         안내문이 덧붙은 dict (안내문 없으면 원본 그대로)
     """
+    # 앞 턴 0행 지시어 승계(plans/146 W3) — 안내·넓힘 차단·다음 턴 기록. 같은 단일 통과점이다.
+    result = _apply_empty_antecedent(result, state)
     # 결정적 고지(plans/123 W-8·W-9) — 턴 단위 고지를 턴당 한 번 붙이고, 합성에서 떨어진 task 단위
     # 의무 고지를 되살린다. 같은 단일 통과점이다.
     result = _apply_disclosures(result, state)
@@ -796,6 +806,88 @@ def _apply_incomplete_notice(result: dict, state: AgentState) -> dict:
     out = dict(result)
     out["final_response"] = f"{body}\n\n---\n{notice}" if body else notice
     return _apply_dependency_notes(out, state)
+
+
+def _turn_sql_outcome(state: AgentState) -> tuple[list[str], int, list[str]] | None:
+    """이번 턴 계획의 SQL 조회 결과 — (실행 SQL, 총 행 수, 행을 낸 task의 실행 SQL).
+
+    모든 task가 SQL을 실행해 오류 없이 끝났을 때만 값을 낸다 — 조회가 아닌 task(APM·추론 등)나
+    실패 task가 섞이면 None(0행 판정을 하지 않는다 · plans/146 W3). 선행 0건으로 순차 게이트가
+    실행하지 않은 task(D-203 `prior_empty`)는 0행 결과로 센다.
+    """
+    tasks = state.get("task_plan") or []
+    task_results = state.get("task_results") or {}
+    sqls: list[str] = []
+    row_sqls: list[str] = []
+    rows = 0
+    for task in tasks:
+        res = task_results.get(str(task.get("task_id")))
+        if isinstance(res, dict) and res.get("skip_reason") == REASON_PRIOR_EMPTY:
+            continue
+        if not isinstance(res, dict) or res.get("error"):
+            return None
+        executed = [
+            str(e["sql"]) for e in (res.get("executed_sqls") or [])
+            if isinstance(e, dict) and e.get("sql")
+        ]
+        if not executed:
+            return None
+        sqls.extend(executed)
+        task_rows = len(_extract_result_rows(res))
+        if task_rows:
+            row_sqls.extend(executed)
+        rows += task_rows
+    return (sqls, rows, row_sqls) if sqls else None
+
+
+def _apply_empty_antecedent(result: dict[str, Any], state: AgentState) -> dict[str, Any]:
+    """앞 턴 0행 지시어 승계를 마감한다 (plans/146 W3 · G-3 (a)) — 1·2단 단일 통과점.
+
+    - 이번 턴이 앞 턴 0행 조회를 지시어로 가리켰고(`EMPTY_ANTECEDENT_KEY`) 다시 0행이면
+      「앞 질문에서 찾은 서버가 없다」를 본문 뒤에 붙인다. 행이 나왔는데 실행 SQL이 앞 턴 조건 값을
+      하나도 잇지 않았으면 행은 그대로 두고 「전체 대상일 수 있다」 안내를 맨 앞에 싣는다(교정 1 —
+      판정이 근사라 숨기지 않는다 · 조건 없이 넓힌 침묵 오답 차단).
+    - 이번 턴이 0행이면 다음 턴 지시어가 잇도록 기록(`ZERO_ROW_TURN_KEY`)을 맥락에 남긴다.
+    - 존 역질문 턴은 승계 중이면 기록만 넘긴다(존 답변 턴이 잇는다 · M-2).
+    파일 산출 턴과 SQL 조회가 아닌 턴은 건드리지 않는다(종전 그대로).
+    """
+    if result.get("zone_clarification"):
+        zone_ctx = carried_zone_turn_context(
+            result.get("conversation_context") or state.get("conversation_context")
+        )
+        return {**result, "conversation_context": zone_ctx} if zone_ctx else result
+    if result.get("output_file") is not None:
+        return result
+    outcome = _turn_sql_outcome(state)
+    if outcome is None:
+        return result
+    sqls, rows, row_sqls = outcome
+    ctx = state.get("conversation_context") or {}
+    antecedent: dict[str, Any] | None = ctx.get(EMPTY_ANTECEDENT_KEY)
+    out = dict(result)
+    # 넓힘 판정은 행을 낸 task의 SQL로 한다 — 같은 턴에 앞 턴 조건을 다시 조회한 task(0행)가 있어도
+    # 행을 낸 후속 task가 조건을 잇지 않았으면 넓힌 것이다.
+    widened = (
+        antecedent is not None and rows > 0
+        and widened_beyond_antecedent(antecedent, row_sqls)
+    )
+    if antecedent and (rows == 0 or widened):
+        note = empty_antecedent_note(antecedent, widened=widened)
+        body = (out.get("final_response") or "").strip()
+        if widened:
+            logger.info(
+                "앞 턴 0행 지시어 — 이번 조회 %d행이 앞 턴 조건을 잇지 않아 맨 앞에 안내"
+                "(plans/146 W3)", rows,
+            )
+            out["final_response"] = f"{note}\n\n{body}" if body else note
+        else:
+            out["final_response"] = f"{body}\n\n{note}" if body else note
+    if rows == 0:
+        record = carried_zero_row_turn(antecedent, str(state.get("user_query") or ""), sqls)
+        if record:
+            base_ctx = out.get("conversation_context") or ctx
+            out["conversation_context"] = {**base_ctx, ZERO_ROW_TURN_KEY: record}
+    return out
 
 
 def _norm_text(text: str) -> str:

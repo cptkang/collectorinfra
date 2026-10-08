@@ -21,8 +21,8 @@ from scripts.itam_bench import catalog as cat
 from scripts.itam_bench import code_samples as cs
 from scripts.itam_bench import redact as rd
 from scripts.itam_bench import report as rp
+from scripts.itam_bench import substitute as sb
 
-_FIXED_KEY = bytes(range(32))
 _RAW_SQL_ERROR = "ProgrammingError: SELECT DISTINCT 상태코드 FROM 자산마스터 WHERE x='가상비밀값'"
 
 # --- 합성 픽스처 -------------------------------------------------------------------
@@ -265,12 +265,6 @@ def policy() -> cat.ColumnPolicy:
         },
         canary_literals=("가상카나리아",),
     )
-
-
-@pytest.fixture()
-def fixed_key(monkeypatch: pytest.MonkeyPatch) -> bytes:
-    monkeypatch.setattr(cs.secrets, "token_bytes", lambda n=32: _FIXED_KEY[:n])
-    return _FIXED_KEY
 
 
 def _originals() -> rd.CodeOriginals:
@@ -606,60 +600,69 @@ def _class(ch: str) -> str:
 
 
 class TestSubstitution:
+    """plans/145 — 치환기는 `substitute.FakeValues`(난수 · 키 없음). 결정성 대신 성질을 단언한다."""
+
     def test_format_preserved(self) -> None:
-        sub = cs._Substituter(rd.CodeOriginals([]), lambda _t: False)
+        sub = sb.FakeValues(originals=rd.CodeOriginals([]))
         for original in ("Ab-3가나", "07", "10", "A_1.b", "가", "Z9"):
-            out = sub.substitute(original)
+            out = sub.fake_or_none(original)
             assert out is not None and out != original and len(out) == len(original)
             assert [_class(c) for c in out] == [_class(c) for c in original]
-        assert sub.substitute("10")[0] != "0"  # 여러 자리 수의 첫 자리 0 아님 유지
+        out = sub.fake_or_none("10")
+        assert out is not None and out[0] != "0"  # 여러 자리 수의 첫 자리 0 아님 유지
 
     def test_same_original_same_substitute_and_injective(self) -> None:
         originals = rd.CodeOriginals(["A01", "a01", "B02"])
-        sub = cs._Substituter(originals, lambda _t: False)
-        first = sub.substitute("A01")
-        assert sub.substitute("A01") == first
-        others = {sub.substitute(v) for v in ("a01", "B02")}
-        assert first not in others and len(others) == 2
-        assert all(not originals.hit(v) for v in others | {first})
+        sub = sb.FakeValues(originals=originals)
+        first = sub.fake_or_none("A01")
+        assert first is not None and sub.fake_or_none("A01") == first
+        # ASCII 대소문자만 다른 원값은 같은 가짜 값에 원값 대소문자를 다시 입힌다(plans/145 A2)
+        assert sub.fake_or_none("a01") == first.lower()
+        other = sub.fake_or_none("B02")
+        assert other is not None and other.casefold() != first.casefold()
+        assert all(not originals.hit(v) for v in (first, other))
 
-    def test_deterministic_per_key(self, fixed_key: bytes) -> None:
-        a = cs._Substituter(_originals(), lambda _t: False)
-        b = cs._Substituter(_originals(), lambda _t: False)
-        assert a.substitute("A01") == b.substitute("A01")
+    def test_reject_redraws(self) -> None:
+        rejected: list[str] = []
 
-    def test_reject_redraws(self, fixed_key: bytes) -> None:
-        probe = cs._Substituter(_originals(), lambda _t: False)
-        first = probe._draw("C03", 0)
-        sub = cs._Substituter(_originals(), lambda text: text == first)
-        out = sub.substitute("C03")
-        assert out is not None and out != first
+        def reject_first(text: str) -> bool:
+            if not rejected:
+                rejected.append(text)
+                return True
+            return False
 
-    def test_gate_rule_collision_redraws(self, fixed_key: bytes, policy: cat.ColumnPolicy) -> None:
+        out = sb.FakeValues(originals=_originals(), reject=reject_first).fake_or_none("C03")
+        assert rejected and out is not None and out != rejected[0]
+
+    def test_gate_rule_collision_redraws(self, policy: cat.ColumnPolicy) -> None:
         """첫 후보가 카나리아(기존 관문 규칙)와 같으면 재추첨한다 — 관문은 그대로 통과."""
-        first = cs._Substituter(_originals(), lambda _t: False)._draw("C03", 0)
-        assert first is not None
-        trapped = cat.ColumnPolicy(
-            db_id="itam", scope="closed", tables=policy.tables, canary_literals=(first,)
-        )
-        gate = _gate(trapped, vault=rd.PiiVault.from_policy(trapped))
-        sub = cs._Substituter(_originals(), lambda t: bool(gate.rules(t, schema_section=False)))
-        out = sub.substitute("C03")
-        assert out is not None and out != first and not gate.rules(out, schema_section=False)
+        gates: list[rd.LeakGate] = []
 
-    def test_secret_key_not_exposed(
-        self, fixed_key: bytes, policy: cat.ColumnPolicy, caplog: pytest.LogCaptureFixture
+        def reject(text: str) -> bool:
+            if not gates:  # 첫 후보를 카나리아로 심은 관문
+                trapped = cat.ColumnPolicy(
+                    db_id="itam", scope="closed", tables=policy.tables, canary_literals=(text,)
+                )
+                gates.append(_gate(trapped, vault=rd.PiiVault.from_policy(trapped)))
+            return bool(gates[0].rules(text, schema_section=False))
+
+        out = sb.FakeValues(originals=_originals(), reject=reject).fake_or_none("C03")
+        assert out is not None and not gates[0].rules(out, schema_section=False)
+
+    def test_mapping_not_exposed(
+        self, policy: cat.ColumnPolicy, caplog: pytest.LogCaptureFixture
     ) -> None:
         caplog.set_level(logging.DEBUG)
-        sub = cs._Substituter(_originals(), lambda _t: False)
-        assert fixed_key.hex() not in repr(sub) and "_key" not in repr(sub)
+        sub = sb.FakeValues(originals=_originals())
+        fake = sub.fake_or_none("C03")
+        assert fake is not None and "C03" not in repr(sub) and fake not in repr(sub)
         text = yaml.safe_dump(_samples(policy), allow_unicode=True)
-        assert fixed_key.hex() not in text and fixed_key.hex() not in caplog.text
+        assert "C03" not in text and "C03" not in caplog.text
         assert repr(_originals()).startswith("<CodeOriginals") and "A01" not in repr(_originals())
 
 
 class TestCodeSamples:
-    def test_shape_and_summary(self, fixed_key: bytes, policy: cat.ColumnPolicy) -> None:
+    def test_shape_and_summary(self, policy: cat.ColumnPolicy) -> None:
         doc = _samples(policy)
         assert list(doc) == ["db_id", "run_id", "p1_draft_id", "note", "summary", "columns"]
         assert doc["db_id"] == "itam" and doc["p1_draft_id"] == "d0000000aaaa"
@@ -697,7 +700,7 @@ class TestCodeSamples:
         assert all(len(v) == 4 and v.isdigit() and v[0] != "0" for v in region["values"])
 
     def test_joined_values_tripping_gate_exhaust_column(
-        self, fixed_key: bytes, policy: cat.ColumnPolicy
+        self, policy: cat.ColumnPolicy
     ) -> None:
         """관문은 잎을 줄바꿈으로 이어 붙여서도 본다 — 이어 붙인 글이 걸리면 그 컬럼은 값 없이."""
         gate = _gate(policy)
@@ -711,7 +714,7 @@ class TestCodeSamples:
         assert columns["자산마스터.지역코드"] == {"distinct": 5, "substitution": "exhausted"}
         assert columns["자산마스터.상태코드"]["substitution"] == "ok"
 
-    def test_values_and_labels(self, fixed_key: bytes, policy: cat.ColumnPolicy) -> None:
+    def test_values_and_labels(self, policy: cat.ColumnPolicy) -> None:
         columns = _samples(policy)["columns"]
         status = columns["자산마스터.상태코드"]
         history = columns["자산이력.이력코드"]
@@ -733,9 +736,25 @@ class TestCodeSamples:
             assert {_class(c) for c in value} <= {"digit", "upper", "lower", "hangul"}
 
     def test_no_originals_frequency_or_hash(
-        self, fixed_key: bytes, policy: cat.ColumnPolicy
+        self, policy: cat.ColumnPolicy
     ) -> None:
-        text = yaml.safe_dump(_samples(policy), allow_unicode=True)
+        """원값 비노출 — 관문 `code_original`과 같은 기준이다(plans/145 W1 교정).
+
+        3자(`CODE_ORIGINAL_MIN_SUBSTRING`) 이상 원값은 부분 문자열로도 나오면 안 되고, 그보다
+        짧은 원값은 잎·키와 같음만 금지다(2자 원값이 무작위 가짜 값 안에 우연히 들어가는 것은
+        누출이 아니다 — 예: 원값 `H1` · 가짜 값 `H14`).
+        """
+        doc = _samples(policy)
+        text = yaml.safe_dump(doc, allow_unicode=True)
+
+        def leaves(node: Any) -> list[str]:
+            if isinstance(node, dict):
+                return [str(k) for k in node] + [x for v in node.values() for x in leaves(v)]
+            if isinstance(node, (list, tuple)):
+                return [x for v in node for x in leaves(v)]
+            return [] if node is None else [str(node)]
+
+        folded_leaves = {leaf.casefold() for leaf in leaves(doc)}
         for original in (
             "A01",
             "B02",
@@ -752,7 +771,10 @@ class TestCodeSamples:
             "금액구분",
             "chrgEmnm",
         ):
-            assert original not in text
+            if len(original) >= rd.CODE_ORIGINAL_MIN_SUBSTRING:
+                assert original.casefold() not in text.casefold()
+            else:
+                assert original.casefold() not in folded_leaves
         assert "freq" not in text and "hash" not in text and "count" not in text
 
 
@@ -763,12 +785,12 @@ class TestCodeOriginalGate:
     def _text(self, doc: dict[str, Any]) -> str:
         return yaml.safe_dump(doc, allow_unicode=True, sort_keys=False)
 
-    def test_clean_samples_pass(self, fixed_key: bytes, policy: cat.ColumnPolicy) -> None:
+    def test_clean_samples_pass(self, policy: cat.ColumnPolicy) -> None:
         assert _gate(policy).check({rd.CODE_SAMPLES_FILE: self._text(_samples(policy))}) == []
 
     @pytest.mark.parametrize("injected", ["a01", "XA01Q", "가동중이다", "z9"])
     def test_injected_original_blocks_write(
-        self, tmp_path: Path, fixed_key: bytes, policy: cat.ColumnPolicy, injected: str
+        self, tmp_path: Path, policy: cat.ColumnPolicy, injected: str
     ) -> None:
         doc = _samples(policy)
         doc["columns"]["자산마스터.상태코드"]["values"][0] = injected
@@ -784,7 +806,7 @@ class TestCodeOriginalGate:
         assert check["rules"][-1] == "code_original" and injected not in json.dumps(check)
 
     def test_structural_and_key_leaves_ignored(
-        self, fixed_key: bytes, policy: cat.ColumnPolicy
+        self, policy: cat.ColumnPolicy
     ) -> None:
         # 2자리 원값 'Z9' 와 같은 이름의 컬럼 키 · 원값 '1' 과 같은 distinct 수는 위반이 아니다
         gate = _gate(policy, code_originals=rd.CodeOriginals(["Z9", "3", "ok", "flag"]))
@@ -797,7 +819,7 @@ class TestCodeOriginalGate:
         assert gate.check({rd.CODE_SAMPLES_FILE: self._text(doc)}) == []
 
     def test_missing_originals_fails_closed(
-        self, fixed_key: bytes, policy: cat.ColumnPolicy
+        self, policy: cat.ColumnPolicy
     ) -> None:
         gate = _gate(policy, code_originals=None)
         violations = gate.check({rd.CODE_SAMPLES_FILE: self._text(_samples(policy))})
@@ -839,7 +861,7 @@ class TestStaging:
         )
 
     def test_six_files_written(
-        self, tmp_path: Path, fixed_key: bytes, policy: cat.ColumnPolicy
+        self, tmp_path: Path, policy: cat.ColumnPolicy
     ) -> None:
         staged, gate = self._staged(policy, tmp_path)
         ok, violations = rd.write_gated(tmp_path / "run", staged, gate)
@@ -873,7 +895,6 @@ class TestStaging:
         everything = "".join(p.read_text(encoding="utf-8") for p in (tmp_path / "run").iterdir())
         for original in ("가동중", "폐기예정", "가상인물", "가상직원", "가상비밀값", "A01"):
             assert original not in everything
-        assert fixed_key.hex() not in everything
 
     def test_fingerprint_tracks_draft(self) -> None:
         a = cat.p1_asset(_draft())
@@ -889,7 +910,7 @@ class TestStaging:
         assert rd.CODE_SAMPLES_FILE not in staged
 
     def test_compare_and_sync_read_old_and_new_runs(
-        self, tmp_path: Path, fixed_key: bytes, policy: cat.ColumnPolicy
+        self, tmp_path: Path, policy: cat.ColumnPolicy
     ) -> None:
         old = RESULTS_ROOT / "20261006-152938"
         if not (old / "run.json").is_file():

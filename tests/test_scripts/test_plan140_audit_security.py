@@ -24,6 +24,7 @@ from scripts.itam_bench import build_assets as ba
 from scripts.itam_bench import catalog as cat
 from scripts.itam_bench import code_samples as cs
 from scripts.itam_bench import redact as rd
+from scripts.itam_bench import substitute as sb
 
 # --- 공통 -----------------------------------------------------------------------------
 
@@ -130,17 +131,19 @@ class TestSubstitutionProperties:
         second = _build(draft)["columns"]["t.유형"]["values"]
         assert first != second  # 30개가 run 두 번에 같게 나올 확률은 무시할 만큼 작다
 
-    def test_repr_and_slots_hide_key(self) -> None:
-        sub = cs._Substituter(rd.CodeOriginals(["ABC"]), _never)
-        assert repr(sub) == "<_Substituter>"
+    def test_repr_and_slots_hide_mapping(self) -> None:
+        """plans/145 — 치환기는 비밀키 없는 `FakeValues`. repr 은 건수만 · `__dict__` 없음."""
+        sub = sb.FakeValues(originals=rd.CodeOriginals(["ABC"]), reject=_never)
+        fake = sub.fake_or_none("XYZ9")
+        assert fake is not None
+        assert "XYZ9" not in repr(sub) and fake not in repr(sub)
         assert not hasattr(sub, "__dict__")
-        assert sub._key.hex() not in repr(sub)
         assert "ABC" not in repr(rd.CodeOriginals(["ABC"]))
 
     def test_secret_holders_refuse_pickle(self) -> None:
-        """감사 L-1 — reject 가 피클 가능한 함수여도 비밀키·대응 메모·원값은 직렬화되지 않는다."""
-        sub = cs._Substituter(rd.CodeOriginals(["ABC1"]), bool)
-        sub.substitute("XYZ9")
+        """감사 L-1 — reject 가 피클 가능한 함수여도 대응 메모·원값은 직렬화되지 않는다."""
+        sub = sb.FakeValues(originals=rd.CodeOriginals(["ABC1"]), reject=bool)
+        sub.fake_or_none("XYZ9")
         for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
             with pytest.raises(TypeError):
                 pickle.dumps(sub, protocol=protocol)

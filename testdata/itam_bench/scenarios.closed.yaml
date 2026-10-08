@@ -11,8 +11,24 @@
 #
 # `no_data: false` — 운영에는 데이터가 있을 수 있어 「지어냄」 판정을 하지 않는다(범위 밖 질문만 true).
 # 실행: `python -m scripts.itam_bench --run --env closed` (이 파일·`column_policy.closed.yaml`이 기본값).
+#
+# **4회차 = 오라클 7건 전환**(plans/146 W5 (1) · G-4 (a) · 2026-10-08): 3회차(`results/itam_bench/20261007-174622`)
+# 관찰로 정답 모양이 정해진 ITAM-107·108·109·110·111·112·116을 `oracle`로 바꿨다(정답 SQL
+# `testdata/scenarios/oracles/ITAM-1NN.mariadb.sql` — 값 리터럴 없음 · 날짜는 앵커 자리표). 모의 DB(합성 행)에서는
+# 구문·실행만 확인했다 — **내부망 `--check-oracle --env closed`에서 0행·오류가 나면 그 시나리오는 `observe`로
+# 되돌린다.** 서비스 개념(101~106·115·117·118)과 113은 관찰 유지 — 연결 위치 탐침
+# (`scenarios.closed.probe.yaml`) 결과로 5회차 오라클을 쓴다.
+# 판정 키 `host_key`: 폐쇄망 열 이름은 `서버호스트명`이고 폐쇄망 정책(`column_policy.closed.yaml`)에는 없다
+# (unclassified). 로더 린트가 정책에 있는 general 이름을 하나 이상 요구해 샌드박스 이름 `sevrHostName`을 같은 뜻
+# 후보로 함께 둔다 — 실행 시 시스템 쪽 키 열 등급이 general이 아니면 키 값은 건수로만 남는다(`keys_recorded`).
 version: 1
 db_id: itam
+
+aliases:
+  # server_hostname·server_host는 3회차 시스템 SQL이 서버호스트명에 붙인 결과 열 별칭(ITAM-106 t1 · ITAM-118 —
+  # trace executed_sqls · plans/146 W5 교정 2) — 없으면 keyset이 판정 대신 hold
+  host_key: &host_key [서버호스트명, sevrHostName, 호스트명, 서버명, 호스트, 서버, hostname, host_name, server_name,
+    server_hostname, server_host, host]
 
 scenarios:
   - id: ITAM-101
@@ -122,9 +138,14 @@ scenarios:
       - send: {query: "자산관리 시스템에 등록된 서버 몇 대야?"}
         expect:
           db_ids: [itam]
-          observe:
-            what: "서버 자산의 기준 테이블을 무엇으로 보는가"
-            no_data: false
+          # 내부망 --check-oracle에서 0행·오류면 observe로 되돌린다(plans/146 W5 (1)) · 관찰 메모: 서버 자산의 기준 테이블을 무엇으로 보는가
+          # 건수 질문 — 1행 값으로 대조, 목록으로 답하면 행 수로(count_rows_ok · ITAM-19와 같은 모양)
+          count_rows_ok: true
+          oracle:
+            id: ITAM-107
+            compare: value
+            value: [n, 서버수, 서버 수, 대수, 건수, count, cnt, server_count]
+            db_ids: [itam]
 
   - id: ITAM-108
     title: "이번 분기 유지보수 계약 만료 · 초안"
@@ -137,9 +158,9 @@ scenarios:
       - send: {query: "이번 분기에 유지보수 계약이 끝나는 서버 있어?"}
         expect:
           db_ids: [itam]
-          observe:
-            what: "날짜 문자열 비교 · 분기 경계"
-            no_data: false
+          # 내부망 --check-oracle에서 0행·오류면 observe로 되돌린다(plans/146 W5 (1)) · 관찰 메모: 날짜 문자열 비교 · 분기 경계
+          # tcdmsif80 마트 가설 — 탐침 ITAM-146-P07B(80↔72 행 배수)와 함께 확인
+          oracle: {id: ITAM-108, compare: keyset, key: [*host_key], db_ids: [itam]}
 
   - id: ITAM-109
     title: "6개월 내 지원 종료 · 초안"
@@ -152,9 +173,8 @@ scenarios:
       - send: {query: "6개월 안에 지원 종료(EOS)되는 서버 알려줘"}
         expect:
           db_ids: [itam]
-          observe:
-            what: "지원 종료일 테이블과 3열 복합 키 조인 · 하드웨어/소프트웨어 OR"
-            no_data: false
+          # 내부망 --check-oracle에서 0행·오류면 observe로 되돌린다(plans/146 W5 (1)) · 관찰 메모: 지원 종료일 테이블 · 하드웨어/소프트웨어 OR
+          oracle: {id: ITAM-109, compare: keyset, key: [*host_key], db_ids: [itam]}
 
   - id: ITAM-110
     title: "노후 5년 이상 · 초안"
@@ -167,9 +187,9 @@ scenarios:
       - send: {query: "자산관리에서 도입한 지 5년 이상 된 노후 서버 리스트 보여줘"}
         expect:
           db_ids: [itam]
-          observe:
-            what: "경과년수·취득일자 중 무엇을 쓰는가 · 경계 포함"
-            no_data: false
+          # 내부망 --check-oracle에서 0행·오류면 observe로 되돌린다(plans/146 W5 (1)) · 관찰 메모: 경과년수·취득일자 중 무엇을 쓰는가 · 경계 포함
+          # G-4: 정답 기준 칸은 취득일자(대안 경과년수) · tcdmsif80 마트 가설
+          oracle: {id: ITAM-110, compare: keyset, key: [*host_key], db_ids: [itam]}
 
   - id: ITAM-111
     title: "취득금액 상위 3 · 초안"
@@ -182,9 +202,15 @@ scenarios:
       - send: {query: "자산관리에서 취득금액 제일 큰 서버 3대랑 금액 보여줘"}
         expect:
           db_ids: [itam]
-          observe:
-            what: "금액 컬럼 · 정렬과 행 제한(금액은 합계·최소·최대만 기록)"
-            no_data: false
+          # 내부망 --check-oracle에서 0행·오류면 observe로 되돌린다(plans/146 W5 (1)) · 관찰 메모: 금액 칸 · 정렬과 행 제한(금액은 합계·최소·최대만 기록)
+          # G-4: 서버 단위 금액(tcdmsif80) 해석 — 상위 N은 동점을 흡수하는 argmax(샌드박스 ITAM-13과 같은 모양)
+          oracle:
+            id: ITAM-111
+            compare: argmax
+            top: 3
+            key: [*host_key]
+            value: [취득금액, acqsiAmt, 금액, 취득 금액, acquisition_amount, amount]
+            db_ids: [itam]
 
   - id: ITAM-112
     title: "운영체제별 서버 수 · 초안"
@@ -197,9 +223,9 @@ scenarios:
       - send: {query: "자산관리 시스템에서 운영체제별 서버 수 알려줘"}
         expect:
           db_ids: [itam]
-          observe:
-            what: "운영체제 컬럼 · 그룹 집계"
-            no_data: false
+          # 내부망 --check-oracle에서 0행·오류면 observe로 되돌린다(plans/146 W5 (1)) · 관찰 메모: 운영체제 칸 · 그룹 집계
+          # 운영체제 칸은 폐쇄망 정책 밖(unclassified)이라 키로 쓰지 않는다 — 그룹 수(count)로 대조
+          oracle: {id: ITAM-112, compare: count, db_ids: [itam]}
 
   - id: ITAM-113
     title: "가상 서버 — 코드값 · 초안"
@@ -261,9 +287,9 @@ scenarios:
       - send: {query: "자산관리 시스템에서 서버 분류 경로별 서버 수 알려줘"}
         expect:
           db_ids: [itam]
-          observe:
-            what: "서버 분류 경로 칸을 집계 축으로 고르는가 · 경로 값 모양이 서비스 단위로 쓰일 수 있는가"
-            no_data: false
+          # 내부망 --check-oracle에서 0행·오류면 observe로 되돌린다(plans/146 W5 (1)) · 관찰 메모: 서버 분류 경로 칸을 집계 축으로 고르는가
+          # 경로 값에 업무 이름이 섞일 수 있어 키로 쓰지 않는다 — 그룹 수(count)로 대조
+          oracle: {id: ITAM-116, compare: count, db_ids: [itam]}
 
   - id: ITAM-117
     title: "서비스 단서 — 스토리지 할당의 업무 이름 · 2회차 관찰 초안"

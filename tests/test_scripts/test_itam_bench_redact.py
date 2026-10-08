@@ -502,7 +502,9 @@ def test_redaction_is_bounded_on_20kb_input(policy: cat.ColumnPolicy) -> None:
     ):
         started = time.perf_counter()
         call()
-        assert (time.perf_counter() - started) < 0.05  # 20KB 입력 50ms 이내(plans/135 W2)
+        # 20KB 입력 200ms 이내(plans/135 W2 50ms → plans/145 완화) — 중앙값 31ms인데 병렬 부하
+        # 지터로 51.7ms 실패가 났다. 막으려는 제곱 시간(20KB 5.7초 실측)과는 여전히 25배 이상 차이
+        assert (time.perf_counter() - started) < 0.2
 
 
 # --- 보안 리뷰 재현(2026-10-06 · 리뷰 12건 중 누출 경로) -----------------------------
