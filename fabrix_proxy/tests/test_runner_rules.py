@@ -234,7 +234,8 @@ def test_label_metrics() -> None:
     judged = {row[0]: row[3] for row in pr.judgments(m)}
     assert judged["오탐률(S4)"] == "미달"
     assert judged["예시 도구 오호출(교정 전 원응답)"] == "미달"
-    assert judged["완주율(S6)"] == "자료 없음"
+    assert judged[pr.S6_REFLECT_ROW] == "자료 없음"
+    assert judged["완주율(S6)"] == "기록(판정 아님)"  # S6 완주율은 판정하지 않는다
 
 
 def test_judge_calls_modes() -> None:
@@ -256,6 +257,84 @@ def test_reflects_folds_unicode_variants() -> None:
     assert not pr.reflects(final, ["VR-5531", "Harbor Point"])  # 빠진 값은 계속 실패
     assert not pr.reflects("VR5531 Maple Court", ["VR-5531"])  # 하이픈 자체가 없으면 실패
     assert pr.reflects("anything", [])
+
+
+# ─────────────────────────── S6 판정 (2026-10-08 · 반영률) ───────────────────────────
+
+S6_TOOLS = ["get_ticket", "get_person"]
+S6_MARKERS = ["HM-7720", "Rei Osk"]
+
+
+def test_s6_completed_without_domain_tool_is_no_tool_use() -> None:
+    # 1차 내부망 실측 — 도구 0개로 바로 평문 · write_todos만 부르고 평문(내장 도구는 도메인 아님)
+    for called in ([], ["write_todos"], ["write_todos", "write_todos"]):
+        assert pr.judge_agent_case(
+            True, called, S6_TOOLS, "The owner is Rei Osk and the code is HM-7720.",
+            S6_MARKERS, None,
+        ) == (False, False, "no_tool_use")
+
+
+def test_s6_domain_tool_and_markers_is_reflected() -> None:
+    called = ["write_todos", "get_ticket", "get_person", "write_todos"]
+    final = "The ticket\u2019s owner is Rei\u202fOsk and the code is **HM\u20117720**."
+    assert pr.judge_agent_case(True, called, S6_TOOLS, final, S6_MARKERS, None) == (
+        True, True, None,
+    )
+
+
+def test_s6_domain_tool_without_markers_is_history() -> None:
+    called = ["write_todos", "get_ticket", "get_person"]
+    assert pr.judge_agent_case(
+        True, called, S6_TOOLS, "The ticket owner is Rei Osk.", S6_MARKERS, None,
+    ) == (True, False, "history")
+
+
+def test_s6_not_completed_keeps_last_failure() -> None:
+    called = ["write_todos", "get_ticket"]
+    final = "Rei Osk HM-7720"  # 미완주면 표지가 있어도 반영이 아니다
+    assert pr.judge_agent_case(False, called, S6_TOOLS, final, S6_MARKERS, "format") == (
+        True, False, "format",
+    )
+    assert pr.judge_agent_case(False, [], S6_TOOLS, "", S6_MARKERS, None) == (
+        False, False, "history",
+    )
+
+
+def test_s6_reflect_rate_row_and_denominator() -> None:
+    o = _opts()
+    records = [
+        _case(o, "S6", reflected=True, domain_tools_used=True),
+        _case(o, "S6", reflected=False, domain_tools_used=False, failure_type="no_tool_use"),
+        _case(o, "S6", reflected=False, domain_tools_used=True, failure_type="history"),
+        _case(o, "S6", completed=False, reflected=None, domain_tools_used=True,
+              failure_type="format"),
+        _case(o, "S6", completed=False, reflected=None, domain_tools_used=False,
+              failure_type="limit_block", error_code="apiconnectionerror"),
+        _case(o, "S6", completed=None, reflected=None, skipped="missing:deepagents"),
+    ]
+    m = pr.label_metrics(records)
+    # 분모 = S6 전체 케이스(인프라 실패·미완주 포함 · skip 제외) — 완주율과 같은 기준
+    assert m["complete_s6"] == (3, 5)
+    assert m["reflect_s6"] == (1, 5)
+    assert m["no_tool_s6"] == (1, 5)
+    assert m["failures"]["no_tool_use"] == 1 and m["failures"]["history"] == 1
+
+    rows = {row[0]: row[1:] for row in pr.judgments(m)}
+    assert pr.S6_REFLECT_ROW == "S6 반영률(도메인 도구 사용 + 표지 포함)"
+    assert rows[pr.S6_REFLECT_ROW] == ("20.0% (1/5)", "≥90%", "미달")
+    assert rows["완주율(S6)"] == ("60.0% (3/5)", "—", "기록(판정 아님)")
+
+    summary = pr.render_summary(records, None, None, pr.Recommendation())
+    assert "| S6 반영률(도메인 도구 사용 + 표지 포함) | 20.0% (1/5) | ≥90% | 미달 |" in summary
+    assert "| 완주율(S6) | 60.0% (3/5) | — | 기록(판정 아님) |" in summary
+    assert "| 완주율(S6) | 60.0% (3/5) | ≥90%" not in summary
+    assert "| 완주(S6) | 반영(S6) | 도구 미사용(S6) |" in summary
+    assert "| 60.0% (3/5) | 20.0% (1/5) | 20.0% (1/5) |" in summary  # 라벨 표 S6 세 칸
+    assert "도구 미사용 1" in summary  # 실패 유형 줄
+    assert "분모는 S6 전체 케이스" in summary
+    header = next(line for line in summary.splitlines() if line.startswith("| 라벨 |"))
+    sep = next(line for line in summary.splitlines() if line.startswith("|---|---:|"))
+    assert header.count("|") == sep.count("|")
 
 
 # ─────────────────────────── 옵션 · --repeat ───────────────────────────

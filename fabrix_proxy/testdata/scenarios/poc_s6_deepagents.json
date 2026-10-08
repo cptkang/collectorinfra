@@ -1,5 +1,5 @@
 {
-  "_comment": "S6 — deepagents 미니 에이전트(내장 write_todos + 합성 도구 2개). ChatOpenAI → 프록시 경유 create_deep_agent 완주. 완주 = 예외 없이 끝나고 마지막 메시지가 도구 호출 없는 AI 평문 · 단계 수 = 모델 호출 수.",
+  "_comment": "S6 — deepagents 미니 에이전트(내장 write_todos + 합성 도구 2개). ChatOpenAI → 프록시 경유 create_deep_agent 완주. 완주 = 예외 없이 끝나고 마지막 메시지가 도구 호출 없는 AI 평문(기록) · 판정 = 반영 = 완주 + 도메인 도구(tools — 내장 write_todos 제외) 1회 이상 호출 + 최종 답에 reflect 표지 전부 · 단계 수 = 모델 호출 수.",
   "scenario": "S6",
   "tools": ["get_ticket", "get_person"],
   "system_prompt": "You are a careful assistant. First plan your steps with the write_todos tool, then use the other tools to gather facts, then answer in plain text.",

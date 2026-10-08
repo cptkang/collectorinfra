@@ -7,6 +7,7 @@
 - 실 FabriX 호출량: 약 445회(순차 · `--concurrency 1`) · 전체 소요 약 1~2.5시간
 - 시나리오의 도구·도구 결과는 전부 합성값이다 — 실 DB·실 알람 데이터를 FabriX에 보내지 않는다.
 - 반출물은 `summary.md` · `results.jsonl` · `env_check.md` **세 개뿐**이다. `failures/`·로그는 내부망에 남긴다.
+- **재측정 R1(2026-10-08 · S5·S6 · 러너 S6 판정 결함 수정 후)은 11절만 한다.**
 
 ## 0. 한눈에 보기
 
@@ -697,3 +698,278 @@ cd "$REPO/fabrix_proxy"
 | ⑦ 반출 점검 | `앞 6자 길이: 6 6 6` · 두 `grep` 0줄 · 세 파일 | 1초 |
 | 10.3 정리 | `lsof` 0줄 · `.env`/`.encenv` 삭제 · 남은 프로세스 0 | 2초 |
 | 10.4 `--dry-run` | 전체 순서 완주 · rc 0 | 10초 |
+
+## 11. 재측정 R1 — S5·S6 (2026-10-08 · 러너 결함 수정 후)
+
+1차 측정(`20261008-141615`)을 마친 뒤 **러너 수정분을 다시 반입했을 때만** 하는 절이다. 2~9절의 1차 절차는 다시 하지 않는다.
+
+**왜 다시 재는가.** 1차 S6은 완주율 100%(10/10)로 집계됐지만, 10건 중 8건이 도메인 도구(`get_ticket`·`get_person`)를 한 번도 부르지 않고 평문으로 끝났다(6건은 도구 0개 · 2건은 `write_todos`만). 옛 러너가 「마지막 메시지가 평문 = 완주」만 봤기 때문이다. 이 경우들은 실패 유형이 비어 `failures/`에도 남지 않았다. 고친 러너는 다음과 같이 판정한다.
+
+- **S6 반영** = 완주 + 도메인 도구 1회 이상 호출(내장 `write_todos` 등 제외) + 최종 답에 표지 전부(유니코드 하이픈·공백 변종 무시). 결과 줄에 `domain_tools_used`(참/거짓)를 싣는다.
+- 완주했지만 도메인 도구를 안 쓴 건은 `no_tool_use`(도구 미사용), 썼지만 표지가 빠진 건은 `history`로 센다. 두 경우 모두 마지막 원출력 앞부분을 `failures/`에 남긴다(반출 금지).
+- 판정 초안의 S6 행은 **「S6 반영률(도메인 도구 사용 + 표지 포함) ≥90%」**다. 분모는 S6 전체 케이스(인프라 실패 포함 — 완주율과 같은 기준)다. 완주율(S6)은 「기록(판정 아님)」 행으로 남는다.
+- 라벨 표에 `반영(S6)`·`도구 미사용(S6)` 열이 생긴다.
+
+| 항목 | 값 |
+|---|---|
+| 반입 | `fabrix_proxy/` 전체를 다시 넣는다(1절과 같다). 바뀐 것은 러너 `scripts/poc_run.py` · `testdata/scenarios/` · `tests/` · `POC_RUNBOOK.md` · `POC_VERSION`이고, 프록시 본체 `fabrix_proxy/fabrix_proxy/`는 1차와 같다 |
+| 설정 파일 | 1차의 `fabrix_proxy/.env`·`.encenv`를 그대로 쓴다(3절 생략) |
+| 측정 | S5 15건(확정 옵션) + S6 10건 × few-shot 3모드(`none`·`static`·`dynamic`) |
+| 확정 옵션 | `--contents-mode turns --fewshot-placement system --protocol-lang ko` · S5는 `--fewshot none` |
+| 실 FabriX 호출 | 약 120~225회 — S5 약 60회(최대 75) · S6 실행당 약 20~50회 × 3 |
+| 소요 | 1차 실측(호출당 1~2초 · S5 15건 67초 · S6 10건 41초) 기준 약 5~10분. 호출당 5~15초로 느려지면 최대 약 1시간 |
+| 반출 | `summary.md`·`results.jsonl` 2종. R1은 env-check를 다시 하지 않으므로 `env_check.md`가 없다(1차 것이 같은 환경이다) |
+
+### 11.1 변수 — 새 `RUN_DIR`
+
+```bash
+REPO=/path/to/collectorinfra
+PY="$REPO/.venv/bin/python"
+PREV_RUN_DIR="$(cat "$REPO/logs/fabrix_proxy_poc/CURRENT" 2>/dev/null)"
+RUN_DIR="$REPO/logs/fabrix_proxy_poc/R1-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$RUN_DIR"
+echo "$RUN_DIR" > "$REPO/logs/fabrix_proxy_poc/CURRENT"
+echo "PREV_RUN_DIR=$PREV_RUN_DIR"
+echo "RUN_DIR=$RUN_DIR"
+head -1 "$REPO/fabrix_proxy/POC_VERSION"
+grep -c judge_agent_case "$REPO/fabrix_proxy/scripts/poc_run.py"
+```
+
+출력 예(리허설 · 경로는 `$REPO`로 줄였다 — 내부망에서는 `PREV_RUN_DIR`이 1차 `…/20261008-141615`다):
+
+```
+PREV_RUN_DIR=$REPO/logs/fabrix_proxy_poc/20261008-181621
+RUN_DIR=$REPO/logs/fabrix_proxy_poc/R1-20261008-181623
+ee319ad86b002eff6a2e787b40e1656b49bc3046-dirty (2026-10-08 Windows 개발 PC · S5/S6 반영 판정 유니코드 정규화(_fold) · 미커밋 — 커밋 후 반입 시 git rev-parse HEAD로 교체)
+3
+```
+
+셋째 줄은 반입한 `POC_VERSION` 첫 줄이다(11.8에서 바꾼 값이 보여야 한다).
+
+- **반드시 새 `RUN_DIR`을 쓴다.** R1의 S5·S6(`--fewshot none`) 라벨은 1차 ⑤b·⑥ 라벨(`contents=turns,fewshot=none,placement=system,lang=ko,…`)과 같다. 1차 디렉터리에 덧붙이면 옛 판정 결과(`domain_tools_used` 없음)와 한 라벨로 합산된다.
+- `PREV_RUN_DIR`은 1차 디렉터리다(그대로 보관한다). 마지막 줄 `grep -c`가 `0`이면 옛 러너다 — 반입을 다시 확인한다.
+- 터미널을 새로 열면 2절 두 번째 블록을 그대로 쓴다(`CURRENT`가 R1 디렉터리를 가리킨다). `PREV_RUN_DIR`은 11.3에서만 쓴다 — 새 터미널에서 11.3을 하면 `PREV_RUN_DIR=<1차 디렉터리>`를 먼저 준다.
+
+### 11.2 오프라인 테스트 — 3분
+
+```bash
+cd "$REPO/fabrix_proxy"
+"$PY" -m pytest tests -q
+```
+
+성공 시 출력 예(마지막 줄):
+
+```
+277 passed in 19.17s
+```
+
+`failed`·`error`가 0이면 된다(통과 개수는 반입 판에 따라 다르다). 실패하면 6.2절처럼 멈추고 목록을 반출한다.
+
+### 11.3 프록시 — 재기동 불필요
+
+프록시 본체 코드가 1차와 같으므로 **재기동하지 않아도 된다.** 1차 프록시가 떠 있으면 그대로 쓰고, 이미 내렸으면(9절) 4절처럼 새로 띄운다. 아래 블록이 두 경우를 가른다.
+
+```bash
+cd "$REPO/fabrix_proxy"
+if curl -sf --noproxy '*' http://127.0.0.1:9095/health > /dev/null; then
+  echo "프록시 실행 중 — 재기동하지 않는다"
+  [ -f "$PREV_RUN_DIR/proxy.pid" ] && cp "$PREV_RUN_DIR/proxy.pid" "$RUN_DIR/proxy.pid"
+else
+  nohup "$PY" -m fabrix_proxy > "$RUN_DIR/proxy.log" 2>&1 &
+  echo $! > "$RUN_DIR/proxy.pid"
+  sleep 5
+  cat "$RUN_DIR/proxy.log"
+fi
+curl -s --noproxy '*' http://127.0.0.1:9095/health; echo
+```
+
+출력 예 — 1차 프록시가 떠 있을 때:
+
+```
+프록시 실행 중 — 재기동하지 않는다
+{"status":"ok"}
+```
+
+내려가 있어서 새로 띄웠을 때:
+
+```
+2026-10-08 18:16:44,940 INFO fabrix_proxy fabrix_proxy start backend=fabrix host=127.0.0.1 port=9095 aliases=fabrix-tools contents_mode=turns fewshot=static poc_mode=True
+INFO:     Started server process [95582]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:9095 (Press CTRL+C to quit)
+{"status":"ok"}
+```
+
+- 새로 띄운 경우 기동 로그에 `poc_mode=True`가 보여야 한다. 떠 있던 프록시가 POC_MODE가 아니면 러너가 「POC_MODE가 아니다」로 멈춘다(8절).
+- 떠 있던 프록시를 쓰면 그 PID를 `$RUN_DIR/proxy.pid`로 옮겨 둔다 — 11.7 종료 명령이 같아진다.
+
+### 11.4 S5 — 15건
+
+```bash
+cd "$REPO/fabrix_proxy"
+"$PY" scripts/poc_run.py run --only S5 --repeat S5=15 --contents-mode turns --fewshot none --fewshot-placement system --protocol-lang ko --out "$RUN_DIR"
+```
+
+성공 시 출력 예:
+
+```
+[run] contents=turns,fewshot=none,placement=system,lang=ko,repair=1,passthrough=false — S5
+[run] 완료 0.3s — $REPO/logs/fabrix_proxy_poc/R1-20261008-181623
+```
+
+(소요는 가짜 업스트림 기준이다. 1차 실 FabriX에서 같은 S5 15건은 약 67초였다.)
+
+### 11.5 S6 — few-shot 3모드 × 10건
+
+```bash
+cd "$REPO/fabrix_proxy"
+"$PY" scripts/poc_run.py run --only S6 --repeat S6=10 --contents-mode turns --fewshot none --fewshot-placement system --protocol-lang ko --out "$RUN_DIR"
+"$PY" scripts/poc_run.py run --only S6 --repeat S6=10 --contents-mode turns --fewshot static --fewshot-placement system --protocol-lang ko --out "$RUN_DIR"
+"$PY" scripts/poc_run.py run --only S6 --repeat S6=10 --contents-mode turns --fewshot dynamic --fewshot-placement system --protocol-lang ko --out "$RUN_DIR"
+```
+
+성공 시 출력 예 — 시작 줄의 `fewshot=`이 차례로 `none`·`static`·`dynamic`이어야 한다:
+
+```
+[run] contents=turns,fewshot=none,placement=system,lang=ko,repair=1,passthrough=false — S6
+[run] 완료 3.7s — $REPO/logs/fabrix_proxy_poc/R1-20261008-181623
+[run] contents=turns,fewshot=static,placement=system,lang=ko,repair=1,passthrough=false — S6
+[run] 완료 3.9s — $REPO/logs/fabrix_proxy_poc/R1-20261008-181623
+[run] contents=turns,fewshot=dynamic,placement=system,lang=ko,repair=1,passthrough=false — S6
+[run] 완료 3.9s — $REPO/logs/fabrix_proxy_poc/R1-20261008-181623
+```
+
+명령 하나가 끊기면 그 줄만 다시 돌린다(같은 `--out` · 7절). 같은 줄을 두 번 끝까지 돌리면 그 라벨에 20건이 합산된다 — 그때는 반출 때 알린다.
+
+### 11.6 결과 확인
+
+```bash
+sed -n '/^## 판정 초안/,/^## 권장값/p' "$RUN_DIR/summary.md" | grep -E '^### |완주율|반영률'
+"$PY" -c "import json,sys,collections; c=collections.Counter((r['scenario'],r['options']['fewshot'],str(r['failure_type'])) for r in map(json.loads,open(sys.argv[1])) if r['record']=='case'); [print(s,'fewshot='+f,t,n) for (s,f,t),n in sorted(c.items())]" "$RUN_DIR/results.jsonl"
+ls "$RUN_DIR/failures"/*/ | head -20
+```
+
+출력 예(리허설 — 수치는 가짜 대본의 차례로 갈린 것이라 의미가 없다. 모양만 본다):
+
+```
+### `contents=turns,fewshot=none,placement=system,lang=ko,repair=1,passthrough=false`
+| 완주율(S5) | 66.7% (10/15) | ≥90% | 미달 |
+| 도구 결과 반영률(S5) | 50.0% (5/10) | ≥90% | 미달 |
+| S6 반영률(도메인 도구 사용 + 표지 포함) | 30.0% (3/10) | ≥90% | 미달 |
+| 완주율(S6) | 100.0% (10/10) | — | 기록(판정 아님) |
+### `contents=turns,fewshot=static,placement=system,lang=ko,repair=1,passthrough=false`
+| 완주율(S5) | — | ≥90% | 자료 없음 |
+| 도구 결과 반영률(S5) | — | ≥90% | 자료 없음 |
+| S6 반영률(도메인 도구 사용 + 표지 포함) | 50.0% (5/10) | ≥90% | 미달 |
+| 완주율(S6) | 100.0% (10/10) | — | 기록(판정 아님) |
+### `contents=turns,fewshot=dynamic,placement=system,lang=ko,repair=1,passthrough=false`
+| 완주율(S5) | — | ≥90% | 자료 없음 |
+| 도구 결과 반영률(S5) | — | ≥90% | 자료 없음 |
+| S6 반영률(도메인 도구 사용 + 표지 포함) | 50.0% (5/10) | ≥90% | 미달 |
+| 완주율(S6) | 100.0% (10/10) | — | 기록(판정 아님) |
+S5 fewshot=none None 5
+S5 fewshot=none history 10
+S6 fewshot=dynamic None 5
+S6 fewshot=dynamic no_tool_use 5
+S6 fewshot=none None 3
+S6 fewshot=none history 1
+S6 fewshot=none no_tool_use 6
+S6 fewshot=static None 5
+S6 fewshot=static no_tool_use 5
+$REPO/logs/fabrix_proxy_poc/R1-20261008-181623/failures/contents=turns_fewshot=dynamic_placement=system_lang=ko_repair=1_passthrough=false/:
+s6_agent_b_r1.txt
+…
+```
+
+완주율(S6)이 100%여도 반영률이 낮을 수 있다 — 1차가 그랬다(새 규칙을 1차 `results.jsonl`의 호출 순서에 대 보면 반영 1/10 · 도구 미사용 8 · 표지 누락 1 — 표지 판정은 1차 기록값이라 유니코드 접기 전이다).
+
+- 첫 명령: 라벨별 판정 초안 중 완주율·반영률 행. S6 판정은 `S6 반영률(도메인 도구 사용 + 표지 포함)` 행이고 `완주율(S6)`은 `기록(판정 아님)`이다. S5 라벨과 S6 `fewshot=none` 라벨은 같은 라벨이라 한 표에 함께 나온다.
+- 둘째 명령: 시나리오 · few-shot 모드 · 실패 유형별 케이스 수(`None` = 반영 성공). `no_tool_use`가 1차의 「도구 없이 평문」 건이다.
+- `failures/`의 `s6_*_r<N>.txt`(도구 미사용·표지 누락 건 원출력)는 내부망 보관용이다 — 반출하지 않는다.
+- R1에는 S1이 없으므로 `summary.md` 「권장값」은 `(근거 없음)`이다(정상).
+
+### 11.7 반출 점검 · 정리
+
+```bash
+mkdir -p "$RUN_DIR/export"
+cp "$RUN_DIR/summary.md" "$RUN_DIR/results.jsonl" "$RUN_DIR/export/"
+"$PY" -c "import json,glob,sys; [print(x) for f in sorted(glob.glob(sys.argv[1]+'/testdata/scenarios/poc_*.json')) for x in json.load(open(f,encoding='utf-8')).get('leak_markers',[])]" "$REPO/fabrix_proxy" > "$RUN_DIR/markers.txt"
+cd "$RUN_DIR/export"
+API6="$(grep '^FABRIX_API_KEY=' "$REPO/fabrix_proxy/.encenv" | cut -d= -f2- | tr -d "\"'" | cut -c1-6)"
+CLI6="$(grep '^FABRIX_CLIENT_KEY=' "$REPO/fabrix_proxy/.encenv" | cut -d= -f2- | tr -d "\"'" | cut -c1-6)"
+TOK6="$(grep '^FABRIX_PROXY_TOKEN=' "$REPO/fabrix_proxy/.encenv" | cut -d= -f2- | tr -d "\"'" | cut -c1-6)"
+echo "앞 6자 길이: ${#API6} ${#CLI6} ${#TOK6} · 표지 $(grep -c '' "$RUN_DIR/markers.txt")개"
+grep -n -E 'https?://|Bearer' summary.md results.jsonl
+grep -n -F -e "$API6" -e "$CLI6" -e "$TOK6" summary.md results.jsonl
+grep -n -F -f "$RUN_DIR/markers.txt" summary.md results.jsonl
+unset API6 CLI6 TOK6
+ls -l
+```
+
+성공 시 출력 예 — 세 `grep`은 아무것도 찍지 않는다:
+
+```
+앞 6자 길이: 6 6 6 · 표지 57개
+total 360
+-rw-------@ 1 user  staff  174574 Oct  8 18:17 results.jsonl
+-rw-------@ 1 user  staff    6801 Oct  8 18:17 summary.md
+```
+
+통과 조건: `앞 6자 길이: 6 6 6` · 세 `grep`이 **아무것도 출력하지 않는다**(0줄 — 셋째는 시나리오 본문 표지) · `ls -l`에 두 파일만 있다. 한 줄이라도 나오면 반출하지 않고 줄 번호·파일 이름만 알린다. 반출: `$RUN_DIR/export/`의 두 파일.
+
+측정이 모두 끝났으면 프록시를 내린다(9절과 같다 · 자기 PID만).
+
+```bash
+kill "$(cat "$RUN_DIR/proxy.pid")"
+sleep 2
+lsof -nP -iTCP:9095 -sTCP:LISTEN
+```
+
+### 11.8 `POC_VERSION` 갱신 (개발 쪽 · 반입 전)
+
+반출물만 보고 어느 코드로 잰 결과인지 맞추려고, 반입 직전에 `POC_VERSION` 첫 줄을 **커밋한 뒤의** `git rev-parse HEAD` 값으로 바꾼다. 러너는 이 첫 줄을 `summary.md` 머리 `POC_VERSION:` 줄에 그대로 옮긴다.
+
+```bash
+cd /path/to/dev/collectorinfra
+git status --short fabrix_proxy
+git log -1 --format='%H %s'
+echo "$(git rev-parse HEAD) ($(date +%F) R1 러너 — S6 반영률 판정)" > fabrix_proxy/POC_VERSION
+head -1 fabrix_proxy/POC_VERSION
+```
+
+- 순서: ① 러너 수정분을 커밋한다 → ② 첫 `git status`가 `fabrix_proxy/POC_VERSION` 말고는 아무것도 출력하지 않는지 본다(남은 변경이 있으면 커밋 전 코드와 반입물이 달라진다 — 커밋부터 한다) → ③ 위 `echo`로 교체 → ④ 반입.
+- `POC_VERSION` 교체분은 커밋하지 않아도 된다(커밋하면 HEAD가 한 칸 앞서지만 `fabrix_proxy/` 코드는 같다).
+- 아직 커밋하지 못한 판을 반입해야 하면 1차처럼 `<SHA>-dirty (날짜 · 사유 · 미커밋)`로 적는다. 지금 파일 값(`ee319ad…-dirty`)이 그 형식이다.
+- 내부망 확인: 11.1 블록의 `head -1` 출력과 R1 `summary.md` 머리 `POC_VERSION:` 줄이 개발 쪽 값과 같아야 한다.
+
+### 11.9 개발 맥 리허설 (2026-10-08 · 가짜 KBGenAI · 실 LLM 0건)
+
+10절 표의 차이(`PY=python` · 가짜 KBGenAI 업스트림 · 리허설 설정 파일)만 바꿔 **10.1 → 10.2 → 11.1 → 11.7**을 그대로 붙여 넣어 돌렸다. 10.1이 만든 디렉터리가 1차 역할(`PREV_RUN_DIR`)을 한다.
+
+| 단계 | 결과 | 소요 |
+|---|---|---|
+| 10.1 가짜 KBGenAI · 10.2 설정 | `FAKE_KBGENAI_READY port=9096` | 2초 |
+| 11.1 변수 | 새 `R1-…` 디렉터리 · `PREV_RUN_DIR` = 10.1 디렉터리 · `POC_VERSION` 첫 줄 · `grep -c` 3 | 1초 |
+| 11.2 오프라인 테스트 | `277 passed` | 20초 |
+| 11.3 프록시 | 두 갈래 모두 확인 — 내려가 있을 때 새로 기동(`poc_mode=True`) · 4절로 미리 띄워 두었을 때 「재기동하지 않는다」 + PID 복사 → 11.7 `kill`로 종료 | 5초 |
+| 11.4 S5 15건 | rc 0 · 라벨 `fewshot=none … lang=ko` | 1초 |
+| 11.5 S6 3모드 × 10건 | rc 0 · 세 라벨 · `fewshot=none`에서 반영 · `no_tool_use` · 유니코드 변종 반영(U+2019·U+202F·U+2011 접기) · `history`가 모두 집계됨 · `domain_tools_used` 기록 | 12초 |
+| 11.6 결과 확인 | S6 판정 행 = 반영률 · 완주율(S6) = 기록 · `no_tool_use`·`history` 원출력이 `failures/`에 생김 | 1초 |
+| 11.7 반출 점검 · 프록시 종료 | `앞 6자 길이: 6 6 6` · 세 `grep` 0줄 · 두 파일 · `lsof` 0줄 | 2초 |
+| 정리(아래 블록) | `lsof` 0줄 · `.env`/`.encenv` 삭제 · 남은 프로세스 0 | 2초 |
+
+가짜 대본(`poc_dryrun_script.json`)의 S6 `s6_agent_a`는 가짜 서버 수명 동안 차례로 정상 반영 → 도구 없이 바로 평문(`no_tool_use`) → U+2019·U+202F·U+2011 섞인 최종 답(접기로 반영) → 표지 하나 빠진 최종 답(`history`) → 그 뒤 정상 반영이다. 그래서 첫 S6 명령(`fewshot=none`)에만 네 경우가 다 나온다. `s6_agent_b`는 `ko` 교정 뒤 `OK` 평문으로 끝나 도구 미사용이 된다(`en`이면 교정 실패 502 · 형식 실패).
+
+리허설 정리 — 가짜 서버 PID는 10.1이 만든 1차 역할 디렉터리에 있다.
+
+```bash
+kill "$(cat "$PREV_RUN_DIR/fake.pid")"
+sleep 2
+lsof -nP -iTCP:9095 -sTCP:LISTEN
+lsof -nP -iTCP:9096 -sTCP:LISTEN
+rm -f "$REPO/fabrix_proxy/.env" "$REPO/fabrix_proxy/.encenv"
+ls -a "$REPO/fabrix_proxy" | grep -E '^\.(env|encenv)$'
+```
+
+마지막 세 명령이 아무것도 출력하지 않으면 끝.
