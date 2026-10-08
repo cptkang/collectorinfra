@@ -46,6 +46,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -1048,6 +1049,27 @@ def tool_result(results: dict[str, Any], name: str, args: dict[str, Any]) -> dic
     return {"error": "not_found"}
 
 
+# 실 FabriX(GptOss)는 최종 답에 U+2011 하이픈·U+202F 공백·U+2019 따옴표를 섞어 쓴다 — 반영 판정만 접는다.
+# 도구 인자 비교는 접지 않는다(인자에 섞이면 실 도구 조회도 실패하므로 실패로 센다).
+_FOLD_TABLE = str.maketrans(
+    {**{c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"},
+     **{c: " " for c in "\u00a0\u2007\u2009\u202f"},
+     **{c: "'" for c in "\u2018\u2019"},
+     **{c: '"' for c in "\u201c\u201d"}}
+)
+
+
+def _fold(text: str) -> str:
+    """반영 판정용 비교 정규화 — NFKC · 하이픈/공백/따옴표 변종 → ASCII · 소문자."""
+    return unicodedata.normalize("NFKC", text).translate(_FOLD_TABLE).lower()
+
+
+def reflects(final_text: str, markers: Iterable[str]) -> bool:
+    """최종 답에 반영 표지가 모두 들어 있는가(유니코드 변종 무시)."""
+    folded = _fold(final_text)
+    return all(_fold(m) in folded for m in markers)
+
+
 async def run_react_case(
     ctx: RunContext, scen: dict[str, Any], case: dict[str, Any], rep: int
 ) -> None:
@@ -1093,9 +1115,7 @@ async def run_react_case(
                     tool_result(scen["tool_results"], name, args), ensure_ascii=False
                 ),
             })
-    reflected = completed and all(
-        m.lower() in final_text.lower() for m in case.get("reflect") or []
-    )
+    reflected = completed and reflects(final_text, case.get("reflect") or [])
     failure = None
     if not completed:
         failure = last_failure or "history"
@@ -1203,9 +1223,7 @@ async def run_agent_case(
         if record["call_like_text"] and turn == len(outcomes):  # 호출 모양 평문은 최종 답이 아니다
             completed = False
         finish_call(ctx, record, outcome, case["id"], rep, turn)
-    reflected = completed and all(
-        m.lower() in final_text.lower() for m in case.get("reflect") or []
-    )
+    reflected = completed and reflects(final_text, case.get("reflect") or [])
     failure = None if completed else (last_failure or "history")
     if failure == "history" and outcomes:
         dump_failure(ctx, case["id"], rep, None, outcomes[-1].raw_heads())
