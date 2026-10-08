@@ -1763,6 +1763,14 @@ def term_in_text(term: str, text: str) -> bool:
     return term in text
 
 
+def term_spans(term: str, text: str) -> list[tuple[int, int]]:
+    """`term_in_text`와 같은 규칙으로 표면어가 걸린 구간(시작·끝)을 왼쪽부터 모두 돌려준다."""
+    if not term or not text:
+        return []
+    pattern = _term_re(term) or re.compile(re.escape(term))
+    return [m.span() for m in pattern.finditer(text)]
+
+
 def remove_term(text: str, term: str, repl: str = " ") -> str:
     """`term_in_text`와 같은 규칙으로 표면어를 지운다(라틴 단어 경계 · 제외 복합어 보존)."""
     if not term or not text:

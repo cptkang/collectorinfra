@@ -94,6 +94,7 @@
                 <button class="tab" data-tab="drm">DRM 연동</button>
                 <button class="tab" data-tab="ragdocs">문서 검색 시험</button>
                 <button class="tab" data-tab="sourcememory">소스 선택 기억</button>
+                <button class="tab" data-tab="apmsources">제니퍼 소스</button>
             </div>
 
             <!-- 환경변수 설정 탭 -->
@@ -599,6 +600,42 @@
                     <table class="settings-table" id="sourceMemorySeedTable">
                         <thead><tr><th>질의</th><th>데이터 소스</th></tr></thead>
                         <tbody id="sourceMemorySeedBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 제니퍼 소스 정합 점검 (plans/147 W4 · D-322 ⑥) -->
+            <div class="tab-content" id="tab-apmsources">
+                <div class="card" id="apmSourcesCard">
+                    <div class="toolbar">
+                        <h2>제니퍼 소스</h2>
+                        <button class="btn btn-secondary" id="refreshApmSourcesBtn" style="padding: 8px 18px; font-size: 0.8125rem;">다시 점검</button>
+                    </div>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+                        레지스트리(<code>config/db_registry.yaml</code> <code>solutions[apm].sources[]</code>)와 APM 게이트웨이(<code>JENNIFER_SOURCES</code>)의 소스를 본체 기동 때 한 번 대조한 결과입니다.
+                        <strong>레지스트리에만 있는 소스(미연결)</strong>는 되묻기 선택지·소스 칩에 뜨지 않고, <strong>게이트웨이에만 있는 소스</strong>는 존·단어를 몰라 고를 수 없습니다.
+                        「다시 점검」은 지금 상태를 보여 주기만 합니다 — 질의에 쓰이는 소스는 <strong>본체를 재기동해야</strong> 바뀝니다.
+                        소스 추가 절차는 <code>docs/31_jennifer_integration_guide.md</code> §4.4입니다.
+                    </p>
+                    <div id="apmSourcesLoading" class="loading">
+                        <div class="spinner"></div>
+                        <div class="loading-text">점검 결과를 불러오는 중...</div>
+                    </div>
+                    <div id="apmSourcesSummary" style="display: none; padding: 12px 14px; border-radius: 6px; margin-bottom: 14px; font-size: 0.85rem;"></div>
+                    <table class="settings-table" id="apmSourcesTable" style="display: none;">
+                        <thead>
+                            <tr>
+                                <th>소스 id</th>
+                                <th>라벨</th>
+                                <th>존</th>
+                                <th>단어 수</th>
+                                <th>게이트웨이 설정</th>
+                                <th>도달</th>
+                                <th>도메인 수</th>
+                                <th>상태</th>
+                            </tr>
+                        </thead>
+                        <tbody id="apmSourcesBody"></tbody>
                     </table>
                 </div>
             </div>

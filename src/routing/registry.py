@@ -183,11 +183,15 @@ class SourceSpec:
             `{family}_{id}`)
         label: 사용자 표시 이름
         zone: 소스가 속한 존 코드 — 비면 존 없는 소스(전 존 구독자·관리자만)
+        terms: 이 소스를 고르는 사전 정의 단어(plans/147 · D-322) — APM task 안에서만 쓴다.
+            시스템 유사어(`source_alias_terms`)·위치 힌트가 아니다(D-293). 여러 소스가 같은 단어를
+            가질 수 있다(걸리면 되묻기).
     """
 
     id: str
     label: str = ""
     zone: str = ""
+    terms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -768,10 +772,11 @@ def _parse_sources(
 
     소스는 알람 존 판정(RBAC)의 정본이라 틀린 항목을 조용히 버리지 않는다 — 버리면 그 소스 알람이
     존 없음으로 떨어져 존 구독자에게 가지 않는다. zone 빈 값은 허용한다(존 없는 소스).
+    `terms`(plans/147 · D-322)는 형식만 본다 — 같은 단어를 여러 소스에 두는 것은 정상이다.
 
     Raises:
         RegistryError: 목록·매핑 아님 · id 없음·형식 위반·예약어 · 같은 솔루션 안 id 중복 ·
-            미선언 존 참조
+            미선언 존 참조 · terms 형식 위반(목록 아님·문자열 아닌 값·빈 단어·같은 행 안 중복)
     """
     if value is None:
         return ()
@@ -798,8 +803,35 @@ def _parse_sources(
             raise RegistryError(
                 f"solutions[{solution}].sources '{sid}'가 미선언 존 '{zone}'를 참조합니다."
             )
-        sources.append(SourceSpec(id=sid, label=str(raw.get("label", "")), zone=zone))
+        where = f"solutions[{solution}].sources '{sid}'"
+        terms = _parse_source_terms(raw.get("terms"), where=where)
+        sources.append(
+            SourceSpec(id=sid, label=str(raw.get("label", "")), zone=zone, terms=terms)
+        )
     return tuple(sources)
+
+
+def _parse_source_terms(value: Any, *, where: str) -> tuple[str, ...]:
+    """소스 `terms:` 목록 → 단어 튜플(plans/147 · D-322). 없으면 빈 튜플(하위호환).
+
+    Raises:
+        RegistryError: 목록 아님 · 문자열 아닌 값 · 빈 단어(공백 제거 후) · 같은 행 안 중복 단어
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise RegistryError(f"{where} terms는 목록이어야 합니다.")
+    terms: list[str] = []
+    for raw in value:
+        if not isinstance(raw, str):
+            raise RegistryError(f"{where} terms에 문자열이 아닌 값이 있습니다: {raw!r}")
+        term = raw.strip()
+        if not term:
+            raise RegistryError(f"{where} terms에 빈 단어가 있습니다.")
+        if term in terms:
+            raise RegistryError(f"{where} terms에 '{term}'가 중복됐습니다.")
+        terms.append(term)
+    return tuple(terms)
 
 
 def parse_registry(data: dict[str, Any]) -> DBRegistry:

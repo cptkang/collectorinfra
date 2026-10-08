@@ -51,6 +51,12 @@
     var dbScopeSol = document.getElementById("dbScopeSol");
     var dbScopeClear = document.getElementById("dbScopeClear");
     var dbScopePopover = document.getElementById("dbScopePopover");
+    // 제니퍼 소스 칩(plans/147 · D-322 ⑤)
+    var apmScopeChip = document.getElementById("apmScopeChip");
+    var apmScopeText = document.getElementById("apmScopeText");
+    var apmScopePick = document.getElementById("apmScopePick");
+    var apmScopeClear = document.getElementById("apmScopeClear");
+    var apmScopePopover = document.getElementById("apmScopePopover");
 
     // 질의 이력 사이드바(D-183) — 이 브라우저에만 남는 목록
     var historyPanel = document.getElementById("historyPanel");
@@ -134,6 +140,8 @@
                 }
                 // 인증 확정(유효 사용자 또는 개발모드) — 앱 셸 노출(FOUC 방지 게이트 해제)
                 revealApp();
+                // 제니퍼 소스 칩(plans/147) — 축이 있을 때만 보인다(인증 확정 뒤에만 축을 읽는다)
+                loadScopeOptions().then(updateApmScopeChip);
                 // 사용자 정보 표시
                 var userInfo = data.user;
                 var userArea = document.getElementById("userInfoArea");
@@ -291,6 +299,14 @@
     var pendingDbIds = null;
     var pendingReset = false;
     var scopeAxes = null;   // GET /api/v1/scope/options 결과(1회 로드)
+    // 제니퍼 소스 칩(plans/147 · D-322 ⑤) — 위 DB 칩과 같은 규칙. currentApmScope는 서버
+    // apm_source_scope의 거울, pendingApmIds/pendingApmReset은 "다음 전송에 실릴 것",
+    // apmScopeInherited는 직전과 같은 값을 다시 받았는가(= 이번 턴은 승계).
+    var currentApmScope = null;
+    var apmScopeInherited = false;
+    var pendingApmIds = null;
+    var pendingApmReset = false;
+    var APM_ALL_KEY = "*";   // 「전체」 옵션 키(서버 ALL_SOURCES)
 
     // 질의 이력 사이드바의 대화 모드(D-248) — 서버에 저장된 스레드 목록의 캐시.
     // 초기화(setupViewTabs)가 이력 코드보다 먼저 돌기 때문에 여기서 선언한다.
@@ -543,6 +559,7 @@
 
     setupViewTabs();
     setupDbScopeChip();   // Plan 90 D-205
+    setupApmScopeChip();  // plans/147 D-322 ⑤
 
     // 테마 토글 — 이 브라우저에만 적용되는 개인 선택(전역 기본값은 운영자가 정한다).
     // data-theme 적용 자체는 head의 theme.js가 첫 페인트 전에 끝낸다.
@@ -855,10 +872,20 @@
         pendingReset = false;
         if (selectedFile) {
             // 파일 턴은 초기 상태로 시작해 원래 승계하지 않는다(SPEC Open Q2) — reset은 실을 필요가 없다.
+            // 제니퍼 소스 칩 대기분(plans/147)은 파일 경로가 받지 않으므로 다음 텍스트 질의까지 남긴다.
             executeFileQuery(query, selectedFile, sendDbIds);
             clearFile();
         } else {
-            executeStreamingQuery(query, sendDbIds, undefined, undefined, undefined, sendReset);
+            // 제니퍼 소스 칩 대기분(plans/147)도 여기서만 소비한다 — 없으면 종전 호출 그대로.
+            var sendApm = (pendingApmIds || pendingApmReset)
+                ? { ids: pendingApmIds, reset: pendingApmReset } : null;
+            pendingApmIds = null;
+            pendingApmReset = false;
+            if (sendApm) {
+                executeStreamingQuery(query, sendDbIds, undefined, undefined, undefined, sendReset, undefined, sendApm);
+            } else {
+                executeStreamingQuery(query, sendDbIds, undefined, undefined, undefined, sendReset);
+            }
         }
     }
 
@@ -1360,16 +1387,19 @@
             var t = _streamStatus.tasks[id];
             // reason이 있으면 상태값과 무관하게 "건너뜀" 우선(88 R-A: skipped 도입이 미뤄지면 failed로 온다)
             var cls = (t.status === "skipped" || t.reason) ? "skipped"
+                    : t.clarification ? "clarify"   // plans/147 제니퍼 소스 되묻기 — 오류 아님
                     : t.status === "failed" ? "failed"
                     : t.status === "accepted" ? "accepted"
                     : t.status === "completed" ? "done" : "active";
-            var mark = cls === "done" ? "\u2713" : cls === "skipped" ? "\u2298" : cls === "failed" ? "\u2715" : "\u25B8";
+            var mark = cls === "done" ? "\u2713" : cls === "skipped" ? "\u2298" : cls === "failed" ? "\u2715"
+                     : cls === "clarify" ? "?" : "\u25B8";
             var tail = "";
             if (t.row_count != null) tail += " \u2192 " + t.row_count + "건";
             if (t.scope_size) tail += " · 대상 " + t.scope_size + "대" + (t.scope_col ? " (" + t.scope_col + ")" : "");
             if (t.truncated_count) tail += " · " + t.truncated_count + "대 절단";
             if (cls === "skipped") tail += " — 건너뜀" + (t.error ? ": " + t.error : "");
             else if (cls === "failed" && t.error) tail += " — 실패: " + t.error;
+            else if (cls === "clarify") tail += " — 확인 필요";
             else if (cls === "active") tail += " · 진행 중";
             else if (cls === "accepted") tail += " · 작업으로 접수(진행 중 — 작업 카드에서 확인)";
             html += '<li class="stream-task stream-task--' + cls + '"><span class="stream-task-mark" aria-hidden="true">' + mark + '</span> ' +
@@ -1378,6 +1408,26 @@
         });
         list.innerHTML = html;
         scrollToBottomIfSticky();
+    }
+
+    // plans/147: 제니퍼 소스 되묻기는 오류가 아니다. task는 error로 끝나고(재계획 종결 판정용) task
+    // 이벤트에는 되묻기 표지가 없으므로, 응답에 apm_source_clarification이 오면 그 질문으로 끝난
+    // apm_query task의 실행 중 표시(상태줄 목록 · 처리 현황 하위 행)를 「확인 필요」 중립 표시로 고친다.
+    function markApmClarifyTasks(meta) {
+        var clar = meta && meta.apm_source_clarification;
+        if (!_streamStatus || !clar || !clar.question) return;
+        _streamStatus.taskOrder.forEach(function (id) {
+            var t = _streamStatus.tasks[id];
+            if (t.agent !== "apm_query" || t.status !== "failed" || !t.error || t.error.indexOf(clar.question) === -1) return;
+            t.clarification = true;
+            var li = progressPipeline && progressPipeline.querySelector('li[data-key="task:' + (t.task_id || t.order) + '"]');
+            var badge = li && li.querySelector(".step-data-badge");
+            if (badge) {
+                badge.className = "step-data-badge step-data-badge--info";
+                badge.textContent = "확인 필요";
+            }
+        });
+        renderStreamTasks();
     }
 
     // 완료: G-2/G-5 — 한 줄 요약으로 접는다(단계 목록은 클릭으로 펼침). 본문의 순차 처리 경과
@@ -1612,7 +1662,7 @@
 
     // ─── SSE Streaming Query ───
 
-    async function executeStreamingQuery(query, selectedDbIds, formFillAnswers, formFillRemember, formMemoryDelete, resetDbScope, selectedSources) {
+    async function executeStreamingQuery(query, selectedDbIds, formFillAnswers, formFillRemember, formMemoryDelete, resetDbScope, selectedSources, apmScope) {
         // 실패 시 "다시 시도" 버튼이 같은 인자로 다시 보낸다(D-242 — 자동 재시도 없음)
         var retryArgs = Array.prototype.slice.call(arguments);
         var retry = function () { executeStreamingQuery.apply(null, retryArgs); };
@@ -1644,6 +1694,14 @@
             if (resetDbScope) {
                 streamBody.reset_db_scope = true;
             }
+            // plans/147: 제니퍼 소스 칩·되묻기 답(apmScope.ids — 구조화 필드) · 칩 ×(apmScope.reset —
+            // 제니퍼 승계만 끊는다)
+            if (apmScope && apmScope.ids && apmScope.ids.length) {
+                streamBody.selected_apm_source_ids = apmScope.ids;
+            }
+            if (apmScope && apmScope.reset) {
+                streamBody.reset_apm_source_scope = true;
+            }
             // D-187: 저장 값 패널 삭제 버튼 — 구조화 필드로만 전달(서버가 파이프라인 없이 결정적 삭제)
             if (formMemoryDelete) {
                 streamBody.form_memory_delete = formMemoryDelete;
@@ -1666,7 +1724,7 @@
             if (response.status === 404 || response.status === 405) {
                 // SSE endpoint not available, fallback to regular POST
                 removeProcessingMessage();
-                await executeFallbackQuery(query, selectedDbIds, formMemoryDelete, resetDbScope, selectedSources);
+                await executeFallbackQuery(query, selectedDbIds, formMemoryDelete, resetDbScope, selectedSources, apmScope);
                 return;
             }
 
@@ -1772,10 +1830,12 @@
             appendFormFillPanelToLastBubble(metaData.form_fill_clarification);
             appendZoneClarificationToLastBubble(metaData.scope_reexpand);
             appendZoneClarificationToLastBubble(metaData.source_switch);   // plans/132 W5 「다른 소스로 보기」
+            appendApmSourceClarificationToLastBubble(metaData.apm_source_clarification);   // plans/147
             // D-187: 저장 값 패널(항목별 삭제)
             appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
             setCurrentThread(metaData.thread_id);
             renderDbScopeChip(metaData.db_scope);   // Plan 90 D-205 — 서버 보고값으로 칩 갱신
+            renderApmScopeChip(metaData.apm_source_scope, apmScope, resetDbScope);   // plans/147
             messages.push({
                 role: "agent",
                 data: {
@@ -1809,6 +1869,7 @@
     }
 
     function finalizeStreamingMessage(text, meta) {
+        markApmClarifyTasks(meta);   // plans/147 — 되묻기 task는 「확인 필요」
         endStreamStatus("done", meta);   // plans/89 G-2: 한 줄 요약으로 접는다
         // 최종 텍스트를 렌더링한다. 스트리밍 중 누적된 토큰과 다를 수 있으므로
         // (복합 질의의 병렬 토큰 순서/인터리빙) 권위 있는 최종 응답으로 보정한다.
@@ -2077,6 +2138,153 @@
         updateDbScopeChip();
     }
 
+    // ─── Jennifer Source Chip (plans/147 · D-322 ⑤) ───
+    // 칩은 서버 apm_source_scope의 **거울**이다(DB 칩과 같은 규칙). 축(/scope/options의 apm_source —
+    // APM 활성 ∧ 사용 가능 소스 ≥2 ∧ apm 권한)이 없고 보일 값도 없으면 칩 자체를 숨긴다(AC-6).
+    //   none          미지정 — 질문에서 확인(지목이 없으면 되묻는다)
+    //   selected      {소스} · 선택 중 / 지목   (이번 턴에 정해진 값)
+    //   inherited     {소스} · 승계 중          (직전과 같은 값을 다시 받음)
+    //   pending       다음 질의부터 {소스}       (선택만 하고 아직 안 보냄)
+    //   pending-reset 다음 질문에서 다시 확인    (×만 누르고 아직 안 보냄)
+    function apmScopeAxis() {
+        return (scopeAxes || []).filter(function (a) { return a.axis === "apm_source"; })[0] || null;
+    }
+
+    function apmSourceLabels(ids) {
+        // 라벨은 서버(scope/options 축 옵션 — 「전체」 포함)의 것만 쓴다 — 없으면 id 원문.
+        var opts = (apmScopeAxis() || {}).options || [];
+        return (ids || []).map(function (id) {
+            var hit = opts.filter(function (o) { return o.key === id; })[0];
+            return hit ? hit.label : id;
+        });
+    }
+
+    function apmScopeChipState() {
+        if (pendingApmReset) return "pending-reset";
+        if (pendingApmIds && pendingApmIds.length) return "pending";
+        if (!currentApmScope || !currentApmScope.ids || !currentApmScope.ids.length) return "none";
+        return apmScopeInherited ? "inherited" : "selected";
+    }
+
+    function updateApmScopeChip() {
+        if (!apmScopeChip) return;
+        var state = apmScopeChipState();
+        var axis = apmScopeAxis();
+        apmScopeChip.hidden = !axis && state === "none";
+        var text;
+        if (state === "pending-reset") text = "다음 질문에서 다시 확인";
+        else if (state === "pending") text = "다음 질의부터 " + apmSourceLabels(pendingApmIds).join(" · ");
+        else if (state === "none") text = "미지정 — 질문에서 확인";
+        else if (state === "inherited") text = apmSourceLabels(currentApmScope.ids).join(" · ") + " · 승계 중";
+        else text = apmSourceLabels(currentApmScope.ids).join(" · ") +
+            (currentApmScope.basis === "named" ? " · 지목" : " · 선택 중");
+        apmScopeChip.setAttribute("data-state", state);
+        apmScopeText.textContent = "제니퍼: " + text;   // 외부 데이터(라벨)는 textContent로
+        apmScopeClear.hidden = (state === "none" || state === "pending-reset");
+        apmScopePick.disabled = !axis;
+    }
+
+    function renderApmScopeChip(scope, sentApm, resetDbScope) {
+        // 값이 없으면 직전 값을 유지한다(파이프라인 전에 끝난 역질문 턴 등) — 단 이번 요청이 승계를
+        // 끊었으면(제니퍼 칩 × · DB 칩 × — 서버가 둘 다 비운다) 비운다.
+        if (scope && scope.ids && scope.ids.length) {
+            var picked = !!(sentApm && sentApm.ids && sentApm.ids.length);
+            apmScopeInherited = !picked && !!currentApmScope &&
+                currentApmScope.basis === scope.basis &&
+                (currentApmScope.ids || []).join(",") === scope.ids.join(",");
+            currentApmScope = scope;
+        } else if (resetDbScope || (sentApm && sentApm.reset)) {
+            currentApmScope = null;
+            apmScopeInherited = false;
+        }
+        updateApmScopeChip();
+    }
+
+    function resetApmScopeChip() {
+        currentApmScope = null;
+        apmScopeInherited = false;
+        pendingApmIds = null;
+        pendingApmReset = false;
+        closeApmScopePopover();
+        updateApmScopeChip();
+    }
+
+    function bindApmAllExclusive(checks, onChange, single) {
+        // 「전체」(*)와 개별 소스는 서로 배타다 — 칩 팝오버·되묻기 블록 공용. single이면 하나만.
+        checks.forEach(function (c) {
+            c.addEventListener("change", function () {
+                if (c.checked) {
+                    var isAll = c.value === APM_ALL_KEY;
+                    checks.forEach(function (x) {
+                        if (x !== c && (single || isAll || x.value === APM_ALL_KEY)) x.checked = false;
+                    });
+                }
+                onChange();
+            });
+        });
+    }
+
+    function closeApmScopePopover() {
+        if (!apmScopePopover) return;
+        apmScopePopover.hidden = true;
+        apmScopePopover.innerHTML = "";
+        apmScopePick.setAttribute("aria-expanded", "false");
+    }
+
+    function openApmScopePopover(axis) {
+        if (!axis || !axis.options || !axis.options.length) return;
+        var preset = (pendingApmIds && pendingApmIds.length) ? pendingApmIds
+            : ((currentApmScope && currentApmScope.ids) || []);
+        var itemsHtml = axis.options.map(function (o) {
+            var checked = preset.indexOf(o.key) !== -1 ? " checked" : "";
+            return '<label class="zone-clarify-item">' +
+                '<input type="checkbox" value="' + escapeHtml(o.key) + '" data-label="' + escapeHtml(o.label) + '"' + checked + '> ' +
+                escapeHtml(o.label) + '</label>';
+        }).join("");
+        apmScopePopover.innerHTML =
+            '<div class="zone-clarify-items">' + itemsHtml + '</div>' +
+            '<button type="button" class="zone-clarify-confirm apm-scope-confirm">다음 질의부터 이 제니퍼로</button>' +
+            '<button type="button" class="zone-clarify-skip apm-scope-cancel">닫기</button>' +
+            '<div class="db-scope-popover-note">선택은 다음 질의 1건에 실리고, 그 뒤로는 승계됩니다. 여러 소스를 함께 고를 수 있습니다.</div>';
+        apmScopePopover.hidden = false;
+        apmScopePick.setAttribute("aria-expanded", "true");
+        var checks = apmScopePopover.querySelectorAll('input[type="checkbox"]');
+        var confirmBtn = apmScopePopover.querySelector(".apm-scope-confirm");
+        var syncConfirm = function () {
+            confirmBtn.disabled = !Array.prototype.some.call(checks, function (x) { return x.checked; });
+        };
+        bindApmAllExclusive(checks, syncConfirm, false);
+        syncConfirm();
+        confirmBtn.addEventListener("click", function () {
+            var ids = [];
+            checks.forEach(function (c) { if (c.checked) ids.push(c.value); });
+            if (!ids.length) return;
+            pendingApmIds = ids;
+            pendingApmReset = false;   // 재선택하면 해제는 취소된다
+            closeApmScopePopover();
+            updateApmScopeChip();
+        });
+        apmScopePopover.querySelector(".apm-scope-cancel").addEventListener("click", closeApmScopePopover);
+    }
+
+    function setupApmScopeChip() {
+        if (!apmScopeChip) return;
+        apmScopePick.addEventListener("click", function () {
+            if (!apmScopePopover.hidden) { closeApmScopePopover(); return; }
+            openApmScopePopover(apmScopeAxis());
+        });
+        apmScopeClear.addEventListener("click", function () {
+            pendingApmReset = true;
+            pendingApmIds = null;
+            closeApmScopePopover();
+            updateApmScopeChip();
+        });
+        document.addEventListener("click", function (e) {
+            if (!apmScopePopover.hidden && !apmScopeChip.contains(e.target)) closeApmScopePopover();
+        });
+        updateApmScopeChip();
+    }
+
     // ─── Zone Clarification (Plan 75 §4) ───
     // 존 미지정 대량 조회 시 백엔드가 status="clarification"으로 존 선택을 요청한다.
     // 체크 결과는 자연어 재조합 없이 selected_db_ids(구조화 필드)로 재전송한다(§4.4) —
@@ -2190,6 +2398,58 @@
         var bubbles = document.querySelectorAll(".message--agent .message-bubble");
         var last = bubbles.length ? bubbles[bubbles.length - 1] : null;
         if (last) renderZoneClarification(last, clar);
+    }
+
+    // ─── Jennifer Source Clarification (plans/147 · D-322) ───
+    // 응답 apm_source_clarification → 답 말풍선 뒤 체크박스 블록(존 역질문과 같은 마크업 · status는
+    // completed라 폴스타 답과 함께 올 수 있다). 복수 선택(multi) · 「전체」는 다른 옵션과 배타.
+    // 확인 → 같은 원 질문을 selected_apm_source_ids와 함께 다시 보낸다(자연어 재조합 없음).
+    function renderApmSourceClarification(bubble, clar) {
+        var options = clar.options || [];
+        if (!options.length) return;
+        var boxId = "apmSourceClarify-" + Date.now();
+        var itemsHtml = options.map(function (o) {
+            return '<label class="zone-clarify-item">' +
+                '<input type="checkbox" value="' + escapeHtml(o.key || "") + '" data-label="' + escapeHtml(o.label || o.key || "") + '"> ' +
+                escapeHtml(o.label || o.key || "") +
+                '</label>';
+        }).join("");
+        bubble.insertAdjacentHTML("beforeend",
+            '<div class="zone-clarify apm-source-clarify" id="' + boxId + '">' +
+                '<div class="zone-clarify-items">' + itemsHtml + '</div>' +
+                '<button class="zone-clarify-confirm" disabled>선택한 제니퍼로 조회</button>' +
+            '</div>');
+        var box = document.getElementById(boxId);
+        var confirmBtn = box.querySelector(".zone-clarify-confirm");
+        var checks = box.querySelectorAll('input[type="checkbox"]');
+        bindApmAllExclusive(checks, function () {
+            confirmBtn.disabled = !Array.prototype.some.call(checks, function (x) { return x.checked; });
+        }, clar.multi === false);
+        confirmBtn.addEventListener("click", function () {
+            var ids = [], labels = [];
+            checks.forEach(function (c) {
+                if (c.checked && c.value) {
+                    ids.push(c.value);
+                    labels.push(c.getAttribute("data-label"));
+                }
+            });
+            if (!ids.length) return;
+            box.classList.add("zone-clarify--done");
+            box.querySelectorAll("input,button").forEach(function (el) { el.disabled = true; });
+            // 선택 결과를 사용자 메시지로 에코(존 역질문과 같은 규칙) — 대상은 selected_apm_source_ids가 정한다
+            var echoMsg = { role: "user", content: "선택: " + labels.join(", "), time: new Date(), file: null };
+            messages.push(echoMsg);
+            renderUserMessage(echoMsg);
+            executeStreamingQuery(clar.original_query || "", null, null, null, null, false, null, { ids: ids });
+        });
+    }
+
+    function appendApmSourceClarificationToLastBubble(clar) {
+        // 스트림·JSON 두 경로 공용 — 마지막 에이전트 말풍선에 체크박스 블록 삽입
+        if (!clar) return;
+        var bubbles = document.querySelectorAll(".message--agent .message-bubble");
+        var last = bubbles.length ? bubbles[bubbles.length - 1] : null;
+        if (last) renderApmSourceClarification(last, clar);
     }
 
     function disableZoneClarifyBlocks() {
@@ -2359,7 +2619,7 @@
 
     // ─── Fallback (non-streaming) Query ───
 
-    async function executeFallbackQuery(query, selectedDbIds, formMemoryDelete, resetDbScope, selectedSources) {
+    async function executeFallbackQuery(query, selectedDbIds, formMemoryDelete, resetDbScope, selectedSources, apmScope) {
         renderProcessingMessage();
         resetProgressPanel();
 
@@ -2377,6 +2637,13 @@
             }
             if (resetDbScope) {
                 queryBody.reset_db_scope = true;   // Plan 90 D-205 (스트리밍 경로와 대칭)
+            }
+            // plans/147: 제니퍼 소스 선택·해제(스트리밍 경로와 대칭)
+            if (apmScope && apmScope.ids && apmScope.ids.length) {
+                queryBody.selected_apm_source_ids = apmScope.ids;
+            }
+            if (apmScope && apmScope.reset) {
+                queryBody.reset_apm_source_scope = true;
             }
             // D-187: 저장 값 패널 삭제 버튼(스트리밍 폴백 경로에서도 동일 구조화 필드)
             if (formMemoryDelete) {
@@ -2401,6 +2668,7 @@
             showPostHocProgress(data);
             setCurrentThread(data.thread_id);
             renderDbScopeChip(data.db_scope);   // Plan 90 D-205
+            renderApmScopeChip(data.apm_source_scope, apmScope, resetDbScope);   // plans/147
             messages.push({ role: "agent", data: data, time: new Date() });
 
             // Plan 75 §4: 존 선택 역질문 — 마지막 에이전트 말풍선에 체크박스 블록 삽입
@@ -2409,6 +2677,7 @@
             appendFormFillPanelToLastBubble(data.form_fill_clarification);
             appendZoneClarificationToLastBubble(data.scope_reexpand);
             appendZoneClarificationToLastBubble(data.source_switch);   // plans/132 W5 「다른 소스로 보기」
+            appendApmSourceClarificationToLastBubble(data.apm_source_clarification);   // plans/147
             // D-187: 저장 값 패널(항목별 삭제)
             appendFormMemoryPanelToLastBubble(data.form_memory_panel);
 
@@ -3559,7 +3828,10 @@
             }
             var ordinal = t.order != null ? t.order : (idx + 1);
             var statusBadge = "";
-            if (t.accepted && t.status === "completed") {
+            if (t.clarification) {
+                // plans/147: 제니퍼 소스 되묻기 — 오류가 아니라 사용자 선택 대기다
+                statusBadge = ' <span class="step-data-badge step-data-badge--info">확인 필요</span>';
+            } else if (t.accepted && t.status === "completed") {
                 // plans/134 W0-B: 작업으로 접수된 조회 — 데이터 완료가 아니다
                 statusBadge = ' <span class="step-data-badge step-data-badge--info">작업 접수</span>';
             } else if (t.status === "completed") {
@@ -3614,6 +3886,8 @@
                 Object.keys(t.db_errors).forEach(function (dbId) {
                     html += '<div class="step-data-value" style="color:var(--error)">' + escapeHtml(dbId + ": " + t.db_errors[dbId]) + "</div>";
                 });
+            } else if (t.error && t.clarification) {
+                html += '<div class="step-data-value">' + escapeHtml(t.error) + "</div>";   // 되묻기 문구(중립)
             } else if (t.error) {
                 html += '<div class="step-data-value" style="color:var(--error)">' + escapeHtml(t.error) + "</div>";
             }
@@ -4309,6 +4583,9 @@
         pendingDbIds = null;
         pendingReset = false;
         updateDbScopeChip();
+        // 제니퍼 소스 승계(plans/147)는 대화 이력에 저장되지 않는다 — 다음 응답이 다시 그린다.
+        // 지난 되묻기 블록도 존 역질문처럼 복원하지 않는다.
+        resetApmScopeChip();
         showProgressEmpty();
         stickToBottom = true;
         scrollToBottom();
@@ -4332,6 +4609,7 @@
         pendingDbIds = null;
         pendingReset = false;
         updateDbScopeChip();
+        resetApmScopeChip();   // plans/147
         showProgressEmpty();
         stickToBottom = true;
         renderHistoryList();   // 현재 대화 강조 해제

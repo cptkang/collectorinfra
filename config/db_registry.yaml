@@ -496,10 +496,17 @@ solutions:
           - "「web01 어제와 오늘 응답시간 비교」"
     # plans/87 J8 · D-287 ④ — 제니퍼 소스 ↔ 존 정본(위 `sources` 설명). 단일 설정(게이트웨이
     # `JENNIFER_API_URL`만 · 소스 `default` · dbId `jennifer`)은 이 표에 없고 존 없음으로 다룬다.
+    # plans/147 · D-322 — `terms` = 그 소스를 고르는 사전 정의 단어(제니퍼는 이 목록만 본다 · `locations`
+    # 비참조). 같은 단어를 여러 소스에 둘 수 있다(걸리면 되묻기). 시스템 유사어(`aliases`)·위치 힌트가 아니다
+    # (D-293 — APM task 안에서만 쓴다). 소스 ≥2 배포에서 지목이 없으면 되묻는다(신규 기능 기본 off 원칙의
+    # 예외 — D-322 주의 ①). 아래 단어는 잠정값이다 — 운영 확정 필요.
     sources:
-      - {id: bank, label: 은행존 제니퍼, zone: bankjon}
-      - {id: common, label: 공동존 제니퍼, zone: gongjon}
-      - {id: legacy, label: 레거시 제니퍼, zone: bankjon}
+      - {id: bank, label: 은행존 제니퍼, zone: bankjon,
+         terms: ["은행존", "은행", "K리전", "은행존 제니퍼"]}
+      - {id: common, label: 공동존 제니퍼, zone: gongjon,
+         terms: ["공동존", "공동", "김포", "여의도", "운영", "개발", "스테이징", "DR", "공동존 제니퍼"]}
+      - {id: legacy, label: 레거시 제니퍼, zone: bankjon,
+         terms: ["은행존", "은행", "레거시", "레거시 제니퍼"]}
 
   # plans/127 W1(G-5 (a)) — 사내 문서 RAG(plans/126 엔진 · FabriX Retrieval Connector). 엔터티 계층이
   # 아닌 «규정·설계 근거» 계층이라 간선(entity_edges)이 없다. 보기(문서군)는 여기 적지 않는다 —

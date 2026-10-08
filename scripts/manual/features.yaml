@@ -55,6 +55,8 @@ user:
   # 5. 조회 범위와 역질문
   - {id: U-24, title: 조회 대상(스코프) 칩, anchors: ["#dbScopeChip", "#dbScopePick", "#dbScopeClear"], files: *IDX, captures: [scope-chip], case_na: 칩 조작 — 질문과 함께 쓰는 법은 U-25 사례}
   - {id: U-25, title: 존 선택 역질문, anchors: ["선택한 존으로 조회", "건너뛰고 전체 조회"], files: *IDX, captures: [zone-clarify], case_na: "파이프라인 전에 라우트가 답하는 제어 화면 — 샌드박스 단일 DB 에서는 발동하지 않아 화면 예시로 싣는다(G-6)"}
+  - {id: U-55, title: "제니퍼 소스 고르기 — 소스 단어 · 되묻기 · 이어 묻기", anchors: ["선택한 제니퍼로 조회"], files: *IDX, captures: [apm-source-clarify, apm-scope-inherit], case_na: "제니퍼 연결이 둘 이상인 환경에서만 나오고 답에 실제 제니퍼 데이터가 필요해 녹화 사례를 만들 수 없다(로컬 제니퍼는 라이선스가 없어 도메인 0건) — 화면 예시(시험용 모의 제니퍼)와 본문 예문을 싣는다"}
+  - {id: U-56, title: 제니퍼 소스 칩, anchors: ["#apmScopeChip", "#apmScopePick", "#apmScopeClear", "#apmScopePopover"], files: *IDX, captures: [apm-scope-popover], case_na: 칩 조작 — 질문과 함께 쓰는 법은 U-55}
   # 6. 양식 채우기
   - {id: U-26, title: 양식 파일 첨부, anchors: ["#attachBtn", "#fileInput", "#filePreview", "#removeFile"], files: *IDX, captures: [file-attached], cases: [F-SERVER-LIST], detail_src: [src/static/js/app.js, src/api/routes/query.py, src/utils/query_gen_common.py]}
   - {id: U-27, title: 양식 채우기 결과 받기, anchors: ["다운로드"], files: *IDX, captures: [form-result], cases: [F-SERVER-LIST, F-CPU-MONTH, F-WORD]}
@@ -165,6 +167,8 @@ admin:
   - {id: A-53, title: 새 DB 편입, anchors: ["env_connection_key"], files: [config/db_registry.yaml], captures: [], no_ui: true}
   - {id: A-66, title: 데이터 소스 이름·유사어 관리, anchors: ["aliases"], files: [config/db_registry.yaml], captures: [], no_ui: true}
   - {id: A-68, title: 소스 선택 기억 관리, anchors: ["data-tab=\"sourcememory\"", "#refreshSourceMemoryBtn"], files: *DASH, captures: [admin-source-memory]}
+  - {id: A-72, title: 제니퍼 소스 추가·소스 단어 관리, anchors: ["terms:", "소스 추가 체크리스트"], files: [config/db_registry.yaml, docs/31_jennifer_integration_guide.md], captures: [], no_ui: true}
+  - {id: A-73, title: 제니퍼 소스 정합 점검, anchors: ["#refreshApmSourcesBtn", "data-tab=\"apmsources\"", "#apmSourcesTable", "/admin/apm/sources", "--gateway-env"], files: [src/static/admin/dashboard.html, src/static/js/admin.js, src/api/routes/admin.py, scripts/apm_source_check.py], captures: [admin-apm-sources]}
   - {id: A-54, title: 실행 경로(사다리) 확인, anchors: ["오케스트레이션 사다리 확정"], files: [src/observability/ladder.py], captures: [], no_ui: true}
   - {id: A-70, title: 질의 기간 해석 설정, anchors: ["time_resolution_enabled"], files: [src/config.py], captures: [], no_ui: true}
   - {id: A-55, title: LLM 설정, anchors: ["LLM_PROVIDER"], files: [.env.example], captures: [], no_ui: true}

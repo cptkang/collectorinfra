@@ -128,6 +128,62 @@ captures:
     clip: ".chat-main"
     pad: 0
     callouts: [[1, ".zone-clarify-items"], [2, ".zone-clarify-confirm"]]
+  # plans/147 — 제니퍼 소스 되묻기·칩은 소스 ≥2 APM 활성 배포에서 파이프라인(집계기)이 만든다 → 재생 서버로
+  # 못 찍는다. `server: apm-harness` 장면은 run_capture 가 찍지 않고, scripts/manual/apm_harness.py(실 라우트 +
+  # 결정적 그래프 + 모의 게이트웨이 · LLM 0)를 띄운 뒤 capture.py --server apm-harness 로 찍는다(사용법은 그 파일).
+  # 인증은 대역(토큰 유무)이라 login 대신 토큰을 넣고 들어간다. 질문은 녹화 재생이 아니므로 send 대신
+  # fill·click 으로 보낸다(녹화 가드 test_capture_queries_have_recordings 는 재생 장면의 send 만 본다)
+  - id: apm-source-clarify
+    server: apm-harness
+    steps:
+      - goto: /login
+      - eval: "localStorage.setItem('user_token', 'manual-harness')"
+      - goto: /
+      - wait: "#apmScopeChip:not([hidden])"
+      - fill: ["#prompt", "WAS 응답시간 알려줘"]
+      - click: "#sendBtn"
+      - wait: ".apm-source-clarify"
+      - wait_answer: null
+      - check: ".apm-source-clarify input[value='common']"
+    clip: ".chat-main"
+    pad: 0
+    callouts: [[1, ".apm-source-clarify .zone-clarify-items"], [2, ".apm-source-clarify .zone-clarify-confirm"], [3, "#apmScopePick"]]
+  - id: apm-scope-inherit
+    server: apm-harness
+    steps:
+      - goto: /login
+      - eval: "localStorage.setItem('user_token', 'manual-harness')"
+      - goto: /
+      - wait: "#apmScopeChip:not([hidden])"
+      - fill: ["#prompt", "WAS 응답시간 알려줘"]
+      - click: "#sendBtn"
+      - wait: ".apm-source-clarify"
+      - wait_answer: null
+      - check: ".apm-source-clarify input[value='common']"
+      - click: ".apm-source-clarify .zone-clarify-confirm"
+      - wait: "#apmScopeChip[data-state='selected']"
+      - wait_answer: null
+      - fill: ["#prompt", "힙 사용률은?"]
+      - click: "#sendBtn"
+      - wait: "#apmScopeChip[data-state='inherited']"
+      - wait_answer: null
+    clip: ".chat-main"
+    pad: 0
+    callouts: [[1, "#apmScopePick"], [2, "#apmScopeClear"], [3, ".message--agent:last-child .message-bubble"]]
+  - id: apm-scope-popover
+    server: apm-harness
+    steps:
+      - goto: /login
+      - eval: "localStorage.setItem('user_token', 'manual-harness')"
+      - goto: /
+      - wait: "#apmScopeChip:not([hidden])"
+      - click: "#apmScopePick"
+      - wait: "#apmScopePopover:not([hidden])"
+      - check: "#apmScopePopover input[value='common']"
+      - wait: 300
+    clip: ".chat-main"
+    pad: 0
+    callouts: [[1, "#apmScopePick"], [2, "#apmScopePopover .zone-clarify-items"], [3, "#apmScopePopover .apm-scope-confirm"]]
   # ── 사용자: 양식 채우기 ─────────────────────────────────
   - id: file-attached
     login: user
@@ -471,6 +527,19 @@ captures:
       - wait: "#sourceMemoryTable"
       - wait: 600
     callouts: [[1, "#sourceMemorySummary"], [2, "#sourceMemoryTable"], [3, "#sourceMemorySeedTable"]]
+  # plans/147 W4 — 제니퍼 소스 정합 점검 탭. 캡처 서버(capture)는 APM 비활성이라 「비활성」만 보인다 →
+  # apm-harness(위 사용자 장면과 같은 하네스 · 모의 헬스: 은행존·공동존 정상 · 레거시 도달 실패)로 찍는다
+  - id: admin-apm-sources
+    server: apm-harness
+    steps:
+      - goto: /login
+      - eval: "localStorage.setItem('user_token', 'manual-harness')"
+      - goto: /admin
+      - click: "[data-tab='apmsources']"
+      - wait: "#apmSourcesTable"
+      - wait: 400
+    clip: "#apmSourcesCard"
+    callouts: [[1, "#refreshApmSourcesBtn"], [2, "#apmSourcesSummary"], [3, "#apmSourcesTable"]]
   - id: swagger
     steps:
       - goto: /docs

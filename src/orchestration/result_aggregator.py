@@ -32,7 +32,12 @@ from src.nodes.output_generator import (
     narration_limit_sec,
     output_generator,
 )
-from src.orchestration.apm_query import APM_QUERY_AGENT, reference_views_only, table_label
+from src.orchestration.apm_query import (
+    APM_QUERY_AGENT,
+    SOURCE_CLARIFICATION_KEY,
+    reference_views_only,
+    table_label,
+)
 from src.orchestration.apm_query import META_KEY as APM_META_KEY
 from src.orchestration.host_inspect import HOST_INSPECT_AGENT
 from src.prompts.result_synthesizer import RESULT_SYNTHESIZER_SYSTEM_PROMPT
@@ -789,6 +794,8 @@ def _apply_incomplete_notice(result: dict, state: AgentState) -> dict:
     """
     # 앞 턴 0행 지시어 승계(plans/146 W3) — 안내·넓힘 차단·다음 턴 기록. 같은 단일 통과점이다.
     result = _apply_empty_antecedent(result, state)
+    # 제니퍼 소스 되묻기·승계(plans/147) — APM task 결과를 상태로 올린다. 같은 단일 통과점이다.
+    result = _apply_apm_source_state(result, state)
     # 결정적 고지(plans/123 W-8·W-9) — 턴 단위 고지를 턴당 한 번 붙이고, 합성에서 떨어진 task 단위
     # 의무 고지를 되살린다. 같은 단일 통과점이다.
     result = _apply_disclosures(result, state)
@@ -806,6 +813,46 @@ def _apply_incomplete_notice(result: dict, state: AgentState) -> dict:
     out = dict(result)
     out["final_response"] = f"{body}\n\n---\n{notice}" if body else notice
     return _apply_dependency_notes(out, state)
+
+
+def _apply_apm_source_state(result: dict[str, Any], state: AgentState) -> dict[str, Any]:
+    """APM task의 소스 되묻기·승계를 상태 키로 올린다(plans/147 §4.3 · D-322).
+
+    - 되묻기(`apm_source_clarification`): 첫 APM task 것 하나 — 응답 칸(요청 스코프)과 다음 턴 글
+      답 판정용 대기 값(`apm_source_pending` = 원 질문 · 선택지)을 함께 쓴다. 같은 턴의 다른 task
+      결과는 그대로 둔다(존 역질문 단락과 달리 부분 답 + 되묻기).
+    - 승계(`apm_source_scope`): 사다리가 승계 값을 낸 APM task(마지막 것) — 근거·소스 + 이번 턴 행이
+      온 소스(`last_target_sources` — 지시어 후속 재료).
+    존 역질문이 이 턴의 답이면(다른 task 결과를 버리는 단락) 아무것도 쓰지 않는다. 없으면 원본
+    그대로다.
+    """
+    if result.get("zone_clarification"):
+        return result
+    task_results = state.get("task_results") or {}
+    ask: dict[str, Any] | None = None
+    scope: dict[str, Any] | None = None
+    for task in sorted(state.get("task_plan") or [], key=lambda t: t.get("order", 0)):
+        res = task_results.get(str(task.get("task_id")))
+        if task.get("agent") != APM_QUERY_AGENT or not isinstance(res, dict):
+            continue
+        if ask is None and isinstance(res.get(SOURCE_CLARIFICATION_KEY), dict):
+            ask = res[SOURCE_CLARIFICATION_KEY]
+        picked = (res.get(APM_META_KEY) or {}).get("source_selection") or {}
+        if isinstance(picked.get("scope"), dict):
+            scope = {**picked["scope"],
+                     "last_target_sources": list(picked.get("last_target_sources") or [])}
+    if ask is None and scope is None:
+        return result
+    out = dict(result)
+    if ask is not None:
+        out[SOURCE_CLARIFICATION_KEY] = ask
+        out["apm_source_pending"] = {
+            "query": ask.get("original_query") or "",
+            "choices": [o.get("key") for o in ask.get("options") or [] if isinstance(o, dict)],
+        }
+    if scope is not None:
+        out["apm_source_scope"] = scope
+    return out
 
 
 def _turn_sql_outcome(state: AgentState) -> tuple[list[str], int, list[str]] | None:

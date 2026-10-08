@@ -117,7 +117,8 @@ from src.routing.db_authz import (
     authorized_db_ids,
     is_source_allowed,
 )
-from src.routing.registry import ViewArgSpec, ViewSpec, get_registry
+from src.routing import apm_source_select as source_select
+from src.routing.registry import SourceSpec, ViewArgSpec, ViewSpec, get_registry
 from src.utils.json_extract import extract_json_from_response
 from src.utils.prior_dependency import NOTE_BRIDGE, NOTE_TRACE
 from src.utils.prior_targets import TargetRef, resolve_targets
@@ -308,9 +309,10 @@ def render_source_line() -> str:
     if len(sources) < 2:
         return ""
     listed = " · ".join(f"`{s.id}`({s.label or s.id})" for s in sources)
+    # 지목이 없을 때 무엇을 조회할지는 처리기의 소스 사다리가 정한다(plans/147 · D-322 — 단어 ·
+    # 대화 선택 · 되묻기) — 프롬프트는 레지스트리 기준 그대로다(렌더 결정성)
     return (f"- 사용자가 조회할 APM 소스를 지목했으면(「{sources[0].label or sources[0].id}만」)"
-            f" `sources`에 소스 id를 넣습니다: {listed}. 지목하지 않았으면 비웁니다(허용된 소스를"
-            " 모두 봅니다).\n")
+            f" `sources`에 소스 id를 넣습니다: {listed}. 지목하지 않았으면 비웁니다.\n")
 
 
 _WINDOW_TEXT = {"range": "기간 지정 가능", "current": "현재값", "hourly": "시 단위 통계",
@@ -1659,6 +1661,183 @@ def _plan_sources(task: dict[str, Any], label: str, meta: dict[str, Any],
                 f" 조회하지 않았습니다. 다음 중 골라 다시 물어 주세요: {choices}")
 
 
+# ── 소스 선택 사다리 (plans/147 · D-322) ───────────────────────────────────────
+
+#: 소스 되묻기 페이로드 — 처리기 결과 키 = 상태·응답 키(집계기가 상태로 옮긴다).
+SOURCE_CLARIFICATION_KEY = "apm_source_clarification"
+#: 결과 행의 소스 표시 칸(레지스트리 라벨 · 모르는 id는 원문 — 행의 `source_id` 원값은 그대로).
+SOURCE_LABEL_KEY = "source_label"
+
+
+def _source_decision(task: dict[str, Any], isolated: dict[str, Any],
+                     llm_ids: tuple[str, ...]) -> source_select.SourceDecision:
+    """격리 입력에서 사다리 입력을 모아 소스를 정한다(plans/147 §4.1).
+
+    단어 원문 = task 질의에 소스 단어가 있으면 task 질의만, 없으면 턴 원문(`original_user_query` —
+    `user_query`는 task 질의로 덮인다) + task 질의. 여러 소스에 걸리는 단어만 쓴 글 답 턴은 그 답
+    문구만 본다(라우트가 질의를 되묻기 원 질문으로 바꿨다 — 원 질문 단어를 다시 세지 않는다).
+    """
+    scope = isolated.get("apm_source_scope")
+    scope = scope if isinstance(scope, dict) else {}
+    inherited = (source_select.SourceScope(ids=tuple(str(i) for i in scope["ids"]),
+                                           basis=str(scope.get("basis") or ""))
+                 if scope.get("ids") else None)
+    prior = (tuple(str(i) for i in scope.get("last_target_sources") or ())
+             if scope and _demonstrative(isolated) else ())
+    answer = isolated.get("apm_source_answer_text")
+    sub_query = str(task.get("sub_query") or "")
+    specs = get_registry().sources_of(APM_SYSTEM)
+    if answer:
+        text = str(answer)
+    elif source_select.match_source_terms(sub_query, specs).source_ids:
+        # task 질의에 소스 단어가 있으면 그것만 본다 — 복합 질의의 다른 task 쪽 위치어(「김포 서버
+        # CPU와 레거시 WAS」의 「김포」)가 이 task의 지목을 흐리지 않게
+        text = sub_query
+    else:  # task 질의가 원문 단어를 잃었다(단일 task 분해) — 턴 원문으로 본다
+        text = " ".join(str(x) for x in (isolated.get("original_user_query"), sub_query) if x)
+    return source_select.select_apm_sources(
+        specs,
+        available=source_select.get_available_apm_sources(),
+        screen_ids=tuple(str(i) for i in isolated.get("selected_apm_source_ids") or ()),
+        screen_basis=str(isolated.get("apm_source_basis") or "selected"),
+        text=text, llm_ids=llm_ids, inherited=inherited, prior_target_ids=prior,
+    )
+
+
+def _source_clarification(decision: source_select.SourceDecision, specs: tuple[SourceSpec, ...],
+                          isolated: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
+    """소스 되묻기 페이로드 — 선택지(키 = 소스 id · 「전체」 = `ALL_SOURCES`) · 복수 선택 가능."""
+    by_id = {spec.id: spec for spec in specs}
+    return {
+        "question": decision.question,
+        "options": [{"key": i, "label": source_select.source_label(i, specs),
+                     "zone": by_id[i].zone if i in by_id else ""} for i in decision.choices],
+        "allow_all": source_select.ALL_SOURCES in decision.choices,
+        "multi": True,
+        # 버튼 답은 같은 원 질문을 선택과 함께 다시 보낸다(글 답 턴에도 원 질문이 남는다)
+        "original_query": str(isolated.get("original_user_query") or task.get("sub_query") or ""),
+    }
+
+
+async def _audit_source_ask(isolated: dict[str, Any], option_count: int) -> None:
+    """소스 되묻기 발동을 감사에 남긴다(되묻기율 — 기존 어휘 `clarification_issued`)."""
+    from src.security.audit_logger import log_clarification
+
+    try:
+        await log_clarification(kind="apm_source", axis="apm_source", option_count=option_count,
+                                user_id=isolated.get("user_id"),
+                                thread_id=isolated.get("thread_id"))
+    except Exception as e:  # noqa: BLE001 — 감사 실패는 경고로 남기고 진행한다
+        logger.warning("%s 소스 되묻기 감사 기록 실패: %s", APM_QUERY_AGENT, e)
+
+
+async def _apply_source_decision(
+    decision: source_select.SourceDecision, task: dict[str, Any], isolated: dict[str, Any],
+    label: str, meta: dict[str, Any], notices: list[disc.Disclosure], source: str,
+) -> dict[str, Any] | None:
+    """사다리 결과를 메타·고지에 싣는다 — 조회면 None, 되묻기·미연결이면 조회 0 거부 결과.
+
+    거부 결과는 `error`를 남겨 재계획 대상에서 빠진다(D-293 ⑤ 소스 불가 종결과 같은 결).
+    """
+    specs = get_registry().sources_of(APM_SYSTEM)
+    given = (meta.get("source_selection") or {}).get("given")
+    scope = decision.scope_update
+    meta["source_selection"] = {
+        **({"given": given} if given else {}),
+        "action": decision.action, "basis": decision.basis, "used": list(decision.source_ids),
+        "evidence": list(decision.evidence),
+        "scope": {"ids": list(scope.ids), "basis": scope.basis} if scope else None,
+    }
+    if decision.action == "query":
+        available = source_select.get_available_apm_sources()
+        usable = [s.id for s in specs if available is None or s.id in available]
+        narrowed = len(decision.source_ids) < len(usable)
+        for i, text in enumerate(decision.notices):  # 좁힘 고지(의무·중립)가 있으면 맨 앞이다
+            kind = (disc.APM_UNTARGETED_SCOPE if narrowed and i == 0
+                    else disc.APM_UNRESOLVED_CONDITION)
+            notices.append(disc.make(kind, text, source=source))
+        return None
+    missing = [disc.make(disc.APM_UNRESOLVED_CONDITION, n, source=source)
+               for n in decision.notices]
+    if decision.action == "unavailable":  # 미연결 소스만 걸렸다 — 다른 소스로 넓히지 않는다
+        meta["source_status"] = _status(label, "unavailable", 0, "미연결 소스")
+        text = "\n".join(f"{n}." for n in decision.notices)
+        return _refusal(text, "source_unavailable", meta, disc.dedupe([*notices, *missing]))
+    meta["source_status"] = _status(label, "not_queried", 0, "소스 되묻기")
+    text = "\n".join([*(f"{n}." for n in decision.notices), decision.question])
+    asked = disc.make(disc.APM_UNRESOLVED_CONDITION, decision.question, source=source)
+    out = _refusal(text, "apm_unresolved_condition", meta,
+                   disc.dedupe([*notices, *missing, asked]))
+    out[SOURCE_CLARIFICATION_KEY] = _source_clarification(decision, specs, isolated, task)
+    await _audit_source_ask(isolated, len(decision.choices))
+    return out
+
+
+def _with_source_labels(rows: list[dict[str, Any]],
+                        specs: tuple[SourceSpec, ...]) -> list[dict[str, Any]]:
+    """`source_id`가 있는 행 바로 뒤에 소스 라벨 칸을 더한다(모르는 id는 원문)."""
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if "source_id" not in row or SOURCE_LABEL_KEY in row:
+            out.append(row)
+            continue
+        labelled: dict[str, Any] = {}
+        for key, value in row.items():
+            labelled[key] = value
+            if key == "source_id":
+                labelled[SOURCE_LABEL_KEY] = source_select.source_label(str(value), specs)
+        out.append(labelled)
+    return out
+
+
+def _source_failure_codes(items: Any) -> dict[str, str]:
+    """게이트웨이 봉투 `sources[]`에서 실패한 소스 → 사유 **코드**(「코드: 문구」의 앞만).
+
+    문구에는 게이트웨이 설정 소스 목록 같은 내부 값이 실릴 수 있어 옮기지 않는다(W0 ②).
+    """
+    out: dict[str, str] = {}
+    for item in items if isinstance(items, list) else ():
+        if isinstance(item, dict) and item.get("source_id") and item.get("status") not in (
+                None, "ok"):
+            code = str(item.get("reason") or item.get("status")).split(":", 1)[0].strip()
+            out.setdefault(str(item["source_id"]), code[:60])
+    return out
+
+
+def _source_status_rows(rows: list[dict[str, Any]], meta: dict[str, Any], used: tuple[str, ...],
+                        specs: tuple[SourceSpec, ...],
+                        first_hop_failed: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    """소스별 상태 행(plans/147 §4.5) — 조회 n건 · 실패(사유 코드) · 선택 밖.
+
+    실패 = 보기 호출 봉투(`aggregates[].sources[]`) 또는 첫 홉(부하 순위·인스턴스 목록) 봉투의 소스
+    상태가 실패이고 그 소스 행이 0건(첫 홉에서 빠진 소스는 대상이 없어 이후 호출에 실리지 않는다).
+    사유는 코드만 옮긴다. 미연결 소스(사용 가능 밖)는 행을 내지 않는다.
+    """
+    available = source_select.get_available_apm_sources()
+    counts: dict[str, int] = {}
+    for row in rows:
+        sid = row.get("source_id")
+        if isinstance(sid, str):
+            counts[sid] = counts.get(sid, 0) + 1
+    failed: dict[str, str] = dict(first_hop_failed or {})
+    for agg in meta.get("aggregates") or []:
+        for sid, code in _source_failure_codes(agg.get("sources")).items():
+            failed.setdefault(sid, code)
+    out: list[dict[str, Any]] = []
+    for spec in specs:
+        if available is not None and spec.id not in available:
+            continue
+        n = counts.get(spec.id, 0)
+        if spec.id not in used:
+            status, reason = "not_selected", "선택 밖"
+        elif spec.id in failed and not n:
+            status, reason = "unavailable", failed[spec.id]
+        else:
+            status, reason = ("ok" if n else "empty"), ""
+        out.append({**_status(spec.label or spec.id, status, n, reason), "source_id": spec.id})
+    return out
+
+
 # ── 앞 결과 행 참조 (plans/134 M-6 · 계약 §4.2) ──────────────────────────────────
 
 #: 참조 종류별 문구 — (무엇이 없는가 · 세는 이름 · 행에 없는 칸 · 먼저 할 일)
@@ -1919,11 +2098,24 @@ async def run_apm_query(
         notices.append(disc.make(disc.APM_UNRESOLVED_CONDITION, selection.uncovered,
                                  source=source))
     # 소스 선택(plans/134 M-5) — 준 id가 전부 무효면 조회하지 않고 되묻는다(전 소스로 넓히지 않는다)
-    source_ids, ask_source = _plan_sources(task, label, meta, notices, source)
-    if ask_source:
-        meta["source_status"] = _status(label, "not_queried", 0, "지목한 소스 미해결")
-        notices.append(disc.make(disc.APM_UNRESOLVED_CONDITION, ask_source, source=source))
-        return _refusal(ask_source, "apm_unresolved_condition", meta, disc.dedupe(notices))
+    plan_notices: list[disc.Disclosure] = []
+    source_ids, ask_source = _plan_sources(task, label, meta, plan_notices, source)
+    # 소스 선택 사다리(plans/147 · D-322) — 소스 ≥2 배포에서만 성립(`unscoped`면 위 종전 결과
+    # 그대로)
+    decision = _source_decision(task, isolated, source_ids)
+    if decision.action == "unscoped":
+        notices += plan_notices
+        if ask_source:
+            meta["source_status"] = _status(label, "not_queried", 0, "지목한 소스 미해결")
+            notices.append(disc.make(disc.APM_UNRESOLVED_CONDITION, ask_source, source=source))
+            return _refusal(ask_source, "apm_unresolved_condition", meta, disc.dedupe(notices))
+    else:
+        # 사다리가 분해 `sources` 검증 결과를 덮는다 — 그 고지·되묻기는 싣지 않는다(중복 고지 없음)
+        refused = await _apply_source_decision(decision, task, isolated, label, meta, notices,
+                                               source)
+        if refused is not None:
+            return refused
+        source_ids = decision.source_ids
     ledger: list[LinkEntry] = []
     linked: dict[str, list[str]] = {}
 
@@ -2028,6 +2220,7 @@ async def run_apm_query(
     #: 첫 홉 부하 순위가 정한 호스트별 소스 · 첫 홉 단계와 그 범위 고지 위치(V6-3)
     host_sources: dict[str, list[str]] = {}
     first_hop: dict[str, Any] | None = None
+    first_hop_failed: dict[str, str] = {}
     first_hop_notice: int | None = None
     named_given, named_texts = _named_texts(task, [by_id[v] for v in live], meta, notices, source)
     notices += _unscoped_notices(task, isolated, [by_id[v] for v in live], meta, source)
@@ -2064,6 +2257,7 @@ async def run_apm_query(
                 top_n = None if full else _int_setting(app_config, "apm_untargeted_top_n", 20)
                 hostnames, hostless, step = await _untargeted_step(session, scope, by_id, top_n)
                 host_sources = step.pop("_host_sources", None) or {}
+                first_hop_failed = step.pop("_source_failures", None) or {}
                 first_hop = step
                 meta["inserted_steps"].append(step)
                 if step.get("error"):
@@ -2248,6 +2442,25 @@ async def run_apm_query(
     lines = _answer_lines(meta)
     if lines:
         extra[ANSWER_LINES_KEY] = lines
+    source_rows: list[dict[str, Any]] = []
+    if decision.action == "query":  # 소스 ≥2 배포(plans/147 §4.5) — 소스 라벨 칸 · 소스별 상태 행
+        specs = get_registry().sources_of(APM_SYSTEM)
+        rows = _with_source_labels(rows, specs)
+        source_rows = _source_status_rows(rows, meta, decision.source_ids, specs,
+                                          first_hop_failed)
+        down = [r for r in source_rows if r["status"] == "unavailable"]
+        if down:  # 고른 소스 일부 실패 — 완료로 세지 않고 어느 소스인지 고지한다(의무)
+            meta["source_status"] = _status(
+                label, "partial", len(rows),
+                "; ".join(x for x in (meta["source_status"].get("reason"),
+                                      f"일부 소스 조회 실패 {len(down)}건") if x))
+            extra["disclosures"] = disc.dedupe([*extra.get("disclosures", []), *(
+                disc.make(disc.APM_PARTIAL_SOURCES,
+                          f"{r['label']}는 조회하지 못했습니다({r['reason']}) — 그 소스의 결과는"
+                          " 빠졌습니다", source=source) for r in down)])
+        # 지시어 후속의 승계 재료(단 3) — 이번 턴 행이 온 소스(선언 순서)
+        found = {r.get("source_id") for r in rows}
+        meta["source_selection"]["last_target_sources"] = [s.id for s in specs if s.id in found]
     shown = display_rows(rows)
     if any(a is not b for a, b in zip(shown, rows)):
         extra[DISPLAY_CUT_KEY] = True
@@ -2264,7 +2477,7 @@ async def run_apm_query(
         },
         "query_results": rows,
         META_KEY: meta,
-        "source_status": [meta["source_status"]],
+        "source_status": [meta["source_status"], *source_rows],
     }
 
 
@@ -2392,6 +2605,8 @@ async def _ranking_step(
     hosts, hostless, unaddressed = _target_rows(rows, host_ok=lambda _row: True)
     # 호스트별 소스 — 호출부가 꺼내 (호스트 · 소스) 대상으로 부른다(메타에는 남기지 않는다 · V6-3)
     step["_host_sources"] = _host_sources(rows)
+    # 실패 소스(plans/147 §4.5) — 호출부가 꺼내 소스별 상태 행에 쓴다(메타에는 남기지 않는다)
+    step["_source_failures"] = _source_failure_codes(env.get("sources"))
     total = _num(summary.get("instances_total"))
     step.update({"hosts": len(hosts), "instances": len(rows),
                  "fleet_total": int(total) if total is not None else len(rows)})
@@ -2460,6 +2675,7 @@ async def _insert_instances_step(
         rows = rows[:limit]
     hosts, hostless, unaddressed = _target_rows(
         rows, host_ok=lambda row: bool(row.get("match_confidence")))
+    step["_source_failures"] = _source_failure_codes(env.get("sources"))
     step["hosts"] = len(hosts)
     step["instances"] = len(rows)
     if hostless:

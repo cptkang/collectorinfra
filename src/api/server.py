@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from src.api.routes import admin, admin_auth, alarm, apm_jobs, conversation, db_structure, doc_search, health, noise_dashboard, query, schema_cache, scope, ui, user_auth
 from src.config import AppConfig, load_config
 from src.graph import build_graph
+from src.routing.apm_source_health import SourceHealthReport
 from src.security.audit_logger import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -258,6 +259,33 @@ async def _ensure_incident_tables(pool) -> None:
         logger.warning("incident 테이블 DDL 실행 실패: %s", e)
 
 
+async def _check_apm_sources(config: AppConfig) -> SourceHealthReport | None:
+    """제니퍼 소스 정합 점검을 1회 돌려 사용 가능 소스 집합을 확정한다(plans/147 W4 · D-322 ⑥).
+
+    비대상 배포(APM 비활성·소스 <2)는 게이트웨이 호출 0·집합 미설정(종전과 같다). 상한
+    (`CHECK_TIMEOUT_SECONDS`) 안에서 기다린다 — Redis 연결 확인처럼 기동 단계에서 끝내 첫 질의 전에
+    집합을 확정한다(미연결 소스가 잠깐이라도 선택지에 뜨지 않게). 점검 실패는 `available=None`
+    (전 소스 사용 가능)이다. 로그 1줄 — 소스 id·불일치 요약만(URL·토큰 0).
+
+    Returns:
+        정합 보고서(`app.state.apm_source_report`) 또는 None(비대상·예외).
+    """
+    try:
+        report = await admin.check_apm_sources(config)
+        if report is None:
+            return None
+        from src.routing.apm_source_select import set_available_apm_sources
+
+        set_available_apm_sources(report.available)
+        (logger.info if report.consistent else logger.warning)(report.log_line())
+        return report
+    except Exception as e:  # noqa: BLE001 — 점검 오류는 기동을 막지 않는다
+        logger.warning(
+            "제니퍼 소스 정합 점검 오류 (전 소스 사용 가능으로 둔다): %s", type(e).__name__
+        )
+        return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator:
     """앱 시작/종료 시 실행되는 라이프사이클 관리자.
@@ -388,6 +416,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             logger.info("Redis 스키마 캐시 연결 완료")
         except Exception as e:
             logger.warning("Redis 연결 실패 (파일 캐시로 폴백): %s", e)
+
+    # 제니퍼 소스 정합 점검(plans/147 W4 · D-322 ⑥) — APM 활성 ∧ 소스 ≥2일 때만 1회 ·
+    # 실패해도 기동 계속
+    app.state.apm_source_report = await _check_apm_sources(config)
 
     # 알람 분석 워커 시작 (ALARM_ENABLED=true인 경우에만)
     alarm_worker_task = None

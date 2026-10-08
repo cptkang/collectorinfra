@@ -1860,3 +1860,7 @@
 - **실수**: 실 FabriX 본 측정에서 S5는 4단계로 정상 완주했고 최종 답에 확인 코드·사무실 이름도 들어 있었다. 그런데 `poc_run.py`의 반영 판정이 `m.lower() in final_text.lower()`라서 반영률이 전 라벨 0~7%로 「미달」 처리됐다
 - **원인**: GptOss는 최종 답에 U+2011(non-breaking hyphen)·U+202F(narrow NBSP)·U+2019를 섞어 쓴다(`VR‑5531`). 개발 맥 리허설의 가짜 KBGenAI는 ASCII만 내서 판정 결함이 드러나지 않았다. 폐쇄망에서는 덤프를 손으로 옮겨 적다 보니 변종 문자가 ASCII로 바뀌어 원인이 한 차례 가려졌다
 - **방지책**: 모델 자유 텍스트와 문자열을 대조하는 판정은 NFKC와 하이픈·공백·따옴표 변종 접기를 거친다(`poc_run.reflects`). 다만 도구 인자 비교는 접지 않는다(실 도구 조회도 실패하므로). 대조 실패 덤프는 화면 대신 코드포인트로 확인한다(`U+%04X` 출력). 가짜 업스트림 대본에도 유니코드 변종 응답을 1건 이상 둔다
+### 2026-10-08 · (plans/147 W2) 루트 conftest autouse 픽스처가 공용 monkeypatch를 요청해 다른 파일의 autouse teardown 순서가 바뀌었다
+- **실수**: 제니퍼 소스 사다리를 기존 테스트에서 끄는 autouse 픽스처(`tests/conftest.py` `_apm_source_ladder_guard`)가 공용 `monkeypatch` 픽스처를 인자로 받았다. 루트 autouse가 `monkeypatch`를 먼저 만들자 그 원복이 `tests/test_api/test_settings_help.py`의 autouse `_fresh_cache` teardown보다 늦어져, teardown의 `reset_help_cache()`가 테스트가 패치한 `curated_index`(lambda)를 보고 `cache_clear` AttributeError를 냈다(7건 ERROR). Wave 중간 모듈 회귀 선택에 그 파일이 들지 않아 계획 끝 회귀에서야 드러났다. 팀 리드가 전용 `pytest.MonkeyPatch()` + 자체 `undo()`로 고쳤다
+- **원인**: 함수 범위 픽스처의 생성·teardown 순서가 「누가 먼저 요청하느냐」로 정해진다는 점을 루트 autouse에 공용 픽스처를 걸 때 고려하지 않았다
+- **방지책**: 루트 `tests/conftest.py`의 autouse 픽스처는 공용 `monkeypatch`를 요청하지 말고 `pytest.MonkeyPatch()`를 직접 만들어 자기 teardown에서 `undo()`한다. 테스트 기반 파일을 바꾼 Wave는 그 파일을 쓰는 다른 autouse·teardown 패턴(`grep -rn "autouse=True" tests/`)을 확인한다

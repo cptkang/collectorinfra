@@ -746,6 +746,11 @@ def _summarize_tasks(tasks: list[dict], results: dict | None = None) -> list[dic
                 item["db_errors"] = db_errors
             elif res.get("error"):
                 item["error"] = res.get("error")
+            # 제니퍼 소스 되묻기(plans/147)는 오류가 아니다 — `error`는 재계획 종결 판정용으로
+            # 남기고 처리 현황은 이 표지로 「확인 필요」를 보인다(미연결 안내는 표지 없음 —
+            # 종전 표시)
+            if res.get("apm_source_clarification"):
+                item["clarification"] = True
         summarized.append(item)
     return summarized
 
@@ -797,6 +802,21 @@ def _disclosures_field(state: dict[str, Any]) -> dict[str, Any]:
     """
     items = state.get("disclosures")
     return {"disclosures": items} if items else {}
+
+
+def _apm_source_fields(state: Mapping[str, Any]) -> dict[str, Any]:
+    """제니퍼 소스 되묻기·승계(plans/147) — 네 응답 지점(JSON · 스트림 응답·done · 폴백 응답·done)에
+    같은 모양으로 싣는다. 값이 없으면 키를 싣지 않는다(소스 <2 배포 스트림 바이트 불변).
+
+    스트림 입력은 누적 상태(`_scope_state`)다 — 승계 값은 체크포인트에서, 되묻기는 집계기 델타에서
+    온다.
+    """
+    out: dict[str, Any] = {}
+    for key in ("apm_source_clarification", "apm_source_scope"):
+        value = state.get(key)
+        if value:
+            out[key] = value
+    return out
 
 
 def _time_resolution_field(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -892,7 +912,9 @@ def _nonsql_task_summary(task: dict[str, Any], res: dict[str, Any]) -> dict[str,
             out["inserted_steps"] = steps
         if meta.get("link_summary"):
             out["link"] = meta["link_summary"]
-    statuses = [s for s in res.get("source_status") or [] if isinstance(s, dict)]
+    # 시스템 행만 — 제니퍼 소스별 행(plans/147 §4.5 · `source_id` 있음)은 요약 코드에 싣지 않는다
+    statuses = [s for s in res.get("source_status") or []
+                if isinstance(s, dict) and "source_id" not in s]
     if statuses:
         out["source_status"] = [f"{s.get('system')}:{s.get('status')}" for s in statuses]
     return out
@@ -1316,15 +1338,37 @@ def _build_turn_input_state(
         # selected_db_ids(존 선택)는 요청 스코프 — 이번 턴 값 또는 None으로 매 턴 재공급.
         # allow_zone_clarification=True: 대화형 텍스트 라우트는 존 역질문 후단 게이트
         # (D-143 후속2) 허용 채널 — 배치·평가·API 직접 호출 경로는 기본 False 유지.
+        # 제니퍼 소스 되묻기 답(plans/147 · D-322) — 버튼(`selected_apm_source_ids`)이면
+        # 같은 원 질문이 다시 오고, 글 답(소스 단어·「전체」뿐)이면 질의를 되묻기 원 질문으로
+        # 바꾼다(대화 기록에는 사용자 원문을 남긴다). 직전 턴이 되묻었으면 근거는 `answered`,
+        # 아니면 화면 선택(`selected`).
+        pending = checkpoint_state.get("apm_source_pending")
+        apm_ids = getattr(body, "selected_apm_source_ids", None)
+        apm_answer: str | None = None
+        turn_query = body.query
+        if not apm_ids:
+            text_answer = _apm_source_text_answer(body.query, pending, current_user)
+            if text_answer is not None and isinstance(pending, dict):
+                apm_ids, apm_answer = text_answer
+                turn_query = str(pending["query"])
+        apm_basis = ("answered" if isinstance(pending, dict) and pending else "selected") \
+            if apm_ids else None
         delta = create_followup_input(
-            _substitute_zone_placeholder(body.query, body.selected_db_ids),
+            _substitute_zone_placeholder(turn_query, body.selected_db_ids),
             selected_db_ids=body.selected_db_ids,
             selected_sources=getattr(body, "selected_sources", None),
             allow_zone_clarification=True,
-            raw_user_query=_raw_query_seed(body.query, config),
+            raw_user_query=_raw_query_seed(turn_query, config),
             # 스코프 칩 "해제"(D-205) — 승계 원천 초기화 + context_resolver sticky 차단
             reset_db_scope=bool(getattr(body, "reset_db_scope", False)),
+            # 제니퍼 소스 칩 "×"(plans/147) — 제니퍼 승계만 끊는다
+            reset_apm_source_scope=bool(getattr(body, "reset_apm_source_scope", False)),
+            selected_apm_source_ids=apm_ids,
+            apm_source_basis=apm_basis,
+            apm_source_answer_text=apm_answer,
         )
+        if turn_query != body.query:
+            delta["messages"] = [HumanMessage(content=body.query)]
         # 존 선택 재개 턴은 전량 조회가 기본 — LIMIT 상향(D-153 후속1, 폼필 후속1과 동형)
         if body.selected_db_ids:
             delta["resolved_limit"] = resolve_query_limit(body.query, _ZONE_SCAN_LIMIT)
@@ -1340,7 +1384,7 @@ def _build_turn_input_state(
             _scope_narrowed_or_none(body, config, current_user) if config else None
         )
         # 원문만으로 정해지는 턴 단위 고지(plans/123 W-4 · S-1) — 요청 스코프
-        delta["turn_disclosures"] = _turn_disclosures(body.query, body.selected_db_ids)
+        delta["turn_disclosures"] = _turn_disclosures(turn_query, body.selected_db_ids)
         return _with_current_identity(
             _release_legacy_structure_hitl(delta, checkpoint_state), current_user
         )
@@ -1356,6 +1400,8 @@ def _build_turn_input_state(
         allowed_sources=current_user.get("allowed_sources"),
         selected_db_ids=body.selected_db_ids,
         selected_sources=getattr(body, "selected_sources", None),
+        # 제니퍼 소스 화면 선택(plans/147) — 첫 턴은 되묻기 대기가 없어 근거가 늘 `selected`다
+        selected_apm_source_ids=getattr(body, "selected_apm_source_ids", None),
         allow_zone_clarification=True,
         # 존 선택 재개 턴(pre-gate는 파이프라인 미실행이라 첫 턴으로 도착)도 전량 상향
         resolved_limit=(
@@ -2005,6 +2051,112 @@ def apply_source_selection_authorization(
     return kept or None
 
 
+def apply_apm_source_selection_authorization(
+    selected: list[str] | None, current_user: dict[str, Any]
+) -> list[str] | None:
+    """제니퍼 소스 선택(plans/147 · D-322)을 요청 경계에서 거른다 — 외부 입력이다.
+
+    레지스트리 소스(`solutions[apm].sources`) ∩ 사용 가능 소스(기동 정합 점검 · 없으면 전부)만
+    남기고
+    「전체」(`ALL_SOURCES`)는 허용한다. 소스 단위 권한은 없다 — 관측 소스 `apm` 권한이 없으면 전부
+    버린다(D-287 ⑤ · 처리기도 실행 경계에서 거부한다). 전부 걸러지면 None(선택 없음 — 사다리가
+    다음 단으로 정한다).
+    """
+    if not selected:
+        return None
+    from src.routing.apm_source_select import ALL_SOURCES, get_available_apm_sources
+    from src.routing.db_authz import is_source_allowed
+    from src.routing.registry import get_registry
+
+    if not is_source_allowed("apm", current_user.get("allowed_sources"), current_user.get("role")):
+        logger.info("제니퍼 소스 선택 제외(관측 소스 권한 없음): %d건 %s", len(selected),
+                    _apm_ids_preview(selected))
+        return None
+    available = get_available_apm_sources()
+    known = {
+        spec.id for spec in get_registry().sources_of("apm")
+        if available is None or spec.id in available
+    }
+    # 상한(심층 방어) — 넘는 개수·긴 항목은 거부(422)하지 않고 버린다(선택 칸 관례: 거르기)
+    given = list(dict.fromkeys(
+        s for s in (str(x) for x in selected[:_APM_IDS_MAX] if x) if len(s) <= _APM_ID_MAX_LEN))
+    kept = [s for s in given if s == ALL_SOURCES or s in known]
+    if len(kept) != len(selected):
+        logger.info("제니퍼 소스 선택 검증으로 제외: %d건 %s → %s", len(selected),
+                    _apm_ids_preview(selected), kept)
+    return kept or None
+
+
+#: 제니퍼 소스 선택 상한 — 개수 · 항목 길이(레지스트리 소스 id는 짧은 슬러그다)
+_APM_IDS_MAX = 32
+_APM_ID_MAX_LEN = 64
+
+
+def _apm_ids_preview(ids: list[Any], head: int = 3, width: int = 20) -> list[str]:
+    """로그용 — 외부 입력 목록의 앞 몇 개만, 각 항목은 잘라서."""
+    return [str(x)[:width] for x in ids[:head]]
+
+
+#: 소스 되묻기 글 답에 붙어도 되는 꼬리(plans/147 — 조사·맺음말·문장부호만 · 좁은 목록).
+#: 이 밖의 말이 섞이면 새 질문이다.
+_APM_ANSWER_TAIL = re.compile(
+    r"(?:조회해\s*주세요|조회해\s*줘|조회해요|조회|해\s*주세요|해\s*줘|해요|부탁해요|부탁합니다"
+    r"|부탁해|주세요|제니퍼|으로요|으로|로요|로|이요|만요|만|요|은|는|이|가|을|를|도|과|와|랑"
+    r"|[\s.,!?~·/])*"
+)
+#: 글 답 길이 상한 — 소스 단어 몇 개 + 꼬리를 넘는 문장은 새 질문으로 본다.
+_APM_ANSWER_MAX = 40
+
+
+def _apm_source_text_answer(
+    query: str, pending: Any, current_user: dict[str, Any]
+) -> tuple[list[str] | None, str | None] | None:
+    """직전 턴 소스 되묻기에 글로 답했으면 (선택 id, 다시 물을 답 문구), 아니면 None(plans/147).
+
+    조건: 체크포인트에 되묻기 대기(`apm_source_pending`)가 있고, 이번 턴 원문이 소스 단어·「전체」와
+    좁은 꼬리(`_APM_ANSWER_TAIL`)뿐이다(결정적 · 존 역질문 Q-2 「같은 원 질의 + 선택뿐」과 같은 결).
+    - 「전체」 단독 → `[ALL_SOURCES]` — 소스 단어가 함께 있으면(「공동존 전체」) 「전체」는
+      「그 소스 전부」로 읽고 무시한다(전 소스로 넓히지 않는다 · D-290 ⑥)
+    - 걸린 소스 1개 → `[그 id]`
+    - 2개 이상(「은행존」) → `(None, 원문)` — 사다리가 이 답 문구만 단어로 보고 다시 되묻는다.
+    관측 소스 `apm` 권한이 없으면 None(새 질문 — 처리기가 거부한다). 미연결 여부는 사다리가
+    판정한다.
+    """
+    from src.routing.apm_source_select import ALL_LABEL, ALL_SOURCES, match_source_terms
+    from src.routing.db_authz import is_source_allowed
+    from src.routing.registry import get_registry
+    from src.utils.query_gen_common import term_spans
+
+    if not isinstance(pending, dict) or not pending.get("query"):
+        return None
+    text = (query or "").strip()
+    if not text or len(text) > _APM_ANSWER_MAX:
+        return None
+    if not is_source_allowed("apm", current_user.get("allowed_sources"), current_user.get("role")):
+        return None
+    specs = get_registry().sources_of("apm")
+    spans = sorted(
+        span for term in {*(t for spec in specs for t in spec.terms), ALL_LABEL}
+        for span in term_spans(term, text)
+    )
+    if not spans:
+        return None
+    pieces, cursor = [], 0
+    for start, end in spans:
+        if start > cursor:
+            pieces.append(text[cursor:start])
+        cursor = max(cursor, end)
+    pieces.append(text[cursor:])
+    if not all(_APM_ANSWER_TAIL.fullmatch(p) for p in pieces):
+        return None
+    matched = match_source_terms(text, specs).source_ids
+    if not matched:
+        return ([ALL_SOURCES], None) if term_spans(ALL_LABEL, text) else None
+    if len(matched) == 1:
+        return [matched[0]], None
+    return None, text
+
+
 def _zone_clarification_or_none(
     body: QueryRequest, checkpoint_state: dict | None, config, current_user: dict | None = None
 ) -> dict | None:
@@ -2340,6 +2492,8 @@ async def process_query(
     )
     body.selected_sources = apply_source_selection_authorization(
         body.selected_sources, current_user)
+    body.selected_apm_source_ids = apply_apm_source_selection_authorization(
+        body.selected_apm_source_ids, current_user)
     if _selection_denied:
         return await turn.response(QueryResponse(
             query_id=query_id,
@@ -2471,6 +2625,7 @@ async def process_query(
         "clarification": zone_clarification,
         # 소스 선택 기억을 쓴 턴의 「다른 소스로 보기」 칩(plans/132 W5)
         "source_switch": result.get("source_switch"),
+        **_apm_source_fields(result),  # plans/147 제니퍼 소스 되묻기·승계
         **_clarify_turn_fields(time_clar),  # 기간 되묻기 턴 — 직전 턴 SQL·행·파일 미탑재(D5)
     }
     _store_result(query_id, {
@@ -2527,6 +2682,8 @@ async def process_query_stream(
     )
     body.selected_sources = apply_source_selection_authorization(
         body.selected_sources, current_user)
+    body.selected_apm_source_ids = apply_apm_source_selection_authorization(
+        body.selected_apm_source_ids, current_user)
     if _selection_denied:
         async def selection_denied_generator() -> AsyncGenerator[str, None]:
             yield _sse_event({
@@ -2806,6 +2963,7 @@ async def process_query_stream(
                                         # 「다른 소스로 보기」(plans/132 W5) — 계획
                                         # 노드가 쓰는 키라 누적 상태에서 읽는다
                                         "source_switch": _scope_state.get("source_switch"),
+                                        **_apm_source_fields(_scope_state),  # plans/147
                                     }
                                     _store_result(query_id, {
                                         **response_data,
@@ -2838,10 +2996,19 @@ async def process_query_stream(
                                         # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                                         "clarification": response_data.get("clarification"),
                                         "source_switch": response_data.get("source_switch"),
+                                        **_apm_source_fields(response_data),  # plans/147
                                         **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
                                         # 단계 타임라인(plans/119 T-0)
                                         "timeline": _finish_timeline(_watch, query_id, done=True),
                                     })
+                                    if (output.get("apm_source_pending")
+                                            or output.get("apm_source_scope")):
+                                        # 제니퍼 소스 되묻기 대기·승계(plans/147)는 종료
+                                        # 노드가 쓰는 스레드 칸이다 — 바로 끝내면 생산자가
+                                        # 취소돼 그 노드의 체크포인트 쓰기가 사라진다
+                                        # (LangGraph 실측). 이 턴만 그래프 끝까지 받는다.
+                                        async for _ in _events:
+                                            pass
                                     return
 
                     if not streamed_any_token:
@@ -2903,6 +3070,7 @@ async def process_query_stream(
                 **_plan_summary_field(result),  # TP-0.1
                 "clarification": _zone_clar,
                 "source_switch": result.get("source_switch"),  # plans/132 W5
+                **_apm_source_fields(result),  # plans/147
                 **_turn_fields,  # 기간 되묻기 턴(D5)
             }
             _store_result(query_id, {
@@ -2936,6 +3104,7 @@ async def process_query_stream(
                 # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
                 "clarification": response_data.get("clarification"),
                 "source_switch": response_data.get("source_switch"),  # plans/132 W5
+                **_apm_source_fields(response_data),  # plans/147
                 **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
                 "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0
             })

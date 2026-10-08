@@ -5654,6 +5654,11 @@ select:focus {
     color: var(--text-secondary);
 }
 
+/* 제니퍼 소스 칩(plans/147)은 축이 없으면 숨는다 — display:flex가 hidden 속성을 덮지 않게 */
+.db-scope-chip[hidden] {
+    display: none;
+}
+
 .db-scope-chip-label {
     flex: 0 0 auto;
     font-family: var(--font-mono);

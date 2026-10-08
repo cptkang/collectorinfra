@@ -1410,6 +1410,12 @@ def _make_isolated_input(
         "zone_selection_db_ids": zone_selection_db_ids(
             state.get("selected_db_ids"), state.get("target_databases")
         ),
+        # 제니퍼 소스 선택(plans/147 · D-322) — `apm_query` 소스 사다리 입력(화면 선택·되묻기 답 ·
+        # 근거 · 글 답 · 대화 승계). 다른 처리기는 읽지 않는다.
+        "selected_apm_source_ids": state.get("selected_apm_source_ids"),
+        "apm_source_basis": state.get("apm_source_basis"),
+        "apm_source_answer_text": state.get("apm_source_answer_text"),
+        "apm_source_scope": state.get("apm_source_scope"),
         # 실시간 사용률 의도(Plan 71, B안 게이트)는 **원문 기준**으로 판정해 승격 —
         # sub_query/sub_query_context 재작성으로 "실시간" 표면어가 탈락해도 유지
         # (resolved_limit과 동일 원리, D-066 후속7).

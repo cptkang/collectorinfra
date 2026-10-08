@@ -35,11 +35,12 @@ def _data(sources, *, family: str = "acme", extra_dbs=None) -> dict:
 
 def test_registry_declares_three_jennifer_sources_in_order() -> None:
     sources = get_registry().sources_of("apm")
-    assert sources == (
-        SourceSpec(id="bank", label="은행존 제니퍼", zone="bankjon"),
-        SourceSpec(id="common", label="공동존 제니퍼", zone="gongjon"),
-        SourceSpec(id="legacy", label="레거시 제니퍼", zone="bankjon"),
-    )
+    # plans/147 W1 — 행마다 `terms`가 붙었다(단어는 test_plan147_source_select가 고정) · 의도된 갱신
+    assert [(s.id, s.label, s.zone) for s in sources] == [
+        ("bank", "은행존 제니퍼", "bankjon"),
+        ("common", "공동존 제니퍼", "gongjon"),
+        ("legacy", "레거시 제니퍼", "bankjon"),
+    ]
 
 
 def test_sources_of_unknown_or_sourceless_system_is_empty() -> None:

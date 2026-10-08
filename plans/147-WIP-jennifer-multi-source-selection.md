@@ -1,7 +1,9 @@
 # 147. 제니퍼 다중 소스 선택 조회 — 은행존·공동존·레거시 제니퍼(이후 N개) 중 고른 소스만 조회 · 소스별 사전 정의 단어 · 애매하거나 지목이 없으면 되묻기 · 선택 승계 · 화면 소스 선택 · 소스 추가 = 설정만 + 정합 점검
 
 > **작성일**: 2026-10-07 · **v1.1**(게이트 확정)
-> **상태**: **TODO — 게이트 확정 · 코드 0건** · **D-322**(게이트 확정값 · D-287 ⑥ 개정) · 착수 대기
+> **상태**: **WIP — W0~W5 구현 완료(2026-10-08 · 작업 트리 · 커밋 없음 · D-322 구현)** · 잔여: ① G-B 소스 단어 운영 확정(현재 §4.2 예시 = 잠정값) ② §4.5 소스별 상태 행(`source_status` 소스 행)은 응답 데이터에만 있고 화면 미노출 — 실패는 의무 고지로 노출 ③ 비대화 채널(API 직접·배치·평가 하네스)도 지목 없으면 되묻는다 — D-143 후속2처럼 대화형만 되묻게 할지 사용자 확인 ④ 「공동존과 레거시」처럼 단일 소스 단어 둘은 다시 되묻는다(§4.1 문언대로 — 합집합 조회로 바꿀지 확인) ⑤ 「개발자」·「공동구매」 등 부분 문자열 좁힘(D-271 제외어는 「운영」만) ⑥ 기존 결함(계획 밖): SSE 경로가 done 뒤 생산자를 취소해 종료 노드(`result_aggregator`)의 체크포인트 쓰기가 유실된다(기준 `ee319ad`에서도 재현 · 이 계획은 제니퍼 칸이 있는 턴만 끝까지 소비) — 별도 계획 필요 ⑦ 대화 이력 복원 시 제니퍼 칩은 「미지정」으로 시작(서버 승계는 유지) · 파일 라우트는 제니퍼 칸 미운반 · 진행 중 task 이벤트는 되묻기를 잠깐 「실패」로 보였다가 done에서 「확인 필요」로 고친다
+> **계획 시작 SHA**: `ee319ad`
+> **회귀 대상 파일**: `config/db_registry.yaml` `docs/18_known_mistakes.md` `docs/31_jennifer_integration_guide.md` `pyproject.toml` `scripts/apm_source_check.py` `scripts/manual/apm_harness.py` `scripts/manual/captures.yaml` `scripts/manual/content/admin.md` `scripts/manual/content/user.md` `scripts/manual/features.yaml` `src/api/routes/admin.py` `src/api/routes/query.py` `src/api/routes/scope.py` `src/api/schemas.py` `src/api/server.py` `src/orchestration/apm_query.py` `src/orchestration/result_aggregator.py` `src/orchestration/subagents.py` `src/routing/apm_source_health.py` `src/routing/apm_source_select.py` `src/routing/db_scope.py` `src/routing/registry.py` `src/state.py` `src/static/admin/dashboard.html` `src/static/css/style.css` `src/static/index.html` `src/static/js/admin.js` `src/static/js/app.js` `src/static/manual/admin.html` `src/static/manual/img/captured.json` `src/static/manual/user.html` `src/utils/query_gen_common.py` `tests/conftest.py` `tests/test_api/test_plan147_verify.py` `tests/test_api/test_plan147_w2_route.py` `tests/test_api/test_plan147_w3_scope.py` `tests/test_api/test_plan147_w4_admin_startup.py` `tests/test_api/test_plan147_w4_real_gateway.py` `tests/test_orchestration/test_plan147_w0_repro.py` `tests/test_orchestration/test_plan147_w2_e2e.py` `tests/test_orchestration/test_plan147_w2_ladder.py` `tests/test_orchestration/test_plan147_w2_pipeline.py` `tests/test_routing/test_plan147_source_health.py` `tests/test_routing/test_plan147_source_select.py` `tests/test_routing/test_plan87_j8_registry_sources.py` `tests/test_scripts/test_apm_source_check.py` · (계획 문서) `plans/125`·`130`·`132`·`87` 통지 행
 > **요청(사용자 2026-10-07)**: *"제니퍼가 '은행존'과 '공동존'으로 1개가 추가되었다. 이후 제니퍼 서버는 추가적으로 늘어날 것이다. 추가되는 제니퍼 데이터 소스에 맞게 선택하여 조회할 수 있는 기능이 필요하다. 이 요건에 맞는 수정 계획을 파일로 생성하라."* → 인터뷰(*"인터뷰를 진행하라."*) → 정리 확인 *"반영하라."*
 > **입력**: 저장소 `8432ac8` 읽기·grep 실측(§1.2 앵커) · 사용자 인터뷰 Q1~Q7(§8) · 과금 호출 0 · 서버 기동 0 · 실 제니퍼 호출 0
 > **관련 계획**: `plans/87`(J8 — 게이트웨이 소스 N개 · 구현 완료) · `plans/125`(D-287 본체 몫 ②③④ — ②는 이 계획이 D-322으로 바꿔 수행 · ③④ 흡수) · `plans/130`(잔여 M-5 `apm_source_id` 승계 — 흡수) · `plans/134`(M-5 분해 `sources` 칸 · 구현 완료) · `plans/132`(소스 어휘·시스템 단위 소스 선택 칩 N-10) · `plans/82`(스코프 칩 — 「솔루션 축」 자리) · `plans/144`(제니퍼 노이즈 캔슬링 — 소스 ↔ 존 판정 공유 · 이 계획과 무관)
@@ -108,7 +110,7 @@ sources:
 - **같은 단어의 여러 소스 등재 허용**(R-3) — 로드 검증은 형식(빈 문자열·중복 단어 같은 행 안)만 거부한다. 「한 단어가 두 소스」는 정상이며 되묻기로 처리된다.
 - **매칭**: 기존 `term_in_text`(라틴 단어 경계·대소문자 무시) · D-271 제외어(「운영체제」·「운영 중」·「운영자」·「운영팀」) 재사용 · 긴 단어 우선(「은행존 제니퍼」가 걸리면 그 안의 「은행존」은 따로 세지 않음).
 - **D-293과 분리**: 이 단어는 **시스템 유사어가 아니다** — `source_alias_terms()`·`target_db_hints`에 넣지 않는다(넣으면 「김포」가 APM 처리기 고정(D-293 ③)을 일으킨다). APM task가 생긴 뒤 `apm_query` 안에서만 쓴다. 시스템 지목(「제니퍼」·「APM」)은 종전대로 D-293이 처리한다.
-- **원문 범위**: 단일 task = 원문 전체 · 복합 질의 = 기존 D-293 ③ 규칙처럼 task 질의(`sub_query`)에 남은 단어 + 원문 (W0에서 분해가 위치어를 APM task 질의에 남기는지 실측해 범위 확정).
+- **원문 범위**(W0 실측 · 검증 교정 2026-10-08로 확정): **task 질의(`sub_query`)에 소스 단어가 걸리면 그것만** 본다 · task 질의에 단어가 0건일 때만 턴 원문(`original_user_query`)을 본다 — 복합 질의에서 폴스타 task의 위치어(「김포 서버 CPU와 레거시 WAS」의 「김포」)가 APM task 판정에 섞이지 않게 한다. W0 실측(MLX 2문항)에서 분해는 위치어를 APM task 질의에 남겼다.
 
 ### 4.3 되묻기·화면 — 스코프 칩 「제니퍼 소스」 축
 
@@ -229,5 +231,6 @@ W3과 W4는 서로 독립이다(병렬 가능).
 
 | 날짜 | 내용 |
 |---|---|
+| 2026-10-08 | **v1.2 — W0~W5 구현**(사용자 *"147번 계획을 검토하고 구현하라."* · 팀 리드 경유 · 시작 `ee319ad`) — W0 실측(재현 3건 · MLX 2문항: 분해는 위치어를 APM task 질의에 남기고 `sources`를 비움) · W1 `terms` 스키마·`src/routing/apm_source_select.py` 사다리 · W2 `apm_query` 배선·스레드 키 `apm_source_scope`·`apm_source_pending`·요청 칸 `selected_apm_source_ids`·응답 칸 `apm_source_clarification`(존 역질문 `zone_clarification`은 다른 task 결과를 버려 재사용 불가 — `source_switch` 전례)·글 답 규칙·`source_label` 칸·첫 홉 소스 실패 고지 · W3 `/scope/options` `apm_source` 축·칩·되묻기 블록·`reset_apm_source_scope` · W4 `src/routing/apm_source_health.py`·기동 점검(최대 5초)·`GET /api/v1/admin/apm/sources`·대시보드 탭·`scripts/apm_source_check.py`·`docs/31` §4.4 · 매뉴얼 U-55·U-56·A-72·A-73 · 검증 교정 3건(「〇〇 전체」 글 답 넓힘 · 복합 질의 위치어 섞임 → §4.2 원문 범위 확정 · 요청 칸 상한) · 모듈 회귀 1회(원래 실패 55 · 이번 변경 탓 7 → conftest teardown 순서 교정 후 해소) |
 | 2026-10-07 | v1.1 — 사용자 인터뷰 Q1~Q7 + 정리 확인(*"반영하라."*) → 게이트 확정 · **D-322** 등재 · D-287 ⑥ 개정 부기. 설계 변경: 위치어 좁히기를 폴스타 위치어 경유에서 **소스별 사전 정의 단어**로 · 소스 유사어와 통합 · 애매·지목 없음 = 되묻기 · 선택 승계 · 미연결 소스 선택지 제외 |
 | 2026-10-07 | v1.0 — 계획 초안(코드 0). 현행 실측 · 게이트 G-1~G-8 |

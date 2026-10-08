@@ -246,6 +246,30 @@ def _restore_sql_file_logger_globals():
     sql_file_logger._SQL_LOG_DIR, sql_file_logger._enabled = saved
 
 
+@pytest.fixture(autouse=True)
+def _apm_source_ladder_guard(request):
+    """제니퍼 소스 선택 사다리(plans/147 · D-322)를 기존 테스트에서 끈다 — 마커 테스트만 실 사다리.
+
+    실 레지스트리는 제니퍼 소스가 3개라 사다리가 켜지면 `sources` 없이 `run_apm_query`를 부르는
+    기존 테스트(지목 없음 = 전 소스 조회를 전제)가 전부 「조회 0 + 되묻기」로 바뀐다. 그 테스트들의
+    의미(보기·대상·창·배치 계약)를 지키도록 사다리 결과를 `unscoped`(= 종전 경로 · 소스 <2 배포와
+    같은 동작)로 고정한다. `@pytest.mark.apm_source_ladder` 테스트는 실 사다리를 쓴다.
+    사용 가능 소스 보관(`set_available_apm_sources`)도 테스트마다 원복한다(누수 차단).
+    공용 `monkeypatch` 픽스처를 요청하지 않는다 — 루트 autouse가 먼저 만들면 그 원복이 다른
+    autouse 픽스처 teardown보다 늦어진다(`test_settings_help._fresh_cache`가 패치된 함수를 본다).
+    """
+    from src.routing import apm_source_select as sel
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(sel, "_available", sel._available)
+    if request.node.get_closest_marker("apm_source_ladder") is None:
+        mp.setattr(
+            sel, "select_apm_sources", lambda *a, **k: sel.SourceDecision(action="unscoped")
+        )
+    yield
+    mp.undo()
+
+
 @pytest.fixture
 def column_coverage_llm() -> ColumnCoverageStubLLM | None:
     """컬럼 커버리지 판단 LLM(이중 모드) — 스텁 페이로드 단언은 `is not None` 가드 후 수행."""

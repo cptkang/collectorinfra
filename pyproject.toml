@@ -135,4 +135,5 @@ asyncio_mode = "auto"
 markers = [
     "serial: 병렬(xdist)로 못 도는 테스트 — scripts/regress.py가 따로 직렬 실행한다",
     "repo_guard: 소스 트리 전체를 훑는 저장소 전역 가드 — 모듈 단위 회귀에 항상 포함",
+    "apm_source_ladder: 제니퍼 소스 선택 사다리를 실제로 쓰는 테스트(plans/147) — 그 밖 테스트는 tests/conftest.py가 종전 경로로 고정",
 ]
