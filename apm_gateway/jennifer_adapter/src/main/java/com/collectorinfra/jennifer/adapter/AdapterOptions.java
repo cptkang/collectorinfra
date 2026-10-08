@@ -1,6 +1,6 @@
 package com.collectorinfra.jennifer.adapter;
 
-import com.aries.extension.util.PropertyUtil;
+import java.lang.reflect.Method;
 
 /**
  * 어댑터 옵션 — 제니퍼 관리 화면 어댑터 [옵션] 팝업의 「사용자 정의 속성」(Key/Value)에서 읽는다.
@@ -11,10 +11,27 @@ import com.aries.extension.util.PropertyUtil;
  * (EventHandler는 {@code on(EventData[])} 하나뿐). 그래서 ID를 코드 상수 {@link #DEFAULT_ADAPTER_ID}로 고정한다 —
  * 관리 화면의 어댑터 ID를 반드시 이 값으로 입력한다. 바꿔야 하면 뷰서버 JVM 옵션
  * {@code -Dcollectorinfra.adapter.id=<ID>}를 쓴다(재기동 필요).
+ *
+ * <p>PropertyUtil은 리플렉션으로 부른다 — 컴파일용 API jar {@code extension-ide-x.y.z.jar}에는 util 패키지
+ * (PropertyUtil·LogUtil)가 없다(1.5.7·1.6.0 실측). 그래서 extension·extension-ide 어느 쪽으로도 빌드되고,
+ * 실행 시에는 뷰서버가 가진 실물을 쓴다. 실물이 없으면 모든 옵션이 기본값 → target_host 미설정 → 송신 안 함(로그 1회).
  */
 final class AdapterOptions {
 
     static final String DEFAULT_ADAPTER_ID = "collectorinfra_event";
+
+    /** {@code PropertyUtil.getValue(String, String, String)} — 없으면 null(옵션 전부 기본값). */
+    private static final Method GET_VALUE = findGetValue();
+
+    private static Method findGetValue() {
+        try {
+            return Class.forName("com.aries.extension.util.PropertyUtil")
+                    .getMethod("getValue", String.class, String.class, String.class);
+        } catch (Throwable e) {
+            Log.warn("PropertyUtil 없음 - 어댑터 옵션을 읽을 수 없어 기본값으로 동작(송신 안 함): " + e);
+            return null;
+        }
+    }
 
     /** 사용 여부 — false면 송신기를 멈추고 이벤트를 버린다(재기동 없이 끄는 스위치). */
     final boolean enabled;
@@ -79,10 +96,13 @@ final class AdapterOptions {
     }
 
     private static String str(String id, String key, String def) {
+        if (GET_VALUE == null) {
+            return def;
+        }
         try {
-            String v = PropertyUtil.getValue(id, key, def);
-            return v == null ? def : v.trim();
-        } catch (RuntimeException e) {
+            Object v = GET_VALUE.invoke(null, id, key, def);
+            return v == null ? def : String.valueOf(v).trim();
+        } catch (Throwable e) {
             return def;
         }
     }
