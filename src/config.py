@@ -955,6 +955,13 @@ class NoiseGateConfig(BaseSettings):
     business_hours_csv: str = ""              # (E3) 업무시간 (시간대 강등용)
     repeat_interval_seconds: int = 14400      # 재발생 재통보 간격 (4h, E1 dedup TTL)
     sev3_repeat_interval_seconds: int = 14400  # (§6.1) 심각도3 재통보 간격(기본=공통, 운영서 단축)
+    # (plans/144 Q-4 · D-320) 같은 지문이 재통보 간격 안에 **직전 통보보다 높은 심각도**로 오면
+    # 지문 dedup에서 버리지 않고 게이트까지 보낸다(예: sev2 → sev3면 심각도3 단락으로 PAGE).
+    # **기본 on — 「신규 플래그 기본 off = 비트 동일」 원칙의 예외**: off(종전 동작)는 같은 지문의
+    # sev2가 통보된 뒤 4h 안에 온 sev3를 버려 D-048 「심각도3 절대 PAGE」가 깨진 채로 남는다.
+    # 통과한 이벤트가 기록 심각도를 갱신하므로 추가 통과는 지문·창당 최대 2회(1→2→3)이고, 같거나
+    # 낮은 심각도의 반복은 종전대로 버린다. false면 종전 동작과 비트 동일. 기동 시 1회 해석.
+    dedup_severity_rise_bypass: bool = True
     recurrence_audit_every_n: int = 1         # (Plan 60 E1) 재발생 억제 감사 적재 샘플링(1=매번, count%N==0만 적재)
     noise_context_timeout_seconds: float = 3.0
     noise_context_cache_ttl_seconds: int = 300
@@ -1147,6 +1154,31 @@ class NoiseGateConfig(BaseSettings):
     apm_mcp_url: str = ""                     # (J4) 게이트웨이 MCP SSE 엔드포인트 — 비면 off
     apm_mcp_token: SecretStr = SecretStr("")  # (J4) 게이트웨이 정적 Bearer 토큰(비면 무헤더)
     app_impact_window_minutes: int = 10       # (J4) 사건창(분) — apm_events lookback_minutes
+    # ── plans/144 W1: 제니퍼(APM) 알람 유형 정책 — 노이즈 컨텍스트 공급자·지속 조건·정규화 유형 ──
+    # 켜면 제니퍼 알람(dbId jennifer·jennifer_<소스>)의 노이즈 컨텍스트를
+    # `config/apm_noise_policy.yaml`(고정 경로 — 설정 키 없음)로 채우고, 지문·해소 짝맞춤에
+    # 정규화 유형을 쓰며, 지표형 경고(심각도2)에 지속 조건 강등(하한 DASHBOARD)을 건다.
+    # 심각도3 단락·폴스타 경로는 불변. 기본 off면 제니퍼 알람은 현행 그대로(신호 수집 실패 →
+    # 보수적 PAGE · 지문 원문) — 비트 동일. 기동 시 1회 해석.
+    apm_noise_policy_enabled: bool = False    # (plans/144) 제니퍼 유형 정책 경로 옵트인
+    # ── plans/144 W3: 폴스타×제니퍼 크로스소스 사건 상관 (D-317) ──
+    # 같은 존·같은 호스트 키·사건창 안의 폴스타 알람과 제니퍼 이벤트를 사건(episode)으로 묶고,
+    # 규칙 표(`cross_source_rules_path`)의 원인→증상 방향이 확인되면 증상을 DASHBOARD로 강등한다
+    # (SUPPRESS 없음 · 심각도3 불변 · 매핑 신뢰도 약하면 묶기만). 모드 사다리:
+    # off(기본 · 사건 추적·판정 모두 없음 → 비트 동일) · shadow(판정 불변 · 「했을 조치」만 감사) ·
+    # annotate(사건 묶음·통보문 주석 · 판정 불변) · enforce(강등 실행 — 규칙 행 `enforce: true`만).
+    cross_source_mode: Literal["off", "shadow", "annotate", "enforce"] = "off"
+    cross_source_rules_path: str = "config/cross_source_rules.yaml"  # (W3) 규칙 표 경로
+    episode_idle_seconds: int = 900           # (W3) 마지막 알람 뒤 이 시간이 지나면 사건 종료
+    # ── plans/144 W4: app_impact 사후 승격 · 제니퍼 정상 강등 shadow (D-317) ──
+    # 사후 승격: 폴스타 알람이 DASHBOARD·TICKET으로 판정된 뒤 같은 사건에 제니퍼 fatal·critical이
+    # 늦게 오면 그 폴스타 알람을 PAGE로 한 번 더 통보한다(알람당 1회 · 사건이 열려 있을 때만 ·
+    # app_impact_enabled와 cross_source_mode ∈ {annotate, enforce} 필요 — shadow는 통보 불변).
+    # 정상 강등 shadow: 폴스타 CPU·메모리 경고(심각도2) 때 같은 호스트의 제니퍼 이벤트가 창 안에
+    # 0건이고 게이트웨이가 정상 응답했으면 감사에
+    # 「강등했을 것」만 남긴다(판정 불변). 둘 다 기본 off = 비트 동일.
+    app_impact_late_promotion_enabled: bool = False  # (W4) 늦게 온 제니퍼 심각 이벤트 사후 승격
+    apm_healthy_demotion_shadow: bool = False  # (W4) 제니퍼 정상 → 폴스타 경고 강등 shadow 기록
 
     model_config = {"env_prefix": "NOISE_", "env_file": ".env", "extra": "ignore"}
 

@@ -86,6 +86,26 @@ async def investigation_trigger_node(
         return {}  # 클라이언트 미주입(빌드 실패/off) → graceful no-op
 
     event = state["alarm_event"]
+    # (plans/144 §5.3 · §4.5) 크로스소스 사건 id — cross_source_mode off·사건 미소속이면 None
+    # (페이로드·감사 비트 동일).
+    episode_id = _episode_id(state)
+
+    # (plans/144 §4.5) APM 알람발 조사는 사건당 1회 — 같은 사건에서 APM 알람이 이미 제출한 조사가
+    # 있으면(워커가 `episode_investigation`으로 넘긴다) 다시 제출하지 않고 기존 조사 id를 감사에
+    # 남긴다. 인프라 알람의 조사 트리거는 이 분기에 들어오지 않는다(현행 그대로).
+    existing = state.get("episode_investigation")
+    if is_apm_event(event) and isinstance(existing, dict) and existing.get("investigation_id"):
+        logger.info(
+            "조사 생략 — 같은 사건의 기존 조사 재사용: alarm_id=%s episode=%s inv=%s",
+            getattr(event, "alarm_id", ""), existing.get("episode_id"),
+            existing.get("investigation_id"),
+        )
+        _audit(
+            configurable.get("decision_store"), event, decision,
+            str(existing["investigation_id"]), "episode_existing", None,
+            episode_id=str(existing.get("episode_id") or episode_id or "") or None,
+        )
+        return {}
 
     # plans/87 J4: 게이트웨이가 인스턴스↔hostname 정합에 실패한 APM 이벤트는 `hostname=""`로 온다
     # (SPEC-apm-gateway §5). 조사 계약 필수 필드(serverName·hostname·severity)를 채우지 못하므로
@@ -181,13 +201,15 @@ async def investigation_trigger_node(
         target_state=target_state,
         # plans/91 1-3: root 이름은 signals(§8.2 동결 스키마)가 아니라 노이즈 컨텍스트에 있다.
         root_resource_name=(state.get("noise_context") or {}).get("root_resource_name"),
+        episode_id=episode_id,
     )
 
     # (Plan 66 3-E) 후속 모드 — submit까지만 하고 통보를 즉시 내보낸다(브리핑 미첨부).
     # poll·후속 발송은 notifier가 즉시 통보 **후** 백그라운드로 수행한다(순서 보장).
     if getattr(gate_cfg, "investigation_followup_enabled", False):
         return await _submit_only(
-            client, payload, event, decision, configurable.get("decision_store")
+            client, payload, event, decision, configurable.get("decision_store"),
+            episode_id=episode_id,
         )
 
     total_timeout = float(
@@ -214,7 +236,10 @@ async def investigation_trigger_node(
             getattr(event, "alarm_id", ""), exc_info=True,
         )
 
-    _audit(configurable.get("decision_store"), event, decision, investigation_id, status, verdict)
+    _audit(
+        configurable.get("decision_store"), event, decision, investigation_id, status, verdict,
+        episode_id=episode_id,
+    )
 
     result: dict[str, Any] = {}
     if briefing is not None:
@@ -230,6 +255,16 @@ async def investigation_trigger_node(
         if escalation is not None:
             result["investigation_escalation"] = escalation
     return result
+
+
+def _episode_id(state: dict[str, Any]) -> str | None:
+    """state의 크로스소스 신호에서 사건 id를 읽는다(없으면 None · plans/144 §5.3)."""
+    cross_source = state.get("cross_source")
+    if isinstance(cross_source, dict):
+        value = cross_source.get("episode_id")
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 async def _resolve_target_state(cfg, event, first) -> Optional[dict]:  # noqa: ANN001
@@ -281,6 +316,8 @@ async def _submit_only(
     event,  # noqa: ANN001 — AlarmEvent
     decision,  # noqa: ANN001 — NotificationDecision
     store,  # noqa: ANN001 — DecisionStore | None
+    *,
+    episode_id: str | None = None,
 ) -> dict[str, Any]:
     """조사를 submit만 하고 통보를 즉시 내보낸다 (Plan 66 3-E 후속 모드).
 
@@ -316,7 +353,7 @@ async def _submit_only(
             getattr(event, "alarm_id", ""), exc_info=True,
         )
 
-    _audit(store, event, decision, investigation_id, status, reason)
+    _audit(store, event, decision, investigation_id, status, reason, episode_id=episode_id)
     if status != "submitted" or not investigation_id:
         return {}
     return {
@@ -377,10 +414,16 @@ def _audit(
     investigation_id: Optional[str],
     status: str,
     verdict: Optional[str],
+    *,
+    episode_id: str | None = None,
 ) -> None:
-    """조사 트리거 결과를 decision_store에 감사한다(미주입·실패는 graceful)."""
+    """조사 트리거 결과를 decision_store에 감사한다(미주입·실패는 graceful).
+
+    `episode_id`(plans/144 §4.5)는 값이 있을 때만 인자로 넘긴다 — 없으면 호출이 종전과 같다.
+    """
     if store is None:
         return
+    extra: dict[str, Any] = {"episode_id": episode_id} if episode_id else {}
     try:
         store.record_investigation(
             alarm_id=getattr(event, "alarm_id", ""),
@@ -388,6 +431,7 @@ def _audit(
             investigation_id=investigation_id,
             status=status,
             verdict=verdict,
+            **extra,
         )
     except Exception:  # noqa: BLE001 — 감사 실패가 통보를 막지 않는다
         logger.warning(

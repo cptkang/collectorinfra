@@ -1,0 +1,63 @@
+# 크로스소스 사건 상관 규칙 표 — 폴스타(원인) × 제니퍼(증상) (plans/144 §5.1~§5.4 · W3)
+#
+# **설계 가정이다 — W6 리플레이의 원인→증상 지연 분포(95분위)·lift로 보정한다(§8.2).**
+# 아래 kind 조합과 창 값은 문헌(Alertmanager inhibit · MicroRCA·Dynatrace 수직 계층)에서 옮긴
+# 초기값이며 운영 데이터로 잰 값이 아니다.
+#
+# 소비처: noise_gate/infrastructure/cross_source_rules.py (NOISE_CROSS_SOURCE_MODE≠off일 때만 기동 시 1회).
+# 모드 off(기본)면 이 파일은 읽히지 않는다. 파일 없음·YAML 오류·스키마 위반이면 기동 로그에 경고
+# 1줄을 남기고 사건 상관 전체가 꺼진다(off와 같은 판정).
+#
+# 결합 조건(전부 만족해야 강등 · 하나라도 빠지면 link — 사건에 묶고 근거만 남긴다):
+#   ① 같은 존 ② 같은 host_key + 양쪽 신뢰도 strong + 한 사건에 서로 다른 폴스타 db_id가 섞이지 않음
+#   ③ 규칙 방향 일치 + 원인 발생 시각이 창 안 ④ 원인의 최종 티어가 PAGE·TICKET이고 미해소
+#   ⑤ 증상 심각도 < 3
+#
+# 필드:
+#   id        규칙 식별자(감사 레코드·통보 사유에 남는다 · 고유)
+#   enabled   false면 적재기가 건너뛴다(기본 true)
+#   enforce   true인 행만 NOISE_CROSS_SOURCE_MODE=enforce에서 실제로 강등한다(기본 false · G-7 —
+#             shadow 2주 거짓 강등률 ≤ 2% AND 누락 사건 0인 행만 켠다)
+#   cause / effect   {source, kinds | was_kinds | alarm_names} — 선택자 중 하나라도 맞으면 해당
+#     source       polestar | jennifer (원인과 증상은 서로 다른 소스)
+#     kinds        폴스타 알람 kind — classify_alarm_kind 어휘(cpu·memory·disk·network·process·log)
+#     was_kinds    제니퍼 게이트웨이가 raw.apm.was_signals[*].kind에 실어 보낸 값(was_* · "*" = 전부).
+#                  noise_gate는 값만 읽는다(판정은 게이트웨이 소관 · D-195 ② 개정)
+#     alarm_names  알람 이름 정확 일치(kind 어휘로 고를 수 없는 원인용)
+#   equal     [zone, host_key] 고정(사건 키 zone|host_key)
+#   window    증상 발생 시각 t_s 기준 원인 발생 시각 t_c ∈ [t_s − cause_before_seconds, t_s + cause_after_seconds]
+#             (after 창 = 폴링 지연으로 원인 발생 시각이 증상보다 조금 늦게 찍히는 경우)
+#   action    link | demote_effect — 강등 상한은 DASHBOARD(SUPPRESS 없음 · G-2).
+#             효과(effect) 소스가 polestar인 역방향 행의 demote_effect는 적재기가 link로 바꾼다(G-3).
+
+version: 1
+
+rules:
+  - id: host_resource_to_was_latency        # 서버 자원 포화 → WAS 지연·큐잉
+    enabled: true
+    enforce: false
+    cause:  {source: polestar, kinds: [cpu, memory]}
+    effect: {source: jennifer, was_kinds: [was_service_queuing, was_gc_stall, was_heap_pressure]}
+    equal:  [zone, host_key]
+    window: {cause_before_seconds: 600, cause_after_seconds: 60}
+    action: demote_effect
+
+  # 서버 다운 → 그 위 인스턴스 이벤트 전부. 원인 알람명(폴스타 서버 가용성 알람 정의 이름)이
+  # 운영 값으로 확인되지 않아 비활성으로 둔다(Q-5 ① — 알람명이 오면 alarm_names를 채우고 켠다).
+  - id: host_down_to_was_all
+    enabled: false
+    enforce: false
+    cause:  {source: polestar, alarm_names: ["<서버 가용성 알람명 — 미확정>"]}
+    effect: {source: jennifer, was_kinds: ["*"]}
+    equal:  [zone, host_key]
+    window: {cause_before_seconds: 900, cause_after_seconds: 120}
+    action: demote_effect
+
+  - id: was_oom_to_process_down             # 역방향 — WAS OOM → 폴스타 프로세스 다운(link만 · G-3)
+    enabled: true
+    enforce: false
+    cause:  {source: jennifer, was_kinds: [was_heap_pressure]}
+    effect: {source: polestar, kinds: [process]}
+    equal:  [zone, host_key]
+    window: {cause_before_seconds: 300, cause_after_seconds: 60}
+    action: link

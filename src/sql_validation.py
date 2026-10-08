@@ -21,7 +21,8 @@ import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any, Optional
 
 import sqlparse
 
@@ -285,13 +286,21 @@ def validate_sql(
             bare_t = t.rsplit(".", 1)[-1].lower()
             if bare_t not in bare_to_qualified:
                 unknown_tables.add(t)
-    if unknown_tables and available_tables:
-        errors.append(f"존재하지 않는 테이블 참조: {', '.join(unknown_tables)}")
+    if _uses_backtick_quotes(db_engine):
+        # 5·6 백틱 엔진(MariaDB) — 백틱 식별자를 읽고 조회 대상 전체 카탈로그로 실존을 본다
+        # (plans/146 W1 · G-1 (b)). 다른 엔진은 아래 종전 판정 그대로다.
+        errors.extend(check_catalog_references(
+            sql, schema_info, db_engine=db_engine,
+            allow_hangul_identifiers=allow_hangul_identifiers,
+        ))
+    else:
+        if unknown_tables and available_tables:
+            errors.append(f"존재하지 않는 테이블 참조: {', '.join(unknown_tables)}")
 
-    # 6. 참조 컬럼 존재 여부
-    if not unknown_tables and available_tables:
-        column_errors = _validate_columns(sql, schema_info, referenced_tables)
-        errors.extend(column_errors)
+        # 6. 참조 컬럼 존재 여부
+        if not unknown_tables and available_tables:
+            column_errors = _validate_columns(sql, schema_info, referenced_tables)
+            errors.extend(column_errors)
 
     # 6.5. 금지 JOIN 컬럼 사용 감지 (warning)
     excluded_join_warnings = _check_excluded_join_columns(sql, schema_info)
@@ -366,6 +375,13 @@ _HANGUL_IDENT_RE = re.compile(r"\w*[가-힣]\w*")
 #: 백틱이 식별자 인용인 엔진(MariaDB·MySQL — 레지스트리 `engine` 값)
 _BACKTICK_ENGINES = frozenset({"mariadb", "mysql"})
 
+#: 조회 대상 전체 카탈로그 키(plans/146 W1 · G-1 (b)) — 스키마 딕셔너리에
+#: ``{테이블: [컬럼 이름…]}``로 싣는다. 선별(D-308)로 좁힌 `tables` 밖이어도 조회 대상(허용 목록)인
+#: 테이블의 실존 판정에 쓴다. 정의 기반 선별 경로만 싣고, 검증은 백틱 엔진만 읽는다.
+CATALOG_COLUMNS_KEY = "_catalog_columns"
+#: 없는 컬럼 오류에 싣는 그 테이블의 실제 컬럼 이름 상한
+CATALOG_COLUMN_PREVIEW = 80
+
 #: 한글 토큰 잔존 오류의 공통 접두 — 단일·멀티 경로가 같은 문구를 쓴다(D-066)
 HANGUL_TOKEN_ERROR_PREFIX = "SQL 구조에 자연어(한글) 토큰이 남아 있습니다"
 #: 한글 식별자 허용 DB인데 대조할 스키마가 없을 때의 경고(검사 생략 — 침묵 강등 금지)
@@ -428,22 +444,52 @@ def _schema_identifiers(schema_info: dict) -> set[str]:
     """스키마의 테이블·컬럼 이름 집합(`_norm_ident` 정규형) — 테이블 키는 한정자 부분도 넣는다.
 
     `columns`는 질의 경로의 목록(`[{"name": …}]`)과 스냅샷의 사전(`{name: {...}}`)을 모두 받는다.
+    조회 대상 전체 카탈로그(`CATALOG_COLUMNS_KEY` · plans/146 W1)가 실려 있으면 그 이름도 넣는다 —
+    선별 밖이지만 실존하는 테이블·컬럼을 자연어 조각으로 거부하지 않게 한다.
     """
     names: set[str] = set()
+    for table_key, columns in _schema_table_columns(schema_info).items():
+        names.update(_norm_ident(part) for part in str(table_key).split(".") if part)
+        names.update(_norm_ident(c) for c in columns)
+    return names
+
+
+def _column_name_list(columns: object) -> list[str]:
+    """컬럼 표기(목록 `[{"name": …}]`·이름 목록·사전 `{name: {...}}`)를 이름 목록으로 바꾼다."""
+    if isinstance(columns, dict):
+        return [str(c) for c in columns if c]
+    if not isinstance(columns, list):
+        return []
+    names: list[str] = []
+    for col in columns:
+        name = col.get("name") if isinstance(col, dict) else col
+        if name:
+            names.append(str(name))
+    return names
+
+
+def _schema_table_columns(schema_info: dict[str, Any]) -> dict[str, list[str]]:
+    """``{테이블 키: [컬럼 이름…]}`` — 스키마 `tables` 다음에 전체 카탈로그(있으면)를 덧붙인다.
+
+    같은 테이블(맨 이름 · 대소문자 무시)이 양쪽에 있으면 `tables` 쪽을 쓴다.
+    """
+    out: dict[str, list[str]] = {}
+    seen: set[str] = set()
     tables = (schema_info or {}).get("tables") or {}
     if not isinstance(tables, dict):
-        return names
+        return out
     for table_key, table_data in tables.items():
-        names.update(_norm_ident(part) for part in str(table_key).split(".") if part)
         columns = (table_data or {}).get("columns") if isinstance(table_data, dict) else None
-        if isinstance(columns, dict):
-            names.update(_norm_ident(str(c)) for c in columns)
-        elif isinstance(columns, list):
-            for col in columns:
-                name = col.get("name") if isinstance(col, dict) else col
-                if name:
-                    names.add(_norm_ident(str(name)))
-    return names
+        out[str(table_key)] = _column_name_list(columns)
+        seen.add(str(table_key).rsplit(".", 1)[-1].lower())
+    catalog = (schema_info or {}).get(CATALOG_COLUMNS_KEY)
+    if isinstance(catalog, dict):
+        for table_key, columns in catalog.items():
+            bare = str(table_key).rsplit(".", 1)[-1].lower()
+            if bare not in seen:
+                out[str(table_key)] = _column_name_list(columns)
+                seen.add(bare)
+    return out
 
 
 def _declared_aliases(sql: str) -> set[str]:
@@ -550,6 +596,208 @@ def check_double_quoted_identifiers(
         f"{DOUBLE_QUOTED_IDENTIFIER_ERROR_PREFIX}: {shown} - 컬럼/테이블명은 따옴표 없이 쓰거나 "
         "백틱(`)으로 감싸세요. 큰따옴표는 AS 뒤 결과 별칭에만 쓸 수 있습니다."
     ]
+
+
+# ──────────────────────────────────────────────
+# 백틱 엔진 참조 실존 검사 (plans/146 W1 · G-1 (b))
+# ──────────────────────────────────────────────
+
+#: 단어 문자만으로 된 백틱 인용 식별자 — 인용을 벗겨도 정규식 추출이 같은 토큰으로 읽는다
+_BACKTICK_WORD_RE = re.compile(r"`(\w+)`")
+#: 바로 뒤에 오는 백틱 식별자가 컬럼 자리임을 뜻하는 앞 키워드(이 밖은 별칭·테이블 자리로 본다)
+_COLUMN_LEAD_KEYWORDS = frozenset({
+    "SELECT", "DISTINCT", "WHERE", "AND", "OR", "NOT", "BY", "ON", "HAVING",
+    "WHEN", "THEN", "ELSE", "CASE", "IN", "LIKE", "REGEXP", "IS", "BETWEEN",
+})
+#: 바로 뒤에 오는 백틱 식별자가 컬럼 자리임을 뜻하는 앞 문자(구분자·연산자)
+_COLUMN_LEAD_CHARS = frozenset("(,=<>!+-*/%|&")
+#: 파생 테이블·CTE — 비한정 컬럼이 어느 테이블 것인지 정할 수 없어 비한정 검사를 건너뛴다
+#: (콤마 조인 파생 테이블 `, (SELECT …) b` 포함)
+_DERIVED_SOURCE_RE = re.compile(
+    r"^\s*WITH\b|\b(?:FROM|JOIN)\s*\(|,\s*\(\s*SELECT\b", re.IGNORECASE,
+)
+#: 비한정 식별자 — 백틱 인용(1) 또는 백틱 밖 한글 식별자(2)
+_UNQUALIFIED_IDENT_RE = re.compile(r"`([^`]+)`|(?<![\w`])(\w*[가-힣]\w*)")
+#: AS 없는 무백틱 암묵 별칭 — 식·리터럴·식별자 뒤의 이름이 콤마·FROM 앞에 오는 자리
+_IMPLICIT_ALIAS_RE = re.compile(r"(?<=[)\w`])\s+(\w+)\s*(?=,|\bFROM\b)", re.IGNORECASE)
+#: 비한정 식별자 분류에서 문자열 리터럴·큰따옴표 자리를 대신하는 토큰
+_LITERAL_PLACEHOLDER = " _lit_ "
+
+
+def _dequote_backticks(sql: str) -> str:
+    """백틱 인용 식별자(단어 문자만)의 인용을 벗긴다 — 테이블·별칭·컬럼 정규식 추출 입력."""
+    return _BACKTICK_WORD_RE.sub(r"\1", sql or "")
+
+
+def _hangul_error_tokens(
+    sql: str, schema_info: dict[str, Any], *, db_engine: str | None,
+    allow_hangul_identifiers: bool,
+) -> set[str]:
+    """`check_hangul_tokens`가 오류로 잡는 한글 식별자 토큰(`_norm_ident`) — 중복 오류 방지용.
+
+    그 검사가 이미 거부한 이름을 참조 실존 검사가 한 번 더 오류로 내지 않게 한다(D-297).
+    """
+    if not allow_hangul_identifiers:
+        tokens = find_bare_hangul_tokens(sql, engine=db_engine, allowed_identifiers=set())
+        return {_norm_ident(t) for t in tokens}
+    known = _schema_identifiers(schema_info)
+    if not known:
+        return set()
+    tokens = find_bare_hangul_tokens(
+        sql, engine=db_engine, allowed_identifiers=known | _declared_aliases(sql),
+    )
+    return {_norm_ident(t) for t in tokens}
+
+
+def _unqualified_columns(sql: str) -> tuple[list[str], set[str]]:
+    """비한정 식별자를 ``(컬럼 자리 이름 목록, 별칭·테이블 자리 이름 집합)``으로 나눈다.
+
+    대상은 백틱 인용 식별자와 백틱 밖 한글 식별자다(무백틱 영문은 키워드와 구분이 어려워 뺀다).
+    집합은 `_norm_ident` 정규형이다. 한정자(`` x.`c` ``)·한정 대상(`` `x`.c ``)·함수 이름
+    (`` `f`( ``)은 뺀다. 컬럼 자리는 앞이 문장 시작·구분자·연산자·컬럼 앞 키워드
+    (`SELECT`·`WHERE`·`BY` 등)일 때만이다 — 그 밖(`AS`·`FROM`·`JOIN`·식이나 리터럴 뒤의
+    암묵 별칭)은 별칭·테이블 자리로 모아 `ORDER BY` 별칭 참조를 컬럼으로 오인하지 않게 한다.
+    문자열 리터럴·큰따옴표는 공백이 아니라 자리표시 토큰으로 바꿔, 리터럴 뒤 별칭을 컬럼
+    자리로 읽지 않게 한다.
+    """
+    body = re.sub(r"--[^\n]*", " ", sql or "")
+    body = re.sub(r"/\*.*?\*/", " ", body, flags=re.S)
+    body = re.sub(r"'(?:[^']|'')*'", _LITERAL_PLACEHOLDER, body)
+    body = re.sub(r'"[^"]*"', _LITERAL_PLACEHOLDER, body)
+    columns: list[str] = []
+    others: set[str] = {
+        _norm_ident(a) for a in re.findall(r"\bAS\s+(\w+)", body, flags=re.IGNORECASE)
+    }
+    # AS 없는 무백틱 암묵 별칭 — 식·리터럴·식별자 뒤 이름이 콤마·FROM 앞에 오는 자리
+    for match in _IMPLICIT_ALIAS_RE.finditer(body):
+        lead = re.search(r"(\w+)\s*$", body[: match.start(1)])
+        if lead is None or lead.group(1).upper() not in _COLUMN_LEAD_KEYWORDS:
+            others.add(_norm_ident(match.group(1)))
+    for match in _UNQUALIFIED_IDENT_RE.finditer(body):
+        before = body[: match.start()].rstrip()
+        after = body[match.end():].lstrip()
+        if before.endswith(".") or after.startswith((".", "(")):
+            continue
+        name = match.group(1) or match.group(2)
+        word = re.search(r"(\w+)$", before)
+        if not before or before[-1] in _COLUMN_LEAD_CHARS or (
+            word is not None and word.group(1).upper() in _COLUMN_LEAD_KEYWORDS
+        ):
+            columns.append(name)
+        else:
+            others.add(_norm_ident(name))
+    return columns, others
+
+
+def _missing_columns_error(table: str, missing: Sequence[str], columns: Sequence[str]) -> str:
+    """없는 컬럼 오류 — 그 테이블의 실제 컬럼 이름 목록(상한 `CATALOG_COLUMN_PREVIEW`)을 싣는다.
+
+    재생성 1회에 고쳐지도록 이름만 싣는다(값 없음). ASCII 구두점만 쓴다(cp949 콘솔).
+    """
+    shown = ", ".join(f"'{c}'" for c in missing)
+    listed = ", ".join(columns[:CATALOG_COLUMN_PREVIEW])
+    if len(columns) > CATALOG_COLUMN_PREVIEW:
+        listed += f" 외 {len(columns) - CATALOG_COLUMN_PREVIEW}개"
+    return (
+        f"테이블 '{table}'에 컬럼 {shown}이 존재하지 않습니다. "
+        f"'{table}'의 실제 컬럼({len(columns)}개): {listed} - 이 목록의 컬럼만 쓰거나, "
+        "그 정보가 있는 다른 테이블을 조인하세요."
+    )
+
+
+def check_catalog_references(
+    sql: str,
+    schema_info: dict[str, Any],
+    *,
+    db_engine: str | None = None,
+    allow_hangul_identifiers: bool = False,
+) -> list[str]:
+    """백틱 엔진(MariaDB·MySQL)의 참조 테이블·컬럼 실존 검사(plans/146 W1 · G-1 (b)) — 오류 목록.
+
+    - 백틱 인용 식별자(`` `t` ``·`` `tbl` ``·`` t.`c` ``·`` `t`.`c` ``)를 읽는다.
+    - 실존 판정은 선별 스키마(`tables`)가 아니라 **조회 대상 전체 카탈로그**(`CATALOG_COLUMNS_KEY` —
+      없으면 `tables`만)로 한다. 선별 밖이어도 조회 대상인 테이블·컬럼은 통과한다.
+    - 카탈로그 밖 테이블은 「존재하지 않는 테이블 참조」 오류다(종전 문구).
+    - 없는 컬럼은 그 테이블의 실제 컬럼 이름 목록을 실은 오류다(테이블당 1건).
+    - 파생 테이블·CTE가 없으면 비한정 컬럼(백틱 · 백틱 밖 한글)도 대조한다 — 참조 테이블이
+      하나면 그 테이블, 여럿이면 참조 테이블 어디에든 있어야 한다(결과 별칭은 뺀다).
+    - 한글 토큰 검사(D-297)가 이미 잡는 이름은 빼서 같은 이름의 중복 오류를 내지 않는다.
+
+    다른 엔진이거나 대조할 스키마가 없으면 검사하지 않는다(빈 목록).
+    """
+    if not _uses_backtick_quotes(db_engine):
+        return []
+    catalog = _schema_table_columns(schema_info)
+    if not catalog:
+        return []
+    by_bare = {key.rsplit(".", 1)[-1].lower(): cols for key, cols in catalog.items()}
+    scan = _dequote_backticks(sql)
+    ctes = {c.lower() for c in _extract_cte_names(scan)}
+    raw_alias_map = _extract_alias_map(scan)
+    # 공용 추출기는 별칭 붙은 콤마 조인(`FROM t1 a, t2 b`)에서 t1만 읽는다 — 별칭 매핑의 테이블을
+    # 합쳐 실존 검사와 비한정 대조(테이블 이름을 컬럼으로 오인하지 않게)에 함께 쓴다.
+    # 공용 추출기는 바꾸지 않는다(다른 엔진 판정 비트 동일).
+    referenced = sorted(
+        t for t in _extract_table_names(scan) | set(raw_alias_map.values())
+        if t.lower() not in ctes
+    )
+    unknown = [t for t in referenced if t.rsplit(".", 1)[-1].lower() not in by_bare]
+    if unknown:
+        return [f"존재하지 않는 테이블 참조: {', '.join(unknown)}"]
+
+    # 참조 테이블(맨 이름 소문자) → SQL에 쓴 이름
+    ref_names = {t.rsplit(".", 1)[-1].lower(): t.rsplit(".", 1)[-1] for t in referenced}
+    alias_map = {a.lower(): t for a, t in raw_alias_map.items()}
+    skip = _hangul_error_tokens(
+        sql, schema_info, db_engine=db_engine, allow_hangul_identifiers=allow_hangul_identifiers,
+    )
+    missing: dict[str, list[str]] = {}
+
+    def _check(bare: str, column: str) -> None:
+        known = {_norm_ident(c) for c in by_bare[bare]}
+        norm = _norm_ident(column)
+        if column == "*" or norm in known or norm in skip:
+            return
+        if column not in missing.setdefault(bare, []):
+            missing[bare].append(column)
+
+    # 한정 컬럼 — 주석·문자열 리터럴·큰따옴표를 지운 본문에서 읽는다(리터럴 안 `x.y` 오인 방지)
+    body = re.sub(r'"[^"]*"', " ", _strip_comments_and_literals(scan))
+    for qualifier, column in re.findall(r"(\w+)\.(\w+)", body):
+        target = alias_map.get(qualifier.lower(), qualifier).rsplit(".", 1)[-1].lower()
+        if target in ref_names:
+            _check(target, column)
+
+    # 비한정 컬럼(백틱 · 백틱 밖 한글) — 파생 테이블·CTE가 없을 때만. 테이블이 하나면 그 테이블,
+    # 여럿이면 참조 테이블 어디에든 있어야 한다.
+    unplaced: list[str] = []
+    if ref_names and not _DERIVED_SOURCE_RE.search(body):
+        columns, others = _unqualified_columns(sql)
+        others |= {_norm_ident(a) for a in alias_map} | {_norm_ident(b) for b in ref_names}
+        candidates = [c for c in columns if _norm_ident(c) not in others]
+        if len(ref_names) == 1:
+            (bare,) = ref_names
+            for column in candidates:
+                _check(bare, column)
+        else:
+            known_any = {_norm_ident(c) for b in ref_names for c in by_bare[b]}
+            for column in candidates:
+                norm = _norm_ident(column)
+                if norm not in known_any and norm not in skip and column not in unplaced:
+                    unplaced.append(column)
+
+    errors = [
+        _missing_columns_error(ref_names[bare], cols, by_bare[bare])
+        for bare, cols in missing.items()
+    ]
+    if unplaced:
+        shown = ", ".join(f"'{c}'" for c in unplaced)
+        errors.append(
+            f"컬럼 {shown}이 참조 테이블"
+            f"({', '.join(sorted(ref_names.values()))}) 어디에도 존재하지 않습니다 - "
+            "실제 컬럼명으로 고치고 테이블 별칭으로 한정해 쓰세요(예: t.`컬럼`)."
+        )
+    return errors
 
 
 #: 상수 SELECT 거부 사유 — 멀티 DB 간이 검증도 같은 문구를 쓴다(D-066 경로 대칭).

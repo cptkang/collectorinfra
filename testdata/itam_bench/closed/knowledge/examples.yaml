@@ -1,0 +1,55 @@
+# K2 — ITAM 질의 예시 + 이력 시드 원천 (plans/146 W4 · G-4 (a) · D-316 · 작성 스킬 .claude/skills/itam-knowledge)
+# 빌드 → config/knowledge/itam/query_examples.yaml(+ 이력 시드). 근거: 3회차 반출 run 20261007-174622에서
+# 관측된 성공 SQL과 행 수 3건만 둔다(활성 의미와 무관하거나 집계 축이 확정된 것). 값 0.
+# 근거 run 리터럴(날짜 등)은 옮기지 않는다 — 날짜는 CURDATE() 기반 식으로 쓴다. 질문은 시나리오 원문을 옮기지 않고
+# 같은 뜻으로 바꿔 적는다. 활성 칸 조건은 넣지 않는다(코드값 0 — K6 활성 규칙).
+version: 1
+items:
+  # 근거: ITAM-109 · `tcdmsif79` 단독 · HW/SW 지원 종료일 OR · 148행(3회차)
+  - id: k2-eos-6months
+    origin: claude_code
+    evidence: 20261007-174622
+    status: active
+    question: 앞으로 6개월 안에 하드웨어나 소프트웨어 지원이 끝나는 서버 목록
+    description: >-
+      지원 종료일 칸은 YYYYMMDD 문자열이라 오늘과 6개월 뒤를 같은 형식 문자열로 만들어 비교한다.
+      하드웨어·소프트웨어를 특정하지 않았으므로 두 칸 중 하나라도 구간에 들면 고른다(OR).
+    tables: [tcdmsif79]
+    sql: >-
+      SELECT e.`서버호스트명`, e.`IP주소내용`, e.`하드웨어지원종료년월일`, e.`소프트웨어지원종료년월일`
+      FROM `tcdmsif79` AS e
+      WHERE e.`하드웨어지원종료년월일` BETWEEN DATE_FORMAT(CURDATE(), '%Y%m%d')
+      AND DATE_FORMAT(DATE_ADD(CURDATE(), INTERVAL 6 MONTH), '%Y%m%d')
+      OR e.`소프트웨어지원종료년월일` BETWEEN DATE_FORMAT(CURDATE(), '%Y%m%d')
+      AND DATE_FORMAT(DATE_ADD(CURDATE(), INTERVAL 6 MONTH), '%Y%m%d')
+      LIMIT 1000
+  # 근거: ITAM-112 · `tcdmsif72` `운영체제타입내용`별 건수 · 5행(3회차 · 반출 가림으로 FROM은 선별 테이블로 확인)
+  - id: k2-server-count-by-os
+    origin: claude_code
+    evidence: 20261007-174622
+    status: active
+    question: 운영체제 종류별로 서버가 몇 대인지
+    description: >-
+      서버 원장의 운영체제 종류 칸으로 묶어 센다(버전은 운영체제버전내용 칸). 활성 값 블록이 없으면 활성 여부로 거르지 않는다.
+    tables: [tcdmsif72]
+    sql: >-
+      SELECT s.`운영체제타입내용` AS os_type, COUNT(*) AS server_count
+      FROM `tcdmsif72` AS s
+      GROUP BY s.`운영체제타입내용`
+      ORDER BY server_count DESC
+      LIMIT 1000
+  # 근거: ITAM-116 · `tcdmsif72` `그룹경로내용`별 건수 · 749행(3회차 · 반출 가림으로 FROM은 선별 테이블로 확인)
+  - id: k2-server-count-by-group-path
+    origin: claude_code
+    evidence: 20261007-174622
+    status: active
+    question: 서버 분류 그룹 경로마다 서버 수
+    description: >-
+      서버 분류 경로는 서버 원장의 그룹 경로 자유 기재 칸이다 — 그 칸으로 묶어 센다.
+    tables: [tcdmsif72]
+    sql: >-
+      SELECT s.`그룹경로내용` AS group_path, COUNT(*) AS server_count
+      FROM `tcdmsif72` AS s
+      GROUP BY s.`그룹경로내용`
+      ORDER BY server_count DESC
+      LIMIT 1000

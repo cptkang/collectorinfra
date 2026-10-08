@@ -26,13 +26,16 @@ from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
+from noise_gate.domain.cross_source import APP_IMPACT_LEVELS
 from noise_gate.domain.notification_policy import (
     STAGE_MATRIX,
     TIER_DASHBOARD,
+    TIER_PAGE,
     TIER_TICKET,
+    NotificationDecision,
     decide_notification,
 )
-from noise_gate.domain.process_rank import is_apm_event
+from noise_gate.domain.process_rank import classify_alarm_kind, is_apm_event
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +86,12 @@ async def notification_gate_node(
             annotation=state.get("annotation"),
             # (Plan 54 모듈 4) 워커가 읽어 넘긴 활성 침묵 규칙(off/없으면 빈 목록 → 단계 미평가).
             silence_rules=state.get("silence_rules"),
+            # (plans/144 §4.2·4.3) 워커가 제니퍼 알람에 산출한 정규화 유형·정책 행·지속 조건
+            # (apm_noise_policy_enabled off·폴스타 알람이면 None → 비트 동일).
+            apm_policy=state.get("apm_policy"),
+            # (plans/144 W3) 워커 사건 추적기의 크로스소스 신호(cross_source_mode off·사건
+            # 미소속이면 None → 비트 동일).
+            cross_source=state.get("cross_source"),
         )
 
     noise_ctx = state.get("noise_context")
@@ -93,27 +102,60 @@ async def notification_gate_node(
     # 이벤트가 있으면 예약키 app_impact를 채워 같은 입력으로 다시 판정한다(도메인 step 9.5가 PAGE로
     # 올린다). 실패는 판정 그대로 두고 사유를 로그·감사에 남긴다. off(기본)면 이 블록에 들어오지
     # 않아 비트 동일.
+    # (plans/144 W4 §5.6) 워커가 사건 저장소에서 미리 산출한 앱 영향(`episode_app_impact` —
+    # cross_source_mode annotate·enforce에서만 실린다)에 fatal 이벤트가 있으면 게이트웨이를 부르지
+    # 않고 그 값으로 승격한다. 없으면 현행 게이트웨이 조회 그대로다(폴러가 꺼진 환경 호환).
+    # (plans/144 W4 §5.7) 정상 강등 shadow 후보(CPU·메모리 경고)면 PAGE 판정이어도 한 번 조회해
+    # 「창 안 이벤트 0건」이면 표지만 남긴다 — 판정·사유는 바꾸지 않는다.
     app_impact_audit: dict[str, Any] = {}
     updated_ctx: dict[str, Any] | None = None
-    if _app_impact_applicable(gate_cfg, event, decision, noise_ctx):
+    impact_applicable = _app_impact_applicable(gate_cfg, event, decision, noise_ctx)
+    shadow_candidate = _healthy_shadow_applicable(gate_cfg, event, decision, noise_ctx)
+    if impact_applicable or shadow_candidate:
+        episode_impact = state.get("episode_app_impact")
+        if not isinstance(episode_impact, dict):
+            episode_impact = {}
+        episode_app_impact = episode_impact.get("app_impact")
+        episode_events = int(episode_impact.get("window_events") or 0)
         client = configurable.get("apm_client")
-        if client is None:
+        app_impact: dict[str, Any] | None = None
+        if impact_applicable and isinstance(episode_app_impact, dict):
+            app_impact = episode_app_impact  # 사건 저장소 판정 — 게이트웨이 호출 없음
+        elif episode_events and not impact_applicable:
+            pass  # shadow 전용 조회인데 사건에 이미 APM 이벤트가 있다 — 정상 아님, 조회 불필요
+        elif client is None:
             logger.debug(
                 "app_impact 조회 생략 — 게이트웨이 클라이언트 없음: alarm_id=%s", event.alarm_id
             )
         else:
-            app_impact, failure = await _fetch_app_impact(client, event, gate_cfg)
-            if app_impact is not None:
-                updated_ctx = {**noise_ctx, "app_impact": app_impact}
-                promoted = _decide(updated_ctx)
-                logger.info(
-                    "app_impact 승격: alarm_id=%s %s→%s fatal=%d types=%s",
-                    event.alarm_id, decision.tier, promoted.tier,
-                    app_impact["fatal_events"], app_impact["event_types"],
-                )
-                decision = promoted
-            elif failure:
+            # shadow 후보면 레벨을 낮춰(normal 이상 = 전 레벨) 한 번에 묻는다 — fatal 판정은 아래
+            # 같은 레벨 필터를 거치므로 승격 결과는 fatal 조회와 같다.
+            fetched, failure, total_rows = await _fetch_app_impact(
+                client, event, gate_cfg, level="normal" if shadow_candidate else "fatal"
+            )
+            if impact_applicable:
+                app_impact = fetched
+            if failure:
                 app_impact_audit["app_impact_error"] = failure
+            elif shadow_candidate and total_rows == 0 and not episode_events:
+                app_impact_audit["apm_healthy_shadow"] = {
+                    "would_demote": True,
+                    "window_minutes": int(getattr(gate_cfg, "app_impact_window_minutes", 10)),
+                    "source": "mcp",
+                }
+                logger.info(
+                    "제니퍼 정상 강등 shadow(판정 불변): alarm_id=%s tier=%s",
+                    event.alarm_id, decision.tier,
+                )
+        if app_impact is not None:
+            updated_ctx = {**(noise_ctx or {}), "app_impact": app_impact}
+            promoted: NotificationDecision = _decide(updated_ctx)  # type: ignore[no-untyped-call]
+            logger.info(
+                "app_impact 승격: alarm_id=%s %s→%s fatal=%d types=%s source=%s",
+                event.alarm_id, decision.tier, promoted.tier,
+                app_impact["fatal_events"], app_impact["event_types"], app_impact["source"],
+            )
+            decision = promoted
 
     store = configurable.get("decision_store")
     if store is not None:
@@ -172,7 +214,11 @@ async def notification_gate_node(
 # fatal 이상으로 세는 레벨 — 게이트웨이 레벨 매핑(fatal·critical → 심각도 3 · SPEC-apm-gateway §5)과
 # 같다.
 # `level="fatal"`로 요청하지만, 다른 레벨 행이 섞여 와도 승격 근거로 쓰지 않는다(과승격 방지 · R-7).
-_APP_IMPACT_LEVELS: frozenset[str] = frozenset({"fatal", "critical"})
+# (plans/144 W4) 사건 저장소 판정과 같은 집합을 쓰도록 도메인 상수를 그대로 쓴다.
+_APP_IMPACT_LEVELS: frozenset[str] = APP_IMPACT_LEVELS
+
+# (plans/144 W4 §5.7) 정상 강등 shadow 대상 kind — 인프라 CPU·메모리 경고.
+_HEALTHY_SHADOW_KINDS: frozenset[str] = frozenset({"cpu", "memory"})
 
 # 제니퍼 소스 표를 가진 레지스트리 시스템 코드
 # (`config/db_registry.yaml` `solutions[].code` · plans/87 J8).
@@ -211,39 +257,65 @@ def _app_impact_applicable(gate_cfg, event, decision, noise_ctx) -> bool:  # noq
     return decision.stage == STAGE_MATRIX and decision.tier in (TIER_DASHBOARD, TIER_TICKET)
 
 
-async def _fetch_app_impact(client, event, gate_cfg) -> tuple[dict | None, str]:  # noqa: ANN001
+def _healthy_shadow_applicable(gate_cfg: Any, event: Any, decision: Any, noise_ctx: Any) -> bool:
+    """제니퍼 정상 강등 shadow 후보인지 (plans/144 W4 §5.7 · G-5 (a)).
+
+    플래그(apm_healthy_demotion_shadow AND app_impact_enabled) · 폴스타 알람 · kind cpu·memory ·
+    매트릭스 판정 · 실효 심각도 2 · 내릴 여지가 있는 티어(PAGE·TICKET). 판정에는 쓰지 않는다.
+    """
+    if not (
+        getattr(gate_cfg, "apm_healthy_demotion_shadow", False)
+        and getattr(gate_cfg, "app_impact_enabled", False)
+    ):
+        return False
+    if is_apm_event(event) or not isinstance(noise_ctx, dict):
+        return False
+    if decision.stage != STAGE_MATRIX or decision.tier not in (TIER_PAGE, TIER_TICKET):
+        return False
+    if (decision.signals or {}).get("effective_severity") != 2:
+        return False
+    return classify_alarm_kind(event) in _HEALTHY_SHADOW_KINDS
+
+
+async def _fetch_app_impact(
+    client: Any, event: Any, gate_cfg: Any, *, level: str = "fatal"
+) -> tuple[dict[str, Any] | None, str, int]:
     """게이트웨이 `apm_events`로 같은 hostname·사건창의 fatal 이벤트를 조회한다.
 
+    `level`(plans/144 W4)은 조회 하한 레벨이다 — 기본 fatal(현행 호출과 같다). 정상 강등 shadow
+    후보는 normal(전 레벨)로 물어 창 안 전체 건수를 함께 본다. fatal 판정은 어느 쪽이든 아래 같은
+    레벨 필터로 한다.
+
     Returns:
-        (app_impact, "") — fatal 이벤트가 있을 때
-                           `{source, fatal_events, event_types, was_signals}`.
-        (None, "")       — 조회는 됐고 fatal 이벤트가 없다(승격 없음).
-        (None, 사유)     — 조회하지 못했다(판정 불변 · 사유는 호출부가 감사에 남긴다).
+        (app_impact, "", n) — fatal 이벤트가 있을 때
+                              `{source, fatal_events, event_types, was_signals}` · n = 응답 행 수.
+        (None, "", n)       — 조회는 됐고 fatal 이벤트가 없다(승격 없음).
+        (None, 사유, 0)     — 조회하지 못했다(판정 불변 · 사유는 호출부가 감사에 남긴다).
     """
     alarm_id = str(getattr(event, "alarm_id", "") or "")
     hostname = str(getattr(event, "hostname", "") or "").strip()
     if not hostname:
         reason = "invalid_argument — 알람 hostname이 비어 있다"
         logger.info("app_impact 조회 생략: alarm_id=%s 사유=%s", alarm_id, reason)
-        return None, reason
+        return None, reason, 0
     alarm_time = getattr(event, "alarm_time", None)
     if not isinstance(alarm_time, datetime):
         reason = "invalid_argument — 알람 발생 시각이 없다"
         logger.info("app_impact 조회 생략: alarm_id=%s 사유=%s", alarm_id, reason)
-        return None, reason
+        return None, reason, 0
 
     probe = getattr(client, "unreachable_reason", None)
     unreachable = await probe() if probe is not None else None
     if unreachable:
         reason = f"gateway_unreachable — {unreachable}"
         logger.warning("app_impact 조회 실패(판정 유지): alarm_id=%s 사유=%s", alarm_id, reason)
-        return None, reason
+        return None, reason, 0
     kwargs: dict[str, Any] = {
         "hostname": hostname,
         # naive(폴스타 알람 시각 그대로) — 게이트웨이가 APM_TIMEZONE으로 해석한다(§3 공통 인자).
         "reference_time": alarm_time.isoformat(),
         "lookback_minutes": int(getattr(gate_cfg, "app_impact_window_minutes", 10)),
-        "level": "fatal",
+        "level": level,
         "investigation_id": alarm_id,
     }
     # (plans/87 J8) 알람 존의 제니퍼 소스로만 좁힌다 — 없으면 인자를 넣지 않아 종전 호출과 같다
@@ -261,19 +333,19 @@ async def _fetch_app_impact(client, event, gate_cfg) -> tuple[dict | None, str]:
     except Exception as exc:  # noqa: BLE001 — 통신 실패도 판정을 막지 않는다(사유만 남긴다)
         reason = f"gateway_error — {exc}"
         logger.warning("app_impact 조회 실패(판정 유지): alarm_id=%s 사유=%s", alarm_id, reason)
-        return None, reason
+        return None, reason, 0
 
     if resp.get("error"):
         reason = f"{resp.get('error')} — {resp.get('reason') or ''}".strip(" —")
         logger.warning(
             "app_impact 게이트웨이 오류 응답(판정 유지): alarm_id=%s 사유=%s", alarm_id, reason
         )
-        return None, reason
+        return None, reason, 0
     rows = resp.get("rows")
     if not isinstance(rows, list):
         reason = "contract_violation — 응답에 rows 배열이 없다"
         logger.warning("app_impact 응답 계약 위반(판정 유지): alarm_id=%s", alarm_id)
-        return None, reason
+        return None, reason, 0
 
     fatal_rows = [
         r for r in rows
@@ -281,7 +353,7 @@ async def _fetch_app_impact(client, event, gate_cfg) -> tuple[dict | None, str]:
     ]
     if not fatal_rows:
         logger.debug("app_impact 없음(fatal 0건): alarm_id=%s host=%s", alarm_id, hostname)
-        return None, ""
+        return None, "", len(rows)
     was_signals = resp.get("was_signals") if isinstance(resp.get("was_signals"), list) else []
     return {
         "source": str(resp.get("source") or ""),
@@ -290,4 +362,4 @@ async def _fetch_app_impact(client, event, gate_cfg) -> tuple[dict | None, str]:
         "was_signals": sorted(
             {str(s["kind"]) for s in was_signals if isinstance(s, dict) and s.get("kind")}
         ),
-    }, ""
+    }, "", len(rows)

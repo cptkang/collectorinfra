@@ -54,6 +54,7 @@ from src.orchestration.schemas import (
     close_agent_vocabulary,
     validate_plan_dag,
 )
+from src.utils.empty_antecedent import EMPTY_ANTECEDENT_KEY, antecedent_query_quote
 from src.utils.json_extract import extract_json_from_response
 from src.utils.prior_dependency import NOTE_DECOMPOSE, has_sequential_marker
 from src.utils.synonym_set_parser import parse_synonym_set
@@ -1092,7 +1093,15 @@ def _build_context_block(
     else:
         lines.append(f"- 직전 대상 위치/환경: {location or '(미상)'}")
         lines.append(f"- 직전 대상 DB 후보: {', '.join(db_ids) if db_ids else '(미상)'}")
-    if has_demonstrative:
+    # 앞 턴 0행 지시어 승계(plans/146 W3 · G-3 (a)) — context_resolver가 지시어 명사구 턴에만
+    # 싣는다(「… 모두 알려줘」 포함 · 교정 1 M-4라 여기서 공용 지시어 판정으로 다시 거르지 않는다).
+    antecedent = conversation_context.get(EMPTY_ANTECEDENT_KEY)
+    if antecedent:
+        lines.append(
+            f"- 직전 대상 서버/장비: (없음 — 직전 질의 「{antecedent_query_quote(antecedent)}」의 "
+            "조회 결과가 0건)"
+        )
+    elif has_demonstrative:
         # 식별 엔티티는 상한 내 소량만 표면화(토큰 절약 — 2026-06-11 상한 원칙).
         entity_strs: list[str] = []
         seen: set[str] = set()
@@ -1115,8 +1124,13 @@ def _build_context_block(
         "- 예: 후속 질의가 \"해당 서버의 프로세스\"이면 sub_query에 직전 위치·서버 식별자를 포함시켜라",
         "  (예: \"김포 운영 폴스타의 ### 서버 현재 프로세스 리스트\").",
         "- 사용자가 명시적으로 다른 위치/DB/대상을 지정하면 그 신호를 최우선으로 따르라(승계하지 말 것).",
-        "",
     ]
+    if antecedent:
+        lines.append(
+            "- 이번 질의의 지시어는 직전 질의의 조건에 해당하는 대상을 가리킨다. sub_query에 직전 "
+            "질의의 조건을 그대로 넣어라(조건 없이 전체 대상으로 넓히지 말 것)."
+        )
+    lines.append("")
     return "\n".join(lines)
 
 

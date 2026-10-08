@@ -40,11 +40,11 @@ import sys
 import tempfile
 import time
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import yaml
 
@@ -61,6 +61,9 @@ from . import (
 from . import catalog as cat
 from . import judge as jd
 from . import redact as rd
+
+if TYPE_CHECKING:
+    from .substitute import FakeValues
 
 KST = timezone(timedelta(hours=9))
 #: 프로파일 → 확정돼야 할 사다리 단(D-251 기준 2단 · 3단은 비교 arm).
@@ -133,12 +136,76 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
     return 0
 
 
+#: `--check-oracle --out <run 디렉터리>`의 하위 디렉터리·결과 파일(plans/146 W5 (3)) — run 의
+#: `leak_check.json`을 덮지 않게 관문 산출물을 따로 둔다.
+ORACLE_CHECK_DIR = "oracle_check"
+ORACLE_CHECK_FILE = "oracle_check.yaml"
+
+
+def oracle_check_document(
+    *,
+    run_id: str,
+    env: str,
+    scenario_file: str,
+    anchor_at: str,
+    entries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """`oracle_check.yaml` 본문 — 오라클 ID · 판정 범주 · 행 수 · 소요 ms · 시나리오·턴 ·
+    앵커만(값 0).
+
+    판정은 고정 어휘(`ok`·`zero_rows`·`error`)다. DB 오류 문구는 가린 형태로도 싣지 않는다(D-301).
+    """
+    counts = Counter(str(e["verdict"]) for e in entries)
+    return {
+        "kind": "oracle_check",
+        "run_id": run_id,
+        "env": env,
+        "scenario_file": scenario_file,
+        "anchor_at": anchor_at,
+        "summary": {
+            "oracles": len(entries),
+            "ok": counts["ok"],
+            "zero_rows": counts["zero_rows"],
+            "error": counts["error"],
+            "failed": counts["zero_rows"] + counts["error"],
+        },
+        "oracles": entries,
+    }
+
+
+def write_oracle_check(
+    out_root: Path, document: Mapping[str, Any], *, policy: cat.ColumnPolicy
+) -> tuple[bool, list[dict[str, Any]], Path]:
+    """누출 관문을 거쳐 `<out_root>/oracle_check/`에 쓴다(실패면 `leak_check.json`만).
+
+    옛 `oracle_check.yaml`은 먼저 지운다 — 관문 실패 때 옛 결과가 새것처럼 읽히지 않게.
+    """
+    out_dir = out_root / ORACLE_CHECK_DIR
+    stale = out_dir / ORACLE_CHECK_FILE
+    if stale.is_file():
+        stale.unlink()
+    gate = rd.LeakGate(
+        policy=policy,
+        vault=rd.PiiVault.from_policy(policy),
+        user_values=user_values(login_id=None, dsn=_itam_dsn()),
+    )
+    staged = {
+        ORACLE_CHECK_FILE: yaml.safe_dump(dict(document), allow_unicode=True, sort_keys=False)
+    }
+    ok, violations = rd.write_gated(out_dir, staged, gate)
+    return ok, violations, out_dir
+
+
 def cmd_check_oracle(args: argparse.Namespace) -> int:
-    """정답 SQL 만 읽기 전용으로 돌려 오라클이 서는지 본다. 행 원문은 출력하지 않는다(건수만)."""
+    """정답 SQL 만 읽기 전용으로 돌려 오라클이 서는지 본다. 행 원문은 출력하지 않는다(건수만).
+
+    `--out <run 디렉터리>`면 같은 결과를 `<run>/oracle_check/oracle_check.yaml`(값 0)로도 남긴다
+    (누출 관문 통과 시 · plans/146 W5 (3)). 없으면 화면만 — 종전과 같다.
+    """
     loaded = _load(args)
     if loaded is None:
         return 1
-    _policy, scenarios = loaded
+    policy, scenarios = loaded
     from scripts.scenario.oracle import run_oracle
     from src.config import load_config
 
@@ -153,6 +220,7 @@ def cmd_check_oracle(args: argparse.Namespace) -> int:
     anchor = now.isoformat()
     run_id = f"check-{now.strftime('%Y%m%d-%H%M%S')}"
     seen: dict[str, tuple[str, int]] = {}
+    entries: list[dict[str, Any]] = []
     failed = 0
     with tempfile.TemporaryDirectory(prefix="itam-bench-oracle-") as tmp:
         log_path = Path(tmp) / "oracle_log.jsonl"
@@ -176,19 +244,47 @@ def cmd_check_oracle(args: argparse.Namespace) -> int:
                     str(outcome.get("reason") or "사유 없음"), vault=rd.PiiVault()
                 )
                 verdict = f"불가 — {reason}"
+                category = "error"
                 failed += 1
             elif rows == 0:
                 verdict = "0행 — 정답을 구하지 못한다(시드·날짜 경계 확인)"
+                category = "zero_rows"
                 failed += 1
             else:
                 verdict = "ok"
+                category = "ok"
             seen[oracle_id] = (verdict, rows)
+            entries.append(
+                {
+                    "id": oracle_id,
+                    "scenario": scenario.id,
+                    "turn": turn.index,
+                    "verdict": category,
+                    "rows": rows,
+                    "elapsed_ms": round(float(outcome.get("elapsed_ms") or 0)),
+                }
+            )
             say(
                 f"  {oracle_id:<8} {verdict:<6} 행 {rows:>3} · "
                 f"{outcome.get('elapsed_ms', 0):.0f}ms "
                 f"({scenario.id} 턴{turn.index})"
             )
     say(f"오라클 {len(seen)}건 중 실패·0행 {failed}건 (앵커 {anchor})")
+    if getattr(args, "out", None):
+        document = oracle_check_document(
+            run_id=run_id,
+            env=args.env,
+            scenario_file=Path(args.scenarios).name,
+            anchor_at=anchor,
+            entries=entries,
+        )
+        ok, violations, out_dir = write_oracle_check(Path(args.out), document, policy=policy)
+        shown = rd.display_path(out_dir, repo_root=REPO_ROOT, home=Path.home())
+        say(f"[check-oracle] 산출물 {'기록' if ok else '미기록(누출 관문 실패)'} — {shown}")
+        if not ok:
+            for violation in violations[:20]:
+                say(f"  - {violation['file']} · {violation['field']} · {violation['rule']}")
+            return 1
     return 1 if failed else 0
 
 
@@ -354,27 +450,53 @@ def _oracle_record(
 ) -> dict[str, Any]:
     """오라클 판정 → 기록용 칸.
 
-    시스템 쪽 키 열이 일반 컬럼이 아니거나 강등됐으면 키 값은 건수로만 남긴다.
+    시스템 쪽 키 열이 일반 컬럼이 아니거나 강등됐거나 찾을 수 없으면 키 값은 건수로만 남긴다.
     """
-    from scripts.scenario.oracle import _resolve
+    from scripts.scenario.oracle import SOURCE_DB_COLUMN, _resolve
 
     spec, outcome, detail, mode, verdict = raw
+    # per_db 판정이면 키 맨 앞이 DB id 태그다 — 치환하지 않는다(교정 3차b Minor-A · `map_detail`)
+    tagged = SOURCE_DB_COLUMN in names
+    fallbacks = jd.registry_fallbacks()
     entries = dict(zip(names, summary.get("columns") or [], strict=False))
     keys_allowed = True
     for ref in spec.get("key") or []:
         column = _resolve(ref, names)
         entry = entries.get(column) if column else None
-        if entry is not None and (entry.get("log_policy") != "general" or entry.get("demoted")):
+        # 키 열을 못 찾으면(이름 없는 결과 · 요약에 없는 열) 등급 근거가 없다 — 건수만(교정 2차)
+        if entry is None or entry.get("log_policy") != "general" or entry.get("demoted"):
             keys_allowed = False
+    value_grade = _value_grade(spec, ctx.policy)
+    fakes = ctx.vault.fakes
     clean = jd.sanitize_detail(
         detail,
-        value_grade=_value_grade(spec, ctx.policy),
+        value_grade=value_grade,
         keys_allowed=keys_allowed,
         labels={name: entry.get("name") for name, entry in entries.items()},
+        fakes=fakes,
+        key_tagged=tagged,
     )
-    if isinstance(clean, dict) and clean.get("reason"):
-        clean["reason"] = rd.redact_text(
-            str(clean["reason"]), vault=ctx.vault, sql=sqls, prompt=turn.query
+    if jd.registry_fallbacks() > fallbacks:
+        # 레지스트리를 못 읽어 태그를 전부 치환했다 — run.json 에 표지로 남긴다(교정 3차d)
+        ctx.counters["registry_fallback"] = 1
+    reason = clean.pop("reason", None) if isinstance(clean, dict) else None
+    # 가짜 값 칸은 그대로 두고 나머지만 가린다 — 가짜 값을 다시 가리면 원값으로 등록돼 관문 ①이
+    # 충돌로 막는다(가린 사유도 같은 까닭으로 가림이 끝난 뒤에 붙인다)
+    fields = (
+        []
+        if fakes is None
+        else jd.substituted_fields(detail, value_grade=value_grade, keys_allowed=keys_allowed)
+    )
+    scrubbed = jd.map_detail(
+        clean,
+        fields,
+        substituted=lambda node: node,
+        other=lambda node: rd.scrub_tree(node, ctx.vault),
+        key_tagged=tagged,
+    )
+    if reason and isinstance(scrubbed, dict):
+        scrubbed["reason"] = rd.redact_text(
+            str(reason), vault=ctx.vault, sql=sqls, prompt=turn.query
         )
     return {
         "id": spec["id"],
@@ -382,9 +504,11 @@ def _oracle_record(
         "verdict": verdict,
         "mode": mode,
         "keys_recorded": keys_allowed,
+        **({"key_tagged": True} if tagged and fields else {}),
+        "substituted_fields": fields,
         "oracle_status": (outcome or {}).get("status"),
         "oracle_rows": sum(len(r) for r in ((outcome or {}).get("rows_by_db") or {}).values()),
-        "detail": rd.scrub_tree(clean, ctx.vault),
+        "detail": scrubbed,
     }
 
 
@@ -421,6 +545,45 @@ def clarification_record(payload: Any, status: str) -> dict[str, Any] | None:
     }
 
 
+@dataclass
+class PendingTurn:
+    """턴 1회의 지연 레코드(plans/145 2단계) — 판정·분류만 턴 중에 끝내고, 가림·치환은 run 끝에.
+
+    `finish()`가 가린 레코드를 만든다(몇 번 불러도 같은 재료로 다시 만든다). `originals()`는 1차
+    등록에 넣을 원값(결과 셀 전부 · SQL 리터럴 · 오라클 행 셀)이다. 원재료는 메모리에만 있다.
+    """
+
+    status: str
+    verdict: str | None
+    taxonomy: list[str]
+    finish: Callable[[], dict[str, Any]]
+    originals: Callable[[], Iterable[object]]
+
+
+def _row_cells(rows: Any) -> Iterable[object]:
+    """행 목록(사전) → 셀 값 전부."""
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, Mapping):
+            yield from row.values()
+
+
+def finish_turns(pending: Sequence[PendingTurn], ctx: RunContext) -> list[dict[str, Any]]:
+    """지연 레코드 → 가린 레코드(plans/145 2단계).
+
+    생성기가 있으면 1차에서 모든 턴의 원값을 등록하고(셀·SQL 리터럴은 같음 대조만), 수집 모드로
+    마감을 한 번 돌려 치환할 원값을 전부 알린 뒤(출력은 버린다), 2차에서 진짜 레코드를 만든다 —
+    가짜 값을 하나라도 내기 전에 원값 전체를 알므로 가짜 값이 원값과 겹칠 수 없다.
+    """
+    fakes = ctx.vault.fakes
+    if fakes is not None:
+        for item in pending:
+            fakes.register(item.originals())
+        with fakes.collecting():
+            for item in pending:
+                item.finish()
+    return [item.finish() for item in pending]
+
+
 def run_turn(
     scenario: cat.Scenario,
     turn: cat.Turn,
@@ -431,10 +594,11 @@ def run_turn(
     audit: Tail,
     capture: Tail,
     ctx: RunContext,
-) -> dict[str, Any]:
-    """턴 1회 — 보내고 · 모으고 · 대조하고 · 분석하고 · **가린 레코드**를 돌려준다.
+) -> PendingTurn:
+    """턴 1회 — 보내고 · 모으고 · 대조하고 · 분석하고 · **지연 레코드**를 돌려준다.
 
-    원값(결과 행·SQL·응답 문장)은 여기서 버린다.
+    판정·분류·카운터만 여기서 계산한다. 가림·치환이 드는 칸(결과 요약·SQL·오류·판정 상세)은
+    원재료와 함께 `PendingTurn.finish`로 미룬다(`finish_turns`가 run 끝에 마감).
     """
     from scripts.scenario.client import result_unavailable
 
@@ -484,21 +648,80 @@ def run_turn(
     analysis = jd.analyze_sql(facts, ctx.catalog, db_id=DB_ID)
     labels = jd.classify(facts, analysis, db_id=DB_ID)
 
-    # ── 위생: 사람 값 수집(결과 요약)이 SQL·오류 가림보다 먼저다 ── 관문 시험 성립 확인용 — 결과
-    # 원문에 카나리아가 몇 번 나왔는가(건수만 · 값은 버린다)
+    # 관문 시험 성립 확인용 — 결과 원문에 카나리아가 몇 번 나왔는가(건수만 · 값은 버린다)
     ctx.counters["canary_in_results"] += ctx.policy.canary_hits(
         json.dumps(result.get("rows") or [], ensure_ascii=False)
     )
+    ctx.counters["turns"] += 1
+    ctx.counters["sql_observed_turns"] += bool(executed)
     sqls = [str(e.get("sql") or "") for e in executed]
+    error = getattr(obs, "error", None)
+
+    def originals() -> Iterable[object]:
+        from scripts.scenario.oracle import _key_cell
+
+        cells = list(_row_cells(result.get("rows")))
+        if raw_oracle is not None:
+            rows_by_db = (raw_oracle[1] or {}).get("rows_by_db") or {}
+            for rows in rows_by_db.values():
+                cells += _row_cells(rows)
+            # per_db 키 태그(DB id) — 미등록 태그가 2차에서 처음 생성기에 드는 길을
+            # 막는다(교정 3차e)
+            yield from rows_by_db
+        yield from cells
+        for sql in sqls:
+            yield from rd.sql_literal_contents(sql)
+        # 판정 상세의 키는 `_key_cell` 정규화 꼴(앞 0·소수 반올림·지수 → 수)이다 — 강등으로 키 칸이
+        # 2차에서야 가짜 값이 되면 처음 보는 원값이 되므로 그 꼴로도 등록한다(교정 2차 Minor-1)
+        yield from (_key_cell(cell) for cell in cells if not isinstance(cell, bool))
+
+    def finish() -> dict[str, Any]:
+        return _turn_record(
+            scenario, turn, repeat, obs, result, executed, sqls, raw_oracle,
+            response=response, status=status, context=context, analysis=analysis,
+            labels=labels, key_refs=key_refs, gold=gold, error=error, ctx=ctx,
+        )  # fmt: skip
+
+    return PendingTurn(
+        status=status, verdict=verdict, taxonomy=labels, finish=finish, originals=originals
+    )
+
+
+def _turn_record(
+    scenario: cat.Scenario,
+    turn: cat.Turn,
+    repeat: int,
+    obs: Any,
+    result: Mapping[str, Any],
+    executed: list[dict[str, Any]],
+    sqls: list[str],
+    raw_oracle: tuple[dict[str, Any], dict[str, Any] | None, Any, str, str] | None,
+    *,
+    response: str,
+    status: str,
+    context: Any,
+    analysis: Mapping[str, Any],
+    labels: list[str],
+    key_refs: Any,
+    gold: Any,
+    error: Any,
+    ctx: RunContext,
+) -> dict[str, Any]:
+    """지연 레코드 마감 — 가린 레코드를 만든다(원값은 여기서 버린다).
+
+    위생 순서: 사람 값 수집(결과 요약)이 SQL·오류 가림보다 먼저다.
+    """
     names = rd.result_column_names(result)
-    sources = rd.resolve_result_columns(names, sqls, ctx.policy.column_names())
+    sources = rd.resolve_result_columns(
+        names, sqls, ctx.policy.column_names(), catalog_columns=ctx.catalog.columns
+    )
     summary = rd.summarize_result(
         result, sources=sources, policy=ctx.policy, vault=ctx.vault, prompt=turn.query
     )
     oracle_part = (
         None if raw_oracle is None else _oracle_record(raw_oracle, names, summary, sqls, turn, ctx)
     )
-    record = {
+    return {
         "run_id": ctx.run_id,
         "id": scenario.id,
         "turn": turn.index,
@@ -548,14 +771,11 @@ def run_turn(
         "response_chars": len(response),
         "latency_ms": round(float(getattr(obs, "wall_ms", 0.0) or 0.0), 1),
         "error": (
-            rd.redact_text(str(obs.error), vault=ctx.vault, sql=sqls, prompt=turn.query)
-            if getattr(obs, "error", None)
+            rd.redact_text(str(error), vault=ctx.vault, sql=sqls, prompt=turn.query)
+            if error
             else None
         ),
     }
-    ctx.counters["turns"] += 1
-    ctx.counters["sql_observed_turns"] += bool(executed)
-    return record
 
 
 def run_scenarios(
@@ -571,12 +791,12 @@ def run_scenarios(
 
     선언 없는 되묻기면 그 시나리오의 남은 턴을 보내지 않는다.
     """
-    records: list[dict[str, Any]] = []
+    pending: list[PendingTurn] = []
     for scenario in scenarios:
         for repeat in range(ctx.repeat):
             thread_id = f"itam-bench-{scenario.id}-{secrets.token_hex(3)}"
             for turn in scenario.turns:
-                record = run_turn(
+                item = run_turn(
                     scenario,
                     turn,
                     repeat,
@@ -586,18 +806,18 @@ def run_scenarios(
                     capture=capture,
                     ctx=ctx,
                 )
-                records.append(record)
-                verdict = (record.get("oracle") or {}).get("verdict") or "observe"
+                pending.append(item)
+                verdict = item.verdict or "observe"
                 progress(
-                    f"  {scenario.id} 턴{turn.index} r{repeat} · {record['status']} · {verdict}"
-                    f"{' · ' + ','.join(record['taxonomy']) if record['taxonomy'] else ''}"
+                    f"  {scenario.id} 턴{turn.index} r{repeat} · {item.status} · {verdict}"
+                    f"{' · ' + ','.join(item.taxonomy) if item.taxonomy else ''}"
                 )
                 upcoming = scenario.turns[turn.index] if turn.index < len(scenario.turns) else None
-                if record["status"] == "clarification" and not (
+                if item.status == "clarification" and not (
                     upcoming and upcoming.reply_to == "clarification"
                 ):
                     break
-    return records
+    return finish_turns(pending, ctx)
 
 
 # --- 사전 점검 (W4) ---------------------------------------------------------------
@@ -651,8 +871,10 @@ def build_artifacts(
     catalog_doc: Mapping[str, Any],
     records: list[dict[str, Any]],
     code_samples: Mapping[str, Any] | None = None,
+    substitutions: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
-    """메모리의 산출물 4종(+ P1 근거가 있으면 치환 코드값 `code_samples.yaml` · 관문 전).
+    """메모리의 산출물 4종(+ P1 근거가 있으면 치환 코드값 `code_samples.yaml` · 가짜 값 생성기가
+    있었으면 가짜 값 목록 `substitutions.yaml` · 관문 전).
 
     `leak_check.json`은 관문이 쓴다.
     """
@@ -669,6 +891,10 @@ def build_artifacts(
     if code_samples is not None:
         staged[rd.CODE_SAMPLES_FILE] = yaml.safe_dump(
             dict(code_samples), allow_unicode=True, sort_keys=False
+        )
+    if substitutions is not None:
+        staged[rd.SUBSTITUTIONS_FILE] = yaml.safe_dump(
+            dict(substitutions), allow_unicode=True, sort_keys=False
         )
     return staged
 
@@ -688,13 +914,18 @@ def stage_gated(
     - 승인 프로필 테이블 정의: 관문 규칙에 걸린 행은 빼고 수만(`gate_table_definitions`)
     - P1 근거가 있으면 치환 코드값(`code_samples.yaml`) — 후보가 관문 규칙(코드값 대조 포함)에
       걸리면 재추첨. 원 코드값·라벨 집합은 이 함수와 관문 안(메모리)에만 있다.
+    - vault 가 run 의 가짜 값 생성기를 품으면(plans/145) 같은 생성기로 코드값을 치환하고(SQL·결과와
+      같은 치환값) 가짜 값 목록 `substitutions.yaml`을 더한다. 관문도 그 등록부를 본다.
     """
     from . import code_samples as cs
 
+    fakes = vault.fakes
     originals = rd.CodeOriginals(cs.original_values(p1_draft)) if p1_draft else None
     gate = rd.LeakGate(
         policy=policy, vault=vault, user_values=user_values, code_originals=originals
     )
+    if fakes is not None:
+        fakes.set_reject(lambda text: bool(gate.rules(text, schema_section=False)))
     catalog_doc = cat.gate_table_definitions(
         catalog_doc, lambda text: bool(gate.rules(text, schema_section=True))
     )
@@ -708,11 +939,56 @@ def stage_gated(
             comments=cs.column_comments(catalog_doc),
             originals=originals,
             reject=lambda text: bool(gate.rules(text, schema_section=False)),
+            fakes=fakes,
         )
+    substitutions = (
+        None
+        if fakes is None
+        else rd.substitutions_document(fakes, db_id=DB_ID, run_id=str(run_meta.get("run_id")))
+    )
     staged = build_artifacts(
-        run_meta=run_meta, catalog_doc=catalog_doc, records=records, code_samples=samples
+        run_meta=run_meta,
+        catalog_doc=catalog_doc,
+        records=records,
+        code_samples=samples,
+        substitutions=substitutions,
     )
     return staged, gate
+
+
+def start_substitution(
+    *,
+    policy: cat.ColumnPolicy,
+    catalog_doc: Mapping[str, Any],
+    user_values: Mapping[str, str | None],
+    p1_draft: Mapping[str, Any] | None,
+) -> tuple[rd.PiiVault, FakeValues, cat.ColumnPolicy]:
+    """run 시작(시나리오 실행 전) — 가짜 값 생성기를 품은 vault 와 관계 등가류 유효 정책(plans/145).
+
+    생성기 재료: P1 원 코드값·라벨(있으면) · 카탈로그 테이블·컬럼 이름 · 누출 관문 규칙(이 시점의
+    정책·vault·사용자 정보로 만든 관문 — 수집 값은 vault 를 거쳐 그때그때 반영된다). 대응은 생성기
+    안 메모리에만 있다.
+    """
+    from . import code_samples as cs
+    from .substitute import FakeValues, effective_policy
+
+    tables: Mapping[str, Any] = catalog_doc.get("tables") or {}
+    identifiers = set(tables) | {
+        str(column.get("name"))
+        for spec in tables.values()
+        for column in (spec or {}).get("columns") or []
+        if column.get("name")
+    }
+    originals = rd.CodeOriginals(cs.original_values(p1_draft)) if p1_draft else None
+    fakes = FakeValues(originals=originals, identifiers=identifiers)
+    # 사용자 정보 원값은 가짜 값을 내기 전에 등록한다(같음 대조 — `run.json` 사용자 칸 가짜 값 재료)
+    fakes.register(v for v in user_values.values() if v)
+    vault = rd.PiiVault.from_policy(policy, fakes=fakes)
+    gate = rd.LeakGate(
+        policy=policy, vault=vault, user_values=user_values, code_originals=originals
+    )
+    fakes.set_reject(lambda text: bool(gate.rules(text, schema_section=False)))
+    return vault, fakes, effective_policy(policy, catalog_doc)
 
 
 def user_values(
@@ -957,7 +1233,15 @@ def _run_with_server(
         client = ScenarioClient(
             ClientConfig(port=port, token_source=source, server_timeouts=status.server_timeouts)
         )
-        vault = rd.PiiVault.from_policy(policy)
+        run_user_values = user_values(
+            login_id=user_id if status.auth_enabled else None,
+            dsn=_itam_dsn(),
+            password=password if status.auth_enabled else None,
+        )
+        # 가리던 값은 run 의 형식 보존 가짜 값으로 바꾼다(plans/145 · D-321) — 대응은 메모리에만
+        vault, fakes, run_policy = start_substitution(
+            policy=policy, catalog_doc=catalog_doc, user_values=run_user_values, p1_draft=p1_draft
+        )
         oracle_log = session / "oracle_log.jsonl"
 
         def oracle(spec: Mapping[str, Any], anchor: str, tag: str) -> dict[str, Any]:
@@ -974,7 +1258,7 @@ def _run_with_server(
         ctx = RunContext(
             run_id=run_id,
             tier=status.tier,
-            policy=policy,
+            policy=run_policy,
             catalog=facts,
             vault=vault,
             oracle=oracle,
@@ -1009,9 +1293,11 @@ def _run_with_server(
             "worker": str(getattr(cfg.llm, "provider", "")),
             "orchestrator": str(getattr(cfg.orchestrator, "provider", "")),
         },
-        "login_user": rd.mask_identifier(user_id) if status.auth_enabled else None,
-        "operator": rd.mask_identifier(getpass.getuser()),
-        "host": rd.mask_identifier(socket.gethostname()),
+        # 사용자 정보는 가짜 값(원값 첫 글자도 남기지 않는다 · plans/145 L9) — 콘솔은 현행 가림
+        "login_user": fakes.fake(user_id) if status.auth_enabled else None,
+        "operator": fakes.fake(getpass.getuser()),
+        "host": fakes.fake(socket.gethostname()),
+        "substitution_note": rd.SUBSTITUTION_NOTE,
         "db_backend": getattr(cfg, "db_backend", None),
         "mcp_endpoint": rd.dsn_scheme(
             str(getattr(getattr(cfg, "dbhub", None), "server_url", "") or "")
@@ -1029,6 +1315,8 @@ def _run_with_server(
         "asset_ablation": getattr(args, "asset_ablation", None),
         "vault_values": len(vault),
         "canary_in_results": ctx.counters["canary_in_results"],
+        # 레지스트리 로드 실패로 per_db 태그를 전부 치환했으면 표지(교정 3차d · 아니면 칸 없음)
+        **({"registry_fallback": True} if ctx.counters["registry_fallback"] else {}),
         "results_dir": rd.display_path(
             RESULTS_ROOT / run_id, repo_root=REPO_ROOT, home=Path.home()
         ),
@@ -1039,11 +1327,7 @@ def _run_with_server(
         records=records,
         policy=policy,
         vault=vault,
-        user_values=user_values(
-            login_id=user_id if status.auth_enabled else None,
-            dsn=_itam_dsn(),
-            password=password if status.auth_enabled else None,
-        ),
+        user_values=run_user_values,
         p1_draft=p1_draft,
     )
     ok, violations = rd.write_gated(RESULTS_ROOT / run_id, staged, gate)
@@ -1289,7 +1573,10 @@ def build_parser() -> argparse.ArgumentParser:
         "(db_unverified를 실패로 치지 않음)",
     )
     parser.add_argument(
-        "--out", default=None, help="--validate-knowledge: 결과 YAML 경로"
+        "--out",
+        default=None,
+        help="--validate-knowledge: 결과 YAML 경로 · --check-oracle: run 디렉터리 — "
+        "<DIR>/oracle_check/oracle_check.yaml(값 0 · 누출 관문 통과 시 · plans/146 W5)",
     )
     parser.add_argument(
         "--catalog",

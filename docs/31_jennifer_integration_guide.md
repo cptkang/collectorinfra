@@ -1254,7 +1254,7 @@ hostname으로 다시 `apm_instance_map(hostname=…)`을 불러(E1r) 인스턴�
 | `time` | `alarmTime`(`yyyyMMddHHmmss` · `APM_TIMEZONE`) | 워커 파서 형식 |
 | `message`·`value` | `conditionLog`(`message` 마스킹 + `(value=…)`) · `conditions`(`JENNIFER EVENT <level> — <alarmName>`) | |
 | (소스) | `dbId="jennifer_<source_id>"`(v5 — 단일 설정 `default`는 `jennifer`) · `source="jennifer"`(항상) · `alarmId="jennifer:<멱등 키 앞 16자>"` · `resourceAncestry="JENNIFER > <source_id> > <domainName> > <instanceName>"`(단일 설정은 `JENNIFER > <domainName> > <instanceName>`) | 소스 배지(§8.4 ②) · 존 판정(§8.4 ⑥) |
-| 부가 | `apm{source_id(v5), domain_id, domain_name, instance_id, instance_name, event_type, event_kind, level, value, txid, time_ms, application, match_confidence, match_reason, was_signals, idempotency_key}` | 워커의 `raw_payload.apm` — 게이트 `hints`·조사 플레이북 입력 |
+| 부가 | `apm{source_id(v5), domain_id, domain_name, instance_id, instance_name, event_type, event_type_norm(plans/144 — 대문자·`ERROR_`·`WARNING_` 접두 제거 · 원문 폴백), event_kind, level, value, txid, time_ms, application, match_confidence, match_reason, was_signals, idempotency_key}` | 워커의 `raw_payload.apm` — 게이트 `hints`·조사 플레이북 입력 |
 
 조사 트리거 계약은 `serverName`·`hostname`·`severity`를 필수로 요구한다(`sre_agent/sre_agent/application/investigation_jobs.py:45`). 게이트웨이 테스트는 이 계약과
 워커가 읽는 키를 **import 없이 복제**해 단언한다(`apm_gateway/tests/test_poller.py` — R-21).

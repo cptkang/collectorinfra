@@ -16,7 +16,10 @@
 **치환값 차단** — 반출에 `code_samples.yaml`(치환 코드값 · 외부망 테스트 전용)이 있으면 쓸 파일의
 본문 전체(문자열 잎·매핑 키 · 파싱 못 하면 텍스트 줄)에 그 값이 토큰으로 나올 때 쓰기를 거부한다
 (위치만 출력 · 값은 출력하지 않는다 · 감사 L-3·L-5). 카탈로그 식별자와 같은 치환값은 대조에서 빼고
-수만 요약에 남긴다.
+수만 요약에 남긴다. 3회차 반출부터 있는 `substitutions.yaml`(형식 보존 가짜 값 · plans/145 §2.6 ·
+차단 전용)의 값도 같은 규칙으로 대조한다 — 한 글자 값(`redact.MIN_VALUE_LEN` 미만)은 대조에서 빼고
+수만 요약에 남긴다(숫자만인 값은 네 자리부터 대조 — `blocked_fakes`). 파일이 없으면(1·2회차)
+현행 그대로, 형식이 틀리면 쓰지 않는다(닫힌 쪽).
 
 **로컬 샌드박스 보존(G-3)** — 덮어쓰기 전에 현 프로필이 로컬 샌드박스 승인본
 (`environment: local_sandbox`)이면 `testdata/itam/db_profile.local_sandbox.yaml`로 바이트 그대로
@@ -82,12 +85,18 @@ from src.schema_cache.persistent_cache import PersistentSchemaCache
 from src.schema_cache.structure_store import _dump_yaml_exact
 
 from . import DB_ID, REPO_ROOT
+from .redact import MIN_VALUE_LEN, SUBSTITUTIONS_FILE
 
 #: 조회 대상에서 기본 제외하는 테이블 — 계정 비밀번호 칸 보유(plans/139 권고 · `keep_excluded`로 끔)
 DEFAULT_EXCLUDED_TABLES: tuple[str, ...] = ("tcdmsif81",)
 
 CATALOG_FILE = "schema_catalog.yaml"
 CODE_SAMPLES_FILE = "code_samples.yaml"
+#: 숫자만인 가짜 값 대조 하한 — 4이면 현 원천 적중 0, 3이면 3자리 가짜 100개 run의 약 36%가 우연
+#: 일치로 빌드 거부(가짜 값 유입은 오염이지 원값 누출이 아니다 · plans/145 W3 교정)
+FAKE_MIN_DIGIT_LEN = 4
+#: 형식 보존 치환값 목록(`redact.SUBSTITUTIONS_FILE` · 3회차 반출부터 · plans/145 §2.6)은 차단
+#: 전용이다(K8 대표값으로 쓰지 않는다)
 
 SEED_DEFINITIONS_REL = Path("testdata/itam_bench/closed/table_definitions.yaml")
 SCHEMA_SEED_REL = Path("testdata/itam_bench/closed/itam_schema.json")
@@ -154,6 +163,31 @@ def load_export(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any] | None]:
             raise BuildError(f"{CODE_SAMPLES_FILE} 형식 오류: 매핑이 아닙니다", EXIT_INPUT)
         samples = loaded
     return catalog, samples
+
+
+def load_substitutions(run_dir: Path) -> list[str] | None:
+    """반출 run의 형식 보존 치환값 목록(`substitutions.yaml` `values`) — 파일이 없으면 None(1·2회차
+    반출 — 현행 그대로).
+
+    Raises:
+        BuildError: 형식 오류 — YAML 오류 · 매핑 아님 · `values`가 문자열 목록이 아님(`EXIT_INPUT` ·
+            닫힌 쪽 · 사유에 값은 싣지 않는다)
+    """
+    path = Path(run_dir) / SUBSTITUTIONS_FILE
+    if not path.is_file():
+        return None
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        raise BuildError(
+            f"{SUBSTITUTIONS_FILE} 형식 오류: YAML을 읽지 못했습니다", EXIT_INPUT
+        ) from None
+    values = loaded.get("values") if isinstance(loaded, dict) else None
+    if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+        raise BuildError(
+            f"{SUBSTITUTIONS_FILE} 형식 오류: `values`가 문자열 목록이 아닙니다", EXIT_INPUT
+        )
+    return values
 
 
 def catalog_columns(catalog: Mapping[str, Any]) -> dict[str, list[str]]:
@@ -434,7 +468,12 @@ def profile_header(
     if p2 and p2.get("query_examples"):
         lines.append(
             "#   query_examples     P2 LLM 초안(모의 DB 실행 성공분 · 치환 코드 리터럴 제외 "
-            f"{int(p2.get('excluded_substituted') or 0)}건)"
+            f"{int(p2.get('excluded_substituted') or 0)}건"
+            + (
+                f" · 형식 보존 치환값 리터럴 제외 {int(p2['excluded_fake'])}건"
+                if p2.get("excluded_fake") else ""
+            )
+            + ")"
         )
     if p2 and p2.get("section"):
         lines.append(
@@ -674,7 +713,13 @@ def blocked_values(
     Returns:
         ``(대조 집합, 식별자·카탈로그 글 때문에 뺀 수)``
     """
-    values = substituted_values(samples)
+    return _drop_known(substituted_values(samples), catalog, input_texts)
+
+
+def _drop_known(
+    values: set[str], catalog: Mapping[str, Any], input_texts: Iterable[str]
+) -> tuple[set[str], int]:
+    """`blocked_values`의 제외 규칙 — 카탈로그 식별자·카탈로그 글에 토큰으로 있는 값을 뺀다."""
     names = {
         str(name)
         for table, columns in catalog_columns(catalog).items()
@@ -687,6 +732,49 @@ def blocked_values(
         if v.casefold() not in folded and not _token_hit(joined, _token_patterns([v]))
     }
     return kept, len(values) - len(kept)
+
+
+def blocked_fakes(
+    fakes: Iterable[str], catalog: Mapping[str, Any], input_texts: Iterable[str] = ()
+) -> tuple[set[str], dict[str, int]]:
+    """`substitutions.yaml` 값의 빌더 차단 대조 집합 — 한 글자 값(`redact.MIN_VALUE_LEN` 미만)과
+    세 자리 이하 숫자 값(`FAKE_MIN_DIGIT_LEN` 미만)을 빼고 `blocked_values`와 같은 제외
+    규칙(카탈로그 식별자·카탈로그 글)을 적용한다.
+
+    실측(plans/145 W3 교정 2026-10-08 · 현행 원천·산출 문자열 잎 19,834개 토큰 대조): 한 글자
+    라틴·숫자 62개 중 13개(21%) 적중 · 3자리 수 900개 중 4개(계획·결정 번호) · 4자리 수
+    9,000개 중 0.
+
+    Returns:
+        ``(대조 집합, {"values": 값 수, "short_skipped": 하한 미만으로 뺀 수,
+        "identifier_skipped": 식별자·카탈로그 글 때문에 뺀 수})``
+    """
+    values = {str(v) for v in fakes} - {""}
+    long_enough = {
+        v for v in values
+        if len(v) >= (FAKE_MIN_DIGIT_LEN if v.isdigit() else MIN_VALUE_LEN)
+    }
+    kept, identifier = _drop_known(long_enough, catalog, input_texts)
+    return kept, {
+        "values": len(values),
+        "short_skipped": len(values) - len(long_enough),
+        "identifier_skipped": identifier,
+    }
+
+
+def export_fakes(
+    run_dir: Path, catalog: Mapping[str, Any]
+) -> tuple[set[str], dict[str, int] | None]:
+    """반출 run 하나의 `substitutions.yaml` 차단 집합과 요약(`blocked_fakes`) — 파일이 없으면
+    ``(빈 집합, None)``.
+
+    Raises:
+        BuildError: 형식 오류(`load_substitutions`)
+    """
+    fakes = load_substitutions(run_dir)
+    if fakes is None:
+        return set(), None
+    return blocked_fakes(fakes, catalog, catalog_texts(catalog))
 
 
 def catalog_texts(catalog: Mapping[str, Any]) -> list[str]:
@@ -731,6 +819,7 @@ async def build_p2(
     code_values: set[str],
     engine: str = P2_ENGINE,
     keep_excluded: bool = False,
+    fake_values: set[str] | None = None,
 ) -> dict[str, Any]:
     """P2 잡(`run_asset_llm`)과 같은 조각으로 쿼리 예시·DB 전용 규칙 섹션을 만든다(쓰기 없음).
 
@@ -746,11 +835,14 @@ async def build_p2(
         code_values: 치환 코드값·라벨 집합(`substituted_values` · 1회차 반출이면 빈 집합)
         engine: SQL 엔진(행 제한 절)
         keep_excluded: 기본 제외 테이블을 조회 대상에 남긴다
+        fake_values: 형식 보존 치환값 집합(`blocked_fakes` · 3회차 반출부터) — 코드값과 따로 센다
 
     Returns:
         ``{"query_examples", "section"(없으면 None), "checks", "excluded_substituted",
-        "section_substituted", "snapshot_hash"}`` — ``checks``에는 LLM 원문이 들어 있으니 출력하지
-        않는다(수만 출력)
+        "excluded_fake", "section_substituted", "section_fake", "snapshot_hash"}`` —
+        ``excluded_substituted``·``section_substituted``는 치환 코드값, ``excluded_fake``·
+        ``section_fake``는 형식 보존 치환값 적중(코드값에 먼저 걸린 것은 코드값으로만 센다) —
+        ``checks``에는 LLM 원문이 들어 있으니 출력하지 않는다(수만 출력)
     """
     from src.prompts.asset_generation import PROMPT_SECTION_PROMPT, QUERY_EXAMPLES_PROMPT
     from src.schema_cache.asset_generation_service import (
@@ -782,23 +874,33 @@ async def build_p2(
     examples, example_checks = await _validate_examples(check, examples_raw)
     section, section_check = await _validate_section(check, section_raw, snapshot)
 
+    fakes = set(fake_values or ())
     kept: list[dict[str, str]] = []
-    excluded = 0
+    excluded = excluded_fake = 0
     for example in examples:
         text = f"{example['question']}\n{example['sql']}"
-        if substitution_hits({"example": (text, {"query_examples": [example]})}, code_values):
+        files = {"example": (text, {"query_examples": [example]})}
+        if substitution_hits(files, code_values):
             excluded += 1
+        elif substitution_hits(files, fakes):
+            excluded_fake += 1
         else:
             kept.append(example)
-    section_substituted = bool(
-        section_check["passed"] and substitution_hits({"section": (section, None)}, code_values)
+    passed = bool(section_check["passed"])
+    section_substituted = passed and bool(
+        substitution_hits({"section": (section, None)}, code_values)
+    )
+    section_fake = passed and not section_substituted and bool(
+        substitution_hits({"section": (section, None)}, fakes)
     )
     return {
         "query_examples": kept,
-        "section": section if section_check["passed"] and not section_substituted else None,
+        "section": section if passed and not (section_substituted or section_fake) else None,
         "checks": {"query_examples": example_checks, "prompt_template": section_check},
         "excluded_substituted": excluded,
+        "excluded_fake": excluded_fake,
         "section_substituted": section_substituted,
+        "section_fake": section_fake,
         "snapshot_hash": snapshot.get("hash"),
     }
 
@@ -852,7 +954,8 @@ def default_p2_deps(cfg: Any) -> P2Deps:
 
 
 async def _run_p2(
-    catalog: Mapping[str, Any], code_values: set[str], deps: P2Deps, *, keep_excluded: bool
+    catalog: Mapping[str, Any], code_values: set[str], deps: P2Deps, *, keep_excluded: bool,
+    fake_values: set[str] | None = None,
 ) -> dict[str, Any]:
     """DB에 연결해 연결 상태를 확인한 뒤 `build_p2`를 돈다.
 
@@ -875,6 +978,7 @@ async def _run_p2(
         return await build_p2(
             catalog, llm=deps.llm_factory(), client=client, sql_checker=deps.sql_checker,
             code_values=code_values, engine=deps.engine, keep_excluded=keep_excluded,
+            fake_values=fake_values,
         )
 
 
@@ -935,6 +1039,7 @@ def build(
     """
     run_dir = Path(run_dir)
     catalog, samples = load_export(run_dir)
+    fake_blocked, fake_summary = export_fakes(run_dir, catalog)
     run_id = run_dir.name
     stamp = generated_at or time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
@@ -1058,6 +1163,12 @@ def build(
             f"치환 코드값이 커밋 대상 파일에 {len(hits)}곳 나옵니다 — 쓰지 않습니다(위치: "
             + "; ".join(hits[:10]) + ")"
         )
+    fake_hits = substitution_hits(parsed, fake_blocked)
+    if fake_hits:
+        raise BuildError(
+            f"형식 보존 치환값({SUBSTITUTIONS_FILE})이 커밋 대상 파일에 {len(fake_hits)}곳 "
+            "나옵니다 — 쓰지 않습니다(위치: " + "; ".join(fake_hits[:10]) + ")"
+        )
 
     old_cache = repo_root / SCHEMA_SEED_REL
     summary = {
@@ -1075,11 +1186,14 @@ def build(
         "synonym_seeds": len((seeds or {}).get("column_synonyms") or {}),
         "code_samples": samples is not None,
         "code_samples_identifier_skipped": identifier_skipped,
+        "substitutions": fake_summary,
         **({"p2": {
             "query_examples": len(p2_result.get("query_examples") or []),
             "excluded_substituted": int(p2_result.get("excluded_substituted") or 0),
+            "excluded_fake": int(p2_result.get("excluded_fake") or 0),
             "section": bool(p2_result.get("section")),
             "section_substituted": bool(p2_result.get("section_substituted")),
+            "section_fake": bool(p2_result.get("section_fake")),
         }} if p2_result is not None else {}),
         **({"knowledge": {
             **dict(knowledge["counts"]),
@@ -1128,7 +1242,8 @@ def knowledge_overlay(
 
     대조 기준은 이번 빌드와 같다 — 반출 카탈로그 · 조회 대상 · 병합한 정의. 치환값 대조는 이번
     반출과 원천 근거 run(반출 run 디렉터리의 형제)의 `code_samples.yaml`, 근거 리터럴 대조도 같은
-    run들(`knowledge.load_evidence_literals`). 사유는 모두 출력한다
+    run들(`knowledge.load_evidence_literals`). 형식 보존 치환값(`substitutions.yaml`)도 같은
+    run들에서 차단 전용으로 더한다(K8 대표값은 `code_samples.yaml`에서만). 사유는 모두 출력한다
     (침묵 없음).
 
     Returns:
@@ -1153,6 +1268,8 @@ def knowledge_overlay(
     results_root = Path(run_dir).parent
     code_values = blocked_values(samples, catalog, catalog_texts(catalog))[0]
     code_values |= kn.load_code_values(runs, results_root)[0]
+    fake_values = export_fakes(Path(run_dir), catalog)[0]
+    fake_values |= kn.load_substitution_values(runs, results_root)[0]
     code_samples = kn.code_samples_map(samples)
     for key, values in kn.load_code_samples(runs, results_root).items():
         merged = code_samples.setdefault(key, [])
@@ -1160,7 +1277,7 @@ def knowledge_overlay(
     result, reason = asyncio.run(kn._run_with_db(
         Path(knowledge_dir), deps, static_only,
         catalog=schema, allowed=allowed, definitions=definitions,
-        code_values=code_values, code_samples=code_samples,
+        code_values=code_values, code_samples=code_samples, fake_values=fake_values,
         evidence_literals=kn.load_evidence_literals(runs | {Path(run_dir).name}, results_root)[0],
     ))
     print(f"  지식 오버레이 검증 — 원천 {knowledge_dir}")
@@ -1217,7 +1334,7 @@ def run_build(
             catalog, samples = load_export(Path(run_dir))
             p2_result = asyncio.run(_run_p2(
                 catalog, blocked_values(samples, catalog, catalog_texts(catalog))[0], p2_deps,
-                keep_excluded=keep_excluded,
+                keep_excluded=keep_excluded, fake_values=export_fakes(Path(run_dir), catalog)[0],
             ))
             result = build(
                 run_dir, keep_excluded=keep_excluded, repo_root=repo_root, p2_result=p2_result
@@ -1275,6 +1392,12 @@ def run_build(
             if s["code_samples"] else "없음"
         )
     )
+    if s["substitutions"] is not None:
+        fs = s["substitutions"]
+        print(
+            f"  형식 보존 치환값 파일 있음(차단 검사 통과 · {fs['values']}건 · 짧은 값 "
+            f"{fs['short_skipped']}건·식별자 {fs['identifier_skipped']}건 대조 제외)"
+        )
     print(f"  스키마 캐시 차이(저장 시각 제외): {'; '.join(s['schema_cache_diff']) or '없음'}")
     print(f"  {preserved}")
     for rel in result["files"]:
@@ -1324,7 +1447,12 @@ def _print_p2(p2_result: Mapping[str, Any]) -> None:
     kept = len(p2_result.get("query_examples") or [])
     print(
         f"  P2 쿼리 예시 — 후보 {len(candidates)} · 실행 성공 {executed_ok} · "
-        f"치환 코드 리터럴 제외 {int(p2_result.get('excluded_substituted') or 0)} · 씀 {kept}"
+        f"치환 코드 리터럴 제외 {int(p2_result.get('excluded_substituted') or 0)} · "
+        + (
+            f"형식 보존 치환값 리터럴 제외 {int(p2_result['excluded_fake'])} · "
+            if p2_result.get("excluded_fake") else ""
+        )
+        + f"씀 {kept}"
         + ("" if candidates else " (LLM 응답이 비었거나 JSON 배열이 아님)")
     )
     if kept == 0:
@@ -1333,6 +1461,10 @@ def _print_p2(p2_result: Mapping[str, Any]) -> None:
         print(f"  P2 DB 전용 규칙 섹션 — 구조 검사·SQL 실행 통과 · 씀: {SECTION_REL}")
     elif p2_result.get("section_substituted"):
         print("  P2 DB 전용 규칙 섹션: 치환 코드 리터럴 포함 — 통째로 버림(파일을 만들지 않음)")
+    elif p2_result.get("section_fake"):
+        print(
+            "  P2 DB 전용 규칙 섹션: 형식 보존 치환값 리터럴 포함 — 통째로 버림(파일을 만들지 않음)"
+        )
     else:
         print(
             "  P2 DB 전용 규칙 섹션: 검증 실패 "

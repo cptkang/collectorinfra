@@ -93,7 +93,7 @@ async def test_named_asset_source_utilization_is_notice_only():
     assert seen["sql_calls"] == 0 and seen["zone_gate"] is None
     assert result["degraded_reason"] == subagents.REASON_SOURCE_NOT_CANONICAL
     assert result["query_results"] == []
-    assert result["final_response"] == utilization_notice_text(["자산관리"])
+    assert result["final_response"] == utilization_notice_text(["자산관리"], kind="trend")
     assert "「자산관리」" in result["final_response"]
     # 사용자 표현만 — 레지스트리 표시명 비노출(D-264)
     assert "ITAM" not in result["final_response"]
@@ -147,7 +147,7 @@ async def test_all_targets_dropped_is_notice_not_default_fallback():
     )
     assert seen["sql_calls"] == 0
     assert result["degraded_reason"] == subagents.REASON_SOURCE_NOT_CANONICAL
-    assert result["final_response"] == utilization_notice_text([])
+    assert result["final_response"] == utilization_notice_text([], kind="trend")
 
 
 @pytest.mark.asyncio
@@ -212,4 +212,44 @@ async def test_no_active_owner_is_noop():
         "서버 CPU 사용률 추이", hints=[], active=["itam"], classified=["itam"],
     )
     assert seen["executed"] == ["itam"]
+    assert not _ownership_notes(result)
+
+
+# ── 사용량(현재값)·사용 추이(기간 변화) 정의(plans/132 v1.5 후속 ②) ──────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query, word", [
+    ("자산관리에서 CPU 사용량 보여줘", "요청하신 사용량·사용률 정보는"),
+    ("자산관리에서 메모리 사용 추이", "요청하신 사용 추이 정보는"),
+])
+async def test_named_asset_source_usage_and_trend_notice_follow_user_wording(
+    query: str, word: str,
+):
+    result, seen = await _run(query, hints=["자산관리"], active=ACTIVE, classified=["itam"])
+    assert seen["sql_calls"] == 0
+    assert result["degraded_reason"] == subagents.REASON_SOURCE_NOT_CANONICAL
+    assert word in result["final_response"] and "「자산관리」" in result["final_response"]
+
+
+@pytest.mark.asyncio
+async def test_unnamed_trend_drops_asset_db():
+    """지목 없는 「사용 추이」형도 사용률 영역 비소유 DB를 뺀다(종전 정규식은 못 잡았다)."""
+    result, seen = await _run(
+        "서버 CPU 사용 추이", hints=[], active=ACTIVE, classified=["itam", "polestar_cm_gp"],
+    )
+    assert seen["executed"] == ["polestar_cm_gp"]
+    assert len(_ownership_notes(result)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query, hints", [
+    ("자산관리에서 서버 메모리 용량", ["자산관리"]),
+    ("CPU 코어 수", []),
+])
+async def test_capacity_and_spec_queries_keep_asset_db(query: str, hints: list[str]):
+    """용량·사양(설치 크기)은 가드 대상이 아니다 — 자산 DB 조회 유지."""
+    result, seen = await _run(query, hints=hints, active=ACTIVE, classified=["itam"])
+    assert seen["executed"] == ["itam"]
+    assert "degraded_reason" not in result
     assert not _ownership_notes(result)

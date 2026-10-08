@@ -25,7 +25,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
 from src.config import AppConfig, load_config
-from src.domain.knowledge_assets import mentions_utilization
+from src.domain.knowledge_assets import mentions_utilization, utilization_kind
 from src.domain.query_time import QueryTime, resolve_task_time
 from src.nodes.cache_management import cache_management
 from src.nodes.general_inference import general_inference
@@ -614,9 +614,7 @@ def _apply_turn_hint_pinning(
 
 def _multiple_systems_active(app_config: AppConfig) -> bool:
     """활성 DB의 소유 시스템(`registry.system_of` · None 제외)이 둘 이상인가(§12.6 ①)."""
-    reg = get_registry()
-    systems = {s for s in (reg.system_of(d) for d in app_config.multi_db.get_active_db_ids()) if s}
-    return len(systems) >= 2
+    return len(get_registry().systems_of(app_config.multi_db.get_active_db_ids())) >= 2
 
 
 def _apply_selection_to_zone_groups(
@@ -737,7 +735,8 @@ def _utilization_source_guard(
                     task.get("task_id"), [m.system for m in named],
                     [t.get("db_id") for t in targets])
         return [], {
-            "final_response": utilization_notice_text([m.hint for m in named]),
+            "final_response": utilization_notice_text(
+                [m.hint for m in named], kind=utilization_kind(sub_query)),
             "degraded_reason": REASON_SOURCE_NOT_CANONICAL,
             "query_results": [],
         }, []

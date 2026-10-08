@@ -11,10 +11,16 @@
 from __future__ import annotations
 
 import copy
+import logging
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .substitute import FakeValues
+
+logger = logging.getLogger(__name__)
 
 #: 실패 분류 → 고칠 곳(plans/135 §3.3 표). 순서가 리포트의 「첫 원인」 우선순위다.
 TAXONOMY: dict[str, str] = {
@@ -201,12 +207,219 @@ _KEY_LISTS = (
 _ASCII_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+#: 판정 상세에서 가짜 값으로 바뀔 수 있는 칸(`oracle.substituted_fields` 어휘 · 관문 ② 양성 검사).
+#: 키 목록은 이름 그대로, `oracle_top`·`value_diffs`는 `.key`(키)·`.value`(값) 로 나누고,
+#: `value.scalar`는 `compare: value` 상세의 최상위 수(`oracle`·`system`·`pre`·`low`·`high`)다.
+DETAIL_FIELDS: tuple[str, ...] = (
+    *(name for name in _KEY_LISTS if name != "oracle_top"),
+    "oracle_top.key",
+    "oracle_top.value",
+    "value_diffs.key",
+    "value_diffs.value",
+    "value.scalar",
+)
+_VALUE_SCALARS = ("oracle", "system", "pre", "low", "high")
+_DIFF_VALUES = ("oracle", "system")
+
+
+def _fake_number(value: Any, fakes: FakeValues) -> Any:
+    """값 → 같은 모양의 가짜 값(None 은 그대로).
+
+    가짜 글이 같은 타입의 수로 되읽혀 글자가 같을 때만 수로 싣고(정수는 정수), 아니면 가짜 글
+    그대로 싣는다 — 앞자리 0 등으로 모양이 바뀐 수는 이 run 가짜 값으로 다시 알아볼 수 없다.
+    `1500`과 `1500.0`은 같은 가짜 정수부를 받는다(`FakeValues`의 소수 0 정규화).
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return fakes.fake(str(value))
+    fake = fakes.fake(str(value))
+    try:
+        number: int | float = int(fake) if isinstance(value, int) else float(fake)
+    except ValueError:
+        return fake
+    return number if str(number) == fake else fake
+
+
+def _values_faked(value_grade: str | None) -> bool:
+    """생성기 경로에서 행별 값을 가짜 값으로 바꾸는 등급 — 일반이 아니면 전부(None = 가장 엄격)."""
+    return value_grade != "general"
+
+
+def substituted_fields(
+    detail: Any, *, value_grade: str | None, keys_allowed: bool
+) -> list[str]:
+    """생성기 경로 `sanitize_detail`이 가짜 값으로 바꾼 칸(`DETAIL_FIELDS` 어휘 · 있는 칸만)."""
+    if not isinstance(detail, Mapping):
+        return []
+    out: list[str] = []
+    values = _values_faked(value_grade)
+    if not keys_allowed:
+        out += [
+            name
+            for name in _KEY_LISTS
+            if name != "oracle_top" and isinstance(detail.get(name), list)
+        ]
+    if isinstance(detail.get("oracle_top"), list):
+        out += ["oracle_top.key"] if not keys_allowed else []
+        out += ["oracle_top.value"] if values else []
+    if isinstance(detail.get("value_diffs"), list):
+        out += ["value_diffs.key"] if not keys_allowed else []
+        out += ["value_diffs.value"] if values else []
+    if values and detail.get("compare") == "value":
+        out.append("value.scalar")
+    return out
+
+
+def detail_key_fields(detail: Any) -> list[str]:
+    """판정 상세에 키 값이 목록으로 실린 칸(`DETAIL_FIELDS` 어휘) — 키를 남기지 않는 기록 검사용."""
+    if not isinstance(detail, Mapping):
+        return []
+    out = [
+        name
+        for name in _KEY_LISTS
+        if name != "oracle_top" and isinstance(detail.get(name), list) and detail[name]
+    ]
+    if isinstance(detail.get("oracle_top"), list) and detail["oracle_top"]:
+        out.append("oracle_top.key")
+    if isinstance(detail.get("value_diffs"), list) and detail["value_diffs"]:
+        out.append("value_diffs.key")
+    return out
+
+
+#: 등록 DB id 집합 캐시(성공만 담는다) · 레지스트리 로드 실패로 내린 횟수(프로세스 누적).
+_REGISTERED_DB_IDS: frozenset[str] | None = None
+_REGISTRY_FALLBACKS = 0
+
+
+def registered_db_ids() -> frozenset[str]:
+    """per_db 키 태그로 치환 없이 남길 수 있는 DB id — `config/db_registry.yaml` 등록 id ∪ 벤치
+    `DB_ID`(교정 3차c).
+
+    레지스트리는 git 에 있는 등록점(신규 DB 는 여기와 `.env`에만 등록)이라 값이 데이터가 아니다.
+    오라클 `rows_by_db`의 키는 시나리오 `db_ids`(등록 id)라 이 집합 안이다 — 관문은 기록만 보고
+    판정하므로 run 마다 달라지는 집합을 쓰지 않는다.
+
+    레지스트리를 못 읽으면(파일 없음·파싱 실패 `RegistryError` · `src.routing` import 실패) run 을
+    죽이지 않고 `{DB_ID}`로 내린다(교정 3차d M-3c-1) — 다른 태그는 전부 치환 칸이 되니 안전한
+    쪽이다. 실패는 캐시하지 않고(다음 호출이 다시 읽는다), 첫 실패에 경고 1줄을 남기고
+    `registry_fallbacks()`를 올린다(부르는 쪽이 run 카운터 `registry_fallback`로 옮긴다).
+    """
+    global _REGISTERED_DB_IDS, _REGISTRY_FALLBACKS
+    from . import DB_ID
+
+    if _REGISTERED_DB_IDS is not None:
+        return _REGISTERED_DB_IDS
+    try:
+        from src.routing.registry import get_registry
+
+        ids = frozenset(get_registry().db_ids()) | {DB_ID}
+    except Exception as exc:  # noqa: BLE001 — 어떤 실패든 닫힌 쪽으로 내린다
+        if _REGISTRY_FALLBACKS == 0:
+            logger.warning(
+                "DB 레지스트리 로드 실패 — per_db 키 태그를 %s 외 전부 치환한다(%s)",
+                DB_ID,
+                type(exc).__name__,
+            )
+        _REGISTRY_FALLBACKS += 1
+        return frozenset({DB_ID})
+    _REGISTERED_DB_IDS = ids
+    return ids
+
+
+def registry_fallbacks() -> int:
+    """`registered_db_ids`가 레지스트리 로드 실패로 내린 횟수(프로세스 누적)."""
+    return _REGISTRY_FALLBACKS
+
+
+def registered_db_ids_cache_clear() -> None:
+    """등록 DB id 캐시와 폴백 횟수를 비운다(레지스트리를 바꿔 끼우는 테스트용)."""
+    global _REGISTERED_DB_IDS, _REGISTRY_FALLBACKS
+    _REGISTERED_DB_IDS = None
+    _REGISTRY_FALLBACKS = 0
+
+
+def map_detail(
+    detail: Any,
+    fields: Iterable[str],
+    *,
+    substituted: Callable[[Any], Any],
+    other: Callable[[Any], Any],
+    key_tagged: bool = False,
+) -> Any:
+    """판정 상세의 치환 칸에는 `substituted`, 나머지에는 `other`를 씌운 사본(구조 유지).
+
+    기록 쪽은 치환 칸을 그대로 두고 나머지만 가린다(가짜 값을 다시 가리면 관문이 알아보지 못한다).
+    관문 쪽은 치환 칸 잎만 이 run 가짜 값인지 본다.
+
+    `key_tagged`(per_db 판정 — 시스템 결과에 `_source_db` 열)면 키마다 맨 앞 DB id 태그는 치환
+    칸에서 빼 `other`를 씌운다(교정 3차b Minor-A). DB id 는 데이터 값이 아니라 git 에 있는 등록
+    식별자라 치환하면 DB 출처만 사라지고, 태그가 2차에서 처음 생성기에 들어가 관문 ①을 세웠다.
+    예외는 **등록 DB id**(`registered_db_ids`)인 태그에만 준다(교정 3차c) — 시스템 쪽 태그는 결과
+    셀(`_source_db`)이라 생성 SQL 이 다른 열을 그 이름으로 별칭하면 호스트명 같은 원값이 온다.
+    등록 밖 태그는 예전처럼 치환 칸이다. 관문도 이 함수로 같은 집합을 본다(표지만 믿지 않는다).
+    """
+    if not isinstance(detail, Mapping):
+        return other(detail)
+    chosen = set(fields)
+
+    def keyed(apply: Callable[[Any], Any]) -> Callable[[Any], Any]:
+        if not key_tagged:
+            return apply
+
+        def run(key: Any) -> Any:
+            if isinstance(key, list) and key and str(key[0]) in registered_db_ids():
+                return [*other([key[0]]), *apply(list(key[1:]))]
+            return apply(key)
+
+        return run
+
+    out: dict[str, Any] = {}
+    for name, node in detail.items():
+        if name in chosen and key_tagged and name in _KEY_LISTS and isinstance(node, list):
+            out[name] = [keyed(substituted)(item) for item in node]
+        elif name in chosen:
+            out[name] = substituted(node)
+        elif name == "oracle_top" and isinstance(node, list):
+            key = keyed(substituted) if "oracle_top.key" in chosen else other
+            value = substituted if "oracle_top.value" in chosen else other
+            out[name] = [
+                [*key(list(item[:-1])), *value(list(item[-1:]))]
+                if isinstance(item, list)
+                else other(item)
+                for item in node
+            ]
+        elif name == "value_diffs" and isinstance(node, list):
+            key = keyed(substituted) if "value_diffs.key" in chosen else other
+            value = substituted if "value_diffs.value" in chosen else other
+            out[name] = [
+                {
+                    k: key(v) if k == "key" else value(v) if k in _DIFF_VALUES else other(v)
+                    for k, v in item.items()
+                }
+                if isinstance(item, Mapping)
+                else other(item)
+                for item in node
+            ]
+        elif (
+            name in _VALUE_SCALARS
+            and "value.scalar" in chosen
+            and detail.get("compare") == "value"
+        ):
+            out[name] = substituted(node)
+        else:
+            out[name] = other(node)
+    return out
+
+
 def sanitize_detail(
     detail: Any,
     *,
     value_grade: str | None,
     keys_allowed: bool = True,
     labels: Mapping[str, str] | None = None,
+    fakes: FakeValues | None = None,
+    key_tagged: bool = False,
 ) -> Any:
     """판정 상세 거르기(§3.5.6).
 
@@ -215,11 +428,25 @@ def sanitize_detail(
       남긴다 — 키 명세가 general 이어도 시스템 값은 별칭으로 찾은 「아무 열」에서 온다.
     - `header`(시스템이 지은 열 이름 — 값일 수 있다)는 요약과 같은 이름(`labels`)으로 바꾸고, 모르는
       이름은 ASCII 식별자 모양일 때만 남긴다.
+    - `fakes`(run 의 가짜 값 생성기 · plans/145 L8)가 있으면 지우거나 건수로 줄이는 대신 구조를
+      유지한 채 키 값마다 가짜 값을 싣고, 값 등급이 일반이 아니면(None 포함 — 가장 엄격) 행별 값
+      (`oracle_top` 끝 원소 · `value_diffs`의 수 · `compare: value`의 최상위 수)도 가짜 값으로
+      싣는다(같은 원값 → 같은 가짜 값). 바뀐 칸은 `substituted_fields`가 같은 규칙으로 센다.
+      `key_tagged`(per_db)면 키 맨 앞 DB id 태그는 바꾸지 않는다(`map_detail`).
     """
     if not isinstance(detail, Mapping):
         return detail
     out = copy.deepcopy(dict(detail))
-    if value_grade == "amount":
+    if fakes is not None:
+        generator = fakes
+        out = map_detail(
+            out,
+            substituted_fields(out, value_grade=value_grade, keys_allowed=keys_allowed),
+            substituted=lambda node: _fake_tree(node, generator),
+            other=lambda node: node,
+            key_tagged=key_tagged,
+        )
+    elif value_grade == "amount":
         if isinstance(out.get("oracle_top"), list):
             out["oracle_top"] = [
                 list(item[:-1]) for item in out["oracle_top"] if isinstance(item, list)
@@ -230,7 +457,7 @@ def sanitize_detail(
                 for d in out["value_diffs"]
                 if isinstance(d, Mapping)
             ]
-    if not keys_allowed:
+    if not keys_allowed and fakes is None:
         for name in _KEY_LISTS:
             if isinstance(out.get(name), list):
                 out[name] = len(out[name])
@@ -243,6 +470,15 @@ def sanitize_detail(
             for i, name in enumerate(out["header"], start=1)
         ]
     return out
+
+
+def _fake_tree(node: Any, fakes: FakeValues) -> Any:
+    """치환 칸 하위 트리 → 잎마다 가짜 값(목록 구조 유지 · 빈 값은 그대로)."""
+    if isinstance(node, list):
+        return [_fake_tree(part, fakes) for part in node]
+    if node is None or (isinstance(node, str) and node == ""):
+        return node
+    return _fake_number(node, fakes)
 
 
 # --- 실패 분류 -------------------------------------------------------------------------

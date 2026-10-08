@@ -753,6 +753,23 @@ def load_schema_source(
 P1_MISSING_WARNING = "P1 근거 없음 — 자산 없는 기준선"
 P1_HASH_MISMATCH = "P1 초안의 스냅샷 해시가 현 스냅샷과 다르다 — 초안 뒤 스키마가 바뀌었을 수 있다"
 P1_OUTDATED_DRAFT = "P1 초안이 구버전 빌드(b1fabf4 이전)로 생성됨 — 내부망에서 P1 재실행 필요"
+P1_MALFORMED_DRAFT = "P1 초안 형식이 손상됨 — 손상된 초안은 쓰지 않음 · 내부망에서 P1 재실행 필요"
+P1_DESCRIPTION_DRAFT_MALFORMED = "P1 설명 초안 형식이 손상됨 — 설명 초안은 쓰지 않음"
+#: P1 초안 ID 형식 — 누출 관문 `code_samples.yaml` 머리 칸(`redact._CODE_SAMPLES_ID`)과 같다.
+#: redact 가 이 모듈을 가져오므로 여기서 가져올 수 없다(순환) — 같은 패턴을 테스트가 고정한다.
+P1_DRAFT_ID_FORM = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+#: P1 초안에서 소비처(카탈로그 조립·치환 코드값)가 순회하는 칸 — 있으면 목록이어야 한다.
+P1_EVIDENCE_LIST_KEYS: tuple[str, ...] = (
+    "columns",
+    "relationships",
+    "allowed_tables",
+    "code_columns",
+)
+#: 목록 항목 안에서 소비처가 순회하는 칸 — 있으면 목록이어야 한다.
+P1_ITEM_LIST_KEYS: dict[str, tuple[str, ...]] = {
+    "columns": ("flag",),
+    "relationships": ("child_columns", "parent_columns"),
+}
 #: 현행 P1 초안 표지 — b1fabf4(plans/140)가 evidence `columns`·`budget.requested/cap`을 더했다.
 P1_CURRENT_EVIDENCE_KEYS: tuple[str, ...] = ("columns",)
 P1_CURRENT_BUDGET_KEYS: tuple[str, ...] = ("requested", "cap")
@@ -804,20 +821,43 @@ async def _read_structure_store(store: Any, db_id: str, *, owned: bool) -> dict[
         if not record or not ((record.get("snapshot") or {}).get("tables")):
             return {"error": "스냅샷 없음"}
         comments = dict(await store.load_ddl_comments(db_id) or {})
+        # 매핑이 아닌 항목은 종류를 알 수 없어 P1 초안 후보가 아니다 — 건너뛰되 손상으로 알린다
+        # (예외로 스냅샷까지 잃지 않는다). 형식이 손상된 P1 초안은 통째로 버린다(초안 없음과 같다
+        # — 그 안의 값을 부분적으로 믿지 않는다 · 설명 초안도 읽지 않는다).
+        listed = list(await store.list_asset_drafts(db_id))
         draft = next(
-            (d for d in await store.list_asset_drafts(db_id) if d.get("kind") == "profile"), None
+            (d for d in listed if isinstance(d, Mapping) and d.get("kind") == "profile"), None
         )
+        malformed = any(not isinstance(d, Mapping) for d in listed)
+        if draft is not None and p1_malformed(draft):
+            draft, malformed = None, True
         descriptions: dict[str, str] = {}
-        if draft and draft.get("description_draft_id"):
-            description = await store.get_description_draft(db_id, draft["description_draft_id"])
-            for per_table in ((description or {}).get("descriptions") or {}).values():
+        description_malformed = False
+        description_id = draft.get("description_draft_id") if draft else None
+        if description_id and not isinstance(description_id, str):
+            description_malformed = True
+        elif description_id:
+            # 설명 초안이 손상됐으면 그것만 버린다(설명 없음) — 스냅샷·P1 은 지킨다
+            description = await store.get_description_draft(db_id, description_id)
+            per_tables = (
+                description.get("descriptions") if isinstance(description, Mapping) else None
+            )
+            if description is not None:
+                description_malformed = not isinstance(description, Mapping) or not _is_optional(
+                    per_tables, Mapping
+                )
+            for per_table in _mapping(per_tables).values():
                 if isinstance(per_table, Mapping):
-                    descriptions.update({str(k): str(v) for k, v in per_table.items() if v})
+                    descriptions.update(
+                        {str(k): v for k, v in per_table.items() if v and isinstance(v, str)}
+                    )
         return {
             "record": record,
             "comments": comments,
             "draft": draft,
             "descriptions": descriptions,
+            "malformed": malformed,
+            "description_malformed": description_malformed,
         }
     except Exception as exc:  # noqa: BLE001 — Redis 실패는 파일 폴백으로 넘긴다
         return {"error": f"Redis 읽기 실패:{type(exc).__name__}"}
@@ -882,12 +922,65 @@ def _normalize_structure_store(data: Mapping[str, Any]) -> dict[str, Any]:
     return {"tables": tables, "descriptions": {}}
 
 
+def _mapping(value: Any) -> Mapping[str, Any]:
+    """매핑이면 그대로, 아니면(없음·형식 손상) 빈 매핑."""
+    return value if isinstance(value, Mapping) else {}
+
+
+def _is_optional(value: Any, kinds: type | tuple[type, ...]) -> bool:
+    """없거나(None) 기대한 형이면 참."""
+    return value is None or isinstance(value, kinds)
+
+
+def p1_malformed(draft: Any) -> bool:
+    """P1 초안 형식 손상 — 소비처(카탈로그 조립·치환 코드값·run.json 지문)가 매핑·목록으로 읽는
+    칸이 다른 형이면 참.
+
+    `draft_id`는 누출 관문 식별자 형식(`P1_DRAFT_ID_FORM`)이어야 한다(관문이 거르면 run 이 멈춘다).
+    초안·`evidence`·`evidence.budget`·`assets`·`assets.code_values`·`assets.code_labels`는 매핑,
+    `P1_EVIDENCE_LIST_KEYS`·`P1_ITEM_LIST_KEYS`·코드값 목록은 목록이어야 한다. **없는 칸(None)은
+    손상이 아니다** — 표지 키 부재는 구버전 판정(`p1_outdated`) 몫이다.
+    """
+    if not isinstance(draft, Mapping):
+        return True
+    draft_id = draft.get("draft_id")
+    if draft_id is not None and not (
+        isinstance(draft_id, str) and P1_DRAFT_ID_FORM.match(draft_id)
+    ):
+        return True
+    evidence = draft.get("evidence")
+    if not _is_optional(evidence, Mapping):
+        return True
+    evidence = _mapping(evidence)
+    if not _is_optional(evidence.get("budget"), Mapping):
+        return True
+    for key in P1_EVIDENCE_LIST_KEYS:
+        rows = evidence.get(key)
+        if not _is_optional(rows, (list, tuple)):
+            return True
+        for row in rows or []:
+            if isinstance(row, Mapping) and any(
+                not _is_optional(row.get(k), (list, tuple)) for k in P1_ITEM_LIST_KEYS.get(key, ())
+            ):
+                return True
+    assets = draft.get("assets")
+    if not _is_optional(assets, Mapping):
+        return True
+    assets = _mapping(assets)
+    code_values = assets.get("code_values")
+    if not _is_optional(code_values, Mapping) or not _is_optional(
+        assets.get("code_labels"), Mapping
+    ):
+        return True
+    return any(not _is_optional(v, (list, tuple)) for v in _mapping(code_values).values())
+
+
 def p1_summary(draft: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """카탈로그 최상위 `p1` — 초안 메타·예산만(값 0)."""
-    if not draft:
+    """카탈로그 최상위 `p1` — 초안 메타·예산만(값 0). 초안이 매핑이 아니면 None."""
+    if not draft or not isinstance(draft, Mapping):
         return None
-    evidence = draft.get("evidence") or {}
-    budget = evidence.get("budget") or {}
+    evidence = _mapping(draft.get("evidence"))
+    budget = _mapping(evidence.get("budget"))
     return {
         "draft_id": draft.get("draft_id"),
         "created_at": draft.get("created_at"),
@@ -900,9 +993,14 @@ def p1_summary(draft: Mapping[str, Any] | None) -> dict[str, Any] | None:
 
 
 def p1_outdated(draft: Mapping[str, Any]) -> bool:
-    """P1 초안이 b1fabf4 이전 빌드로 만들어졌나 — 현행 evidence 표지 키가 하나라도 없으면 참."""
-    evidence = draft.get("evidence") or {}
-    budget = evidence.get("budget") or {}
+    """P1 초안이 b1fabf4 이전 빌드로 만들어졌나 — 현행 evidence 표지 키가 하나라도 없으면 참.
+
+    매핑이 아닌 칸은 표지가 없는 것으로 본다(형식 손상 판정은 `p1_malformed` 몫 — 로더가 먼저 본다).
+    """
+    if not isinstance(draft, Mapping):
+        return True
+    evidence = _mapping(draft.get("evidence"))
+    budget = _mapping(evidence.get("budget"))
     return any(k not in evidence for k in P1_CURRENT_EVIDENCE_KEYS) or any(
         k not in budget for k in P1_CURRENT_BUDGET_KEYS
     )
@@ -911,7 +1009,7 @@ def p1_outdated(draft: Mapping[str, Any]) -> bool:
 def p1_asset(draft: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """`run.json` `assets.p1` — 초안 지문(assets·evidence 정규 JSON sha256 앞 12자)·시각·예산."""
     summary = p1_summary(draft)
-    if summary is None or draft is None:
+    if summary is None or not isinstance(draft, Mapping):
         return None
     canonical = json.dumps(
         {"assets": draft.get("assets"), "evidence": draft.get("evidence")},
@@ -943,6 +1041,10 @@ def load_structure_store_source(
     - 두 경우 모두 `p1: None` · `p1_fallback: 사유`(고정 문구) — 리포트 첫머리 경고 재료다.
     - P1 초안의 `snapshot_hash`가 현 스냅샷 해시와 다르면 `p1_warnings`에 남긴다.
     - P1 초안이 구버전 빌드 모양(`p1_outdated`)이면 `p1_warnings`에 따로 남긴다.
+    - P1 초안 형식이 손상됐으면(`p1_malformed` · 매핑 아닌 초안 항목 포함) 초안 없음과 같게 진행하고
+      `p1_warnings`에 `P1_MALFORMED_DRAFT`를 남긴다(구버전과 구별 · 고정 문구).
+    - 설명 초안 형식이 손상됐으면 설명 초안만 버리고(스냅샷·P1 유지)
+      `P1_DESCRIPTION_DRAFT_MALFORMED`를 남긴다. 문자열 아닌 설명 값은 그 항목만 건너뛴다.
 
     P1 초안 원본(코드값·라벨 포함)은 `_p1_draft`에 **메모리로만** 둔다 — 카탈로그 조립과 치환
     코드값 생성(`code_samples`)의 재료이고 산출물에 그대로 쓰지 않는다.
@@ -975,9 +1077,15 @@ def load_structure_store_source(
         warnings.append(P1_HASH_MISMATCH)
     if draft and p1_outdated(draft):
         warnings.append(P1_OUTDATED_DRAFT)
+    fallback = "P1 초안 없음"
+    if data.get("malformed"):
+        warnings.append(P1_MALFORMED_DRAFT)
+        fallback = "P1 초안 형식 손상"
+    if data.get("description_malformed"):
+        warnings.append(P1_DESCRIPTION_DRAFT_MALFORMED)
     normalized.update(
         p1=p1_summary(draft),
-        p1_fallback=None if draft else "P1 초안 없음",
+        p1_fallback=None if draft else fallback,
         p1_warnings=warnings,
         _p1_draft=draft,
     )

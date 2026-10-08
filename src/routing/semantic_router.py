@@ -19,6 +19,7 @@ from typing import Any, Optional
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 
+from src.utils.empty_antecedent import carried_zone_turn_context
 from src.utils.synonym_set_parser import parse_synonym_set
 from src.utils.usage_query import is_usage_query
 from src.config import AppConfig, load_config
@@ -466,6 +467,11 @@ async def semantic_router(
             clarification_out.update(
                 _ownership_state_fields(state, targets, capability_chain, ownership_notes)
             )
+        # 앞 턴 0행 지시어 승계 중이면 기록을 넘겨 존 답변 턴이 잇게 한다(plans/146 W3 교정 1 M-2
+        # — 2단 `result_aggregator` 존 역질문 대칭).
+        zone_ctx = carried_zone_turn_context(state.get("conversation_context"))
+        if zone_ctx:
+            clarification_out["conversation_context"] = zone_ctx
         return clarification_out
 
     is_multi_db = len(targets) > 1

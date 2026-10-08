@@ -1,12 +1,17 @@
 # 144. 제니퍼 노이즈 캔슬링과 폴스타×제니퍼 복합 캔슬링 — 제니퍼 단독 판정 정책 · 공통 호스트 키 · 크로스소스 사건 상관(원인 알람 아래 증상 알람 강등) · 앱 영향 축 정밀화: 문헌 조사와 구현 계획
 
-> **작성일**: 2026-10-07 · **v1.0**
-> **상태**: **TODO — 계획 초안(코드 0건)** · 사용자 확정 게이트 G-1~G-8 대기(§9) · D-317 예약
+> **작성일**: 2026-10-07 · **v1.2**
+> **상태**: **WIP — 외부망 구현 W0~W5 완료(작업 트리 · 커밋 없음)** · 게이트 G-1~G-8·Q-1~Q-5 사용자 확정(2026-10-07 「권고대로 진행」) · D-317·D-320 등재 · D-195 ②·D-109 B-6 부기 · **잔여: W6 내부망 shadow 2주·리플레이 지표·창 보정(외부망 불가) · W7(선택) · Q-3 사용자 확인 대기 · J0-L-b 뒤 정책 표·규칙 표 재측정**
+> **진행(v1.2 · 2026-10-07)**: ① **Wave A** — Q-4 / D-320 지문 dedup 심각도 상승 우회(전 경로 · `NOISE_DEDUP_SEVERITY_RISE_BYPASS` **기본 on** — 신규 플래그 기본 off 원칙의 예외 · 근거 config 주석·D-320) · §4.4 제니퍼 상관 토큰에 `was_signals` kind·`domain_id`(`apm_noise_context.correlation_extra`) ② **W3** — `config/cross_source_rules.yaml`(3행 · 전부 `enforce: false` · `host_down_to_was_all` 비활성) · `noise_gate/domain/cross_source.py`(EpisodeTracker · 결합 판정) · `noise_gate/infrastructure/cross_source_rules.py`(역방향 demote → link 강제) · 정책 step 7.6 `STAGE_CROSS_SOURCE`(step 8~9.5 결과에 DASHBOARD 상한 — 티어 상승 없음) · `NOISE_CROSS_SOURCE_MODE`(기본 off) · 리플레이 `--cross-source-mode`(목업 shadow: 사건 5 · 했을 강등 2 · 적용 0) ③ **W4** — `app_impact` 사건 저장소 우선(annotate·enforce) · 사후 승격(`NOISE_APP_IMPACT_LATE_PROMOTION_ENABLED` · annotate·enforce만 · 알람당 1회 · 트리거당 5건 · `type="late_promotion"`) · 정상 강등 shadow(`NOISE_APM_HEALTHY_DEMOTION_SHADOW`) · 제니퍼 조사 사건당 1회 ④ **W5** — 통보문 사건 묶음 줄(annotate·enforce) · 관제 JS 단계·근거 라벨 · 사건 피드백 2동작(`POST /api/v1/admin/noise/episode-feedback` · 운영자 전용 — 관리자 화면 토큰이 `type=admin`이라 `/alarm/feedback` 불가 · D-245 사용자 경로 읽기 전용) · 매뉴얼 A-71 신설·A-60·A-45·U-40·U-44·U-45 갱신(캡처 없음 — 녹화 픽스처에 크로스소스 기록 없음) ⑤ 검증 verifier Critical·Major 0 · Minor 5 교정(`cause_ids` 상한 · 피드백 입력 길이·제어문자·형식 · 사후 승격 shadow 제외 · 트리거당 상한 · sweep 간격) · Q-5 ② 배지 플래그 보류
+> **진행(v1.1 · 2026-10-07)**: ① **W0** 목업 `--with-jennifer`(시나리오 15~18 · `--dump`) · 리플레이 하네스 `noise_gate/scripts/replay_noise.py`(noise_ctx 공급 함수 주입) · 픽스처 `noise_gate/testdata/cross_source/mock_events.jsonl` — 기준선 재현: 제니퍼 미해소 14건 전부 `collection_failed` PAGE · sev3 1건 심각도3 PAGE · recovery 5건 resolved ② **W1(게이트웨이)** `raw.apm.event_type_norm` 추가(어댑터가 정규화 · domain은 옮기기만) ③ **W1(noise_gate)** 플래그 `NOISE_APM_NOISE_POLICY_ENABLED`(기본 off = 비트 동일) · 공급자 `noise_gate/infrastructure/apm_noise_context.py` · 정책 표 `config/apm_noise_policy.yaml`(11종 + default · suppress 없음 · 로더는 suppress→dashboard 강제) · 지속 조건(이 사유만이면 하한 DASHBOARD — G-1 (b) 보수) · 정규화 지문·해소 짝맞춤(플래그 on 제니퍼만) · evidence `apm_policy` · **이탈**: 워커 지문 dedup(4h)이 두 번째 이벤트를 게이트 전에 버려 §4.2 전제가 성립하지 않음 → 지속 조건이 채워지는 순간 dedup 1회 해제 재판정(`persistence.reevaluated`) + 정책 경로에서 심각도 상승은 dedup 우회 ④ **W2** `AlarmEvent.host_key`·`host_key_strength`(게이트웨이 실측 어휘 `host_name` — §5.2·§5.5 정정) · 등록명 배지 역조회는 기본 off 플래그가 필요해 미구현(설계 메모 §12) · 검증 verifier Critical 0
+> **회귀(모듈 단위 · v1.2 계획 끝 · 2026-10-07)**: `regress.py --base c161bfd --files <회귀 대상 58개>` — 원래 실패 60 · 자기 귀속 0 · apm_gateway 1,576 통과 · arch/overfit/mypy 통과 · ruff 이번 diff 줄 3건(주석) 교정 후 `--no-tests` rc=0 · `범위: 모듈 단위 — 전체 미실행` · 교정 라운드 모듈 선택(교정 3파일 + 테스트) 원래 실패 58 · 자기 귀속 0 · `[전체 회귀 권고]` src.config 허브 88% · `parse_menu_input` 반환 주석 · 직접 선택 비율 42%(사용자 요청 시 `--full`) · 형제 venv(`../collectorinfra/.venv`)로 실행 · (v1.1 회귀: 25개 rc=0 · 원래 실패 60)
 > **요청(사용자 2026-10-07)**: *"현재 폴스타 노이즈 캔슬링 기능만 있다. 제니퍼의 노이즈 캔슬링 기능을 구현하려고 한다. 또한 폴스타의 알람과 제니퍼를 복합적으로 검토하여 캔슬링하는 기능을 만들려고 한다. 관련 문헌과 논문을 찾아 위 요건에 맞는 계획파일을 작성하라."*
 > **입력**: 저장소 `584a80f` 읽기·grep 실측(서브에이전트 2갈래 — `noise_gate` 제니퍼 처리 지도 · 문헌 조사) · 동반 문헌 조사 문서 [`docs/aiops_benchmark/apm_cross_source_noise_literature.md`](../docs/aiops_benchmark/apm_cross_source_noise_literature.md)
 > **관련 계획**: `plans/52`(게이트 설계 정본) · `plans/60`(E1~E8 · §13 노이즈 문헌) · `plans/87`(제니퍼 연동 — §5.5 이벤트 폴러·`app_impact` · U-1·U-4·U-13 · J0-L-b) · `plans/55`(멀티소스 로드맵 — 「사용자 영향」 축 · cross-source 상관 자리) · `plans/112`(관제 드릴다운) · `plans/117`(ML 노이즈 판정 — 모드 사다리 off→shadow→annotate→advise) · `plans/101`(통합 이벤트 스키마 · 리플레이셋) · `plans/130`(인스턴스·업무명 해석) · `plans/134`(게이트웨이 이벤트 버퍼 W3)
 > **관련 결정**: **D-048**(4-티어 · 결정적 판정 · 심각도3 절대 PAGE · 수집 실패 → 보수적 PAGE · 억제≠삭제) · **D-109**(상관은 db_id(존) 경계 안 — B-6) · D-111(변경 상관 — 폴스타 전용) · D-112(위상 가중 — 폴스타 토폴로지 전용) · **D-195 ②**·**D-274 ⑤**(WAS 판정은 게이트웨이 `domain/` 단일 정의 · `app_impact`는 승격 전용) · D-287 ④(제니퍼 소스 ↔ 존 정본은 레지스트리) · D-188(hostname 역조회) · D-177(피드백) · D-035(LLM은 판정자 아님) · D-139(패키지 경계) · D-243(미연동 한 줄 경고) · D-255(매뉴얼 동반) · D-303(회귀)
-> **D-번호**: **D-317 예약**(`docs/02_decision.md` 예약 행) — 게이트 답을 받으면 본문 등재
+> **D-번호**: **D-317**(본문 등재 2026-10-07) · **D-320**(Q-4 지문 dedup 심각도 상승 우회) · D-195 ②·D-109 B-6 부기
+> **계획 시작 SHA**: `c161bfd2a3209590041fcdef18052458e075cebb`
+> **회귀 대상 파일**: `.env.example` `apm_gateway/apm_gateway/adapters/jennifer/fields.py` `apm_gateway/apm_gateway/domain/events.py` `apm_gateway/tests/test_plan144_event_type_norm.py` `apm_gateway/tests/test_plan144_verify_gw.py` `apm_gateway/tests/test_poller.py` `config/apm_noise_policy.yaml` `config/cross_source_rules.yaml` `config/settings_help/noise_gate_core.yaml` `config/settings_help/noise_gate_investigation.yaml` `docs/31_jennifer_integration_guide.md` `noise_gate/application/alarm_worker.py` `noise_gate/application/nodes/alarm_context_enricher.py` `noise_gate/application/nodes/alarm_notifier.py` `noise_gate/application/nodes/investigation_trigger.py` `noise_gate/application/nodes/notification_gate.py` `noise_gate/domain/alarm.py` `noise_gate/domain/cross_source.py` `noise_gate/domain/investigation_payload.py` `noise_gate/domain/notification_policy.py` `noise_gate/infrastructure/apm_noise_context.py` `noise_gate/infrastructure/cross_source_rules.py` `noise_gate/infrastructure/decision_store.py` `noise_gate/infrastructure/feedback_store.py` `noise_gate/orchestration/alarm_graph.py` `noise_gate/scripts/mock_polestar_events.py` `noise_gate/scripts/replay_noise.py` `noise_gate/testdata/cross_source/mock_events.jsonl` `noise_gate/tests/fixtures/decision_snapshot.json` `noise_gate/tests/test_decision_snapshot.py` `noise_gate/tests/test_decision_stage.py` `noise_gate/tests/test_mock_polestar_events.py` `noise_gate/tests/test_plan144_apm_policy.py` `noise_gate/tests/test_plan144_cross_source.py` `noise_gate/tests/test_plan144_host_key.py` `noise_gate/tests/test_plan144_verify.py` `noise_gate/tests/test_plan144_verify2.py` `noise_gate/tests/test_plan144_w4.py` `noise_gate/tests/test_plan144_w5.py` `noise_gate/tests/test_plan144_wave_a.py` `noise_gate/tests/test_replay_noise.py` `scripts/manual/content/admin.md` `scripts/manual/content/user.md` `scripts/manual/features.yaml` `spec/SPEC-apm-gateway.md` `src/api/routes/alarm.py` `src/api/routes/noise_dashboard.py` `src/api/settings_catalog.py` `src/config.py` `src/static/admin/noise.html` `src/static/index.html` `src/static/js/app.js` `src/static/js/noise-help.js` `src/static/js/noise.js` `src/static/manual/admin.html` `src/static/manual/user.html` `src/static/noise.html` `tests/test_api/test_plan144_verify2_api.py` `tests/test_api/test_plan144_w5_episode_feedback.py` `tests/test_api/test_settings_catalog.py`
 
 ---
 
@@ -213,7 +218,7 @@ rules:
 증상 알람 하나를 강등하려면 다음을 **전부** 만족해야 한다. 하나라도 빠지면 `link`(사건에 묶고 주석만)로 내려간다.
 
 1. 같은 존 — 폴스타 알람 존 == 제니퍼 소스 존(D-287 ④ 레지스트리). D-109 B-6 존 경계 유지.
-2. 같은 `host_key`(§5.5)이고 **양쪽 신뢰도가 강함**(폴스타: hostname 실값 · 제니퍼: `match_reason ∈ {override, hostName}`). 정규식 정합·미해소·`ambiguous`면 강등 금지(IcM BRAIN).
+2. 같은 `host_key`(§5.5)이고 **양쪽 신뢰도가 강함**(폴스타: hostname 실값 · 제니퍼: `match_reason ∈ {override, host_name}` — 게이트웨이 실측 어휘 `override`·`host_name`·`regex`·`unresolved`(W2 정정)). 정규식 정합·미해소·`ambiguous`면 강등 금지(IcM BRAIN).
 3. 규칙 표 방향이 맞고, 원인 알람이 창 안에 있다(EvTS 시간 순서).
 4. 원인 알람이 **이미 PAGE 또는 TICKET으로 통보됐다** — 원인을 사람이 보고 있을 때만 증상을 내린다(Alertmanager inhibit의 「source firing」 조건).
 5. 증상 알람 심각도 < 3(D-048 절대 PAGE).
@@ -242,7 +247,7 @@ rules:
 ### 5.5 공통 호스트 키 (E-3)
 
 - `AlarmEvent.host_key`(신규 도메인 필드 · 계산 프로퍼티): 소문자 · 앞뒤 공백 제거 · FQDN이면 첫 라벨. 원천은 폴스타 `hostname`, 제니퍼는 게이트웨이 정합 hostname.
-- 신뢰도 `host_key_strength`: `strong`(폴스타 실값 · 제니퍼 override/hostName) · `weak`(제니퍼 정규식) · `none`.
+- 신뢰도 `host_key_strength`: `strong`(폴스타 실값 · 제니퍼 `match_reason` override·host_name) · `weak`(제니퍼 정규식) · `none`.
 - 같은 hostname이 다른 존에 있는 문제(`plans/87` R-32)는 결합 조건 1(같은 존)로 막는다.
 - 제니퍼 알람의 `serverName`을 폴스타 등록명으로 바꾸지 않는다(관제·핑거프린트 이력 보존). 표시용 등록명 역조회(D-188)는 `host_key`로 별도 시도하고 결과는 배지에만 쓴다.
 
@@ -343,6 +348,8 @@ rules:
 | G-7 | enforce 전환 기준 | §8.2 초안 그대로 / 수치 조정 | 초안 |
 | G-8 | 사건 상태 영속 | (a) 워커 메모리(재기동 시 초기화 — 현행 상관과 동일) (b) Redis | **(a)**, W6에서 재기동 손실 측정 후 |
 
+**답(사용자 2026-10-07 「권고대로 진행」)**: G-1 (b) · G-2 (a) · G-3 (a) · G-4 (a) · G-5 (a) · G-6 (a) · G-7 초안 그대로 · G-8 (a).
+
 ## 10. 리스크
 
 | # | 리스크 | 통제 |
@@ -363,8 +370,31 @@ rules:
 - 제니퍼 알람 유입량과 현행 PAGE·조사 트리거 건수(운영 `decision_store` 미열람).
 - 동반 문헌 중 「(서지 확인)」·「미재확인」 표기 항목의 원문.
 
+## 12. 구현 중 발견한 결정 충돌·질문 (v1.1 — W3 착수 전 답 필요)
+
+§9 게이트(G-1~G-8)와 별개로, 기존 결정의 용도·경계를 넓히는 항목이 트랙 항목으로 들어가 있었다(docs/18 2026-10-07 항목). 아래 답을 받기 전에는 W1 §4.4 · W3 · W4를 착수하지 않는다.
+
+| # | 충돌·질문 | 선택지 | 팀 리드 권고 |
+|---|---|---|---|
+| Q-1 | **D-195 ②**(「noise_gate는 `was_signals`를 `app_impact` **승격 전용**으로 쓴다」)와 §4.4(상관 토큰에 was kind·domain_id → step 7.5 SUPPRESS) · §5.1(`was_kinds`로 강등 대상 선택) 충돌 | (a) D-195 ② 개정 — noise_gate가 `was_signals` kind를 **묶음·강등 대상 선택**에 쓰는 것을 허용(판정 재구현은 여전히 금지) (b) D-195 ② 유지 — 규칙 표는 `was_kinds` 대신 **정규화 유형 목록**으로 증상을 고르고 §4.4는 폐기 | (a) — 판정 단일 정의(D-274 ⑤)는 지켜지고, (b)는 게이트웨이 유형→kind 표를 데이터로 한 벌 더 만든다 |
+| Q-2 | **D-109 B-6**(상관은 **db_id** 경계 안 · 「gp↔yd 상관 금지」)과 §5.3 사건 키 `zone|host_key` 충돌 — 공동존 제니퍼 소스 하나가 `polestar_cm_gp`·`polestar_cm_yd` 양쪽 알람과 묶일 수 있다 | (a) B-6은 서로 다른 호스트 간 상관 규칙으로 한정하고, **같은 호스트 키**의 소스 간 묶음은 존 경계로 허용 (b) 제니퍼 소스 → 폴스타 db_id 대응을 레지스트리에 더해 db_id 경계를 유지 | (a) — 같은 호스트 키 + 강한 정합이 이미 조건이고, gp↔yd에 같은 hostname이 있으면 R-32처럼 강등 금지 |
+| Q-3 | G-1 (b)「가장 낮아도 DASHBOARD」의 범위 — 유형 정책·지속 조건만인가, 플래그 on에서 제니퍼 알람이 새로 도달하는 공용 억제 단계(유지보수·침묵·스톰·플래핑·크로스호스트 상관 SUPPRESS)까지인가 | (a) 유형 정책만(현 구현) (b) 제니퍼 알람 전체 하한 DASHBOARD | (a) — 공용 단계는 폴스타와 같은 규칙을 따른다 |
+| Q-4 | W1 이탈 수용 여부 — 지문 dedup(기본 4h) 때문에 「두 번째 이벤트 재판정」(§4.2)이 성립하지 않아, 지속 조건이 채워지는 순간 dedup 1회 해제 + 정책 경로의 심각도 상승 dedup 우회를 넣었다. 또 verifier가 **기존 경로**에서도 같은 지문 sev2 → sev3가 4h 안이면 버려지는 것을 실측했다(D-048 인접 · 기준선 동작) | (a) 이탈 수용 · 기존 경로 dedup은 별도 건 (b) 이탈 수용 + 기존 경로에도 「심각도 상승은 dedup 우회」를 넣는 별도 결정 | (b) — 심각도3 절대 PAGE의 빈틈이다 |
+| Q-5 | 데이터 미확정 2건 — ① 규칙 `host_down_to_was_all`의 원인 = 폴스타 서버 가용성 알람 정의 이름(운영 값) ② 제니퍼 알람 표시용 폴스타 등록명 배지(D-188) — 현행은 제니퍼 db_id가 레지스트리 DB가 아니라 역조회가 사실상 안 된다. 넣으려면 존→폴스타 db_id 순회 · 대소문자 무시 조회 · `serverName` 승격 생략이 필요해 플래그 `NOISE_APM_IDENTITY_BADGE_LOOKUP`(기본 off)를 새로 둬야 한다 | ① 운영 알람명 제공 / 행을 비활성으로 둠 ② 배지 플래그 추가 / 보류 | ① 행 비활성(`enforce` 없음) ② 보류(W5에서 화면 요구와 함께) |
+
+**답(사용자 2026-10-07)**:
+- Q-1 **(a)** — D-195 ② 부분 개정(부기 2026-10-07): noise_gate가 `was_signals` kind를 상관 묶음·크로스소스 강등 대상 선택에 쓴다 · 판정 재구현 금지 · `app_impact` 승격 전용 불변 → §4.4 구현.
+- Q-2 **(a)** — D-109 B-6은 서로 다른 호스트 간 상관에만 적용 · 같은 `host_key`의 소스 간 묶음은 존 경계로 허용(부기 2026-10-07) · 같은 존 사건에 서로 다른 폴스타 db_id가 섞이면 강등 금지(link).
+- Q-3 — 사용자 권고 없음 → **현 구현 유지**(「가장 낮아도 DASHBOARD」는 유형 정책·지속 조건에만 · 공용 억제 단계는 폴스타와 같은 규칙). 최종 보고에서 별도 확인 요청.
+- Q-4 **이탈 수용 + 기존 경로 별도 결정** — 기존(폴스타 포함) 지문 dedup에 「심각도 상승 시 dedup 건너뜀」을 넣고 D-320로 등재 · 플래그 `NOISE_DEDUP_SEVERITY_RISE_BYPASS` **기본 on**(신규 플래그 기본 off 원칙의 예외 — 근거는 D-320·config 주석).
+- Q-5 — ① `host_down_to_was_all`은 비활성 행(`enabled: false`) 유지 ② `NOISE_APM_IDENTITY_BADGE_LOOKUP` 보류(미구현).
+
+**측정 잔여(J0-L-b 뒤)**: 지표 기반 이벤트의 유형은 `metricsName`이라 정책 표 11종(오류 유형)과 맞지 않으면 `default`로 떨어져 지속 조건이 걸리지 않는다 · recovery 유형 대응(`recovers:` 열) 미구현(U-1) · 침묵 규칙은 원문 `alarm_name`으로 매칭한다(정규화 유형으로 쓴 규칙은 `WARNING_` 접두 이벤트에 걸리지 않음) · (v1.2 해소) `.env.example` 기재 · 관제 근거 키 한글 라벨 · 매뉴얼(침묵 규칙 원문 매칭 주의 포함).
+
 ## 변경 이력
 
 | 날짜 | 버전 | 내용 |
 |---|---|---|
 | 2026-10-07 | v1.0 | 초안 — 현행 실측(§2) · 문헌 조사(§3 · 동반 문서) · 설계 A·B · Wave W0~W7 · 게이트 G-1~G-8 · D-317 예약 |
+| 2026-10-07 | v1.1 | 게이트 무관분 구현 — W0(목업·리플레이) · W1 §4.1~4.3(게이트웨이 `event_type_norm` · 제니퍼 정책 경로 · 지속 조건 · dedup 이탈) · W2(`host_key`) · §5.2·§5.5 `match_reason` 어휘 정정(`hostName`→`host_name`) · §12 결정 충돌 질문 Q-1~Q-5 신설 · 파일명 `-TODO`→`-WIP` |
+| 2026-10-07 | v1.2 | 게이트·Q 사용자 확정 반영(§9·§12 답) · Wave A(Q-4 D-320 · §4.4) · W3 크로스소스 사건 상관 · W4 `app_impact` 사건 저장소·사후 승격·정상 강등 shadow·조사 사건당 1회 · W5 통보·관제·사건 피드백·매뉴얼 · D-317 등재 · D-320 신설 · D-195 ②·D-109 B-6 부기 · W6(내부망)·W7 잔여 |

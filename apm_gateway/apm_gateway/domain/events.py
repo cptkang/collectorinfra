@@ -142,6 +142,9 @@ def build_alarm_payload(
             "instance_id": event.get("instance_id"),
             "instance_name": instance_name,
             "event_type": event_type,
+            # 정규화 유형은 어댑터가 레코드에 채운다(벤더 접두 규칙은 어댑터에만 — plans/144 §4.3).
+            # 레코드에 없으면 원문을 둔다 — 소비측 폴백(`event_type_norm` 없음 = 원문)과 같은 값.
+            "event_type_norm": str(event.get("event_type_norm") or event_type),
             "event_kind": event.get("event_kind", ""),
             "level": level,
             "value": value,

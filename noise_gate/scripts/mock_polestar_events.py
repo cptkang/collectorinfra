@@ -19,8 +19,12 @@ collectorinfra 노이즈 캔슬링 구조(alarm_server → Redis Stream → Alar
     python scripts/mock_polestar_events.py                     # 대화형 메뉴(기본)
     python scripts/mock_polestar_events.py --send dup-suppress # 단발 주입 후 종료(자동화/e2e)
     python scripts/mock_polestar_events.py --path redis        # Redis 직주입 폴백
+    python scripts/mock_polestar_events.py --with-jennifer     # 복합 시나리오(15~18) 추가
+    python -m noise_gate.scripts.mock_polestar_events --with-jennifer --dump <경로>  # 픽스처 재생성
 
 기동 옵션(§5): --host/--port/--path tcp|redis/--redis-url/--decision-log/--timeout/--db-id/--send.
+plans/144 W0: --with-jennifer(복합 시나리오 추가) · --dump(고정 시각축 JSONL — 픽스처
+`noise_gate/testdata/cross_source/mock_events.jsonl` 정본, 주입 없음).
 
 원칙: 파이프라인(src/) 무변경 — 본 도구는 **주입·관찰만** 한다(읽기전용 D-003). 전제 미충족
 (서버 미기동·플래그 off·모델 부재) 시 침묵 실패 없이 원인과 해결 방법을 출력한다(Known Mistakes).
@@ -29,15 +33,18 @@ collectorinfra 노이즈 캔슬링 구조(alarm_server → Redis Stream → Alar
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import socket
 import sys
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Optional
+from collections.abc import Callable
+from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 # ─── 기본 상수 (기동 옵션 기본값 · §5) ────────────────────────────────────────
 
@@ -142,6 +149,8 @@ class Step:
     expect_no_dedup: bool = False                    # 독립 판정(dedup 아님) 기대 — 음성 대조군
     show_audit: bool = False                         # Plan 60 감사 필드 표시 여부
     expect_investigation: bool = False               # 자동 조사 트리거 감사 레코드 조회 기대(§4.3)
+    # (plans/144 W0) 리플레이 전용 — 이 서버의 폴스타 노이즈 신호(픽스처 DB 값). 주입에는 안 쓴다.
+    noise_ctx: dict[str, Any] | None = None
 
     @property
     def alarm_id(self) -> str:
@@ -158,7 +167,7 @@ class Scenario:
     title: str                                       # 메뉴 한 줄 설명
     expect_label: str                                # 기대 결과 표시
     category: str                                    # "basic" | "plan60" | "sre"
-    build: Callable[[str, str], list]                # (run_id, db_id) -> list[Step]
+    build: Callable[..., list[Any]]                  # (run_id, db_id[, base]) -> list[Step]
     required_flags: tuple = ()                        # ((config_attr, env_key), ...)
     requires_model: bool = False                     # 로컬 임베딩 모델 필요(B-7)
     requires_investigation_service: bool = False     # sre_agent 조사 서비스 도달성 점검(§4.3)
@@ -518,6 +527,336 @@ SCENARIOS_BY_NUMBER: dict = {s.number: s for s in SCENARIOS}
 SCENARIOS_BY_NAME: dict = {s.name: s for s in SCENARIOS}
 
 
+# ─── 제니퍼 복합 시나리오 (plans/144 W0 · `--with-jennifer`) ──────────────────────
+# 실경로에서 제니퍼 이벤트는 apm_gateway 폴러가 `alarm:raw`에 XADD하고 워커가 폴스타와 같은 파서로
+# 받는다. 페이로드 모양은 게이트웨이 `domain/events.py::build_alarm_payload`를 **복제**한다 —
+# 이 패키지는 apm_gateway를 import하지 않는다(D-274 ③ 양방향 import 0). 계약이 바뀌면 여기도 고친다.
+# 존 짝: 폴스타 db_id와 제니퍼 소스가 같은 존이어야 상관 검증에 쓸 수 있다(config/db_registry.yaml
+# `solutions[apm].sources` — 공동존 제니퍼 `common` ↔ 공동존 김포 폴스타).
+XS_POLESTAR_DB_ID = "polestar_cm_gp"
+XS_JENNIFER_SOURCE = "jennifer"
+XS_JENNIFER_SOURCE_ID = "common"
+XS_JENNIFER_LABEL = "제니퍼"
+XS_TZ = "Asia/Seoul"
+XS_LIVE_LOOKBACK = timedelta(minutes=16)          # 라이브 주입 기준 시각(모든 alarmTime이 과거)
+XS_DUMP_BASE = datetime(2026, 10, 7, 9, 0, 0)     # --dump 고정 기준 시각(픽스처 결정성)
+XS_DUMP_SPACING = timedelta(minutes=30)           # --dump 시나리오 사이 간격(사건이 겹치지 않게)
+XS_LIVE_INTERVAL = 1.0                            # 라이브 주입 스텝 간격(초) — 시각축은 alarmTime
+XS_SEV_WARNING = 2                                # 사용률 포화 경고(폴스타 severity 2)
+
+# 폴스타 쪽 리플레이 신호(중요도 보통 · 유지보수 아님) — 픽스처 DB가 이 서버에 줄 값.
+XS_POLESTAR_NOISE_CTX: dict[str, Any] = {
+    "importance_id": "2", "maintenance": False, "noti_policy": None, "source": "fixture",
+}
+
+# 게이트웨이 레벨 → severity(DEFAULT_LEVEL_SEVERITY 복제).
+JENNIFER_LEVEL_SEVERITY: dict[str, int] = {
+    "fatal": 3, "critical": 3, "warning": 2, "normal": 1, "recovery": 0, "clear": 0,
+}
+# 유형(정규화) → (WAS kind, level, category) — 어댑터 `EVENT_TYPE_SIGNALS` 11종 복제.
+JENNIFER_EVENT_SIGNALS: dict[str, tuple[str, str, str]] = {
+    "SERVICE_QUEUING": ("was_service_queuing", "CRITICAL", "strong"),
+    "PLC_REJECTED": ("was_service_queuing", "CRITICAL", "strong"),
+    "HIGH_RATE_REJECT": ("was_service_queuing", "CRITICAL", "strong"),
+    "JDBC_CONNECTION_FAIL": ("was_db_pool_exhaustion", "CRITICAL", "strong"),
+    "DB_CONNECTION_FAIL": ("was_db_pool_exhaustion", "CRITICAL", "strong"),
+    "DB_CONN_UNCLOSED": ("was_db_pool_exhaustion", "CRITICAL", "strong"),
+    "MAYBE_GC_TIME_DELAY": ("was_gc_stall", "WARNING", "medium"),
+    "OUTOFMEMORY": ("was_heap_pressure", "CRITICAL", "strong"),
+    "JVM_HEAP_MEM_HIGH": ("was_heap_pressure", "WARNING", "medium"),
+    "HTTP_IO_EXCEPTION": ("was_external_call_delay", "WARNING", "medium"),
+    "HIGH_RATE_FAIL": ("was_error_burst", "CRITICAL", "strong"),
+}
+_WAS_SIGNAL_LABELS: dict[str, str] = {
+    "was_service_queuing": "WAS 서비스 큐잉(유입 대기·PLC 거절)",
+    "was_db_pool_exhaustion": "DB 커넥션 풀 고갈",
+    "was_gc_stall": "GC 지연(GC 시간 비중 과다)",
+    "was_heap_pressure": "힙 메모리 압박",
+    "was_external_call_delay": "외부 호출 지연",
+    "was_error_burst": "오류 급증",
+}
+# 정합 사유 → 신뢰도(게이트웨이 resolver.reverse 복제).
+_MATCH_CONFIDENCE: dict[str, str] = {
+    "override": "high", "host_name": "high", "regex": "medium", "unresolved": "none",
+}
+
+
+def normalize_event_type(raw: object) -> str:
+    """이벤트 유형을 대문자로 바꾸고 `ERROR_`·`WARNING_` 접두를 뗀다(게이트웨이 정규화 복제)."""
+    text = str(raw or "").strip().upper()
+    for prefix in ("ERROR_", "WARNING_"):
+        if text.startswith(prefix):
+            return text[len(prefix):]
+    return text
+
+
+def make_jennifer_payload(
+    *,
+    event_type: str,
+    level: str,
+    alarm_time: datetime,
+    instance_id: int,
+    instance_name: str,
+    domain_id: int,
+    domain_name: str,
+    hostname: str,
+    match_reason: str = "host_name",
+    event_kind: str = "error",
+    value: float | None = None,
+    message: str = "",
+    txid: str = "",
+    source_id: str = XS_JENNIFER_SOURCE_ID,
+) -> dict[str, Any]:
+    """게이트웨이 `build_alarm_payload`와 같은 모양의 제니퍼 `alarm:raw` 페이로드를 만든다.
+
+    alarm_time은 naive 현지 시각(XS_TZ)이며 `alarmTime`·`apm.time_ms`가 같은 순간을 가리킨다.
+    hostname이 빈 값이면(정합 실패) `serverName`은 인스턴스 이름이 된다(게이트웨이 동작과 같다).
+    """
+    time_ms = int(alarm_time.replace(tzinfo=ZoneInfo(XS_TZ)).timestamp() * 1000)
+    key = hashlib.sha256(
+        "|".join(str(x) for x in (source_id, domain_id, instance_id, event_type, time_ms, txid))
+        .encode("utf-8")
+    ).hexdigest()
+    norm = normalize_event_type(event_type)
+    mapped = JENNIFER_EVENT_SIGNALS.get(norm)
+    signals: list[dict[str, Any]] = []
+    if mapped is not None:
+        kind, sig_level, category = mapped
+        signals.append({
+            "kind": kind, "level": sig_level, "category": category,
+            "label": _WAS_SIGNAL_LABELS[kind], "evidence": f"이벤트 {event_type}",
+            "instance_id": instance_id, "source_tool": "event_poller", "source_id": source_id,
+        })
+    ancestry = [XS_JENNIFER_LABEL, source_id, domain_name, instance_name]
+    condition_log = message if value is None else f"{message} (value={value:g})"
+    return {
+        "dbId": f"{XS_JENNIFER_SOURCE}_{source_id}",
+        "source": XS_JENNIFER_SOURCE,
+        "serverName": hostname or instance_name,
+        "hostname": hostname,
+        "ipAddress": "",
+        "resourceAncestry": " > ".join(ancestry),
+        "alarmId": f"{XS_JENNIFER_SOURCE}:{key[:16]}",
+        "severity": JENNIFER_LEVEL_SEVERITY.get(level, 2),
+        "alarmStatus": "",
+        "resourceType": "apm.Instance",
+        "resourceName": instance_name,
+        "alarmName": event_type,
+        "alarmTime": alarm_time.strftime("%Y%m%d%H%M%S"),
+        "conditions": f"{XS_JENNIFER_LABEL} EVENT {level} — {event_type}",
+        "conditionLog": condition_log,
+        "apm": {
+            "source": XS_JENNIFER_SOURCE,
+            "source_id": source_id,
+            "domain_id": domain_id,
+            "domain_name": domain_name,
+            "instance_id": instance_id,
+            "instance_name": instance_name,
+            "event_type": event_type,
+            "event_type_norm": norm,
+            "event_kind": event_kind,
+            "level": level,
+            "value": value,
+            "txid": txid,
+            "time_ms": time_ms,
+            "application": "",
+            "match_confidence": _MATCH_CONFIDENCE[match_reason],
+            "match_reason": match_reason,
+            "was_signals": signals,
+            "idempotency_key": key,
+        },
+    }
+
+
+def _xs_base(base: datetime | None) -> datetime:
+    """시나리오 기준 시각 — 미지정(라이브 주입)이면 현재에서 XS_LIVE_LOOKBACK만큼 앞."""
+    if base is not None:
+        return base
+    return datetime.now().replace(microsecond=0) - XS_LIVE_LOOKBACK
+
+
+def _xs_polestar(
+    run_id: str, seq: int, at: datetime, label: str, *, server: str, severity: int,
+    alarm_name: str, resource_name: str, conditions: str, condition_log: str,
+) -> Step:
+    """복합 시나리오의 폴스타 스텝(공동존 db_id · 리플레이 신호 동봉)."""
+    return Step(
+        make_payload(
+            db_id=XS_POLESTAR_DB_ID, server_name=server, severity=severity,
+            alarm_name=alarm_name, resource_name=resource_name, conditions=conditions,
+            condition_log=condition_log, alarm_id=mock_alarm_id(run_id, seq),
+            alarm_time=at.strftime("%Y%m%d%H%M%S"),
+        ),
+        label=label, interval_after=XS_LIVE_INTERVAL, noise_ctx=dict(XS_POLESTAR_NOISE_CTX),
+    )
+
+
+def _xs_jennifer(label: str, **kwargs: Any) -> Step:
+    """복합 시나리오의 제니퍼 스텝(make_jennifer_payload 인자를 그대로 넘긴다)."""
+    return Step(make_jennifer_payload(**kwargs), label=label, interval_after=XS_LIVE_INTERVAL)
+
+
+def _build_xs_saturation(run_id: str, db_id: str, base: datetime | None = None) -> list[Step]:
+    """[15] xs-saturation — 폴스타 CPU·메모리 포화 → 같은 호스트 WAS 큐잉(폴링 지연 반영) → 해소.
+
+    db_id 인자는 쓰지 않는다 — 존 짝(XS_POLESTAR_DB_ID ↔ 공동존 제니퍼)을 고정한다.
+    """
+    t0 = _xs_base(base)
+    host = "xsapp01"
+    dom = {"domain_id": 1001, "domain_name": "주문", "hostname": host}
+    return [
+        _xs_polestar(run_id, 1, t0, "폴스타 CPU 포화", server=host, severity=XS_SEV_WARNING,
+                     alarm_name="CPU 사용률", resource_name="CPU", conditions="> 90 %, 3회 연속",
+                     condition_log="[97 % (> 90 %, 3회 연속)]"),
+        _xs_polestar(run_id, 2, t0 + timedelta(seconds=30), "폴스타 메모리 포화", server=host,
+                     severity=XS_SEV_WARNING, alarm_name="메모리 사용률", resource_name="Memory",
+                     conditions="> 90 %, 3회 연속", condition_log="[94 % (> 90 %, 3회 연속)]"),
+        _xs_jennifer("제니퍼 큐잉 was01", event_type="SERVICE_QUEUING", level="warning",
+                     alarm_time=t0 + timedelta(seconds=95), instance_id=11,
+                     instance_name="xsapp01_was01", value=37.0, message="서비스 큐잉", **dom),
+        _xs_jennifer("제니퍼 큐잉 was02", event_type="SERVICE_QUEUING", level="warning",
+                     alarm_time=t0 + timedelta(seconds=125), instance_id=12,
+                     instance_name="xsapp01_was02", value=29.0, message="서비스 큐잉", **dom),
+        _xs_jennifer("제니퍼 큐잉 해소 was01", event_type="SERVICE_QUEUING", level="recovery",
+                     alarm_time=t0 + timedelta(seconds=600), instance_id=11,
+                     instance_name="xsapp01_was01", message="서비스 큐잉 해소", **dom),
+        _xs_polestar(run_id, 3, t0 + timedelta(seconds=660), "폴스타 CPU 해소", server=host,
+                     severity=SEV_CLEAR, alarm_name="CPU 사용률", resource_name="CPU",
+                     conditions="<= 90 %", condition_log="[62 % (<= 90 %)]"),
+    ]
+
+
+def _build_xs_server_down(
+    run_id: str, db_id: str, base: datetime | None = None
+) -> list[Step]:
+    """[16] xs-server-down — 폴스타 가용성 DOWN → 그 위 인스턴스 이벤트 다수 → 해소.
+
+    제니퍼 hostname은 대문자 FQDN(`XSWEB02.example.local`)이라 폴스타 `xsweb02`와 표기가 다르다
+    (공통 호스트 키 검증용). 유형은 `ERROR_` 접두 원문이고, 해소는 접두 없는 표기로 온다(짝맞춤
+    정규화 검증용). db_id 인자는 쓰지 않는다.
+    """
+    t0 = _xs_base(base)
+    dom = {"domain_id": 3001, "domain_name": "대외", "hostname": "XSWEB02.example.local"}
+    steps = [
+        _xs_polestar(run_id, 1, t0, "폴스타 가용성 DOWN", server="xsweb02",
+                     severity=SEV_AVAIL_DOWN, alarm_name="가용성", resource_name="xsweb02",
+                     conditions="= DOWN, 2회 연속", condition_log="[DOWN (= DOWN, 2회 연속)]"),
+    ]
+    for i, sec in enumerate((40, 45, 50), start=1):
+        steps.append(_xs_jennifer(
+            f"제니퍼 외부 호출 오류 was0{i}", event_type="ERROR_HTTP_IO_EXCEPTION",
+            level="warning", alarm_time=t0 + timedelta(seconds=sec), instance_id=30 + i,
+            instance_name=f"xsweb02_was0{i}", message="HTTP I/O 예외", **dom,
+        ))
+    steps += [
+        _xs_jennifer("제니퍼 오류율 급증 was01", event_type="HIGH_RATE_FAIL", level="fatal",
+                     alarm_time=t0 + timedelta(seconds=55), instance_id=31,
+                     instance_name="xsweb02_was01", value=64.0, message="오류율", **dom),
+        _xs_polestar(run_id, 2, t0 + timedelta(seconds=900), "폴스타 가용성 UP", server="xsweb02",
+                     severity=SEV_CLEAR, alarm_name="가용성", resource_name="xsweb02",
+                     conditions="= UP", condition_log="[UP (= UP)]"),
+        _xs_jennifer("제니퍼 외부 호출 해소 was01(접두 없음)", event_type="HTTP_IO_EXCEPTION",
+                     level="recovery", alarm_time=t0 + timedelta(seconds=930), instance_id=31,
+                     instance_name="xsweb02_was01", message="HTTP I/O 예외 해소", **dom),
+    ]
+    return steps
+
+
+def _build_xs_db_pool_storm(
+    run_id: str, db_id: str, base: datetime | None = None
+) -> list[Step]:
+    """[17] xs-db-pool-storm — 같은 도메인 5개 인스턴스가 JDBC 연결 실패를 동시에(제니퍼 단독 폭풍).
+
+    한 인스턴스는 hostname 정합 실패(`unresolved` — serverName이 인스턴스 이름)다. run_id·db_id
+    인자는 쓰지 않는다(제니퍼 알람 id는 멱등 키에서 나온다).
+    """
+    t0 = _xs_base(base)
+    members = (  # (초, instance_id, instance_name, hostname, match_reason)
+        (0, 21, "xspay01_was01", "xspay01", "host_name"),
+        (3, 22, "xspay01_was02", "xspay01", "host_name"),
+        (6, 23, "xspay02_was01", "xspay02", "host_name"),
+        (10, 24, "xspay02_was02", "xspay02", "host_name"),
+        (16, 25, "pay-batch-was", "", "unresolved"),
+    )
+    steps = [
+        _xs_jennifer(f"제니퍼 JDBC 실패 {name}", event_type="JDBC_CONNECTION_FAIL",
+                     level="warning", alarm_time=t0 + timedelta(seconds=sec), instance_id=iid,
+                     instance_name=name, domain_id=2001, domain_name="결제", hostname=host,
+                     match_reason=reason, message="JDBC 연결 실패")
+        for sec, iid, name, host, reason in members
+    ]
+    for sec, (_, iid, name, host, reason) in zip((420, 425), (members[0], members[2])):
+        steps.append(_xs_jennifer(
+            f"제니퍼 JDBC 해소 {name}", event_type="JDBC_CONNECTION_FAIL", level="recovery",
+            alarm_time=t0 + timedelta(seconds=sec), instance_id=iid, instance_name=name,
+            domain_id=2001, domain_name="결제", hostname=host, match_reason=reason,
+            message="JDBC 연결 회복",
+        ))
+    return steps
+
+
+def _build_xs_apm_metric_warn(
+    run_id: str, db_id: str, base: datetime | None = None
+) -> list[Step]:
+    """[18] xs-apm-metric-warn — 제니퍼 단독 지표형 경고(severity 2) 1분 간격 4회 반복 → 해소.
+
+    정규식 정합(`regex` · 신뢰도 medium) 인스턴스다. run_id·db_id 인자는 쓰지 않는다.
+    """
+    t0 = _xs_base(base)
+    common = {"event_type": "JVM_HEAP_MEM_HIGH", "event_kind": "metric", "instance_id": 41,
+              "instance_name": "xsbat01_was01", "domain_id": 4001, "domain_name": "배치",
+              "hostname": "xsbat01", "match_reason": "regex", "message": "힙 사용률"}
+    steps = [
+        _xs_jennifer(f"제니퍼 힙 경고 {i}회", level="warning",
+                     alarm_time=t0 + timedelta(seconds=60 * (i - 1)), value=val, **common)
+        for i, val in enumerate((91.5, 92.8, 93.1, 92.4), start=1)
+    ]
+    steps.append(_xs_jennifer("제니퍼 힙 해소", level="recovery",
+                              alarm_time=t0 + timedelta(seconds=300), value=71.0, **common))
+    return steps
+
+
+# `--with-jennifer`일 때만 카탈로그에 붙는다 — 없으면 메뉴·주입·출력이 기존과 같다.
+CROSS_SOURCE_SCENARIOS: tuple[Scenario, ...] = (
+    Scenario(15, "xs-saturation", "폴스타 CPU·메모리 포화 → WAS 큐잉 (144)", "리플레이 관측",
+             "cross_source", _build_xs_saturation),
+    Scenario(16, "xs-server-down", "폴스타 서버 DOWN → 인스턴스 이벤트 다수 (144)", "리플레이 관측",
+             "cross_source", _build_xs_server_down),
+    Scenario(17, "xs-db-pool-storm", "제니퍼 DB 풀 고갈 도메인 폭풍 (144)", "리플레이 관측",
+             "cross_source", _build_xs_db_pool_storm),
+    Scenario(18, "xs-apm-metric-warn", "제니퍼 단독 지표형 경고 반복 (144)", "리플레이 관측",
+             "cross_source", _build_xs_apm_metric_warn),
+)
+
+
+def cross_source_records() -> list[dict[str, Any]]:
+    """복합 시나리오를 고정 기준 시각으로 펼친 리플레이 레코드 목록(`--dump` · 픽스처 정본).
+
+    레코드 = `{"scenario", "payload"[, "noise_ctx"]}`. 시나리오마다 기준 시각을 XS_DUMP_SPACING씩
+    밀어 사건이 겹치지 않게 하고, 폴스타 알람 id의 run_id는 `xs<번호>`로 고정한다.
+    """
+    records: list[dict[str, Any]] = []
+    for idx, scen in enumerate(CROSS_SOURCE_SCENARIOS):
+        base = XS_DUMP_BASE + XS_DUMP_SPACING * idx
+        for step in scen.build(f"xs{scen.number}", XS_POLESTAR_DB_ID, base):
+            rec: dict[str, Any] = {"scenario": scen.name, "payload": step.payload}
+            if step.noise_ctx is not None:
+                rec["noise_ctx"] = step.noise_ctx
+            records.append(rec)
+    return records
+
+
+def dump_cross_source(path: str) -> int:
+    """복합 시나리오 레코드를 JSONL로 쓴다 → 쓴 줄 수."""
+    records = cross_source_records()
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", encoding="utf-8") as fh:
+        for rec in records:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return len(records)
+
+
 # ─── 전송기 (TcpSender 기본 / RedisSender 폴백) ────────────────────────────────
 
 class TcpSender:
@@ -854,6 +1193,7 @@ class RunContext:
     timeout: float
     wait_enabled: bool = True
     seen_investigation_ids: set = field(default_factory=set)  # 세션 내 관측 investigation_id(dedup 판정)
+    scenarios: tuple[Scenario, ...] = SCENARIOS      # 활성 카탈로그(--with-jennifer면 복합 포함)
 
 
 def dispatch_scenario(scenario: Scenario, ctx: RunContext) -> None:
@@ -921,14 +1261,20 @@ def _category_label(category: str) -> str:
         "plan60": "─ Plan 60 (플래그 필요 — off면 선택 시 안내) ──",
         "sre": "─ SRE-Agent 연동 (§4.3 — 자동 조사 트리거) ─────",
         "plan60e7": "─ Plan 60 E7 (실측 텍스트·사이트 — 플래그 필요) ─",
+        "cross_source": "─ 폴스타 × 제니퍼 복합 (plans/144 — --with-jennifer) ─",
     }.get(category, category)
 
 
-def build_menu_text(sender_label: str, decision_log: str, wait_enabled: bool) -> str:
+def build_menu_text(
+    sender_label: str,
+    decision_log: str,
+    wait_enabled: bool,
+    scenarios: tuple[Scenario, ...] = SCENARIOS,
+) -> str:
     """번호 메뉴 텍스트를 구성한다(카테고리별 그룹 + 보조 키)."""
     lines: list = [f"══ 노이즈 캔슬링 목업 이벤트 생성기 ({sender_label}) ══"]
     last_category = None
-    for scen in SCENARIOS:
+    for scen in scenarios:
         if scen.category != last_category:
             lines.append(_category_label(scen.category))
             last_category = scen.category
@@ -946,7 +1292,9 @@ def build_menu_text(sender_label: str, decision_log: str, wait_enabled: bool) ->
     return "\n".join(lines)
 
 
-def parse_menu_input(raw: str) -> tuple:
+def parse_menu_input(
+    raw: str, scenarios: tuple[Scenario, ...] = SCENARIOS
+) -> tuple[str, Scenario | None]:
     """사용자 입력을 액션으로 해석한다 → (action, scenario|None).
 
     action: "scenario" | "list" | "toggle" | "quit" | "empty" | "invalid".
@@ -962,7 +1310,7 @@ def parse_menu_input(raw: str) -> tuple:
     if token == KEY_TOGGLE:
         return "toggle", None
     if token.isdigit():
-        scen = SCENARIOS_BY_NUMBER.get(int(token))
+        scen = {s.number: s for s in scenarios}.get(int(token))
         if scen is not None:
             return "scenario", scen
     return "invalid", None
@@ -970,7 +1318,7 @@ def parse_menu_input(raw: str) -> tuple:
 
 def run_menu(ctx: RunContext, sender_label: str, decision_log: str) -> int:
     """대화형 메뉴 루프를 실행한다(번호 입력 → 주입·판정 → 복귀, q 종료)."""
-    print(build_menu_text(sender_label, decision_log, ctx.wait_enabled))
+    print(build_menu_text(sender_label, decision_log, ctx.wait_enabled, ctx.scenarios))
     while True:
         try:
             raw = input("번호 입력> ")
@@ -978,14 +1326,14 @@ def run_menu(ctx: RunContext, sender_label: str, decision_log: str) -> int:
             print("\n종료합니다.")
             return 0
 
-        action, scenario = parse_menu_input(raw)
+        action, scenario = parse_menu_input(raw, ctx.scenarios)
         if action == "quit":
             print("종료합니다.")
             return 0
         if action == "empty":
             continue
         if action == "list":
-            print(build_menu_text(sender_label, decision_log, ctx.wait_enabled))
+            print(build_menu_text(sender_label, decision_log, ctx.wait_enabled, ctx.scenarios))
             continue
         if action == "toggle":
             ctx.wait_enabled = not ctx.wait_enabled
@@ -1018,12 +1366,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="대상 DB 프로필(기본 polestar_pg)")
     parser.add_argument("--send", metavar="NAME",
                         help="비대화형 단발 주입 후 종료(시나리오 이름, 자동화/e2e용)")
+    parser.add_argument("--with-jennifer", action="store_true",
+                        help="폴스타 × 제니퍼 복합 시나리오(15~18)를 카탈로그에 더한다(plans/144)")
+    parser.add_argument("--dump", metavar="PATH",
+                        help="복합 시나리오를 고정 시각축 JSONL로 쓰고 종료"
+                             "(--with-jennifer 필요 · 주입 없음)")
     return parser
 
 
 def main(argv: Optional[list] = None) -> int:
     """진입점 — --send면 단발 주입, 아니면 대화형 메뉴를 실행한다."""
     args = build_arg_parser().parse_args(argv)
+    if args.dump:
+        if not args.with_jennifer:
+            print("[오류] --dump는 --with-jennifer와 함께 쓴다")
+            return 2
+        count = dump_cross_source(args.dump)
+        print(f"[덤프] 복합 시나리오 {count}건 → {args.dump}")
+        return 0
+    scenarios = SCENARIOS + CROSS_SOURCE_SCENARIOS if args.with_jennifer else SCENARIOS
     sender = build_sender(args)
     judge = Judge(args.decision_log)
 
@@ -1045,12 +1406,13 @@ def main(argv: Optional[list] = None) -> int:
         db_id=args.db_id, timeout=args.timeout, wait_enabled=True,
         # 기존 로그의 investigation_id를 시드 → 별도 프로세스 연속 주입에서도 duplicate 감지(§4.3).
         seen_investigation_ids=judge.known_investigation_ids(),
+        scenarios=scenarios,
     )
 
     if args.send:
-        scenario = SCENARIOS_BY_NAME.get(args.send)
+        scenario = {s.name: s for s in scenarios}.get(args.send)
         if scenario is None:
-            names = ", ".join(s.name for s in SCENARIOS)
+            names = ", ".join(s.name for s in scenarios)
             print(f"[오류] 알 수 없는 시나리오: {args.send!r}\n사용 가능: {names}")
             return 2
         dispatch_scenario(scenario, ctx)

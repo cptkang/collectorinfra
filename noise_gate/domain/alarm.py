@@ -9,9 +9,38 @@ AlarmAnalysisResult: LLM 분석 결과 및 발송 내역
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Optional
+
+# --- 공통 호스트 키 (plans/144 §5.5) ---
+# APM 게이트웨이 이벤트 판정 — `application/server_identity.is_apm_source`와 같은 기준(dbId·원문
+# `source`)에 `process_rank.is_apm_event`의 resourceType 기준을 더한다. domain은 application을
+# import할 수 없고, process_rank는 이 모듈을 import하므로(순환) 최소 상수로 둔다.
+_APM_SOURCE_ID = "jennifer"
+_APM_RESOURCE_TYPE = "apm.instance"
+# 게이트웨이 `resolver.reverse`가 `raw.apm.match_reason`에 싣는 어휘 중 강한 정합
+# (수동 override · 인스턴스 hostName 직접 대조). 정규식 등 그 밖의 사유는 약한 정합이다.
+_STRONG_MATCH_REASONS = frozenset({"override", "host_name"})
+_AMBIGUOUS_REASON = "ambiguous"
+# 숫자·점만으로 된 값(IPv4 모양)은 첫 라벨로 자르지 않는다 — 자르면 다른 IP가 같은 키가 된다.
+_NUMERIC_DOTTED_RE = re.compile(r"[\d.]+")
+
+HOST_KEY_STRONG = "strong"
+HOST_KEY_WEAK = "weak"
+HOST_KEY_NONE = "none"
+
+
+def normalize_host_key(value: str) -> str:
+    """hostname → 공통 호스트 키. 앞뒤 공백 제거 · 소문자 · FQDN이면 첫 라벨(끝 점 무시).
+
+    IP 주소 모양(숫자·점만 · IPv6의 콜론 포함)은 자르지 않는다. 빈 값은 "".
+    """
+    key = (value or "").strip().lower().rstrip(".")
+    if not key or ":" in key or _NUMERIC_DOTTED_RE.fullmatch(key):
+        return key
+    return key.split(".", 1)[0]
 
 
 @dataclass
@@ -83,6 +112,48 @@ class AlarmEvent:
     server_identity: Optional[ServerIdentity] = None
     # (D-188 부기) 워커/API가 이벤트를 구성한 시각 — UI '수신' 표시·지연 진단용(폴스타 alarm_time과 대비)
     received_at: Optional[datetime] = None
+
+    def _is_apm_alarm(self) -> bool:
+        """APM 게이트웨이 발행 이벤트인지 — dbId · 원문 `source` · resourceType 중 하나."""
+        raw = self.raw_payload if isinstance(self.raw_payload, dict) else {}
+        db_id = self.db_id or ""
+        return (
+            db_id == _APM_SOURCE_ID
+            or db_id.startswith(_APM_SOURCE_ID + "_")
+            or raw.get("source") == _APM_SOURCE_ID
+            or (self.resource_type or "").strip().lower() == _APM_RESOURCE_TYPE
+        )
+
+    @property
+    def host_key(self) -> str:
+        """소스 간 공통 호스트 키 (plans/144 §5.5) — 계산 프로퍼티라 생성자·직렬화는 그대로다.
+
+        원천은 `hostname` — 인프라 알람은 템플릿 hostname, APM 알람은 게이트웨이가 정합한
+        hostname(정합 실패 시 ""). `server_name`은 쓰지 않는다. 같은 hostname이 다른 존에
+        있어도 키는 같다 — 존 분리는 호출자 책임이다.
+        """
+        return normalize_host_key(self.hostname)
+
+    @property
+    def host_key_strength(self) -> str:
+        """`host_key` 신뢰도 — "strong" | "weak" | "none".
+
+        - none: 키가 빈 값 · 정합 사유 "ambiguous" · 서버 식별 역조회 모호(같은 hostname 2건 이상).
+        - APM 알람: `raw.apm.match_reason`이 override·host_name이면 strong, 그 밖(정규식 등)은 weak.
+        - 그 밖의 알람: hostname 실값이면 strong.
+        """
+        if not self.host_key:
+            return HOST_KEY_NONE
+        if self.server_identity is not None and self.server_identity.ambiguous:
+            return HOST_KEY_NONE
+        if not self._is_apm_alarm():
+            return HOST_KEY_STRONG
+        raw = self.raw_payload if isinstance(self.raw_payload, dict) else {}
+        apm = raw.get("apm")
+        reason = str(apm.get("match_reason") or "").strip() if isinstance(apm, dict) else ""
+        if reason == _AMBIGUOUS_REASON:
+            return HOST_KEY_NONE
+        return HOST_KEY_STRONG if reason in _STRONG_MATCH_REASONS else HOST_KEY_WEAK
 
 
 @dataclass

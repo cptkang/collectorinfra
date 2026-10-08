@@ -102,6 +102,7 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_SELF_HEAL_WINDOW_SECONDS": "기본 동작",
     "NOISE_REPEAT_INTERVAL_SECONDS": "기본 동작",
     "NOISE_SEV3_REPEAT_INTERVAL_SECONDS": "기본 동작",
+    "NOISE_DEDUP_SEVERITY_RISE_BYPASS": "기본 동작",
     "NOISE_NOISE_CONTEXT_TIMEOUT_SECONDS": "기본 동작",
     "NOISE_NOISE_CONTEXT_CACHE_TTL_SECONDS": "기본 동작",
     "NOISE_RESOLVED_TO_DASHBOARD": "기본 동작",
@@ -213,6 +214,14 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_APM_MCP_URL": "앱 영향 승격(APM)",
     "NOISE_APM_MCP_TOKEN": "앱 영향 승격(APM)",
     "NOISE_APP_IMPACT_WINDOW_MINUTES": "앱 영향 승격(APM)",
+    # (plans/144 W1) 제니퍼 알람 유형 정책 — 정의 순서상 앱 영향 승격 직후(구획 연속)
+    "NOISE_APM_NOISE_POLICY_ENABLED": "제니퍼 알람 정책",
+    # (plans/144 W3·W4) 폴스타×제니퍼 크로스소스 사건 상관 · 사후 승격 · 정상 강등 shadow
+    "NOISE_CROSS_SOURCE_MODE": "폴스타×제니퍼 복합 판정",
+    "NOISE_CROSS_SOURCE_RULES_PATH": "폴스타×제니퍼 복합 판정",
+    "NOISE_EPISODE_IDLE_SECONDS": "폴스타×제니퍼 복합 판정",
+    "NOISE_APP_IMPACT_LATE_PROMOTION_ENABLED": "폴스타×제니퍼 복합 판정",
+    "NOISE_APM_HEALTHY_DEMOTION_SHADOW": "폴스타×제니퍼 복합 판정",
 }
 
 #: `.encenv.example` 파싱 외에 수동으로 시크릿 취급하는 키.

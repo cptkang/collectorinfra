@@ -250,9 +250,14 @@ def render_report(
     *,
     code_samples: Mapping[str, Any] | None = None,
 ) -> str:
-    """`report.md` 본문. `code_samples`는 치환 코드값 파일 본문(요약 수만 옮긴다)."""
+    """`report.md` 본문. `code_samples`는 치환 코드값 파일 본문(요약 수만 옮긴다).
+
+    run 이 가짜 값으로 치환했으면(`substitution_note` · plans/145) 제목 아래 고정 문구를 싣는다.
+    """
     s = summarize(records)
     lines = [f"# ITAM 질의 벤치 리포트 — {run.get('run_id')}", ""]
+    if run.get("substitution_note"):
+        lines += [f"> {run['substitution_note']}", ""]
     lines += _p1_warnings(catalog)
     lines += [
         f"- 환경 `{run.get('env')}` · 프로파일 `{run.get('profile')}` · "

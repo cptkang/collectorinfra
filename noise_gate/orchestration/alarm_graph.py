@@ -67,6 +67,22 @@ class AlarmState(TypedDict):
     # 게이트가 결정 단계의 것만 골라 기록한다. **선언 필수** — LangGraph는 이 TypedDict에
     # 없는 입력 키를 노드에 넘기지 않는다(누락 시 근거가 조용히 사라진다).
     detection_evidence: dict[str, Any] | None
+    # plans/144 §4.2·4.3: 워커가 제니퍼 알람에 산출한 {event_type_norm, policy_row, persistence}
+    # (apm_noise_policy_enabled 시에만 · off/폴스타면 None). 선언 필수(위 detection_evidence 주석).
+    apm_policy: dict[str, Any] | None
+    # plans/144 W3: 워커 사건 추적기가 산출한 크로스소스 신호(episode_id·규칙 결합 판정·연관 증상)
+    # (cross_source_mode≠off이고 사건에 붙은 알람일 때만 · off면 입력에 키 자체가 없다). 선언 필수.
+    cross_source: dict[str, Any] | None
+    # plans/144 W4 §5.6: 워커가 사건 저장소에서 미리 산출한 폴스타 알람의 앱 영향
+    # {app_impact, window_events, window_minutes}(cross_source_mode ∈ annotate·enforce +
+    # app_impact_enabled + 사건 소속일 때만 · 그 밖에는 입력에 키가 없다). 선언 필수.
+    episode_app_impact: dict[str, Any] | None
+    # plans/144 W4 §4.5: 같은 사건에서 APM 알람이 이미 제출한 조사 {episode_id, investigation_id}
+    # (cross_source_mode≠off이고 그런 조사가 있을 때 APM 알람에만 · 그 밖에는 키가 없다). 선언 필수.
+    episode_investigation: dict[str, Any] | None
+    # plans/144 W5: 통보문 사건 묶음 표시 요약 {episode_id, member_count}(cross_source_mode ∈
+    # annotate·enforce이고 사건 소속일 때만 · 그 밖에는 키가 없다). 표시 전용 · 선언 필수.
+    episode_summary: dict[str, Any] | None
 
 
 def build_alarm_graph(config=None):  # noqa: ANN001

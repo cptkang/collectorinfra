@@ -302,6 +302,7 @@ class DecisionStore:
         status: str = "",
         verdict: Optional[str] = None,
         ts: Optional[datetime] = None,
+        episode_id: str | None = None,
     ) -> None:
         """자동 조사 트리거 결과를 JSONL 한 줄로 append 한다 (Plan 64 CW-A · graceful).
 
@@ -313,6 +314,9 @@ class DecisionStore:
 
         조사 서비스 다운/타임아웃/거부 시에도 status(down/timeout/rejected 등)를 정직하게
         기록한다(침묵 폴백 금지). 기록 실패는 warning 후 무시(발송 차단 금지). enabled=False면 no-op.
+
+        (plans/144 §4.5) `episode_id`가 주어지면 최상위 키로 싣는다 — 없으면(기본·cross_source_mode
+        off) 레코드는 종전과 비트 동일하다.
         """
         if not self.enabled:
             return
@@ -326,6 +330,8 @@ class DecisionStore:
             "verdict": verdict,
             "ts": when.isoformat(),
         }
+        if episode_id:
+            record["episode_id"] = episode_id
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(record, ensure_ascii=False)
@@ -333,6 +339,51 @@ class DecisionStore:
                 fh.write(line + "\n")
         except OSError as exc:
             logger.warning("조사 트리거 감사 기록 실패(무시): %s", exc)
+
+    def record_late_promotion(
+        self,
+        *,
+        alarm_id: str,
+        fingerprint: str = "",
+        episode_id: str = "",
+        trigger_alarm_id: str = "",
+        trigger_event_type: str = "",
+        trigger_level: str = "",
+        from_tier: str = "",
+        reason: str = "",
+        sent: dict[str, bool] | None = None,
+        ts: datetime | None = None,
+    ) -> None:
+        """사후 승격 통보를 `type="late_promotion"` 레코드로 append 한다 (plans/144 §5.6 · G-6).
+
+        원 판정 레코드는 소급 수정하지 않는다 — 이미 DASHBOARD·TICKET으로 기록된 인프라 알람이 같은
+        사건에 늦게 붙은 APM 심각 이벤트 때문에 PAGE로 다시 통보됐다는 사실을 별도 레코드로 남긴다.
+        `type` 보유 레코드라 기존 집계·퍼널은 불변이다. 기록 실패는 warning 후 무시. enabled=False면
+        no-op.
+        """
+        if not self.enabled:
+            return
+        when = ts or datetime.now(UTC)
+        record = {
+            "type": "late_promotion",
+            "alarm_id": alarm_id,
+            "fingerprint": fingerprint,
+            "episode_id": episode_id,
+            "trigger_alarm_id": trigger_alarm_id,
+            "trigger_event_type": trigger_event_type,
+            "trigger_level": trigger_level,
+            "from_tier": from_tier,
+            "to_tier": TIER_PAGE,
+            "reason": reason,
+            "sent": dict(sent or {}),
+            "ts": when.isoformat(),
+        }
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            logger.warning("사후 승격 감사 기록 실패(무시): %s", exc)
 
     def record_l3_state(
         self,

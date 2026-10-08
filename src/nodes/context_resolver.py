@@ -22,6 +22,7 @@ from src.domain.result_refs import RESULT_TABLES_KEY, TABLE_LABELS_KEY, extract_
 from src.routing.db_scope import extract_state_db_ids
 from src.routing.registry import get_registry
 from src.state import AgentState
+from src.utils.empty_antecedent import EMPTY_ANTECEDENT_KEY, resolve_empty_antecedent
 from src.utils.query_gen_common import (
     has_host_identifier_filter,
     refers_to_demonstrative_server,
@@ -132,6 +133,20 @@ async def context_resolver(
     if state.get("db_scope_reset"):
         previous_db_ids = []
         previous_location = ""
+    # 앞 턴 0행 지시어 승계(plans/146 W3 · G-3 (a)) — 이번 턴 지시어가 0행으로 끝난 앞 턴 조회를
+    # 가리키면 대상은 빈 집합이다. 그 앞 턴 엔티티(sticky)로 되살리지 않고, 앞 턴 원 질의·SQL을
+    # 승계 맥락으로 싣는다(2단은 top-level SQL이 비어 있어 기록의 SQL로 채운다).
+    empty_antecedent = resolve_empty_antecedent(
+        str(state.get("user_query") or ""), prior_ctx, fresh_entities
+    )
+    if empty_antecedent:
+        previous_entities = []
+        previous_sql = previous_sql or "\n".join(empty_antecedent["sqls"])
+        results_summary = "0건 조회됨"
+        logger.info(
+            "앞 턴 0행 지시어 승계(plans/146 W3): 앞 질의=%r · SQL %d건",
+            empty_antecedent["query"][:80], len(empty_antecedent["sqls"]),
+        )
 
     context = {
         "previous_sql": previous_sql,
@@ -159,6 +174,8 @@ async def context_resolver(
         # 않는다.
         "previous_result_refs": _previous_result_refs(previous_results, prior_ctx, turn_count),
     }
+    if empty_antecedent:
+        context[EMPTY_ANTECEDENT_KEY] = empty_antecedent
 
     logger.info(
         "context_resolver: turn=%d, prev_sql=%s, prev_results=%d, prev_db_ids=%s, "
@@ -177,7 +194,7 @@ async def context_resolver(
         "conversation_context": context,
         "current_node": "context_resolver",
         "demonstrative_without_antecedent": _demonstrative_without_antecedent(
-            state, previous_entities
+            state, previous_entities, has_empty_antecedent=bool(empty_antecedent)
         ),
     }
 
@@ -210,16 +227,22 @@ def _previous_result_refs(
     return dict(kept) if isinstance(kept, dict) else {}
 
 
-def _demonstrative_without_antecedent(state: AgentState, previous_entities: list) -> bool:
+def _demonstrative_without_antecedent(
+    state: AgentState, previous_entities: list[Any], *, has_empty_antecedent: bool = False
+) -> bool:
     """지시어(「그 장비」·「해당 서버」)로 서버를 가리키는데 가리킬 선행 대상이 없는가.
 
     plans/123 S-7(b) · 123·G-6 (a)(사용자 확정 — 첫 턴 지시어·선행 대상 없음은 되묻기) —
     **트리거만** 산출한다. 되묻기 게이트 구현·소비는 `plans/106` H1 몫이고, LLM 분해의
     `clarification_needed`(D-270 ⑤)와는 별도 키다. 지시어 판정은
     `refers_to_demonstrative_server` 단일 출처를 쓴다. 발동하면 로그 한 줄을 남긴다.
+    앞 턴이 0행 조회였으면(plans/146 W3) 선행 대상은 그 조회 조건이다 — 발동하지 않는다.
     """
     query = str(state.get("user_query") or "")
-    hit = refers_to_demonstrative_server(query) and not previous_entities
+    hit = (
+        refers_to_demonstrative_server(query) and not previous_entities
+        and not has_empty_antecedent
+    )
     if hit:
         logger.info(
             "S-7(b) 트리거(plans/123): 선행 대상 없는 지시어 — %r(되묻기 소비는 106 H1)",

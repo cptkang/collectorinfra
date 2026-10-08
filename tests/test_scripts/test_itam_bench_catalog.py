@@ -279,7 +279,15 @@ class TestMariadbCanon:
     _FILES = sorted(oracle_mod.ORACLE_DIR.glob("ITAM-*.mariadb.sql"))
 
     def test_canon_files_exist(self) -> None:
-        assert len(self._FILES) == 16
+        """샌드박스 정본 16 · 폐쇄망 정답 7(plans/146 W5 (1)) · 연결 위치 탐침 10(W5 (2))."""
+        stems = [p.name.split(".")[0] for p in self._FILES]
+        sandbox = [s for s in stems if re.fullmatch(r"ITAM-\d{2}", s)]
+        closed = [s for s in stems if re.fullmatch(r"ITAM-1\d{2}", s)]
+        probes = [s for s in stems if s.startswith("ITAM-146-P")]
+        assert len(sandbox) == 16
+        assert closed == [f"ITAM-{n}" for n in (107, 108, 109, 110, 111, 112, 116)]
+        assert len(probes) == 10
+        assert len(stems) == len(sandbox) + len(closed) + len(probes)
 
     @pytest.mark.parametrize("path", _FILES, ids=lambda p: p.name)
     def test_canon_header_and_dialect_rules(self, path: Path) -> None:

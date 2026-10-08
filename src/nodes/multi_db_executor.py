@@ -42,6 +42,7 @@ from src.nodes.query_validator import (
 from src.nodes.semantic_compiler import compile_from_nl
 from src.nodes.table_selection import (
     SOURCE_NONE,
+    catalog_columns,
     definitions_of,
     load_db_description,
     narrow_schema_dict,
@@ -60,7 +61,11 @@ from src.security.pii_filter import (
     is_scrub_samples_enabled,
     scrub_pii,
 )
-from src.sql_validation import TOKEN_LIMIT_ERROR_PREFIX, detect_llm_backend_error
+from src.sql_validation import (
+    CATALOG_COLUMNS_KEY,
+    TOKEN_LIMIT_ERROR_PREFIX,
+    detect_llm_backend_error,
+)
 from src.state import AgentState, QueryAttempt
 from src.utils.prior_dependency import (
     add_db_note,
@@ -1646,7 +1651,10 @@ async def _analyze_schema(
         )
         if isinstance(selection_sink, dict):
             selection_sink[db_id] = selection.as_state()
+        full_tables = schema_dict.get("tables") or {}
         schema_dict = narrow_schema_dict(schema_dict, selection.selected)
+        # 조회 대상 전체 카탈로그(plans/146 W1 · G-1 (b)) — 단일 경로(`schema_analyzer`)와 대칭.
+        schema_dict[CATALOG_COLUMNS_KEY] = catalog_columns(full_tables, _manual_prof)
     else:
         schema_dict = _gate_schema_tables(
             schema_dict, _manual_prof, _synonyms, parsed_requirements,
@@ -3111,6 +3119,17 @@ def _validate_sql_simple(
     quoted_errors = check_double_quoted_identifiers(sql, schema_info, db_engine=db_engine)
     if quoted_errors:
         return quoted_errors[0]
+
+    # 백틱 엔진(MariaDB) 참조 테이블·컬럼 실존 — 단일 경로 5·6과 같은 함수(plans/146 W1 · D-066).
+    # 다른 엔진은 빈 목록이라 간이 검증 종전 동작 그대로다.
+    from src.sql_validation import check_catalog_references
+
+    reference_errors = check_catalog_references(
+        sql, schema_info, db_engine=db_engine,
+        allow_hangul_identifiers=allow_hangul_identifiers,
+    )
+    if reference_errors:
+        return reference_errors[0]
 
     # cmm_resource 조회 시 dtime IS NULL 부재 검출 — 단일 경로(query_validator 4.6)와 공유
     # (D-066 경로 비대칭 방지). 폐쇄망 실측 2026-07-21 b0-005: 필터 누락 시 삭제 서버 혼입.

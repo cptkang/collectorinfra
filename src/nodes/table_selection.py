@@ -195,6 +195,22 @@ def narrow_schema_dict(schema_dict: Mapping[str, Any], selected: Sequence[str]) 
     return {**schema_dict, "tables": kept, "relationships": relationships}
 
 
+def catalog_columns(
+    schema_tables: Mapping[str, Any], profile: Mapping[str, Any],
+) -> dict[str, list[str]]:
+    """조회 대상 전체 카탈로그 ``{테이블: [컬럼 이름…]}`` — 선별 후보와 같은 범위.
+
+    범위는 스키마 ∩ `allowed_tables`(선언됐을 때)다.
+
+    선별로 좁힌 스키마 딕셔너리에 `CATALOG_COLUMNS_KEY`로 실어, 검증기가 선별 밖이지만 조회 대상인
+    테이블의 실존을 판정하게 한다(plans/146 W1 · G-1 (b)). 이름만 싣는다(값·샘플 없음).
+    단일(`TableInfo`)·멀티(스키마 딕셔너리) 모양을 모두 받는다.
+    """
+    return {
+        t: _column_names(schema_tables[t]) for t in _candidate_tables(schema_tables, profile)
+    }
+
+
 # ──────────────────────────────────────────────
 # 후보·프롬프트
 # ──────────────────────────────────────────────

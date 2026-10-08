@@ -1,0 +1,151 @@
+# ITAM 질의 벤치 — 서비스↔서버 연결 위치 탐침 (plans/146 W5 (2) · 2026-10-08)
+#
+# ★ **`python -m scripts.itam_bench --check-oracle --env closed --scenarios <이 파일>` 전용 · LLM 0 ·
+#   출력은 행 수만(값 0).** `--run` 대상이 아니다 — 시나리오 꼴은 로더·`--check-oracle`이 읽게 하려고 빌렸을
+#   뿐이고, 각 턴 `query`는 시스템에 보내는 질문이 아니다(실행하지 않는다).
+#
+# 탐침 SQL은 `testdata/scenarios/oracles/ITAM-146-PNN.mariadb.sql`(오라클 디렉터리 규칙 — 머리 주석·SELECT 전용·
+# 행 상한·현재시각 함수 금지). 행 수가 정보가 되게 `COUNT(*)` 한 행이 아니라 키 행을 돌려준다(`SELECT DISTINCT
+# 키 … LIMIT 10000`). `compare: count`는 로더 형식을 맞추려는 것뿐이다 — 판정에 쓰지 않는다.
+# `--check-oracle`은 0행을 「실패」로 세지만 탐침에서는 0행도 답이다(「없다」).
+#
+# 핵심어는 시나리오 원문에 이미 있는 말(「통합인증」)만 쓴다 — 다른 업무 이름·값 리터럴을 넣지 않는다(D-301).
+# 「인터넷뱅킹」(ITAM-103)은 행 수를 핵심어별로 가르려고 이번 탐침에 섞지 않았다 — 필요하면 P01~P05를 복사해 바꾼다.
+# 조인 키는 반출 테이블 정의 `related`(값 겹침 미확인)를 따른다. 시나리오 ID는 로더 형식(`ITAM-NN…`)에 맞춰
+# `ITAM-146-PNN`이다(P07은 두 질문이라 P07A·P07B로 나눴다).
+#
+# 결과 회수: `--out results/itam_bench/<run>`을 붙이면 `<run>/oracle_check/oracle_check.yaml`(ID·판정 범주·행 수·ms ·
+#   값 0 · 누출 관문 통과분만)로 남는다 — 없으면 화면의 「ITAM-146-PNN … 행 N」 줄을 옮긴다. 계획서 plans/146 §5 W5 (2) 표에 대응.
+version: 1
+db_id: itam
+
+scenarios:
+  - id: ITAM-146-P01
+    title: "탐침 P01 — 서비스 핵심어 → 어플리케이션 목록의 이름 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 P01 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-146-P01, compare: count, db_ids: [itam]}
+
+  - id: ITAM-146-P02
+    title: "탐침 P02 — 서비스 핵심어 → 서버 원장 분류 경로 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 P02 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-146-P02, compare: count, db_ids: [itam]}
+
+  - id: ITAM-146-P03
+    title: "탐침 P03 — 서비스 핵심어 → 서버 원장 구성 설명 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 P03 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-146-P03, compare: count, db_ids: [itam]}
+
+  - id: ITAM-146-P04
+    title: "탐침 P04 — 서비스 핵심어 → 스토리지 할당 업무 이름 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 P04 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-146-P04, compare: count, db_ids: [itam]}
+
+  - id: ITAM-146-P05
+    title: "탐침 P05 — 어플리케이션 이름 → 서버 자유 기재 칸(두 단계) (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 P05 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-146-P05, compare: count, db_ids: [itam]}
+
+  - id: ITAM-146-P06
+    title: "탐침 P06 — 서버 원장 물품 키 ↔ 자산 원장(조건 없음) (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 P06 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-146-P06, compare: count, db_ids: [itam]}
+
+  - id: ITAM-146-P07A
+    title: "탐침 P07A — 서버 원장 → 매핑 → 자산 원장 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 P07A 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-146-P07A, compare: count, db_ids: [itam]}
+
+  - id: ITAM-146-P07B
+    title: "탐침 P07B — 서버 통합 현황 ↔ 서버 원장 행 배수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 P07B 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-146-P07B, compare: count, db_ids: [itam]}
+
+  - id: ITAM-146-P08
+    title: "탐침 P08 — 스토리지 할당 호스트 ↔ 서버 원장 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 P08 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-146-P08, compare: count, db_ids: [itam]}
+
+  - id: ITAM-146-P09
+    title: "탐침 P09 — 가상 서버 호스트 ↔ 서버 원장 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 P09 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-146-P09, compare: count, db_ids: [itam]}

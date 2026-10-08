@@ -237,9 +237,18 @@
         <div class="noise-actions" style="margin-top:16px;">
             <button class="btn btn-secondary" id="silenceThisBtn" style="padding:7px 14px;font-size:12px;">이 패턴 침묵</button>
         </div>
+        <!-- plans/144 W5: 크로스소스 사건 피드백 — 사건에 묶인 판단에서만 noise.js가 보인다 -->
+        <div id="episodeFeedback" style="display:none;margin-top:16px;">
+            <h2 class="drawer-sub" data-help="drawer.episode">사건 피드백</h2>
+            <div class="noise-actions">
+                <button class="btn btn-secondary" id="episodeSplitBtn" style="padding:7px 14px;font-size:12px;">이 묶음은 틀렸다(분리)</button>
+                <button class="btn btn-secondary" id="episodeNeededBtn" style="padding:7px 14px;font-size:12px;">강등된 증상이 실제로 조치 필요</button>
+            </div>
+            <div class="rs" id="episodeFeedbackMsg" role="status"></div>
+        </div>
     </aside>
 
-    <script src="/static/js/noise-help.js?v=4"></script>
-    <script src="/static/js/noise.js?v=10"></script>
+    <script src="/static/js/noise-help.js?v=5"></script>
+    <script src="/static/js/noise.js?v=11"></script>
 </body>
 </html>

@@ -45,7 +45,7 @@ import unicodedata
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from src.domain import query_templates as qt
 from src.domain.schema_snapshot import bare_name
@@ -131,9 +131,20 @@ _SQL_WORDS = frozenset({
 })
 # 사용률 — 관측 DB 정본(D-308 G-6). 사용률을 말한 절(clause)에 부정·관측 DB 안내가 함께 있어야
 # 허용한다(같은 문장의 다른 절 부정어 — 「…로 답하고 NULL 행은 세지 않는다」 — 로는 풀리지 않는다)
+#
+# 사용량·사용률(현재값)과 사용 추이(기간 변화)를 모두 잡는다(plans/132 v1.5 — 2026-10-07 사용자
+# 정의). 자원어 없는 맨 「사용량」·「스토리지 사용량」(자산의 할당·장비 사용량 유사어와 겹친다)과
+# 「용량」·「사양」·「부하」·「사용 현황」은 넣지 않는다 — 설치 크기·자산 현황은 조회 허용이다.
 _UTILIZATION_RE = re.compile(
-    r"(?i)사용률|utili[sz]ation|(?:cpu|메모리|디스크|memory|disk)\s*사용량"
+    r"(?i)사용률|utili[sz]ation"
+    r"|(?:cpu|메모리|디스크|memory|disk|(?<![가-힣])램|서버\s*램|(?<![a-z])d?ram)\s*(?:의\s*)?"
+    r"(?:사용량|(?:사용\s*)?(?:추이|추세|트렌드)|사용\s*변화)"
 )
+# 사용 추이 — 사용률 언급 안이나 그 뒤 짧은 창(8자 · 문장·쉼표 경계 안)의 기간 변화 표현만 본다
+# (「사용률 추이」·「사용률 일별 추이」·「사용률이 어떻게 변화했나」). 멀리 떨어진 다른 명사의
+# 변화(「…상위 서버의 담당자 변화」)는 추이가 아니다.
+_TREND_RE = re.compile(r"(?i)추이|추세|트렌드|변화|trend")
+_TREND_AFTER_RE = re.compile(r"(?i)[^.,;!?\n]{0,8}?(?:추이|추세|트렌드|변화|trend)")
 _REDIRECT_RE = re.compile(
     r"않|지\s*말|말\s*것|말라|금지|아니|없다|관측\s*DB|관측\s*데이터|범위\s*밖"
 )
@@ -414,9 +425,25 @@ def mention_issues(text: str, catalog: Catalog) -> list[dict[str, str]]:
     return out
 
 
+def utilization_kind(text: str) -> Literal["current", "trend"] | None:
+    """사용량·사용률을 묻는다면 현재값(``current``)인가 사용 추이(``trend``)인가 — 아니면 None.
+
+    사용량·사용률은 지금 시점 값, 사용 추이는 일정 기간 동안의 변화다(정본은 둘 다 관측 데이터).
+    추이·추세·트렌드·변화 표현이 사용률 언급 안이나 그 뒤 짧은 창 안에 있을 때만 추이로 본다.
+    """
+    norm = _norm(text or "")
+    matches = list(_UTILIZATION_RE.finditer(norm))
+    if not matches:
+        return None
+    trend = any(
+        _TREND_RE.search(m.group()) or _TREND_AFTER_RE.match(norm, m.end()) for m in matches
+    )
+    return "trend" if trend else "current"
+
+
 def mentions_utilization(text: str) -> bool:
-    """사용률(·CPU/메모리/디스크 사용량)을 말하는가 — K1·K2·K3·K4 사용률 규칙의 공용 판정."""
-    return _UTILIZATION_RE.search(_norm(text or "")) is not None
+    """사용량·사용률·사용 추이를 말하는가 — K1~K4 사용률 규칙 · 런타임 소스 가드의 공용 판정."""
+    return utilization_kind(text) is not None
 
 
 def _redirects_utilization(sentence: str) -> bool:

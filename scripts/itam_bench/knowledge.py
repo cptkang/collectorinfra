@@ -7,15 +7,18 @@ plans/143 W1·W2 · D-316.
 파일(철회 항목)·직전 검증 결과(`knowledge/validation.yaml`)에서 `src.domain.knowledge_evidence`로
 자산별 입력을 만들고, 누출 관문(5규칙 · `redact.LeakGate`)을 통과할 때만
 `<run>/knowledge_evidence/`에 쓴다(실패면 `leak_check.json`만 · 종료 1). 같은 입력이면 바이트가
-같다. LLM·DB 0.
+같다. LLM·DB 0. 반출 run에 `substitutions.yaml`(3회차부터 · 형식 보존 가짜 값 · plans/145 §2.6)이
+있으면 묶음이 가짜 값을 실어 나르는 것은 막지 않고(외부망 작업 자료) 색인에 가짜 값 수와 「자산에
+쓰지 않는다」 고지를 한 줄 싣는다.
 
 **검증** — 원천 파일(`src.domain.knowledge_assets` 계약)을 결정적으로 검사한다. 정적 검사는 도메인
 모듈, SQL은 여기서 더한다(K2·K4·K8 모두 MariaDB 실행 주석 `/*! … */`는 실행 전 거절): K2
 `SQLGuard` → 「DB 구조」 탭과 같은 검사(SELECT 한 문장·행 제한 · 부수효과 함수 · `validate_sql`
 실존·한글 식별자) → `tables` 칸 일치 → 모의 DB 실행(바깥 행 제한) ·
 K4 D-294 ③ 섹션 검증(`_validate_section`) → 섹션 SQL 모의 DB 실행. 치환 코드값(근거 run의
-`code_samples.yaml`)이 리터럴로 나오는 항목은 모든 자산에서 거절한다. 근거 run 리터럴(실행 SQL의
-문자열·숫자 리터럴 · 반출 카탈로그 주석과 반출 테이블 정의 글의 코드 열거 값 —
+`code_samples.yaml`)과 형식 보존 치환값(근거 run의 `substitutions.yaml` — 차단 전용 · 한 글자
+값 제외 `build_assets.blocked_fakes`)이 리터럴로 나오는 항목은 모든 자산에서 거절한다. 근거 run
+리터럴(실행 SQL의 문자열·숫자 리터럴 · 반출 카탈로그 주석과 반출 테이블 정의 글의 코드 열거 값 —
 `load_evidence_literals`)이 토큰으로 나오는 항목도 철회 항목까지 거절한다(`evidence_literal` · 원천
 파일은 커밋된다 — D-301 · D-308). K6은 정의 `kind` 파생 규칙을
 같은 글 검사로 본다. K8(`query_templates.yaml` · 머리 `version: 1` + `templates:` 목록)은 공통 칸 →
@@ -212,6 +215,34 @@ def load_code_values(
     return values, found
 
 
+def load_substitution_values(
+    runs: Iterable[str], results_root: Path = RESULTS_ROOT
+) -> tuple[set[str], list[str], dict[str, int]]:
+    """근거 run들의 형식 보존 치환값 대조 집합(`build_assets.export_fakes` 합집합) — 차단 전용(K8
+    code 슬롯 대표값으로 쓰지 않는다 · 대표값은 `load_code_samples`).
+
+    Returns:
+        ``(집합, 파일이 있던 run, 요약 합 {"values", "short_skipped", "identifier_skipped"})``
+
+    Raises:
+        ba.BuildError: `substitutions.yaml` 형식 오류 · 그 run의 반출 카탈로그 없음(닫힌 쪽)
+    """
+    values: set[str] = set()
+    found: list[str] = []
+    counts = {"values": 0, "short_skipped": 0, "identifier_skipped": 0}
+    for run_id in sorted(runs):
+        run_dir = Path(results_root) / run_id
+        if not (run_dir / rd.SUBSTITUTIONS_FILE).is_file():
+            continue
+        catalog, _ = ba.load_export(run_dir)
+        blocked, summary = ba.export_fakes(run_dir, catalog)
+        values |= blocked
+        for key in counts:
+            counts[key] += int((summary or {}).get(key) or 0)
+        found.append(run_id)
+    return values, found, counts
+
+
 def code_samples_map(samples: Mapping[str, Any] | None) -> dict[str, list[str]]:
     """`code_samples.yaml` → ``{"table.column"(소문자): [치환값…]}`` — `substitution: ok`·값 있는
     것만(모의 DB 행 생성기 `load_code_samples`와 같은 규칙). K8 code 슬롯 대표값으로 쓴다."""
@@ -270,6 +301,10 @@ def run_literals(run_dir: Path) -> set[str]:
       table_definitions`의 `kind`·`origin`·`key_columns` 밖 칸)의 코드 열거 값(`parse_comment_enum`
       키 · 라벨은 싣지 않는다 — 정의 글은 원 코드값이 있어도 반출된다 · D-311 부기).
     - 반출 카탈로그의 테이블·컬럼 이름과 같은 값은 뺀다.
+
+    3회차 반출부터 실행 SQL 리터럴은 가림 표지가 아니라 형식 보존 가짜 값(plans/145)이라 근거
+    리터럴로 잡힌다 — 그 값이 든 자산 항목이 거절되는 것은 의도된 동작이다(가짜 값은 자산에
+    쓰지 않는다).
     """
     from src.domain.schema_inference import parse_comment_enum
 
@@ -369,6 +404,7 @@ def build_evidence_files(
     run_dir = Path(run_dir)
     repo_root = Path(repo_root)
     catalog, samples = ba.load_export(run_dir)
+    fakes = ba.load_substitutions(run_dir)
     trace_path = run_dir / TRACE_FILE
     records = (
         [
@@ -405,6 +441,11 @@ def build_evidence_files(
             "previous_validation": validation is not None,
         },
     )
+    if fakes is not None:  # 1·2회차(파일 없음)는 색인 바이트 그대로
+        docs[ke.INDEX_FILE]["substitutions"] = (
+            f"가짜 값 {len(set(fakes) - {''})}건({rd.SUBSTITUTIONS_FILE}) — 형식 보존 치환값 · "
+            "원값 아님 · 자산에 쓰지 않는다"
+        )
     return {name: _dump_yaml_exact(doc) for name, doc in docs.items()}
 
 
@@ -465,6 +506,7 @@ class _Context:
     columns: dict[str, list[str]] = field(default_factory=dict)
     code_samples: dict[str, list[str]] = field(default_factory=dict)
     evidence_literals: set[str] = field(default_factory=set)
+    fake_values: set[str] = field(default_factory=set)
 
     def check(self, client: Any) -> Any:
         from src.schema_cache.asset_generation_service import _SqlCheck
@@ -481,15 +523,16 @@ def _issue(code: str, message: str) -> dict[str, str]:
 
 
 def _substitution_issues(
-    name: str, item: Mapping[str, Any], values: set[str]
+    name: str, item: Mapping[str, Any], values: set[str], label: str = "치환 코드값"
 ) -> list[dict[str, str]]:
-    """치환 코드값 리터럴(위치만 · 값 없음)."""
+    """치환값 리터럴(위치만 · 값 없음) — `label`은 문구의 값 종류(치환 코드값 · 형식 보존
+    치환값)."""
     if not values:
         return []
     hits = ba.substitution_hits({name: ("", dict(item))}, values)
     if not hits:
         return []
-    return [_issue(SUBSTITUTED, f"치환 코드값이 나옵니다(위치: {'; '.join(hits[:5])})")]
+    return [_issue(SUBSTITUTED, f"{label}이 나옵니다(위치: {'; '.join(hits[:5])})")]
 
 
 def _evidence_literal_issues(
@@ -716,9 +759,14 @@ async def _validate_file(
         _result(name, e.label, list(e.issues), static_only)
         for e in parsed.entries if e.withdrawn and e.issues
     ]
-    for e in parsed.entries:  # 철회 항목도 커밋된다 — 근거 리터럴은 철회 항목에서도 거절
+    # 철회 항목도 커밋된다 — 근거 리터럴·형식 보존 치환값은 철회 항목에서도 거절(원천은 git 추적
+    # — D-311 ② 「지식 원천에 넣지 않는다」)
+    for e in parsed.entries:
         found = (
             _evidence_literal_issues(name, e.item, ctx.evidence_literals)
+            + _substitution_issues(
+                name, e.item, ctx.fake_values, f"형식 보존 치환값({rd.SUBSTITUTIONS_FILE})"
+            )
             if e.withdrawn and not e.issues else []
         )
         if found:
@@ -760,6 +808,9 @@ async def _validate_file(
                 found, bound, pending = _template_static(item, ctx)
                 issues += found
             issues += _substitution_issues(name, item, ctx.code_values)
+            issues += _substitution_issues(
+                name, item, ctx.fake_values, f"형식 보존 치환값({rd.SUBSTITUTIONS_FILE})"
+            )
             issues += _evidence_literal_issues(name, item, ctx.evidence_literals)
             if not issues and name == ka.EXAMPLES_FILE:
                 issues += await _execute_example(item, ctx)
@@ -802,6 +853,7 @@ async def avalidate_dir(
     engine: str = ENGINE,
     code_samples: Mapping[str, Iterable[str]] | None = None,
     evidence_literals: Iterable[str] | None = None,
+    fake_values: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """원천 파일 디렉터리를 검증한다(쓰기 없음).
 
@@ -818,6 +870,8 @@ async def avalidate_dir(
             없는 컬럼의 조합은 `code_unverified`)
         evidence_literals: 근거 run 리터럴 대조 집합(`load_evidence_literals` — 대조 카탈로그의
             테이블·컬럼 이름과 같은 값은 여기서 한 번 더 뺀다)
+        fake_values: 형식 보존 치환값 대조 집합(`load_substitution_values` — 차단 전용 · K8 대표값에
+            섞지 않는다)
 
     Returns:
         ``{"static_only", "db_executed", "results": [{file, id, ok, issues:[{code, message}]}],
@@ -849,6 +903,7 @@ async def avalidate_dir(
         evidence_literals=ka.evidence_literal_values(
             evidence_literals or (), exempt=[n for t, cols in columns.items() for n in (t, *cols)]
         ),
+        fake_values=set(fake_values or ()),
     )
     results: list[dict[str, Any]] = []
     withdrawn: list[dict[str, Any]] = []
@@ -1180,6 +1235,7 @@ def run_validate(
         code_values, sample_runs = load_code_values(runs, results_root)
         code_samples = load_code_samples(runs, results_root)
         literals, literal_runs = load_evidence_literals(runs, results_root)
+        fakes, fake_runs, fake_counts = load_substitution_values(runs, results_root)
     except ba.BuildError as e:
         print(f"[validate-knowledge] 중단: {e}")
         return e.exit_code
@@ -1191,10 +1247,12 @@ def run_validate(
         code_values=code_values,
         code_samples=code_samples,
         evidence_literals=literals,
+        fake_values=fakes,
     ))
     result["db_unavailable_reason"] = reason
     result["code_samples_runs"] = sample_runs
     result["evidence_literal_runs"] = literal_runs
+    result["substitutions_runs"] = fake_runs
     print_summary(result, reason=reason)
     if not any(Path(knowledge_dir, n).is_file() for n in ka.KNOWLEDGE_FILES):
         print(f"  원천 파일 0개 — {knowledge_dir}")
@@ -1203,6 +1261,12 @@ def run_validate(
         f"  근거 run 리터럴 대조: {', '.join(literal_runs) or '근거 run 산출물 없음'}"
         f"({len(literals)}개 · 값은 싣지 않는다)"
     )
+    if fake_runs:  # 1·2회차(파일 없음)는 출력 그대로
+        print(
+            f"  형식 보존 치환값 대조: {', '.join(fake_runs)}({len(fakes)}개 · 짧은 값 "
+            f"{fake_counts['short_skipped']}개·식별자 {fake_counts['identifier_skipped']}개 제외 · "
+            "값은 싣지 않는다)"
+        )
     if out is not None:
         Path(out).parent.mkdir(parents=True, exist_ok=True)
         Path(out).write_text(_dump_yaml_exact(dict(result)), encoding="utf-8")

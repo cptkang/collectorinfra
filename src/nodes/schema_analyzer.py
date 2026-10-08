@@ -31,10 +31,12 @@ from src.routing.registry import hangul_identifiers_allowed
 from src.schema_cache.cache_manager import get_cache_manager
 from src.nodes.table_selection import (
     TableSelection,
+    catalog_columns,
     load_db_description,
     select_tables,
     uses_definition_selection,
 )
+from src.sql_validation import CATALOG_COLUMNS_KEY, _uses_backtick_quotes
 from src.state import AgentState
 from src.utils.flex_match import best_flex_match
 from src.utils.json_extract import coerce_content_text
@@ -827,6 +829,14 @@ async def schema_analyzer(
 
             # 3. 스키마를 딕셔너리로 변환 (관련 테이블만 추출)
             schema_dict = schema_to_dict(full_schema, relevant)
+            # 조회 대상 전체 카탈로그(plans/146 W1 · G-1 (b)) — 정의 기반 선별이고 검증기가
+            # 읽는 엔진(`active_db_engine` 백틱 엔진 · 1·2단)일 때만 싣는다. 검증기는 같은
+            # 상태 값으로 엔진을 정하므로(없으면 postgresql) 읽지 않을 카탈로그를 남기지 않는다.
+            if (
+                table_selection is not None and _def_prof is not None
+                and _uses_backtick_quotes(state.get("active_db_engine"))
+            ):
+                schema_dict[CATALOG_COLUMNS_KEY] = catalog_columns(full_schema.tables, _def_prof)
             # ★ DEBUG[5]: 최종 schema_dict의 테이블 키 확인
             logger.debug("DEBUG[5] final schema_dict tables: %s", list(schema_dict.get("tables", {}).keys()))
 

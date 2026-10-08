@@ -383,11 +383,19 @@ def test_first_export_reproduces_committed_files():
 
     # 커밋 파일 = 빌더 + 지식 오버레이(정적 전용) 산출(D-316 ②가 D-311 ③을 부분 개정 · plans/143
     # W4) — 같은 원천으로 오버레이를 재현해 비교한다(위 근거 단언은 오버레이 전 빌더 산출 기준)
-    from scripts.itam_bench.knowledge import KNOWLEDGE_DIR_REL
+    from scripts.itam_bench.knowledge import KNOWLEDGE_DIR_REL, KnowledgeDeps
+    from src.api.routes.db_structure import asset_sql_checker
+
+    # K2 예시(SQL 항목)는 SQL 검증기가 없으면 거절된다 — 실제 빌드와 같은 정적 검사기
+    # (`asset_sql_checker` · DB 접속 없음)를 넘긴다. 정적 전용이라 DB 클라이언트는 열지 않는다
+    # (plans/146 W4 교정 1).
+    def _no_db() -> Any:
+        raise AssertionError("정적 전용 재현은 DB에 접속하지 않는다")
 
     overlay = ba.knowledge_overlay(
         _REAL_RUN, repo_root=REPO_ROOT, knowledge_dir=REPO_ROOT / KNOWLEDGE_DIR_REL,
-        static_only=True, deps=None, keep_excluded=False,
+        static_only=True, deps=KnowledgeDeps(client_factory=_no_db, sql_checker=asset_sql_checker),
+        keep_excluded=False,
     )
     assert overlay is not None
     result = ba.build(_REAL_RUN, repo_root=REPO_ROOT, generated_at="T", knowledge=overlay)
