@@ -1,0 +1,1099 @@
+{
+  "versions": {
+    "python": "3.13.1",
+    "openai": "2.42.0",
+    "langchain-openai": "1.3.2",
+    "langchain-core": "1.4.7",
+    "langchain": "1.3.9",
+    "langgraph": "1.2.5",
+    "deepagents": "0.6.10",
+    "httpx": "0.28.1",
+    "litellm": "not installed"
+  },
+  "consumers": {
+    "openai_sdk_nonstream": {
+      "status": "recorded",
+      "error": null,
+      "file": "openai_sdk_nonstream.json",
+      "request_count": 1,
+      "requests": [
+        {
+          "seq": 1,
+          "case": "tool_call_turn",
+          "path": "/v1/chat/completions",
+          "signature": {
+            "top_level_keys": [
+              "messages",
+              "model",
+              "tools"
+            ],
+            "nonstandard_keys": [],
+            "model": "fabrix-tools",
+            "tool_choice": "<absent>",
+            "parallel_tool_calls": "<absent>",
+            "stream": "<absent>",
+            "stream_options": "<absent>",
+            "max_tokens": "<absent>",
+            "max_completion_tokens": "<absent>",
+            "temperature": "<absent>",
+            "top_p": "<absent>",
+            "extra_body": "<absent>",
+            "chat_template_kwargs": "<absent>",
+            "message_count": 1,
+            "message_roles": [
+              "user"
+            ],
+            "message_keys_by_role": {
+              "user": [
+                "content",
+                "role"
+              ]
+            },
+            "content_kinds_by_role": {
+              "user": [
+                "str"
+              ]
+            },
+            "content_part_types": [],
+            "assistant_tool_call_keys": [],
+            "assistant_tool_call_function_keys": [],
+            "assistant_tool_call_argument_types": [],
+            "tool_count": 2,
+            "tool_types": [
+              "function"
+            ],
+            "tool_names": [
+              "lookup_weather",
+              "get_order_status"
+            ]
+          }
+        }
+      ]
+    },
+    "openai_sdk_stream": {
+      "status": "recorded",
+      "error": null,
+      "file": "openai_sdk_stream.json",
+      "request_count": 1,
+      "requests": [
+        {
+          "seq": 1,
+          "case": "tool_call_turn",
+          "path": "/v1/chat/completions",
+          "signature": {
+            "top_level_keys": [
+              "messages",
+              "model",
+              "stream",
+              "tools"
+            ],
+            "nonstandard_keys": [],
+            "model": "fabrix-tools",
+            "tool_choice": "<absent>",
+            "parallel_tool_calls": "<absent>",
+            "stream": true,
+            "stream_options": "<absent>",
+            "max_tokens": "<absent>",
+            "max_completion_tokens": "<absent>",
+            "temperature": "<absent>",
+            "top_p": "<absent>",
+            "extra_body": "<absent>",
+            "chat_template_kwargs": "<absent>",
+            "message_count": 1,
+            "message_roles": [
+              "user"
+            ],
+            "message_keys_by_role": {
+              "user": [
+                "content",
+                "role"
+              ]
+            },
+            "content_kinds_by_role": {
+              "user": [
+                "str"
+              ]
+            },
+            "content_part_types": [],
+            "assistant_tool_call_keys": [],
+            "assistant_tool_call_function_keys": [],
+            "assistant_tool_call_argument_types": [],
+            "tool_count": 2,
+            "tool_types": [
+              "function"
+            ],
+            "tool_names": [
+              "lookup_weather",
+              "get_order_status"
+            ]
+          }
+        }
+      ]
+    },
+    "chatopenai_bind_tools_ainvoke": {
+      "status": "recorded",
+      "error": null,
+      "file": "chatopenai_bind_tools_ainvoke.json",
+      "request_count": 2,
+      "requests": [
+        {
+          "seq": 1,
+          "case": "turn1_tool_call",
+          "path": "/v1/chat/completions",
+          "signature": {
+            "top_level_keys": [
+              "messages",
+              "model",
+              "stream",
+              "tools"
+            ],
+            "nonstandard_keys": [],
+            "model": "fabrix-tools",
+            "tool_choice": "<absent>",
+            "parallel_tool_calls": "<absent>",
+            "stream": false,
+            "stream_options": "<absent>",
+            "max_tokens": "<absent>",
+            "max_completion_tokens": "<absent>",
+            "temperature": "<absent>",
+            "top_p": "<absent>",
+            "extra_body": "<absent>",
+            "chat_template_kwargs": "<absent>",
+            "message_count": 1,
+            "message_roles": [
+              "user"
+            ],
+            "message_keys_by_role": {
+              "user": [
+                "content",
+                "role"
+              ]
+            },
+            "content_kinds_by_role": {
+              "user": [
+                "str"
+              ]
+            },
+            "content_part_types": [],
+            "assistant_tool_call_keys": [],
+            "assistant_tool_call_function_keys": [],
+            "assistant_tool_call_argument_types": [],
+            "tool_count": 2,
+            "tool_types": [
+              "function"
+            ],
+            "tool_names": [
+              "lookup_weather",
+              "get_order_status"
+            ]
+          }
+        },
+        {
+          "seq": 2,
+          "case": "turn2_after_tool",
+          "path": "/v1/chat/completions",
+          "signature": {
+            "top_level_keys": [
+              "messages",
+              "model",
+              "stream",
+              "tools"
+            ],
+            "nonstandard_keys": [],
+            "model": "fabrix-tools",
+            "tool_choice": "<absent>",
+            "parallel_tool_calls": "<absent>",
+            "stream": false,
+            "stream_options": "<absent>",
+            "max_tokens": "<absent>",
+            "max_completion_tokens": "<absent>",
+            "temperature": "<absent>",
+            "top_p": "<absent>",
+            "extra_body": "<absent>",
+            "chat_template_kwargs": "<absent>",
+            "message_count": 3,
+            "message_roles": [
+              "assistant",
+              "tool",
+              "user"
+            ],
+            "message_keys_by_role": {
+              "assistant": [
+                "content",
+                "role",
+                "tool_calls"
+              ],
+              "tool": [
+                "content",
+                "role",
+                "tool_call_id"
+              ],
+              "user": [
+                "content",
+                "role"
+              ]
+            },
+            "content_kinds_by_role": {
+              "assistant": [
+                "null"
+              ],
+              "tool": [
+                "str"
+              ],
+              "user": [
+                "str"
+              ]
+            },
+            "content_part_types": [],
+            "assistant_tool_call_keys": [
+              "function",
+              "id",
+              "type"
+            ],
+            "assistant_tool_call_function_keys": [
+              "arguments",
+              "name"
+            ],
+            "assistant_tool_call_argument_types": [
+              "str"
+            ],
+            "tool_count": 2,
+            "tool_types": [
+              "function"
+            ],
+            "tool_names": [
+              "lookup_weather",
+              "get_order_status"
+            ]
+          }
+        }
+      ]
+    },
+    "chatopenai_bind_tools_astream": {
+      "status": "recorded",
+      "error": null,
+      "file": "chatopenai_bind_tools_astream.json",
+      "request_count": 2,
+      "requests": [
+        {
+          "seq": 1,
+          "case": "turn1_tool_call",
+          "path": "/v1/chat/completions",
+          "signature": {
+            "top_level_keys": [
+              "messages",
+              "model",
+              "stream",
+              "tools"
+            ],
+            "nonstandard_keys": [],
+            "model": "fabrix-tools",
+            "tool_choice": "<absent>",
+            "parallel_tool_calls": "<absent>",
+            "stream": true,
+            "stream_options": "<absent>",
+            "max_tokens": "<absent>",
+            "max_completion_tokens": "<absent>",
+            "temperature": "<absent>",
+            "top_p": "<absent>",
+            "extra_body": "<absent>",
+            "chat_template_kwargs": "<absent>",
+            "message_count": 1,
+            "message_roles": [
+              "user"
+            ],
+            "message_keys_by_role": {
+              "user": [
+                "content",
+                "role"
+              ]
+            },
+            "content_kinds_by_role": {
+              "user": [
+                "str"
+              ]
+            },
+            "content_part_types": [],
+            "assistant_tool_call_keys": [],
+            "assistant_tool_call_function_keys": [],
+            "assistant_tool_call_argument_types": [],
+            "tool_count": 2,
+            "tool_types": [
+              "function"
+            ],
+            "tool_names": [
+              "lookup_weather",
+              "get_order_status"
+            ]
+          }
+        },
+        {
+          "seq": 2,
+          "case": "turn2_after_tool",
+          "path": "/v1/chat/completions",
+          "signature": {
+            "top_level_keys": [
+              "messages",
+              "model",
+              "stream",
+              "tools"
+            ],
+            "nonstandard_keys": [],
+            "model": "fabrix-tools",
+            "tool_choice": "<absent>",
+            "parallel_tool_calls": "<absent>",
+            "stream": true,
+            "stream_options": "<absent>",
+            "max_tokens": "<absent>",
+            "max_completion_tokens": "<absent>",
+            "temperature": "<absent>",
+            "top_p": "<absent>",
+            "extra_body": "<absent>",
+            "chat_template_kwargs": "<absent>",
+            "message_count": 3,
+            "message_roles": [
+              "assistant",
+              "tool",
+              "user"
+            ],
+            "message_keys_by_role": {
+              "assistant": [
+                "content",
+                "role",
+                "tool_calls"
+              ],
+              "tool": [
+                "content",
+                "role",
+                "tool_call_id"
+              ],
+              "user": [
+                "content",
+                "role"
+              ]
+            },
+            "content_kinds_by_role": {
+              "assistant": [
+                "null"
+              ],
+              "tool": [
+                "str"
+              ],
+              "user": [
+                "str"
+              ]
+            },
+            "content_part_types": [],
+            "assistant_tool_call_keys": [
+              "function",
+              "id",
+              "type"
+            ],
+            "assistant_tool_call_function_keys": [
+              "arguments",
+              "name"
+            ],
+            "assistant_tool_call_argument_types": [
+              "str"
+            ],
+            "tool_count": 2,
+            "tool_types": [
+              "function"
+            ],
+            "tool_names": [
+              "lookup_weather",
+              "get_order_status"
+            ]
+          }
+        }
+      ]
+    },
+    "chatopenai_astream_events": {
+      "status": "recorded",
+      "error": null,
+      "file": "chatopenai_astream_events.json",
+      "request_count": 3,
+      "requests": [
+        {
+          "seq": 1,
+          "case": "control_plain_ainvoke",
+          "path": "/v1/chat/completions",
+          "signature": {
+            "top_level_keys": [
+              "messages",
+              "model",
+              "stream",
+              "tools"
+            ],
+            "nonstandard_keys": [],
+            "model": "fabrix-tools",
+            "tool_choice": "<absent>",
+            "parallel_tool_calls": "<absent>",
+            "stream": false,
+            "stream_options": "<absent>",
+            "max_tokens": "<absent>",
+            "max_completion_tokens": "<absent>",
+            "temperature": "<absent>",
+            "top_p": "<absent>",
+            "extra_body": "<absent>",
+            "chat_template_kwargs": "<absent>",
+            "message_count": 1,
+            "message_roles": [
+              "user"
+            ],
+            "message_keys_by_role": {
+              "user": [
+                "content",
+                "role"
+              ]
+            },
+            "content_kinds_by_role": {
+              "user": [
+                "str"
+              ]
+            },
+            "content_part_types": [],
+            "assistant_tool_call_keys": [],
+            "assistant_tool_call_function_keys": [],
+            "assistant_tool_call_argument_types": [],
+            "tool_count": 2,
+            "tool_types": [
+              "function"
+            ],
+            "tool_names": [
+              "lookup_weather",
+              "get_order_status"
+            ]
+          }
+        },
+        {
+          "seq": 2,
+          "case": "ainvoke_wrapped_by_astream_events",
+          "path": "/v1/chat/completions",
+          "signature": {
+            "top_level_keys": [
+              "messages",
+              "model",
+              "stream",
+              "tools"
+            ],
+            "nonstandard_keys": [],
+            "model": "fabrix-tools",
+            "tool_choice": "<absent>",
+            "parallel_tool_calls": "<absent>",
+            "stream": true,
+            "stream_options": "<absent>",
+            "max_tokens": "<absent>",
+            "max_completion_tokens": "<absent>",
+            "temperature": "<absent>",
+            "top_p": "<absent>",
+            "extra_body": "<absent>",
+            "chat_template_kwargs": "<absent>",
+            "message_count": 1,
+            "message_roles": [
+              "user"
+            ],
+            "message_keys_by_role": {
+              "user": [
+                "content",
+                "role"
+              ]
+            },
+            "content_kinds_by_role": {
+              "user": [
+                "str"
+              ]
+            },
+            "content_part_types": [],
+            "assistant_tool_call_keys": [],
+            "assistant_tool_call_function_keys": [],
+            "assistant_tool_call_argument_types": [],
+            "tool_count": 2,
+            "tool_types": [
+              "function"
+            ],
+            "tool_names": [
+              "lookup_weather",
+              "get_order_status"
+            ]
+          }
+        },
+        {
+          "seq": 3,
+          "case": "direct_astream_events",
+          "path": "/v1/chat/completions",
+          "signature": {
+            "top_level_keys": [
+              "messages",
+              "model",
+              "stream",
+              "tools"
+            ],
+            "nonstandard_keys": [],
+            "model": "fabrix-tools",
+            "tool_choice": "<absent>",
+            "parallel_tool_calls": "<absent>",
+            "stream": true,
+            "stream_options": "<absent>",
+            "max_tokens": "<absent>",
+            "max_completion_tokens": "<absent>",
+            "temperature": "<absent>",
+            "top_p": "<absent>",
+            "extra_body": "<absent>",
+            "chat_template_kwargs": "<absent>",
+            "message_count": 1,
+            "message_roles": [
+              "user"
+            ],
+            "message_keys_by_role": {
+              "user": [
+                "content",
+                "role"
+              ]
+            },
+            "content_kinds_by_role": {
+              "user": [
+                "str"
+              ]
+            },
+            "content_part_types": [],
+            "assistant_tool_call_keys": [],
+            "assistant_tool_call_function_keys": [],
+            "assistant_tool_call_argument_types": [],
+            "tool_count": 2,
+            "tool_types": [
+              "function"
+            ],
+            "tool_names": [
+              "lookup_weather",
+              "get_order_status"
+            ]
+          }
+        }
+      ]
+    },
+    "deepagents_mini_agent": {
+      "status": "recorded",
+      "error": null,
+      "file": "deepagents_mini_agent.json",
+      "request_count": 2,
+      "requests": [
+        {
+          "seq": 1,
+          "case": "agent_ainvoke",
+          "path": "/v1/chat/completions",
+          "signature": {
+            "top_level_keys": [
+              "messages",
+              "model",
+              "stream",
+              "tools"
+            ],
+            "nonstandard_keys": [],
+            "model": "fabrix-tools",
+            "tool_choice": "<absent>",
+            "parallel_tool_calls": "<absent>",
+            "stream": false,
+            "stream_options": "<absent>",
+            "max_tokens": "<absent>",
+            "max_completion_tokens": "<absent>",
+            "temperature": "<absent>",
+            "top_p": "<absent>",
+            "extra_body": "<absent>",
+            "chat_template_kwargs": "<absent>",
+            "message_count": 2,
+            "message_roles": [
+              "system",
+              "user"
+            ],
+            "message_keys_by_role": {
+              "system": [
+                "content",
+                "role"
+              ],
+              "user": [
+                "content",
+                "role"
+              ]
+            },
+            "content_kinds_by_role": {
+              "system": [
+                "parts"
+              ],
+              "user": [
+                "str"
+              ]
+            },
+            "content_part_types": [
+              "text"
+            ],
+            "assistant_tool_call_keys": [],
+            "assistant_tool_call_function_keys": [],
+            "assistant_tool_call_argument_types": [],
+            "tool_count": 9,
+            "tool_types": [
+              "function"
+            ],
+            "tool_names": [
+              "write_todos",
+              "ls",
+              "read_file",
+              "write_file",
+              "edit_file",
+              "glob",
+              "grep",
+              "task",
+              "lookup_weather"
+            ]
+          }
+        },
+        {
+          "seq": 2,
+          "case": "agent_ainvoke",
+          "path": "/v1/chat/completions",
+          "signature": {
+            "top_level_keys": [
+              "messages",
+              "model",
+              "stream",
+              "tools"
+            ],
+            "nonstandard_keys": [],
+            "model": "fabrix-tools",
+            "tool_choice": "<absent>",
+            "parallel_tool_calls": "<absent>",
+            "stream": false,
+            "stream_options": "<absent>",
+            "max_tokens": "<absent>",
+            "max_completion_tokens": "<absent>",
+            "temperature": "<absent>",
+            "top_p": "<absent>",
+            "extra_body": "<absent>",
+            "chat_template_kwargs": "<absent>",
+            "message_count": 4,
+            "message_roles": [
+              "assistant",
+              "system",
+              "tool",
+              "user"
+            ],
+            "message_keys_by_role": {
+              "assistant": [
+                "content",
+                "role",
+                "tool_calls"
+              ],
+              "system": [
+                "content",
+                "role"
+              ],
+              "tool": [
+                "content",
+                "role",
+                "tool_call_id"
+              ],
+              "user": [
+                "content",
+                "role"
+              ]
+            },
+            "content_kinds_by_role": {
+              "assistant": [
+                "null"
+              ],
+              "system": [
+                "parts"
+              ],
+              "tool": [
+                "str"
+              ],
+              "user": [
+                "str"
+              ]
+            },
+            "content_part_types": [
+              "text"
+            ],
+            "assistant_tool_call_keys": [
+              "function",
+              "id",
+              "type"
+            ],
+            "assistant_tool_call_function_keys": [
+              "arguments",
+              "name"
+            ],
+            "assistant_tool_call_argument_types": [
+              "str"
+            ],
+            "tool_count": 9,
+            "tool_types": [
+              "function"
+            ],
+            "tool_names": [
+              "write_todos",
+              "ls",
+              "read_file",
+              "write_file",
+              "edit_file",
+              "glob",
+              "grep",
+              "task",
+              "lookup_weather"
+            ]
+          }
+        }
+      ]
+    },
+    "litellm_openai": {
+      "status": "skipped",
+      "reason": "미설치: litellm"
+    },
+    "noise_track_b_bind_tools": {
+      "status": "recorded",
+      "error": null,
+      "file": "noise_track_b_bind_tools.json",
+      "request_count": 4,
+      "requests": [
+        {
+          "seq": 1,
+          "case": "react_loop_model=fabrix-tools",
+          "path": "/v1/chat/completions",
+          "signature": {
+            "top_level_keys": [
+              "messages",
+              "model",
+              "stream",
+              "temperature",
+              "tools"
+            ],
+            "nonstandard_keys": [],
+            "model": "fabrix-tools",
+            "tool_choice": "<absent>",
+            "parallel_tool_calls": "<absent>",
+            "stream": false,
+            "stream_options": "<absent>",
+            "max_tokens": "<absent>",
+            "max_completion_tokens": "<absent>",
+            "temperature": 0.0,
+            "top_p": "<absent>",
+            "extra_body": "<absent>",
+            "chat_template_kwargs": "<absent>",
+            "message_count": 2,
+            "message_roles": [
+              "system",
+              "user"
+            ],
+            "message_keys_by_role": {
+              "system": [
+                "content",
+                "role"
+              ],
+              "user": [
+                "content",
+                "role"
+              ]
+            },
+            "content_kinds_by_role": {
+              "system": [
+                "str"
+              ],
+              "user": [
+                "str"
+              ]
+            },
+            "content_part_types": [],
+            "assistant_tool_call_keys": [],
+            "assistant_tool_call_function_keys": [],
+            "assistant_tool_call_argument_types": [],
+            "tool_count": 3,
+            "tool_types": [
+              "function"
+            ],
+            "tool_names": [
+              "scan_message_signature",
+              "collect_importance_maintenance",
+              "collect_dependency_status"
+            ]
+          }
+        },
+        {
+          "seq": 2,
+          "case": "react_loop_model=fabrix-tools",
+          "path": "/v1/chat/completions",
+          "signature": {
+            "top_level_keys": [
+              "messages",
+              "model",
+              "stream",
+              "temperature",
+              "tools"
+            ],
+            "nonstandard_keys": [],
+            "model": "fabrix-tools",
+            "tool_choice": "<absent>",
+            "parallel_tool_calls": "<absent>",
+            "stream": false,
+            "stream_options": "<absent>",
+            "max_tokens": "<absent>",
+            "max_completion_tokens": "<absent>",
+            "temperature": 0.0,
+            "top_p": "<absent>",
+            "extra_body": "<absent>",
+            "chat_template_kwargs": "<absent>",
+            "message_count": 4,
+            "message_roles": [
+              "assistant",
+              "system",
+              "tool",
+              "user"
+            ],
+            "message_keys_by_role": {
+              "assistant": [
+                "content",
+                "role",
+                "tool_calls"
+              ],
+              "system": [
+                "content",
+                "role"
+              ],
+              "tool": [
+                "content",
+                "role",
+                "tool_call_id"
+              ],
+              "user": [
+                "content",
+                "role"
+              ]
+            },
+            "content_kinds_by_role": {
+              "assistant": [
+                "null"
+              ],
+              "system": [
+                "str"
+              ],
+              "tool": [
+                "str"
+              ],
+              "user": [
+                "str"
+              ]
+            },
+            "content_part_types": [],
+            "assistant_tool_call_keys": [
+              "function",
+              "id",
+              "type"
+            ],
+            "assistant_tool_call_function_keys": [
+              "arguments",
+              "name"
+            ],
+            "assistant_tool_call_argument_types": [
+              "str"
+            ],
+            "tool_count": 3,
+            "tool_types": [
+              "function"
+            ],
+            "tool_names": [
+              "scan_message_signature",
+              "collect_importance_maintenance",
+              "collect_dependency_status"
+            ]
+          }
+        },
+        {
+          "seq": 3,
+          "case": "react_loop_model=Qwen3.5-9B",
+          "path": "/v1/chat/completions",
+          "signature": {
+            "top_level_keys": [
+              "chat_template_kwargs",
+              "messages",
+              "model",
+              "stream",
+              "temperature",
+              "tools"
+            ],
+            "nonstandard_keys": [
+              "chat_template_kwargs"
+            ],
+            "model": "Qwen3.5-9B",
+            "tool_choice": "<absent>",
+            "parallel_tool_calls": "<absent>",
+            "stream": false,
+            "stream_options": "<absent>",
+            "max_tokens": "<absent>",
+            "max_completion_tokens": "<absent>",
+            "temperature": 0.0,
+            "top_p": "<absent>",
+            "extra_body": "<absent>",
+            "chat_template_kwargs": {
+              "enable_thinking": false
+            },
+            "message_count": 2,
+            "message_roles": [
+              "system",
+              "user"
+            ],
+            "message_keys_by_role": {
+              "system": [
+                "content",
+                "role"
+              ],
+              "user": [
+                "content",
+                "role"
+              ]
+            },
+            "content_kinds_by_role": {
+              "system": [
+                "str"
+              ],
+              "user": [
+                "str"
+              ]
+            },
+            "content_part_types": [],
+            "assistant_tool_call_keys": [],
+            "assistant_tool_call_function_keys": [],
+            "assistant_tool_call_argument_types": [],
+            "tool_count": 3,
+            "tool_types": [
+              "function"
+            ],
+            "tool_names": [
+              "scan_message_signature",
+              "collect_importance_maintenance",
+              "collect_dependency_status"
+            ]
+          }
+        },
+        {
+          "seq": 4,
+          "case": "react_loop_model=Qwen3.5-9B",
+          "path": "/v1/chat/completions",
+          "signature": {
+            "top_level_keys": [
+              "chat_template_kwargs",
+              "messages",
+              "model",
+              "stream",
+              "temperature",
+              "tools"
+            ],
+            "nonstandard_keys": [
+              "chat_template_kwargs"
+            ],
+            "model": "Qwen3.5-9B",
+            "tool_choice": "<absent>",
+            "parallel_tool_calls": "<absent>",
+            "stream": false,
+            "stream_options": "<absent>",
+            "max_tokens": "<absent>",
+            "max_completion_tokens": "<absent>",
+            "temperature": 0.0,
+            "top_p": "<absent>",
+            "extra_body": "<absent>",
+            "chat_template_kwargs": {
+              "enable_thinking": false
+            },
+            "message_count": 4,
+            "message_roles": [
+              "assistant",
+              "system",
+              "tool",
+              "user"
+            ],
+            "message_keys_by_role": {
+              "assistant": [
+                "content",
+                "role",
+                "tool_calls"
+              ],
+              "system": [
+                "content",
+                "role"
+              ],
+              "tool": [
+                "content",
+                "role",
+                "tool_call_id"
+              ],
+              "user": [
+                "content",
+                "role"
+              ]
+            },
+            "content_kinds_by_role": {
+              "assistant": [
+                "null"
+              ],
+              "system": [
+                "str"
+              ],
+              "tool": [
+                "str"
+              ],
+              "user": [
+                "str"
+              ]
+            },
+            "content_part_types": [],
+            "assistant_tool_call_keys": [
+              "function",
+              "id",
+              "type"
+            ],
+            "assistant_tool_call_function_keys": [
+              "arguments",
+              "name"
+            ],
+            "assistant_tool_call_argument_types": [
+              "str"
+            ],
+            "tool_count": 3,
+            "tool_types": [
+              "function"
+            ],
+            "tool_names": [
+              "scan_message_signature",
+              "collect_importance_maintenance",
+              "collect_dependency_status"
+            ]
+          }
+        }
+      ]
+    },
+    "body_tools_deep_agent": {
+      "status": "recorded",
+      "file": "body_tools_deep_agent.json",
+      "tool_count": 7,
+      "tool_names": [
+        "query_infra_db",
+        "query_live_processes",
+        "query_alarm",
+        "manage_cache",
+        "register_synonym",
+        "general_answer",
+        "inspect_host"
+      ],
+      "schema_json_chars": 1615
+    },
+    "body_tools_noise_track_b": {
+      "status": "recorded",
+      "file": "body_tools_noise_track_b.json",
+      "tool_count": 3,
+      "tool_names": [
+        "scan_message_signature",
+        "collect_importance_maintenance",
+        "collect_dependency_status"
+      ],
+      "schema_json_chars": 658
+    }
+  }
+}

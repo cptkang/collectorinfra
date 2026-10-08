@@ -1,0 +1,26 @@
+{
+  "_comment": "S1 — 도구 3개 중 1개 단발(tool_choice auto). expect[].args는 인자 이름 → 허용 값 목록(문자열은 대소문자 무시 부분 일치 · 수는 값 일치). leak_markers는 반출물 자기 검사용 본문 조각이다.",
+  "scenario": "S1",
+  "tools": ["convert_currency", "get_recipe", "find_book"],
+  "tool_choice": "auto",
+  "cases": [
+    {"id": "s1_usd_eur", "query": "How much is 120 US dollars in euros?",
+     "expect": [{"name": "convert_currency", "args": {"amount": [120], "from_currency": ["USD"], "to_currency": ["EUR"]}}]},
+    {"id": "s1_risotto", "query": "Find me a recipe for mushroom risotto for four people.",
+     "expect": [{"name": "get_recipe", "args": {"dish": ["risotto"], "servings": [4]}}]},
+    {"id": "s1_book_en", "query": "Is there a book called The Silent Orchard? Please look it up.",
+     "expect": [{"name": "find_book", "args": {"title": ["silent orchard"]}}]},
+    {"id": "s1_yen_won", "query": "Convert 7500 Japanese yen to Korean won.",
+     "expect": [{"name": "convert_currency", "args": {"amount": [7500], "from_currency": ["JPY"], "to_currency": ["KRW"]}}]},
+    {"id": "s1_gbp_ko", "query": "50 영국 파운드는 미국 달러로 얼마야?",
+     "expect": [{"name": "convert_currency", "args": {"amount": [50], "from_currency": ["GBP"], "to_currency": ["USD"]}}]},
+    {"id": "s1_recipe_ko", "query": "된장찌개 레시피 찾아줘. 2인분이면 좋겠어.",
+     "expect": [{"name": "get_recipe", "args": {"dish": ["된장"], "servings": [2]}}]},
+    {"id": "s1_book_ko", "query": "'겨울 등대'라는 책이 도서관에 있는지 찾아봐 줘.",
+     "expect": [{"name": "find_book", "args": {"title": ["겨울 등대"]}}]},
+    {"id": "s1_pancake", "query": "I want to make pancakes this weekend. Can you get me a recipe?",
+     "expect": [{"name": "get_recipe", "args": {"dish": ["pancake"]}}]}
+  ],
+  "leak_markers": ["120 US dollars", "mushroom risotto", "The Silent Orchard", "7500 Japanese yen",
+                   "영국 파운드", "된장찌개 레시피", "겨울 등대", "pancakes this weekend"]
+}

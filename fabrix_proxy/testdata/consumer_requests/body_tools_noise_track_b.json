@@ -1,0 +1,38 @@
+{
+  "source": "noise_gate/infrastructure/noise_signal_tools.py:build_noise_signal_tools (collect_dependency=True)",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "scan_message_signature",
+        "description": "알람 메시지(condition_log)를 OS 장애 시그니처로 스캔하여 상향 심각도 후보를 반환한다. 읽기전용·결정적(LLM 없음). 인자 없음.",
+        "parameters": {
+          "properties": {},
+          "type": "object"
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "collect_importance_maintenance",
+        "description": "이 서버의 자산 중요도·유지보수 모드·폴스타 알림정책을 폴스타 DB에서 읽기전용 고정 SQL로 조회한다. 인자 없음.",
+        "parameters": {
+          "properties": {},
+          "type": "object"
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "collect_dependency_status",
+        "description": "이 서버의 가용성 의존 부모 리소스 상태(정상/비정상)를 폴스타 DB에서 읽기전용 고정 SQL로 조회한다(연쇄 노이즈 판단용). 인자 없음.",
+        "parameters": {
+          "properties": {},
+          "type": "object"
+        }
+      }
+    }
+  ]
+}

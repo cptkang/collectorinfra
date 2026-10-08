@@ -1,0 +1,84 @@
+{
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "example_lookup_item",
+        "description": "Look up a catalog item by its code.",
+        "parameters": {
+          "type": "object",
+          "properties": {"code": {"type": "string", "description": "Item code"}},
+          "required": ["code"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "example_get_status",
+        "description": "Get the delivery status of an order.",
+        "parameters": {
+          "type": "object",
+          "properties": {"order_id": {"type": "string", "description": "Order number"}},
+          "required": ["order_id"]
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "pattern": "single",
+      "messages": [
+        {"role": "user", "content": "What is the price of item A-100?"}
+      ],
+      "expected": {
+        "tool_calls": [
+          {"name": "example_lookup_item", "arguments": {"code": "A-100"}}
+        ]
+      }
+    },
+    {
+      "pattern": "parallel",
+      "messages": [
+        {"role": "user", "content": "Show item B-200 and the delivery status of order 77."}
+      ],
+      "expected": {
+        "tool_calls": [
+          {"name": "example_lookup_item", "arguments": {"code": "B-200"}},
+          {"name": "example_get_status", "arguments": {"order_id": "77"}}
+        ]
+      }
+    },
+    {
+      "pattern": "after_result",
+      "messages": [
+        {"role": "user", "content": "Is item C-300 in stock?"},
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_example_1",
+              "type": "function",
+              "function": {"name": "example_lookup_item", "arguments": "{\"code\": \"C-300\"}"}
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_example_1",
+          "name": "example_lookup_item",
+          "content": "{\"code\": \"C-300\", \"price\": 12.5, \"in_stock\": true}"
+        }
+      ],
+      "expected": {"text": "Yes. Item C-300 is in stock, and its price is 12.5."}
+    },
+    {
+      "pattern": "no_tool",
+      "messages": [
+        {"role": "user", "content": "How do you say thank you in French?"}
+      ],
+      "expected": {"text": "In French, thank you is \"merci\"."}
+    }
+  ]
+}

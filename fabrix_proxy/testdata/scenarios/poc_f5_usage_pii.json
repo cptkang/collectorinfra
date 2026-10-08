@@ -1,0 +1,20 @@
+{
+  "_comment": "F5 — usage 유무(평문 질의 · 도구 있음) 각 N건 · PII 필터: 합성 호스트명·IP(문서용 대역 192.0.2.0/24)를 든 도구 결과로 400 content_filter 여부 각 N건. F5만 합성 호스트명·IP를 의도적으로 쓴다.",
+  "scenario": "F5",
+  "tools": ["run_check"],
+  "tool_choice": "auto",
+  "usage_cases": [
+    {"id": "f5_usage", "messages": [{"role": "user", "content": "Please reply with a short greeting."}]}
+  ],
+  "pii_cases": [
+    {"id": "f5_pii", "messages": [
+      {"role": "user", "content": "Summarize the latest connectivity check in one sentence."},
+      {"role": "assistant", "content": null, "tool_calls": [
+        {"id": "call_f5_1", "type": "function", "function": {"name": "run_check", "arguments": "{\"target\": \"host-sample-01\"}"}}]},
+      {"role": "tool", "tool_call_id": "call_f5_1", "name": "run_check",
+       "content": "host-sample-01 (192.0.2.15) answered in 12 ms; host-sample-02 (192.0.2.16) answered in 15 ms"}
+    ]}
+  ],
+  "leak_markers": ["host-sample-01", "host-sample-02", "192.0.2.15", "192.0.2.16", "short greeting",
+                   "latest connectivity check"]
+}

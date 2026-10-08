@@ -1,0 +1,367 @@
+{
+  "consumer": "noise_track_b_bind_tools",
+  "description": "noise_gate 트랙 B — create_orchestrator_llm(vllm)·bind_tools·run_signal_react_loop(하위 프로세스)",
+  "fake_base_url": "http://127.0.0.1:<port>/v1",
+  "versions": {
+    "python": "3.13.1",
+    "openai": "2.42.0",
+    "langchain-openai": "1.3.2",
+    "langchain-core": "1.4.7",
+    "langchain": "1.3.9",
+    "langgraph": "1.2.5",
+    "deepagents": "0.6.10",
+    "httpx": "0.28.1",
+    "litellm": "not installed"
+  },
+  "error": null,
+  "requests": [
+    {
+      "seq": 1,
+      "case": "react_loop_model=fabrix-tools",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "header_names": [
+        "accept",
+        "accept-encoding",
+        "authorization",
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "user-agent",
+        "x-stainless-arch",
+        "x-stainless-async",
+        "x-stainless-lang",
+        "x-stainless-os",
+        "x-stainless-package-version",
+        "x-stainless-raw-response",
+        "x-stainless-read-timeout",
+        "x-stainless-retry-count",
+        "x-stainless-runtime",
+        "x-stainless-runtime-version"
+      ],
+      "body": {
+        "messages": [
+          {
+            "content": "당신은 인프라 알람의 **신호 수집 보조자**입니다.\n주어진 알람 메시지를 해석하여, 위험도를 정확히 보강하는 데 필요한 신호를 **읽기전용 도구로만**\n수집하세요. 사용할 수 있는 도구는 메시지 시그니처 스캔·자산 중요도/유지보수 조회·의존성 상태\n조회입니다. 모두 읽기전용이며 데이터를 변경하지 않습니다.\n\n절대 규칙:\n- **발송 여부(통보/억제/티어)는 판단하지 마세요.** 그 판단은 별도의 결정적 규칙이 수행합니다.\n  당신은 오직 신호를 모으는 역할입니다.\n- 불필요한 도구를 반복 호출하지 말고, 판단에 필요한 신호만 수집하면 종료하세요.\n- 도구가 반환한 값을 왜곡하거나 지어내지 마세요.\n\n신호를 충분히 모았다고 판단되면, 수집한 신호를 간단히 요약하고 마치세요.\n",
+            "role": "system"
+          },
+          {
+            "content": "알람명: sample alarm\n서버: host-a\n자원유형: log\n심각도: 2\n메시지(condition_log): kernel: sample error line",
+            "role": "user"
+          }
+        ],
+        "model": "fabrix-tools",
+        "stream": false,
+        "temperature": 0.0,
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "scan_message_signature",
+              "description": "알람 메시지(condition_log)를 OS 장애 시그니처로 스캔하여 상향 심각도 후보를 반환한다. 읽기전용·결정적(LLM 없음). 인자 없음.",
+              "parameters": {
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "collect_importance_maintenance",
+              "description": "이 서버의 자산 중요도·유지보수 모드·폴스타 알림정책을 폴스타 DB에서 읽기전용 고정 SQL로 조회한다. 인자 없음.",
+              "parameters": {
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "collect_dependency_status",
+              "description": "이 서버의 가용성 의존 부모 리소스 상태(정상/비정상)를 폴스타 DB에서 읽기전용 고정 SQL로 조회한다(연쇄 노이즈 판단용). 인자 없음.",
+              "parameters": {
+                "properties": {},
+                "type": "object"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 2,
+      "case": "react_loop_model=fabrix-tools",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "header_names": [
+        "accept",
+        "accept-encoding",
+        "authorization",
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "user-agent",
+        "x-stainless-arch",
+        "x-stainless-async",
+        "x-stainless-lang",
+        "x-stainless-os",
+        "x-stainless-package-version",
+        "x-stainless-raw-response",
+        "x-stainless-read-timeout",
+        "x-stainless-retry-count",
+        "x-stainless-runtime",
+        "x-stainless-runtime-version"
+      ],
+      "body": {
+        "messages": [
+          {
+            "content": "당신은 인프라 알람의 **신호 수집 보조자**입니다.\n주어진 알람 메시지를 해석하여, 위험도를 정확히 보강하는 데 필요한 신호를 **읽기전용 도구로만**\n수집하세요. 사용할 수 있는 도구는 메시지 시그니처 스캔·자산 중요도/유지보수 조회·의존성 상태\n조회입니다. 모두 읽기전용이며 데이터를 변경하지 않습니다.\n\n절대 규칙:\n- **발송 여부(통보/억제/티어)는 판단하지 마세요.** 그 판단은 별도의 결정적 규칙이 수행합니다.\n  당신은 오직 신호를 모으는 역할입니다.\n- 불필요한 도구를 반복 호출하지 말고, 판단에 필요한 신호만 수집하면 종료하세요.\n- 도구가 반환한 값을 왜곡하거나 지어내지 마세요.\n\n신호를 충분히 모았다고 판단되면, 수집한 신호를 간단히 요약하고 마치세요.\n",
+            "role": "system"
+          },
+          {
+            "content": "알람명: sample alarm\n서버: host-a\n자원유형: log\n심각도: 2\n메시지(condition_log): kernel: sample error line",
+            "role": "user"
+          },
+          {
+            "content": null,
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "type": "function",
+                "id": "call_0001",
+                "function": {
+                  "name": "scan_message_signature",
+                  "arguments": "{}"
+                }
+              }
+            ]
+          },
+          {
+            "content": "메시지 시그니처: 장애 시그니처 없음",
+            "role": "tool",
+            "tool_call_id": "call_0001"
+          }
+        ],
+        "model": "fabrix-tools",
+        "stream": false,
+        "temperature": 0.0,
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "scan_message_signature",
+              "description": "알람 메시지(condition_log)를 OS 장애 시그니처로 스캔하여 상향 심각도 후보를 반환한다. 읽기전용·결정적(LLM 없음). 인자 없음.",
+              "parameters": {
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "collect_importance_maintenance",
+              "description": "이 서버의 자산 중요도·유지보수 모드·폴스타 알림정책을 폴스타 DB에서 읽기전용 고정 SQL로 조회한다. 인자 없음.",
+              "parameters": {
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "collect_dependency_status",
+              "description": "이 서버의 가용성 의존 부모 리소스 상태(정상/비정상)를 폴스타 DB에서 읽기전용 고정 SQL로 조회한다(연쇄 노이즈 판단용). 인자 없음.",
+              "parameters": {
+                "properties": {},
+                "type": "object"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 3,
+      "case": "react_loop_model=Qwen3.5-9B",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "header_names": [
+        "accept",
+        "accept-encoding",
+        "authorization",
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "user-agent",
+        "x-stainless-arch",
+        "x-stainless-async",
+        "x-stainless-lang",
+        "x-stainless-os",
+        "x-stainless-package-version",
+        "x-stainless-raw-response",
+        "x-stainless-read-timeout",
+        "x-stainless-retry-count",
+        "x-stainless-runtime",
+        "x-stainless-runtime-version"
+      ],
+      "body": {
+        "messages": [
+          {
+            "content": "당신은 인프라 알람의 **신호 수집 보조자**입니다.\n주어진 알람 메시지를 해석하여, 위험도를 정확히 보강하는 데 필요한 신호를 **읽기전용 도구로만**\n수집하세요. 사용할 수 있는 도구는 메시지 시그니처 스캔·자산 중요도/유지보수 조회·의존성 상태\n조회입니다. 모두 읽기전용이며 데이터를 변경하지 않습니다.\n\n절대 규칙:\n- **발송 여부(통보/억제/티어)는 판단하지 마세요.** 그 판단은 별도의 결정적 규칙이 수행합니다.\n  당신은 오직 신호를 모으는 역할입니다.\n- 불필요한 도구를 반복 호출하지 말고, 판단에 필요한 신호만 수집하면 종료하세요.\n- 도구가 반환한 값을 왜곡하거나 지어내지 마세요.\n\n신호를 충분히 모았다고 판단되면, 수집한 신호를 간단히 요약하고 마치세요.\n",
+            "role": "system"
+          },
+          {
+            "content": "알람명: sample alarm\n서버: host-a\n자원유형: log\n심각도: 2\n메시지(condition_log): kernel: sample error line",
+            "role": "user"
+          }
+        ],
+        "model": "Qwen3.5-9B",
+        "stream": false,
+        "temperature": 0.0,
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "scan_message_signature",
+              "description": "알람 메시지(condition_log)를 OS 장애 시그니처로 스캔하여 상향 심각도 후보를 반환한다. 읽기전용·결정적(LLM 없음). 인자 없음.",
+              "parameters": {
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "collect_importance_maintenance",
+              "description": "이 서버의 자산 중요도·유지보수 모드·폴스타 알림정책을 폴스타 DB에서 읽기전용 고정 SQL로 조회한다. 인자 없음.",
+              "parameters": {
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "collect_dependency_status",
+              "description": "이 서버의 가용성 의존 부모 리소스 상태(정상/비정상)를 폴스타 DB에서 읽기전용 고정 SQL로 조회한다(연쇄 노이즈 판단용). 인자 없음.",
+              "parameters": {
+                "properties": {},
+                "type": "object"
+              }
+            }
+          }
+        ],
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    },
+    {
+      "seq": 4,
+      "case": "react_loop_model=Qwen3.5-9B",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "header_names": [
+        "accept",
+        "accept-encoding",
+        "authorization",
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "user-agent",
+        "x-stainless-arch",
+        "x-stainless-async",
+        "x-stainless-lang",
+        "x-stainless-os",
+        "x-stainless-package-version",
+        "x-stainless-raw-response",
+        "x-stainless-read-timeout",
+        "x-stainless-retry-count",
+        "x-stainless-runtime",
+        "x-stainless-runtime-version"
+      ],
+      "body": {
+        "messages": [
+          {
+            "content": "당신은 인프라 알람의 **신호 수집 보조자**입니다.\n주어진 알람 메시지를 해석하여, 위험도를 정확히 보강하는 데 필요한 신호를 **읽기전용 도구로만**\n수집하세요. 사용할 수 있는 도구는 메시지 시그니처 스캔·자산 중요도/유지보수 조회·의존성 상태\n조회입니다. 모두 읽기전용이며 데이터를 변경하지 않습니다.\n\n절대 규칙:\n- **발송 여부(통보/억제/티어)는 판단하지 마세요.** 그 판단은 별도의 결정적 규칙이 수행합니다.\n  당신은 오직 신호를 모으는 역할입니다.\n- 불필요한 도구를 반복 호출하지 말고, 판단에 필요한 신호만 수집하면 종료하세요.\n- 도구가 반환한 값을 왜곡하거나 지어내지 마세요.\n\n신호를 충분히 모았다고 판단되면, 수집한 신호를 간단히 요약하고 마치세요.\n",
+            "role": "system"
+          },
+          {
+            "content": "알람명: sample alarm\n서버: host-a\n자원유형: log\n심각도: 2\n메시지(condition_log): kernel: sample error line",
+            "role": "user"
+          },
+          {
+            "content": null,
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "type": "function",
+                "id": "call_0002",
+                "function": {
+                  "name": "scan_message_signature",
+                  "arguments": "{}"
+                }
+              }
+            ]
+          },
+          {
+            "content": "메시지 시그니처: 장애 시그니처 없음",
+            "role": "tool",
+            "tool_call_id": "call_0002"
+          }
+        ],
+        "model": "Qwen3.5-9B",
+        "stream": false,
+        "temperature": 0.0,
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "scan_message_signature",
+              "description": "알람 메시지(condition_log)를 OS 장애 시그니처로 스캔하여 상향 심각도 후보를 반환한다. 읽기전용·결정적(LLM 없음). 인자 없음.",
+              "parameters": {
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "collect_importance_maintenance",
+              "description": "이 서버의 자산 중요도·유지보수 모드·폴스타 알림정책을 폴스타 DB에서 읽기전용 고정 SQL로 조회한다. 인자 없음.",
+              "parameters": {
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "collect_dependency_status",
+              "description": "이 서버의 가용성 의존 부모 리소스 상태(정상/비정상)를 폴스타 DB에서 읽기전용 고정 SQL로 조회한다(연쇄 노이즈 판단용). 인자 없음.",
+              "parameters": {
+                "properties": {},
+                "type": "object"
+              }
+            }
+          }
+        ],
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  ]
+}

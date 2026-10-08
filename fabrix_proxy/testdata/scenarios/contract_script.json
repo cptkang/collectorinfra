@@ -1,0 +1,26 @@
+{
+  "_comment": "plans/148 테스트 B(계약)·C(소비자 종단) 공용 대본 — scripts/fake_kbgenai.py 형식. 사용자 질의의 CASE_* 표지로 오류 경로를 고르고, 그 외에는 도구 호출 → <tool_response> 뒤 최종 평문 순서로 응답한다. 합성 도구 이름만 쓴다.",
+  "rules": [
+    {"when": {"any_contains": "CASE_SLOW"}, "delay_s": 4,
+     "respond": {"status": "SUCCESS", "content": "too late"}},
+    {"when": {"any_contains": "CASE_PII_HTTP"}, "http_status": 400,
+     "respond": {"detail": "민감정보 감지됨"}},
+    {"when": {"any_contains": "CASE_PII"},
+     "respond": {"status": "FILTER_INVALID", "content": ""}},
+    {"when": {"any_contains": "CASE_UPSTREAM_FAIL"},
+     "respond": {"status": "FAIL", "content": ""}},
+    {"when": {"any_contains": "CASE_HTTP500"}, "http_status": 500},
+    {"when": {"any_contains": "CASE_INVALID"},
+     "respond": {"status": "SUCCESS",
+                 "content": "<tool_call>{\"name\": \"no_such_tool\", \"arguments\": {}}</tool_call>"}},
+    {"when": {"any_contains": "CASE_PLAIN"},
+     "respond": {"status": "SUCCESS", "content": "Plain answer #{{SEQ}}"}},
+    {"when": {"last_contains": "<tool_response"},
+     "respond": {"status": "SUCCESS", "content": "Final answer: Paris is 21 degrees and clear."}},
+    {"when": {"system_contains": "scan_message_signature"},
+     "respond": {"status": "SUCCESS",
+                 "content": "<tool_call>{\"name\": \"scan_message_signature\", \"arguments\": {}}</tool_call>\n<tool_call>{\"name\": \"collect_importance_maintenance\", \"arguments\": {}}</tool_call>"}}
+  ],
+  "default": {"status": "SUCCESS",
+              "content": "<tool_call>{\"name\": \"lookup_weather\", \"arguments\": {\"city\": \"Paris\"}}</tool_call>"}
+}

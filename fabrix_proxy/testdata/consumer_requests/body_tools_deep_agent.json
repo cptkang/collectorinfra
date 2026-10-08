@@ -1,0 +1,131 @@
+{
+  "source": "src/orchestration/deepagents_tools.py:build_tools (1단 deep agent)",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "query_infra_db",
+        "description": "인프라 DB(서버 사양·사용량·성능 통계) 조회 — 알람/이벤트(event) 조회는 alarm_query 담당",
+        "parameters": {
+          "properties": {
+            "sub_query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub_query"
+          ],
+          "type": "object"
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "query_live_processes",
+        "description": "특정 서버의 현재/실시간 프로세스 리스트 조회 (DB 이력이 아닌 실시간 폴스타 프로세스 API)",
+        "parameters": {
+          "properties": {
+            "sub_query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub_query"
+          ],
+          "type": "object"
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "query_alarm",
+        "description": "알람/모니터링 이벤트(event) 조회 — 알람 현황·이력, event 발생 서버, alert, 경보",
+        "parameters": {
+          "properties": {
+            "sub_query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub_query"
+          ],
+          "type": "object"
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "manage_cache",
+        "description": "스키마 캐시·유사어 관리",
+        "parameters": {
+          "properties": {
+            "sub_query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub_query"
+          ],
+          "type": "object"
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "register_synonym",
+        "description": "유사어 등록",
+        "parameters": {
+          "properties": {
+            "sub_query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub_query"
+          ],
+          "type": "object"
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "general_answer",
+        "description": "DB 미접근 일반 응답",
+        "parameters": {
+          "properties": {
+            "sub_query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub_query"
+          ],
+          "type": "object"
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "inspect_host",
+        "description": "특정 서버의 OS 구성·자원 현황·메트릭 추세 단건 조회 (DB SQL도 장애 진단 위임도 아닌 mcp_server 고수준 도구 경로)",
+        "parameters": {
+          "properties": {
+            "sub_query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sub_query"
+          ],
+          "type": "object"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "_comment": "F2 탐침 — (a) contents 원소 수(2·3·4)와 빈 첫 원소 유무별로 모델이 원소 역할을 인식하는지(응답에 expect 표지 값 포함으로 자동 채점) (b) 같은 3턴 도구 대화를 turns·transcript로 직렬화해 마지막 tool_response를 인식하고 기대한 다음 호출(expect_call)을 고르는지(parse_response로 채점). 프록시 미경유 · KBGenAI 직접.",
+  "scenario": "F2",
+  "role_system_prompt": "You are a test assistant in a short conversation. Follow the latest user message exactly and keep the reply short.",
+  "role_cases": [
+    {"id": "n2_empty_first", "contents": ["", "My code word is LUMEN-31. Reply with only my code word."], "expect": "LUMEN-31"},
+    {"id": "n3_no_empty", "contents": ["My code word is CORAL-58.", "Understood, I will remember your code word.", "What code word did I give you? Reply with only the code word."], "expect": "CORAL-58"},
+    {"id": "n4_empty_first", "contents": ["", "My code word is BIRCH-72.", "Understood, I will remember your code word.", "What code word did I give you? Reply with only the code word."], "expect": "BIRCH-72"},
+    {"id": "n4_assistant_said", "contents": ["", "Please pick a code word for us.", "Our code word is DELTA-94.", "Which code word did you pick in your previous reply? Reply with only that code word."], "expect": "DELTA-94"}
+  ],
+  "tool_conversation": {
+    "tools": ["get_ticket", "get_person"],
+    "messages": [
+      {"role": "user", "content": "Find the owner of support ticket T-5001 and then look up that person's profile."},
+      {"role": "assistant", "content": null, "tool_calls": [
+        {"id": "call_f2_1", "type": "function", "function": {"name": "get_ticket", "arguments": "{\"ticket_id\": \"T-5001\"}"}}]},
+      {"role": "tool", "tool_call_id": "call_f2_1", "name": "get_ticket",
+       "content": "{\"ticket_id\": \"T-5001\", \"owner_id\": \"u-33\", \"verification_code\": \"NX-3308\"}"}
+    ],
+    "expect_call": {"name": "get_person", "args": {"person_id": ["u-33"]}}
+  },
+  "leak_markers": ["LUMEN-31", "CORAL-58", "BIRCH-72", "DELTA-94", "NX-3308", "owner of support ticket T-5001"]
+}

@@ -1,0 +1,18 @@
+{
+  "_comment": "S2 — 병렬 도구 2개가 필요한 질의(parallel_tool_calls true). 선택 정답 = 호출 이름 집합이 expect와 같다.",
+  "scenario": "S2",
+  "tools": ["convert_currency", "get_recipe", "find_book"],
+  "tool_choice": "auto",
+  "cases": [
+    {"id": "s2_money_soup", "query": "Convert 10 US dollars to euros, and also find a recipe for lentil soup.",
+     "expect": [{"name": "convert_currency", "args": {"amount": [10], "from_currency": ["USD"], "to_currency": ["EUR"]}},
+                {"name": "get_recipe", "args": {"dish": ["lentil"]}}]},
+    {"id": "s2_book_bread", "query": "Look up the book 'Paper Comet' and give me a recipe for banana bread.",
+     "expect": [{"name": "find_book", "args": {"title": ["paper comet"]}},
+                {"name": "get_recipe", "args": {"dish": ["banana"]}}]},
+    {"id": "s2_cad_book_ko", "query": "100 캐나다 달러를 엔화로 바꾸면 얼마인지 알려 주고, '푸른 정원'이라는 책도 찾아줘.",
+     "expect": [{"name": "convert_currency", "args": {"amount": [100], "from_currency": ["CAD"], "to_currency": ["JPY"]}},
+                {"name": "find_book", "args": {"title": ["푸른 정원"]}}]}
+  ],
+  "leak_markers": ["lentil soup", "Paper Comet", "banana bread", "캐나다 달러", "푸른 정원"]
+}

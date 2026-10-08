@@ -1,0 +1,34 @@
+{
+  "_comment": "S5 — 5턴 ReAct. 러너가 tool_results(도구 → 인자 이름 → 값 → 결과 객체)로 합성 도구 결과를 돌려주고, 모델이 다음 행동을 고른다. 완주 = max_turns 안에 최종 평문 · 반영 = 최종 답에 reflect 값이 모두 포함 · 같은 호출(이름+인자) 반복 기록. 매치가 없으면 {\"error\": \"not_found\"}.",
+  "scenario": "S5",
+  "tools": ["get_ticket", "get_person", "get_office"],
+  "tool_choice": "auto",
+  "max_turns": 5,
+  "tool_results": {
+    "get_ticket": {"ticket_id": {
+      "T-3001": {"ticket_id": "T-3001", "owner_id": "u-58", "verification_code": "ZX-4417"},
+      "T-3002": {"ticket_id": "T-3002", "owner_id": "u-71", "verification_code": "QK-2096"},
+      "T-3003": {"ticket_id": "T-3003", "owner_id": "u-90", "verification_code": "VR-5531"}
+    }},
+    "get_person": {"person_id": {
+      "u-58": {"person_id": "u-58", "name": "Dana Ilves", "office_id": "of-9"},
+      "u-71": {"person_id": "u-71", "name": "Jun Arlo", "office_id": "of-3"},
+      "u-90": {"person_id": "u-90", "name": "Mio Tasker", "office_id": "of-5"}
+    }},
+    "get_office": {"office_id": {
+      "of-9": {"office_id": "of-9", "office_name": "Harbor Point"},
+      "of-3": {"office_id": "of-3", "office_name": "Cedar Hall"},
+      "of-5": {"office_id": "of-5", "office_name": "Maple Court"}
+    }}
+  },
+  "cases": [
+    {"id": "s5_ticket_en", "query": "Look up support ticket T-3001, find its owner, and tell me the owner's office name and the ticket's verification code.",
+     "reflect": ["ZX-4417", "Harbor Point"]},
+    {"id": "s5_ticket_ko", "query": "지원 티켓 T-3002를 조회해서 담당자를 찾고, 그 담당자의 사무실 이름과 티켓 확인 코드를 알려줘.",
+     "reflect": ["QK-2096", "Cedar Hall"]},
+    {"id": "s5_ticket_en2", "query": "Who owns ticket T-3003? Report the owner's office name and the ticket's verification code.",
+     "reflect": ["VR-5531", "Maple Court"]}
+  ],
+  "leak_markers": ["ZX-4417", "QK-2096", "VR-5531", "Harbor Point", "Cedar Hall", "Maple Court",
+                   "Dana Ilves", "Jun Arlo", "Mio Tasker", "find its owner", "담당자를 찾고"]
+}

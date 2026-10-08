@@ -1,0 +1,200 @@
+{
+  "consumer": "chatopenai_bind_tools_ainvoke",
+  "description": "ChatOpenAI.bind_tools(…).ainvoke 2턴(도구 호출 → ToolMessage → 최종)",
+  "fake_base_url": "http://127.0.0.1:<port>/v1",
+  "versions": {
+    "python": "3.13.1",
+    "openai": "2.42.0",
+    "langchain-openai": "1.3.2",
+    "langchain-core": "1.4.7",
+    "langchain": "1.3.9",
+    "langgraph": "1.2.5",
+    "deepagents": "0.6.10",
+    "httpx": "0.28.1",
+    "litellm": "not installed"
+  },
+  "error": null,
+  "requests": [
+    {
+      "seq": 1,
+      "case": "turn1_tool_call",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "header_names": [
+        "accept",
+        "accept-encoding",
+        "authorization",
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "user-agent",
+        "x-stainless-arch",
+        "x-stainless-async",
+        "x-stainless-lang",
+        "x-stainless-os",
+        "x-stainless-package-version",
+        "x-stainless-raw-response",
+        "x-stainless-retry-count",
+        "x-stainless-runtime",
+        "x-stainless-runtime-version"
+      ],
+      "body": {
+        "messages": [
+          {
+            "content": "What is the weather in Springfield right now?",
+            "role": "user"
+          }
+        ],
+        "model": "fabrix-tools",
+        "stream": false,
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "lookup_weather",
+              "description": "Look up the current weather for a city.",
+              "parameters": {
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  },
+                  "unit": {
+                    "default": "celsius",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "get_order_status",
+              "description": "Get the shipping status of an order.",
+              "parameters": {
+                "properties": {
+                  "order_id": {
+                    "type": "string"
+                  },
+                  "include_items": {
+                    "default": false,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "order_id"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "seq": 2,
+      "case": "turn2_after_tool",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "header_names": [
+        "accept",
+        "accept-encoding",
+        "authorization",
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "user-agent",
+        "x-stainless-arch",
+        "x-stainless-async",
+        "x-stainless-lang",
+        "x-stainless-os",
+        "x-stainless-package-version",
+        "x-stainless-raw-response",
+        "x-stainless-retry-count",
+        "x-stainless-runtime",
+        "x-stainless-runtime-version"
+      ],
+      "body": {
+        "messages": [
+          {
+            "content": "What is the weather in Springfield right now?",
+            "role": "user"
+          },
+          {
+            "content": null,
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "type": "function",
+                "id": "call_0001",
+                "function": {
+                  "name": "lookup_weather",
+                  "arguments": "{\"city\": \"sample\"}"
+                }
+              }
+            ]
+          },
+          {
+            "content": "21 degrees, clear",
+            "role": "tool",
+            "tool_call_id": "call_0001"
+          }
+        ],
+        "model": "fabrix-tools",
+        "stream": false,
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "lookup_weather",
+              "description": "Look up the current weather for a city.",
+              "parameters": {
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  },
+                  "unit": {
+                    "default": "celsius",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "get_order_status",
+              "description": "Get the shipping status of an order.",
+              "parameters": {
+                "properties": {
+                  "order_id": {
+                    "type": "string"
+                  },
+                  "include_items": {
+                    "default": false,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "order_id"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
