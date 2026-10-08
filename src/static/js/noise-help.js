@@ -162,6 +162,17 @@ window.NOISE_HELP = {
                 + "않습니다).",
             read: "값이 — 이면 그 신호가 수집되지 않았거나 해당 기능이 꺼져 있던 것입니다.",
         },
+        "drawer.episode": {
+            title: "사건 피드백",
+            def: "크로스소스 사건(같은 존·같은 호스트의 인프라 알람과 APM 알람 묶음)에 묶인 판단에만 "
+                + "보입니다. 「이 묶음은 틀렸다(분리)」는 서로 무관한 알람이 한 사건으로 묶였다는 뜻이고, "
+                + "「강등된 증상이 실제로 조치 필요」는 원인 아래로 내려간(또는 기록 모드에서 내려갔을) "
+                + "증상이 사실은 대응이 필요했다는 뜻입니다.",
+            read: "두 피드백은 사건 순도·거짓 강등률 지표의 분자로만 쓰입니다 — 판정을 바로 바꾸지 않고, "
+                + "알람 카드의 유효/노이즈 피드백(LLM 참고 사례)과도 섞이지 않습니다.",
+            caution: "운영자 화면에서만 남길 수 있습니다. 작성자 계정이 함께 기록됩니다.",
+            keys: ["NOISE_CROSS_SOURCE_MODE", "NOISE_FEEDBACK_STORE_ENABLED"],
+        },
         "panel.bucket": {
             title: "구간 판단 목록",
             def: "추이 그래프의 막대 1개(한 구간) 동안 게이트가 내린 판단입니다. 총 건수는 그 막대의 합계와 "
@@ -174,6 +185,8 @@ window.NOISE_HELP = {
     stageSettings: {
         self_heal: ["NOISE_SELF_HEAL_WINDOW_SECONDS"],
         resolved: ["NOISE_RESOLVED_TO_DASHBOARD"],
+        // plans/144 — 실제로 낮추는 것은 강제(enforce) 모드에서 규칙 단위로 켠 행뿐이다.
+        cross_source: ["NOISE_CROSS_SOURCE_MODE", "NOISE_CROSS_SOURCE_RULES_PATH", "NOISE_EPISODE_IDLE_SECONDS"],
     },
 
     // 결정 추적 드로어 "신호 스냅샷" 16키 — 영문 키 옆에 한국어 이름·설명을 붙인다.
@@ -248,5 +261,35 @@ window.NOISE_HELP = {
         app_impact_was_signals: "앱 영향 — WAS 판정",
         app_impact_source: "앱 영향 — 소스",
         app_impact_error: "앱 영향 조회 실패 사유",
+        // plans/144 W5 — 제니퍼 알람 정책·크로스소스 사건 근거(결정 단계와 무관하게 실린다).
+        // 중첩 근거는 `부모.자식` 키로 한 줄씩 펼친다(noise.js flattenEvidence).
+        apm_policy: "제니퍼 정책",
+        "apm_policy.event_type_norm": "제니퍼 정책 — 정규화 유형",
+        "apm_policy.policy_row": "제니퍼 정책 — 적용 정책 행",
+        "apm_policy.persistence": "제니퍼 정책 — 지속 조건",
+        "apm_policy.persistence.count": "지속 조건 — 창 안 발생 수",
+        "apm_policy.persistence.min_count": "지속 조건 — 필요 발생 수",
+        "apm_policy.persistence.window_seconds": "지속 조건 — 창",
+        "apm_policy.persistence.met": "지속 조건 — 충족",
+        "apm_policy.persistence.reevaluated": "지속 조건 — 충족 뒤 재판정",
+        "apm_policy.escalated_from": "제니퍼 정책 — 직전 통보 심각도(상승 우회)",
+        "apm_policy.policy_error": "제니퍼 정책 적재 오류",
+        episode_id: "크로스소스 사건 ID",
+        cross_source: "크로스소스 사건",
+        "cross_source.mode": "크로스소스 — 모드",
+        "cross_source.host_key": "크로스소스 — 공통 호스트 키",
+        "cross_source.rule_id": "크로스소스 — 규칙 ID",
+        "cross_source.cause_alarm_id": "크로스소스 — 원인 알람",
+        "cross_source.lag_seconds": "크로스소스 — 원인→증상 시차",
+        "cross_source.action": "크로스소스 — 규칙 판정",
+        "cross_source.enforce": "크로스소스 — 규칙 단위 강제",
+        "cross_source.missing": "크로스소스 — 빠진 강등 조건",
+        "cross_source.applied": "크로스소스 — 강등 적용됨",
+        "cross_source.related_effects": "크로스소스 — 연관 증상(이미 통보됨)",
+        capped_from: "상한 전 매트릭스 티어",
+        apm_healthy_shadow: "제니퍼 정상 강등(기록만)",
+        "apm_healthy_shadow.would_demote": "제니퍼 정상 강등 — 했을 강등",
+        "apm_healthy_shadow.window_minutes": "제니퍼 정상 강등 — 조회 창",
+        "apm_healthy_shadow.source": "제니퍼 정상 강등 — 근거 출처",
     },
 };

@@ -14,6 +14,7 @@ AlarmAnalysisResult의 notification_channels에 따라 채널별로 순차 발�
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import html
 import logging
 from datetime import datetime
@@ -29,6 +30,7 @@ from noise_gate.domain.alarm import (
     MessageEnrichment,
     ProcessSnapshot,
 )
+from noise_gate.domain.cross_source import MODE_ANNOTATE, MODE_ENFORCE
 from noise_gate.domain.enrichment_profile import build_summary
 from noise_gate.domain.investigation_briefing import render_briefing_lines
 from noise_gate.domain.investigation_payload import build_escalation
@@ -204,6 +206,54 @@ def _enrichment_to_attach(
     return enrichment
 
 
+def episode_lines(
+    decision: Any,  # NotificationDecision | None
+    episode_summary: dict[str, Any] | None = None,
+) -> list[str]:
+    """통보문에 붙일 크로스소스 사건 묶음 표시 줄을 만든다 (plans/144 W5 · §5.4).
+
+    판정 근거(`decision.evidence`의 `episode_id`·`cross_source`)를 읽기만 한다. 모드가
+    annotate·enforce일 때만 줄을 만든다 — off·shadow·사건 미소속·게이트 off면 빈 목록이라
+    통보 본문·페이로드가 비트 동일하다.
+
+    줄 구성(값이 있는 것만):
+        - 「사건 <id> · <host_key> · 같은 사건 N건」 — N은 워커가 넘긴 사건 요약
+          (`episode_summary`)이 같은 사건일 때만 붙인다.
+        - 증상 강등이 실제로 적용됐으면(`applied`)
+          「원인 <id> (<rule_id>) 아래 묶음 — 화면 표시로 내림」.
+        - 원인 알람에 이미 통보된 연관 증상이 있으면 「연관 제니퍼 이벤트 N건(이미 통보됨)」.
+    """
+    evidence = getattr(decision, "evidence", None) if decision is not None else None
+    if not isinstance(evidence, dict):
+        return []
+    cs = evidence.get("cross_source")
+    episode_id = evidence.get("episode_id")
+    if not isinstance(cs, dict) or cs.get("mode") not in (MODE_ANNOTATE, MODE_ENFORCE):
+        return []
+    if not isinstance(episode_id, str) or not episode_id:
+        return []
+    head = [f"사건 {episode_id}"]
+    if cs.get("host_key"):
+        head.append(str(cs["host_key"]))
+    if isinstance(episode_summary, dict) and episode_summary.get("episode_id") == episode_id:
+        count = episode_summary.get("member_count")
+        if isinstance(count, int) and count > 0:
+            head.append(f"같은 사건 {count}건")
+    lines = [" · ".join(head)]
+    if cs.get("applied") is True:
+        cause = f"{cs.get('cause_alarm_id', '')} ({cs.get('rule_id', '')})"
+        lines.append(f"원인 {cause} 아래 묶음 — 화면 표시로 내림")
+    related = cs.get("related_effects")
+    if isinstance(related, list) and related:
+        lines.append(f"연관 제니퍼 이벤트 {len(related)}건(이미 통보됨)")
+    return lines
+
+
+def _episode_block_html(lines: list[str]) -> str:
+    """사건 묶음 표시 블록(HTML) — 줄 문자열은 이스케이프한다."""
+    return "<br><br><b>사건 묶음</b><br>" + "<br>".join(html.escape(line) for line in lines)
+
+
 def build_workb_body(
     result: AlarmAnalysisResult,
     process_snapshot: Optional[ProcessSnapshot] = None,
@@ -212,6 +262,7 @@ def build_workb_body(
     enrichment: Optional[MessageEnrichment] = None,
     investigation_briefing: Optional[dict] = None,
     investigation_escalation: Optional[dict] = None,
+    episode_lines: list[str] | None = None,
 ) -> str:
     """WorkB 쪽지 본문을 HTML 형식으로 생성한다.
 
@@ -230,6 +281,9 @@ def build_workb_body(
     investigation_escalation(Plan 64 CW-C): fault_escalation_enabled + poll verdict.escalate 하에서
     escalate-only 상향 안내 데이터가 있으면 별도 첨부한다(게이트 판정 소급 변경 없음·상향만).
     None(기본·off·미escalate)이면 본문은 비트 동일(회귀 0).
+
+    episode_lines(plans/144 W5): 크로스소스 사건 묶음 표시 줄(`episode_lines()` 산출 — annotate·
+    enforce에서만 생긴다). None·빈 목록(기본·off·shadow·사건 미소속)이면 본문은 비트 동일.
     """
     ev = result.alarm_event
     color = _SEVERITY_COLORS.get(ev.severity, "#6c757d")
@@ -275,6 +329,9 @@ def build_workb_body(
             f"<br><br><b>재발생 이력</b><br>"
             f"직전 {window_h}h {recurrence['count']}회 재발 후 재통보"
         )
+    # plans/144 W5: 크로스소스 사건 묶음(annotate·enforce만 — 없으면 미첨부 → 비트 동일)
+    if episode_lines:
+        body += _episode_block_html(episode_lines)
     # Plan 64 CW-A: 자동 조사 브리핑 (investigation_briefing=None이면 미첨부 → 본문 비트 동일)
     if investigation_briefing is not None:
         body += _investigation_briefing_html(investigation_briefing)
@@ -316,6 +373,9 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
     # decision 존재 + TICKET/DASHBOARD/SUPPRESS → 발송하지 않고 로그만(감사는 gate가 기록).
     # decision 존재 + PAGE(또는 미상 티어) → 아래 기존 발송 경로로 폴백(보수적 PAGE).
     decision = state.get("notification_decision")
+    # (plans/144 W5) 크로스소스 사건 묶음 표시 — annotate·enforce에서 사건 소속일 때만 줄이 생긴다.
+    # 빈 목록(off·shadow·미소속·게이트 off)이면 아래 어느 경로에도 넘기지 않는다(비트 동일).
+    ep_lines = episode_lines(decision, state.get("episode_summary"))
     if decision is not None and decision.tier in _NON_PAGE_TIERS:
         configurable = (config or {}).get("configurable", {})
         ticket_queue = configurable.get("ticket_queue")
@@ -330,6 +390,7 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
             sse_publisher,
             # (Plan 83) SUPPRESS SSE 옵트인 — 게이트 설정 부재 시 False(현행 유지)
             suppress_sse=bool(getattr(gate_cfg, "sse_suppressed_enabled", False)),
+            **({"episode_lines": ep_lines} if ep_lines else {}),
         )
         return {"analysis_result": result}
 
@@ -340,7 +401,12 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
         incident_publisher = (config or {}).get("configurable", {}).get(
             "incident_publisher"
         )
-        await _publish_incident_open(result, decision, incident_publisher)
+        await _publish_incident_open(
+            result,
+            decision,
+            incident_publisher,
+            **({"episode_lines": ep_lines} if ep_lines else {}),
+        )
 
     # ── Plan 60 E6: 메시지 기반 L1 보강 블록 첨부(옵트인·티어 게이트) ──
     # message_enrichment_enabled + 통보 티어 ≥ enrichment_min_tier일 때만 첨부(라우팅 불변).
@@ -373,6 +439,7 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
                     enrichment=enrichment,
                     investigation_briefing=investigation_briefing,
                     investigation_escalation=investigation_escalation,
+                    **({"episode_lines": ep_lines} if ep_lines else {}),
                 )
             elif channel == "webhook":
                 await _send_webhook(cfg.alarm, result, process_snapshot)
@@ -691,11 +758,16 @@ def _identity_dict(ev) -> Optional[dict]:  # noqa: ANN001 — AlarmEvent
     return identity.to_dict() if identity is not None else None
 
 
-def _tier_sse_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: ANN001
+def _tier_sse_payload(
+    result: AlarmAnalysisResult,
+    decision: Any,  # NotificationDecision
+    episode_lines: list[str] | None = None,
+) -> dict[str, Any]:
     """티어 라우팅용 SSE 이벤트 payload를 생성한다(§7 · Phase E3).
 
     기존 `/alarm/notifications/stream`·analyze 경로의 publish 형식(alarm 필드 + 분석 결과)을
     그대로 따르고, 티어/근거(tier·tier_reason)를 추가해 일관성을 유지한다.
+    episode_lines(plans/144 W5)가 있으면 `episode_lines` 키로 싣는다(없으면 키 없음 → 바이트 동일).
     """
     ev = result.alarm_event
     payload = {
@@ -734,6 +806,8 @@ def _tier_sse_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: A
     # (plans/91 1-4) 조사 ID — 값 있을 때만 키(없으면 페이로드 바이트 동일). 카드 피드백이 investigation_id로 되돌린다.
     if getattr(result, "investigation_id", ""):
         payload["investigation_id"] = result.investigation_id
+    if episode_lines:  # (plans/144 W5) 사건 묶음 표시 — 값 있을 때만 키
+        payload["episode_lines"] = list(episode_lines)
     return payload
 
 
@@ -744,6 +818,7 @@ async def _route_non_page_tier(
     alarm_bus,  # noqa: ANN001 — AlarmNotificationBus | None (덕 타이핑)
     sse_publisher=None,  # noqa: ANN001 — RedisSseBridgePublisher | None (덕 타이핑)
     suppress_sse: bool = False,
+    episode_lines: list[str] | None = None,
 ) -> None:
     """PAGE 외 티어(TICKET/DASHBOARD/SUPPRESS)를 라우팅한다(발송 안 함, §7 · Phase E3).
 
@@ -756,6 +831,8 @@ async def _route_non_page_tier(
     - SUPPRESS: 발송·큐 없음. `suppress_sse=True`(Plan 83 · NOISE_SSE_SUPPRESSED_ENABLED)면
       SSE만 발행해 **관리자 감사 레벨**에서 볼 수 있게 한다 — 기본 False면 종전처럼 로그만이라
       비트 동일하다. 수신 측 권한(관리자 전용)은 스트림 엔드포인트가 판정한다(이 함수 밖).
+
+    episode_lines(plans/144 W5)는 SSE 카드에 실을 사건 묶음 표시 줄이다(없으면 페이로드 불변).
 
     alarm_bus는 API 경로(app.state.alarm_bus)에서만 주입된다. 워커 경로(cross-process)는
     alarm_bus를 공유할 수 없어 대신 sse_publisher(Redis pub/sub 브리지, E3 후속·D-048.9)를
@@ -775,14 +852,18 @@ async def _route_non_page_tier(
                 )
             except Exception:  # noqa: BLE001 — 큐 적재 실패가 파이프라인을 막지 않는다
                 logger.warning("TICKET 일배치 큐 적재 실패(무시): alarm_id=%s", alarm_id)
-        await _publish_tier_sse(result, decision, alarm_bus, sse_publisher)
+        await _publish_tier_sse(
+            result, decision, alarm_bus, sse_publisher, episode_lines=episode_lines
+        )
         logger.info(
             "TICKET(저우선 — 일배치 큐 적재 + SSE 표시, 감사 기록됨): alarm_id=%s reason=%s",
             alarm_id,
             decision.reason,
         )
     elif decision.tier == TIER_DASHBOARD:
-        await _publish_tier_sse(result, decision, alarm_bus, sse_publisher)
+        await _publish_tier_sse(
+            result, decision, alarm_bus, sse_publisher, episode_lines=episode_lines
+        )
         logger.info(
             "DASHBOARD(UI 표시만 — SSE, 발송 안 함): alarm_id=%s reason=%s",
             alarm_id,
@@ -792,7 +873,9 @@ async def _route_non_page_tier(
         # (Plan 83) 옵트인 시에만 SSE 발행 — 억제 내역을 UI에서 감사하기 위한 경로다.
         # 발송·큐는 여전히 없다(억제 판정 자체는 불변). 기본 off면 종전과 동일.
         if suppress_sse:
-            await _publish_tier_sse(result, decision, alarm_bus, sse_publisher)
+            await _publish_tier_sse(
+            result, decision, alarm_bus, sse_publisher, episode_lines=episode_lines
+        )
         logger.info(
             "SUPPRESS(미통보 — 감사 기록만%s): alarm_id=%s reason=%s",
             " · SSE 발행" if suppress_sse else "",
@@ -806,6 +889,7 @@ async def _publish_tier_sse(
     decision,  # noqa: ANN001 — NotificationDecision
     alarm_bus,  # noqa: ANN001 — AlarmNotificationBus | None
     sse_publisher=None,  # noqa: ANN001 — RedisSseBridgePublisher | None
+    episode_lines: list[str] | None = None,
 ) -> None:
     """티어 SSE 이벤트를 publish한다(대상 없으면 로그 폴백, 실패는 graceful).
 
@@ -821,7 +905,7 @@ async def _publish_tier_sse(
         )
         return
     try:
-        await target.publish(_tier_sse_payload(result, decision))
+        await target.publish(_tier_sse_payload(result, decision, episode_lines))
     except Exception:  # noqa: BLE001 — SSE 실패가 파이프라인을 막지 않는다
         logger.warning(
             "티어 SSE publish 실패(무시): alarm_id=%s tier=%s",
@@ -830,7 +914,11 @@ async def _publish_tier_sse(
         )
 
 
-def _incident_open_payload(result: AlarmAnalysisResult, decision) -> dict:  # noqa: ANN001
+def _incident_open_payload(
+    result: AlarmAnalysisResult,
+    decision: Any,  # NotificationDecision
+    episode_lines: list[str] | None = None,
+) -> dict[str, Any]:
     """incident open 이벤트 payload를 생성한다(§5 양측 합의 스키마 + 카드 표시필드, D-049).
 
     재발행 SSE 카드(app.js renderAlarmMessage)가 빈 칸 없이 렌더되도록 `_tier_sse_payload`의
@@ -872,6 +960,17 @@ def _incident_open_payload(result: AlarmAnalysisResult, decision) -> dict:  # no
     }
     if getattr(result, "investigation_id", ""):   # (plans/91 1-4) 값 있을 때만 키
         payload["investigation_id"] = result.investigation_id
+    # (plans/144 §5.3 · W3) 크로스소스 사건 id — 값 있을 때만 키(cross_source_mode off면 없음).
+    evidence = getattr(decision, "evidence", None)
+    episode_id = evidence.get("episode_id") if isinstance(evidence, dict) else None
+    if isinstance(episode_id, str) and episode_id:
+        payload["episode_id"] = episode_id
+    # (plans/144 W4 §5.6 · G-6) 사후 승격 재통보 표지 — 사후 승격 경로에서만 키가 생긴다.
+    late = evidence.get("late_promotion") if isinstance(evidence, dict) else None
+    if isinstance(late, dict) and late:
+        payload["late_promotion"] = dict(late)
+    if episode_lines:  # (plans/144 W5) 사건 묶음 표시 — 값 있을 때만 키
+        payload["episode_lines"] = list(episode_lines)
     return payload
 
 
@@ -879,6 +978,7 @@ async def _publish_incident_open(
     result: AlarmAnalysisResult,
     decision,  # noqa: ANN001 — NotificationDecision
     incident_publisher=None,  # noqa: ANN001 — RedisIncidentPublisher | None (덕 타이핑)
+    episode_lines: list[str] | None = None,
 ) -> None:
     """PAGE 결정 시 incident open 이벤트를 발행한다(미주입·실패는 graceful).
 
@@ -889,7 +989,7 @@ async def _publish_incident_open(
     if incident_publisher is None:
         return
     try:
-        await incident_publisher.publish(_incident_open_payload(result, decision))
+        await incident_publisher.publish(_incident_open_payload(result, decision, episode_lines))
     except Exception:  # noqa: BLE001 — incident 발행 실패가 발송을 막지 않는다
         logger.warning(
             "incident open 발행 실패(무시): alarm_id=%s",
@@ -907,6 +1007,7 @@ async def _send_workb(
     enrichment: Optional[MessageEnrichment] = None,
     investigation_briefing: Optional[dict] = None,
     investigation_escalation: Optional[dict] = None,
+    episode_lines: list[str] | None = None,
 ) -> None:
     """worKB 사내메신저 쪽지 발송.
 
@@ -922,6 +1023,7 @@ async def _send_workb(
         enrichment: kind별 L1 보강 블록 (Plan 60 E6, None이면 첨부 생략)
         investigation_briefing: sre_agent 조사 브리핑 (Plan 64 CW-A, None이면 첨부 생략)
         investigation_escalation: escalate-only 상향 안내 (Plan 64 CW-C, None이면 첨부 생략)
+        episode_lines: 크로스소스 사건 묶음 표시 줄 (plans/144 W5, None이면 첨부 생략)
     """
     if not workb_cfg.base_url:
         raise WorkbNotConfiguredError("WORKB_BASE_URL이 설정되지 않았습니다.")
@@ -936,11 +1038,101 @@ async def _send_workb(
         enrichment=enrichment,
         investigation_briefing=investigation_briefing,
         investigation_escalation=investigation_escalation,
+        episode_lines=episode_lines,
     )
     payload = {
         "systemDiv": workb_cfg.system_div,
         "msgTitle": msg_title,
         "msgBody": msg_body,
+        "sendId": workb_cfg.send_id,
+        "userIds": workb_cfg.get_user_ids(ev.severity),
+        "alias": workb_cfg.alias,
+    }
+    headers = {
+        "Authorization": f"Bearer {workb_cfg.bearer_token}",
+        "Content-Type": "application/json; charset=utf-8",
+        "Accept": "application/json",
+    }
+    url = f"{workb_cfg.base_url.rstrip('/')}/api/sendWorkbMsg"
+    async with httpx.AsyncClient(timeout=workb_cfg.timeout_seconds) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+
+
+def late_promotion_reason(event_type: str, episode_id: str) -> str:
+    """사후 승격 통보 사유 한 줄 (plans/144 W4 §5.6 · G-6) — 통보 본문·감사가 같은 문구를 쓴다."""
+    return f"사후 승격: 같은 서버 제니퍼 {event_type or '심각 이벤트'} (사건 {episode_id})"
+
+
+async def send_late_promotion(
+    result: AlarmAnalysisResult,
+    decision: Any,  # NotificationDecision(원 판정 · DASHBOARD·TICKET)
+    promotion: dict[str, Any],
+    cfg: Any,  # AppConfig (덕 타이핑)
+    incident_publisher: Any = None,  # RedisIncidentPublisher | None
+) -> dict[str, bool]:
+    """이미 낮게 판정된 인프라 알람을 PAGE로 다시 통보한다 (plans/144 W4 §5.6 · G-6).
+
+    같은 사건에 APM 심각 이벤트가 늦게 붙었을 때 워커가 부른다. PAGE 경로와 같은 부수효과
+    (incident open 발행 → worKB 쪽지)를 내되, 제목·본문 머리에 사후 승격 사유를 붙인다. webhook은
+    보내지 않는다(후속 통보 전례 — 기계 연동 채널은 원 알람을 이미 받았다). 원 판정 객체는 바꾸지
+    않는다(복사본으로 incident 페이로드를 만든다). 모든 실패는 graceful — 결과는 채널별 bool로
+    돌려주고 감사는 호출부가 남긴다.
+
+    Args:
+        result: 원 알람의 분석 결과(원 판정 때 그래프가 만든 것).
+        decision: 원 판정(DASHBOARD·TICKET).
+        promotion: `{episode_id, trigger_alarm_id, trigger_event_type, trigger_level, reason}`.
+        cfg: 앱 설정(worKB 설정 사용).
+        incident_publisher: incident open 발행기(없으면 발행 생략).
+
+    Returns:
+        `{"incident": bool, "workb": bool}` — 실제로 나간 채널.
+    """
+    reason = str(promotion.get("reason") or "")
+    promoted = dataclasses.replace(
+        decision,
+        tier=TIER_PAGE,
+        reason=reason,
+        evidence={**(getattr(decision, "evidence", None) or {}), "late_promotion": dict(promotion)},
+    )
+    sent = {"incident": False, "workb": False}
+    if incident_publisher is not None:
+        try:
+            await incident_publisher.publish(_incident_open_payload(result, promoted))
+            sent["incident"] = True
+        except Exception:  # noqa: BLE001 — 발행 실패가 쪽지를 막지 않는다
+            logger.warning(
+                "사후 승격 incident open 발행 실패(무시): alarm_id=%s", result.alarm_event.alarm_id
+            )
+    try:
+        await _send_workb_late_promotion(cfg.workb, result, reason)
+        sent["workb"] = True
+    except WorkbNotConfiguredError:
+        logger.warning(
+            "worKB 미설정(WORKB_BASE_URL 없음) — 사후 승격 발송 생략: alarm_id=%s",
+            result.alarm_event.alarm_id,
+        )
+    except Exception:  # noqa: BLE001 — 발송 실패는 사유를 로그로 남기고 결과에 반영
+        logger.warning(
+            "사후 승격 발송 실패: alarm_id=%s", result.alarm_event.alarm_id, exc_info=True
+        )
+    return sent
+
+
+async def _send_workb_late_promotion(
+    workb_cfg: Any,  # WorkbConfig (덕 타이핑)
+    result: AlarmAnalysisResult,
+    reason: str,
+) -> None:
+    """사후 승격 쪽지 — `_send_workb` 전송 규약 동형, 제목 접두와 본문 머리 사유만 다르다."""
+    if not workb_cfg.base_url:
+        raise WorkbNotConfiguredError("WORKB_BASE_URL이 설정되지 않았습니다.")
+    ev = result.alarm_event
+    payload = {
+        "systemDiv": workb_cfg.system_div,
+        "msgTitle": f"[사후 승격][{result.severity_label}] {ev.server_name} ({ev.hostname})",
+        "msgBody": f"<b>{html.escape(reason)}</b><hr>" + build_workb_body(result),
         "sendId": workb_cfg.send_id,
         "userIds": workb_cfg.get_user_ids(ev.severity),
         "alias": workb_cfg.alias,

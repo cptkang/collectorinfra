@@ -629,7 +629,7 @@ class TestSubstitution:
             if not rejected:
                 rejected.append(text)
                 return True
-            return False
+            return text == rejected[0]  # 재추첨이 같은 후보를 다시 뽑아도 거부(간헐 실패)
 
         out = sb.FakeValues(originals=_originals(), reject=reject_first).fake_or_none("C03")
         assert rejected and out is not None and out != rejected[0]

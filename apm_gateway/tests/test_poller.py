@@ -137,6 +137,9 @@ async def test_publishes_contract_payload(events_server):
     assert "kim@example.com" not in p["conditionLog"]
     assert p["apm"]["instance_id"] == 1001 and p["apm"]["match_confidence"] == "high"
     assert p["apm"]["was_signals"][0]["kind"] == "was_service_queuing"
+    # 정규화 유형은 추가 칸 — 원문(alarmName·apm.event_type)은 그대로(plans/144 §4.3).
+    assert p["apm"]["event_type"] == "ERROR_SERVICE_QUEUING"
+    assert p["apm"]["event_type_norm"] == "SERVICE_QUEUING"
     assert TOKEN not in rec["data"]
 
 

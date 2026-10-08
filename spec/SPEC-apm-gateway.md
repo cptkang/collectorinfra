@@ -352,12 +352,13 @@ business_map:
  "alarmName": "<errorType, 비면 metricsName>", "alarmTime": "yyyyMMddHHmmss(APM_TIMEZONE)",
  "conditions": "JENNIFER EVENT <level> — <alarmName>", "conditionLog": "<마스킹 message> (value=<value>)",
  "apm": {"source": "jennifer", "source_id": "bank", "domain_id": 1000, "domain_name": "...", "instance_id": 1001, "instance_name": "...",
-         "event_type": "<alarmName>", "event_kind": "error|metric", "level": "fatal|warning|normal",
+         "event_type": "<alarmName>", "event_type_norm": "<정규화 유형>", "event_kind": "error|metric", "level": "fatal|warning|normal",
          "value": 0.0, "txid": "", "time_ms": 0, "application": "<마스킹>",
          "match_confidence": "high|medium|none", "match_reason": "...",
          "was_signals": [ ... §4 ... ], "idempotency_key": "<sha256>"}}
 ```
 
+- `apm.event_type_norm`(plans/144 §4.3): `event_type`을 대문자 · 앞뒤 공백 제거 · `ERROR_`·`WARNING_` 접두 1회 제거한 값(어댑터 `normalize_event_type` — 소비측 상관·억제 키). `alarmName`·`event_type`(원문)·멱등 키·`alarmId`는 그대로다. 없으면 소비측은 원문으로 폴백한다.
 - `severity`: `config/event_levels.yaml` — fatal·critical → 3 · warning → 2 · normal → 1 · recovery·clear → 0 · 미지 → 2(보수). 대소문자 무시.
 - **[J8] 소스 식별**: `dbId` = `jennifer_<source_id>` — 소비자가 루트 레지스트리로 존을 푼다(존 구독자 전달·ack · F-7 해소). 단일 설정 소스 `default`는 `dbId` = `jennifer` · `resourceAncestry` = `JENNIFER > <domainName> > <instanceName>`(v4 그대로 · 존 없음). `source`는 항상 `jennifer`(소비자 인식 키). `apm.source_id`는 `default` 포함 항상 있다.
 - 멱등 키 = sha256(`source_id|domainId|instanceId|errorType 또는 metricsName|time|txid`) — 두 서버의 값이 같은 이벤트가 중복으로 버려지지 않는다. 커서 = (소스, 도메인)별 마지막 `time`(Redis 키 `apm_gateway:poller:cursor:<source_id>:<domain_id>` · 경계 포함 재조회). 발행 전 Redis `SET NX EX`로 중복 차단 → 재기동·경계 재조회에도 중복 발행 0. 소스 간은 병렬로, 소스 안은 도메인 순차로 폴링하고 한 소스의 실패가 다른 소스 폴링을 막지 않는다. 운영 발행 이력이 없어(§0.12) 종전 키(`…:cursor:<domain_id>`)는 옮기지 않았다.

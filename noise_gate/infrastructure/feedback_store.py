@@ -18,7 +18,7 @@ import json
 import logging
 from collections import deque
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 # 운영자 라벨 — noise(노이즈)|valid(유효)만 허용한다(그 외는 기록·후보에서 제외).
 _VALID_LABELS = ("noise", "valid")
+
+# (plans/144 W5 · §6.3) 크로스소스 사건 단위 피드백 라벨 — 거짓 강등률·사건 순도 지표(§8.1)의
+# 분자다. **few-shot 후보·유효/노이즈 집계와 섞지 않는다**: `_VALID_LABELS`에 넣지 않으므로
+# find_similar·summarize가 자연히 건너뛰고, 사건 피드백은 summarize_episode_feedback로만 센다.
+#   episode_split    — 이 묶음은 틀렸다(분리) · 사건 순도
+#   demotion_needed  — 강등된 증상이 실제로 조치가 필요했다 · 거짓 강등률
+EPISODE_FEEDBACK_LABELS: tuple[str, ...] = ("episode_split", "demotion_needed")
 
 # (Plan 83 T4) 철회 tombstone 라벨. 파일 재작성 없이 append만으로 라벨을 무효화한다
 # — append-only 감사 원칙을 지키면서 오클릭을 되돌리기 위한 유일한 수단이다.
@@ -101,6 +108,84 @@ class FeedbackStore:
         if investigation_id:
             record["investigation_id"] = str(investigation_id)
         self._append(record)
+
+    def record_episode_feedback(
+        self,
+        *,
+        label: str,
+        episode_id: str,
+        alarm_id: str = "",
+        alarm_name: str = "",
+        server_name: str = "",
+        db_id: str = "",
+        tier: str = "",
+        stage: str = "",
+        applied: bool | None = None,
+        note: str = "",
+        labeled_by: str = "",
+        ts: datetime | None = None,
+    ) -> bool:
+        """크로스소스 사건 단위 피드백을 JSONL 한 줄로 append 한다 (plans/144 W5 · §6.3).
+
+        같은 파일에 쓰되 라벨이 `EPISODE_FEEDBACK_LABELS`라 few-shot 후보(find_similar)와
+        유효/노이즈 집계(summarize)에 들지 않는다. 철회 tombstone(record_retract)은 같은 규약으로
+        적용된다. label이 허용 밖이거나 episode_id가 비면 기록하지 않는다.
+
+        Returns:
+            기록을 시도했으면 True(비활성·검증 실패면 False). 디스크 실패는 _append가 삼킨다.
+        """
+        if not self.enabled:
+            return False
+        if label not in EPISODE_FEEDBACK_LABELS or not episode_id:
+            logger.warning(
+                "허용되지 않은 사건 피드백(무시): label=%r episode_id=%r", label, episode_id
+            )
+            return False
+        when = ts or datetime.now(UTC)
+        record = {
+            "ts": when.isoformat(),
+            "label": label,
+            "episode_id": episode_id,
+            "alarm_id": alarm_id,
+            "alarm_name": alarm_name,
+            "server_name": server_name,
+            "db_id": db_id,
+            "tier": tier,
+            "stage": stage,
+            "applied": applied,
+            "note": note,
+            "labeled_by": labeled_by,
+        }
+        self._append(record)
+        return True
+
+    def summarize_episode_feedback(
+        self, *, db_id_filter: Callable[[str], bool] | None = None
+    ) -> dict[str, int]:
+        """사건 피드백 라벨별 건수 `{episode_split, demotion_needed}` (plans/144 W5 · §8.1 분자).
+
+        철회된 레코드는 빠진다. db_id_filter는 summarize와 같은 규약(집계 전 레코드 단위).
+        비활성·파일 없음·읽기 실패면 0으로 채운 dict.
+        """
+        counts = {label: 0 for label in EPISODE_FEEDBACK_LABELS}
+        if not self.enabled or not self.path.exists():
+            return counts
+        rows = self._read_window()
+        if rows is None:
+            return counts
+        retracted = {
+            r.get("target_ts")
+            for r in rows
+            if r.get("label") == _RETRACT_LABEL and r.get("target_ts")
+        }
+        for rec in rows:
+            label = rec.get("label")
+            if label not in counts or rec.get("ts") in retracted:
+                continue
+            if db_id_filter is not None and not db_id_filter(rec.get("db_id") or ""):
+                continue
+            counts[label] += 1
+        return counts
 
     def record_retract(
         self,

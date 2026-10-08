@@ -1838,6 +1838,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - [[만료 없는 침묵|「지속 시간은 604800초 이하여야 합니다(만료 없는 침묵 금지).」]]은 만들 수 없다. [[지속 시간]] 상한은 기본 7일(`NOISE_SILENCE_MAX_DURATION_SECONDS`)이다.
 - [[침묵 기능|기능 꺼짐일 때]](`NOISE_SILENCE_ENABLED`)이 꺼져 있으면 규칙을 만들어도 적용되지 않고, [[화면 위에 그 사실이 표시된다|기능 꺼짐 안내]].
 - 규칙 추가·해제는 [[감사 로그|감사 기록]]에 남는다.
+- 알람명 매처는 수신 **원문** 알람명과 맞춘다. 제니퍼 이벤트를 정규화 유형(예: `SERVICE_QUEUING`)으로 적으면 접두가 붙은 원문(`ERROR_SERVICE_QUEUING`)에 걸리지 않으므로 `*SERVICE_QUEUING`처럼 와일드카드로 적는다([A-71](#a-71)).
 :::
 ::: detail
 #### 동작 원리
@@ -2789,6 +2790,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 | 6 | [[플래핑|6 플래핑 (flapping)]] | {{6 플래핑 (flapping)}} (상태 진동(상태 5개 이상, 가중 상태변화율, 임계 low 5 / high 20) + 심각도 ≤ 억제 상한) | [[SUPPRESS|티어 SUPPRESS — 기록만]] | `NOISE_FLAPPING_ENABLED`(false) |
 | 7 | [[스톰|7 스톰 (storm)]] | {{7 스톰 (storm)}} (같은 서버에 창(60초) 안 다발(5건 초과)) | 대표 외 [[SUPPRESS|티어 SUPPRESS — 기록만]] | `NOISE_STORM_GROUPING_ENABLED`(false) |
 | 7.5 | [[크로스-호스트 상관|7.5 크로스-호스트 상관 (correlation)]] | {{7.5 크로스-호스트 상관 (correlation)}} (서버를 넘어 유사 알람 군집(Jaccard ≥ 0.5, 120초)) | 대표 외 [[SUPPRESS|티어 SUPPRESS — 기록만]] | `NOISE_CROSS_HOST_CORRELATION_ENABLED`(false) |
+| 7.6 | [[크로스소스 사건 상관|7.6 크로스소스 사건 상관 (cross_source)]] | {{7.6 크로스소스 사건 상관 (cross_source)}} (같은 존·같은 호스트의 폴스타 원인 알람이 통보 중이고 규칙 표 방향·창이 맞는 제니퍼 증상) | [[DASHBOARD|티어 DASHBOARD — 화면에만]] 상한(올리지 않음) | `NOISE_CROSS_SOURCE_MODE`(off) — `enforce`이면서 규칙 행 `enforce: true`일 때만 ([A-71](#a-71)) |
 | 7.7 | [[계획-무해 주석|7.7 계획-무해 주석 (annotation)]] | {{7.7 계획-무해 주석 (annotation)}} (계획작업 주석 **그리고** 해소·상관·변경 근접 중 하나) | [[DASHBOARD|티어 DASHBOARD — 화면에만]] | `NOISE_ANNOTATION_PLANNED_SUPPRESS`(false) |
 | 8~9 | [[우선순위 매트릭스|8 우선순위 매트릭스 (matrix)]] | {{8 우선순위 매트릭스 (matrix)}} | 매트릭스 + [[보조 조정|9 보조 조정 (matrix 안)]] | 항상 |
 
@@ -2829,7 +2831,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 :::
 ::: detail
 #### 항목 전수
-티어 4종, 결정 단계 14개(`STAGE_ORDER` 순서), 매트릭스 뒤의 보조 조정을 항목 하나씩 둔다. 단계 제목의 숫자는 설계 문서의 단계 번호이며, 평가 순서는 항목이 놓인 순서다(플래핑은 6.5 인히비션 **다음**에 평가한다).
+티어 4종, 결정 단계 15개(`STAGE_ORDER` 순서), 매트릭스 뒤의 보조 조정을 항목 하나씩 둔다. 단계 제목의 숫자는 설계 문서의 단계 번호이며, 평가 순서는 항목이 놓인 순서다(플래핑은 6.5 인히비션 **다음**에 평가한다).
 
 ##### 티어 PAGE — 즉시 통보
 - **정의**: 티어 순위 3(최상위). 결정 기록 `tier` 값은 `page`다.
@@ -2846,7 +2848,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 
 ##### 티어 DASHBOARD — 화면에만
 - **정의**: 티어 순위 1. 결정 기록 `tier` 값은 `dashboard`다.
-- **나오는 곳**: 매트릭스 2 × 낮음, 1 × 보통, 1 × 낮음, `resolved`(`NOISE_RESOLVED_TO_DASHBOARD`=true), `dependency` 다홉에서 근본원인 미통보, `annotation`, 매트릭스 TICKET 칸의 강등.
+- **나오는 곳**: 매트릭스 2 × 낮음, 1 × 보통, 1 × 낮음, `resolved`(`NOISE_RESOLVED_TO_DASHBOARD`=true), `dependency` 다홉에서 근본원인 미통보, `cross_source`(강제 모드), `annotation`, 매트릭스 TICKET 칸의 강등.
 - **동작**: 발송·큐 없이 화면 카드만 발행한다. API 경로(`/alarm/analyze-test`·`/alarm/analyze-test/raw`)는 앱 내부 버스로, 워커 경로는 `NOISE_SSE_BRIDGE_ENABLED`(false)가 켜져 있을 때만 Redis 중계(`NOISE_SSE_BRIDGE_CHANNEL`, 기본 `alarm:sse`)로 나간다. 둘 다 없으면 로그만 남는다.
 - **주의**: 코드 기본 설정의 워커 경로에서는 TICKET·DASHBOARD 카드가 화면에 뜨지 않는다. 또 사용자가 표시 범위를 「통보 대상」이나 「긴급만」으로 좁히면 DASHBOARD 카드는 브라우저에서 걸러져 뜨지 않는다(브라우저 저장값, 기본 「전체」).
 
@@ -2937,6 +2939,13 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - **결과**: SUPPRESS. 결정 기록 최상위에 `correlation_meta`(대표 지문·멤버 순번·유사도).
 - **켜는 키**: `NOISE_CROSS_HOST_CORRELATION_ENABLED`(false). 위상 가중 `NOISE_CORRELATION_TOPOLOGY_WEIGHT_ENABLED`(false)를 켜면 인접 군집 점수에 `NOISE_CORRELATION_TOPOLOGY_WEIGHT`(0.2)를 더한다.
 - **예외**: 맞는 군집이 없으면 새 군집의 대표가 되어 통과한다. 마지막 합류 뒤 `NOISE_CORRELATION_WINDOW_SECONDS`(120)가 지나면 군집이 사라지고, DB당 `NOISE_CORRELATION_BUFFER_MAX`(1000)에 닿으면 가장 오래된 군집부터 버린다. 존을 넘어 묶지 않는다.
+
+##### 7.6 크로스소스 사건 상관 (`cross_source`)
+- **보는 것**: 워커의 사건 추적기가 붙인 크로스소스 신호(사건 id·규칙·원인 알람·시차·빠진 조건). 폴스타 알람과 제니퍼 이벤트를 같은 존·같은 호스트 키로 한 사건에 묶는다.
+- **조건**: 모드 `enforce` · 판정 근거가 강등(`action=demote` — 결합 조건 다섯 개 전부 충족) · 규칙 행 `enforce: true` 세 가지가 모두 참이고, 매트릭스로 계산한 결과가 DASHBOARD보다 높다.
+- **결과**: DASHBOARD. 매트릭스 결과가 이미 DASHBOARD 이하면 이 단계에서 끝나지 않고 7.7·8단계로 그대로 간다 — 올리는 방향은 없다. `stage_evidence.capped_from`에 강등 전 매트릭스 티어가 남는다.
+- **켜는 키**: `NOISE_CROSS_SOURCE_MODE`(off) · 규칙 표 `NOISE_CROSS_SOURCE_RULES_PATH`(`config/cross_source_rules.yaml`) · 사건 종료 `NOISE_EPISODE_IDLE_SECONDS`(900).
+- **예외**: shadow·annotate는 판정을 바꾸지 않고 근거(`episode_id`·`cross_source`)만 남긴다. 앞 단계 억제가 우선이고 심각도 3은 3단계에서 이미 끝난다. 모드·결합 조건·피드백은 [A-71](#a-71).
 
 ##### 7.7 계획-무해 주석 (`annotation`)
 - **보는 것**: 워커가 만든 주석 신호(계획작업·해소·운영자 접수)와 상관 합류·변경 근접 여부.
@@ -3030,7 +3039,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 | `correlation_meta` | 상관 대표 지문·멤버 순번·유사도 | 상관 탐지가 참일 때 |
 | `semantic_annotation` | 임베딩 근접 중복 후보 | 임베딩 주석이 켜져 있고 후보가 있을 때 |
 
-`signals` 키 16개: `severity`·`ai_severity`·`effective_severity`·`importance`·`maintenance`·`parent_avail_status`·`pattern`·`is_routine`·`noti_policy`·`flapping`·`self_heal`·`storm`·`llm_actionability`·`cascaded`·`root_resource`·`correlated`. 인히비션 여부·변경 근접·주석 신호는 여기에 없어 사유 문장과 `stage_evidence`로만 확인한다. 같은 파일에 `type` 키가 있는 줄(`recurrence`·`resolution`·`investigation`·`l3_state`)은 판단이 아니며 티어 집계와 퍼널이 세지 않는다. 판단 레코드마다 Prometheus 카운터도 하나씩 오르며, 두 값이 다르면 파일 쪽이 정본이다. 기록 실패는 경고만 남기고 발송을 막지 않는다.
+`signals` 키 16개: `severity`·`ai_severity`·`effective_severity`·`importance`·`maintenance`·`parent_avail_status`·`pattern`·`is_routine`·`noti_policy`·`flapping`·`self_heal`·`storm`·`llm_actionability`·`cascaded`·`root_resource`·`correlated`. 인히비션 여부·변경 근접·주석 신호는 여기에 없어 사유 문장과 `stage_evidence`로만 확인한다. 같은 파일에 `type` 키가 있는 줄(`recurrence`·`resolution`·`investigation`·`l3_state`·`late_promotion`)은 판단이 아니며 티어 집계와 퍼널이 세지 않는다. 판단 레코드마다 Prometheus 카운터도 하나씩 오르며, 두 값이 다르면 파일 쪽이 정본이다. 기록 실패는 경고만 남기고 발송을 막지 않는다.
 
 ##### 설정만 있고 읽지 않는 키
 `NOISE_BUSINESS_HOURS_CSV`·`NOISE_DEBOUNCE_SECONDS`·`NOISE_CORRELATION_FIELD_WEIGHTS_CSV`는 설정에 정의돼 있지만 읽는 코드가 없어 값을 바꿔도 판단이 달라지지 않는다.
@@ -3059,6 +3068,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - [A-59 처리 흐름과 판단 주체](#a-59)
 - [A-61 보조 신호 — LLM·통계·운영자 피드백](#a-61)
 - [A-46 정책 조회](#a-46)
+- [A-71 제니퍼 알람 정책과 크로스소스 사건 상관](#a-71)
 :::
 
 ### A-61
@@ -3314,6 +3324,188 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 ::: related
 - [A-60 결정 단계와 우선순위 매트릭스](#a-60)
 - [A-39 알람 피드백 요약](#a-39)
+:::
+
+### A-71
+::: what
+제니퍼(APM) 이벤트를 폴스타 알람과 같은 노이즈 게이트에서 판단하고, 같은 서버에서 함께 난 두 소스의 알람을 **사건**으로 묶는 기능 묶음이다. 모두 코드 기본 off(심각도 상승 우회만 on)이며, 어느 기능을 켜도 심각도 3은 3단계에서 PAGE로 끝난다.
+
+| 기능 | 하는 일 | 판단에 들어가는 곳 | 켜는 설정(코드 기본) |
+|---|---|---|---|
+| [[제니퍼 유형 정책|제니퍼 유형 정책 — 중요도·통보 정책]] | {{제니퍼 유형 정책 — 중요도·통보 정책}} | 8단계 중요도 · 9단계 승격 | `NOISE_APM_NOISE_POLICY_ENABLED`(false) |
+| [[지속 조건|제니퍼 지속 조건]] | {{제니퍼 지속 조건}} | 9단계 강등(하한 DASHBOARD) | 위와 같은 키 |
+| [[정규화 지문|제니퍼 정규화 지문]] | {{제니퍼 정규화 지문}} | 재통보 창 · 해소 짝맞춤 | 위와 같은 키 |
+| [[사건 상관|사건 묶기와 7.6단계 강등]] | {{사건 묶기와 7.6단계 강등}} | [A-60](#a-60) 7.6단계 | `NOISE_CROSS_SOURCE_MODE`(off) · `NOISE_CROSS_SOURCE_RULES_PATH` · `NOISE_EPISODE_IDLE_SECONDS`(900) |
+| [[사후 승격|앱 영향 사후 승격]] | {{앱 영향 사후 승격}} | 판정 뒤 별도 PAGE 통보 | `NOISE_APP_IMPACT_LATE_PROMOTION_ENABLED`(false) + `NOISE_APP_IMPACT_ENABLED` + 모드 annotate·enforce(shadow 제외) |
+| [[정상 강등 shadow|제니퍼 정상 강등 shadow]] | {{제니퍼 정상 강등 shadow}} | 판정 불변 — 감사만 | `NOISE_APM_HEALTHY_DEMOTION_SHADOW`(false) + `NOISE_APP_IMPACT_ENABLED` |
+| [[사건당 조사 1회|사건당 자동 조사 1회]] | {{사건당 자동 조사 1회}} | 자동 조사 트리거 | 모드 ≠ off |
+| [[심각도 상승 우회|지문 dedup 심각도 상승 우회]] | {{지문 dedup 심각도 상승 우회}} | 재통보 창 | `NOISE_DEDUP_SEVERITY_RISE_BYPASS`(**true**) |
+
+`NOISE_CROSS_SOURCE_MODE`는 네 단계로 올린다.
+
+| 모드 | 사건 추적 | 판정 | 통보문 「사건 묶음」 |
+|---|---|---|---|
+| `off` | 없음 | 종전과 같다 | 없음 |
+| `shadow` | 함 | 바꾸지 않고 「했을 조치」만 결정 기록에 남긴다 | 없음 |
+| `annotate` | 함 | 바꾸지 않는다 | 붙는다 |
+| `enforce` | 함 | 규칙 행 `enforce: true`이고 결합 조건이 모두 맞을 때만 증상을 DASHBOARD로 내린다 | 붙는다 |
+:::
+::: how
+1. 먼저 `NOISE_APM_NOISE_POLICY_ENABLED`를 켜고 [환경변수 설정](#a-04)에서 본체를 다시 띄운다. 정책 표는 `config/apm_noise_policy.yaml`(고정 경로)이다.
+2. `NOISE_CROSS_SOURCE_MODE=shadow`로 두고 결정 추적에서 근거 표의 「크로스소스 — 규칙 판정」·「크로스소스 — 빠진 강등 조건」 줄을 쌓는다. 규칙 행마다 거짓 강등이 드물고 놓친 사건이 없을 때 그 행의 `enforce`를 true로 바꾼다.
+3. `annotate`로 올려 통보문과 화면 카드에 「사건 묶음」이 붙는지 보고, 그다음 `enforce`로 올린다. 실제로 내려간 판단은 결정 단계가 **크로스소스 사건 상관**이다.
+4. 묶음이 틀렸거나 내려간 증상이 실제로는 조치가 필요했으면, 노이즈 관제 결정 추적 창의 [[사건 피드백|사건 피드백 2동작]] 버튼을 누른다.
+5. 쌓인 사건 피드백 건수는 `GET /api/v1/alarm/feedback/summary` 응답의 `episode_counts`로 본다.
+:::
+::: ui -
+화면 캡처가 없다. 결정 추적 창은 [A-42](#a-42) 그림을 본다. 사건 id가 기록된 판단을 열면 침묵 버튼 아래에 「사건 피드백」 칸이 나온다.
+
+| 요소 | 설명 |
+|---|---|
+| **이 묶음은 틀렸다(분리)** | 사건 id가 있는 판단이면 항상 나온다. 라벨 `episode_split`을 남긴다 |
+| **강등된 증상이 실제로 조치 필요** | 결정 단계가 크로스소스 사건 상관이거나 근거의 조치가 「증상 강등」일 때만 나온다. 라벨 `demotion_needed`를 남긴다 |
+| 결과 줄 | 「피드백을 남겼습니다」 또는 「전송 실패 — 사유」 |
+:::
+::: caution
+- 강등 상한은 DASHBOARD다. 이 기능 묶음은 **SUPPRESS를 만들지 않는다.**
+- 기본 규칙 표의 행은 모두 `enforce: false`다. 모드만 `enforce`로 바꾸면 강등은 0건이다.
+- [[침묵 규칙은 원문 알람명으로 맞춘다|침묵 규칙이 제니퍼 이벤트에 걸리지 않는다]]. 정규화 유형으로 적은 규칙은 `ERROR_`·`WARNING_` 접두가 붙은 이벤트에 걸리지 않는다.
+- 사건은 워커 메모리에만 있다. 본체를 다시 띄우면 열린 사건이 사라지고 새 알람부터 다시 묶는다.
+- 사건 피드백은 판정에 반영되지 않는다. 규칙 표를 고칠 때 보는 기록이며, 관리자 화면에서만 남길 수 있다.
+:::
+::: detail
+#### 동작 원리
+기능마다 무엇인지, 언제 동작하는지, 남는 근거, 꺼졌거나 실패했을 때 순으로 적는다.
+
+##### 제니퍼 유형 정책 — 중요도·통보 정책
+- **무엇인가**: 제니퍼 이벤트의 이벤트 유형으로 정책 표의 행을 찾아 중요도(높음·보통·낮음)와 통보 정책을 채운다.
+- **대상**: `dbId`가 `jennifer` 또는 `jennifer_<소스>`인 이벤트. 폴스타 알람 경로는 그대로다.
+- **행 고르기**: 인스턴스 이름 오버라이드(`instances`)가 유형 행의 중요도보다 앞선다. 표에 없는 유형은 `default` 행(보통 · 승격 신호 없음)으로 간다.
+- **통보 정책**: 행의 `notify: page`는 9단계 승격 신호 하나가 된다. `dashboard`는 신호가 없다. `suppress`는 아직 쓰지 않으며, 적혀 있으면 경고 후 `dashboard`로 읽는다.
+- **꺼져 있으면**: 제니퍼 이벤트는 부가 정보 수집 실패로 읽혀 심각도 1 이상이 5단계에서 보수적 PAGE가 된다(종전 동작).
+
+##### 제니퍼 지속 조건
+- **무엇인가**: 지표형 경고(심각도 2)가 정해진 창 안에 몇 번 반복됐는지 세어, 모자라면 9단계에서 한 단계 내리는 강등 신호를 낸다(하한 DASHBOARD).
+- **대상**: 정책 행에 `persistence`(`window_seconds`·`min_count`)가 있고 이벤트 종류가 지표형인 것. 오류형 이벤트·해소 이벤트에는 걸지 않는다.
+- **첫 이벤트**: 붙잡지 않는다. 조건 미달로 낮게 판정된 지문에 반복이 쌓여 조건을 채우면 그 지문의 재통보 기록을 한 번 지워 매트릭스대로 다시 판정한다(근거 `reevaluated`).
+- **근거**: `stage_evidence.apm_policy.persistence`에 창 안 발생 수·필요 발생 수·창·충족 여부.
+
+##### 제니퍼 정규화 지문
+- **무엇인가**: 지문과 해소 짝맞춤에 원문 이벤트 유형 대신 정규화 유형(대문자 · 앞의 `ERROR_`·`WARNING_` 한 번 제거)을 쓴다.
+- **효과**: 같은 유형이 접두만 달리 와도 한 지문으로 재통보 창을 공유하고, 발생과 해소가 짝을 이룬다.
+- **근거**: `stage_evidence.apm_policy.event_type_norm`(정규화 유형)·`policy_row`(적용 행). 정책 표 적재가 실패했으면 `policy_error`가 붙는다.
+
+##### 사건 묶기와 7.6단계 강등
+- **무엇인가**: 같은 존·같은 호스트 키의 폴스타 알람과 제니퍼 이벤트를 사건 하나로 묶고, 규칙 표 방향(원인 → 증상)이 확인된 증상만 7.6단계에서 DASHBOARD로 내린다.
+- **호스트 키**: 알람의 hostname을 정규화한 값이다. 폴스타는 hostname이 있으면 신뢰도 strong, 제니퍼는 게이트웨이 정합 사유가 오버라이드·호스트명 일치일 때만 strong이고 정규식 정합은 weak다. 키가 비면 사건에 넣지 않는다.
+- **사건 종료**: 소속 알람이 모두 해소되거나 마지막 알람 뒤 `NOISE_EPISODE_IDLE_SECONDS`(900초)가 지나면 닫힌다.
+- **도착 순서**: 증상을 붙잡지 않는다. 증상이 원인보다 먼저 왔으면 그 증상은 그대로 두고, 나중에 온 원인의 근거에 「이미 통보된 연관 증상」 id 목록(`related_effects`)을 싣는다.
+- **근거**: 모드와 무관하게 사건에 붙은 판단에는 `stage_evidence.episode_id`와 `cross_source`(모드·호스트 키·규칙·원인 알람·시차·조치·빠진 조건·실제 적용 여부)가 남는다.
+
+##### 결합 조건 다섯 개
+- **무엇인가**: 증상을 내리려면 다섯 조건이 모두 맞아야 하고, 하나라도 빠지면 묶기만 한다(조치 `link` · `missing`에 빠진 조건).
+- **조건**: ①같은 존(빈 값이면 불충족) ②같은 호스트 키 · 양쪽 신뢰도 strong · 한 사건에 서로 다른 폴스타 DB가 섞이지 않음 ③규칙 방향 일치 · 원인 발생 시각이 증상 발생 시각 기준 창 안 ④원인의 최종 티어가 PAGE·TICKET이고 아직 해소되지 않음 ⑤증상 심각도 3 미만.
+- **빠진 조건 라벨**: `zone`·`host_key`·`host_key_strength`·`db_ambiguous`·`window`·`cause_tier`·`cause_resolved`·`severity`. 관제 화면은 한국어로 바꿔 보여 준다.
+- **규칙 표**: `config/cross_source_rules.yaml`. 행마다 `enabled`·`enforce`·원인/증상 선택자(`kinds`·`was_kinds`·`alarm_names`)·창(`cause_before_seconds`·`cause_after_seconds`)·`action`을 둔다. 증상이 폴스타인 역방향 행의 `demote_effect`는 적재 때 `link`로 바뀐다.
+
+##### 통보문 사건 묶음
+- **무엇인가**: `annotate`·`enforce`에서 사건에 붙은 알람의 통보문 끝에 「사건 묶음」 문단을 붙인다. off·shadow면 통보문은 종전과 같다.
+- **줄**: 「사건 <id> · <호스트 키> · 같은 사건 N건」(N은 이 알람을 포함한 현재 멤버 수), 실제로 내려간 증상이면 「원인 <원인 알람 id> (<규칙 id>) 아래 묶음 — 화면 표시로 내림」, 원인 알람에 이미 통보된 증상이 있으면 「연관 제니퍼 이벤트 N건(이미 통보됨)」.
+- **나오는 곳**: PAGE는 worKB 쪽지와 사건 열림 카드, TICKET·DASHBOARD는 화면 카드다. 내려간 증상은 DASHBOARD라 화면 카드에만 나온다.
+- **주의**: 멤버 수는 사건당 멤버 상한(200)에서 잘린 만큼 빠진다. 판정에는 쓰지 않는다.
+
+##### 앱 영향 사후 승격
+- **무엇인가**: DASHBOARD·TICKET으로 판정된 폴스타 알람 뒤에 같은 사건으로 제니퍼 fatal·critical 이벤트가 늦게 오면, 그 폴스타 알람을 PAGE로 한 번 더 통보한다.
+- **대상**: 8단계 매트릭스에서 DASHBOARD·TICKET으로 끝난 심각도 3 미만 폴스타 알람 · 해소 전 · 두 이벤트의 발생 시각 차가 `NOISE_APP_IMPACT_WINDOW_MINUTES`(10분) 이내 · 사건이 열려 있을 때. 모드가 `annotate`·`enforce`일 때만 동작하며, `shadow`에서는 통보를 바꾸지 않는다.
+- **횟수**: 알람당 1회다. 발송이 실패해도 다시 시도하지 않는다.
+- **기록**: 원 판정 레코드는 고치지 않고 `type="late_promotion"` 줄(사건 id·트리거 이벤트·원 티어·사유·발송 결과)을 따로 남긴다. 통보 사유는 「사후 승격: 같은 서버 제니퍼 <유형> (사건 <id>)」이다.
+- **사건 저장소 판정**: `annotate`·`enforce`이고 `NOISE_APP_IMPACT_ENABLED`이면, 9.5단계 앱 영향 승격은 게이트웨이를 부르기 전에 사건에 이미 있는 제니퍼 fatal·critical 이벤트로 먼저 판단한다(근거 `app_impact_source`가 `episode`).
+
+##### 제니퍼 정상 강등 shadow
+- **무엇인가**: 폴스타 CPU·메모리 경고가 매트릭스에서 PAGE·TICKET일 때, 같은 호스트의 제니퍼 이벤트가 창 안에 한 건도 없고 게이트웨이가 정상 응답했으면 「강등했을 것」만 기록한다.
+- **판정**: 바꾸지 않는다. 결정 추적 근거에 `apm_healthy_shadow`(강등했을 것 · 창 · 조회 출처)가 남는다.
+- **호출**: 후보 알람마다 게이트웨이 `apm_events`를 전 레벨로 한 번 부른다. 앱 영향 승격 대상이 아닌 shadow 전용 후보인데 사건에 이미 제니퍼 이벤트가 있으면 정상이 아니므로 부르지 않는다. 조회가 실패하면 표지 없이 `app_impact_error`만 남는다.
+
+##### 사건당 자동 조사 1회
+- **무엇인가**: 같은 사건에서 제니퍼 이벤트가 이미 자동 조사를 제출했으면, 뒤이은 제니퍼 이벤트는 새 조사를 내지 않고 앞 조사 id를 감사에 남긴다(조사 감사 상태 `episode_existing`).
+- **범위**: 제니퍼 이벤트끼리만 적용한다. 폴스타 알람의 조사 트리거는 종전 그대로다.
+
+##### 지문 dedup 심각도 상승 우회
+- **무엇인가**: 같은 지문이 재통보 창 안에 직전 통보보다 높은 심각도로 오면 버리지 않고 게이트까지 보낸다. 예를 들어 심각도 2가 통보된 뒤 같은 지문의 심각도 3이 오면 3단계에서 PAGE가 된다.
+- **기본값이 on인 이유**: off(종전)이면 그 심각도 3이 창 안 반복으로 버려져 「심각도 3은 항상 PAGE」가 깨진다.
+- **한도**: 통과한 이벤트가 기록 심각도를 올리므로 지문·창당 추가 통과는 최대 두 번(1→2→3)이다. 같거나 낮은 심각도의 반복은 종전대로 버린다. 제니퍼 정책 경로에서는 근거 `escalated_from`에 직전 심각도가 남는다.
+
+##### 관제 화면의 새 근거 키
+- **무엇인가**: 결정 추적 창의 근거 표는 중첩된 근거를 「제니퍼 정책 — 지속 조건」·「크로스소스 — 원인 알람」처럼 점으로 이은 줄로 펼쳐 보여 준다.
+- **새 단계**: 퍼널과 결정 이력의 단계 목록에 **크로스소스 사건 상관**이 7.5와 7.7 사이에 나온다. 이 단계의 목록 칸은 「원인 알람 (규칙)」·「매트릭스 → 상한」·「사건 · 호스트 키」다.
+- **새 줄**: `apm_policy`(정규화 유형·적용 행·지속 조건·직전 통보 심각도·적재 오류), `episode_id`, `cross_source`(모드·호스트 키·규칙·원인 알람·시차·조치·강제 행·빠진 조건·적용·연관 증상), `capped_from`(강등 전 티어), `apm_healthy_shadow`.
+
+##### 사건 피드백 2동작
+- **무엇인가**: 결정 추적 창에서 사건 묶음이 틀렸다(`episode_split`) 또는 내려간 증상이 실제로 조치가 필요했다(`demotion_needed`)는 라벨을 남긴다.
+- **저장**: 운영자 피드백과 같은 파일(`NOISE_FEEDBACK_STORE_PATH`)에 사건 id·알람·티어·단계·실제 적용 여부·누른 계정과 함께 한 줄 붙는다. `NOISE_FEEDBACK_STORE_ENABLED`(true)가 꺼져 있으면 503이다.
+- **쓰임**: 액션가능성 예시(few-shot) 후보와 유효·노이즈 집계에는 들어가지 않는다. 요약 API의 `episode_counts`로만 센다. 규칙 행의 `enforce`를 켜거나 끌 때 근거로 본다.
+- **되돌리기**: 화면에서 철회하는 버튼은 없다.
+
+#### 반영 시점과 영향
+##### 설정을 바꿨을 때
+- 이 절의 키는 모두 워커 기동 때 한 번 읽는다. 값을 바꾸면 본체를 다시 띄워야 한다.
+- 정책 표와 규칙 표 파일도 기동 때만 읽는다. 파일을 고친 뒤에도 재기동이 필요하다.
+
+##### 표 파일이 깨졌을 때
+- 정책 표가 없거나 YAML·스키마 오류면 기동 로그에 경고 한 줄이 남고, 제니퍼 이벤트는 정책 없이 종전처럼 보수적 PAGE로 간다.
+- 규칙 표가 없거나 오류면 경고 한 줄 뒤 사건 상관 전체가 꺼진다(off와 같은 판정).
+
+##### 메모리 한도
+- 열린 사건은 최대 5000개, 사건당 멤버는 최대 200개다. 넘치면 오래된 것부터 정리하고 경고 로그를 남긴다.
+- 사후 승격 후보도 상한이 있어 넘치면 오래된 후보부터 지운다.
+
+##### 모두 꺼져 있을 때
+- 심각도 상승 우회를 뺀 키가 모두 기본값이면 판정·통보문·결정 기록이 이 기능 도입 전과 같다.
+
+#### 권한과 보안
+##### 사건 피드백 API
+- `POST /api/v1/admin/noise/episode-feedback`는 운영자 경로에만 있다. 운영자 토큰은 `type=admin`을, 사용자 토큰은 DB 역할 admin을 명시적으로 검사한다. 사용자 경로(`/api/v1/noise/*`)는 읽기 전용이라 이 쓰기 경로가 없다.
+- 라벨이 두 값 밖이면 400이다. 사건 id가 `ep-` + 16진 12자리 형식이 아니거나, 문자열 필드가 길이 한도(알람 id·DB·티어·단계 128자, 알람명·서버명 256자, 메모 200자)를 넘거나 제어문자(줄바꿈 포함)를 담으면 422다. 결정 기록과 로그 줄 위조를 막기 위해서다. 누른 계정이 `labeled_by`로 남는다.
+
+##### 제니퍼 자격증명
+- 노이즈 게이트는 제니퍼 토큰을 갖지 않는다. 게이트웨이 조회에는 게이트웨이 Bearer 토큰(`NOISE_APM_MCP_TOKEN`)만 쓴다.
+
+#### 문제 해결
+##### 모드를 enforce로 바꿨는데 강등이 0건이다
+- **확인할 곳**: 결정 추적의 `cross_source.enforce`·`missing`.
+- **원인과 대응**: 규칙 행의 `enforce`가 false이거나(기본), 빠진 조건이 있다. 원인이 PAGE·TICKET이 아니었거나 이미 해소됐으면 `cause_tier`·`cause_resolved`가 찍힌다. 매트릭스 결과가 이미 DASHBOARD 이하였어도 이 단계에서 끝나지 않는다.
+
+##### 통보문에 사건 묶음 문단이 없다
+- **확인할 곳**: 모드와 결정 추적의 `episode_id`.
+- **원인과 대응**: 모드가 off·shadow이거나, hostname이 비어 사건에 넣지 않았다. 내려간 증상의 줄은 화면 카드에만 나오므로 쪽지에서는 볼 수 없다.
+
+##### 사건 피드백 칸이 보이지 않는다
+- **확인할 곳**: 그 판단의 근거 표에 「크로스소스 사건 ID」 줄이 있는지.
+- **원인과 대응**: 사건 id가 없는 판단(모드 off 시절 기록·hostname 없음)에는 나오지 않는다. 사용자 화면에는 이 칸이 없다.
+
+##### 제니퍼 이벤트가 거의 모두 PAGE다
+- **확인할 곳**: 결정 단계와 `apm_policy`.
+- **원인과 대응**: 정책 키가 꺼져 있거나 정책 표 적재가 실패해(`policy_error`) 5단계 수집 실패 보수화로 끝난 것이다. 켜져 있다면 정책 행의 `notify: page` 승격과 중요도 높음을 확인한다.
+
+##### 침묵 규칙이 제니퍼 이벤트에 걸리지 않는다
+- 침묵 매처는 대소문자를 가리는 와일드카드로 수신 원문 알람명과 맞춘다. 지문은 정규화 유형을 쓰지만 침묵은 그렇지 않아, `SERVICE_QUEUING`으로 적은 규칙은 `ERROR_SERVICE_QUEUING`에 걸리지 않는다. `*SERVICE_QUEUING`으로 적는다.
+
+##### 사후 승격이 나가지 않는다
+- **확인할 곳**: 워커 로그의 「사후 승격 통보」 줄과 원 판정의 결정 단계.
+- **원인과 대응**: 세 조건(사후 승격 키·앱 영향 키·모드 annotate·enforce — shadow 제외) 중 하나가 빠졌거나, 원 판정이 매트릭스가 아니었거나(억제 단계·7.6 강등), 사건이 이미 닫혔거나, 두 이벤트가 창 밖이다.
+
+#### 근거와 참고 문서
+##### 코드 위치
+- 정책 공급자 `noise_gate/infrastructure/apm_noise_context.py`, 사건 추적·결합 판정 `noise_gate/domain/cross_source.py`, 규칙 적재 `noise_gate/infrastructure/cross_source_rules.py`, 7.6단계 `noise_gate/domain/notification_policy.py`, 워커 배선·사후 승격 `noise_gate/application/alarm_worker.py`, 정상 강등 shadow `noise_gate/application/nodes/notification_gate.py`, 통보문 `noise_gate/application/nodes/alarm_notifier.py`다.
+
+##### 설계 문서
+- 제니퍼 연동 전체는 `docs/31_jennifer_integration_guide.md`, 결정은 D-317(크로스소스 사건 상관)·D-320(심각도 상승 우회)에 있다.
+:::
+::: related
+- [A-60 결정 단계와 우선순위 매트릭스](#a-60)
+- [A-61 보조 신호 — LLM·통계·운영자 피드백](#a-61)
+- [A-45 침묵(Silence) 규칙](#a-45)
+- [A-69 제니퍼 장기 조회 작업 API](#a-69)
 :::
 
 ## 10. 화면 없는 관리 기능

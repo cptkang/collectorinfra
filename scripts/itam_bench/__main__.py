@@ -136,12 +136,76 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
     return 0
 
 
+#: `--check-oracle --out <run 디렉터리>`의 하위 디렉터리·결과 파일(plans/146 W5 (3)) — run 의
+#: `leak_check.json`을 덮지 않게 관문 산출물을 따로 둔다.
+ORACLE_CHECK_DIR = "oracle_check"
+ORACLE_CHECK_FILE = "oracle_check.yaml"
+
+
+def oracle_check_document(
+    *,
+    run_id: str,
+    env: str,
+    scenario_file: str,
+    anchor_at: str,
+    entries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """`oracle_check.yaml` 본문 — 오라클 ID · 판정 범주 · 행 수 · 소요 ms · 시나리오·턴 ·
+    앵커만(값 0).
+
+    판정은 고정 어휘(`ok`·`zero_rows`·`error`)다. DB 오류 문구는 가린 형태로도 싣지 않는다(D-301).
+    """
+    counts = Counter(str(e["verdict"]) for e in entries)
+    return {
+        "kind": "oracle_check",
+        "run_id": run_id,
+        "env": env,
+        "scenario_file": scenario_file,
+        "anchor_at": anchor_at,
+        "summary": {
+            "oracles": len(entries),
+            "ok": counts["ok"],
+            "zero_rows": counts["zero_rows"],
+            "error": counts["error"],
+            "failed": counts["zero_rows"] + counts["error"],
+        },
+        "oracles": entries,
+    }
+
+
+def write_oracle_check(
+    out_root: Path, document: Mapping[str, Any], *, policy: cat.ColumnPolicy
+) -> tuple[bool, list[dict[str, Any]], Path]:
+    """누출 관문을 거쳐 `<out_root>/oracle_check/`에 쓴다(실패면 `leak_check.json`만).
+
+    옛 `oracle_check.yaml`은 먼저 지운다 — 관문 실패 때 옛 결과가 새것처럼 읽히지 않게.
+    """
+    out_dir = out_root / ORACLE_CHECK_DIR
+    stale = out_dir / ORACLE_CHECK_FILE
+    if stale.is_file():
+        stale.unlink()
+    gate = rd.LeakGate(
+        policy=policy,
+        vault=rd.PiiVault.from_policy(policy),
+        user_values=user_values(login_id=None, dsn=_itam_dsn()),
+    )
+    staged = {
+        ORACLE_CHECK_FILE: yaml.safe_dump(dict(document), allow_unicode=True, sort_keys=False)
+    }
+    ok, violations = rd.write_gated(out_dir, staged, gate)
+    return ok, violations, out_dir
+
+
 def cmd_check_oracle(args: argparse.Namespace) -> int:
-    """정답 SQL 만 읽기 전용으로 돌려 오라클이 서는지 본다. 행 원문은 출력하지 않는다(건수만)."""
+    """정답 SQL 만 읽기 전용으로 돌려 오라클이 서는지 본다. 행 원문은 출력하지 않는다(건수만).
+
+    `--out <run 디렉터리>`면 같은 결과를 `<run>/oracle_check/oracle_check.yaml`(값 0)로도 남긴다
+    (누출 관문 통과 시 · plans/146 W5 (3)). 없으면 화면만 — 종전과 같다.
+    """
     loaded = _load(args)
     if loaded is None:
         return 1
-    _policy, scenarios = loaded
+    policy, scenarios = loaded
     from scripts.scenario.oracle import run_oracle
     from src.config import load_config
 
@@ -156,6 +220,7 @@ def cmd_check_oracle(args: argparse.Namespace) -> int:
     anchor = now.isoformat()
     run_id = f"check-{now.strftime('%Y%m%d-%H%M%S')}"
     seen: dict[str, tuple[str, int]] = {}
+    entries: list[dict[str, Any]] = []
     failed = 0
     with tempfile.TemporaryDirectory(prefix="itam-bench-oracle-") as tmp:
         log_path = Path(tmp) / "oracle_log.jsonl"
@@ -179,19 +244,47 @@ def cmd_check_oracle(args: argparse.Namespace) -> int:
                     str(outcome.get("reason") or "사유 없음"), vault=rd.PiiVault()
                 )
                 verdict = f"불가 — {reason}"
+                category = "error"
                 failed += 1
             elif rows == 0:
                 verdict = "0행 — 정답을 구하지 못한다(시드·날짜 경계 확인)"
+                category = "zero_rows"
                 failed += 1
             else:
                 verdict = "ok"
+                category = "ok"
             seen[oracle_id] = (verdict, rows)
+            entries.append(
+                {
+                    "id": oracle_id,
+                    "scenario": scenario.id,
+                    "turn": turn.index,
+                    "verdict": category,
+                    "rows": rows,
+                    "elapsed_ms": round(float(outcome.get("elapsed_ms") or 0)),
+                }
+            )
             say(
                 f"  {oracle_id:<8} {verdict:<6} 행 {rows:>3} · "
                 f"{outcome.get('elapsed_ms', 0):.0f}ms "
                 f"({scenario.id} 턴{turn.index})"
             )
     say(f"오라클 {len(seen)}건 중 실패·0행 {failed}건 (앵커 {anchor})")
+    if getattr(args, "out", None):
+        document = oracle_check_document(
+            run_id=run_id,
+            env=args.env,
+            scenario_file=Path(args.scenarios).name,
+            anchor_at=anchor,
+            entries=entries,
+        )
+        ok, violations, out_dir = write_oracle_check(Path(args.out), document, policy=policy)
+        shown = rd.display_path(out_dir, repo_root=REPO_ROOT, home=Path.home())
+        say(f"[check-oracle] 산출물 {'기록' if ok else '미기록(누출 관문 실패)'} — {shown}")
+        if not ok:
+            for violation in violations[:20]:
+                say(f"  - {violation['file']} · {violation['field']} · {violation['rule']}")
+            return 1
     return 1 if failed else 0
 
 
@@ -1480,7 +1573,10 @@ def build_parser() -> argparse.ArgumentParser:
         "(db_unverified를 실패로 치지 않음)",
     )
     parser.add_argument(
-        "--out", default=None, help="--validate-knowledge: 결과 YAML 경로"
+        "--out",
+        default=None,
+        help="--validate-knowledge: 결과 YAML 경로 · --check-oracle: run 디렉터리 — "
+        "<DIR>/oracle_check/oracle_check.yaml(값 0 · 누출 관문 통과 시 · plans/146 W5)",
     )
     parser.add_argument(
         "--catalog",

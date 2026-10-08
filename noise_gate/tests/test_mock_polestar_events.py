@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 import socket
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -598,3 +599,132 @@ def test_send_invest_trigger_e2e(mvp_record):
     assert ids, "investigation_id가 비었다 — submit 실패(조사 서비스 미도달) 가능성"
     # 스텁(LLM 키 부재)·실 조사 어느 쪽이든 종결 상태여야 한다. 진행 중(running)이면 미완주.
     assert statuses and "running" not in statuses, f"조사가 종결되지 않았다(status={statuses})"
+
+
+# ─── 폴스타 × 제니퍼 복합 시나리오 (plans/144 W0 · --with-jennifer) ─────────────
+
+# 게이트웨이 `build_alarm_payload` 출력 키(apm_gateway/.../domain/events.py) — import 없이 고정.
+_JENNIFER_TOP_KEYS = mpe.REQUIRED_PAYLOAD_KEYS | {"source", "apm"}
+_JENNIFER_APM_KEYS = frozenset({
+    "source", "source_id", "domain_id", "domain_name", "instance_id", "instance_name",
+    "event_type", "event_type_norm", "event_kind", "level", "value", "txid", "time_ms",
+    "application", "match_confidence", "match_reason", "was_signals", "idempotency_key",
+})
+
+
+def _xs_payloads() -> list:
+    return [rec["payload"] for rec in mpe.cross_source_records()]
+
+
+def _is_jennifer(payload: dict) -> bool:
+    return payload["dbId"].startswith("jennifer")
+
+
+def test_default_catalog_unchanged_without_flag():
+    """플래그 없이는 카탈로그·메뉴가 기존 그대로다(복합 시나리오 미노출)."""
+    assert [s.number for s in mpe.SCENARIOS] == list(range(1, 15))
+    text = mpe.build_menu_text("TCP x", "log", True)
+    assert "xs-" not in text and "plans/144" not in text
+    assert mpe.parse_menu_input("15")[0] == "invalid"
+
+
+def test_with_jennifer_catalog_extends_menu():
+    catalog = mpe.SCENARIOS + mpe.CROSS_SOURCE_SCENARIOS
+    assert [s.number for s in mpe.CROSS_SOURCE_SCENARIOS] == [15, 16, 17, 18]
+    action, scen = mpe.parse_menu_input("17", catalog)
+    assert action == "scenario" and scen.name == "xs-db-pool-storm"
+    assert "xs-saturation" in mpe.build_menu_text("TCP x", "log", True, catalog)
+
+
+def test_cross_source_scenario_counts():
+    from collections import Counter
+
+    counts = Counter(rec["scenario"] for rec in mpe.cross_source_records())
+    assert counts == {"xs-saturation": 6, "xs-server-down": 7, "xs-db-pool-storm": 7,
+                      "xs-apm-metric-warn": 5}
+
+
+def test_jennifer_payload_shape_matches_gateway_contract():
+    """제니퍼 페이로드는 게이트웨이 키 집합과 같고 `event_type_norm`·WAS 신호를 싣는다."""
+    jennifer = [p for p in _xs_payloads() if _is_jennifer(p)]
+    assert len(jennifer) == 20
+    for p in jennifer:
+        assert set(p) == _JENNIFER_TOP_KEYS
+        assert set(p["apm"]) == _JENNIFER_APM_KEYS
+        assert p["dbId"] == "jennifer_common" and p["resourceType"] == "apm.Instance"
+        assert p["apm"]["event_type_norm"] == mpe.normalize_event_type(p["alarmName"])
+        assert p["severity"] == mpe.JENNIFER_LEVEL_SEVERITY[p["apm"]["level"]]
+        assert p["alarmId"] == f"jennifer:{p['apm']['idempotency_key'][:16]}"
+        kinds = [s["kind"] for s in p["apm"]["was_signals"]]
+        assert kinds == [mpe.JENNIFER_EVENT_SIGNALS[p["apm"]["event_type_norm"]][0]]
+
+
+def test_normalize_event_type_strips_prefixes():
+    assert mpe.normalize_event_type("error_http_io_exception") == "HTTP_IO_EXCEPTION"
+    assert mpe.normalize_event_type("WARNING_JVM_HEAP_MEM_HIGH") == "JVM_HEAP_MEM_HIGH"
+    assert len(mpe.JENNIFER_EVENT_SIGNALS) == 11
+
+
+def test_unresolved_instance_uses_instance_name_as_server():
+    unresolved = [p for p in _xs_payloads()
+                  if _is_jennifer(p) and p["apm"]["match_reason"] == "unresolved"]
+    assert unresolved
+    for p in unresolved:
+        assert p["hostname"] == "" and p["serverName"] == p["resourceName"]
+        assert p["apm"]["match_confidence"] == "none"
+
+
+def test_cross_source_shares_time_axis_and_host():
+    """같은 시각축 — 원인(폴스타)이 먼저 오고 제니퍼 증상이 폴링 지연 뒤 같은 호스트로 온다."""
+    for name, pol_host in (("xs-saturation", "xsapp01"), ("xs-server-down", "xsweb02")):
+        recs = [r["payload"] for r in mpe.cross_source_records() if r["scenario"] == name]
+        times = [p["alarmTime"] for p in recs]
+        assert times == sorted(times)
+        first_pol = min(p["alarmTime"] for p in recs if not _is_jennifer(p))
+        first_jen = min(p["alarmTime"] for p in recs if _is_jennifer(p) and p["severity"] > 0)
+        assert first_pol < first_jen
+        jen_hosts = {p["hostname"] for p in recs if _is_jennifer(p)}
+        assert {h.lower().split(".")[0] for h in jen_hosts} == {pol_host}
+    # 대소문자·FQDN 차이 1건(공통 호스트 키 검증용)
+    assert any(p["hostname"] == "XSWEB02.example.local" for p in _xs_payloads())
+
+
+def test_cross_source_polestar_steps_carry_replay_signals():
+    for rec in mpe.cross_source_records():
+        if _is_jennifer(rec["payload"]):
+            assert "noise_ctx" not in rec
+        else:
+            assert set(rec["payload"]) == mpe.REQUIRED_PAYLOAD_KEYS
+            assert rec["noise_ctx"]["source"] == "fixture"
+
+
+def test_cross_source_zone_pairing_matches_registry():
+    """폴스타 db_id와 제니퍼 소스가 레지스트리상 같은 존이다(읽기만)."""
+    import yaml
+
+    registry = Path(__file__).resolve().parents[2] / "config" / "db_registry.yaml"
+    reg = yaml.safe_load(registry.read_text(encoding="utf-8"))
+    apm = next(s for s in reg["solutions"] if s.get("code") == "apm")
+    src_zone = {s["id"]: s.get("zone") for s in apm["sources"]}[mpe.XS_JENNIFER_SOURCE_ID]
+    db_zone = {d["db_id"]: d.get("zone") for d in reg["databases"]}[mpe.XS_POLESTAR_DB_ID]
+    assert src_zone == db_zone
+
+
+def test_dump_requires_with_jennifer(tmp_path, capsys):
+    import json
+
+    out = tmp_path / "x.jsonl"
+    assert mpe.main(["--dump", str(out)]) == 2
+    assert not out.exists()
+    assert mpe.main(["--with-jennifer", "--dump", str(out)]) == 0
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 25
+    assert [json.loads(x) for x in lines] == mpe.cross_source_records()
+
+
+def test_send_cross_source_name_requires_flag(capsys, monkeypatch):
+    """플래그 없이 복합 시나리오 이름을 --send하면 기존처럼 '알 수 없는 시나리오'(rc=2)."""
+    monkeypatch.setattr(mpe, "load_noise_config", lambda: None)
+    monkeypatch.setattr(mpe.TcpSender, "check", lambda self: (False, "skip"))
+    assert mpe.main(["--send", "xs-saturation"]) == 2
+    assert "알 수 없는 시나리오" in capsys.readouterr().out

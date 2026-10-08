@@ -15,6 +15,7 @@ from noise_gate.domain.notification_policy import (
     STAGE_ANNOTATION,
     STAGE_COLLECTION_FAILED,
     STAGE_CORRELATION,
+    STAGE_CROSS_SOURCE,
     STAGE_DEPENDENCY,
     STAGE_FLAPPING,
     STAGE_INHIBITION,
@@ -182,6 +183,23 @@ class TestStagePerDecisionPoint:
         assert d.tier == TIER_SUPPRESS
         assert d.stage == STAGE_CORRELATION
 
+    def test_cross_source(self):
+        # (plans/144 W3) 강제 모드 + 결합 조건 충족 + 규칙 enforce → 매트릭스 PAGE를 DASHBOARD로.
+        d = decide_notification(
+            make_event(severity=2),
+            None,
+            None,
+            make_ctx(),
+            _cfg(),
+            cross_source={
+                "episode_id": "ep-1", "mode": "enforce", "action": "demote", "enforce": True,
+                "missing": [], "rule_id": "r1", "cause_alarm_id": "c1", "host_key": "h",
+                "lag_seconds": 30.0,
+            },
+        )
+        assert d.tier == TIER_DASHBOARD
+        assert d.stage == STAGE_CROSS_SOURCE
+
     def test_annotation(self):
         d = decide_notification(
             make_event(severity=2),
@@ -201,7 +219,7 @@ class TestStagePerDecisionPoint:
         assert d.stage == STAGE_MATRIX
 
     def test_every_stage_except_silence_is_reachable(self):
-        # 침묵(모듈 4)을 뺀 13단계가 이 테스트 클래스에서 모두 도달됐음을 상수로 고정한다.
+        # 침묵(모듈 4)을 뺀 14단계가 이 테스트 클래스에서 모두 도달됐음을 상수로 고정한다.
         covered = {
             STAGE_NON_ALARM,
             STAGE_SEVERITY3,
@@ -214,6 +232,7 @@ class TestStagePerDecisionPoint:
             STAGE_FLAPPING,
             STAGE_STORM,
             STAGE_CORRELATION,
+            STAGE_CROSS_SOURCE,
             STAGE_ANNOTATION,
             STAGE_MATRIX,
         }
