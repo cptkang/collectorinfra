@@ -1,0 +1,13 @@
+{
+  "_comment": "S4 — 도구가 필요 없는 질문(도구는 주되 tool_choice auto). 평문이어야 한다 — 도구 호출(또는 502 tool_call_invalid)은 오탐.",
+  "scenario": "S4",
+  "tools": ["convert_currency", "get_recipe", "find_book"],
+  "tool_choice": "auto",
+  "cases": [
+    {"id": "s4_math", "query": "What is 7 times 8?"},
+    {"id": "s4_spanish", "query": "How do you say good morning in Spanish?"},
+    {"id": "s4_mood_ko", "query": "안녕, 오늘 기분 어때?"},
+    {"id": "s4_poem", "query": "Write a two-line poem about rain."}
+  ],
+  "leak_markers": ["7 times 8", "good morning in Spanish", "오늘 기분 어때", "poem about rain"]
+}

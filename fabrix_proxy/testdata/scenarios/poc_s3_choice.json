@@ -1,0 +1,20 @@
+{
+  "_comment": "S3 — tool_choice=required(아무 도구나 1개 이상) N건 + 이름 지정(force) N건. 선택 정답 = required는 호출 ≥1, 이름 지정은 모든 호출이 force 도구.",
+  "scenario": "S3",
+  "tools": ["convert_currency", "get_recipe", "find_book"],
+  "required_cases": [
+    {"id": "s3r_cook", "query": "Tell me about something interesting to cook tonight."},
+    {"id": "s3r_money", "query": "I am curious about money exchange between dollars and euros."},
+    {"id": "s3r_read_ko", "query": "요즘 읽을 만한 책 하나 골라 줘."}
+  ],
+  "named_cases": [
+    {"id": "s3n_glass", "force": "find_book", "query": "Check whether the library has 'Glass Harbor'.",
+     "expect": [{"name": "find_book", "args": {"title": ["glass harbor"]}}]},
+    {"id": "s3n_tea", "force": "find_book", "query": "Recommend me something to read about tea.",
+     "expect": [{"name": "find_book", "args": {}}]},
+    {"id": "s3n_recipe_ko", "force": "get_recipe", "query": "비 오는 날 먹기 좋은 음식 하나 추천해 줘.",
+     "expect": [{"name": "get_recipe", "args": {}}]}
+  ],
+  "leak_markers": ["something interesting to cook", "money exchange between", "읽을 만한 책", "Glass Harbor",
+                   "something to read about tea", "비 오는 날 먹기"]
+}

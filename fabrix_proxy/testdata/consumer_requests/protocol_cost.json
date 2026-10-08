@@ -1,0 +1,123 @@
+{
+  "plan": "plans/148 1-2",
+  "input_limit_tokens": 95232,
+  "token_estimator": "estimate_tokens = ceil(ASCII/4 + 비ASCII/1) — F3 실측 전 보수 추정",
+  "render_conditions": {
+    "tool_choice": "auto",
+    "parallel_tool_calls": true,
+    "fewshot": "static",
+    "fewshot_placement": "system"
+  },
+  "tool_sets": {
+    "deep_agent_tier1": [
+      "write_todos",
+      "ls",
+      "read_file",
+      "write_file",
+      "edit_file",
+      "glob",
+      "grep",
+      "task",
+      "query_infra_db",
+      "query_live_processes",
+      "query_alarm",
+      "manage_cache",
+      "register_synonym",
+      "general_answer",
+      "inspect_host"
+    ],
+    "noise_track_b": [
+      "scan_message_signature",
+      "collect_importance_maintenance",
+      "collect_dependency_status"
+    ],
+    "deepagents_builtin_only": [
+      "write_todos",
+      "ls",
+      "read_file",
+      "write_file",
+      "edit_file",
+      "glob",
+      "grep",
+      "task"
+    ]
+  },
+  "results": {
+    "deep_agent_tier1": [
+      {
+        "lang": "en",
+        "tool_count": 15,
+        "protocol_chars": 20335,
+        "fewshot_chars": 1505,
+        "total_chars": 21842,
+        "protocol_est_tokens": 5198,
+        "fewshot_est_tokens": 377,
+        "total_est_tokens": 5575,
+        "pct_of_limit": 5.85
+      },
+      {
+        "lang": "ko",
+        "tool_count": 15,
+        "protocol_chars": 19853,
+        "fewshot_chars": 1373,
+        "total_chars": 21228,
+        "protocol_est_tokens": 5266,
+        "fewshot_est_tokens": 389,
+        "total_est_tokens": 5655,
+        "pct_of_limit": 5.94
+      }
+    ],
+    "noise_track_b": [
+      {
+        "lang": "en",
+        "tool_count": 3,
+        "protocol_chars": 1546,
+        "fewshot_chars": 1505,
+        "total_chars": 3053,
+        "protocol_est_tokens": 490,
+        "fewshot_est_tokens": 377,
+        "total_est_tokens": 867,
+        "pct_of_limit": 0.91
+      },
+      {
+        "lang": "ko",
+        "tool_count": 3,
+        "protocol_chars": 1064,
+        "fewshot_chars": 1373,
+        "total_chars": 2439,
+        "protocol_est_tokens": 558,
+        "fewshot_est_tokens": 389,
+        "total_est_tokens": 948,
+        "pct_of_limit": 1.0
+      }
+    ],
+    "deepagents_builtin_only": [
+      {
+        "lang": "en",
+        "tool_count": 8,
+        "protocol_chars": 19070,
+        "fewshot_chars": 1505,
+        "total_chars": 20577,
+        "protocol_est_tokens": 4769,
+        "fewshot_est_tokens": 377,
+        "total_est_tokens": 5146,
+        "pct_of_limit": 5.4
+      },
+      {
+        "lang": "ko",
+        "tool_count": 8,
+        "protocol_chars": 18588,
+        "fewshot_chars": 1373,
+        "total_chars": 19963,
+        "protocol_est_tokens": 4837,
+        "fewshot_est_tokens": 389,
+        "total_est_tokens": 5227,
+        "pct_of_limit": 5.49
+      }
+    ]
+  },
+  "reference": {
+    "deepagents_system_message_chars": 7391,
+    "deepagents_system_message_est_tokens": 1861
+  }
+}

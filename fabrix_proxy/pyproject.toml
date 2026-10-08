@@ -1,0 +1,43 @@
+[project]
+name = "fabrix-proxy"
+version = "0.1.0"
+description = "FabriX KBGenAI → OpenAI Chat Completions(+tools) 프록시 — 도구 호출 프롬프트 에뮬레이션 (plans/148 1단계 PoC)"
+requires-python = ">=3.11"
+
+# 루트 venv를 공유한다(apm_gateway·mcp_server 전례). 아래 의존은 루트 venv에 이미 설치돼 있다
+# (2026-10-08 실측 fastapi 0.115.14 · uvicorn 0.34.3 · httpx 0.28.1 · pydantic 2.12.5 ·
+# pydantic-settings 2.13.1 · jsonschema 4.26.0) — 프록시만 따로 배포할 때를 위해 여기 선언한다.
+dependencies = [
+    "fastapi",               # OpenAI 호환 HTTP 표면(/v1/chat/completions · /v1/models · /health)
+    "uvicorn",               # ASGI 서빙
+    "httpx>=0.27.0",         # KBGenAI 업스트림 호출
+    "pydantic>=2",
+    "pydantic-settings>=2",  # .env/.encenv 설정
+    "jsonschema>=4",         # 도구 인자 스키마 검증(미설치면 축소 검증으로 대체)
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "openai",                # 계약 테스트 — 실 SDK로 프록시를 부른다
+    "langchain-openai",
+]
+
+[project.scripts]
+fabrix-proxy = "fabrix_proxy.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fabrix_proxy*"]
+
+[tool.setuptools.package-data]
+fabrix_proxy = ["*.json", "*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

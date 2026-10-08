@@ -1,0 +1,24 @@
+{
+  "_comment": "S6 — deepagents 미니 에이전트(내장 write_todos + 합성 도구 2개). ChatOpenAI → 프록시 경유 create_deep_agent 완주. 완주 = 예외 없이 끝나고 마지막 메시지가 도구 호출 없는 AI 평문 · 단계 수 = 모델 호출 수.",
+  "scenario": "S6",
+  "tools": ["get_ticket", "get_person"],
+  "system_prompt": "You are a careful assistant. First plan your steps with the write_todos tool, then use the other tools to gather facts, then answer in plain text.",
+  "recursion_limit": 40,
+  "tool_results": {
+    "get_ticket": {"ticket_id": {
+      "T-4001": {"ticket_id": "T-4001", "owner_id": "u-12", "verification_code": "HM-7720"},
+      "T-4002": {"ticket_id": "T-4002", "owner_id": "u-13", "verification_code": "PB-1184"}
+    }},
+    "get_person": {"person_id": {
+      "u-12": {"person_id": "u-12", "name": "Rei Osk"},
+      "u-13": {"person_id": "u-13", "name": "Ola Vint"}
+    }}
+  },
+  "cases": [
+    {"id": "s6_agent_a", "query": "Plan with write_todos first. Then look up support ticket T-4001 and its owner, and tell me the owner's name and the ticket's verification code.",
+     "reflect": ["HM-7720", "Rei Osk"]},
+    {"id": "s6_agent_b", "query": "Plan with write_todos first. Then look up support ticket T-4002 and its owner, and tell me the owner's name and the ticket's verification code.",
+     "reflect": ["PB-1184", "Ola Vint"]}
+  ],
+  "leak_markers": ["HM-7720", "PB-1184", "Rei Osk", "Ola Vint", "Plan with write_todos first"]
+}

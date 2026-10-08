@@ -1,0 +1,517 @@
+{
+ "_comment": "plans/148 W3b 러너 --dry-run 대본(scripts/fake_kbgenai.py 형식). 시나리오 질의·도구 결과의 표지 문자열로 응답을 골라 정답·오답·교정 성공·502·업스트림 오류·PII 차단이 섞이게 한다(지표 계산 경로 전부 통과). 첫 규칙은 OpenAI 형식 바디(F1 네이티브 탐침)만 매치한다 — KBGenAI 페이로드는 항상 공백을 포함한다. S4 응답에 가짜 URL·가짜 키 표지를 심어 반출물 자기 검사를 시험한다.",
+ "leak_markers": [
+  "leak-marker.invalid",
+  "dryrun-apikey-7Q3",
+  "warm bowl of bibimbap",
+  "buenos días",
+  "could not find anything useful",
+  "not sure which code word"
+ ],
+ "rules": [
+  {
+   "when": {
+    "not_contains": " "
+   },
+   "respond": {
+    "id": "chatcmpl-dryrun",
+    "object": "chat.completion",
+    "model": "dryrun-native",
+    "choices": [
+     {
+      "index": 0,
+      "finish_reason": "tool_calls",
+      "message": {
+       "role": "assistant",
+       "content": null,
+       "tool_calls": [
+        {
+         "id": "call_dryrun_1",
+         "type": "function",
+         "function": {
+          "name": "lookup_weather",
+          "arguments": "{\"city\": \"Springfield\"}"
+         }
+        }
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "when": {
+    "any_contains": "CORAL-58"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "I am not sure which code word you mean."
+   }
+  },
+  {
+   "when": {
+    "any_contains": "LUMEN-31"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "LUMEN-31"
+   }
+  },
+  {
+   "when": {
+    "any_contains": "BIRCH-72"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "BIRCH-72"
+   }
+  },
+  {
+   "when": {
+    "any_contains": "DELTA-94"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "DELTA-94"
+   }
+  },
+  {
+   "when": {
+    "any_contains": "T-5001",
+    "last_contains": "[assistant]"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "I could not find anything useful."
+   }
+  },
+  {
+   "when": {
+    "last_contains": "u-33"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"get_person\", \"arguments\": {\"person_id\": \"u-33\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "any_contains": "192.0.2.15"
+   },
+   "respond": {
+    "status": "FILTER_INVALID",
+    "content": ""
+   }
+  },
+  {
+   "when": {
+    "last_contains": "short greeting"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "Hello there, have a nice day!",
+    "usage": {
+     "prompt_tokens": 120,
+     "completion_tokens": 8,
+     "total_tokens": 128
+    }
+   }
+  },
+  {
+   "when": {
+    "any_contains": "T-4002",
+    "last_contains": "Your previous reply could not be used as a tool call"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"find_book\", \"arguments\": {\"title\": </tool_call>"
+   }
+  },
+  {
+   "when": {
+    "any_contains": "The Silent Orchard",
+    "last_contains": "Your previous reply could not be used as a tool call"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"find_book\", \"arguments\": {\"title\": \"The Silent Orchard\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "any_contains": "something to read about tea",
+    "last_contains": "Your previous reply could not be used as a tool call"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"find_book\", \"arguments\": {\"title\": \"tea\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "any_contains": "something interesting to cook",
+    "last_contains": "Your previous reply could not be used as a tool call"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"get_recipe\", \"arguments\": {\"dish\": \"bibimbap\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "system_contains": "# 도구",
+    "any_contains": "The Silent Orchard"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"find_book\", \"arguments\": {\"title\": </tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "The Silent Orchard"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"find_book\", \"arguments\": {\"title\": </tool_call>"
+   }
+  },
+  {
+   "when": {
+    "not_contains": "# Format examples",
+    "any_contains": "pancakes this weekend"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"find_book\", \"arguments\": {\"title\": </tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "pancakes this weekend"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"get_recipe\", \"arguments\": {\"dish\": \"pancakes\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "120 US dollars"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"convert_currency\", \"arguments\": {\"amount\": 120, \"from_currency\": \"USD\", \"to_currency\": \"EUR\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "mushroom risotto"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"get_recipe\", \"arguments\": {\"dish\": \"mushroom risotto\", \"servings\": 4}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "7500 Japanese yen"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"get_recipe\", \"arguments\": {\"dish\": \"yen\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "영국 파운드"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"convert_currency\", \"arguments\": {\"amount\": 50, \"from_currency\": \"GBP\", \"to_currency\": \"USD\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "any_contains": "된장찌개 레시피"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"find_book\", \"arguments\": {\"title\": </tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "겨울 등대"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"find_book\", \"arguments\": {\"title\": \"겨울 등대\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "lentil soup"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"convert_currency\", \"arguments\": {\"amount\": 10, \"from_currency\": \"USD\", \"to_currency\": \"EUR\"}}</tool_call>\n<tool_call>{\"name\": \"get_recipe\", \"arguments\": {\"dish\": \"lentil soup\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "Paper Comet"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"find_book\", \"arguments\": {\"title\": \"Paper Comet\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "캐나다 달러"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"convert_currency\", \"arguments\": {\"amount\": 100, \"from_currency\": \"CAD\", \"to_currency\": \"JPY\"}}</tool_call>\n<tool_call>{\"name\": \"find_book\", \"arguments\": {\"title\": \"푸른 정원\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "something interesting to cook"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "How about a warm bowl of bibimbap?"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "money exchange between"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"convert_currency\", \"arguments\": {\"amount\": 1, \"from_currency\": \"USD\", \"to_currency\": \"EUR\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "읽을 만한 책"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"find_book\", \"arguments\": {\"title\": \"고요한 숲\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "Glass Harbor"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"find_book\", \"arguments\": {\"title\": \"Glass Harbor\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "system_contains": "example_lookup_item",
+    "last_contains": "something to read about tea"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"example_lookup_item\", \"arguments\": {\"code\": \"T-1\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "something to read about tea"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"find_book\", \"arguments\": {\"title\": \"tea\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "비 오는 날 먹기"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"get_recipe\", \"arguments\": {\"dish\": \"파전\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "7 times 8"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "7 times 8 is 56. Source https://leak-marker.invalid/answers?key=dryrun-apikey-7Q3"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "good morning in Spanish"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "In Spanish, good morning is \"buenos días\"."
+   }
+  },
+  {
+   "when": {
+    "last_contains": "오늘 기분 어때"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"convert_currency\", \"arguments\": {\"amount\": 1, \"from_currency\": \"KRW\", \"to_currency\": \"USD\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "poem about rain"
+   },
+   "http_status": 500
+  },
+  {
+   "when": {
+    "last_contains": "Harbor Point"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "The owner works at Harbor Point, and the ticket's verification code is ZX-4417."
+   }
+  },
+  {
+   "when": {
+    "last_contains": "Cedar Hall"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "The owner of that ticket works at Cedar Hall."
+   }
+  },
+  {
+   "when": {
+    "last_contains": "\"of-9\""
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"get_office\", \"arguments\": {\"office_id\": \"of-9\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "\"of-3\""
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"get_office\", \"arguments\": {\"office_id\": \"of-3\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "\"u-58\""
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"get_person\", \"arguments\": {\"person_id\": \"u-58\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "\"u-71\""
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"get_person\", \"arguments\": {\"person_id\": \"u-71\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "T-3001"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"get_ticket\", \"arguments\": {\"ticket_id\": \"T-3001\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "T-3002"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"get_ticket\", \"arguments\": {\"ticket_id\": \"T-3002\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "T-3003"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"get_ticket\", \"arguments\": {\"ticket_id\": \"T-3003\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "Rei Osk"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "The owner is Rei Osk and the verification code is HM-7720."
+   }
+  },
+  {
+   "when": {
+    "last_contains": "\"u-12\""
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"get_person\", \"arguments\": {\"person_id\": \"u-12\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "Updated todo list",
+    "any_contains": "T-4002"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"find_book\", \"arguments\": {\"title\": </tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "Updated todo list"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"get_ticket\", \"arguments\": {\"ticket_id\": \"T-4001\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "T-4001"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"write_todos\", \"arguments\": {\"todos\": [{\"content\": \"Look up the ticket\", \"status\": \"in_progress\"}, {\"content\": \"Look up the owner\", \"status\": \"pending\"}]}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "T-4002"
+   },
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"write_todos\", \"arguments\": {\"todos\": [{\"content\": \"Look up the ticket\", \"status\": \"in_progress\"}, {\"content\": \"Look up the owner\", \"status\": \"pending\"}]}}</tool_call>"
+   }
+  }
+ ],
+ "default": {
+  "status": "SUCCESS",
+  "content": "OK"
+ }
+}

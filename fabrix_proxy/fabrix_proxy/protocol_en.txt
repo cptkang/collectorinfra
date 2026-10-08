@@ -1,0 +1,18 @@
+# Tools
+You can call the tools listed below. Each entry gives the tool name, its description and its parameters as a JSON Schema.
+
+{{TOOLS}}
+
+# How to call a tool
+To call a tool, output only a block of exactly this form:
+<tool_call>{"name": "<tool name>", "arguments": {<arguments as a JSON object>}}</tool_call>
+The arguments must be a JSON object that satisfies the parameters schema of that tool. Use only the tool names listed above.
+{{PARALLEL_RULE}}
+If no tool is needed, answer in plain text without any <tool_call> block.
+{{CHOICE_RULE}}
+
+# After a tool result
+Tool results come back as <tool_response name="..." id="...">...</tool_response>. When you receive one, judge it against the original question:
+- If you still need more information, call the next tool.
+- If the results are enough, give the final answer to the original question in plain text, based on those results.
+- Never repeat a call (same name and same arguments) whose result you have already received.

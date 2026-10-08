@@ -1,0 +1,99 @@
+{
+  "_comment": "plans/148 1단계 PoC 시나리오 공용 합성 도구(OpenAI 도구 JSON). 업무 무관 이름만 쓴다. 시나리오 파일의 tools 배열은 여기 이름을 가리킨다.",
+  "tools": {
+    "convert_currency": {
+      "type": "function",
+      "function": {
+        "name": "convert_currency",
+        "description": "Convert an amount of money from one currency to another using today's rate.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "amount": {"type": "number", "description": "Amount of money to convert"},
+            "from_currency": {"type": "string", "description": "ISO 4217 code of the source currency, e.g. USD"},
+            "to_currency": {"type": "string", "description": "ISO 4217 code of the target currency, e.g. EUR"}
+          },
+          "required": ["amount", "from_currency", "to_currency"]
+        }
+      }
+    },
+    "get_recipe": {
+      "type": "function",
+      "function": {
+        "name": "get_recipe",
+        "description": "Get a cooking recipe for a dish.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "dish": {"type": "string", "description": "Name of the dish"},
+            "servings": {"type": "integer", "description": "Number of servings"}
+          },
+          "required": ["dish"]
+        }
+      }
+    },
+    "find_book": {
+      "type": "function",
+      "function": {
+        "name": "find_book",
+        "description": "Search the library catalog for a book by title.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": {"type": "string", "description": "Book title or part of it"},
+            "author": {"type": "string", "description": "Author name, if known"}
+          },
+          "required": ["title"]
+        }
+      }
+    },
+    "get_ticket": {
+      "type": "function",
+      "function": {
+        "name": "get_ticket",
+        "description": "Get a support ticket by its id. Returns the owner's person id and the ticket's verification code.",
+        "parameters": {
+          "type": "object",
+          "properties": {"ticket_id": {"type": "string", "description": "Ticket id such as T-1000"}},
+          "required": ["ticket_id"]
+        }
+      }
+    },
+    "get_person": {
+      "type": "function",
+      "function": {
+        "name": "get_person",
+        "description": "Get a person's profile by person id. Returns the name and office id.",
+        "parameters": {
+          "type": "object",
+          "properties": {"person_id": {"type": "string", "description": "Person id such as u-10"}},
+          "required": ["person_id"]
+        }
+      }
+    },
+    "get_office": {
+      "type": "function",
+      "function": {
+        "name": "get_office",
+        "description": "Get an office by office id. Returns the office name.",
+        "parameters": {
+          "type": "object",
+          "properties": {"office_id": {"type": "string", "description": "Office id such as of-1"}},
+          "required": ["office_id"]
+        }
+      }
+    },
+    "run_check": {
+      "type": "function",
+      "function": {
+        "name": "run_check",
+        "description": "Run a connectivity check against a target and return the result line.",
+        "parameters": {
+          "type": "object",
+          "properties": {"target": {"type": "string", "description": "Target name"}},
+          "required": ["target"]
+        }
+      }
+    }
+  }
+}
