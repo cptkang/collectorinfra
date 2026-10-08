@@ -157,6 +157,21 @@ def _determinism(records: Sequence[Mapping[str, Any]]) -> list[list[Any]]:
     ]
 
 
+def _verdict_cell(oracle: Mapping[str, Any]) -> str:
+    """판정 칸 — 판정(방식) + keyset 「행 수 ≠ 키 수」 표지(plans/149 W4 (6) · 중복 행)."""
+    cell = f"{oracle['verdict']}" + (
+        f" ({oracle['mode']})" if oracle.get("mode") != "as_is" else ""
+    )
+    detail = oracle.get("detail")
+    if (
+        isinstance(detail, Mapping)
+        and detail.get("compare") == "keyset"
+        and isinstance(detail.get("system_rows"), int)
+    ):
+        cell += f" · 행≠키({detail['system_rows']}/{detail.get('system_keys')})"
+    return cell
+
+
 def _row_counts(record: Mapping[str, Any]) -> str:
     """실행 SQL 별 행 수(성공한 것) · 사용자가 받은 결과 행 수."""
     counts = [
@@ -377,12 +392,7 @@ def render_report(
                 r["repeat"],
                 r.get("prompt") or f"(응답 {', '.join(r.get('send_keys') or [])})",
                 r.get("status"),
-                (
-                    f"{r['oracle']['verdict']}"
-                    + (f" ({r['oracle']['mode']})" if r["oracle"].get("mode") != "as_is" else "")
-                )
-                if r.get("oracle")
-                else "관측",
+                _verdict_cell(r["oracle"]) if r.get("oracle") else "관측",
                 r.get("taxonomy") or "",
                 (r.get("sql_analysis") or {}).get("tables") or "",
                 (r.get("sql_analysis") or {}).get("dialect_hazards") or "",

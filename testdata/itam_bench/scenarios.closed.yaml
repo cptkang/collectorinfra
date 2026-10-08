@@ -18,9 +18,10 @@
 # 구문·실행만 확인했다 — **내부망 `--check-oracle --env closed`에서 0행·오류가 나면 그 시나리오는 `observe`로
 # 되돌린다.** 서비스 개념(101~106·115·117·118)과 113은 관찰 유지 — 연결 위치 탐침
 # (`scenarios.closed.probe.yaml`) 결과로 5회차 오라클을 쓴다.
-# 판정 키 `host_key`: 폐쇄망 열 이름은 `서버호스트명`이고 폐쇄망 정책(`column_policy.closed.yaml`)에는 없다
-# (unclassified). 로더 린트가 정책에 있는 general 이름을 하나 이상 요구해 샌드박스 이름 `sevrHostName`을 같은 뜻
-# 후보로 함께 둔다 — 실행 시 시스템 쪽 키 열 등급이 general이 아니면 키 값은 건수로만 남는다(`keys_recorded`).
+# 판정 키 `host_key`: 폐쇄망 열 이름은 `서버호스트명`이고 폐쇄망 정책(`column_policy.closed.yaml`)에 `identifier`
+# 등급으로 있다(plans/149 W5 — 로더가 키로 받는다). 샌드박스 이름 `sevrHostName`은 같은 뜻 후보로 남아 있을 뿐
+# 로더 요건이 아니다. 시스템 쪽 키 열 등급이 general이 아니면(identifier 포함 · `keys_recorded: false`) 판정
+# 상세의 키 값은 run 일관 가짜 값으로만 남는다(생성기 없는 경로는 건수만).
 version: 1
 db_id: itam
 

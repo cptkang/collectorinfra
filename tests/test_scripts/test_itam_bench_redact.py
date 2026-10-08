@@ -209,7 +209,9 @@ class TestSummarizeResult:
         assert cols["금액"]["log_policy"] == "amount"
         assert cols["금액"]["sum"] == 20700000 and cols["금액"]["min"] == 10300000
         assert "values" not in cols["금액"] and "sample" not in cols["금액"]
-        assert cols["iPCtnt"]["log_policy"] == "network" and "10.0.3.***" in _dump(cols["iPCtnt"])
+        # 생성기 없는 경로의 IP 칸은 길이만 — 앞 세 옥텟도 싣지 않는다(plans/149 W5 3차)
+        assert cols["iPCtnt"]["log_policy"] == "network" and "10.0.3" not in _dump(cols["iPCtnt"])
+        assert "sample" not in cols["iPCtnt"] and "length" in cols["iPCtnt"]
         assert (
             cols["byCtrcName"]["log_policy"] == "free_text" and "sample" not in cols["byCtrcName"]
         )

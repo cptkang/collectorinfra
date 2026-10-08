@@ -1,7 +1,7 @@
 -- 탐침 ITAM-146-P04 · MariaDB(itam 폐쇄망) — plans/146 W5 (2) 연결 위치 탐침 (오라클 디렉터리 규칙만 빌린다 · 정답 SQL 아님)
 -- 대상 시나리오: ITAM-146-P04 (testdata/itam_bench/scenarios.closed.probe.yaml — --check-oracle --env closed --scenarios 전용 · LLM 0)
 -- 묻는 것: 서비스 핵심어 「통합인증」이 스토리지 할당 tcdmsif52 업무명에 부분 일치로 있나 — 행 = 일치한 호스트 수
--- 검수: 모의 DB(127.0.0.1:3308 · 합성 행 — 근거 0)에서 구문·실행만 확인 · 내부망 미실행
+-- 검수: 모의 DB(포트 3308 · 합성 행 — 근거 0)에서 구문·실행만 확인 · 내부망 미실행
 -- 출력: 행 수만(값 0 · --check-oracle) — 0행도 정보다(정답 오라클이 아니다 · 판정에 쓰지 않는다)
 -- 근거: results/itam_bench/20261007-174622 3회차 ITAM-117·118(업무명 등호·IN · 0행) · 정의 tcdmsif52 notes(업무명 = 서비스 연결 후보)
 SELECT DISTINCT g.`호스트명`

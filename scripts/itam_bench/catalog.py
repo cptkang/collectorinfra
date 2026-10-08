@@ -34,7 +34,23 @@ import yaml
 from . import DB_ID, REPO_ROOT
 
 #: 기록 등급 — 엄격도 오름차순(여럿이면 가장 엄격한 것을 쓴다 · §3.5.1 「결과 열 → 원 컬럼 해석」).
-GRADES: tuple[str, ...] = ("general", "network", "amount", "free_text", "unclassified", "pii")
+#: `identifier`(plans/149 W5 · G-1 (b)) — 호스트명·ID 같은 식별자 칸. 값은 run 일관 가짜 값이고
+#: 원값은 사람 값처럼 vault 에 모아 관문이 훑는다. 별칭·판정 키(`oracle.key`)로는 쓸 수 있다.
+#: 값 쪽이 `unclassified`보다 엄격(수집 + 치환)해 그 위다 — 관계 등가류(`effective_policy`)에서
+#: 정책 밖 같은 키 칸(다른 테이블의 `서버호스트명`)도 `identifier`로 올라가 조인 양쪽이 같은
+#: 등급이다.
+GRADES: tuple[str, ...] = (
+    "general",
+    "network",
+    "amount",
+    "free_text",
+    "unclassified",
+    "identifier",
+    "pii",
+)
+#: 판정 키로 쓸 수 있는 등급 — 상세의 `identifier` 키 값은 가짜 값으로 나간다
+#: (`judge.sanitize_detail`).
+KEY_GRADES: frozenset[str] = frozenset({"general", "identifier"})
 GRADE_RANK: dict[str, int] = {grade: rank for rank, grade in enumerate(GRADES)}
 #: 정책 파일에 적을 수 있는 등급(`unclassified`는 「정책에 없음」의 뜻이라 적지 않는다).
 POLICY_GRADES: frozenset[str] = frozenset(GRADES) - {"unclassified"}
@@ -227,12 +243,22 @@ def lint_prompt(text: str, *, identifiers: Iterable[str], policy: ColumnPolicy) 
     """사용자 프롬프트 위반 사유(빈 목록 = 통과 · §3.2.2).
 
     걸린 값 자체는 사유에 싣지 않는다(사람 정보).
+
+    비ASCII 이름(운영 한글 컬럼 `취득금액`·`서버호스트명`)은 사용자 말과 같은 낱말이라 산문 속
+    부분 문자열로는 잡지 않고, 코드 꼴(백틱 `` `이름` `` · 한정 `표.이름`·`이름.칸`)일 때만 잡는다
+    (plans/149 W5). ASCII 이름(`sevrHostName`)은 종전대로 낱말 경계 일치다.
     """
     from src.security.pii_filter import scan_pii
 
     problems: list[str] = []
     for name in sorted({str(n) for n in identifiers if n}, key=str.casefold):
-        if re.search(rf"(?i)(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", text):
+        escaped = re.escape(name)
+        pattern = (
+            rf"(?i)(?<![A-Za-z0-9_]){escaped}(?![A-Za-z0-9_])"
+            if name.isascii()
+            else rf"`{escaped}`|(?<=\w\.){escaped}(?!\w)|(?<!\w){escaped}(?=\.\w)"
+        )
+        if re.search(pattern, text):
             problems.append(f"테이블·컬럼 식별자 `{name}` — 사용자 말로 바꾼다")
     for match in _SQL_TERMS_EN.finditer(text):
         problems.append(f"SQL 용어 `{match.group(1)}`")
@@ -312,7 +338,10 @@ def _ref_names(ref: Any) -> list[str]:
 def _check_oracle(
     spec: dict[str, Any], *, where: str, db_ids: list[str] | None, policy: ColumnPolicy
 ) -> list[str]:
-    """하네스 명세 검사(`validate_oracle_spec`) + 벤치 규칙(키 = general · 값 = general|amount)."""
+    """하네스 명세 검사(`validate_oracle_spec`) + 벤치 규칙.
+
+    키 = general|identifier(`KEY_GRADES`) · 값 = general|amount.
+    """
     from scripts.scenario.oracle import validate_oracle_spec
 
     errors = [
@@ -326,10 +355,11 @@ def _check_oracle(
                 f"{where} oracle.key {ref!r}: 카탈로그 컬럼 이름이 하나도 없다 — 키를 컬럼에 묶는다"
             )
         for name in known:
-            if policy.grade(name) != "general":
+            if policy.grade(name) not in KEY_GRADES:
                 errors.append(
-                    f"{where} oracle.key: `{name}`은 {policy.grade(name)} 등급 — 키는 general만"
-                    "(불일치 상세가 키 값을 싣는다 · plans/135 §3.5.6)"
+                    f"{where} oracle.key: `{name}`은 {policy.grade(name)} 등급 — 키는 "
+                    "general·identifier만(불일치 상세가 키 값을 싣는다 · plans/135 §3.5.6 · "
+                    "identifier 키 값은 가짜 값 · plans/149 W5)"
                 )
     if "value" in spec:
         for name in _ref_names(spec["value"]):

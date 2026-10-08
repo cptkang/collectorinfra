@@ -4,7 +4,7 @@
 --   G-4: 기준 칸은 취득년월일(대안 경과년수 — 4회차 대조로 가린다) · tcdmsif80 마트 가설(추정)
 -- compare: keyset(서버호스트명) — 키 열 unclassified라 실행 시 키 값은 건수로만 남는다
 -- 권장 spec: {id: ITAM-110, compare: keyset, key: [[서버호스트명, sevrHostName, …]], db_ids: [itam]}
--- 검수: 모의 DB(127.0.0.1:3308 · 합성 행 — 근거 0)에서 구문·실행만 확인 · 내부망 --check-oracle 미실행 — 내부망에서 0행·오류면 시나리오를 observe로 되돌린다
+-- 검수: 모의 DB(포트 3308 · 합성 행 — 근거 0)에서 구문·실행만 확인 · 내부망 --check-oracle 미실행 — 내부망에서 0행·오류면 시나리오를 observe로 되돌린다
 -- 근거: results/itam_bench/20261007-174622 3회차 ITAM-110(tcdmsif80↔tcdmsif72 · 2,220행 — 조인은 활성 칸 때문 · 80만으로 답 가능 추정) · plans/146 §2
 SELECT DISTINCT `서버호스트명`
 FROM `tcdmsif80`

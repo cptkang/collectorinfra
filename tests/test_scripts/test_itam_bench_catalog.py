@@ -200,7 +200,7 @@ class TestScenarioLoader:
                 "oracle: {id: ITAM-02, compare: count, db_ids: [itam]}",
                 "oracle: {id: ITAM-02, compare: keyset, key: [[rspblPsnEmnm, 담당자]], "
                 "db_ids: [itam]}",
-                "키는 general만",
+                "키는 general·identifier만",
             ),
             (
                 "oracle: {id: ITAM-02, compare: count, db_ids: [itam]}",

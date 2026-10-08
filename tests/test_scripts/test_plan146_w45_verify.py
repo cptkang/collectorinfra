@@ -167,8 +167,10 @@ class TestKnowledgeSources:
         assert "항진 조건도 쓰지 않는다" in rules["s04-code-columns"]
         assert "관측 DB" in rules["s09-utilization"]
         desc = {i["id"]: i for i in self._items("descriptions.yaml")}
-        for key in ("tcdmsif80.자산상태구분", "tcdmsif52.업무명", "tcdmsgt82.어플리케이션명"):
+        for key in ("tcdmsif80.자산상태구분", "tcdmsif52.업무명"):
             assert desc[key]["evidence"] == "20261007-174622"
+        # plans/149 W1 — 어플리케이션명은 4회차 근거로 2순위 칸으로 다시 썼다
+        assert desc["tcdmsgt82.어플리케이션명"]["evidence"] == "20261008-133613"
 
 
 # --- 값 누출 경계 — 폐쇄망 keyset 판정 기록 ----------------------------------------------

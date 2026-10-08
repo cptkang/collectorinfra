@@ -30,6 +30,7 @@ from src.domain.query_time import QueryTime, resolve_task_time
 from src.nodes.cache_management import cache_management
 from src.nodes.general_inference import general_inference
 from src.nodes.multi_db_executor import multi_db_executor
+from src.nodes.name_match_retry import NAME_MATCH_CHECKED_KEY, name_match_retry_hint
 from src.nodes.query_executor import query_executor
 from src.nodes.query_generator import query_generator
 from src.nodes.query_validator import (
@@ -1009,6 +1010,9 @@ async def _run_single_db_pipeline(
       소요`면 하지 않는다(T-3). 마감(`request_deadline`)이 없는 상태(CLI·테스트·옛
       체크포인트)는 종전 동작과 같다.
     - 유효 SQL 없이 끝나면 `regen_stop`을 남긴다(`_stop_regen`).
+    - **0행 + 이름 칸 등호·IN**(plans/149 W3)이면 부분 일치 힌트로 1회 재생성한다
+      (`name_match_retry_hint` — 그래프 경로 `result_organizer`와 같은 판정). 재생성도 0행이면 끝.
+      재생성이 실행 성공 없이 끝나면(검증·실행 실패 · 조회 마감 등) 재생성 전 0행 답으로 되돌린다.
 
     주의: result_organizer는 호출자(run_data_query_pipeline)에서 일괄 수행한다.
     여기서는 schema→generate→validate→execute 까지의 재시도 루프만 담당한다.
@@ -1042,6 +1046,9 @@ async def _run_single_db_pipeline(
     steps = 0
     # 직전 SQL 생성 소요(초) — 방금 잰 값으로 재생성 가능 여부를 판정한다(추정 상수 금지 · T-3).
     last_gen_sec: float | None = None
+    # 이름 칸 부분 일치 재생성 직전의 0행 상태(plans/149 W3 · 검증 149 M-1) — 재생성이 실행 성공
+    # 없이(검증·실행 실패 예산 소진 · 산문 · 조회 마감 등) 끝나면 이 0행 답으로 되돌린다.
+    zero_row_snapshot: dict[str, Any] | None = None
     while steps < _MAX_PIPELINE_STEPS:
         steps += 1
 
@@ -1126,9 +1133,31 @@ async def _run_single_db_pipeline(
             # 실행 에러 + 재시도 가능 → query_generator 회귀
             continue
 
-        # 정상 실행 완료
+        # 0행 + 이름 칸 등호·IN(plans/149 W3 · G-4 (b)) — 부분 일치 힌트로 1회 재생성한다. 그래프
+        # 경로(`result_organizer` → `route_after_organization`)와 같은 판정 함수 · 같은 예산이다.
+        # 재생성할 시간이 없으면 0행 그대로 끝낸다(조회 마감 실패로 바꾸지 않는다).
+        _hint = name_match_retry_hint(state, max_retry=_max_retry)
+        if _hint is not None:
+            # 판정 표지 — 결과 정리(`result_organizer`)가 같은 판정을 다시 내 재시도 사유가 task
+            # 실패(`error`)로 새지 않게 한다(이 루프 뒤에는 재생성 루프가 없다).
+            state[NAME_MATCH_CHECKED_KEY] = True
+            if has_time_for(state, _reserve, last_gen_sec, now=_monotonic()):
+                zero_row_snapshot = dict(state)
+                state["error_message"] = _hint
+                continue
+            logger.info("이름 칸 부분 일치 재생성 생략 — 조회 마감(plans/149 W3) · 0행 그대로")
+
+        # 정상 실행 완료 — 재생성 SQL이 실행됐으면 그 결과가 답이다
+        zero_row_snapshot = None
         break
 
+    if zero_row_snapshot is not None:
+        logger.info(
+            "이름 칸 부분 일치 재생성이 실행 성공 없이 끝남 — 재생성 전 0행 답으로 되돌림"
+            "(plans/149 W3): 종결=%s 사유=%s",
+            (state.get("regen_stop") or {}).get("reason"), state.get("error_message"),
+        )
+        state = zero_row_snapshot
     return state
 
 

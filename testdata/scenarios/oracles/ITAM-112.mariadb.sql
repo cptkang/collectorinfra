@@ -4,7 +4,7 @@
 -- compare: count(그룹 수) — 운영체제타입내용은 폐쇄망 정책(column_policy.closed.yaml)에 없어 unclassified라 키로 쓰지 않는다(키는 general만)
 --   건수 열을 n으로 짓지 않는다(n이면 count가 그 합 = 전체 서버 수로 읽힌다)
 -- 권장 spec: {id: ITAM-112, compare: count, db_ids: [itam]}
--- 검수: 모의 DB(127.0.0.1:3308 · 합성 행 — 근거 0)에서 구문·실행만 확인 · 내부망 --check-oracle 미실행 — 내부망에서 0행·오류면 시나리오를 observe로 되돌린다
+-- 검수: 모의 DB(포트 3308 · 합성 행 — 근거 0)에서 구문·실행만 확인 · 내부망 --check-oracle 미실행 — 내부망에서 0행·오류면 시나리오를 observe로 되돌린다
 -- 근거: results/itam_bench/20261007-174622 3회차 ITAM-112(tcdmsif72 운영체제타입내용 집계 · 5행) · plans/146 §2
 SELECT `운영체제타입내용`, COUNT(*) AS server_count
 FROM `tcdmsif72`

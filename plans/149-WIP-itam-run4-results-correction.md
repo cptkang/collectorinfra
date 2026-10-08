@@ -1,13 +1,14 @@
 # 149. ITAM 내부망 4회차 결과 교정 — 서비스 연결 가이드 전제 오류 · 선별 밖 테이블 증가 · 이름 칸 등호 · 반출 판독 결함
 
-> **작성일**: 2026-10-08 · **v1.1**(게이트 답 반영)
-> **상태**: **TODO — 계획(코드 0건) · 착수 대기** · 게이트 답 확정(G-1 (b) · G-2 (b) · G-3 (a) · G-4 (b))
+> **작성일**: 2026-10-08 · **v1.2**(착지 — §10 착지 보고)
+> **상태**: **WIP — 외부망 W1~W5 완료 · 내부망 5회차 대기(W6)** · 계획 끝 회귀 `--base 38adcc6` rc=0(본체 통과 4,115 · 실패 0 · 모듈 단위) · arch·overfit 통과 · verifier Critical·High 0 · 보안 감사 2라운드 Critical·High 0 · D-297·D-301 부기 · 잔여: W6 사용자 체크리스트 · 사용자 확인 2건(§10.7)
+> **회귀 대상 파일**: `src/nodes/{name_match_retry(신규),result_organizer}.py` · `src/orchestration/subagents.py` · `scripts/itam_bench/{__main__,catalog,judge,redact,report}.py` · `config/{db_profiles/itam,knowledge/itam/column_descriptions,knowledge/itam/prompt_template,synonym_seeds/itam}.yaml` · `testdata/itam_bench/closed/knowledge/{guide,prompt_section,descriptions,validation(신규)}.yaml` · `testdata/itam_bench/closed/table_definitions.yaml` · `testdata/itam_bench/{column_policy.closed,scenarios.closed}.yaml` · 오라클·탐침 SQL 17(머리 주석) · 테스트 10(신규 4)
 > **요청(사용자 2026-10-08)**: *"20261008-133613, verify-20261008-133551 은 itam_bench 구동 결과이다. 분석하여 수정 계획을 작성하라."*
 > **입력**:
 > - 내부망 4회차 run `results/itam_bench/20261008-133613/`(closed · `tier2_intent` · 워커 fabrix / 오케스트레이터 vllm · 시나리오 18 · 턴 19 · SQL 관측 18 · 오라클 7/7 · 누출 관문 통과)
 > - 자산 검증 run `results/itam_bench/verify-20261008-133551/`(K2 3건 모두 성공 · 관문 통과)
 > - 외부망 코드 재현 2건(§3 F7·F8). LLM 호출 0 · DB 호출 0
-> **계획 시작 SHA**: `81d2657`(로컬 `itam_query`) — `origin/main`은 `ee319ad`(147·148·D-322 포함)로 앞서 있다. 착수 전에 병합한다.
+> **계획 시작 SHA**: `38adcc6`(`origin/main` `ee319ad` 병합 커밋 — 작성 당시 기준 `81d2657`)
 > **관련 계획**: `plans/146`(3회차 교정 — 이 계획이 4회차 결과로 146 잔여 W2·W7을 이어받는다) · `plans/143`(지식 자산 사이클) · `plans/145`(반출 값 치환) · `plans/139`(정의 기반 선별) · `plans/135`(벤치)
 > **관련 결정**: D-003 · D-004(LLM 출력은 정합성 근거 아님) · D-297(DB별 한글 식별자) · D-301(반출 값 0 · 식별자 남김) · D-308(정의 선별) · D-316(지식 자산 작성) · D-321(반출 값 치환)
 > **게이트 답(사용자 2026-10-08)**: *"권고에 맞게 정리하라."* — G-1 (b) · G-2 (b) · G-3 (a) · G-4 (b)(§6)
@@ -187,5 +188,51 @@
 
 ## 9. 버전 이력
 
+- v1.2(2026-10-08) — 착지 — W1~W5 구현 · 모의 DB 검증 81/81 · 계획 끝 회귀 rc=0 · verifier·보안 감사 Critical·High 0 · D-297·D-301 부기 · §10 착지 보고 · 상태 WIP(W6 내부망 대기)
 - v1.1(2026-10-08) — 게이트 답 반영(권고안 전부 — G-1 (b) · G-2 (b) · G-3 (a) · G-4 (b)) · W2를 데이터 단독으로 확정 · W5 등급 규칙 확정 · 착지 때 D-301·D-297 부기
 - v1.0(2026-10-08) — 4회차 run·검증 run 분석 · 발견 F1~F14 · W1~W6 · 게이트 G-1~G-4
+
+## 10. 착지 보고(v1.2 · 2026-10-08)
+
+### 10.1 W1·W2 — 지식 자산·정의(스킬 `/itam-knowledge`)
+- 원천: `guide.yaml` g03·g05·g06 · `prompt_section.yaml` s07 · `descriptions.yaml`(`tcdmsif72` 그룹경로내용·구성항목설명내용·용도내용·담당부점코드 · `tcdmsgt82.어플리케이션명`) — evidence `20261008-133613` · 서비스 연결 1순위 = 핵심어를 72 두 칸 OR 부분 일치 직접 · 2순위 = 0행일 때만 `tcdmsgt82` 두 단계 · 서버 단위 계약·취득은 `tcdmsif80` 단독(물품 키 41·43 조인 금지) · `용도내용`은 용도 지목 질문에만.
+- W2: `tcdmsgt82`·`tcdmsif80` `manages`에 질문 유형 문장. `tcdmsif80`에 「EOS」는 넣지 않았다(이 테이블에 지원 종료 칸이 없다 — EOS는 `tcdmsif79`).
+- 이름 칸 표시(W3 신호): 72 세 칸 · `tcdmsif52.업무명` · `tcdmsgt82.어플리케이션명`.
+- 검증: 모의 DB 실행 검증 81/81(db_unverified 0 · 3회차 run 모의 DB · 전용 MCP 9198 env 오버라이드 — 9099·`.env` 무변경 · 끝나고 내림) → `validation.yaml` · 빌드 기준 1회차 `20261006-152938`(재기저 없음 · 스키마 캐시 차이 0) · 선별 후보 줄 차이 2줄(80·gt82). `prompt_render_diff --ci`는 폴스타만 렌더해 ITAM 블록 차이 0(도구 범위 밖).
+- 함께 고침: `--evidence` 누출 관문 오탐 — 오라클·탐침 SQL 17개 머리 주석의 루프백 IP 표기를 「포트 3308」로(SQL 무변경).
+
+### 10.2 W3 — 이름 칸 등호 0행 1회 재생성(G-4 (b) · D-297 부기)
+- 조사: 0행은 두 경로 모두 「충분」이라 재생성이 없었다(`result_organizer` 비집계 0행 · 2단 루프는 실행 오류만 재생성). F13 「2단에 0건 진단 배선 없음」 추정은 **반증** — 배선은 있고, 퍼널 프로브가 수치 비교만 사용자 조건으로 봐 문자열 조건은 진단이 None이 된다(22자 = 진단 없는 0행 문구). 115(71자)는 진단이 생겨야 하는 모양이라 내부망 `TEXT2SQL_EMPTY_DIAGNOSIS_ENABLED` off 가능성(미확정 · W6).
+- 구현: `src/nodes/name_match_retry.py`(판정 1개) — 2단 `_run_single_db_pipeline`·그래프 `result_organizer` 공용 · 이름 칸 = 설명 정본 「부분 일치」 표시 · CASE 구간 제외 · 1회 상한 · 2단은 재생성 실패 시 0행 답 복원 · 그래프는 남은 재시도 2회 이상일 때만 · 신규 플래그 없음 · 폴스타 비트 동일.
+
+### 10.3 W4 — 벤치 반출·판정 교정(본체 0)
+- (1) `%`·`_`만으로 된 리터럴 구조 유지(fullmatch) (2) 프롬프트 낱말 허용 = 같은 시나리오 현재 턴까지 (3) judge 한글·백틱 식별자 인식(영문 토큰화 동일) (4) 순수 `COUNT(…)` 결과 열 general(위장 식·UNION·백틱 저장 함수 제외) (5) 오라클 스칼라 = 엄격 등급(순수 COUNT만 예외) (6) keyset 「행≠키」 표지.
+
+### 10.4 W5 — closed 정책 재키잉(G-1 (b) · D-301 부기)
+- 77항목 → 한글 컬럼(시트 순서 77/77 · 논리명 63/77) · 새 등급 `identifier` 12칸(D-301 부기에 이름) · network는 생성기 없으면 길이만 · 프롬프트 린트는 한글 이름을 코드 꼴일 때만 · 가드 테스트(정책 칼럼 실존 · 샌드박스 등급 동기).
+
+### 10.5 검증
+- 계획 끝 회귀: `python scripts/regress.py --base 38adcc6 --files <49파일>` → rc=0 · 본체 통과 4,115 · 실패 0 · 건너뜀 7 · arch·overfit 통과 · ruff·mypy 이번 diff 줄 0 · `범위: 모듈 단위 — 전체 미실행` · 권고 블록 없음(`logs/regress/20261008-154831-25424`).
+- verifier: Critical·High 0 · M-1(재생성 실패가 0행 답을 실패로 바꿈) 교정 · L-2·L-4 교정 · L-1·L-3 수용 · 테스트 2파일(xfail 3 — 그래프 M-1 잔여·L-1·L-3).
+- 보안 감사: 1차 Medium 1(스칼라 등급)·Info(와일드카드 끝 개행) 교정 → 재감사 Critical·High·Medium 0 · Low 2(주석 낀 백틱 count · UNION) 교정.
+
+### 10.6 팀 리드 판단
+| 항목 | 판단 · 되돌리는 비용 |
+|---|---|
+| W3 신호를 런타임 Redis 설명이 아니라 정본 파일에서 읽음 | 정본은 Redis에 없는 키만 채운다(HSETNX) — 내부망 Redis 설명 1,988건이라 표시가 닿지 않을 수 있다. 되돌리기는 `_knowledge_columns` 한 곳 |
+| `identifier` 등급 신설(계획은 「식별자류 치환」만 적음) | 기존 등급으로는 별칭·`oracle.key`가 가려지거나 거부됐다. 되돌리기는 정책 12칸을 general로 · 등급 상수 제거 |
+| 번호류 7칸도 identifier | G-1 (b) 「ID 칸」을 보수적으로 읽음. 되돌리기는 정책 7줄 |
+| 오라클 SQL 머리 주석 IP 표기 교체 | 범위 밖이나 근거 묶음 생성이 막혀 교정(SQL 무변경) |
+
+### 10.7 잔여 · 사용자 확인
+- **사용자 확인 1**: 논리명 불일치 14칸을 시트 순서 대응으로 넣었다(서버호스트명·IP주소내용 80·79 · 서버유형구분 · 자산유지보수구분 · 서버운영환경구분 · 노후교체기기구분 · 자산상태구분 · 자산분류구분 · 세부자산분류구분 · 시리얼번호 · 하드웨어/소프트웨어지원종료년월일 — 같은 자리·타입·NULL).
+- **사용자 확인 2**: 원값 반출로 바뀌는 것 — general 50칸(OS·벤더·모델·용량·건수·코드·날짜·부점·물품명·설치지역 등) · amount 3칸의 합계·최소·최대 · general 술어 리터럴·비교 수 · `%`/`_` 리터럴 · 같은 시나리오 앞 턴 프롬프트 낱말 · 순수 COUNT 결과 · 한글 정책 이름의 산문 사용(린트). general은 이름 단위라 정책 밖 테이블의 같은 이름 칸에도 붙는다(감사 Low).
+- 그래프 경로(3·4단) M-1 잔여 · 후속 턴 덜 발동(L-1) · 큰따옴표 리터럴 미탐(L-3) · `multi_db_executor` 미적용.
+- `tcdmsif80` 정의 `related`가 여전히 41·43 물품 키 연결을 싣는다(verifier L-5) — 5회차 선별 계수에서 41·43이 끌려오면 다룬다.
+- 0건 진단을 문자열 조건까지 넓히는 일(F13)은 범위 밖 — 별건.
+- 2단 0행 집계 질의의 `data_insufficient`가 task 실패로 새는 추정(W3 조사 부수 관찰 · 미실측).
+
+### 10.8 W6 추가 확인(5회차)
+- 내부망 로그 `설명 정본 파일 적재: db_id=itam … kept=… added=…` — K3 설명 교정이 Redis에 이미 있는 칸에는 적재되지 않는다(kept). kept가 크면 「DB 구조」 탭에서 설명을 다시 적재해야 K3가 프롬프트에 닿는다.
+- 내부망 `.env`의 `TEXT2SQL_EMPTY_DIAGNOSIS_ENABLED` 값(115 71자 응답).
+- 판독: 117·118 재생성(로그 `이름 칸 등호 0행 — 부분 일치 힌트로 1회 재생성`) · 리포트 §8 분류 필요 컬럼 감소 · 104 `server_count` 원값.

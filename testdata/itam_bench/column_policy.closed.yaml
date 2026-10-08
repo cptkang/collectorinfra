@@ -1,50 +1,76 @@
-# ITAM 질의 벤치 컬럼 기록 정책 — 폐쇄망(운영) 1회차 (plans/135 W8 · D-301 ②)
+# ITAM 질의 벤치 컬럼 기록 정책 — 폐쇄망(운영) (plans/135 W8 · plans/149 W5 · D-301 ②)
 #
-# **기본 거부.** 운영 ITAM 은 108테이블이지만 검토된 것은 벤더 시트 전사본이 있는 두 테이블뿐이다
-# (`testdata/itam/schema.yaml` — 샌드박스 정책과 같은 등급 · 둘 중 하나를 바꾸면 다른 쪽도 바꾼다:
-# `tests/test_scripts/test_itam_bench_closed_kit.py`가 같음을 고정). 나머지 106테이블의 컬럼은
-# `unclassified`(값 미기록 · 건수·길이만)이고, 이름 토큰·의미 낱말 휴리스틱이 사람 정보로 보이는
-# 컬럼만 `pii`로 올린다. 1회차 반출 후 `python -m scripts.itam_bench --sync <run>`이 정책 밖 컬럼을
-# 뽑아 주면 사용자 검토로 `general`을 더한다(휴리스틱은 `general`을 만들지 않는다).
+# **기본 거부.** 운영 ITAM 은 108테이블이지만 검토된 것은 벤더 시트 전사본이 있는 두 테이블뿐이다.
+# 나머지 106테이블의 컬럼은 `unclassified`(값 미기록 · 건수·길이만)이고, 이름 토큰·의미 낱말
+# 휴리스틱이 사람 정보로 보이는 컬럼만 `pii`로 올린다. 반출 후 `python -m scripts.itam_bench --sync <run>`이
+# 정책 밖 컬럼을 뽑아 주면 사용자 검토로 `general`을 더한다(휴리스틱은 `general`을 만들지 않는다).
+#
+# 컬럼 이름 재키잉(2026-10-08 · plans/149 W5 · F9): 1회차 정책은 벤더 시트 변수명(`sevrHostName` 등
+# 영문 77항목)이었는데 운영 DB 컬럼은 한글 이름이다(closed 스키마 사본
+# `testdata/itam_bench/closed/itam_schema.json` — 테이블 키 `tcdmsif80`·`tcdmsif79` 소문자). 그래서
+# 4회차 결과 열이 한 칸도 정책에 맞지 않았다. 대응은 결정적이다 — 전사본(`testdata/itam/schema.yaml`)의
+# 시트 순서(`seq`)와 사본의 컬럼 순서가 두 테이블 모두 같은 수(68·9)이고 자리마다 기본 타입·NULL 허용이
+# 같으며, 논리명(`ko` 공백 제거)이 같은 63칸은 전부 같은 자리다. 논리명이 다른 14칸(아래 `논리명≠`)도
+# 같은 자리 이름을 쓴다(팀 리드 결정 2026-10-08 — 사용자 검토 대상으로 보고). 샌드박스 정책
+# (`column_policy.yaml`)은 영문 이름 그대로다.
+#
+# 등급(G-1 (b)): 샌드박스 검토 등급(2026-10-06 · 77항목)을 그대로 옮기되 **식별자류**(호스트명·
+# 가상화·군집 ID · 번호류 7칸 — 시리얼번호·물품고유번호·물품분류번호·구매계약번호·
+# 서버유지보수계약번호·구매물품세부일련번호·유지보수물품세부일련번호)만 `general`에서 `identifier`로
+# 내린다 — 값은 run 일관 형식 보존 가짜 값(조인·키 비교 유지 · D-321)이고 별칭·판정 키로는 쓸 수
+# 있다(팀 리드 결정 2026-10-08). 그룹회사코드는 코드라 general 이다. IP 는 `network`(run 경로는 계층
+# 일관 가짜 IP · 생성기 없는 경로는 길이만)다.
+# `tests/test_scripts/test_itam_bench_closed_kit.py`가 「샌드박스 등급 → 같은 대응 → 식별자류만
+# 내림」 = 이 파일임과, 모든 테이블·컬럼 이름이 사본에 실존함을 고정한다.
 #
 # 카나리아: 운영에는 합성 성명이 없다 — 비워 둔다. 관문은 결과에서 모은 사람 값·정규식 규칙·
 # 사용자 정보로 막는다.
 version: 1
 db_id: itam
 scope: closed
-reviewed: "2026-10-06 plans/135 W8 — 전사본 두 테이블(77항목)만 검토 · 나머지는 기본 거부"
+reviewed: "2026-10-06 plans/135 W8 — 전사본 두 테이블(77항목)만 검토 · 2026-10-08 plans/149 W5 한글 이름 재키잉"
 
 canaries:
   literals: []
   patterns: []
 
 tables:
-  TCDMSIF80:
+  tcdmsif80:
     general: [
-      groupCoCd, sevrHostName,
-      vrtlMgtSevrID, clstRefID, vrtlSevrRefID,
-      oSTypzCtnt, vndrCtnt, oSVsnCtnt,
-      sevrPtrnDstcd, inttAreaCtnt, sevrMdelName, asstMdelName,
-      cPUCnt, cPUSocktCnt, sevrCPUSped, sevrCPUUseQanty, sevrCPUUseRt,
-      sevrMmryCapc, sevrMmryUseQanty, sevrMmryUseRt,
-      wholStrgeCapc, wholStrgeUseQanty, wholStrgeUseRt,
-      rspblBrncd, rspblBrnName,
-      cmdtsClsfiNo, cmdtsUniqno, cmdtsName, vrtlSevrMapngYn,
-      byCtrcNo, byCmdtsDtalsSerno, acqsiYmd,
-      asstManmenDstcd, sevrOperEvirnDstcd, elapsNoy, osoaRplacMchtlDstcd, asstStusDstcd,
-      manmenCtrcStartYmd, manmenCtrcEndYmd, manmenCtrcTermiYmd, sevrManmenCtrcNo, manmenCmdtsDtalsSerno,
-      asstMapngYn, asstHoldBrncd, asstHoldBrnName, stohusAsstYn,
-      asstClsfiDstcd, asstClsfiDsticName, dtalsAsstClsfiDstcd, dtalsAsstClsfiDsticName,
-      manmenHopeYm, grttStartYmd, grttEndYmd, srialNoCtnt,
-      sysRegiPrcssYMS, sysLastPrcssYMS,
+      그룹회사코드,
+      운영체제타입내용, 벤더내용, 운영체제버전내용,
+      서버유형구분, 설치지역내용, 서버모델명, 자산모델명,  # 논리명≠ 서버유형구분(서버 유형 구분코드)
+      CPU개수, CPU소켓개수, 서버CPU속도, 서버CPU사용량, 서버CPU사용률,
+      서버메모리용량, 서버메모리사용량, 서버메모리사용률,
+      전체스토리지용량, 전체스토리지사용량, 전체스토리지사용률,
+      담당부점코드, 담당부점명,
+      물품명, 가상화서버매핑여부,
+      취득년월일,
+      # 논리명≠ 자산유지보수구분·서버운영환경구분·노후교체기기구분·자산상태구분(각 「… 구분코드」)
+      자산유지보수구분, 서버운영환경구분, 경과년수, 노후교체기기구분, 자산상태구분,
+      유지보수계약시작년월일, 유지보수계약종료년월일, 유지보수계약해지년월일,
+      자산매핑여부, 자산보유부점코드, 자산보유부점명, 창고자산여부,
+      # 논리명≠ 자산분류구분·세부자산분류구분(각 「… 구분코드」)
+      자산분류구분, 자산분류구분명, 세부자산분류구분, 세부자산분류구분명,
+      유지보수희망년월, 무상시작년월일, 무상종료년월일,
+      시스템등록처리일시, 시스템최종처리일시,
     ]
-    network: [iPCtnt]
-    amount: [acqsiAmt, manmenCnpr, rmainAcbkAmt]
+    # 식별자류(G-1 (b)) — 서버호스트명(논리명≠ 해당 서버의 호스트 명)·가상화·군집 ID · 번호류
+    # (시리얼번호 논리명≠ 시리얼번호 내용)
+    identifier: [
+      서버호스트명, 가상화관리서버ID, 군집참조ID, 가상화서버참조ID,
+      물품분류번호, 물품고유번호, 구매계약번호, 구매물품세부일련번호,
+      서버유지보수계약번호, 유지보수물품세부일련번호, 시리얼번호,
+    ]
+    network: [IP주소내용]  # 논리명≠ (해당 서버의 ip 주소)
+    amount: [취득금액, 유지보수계약금액, 잔존장부금액]
     # 계약명(공급사명 포함 가능)·용도·구성 설명 — 사람 이름·연락처가 섞일 수 있는 서술형
-    free_text: [cmdtsUseUsagCtnt, byCtrcName, manmenCtrcName, cnfgItemDescCtnt]
+    free_text: [물품사용용도내용, 구매계약명, 유지보수계약명, 구성항목설명내용]
     # 담당자 직원번호·성명 · 시스템 등록/최종 사용자번호
-    pii: [rspblPsnEmpid, rspblPsnEmnm, sysRegiUno, sysLastUno]
-  TCDMSIF79:
-    general: [groupCoCd, sevrHostName, hWSportEndYmd, sWSportEndYmd, sysRegiPrcssYMS, sysLastPrcssYMS]
-    network: [iPCtnt]
-    pii: [sysRegiUno, sysLastUno]
+    pii: [담당자직원번호, 담당자직원명, 시스템등록사용자번호, 시스템최종사용자번호]
+  tcdmsif79:
+    # 논리명≠ 하드웨어·소프트웨어지원종료년월일(각 「… 지원 종료일자」)
+    general: [그룹회사코드, 하드웨어지원종료년월일, 소프트웨어지원종료년월일, 시스템등록처리일시, 시스템최종처리일시]
+    identifier: [서버호스트명]  # 식별자류(G-1 (b)) · 논리명≠ (해당 서버의 호스트 명)
+    network: [IP주소내용]  # 논리명≠ (해당 서버의 ip 주소)
+    pii: [시스템등록사용자번호, 시스템최종사용자번호]

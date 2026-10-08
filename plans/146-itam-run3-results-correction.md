@@ -1,7 +1,7 @@
 # 146. ITAM 내부망 3회차 결과 교정 — 백틱 식별자 검증 누락 · 선별↔생성 테이블 불일치 · 서비스 연결 탐침 · 4회차 정답 판정 준비
 
-> **작성일**: 2026-10-08 · **v1.3**(W5 (3) `--out` 완료 · v1.2 착지 — §10 착지 보고)
-> **상태**: **WIP — 외부망 작업 완료 · 내부망 4회차 대기**(파일명 태그는 다른 작업 트리와의 145·146 번호 재부여를 사용자가 정할 때까지 `TODO` 유지) · W1·W3·W4·W5 (1)(2)(3) 완료(계획 끝 회귀 rc=0 · W5 (3) 회귀 rc=0 · 모듈 단위) · 잔여: W2 4회차 재계수 · W6은 145에서 교정(F9 · 따옴표 없는 비ASCII 단어 잔여는 D-321 수용 잔여) · F12 일부 교정(「열#N」은 정책 동기화 필요 잔여) · W7 사용자 체크리스트 · L1(3·4단 엔진 폴백 — 103 소관)
+> **작성일**: 2026-10-08 · **v1.4**(완료 — 잔여 이관 · v1.3 W5 (3) · v1.2 착지 — §10 착지 보고)
+> **상태**: **완료(2026-10-08 · 잔여 이관)** — W1·W3·W4·W5 (1)(2)(3) 완료(계획 끝 회귀 rc=0 · W5 (3) 회귀 rc=0 · 모듈 단위) · 내부망 4회차 실행됨(`20261008-133613` — 오라클 7/7 · 1054 오류 0) · **이관**: W2 선별 보강 → `plans/149` W2(4회차 재계수 5→8턴 · G-2 (b)) · W7 내부망 체크리스트 → `plans/149` W6(5회차) · F12 「열#N」 정책 동기화 → `plans/149` W5(closed 정책 재키잉) · W6(F9)은 145에서 교정 · L1(3·4단 엔진 폴백) → `plans/103` 소관
 > **회귀 대상 파일**: `src/sql_validation.py` · `src/nodes/{table_selection,schema_analyzer,multi_db_executor,context_resolver,output_generator}.py` · `src/utils/empty_antecedent.py`(신규) · `src/orchestration/{intent_planner,result_aggregator}.py` · `src/routing/semantic_router.py` · 매뉴얼 3 · `config/{db_profiles/itam,knowledge/itam/column_descriptions,knowledge/itam/prompt_template,synonym_seeds/itam}.yaml` · `testdata/itam_bench/closed/knowledge/{guide,prompt_section,descriptions,examples}.yaml` · `testdata/itam_bench/scenarios.closed{,.probe}.yaml` · 오라클·탐침 SQL 17 · 테스트 7 · (v1.3) `scripts/itam_bench/__main__.py` · `tests/test_scripts/test_plan146_w5_oracle_out.py`
 > **게이트 답(사용자 2026-10-08)**: *"권고에 맞게 진행하라."* — G-1 (b) · G-2 (c) · G-3 (a) · G-4 (a). W5 (3) `--check-oracle --out`(선택)은 `scripts/itam_bench/__main__.py`를 145가 미커밋 편집 중이라 **보류**(145 통지)
 > **요청(사용자 2026-10-08)**: *"「20261007-174622」 폴더에 itam_bench결과가 있다. 이를 분석하여 수정계획 파일을 작성하라."*
@@ -225,6 +225,7 @@
 | v1.1 | 2026-10-08 | 게이트 답 — 권고안 전부(G-1 (b) · G-2 (c) · G-3 (a) · G-4 (a)) · W5 (3) 보류(145 파일 충돌) · 착수 |
 | v1.2 | 2026-10-08 | 착지 — W1(백틱 카탈로그 실존 검사 · D-297 부기) · W3(0행 앞 턴 승계 + 안내 · 행 숨김 기각 · D-055 부기) · W4(K1·K3·K4 · K2 3건 · 모의 DB 실행 검증 81/81) · W5 (1)(2)(오라클 7 · 탐침 10) · 계획 끝 회귀 rc=0 · §10 착지 보고 · 상태 WIP(파일명 태그 유지) |
 | v1.3 | 2026-10-08 | W5 (3) — `--check-oracle --out` → `<run>/oracle_check/oracle_check.yaml`(값 0 · 누출 관문 · run 루트 무손상) · W7 회수 문구·145 반입 확인 3·반출 실물 대조 포인트 · 회귀 rc=0 |
+| v1.4 | 2026-10-08 | 완료 — 4회차 실행 확인 · 잔여 이관(W2·W7·F12 → `plans/149` W2·W6·W5 · L1 → 103) · 파일명 태그 제거(`146-itam-run3-results-correction.md`) |
 
 ## 10. 착지 보고(v1.2 · 2026-10-08)
 

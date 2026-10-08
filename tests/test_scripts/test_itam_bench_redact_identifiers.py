@@ -182,7 +182,7 @@ def _trace_redacted(policy: cat.ColumnPolicy, vault: rd.PiiVault) -> str:
     )
 
 
-# ⑦ 2회차 trace 모양 SQL — 결과 문자열 고정
+# ⑦ 2회차 trace 모양 SQL — 결과 문자열 고정(와일드카드만인 `'%'`는 남는다 · plans/149 W4 (1))
 def test_second_run_trace_shape(policy: cat.ColumnPolicy, vault: rd.PiiVault) -> None:
     assert _trace_redacted(policy, vault) == f"""-- {M}
 SELECT
@@ -194,8 +194,8 @@ JOIN `tcdmsif75` AS sw
  AND s.`서버호스트명` = sw.`서버호스트명`
  AND s.`자산번호`   = sw.`지어낸자산번호`
 JOIN `tcdmsgt82` AS a
-  ON ( s.`서버호스트명`   LIKE CONCAT('{M}', a.`서비스코드`, '{M}')
-       OR s.`서버용도내용` LIKE CONCAT('{M}', a.`서비스코드`, '{M}') )
+  ON ( s.`서버호스트명`   LIKE CONCAT('%', a.`서비스코드`, '%')
+       OR s.`서버용도내용` LIKE CONCAT('%', a.`서비스코드`, '%') )
 WHERE s.`활성화여부` = '0'
   AND s.`서버용도내용` LIKE '%통합인증 서비스%'
   AND s.`비고` = '{M}'

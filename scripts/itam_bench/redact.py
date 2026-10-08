@@ -9,14 +9,19 @@ plans/135 §3.5 · W2 · D-301.
   서술형·미분류는 건수·길이만, 금액은 합계·최소·최대만, IP 는 끝자리를 가린다. 해시도 남기지 않는다
   (이름은 경우의 수가 작아 역산된다). 결과 열의 원 컬럼은 **별칭 식이 먼저**이고 실행 SQL 전부의
   합집합에서 가장 엄격한 등급을 쓴다. 열 이름(별칭)도 값일 수 있어 근거가 있을 때만 남긴다.
+  `COUNT(…)` 결과는 건수라 인자 컬럼 등급을 따르지 않는다(plans/149 W4 (4)). 식별자(`identifier`
+  · 호스트명·ID)는 서술형처럼 건수·길이만(생성기 경로는 가짜 값)이고 원값은 사람 값처럼 모으되
+  열 이름(별칭)은 일반처럼 남긴다(plans/149 W5 · G-1 (b)).
 - SQL: 주석·문자열·백틱을 한 번에 토큰으로 나눈다(주석 속 따옴표가 짝을 뒤집지 않게). 주석은 가리고,
-  리터럴은 남길 근거(그 턴 프롬프트의 말 · 일반 컬럼 비교 · 날짜/짧은 수 · 날짜 서식 · 식별자
-  따옴표)가 있고 같은 술어에 사람·서술형 컬럼이 없을 때만 남긴다. 테이블·컬럼 식별자(백틱 ·
-  `AS` 뒤 따옴표 별칭 · 따옴표 없는 비ASCII 낱말)는 카탈로그 실존과 무관하게 이름으로 남긴다(D-301
-  부기 2026-10-07 — 데이터만 가린다). 다만 비한정·비카탈로그 낱말이 식별자 모양이 아니거나, 값
-  자리(비교 연산자·LIKE·BETWEEN·THEN·ELSE 뒤 · IN 목록)에 있거나, 사람·서술형·미검토 카탈로그
-  컬럼과 같은 술어에 있으면 값으로 보고 가린다. 별칭은 가린 리터럴과 겹치거나 상수 항목일 때만
-  가린다. IP 는 어디서든 끝자리를 가린다. SQL 구조(테이블·컬럼·조건 형태)는 그대로다.
+  리터럴은 남길 근거(프롬프트의 말 — 부르는 쪽이 같은 시나리오의 현재 턴까지 프롬프트를 넘긴다 ·
+  일반 컬럼 비교 · 날짜/짧은 수 · 날짜 서식 · 식별자 따옴표)가 있고 같은 술어에 사람·서술형 컬럼이
+  없을 때만 남긴다. LIKE 와일드카드만인 리터럴(`'%'`)은 값이 없어 늘 남긴다(plans/149 W4 (1)).
+  테이블·컬럼 식별자(백틱 · `AS` 뒤 따옴표 별칭 · 따옴표 없는 비ASCII 낱말)는 카탈로그 실존과
+  무관하게 이름으로 남긴다(D-301 부기 2026-10-07 — 데이터만 가린다). 다만 비한정·비카탈로그 낱말이
+  식별자 모양이 아니거나, 값 자리(비교 연산자·LIKE·BETWEEN·THEN·ELSE 뒤 · IN 목록)에 있거나,
+  사람·서술형·미검토 카탈로그 컬럼과 같은 술어에 있으면 값으로 보고 가린다. 별칭은 가린 리터럴과
+  겹치거나 상수 항목일 때만 가린다. IP 는 어디서든 끝자리를 가린다. SQL 구조(테이블·컬럼·조건
+  형태)는 그대로다.
 - 결과에서 본 사람 값은 **메모리에만** 모아(`PiiVault`) 다른 칸·SQL·오류 문구에 나타나면 가린다.
 - 누출 관문(`LeakGate`)이 산출물 전부를 디코드한 값 단위로 다시 훑는다 — 실패하면 산출물을 쓰지 않고
   위치만 적는다(값일 수 있는 키는 경로에 순번으로). 치환 코드값 파일(`code_samples.yaml`)에는 「원
@@ -102,6 +107,9 @@ _SQL_TOKEN = re.compile(
     r"/\*.*?\*/|--[^\n]*|#[^\n]*|'(?:[^'\\]|\\.|'')*'|\"(?:[^\"\\]|\\.|\"\")*\"|`(?:[^`]|``)*`",
     re.S,
 )
+#: 함수 호출 자리 — 공백·주석 뒤 `(`(백틱 `count` 저장 함수 판정 · 교정 2).
+#: 갈래 첫 글자가 서로 달라 선형이다.
+_CALL_AFTER = re.compile(r"(?:\s|/\*.*?\*/|--[^\n]*(?:\n|\Z)|#[^\n]*(?:\n|\Z))*\(", re.S)
 #: 술어 조각 경계(리터럴이 어느 컬럼과 같은 조건에 있는가를 볼 때).
 _BOUNDARY = re.compile(r"(?i)\b(?:and|or|where|on|having|when|then|else|select|from|set|join)\b|;")
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -121,7 +129,9 @@ _IN_BEFORE = re.compile(r"(?i)\bIN\s*$")
 _COMPARE_WORD_BEFORE = re.compile(r"(?i)\b(?:LIKE|BETWEEN|WHEN|AND)$")
 _BETWEEN_AND_BEFORE = re.compile(r"(?is)\bBETWEEN\b(?:(?!\bAND\b).){0,200}\bAND$")
 #: 가짜 값으로 바꾸는 비교 자리 수의 술어 등급 — None 은 근거 없음(가장 엄격).
-_COMPARE_FAKE_GRADES = frozenset({"pii", "free_text", "unclassified", "amount", None})
+_COMPARE_FAKE_GRADES = frozenset(
+    {"pii", "identifier", "free_text", "unclassified", "amount", None}
+)
 #: 비교 자리를 감싸는 호출(교정 3차) — `= CAST(N AS …)`의 첫 인자 · `= COALESCE(x, N)`의 인자.
 _WRAP_CALL_BEFORE = re.compile(r"(?i)\b(CAST|COALESCE)\s*$")
 #: 값 하위 질의 — `(` 바로 앞이 비교 연산자·IN·ANY·ALL·SOME 이고 `(` 바로 뒤가 SELECT.
@@ -157,6 +167,8 @@ _SAFE_NUMBERISH = re.compile(
 )
 #: 날짜 서식 — `%`+영문 지시자와 구분자만(40자 이하 · 선형).
 _FORMAT = re.compile(r"^(?:%[A-Za-z]|[-/:. ]){1,40}$")
+#: LIKE 와일드카드만(`'%'`·`'_'`·`'%%'`) — 값이 아니라 구조 기호다(plans/149 W4 (1) · F7).
+_WILDCARD_ONLY = re.compile(r"\A[%_]{1,40}\Z")  # `$`는 끝 개행을 허용한다(교정 1)
 _IPISH = re.compile(r"^%?[0-9.]{1,15}%?$")
 _JWT = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.")
 _NEAR = re.compile(r"near '(?P<body>[^\n]*?)' at line (?P<line>\d+)|near '(?P<tail>[^\n]*)$")
@@ -469,6 +481,11 @@ def _skeleton(sql: str, identifiers: set[str] | None = None) -> str:
             return " "
         content = token[1:-1]
         if token.startswith("`"):
+            # `` `COUNT`(…) ``는 내장 집계가 아니라 저장 함수 호출이다 — 백틱을 남겨 COUNT 로 보지
+            # 않는다(plans/149 W4 교정 1 · `_strip_counts`·`is_count_column`)
+            # 사이 주석도 건너뛴다(교정 2 — `` `count`/*c*/( ``·`-- c\n(`·`#c\n(`)
+            if content.casefold() == "count" and _CALL_AFTER.match(sql, match.end()):
+                return token
             return content
         if token.startswith('"') and identifiers and content.casefold() in identifiers:
             return content
@@ -533,6 +550,64 @@ def _alias_expressions(skeleton: str, alias: str) -> list[str]:
     return expressions
 
 
+#: `COUNT(` 호출 머리(`ACCOUNT(` 같은 낱말 꼬리는 `\b`로 거른다). 이름과 `(` 사이 공백·주석은
+#: 허용하지 않는다 — MariaDB 기본 모드(IGNORE_SPACE 꺼짐)에서 `COUNT (x)`는 내장 집계가 아니라
+#: 저장 함수 호출로 해석된다(교정 2 · 골격은 주석을 공백으로 바꾼다).
+_COUNT_OPEN = re.compile(r"(?i)\bCOUNT\(")
+
+
+def _strip_counts(expression: str) -> str:
+    """식에서 `COUNT(…)` 호출을 통째로 `0`으로 바꾼다(괄호 짝이 맞는 것만 — 안 맞으면 그대로).
+
+    `COUNT` 결과는 건수라 인자 컬럼의 값이 실리지 않는다(plans/149 W4 (4) · F10). `COUNT` 밖 식
+    (`SUM`·`MAX`·나눗셈의 다른 항 등)의 컬럼은 그대로 남아 종전대로 등급을 정한다.
+    """
+    out: list[str] = []
+    cursor = 0
+    for match in _COUNT_OPEN.finditer(expression):
+        if match.start() < cursor:
+            continue  # 앞에서 지운 COUNT 안쪽의 COUNT
+        depth, index = 1, match.end()
+        while index < len(expression) and depth:
+            depth += {"(": 1, ")": -1}.get(expression[index], 0)
+            index += 1
+        if depth:
+            break  # 짝이 없다 — 남은 식은 그대로 본다
+        out += [expression[cursor : match.start()], " 0 "]
+        cursor = index
+    return "".join(out) + expression[cursor:]
+
+
+#: `COUNT`를 지운 뒤 남아도 되는 것 — `0`·공백·괄호뿐(순수 `COUNT` 결과).
+_COUNT_ONLY_REST = re.compile(r"\A[\s()0]*\Z")
+#: 집합 연산 — 다른 SELECT 의 행이 같은 결과 열로 들어온다(교정 2 · 하위 질의 안이어도 거짓 쪽).
+_SET_OPERATOR = re.compile(r"(?i)\b(?:union|intersect|except)\b")
+
+
+def is_count_column(name: str, sqls: Iterable[str]) -> bool:
+    """결과 열이 순수 `COUNT(…)` 결과인가 — 실행 SQL 전부에서 그 별칭의 식이 하나 이상 있고 모두
+    `COUNT(…)`(괄호만 허용)일 때만 참(plans/149 W4 교정 1 · `judge.scalar_grade`의 예외 판정).
+
+    `COUNT(x) + SUM(y)`·`COUNT(*) + 0`·별칭이 아닌 열·다른 SQL 에서 같은 별칭이 다른 식이면 거짓.
+    `UNION`·`INTERSECT`·`EXCEPT`가 든 SQL 이 그 별칭을 쓰면 거짓이다(다른 SELECT 의 열이 같은 결과
+    열로 들어온다 · 교정 2).
+    """
+    found = False
+    for sql in sqls:
+        if not sql:
+            continue
+        skeleton = _skeleton(str(sql)[:INPUT_MAX])
+        expressions = _alias_expressions(skeleton, str(name))
+        if expressions and _SET_OPERATOR.search(skeleton):
+            return False
+        for expression in expressions:
+            found = True
+            stripped = _strip_counts(expression)
+            if stripped == expression or not _COUNT_ONLY_REST.match(stripped):
+                return False
+    return found
+
+
 def _expression_sources(
     expression: str, folded: Mapping[str, str], catalog: frozenset[str] = frozenset()
 ) -> list[str]:
@@ -540,8 +615,10 @@ def _expression_sources(
 
     낱말은 유니코드 단위로 끊는다(`IP주소내용`을 `IP`로 자르지 않는다 · 교정 1차 F12). 정책에 없는
     낱말은 ASCII 식별자이거나 카탈로그 컬럼 이름일 때만 이름을 남기고(`?:이름`), 그 밖의 비ASCII
-    낱말은 값일 수 있어 이름 없이 `?`다.
+    낱말은 값일 수 있어 이름 없이 `?`다. `COUNT(…)` 안은 보지 않는다 — 식 전체가 `COUNT`면
+    `#computed`(general)다(plans/149 W4 (4)).
     """
+    expression = _strip_counts(expression)
     out: list[str] = []
     has_literal = "''" in expression
     anonymous = False
@@ -646,7 +723,9 @@ def safe_label(
     if _ASCII_LABEL.match(name):
         return name
     real = [s for s in sources if s != COMPUTED]
-    if real and grade in ("general", "network", "amount") and not pii_suggestion(name, name):
+    if real and grade in ("general", "network", "amount", "identifier") and not pii_suggestion(
+        name, name
+    ):
         return name
     return f"열#{index}"
 
@@ -724,8 +803,10 @@ def summarize_result(
     names = result_column_names(result)
     grades = {name: _column_grade(name, list(sources.get(name) or []), policy) for name in names}
     # ① 사람 값 수집이 먼저다 — 같은 결과의 일반 열에 그 값이 섞였는지 바로 대조해야 한다.
+    # 식별자(`identifier` · 호스트명·ID)도 모은다 — 다른 칸·SQL·문구에 나타나면 가짜 값으로
+    # 바뀌고 관문이 원값을 훑는다(plans/149 W5 · G-1 (b) · D-321).
     for name, grade in grades.items():
-        if grade == "pii":
+        if grade in ("pii", "identifier"):
             for row in rows:
                 if not _is_empty(row.get(name)):
                     vault.add(row.get(name))
@@ -747,7 +828,9 @@ def summarize_result(
         unknown = sorted({s.split(":", 1)[1] for s in source_list if s.startswith(f"{UNKNOWN}:")})
         if unknown:
             entry["unknown_identifiers"] = unknown
-        if grade in ("general", "network"):
+        # 생성기 없는 경로의 IP 칸은 앞 세 옥텟도 싣지 않는다 — 길이만(아래 서술형 갈래 ·
+        # plans/149 W5 3차: 폐쇄망 정책 재키잉 전 기준선(미분류 = 길이만)과 같은 강도)
+        if grade == "general" or (grade == "network" and fakes is not None):
             if any(_unsafe_flags(present, vault)):
                 entry["demoted"] = "pii_value_match"
                 if fakes is not None:
@@ -775,7 +858,9 @@ def summarize_result(
             entry["distinct"] = len(set(present))
             if fakes is not None:
                 _fill_substituted(entry, present, fakes)
-        else:  # free_text · unclassified
+        else:
+            # free_text · unclassified · identifier(값은 가짜 값 · 별칭은 남김) ·
+            # 생성기 없는 network
             if present:
                 lengths = [len(v) for v in present]
                 entry["length"] = [min(lengths), max(lengths)]
@@ -808,6 +893,7 @@ def _trivially_safe(content: str, prompt: str) -> bool:
     return bool(
         _SAFE_NUMBERISH.match(content)
         or (_FORMAT.match(content) and "%" in content)
+        or _WILDCARD_ONLY.match(content)
         or _prompt_word(content, prompt)
     )
 
@@ -913,10 +999,10 @@ def _identifier_judge(
     - 별칭(`AS` 뒤): 같은 SQL 에서 가린 리터럴(`masked_literals`)과 내용이 겹치거나(2자 이상 ·
       casefold · 같음/포함/피포함 — ASCII 리터럴의 포함은 낱말 경계로), 그 SELECT 항목이 상수
       하나뿐이거나 사람·서술형 칼럼 하나뿐이면 가린다. 그 밖의 별칭은 남긴다(`SELECT 서버명 AS
-      박서준`은 수용 잔여).
+      박서준`은 수용 잔여 · 식별자(`identifier`) 칼럼 하나뿐인 항목의 별칭도 남긴다 — plans/149 W5).
     - 그 밖: 값 자리(비교 연산자·LIKE·BETWEEN·BETWEEN 뒤 AND·WHEN·THEN·ELSE 뒤 · `IN (` 목록 ·
       값 하위 질의의 SELECT 목록)면 가린다. 아니면 이 SQL 에서 정의해 남긴 별칭의 참조(ORDER BY·
-      GROUP BY·HAVING)는 남기고, 같은 술어 조각(`_BOUNDARY` + 괄호 깊이 0 쉼표)에 사람·서술형
+      GROUP BY·HAVING)는 남기고, 같은 술어 조각(`_BOUNDARY` + 괄호 깊이 0 쉼표)에 사람·식별자·서술형
       컬럼(정책 밖은 사람 정보 휴리스틱) 또는 정책 밖 카탈로그 컬럼이 있으면(자기 자신 제외) 가린다.
 
     조각마다 위험 낱말 수를 누적합으로 한 번 계산하고, 낱말 등급은 지역 사전에 담는다(선형).
@@ -955,7 +1041,7 @@ def _identifier_judge(
 
     def risky(word: str) -> bool:
         grade = grade_of(word)
-        return grade in ("pii", "free_text") or (
+        return grade in ("pii", "identifier", "free_text") or (
             grade == "unclassified" and word.casefold() in catalog
         )
 
@@ -1133,10 +1219,12 @@ def _literal_plan(
             decision = (
                 "keep" if (_ASCII_LABEL.match(content) or _prompt_word(content, prompt)) else "mask"
             )
-        elif _prompt_word(content, prompt):
+        elif _prompt_word(content, prompt) or _WILDCARD_ONLY.match(content):
+            # 와일드카드만인 리터럴은 담긴 값이 없다 — 술어 등급과 무관하게 남긴다(plans/149 F7)
             decision = "keep"
         elif (segment := grade_at(match.start(), match.end())) in (
             "pii",
+            "identifier",
             "free_text",
             "unclassified",
         ):

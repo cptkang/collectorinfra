@@ -60,6 +60,16 @@ _PREDICATE_SPLIT = re.compile(
 )
 _COMPARISON = re.compile(r"(?i)[<>=]|\bbetween\b|\b(?:datediff|timestampdiff)\s*\(")
 _TABULAR_LINE = re.compile(r"^\s*(\|.*\||[-*•]\s+\S|\d+[.)]\s+\S)")
+#: 식별자 낱말 — 유니코드(한글 컬럼 `서버호스트명`)·백틱 안 이름까지(plans/149 W4 (3) · F11).
+#: ASCII 낱말만 쓰는 영문 샌드박스 SQL 에서는 예전 `[A-Za-z_][A-Za-z0-9_]*`와 같은 토큰이다.
+_WORD = re.compile(r"[^\W\d]\w*")
+_BACKTICK = re.compile(r"`((?:[^`]|``)+)`")
+#: 한정 식별자 한 쪽(`s.k` · `` s.`k` `` · `` `s`.`k` ``) — 백틱 이름은 공백·기호를 품을 수 있다.
+_QUALIFIED_PART = r"(?:`(?:[^`]|``)+`|\w+)"
+_JOIN_EQUAL = re.compile(
+    rf"(?<![\w`]){_QUALIFIED_PART}\.({_QUALIFIED_PART})\s*=\s*"
+    rf"{_QUALIFIED_PART}\.({_QUALIFIED_PART})(?!\w)"
+)
 
 
 def strip_comments(sql: str) -> str:
@@ -78,6 +88,17 @@ def _bare(name: str) -> str:
     return str(name).strip('`"').rsplit(".", 1)[-1]
 
 
+def _unquote(name: str) -> str:
+    """백틱 이름 → 안의 이름(겹 백틱은 하나로)."""
+    return name[1:-1].replace("``", "`") if name.startswith("`") else name
+
+
+def _identifier_tokens(text: str) -> set[str]:
+    """텍스트의 식별자 낱말(소문자) — 유니코드 낱말 + 백틱 안 이름 통째."""
+    tokens = {token.casefold() for token in _WORD.findall(text)}
+    return tokens | {m.group(1).replace("``", "`").casefold() for m in _BACKTICK.finditer(text)}
+
+
 def sql_tables(sql: str) -> list[str]:
     """사용 테이블(백틱을 먼저 벗긴다 — `_extract_table_names` 식별자 패턴이 `[\\w]+`다)."""
     from src.sql_validation import _extract_table_names
@@ -86,9 +107,12 @@ def sql_tables(sql: str) -> list[str]:
 
 
 def sql_columns(sql: str, catalog_columns: Iterable[str]) -> list[str]:
-    """사용 컬럼 — 카탈로그 컬럼 이름의 단어 경계 일치(대소문자 무시 — MariaDB 컬럼 이름 규칙)."""
+    """사용 컬럼 — 카탈로그 컬럼 이름의 단어 경계 일치(대소문자 무시 — MariaDB 컬럼 이름 규칙).
+
+    한글·백틱 식별자도 읽는다(plans/149 W4 (3)).
+    """
     body = _DOUBLE_LITERAL.sub(" ", strip_literals(sql))
-    present = {token.casefold() for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", body)}
+    present = _identifier_tokens(body)
     return sorted({c for c in catalog_columns if c.casefold() in present})
 
 
@@ -117,7 +141,7 @@ def date_text_misuse(sql: str, date_columns: Iterable[str]) -> bool:
     if not columns:
         return False
     for segment in _PREDICATE_SPLIT.split(strip_comments(sql)):
-        tokens = {t.casefold() for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", segment)}
+        tokens = _identifier_tokens(segment)
         if (
             tokens & columns
             and _COMPARISON.search(segment)
@@ -131,15 +155,15 @@ def date_text_misuse(sql: str, date_columns: Iterable[str]) -> bool:
 def join_key_partial(sql: str, key_groups: Iterable[tuple[frozenset[str], Sequence[str]]]) -> bool:
     """같은 복합 키를 가진 테이블 둘을 함께 쓰면서 조인 조건이 키 전부를 잇지 않았는가.
 
-    `key_groups`: (테이블 이름 집합(소문자), 공통 키 컬럼 목록). 조인 조건은 `a.k = b.k`(같은 이름)·
-    `USING (k, …)` 형태만 센다.
+    `key_groups`: (테이블 이름 집합(소문자), 공통 키 컬럼 목록). 조인 조건은 `a.k = b.k`(같은 이름 ·
+    백틱 `` a.`키` `` 포함 · plans/149 W4 (3))·`USING (k, …)` 형태만 센다.
     """
     body = strip_literals(sql)
     used = {t.casefold() for t in sql_tables(sql)}
     joined = {
-        m.group(2).casefold()
-        for m in re.finditer(r"\b\w+\.(\w+)\s*=\s*\w+\.(\w+)\b", body)
-        if m.group(1).casefold() == m.group(2).casefold()
+        _unquote(m.group(2)).casefold()
+        for m in _JOIN_EQUAL.finditer(body)
+        if _unquote(m.group(1)).casefold() == _unquote(m.group(2)).casefold()
     }
     for using in re.finditer(r"(?i)\bUSING\s*\(([^)]*)\)", body):
         joined |= {part.strip().strip("`").casefold() for part in using.group(1).split(",")}
@@ -167,6 +191,9 @@ def evaluate(
 
     판정 방식: `as_is` · `single_cell_renamed`(1×1 결과의 열 이름을 명세 첫 후보로 바꿔 판정) ·
     `count_fallback`(건수 질문에 목록으로 답함 → 같은 오라클을 행 수로 판정).
+
+    keyset 상세는 시스템 결과 행 수가 키 수와 다를 때만 `system_rows`를 더한다 — keyset 은 중복
+    행을 보지 않으므로 「행 수 ≠ 키 수」 표지다(plans/149 W4 (6) · F12 · 리포트가 표시한다).
     """
     from scripts.scenario.oracle import _resolve, evaluate_oracle
 
@@ -190,6 +217,11 @@ def evaluate(
     verdict, detail = evaluate_oracle(
         spec, dict(outcome) if outcome else None, dict(result) if result else None
     )
+    if isinstance(detail, dict) and detail.get("compare") == "keyset":
+        keys = detail.get("system_keys")
+        system_rows = sum(1 for row in rows if isinstance(row, Mapping))
+        if isinstance(keys, int) and system_rows != keys:
+            detail["system_rows"] = system_rows
     return verdict, detail, mode
 
 
@@ -246,8 +278,30 @@ def _values_faked(value_grade: str | None) -> bool:
     return value_grade != "general"
 
 
+def scalar_grade(
+    value_grade: str | None, system_grade: str | None, *, count_result: bool = False
+) -> str:
+    """`compare: value` 최상위 수의 등급(plans/149 W4 (5) · F10 · 교정 1).
+
+    기본은 명세 값 컬럼 등급과 시스템 결과 값 열 등급 중 **엄격한 쪽**이다(None 은 `unclassified`).
+    예외는 시스템 값 열이 순수 `COUNT(…)` 결과일 때(`count_result` · `redact.is_count_column`)
+    뿐이다: 결과 요약이 원값으로 남긴 건수를 판정 상세만 가짜 값으로 내면 같은 수가 두 값으로
+    보이므로, 명세 등급을 모르면 general 로 본다. 명세 등급을 알면(금액 등) 그 등급을 유지한다.
+    """
+    from .catalog import strictest
+
+    if count_result:
+        return value_grade if value_grade is not None else "general"
+    return strictest([value_grade or "unclassified", system_grade or "unclassified"])
+
+
 def substituted_fields(
-    detail: Any, *, value_grade: str | None, keys_allowed: bool
+    detail: Any,
+    *,
+    value_grade: str | None,
+    keys_allowed: bool,
+    system_grade: str | None = None,
+    count_result: bool = False,
 ) -> list[str]:
     """생성기 경로 `sanitize_detail`이 가짜 값으로 바꾼 칸(`DETAIL_FIELDS` 어휘 · 있는 칸만)."""
     if not isinstance(detail, Mapping):
@@ -266,7 +320,8 @@ def substituted_fields(
     if isinstance(detail.get("value_diffs"), list):
         out += ["value_diffs.key"] if not keys_allowed else []
         out += ["value_diffs.value"] if values else []
-    if values and detail.get("compare") == "value":
+    scalar = scalar_grade(value_grade, system_grade, count_result=count_result)
+    if _values_faked(scalar) and detail.get("compare") == "value":
         out.append("value.scalar")
     return out
 
@@ -420,6 +475,8 @@ def sanitize_detail(
     labels: Mapping[str, str] | None = None,
     fakes: FakeValues | None = None,
     key_tagged: bool = False,
+    system_grade: str | None = None,
+    count_result: bool = False,
 ) -> Any:
     """판정 상세 거르기(§3.5.6).
 
@@ -433,6 +490,8 @@ def sanitize_detail(
       (`oracle_top` 끝 원소 · `value_diffs`의 수 · `compare: value`의 최상위 수)도 가짜 값으로
       싣는다(같은 원값 → 같은 가짜 값). 바뀐 칸은 `substituted_fields`가 같은 규칙으로 센다.
       `key_tagged`(per_db)면 키 맨 앞 DB id 태그는 바꾸지 않는다(`map_detail`).
+      `compare: value` 최상위 수는 `scalar_grade`(명세 등급과 `system_grade` 중 엄격한 쪽 · 순수
+      `COUNT` 결과 열(`count_result`)이면 명세 등급, 모르면 general)로 정한다.
     """
     if not isinstance(detail, Mapping):
         return detail
@@ -441,7 +500,13 @@ def sanitize_detail(
         generator = fakes
         out = map_detail(
             out,
-            substituted_fields(out, value_grade=value_grade, keys_allowed=keys_allowed),
+            substituted_fields(
+                out,
+                value_grade=value_grade,
+                keys_allowed=keys_allowed,
+                system_grade=system_grade,
+                count_result=count_result,
+            ),
             substituted=lambda node: _fake_tree(node, generator),
             other=lambda node: node,
             key_tagged=key_tagged,

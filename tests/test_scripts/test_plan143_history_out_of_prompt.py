@@ -115,7 +115,7 @@ def test_rules_kept_after_history_removal() -> None:
         "결과 별칭은 큰따옴표로 감싸지 않는다",
         "조건 없이도 0행이었다(쓴 칸은 미확인 — 연결 키 미확정)",
         "자산 원장 계열과 잇지 않는다",
-        "LIKE 부분 일치로 건다(추정 — 등호 조건은 0행",
+        "`구성항목설명내용`에 OR로 묶어 LIKE 부분 일치로 직접 건다",  # plans/149 W1 — s07 순서 반전
         "`tcdmsif73`·`tcdmsif90`으로도 사용률 추이 SQL을 만들지 않는다",
     ):
         assert phrase in section, phrase

@@ -34,6 +34,7 @@ from src.nodes.condition_probe import (
     split_user_conditions,
     truncated_stage_count,
 )
+from src.nodes.name_match_retry import name_match_retry_hint
 from src.routing.domain_config import get_domain_by_id
 from src.security.data_masker import DataMasker
 from src.state import AgentState, OrganizedData, SheetMappingResult
@@ -110,6 +111,31 @@ async def result_organizer(
             len(masked_results),
         )
         is_sufficient = True
+
+    # 이름 칸 등호 0행(plans/149 W3 · G-4 (b)) — 설명 정본이 부분 일치로 표시한 칸에 등호·IN을
+    # 걸어 0행이면 힌트를 재시도 사유로 실어 1회 재생성한다(`route_after_organization` →
+    # query_generator).
+    # 0건 진단 프로브는 재생성 뒤 결과에 돌린다. 표시가 없는 DB는 판정이 None이라 종전과 같다.
+    # 2단 task 루프는 실행 직후 같은 판정을 이미 했다(판정 표지로 여기서는 None — 뒤에 루프가 없다).
+    # 그래프 경로는 재생성이 실패해도 0행 답으로 되돌릴 수단이 없어 남은 재시도가 2회 이상일 때만
+    # 발동한다(재생성 실패 1회를 예산 안에서 흡수 · 검증 149 M-1).
+    if not masked_results:
+        hint = name_match_retry_hint(
+            state, max_retry=app_config.query.max_retry_count, min_retries_left=2,
+        )
+        if hint is not None:
+            return {
+                "organized_data": OrganizedData(
+                    summary="이름 칸을 부분 일치로 다시 조회합니다.",
+                    rows=[],
+                    column_mapping=None,
+                    resolved_mapping=None,
+                    is_sufficient=False,
+                    sheet_mappings=None,
+                ),
+                "error_message": hint,
+                "current_node": "result_organizer",
+            }
 
     # 0건 원인 진단(D-176 후속1 · §6) — **0건일 때만** 발동한다. 결과가 있으면 프로브 호출 0회라
     # 정상 경로 비용이 0이고, 플래그 OFF면 진단 자체가 없다(응답 문구 바이트 무변경).

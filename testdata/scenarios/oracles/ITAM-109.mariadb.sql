@@ -3,7 +3,7 @@
 -- 정답: tcdmsif79 하드웨어 또는 소프트웨어 지원 종료일(문자형 YYYYMMDD)이 앵커 날짜~6개월 뒤(경계 포함)인 서버
 -- compare: keyset(서버호스트명) — 키 열은 3회차 카탈로그 log_policy unclassified라 실행 시 키 값은 건수로만 남는다(keys_recorded false)
 -- 권장 spec: {id: ITAM-109, compare: keyset, key: [[서버호스트명, sevrHostName, …]], db_ids: [itam]}
--- 검수: 모의 DB(127.0.0.1:3308 · 합성 행 — 근거 0)에서 구문·실행만 확인 · 내부망 --check-oracle 미실행 — 내부망에서 0행·오류면 시나리오를 observe로 되돌린다
+-- 검수: 모의 DB(포트 3308 · 합성 행 — 근거 0)에서 구문·실행만 확인 · 내부망 --check-oracle 미실행 — 내부망에서 0행·오류면 시나리오를 observe로 되돌린다
 -- 근거: results/itam_bench/20261007-174622 3회차 ITAM-109(tcdmsif79 단독 · HW/SW OR · 148행) · 샌드박스 정본 ITAM-09와 같은 날짜 식(CURDATE() 대신 :today · :today_ymd)
 SELECT DISTINCT `서버호스트명`
 FROM `tcdmsif79`

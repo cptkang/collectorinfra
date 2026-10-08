@@ -410,6 +410,16 @@ def _value_grade(spec: Mapping[str, Any], policy: cat.ColumnPolicy) -> str | Non
     return cat.strictest(known) if known else None
 
 
+def prompt_scope(scenario: cat.Scenario, turn: cat.Turn) -> str:
+    """가림의 프롬프트 낱말 허용 범위 — 같은 시나리오의 첫 턴부터 이 턴까지 프롬프트 전부.
+
+    앞 턴 프롬프트는 그 턴 레코드 `prompt`로 원문 반출된다 — 다음 턴 SQL 이 앞 턴의 말
+    (「통합인증」)을 검색어로 써도 새로 드러나는 것이 없다(plans/149 W4 (2) · F8 · D-321
+    대응표·난수 규칙 그대로). 다른 시나리오 프롬프트는 넣지 않는다.
+    """
+    return "\n".join(t.query for t in scenario.turns[: turn.index] if t.query)
+
+
 def _redacted_sqls(
     executed: list[dict[str, Any]], ctx: RunContext, prompt: str, labels: Iterable[str] = ()
 ) -> list[dict[str, Any]]:
@@ -447,10 +457,14 @@ def _oracle_record(
     sqls: list[str],
     turn: cat.Turn,
     ctx: RunContext,
+    prompt: str | None = None,
 ) -> dict[str, Any]:
     """오라클 판정 → 기록용 칸.
 
     시스템 쪽 키 열이 일반 컬럼이 아니거나 강등됐거나 찾을 수 없으면 키 값은 건수로만 남긴다.
+    `compare: value` 최상위 수의 등급은 명세 값 컬럼 등급을 모를 때 시스템 결과 값 열의 등급을
+    따른다(plans/149 W4 (5) — 결과 요약과 같은 수가 두 값으로 보이지 않게). `prompt`는 가림의
+    프롬프트 범위(`prompt_scope` · 없으면 그 턴 프롬프트).
     """
     from scripts.scenario.oracle import SOURCE_DB_COLUMN, _resolve
 
@@ -467,6 +481,21 @@ def _oracle_record(
         if entry is None or entry.get("log_policy") != "general" or entry.get("demoted"):
             keys_allowed = False
     value_grade = _value_grade(spec, ctx.policy)
+    value_column = _resolve(spec.get("value"), names) if spec.get("value") else None
+    if value_column is None and mode == "single_cell_renamed" and len(names) == 1:
+        value_column = names[0]  # 1×1 결과의 열을 명세 첫 후보로 바꿔 판정했다(`jd.evaluate`)
+    value_entry = entries.get(value_column) if value_column else None
+    system_grade = (
+        value_entry.get("log_policy")
+        if value_entry is not None and not value_entry.get("demoted")
+        else None
+    )
+    # 순수 COUNT 결과 열만 명세 등급을 모를 때 원값 예외(교정 1 — 그 밖은 두 등급 중 엄격한 쪽)
+    count_result = (
+        system_grade == "general"
+        and value_column is not None
+        and rd.is_count_column(value_column, sqls)
+    )
     fakes = ctx.vault.fakes
     clean = jd.sanitize_detail(
         detail,
@@ -475,6 +504,8 @@ def _oracle_record(
         labels={name: entry.get("name") for name, entry in entries.items()},
         fakes=fakes,
         key_tagged=tagged,
+        system_grade=system_grade,
+        count_result=count_result,
     )
     if jd.registry_fallbacks() > fallbacks:
         # 레지스트리를 못 읽어 태그를 전부 치환했다 — run.json 에 표지로 남긴다(교정 3차d)
@@ -485,7 +516,13 @@ def _oracle_record(
     fields = (
         []
         if fakes is None
-        else jd.substituted_fields(detail, value_grade=value_grade, keys_allowed=keys_allowed)
+        else jd.substituted_fields(
+            detail,
+            value_grade=value_grade,
+            keys_allowed=keys_allowed,
+            system_grade=system_grade,
+            count_result=count_result,
+        )
     )
     scrubbed = jd.map_detail(
         clean,
@@ -495,9 +532,8 @@ def _oracle_record(
         key_tagged=tagged,
     )
     if reason and isinstance(scrubbed, dict):
-        scrubbed["reason"] = rd.redact_text(
-            str(reason), vault=ctx.vault, sql=sqls, prompt=turn.query
-        )
+        scope = turn.query if prompt is None else prompt
+        scrubbed["reason"] = rd.redact_text(str(reason), vault=ctx.vault, sql=sqls, prompt=scope)
     return {
         "id": spec["id"],
         "compare": spec.get("compare"),
@@ -709,17 +745,21 @@ def _turn_record(
 ) -> dict[str, Any]:
     """지연 레코드 마감 — 가린 레코드를 만든다(원값은 여기서 버린다).
 
-    위생 순서: 사람 값 수집(결과 요약)이 SQL·오류 가림보다 먼저다.
+    위생 순서: 사람 값 수집(결과 요약)이 SQL·오류 가림보다 먼저다. 가림의 프롬프트 낱말 허용
+    범위는 같은 시나리오의 현재 턴까지 프롬프트 전부다(`prompt_scope`).
     """
+    prompt = prompt_scope(scenario, turn)
     names = rd.result_column_names(result)
     sources = rd.resolve_result_columns(
         names, sqls, ctx.policy.column_names(), catalog_columns=ctx.catalog.columns
     )
     summary = rd.summarize_result(
-        result, sources=sources, policy=ctx.policy, vault=ctx.vault, prompt=turn.query
+        result, sources=sources, policy=ctx.policy, vault=ctx.vault, prompt=prompt
     )
     oracle_part = (
-        None if raw_oracle is None else _oracle_record(raw_oracle, names, summary, sqls, turn, ctx)
+        None
+        if raw_oracle is None
+        else _oracle_record(raw_oracle, names, summary, sqls, turn, ctx, prompt=prompt)
     )
     return {
         "run_id": ctx.run_id,
@@ -751,7 +791,7 @@ def _turn_record(
         "executed_sqls": _redacted_sqls(
             executed,
             ctx,
-            turn.query,
+            prompt,
             [c["name"] for c in summary["columns"] if not str(c["name"]).startswith("열#")],
         ),
         "result": summary,
@@ -771,7 +811,7 @@ def _turn_record(
         "response_chars": len(response),
         "latency_ms": round(float(getattr(obs, "wall_ms", 0.0) or 0.0), 1),
         "error": (
-            rd.redact_text(str(error), vault=ctx.vault, sql=sqls, prompt=turn.query)
+            rd.redact_text(str(error), vault=ctx.vault, sql=sqls, prompt=prompt)
             if error
             else None
         ),
