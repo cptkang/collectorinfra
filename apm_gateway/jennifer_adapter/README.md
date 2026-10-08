@@ -89,6 +89,19 @@ sha256        : <해시>
 ```
 
 - 뷰서버에 JDK가 없어도 된다(JRE만 있는 경우). 같은 extension jar를 다른 장비로 가져가 빌드하고 jar만 옮기면 된다. JDK 8~21 어느 것이든 된다.
+
+### Windows (`build.bat` · 2026-10-08 실측: 공백 포함 경로 · extension 1.3.0/1.5.8)
+
+```bat
+rem 명령 프롬프트(cmd)에서 — 경로에 공백이 있어도 된다(따옴표 필수)
+cd /d "<jennifer_adapter 폴더>"
+set "EXT_JAR=C:\경로\extension-1.5.8.jar"
+build.bat
+```
+
+정상이면 `classes : 10 (expected 10)` · `major version: 52` · `sha256 : <해시>` · `done : …\dist\collectorinfra-jennifer-adapter-0.2.0.jar`이 나온다.
+`build.bat`은 일부러 영문(ASCII)만 쓴다 — cmd가 배치 파일을 콘솔 코드페이지(cp949)로 읽어 UTF-8 한글이 옆 문자를 깨뜨릴 수 있다.
+반입 후 해시 확인: PowerShell `Get-FileHash <jar> -Algorithm SHA256` · 리눅스 `sha256sum <jar>`.
 - 컴파일 오류가 나면 extension jar가 뷰서버 것이 아니거나 구조가 예상과 다른 것이다. `javap -cp $EXT_JAR com.aries.extension.data.EventData`로 필드를 확인한다.
 
 ---
