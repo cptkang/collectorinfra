@@ -248,6 +248,16 @@ def test_judge_calls_modes() -> None:
     assert named == (True, True)
 
 
+def test_reflects_folds_unicode_variants() -> None:
+    # 실 FabriX(GptOss) 최종 답 실측 형태 · U+2011 하이픈 · U+202F 공백 · U+2019 따옴표
+    final = "The ticket\u2019s verification code is **VR\u20115531**; office: Maple\u202fCourt."
+    assert pr.reflects(final, ["VR-5531", "Maple Court"])
+    assert pr.reflects("code zx\u20144417 at harbor point", ["ZX-4417", "Harbor Point"])
+    assert not pr.reflects(final, ["VR-5531", "Harbor Point"])  # 빠진 값은 계속 실패
+    assert not pr.reflects("VR5531 Maple Court", ["VR-5531"])  # 하이픈 자체가 없으면 실패
+    assert pr.reflects("anything", [])
+
+
 # ─────────────────────────── 옵션 · --repeat ───────────────────────────
 
 
