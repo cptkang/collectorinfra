@@ -71,6 +71,51 @@ _JOIN_EQUAL = re.compile(
     rf"{_QUALIFIED_PART}\.({_QUALIFIED_PART})(?!\w)"
 )
 
+#: 조인 키 판정(plans/150 W2 (6)) — 등호 양쪽(한정 이름 `별칭.칸` 또는 맨 칸 이름 · 백틱 포함).
+#: 맨 이름은 숫자로 시작하지 않는다(`1 = 1`). 앞뒤가 한정·함수 호출의 일부면 잡지 않는다.
+_SIDE_NAME = r"(?:`(?:[^`]|``)+`|[^\W\d]\w*)"
+_EQUAL_SIDES = re.compile(
+    rf"(?<![\w`.])(?:({_SIDE_NAME})\s*\.\s*)?({_SIDE_NAME})\s*=\s*"
+    rf"(?:({_SIDE_NAME})\s*\.\s*)?({_SIDE_NAME})(?![\w`.(])"
+)
+#: `FROM`·`JOIN` 뒤 테이블 항목 하나 — `[스키마.]표 [[AS] 별칭]`(쉼표 목록은 이어서 읽는다).
+_FROM_TABLE = re.compile(
+    rf"\s*({_SIDE_NAME})(?:\s*\.\s*({_SIDE_NAME}))?(?:\s+(?:(?i:as)\s+)?({_SIDE_NAME}))?"
+)
+_FROM_KEYWORD = re.compile(r"(?i)\b(?:from|join)\b")
+_USING = re.compile(r"(?i)\bUSING\s*\(([^)]*)\)")
+#: 칸 참조 하나(`별칭.칸` 또는 맨 칸 이름) · 쪼개 읽기용
+_REF = rf"(?:{_SIDE_NAME}\s*\.\s*)?{_SIDE_NAME}"
+_REF_PARTS = re.compile(rf"\s*(?:({_SIDE_NAME})\s*\.\s*)?({_SIDE_NAME})\s*")
+#: 칸 하나를 감싼 정리·형 변환 함수(`TRIM(a.칸)` · `UPPER(…)` · `CAST(a.칸 AS CHAR(10))` ·
+#: `CONVERT(a.칸, CHAR)`) — 조인 등호 판정 전에 칸만 남긴다(교정 M4 · 겹침은 반복해 푼다).
+_WRAPPED_REF = re.compile(
+    rf"(?i)(?<![\w`.])(?:trim|ltrim|rtrim|upper|lower|ucase|lcase|cast|convert)\s*\(\s*({_REF})\s*"
+    r"(?:(?:as|using)\s+\w+(?:\s+\w+)?(?:\s*\(\s*\d+(?:\s*,\s*\d+)?\s*\))?"
+    r"|,\s*\w+(?:\s*\(\s*\d+(?:\s*,\s*\d+)?\s*\))?)?\s*\)"
+)
+#: 세미·안티 조인 `칸 [NOT] IN (SELECT 칸 FROM 표 …)` · `(칸, 칸) [NOT] IN (SELECT 칸, 칸 …)`
+#: (교정 M5) — 바깥 칸과 하위 SELECT 칸을 자리 순서대로 잇는다.
+_IN_SUBQUERY = re.compile(
+    rf"(?i)(?:\(\s*(?P<tuple>{_REF}(?:\s*,\s*{_REF})+)\s*\)|(?<![\w`.])(?P<single>{_REF}))"
+    rf"\s+(?:not\s+)?in\s*\(\s*select\s+(?:distinct\s+)?(?P<items>[^()]*?)\s+from\s+"
+    rf"(?P<first>{_SIDE_NAME})(?:\s*\.\s*(?P<second>{_SIDE_NAME}))?"
+    rf"(?:\s+(?:as\s+)?(?P<alias>{_SIDE_NAME}))?"
+)
+#: 별칭 자리에 올 수 없는 낱말(다음 절·조인 수식어).
+_NOT_ALIAS = frozenset(
+    "where join on using left right inner outer cross full natural straight_join group order "
+    "having limit union where window for lock into set select from as and or not exists".split()
+)
+#: 모든 ITAM 테이블에 있는 공통 칸 — 정의 `related`에 없어 조인 키로 요구하지 않고, 이었는지만
+#: 기록한다(`join_group_company`).
+GROUP_COMPANY_COLUMN = "그룹회사코드"
+#: 승인 코드값이 없는 코드·여부 칸에 리터럴 등호를 쓴 턴의 `unknown_code_value` 표시
+#: (plans/150 W2 (5))
+NO_APPROVED_CODES = "승인 코드값 없음"
+#: 코드·여부 칸 이름·설명 끝말
+_CODE_SUFFIXES = ("코드", "여부")
+
 
 def strip_comments(sql: str) -> str:
     return _COMMENTS.sub(" ", sql or "")
@@ -171,6 +216,185 @@ def join_key_partial(sql: str, key_groups: Iterable[tuple[frozenset[str], Sequen
         if len(tables & used) >= 2 and not {k.casefold() for k in keys} <= joined:
             return True
     return False
+
+
+def _table_items(body: str) -> list[tuple[int, str, str]]:
+    """`FROM`·`JOIN` 절의 테이블 항목 ``(위치, 표, 인스턴스)``(나온 순서 · 소문자).
+
+    인스턴스는 별칭이 있으면 별칭, 없으면 표 이름이다 — 같은 표를 두 번 쓰면(`72 a`·`72 b`)
+    인스턴스가 둘이다. 하위 질의(`EXISTS (SELECT … FROM 표 별칭 …)`)의 항목도 든다.
+    """
+    items: list[tuple[int, str, str]] = []
+    for keyword in _FROM_KEYWORD.finditer(body):
+        position = keyword.end()
+        while True:
+            match = _FROM_TABLE.match(body, position)
+            if match is None:
+                break
+            first, second, alias = match.group(1), match.group(2), match.group(3)
+            table = _unquote(second or first).casefold()
+            if table in _NOT_ALIAS:
+                break
+            name = _unquote(alias).casefold() if alias else None
+            end = match.end()
+            if name is not None and (alias.startswith("`") or name not in _NOT_ALIAS):
+                items.append((match.start(1), table, name))
+            else:
+                items.append((match.start(1), table, table))
+                end = match.end(2) if second else match.end(1)
+            comma = re.compile(r"\s*,").match(body, end)
+            if comma is None or keyword.group(0).casefold() == "join":
+                break
+            position = comma.end()
+    return items
+
+
+def _alias_map(items: Iterable[tuple[int, str, str]]) -> dict[str, set[str]]:
+    """테이블 항목 → ``{별칭·표 이름(소문자): {표(소문자)…}}``.
+
+    같은 별칭이 다른 테이블을 가리키면 값이 둘 이상이고, 판정은 그 별칭을 「해석 못 함」으로 본다.
+    """
+    aliases: dict[str, set[str]] = {}
+    for _, table, instance in items:
+        aliases.setdefault(table, set()).add(table)
+        aliases.setdefault(instance, set()).add(table)
+    return aliases
+
+
+def _unwrap_refs(body: str) -> str:
+    """칸 하나를 감싼 정리·형 변환 함수를 벗긴다(`TRIM(UPPER(a.칸))` → `a.칸`)."""
+    for _ in range(4):
+        unwrapped = _WRAPPED_REF.sub(lambda m: m.group(1), body)
+        if unwrapped == body:
+            break
+        body = unwrapped
+    return body
+
+
+def _refs(text: str) -> list[tuple[str | None, str]] | None:
+    """쉼표 목록 → ``[(한정자, 칸)…]``(칸 참조가 아닌 항목이 있으면 None)."""
+    out: list[tuple[str | None, str]] = []
+    for part in text.split(","):
+        match = _REF_PARTS.fullmatch(part)
+        if match is None:
+            return None
+        out.append((match.group(1), match.group(2)))
+    return out
+
+
+def join_key_judgement(
+    sql: str, pairs: Sequence[tuple[tuple[str, str], tuple[str, str]]]
+) -> dict[str, Any]:
+    """조인 키 쌍 판정(plans/150 W2 (6) · 관찰 표지 — 판정 불변).
+
+    쌍 ``((표, 칸), (표, 칸))``의 두 테이블을 SQL 이 함께 쓸 때, 그 두 칸을 잇는 조인이 없으면
+    `missed`에 싣는다. 조인으로 보는 것:
+
+    - 등호 `별칭.칸 = 별칭.칸`(이름 다른 칸 포함 · `EXISTS`/`NOT EXISTS` 하위 질의 안 포함 ·
+      `TRIM`·`UPPER`·`CAST` 같은 칸 하나 감싼 함수는 벗겨 본다)
+    - `USING (칸, …)` — 그 `JOIN` 의 테이블과 바로 앞 테이블 항목 사이만
+    - `칸 [NOT] IN (SELECT 칸 FROM 표 …)` · `(칸, 칸) IN (SELECT 칸, 칸 …)` — 자리 순서대로
+
+    이어진 칸끼리는 같은 묶음이다(추이 — `a = b`·`b = c`면 `a`와 `c`도 이어진 것). 노드는
+    테이블 **인스턴스**(별칭)의 칸이라 같은 표를 두 번 쓰면 따로 본다 — 같은 두 테이블 사이의
+    쌍(복합 키)은 한 인스턴스 쌍이 다 이어야 하고, 가장 많이 이은 인스턴스 쌍 기준으로 빠진 쌍을
+    싣는다. 해석하지 못한 조인(맨 칸 이름 · 모르는 별칭 · 두 테이블을 가리키는 별칭)은 칸 이름
+    쌍으로만 보고 `alias_unresolved`를 단다. `group_company`는 `그룹회사코드`끼리 이었는가
+    (요구하지 않음).
+    """
+    body = _unwrap_refs(strip_literals(sql))
+    used = {t.casefold() for t in sql_tables(sql)}
+    items = _table_items(body)
+    aliases = _alias_map(items)
+    instances = {name: next(iter(tables)) for name, tables in aliases.items() if len(tables) == 1}
+    parent: dict[tuple[str, str], tuple[str, str]] = {}
+    loose: set[frozenset[str]] = set()
+
+    def find(node: tuple[str, str]) -> tuple[str, str]:
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    def instance_of(qualifier: str | None) -> str | None:
+        if qualifier is None:
+            return None
+        name = _unquote(qualifier).casefold()
+        return name if name in instances else None
+
+    def link(left: str | None, left_col: str, right: str | None, right_col: str) -> None:
+        left_col, right_col = _unquote(left_col).casefold(), _unquote(right_col).casefold()
+        if left is not None and right is not None:
+            parent[find((left, left_col))] = find((right, right_col))
+        else:
+            loose.add(frozenset((left_col, right_col)))
+
+    group_company = False
+    folded_group = GROUP_COMPANY_COLUMN.casefold()
+    for match in _EQUAL_SIDES.finditer(body):
+        if _unquote(match.group(2)).casefold() == _unquote(match.group(4)).casefold() == (
+            folded_group
+        ):
+            group_company = True
+        link(instance_of(match.group(1)), match.group(2), instance_of(match.group(3)),
+             match.group(4))
+    for match in _USING.finditer(body):
+        before = [item for item in items if item[0] < match.start()]
+        left = instance_of(before[-2][2]) if len(before) >= 2 else None
+        right = instance_of(before[-1][2]) if before else None
+        for part in match.group(1).split(","):
+            column = part.strip()
+            if not column:
+                continue
+            group_company = group_company or _unquote(column).casefold() == folded_group
+            link(left, column, right, column)
+    for match in _IN_SUBQUERY.finditer(body):
+        outer = _refs(match.group("tuple") or match.group("single"))
+        inner = _refs(match.group("items"))
+        if outer is None or inner is None or len(outer) != len(inner):
+            continue
+        alias = match.group("alias")
+        source = (
+            alias
+            if alias and (alias.startswith("`") or alias.casefold() not in _NOT_ALIAS)
+            else match.group("second") or match.group("first")
+        )
+        for (outer_q, outer_col), (inner_q, inner_col) in zip(outer, inner, strict=True):
+            link(instance_of(outer_q), outer_col, instance_of(inner_q or source), inner_col)
+
+    groups: dict[tuple[str, str], list[tuple[int, str, str]]] = {}
+    for index, ((table_a, column_a), (table_b, column_b)) in enumerate(pairs):
+        a, b = table_a.casefold(), table_b.casefold()
+        ca, cb = column_a.casefold(), column_b.casefold()
+        if (a, ca) > (b, cb):
+            a, b, ca, cb = b, a, cb, ca
+        groups.setdefault((a, b), []).append((index, ca, cb))
+    missed_index: list[int] = []
+    unresolved = False
+    for (a, b), members in groups.items():
+        if not {a, b} <= used:
+            continue
+        best: set[int] = set()
+        for left in (name for name, table in instances.items() if table == a):
+            for right in (name for name, table in instances.items() if table == b):
+                if a == b and left == right:
+                    continue
+                joined = {i for i, ca, cb in members if find((left, ca)) == find((right, cb))}
+                if len(joined) > len(best):
+                    best = joined
+        for index, ca, cb in members:
+            if index in best:
+                continue
+            if frozenset((ca, cb)) in loose:
+                unresolved = True
+                continue
+            missed_index.append(index)
+    missed = [
+        [f"{pairs[i][0][0]}.{pairs[i][0][1]}", f"{pairs[i][1][0]}.{pairs[i][1][1]}"]
+        for i in sorted(missed_index)
+    ]
+    return {"missed": missed, "alias_unresolved": unresolved, "group_company": group_company}
 
 
 # --- 오라클 어댑터 (§3.3 v1.2) -------------------------------------------------------
@@ -566,6 +790,8 @@ class TurnFacts:
     gold_tables: list[str] = field(default_factory=list)
     schema_context: Mapping[str, Any] | None = None
     access_denied: bool = False
+    #: 조인 키 쌍 ``((표, 칸), (표, 칸))``(plans/150 W2 (6)) — 있을 때만 `join_*` 분석 칸이 생긴다
+    join_keys: list[tuple[tuple[str, str], tuple[str, str]]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -578,6 +804,10 @@ class CatalogFacts:
     key_groups: tuple[tuple[frozenset[str], tuple[str, ...]], ...]
     #: 승인된 코드값(plans/133 A4) — 컬럼 → 값. 비었으면 `code_value` 판정은 보류(분류하지 않는다).
     code_values: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    #: 코드·여부 칸(plans/150 W2 (5)) — 값 종류 `code_text`·`flag_yn` · P1 `profile.code` · 이름이나
+    #: 설명이 「코드」·「여부」로 끝나는 칸. 승인 코드값이 없는 이 칸에 리터럴 등호를 쓰면
+    #: `unknown_code_value`에 `NO_APPROVED_CODES`를 단다(관측 · 판정 불변).
+    code_marked: frozenset[str] = frozenset()
 
     @classmethod
     def from_catalog(
@@ -605,7 +835,25 @@ class CatalogFacts:
             for key, values in (code_values or {}).items()
             if isinstance(values, (list, tuple)) and values
         }
-        return cls(frozenset(columns), frozenset(tables), frozenset(dates), tuple(groups), codes)
+        marked = {
+            c["name"]
+            for t in tables.values()
+            for c in t.get("columns") or []
+            if c.get("value_kind") in ("code_text", "flag_yn")
+            or (c.get("profile") or {}).get("code") is True
+            or any(
+                str(text or "").strip().endswith(_CODE_SUFFIXES)
+                for text in (c.get("name"), c.get("meaning"))
+            )
+        }
+        return cls(
+            frozenset(columns),
+            frozenset(tables),
+            frozenset(dates),
+            tuple(groups),
+            codes,
+            frozenset(marked),
+        )
 
 
 def _sqls_for(facts: TurnFacts, db_id: str) -> list[dict[str, Any]]:
@@ -626,8 +874,11 @@ def analyze_sql(facts: TurnFacts, catalog: CatalogFacts, *, db_id: str) -> dict[
     tables: set[str] = set()
     columns: set[str] = set()
     hazards: set[str] = set()
-    date_misuse = join_partial = schema_probe = unknown_code = False
+    date_misuse = join_partial = schema_probe = unknown_code = no_codes = False
     identifiers = catalog.columns | catalog.tables
+    approved = {k.casefold() for k in catalog.code_values}
+    unapproved = sorted(c for c in catalog.code_marked if c.casefold() not in approved)
+    joins: list[dict[str, Any]] = []
     for entry in entries:
         sql = str(entry["sql"])
         tables |= set(sql_tables(sql))
@@ -639,9 +890,15 @@ def analyze_sql(facts: TurnFacts, catalog: CatalogFacts, *, db_id: str) -> dict[
             re.search(r"(?i)information_schema|show\s+(create|columns)", strip_comments(sql))
         )
         unknown_code = unknown_code or _unknown_code_value(sql, catalog.code_values)
+        no_codes = no_codes or _literal_equal(sql, unapproved)
+        if facts.join_keys:
+            joins.append(join_key_judgement(sql, facts.join_keys))
     used = {c.casefold() for c in columns}
     key_used = [alt for ref in facts.key_refs for alt in ref if alt.casefold() in used]
-    return {
+    unknown: bool | str | None = unknown_code if catalog.code_values else None
+    if not unknown_code and no_codes:
+        unknown = NO_APPROVED_CODES
+    analysis: dict[str, Any] = {
         "tables": sorted(tables),
         "columns": sorted(columns),
         "key_columns_used": sorted(set(key_used)),
@@ -649,7 +906,7 @@ def analyze_sql(facts: TurnFacts, catalog: CatalogFacts, *, db_id: str) -> dict[
         "date_text_misuse": date_misuse,
         "join_key_partial": join_partial,
         "schema_query_by_system": schema_probe,
-        "unknown_code_value": unknown_code if catalog.code_values else None,
+        "unknown_code_value": unknown,
         "sql_count": len(entries),
         "sql_count_all": sum(1 for e in facts.executed if e.get("sql")),
         "failed_syntax": sum(
@@ -658,6 +915,12 @@ def analyze_sql(facts: TurnFacts, catalog: CatalogFacts, *, db_id: str) -> dict[
             if e.get("success") is False and _SYNTAX_ERROR.search(str(e.get("error") or ""))
         ),
     }
+    if facts.join_keys:  # 조인 키를 선언한 턴만(plans/150 W2 (6) — 없는 턴은 기록 바이트 그대로)
+        missed = sorted({tuple(pair) for j in joins for pair in j["missed"]})
+        analysis["join_key_miss"] = [list(pair) for pair in missed]
+        analysis["join_alias_unresolved"] = any(j["alias_unresolved"] for j in joins)
+        analysis["join_group_company"] = any(j["group_company"] for j in joins)
+    return analysis
 
 
 def classify(facts: TurnFacts, analysis: Mapping[str, Any], *, db_id: str) -> list[str]:
@@ -703,7 +966,7 @@ def classify(facts: TurnFacts, analysis: Mapping[str, Any], *, db_id: str) -> li
         labels.add("date_text")
     if analysis.get("join_key_partial"):
         labels.add("join_key_partial")
-    if analysis.get("unknown_code_value"):
+    if analysis.get("unknown_code_value") is True:  # 「승인 코드값 없음」 표시는 관측만(W2 (5))
         labels.add("code_value")
     context = facts.schema_context
     if context is not None:
@@ -759,6 +1022,20 @@ def _unknown_code_value(sql: str, code_values: Mapping[str, frozenset[str]]) -> 
             value not in allowed
             for value in _extract_column_literals(strip_comments(sql), [column])
         ):
+            return True
+    return False
+
+
+def _literal_equal(sql: str, columns: Iterable[str]) -> bool:
+    """칸에 리터럴 등호(`칸 = '값'`·`칸 = 0`·`칸 IN ('값', …)`)를 썼는가 — 한정·백틱 이름 포함."""
+    body = strip_comments(sql)
+    for column in columns:
+        name = re.escape(column)
+        pattern = (
+            rf"(?:`{name}`|(?<![\w`]){name}(?![\w`]))\s*"
+            r"(?:=\s*(?:'|[-+]?\d)|in\s*\(\s*(?:'|[-+]?\d))"
+        )
+        if re.search(pattern, body, re.IGNORECASE):
             return True
     return False
 

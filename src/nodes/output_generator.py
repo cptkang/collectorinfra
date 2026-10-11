@@ -45,9 +45,13 @@ from src.utils.deadline import (
 )
 from src.utils.empty_antecedent import (
     EMPTY_ANTECEDENT_KEY,
+    SAMPLED_ANTECEDENT_KEY,
+    SAMPLED_TURN_KEY,
     ZERO_ROW_TURN_KEY,
     carried_zero_row_turn,
     empty_antecedent_note,
+    sampled_antecedent_outcome,
+    sampled_turn,
     widened_beyond_antecedent,
 )
 from src.utils.month_structure import is_month_structure_field
@@ -174,6 +178,14 @@ async def _run_output_generator(
                 "앞 턴 0행 지시어 — 이번 조회 %d행이 앞 턴 조건을 잇지 않아 맨 앞에 안내"
                 "(plans/146 W3)", row_count,
             )
+        # 표본 앞 턴 승계(plans/150 W1) — 2단 집계기와 같은 규칙(D-066)
+        sampled_note = sampled_antecedent_outcome(
+            (state.get("conversation_context") or {}).get(SAMPLED_ANTECEDENT_KEY)
+            if sql_outcome else None,
+            executed, row_count,
+        )
+        if sampled_note:
+            logger.info("표본 앞 턴 지시어 — 이번 조회 %d행에 맨 앞 안내(plans/150 W1)", row_count)
         response = await _generate_text_response(
             app_config, state, llm=llm, stream_user_response=stream_user_response
         )
@@ -199,6 +211,8 @@ async def _run_output_generator(
             response = f"{no_template_notice}\n\n{response}"
         if antecedent and widened:
             response = f"{empty_antecedent_note(antecedent, widened=True)}\n\n{response}"
+        if sampled_note:
+            response = f"{sampled_note}\n\n{response}"
         return {
             "final_response": response,
             "output_file": None,
@@ -208,6 +222,7 @@ async def _run_output_generator(
             # 결정적 고지의 구조화본(plans/123 W-8) — 본문에 실린 고지만 싣는다.
             "disclosures": collect_disclosures(state, response),
             **(_zero_row_turn_delta(state, antecedent, executed) if zero_rows else {}),
+            **_sampled_turn_delta(state, executed, row_count),
         }
 
     elif output_format in ("xlsx", "docx"):
@@ -365,6 +380,20 @@ def _zero_row_turn_delta(
         return {}
     ctx = state.get("conversation_context") or {}
     return {"conversation_context": {**ctx, ZERO_ROW_TURN_KEY: record}}
+
+
+def _sampled_turn_delta(
+    state: Mapping[str, Any], sqls: list[str], row_count: int,
+) -> dict[str, Any]:
+    """엔티티 상한을 넘는 행으로 끝난 턴의 기록을 맥락에 남기는 상태 갱신(plans/150 W1).
+
+    다음 턴 지시어가 표본이 아니라 이 턴의 조건을 잇게 한다. 상한 이하·SQL 없음이면 빈 갱신이다.
+    """
+    record = sampled_turn(str(state.get("user_query") or ""), sqls, row_count)
+    if not record:
+        return {}
+    ctx = state.get("conversation_context") or {}
+    return {"conversation_context": {**ctx, SAMPLED_TURN_KEY: record}}
 
 
 #: 양식 없는 파일 요청 안내의 머리(D-264 ④). 턴 단위 안내라 2단 단계별 답변은 이 머리로 찾아

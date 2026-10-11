@@ -126,7 +126,10 @@ class TestProbes:
         self, closed_policy: cat.ColumnPolicy, closed_specs: dict[str, dict[str, Any]]
     ) -> None:
         scenarios = cat.load_scenarios(PROBE_PATH, closed_policy)
-        assert [s.id for s in scenarios] == [f"ITAM-146-{p}" for p in PROBES]
+        # 146 항목만 고른다 — 같은 파일 뒤에 plans/150 W7 탐침(`ITAM-150-PNN`)이 이어 붙는다
+        assert [s.id for s in scenarios if s.id.startswith("ITAM-146-")] == [
+            f"ITAM-146-{p}" for p in PROBES
+        ]
         assert all(s.category == "probe" for s in scenarios)
         assert all(t.oracle and t.oracle["compare"] == "count" for s in scenarios for t in s.turns)
         assert not any(spec["id"].startswith("ITAM-146-P") for spec in closed_specs.values())
@@ -139,11 +142,14 @@ class TestKnowledgeSources:
     def _items(self, name: str) -> list[dict[str, Any]]:
         return yaml.safe_load((KNOWLEDGE / name).read_text(encoding="utf-8"))["items"]
 
-    def test_k2_three_only_and_no_k8(self) -> None:
+    def test_k2_five_only_and_no_k8(self) -> None:
+        # plans/150 W3(G-3 (a))이 서버 마트 `tcdmsif80` 단독 변형 2건을 더했다(146 W4 3건 + 2)
         ids = [i["id"] for i in self._items("examples.yaml") if i.get("status") == "active"]
-        assert len(ids) == 3
+        assert len(ids) == 5
         tables = [tuple(i["tables"]) for i in self._items("examples.yaml")]
-        assert tables == [("tcdmsif79",), ("tcdmsif72",), ("tcdmsif72",)]
+        assert tables == [
+            ("tcdmsif79",), ("tcdmsif72",), ("tcdmsif72",), ("tcdmsif80",), ("tcdmsif80",),
+        ]
         assert not (KNOWLEDGE / "query_templates.yaml").exists()
 
     @pytest.mark.parametrize(

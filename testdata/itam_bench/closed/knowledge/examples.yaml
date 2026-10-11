@@ -3,6 +3,10 @@
 # 관측된 성공 SQL과 행 수 3건만 둔다(활성 의미와 무관하거나 집계 축이 확정된 것). 값 0.
 # 근거 run 리터럴(날짜 등)은 옮기지 않는다 — 날짜는 CURDATE() 기반 식으로 쓴다. 질문은 시나리오 원문을 옮기지 않고
 # 같은 뜻으로 바꿔 적는다. 활성 칸 조건은 넣지 않는다(코드값 0 — K6 활성 규칙).
+# 5회차(20261008-163344 · plans/150 W3 · G-3 (a))로 서버 마트 `tcdmsif80` 단독 변형 2건을 더했다 — 오라클 108·110
+# 모양(80 한 테이블 · 서버별 한 행)이되 질문 문구·기간·연수를 기존 시나리오(이번 분기 · 5년 · 상위 3)와
+# 6회차 세트(다음 달 · 이미 끝난 · 8년 · 총합 · 6년) 어느 쪽과도 겹치지 않게 바꿨다(겹침 가드
+# tests/test_scripts/test_itam_bench_plan150_r6_overlap.py).
 version: 1
 items:
   # 근거: ITAM-109 · `tcdmsif79` 단독 · HW/SW 지원 종료일 OR · 148행(3회차)
@@ -52,4 +56,44 @@ items:
       FROM `tcdmsif72` AS s
       GROUP BY s.`그룹경로내용`
       ORDER BY server_count DESC
+      LIMIT 1000
+  # 근거: ITAM-108 오라클 모양(`tcdmsif80` 단독 · 유지보수계약종료년월일 구간) · 5회차 108은 `tcdmsif72`를 이어 답했다
+  # (52행 · 72에서 가져온 칸은 80에도 있음). 「서버별 한 행」은 4회차 110의 80 단독 1,762행 · 키 1,559 대조.
+  - id: k2-maint-end-window-by-server
+    origin: claude_code
+    evidence: 20261008-163344
+    status: active
+    question: 앞으로 45일 사이에 유지보수 계약 종료일이 다가오는 서버를 종료일과 함께 정리해 줘
+    description: >-
+      서버 단위 유지보수 계약은 서버 통합 현황 한 테이블로 답하고 서버 원장을 잇지 않는다(이으면 호스트당 행이 불어난다).
+      종료일 칸은 YYYYMMDD 문자열이라 오늘과 45일 뒤를 같은 형식 문자열로 만들어 두 경계를 포함해 비교하고,
+      서버별 한 행으로 서버호스트명마다 묶는다.
+    tables: [tcdmsif80]
+    sql: >-
+      SELECT m.`서버호스트명`, MIN(m.`유지보수계약종료년월일`) AS maint_end
+      FROM `tcdmsif80` AS m
+      WHERE m.`유지보수계약종료년월일` BETWEEN DATE_FORMAT(CURDATE(), '%Y%m%d')
+      AND DATE_FORMAT(DATE_ADD(CURDATE(), INTERVAL 45 DAY), '%Y%m%d')
+      GROUP BY m.`서버호스트명`
+      ORDER BY maint_end
+      LIMIT 1000
+  # 근거: ITAM-110 오라클 모양(`tcdmsif80` 단독 · 취득년월일 경계 포함 · 빈 문자열 제외) · 5회차 110은 `tcdmsif72`를
+  # 이어 2,226행(4회차 80 단독 1,762행 · 키 1,559)이었다.
+  - id: k2-acquired-years-by-server
+    origin: claude_code
+    evidence: 20261008-163344
+    status: active
+    question: 취득일로부터 7년 이상 지난 서버를 서버마다 한 줄씩 취득일과 같이 뽑아 줘
+    description: >-
+      서버 단위 취득일은 서버 통합 현황 한 테이블로 답하고 서버 원장을 잇지 않는다(이으면 호스트당 행이 불어난다).
+      취득일 칸은 YYYYMMDD 문자열이라 7년 전 날짜를 같은 형식 문자열로 만들어 경계를 포함해 비교하고,
+      빈 문자열은 뺀 뒤 서버호스트명마다 묶어 서버별 한 행으로 낸다.
+    tables: [tcdmsif80]
+    sql: >-
+      SELECT a.`서버호스트명`, MIN(a.`취득년월일`) AS acquired_on
+      FROM `tcdmsif80` AS a
+      WHERE a.`취득년월일` <= DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 7 YEAR), '%Y%m%d')
+      AND TRIM(a.`취득년월일`) <> ''
+      GROUP BY a.`서버호스트명`
+      ORDER BY acquired_on
       LIMIT 1000

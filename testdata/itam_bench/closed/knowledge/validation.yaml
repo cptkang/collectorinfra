@@ -53,6 +53,14 @@ results:
   id: k2-server-count-by-group-path
   ok: true
   issues: []
+- file: examples.yaml
+  id: k2-maint-end-window-by-server
+  ok: true
+  issues: []
+- file: examples.yaml
+  id: k2-acquired-years-by-server
+  ok: true
+  issues: []
 - file: descriptions.yaml
   id: tcdmsif72.서버운영환경구분
   ok: true
@@ -325,6 +333,10 @@ results:
   id: s10-name-match
   ok: true
   issues: []
+- file: prompt_section.yaml
+  id: s11-server-mart
+  ok: true
+  issues: []
 withdrawn: []
 skipped: []
 derived:
@@ -344,8 +356,8 @@ derived:
     `tcdmsif88`, `tcdmsif91`.'
   issues: []
 summary:
-  items: 81
-  ok: 81
+  items: 84
+  ok: 84
   failed: 0
   db_unverified: 0
   code_unverified: 0
@@ -357,10 +369,13 @@ code_samples_runs:
 - 20261007-152223
 - 20261007-174622
 - 20261008-133613
+- 20261008-163344
 evidence_literal_runs:
 - 20261006-152938
 - 20261007-152223
 - 20261007-174622
 - 20261008-133613
+- 20261008-163344
 substitutions_runs:
 - 20261008-133613
+- 20261008-163344

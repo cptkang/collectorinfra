@@ -112,6 +112,8 @@ def _run(
         id="S1", category="c", traps=[], turns=[first, second],
         key_columns_for=lambda t: ["sevrHostName"] if t is first else [],
         gold_tables_for=lambda _t: [],
+        # plans/150 W2 (6) — run_turn 이 허용 경로·조인 키도 읽는다(Scenario 인터페이스 대역)
+        gold_paths_for=lambda _t: [], join_keys_for=lambda _t: [],
     )  # fmt: skip
     columns = [column, "_source_db"] if per_db else [column]
     rows = [{column: c, **({"_source_db": tag} if per_db else {})} for c in cells]

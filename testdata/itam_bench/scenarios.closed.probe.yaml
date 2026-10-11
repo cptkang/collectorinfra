@@ -16,6 +16,11 @@
 #
 # 결과 회수: `--out results/itam_bench/<run>`을 붙이면 `<run>/oracle_check/oracle_check.yaml`(ID·판정 범주·행 수·ms ·
 #   값 0 · 누출 관문 통과분만)로 남는다 — 없으면 화면의 「ITAM-146-PNN … 행 N」 줄을 옮긴다. 계획서 plans/146 §5 W5 (2) 표에 대응.
+#
+# plans/150 W7 추가분(`ITAM-150-PNN` · 2026-10-08): P01~P08은 위와 같은 키 행이다. 핵심어는 「인터넷뱅킹」「통합인증」
+# 「무인공과금」「법원공탁금」「그린뱅크」만 쓴다. P09~P18(조인 연결)은 **상수 1 행**을 돌려준다 — 값 칸 없이 행 수가 곧
+# 건수다. `--check-oracle`은 행 수만 보이므로 한 SQL에 건수 여러 개를 담지 않고 「키 전부」·「키 일부(또는
+# 그룹회사코드·가상화관리서버ID 추가)」·「한쪽 전체(분모)」를 접미사 A·B·C(·D)로 나눴다. 행 수 10000은 「10000 이상」이다.
 version: 1
 db_id: itam
 
@@ -149,3 +154,649 @@ scenarios:
         expect:
           db_ids: [itam]
           oracle: {id: ITAM-146-P09, compare: count, db_ids: [itam]}
+
+  # --- plans/150 W7 추가 탐침(ITAM-150-PNN) ---
+
+  # 확정: 103 0행이 핵심어 부재 탓인가(F5)
+  - id: ITAM-150-P01
+    title: "탐침 150 P01 — 서비스 핵심어(인터넷뱅킹) → 서버 원장 1순위 두 칸 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P01 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P01, compare: count, db_ids: [itam]}
+
+  # 확정: 103 0행이 72↔79 세 칸 조인 탓인가(F5)
+  - id: ITAM-150-P02
+    title: "탐침 150 P02 — P01 서버 ↔ 지원 종료 세 칸 연결 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P02 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P02, compare: count, db_ids: [itam]}
+
+  # 확정: 72↔79 키 선택 — 세 칸(P03B와 대조 · 103 · 106 t2)
+  - id: ITAM-150-P03A
+    title: "탐침 150 P03A — 서버 원장 전체 ↔ 지원 종료 세 칸 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P03A 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P03A, compare: count, db_ids: [itam]}
+
+  # 확정: 72↔79 키 선택 — 서버호스트명만(P03A와 대조)
+  - id: ITAM-150-P03B
+    title: "탐침 150 P03B — 서버 원장 전체 ↔ 지원 종료 서버호스트명만 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P03B 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P03B, compare: count, db_ids: [itam]}
+
+  # 확정: 106 t2 정답 범위 — 오라클 전환 재료
+  - id: ITAM-150-P04
+    title: "탐침 150 P04 — 서비스 핵심어(통합인증) 서버 ↔ 지원 종료 세 칸 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P04 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P04, compare: count, db_ids: [itam]}
+
+  # 확정: 102 부서 칸이 80 담당부점명에 있나(F10 · 149 P10 대체)
+  - id: ITAM-150-P05A
+    title: "탐침 150 P05A — 통합인증 서버 → 서버 통합 현황 담당부점명 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P05A 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P05A, compare: count, db_ids: [itam]}
+
+  # 확정: 102 부서 칸이 72 담당부점코드→br01로 채워지나(F10 · P05A 대조)
+  - id: ITAM-150-P05B
+    title: "탐침 150 P05B — 통합인증 서버 → 부점 원장 부점명 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P05B 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P05B, compare: count, db_ids: [itam]}
+
+  # 확정: 117 0행이 51↔52 조인 탓인가(F6)
+  - id: ITAM-150-P06
+    title: "탐침 150 P06 — 스토리지 ↔ 스토리지 할당(시리얼번호) (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P06 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P06, compare: count, db_ids: [itam]}
+
+  # 확정: W9 서비스 턴 0행 판별 — 이름이 서버 원장에 있나
+  - id: ITAM-150-P07A
+    title: "탐침 150 P07A — 서비스 핵심어(무인공과금) → 서버 원장 1순위 두 칸 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P07A 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P07A, compare: count, db_ids: [itam]}
+
+  # 확정: W9 서비스 턴 0행 판별 — 이름이 서버 원장에 있나
+  - id: ITAM-150-P07B
+    title: "탐침 150 P07B — 서비스 핵심어(법원공탁금) → 서버 원장 1순위 두 칸 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P07B 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P07B, compare: count, db_ids: [itam]}
+
+  # 확정: W9 서비스 턴 0행 판별 — 이름이 서버 원장에 있나
+  - id: ITAM-150-P07C
+    title: "탐침 150 P07C — 서비스 핵심어(그린뱅크) → 서버 원장 1순위 두 칸 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P07C 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P07C, compare: count, db_ids: [itam]}
+
+  # 확정: W9 ITAM-211 — 이름이 스토리지 업무명에 있나
+  - id: ITAM-150-P08
+    title: "탐침 150 P08 — 서비스 핵심어(그린뱅크) → 스토리지 할당 업무명 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P08 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P08, compare: count, db_ids: [itam]}
+
+  # 확정: 79↔80 키 전부 연결 수(219)
+  - id: ITAM-150-P09A
+    title: "탐침 150 P09A — 지원 종료 ↔ 서버 통합 현황 두 칸 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P09A 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P09A, compare: count, db_ids: [itam]}
+
+  # 확정: 79↔80 키 일부 연결 수(219)
+  - id: ITAM-150-P09B
+    title: "탐침 150 P09B — 지원 종료 ↔ 서버 통합 현황 서버호스트명만 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P09B 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P09B, compare: count, db_ids: [itam]}
+
+  # 확정: P09A·B 분모
+  - id: ITAM-150-P09C
+    title: "탐침 150 P09C — 지원 종료 전체 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P09C 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P09C, compare: count, db_ids: [itam]}
+
+  # 확정: 51↔58 정의 키 연결 수(220 · 222)
+  - id: ITAM-150-P10A
+    title: "탐침 150 P10A — 스토리지 지원 종료 ↔ 스토리지 시리얼번호 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P10A 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P10A, compare: count, db_ids: [itam]}
+
+  # 확정: 51↔58 그룹회사코드 추가 연결 수
+  - id: ITAM-150-P10B
+    title: "탐침 150 P10B — 스토리지 지원 종료 ↔ 스토리지 시리얼번호·그룹회사코드 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P10B 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P10B, compare: count, db_ids: [itam]}
+
+  # 확정: P10A·B 분모
+  - id: ITAM-150-P10C
+    title: "탐침 150 P10C — 스토리지 지원 종료 전체 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P10C 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P10C, compare: count, db_ids: [itam]}
+
+  # 확정: 52↔72 이름 다른 키 연결 수(221)
+  - id: ITAM-150-P11A
+    title: "탐침 150 P11A — 스토리지 할당 호스트명 ↔ 서버 원장 서버호스트명 연결 호스트 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P11A 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P11A, compare: count, db_ids: [itam]}
+
+  # 확정: 52↔72 그룹회사코드 추가 연결 수
+  - id: ITAM-150-P11B
+    title: "탐침 150 P11B — 스토리지 할당 ↔ 서버 원장 그룹회사코드 추가 연결 호스트 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P11B 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P11B, compare: count, db_ids: [itam]}
+
+  # 확정: P11A·B 분모
+  - id: ITAM-150-P11C
+    title: "탐침 150 P11C — 스토리지 할당 고유 호스트 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P11C 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P11C, compare: count, db_ids: [itam]}
+
+  # 확정: 92↔89 키 일부 연결 수(223 · 224)
+  - id: ITAM-150-P12A
+    title: "탐침 150 P12A — 가상 서버 ↔ 가상화 호스트 호스트참조ID만 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P12A 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P12A, compare: count, db_ids: [itam]}
+
+  # 확정: 92↔89 관리서버 추가 연결 수(복합 키 함정)
+  - id: ITAM-150-P12B
+    title: "탐침 150 P12B — 가상 서버 ↔ 가상화 호스트 가상화관리서버ID 추가 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P12B 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P12B, compare: count, db_ids: [itam]}
+
+  # 확정: 호스트참조ID가 관리서버별인가(추정 확정)
+  - id: ITAM-150-P12C
+    title: "탐침 150 P12C — 가상화 호스트 참조 ID가 관리서버 여럿에 걸친 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P12C 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P12C, compare: count, db_ids: [itam]}
+
+  # 확정: P12A·B 분모
+  - id: ITAM-150-P12D
+    title: "탐침 150 P12D — 가상 서버 전체 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P12D 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P12D, compare: count, db_ids: [itam]}
+
+  # 확정: 89↔86 키 일부 연결 수(224)
+  - id: ITAM-150-P13A
+    title: "탐침 150 P13A — 가상화 호스트 ↔ 군집 군집참조ID만 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P13A 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P13A, compare: count, db_ids: [itam]}
+
+  # 확정: 89↔86 관리서버 추가 연결 수
+  - id: ITAM-150-P13B
+    title: "탐침 150 P13B — 가상화 호스트 ↔ 군집 가상화관리서버ID 추가 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P13B 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P13B, compare: count, db_ids: [itam]}
+
+  # 확정: P13A·B 분모
+  - id: ITAM-150-P13C
+    title: "탐침 150 P13C — 가상화 호스트 전체 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P13C 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P13C, compare: count, db_ids: [itam]}
+
+  # 확정: 11↔12 정의 키 연결 수(225)
+  - id: ITAM-150-P14A
+    title: "탐침 150 P14A — 계약 ↔ 계약 물품 계약번호 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P14A 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P14A, compare: count, db_ids: [itam]}
+
+  # 확정: 11↔12 그룹회사코드 추가 연결 수
+  - id: ITAM-150-P14B
+    title: "탐침 150 P14B — 계약 ↔ 계약 물품 그룹회사코드 추가 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P14B 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P14B, compare: count, db_ids: [itam]}
+
+  # 확정: P14A·B 분모
+  - id: ITAM-150-P14C
+    title: "탐침 150 P14C — 계약 전체 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P14C 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P14C, compare: count, db_ids: [itam]}
+
+  # 확정: 41↔46 정의 키 연결 수(226)
+  - id: ITAM-150-P15A
+    title: "탐침 150 P15A — 자산 원장 ↔ 물품 분류 기준 물품분류번호 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P15A 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P15A, compare: count, db_ids: [itam]}
+
+  # 확정: 41↔46 그룹회사코드 추가 연결 수
+  - id: ITAM-150-P15B
+    title: "탐침 150 P15B — 자산 원장 ↔ 물품 분류 기준 그룹회사코드 추가 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P15B 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P15B, compare: count, db_ids: [itam]}
+
+  # 확정: P15A·B 분모
+  - id: ITAM-150-P15C
+    title: "탐침 150 P15C — 자산 원장 전체 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P15C 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P15C, compare: count, db_ids: [itam]}
+
+  # 확정: 31↔41 키 전부 연결 수(228)
+  - id: ITAM-150-P16A
+    title: "탐침 150 P16A — 장애 접수 ↔ 자산 원장 물품 두 칸 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P16A 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P16A, compare: count, db_ids: [itam]}
+
+  # 확정: 31↔41 키 일부 연결 수
+  - id: ITAM-150-P16B
+    title: "탐침 150 P16B — 장애 접수 ↔ 자산 원장 물품분류번호만 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P16B 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P16B, compare: count, db_ids: [itam]}
+
+  # 확정: P16A·B 분모
+  - id: ITAM-150-P16C
+    title: "탐침 150 P16C — 장애 접수 전체 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P16C 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P16C, compare: count, db_ids: [itam]}
+
+  # 확정: 80↔41 연결 수(72↔41 0행 3회 대조)
+  - id: ITAM-150-P16D
+    title: "탐침 150 P16D — 서버 통합 현황 ↔ 자산 원장 물품 두 칸 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P16D 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P16D, compare: count, db_ids: [itam]}
+
+  # 확정: 21↔22 키 전부 연결 수(231)
+  - id: ITAM-150-P17A
+    title: "탐침 150 P17A — IP 사용처 ↔ IP 장비 두 칸 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P17A 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P17A, compare: count, db_ids: [itam]}
+
+  # 확정: 21↔22 키 일부 연결 수
+  - id: ITAM-150-P17B
+    title: "탐침 150 P17B — IP 사용처 ↔ IP 장비 IP주소만 연결 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P17B 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P17B, compare: count, db_ids: [itam]}
+
+  # 확정: P17A·B 분모
+  - id: ITAM-150-P17C
+    title: "탐침 150 P17C — IP 사용처 전체 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P17C 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P17C, compare: count, db_ids: [itam]}
+
+  # 확정: 72↔75 키 전부 연결 수(232)
+  - id: ITAM-150-P18A
+    title: "탐침 150 P18A — 서버 소프트웨어 ↔ 서버 원장 두 칸 연결 서버 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P18A 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P18A, compare: count, db_ids: [itam]}
+
+  # 확정: 72↔75 키 일부 연결 수
+  - id: ITAM-150-P18B
+    title: "탐침 150 P18B — 서버 소프트웨어 ↔ 서버 원장 서버호스트명만 연결 서버 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P18B 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P18B, compare: count, db_ids: [itam]}
+
+  # 확정: P18A·B 분모
+  - id: ITAM-150-P18C
+    title: "탐침 150 P18C — 서버 소프트웨어 고유 서버 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P18C 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P18C, compare: count, db_ids: [itam]}
+
+  # 확정: r6 202·203·212 서버 수 기준(COUNT(*))
+  - id: ITAM-150-P19A
+    title: "탐침 150 P19A — 서버 통합 현황 전체 행 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P19A 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P19A, compare: count, db_ids: [itam]}
+
+  # 확정: r6 202·203·212 서버 수 기준(COUNT(DISTINCT))
+  - id: ITAM-150-P19B
+    title: "탐침 150 P19B — 서버 통합 현황 고유 서버호스트명 건수 (실행하지 않는 질문)"
+    category: probe
+    env: [closed]
+    traps: []
+    key_columns: []
+    gold_tables: []
+    turns:
+      - send: {query: "탐침 150 P19B 전용 — 시스템에 보내지 않는다"}
+        expect:
+          db_ids: [itam]
+          oracle: {id: ITAM-150-P19B, compare: count, db_ids: [itam]}

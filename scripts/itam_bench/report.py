@@ -44,6 +44,122 @@ def _table(header: list[str], rows: Iterable[Iterable[Any]]) -> list[str]:
     return lines
 
 
+def gold_paths(record: Mapping[str, Any]) -> list[list[str]]:
+    """레코드의 정답 테이블 경로 — 허용 경로 묶음(`expected.gold_paths`)이 있으면 그것, 아니면
+    `expected.gold_tables` 하나(비었으면 [])."""
+    expected = record.get("expected") or {}
+    paths = expected.get("gold_paths")
+    if paths:
+        return [[str(t) for t in path] for path in paths]
+    gold = expected.get("gold_tables") or []
+    return [[str(t) for t in gold]] if gold else []
+
+
+def table_scores(record: Mapping[str, Any]) -> tuple[float, float, list[str]] | None:
+    """턴 테이블 정밀도·재현율 ``(정밀도, 재현율, 맞춘 경로)``.
+
+    허용 경로 중 F1 이 가장 큰 것(같으면 앞 경로 · plans/150 W2 (6)). 정답 경로나 사용
+    테이블이 없으면 None.
+    """
+    used = {t.casefold() for t in (record.get("sql_analysis") or {}).get("tables") or []}
+    paths = gold_paths(record)
+    if not paths or not used:
+        return None
+    best: tuple[float, float, float, list[str]] | None = None
+    for path in paths:
+        gold = {t.casefold() for t in path}
+        hit = len(gold & used)
+        precision, recall = hit / len(used), hit / len(gold)
+        f1 = 2 * precision * recall / (precision + recall) if hit else 0.0
+        if best is None or f1 > best[0]:
+            best = (f1, precision, recall, path)
+    assert best is not None
+    return best[1], best[2], best[3]
+
+
+def _outside_selection(record: Mapping[str, Any]) -> list[str] | None:
+    """선별 밖 테이블 — SQL 이 쓴 테이블 중 스키마 맥락에 제시되지 않은 것(맥락 없으면 None)."""
+    context = record.get("schema_context")
+    if not isinstance(context, Mapping):
+        return None
+    presented = {t.casefold() for t in context.get("presented_tables") or []}
+    return [
+        t for t in (record.get("sql_analysis") or {}).get("tables") or []
+        if t.casefold() not in presented
+    ]
+
+
+def join_section(records: Sequence[Mapping[str, Any]]) -> list[str]:
+    """「조인 판정」 절(plans/150 W2 (6)) — 정답 테이블·조인 키를 선언한 턴을 싣는다. 관찰 표지이고
+    오라클 판정은 바꾸지 않는다. 조인 키(`expected.join_keys`)·허용 경로(`expected.gold_paths`)를
+    선언한 턴이 하나도 없는 run 이면 빈 목록이다(그 전 시나리오 세트의 리포트 바이트 그대로)."""
+    if not any(
+        (r.get("expected") or {}).get("join_keys") or (r.get("expected") or {}).get("gold_paths")
+        for r in records
+    ):
+        return []
+    rows = []
+    declared = missed = 0
+    for r in records:
+        expected = r.get("expected") or {}
+        if not (expected.get("gold_tables") or expected.get("join_keys")):
+            continue
+        analysis = r.get("sql_analysis") or {}
+        scores = table_scores(r)
+        outside = _outside_selection(r)
+        if "join_key_miss" in analysis:
+            declared += 1
+            missed += bool(analysis["join_key_miss"])
+            miss_cell: Any = [" = ".join(pair) for pair in analysis["join_key_miss"]] or "없음"
+            alias = "예" if analysis.get("join_alias_unresolved") else ""
+            group = "예" if analysis.get("join_group_company") else "아니오"
+        else:
+            miss_cell, alias, group = "—", "", "—"
+        rows.append(
+            [
+                r["id"],
+                r["turn"],
+                r["repeat"],
+                scores[2] if scores else (gold_paths(r) or [["—"]])[0],
+                analysis.get("tables") or "—",
+                f"{scores[0]:.2f}" if scores else "—",
+                f"{scores[1]:.2f}" if scores else "—",
+                miss_cell,
+                alias,
+                group,
+                "—" if outside is None else (outside or "없음"),
+            ]
+        )
+    if not rows:
+        return []
+    lines = [
+        "",
+        "## 10. 조인 판정",
+        "",
+        "정답 테이블(`gold_tables` — 허용 경로 묶음이면 가장 잘 맞는 경로)·조인 키(`join_keys`)를 "
+        "선언한 턴이다. 관찰 표지이고 오라클 판정은 바꾸지 않는다(plans/150 W2 (6)). "
+        f"조인 키 선언 턴 {declared} · `join_key_miss` 턴 {missed}.",
+        "",
+    ]
+    lines += _table(
+        [
+            "시나리오",
+            "턴",
+            "반복",
+            "정답 경로",
+            "사용 테이블",
+            "정밀도",
+            "재현율",
+            "join_key_miss",
+            "별칭 미해석",
+            "그룹회사코드 연결",
+            "선별 밖 테이블",
+        ],
+        rows,
+    )
+    return lines
+
+
 def summarize(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """리포트·비교가 함께 쓰는 지표(§3.3 「지표」)."""
     oracle = _oracle_records(records)
@@ -61,11 +177,10 @@ def summarize(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     precision = recall = 0.0
     scored = 0
     for r in records:
-        gold = {t.casefold() for t in (r.get("expected") or {}).get("gold_tables") or []}
-        used = {t.casefold() for t in (r.get("sql_analysis") or {}).get("tables") or []}
-        if gold and used:
-            precision += len(gold & used) / len(used)
-            recall += len(gold & used) / len(gold)
+        scores = table_scores(r)
+        if scores is not None:
+            precision += scores[0]
+            recall += scores[1]
             scored += 1
     key_refs = key_hits = 0
     for r in records:
@@ -285,9 +400,12 @@ def render_report(
         f"- 시나리오 {run.get('scenarios')}건 × 반복 {run.get('repeat')} · 턴 {s['turns']} · "
         f"SQL 관측 턴 {run.get('sql_observed_turns')}",
         f"- 스키마 입력 `{catalog.get('source')}` · "
-        f"자산 지문 `{json.dumps(catalog.get('assets'), ensure_ascii=False)}`",
-        "",
+        f"자산 지문 `{json.dumps(catalog.get('assets'), ensure_ascii=False)}`"
+        f"{_fingerprint_marker(catalog.get('assets'))}",
     ]
+    if run.get("retry_attempt_note"):
+        lines.append(f"- {run['retry_attempt_note']}")
+    lines.append("")
     if not run.get("judged", True):
         lines += [
             "> **판정하지 않음** — SQL 관측 턴이 0이다(D-219 ③). 감사 로그 수집 경로부터 확인한다.",
@@ -450,6 +568,7 @@ def render_report(
         ]
     else:
         lines += ["- (없음)"]
+    lines += join_section(records)
     return "\n".join(lines) + "\n"
 
 
@@ -491,12 +610,60 @@ def _turn_outcomes(records: Sequence[Mapping[str, Any]]) -> dict[tuple[str, int]
     return out
 
 
+#: 실행 SQL `retry_attempt` 뜻(plans/150 W2 (4) · 교정 L17) — 이 표지를 실은 run(`run.json`
+#: `retry_attempt_note`)만 리포트 머리에 한 줄로 싣는다(옛 run 리포트는 바이트 그대로).
+RETRY_ATTEMPT_NOTE = (
+    "실행 SQL `retry_attempt` = 턴 안 실행 순번(0부터 · 재생성 횟수 아님) — 서버 감사 값(task 별 "
+    "재생성 횟수)은 순번과 다를 때만 `server_retry_attempt`"
+)
+
+
+def _fingerprint_method(assets: Any) -> str:
+    """자산 지문 방식 — 표지(`fingerprint_method`)가 없으면 v1(파일 바이트 그대로)."""
+    method = assets.get("fingerprint_method") if isinstance(assets, Mapping) else None
+    return str(method) if method else "v1"
+
+
+def _fingerprint_marker(assets: Any) -> str:
+    """리포트 머리 표지 — v2 run 만 ` · 지문 정규화 v2`(표지 없는 옛 run 리포트는 바이트 그대로)."""
+    method = _fingerprint_method(assets)
+    return "" if method == "v1" else f" · 지문 정규화 {method}"
+
+
+_OUTCOMES = ("pass", "fail", "hold", "observe")
+
+
+def _category_outcomes(records: Sequence[Mapping[str, Any]]) -> dict[str, Counter[str]]:
+    """범주 → 턴 기록의 판정 수(오라클 없는 턴 = observe · 반복 포함)."""
+    out: dict[str, Counter[str]] = defaultdict(Counter)
+    for r in records:
+        verdict = (r.get("oracle") or {}).get("verdict") if r.get("oracle") else "observe"
+        out[str(r.get("category"))][str(verdict)] += 1
+    return out
+
+
 def compare_runs(dir_a: Path, dir_b: Path) -> str:
     """두 run 의 시나리오별 전이(통과↔실패) · 분류 증감 · 자산 지문 차이(LLM·DB 0)."""
     run_a, records_a = _load_run(Path(dir_a))
     run_b, records_b = _load_run(Path(dir_b))
     outcomes_a, outcomes_b = _turn_outcomes(records_a), _turn_outcomes(records_b)
     lines = [f"# 비교 — {run_a.get('run_id')} → {run_b.get('run_id')}", ""]
+    file_a, file_b = run_a.get("scenario_file"), run_b.get("scenario_file")
+    swapped = bool(file_a and file_b and file_a != file_b)
+    if swapped:
+        lines += [
+            f"> **프롬프트 세트 교체** — `{file_a}` → `{file_b}`. 시나리오 ID 가 겹치지 않으면 "
+            "턴 짝 비교(「전이」)는 의미가 없다 — 「범주별 판정」으로 비교한다(plans/150 W9).",
+            "",
+        ]
+    method_a = _fingerprint_method(run_a.get("assets"))
+    method_b = _fingerprint_method(run_b.get("assets"))
+    if method_a != method_b:
+        lines += [
+            f"> **지문 방식 변경** — `{method_a}` → `{method_b}`(v2 = 줄바꿈 정규화 · plans/150 "
+            "W2 (3)). 이번 비교의 자산 지문 차이는 파일 변화가 아닐 수 있다(1회 불연속).",
+            "",
+        ]
     if run_a.get("assets") == run_b.get("assets"):
         lines += [
             "> **프롬프트 자산 변화 없음** — 두 run 의 ITAM 자산 지문이 같다. 차이는 모델 비결정성·"
@@ -523,6 +690,17 @@ def compare_runs(dir_a: Path, dir_b: Path) -> str:
             f"{run_b.get('tier')}/{run_b.get('env')}). 같은 조건 비교가 아니다.",
             "",
         ]
+    if swapped:
+        cats_a, cats_b = _category_outcomes(records_a), _category_outcomes(records_b)
+        lines += ["## 범주별 판정", "", "턴 기록 기준(반복 포함) · pass/fail/hold/observe 수.", ""]
+        lines += _table(
+            ["범주", "전", "후"],
+            [
+                [c, *("/".join(str(m[c][v]) for v in _OUTCOMES) for m in (cats_a, cats_b))]
+                for c in sorted(set(cats_a) | set(cats_b))
+            ],
+        )
+        lines += [""]
     transitions: Counter[tuple[str, str]] = Counter()
     rows = []
     for key in sorted(set(outcomes_a) | set(outcomes_b)):

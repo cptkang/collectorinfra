@@ -22,7 +22,13 @@ from src.domain.result_refs import RESULT_TABLES_KEY, TABLE_LABELS_KEY, extract_
 from src.routing.db_scope import extract_state_db_ids
 from src.routing.registry import get_registry
 from src.state import AgentState
-from src.utils.empty_antecedent import EMPTY_ANTECEDENT_KEY, resolve_empty_antecedent
+from src.utils.empty_antecedent import (
+    EMPTY_ANTECEDENT_KEY,
+    ENTITY_SAMPLE_ROWS,
+    SAMPLED_ANTECEDENT_KEY,
+    resolve_empty_antecedent,
+    resolve_sampled_antecedent,
+)
 from src.utils.query_gen_common import (
     has_host_identifier_filter,
     refers_to_demonstrative_server,
@@ -41,7 +47,8 @@ MAX_HISTORY_TURNS = 10
 MAX_HISTORY_CHARS = 96_000
 
 # 직전 턴 식별 엔티티(서버/장비) 값을 보존할 때의 행수 상한 (R-12 / 2026-06-11 상한 원칙).
-_MAX_ENTITY_ROWS = 20
+# 정본은 `empty_antecedent.ENTITY_SAMPLE_ROWS` — 턴 끝 마감의 표본 턴 기록(plans/150 W1)과 같은 값.
+_MAX_ENTITY_ROWS = ENTITY_SAMPLE_ROWS
 # 식별 키 컬럼 후보 (보수적: 식별성 높은 컬럼 우선). subagents._IDENTITY_KEY_HINTS와 정합.
 _IDENTITY_KEY_HINTS = ("hostname", "host_name", "name", "server_name", "ip", "id")
 # filter_conditions 중 식별 키로 인정할 field 명.
@@ -147,6 +154,26 @@ async def context_resolver(
             "앞 턴 0행 지시어 승계(plans/146 W3): 앞 질의=%r · SQL %d건",
             empty_antecedent["query"][:80], len(empty_antecedent["sqls"]),
         )
+    # 표본 앞 턴 지시어 승계(plans/150 W1 · G-1 (a)) — 앞 턴 결과가 엔티티 상한을 넘어 엔티티가
+    # 표본이면 지시어 대상은 표본이 아니라 앞 질의 조건에 해당하는 전체다. 엔티티는 그대로 두고
+    # (단수 지시어·프로세스 등 다른 소비처는 종전대로) 앞 턴 원 질의·SQL을 승계 맥락으로 싣는다.
+    sampled_antecedent = None if empty_antecedent else resolve_sampled_antecedent(
+        str(state.get("user_query") or ""), prior_ctx, fresh_entities,
+        entities_complete=previous_entities_complete,
+        # 판정 전용 표본(교정 M2) — 한글 식별 칸까지.
+        # 프로세스 행은 서버 식별자가 아니다(엔티티와 같음).
+        sample_rows=(
+            previous_results
+            if previous_results and not _looks_like_process_rows(previous_results) else []
+        ),
+    )
+    if sampled_antecedent:
+        previous_sql = previous_sql or "\n".join(sampled_antecedent["sqls"])
+        logger.info(
+            "표본 앞 턴 지시어 승계(plans/150 W1): 앞 질의=%r · 결과 %d건 · 표본 %d건 · SQL %d건",
+            sampled_antecedent["query"][:80], sampled_antecedent["row_count"],
+            len(sampled_antecedent["sample_values"]), len(sampled_antecedent["sqls"]),
+        )
 
     context = {
         "previous_sql": previous_sql,
@@ -176,6 +203,8 @@ async def context_resolver(
     }
     if empty_antecedent:
         context[EMPTY_ANTECEDENT_KEY] = empty_antecedent
+    if sampled_antecedent:
+        context[SAMPLED_ANTECEDENT_KEY] = sampled_antecedent
 
     logger.info(
         "context_resolver: turn=%d, prev_sql=%s, prev_results=%d, prev_db_ids=%s, "

@@ -54,7 +54,11 @@ from src.orchestration.schemas import (
     close_agent_vocabulary,
     validate_plan_dag,
 )
-from src.utils.empty_antecedent import EMPTY_ANTECEDENT_KEY, antecedent_query_quote
+from src.utils.empty_antecedent import (
+    EMPTY_ANTECEDENT_KEY,
+    SAMPLED_ANTECEDENT_KEY,
+    antecedent_query_quote,
+)
 from src.utils.json_extract import extract_json_from_response
 from src.utils.prior_dependency import NOTE_DECOMPOSE, has_sequential_marker
 from src.utils.synonym_set_parser import parse_synonym_set
@@ -1096,10 +1100,19 @@ def _build_context_block(
     # 앞 턴 0행 지시어 승계(plans/146 W3 · G-3 (a)) — context_resolver가 지시어 명사구 턴에만
     # 싣는다(「… 모두 알려줘」 포함 · 교정 1 M-4라 여기서 공용 지시어 판정으로 다시 거르지 않는다).
     antecedent = conversation_context.get(EMPTY_ANTECEDENT_KEY)
+    sampled = conversation_context.get(SAMPLED_ANTECEDENT_KEY)
     if antecedent:
         lines.append(
             f"- 직전 대상 서버/장비: (없음 — 직전 질의 「{antecedent_query_quote(antecedent)}」의 "
             "조회 결과가 0건)"
+        )
+    elif sampled:
+        # 표본 앞 턴 지시어 승계(plans/150 W1 · G-1 (a)) — 엔티티는 앞 결과 앞쪽 일부(표본)다.
+        # 「직전 대상」으로 실으면 LLM이 표본 값으로 sub_query를 좁힌다(5회차 ITAM-106 t2 — 85대 중
+        # IP 10개). 노드 경로 `demonstrative_entity_scope`의 표본 가드와 같은 판정이다(D-066).
+        lines.append(
+            f"- 직전 대상 서버/장비: (직전 질의 「{antecedent_query_quote(sampled)}」의 결과 "
+            f"{sampled.get('row_count') or 0}건 — 표본만 보존되어 식별값을 싣지 않음)"
         )
     elif has_demonstrative:
         # 식별 엔티티는 상한 내 소량만 표면화(토큰 절약 — 2026-06-11 상한 원칙).
@@ -1129,6 +1142,12 @@ def _build_context_block(
         lines.append(
             "- 이번 질의의 지시어는 직전 질의의 조건에 해당하는 대상을 가리킨다. sub_query에 직전 "
             "질의의 조건을 그대로 넣어라(조건 없이 전체 대상으로 넓히지 말 것)."
+        )
+    elif sampled:
+        lines.append(
+            "- 이번 질의의 지시어는 직전 질의의 조건에 해당하는 대상 전체를 가리킨다. "
+            "sub_query에 직전 질의의 조건을 그대로 넣어라"
+            "(일부 서버 식별값으로 좁히거나 조건 없이 전체 대상으로 넓히지 말 것)."
         )
     lines.append("")
     return "\n".join(lines)

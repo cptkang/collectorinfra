@@ -177,8 +177,8 @@ def test_korean_prefix_ascii_not_split():
 def test_closed_policy_grades_and_existence():
     policy = cat.load_policy(CLOSED_POLICY)
     grades = Counter(g for cols in policy.tables.values() for g in cols.values())
-    assert sum(grades.values()) == 77
-    assert grades["identifier"] == 12
+    assert sum(grades.values()) == 87  # 77 + plans/150 W6 정책 밖 10칸
+    assert grades["identifier"] == 14  # 12 + plans/150 W6 2칸
     schema = json.loads(CLOSED_SCHEMA.read_text(encoding="utf-8"))
     tables = schema["schema"]["tables"]
     for table, cols in policy.tables.items():

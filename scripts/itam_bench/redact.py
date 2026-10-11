@@ -167,6 +167,14 @@ _SAFE_NUMBERISH = re.compile(
 )
 #: 날짜 서식 — `%`+영문 지시자와 구분자만(40자 이하 · 선형).
 _FORMAT = re.compile(r"^(?:%[A-Za-z]|[-/:. ]){1,40}$")
+#: 날짜 서식(숫자 섞임 · plans/150 W2 (2) · F8) — `%`+영문 지시자 · 구분자 · 2자리 이하 숫자 덩이만
+#: (`'%Y%m01'`). 지시자 2개 이상일 때만 쓴다(`_date_format`) — 3자리 이상 숫자 덩이는 값일 수 있다.
+_FORMAT_DIGITS = re.compile(r"\A(?:%[A-Za-z]|[-/:. ]|(?<![0-9])[0-9]{1,2}(?![0-9])){1,40}\Z")
+_FORMAT_DIRECTIVE = re.compile(r"%[A-Za-z]")
+#: 숫자 섞인 서식의 숫자 문자 총수 상한 — 덩이를 쪼개 값을 싣지 못하게(보안 감사 L1)
+_FORMAT_MAX_DIGITS = 4
+#: 공백으로 띄운 숫자 덩이 연쇄(`'%a%b 0 1 0 1'`) — 서식이 아니라 쪼갠 값일 수 있다(보안 감사 L1)
+_FORMAT_SPACED_DIGITS = re.compile(r"[0-9]\s+[0-9]")
 #: LIKE 와일드카드만(`'%'`·`'_'`·`'%%'`) — 값이 아니라 구조 기호다(plans/149 W4 (1) · F7).
 _WILDCARD_ONLY = re.compile(r"\A[%_]{1,40}\Z")  # `$`는 끝 개행을 허용한다(교정 1)
 _IPISH = re.compile(r"^%?[0-9.]{1,15}%?$")
@@ -889,10 +897,26 @@ def _prompt_word(content: str, prompt: str) -> bool:
     return len(core) >= MIN_VALUE_LEN and core in (prompt or "")
 
 
+def _date_format(content: str) -> bool:
+    """날짜 서식 리터럴인가 — 종전 `_FORMAT`(지시자·구분자만) 또는 지시자 2개 이상 + 구분자·2자리
+    이하 숫자 덩이(`'%Y%m01'` · plans/150 W2 (2)). `'20261001'`·`'%통합인증%'`는 아니다.
+
+    숫자 섞인 꼴은 숫자 문자 총수 `_FORMAT_MAX_DIGITS` 이하이고 공백으로 띄운 숫자 덩이 연쇄가
+    없을 때만이다(`'%a%b 0 1 0 1'`·`'%Y%m01 00:00'`은 가린다 · 보안 감사 L1)."""
+    if _FORMAT.match(content) and "%" in content:
+        return True
+    return (
+        bool(_FORMAT_DIGITS.match(content))
+        and len(_FORMAT_DIRECTIVE.findall(content)) >= 2
+        and sum(ch.isdigit() for ch in content) <= _FORMAT_MAX_DIGITS
+        and not _FORMAT_SPACED_DIGITS.search(content)
+    )
+
+
 def _trivially_safe(content: str, prompt: str) -> bool:
     return bool(
         _SAFE_NUMBERISH.match(content)
-        or (_FORMAT.match(content) and "%" in content)
+        or _date_format(content)
         or _WILDCARD_ONLY.match(content)
         or _prompt_word(content, prompt)
     )
