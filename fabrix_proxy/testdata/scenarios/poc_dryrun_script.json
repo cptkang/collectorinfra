@@ -1,5 +1,5 @@
 {
- "_comment": "plans/148 W3b 러너 --dry-run 대본(scripts/fake_kbgenai.py 형식). 시나리오 질의·도구 결과의 표지 문자열로 응답을 골라 정답·오답·교정 성공·502·업스트림 오류·PII 차단이 섞이게 한다(지표 계산 경로 전부 통과). 첫 규칙은 OpenAI 형식 바디(F1 네이티브 탐침)만 매치한다 — KBGenAI 페이로드는 항상 공백을 포함한다. S4 응답에 가짜 URL·가짜 키 표지를 심어 반출물 자기 검사를 시험한다.",
+ "_comment": "plans/148 W3b 러너 --dry-run 대본(scripts/fake_kbgenai.py 형식). 시나리오 질의·도구 결과의 표지 문자열로 응답을 골라 정답·오답·교정 성공·502·업스트림 오류·PII 차단이 섞이게 한다(지표 계산 경로 전부 통과). 첫 규칙은 OpenAI 형식 바디(F1 네이티브 탐침)만 매치한다 — KBGenAI 페이로드는 항상 공백을 포함한다. S4 응답에 가짜 URL·가짜 키 표지를 심어 반출물 자기 검사를 시험한다. S6 s6_agent_a는 가짜 서버 수명 동안 times 규칙으로 차례가 갈린다 — 1번째 정상 반영 · 2번째 도구 없이 바로 평문(no_tool_use) · 3번째 U+2019·U+202F·U+2011 섞인 최종 답(접기로 반영) · 4번째 표지 하나 빠진 최종 답(history) · 그 뒤는 정상 반영. s6_agent_b는 교정 뒤에도 깨진 호출(형식 실패 · 미완주).",
  "leak_markers": [
   "leak-marker.invalid",
   "dryrun-apikey-7Q3",
@@ -458,6 +458,36 @@
    "when": {
     "last_contains": "Rei Osk"
    },
+   "times": 1,
+   "respond": {
+    "status": "SUCCESS",
+    "content": "The owner is Rei Osk and the verification code is HM-7720."
+   }
+  },
+  {
+   "when": {
+    "last_contains": "Rei Osk"
+   },
+   "times": 1,
+   "respond": {
+    "status": "SUCCESS",
+    "content": "The ticket\u2019s owner is Rei\u202fOsk and the verification code is **HM\u20117720**."
+   }
+  },
+  {
+   "when": {
+    "last_contains": "Rei Osk"
+   },
+   "times": 1,
+   "respond": {
+    "status": "SUCCESS",
+    "content": "The ticket owner is Rei Osk."
+   }
+  },
+  {
+   "when": {
+    "last_contains": "Rei Osk"
+   },
    "respond": {
     "status": "SUCCESS",
     "content": "The owner is Rei Osk and the verification code is HM-7720."
@@ -489,6 +519,26 @@
    "respond": {
     "status": "SUCCESS",
     "content": "<tool_call>{\"name\": \"get_ticket\", \"arguments\": {\"ticket_id\": \"T-4001\"}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "support ticket T-4001"
+   },
+   "times": 1,
+   "respond": {
+    "status": "SUCCESS",
+    "content": "<tool_call>{\"name\": \"write_todos\", \"arguments\": {\"todos\": [{\"content\": \"Look up the ticket\", \"status\": \"in_progress\"}, {\"content\": \"Look up the owner\", \"status\": \"pending\"}]}}</tool_call>"
+   }
+  },
+  {
+   "when": {
+    "last_contains": "support ticket T-4001"
+   },
+   "times": 1,
+   "respond": {
+    "status": "SUCCESS",
+    "content": "Tickets like that are usually owned by the support desk; please check the ticket page for the verification code."
    }
   },
   {

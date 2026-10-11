@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KB AIOps 포탈</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css?v=25">
+    <link rel="stylesheet" href="/static/css/style.css?v=26">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
 </head>
@@ -250,6 +250,19 @@
                         <div class="db-scope-popover" id="dbScopePopover" hidden></div>
                     </div>
 
+                    <!-- 제니퍼 소스 칩 (plans/147 · D-322 ⑤). /scope/options에 apm_source 축이 있을 때만(APM 활성 ∧
+                         사용 가능 소스 ≥2 ∧ apm 권한) 보인다. 서버 apm_source_scope의 거울 — ▾ 선택은 다음 질의 1건에
+                         selected_apm_source_ids로 실리고 이후는 승계, ×는 제니퍼 승계만 끊는다(다음 질문에서 다시 확인). -->
+                    <div class="db-scope-chip" id="apmScopeChip" data-state="none" hidden>
+                        <button type="button" class="db-scope-chip-pick" id="apmScopePick"
+                            title="제니퍼 소스 선택" aria-haspopup="true" aria-expanded="false">
+                            <span id="apmScopeText">제니퍼: 미지정 — 질문에서 확인</span><span class="db-scope-chip-caret" aria-hidden="true">▾</span>
+                        </button>
+                        <button type="button" class="db-scope-chip-clear" id="apmScopeClear"
+                            title="제니퍼 선택 해제 — 다음 질문에서 다시 확인" aria-label="제니퍼 소스 해제" hidden>×</button>
+                        <div class="db-scope-popover" id="apmScopePopover" hidden></div>
+                    </div>
+
                     <!-- Input row -->
                     <div class="input-row">
                         <textarea id="prompt" placeholder="인프라 데이터에 대해 질문하세요..." rows="1"></textarea>
@@ -368,7 +381,7 @@
 
     <script src="/static/js/marked.min.js?v=1"></script>
     <!-- app.js 변경 시 v를 올려야 브라우저 캐시가 갱신된다(D-187: v=2 캐시로 저장 값 패널 미표시 실측) -->
-    <script src="/static/js/app.js?v=18"></script>
+    <script src="/static/js/app.js?v=20"></script>
 </body>
 
 </html>

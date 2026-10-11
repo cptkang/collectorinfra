@@ -29,6 +29,7 @@ from src.api.settings_catalog import (
 )
 from src.api.settings_help import SettingHelp, build_help
 from src.domain.user import UserRole, UserStatus
+from src.routing.apm_source_health import SourceHealthReport, check_sources
 from src.routing.registry import get_registry
 from src.api.schemas import (
     AdminUserInfoResponse,
@@ -1540,6 +1541,69 @@ async def list_observation_sources(
             {"code": spec.code, "label": spec.label or spec.code, "active": spec.code in active}
             for spec in get_registry().non_db_systems()
         ]
+    }
+
+
+# --- 제니퍼 소스 정합 점검 (plans/147 W4 · D-322 ⑥) ---
+
+
+def _apm_source_scope(config: Any) -> tuple[tuple[str, str | None] | None, str | None]:
+    """(엔드포인트, 비대상 사유) — 점검 대상은 APM 활성 ∧ 레지스트리 소스 ≥2뿐이다."""
+    from src.orchestration import apm_query as aq
+
+    if not aq.apm_active(config):
+        return None, "apm_inactive"
+    if len(get_registry().sources_of(aq.APM_SYSTEM)) < 2:
+        return None, "single_source"
+    return aq.apm_endpoint(config), None
+
+
+async def check_apm_sources(config: Any) -> SourceHealthReport | None:
+    """게이트웨이 `gateway_health` 1회로 정합 보고서를 만든다 — 비대상 배포는 None(호출 0).
+
+    예외를 올리지 않는다(점검 실패는 보고서의 `check_ok=False`).
+    """
+    from src.orchestration import apm_query as aq
+
+    endpoint, _reason = _apm_source_scope(config)
+    if endpoint is None:
+        return None
+    url, token = endpoint
+    return await check_sources(url, token, get_registry().sources_of(aq.APM_SYSTEM),
+                               session_factory=aq._SESSION_FACTORY)
+
+
+@router.get("/admin/apm/sources")
+async def get_apm_source_health(
+    request: Request,
+    refresh: bool = False,
+    _admin: dict[str, Any] = Depends(require_admin_user),
+) -> dict[str, Any]:
+    """제니퍼 소스 정합 점검 결과 — 기동 시 보관한 보고서(`?refresh=1`이면 재점검해 보고만).
+
+    재점검 결과는 사용 가능 소스 집합에 반영하지 않는다 — 반영은 재기동 시(D-322 ⑥ 「주기 재점검
+    없음」).
+    `applied_available`이 지금 질의에 쓰이는 집합이다(None = 전 소스). URL·토큰은 싣지 않는다.
+    """
+    from src.orchestration import apm_query as aq
+    from src.routing.apm_source_select import get_available_apm_sources
+
+    config = request.app.state.config
+    endpoint, reason = _apm_source_scope(config)
+    report: SourceHealthReport | None = getattr(request.app.state, "apm_source_report", None)
+    refreshed = False
+    if endpoint is not None and refresh:
+        fresh = await check_apm_sources(config)
+        if fresh is not None:
+            report, refreshed = fresh, True
+    applied = get_available_apm_sources() if endpoint is not None else None
+    order = [s.id for s in get_registry().sources_of(aq.APM_SYSTEM)]
+    return {
+        "active": endpoint is not None,
+        "reason": reason,
+        "refreshed": refreshed,
+        "applied_available": None if applied is None else [sid for sid in order if sid in applied],
+        "report": report.to_dict() if (endpoint is not None and report is not None) else None,
     }
 
 

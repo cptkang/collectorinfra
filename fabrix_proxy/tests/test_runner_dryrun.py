@@ -133,3 +133,34 @@ def test_usage_errors_exit_2(tmp_path: Path, capsys: Any) -> None:
     assert pr.main(["run", "--dry-run", "--only", "S7", "--out", out]) == 2
     assert pr.main(["run", "--dry-run", "--concurrency", "0", "--out", out]) == 2
     assert "사용법" in capsys.readouterr().err
+
+
+def test_s6_dry_run_judges_reflection_and_dumps_no_tool_use(
+    tmp_path: Path, spawned: Any
+) -> None:
+    """가짜 KBGenAI 대본의 S6 차례 — 정상 반영 · 도구 미사용 · 유니코드 변종 반영 · 표지 누락."""
+    out = tmp_path / "out"
+    assert pr.main(["run", "--dry-run", "--only", "S6", "--repeat", "S6=8", "--out", str(out)]) == 0
+    records = [json.loads(line) for line in (out / "results.jsonl").read_text().splitlines()]
+    cases = {
+        (r["case"], r["rep"]): (r["completed"], r["domain_tools_used"], r["reflected"],
+                                r["failure_type"])
+        for r in records if r["record"] == "case"
+    }
+    assert cases[("s6_agent_a", 1)] == (True, True, True, None)
+    assert cases[("s6_agent_a", 2)] == (True, False, False, "no_tool_use")
+    assert cases[("s6_agent_a", 3)] == (True, True, True, None)  # U+2011·U+202F 접기
+    assert cases[("s6_agent_a", 4)] == (True, True, False, "history")
+    assert all(not v[0] and v[3] == "format" for k, v in cases.items() if k[0] == "s6_agent_b")
+
+    dumps = {p.name for p in (out / "failures").rglob("*.txt")}
+    assert {"s6_agent_a_r2.txt", "s6_agent_a_r4.txt"} <= dumps  # 원출력은 failures/에만
+
+    summary = (out / "summary.md").read_text(encoding="utf-8")
+    assert "| S6 반영률(도메인 도구 사용 + 표지 포함) | 25.0% (2/8) | ≥90% | 미달 |" in summary
+    assert "| 완주율(S6) | 50.0% (4/8) | — | 기록(판정 아님) |" in summary
+    assert "도구 미사용 1" in summary
+    guard = pr.build_guard([])
+    for path in _exported(out):
+        assert guard.violations(path.read_text(encoding="utf-8")) == [], path.name
+        assert "Rei" not in path.read_text(encoding="utf-8"), path.name

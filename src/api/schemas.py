@@ -51,6 +51,13 @@ class QueryRequest(BaseModel):
         default=None,
         description="소스 선택 칩 응답 — 조회할 데이터 소스 시스템 코드 목록(결정적 고정)",
     )
+    # plans/147 · D-322: 제니퍼 소스 선택(화면 칩 · 소스 되묻기 답) — 소스 id 목록(레지스트리
+    # `solutions[apm].sources`) · `"*"` = 전체. 시스템 단위 `selected_sources`와 섞지 않는다.
+    # 요청 스코프.
+    selected_apm_source_ids: list[str] | None = Field(
+        default=None,
+        description="제니퍼 소스 선택 — 조회할 APM 소스 id 목록(`*` = 전체 · 결정적 고정)",
+    )
     # Plan 73 §11 (D-151): 폼필 역질문 패널의 구조화 답변 — 자연어 재조합·LLM 파싱 없이
     # 이 필드로만 전달되어 결정적 검증(존재성)·적용을 거친다.
     form_fill_answers: Optional[dict[str, dict]] = Field(
@@ -80,6 +87,13 @@ class QueryRequest(BaseModel):
     reset_db_scope: bool = Field(
         default=False,
         description="스레드 DB 스코프 해제 — 직전 턴 DB 승계를 끊고 첫 턴 규칙으로 처리",
+    )
+    # plans/147 · D-322 ⑤: 제니퍼 소스 칩 "×" — 제니퍼 소스 승계(`apm_source_scope`)만 끊는다
+    # (DB 스코프는 그대로 · 다음 질문부터 다시 되묻는다). 기본 False = 현행 동작 동일.
+    # `reset_db_scope`는 종전대로 둘 다 비운다.
+    reset_apm_source_scope: bool = Field(
+        default=False,
+        description="제니퍼 소스 승계 해제 — 직전 소스 선택을 끊고 다음 질문부터 다시 확인",
     )
 
 
@@ -117,6 +131,17 @@ class QueryResponse(BaseModel):
     source_switch: dict[str, Any] | None = Field(
         default=None,
         description="소스 선택 기억으로 소스를 고른 턴의 「다른 소스로 보기」 칩(plans/132 W5)",
+    )
+    # plans/147: APM task의 소스 되묻기(답 말풍선 뒤 체크박스 — status는 completed 유지)
+    # {question, options: [{key, label, zone}], allow_all, multi, original_query}
+    apm_source_clarification: dict[str, Any] | None = Field(
+        default=None,
+        description="제니퍼 소스 되묻기 — 선택지(키 = 소스 id · `*` = 전체)와 원 질문(plans/147)",
+    )
+    # plans/147: 현재 대화의 제니퍼 소스 승계 {ids, basis, last_target_sources} — 스코프 칩이 그린다
+    apm_source_scope: dict[str, Any] | None = Field(
+        default=None,
+        description="제니퍼 소스 승계 — 소스 id(`*` = 전체)·근거(selected|answered|named|all)",
     )
     has_mapping_report: bool = Field(
         default=False, description="매핑 보고서 존재 여부"

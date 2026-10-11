@@ -138,6 +138,7 @@ FAILURE_LABELS = {
     "tool_selection": "도구 선택",
     "history": "이력 해석",
     "limit_block": "한도·차단",
+    "no_tool_use": "도구 미사용",  # S6 — 완주했지만 시나리오 도메인 도구를 한 번도 안 부름
 }
 _URL_RE = re.compile(r"https?://", re.I)
 _CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
@@ -887,6 +888,7 @@ def build_case_record(
         "rep": rep,
         "completed": None,
         "reflected": None,
+        "domain_tools_used": None,
         "repeated_call": None,
         "steps": None,
         "latency_ms": None,
@@ -1049,7 +1051,8 @@ def tool_result(results: dict[str, Any], name: str, args: dict[str, Any]) -> dic
     return {"error": "not_found"}
 
 
-# 실 FabriX(GptOss)는 최종 답에 U+2011 하이픈·U+202F 공백·U+2019 따옴표를 섞어 쓴다 — 반영 판정만 접는다.
+# 실 FabriX(GptOss)는 최종 답에 U+2011 하이픈·U+202F 공백·U+2019 따옴표를 섞어 쓴다
+# — 반영 판정만 접는다.
 # 도구 인자 비교는 접지 않는다(인자에 섞이면 실 도구 조회도 실패하므로 실패로 센다).
 _FOLD_TABLE = str.maketrans(
     {**{c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"},
@@ -1068,6 +1071,31 @@ def reflects(final_text: str, markers: Iterable[str]) -> bool:
     """최종 답에 반영 표지가 모두 들어 있는가(유니코드 변종 무시)."""
     folded = _fold(final_text)
     return all(_fold(m) in folded for m in markers)
+
+
+def judge_agent_case(
+    completed: bool, called: Iterable[str], tools: Iterable[str], final_text: str,
+    markers: Iterable[str], last_failure: str | None,
+) -> tuple[bool, bool, str | None]:
+    """S6 케이스 판정 — (도메인 도구 사용, 반영, 실패 유형).
+
+    도메인 도구 = 시나리오 `tools`(deepagents 내장 `write_todos` 등 제외)를 1회 이상 호출.
+    반영 = 완주 · 도메인 도구 사용 · 최종 답에 표지 전부. 도구 없이 바로 평문으로 끝나도
+    완주로 잡히므로(1차 내부망 실측 — 10건 중 8건) 판정은 완주가 아니라 반영으로 한다.
+    실패 유형: 미완주면 마지막 호출 실패(없으면 `history`) · 완주했지만 도메인 도구 미사용이면
+    `no_tool_use` · 사용했지만 표지가 빠지면 `history`.
+    """
+    domain = set(tools) - DEEPAGENTS_BUILTINS
+    used = any(name in domain for name in called)
+    reflected = completed and used and reflects(final_text, markers)
+    failure: str | None = None
+    if not completed:
+        failure = last_failure or "history"
+    elif not used:
+        failure = "no_tool_use"
+    elif not reflected:
+        failure = "history"
+    return used, reflected, failure
 
 
 async def run_react_case(
@@ -1133,7 +1161,10 @@ async def run_react_case(
 async def run_agent_case(
     ctx: RunContext, scen: dict[str, Any], case: dict[str, Any], rep: int
 ) -> None:
-    """S6 — deepagents 미니 에이전트(ChatOpenAI → 프록시). 진단은 httpx 이벤트 훅으로 읽는다."""
+    """S6 — deepagents 미니 에이전트(ChatOpenAI → 프록시). 진단은 httpx 이벤트 훅으로 읽는다.
+
+    판정은 `judge_agent_case` — 완주율은 기록, 판정은 반영률(도메인 도구 사용 + 표지)로 한다.
+    """
     try:
         from deepagents import create_deep_agent
         from langchain_core.messages import AIMessage
@@ -1223,13 +1254,16 @@ async def run_agent_case(
         if record["call_like_text"] and turn == len(outcomes):  # 호출 모양 평문은 최종 답이 아니다
             completed = False
         finish_call(ctx, record, outcome, case["id"], rep, turn)
-    reflected = completed and reflects(final_text, case.get("reflect") or [])
-    failure = None if completed else (last_failure or "history")
-    if failure == "history" and outcomes:
+    called = [name for outcome in outcomes for name, _ in outcome.calls()]
+    used, reflected, failure = judge_agent_case(
+        completed, called, scen["tools"], final_text, case.get("reflect") or [], last_failure,
+    )
+    if failure in ("history", "no_tool_use") and outcomes:  # 원출력은 failures/(반출 제외)에만
         dump_failure(ctx, case["id"], rep, None, outcomes[-1].raw_heads())
     write_record(ctx, build_case_record(
         ctx, "S6", case["id"], rep, completed=completed,
-        reflected=reflected if completed else None, steps=len(outcomes), latency_ms=elapsed,
+        reflected=reflected if completed else None, domain_tools_used=used,
+        steps=len(outcomes), latency_ms=elapsed,
         error_code=safe_code(error.lower()) if error else None, failure_type=failure,
     ))
 
@@ -1436,6 +1470,9 @@ def label_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
         "reflect_s5": _flag_ratio([c for c in s5 if c.get("completed")], "reflected"),
         "repeat_s5": sum(1 for c in s5 if c.get("repeated_call")),
         "complete_s6": _flag_ratio(s6, "completed"),
+        # 반영률·도구 미사용 분모는 S6 전체 케이스(인프라 실패·미완주 포함 — 완주율과 같은 기준)
+        "reflect_s6": ratio(sum(1 for c in s6 if c.get("reflected")), len(s6)),
+        "no_tool_s6": ratio(sum(1 for c in s6 if c.get("failure_type") == "no_tool_use"), len(s6)),
         "steps_s6": (sum(int(c.get("steps") or 0) for c in s6) / len(s6)) if s6 else None,
         "lat_s6_p50": percentile(s6_lat, 50),
         "lat_s6_p95": percentile(s6_lat, 95),
@@ -1462,6 +1499,9 @@ def label_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+S6_REFLECT_ROW = "S6 반영률(도메인 도구 사용 + 표지 포함)"
+
+
 def judgments(m: dict[str, Any]) -> list[tuple[str, str, str, str]]:
     """판정 초안 — (지표, 값, 합격선, 충족)."""
 
@@ -1478,11 +1518,13 @@ def judgments(m: dict[str, Any]) -> list[tuple[str, str, str, str]]:
         ("도구 선택 정답률(S1)", m["select_s1"], f"≥{PASS_SELECT:.0%}", PASS_SELECT, False),
         ("오탐률(S4)", m["fp_s4"], f"≤{PASS_FALSE_POSITIVE:.0%}", PASS_FALSE_POSITIVE, True),
         ("완주율(S5)", m["complete_s5"], f"≥{PASS_COMPLETE:.0%}", PASS_COMPLETE, False),
-        ("완주율(S6)", m["complete_s6"], f"≥{PASS_COMPLETE:.0%}", PASS_COMPLETE, False),
         ("도구 결과 반영률(S5)", m["reflect_s5"], f"≥{PASS_REFLECT:.0%}", PASS_REFLECT, False),
+        (S6_REFLECT_ROW, m["reflect_s6"], f"≥{PASS_REFLECT:.0%}", PASS_REFLECT, False),
         ("교정 의존률", m["repair_dep"], f"≤{PASS_REPAIR_DEP:.0%}", PASS_REPAIR_DEP, True),
     ]
     out = [(name, fmt_ratio(r), line, check(r, th, upper)) for name, r, line, th, upper in rows]
+    # S6 완주율은 도구 없이 바로 평문으로 끝나도 100%가 된다 — 판정이 아니라 기록으로 둔다
+    out.append(("완주율(S6)", fmt_ratio(m["complete_s6"]), "—", "기록(판정 아님)"))
     miscall = m["example_miscall"]
     out.append(("예시 도구 오호출(교정 전 원응답)", f"{miscall}건", "0건",
                 "충족" if miscall == 0 else "미달"))
@@ -1721,12 +1763,14 @@ def render_summary(
             "",
             "단발 지표(S1~S4)는 판정 가능 호출(200·502 tool_call_invalid) 기준이며 인프라 실패"
             "(업스트림 오류·시간 초과·PII 차단)는 따로 센다."
-            " 완주율(S5·S6)은 인프라 실패를 포함한다.",
+            " 완주율(S5·S6)은 인프라 실패를 포함한다."
+            " 반영(S6)·도구 미사용(S6)의 분모는 S6 전체 케이스다(인프라 실패 포함 — 완주율과 같은"
+            " 기준). 반영(S6) = 완주 + 도메인 도구 사용 + 표지 포함.",
             "",
             "| 라벨 | 호출 | 형식(S1~S3) | 인자(S1~S3) | 선택(S1) | 오탐(S4) | 완주(S5) | 반영(S5)"
-            " | 완주(S6) | 교정 의존 | 예시 오호출 | 호출 모양 평문 | p50 ms | p95 ms"
-            " | 인프라 실패 |",
-            "|---|---:|---|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|",
+            " | 완주(S6) | 반영(S6) | 도구 미사용(S6) | 교정 의존 | 예시 오호출 | 호출 모양 평문"
+            " | p50 ms | p95 ms | 인프라 실패 |",
+            "|---|---:|---|---|---|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|",
         ]
         for label, m in metrics.items():
             lines.append(
@@ -1734,6 +1778,7 @@ def render_summary(
                 f"{fmt_ratio(m['args_s123'])} | {fmt_ratio(m['select_s1'])} | "
                 f"{fmt_ratio(m['fp_s4'])} | {fmt_ratio(m['complete_s5'])} | "
                 f"{fmt_ratio(m['reflect_s5'])} | {fmt_ratio(m['complete_s6'])} | "
+                f"{fmt_ratio(m['reflect_s6'])} | {fmt_ratio(m['no_tool_s6'])} | "
                 f"{fmt_ratio(m['repair_dep'])} | {m['example_miscall']} | {m['call_like']} | "
                 f"{_num(m['p50'])} | "
                 f"{_num(m['p95'])} | {m['infra']} |"

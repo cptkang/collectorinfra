@@ -2677,4 +2677,97 @@
         showSuccess(action === "promote" ? "조직 공용 사례로 승격했습니다." : "기억 사례를 지웠습니다.");
         loadSourceMemory();
     }
+
+    // ─── 제니퍼 소스 정합 점검 (plans/147 W4 · D-322 ⑥) ───
+    // 기동 때 보관한 결과를 보여 준다. 「다시 점검」은 보고만 한다(질의에 쓰는 집합은 재기동 시 갱신).
+    var apmSourcesBody = document.getElementById("apmSourcesBody");
+    var apmSourcesTable = document.getElementById("apmSourcesTable");
+    var apmSourcesLoading = document.getElementById("apmSourcesLoading");
+    var apmSourcesSummary = document.getElementById("apmSourcesSummary");
+    var refreshApmSourcesBtn = document.getElementById("refreshApmSourcesBtn");
+    var APM_SOURCE_STATUS = {
+        ok: ["정상", "var(--success, #2e7d32)"],
+        degraded: ["도메인 확인", "var(--warning, #ed6c02)"],
+        unreachable: ["도달 실패", "var(--danger, #c62828)"],
+        registry_only: ["미연결(선택지 제외)", "var(--danger, #c62828)"],
+        gateway_only: ["게이트웨이만(선택 불가)", "var(--warning, #ed6c02)"],
+        unknown: ["점검 실패(사용 가능으로 둠)", "var(--text-muted)"]
+    };
+    var APM_SOURCE_REASONS = {
+        apm_inactive: "APM 게이트웨이가 연결되어 있지 않습니다(MCP_SOURCE_ENDPOINTS 의 apm 미설정).",
+        single_source: "레지스트리에 제니퍼 소스가 1개 이하라 소스 선택·정합 점검을 하지 않습니다."
+    };
+
+    if (refreshApmSourcesBtn) refreshApmSourcesBtn.addEventListener("click", function () { loadApmSources(true); });
+    document.querySelectorAll('.tab[data-tab="apmsources"]').forEach(function (tab) {
+        tab.addEventListener("click", function () { loadApmSources(false); });
+    });
+
+    async function loadApmSources(refresh) {
+        if (!apmSourcesBody) return;
+        if (apmSourcesLoading) apmSourcesLoading.classList.add("active");
+        try {
+            var response = await apiRequest("GET", "/api/v1/admin/apm/sources" + (refresh ? "?refresh=1" : ""));
+            if (!response.ok) throw new Error(String(response.status));
+            renderApmSources(await response.json());
+        } catch (err) {
+            showError("제니퍼 소스 점검 결과를 불러오지 못했습니다.");
+        } finally {
+            if (apmSourcesLoading) apmSourcesLoading.classList.remove("active");
+        }
+    }
+
+    function apmFlag(value) {
+        if (value === null || value === undefined) return "-";
+        return value ? "예" : '<strong style="color: var(--danger, #c62828);">아니오</strong>';
+    }
+
+    function renderApmSources(data) {
+        var report = data.report;
+        if (apmSourcesSummary) {
+            var tone = "rgba(120,120,120,0.12)";
+            var html;
+            if (!data.active) {
+                html = "<strong>비활성</strong> &mdash; " + escapeHtml(APM_SOURCE_REASONS[data.reason] || data.reason || "");
+            } else if (!report) {
+                html = "<strong>점검 결과 없음</strong> &mdash; 「다시 점검」으로 지금 상태를 확인하세요.";
+            } else if (!report.check_ok) {
+                tone = "rgba(198,40,40,0.12)";
+                html = "<strong>점검 실패</strong> &mdash; " + escapeHtml(report.error || "") +
+                    ". 레지스트리의 모든 소스를 사용 가능으로 둡니다(조회 때 게이트웨이 오류는 따로 안내됩니다).";
+            } else {
+                tone = report.consistent ? "rgba(46,125,50,0.12)" : "rgba(198,40,40,0.12)";
+                var parts = [];
+                if (report.registry_only.length) parts.push("미연결 " + escapeHtml(report.registry_only.join(", ")));
+                if (report.gateway_only.length) parts.push("게이트웨이만 " + escapeHtml(report.gateway_only.join(", ")));
+                if (report.unreachable.length) parts.push("도달 실패 " + escapeHtml(report.unreachable.join(", ")));
+                html = "<strong>" + (report.consistent ? "일치" : "불일치") + "</strong> &mdash; 사용 가능 " +
+                    escapeHtml((report.available || []).join(", ") || "없음") +
+                    (parts.length ? " · " + parts.join(" · ") : "");
+            }
+            if (data.active) {
+                var applied = data.applied_available;
+                html += "<br><span style=\"font-size: 0.75rem; color: var(--text-muted);\">질의에 쓰는 소스: " +
+                    escapeHtml(applied === null || applied === undefined ? "전체(레지스트리)" : (applied.join(", ") || "없음")) +
+                    (report && report.checked_at ? " · 점검 " + escapeHtml(report.checked_at) : "") +
+                    (data.refreshed ? " · 다시 점검 결과(재기동 전까지 질의에는 반영되지 않습니다)" : "") + "</span>";
+            }
+            apmSourcesSummary.style.background = tone;
+            apmSourcesSummary.innerHTML = html;
+            apmSourcesSummary.style.display = "block";
+        }
+        var rows = ((report && report.sources) || []).map(function (s) {
+            var st = APM_SOURCE_STATUS[s.status] || [s.status, "var(--text-muted)"];
+            var mismatch = s.status !== "ok" && s.status !== "unknown";
+            return "<tr" + (mismatch ? ' style="background: rgba(198,40,40,0.06);"' : "") + "><td><code>" +
+                escapeHtml(s.id) + "</code></td><td>" + escapeHtml(s.label || "-") + "</td><td>" +
+                escapeHtml(s.zone || "-") + "</td><td>" + escapeHtml(s.term_count) + "</td><td>" +
+                apmFlag(s.gateway_configured) + "</td><td>" + apmFlag(s.reachable) + "</td><td>" +
+                escapeHtml(s.domain_count === null || s.domain_count === undefined ? "-" : s.domain_count) +
+                '</td><td><span style="font-weight: 600; color: ' + st[1] + ';">' + escapeHtml(st[0]) + "</span></td></tr>";
+        });
+        apmSourcesBody.innerHTML = rows.join("") ||
+            '<tr><td colspan="8" style="color: var(--text-muted); text-align: center;">표시할 소스가 없습니다.</td></tr>';
+        if (apmSourcesTable) apmSourcesTable.style.display = data.active ? "table" : "none";
+    }
 })();

@@ -251,6 +251,23 @@ class AgentState(TypedDict):
     #   source_switch: 기억을 써서 소스를 고른 턴의 「다른 소스로 보기」 칩 페이로드(응답 키 같음).
     source_selection_meta: dict[str, Any] | None
     source_switch: dict[str, Any] | None
+    # 제니퍼 소스 선택(plans/147 · D-322) — APM task 안(`apm_query` 소스 사다리)에서만 쓴다.
+    #   selected_apm_source_ids: 이번 턴 화면 선택·되묻기 답의 소스 id(`"*"` = 전체) — 요청 스코프.
+    #   apm_source_basis: 위 선택의 근거 `selected`(화면) | `answered`(되묻기 답) — 요청 스코프.
+    #   apm_source_answer_text: 여러 소스에 걸리는 단어만 쓴 글 답(「은행존」) — 사다리가 이 문구만
+    #     단어로 보고 다시 되묻는다. 라우트가 질의를 되묻기 원 질문으로 바꿀 때만 싣는다 — 요청
+    #     스코프.
+    #   apm_source_clarification: APM task의 소스 되묻기 페이로드(응답 키 같음) — 요청 스코프.
+    #   apm_source_scope: 대화 승계 값 `{ids, basis, last_target_sources}` — 스레드 범위(집계기가
+    #     쓰고 스코프 칩 해제 `reset_db_scope`가 비운다).
+    #   apm_source_pending: 되묻기 대기 `{query, choices}` — 되묻기 턴에 집계기가 쓰고 다음 턴
+    #     라우트가 입력 조립 전에 읽는다(입력 델타가 None으로 덮는다).
+    selected_apm_source_ids: list[str] | None
+    apm_source_basis: str | None
+    apm_source_answer_text: str | None
+    apm_source_clarification: dict[str, Any] | None
+    apm_source_scope: dict[str, Any] | None
+    apm_source_pending: dict[str, Any] | None
     # 존 역질문 후단 게이트 허용 채널 여부(D-143 후속2). 대화형 텍스트 라우트만 True로
     # 주입 — API 직접 호출·배치·평가 하네스는 역질문에 답할 수 없어 기존 폴백 유지
     # (§4.3-3 비대화 경로 분기). 요청 스코프 — 매 턴 라우트가 재공급.
@@ -435,6 +452,10 @@ def create_followup_input(
     reset_db_scope: bool = False,
     raw_user_query: Optional[str] = None,
     selected_sources: list[str] | None = None,
+    selected_apm_source_ids: list[str] | None = None,
+    apm_source_basis: str | None = None,
+    apm_source_answer_text: str | None = None,
+    reset_apm_source_scope: bool = False,
 ) -> dict:
     """후속(텍스트) 턴의 델타 입력을 생성한다 (D-064).
 
@@ -455,6 +476,11 @@ def create_followup_input(
         reset_db_scope: 스코프 칩 "해제"(plans/90 · D-205). True면 승계 원천(active_db_id/
             target_databases/mapped_db_ids)을 비우고 context_resolver의 sticky 폴백도 건너뛰게
             db_scope_reset을 세운다(G-4: 폼필 고정 DB도 비운다 — 재업로드 시 다시 고정된다).
+        selected_apm_source_ids: 제니퍼 소스 화면 선택·되묻기 답(plans/147 · 요청 스코프)
+        apm_source_basis: 위 선택의 근거 `selected` | `answered`(plans/147 · 요청 스코프)
+        apm_source_answer_text: 여러 소스에 걸리는 단어만 쓴 글 답(plans/147 · 요청 스코프)
+        reset_apm_source_scope: 제니퍼 소스 칩 "×"(plans/147 · D-322 ⑤). True면 제니퍼 승계
+            (`apm_source_scope`)만 비운다 — DB 스코프는 그대로다(`reset_db_scope`는 둘 다 비운다).
 
     Returns:
         graph.ainvoke에 전달할 델타 입력 dict
@@ -481,6 +507,14 @@ def create_followup_input(
         # 소스 선택 기억(plans/132 W5) — 요청 스코프. 칩 응답 표지는 라우트가 이 델타 위에 싣는다.
         "source_selection_meta": None,
         "source_switch": None,
+        # 제니퍼 소스 선택(plans/147) — 요청 스코프. 되묻기 대기(`apm_source_pending`)는 라우트가 이
+        # 델타를 만들기 전에 체크포인트에서 읽었다 — 여기서 비운다(이번 턴 되묻기면 집계기가 다시
+        # 쓴다).
+        "selected_apm_source_ids": selected_apm_source_ids,
+        "apm_source_basis": apm_source_basis,
+        "apm_source_answer_text": apm_source_answer_text,
+        "apm_source_clarification": None,
+        "apm_source_pending": None,
         # 존 역질문 후단 게이트(D-143 후속2) — 채널 플래그·발동 페이로드 모두 요청 스코프.
         # 직전 턴 발동 페이로드가 체크포인터로 승계돼 새 턴 응답을 오염시키지 않도록 초기화.
         "zone_clarification_allowed": allow_zone_clarification,
@@ -562,6 +596,12 @@ def create_followup_input(
         delta["mapped_db_ids"] = None
         # 스레드 소스 선택(plans/132 N-10)도 스코프다 — 해제하면 다음 모호 질의는 다시 묻는다.
         delta["source_choice"] = None
+        # 제니퍼 소스 승계(plans/147)도 스코프다 — 해제하면 다음 질문부터 다시 되묻는다.
+        delta["apm_source_scope"] = None
+    if reset_apm_source_scope:
+        # 제니퍼 칩 ×(plans/147) — 제니퍼 승계만 끊는다. 되묻기 대기(`apm_source_pending`)는
+        # 위 델타가 매 턴 비운다.
+        delta["apm_source_scope"] = None
     return delta
 
 
@@ -583,6 +623,7 @@ def create_initial_state(
     allow_zone_clarification: bool = False,
     raw_user_query: Optional[str] = None,
     selected_sources: list[str] | None = None,
+    selected_apm_source_ids: list[str] | None = None,
 ) -> AgentState:
     """초기 State를 생성한다.
 
@@ -602,6 +643,8 @@ def create_initial_state(
         raw_user_query: 라우트 진입 원문(plans/107 — INTENT_FRAME_ENABLED일 때만 전달).
             주어지면 ``user_query``(존 표기 치환본)를 ``display_query``로도 기록한다.
         selected_sources: 소스 선택 칩 답변(plans/132 N-10 · 요청 스코프)
+        selected_apm_source_ids: 제니퍼 소스 화면 선택(plans/147 · 요청 스코프 — 첫 턴은 되묻기
+            답이 없어 근거가 늘 `selected`다)
 
     Returns:
         초기화된 AgentState
@@ -687,6 +730,14 @@ def create_initial_state(
         turn_sources=None,  # 2단 계획 출구가 매 턴 쓴다(plans/132)
         source_selection_meta=None,  # 요청 스코프(plans/132 W5)
         source_switch=None,  # 요청 스코프(plans/132 W5)
+        # 제니퍼 소스 선택(plans/147) — 선택·근거·글 답·되묻기는 요청 스코프 ·
+        # 승계·대기는 스레드 범위
+        selected_apm_source_ids=selected_apm_source_ids,
+        apm_source_basis="selected" if selected_apm_source_ids else None,
+        apm_source_answer_text=None,
+        apm_source_clarification=None,
+        apm_source_scope=None,
+        apm_source_pending=None,
         zone_clarification_allowed=allow_zone_clarification,
         zone_clarification=None,
         reuse_parsed_requirements=None,

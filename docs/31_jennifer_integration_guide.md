@@ -624,7 +624,8 @@ JENNIFER_LEGACY_DOMAIN_IDS=[3000]
 - 소스마다 클라이언트가 따로다 — 토큰·초당 상한·응답 크기 상한·인벤토리 캐시가 소스별이고, 한 소스의 토큰은 다른 소스 요청에 실리지 않는다(`apm_gateway/tests/test_multi_source.py`).
 - **소스 타임아웃은 소비자 호출 상한보다 짧게** 둔다. `noise_gate`의 게이트웨이 호출 상한은 5초(코드 상수)인데 전역 기본 타임아웃은 10초다 — 느린 소스 하나가 게이트웨이 응답 전체를
   늦춘다(87 R-33). 게이트웨이는 소스를 병렬로 부르고, 타임아웃 난 소스는 `[한계]`로 빼고 나머지를 돌려준다.
-- 레지스트리 `sources[].id`와 `JENNIFER_SOURCES`가 다르면 `noise_gate`의 존 좁히기가 `invalid_argument`(모르는 `source_ids`)로 실패한다(판정은 그대로 · §4.7). 둘을 같이 바꾼다.
+- 레지스트리 `sources[].id`와 `JENNIFER_SOURCES`가 다르면 `noise_gate`의 존 좁히기가 `invalid_argument`(모르는 `source_ids`)로 실패한다(판정은 그대로 · §4.7). 둘을 같이 바꾼다 —
+  **소스 추가·제거는 §4.4 「소스 추가 체크리스트」**(D-322 ⑥)를 따른다. 배포 전 `python scripts/apm_source_check.py`로 두 파일을 대조하고, 기동 뒤에는 본체 기동 로그·관리 화면 「제니퍼 소스」 탭이 차이를 보여 준다.
 - `JENNIFER_<ID>_*` 키도 R-29 대상이다 — 에이전트를 붙인 WAS JVM 환경에 두지 않는다.
 
 **장기 작업 · 결과 파일 · 호출 주체(`plans/134` W0-B · D-296 ④ · D-299 ④)** 【현재 가능 — `application/jobs.py`·`spool.py` · `interface/server.py` · 계약 `spec/SPEC-apm-question-coverage.md` §3】
@@ -688,10 +689,13 @@ solutions:
     backend: mcp
     family: jennifer
     views: [ ... ]            # plans/125 — 보기 id → 게이트웨이 도구
-    sources:                  # v5 · J8 · D-287 ④ — 제니퍼 소스 ↔ 존 정본
-      - {id: bank, label: 은행존 제니퍼, zone: bankjon}
-      - {id: common, label: 공동존 제니퍼, zone: gongjon}
-      - {id: legacy, label: 레거시 제니퍼, zone: bankjon}
+    sources:                  # v5 · J8 · D-287 ④ — 제니퍼 소스 ↔ 존 정본 · terms는 plans/147 · D-322
+      - {id: bank, label: 은행존 제니퍼, zone: bankjon,
+         terms: ["은행존", "은행", "K리전", "은행존 제니퍼"]}
+      - {id: common, label: 공동존 제니퍼, zone: gongjon,
+         terms: ["공동존", "공동", "김포", "여의도", "운영", "개발", "스테이징", "DR", "공동존 제니퍼"]}
+      - {id: legacy, label: 레거시 제니퍼, zone: bankjon,
+         terms: ["은행존", "은행", "레거시", "레거시 제니퍼"]}
 ```
 
 - **정본은 레지스트리 하나다**(D-053) — 게이트웨이는 존을 모른다(루트 `config/`를 읽지 않는다 · D-274 ③). 소비자(본체 알람 라우트·`noise_gate`)가 이 표로 존을 푼다.
@@ -700,7 +704,32 @@ solutions:
   선언되지 않은 존. `zone`을 비우면 존 없는 소스(전 존 구독자·관리자만).
 - 조회 함수: `sources_of("apm")`(선언 순서) · `alarm_source(db_id)` — 알람 `dbId` `jennifer_<id>`(= `{family}_{id}`) → (시스템, 소스). 단일 설정 `jennifer`는 존 없음(경고 없음),
   표에 없는 `jennifer_<id>`는 **id별 경고 1회** 뒤 존 없음. 알람 존 판정 `src/routing/zones.py` `db_id_to_zone`이 이 함수를 쓴다(§8.4 ⑥).
-- 소스 추가 절차: 게이트웨이 `JENNIFER_SOURCES`·접두 키(§4.2)와 이 표를 **같은 id로 함께** 바꾼다. 존을 모르면 `zone`을 비우고 추가해도 된다(알람은 전 존 구독자·관리자만 본다).
+- `terms`(plans/147 · D-322 ②): 채팅에서 **이 소스를 고르는 사전 정의 단어**다. APM task 안에서만 쓰고 시스템 유사어·위치 힌트(`target_db_hints`)가 아니다(D-293).
+  한 소스에만 걸리는 단어(「김포」·「레거시」)는 그 소스만 조회하고, 여러 소스에 걸리는 단어(「은행존」)나 지목 없음은 조회 없이 되묻는다(소스가 2개 이상인 배포만).
+  비워도 된다(그 소스는 되묻기 답·화면 선택·id 지목으로만 고른다).
+
+**소스 추가 체크리스트(D-322 ⑥ — 코드 수정 0)** 【plans/147 W4】
+
+1. **게이트웨이 `apm_gateway/.env`** — `JENNIFER_SOURCES`(JSON 배열)에 id를 넣고 `JENNIFER_<ID>_API_URL`·`JENNIFER_<ID>_API_TOKEN`(그 뷰 서버의 AIOps 전용 토큰)을 둔다. 선택 키(`_DOMAIN_IDS`·`_API_TIMEOUT_SECONDS` 등)는 §4.2.
+2. **루트 `config/db_registry.yaml`** `solutions[apm].sources[]`에 `{id, label, zone, terms}` 한 행 — id는 1과 **같은 값**. 존을 모르면 `zone`을 비운다(알람은 전 존 구독자·관리자만 본다).
+   배포 전 대조: `python scripts/apm_source_check.py [--gateway-env <경로>] [--registry <경로>]` — 두 파일을 **파일로만** 비교한다(토큰·URL 값은 읽어 보관·출력하지 않고 키에 값이 있는지만 본다).
+   종료 코드 0 일치 · 1 불일치(레지스트리만·게이트웨이만·필수 키 누락·단일/다중 설정 동시 사용) · 2 파일·형식 오류.
+3. **게이트웨이 → 본체 순서로 재기동** → 본체 기동 로그 1줄 「제니퍼 소스 정합 점검: 사용 가능 [...] · …」과 관리 화면 「제니퍼 소스」 탭을 확인 → 채팅에서 「〇〇 제니퍼 인스턴스 목록」으로 조회되는지 본다.
+4. (선택) `apm_gateway/config/instance_map.yaml`의 `per_source`·`overrides`(§4.5) — 명명 규칙이 다른 소스만.
+
+**정합 점검(본체 기동 시 1회 · D-322 ⑥)** — APM 활성(엔드포인트 설정) ∧ 레지스트리 소스 ≥2일 때만 게이트웨이 `gateway_health`를 1회 부른다(상한 5초 · 그 밖의 배포는 호출 0). 판정 `src/routing/apm_source_health.py` `reconcile`:
+
+| 경우 | 처리 |
+|---|---|
+| 레지스트리∖게이트웨이(**미연결**) | 되묻기 선택지·화면 소스 칩에서 **뺀다**. 그 소스만 지목하면 안내로 끝난다(다른 소스로 넓히지 않음) |
+| 게이트웨이∖레지스트리 | 존·단어를 몰라 **고를 수 없다**(표시만) · 알람은 전 존 구독자만 |
+| 설정은 됐으나 제니퍼 도달 실패 | 선택지에 **남긴다** — 조회 때 종전 실패 고지 · 로그·관리 화면에 강조 |
+| 점검 실패(게이트웨이 다운·시간 초과) | 레지스트리 **전 소스를 사용 가능**으로 둔다(선택지를 비우지 않음) · 기동은 계속 |
+
+- 기동 로그는 1줄이다 — 일치면 INFO, 불일치·도달 실패·점검 실패면 WARNING. 소스 id와 불일치 요약만 싣는다(URL·토큰 0).
+- **주기 재점검은 없다** — 게이트웨이 설정을 바꾸면 본체를 재기동해야 사용 가능 집합이 바뀐다. 관리 화면 「다시 점검」(`GET /api/v1/admin/apm/sources?refresh=1`)은 지금 상태를 **보여 주기만** 한다.
+- 분해 프롬프트의 소스 칸은 **레지스트리 기준 그대로**다(점검 결과를 넣지 않는다 — 기동 시점 게이트웨이 상태에 렌더 지문이 흔들리지 않게).
+- 관리 화면 「제니퍼 소스」 탭(관리자 전용): 소스별 id·라벨·존·단어 수·게이트웨이 설정·도달·도메인 수·상태, 불일치 행 강조, 「질의에 쓰는 소스」(지금 적용된 집합). APM 비활성·소스 1개 배포는 「비활성」.
 - 이 표를 더해도 분해·라우팅 프롬프트 렌더는 바이트가 같다(v5 실측 — 렌더 지문 11종 · 87 §0.14). 채팅의 위치어 → 소스 좁히기(G-16)는 `plans/125`가 구현한다.
 - `databases`·`ACTIVE_DB_IDS`에는 넣지 않는다. 제니퍼는 DB가 아니다.
 

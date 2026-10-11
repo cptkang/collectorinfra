@@ -14,9 +14,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from typing import Any, Mapping, Optional, Sequence
 
-from src.routing.registry import get_registry
+from src.routing.apm_source_select import ALL_LABEL, ALL_SOURCES
+from src.routing.registry import SourceSpec, get_registry
 from src.routing.source_hints import KIND_DB, resolve_source_mentions
 from src.utils.query_gen_common import term_in_text
 
@@ -196,6 +198,30 @@ def scope_axes_options(
             {"axis": "zone_group", "exclusive": bool(group_exclusive), "options": options}
         ]
     }
+
+
+def apm_source_axis(
+    sources: Sequence[SourceSpec], *, available: Collection[str] | None = None
+) -> dict[str, Any] | None:
+    """`GET /scope/options`의 제니퍼 소스 축(plans/147 §4.3 · D-322 ⑤) — 사용 가능 소스 <2면 None.
+
+    옵션 = 사용 가능 소스(레지스트리 선언 순 · `key` = 소스 id · `label` · `zone`) + 「전체」
+    (`ALL_SOURCES`). 개별 소스는 복수 선택(`exclusive=False`)이고 「전체」와는 배타다(화면 규칙).
+    `db_ids`는 축 어휘를 맞추려 빈 목록이다. APM 활성·사용자 `apm` 권한 판정은 호출자(라우트)
+    몫이다.
+
+    Args:
+        sources: 레지스트리 소스 표(`sources_of(APM 시스템)`)
+        available: 사용 가능 소스 id(기동 정합 점검) — None = 레지스트리 전부 사용 가능
+    """
+    usable = [s for s in sources if available is None or s.id in available]
+    if len(usable) < 2:
+        return None
+    options = [
+        {"key": s.id, "label": s.label or s.id, "zone": s.zone, "db_ids": []} for s in usable
+    ]
+    options.append({"key": ALL_SOURCES, "label": ALL_LABEL, "zone": "", "db_ids": []})
+    return {"axis": "apm_source", "exclusive": False, "options": options}
 
 
 # ── 미등록 존 탐지 (plans/108 CU-B2 · G-3 사용자 확정 2026-09-21) ──────────────────
