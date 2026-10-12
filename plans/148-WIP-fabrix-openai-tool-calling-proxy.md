@@ -1,12 +1,12 @@
 # 148. FabriX 도구 호출 프록시 — OpenAI Chat Completions(+`tools`)로 받아 FabriX KBGenAI로 변환·호출하고 응답을 OpenAI 형식(`tool_calls`)으로 되돌리는 독립 서버
 
-> **작성일**: 2026-10-08 · **v5.2**(1단계 PoC 진행 가이드 부록 D · 판정 기록 양식 부록 C · v5: 도구 루프 흐름·역할 분담 §3.0 · 결과 수신 후 행동 규칙 · 턴별 입력 길이 기록 · v4: few-shot 형식 예시 · v3: 판정 테스트를 내부망 FabriX 실행으로 재편 · v2: 1단계 PoC 신설 · `plans/128`과 분리)
-> **상태**: **WIP — 1단계 내부망 1차 실행 완료(2026-10-08) · 판정 보류(S5 반영 = 러너 결함 · S6 = 기준 결함) → 재측정 R1 대기**(부록 C) · 이전: 1단계 개발 맥 완료(D.1~D.3 · 2026-10-08) — `fabrix_proxy/` PoC 서버·러너·탐침·런북 · 테스트 A·B 270 통과 · C 3 통과/1 skip(litellm 미설치) · 드라이런·런북 리허설 완주 · 1-2 길이 = 부록 C · 커밋 없음 · 이전: TODO — 계획만(코드 0) · 착수 = **1단계 PoC**(§5 — PoC 서버 + 테스트 A·B·C·D로 동작 판정 · **판정 테스트는 내부망 FabriX에서 실행**) · 판정(G-4) 통과 시에만 2단계 이후 · **G-4 합격선 확정**(사용자 2026-10-08 「권고대로」) · 내부망 FabriX 호출량 약 445회 순차 실행 허용(사용자 2026-10-08 「가능하다」) · 잔여 G-5(PoC 측정) · G-6 · G-7
+> **작성일**: 2026-10-08 · **v5.5**(2026-10-12 2차 측정 미달 → 교정 · 반출 원칙 개정 — 부록 B · v5.2: 1단계 PoC 진행 가이드 부록 D · 판정 기록 양식 부록 C · v5: 도구 루프 흐름·역할 분담 §3.0 · 결과 수신 후 행동 규칙 · 턴별 입력 길이 기록 · v4: few-shot 형식 예시 · v3: 판정 테스트를 내부망 FabriX 실행으로 재편 · v2: 1단계 PoC 신설 · `plans/128`과 분리)
+> **상태**: **WIP — 1단계 2차 측정(2026-10-12 · 첫 유효 측정) 미달**(G-4: S5 반영 71% · S6 반영 최고 ko·static 80% — 부록 C.2) → **교정 반영 완료(개발 맥 · 규약 문구·연쇄 few-shot·러너 판정·반출 확대) · 재측정 R2(1회 한도 사용) 대기** · 커밋 없음 · 이전: 1차 실행 완료(2026-10-08) · 판정 보류(S5 반영 = 러너 결함 · S6 = 기준 결함) · 이전: 1단계 개발 맥 완료(D.1~D.3 · 2026-10-08) — `fabrix_proxy/` PoC 서버·러너·탐침·런북 · 테스트 A·B 270 통과 · C 3 통과/1 skip(litellm 미설치) · 드라이런·런북 리허설 완주 · 1-2 길이 = 부록 C · 커밋 없음 · 이전: TODO — 계획만(코드 0) · 착수 = **1단계 PoC**(§5 — PoC 서버 + 테스트 A·B·C·D로 동작 판정 · **판정 테스트는 내부망 FabriX에서 실행**) · 판정(G-4) 통과 시에만 2단계 이후 · **G-4 합격선 확정**(사용자 2026-10-08 「권고대로」) · 내부망 FabriX 호출량 약 445회 순차 실행 허용(사용자 2026-10-08 「가능하다」) · 잔여 G-5(PoC 측정) · G-6 · G-7
 > **사용자 확정(2026-10-08)**: *"148번 1단계에서 proxy서버를 poc 할 수 있는 테스트 코드를 만들어 동작여부를 테스트하는 단계를 넣어라. 148번 계획은 128번 계획과 다른 계획이다. 이게 성공되면 128번은 사용하지 않을 계획이다. 1단계에서 성공하면 deepagents 등에서 활용 예정이다."*
 > - G-1 → **(b) 128과 별개의 독립 패키지**. 148 1단계가 성공하면 `plans/128`은 사용하지 않는다(128은 미착수 그대로 · 폐기 표기는 1단계 판정 때).
 > - G-2 → **(a) 1단계 성공 후 deepagents 등(1단 · noise_gate 트랙 B · sre_agent 조사)에서 활용**.
 > - 1단계 = **PoC 서버 + PoC 테스트 코드로 동작 여부를 판정**하는 단계(§5 1단계).
-> - (추가 지시) *"테스트는 내부망 fabrix환경에서 진행할 예정이다. 계획을 업데이트하라."* → 1단계 판정 테스트는 **전부 내부망 FabriX에서 사용자가 실행**한다. 개발 맥은 코드·오프라인 테스트만(실 LLM 0 · MLX 대조 없음) · 내부망 무수정 실행(옵션화) · 런북 · 반출은 판정값만(§5 1단계 「실행 환경 원칙」).
+> - (추가 지시) *"테스트는 내부망 fabrix환경에서 진행할 예정이다. 계획을 업데이트하라."* → 1단계 판정 테스트는 **전부 내부망 FabriX에서 사용자가 실행**한다. 개발 맥은 코드·오프라인 테스트만(실 LLM 0 · MLX 대조 없음) · 내부망 무수정 실행(옵션화) · 런북 · 반출은 판정값만(§5 1단계 「실행 환경 원칙」 — **v5.5에서 개정**: 실패 덤프·탐침·권장값도 반출, 자격증명·업스트림 주소만 금지).
 >
 > **요청 원문(2026-10-08)**: *"fabrix는 tools 호출이 안되고 있다. 이를 해결하기 위해 별도의 proxy api 서버를 두고 그 서버에 호출할때는 openai 표준 api로 호출하고 proxy서버에서 fabrix형식으로 변환하여 호출하고 응답이 오면 proxy 서버가 다시 openai형식의 api 응답으로 변환하여 리턴해 주는 방식으로 툴 호출을 제공하려고 한다. 이 요건에 대해 검토하고 계획파일을 작성하라."*
 >
@@ -21,7 +21,7 @@
 > **관련 결정**: **D-037**(vLLM 오케스트레이터 · **KBGenAIChat 프롬프트 에뮬레이션 기각**) · **D-174**(평면 정책: vLLM = deep agents 전용 · 나머지 FabriX) · D-042(Qwen no-think) · D-060(SSL 검증 해제) · D-139·**D-274**(독립 패키지 · 자격증명은 게이트웨이에만) · D-155(PII 차단 진단) · D-194(`llmConfig` 프로파일) · D-198(FabriX 총 소요 상한) · D-268(마감 전파 · SDK 재시도 0) · D-222·D-127·D-240(과금 판정 · 외부 차단 · 실 LLM은 MLX) · D-120·D-213·D-229·D-230(sre_agent 조사 LLM) · D-225·D-251(사다리) · D-161(경로 폐기 실측) · D-255(매뉴얼 동반) · D-303(회귀)
 > **번호 변경**: 146 → 148(2026-10-08 · 다른 작업 트리가 `plans/146`을 먼저 써서 사용자 결정으로 재번호 — 사용자 인용문 안의 자기 번호도 새 번호로 고쳤다)
 > **계획 시작 SHA**: `a95d8f5fef9a91bea21adf41f4920ed307657d0b`(2026-10-08 1단계 착수)
-> **회귀 대상 파일**: `fabrix_proxy/` 전체(신규 · 미추적) · `tests/test_fabrix_proxy_poc.py` · `plans/148-WIP-…` · `plans/INDEX.md` · `plans/INDEX-CHANGELOG.md` · `plans/128-TODO-…`(재번호 참조만) — W4 모듈 회귀 1회(2026-10-08): 본체 통과 193 · 실패 0 · 건너뜀 1 · arch·overfit 통과 · ruff E501 1건(팀 리드 편집) 교정 후 통과 · `범위: 모듈 단위 — 전체 미실행` · `fabrix_proxy` 자체 테스트는 regress 밖(`cd fabrix_proxy && python -m pytest`)
+> **회귀 대상 파일**: `fabrix_proxy/` 전체(신규 · 미추적) · `tests/test_fabrix_proxy_poc.py` · `plans/148-WIP-…` · `plans/INDEX.md` · `plans/INDEX-CHANGELOG.md` · `plans/128-TODO-…`(재번호 참조만) — W4 모듈 회귀 1회(2026-10-08): 본체 통과 193 · 실패 0 · 건너뜀 1 · arch·overfit 통과 · ruff E501 1건(팀 리드 편집) 교정 후 통과 · `범위: 모듈 단위 — 전체 미실행` · `fabrix_proxy` 자체 테스트는 regress 밖(`cd fabrix_proxy && python -m pytest`) · **v5.5 교정(2026-10-12 · 기준 `302bc84`)**: `fabrix_proxy/fabrix_proxy/{protocol_en.txt,protocol_ko.txt,tool_protocol.py,fewshot_default.json}` · `fabrix_proxy/scripts/{poc_run.py,probe_fabrix.py}` · `fabrix_proxy/testdata/{scenarios/poc_dryrun_script.json,consumer_requests/protocol_cost.json}` · `fabrix_proxy/tests/{test_protocol_r2.py,test_runner_r2.py,test_verify_r2.py}` · `fabrix_proxy/pyproject.toml` · `fabrix_proxy/POC_RUNBOOK.md` · `docs/18` — 정적 게이트 통과 · `fabrix_proxy` 374 passed · `범위: 정적 게이트만 — 테스트 미실행`
 > **D-번호**: 예약하지 않는다. **1단계 판정 때** 확정값(G-1·G-2·G-4 결과 · 128 미사용 여부 · D-037·D-174 부기)을 묶어 1건으로 등재한다 — 등재 직전 `ls docs/decisions/ | tail -3`으로 최댓값을 확인한다. 판정 전에 등재하지 않는 이유: 128 미사용·D-174 개정이 모두 「성공하면」 조건부다.
 
 ---
@@ -365,7 +365,7 @@ API_KEY=<같은 토큰>
 **실행 환경 원칙(사용자 2026-10-08 — *"테스트는 내부망 fabrix환경에서 진행할 예정이다."*).**
 - **동작 여부 판정 테스트는 전부 내부망 FabriX 환경에서 사용자가 실행한다.** 개발 맥에는 FabriX가 없으므로 개발 맥에서는 코드 작성과 가짜 업스트림 기반 오프라인 테스트(A·B·C)만 하고 **실 LLM 호출은 0건**이다(MLX 대조 측정도 하지 않는다).
 - **내부망에서 코드를 고치지 않고 돌 수 있어야 한다.** 측정 중 고를 선택지는 전부 실행 옵션으로 연다 — `--contents-mode turns|transcript`(G-5) · `--protocol-lang en|ko` · `--protocol-file <경로>`(규약 문구 교체) · `--fewshot none|static|dynamic` · `--fewshot-placement system|contents` · `--fewshot-file <경로>`(예시 교체 — §3.3.1) · `--repair-max N` · `--passthrough`(F1이 네이티브 지원일 때 에뮬레이션 끄기).
-- 판정은 반출한 요약으로 한다. **반출물은 판정값만**(아래 1-7) — 원출력·자격증명·업스트림 URL은 내부망에 남긴다.
+- 판정은 반출물로 한다. ~~반출물은 판정값만~~ → **v5.5 개정(사용자 2026-10-12 *"failures/ 등의 내용을 반출하는 폴더에 같이 저장하고…"*)**: 반출 폴더에 판정값 3종(`summary.md`·`results.jsonl`·`env_check.md`)과 함께 실패 덤프 `failures/` · `recommend.env` · 탐침 `probe_*.json`을 넣는다. **자격증명(API 키·클라이언트 키·프록시 토큰)·`Authorization`/`Bearer` 값·업스트림 URL·호스트·`.encenv` 값은 어떤 반출 파일에도 넣지 않는다**(러너 반출 명령이 자기 검사 — 부록 D.5 ⑦). 합성 시나리오의 표지 값과 모델 원출력은 실패 덤프·탐침에서만 허용한다(전부 합성 데이터 — 실 DB·알람 값 없음).
 
 **작업 순서.**
 
@@ -377,7 +377,7 @@ API_KEY=<같은 토큰>
 | 1-4 | **테스트 A·B·C 작성·통과**(반입 전 조건) · 러너는 가짜 KBGenAI(대본)로 `--dry-run` 완주 확인 · 정적 게이트(`regress.py --no-tests --files …`) | pytest 결과 · 러너 드라이런 요약 | 개발 맥 |
 | 1-5 | **반입 묶음 구성** — `fabrix_proxy/` 전체 · 루트 `tests/test_fabrix_proxy_poc.py` · `POC_RUNBOOK.md` · `.env.example`. 자격증명은 넣지 않는다(내부망에서 `fabrix_proxy/.encenv`에 기입) | 반입 목록 | 개발 맥 |
 | 1-6 | **내부망 실행(사용자 수행 · 런북 순서)** — 아래 「내부망 실행 순서」 | `logs/fabrix_proxy_poc/<시각>/` | **내부망** |
-| 1-7 | **반출·판정** — 반출물 `summary.md`(지표·판정·권장 옵션) + `results.jsonl`(호출별 판정값 — 본문 없음 · 턴 번호와 입력 길이(문자 수·추정 토큰) 포함) + `env_check.md`. 개발 쪽에서 판정표로 판정하고 §부록 C에 기록 | 통과/미달 | 개발 맥 |
+| 1-7 | **반출·판정** — 반출물 `summary.md`(지표·판정·권장 옵션) + `results.jsonl`(호출별 판정값 — 본문 없음 · 턴 번호와 입력 길이(문자 수·추정 토큰) 포함) + `env_check.md` + (v5.5) 진단 파일 `failures/`·`recommend.env`·`probe_*.json`(`poc_run.py export`가 가려 복사). 개발 쪽에서 판정표로 판정하고 §부록 C에 기록 | 통과/미달 | 개발 맥 |
 
 **내부망 실행 순서(런북 요약).**
 
@@ -390,11 +390,11 @@ API_KEY=<같은 토큰>
 | ⑤a few-shot 비교 | `poc_run.py run --only S1,S4,S5 --fewshot none` / `static` / `dynamic` (S1 10 · S4 10 · S5 5) | 형식 유효율 · 선택 정답률 · 오탐률 · 완주율 · 예시 도구 오호출 수 → 권장 `--fewshot` 기록. 정적 예시가 기본이며, 동적 예시는 형식 유효율이 더 높고 오호출이 0일 때만 고른다 | 세 모드 모두 형식 유효율이 낮으면 `--fewshot-placement contents`로 static만 1회 더 |
 | ⑤b 문구 언어 비교 | `poc_run.py run --only S1,S5 --fewshot <⑤a> --protocol-lang en` / `ko` (S1 10 · S5 5) | 나은 쪽을 권장값으로 기록 | — |
 | ⑥ 본 측정 | `poc_run.py run --contents-mode <④> --fewshot <⑤a> --fewshot-placement <⑤a> --protocol-lang <⑤b>` | S1~S6 · F5 | 개별 시나리오 실패는 기록하고 다음으로 진행(중단하지 않음) |
-| ⑦ 반출 | `logs/fabrix_proxy_poc/<시각>/`의 반출물 3종 | 본문·자격증명 미포함 확인(러너가 반출물 생성 시 자기 검사) | — |
+| ⑦ 반출 | `poc_run.py export --out "$RUN_DIR"` → `$RUN_DIR/export/`(v5.5 — 판정값 3종 + `failures/`·`recommend.env`·`probe_*.json`) | 자격증명·인증 헤더·업스트림 URL/호스트 미포함 확인(러너 자기 검사 + 사용자 재귀 grep) | 종료 코드 3이면 규칙 이름만 알리고 멈춤 |
 
 - **호출량·소요(추정)**: ⑥ 본 측정 약 220회(S1·S2·S4 각 20 · S3 20 · S5 10×5턴 · S6 10×약 6턴) + ③④ 약 20회 + ⑤a 약 135회(3모드 × (S1 10 + S4 10 + S5 5×5턴)) + ⑤b 약 70회(2언어 × (S1 10 + S5 5×5턴)). 총 약 445회 · 호출당 5~15초로 잡으면 40~110분. 기본은 **순차 실행**(`--concurrency 1`) · 호출 간 `--sleep`. **이 호출량을 순차로 실행하는 것은 내부망 FabriX 사용 정책상 가능하다**(사용자 2026-10-08 확인).
 - **데이터**: 시나리오의 도구·도구 결과는 전부 합성(`testdata/scenarios/`)이다 — 실 DB·실 알람 데이터를 FabriX에 보내지 않는다. F5의 호스트명·IP도 합성값이다.
-- **재측정 사이클(미달 시 1회)**: 반출 요약으로 실패 유형을 보고 개발 쪽에서 규약 문구·few-shot 예시 파일만 고쳐 재반입 → `--protocol-file`·`--fewshot-file`로 ⑥만 다시 돈다(코드 재반입 없음이 원칙).
+- **재측정 사이클(미달 시 1회)**: 반출 요약으로 실패 유형을 보고 개발 쪽에서 규약 문구·few-shot 예시 파일만 고쳐 재반입 → `--protocol-file`·`--fewshot-file`로 ⑥만 다시 돈다(코드 재반입 없음이 원칙). **v5.5 이탈**: 2차 미달 뒤 재측정 R2는 사용자 지시로 코드째 재반입한다 — 병렬 규칙은 `tool_protocol.py` `_PARALLEL_RULES`(코드 상수)에 있고, 연쇄 few-shot은 `FEWSHOT_PATTERNS`에 새 패턴이 필요했으며, 러너 판정·반출 교정이 함께 들어가기 때문이다(부록 C.2).
 
 **테스트 묶음.**
 
@@ -403,7 +403,7 @@ API_KEY=<같은 토큰>
 | **A. 단위** | 변환 표(system → `systemPrompt` · assistant `tool_calls` → `<tool_call>` 블록 · `tool` → `<tool_response>` · 연속 같은 역할 병합 · `contents` 두 모드) · 파서 표(§3.4 ④ 전 행) · `tool_choice` 4종 · `parallel_tool_calls=false` · id 발급 · 교정 1회 성공/실패(502) · 오류 봉투 형식 · 경계(import 0) · **few-shot**(렌더한 예시를 파서에 넣으면 기대 `tool_calls`가 그대로 나옴 · 예시 도구 이름 ∩ 요청 도구 이름 = ∅(겹치면 접미사) · 업무 도메인 어휘 없음 · `parallel_tool_calls=false`면 패턴 ② 제외 · `--fewshot none`이면 블록 없음) | `fabrix_proxy/tests/` · 개발 맥 + 내부망 ② | 없음 |
 | **B. 계약** | 프록시 + 가짜 KBGenAI(대본 모드)를 실프로세스로 띄우고: openai SDK `chat.completions.create(tools=…)` 비스트림·스트림 → `tool_calls` · `ChatOpenAI(base_url=프록시).bind_tools([…])` `ainvoke`·`astream` → `AIMessage.tool_calls`(스트림 조각 조립 포함) · 401/400/502/504가 SDK 예외 계열로 매핑 · 가짜 KBGenAI가 받은 페이로드에 도구 규약 블록·이력 직렬화가 들어 있음 | `fabrix_proxy/tests/test_contract_*.py` · 개발 맥 + 내부망 ② | 없음(대본) |
 | **C. 소비자 종단** | 프록시를 **하위 프로세스로** 띄우고(import 0 유지) 본체 쪽 실제 조립 함수로: ① deepagents `create_deep_agent`(모델 = `ChatOpenAI`→프록시 · 가짜 도구 1개) 미니 에이전트가 도구 호출 → 결과 → 최종 답까지 완주 ② `create_orchestrator_llm`(provider `vllm` · base_url 프록시) + `orchestrator_available` = True ③ noise_gate `_select_backend` = `track_b` · 도구 루프 1회 ④ litellm `openai/<별칭>` + `api_base` 1회 왕복(`sre_agent/.venv` 있을 때만 — 없으면 skip 사유 출력) | 루트 `tests/test_fabrix_proxy_poc.py` · 프록시·deepagents 미설치면 skip(사유 출력) · 개발 맥 + 내부망 ② | 없음(대본) |
-| **D. 실 FabriX 시나리오 러너** | `scripts/poc_run.py run --repeat N` — 아래 시나리오를 프록시 경유로 N회씩 돌려 지표 산출. 결과는 판정값 JSONL + `summary.md`, **실패 건만** 원출력 앞 500자를 내부망 로그에 저장(반출 제외) | `fabrix_proxy/scripts/` · 내부망 ③~⑥ | **실 FabriX(내부망)** |
+| **D. 실 FabriX 시나리오 러너** | `scripts/poc_run.py run --repeat N` — 아래 시나리오를 프록시 경유로 N회씩 돌려 지표 산출. 결과는 판정값 JSONL + `summary.md`, **실패 건만** 원출력 앞 500자(단발) · S5·S6 케이스는 턴별 호출·인자·도구 결과(found/not_found)·최종 답 앞 2000자를 `failures/`에 저장(v5.5부터 반출 — 가림 후) | `fabrix_proxy/scripts/` · 내부망 ③~⑥ | **실 FabriX(내부망)** |
 
 **D 러너 시나리오.**
 
@@ -540,6 +540,7 @@ sed -n 20,100p src/orchestration/deep_agent.py ; sed -n 140,175p noise_gate/appl
 | v5.2 | 2026-10-08 | 사용자 지시 *"1단계 poc 진행 가이드를 계획 파일에 정리하라."* — 부록 D 신설(흐름·역할 · 개발 맥 착수 준비 · 구현 Wave W1~W4와 반입 전 게이트 · 반입 묶음(`POC_VERSION`) · 내부망 설정·기동 · 실행 ①~⑦ 소요·인계값 · ⑤a/⑤b 선택 규칙 · 중단 시 재개 · 반출 점검 · 실패 시 조치 · 판정·기록 · 판정 뒤 처리) · 부록 C를 판정 기록 양식으로 · §5 1단계 머리와 §3.8에 안내 |
 | v5.3 | 2026-10-08 | 1단계 개발 맥 구현 완료(부록 D.1~D.3 · 사용자 지시 *"1단계까지 구현하라."*) — `fabrix_proxy/` 독립 패키지(PoC 서버: 변환·규약·few-shot·파서·교정 1회·502·스트림 합성·총상한 504·POC_MODE 진단) · 가짜 KBGenAI · 러너 `poc_run.py`(env-check·run·권장값 `recommend.env`·반출물 자기 검사) · 탐침 `probe_fabrix.py` · 시나리오 · `POC_RUNBOOK.md`(사용자 지시 *"1단계의 poc 실행 명령어를 명확히 가이드에 작성하라."* — 리허설로 확인) · 테스트 A·B·C · 1-2 길이 부록 C 기입 · D.4~D.6을 런북 명령으로 갱신 · §3.4-5 원출력 로그 문구를 §3.7에 맞춰 정리 · 계획 번호 146 → 148(사용자 결정) |
 | v5.4 | 2026-10-08 | 내부망 1차 결과(`results/fabrix_proxy_poc_20261008-141615`) 판정 — 부록 C.1 기록. 단발 지표 합격(형식 100% · 인자 98.6% · 선택 96.7% · 오탐 0% · 교정 의존 0.6%) · 권장 옵션 turns·none·system·ko · S5 반영률은 러너의 ASCII 비교 결함으로 무효(사용자 수정 `925360c` — 유니코드 접기) · **S6 「완주」가 도구 미사용 종료도 세는 결함 → 사용자 결정 「S6도 반영률로 판정」: 판정표 S6 행을 「S6 반영률 ≥90%」로 교체 · `no_tool_use` 실패 유형** · 사용자 결정 「S5 + S6 few-shot 비교」 재측정 R1(한도 미차감) |
+| v5.5 | 2026-10-12 | 내부망 2차 측정(첫 유효 측정) **미달** — 부록 C.2. 사용자 지시 *"failures/ 등의 내용을 반출하는 폴더에 같이 저장하고 검토한 내용확인하여 팀리더 에이전트는 poc 코드를 수정하라."* → **반출 원칙 개정**(「판정값만」 → 판정값 3종 + `failures/`·`recommend.env`·`probe_*.json` · 자격증명·인증 헤더·업스트림 URL/호스트·`.encenv` 값은 계속 금지 · 진단 파일은 가림 후 재검사 — §5 실행 환경 원칙 · 1-7 · ⑦ · 부록 D.5 ⑦·D.6·D.7) · 교정: 규약 문구(병렬 = 인자를 아는 호출만 · 도구로만 알 수 있는 사실은 짐작 금지 · 계획은 답이 아님) · static few-shot 연쇄 예시(`chain`) · 러너(반출 명령 `export` · S5 `no_tool_use`·추측 병렬 · ⑤a/⑤b 근거 = 반영률 · F1 후보 0개 명시·`--path`) · 런북 12절 「재측정 R2」. R2가 재측정 1회 한도를 쓴다 |
 
 ## 부록 C. 1단계 판정 기록
 
@@ -555,7 +556,7 @@ sed -n 20,100p src/orchestration/deep_agent.py ; sed -n 140,175p noise_gate/appl
 | 규약 블록 + few-shot 길이(1-2) | **deepagents 1단(내장 8 + 본체 7 = 도구 15개) en: 규약 20,335자 + few-shot 1,505자 = 21,842자 · 추정 5,575토큰 · 95,232 대비 5.85%** (ko 21,228자 · 5,655토큰 · 5.94%) · 트랙 B(도구 3개) en 3,053자 · 867토큰 · 0.91%(ko 2,439자 · 948토큰 · 1.00%) · 참고: deepagents 내장만 en 5.40% · 녹화된 deepagents system 메시지 7,391자(약 1,861토큰) 별도 | 개발 맥 2026-10-08 · `fabrix_proxy/scripts/measure_protocol_cost.py` → `testdata/consumer_requests/protocol_cost.json` · 추정 토큰 = ASCII/4 + 비ASCII/1(보수 추정 — F3 실측 전) · 비용 대부분은 deepagents 내장 도구 설명(약 19K자) |
 | F1 네이티브 엔드포인트 | **미기록**(summary 탐침 표 빈칸 · `probe_*.json`은 내부망 보관) | ⑥+ passthrough 측정 없음 → 네이티브 지원은 확인되지 않았다. 사용자 확인 필요 |
 | F2 → `--contents-mode` | **turns**(turns·transcript 모두 다음 행동 정답 3/3 · 역할 인식 n2·n3·n4 빈 첫 원소 3/3 · `n4_assistant_said` 0/3) | 모델이 「자기 이전 답」을 지목하는 질문에는 약하다 — 도구 이력 해석에는 영향이 없었다(S5 체인 30/35 정상) |
-| ⑤a → `--fewshot` · `--fewshot-placement` | **none · system** — 형식 유효율(S1·S4·S5) none 100%(55/55) · static 94.7%(36/38) · dynamic 100%(40/40) · 예시 도구 오호출 전 모드 0건 | **few-shot은 짧은 프롬프트에서 이득이 없었다**(static은 S1 선택 70% — n=10). 긴 deepagents 프롬프트(S6)에서는 재측정 R1에서 비교 |
+| ⑤a → `--fewshot` · `--fewshot-placement` | **none · system** — 형식 유효율(S1·S4·S5) none 100%(55/55) · static 94.7%(36/38) · dynamic 100%(40/40) · 예시 도구 오호출 전 모드 0건 | **few-shot은 짧은 프롬프트에서 이득이 없었다**(static은 S1 선택 70% — n=10). 긴 deepagents 프롬프트(S6)에서는 재측정 R1에서 비교 · **v5.5 주석**: 「none」은 동률 순서 버그(`FEWSHOT_MODES[::-1]`가 none을 최우선)가 고른 값이다 — none·dynamic 형식 유효율이 모두 100%로 동률이었고, 교정한 순서(static>dynamic>none)로는 dynamic이다. 「none이 더 낫다」는 근거는 아니다 |
 | ⑤b → `--protocol-lang` | **ko** — en S5 완주 80%(업스트림 오류 3건 포함) · ko 100% | |
 | S1·S2·S3 형식·인자 유효율 | **100% (70/70) · 98.6% (69/70)** | ⑥(ko·none) 라벨 · 합격 ≥95% ✅ |
 | S1 도구 선택 정답률 | **96.7% (29/30)** | 합격 ≥90% ✅ |
@@ -571,9 +572,29 @@ sed -n 20,100p src/orchestration/deep_agent.py ; sed -n 140,175p noise_gate/appl
 | **판정** | **보류** — 단발 지표(S1~S4)·교정·예시 오호출은 합격. S5 반영(러너 결함)·S6(기준 결함)은 판정 불가 | D.8 「코드 결함 발견」 — 고친 뒤 재측정하며 **재측정 1회 한도에 넣지 않는다** |
 | 재측정 여부 · 바꾼 파일 | **R1 예정**: S5 15건(turns·none·system·ko) + S6 10건 × few-shot none/static/dynamic · 러너 `poc_run.py`(반영 접기 `925360c` + S6 반영 판정·`no_tool_use`) · 런북 「재측정 R1」 절 | 반입 전 커밋하고 `POC_VERSION`을 커밋 SHA로 교체 |
 
-### C.2 재측정 R1
+### C.2 2차 측정 (2026-10-12 09:42~09:55 · 재측정 R1 + ⑤a·⑤b 재실행 · 첫 유효 측정 · 반출 `collectorinfra/results/fabrix_proxy/export/`·`export_s6fewshot/`)
 
-(R1 반출물을 받은 뒤 기록한다.)
+| 항목 | 값 | 비고 |
+|---|---|---|
+| 반입 코드 SHA (`POC_VERSION`) | `ee319ad…-dirty`(Windows 개발 PC · 반영 판정 `_fold` 포함 · 미커밋) | env-check 반출됨(python 3.12.10 · langchain-core 1.4.8 · deepagents 0.6.11 · FabriX 도달 ok · `/health`·`/v1/models` 200) |
+| 실행 | run 9회(본 6 · S6 few-shot 3) · 호출 405 · 케이스 75 · 인프라 실패 0 | |
+| S1·S2·S3 형식 · 인자 | **100% (110/110) · 98.2% (108/110)** | ✅ (en·none 라벨만 인자 8/10 — n=10) |
+| S1 도구 선택 | **97.1% (68/70)** | ✅ (en·none 라벨 8/10) |
+| S4 오탐 | **0% (0/50)** | ✅ |
+| 교정 의존 · 예시 오호출 | 2.6% (8/311) · 0% (0/100) · 오호출 **0건** | ✅ |
+| S5 완주율 | 100% (35/35) | 판정상 ✅이나 **변별력 없음** — 도구 0개 평문도 완주로 센다(S6과 같은 정의 결함 · v5.5 summary 주석) |
+| **S5 반영률** | **71.4% (25/35)** — en·none 4/5 · en·static 14/20 · en·dynamic 3/5 · ko·static 4/5 | ❌ 합격 ≥90%. 실패 10건: ① **추측 병렬 5건**(첫 턴에 `get_ticket`+`get_person`+`get_office` 동시 호출 — 앞 결과로만 알 수 있는 ID를 짐작 · 전부 `s5_ticket_ko`) ② 도구 없이 즉답 3건 ③ 첫 도구 뒤 중단 2건 |
+| **S6 반영률** | ko·none **3/10** · ko·static **8/10** · ko·dynamic **3/10** · en·static **2/10** | ❌ 합격 ≥90%. 실패: 도구 0개 종료(ko·none 3 · static 1 · dynamic 1 · en·static 6) · `write_todos`만 하고 평문 종료(ko·none 3 · dynamic 4) · 도구 다 부르고 표지 누락 4건(반출물로는 원인 불명 — 당시 `failures/` 미반출) |
+| ⑤a · ⑤b 권장값(러너) | `recommend.env` = static · system · **en** | **⑤b 근거 결함** — 변별력 없는 S5 완주율로 골라 en을 권했으나 S6은 ko가 우월(ko·static 8/10 vs en·static 2/10). 교정한 러너로 두 반출물을 합쳐 다시 계산하면 **static · system · ko** |
+| F1 네이티브 | **미확인** — summary 표 머리만 있고 행 0개 | 원인(코드 확정): 후보 0개(FABRIX_NATIVE_URL 미설정 · `--url` 없음)여도 `probe_native.json`이 쓰이고 summary가 빈 표를 찍었다 → 「후보 0개 — 네이티브 미확인」 명시 · 후보 0개 경고 · `--path`(경로만 받아 `FABRIX_BASE_URL` 호스트에 붙임) |
+| F5 | usage 0/3 · PII 차단 0/3 | 1차와 같다 |
+| 지연 | 호출 p50 약 1.0~1.5초 · p95 1.6~4.4초 · S6 실행 p50 2.0~3.3초 · p95 7.1~7.6초 · S6 첫 턴 약 2.9만 자(추정 7.2천 토큰) · 턴당 +430자 | 기록만 |
+| **판정** | **미달(첫 유효 측정)** — 단발 지표·교정·예시 오호출 합격, S5·S6 반영률 미달 | D.8 「미달(1차)」 |
+| 재측정 | **R2 — 1회 한도 사용**. 고정 조합 `turns · static · system · ko` · S1~S5(S5 15회) + S6 10회(+선택 S6 none 대조 10회) · F1 `--path` · 반출 `poc_run.py export`(런북 12절 · 필수 실 FabriX 호출 약 190회 · 선택 포함 약 240회) | R2도 미달이면 중단(D.8) |
+| 바꾼 파일(개발 맥 2026-10-12 · 커밋 없음) | 규약 `fabrix_proxy/fabrix_proxy/protocol_en.txt`·`protocol_ko.txt`·`tool_protocol.py`(`_PARALLEL_RULES` · `FEWSHOT_PATTERNS`+`chain`) · `fewshot_default.json`(연쇄 예시 D-400 → `last_order_id` 512 → `example_get_status`) · 러너 `scripts/poc_run.py`(`export` · `ExportGuard` 진단 완화·가림·`.encenv` · S5·S6 케이스 덤프 · S5 `no_tool_use`·`speculative_parallel` · ⑤a/⑤b 반영률 · ⑤a 동률 순서 버그 교정) · `scripts/probe_fabrix.py`(`--path` · 경로만 기록 · 후보 0개 경고) · `testdata/scenarios/poc_dryrun_script.json` · `testdata/consumer_requests/protocol_cost.json` · 테스트 `tests/test_protocol_r2.py`(20)·`tests/test_runner_r2.py`(48)·`tests/test_verify_r2.py`(29 · verifier) · `pyproject.toml`(dev에 `python-dotenv`) · `POC_RUNBOOK.md` 12절. 보안 감사(Medium 4 · Low 5) 교정: 인증 헤더 이름+값 줄 끝 가림 · 스킴 무관·이스케이프·퍼센트 인코딩 URL · 진단 파일 IPv4 · 호스트 대소문자 무시 + `.env`/`.encenv` URL 호스트 수집 · 정규화 사본 독립 최종 검사(`final_scan`) · `.encenv` 없으면 거부(`--allow-no-encenv`) · 심볼릭 링크·숨김 제외 · 임시 폴더 후 rename · 판정값 3종에 원출력 조각 대조 | 검증: `fabrix_proxy` 374 passed · 루트 `tests/test_fabrix_proxy_poc.py` 3 passed 1 skipped · `regress.py --no-tests` arch·overfit·ruff 통과(`범위: 정적 게이트만 — 테스트 미실행`) · 런북 12절 가짜 KBGenAI 리허설 완주 · 반입 전 커밋하고 `POC_VERSION`을 커밋 SHA로 교체(사용자) |
+| 1-2 길이 변화 | deepagents 1단(도구 15) en 21,842 → **22,674자 · 5,575 → 5,783토큰 · 5.85 → 6.07%** · ko 21,228 → 21,836자 · 5,655 → 5,904토큰 · 5.94 → 6.20% · 트랙 B en 3,053 → 3,885자 · 0.91 → 1.13% · ko 2,439 → 3,047자 · 1.00 → 1.26% | 규약 +185~404자 · few-shot +423~428자 · 1단 약 +210~250토큰(한도의 +0.2%p) |
+
+판정 기준 메모: S5 반영은 v5.5부터 S6과 같은 `judge_agent_case`로 판정한다(완주 + 도메인 도구 1회 이상 + 표지 전부). 도구 없이 표지를 맞힐 수 없는 합성 값이라 2차 수치의 의미는 같다. 완주율(S5)을 「기록(판정 아님)」으로 내리는 것은 implementer 제안으로 남긴다(합격선 변경은 사용자 결정).
 
 ## 부록 D. 1단계 PoC 진행 가이드
 
@@ -681,13 +702,14 @@ sed -n 20,100p src/orchestration/deep_agent.py ; sed -n 140,175p noise_gate/appl
 2. 남은 모드 중 형식 유효율(S1·S4·S5)이 가장 높은 쪽. 차이가 2%p 이내면 `static`(기본값).
 3. 세 모드 모두 90% 미만이면(`ADVISE FEWSHOT_RERUN`) `--fewshot static --fewshot-placement contents`로 ⑤a를 1회 더 돌린 뒤 같은 규칙. 그래도 `FEWSHOT`이 비면(`ADVISE FEWSHOT=undecided`) 기본값 `static`·`system`으로 계속하고 반출 때 알린다.
 
-**⑤b 선택 규칙.** 형식 유효율(S1·S5)이 높은 쪽 · 2%p 이내면 S5 완주율 · 같으면 `en`.
+**⑤b 선택 규칙.** 형식 유효율(S1·S5)이 높은 쪽 · 2%p 이내면 **반영률**(두 라벨 모두 S6 자료가 있으면 S6, 아니면 S5) · 같으면 `en`. ~~2%p 이내면 S5 완주율~~(v5.5 — S5 완주율은 도구 0개 평문도 완주로 세 전 라벨 100%라 변별력이 없었다). ⑤a도 같은 원칙: 형식 유효율 ≥90% · 예시 오호출 0인 모드 중 반영률(S6 우선) 최고 · 2%p 안이면 static.
 
 **중단됐을 때.** 새 터미널에서 런북 2절 두 번째 블록(`RUN_DIR="$(cat "$REPO/logs/fabrix_proxy_poc/CURRENT")"` · `. "$RUN_DIR/recommend.env"`) → 끝나지 않은 시나리오만 같은 `--out`으로: 예 `poc_run.py run --only S5,S6 --contents-mode "$CONTENTS_MODE" … --out "$RUN_DIR"`.
 
 **⑦ 반출 점검.** 러너의 자기 검사와 별도로 사용자가 한 번 더 본다.
-- 반출 대상은 `summary.md` · `results.jsonl` · `env_check.md` 세 개뿐이다(`mkdir -p "$RUN_DIR/export" && cp …`). `failures/`·`proxy*.log`·`recommend.env`·`probe_*.json`은 내부망에 남긴다.
-- `grep -n -E 'https?://|Bearer' …` 와 `.encenv`에서 뽑은 API 키·client 키·프록시 토큰 앞 6자의 `grep -n -F -e … ` 결과가 모두 0줄이어야 한다(키 추출 명령은 런북 6.9절).
+- **v5.5 개정(사용자 2026-10-12)**: 반출은 `poc_run.py export --out "$RUN_DIR"`로 한다 → `$RUN_DIR/export/`에 판정값 3종(`summary.md`·`results.jsonl`·`env_check.md`) + 진단 파일(`recommend.env`·`probe_*.json`·`failures/<라벨>/*.txt`). `proxy*.log`·pid 등은 복사하지 않는다. ~~반출 대상은 세 개뿐~~(v5.4까지).
+- 자기 검사: 판정값 3종은 엄격(URL·`Bearer`·키·호스트·시나리오 표지·응답 원문 → 거부 · 종료 코드 3). 진단 파일은 합성 표지·모델 원출력을 허용하고 URL·인증 헤더·자격증명(설정 3종 + `.encenv` 전 값)·호스트를 **사본에서 가린 뒤 재검사**(남으면 거부). 원본은 그대로 둔다.
+- 사용자 육안 점검: `export/` 전체를 재귀로 `grep -rn -E 'https?://|Bearer'`와 `.encenv` 키 앞 6자·업스트림 호스트 `grep -rn -F` — 모두 0줄(명령은 런북 12.7절).
 
 ### D.6 내부망 — 실패 시 조치
 
@@ -704,11 +726,11 @@ sed -n 20,100p src/orchestration/deep_agent.py ; sed -n 140,175p noise_gate/appl
 | 502 `tool_call_invalid` 다발 | 모델이 규약을 못 따름 | **측정 결과 자체다** — 멈추지 않고 계속 진행한다 |
 | 502 `upstream_error` · 504 연속 | FabriX 장애 · 과부하 | 5분 쉬고 해당 시나리오만 `--only` + 같은 `--out`으로 재실행 · `--sleep` 증가 |
 | ② 테스트 실패 | 내부망 패키지 버전 차이 | 실패 목록과 `env_check.md` 반출 → 개발 쪽 보완 후 재반입 |
-| 러너 종료 코드 3(반출물 자기 검사) | 반출 파일에 URL·키·본문 표지 | 그 파일은 쓰이지 않았다 — 규칙 이름만 알리고 멈춘다(코드 결함) |
+| 러너 종료 코드 3(반출물 자기 검사) | 판정값 파일에 URL·키·본문 표지 · 또는 진단 파일 가림 뒤에도 키·호스트 잔존 | 그 파일은 쓰이지 않았다 — 규칙 이름만 알리고 멈춘다(코드 결함) |
 
 ### D.7 개발 맥 — 판정과 기록
 
-1. 반출물을 `logs/` 밖 임시 경로에 받는다. 저장소에는 넣지 않는다 — 판정값만 부록 C로 옮긴다.
+1. 반출물을 `logs/` 밖 임시 경로에 받는다. 저장소에는 넣지 않는다 — 판정값만 부록 C로 옮긴다. (v5.5) `failures/`는 실패 유형 원인 진단(추측 병렬·표지 누락 등)에 쓰고 요지만 부록 C에 적는다.
 2. `summary.md`의 지표를 §5 1단계 판정표와 대조해 부록 C를 채운다. 러너의 판정 초안은 참고로만 쓰고, 판정은 개발 쪽이 내린다.
 3. 실패 건은 `results.jsonl`의 실패 유형(형식 / 도구 선택 / 이력 해석 / 한도·차단)으로 센다.
 

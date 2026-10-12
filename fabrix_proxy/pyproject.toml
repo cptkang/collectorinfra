@@ -22,6 +22,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "openai",                # 계약 테스트 — 실 SDK로 프록시를 부른다
     "langchain-openai",
+    "python-dotenv",         # 러너 export — .encenv 파싱(pydantic-settings 경유로도 설치됨)
 ]
 
 [project.scripts]

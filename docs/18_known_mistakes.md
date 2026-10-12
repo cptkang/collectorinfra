@@ -1864,3 +1864,8 @@
 - **실수**: 제니퍼 소스 사다리를 기존 테스트에서 끄는 autouse 픽스처(`tests/conftest.py` `_apm_source_ladder_guard`)가 공용 `monkeypatch` 픽스처를 인자로 받았다. 루트 autouse가 `monkeypatch`를 먼저 만들자 그 원복이 `tests/test_api/test_settings_help.py`의 autouse `_fresh_cache` teardown보다 늦어져, teardown의 `reset_help_cache()`가 테스트가 패치한 `curated_index`(lambda)를 보고 `cache_clear` AttributeError를 냈다(7건 ERROR). Wave 중간 모듈 회귀 선택에 그 파일이 들지 않아 계획 끝 회귀에서야 드러났다. 팀 리드가 전용 `pytest.MonkeyPatch()` + 자체 `undo()`로 고쳤다
 - **원인**: 함수 범위 픽스처의 생성·teardown 순서가 「누가 먼저 요청하느냐」로 정해진다는 점을 루트 autouse에 공용 픽스처를 걸 때 고려하지 않았다
 - **방지책**: 루트 `tests/conftest.py`의 autouse 픽스처는 공용 `monkeypatch`를 요청하지 말고 `pytest.MonkeyPatch()`를 직접 만들어 자기 teardown에서 `undo()`한다. 테스트 기반 파일을 바꾼 Wave는 그 파일을 쓰는 다른 autouse·teardown 패턴(`grep -rn "autouse=True" tests/`)을 확인한다
+
+### 2026-10-12 · (plans/148 PoC 러너) 권장값 선택 근거를 변별력 없는 지표(S5 완주율)로 잡고 동률 순서도 거꾸로 둬 내부망 권장값이 틀렸다
+- **실수**: `poc_run.py` `recommend_lang`(⑤b)이 형식 유효율 동률이면 S5 완주율로 언어를 골랐다. 완주율은 도구 0개 평문도 완주로 세 전 라벨 100%라, 2차 내부망 실측에서 S6 반영이 ko 8/10 · en 2/10인데도 `PROTOCOL_LANG=en`을 권했다. `recommend_fewshot`의 동률 순서 `FEWSHOT_MODES[::-1]`는 주석(static>dynamic>none)과 반대로 none을 최우선에 뒀다. F1 탐침은 후보 0개여도 summary에 빈 표를 찍어 「미실행」과 「결과 없음」을 구분할 수 없었다
+- **원인**: 선택 규칙을 짤 때 그 지표가 실제로 라벨 사이를 가르는지(분산)를 가짜 업스트림 대본으로만 봤다. S6에서 같은 완주 정의 결함을 고칠 때(v5.4) 같은 지표를 쓰는 다른 소비처(⑤b 선택)를 grep하지 않았다. 동률 순서는 테스트가 없었다
+- **방지책**: 판정·선택 지표의 정의를 고치면 그 지표를 읽는 소비처(판정표·권장값·summary 근거 줄)를 전수 grep해 함께 고친다. 선택 규칙은 「목표 지표(반영률)」를 1순위로 두고, 변별력 없는 지표는 기록만 한다. 동률 순서는 단언 테스트로 고정한다. 탐침 결과가 0건이면 빈 표 대신 원인(후보 0개)을 문장으로 적는다

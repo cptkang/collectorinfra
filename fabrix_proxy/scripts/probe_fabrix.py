@@ -3,13 +3,15 @@
 
 프록시를 거치지 않고 FabriX를 직접 부른다(설정은 `ProxySettings`).
 
-    python scripts/probe_fabrix.py native [--url URL …] [--out DIR] [--dry-run]
+    python scripts/probe_fabrix.py native [--url URL …] [--path PATH …] [--out DIR] [--dry-run]
     python scripts/probe_fabrix.py contents [--repeat N] [--out DIR] [--dry-run]
 
-- `native`(F1): `FABRIX_NATIVE_URL`(있으면) + `--url` 후보마다 OpenAI 형식 `/chat/completions` +
-  tools 1개 요청을 1회씩 보내 HTTP 상태와 응답의 `tool_calls` 유무만 판정한다. 인증 헤더는 KBGenAI와
-  같은 헤더로 **추정**한다. 결과 `<out>/probe_native.json`(판정값만 · 후보는 출처 이름으로만 적고
-  URL은 쓰지 않는다).
+- `native`(F1): `FABRIX_NATIVE_URL`(있으면) + `--url` 후보 + `--path` 후보(경로만 받아
+  `FABRIX_BASE_URL`의 scheme+host에 붙인다 — 명령에 호스트를 적지 않는다)마다 OpenAI 형식
+  `/chat/completions` + tools 1개 요청을 1회씩 보내 HTTP 상태와 응답의 `tool_calls` 유무만 판정한다.
+  인증 헤더는 KBGenAI와 같은 헤더로 **추정**한다. 결과 `<out>/probe_native.json`(판정값만 · 후보는
+  출처 이름(`--url#1`·`--path#1` 등)과 경로만 적고 호스트·URL은 쓰지 않는다). 후보가 0개면 경고를
+  내고 summary에 「후보 0개 — 네이티브 미확인」으로 적힌다.
 - `contents`(F2): `KBGenAIUpstream`으로 (a) contents 2·3·4원소 · 빈 첫 원소 유무별 역할 인식
   (응답에 표지 값이 있으면 인식) (b) 같은 3턴 도구 대화를 `turns`·`transcript`로 직렬화해(프록시
   `convert`·`tool_protocol` 재사용) 기대한 다음 호출을 고르는 비율(`parse_response` 채점)을 잰다
@@ -27,6 +29,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -111,6 +114,15 @@ async def _native_once(
     }
 
 
+_SAFE_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]{1,80}$")
+
+
+def safe_path(url: str) -> str:
+    """후보 URL의 경로 — 안전 문자(영숫자·`._/-`) 80자 이내만 그대로, 아니면 `<path>`."""
+    path = urlparse(url).path
+    return path if _SAFE_PATH_RE.match(path) else "<path>"
+
+
 async def probe_native(
     settings: ProxySettings, out: Path, guard: common.ExportGuard,
     extra: list[tuple[str, str]],
@@ -120,10 +132,14 @@ async def probe_native(
     if settings.fabrix_native_url:
         candidates.append(("FABRIX_NATIVE_URL", settings.fabrix_native_url))
     candidates += extra
+    if not candidates:
+        print("[probe native] 경고: 후보 0개 — FABRIX_NATIVE_URL·--url·--path가 하나도 없다"
+              "(네이티브 미확인으로 기록한다)", file=sys.stderr, flush=True)
     rows = []
     for source, url in candidates:
         row = await _native_once(settings, url, guard)
-        rows.append({"source": source, **row})
+        # 호스트는 쓰지 않는다 — 경로만(반출 때 `export`가 다시 검사한다)
+        rows.append({"source": source, "path": safe_path(url), **row})
     result = {
         "probe": "F1",
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -234,6 +250,17 @@ async def probe_contents(
     return result
 
 
+def path_candidates(base_url: str, paths: list[str]) -> list[tuple[str, str]]:
+    """`--path` → `FABRIX_BASE_URL`의 scheme+host에 붙인 후보(출처 `--path#1`…)."""
+    if not paths:
+        return []
+    parsed = urlparse(base_url)
+    if not (parsed.scheme and parsed.netloc):
+        raise common.UsageError("--path는 FABRIX_BASE_URL(scheme+host)이 설정돼 있어야 한다")
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    return [(f"--path#{i}", origin + "/" + path.lstrip("/")) for i, path in enumerate(paths, 1)]
+
+
 async def _run(args: argparse.Namespace, settings: ProxySettings, out: Path,
                guard: common.ExportGuard, extra: list[tuple[str, str]]) -> None:
     if args.mode == "native":
@@ -255,6 +282,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repeat", type=int, default=3, help="contents 사례별 반복(기본 3)")
     parser.add_argument("--url", action="append", default=[],
                         help="native 추가 후보 URL(여러 번 줄 수 있다)")
+    parser.add_argument("--path", action="append", default=[],
+                        help="native 추가 후보 경로(예: /v1/chat/completions) — FABRIX_BASE_URL의 "
+                             "scheme+host에 붙인다(여러 번 줄 수 있다)")
     parser.add_argument("--dry-run", action="store_true",
                         help="가짜 KBGenAI를 하위 프로세스로 띄워 돈다(실 LLM 0건)")
     args = parser.parse_args(argv)
@@ -266,12 +296,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             with common.dry_stack(with_proxy=False) as stack:
                 guard = common.build_guard([stack.settings])
+                extra += path_candidates(stack.settings.fabrix_base_url, args.path)
                 extra.append(("dry-run#closed-port", common._closed_url()))
                 asyncio.run(_run(args, stack.settings, out, guard, extra))
                 common.rebuild_reports(out, guard)
         else:
             settings = common.load_settings()
             guard = common.build_guard([settings])
+            extra += path_candidates(settings.fabrix_base_url, args.path)
             for _, url in extra:  # --url 후보 호스트도 반출물 검사 대상
                 host = urlparse(url).hostname
                 if host:

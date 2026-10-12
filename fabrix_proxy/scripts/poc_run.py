@@ -9,6 +9,7 @@
         [--fewshot none|static|dynamic] [--fewshot-placement system|contents] \
         [--fewshot-file PATH] [--repair-max N] [--passthrough] [--concurrency N] [--sleep SEC] \
         [--out DIR] [--proxy-url URL] [--dry-run]
+    python scripts/poc_run.py export --out DIR [--dest DIR] [--allow-no-encenv]
 
 - 설정(프록시 토큰 · FabriX 접속값)은 `ProxySettings`(`fabrix_proxy/.env`·`.encenv` + OS 환경변수)로
   읽는다. 토큰을 CLI 인자로 받지 않는다.
@@ -17,10 +18,16 @@
 - 결과(`--out`, 기본 `<repo>/logs/fabrix_proxy_poc/<YYYYmmdd-HHMMSS>/`):
   `results.jsonl`(호출/케이스별 판정값) · `summary.md` · `recommend.env` · `env_check.md` —
   같은 `--out`을 다시 주면 결과를 덧붙이고 summary·recommend를 디렉터리 전체로 다시 만든다.
-  `failures/`(실패 건 원출력 앞 500자)는 내부망 보관용이며 **반출하지 않는다**.
-- 반출물(`summary.md`·`results.jsonl`·`env_check.md` 등)은 쓸 때마다 자기 검사한다 — URL ·
+  `failures/`(실패 건 원출력 앞부분 · S5·S6 케이스 턴별 호출·도구 결과·최종 답)는 진단용이다.
+- 판정값 파일(`summary.md`·`results.jsonl`·`env_check.md` 등)은 쓸 때마다 자기 검사한다 — URL ·
   인증 헤더 표지 · 설정 자격증명 값 · 업스트림 호스트 · 시나리오 본문 표지(`leak_markers`) ·
   응답 원문이 걸리면 그 파일을 쓰지 않고(지우고) 종료 코드 3으로 끝낸다(걸린 규칙만 출력).
+- `export`(2026-10-12 R2 · 반출 원칙 개정): 판정값 3종 + `recommend.env`·`probe_*.json`·
+  `failures/`를 반출 폴더(기본 `<out>/export/`)에 복사한다. 판정값 3종은 위 규칙 그대로(걸리면
+  거부), 나머지는 합성 표지·모델 원출력을 허용하되 URL·인증 헤더·자격증명·호스트를 가린 뒤
+  다시 검사한다(남으면 거부). 모든 사본은 쓰기 직전 정규화 사본(NFKC·제로폭 제거·퍼센트
+  디코딩)에서 독립 금지 패턴 검사를 한 번 더 거친다. `.encenv`가 없거나 비면 거부한다
+  (`--allow-no-encenv`로만 진행). 원본은 건드리지 않는다.
 - `--dry-run`은 가짜 KBGenAI(`testdata/scenarios/poc_dryrun_script.json`) + 프록시(POC_MODE ·
   임시 토큰 · 빈 포트)를 하위 프로세스로 띄워 같은 흐름을 돈다(실 LLM 0건). `run --dry-run`에
   `--only`가 없으면 전체 순서(env-check → F1 → F2 → ⑤a → ⑤b → ⑥)를 한 디렉터리에 돈다.
@@ -41,6 +48,7 @@ import os
 import re
 import secrets
 import select
+import shutil
 import socket
 import subprocess
 import sys
@@ -54,9 +62,10 @@ from datetime import datetime
 from importlib import metadata
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import httpx
+from dotenv import dotenv_values
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROXY_ROOT = SCRIPT_DIR.parent  # fabrix_proxy/
@@ -95,10 +104,15 @@ RECOMMEND = "recommend.env"
 PROBE_NATIVE = "probe_native.json"
 PROBE_CONTENTS = "probe_contents.json"
 FAILURES = "failures"
+EXPORT_DIR = "export"
+ENCENV_FILE = PROXY_ROOT / ".encenv"
+ENV_FILE = PROXY_ROOT / ".env"
 
 DIAG_FIELD = "fabrix_proxy_diag"
 OPTIONS_FIELD = "fabrix_proxy_options"
 RAW_HEAD_CHARS = 500
+FINAL_HEAD_CHARS = 2000  # 케이스 덤프의 최종 답 앞부분
+ARGS_HEAD_CHARS = 300
 
 SCENARIOS = ("S1", "S2", "S3", "S4", "S5", "S6", "F5")
 DEFAULT_REPEAT = {"S1": 20, "S2": 20, "S3": 10, "S4": 20, "S5": 10, "S6": 10, "F5": 3}
@@ -138,9 +152,27 @@ FAILURE_LABELS = {
     "tool_selection": "도구 선택",
     "history": "이력 해석",
     "limit_block": "한도·차단",
-    "no_tool_use": "도구 미사용",  # S6 — 완주했지만 시나리오 도메인 도구를 한 번도 안 부름
+    "no_tool_use": "도구 미사용",  # S5·S6 — 완주했지만 시나리오 도메인 도구를 한 번도 안 부름
+    # S5 — 한 턴에 호출 ≥2개 중 하나 이상이 not_found(앞 결과로만 알 수 있는 ID를 짐작)인
+    # 케이스가 반영에 실패함
+    "speculative_parallel": "추측 병렬",
 }
-_URL_RE = re.compile(r"https?://", re.I)
+# 스킴 무관 URL — `x://`·JSON 이스케이프 `x:\/\/`·퍼센트 인코딩 `%3A%2F%2F`
+_URL_RE = re.compile(r"(?:[a-z][a-z0-9+.-]*)?(?::(?:\\?/){2}|%3a%2f%2f)", re.I)
+_URL_MASK_RE = re.compile(
+    r"(?:[a-z][a-z0-9+.-]*)?(?::(?:\\?/){2}|%3a%2f%2f)[^\s\"'<>`)\]]*", re.I)
+# 인증 헤더 이름 — fabrix_client.py가 실제로 쓰는 KBGenAI 헤더 2종 + 일반 인증 헤더
+AUTH_HEADER_NAMES = (
+    "proxy-authorization", "authorization", "x-api-key", "api-key",
+    "x-openapi-token", "x-generative-ai-client",
+)
+_AUTH_NAME = "|".join(n.replace("-", "[-_]") for n in AUTH_HEADER_NAMES)
+_AUTH_HEADER_RE = re.compile(
+    rf"(?<![a-z0-9_-])(?:{_AUTH_NAME})[\"']?\s*[:=]\s*[\"']?(?!<redacted)[^\s\"',}}]", re.I)
+_AUTH_HEADER_MASK_RE = re.compile(
+    rf"((?<![a-z0-9_-])(?:{_AUTH_NAME})[\"']?\s*[:=]\s*)(?![\"']?<redacted)\S.*$", re.I | re.M)
+_BEARER_MASK_RE = re.compile(r"bearer\b[\s:=]*[\"']?[^\s\"',}]*[\"']?", re.I)
+_IPV4_RE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?![\d.])")
 _CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 # 400 invalid_request 메시지에서 뽑아 출력해도 되는 식별자(옵션·필드·설정 키 이름) — 그 밖은 버린다
 INVALID_REQUEST_HINTS = frozenset({
@@ -172,12 +204,14 @@ class ExportCheckError(Exception):
 # ─────────────────────────────── 반출물 자기 검사 ───────────────────────────────
 
 
-def _secret_needle(value: str) -> str | None:
-    """자격증명 값의 검사 조각 — 6자 미만은 건너뛰고, 앞 8자(6~7자면 전체)를 쓴다."""
+def _secret_needles(value: str) -> list[str]:
+    """자격증명 값의 검사 조각 — 6자 미만은 건너뛰고, 앞 8자 + 뒤 8자(6~7자면 전체)를 쓴다."""
     value = value.strip()
     if len(value) < 6:
-        return None
-    return value[:8]
+        return []
+    if len(value) < 8:
+        return [value]
+    return list(dict.fromkeys((value[:8], value[-8:])))
 
 
 @dataclass
@@ -200,11 +234,7 @@ class ExportGuard:
                 ("FABRIX_CLIENT_KEY", settings.fabrix_client_key),
                 ("FABRIX_PROXY_TOKEN", settings.fabrix_proxy_token),
             ):
-                needle = _secret_needle(value)
-                if needle:
-                    key = f"{name}#{len(guard.secret_needles)}"
-                    guard.secret_needles[key] = needle
-                    guard.secret_values[key] = value.strip()
+                guard.add_secret(name, value)
             for name, url in (
                 ("FABRIX_BASE_URL", settings.fabrix_base_url),
                 ("FABRIX_NATIVE_URL", settings.fabrix_native_url),
@@ -214,6 +244,13 @@ class ExportGuard:
                     guard.hosts[f"{name}#{len(guard.hosts)}"] = host
         return guard
 
+    def add_secret(self, name: str, value: str) -> None:
+        """자격증명 1개 — 조각(앞 8자·뒤 8자)마다 항목 1개, 전체 값은 같은 항목에 둔다."""
+        for needle in _secret_needles(value):
+            key = f"{name}#{len(self.secret_needles)}"
+            self.secret_needles[key] = needle
+            self.secret_values[key] = value.strip()
+
     def note_response(self, text: str | None) -> None:
         """응답 원문 조각을 기억한다(16자 이상만 · 앞 32자)."""
         if not text:
@@ -222,25 +259,92 @@ class ExportGuard:
         if len(clean) >= 16:
             self.responses.add(clean[:32])
 
-    def violations(self, text: str) -> list[str]:
-        """걸린 규칙 이름 목록(값은 싣지 않는다)."""
+    def violations(self, text: str, *, diagnostic: bool = False) -> list[str]:
+        """걸린 규칙 이름 목록(값은 싣지 않는다).
+
+        `diagnostic=True`(진단 파일 반출 — `failures/`·`probe_*.json`·`recommend.env`)는
+        `leak_marker`·`response_text`(합성 시나리오 표지·모델 원출력)만 허용한다. 기준선보다
+        느슨해지는 경로는 이것 하나뿐이다 — URL·인증 헤더·자격증명·호스트 규칙은 그대로이고,
+        진단 파일에는 IPv4(`ipv4`)를 더 본다.
+        """
         rules: list[str] = []
         if _URL_RE.search(text):
             rules.append("url")
-        if "bearer" in text.lower():
+        if "bearer" in text.lower() or _AUTH_HEADER_RE.search(text):
             rules.append("auth_header")
         for name, needle in self.secret_needles.items():
-            # 앞 8자 조각 + 전체 값 — 둘 중 하나라도 걸리면 같은 규칙
+            # 조각(앞 8자·뒤 8자) + 전체 값 — 둘 중 하나라도 걸리면 같은 규칙
             if needle in text or self.secret_values.get(name, needle) in text:
                 rules.append("secret:" + name.split("#", 1)[0])
+        lowered = text.lower()
         for name, host in self.hosts.items():
-            if host in text:
+            if host.lower() in lowered:
                 rules.append("host:" + name.split("#", 1)[0])
-        if any(marker in text for marker in self.markers):
-            rules.append("leak_marker")
-        if any(snippet in text for snippet in self.responses):
-            rules.append("response_text")
+        if diagnostic:
+            if _IPV4_RE.search(text):
+                rules.append("ipv4")
+        else:
+            if any(marker in text for marker in self.markers):
+                rules.append("leak_marker")
+            if any(snippet in text for snippet in self.responses):
+                rules.append("response_text")
         return list(dict.fromkeys(rules))
+
+    def mask(self, text: str) -> tuple[str, list[str]]:
+        """진단 파일 반출 사본용 — 자격증명(전체 값 → 조각)·URL·호스트·IPv4·인증 헤더를 가린다.
+
+        (가린 텍스트, 가린 규칙 이름 목록). 원문에 가리고 정규화하지 않는다(유니코드 변종은
+        진단 단서). 가린 뒤 판정은 `violations(…, diagnostic=True)`와 독립 검사 `final_scan`이
+        한다(호출자 몫 — 남으면 거부).
+        """
+        hits: list[str] = []
+
+        def sub(pattern: str | re.Pattern[str], repl: str, rule: str, flags: int = 0) -> None:
+            nonlocal text
+            text, n = re.subn(pattern, repl, text, flags=flags)
+            if n:
+                hits.append(rule)
+
+        for name, value in self.secret_values.items():
+            rule = "secret:" + name.split("#", 1)[0]
+            sub(re.escape(value), f"<redacted:{rule}>", rule)
+        for name, needle in self.secret_needles.items():
+            rule = "secret:" + name.split("#", 1)[0]
+            sub(re.escape(needle), f"<redacted:{rule}>", rule)
+        sub(_URL_MASK_RE, "<url>", "url")
+        for name, host in self.hosts.items():
+            rule = "host:" + name.split("#", 1)[0]
+            sub(re.escape(host), f"<redacted:{rule}>", rule, re.I)
+        sub(_IPV4_RE, "<ip>", "ipv4")
+        sub(_AUTH_HEADER_MASK_RE, r"\1<redacted:auth_header>", "auth_header")
+        sub(_BEARER_MASK_RE, "<redacted:auth_header>", "auth_header")
+        return text, list(dict.fromkeys(hits))
+
+    def add_encenv(self, path: Path) -> int:
+        """`.encenv`의 모든 값(6자 이상)을 자격증명으로 더한다 — 설정 필드 밖 키까지 막는다.
+
+        파싱은 python-dotenv 규칙(인라인 주석·따옴표)을 따른다. 읽은 값(빈 값 제외) 개수를
+        돌려준다 — 파일이 없으면 0.
+        """
+        if not path.is_file():
+            return 0
+        count = 0
+        for key, value in dotenv_values(path, interpolate=False).items():
+            if not value:
+                continue
+            count += 1
+            self.add_secret(f"ENCENV:{key}", value)
+        return count
+
+    def add_url_hosts(self, path: Path, prefix: str) -> None:
+        """env 파일 값 속 URL의 호스트를 모두 더한다 — 설정 2필드 밖 URL 키까지 막는다."""
+        if not path.is_file():
+            return
+        for key, value in dotenv_values(path, interpolate=False).items():
+            for match in re.finditer(r"[a-z][a-z0-9+.-]*://[^\s\"'<>,;]+", value or "", re.I):
+                host = urlparse(match.group()).hostname
+                if host:
+                    self.hosts[f"{prefix}:{key}#{len(self.hosts)}"] = host
 
     def _refuse(self, path: Path, rules: list[str]) -> None:
         self.tripped = True
@@ -267,6 +371,51 @@ class ExportGuard:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(text)
+
+
+# 독립 최종 검사 전용 금지 패턴 — `mask`·`violations`의 패턴과 따로 둔다(같은 규칙 집합으로
+# 가리고 다시 보면 독립 검증이 아니다). 정규화 사본에서 본다.
+_FINAL_URL_RE = re.compile(r":\\?/\\?/")
+_FINAL_BEARER_RE = re.compile(r"\bbearer\b", re.I)
+_FINAL_AUTH_RE = re.compile(
+    r"(?<![a-z0-9_-])(?:proxy[-_]authorization|authorization|x[-_]api[-_]key|api[-_]key"
+    r"|x[-_]openapi[-_]token|x[-_]generative[-_]ai[-_]client)"
+    r"[\"']?\s*[:=]\s*[\"']?(?!<redacted)[^\s\"',}]",
+    re.I,
+)
+_FINAL_IPV4_RE = re.compile(r"(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.])")
+
+
+def _scan_normalize(text: str) -> str:
+    """판정용 정규화 사본 — NFKC · 서식 문자(제로폭 등 Cf) 제거 · 퍼센트 디코딩."""
+    text = unicodedata.normalize("NFKC", text)
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return unquote(text)
+
+
+def final_scan(guard: ExportGuard, text: str, *, diagnostic: bool) -> list[str]:
+    """반출 사본을 쓰기 직전의 독립 금지 패턴 검사 — 걸린 규칙 이름(`final:` 접두)만 돌려준다.
+
+    가림은 원문에 하고 판정은 정규화 사본(`_scan_normalize`)으로 한다. 스킴 무관 URL ·
+    인증 헤더 이름+값·`bearer` · 자격증명(전체·조각) · 호스트(대소문자 무시) · (진단 파일) IPv4.
+    """
+    norm = _scan_normalize(text)
+    folded = norm.casefold()
+    rules: list[str] = []
+    if _FINAL_URL_RE.search(norm):
+        rules.append("final:url")
+    if _FINAL_BEARER_RE.search(norm) or _FINAL_AUTH_RE.search(norm):
+        rules.append("final:auth_header")
+    for name, needle in guard.secret_needles.items():
+        value = guard.secret_values.get(name, needle)
+        if needle in norm or value in norm:
+            rules.append("final:secret:" + name.split("#", 1)[0])
+    for name, host in guard.hosts.items():
+        if _scan_normalize(host).casefold() in folded:
+            rules.append("final:host:" + name.split("#", 1)[0])
+    if diagnostic and _FINAL_IPV4_RE.search(norm):
+        rules.append("final:ipv4")
+    return list(dict.fromkeys(rules))
 
 
 def load_leak_markers() -> list[str]:
@@ -890,6 +1039,7 @@ def build_case_record(
         "reflected": None,
         "domain_tools_used": None,
         "repeated_call": None,
+        "speculative_parallel": None,
         "steps": None,
         "latency_ms": None,
         "skipped": None,
@@ -904,17 +1054,64 @@ def write_record(ctx: RunContext, record: dict[str, Any]) -> None:
     ctx.guard.append(ctx.out / RESULTS, json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def dump_failure(
-    ctx: RunContext, case: str, rep: int, turn: int | None, heads: list[str]
-) -> None:
-    """실패 건 원출력 앞 500자를 `failures/<라벨>/`에 남긴다(내부망 보관 · 반출 제외)."""
-    if not heads:
-        return
+def _failure_path(ctx: RunContext, case: str, rep: int, turn: int | None) -> Path:
     target = ctx.out / FAILURES / ctx.label.replace(",", "_")
     target.mkdir(parents=True, exist_ok=True)
     suffix = f"_t{turn}" if turn is not None else ""
+    return target / f"{case}_r{rep}{suffix}.txt"
+
+
+def dump_failure(
+    ctx: RunContext, case: str, rep: int, turn: int | None, heads: list[str]
+) -> None:
+    """실패 호출의 시도별 원출력 앞 500자를 `failures/<라벨>/`에 남긴다.
+
+    반출 사본은 `export`가 가린다(원본은 내부망 보관).
+    """
+    if not heads:
+        return
     text = "\n\n".join(f"--- attempt {i}\n{h[:RAW_HEAD_CHARS]}" for i, h in enumerate(heads, 1))
-    (target / f"{case}_r{rep}{suffix}.txt").write_text(text, encoding="utf-8")
+    _failure_path(ctx, case, rep, turn).write_text(text, encoding="utf-8")
+
+
+@dataclass
+class TurnTrace:
+    """케이스 덤프용 턴 1개 — 호출 결과와 그 턴의 도구 실행(이름 · 인자 · not_found 여부)."""
+
+    turn: int
+    outcome: CallOutcome
+    tools: list[tuple[str, dict[str, Any], bool]] = field(default_factory=list)
+
+
+def _args_text(args: dict[str, Any]) -> str:
+    return json.dumps(args, ensure_ascii=False, sort_keys=True)[:ARGS_HEAD_CHARS]
+
+
+def dump_case(
+    ctx: RunContext, scenario: str, case: str, rep: int, verdict: dict[str, Any],
+    traces: list[TurnTrace], final_text: str,
+) -> None:
+    """S5·S6 케이스 실패 덤프 — 턴별 호출 이름·인자 · 도구 결과(not_found) · 최종 답 앞 2000자.
+
+    「도구 다 부르고 표지 누락」·추측 병렬처럼 결과 줄만으로 원인을 못 보는 건을 진단한다.
+    """
+    head = " · ".join(f"{k}={v}" for k, v in verdict.items())
+    lines = [f"# {scenario} {case} r{rep} — {head}"]
+    for tr in traces:
+        o = tr.outcome
+        lines += ["", f"--- turn {tr.turn} · HTTP {o.status}"
+                  + (f" · {o.error_code}" if o.error_code else "")
+                  + f" · emulation={(o.diag or {}).get('emulation')}"]
+        content = str((o.message or {}).get("content") or "")
+        if content:
+            lines.append("content: " + content[:RAW_HEAD_CHARS])
+        for name, args in o.calls():
+            lines.append(f"call {name} {_args_text(args)}")
+        for name, args, not_found in tr.tools:
+            lines.append(f"result {name} {_args_text(args)} → "
+                         + ("not_found" if not_found else "found"))
+    lines += ["", f"--- final answer (앞 {FINAL_HEAD_CHARS}자)", final_text[:FINAL_HEAD_CHARS]]
+    _failure_path(ctx, case, rep, None).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def finish_call(
@@ -1101,19 +1298,26 @@ def judge_agent_case(
 async def run_react_case(
     ctx: RunContext, scen: dict[str, Any], case: dict[str, Any], rep: int
 ) -> None:
-    """S5 — 러너가 합성 도구 결과를 돌려주는 다턴 ReAct."""
+    """S5 — 러너가 합성 도구 결과를 돌려주는 다턴 ReAct.
+
+    판정은 S6과 같은 `judge_agent_case`(도구 0개로 바로 평문이면 `no_tool_use`). 한 턴에 호출
+    ≥2개 중 하나라도 `not_found`를 받으면 `speculative_parallel` 플래그를 세우고, 그 케이스가
+    `history`로 실패하면 실패 유형을 `speculative_parallel`(추측 병렬)로 센다.
+    """
     messages: list[dict[str, Any]] = [{"role": "user", "content": case["query"]}]
     seen: set[str] = set()
-    repeated = completed = False
+    repeated = completed = speculative = False
     final_text = ""
     last_failure: str | None = None
-    last: CallOutcome | None = None
+    called: list[str] = []
+    traces: list[TurnTrace] = []
     turns = 0
     t0 = time.monotonic()
     for turn in range(1, int(scen.get("max_turns", 5)) + 1):
         turns = turn
         outcome = await _call(ctx, _body(ctx, scen["tool_defs"], messages, scen.get("tool_choice")))
-        last = outcome
+        trace = TurnTrace(turn, outcome)
+        traces.append(trace)
         record = build_call_record(ctx, "S5", case["id"], rep, outcome, turn)
         if outcome.measured and not record["format_ok"]:
             record["failure_type"] = "format"
@@ -1135,25 +1339,30 @@ async def run_react_case(
             key = name + json.dumps(args, sort_keys=True, ensure_ascii=False)
             repeated = repeated or key in seen
             seen.add(key)
+            called.append(name)
+            result = tool_result(scen["tool_results"], name, args)
+            trace.tools.append((name, args, result == {"error": "not_found"}))
             messages.append({
                 "role": "tool",
                 "tool_call_id": raw_call.get("id") or "",
                 "name": name,
-                "content": json.dumps(
-                    tool_result(scen["tool_results"], name, args), ensure_ascii=False
-                ),
+                "content": json.dumps(result, ensure_ascii=False),
             })
-    reflected = completed and reflects(final_text, case.get("reflect") or [])
-    failure = None
-    if not completed:
-        failure = last_failure or "history"
-    elif not reflected:
-        failure = "history"
-    if failure == "history" and last is not None:
-        dump_failure(ctx, case["id"], rep, None, last.raw_heads())
+        if len(trace.tools) >= 2 and any(nf for _, _, nf in trace.tools):
+            speculative = True
+    used, reflected, failure = judge_agent_case(
+        completed, called, scen["tools"], final_text, case.get("reflect") or [], last_failure,
+    )
+    if failure == "history" and speculative:
+        failure = "speculative_parallel"
+    if failure:
+        dump_case(ctx, "S5", case["id"], rep, {
+            "failure": failure, "completed": completed, "speculative_parallel": speculative,
+        }, traces, final_text)
     write_record(ctx, build_case_record(
         ctx, "S5", case["id"], rep, completed=completed,
-        reflected=reflected if completed else None, repeated_call=repeated, steps=turns,
+        reflected=reflected if completed else None, domain_tools_used=used,
+        repeated_call=repeated, speculative_parallel=speculative, steps=turns,
         latency_ms=int((time.monotonic() - t0) * 1000), failure_type=failure,
     ))
 
@@ -1179,6 +1388,7 @@ async def run_agent_case(
 
     outcomes: list[CallOutcome] = []
     starts: dict[int, float] = {}
+    executed: list[tuple[int, str, dict[str, Any], bool]] = []  # (요청한 턴, 이름, 인자, not_found)
 
     async def on_request(request: httpx.Request) -> None:
         starts[id(request)] = time.monotonic()
@@ -1200,7 +1410,9 @@ async def run_agent_case(
         definition = load_tools()[name]["function"]
 
         def run_tool(**kwargs: Any) -> str:
-            return json.dumps(tool_result(scen["tool_results"], name, kwargs), ensure_ascii=False)
+            result = tool_result(scen["tool_results"], name, kwargs)
+            executed.append((len(outcomes), name, dict(kwargs), result == {"error": "not_found"}))
+            return json.dumps(result, ensure_ascii=False)
 
         return StructuredTool.from_function(
             func=run_tool, name=name, description=definition.get("description", ""),
@@ -1258,8 +1470,13 @@ async def run_agent_case(
     used, reflected, failure = judge_agent_case(
         completed, called, scen["tools"], final_text, case.get("reflect") or [], last_failure,
     )
-    if failure in ("history", "no_tool_use") and outcomes:  # 원출력은 failures/(반출 제외)에만
-        dump_failure(ctx, case["id"], rep, None, outcomes[-1].raw_heads())
+    if failure and outcomes:  # 진단 덤프는 failures/에(반출은 `export`가 가린다)
+        traces = [TurnTrace(i, o) for i, o in enumerate(outcomes, 1)]
+        for turn, name, args, not_found in executed:
+            traces[min(max(turn, 1), len(traces)) - 1].tools.append((name, args, not_found))
+        dump_case(ctx, "S6", case["id"], rep, {
+            "failure": failure, "completed": completed, "domain_tools_used": used,
+        }, traces, final_text)
     write_record(ctx, build_case_record(
         ctx, "S6", case["id"], rep, completed=completed,
         reflected=reflected if completed else None, domain_tools_used=used,
@@ -1469,6 +1686,12 @@ def label_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
         "complete_s5": _flag_ratio(s5, "completed"),
         "reflect_s5": _flag_ratio([c for c in s5 if c.get("completed")], "reflected"),
         "repeat_s5": sum(1 for c in s5 if c.get("repeated_call")),
+        # S5 도구 미사용·추측 병렬(실패 유형) — 분모는 S5 전체 케이스. 플래그는 반영 성공 포함
+        "no_tool_s5": ratio(sum(1 for c in s5 if c.get("failure_type") == "no_tool_use"), len(s5)),
+        "spec_s5": ratio(
+            sum(1 for c in s5 if c.get("failure_type") == "speculative_parallel"), len(s5)
+        ),
+        "spec_flag_s5": sum(1 for c in s5 if c.get("speculative_parallel") is True),
         "complete_s6": _flag_ratio(s6, "completed"),
         # 반영률·도구 미사용 분모는 S6 전체 케이스(인프라 실패·미완주 포함 — 완주율과 같은 기준)
         "reflect_s6": ratio(sum(1 for c in s6 if c.get("reflected")), len(s6)),
@@ -1576,73 +1799,145 @@ def _has(records: list[dict[str, Any]], scenario: str) -> bool:
     return any(r["scenario"] == scenario for r in records)
 
 
+def reflect_ratio(rows: list[dict[str, Any]], scenario: str) -> Ratio | None:
+    """반영률 — 시나리오 케이스 전체(skip 제외) 중 완주 + 반영. 케이스가 없으면 None."""
+    cases = [c for c in _cases(rows, scenario) if not c.get("skipped")]
+    if not cases:
+        return None
+    return ratio(sum(1 for c in cases if c.get("completed") and c.get("reflected")), len(cases))
+
+
+def reflect_basis(rows_list: list[list[dict[str, Any]]]) -> str | None:
+    """비교 라벨 **전부**에 S6 반영 자료가 있으면 S6, 아니면 전부에 S5가 있으면 S5, 아니면 None.
+
+    한 라벨이라도 자료가 없으면 그 시나리오로 비교하지 않는다(없는 값을 0으로 읽지 않는다).
+    """
+    for scenario in ("S6", "S5"):
+        if rows_list and all(reflect_ratio(rows, scenario) is not None for rows in rows_list):
+            return scenario
+    return None
+
+
+def _reflect_text(rows: list[dict[str, Any]]) -> str:
+    return (f"반영률 S5 {fmt_ratio(reflect_ratio(rows, 'S5'))}"
+            f" · S6 {fmt_ratio(reflect_ratio(rows, 'S6'))}")
+
+
+def _all_s6(by_label: dict[str, list[dict[str, Any]]], group: dict[str, str]) -> bool:
+    return all(reflect_ratio(by_label[lb], "S6") is not None for lb in group.values())
+
+
+@dataclass
+class _FewshotCand:
+    mode: str
+    placement: str
+    fmt: float | None
+    miscall: int
+    fr: Ratio
+    rows: list[dict[str, Any]]
+
+
+FEWSHOT_FORMAT_SCEN = ["S1", "S4", "S5", "S6"]
+
+
+def _fewshot_member(rows: list[dict[str, Any]]) -> bool:
+    """⑤a 비교 대상 라벨 — S1(⑤a·⑥) 또는 S6 반영 자료(R1·R2 S6 few-shot 비교)가 있다."""
+    return _has(rows, "S1") or reflect_ratio(rows, "S6") is not None
+
+
 def recommend_fewshot(records: list[dict[str, Any]], rec: Recommendation) -> None:
-    """⑤a — fewshot 모드 비교(S1·S4·S5)."""
+    """⑤a — fewshot 모드 비교.
+
+    형식 유효율(S1·S4·S5·S6) ≥90% · 예시 도구 오호출 0인 모드 중 반영률 최고(비교 모드 전부에
+    S6 자료가 있으면 S6, 아니면 S5 — `reflect_basis`) · 2%p 안이면 static. 반영 자료가 고르지
+    않으면 형식 유효율로 고른다(기존 규칙). 90%를 넘는 모드가 없으면 오호출 0인 모드 전부에서
+    고른다.
+    """
     labels = _labels(records)
     by_label = _by_label(records)
     groups: dict[str, dict[str, str]] = {}
     for label, (options, _) in labels.items():
-        if _has(by_label[label], "S1"):
+        if _fewshot_member(by_label[label]):
             key = _group_key(options, ["fewshot"])
             groups.setdefault(key, {})[options["fewshot"]] = label
     usable = {k: g for k, g in groups.items() if len(g) >= 2}
     if not usable:
         return
-    def recency(k: str) -> tuple[int, int]:
-        return len(usable[k]), max(labels[lb][1] for lb in usable[k].values())
+
+    def recency(k: str) -> tuple[int, bool, int]:
+        return (len(usable[k]), _all_s6(by_label, usable[k]),
+                max(labels[lb][1] for lb in usable[k].values()))
 
     key = max(usable, key=recency)
     group = usable[key]
     main_placement = labels[next(iter(group.values()))][0]["fewshot_placement"]
-    scen = ["S1", "S4", "S5"]
-    candidates: list[tuple[str, str, float | None, int, Ratio]] = []
-    for mode in FEWSHOT_MODES:
-        if mode in group:
-            rows = by_label[group[mode]]
-            fr = format_ratio(rows, scen)
-            mis = sum(1 for c in _calls(rows, scen) if c.get("example_tool_called"))
-            candidates.append((mode, main_placement, rate(fr), mis, fr))
-    main_rates = [c[2] for c in candidates if c[2] is not None]
+    scen = FEWSHOT_FORMAT_SCEN
+
+    def cand(mode: str, placement: str, rows: list[dict[str, Any]]) -> _FewshotCand:
+        fr = format_ratio(rows, scen)
+        mis = sum(1 for c in _calls(rows, scen) if c.get("example_tool_called"))
+        return _FewshotCand(mode, placement, rate(fr), mis, fr, rows)
+
+    candidates = [cand(m, main_placement, by_label[group[m]]) for m in FEWSHOT_MODES if m in group]
+    main_rates = [c.fmt for c in candidates if c.fmt is not None]
     all_low = bool(main_rates) and all(r < FEWSHOT_LOW for r in main_rates)
     extra_key = _group_key(json.loads(key), ["fewshot_placement"])
     if main_placement != "contents":
         for label, (options, _) in labels.items():
             if (options["fewshot"] == "static" and options["fewshot_placement"] == "contents"
                     and _group_key(options, ["fewshot", "fewshot_placement"]) == extra_key
-                    and _has(by_label[label], "S1")):
-                rows = by_label[label]
-                fr = format_ratio(rows, scen)
-                mis = sum(1 for c in _calls(rows, scen) if c.get("example_tool_called"))
-                candidates.append(("static", "contents", rate(fr), mis, fr))
+                    and _fewshot_member(by_label[label])):
+                candidates.append(cand("static", "contents", by_label[label]))
                 break
-    for mode, placement, _, mis, fr in candidates:
+    for c in candidates:
         rec.basis.append(
-            f"⑤a fewshot={mode} placement={placement}: 형식 유효율(S1·S4·S5) {fmt_ratio(fr)}"
-            f" · 예시 도구 오호출 {mis}건"
+            f"⑤a fewshot={c.mode} placement={c.placement}: 형식 유효율(S1·S4·S5·S6) "
+            f"{fmt_ratio(c.fr)} · 예시 도구 오호출 {c.miscall}건 · {_reflect_text(c.rows)}"
         )
-    has_contents = any(c[1] == "contents" for c in candidates) and main_placement != "contents"
+    has_contents = (any(c.placement == "contents" for c in candidates)
+                    and main_placement != "contents")
     if all_low and not has_contents:
         rec.advice.append(
             "ADVISE FEWSHOT_RERUN=--fewshot static --fewshot-placement contents"
             " (⑤a 세 모드 모두 형식 유효율 <90% — ⑤a 1회 더)"
         )
-    eligible = [c for c in candidates if c[3] == 0 and c[2] is not None]
+    eligible = [c for c in candidates if c.miscall == 0 and c.fmt is not None]
     if not eligible:
         rec.advice.append("ADVISE FEWSHOT=undecided (모든 모드에 예시 도구 오호출 또는 자료 없음)")
         return
-    best = max(c[2] for c in eligible if c[2] is not None)
-    statics = [c for c in eligible if c[0] == "static" and best - (c[2] or 0.0) <= TIE_MARGIN]
+    pool = [c for c in eligible if (c.fmt or 0.0) >= FEWSHOT_LOW] or eligible
+    basis = reflect_basis([c.rows for c in pool])
+
+    def value(c: _FewshotCand) -> float:
+        if basis:
+            return rate(reflect_ratio(c.rows, basis)) or 0.0
+        return c.fmt or 0.0
+
+    best = max(value(c) for c in pool)
+    statics = [c for c in pool if c.mode == "static" and best - value(c) <= TIE_MARGIN]
     if statics:
-        chosen = max(statics, key=lambda c: (c[2] or 0.0, c[1] == main_placement))
+        chosen = max(statics, key=lambda c: (value(c), c.placement == main_placement))
     else:
-        order = {m: i for i, m in enumerate(FEWSHOT_MODES[::-1])}  # 동률이면 static>dynamic>none
-        chosen = max(eligible, key=lambda c: (c[2] or 0.0, order.get(c[0], 0)))
-    rec.values["FEWSHOT"] = chosen[0]
-    rec.values["FEWSHOT_PLACEMENT"] = chosen[1]
+        # 동률이면 static>dynamic>none — 옛 `FEWSHOT_MODES[::-1]` 순번은 none을 가장 높게 매겨
+        # 주석과 거꾸로였다(2026-10-12 교정)
+        order = {"none": 0, "dynamic": 1, "static": 2}
+        chosen = max(pool, key=lambda c: (value(c), order.get(c.mode, 0)))
+    rec.values["FEWSHOT"] = chosen.mode
+    rec.values["FEWSHOT_PLACEMENT"] = chosen.placement
+    rec.basis.append(
+        f"⑤a 선택 기준: {('반영률(' + basis + ')') if basis else '형식 유효율'} 최고"
+        " (형식 유효율 ≥90%·예시 오호출 0건 중 · 2%p 안이면 static)"
+        f" → fewshot={chosen.mode} placement={chosen.placement}"
+    )
 
 
 def recommend_lang(records: list[dict[str, Any]], rec: Recommendation) -> None:
-    """⑤b — 규약 언어 비교(S1·S5)."""
+    """⑤b — 규약 언어 비교.
+
+    형식 유효율(S1·S5)이 2%p 넘게 차이 나면 높은 쪽(기존 규칙). 아니면 반영률(두 라벨 모두 S6
+    자료가 있으면 S6, 아니면 S5 — `reflect_basis`)이 높은 쪽. 같으면 en. 2차 내부망 실측에서
+    S5 완주율은 전 라벨 100%라 변별력이 없어 근거에서 뺐다(기록만 한다).
+    """
     labels = _labels(records)
     by_label = _by_label(records)
     groups: dict[str, dict[str, str]] = {}
@@ -1654,24 +1949,30 @@ def recommend_lang(records: list[dict[str, Any]], rec: Recommendation) -> None:
     usable = {k: g for k, g in groups.items() if all(lang in g for lang in LANGS)}
     if not usable:
         return
-    key = max(usable, key=lambda k: max(labels[lb][1] for lb in usable[k].values()))
-    stats: dict[str, tuple[float, float, Ratio, Ratio]] = {}
+    key = max(usable, key=lambda k: (
+        _all_s6(by_label, usable[k]), max(labels[lb][1] for lb in usable[k].values())
+    ))
+    rows = {lang: by_label[usable[key][lang]] for lang in LANGS}
+    basis = reflect_basis([rows[lang] for lang in LANGS])
+    fmt: dict[str, float] = {}
+    refl: dict[str, float] = {}
     for lang in LANGS:
-        rows = by_label[usable[key][lang]]
-        fr = format_ratio(rows, ["S1", "S5"])
-        cr = _flag_ratio(_cases(rows, "S5"), "completed")
-        stats[lang] = (rate(fr) or 0.0, rate(cr) or 0.0, fr, cr)
+        fr = format_ratio(rows[lang], ["S1", "S5"])
+        cr = _flag_ratio(_cases(rows[lang], "S5"), "completed")
+        fmt[lang] = rate(fr) or 0.0
+        refl[lang] = (rate(reflect_ratio(rows[lang], basis)) or 0.0) if basis else 0.0
         rec.basis.append(
-            f"⑤b lang={lang}: 형식 유효율(S1·S5) {fmt_ratio(fr)} · S5 완주율 {fmt_ratio(cr)}"
+            f"⑤b lang={lang}: 형식 유효율(S1·S5) {fmt_ratio(fr)} · {_reflect_text(rows[lang])}"
+            f" · S5 완주율 {fmt_ratio(cr)}(기록)"
         )
-    en, ko = stats["en"], stats["ko"]
-    if abs(en[0] - ko[0]) > TIE_MARGIN:
-        chosen = "en" if en[0] > ko[0] else "ko"
-    elif en[1] != ko[1]:
-        chosen = "en" if en[1] > ko[1] else "ko"
+    if abs(fmt["en"] - fmt["ko"]) > TIE_MARGIN:
+        chosen, why = ("en" if fmt["en"] > fmt["ko"] else "ko"), "형식 유효율 2%p 초과 차이"
+    elif basis and refl["en"] != refl["ko"]:
+        chosen, why = ("en" if refl["en"] > refl["ko"] else "ko"), f"반영률({basis})"
     else:
-        chosen = "en"
+        chosen, why = "en", "동률(en)"
     rec.values["PROTOCOL_LANG"] = chosen
+    rec.basis.append(f"⑤b 선택 기준: {why} → lang={chosen}")
 
 
 def recommend_contents(probe: dict[str, Any] | None, rec: Recommendation) -> None:
@@ -1751,9 +2052,10 @@ def render_summary(
         f"- 생성 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"- 실행 run: {len(run_ids)}회 ({', '.join(run_ids) if run_ids else '없음'})",
         f"- 라벨 수: {len(by_label)}",
-        "- 반출: `summary.md`·`results.jsonl`·`env_check.md` 3종만"
-        "(`recommend.env`·`probe_*.json`도 내부망 보관)."
-        " `failures/`는 내부망 보관(반출 제외).",
+        "- 반출(R2 개정): `poc_run.py export`가 `export/`에 판정값 3종"
+        "(`summary.md`·`results.jsonl`·`env_check.md` — 표지·원문 금지)"
+        " + 진단 파일(`recommend.env`·`probe_*.json`·`failures/` —"
+        " 합성 표지·모델 원출력 허용 · URL·인증·키·호스트는 가림)을 복사한다.",
         "",
     ]
     metrics = {label: label_metrics(rows) for label, rows in by_label.items()}
@@ -1765,19 +2067,24 @@ def render_summary(
             "(업스트림 오류·시간 초과·PII 차단)는 따로 센다."
             " 완주율(S5·S6)은 인프라 실패를 포함한다."
             " 반영(S6)·도구 미사용(S6)의 분모는 S6 전체 케이스다(인프라 실패 포함 — 완주율과 같은"
-            " 기준). 반영(S6) = 완주 + 도메인 도구 사용 + 표지 포함.",
+            " 기준). 반영(S6) = 완주 + 도메인 도구 사용 + 표지 포함."
+            " 완주(S5)·완주(S6)는 도구 0개 평문도 완주로 센다 — 판정은 반영률로 본다."
+            " 도구 미사용(S5)·추측 병렬(S5)의 분모는 S5 전체 케이스다(추측 병렬 = 한 턴에 호출"
+            " ≥2개 중 not_found가 있고 반영에 실패한 케이스).",
             "",
             "| 라벨 | 호출 | 형식(S1~S3) | 인자(S1~S3) | 선택(S1) | 오탐(S4) | 완주(S5) | 반영(S5)"
+            " | 도구 미사용(S5) | 추측 병렬(S5)"
             " | 완주(S6) | 반영(S6) | 도구 미사용(S6) | 교정 의존 | 예시 오호출 | 호출 모양 평문"
             " | p50 ms | p95 ms | 인프라 실패 |",
-            "|---|---:|---|---|---|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|",
+            "|---|---:|---|---|---|---|---|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|",
         ]
         for label, m in metrics.items():
             lines.append(
                 f"| `{label}` | {m['n_calls']} | {fmt_ratio(m['format_s123'])} | "
                 f"{fmt_ratio(m['args_s123'])} | {fmt_ratio(m['select_s1'])} | "
                 f"{fmt_ratio(m['fp_s4'])} | {fmt_ratio(m['complete_s5'])} | "
-                f"{fmt_ratio(m['reflect_s5'])} | {fmt_ratio(m['complete_s6'])} | "
+                f"{fmt_ratio(m['reflect_s5'])} | {fmt_ratio(m['no_tool_s5'])} | "
+                f"{fmt_ratio(m['spec_s5'])} | {fmt_ratio(m['complete_s6'])} | "
                 f"{fmt_ratio(m['reflect_s6'])} | {fmt_ratio(m['no_tool_s6'])} | "
                 f"{fmt_ratio(m['repair_dep'])} | {m['example_miscall']} | {m['call_like']} | "
                 f"{_num(m['p50'])} | "
@@ -1793,6 +2100,9 @@ def render_summary(
                 "- 호출 모양 평문(태그 없는 호출 JSON — 형식 실패·S4 오탐으로 셈): "
                 f"{m['call_like']}건",
                 f"- S5 같은 호출 반복: {m['repeat_s5']}건",
+                f"- S5 도구 미사용: {m['no_tool_s5'][0]}건 · 추측 병렬(실패 유형): "
+                f"{m['spec_s5'][0]}건 · 추측 병렬 플래그(반영 성공 포함): "
+                f"{m['spec_flag_s5']}건",
                 f"- S6 단계 수 평균: {_num(m['steps_s6'], 1)} · 실행 지연 p50/p95: "
                 f"{_num(m['lat_s6_p50'])}/{_num(m['lat_s6_p95'])} ms"
                 + (f" · skip: {', '.join(m['skip_s6'])}" if m["skip_s6"] else ""),
@@ -1823,13 +2133,16 @@ def render_summary(
         lines += ["## 라벨별 지표", "", "결과 없음", ""]
 
     lines += ["## 탐침", ""]
-    if probe_native:
+    if probe_native and not probe_native.get("candidates"):
+        lines += ["F1: 후보 0개(FABRIX_NATIVE_URL·--url·--path 미지정) — 네이티브 미확인", ""]
+    elif probe_native:
         lines += ["F1 네이티브 엔드포인트(인증 헤더는 KBGenAI와 같다고 추정):", "",
-                  "| 후보 | HTTP | 오류 | 엔드포인트 | tool_calls |", "|---|---|---|---|---|"]
+                  "| 후보 | 경로 | HTTP | 오류 | 엔드포인트 | tool_calls |",
+                  "|---|---|---|---|---|---|"]
         for c in probe_native.get("candidates") or []:
             lines.append(
-                f"| {c.get('source')} | {c.get('http_status') or '—'} | {c.get('error') or '—'} | "
-                f"{'있음' if c.get('endpoint_exists') else '없음'} | "
+                f"| {c.get('source')} | {c.get('path') or '—'} | {c.get('http_status') or '—'} | "
+                f"{c.get('error') or '—'} | {'있음' if c.get('endpoint_exists') else '없음'} | "
                 f"{'있음' if c.get('tool_calls') else '없음'} |"
             )
         lines.append("")
@@ -1846,7 +2159,12 @@ def render_summary(
     else:
         lines += ["F2: 결과 없음", ""]
 
-    lines += ["## 판정 초안 (참고용 · 판정은 개발 쪽)", ""]
+    lines += [
+        "## 판정 초안 (참고용 · 판정은 개발 쪽)",
+        "",
+        "완주율(S5)은 도구 0개 평문도 완주로 센다(정의 결함) — 판정은 반영률로 본다.",
+        "",
+    ]
     for label, m in metrics.items():
         lines += [f"### `{label}`", "", "| 지표 | 값 | 합격선 | 충족 |", "|---|---|---|---|"]
         lines += [f"| {a} | {b} | {c} | {d} |" for a, b, c, d in judgments(m)]
@@ -1870,6 +2188,177 @@ def rebuild_reports(out: Path, guard: ExportGuard) -> Recommendation:
     guard.write(out / SUMMARY, render_summary(records, probe_native, probe_contents, rec))
     update_recommend_env(out / RECOMMEND, rec.values, guard)
     return rec
+
+
+# ─────────────────────────────── 반출 ───────────────────────────────
+
+VERDICT_FILES = (SUMMARY, RESULTS, ENV_CHECK)  # 판정값 — 현행 규칙 그대로(걸리면 거부)
+DIAGNOSTIC_FILES = (RECOMMEND, PROBE_NATIVE, PROBE_CONTENTS)  # + failures/**/*.txt
+
+
+def _inside(path: Path, root: Path) -> bool:
+    """`path`를 풀어(`resolve`) `root` 안이면 참."""
+    try:
+        path.resolve().relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _export_sources(out: Path) -> tuple[list[Path], list[Path], list[str]]:
+    """(판정값, 진단, 건너뛴 경로). 심볼릭 링크·RUN_DIR 밖·숨김 파일은 복사하지 않는다.
+
+    판정값 3종이 링크거나 밖을 가리키면 거부(`ExportCheckError` — 종료 코드 3).
+    """
+    root = out.resolve()
+    verdict: list[Path] = []
+    for name in VERDICT_FILES:
+        path = out / name
+        if path.is_symlink() or (path.exists() and not _inside(path, root)):
+            raise ExportCheckError(path, ["symlink"])
+        if path.is_file():
+            verdict.append(Path(name))
+    diagnostic: list[Path] = []
+    skipped: list[str] = []
+    for name in DIAGNOSTIC_FILES:
+        path = out / name
+        if path.is_symlink() or (path.exists() and not _inside(path, root)):
+            skipped.append(name)
+        elif path.is_file():
+            diagnostic.append(Path(name))
+    failures = out / FAILURES
+    if failures.is_symlink():
+        skipped.append(FAILURES)
+    elif failures.is_dir():
+        found: list[Path] = []
+        for dirpath, dirnames, filenames in os.walk(failures, followlinks=False):
+            base = Path(dirpath)
+            for name in list(dirnames):
+                if name.startswith(".") or (base / name).is_symlink():
+                    dirnames.remove(name)
+                    if not name.startswith("."):
+                        skipped.append(str((base / name).relative_to(out)))
+            for name in filenames:
+                path = base / name
+                if name.startswith(".") or not name.endswith(".txt"):
+                    continue
+                if path.is_symlink() or not _inside(path, root):
+                    skipped.append(str(path.relative_to(out)))
+                    continue
+                found.append(path.relative_to(out))
+        diagnostic += sorted(found)
+    return verdict, diagnostic, skipped
+
+
+def _note_failure_responses(guard: ExportGuard, text: str) -> None:
+    """실패 덤프에서 모델 원출력 조각을 `responses`로 불러온다(쓰기 시점과 같은 엄격도).
+
+    `dump_failure`의 시도별 원출력 · `dump_case`의 `content:` 줄 · 최종 답 부분만 — 덤프 머리·
+    `call`/`result` 줄은 러너가 만든 형식이라 넣지 않는다.
+    """
+    for block in re.findall(r"^--- attempt \d+\n(.*?)(?=\n\n--- attempt \d+\n|\Z)", text,
+                            re.S | re.M):
+        guard.note_response(block)
+    for line in re.findall(r"^content: (.*)$", text, re.M):
+        guard.note_response(line)
+    _, sep, final = text.partition("\n--- final answer")
+    if sep:
+        guard.note_response(final.partition("\n")[2])
+
+
+def export_run(out: Path, dest: Path, guard: ExportGuard) -> dict[str, Any]:
+    """RUN_DIR 1개를 반출 폴더로 복사한다 — 전부 검사한 뒤에만 쓴다(하나라도 걸리면 0개).
+
+    - 판정값 3종: `guard.violations` 그대로(+ `failures/` 원출력 조각을 `responses`로 불러 쓰기
+      시점과 같은 엄격도). 걸리면 `ExportCheckError`(종료 코드 3).
+    - 진단 파일(`recommend.env`·`probe_*.json`·`failures/` 아래 `.txt`): 사본만 `guard.mask`로
+      가린 뒤 `violations(…, diagnostic=True)`로 다시 검사한다(남으면 거부). 기준선보다 느슨한
+      것은 합성 표지·모델 원출력 허용 하나뿐이다.
+    - 모든 사본은 쓰기 직전에 독립 금지 패턴 검사(`final_scan`)를 한 번 더 거친다.
+    - 그 밖의 파일·숨김 파일은 복사하지 않고, 심볼릭 링크·RUN_DIR 밖 파일은 건너뛰며 경고한다.
+    - `dest`의 형제 임시 폴더에 다 쓴 뒤 이름을 바꾼다(실패하면 임시 폴더를 지운다). 원본은
+      건드리지 않는다.
+    """
+    if not (out / RESULTS).is_file() or not (out / SUMMARY).is_file():
+        raise UsageError(f"반출할 결과가 없다 — {out}에 {RESULTS}·{SUMMARY}가 있어야 한다")
+    if dest.exists() and not dest.is_dir():
+        raise UsageError(f"반출 폴더 자리에 파일이 있다: {dest}")
+    if _inside(dest, (out / FAILURES).resolve()):
+        raise UsageError(f"반출 폴더를 {FAILURES}/ 안에 둘 수 없다: {dest}")
+    if dest.exists() and any(dest.iterdir()):
+        raise UsageError(f"반출 폴더가 비어 있지 않다 — 지우고 다시 돌린다: {dest}")
+    verdict, diagnostic, skipped = _export_sources(out)
+    for rel in skipped:
+        print(f"[export] 경고: 심볼릭 링크·RUN_DIR 밖 — 복사하지 않는다: {rel}", file=sys.stderr)
+    sources = {rel: (out / rel).read_text(encoding="utf-8", errors="replace")
+               for rel in verdict + diagnostic}
+    for rel in diagnostic:
+        if rel.parts[0] == FAILURES:
+            _note_failure_responses(guard, sources[rel])
+
+    plan: list[tuple[Path, str]] = []
+    masked: dict[str, int] = {}
+    for rel in verdict:
+        rules = guard.violations(sources[rel]) or final_scan(guard, sources[rel], diagnostic=False)
+        if rules:
+            raise ExportCheckError(dest / rel, rules)
+        plan.append((rel, sources[rel]))
+    masked_files = 0
+    for rel in diagnostic:
+        text, hits = guard.mask(sources[rel])
+        rules = guard.violations(text, diagnostic=True) or final_scan(guard, text, diagnostic=True)
+        if rules:
+            raise ExportCheckError(dest / rel, rules)
+        masked_files += bool(hits)
+        for rule in hits:
+            masked[rule] = masked.get(rule, 0) + 1
+        plan.append((rel, text))
+
+    tmp = dest.with_name(f".{dest.name}.tmp")
+    if tmp.is_symlink() or tmp.is_file():
+        tmp.unlink()
+    elif tmp.exists():
+        shutil.rmtree(tmp)
+    try:
+        for rel, text in plan:
+            target = tmp / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        if dest.exists():
+            dest.rmdir()  # 비어 있음을 위에서 확인했다
+        tmp.rename(dest)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    return {
+        "files": len(plan),
+        "failures": sum(1 for rel, _ in plan if rel.parts[0] == FAILURES),
+        "masked_files": masked_files,
+        "masked_rules": masked,
+        "skipped": len(skipped),
+    }
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    out = Path(args.out).expanduser().resolve()
+    if not out.is_dir():
+        raise UsageError(f"--out 디렉터리가 없다: {out}")
+    dest = Path(args.dest).expanduser().resolve() if args.dest else out / EXPORT_DIR
+    guard = build_guard([load_settings()])
+    if guard.add_encenv(ENCENV_FILE) == 0:
+        print("[export] 경고: .encenv가 없거나 값이 0개다 — 키 원값 대조 없이 반출하게 된다",
+              file=sys.stderr)
+        if not args.allow_no_encenv:
+            raise UsageError(".encenv 없음 — 확인한 뒤 --allow-no-encenv를 붙여 다시 돌린다")
+    guard.add_url_hosts(ENV_FILE, "ENV")
+    guard.add_url_hosts(ENCENV_FILE, "ENCENV")
+    stats = export_run(out, dest, guard)
+    rules = " · ".join(f"{k} {v}" for k, v in sorted(stats["masked_rules"].items())) or "없음"
+    print(f"[export] 파일 {stats['files']}개(failures {stats['failures']}개) · "
+          f"가린 파일 {stats['masked_files']}개(규칙별 파일 수: {rules})"
+          + (f" · 건너뜀 {stats['skipped']}개" if stats["skipped"] else ""))
+    print(f"[export] {dest}")
+    return 0
 
 
 # ─────────────────────────────── env-check ───────────────────────────────
@@ -2184,6 +2673,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--concurrency", type=int, default=1, help="동시 케이스 수(기본 1)")
     run.add_argument("--sleep", type=float, default=0.0, help="호출 간 대기 초(기본 0)")
     run.set_defaults(func=cmd_run)
+
+    export = sub.add_parser(
+        "export", help="반출 폴더 만들기 — 판정값 3종 + recommend.env·probe_*.json·failures/"
+    )
+    export.add_argument("--out", required=True, help="결과 디렉터리(RUN_DIR) 1개")
+    export.add_argument("--dest", default=None,
+                        help="반출 폴더(기본 <out>/export · 비어 있어야 한다)")
+    export.add_argument("--allow-no-encenv", action="store_true",
+                        help=".encenv가 없거나 비어도 반출한다(기본은 거부)")
+    export.set_defaults(func=cmd_export)
     return parser
 
 

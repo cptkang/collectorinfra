@@ -74,6 +74,34 @@
       "expected": {"text": "Yes. Item C-300 is in stock, and its price is 12.5."}
     },
     {
+      "pattern": "chain",
+      "messages": [
+        {"role": "user", "content": "What is the delivery status of the latest order for item D-400?"},
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_example_2",
+              "type": "function",
+              "function": {"name": "example_lookup_item", "arguments": "{\"code\": \"D-400\"}"}
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_example_2",
+          "name": "example_lookup_item",
+          "content": "{\"code\": \"D-400\", \"price\": 8.0, \"last_order_id\": \"512\"}"
+        }
+      ],
+      "expected": {
+        "tool_calls": [
+          {"name": "example_get_status", "arguments": {"order_id": "512"}}
+        ]
+      }
+    },
+    {
       "pattern": "no_tool",
       "messages": [
         {"role": "user", "content": "How do you say thank you in French?"}

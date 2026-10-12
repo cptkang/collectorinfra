@@ -47,72 +47,72 @@
       {
         "lang": "en",
         "tool_count": 15,
-        "protocol_chars": 20335,
-        "fewshot_chars": 1505,
-        "total_chars": 21842,
-        "protocol_est_tokens": 5198,
-        "fewshot_est_tokens": 377,
-        "total_est_tokens": 5575,
-        "pct_of_limit": 5.85
+        "protocol_chars": 20739,
+        "fewshot_chars": 1933,
+        "total_chars": 22674,
+        "protocol_est_tokens": 5299,
+        "fewshot_est_tokens": 484,
+        "total_est_tokens": 5783,
+        "pct_of_limit": 6.07
       },
       {
         "lang": "ko",
         "tool_count": 15,
-        "protocol_chars": 19853,
-        "fewshot_chars": 1373,
-        "total_chars": 21228,
-        "protocol_est_tokens": 5266,
-        "fewshot_est_tokens": 389,
-        "total_est_tokens": 5655,
-        "pct_of_limit": 5.94
+        "protocol_chars": 20038,
+        "fewshot_chars": 1796,
+        "total_chars": 21836,
+        "protocol_est_tokens": 5407,
+        "fewshot_est_tokens": 497,
+        "total_est_tokens": 5904,
+        "pct_of_limit": 6.2
       }
     ],
     "noise_track_b": [
       {
         "lang": "en",
         "tool_count": 3,
-        "protocol_chars": 1546,
-        "fewshot_chars": 1505,
-        "total_chars": 3053,
-        "protocol_est_tokens": 490,
-        "fewshot_est_tokens": 377,
-        "total_est_tokens": 867,
-        "pct_of_limit": 0.91
+        "protocol_chars": 1950,
+        "fewshot_chars": 1933,
+        "total_chars": 3885,
+        "protocol_est_tokens": 591,
+        "fewshot_est_tokens": 484,
+        "total_est_tokens": 1075,
+        "pct_of_limit": 1.13
       },
       {
         "lang": "ko",
         "tool_count": 3,
-        "protocol_chars": 1064,
-        "fewshot_chars": 1373,
-        "total_chars": 2439,
-        "protocol_est_tokens": 558,
-        "fewshot_est_tokens": 389,
-        "total_est_tokens": 948,
-        "pct_of_limit": 1.0
+        "protocol_chars": 1249,
+        "fewshot_chars": 1796,
+        "total_chars": 3047,
+        "protocol_est_tokens": 700,
+        "fewshot_est_tokens": 497,
+        "total_est_tokens": 1196,
+        "pct_of_limit": 1.26
       }
     ],
     "deepagents_builtin_only": [
       {
         "lang": "en",
         "tool_count": 8,
-        "protocol_chars": 19070,
-        "fewshot_chars": 1505,
-        "total_chars": 20577,
-        "protocol_est_tokens": 4769,
-        "fewshot_est_tokens": 377,
-        "total_est_tokens": 5146,
-        "pct_of_limit": 5.4
+        "protocol_chars": 19474,
+        "fewshot_chars": 1933,
+        "total_chars": 21409,
+        "protocol_est_tokens": 4870,
+        "fewshot_est_tokens": 484,
+        "total_est_tokens": 5354,
+        "pct_of_limit": 5.62
       },
       {
         "lang": "ko",
         "tool_count": 8,
-        "protocol_chars": 18588,
-        "fewshot_chars": 1373,
-        "total_chars": 19963,
-        "protocol_est_tokens": 4837,
-        "fewshot_est_tokens": 389,
-        "total_est_tokens": 5227,
-        "pct_of_limit": 5.49
+        "protocol_chars": 18773,
+        "fewshot_chars": 1796,
+        "total_chars": 20571,
+        "protocol_est_tokens": 4979,
+        "fewshot_est_tokens": 497,
+        "total_est_tokens": 5475,
+        "pct_of_limit": 5.75
       }
     ]
   },

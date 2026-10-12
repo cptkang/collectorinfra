@@ -8,6 +8,7 @@
 - 시나리오의 도구·도구 결과는 전부 합성값이다 — 실 DB·실 알람 데이터를 FabriX에 보내지 않는다.
 - 반출물은 `summary.md` · `results.jsonl` · `env_check.md` **세 개뿐**이다. `failures/`·로그는 내부망에 남긴다.
 - **재측정 R1(2026-10-08 · S5·S6 · 러너 S6 판정 결함 수정 후)은 11절만 한다.**
+- **재측정 R2(2026-10-12 · 프록시 규약 보강 + 러너 판정 교정 후)는 12절만 한다.** R2부터 반출은 `poc_run.py export`가 만드는 폴더 전체(판정값 3종 + `recommend.env`·`probe_*.json`·`failures/`)다 — 위 「세 개뿐」은 1차·R1 기준이다.
 
 ## 0. 한눈에 보기
 
@@ -371,7 +372,7 @@ CONTENTS_MODE=turns FEWSHOT=static FEWSHOT_PLACEMENT=system
 
 선택 규칙(러너가 계산한다 — 사용자는 `summary.md`의 근거 줄과 맞는지만 본다):
 1. 예시 도구 오호출이 1건 이상인 모드는 뺀다.
-2. 남은 모드 중 형식 유효율(S1·S4·S5)이 가장 높은 쪽. 차이가 2%p 이내면 `static`.
+2. 형식 유효율(S1·S4·S5·S6) 90% 이상인 모드 중 반영률이 가장 높은 쪽(비교 모드 전부에 S6 결과가 있으면 S6 반영률, 아니면 S5 반영률). 차이가 2%p 이내면 `static`. 반영률 자료가 모드마다 고르지 않으면 형식 유효율로 고른다. (2026-10-12 R2 개정 — 옛 규칙은 형식 유효율만 봤다)
 3. 세 모드 모두 90% 미만이면 위의 `--fewshot-placement contents` 1회 뒤 같은 규칙.
 
 `FEWSHOT`이 비어 있으면(`ADVISE FEWSHOT=undecided` — 모든 모드에 예시 도구 오호출) 기본값으로 계속하고, 반출 때 이 사실을 알린다: `FEWSHOT=static; FEWSHOT_PLACEMENT=system`
@@ -401,7 +402,7 @@ RECOMMEND PROTOCOL_LANG=en
 CONTENTS_MODE=turns FEWSHOT=static FEWSHOT_PLACEMENT=system PROTOCOL_LANG=en
 ```
 
-선택 규칙: 형식 유효율(S1·S5)이 높은 쪽 · 2%p 이내면 S5 완주율 · 그래도 같으면 `en`.
+선택 규칙: 형식 유효율(S1·S5)이 2%p 넘게 높은 쪽 · 아니면 반영률(두 라벨 모두 S6 결과가 있으면 S6, 아니면 S5)이 높은 쪽 · 그래도 같으면 `en`. (2026-10-12 R2 개정 — 옛 규칙의 S5 완주율은 도구 0개 평문도 완주로 세서 변별력이 없었다)
 
 ### 6.7 ⑥ 본 측정 — 20~55분
 
@@ -467,6 +468,8 @@ cd "$REPO/fabrix_proxy"
 같은 세션에서 시간이 모자라면 다음 세션에 2절 두 번째 블록 → 이 절만 한다.
 
 ### 6.9 ⑦ 반출 점검 — 5분
+
+> **R2(2026-10-12)부터 개정:** 이 절의 「세 파일만 · `failures/`·`recommend.env`·`probe_*.json` 반출 금지」는 1차 기준이다. R2부터는 12.7절(`poc_run.py export`)을 따른다.
 
 러너가 반출물을 쓸 때마다 자기 검사(URL · `Bearer` · 키 값 · 업스트림 호스트 · 시나리오 본문 표지 · 응답 원문)를 하지만, 사용자가 한 번 더 본다.
 
@@ -891,6 +894,8 @@ s6_agent_b_r1.txt
 
 ### 11.7 반출 점검 · 정리
 
+> **R2(2026-10-12)부터 개정:** 이 절의 「두 파일만 · `failures/` 반출 금지」는 R1 기준이다. R2부터는 12.7절(`poc_run.py export`)을 따른다.
+
 ```bash
 mkdir -p "$RUN_DIR/export"
 cp "$RUN_DIR/summary.md" "$RUN_DIR/results.jsonl" "$RUN_DIR/export/"
@@ -962,6 +967,295 @@ head -1 fabrix_proxy/POC_VERSION
 가짜 대본(`poc_dryrun_script.json`)의 S6 `s6_agent_a`는 가짜 서버 수명 동안 차례로 정상 반영 → 도구 없이 바로 평문(`no_tool_use`) → U+2019·U+202F·U+2011 섞인 최종 답(접기로 반영) → 표지 하나 빠진 최종 답(`history`) → 그 뒤 정상 반영이다. 그래서 첫 S6 명령(`fewshot=none`)에만 네 경우가 다 나온다. `s6_agent_b`는 `ko` 교정 뒤 `OK` 평문으로 끝나 도구 미사용이 된다(`en`이면 교정 실패 502 · 형식 실패).
 
 리허설 정리 — 가짜 서버 PID는 10.1이 만든 1차 역할 디렉터리에 있다.
+
+```bash
+kill "$(cat "$PREV_RUN_DIR/fake.pid")"
+sleep 2
+lsof -nP -iTCP:9095 -sTCP:LISTEN
+lsof -nP -iTCP:9096 -sTCP:LISTEN
+rm -f "$REPO/fabrix_proxy/.env" "$REPO/fabrix_proxy/.encenv"
+ls -a "$REPO/fabrix_proxy" | grep -E '^\.(env|encenv)$'
+```
+
+마지막 세 명령이 아무것도 출력하지 않으면 끝.
+
+## 12. 재측정 R2 — 고정 조합 1회 + 반출 확대 (2026-10-12 · 규약 보강 + 러너 판정 교정 후)
+
+2차 측정(R1 디렉터리 · 2026-10-12)을 마친 뒤 **프록시·러너 수정분을 다시 반입했을 때만** 하는 절이다. 2~11절은 다시 하지 않는다.
+
+**왜 다시 재는가.** 2차는 단발 지표(S1~S4)·교정 의존·예시 오호출·인프라 실패는 합격했지만 G-4(다턴 반영)가 미달이었다 — S5 반영 25/35(71%) · S6 반영 `ko·none` 3/10 · `ko·static` 8/10 · `ko·dynamic` 3/10 · `en·static` 2/10. S5 실패 10건은 ① 첫 턴에 `get_ticket`+`get_person`+`get_office`를 동시에 불러 앞 결과로만 알 수 있는 ID를 짐작(추측 병렬) 5건 ② 도구 없이 즉답 3건 ③ 첫 도구 뒤 중단 2건이었다. 이번 반입에서 바뀐 것:
+
+- **프록시 본체 `fabrix_proxy/fabrix_proxy/`** — 규약 문구(en·ko)에 ① 병렬은 인자를 이미 아는 호출만 · 결과에 달린 인자는 먼저 부르고 기다린다 ② 도구로만 알 수 있는 사실은 짐작하지 말고 도구를 호출한다 ③ 계획·할 일 목록은 답이 아니다 — 단계를 도구로 실행한 뒤 답한다, static few-shot에 연쇄 예시 1개. **→ 프록시 재기동 필요(12.3).**
+- **러너** — S5에 `no_tool_use`(도구 미사용)·`speculative_parallel`(추측 병렬 — 한 턴에 호출 ≥2개 중 하나라도 `not_found`를 받고 반영에 실패) 실패 유형 · 권장값 ⑤a·⑤b를 반영률 기준으로 교정(2차 반출물로 다시 계산하면 `PROTOCOL_LANG=ko`·`FEWSHOT=static`) · 실패 덤프에 턴별 호출·인자·도구 결과(found/not_found)·최종 답 앞 2000자 · F1 `--path` · 반출 명령 `poc_run.py export`.
+- **반출 원칙 개정(사용자 지시 2026-10-12)** — 판정값 3종에 더해 `failures/`·`recommend.env`·`probe_*.json`도 반출한다. 진단 파일은 합성 시나리오 표지·모델 원출력을 허용하되 URL(스킴 무관 · 이스케이프·퍼센트 인코딩 포함)·인증 헤더 값(`Bearer`·`Authorization`·`api-key`·`x-openapi-token`·`x-generative-ai-client` 등)·키(앞 8자·뒤 8자 조각·전체 값)·업스트림 호스트(대소문자 무시 · `.env`/`.encenv` 속 URL 호스트 포함)·IPv4·`.encenv` 값은 반출 사본에서 `<url>`·`<ip>`·`<redacted:규칙>`으로 가리고 다시 검사한다. 쓰기 직전에는 정규화 사본(NFKC·제로폭 제거·퍼센트 디코딩)으로 독립 금지 패턴 검사를 한 번 더 한다(남으면 거부 · 종료 코드 3). 판정값 3종은 전과 같이 표지·원문(`failures/` 원출력 조각 포함)이 하나라도 있으면 거부한다. 기준선보다 느슨해진 것은 「진단 파일의 합성 표지·모델 원출력 허용」 하나뿐이다. 원본(`$RUN_DIR/failures/`)은 건드리지 않는다.
+
+| 항목 | 값 |
+|---|---|
+| 반입 | `fabrix_proxy/` 전체(1절과 같다) — 프록시 본체·러너·`tests/`·`testdata/`·`POC_RUNBOOK.md`·`POC_VERSION` |
+| 설정 파일 | 1차의 `fabrix_proxy/.env`·`.encenv`를 그대로 쓴다(3절 생략) |
+| 고정 조합 | `--contents-mode turns --fewshot static --fewshot-placement system --protocol-lang ko` |
+| 측정 | ① env-check · F1 탐침 · S1~S5(S5 15건) · S6 10건 · (선택 · 대조) S6 `--fewshot none` 10건 |
+| 실 FabriX 호출 | 필수 약 190회 — env-check 1 · F1 후보당 1 · S1~S4 80(교정 재시도 2차 실측 약 3% → +2~3) · S5 15건 × 약 4턴 ≈ 60(최대 75) · S6 10건 × 약 4~5호출 ≈ 45. 선택 대조 S6 `none` +약 25~50 → 합계 약 190~240회 |
+| 소요 | 2차 실측(호출 p50 약 1.1~1.5초 · S6 첫 턴 입력 약 2.9만 자 · S6 10건 실행 약 1~1.5분) 기준 측정만 약 6~8분, 오프라인 테스트·재기동·반출 포함 약 20분. 호출당 5~15초로 느려지면 최대 약 1시간 |
+| 반출 | `$RUN_DIR/export/` 폴더 전체(12.7) |
+
+### 12.1 변수 — 새 `RUN_DIR`
+
+```bash
+REPO=/path/to/collectorinfra
+PY="$REPO/.venv/bin/python"
+PREV_RUN_DIR="$(cat "$REPO/logs/fabrix_proxy_poc/CURRENT" 2>/dev/null)"
+RUN_DIR="$REPO/logs/fabrix_proxy_poc/R2-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$RUN_DIR"
+echo "$RUN_DIR" > "$REPO/logs/fabrix_proxy_poc/CURRENT"
+echo "PREV_RUN_DIR=$PREV_RUN_DIR"
+echo "RUN_DIR=$RUN_DIR"
+head -1 "$REPO/fabrix_proxy/POC_VERSION"
+grep -c 'def cmd_export' "$REPO/fabrix_proxy/scripts/poc_run.py"
+grep -c '할 일 목록' "$REPO/fabrix_proxy/fabrix_proxy/protocol_ko.txt"
+```
+
+출력 예(리허설 · 경로는 `$REPO`로 줄였다):
+
+```
+PREV_RUN_DIR=$REPO/logs/fabrix_proxy_poc/R1-20261012-…
+RUN_DIR=$REPO/logs/fabrix_proxy_poc/R2-20261012-…
+<커밋 SHA> (2026-10-12 R2 — 규약 보강 · 러너 반영률 판정 · 반출 확대)
+1
+1
+```
+
+- **반드시 새 `RUN_DIR`을 쓴다.** R2 라벨(`contents=turns,fewshot=static,placement=system,lang=ko,repair=1,passthrough=false`)은 2차 라벨과 같다 — 2차 디렉터리에 덧붙이면 옛 규약으로 잰 결과와 한 라벨로 합산된다.
+- 마지막 두 `grep -c`가 `0`이면 옛 판이다 — 반입을 다시 확인한다(첫째 = 러너 `export` 명령 · 둘째 = 보강한 규약 문구).
+- 터미널을 새로 열면 2절 두 번째 블록을 그대로 쓴다(`CURRENT`가 R2 디렉터리를 가리킨다). `PREV_RUN_DIR`은 12.3에서만 쓴다.
+
+### 12.2 오프라인 테스트 — 3분
+
+```bash
+cd "$REPO/fabrix_proxy"
+"$PY" -m pytest tests -q
+```
+
+성공 시 출력 예(마지막 줄):
+
+```
+318 passed in 21.11s
+```
+
+`failed`·`error`가 0이면 된다(통과 개수는 반입 판에 따라 다르다). 실패하면 6.2절처럼 멈추고 목록을 반출한다.
+
+### 12.3 프록시 재기동 · 환경 점검 — 3분
+
+프록시 본체(규약 문구·few-shot)가 바뀌었으므로 **떠 있는 프록시를 내리고 새로 띄운다.** 자기가 띄운 PID만 종료한다(`pkill` 금지).
+
+```bash
+cd "$REPO/fabrix_proxy"
+[ -f "$PREV_RUN_DIR/proxy.pid" ] && kill "$(cat "$PREV_RUN_DIR/proxy.pid")"
+sleep 2
+lsof -nP -iTCP:9095 -sTCP:LISTEN
+nohup "$PY" -m fabrix_proxy > "$RUN_DIR/proxy.log" 2>&1 &
+echo $! > "$RUN_DIR/proxy.pid"
+sleep 5
+cat "$RUN_DIR/proxy.log"
+"$PY" scripts/poc_run.py env-check --out "$RUN_DIR"
+```
+
+- `lsof`는 아무것도 출력하지 않아야 한다. 무언가 나오면 그 줄의 PID가 이전에 띄운 프록시인지 확인하고 `kill <PID>`한 뒤 `nohup` 줄부터 다시 한다(이전 PID 파일이 없을 때).
+- 기동 로그에 `backend=fabrix`·`poc_mode=True`가 보여야 한다(4절과 같다).
+- env-check 출력은 6.1절과 같다 — `FabriX=ok … poc_mode=on 녹화 하네스 rc=0`. `env_check.md`가 반출에 들어간다.
+
+### 12.4 F1 네이티브 탐침 — 1분
+
+2차 summary의 F1 표가 비었던 것은 **후보가 0개**였기 때문이다(`FABRIX_NATIVE_URL` 빈 값 · `--url` 없음 → `probe_native.json`의 `candidates`가 빈 목록). 이번 러너는 후보 0개면 경고를 내고 summary에 「F1: 후보 0개(…) — 네이티브 미확인」으로 적는다.
+
+후보 경로는 FabriX 포털·API 문서의 「OpenAI 호환」·`chat/completions` 엔드포인트에서 찾는다. **호스트가 KBGenAI(`FABRIX_BASE_URL`)와 같으면 경로만 준다** — `--path`는 `FABRIX_BASE_URL`의 scheme+host에 경로를 붙이므로 명령에 호스트를 적지 않는다(여러 번 줄 수 있다 · 후보당 FabriX 1회 호출). 호스트가 다르면 `--url '<전체 URL>'`을 쓴다. `.env`에 `FABRIX_NATIVE_URL`이 있으면 자동으로 후보에 들어간다.
+
+```bash
+cd "$REPO/fabrix_proxy"
+"$PY" scripts/probe_fabrix.py native --out "$RUN_DIR" --path /v1/chat/completions --path /openai/v1/chat/completions
+grep -E '^F1|^\| --path|^\| --url|^\| FABRIX_NATIVE_URL|^ADVISE PASSTHROUGH' "$RUN_DIR/summary.md"
+```
+
+출력 예(리허설 — 가짜 KBGenAI는 어떤 경로든 tool_calls를 돌려준다):
+
+```
+[probe native] 후보 2개 — tool_calls 있음 2개
+[probe] $REPO/logs/fabrix_proxy_poc/R2-20261012-…
+F1 네이티브 엔드포인트(인증 헤더는 KBGenAI와 같다고 추정):
+| --path#1 | /v1/chat/completions | 200 | — | 있음 | 있음 |
+| --path#2 | /openai/v1/chat/completions | 200 | — | 있음 | 있음 |
+ADVISE PASSTHROUGH=⑥ 뒤 --passthrough 측정 추가 (F1 네이티브 응답에 tool_calls 있음)
+```
+
+- 표의 `엔드포인트 없음`(HTTP 404·405·501)은 그 경로가 없다는 뜻이다. `probe_native.json`·summary에는 출처 이름(`--path#1`)과 경로만 적힌다(호스트·URL 없음).
+- 후보를 하나도 모르면 `--path` 없이 돌린다 — `[probe native] 경고: 후보 0개 …`가 나오고 summary에 「F1: 후보 0개 — 네이티브 미확인」으로 적힌다(측정은 계속한다).
+- `ADVISE PASSTHROUGH`가 나와도 R2에서는 passthrough 측정(6.8)을 하지 않는다 — 결과를 반출해 개발 쪽이 다음 단계를 정한다.
+
+### 12.5 S1~S5 — 고정 조합 (S5 15건)
+
+```bash
+cd "$REPO/fabrix_proxy"
+"$PY" scripts/poc_run.py run --only S1,S2,S3,S4,S5 --repeat S5=15 --contents-mode turns --fewshot static --fewshot-placement system --protocol-lang ko --out "$RUN_DIR"
+```
+
+성공 시 출력 예:
+
+```
+[run] contents=turns,fewshot=static,placement=system,lang=ko,repair=1,passthrough=false — S1,S2,S3,S4,S5
+[run] 완료 0.6s — $REPO/logs/fabrix_proxy_poc/R2-20261012-…
+```
+
+(소요는 가짜 업스트림 기준이다. 실 FabriX에서는 약 3~5분.)
+
+### 12.6 S6 10건 + (선택) `fewshot none` 대조 10건
+
+```bash
+cd "$REPO/fabrix_proxy"
+"$PY" scripts/poc_run.py run --only S6 --repeat S6=10 --contents-mode turns --fewshot static --fewshot-placement system --protocol-lang ko --out "$RUN_DIR"
+```
+
+선택 — 연쇄 few-shot의 효과를 보려는 대조(같은 규약 · few-shot 없음). 시간이 되면 한다:
+
+```bash
+cd "$REPO/fabrix_proxy"
+"$PY" scripts/poc_run.py run --only S6 --repeat S6=10 --contents-mode turns --fewshot none --fewshot-placement system --protocol-lang ko --out "$RUN_DIR"
+```
+
+성공 시 출력 예 — 시작 줄의 `fewshot=`이 `static`(대조는 `none`)이어야 한다:
+
+```
+[run] contents=turns,fewshot=static,placement=system,lang=ko,repair=1,passthrough=false — S6
+[run] 완료 3.7s — $REPO/logs/fabrix_proxy_poc/R2-20261012-…
+[run] contents=turns,fewshot=none,placement=system,lang=ko,repair=1,passthrough=false — S6
+[run] 완료 3.7s — $REPO/logs/fabrix_proxy_poc/R2-20261012-…
+```
+
+결과 확인:
+
+```bash
+sed -n '/^## 판정 초안/,/^## 권장값/p' "$RUN_DIR/summary.md" | grep -E '^### |형식 유효율|오탐률|완주율|반영률'
+grep -E '^- (실패 유형|S5 도구 미사용)' "$RUN_DIR/summary.md"
+grep -E '^(RECOMMEND|ADVISE)' "$RUN_DIR/summary.md"
+```
+
+- S5·S6 판정은 반영률 행이다. 완주율(S5)은 도구 0개 평문도 완주로 세므로(정의 결함 — summary 판정 초안 머리에 같은 주석) 기록으로만 본다.
+- `- S5 도구 미사용: N건 · 추측 병렬(실패 유형): N건 · 추측 병렬 플래그(반영 성공 포함): N건` 줄이 2차의 「도구 없이 즉답」·「추측 병렬」 건수에 해당한다.
+- 「권장값」의 `RECOMMEND FEWSHOT`은 대조(`none`)를 돌렸을 때만 나온다(비교할 모드가 둘 이상일 때). `PROTOCOL_LANG`은 R2에 `ko`만 있으므로 나오지 않는다(정상).
+
+### 12.7 반출 — `poc_run.py export`
+
+```bash
+cd "$REPO/fabrix_proxy"
+"$PY" scripts/poc_run.py export --out "$RUN_DIR"
+```
+
+성공 시 출력 예(리허설):
+
+```
+[export] 파일 56개(failures 51개) · 가린 파일 0개(규칙별 파일 수: 없음)
+[export] $REPO/logs/fabrix_proxy_poc/R2-20261012-…/export
+```
+
+반출 폴더 구조:
+
+```
+$RUN_DIR/export/
+  summary.md            판정값 — 표지·응답 원문·URL·키·호스트 금지(하나라도 있으면 거부)
+  results.jsonl         판정값 — 같은 규칙
+  env_check.md          판정값 — 같은 규칙(12.3을 했을 때)
+  recommend.env         진단 — 권장값
+  probe_native.json     진단 — F1 후보 출처 이름·경로·HTTP·tool_calls 유무
+  failures/<라벨>/       진단 — 합성 표지·모델 원출력 허용 · URL·Bearer·키·호스트는 가림
+    s5_<케이스>_r<N>.txt     S5 케이스 실패 — 턴별 호출·인자·도구 결과(found/not_found)·최종 답 앞 2000자
+    s6_<케이스>_r<N>.txt     S6 케이스 실패 — 같은 형식
+    <케이스>_r<N>_t<턴>.txt  실패 호출(형식 실패 등)의 시도별 원출력 앞 500자
+```
+
+- 반출 폴더가 이미 있고 비어 있지 않으면 종료 코드 2로 멈춘다(`rm -rf "$RUN_DIR/export"` 뒤 다시). `--dest`가 파일이거나 `failures/` 안이어도 종료 코드 2다. `proxy.log`·`proxy.pid`·숨김 파일·`failures/` 아래 `.txt`가 아닌 파일은 복사하지 않는다. 심볼릭 링크·`RUN_DIR` 밖을 가리키는 파일은 `[export] 경고: … 복사하지 않는다: <경로>`로 건너뛴다(판정값 3종이 링크면 종료 코드 3 `symlink`).
+- `[export] 경고: .encenv가 없거나 값이 0개다` + 종료 코드 2면 `fabrix_proxy/.encenv`가 없거나 비었다 — 키 원값 대조를 못 하므로 기본은 거부한다. 파일을 확인하고, 정말 없이 반출해야 할 때만 `--allow-no-encenv`를 붙인다(R2는 1차 `.encenv`를 그대로 쓰므로 필요 없다).
+- 반출은 형제 임시 폴더(`$RUN_DIR/.export.tmp`)에 다 쓴 뒤 이름을 바꾼다 — 중간에 실패하면 임시 폴더를 지우고 `export/`는 생기지 않는다.
+- 종료 코드 3 `반출물 자기 검사 실패 — <파일>: 규칙 …`이면 **반출 폴더를 만들지 않았다**(하나라도 걸리면 0개). 출력 한 줄(규칙 이름만)을 그대로 알린다 — 코드 결함으로 다룬다. 규칙 이름이 `final:`로 시작하면 가림을 빠져나간 변종(전각·제로폭·인코딩된 호스트·키 등)을 독립 검사가 잡은 것이다.
+- 「가린 파일 N개」가 1 이상이면 모델이 URL 등을 지어낸 것이다 — 가린 자리는 `<url>`·`<ip>`·`<redacted:host:FABRIX_BASE_URL>`·`<redacted:auth_header>`(헤더 이름 뒤 줄 끝까지)처럼 보인다.
+
+사용자 육안 점검 — 반출 폴더 **전체를 재귀로** 본다(`failures/` 포함):
+
+```bash
+cd "$RUN_DIR/export"
+API6="$(grep '^FABRIX_API_KEY=' "$REPO/fabrix_proxy/.encenv" | cut -d= -f2- | tr -d "\"'" | cut -c1-6)"
+CLI6="$(grep '^FABRIX_CLIENT_KEY=' "$REPO/fabrix_proxy/.encenv" | cut -d= -f2- | tr -d "\"'" | cut -c1-6)"
+TOK6="$(grep '^FABRIX_PROXY_TOKEN=' "$REPO/fabrix_proxy/.encenv" | cut -d= -f2- | tr -d "\"'" | cut -c1-6)"
+BHOST="$(grep '^FABRIX_BASE_URL=' "$REPO/fabrix_proxy/.env" | cut -d= -f2- | tr -d "\"'" | sed -E 's#^[A-Za-z]+://##; s#[/:].*$##')"
+NHOST="$(grep '^FABRIX_NATIVE_URL=' "$REPO/fabrix_proxy/.env" | cut -d= -f2- | tr -d "\"'" | sed -E 's#^[A-Za-z]+://##; s#[/:].*$##')"
+echo "앞 6자 길이: ${#API6} ${#CLI6} ${#TOK6} · 호스트 길이: ${#BHOST} ${#NHOST}"
+grep -rniE -e '://' -e '%3a%2f%2f' -e 'bearer' -e '(authorization|api-key|openapi-token|generative-ai-client)"?[[:space:]]*[:=]' .
+grep -rnE '([0-9]{1,3}\.){3}[0-9]{1,3}' failures probe_native.json probe_contents.json recommend.env 2>/dev/null
+grep -rn -F -e "$API6" -e "$CLI6" -e "$TOK6" .
+[ -n "$BHOST" ] && grep -rni -F "$BHOST" .
+[ -n "$NHOST" ] && grep -rni -F "$NHOST" .
+unset API6 CLI6 TOK6 BHOST NHOST
+find . -type f | sort
+```
+
+성공 시 출력 예 — 다섯 `grep`은 아무것도 찍지 않는다(`NHOST`가 비어 있으면 둘째 호스트 길이는 0이고 그 `grep`은 건너뛴다):
+
+```
+앞 6자 길이: 6 6 6 · 호스트 길이: 9 0
+./env_check.md
+./failures/contents=turns_fewshot=static_placement=system_lang=ko_repair=1_passthrough=false/s5_ticket_en2_r1.txt
+…
+./probe_native.json
+./recommend.env
+./results.jsonl
+./summary.md
+```
+
+통과 조건: `앞 6자 길이: 6 6 6` · 호스트 길이 첫째가 0이 아니다 · 다섯 `grep`이 **아무것도 출력하지 않는다**. 한 줄이라도 나오면 반출하지 않고 줄 번호·파일 이름만 알린다(내용은 옮기지 않는다). `--url`로 다른 호스트를 줬다면 그 호스트도 `grep -rn -F '<호스트>' .`로 한 번 더 본다. 시나리오 표지(합성 값 `QK-2096` 등)·모델 답 문장은 `failures/`에 있어도 된다(R2 개정).
+
+반출: `$RUN_DIR/export/` 폴더 전체.
+
+측정이 모두 끝났으면 프록시를 내린다(자기 PID만):
+
+```bash
+kill "$(cat "$RUN_DIR/proxy.pid")"
+sleep 2
+lsof -nP -iTCP:9095 -sTCP:LISTEN
+```
+
+### 12.8 `POC_VERSION` 갱신 (개발 쪽 · 반입 전)
+
+11.8과 같다 — 프록시·러너 수정분을 **커밋한 뒤** 그 SHA로 첫 줄을 바꾼다.
+
+```bash
+cd /path/to/dev/collectorinfra
+git status --short fabrix_proxy
+git log -1 --format='%H %s'
+echo "$(git rev-parse HEAD) ($(date +%F) R2 — 규약 보강 · 러너 반영률 판정 · 반출 확대)" > fabrix_proxy/POC_VERSION
+head -1 fabrix_proxy/POC_VERSION
+```
+
+- 순서: ① 커밋 → ② 첫 `git status`가 `fabrix_proxy/POC_VERSION` 말고는 아무것도 출력하지 않는지 확인 → ③ 위 `echo`로 교체 → ④ 반입.
+- 내부망 확인: 12.1 `head -1` 출력과 R2 `summary.md` 머리 `POC_VERSION:` 줄이 개발 쪽 값과 같아야 한다.
+
+### 12.9 개발 맥 리허설 (2026-10-12 · 가짜 KBGenAI · 실 LLM 0건)
+
+10절 표의 차이(`PY=python` · 가짜 KBGenAI 업스트림 · 리허설 설정 파일)만 바꿔 **10.1 → 10.2 → 12.1 → 12.7**을 그대로 붙여 넣어 돌렸다(12.6 선택 대조 포함). 10.1이 만든 디렉터리가 이전 측정 역할(`PREV_RUN_DIR`)을 한다. 전체 49초.
+
+| 단계 | 결과 | 소요 |
+|---|---|---|
+| 10.1 가짜 KBGenAI · 10.2 설정 | `FAKE_KBGENAI_READY port=9096` | 2초 |
+| 12.1 변수 | 새 `R2-…` 디렉터리 · `POC_VERSION` 첫 줄 · 두 `grep -c` 모두 1 | 1초 |
+| 12.2 오프라인 테스트 | `318 passed` | 20초 |
+| 12.3 프록시 · env-check | 기동 로그 `poc_mode=True` · `FabriX=ok … poc_mode=on 녹화 하네스 rc=0` | 5초 |
+| 12.4 F1 | 후보 2개(`--path#1`·`--path#2`) · 표에 경로만(호스트 없음) · `ADVISE PASSTHROUGH` | 1초 |
+| 12.5 S1~S5 | rc 0 · S5 15건 — 도구 미사용 1건 · 추측 병렬 1건(대본 의도대로) | 1초 |
+| 12.6 S6 static 10 + none 10 | rc 0 · 반영률 static 3/10 · none 5/10 · 완주율(S6) 기록 · `RECOMMEND FEWSHOT=none`(가짜 대본 차례로 갈린 값 — 의미 없음) | 8초 |
+| 12.7 반출 · 육안 점검 · 프록시 종료 | `[export] 파일 56개(failures 51개) · 가린 파일 0개` · `앞 6자 길이: 6 6 6 · 호스트 길이: 9 0` · 육안 `grep` 0줄 · `lsof` 0줄 | 3초 |
+| 12.7 재리허설(반출 보안 교정 뒤) | 10.2 설정 → `rm -rf "$RUN_DIR/export"` → 12.7 두 블록 그대로. 같은 RUN_DIR에서 `[export] 파일 56개(failures 51개) · 가린 파일 0개` rc 0(`failures/` 원출력 조각 대조 · 독립 최종 검사 오탐 0) · 다섯 `grep` 0줄 · `.export.tmp` 남지 않음 · 끝에 `.env`/`.encenv` 삭제 | 2초 |
+| 정리(아래 블록) | `lsof` 0줄 · `.env`/`.encenv` 삭제 · 남은 프로세스 0 | 2초 |
+
+가짜 대본(`poc_dryrun_script.json`)의 S5 `s5_ticket_en2`는 가짜 서버 수명 동안 첫 차례에 `get_ticket`+`get_person`(추측 인자 → not_found)을 한 턴에 병렬로 내고(`speculative_parallel`), 둘째 차례에 도구 없이 평문으로 끝난다(`no_tool_use`). 반출된 `failures/…/s5_ticket_en2_r1.txt`에 턴별 `call`·`result … → found/not_found` 줄이 남는 것을 확인했다.
+
+리허설 정리 — 가짜 서버 PID는 10.1이 만든 디렉터리에 있다.
 
 ```bash
 kill "$(cat "$PREV_RUN_DIR/fake.pid")"

@@ -47,7 +47,7 @@ LLAMA_JUNK_TOKENS = [
     "<|start_header_id|>assistant",
 ]
 
-FEWSHOT_PATTERNS = ("single", "parallel", "after_result", "no_tool")
+FEWSHOT_PATTERNS = ("single", "parallel", "after_result", "chain", "no_tool")
 SAMPLE_SUFFIX = "_sample"
 
 Turn = tuple[str, str]  # (role ∈ {"user","assistant"}, text)
@@ -67,12 +67,19 @@ _PARALLEL_RULES = {
     "en": {
         True: (
             "You may call several tools at once by writing several <tool_call> blocks "
-            "one after another."
+            "one after another, but only calls whose arguments you already know. "
+            "If an argument depends on another tool's result, call that tool first "
+            "and wait for its result."
         ),
         False: "Call at most one tool per reply (a single <tool_call> block).",
     },
     "ko": {
-        True: "여러 도구를 한 번에 호출하려면 <tool_call> 블록을 여러 개 이어서 쓴다.",
+        True: (
+            "여러 도구를 한 번에 호출하려면 <tool_call> 블록을 여러 개 이어서 쓴다. "
+            "단, 인자를 이미 아는 호출만 한꺼번에 부른다. "
+            "인자가 다른 도구의 결과에 달려 있으면 "
+            "그 도구를 먼저 부르고 결과를 기다린다."
+        ),
         False: "한 답에서는 도구를 하나만 호출한다(<tool_call> 블록 1개).",
     },
 }
@@ -479,7 +486,8 @@ def _dynamic_examples(tools: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     """요청 도구 이름으로 패턴 ①~④를 만든다(인자는 스키마 기반 자리표시 값).
 
     비교군 전용이다 — 자리표시 값을 모델이 베끼면 스키마 검증을 통과해 조용히 틀릴 수 있다
-    (R-8 위험).
+    (R-8 위험). 연쇄(chain)는 넣지 않는다 — 앞 결과 값이 다음 인자로 이어지는 것이 요점인데
+    자리표시 값으로는 그 의존을 보여 줄 수 없다.
     """
     first = tools[0]
     name0 = tool_function(first).get("name", "")
@@ -544,7 +552,7 @@ def select_fewshot(
     - static: 데이터의 가상 도구 예시. 요청 도구 이름과 겹치는 예시 도구 이름에는 `_sample` 접미사를
       붙여 일관 치환한다.
     - dynamic: 요청 도구 이름으로 같은 패턴을 만든다(비교군 · R-8 위험).
-    - `parallel_tool_calls=false`면 병렬 패턴(②)을 뺀다.
+    - `parallel_tool_calls=false`면 병렬 패턴(②)을 뺀다. 연쇄(chain)는 한 답에 호출 1개라 남긴다.
     """
     if mode == "none" or not tools:
         return None
