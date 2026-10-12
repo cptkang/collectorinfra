@@ -7,12 +7,23 @@ HolmesGPT의 서술(`answer`)과 severity_judge 판정(`ImportanceVerdict`)을 *
 - **한계 서술 강제**: 단면 데이터·미수집 신호·증거 불충분을 반드시 명시한다.
 - **조치는 권고만**: 실행 경로 없음(D-011). 권고 문자열에 human-gated 안내를 강제한다.
 
-계층: application. 순수 조립 로직으로 domain(severity_signatures)만 참조하고 stdlib만 쓴다
+계층: application. 순수 조립 로직으로 domain(severity_signatures · cross_source_episode)만
+참조하고 stdlib만 쓴다
 (도구 원시 출력 타입 등 application 세부는 dispatcher가 평문으로 넘긴다 — 결합 최소화).
 """
 
 from __future__ import annotations
 
+from sre_agent.domain.cross_source_episode import (
+    APM_TOOLS_NOT_CONNECTED_LIMIT,
+    KIND_APM_MEMBER,
+    SOURCE_APM,
+    SOURCE_INFRA,
+    STRONG_ONLY_NOTE,
+    EpisodeContext,
+    EpisodeLink,
+    episode_timeline,
+)
 from sre_agent.domain.severity_signatures import ImportanceVerdict
 
 # 브리핑 6요소(§7). 중요도([중요도])는 severity_judge 판정에서 오므로 별도 헤더로 조립하고,
@@ -45,7 +56,12 @@ UNRESOLVED_PREFIX = "[미결] "
 
 # 상관 ≠ 인과 — 결정적 상관에서 도출한 가설의 신뢰도 한계(plans/50 §6.3).
 CORRELATION_NOT_CAUSATION_NOTE = "상관 ≠ 인과 — 가설 신뢰도는 선행성·지속성(결정적 상관)에서 도출한 것이며 인과 확정이 아님"
-_KIND_LABEL = {"metric": "메트릭", "alarm": "알람", "change": "변경"}
+_KIND_LABEL = {"metric": "메트릭", "alarm": "알람", "change": "변경", KIND_APM_MEMBER: "이벤트"}
+
+# 크로스소스 규칙 가설(plans/150 §4.6)의 confidence — 규칙 결합은 측정이 아니라
+# 사건 추적기의 판정이므로 기존 상관 가설의 비측정 상한(변경 직후 가설 · plans/91 1-2)과
+# 같은 medium에서 멈춘다(R-3).
+CROSS_SOURCE_HYPOTHESIS_CONFIDENCE = "medium"
 
 
 def _fmt_offset(minutes: object) -> str:
@@ -56,15 +72,21 @@ def _fmt_offset(minutes: object) -> str:
     return f"T{'-' if m < 0 else '+'}{abs(m)}m"
 
 
-def correlation_timeline(correlation: dict) -> list[str]:
-    """§9.1 상대시각 타임라인 — `T-15m 메트릭 디스크 IO 급등 …`(수치는 주입값만)."""
-    lines: list[str] = []
+def _timeline_pairs(correlation: dict) -> list[tuple[str, str]]:
+    """`(kind, 줄)` 쌍 — 소스 라벨을 kind별로 붙이기 위해 kind를 함께 돌려준다."""
+    pairs: list[tuple[str, str]] = []
     for t in correlation.get("timeline") or []:
         if not isinstance(t, dict):
             continue
-        kind = _KIND_LABEL.get(str(t.get("kind")), str(t.get("kind")))
-        lines.append(f"{_fmt_offset(t.get('t_offset_min'))} {kind} {t.get('detail')}")
-    return lines
+        kind = str(t.get("kind"))
+        offset, label = _fmt_offset(t.get("t_offset_min")), _KIND_LABEL.get(kind, kind)
+        pairs.append((kind, f"{offset} {label} {t.get('detail')}"))
+    return pairs
+
+
+def correlation_timeline(correlation: dict) -> list[str]:
+    """§9.1 상대시각 타임라인 — `T-15m 메트릭 디스크 IO 급등 …`(수치는 주입값만)."""
+    return [line for _, line in _timeline_pairs(correlation)]
 
 
 def root_cause_hypotheses(correlation: dict | None, llm_cause: str, citations_verified: bool) -> list[dict]:
@@ -131,6 +153,96 @@ def root_cause_hypotheses(correlation: dict | None, llm_cause: str, citations_ve
     return out
 
 
+def _llm_hypothesis(rank: int, llm_cause: str, citations_verified: bool) -> dict:
+    return {
+        "rank": rank, "cause": llm_cause,
+        "confidence": "medium" if citations_verified else "low",
+        "evidence": [llm_cause] if citations_verified else [],
+        "reasoning": "조사 서술의 인용 원인"
+        + ("" if citations_verified else " — 도구 출력 인용 결여로 가설 강등"),
+    }
+
+
+def _lag_phrase(lag: float | None) -> str:
+    if lag is None:
+        return "시차 미상으로 결합"
+    return f"{int(lag)}초 선행" if lag >= 0 else f"{int(-lag)}초 후행(규칙 창 허용)"
+
+
+_SUPPORT_TEXT = {True: "양쪽 소스 도구 인용 있음", False: "한쪽 소스 도구 인용만 있음",
+                 None: "도구 인용 없음"}
+
+
+def cross_source_hypotheses(
+    ctx: EpisodeContext,
+    timeline: list[str],
+    supported_by_tools: bool | None,
+    cited_lines: list[str],
+) -> list[dict]:
+    """plans/150 §4.6 — 성립 링크마다 규칙 기반 가설 1개(결정적 · confidence 상한 · 상관≠인과).
+
+    문안: "인프라 {kind} 알람이 {lag}초 선행 → 애플리케이션 {was_kind} (규칙 {rule_id})".
+    LLM 인용이 양쪽 소스를 모두 뒷받침하면(`supported_by_tools`) 근거에 그 인용 줄을 함께
+    싣는다 — 반박 서술도 지우지 않는다(둘 다 보임).
+    """
+    out: list[dict] = []
+    for lk in ctx.valid_links:
+        cause_m, effect_m = ctx.member(lk.cause_alarm_id), ctx.member(lk.effect_alarm_id)
+        cause_label = ctx.link_label(lk.cause_alarm_id)
+        effect_label = ctx.link_label(lk.effect_alarm_id)
+        kind = (cause_m.trait if cause_m else "") or cause_label
+        was = (effect_m.trait if effect_m else "") or effect_label
+        ends = (f"] {cause_label}", f"] {effect_label}")
+        evidence = [ln for ln in timeline if "[사건 · " in ln and any(e in ln for e in ends)]
+        if supported_by_tools:
+            evidence += cited_lines
+        lag = _lag_phrase(lk.lag_seconds)
+        out.append({
+            "rank": 0,
+            "cause": f"인프라 {kind} 알람이 {lag} → 애플리케이션 {was} (규칙 {lk.rule_id})",
+            "confidence": CROSS_SOURCE_HYPOTHESIS_CONFIDENCE,
+            "evidence": evidence or [f"{cause_label} → {effect_label} (규칙 {lk.rule_id})"],
+            "reasoning": f"사건 {ctx.episode_id or '?'}의 규칙 {lk.rule_id} 결합"
+                         "(같은 호스트 키 strong 매칭 · 창 안) · "
+                         f"{_SUPPORT_TEXT[supported_by_tools]}. " + CORRELATION_NOT_CAUSATION_NOTE,
+        })
+    return out
+
+
+def _supported_by_tools(cited_lines: list[str], tool_names: list[str]) -> bool | None:
+    """§4.7 — 인용 줄의 소스 라벨(`evidence_source_label`) 판정.
+
+    양쪽이면 True · 한쪽이면 False · 인용 없음 None.
+    """
+    if not cited_lines:
+        return None
+    labels = {evidence_source_label(c, tool_names) for c in cited_lines}
+    return APM_SOURCE_LABEL in labels and INFRA_SOURCE_LABEL in labels
+
+
+def _cross_source_block(
+    ctx: EpisodeContext,
+    links: list[EpisodeLink],
+    supported: bool | None,
+    tool_names: list[str],
+    apm_connected: bool,
+) -> dict:
+    """§4.7 브리핑 선택 키 `cross_source`(6요소는 그대로)."""
+    return {
+        "episode_id": ctx.episode_id,
+        "host_key": ctx.host_key,
+        "sources": {SOURCE_INFRA: len(ctx.infra_members), SOURCE_APM: len(ctx.apm_members)},
+        "apm_tools_connected": apm_connected,
+        "apm_tools_called": sum(1 for n in tool_names if n.startswith(_APM_TOOL_PREFIX)),
+        "links": [
+            {"rule_id": lk.rule_id, "cause": ctx.link_label(lk.cause_alarm_id),
+             "effect": ctx.link_label(lk.effect_alarm_id), "lag_seconds": lk.lag_seconds,
+             "supported_by_tools": supported}
+            for lk in links
+        ],
+    }
+
+
 def _is_cited(line: str, tool_names: list[str]) -> bool:
     """한 라인이 도구 출력 인용을 포함하는지 판정한다(도구명 언급 또는 인용 마커).
 
@@ -168,6 +280,8 @@ def build_briefing(
     correlation: dict | None = None,
     source_labels: bool = False,
     unresolved: bool = False,
+    cross_source: EpisodeContext | None = None,
+    apm_tools_connected: bool = False,
 ) -> dict:
     """6요소 브리핑 dict를 결정적으로 조립한다.
 
@@ -181,6 +295,12 @@ def build_briefing(
     `source_labels`(plans/87 J3 — apm_guidance_enabled): 타임라인 증거 앞에 `[애플리케이션(APM)]`
     (호출된 apm_* 인용) · `[인프라]`(그 밖 · 상관 타임라인) 라벨을 붙인다. `unresolved`(정체 가드):
     요약 앞에 `[미결] `을 붙인다(사유는 호출자가 `limitations`에 싣는다). 둘 다 기본 False — 종전과 같다.
+
+    `cross_source`(plans/150 §4.6·§4.7 — 두 소스 멤버가 있는 사건만 dispatcher가 넘긴다):
+    상관 타임라인이 없으면 사건 멤버를 타임라인에 편입하고(있으면 사전수집이 이미 편입),
+    성립 링크마다 규칙 가설을 LLM 원인 앞에 넣는다(`cause`는 바꾸지 않는다 — 규칙은 가설).
+    한계에 strong 매칭 고지·절단·제외 링크와 APM 도구 미연결(`apm_tools_connected=False`)을
+    강제하고 선택 키 `cross_source`를 더한다. None이면 종전과 같다.
     """
     tool_names = tool_names or []
     claims = _claim_lines(answer)
@@ -206,20 +326,39 @@ def build_briefing(
 
     # 타임라인: 상관 타임라인(상대시각 · 주입값) 먼저, 인용 라인은 근거로 뒤에(없으면 안내).
     cited_lines = [c for c in claims if _is_cited(c, tool_names)]
-    corr_lines = correlation_timeline(correlation) if correlation else []
+    raw_cited = list(cited_lines)
+    corr_pairs = _timeline_pairs(correlation) if correlation else []
+    if cross_source is not None and not correlation:
+        corr_pairs = _timeline_pairs({"timeline": [
+            {"t_offset_min": t.t_offset_min, "kind": t.kind, "detail": t.detail}
+            for t in episode_timeline(cross_source)
+        ]})
+    corr_lines = [ln for _, ln in corr_pairs]
     if source_labels:
-        corr_lines = [f"[{INFRA_SOURCE_LABEL}] {ln}" for ln in corr_lines]
+        corr_lines = [
+            f"[{APM_SOURCE_LABEL if kind == KIND_APM_MEMBER else INFRA_SOURCE_LABEL}] {ln}"
+            for kind, ln in corr_pairs
+        ]
         cited_lines = [f"[{evidence_source_label(c, tool_names)}] {c}" for c in cited_lines]
-    if correlation:
+    if correlation or corr_lines:
         timeline = corr_lines + cited_lines
         timeline = timeline or ["타임라인 근거 없음(상관 타임라인·도구 출력 인용 모두 결여)"]
     else:
         timeline = cited_lines or ["타임라인 근거 없음(도구 출력 인용 결여)"]
 
     # 원인 가설(§7.2): 결정적 상관에서 먼저, LLM 인용 원인은 마지막. rank 1이 `cause` 문자열이 된다.
-    hypotheses_ranked = root_cause_hypotheses(correlation, cause, citations_verified)
+    llm_cause = cause
+    hypotheses_ranked = root_cause_hypotheses(correlation, llm_cause, citations_verified)
     if correlation and hypotheses_ranked:
         cause = hypotheses_ranked[0]["cause"]
+    supported = _supported_by_tools(raw_cited, tool_names) if cross_source is not None else None
+    if cross_source is not None and cross_source.valid_links:
+        # 규칙 가설은 결정적 상관 가설 뒤 · LLM 인용 원인 앞(LLM 항목은 항상 마지막).
+        # `cause`는 그대로 둔다.
+        corr_hyps = hypotheses_ranked[:-1] if hypotheses_ranked else []
+        rules = cross_source_hypotheses(cross_source, corr_lines, supported, raw_cited)
+        merged = corr_hyps + rules + [_llm_hypothesis(0, llm_cause, citations_verified)]
+        hypotheses_ranked = [{**h, "rank": i} for i, h in enumerate(merged, start=1)]
 
     # 병목: 매칭된 시그니처 라벨에서 도출(없으면 미확정).
     if verdict.signals:
@@ -243,6 +382,14 @@ def build_briefing(
     if correlation:
         limits.extend(str(n) for n in (correlation.get("notes") or []))
         limits.append(CORRELATION_NOT_CAUSATION_NOTE)
+    if cross_source is not None:
+        if not apm_tools_connected:
+            limits.append(APM_TOOLS_NOT_CONNECTED_LIMIT)
+        limits.append(STRONG_ONLY_NOTE)
+        limits.extend(cross_source.excluded_link_notes())
+        limits.extend(cross_source.notes)
+        if cross_source.valid_links and CORRELATION_NOT_CAUSATION_NOTE not in limits:
+            limits.append(CORRELATION_NOT_CAUSATION_NOTE)
 
     # 중요도 헤더: severity_judge 판정 + 게이트 근거.
     severity = {
@@ -254,7 +401,7 @@ def build_briefing(
         "evidence_insufficient": verdict.evidence_insufficient,
     }
 
-    return {
+    briefing = {
         "severity": severity,
         "summary": summary,
         "timeline": timeline,
@@ -266,6 +413,11 @@ def build_briefing(
         "citations_verified": citations_verified,
         "hypotheses": uncited,
     }
+    if cross_source is not None:
+        briefing["cross_source"] = _cross_source_block(
+            cross_source, list(cross_source.valid_links), supported, tool_names, apm_tools_connected
+        )
+    return briefing
 
 
 def stub_briefing(message: str) -> dict:
@@ -278,6 +430,8 @@ __all__ = [
     "CORRELATION_NOT_CAUSATION_NOTE",
     "correlation_timeline",
     "root_cause_hypotheses",
+    "cross_source_hypotheses",
+    "CROSS_SOURCE_HYPOTHESIS_CONFIDENCE",
     "CITATION_MARKERS",
     "HYPOTHESIS_PREFIX",
     "HUMAN_GATED_NOTE",

@@ -52,14 +52,27 @@ class ChangePoint:
 
 
 @dataclass(frozen=True)
-class TimelineItem:
-    t_offset_min: int
-    kind: str        # "metric" | "change" | "alarm"
+class EpisodePoint:
+    """외부 사건 스냅샷의 멤버 1건(plans/150 §4.6) — 추가 호출 없이 타임라인에 편입한다.
+
+    `kind`·`detail`은 호출자가 정한다(벤더 중립 — 여기서는 시각 정렬만).
+    """
+
+    time: str          # ISO 8601(naive)
+    kind: str          # "alarm" | "apm_event"
     detail: str
 
 
-# 타임라인 같은 offset의 표시 순서 — 지표 → 변경 → 알람(종전 metric < alarm 순서 불변).
-_KIND_ORDER = {"metric": 0, "change": 1, "alarm": 2}
+@dataclass(frozen=True)
+class TimelineItem:
+    t_offset_min: int
+    kind: str        # "metric" | "change" | "alarm" | "apm_event"(plans/150 — 사건 멤버)
+    detail: str
+
+
+# 타임라인 같은 offset의 표시 순서 — 지표 → 변경 → 알람 → 애플리케이션 이벤트
+# (종전 metric < alarm 순서 불변).
+_KIND_ORDER = {"metric": 0, "change": 1, "alarm": 2, "apm_event": 3}
 
 
 @dataclass(frozen=True)
@@ -196,9 +209,15 @@ def change_finding(reference_time: str, changes: list[ChangePoint], first_alarm_
 def merge_timeline(
     reference_time: str, alarms: list[AlarmPoint], findings: dict[str, dict],
     changes: list[ChangePoint] | None = None,
+    episode: list[EpisodePoint] | None = None,
 ) -> list[TimelineItem]:
-    """§6.1 — 알람 + 지표 이상(onset·peak) + 변경 이벤트를 기준시각 좌표계로 정렬한다."""
+    """§6.1 — 알람 + 지표 이상(onset·peak) + 변경 이벤트를 기준시각 좌표계로 정렬한다.
+
+    `episode`(plans/150 — 사건 스냅샷 멤버)도 같은 축에 넣는다.
+    """
     items: list[TimelineItem] = []
+    for e in episode or []:
+        items.append(TimelineItem(offset_minutes(reference_time, e.time), e.kind, e.detail))
     for c in changes or []:
         items.append(TimelineItem(offset_minutes(reference_time, c.time), "change", _change_label(c)))
     for a in alarms:
@@ -227,11 +246,16 @@ def correlate(
     notes: list[str] | None = None,
     changes: list[ChangePoint] | None = None,
     related_alarms: dict[str, list[AlarmPoint]] | None = None,
+    episode_points: list[EpisodePoint] | None = None,
+    alarm_axis: bool = True,
 ) -> CorrelationResult:
     """§6.1~6.4 — 알람·지표(·변경·연관 서버 알람)를 병합해 선행 신호와 한계를 결정적으로 산출한다.
 
     `changes`가 None이면(오버레이 off·미수집) 결과는 종전과 동일하다 — `change_finding=None`.
     `related_alarms`(plans/91 1-3)는 타임라인·notes에만 실린다 — 요약·선행성은 대표 서버 알람 기준을 유지한다.
+    `episode_points`(plans/150 §4.6 — 사건 스냅샷 멤버)도 타임라인에만 실린다.
+    `alarm_axis=False`는 알람 축을 조회하지 않은 경우다 — 「알람 0건」 노트를 내지 않는다
+    (조회하지 않은 것을 0건으로 단정하지 않는다).
     """
     all_notes: list[str] = list(notes or [])
     findings: dict[str, dict] = {}
@@ -241,7 +265,7 @@ def correlate(
         all_notes.extend(n)
 
     summary = alarm_summary(reference_time, alarms)
-    if not alarms:
+    if not alarms and alarm_axis:
         all_notes.append("사건 구간 내 알람 0건 — 알람 축 선후 판정 불가")
 
     # §6.2 선행성: 첫 알람 대비 onset 시차(음수=지표 선행).
@@ -273,7 +297,9 @@ def correlate(
 
     return CorrelationResult(
         reference_time=_parse(reference_time).isoformat(),
-        timeline=tuple(merge_timeline(reference_time, timeline_alarms, findings, changes)),
+        timeline=tuple(
+            merge_timeline(reference_time, timeline_alarms, findings, changes, episode_points)
+        ),
         metric_findings=findings,
         alarm_summary=summary,
         leading_signal=leading,
@@ -284,6 +310,7 @@ def correlate(
 
 __all__ = [
     "Z_THRESHOLD", "SUSTAINED_MIN_POINTS", "BASELINE_MIN_POINTS",
-    "AlarmPoint", "ChangePoint", "MetricSeries", "TimelineItem", "CorrelationResult",
+    "AlarmPoint", "ChangePoint", "EpisodePoint", "MetricSeries", "TimelineItem",
+    "CorrelationResult",
     "offset_minutes", "format_offset", "metric_finding", "alarm_summary", "change_finding", "merge_timeline", "correlate",
 ]

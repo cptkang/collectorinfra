@@ -11,7 +11,7 @@ event/decision은 덕 타이핑으로 소비하며 타입에 결합하지 않는
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from noise_gate.domain.process_rank import KIND_APM, is_apm_event
 
@@ -23,6 +23,10 @@ CONTRACT_VERSION = "1"
 # 이름 필드다. `source_id`(제니퍼 소스 — 인스턴스 식별 = 소스·도메인·인스턴스)는
 # plans/87 J8 · D-287 ②.
 _APM_HINT_FIELDS: tuple[str, ...] = ("source_id", "instance_id", "domain_id", "event_type", "txid")
+
+# (plans/150 §4.5) 사건 종합 조사 — `meta.investigation_kind` 값과 dedup 지문 접두.
+INVESTIGATION_KIND_EPISODE = "episode"
+EPISODE_FINGERPRINT_PREFIX = "episode:"
 
 
 def apm_trigger_hints(event) -> dict:  # noqa: ANN001 — AlarmEvent (덕 타이핑)
@@ -64,6 +68,9 @@ def build_trigger_payload(
     target_state: Optional[dict] = None,
     root_resource_name: Optional[str] = None,
     episode_id: str | None = None,
+    episode: dict[str, Any] | None = None,
+    cross_source: dict[str, Any] | None = None,
+    investigation_kind: str | None = None,
 ) -> dict:
     """게이트 보유값으로 조사 트리거 페이로드(`contract_version: "1"`)를 조립한다.
 
@@ -82,6 +89,12 @@ def build_trigger_payload(
             `meta.root_resource_name` 키가 생긴다.
         episode_id: 크로스소스 사건 id(plans/144 §5.3 · §4.5). 값이 있을 때만 `meta.episode_id` 키가
             생긴다(cross_source_mode off·사건 미소속이면 종전 바이트 동일).
+        episode: 사건 스냅샷(plans/150 §4.4 · `cross_source.episode_snapshot`). 값이 있을 때만
+            `meta.episode` 키가 생긴다(사건 맥락 플래그 off면 종전 바이트 동일).
+        cross_source: 이 알람의 결합 판정(`decision.evidence.cross_source`). 값이 있을 때만
+            `meta.cross_source` 키가 생긴다.
+        investigation_kind: 조사 종류(종합 조사 "episode"). 값이 있을 때만
+            `meta.investigation_kind`.
         target_state: 대상 호스트 가용성 판정(Plan 81 · `HostAvailability.to_dict()`).
             **값이 있을 때만 `meta.target_state` 키가 생긴다** — 없으면 페이로드가 종전과
             바이트 동일하다. `validate_payload`가 여분 키를 거부하지 않으므로 구버전
@@ -112,6 +125,14 @@ def build_trigger_payload(
     # plans/144 §4.5: 사건 id — 조사 서비스·plans/117 라벨 조인 키. 값이 있을 때만 키를 넣는다.
     if episode_id:
         meta["episode_id"] = str(episode_id)
+    # plans/150 §4.4·§4.5: 사건 스냅샷·결합 판정·조사 종류 — 값이 있을 때만(계약 `meta` 가산 키 ·
+    # contract_version "1" 유지 — 수신 측은 meta 추가 키를 허용한다).
+    if episode:
+        meta["episode"] = episode
+    if cross_source:
+        meta["cross_source"] = cross_source
+    if investigation_kind:
+        meta["investigation_kind"] = str(investigation_kind)
 
     return {
         "contract_version": CONTRACT_VERSION,
@@ -136,6 +157,37 @@ def build_trigger_payload(
         },
         "meta": meta,
     }
+
+
+def build_episode_trigger_payload(
+    event: Any,  # 대표 알람 AlarmEvent (덕 타이핑)
+    decision: Any,  # 대표 알람 NotificationDecision (덕 타이핑)
+    episode: dict[str, Any],
+    *,
+    target_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """사건 종합 조사 페이로드(plans/150 §4.5 · G-6 (a)).
+
+    대표 알람 event·판정 + 그 시점 전체 `meta.episode` + `meta.investigation_kind="episode"`.
+    판정의 `fingerprint`만 `episode:<사건 id>`로 바꾼다 — 조사 서비스의 fingerprint dedup(TTL)이
+    같은 사건의 중복 제출을 막는다(대표 알람 단독 조사와 지문이 겹치지 않는다).
+    `meta.cross_source`는 대표 알람 자신의 결합 판정(`decision.evidence.cross_source`)이 있을 때만
+    싣는다.
+    """
+    episode_id = str(episode.get("episode_id") or "")
+    evidence = getattr(decision, "evidence", None)
+    cross_source = evidence.get("cross_source") if isinstance(evidence, dict) else None
+    payload = build_trigger_payload(
+        event,
+        decision,
+        target_state=target_state,
+        episode_id=episode_id or None,
+        episode=episode,
+        cross_source=cross_source if isinstance(cross_source, dict) else None,
+        investigation_kind=INVESTIGATION_KIND_EPISODE,
+    )
+    payload["decision"]["fingerprint"] = EPISODE_FINGERPRINT_PREFIX + episode_id
+    return payload
 
 
 #: 가용성(DOWN) 계열 알람을 알아보는 표면어 (Plan 81 G-3).
@@ -203,7 +255,10 @@ def build_escalation(verdict: object) -> Optional[dict]:
 
 __all__ = [
     "CONTRACT_VERSION",
+    "EPISODE_FINGERPRINT_PREFIX",
+    "INVESTIGATION_KIND_EPISODE",
     "apm_trigger_hints",
+    "build_episode_trigger_payload",
     "build_escalation",
     "build_trigger_payload",
     "verdict_escalates",

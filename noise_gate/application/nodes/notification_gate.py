@@ -14,6 +14,8 @@ alarm_analyzer 다음에 위치하여, 결정적 정책 함수 `decide_notificat
       게이트웨이(`apm_client` 주입)에 fatal 이벤트를 묻고 있으면 승격만 한다. 조회 실패는 판정
       불변 + 사유(로그·`stage_evidence.app_impact_error`). (plans/87 J8) 조회는 알람 존의 제니퍼
       소스(`source_ids`)로 좁힌다 — 존에 소스가 없으면 전 소스.
+    - (plans/150 W1 · G-7 (a)) decision_analysis_text_enabled일 때만 이미 만든 AI 분석 서술 3필드를
+      판정 레코드 `analysis`로 옮긴다(추가 LLM 0 · 판정 불변 · off면 키 없음 = 비트 동일).
 
 계층: application → domain(notification_policy.decide_notification) 단방향 의존만 사용한다.
 """
@@ -194,6 +196,13 @@ async def notification_gate_node(
                 db_id=str(getattr(event, "db_id", "") or ""),
                 resource_name=str(getattr(event, "resource_name", "") or ""),
                 condition_log=str(getattr(event, "condition_log", "") or ""),
+                # (plans/150 W1) AI 분석 서술 — 플래그 off면 인자 자체를 넘기지 않는다
+                # (호출·레코드 모두 현행과 비트 동일).
+                **(
+                    {"analysis": analysis_text(result)}
+                    if getattr(gate_cfg, "decision_analysis_text_enabled", False)
+                    else {}
+                ),
             )
         except Exception:  # noqa: BLE001 — 기록 실패가 발송을 막지 않는다
             logger.warning("발송 판단 감사 기록 실패(무시): alarm_id=%s", event.alarm_id)
@@ -207,6 +216,29 @@ async def notification_gate_node(
     out: dict[str, Any] = {"notification_decision": decision}
     if updated_ctx is not None:
         out["noise_context"] = updated_ctx  # 예약키 app_impact를 채운 컨텍스트(승격했을 때만)
+    return out
+
+
+# ── plans/150 W1: 판정 레코드 AI 분석 서술(G-7 (a)) ──────────────────────────
+# 서술 필드 하나의 저장 상한(자) — 판정 레코드 크기와 관제 tail 스캔 비용을 묶는다(R-5).
+ANALYSIS_TEXT_MAX = 500
+_ANALYSIS_TEXT_FIELDS: tuple[str, ...] = ("summary", "probable_cause", "recommended_action")
+
+
+def analysis_text(result: Any) -> dict[str, Any]:
+    """AI 분석 결과에서 판정 레코드용 `analysis` dict를 만든다 (plans/150 W1 · G-7 (a)).
+
+    3필드를 각 `ANALYSIS_TEXT_MAX`자로 자르고 `failed: False`를 붙인다. 분석이 실패한 결과
+    (`result.error`)는 analyzer가 원문 알람으로 채운 폴백 문구라 AI 추정이 아니다 — 텍스트를
+    비우고 `failed: True`만 남긴다(화면은 「AI 분석 실패」 상태만 보인다).
+    """
+    if getattr(result, "error", None):
+        return {field: "" for field in _ANALYSIS_TEXT_FIELDS} | {"failed": True}
+    out: dict[str, Any] = {
+        field: str(getattr(result, field, "") or "")[:ANALYSIS_TEXT_MAX]
+        for field in _ANALYSIS_TEXT_FIELDS
+    }
+    out["failed"] = False
     return out
 
 

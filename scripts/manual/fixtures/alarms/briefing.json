@@ -1,0 +1,254 @@
+{
+  "_note": "손으로 만든 예시 데이터(녹화 아님) — plans/150 「조사 브리핑」·「발생 원인과 처리」 캡처용. 같은 서버의 인프라 원인 알람(CPU)과 제니퍼 증상 알람(WAS 응답 지연)이 한 사건으로 묶이고, 증상은 크로스소스 사건 상관으로 PAGE → DASHBOARD 강등, 원인 알람의 단독 조사와 사건 종합 조사가 모두 완료된 장면. ago_min 은 캡처 시각 기준 몇 분 전인지다(녹화 결정 기록보다 앞이라 결정 이력 첫 행을 바꾸지 않는다). 서버 이름은 샌드박스 명명 규칙(svr-*)을 따른 가상 이름이다.",
+  "decisions": [
+    {
+      "ago_min": 40,
+      "alarm_id": "MANUAL-BRF-CPU",
+      "tier": "page",
+      "reason": "매트릭스(심각도2×중요도높음) → page",
+      "priority": 330,
+      "fingerprint": "manual-briefing-cpu",
+      "signals": {
+        "severity": 2,
+        "ai_severity": null,
+        "effective_severity": 2,
+        "importance": "높음",
+        "maintenance": false,
+        "parent_avail_status": null,
+        "pattern": "첫 발생",
+        "is_routine": false,
+        "noti_policy": null,
+        "flapping": false,
+        "self_heal": false,
+        "storm": false,
+        "llm_actionability": null,
+        "cascaded": null,
+        "root_resource": null,
+        "correlated": false
+      },
+      "stage": "matrix",
+      "alarm_name": "CPU 사용률",
+      "server_name": "svr-was-01",
+      "db_id": "polestar",
+      "resource_name": "CPU",
+      "condition_log": "[CPU 사용률 95.1% (> 90%, 3회 연속)]",
+      "stage_evidence": {
+        "base_tier": "page",
+        "promote": [],
+        "demote": [],
+        "episode_id": "ep-3f2a9c1b7d40"
+      },
+      "analysis": {
+        "summary": "svr-was-01 의 CPU 사용률이 3회 연속 90%를 넘었습니다.",
+        "probable_cause": "야간 배치 작업이나 특정 프로세스가 CPU를 오래 점유한 것으로 추정됩니다.",
+        "recommended_action": "CPU 점유 상위 프로세스와 배치 작업 일정을 확인하세요.",
+        "failed": false
+      }
+    },
+    {
+      "ago_min": 36,
+      "alarm_id": "MANUAL-BRF-WAS",
+      "tier": "dashboard",
+      "reason": "크로스소스 사건 상관 — 원인 MANUAL-BRF-CPU 통보 중, 증상 대시보드 강등(규칙 host_resource_to_was_latency · 호스트 svr-was-01 · 시차 240초 · 매트릭스 page)",
+      "priority": 180,
+      "fingerprint": "manual-briefing-was",
+      "signals": {
+        "severity": 2,
+        "ai_severity": null,
+        "effective_severity": 2,
+        "importance": "높음",
+        "maintenance": false,
+        "parent_avail_status": null,
+        "pattern": "첫 발생",
+        "is_routine": false,
+        "noti_policy": null,
+        "flapping": false,
+        "self_heal": false,
+        "storm": false,
+        "llm_actionability": null,
+        "cascaded": null,
+        "root_resource": null,
+        "correlated": false
+      },
+      "stage": "cross_source",
+      "alarm_name": "WAS 응답 지연",
+      "server_name": "svr-was-01",
+      "db_id": "jennifer",
+      "resource_name": "WAS",
+      "stage_evidence": {
+        "capped_from": "page",
+        "episode_id": "ep-3f2a9c1b7d40",
+        "cross_source": {
+          "mode": "enforce",
+          "host_key": "svr-was-01",
+          "rule_id": "host_resource_to_was_latency",
+          "cause_alarm_id": "MANUAL-BRF-CPU",
+          "lag_seconds": 240,
+          "action": "demote",
+          "enforce": true,
+          "missing": [],
+          "applied": true
+        }
+      },
+      "analysis": {
+        "summary": "svr-was-01 WAS 의 평균 응답 시간이 3초를 넘었습니다.",
+        "probable_cause": "WAS 스레드 풀이 모자라 요청이 대기열에 쌓인 것으로 추정됩니다.",
+        "recommended_action": "WAS 스레드 풀 크기를 늘리고 재기동을 검토하세요.",
+        "failed": false
+      }
+    }
+  ],
+  "investigations": [
+    {
+      "ago_min": 39,
+      "investigation_id": "inv-manual-cpu",
+      "alarm_ids": [
+        "MANUAL-BRF-CPU"
+      ],
+      "kind": "alarm",
+      "episode_id": "ep-3f2a9c1b7d40",
+      "status": "submitted",
+      "source": "inline"
+    },
+    {
+      "ago_min": 37,
+      "investigation_id": "inv-manual-cpu",
+      "alarm_ids": [
+        "MANUAL-BRF-CPU"
+      ],
+      "kind": "alarm",
+      "episode_id": "ep-3f2a9c1b7d40",
+      "status": "done",
+      "source": "followup",
+      "verdict": {
+        "level": "high"
+      },
+      "briefing_lines": [
+        {
+          "label": "중요도",
+          "text": "심각(신뢰도 high) — 게이트 PAGE · 조사 결과 유지"
+        },
+        {
+          "label": "요약",
+          "text": "svr-was-01 CPU 사용률이 10:00부터 95% 안팎으로 이어지고 있습니다"
+        },
+        {
+          "label": "타임라인",
+          "text": "[인프라] 09:58 CPU 사용률 88% ← 폴스타 성능 지표\n[인프라] 10:00 CPU 사용률 95.1% ← 폴스타 성능 지표"
+        },
+        {
+          "label": "원인 가설",
+          "text": "[가설] 10:00에 시작한 야간 배치 작업이 CPU를 점유하고 있습니다\n[미결] 배치 외 다른 프로세스의 점유 여부는 확인하지 못했습니다"
+        },
+        {
+          "label": "권고",
+          "text": "배치 작업 일정과 CPU 점유 상위 프로세스를 확인하세요\n※ 실행은 운영자 승인 후 수동 — 시스템은 제안만(자동 실행 경로 없음)"
+        },
+        {
+          "label": "한계",
+          "text": "프로세스별 CPU 표본이 5분뿐이라 점유 프로세스를 단정하지 못했습니다"
+        }
+      ]
+    },
+    {
+      "ago_min": 34,
+      "investigation_id": "inv-manual-ep",
+      "alarm_ids": [
+        "MANUAL-BRF-CPU",
+        "MANUAL-BRF-WAS"
+      ],
+      "kind": "episode",
+      "episode_id": "ep-3f2a9c1b7d40",
+      "status": "submitted",
+      "source": "followup"
+    },
+    {
+      "ago_min": 31,
+      "investigation_id": "inv-manual-ep",
+      "alarm_ids": [
+        "MANUAL-BRF-CPU",
+        "MANUAL-BRF-WAS"
+      ],
+      "kind": "episode",
+      "episode_id": "ep-3f2a9c1b7d40",
+      "status": "done",
+      "source": "followup",
+      "verdict": {
+        "level": "high"
+      },
+      "briefing_lines": [
+        {
+          "label": "중요도",
+          "text": "심각(신뢰도 high) — 게이트 PAGE · 조사 결과 유지"
+        },
+        {
+          "label": "요약",
+          "text": "svr-was-01 CPU 사용률 95%가 이어진 4분 뒤 WAS 응답 지연이 났습니다 — 같은 사건으로 판단했습니다"
+        },
+        {
+          "label": "타임라인",
+          "text": "[인프라] 10:00 CPU 사용률 95.1% ← 폴스타 성능 지표\n[애플리케이션(APM)] 10:04 평균 응답 시간 3.2초 ← 제니퍼 트랜잭션"
+        },
+        {
+          "label": "원인 가설",
+          "text": "[가설] 야간 배치 작업이 CPU를 점유해 WAS 요청 처리가 밀렸습니다\n[미결] 스레드 대기열이 늘어난 직접 원인은 확인하지 못했습니다"
+        },
+        {
+          "label": "권고",
+          "text": "배치 작업 일정과 CPU 점유 상위 프로세스를 먼저 확인하세요\n※ 실행은 운영자 승인 후 수동 — 시스템은 제안만(자동 실행 경로 없음)"
+        },
+        {
+          "label": "한계",
+          "text": "제니퍼 트랜잭션 표본이 10분뿐이라 인용 일부를 검증하지 못했습니다"
+        }
+      ],
+      "cross_source": {
+        "episode_id": "ep-3f2a9c1b7d40",
+        "host_key": "svr-was-01",
+        "sources": {
+          "polestar": 1,
+          "jennifer": 1
+        },
+        "apm_tools_connected": true,
+        "apm_tools_called": 3,
+        "links": [
+          {
+            "rule_id": "host_resource_to_was_latency",
+            "cause": "CPU 사용률",
+            "effect": "WAS 응답 지연",
+            "lag_seconds": 240,
+            "supported_by_tools": true
+          }
+        ]
+      }
+    }
+  ],
+  "cards": [
+    {
+      "type": "alarm_notification",
+      "alarm_id": "MANUAL-BRF-CPU",
+      "investigation_id": "inv-manual-cpu",
+      "severity": 2,
+      "severity_label": "경고",
+      "alarm_name": "CPU 사용률",
+      "db_id": "polestar",
+      "server_name": "svr-was-01",
+      "hostname": "svr-was-01",
+      "ip_address": "",
+      "resource_type": "server.Cpus",
+      "resource_name": "CPU",
+      "alarm_status": "Y",
+      "summary": "svr-was-01 의 CPU 사용률이 3회 연속 90%를 넘었습니다.",
+      "probable_cause": "야간 배치 작업이나 특정 프로세스가 CPU를 오래 점유한 것으로 추정됩니다.",
+      "recommended_action": "CPU 점유 상위 프로세스와 배치 작업 일정을 확인하세요.",
+      "pattern_type": "첫 발생",
+      "is_routine": false,
+      "pattern_analysis": "",
+      "tier": "page",
+      "tier_reason": "매트릭스(심각도2×중요도높음) → page",
+      "stage": "matrix",
+      "alarm_time": null,
+      "received_at": null
+    }
+  ]
+}

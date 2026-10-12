@@ -27,6 +27,7 @@ import redis.asyncio as aioredis
 
 if TYPE_CHECKING:
     from noise_gate.domain.topology import DependencyGraph
+    from noise_gate.infrastructure.investigation_store import InvestigationStore
 
 from noise_gate.domain.alarm import AlarmEvent
 from noise_gate.domain.annotation_signal import (
@@ -47,6 +48,8 @@ from noise_gate.domain.cross_source import (
     EpisodeTracker,
     apm_alarms_in_window,
     app_impact_from_alarms,
+    episode_investigation_due,
+    episode_snapshot,
     late_promotion_targets,
 )
 from noise_gate.domain.flapping import MAX_STATES, flap_percent, update_flap_state
@@ -80,7 +83,9 @@ from noise_gate.infrastructure.redis_queue import (
 from noise_gate.application.nodes.alarm_notifier import (
     late_promotion_reason,
     send_late_promotion,
+    spawn_episode_investigation_followup,
 )
+from noise_gate.application.nodes.investigation_trigger import submit_episode_investigation
 from noise_gate.orchestration.alarm_graph import build_alarm_graph
 from noise_gate.orchestration.ticket_summary import run_ticket_summary_loop
 
@@ -113,6 +118,12 @@ _LATE_PROMOTION_PER_TRIGGER_MAX = 5
 # 후보 전수 sweep(사건 종료·해소·승격 정리) 최소 간격(초) — 메모리 위생용이라 정확성과 무관하다
 # (대상 판정은 late_promotion_targets가 멤버 상태로 다시 거른다). 상한 검사는 매번 한다.
 _LATE_PROMOTION_SWEEP_SECONDS = 60.0
+
+# (plans/150 W4 §4.5) 종합 조사 대표 알람 후보(멤버의 분석 결과·판정 보관) 상한 — 넘치면 닫힌 사건의
+# 것부터, 그래도 넘치면 가장 오래된 것부터 버린다. 종합 조사 제출 뒤에는 그 사건 몫을 지운다.
+_EPISODE_CTX_MAX = 2000
+# 후속 알람을 묶지 않는 종합 조사 저장 상태(조사 저장소 `normalize_status` 결과 — 종결 실패).
+_EPISODE_INV_UNUSABLE = frozenset({"rejected", "failed", "timeout"})
 
 
 def _dedup_severity_rises(rec: dict[str, Any], severity: int) -> bool:
@@ -157,6 +168,8 @@ class AlarmWorker:
         # (Plan 60 E3) 동적 baseline 이상탐지 어댑터 — dynamic_baseline_enabled 시에만 생성.
         self._metric_baseline = None
         self._decision_store = None
+        # (plans/150 W2) 조사 저장소 — 조사 트리거가 켜졌을 때만 생성(off면 None·파일 생성 0).
+        self._investigation_store: InvestigationStore | None = None
         # (Plan 54 모듈 4) 침묵 규칙 저장소 — silence_enabled off(기본)면 None(조회 자체 없음).
         self._silence_store = None
         # 활성 규칙 캐시 (만료 epoch, 규칙 목록) — 알람 1건마다 파일을 다시 읽지 않게 한다.
@@ -251,6 +264,10 @@ class AlarmWorker:
         # 사건 종료·멤버 해소·승격 완료 시 sweep하고 상한(_LATE_PROMOTION_MAX)을 둔다.
         self._late_promotion: dict[str, tuple[str, Any, Any, float]] = {}
         self._late_promotion_swept_at = 0.0
+        # (plans/150 W4 §4.5) 종합 조사 대표 알람 후보: alarm_id → (사건 id, 분석 결과, 판정,
+        # 보관 시각). investigation_episode_context_enabled + 조사 트리거 + 추적기일 때만 담는다
+        # (사건 상태 영속화 없음 — G-8). 상한 _EPISODE_CTX_MAX.
+        self._episode_ctx: dict[str, tuple[str, Any, Any, float]] = {}
 
     def _build_history_repo(self):  # noqa: ANN202
         """이력 조회 리포지토리를 생성한다 (Plan 47).
@@ -458,13 +475,131 @@ class AlarmWorker:
     def _episode_investigation(
         self, cross_source: dict[str, Any] | None, event: AlarmEvent
     ) -> dict[str, Any] | None:
-        """같은 사건에서 APM 알람이 이미 제출한 조사(plans/144 §4.5) — APM 알람에만."""
+        """같은 사건에서 APM 알람이 이미 제출한 조사(plans/144 §4.5) — APM 알람에만.
+
+        (plans/150 §4.5) 사건 종합 조사가 실제로 제출돼 조사 id가 있고 종결 실패가 아니면 그 id가
+        우선한다 — 제니퍼 후속 알람은 종합 조사로 연결된다(`episode_existing`). 종합 조사 시도가
+        실패했으면(id 없음 · 저장소상 거부·실패·타임아웃) 종전 동작(사건의 기존 단독 조사 id, 없으면
+        제출)으로 돌아간다. 종합 조사는 플래그 on에서만 생기므로 off면 종전과 같다.
+        """
         if not is_apm_source(event):
             return None
         ep = self._episode_of(cross_source)
-        if ep is None or not ep.apm_investigation_id:
+        if ep is None:
             return None
-        return {"episode_id": ep.id, "investigation_id": ep.apm_investigation_id}
+        inv = self._usable_episode_investigation(ep) or ep.apm_investigation_id
+        if not inv:
+            return None
+        return {"episode_id": ep.id, "investigation_id": inv}
+
+    def _usable_episode_investigation(self, ep: Episode) -> str:
+        """연결해도 되는 사건 종합 조사 id — 제출 성공(id 있음)이고 저장소상 종결 실패가 아닐 때만.
+
+        submit은 받았지만 조사 서비스가 뒤에 거부·실패·타임아웃으로 끝낸 조사(후속 poll이 저장소에
+        남긴 상태)에는 후속 알람을 묶지 않는다 — 묶으면 그 알람은 아무 조사도 받지 못한다.
+        """
+        inv = ep.episode_investigation_id
+        if not inv or ep.episode_investigation_status != "submitted":
+            return ""
+        store = self._investigation_store
+        if store is None:
+            return inv
+        try:
+            rec = store.get_by_investigation(inv)
+        except Exception:  # noqa: BLE001 — 조회 실패는 제출 성공 사실로 판단한다
+            logger.warning("종합 조사 상태 조회 실패(연결 유지): inv=%s", inv, exc_info=True)
+            return inv
+        status = str((rec or {}).get("status") or "")
+        return "" if status in _EPISODE_INV_UNUSABLE else inv
+
+    def _episode_context_on(self) -> bool:
+        """사건 맥락 활성 — 플래그 AND 조사 트리거 AND 추적기(cross_source_mode≠off · §4.4)."""
+        gate = self._config.noise_gate
+        return (
+            self._episodes is not None
+            and bool(getattr(gate, "investigation_episode_context_enabled", False))
+            and bool(getattr(gate, "investigation_trigger_enabled", False))
+        )
+
+    def _episode_snapshot(self, cross_source: dict[str, Any] | None) -> dict[str, Any] | None:
+        """조사 페이로드용 제출 시점 사건 스냅샷(사본) — 사건 맥락 off·사건 미소속이면 None."""
+        if not self._episode_context_on() or self._episodes is None:
+            return None
+        ep = self._episode_of(cross_source)
+        return episode_snapshot(ep, self._episodes.rules) if ep is not None else None
+
+    def _remember_episode_ctx(
+        self, cross_source: dict[str, Any], event: AlarmEvent, result: Any, now: float
+    ) -> None:
+        """이 알람의 분석 결과·판정을 종합 조사 대표 후보로 보관한다(§4.5 · 상한 가드)."""
+        if not isinstance(result, dict):
+            return
+        decision = result.get("notification_decision")
+        analysis = result.get("analysis_result")
+        if decision is None or analysis is None:
+            return
+        self._episode_ctx[event.alarm_id] = (
+            str(cross_source.get("episode_id") or ""), analysis, decision, now
+        )
+        if len(self._episode_ctx) <= _EPISODE_CTX_MAX or self._episodes is None:
+            return
+        for alarm_id, (episode_id, *_rest) in list(self._episode_ctx.items()):
+            if self._episodes.get(episode_id) is None:
+                del self._episode_ctx[alarm_id]
+        overflow = len(self._episode_ctx) - _EPISODE_CTX_MAX
+        if overflow > 0:
+            oldest = sorted(self._episode_ctx, key=lambda k: self._episode_ctx[k][3])
+            for alarm_id in oldest[:overflow]:
+                del self._episode_ctx[alarm_id]
+            logger.warning(
+                "종합 조사 대표 후보 상한(%d) 초과 — 오래된 %d건 정리", _EPISODE_CTX_MAX, overflow
+            )
+
+    async def _maybe_episode_investigation(
+        self, cross_source: dict[str, Any], event: AlarmEvent
+    ) -> None:
+        """사건 종합 조사를 조건이 처음 성립할 때 1회 제출한다 (plans/150 §4.5 · G-6 (a)).
+
+        조건은 `episode_investigation_due`(두 소스 멤버 · 링크 ≥1 · 통보 멤버 ≥1 · 미시도). 대표
+        알람은 사건의 대표(먼저 쓰인 원인) — 그 알람의 결과가 보관돼 있지 않으면 지금 알람이다.
+        시도는 성패와 무관하게 사건당 1회다(재시도 폭주 방지 · 사유는 감사·저장소). 판정은 바꾸지
+        않는다.
+        """
+        ep = self._episode_of(cross_source)
+        if ep is None or not episode_investigation_due(ep):
+            return
+        client = self._sre_agent_client
+        if client is None or self._episodes is None:
+            return
+        rep_id = ep.representative_id
+        ctx = self._episode_ctx.get(rep_id)
+        if ctx is None or ctx[0] != ep.id:
+            rep_id = event.alarm_id
+            ctx = self._episode_ctx.get(rep_id)
+        if ctx is None:
+            return
+        _, analysis, decision, _ = ctx
+        ep.episode_investigation_status = "attempted"
+        alarm_ids = [rep_id] + [
+            m.alarm.alarm_id for m in ep.members if m.alarm.alarm_id != rep_id
+        ]
+        outcome = await submit_episode_investigation(
+            client, analysis.alarm_event, decision,
+            episode_snapshot(ep, self._episodes.rules), alarm_ids,
+            cfg=self._config, decision_store=self._decision_store,
+            inv_store=self._investigation_store,
+        )
+        ep.episode_investigation_status = str(outcome.get("status") or "attempted")
+        if outcome.get("investigation_id") and outcome.get("status") == "submitted":
+            ep.episode_investigation_id = str(outcome["investigation_id"])
+        for alarm_id in [k for k, v in self._episode_ctx.items() if v[0] == ep.id]:
+            del self._episode_ctx[alarm_id]
+        pending = outcome.get("pending")
+        if pending:
+            spawn_episode_investigation_followup(
+                pending, analysis, self._config, self._config.noise_gate,
+                self._decision_store, self._investigation_store,
+            )
 
     def _record_apm_investigation(
         self, cross_source: dict[str, Any], event: AlarmEvent, result: Any
@@ -610,6 +745,15 @@ class AlarmWorker:
             self._record_apm_investigation(cross_source, event, result)
         except Exception:  # noqa: BLE001
             logger.warning("사건 조사 id 기록 실패: alarm_id=%s", event.alarm_id, exc_info=True)
+        # (plans/150 W4 §4.5) 사건 종합 조사 — 플래그 off면 진입하지 않는다(비트 동일).
+        if self._episode_context_on():
+            try:
+                self._remember_episode_ctx(cross_source, event, result, now)
+                await self._maybe_episode_investigation(cross_source, event)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "사건 종합 조사 처리 실패: alarm_id=%s", event.alarm_id, exc_info=True
+                )
         if not self._late_promotion_on():
             return
         try:
@@ -703,6 +847,27 @@ class AlarmWorker:
             )
         except Exception:
             logger.exception("발송 판단 감사 저장소 생성 실패 — 감사 없이 진행")
+            return None
+
+    def _build_investigation_store(self) -> InvestigationStore | None:
+        """조사 저장소를 생성한다 (plans/150 W2 · D-323 G-1 (a)).
+
+        게이트 off·조사 트리거 off·생성 실패 시 None — 트리거·후속 태스크의 저장 호출이 전부
+        no-op이라 통보 경로가 현행과 비트 동일하고 파일도 만들지 않는다
+        (생성자는 파일을 열지 않는다).
+        """
+        ng = self._config.noise_gate
+        if not ng.enable_noise_gate or not getattr(ng, "investigation_trigger_enabled", False):
+            return None
+        try:
+            from noise_gate.infrastructure.investigation_store import InvestigationStore
+
+            return InvestigationStore(
+                getattr(ng, "investigation_store_path", "logs/alarm_investigations.jsonl"),
+                int(getattr(ng, "investigation_store_max_lines", 2000)),
+            )
+        except Exception:
+            logger.exception("조사 저장소 생성 실패 — 웹 조회용 조사 기록 없이 진행")
             return None
 
     def _active_silence_rules(self, now: float) -> list:
@@ -970,6 +1135,7 @@ class AlarmWorker:
         # (Plan 60 B-7 L-2/L-4) 로컬 임베딩 provider — 두 주석 플래그 모두 off면 None(회귀 0).
         self._embedding_provider = self._build_embedding_provider()
         self._decision_store = self._build_decision_store()
+        self._investigation_store = self._build_investigation_store()
         self._silence_store = self._build_silence_store()
         self._ticket_queue = self._build_ticket_queue()
         self._feedback_store = self._build_feedback_store()
@@ -1126,6 +1292,7 @@ class AlarmWorker:
             episode_investigation: dict[str, Any] | None = None
             # (plans/144 W5) 통보문 사건 묶음 표시용 요약(annotate·enforce + 사건 소속일 때만).
             episode_summary: dict[str, Any] | None = None
+            episode_snapshot_: dict[str, Any] | None = None
 
             if gate_on:
                 # ── Plan 52 게이트 활성 경로 ──
@@ -1289,6 +1456,7 @@ class AlarmWorker:
                 episode_app_impact = self._episode_app_impact(cross_source, event)
                 episode_investigation = self._episode_investigation(cross_source, event)
                 episode_summary = self._episode_summary(cross_source)
+                episode_snapshot_ = self._episode_snapshot(cross_source)
             else:
                 # ── 기존 경로 (게이트 off — 무변경) ──
                 if self._is_duplicate(event, dedup):
@@ -1359,6 +1527,9 @@ class AlarmWorker:
                     ),
                     # (plans/144 W5) 통보문 사건 묶음 표시 요약 — 값이 있을 때만 키(비트 동일).
                     **({"episode_summary": episode_summary} if episode_summary else {}),
+                    # (plans/150 W4) 제출 시점 사건 스냅샷 — 사건 맥락 on·사건 소속일 때만 키
+                    # (비트 동일).
+                    **({"episode_snapshot": episode_snapshot_} if episode_snapshot_ else {}),
                 },
                 config={
                     "configurable": {
@@ -1374,6 +1545,8 @@ class AlarmWorker:
                         # enricher는 이상탐지 태스크 미추가(anomaly_severity 미산출·회귀 0).
                         "metric_baseline": self._metric_baseline,
                         "decision_store": self._decision_store,
+                        # (plans/150 W2) 조사 저장소 — 트리거 off면 None → 저장 호출 no-op.
+                        "investigation_store": self._investigation_store,
                         # (E3) TICKET 일배치 큐 — 워커는 cross-process라 alarm_bus는 미주입.
                         # 큐 적재는 동작하고, 티어 SSE는 sse_publisher(Redis 브리지)로 중계한다.
                         "ticket_queue": self._ticket_queue,

@@ -37,6 +37,12 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
+from sre_agent.domain.cross_source_episode import (
+    INVESTIGATION_KIND_EPISODE,
+    active_episode,
+    episode_from_payload,
+    is_episode_investigation,
+)
 from sre_agent.domain.investigation_limits import (
     apm_limitations,
     is_apm_trigger,
@@ -105,7 +111,7 @@ BriefingFn = Callable[..., dict]
 PrefetchFn = Callable[[JobLike], "dict | None"]
 
 
-def _host_key(job: JobLike) -> tuple[str, str] | None:
+def _host_key(job: JobLike, episode_scoped: bool = False) -> tuple[str, ...] | None:
     """조사 대상 호스트의 in-flight 키 `(db_id, host)`를 만든다 (78 W2-6 L-4).
 
     **두 진입점의 payload 형태가 다르다**(실측 2026-08-27) — 한쪽만 보면 그 경로에서 가드가
@@ -119,11 +125,18 @@ def _host_key(job: JobLike) -> tuple[str, str] | None:
     키가 되어 가드를 비껴간다.** 해소하려면 이름 해소가 필요한데 그건 본체(`cmm_resource`) 소관이라
     여기서 부를 수 없다(D-118 경계) — 완화가 아니라 **명시된 잔여 한계**다.
 
+    **종합 조사**(plans/150 §4.5 · `episode_scoped` = `cross_source_investigation_enabled`):
+    종합 조사 페이로드는 대표(원인) 알람 event를 실어 키가 그 알람의 단독 조사와 같다 —
+    단독 조사가 도는 동안 제출되면 거부되고 사건당 1회라 재시도도 없다. 그래서 종합 조사는
+    `(db_id, host, "episode")`로 따로 잡는다(같은 호스트 종합 조사끼리의 중복 차단은 유지).
+
     Args:
         job: 조사 잡
+        episode_scoped: True면 종합 조사 잡에 kind 축을 붙인다(False면 종전 키 그대로)
 
     Returns:
-        `(db_id, host)` 키. 대상을 식별할 수 없으면 None(부하 귀속이 불가하므로 가드 대상 아님)
+        `(db_id, host[, "episode"])` 키. 대상을 식별할 수 없으면 None(부하 귀속이 불가하므로
+        가드 대상 아님)
     """
     payload = getattr(job, "payload", None) or {}
     event = payload.get("event") or {}
@@ -137,6 +150,8 @@ def _host_key(job: JobLike) -> tuple[str, str] | None:
     ).strip()
     if not host:
         return None
+    if episode_scoped and is_episode_investigation(payload):
+        return (db_id, host, INVESTIGATION_KIND_EPISODE)
     return (db_id, host)
 
 
@@ -223,7 +238,7 @@ class InvestigationDispatcher:
         # **fingerprint dedup과 목적이 다르다**: dedup은 *같은 알람*의 재조사를 TTL로 억제하고,
         # 이쪽은 *서로 다른 알람이라도 같은 호스트*의 **동시** 조사를 막는다. 부하는 곱해지므로
         # 이미 포화된 대상에 조사를 겹쳐 걸면 조사가 장애를 악화시킨다(78 W2-6 · docs/25 L-4).
-        self._inflight_hosts: dict[tuple[str, str], tuple[str, float]] = {}
+        self._inflight_hosts: dict[tuple[str, ...], tuple[str, float]] = {}
         self._budget_window: deque[float] = deque()  # 최근 1시간 조사 시작 시각들
         self._workers: set[threading.Thread] = set()
 
@@ -240,7 +255,8 @@ class InvestigationDispatcher:
             job.briefing = {"stub": True, "message": job.verdict, "elements": None}
             job.tool_calls_summary, job.tokens, job.cost = [], 0, 0.0
             job.updated_at = self._wall_clock()
-            self._audit({"event": "rejected", "investigation_id": job.investigation_id, "reason": blocked})
+            self._audit({"event": "rejected", "investigation_id": job.investigation_id,
+                         "reason": blocked, **self._episode_audit(job)})
             return
 
         if self._diagnose_fn is None or self._settings.investigation_llm_stub_reason() is not None:
@@ -304,7 +320,7 @@ class InvestigationDispatcher:
             # L-4 — 같은 호스트를 조사 중이면 거부한다. 직렬화(대기)하지 않는 이유:
             # 조사는 분 단위로 길어(실측 161s) submit을 붙들면 MCP 동기 타임아웃(60s)을 넘긴다.
             # 거부하고 사유를 남기면 호출자가 진행 중인 조사의 브리핑을 받아 쓸 수 있다.
-            host_key = _host_key(job)
+            host_key = _host_key(job, self._settings.cross_source_investigation_enabled)
             if host_key is not None and host_key in self._inflight_hosts:
                 return "host_investigation_in_flight"
 
@@ -323,7 +339,7 @@ class InvestigationDispatcher:
         **자기 조사가 잡은 키만 푼다** — 방어적 축출 뒤 다른 조사가 같은 키를 잡았을 수 있고,
         그때 무조건 pop하면 남의 가드를 풀어 버린다.
         """
-        key = _host_key(job)
+        key = _host_key(job, self._settings.cross_source_investigation_enabled)
         if key is None:
             return
         with self._lock:
@@ -372,7 +388,8 @@ class InvestigationDispatcher:
             job.error = f"dispatcher 워커 예외: {type(exc).__name__}: {exc}"
             job.updated_at = self._wall_clock()
             logger.exception("dispatcher 워커 예외: investigation_id=%s", job.investigation_id)
-            self._audit({"event": "failed", "investigation_id": job.investigation_id, "error": job.error})
+            self._audit({"event": "failed", "investigation_id": job.investigation_id,
+                         "error": job.error, **self._episode_audit(job)})
         finally:
             self._release_host(job)
             with self._lock:
@@ -395,7 +412,8 @@ class InvestigationDispatcher:
             job.briefing = {"stub": True, "message": job.verdict, "elements": None}
             job.tool_calls_summary, job.tokens, job.cost = [], 0, 0.0
             job.updated_at = self._wall_clock()
-            self._audit({"event": "timeout", "investigation_id": job.investigation_id, "timeout_s": self._timeout})
+            self._audit({"event": "timeout", "investigation_id": job.investigation_id,
+                         "timeout_s": self._timeout, **self._episode_audit(job)})
             return
 
         gate_severity, gate_tier = self._gate_context(job)
@@ -415,6 +433,13 @@ class InvestigationDispatcher:
             ) + [stall_limitation(*s) for s in stalls]
             briefing_kwargs["source_labels"] = True
             briefing_kwargs["unresolved"] = bool(stalls)
+        xs = active_episode(job.payload, self._settings.cross_source_investigation_enabled,
+                            getattr(job, "reference_time", None))
+        if xs is not None:
+            # plans/150 §4.6·§4.7 — 두 소스 멤버가 있는 사건만.
+            # off·한쪽 소스면 인자를 넘기지 않는다(종전 호출 동일).
+            briefing_kwargs["cross_source"] = xs
+            briefing_kwargs["apm_tools_connected"] = bool(self._settings.apm_mcp_url)
         briefing = self._briefing_fn(
             answer=result.answer,
             verdict=verdict,
@@ -443,7 +468,26 @@ class InvestigationDispatcher:
         }
         if stalls:
             record["unresolved"] = [f"{name} x{n}" for name, _args, n in stalls]  # 정체 가드(미결)만 추가 키
+        record.update(self._episode_audit(job))
         self._audit(record)
+
+    def _episode_audit(self, job: JobLike) -> dict:
+        """plans/150 §4.6 감사 키 `episode_id`·`kind`·`cross_source_links`.
+
+        플래그 on이고 `meta.episode`가 있을 때만 붙는다 — off면 빈 dict라 감사 레코드가
+        종전과 비트 동일하다. `kind`는 `meta.investigation_kind`(종합 조사 "episode"),
+        없으면 잡 종류다.
+        """
+        if not self._settings.cross_source_investigation_enabled:
+            return {}
+        ctx = episode_from_payload(getattr(job, "payload", None))
+        if ctx is None:
+            return {}
+        return {
+            "episode_id": ctx.episode_id,
+            "kind": ctx.investigation_kind or job.kind,
+            "cross_source_links": len(ctx.links),
+        }
 
     def _prefetch(self, job: JobLike) -> dict | None:
         """사전수집 콜러블을 격리 실행한다. 미주입·기준시각 없음이면 None(호출 자체를 하지 않는다)."""
@@ -580,7 +624,8 @@ class InvestigationDispatcher:
         job.briefing = {"stub": True, "message": message, "elements": None}
         job.tool_calls_summary, job.tokens, job.cost, job.error = [], 0, 0.0, None
         job.updated_at = self._wall_clock()
-        self._audit({"event": "stub", "investigation_id": job.investigation_id, "message": message})
+        self._audit({"event": "stub", "investigation_id": job.investigation_id, "message": message,
+                     **self._episode_audit(job)})
         # 스텁 경로는 워커가 돌지 않는다 — 여기서 풀지 않으면 그 호스트가 영구히 조사 불가가 된다.
         self._release_host(job)
 

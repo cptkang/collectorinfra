@@ -283,6 +283,22 @@ captures:
       - wait: "#promptConfirm"
       - wait: 500
     callouts: [[1, "#promptConfirm"], [2, "#prompt"]]
+  # 조사 브리핑(plans/150) — 예시 카드·조사 기록은 손으로 만든 것(fixtures/alarms/briefing.json)
+  - id: alarm-briefing
+    login: admin
+    height: 1300
+    steps:
+      - click: ".view-tab[data-view='alarm']"
+      - wait: 1500
+      - alarm_replay: {only: briefing}
+      - wait: "#alarmList .message--alarm .alarm-briefing-toggle"
+      - wait: 800
+      - click: "#alarmList .alarm-briefing-toggle"
+      - wait: "#alarmList .alarm-briefing-body .bv-item--limit"
+      - wait: 600
+    clip: "#alarmList .message--alarm:has(.alarm-briefing-section)"
+    pad: 8
+    callouts: [[1, "#alarmList .alarm-briefing-toggle"], [2, "#alarmList .bv-chip"], [3, "#alarmList .bv-badge--hypo"], [4, "#alarmList .bv-item--limit"], [5, "#alarmList .bv-gated"]]
   - id: noise-user
     login: user
     steps:
@@ -296,6 +312,21 @@ captures:
       - click: "#decisionBody tr >> nth=0"
       - wait: "#drawer"
       - wait: 800
+  - id: noise-drawer-cause
+    login: user
+    height: 1120
+    steps:
+      - goto: /noise
+      - wait: 2500
+      - fill: ["#decSearch", "WAS 응답 지연"]
+      - click: "#decSearchBtn"
+      - wait: "#decisionBody tr:has-text('WAS 응답 지연')"
+      - click: "#decisionBody tr:has-text('WAS 응답 지연') >> nth=0"
+      - wait: "#drawerCause .cause-briefing .bv-cross-table"
+      - wait: 800
+    clip: "#drawer"
+    pad: 0
+    callouts: [[1, "#drawerSummary .tier-shift"], [2, "#drawerSummary .drawer-summary-text"], [3, "#drawerCause .cause-handling"], [4, "#drawerCause .cause-ai"], [5, "#drawerCause .cause-briefing"]]
   - id: noise-admin
     login: admin
     steps:

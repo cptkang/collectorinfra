@@ -762,6 +762,9 @@
                 + (item.stage_label || item.stage || "") + " · " + fmtTime(item.ts);
             node.appendChild(el("div", "rs", meta));
             node.appendChild(el("div", "rs", item.reason || ""));
+            // (plans/150 W1) AI 추정 원인 한 줄 — 출처를 앞에 붙인다(판정 근거와 섞지 않는다).
+            var cause = causeShort(item);
+            if (cause) node.appendChild(el("div", "rs rs-ai", (HELP.cause || {}).feedCausePrefix + cause));
 
             // 재동기화로 받은 항목은 레코드 전체를 가졌다 — 그 레코드로 그린다(plans/112 F-5).
             // SSE로만 들어온 항목(레코드 없음)만 서버 조회로 폴백한다.
@@ -792,6 +795,7 @@
                 stage_label: item.stage_label,
                 reason: item.reason,
                 ts: item.ts,
+                analysis: item.analysis,
                 record: item,
             };
         });
@@ -872,6 +876,9 @@
             stage_label: "",
             reason: payload.tier_reason,
             ts: payload.received_at || payload.alarm_time || new Date().toISOString(),
+            // (plans/150 W1) 스트림의 AI 분석 서술을 버리지 않고 행에 담는다(출처 = 스트림 ·
+            // 분석 실패 표시는 스트림에 없다 — 드로어는 서버 레코드로 다시 그린다).
+            analysis: streamAnalysis(payload),
         };
         var exists = state.feed.some(function (f) { return feedKey(f) === feedKey(item); });
         if (!exists) {
@@ -879,6 +886,16 @@
             state.feed = state.feed.slice(0, FEED_MAX);
             renderFeed();
         }
+    }
+
+    // 스트림 페이로드의 AI 분석 서술 3필드 — 셋 다 비면 null(행에 AI 줄을 만들지 않는다).
+    function streamAnalysis(payload) {
+        var out = {
+            summary: payload.summary || "",
+            probable_cause: payload.probable_cause || "",
+            recommended_action: payload.recommended_action || "",
+        };
+        return out.summary || out.probable_cause || out.recommended_action ? out : null;
     }
 
     function setStreamPill(kind, text) {
@@ -932,6 +949,17 @@
     drawerTrace.parentNode.insertBefore(drawerTraceHead, drawerTrace);
     drawerTrace.parentNode.insertBefore(drawerEvidenceHead, drawerTrace.nextSibling);
     drawerTrace.parentNode.insertBefore(drawerEvidence, drawerEvidenceHead.nextSibling);
+    // (plans/150 W1) 머리 사유 요약(판단 요약 표 위) · 「발생 원인과 처리」(판단 경로 위).
+    // 문구는 noise-help.js가 정본이다(이 시점에는 아래 HELP 변수가 아직 대입 전이라 직접 읽는다).
+    var drawerSummary = el("div", "drawer-summary");
+    drawerSummary.id = "drawerSummary";
+    var drawerCauseHead = el("h2", "drawer-sub", ((window.NOISE_HELP || {}).cause || {}).title);
+    drawerCauseHead.setAttribute("data-help", "drawer.cause");
+    var drawerCause = el("div", "drawer-cause");
+    drawerCause.id = "drawerCause";
+    drawerTrace.parentNode.insertBefore(drawerSummary, drawerFacts);
+    drawerTrace.parentNode.insertBefore(drawerCauseHead, drawerTraceHead);
+    drawerTrace.parentNode.insertBefore(drawerCause, drawerTraceHead);
 
     function openDrawerFromRecord(record, trigger) {
         if (!record) return;
@@ -997,6 +1025,16 @@
             addFactRow(drawerFactsBody, "직전 창 재발", fmtInt(record.recurrence.count) + "회");
         }
         addFactRow(drawerFactsBody, "관련 판단", relatedText(record));
+
+        // (plans/150 W1) 사유 요약 1문단 + 「원래 티어 → 최종 티어」 칩 — 결정적 템플릿.
+        drawerSummary.innerHTML = "";
+        var shiftChip = tierShiftChip(record);
+        if (shiftChip) drawerSummary.appendChild(shiftChip);
+        var summaryText = reasonSummary(record);
+        if (summaryText) drawerSummary.appendChild(el("p", "drawer-summary-text", summaryText));
+        drawerSummary.style.display = drawerSummary.childNodes.length ? "" : "none";
+        renderCause(record);
+        renderInvestigation(record);
 
         drawerTrace.innerHTML = "";
         if (!timeline || !timeline.length) {
@@ -1068,6 +1106,7 @@
 
     function closeDrawer() {
         if (!drawer.classList.contains("on")) return;
+        stopInvestigation();
         if (infoOwner && drawer.contains(infoOwner)) closeInfoPop();
         drawer.classList.remove("on");
         drawer.setAttribute("aria-hidden", "true");
@@ -1482,6 +1521,246 @@
         }
     }
 
+    // ── 사유 요약 · 처리 안내 · AI 추정 (plans/150 W1 · §4.8 · §4.9) ────────
+    // 사유 요약·처리 안내는 결정적 템플릿이다(D-035) — 문구 정본은 noise-help.js(summary)와 도메인
+    // STAGE_HANDLING(API `summary.stages[].handling`). AI 추정(`analysis`)은 출처를 따로 표기하고 위
+    // 두 문장과 합치지 않는다(G-8).
+
+    // 템플릿 채우기 — `{키}`는 lookup 값으로 바꾸고, `[ … ]` 선택 구간은 안의 키가 하나라도 비면
+    // 구간째 뺀다. 넣은 값은 다시 훑지 않는다(값 안의 `{`·`[`가 템플릿으로 해석되지 않게).
+    function fillTemplate(template, lookup) {
+        function value(key) {
+            var v = lookup(key);
+            return v === null || v === undefined ? "" : String(v);
+        }
+        return String(template || "").replace(/\[([^\[\]]*)\]|\{([\w.]+)\}/g, function (_, seg, key) {
+            if (key !== undefined) return value(key);
+            var missing = false;
+            var out = seg.replace(/\{([\w.]+)\}/g, function (__, k) {
+                var v = value(k);
+                if (!v) missing = true;
+                return v;
+            });
+            return missing ? "" : out;
+        });
+    }
+
+    var TIER_RANK = { suppress: 0, dashboard: 1, ticket: 2, page: 3 };
+
+    // 원래 티어 — 기록된 값만 쓴다: 크로스소스 상한 전 매트릭스 티어(`capped_from`) · 매트릭스 기본
+    // 티어(`base_tier`). 없으면 "" (칩·강등 필터 대상 아님).
+    function originalTier(item) {
+        var e = evidenceOf(item);
+        if (e.capped_from) return String(e.capped_from);
+        if (item && item.stage === "matrix" && e.base_tier) return String(e.base_tier);
+        return "";
+    }
+
+    // 원래 → 최종 이동 방향: -1 강등 · 1 승격 · 0 같음/모름.
+    function tierShift(item) {
+        var from = originalTier(item);
+        var to = item && item.tier;
+        if (!(from in TIER_RANK) || !(to in TIER_RANK)) return 0;
+        return TIER_RANK[to] < TIER_RANK[from] ? -1 : TIER_RANK[to] > TIER_RANK[from] ? 1 : 0;
+    }
+
+    function tierShiftChip(item) {
+        var shift = tierShift(item);
+        if (!shift) return null;
+        var S = HELP.summary || {};
+        var from = originalTier(item);
+        var chip = el("span", "tier-shift " + (shift < 0 ? "is-demoted" : "is-promoted"));
+        chip.title = S.chipTitle || "";
+        chip.appendChild(el("span", null,
+            (TIER_NAMES[from] || from) + " → " + (TIER_NAMES[item.tier] || item.tier)));
+        chip.appendChild(el("b", null, shift < 0 ? S.chipDemoted : S.chipPromoted));
+        return chip;
+    }
+
+    // 템플릿 값 찾기 — 레코드 값(stage_label·tier·from_tier) 또는 단계 근거(`부모.자식` 경로).
+    // 빈 값(없음·null·""·빈 배열·dict)은 ""를 돌려 선택 구간을 빼게 한다. 형식은 근거 표와 같다.
+    function evidenceLookup(item) {
+        var e = evidenceOf(item);
+        return function (key) {
+            if (key === "stage_label") return item.stage_label || stageLabel(item.stage);
+            if (key === "tier") return TIER_NAMES[item.tier] || String(item.tier || "").toUpperCase();
+            if (key === "from_tier") {
+                var from = originalTier(item);
+                return from ? TIER_NAMES[from] || from : "";
+            }
+            var v = e;
+            var parts = key.split(".");
+            for (var i = 0; i < parts.length; i++) {
+                if (!v || typeof v !== "object" || Array.isArray(v)) return "";
+                v = v[parts[i]];
+            }
+            if (v === null || v === undefined || v === "") return "";
+            if (Array.isArray(v) && !v.length) return "";
+            if (typeof v === "object" && !Array.isArray(v)) return "";
+            return evidenceValue(key, v);
+        };
+    }
+
+    // 드로어 머리 사유 요약 1문단 — 머리 문장(강등·승격·판단) + 단계 문장 + 묶기만 문장.
+    function reasonSummary(item) {
+        var S = HELP.summary || {};
+        var lookup = evidenceLookup(item);
+        var shift = tierShift(item);
+        var head = item.stage === "unknown" ? S.unknownHead
+            : shift < 0 ? S.demoted : shift > 0 ? S.promoted : S.decided;
+        var parts = [fillTemplate(head, lookup), fillTemplate((S.stages || {})[item.stage], lookup)];
+        // 크로스소스 사건에 묶였지만 이 판단에서 강등하지 않은 증상 — 빠진 조건을 덧붙인다.
+        var cs = crossSource(item);
+        if (item.stage !== "cross_source" && cs.cause_alarm_id && cs.applied !== true) {
+            parts.push(fillTemplate(S.linked, lookup));
+        }
+        return parts.filter(Boolean).join(" ");
+    }
+
+    // 처리 안내(ⓐ) — 단계 메타의 handling 표에서 티어 문장(없으면 `*`)을 골라 근거 값을 채운다.
+    function handlingText(item) {
+        var meta = stageMeta(item.stage);
+        var table = (meta && meta.handling) || {};
+        var template = table[item.tier] || table["*"] || "";
+        return template ? fillTemplate(template, evidenceLookup(item)) : "";
+    }
+
+    // 목록 칸용 처리 안내 — 첫 ` — `나 첫 문장 끝까지(문장은 할 일을 첫 마디에 둔다).
+    function handlingShort(item) {
+        var text = handlingText(item);
+        var cut = text.search(/ — |[.](?=\s|$)/);
+        return cut > 0 ? text.slice(0, cut) : text;
+    }
+
+    function analysisOf(item) {
+        var a = item && item.analysis;
+        return a && typeof a === "object" ? a : null;
+    }
+
+    // AI 분석 실패 여부 — 저장된 `analysis.failed`, 없으면 게이트가 남긴 근거 표시(`stage_evidence.analysis`).
+    function analysisFailed(item) {
+        var a = analysisOf(item);
+        if (a) return a.failed === true;
+        return !!evidenceOf(item).analysis;
+    }
+
+    var CAUSE_SHORT_MAX = 80;
+
+    // 목록 칸·피드 줄용 AI 추정 원인(80자).
+    function causeShort(item) {
+        var a = analysisOf(item);
+        if (!a) return "";
+        if (a.failed) return (HELP.cause || {}).aiFailed;
+        var text = String(a.probable_cause || "");
+        return text.length > CAUSE_SHORT_MAX ? text.slice(0, CAUSE_SHORT_MAX) + "…" : text;
+    }
+
+    // 「발생 원인과 처리」 — ⓐ 처리 안내(위) → ⓑ AI 추정(아래). ⓒ 조사 브리핑은 이 칸에 없다.
+    function renderCause(item) {
+        var C = HELP.cause || {};
+        drawerCause.innerHTML = "";
+
+        var handlingBlock = el("div", "cause-block cause-handling");
+        var handlingHead = el("div", "cause-head");
+        handlingHead.appendChild(el("span", "cause-title", C.handlingHead));
+        handlingHead.appendChild(el("span", "src-badge src-rule", C.handlingBadge));
+        handlingBlock.appendChild(handlingHead);
+        var handling = handlingText(item);
+        handlingBlock.appendChild(el("p", "cause-text" + (handling ? "" : " cell-muted"),
+            handling || C.handlingMissing));
+        drawerCause.appendChild(handlingBlock);
+
+        var aiBlock = el("div", "cause-block cause-ai");
+        var aiHead = el("div", "cause-head");
+        aiHead.appendChild(el("span", "cause-title", C.aiHead));
+        aiHead.appendChild(el("span", "src-badge src-ai", C.aiBadge));
+        aiBlock.appendChild(aiHead);
+        var analysis = analysisOf(item);
+        if (analysisFailed(item)) {
+            aiBlock.appendChild(el("p", "cause-text cause-failed", C.aiFailed));
+        } else if (!analysis) {
+            aiBlock.appendChild(el("p", "cause-text cell-muted", C.aiNotStored));
+        } else {
+            aiBlock.appendChild(el("p", "cause-lead", C.aiLead));
+            var table = el("table", "signals cause-fields");
+            var body = el("tbody");
+            table.appendChild(body);
+            ["summary", "probable_cause", "recommended_action"].forEach(function (key) {
+                addFactRow(body, (C.fields || {})[key] || key, analysis[key]);
+            });
+            if (body.childNodes.length) aiBlock.appendChild(table);
+            else aiBlock.appendChild(el("p", "cause-text cell-muted", "—"));
+        }
+        drawerCause.appendChild(aiBlock);
+    }
+
+    // ⓒ 조사 브리핑(plans/150 W3 · G-8 (a)) — ⓐ·ⓑ 아래에 붙인다. 렌더는 알람 카드와 같은 공용 함수
+    // (`briefing-view.js` BriefingView.renderBody — D-247 공용 패널). 행 레코드에는 조사 블록이 없으므로
+    // 드로어를 열 때(= 펼칠 때) `decisions/{alarm_id}`의 `investigation` 블록을 1회 읽는다. 블록이 없으면
+    // 칸 자체를 그리지 않는다. 미종결이면 공용 컨트롤러가 15초 간격(상한 300초)으로 조회 API를 다시
+    // 불러 서버 쪽 poll을 태운다. 드로어를 닫거나 다른 판단을 열면 타이머를 멈춘다.
+    var investigationPanel = null;
+    var investigationSeq = 0;
+
+    function stopInvestigation() {
+        investigationSeq += 1;
+        if (investigationPanel) investigationPanel.close();
+        investigationPanel = null;
+    }
+
+    async function decisionInvestigation(alarmId) {
+        var data = await getJSON(API + "/decisions/" + encodeURIComponent(alarmId));
+        return (data && data.decision && data.decision.investigation) || null;
+    }
+
+    // 조회 API는 사용자 토큰 인가다 — break-glass 운영자 토큰이면 401이라 apiRequest(401 → 로그아웃)를
+    // 거치지 않고 직접 부른다. 실패하면 관제 응답의 블록(저장소 값)으로 대신한다.
+    async function reloadInvestigation(block, alarmId) {
+        var path = block.investigation_id
+            ? "/api/v1/alarm/investigations/" + encodeURIComponent(block.investigation_id)
+            : "/api/v1/alarm/investigations/by-alarm/" + encodeURIComponent(alarmId);
+        try {
+            var res = await fetch(path, { headers: { "Authorization": "Bearer " + token } });
+            if (res.ok) return res.json();
+        } catch (_err) { /* 아래 저장소 값으로 대신한다 */ }
+        var stored = await decisionInvestigation(alarmId);
+        if (!stored) throw new Error("조사 기록을 다시 읽지 못했습니다");
+        return stored;
+    }
+
+    function renderInvestigation(record) {
+        stopInvestigation();
+        var BV = window.BriefingView;
+        if (!BV || !record || !record.alarm_id) return;
+        var seq = investigationSeq;
+        var alarmId = record.alarm_id;
+        var first = record.investigation
+            ? Promise.resolve(record.investigation) : decisionInvestigation(alarmId);
+        first.then(function (block) {
+            if (seq !== investigationSeq || !block) return;   // 닫혔거나 다른 판단 · 기록 없음
+            investigationPanel = BV.attach(investigationBox(BV), {
+                initial: block,
+                load: function () { return reloadInvestigation(block, alarmId); },
+            });
+            investigationPanel.open();
+        }).catch(function (err) {
+            if (seq !== investigationSeq) return;
+            investigationBox(BV).innerHTML = BV.renderError(err && err.message);  // 침묵 금지
+        });
+    }
+
+    // ⓒ 칸 골격(제목 + 본문 자리)을 ⓐ·ⓑ 뒤에 붙이고 본문 자리를 돌려준다.
+    function investigationBox(BV) {
+        var box = el("div", "cause-block cause-briefing");
+        var head = el("div", "cause-head");
+        head.appendChild(el("span", "cause-title", BV.TEXT.title));
+        box.appendChild(head);
+        var body = el("div", "cause-briefing-body");
+        box.appendChild(body);
+        drawerCause.appendChild(box);
+        return body;
+    }
+
     // ── 설명 팝오버 (plans/112 S4 · §2.7) ───────────────────────────────
     // 항목 옆 (!) 버튼 → 클릭 팝오버. 호버 툴팁을 쓰지 않는 이유: 여러 줄 설명을 키보드·터치로도
     // 열어야 한다. 한 번에 하나만 열고, 같은 버튼·Esc·바깥 클릭으로 닫는다. 팝오버는 읽기 전용이라
@@ -1730,6 +2009,13 @@
             },
         },
         basis: { head: "근거", cls: "wrap", render: stageBasis },
+        // (plans/150 W1) AI 추정 원인(80자 · 저장된 판단이 하나라도 있을 때만 칸) · 처리 안내(짧게).
+        cause: {
+            head: (HELP.cause || {}).colCause, cls: "wrap",
+            when: function (it) { return !!analysisOf(it); },
+            render: causeShort,
+        },
+        handling: { head: (HELP.cause || {}).colHandling, cls: "wrap", render: handlingShort },
 
         // ── 퍼널 단계 전용 칸(§2.3) ──
         evMarkers: {
@@ -2026,13 +2312,13 @@
         dashboard: {
             title: "DASHBOARD — 화면 표시만", question: "왜 통보 없이 화면에만 남았나",
             help: "kpi.dashboard", tier: ["dashboard"], chips: ["stage"],
-            cols: ["time", "alarm", "server", "stage", "basis", "sev", "importance"],
+            cols: ["time", "alarm", "server", "stage", "basis", "handling", "cause", "sev", "importance"],
             heads: { stage: "강등 경로", basis: "경로별 근거" },
         },
         suppress: {
             title: "SUPPRESS — 억제된 알람", question: "어떤 알람을 왜 억제했나",
             help: "kpi.suppress", tier: ["suppress"], chips: ["stage"],
-            cols: ["time", "alarm", "server", "stage", "reason", "basis", "sev"],
+            cols: ["time", "alarm", "server", "stage", "reason", "basis", "handling", "cause", "sev"],
             heads: { stage: "억제 단계", reason: "억제 사유", basis: "단계 근거" },
         },
         suppress_ratio: {
@@ -2170,12 +2456,12 @@
         };
     })();
 
-    var panelState = null;     // {spec, chipTier, chipStage, q, page, data, trigger}
+    var panelState = null;     // {spec, chipTier, chipStage, q, page, data, trigger, demotedOnly}
     var panelSeq = 0;          // 늦게 도착한 응답이 새 조회를 덮지 않게 하는 순번
 
     function openPanel(spec, trigger) {
         panelState = {
-            spec: spec, chipTier: "", chipStage: "", q: "", page: 1, data: null,
+            spec: spec, chipTier: "", chipStage: "", q: "", page: 1, data: null, demotedOnly: false,
             trigger: returnPoint(trigger || document.activeElement),
         };
         P.input.value = "";
@@ -2376,6 +2662,29 @@
                 loadPanel();
             }));
         }
+        P.chips.appendChild(demotedToggle(ps));
+    }
+
+    // (plans/150 W1) 「강등됨」 보조 필터 — 원래 티어(기록된 값)보다 최종 티어가 낮은 판단만 본다.
+    // 서버 페이지(50건) 안에서 거르는 클라이언트 필터라 수는 「이 쪽」 기준이다(총 건수·칩은 그대로).
+    function demotedToggle(ps) {
+        var C = HELP.cause || {};
+        var items = (ps.data && ps.data.items) || [];
+        var count = items.filter(function (it) { return tierShift(it) < 0; }).length;
+        var row = el("div", "chip-row");
+        row.setAttribute("role", "group");
+        row.setAttribute("aria-label", C.demotedFilter);
+        var chip = el("button", "chip" + (ps.demotedOnly ? " on" : "") + (count ? "" : " is-zero"));
+        chip.type = "button";
+        chip.setAttribute("aria-pressed", ps.demotedOnly ? "true" : "false");
+        chip.appendChild(document.createTextNode(C.demotedFilter + " (" + C.demotedFilterScope + ")"));
+        chip.appendChild(el("b", null, fmtInt(count)));
+        chip.addEventListener("click", function () {
+            ps.demotedOnly = !ps.demotedOnly;
+            renderPanel();
+        });
+        row.appendChild(chip);
+        return row;
     }
 
     function chipRow(label, items, active, onPick) {
@@ -2424,6 +2733,7 @@
     function renderPanelTable(ps, errorMessage) {
         var spec = ps.spec;
         var items = ps.data ? ps.data.items : [];
+        if (ps.demotedOnly) items = items.filter(function (it) { return tierShift(it) < 0; });
         var cols = panelColumns(spec, items);
         var heads = spec.heads || {};
 
@@ -2447,6 +2757,10 @@
         if (!items.length) {
             P.table.style.display = "none";
             P.status.style.display = "";
+            if (ps.demotedOnly && ps.data && ps.data.items.length) {
+                P.status.textContent = (HELP.cause || {}).demotedEmpty;
+                return;
+            }
             P.status.textContent = (spec.emptyText ? spec.emptyText(ps) : "이 조건의 판단이 없습니다.")
                 + " (" + describeFilters(ps, true) + ")";
             return;

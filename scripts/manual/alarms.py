@@ -142,6 +142,40 @@ def seed_decisions(app_dir: Path) -> int:
     return len(recs)
 
 
+def seed_briefing(app_dir: Path) -> int:
+    """조사 브리핑 장면(plans/150)의 예시 판정·조사 기록을 캡처 서버 저장소에 넣는다.
+
+    ``fixtures/alarms/briefing.json`` 은 손으로 만든 예시다
+    (녹화 아님 — 워커·LLM 없이 화면만 그린다). ``ago_min`` 을 지금 기준 시각으로 바꿔
+    판정은 결정 기록 끝에 덧붙이고, 조사는 조사 저장소에 쓴다.
+    알람 카드는 ``capture.py`` 의 ``alarm_replay: {only: briefing}`` 가 발행한다.
+    """
+    src = OUT / "briefing.json"
+    if not src.exists():
+        return 0
+    data = json.loads(src.read_text("utf-8"))
+    now = dt.datetime.now(dt.UTC)
+
+    def _rows(key: str) -> list[dict]:
+        out = []
+        for rec in data.get(key) or []:
+            rec = dict(rec)
+            rec["ts"] = (now - dt.timedelta(minutes=rec.pop("ago_min"))).isoformat()
+            out.append(rec)
+        return out
+
+    logs = app_dir / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    decisions = _rows("decisions")
+    with (logs / "alarm_decisions.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in decisions))
+    investigations = _rows("investigations")
+    (logs / "alarm_investigations.jsonl").write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in investigations), "utf-8"
+    )
+    return len(decisions) + len(investigations)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     g = ap.add_mutually_exclusive_group(required=True)

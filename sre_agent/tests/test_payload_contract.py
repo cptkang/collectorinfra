@@ -105,3 +105,47 @@ def test_submit_unsupported_version_rejected(tmp_path):
     res = store.submit(p)
     assert res["status"] == "rejected"
     assert "contract_version" in res["reason"]
+
+
+# ── plans/150 §4.4 가산 키(meta.episode · meta.cross_source · meta.investigation_kind) ──
+
+
+def _episode_payload() -> dict:
+    p = base_payload()
+    p["meta"] = {
+        "episode_id": "ep-1",
+        "investigation_kind": "episode",
+        "cross_source": {"rule_id": "R1", "cause_alarm_id": "a1", "lag_seconds": 270.0,
+                         "action": "link", "missing": []},
+        "episode": {
+            "episode_id": "ep-1", "zone": "gongjon", "host_key": "web-01",
+            "members": [{"alarm_id": "a1", "source": "polestar", "db_id": "db1",
+                         "alarm_name": "CPU", "kind": "cpu", "was_kinds": [], "level": "",
+                         "severity": 2, "occurred_at": 1791363600.0, "tier": "page",
+                         "resolved": False}],
+            "links": [], "rules": [], "infra_db_ids": ["db1"],
+        },
+    }
+    return p
+
+
+def test_additive_episode_meta_keys_accepted_without_version_bump():
+    # contract_version은 "1" 그대로 — 수신 측은 meta 추가 키를 허용한다(D-118 · plans/150 §4.4).
+    p = _episode_payload()
+    assert p["contract_version"] == CONTRACT_VERSION == "1"
+    ok, reason = validate_payload(p)
+    assert ok is True and reason is None
+
+
+def test_submit_with_episode_meta_accepted(tmp_path):
+    store = JobStore(make_settings(), audit_path=tmp_path / "a.jsonl")
+    res = store.submit(_episode_payload())
+    assert res["status"] == "accepted"
+
+
+def test_malformed_episode_meta_does_not_reject():
+    # 모양이 틀린 meta.episode도 계약 위반이 아니다(선택 키 — 해석 측이 무시한다).
+    p = base_payload()
+    p["meta"] = {"episode": "not-a-dict", "investigation_kind": 3}
+    ok, _ = validate_payload(p)
+    assert ok is True

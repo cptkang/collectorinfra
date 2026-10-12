@@ -80,6 +80,22 @@ class TestRecord:
         rows = _read_lines(store_path)
         assert rows[0]["ts"] == ts.isoformat()
 
+    def test_analysis_none_adds_no_key(self, tmp_path):
+        # (plans/150 W1) 기본(플래그 off) 호출은 키를 넣지 않는다 — 기존 레코드와 비트 동일.
+        store_path = tmp_path / "decisions.jsonl"
+        DecisionStore(str(store_path)).record(make_decision(), analysis=None)
+        assert "analysis" not in _read_lines(store_path)[0]
+
+    def test_analysis_dict_is_recorded_as_top_level_field(self, tmp_path):
+        store_path = tmp_path / "decisions.jsonl"
+        analysis = {
+            "summary": "s", "probable_cause": "c", "recommended_action": "a", "failed": False,
+        }
+        DecisionStore(str(store_path)).record(make_decision(tier=TIER_SUPPRESS), analysis=analysis)
+        row = _read_lines(store_path)[0]
+        assert row["analysis"] == analysis
+        assert row["tier"] == TIER_SUPPRESS  # 억제 판단에도 실린다(억제 ≠ 삭제)
+
 
 class TestEnabledFlag:
     def test_disabled_is_noop(self, tmp_path):

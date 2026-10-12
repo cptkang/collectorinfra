@@ -160,6 +160,19 @@ class AgentSettings(BaseSettings):
     # severity_judge_enabled와 함께 켠다 — judge가 꺼져 있으면 합칠 판정이 없다.
     # **만료일 2027-03-29**(D-161 ① · 6개월).
     apm_signatures_enabled: bool = False
+    # 크로스소스 조사(plans/150 W5 · §4.6·§4.7 · D-323 ⑨). 기본 off = 페이로드
+    # `meta.episode`를 무시해 질문·지침·브리핑·감사가 비트 동일.
+    # 켜면 `meta.episode`(noise_gate 사건 추적기 스냅샷 — 여기서 사건을 재구성하지 않는다 ·
+    # G-5 (a))에 인프라·애플리케이션 멤버가 모두 있을 때 크로스소스 질문 · OS+APM 플레이북
+    # 병기 · 사건 멤버 타임라인 · 규칙 가설 · 브리핑 `cross_source` 블록 · 감사 키
+    # (episode_id·kind·cross_source_links)가 붙는다. APM 트리거 사전수집은
+    # `meta.episode.infra_db_ids[0]`를 폴스타 소스로 쓴다(없으면 폴스타 축 생략 —
+    # 이 부분은 플래그 무관 R-4).
+    # 운영 메모: `APM_MCP_URL`과 함께 켠다 — 비면 브리핑 한계에
+    # "애플리케이션(APM) 도구 미연결"이 강제로 실린다.
+    # **만료일 2027-04-12**(D-161 ① · 6개월) — 사건 결합 운영 실측(plans/144 W6 shadow) 후
+    # 상시화 또는 삭제를 판정한다.
+    cross_source_investigation_enabled: bool = False
     # 사건 구간 증거 사전수집 + 결정적 상관(plans/50 G4 · D-197). 기본 off — 켜면 잡에 reference_time이
     # 있을 때 조사 전에 mcp_server 도구(전 알람 1 + 지표 4)를 코드가 호출해 선행 신호·타임라인을 계산하고
     # 조사 지침·브리핑에 싣는다. LLM 호출 0. 실패해도 조사를 막지 않는다(상관 없음 + 감사).

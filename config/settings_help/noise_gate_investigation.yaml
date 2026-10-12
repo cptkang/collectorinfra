@@ -198,6 +198,69 @@ settings:
     recommendation: 조사 서비스가 감당하는 동시 처리량에 맞춰 정한다. 기본 8에서 시작한다.
     related: [NOISE_INVESTIGATION_FOLLOWUP_ENABLED]
 
+  # ── plans/150 W2 · D-323: 조사 저장소 (브리핑 웹 조회) ──
+
+  NOISE_INVESTIGATION_STORE_PATH:
+    example: >-
+      worKB로 받은 조사 브리핑을 웹 알람 카드나 관제 화면에서 다시 열 때 이 파일을 읽는다. 조사 서비스는 종결 후 한 시간이 지나거나 재기동하면 브리핑을 잊으므로, 이 파일이 없으면 웹에서는 「조사 결과 없음」으로 보인다.
+    summary: 자동 조사의 상태와 브리핑을 남기는 파일 경로.
+    behavior: >-
+      조사 한 건이 제출·완료·실패·타임아웃으로 바뀔 때마다 한 줄씩 덧붙인다. 브리핑 원본은
+      32KB에서 자르고 「한계」에 잘렸다고 적는다. 판정 기록 파일과 따로 두어 관제 화면 조회가
+      느려지지 않게 한다. 상대 경로는 서버 작업 디렉터리 기준이다. 자동 조사 트리거가 꺼져 있으면
+      파일을 만들지 않는다.
+    performance: 조사 한 건에 두세 줄, 브리핑이 있는 줄은 수 KB~32KB다.
+    stability: >-
+      디스크가 가득 차지 않도록 정리 정책이 필요하다. 경로를 바꾸면 이전 기록은 옛 경로에 남아
+      웹에서 다시 보이지 않는다.
+    related: [NOISE_INVESTIGATION_STORE_MAX_LINES, NOISE_INVESTIGATION_TRIGGER_ENABLED]
+
+  NOISE_INVESTIGATION_STORE_MAX_LINES:
+    example: >-
+      하루 PAGE 알람이 300건이고 조사 한 건이 두세 줄을 남기면, 2000줄로 사흘 남짓의 조사를 웹에서 다시 볼 수 있다. 그보다 오래된 알람은 「조사 결과 없음」으로 보인다.
+    summary: 조사 조회가 저장소 파일 끝에서 되짚는 줄 수 상한.
+    behavior: >-
+      웹 알람 카드의 조사 브리핑 조회와 관제 화면 결정 추적의 조사 칸이 파일 **끝에서** 이 줄
+      수만 읽는다. 파일 자체는 자르지 않는다.
+    options:
+      - value: "2000"
+        label: 기본
+        effect: 최근 2천 줄(대략 700~1000건의 조사)까지 조회된다.
+      - value: "10000"
+        effect: 더 오래된 조사도 보이지만 브리핑 행이 커서 조회가 느려진다.
+      - value: "200"
+        effect: 가볍지만 몇 시간 전 알람의 조사도 보이지 않을 수 있다.
+    performance: 값과 브리핑 크기에 비례해 조회 한 번의 파일 읽기 양이 늘어난다.
+    stability: 기록은 이 값과 무관하게 전부 남는다 — 잘리는 것은 조회 시야뿐이다.
+    recommendation: 기본 2000 유지. 조회가 느리면 줄인다.
+    related: [NOISE_INVESTIGATION_STORE_PATH]
+
+  # ── plans/150 W4 · D-323: 사건 스냅샷 · 사건당 1회 종합 조사 ──
+
+  NOISE_INVESTIGATION_EPISODE_CONTEXT_ENABLED:
+    example: >-
+      xsapp01에 폴스타 CPU PAGE가 뜨고 4분 반 뒤 같은 서버 제니퍼 서비스 큐잉이 오면, 두 알람이 한 사건으로 묶인다. 켜 두면 그 순간 사건 전체(두 알람·결합 근거·규칙)를 담은 종합 조사가 한 번 나가고, 결과가 나오면 원인 알람 기준으로 후속 메시지가 한 건 온다.
+    summary: 조사에 크로스소스 사건 맥락을 싣고, 결합된 사건마다 종합 조사를 한 번 낼지.
+    behavior: >-
+      켜면 사건에 묶인 알람의 조사 요청에 제출 시점의 사건 스냅샷(멤버·결합 링크·걸린 규칙)과 이
+      알람의 결합 판정을 함께 보낸다. 사건에 폴스타와 제니퍼 알람이 모두 들어오고 결합 판정이 처음
+      성립하면, 멤버 중 PAGE·TICKET 통보가 하나라도 있을 때 그 사건에 대해 종합 조사를 한 번만 낸다.
+      이후 같은 사건의 제니퍼 알람은 새로 조사하지 않고 종합 조사에 연결된다. 사건 상관
+      (NOISE_CROSS_SOURCE_MODE)이 off거나 자동 조사 트리거가 꺼져 있으면 아무 일도 하지 않는다.
+      판정·티어·사유는 바뀌지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 조사 요청이 종전과 같고 종합 조사도 없다.
+      - value: "true"
+        effect: 조사에 사건 맥락이 실리고 결합된 사건마다 종합 조사가 한 번 나간다.
+    performance: 결합된 사건 하나에 조사 한 건이 더 나간다. 조사 서비스의 시간당 예산·동시 상한·중복 억제를 그대로 탄다.
+    stability: >-
+      아무도 통보받지 않은 사건은 조사하지 않는다(예산 보호). 사건 상태는 워커 메모리에만 있어
+      재기동하면 진행 중이던 사건의 종합 조사 여부를 잊는다.
+    recommendation: 사건 상관을 shadow 이상으로 켜고 조사 서비스의 크로스소스 조사(CROSS_SOURCE_INVESTIGATION_ENABLED)와 함께 켠다.
+    related: [NOISE_INVESTIGATION_TRIGGER_ENABLED, NOISE_CROSS_SOURCE_MODE, NOISE_INVESTIGATION_FOLLOWUP_ENABLED]
+
   NOISE_FAULT_ESCALATION_ENABLED:
     example: >-
       조사 결과가 '생각보다 심각하다'고 판단하면 통보에 상향 안내가 붙는다. 게이트가 내린 티어를 소급해 바꾸지는 않으며, 자동 조사 트리거가 꺼져 있으면 조사 결과 자체가

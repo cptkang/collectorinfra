@@ -27,6 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from sre_agent.domain.cross_source_episode import episode_reference_time
 from sre_agent.domain.incident_scope import (
     DEFAULT_LOOKBACK_MINUTES,
     alarm_time_to_iso,
@@ -327,6 +328,10 @@ class JobStore:
             job = self._new_job(kind="alarm", status="accepted", fingerprint=fingerprint, payload=payload)
             # 사건 좌표계: 알람 시각을 기준시각으로(변환 불가면 앵커 없는 조사 — 종전과 동일).
             job.reference_time = alarm_time_to_iso((payload.get("event") or {}).get("alarmTime"))
+            if self._settings.cross_source_investigation_enabled:
+                # plans/150 — 종합 조사는 사건 멤버 중 가장 늦은 시각을 기준으로 잡는다(증상 포함).
+                # 질문·사전수집·타임라인이 모두 이 값을 읽는다. 플래그 off면 종전과 같다.
+                job.reference_time = episode_reference_time(payload) or job.reference_time
             job.lookback_minutes = DEFAULT_LOOKBACK_MINUTES if job.reference_time else None
             self._jobs[job.investigation_id] = job
             if fingerprint:

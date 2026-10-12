@@ -1,0 +1,81 @@
+{
+  "jennifer_common_with_episode": {
+    "contract_version": "1",
+    "event": {
+      "dbId": "jennifer_common",
+      "serverName": "xsapp01",
+      "hostname": "xsapp01",
+      "alarmId": "jennifer:p150q0000000001",
+      "severity": 2,
+      "alarmName": "SERVICE_QUEUING",
+      "resourceType": "apm.Instance",
+      "resourceName": "xsapp01_was01",
+      "alarmTime": "20261007090430",
+      "conditions": "제니퍼 EVENT warning — SERVICE_QUEUING",
+      "conditionLog": "서비스 큐잉 (value=41)"
+    },
+    "decision": {
+      "tier": "page",
+      "reason": "수집 실패 — 원문 알람으로 판단",
+      "fingerprint": "fp-p150-queuing",
+      "signals": {
+        "severity": 2,
+        "collection_failed": true
+      }
+    },
+    "meta": {
+      "recurrence": null,
+      "cluster": null,
+      "root_resource": null,
+      "source": "collectorinfra",
+      "hints": {
+        "solution": "apm",
+        "source_id": "common",
+        "instance_id": 11,
+        "domain_id": 1001,
+        "event_type": "SERVICE_QUEUING",
+        "txid": ""
+      },
+      "episode_id": "ep-p150fixture"
+    }
+  },
+  "jennifer_common_no_episode": {
+    "contract_version": "1",
+    "event": {
+      "dbId": "jennifer_common",
+      "serverName": "xsapp01",
+      "hostname": "xsapp01",
+      "alarmId": "jennifer:p150q0000000001",
+      "severity": 2,
+      "alarmName": "SERVICE_QUEUING",
+      "resourceType": "apm.Instance",
+      "resourceName": "xsapp01_was01",
+      "alarmTime": "20261007090430",
+      "conditions": "제니퍼 EVENT warning — SERVICE_QUEUING",
+      "conditionLog": "서비스 큐잉 (value=41)"
+    },
+    "decision": {
+      "tier": "page",
+      "reason": "수집 실패 — 원문 알람으로 판단",
+      "fingerprint": "fp-p150-queuing",
+      "signals": {
+        "severity": 2,
+        "collection_failed": true
+      }
+    },
+    "meta": {
+      "recurrence": null,
+      "cluster": null,
+      "root_resource": null,
+      "source": "collectorinfra",
+      "hints": {
+        "solution": "apm",
+        "source_id": "common",
+        "instance_id": 11,
+        "domain_id": 1001,
+        "event_type": "SERVICE_QUEUING",
+        "txid": ""
+      }
+    }
+  }
+}

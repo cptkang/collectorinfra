@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-08 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
+> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-12 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -192,6 +192,7 @@
 | 147 | [`147-WIP-jennifer-multi-source-selection.md`](./147-WIP-jennifer-multi-source-selection.md) | 147. 제니퍼 다중 소스 선택 조회 — 은행존·공동존·레거시(이후 N개) 중 고른 소스만 · 소스별 사전 정의 단어 · 애매·무지목 되묻기 · 선택 승계 · 화면 소스 축 · 소스 추가 = 설정만 + 정합 점검 | **WIP — W0~W5 구현(2026-10-08 · 커밋 없음 · D-322)** · 잔여: 소스 단어 운영 확정(G-B) · 비대화 채널 되묻기·단어 둘 합집합 여부 확인 · 소스별 상태 행 화면 미노출 · SSE 종료 노드 쓰기 유실(기존 결함) *(상세: 계획서 머리)* | 2026-10-08 |
 | 148 | [`148-WIP-fabrix-openai-tool-calling-proxy.md`](./148-WIP-fabrix-openai-tool-calling-proxy.md) | 148. FabriX 도구 호출 프록시 — OpenAI Chat Completions(+tools)로 받아 KBGenAI로 변환·호출, 응답을 OpenAI `tool_calls`로 반환하는 독립 서버 `fabrix_proxy/`(프롬프트 에뮬레이션) | **WIP — 1단계 개발 맥 완료(D.1~D.3) · 내부망 실행(D.4~D.6) 대기** · `fabrix_proxy/` PoC 서버·러너·런북(`POC_RUNBOOK.md`) · 테스트 A·B·C 통과 · 커밋 없음 · 통과 시 deepagents 등 연동 · 128과 별개 *(상세: 계획서 머리)* | 2026-10-08 |
 | 149 | [`149-WIP-itam-run4-results-correction.md`](./149-WIP-itam-run4-results-correction.md) | 149. ITAM 내부망 4회차 결과 교정 — 서비스 연결 가이드 전제 오류 · 선별 밖 테이블 증가 · 이름 칸 등호 · 반출 판독 결함 | **WIP — 외부망 W1~W5 완료 · 5회차 대기** · 서비스 연결 1·2순위 반전 · 정의 manages · 이름 칸 등호 0행 1회 재생성(D-297 부기) · 반출 판독 교정 · closed 정책 한글 재키잉+`identifier` 12칸(D-301 부기) · 회귀 rc=0 · 잔여 W6·사용자 확인 2 *(상세: 계획서 머리)* | 2026-10-08 |
+| 150 | [`150-WIP-alarm-explain-briefing-web-and-cross-source-investigation.md`](./150-WIP-alarm-explain-briefing-web-and-cross-source-investigation.md) | 150. 알람 설명 3종 — 웹 UI 조사 브리핑 표시 · HolmesGPT 폴스타(SMS)×제니퍼(APM) 크로스소스 조사 · 노이즈 관제의 억제·강등 사유와 발생 원인·처리 방법 | **WIP — W0~W6 구현(커밋 없음)** · 잔여: MLX 대표 1회 미실행(두 평면 mlx 미확인) · W7 제외 · 조사 저장소·`/alarm/investigations/*`·카드/드로어 브리핑 · 사건 스냅샷·종합 조사 · sre_agent 크로스소스 · 처리 안내 3층 · D-323 *(상세: 계획서 §10.1)* | 2026-10-12 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |

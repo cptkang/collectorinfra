@@ -517,6 +517,31 @@ settings:
     recommendation: 기본 20000 유지. 화면이 느리면 줄인다.
     related: [NOISE_DECISION_STORE_PATH, NOISE_DECISION_STORE_ENABLED]
 
+  # ── plans/150 W1 · D-323: 판정 기록에 AI 분석 서술 저장 ──
+
+  NOISE_DECISION_ANALYSIS_TEXT_ENABLED:
+    example: >-
+      유지보수 창 안에서 억제된 알람을 관제 화면 결정 추적에서 열면, 켜져 있을 때는 「발생 원인과 처리」 칸 아래에 AI가 알람 문구만 보고 추정한 원인·권고가 함께 보인다. 꺼져 있으면 그 칸에 「이 판단이 기록될 때는 AI 추정을 저장하지 않았습니다」가 나온다.
+    summary: 판정 기록에 AI 분석 서술(요약·추정 원인·권고 조치)을 함께 저장할지 — 기본으로 꺼져 있다.
+    behavior: >-
+      켜면 게이트 앞에서 이미 만든 AI 분석의 요약·추정 원인·권고 조치를 각 500자로 잘라 판정
+      기록에 `analysis`로 덧붙인다. 억제(SUPPRESS)된 알람에도 저장된다. **추가 LLM 호출은 없고**
+      판정(티어·사유·우선순위·단계)은 바뀌지 않는다. AI 분석이 실패한 알람은 대체 문구를
+      저장하지 않고 실패 표시만 남긴다. 끄면 판정 기록이 종전과 완전히 같다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: AI 서술을 저장하지 않는다. 관제 화면의 AI 추정 칸은 「저장하지 않았습니다」로 보인다.
+      - value: "true"
+        effect: 관제 화면 결정 추적에 AI 추정 원인·권고가 보이고, 목록에 추정 원인 열이 채워진다.
+    performance: 판정 기록 한 줄이 최대 약 1,500자 늘어난다 — 관제 화면이 되짚는 파일 읽기 양도 그만큼 는다.
+    stability: >-
+      AI 서술은 노이즈 판정 전에 알람 문구만으로 만든 것이라 억제 판단과 어긋날 수 있다. 화면은
+      결정적 처리 안내를 위에, AI 추정을 아래에 출처 표시와 함께 둔다. 사용자 화면 응답에서는
+      마스킹을 거친다.
+    recommendation: 관제 화면에서 원인·권고를 함께 보고 싶을 때 켠다.
+    related: [NOISE_DECISION_STORE_ENABLED, NOISE_DECISION_STORE_MAX_LINES]
+
   NOISE_SILENCE_ENABLED:
     example: >-
       운영자가 관제 화면에서 만든 침묵 규칙을 게이트가 실제로 적용할지 결정한다. 꺼두면 규칙을 만들어도 알람은 그대로 나가므로, 점검 중이라 생각하고 방치하면 시끄럽다. 반대로 켜두고 만료 없는 습관이 생기면 진짜 장애가 조용히 묻힌다.

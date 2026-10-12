@@ -3,7 +3,7 @@
 카드 UI가 "버튼을 렌더할지"를 서버에 묻기 위한 계약이다. 지금은 액션가능성이 off여도
 피드백 버튼이 항상 그려지고 누르면 503이 떠서 운영자가 원인을 알 수 없다(docs/28 실측).
 
-노출 원칙: **불리언·정수만** — 경로·시크릿·엔드포인트 주소는 싣지 않는다.
+노출 원칙: **불리언·숫자만** — 경로·시크릿·엔드포인트 주소는 싣지 않는다.
 """
 
 from __future__ import annotations
@@ -70,6 +70,20 @@ def test_capabilities_expose_no_paths_or_secrets():
         "feedback_enabled", "incident_tracking", "sse_bridge",
         "suppress_stream", "suppress_max_severity",
         "prompt_suggest_enabled",   # Plan 86 — 불리언(경로·시크릿 아님)
+        "investigation_enabled",    # plans/150 W2 — 불리언(서비스 URL 자체는 싣지 않는다)
+        "investigation_followup_timeout_seconds",  # plans/150 W2 교정 — 실수(웹 재조회 상한)
     }
     for value in body.values():
-        assert isinstance(value, (bool, int)), value
+        assert isinstance(value, (bool, int, float)), value
+
+
+def test_investigation_followup_timeout_follows_config():
+    """웹 재조회 상한은 후속 poll 전체 타임아웃 설정값을 그대로 쓴다(미설정이면 300초)."""
+    assert _client().get("/api/v1/alarm/capabilities").json()[
+        "investigation_followup_timeout_seconds"
+    ] == 300.0
+    body = _client(investigation_followup_timeout_seconds=45).get(
+        "/api/v1/alarm/capabilities"
+    ).json()
+    assert body["investigation_followup_timeout_seconds"] == 45.0
+    assert isinstance(body["investigation_followup_timeout_seconds"], float)

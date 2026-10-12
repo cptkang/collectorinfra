@@ -12,6 +12,10 @@ HTML 이스케이프·줄바꿈 변환은 소비자가 한다(domain은 표현 �
 
 from __future__ import annotations
 
+from typing import Any
+
+from noise_gate.domain.cross_source import SOURCE_JENNIFER, SOURCE_POLESTAR
+
 #: 생산자 산출 키 전체. `tests/test_briefing_contract.py`와 `sre_agent/tests/test_briefing_builder.py`가
 #: 같은 리터럴로 양쪽에서 단언한다(양방향 import 0 — D-118).
 BRIEFING_CONTRACT_KEYS: frozenset[str] = frozenset({
@@ -31,7 +35,16 @@ _ORDERED: tuple[tuple[str, str], ...] = (
     ("recommendation", "권고"),
     ("limitations", "한계"),
     ("hypotheses", "가설"),
+    ("cross_source", "크로스소스"),
 )
+
+#: 순서 목록 밖 키 중 라벨만 한글로 바꾸는 것(렌더 위치·값은 원 키와 같다). 스텁 브리핑의
+#: `message`가 웹 브리핑 줄에 영문 키로 보이지 않게 한다(plans/150 W2 교정).
+_EXTRA_LABELS: dict[str, str] = {"message": "안내"}
+
+#: (plans/150 §4.7) `cross_source` 블록의 소스 라벨 · 도구 뒷받침 표기. 모르는 소스는 원 키명.
+_SOURCE_LABELS: dict[str, str] = {SOURCE_POLESTAR: "폴스타", SOURCE_JENNIFER: "제니퍼"}
+_SUPPORT_LABELS: dict[bool | None, str] = {True: "양쪽", False: "한쪽", None: "인용 없음"}
 
 #: 메타데이터라 출력하지 않는 키. `citations_verified`가 False면 생산자가 이미 `limitations`에
 #: 사유를 넣으므로 중복이다. `stub`·`elements`는 스텁 경로 표지.
@@ -80,10 +93,50 @@ def _render_item(item: object) -> str:
     return str(item)
 
 
+def _render_lag(lag: object) -> str:
+    """선행 초 — 정수로 떨어지면 소수점 없이(`270.0` → `270`)."""
+    if isinstance(lag, float) and lag.is_integer():
+        return str(int(lag))
+    return str(lag)
+
+
+def _render_cross_source(cs: dict[str, Any]) -> str:
+    """크로스소스 블록을 결정적 한국어 요약으로 편다(plans/150 §4.7 — 키 나열 대신).
+
+    `사건 호스트 h · 폴스타 1건 · 제니퍼 1건` / `APM 도구 연결 · 호출 n회`(또는 미연결) /
+    링크마다 `규칙 r: 원인 → 결과 (270초) · 도구 뒷받침: 양쪽|한쪽|인용 없음`.
+    """
+    head = [f"사건 호스트 {cs.get('host_key') or '미상'}"]
+    sources = cs.get("sources")
+    if isinstance(sources, dict):
+        # 생산자 dict 순서와 무관하게 폴스타 → 제니퍼 → 그 밖(키 이름순)으로 고정한다.
+        order = list(_SOURCE_LABELS) + sorted(str(k) for k in sources if k not in _SOURCE_LABELS)
+        head.extend(
+            f"{_SOURCE_LABELS.get(k, k)} {sources[k]}건" for k in order if k in sources
+        )
+    lines = [" · ".join(head)]
+    if cs.get("apm_tools_connected"):
+        lines.append(f"APM 도구 연결 · 호출 {cs.get('apm_tools_called') or 0}회")
+    else:
+        lines.append("APM 도구 미연결")
+    for link in cs.get("links") or []:
+        if not isinstance(link, dict):
+            continue
+        support = link.get("supported_by_tools")
+        lines.append(
+            f"규칙 {link.get('rule_id') or '미상'}: {link.get('cause') or '미상'} → "
+            f"{link.get('effect') or '미상'} ({_render_lag(link.get('lag_seconds'))}초) · "
+            f"도구 뒷받침: {_SUPPORT_LABELS.get(support if isinstance(support, bool) else None)}"
+        )
+    return "\n".join(lines)
+
+
 def _render_value(key: str, val: object) -> str:
     """값을 평문으로 편다. 복수 항목은 줄바꿈으로 나열한다(repr 금지)."""
     if key == "severity" and isinstance(val, dict):
         return _render_severity(val)
+    if key == "cross_source" and isinstance(val, dict):
+        return _render_cross_source(val)
     if isinstance(val, dict):
         if "items" in val:  # 권고 형태 {"items": [...], "note": "..."}
             lines = [str(i) for i in (val.get("items") or []) if not _is_empty(i)]
@@ -99,7 +152,9 @@ def _render_value(key: str, val: object) -> str:
 def render_briefing_lines(briefing: dict) -> list[tuple[str, str]]:
     """브리핑 dict → `[(라벨, 평문 값), ...]` 순서 고정. 표현 매체 비의존(순수 함수).
 
-    - 순서 8키는 `_ORDERED` 순, 그 외 키는 원 키명으로 말미에 정렬 렌더한다.
+    - 순서 키는 `_ORDERED` 순, 그 외 키는 원 키명으로 말미에 정렬 렌더한다.
+    - (plans/150 §4.7) `cross_source`(선택 키)는 원 키 나열 대신 「크로스소스」 라벨의 결정적 요약
+      줄로 편다 — 키가 없으면 출력은 종전과 비트 동일하다.
     - 빈 값(`None`·`""`·`[]`·`{}`·`False`)은 라벨째 생략한다.
     - `_SUPPRESSED`는 출력하지 않는다. 스텁 판정은 호출자 몫이다.
     """
@@ -118,7 +173,7 @@ def render_briefing_lines(briefing: dict) -> list[tuple[str, str]]:
             continue
         rendered = _render_value(str(key), val)
         if rendered.strip():
-            out.append((str(key), rendered))
+            out.append((_EXTRA_LABELS.get(str(key), str(key)), rendered))
     return out
 
 

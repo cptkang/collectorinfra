@@ -280,3 +280,54 @@ def test_incomplete_notice_is_not_treated_as_citation():
     assert on["cause"].startswith(HYPOTHESIS_PREFIX)
     assert on["timeline"] == ["타임라인 근거 없음(상관 타임라인·도구 출력 인용 모두 결여)"]
     assert on["citations_verified"] is False
+
+
+# ── plans/150 §4.6·§4.7 크로스소스(선택 키 `cross_source` · 6요소 불변) ──
+
+
+def _xs_ctx():
+    from sre_agent.domain.cross_source_episode import active_episode
+
+    payload = {"meta": {"episode": {
+        "episode_id": "ep-1", "host_key": "web-01",
+        "members": [
+            {"alarm_id": "j1", "source": "jennifer", "alarm_name": "SERVICE_QUEUING",
+             "was_kinds": ["queuing"], "occurred_at": "2026-09-01T14:00:00"},
+            {"alarm_id": "p1", "source": "polestar", "alarm_name": "CPU", "kind": "cpu",
+             "occurred_at": "2026-09-01T13:55:00"},
+        ],
+        "links": [{"rule_id": "R1", "cause_alarm_id": "p1", "effect_alarm_id": "j1",
+                   "lag_seconds": 300, "missing": []}],
+    }}}
+    return active_episode(payload, True, "2026-09-01T14:00:00")
+
+
+def test_cross_source_adds_only_optional_key():
+    """`cross_source`는 선택 키 — 소비자 계약 10키는 그대로이고 그 키 하나만 더한다.
+
+    None이면 종전과 같다.
+    """
+    plain = build_briefing(answer="x ← t", verdict=_verdict(), tool_names=["t"], cross_source=None)
+    assert set(plain) == CONSUMER_CONTRACT_KEYS
+    xs = build_briefing(answer="x ← t", verdict=_verdict(), tool_names=["t"],
+                        cross_source=_xs_ctx())
+    assert set(xs) == CONSUMER_CONTRACT_KEYS | {"cross_source"}
+
+
+def test_cross_source_with_correlation_does_not_duplicate_members():
+    """사전수집이 사건 멤버를 이미 편입한 상관 타임라인이면 브리핑이 다시 붙이지 않는다."""
+    corr = {"timeline": [{"t_offset_min": -5, "kind": "alarm",
+                          "detail": "[사건 · 인프라] CPU (cpu)"},
+                         {"t_offset_min": 0, "kind": "apm_event",
+                          "detail": "[사건 · 애플리케이션(APM)] SERVICE_QUEUING (was queuing)"}],
+            "metric_findings": {}, "alarm_summary": {"count": 0}, "leading_signal": None,
+            "notes": []}
+    b = build_briefing(answer="x ← t", verdict=_verdict(), tool_names=["t"], correlation=corr,
+                       cross_source=_xs_ctx())
+    assert sum("[사건 · " in ln for ln in b["timeline"]) == 2
+    ranks = [h["rank"] for h in b["root_cause_hypotheses"]]
+    assert ranks == [1, 2]   # 규칙 가설 1 + LLM 인용 원인(마지막)
+    assert b["root_cause_hypotheses"][0]["cause"] == (
+        "인프라 cpu 알람이 300초 선행 → 애플리케이션 queuing (규칙 R1)"
+    )
+    assert b["cause"] == "x ← t"   # 규칙 가설은 cause를 대체하지 않는다

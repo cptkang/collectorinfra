@@ -97,7 +97,8 @@ def _serve_and_capture(profile: str, only: list[str] | None, keep: bool) -> int:
     app = snapshot.build(profile)
     if profile == "capture":
         n = alarms.seed_decisions(app)
-        print(f"스냅샷 {app} · 결정 기록 {n}건")
+        b = alarms.seed_briefing(app)
+        print(f"스냅샷 {app} · 결정 기록 {n}건 · 조사 브리핑 예시 {b}건")
     env = {
         **os.environ,
         "MANUAL_MODE": "replay",

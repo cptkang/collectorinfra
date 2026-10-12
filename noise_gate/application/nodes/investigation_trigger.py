@@ -4,7 +4,10 @@
 이전)에 위치한다. tier가 `investigation_trigger_min_tier`(기본 PAGE) 이상이면 sre_agent 조사
 서비스에 트리거 페이로드(`contract_version: "1"`)를 submit하고, **전체 타임아웃 가드** 안에서
 poll하여 브리핑을 받아 state에 실어 notifier가 통보에 첨부하게 한다. 결과(investigation_id·
-status·verdict)는 decision_store에 감사한다.
+status·verdict)는 decision_store에 감사한다. (plans/150 W2) 조사 저장소가 주입되면
+상태·사유·브리핑을 웹 조회용으로 함께 남긴다(미주입이면 no-op). (plans/150 W4) 사건 맥락 플래그가
+켜져 있으면 페이로드에 제출 시점 사건 스냅샷을 싣고, 워커가 부르는 `submit_episode_investigation`이
+사건당 1회 종합 조사를 제출한다.
 
 설계 안전장치(회귀 0·비차단·graceful):
     - 게이트 판정·라우팅 무변경 — 이 노드는 gate 노드를 건드리지 않고 gate 다음에 삽입되며,
@@ -29,6 +32,9 @@ from typing import Any, Optional
 from langchain_core.runnables import RunnableConfig
 
 from noise_gate.domain.investigation_payload import (
+    EPISODE_FINGERPRINT_PREFIX,
+    INVESTIGATION_KIND_EPISODE,
+    build_episode_trigger_payload,
     build_escalation,
     build_trigger_payload,
     is_availability_alarm,
@@ -89,6 +95,11 @@ async def investigation_trigger_node(
     # (plans/144 §5.3 · §4.5) 크로스소스 사건 id — cross_source_mode off·사건 미소속이면 None
     # (페이로드·감사 비트 동일).
     episode_id = _episode_id(state)
+    # (plans/150 W2) 조사 저장소 — 웹 조회용 상태·브리핑 기록. 미주입(트리거 off·워커 밖)이면 None →
+    # 아래 `_store` 호출은 전부 no-op(비트 동일). 행의 `source`는 이 조사가 도는 모드다.
+    inv_store = configurable.get("investigation_store")
+    followup = bool(getattr(gate_cfg, "investigation_followup_enabled", False))
+    source = "followup" if followup else "inline"
 
     # (plans/144 §4.5) APM 알람발 조사는 사건당 1회 — 같은 사건에서 APM 알람이 이미 제출한 조사가
     # 있으면(워커가 `episode_investigation`으로 넘긴다) 다시 제출하지 않고 기존 조사 id를 감사에
@@ -103,6 +114,11 @@ async def investigation_trigger_node(
         _audit(
             configurable.get("decision_store"), event, decision,
             str(existing["investigation_id"]), "episode_existing", None,
+            episode_id=str(existing.get("episode_id") or episode_id or "") or None,
+        )
+        _store(
+            inv_store, event, str(existing["investigation_id"]), "episode_existing",
+            source=source,
             episode_id=str(existing.get("episode_id") or episode_id or "") or None,
         )
         return {}
@@ -121,6 +137,7 @@ async def investigation_trigger_node(
             configurable.get("decision_store"), event, decision,
             None, "target_unresolved", reason,
         )
+        _store(inv_store, event, None, "target_unresolved", source=source, reason=reason)
         return {}
 
     # 조사 대상 확정 — **채팅 경로와 같은 공통 모듈**을 쓴다 (Plan 78 W1-4 · G5 대칭).
@@ -148,6 +165,7 @@ async def investigation_trigger_node(
                 configurable.get("decision_store"), event, decision,
                 None, "target_unresolved", None,
             )
+            _store(inv_store, event, None, "target_unresolved", source=source)
             return {}
 
     # ★ 호스트 인가 게이트 — **채팅 경로와 같은 모듈**을 호출한다 (Plan 78 W3-5 · G5 대칭).
@@ -170,6 +188,10 @@ async def investigation_trigger_node(
             configurable.get("decision_store"), event, decision,
             None, "authz_denied", None,
         )
+        _store(
+            inv_store, event, None, "authz_denied", source=source,
+            reason=f"호스트 인가 거부({authz.reason})" if authz.reason else None,
+        )
         return {}
 
     # ★ 조사 서비스 사전 도달성 확인 (D-243). 서비스가 없으면 SSE 연결 타임아웃·traceback
@@ -183,6 +205,10 @@ async def investigation_trigger_node(
                 getattr(event, "alarm_id", ""), unreachable,
             )
             _audit(configurable.get("decision_store"), event, decision, None, "down", None)
+            _store(
+                inv_store, event, None, "down", source=source,
+                reason=f"조사 서비스 미가용: {unreachable}",
+            )
             return {}
 
     # ★ 가용성 사전 판정 (Plan 81 · D-175). 판정 결과를 페이로드에 실어 보내면
@@ -192,6 +218,7 @@ async def investigation_trigger_node(
     target_state = await _resolve_target_state(cfg, event, first)
 
     signals = getattr(decision, "signals", None) or {}
+    episode_meta, cross_source_meta = _episode_context(state, gate_cfg, event, decision)
     payload = build_trigger_payload(
         event,
         decision,
@@ -202,14 +229,16 @@ async def investigation_trigger_node(
         # plans/91 1-3: root 이름은 signals(§8.2 동결 스키마)가 아니라 노이즈 컨텍스트에 있다.
         root_resource_name=(state.get("noise_context") or {}).get("root_resource_name"),
         episode_id=episode_id,
+        episode=episode_meta,
+        cross_source=cross_source_meta,
     )
 
     # (Plan 66 3-E) 후속 모드 — submit까지만 하고 통보를 즉시 내보낸다(브리핑 미첨부).
     # poll·후속 발송은 notifier가 즉시 통보 **후** 백그라운드로 수행한다(순서 보장).
-    if getattr(gate_cfg, "investigation_followup_enabled", False):
+    if followup:
         return await _submit_only(
             client, payload, event, decision, configurable.get("decision_store"),
-            episode_id=episode_id,
+            episode_id=episode_id, inv_store=inv_store,
         )
 
     total_timeout = float(
@@ -240,6 +269,20 @@ async def investigation_trigger_node(
         configurable.get("decision_store"), event, decision, investigation_id, status, verdict,
         episode_id=episode_id,
     )
+    # (plans/150 W2) 인라인 종결 — 상태·사유·verdict·브리핑을 웹 조회용으로 남긴다. rejected의
+    # verdict 자리는 거부 사유 문자열이다(`_submit_and_poll` 반환 계약).
+    if status == "rejected":
+        inline_reason: Any = verdict
+    elif status == "timeout":
+        inline_reason = f"조사 전체 타임아웃({total_timeout:.0f}s 초과)"
+    else:
+        inline_reason = None
+    _store(
+        inv_store, event, investigation_id, status, source=source,
+        reason=inline_reason,
+        verdict=None if status == "rejected" else verdict,
+        briefing=briefing, episode_id=episode_id,
+    )
 
     result: dict[str, Any] = {}
     if briefing is not None:
@@ -265,6 +308,156 @@ def _episode_id(state: dict[str, Any]) -> str | None:
         if isinstance(value, str) and value:
             return value
     return None
+
+
+def _episode_context(
+    state: dict[str, Any],
+    gate_cfg: Any,
+    event: Any,
+    decision: Any,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """(plans/150 §4.4) 페이로드 `meta.episode`·`meta.cross_source` 재료.
+
+    플래그 off·사건 미소속이면 (None, None).
+
+    워커가 넘긴 스냅샷은 판정 전에 만든 사본이라 이 알람의 티어가 비어 있다 — 제출 시점의 판정
+    티어를 채워 넣는다(원본 사건 상태는 건드리지 않는다). `meta.cross_source`는 이 알람 자신의
+    결합 판정(`decision.evidence.cross_source`)이다.
+    """
+    if not getattr(gate_cfg, "investigation_episode_context_enabled", False):
+        return None, None
+    snapshot = state.get("episode_snapshot")
+    if not isinstance(snapshot, dict):
+        return None, None
+    alarm_id = str(getattr(event, "alarm_id", "") or "")
+    tier = getattr(decision, "tier", None)
+    members = [
+        {**m, "tier": tier} if m.get("alarm_id") == alarm_id and m.get("tier") is None else m
+        for m in snapshot.get("members") or []
+        if isinstance(m, dict)
+    ]
+    evidence = getattr(decision, "evidence", None)
+    cross_source = evidence.get("cross_source") if isinstance(evidence, dict) else None
+    return (
+        {**snapshot, "members": members},
+        cross_source if isinstance(cross_source, dict) else None,
+    )
+
+
+async def submit_episode_investigation(
+    client: Any,  # SreAgentClient (덕 타이핑)
+    event: Any,  # 대표 알람 AlarmEvent
+    decision: Any,  # 대표 알람 NotificationDecision
+    episode: dict[str, Any],
+    alarm_ids: list[str],
+    *,
+    cfg: Any,  # AppConfig (덕 타이핑)
+    decision_store: Any = None,  # DecisionStore | None
+    inv_store: Any = None,  # InvestigationStore | None
+) -> dict[str, Any]:
+    """사건 종합 조사를 submit만 한다 (plans/150 §4.5 · G-6 (a) — 워커가 사건당 1회 부른다).
+
+    대표 알람 기준으로 단독 조사와 같은 결정적 가드(hostname 결측 · 호스트 인가 · 가용성 사전
+    판정)를 거친 뒤 `kind="episode"` 페이로드(지문 `episode:<id>`)를 제출한다. poll·후속 발송은
+    호출부가 notifier의 후속 경로로 띄운다. 조사 서비스의 예산·동시 상한·dedup TTL은 그대로 탄다.
+    모든 실패는 graceful — 사유를 감사·조사 저장소에 남긴다(침묵 금지).
+
+    Args:
+        alarm_ids: 사건 멤버 alarm_id 전부(대표 알람이 첫 원소 — 저장소 존 판정 기준).
+
+    Returns:
+        `{"status", "investigation_id", "pending"}` — pending은 submit 성공 시 후속 태스크용
+        식별자(`alarm_id`·`fingerprint`·`episode_id`·`kind`·`alarm_ids`), 아니면 None.
+    """
+    episode_id = str(episode.get("episode_id") or "")
+    fingerprint = EPISODE_FINGERPRINT_PREFIX + episode_id
+    audit_decision = _FingerprintOnly(fingerprint)
+    # 멤버 db_id(조회 API 존 검사 근거) — 대표 알람 + 스냅샷 멤버. 스냅샷 상한 밖 멤버는 API가
+    # 판정 기록으로 폴백한다.
+    alarm_db_ids = _alarm_db_ids(event)
+    for member in episode.get("members") or []:
+        if isinstance(member, dict) and member.get("alarm_id") and member.get("db_id"):
+            alarm_db_ids.setdefault(str(member["alarm_id"]), str(member["db_id"]))
+    store_kw: dict[str, Any] = {
+        "source": "followup", "episode_id": episode_id or None,
+        "kind": INVESTIGATION_KIND_EPISODE, "alarm_ids": alarm_ids,
+        "alarm_db_ids": alarm_db_ids,
+    }
+
+    def _done(investigation_id: str | None, status: str, reason: Any = None) -> dict[str, Any]:
+        _audit(decision_store, event, audit_decision, investigation_id, status, reason,
+               episode_id=episode_id or None)
+        _store(inv_store, event, investigation_id, status, reason=reason, **store_kw)
+        return {"status": status, "investigation_id": investigation_id, "pending": None}
+
+    hostname = str(getattr(event, "hostname", "") or "").strip()
+    if not hostname:
+        return _done(None, "target_unresolved",
+                     "대표 알람 hostname 미해소 — 조사 필수 필드(hostname) 결측으로 종합 조사 생략")
+    target_resolution = resolve_targets(
+        alarm_payload={
+            "server_name": getattr(event, "server_name", None),
+            "hostname": getattr(event, "hostname", None),
+            "db_id": getattr(event, "db_id", None),
+        }
+    )
+    first = target_resolution.targets[0] if target_resolution.resolved else None
+    authz = authorize_host_investigation(
+        mode=getattr(getattr(cfg, "host_authz", None), "mode", None),
+        principal=Principal.system(),
+        hostname=(first.hostname or first.server_name) if first else hostname,
+        db_id=getattr(event, "db_id", None),
+    )
+    if not authz.allowed:
+        record_investigation(denied_reason=authz.reason)
+        return _done(None, "authz_denied",
+                     f"호스트 인가 거부({authz.reason})" if authz.reason else None)
+
+    target_state = await _resolve_target_state(cfg, event, first)
+    payload = build_episode_trigger_payload(event, decision, episode, target_state=target_state)
+
+    status = "error"
+    investigation_id: str | None = None
+    reason: Any = None
+    try:
+        await client.connect()
+        try:
+            sub = await client.submit(payload)
+        finally:
+            await client.disconnect()
+        investigation_id = sub.get("investigation_id")
+        if sub.get("status") == "rejected":
+            status, reason = "rejected", sub.get("reason")
+        elif investigation_id:
+            status = "submitted"
+    except Exception:  # noqa: BLE001 — 서비스 다운도 알람 처리를 막지 않는다
+        status = "down"
+        logger.warning(
+            "사건 종합 조사 submit 실패(graceful): episode=%s", episode_id, exc_info=True
+        )
+    logger.info(
+        "사건 종합 조사 제출: episode=%s 대표=%s 멤버=%d status=%s inv=%s",
+        episode_id, getattr(event, "alarm_id", ""), len(alarm_ids), status, investigation_id,
+    )
+    result = _done(investigation_id, status, reason)
+    if status == "submitted" and investigation_id:
+        result["pending"] = {
+            "investigation_id": investigation_id,
+            "alarm_id": str(getattr(event, "alarm_id", "") or ""),
+            "fingerprint": fingerprint,
+            "episode_id": episode_id,
+            "kind": INVESTIGATION_KIND_EPISODE,
+            "alarm_ids": list(alarm_ids),
+            "alarm_db_ids": dict(alarm_db_ids),
+        }
+    return result
+
+
+class _FingerprintOnly:
+    """감사 기록용 판정 대용 — `_audit`가 읽는 `fingerprint`만 가진다(종합 조사 지문)."""
+
+    def __init__(self, fingerprint: str) -> None:
+        self.fingerprint = fingerprint
 
 
 async def _resolve_target_state(cfg, event, first) -> Optional[dict]:  # noqa: ANN001
@@ -318,6 +511,7 @@ async def _submit_only(
     store,  # noqa: ANN001 — DecisionStore | None
     *,
     episode_id: str | None = None,
+    inv_store=None,  # noqa: ANN001 — InvestigationStore | None (plans/150 W2)
 ) -> dict[str, Any]:
     """조사를 submit만 하고 통보를 즉시 내보낸다 (Plan 66 3-E 후속 모드).
 
@@ -354,6 +548,12 @@ async def _submit_only(
         )
 
     _audit(store, event, decision, investigation_id, status, reason, episode_id=episode_id)
+    # (plans/150 W2) submit 직후 상태 — submitted면 종결 행은 notifier 후속 태스크(또는 API 지연
+    # poll)가 남긴다. 거부·실패는 여기서 사유와 함께 끝난다.
+    _store(
+        inv_store, event, investigation_id, status, source="followup",
+        reason=reason, episode_id=episode_id,
+    )
     if status != "submitted" or not investigation_id:
         return {}
     return {
@@ -361,6 +561,10 @@ async def _submit_only(
             "investigation_id": investigation_id,
             "alarm_id": getattr(event, "alarm_id", ""),
             "fingerprint": getattr(decision, "fingerprint", ""),
+            # (plans/150 W2) 후속 태스크의 저장 행에 사건 id를 잇는다 — 사건 미소속이면 키 없음.
+            **({"episode_id": episode_id} if episode_id else {}),
+            # (plans/150 W2 교정) 후속 저장 행의 존 검사 근거 — db_id를 모르면 키 없음.
+            **({"alarm_db_ids": db_ids} if (db_ids := _alarm_db_ids(event)) else {}),
         }
     }
 
@@ -440,3 +644,50 @@ def _audit(
         )
 
 
+def _alarm_db_ids(event: Any) -> dict[str, str]:
+    """이 알람의 `{alarm_id: db_id}`(둘 중 하나라도 없으면 빈 dict)."""
+    alarm_id = str(getattr(event, "alarm_id", "") or "")
+    db_id = str(getattr(event, "db_id", "") or "")
+    return {alarm_id: db_id} if alarm_id and db_id else {}
+
+
+def _store(
+    inv_store: Any,  # InvestigationStore | None (덕 타이핑)
+    event: Any,  # AlarmEvent
+    investigation_id: str | None,
+    status: str,
+    *,
+    source: str,
+    reason: Any = None,
+    verdict: Any = None,
+    briefing: dict[str, Any] | None = None,
+    episode_id: str | None = None,
+    kind: str = "alarm",
+    alarm_ids: list[str] | None = None,
+    alarm_db_ids: dict[str, Any] | None = None,
+) -> None:
+    """조사 상태를 조사 저장소에 남긴다(plans/150 W2 · 미주입·실패는 graceful).
+
+    단일 알람 조사는 `kind="alarm"`·`alarm_ids=[이 알람]`(기본). 사건 종합 조사(W4)는
+    `kind="episode"`·`alarm_ids=[대표, 멤버…]`를 넘긴다. `alarm_db_ids`(조회 API 존 검사 근거)를
+    주지 않으면 이 알람의 db_id를 싣는다(`_alarm_db_ids`).
+    """
+    if inv_store is None:
+        return
+    try:
+        inv_store.record(
+            investigation_id=investigation_id,
+            alarm_ids=alarm_ids or [str(getattr(event, "alarm_id", "") or "")],
+            kind=kind,
+            status=status,
+            source=source,
+            reason=reason,
+            verdict=verdict,
+            briefing=briefing,
+            episode_id=episode_id,
+            alarm_db_ids=alarm_db_ids if alarm_db_ids is not None else _alarm_db_ids(event),
+        )
+    except Exception:  # noqa: BLE001 — 저장 실패가 통보를 막지 않는다
+        logger.warning(
+            "조사 저장소 기록 실패(무시): alarm_id=%s", getattr(event, "alarm_id", "")
+        )

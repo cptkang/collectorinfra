@@ -1864,3 +1864,13 @@
 - **실수**: 제니퍼 소스 사다리를 기존 테스트에서 끄는 autouse 픽스처(`tests/conftest.py` `_apm_source_ladder_guard`)가 공용 `monkeypatch` 픽스처를 인자로 받았다. 루트 autouse가 `monkeypatch`를 먼저 만들자 그 원복이 `tests/test_api/test_settings_help.py`의 autouse `_fresh_cache` teardown보다 늦어져, teardown의 `reset_help_cache()`가 테스트가 패치한 `curated_index`(lambda)를 보고 `cache_clear` AttributeError를 냈다(7건 ERROR). Wave 중간 모듈 회귀 선택에 그 파일이 들지 않아 계획 끝 회귀에서야 드러났다. 팀 리드가 전용 `pytest.MonkeyPatch()` + 자체 `undo()`로 고쳤다
 - **원인**: 함수 범위 픽스처의 생성·teardown 순서가 「누가 먼저 요청하느냐」로 정해진다는 점을 루트 autouse에 공용 픽스처를 걸 때 고려하지 않았다
 - **방지책**: 루트 `tests/conftest.py`의 autouse 픽스처는 공용 `monkeypatch`를 요청하지 말고 `pytest.MonkeyPatch()`를 직접 만들어 자기 teardown에서 `undo()`한다. 테스트 기반 파일을 바꾼 Wave는 그 파일을 쓰는 다른 autouse·teardown 패턴(`grep -rn "autouse=True" tests/`)을 확인한다
+
+### 2026-10-12 · (plans/150 설계·W4) 사건당 1회 종합 조사가 sre_agent 같은 호스트 동시 조사 가드와 조사 구간을 통과하는지 확인하지 않았다
+- **실수**: 계획서 §4.5가 종합 조사를 「대표(원인) 알람 event + `meta.episode`」로 제출하게 설계했고 W4가 그대로 구현했다. 대표 event를 쓰면 sre_agent dispatcher의 같은 호스트 가드 키 `(db_id, host)`가 원인 알람 단독 조사와 같아, 원인 조사(실측 ~161s)가 끝나기 전 제출된 종합 조사가 `host_investigation_in_flight`로 거부되고(사건당 1회라 재시도 없음), 기준시각이 원인 알람 시각이라 「기준시각 이전 60분」 구간에 증상 멤버가 빠졌다. 뒤이은 제니퍼 알람은 거부된 종합 조사로 연결돼 아무 조사도 받지 못했다. verifier가 xfail(strict)로 확정 → 플래그 on에서 가드 키 `(db_id, host, "episode")` 분리 · 기준시각 = 최신 멤버 · 실패한 종합 조사 미연결로 교정
+- **원인**: 새 조사 종류를 기존 submit 계약(D-123)에 「meta 가산 키만」으로 얹으면서, 수신 측이 event 필드로 하는 부수 판단(동시 조사 가드·조사 구간·dedup)을 전수 확인하지 않았다. 계약 테스트는 키 모양만 봤다
+- **방지책**: 기존 페이로드를 재사용해 새 종류의 잡을 만들 때는 수신 측에서 event 필드를 읽는 가드·윈도·키 계산을 `grep -n "serverName\|alarmTime\|_host_key\|reference_time"`으로 전수 뽑아 새 종류에서도 의도대로 동작하는지 표로 확인한다. 계약 테스트는 생산자 실 출력을 수신 측 실 경로(가드·구간 포함)에 넣는 왕복으로 쓴다
+
+### 2026-10-12 · (plans/150 회귀) regress.py가 pytest-xdist 부재로 멈추고, sre_agent 패키지 단계를 「미실행」으로 넘겼다
+- **실수**: 이 체크아웃(`collectorinfra_second`)의 pyenv 인터프리터엔 pytest-xdist가 없어 `regress.py`가 `-n`에서 rc=4로 멈췄고, `sre_agent/.venv`가 없어 regress 마지막 단계가 sre_agent 패키지(변경 16파일)를 「미실행」으로 표시한 채 넘어갔다. 범위 줄만 보면 sre_agent까지 돈 것처럼 읽힐 수 있었다
+- **원인**: 회귀 도구가 실행 환경(xdist·패키지별 venv)을 전제로 하는데 형제 체크아웃에서는 그 전제가 깨진다. 「미실행」 줄은 실패가 아니라 rc에 반영되지 않는다
+- **방지책**: 형제 체크아웃에서 회귀를 돌릴 때는 `regress.split_workers`를 `(0, 0)`으로 바꾼 직렬 래퍼(패키지 설치 없이)를 쓰고, 출력의 `④ 패키지 전체 … → 미실행` 줄을 반드시 확인해 그 패키지는 실제 venv(예: 형제 체크아웃 `collectorinfra/sre_agent/.venv` · **`cd sre_agent` cwd**)로 따로 돌려 결과를 보고에 함께 적는다

@@ -29,6 +29,12 @@ from sre_agent.application.investigation_jobs import (
     default_audit_path,
 )
 from sre_agent.diagnosis import DiagnosisAgent, DiagnosisResult
+from sre_agent.domain.cross_source_episode import (
+    EpisodeContext,
+    EpisodeMember,
+    active_episode,
+    prompt_text,
+)
 from sre_agent.infrastructure.mcp_tool_client import make_batch_caller
 from sre_agent.settings import AgentSettings
 from sre_agent.toolset_profiles import remote_vm_profile
@@ -82,8 +88,48 @@ class StaticBearerAuthMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
-def _job_to_question(job) -> str:
-    """조사 잡을 DiagnosisAgent 질의 문자열로 변환한다(pull은 question, push는 이벤트 요약)."""
+#: 크로스소스 질문(plans/150 §4.6) — 규칙은 「가설」로만 제시한다
+#: (결합 근거는 사건 추적기 판정 · 인과 아님).
+CROSS_SOURCE_QUESTION_TEMPLATE = (
+    "{host}에서 인프라(폴스타) 알람 {causes}와 애플리케이션(제니퍼) 이벤트 {effects}이 "
+    "한 사건으로 묶였다{at}. "
+    "두 소스의 도구로 선후와 연결 근거를 확인하고, 규칙 가설이 맞는지 반증까지 검토하라. "
+    "모든 주장에 도구 출력을 인용하라."
+)
+_QUESTION_NAMES_MAX = 3
+
+
+def _names(members: list[EpisodeMember]) -> str:
+    """멤버 표시 이름(중복 제거 · 최대 3개) — 「A」·「B」 형식."""
+    names = list(dict.fromkeys(prompt_text(m.label) for m in members))[:_QUESTION_NAMES_MAX]
+    return "·".join(f"「{n}」" for n in names) or "「?」"
+
+
+def _cross_source_question(server: str, when: str | None, xs: EpisodeContext) -> str:
+    """크로스소스 질문 문자열.
+
+    원인 후보 = 성립 링크의 원인 멤버(없으면 인프라 멤버) ·
+    증상 = 링크의 증상 멤버(없으면 애플리케이션 멤버).
+    """
+    links = xs.valid_links
+    causes = [m for m in (xs.member(lk.cause_alarm_id) for lk in links) if m is not None]
+    effects = [m for m in (xs.member(lk.effect_alarm_id) for lk in links) if m is not None]
+    at = f"(발생 시각 {when} — 이 시각 이전 구간을 조사)" if when else ""
+    return CROSS_SOURCE_QUESTION_TEMPLATE.format(
+        host=server,
+        causes=_names(causes or list(xs.infra_members)),
+        effects=_names(effects or list(xs.apm_members)),
+        at=at,
+    )
+
+
+def _job_to_question(job, settings: AgentSettings | None = None) -> str:
+    """조사 잡을 DiagnosisAgent 질의 문자열로 변환한다(pull은 question, push는 이벤트 요약).
+
+    `settings.cross_source_investigation_enabled`(plans/150 §4.6)이고 `meta.episode`에
+    두 소스 멤버가 모두 있으면 크로스소스 질문을 만든다. settings 미지정·플래그 off·
+    한쪽 소스 사건이면 종전 문자열 그대로다.
+    """
     if getattr(job, "kind", None) == "diagnosis" and getattr(job, "question", None):
         return job.question
     event = (getattr(job, "payload", None) or {}).get("event") or {}
@@ -91,6 +137,10 @@ def _job_to_question(job) -> str:
     # 사건 좌표계(plans/50 A′-5): 알람 시각을 질문에 싣는다 — 워커 지연·재처리 시에도 조사가
     # "지금"이 아니라 그 시각을 기준으로 이뤄지도록. 구간·도구 인자 지시는 guidance가 나른다.
     when = getattr(job, "reference_time", None)
+    enabled = bool(getattr(settings, "cross_source_investigation_enabled", False))
+    xs = active_episode(getattr(job, "payload", None), enabled, when)
+    if xs is not None:
+        return _cross_source_question(server, when, xs)
     at = f"(발생 시각 {when} — 이 시각 이전 구간을 조사) " if when else ""
     # 결론 유도(수렴 가드): 트리아지 순서는 유지하되 핵심 지표 위주로 간결히 조사하고
     # 충분한 근거가 모이면 즉시 결론을 내도록 지시한다(불필요한 반복 조회가 step을 소진해
@@ -154,7 +204,7 @@ def _default_diagnose_fn(settings: AgentSettings):
         # 조사 지침 주입(plans/50 G5 · D-197): 원격 셸 안내 · 사건 구간 · 운영자 추가 지침.
         # 종전에는 additions를 넘기지 않아 REMOTE_VM_SHELL_NOTE조차 주입되지 않았다.
         return agent.ask(
-            _job_to_question(job),
+            _job_to_question(job, settings),
             system_prompt_additions=build_guidance(settings, job, remote=True),
         )
 
@@ -178,7 +228,8 @@ def _default_prefetch_fn(settings: AgentSettings):
     def _prefetch(job) -> dict | None:
         scope = scope_from_job(job, baseline_periods=settings.evidence_baseline_periods,
                                change_overlay=settings.evidence_change_overlay_enabled,
-                               related_hosts_max=settings.evidence_correlation_related_hosts)
+                               related_hosts_max=settings.evidence_correlation_related_hosts,
+                               cross_source=settings.cross_source_investigation_enabled)
         if scope is None:
             return None
         return prefetch_and_correlate(scope, call_batch).to_dict()

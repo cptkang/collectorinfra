@@ -1,0 +1,340 @@
+{
+  "_comment": "plans/150 검증 — noise_gate 실 출력(cross_source_incident.jsonl → AlarmWorker → 조사 서비스 대역에 제출된 페이로드 3건). 생산자 측 고정: noise_gate/tests/test_plan150_verify_contract.py · 수신 측: sre_agent/tests/test_plan150_verify_roundtrip.py. occurred_at은 epoch 초(생산 머신 로컬 시각 규약)라 테스트는 시간대 중립으로 비교한다.",
+  "polestar_cpu_single": {
+    "contract_version": "1",
+    "event": {
+      "dbId": "polestar_cm_gp",
+      "serverName": "xsapp01",
+      "hostname": "xsapp01",
+      "alarmId": "P150-CPU-1",
+      "severity": 2,
+      "alarmName": "CPU 사용률",
+      "resourceType": "server.Server",
+      "resourceName": "CPU",
+      "alarmTime": "20261007090000",
+      "conditions": "> 90 %, 3회 연속",
+      "conditionLog": "[98 % (> 90 %, 3회 연속)]"
+    },
+    "decision": {
+      "tier": "page",
+      "reason": "매트릭스(심각도2×중요도높음) → page → 최종 page",
+      "fingerprint": "ba1cdaa6b5eced7f3913f9fe547e7719f58cc3c7",
+      "signals": {
+        "severity": 2,
+        "ai_severity": null,
+        "effective_severity": 2,
+        "importance": "높음",
+        "maintenance": false,
+        "parent_avail_status": null,
+        "pattern": "",
+        "is_routine": null,
+        "noti_policy": null,
+        "flapping": false,
+        "self_heal": false,
+        "storm": false,
+        "llm_actionability": null,
+        "cascaded": null,
+        "root_resource": null,
+        "correlated": false
+      }
+    },
+    "meta": {
+      "recurrence": null,
+      "cluster": null,
+      "root_resource": null,
+      "source": "collectorinfra",
+      "episode_id": "ep-d4a69213ff49",
+      "episode": {
+        "episode_id": "ep-d4a69213ff49",
+        "zone": "gongjon",
+        "host_key": "xsapp01",
+        "members": [
+          {
+            "alarm_id": "P150-CPU-1",
+            "source": "polestar",
+            "db_id": "polestar_cm_gp",
+            "alarm_name": "CPU 사용률",
+            "kind": "cpu",
+            "was_kinds": [],
+            "level": "",
+            "severity": 2,
+            "occurred_at": 1791331200.0,
+            "tier": "page",
+            "resolved": false
+          }
+        ],
+        "links": [],
+        "rules": [],
+        "infra_db_ids": [
+          "polestar_cm_gp"
+        ]
+      },
+      "cross_source": {
+        "mode": "shadow",
+        "host_key": "xsapp01",
+        "applied": false
+      }
+    }
+  },
+  "jennifer_queuing_individual": {
+    "contract_version": "1",
+    "event": {
+      "dbId": "jennifer_common",
+      "serverName": "xsapp01",
+      "hostname": "xsapp01",
+      "alarmId": "jennifer:p150q0000000001",
+      "severity": 2,
+      "alarmName": "SERVICE_QUEUING",
+      "resourceType": "apm.Instance",
+      "resourceName": "xsapp01_was01",
+      "alarmTime": "20261007090430",
+      "conditions": "제니퍼 EVENT warning — SERVICE_QUEUING",
+      "conditionLog": "서비스 큐잉 (value=41)"
+    },
+    "decision": {
+      "tier": "page",
+      "reason": "매트릭스(심각도2×중요도보통) → ticket · 승격: 폴스타 통보 정책(notify) → 최종 page",
+      "fingerprint": "96e51561b6c4d58025d143f7bf90b029b3b4bb44",
+      "signals": {
+        "severity": 2,
+        "ai_severity": null,
+        "effective_severity": 2,
+        "importance": "보통",
+        "maintenance": false,
+        "parent_avail_status": null,
+        "pattern": "",
+        "is_routine": null,
+        "noti_policy": "notify",
+        "flapping": false,
+        "self_heal": false,
+        "storm": false,
+        "llm_actionability": null,
+        "cascaded": null,
+        "root_resource": null,
+        "correlated": false
+      }
+    },
+    "meta": {
+      "recurrence": null,
+      "cluster": null,
+      "root_resource": null,
+      "source": "collectorinfra",
+      "hints": {
+        "solution": "apm",
+        "source_id": "common",
+        "instance_id": 11,
+        "domain_id": 1001,
+        "event_type": "SERVICE_QUEUING",
+        "txid": ""
+      },
+      "episode_id": "ep-d4a69213ff49",
+      "episode": {
+        "episode_id": "ep-d4a69213ff49",
+        "zone": "gongjon",
+        "host_key": "xsapp01",
+        "members": [
+          {
+            "alarm_id": "jennifer:p150q0000000001",
+            "source": "jennifer",
+            "db_id": "jennifer_common",
+            "alarm_name": "SERVICE_QUEUING",
+            "kind": "",
+            "was_kinds": [
+              "was_service_queuing"
+            ],
+            "level": "warning",
+            "severity": 2,
+            "occurred_at": 1791331470.0,
+            "tier": "page",
+            "resolved": false
+          },
+          {
+            "alarm_id": "P150-CPU-1",
+            "source": "polestar",
+            "db_id": "polestar_cm_gp",
+            "alarm_name": "CPU 사용률",
+            "kind": "cpu",
+            "was_kinds": [],
+            "level": "",
+            "severity": 2,
+            "occurred_at": 1791331200.0,
+            "tier": "page",
+            "resolved": false
+          }
+        ],
+        "links": [
+          {
+            "rule_id": "host_resource_to_was_latency",
+            "cause_alarm_id": "P150-CPU-1",
+            "effect_alarm_id": "jennifer:p150q0000000001",
+            "lag_seconds": 270.0,
+            "action": "demote",
+            "missing": []
+          }
+        ],
+        "rules": [
+          {
+            "id": "host_resource_to_was_latency",
+            "cause": {
+              "source": "polestar",
+              "kinds": [
+                "cpu",
+                "memory"
+              ]
+            },
+            "effect": {
+              "source": "jennifer",
+              "was_kinds": [
+                "was_gc_stall",
+                "was_heap_pressure",
+                "was_service_queuing"
+              ]
+            },
+            "window": {
+              "cause_before_seconds": 600,
+              "cause_after_seconds": 60
+            }
+          }
+        ],
+        "infra_db_ids": [
+          "polestar_cm_gp"
+        ]
+      },
+      "cross_source": {
+        "mode": "shadow",
+        "host_key": "xsapp01",
+        "rule_id": "host_resource_to_was_latency",
+        "cause_alarm_id": "P150-CPU-1",
+        "lag_seconds": 270.0,
+        "action": "demote",
+        "enforce": false,
+        "missing": [],
+        "applied": false
+      }
+    }
+  },
+  "episode_composite": {
+    "contract_version": "1",
+    "event": {
+      "dbId": "polestar_cm_gp",
+      "serverName": "xsapp01",
+      "hostname": "xsapp01",
+      "alarmId": "P150-CPU-1",
+      "severity": 2,
+      "alarmName": "CPU 사용률",
+      "resourceType": "server.Server",
+      "resourceName": "CPU",
+      "alarmTime": "20261007090000",
+      "conditions": "> 90 %, 3회 연속",
+      "conditionLog": "[98 % (> 90 %, 3회 연속)]"
+    },
+    "decision": {
+      "tier": "page",
+      "reason": "매트릭스(심각도2×중요도높음) → page → 최종 page",
+      "fingerprint": "episode:ep-d4a69213ff49",
+      "signals": {
+        "severity": 2,
+        "ai_severity": null,
+        "effective_severity": 2,
+        "importance": "높음",
+        "maintenance": false,
+        "parent_avail_status": null,
+        "pattern": "",
+        "is_routine": null,
+        "noti_policy": null,
+        "flapping": false,
+        "self_heal": false,
+        "storm": false,
+        "llm_actionability": null,
+        "cascaded": null,
+        "root_resource": null,
+        "correlated": false
+      }
+    },
+    "meta": {
+      "recurrence": null,
+      "cluster": null,
+      "root_resource": null,
+      "source": "collectorinfra",
+      "episode_id": "ep-d4a69213ff49",
+      "episode": {
+        "episode_id": "ep-d4a69213ff49",
+        "zone": "gongjon",
+        "host_key": "xsapp01",
+        "members": [
+          {
+            "alarm_id": "jennifer:p150q0000000001",
+            "source": "jennifer",
+            "db_id": "jennifer_common",
+            "alarm_name": "SERVICE_QUEUING",
+            "kind": "",
+            "was_kinds": [
+              "was_service_queuing"
+            ],
+            "level": "warning",
+            "severity": 2,
+            "occurred_at": 1791331470.0,
+            "tier": "page",
+            "resolved": false
+          },
+          {
+            "alarm_id": "P150-CPU-1",
+            "source": "polestar",
+            "db_id": "polestar_cm_gp",
+            "alarm_name": "CPU 사용률",
+            "kind": "cpu",
+            "was_kinds": [],
+            "level": "",
+            "severity": 2,
+            "occurred_at": 1791331200.0,
+            "tier": "page",
+            "resolved": false
+          }
+        ],
+        "links": [
+          {
+            "rule_id": "host_resource_to_was_latency",
+            "cause_alarm_id": "P150-CPU-1",
+            "effect_alarm_id": "jennifer:p150q0000000001",
+            "lag_seconds": 270.0,
+            "action": "demote",
+            "missing": []
+          }
+        ],
+        "rules": [
+          {
+            "id": "host_resource_to_was_latency",
+            "cause": {
+              "source": "polestar",
+              "kinds": [
+                "cpu",
+                "memory"
+              ]
+            },
+            "effect": {
+              "source": "jennifer",
+              "was_kinds": [
+                "was_gc_stall",
+                "was_heap_pressure",
+                "was_service_queuing"
+              ]
+            },
+            "window": {
+              "cause_before_seconds": 600,
+              "cause_after_seconds": 60
+            }
+          }
+        ],
+        "infra_db_ids": [
+          "polestar_cm_gp"
+        ]
+      },
+      "cross_source": {
+        "mode": "shadow",
+        "host_key": "xsapp01",
+        "applied": false
+      },
+      "investigation_kind": "episode"
+    }
+  }
+}
