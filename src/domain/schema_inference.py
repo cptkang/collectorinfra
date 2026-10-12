@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.domain.schema_snapshot import bare_name
+from src.domain.table_definitions import KIND_COLLECT_LOAD
 
 #: 공통 컬럼 판정 비율 — 이 비율을 넘는 테이블에 나오는 컬럼만으로 된 기본키는 부모가 아니다
 DEFAULT_COMMON_RATIO = 0.5
@@ -566,18 +567,34 @@ def rules_and_entity_candidates(
     return rules, entity
 
 
+#: 식별 키 테이블 후보에서 빼는 테이블 성격(plans/151 W7) — 호스트당 여러 행인 수집 이력·적재
+ENTITY_KEY_EXCLUDED_KINDS: frozenset[str] = frozenset({"수집이력", KIND_COLLECT_LOAD})
+
+
 def entity_keys_asset(
-    entity: Mapping[str, Mapping[str, Any]], rows: Mapping[str, int | None]
+    entity: Mapping[str, Mapping[str, Any]],
+    rows: Mapping[str, int | None],
+    definitions: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """식별 키 후보 중 호스트명을 가진(있으면 IP도 가진) 테이블 하나를 골라 `entity_keys` 자산으로.
 
     Args:
         entity: `rules_and_entity_candidates`의 식별 키 후보
         rows: 테이블 행 수(모르면 None) — IP 보유 → 행 수 큰 순 → 이름순으로 고른다
+        definitions: 승인된 테이블 정의(`table_definitions`) — 있으면 `kind`가
+            `ENTITY_KEY_EXCLUDED_KINDS`인 테이블을 후보에서 뺀다(맨 이름 비교). 남는 후보가 없거나
+            None이면 종전 규칙 그대로
     """
     candidates = [t for t, kinds in entity.items() if "hostname" in kinds]
     if not candidates:
         return None
+    if isinstance(definitions, Mapping):
+        excluded = {
+            bare_name(str(t)) for t, item in definitions.items()
+            if isinstance(item, Mapping)
+            and str(item.get("kind") or "").strip() in ENTITY_KEY_EXCLUDED_KINDS
+        }
+        candidates = [t for t in candidates if bare_name(t) not in excluded] or candidates
     table = sorted(
         candidates, key=lambda t: ("ip" not in entity[t], -(rows.get(t) or 0), t)
     )[0]

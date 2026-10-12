@@ -62,6 +62,11 @@ SOURCE_LLM = "llm"
 SOURCE_LEXICAL = "lexical"
 SOURCE_NONE = "none"
 
+#: `table_selection[db_id].reason` — LLM 선별 폴백 사유 코드(plans/151 W5 · 로그 문구와 같은 분기)
+REASON_LLM_ERROR = "llm_error"
+REASON_BACKEND_ERROR = "backend_error"
+REASON_ZERO_VALID = "zero_valid"
+
 #: 설정(`text2sql.schema_table_select_max`)을 읽지 못할 때의 상한 K
 DEFAULT_SELECT_MAX = 8
 #: 정의가 없는 후보 줄에 싣는 앞쪽 컬럼 수
@@ -95,6 +100,8 @@ class TableSelection:
         candidates: 후보 테이블 수(스키마 ∩ 허용 목록)
         selected: 최종 선별 테이블 — 스키마 원래 키 · 다리 테이블 포함
         bridged: `selected` 중 다리 테이블로 보완한 것
+        reason: LLM 선별이 폴백한 사유 코드 — ``"llm_error"``(호출 예외) · ``"backend_error"``
+            (백엔드 오류 응답·예외) · ``"zero_valid"``(유효한 이름 0개) · 폴백이 아니면 None
     """
 
     mode: str
@@ -102,6 +109,7 @@ class TableSelection:
     candidates: int
     selected: tuple[str, ...] = ()
     bridged: tuple[str, ...] = ()
+    reason: str | None = None
 
     def as_state(self) -> dict[str, Any]:
         """상태 `table_selection[db_id]` 값(이름·개수만 — 데이터 값 없음)."""
@@ -111,6 +119,7 @@ class TableSelection:
             "candidates": self.candidates,
             "selected": list(self.selected),
             "bridged": list(self.bridged),
+            "reason": self.reason,
         }
 
 
@@ -540,12 +549,14 @@ async def select_tables(
     )
 
     reason: str | None = None
+    reason_code: str | None = None
     picked: list[str] = []
     try:
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         text = coerce_content_text(response.content)
     except Exception as e:  # noqa: BLE001 — 선별 실패는 어휘 대체로 간다(사유 로그)
         backend = detect_llm_backend_error(str(e))
+        reason_code = REASON_BACKEND_ERROR if backend is not None else REASON_LLM_ERROR
         reason = (
             f"LLM 백엔드 오류({backend.summary})" if backend is not None
             else f"LLM 호출 예외({type(e).__name__}: {' '.join(str(e).split())[:200]})"
@@ -553,6 +564,7 @@ async def select_tables(
     else:
         backend = detect_llm_backend_error(text)
         if backend is not None:
+            reason_code = REASON_BACKEND_ERROR
             reason = f"LLM 백엔드 오류 응답({backend.summary})"
         else:
             names = parse_selected_names(text)
@@ -569,6 +581,7 @@ async def select_tables(
                     db_id, len(dropped), dropped[:20],
                 )
             if not picked:
+                reason_code = REASON_ZERO_VALID
                 reason = f"유효한 테이블 0개(응답 이름 {len(names)}개)"
 
     if reason is None:
@@ -604,9 +617,11 @@ async def select_tables(
             "[테이블선별] 폴백 — db=%s 사유: %s → 어휘 매칭 %d개: %s",
             db_id, reason, len(lexical), lexical,
         )
-        return TableSelection(MODE_DEFINITIONS, SOURCE_LEXICAL, len(candidates), tuple(lexical))
+        return TableSelection(
+            MODE_DEFINITIONS, SOURCE_LEXICAL, len(candidates), tuple(lexical), reason=reason_code,
+        )
     logger.warning(
         "[테이블선별] 폴백 — db=%s 사유: %s → 어휘 매칭 0개 — 선별 없음(SQL 생성 없이 안내 종결)",
         db_id, reason,
     )
-    return TableSelection(MODE_DEFINITIONS, SOURCE_NONE, len(candidates))
+    return TableSelection(MODE_DEFINITIONS, SOURCE_NONE, len(candidates), reason=reason_code)

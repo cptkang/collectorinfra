@@ -535,7 +535,10 @@ def _alias_expressions(skeleton: str, alias: str) -> list[str]:
         if as_match:
             end = as_match.start()
         elif before and (before[-1].isalnum() or before[-1] in "_)'"):
-            if re.search(r"(?i)\b(?:SELECT|DISTINCT)$", before):
+            # `GROUP BY 별칭`·`ORDER BY 별칭`은 별칭 참조다 — 앞 낱말 `BY`를 식으로 읽으면
+            # 앞 쉼표까지(`COUNT(*) AS n FROM t s GROUP BY`)가 식이 돼 별칭·테이블 이름이 원
+            # 컬럼으로 섞인다(plans/151 F6)
+            if re.search(r"(?i)\b(?:SELECT|DISTINCT|BY)$", before):
                 continue
             end = len(before)
         else:

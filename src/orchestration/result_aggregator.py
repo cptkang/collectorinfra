@@ -977,12 +977,12 @@ def _turn_level_disclosures(
     """
     from src.domain.scope_select import render_narrowed_note
     from src.nodes.output_generator import scope_partial_text
-    from src.utils.query_gen_common import has_all_scope_keyword
+    from src.utils.query_gen_common import has_full_scope_request
 
     query = str(state.get("user_query") or "")
     items: list[disc.Disclosure] = []
     narrowed = render_narrowed_note(
-        state.get("scope_narrowed"), full_scope_requested=has_all_scope_keyword(query)
+        state.get("scope_narrowed"), full_scope_requested=has_full_scope_request(query)
     ) or None
     if narrowed:
         items.append(disc.make(disc.SCOPE_NARROWED, narrowed.lstrip("- ")))

@@ -20,13 +20,14 @@ import json
 import logging
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 
 from src.config import AppConfig
 from src.domain.schema_snapshot import bare_name
 from src.domain.table_definitions import PROFILE_KEY as TABLE_DEFINITIONS_KEY
 from src.domain.table_definitions import sanitize_definitions_for_prompt
+from src.nodes.table_selection import SOURCE_LEXICAL, SOURCE_LLM
 from src.utils.query_gen_common import (
     build_query_examples_block,
     build_value_index_block,
@@ -174,24 +175,71 @@ def build_forbidden_join_block(patterns: list[dict]) -> str:
 
 _PROFILE_RULES_MAX_CODES = 60
 _PROFILE_RULES_MAX_VALUES = 30
+#: 규칙 문장 속 백틱 컬럼 참조 `` `[스키마.]테이블.컬럼` `` — 1군은 컬럼 앞부분
+#: (테이블 · 스키마 한정 가능)
+_RULE_COLUMN_REF_RE = re.compile(r"`([\w$#]+(?:\.[\w$#]+)*)\.[\w$#]+`")
 
 
-def build_profile_rules_block(structure_meta: dict[str, Any] | None) -> str:
+def profile_rule_tables(selection: Mapping[str, Any] | None) -> list[str] | None:
+    """프로필 규칙·코드값 블록을 좁힐 테이블 — 정의 기반 선별이 동작했을 때만(plans/151 W2 · G-2).
+
+    `selection`은 상태 `table_selection[db_id]`(`TableSelection.as_state`)다. 출처가 LLM 선별·어휘
+    대체일 때 `selected`(다리 테이블 포함 — 프롬프트 스키마에 실린 테이블과 같다)를 돌려준다. 그 밖
+    (정의 없는 DB · 선별 결과 없음 · 그 밖 출처)은 None — 블록은 종전 그대로 전량이다.
+    """
+    if not isinstance(selection, Mapping):
+        return None
+    if selection.get("source") not in (SOURCE_LLM, SOURCE_LEXICAL):
+        return None
+    selected = selection.get("selected")
+    return [str(t) for t in selected] if isinstance(selected, (list, tuple)) else None
+
+
+def _keeps_rule(rule: str, tables: set[str]) -> bool:
+    """규칙 줄을 실을지 — 백틱 컬럼 참조의 테이블이 하나라도 대상이면 싣는다.
+
+    테이블을 읽지 못한 줄(참조 없음)은 싣는다 — 좁히다가 일반 규칙이 침묵 누락되지 않게 한다.
+    """
+    refs = {bare_name(t) for t in _RULE_COLUMN_REF_RE.findall(rule)}
+    return not refs or bool(refs & tables)
+
+
+def _keeps_code_key(key: str, tables: set[str]) -> bool:
+    """코드값 키(`[스키마.]테이블.컬럼`)를 실을지 — 테이블을 읽지 못한 키(점 없음)는 싣는다."""
+    table = str(key).rpartition(".")[0]
+    return not table or bare_name(table) in tables
+
+
+def build_profile_rules_block(
+    structure_meta: dict[str, Any] | None, tables: Collection[str] | None = None,
+) -> str:
     """프로필 `query_rules`·`code_values`·`code_labels`(D-294 자산 자동 생성) 블록.
 
     단일 경로(`_format_structure_guide`)와 멀티 경로(`multi_db_executor`)가 같은 자리(few-shot 예시
     앞)에서 이 함수를 부른다(D-066 대칭). 세 키가 모두 없으면 빈 문자열이라 기존 프로필의 프롬프트는
     바이트 그대로다.
+
+    Args:
+        structure_meta: 구조 메타(프로필)
+        tables: 좁힐 테이블(plans/151 W2 — `profile_rule_tables`). 주어지면 그 테이블(맨 이름 ·
+            대소문자 무시 · 스키마 한정자 무시)의 규칙 줄·코드값 키만 싣고, 코드값 상한
+            (`_PROFILE_RULES_MAX_CODES`)은 좁힌 뒤에 적용한다. 테이블을 읽지 못한 줄·키는 싣는다.
+            None이면 종전 그대로(전량 · 키 순서 앞 상한).
     """
     meta = structure_meta or {}
     rules = [r for r in meta.get("query_rules") or [] if isinstance(r, str) and r.strip()]
     raw_codes, raw_labels = meta.get("code_values"), meta.get("code_labels")
     code_values: dict[str, Any] = raw_codes if isinstance(raw_codes, dict) else {}
     code_labels: dict[str, Any] = raw_labels if isinstance(raw_labels, dict) else {}
+    keys = list(dict.fromkeys([*code_values, *code_labels]))
+    if tables is not None:
+        wanted = {bare_name(t) for t in tables}
+        rules = [r for r in rules if _keeps_rule(r, wanted)]
+        keys = [k for k in keys if _keeps_code_key(k, wanted)]
+    keys = keys[:_PROFILE_RULES_MAX_CODES]
     out = ""
     if rules:
         out += "\n\n### DB 쿼리 규칙\n" + "".join(f"  - {rule}\n" for rule in rules)
-    keys = list(dict.fromkeys([*code_values, *code_labels]))[:_PROFILE_RULES_MAX_CODES]
     if keys:
         out += "\n\n### 코드값 (컬럼: 값=의미)\n"
         for key in keys:

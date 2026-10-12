@@ -113,6 +113,8 @@ class TestSinkRecord:
                     "backend_reported_tokens": None,
                     "selection_source": None,
                     "selected_count": None,
+                    "selection_bridged": [],
+                    "selection_reason": None,
                     "stop_reason": None,
                 }
             },

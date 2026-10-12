@@ -397,9 +397,45 @@ def recognize(text: str) -> list[TimeSpec]:
 
 def recognize_detail(text: str) -> tuple[list[TimeSpec], list[tuple[int, int, str]]]:
     """`recognize` + 존재하지 않는 날짜 표현의 스팬 목록 `[(시작, 끝, 거부 코드)]`."""
+    found, invalid, _ = _recognize(text)
+    return found, invalid
+
+
+# 지원 종료일(EoS·EoL)·만료일처럼 **자원의 날짜 속성 조건**에 붙은 기간은 조회 기간이 아니다 —
+# 「2027년에 EoS가 되는 서버」·「EoS가 2027년인 서버」·「내년에 만료되는 인증서」는 속성값 필터라
+# 미래여도 되묻지 않는다(데이터가 있다). 마감어 앞에는 조사(「에·까지·안에…」)와 수식어 두 단어
+# (「하드웨어 지원」·「유지보수 계약」)까지만 허용한다 — 「2025년 3월 CPU 사용률과 EOS」처럼
+# 다른 대상을 잇는 말(과·와·및·고·며)이 끼면 조회 기간 그대로다. 「만료」의 과거·완료형은
+# 지난 사건의 조회 기간이라 그대로 둔다(D-319 ③과 같은 기준).
+_ATTR_DEADLINE = (
+    r"(?:(?i:EO[SL])|지원\s*(?:이\s*)?(?:종료|만료|끝나|끝날)|단종|만료(?!된|됐|되었))"
+)
+_ATTR_DEADLINE_RE = re.compile(_ATTR_DEADLINE)
+_DEADLINE_AFTER_RE = re.compile(
+    r"\s*(?:까지|중에?|이내에?|안에|안으로|내에?|내로|사이에?|이후에?|에)?\s*"
+    r"(?:[가-힣A-Za-z/]{1,5}(?<![과와및고며랑])\s*){0,2}?" + _ATTR_DEADLINE
+)
+_DEADLINE_BEFORE_RE = re.compile(
+    _ATTR_DEADLINE
+    + r"\s*(?:예정\s*)?(?:일자?|날짜|시점|년월일)?\s*(?:이|가|은|는)?\s*(?:예정\s*)?$"
+)
+
+
+def _is_deadline_filter(text: str, start: int, end: int) -> bool:
+    """`text[start:end]` 기간 표현이 날짜 속성 조건(지원 종료·만료)의 값인지."""
+    return bool(
+        _DEADLINE_AFTER_RE.match(text, end) or _DEADLINE_BEFORE_RE.search(text[:start])
+    )
+
+
+def _recognize(
+    text: str,
+) -> tuple[list[TimeSpec], list[tuple[int, int, str]], list[tuple[int, int]]]:
+    """`recognize_detail` + 날짜 속성 조건으로 빠진 기간 스팬 목록(흔적 검사에서 가린다)."""
     claimed: list[tuple[int, int]] = []
     found: list[TimeSpec] = []
     invalid: list[tuple[int, int, str]] = []
+    filtered: list[tuple[int, int]] = []
     for rule in _RULES:
         for m in rule.pattern.finditer(text):
             if _overlaps(claimed, m.start(), m.end()):
@@ -417,9 +453,12 @@ def recognize_detail(text: str) -> tuple[list[TimeSpec], list[tuple[int, int, st
             if _overlaps(claimed, m.start(), end):
                 continue
             claimed.append((m.start(), end))
+            if spec.relation != "none" and _is_deadline_filter(text, m.start(), end):
+                filtered.append((m.start(), end))
+                continue
             found.append(replace(spec, span=text[m.start():end], span_pos=(m.start(), end)))
     found.sort(key=lambda s: s.span_pos[0] if s.span_pos else -1)
-    return found, invalid
+    return found, invalid, filtered
 
 
 # ──────────────────────────────────────────────
@@ -483,24 +522,20 @@ class Interpretation:
     clarify: str | None = None
 
 
-def _masked(text: str, specs: list[TimeSpec]) -> str:
+def _masked(text: str, specs: list[TimeSpec], filtered: list[tuple[int, int]]) -> str:
     chars = list(text)
-    for spec in specs:
-        if spec.span_pos:
-            s, e = spec.span_pos
-            chars[s:e] = " " * (e - s)
+    spans = [spec.span_pos for spec in specs if spec.span_pos] + filtered
+    for s, e in spans:
+        chars[s:e] = " " * (e - s)
     return "".join(chars)
 
 
-def _residual_trace(text: str, specs: list[TimeSpec]) -> str | None:
-    """인식된 스팬을 가린 원문에 남은 기간 표현 흔적(없으면 None)."""
-    chars = list(text)
-    for spec in specs:
-        if spec.span_pos:
-            s, e = spec.span_pos
-            chars[s:e] = " " * (e - s)
-    m = _TRACE_RE.search("".join(chars))
-    return m.group(0) if m else None
+def _first_trace(pattern: re.Pattern[str], text: str, masked: str) -> str | None:
+    """가린 원문에서 찾은 흔적 중 날짜 속성 조건(「내년에 EoS」)이 아닌 첫 흔적."""
+    for m in pattern.finditer(masked):
+        if not _is_deadline_filter(text, m.start(), m.end()):
+            return m.group(0)
+    return None
 
 
 def interpret(text: str, now: datetime, *, subject: Subject = "metric") -> TimeResolution | None:
@@ -532,7 +567,7 @@ def interpret_detail(text: str, now: datetime, *, subject: Subject = "metric") -
 
 
 def _interpret(text: str, now: datetime, subject: Subject) -> Interpretation:
-    specs, invalid = recognize_detail(text)
+    specs, invalid, filtered = _recognize(text)
     if invalid:
         return Interpretation(None, CLARIFY_INVALID_DATE)
     periods = [s for s in specs if s.relation != "none"]
@@ -541,10 +576,11 @@ def _interpret(text: str, now: datetime, subject: Subject) -> Interpretation:
     display: DisplayGrain = (
         min(grains, key=lambda g: {"hour": 0, "day": 1, "month": 2}[g]) if grains else "none"
     )
-    if _FUTURE_TRACE_RE.search(_masked(text, specs)):
+    masked = _masked(text, specs, filtered)
+    if _first_trace(_FUTURE_TRACE_RE, text, masked):
         return Interpretation(None, CLARIFY_FUTURE_RELATIVE)
     if not periods:
-        if _residual_trace(text, specs):
+        if _first_trace(_TRACE_RE, text, masked):
             return Interpretation(None, CLARIFY_UNRESOLVED)
         unbounded = next((s for s in specs if s.unbounded), None)
         if unbounded is not None:
@@ -651,7 +687,8 @@ def slot_to_spec(slot: Any, text: str) -> tuple[TimeSpec | None, str | None]:
 
     실패하면 `(None, 사유 코드)` — 슬롯을 폐기하고 사유를 로그에 남기는 것은 호출부 몫이다.
     사유 코드: slot_not_object · relation_missing · invalid_relation · no_time_expression ·
-    span_missing · span_not_in_text(환각 기간 차단) · invalid_n · n_out_of_range ·
+    span_missing · span_not_in_text(환각 기간 차단) · deadline_value(지원 종료·만료 같은 날짜 속성
+    조건의 값 — 조회 기간 아님) · invalid_n · n_out_of_range ·
     n_mismatch_span · invalid_unit · unit_missing · invalid_completeness · invalid_anchor ·
     anchor_data_latest_unsupported(G-15) · invalid_display_grain · invalid_partial_date ·
     month_out_of_range · day_out_of_range · hour_out_of_range · year_out_of_range ·
@@ -678,6 +715,11 @@ def slot_to_spec(slot: Any, text: str) -> tuple[TimeSpec | None, str | None]:
         pos = _locate(span.strip(), text)
         if pos is None:
             return None, "span_not_in_text"
+        if relation != "none" and (
+            _is_deadline_filter(text, *pos) or _ATTR_DEADLINE_RE.search(text, *pos)
+        ):
+            # 「2027년에 EoS」 — 날짜 속성 조건의 값(규칙 `_recognize`와 같은 판정)
+            return None, "deadline_value"
         n = _opt_int(slot.get("n"), "invalid_n")
         unit = _opt_enum(slot.get("unit"), UNITS, "invalid_unit")
         completeness = _opt_enum(slot.get("completeness"), COMPLETENESS, "invalid_completeness")

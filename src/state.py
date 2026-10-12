@@ -107,7 +107,9 @@ class AgentState(TypedDict):
     schema_cache_source: Optional[str]       # 스키마 캐시 출처 ("메모리" | "Redis" | "DB 직접 조회")
     # 정의 기반 테이블 선별 결과(plans/139 W4 · D-308) — DB id 키, 단일·멀티 같은 모양:
     # {db_id: {"mode": "definitions", "source": "llm"|"lexical"|"none", "candidates": 후보 수,
-    #  "selected": [최종 테이블], "bridged": [다리 테이블]}}. 그 모드인 DB만 싣고(없으면 None) 이름·
+    #  "selected": [최종 테이블], "bridged": [다리 테이블],
+    #  "reason": 폴백 사유 코드|None(plans/151 W5)}}.
+    # 그 모드인 DB만 싣고(없으면 None) 이름·
     # 개수만 담는다(값 없음). **요청 스코프** — 두 상태 생성 함수가 None으로 초기화한다.
     table_selection: dict[str, dict[str, Any]] | None
     column_descriptions: dict[str, str]      # 컬럼 설명 {table.column: description}

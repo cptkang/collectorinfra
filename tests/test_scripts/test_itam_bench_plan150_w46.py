@@ -39,6 +39,14 @@ _W6_GRADES: dict[str, dict[str, str]] = {
     "tcdmsbr01": {"부점명": "general"},
     "tcdmsgt82": {"어플리케이션명": "general"},
 }
+#: plans/151 W6 — 92 사용량·사용률 6칸(수치 · 사람 정보 아님)이 위에 더해졌다
+_W151_GRADES_92: dict[str, str] = {
+    c: "general"
+    for c in (
+        "CPU사용량", "CPU사용률", "가상화서버메모리사용량", "메모리사용률", "스토리지사용량",
+        "스토리지사용률",
+    )
+}
 
 
 def _schema_tables() -> dict[str, Any]:
@@ -86,13 +94,14 @@ def test_other_definitions_do_not_point_to_80(definitions: dict[str, dict[str, A
 
 
 def test_w6_grades_exact_and_exist(policy: cat.ColumnPolicy) -> None:
-    assert {t: dict(policy.tables[t]) for t in _W6_GRADES} == _W6_GRADES
+    expected = {**_W6_GRADES, "tcdmsif92": {**_W6_GRADES["tcdmsif92"], **_W151_GRADES_92}}
+    assert {t: dict(policy.tables[t]) for t in _W6_GRADES} == expected
     schema = _schema_tables()
-    for table, columns in _W6_GRADES.items():
+    for table, columns in expected.items():
         assert set(columns) <= {c["name"] for c in schema[table]["columns"]}, table
-    # 전사본 두 테이블 77칸 + 10칸 — 다른 테이블은 없다
+    # 전사본 두 테이블 77칸 + 10칸 + plans/151 W6 6칸 — 다른 테이블은 없다
     assert set(policy.tables) == {"tcdmsif80", "tcdmsif79", *_W6_GRADES}
-    assert sum(len(c) for c in policy.tables.values()) == 87
+    assert sum(len(c) for c in policy.tables.values()) == 93
 
 
 def _summary(policy: cat.ColumnPolicy, *, generator: bool) -> dict[str, Any]:

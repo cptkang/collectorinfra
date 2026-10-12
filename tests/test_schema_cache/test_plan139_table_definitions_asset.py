@@ -509,6 +509,7 @@ class TestReviewAndApprove:
         }
         assert profile["allowed_tables"] == ["t_alpha01", "t_alpha02"]
         assert approved["applied"]["profile"]["table_definitions_kept_manual"] == ["t_alpha01"]
+        assert approved["applied"]["profile"]["table_definitions_kept"] == {"t_alpha01": "manual"}
         assert approved["draft"]["approved_table_definitions"] == ["t_alpha01", "t_alpha02"]
 
         versions = await env.store.list_versions(SRC)

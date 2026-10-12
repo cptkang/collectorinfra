@@ -91,6 +91,7 @@ from src.nodes.key_bridge import (
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
 from src.nodes.prompt_blocks import (
     build_profile_rules_block,
+    profile_rule_tables,
     CRITERIA_AND_GRAIN_RULE_BLOCK,
     EAV_JOIN_RULE_BLOCK,
     PROMPT_BUDGET_EXCEEDED,
@@ -175,6 +176,7 @@ def _format_structure_guide(
     resource_type_synonyms: dict[str, list[str]] | None = None,
     eav_name_synonyms: dict[str, list[str]] | None = None,
     query_history_examples: list[dict] | None = None,
+    rule_tables: list[str] | None = None,
 ) -> str:
     """구조 분석 메타데이터에서 쿼리 가이드를 포맷한다.
 
@@ -187,6 +189,8 @@ def _format_structure_guide(
         eav_name_synonyms: EAV NAME 유사단어 매핑 (선택)
         query_history_examples: 질의 이력에서 선택된 few-shot 예시 (선택, N2).
             주어지면 프로필 고정 예시 대신 이 예시로 블록을 만든다.
+        rule_tables: 프로필 규칙·코드값 블록을 좁힐 테이블(plans/151 W2 · `profile_rule_tables`).
+            None이면 종전 그대로 전량이다.
 
     Returns:
         포맷된 가이드 텍스트
@@ -230,8 +234,9 @@ def _format_structure_guide(
     guide += build_forbidden_join_block(structure_meta.get("patterns", []))
 
     # D-294 — 프로필 쿼리 규칙·코드값 블록(자산 자동 생성 · 멀티 경로와 같은 자리)
-    # 키가 없으면 빈 문자열이라 기존 프로필의 프롬프트는 그대로다
-    guide += build_profile_rules_block(structure_meta)
+    # 키가 없으면 빈 문자열이라 기존 프로필의 프롬프트는 그대로다. 정의 기반 선별이 동작한 턴은
+    # 선별 테이블로 좁힌다(plans/151 W2 — 멀티 경로와 같은 함수 · 그 밖은 None → 종전 전량)
+    guide += build_profile_rules_block(structure_meta, rule_tables)
 
     # 쿼리 예시 (few-shot) — 질문→SQL 쌍을 직접 제시하여 LLM 환각 방지.
     # 멀티 DB 경로(multi_db_executor)와 동일 출처를 쓰도록 공용 헬퍼로 분리(D-066).
@@ -817,6 +822,15 @@ async def _build_fallback_prompts(
         state, user_query, app_config,
     )
 
+    # 프로필 규칙·코드값 블록을 선별 테이블로 좁힌다(plans/151 W2) — 선별 결과 키는
+    # schema_analyzer와 같은 규칙(`active_db_id`, 없으면 ``"_default"``). 정의 기반 선별이
+    # 아니면 None(종전 전량).
+    _selections = state.get("table_selection")
+    rule_tables = profile_rule_tables(
+        _selections.get(state.get("active_db_id") or "_default")
+        if isinstance(_selections, dict) else None
+    )
+
     def _render_system(schema_info: dict[str, Any], *, materials: bool) -> str:
         """시스템 프롬프트 — ``materials=False``면 유사어·설명 재료를 뺀다(예산 사다리 1단)."""
         return _build_system_prompt(
@@ -832,6 +846,7 @@ async def _build_fallback_prompts(
             routing_intent=state.get("routing_intent"),
             query_history_examples=history_examples,
             path_parity=path_parity_enabled(app_config),
+            rule_tables=rule_tables,
         )
 
     # 프롬프트 구성
@@ -1589,6 +1604,7 @@ def _build_system_prompt(
     routing_intent: str | None = None,
     query_history_examples: list[dict] | None = None,
     path_parity: bool = False,
+    rule_tables: list[str] | None = None,
 ) -> str:
     """시스템 프롬프트를 구성한다.
 
@@ -1605,6 +1621,7 @@ def _build_system_prompt(
         routing_intent: 시멘틱 라우터가 분류한 의도 (선택, 예: "alarm_query", "data_query")
         query_history_examples: 질의 이력 few-shot 예시 (선택, N2 — 없으면 고정 예시)
         path_parity: 경로 대칭 옵트인 (ON이면 멀티 전용이던 스키마 한정 규칙을 주입)
+        rule_tables: 프로필 규칙·코드값 블록을 좁힐 테이블 (선택, plans/151 W2 — 없으면 전량)
 
     Returns:
         시스템 프롬프트 문자열
@@ -1626,6 +1643,7 @@ def _build_system_prompt(
             resource_type_synonyms=resource_type_synonyms,
             eav_name_synonyms=eav_name_synonyms,
             query_history_examples=query_history_examples,
+            rule_tables=rule_tables,
         )
 
     # DB 엔진 힌트

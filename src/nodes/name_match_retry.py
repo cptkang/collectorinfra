@@ -1,10 +1,16 @@
-"""이름 칸 등호 0행 재생성 판정 (plans/149 W3 · G-4 (b) · D-004 취지 · D-297 부기).
+"""이름 칸 등호·LIKE 0행 재생성 판정 (plans/149 W3 · plans/151 W4 · D-004 취지 · D-297 부기).
 
 **무엇을 하나.** 실행한 SQL이 0행이고 WHERE에 **이름 칸**에 대한 문자열 등호
 (`= '값'`)·`IN ('값', …)`이 있으면, 「이 칸은 핵심어 부분 일치로 다시 써라」 힌트 문구를
 돌려준다. 호출부(단일 그래프 경로 `result_organizer` · 2단 task 루프
 `subagents._run_single_db_pipeline`)가 이 문구를 재시도 사유(`error_message`)로 실어 SQL을
 **1회만** 다시 만든다. 재생성도 0행이면 그대로 0행을 답한다 — 결과를 넓히거나 숨기지 않는다.
+
+**LIKE도 본다(plans/151 W4 · F4 · G-4 (a)).** 이름 칸에 건 `LIKE`(`ILIKE` 포함 · `NOT LIKE`
+제외)의 리터럴에서 양끝 와일드카드(`%`·`_`)·공백을 뗀 문구가 그 리터럴의 핵심어 후보
+(`name_keyword`)와 다르면 발동한다 — 6회차 101 `LIKE '%통합인증 서비스%'`(일반어 섞임) 꼴이다.
+이미 핵심어만 건 LIKE(5회차 118 재생성 꼴 `'%통합인증%'`)와 후보가 없는 LIKE(일반어만)는
+발동하지 않는다 → 재생성 SQL이 같은 판정에 다시 걸리지 않는다.
 
 **이름 칸은 데이터에서 읽는다.** 그 DB의 설명 정본 파일
 (`config/knowledge/{db_id}/column_descriptions.yaml` · D-316 ④)에서 설명에 「부분 일치」가
@@ -77,6 +83,14 @@ _PREDICATE_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: 칸 LIKE '값' · 칸 ILIKE '값'(plans/151 W4) — `NOT LIKE`는 칸 자리에 `NOT`이 와서 걸리지 않는다
+#: (`NOT IN`과 같은 관례). 빈 리터럴은 대상이 아니다.
+_LIKE_RE = re.compile(
+    rf"(?<![\w`\".])(?:(?P<qual>{_IDENT})\s*\.\s*)?(?P<col>{_IDENT})"
+    r"\s*\bI?LIKE\s*'(?!')",
+    re.IGNORECASE,
+)
+
 #: 문자열 리터럴 하나(앞 공백 허용) · `IN (…)` 목록의 다음 항목 구분자.
 _LITERAL_RE = re.compile(r"\s*'((?:[^']|'')*)'")
 _IN_NEXT_RE = re.compile(r"\s*,")
@@ -99,6 +113,8 @@ _WILDCARDS = "%_"
 #: 힌트 첫머리 — 로그에서 힌트를 알아보고 칸 이름만 남기는 데 쓴다(`loggable_reason`).
 _HINT_HEAD = "이전 SQL은 0행이었습니다. 이름 칸 "
 _HINT_COLS_END = "에 등호(=)·IN으로"
+#: LIKE만으로 발동한 힌트의 칸 목록 끝 표지(plans/151 W4).
+_HINT_LIKE_COLS_END = "에 LIKE로"
 
 #: CASE … END 경계 — 이 구간의 조건(선택 목록 등)은 조회 조건이 아니다(검증 149 L-2).
 _CASE_TOKEN_RE = re.compile(r"\b(CASE|END)\b", re.IGNORECASE)
@@ -182,8 +198,12 @@ def find_name_equalities(sql: str, columns: Mapping[str, frozenset[str]]) -> lis
     return names
 
 
-def _name_predicates(sql: str, columns: Mapping[str, frozenset[str]]) -> list[re.Match[str]]:
-    """이름 칸 문자열 등호·IN 술어 매치(가린 SQL 기준 · 위치는 원문과 같다)."""
+def _name_predicates(
+    sql: str,
+    columns: Mapping[str, frozenset[str]],
+    pattern: re.Pattern[str] = _PREDICATE_RE,
+) -> list[re.Match[str]]:
+    """이름 칸 문자열 술어 매치(가린 SQL 기준 · 위치는 원문과 같다) — 기본은 등호·IN."""
     if not sql or not columns:
         return []
     masked = _mask(sql)
@@ -195,7 +215,7 @@ def _name_predicates(sql: str, columns: Mapping[str, frozenset[str]]) -> list[re
         if alias and _norm(alias) not in _NOT_ALIAS:
             aliases[_norm(alias)] = table
     hits: list[re.Match[str]] = []
-    for m in _PREDICATE_RE.finditer(_blank_case(masked)):
+    for m in pattern.finditer(_blank_case(masked)):
         tables = columns.get(_norm(m.group("col")))
         if tables is None:
             continue
@@ -219,6 +239,26 @@ def find_name_literals(sql: str, columns: Mapping[str, frozenset[str]]) -> list[
                 break
             pos = sep.end()
     return literals
+
+
+def find_name_likes(sql: str, columns: Mapping[str, frozenset[str]]) -> list[tuple[str, str]]:
+    """이름 칸 LIKE 가운데 문구가 핵심어 후보와 다른 것 — `(칸 이름, 리터럴)`(나온 순서).
+
+    문구는 리터럴 양끝의 와일드카드·공백을 뗀 것이다. 후보(`name_keyword`)가 없거나 문구와 같으면
+    (이미 핵심어만 건 LIKE) 빼서 재생성이 같은 판정을 되풀이하지 않게 한다(plans/151 W4). 한정자·
+    `CASE … END`·주석 처리는 `find_name_equalities`와 같다.
+    """
+    out: list[tuple[str, str]] = []
+    for m in _name_predicates(sql, columns, _LIKE_RE):
+        item = _LITERAL_RE.match(sql, m.end() - 1)
+        if item is None:
+            continue
+        literal = item.group(1).replace("''", "'")
+        keyword = name_keyword([literal])
+        if keyword is None or literal.strip(_WILDCARDS + " \t\n") == keyword:
+            continue
+        out.append((m.group("col").strip(), literal))
+    return out
 
 
 def _strip_particle(word: str) -> str:
@@ -245,15 +285,21 @@ def name_keyword(literals: Sequence[str]) -> str | None:
     return best
 
 
-def build_name_match_hint(columns: Sequence[str], keyword: str | None = None) -> str:
+def build_name_match_hint(
+    columns: Sequence[str], keyword: str | None = None, *, like_only: bool = False,
+) -> str:
     """재생성 힌트 문구 — 재시도 사유(`error_message`)로 SQL 생성기에 그대로 실린다.
 
     `keyword`(핵심어 후보 · plans/150 W5)가 있으면 끝에 후보 문장 하나를 덧붙인다. 없으면 종전
-    문구와 같다.
+    문구와 같다. `like_only`(등호·IN 칸 없이 LIKE만으로 발동 · plans/151 W4)면 첫 문장만
+    「LIKE로 값 문구를 그대로 걸었다」로 바꾼다.
     """
     names = "·".join(columns)
+    first = (
+        f"{_HINT_LIKE_COLS_END} 값 문구를" if like_only else f"{_HINT_COLS_END} 값을"
+    )
     hint = (
-        f"{_HINT_HEAD}{names}{_HINT_COLS_END} 값을 그대로 걸었습니다 — "
+        f"{_HINT_HEAD}{names}{first} 그대로 걸었습니다 — "
         "이 칸은 컬럼 설명이 부분 일치로 표시한 이름 칸입니다. "
         "이 칸 조건만 질문에서 고유한 핵심어를 뽑아 LIKE '%핵심어%' 부분 일치로 다시 쓰고, "
         "다른 조건·조인·선택 칼럼은 그대로 두세요. "
@@ -273,8 +319,10 @@ def loggable_reason(text: Any) -> Any:
     힌트 끝의 핵심어 후보는 사용자 질문에서 온 값이라 로그에 남기지 않는다(plans/150 W5 ·
     검증 150 Low 14).
     """
-    if isinstance(text, str) and text.startswith(_HINT_HEAD) and _HINT_COLS_END in text:
-        return f"이름 칸 부분 일치 힌트(칸={text[len(_HINT_HEAD):text.index(_HINT_COLS_END)]})"
+    if isinstance(text, str) and text.startswith(_HINT_HEAD):
+        ends = [i for end in (_HINT_COLS_END, _HINT_LIKE_COLS_END) if (i := text.find(end)) >= 0]
+        if ends:
+            return f"이름 칸 부분 일치 힌트(칸={text[len(_HINT_HEAD):min(ends)]})"
     return text
 
 
@@ -308,7 +356,8 @@ def name_match_retry_hint(
 
     발동 조건(모두): 결과 0행 · 단일 DB · 판정 표지(`NAME_MATCH_CHECKED_KEY`) 없음 · 남은 재시도
     횟수(`max_retry - retry_count`) ≥ `min_retries_left` · 성공한 0행 실행이 이번 한 건뿐 · 활성 DB
-    설명 정본에 이름 칸 표시가 있음 · 실행 SQL에 그 칸의 문자열 등호·IN이 있음.
+    설명 정본에 이름 칸 표시가 있음 · 실행 SQL에 그 칸의 문자열 등호·IN 또는 문구가 핵심어 후보와
+    다른 LIKE(`find_name_likes` · plans/151 W4)가 있음.
 
     Args:
         state: 파이프라인 상태(`query_results`·`generated_sql`·`query_attempts`·`retry_count`·
@@ -330,7 +379,12 @@ def name_match_retry_hint(
     columns = _knowledge_columns(db_id, knowledge_root or KNOWLEDGE_ROOT)
     if not columns:
         return None
+    likes = find_name_likes(sql, columns)
     hits = find_name_equalities(sql, columns)
+    like_only = not hits
+    for col, _ in likes:
+        if col not in hits:
+            hits.append(col)
     if not hits:
         return None
     if max_retry - int(state.get("retry_count") or 0) < min_retries_left:
@@ -344,4 +398,5 @@ def name_match_retry_hint(
         "이름 칸 등호 0행 — 부분 일치 힌트로 1회 재생성(plans/149 W3): db=%s columns=%s retry=%s",
         db_id, hits, state.get("retry_count", 0),
     )
-    return build_name_match_hint(hits, name_keyword(find_name_literals(sql, columns)))
+    literals = find_name_literals(sql, columns) + [literal for _, literal in likes]
+    return build_name_match_hint(hits, name_keyword(literals), like_only=like_only)

@@ -10,11 +10,19 @@ from __future__ import annotations
 import json
 import statistics
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import yaml
+
+from src.domain.schema_snapshot import bare_name
+
+from . import REPO_ROOT
 from .judge import SEPARATE, TAXONOMY
+
+#: closed 시드 테이블 정의(§0 「시드 대비 하향」의 기준 · 이름만 읽는다 · plans/151 W5)
+SEED_DEFINITIONS_PATH = REPO_ROOT / "testdata" / "itam_bench" / "closed" / "table_definitions.yaml"
 
 
 def _pct(part: int, whole: int) -> str:
@@ -225,6 +233,11 @@ def summarize(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "sample_rows_turns": sum(
             1 for r in contexts if r["schema_context"].get("sample_rows_presented")
         ),
+        "outside_turns": [
+            (r.get("id"), r.get("turn"), r.get("repeat"), outside)
+            for r in contexts
+            if (outside := _outside_selection(r))
+        ],
         "table_precision": precision / scored if scored else None,
         "table_recall": recall / scored if scored else None,
         "key_hits": key_hits,
@@ -330,13 +343,69 @@ def _p1_warnings(catalog: Mapping[str, Any]) -> list[str]:
     return lines + [""] if lines else []
 
 
-def _p1_section(catalog: Mapping[str, Any], code_samples: Mapping[str, Any] | None) -> list[str]:
-    """P1 근거 요약 · 주석 열거 보유 컬럼 수 · 치환 코드값 요약(수만)."""
+def seed_definition_tables(path: Path = SEED_DEFINITIONS_PATH) -> frozenset[str] | None:
+    """closed 시드 테이블 정의(`tables:`)의 맨 테이블 이름(`bare_name`) — 파일이 없으면 None."""
+    if not path.is_file():
+        return None
+    doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    tables = doc.get("tables") if isinstance(doc, Mapping) else None
+    return frozenset(bare_name(str(t)) for t in tables or {})
+
+
+def _definition_rows(
+    catalog: Mapping[str, Any], seed_tables: Collection[str] | None
+) -> tuple[list[list[Any]], list[str]]:
+    """승인 프로필의 테이블 정의 출처·교차 질의 식별 키 테이블 행(plans/151 W5 (3) · 이름·수만).
+
+    시드 대비 하향 = closed 시드에 정의가 있는데 승인본 출처가 `comment`(DB 주석)인 테이블 수 —
+    0이 아니면 경고 줄을 함께 돌려준다. 승인 프로필에 정의가 없으면 둘 다 빈 목록이다.
+    """
+    approved = catalog.get("approved_profile")
+    definitions = approved.get("table_definitions") if isinstance(approved, Mapping) else None
+    if not isinstance(definitions, Mapping) or not definitions:
+        return [], []
+    origins = Counter(
+        str((row or {}).get("origin") or "—") if isinstance(row, Mapping) else "—"
+        for row in definitions.values()
+    )
+    ranked = sorted(origins.items(), key=lambda item: (-item[1], item[0]))
+    cell = " · ".join(f"{name} {n}" for name, n in ranked)
+    warnings: list[str] = []
+    if seed_tables is not None:
+        # 맨 이름 비교(스키마 접두·따옴표 무시 · 대소문자 무시) — `schema.tcdmsif72`도 같은 테이블
+        folded = {bare_name(str(t)) for t in seed_tables}
+        lowered = sum(
+            1
+            for name, row in definitions.items()
+            if bare_name(str(name)) in folded
+            and isinstance(row, Mapping)
+            and row.get("origin") == "comment"
+        )
+        cell += f" · 시드 대비 하향 {lowered}"
+        if lowered:
+            warnings.append(
+                f"> 경고 — closed 시드에 정의가 있는 테이블 {lowered}개의 승인 정의 출처가 DB 주석"
+                "(`comment`)이다 — 큐레이션 정의가 주석 한 줄로 덮였다(plans/151 F1). 시드 정의를 "
+                "다시 가져와 승인한 뒤 재측정한다."
+            )
+    entity = approved.get("entity_keys") if isinstance(approved, Mapping) else None
+    entity_table = entity.get("table") if isinstance(entity, Mapping) else None
+    rows = [["테이블 정의 출처", cell], ["교차 질의 식별 키 테이블", entity_table or "—"]]
+    return rows, warnings
+
+
+def _p1_section(
+    catalog: Mapping[str, Any],
+    code_samples: Mapping[str, Any] | None,
+    seed_tables: Collection[str] | None = None,
+) -> list[str]:
+    """P1 근거 요약 · 주석 열거 보유 컬럼 수 · 치환 코드값 요약 · 테이블 정의 출처(수만)."""
     from .code_samples import summary_line
 
     summary = catalog.get("summary") or {}
     p1 = catalog.get("p1")
-    if not p1 and "comment_enum_columns" not in summary:
+    definition_rows, definition_warnings = _definition_rows(catalog, seed_tables)
+    if not p1 and "comment_enum_columns" not in summary and not definition_rows:
         return []
     rows: list[list[Any]] = []
     if p1:
@@ -362,8 +431,11 @@ def _p1_section(catalog: Mapping[str, Any], code_samples: Mapping[str, Any] | No
     rows.append(["주석 코드 열거 보유 컬럼", summary.get("comment_enum_columns", 0)])
     if p1:
         rows.append(["치환 코드값(code_samples.yaml)", summary_line(code_samples)])
+    rows += definition_rows
     lines = ["## 0. P1 근거(「DB 구조」 탭 결과 읽기 · 값 0)", ""]
     lines += _table(["항목", "값"], rows)
+    if definition_warnings:
+        lines += ["", *definition_warnings]
     if summary.get("comment_enum_columns"):
         lines += [
             "",
@@ -379,8 +451,11 @@ def render_report(
     records: Sequence[Mapping[str, Any]],
     *,
     code_samples: Mapping[str, Any] | None = None,
+    seed_tables: Collection[str] | None = None,
 ) -> str:
     """`report.md` 본문. `code_samples`는 치환 코드값 파일 본문(요약 수만 옮긴다).
+
+    `seed_tables`는 closed 시드 정의의 테이블 이름이다(§0 「시드 대비 하향」 · 없으면 그 수를 뺀다).
 
     run 이 가짜 값으로 치환했으면(`substitution_note` · plans/145) 제목 아래 고정 문구를 싣는다.
     """
@@ -433,7 +508,7 @@ def render_report(
             "관문 통과가 위생의 증거가 되지 못한다.",
             "",
         ]
-    lines += _p1_section(catalog, code_samples)
+    lines += _p1_section(catalog, code_samples, seed_tables)
     lines += ["## 1. 점수", ""]
     lines += _table(
         ["항목", "값"],
@@ -486,8 +561,19 @@ def render_report(
             ["정답 테이블 제시율", _pct(s["gold_presented"], s["gold_turns"])],
             ["핵심 컬럼 의미 보유율", _pct(s["key_meaning"], s["key_presented"])],
             ["실 데이터 표본이 LLM 에 제시된 턴", s["sample_rows_turns"]],
+            ["선별 밖 사용 턴", len(s["outside_turns"])],
         ],
     )
+    if s["outside_turns"]:
+        lines += [
+            "",
+            "선별 밖 사용 턴 — SQL 이 쓴 테이블 중 LLM 에 제시되지 않은 것(plans/151 W5):",
+            "",
+        ]
+        lines += [
+            f"- `{scenario}` 턴 {turn} · 반복 {repeat}: {', '.join(f'`{t}`' for t in tables)}"
+            for scenario, turn, repeat, tables in s["outside_turns"]
+        ]
     if s["context_turns"] < s["turns"]:
         lines += [
             "",

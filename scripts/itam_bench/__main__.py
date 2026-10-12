@@ -959,7 +959,7 @@ def build_artifacts(
 
     `leak_check.json`은 관문이 쓴다.
     """
-    from .report import render_report
+    from .report import render_report, seed_definition_tables
 
     staged = {
         "run.json": json.dumps(run_meta, ensure_ascii=False, indent=2) + "\n",
@@ -967,7 +967,13 @@ def build_artifacts(
             dict(catalog_doc), allow_unicode=True, sort_keys=False
         ),
         "trace.jsonl": "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records),
-        "report.md": render_report(run_meta, catalog_doc, records, code_samples=code_samples),
+        "report.md": render_report(
+            run_meta,
+            catalog_doc,
+            records,
+            code_samples=code_samples,
+            seed_tables=seed_definition_tables(),
+        ),
     }
     if code_samples is not None:
         staged[rd.CODE_SAMPLES_FILE] = yaml.safe_dump(

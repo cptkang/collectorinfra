@@ -420,7 +420,7 @@ class TestSingleSchemaAnalyzer:
         assert list(out["schema_info"]["tables"]) == ["app.alpha", "app.beta", "app.misc"]
         assert out["table_selection"] == {"app_db": {
             "mode": "definitions", "source": "llm", "candidates": 5,
-            "selected": ["app.alpha", "app.beta", "app.misc"], "bridged": [],
+            "selected": ["app.alpha", "app.beta", "app.misc"], "bridged": [], "reason": None,
         }}
         assert len(llm.prompts) == 1 and "## 테이블 성격 안내" in llm.prompts[0]
         syn.assert_not_awaited()  # Q-5 생략·유사어 동적 보완 미적용
@@ -668,6 +668,7 @@ class TestMultiAnalyzeSchema:
         assert sink == {"app_db": {
             "mode": "definitions", "source": "llm", "candidates": 5,
             "selected": ["app.alpha", "app.beta", "app.delta"], "bridged": ["app.delta"],
+            "reason": None,
         }}
         assert len(cached["tables"]) == len(_TABLES), "캐시 공유 객체는 그대로"
         assert out["_structure_meta"]["table_definitions"]
@@ -761,6 +762,7 @@ class TestMultiExecutor:
         assert out["regen_stops"]["defs_db"] == {"reason": "selection_none", "detail": _GUIDANCE}
         assert out["table_selection"] == {"defs_db": {
             "mode": "definitions", "source": "none", "candidates": 5, "selected": [], "bridged": [],
+            "reason": None,
         }}
         assert "plain_db" in out["db_results"]
 

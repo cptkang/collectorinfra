@@ -1110,8 +1110,21 @@ def prompt_by_db(records: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, An
             reason = shape.get("stop_reason")
             if isinstance(reason, str) and reason:
                 entry["stop_reasons"] = sorted({*entry["stop_reasons"], reason})
+            _merge_selection(entry, shape)
             _merge_usage(entry, shape)
     return out
+
+
+def _merge_selection(entry: dict[str, Any], shape: Mapping[str, Any]) -> None:
+    """선별 판독 재료(plans/151 W5) — 다리 테이블 이름(나온 순 합집합)·폴백 사유 코드(정렬한
+    합집합). 실렸을 때만 칸이 생긴다(옛 레코드·폴백 없는 턴은 칸 없음)."""
+    bridged = shape.get("selection_bridged")
+    if isinstance(bridged, list) and bridged:
+        merged = entry.setdefault("selection_bridged", [])
+        merged += [str(t) for t in bridged if str(t) not in merged]
+    reason = shape.get("selection_reason")
+    if isinstance(reason, str) and reason:
+        entry["selection_reasons"] = sorted({*entry.get("selection_reasons", []), reason})
 
 
 _FINGERPRINT = re.compile(r"^[0-9a-f]{12}$")
