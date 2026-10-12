@@ -25,7 +25,8 @@ D-292 DDL 등록)과 **읽기 전용 데이터 조회**(`schema_probe`)로 결�
   `admin_llm_concurrency` · 실행 전 `estimate_table_definition_llm` · 실패 묶음만 재실행).
   형식·검증은
   `src.domain.table_definitions`가 정하고, 검증 실패 행은 승인할 수 없다(테이블 단위 선택 승인 ·
-  사람 편집 `manual` 보존 병합 · 되돌리기는 프로필 「버전 이력」).
+  출처 순위 보존 병합 `manual` > `import` > `llm` > `comment`(plans/151 W1) · 되돌리기는 프로필
+  「버전 이력」).
 
 계층: infrastructure(`src/schema_cache`). 스키마 리터럴 금지(`overfit_check` 스캔 대상).
 """
@@ -45,7 +46,7 @@ import yaml  # type: ignore[import-untyped]
 from langchain_core.messages import HumanMessage
 
 from src.domain import schema_inference as inference
-from src.domain.profile_merge import merge_profile, profile_field_diff
+from src.domain.profile_merge import base_definition_origin, merge_profile, profile_field_diff
 from src.domain.schema_snapshot import bare_name
 from src.domain.table_definitions import (
     FIELDS,
@@ -297,6 +298,7 @@ class AssetGenerationService(AdminServiceBase):
         await ctx.progress(4, total, "자산 조립")
         assets, evidence = _assemble(
             source, snapshot, scope, comments, catalog, relationships, columns, code_tables,
+            profile.get(TABLE_DEFINITIONS_KEY),
         )
         # 테이블 주석 → 테이블 정의 초안(출처 `comment` · LLM 0 · 검증 실패는 오류 행)
         definitions, definition_errors = _definition_rows(
@@ -1108,12 +1110,17 @@ class AssetGenerationService(AdminServiceBase):
             by_bare = {
                 bare_name(str(k)): v for k, v in applied_defs.items()
             } if isinstance(applied_defs, Mapping) else {}
-            kept = [
-                t for t, item in draft_meta[TABLE_DEFINITIONS_KEY].items()
+            # 더 높은 출처의 base 정의를 보존한 테이블 → 보존한 출처(plans/151 W1)
+            kept = {
+                t: base_definition_origin(by_bare.get(bare_name(t)))
+                for t, item in draft_meta[TABLE_DEFINITIONS_KEY].items()
                 if by_bare.get(bare_name(t)) != item
-            ]
+            }
             if kept:
-                result["table_definitions_kept_manual"] = kept
+                result["table_definitions_kept"] = kept
+            kept_manual = [t for t, origin in kept.items() if origin == ORIGIN_MANUAL]
+            if kept_manual:  # 호환 키 — `manual` 보존분만
+                result["table_definitions_kept_manual"] = kept_manual
         return result
 
     async def _apply_prompt_template(
@@ -1473,8 +1480,13 @@ def _assemble(
     relationships: list[dict[str, Any]],
     columns: Mapping[str, Mapping[str, Any]],
     code_tables: Sequence[Mapping[str, Any]],
+    definitions: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """프로파일링 결과를 자산(초안 값)과 근거로 조립한다(결정적)."""
+    """프로파일링 결과를 자산(초안 값)과 근거로 조립한다(결정적).
+
+    ``definitions``는 승인 프로필의 테이블 정의다 — 식별 키 후보에서 수집 이력 테이블을 뺀다
+    (plans/151 W7 · 없으면 종전).
+    """
     code_values: dict[str, list[str]] = {}
     code_labels: dict[str, dict[str, str]] = {}
     column_values: dict[str, dict[str, Any]] = {}
@@ -1545,7 +1557,7 @@ def _assemble(
         "allowed_tables": allowed,
         "code_values": code_values,
         "code_labels": code_labels,
-        "entity_keys": inference.entity_keys_asset(entity, catalog.row_estimates),
+        "entity_keys": inference.entity_keys_asset(entity, catalog.row_estimates, definitions),
         "query_rules": rules,
         "seeds": {"column_synonyms": column_synonyms, "column_values": column_values}
         if (column_synonyms or column_values) else None,

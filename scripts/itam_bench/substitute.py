@@ -310,6 +310,7 @@ class FakeValues:
         "_ip_used",
         "_ip_originals",
         "_fallback",
+        "_registry",
     )
 
     def __init__(
@@ -345,6 +346,29 @@ class FakeValues:
         #: 깊이별(1~4) 원 IP 접두
         self._ip_originals: tuple[set[str], ...] = (set(), set(), set(), set())
         self._fallback: Counter[str] = Counter()
+        #: 조회 전용 등록부(`registry`)면 True — 발급·등록을 부르면 예외
+        self._registry = False
+
+    @classmethod
+    def registry(cls, values: Iterable[str]) -> FakeValues:
+        """반출 run 의 가짜 값 목록(`substitutions.yaml` `values`)만 품은 **조회 전용 등록부**
+        (plans/150 W2 (1) — 근거 묶음 관문의 「이 run 가짜 값」 판정용).
+
+        원값·대응 메모는 없다(원값 0). 목록 값을 메모 키(`_key`) 그대로 「낸 가짜 값」으로 올려
+        `is_fake`만 답한다 — 0 소수 값(`1285.0`)도 목록에 적힌 꼴 그대로만 가짜 값이다. 발급
+        (`fake`·`fake_or_none`·`fake_ip`)·원값 등록(`register`)은 부르면 `RuntimeError`다.
+        """
+        fakes = cls()
+        for value in values:
+            text = str(value)
+            if text.strip():
+                fakes._add_issued(_key(text))
+        fakes._registry = True
+        return fakes
+
+    def _writable(self) -> None:
+        if self._registry:
+            raise RuntimeError("조회 전용 가짜 값 등록부는 발급·등록을 하지 않는다")
 
     def __repr__(self) -> str:
         return f"<FakeValues 가짜 {len(self._issued)}건 · 원값 {self._seen_count}건>"
@@ -382,6 +406,7 @@ class FakeValues:
         앞뒤 공백을 다 걷은 꼴도 함께 등록한다 — 결과 요약 표본은 `strip()`한 셀을 생성기에 넣는다
         (교정 2차 Minor-1: 앞 공백 셀이 2차에서 처음 보는 원값이 되던 결함).
         """
+        self._writable()
         for value in values:
             if value is None or isinstance(value, bool):
                 continue
@@ -412,6 +437,7 @@ class FakeValues:
 
     def fake_or_none(self, value: object) -> str | None:
         """원값 → 가짜 값(run 안 메모). 치환 불가면 None(코드값 파일의 `exhausted` 처분용)."""
+        self._writable()
         text = str(value)
         key = _key(text)
         zero = _ZERO_FRACTION.fullmatch(key)
@@ -437,6 +463,7 @@ class FakeValues:
 
     def fake_ip(self, text: str) -> str:
         """글 안 IPv4 마다 계층 일관 가짜 IP(치환 불가면 가림 표지)."""
+        self._writable()
         return _IPV4.sub(self._ip_sub, str(text))
 
     def _issue(self, key: str, text: str) -> str | None:

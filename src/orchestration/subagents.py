@@ -30,7 +30,11 @@ from src.domain.query_time import QueryTime, resolve_task_time
 from src.nodes.cache_management import cache_management
 from src.nodes.general_inference import general_inference
 from src.nodes.multi_db_executor import multi_db_executor
-from src.nodes.name_match_retry import NAME_MATCH_CHECKED_KEY, name_match_retry_hint
+from src.nodes.name_match_retry import (
+    NAME_MATCH_CHECKED_KEY,
+    loggable_reason,
+    name_match_retry_hint,
+)
 from src.nodes.query_executor import query_executor
 from src.nodes.query_generator import query_generator
 from src.nodes.query_validator import (
@@ -1155,7 +1159,8 @@ async def _run_single_db_pipeline(
         logger.info(
             "이름 칸 부분 일치 재생성이 실행 성공 없이 끝남 — 재생성 전 0행 답으로 되돌림"
             "(plans/149 W3): 종결=%s 사유=%s",
-            (state.get("regen_stop") or {}).get("reason"), state.get("error_message"),
+            (state.get("regen_stop") or {}).get("reason"),
+            loggable_reason(state.get("error_message")),
         )
         state = zero_row_snapshot
     return state

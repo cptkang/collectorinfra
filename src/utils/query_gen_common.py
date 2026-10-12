@@ -470,14 +470,44 @@ def has_all_scope_keyword(text: str | None) -> bool:
     Returns:
         전체 스코프 지시가 있으면 True
     """
+    return _has_scope_term(text, _ALL_QUERY_KEYWORDS, instrument=True)
+
+
+# 고지용 「전체」 표면어 — D-279 ⑦ 문구(전체·모든·모두) 그대로다. LIMIT 상향용
+# `_ALL_QUERY_KEYWORDS`의 「서버별」·「서버들」·「각 서버」는 전 서버 **나열** 의도일 뿐
+# 「조회 가능 존 전체」 요청이 아니다 — 고지에 쓰면 거짓 「전체가 아니라 …」가 붙는다(plans/151 F3).
+_FULL_SCOPE_REQUEST_KEYWORDS: tuple[str, ...] = ("모든", "전체", "모두")
+
+
+def has_full_scope_request(text: str | None) -> bool:
+    """질의가 「전체·모든·모두」로 범위 전체를 요청했는지 판정한다 — 범위 고지 전용(plans/151 W3).
+
+    「전체가 아니라 …」 고지(`render_narrowed_note`·`scope_partial_text`)의 발동 판정이다.
+    파생 접미 거름(「전체적」)은 `has_all_scope_keyword`와 같다. 계측 카운터는 LIMIT 판정만
+    남긴다(같은 질의를 두 번 세지 않게).
+
+    Args:
+        text: 사용자 원문 질의
+
+    Returns:
+        「전체·모든·모두」 지시가 있으면 True
+    """
+    return _has_scope_term(text, _FULL_SCOPE_REQUEST_KEYWORDS, instrument=False)
+
+
+def _has_scope_term(
+    text: str | None, keywords: tuple[str, ...], *, instrument: bool
+) -> bool:
+    """표면어가 파생 접미(`_ALL_SCOPE_DERIV_SUFFIXES`) 없이 한 번이라도 나오는지 본다."""
     body = text or ""
-    for kw in _ALL_QUERY_KEYWORDS:
+    for kw in keywords:
         start = body.find(kw)
         while start != -1:
             tail = body[start + len(kw):]
             if not tail.startswith(_ALL_SCOPE_DERIV_SUFFIXES):
                 return True
-            note_fallback(FALLBACK_ALL_SCOPE_REJECT, f"{kw}{tail[:2]}")
+            if instrument:
+                note_fallback(FALLBACK_ALL_SCOPE_REJECT, f"{kw}{tail[:2]}")
             start = body.find(kw, start + 1)
     return False
 

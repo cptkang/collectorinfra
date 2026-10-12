@@ -307,6 +307,7 @@ class TestThreeWaySymmetryOnSeed:
         expected = {
             "mode": "definitions", "source": "llm", "candidates": 99,
             "selected": ["tcdmsif94", "tcdmsif89", "tcdmsif92"], "bridged": ["tcdmsif92"],
+            "reason": None,
         }
         assert single["table_selection"][_DB] == expected
         assert sink[_DB] == expected

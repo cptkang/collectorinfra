@@ -60,9 +60,13 @@ CAPTURE_KIND = "task_pipeline_state"
 #: 그 밖의 값은 null 로 옮긴다.
 BUDGET_STAGES: frozenset[str] = frozenset({"within", "materials", "samples", "exceeded"})
 SELECTION_SOURCES: frozenset[str] = frozenset({"llm", "lexical", "none"})
+#: 선별 폴백 사유 코드(`table_selection.reason` · plans/151 W5) — 그 밖의 값은 null.
+SELECTION_REASONS: frozenset[str] = frozenset({"llm_error", "backend_error", "zero_valid"})
 #: 재생성 종결 사유(`regen_stop.reason`)는 코드 열거(`backend_limit` 등)만 옮긴다.
 #: 문구 모양이면 null 이다.
 _REASON_CODE = re.compile(r"^[a-z][a-z_]{0,39}$")
+#: 다리 테이블 이름 모양(스키마 한정 포함 · 테이블 이름은 반출 허용 범위 — D-308). 그 밖은 뺀다.
+_TABLE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,63}(?:\.[A-Za-z_][A-Za-z0-9_$]{0,63})?$")
 
 #: 자산 사용 표지 대상 — 구조 메타 키(plans/143 W1).
 ASSET_MARKER_KEYS: tuple[str, ...] = (
@@ -135,7 +139,8 @@ def _prompt_shape(state: Mapping[str, Any], db_id: str, *, single: bool) -> dict
 
     예산(`prompt_budget`)·백엔드 보고(`validation_result.backend_error`)·종결 사유(`regen_stop`)는
     단일 경로 상태의 몫이다. 멀티 DB 상태는 DB 별 종결 사유(`regen_stops`)와 선별만 읽는다.
-    선별(`table_selection`)은 두 경로 모두 DB id 키다.
+    선별(`table_selection`)은 두 경로 모두 DB id 키다. 다리 테이블(`bridged` — 이름만)·폴백 사유
+    코드(`reason`)도 옮긴다(plans/151 W5 — 모양이 아니면 뺀다).
     """
     budget = _mapping(state.get("prompt_budget")) if single else {}
     backend = (
@@ -143,6 +148,7 @@ def _prompt_shape(state: Mapping[str, Any], db_id: str, *, single: bool) -> dict
     )
     selection = _mapping(_mapping(state.get("table_selection")).get(db_id))
     selected = selection.get("selected")
+    bridged = selection.get("bridged")
     stop = (
         _mapping(state.get("regen_stop"))
         if single
@@ -155,6 +161,12 @@ def _prompt_shape(state: Mapping[str, Any], db_id: str, *, single: bool) -> dict
         "backend_reported_tokens": _count(backend.get("given")),
         "selection_source": _member(selection.get("source"), SELECTION_SOURCES),
         "selected_count": len(selected) if isinstance(selected, (list, tuple)) else None,
+        "selection_bridged": [
+            str(t) for t in bridged if isinstance(t, str) and _TABLE_NAME.match(t)
+        ]
+        if isinstance(bridged, (list, tuple))
+        else [],
+        "selection_reason": _member(selection.get("reason"), SELECTION_REASONS),
         "stop_reason": reason if isinstance(reason, str) and _REASON_CODE.match(reason) else None,
     }
 

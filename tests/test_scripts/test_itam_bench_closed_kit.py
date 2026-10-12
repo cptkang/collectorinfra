@@ -101,8 +101,9 @@ class TestClosedScenarios:
                 )
                 for var, grade in columns.items()
             }
-        assert {t: dict(c) for t, c in closed_policy.tables.items()} == expected
-        assert sum(len(c) for c in closed_policy.tables.values()) == 77
+        # 전사본 두 테이블만 대조한다 — 정책 밖 10칸(plans/150 W6)은 test_itam_bench_plan150_w46
+        assert {t: dict(closed_policy.tables[t]) for t in expected} == expected
+        assert sum(len(closed_policy.tables[t]) for t in expected) == 77
         assert closed_policy.scope == "closed"
         assert closed_policy.canary_literals == () and closed_policy.canary_patterns == ()
         # 샌드박스 정책은 새 등급을 쓰지 않는다

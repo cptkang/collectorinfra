@@ -603,13 +603,18 @@ def test_defect_llm_next_slot_is_future_clarify():
     assert qt.clarify == "future_relative"
 
 
-def test_future_slot_on_filter_phrase_is_dropped_not_clarified():
+@pytest.mark.parametrize("query, reason", [
+    ("30일 후 점검 예정 서버 목록", "future_period"),
+    # 「만료」가 붙으면 날짜 속성 조건의 값이라 미래 구간 판정 전에 버린다(D-309 부기)
+    ("30일 후 만료 서버 목록", "deadline_value"),
+])
+def test_future_slot_on_filter_phrase_is_dropped_not_clarified(query, reason):
     """필터 표현(흔적 아님)에 슬롯이 미래 구간을 내면 슬롯만 버리고 기본값으로 간다(D2·D3 교차)."""
     slot = {"relation": "next", "n": 30, "unit": "day", "completeness": None, "anchor": None,
             "start": None, "end": None, "display_grain": "none", "span": "30일 후"}
-    qt = resolve_query_time("30일 후 만료 서버 목록", NOW, slot=slot)
+    qt = resolve_query_time(query, NOW, slot=slot)
     assert qt.clarify is None and qt.slot_status == "rejected"
-    assert qt.slot_reason == "future_period"
+    assert qt.slot_reason == reason
     assert qt.metric is not None and qt.metric.source == "default"
 
 

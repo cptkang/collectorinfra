@@ -592,7 +592,8 @@ class TestVerifierRealShapes:
     """실제 ITAM SQL(K2 예시 · 신규 오라클) — 선별(72·41) 밖이어도 단일·멀티에서 통과."""
 
     def test_oracle_inventory(self):
-        assert len(_closed_oracles()) >= 15 and len(_k2_items()) == 3
+        # K2 5건 — 146 W4 3건 + plans/150 W3 `tcdmsif80` 단독 변형 2건
+        assert len(_closed_oracles()) >= 15 and len(_k2_items()) == 5
 
     @pytest.mark.parametrize("path", _closed_oracles(), ids=lambda p: p.name)
     def test_oracles_pass(self, seed, path):

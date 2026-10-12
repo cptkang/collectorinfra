@@ -200,15 +200,24 @@ class TestMerge:
 
         merged = merge_profile(base, draft, local_sandbox=False)
 
+        # plans/151 W1 — llm 초안은 import base를 덮지 않는다(출처 순위)
         assert merged[PROFILE_KEY] == {
             "t_a": _def("사람 a", "manual"),
-            "t_b": _def("llm b", "llm"),
+            "t_b": _def("가져온 b", "import"),
             "t_only_base": _def("base만", "llm"),
             "t_new": _def("주석 new", "comment"),
         }
+        diff = {d["path"]: d["change"] for d in profile_field_diff(base, merged)}
+        assert diff == {f"{PROFILE_KEY}[t_new]": "added"}
+
+    def test_same_or_higher_origin_replaces_and_input_unchanged(self):
+        base = {"source": "manual", PROFILE_KEY: {"t_b": _def("가져온 b", "import")}}
+        merged = merge_profile(base, {PROFILE_KEY: {"t_b": _def("다시 가져온 b", "import")}},
+                               local_sandbox=False)
+        assert merged[PROFILE_KEY] == {"t_b": _def("다시 가져온 b", "import")}
         assert base[PROFILE_KEY]["t_b"]["manages"] == "가져온 b"  # 입력 불변
         diff = {d["path"]: d["change"] for d in profile_field_diff(base, merged)}
-        assert diff == {f"{PROFILE_KEY}[t_b]": "changed", f"{PROFILE_KEY}[t_new]": "added"}
+        assert diff == {f"{PROFILE_KEY}[t_b]": "changed"}
 
     def test_draft_manual_edit_replaces_base_manual(self):
         base = {PROFILE_KEY: {"t_a": _def("이전 사람 값", "manual")}}

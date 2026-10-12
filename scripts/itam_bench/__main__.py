@@ -61,6 +61,7 @@ from . import (
 from . import catalog as cat
 from . import judge as jd
 from . import redact as rd
+from .report import RETRY_ATTEMPT_NOTE
 
 if TYPE_CHECKING:
     from .substitute import FakeValues
@@ -86,7 +87,12 @@ def _split(raw: str | None) -> list[str]:
 def _load(args: argparse.Namespace) -> tuple[cat.ColumnPolicy, list[cat.Scenario]] | None:
     try:
         policy = cat.load_policy(Path(args.policy))
-        scenarios = cat.load_scenarios(Path(args.scenarios), policy)
+        # 판정 칸 이름은 정책 ∪ closed 스키마 스냅숏으로 검사한다(plans/150 W2 (7))
+        scenarios = cat.load_scenarios(
+            Path(args.scenarios),
+            policy,
+            schema_names=cat.load_schema_names(cat.CLOSED_SCHEMA_PATH),
+        )
         return policy, cat.select(scenarios, env=args.env, only=_split(args.only))
     except cat.CatalogError as exc:
         say(f"[중단] 시나리오·정책 검증 실패 {len(exc.errors)}건:")
@@ -423,30 +429,41 @@ def prompt_scope(scenario: cat.Scenario, turn: cat.Turn) -> str:
 def _redacted_sqls(
     executed: list[dict[str, Any]], ctx: RunContext, prompt: str, labels: Iterable[str] = ()
 ) -> list[dict[str, Any]]:
+    """실행 SQL 기록 — `retry_attempt`는 **이 턴 안 실행 순번**(0부터 · 감사 로그 줄 순서)이다.
+
+    서버 감사 이벤트의 `retry_attempt`는 그 실행을 낸 task 의 재생성 횟수(`retry_count`)라 task 가
+    둘 이상이면(2단 계획 · `schema_context.tasks`) 순번과 어긋난다 — 5회차 105(task 2개): 서버 값 1
+    인 SQL(그 task 의 재생성 — 실행되지 않은 앞 생성은 감사 로그에 없다)을 먼저, 서버 값 0 인 다른
+    task 첫 SQL 을 나중에 실행했다(plans/150 W2 (4)).
+    감사 로그는 실행 순서대로 쌓이므로 순번만 고치고, 서버 값이 순번과 다를 때만
+    `server_retry_attempt`로 함께 싣는다.
+    """
     out = []
-    for entry in executed:
+    for order, entry in enumerate(executed):
         sql = str(entry.get("sql") or "")
-        out.append(
-            {
-                "sql": rd.redact_sql(
-                    sql,
-                    policy=ctx.policy,
-                    vault=ctx.vault,
-                    prompt=prompt,
-                    allowed_words=labels,
-                    catalog_columns=ctx.catalog.columns,
-                ),
-                "source": entry.get("source"),
-                "success": entry.get("success"),
-                "row_count": entry.get("row_count"),
-                "retry_attempt": entry.get("retry_attempt"),
-                "error": (
-                    rd.redact_text(str(entry["error"]), vault=ctx.vault, sql=sql, prompt=prompt)
-                    if entry.get("error")
-                    else None
-                ),
-            }
-        )
+        server_attempt = entry.get("retry_attempt")
+        record: dict[str, Any] = {
+            "sql": rd.redact_sql(
+                sql,
+                policy=ctx.policy,
+                vault=ctx.vault,
+                prompt=prompt,
+                allowed_words=labels,
+                catalog_columns=ctx.catalog.columns,
+            ),
+            "source": entry.get("source"),
+            "success": entry.get("success"),
+            "row_count": entry.get("row_count"),
+            "retry_attempt": order,
+            "error": (
+                rd.redact_text(str(entry["error"]), vault=ctx.vault, sql=sql, prompt=prompt)
+                if entry.get("error")
+                else None
+            ),
+        }
+        if isinstance(server_attempt, int) and server_attempt != order:
+            record["server_retry_attempt"] = server_attempt
+        out.append(record)
     return out
 
 
@@ -652,6 +669,8 @@ def run_turn(
     captured = capture.collect(capture_mark, thread_id)
     key_refs = scenario.key_columns_for(turn)
     gold = scenario.gold_tables_for(turn)
+    gold_paths = scenario.gold_paths_for(turn)
+    join_keys = scenario.join_keys_for(turn)
     context = jd.schema_context(captured, db_id=DB_ID, gold_tables=gold, key_refs=key_refs)
 
     verdict: str | None = None
@@ -680,6 +699,7 @@ def run_turn(
         gold_tables=gold,
         schema_context=context,
         access_denied=any(message in response for message in ctx.denied_messages),
+        join_keys=join_keys,
     )
     analysis = jd.analyze_sql(facts, ctx.catalog, db_id=DB_ID)
     labels = jd.classify(facts, analysis, db_id=DB_ID)
@@ -716,11 +736,31 @@ def run_turn(
             scenario, turn, repeat, obs, result, executed, sqls, raw_oracle,
             response=response, status=status, context=context, analysis=analysis,
             labels=labels, key_refs=key_refs, gold=gold, error=error, ctx=ctx,
+            gold_paths=gold_paths, join_keys=join_keys,
         )  # fmt: skip
 
     return PendingTurn(
         status=status, verdict=verdict, taxonomy=labels, finish=finish, originals=originals
     )
+
+
+def _expected(
+    turn: cat.Turn,
+    key_refs: Any,
+    gold: Any,
+    gold_paths: Sequence[Sequence[str]],
+    join_keys: Sequence[tuple[tuple[str, str], tuple[str, str]]],
+) -> dict[str, Any]:
+    expected: dict[str, Any] = {
+        "db_ids": list(turn.expect.get("db_ids") or []),
+        "key_columns": key_refs,
+        "gold_tables": gold,
+    }
+    if len(gold_paths) > 1:
+        expected["gold_paths"] = [list(path) for path in gold_paths]
+    if join_keys:
+        expected["join_keys"] = [[f"{t}.{c}" for t, c in pair] for pair in join_keys]
+    return expected
 
 
 def _turn_record(
@@ -742,8 +782,13 @@ def _turn_record(
     gold: Any,
     error: Any,
     ctx: RunContext,
+    gold_paths: Sequence[Sequence[str]] = (),
+    join_keys: Sequence[tuple[tuple[str, str], tuple[str, str]]] = (),
 ) -> dict[str, Any]:
     """지연 레코드 마감 — 가린 레코드를 만든다(원값은 여기서 버린다).
+
+    `expected`에는 허용 경로 묶음이 둘 이상일 때만 `gold_paths`, 조인 키를 선언했을 때만
+    `join_keys`(`["표.칸", "표.칸"]` 쌍)를 더한다(plans/150 W2 (6) — 없는 턴은 바이트 그대로).
 
     위생 순서: 사람 값 수집(결과 요약)이 SQL·오류 가림보다 먼저다. 가림의 프롬프트 낱말 허용
     범위는 같은 시나리오의 현재 턴까지 프롬프트 전부다(`prompt_scope`).
@@ -771,11 +816,7 @@ def _turn_record(
         "prompt": turn.query or None,
         "reply_to": turn.reply_to,
         "send_keys": sorted(turn.send),
-        "expected": {
-            "db_ids": list(turn.expect.get("db_ids") or []),
-            "key_columns": key_refs,
-            "gold_tables": gold,
-        },
+        "expected": _expected(turn, key_refs, gold, gold_paths, join_keys),
         "tier": ctx.tier,
         "status": status,
         "http_status": getattr(obs, "http_status", None),
@@ -918,7 +959,7 @@ def build_artifacts(
 
     `leak_check.json`은 관문이 쓴다.
     """
-    from .report import render_report
+    from .report import render_report, seed_definition_tables
 
     staged = {
         "run.json": json.dumps(run_meta, ensure_ascii=False, indent=2) + "\n",
@@ -926,7 +967,13 @@ def build_artifacts(
             dict(catalog_doc), allow_unicode=True, sort_keys=False
         ),
         "trace.jsonl": "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records),
-        "report.md": render_report(run_meta, catalog_doc, records, code_samples=code_samples),
+        "report.md": render_report(
+            run_meta,
+            catalog_doc,
+            records,
+            code_samples=code_samples,
+            seed_tables=seed_definition_tables(),
+        ),
     }
     if code_samples is not None:
         staged[rd.CODE_SAMPLES_FILE] = yaml.safe_dump(
@@ -1338,6 +1385,8 @@ def _run_with_server(
         "operator": fakes.fake(getpass.getuser()),
         "host": fakes.fake(socket.gethostname()),
         "substitution_note": rd.SUBSTITUTION_NOTE,
+        # 실행 SQL `retry_attempt` 뜻 — 옛 run(재생성 횟수)과 구분(plans/150 W2 (4) · 교정 L17)
+        "retry_attempt_note": RETRY_ATTEMPT_NOTE,
         "db_backend": getattr(cfg, "db_backend", None),
         "mcp_endpoint": rd.dsn_scheme(
             str(getattr(getattr(cfg, "dbhub", None), "server_url", "") or "")

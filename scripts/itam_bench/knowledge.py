@@ -9,7 +9,9 @@ plans/143 W1·W2 · D-316.
 `<run>/knowledge_evidence/`에 쓴다(실패면 `leak_check.json`만 · 종료 1). 같은 입력이면 바이트가
 같다. LLM·DB 0. 반출 run에 `substitutions.yaml`(3회차부터 · 형식 보존 가짜 값 · plans/145 §2.6)이
 있으면 묶음이 가짜 값을 실어 나르는 것은 막지 않고(외부망 작업 자료) 색인에 가짜 값 수와 「자산에
-쓰지 않는다」 고지를 한 줄 싣는다.
+쓰지 않는다」 고지를 한 줄 싣는다. 관문은 그 목록을 조회 전용 가짜 값
+등록부(`FakeValues.registry`)로 받아 이 run 가짜 IP를 잔존 IPv4로 보지 않는다(plans/150 W2
+(1) · 목록 밖 IP는 종전대로 막는다).
 
 **검증** — 원천 파일(`src.domain.knowledge_assets` 계약)을 결정적으로 검사한다. 정적 검사는 도메인
 모듈, SQL은 여기서 더한다(K2·K4·K8 모두 MariaDB 실행 주석 `/*! … */`는 실행 전 거절): K2
@@ -61,6 +63,7 @@ from . import build_assets as ba
 from . import catalog as cat
 from . import judge as jd
 from . import redact as rd
+from . import substitute as sub
 
 KNOWLEDGE_DIR_REL = Path("testdata/itam_bench/closed/knowledge")
 EVIDENCE_DIR = "knowledge_evidence"
@@ -467,11 +470,17 @@ def run_evidence(
             run_dir, repo_root=repo_root, scenarios_path=scenarios_path, knowledge_dir=knowledge_dir
         )
         policy = cat.load_policy(Path(policy_path))
+        issued = ba.load_substitutions(Path(run_dir))
     except (ba.BuildError, cat.CatalogError, FileNotFoundError) as e:
         print(f"[evidence] 중단: {e}")
         return getattr(e, "exit_code", EXIT_INPUT)
+    # 반출 run 의 가짜 값 목록을 등록부로 — 반출 관문을 이미 통과한 이 run 가짜 IP 를 잔존 IPv4
+    # 로 보지 않는다(plans/150 W2 (1)). 파일이 없으면(1·2회차) 종전대로 모양만으로 막는다.
+    registry = sub.FakeValues.registry(issued) if issued is not None else None
     gate = rd.LeakGate(
-        policy=policy, vault=rd.PiiVault.from_policy(policy), user_values=dict(user_values or {})
+        policy=policy,
+        vault=rd.PiiVault.from_policy(policy, fakes=registry),
+        user_values=dict(user_values or {}),
     )
     out_dir = Path(run_dir) / EVIDENCE_DIR
     if out_dir.is_dir():

@@ -45,10 +45,14 @@ from src.state import AgentState
 from src.utils.deadline import MIN_CALL_TIMEOUT_SEC
 from src.utils.empty_antecedent import (
     EMPTY_ANTECEDENT_KEY,
+    SAMPLED_ANTECEDENT_KEY,
+    SAMPLED_TURN_KEY,
     ZERO_ROW_TURN_KEY,
     carried_zero_row_turn,
     carried_zone_turn_context,
     empty_antecedent_note,
+    sampled_antecedent_outcome,
+    sampled_turn,
     widened_beyond_antecedent,
 )
 from src.utils.prior_dependency import REASON_PRIOR_EMPTY, render_dependency_notes
@@ -896,6 +900,8 @@ def _apply_empty_antecedent(result: dict[str, Any], state: AgentState) -> dict[s
       판정이 근사라 숨기지 않는다 · 조건 없이 넓힌 침묵 오답 차단).
     - 이번 턴이 0행이면 다음 턴 지시어가 잇도록 기록(`ZERO_ROW_TURN_KEY`)을 맥락에 남긴다.
     - 존 역질문 턴은 승계 중이면 기록만 넘긴다(존 답변 턴이 잇는다 · M-2).
+    - 표본 앞 턴 승계(plans/150 W1 · `SAMPLED_ANTECEDENT_KEY`)면 표본 `IN`·넓힘 안내를 맨 앞에 싣고,
+      이번 턴이 엔티티 상한을 넘는 행이면 다음 턴 지시어가 잇도록 기록(`SAMPLED_TURN_KEY`)을 남긴다.
     파일 산출 턴과 SQL 조회가 아닌 턴은 건드리지 않는다(종전 그대로).
     """
     if result.get("zone_clarification"):
@@ -934,6 +940,18 @@ def _apply_empty_antecedent(result: dict[str, Any], state: AgentState) -> dict[s
         if record:
             base_ctx = out.get("conversation_context") or ctx
             out["conversation_context"] = {**base_ctx, ZERO_ROW_TURN_KEY: record}
+    # 표본 앞 턴 승계(plans/150 W1) — 표본 `IN`은 행 수와 무관하게, 넓힘은 행이 있을 때 맨 앞에 안내
+    sampled_note = sampled_antecedent_outcome(
+        ctx.get(SAMPLED_ANTECEDENT_KEY), row_sqls or sqls, rows
+    )
+    if sampled_note:
+        logger.info("표본 앞 턴 지시어 — 이번 조회 %d행에 맨 앞 안내(plans/150 W1)", rows)
+        body = (out.get("final_response") or "").strip()
+        out["final_response"] = f"{sampled_note}\n\n{body}" if body else sampled_note
+    sampled = sampled_turn(str(state.get("user_query") or ""), row_sqls, rows)
+    if sampled:
+        base_ctx = out.get("conversation_context") or ctx
+        out["conversation_context"] = {**base_ctx, SAMPLED_TURN_KEY: sampled}
     return out
 
 
@@ -959,12 +977,12 @@ def _turn_level_disclosures(
     """
     from src.domain.scope_select import render_narrowed_note
     from src.nodes.output_generator import scope_partial_text
-    from src.utils.query_gen_common import has_all_scope_keyword
+    from src.utils.query_gen_common import has_full_scope_request
 
     query = str(state.get("user_query") or "")
     items: list[disc.Disclosure] = []
     narrowed = render_narrowed_note(
-        state.get("scope_narrowed"), full_scope_requested=has_all_scope_keyword(query)
+        state.get("scope_narrowed"), full_scope_requested=has_full_scope_request(query)
     ) or None
     if narrowed:
         items.append(disc.make(disc.SCOPE_NARROWED, narrowed.lstrip("- ")))

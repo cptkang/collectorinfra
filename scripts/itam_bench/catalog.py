@@ -68,6 +68,7 @@ EXPECT_KEYS: frozenset[str] = frozenset(
         "count_rows_ok",
         "key_columns",
         "gold_tables",
+        "join_keys",
     }
 )
 SCENARIO_KEYS: frozenset[str] = frozenset(
@@ -79,9 +80,13 @@ SCENARIO_KEYS: frozenset[str] = frozenset(
         "traps",
         "key_columns",
         "gold_tables",
+        "join_keys",
         "turns",
     }
 )
+#: closed 스키마 스냅숏(앱 스키마 캐시 꼴 · git 추적 · 이름만) — 시나리오의 판정 칸(`gold_tables`·
+#: `key_columns`·`join_keys`) 이름 검사 출처를 정책 ∪ 이 스냅숏으로 넓힌다(plans/150 W2 (7)).
+CLOSED_SCHEMA_PATH = REPO_ROOT / "testdata" / "itam_bench" / "closed" / "itam_schema.json"
 _ID_RE = re.compile(r"^ITAM-[0-9]{2,3}[A-Za-z0-9-]*$")
 
 #: 프롬프트 린트 — SQL 용어. 영문은 단어 경계, 한글은 부분 일치(조사가 붙는다).
@@ -312,8 +317,12 @@ class Scenario:
     env: tuple[str, ...]
     traps: tuple[str, ...]
     key_columns: tuple[Any, ...]
-    gold_tables: tuple[str, ...]
+    #: 정답 테이블 — 문자열 목록(경로 하나) 또는 목록의 목록(허용 경로 묶음 · 첫 묶음이 기준 ·
+    #: plans/150 W2 (6))
+    gold_tables: tuple[Any, ...]
     turns: tuple[Turn, ...] = field(default_factory=tuple)
+    #: 조인 키 쌍 `[["표.칸", "표.칸"], …]`(plans/150 W2 (6) · 관찰 표지 — 판정 불변)
+    join_keys: tuple[Any, ...] = ()
 
     def key_columns_for(self, turn: Turn) -> list[list[str]]:
         """턴의 핵심 컬럼 — 항목마다 「같은 뜻」 후보 목록.
@@ -323,8 +332,55 @@ class Scenario:
         refs = turn.expect.get("key_columns", self.key_columns)
         return [[str(ref)] if isinstance(ref, str) else [str(x) for x in ref] for ref in refs or []]
 
+    def gold_paths_for(self, turn: Turn) -> list[list[str]]:
+        """턴의 정답 테이블 경로 목록 — 턴 `expect.gold_tables`가 시나리오 값을 덮는다.
+
+        문자열 목록이면 경로 하나, 목록의 목록이면 허용 경로 묶음(첫 묶음이 기준)이다. 없으면 [].
+        """
+        return gold_paths(turn.expect.get("gold_tables", self.gold_tables))
+
     def gold_tables_for(self, turn: Turn) -> list[str]:
-        return [str(t) for t in turn.expect.get("gold_tables", self.gold_tables) or []]
+        """기준 정답 경로(허용 경로 묶음이면 첫 묶음) — 스키마 맥락 제시율·`schema_miss`가 쓴다."""
+        paths = self.gold_paths_for(turn)
+        return paths[0] if paths else []
+
+    def join_keys_for(self, turn: Turn) -> list[tuple[tuple[str, str], tuple[str, str]]]:
+        """턴의 조인 키 쌍 ``((표, 칸), (표, 칸))``.
+
+        턴 `expect.join_keys`가 시나리오 값을 덮는다.
+        """
+        return [
+            pair
+            for pair in (
+                _join_pair(item) for item in turn.expect.get("join_keys", self.join_keys) or []
+            )
+            if pair is not None
+        ]
+
+
+def gold_paths(raw: Any) -> list[list[str]]:
+    """`gold_tables` 값 → 경로 목록(문자열 목록 = 경로 하나 · 목록의 목록 = 허용 경로 묶음)."""
+    items = list(raw or [])
+    if not items:
+        return []
+    if all(isinstance(item, (list, tuple)) for item in items):
+        return [[str(t) for t in item] for item in items]
+    return [[str(t) for t in items]]
+
+
+def _join_side(ref: Any) -> tuple[str, str] | None:
+    """`"표.칸"` → (표, 칸) — 점이 없거나 한쪽이 비면 None."""
+    if not isinstance(ref, str) or "." not in ref:
+        return None
+    table, column = (part.strip() for part in ref.split(".", 1))
+    return (table, column) if table and column else None
+
+
+def _join_pair(item: Any) -> tuple[tuple[str, str], tuple[str, str]] | None:
+    if not isinstance(item, (list, tuple)) or len(item) != 2:
+        return None
+    left, right = _join_side(item[0]), _join_side(item[1])
+    return (left, right) if left is not None and right is not None else None
 
 
 def _ref_names(ref: Any) -> list[str]:
@@ -431,6 +487,73 @@ def _check_turn(
     return turn, errors
 
 
+def load_schema_names(path: Path) -> dict[str, list[str]]:
+    """closed 스키마 스냅숏(앱 스키마 캐시 꼴 `{"schema": {"tables": {t: {"columns": [...]}}}}`) →
+    ``{테이블: [컬럼…]}``(이름만 · 파일이 없으면 빈 사전 — 정책만으로 검사하는 종전 동작)."""
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    schema = data.get("schema") if isinstance(data, Mapping) else None
+    tables = (schema if isinstance(schema, Mapping) else data or {}).get("tables") or {}
+    return {
+        str(table): [
+            str(c.get("name")) for c in (info or {}).get("columns") or [] if c.get("name")
+        ]
+        for table, info in tables.items()
+    }
+
+
+def _check_gold(where: str, raw: Any, known_tables: set[str]) -> list[str]:
+    """`gold_tables` 형식(문자열 목록 또는 비지 않은 목록의 목록 · 섞임 금지) + 이름 검사."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        return [f"{where}: gold_tables 는 목록이다"]
+    nested = [isinstance(item, list) for item in raw]
+    if any(nested) and not all(nested):
+        return [f"{where}: gold_tables 는 테이블 목록 또는 허용 경로 묶음(목록의 목록) 하나로 쓴다"]
+    if any(nested) and not all(item and all(isinstance(t, str) for t in item) for item in raw):
+        return [f"{where}: gold_tables 의 허용 경로는 비지 않은 테이블 이름 목록이다"]
+    return [
+        f"{where}: gold_tables 의 `{t}` 는 카탈로그에 없다"
+        for path in gold_paths(raw)
+        for t in path
+        if t.casefold() not in known_tables
+    ]
+
+
+def _check_join_keys(
+    where: str, raw: Any, known: Mapping[str, set[str]]
+) -> list[str]:
+    """`join_keys` 형식(`[["표.칸", "표.칸"], …]`) + 이름 검사(테이블과 그 테이블의 칸)."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        return [f"{where}: join_keys 는 [[\"표.칸\", \"표.칸\"], …] 목록이다"]
+    errors = []
+    for item in raw:
+        pair = _join_pair(item)
+        if pair is None:
+            errors.append(f"{where}: join_keys 항목 {item!r} — [\"표.칸\", \"표.칸\"] 두 개")
+            continue
+        if pair[0][0].casefold() == pair[1][0].casefold() and (
+            pair[0][1].casefold() == pair[1][1].casefold()
+        ):
+            errors.append(f"{where}: join_keys 항목 {item!r} — 양쪽이 같은 칸이다")
+        for table, column in pair:
+            columns = known.get(table.casefold())
+            if columns is None:
+                errors.append(f"{where}: join_keys 의 테이블 `{table}` 는 카탈로그에 없다")
+            elif column.casefold() not in columns:
+                errors.append(f"{where}: join_keys 의 `{table}.{column}` 은 카탈로그에 없다")
+    return errors
+
+
+def _no_data(turn: Turn) -> bool:
+    return bool((turn.observe or {}).get("no_data"))
+
+
 def _check_columns(where: str, refs: Any, policy: ColumnPolicy, known: set[str]) -> list[str]:
     if refs is None:
         return []
@@ -446,14 +569,37 @@ def _check_columns(where: str, refs: Any, policy: ColumnPolicy, known: set[str])
 
 
 def load_scenarios(
-    path: Path, policy: ColumnPolicy, *, identifiers: Iterable[str] | None = None
+    path: Path,
+    policy: ColumnPolicy,
+    *,
+    identifiers: Iterable[str] | None = None,
+    schema_names: Mapping[str, Iterable[str]] | None = None,
 ) -> list[Scenario]:
-    """`scenarios.yaml` → 시나리오 목록. 위반이 하나라도 있으면 `CatalogError`(사유 전부)."""
+    """`scenarios.yaml` → 시나리오 목록. 위반이 하나라도 있으면 `CatalogError`(사유 전부).
+
+    판정 칸(`gold_tables`·`key_columns`·`join_keys`)의 이름은 정책 ∪ `schema_names`(closed 스키마
+    스냅숏 `load_schema_names` · plans/150 W2 (7))로 검사한다 — 정책 밖 칸은 반출에서 종전대로
+    `unclassified`로 가려지므로 반출 범위는 그대로다. 프롬프트 린트 식별자는 종전대로 정책
+    이름이다. 파일 머리 `require_judgement: true`면 `observe.no_data: true`가 아닌 모든 턴에
+    `gold_tables`·`key_columns`(턴 또는 시나리오 값)가 비지 않아야 한다.
+    """
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     known_columns = set(policy.column_names())
     idents = set(identifiers) if identifiers is not None else known_columns | policy.table_names()
-    known_tables = {t.casefold() for t in policy.table_names()}
+    table_columns: dict[str, set[str]] = {}
+    for table, columns in policy.tables.items():
+        table_columns.setdefault(table.casefold(), set()).update(c.casefold() for c in columns)
+    for table, names in (schema_names or {}).items():
+        table_columns.setdefault(str(table).casefold(), set()).update(
+            str(c).casefold() for c in names
+        )
+        known_columns |= {str(c) for c in names}
+    known_tables = set(table_columns)
     errors: list[str] = []
+    require = data.get("require_judgement", False)
+    if not isinstance(require, bool):
+        errors.append("require_judgement 는 불리언이다")
+        require = False
     scenarios: list[Scenario] = []
     seen: set[str] = set()
     for raw in data.get("scenarios") or []:
@@ -472,12 +618,8 @@ def load_scenarios(
         if not env or set(env) - ENVS:
             errors.append(f"{sid}: env 는 {sorted(ENVS)} 의 비지 않은 목록")
         errors += _check_columns(sid, raw.get("key_columns"), policy, known_columns)
-        gold = [str(t) for t in raw.get("gold_tables") or []]
-        errors += [
-            f"{sid}: gold_tables 의 `{t}` 는 카탈로그에 없다"
-            for t in gold
-            if t.casefold() not in known_tables
-        ]
+        errors += _check_gold(sid, raw.get("gold_tables"), known_tables)
+        errors += _check_join_keys(sid, raw.get("join_keys"), table_columns)
         turns: list[Turn] = []
         raw_turns = raw.get("turns")
         if not isinstance(raw_turns, list) or not raw_turns:
@@ -491,26 +633,40 @@ def load_scenarios(
             errors += _check_columns(
                 f"{sid} 턴{index}", turn.expect.get("key_columns"), policy, known_columns
             )
-            errors += [
-                f"{sid} 턴{index}: gold_tables 의 `{t}` 는 카탈로그에 없다"
-                for t in turn.expect.get("gold_tables") or []
-                if str(t).casefold() not in known_tables
-            ]
+            errors += _check_gold(f"{sid} 턴{index}", turn.expect.get("gold_tables"), known_tables)
+            errors += _check_join_keys(
+                f"{sid} 턴{index}", turn.expect.get("join_keys"), table_columns
+            )
             turns.append(turn)
         if turns and not any(turn.judged for turn in turns):
             errors.append(f"{sid}: oracle·observe 가 있는 턴이 하나도 없다")
-        scenarios.append(
-            Scenario(
-                id=sid,
-                title=str(raw.get("title") or ""),
-                category=str(raw.get("category") or ""),
-                env=env,
-                traps=tuple(str(t) for t in raw.get("traps") or []),
-                key_columns=tuple(raw.get("key_columns") or []),
-                gold_tables=tuple(gold),
-                turns=tuple(turns),
-            )
+        scenario = Scenario(
+            id=sid,
+            title=str(raw.get("title") or ""),
+            category=str(raw.get("category") or ""),
+            env=env,
+            traps=tuple(str(t) for t in raw.get("traps") or []),
+            key_columns=tuple(raw.get("key_columns") or []),
+            gold_tables=tuple(raw.get("gold_tables") or [])
+            if isinstance(raw.get("gold_tables"), list)
+            else (),
+            turns=tuple(turns),
+            join_keys=tuple(raw.get("join_keys") or [])
+            if isinstance(raw.get("join_keys"), list)
+            else (),
         )
+        if require:
+            errors += [
+                f"{sid} 턴{turn.index}: require_judgement — {name} 가 비었다"
+                for turn in scenario.turns
+                if not _no_data(turn)
+                for name, value in (
+                    ("gold_tables", scenario.gold_tables_for(turn)),
+                    ("key_columns", scenario.key_columns_for(turn)),
+                )
+                if not value
+            ]
+        scenarios.append(scenario)
     if not scenarios and not errors:
         errors.append("시나리오가 0건이다")
     if errors:
@@ -1197,9 +1353,16 @@ def apply_server_annotations(
     return schema
 
 
+#: 자산 지문 방식 표지(`assets.fingerprint_method`) — v2 = 줄바꿈 정규화(CRLF → LF) 뒤 바이트 해시
+#: (plans/150 W2 (3) · F9). 표지가 없는 run 은 파일 바이트 그대로였다(v1 — 내부망 CRLF 사본과 외부망
+#: 커밋 지문이 같아질 수 없었다).
+FINGERPRINT_METHOD = "v2"
+
+
 def _fingerprint_file(path: Path) -> str | None:
+    """파일 지문 — CRLF 를 LF 로 접은 바이트의 SHA-256 앞 12자(없으면 None)."""
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+        return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()[:12]
     except OSError:
         return None
 
@@ -1210,7 +1373,8 @@ def asset_fingerprints(
     """이 run 에 적용된 ITAM 프롬프트 자산의 지문(개선 전후 비교 기준 · §3.4).
 
     프로필은 **머리 주석을 옮기지 않는다** — 승인자 칸이 있다(§2.4 v1.2). 지문(내용 해시 앞 12자)과
-    `source`·`environment` 키만 남긴다.
+    `source`·`environment` 키만 남긴다. 지문은 줄바꿈 정규화 뒤 해시이고 방식 표지
+    `fingerprint_method`(`FINGERPRINT_METHOD`)를 함께 싣는다(plans/150 W2 (3)).
     """
     from src.schema_cache.asset_store import ASSET_PATHS
 
@@ -1234,6 +1398,7 @@ def asset_fingerprints(
     knowledge = _fingerprint_file(repo_root / "config" / "knowledge" / db_id / "catalog.yaml")
     assets["knowledge_catalog"] = {"fingerprint": knowledge} if knowledge else None
     assets["column_descriptions"] = int(descriptions)
+    assets["fingerprint_method"] = FINGERPRINT_METHOD
     return assets
 
 

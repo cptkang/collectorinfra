@@ -33,7 +33,7 @@ from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.nodes.intent_frame_builder import CONSUMER_OUTPUT_GENERATOR, get_prompt_query
 from src.prompts.output_generator import OUTPUT_SUMMARY_SYSTEM_PROMPT
 from src.routing.domain_config import get_domain_by_id
-from src.routing.registry import null_group_label_enabled
+from src.routing.registry import RegistryError, get_registry, null_group_label_enabled
 from src.schema_cache.form_memory import save_form_memory_entries
 from src.state import AgentState
 from src.utils.deadline import (
@@ -45,9 +45,13 @@ from src.utils.deadline import (
 )
 from src.utils.empty_antecedent import (
     EMPTY_ANTECEDENT_KEY,
+    SAMPLED_ANTECEDENT_KEY,
+    SAMPLED_TURN_KEY,
     ZERO_ROW_TURN_KEY,
     carried_zero_row_turn,
     empty_antecedent_note,
+    sampled_antecedent_outcome,
+    sampled_turn,
     widened_beyond_antecedent,
 )
 from src.utils.month_structure import is_month_structure_field
@@ -58,7 +62,7 @@ from src.utils.query_gen_common import (
     FORM_MEMORY_SHORTCUT_HINT,
     HOST_IDENTIFIER_FIELDS,
     explicit_row_count,
-    has_all_scope_keyword,
+    has_full_scope_request,
     is_demonstrative_identifier,
     render_elliptical_succession_note,
     resolve_stat_month_range,
@@ -174,6 +178,14 @@ async def _run_output_generator(
                 "앞 턴 0행 지시어 — 이번 조회 %d행이 앞 턴 조건을 잇지 않아 맨 앞에 안내"
                 "(plans/146 W3)", row_count,
             )
+        # 표본 앞 턴 승계(plans/150 W1) — 2단 집계기와 같은 규칙(D-066)
+        sampled_note = sampled_antecedent_outcome(
+            (state.get("conversation_context") or {}).get(SAMPLED_ANTECEDENT_KEY)
+            if sql_outcome else None,
+            executed, row_count,
+        )
+        if sampled_note:
+            logger.info("표본 앞 턴 지시어 — 이번 조회 %d행에 맨 앞 안내(plans/150 W1)", row_count)
         response = await _generate_text_response(
             app_config, state, llm=llm, stream_user_response=stream_user_response
         )
@@ -199,6 +211,8 @@ async def _run_output_generator(
             response = f"{no_template_notice}\n\n{response}"
         if antecedent and widened:
             response = f"{empty_antecedent_note(antecedent, widened=True)}\n\n{response}"
+        if sampled_note:
+            response = f"{sampled_note}\n\n{response}"
         return {
             "final_response": response,
             "output_file": None,
@@ -208,6 +222,7 @@ async def _run_output_generator(
             # 결정적 고지의 구조화본(plans/123 W-8) — 본문에 실린 고지만 싣는다.
             "disclosures": collect_disclosures(state, response),
             **(_zero_row_turn_delta(state, antecedent, executed) if zero_rows else {}),
+            **_sampled_turn_delta(state, executed, row_count),
         }
 
     elif output_format in ("xlsx", "docx"):
@@ -365,6 +380,20 @@ def _zero_row_turn_delta(
         return {}
     ctx = state.get("conversation_context") or {}
     return {"conversation_context": {**ctx, ZERO_ROW_TURN_KEY: record}}
+
+
+def _sampled_turn_delta(
+    state: Mapping[str, Any], sqls: list[str], row_count: int,
+) -> dict[str, Any]:
+    """엔티티 상한을 넘는 행으로 끝난 턴의 기록을 맥락에 남기는 상태 갱신(plans/150 W1).
+
+    다음 턴 지시어가 표본이 아니라 이 턴의 조건을 잇게 한다. 상한 이하·SQL 없음이면 빈 갱신이다.
+    """
+    record = sampled_turn(str(state.get("user_query") or ""), sqls, row_count)
+    if not record:
+        return {}
+    ctx = state.get("conversation_context") or {}
+    return {"conversation_context": {**ctx, SAMPLED_TURN_KEY: record}}
 
 
 #: 양식 없는 파일 요청 안내의 머리(D-264 ④). 턴 단위 안내라 2단 단계별 답변은 이 머리로 찾아
@@ -2007,7 +2036,7 @@ def _append_scope_note(response: str, state: AgentState) -> str:
     note = render_narrowed_note(
         state.get("scope_narrowed"),
         # 「전체」를 요청했는데 좁혔으면 그 점을 문구 머리에 밝힌다(plans/123 W-5 강화 규칙)
-        full_scope_requested=has_all_scope_keyword(_turn_query(state)),
+        full_scope_requested=has_full_scope_request(_turn_query(state)),
     )
     return f"{response}\n\n{note}" if note else response
 
@@ -2468,6 +2497,16 @@ def _append_condition_changes(response: str, state: AgentState) -> str:
 # ── 결정적 고지: 턴 단위 (plans/123 W-2·W-4·W-5·S-1 · W-9) ─────────────────────
 
 
+def _is_zoned_db(db_id: str) -> bool:
+    """레지스트리에서 존이 배정된 DB인지 — 미등록·레지스트리 적재 실패는 False(고지하지 않는 쪽)."""
+    try:
+        entry = get_registry().get(db_id)
+    except RegistryError as e:
+        logger.warning("존 배정 조회 실패(범위 고지 생략): db_id=%s · %s", db_id, e)
+        return False
+    return bool(entry is not None and entry.zone)
+
+
 def scope_partial_text(
     state: Mapping[str, Any],
     *,
@@ -2477,23 +2516,32 @@ def scope_partial_text(
 ) -> str | None:
     """「전체」를 요청했는데 조회 가능 존의 일부만 조회했으면 그 사실 한 줄(plans/123 W-5).
 
-    발동: 질의에 「전체·모든·모두」 + 조회한 DB ⊊ (활성 ∩ 허용) + 대상이 원문 위치 힌트·직전 턴
-    승계로 정해지지 않았을 것(`db_origin ∉ {hint, inherited}` — 「은행존 전체」·「운영 서버 전체」는
-    사용자가 범위를 이미 말했다). 좁힌 범위 기록(W-2 `scope_narrowed`)이 있으면 그쪽이 같은 사실을
-    말하므로 여기서는 내지 않는다. 권한 밖 존 이름은 싣지 않는다(D-264 ②).
+    발동: 질의에 「전체·모든·모두」 + 조회한 존 DB ⊊ (활성 ∩ 허용 ∩ 존 배정) + 대상이 원문 위치
+    힌트·직전 턴 승계로 정해지지 않았을 것(`db_origin ∉ {hint, inherited}` — 「은행존 전체」·「운영
+    서버 전체」는 사용자가 범위를 이미 말했다). 좁힌 범위 기록(W-2 `scope_narrowed`)이 있으면
+    그쪽이 같은 사실을 말하므로 여기서는 내지 않는다. 권한 밖 존 이름은 싣지 않는다(D-264 ②).
+    존은 레지스트리 존 배정 DB끼리만 따진다 — 존 미배정 DB(자산관리 등)만 조회했으면
+    「미조회 존」이 성립하지 않으므로 내지 않는다(plans/151 W3 · 존 미배정 질문에 폴스타 존을
+    미조회로 적던 오고지).
     """
     if state.get("scope_narrowed"):
         return None
     if db_origin in ("hint", "inherited"):
         return None
-    if not queried_db_ids or not has_all_scope_keyword(_turn_query(state)):
+    if not queried_db_ids or not has_full_scope_request(_turn_query(state)):
+        return None
+    queried = [d for d in queried_db_ids if d]
+    queried_zoned = {d for d in queried if _is_zoned_db(d)}
+    if not queried_zoned:
         return None
     if active_db_ids is None:
         active_db_ids = list(load_config().multi_db.get_active_db_ids() or [])
     allowed = state.get("allowed_db_ids")
-    candidates = [d for d in active_db_ids if allowed is None or d in set(allowed)]
-    queried = [d for d in queried_db_ids if d]
-    if not candidates or not set(queried) < set(candidates):
+    candidates = [
+        d for d in active_db_ids
+        if (allowed is None or d in set(allowed)) and _is_zoned_db(d)
+    ]
+    if not candidates or not queried_zoned < set(candidates):
         return None
     names = " · ".join(_db_display_name(d) for d in queried)
     skipped = " · ".join(_db_display_name(d) for d in candidates if d not in set(queried))
@@ -2554,7 +2602,7 @@ def collect_disclosures(state: Mapping[str, Any], response: str) -> list[disc.Di
 
         narrowed = render_narrowed_note(
             state.get("scope_narrowed"),
-            full_scope_requested=has_all_scope_keyword(_turn_query(state)),
+            full_scope_requested=has_full_scope_request(_turn_query(state)),
         )
         if narrowed:
             found.append(disc.make(disc.SCOPE_NARROWED, narrowed.lstrip("- ")))

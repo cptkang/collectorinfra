@@ -217,3 +217,56 @@ class TestDeadlineWithinFilter:
         )
         assert qt.clarify is None and qt.slot_status == SLOT_REJECTED
         assert qt.metric is not None and qt.metric.source == "default"
+
+
+class TestAttrDeadlineFilter:
+    """지원 종료일(EoS·EoL)·만료일 같은 날짜 속성 조건에 붙은 기간은 조회 기간이 아니다.
+
+    「2027년에 EoS가 되는 서버」가 미래 기간 되묻기로 끝나던 것(사용자 실측 2026-10-12) — 속성값은
+    미래여도 데이터가 있다. 기간은 기본값으로 두고 SQL 생성이 원문의 연도를 조건으로 쓴다.
+    """
+
+    @pytest.mark.parametrize("query", [
+        "2027년에 EoS가 되는 서버 리스트를 보여줘.",
+        "itam에서 2027년에 EoS가 되는 서버 리스트를 보여줘.",
+        "27년에 EoS가 되는 서버",
+        "내년에 EOS 되는 서버",
+        "2027년 3월에 하드웨어 지원 종료되는 서버",
+        "EoS가 2027년인 서버",
+        "지원 종료일이 2027년 6월인 서버",
+        "2027년까지 만료 예정인 계약",
+        "다음 달 만료 예정 서버",
+        "2027년 이후 EOL 서버",
+    ])
+    def test_future_deadline_value_is_not_clarified(self, query: str) -> None:
+        qt = resolve_query_time(query, NOW)
+        assert qt.clarify is None
+        assert qt.metric is not None and qt.metric.source == "default"
+
+    def test_future_slot_on_deadline_value_is_dropped(self) -> None:
+        qt = resolve_query_time(
+            "2027년에 EoS가 되는 서버", NOW,
+            slot=slot(relation="absolute", start={"year": 2027}, display_grain="none",
+                      span="2027년"),
+        )
+        assert qt.clarify is None
+        assert qt.metric is not None and qt.metric.source == "default"
+
+    @pytest.mark.parametrize("query, code", [
+        ("2027년 CPU 사용률", "future_explicit"),
+        ("내년 3월 알람", "future_relative"),
+    ])
+    def test_plain_future_still_clarified(self, query: str, code: str) -> None:
+        assert resolve_query_time(query, NOW).clarify == code
+
+    @pytest.mark.parametrize("query", [
+        "2025년 3월 CPU 사용률과 EOS 서버",  # 다른 대상을 잇는 말이 끼면 조회 기간
+        "지난달 만료된 인증서",  # 「만료」 과거형은 지난 사건의 조회 기간
+    ])
+    def test_period_kept_when_not_attribute_value(self, query: str) -> None:
+        qt = resolve_query_time(query, NOW)
+        assert qt.metric is not None and qt.metric.source == "rule"
+
+    def test_task_time_ignores_deadline_value(self) -> None:
+        base = resolve_query_time("2027년에 EoS가 되는 서버", NOW)
+        assert resolve_task_time("2027년에 EoS가 되는 서버", base) is base

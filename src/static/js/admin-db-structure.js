@@ -1088,19 +1088,31 @@
             var result = await call("POST", sourcePath(source) + "/asset-drafts/" + encodeURIComponent(draft.draft_id) + "/approve", body);
             var applied = result.applied || {};
             var unchanged = (applied.profile || {}).unchanged || [];
-            var keptManual = (applied.profile || {}).table_definitions_kept_manual || [];
-            if (keptManual.length) {
-                api.showSuccess("사람이 고친 테이블 정의는 보존했습니다: " + keptManual.join(", "));
+            // 더 높은 출처의 기존 정의를 보존한 테이블 → 출처별 수(plans/151 W1 · 구 키 폴백)
+            var kept = (applied.profile || {}).table_definitions_kept;
+            if (!kept) {
+                kept = {};
+                ((applied.profile || {}).table_definitions_kept_manual || []).forEach(function (table) { kept[table] = "manual"; });
             }
+            var keptCounts = {};
+            Object.keys(kept).forEach(function (table) { keptCounts[kept[table]] = (keptCounts[kept[table]] || 0) + 1; });
+            var message;
             if (result.partial) {
-                api.showError("일부 자산만 적용됐습니다 — 실패: " + Object.keys(applied).filter(function (k) { return applied[k] && applied[k].error; })
-                    .map(function (k) { return (ASSET_LABELS[k] || k) + "(" + applied[k].error + ")"; }).join(", ") + auditNote(result));
+                message = "일부 자산만 적용됐습니다 — 실패: " + Object.keys(applied).filter(function (k) { return applied[k] && applied[k].error; })
+                    .map(function (k) { return (ASSET_LABELS[k] || k) + "(" + applied[k].error + ")"; }).join(", ");
             } else if (unchanged.length) {
-                api.showSuccess("자산을 적용했습니다 — 기존 값을 보존해 바뀌지 않은 자산: "
-                    + unchanged.map(function (k) { return ASSET_LABELS[k] || k; }).join(", ") + auditNote(result));
+                message = "자산을 적용했습니다 — 기존 값을 보존해 바뀌지 않은 자산: "
+                    + unchanged.map(function (k) { return ASSET_LABELS[k] || k; }).join(", ");
             } else {
-                api.showSuccess("자산을 적용했습니다." + auditNote(result));
+                message = "자산을 적용했습니다.";
             }
+            // 알림 칸은 하나다 — 보존 문구는 마지막 알림 끝에 이어 붙인다(따로 띄우면 곧바로 덮인다)
+            if (Object.keys(keptCounts).length) {
+                message += " · 더 높은 출처 정의를 보존했습니다: " + Object.keys(keptCounts).map(function (origin) {
+                    return (DEFINITION_ORIGIN_LABELS[origin] || origin) + " " + keptCounts[origin] + "개";
+                }).join(" · ");
+            }
+            (result.partial ? api.showError : api.showSuccess)(message + auditNote(result));
             refreshAfterChange(source);
         } catch (err) {
             api.showError("자산 승인 실패: " + err.message);

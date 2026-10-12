@@ -95,6 +95,7 @@ from src.nodes.intent_frame_builder import CONSUMER_MULTI_DB, observe_rewrite
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
 from src.nodes.prompt_blocks import (
     build_profile_rules_block,
+    profile_rule_tables,
     CRITERIA_AND_GRAIN_RULE_BLOCK,
     EAV_JOIN_RULE_BLOCK,
     PromptBudgetExceeded,
@@ -695,6 +696,12 @@ async def _generate_validated_sql(
 
     # 선행 스코프는 DB별로 고른다(plans/88 순차 의존 계약) — 분할이 없으면 run 단위 값 그대로.
     _pb, _ps = _prior_for_db(run, db_id)
+    # 프로필 규칙·코드값 블록을 이 DB의 선별 테이블로 좁힌다(plans/151 W2 — 단일 경로와 같은 함수).
+    # isinstance 검사는 테스트 대역(MagicMock run)이 값을 오발생시키지 않게 한다.
+    _selections = getattr(run, "table_selections", None)
+    _rule_tables = profile_rule_tables(
+        _selections.get(db_id) if isinstance(_selections, dict) else None
+    )
     # 생성 소요를 잰다 — 재생성 시간 게이트(T-3)가 방금 잰 값과 비교한다(추정 상수 금지).
     _gen_started = _monotonic()
     sql = await _generate_sql(
@@ -723,6 +730,7 @@ async def _generate_validated_sql(
             run.template_assembly
             if isinstance(getattr(run, "template_assembly", None), dict) else None
         ),
+        rule_tables=_rule_tables,
     )
     _last_gen = _monotonic() - _gen_started
     _note_gen_elapsed(run, db_id, _last_gen)
@@ -817,6 +825,7 @@ async def _generate_validated_sql(
             form_fill_answers=run.form_fill_answers,
             surface_query=surface_query_for_judgment(run.state),
             query_time=_run_query_time(run),
+            rule_tables=_rule_tables,
         )
         _last_gen = _monotonic() - _gen_started
         _note_gen_elapsed(run, db_id, _last_gen)
@@ -1995,11 +2004,13 @@ async def _build_multi_structure_guide(
     sub_query_context: str,
     db_id: str,
     app_config: AppConfig | None,
+    rule_tables: list[str] | None = None,
 ) -> str:
     """구조 분석 메타 기반 쿼리 가이드를 만든다(EAV 조인 규칙 + 값 조인 + 금지 조인 + few-shot).
 
     단일 경로(``query_generator._format_structure_guide``)와 같은 공용 빌더를 쓰되, 조립
-    순서·조건은 현행 그대로 둔다(Plan 69 P3-1 동작 불변).
+    순서·조건은 현행 그대로 둔다(Plan 69 P3-1 동작 불변). `rule_tables`는 프로필 규칙·코드값
+    블록을 좁힐 선별 테이블이다(plans/151 W2 · None이면 종전 전량).
     """
     structure_meta = schema_info.get("_structure_meta")
     structure_guide = ""
@@ -2030,7 +2041,7 @@ async def _build_multi_structure_guide(
     # D-294 — 프로필 쿼리 규칙·코드값 블록(단일 경로와 같은 자리 · 키 없으면 빈 문자열)
     return (
         structure_guide
-        + build_profile_rules_block(structure_meta)
+        + build_profile_rules_block(structure_meta, rule_tables)
         + build_query_examples(structure_meta, _history_examples)
     )
 
@@ -2067,8 +2078,12 @@ async def _build_multi_system_prompt(
     db_engine: str,
     db_id: str,
     app_config: AppConfig | None,
+    rule_tables: list[str] | None = None,
 ) -> str:
-    """멀티 DB 경로의 시스템 프롬프트를 조립한다(스키마 + 구조 가이드 + 엔진 힌트)."""
+    """멀티 DB 경로의 시스템 프롬프트를 조립한다(스키마 + 구조 가이드 + 엔진 힌트).
+
+    `rule_tables`는 프로필 규칙·코드값 블록을 좁힐 선별 테이블이다(plans/151 W2 · None이면 전량).
+    """
     # 경로 대칭 (a): 담당 어댑터(폴스타)가 있으면 단일 경로(`_build_system_prompt`)와 같은
     # 진입점으로 전용 시스템 템플릿을 쓴다 — 종전 멀티는 공통 템플릿 고정이라 폴스타 DB를
     # 멀티로 조회하면 전용 지식이 통째로 빠졌다(D-066 원형 결함과 동형). 렌더 2모드(마커
@@ -2091,6 +2106,7 @@ async def _build_multi_system_prompt(
 
     structure_guide = await _build_multi_structure_guide(
         schema_info, parsed_requirements, sub_query_context, db_id, app_config,
+        rule_tables=rule_tables,
     )
     db_engine_hint = _build_multi_engine_hint(db_engine, db_id)
 
@@ -2647,6 +2663,7 @@ async def _generate_sql(
     surface_query: str | None = None,
     query_time: QueryTime | None = None,
     template_sink: dict[str, dict[str, Any]] | None = None,
+    rule_tables: list[str] | None = None,
 ) -> str:
     """LLM을 사용하여 SQL을 생성한다.
 
@@ -2677,6 +2694,8 @@ async def _generate_sql(
             None이면 종전(원문 → sub_query_context → LLM time_range) 그대로
         template_sink: 템플릿 조립 표지 out-param(선택 · plans/143 W6) — 발동한 DB의
             ``{db_id: TemplateOutcome.as_state()}``를 담는다
+        rule_tables: 프로필 규칙·코드값 블록을 좁힐 선별 테이블(선택 · plans/151 W2 —
+            `profile_rule_tables`). None이면 종전 전량
 
     Returns:
         생성된 SQL 문자열
@@ -2738,7 +2757,7 @@ async def _generate_sql(
     # 내지 않도록(2026-08-04 py-spy 실측: scrub/_format_schema 이벤트 루프 동기 점유).
     system_prompt = await _build_multi_system_prompt(
         schema_info, parsed_requirements, sub_query_context,
-        default_limit, db_engine, db_id, app_config,
+        default_limit, db_engine, db_id, app_config, rule_tables=rule_tables,
     )
 
     return _regenerated(await _invoke_llm_for_sql(

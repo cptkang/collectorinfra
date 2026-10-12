@@ -26,10 +26,13 @@
    그대로 둔다. `code_labels`(컬럼 → {코드값: 라벨})는 코드값 단위로 base 라벨을 우선하고 새
    코드값의 라벨만 더한다.
 8. (D-308 테이블 정의) `table_definitions`(테이블 → 정의)는 **테이블 단위**로 병합한다
-   (맨 이름 비교). base의 `origin: manual` 항목은 보존하고, 초안의 `import`·`llm`·`comment`
-   항목은 base의 비-manual 항목을 교체한다. 초안의 `manual` 항목(관리자가 검토 화면에서 고친
-   값)은 그대로 쓴다. 초안에만 있는 테이블은 더하고 base에만 있는 테이블은 그대로 둔다. 초안에
-   키가 없으면 base 값을 그대로 둔다 — 이 키가 없는 프로필의 병합 결과는 종전과 같다.
+   (맨 이름 비교). 출처 순위는 `manual` > `import` > `llm` > `comment`이고(plans/151 W1),
+   초안 항목은 base 항목보다 순위가 **같거나 높을 때만** 교체한다 — 낮은 출처 초안(예: P1의 DB
+   주석 한 줄)은 높은 출처 정의(큐레이션 가져오기)를 덮지 않는다. 초안의 `manual` 항목(관리자가
+   검토 화면에서 고친 값)은 늘 이긴다. 출처가 없거나 미지 값인 base 항목은 `import`(가져오기
+   이전 사본)로 보고, 출처가 없거나 미지 값인 초안 항목은 최저로 본다(기존 정의를 덮지 않는다).
+   초안에만 있는 테이블은 더하고 base에만 있는 테이블은 그대로 둔다. 초안에 키가 없으면 base
+   값을 그대로 둔다 — 이 키가 없는 프로필의 병합 결과는 종전과 같다.
 
 계층: domain — 순수 함수 · I/O·LLM 0 · 표준 라이브러리만 · 스키마 리터럴 0.
 """
@@ -44,7 +47,12 @@ from types import MappingProxyType
 from typing import Any
 
 from src.domain.schema_snapshot import bare_name
-from src.domain.table_definitions import ORIGIN_MANUAL
+from src.domain.table_definitions import (
+    ORIGIN_COMMENT,
+    ORIGIN_IMPORT,
+    ORIGIN_LLM,
+    ORIGIN_MANUAL,
+)
 
 # 초안이 갱신하는 최상위 키
 LLM_TOP_LEVEL_KEYS: tuple[str, ...] = ("patterns", "code_values")
@@ -58,8 +66,12 @@ UNION_LIST_KEYS: Mapping[str, tuple[str, ...]] = MappingProxyType({
 })
 # 컬럼 키 단위로 base를 우선하고 초안에만 있는 키를 더하는 dict 자산 키(D-294)
 DICT_FILL_KEYS: tuple[str, ...] = ("code_labels",)
-# 테이블 단위로 병합하는 정의 자산 키(D-308 — base `manual` 항목 보존)
+# 테이블 단위로 병합하는 정의 자산 키(D-308 — 출처 순위로 보존)
 TABLE_UNIT_KEYS: tuple[str, ...] = ("table_definitions",)
+# 테이블 정의 출처 순위(클수록 우선 · plans/151 W1) — 초안은 같거나 높을 때만 base를 교체한다
+DEFINITION_ORIGIN_RANK: Mapping[str, int] = MappingProxyType({
+    ORIGIN_COMMENT: 0, ORIGIN_LLM: 1, ORIGIN_IMPORT: 2, ORIGIN_MANUAL: 3,
+})
 # 병합이 직접 정하는 메타 키(base 값은 쓰지 않는다)
 METADATA_KEYS: tuple[str, ...] = ("source", "environment")
 
@@ -260,12 +272,24 @@ def _merge_table_definitions(base_value: Any, draft_value: Any, *, base_has_key:
             merged[table] = copy.deepcopy(item)
             index[bare_name(str(table))] = table
             continue
-        existing = merged[existing_key]
-        draft_manual = isinstance(item, Mapping) and item.get("origin") == ORIGIN_MANUAL
-        base_manual = isinstance(existing, Mapping) and existing.get("origin") == ORIGIN_MANUAL
-        if draft_manual or not base_manual:
+        # 출처가 없거나 미지 값인 초안 항목은 최저 — 기존 정의를 덮지 않는다
+        draft_rank = DEFINITION_ORIGIN_RANK.get(_origin_of(item), -1)
+        base_rank = DEFINITION_ORIGIN_RANK[base_definition_origin(merged[existing_key])]
+        if draft_rank >= base_rank:
             merged[existing_key] = copy.deepcopy(item)
     return merged
+
+
+def _origin_of(item: Any) -> str:
+    """정의 항목의 `origin` 문자열(없거나 문자열이 아니면 빈 문자열)."""
+    origin = item.get("origin") if isinstance(item, Mapping) else None
+    return origin if isinstance(origin, str) else ""
+
+
+def base_definition_origin(item: Any) -> str:
+    """base 테이블 정의 항목의 출처 — 출처가 없거나 미지 값이면 `import`(가져오기 이전 사본)."""
+    origin = _origin_of(item)
+    return origin if origin in DEFINITION_ORIGIN_RANK else ORIGIN_IMPORT
 
 
 def _merge_top_key(key: str, base: Mapping[str, Any], draft: Mapping[str, Any]) -> Any:

@@ -279,15 +279,25 @@ class TestMariadbCanon:
     _FILES = sorted(oracle_mod.ORACLE_DIR.glob("ITAM-*.mariadb.sql"))
 
     def test_canon_files_exist(self) -> None:
-        """샌드박스 정본 16 · 폐쇄망 정답 7(plans/146 W5 (1)) · 연결 위치 탐침 10(W5 (2))."""
+        """샌드박스 정본 16 · 폐쇄망 정답 7(plans/146 W5 (1)) · 연결 위치 탐침 10(W5 (2)) ·
+        150 탐침 46(plans/150 W7 · P19A·B 2026-10-12) ·
+        6회차 정답 10(plans/150 W9 · scenarios.closed.r6.yaml)."""
         stems = [p.name.split(".")[0] for p in self._FILES]
         sandbox = [s for s in stems if re.fullmatch(r"ITAM-\d{2}", s)]
         closed = [s for s in stems if re.fullmatch(r"ITAM-1\d{2}", s)]
+        r6 = [s for s in stems if re.fullmatch(r"ITAM-2\d{2}", s)]
         probes = [s for s in stems if s.startswith("ITAM-146-P")]
+        probes_150 = [s for s in stems if s.startswith("ITAM-150-P")]
         assert len(sandbox) == 16
         assert closed == [f"ITAM-{n}" for n in (107, 108, 109, 110, 111, 112, 116)]
+        assert r6 == [
+            f"ITAM-{n}" for n in (201, 202, 203, 204, 205, 206, 207, 212, 218, 227)
+        ]
         assert len(probes) == 10
-        assert len(stems) == len(sandbox) + len(closed) + len(probes)
+        assert len(probes_150) == 46
+        assert len(stems) == (
+            len(sandbox) + len(closed) + len(r6) + len(probes) + len(probes_150)
+        )
 
     @pytest.mark.parametrize("path", _FILES, ids=lambda p: p.name)
     def test_canon_header_and_dialect_rules(self, path: Path) -> None:

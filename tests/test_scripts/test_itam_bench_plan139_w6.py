@@ -340,11 +340,14 @@ class TestPromptShape:
             "backend_reported_tokens": 41234,
             "selection_source": "lexical",
             "selected_count": 2,
+            # plans/151 W5 — 다리 테이블 이름(반출 허용 · D-308)·폴백 사유 코드는 옮긴다
+            "selection_bridged": ["TCDMSIF98"],
+            "selection_reason": None,
             "stop_reason": "backend_limit",
         }
         text = repr(record)
-        # 선별 테이블 이름·사유 문구·한도 문장·표본 값은 옮기지 않는다
-        for leaked in ("TCDMSIF99", "TCDMSIF98", "합성부서", "SELECT", "32768", "svr-db-03"):
+        # 선별 테이블 이름(다리 밖)·사유 문구·한도 문장·표본 값은 옮기지 않는다
+        for leaked in ("TCDMSIF99", "합성부서", "SELECT", "32768", "svr-db-03"):
             assert leaked not in text
 
     def test_absent_state_fields_are_null(self) -> None:
@@ -427,6 +430,7 @@ class TestPromptShape:
                 "selection_source": "none",
                 "selected_count": 2,
                 "stop_reasons": ["backend_limit", "selection_none"],
+                "selection_bridged": ["TCDMSIF98"],
             }
         }
 
