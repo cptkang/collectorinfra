@@ -94,10 +94,13 @@ def test_k2_variant_question_not_copied(item_id: str) -> None:
 
 
 def test_k3_dept_code_candidate() -> None:
+    # plans/151 W12(G-11 (a)) — 확인 run에서 값 0이 확정돼 br01 풀이를 빼고
+    # 80 `담당부점명`으로 고정했다(g07과 같음).
     item = _items("descriptions")["tcdmsif72.담당부점코드"]
     text = item["text"]
-    assert "비어 있었다(관측)" in text and "tcdmsif80 담당부점명" in text and "(추정)" in text
-    assert len(text) <= 200 and item["evidence"] == RUN5
+    assert "값이 비어 있다(관측" in text and "tcdmsif80의 담당부점명" in text
+    assert "tcdmsbr01" not in text
+    assert len(text) <= 200 and item["evidence"] == "20261012-141107"
 
 
 def test_build_carries_sources() -> None:

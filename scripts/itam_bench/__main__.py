@@ -61,7 +61,7 @@ from . import (
 from . import catalog as cat
 from . import judge as jd
 from . import redact as rd
-from .report import RETRY_ATTEMPT_NOTE
+from .report import P1_ASSETS_MISSING_WARNING, RETRY_ATTEMPT_NOTE, p1_assets_missing
 
 if TYPE_CHECKING:
     from .substitute import FakeValues
@@ -1154,6 +1154,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     assets = cat.asset_fingerprints(descriptions=len(schema.get("descriptions") or {}))
     assets["p1"] = cat.p1_asset(p1_draft)
     catalog_doc = cat.build_schema_catalog(schema, policy, assets=assets, profile=profile)
+    # 승인 프로필(`approved_profile`)은 카탈로그를 만들 때 붙는다 — 리포트 §0과 같은 판정
+    # (plans/151 W11)
+    if p1_assets_missing(catalog_doc):
+        say(f"[주의] {P1_ASSETS_MISSING_WARNING}")
     # 실행 환경의 카탈로그(운영이면 108테이블)로 프롬프트를 한 번 더 거른다 — 로더 린트는 정책에
     # 적힌 이름만 안다. 걸린 낱말은 출력하지 않는다(시나리오 id 만). 짧은 이름(`IP`·`OS` 같은
     # 컬럼)은 사용자 말과 겹치므로 5자 이상만 본다.
