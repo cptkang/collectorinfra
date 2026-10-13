@@ -52,7 +52,7 @@ user:
   - {id: U-22, title: CSV로 내려받기, anchors: ["CSV 다운로드"], files: *IDX, captures: [answer-table], cases: [Q-SERVER-LIST]}
   - {id: U-23, title: 결과 파일 내려받기, anchors: ["다운로드"], files: *IDX, captures: [answer-file], cases: [Q-EXCEL-OUT]}
   - {id: U-58, title: 결과를 그래프로 보기, anchors: ["그래프로 보기", "그래프 접기"], files: [src/static/js/result-viz.js], captures: [result-chart-line, result-chart-bar], cases: [Q-CPU-MONTH]}
-  - {id: U-59, title: 칼럼 용어 사전·값 해석, anchors: ["용어 사전", "사전 미등재 · LLM 생성", "LLM 해석 · 참고용"], files: [src/static/js/result-viz.js], captures: [result-glossary, result-interpret], case_na: "해석 문장은 AI가 매번 새로 쓰고 사전 설명은 관리자 등록에 따라 달라 녹화 사례 하나로 고정할 수 없다 — 그래프 사례는 U-58, 본문에 표지·계산값 설명을 싣는다"}
+  - {id: U-59, title: 칼럼 용어 사전·값 해석, anchors: ["용어 사전", "사전 미등재 · LLM 생성", "LLM 해석 · 참고용"], files: [src/static/js/result-viz.js], captures: [result-glossary, result-interpret, result-answer-table-explain], case_na: "해석 문장은 AI가 매번 새로 쓰고 사전 설명은 관리자 등록에 따라 달라 녹화 사례 하나로 고정할 수 없다 — 그래프 사례는 U-58, 본문에 표지·계산값 설명을 싣는다"}
   - {id: U-60, title: 표 넓게 보기, anchors: ["넓게 보기", "표 넓게 보기", "#historyToggle", "#panelToggle"], files: [src/static/js/result-viz.js, src/static/index.html], captures: [table-wide-panels, table-expand-btn, table-expand-overlay], case_na: "표가 있는 모든 답에 쓰는 화면 조작 — 질문 사례는 U-19~U-22"}
   - {id: U-50, title: 오래 걸리는 제니퍼 조회 · 전체 결과 받기, anchors: ["제니퍼 조회 작업", "작업 취소", "결과 보기", "전체 결과 받기(CSV)", "다시 확인", "작업 접수"], files: *IDX, captures: [], case_na: "오래 걸리는 조회는 실제 제니퍼 연결과 큰 데이터가 있어야 생겨 녹화 사례·캡처를 만들 수 없다(로컬 제니퍼는 라이선스가 없어 도메인 0건) — 본문에 안내 문구와 카드 구성을 싣는다"}
   # 5. 조회 범위와 역질문

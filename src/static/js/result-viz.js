@@ -272,6 +272,17 @@
         return d.getUTCFullYear() + "-" + fmtDate(d) + " " + fmtClock(d, d.getUTCSeconds() !== 0);
     }
 
+    // 월 기준 점(전부 그 달 1일 00:00) — 통계 기준 월(YYYYMM)은 「2026-07」로 적고 눈금도 점마다 둔다
+    function isMonthStart(ms) {
+        var d = new Date(ms);
+        return d.getUTCDate() === 1 && d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0;
+    }
+
+    function fmtMonth(ms) {
+        var d = new Date(ms);
+        return d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1);
+    }
+
     function formatTick(ms, step, span) {
         var d = new Date(ms);
         if (step >= DAY) return fmtDate(d);
@@ -350,8 +361,12 @@
                     borderWidth: 2, pointRadius: pts.length > 60 ? 0 : 2, pointHoverRadius: 4, tension: 0
                 };
             });
+            var xs = [];
+            datasets.forEach(function (ds) { ds.data.forEach(function (p) { xs.push(p.x); }); });
+            var monthly = xs.length > 0 && xs.every(isMonthStart);
+            var monthTicks = monthly ? xs.filter(function (x, i) { return xs.indexOf(x) === i; }).sort(function (a, b) { return a - b; }) : [];
             if (!isFinite(lo)) { lo = 0; hi = 1; }
-            if (hi === lo) { lo -= 30 * MIN; hi += 30 * MIN; }
+            if (hi === lo) { lo -= (monthly ? 15 * DAY : 30 * MIN); hi += (monthly ? 15 * DAY : 30 * MIN); }
             var span = hi - lo;
             var step = pickStep(span);
             options.scales.x = {
@@ -359,16 +374,24 @@
                 grid: { color: pal.grid },
                 ticks: {
                     color: pal.muted, font: font, maxRotation: 0, autoSkip: true,
-                    callback: function (value) { return formatTick(value, step, span); }
+                    callback: function (value) { return monthly ? fmtMonth(value) : formatTick(value, step, span); }
                 },
                 afterBuildTicks: function (axis) {
                     var ticks = [];
-                    for (var t = Math.ceil(lo / step) * step; t <= hi; t += step) ticks.push({ value: t });
+                    if (monthly) {
+                        var every = Math.ceil(monthTicks.length / 12);
+                        monthTicks.forEach(function (t, i) { if (i % every === 0) ticks.push({ value: t }); });
+                    } else {
+                        for (var t = Math.ceil(lo / step) * step; t <= hi; t += step) ticks.push({ value: t });
+                    }
                     if (ticks.length) axis.ticks = ticks;
                 }
             };
             tooltip.callbacks = {
-                title: function (items) { return items.length ? formatFullTime(items[0].parsed.x) : ""; }
+                title: function (items) {
+                    if (!items.length) return "";
+                    return monthly ? fmtMonth(items[0].parsed.x) : formatFullTime(items[0].parsed.x);
+                }
             };
             return { type: "line", data: { datasets: datasets }, options: options };
         }
@@ -610,11 +633,115 @@
         if (!state.requested) loadPanel(state);
     }
 
+    // ─── 답 본문 표 해설 링크(D-327 부기 2026-10-13 — G-3 개정) ───
+    // 답 표는 서버 코드가 원본 행으로 렌더한 표다. 원본 표(`GET …/tables`)와 머리글·칸을 맞춰,
+    // 맞는 머리글과 원본 행을 하나로 특정한 칸에만 링크를 단다. 못 맞추면 그 칸은 그대로 둔다(추측 링크 없음).
+
+    function normText(v) {
+        if (v == null) return "";
+        var t = typeof v === "object" ? cellText(v) : String(v);
+        // 서버 표는 str(datetime)(공백 구분) · API는 ISO(T 구분) — 같은 시각으로 본다
+        return t.replace(/\s+/g, " ").trim().replace(/^(\d{4}-\d{2}-\d{2})T(\d{2}:)/, "$1 $2").toLowerCase();
+    }
+
+    function sameCell(text, value) {
+        var a = normText(text), b = normText(value);
+        if (a === b) return true;
+        if (value == null) return a === "" || a === "(값 없음)";
+        var na = Number(a.replace(/,/g, "").replace(/%$/, "")), nb = Number(b.replace(/,/g, "").replace(/%$/, ""));
+        return a !== "" && b !== "" && isFinite(na) && isFinite(nb) && na === nb;
+    }
+
+    function linkify(cell, column, row) {
+        var text = cell.textContent;
+        if (!text.trim()) return;
+        var b = el("button", LINK_CLASS, text);
+        b.type = "button";
+        b.title = row == null ? "칼럼 설명 보기" : "값 해석 보기";
+        b.dataset.rvCol = column;
+        if (row != null) b.dataset.rvRow = String(row);
+        cell.textContent = "";
+        cell.appendChild(b);
+    }
+
+    function pickRow(t, cols, cells, i, used) {
+        // 비교할 칸 = 링크할 머리글 칸. 4칸 중 3칸 이상 맞는 원본 행 중 가장 많이 맞는 행(동률이면 같은 순번)
+        var rows = t.rows || [];
+        var need = Math.max(1, Math.ceil(cols.length * 0.75));
+        var best = -1, bestScore = 0;
+        for (var j = 0; j < rows.length; j++) {
+            if (used[j]) continue;
+            var score = 0;
+            for (var k = 0; k < cols.length; k++) {
+                if (sameCell(cells[cols[k].pos].textContent, rows[j][cols[k].name])) score++;
+            }
+            if (score >= need && (score > bestScore || (score === bestScore && j === i))) {
+                best = j;
+                bestScore = score;
+            }
+        }
+        return best;
+    }
+
+    function linkTable(table, queryId, t) {
+        var heads = table.querySelectorAll("thead th");
+        var cols = [];
+        for (var c = 0; c < heads.length; c++) {
+            var name = heads[c].textContent.trim();
+            if (t.columns.indexOf(name) >= 0) cols.push({ pos: c, name: name });
+        }
+        if (!cols.length) return false;
+        table.dataset.rvQuery = queryId;
+        table.dataset.rvTable = String(t.index);
+        table.dataset.rvExplain = "1";
+        cols.forEach(function (col) { linkify(heads[col.pos], col.name, null); });
+        var used = {};
+        var trs = table.querySelectorAll("tbody tr");
+        for (var i = 0; i < trs.length; i++) {
+            var cells = trs[i].children;
+            var j = pickRow(t, cols, cells, i, used);
+            if (j < 0) continue;
+            used[j] = true;
+            cols.forEach(function (col) { if (cells[col.pos]) linkify(cells[col.pos], col.name, j); });
+        }
+        return true;
+    }
+
+    function linkAnswerTables(bubbleEl, queryId) {
+        var tables = Array.prototype.filter.call(
+            bubbleEl.querySelectorAll(".response-text table"),
+            function (tb) { return !tb.classList.contains(GRID_CLASS) && !tb.dataset.rvExplain; });
+        if (!tables.length) return;
+        requestJson(API_BASE + encodeURIComponent(queryId) + "/tables", "GET").then(function (res) {
+            var pool = (res && Array.isArray(res.tables) ? res.tables : []).filter(function (t) {
+                return Array.isArray(t.columns) && Array.isArray(t.rows);
+            });
+            tables.forEach(function (tb) {
+                if (!tb.isConnected || !pool.length) return;
+                // 머리글이 가장 많이 겹치는 원본 표 — 한 원본 표는 답 표 하나에만 쓴다
+                var heads = Array.prototype.map.call(tb.querySelectorAll("thead th"), function (h) { return h.textContent.trim(); });
+                var bestAt = -1, bestHit = 0;
+                pool.forEach(function (t, at) {
+                    var hit = heads.filter(function (h) { return t.columns.indexOf(h) >= 0; }).length;
+                    if (hit > bestHit) { bestHit = hit; bestAt = at; }
+                });
+                if (bestAt < 0 || bestHit * 2 < heads.length) return;   // 머리글 절반 이상이 원본 칼럼이어야 원본 표로 본다
+                if (linkTable(tb, String(queryId), pool[bestAt])) pool.splice(bestAt, 1);
+            });
+        }, function () { /* 만료·꺼짐 — 답 표는 그대로 둔다 */ });
+    }
+
     function attach(bubbleEl, data, opts) {
         if (opts && typeof opts.headers === "function") headerFn = opts.headers;
         if (!bubbleEl || !data || !data.chart) return;
         var queryId = data.query_id || data.result_query_id;
-        if (!queryId || bubbleEl.querySelector(".result-viz-toggle")) return;
+        if (!queryId) return;
+        if (data.chart.explain === true) {
+            ensureDelegation();
+            linkAnswerTables(bubbleEl, queryId);
+        }
+        if (!Array.isArray(data.chart.tables) || !data.chart.tables.length) return;   // 해설만 — 그릴 표 없음
+        if (bubbleEl.querySelector(".result-viz-toggle")) return;
 
         // 대화 복원 턴은 다운로드 줄이 없다 — 없으면 만든다
         var actions = bubbleEl.querySelector(":scope > .message-download-actions");
@@ -822,7 +949,7 @@
         document.addEventListener("click", function (e) {
             var link = e.target && e.target.closest ? e.target.closest("." + LINK_CLASS) : null;
             if (!link) return;
-            var table = link.closest("table." + GRID_CLASS);
+            var table = link.closest("table[data-rv-explain]");
             if (!table || table.dataset.rvExplain !== "1") return;
             e.preventDefault();
             openExplain(link, table);

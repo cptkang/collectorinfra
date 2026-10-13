@@ -206,7 +206,9 @@ def test_stream_tracked_rows_fallback_signal_matches_stored_rows() -> None:
             if line.startswith("data: ") and '"done"' in line]
     assert len(done) == 1
     body = done[0]
-    assert body["chart"] == {"kind": "line", "tables": [{"index": 0, "label": "", "kind": "line"}]}
+    # 해석도 켜진 설정이라 답 표 해설 신호가 붙는다(D-327 부기 2026-10-13)
+    assert body["chart"] == {"kind": "line", "tables": [{"index": 0, "label": "", "kind": "line"}],
+                             "explain": True}
     stored = query._results_store[body["query_id"]]
     assert stored["query_results"] == _line_rows()
     assert stored["chart"] == body["chart"]

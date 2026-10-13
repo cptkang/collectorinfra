@@ -44,6 +44,28 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class ResultTable:
+    """결과 표 1개(그릴 수 없는 표 포함) — 표 번호 · 라벨 · 판정(없으면 None) · 격자 행.
+
+    답 본문 표의 용어·값 해석(D-327 부기 2026-10-13)이 쓴다. 그릴 수 있는 표의 행은 `ChartTable`과
+    같은 값이다(같은 함수에서 나온다) — 그래프 패널 격자와 답 표의 행 번호가 같은 행을 가리킨다.
+    """
+
+    index: int
+    label: str
+    spec: ChartSpec | None
+    rows: list[dict[str, Any]]
+
+    def columns(self) -> list[str]:
+        """격자 칼럼 순서 — 등장 순서 합집합(CSV와 같다)."""
+        order: dict[str, None] = {}
+        for row in self.rows:
+            for key in row:
+                order.setdefault(key, None)
+        return list(order)
+
+
+@dataclass(frozen=True)
 class ChartTable:
     """그릴 수 있는 표 1개 — 원래 표 번호 · 라벨 · 판정 · 격자 행(평탄·마스킹)."""
 
@@ -61,22 +83,33 @@ class ChartTable:
         return list(order)
 
 
-def chart_tables(rows: Any, tables: Any, security: SecurityConfig) -> list[ChartTable]:
-    """저장된 결과 행 → 그릴 수 있는 표 목록(원래 표 순서). 그릴 표가 없으면 빈 목록."""
+def result_tables(rows: Any, tables: Any, security: SecurityConfig) -> list[ResultTable]:
+    """저장된 결과 행 → 표 목록 전부(원래 순서 · 행 없는 표 제외). 그릴 수 있으면 `spec`이 있다."""
     if not isinstance(rows, list):
         return []
     masker = DataMasker(security)
     masked = masker.mask_rows([row for row in rows if isinstance(row, dict)])
-    out: list[ChartTable] = []
+    out: list[ResultTable] = []
     for index, (label, part) in enumerate(split_tables(masked, tables)):
         flat = chart_rows(part)
         if flat is not part:
             flat = masker.mask_rows(flat)
+        if not flat:
+            continue
         spec = detect_chart(flat)
         if spec is not None:
             flat, spec = _wall_clock_x(flat, spec)
-            out.append(ChartTable(index=index, label=label, spec=spec, rows=flat))
+        out.append(ResultTable(index=index, label=label, spec=spec, rows=flat))
     return out
+
+
+def chart_tables(rows: Any, tables: Any, security: SecurityConfig) -> list[ChartTable]:
+    """저장된 결과 행 → 그릴 수 있는 표 목록(원래 표 순서). 그릴 표가 없으면 빈 목록."""
+    return [
+        ChartTable(index=t.index, label=t.label, spec=t.spec, rows=t.rows)
+        for t in result_tables(rows, tables, security)
+        if t.spec is not None
+    ]
 
 
 def _epoch_to_wall(value: Any) -> Any:
@@ -117,21 +150,31 @@ def chart_field(
 
     `RESULT_VIZ_CHART_ENABLED` off면 None(현행과 같다). 되묻기 턴(`status="clarification"` — 기간·존
     역질문)은 조회하지 않은 턴이라 판정하지 않고 None이다(그래프 상태에 직전 턴 행이 남아 있다).
-    그릴 표가 없어도 None. 판정 실패는 질의 응답을 깨지 않도록 경고 1줄을 남기고 None이다.
+    판정 실패는 질의 응답을 깨지 않도록 경고 1줄을 남기고 None이다.
+
+    용어·값 해석(`RESULT_VIZ_EXPLAIN_ENABLED`)도 켜져 있으면 `explain: true`를 더한다 — 화면이 답
+    본문 표에 해설 링크를 단다(D-327 부기 2026-10-13). 이때는 그릴 표가 없어도 결과 표가 있으면
+    `{"kind": None, "tables": [], "explain": True}`다. 해석이 꺼져 있으면 종전 그대로(그릴 표가
+    없으면 None).
     """
     if not config.result_viz.chart_enabled or status == "clarification":
         return None
+    explain = bool(config.result_viz.explain_enabled)
     try:
-        found = chart_tables(rows, tables, config.security)
+        every = result_tables(rows, tables, config.security)
     except Exception as e:  # noqa: BLE001 — 신호 실패가 질의 응답을 깨면 안 된다
         logger.warning("결과 그래프 판정 실패 — chart 신호 생략: %s: %s", type(e).__name__, e)
         return None
-    if not found:
+    found = [(t, t.spec) for t in every if t.spec is not None]
+    if not found and not (explain and every):
         return None
-    return {
-        "kind": found[0].spec.kind,
-        "tables": [{"index": t.index, "label": t.label, "kind": t.spec.kind} for t in found],
+    signal: dict[str, Any] = {
+        "kind": found[0][1].kind if found else None,
+        "tables": [{"index": t.index, "label": t.label, "kind": spec.kind} for t, spec in found],
     }
+    if explain:
+        signal["explain"] = True
+    return signal
 
 
 def chart_carry(chart: dict[str, Any] | None) -> dict[str, Any]:

@@ -13,10 +13,13 @@
 
 용어·값 해석 API(plans/160 B-2 · C-2) — `GET /query/{id}/glossary` · `POST /query/{id}/interpret`.
 
-- `RESULT_VIZ_EXPLAIN_ENABLED` off → 404 — 격자가 그래프 패널 안에만 있으므로 그래프 보기가 꺼져도
-  404다. 인가·만료 문구는 그래프 API와 같다.
-- 입력은 그래프 API가 준 표 번호(`index`) · 격자 칼럼 · 격자 행 번호뿐이다 — 자유 텍스트 없음.
-  실존하지 않으면 400. 서비스에는 격자 행(`ChartTable.rows` — 마스킹·평탄)만 넘긴다.
+- `RESULT_VIZ_EXPLAIN_ENABLED` off → 404 — 그래프 보기가 꺼져도 404다(라우터 미등록). 인가·만료
+  문구는 그래프 API와 같다.
+- 대상은 그래프 패널 격자와 **답 본문 표**다(D-327 부기 2026-10-13 — G-3 개정). 답 표는 코드가
+  원본 행으로 렌더한 표라(`output_generator._render_result_table`) 화면이 `GET /query/{id}/tables`의
+  원본 행과 칸을 맞춰 링크를 단다. 그래서 그릴 수 없는 표(사양 목록 등)도 해설 대상이다.
+- 입력은 표 번호(`index`) · 격자 칼럼 · 격자 행 번호뿐이다 — 자유 텍스트 없음.
+  실존하지 않으면 400. 서비스에는 격자 행(`ResultTable.rows` — 마스킹·평탄)만 넘긴다.
 - 해설 로직은 `src/semantic/result_explainer`(사전 → 캐시 → LLM · 판정 어휘 가드)다.
 - 감사는 요청마다 1행(`event="result_explain"`) — 대상 칼럼·행만, 셀 값은 sha256 해시만 남긴다.
 """
@@ -32,7 +35,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api.dependencies import require_user
-from src.api.result_chart_view import ChartTable, chart_tables
+from src.api.result_chart_view import ResultTable, chart_tables, result_tables
 from src.api.routes.query import _audit_file_download, _owned_result
 from src.domain.audit import AuditLogEntry
 from src.domain.result_chart import build_chart_data
@@ -116,6 +119,50 @@ async def get_result_chart(
 # ── 용어·값 해석(B-2 · C-2) ─────────────────────────────────────────────
 
 
+def _require_explain_enabled(request: Request) -> None:
+    """용어·값 해석이 꺼져 있으면 404(그래프 보기는 라우터 의존성이 이미 검사했다)."""
+    if not request.app.state.config.result_viz.explain_enabled:
+        raise HTTPException(status_code=404, detail=EXPLAIN_DISABLED_MESSAGE)
+
+
+@router.get("/query/{query_id}/tables")
+async def get_result_tables(
+    request: Request,
+    query_id: str,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """답 본문 표의 해설 링크용 원본 표 전부(그릴 수 없는 표 포함 · 질의한 사용자·관리자만).
+
+    표마다 원래 표 번호(`index`) · 라벨 · 판정 종류(`kind` — 그릴 수 없으면 None) · 격자 칼럼 ·
+    격자 행(앞 `GRID_MAX_ROWS`행) · 전체 행 수를 준다. 행 번호는 그래프 API 격자와 같다.
+    """
+    _require_explain_enabled(request)
+    config = request.app.state.config
+    stored = _owned_result(request, query_id, current_user, not_found=EXPIRED_MESSAGE)
+    every = result_tables(stored.get("query_results") or [], stored.get("result_tables"),
+                          config.security)
+    body = {
+        "query_id": query_id,
+        "tables": [
+            {
+                "index": t.index,
+                "label": t.label,
+                "kind": t.spec.kind if t.spec else None,
+                "columns": t.columns(),
+                "rows": t.rows[:GRID_MAX_ROWS],
+                "rows_total": len(t.rows),
+            }
+            for t in every
+        ],
+    }
+    await _audit_file_download(
+        request, current_user,
+        file_name=f"{query_id}.tables", file_type="table",
+        file_size=len(json.dumps(body, ensure_ascii=False, default=str).encode("utf-8")),
+    )
+    return body
+
+
 class InterpretRequest(BaseModel):
     """값 해석 요청 — 표 번호 · 격자 칼럼 · 격자 행 번호만 받는다(자유 텍스트 없음)."""
 
@@ -128,14 +175,14 @@ class InterpretRequest(BaseModel):
 
 def _explain_table(
     request: Request, query_id: str, current_user: dict[str, Any], table: int, column: str
-) -> tuple[dict[str, Any], ChartTable]:
-    """플래그·인가·실존 검증을 거친 저장 결과와 대상 표."""
+) -> tuple[dict[str, Any], ResultTable]:
+    """플래그·인가·실존 검증을 거친 저장 결과와 대상 표(그릴 수 없는 표 포함)."""
     config = request.app.state.config
     if not (config.result_viz.chart_enabled and config.result_viz.explain_enabled):
         raise HTTPException(status_code=404, detail=EXPLAIN_DISABLED_MESSAGE)
     stored = _owned_result(request, query_id, current_user, not_found=EXPIRED_MESSAGE)
-    found = chart_tables(stored.get("query_results") or [], stored.get("result_tables"),
-                         config.security)
+    found = result_tables(stored.get("query_results") or [], stored.get("result_tables"),
+                          config.security)
     target = next((t for t in found if t.index == table), None)
     if target is None:
         raise HTTPException(status_code=400, detail=NO_TABLE_MESSAGE)

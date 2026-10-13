@@ -7,7 +7,9 @@
 **칼럼 유형은 값 모양으로만 정한다.** 칼럼 이름은 보지 않는다(이름 리터럴은 DB·도구마다 달라
 과적합된다 — D-179). None·빈 문자열은 판정 분모에서 뺀다.
 
-- 시간(`time`): datetime/date 객체 또는 ISO 날짜시각 문자열의 파싱 성공률 ≥ 90%. 또는 epoch —
+- 시간(`time`): datetime/date 객체 · ISO 날짜시각 문자열 · 압축 날짜 문자열(`YYYYMM` · `YYYYMMDD` ·
+  `YYYYMMDDHH` · `YYYY-MM` — 통계 기준 시각 칼럼의 흔한 모양 · 연도 1970~2100과 월·일·시가 실재할
+  때만 · 정수 값은 아니다)의 파싱 성공률 ≥ 90%. 또는 epoch —
   전부 정수(정수형 float 포함)이고 전부 초 범위 [1e9, 4e9] 또는 전부 ms 범위 [1e12, 4e12]이며
   인접 쌍의 단조 비감소 비율 ≥ 90%(전체 순서 또는 고유값 ≤ 10인 범주 칼럼별 그룹 — 어느 쪽이든).
   범위 안의 큰 정수 ID라도 순서가 무작위면 시간이 아니다.
@@ -70,6 +72,10 @@ _ISO_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}"
     r"(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$"
 )
+#: 압축 날짜 문자열 — 월(YYYYMM)·일(YYYYMMDD)·시(YYYYMMDDHH) 기준 통계 시각과 `YYYY-MM`.
+_COMPACT_RE = re.compile(r"^(\d{4})(\d{2})(?:(\d{2})(\d{2})?)?$")
+_YEAR_MONTH_RE = re.compile(r"^(\d{4})-(\d{2})$")
+_COMPACT_YEARS = (1970, 2100)
 _NUM_RE = re.compile(r"^[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)?(?:\.\d+)?(?:[eE][+-]?\d+)?$")
 _INT_RE = re.compile(r"^[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)$")
 
@@ -131,7 +137,7 @@ def parse_number(value: Any) -> float | None:
 
 
 def parse_datetime(value: Any) -> datetime | None:
-    """datetime/date 객체 또는 ISO 날짜시각 문자열이면 datetime으로, 아니면 None(epoch는 제외)."""
+    """datetime/date · ISO 날짜시각 · 압축 날짜 문자열이면 datetime, 아니면 None(epoch 제외)."""
     if isinstance(value, datetime):
         return value
     if isinstance(value, date):
@@ -140,9 +146,26 @@ def parse_datetime(value: Any) -> datetime | None:
         return None
     text = value.strip()
     if not _ISO_RE.match(text):
-        return None
+        return _parse_compact(text)
     try:
         return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _parse_compact(text: str) -> datetime | None:
+    """압축 날짜 문자열(`YYYYMM`·`YYYYMMDD`·`YYYYMMDDHH`·`YYYY-MM`)이면 datetime, 아니면 None."""
+    match = _COMPACT_RE.match(text) or _YEAR_MONTH_RE.match(text)
+    if match is None:
+        return None
+    parts = [int(g) for g in match.groups() if g is not None]
+    year, month = parts[0], parts[1]
+    day = parts[2] if len(parts) > 2 else 1
+    hour = parts[3] if len(parts) > 3 else 0
+    if not _COMPACT_YEARS[0] <= year <= _COMPACT_YEARS[1]:
+        return None
+    try:
+        return datetime(year, month, day, hour)
     except ValueError:
         return None
 

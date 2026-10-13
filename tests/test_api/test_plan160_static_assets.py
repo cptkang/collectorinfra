@@ -102,7 +102,7 @@ def test_widening_rules_only_above_1024px(style_css: str) -> None:
 def test_chartjs_and_cache_busting_versions(index_html: str) -> None:
     """Chart.js는 result-viz.js보다 먼저 · 바꾼 정적 자산은 버전을 올린다(D-187 캐시 실수 이력)."""
     chart = index_html.find('src="/static/vendor/chartjs/chart.umd.min.js?v=1"')
-    viz = index_html.find('src="/static/js/result-viz.js?v=3"')
+    viz = index_html.find('src="/static/js/result-viz.js?v=4"')
     assert chart != -1 and viz != -1 and chart < viz
     assert 'href="/static/css/style.css?v=28"' in index_html
     assert 'src="/static/js/app.js?v=24"' in index_html

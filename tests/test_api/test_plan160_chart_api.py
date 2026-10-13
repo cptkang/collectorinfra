@@ -318,7 +318,7 @@ def test_signal_failure_is_logged_and_does_not_break_answer(monkeypatch, caplog)
     def boom(*args: Any, **kwargs: Any) -> Any:
         raise ValueError("판정 폭발")
 
-    monkeypatch.setattr(result_chart_view, "chart_tables", boom)
+    monkeypatch.setattr(result_chart_view, "result_tables", boom)
     client = _client(_Graph(heap_rows()), auth=False)
     with caplog.at_level("WARNING", logger="src.api.result_chart_view"):
         body = _post(client, "/query")

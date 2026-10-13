@@ -162,6 +162,18 @@ captures:
       - wait: ".result-viz-pop .result-viz-pop-llm"
       - wait: 300
     callouts: [[1, ".message--agent:last-child table.result-viz-grid tbody tr:nth-child(5) button[data-rv-col='heap_used_mb']"], [2, ".result-viz-pop .result-viz-facts"], [3, ".result-viz-pop .result-viz-pop-llm"]]
+  # 답 본문 표 해설(plans/160 §8) — 코드가 원본 행으로 렌더한 답 표에 밑줄 링크가 붙는다.
+  # 월간 통계 추세는 손 제작 재생 파일(fixtures/queries/720fee46a68a27bf.json · 서버·값 가상)
+  - id: result-answer-table-explain
+    server: capture-viz
+    login: user
+    steps:
+      - send: "svr-db-01 서버의 메모리 사용률 6개월 추세 보여줘"
+      - wait: ".message--agent:last-child .response-text table[data-rv-explain] tbody button"
+      - click: ".message--agent:last-child .response-text table tbody tr:nth-child(3) button[data-rv-col='mem_max_pct']"
+      - wait: ".result-viz-pop .result-viz-pop-llm"
+      - wait: 300
+    callouts: [[1, ".message--agent:last-child .response-text table thead button[data-rv-col='stat_month']"], [2, ".message--agent:last-child .response-text table tbody tr:nth-child(3) button[data-rv-col='mem_max_pct']"], [3, ".result-viz-pop"], [4, ".message--agent:last-child .result-viz-toggle"]]
   # 질의 이력은 기본 접힘 — 처리 현황만 접으면 둘 다 접힌 상태다
   - id: table-wide-panels
     server: capture-viz
