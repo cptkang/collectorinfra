@@ -1,0 +1,2506 @@
+{
+ "key": "40cd5dcc997d743e",
+ "query": "itam db에 유사어를 등록하려고 한다. 어떻게 해야 되냐?",
+ "has_file": false,
+ "has_answers": false,
+ "recorded_at": "2026-10-13T18:24:58",
+ "events": [
+  {
+   "event": "on_chain_start",
+   "name": "LangGraph",
+   "depth": 0
+  },
+  {
+   "event": "on_chain_start",
+   "name": "context_resolver",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "context_resolver",
+   "depth": 1,
+   "output": {
+    "conversation_context": null,
+    "current_node": "context_resolver",
+    "demonstrative_without_antecedent": false
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "input_parser",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "input_parser",
+   "depth": 1,
+   "output": {
+    "parsed_requirements": {
+     "query_targets": [
+      "에이전트"
+     ],
+     "filter_conditions": [],
+     "time_range": null,
+     "output_format": "text",
+     "aggregation": null,
+     "limit": null,
+     "target_sheets": null,
+     "field_mapping_hints": [],
+     "target_db_hints": [
+      "ITAM/itam"
+     ],
+     "synonym_registration": {
+      "mode": "all"
+     },
+     "time_expr": null,
+     "original_query": "itam db에 유사어를 등록하려고 한다. 어떻게 해야 되냐?"
+    },
+    "template_structure": null,
+    "target_sheets": null,
+    "unanchored_query_targets": [
+     "에이전트"
+    ],
+    "current_node": "input_parser",
+    "error_message": null,
+    "time_resolution": {
+     "version": 1,
+     "anchor_at": "2026-10-13T18:24:18.178098+09:00",
+     "metric": {
+      "start": "2026-09-01T00:00:00+09:00",
+      "end": "2026-10-01T00:00:00+09:00",
+      "grain": "month",
+      "completeness": "complete",
+      "source": "default",
+      "anchor_at": "2026-10-13T18:24:18.178098+09:00",
+      "span": "",
+      "unbounded": false,
+      "notes": [
+       "default_period"
+      ],
+      "anchor": "now",
+      "label": "2026-09-01 ~ 2026-09-30"
+     },
+     "event": {
+      "start": null,
+      "end": null,
+      "grain": "month",
+      "completeness": "complete",
+      "source": "default",
+      "anchor_at": "2026-10-13T18:24:18.178098+09:00",
+      "span": "",
+      "unbounded": true,
+      "notes": [
+       "event_no_default_period"
+      ],
+      "anchor": "now",
+      "label": "전체 보관 기간(기간 조건 없음)"
+     },
+     "clarify": null,
+     "slot_status": "absent",
+     "slot_reason": null,
+     "present": false
+    }
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "field_mapper",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "field_mapper",
+   "depth": 1,
+   "output": {
+    "current_node": "field_mapper",
+    "column_mapping": null,
+    "db_column_mapping": null,
+    "mapping_sources": null,
+    "mapped_db_ids": null,
+    "llm_inference_details": null,
+    "mapping_report_md": null
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "intent_planner",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "intent_planner",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "portal_help",
+      "sub_query": "itam db에 유사어를 등록하려고 한다. 어떻게 해야 되냐?",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "pending",
+      "areas": [],
+      "requested_source": "itam"
+     }
+    ],
+    "is_composite": false,
+    "current_node": "intent_planner",
+    "plan_path": "portal_redirect",
+    "clarification_needed": null
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "agent_orchestrator",
+   "depth": 1
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t1",
+    "order": 1,
+    "total": 1,
+    "agent": "portal_help",
+    "sub_query": "itam db에 유사어를 등록하려고 한다. 어떻게 해야 되냐?",
+    "input_from": [],
+    "phase": "start",
+    "status": "in_progress"
+   }
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "itam"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " db"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 에"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 유사"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "어를"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 등록"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "하려면"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 입력"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "창"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "에"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 기준"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 항목"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "과"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 추가"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "하려는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 낱"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "말"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "을"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 함께"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 적"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "으"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "세요"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 예를"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 들어"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " \"("
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "항"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "목"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ")"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "에"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " '("
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "낱"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "말"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ")'"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 유사"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 단"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "어를"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 추가"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "해"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "줘"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\""
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "와"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 같은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 형"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "식으로"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 작성"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "하면"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 됩니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "시스템"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 내용을"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 분석"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "하여"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 기준"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 항목"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "을"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 찾"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "습니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 기준"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 항목"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "을"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 찾을"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 수"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 있으면"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 등록"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "을"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 진행"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "하지만"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 못"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 찾"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "으면"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 방법을"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 안내"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "합니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 등록"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "한"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 말"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 모든"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 사용"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "자에게"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 적용"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "되며"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " DB"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 유사"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "어"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 폴"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "스타"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "와"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 자산"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "관리"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " ("
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "IT"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "AM"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ")"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 가"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 함께"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 사용합니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "주의"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "할"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 점은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " DB"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 가"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 아닌"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 소"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "스"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " ("
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "예"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ":"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 제"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "니"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "퍼"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 사"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "내"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 문서"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ")"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 를"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 언급"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "하거나"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 소"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "스"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 이름을"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 넣어"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 등록"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "할"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 경우"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " DB"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 유사"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "어"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "에"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 넣"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "지"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 않고"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 관리"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "자가"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 설정"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 파일"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "로"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 관리"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "한다고"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 안내"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "한다는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 것입니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 또한"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 뜻"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 모"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "호"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "하면"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 등록"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "하지"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 않고"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 다시"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 묻"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "습니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 등록"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 후"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 등록"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 결과가"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 확인"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "되"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "도록"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 하"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "시고"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 잘못"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 등록"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "했"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "으면"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 관리"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "자에게"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 삭"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "제를"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 요청"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "하세요"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "아"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "래"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 입력"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 예를"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 참고"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "하세요"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t1",
+    "order": 1,
+    "total": 1,
+    "agent": "portal_help",
+    "sub_query": "itam db에 유사어를 등록하려고 한다. 어떻게 해야 되냐?",
+    "input_from": [],
+    "phase": "end",
+    "status": "completed"
+   }
+  },
+  {
+   "event": "on_chain_end",
+   "name": "agent_orchestrator",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "portal_help",
+      "sub_query": "itam db에 유사어를 등록하려고 한다. 어떻게 해야 되냐?",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed",
+      "areas": [],
+      "requested_source": "itam"
+     }
+    ],
+    "task_results": {
+     "t1": {
+      "final_response": "itam db 에 유사어를 등록하려면 입력창에 기준 항목과 추가하려는 낱말을 함께 적으세요. 예를 들어 \"(항목)에 '(낱말)' 유사 단어를 추가해줘\"와 같은 형식으로 작성하면 됩니다.\n\n시스템은 이 내용을 분석하여 기준 항목을 찾습니다. 기준 항목을 찾을 수 있으면 등록을 진행하지만, 못 찾으면 방법을 안내합니다. 등록한 말은 모든 사용자에게 적용되며, DB 유사어는 폴스타와 자산관리 (ITAM) 가 함께 사용합니다.\n\n주의할 점은 DB 가 아닌 소스 (예: 제니퍼, 사내 문서) 를 언급하거나 소스 이름을 넣어 등록할 경우, DB 유사어에 넣지 않고 관리자가 설정 파일로 관리한다고 안내한다는 것입니다. 또한 뜻이 모호하면 등록하지 않고 다시 묻습니다. 등록 후 등록 결과가 확인되도록 하시고, 잘못 등록했으면 관리자에게 삭제를 요청하세요.\n\n아래 입력 예를 참고하세요.\n\n**입력 예**\n```text\nvcore, cpu, core은 동의어이다. 캐시에 등록하라.\nhostname에 '장비이름' 유사 단어를 추가해줘\n```\n형식:\n```text\n(항목)에 '(낱말)' 유사 단어를 추가해줘\n```\n\n**매뉴얼에서 보기**\n- [U-37 유사어 등록](/manual/user#u-37)",
+      "portal_help": {
+       "status": "ok",
+       "sections": [
+        "user:U-37"
+       ],
+       "reason": "",
+       "llm_calls": 1
+      },
+      "source_status": [
+       {
+        "system": "portal",
+        "label": "AIOps 포탈 매뉴얼",
+        "status": "ok",
+        "rows": 1,
+        "reason": ""
+       }
+      ]
+     }
+    },
+    "current_node": "agent_orchestrator",
+    "orchestrator_round_sec": 7.628
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "replanner",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "replanner",
+   "depth": 1,
+   "output": {
+    "needs_replan": false,
+    "replan_history": [],
+    "current_node": "replanner"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "result_aggregator",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "result_aggregator",
+   "depth": 1,
+   "output": {
+    "final_response": "itam db 에 유사어를 등록하려면 입력창에 기준 항목과 추가하려는 낱말을 함께 적으세요. 예를 들어 \"(항목)에 '(낱말)' 유사 단어를 추가해줘\"와 같은 형식으로 작성하면 됩니다.\n\n시스템은 이 내용을 분석하여 기준 항목을 찾습니다. 기준 항목을 찾을 수 있으면 등록을 진행하지만, 못 찾으면 방법을 안내합니다. 등록한 말은 모든 사용자에게 적용되며, DB 유사어는 폴스타와 자산관리 (ITAM) 가 함께 사용합니다.\n\n주의할 점은 DB 가 아닌 소스 (예: 제니퍼, 사내 문서) 를 언급하거나 소스 이름을 넣어 등록할 경우, DB 유사어에 넣지 않고 관리자가 설정 파일로 관리한다고 안내한다는 것입니다. 또한 뜻이 모호하면 등록하지 않고 다시 묻습니다. 등록 후 등록 결과가 확인되도록 하시고, 잘못 등록했으면 관리자에게 삭제를 요청하세요.\n\n아래 입력 예를 참고하세요.\n\n**입력 예**\n```text\nvcore, cpu, core은 동의어이다. 캐시에 등록하라.\nhostname에 '장비이름' 유사 단어를 추가해줘\n```\n형식:\n```text\n(항목)에 '(낱말)' 유사 단어를 추가해줘\n```\n\n**매뉴얼에서 보기**\n- [U-37 유사어 등록](/manual/user#u-37)",
+    "current_node": "result_aggregator",
+    "query_results": [],
+    "messages": [
+     {
+      "__msg__": "ai",
+      "content": "itam db 에 유사어를 등록하려면 입력창에 기준 항목과 추가하려는 낱말을 함께 적으세요. 예를 들어 \"(항목)에 '(낱말)' 유사 단어를 추가해줘\"와 같은 형식으로 작성하면 됩니다.\n\n시스템은 이 내용을 분석하여 기준 항목을 찾습니다. 기준 항목을 찾을 수 있으면 등록을 진행하지만, 못 찾으면 방법을 안내합니다. 등록한 말은 모든 사용자에게 적용되며, DB 유사어는 폴스타와 자산관리 (ITAM) 가 함께 사용합니다.\n\n주의할 점은 DB 가 아닌 소스 (예: 제니퍼, 사내 문서) 를 언급하거나 소스 이름을 넣어 등록할 경우, DB 유사어에 넣지 않고 관리자가 설정 파일로 관리한다고 안내한다는 것입니다. 또한 뜻이 모호하면 등록하지 않고 다시 묻습니다. 등록 후 등록 결과가 확인되도록 하시고, 잘못 등록했으면 관리자에게 삭제를 요청하세요.\n\n아래 입력 예를 참고하세요.\n\n**입력 예**\n```text\nvcore, cpu, core은 동의어이다. 캐시에 등록하라.\nhostname에 '장비이름' 유사 단어를 추가해줘\n```\n형식:\n```text\n(항목)에 '(낱말)' 유사 단어를 추가해줘\n```\n\n**매뉴얼에서 보기**\n- [U-37 유사어 등록](/manual/user#u-37)"
+     }
+    ]
+   }
+  },
+  {
+   "event": "on_chain_end",
+   "name": "LangGraph",
+   "depth": 0,
+   "output": {
+    "user_query": "itam db에 유사어를 등록하려고 한다. 어떻게 해야 되냐?",
+    "uploaded_file": null,
+    "file_type": null,
+    "parsed_requirements": {
+     "query_targets": [
+      "에이전트"
+     ],
+     "filter_conditions": [],
+     "time_range": null,
+     "output_format": "text",
+     "aggregation": null,
+     "limit": null,
+     "target_sheets": null,
+     "field_mapping_hints": [],
+     "target_db_hints": [
+      "ITAM/itam"
+     ],
+     "synonym_registration": {
+      "mode": "all"
+     },
+     "time_expr": null,
+     "original_query": "itam db에 유사어를 등록하려고 한다. 어떻게 해야 되냐?"
+    },
+    "template_structure": null,
+    "target_sheets": null,
+    "csv_sheet_data": null,
+    "relevant_tables": [],
+    "schema_info": {},
+    "schema_cache_source": null,
+    "table_selection": null,
+    "column_descriptions": {},
+    "column_synonyms": {},
+    "resource_type_synonyms": {},
+    "eav_name_synonyms": {},
+    "generated_sql": "",
+    "sql_candidates": null,
+    "text2sql_fallback": null,
+    "smq_derivation": null,
+    "column_value_index": null,
+    "synonym_usage": null,
+    "pii_block_diagnosis": null,
+    "prompt_budget": null,
+    "template_assembly": null,
+    "validation_result": {
+     "passed": false,
+     "reason": "",
+     "auto_fixed_sql": null
+    },
+    "query_results": [],
+    "organized_data": {
+     "summary": "",
+     "rows": [],
+     "column_mapping": null,
+     "resolved_mapping": null,
+     "is_sufficient": false,
+     "sheet_mappings": null
+    },
+    "retry_count": 0,
+    "error_message": null,
+    "current_node": "result_aggregator",
+    "resolved_limit": null,
+    "raw_user_query": null,
+    "display_query": null,
+    "intent_frame": null,
+    "rewrite_trace": null,
+    "query_attempts": [],
+    "column_mapping": null,
+    "db_column_mapping": null,
+    "mapping_sources": null,
+    "mapped_db_ids": null,
+    "pending_synonym_registrations": null,
+    "llm_inference_details": null,
+    "mapping_report_md": null,
+    "form_month_anchor": null,
+    "form_fill_answers": null,
+    "form_fill_overrides": null,
+    "form_fill_literals": null,
+    "form_fill_candidates": null,
+    "pending_form_fill": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "form_fill_remember": null,
+    "last_form_signature": null,
+    "pending_synonym_reuse": null,
+    "active_db_engine": null,
+    "routing_intent": null,
+    "target_databases": [],
+    "active_db_id": null,
+    "db_results": {},
+    "db_schemas": {},
+    "db_errors": {},
+    "is_multi_db": false,
+    "user_specified_db": null,
+    "selected_db_ids": null,
+    "selected_sources": null,
+    "source_choice": null,
+    "turn_sources": null,
+    "source_selection_meta": null,
+    "source_switch": null,
+    "selected_apm_source_ids": null,
+    "apm_source_basis": null,
+    "apm_source_answer_text": null,
+    "apm_source_clarification": null,
+    "apm_source_scope": null,
+    "apm_source_pending": null,
+    "zone_clarification_allowed": true,
+    "zone_clarification": null,
+    "reuse_parsed_requirements": null,
+    "zone_reentry_plan": null,
+    "reuse_task_plan": null,
+    "db_scope_source": null,
+    "db_scope_reset": false,
+    "required_capabilities": null,
+    "capability_chain": null,
+    "entity_probe": null,
+    "messages": [
+     {
+      "__msg__": "human",
+      "content": "itam db에 유사어를 등록하려고 한다. 어떻게 해야 되냐?"
+     },
+     {
+      "__msg__": "ai",
+      "content": "itam db 에 유사어를 등록하려면 입력창에 기준 항목과 추가하려는 낱말을 함께 적으세요. 예를 들어 \"(항목)에 '(낱말)' 유사 단어를 추가해줘\"와 같은 형식으로 작성하면 됩니다.\n\n시스템은 이 내용을 분석하여 기준 항목을 찾습니다. 기준 항목을 찾을 수 있으면 등록을 진행하지만, 못 찾으면 방법을 안내합니다. 등록한 말은 모든 사용자에게 적용되며, DB 유사어는 폴스타와 자산관리 (ITAM) 가 함께 사용합니다.\n\n주의할 점은 DB 가 아닌 소스 (예: 제니퍼, 사내 문서) 를 언급하거나 소스 이름을 넣어 등록할 경우, DB 유사어에 넣지 않고 관리자가 설정 파일로 관리한다고 안내한다는 것입니다. 또한 뜻이 모호하면 등록하지 않고 다시 묻습니다. 등록 후 등록 결과가 확인되도록 하시고, 잘못 등록했으면 관리자에게 삭제를 요청하세요.\n\n아래 입력 예를 참고하세요.\n\n**입력 예**\n```text\nvcore, cpu, core은 동의어이다. 캐시에 등록하라.\nhostname에 '장비이름' 유사 단어를 추가해줘\n```\n형식:\n```text\n(항목)에 '(낱말)' 유사 단어를 추가해줘\n```\n\n**매뉴얼에서 보기**\n- [U-37 유사어 등록](/manual/user#u-37)"
+     }
+    ],
+    "thread_id": "45e5ec15-a8be-4790-ac28-bac653e46fa2",
+    "conversation_context": null,
+    "awaiting_approval": false,
+    "approval_context": null,
+    "approval_action": null,
+    "approval_modified_sql": null,
+    "user_id": "demo_user",
+    "user_department": "인프라운영팀",
+    "user_role": "user",
+    "allowed_db_ids": [
+     "polestar"
+    ],
+    "allowed_sources": [],
+    "request_id": null,
+    "client_ip": null,
+    "accessed_tables": [],
+    "execution_groups": null,
+    "group_results": null,
+    "group_packets": null,
+    "db_result_summary": null,
+    "db_executed_sqls": null,
+    "merged_ranking": null,
+    "merged_aggregates": null,
+    "empty_diagnosis": null,
+    "spike_notes": null,
+    "discovery_trace": null,
+    "scope_narrowed": null,
+    "disclosures": null,
+    "turn_disclosures": null,
+    "demonstrative_without_antecedent": false,
+    "unanchored_query_targets": [
+     "에이전트"
+    ],
+    "time_resolution": {
+     "version": 1,
+     "anchor_at": "2026-10-13T18:24:18.178098+09:00",
+     "metric": {
+      "start": "2026-09-01T00:00:00+09:00",
+      "end": "2026-10-01T00:00:00+09:00",
+      "grain": "month",
+      "completeness": "complete",
+      "source": "default",
+      "anchor_at": "2026-10-13T18:24:18.178098+09:00",
+      "span": "",
+      "unbounded": false,
+      "notes": [
+       "default_period"
+      ],
+      "anchor": "now",
+      "label": "2026-09-01 ~ 2026-09-30"
+     },
+     "event": {
+      "start": null,
+      "end": null,
+      "grain": "month",
+      "completeness": "complete",
+      "source": "default",
+      "anchor_at": "2026-10-13T18:24:18.178098+09:00",
+      "span": "",
+      "unbounded": true,
+      "notes": [
+       "event_no_default_period"
+      ],
+      "anchor": "now",
+      "label": "전체 보관 기간(기간 조건 없음)"
+     },
+     "clarify": null,
+     "slot_status": "absent",
+     "slot_reason": null,
+     "present": false
+    },
+    "final_response": "itam db 에 유사어를 등록하려면 입력창에 기준 항목과 추가하려는 낱말을 함께 적으세요. 예를 들어 \"(항목)에 '(낱말)' 유사 단어를 추가해줘\"와 같은 형식으로 작성하면 됩니다.\n\n시스템은 이 내용을 분석하여 기준 항목을 찾습니다. 기준 항목을 찾을 수 있으면 등록을 진행하지만, 못 찾으면 방법을 안내합니다. 등록한 말은 모든 사용자에게 적용되며, DB 유사어는 폴스타와 자산관리 (ITAM) 가 함께 사용합니다.\n\n주의할 점은 DB 가 아닌 소스 (예: 제니퍼, 사내 문서) 를 언급하거나 소스 이름을 넣어 등록할 경우, DB 유사어에 넣지 않고 관리자가 설정 파일로 관리한다고 안내한다는 것입니다. 또한 뜻이 모호하면 등록하지 않고 다시 묻습니다. 등록 후 등록 결과가 확인되도록 하시고, 잘못 등록했으면 관리자에게 삭제를 요청하세요.\n\n아래 입력 예를 참고하세요.\n\n**입력 예**\n```text\nvcore, cpu, core은 동의어이다. 캐시에 등록하라.\nhostname에 '장비이름' 유사 단어를 추가해줘\n```\n형식:\n```text\n(항목)에 '(낱말)' 유사 단어를 추가해줘\n```\n\n**매뉴얼에서 보기**\n- [U-37 유사어 등록](/manual/user#u-37)",
+    "output_file": null,
+    "output_file_name": null,
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "portal_help",
+      "sub_query": "itam db에 유사어를 등록하려고 한다. 어떻게 해야 되냐?",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed",
+      "areas": [],
+      "requested_source": "itam"
+     }
+    ],
+    "task_results": {
+     "t1": {
+      "final_response": "itam db 에 유사어를 등록하려면 입력창에 기준 항목과 추가하려는 낱말을 함께 적으세요. 예를 들어 \"(항목)에 '(낱말)' 유사 단어를 추가해줘\"와 같은 형식으로 작성하면 됩니다.\n\n시스템은 이 내용을 분석하여 기준 항목을 찾습니다. 기준 항목을 찾을 수 있으면 등록을 진행하지만, 못 찾으면 방법을 안내합니다. 등록한 말은 모든 사용자에게 적용되며, DB 유사어는 폴스타와 자산관리 (ITAM) 가 함께 사용합니다.\n\n주의할 점은 DB 가 아닌 소스 (예: 제니퍼, 사내 문서) 를 언급하거나 소스 이름을 넣어 등록할 경우, DB 유사어에 넣지 않고 관리자가 설정 파일로 관리한다고 안내한다는 것입니다. 또한 뜻이 모호하면 등록하지 않고 다시 묻습니다. 등록 후 등록 결과가 확인되도록 하시고, 잘못 등록했으면 관리자에게 삭제를 요청하세요.\n\n아래 입력 예를 참고하세요.\n\n**입력 예**\n```text\nvcore, cpu, core은 동의어이다. 캐시에 등록하라.\nhostname에 '장비이름' 유사 단어를 추가해줘\n```\n형식:\n```text\n(항목)에 '(낱말)' 유사 단어를 추가해줘\n```\n\n**매뉴얼에서 보기**\n- [U-37 유사어 등록](/manual/user#u-37)",
+      "portal_help": {
+       "status": "ok",
+       "sections": [
+        "user:U-37"
+       ],
+       "reason": "",
+       "llm_calls": 1
+      },
+      "source_status": [
+       {
+        "system": "portal",
+        "label": "AIOps 포탈 매뉴얼",
+        "status": "ok",
+        "rows": 1,
+        "reason": ""
+       }
+      ]
+     }
+    },
+    "is_composite": false,
+    "prior_rows": null,
+    "prior_targets": null,
+    "dependency_notes": null,
+    "clarification_needed": null,
+    "plan_path": "portal_redirect",
+    "decompose_fallback": null,
+    "replan_count": 0,
+    "needs_replan": false,
+    "replan_history": [],
+    "request_deadline": 452469.230881583,
+    "orchestrator_round_sec": 7.628,
+    "replan_stop_notice": null,
+    "needs_plan": null,
+    "task_outcomes": []
+   }
+  }
+ ],
+ "complete": true
+}

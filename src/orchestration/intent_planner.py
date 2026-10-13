@@ -33,6 +33,7 @@ from src.prompts.intent_planner import (
     render_intent_planner_doc_template,
     render_intent_planner_environment_terms,
     render_intent_planner_ownership_template,
+    render_intent_planner_portal_template,
     render_intent_planner_task_frame_template,
 )
 from src.routing.db_scope import ZONE_GROUP_ONLY, ZONE_SELECTION_SCOPE_KEY
@@ -557,6 +558,33 @@ def _doc_command_plan(
     return _on_path(plan, DOC_COMMAND_PATH)
 
 
+def _portal_command_plan(
+    state: AgentState, app_config: AppConfig, user_query: str,
+) -> dict[str, Any] | None:
+    """포탈 도움말 명령 턴 — `portal_help` 단일 task(활성) 또는 안내만(비활성) · 아니면 None
+    (plans/142 §5 ③.9 · D-315 — 문서 검색 명령 ②.9와 같은 판정 재료·같은 모양).
+
+    양식·존·소스 선택 답변 턴은 판정하지 않는다(그 턴의 결정적 단락이 우선한다).
+    """
+    if (state.get("template_structure") or state.get("uploaded_file")
+            or state.get("selected_db_ids") or state.get("selected_sources")):
+        return None
+    from src.orchestration import portal_help  # 지연 — 순환 방지
+
+    command = portal_help.parse_portal_command(user_query, app_config)
+    if command is None:
+        return None
+    if not command.active:
+        logger.info("intent_planner: 포탈 도움말 명령 — 비활성 → 안내만(plans/142 ③.9)")
+        plan = _single_task_plan("general_inference", user_query)
+        plan["task_plan"][0]["direct_response"] = portal_help.inactive_notice(command.hint)
+        return _on_path(plan, portal_help.PORTAL_COMMAND_PATH)
+    logger.info("intent_planner: 포탈 도움말 명령 — portal_help 단일 task(plans/142 ③.9) 질의=%r",
+                command.query)
+    return _on_path(_single_task_plan(portal_help.PORTAL_HELP_AGENT, command.query),
+                    portal_help.PORTAL_COMMAND_PATH)
+
+
 def _restored_zone_reentry_plan(
     state: AgentState, selected_db_ids: list[str], *, agent: str | None = None,
 ) -> dict[str, Any] | None:
@@ -712,6 +740,13 @@ async def _plan_turn(
     if doc_plan is not None:
         return doc_plan
 
+    # ③.9 포탈 도움말 명령(plans/142 §5 · D-315) — 「AIOps 포탈에서 수신 알람을 설명해줘」처럼 등록
+    # 포탈 별칭(레지스트리 `solutions[portal]`)으로 지목하고 설명·검색을 명령하면 LLM 분해 없이
+    # portal_help 단일 task로 고정한다(②.9와 같은 판정 함수 · 데이터 요청 표지가 있으면 보류).
+    portal_plan = _portal_command_plan(state, app_config, user_query)
+    if portal_plan is not None:
+        return portal_plan
+
     # ②.4 소스 선택 칩 답변 턴(plans/132 N-10) — 비DB 소스를 골랐으면 LLM 분해 없이 그 처리기로
     # 결정적 고정한다(존 선택 ②.5와 같은 모양). DB 소스를 골랐으면 칩이 DB 선택지를 함께 보냈으므로
     # 아래 ②.5가 그대로 처리한다.
@@ -793,11 +828,21 @@ async def _plan_turn(
     decomposed = await _llm_decompose(
         llm, user_query, app_config, conversation_context=conversation_context
     )
+    from src.orchestration import portal_help  # 지연 — 순환 방지
+
+    # plans/142 W5 — 데이터 요청 표지가 있는 portal_help task 는 data_query 로 되돌린다.
+    # 알람·프로세스 교정 **앞**에 두어 알람 신호가 있으면 alarm_query 로 마저 교정되게 한다.
+    tasks = portal_help.coerce_portal_data_request(decomposed["tasks"], user_query)
     # 결정적 가드: 시간성 신호 없는 프로세스 조회는 실시간 API로 교정(D-041/D-046, 폴백 포함)
-    tasks = _coerce_alarm_intent(_coerce_process_intent(decomposed["tasks"]))
+    tasks = _coerce_alarm_intent(_coerce_process_intent(tasks))
     # Plan 78 W3-2(WU-18): 단건 호스트 조사를 중간 비용 경로로 교정.
     # 플래그 off면 no-op이다 — 프로세스/알람 교정 **뒤**에 두어 그 둘의 결과를 뒤집지 않는다.
     tasks = _coerce_host_inspect_intent(tasks, state, app_config)
+    # plans/142 G-5 (b) — 분해 LLM 이 포탈 기능 질문을 general_inference·cache_management
+    # 단일 task로 보냈으면 매뉴얼 검색 근거로 portal_help 로 되돌린다(좁은 결정적 판정 ·
+    # 비활성이면 no-op).
+    portal_redirected = portal_help.coerce_portal_redirect(
+        tasks, user_query, app_config, user_role=state.get("user_role"))
     result: dict = {
         "task_plan": tasks,
         "is_composite": len(tasks) > 1,
@@ -816,6 +861,8 @@ async def _plan_turn(
             for d in degraded if isinstance(d, dict) and d.get("detail")
         ]
     _record_decompose_fallback(result, decomposed, state, user_query)
+    if portal_redirected is not None:
+        return _on_path(result, portal_help.PORTAL_REDIRECT_PATH)
     return _on_path(result, "llm_decompose")
 
 
@@ -1254,17 +1301,35 @@ def _sanitize_task_views(result: dict[str, Any], app_config: AppConfig) -> None:
 
     구조화·JSON·폴백 모든 경로의 결과에 같은 규칙을 적용하려고 분해의 마지막 한 곳에서 한다.
     문서 task(`doc_query`)의 의존은 끊고 사유를 경과 노트로 남긴다(간선 없음 · plans/127 G-10).
+    포탈 도움말 task(`portal_help` · plans/142)도 같고, 사유 문구는 매뉴얼 답에 맞춘다.
     """
     from src.orchestration.conditional_agents import sanitize_task_views
 
     run_capture.emit("apm_plan_raw", result)  # 정제 전 원출력(plans/152 §3.6 — 수신기가 즉시 복사)
+    tasks = [t for t in result.get("tasks") or [] if isinstance(t, dict)]
+    agent_of = {str(t.get("task_id")): t.get("agent") for t in tasks}
+    edges = {str(t.get("task_id")): [*(t.get("depends_on") or []), *(t.get("input_from") or [])]
+             for t in tasks}
     cut = sanitize_task_views(result, app_config)
-    if cut:
+    if not cut:
+        return
+    # 끊긴 간선의 양 끝 담당으로 문구를 고른다(끊기 전 간선 기준)
+    involved = {agent_of.get(tid) for tid in cut}
+    involved |= {agent_of.get(str(d)) for tid in cut for d in edges.get(tid, [])}
+    portal_cut = "portal_help" in involved
+    if not portal_cut or "doc_query" in involved:
         logger.info("intent_planner: 문서 task 의존 제거(간선 없음 · plans/127) — %s", cut)
         result["degraded"] = list(result.get("degraded") or []) + [_degraded(
             "doc_task_dependency_cut",
             "문서 답은 다른 조회의 입력으로 쓰지 않았습니다"
             "(문서 검색과 다른 조회는 따로 답합니다).",
+        )]
+    if portal_cut:
+        logger.info("intent_planner: 포탈 도움말 task 의존 제거(간선 없음 · plans/142) — %s", cut)
+        result["degraded"] = list(result.get("degraded") or []) + [_degraded(
+            "portal_task_dependency_cut",
+            "매뉴얼 답은 다른 조회의 입력으로 쓰지 않았습니다"
+            "(포탈 기능 안내와 다른 조회는 따로 답합니다).",
         )]
 
 
@@ -1351,6 +1416,10 @@ def _planner_system_prompt(app_config: AppConfig) -> str:
             base, doc_query.render_agent_line(), doc_query.render_view_rows(app_config),
             doc_query.example_view(app_config),
         )
+    if "portal_help" in agents:
+        from src.orchestration import portal_help
+
+        base = _render_portal_prompt(base, portal_help.render_agent_line())
     return _render_planner_environment_terms(base, get_registry().environment_terms)
 
 
@@ -1395,6 +1464,12 @@ def _render_apm_prompt(base: str, agent_line: str, view_rows: str, source_line: 
 def _render_doc_prompt(base: str, agent_line: str, view_rows: str, example_view: str) -> str:
     """문서 라우팅 활성 렌더 캐시(plans/127 W2) — APM 렌더와 같은 규율(삽입만 · 기동 시 1회)."""
     return render_intent_planner_doc_template(base, agent_line, view_rows, example_view)
+
+
+@lru_cache(maxsize=8)
+def _render_portal_prompt(base: str, agent_line: str) -> str:
+    """포탈 도움말 활성 렌더 캐시(plans/142) — 문서 렌더와 같은 규율(삽입만 · 기동 시 1회)."""
+    return render_intent_planner_portal_template(base, agent_line)
 
 
 @lru_cache(maxsize=8)

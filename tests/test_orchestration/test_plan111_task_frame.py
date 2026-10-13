@@ -105,7 +105,11 @@ class TestPrompt:
         assert out.index(INTENT_PLANNER_TASK_FRAME_SECTION) < out.index("## 출력 형식\n")
 
     def test_off_is_byte_identical(self, mock_config):
+        from src.config import PortalHelpConfig
+
         mock_config.composite.task_frame_enabled = False
+        # 포탈 도움말(plans/142 · 기본 on)은 분해 프롬프트에 절을 삽입한다 — task 프레임만 본다
+        mock_config.portal_help = PortalHelpConfig(_env_file=None, enabled=False)
         # 기본 템플릿 + 답변 영역 칸(plans/132 N-5 — 항상 켜짐) + 환경어 자리 채움만
         # (plans/121 TP-11.2)
         from src.orchestration.intent_planner import _area_rows

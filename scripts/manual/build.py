@@ -6,7 +6,9 @@
 - ``fixtures/samples/*.json`` — 사례 입력·결과(실 실행 녹화 · 여기서만 가져온다 — 손으로 옮기지 않는다)
 - ``src/static/manual/img/*.png`` — capture.py 산출
 
-산출: ``src/static/manual/user.html`` · ``admin.html`` (커밋한다 — 배포 서버에 빌드 도구가 없어도 된다)
+산출: ``src/static/manual/user.html`` · ``admin.html`` · ``help_index.json``
+(커밋한다 — 배포 서버에 빌드 도구가 없어도 된다)
+- ``help_index.json`` — 채팅 포탈 기능 질의응답의 검색 색인(plans/142 §3.1 · ``build_help_index``)
 
 본문 형식::
 
@@ -35,11 +37,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import html
 import json
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import yaml
@@ -479,26 +483,36 @@ def _link_terms(h: str, terms: dict[str, tuple[str, str]]) -> str:
     return re.sub(r'(<span class="badge-n">\d+</span><span>)([^<]+?)( — |\(|</span>)', callout, h)
 
 
+def _blocks(text: str) -> Iterator[tuple[str | None, str, str]]:
+    """절 본문을 칸 단위로 나눈다 — (칸 종류, 인자, 본문).
+
+    칸 밖의 줄은 종류 None 으로 한 줄씩 낸다."""
+    lines, i = text.splitlines(), 0
+    while i < len(lines):
+        m = _DIRECTIVE.match(lines[i])
+        if not m:
+            yield None, "", lines[i]
+            i += 1
+            continue
+        j = i + 1
+        while j < len(lines) and lines[j].strip() != ":::":
+            j += 1
+        yield m.group(1), m.group(2).strip(), "\n".join(lines[i + 1 : j])
+        i = j + 1
+
+
 def render_section(fid: str, title: str, text: str) -> str:
     terms = _detail_terms(fid, text)
     term_list = _term_list(fid, text)
     detail_body: str | None = None
-    out, lines, i = [], text.splitlines(), 0
+    out: list[str] = []
     slots_seen = set()
     order: list[str] = []
     loose: list[str] = []
-    while i < len(lines):
-        m = _DIRECTIVE.match(lines[i])
-        if not m or m.group(1) == "":
-            loose.append(lines[i])
-            i += 1
+    for kind, arg, body in _blocks(text):
+        if kind is None:
+            loose.append(body)
             continue
-        kind, arg = m.group(1), m.group(2).strip()
-        j = i + 1
-        while j < len(lines) and lines[j].strip() != ":::":
-            j += 1
-        body = "\n".join(lines[i + 1 : j])
-        i = j + 1
         if kind in _LINKED_SLOTS:
             body = _expand_terms(fid, body, terms)
         if kind == "case":
@@ -550,25 +564,31 @@ def render_section(fid: str, title: str, text: str) -> str:
     )
 
 
+def _chapters(manual: str) -> tuple[str, list[tuple[str, str, list[tuple[str, str]]]]]:
+    """본문을 장·절로 나눈다 — (머리말, [(장 제목 줄, 장 도입, [(절 id, 절 본문)…])…])."""
+    text = (HERE / "content" / f"{manual}.md").read_text(encoding="utf-8")
+    preface, *chapters = re.split(r"^## ", text, flags=re.M)
+    out = []
+    for ch in chapters:
+        head, _, rest = ch.partition("\n")
+        intro, *secs = re.split(r"^### ", rest, flags=re.M)
+        parts = (s.partition("\n") for s in secs)
+        out.append((head, intro, [(sid.strip(), stext) for sid, _, stext in parts]))
+    return preface, out
+
+
 def build(manual: str) -> Path:
     feats = {
         f["id"]: f
         for f in yaml.safe_load((HERE / "features.yaml").read_text(encoding="utf-8"))[manual]
     }
-    text = (HERE / "content" / f"{manual}.md").read_text(encoding="utf-8")
-    chapters = re.split(r"^## ", text, flags=re.M)
-    preface, chapters = chapters[0], chapters[1:]
+    preface, chapters = _chapters(manual)
     toc, body, seen = [], [], []
-    for ch in chapters:
-        head, _, rest = ch.partition("\n")
+    for head, intro, secs in chapters:
         m = re.match(r"(\d+|부록)\.?\s*(.*)$", head.strip())
         ch_id = f"ch-{m.group(1)}" if m else f"ch-{len(toc)}"
-        parts = re.split(r"^### ", rest, flags=re.M)
-        intro, secs = parts[0], parts[1:]
         sub_toc, sec_html = [], []
-        for sec in secs:
-            sid, _, stext = sec.partition("\n")
-            sid = sid.strip()
+        for sid, stext in secs:
             if sid not in feats:
                 raise SystemExit(f"{manual}: features.yaml 에 없는 절 {sid}")
             seen.append(sid)
@@ -606,6 +626,164 @@ def build(manual: str) -> Path:
     path = OUT / f"{manual}.html"
     path.write_text(page, encoding="utf-8")
     return path
+
+
+# ── 기능 질의응답 색인 (plans/142 §3.1) ────────────────────────────────────
+# 같은 원천에서 HTML 과 함께 만든다(D-131 — 사본 원천 금지).
+# 평문은 HTML 렌더 규칙을 그대로 거친 뒤 태그만 뗀다.
+# 사례 입력 문장은 게재 판정(ok·partly)인 사례만 원문 그대로 싣는다(D-252 ⑤).
+
+HELP_INDEX = OUT / "help_index.json"
+_INDEX_SLOTS = ("what", "how", "ui", "caution")  # 절 청크 평문에 넣는 칸(원천 순서대로)
+_PUBLISHED = ("ok", "partly")
+# 「사용 방법」에서 입력 안내 줄로 보는 말 — 「적이 있는」 같은 오검출을 피하려 동사 꼴로 좁혔다
+_INPUT_HINTS = ("입력창", "보내", "적어", "적으", "적고", "물어", "물으")
+_QUOTE = re.compile(r"「([^「」]+)」")
+_BLOCK_END = re.compile(r"</(?:p|li|tr|h\d|div|table|ul|ol|summary|figure)>|<br\s*/?>")
+
+
+def _html_text(h: str) -> str:
+    """렌더된 HTML 을 평문으로 — 블록 끝은 줄바꿈, 표 칸은 공백, 나머지 태그는 뗀다."""
+    h = _BLOCK_END.sub("\n", h)
+    h = re.sub(r"</t[dh]>", " ", h)
+    h = html.unescape(re.sub(r"<[^>]+>", "", h))
+    lines = (re.sub(r"[ \t]+", " ", ln).strip() for ln in h.splitlines())
+    return "\n".join(ln for ln in lines if ln)
+
+
+def _published_queries(case_ids: list[str]) -> list[str]:
+    """사례 입력 문장(cases.yaml 원문) — 녹화 샘플이 게재 판정(ok·partly)인 사례만."""
+    cases = {
+        c["id"]: c
+        for c in yaml.safe_load((HERE / "cases.yaml").read_text(encoding="utf-8"))["cases"]
+    }
+    out: list[str] = []
+    for cid in case_ids:
+        path = SAMPLES / f"{cid}.json"
+        if not path.exists():
+            continue
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        verdict = (doc.get("review") or {}).get("verdict")
+        if doc.get("reviewed") is True and verdict in _PUBLISHED:
+            out += [t["query"] for t in cases[cid]["turns"]]
+    return out
+
+
+def _input_forms(how: str) -> list[str]:
+    """「사용 방법」의 입력 안내 줄에서 「…」 인용 구간을 원문 그대로 뽑는다.
+
+    중복은 빼고 순서는 지킨다."""
+    out: list[str] = []
+    for ln in how.splitlines():
+        if any(k in ln for k in _INPUT_HINTS):
+            out += [q for q in _QUOTE.findall(ln) if q not in out]
+    return out
+
+
+def _source_hash() -> str:
+    """색인 원천의 해시 — 본문 2권 · features.yaml · cases.yaml · 사례별 게재 판정."""
+    h = hashlib.sha256()
+    for rel in ("content/admin.md", "content/user.md", "cases.yaml", "features.yaml"):
+        h.update(rel.encode() + b"\0" + (HERE / rel).read_bytes() + b"\0")
+    for path in sorted(SAMPLES.glob("*.json")):
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        verdict = (doc.get("review") or {}).get("verdict")
+        h.update(f"{path.stem}={doc.get('reviewed')}:{verdict}\0".encode())
+    return h.hexdigest()
+
+
+def _chunk(
+    manual: str, kind: str, cid: str, sid: str, title: str, chapter: str, item: str, anchor: str,
+    text: str, aliases: list[str] | None = None, examples: list[str] | None = None,
+    input_forms: list[str] | None = None,
+) -> dict:
+    return {
+        "id": cid,
+        "manual": manual,
+        "kind": kind,
+        "section_id": sid,
+        "section_title": title,
+        "chapter": chapter,
+        "item": item,
+        "anchor": anchor,
+        "text": text,
+        "aliases": aliases or [],
+        "examples": examples or [],
+        "input_forms": input_forms or [],
+    }
+
+
+def _index_chunks(manual: str) -> list[dict]:
+    feats = {
+        f["id"]: f
+        for f in yaml.safe_load((HERE / "features.yaml").read_text(encoding="utf-8"))[manual]
+    }
+    chunks: list[dict] = []
+    _, chapters = _chapters(manual)
+    for head, _, secs in chapters:
+        chapter = head.strip()
+        for sid, stext in secs:
+            feat, terms = feats[sid], _detail_terms(sid, stext)
+            base = sid.lower()
+            texts, how, detail = [], "", None
+            for kind, _, body in _blocks(stext):
+                if kind == "detail":
+                    detail = body
+                if kind not in _INDEX_SLOTS:
+                    continue
+                if kind == "how":
+                    how = body
+                body = _expand_terms(sid, body, terms)
+                texts.append(_html_text(render_ui("-", body) if kind == "ui" else md(body)))
+            chunks.append(
+                _chunk(
+                    manual, "section", f"{manual}:{sid}", sid, feat["title"], chapter, "", base,
+                    "\n".join(t for t in texts if t),
+                    aliases=list(feat.get("aliases") or []),
+                    examples=_published_queries(feat.get("cases") or []),
+                    input_forms=_input_forms(how),
+                )
+            )
+            if detail is None:
+                continue
+            # 항목 앵커 번호는 render_detail 과 같다(소제목 t · 항목 k)
+            seen: set[str] = set()
+            for t, (topic, ttext) in enumerate(_split_heads(detail, "####")[1], 1):
+                intro, items = _split_heads(ttext, "#####")
+                if not items:  # 항목 없는 소제목 — 소제목 자체를 항목으로 둔다
+                    items, anchors = [(topic, intro)], [f"{base}-d-{t}"]
+                else:
+                    anchors = [f"{base}-d-{t}-{k}" for k in range(1, len(items) + 1)]
+                for (name, desc), anchor in zip(items, anchors, strict=True):
+                    item = _html_text(MD.renderInline(_bold(name)))
+                    cid = f"{manual}:{sid}:{item}"
+                    if cid in seen:  # 같은 절에 같은 이름의 항목이 또 있다 — 앵커로 구별한다
+                        cid = f"{cid}:{anchor}"
+                    seen.add(cid)
+                    chunks.append(
+                        _chunk(
+                            manual, "item", cid, sid, feat["title"], chapter, item, anchor,
+                            _html_text(md(desc)),
+                        )
+                    )
+    return chunks
+
+
+def help_index_json() -> str:
+    """현재 원천으로 만든 색인 JSON 문자열 — 같은 원천이면 바이트 동일.
+
+    가드 테스트가 커밋본과 비교한다."""
+    doc = {
+        "version": 1,
+        "source_hash": _source_hash(),
+        "chunks": _index_chunks("user") + _index_chunks("admin"),
+    }
+    return json.dumps(doc, ensure_ascii=False, indent=1) + "\n"
+
+
+def build_help_index() -> Path:
+    HELP_INDEX.write_text(help_index_json(), encoding="utf-8")
+    return HELP_INDEX
 
 
 TEMPLATE = """<!DOCTYPE html>
@@ -651,6 +829,7 @@ def main() -> None:
     manuals = [a for a in args if not a.startswith("--")] or ["user", "admin"]
     for m in manuals:
         print(build(m))
+    print(build_help_index())
 
 
 if __name__ == "__main__":

@@ -178,8 +178,9 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     env_file = _use_env_file(monkeypatch, tmp_path, "LLM_MODEL=from-file\n")
     response = await get_settings_schema(_ADMIN)
 
-    # plans/107 intent_frame +1 · plans/126 rag +1 · plans/160 result_viz +1
-    assert len(response.groups) == 27
+    # plans/107 intent_frame +1 · plans/126 rag +1 · plans/160 result_viz +1 ·
+    # plans/142 portal_help +1
+    assert len(response.groups) == 28
     assert response.env_file_path == str(env_file)
     items = {
         item.env_key: item
@@ -210,7 +211,8 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     # plans/153 W2 NOISE_INVESTIGATION_STORE_PATH·STORE_MAX_LINES +2 ·
     # plans/153 W4 NOISE_INVESTIGATION_EPISODE_CONTEXT_ENABLED +1 ·
     # plans/160 W2 RESULT_VIZ_{CHART,EXPLAIN}_ENABLED +2(신규 그룹 result_viz)
-    assert len(items) == 408
+    # plans/142 W3 PORTAL_HELP_ENABLED +1(신규 그룹 portal_help)
+    assert len(items) == 409
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -348,7 +350,7 @@ def test_t2_group_and_field_counts():
     """
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
-    assert len(group_keys) == 27  # plans/160 W2 result_viz +1
+    assert len(group_keys) == 28  # plans/160 W2 result_viz +1 · plans/142 W3 portal_help +1
     # plans/111 COMPOSITE_TASK_FRAME_ENABLED +1 · plans/103 TIER3_PLAN_LOOP_ENABLED +1 ·
     # plans/82 v7.1 API_SSE_GROUP_PREVIEW_ROWS +1 ·
     # plans/92 O4 OBS_METRICS_{ENDPOINT_ENABLED,BEARER_TOKEN} +2 ·
@@ -374,7 +376,8 @@ def test_t2_group_and_field_counts():
     # plans/153 W4 NOISE_INVESTIGATION_EPISODE_CONTEXT_ENABLED +1
     # (noise_gate 기존 그룹 — 그룹 수 불변) ·
     # plans/160 W2 RESULT_VIZ_{CHART,EXPLAIN}_ENABLED +2(신규 그룹 result_viz +1)
-    assert len(index) == 408
+    # plans/142 W3 PORTAL_HELP_ENABLED +1(신규 그룹 portal_help — 그룹 수 +1)
+    assert len(index) == 409
     # plans/103 TIER3_PLAN_LOOP_ENABLED +1 · plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1
     assert len([s for s in index.values() if s.group_key == "general"]) == 21
 

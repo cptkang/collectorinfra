@@ -23,7 +23,7 @@ import re
 
 import pytest
 
-from src.config import AppConfig, MultiDBConfig, RouterConfig
+from src.config import AppConfig, MultiDBConfig, PortalHelpConfig, RouterConfig
 from src.prompts import intent_planner as planner_prompts
 from src.prompts.semantic_router import (
     SEMANTIC_ROUTER_CAPABILITY_CHAIN_LINE,
@@ -49,6 +49,8 @@ def _cfg(*, ownership: bool, unknown: bool = False) -> AppConfig:
         router=RouterConfig(
             capability_ownership_enabled=ownership, unknown_enabled=unknown, two_stage_enabled=False
         ),
+        # 포탈 도움말(plans/142 · 기본 on)은 분해 프롬프트에 절을 삽입한다 — 소유 플래그만 본다
+        portal_help=PortalHelpConfig(_env_file=None, enabled=False),
     )
 
 
