@@ -40,7 +40,7 @@ from tests.test_orchestration.test_plan134_w567_body_verify import (
 
 _GW_TOKEN = "tok-chat-p147-w4"
 _MOCK_TOKEN = "tok-mock-p147-w4"
-_GATEWAY_SOURCES = ("bank", "common", "legacy", "newsrc")
+_GATEWAY_SOURCES = ("b0", "cm_prd", "cm_stg", "newsrc")
 _NEW = SourceSpec(id="newsrc", label="신규 제니퍼", zone="gongjon", terms=("신규",))
 
 
@@ -132,7 +132,7 @@ async def test_fourth_source_added_by_settings_only_is_available(real_gateway, a
                                                                  monkeypatch, caplog) -> None:
     """AC-4 — 게이트웨이 환경 변수 + 레지스트리 한 행만으로 4소스 사용 가능."""
     base = get_registry().sources_of(aq.APM_SYSTEM)
-    assert [s.id for s in base] == ["bank", "common", "legacy"], "전제: 레지스트리 3소스"
+    assert [s.id for s in base] == ["b0", "cm_prd", "cm_stg"], "전제: 레지스트리 3소스"
     monkeypatch.setattr(admin, "get_registry", lambda: _Registry((*base, _NEW)))
     with caplog.at_level(logging.INFO, logger="src.api.server"):
         report = await server._check_apm_sources(_app_config(real_gateway, _GW_TOKEN))
@@ -157,7 +157,7 @@ async def test_registry_only_and_gateway_only_through_real_gateway(real_gateway,
         report = await server._check_apm_sources(_app_config(real_gateway, _GW_TOKEN))
     assert report is not None and report.check_ok
     assert report.registry_only == ("ghost",) and report.gateway_only == ("newsrc",)
-    assert available["value"] == frozenset({"bank", "common", "legacy"})
+    assert available["value"] == frozenset({"b0", "cm_prd", "cm_stg"})
     (line,) = [r for r in caplog.records if r.name == "src.api.server"]
     assert line.levelno == logging.WARNING
     assert "미연결" in line.getMessage() and "ghost" in line.getMessage()

@@ -532,10 +532,10 @@ SCENARIOS_BY_NAME: dict = {s.name: s for s in SCENARIOS}
 # 받는다. 페이로드 모양은 게이트웨이 `domain/events.py::build_alarm_payload`를 **복제**한다 —
 # 이 패키지는 apm_gateway를 import하지 않는다(D-274 ③ 양방향 import 0). 계약이 바뀌면 여기도 고친다.
 # 존 짝: 폴스타 db_id와 제니퍼 소스가 같은 존이어야 상관 검증에 쓸 수 있다(config/db_registry.yaml
-# `solutions[apm].sources` — 공동존 제니퍼 `common` ↔ 공동존 김포 폴스타).
+# `solutions[apm].sources` — 공동존 운영 제니퍼 `cm_prd`(「김포」 · D-329) ↔ 공동존 김포 폴스타).
 XS_POLESTAR_DB_ID = "polestar_cm_gp"
 XS_JENNIFER_SOURCE = "jennifer"
-XS_JENNIFER_SOURCE_ID = "common"
+XS_JENNIFER_SOURCE_ID = "cm_prd"
 XS_JENNIFER_LABEL = "제니퍼"
 XS_TZ = "Asia/Seoul"
 XS_LIVE_LOOKBACK = timedelta(minutes=16)          # 라이브 주입 기준 시각(모든 alarmTime이 과거)

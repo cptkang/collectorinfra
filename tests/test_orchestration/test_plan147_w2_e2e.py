@@ -1,6 +1,6 @@
 """plans/147 W2 · AC-4 종단 — 4번째 소스를 설정(게이트웨이 `.env`)과 레지스트리 한 행만으로 붙인다.
 
-실프로세스: 목 Open API ↔ `python -m apm_gateway`(소스 4개 `bank`·`common`·`legacy`·`east` —
+실프로세스: 목 Open API ↔ `python -m apm_gateway`(소스 4개 `b0`·`cm_prd`·`cm_stg`·`east` —
 `JENNIFER_SOURCES` + 소스별 URL·토큰 환경 변수만) ↔ 실제 MCP SSE ↔ `run_apm_query`. 레지스트리는 실
 레지스트리에 `east` 한 행(단어 「동부」)을 더한 대역이다(코드 수정 0). 성립을 고정하는 것:
   - AC-1 단어 지목 — 「동부」면 `east`만 조회(모든 호출 `source_ids`) · 행 라벨 「동부 제니퍼」.
@@ -26,7 +26,7 @@ from tests.test_orchestration.test_plan147_w0_repro import (
 
 pytestmark = pytest.mark.apm_source_ladder
 
-SOURCES4 = ("bank", "common", "legacy", "east")
+SOURCES4 = ("b0", "cm_prd", "cm_stg", "east")
 EAST = SourceSpec("east", "동부 제니퍼", terms=("동부", "동부 제니퍼"))
 
 

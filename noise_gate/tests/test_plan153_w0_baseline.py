@@ -240,7 +240,7 @@ class TestTriggerPayloadBaseline:
 
     def test_apm_event_db_id_is_jennifer_source(self):
         # R-4 전제 — 제니퍼 트리거의 event.dbId는 폴스타 소스가 아니라 제니퍼 소스 id다.
-        assert _payload_cases()["jennifer_no_episode"]["event"]["dbId"] == "jennifer_common"
+        assert _payload_cases()["jennifer_no_episode"]["event"]["dbId"] == "jennifer_cm_prd"
 
     def test_golden_covers_every_case(self):
         golden = json.loads(PAYLOAD_GOLDEN.read_text(encoding="utf-8"))

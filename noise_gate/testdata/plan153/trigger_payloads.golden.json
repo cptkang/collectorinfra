@@ -2,7 +2,7 @@
   "jennifer_no_episode": {
     "contract_version": "1",
     "event": {
-      "dbId": "jennifer_common",
+      "dbId": "jennifer_cm_prd",
       "serverName": "xsapp01",
       "hostname": "xsapp01",
       "alarmId": "jennifer:p150q0000000001",
@@ -30,7 +30,7 @@
       "source": "collectorinfra",
       "hints": {
         "solution": "apm",
-        "source_id": "common",
+        "source_id": "cm_prd",
         "instance_id": 11,
         "domain_id": 1001,
         "event_type": "SERVICE_QUEUING",
@@ -41,7 +41,7 @@
   "jennifer_with_episode": {
     "contract_version": "1",
     "event": {
-      "dbId": "jennifer_common",
+      "dbId": "jennifer_cm_prd",
       "serverName": "xsapp01",
       "hostname": "xsapp01",
       "alarmId": "jennifer:p150q0000000001",
@@ -69,7 +69,7 @@
       "source": "collectorinfra",
       "hints": {
         "solution": "apm",
-        "source_id": "common",
+        "source_id": "cm_prd",
         "instance_id": 11,
         "domain_id": 1001,
         "event_type": "SERVICE_QUEUING",

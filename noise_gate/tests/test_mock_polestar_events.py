@@ -651,7 +651,7 @@ def test_jennifer_payload_shape_matches_gateway_contract():
     for p in jennifer:
         assert set(p) == _JENNIFER_TOP_KEYS
         assert set(p["apm"]) == _JENNIFER_APM_KEYS
-        assert p["dbId"] == "jennifer_common" and p["resourceType"] == "apm.Instance"
+        assert p["dbId"] == "jennifer_cm_prd" and p["resourceType"] == "apm.Instance"
         assert p["apm"]["event_type_norm"] == mpe.normalize_event_type(p["alarmName"])
         assert p["severity"] == mpe.JENNIFER_LEVEL_SEVERITY[p["apm"]["level"]]
         assert p["alarmId"] == f"jennifer:{p['apm']['idempotency_key'][:16]}"

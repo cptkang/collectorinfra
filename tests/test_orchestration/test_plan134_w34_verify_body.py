@@ -121,7 +121,7 @@ _PATHS = [
      {"targets": [{"text": "주문", "kind": "auto"}]}),
     ("fleet", ["apm.ranking", "apm.fleet_events"], (), {}),
     ("first-hop", ["apm.pool"], (), {}),
-    ("sources", ["apm.app_health"], ("web01", "web02"), {"sources": ["bank"]}),
+    ("sources", ["apm.app_health"], ("web01", "web02"), {"sources": ["b0"]}),
 ]
 
 

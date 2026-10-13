@@ -53,8 +53,8 @@ def test_e1_placeholders_fill_every_prompt(placeholders: dv.Placeholders) -> Non
 
 def test_e1_answers_cover_registry_sources(placeholders: dv.Placeholders, registry) -> None:  # type: ignore[no-untyped-def]
     assert set(placeholders.answers) == set(registry.source_ids)
-    assert placeholders.source_for("inst_b") == "bank"
-    assert placeholders.source_for("inst_1") == placeholders.source_default == "common"
+    assert placeholders.source_for("inst_b") == "b0"
+    assert placeholders.source_for("inst_1") == placeholders.source_default == "cm_prd"
 
 
 def test_target_placeholder() -> None:
@@ -384,6 +384,16 @@ def test_collect_inventory_names_and_errors() -> None:
     assert hosts == {"a": ["h"]}  # 호스트 빈 행은 대응 없음
 
 
+def test_collect_inventory_unwraps_exception_group() -> None:
+    """MCP 클라이언트가 감싼 예외 묶음은 잎 예외 이름으로 남긴다(원인 판독 · W8 1회차)."""
+    def call_tool(name: str, args: dict) -> dict:
+        raise ExceptionGroup("unhandled errors in a TaskGroup", [TimeoutError()])
+
+    names, calls, errors = dv.collect_inventory(call_tool)
+    assert names == [] and calls == 2
+    assert errors == ["apm_instance_map:TimeoutError", "apm_business:TimeoutError"]
+
+
 def test_admin_token_uses_configured_operator(monkeypatch: pytest.MonkeyPatch) -> None:
     """인증이 켜진 본체(E2)의 설정 에코는 운영자 토큰이 있어야 열린다 — 설정 계정으로 받는다."""
     from scripts.scenario import client as sc
@@ -427,7 +437,7 @@ def test_e1_end_to_end(placeholders: dv.Placeholders) -> None:
     assert health["observed"]["apm_called"] and health["thread_id"]
     assert health["observed"]["targets"][0]["selected"] == ["was01_a"]
     assert any(c["tool"] == "apm_app_health" for c in health["observed"]["calls"])
-    assert health["extra"]["source_auto_answer"]["source"] == "common"  # 되묻기 자동 답
+    assert health["extra"]["source_auto_answer"]["source"] == "cm_prd"  # 되묻기 자동 답
     ask = by_key[("APM-SRC-none-all", 0)]
     assert ask["observed"]["clarify_kind"] == "source" and not ask["observed"]["apm_called"]
     assert "source_auto_answer" not in ask["extra"]  # 되묻기가 정답 — 답하지 않는다
@@ -435,3 +445,14 @@ def test_e1_end_to_end(placeholders: dv.Placeholders) -> None:
     assert answer["thread_id"] == ask["thread_id"]  # 같은 스레드
     assert answer["observed"]["apm_source_scope"]["ids"] == ["*"]
     assert answer["observed"]["apm_called"]
+
+
+def test_server_overrides_auth_off_by_default(tmp_path: Path) -> None:
+    """기본은 벤치 본체만 인증 끔 + 127.0.0.1 바인드 — 설정 에코로 검증되게 expected 에 싣는다(`--user`도 루프백)."""
+    proc = type("P", (), {"sse_url": "http://127.0.0.1:1/sse",
+                          "tokens": {gw.CHAT_PRINCIPAL: "t"}})()
+    expected, overrides = dv._server_overrides("e2", tmp_path, proc, None)  # type: ignore[arg-type]
+    assert expected["AUTH_ENABLED"] == "false" and expected["API_HOST"] == "127.0.0.1"
+    assert overrides["API_HOST"] == "127.0.0.1"
+    kept, _ = dv._server_overrides("e2", tmp_path, proc, None, keep_auth=True)  # type: ignore[arg-type]
+    assert "AUTH_ENABLED" not in kept and kept["API_HOST"] == "127.0.0.1"

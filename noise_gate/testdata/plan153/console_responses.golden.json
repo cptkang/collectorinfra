@@ -110,7 +110,7 @@
         "tier": "page",
         "reason": "신호 수집 실패 — 보수적 PAGE",
         "priority": 322,
-        "fingerprint": "96e51561b6c4d58025d143f7bf90b029b3b4bb44",
+        "fingerprint": "7fd18698e8560c8ed9f73c7d74fed44951dd199b",
         "signals": {
           "severity": 2,
           "ai_severity": null,
@@ -132,7 +132,7 @@
         "stage": "collection_failed",
         "alarm_name": "SERVICE_QUEUING",
         "server_name": "xsapp01",
-        "db_id": "jennifer_common",
+        "db_id": "jennifer_cm_prd",
         "resource_name": "xsapp01_was01",
         "stage_evidence": {
           "episode_id": "ep-p150fixture",
@@ -282,7 +282,7 @@
         "tier": "page",
         "reason": "신호 수집 실패 — 보수적 PAGE",
         "priority": 322,
-        "fingerprint": "96e51561b6c4d58025d143f7bf90b029b3b4bb44",
+        "fingerprint": "7fd18698e8560c8ed9f73c7d74fed44951dd199b",
         "signals": {
           "severity": 2,
           "ai_severity": null,
@@ -304,7 +304,7 @@
         "stage": "collection_failed",
         "alarm_name": "SERVICE_QUEUING",
         "server_name": "xsapp01",
-        "db_id": "jennifer_common",
+        "db_id": "jennifer_cm_prd",
         "resource_name": "xsapp01_was01",
         "condition_log": "서비스 큐잉 (value=41)",
         "stage_evidence": {
@@ -462,7 +462,7 @@
       "tier": "page",
       "reason": "신호 수집 실패 — 보수적 PAGE",
       "priority": 322,
-      "fingerprint": "96e51561b6c4d58025d143f7bf90b029b3b4bb44",
+      "fingerprint": "7fd18698e8560c8ed9f73c7d74fed44951dd199b",
       "signals": {
         "severity": 2,
         "ai_severity": null,
@@ -484,7 +484,7 @@
       "stage": "collection_failed",
       "alarm_name": "SERVICE_QUEUING",
       "server_name": "xsapp01",
-      "db_id": "jennifer_common",
+      "db_id": "jennifer_cm_prd",
       "resource_name": "xsapp01_was01",
       "condition_log": "서비스 큐잉 (value=41)",
       "stage_evidence": {

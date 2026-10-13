@@ -26,6 +26,7 @@ mlx · 루프백 · `mlx_run_blockers` 통과일 때만 · D-240). E2 는 본체
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import os
 import shutil
@@ -80,6 +81,9 @@ INVENTORY_CALLS: tuple[tuple[str, dict[str, Any], tuple[str, ...]], ...] = (
     ("apm_instance_map", {}, ("instance_name", "domain_name", "host_name")),
     ("apm_business", {"mode": "list"}, ("business_name", "domain_name")),
 )
+#: 인벤토리 도구 1회 상한(초) — 도메인마다 1호출 · 벤치 게이트웨이 초당 2회라 운영 규모(수백 도메인)는
+#: 수 분 걸린다. 도구 기본 60초면 끊겨 원이름 대조 집합이 빈다(W8 1회차 실측).
+INVENTORY_TIMEOUT_SEC = 900.0
 LLM_CHOICES = ("fake", "mlx")
 #: `--llm mlx` 기본 주소·모델(`scripts/mlx_server.sh` 기본 · 모델 별칭은 서버 `--model`로 매핑).
 MLX_DEFAULT_URL = "http://127.0.0.1:8080/v1"
@@ -497,6 +501,13 @@ def mlx_blockers(base_url: str, model: str, *,
     return out
 
 
+def _leaf_error(exc: BaseException) -> str:
+    """예외 이름 — MCP 클라이언트가 감싼 `ExceptionGroup`은 첫 잎 예외까지 푼다(원인이 보이게)."""
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    return type(exc).__name__
+
+
 def collect_inventory(
     call_tool: CallTool, *, hosts: dict[str, list[str]] | None = None
 ) -> tuple[list[str], int, list[str]]:
@@ -519,7 +530,7 @@ def collect_inventory(
         try:
             envelope = call_tool(tool, dict(args))
         except Exception as exc:  # noqa: BLE001 — 수집 하나의 실패가 run 을 막지 않는다
-            errors.append(f"{tool}:{type(exc).__name__}")
+            errors.append(f"{tool}:{_leaf_error(exc)}")
             continue
         if envelope.get("error"):
             errors.append(f"{tool}:{envelope.get('error')}")
@@ -703,8 +714,17 @@ def _measure_baseline(gateway_proc: gw.GatewayProc, audit: gw.AuditTail, feed: G
     return elapsed
 
 
+#: 벤치 본체 인증 끔 — 벤치 본체는 벤치 전용 인스턴스라 127.0.0.1 에만 연다. 재는 것은 보기·대상·
+#: 구간·인자 선택 정확도이고, 익명 사용자는 소스 제한 없음(`allowed_sources=None`)이라 전체 권한
+#: 사용자와 같은 경로를 탄다. 운영 계정·비밀번호가 필요 없다(`--user`를 주면 `.env` 인증 그대로).
+#: 벤치 본체는 `--user`(인증 유지)여도 루프백에만 연다.
+LOOPBACK_ENV = {"API_HOST": "127.0.0.1"}
+NO_AUTH_ENV = {"AUTH_ENABLED": "false", **LOOPBACK_ENV}
+
+
 def _server_overrides(env: str, session: Path, gateway_proc: gw.GatewayProc,
                       llm_url: str | None, llm_model: str | None = None,
+                      keep_auth: bool = False,
                       ) -> tuple[dict[str, str], dict[str, str]]:
     """(검증할 프로파일 주입값, 전체 주입값)."""
     from scripts.scenario.catalog import load_profiles
@@ -712,7 +732,8 @@ def _server_overrides(env: str, session: Path, gateway_proc: gw.GatewayProc,
 
     from ._serve import CAPTURE_ENV
 
-    expected = {**ISOLATION_ENV, **load_profiles()[PROFILE]}
+    expected = {**ISOLATION_ENV, **load_profiles()[PROFILE],
+                **(LOOPBACK_ENV if keep_auth else NO_AUTH_ENV)}
     overrides = {
         **expected,
         "CHECKPOINT_DB_URL": str(session / "checkpoints.db"),
@@ -772,6 +793,8 @@ def run(
     mlx_model: str | None = None,
     mlx_check: Callable[[str, str], list[str]] | None = None,
     say: Callable[[str], None] = print,
+    user_id: str | None = None,
+    password: str | None = None,
 ) -> tuple[list[TurnRecord], dict[str, Any]]:
     """시나리오를 2단 본체로 돌려 턴 레코드와 run 메타를 돌려준다.
 
@@ -789,6 +812,8 @@ def run(
         mlx_url · mlx_model: `llm="mlx"` 주소·모델(기본 `MLX_DEFAULT_URL`·`MLX_DEFAULT_MODEL`)
         mlx_check: (주소, 모델) → 막는 사유(테스트 주입 · None = `mlx_blockers`)
         say: 진행 출력
+        user_id · password: 인증이 켜진 본체의 질의 로그인 계정(None = 내장 테스트 계정 —
+            운영 인증 DB 에는 없을 수 있다)
 
     Raises:
         ValueError: 뷰 서버 버전 미달·미입력(E2) · E2 에 `out_dir` · E2 에 `llm="mlx"`
@@ -878,9 +903,14 @@ def run(
         feed = GuardFeed(audit, guard, on_abort)
         _measure_baseline(gateway_proc, audit, feed, say)
         instance_hosts: dict[str, list[str]] = {}
-        names, inv_calls, inv_errors = collect_inventory(gateway_proc.call_tool,
-                                                         hosts=instance_hosts)
+        names, inv_calls, inv_errors = collect_inventory(
+            functools.partial(gateway_proc.call_tool, timeout_sec=INVENTORY_TIMEOUT_SEC),
+            hosts=instance_hosts)
         feed.pump()
+        if env == "e2" and not names:
+            # 원이름 대조 집합이 비면 누출 관문이 자리표 값만 본다 — 반출본 안전을 보장 못 한다
+            raise RuntimeError("인벤토리 이름 0개 — 누출 관문 원이름 대조 집합이 비어 실행하지 "
+                               f"않는다({', '.join(inv_errors) or '목록 빈 응답'})")
         meta["inventory_names"] = names  # 관문 원이름 대조 집합 — 호출 측이 run.json 에서 뺀다
         meta["inventory"] = {"calls": inv_calls, "names": len(names), "errors": inv_errors}
         say(f"      인벤토리 이름 {len(names)}개(도구 {inv_calls}회"
@@ -892,7 +922,9 @@ def run(
             llm_url = fake.start()
         elif env == "e1":
             llm_url, llm_model = mlx_url, mlx_model
-        expected, overrides = _server_overrides(env, session, gateway_proc, llm_url, llm_model)
+        expected, overrides = _server_overrides(env, session, gateway_proc, llm_url, llm_model,
+                                                keep_auth=bool(user_id))
+        meta["auth"] = "user_login" if user_id else "off_local_bench"
         # 평면 = 실제로 답한 LLM. 가짜 LLM 은 본체에 mlx 프로토콜로 붙지만 MLX 모델이 아니다 —
         # `fake`로 적어 run 대조(`loop.directional_reasons`)가 MLX 결과로 읽지 않게 한다
         meta["planes"] = ({"worker": "fake", "orchestrator": "fake"} if fake is not None else
@@ -914,17 +946,19 @@ def run(
             raise RuntimeError("기동 검증 실패: " + "; ".join(status.reasons))
         say(f"      사다리 확정: {status.tier} (사유 {status.degraded_reason})")
         token: str | None = None
+        login_id = user_id or DEFAULT_USER_ID
+        login_password = (password or "") if user_id else DEFAULT_USER_PASSWORD
         if status.auth_enabled:
             login_client = _bench_client_class()(ClientConfig(port=port))
             try:
-                token, error = login_client.login(DEFAULT_USER_ID, DEFAULT_USER_PASSWORD)
+                token, error = login_client.login(login_id, login_password)
             finally:
                 login_client.close()
             if not token:
                 raise RuntimeError(f"로그인 실패: {(error or '')[:200]}")
         source = TokenSource(
             token=token,
-            relogin=(user_relogin(port, DEFAULT_USER_ID, DEFAULT_USER_PASSWORD)
+            relogin=(user_relogin(port, login_id, login_password)
                      if status.auth_enabled else None),
             lifetime_sec=jwt_lifetime_sec(), issued_at=time.monotonic())
         client = _bench_client_class()(ClientConfig(

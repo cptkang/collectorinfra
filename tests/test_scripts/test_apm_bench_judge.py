@@ -343,14 +343,14 @@ def test_fewshot_copy_on_failed_required_arg_clarify(registry, real) -> None:
 
 
 def test_source_select(registry) -> None:
-    s, r = _base(registry, "공동존 제니퍼에서 {{inst_c}} 최근 30분 응답시간", target="inst:c",
-                 apm_sources=("common",))
-    r["observed"]["calls"][0]["sources"] = ["bank"]
+    s, r = _base(registry, "공동존 운영 제니퍼에서 {{inst_c}} 최근 30분 응답시간", target="inst:c",
+                 apm_sources=("cm_prd",))
+    r["observed"]["calls"][0]["sources"] = ["b0"]
     v = _judge(s, r, registry)
     assert v["categories"] == ["source_select"] and v["fewshot_fixable"] is None
-    assert "sources:common" in v["locus"]
+    assert "sources:cm_prd" in v["locus"]
     # 「전체」(`*`) 승계는 레지스트리 소스 전부로 편다
-    s, r = _base(registry, "{{inst_1}}", apm_sources=("bank", "common", "legacy"))
+    s, r = _base(registry, "{{inst_1}}", apm_sources=("b0", "cm_prd", "cm_stg"))
     for c in r["observed"]["calls"]:
         c["sources"] = []
     r["observed"]["apm_source_scope"] = {"ids": ["*"], "basis": "all"}

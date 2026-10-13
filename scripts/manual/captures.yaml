@@ -231,7 +231,7 @@ captures:
       - click: "#sendBtn"
       - wait: ".apm-source-clarify"
       - wait_answer: null
-      - check: ".apm-source-clarify input[value='common']"
+      - check: ".apm-source-clarify input[value='cm_prd']"
     clip: ".chat-main"
     pad: 0
     callouts: [[1, ".apm-source-clarify .zone-clarify-items"], [2, ".apm-source-clarify .zone-clarify-confirm"], [3, "#apmScopePick"]]
@@ -246,7 +246,7 @@ captures:
       - click: "#sendBtn"
       - wait: ".apm-source-clarify"
       - wait_answer: null
-      - check: ".apm-source-clarify input[value='common']"
+      - check: ".apm-source-clarify input[value='cm_prd']"
       - click: ".apm-source-clarify .zone-clarify-confirm"
       - wait: "#apmScopeChip[data-state='selected']"
       - wait_answer: null
@@ -266,7 +266,7 @@ captures:
       - wait: "#apmScopeChip:not([hidden])"
       - click: "#apmScopePick"
       - wait: "#apmScopePopover:not([hidden])"
-      - check: "#apmScopePopover input[value='common']"
+      - check: "#apmScopePopover input[value='cm_prd']"
       - wait: 300
     clip: ".chat-main"
     pad: 0

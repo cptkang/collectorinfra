@@ -1820,12 +1820,12 @@
       - apm.pool
       target: ref
       window: current
-- id: APM-SRC-common
+- id: APM-SRC-cm-prd
   split: dev
   covers:
   - COV-RT-INSTANCE
   turns:
-  - prompt: 공동존 제니퍼에서 {{inst_c}} 최근 30분 응답시간
+  - prompt: 공동존 운영 제니퍼에서 {{inst_c}} 최근 30분 응답시간
     expect:
       agents:
       - apm_query
@@ -1834,7 +1834,8 @@
       target: inst:c
       window: range:30
       apm_sources:
-      - common
+      - cm_prd
+    note: 「공동존 운영 제니퍼」 = cm_prd 소스 단어(긴 단어 우선 — 안의 「운영」은 따로 세지 않는다)
 - id: APM-SRC-legacy
   split: dev
   covers:
@@ -1849,34 +1850,35 @@
       target: none
       window: none
       apm_sources:
-      - legacy
+      - b0
+    note: 「레거시 제니퍼」 = b0 소스 단어(은행 제니퍼 — legacy 소스는 폐지돼 b0에 합쳐졌다)
 - id: APM-SRC-ambiguous
   split: dev
   covers:
   - COV-RT-INSTANCE
   turns:
-  - prompt: 은행 쪽 {{inst_b}} 응답시간 30분
+  - prompt: 김포랑 여의도 {{inst_c}} 응답시간 30분
     expect:
       agents:
       - apm_query
       views:
       - apm.app_health
-      target: inst:b
+      target: inst:c
       window: range:30
       clarify: source
-    note: 「은행」 = bank·legacy 둘 다 → 되묻기가 정답
-  - prompt: 은행존 제니퍼
+    note: 「김포」 = cm_prd · 「여의도」 = cm_stg — 걸린 소스 둘 → 되묻기가 정답(선택지 = 걸린 소스)
+  - prompt: 공동존 운영
     reply_to: source
     expect:
       agents:
       - apm_query
       views:
       - apm.app_health
-      target: inst:b
+      target: inst:c
       window: range:30
       apm_sources:
-      - bank
-    note: 「은행존」만 답하면 bank·legacy 둘 다라 다시 되묻는다 — 긴 단어 우선(D-322 부기 ① 단2)으로 bank 하나
+      - cm_prd
+    note: 「공동존 운영」 글 답 = cm_prd 하나(「공동존」 단독은 어느 소스 단어도 아니라 글 답으로 읽히지 않는다)
 - id: APM-SRC-none-all
   split: dev
   covers:
@@ -1902,15 +1904,15 @@
       target: none
       window: none
       apm_sources:
-      - bank
-      - common
-      - legacy
+      - b0
+      - cm_prd
+      - cm_stg
 - id: APM-SRC-inherit
   split: dev
   covers:
   - COV-EVENT
   turns:
-  - prompt: 공동존 {{inst_c}} 최근 1시간 이벤트
+  - prompt: 김포 {{inst_c}} 최근 1시간 이벤트
     expect:
       agents:
       - apm_query
@@ -1919,7 +1921,8 @@
       target: inst:c
       window: range:60
       apm_sources:
-      - common
+      - cm_prd
+    note: 「김포」 = cm_prd 소스 단어 · inst_c는 cm_prd 인스턴스(「공동존」 단독은 무지목이라 되묻는다)
   - prompt: 느린 거래도 10분치
     expect:
       agents:
@@ -1929,8 +1932,8 @@
       target: ref
       window: range:10
       apm_sources:
-      - common
-    note: 소스 승계 — 되묻기 없이 common
+      - cm_prd
+    note: 소스 승계 — 되묻기 없이 cm_prd
 - id: APM-CROSS-host-cpu-heap
   split: dev
   covers:

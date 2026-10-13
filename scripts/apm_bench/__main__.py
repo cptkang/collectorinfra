@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -213,12 +214,30 @@ def make_run_id(env: str, sha: str, now: datetime | None = None) -> str:
     return f"{stamp}-{env}-{sha[:7]}"
 
 
-def run_user_values() -> dict[str, str | None]:
+#: `--user` 계정 비밀번호 환경변수 — 명령줄 인자로 받지 않는다(셸 이력·프로세스 목록 노출).
+PASSWORD_ENV = "APM_BENCH_PASSWORD"
+
+
+def run_user_values(login_id: str | None = None) -> dict[str, str | None]:
     """누출 관문 사용자 정보 원값(로그인 계정 · OS 사용자 · 호스트 · 홈)."""
     from scripts.scenario.runner import DEFAULT_USER_ID
 
-    return {"login_id": DEFAULT_USER_ID, "os_user": getpass.getuser(),
+    return {"login_id": login_id or DEFAULT_USER_ID, "os_user": getpass.getuser(),
             "host": socket.gethostname(), "home": str(Path.home())}
+
+
+def login_password(user: str | None) -> tuple[str | None, str | None]:
+    """(`--user` 비밀번호, 막는 사유) — 환경변수 → 대화형 프롬프트 순. 계정이 없으면 (None, None)."""
+    if not user:
+        return None, None
+    password = os.environ.pop(PASSWORD_ENV, None)  # 본체·게이트웨이 자식 env 로 넘기지 않는다
+    if password:
+        return password, None
+    if sys.stdin is not None and sys.stdin.isatty():
+        password = getpass.getpass(f"{user} 비밀번호: ")
+        if password:
+            return password, None
+    return None, f"--user {user} 의 비밀번호가 없다 — 환경변수 {PASSWORD_ENV} 또는 대화형 입력"
 
 
 def build_run_meta(meta: Mapping[str, Any], *, run_id: str, sha: str, dirty: bool,
@@ -425,16 +444,22 @@ def cmd_run(args: argparse.Namespace, *, judge_fn: Callable[..., object] | None 
     if not to_drive:
         say("[중단] 무거운 등급을 빼면 돌 시나리오가 없다(--skip-heavy)")
         return 1
+    user = getattr(args, "user", None)
+    password, blocked = login_password(user)
+    if blocked:
+        say(f"[중단] {blocked}")
+        return 2
     registry = sc.load_registry_info()
     probe_rows: list[dict[str, Any]] = []
     probe_fn = make_probe_fn(registry, placeholders.values, probe_rows) if args.probe else None
+    login = {"user_id": user, "password": password} if user else {}
     try:
         records, meta = (driver_run or driver.run)(
             to_drive, env=args.env, placeholders=placeholders,
             out_dir=Path(args.debug_raw) if args.debug_raw else None,
             view_server_version=args.view_server_version, judge_fn=judge_fn,
             probe_fn=probe_fn, llm=args.llm, mlx_url=args.mlx_url, mlx_model=args.mlx_model,
-            say=say)
+            say=say, **login)
     except driver.LLMBlockedError as exc:
         say(f"[중단] LLM 사전 점검 실패(--llm mlx 점검 · E2 과금 평면) — {exc}")
         return 2
@@ -483,7 +508,7 @@ def cmd_run(args: argparse.Namespace, *, judge_fn: Callable[..., object] | None 
     staged = hy.stage_outputs(clean.records, clean.run_meta, clean.probe_rows, coverage_md,
                               report_md)
     gate = hy.make_gate(inventory_names=names, placeholders=placeholders.values,
-                        user_values=run_user_values(), canaries=placeholders.canaries,
+                        user_values=run_user_values(user), canaries=placeholders.canaries,
                         sanitizer=sanitizer)
     out_dir = Path(args.out) if args.out else RESULTS_ROOT / run_id
     gate_ok, violations = hy.write_outputs(out_dir, staged, gate)
@@ -690,6 +715,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="--run E2 뷰 서버 버전(운영자 입력 · 5.6.2.18 이상)")
     parser.add_argument("--skip-heavy", action="store_true",
                         help="--run 무거운 등급 시나리오를 돌지 않는다(건너뜀 heavy_off)")
+    parser.add_argument("--user", default=None,
+                        help="--run 특정 채팅 계정 권한으로 잴 때만(기본 = 벤치 본체 인증 끔 · 127.0.0.1) · "
+                             f"비밀번호는 환경변수 {PASSWORD_ENV} 또는 프롬프트")
     parser.add_argument("--term-policy", default=None,
                         help="--run 일반 단어 허용 목록(기본 testdata/apm_bench/term_policy.yaml)")
     parser.add_argument("--turns", nargs="+", default=None, metavar="ID#N",

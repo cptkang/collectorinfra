@@ -323,7 +323,7 @@ few-shot 원문은 반출하지 않는다 — 같은 SHA에서 외부망이 그�
 - 2026-10-12 — 인터뷰 확정 · D-323 · 시나리오 초안 `testdata/apm_bench/scenarios.yaml` 생성(W1 일부 — 검수·로더·커버리지 검사기는 미착수).
   - 규모: 시나리오 121 · 턴 135(멀티턴 12묶음 — 행 지목 후속 · 소스 되묻기·승계) · dev 85 / holdout 36(30%) · heavy 5(전부 dev) · WAS 접촉 6(내부망 실행 3 · 나머지 3은 `e2_skip: was_touch_limit`) · 답할 수 없는 질문 3(거절이 정답) · 필수 인자 되묻기 1 · 교차 소스 2.
   - 생성 시 대조(1회용 생성기 — 저장소 밖): `spec/CAPABILITY-MAP-134.md` 표 A 40경로 · 표 B 실제 전달 선택 인자 26개 · 레지스트리 보기 29개 · 보기 인자 59개 모두 미커버 0 · 기대 인자 중 레지스트리에 없는 이름 0. 표 A 40경로 모두 dev·holdout 양쪽에 있다 — 단 `COV-ACTIVE-DETAIL`·`COV-ENV`·`COV-LOADED-CLASS`는 §3.7 API당 1회 제한 때문에 holdout 쪽이 외부망 전용이다.
-  - 실측 확인: 프롬프트 린트(도구명·보기명·`/api`·영문 인자 키·IP) 0건 · F1 예문 49개·F2/F3 프롬프트와 유사도 0.8 이상 0건 · `select_apm_sources`로 소스 시나리오 판정 일치(무지목·「은행」 = 되묻기, 「은행존 제니퍼」 = bank 하나, 승계 = common). 「은행존」만 답하면 bank·legacy 둘 다 걸려 다시 되묻는다 — 되묻기 답 턴은 「은행존 제니퍼」로 적었다.
+  - 실측 확인: 프롬프트 린트(도구명·보기명·`/api`·영문 인자 키·IP) 0건 · F1 예문 49개·F2/F3 프롬프트와 유사도 0.8 이상 0건 · `select_apm_sources`로 소스 시나리오 판정 일치(무지목·「은행」 = 되묻기, 「은행존 제니퍼」 = bank 하나, 승계 = common). 「은행존」만 답하면 bank·legacy 둘 다 걸려 다시 되묻는다 — 되묻기 답 턴은 「은행존 제니퍼」로 적었다. (D-329 이후 소스 id는 b0·cm_prd·cm_stg — plans/161)
 - 2026-10-12 — **W0 실측 재대조**(파일 변경 0 · 실 LLM 0).
   - §2 인용: 어긋남 1건(경미) — 감사 줄은 `interface/audit.py:55`가 **오류 갈래**(`error=`), 성공 갈래(`rows=`)는 `:70`이다(두 갈래 모두 `thread_id`). 나머지(허용 41템플릿 · 도구 25종 · 속도 5/타임아웃 10 · F1 보기 29/예문 보유 27/예문 49 · `apm_query.py`·`conditional_agents.py`·`intent_planner.py` 행 번호) 전부 일치. 소스 파일은 `src/orchestration/apm_query.py`.
   - 벤치 게이트웨이 「초당 2 · 폴러 끔」은 기존 env로 된다 — `JENNIFER_RATE_LIMIT_PER_SEC=2`(실측 최소 간격 0.48초) · `APM_EVENT_POLLER_ENABLED=false`(기본값). 게이트웨이 코드 변경 0.
@@ -335,7 +335,7 @@ few-shot 원문은 반출하지 않는다 — 같은 SHA에서 외부망이 그�
 - 2026-10-12 — **W1 완료**: `scripts/apm_bench/{__init__,__main__,scenarios}.py` · 테스트 52건 통과 · `--dry-run`·`--coverage` exit 0. 실측: 시나리오 121 · 턴 135 · dev 85/holdout 36(29.8%) · heavy 5(전부 dev) · was_touch 6(e2_skip 3) · 표 A 40/40 · 표 B 선택 인자 26/26 · 보기 29/29 · 보기 인자 59/59(미커버 0 · 표 B 제외 90행은 사유와 함께 출력). `scenarios.yaml` 수정 0건. 경고 3(위반 아님): `COV-ACTIVE-DETAIL`·`COV-ENV`·`COV-LOADED-CLASS`의 holdout은 외부망 전용. 결정: 되묻기 턴은 되물을 대상 보기를 `views`에 적을 수 있다(필수 인자 되묻기 판정에 필요) · 전 턴 거절 시나리오만 `covers: []` 허용 · `--coverage`는 분할 위반도 exit 1(§5 ①) · 허용 자리표에서 미사용 `{{src_N}}` 제외.
   - 모듈 계약: 턴 관측 레코드 `scripts/apm_bench/record.py`(팀 리드 — `TurnRecord`·`Observed`·`Verdict`).
 - 2026-10-12 — **W2 완료**(U층 드라이버): `driver.py`·`gateway.py`·`guard.py`·`fake_llm.py`·`_serve.py`·`placeholders.e1.yaml` · 본체 emit 3지점(+7줄: `investigation_audit.py` `_run` finally `investigation_result` · `intent_planner.py` 정제 직전 `apm_plan_raw` · `apm_query.py` `_retry_selection` `apm_view_reselect`) · 테스트 38건. E1 전 시나리오(가짜 LLM): 135턴 · APM 관측 108 · 2단 확정 · 중단 0 · 297초.
-  - 결정: 가짜 LLM = 127.0.0.1 OpenAI 호환 서버를 `mlx` 평면으로(분해 응답 기본값 = 기대값에서 만든 정답 계획 · 턴별 덮어쓰기 훅) · **뷰 서버 버전은 허용 API로 얻을 수 없다**(`Instance.version`은 에이전트 버전) → E2는 `--view-server-version` 운영자 입력 필수(미입력·5.6.2.18 미만 exit 2) · 예산 = 감사 줄 `api_calls` 소스별 합 · 타임아웃 비율 분모 하한 20 · 지연 3배는 절대 증가 200ms 하한 병행(목 지터) · 기준선 `gateway_health` 10시나리오마다 재측정 · 감시 스레드 0.5초 · E1은 레지스트리 3소스(bank·common·legacy)를 같은 목에 연결(소스 모호성 재현).
+  - 결정: 가짜 LLM = 127.0.0.1 OpenAI 호환 서버를 `mlx` 평면으로(분해 응답 기본값 = 기대값에서 만든 정답 계획 · 턴별 덮어쓰기 훅) · **뷰 서버 버전은 허용 API로 얻을 수 없다**(`Instance.version`은 에이전트 버전) → E2는 `--view-server-version` 운영자 입력 필수(미입력·5.6.2.18 미만 exit 2) · 예산 = 감사 줄 `api_calls` 소스별 합 · 타임아웃 비율 분모 하한 20 · 지연 3배는 절대 증가 200ms 하한 병행(목 지터) · 기준선 `gateway_health` 10시나리오마다 재측정 · 감시 스레드 0.5초 · E1은 레지스트리 3소스(b0·cm_prd·cm_stg — D-329 · plans/161)를 같은 목에 연결(소스 모호성 재현).
   - **제품 결함 발견(이 계획에서 고치지 않음)**: 분 단위 기간(「지난 30분」·「10분치」)이 `input_parser` 시간 해석에서 `clarify=unresolved`로 끝나 APM 처리기에 닿지 않는다(규칙이 분을 못 잡고 LLM 슬롯 `time_expr.unit`에 minute 없음 → `invalid_unit`) — E1 15턴.
 - 2026-10-12 — **W3 완료**(판정·분류·P층): `judge.py`·`probe.py` · 테스트 35건(분류 13종 각 1+ · 기대값 그대로의 관측 합성 시 전 턴 통과 자기 일관성). 보기 축 비교 대상 = 재선택 결과 또는 정제 뒤 계획(도구는 여러 보기가 공유) · 환각 제외 = `fixed_args`·`target_arg`·`reference`·보기 기본값·코드 채움 인자·창 인자 · P층은 같은 인자(봉투 window로 기간 키 복원) 재호출, 과거 고정 창만.
 - 2026-10-12 — **W4 완료**(위생·반출 관문): `hygiene.py`·`term_policy.yaml`(빈 목록 = 기본 거부) · 테스트 46건. ITAM `FakeValues`·`PiiVault`·`redact_text`·`LeakGate`·`write_gated` 재사용(ITAM 코드 변경 0). 토큰 단위 일관 치환 · GUID/txid 전용 형식 보존 생성기 · 가짜 값이 PII 정규식에 걸리면 재추첨(E1 실물에서 발견) · E1 실물 135턴: 근거 묶음 누락 0 · 관문 위반 0(40회 반복).
@@ -367,7 +367,7 @@ few-shot 원문은 반출하지 않는다 — 같은 SHA에서 외부망이 그�
 | `.env` | E1에는 필요 없다. 벤치가 본체 env를 직접 주입한다: 프로파일 `tier2_intent`, `ALARM_ENABLED=false`, 체크포인트·캡처 경로, `MCP_SOURCE_ENDPOINTS`·`MCP_SOURCE_TOKENS`의 APM 키, LLM 두 평면. 단 `--replay`와 `python -m scripts.bench`는 `.env`가 없으면 코드 기본값(워커 `ollama`·오케스트레이터 `vllm`)으로 읽으므로 평면 env를 **명령 앞에** 붙인다(§10.3 ⑥). `.env` 파일은 만들지 않는다 |
 | Redis·DB | 필요 없다. 본체는 Redis 연결에 실패하면 「파일 캐시로 폴백」 경고만 남기고, 게이트웨이의 Redis는 `REDIS_PORT=1`로 막혀 있다 |
 | 자동 기동 | `--run` 한 번으로 다음 순서로 띄운다: 목 Open API(E1) → 벤치 게이트웨이 → 가짜 LLM(E1 `--llm fake`) → 본체(`scripts.apm_bench._serve` — 측정 수신기 설치). 포트는 127.0.0.1 임시 포트이고 8000·8080·9096·9097·9099는 피한다. 끝나면 자기 PID만 내리고 세션 임시 디렉터리(`$TMPDIR/apm_bench_*`, 권한 0700)를 지운다. 스풀도 세션 안에 두므로 `apm_gateway/var`가 생기지 않는다. run 끝에 이를 검사해 남아 있으면 `[경고]`를 낸다 |
-| 벤치 게이트웨이 설정 | 자식 env를 벤치가 고정한다(`scripts/apm_bench/gateway.py` `gateway_env`). 부모 env의 `JENNIFER_*`·`APM_*`를 **모두 걷어낸 뒤** 다음 값을 넣는다: `JENNIFER_RATE_LIMIT_PER_SEC=2`(전역과 소스별 `JENNIFER_<ID>_RATE_LIMIT_PER_SEC`) · `JENNIFER_API_TIMEOUT_SECONDS=10`(전역·소스별) · `APM_EVENT_POLLER_ENABLED=false` · `APM_SPOOL_DIR=<세션>/spool` · `APM_GATEWAY_HOST=127.0.0.1`과 임시 포트 · `APM_GATEWAY_BEARER_TOKENS`에 주체 `chat`(본체)·`bench`(P층·기준선) · `REDIS_PORT=1`. E1은 소스 3개(bank·common·legacy)의 URL·토큰을 목 서버 값으로 채운다. E2는 URL·토큰을 넣지 않으므로 게이트웨이가 자기 `apm_gateway/.env`에서 읽는다. 그 로더는 이미 있는 키를 덮지 않으므로 속도·폴러·스풀은 벤치 값이 이긴다. 운영 게이트웨이 프로세스와 그 설정 파일은 건드리지 않는다 |
+| 벤치 게이트웨이 설정 | 자식 env를 벤치가 고정한다(`scripts/apm_bench/gateway.py` `gateway_env`). 부모 env의 `JENNIFER_*`·`APM_*`를 **모두 걷어낸 뒤** 다음 값을 넣는다: `JENNIFER_RATE_LIMIT_PER_SEC=2`(전역과 소스별 `JENNIFER_<ID>_RATE_LIMIT_PER_SEC`) · `JENNIFER_API_TIMEOUT_SECONDS=10`(전역·소스별) · `APM_EVENT_POLLER_ENABLED=false` · `APM_SPOOL_DIR=<세션>/spool` · `APM_GATEWAY_HOST=127.0.0.1`과 임시 포트 · `APM_GATEWAY_BEARER_TOKENS`에 주체 `chat`(본체)·`bench`(P층·기준선) · `REDIS_PORT=1`. E1은 소스 3개(b0·cm_prd·cm_stg — D-329)의 URL·토큰을 목 서버 값으로 채운다. E2는 URL·토큰을 넣지 않으므로 게이트웨이가 자기 `apm_gateway/.env`에서 읽는다. 그 로더는 이미 있는 키를 덮지 않으므로 속도·폴러·스풀은 벤치 값이 이긴다. 운영 게이트웨이 프로세스와 그 설정 파일은 건드리지 않는다 |
 
 **목·게이트웨이 수동 기동**(디버깅용 — 벤치와 같은 합성 픽스처·같은 벤치 env). 실측: 기동부터 도구 1회까지 1.7초, `apm_instance_map` 9행, 끝난 뒤 `apm_gateway/var` 없음.
 
@@ -378,7 +378,7 @@ from pathlib import Path
 from scripts.apm_bench import gateway as gw
 d = Path(tempfile.mkdtemp(prefix="apm_bench_manual_"))
 mock = gw.start_mock(gw.bench_fixtures(), "manual-mock-token", d / "fixtures")
-proc = gw.start_gateway(d, sources=["bank", "common", "legacy"], mock=mock)
+proc = gw.start_gateway(d, sources=["b0", "cm_prd", "cm_stg"], mock=mock)
 try:
     print(proc.sse_url, proc.call_tool("apm_instance_map", {}).get("row_count"))
 finally:
@@ -523,8 +523,8 @@ python -m pytest tests/test_scripts/test_apm_bench_capture.py tests/test_scripts
 2. 운영 인벤토리(제니퍼 콘솔 · 운영 게이트웨이의 인스턴스·업무·서비스 목록)에서 칸을 채운다.
    - `values`(16종 필수): `inst_1`·`inst_2`(일반 인스턴스 둘) · `inst_c`(공동존 소스 인스턴스) · `inst_b`(은행존 소스 인스턴스) · `inst_w`(**운영자가 지정한 WAS 접촉 허용 인스턴스 1개** — 실행 중 요청 상세·로드된 클래스·환경변수 대상) · `host_1`·`host_2`(WAS 호스트명 — `host_2`는 FQDN 형태 권장) · `biz_1`·`biz_2`(업무명) · `svc_1`·`svc_2`(서비스·도메인명) · `url_1`(애플리케이션 URL 하나) · `pid_1`(`host_1` 위 WAS 프로세스 PID) · `guid_1`(최근 거래 GUID 하나) · `user_1`(제니퍼 계정 하나 — 민감 API라 응답 모양만 기록) · `domain_id_1`(도메인 번호). 값은 모두 문자열로 쓴다(`"4242"`).
    - `any_values`: 기대 인자 `*` 중 레지스트리 허용값 선언이 없는 인자의 값이다. E1 가짜 LLM 전용이므로 E2에서는 견본 그대로 둬도 된다.
-   - `sources`: 소스 되묻기 자동 답. `default`(그 밖 대상의 소스 id)와 `by_placeholder`(`inst_b: bank` · `inst_c: common`처럼 자리표 → 소스 id).
-   - `answers`: 소스 id → 자동 답 문구. 라우트가 그 소스 하나로 읽는 말이어야 한다(「은행존」만 쓰면 bank·legacy 둘 다 걸려 다시 되묻는다 · D-322 부기 ①).
+   - `sources`: 소스 되묻기 자동 답. `default`(그 밖 대상의 소스 id)와 `by_placeholder`(`inst_b: b0` · `inst_c: cm_prd`처럼 자리표 → 소스 id).
+   - `answers`: 소스 id → 자동 답 문구. 라우트가 그 소스 하나로 읽는 말이어야 한다(D-322 부기 ①). D-329 확정 표는 소스 간 공유 단어가 0이라 그 소스의 `terms` 한 단어(예 b0 「은행 제니퍼」)면 하나로 읽힌다.
    - `canaries`: 누출 관문 카나리아. 운영 데이터에 절대 나오지 않을 고유 문자열 1~2개(예: 임의 난수 토큰)를 넣는다.
 3. 채움 검사(시나리오가 쓰는 자리표가 다 있는지 확인). 실측: E1 사본은 `필요 16 · 미등록 없음`으로 exit 0, 일부를 비운 파일은 미등록 15개 목록을 내고 exit 1.
 

@@ -816,7 +816,7 @@ class TestGateNodeAppImpact:
                 "lookback_minutes": 10,
                 "level": "fatal",
                 "investigation_id": "P-1",
-                "source_ids": ["common"],  # plans/87 J8 — 공동존 알람은 공동존 제니퍼 소스만
+                "source_ids": ["cm_prd", "cm_stg"],  # plans/87 J8 — 공동존 알람은 공동존 소스만(161)
             }
         ]
         assert out["noise_context"]["app_impact"] == {

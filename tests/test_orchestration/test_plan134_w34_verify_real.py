@@ -1,6 +1,6 @@
 """plans/134 W3·W4 독립 검증(verify-134-w34 · 2026-10-06) — 실프로세스 종단.
 
-합성 제니퍼 Open API(이 프로세스 스레드 · 127.0.0.1 임시 포트 · 소스 `bank`·`common` 각각 별도 서버
+합성 제니퍼 Open API(이 프로세스 스레드 · 127.0.0.1 임시 포트 · 소스 `b0`·`cm_prd` 각각 별도 서버
 · 별도 토큰) ↔ `python -m apm_gateway`(임시 포트 · 임시 스풀 · 폴러 꺼짐) ↔ 실제 MCP SSE ↔ 본체
 2단 노드(가짜 LLM 분해 → `agent_orchestrator` → `replanner` → `result_aggregator`).
 
@@ -62,7 +62,7 @@ _SCRIPTS = GW_ROOT / "testdata" / "jennifer" / "scripts"
 _CATALOG_FX = GW_ROOT / "testdata" / "jennifer" / "recorded" / "local-docker" / \
     "GET_api_metrics__ok.json"
 _GW_TOKEN = "tok-chat-v34-8Rq"
-_TOKENS = {"bank": "tok-bank-SECRET-v34-1Aa", "common": "tok-common-SECRET-v34-2Bb"}
+_TOKENS = {"b0": "tok-bank-SECRET-v34-1Aa", "cm_prd": "tok-common-SECRET-v34-2Bb"}
 #: 대상 해석·인벤토리 경로(데이터 조회 아님)
 _RESOLUTION_PATHS = {"/api/domain", "/api/instance", "/api/business", "/api/metrics"}
 #: 서비스(도메인) 이름 — 도메인 1·2·3은 이름으로 찾는 서비스, 나머지는 순위·이벤트 규모용
@@ -94,7 +94,7 @@ class _Model:
         self.delay: dict[str, float] = {}
         self.hits: list[dict] = []
         self.lock = threading.Lock()
-        base = 1 if sid == "bank" else 2
+        base = 1 if sid == "b0" else 2
         for k, host in enumerate(hosts, 1):  # 도메인 1(주문) — 이름 있는 서버
             self._add(1, 100 + k, f"{host}-was", host, rt=float(base * 1000 + k * 10))
         if hostless:  # 호스트 정합이 안 되는 인스턴스(hostName 빈 값)
@@ -350,8 +350,8 @@ class _Stack:
 
 
 def _models(hostless: bool = False) -> dict[str, _Model]:
-    return {"bank": _Model("bank", _TOKENS["bank"], hosts=_HOSTS, hostless=hostless),
-            "common": _Model("common", _TOKENS["common"], hosts=_HOSTS[:4])}
+    return {"b0": _Model("b0", _TOKENS["b0"], hosts=_HOSTS, hostless=hostless),
+            "cm_prd": _Model("cm_prd", _TOKENS["cm_prd"], hosts=_HOSTS[:4])}
 
 
 @pytest.fixture(scope="module")
@@ -493,13 +493,13 @@ async def test_e1_twelve_hosts_four_views_one_batch_each(live) -> None:
     audits = [a for a in stack.audits(mark) if "tool=apm_job" not in a]
     assert len(audits) == 4 and all("target=targets(12)" in a for a in audits), audits
     assert not any(h in a for a in audits for h in ("web07", "web12")), "감사에 대상 원문 없음"
-    # 게이트웨이 → 제니퍼: 대상마다 실시간 조회(도메인 1 · 그 인스턴스) · common 소스도 web01~04
-    rt_bank = stack.models["bank"].hits_of("/api/realtime/instance")
+    # 게이트웨이 → 제니퍼: 대상마다 실시간 조회(도메인 1 · 그 인스턴스) · cm_prd 소스도 web01~04
+    rt_bank = stack.models["b0"].hits_of("/api/realtime/instance")
     assert {h["query"].get("instance_id") for h in rt_bank} >= {str(100 + k) for k in range(1, 13)}
     # 대상별 복원 — 행·집계·출처가 대상별
     rows = state.get("query_results") or []
     health = [r for r in rows if r.get("response_time_avg_ms") is not None and "db_pool_active"
-              not in r and r.get("source_id") == "bank"]
+              not in r and r.get("source_id") == "b0"]
     by_host = {r["hostname"]: r["response_time_avg_ms"] for r in health}
     for k, host in enumerate(_HOSTS, 1):
         assert by_host.get(host) == 1000 + k * 10, (host, by_host)
@@ -536,7 +536,7 @@ async def test_e1_batch_partial_failure_is_per_target_not_zero(live) -> None:
 def _oracle(stack: _Stack, *, n: int, failed: set[tuple[str, int]] = frozenset(),
             domains: set[int] | None = None) -> list[tuple[str, int, int, float]]:
     """독립 오라클 — 합성 원천 값에서 직접 (값 내림차순 · 소스 순서 · 도메인 · 인스턴스)."""
-    order = {"bank": 0, "common": 1}
+    order = {"b0": 0, "cm_prd": 1}
     items = []
     for sid, model in stack.models.items():
         for d, recs in model.realtime.items():
@@ -550,22 +550,22 @@ def _oracle(stack: _Stack, *, n: int, failed: set[tuple[str, int]] = frozenset()
 
 async def test_e2_ranking_provisional_and_independent_oracle(live) -> None:
     stack, rec = live
-    stack.models["bank"].fail["/api/realtime/instance"].add(50)
+    stack.models["b0"].fail["/api/realtime/instance"].add(50)
     try:
         state = await _turn(stack, "전체 WAS 중 응답시간 가장 느린 7개",
                             _task(["apm.ranking"], view_args={"apm.ranking": {"n": 7}}))
     finally:
-        stack.models["bank"].fail["/api/realtime/instance"].discard(50)
+        stack.models["b0"].fail["/api/realtime/instance"].discard(50)
     res = _apm_result(state)
     (args,) = rec.named("apm_fleet")
     assert args["mode"] == "ranking" and args["n"] == 7 and "targets" not in args
-    rt = stack.models["bank"].hits_of("/api/realtime/instance") + \
-        stack.models["common"].hits_of("/api/realtime/instance")
+    rt = stack.models["b0"].hits_of("/api/realtime/instance") + \
+        stack.models["cm_prd"].hits_of("/api/realtime/instance")
     assert len(rt) == 2 * _DOMAINS, "도메인마다 1호출 × 소스 2"
     assert all("instance_id" not in h["query"] for h in rt)
     got = [(r["source_id"], r["domain_id"], r["instance_id"], r["value"])
            for r in res["query_results"]]
-    assert got == _oracle(stack, n=7, failed={("bank", 50)}), got
+    assert got == _oracle(stack, n=7, failed={("b0", 50)}), got
     block = _judgement_block(_final(state))
     assert "잠정 순위 — 조회 실패 도메인 1곳 제외" in block, _final(state)[-3000:]
     assert "전체 인스턴스" in block and "상위 7" in block
@@ -612,7 +612,7 @@ def _event(d: int, iid: int, t: int, level: str, etype: str = "ERROR_SERVICE_QUE
 async def test_e3_fleet_events_api_path_failed_domain_is_not_zero(live) -> None:
     stack, rec = live
     now = int(time.time() * 1000)
-    bank, common = stack.models["bank"], stack.models["common"]
+    bank, common = stack.models["b0"], stack.models["cm_prd"]
     bank.events[5] = [_event(5, 500, now - 60_000, "FATAL"), _event(5, 501, now - 90_000,
                                                                     "WARNING")]
     common.events[9] = [_event(9, 900, now - 30_000, "FATAL")]
@@ -632,7 +632,7 @@ async def test_e3_fleet_events_api_path_failed_domain_is_not_zero(live) -> None:
     assert len(ev) == 2 * _DOMAINS and all("level" not in h["query"] for h in ev)
     rows = res["query_results"]
     assert sorted((r["source_id"], r["domain_id"], r["instance_id"]) for r in rows) == [
-        ("bank", 5, 500), ("common", 9, 900)], rows
+        ("b0", 5, 500), ("cm_prd", 9, 900)], rows
     block = _judgement_block(_final(state))
     assert "이벤트 2건" in block and f"도메인 {2 * _DOMAINS}곳" in block, block
     assert "실패 1" in block and "0건이 아니라 확인하지 못함" in block, block
@@ -650,10 +650,10 @@ async def test_e4_service_current_by_name(live) -> None:
     assert args["service"] == ["주문"], args
     rd = [h for m in stack.models.values() for h in m.hits_of("/api/realtime/domain")]
     assert sorted((h["source"], h["query"].get("domain_id")) for h in rd) == [
-        ("bank", "1"), ("common", "1")]
+        ("b0", "1"), ("cm_prd", "1")]
     rows = res["query_results"]
     assert sorted((r["source_id"], r["domain_id"], r["domain_name"]) for r in rows) == [
-        ("bank", 1, "주문"), ("common", 1, "주문")]
+        ("b0", 1, "주문"), ("cm_prd", 1, "주문")]
     assert all(r["match_tier"] == "exact" for r in rows)
 
 
@@ -663,7 +663,7 @@ async def test_e4_service_without_name_is_every_domain_one_call_per_source(live)
     (args,) = rec.named("apm_service_status")
     assert "service" not in args
     rd = [h for m in stack.models.values() for h in m.hits_of("/api/realtime/domain")]
-    assert sorted(h["source"] for h in rd) == ["bank", "common"]
+    assert sorted(h["source"] for h in rd) == ["b0", "cm_prd"]
     assert all("domain_id" not in h["query"] for h in rd)
     assert len(_apm_result(state)["query_results"]) == 2 * _DOMAINS
 
@@ -680,7 +680,7 @@ async def test_e4_service_trend_with_metric(live) -> None:
     dm = [h for m in stack.models.values() for h in m.hits_of("/api/dbmetrics/domain")]
     assert sorted((h["source"], h["query"]["domain_id"], h["query"]["metrics"],
                    h["query"]["interval_minute"]) for h in dm) == [
-        ("bank", "1", "service_time", "10"), ("common", "1", "service_time", "10")]
+        ("b0", "1", "service_time", "10"), ("cm_prd", "1", "service_time", "10")]
     assert len(res["query_results"]) == 6, res["query_results"]
 
 
@@ -703,10 +703,10 @@ async def test_e4_business_current_and_list(live) -> None:
     assert args["business"] == ["결제"] and args.get("mode", "current") == "current"
     rb = [h for m in stack.models.values() for h in m.hits_of("/api/realtime/business")]
     assert sorted((h["source"], h["query"]["domain_id"], h["query"].get("business_id"))
-                  for h in rb) == [("bank", "2", "11"), ("common", "2", "11")]
+                  for h in rb) == [("b0", "2", "11"), ("cm_prd", "2", "11")]
     rows = res["query_results"]
     assert sorted((r["source_id"], r["business_id"], r["tps"]) for r in rows) == [
-        ("bank", 11, 12.0), ("common", 11, 13.0)]
+        ("b0", 11, 12.0), ("cm_prd", 11, 13.0)]
     rec.calls.clear()
     stack.clear()
     state = await _turn(stack, "업무 목록 보여줘",
@@ -730,7 +730,7 @@ async def test_e4_business_trend_with_metric(live) -> None:
     assert args["scope"] == "business" and args["business"] == ["결제"]
     bm = [h for m in stack.models.values() for h in m.hits_of("/api/dbmetrics/business")]
     assert sorted((h["source"], h["query"]["business_id"]) for h in bm) == [
-        ("bank", "11"), ("common", "11")]
+        ("b0", "11"), ("cm_prd", "11")]
     assert res["source_status"][0]["status"] == "ok", res["source_status"]
 
 
@@ -762,7 +762,7 @@ async def test_e4_partially_unresolved_names_query_only_the_found(live) -> None:
     rd = [h for m in stack.models.values() for h in m.hits_of("/api/realtime/domain")]
     assert {h["query"].get("domain_id") for h in rd} == {"1"}, "찾은 도메인만"
     assert {(r["source_id"], r["domain_id"]) for r in res["query_results"]} == {
-        ("bank", 1), ("common", 1)}
+        ("b0", 1), ("cm_prd", 1)}
     texts = [d["text"] for d in res.get("disclosures") or []
              if d["kind"] == disc.APM_UNRESOLVED_CONDITION]
     assert any("없는이름zz" in t for t in texts), texts
@@ -785,19 +785,19 @@ def fresh_stack(tmp_path, monkeypatch):
         s.close()
 
 
-async def test_e6_sources_bank_never_touches_common(fresh_stack) -> None:
+async def test_e6_sources_b0_never_touches_cm_prd(fresh_stack) -> None:
     stack, rec = fresh_stack
     state = await _turn(stack, "은행존 제니퍼에서 web01 web02 응답시간과 주문 서비스 상태",
                         _task(["apm.app_health", "apm.service"],
-                              targets=[{"text": "주문", "kind": "auto"}], sources=["bank"]),
+                              targets=[{"text": "주문", "kind": "auto"}], sources=["b0"]),
                         hosts=("web01", "web02"))
     res = _apm_result(state)
     for name, args in rec.data_calls():
-        assert args.get("source_ids") == ["bank"], (name, args)
-    assert stack.models["common"].hits_of() == [], "다른 소스 호출 0(인벤토리 포함)"
-    assert {r["source_id"] for r in res["query_results"]} == {"bank"}
-    assert (res.get("apm_query") or {}).get("source_selection") == {"given": ["bank"],
-                                                                    "used": ["bank"]}
+        assert args.get("source_ids") == ["b0"], (name, args)
+    assert stack.models["cm_prd"].hits_of() == [], "다른 소스 호출 0(인벤토리 포함)"
+    assert {r["source_id"] for r in res["query_results"]} == {"b0"}
+    assert (res.get("apm_query") or {}).get("source_selection") == {"given": ["b0"],
+                                                                    "used": ["b0"]}
 
 
 async def test_e6_every_source_invalid_asks_back_without_the_gateway(fresh_stack) -> None:
@@ -810,16 +810,16 @@ async def test_e6_every_source_invalid_asks_back_without_the_gateway(fresh_stack
     assert stack.audits(mark) == []
     assert all(m.hits_of() == [] for m in stack.models.values())
     assert "찾지 못해 조회하지 않았습니다" in str(res.get("final_response")), res
-    assert "「은행존 제니퍼」" in str(res.get("final_response"))
+    assert "「은행 제니퍼」" in str(res.get("final_response"))
 
 
 async def test_e6_registry_source_not_on_gateway_is_a_gateway_error_not_silent(fresh_stack) -> None:
-    """레지스트리에는 있으나 게이트웨이에 설정되지 않은 소스(legacy) — 조용한 0건이 아니다."""
+    """레지스트리에는 있으나 게이트웨이에 설정되지 않은 소스(cm_stg) — 조용한 0건이 아니다."""
     stack, rec = fresh_stack
-    state = await _turn(stack, "레거시 제니퍼에서 web01 응답시간",
-                        _task(["apm.app_health"], sources=["legacy"]), hosts=("web01",))
+    state = await _turn(stack, "공동존 개발/스테이징 제니퍼에서 web01 응답시간",
+                        _task(["apm.app_health"], sources=["cm_stg"]), hosts=("web01",))
     res = _apm_result(state)
-    assert rec.named("apm_app_health")[0]["source_ids"] == ["legacy"]
+    assert rec.named("apm_app_health")[0]["source_ids"] == ["cm_stg"]
     assert res.get("source_status", [{}])[0].get("status") != "ok", res
     assert all(m.hits_of() == [] for m in stack.models.values())
 
@@ -832,9 +832,9 @@ def small_stack(tmp_path, monkeypatch):
     pytest.importorskip("mcp")
 
     def make(inline_rows: int) -> tuple[_Stack, _Recorder]:
-        models = {"bank": _Model("bank", _TOKENS["bank"], hosts=_HOSTS, domains=4,
+        models = {"b0": _Model("b0", _TOKENS["b0"], hosts=_HOSTS, domains=4,
                                  hostless=True),
-                  "common": _Model("common", _TOKENS["common"], hosts=_HOSTS[:4], domains=4)}
+                  "cm_prd": _Model("cm_prd", _TOKENS["cm_prd"], hosts=_HOSTS[:4], domains=4)}
         where = tmp_path / f"inline{inline_rows}-{len(made)}"
         where.mkdir()
         s = _Stack(models, where, {"APM_INLINE_ROWS": str(inline_rows)})
@@ -877,7 +877,7 @@ async def test_e7_first_hop_takes_every_instance_including_hostless(small_stack)
     expected_hosts = {i["hostName"] for m in stack.models.values()
                       for recs in m.instances.values() for i in recs if i["hostName"]}
     assert hosts == expected_hosts, "호스트 정합 인스턴스 전부(절단 0)"
-    assert hostless == [{"instance_name": "batch-was", "source_id": "bank", "instance_id": 199}]
+    assert hostless == [{"instance_name": "batch-was", "source_id": "b0", "instance_id": 199}]
     got = {(r["source_id"], r["instance_id"]) for r in res["query_results"]}
     assert got == _all_instances(stack), sorted(_all_instances(stack) - got)
     notes = [d["text"] for d in res.get("disclosures") or [] if "대상 서버 미지정" in d["text"]]
@@ -945,7 +945,7 @@ async def test_e7_batch_rows_beyond_inline_are_disclosed_not_zero(small_stack) -
 
 async def test_e5_promoted_batch_is_one_accepted_job_then_recovered(small_stack) -> None:
     stack, rec = small_stack(500)
-    stack.models["bank"].delay["/api/realtime/instance"] = 0.4
+    stack.models["b0"].delay["/api/realtime/instance"] = 0.4
     config = _config(stack.url, call_timeout=4.0, query_timeout=5, reserve=2)
     state = await _turn(stack, "web01~web12 응답시간", _task(["apm.app_health"]),
                         hosts=tuple(_HOSTS), config=config, thread="th-v34-job")
@@ -957,7 +957,7 @@ async def test_e5_promoted_batch_is_one_accepted_job_then_recovered(small_stack)
     assert "작업으로 접수" in text and "아직 조회 결과가 아닙니다" in text, text
     m = re.search(r"진행 (\d+)/(\d+) API 호출", text)
     assert m, text
-    # 배치 전체 기준 — 대상 12개(bank 12 + common 4 · 대상마다 실시간 1호출 이상)
+    # 배치 전체 기준 — 대상 12개(b0 12 + cm_prd 4 · 대상마다 실시간 1호출 이상)
     assert int(m.group(2)) >= 16, text
     jobs = res.get("accepted_jobs") or (res.get("apm_query") or {}).get("accepted_jobs") or []
     assert len(jobs) == 1, ("배치 = 작업 1건", jobs)
@@ -980,7 +980,7 @@ async def test_e5_promoted_batch_is_one_accepted_job_then_recovered(small_stack)
     # (배치 항목 순서 = 본체가 보낸 targets 순서)
     shown = {(r["source_id"], batch["targets"][r["target_index"]]["hostname"],
               r["response_time_avg_ms"]) for r in lines}
-    assert {(h, v) for s_, h, v in shown if s_ == "bank"} == {
+    assert {(h, v) for s_, h, v in shown if s_ == "b0"} == {
         (h, 1000 + k * 10) for k, h in enumerate(_HOSTS, 1)}, shown
     assert {r["target_index"] for r in lines} == set(range(12))
 

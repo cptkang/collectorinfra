@@ -23,7 +23,7 @@ from src.routing import apm_source_select as sel
 from src.routing.registry import get_registry
 
 USER: dict[str, Any] = {"sub": "u1", "role": "user"}
-PENDING = {"query": "WAS 응답시간 알려줘", "choices": ["bank", "common", "legacy", "*"]}
+PENDING = {"query": "WAS 응답시간 알려줘", "choices": ["b0", "cm_prd", "cm_stg", "*"]}
 
 
 def _answer(text: str):
@@ -37,7 +37,7 @@ def _answer(text: str):
 @pytest.mark.apm_source_ladder
 @pytest.mark.parametrize("text", [
     "공동존 WAS 응답시간", "김포 WAS 힙 추세", "은행존 WAS 응답시간", "전체 서버 CPU",
-    "전체 말고 공동존", "운영체제", "운영 중", "운영자", "운영팀", "DRM", "개발자",
+    "전체 말고 김포", "운영체제", "운영 중", "운영자", "운영팀", "DRM", "개발자",
     "레거시 서버 목록", "공동존 서버 CPU와 WAS 응답시간",
 ])
 def test_question_like_text_is_not_an_answer(text: str) -> None:
@@ -46,16 +46,17 @@ def test_question_like_text_is_not_an_answer(text: str) -> None:
 
 @pytest.mark.apm_source_ladder
 @pytest.mark.parametrize(("text", "expected"), [
-    ("DR", (["common"], None)), ("dr로", (["common"], None)), ("K리전", (["bank"], None)),
-    ("레거시요", (["legacy"], None)), ("은행", (None, "은행")),
-    ("공동존 제니퍼로 조회해 주세요", (["common"], None)),
+    # plans/161 — 운영 확정 3소스(D-329): 「은행」은 b0 하나 · 공유 단어 0 → 되묻기는 두 소스 단어로
+    ("DR", (["cm_prd"], None)), ("dr로", (["cm_prd"], None)), ("여의도", (["cm_stg"], None)),
+    ("레거시요", (["b0"], None)), ("은행", (["b0"], None)), ("김포랑 여의도", (None, "김포랑 여의도")),
+    ("공동존 운영 제니퍼로 조회해 주세요", (["cm_prd"], None)),
 ])
 def test_short_answers(text: str, expected) -> None:
     assert _answer(text) == expected
 
 
 @pytest.mark.apm_source_ladder
-@pytest.mark.parametrize("text", ["공동존 전체", "레거시 전체요", "전체 김포"])
+@pytest.mark.parametrize("text", ["공동존 운영 전체", "레거시 전체요", "전체 김포"])
 def test_named_source_plus_all_word_does_not_widen(text: str) -> None:
     assert _answer(text) != (["*"], None)
 
@@ -66,9 +67,9 @@ def test_named_source_plus_all_word_does_not_widen(text: str) -> None:
 @pytest.mark.parametrize(("text", "ids"), [
     ("운영체제별 WAS 응답시간", ()), ("운영 중인 WAS 응답시간", ()), ("운영자 WAS 목록", ()),
     ("운영팀 WAS", ()), ("DRM 서버 WAS 응답시간", ()), ("ADDRESS WAS", ()),
-    ("DR 서버 WAS 응답시간", ("common",)), ("dr서버 WAS", ("common",)),
-    ("운영 중요 WAS", ("common",)), ("은행존 제니퍼 WAS", ("bank",)),
-    ("레거시 제니퍼와 은행존 제니퍼", ("bank", "legacy")),
+    ("DR 서버 WAS 응답시간", ("cm_prd",)), ("dr서버 WAS", ("cm_prd",)),
+    ("운영 중요 WAS", ("cm_prd",)), ("은행존 제니퍼 WAS", ("b0",)),
+    ("레거시 제니퍼와 은행존 제니퍼", ("b0",)), ("김포 제니퍼와 여의도 제니퍼", ("cm_prd", "cm_stg")),
 ])
 def test_source_term_counterexamples(text: str, ids: tuple[str, ...]) -> None:
     got = sel.match_source_terms(text, get_registry().sources_of("apm")).source_ids
@@ -79,8 +80,8 @@ def test_source_term_counterexamples(text: str, ids: tuple[str, ...]) -> None:
 def test_two_single_source_words_ask_between_them() -> None:
     """현행 동작 고정(§4.1 단 2 문언) — 서로 다른 단일 소스 단어 둘도 되묻는다(복수 지목 글 답
     포함)."""
-    d = sel.select_apm_sources(get_registry().sources_of("apm"), text="공동존과 레거시")
-    assert d.action == "ask" and d.choices == ("common", "legacy")
+    d = sel.select_apm_sources(get_registry().sources_of("apm"), text="김포랑 여의도")
+    assert d.action == "ask" and d.choices == ("cm_prd", "cm_stg")
 
 
 # ── 3. 요청 경계 — 대량·이상 입력 ───────────────────────────────────────────────
@@ -90,9 +91,9 @@ def test_selection_authorization_large_and_odd_input() -> None:
     from src.api.routes.query import apply_apm_source_selection_authorization as authz
 
     # 개수 상한(앞 32개만 본다 — W2 교정 3)이 있어 이상 값·유효 값을 앞에, 대량 잡음을 뒤에 둔다
-    junk = ["<script>", "", "*", "common", "COMMON", " common"] + [f"x{i}" for i in range(5000)]
-    assert authz(junk, USER) == ["*", "common"]
-    assert authz(["common"], {"sub": "u", "role": "user", "allowed_sources": ["polestar"]}) is None
+    junk = ["<script>", "", "*", "cm_prd", "CM_PRD", " cm_prd"] + [f"x{i}" for i in range(5000)]
+    assert authz(junk, USER) == ["*", "cm_prd"]
+    assert authz(["cm_prd"], {"sub": "u", "role": "user", "allowed_sources": ["polestar"]}) is None
 
 
 # ── 4. 관리 API 인증 — 클레임 위조 · 시크릿 교차 ────────────────────────────────────
@@ -208,4 +209,4 @@ def test_composite_polestar_location_word_does_not_override_apm_task_source() ->
     q = "김포 서버 CPU와 레거시 WAS 응답시간"
     task = {"task_id": "t2", "agent": "apm_query", "sub_query": "레거시 WAS 응답시간"}
     d = aq._source_decision(task, {"original_user_query": q, "user_query": task["sub_query"]}, ())
-    assert (d.action, d.source_ids) == ("query", ("legacy",))
+    assert (d.action, d.source_ids) == ("query", ("b0",))

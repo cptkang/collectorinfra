@@ -79,7 +79,7 @@
   "jennifer_queuing_individual": {
     "contract_version": "1",
     "event": {
-      "dbId": "jennifer_common",
+      "dbId": "jennifer_cm_prd",
       "serverName": "xsapp01",
       "hostname": "xsapp01",
       "alarmId": "jennifer:p150q0000000001",
@@ -94,7 +94,7 @@
     "decision": {
       "tier": "page",
       "reason": "매트릭스(심각도2×중요도보통) → ticket · 승격: 폴스타 통보 정책(notify) → 최종 page",
-      "fingerprint": "96e51561b6c4d58025d143f7bf90b029b3b4bb44",
+      "fingerprint": "7fd18698e8560c8ed9f73c7d74fed44951dd199b",
       "signals": {
         "severity": 2,
         "ai_severity": null,
@@ -121,7 +121,7 @@
       "source": "collectorinfra",
       "hints": {
         "solution": "apm",
-        "source_id": "common",
+        "source_id": "cm_prd",
         "instance_id": 11,
         "domain_id": 1001,
         "event_type": "SERVICE_QUEUING",
@@ -136,7 +136,7 @@
           {
             "alarm_id": "jennifer:p150q0000000001",
             "source": "jennifer",
-            "db_id": "jennifer_common",
+            "db_id": "jennifer_cm_prd",
             "alarm_name": "SERVICE_QUEUING",
             "kind": "",
             "was_kinds": [
@@ -265,7 +265,7 @@
           {
             "alarm_id": "jennifer:p150q0000000001",
             "source": "jennifer",
-            "db_id": "jennifer_common",
+            "db_id": "jennifer_cm_prd",
             "alarm_name": "SERVICE_QUEUING",
             "kind": "",
             "was_kinds": [

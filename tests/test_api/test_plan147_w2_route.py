@@ -7,10 +7,10 @@ task 1개로) → 실제 `agent_orchestrator`(실제 `apm_query` 처리기 · �
 
 고정하는 계약:
   1. 3턴 — 지목 없음 → 되묻기(`apm_source_clarification` · 대기 `apm_source_pending`) → 글 답
-     「공동존」
-     (질의를 원 질문으로 바꿔 공동존만 · 대화 기록에는 사용자 원문) → 후속 「힙 사용률은?」(승계).
+     「김포」
+     (질의를 원 질문으로 바꿔 cm_prd만 · 대화 기록에는 사용자 원문) → 후속 「힙 사용률은?」(승계).
   2. 버튼 답(`selected_apm_source_ids`) — 근거 `answered` · 여러 개 · 「전체」(`*`).
-  3. 글 답 「은행존」(두 소스) → 그 두 소스로 다시 되묻기 · 새 질문 글은 답으로 보지 않는다.
+  3. 글 답 「김포랑 여의도요」(두 소스 단어 · plans/161) → 그 두 소스로 다시 되묻기 · 새 질문 글은 답으로 보지 않는다.
   4. × 해제(`reset_db_scope`) — 승계가 지워져 다시 되묻는다.
   5. 운반 — JSON(`/query`) · SSE `done` · 스트림 폴백(`ainvoke`) 모두 같은 칸 · 값 없으면 SSE에
      키 없음. SSE 되묻기·승계 턴의 스레드 칸이 체크포인트에 남는다(종료 노드 쓰기).
@@ -36,7 +36,7 @@ from src.routing import apm_source_select as sel
 
 pytestmark = pytest.mark.apm_source_ladder
 
-ALL3 = ["bank", "common", "legacy"]
+ALL3 = ["b0", "cm_prd", "cm_stg"]  # plans/161 — 운영 확정 3소스(D-329)
 USER: dict[str, Any] = {"sub": "u1", "role": "user"}
 
 
@@ -191,35 +191,35 @@ def test_three_turns_ask_text_answer_followup(env, route) -> None:
     assert _thread_values(env, thread)["apm_source_pending"] == {
         "query": q1, "choices": [*ALL3, "*"]}
 
-    out = _post(client, route, "공동존", thread)
-    assert env.gw.take() == [["common"]], "2턴 글 답 — 원 질문을 공동존만"
+    out = _post(client, route, "김포", thread)
+    assert env.gw.take() == [["cm_prd"]], "2턴 글 답 — 원 질문을 cm_prd만"
     assert not out.get("apm_source_clarification")
-    assert out["apm_source_scope"] == {"ids": ["common"], "basis": "answered",
-                                       "last_target_sources": ["common"]}
-    assert "공동존 제니퍼만 조회했습니다(되묻기 답)" in out["response"]
+    assert out["apm_source_scope"] == {"ids": ["cm_prd"], "basis": "answered",
+                                       "last_target_sources": ["cm_prd"]}
+    assert "공동존 운영 제니퍼만 조회했습니다(되묻기 답)" in out["response"]
     values = _thread_values(env, thread)
     assert values["apm_source_pending"] is None, "대기는 답 턴에 소비된다"
     assert values["user_query"] == q1
     humans = [m.content for m in values["messages"] if m.type == "human"]
-    assert humans[-1] == "공동존", "대화 기록에는 사용자 원문"
+    assert humans[-1] == "김포", "대화 기록에는 사용자 원문"
 
     out = _post(client, route, "힙 사용률은?", thread)
-    assert env.gw.take() == [["common"]], "3턴 — 승계"
-    assert "공동존 제니퍼만 조회했습니다(이전 선택 승계)" in out["response"]
-    assert out["apm_source_scope"]["ids"] == ["common"]
+    assert env.gw.take() == [["cm_prd"]], "3턴 — 승계"
+    assert "공동존 운영 제니퍼만 조회했습니다(이전 선택 승계)" in out["response"]
+    assert out["apm_source_scope"]["ids"] == ["cm_prd"]
 
 
 def test_button_answer_and_all(env) -> None:
     client, thread = env.client(), "p147-btn"
     q1 = "WAS 응답시간 알려줘"
     _post(client, "json", q1, thread)
-    out = _post(client, "json", q1, thread, selected_apm_source_ids=["bank", "legacy"])
-    assert env.gw.take() == [["bank", "legacy"]]
+    out = _post(client, "json", q1, thread, selected_apm_source_ids=["b0", "cm_stg"])
+    assert env.gw.take() == [["b0", "cm_stg"]]
     assert out["apm_source_scope"]["basis"] == "answered"
-    out = _post(client, "json", "레거시는?", thread)
-    assert env.gw.take() == [["legacy"]], "승계 중 새 단어가 이긴다"
-    assert out["apm_source_scope"] == {"ids": ["legacy"], "basis": "named",
-                                       "last_target_sources": ["legacy"]}
+    out = _post(client, "json", "여의도는?", thread)
+    assert env.gw.take() == [["cm_stg"]], "승계 중 새 단어가 이긴다"
+    assert out["apm_source_scope"] == {"ids": ["cm_stg"], "basis": "named",
+                                       "last_target_sources": ["cm_stg"]}
     out = _post(client, "json", "WAS 응답시간 알려줘", thread, selected_apm_source_ids=["*"])
     assert env.gw.take() == [ALL3]
     assert out["apm_source_scope"] == {"ids": ["*"], "basis": "all",
@@ -228,8 +228,8 @@ def test_button_answer_and_all(env) -> None:
 
 def test_first_turn_screen_selection(env) -> None:
     out = _post(env.client(), "json", "WAS 응답시간 알려줘", "p147-first",
-                selected_apm_source_ids=["common"])
-    assert env.gw.take() == [["common"]]
+                selected_apm_source_ids=["cm_prd"])
+    assert env.gw.take() == [["cm_prd"]]
     assert out["apm_source_scope"]["basis"] == "selected"
 
 
@@ -239,24 +239,24 @@ def test_shared_word_text_answer_reasks_with_matching_sources(env) -> None:
     client, thread = env.client(), "p147-reask"
     q1 = "WAS 응답시간 알려줘"
     _post(client, "json", q1, thread)
-    out = _post(client, "json", "은행존이요", thread)
+    out = _post(client, "json", "김포랑 여의도요", thread)
     assert env.gw.take() == []
     ask = out["apm_source_clarification"]
-    assert [o["key"] for o in ask["options"]] == ["bank", "legacy"]
+    assert [o["key"] for o in ask["options"]] == ["cm_prd", "cm_stg"]
     assert ask["original_query"] == q1
     assert _thread_values(env, thread)["apm_source_pending"]["query"] == q1, "원 질문 유지"
-    out = _post(client, "json", "레거시로 해 주세요", thread)
-    assert env.gw.take() == [["legacy"]]
+    out = _post(client, "json", "여의도로 해 주세요", thread)
+    assert env.gw.take() == [["cm_stg"]]
     assert _thread_values(env, thread)["user_query"] == q1
 
 
 def test_new_question_is_not_an_answer(env) -> None:
     client, thread = env.client(), "p147-newq"
     _post(client, "json", "WAS 응답시간 알려줘", thread)
-    out = _post(client, "json", "공동존 web01 힙 사용률 추이 보여줘", thread)
-    assert env.gw.take() == [["common"]], "새 질문 — 단어 지목(named)으로 처리"
+    out = _post(client, "json", "김포 web01 힙 사용률 추이 보여줘", thread)
+    assert env.gw.take() == [["cm_prd"]], "새 질문 — 단어 지목(named)으로 처리"
     assert out["apm_source_scope"]["basis"] == "named"
-    assert _thread_values(env, thread)["user_query"] == "공동존 web01 힙 사용률 추이 보여줘"
+    assert _thread_values(env, thread)["user_query"] == "김포 web01 힙 사용률 추이 보여줘"
 
 
 # ── 4. × 해제 ────────────────────────────────────────────────────────────────
@@ -264,7 +264,7 @@ def test_new_question_is_not_an_answer(env) -> None:
 def test_reset_db_scope_clears_inherited_choice(env) -> None:
     client, thread = env.client(), "p147-reset"
     _post(client, "json", "김포 WAS 응답시간", thread)
-    assert env.gw.take() == [["common"]]
+    assert env.gw.take() == [["cm_prd"]]
     out = _post(client, "json", "힙 사용률은?", thread, reset_db_scope=True)
     assert env.gw.take() == [], "승계가 지워져 다시 되묻는다"
     assert out["apm_source_clarification"]["options"][-1]["key"] == "*"
@@ -297,18 +297,19 @@ def test_response_model_declares_fields() -> None:
 def test_selection_is_filtered_by_registry_available_and_permission() -> None:
     from src.api.routes.query import apply_apm_source_selection_authorization as authz
 
-    assert authz(["common", "zzz", "*", "common"], USER) == ["common", "*"]
+    assert authz(["cm_prd", "zzz", "*", "cm_prd"], USER) == ["cm_prd", "*"]
     assert authz(["zzz"], USER) is None
-    assert authz(["common"], {"sub": "u", "role": "user", "allowed_sources": []}) is None
-    sel.set_available_apm_sources({"bank"})
-    assert authz(["common", "bank"], USER) == ["bank"], "미연결 소스는 고를 수 없다"
+    assert authz(["cm_prd"], {"sub": "u", "role": "user", "allowed_sources": []}) is None
+    sel.set_available_apm_sources({"b0"})
+    assert authz(["cm_prd", "b0"], USER) == ["b0"], "미연결 소스는 고를 수 없다"
 
 
 @pytest.mark.parametrize(("text", "expected"), [
-    ("공동존", (["common"], None)), ("김포로요", (["common"], None)),
-    ("레거시 제니퍼로 조회해 주세요", (["legacy"], None)), ("전체", (["*"], None)),
-    ("전체 조회해 줘", (["*"], None)), ("은행존", (None, "은행존")),
-    ("공동존과 레거시", (None, "공동존과 레거시")),
+    # plans/161 — 「공동존」 단독은 소스 단어가 아니다 · 「은행존」은 b0 하나 · 되묻기는 두 소스 단어로
+    ("김포", (["cm_prd"], None)), ("김포로요", (["cm_prd"], None)), ("공동존", None),
+    ("레거시 제니퍼로 조회해 주세요", (["b0"], None)), ("전체", (["*"], None)),
+    ("전체 조회해 줘", (["*"], None)), ("은행존", (["b0"], None)),
+    ("김포와 레거시", (None, "김포와 레거시")),
     ("공동존 CPU 상위 10대", None), ("운영체제", None), ("응답시간은?", None), ("", None),
 ])
 def test_text_answer_rule(text, expected) -> None:
@@ -326,9 +327,9 @@ def test_selection_caps_count_and_item_length_and_logs_preview(caplog) -> None:
 
     from src.api.routes.query import apply_apm_source_selection_authorization as authz
 
-    flood = [f"x{i}" for i in range(500)] + ["common"]
+    flood = [f"x{i}" for i in range(500)] + ["cm_prd"]
     assert authz(flood, USER) is None, "상한(32) 밖의 유효 id는 보지 않는다"
-    assert authz(["common", "z" * 65 + "common"], USER) == ["common"]
+    assert authz(["cm_prd", "z" * 65 + "cm_prd"], USER) == ["cm_prd"]
     with caplog.at_level(logging.INFO, logger="src.api.routes.query"):
         authz(["A" * 5000, *flood], USER)
     (line,) = [r.getMessage() for r in caplog.records if "제니퍼 소스 선택" in r.getMessage()]

@@ -628,12 +628,12 @@ def _jennifer_rec(alarm_id: str, *, severity: int = 2, at: str = "20261007090135
                   host: str = "xsapp01", reason: str = "host_name",
                   kind: str = "was_service_queuing") -> dict:
     return {
-        "dbId": "jennifer_common", "source": "jennifer", "serverName": host, "hostname": host,
+        "dbId": "jennifer_cm_prd", "source": "jennifer", "serverName": host, "hostname": host,
         "ipAddress": "", "resourceAncestry": "JENNIFER > 주문 > was01", "alarmId": alarm_id,
         "severity": severity, "alarmStatus": "", "resourceType": "apm.Instance",
         "resourceName": f"{host}_was01", "alarmName": "SERVICE_QUEUING", "alarmTime": at,
         "conditions": "", "conditionLog": "",
-        "apm": {"source": "jennifer", "source_id": "common", "match_reason": reason,
+        "apm": {"source": "jennifer", "source_id": "cm_prd", "match_reason": reason,
                 "event_type": "SERVICE_QUEUING", "event_type_norm": "SERVICE_QUEUING",
                 "event_kind": "error", "was_signals": [{"kind": kind}]},
     }

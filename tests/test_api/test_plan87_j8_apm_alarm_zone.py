@@ -24,9 +24,10 @@ from src.api.routes import alarm as alarm_routes
 from src.api.routes.alarm import _zone_permits, event_visible_to
 from src.routing.zones import ZONE_BANKJON, ZONE_GONGJON, db_id_to_zone
 
-BANK = "jennifer_bank"
-COMMON = "jennifer_common"
-LEGACY = "jennifer_legacy"
+# plans/161 — 운영 확정 3소스(D-329): b0 = 은행존 · cm_prd·cm_stg = 공동존(레거시 소스 폐지)
+BANK = "jennifer_b0"
+COMMON = "jennifer_cm_prd"
+STG = "jennifer_cm_stg"
 DEFAULT = "jennifer"          # 게이트웨이 단일 설정(소스 default) — 존 없음
 UNKNOWN = "jennifer_zzz"      # 레지스트리에 없는 소스 — 존 없음 + 경고 1회
 
@@ -41,7 +42,7 @@ ADMIN = {"sub": "adm", "role": "admin", "alarm_zones": None}
 
 @pytest.mark.parametrize(
     "db_id,zone",
-    [(BANK, ZONE_BANKJON), (COMMON, ZONE_GONGJON), (LEGACY, ZONE_BANKJON),
+    [(BANK, ZONE_BANKJON), (COMMON, ZONE_GONGJON), (STG, ZONE_GONGJON),
      (DEFAULT, None), (UNKNOWN, None)],
 )
 def test_db_id_to_zone_resolves_apm_sources(db_id: str, zone: str | None) -> None:
@@ -67,14 +68,14 @@ def _visible(
 
 def test_zone_subscriber_receives_own_zone_apm_alarms() -> None:
     assert _visible(BANK, {ZONE_BANKJON}) is True
-    assert _visible(LEGACY, {ZONE_BANKJON}) is True        # 레거시 = 은행존(G-14 ①)
     assert _visible(COMMON, {ZONE_GONGJON}) is True
+    assert _visible(STG, {ZONE_GONGJON}) is True           # 개발/스테이징 = 공동존
 
 
 def test_zone_subscriber_does_not_receive_other_zone_apm_alarms() -> None:
     assert _visible(COMMON, {ZONE_BANKJON}) is False
     assert _visible(BANK, {ZONE_GONGJON}) is False
-    assert _visible(LEGACY, {ZONE_GONGJON}) is False
+    assert _visible(STG, {ZONE_BANKJON}) is False
 
 
 @pytest.mark.parametrize("db_id", [DEFAULT, UNKNOWN])
@@ -97,9 +98,10 @@ def test_suppress_rule_still_applies_to_apm_alarms() -> None:
 
 def test_zone_permits_apm_sources() -> None:
     assert _zone_permits({ZONE_BANKJON}, BANK) is True
-    assert _zone_permits({ZONE_BANKJON}, LEGACY) is True
+    assert _zone_permits({ZONE_BANKJON}, STG) is False
     assert _zone_permits({ZONE_BANKJON}, COMMON) is False
     assert _zone_permits({ZONE_GONGJON}, COMMON) is True
+    assert _zone_permits({ZONE_GONGJON}, STG) is True
     assert _zone_permits({ZONE_GONGJON}, DEFAULT) is False
     assert _zone_permits(None, DEFAULT) is True            # 전 존(관리자)
 
@@ -133,9 +135,10 @@ def _ack(user: dict, db_id: str) -> tuple[int, list[int]]:
     return resp.status_code, store.ack_calls
 
 
-def test_bankjon_operator_can_ack_bank_and_legacy_apm_incidents() -> None:
+def test_zone_operator_can_ack_own_zone_apm_incidents() -> None:
     assert _ack(OPERATOR_BANKJON, BANK) == (200, [11])
-    assert _ack(OPERATOR_BANKJON, LEGACY) == (200, [11])
+    assert _ack(OPERATOR_GONGJON, COMMON) == (200, [11])
+    assert _ack(OPERATOR_GONGJON, STG) == (200, [11])
 
 
 def test_other_zone_operator_cannot_ack_apm_incident() -> None:

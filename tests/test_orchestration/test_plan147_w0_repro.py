@@ -1,13 +1,13 @@
 """plans/147 W0 재현 → W2에서 뒤집힌 기대(D-322 · 제니퍼 다중 소스 선택 사다리).
 
 실프로세스 왕복: 목 Open API(이 프로세스 스레드 · 127.0.0.1 임시 포트) ↔ `python -m apm_gateway`
-(임시 포트 · 임시 스풀 · 소스 3개 `bank`·`common`·`legacy`가 같은 목을 본다) ↔ 실제 MCP SSE ↔
+(임시 포트 · 임시 스풀 · 소스 3개 `b0`·`cm_prd`·`cm_stg`가 같은 목을 본다) ↔ 실제 MCP SSE ↔
 `run_apm_query`. 분해는 가짜 LLM 고정 출력(`_llm_decompose`)으로 만든다. 본체가 게이트웨이에 실은
 도구 인자는 실 세션을 감싼 기록기로 잰다(FastMCP는 모르는 인자를 조용히 버린다 — 결과 행의
 `source_id`로도 확인한다).
 
 W0 현행 → W2 기대:
-  ① 「김포 WAS 응답시간」 — 3소스 모두 조회 → 공동존(`common`)만 조회(모든 호출 `source_ids`).
+  ① 「김포 WAS 응답시간」 — 3소스 모두 조회 → 공동존 운영(`cm_prd`)만 조회(모든 호출 `source_ids`).
   ② 레지스트리에만 있고 게이트웨이에 없는 소스 지목 — 게이트웨이까지 가서 `invalid_argument`
      (설정 소스 목록 노출) → 조회 0 · 「연결되지 않아 조회하지 않았습니다」 안내만(넓히지 않음).
   ③ 지목 없음 — 전 소스 조회 · 되묻기 0 → 조회 0 · 되묻기(소스 3 + 「전체」).
@@ -50,7 +50,7 @@ pytestmark = pytest.mark.apm_source_ladder
 
 _GW_TOKEN = "tok-chat-p147-w0"
 _MOCK_TOKEN = "tok-mock-p147-w0"
-_SOURCES = ("bank", "common", "legacy")
+_SOURCES = ("b0", "cm_prd", "cm_stg")
 _INSTANCES = [
     {"instanceId": 1001, "name": "gp-was01", "hostName": "gp-was-host01", "domainId": 1000},
     {"instanceId": 1002, "name": "gp-was02", "hostName": "gp-was-host02", "domainId": 1000},
@@ -124,7 +124,7 @@ def launch_gateway(tmp_path_factory, sources: tuple[str, ...]) -> Iterator[str]:
 
 @pytest.fixture(scope="module")
 def real_gateway(tmp_path_factory):
-    """목 Open API + 게이트웨이 실프로세스(소스 bank·common·legacy) — sse url."""
+    """목 Open API + 게이트웨이 실프로세스(소스 b0·cm_prd·cm_stg) — sse url."""
     with launch_gateway(tmp_path_factory, _SOURCES) as url:
         yield url
 
@@ -186,17 +186,17 @@ def _asks_back(res: dict) -> bool:
     return res.get("degraded_reason") == "apm_unresolved_condition"
 
 
-# W0 현행: 3소스 모두 조회 → W2: 위치어 「김포」(공동존 단어)면 `common`만 조회한다(D-322).
+# W0 현행: 3소스 모두 조회 → W2: 위치어 「김포」(공동존 운영 단어 · D-329)면 `cm_prd`만 조회한다(D-322).
 async def test_gimpo_was_response_time_queries_common_only(real_gateway, recorded) -> None:
     res = await _decompose_and_run(real_gateway, "김포 WAS 응답시간", [])
     assert res["source_status"][0]["status"] in ("ok", "partial"), res.get("error") or res
     (ranking, health) = recorded
-    assert ranking[0] == "apm_fleet" and ranking[1]["source_ids"] == ["common"]
-    assert health[0] == "apm_app_health" and health[1]["source_ids"] == ["common"]
-    assert {t["source_id"] for t in health[1]["targets"]} == {"common"}
-    assert _row_sources(res) == {"common"}, "공동존 행만"
-    assert res["apm_query"]["source_selection"]["used"] == ["common"]
-    assert "공동존 제니퍼만 조회했습니다(근거: 「김포」)" in [
+    assert ranking[0] == "apm_fleet" and ranking[1]["source_ids"] == ["cm_prd"]
+    assert health[0] == "apm_app_health" and health[1]["source_ids"] == ["cm_prd"]
+    assert {t["source_id"] for t in health[1]["targets"]} == {"cm_prd"}
+    assert _row_sources(res) == {"cm_prd"}, "공동존 행만"
+    assert res["apm_query"]["source_selection"]["used"] == ["cm_prd"]
+    assert "공동존 운영 제니퍼만 조회했습니다(근거: 「김포」)" in [
         d["text"] for d in res.get("disclosures") or []]
 
 
@@ -220,15 +220,15 @@ class _RegistryPlus:
 async def test_registry_only_source_is_notice_only_without_gateway_call(
         real_gateway, recorded, monkeypatch) -> None:
     monkeypatch.setattr(aq, "get_registry", lambda: _RegistryPlus(
-        SourceSpec("dr", "DR 제니퍼", terms=("DR 제니퍼",))))
+        SourceSpec("dc3", "제3센터 제니퍼", terms=("제3센터 제니퍼",))))  # 「DR」은 cm_prd 단어
     sel.set_available_apm_sources(set(_SOURCES))
-    for query, hosts in (("DR 제니퍼 WAS 응답시간", None),
-                         ("DR 제니퍼 gp-was-host01 응답시간", ["gp-was-host01"])):
+    for query, hosts in (("제3센터 제니퍼 WAS 응답시간", None),
+                         ("제3센터 제니퍼 gp-was-host01 응답시간", ["gp-was-host01"])):
         recorded.clear()
-        res = await _decompose_and_run(real_gateway, query, ["dr"], hosts=hosts)
+        res = await _decompose_and_run(real_gateway, query, ["dc3"], hosts=hosts)
         assert recorded == [], "게이트웨이 호출 0"
         assert res["degraded_reason"] == "source_unavailable", res
-        assert res["final_response"] == "DR 제니퍼는 연결되지 않아 조회하지 않았습니다."
+        assert res["final_response"] == "제3센터 제니퍼는 연결되지 않아 조회하지 않았습니다."
         assert "설정된 소스" not in json.dumps(res, ensure_ascii=False, default=str)
         assert not _asks_back(res) and aq.SOURCE_CLARIFICATION_KEY not in res
 

@@ -8,8 +8,8 @@
 # - values: 자리표 이름 → 값(시나리오 프롬프트·기대 인자를 채운다)
 # - any_values: 기대 인자 "*"(존재만 판정) 중 레지스트리 허용값 선언이 없는 인자의 가짜 LLM 값(E1 정답 계획 전용)
 # - sources: 소스 되묻기 자동 답의 소스 — by_placeholder(턴 대상 자리표 → 소스 id) · default(그 밖)
-# - answers: 소스 id → 자동 답 문구(라우트의 글 답 해석이 그 소스 하나로 읽는 말 — 「은행존」 단독은 bank·legacy
-#   둘 다라 다시 되묻는다 · D-322 부기 ①)
+# - answers: 소스 id → 자동 답 문구(라우트의 글 답 해석이 그 소스 하나로 읽는 말 — 「공동존」 단독은 어느 소스
+#   단어도 아니라 글 답으로 읽히지 않는다 · 「공동존 운영」·「공동존 개발」처럼 그 소스 단어를 쓴다 · D-322 부기 ①)
 # - canaries: 누출 관문 canary — 목 Open API(apm_gateway/testdata/jennifer/scripts/mock_openapi.py userlist)가
 #   심은 값. 산출물에 한 번이라도 나오면 관문 실패(치환·차단이 새는지 확인)
 
@@ -36,15 +36,15 @@ any_values:
   error_type: OUTOFMEMORY
 
 sources:
-  default: common
+  default: cm_prd
   by_placeholder:
-    inst_b: bank
-    inst_c: common
+    inst_b: b0
+    inst_c: cm_prd
 
 answers:
-  bank: 은행존 제니퍼
-  common: 공동존
-  legacy: 레거시
+  b0: 은행 제니퍼
+  cm_prd: 공동존 운영
+  cm_stg: 공동존 개발
 
 canaries:
   - canary@example.invalid

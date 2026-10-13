@@ -311,7 +311,7 @@ class TestGateEpisodeStore:
         assert client.calls == [{
             "hostname": "was-app-01", "reference_time": "2026-09-29T10:15:00",
             "lookback_minutes": 10, "level": "fatal", "investigation_id": "P-1",
-            "source_ids": ["common"],
+            "source_ids": ["cm_prd", "cm_stg"],  # plans/161 — 공동존 알람은 공동존 제니퍼 두 소스
         }]
 
     async def test_episode_value_never_promotes_page_or_suppress(self):

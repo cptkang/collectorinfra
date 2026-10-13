@@ -33,13 +33,14 @@ PORT = 18987
 USER: dict[str, Any] = {"sub": "demo_user", "role": "user"}
 ADMIN: dict[str, Any] = {"sub": "admin", "role": "admin"}
 
-#: 관리 화면 예시 — 은행존·공동존은 정상, 레거시는 설정됐으나 도달 실패(선택지에서 빼지 않는다)
+#: 관리 화면 예시 — 은행·공동존 운영은 정상, 공동존 개발/스테이징은 설정됐으나 도달 실패(선택지에서
+#: 빼지 않는다) · 소스 id는 운영 확정값(D-329)
 _HEALTH_ROWS = [
-    {"source_id": "bank", "status": "ok", "jennifer_configured": True,
+    {"source_id": "b0", "status": "ok", "jennifer_configured": True,
      "jennifer_reachable": True, "domain_count": 3},
-    {"source_id": "common", "status": "ok", "jennifer_configured": True,
+    {"source_id": "cm_prd", "status": "ok", "jennifer_configured": True,
      "jennifer_reachable": True, "domain_count": 5},
-    {"source_id": "legacy", "status": "degraded", "jennifer_configured": True,
+    {"source_id": "cm_stg", "status": "degraded", "jennifer_configured": True,
      "jennifer_reachable": False, "domain_count": None},
 ]
 

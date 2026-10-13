@@ -554,31 +554,31 @@ def test_sanitize_sources_is_shape_only() -> None:
 async def test_sources_scope_every_gateway_call(gateway) -> None:
     gw = gateway({"apm_instance_map": _env("apm_instance_map", [_inst(1, "a1", "h1"),
                                                                  _inst(2, "a2", "h2")])})
-    await _run(["apm.app_health"], sources=["common"])
+    await _run(["apm.app_health"], sources=["cm_prd"])
     (ranking,) = gw.named("apm_fleet")
-    assert ranking["source_ids"] == ["common"], "첫 홉(부하 순위 · W6 ④)도 고른 소스 안에서"
+    assert ranking["source_ids"] == ["cm_prd"], "첫 홉(부하 순위 · W6 ④)도 고른 소스 안에서"
     (first_hop,) = gw.named("apm_instance_map")
-    assert first_hop["source_ids"] == ["common"], "순위 폴백 목록도 고른 소스 안에서"
+    assert first_hop["source_ids"] == ["cm_prd"], "순위 폴백 목록도 고른 소스 안에서"
     (batch,) = gw.named("apm_app_health")
-    assert batch["source_ids"] == ["common"] and len(batch["targets"]) == 2
+    assert batch["source_ids"] == ["cm_prd"] and len(batch["targets"]) == 2
     gw2 = gateway({"apm_instance_map": _env("apm_instance_map", [_inst(1, "abc", None)])})
     await _run(["apm.app_health"], targets=[{"text": "abc", "kind": "instance"}],
-               sources=["bank", "legacy"])
+               sources=["b0", "cm_stg"])
     (search,) = gw2.named("apm_instance_map")
-    assert search["source_ids"] == ["bank", "legacy"], "해석 검색도 고른 소스 안에서"
+    assert search["source_ids"] == ["b0", "cm_stg"], "해석 검색도 고른 소스 안에서"
     gw3 = gateway()
-    await _run(["apm.ranking"], sources=["bank"])
-    assert gw3.named("apm_fleet")[0]["source_ids"] == ["bank"]
+    await _run(["apm.ranking"], sources=["b0"])
+    assert gw3.named("apm_fleet")[0]["source_ids"] == ["b0"]
 
 
 @pytest.mark.asyncio
 async def test_unknown_source_is_dropped_with_notice(gateway) -> None:
     gw = gateway()
-    res = await _run(["apm.app_health"], _isolated("web01"), sources=["bank", "zzz"])
-    assert gw.named("apm_app_health")[0]["source_ids"] == ["bank"]
+    res = await _run(["apm.app_health"], _isolated("web01"), sources=["b0", "zzz"])
+    assert gw.named("apm_app_health")[0]["source_ids"] == ["b0"]
     (notice,) = _kinds(res, disc.APM_UNRESOLVED_CONDITION)
-    assert "zzz" in notice and "은행존 제니퍼만 조회했습니다" in notice
-    assert res["apm_query"]["source_selection"] == {"given": ["bank", "zzz"], "used": ["bank"]}
+    assert "zzz" in notice and "은행 제니퍼만 조회했습니다" in notice
+    assert res["apm_query"]["source_selection"] == {"given": ["b0", "zzz"], "used": ["b0"]}
 
 
 @pytest.mark.asyncio
@@ -590,7 +590,7 @@ async def test_every_source_invalid_asks_back_without_opening_the_gateway(gatewa
     assert res["source_status"][0]["status"] == "not_queried"
     text = res["final_response"]
     assert "zzz, yyy" in text
-    assert "「은행존 제니퍼」 · 「공동존 제니퍼」 · 「레거시 제니퍼」" in text
+    assert "「은행 제니퍼」 · 「공동존 운영 제니퍼」 · 「공동존 개발/스테이징 제니퍼」" in text
 
 
 def test_sources_ride_the_targets_transport_and_replanning() -> None:
@@ -701,8 +701,8 @@ def test_active_prompt_asks_for_every_needed_view_and_renders_the_source_slot() 
         "## 사내 문서")[0]
     assert "`apm.ranking`" in prompt and "`apm.fleet_events`" in prompt
     assert "`apm.service`" in prompt and "`apm.business_trend`" in prompt
-    assert "`sources`에 소스 id를 넣습니다: `bank`(은행존 제니퍼) · `common`(공동존 제니퍼) ·" \
-           " `legacy`(레거시 제니퍼)" in prompt
+    assert "`sources`에 소스 id를 넣습니다: `b0`(은행 제니퍼) · `cm_prd`(공동존 운영 제니퍼) ·" \
+           " `cm_stg`(공동존 개발/스테이징 제니퍼)" in prompt
     assert prompt.count(pip.APM_SKELETON_TAIL_WITH_SOURCES) == 1
     assert prompt.count('"sources": []') == 1 and prompt.count(pip.APM_SOURCES_RULE) == 1
     assert pip.APM_SOURCES_SLOT not in prompt

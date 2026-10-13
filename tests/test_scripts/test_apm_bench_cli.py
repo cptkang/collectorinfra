@@ -129,7 +129,7 @@ def test_run_invalid_exits_1(tmp_path: Path) -> None:
 
 def test_gate_failure_writes_nothing_but_leak_check(tmp_path: Path,
                                                     monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "run_user_values", lambda: {"login_id": "zz-run-user-9"})
+    monkeypatch.setattr(cli, "run_user_values", lambda *_a: {"login_id": "zz-run-user-9"})
     code, out = _run(tmp_path, response="조회자 zz-run-user-9")
     assert code == 1
     assert {p.name for p in out.iterdir()} == {"leak_check.json"}
@@ -315,3 +315,19 @@ def test_replay_warns_on_holdout_turns(tmp_path: Path, monkeypatch: pytest.Monke
 
 def test_main_routes_every_mode() -> None:
     assert set(cli.MODES) == {"dry_run", "coverage", "run", "fewshot_check", "compare", "replay"}
+
+
+def test_login_password_env_then_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`--user` 비밀번호는 환경변수로만(명령줄 금지) · 없고 비대화형이면 막는다 · 계정 없으면 무관."""
+    assert cli.login_password(None) == (None, None)
+    monkeypatch.setenv(cli.PASSWORD_ENV, "pw-1")
+    assert cli.login_password("ops01") == ("pw-1", None)
+    assert cli.PASSWORD_ENV not in cli.os.environ  # 자식 프로세스로 새지 않게 읽은 뒤 지운다
+    monkeypatch.setattr(cli.sys, "stdin", None)
+    password, blocked = cli.login_password("ops01")
+    assert password is None and blocked is not None and cli.PASSWORD_ENV in blocked
+
+
+def test_run_user_values_uses_login_id() -> None:
+    assert cli.run_user_values("ops01")["login_id"] == "ops01"
+    assert cli.run_user_values()["login_id"]  # 내장 테스트 계정

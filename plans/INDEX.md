@@ -203,6 +203,7 @@
 | 158 | [`158-TODO-baseline-failing-tests.md`](./158-TODO-baseline-failing-tests.md) | 158. 기준선 「원래 실패」 테스트 18건 정리 — 회귀마다 반복되는 실패의 원인 분류와 교정 | **TODO — 계획 작성(코드 0)** · v1.0 · 18건 전부 환경 의존(`.env` 부재 시 활성 DB·플래그 누수 14+2 · `instructor` 미설치 2) · 제품 결함 0 · 가벼운 게이트 G-1·G-2 · W0~W3 | 2026-10-13 |
 | 159 | [`159-minute-period-resolution.md`](./159-minute-period-resolution.md) | 159. 분 단위 기간 해석 — 「최근 30분」·「10분치」가 시간 되묻기로 끝나 제니퍼 조회에 닿지 않는 결함 교정(152 E1 12+4턴) | **완료(2026-10-13)** · D-328 · 사건 분 그대로 · 통계 시 확장+고지 · 「N시간 M분/반」 합성 · 빈도 어휘·슬롯 가드 · 152 E1 87.6→97.7% · 회귀 신규 실패 0 · 매뉴얼 · 후속: 시각 시작점·한자어 수사 *(상세: 계획서 §9)* | 2026-10-13 |
 | 160 | [`160-result-chart-and-field-explain.md`](./160-result-chart-and-field-explain.md) | 160. 조회 결과 그래프 보기 · 칼럼 용어 사전 · 값 해석 링크 · 표 넓게 보기 | **완료** · W0~W6 · **D-327** · 결정적 차트 판정 · `/chart`·`/glossary`·`/interpret`(플래그 기본 off) · 용어 사전 28키 · 표 넓게 보기 · 매뉴얼 U-58~60·A-74~75 · 회귀 원래 실패 66(새 0) · 잔여 §7.4 *(상세: 계획서 §7)* | 2026-10-13 |
+| 161 | [`161-WIP-apm-sources-production-ids.md`](./161-WIP-apm-sources-production-ids.md) | 161. 저장소 제니퍼(APM) 소스 구성을 폐쇄망 운영 구성으로 일치 | **WIP** · **D-329** · `bank`·`common`·`legacy` → `b0`·`cm_prd`·`cm_stg`(terms 확정) · 테스트·픽스처·벤치 시나리오·매뉴얼 갱신 · 잔여: 캡처 4장 · 복합 단어 제외 꼬리 결정 *(상세: 계획서 머리)* | 2026-10-13 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |

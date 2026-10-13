@@ -317,12 +317,11 @@ def _data(sources: list) -> dict:
 
 def test_registry_declares_terms_for_three_jennifer_sources() -> None:
     by_id = {s.id: s.terms for s in get_registry().sources_of("apm")}
+    # plans/161 — 운영 확정 3소스(D-329) · 소스 간 공유 단어 0 · 의도된 갱신
     assert by_id == {
-        "bank": ("은행존", "은행", "K리전", "은행존 제니퍼"),
-        "common": (
-            "공동존", "공동", "김포", "여의도", "운영", "개발", "스테이징", "DR", "공동존 제니퍼",
-        ),
-        "legacy": ("은행존", "은행", "레거시", "레거시 제니퍼"),
+        "b0": ("은행존", "은행", "은행 제니퍼", "레거시", "레거시 제니퍼"),
+        "cm_prd": ("공동존 운영", "김포", "운영", "DR", "공동존 운영 제니퍼"),
+        "cm_stg": ("공동존 개발", "개발", "스테이징", "여의도", "공동존 개발/스테이징 제니퍼"),
     }
 
 
