@@ -26,6 +26,7 @@ from collections.abc import Callable
 from functools import wraps
 from typing import Any
 
+from src.observability import run_capture
 from src.orchestration.db_access import is_access_denied_result
 from src.orchestration.host_inspect import DEGRADED_KEY
 from src.orchestration.process_query import REASON_HOST_UNAVAILABLE
@@ -213,6 +214,7 @@ def audited_investigation(handler: Callable[..., Any], backend: str) -> Callable
             error = exc
             raise
         finally:
+            run_capture.emit("investigation_result", (backend, task, isolated, result))
             if _audit_enabled(app_config):
                 try:
                     await _record(

@@ -1,0 +1,51 @@
+# plans/152 · D-323 — E1(목 Open API) 자리표 파일 — 합성 이름만
+#
+# 값은 게이트웨이 테스트 합성 픽스처(apm_gateway/tests/conftest.py synthetic_fixtures)와 벤치 보충 픽스처
+# (scripts/apm_bench/gateway.py bench_fixtures)의 이름이다. 운영 이름·호스트·토큰을 넣지 않는다.
+# E2(내부망)는 같은 형식의 로컬 전용 파일을 저장소 밖에 두고 --placeholders 로 넘긴다(반출 금지).
+#
+# 칸
+# - values: 자리표 이름 → 값(시나리오 프롬프트·기대 인자를 채운다)
+# - any_values: 기대 인자 "*"(존재만 판정) 중 레지스트리 허용값 선언이 없는 인자의 가짜 LLM 값(E1 정답 계획 전용)
+# - sources: 소스 되묻기 자동 답의 소스 — by_placeholder(턴 대상 자리표 → 소스 id) · default(그 밖)
+# - answers: 소스 id → 자동 답 문구(라우트의 글 답 해석이 그 소스 하나로 읽는 말 — 「은행존」 단독은 bank·legacy
+#   둘 다라 다시 되묻는다 · D-322 부기 ①)
+# - canaries: 누출 관문 canary — 목 Open API(apm_gateway/testdata/jennifer/scripts/mock_openapi.py userlist)가
+#   심은 값. 산출물에 한 번이라도 나오면 관문 실패(치환·차단이 새는지 확인)
+
+values:
+  inst_1: was01_a
+  inst_2: api02_main
+  inst_c: was01_b
+  inst_b: was01_a
+  inst_w: was01_b
+  host_1: was-host01
+  host_2: was-host01.example.local
+  biz_1: 주문
+  biz_2: 결제
+  svc_1: demo-domain
+  svc_2: demo-domain
+  url_1: /order/list
+  pid_1: "4242"
+  guid_1: guid-0000
+  user_1: op01
+  domain_id_1: "1000"
+
+any_values:
+  metrics: [heap_used]
+  error_type: OUTOFMEMORY
+
+sources:
+  default: common
+  by_placeholder:
+    inst_b: bank
+    inst_c: common
+
+answers:
+  bank: 은행존 제니퍼
+  common: 공동존
+  legacy: 레거시
+
+canaries:
+  - canary@example.invalid
+  - canary

@@ -1,0 +1,1998 @@
+# plans/152 · D-323 — 제니퍼 APM 조회 벤치마크 사용자 프롬프트 시나리오 (초안 · W1 검수 전)
+#
+# 생성: 2026-10-12 · 원천 = spec/CAPABILITY-MAP-134.md 표 A(허용 GET 경로 40개) · 표 B(실제 전달하는 선택 인자 26개)
+#       + config/db_registry.yaml solutions[apm].views(보기 29개 · 보기 인자 59개)
+# 규모: 시나리오 121개 · 턴 135개 · holdout 36개(30%)
+#   분할 규칙(결정적): ① 표 A 경로마다 holdout 1개 확보(외부망 전용 변형 우선) ② 출현 순서로 30%까지 채움 — 경로의 dev가 사라지면 건너뜀 · heavy는 dev 고정
+# 커버리지(생성 시 대조): 표 A 미커버 0 · 표 B 미커버 0 · 보기 미커버 0 · 보기 인자 미커버 0
+#   경로별 분할: 표 A 40경로 모두 dev·holdout 양쪽 존재 — 단 holdout이 외부망 전용(e2_skip · WAS 접촉 1회 제한): COV-ACTIVE-DETAIL, COV-ENV, COV-LOADED-CLASS
+#
+# 규칙
+# - 프롬프트에 도구명(apm_)·보기명(apm.)·API 경로(/api)·영문 인자 키를 넣지 않는다(로더 린트 — W1).
+# - 운영 이름은 자리표: {{inst_N}} 인스턴스명 · {{host_N}} 호스트명 · {{biz_N}} 업무명 · {{svc_N}} 서비스(도메인)명 ·
+#   {{inst_c}}/{{inst_b}} 공동존/은행존 인스턴스 · {{inst_w}} 운영자 지정 WAS 접촉 허용 인스턴스 1개 · {{url_1}} · {{pid_1}} ·
+#   {{guid_1}} · {{user_1}} · {{domain_id_1}}. 내부망 키트가 운영 인벤토리에서 채운다(로컬 전용 · 반출 금지).
+# - 소스 되묻기(D-322): expect.clarify가 없는 턴에서 소스 되묻기가 오면 드라이버가 대상 자리표의 소스로 답하고
+#   기록만 한다(실패 아님). clarify가 적힌 턴은 되묻기가 정답이다.
+#
+# expect 칸
+# - agents: 담당 처리기 집합 · views: 보기 집합(정확 일치 판정 · 누락/초과 수 기록)
+# - target: none(대상 없음) · untargeted(서버 미지정 = 상위 N · D-313) · host:N · inst:N(inst:c 공동존 · inst:b 은행존) · biz:N · svc:N · inst_w · ref(앞 턴 행 지목)
+# - window: default(말 안 함 = 보기 기본 창) · none · current · compare · range:<분> · hourly:today|yesterday|<분>
+# - args: 요구한 보기 인자만 적는다 — 적지 않은 인자가 붙으면 환각(arg_hallucination). "*" = 값은 지표 카탈로그 의존 · 존재만 판정
+# - apm_sources: 소스 지목 반영 · clarify: source|required_arg(되묻기가 정답) · refusal: unsupported|write_control(거절이 정답)
+#
+# 플래그(D-323 ③ 운영 뷰 서버 허용 범위)
+# - heavy: 무거운 등급 — 최대 5개 · 맨 마지막 · 앞 단계 정상일 때만 · was_touch: WAS 에이전트 접촉 가능 API — API당 1회 · {{inst_w}}만
+# - e2_skip: 내부망에서 건너뜀(사유) · sensitive: 응답 모양만 기록
+
+- id: APM-INST-list
+  split: holdout
+  covers:
+  - COV-DOMAIN
+  - COV-INSTANCE
+  turns:
+  - prompt: 제니퍼에 등록된 WAS 인스턴스 전체 목록 보여줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.instances
+      target: none
+      window: none
+- id: APM-INST-domain
+  split: dev
+  covers:
+  - COV-INSTANCE
+  turns:
+  - prompt: 도메인 {{domain_id_1}}번에 속한 인스턴스만 보여줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.instances
+      target: none
+      window: none
+      args:
+        domain_id: '{{domain_id_1}}'
+- id: APM-INST-host
+  split: holdout
+  covers:
+  - COV-INSTANCE
+  turns:
+  - prompt: '{{host_1}} 서버에 올라가 있는 WAS 인스턴스가 뭐야?'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.instances
+      target: host:1
+      window: none
+- id: APM-HEALTH-inst
+  split: holdout
+  covers:
+  - COV-RT-INSTANCE
+  - COV-RT-INSTANCE.instance_id
+  - COV-TX-TIME
+  turns:
+  - prompt: '{{inst_1}} 응답시간이랑 TPS 지금 어때?'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.app_health
+      target: inst:1
+      window: default
+- id: APM-HEALTH-host-30m
+  split: dev
+  covers:
+  - COV-TX-TIME
+  - COV-TX-TIME.instance_id
+  turns:
+  - prompt: '{{host_1}} WAS 지난 30분 에러율이랑 p95 응답시간 알려줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.app_health
+      target: host:1
+      window: range:30
+- id: APM-HEALTH-colloquial
+  split: holdout
+  covers:
+  - COV-RT-INSTANCE
+  turns:
+  - prompt: '{{inst_2}} 요즘 왜 이렇게 느려? 최근 30분 응답 좀 봐줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.app_health
+      target: inst:2
+      window: range:30
+- id: APM-HEALTH-untargeted
+  split: dev
+  covers:
+  - COV-RT-INSTANCE
+  heavy: true
+  turns:
+  - prompt: 지금 WAS들 응답시간 상태 어때?
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.app_health
+      target: untargeted
+      window: default
+    note: 서버 미지정 = TPS 상위 20대(D-313) — 전 도메인 실시간 순회
+- id: APM-RUNTIME-heap
+  split: holdout
+  covers:
+  - COV-DBM-INSTANCE
+  turns:
+  - prompt: '{{inst_1}} 지난 6시간 힙 메모리 추세 보여줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.runtime
+      target: inst:1
+      window: range:360
+- id: APM-RUNTIME-metrics-interval
+  split: holdout
+  covers:
+  - COV-DBM-INSTANCE
+  turns:
+  - prompt: '{{host_1}} 오늘 GC 시간이랑 스레드 수 추세를 10분 간격으로'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.runtime
+      target: host:1
+      window: hourly:today
+      args:
+        metrics: '*'
+        interval_minute: 10
+- id: APM-RUNTIME-cpu-5m
+  split: dev
+  covers:
+  - COV-DBM-INSTANCE
+  turns:
+  - prompt: '{{inst_2}} 지난 3시간 프로세스 CPU 추세 5분 단위로'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.runtime
+      target: inst:2
+      window: range:180
+      args:
+        metrics: '*'
+        interval_minute: 5
+- id: APM-POOL-inst
+  split: dev
+  covers:
+  - COV-RT-INSTANCE
+  - COV-ACTIVE-LIST
+  turns:
+  - prompt: '{{inst_1}} DB 커넥션 풀 지금 얼마나 쓰고 있어?'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.pool
+      target: inst:1
+      window: current
+- id: APM-POOL-mode
+  split: holdout
+  covers:
+  - COV-ACTIVE-LIST
+  turns:
+  - prompt: '{{host_2}} 커넥션 풀이랑 실행 모드별 서비스 개수 보여줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.pool
+      target: host:2
+      window: current
+- id: APM-ACTIVE-inst
+  split: dev
+  covers:
+  - COV-ACTIVE-LIST
+  - COV-ACTIVE-LIST.instance_id
+  turns:
+  - prompt: '{{inst_1}}에서 지금 돌고 있는 서비스 보여줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.active
+      target: inst:1
+      window: current
+- id: APM-ACTIVE-n
+  split: dev
+  covers:
+  - COV-ACTIVE-LIST
+  turns:
+  - prompt: '{{host_1}} 실행 중인 서비스 오래 걸린 순으로 3개만'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.active
+      target: host:1
+      window: current
+      args:
+        n: 3
+- id: APM-ACTIVE-full
+  split: holdout
+  covers:
+  - COV-ACTIVE-LIST
+  turns:
+  - prompt: '{{inst_2}} 지금 실행 중인 요청 하나도 빼지 말고 전부'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.active
+      target: inst:2
+      window: current
+      args:
+        full: true
+- id: APM-SLOWTX-10m
+  split: dev
+  covers:
+  - COV-TX-TIME
+  turns:
+  - prompt: '{{inst_1}} 최근 10분 느린 거래 보여줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.slow_tx
+      target: inst:1
+      window: range:10
+- id: APM-SLOWTX-n
+  split: dev
+  covers:
+  - COV-TX-TIME
+  turns:
+  - prompt: '{{host_1}} 지난 1시간 동안 제일 느렸던 트랜잭션 5개'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.slow_tx
+      target: host:1
+      window: range:60
+      args:
+        n: 5
+- id: APM-SLOWTX-full
+  split: holdout
+  covers:
+  - COV-TX-TIME
+  turns:
+  - prompt: '{{inst_2}} 최근 5분 트랜잭션 전부 다'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.slow_tx
+      target: inst:2
+      window: range:5
+      args:
+        full: true
+- id: APM-SLOWTX-colloquial
+  split: dev
+  covers:
+  - COV-TX-TIME
+  turns:
+  - prompt: 방금 {{inst_1}}에서 오래 걸린 거래들 있지? 15분 전부터 지금까지
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.slow_tx
+      target: inst:1
+      window: range:15
+- id: APM-EVENT-default
+  split: holdout
+  covers:
+  - COV-EVENT
+  - COV-EVENT.instance_id
+  turns:
+  - prompt: '{{inst_1}} 최근에 이벤트 뜬 거 있어?'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.events
+      target: inst:1
+      window: default
+- id: APM-EVENT-fatal-exact
+  split: holdout
+  covers:
+  - COV-EVENT
+  - COV-EVENT.level
+  turns:
+  - prompt: '{{host_1}} 오늘 fatal 이벤트만 보여줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.events
+      target: host:1
+      window: hourly:today
+      args:
+        level: fatal
+        level_mode: exact
+- id: APM-EVENT-warning-min
+  split: dev
+  covers:
+  - COV-EVENT.level
+  turns:
+  - prompt: '{{inst_1}} 지난 2시간 warning 이상 이벤트'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.events
+      target: inst:1
+      window: range:120
+      args:
+        level: warning
+        level_mode: min
+- id: APM-EVENT-normal
+  split: dev
+  covers:
+  - COV-EVENT.level
+  turns:
+  - prompt: '{{host_2}} 최근 30분 normal 레벨 이벤트만'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.events
+      target: host:2
+      window: range:30
+      args:
+        level: normal
+        level_mode: exact
+- id: APM-EVENT-n
+  split: dev
+  covers:
+  - COV-EVENT
+  turns:
+  - prompt: '{{inst_2}} 최근 1시간 이벤트 10건만'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.events
+      target: inst:2
+      window: range:60
+      args:
+        n: 10
+- id: APM-EVENT-full
+  split: dev
+  covers:
+  - COV-EVENT
+  turns:
+  - prompt: '{{host_2}} 오늘 발생한 이벤트 전부'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.events
+      target: host:2
+      window: hourly:today
+      args:
+        full: true
+- id: APM-ERROR-record
+  split: holdout
+  covers:
+  - COV-ERROR
+  - COV-ERROR.instance_id
+  turns:
+  - prompt: '{{inst_1}} 오늘 오류 기록 보여줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.events
+      target: inst:1
+      window: hourly:today
+      args:
+        record: error
+- id: APM-ERROR-type
+  split: dev
+  covers:
+  - COV-ERROR.error_type
+  turns:
+  - prompt: '{{inst_1}} 지난 3시간 OutOfMemory 오류 있었어?'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.events
+      target: inst:1
+      window: range:180
+      args:
+        record: error
+        error_type: OUTOFMEMORY
+- id: APM-ERROR-colloquial
+  split: dev
+  covers:
+  - COV-ERROR
+  turns:
+  - prompt: '{{host_1}} 한 시간 전부터 에러 난 거 목록으로 줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.events
+      target: host:1
+      window: range:60
+      args:
+        record: error
+- id: APM-APPSTAT-today
+  split: holdout
+  covers:
+  - COV-STAT-APP
+  - COV-STAT-APP.instance_id
+  turns:
+  - prompt: '{{inst_1}} 오늘 URL별 호출 통계 보여줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.app_stats
+      target: inst:1
+      window: hourly:today
+- id: APM-APPSTAT-failures
+  split: dev
+  covers:
+  - COV-STAT-APP.sort_by_metrics
+  - COV-STAT-APP.max_row
+  turns:
+  - prompt: '{{host_1}} 오늘 실패 많은 URL 상위 5개'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.app_stats
+      target: host:1
+      window: hourly:today
+      args:
+        sort_by: failures
+        n: 5
+- id: APM-APPSTAT-resp-yesterday
+  split: dev
+  covers:
+  - COV-STAT-APP.sort_by_metrics
+  turns:
+  - prompt: '{{inst_2}} 어제 평균 응답시간 긴 URL 순으로 보여줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.app_stats
+      target: inst:2
+      window: hourly:yesterday
+      args:
+        sort_by: responseTime
+- id: APM-APPSTAT-maxresp
+  split: dev
+  covers:
+  - COV-STAT-APP.sort_by_metrics
+  - COV-STAT-APP.max_row
+  turns:
+  - prompt: '{{inst_1}} 지난 3시간 최대 응답시간 긴 URL 10개'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.app_stats
+      target: inst:1
+      window: hourly:180
+      args:
+        sort_by: maxResponseTime
+        n: 10
+- id: APM-APPSTAT-bad
+  split: dev
+  covers:
+  - COV-STAT-APP.sort_by_metrics
+  turns:
+  - prompt: '{{inst_2}} 오늘 응답 지연 많이 난 화면 순위'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.app_stats
+      target: inst:2
+      window: hourly:today
+      args:
+        sort_by: badResponses
+- id: APM-APPSTAT-name
+  split: dev
+  covers:
+  - COV-STAT-APP.application_name
+  turns:
+  - prompt: '{{inst_1}} 오늘 {{url_1}} 호출 통계'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.app_stats
+      target: inst:1
+      window: hourly:today
+      args:
+        application_name: '{{url_1}}'
+- id: APM-APPSTAT-full
+  split: dev
+  covers:
+  - COV-STAT-APP
+  turns:
+  - prompt: '{{host_2}} 오늘 URL 통계 하나도 빠짐없이'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.app_stats
+      target: host:2
+      window: hourly:today
+      args:
+        full: true
+- id: APM-SQLSTAT-today
+  split: holdout
+  covers:
+  - COV-STAT-SQL
+  - COV-STAT-SQL.instance_id
+  turns:
+  - prompt: '{{inst_1}} 오늘 SQL 실행 통계'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.sql_stats
+      target: inst:1
+      window: hourly:today
+- id: APM-SQLSTAT-resp-n
+  split: dev
+  covers:
+  - COV-STAT-SQL.sort_by_metrics
+  - COV-STAT-SQL.max_row
+  turns:
+  - prompt: '{{host_1}} 오늘 실행 시간이 가장 긴 SQL 10개'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.sql_stats
+      target: host:1
+      window: hourly:today
+      args:
+        sort_by: responseTime
+        n: 10
+- id: APM-SQLSTAT-failures
+  split: dev
+  covers:
+  - COV-STAT-SQL.sort_by_metrics
+  turns:
+  - prompt: '{{inst_2}} 오늘 실패한 쿼리 많은 순서대로'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.sql_stats
+      target: inst:2
+      window: hourly:today
+      args:
+        sort_by: failures
+- id: APM-SQLSTAT-full
+  split: dev
+  covers:
+  - COV-STAT-SQL
+  turns:
+  - prompt: '{{inst_1}} 어제 SQL 통계 전부'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.sql_stats
+      target: inst:1
+      window: hourly:yesterday
+      args:
+        full: true
+- id: APM-EXTSTAT-today
+  split: holdout
+  covers:
+  - COV-STAT-EXT
+  - COV-STAT-EXT.instance_id
+  turns:
+  - prompt: '{{inst_1}} 오늘 외부 연계 호출 통계'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.external_stats
+      target: inst:1
+      window: hourly:today
+- id: APM-EXTSTAT-calls-n
+  split: dev
+  covers:
+  - COV-STAT-EXT.sort_by_metrics
+  - COV-STAT-EXT.max_row
+  turns:
+  - prompt: '{{host_2}} 오늘 외부 호출 중에 호출 수 많은 곳 5개'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.external_stats
+      target: host:2
+      window: hourly:today
+      args:
+        sort_by: calls
+        n: 5
+- id: APM-EXTSTAT-fail-full
+  split: dev
+  covers:
+  - COV-STAT-EXT.sort_by_metrics
+  turns:
+  - prompt: '{{inst_2}} 어제 외부 연계 실패 많은 순으로 전부'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.external_stats
+      target: inst:2
+      window: hourly:yesterday
+      args:
+        sort_by: failures
+        full: true
+- id: APM-METRICS-all
+  split: holdout
+  covers:
+  - COV-METRICS
+  turns:
+  - prompt: 제니퍼에서 조회할 수 있는 지표 목록 보여줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.metrics
+      target: none
+      window: none
+- id: APM-METRICS-instance
+  split: dev
+  covers:
+  - COV-METRICS
+  turns:
+  - prompt: 인스턴스 단위로 볼 수 있는 지표 이름들 알려줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.metrics
+      target: none
+      window: none
+      args:
+        scope: instance
+- id: APM-METRICS-domain
+  split: dev
+  covers:
+  - COV-METRICS
+  turns:
+  - prompt: 서비스(도메인) 단위 지표는 뭐가 있어?
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.metrics
+      target: none
+      window: none
+      args:
+        scope: domain
+- id: APM-METRICS-business
+  split: dev
+  covers:
+  - COV-METRICS
+  turns:
+  - prompt: 업무 단위로 볼 수 있는 지표 이름
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.metrics
+      target: none
+      window: none
+      args:
+        scope: business
+- id: APM-METRICS-application
+  split: dev
+  covers:
+  - COV-METRICS
+  turns:
+  - prompt: URL 통계에 나오는 지표 항목들 알려줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.metrics
+      target: none
+      window: none
+      args:
+        scope: application
+- id: APM-METRICS-sql
+  split: dev
+  covers:
+  - COV-METRICS
+  turns:
+  - prompt: SQL 통계 지표 목록
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.metrics
+      target: none
+      window: none
+      args:
+        scope: sql
+- id: APM-METRICS-external
+  split: dev
+  covers:
+  - COV-METRICS
+  turns:
+  - prompt: 외부 호출 통계에서 볼 수 있는 지표는?
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.metrics
+      target: none
+      window: none
+      args:
+        scope: external_call
+- id: APM-CHANGES-default
+  split: holdout
+  covers:
+  - COV-DEPLOY
+  turns:
+  - prompt: '{{inst_1}} 최근에 소스 변경 있었어?'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.changes
+      target: inst:1
+      window: default
+- id: APM-CHANGES-3d
+  split: dev
+  covers:
+  - COV-DEPLOY
+  turns:
+  - prompt: '{{host_1}} 지난 3일 동안 소스 변경 감지 이력'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.changes
+      target: host:1
+      window: range:4320
+- id: APM-IMPACT-default
+  split: dev
+  covers:
+  - COV-DEPLOY
+  - COV-STAT-APP
+  - COV-ERROR
+  turns:
+  - prompt: '{{inst_1}} 최근 배포 전후로 오류율 달라졌어?'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.change_impact
+      target: inst:1
+      window: default
+- id: APM-IMPACT-width
+  split: dev
+  covers:
+  - COV-DEPLOY
+  turns:
+  - prompt: '{{inst_2}} 소스 변경 전후 30분씩 비교해줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.change_impact
+      target: inst:2
+      window: default
+      args:
+        width_minutes: 30
+- id: APM-IMPACT-n
+  split: dev
+  covers:
+  - COV-DEPLOY
+  turns:
+  - prompt: '{{host_1}} 지난주 소스 변경 전후 비교 — 변경 3건만'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.change_impact
+      target: host:1
+      window: range:10080
+      args:
+        n: 3
+- id: APM-IMPACT-full
+  split: dev
+  covers:
+  - COV-DEPLOY
+  turns:
+  - prompt: '{{inst_1}} 지난 이틀 소스 변경 전후 비교 전부'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.change_impact
+      target: inst:1
+      window: range:2880
+      args:
+        full: true
+- id: APM-COMPARE-day
+  split: dev
+  covers:
+  - COV-STAT-APP
+  turns:
+  - prompt: '{{inst_1}} 오늘 오전이랑 어제 오전 응답시간 비교해줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.period_compare
+      target: inst:1
+      window: compare
+- id: APM-COMPARE-week
+  split: dev
+  covers:
+  - COV-STAT-APP
+  turns:
+  - prompt: '{{host_1}} 이번 주 호출 수랑 실패율을 지난주랑 비교'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.period_compare
+      target: host:1
+      window: compare
+- id: APM-SERVICE-all
+  split: holdout
+  covers:
+  - COV-RT-DOMAIN
+  turns:
+  - prompt: 전체 서비스 현재 TPS랑 응답시간 보여줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.service
+      target: none
+      window: current
+- id: APM-SERVICE-name
+  split: dev
+  covers:
+  - COV-RT-DOMAIN
+  - COV-RT-DOMAIN.domain_id
+  turns:
+  - prompt: '{{svc_1}} 서비스 지금 상태 어때?'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.service
+      target: svc:1
+      window: current
+- id: APM-SVCTREND-6h
+  split: holdout
+  covers:
+  - COV-DBM-DOMAIN
+  turns:
+  - prompt: '{{svc_1}} 서비스 지난 6시간 TPS 추세'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.service_trend
+      target: svc:1
+      window: range:360
+- id: APM-SVCTREND-interval
+  split: dev
+  covers:
+  - COV-DBM-DOMAIN
+  turns:
+  - prompt: '{{svc_2}} 서비스 오늘 응답시간 추세 30분 간격으로'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.service_trend
+      target: svc:2
+      window: hourly:today
+      args:
+        metrics: '*'
+        interval_minute: 30
+- id: APM-BIZ-list
+  split: holdout
+  covers:
+  - COV-BUSINESS
+  turns:
+  - prompt: 제니퍼에 정의된 업무 목록 보여줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.business
+      target: none
+      window: none
+      args:
+        mode: list
+    note: 업무 정의 콜드 캐시 = 도메인 수만큼 호출(약 350) — 업무 묶음 첫 순서
+- id: APM-BIZ-list-names
+  split: dev
+  covers:
+  - COV-BUSINESS
+  turns:
+  - prompt: 업무 이름들만 쭉 뽑아줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.business
+      target: none
+      window: none
+      args:
+        mode: list
+- id: APM-BIZ-name
+  split: holdout
+  covers:
+  - COV-RT-BUSINESS
+  - COV-RT-BUSINESS.business_id
+  turns:
+  - prompt: '{{biz_1}} 업무 지금 응답시간이랑 TPS'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.business
+      target: biz:1
+      window: current
+- id: APM-BIZ-all
+  split: dev
+  covers:
+  - COV-RT-BUSINESS
+  turns:
+  - prompt: 전체 업무 현재 상태 보여줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.business
+      target: none
+      window: current
+- id: APM-BIZTREND-3h
+  split: holdout
+  covers:
+  - COV-DBM-BUSINESS
+  turns:
+  - prompt: '{{biz_1}} 업무 지난 3시간 TPS 추세'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.business_trend
+      target: biz:1
+      window: range:180
+- id: APM-BIZTREND-interval
+  split: dev
+  covers:
+  - COV-DBM-BUSINESS
+  turns:
+  - prompt: '{{biz_2}} 업무 오늘 응답시간 추세 10분 단위로'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.business_trend
+      target: biz:2
+      window: hourly:today
+      args:
+        metrics: '*'
+        interval_minute: 10
+- id: APM-RANK-tps-asc
+  split: dev
+  covers:
+  - COV-RT-INSTANCE
+  heavy: true
+  turns:
+  - prompt: 지금 TPS가 가장 낮은 WAS 5개
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.ranking
+      target: untargeted
+      window: current
+      args:
+        metric: tps
+        order: asc
+        n: 5
+- id: APM-RANK-failrate-full
+  split: dev
+  covers:
+  - COV-STAT-APP
+  heavy: true
+  turns:
+  - prompt: 지난 1시간 실패율 기준으로 전체 WAS 순위 전부
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.ranking
+      target: untargeted
+      window: range:60
+      args:
+        metric: failure_rate
+        full: true
+- id: APM-RANK-svc-heap
+  split: dev
+  covers:
+  - COV-RT-INSTANCE
+  turns:
+  - prompt: '{{svc_1}} 서비스 안에서 힙 많이 쓰는 인스턴스 순위'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.ranking
+      target: svc:1
+      window: current
+      args:
+        metric: heap_used_mb
+        service: '{{svc_1}}'
+- id: APM-RANK-svc-slow3
+  split: dev
+  covers:
+  - COV-RT-INSTANCE
+  turns:
+  - prompt: '{{svc_2}} 서비스에서 응답 가장 느린 인스턴스 3개'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.ranking
+      target: svc:2
+      window: current
+      args:
+        n: 3
+        service: '{{svc_2}}'
+- id: APM-FLEETEV-fatal
+  split: dev
+  covers:
+  - COV-EVENT
+  heavy: true
+  turns:
+  - prompt: 전체 WAS에서 오늘 fatal 이벤트만 보여줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.fleet_events
+      target: untargeted
+      window: hourly:today
+      args:
+        level: fatal
+        level_mode: exact
+- id: APM-FLEETEV-oom-full
+  split: dev
+  covers:
+  - COV-ERROR
+  heavy: true
+  turns:
+  - prompt: 모든 WAS의 최근 1시간 OutOfMemory 오류 전부
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.fleet_events
+      target: untargeted
+      window: range:60
+      args:
+        error_type: OUTOFMEMORY
+        full: true
+- id: APM-FLEETEV-svc
+  split: dev
+  covers:
+  - COV-EVENT
+  turns:
+  - prompt: '{{svc_1}} 서비스 인스턴스 전체에서 최근 1시간 warning 이상 이벤트 20건'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.fleet_events
+      target: svc:1
+      window: range:60
+      args:
+        level: warning
+        level_mode: min
+        n: 20
+        service: '{{svc_1}}'
+- id: APM-RULE-all
+  split: holdout
+  covers:
+  - COV-RULE-ERROR
+  - COV-RULE-METRIC
+  - COV-RULE-COMPARE
+  turns:
+  - prompt: '{{inst_1}}에 걸려 있는 이벤트 룰 보여줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.event_rules
+      target: inst:1
+      window: none
+- id: APM-RULE-error
+  split: dev
+  covers:
+  - COV-RULE-ERROR
+  turns:
+  - prompt: '{{host_1}} 쪽 오류 이벤트 룰만 보여줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.event_rules
+      target: host:1
+      window: none
+      args:
+        rule_type: error
+- id: APM-RULE-metric-inst
+  split: dev
+  covers:
+  - COV-RULE-METRIC
+  turns:
+  - prompt: '{{inst_1}} 인스턴스 대상 지표 이벤트 룰'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.event_rules
+      target: inst:1
+      window: none
+      args:
+        rule_type: metric
+        target: instance
+- id: APM-RULE-metric-biz
+  split: dev
+  covers:
+  - COV-RULE-METRIC
+  turns:
+  - prompt: '{{inst_2}} 도메인의 업무 대상 지표 룰'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.event_rules
+      target: inst:2
+      window: none
+      args:
+        rule_type: metric
+        target: business
+- id: APM-RULE-compare-domain
+  split: dev
+  covers:
+  - COV-RULE-COMPARE
+  turns:
+  - prompt: '{{host_2}} 도메인 전체 대상 비교 이벤트 룰'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.event_rules
+      target: host:2
+      window: none
+      args:
+        rule_type: compare
+        target: domain
+- id: APM-RULE-compare-inst
+  split: dev
+  covers:
+  - COV-RULE-COMPARE
+  turns:
+  - prompt: '{{inst_2}} 인스턴스 대상 비교 룰 설정'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.event_rules
+      target: inst:2
+      window: none
+      args:
+        rule_type: compare
+        target: instance
+- id: APM-RULE-errtype
+  split: holdout
+  covers:
+  - COV-RULE-ERROR-APPLIED
+  - COV-RULE-ERROR-INDIV
+  turns:
+  - prompt: '{{inst_1}}의 OutOfMemory 오류 룰 적용 현황이랑 인스턴스 개별 설정'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.event_rules
+      target: inst:1
+      window: none
+      args:
+        error_type: OUTOFMEMORY
+- id: APM-RULE-errtype-sql
+  split: dev
+  covers:
+  - COV-RULE-ERROR-APPLIED
+  - COV-RULE-ERROR-INDIV
+  turns:
+  - prompt: '{{inst_2}}에 SQL 예외 오류 룰이 적용돼 있는지, 개별 설정은 어떤지'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.event_rules
+      target: inst:2
+      window: none
+      args:
+        error_type: '*'
+- id: APM-RULE-color
+  split: holdout
+  covers:
+  - COV-RULE-COLOR
+  turns:
+  - prompt: 실행 중 서비스 응답시간 색상 기준값이 어떻게 설정돼 있어?
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.event_rules
+      target: none
+      window: none
+      args:
+        kind: color_boundary
+- id: APM-RULE-color-colloquial
+  split: dev
+  covers:
+  - COV-RULE-COLOR
+  turns:
+  - prompt: 실행 중 서비스 초록·노랑·빨강 구분하는 기준 몇 초로 잡혀 있어?
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.event_rules
+      target: none
+      window: none
+      args:
+        kind: color_boundary
+- id: APM-PROC-pid
+  split: holdout
+  covers:
+  - COV-PROC-INSTANCE
+  - COV-PROC-INSTANCE.processId
+  turns:
+  - prompt: PID {{pid_1}}번 프로세스는 어느 WAS 인스턴스야?
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.process
+      target: none
+      window: none
+      args:
+        process_id: '{{pid_1}}'
+- id: APM-PROC-pid-host
+  split: dev
+  covers:
+  - COV-PROC-INSTANCE.hostname
+  turns:
+  - prompt: '{{host_1}} 서버의 PID {{pid_1}}는 어떤 인스턴스지?'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.process
+      target: host:1
+      window: none
+      args:
+        process_id: '{{pid_1}}'
+- id: APM-PROC-missing
+  split: dev
+  covers:
+  - COV-PROC-INSTANCE
+  turns:
+  - prompt: 프로세스 번호로 WAS 인스턴스 찾아줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.process
+      target: none
+      window: none
+      clarify: required_arg
+    note: 필수 인자 없음 → 되묻기(조회 0)가 정답 · 되묻기 문구는 F1 첫 예문을 쓴다
+- id: APM-JSERVER-resource
+  split: holdout
+  covers:
+  - COV-DS-DOMAINS
+  - COV-DS-RESOURCE
+  - COV-DS-SYSPROP
+  turns:
+  - prompt: 제니퍼 데이터 서버 자원 사용량 보여줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.jennifer_server
+      target: none
+      window: none
+- id: APM-JSERVER-domains
+  split: dev
+  covers:
+  - COV-DS-DOMAINS
+  - COV-DS-RESOURCE
+  - COV-DS-SYSPROP
+  turns:
+  - prompt: 데이터 서버별 도메인 배치랑 설정값 알려줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.jennifer_server
+      target: none
+      window: none
+      args:
+        kind: data_server
+- id: APM-JSERVER-dbpath
+  split: holdout
+  covers:
+  - COV-DB-PATH
+  turns:
+  - prompt: '{{inst_1}} 도메인 데이터가 저장되는 DB 경로'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.jennifer_server
+      target: inst:1
+      window: none
+      args:
+        kind: db_path
+- id: APM-JSERVER-dbpath-host
+  split: dev
+  covers:
+  - COV-DB-PATH
+  turns:
+  - prompt: '{{host_2}} 쪽 제니퍼 성능 데이터 저장 위치 알려줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.jennifer_server
+      target: host:2
+      window: none
+      args:
+        kind: db_path
+- id: APM-JSERVER-rdb
+  split: holdout
+  covers:
+  - COV-RDB-EXPORT
+  turns:
+  - prompt: 수동 RDB Export 진행 상태 확인해줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.jennifer_server
+      target: none
+      window: none
+      args:
+        kind: rdb_export
+- id: APM-JSERVER-rdb-colloquial
+  split: dev
+  covers:
+  - COV-RDB-EXPORT
+  turns:
+  - prompt: RDB로 내보내는 작업 지금 어디까지 됐어?
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.jennifer_server
+      target: none
+      window: none
+      args:
+        kind: rdb_export
+- id: APM-CLASSES-search
+  split: dev
+  covers:
+  - COV-LOADED-CLASS
+  - COV-LOADED-CLASS.search
+  was_touch: true
+  turns:
+  - prompt: '{{inst_w}}에 로드된 클래스 중에 이름에 Order 들어간 것'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.loaded_classes
+      target: inst_w
+      window: none
+      args:
+        search: Order
+- id: APM-CLASSES-search-2
+  split: holdout
+  covers:
+  - COV-LOADED-CLASS
+  - COV-LOADED-CLASS.search
+  was_touch: true
+  e2_skip: was_touch_limit
+  turns:
+  - prompt: '{{inst_w}}에 Payment라는 이름이 들어간 클래스 올라와 있어?'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.loaded_classes
+      target: inst_w
+      window: none
+      args:
+        search: Payment
+    note: 내부망은 COV-LOADED-CLASS 1회 제한(CLASSES-search가 사용) — 외부망만 실행
+- id: APM-ENV-system-key
+  split: dev
+  covers:
+  - COV-ENV
+  was_touch: true
+  turns:
+  - prompt: '{{inst_w}} 환경변수 JAVA_HOME 값 알려줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.environment
+      target: inst_w
+      window: none
+      args:
+        scope: SYSTEM
+        key: JAVA_HOME
+- id: APM-ENV-java
+  split: holdout
+  covers:
+  - COV-ENV
+  was_touch: true
+  e2_skip: was_touch_limit
+  turns:
+  - prompt: '{{inst_w}} JVM 시스템 속성 목록 보여줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.environment
+      target: inst_w
+      window: none
+      args:
+        scope: JAVA
+    note: 내부망은 COV-ENV 1회 제한(ENV-system-key가 사용) — 외부망만 실행
+- id: APM-USERS-list
+  split: holdout
+  covers:
+  - COV-AUTH-USERLIST
+  - COV-REST-USERS
+  sensitive: true
+  turns:
+  - prompt: 제니퍼 사용자 계정 목록 보여줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.users
+      target: none
+      window: none
+- id: APM-USERS-count
+  split: dev
+  covers:
+  - COV-AUTH-USERLIST
+  - COV-REST-USERS
+  sensitive: true
+  turns:
+  - prompt: 제니퍼 쓰는 계정 몇 개나 있어?
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.users
+      target: none
+      window: none
+- id: APM-USERS-one
+  split: holdout
+  covers:
+  - COV-REST-USER
+  sensitive: true
+  turns:
+  - prompt: 제니퍼 계정 {{user_1}} 정보 확인해줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.users
+      target: none
+      window: none
+      args:
+        user_id: '{{user_1}}'
+- id: APM-USERS-one-group
+  split: dev
+  covers:
+  - COV-REST-USER
+  sensitive: true
+  turns:
+  - prompt: '{{user_1}} 계정은 어떤 권한 그룹이야?'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.users
+      target: none
+      window: none
+      args:
+        user_id: '{{user_1}}'
+- id: APM-MT-profile
+  split: holdout
+  covers:
+  - COV-TX-TXID
+  - COV-TX-PROFILE
+  - COV-TX-SQL
+  - COV-TX-SQL.include_param_key
+  turns:
+  - prompt: '{{inst_1}} 최근 30분 느린 거래 보여줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.slow_tx
+      target: inst:1
+      window: range:30
+  - prompt: 두 번째 거래 프로파일 보여줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.profile
+      target: ref
+      window: none
+      args:
+        ref: 2
+  - prompt: 그 거래에서 오래 걸린 구간 3개만, SQL 파라미터도 같이
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.profile
+      target: ref
+      window: none
+      args:
+        ref: 2
+        top_k: 3
+        include_param_key: true
+- id: APM-MT-trace
+  split: holdout
+  covers:
+  - COV-TX-GUID
+  turns:
+  - prompt: '{{host_1}} 지난 1시간 느린 거래 5개'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.slow_tx
+      target: host:1
+      window: range:60
+      args:
+        n: 5
+  - prompt: 첫 번째 거래가 거쳐 간 서버들 추적해줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.trace
+      target: ref
+      window: default
+      args:
+        ref: 1
+- id: APM-MT-guid-direct
+  split: dev
+  covers:
+  - COV-TX-GUID
+  turns:
+  - prompt: GUID {{guid_1}} 거래 흐름 추적
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.trace
+      target: none
+      window: default
+      args:
+        guid: '{{guid_1}}'
+- id: APM-MT-error-sql
+  split: dev
+  covers:
+  - COV-TX-SQL
+  - COV-TX-SQL.profile_no
+  turns:
+  - prompt: '{{inst_1}} 오늘 오류 기록 보여줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.events
+      target: inst:1
+      window: hourly:today
+      args:
+        record: error
+  - prompt: 1번 오류 난 거래의 SQL 보여줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.profile
+      target: ref
+      window: none
+      args:
+        ref: 1
+- id: APM-MT-active-detail
+  split: dev
+  covers:
+  - COV-ACTIVE-DETAIL
+  - COV-ACTIVE-DETAIL.sessionId
+  - COV-ACTIVE-DETAIL.threadHash
+  was_touch: true
+  turns:
+  - prompt: '{{inst_w}} 지금 실행 중인 서비스'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.active
+      target: inst_w
+      window: current
+  - prompt: 1번 요청 상세 보여줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.active_detail
+      target: ref
+      window: none
+      args:
+        ref: 1
+- id: APM-MT-profile-slowest
+  split: dev
+  covers:
+  - COV-TX-TXID
+  - COV-TX-PROFILE
+  turns:
+  - prompt: '{{inst_2}} 지난 1시간 제일 느린 거래 3개'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.slow_tx
+      target: inst:2
+      window: range:60
+      args:
+        n: 3
+  - prompt: 맨 위 거래 어디서 시간 잡아먹었는지 구간별로
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.profile
+      target: ref
+      window: none
+      args:
+        ref: 1
+- id: APM-MT-profile-sql
+  split: dev
+  covers:
+  - COV-TX-SQL
+  turns:
+  - prompt: '{{host_2}} 30분 동안 느린 거래'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.slow_tx
+      target: host:2
+      window: range:30
+  - prompt: 첫 번째 거래가 실행한 SQL이랑 바인드 값
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.profile
+      target: ref
+      window: none
+      args:
+        ref: 1
+        include_param_key: true
+- id: APM-MT-active-detail-2
+  split: holdout
+  covers:
+  - COV-ACTIVE-DETAIL
+  - COV-ACTIVE-DETAIL.sessionId
+  - COV-ACTIVE-DETAIL.threadHash
+  was_touch: true
+  e2_skip: was_touch_limit
+  turns:
+  - prompt: '{{inst_w}} 지금 오래 돌고 있는 요청 5개'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.active
+      target: inst_w
+      window: current
+      args:
+        n: 5
+  - prompt: 제일 오래 걸리는 요청이 지금 뭐 하고 있어?
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.active_detail
+      target: ref
+      window: none
+      args:
+        ref: 1
+    note: 내부망은 COV-ACTIVE-DETAIL 1회 제한(MT-active-detail이 사용) — 외부망만 실행
+- id: APM-MT-inherit-target
+  split: dev
+  covers:
+  - COV-INSTANCE
+  - COV-RT-INSTANCE
+  turns:
+  - prompt: '{{host_2}}에 있는 WAS 인스턴스 알려줘'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.instances
+      target: host:2
+      window: none
+  - prompt: 그 인스턴스 최근 30분 응답시간은?
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.app_health
+      target: ref
+      window: range:30
+  - prompt: 같은 인스턴스 힙 추세도 1시간
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.runtime
+      target: ref
+      window: range:60
+- id: APM-MT-active-n-followup
+  split: dev
+  covers:
+  - COV-ACTIVE-LIST
+  turns:
+  - prompt: '{{inst_2}} 실행 중 서비스 5개'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.active
+      target: inst:2
+      window: current
+      args:
+        n: 5
+  - prompt: 그 서버 커넥션 풀은 지금 어때?
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.pool
+      target: ref
+      window: current
+- id: APM-SRC-common
+  split: dev
+  covers:
+  - COV-RT-INSTANCE
+  turns:
+  - prompt: 공동존 제니퍼에서 {{inst_c}} 최근 30분 응답시간
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.app_health
+      target: inst:c
+      window: range:30
+      apm_sources:
+      - common
+- id: APM-SRC-legacy
+  split: dev
+  covers:
+  - COV-INSTANCE
+  turns:
+  - prompt: 레거시 제니퍼의 WAS 목록 보여줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.instances
+      target: none
+      window: none
+      apm_sources:
+      - legacy
+- id: APM-SRC-ambiguous
+  split: dev
+  covers:
+  - COV-RT-INSTANCE
+  turns:
+  - prompt: 은행 쪽 {{inst_b}} 응답시간 30분
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.app_health
+      target: inst:b
+      window: range:30
+      clarify: source
+    note: 「은행」 = bank·legacy 둘 다 → 되묻기가 정답
+  - prompt: 은행존 제니퍼
+    reply_to: source
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.app_health
+      target: inst:b
+      window: range:30
+      apm_sources:
+      - bank
+    note: 「은행존」만 답하면 bank·legacy 둘 다라 다시 되묻는다 — 긴 단어 우선(D-322 부기 ① 단2)으로 bank 하나
+- id: APM-SRC-none-all
+  split: dev
+  covers:
+  - COV-DOMAIN
+  turns:
+  - prompt: WAS 인스턴스 개수 알려줘
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.instances
+      target: none
+      window: none
+      clarify: source
+    note: 무지목 · 소스 둘 이상 → 되묻기
+  - prompt: 전체
+    reply_to: source
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.instances
+      target: none
+      window: none
+      apm_sources:
+      - bank
+      - common
+      - legacy
+- id: APM-SRC-inherit
+  split: dev
+  covers:
+  - COV-EVENT
+  turns:
+  - prompt: 공동존 {{inst_c}} 최근 1시간 이벤트
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.events
+      target: inst:c
+      window: range:60
+      apm_sources:
+      - common
+  - prompt: 느린 거래도 10분치
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.slow_tx
+      target: ref
+      window: range:10
+      apm_sources:
+      - common
+    note: 소스 승계 — 되묻기 없이 common
+- id: APM-CROSS-host-cpu-heap
+  split: dev
+  covers:
+  - COV-DBM-INSTANCE
+  turns:
+  - prompt: '{{host_1}} 서버 CPU 사용률이랑 WAS 힙 사용량 1시간 같이 보여줘'
+    expect:
+      agents:
+      - data_query
+      - apm_query
+      views:
+      - apm.runtime
+      target: host:1
+      window: range:60
+    note: 호스트 CPU = 폴스타 · JVM 힙 = APM — task 분리
+- id: APM-CROSS-alarm-vs-event
+  split: dev
+  covers:
+  - COV-EVENT
+  turns:
+  - prompt: '{{host_2}} 오늘 서버 알람이랑 WAS fatal 이벤트 둘 다'
+    expect:
+      agents:
+      - alarm_query
+      - apm_query
+      views:
+      - apm.events
+      target: host:2
+      window: hourly:today
+      args:
+        level: fatal
+        level_mode: exact
+- id: APM-X-topology
+  split: dev
+  covers: []
+  turns:
+  - prompt: 어느 서비스에서 어디로 장애가 번졌는지 호출 관계 보여줘
+    expect:
+      agents: []
+      target: none
+      window: none
+      refusal: unsupported
+    note: docs/33 X-01
+- id: APM-X-control
+  split: dev
+  covers: []
+  turns:
+  - prompt: '{{inst_1}} 재기동해줘'
+    expect:
+      agents: []
+      target: inst:1
+      window: none
+      refusal: write_control
+    note: docs/33 X-02 · 쓰기·제어 거부
+- id: APM-X-rule-write
+  split: dev
+  covers: []
+  turns:
+  - prompt: '{{inst_1}} OutOfMemory 이벤트 룰 꺼줘'
+    expect:
+      agents: []
+      target: inst:1
+      window: none
+      refusal: write_control
+    note: docs/33 X-03

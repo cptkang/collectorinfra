@@ -97,6 +97,7 @@ from src.domain.time_spec import (
     resolve,
     shift_unit,
 )
+from src.observability import run_capture
 from src.orchestration import apm_jobs as jobs
 from src.orchestration.db_access import access_denied_result
 from src.orchestration.entity_link import (
@@ -1387,6 +1388,8 @@ async def _retry_selection(
         parsed = extract_json_from_response(getattr(response, "content", response))
     except Exception as e:  # noqa: BLE001 — 재시도 실패는 미해결로 끝낸다(사유는 메타·로그)
         return [], {}, f"{type(e).__name__}: {str(e)[:120]}"
+    run_capture.emit("apm_view_reselect",
+                     {"parsed": parsed, "areas": areas, "thread_id": isolated.get("thread_id")})
     if not isinstance(parsed, dict):
         return [], {}, "JSON 아님"
     views = sanitize_views(parsed.get("views"))
