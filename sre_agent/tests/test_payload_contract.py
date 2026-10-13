@@ -107,7 +107,7 @@ def test_submit_unsupported_version_rejected(tmp_path):
     assert "contract_version" in res["reason"]
 
 
-# ── plans/150 §4.4 가산 키(meta.episode · meta.cross_source · meta.investigation_kind) ──
+# ── plans/153 §4.4 가산 키(meta.episode · meta.cross_source · meta.investigation_kind) ──
 
 
 def _episode_payload() -> dict:
@@ -130,7 +130,7 @@ def _episode_payload() -> dict:
 
 
 def test_additive_episode_meta_keys_accepted_without_version_bump():
-    # contract_version은 "1" 그대로 — 수신 측은 meta 추가 키를 허용한다(D-118 · plans/150 §4.4).
+    # contract_version은 "1" 그대로 — 수신 측은 meta 추가 키를 허용한다(D-118 · plans/153 §4.4).
     p = _episode_payload()
     assert p["contract_version"] == CONTRACT_VERSION == "1"
     ok, reason = validate_payload(p)

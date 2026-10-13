@@ -81,7 +81,7 @@ class InvestigationJob:
     lookback_minutes: int | None = None
     # 결정적 상관 결과(CorrelationResult.to_dict — plans/50 G4). 사전수집 off·불가면 None.
     correlation: dict | None = None
-    # 계측 가산 키(plans/151 W1 · D-324 ⑦) — dispatcher가 종결 시 채우고 `summary()`가 펼친다.
+    # 계측 가산 키(plans/154 W1 · D-324 ⑦) — dispatcher가 종결 시 채우고 `summary()`가 펼친다.
     # done: incomplete·elapsed_s·prefetch_s·steps·tool_calls_n·model·max_steps·
     #       tool_calls[{name, args_digest, status}]
     # timeout·failed: elapsed_s·model·max_steps. 원시 도구 기록(ToolCallRecord)은 남기지 않는다.
@@ -339,7 +339,7 @@ class JobStore:
             # 사건 좌표계: 알람 시각을 기준시각으로(변환 불가면 앵커 없는 조사 — 종전과 동일).
             job.reference_time = alarm_time_to_iso((payload.get("event") or {}).get("alarmTime"))
             if self._settings.cross_source_investigation_enabled:
-                # plans/150 — 종합 조사는 사건 멤버 중 가장 늦은 시각을 기준으로 잡는다(증상 포함).
+                # plans/153 — 종합 조사는 사건 멤버 중 가장 늦은 시각을 기준으로 잡는다(증상 포함).
                 # 질문·사전수집·타임라인이 모두 이 값을 읽는다. 플래그 off면 종전과 같다.
                 job.reference_time = episode_reference_time(payload) or job.reference_time
             job.lookback_minutes = DEFAULT_LOOKBACK_MINUTES if job.reference_time else None

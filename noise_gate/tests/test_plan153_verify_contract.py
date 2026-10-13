@@ -1,8 +1,8 @@
-"""plans/150 검증(verifier) — 조사 페이로드 `meta.episode` 생산자 고정 + 워커 메모리 상한.
+"""plans/153 검증(verifier) — 조사 페이로드 `meta.episode` 생산자 고정 + 워커 메모리 상한.
 
 1. 실 워커(W6 종단 하네스 재사용)에 `cross_source_incident.jsonl`을 넣어 조사 서비스 대역에 제출된
-   페이로드 3건이 `sre_agent/tests/fixtures/plan150/noise_gate_episode_payloads.json`과 같은지 본다.
-   수신 측(sre_agent)은 같은 JSON 파일을 `sre_agent/tests/test_plan150_verify_roundtrip.py`에서
+   페이로드 3건이 `sre_agent/tests/fixtures/plan153/noise_gate_episode_payloads.json`과 같은지 본다.
+   수신 측(sre_agent)은 같은 JSON 파일을 `sre_agent/tests/test_plan153_verify_roundtrip.py`에서
    해석한다 — 두 패키지 import를 섞지 않고 파일 하나로 계약을 맞물린다(D-118).
    `occurred_at`(epoch 초 · 생산 머신 로컬 시각 규약)만 시간대 중립으로 따로 비교한다.
 2. `_episode_ctx`(종합 조사 대표 후보) 상한 `_EPISODE_CTX_MAX` — 넘치면 닫힌 사건 몫부터 버린다.
@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from tests.test_api.test_plan150_w6_cross_source_e2e import (  # noqa: F401 — 픽스처 재사용
+from tests.test_api.test_plan153_w6_cross_source_e2e import (  # noqa: F401 — 픽스처 재사용
     _bind_poll,
     _run_incident,
     _worker,
@@ -29,7 +29,7 @@ from tests.test_api.test_plan150_w6_cross_source_e2e import (  # noqa: F401 — 
 from noise_gate.application import alarm_worker as worker_mod
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE = ROOT / "sre_agent" / "tests" / "fixtures" / "plan150" / "noise_gate_episode_payloads.json"
+FIXTURE = ROOT / "sre_agent" / "tests" / "fixtures" / "plan153" / "noise_gate_episode_payloads.json"
 _KEYS = ("polestar_cpu_single", "jennifer_queuing_individual", "episode_composite")
 
 # 픽스처 alarmTime(로컬 naive) — 생산자는 이 시각을 로컬 시각으로 epoch 변환한다.

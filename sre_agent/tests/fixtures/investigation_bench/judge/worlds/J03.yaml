@@ -1,4 +1,4 @@
-# 채점기 테스트 전용 세계 — 원인 호스트(DB) ≠ 알람 호스트(앱) (plans/151 W3 · test_bench_judge)
+# 채점기 테스트 전용 세계 — 원인 호스트(DB) ≠ 알람 호스트(앱) (plans/154 W3 · test_bench_judge)
 id: J03
 split: holdout
 title: DB 테이블스페이스 포화로 앱 지연(채점 테스트)

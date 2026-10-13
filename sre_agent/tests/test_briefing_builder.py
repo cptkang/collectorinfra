@@ -282,7 +282,7 @@ def test_incomplete_notice_is_not_treated_as_citation():
     assert on["citations_verified"] is False
 
 
-# ── plans/150 §4.6·§4.7 크로스소스(선택 키 `cross_source` · 6요소 불변) ──
+# ── plans/153 §4.6·§4.7 크로스소스(선택 키 `cross_source` · 6요소 불변) ──
 
 
 def _xs_ctx():

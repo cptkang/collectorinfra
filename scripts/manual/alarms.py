@@ -143,7 +143,7 @@ def seed_decisions(app_dir: Path) -> int:
 
 
 def seed_briefing(app_dir: Path) -> int:
-    """조사 브리핑 장면(plans/150)의 예시 판정·조사 기록을 캡처 서버 저장소에 넣는다.
+    """조사 브리핑 장면(plans/153)의 예시 판정·조사 기록을 캡처 서버 저장소에 넣는다.
 
     ``fixtures/alarms/briefing.json`` 은 손으로 만든 예시다
     (녹화 아님 — 워커·LLM 없이 화면만 그린다). ``ago_min`` 을 지금 기준 시각으로 바꿔

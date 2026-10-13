@@ -1,10 +1,10 @@
-"""plans/150 W0 · R-4 — 제니퍼 소스 id로 폴스타 사전수집 도구를 부르면 「알 수 없는 소스」.
+"""plans/153 W0 · R-4 — 제니퍼 소스 id로 폴스타 사전수집 도구를 부르면 「알 수 없는 소스」.
 
 sre_agent 사전수집은 `polestar_incident_alarms` 1건 + `polestar_metric_trend` 4건을
 같은 `source`로 부른다. 제니퍼 트리거의 dbId(`jennifer`·`jennifer_<source_id>`)는 mcp_server
 소스 설정에 없으므로 `_resolve_engine`이 ValueError를 내고, 도구는 예외를 전파하지 않고
 `{error}` JSON을 돌려준다(DB 미접속).
-sre_agent 쪽 재현은 `sre_agent/tests/test_plan150_r4_apm_prefetch_source.py`.
+sre_agent 쪽 재현은 `sre_agent/tests/test_plan153_r4_apm_prefetch_source.py`.
 """
 
 import asyncio

@@ -1,4 +1,4 @@
-"""plans/150 W2 — 조사 저장소(`investigation_store`) 단위 + 워커 배선 계약.
+"""plans/153 W2 — 조사 저장소(`investigation_store`) 단위 + 워커 배선 계약.
 
 - 레코드 모양(§4.1) · 상태 정규화 · 32KB 절단(「잘림」 표지) · 최신 행 우선 · `alarm_ids` 멤버십
 - 연결 행(`episode_existing`)은 기존 조사의 상태를 덮지 않는다

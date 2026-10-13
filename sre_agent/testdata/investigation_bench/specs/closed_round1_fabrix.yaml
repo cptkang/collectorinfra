@@ -1,4 +1,4 @@
-# 내부망 FabriX 기준선(대체 백엔드) — fabrix_proxy · plans/148 G-4 통과 뒤만 (plans/151 §6.7 · §9.3.7)
+# 내부망 FabriX 기준선(대체 백엔드) — fabrix_proxy · plans/148 G-4 통과 뒤만 (plans/154 §6.7 · §9.3.7)
 # FabriX A/A는 vLLM 기준선과 섞지 않는다. 사전 점검이 예상 호출 수를 출력한다 — worlds·k로 규모를 줄인다.
 # llm.model = openai/<프록시 /v1/models 이름>
 run:

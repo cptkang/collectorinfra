@@ -675,7 +675,7 @@ def test_summary_stages_carry_description_and_enable_key(tmp_path, mode):
     for key, row in stages.items():
         assert row["description"] == STAGE_DESCRIPTIONS[key] and row["description"]
         assert row["enable_key"] == _EXPECTED_ENABLE_KEYS.get(key)
-        # (plans/150 W1) 처리 안내도 도메인 정본 그대로 — 단계 기본 문장(`*`)은 늘 있다.
+        # (plans/153 W1) 처리 안내도 도메인 정본 그대로 — 단계 기본 문장(`*`)은 늘 있다.
         assert row["handling"] == STAGE_HANDLING[key] and row["handling"]["*"]
 
 
@@ -836,7 +836,7 @@ def test_s6_string_fields_are_masked(tmp_path, mode):
 
 @pytest.mark.parametrize("mode", MODES)
 def test_analysis_text_masked_on_user_path_only(tmp_path, mode):
-    # (plans/150 W1 · R-1) AI 분석 서술은 사용자 경로에서만 가리고 운영자 경로는 원문이다.
+    # (plans/153 W1 · R-1) AI 분석 서술은 사용자 경로에서만 가리고 운영자 경로는 원문이다.
     secret = "sk-abcdefghijklmnopqrstuvwxyz012345"
     _seed_decisions(tmp_path, [_decision_record(
         alarm_id="m2", analysis={"summary": secret, "probable_cause": "c",

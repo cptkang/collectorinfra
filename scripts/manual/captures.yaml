@@ -283,7 +283,7 @@ captures:
       - wait: "#promptConfirm"
       - wait: 500
     callouts: [[1, "#promptConfirm"], [2, "#prompt"]]
-  # 조사 브리핑(plans/150) — 예시 카드·조사 기록은 손으로 만든 것(fixtures/alarms/briefing.json)
+  # 조사 브리핑(plans/153) — 예시 카드·조사 기록은 손으로 만든 것(fixtures/alarms/briefing.json)
   - id: alarm-briefing
     login: admin
     height: 1300

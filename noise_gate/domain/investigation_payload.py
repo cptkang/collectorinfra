@@ -24,7 +24,7 @@ CONTRACT_VERSION = "1"
 # plans/87 J8 · D-287 ②.
 _APM_HINT_FIELDS: tuple[str, ...] = ("source_id", "instance_id", "domain_id", "event_type", "txid")
 
-# (plans/150 §4.5) 사건 종합 조사 — `meta.investigation_kind` 값과 dedup 지문 접두.
+# (plans/153 §4.5) 사건 종합 조사 — `meta.investigation_kind` 값과 dedup 지문 접두.
 INVESTIGATION_KIND_EPISODE = "episode"
 EPISODE_FINGERPRINT_PREFIX = "episode:"
 
@@ -89,7 +89,7 @@ def build_trigger_payload(
             `meta.root_resource_name` 키가 생긴다.
         episode_id: 크로스소스 사건 id(plans/144 §5.3 · §4.5). 값이 있을 때만 `meta.episode_id` 키가
             생긴다(cross_source_mode off·사건 미소속이면 종전 바이트 동일).
-        episode: 사건 스냅샷(plans/150 §4.4 · `cross_source.episode_snapshot`). 값이 있을 때만
+        episode: 사건 스냅샷(plans/153 §4.4 · `cross_source.episode_snapshot`). 값이 있을 때만
             `meta.episode` 키가 생긴다(사건 맥락 플래그 off면 종전 바이트 동일).
         cross_source: 이 알람의 결합 판정(`decision.evidence.cross_source`). 값이 있을 때만
             `meta.cross_source` 키가 생긴다.
@@ -125,7 +125,7 @@ def build_trigger_payload(
     # plans/144 §4.5: 사건 id — 조사 서비스·plans/117 라벨 조인 키. 값이 있을 때만 키를 넣는다.
     if episode_id:
         meta["episode_id"] = str(episode_id)
-    # plans/150 §4.4·§4.5: 사건 스냅샷·결합 판정·조사 종류 — 값이 있을 때만(계약 `meta` 가산 키 ·
+    # plans/153 §4.4·§4.5: 사건 스냅샷·결합 판정·조사 종류 — 값이 있을 때만(계약 `meta` 가산 키 ·
     # contract_version "1" 유지 — 수신 측은 meta 추가 키를 허용한다).
     if episode:
         meta["episode"] = episode
@@ -166,7 +166,7 @@ def build_episode_trigger_payload(
     *,
     target_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """사건 종합 조사 페이로드(plans/150 §4.5 · G-6 (a)).
+    """사건 종합 조사 페이로드(plans/153 §4.5 · G-6 (a)).
 
     대표 알람 event·판정 + 그 시점 전체 `meta.episode` + `meta.investigation_kind="episode"`.
     판정의 `fingerprint`만 `episode:<사건 id>`로 바꾼다 — 조사 서비스의 fingerprint dedup(TTL)이

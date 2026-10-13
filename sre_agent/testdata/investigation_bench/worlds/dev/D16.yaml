@@ -1,4 +1,4 @@
-# plans/151 §4.6 D16 — 제니퍼 DB 커넥션 풀 고갈(apm_pool_exhaustion · app · 크로스소스 — apm_* 도구 · plans/150 W5 뒤)
+# plans/154 §4.6 D16 — 제니퍼 DB 커넥션 풀 고갈(apm_pool_exhaustion · app · 크로스소스 — apm_* 도구 · plans/153 W5 뒤)
 id: D16
 split: dev
 title: 주문 WAS의 JDBC 커넥션 풀 고갈로 응답 지연

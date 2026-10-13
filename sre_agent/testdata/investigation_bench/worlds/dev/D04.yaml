@@ -1,4 +1,4 @@
-# plans/151 §4.6 D04 — 야간 백업 I/O 대기(disk_io_saturation · os · 함정 없음)
+# plans/154 §4.6 D04 — 야간 백업 I/O 대기(disk_io_saturation · os · 함정 없음)
 id: D04
 split: dev
 title: 야간 백업이 디스크 I/O를 포화시켜 응답 지연

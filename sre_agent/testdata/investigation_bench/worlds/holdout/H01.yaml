@@ -1,4 +1,4 @@
-# plans/151 §4.6 H01 — 홀드아웃(D01과 같은 kind · cpu_runaway) · 개선 채택 판정 전용
+# plans/154 §4.6 H01 — 홀드아웃(D01과 같은 kind · cpu_runaway) · 개선 채택 판정 전용
 id: H01
 split: holdout
 title: 대사 작업 무한 반복으로 프로세서 점유

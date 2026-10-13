@@ -119,7 +119,7 @@ _LATE_PROMOTION_PER_TRIGGER_MAX = 5
 # (대상 판정은 late_promotion_targets가 멤버 상태로 다시 거른다). 상한 검사는 매번 한다.
 _LATE_PROMOTION_SWEEP_SECONDS = 60.0
 
-# (plans/150 W4 §4.5) 종합 조사 대표 알람 후보(멤버의 분석 결과·판정 보관) 상한 — 넘치면 닫힌 사건의
+# (plans/153 W4 §4.5) 종합 조사 대표 알람 후보(멤버의 분석 결과·판정 보관) 상한 — 넘치면 닫힌 사건의
 # 것부터, 그래도 넘치면 가장 오래된 것부터 버린다. 종합 조사 제출 뒤에는 그 사건 몫을 지운다.
 _EPISODE_CTX_MAX = 2000
 # 후속 알람을 묶지 않는 종합 조사 저장 상태(조사 저장소 `normalize_status` 결과 — 종결 실패).
@@ -168,7 +168,7 @@ class AlarmWorker:
         # (Plan 60 E3) 동적 baseline 이상탐지 어댑터 — dynamic_baseline_enabled 시에만 생성.
         self._metric_baseline = None
         self._decision_store = None
-        # (plans/150 W2) 조사 저장소 — 조사 트리거가 켜졌을 때만 생성(off면 None·파일 생성 0).
+        # (plans/153 W2) 조사 저장소 — 조사 트리거가 켜졌을 때만 생성(off면 None·파일 생성 0).
         self._investigation_store: InvestigationStore | None = None
         # (Plan 54 모듈 4) 침묵 규칙 저장소 — silence_enabled off(기본)면 None(조회 자체 없음).
         self._silence_store = None
@@ -264,7 +264,7 @@ class AlarmWorker:
         # 사건 종료·멤버 해소·승격 완료 시 sweep하고 상한(_LATE_PROMOTION_MAX)을 둔다.
         self._late_promotion: dict[str, tuple[str, Any, Any, float]] = {}
         self._late_promotion_swept_at = 0.0
-        # (plans/150 W4 §4.5) 종합 조사 대표 알람 후보: alarm_id → (사건 id, 분석 결과, 판정,
+        # (plans/153 W4 §4.5) 종합 조사 대표 알람 후보: alarm_id → (사건 id, 분석 결과, 판정,
         # 보관 시각). investigation_episode_context_enabled + 조사 트리거 + 추적기일 때만 담는다
         # (사건 상태 영속화 없음 — G-8). 상한 _EPISODE_CTX_MAX.
         self._episode_ctx: dict[str, tuple[str, Any, Any, float]] = {}
@@ -477,7 +477,7 @@ class AlarmWorker:
     ) -> dict[str, Any] | None:
         """같은 사건에서 APM 알람이 이미 제출한 조사(plans/144 §4.5) — APM 알람에만.
 
-        (plans/150 §4.5) 사건 종합 조사가 실제로 제출돼 조사 id가 있고 종결 실패가 아니면 그 id가
+        (plans/153 §4.5) 사건 종합 조사가 실제로 제출돼 조사 id가 있고 종결 실패가 아니면 그 id가
         우선한다 — 제니퍼 후속 알람은 종합 조사로 연결된다(`episode_existing`). 종합 조사 시도가
         실패했으면(id 없음 · 저장소상 거부·실패·타임아웃) 종전 동작(사건의 기존 단독 조사 id, 없으면
         제출)으로 돌아간다. 종합 조사는 플래그 on에서만 생기므로 off면 종전과 같다.
@@ -558,7 +558,7 @@ class AlarmWorker:
     async def _maybe_episode_investigation(
         self, cross_source: dict[str, Any], event: AlarmEvent
     ) -> None:
-        """사건 종합 조사를 조건이 처음 성립할 때 1회 제출한다 (plans/150 §4.5 · G-6 (a)).
+        """사건 종합 조사를 조건이 처음 성립할 때 1회 제출한다 (plans/153 §4.5 · G-6 (a)).
 
         조건은 `episode_investigation_due`(두 소스 멤버 · 링크 ≥1 · 통보 멤버 ≥1 · 미시도). 대표
         알람은 사건의 대표(먼저 쓰인 원인) — 그 알람의 결과가 보관돼 있지 않으면 지금 알람이다.
@@ -745,7 +745,7 @@ class AlarmWorker:
             self._record_apm_investigation(cross_source, event, result)
         except Exception:  # noqa: BLE001
             logger.warning("사건 조사 id 기록 실패: alarm_id=%s", event.alarm_id, exc_info=True)
-        # (plans/150 W4 §4.5) 사건 종합 조사 — 플래그 off면 진입하지 않는다(비트 동일).
+        # (plans/153 W4 §4.5) 사건 종합 조사 — 플래그 off면 진입하지 않는다(비트 동일).
         if self._episode_context_on():
             try:
                 self._remember_episode_ctx(cross_source, event, result, now)
@@ -850,7 +850,7 @@ class AlarmWorker:
             return None
 
     def _build_investigation_store(self) -> InvestigationStore | None:
-        """조사 저장소를 생성한다 (plans/150 W2 · D-323 G-1 (a)).
+        """조사 저장소를 생성한다 (plans/153 W2 · D-325 G-1 (a)).
 
         게이트 off·조사 트리거 off·생성 실패 시 None — 트리거·후속 태스크의 저장 호출이 전부
         no-op이라 통보 경로가 현행과 비트 동일하고 파일도 만들지 않는다
@@ -1527,7 +1527,7 @@ class AlarmWorker:
                     ),
                     # (plans/144 W5) 통보문 사건 묶음 표시 요약 — 값이 있을 때만 키(비트 동일).
                     **({"episode_summary": episode_summary} if episode_summary else {}),
-                    # (plans/150 W4) 제출 시점 사건 스냅샷 — 사건 맥락 on·사건 소속일 때만 키
+                    # (plans/153 W4) 제출 시점 사건 스냅샷 — 사건 맥락 on·사건 소속일 때만 키
                     # (비트 동일).
                     **({"episode_snapshot": episode_snapshot_} if episode_snapshot_ else {}),
                 },
@@ -1545,7 +1545,7 @@ class AlarmWorker:
                         # enricher는 이상탐지 태스크 미추가(anomaly_severity 미산출·회귀 0).
                         "metric_baseline": self._metric_baseline,
                         "decision_store": self._decision_store,
-                        # (plans/150 W2) 조사 저장소 — 트리거 off면 None → 저장 호출 no-op.
+                        # (plans/153 W2) 조사 저장소 — 트리거 off면 None → 저장 호출 no-op.
                         "investigation_store": self._investigation_store,
                         # (E3) TICKET 일배치 큐 — 워커는 cross-process라 alarm_bus는 미주입.
                         # 큐 적재는 동작하고, 티어 SSE는 sse_publisher(Redis 브리지)로 중계한다.

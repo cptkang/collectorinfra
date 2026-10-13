@@ -53,7 +53,7 @@ def test_ask_propagates_non_step_limit_exception(_msgs, _rec):
 def test_ask_normal_completion_not_incomplete(_msgs, _rec):
     """정상 완주는 incomplete=False."""
     agent = _agent()
-    # plans/151 W1: ask()는 holmes `call_stream`을 직접 소비한다
+    # plans/154 W1: ask()는 holmes `call_stream`을 직접 소비한다
     # — 종결 이벤트 1건으로 종전 mock 결과와 같은 값을 만든다.
     agent._llm.call_stream.return_value = iter([StreamMessage(
         event=StreamEvents.ANSWER_END,

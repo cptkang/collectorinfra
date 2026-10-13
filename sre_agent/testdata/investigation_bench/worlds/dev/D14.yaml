@@ -1,4 +1,4 @@
-# plans/151 §4.6 D14 — 서비스 프로세스 종료(process_down · app · 함정 없음)
+# plans/154 §4.6 D14 — 서비스 프로세스 종료(process_down · app · 함정 없음)
 id: D14
 split: dev
 title: 게이트웨이 프로세스 비정상 종료 후 미기동

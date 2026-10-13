@@ -4,8 +4,8 @@
 이전)에 위치한다. tier가 `investigation_trigger_min_tier`(기본 PAGE) 이상이면 sre_agent 조사
 서비스에 트리거 페이로드(`contract_version: "1"`)를 submit하고, **전체 타임아웃 가드** 안에서
 poll하여 브리핑을 받아 state에 실어 notifier가 통보에 첨부하게 한다. 결과(investigation_id·
-status·verdict)는 decision_store에 감사한다. (plans/150 W2) 조사 저장소가 주입되면
-상태·사유·브리핑을 웹 조회용으로 함께 남긴다(미주입이면 no-op). (plans/150 W4) 사건 맥락 플래그가
+status·verdict)는 decision_store에 감사한다. (plans/153 W2) 조사 저장소가 주입되면
+상태·사유·브리핑을 웹 조회용으로 함께 남긴다(미주입이면 no-op). (plans/153 W4) 사건 맥락 플래그가
 켜져 있으면 페이로드에 제출 시점 사건 스냅샷을 싣고, 워커가 부르는 `submit_episode_investigation`이
 사건당 1회 종합 조사를 제출한다.
 
@@ -95,7 +95,7 @@ async def investigation_trigger_node(
     # (plans/144 §5.3 · §4.5) 크로스소스 사건 id — cross_source_mode off·사건 미소속이면 None
     # (페이로드·감사 비트 동일).
     episode_id = _episode_id(state)
-    # (plans/150 W2) 조사 저장소 — 웹 조회용 상태·브리핑 기록. 미주입(트리거 off·워커 밖)이면 None →
+    # (plans/153 W2) 조사 저장소 — 웹 조회용 상태·브리핑 기록. 미주입(트리거 off·워커 밖)이면 None →
     # 아래 `_store` 호출은 전부 no-op(비트 동일). 행의 `source`는 이 조사가 도는 모드다.
     inv_store = configurable.get("investigation_store")
     followup = bool(getattr(gate_cfg, "investigation_followup_enabled", False))
@@ -269,7 +269,7 @@ async def investigation_trigger_node(
         configurable.get("decision_store"), event, decision, investigation_id, status, verdict,
         episode_id=episode_id,
     )
-    # (plans/150 W2) 인라인 종결 — 상태·사유·verdict·브리핑을 웹 조회용으로 남긴다. rejected의
+    # (plans/153 W2) 인라인 종결 — 상태·사유·verdict·브리핑을 웹 조회용으로 남긴다. rejected의
     # verdict 자리는 거부 사유 문자열이다(`_submit_and_poll` 반환 계약).
     if status == "rejected":
         inline_reason: Any = verdict
@@ -316,7 +316,7 @@ def _episode_context(
     event: Any,
     decision: Any,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """(plans/150 §4.4) 페이로드 `meta.episode`·`meta.cross_source` 재료.
+    """(plans/153 §4.4) 페이로드 `meta.episode`·`meta.cross_source` 재료.
 
     플래그 off·사건 미소속이면 (None, None).
 
@@ -355,7 +355,7 @@ async def submit_episode_investigation(
     decision_store: Any = None,  # DecisionStore | None
     inv_store: Any = None,  # InvestigationStore | None
 ) -> dict[str, Any]:
-    """사건 종합 조사를 submit만 한다 (plans/150 §4.5 · G-6 (a) — 워커가 사건당 1회 부른다).
+    """사건 종합 조사를 submit만 한다 (plans/153 §4.5 · G-6 (a) — 워커가 사건당 1회 부른다).
 
     대표 알람 기준으로 단독 조사와 같은 결정적 가드(hostname 결측 · 호스트 인가 · 가용성 사전
     판정)를 거친 뒤 `kind="episode"` 페이로드(지문 `episode:<id>`)를 제출한다. poll·후속 발송은
@@ -511,7 +511,7 @@ async def _submit_only(
     store,  # noqa: ANN001 — DecisionStore | None
     *,
     episode_id: str | None = None,
-    inv_store=None,  # noqa: ANN001 — InvestigationStore | None (plans/150 W2)
+    inv_store=None,  # noqa: ANN001 — InvestigationStore | None (plans/153 W2)
 ) -> dict[str, Any]:
     """조사를 submit만 하고 통보를 즉시 내보낸다 (Plan 66 3-E 후속 모드).
 
@@ -548,7 +548,7 @@ async def _submit_only(
         )
 
     _audit(store, event, decision, investigation_id, status, reason, episode_id=episode_id)
-    # (plans/150 W2) submit 직후 상태 — submitted면 종결 행은 notifier 후속 태스크(또는 API 지연
+    # (plans/153 W2) submit 직후 상태 — submitted면 종결 행은 notifier 후속 태스크(또는 API 지연
     # poll)가 남긴다. 거부·실패는 여기서 사유와 함께 끝난다.
     _store(
         inv_store, event, investigation_id, status, source="followup",
@@ -561,9 +561,9 @@ async def _submit_only(
             "investigation_id": investigation_id,
             "alarm_id": getattr(event, "alarm_id", ""),
             "fingerprint": getattr(decision, "fingerprint", ""),
-            # (plans/150 W2) 후속 태스크의 저장 행에 사건 id를 잇는다 — 사건 미소속이면 키 없음.
+            # (plans/153 W2) 후속 태스크의 저장 행에 사건 id를 잇는다 — 사건 미소속이면 키 없음.
             **({"episode_id": episode_id} if episode_id else {}),
-            # (plans/150 W2 교정) 후속 저장 행의 존 검사 근거 — db_id를 모르면 키 없음.
+            # (plans/153 W2 교정) 후속 저장 행의 존 검사 근거 — db_id를 모르면 키 없음.
             **({"alarm_db_ids": db_ids} if (db_ids := _alarm_db_ids(event)) else {}),
         }
     }
@@ -666,7 +666,7 @@ def _store(
     alarm_ids: list[str] | None = None,
     alarm_db_ids: dict[str, Any] | None = None,
 ) -> None:
-    """조사 상태를 조사 저장소에 남긴다(plans/150 W2 · 미주입·실패는 graceful).
+    """조사 상태를 조사 저장소에 남긴다(plans/153 W2 · 미주입·실패는 graceful).
 
     단일 알람 조사는 `kind="alarm"`·`alarm_ids=[이 알람]`(기본). 사건 종합 조사(W4)는
     `kind="episode"`·`alarm_ids=[대표, 멤버…]`를 넘긴다. `alarm_db_ids`(조회 API 존 검사 근거)를

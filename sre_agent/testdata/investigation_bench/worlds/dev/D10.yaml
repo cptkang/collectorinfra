@@ -1,4 +1,4 @@
-# plans/151 §4.6 D10 — 스풀 디스크 포화(disk_full · os · 함정: 강한 유인 — CPU 90%대 상시)
+# plans/154 §4.6 D10 — 스풀 디스크 포화(disk_full · os · 함정: 강한 유인 — CPU 90%대 상시)
 id: D10
 split: dev
 title: 스풀 정리 작업 중단으로 디스크 포화(CPU 상시 고부하 서버)

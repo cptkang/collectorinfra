@@ -4915,7 +4915,7 @@
                 '</div>';
         }
 
-        // plans/150 W3: 자동 조사 브리핑 — 조사 id가 실렸거나 조사 기능이 켜져 있을 때만 접힌 섹션을 둔다.
+        // plans/153 W3: 자동 조사 브리핑 — 조사 id가 실렸거나 조사 기능이 켜져 있을 때만 접힌 섹션을 둔다.
         // 펼칠 때만 조회한다(카드 렌더 시 자동 호출 금지 — 알람 폭주 때 호출이 같이 폭증하지 않게).
         var briefingHtml = hasAlarmBriefing(data) ? renderAlarmBriefingSection() : "";
 
@@ -4994,7 +4994,7 @@
         // Plan 52 E4: 피드백 버튼 바인딩(closure로 data 캡처 — 인라인 onclick 미사용, D-049 패턴)
         bindAlarmFeedback(el, data);
 
-        // plans/150 W3: 조사 브리핑 펼치기·접기(같은 closure 패턴)
+        // plans/153 W3: 조사 브리핑 펼치기·접기(같은 closure 패턴)
         if (briefingHtml) bindAlarmBriefing(el, data);
 
         // 보고 있지 않은 동안 도착한 알람만 미확인으로 센다(채팅 스크롤은 건드리지 않는다).
@@ -5009,7 +5009,7 @@
         updateAlarmViewState();
     }
 
-    // plans/150 W3: 조사 브리핑 섹션 표시 조건 — 카드에 조사 id가 있거나 capabilities가 조사 가용을 알릴 때.
+    // plans/153 W3: 조사 브리핑 섹션 표시 조건 — 카드에 조사 id가 있거나 capabilities가 조사 가용을 알릴 때.
     // 공용 렌더(briefing-view.js)가 없으면 그리지 않는다.
     function hasAlarmBriefing(data) {
         if (!window.BriefingView) return false;

@@ -81,7 +81,7 @@ class TestRecord:
         assert rows[0]["ts"] == ts.isoformat()
 
     def test_analysis_none_adds_no_key(self, tmp_path):
-        # (plans/150 W1) 기본(플래그 off) 호출은 키를 넣지 않는다 — 기존 레코드와 비트 동일.
+        # (plans/153 W1) 기본(플래그 off) 호출은 키를 넣지 않는다 — 기존 레코드와 비트 동일.
         store_path = tmp_path / "decisions.jsonl"
         DecisionStore(str(store_path)).record(make_decision(), analysis=None)
         assert "analysis" not in _read_lines(store_path)[0]

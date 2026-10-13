@@ -1,4 +1,4 @@
-# plans/151 §4.6 D15 — 알람 시각 직전 메모리 고갈 · 지금은 정상(memory_exhaustion · os · 함정: 시간창 — reference_time 사용 검증)
+# plans/154 §4.6 D15 — 알람 시각 직전 메모리 고갈 · 지금은 정상(memory_exhaustion · os · 함정: 시간창 — reference_time 사용 검증)
 # 사건 기준시각(reference_time)으로 조회해야 그 시점 값이 나온다. 기준시각 없이 부르면 「최근 값」(정상)이고,
 # 사건 구간을 덮지 않는 시간창은 빈 결과 + arg_error=time_window다(세계 서버 §4.10).
 id: D15

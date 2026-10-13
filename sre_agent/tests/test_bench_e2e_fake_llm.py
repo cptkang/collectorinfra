@@ -1,4 +1,4 @@
-"""plans/151 W3 — 가짜 LLM 종단(L3 · §9.3.4).
+"""plans/154 W3 — 가짜 LLM 종단(L3 · §9.3.4).
 
 세계 서버 + 가짜 LLM + 실제 sre_agent(`_serve.py`) 2실험군 × T01·T02 × k=1을 실프로세스로 한 번
 돌리고 산출물(manifest · world_calls · raw · scores · report · 내보내기 묶음)을 본다. 실 LLM 0 —
@@ -58,7 +58,8 @@ def test_fake_llm_replays_script_by_assistant_turns(tmp_path: Path) -> None:
     assert second["choices"][0]["finish_reason"] == "stop"
     assert "98.4%" in second["choices"][0]["message"]["content"]
     assert second["usage"]["total_tokens"] > 0
-    assert llm.respond(_body(1)) == second  # 무상태 — 같은 요청 = 같은 응답
+    again = llm.respond(_body(1))  # 무상태 — 같은 요청 = 같은 응답(id·created는 시각이라 제외)
+    assert (again["choices"], again["usage"]) == (second["choices"], second["usage"])
     assert llm.respond(_body(5))["choices"][0]["message"]["content"] == \
         second["choices"][0]["message"]["content"]  # 대본 끝 = 마지막 답
     with pytest.raises(KeyError):

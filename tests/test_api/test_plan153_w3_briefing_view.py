@@ -1,4 +1,4 @@
-"""plans/150 W3 — 조사 브리핑 웹 표시(R-1): 공용 렌더 `briefing-view.js` · 카드 · 드로어 ⓒ.
+"""plans/153 W3 — 조사 브리핑 웹 표시(R-1): 공용 렌더 `briefing-view.js` · 카드 · 드로어 ⓒ.
 
 세 갈래를 겨눈다:
     1. JS 순수 함수 — `briefing-view.js`를 node로 실제 실행한다. 이스케이프(외부 텍스트) ·
@@ -422,7 +422,7 @@ def test_pages_load_briefing_view_before_consumer(page, consumer):
 
 
 def test_cross_source_line_hidden_when_table_drawn() -> None:
-    """(plans/150 W6) 소표를 그리면 같은 내용의 「크로스소스」 평문 줄을 뺀다.
+    """(plans/153 W6) 소표를 그리면 같은 내용의 「크로스소스」 평문 줄을 뺀다.
 
     소표가 없으면 그 줄을 그대로 둔다.
     """

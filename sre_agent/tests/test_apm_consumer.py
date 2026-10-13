@@ -506,7 +506,7 @@ def test_dispatcher_off_briefing_and_audit_unchanged_even_with_stall():
         answer=_ANSWER, verdict=ImportanceVerdict(level="경고", confidence="none", escalate=False),
         tool_names=["apm_events"] * 3, gate_tier=None, remediation=None)
     done = [r for r in audit if r.get("event") == "done"][0]
-    # plans/151 W1 계측 가산 키(D-324 ⑦ — 상시)를 뺀 나머지가 종전 8키와 같다 — 정체·APM 키는 없다.
+    # plans/154 W1 계측 가산 키(D-324 ⑦ — 상시)를 뺀 나머지가 종전 8키와 같다 — 정체·APM 키는 없다.
     assert set(done) - set(INSTRUMENTATION_KEYS) == {
         "event", "investigation_id", "level", "confidence", "escalate", "signals", "tokens", "cost"}
     assert "unresolved" not in done

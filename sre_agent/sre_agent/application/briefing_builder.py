@@ -58,7 +58,7 @@ UNRESOLVED_PREFIX = "[미결] "
 CORRELATION_NOT_CAUSATION_NOTE = "상관 ≠ 인과 — 가설 신뢰도는 선행성·지속성(결정적 상관)에서 도출한 것이며 인과 확정이 아님"
 _KIND_LABEL = {"metric": "메트릭", "alarm": "알람", "change": "변경", KIND_APM_MEMBER: "이벤트"}
 
-# 크로스소스 규칙 가설(plans/150 §4.6)의 confidence — 규칙 결합은 측정이 아니라
+# 크로스소스 규칙 가설(plans/153 §4.6)의 confidence — 규칙 결합은 측정이 아니라
 # 사건 추적기의 판정이므로 기존 상관 가설의 비측정 상한(변경 직후 가설 · plans/91 1-2)과
 # 같은 medium에서 멈춘다(R-3).
 CROSS_SOURCE_HYPOTHESIS_CONFIDENCE = "medium"
@@ -179,7 +179,7 @@ def cross_source_hypotheses(
     supported_by_tools: bool | None,
     cited_lines: list[str],
 ) -> list[dict]:
-    """plans/150 §4.6 — 성립 링크마다 규칙 기반 가설 1개(결정적 · confidence 상한 · 상관≠인과).
+    """plans/153 §4.6 — 성립 링크마다 규칙 기반 가설 1개(결정적 · confidence 상한 · 상관≠인과).
 
     문안: "인프라 {kind} 알람이 {lag}초 선행 → 애플리케이션 {was_kind} (규칙 {rule_id})".
     LLM 인용이 양쪽 소스를 모두 뒷받침하면(`supported_by_tools`) 근거에 그 인용 줄을 함께
@@ -296,7 +296,7 @@ def build_briefing(
     (호출된 apm_* 인용) · `[인프라]`(그 밖 · 상관 타임라인) 라벨을 붙인다. `unresolved`(정체 가드):
     요약 앞에 `[미결] `을 붙인다(사유는 호출자가 `limitations`에 싣는다). 둘 다 기본 False — 종전과 같다.
 
-    `cross_source`(plans/150 §4.6·§4.7 — 두 소스 멤버가 있는 사건만 dispatcher가 넘긴다):
+    `cross_source`(plans/153 §4.6·§4.7 — 두 소스 멤버가 있는 사건만 dispatcher가 넘긴다):
     상관 타임라인이 없으면 사건 멤버를 타임라인에 편입하고(있으면 사전수집이 이미 편입),
     성립 링크마다 규칙 가설을 LLM 원인 앞에 넣는다(`cause`는 바꾸지 않는다 — 규칙은 가설).
     한계에 strong 매칭 고지·절단·제외 링크와 APM 도구 미연결(`apm_tools_connected=False`)을

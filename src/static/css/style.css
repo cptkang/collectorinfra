@@ -2813,7 +2813,7 @@ body.auth-pending .auth-splash {
     color: var(--text);
 }
 
-/* ─── plans/150 W3: 조사 브리핑 — 카드 접이식 섹션 ─── */
+/* ─── plans/153 W3: 조사 브리핑 — 카드 접이식 섹션 ─── */
 
 .alarm-briefing-toggle {
     padding: 0;
@@ -2833,7 +2833,7 @@ body.auth-pending .auth-splash {
 .alarm-briefing-section--collapsed .alarm-briefing-body { display: none; }
 .alarm-briefing-body { margin-top: 4px; }
 
-/* ─── plans/150 W3: 조사 브리핑 공용 본문(briefing-view.js) — 카드·관제 드로어가 함께 쓴다 ─── */
+/* ─── plans/153 W3: 조사 브리핑 공용 본문(briefing-view.js) — 카드·관제 드로어가 함께 쓴다 ─── */
 
 .bv { display: flex; flex-direction: column; gap: 6px; font-size: 0.78rem; line-height: 1.55; color: var(--text); }
 .bv-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }

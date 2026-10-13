@@ -1,5 +1,5 @@
 /**
- * 자동 조사 브리핑 공용 렌더 (plans/150 W3 · R-1 · D-323).
+ * 자동 조사 브리핑 공용 렌더 (plans/153 W3 · R-1 · D-325).
  *
  * 알람 카드(`app.js renderAlarmMessage`)와 노이즈 관제 드로어(`noise.js` 「발생 원인과 처리」 ⓒ)가
  * **같은 함수(`renderBody`) 하나로** 그린다(D-247 「공용 패널」 — 두 벌이면 한쪽만 고쳐진다).
@@ -15,7 +15,7 @@
  *     `investigation_followup_timeout_seconds` 기본)에서 멈춘다. 닫으면 타이머를 정리한다(G-2 (a)).
  *
  * 전역은 `window.BriefingView` 하나만 둔다. DOM 없이 도는 순수 함수(문자열 렌더·재조회 상한)는
- * node로 단위 테스트한다(`tests/test_api/test_plan150_w3_briefing_view.py`).
+ * node로 단위 테스트한다(`tests/test_api/test_plan153_w3_briefing_view.py`).
  */
 (function (root) {
     "use strict";

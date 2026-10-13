@@ -6,7 +6,7 @@
 
 구성(순서 고정): ① REMOTE_VM_SHELL_NOTE(원격 프로파일) ② 사건 구간 지침(잡의 reference_time —
 도구 호출에 앵커 인자를 쓰라는 지시) ③ 상관 결과 ③′ 크로스소스 사건
-(settings.cross_source_investigation_enabled이고 두 소스 멤버가 있을 때만 · plans/150 §4.6)
+(settings.cross_source_investigation_enabled이고 두 소스 멤버가 있을 때만 · plans/153 §4.6)
 ④ kind별 플레이북(plans/91 1-5 · plans/51 §6 —
 결정적 문구) ⑤ OpenMetrics 서술 노트(settings.openmetrics_guidance_enabled일 때만 ·
 plans/92 O3 · R-12) ⑥ APM 노트(settings.apm_guidance_enabled일 때만 · plans/87 J3)
@@ -376,7 +376,7 @@ def apm_notes(settings, job) -> list[str]:  # noqa: ANN001 — AgentSettings · 
 
 
 # ---------------------------------------------------------------------
-# 크로스소스 사건 노트 (plans/150 §4.6 · D-323 ⑨ · D-035 — 결정적 문구, LLM 0)
+# 크로스소스 사건 노트 (plans/153 §4.6 · D-325 ⑨ · D-035 — 결정적 문구, LLM 0)
 #
 # 사건 스냅샷은 noise_gate 사건 추적기가 묶은 결과다(G-5 (a)) — 여기서는 표로 옮기기만
 # 하고, 규칙은 「가설」로만 제시해 LLM이 두 소스 도구로 확인·반증하게 한다.
@@ -481,7 +481,7 @@ def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa
     `meta.hints.solution == "apm"`)이면 OS 플레이북 대신 APM 플레이북 하나만 싣는다.
 
     `cross_source_investigation_enabled`이고 `meta.episode`에 두 소스 멤버가 있으면
-    (plans/150 §4.6) ③ 뒤에 ③′ 크로스소스 사건 노트를 넣고, ④는 OS 플레이북과
+    (plans/153 §4.6) ③ 뒤에 ③′ 크로스소스 사건 노트를 넣고, ④는 OS 플레이북과
     APM 플레이북을 **병기**한다(대체 아님).
     """
     apm_on = bool(getattr(settings, "apm_guidance_enabled", False))

@@ -1,4 +1,4 @@
-"""plans/150 W4 — 조사 페이로드 사건 스냅샷(`meta.episode`·`meta.cross_source`) ·
+"""plans/153 W4 — 조사 페이로드 사건 스냅샷(`meta.episode`·`meta.cross_source`) ·
 사건당 1회 종합 조사.
 
     A. 도메인 — 스냅샷 모양(W5 수신 계약 키 전부 · `effect_alarm_id` · 최근 순 · 상한) · 신호 불변 ·
@@ -8,7 +8,7 @@
        통보 멤버 0 · 한쪽 소스 · 플래그 off · 실패 재시도 없음 · workb 후속 1건
     D. 리플레이 하네스 — 종합 조사 발주 수
 
-픽스처: `noise_gate/testdata/plan150/cross_source_incident.jsonl`(폴스타 CPU PAGE → 270초 뒤 같은
+픽스처: `noise_gate/testdata/plan153/cross_source_incident.jsonl`(폴스타 CPU PAGE → 270초 뒤 같은
 호스트 제니퍼 큐잉 · `host_resource_to_was_latency` · missing 없음 — W0 작성).
 """
 
@@ -55,7 +55,7 @@ from noise_gate.infrastructure.investigation_store import InvestigationStore
 from noise_gate.scripts import replay_noise as rn
 from noise_gate.tests.test_plan144_cross_source import SHIPPED_RULES, _Clock, _Redis
 
-TESTDATA = Path(__file__).resolve().parents[1] / "testdata" / "plan150"
+TESTDATA = Path(__file__).resolve().parents[1] / "testdata" / "plan153"
 INCIDENT = TESTDATA / "cross_source_incident.jsonl"
 PAYLOAD_GOLDEN = TESTDATA / "trigger_payloads.golden.json"
 EPISODE_ID = "ep-p150fixture"  # W0 골든과 같은 고정 id
@@ -63,7 +63,7 @@ EPISODE_ID = "ep-p150fixture"  # W0 골든과 같은 고정 id
 P_ID = "P150-CPU-1"
 J_ID = "jennifer:p150q0000000001"
 
-# W5 수신 계약(plans/150 §4.4 · sre_agent `cross_source_episode`)이 읽는 키.
+# W5 수신 계약(plans/153 §4.4 · sre_agent `cross_source_episode`)이 읽는 키.
 EPISODE_KEYS = {"episode_id", "zone", "host_key", "members", "links", "rules", "infra_db_ids"}
 MEMBER_KEYS = {"alarm_id", "source", "db_id", "alarm_name", "kind", "was_kinds", "level",
                "severity", "occurred_at", "tier", "resolved"}
@@ -472,7 +472,7 @@ def followup(monkeypatch) -> list[tuple]:
         return {"summary": f"brief {investigation_id}"}, "done", None, None
 
     async def _send(workb_cfg, result, briefing, escalation, l3=None, **kw):
-        # (plans/150 W6) 종합 조사 후속만 `episode_note` 키워드를 받는다 — 단독 조사는 종전 호출.
+        # (plans/153 W6) 종합 조사 후속만 `episode_note` 키워드를 받는다 — 단독 조사는 종전 호출.
         sent.append((result.alarm_event.alarm_id, briefing, *kw.values()))
 
     monkeypatch.setattr(notifier_mod, "_poll_until_terminal", _poll)
@@ -580,7 +580,7 @@ class TestWorkerEpisodeInvestigation:
         failed_rows = [json.loads(x) for x in t.inv.path.read_text("utf-8").splitlines()
                        if json.loads(x)["kind"] == "episode"]
         assert [(r["status"], r["alarm_ids"][0]) for r in failed_rows] == [("failed", P_ID)]
-        # (plans/150 W6) 실패한 종합 조사가 멤버의 단독 조사를 가리지 않는다
+        # (plans/153 W6) 실패한 종합 조사가 멤버의 단독 조사를 가리지 않는다
         rec = t.inv.get_by_alarm(P_ID)
         assert rec["kind"] == "alarm" and rec["investigation_id"] == "inv-1"
         # 실패한 종합 조사에는 묶지 않는다 — 종전(D-317 ⑦) 사건의 기존 단독 조사 id로 연결

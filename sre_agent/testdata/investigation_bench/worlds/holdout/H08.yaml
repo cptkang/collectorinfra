@@ -1,4 +1,4 @@
-# plans/151 §4.6 H08 — 홀드아웃(D16과 같은 kind · apm_pool_exhaustion · 크로스소스 apm_*) · 개선 채택 판정 전용
+# plans/154 §4.6 H08 — 홀드아웃(D16과 같은 kind · apm_pool_exhaustion · 크로스소스 apm_*) · 개선 채택 판정 전용
 id: H08
 split: holdout
 title: 결제 WAS의 JDBC 연결 풀 소진으로 결제 응답 지연

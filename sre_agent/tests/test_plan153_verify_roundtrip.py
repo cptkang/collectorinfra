@@ -1,9 +1,9 @@
-"""plans/150 검증(verifier) — noise_gate 실 출력 페이로드를 sre_agent 수신 측이 해석하는 왕복.
+"""plans/153 검증(verifier) — noise_gate 실 출력 페이로드를 sre_agent 수신 측이 해석하는 왕복.
 
-입력은 `tests/fixtures/plan150/noise_gate_episode_payloads.json` — noise_gate 실 워커가
+입력은 `tests/fixtures/plan153/noise_gate_episode_payloads.json` — noise_gate 실 워커가
 `cross_source_incident.jsonl`(폴스타 CPU PAGE → 270초 뒤 같은 호스트 제니퍼 큐잉)에서 만든 제출
 페이로드 3건(폴스타 단독 · 제니퍼 단독 · 사건 종합)이다. 생산자 쪽 고정은
-`noise_gate/tests/test_plan150_verify_contract.py`가 같은 파일로 한다(import 0 · D-118).
+`noise_gate/tests/test_plan153_verify_contract.py`가 같은 파일로 한다(import 0 · D-118).
 
 `occurred_at`은 epoch 초(생산 머신 로컬 시각 규약)라 시간대 중립으로 비교한다.
 
@@ -32,7 +32,7 @@ from sre_agent.domain.severity_signatures import ImportanceVerdict
 from sre_agent.settings import AgentSettings
 
 FIXTURE = (
-    Path(__file__).resolve().parent / "fixtures" / "plan150" / "noise_gate_episode_payloads.json"
+    Path(__file__).resolve().parent / "fixtures" / "plan153" / "noise_gate_episode_payloads.json"
 )
 P = json.loads(FIXTURE.read_text(encoding="utf-8"))
 CPU_ID = "P150-CPU-1"

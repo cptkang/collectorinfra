@@ -1,4 +1,4 @@
-"""도구 스키마 스냅샷 · 드리프트 가드 (plans/151 §4.3 · D-324 ①).
+"""도구 스키마 스냅샷 · 드리프트 가드 (plans/154 §4.3 · D-324 ①).
 
 실 `mcp_server`(조사 프로파일)·`apm_gateway`의 도구 표면을 **MCP 프로토콜 `list_tools`로** 받아
 `testdata/investigation_bench/tool_schemas.json`에 서버별 묶음으로 남긴다. import가 아니라

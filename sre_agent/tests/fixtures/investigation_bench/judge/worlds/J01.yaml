@@ -1,4 +1,4 @@
-# 채점기 테스트 전용 세계 — 원인 호스트 = 알람 호스트 · 유인 1종 (plans/151 W3 · test_bench_judge)
+# 채점기 테스트 전용 세계 — 원인 호스트 = 알람 호스트 · 유인 1종 (plans/154 W3 · test_bench_judge)
 id: J01
 split: holdout
 title: 로그 미회전으로 파일시스템 포화(채점 테스트)

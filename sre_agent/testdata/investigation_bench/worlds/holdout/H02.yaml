@@ -1,4 +1,4 @@
-# plans/151 §4.6 H02 — 홀드아웃(D02와 같은 kind · memory_leak_oom) · 개선 채택 판정 전용
+# plans/154 §4.6 H02 — 홀드아웃(D02와 같은 kind · memory_leak_oom) · 개선 채택 판정 전용
 id: H02
 split: holdout
 title: 원장 서비스 힙 누수 후 커널 강제 종료

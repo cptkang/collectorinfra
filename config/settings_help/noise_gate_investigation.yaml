@@ -198,7 +198,7 @@ settings:
     recommendation: 조사 서비스가 감당하는 동시 처리량에 맞춰 정한다. 기본 8에서 시작한다.
     related: [NOISE_INVESTIGATION_FOLLOWUP_ENABLED]
 
-  # ── plans/150 W2 · D-323: 조사 저장소 (브리핑 웹 조회) ──
+  # ── plans/153 W2 · D-325: 조사 저장소 (브리핑 웹 조회) ──
 
   NOISE_INVESTIGATION_STORE_PATH:
     example: >-
@@ -235,7 +235,7 @@ settings:
     recommendation: 기본 2000 유지. 조회가 느리면 줄인다.
     related: [NOISE_INVESTIGATION_STORE_PATH]
 
-  # ── plans/150 W4 · D-323: 사건 스냅샷 · 사건당 1회 종합 조사 ──
+  # ── plans/153 W4 · D-325: 사건 스냅샷 · 사건당 1회 종합 조사 ──
 
   NOISE_INVESTIGATION_EPISODE_CONTEXT_ENABLED:
     example: >-

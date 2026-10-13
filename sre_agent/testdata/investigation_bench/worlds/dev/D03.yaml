@@ -1,4 +1,4 @@
-# plans/151 §4.6 D03 — 로그 미회전으로 파일시스템 포화(disk_full · os · 유인: 정시 배치의 정상 CPU 패턴)
+# plans/154 §4.6 D03 — 로그 미회전으로 파일시스템 포화(disk_full · os · 유인: 정시 배치의 정상 CPU 패턴)
 id: D03
 split: dev
 title: 로그 미회전으로 파일시스템 포화

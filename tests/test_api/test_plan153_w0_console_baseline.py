@@ -1,15 +1,15 @@
-"""plans/150 W0 — 노이즈 관제 응답 flags-off 비트 동일 기준선.
+"""plans/153 W0 — 노이즈 관제 응답 flags-off 비트 동일 기준선.
 
 `GET /noise/decisions` · `/noise/decisions/{alarm_id}`(사용자 경로)와 같은 핸들러의 운영자 경로
 (`/admin/noise/*`) 응답 모양을 골든으로 고정한다. 이후 Wave(W1 `analysis`·`summary.stages[]` 보강 ·
 W2 `investigation` 블록)가 플래그·데이터 유무로 필드를 더해도, **기본값(off)·데이터 없음**에서는
-응답이 지금과 같아야 한다(plans/150 §3 ⑥).
+응답이 지금과 같아야 한다(plans/153 §3 ⑥).
 
-시드는 `noise_gate/tests/test_plan150_w0_baseline.py`가 실 게이트 노드로 떠 둔 판정 레코드 골든
+시드는 `noise_gate/tests/test_plan153_w0_baseline.py`가 실 게이트 노드로 떠 둔 판정 레코드 골든
 (`decision_records.golden.json`)이다 — 기록 시각(`ts`)만 고정값으로 채워 넣고, 응답 비교에서는 뺀다.
 
 골든 재생성은 **응답을 의도적으로 바꾼 경우에만** 한다:
-    python -m tests.test_api.test_plan150_w0_console_baseline --write
+    python -m tests.test_api.test_plan153_w0_console_baseline --write
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from tests.test_api.test_noise_dashboard_api import (
     _seed_decisions,
 )
 
-TESTDATA = Path(__file__).resolve().parents[2] / "noise_gate" / "testdata" / "plan150"
+TESTDATA = Path(__file__).resolve().parents[2] / "noise_gate" / "testdata" / "plan153"
 RECORDS_GOLDEN = TESTDATA / "decision_records.golden.json"
 CONSOLE_GOLDEN = TESTDATA / "console_responses.golden.json"
 

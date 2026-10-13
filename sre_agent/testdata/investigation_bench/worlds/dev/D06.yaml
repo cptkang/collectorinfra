@@ -1,4 +1,4 @@
-# plans/151 §4.6 D06 — 스왑 스래싱(swap_thrash · os · 함정 없음)
+# plans/154 §4.6 D06 — 스왑 스래싱(swap_thrash · os · 함정 없음)
 id: D06
 split: dev
 title: 캐시 적재 프로세스의 메모리 과점유로 스왑 스래싱

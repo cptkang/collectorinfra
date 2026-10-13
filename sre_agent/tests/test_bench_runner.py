@@ -1,4 +1,4 @@
-"""plans/151 W3 — 러너 조립(§4.7 · §4.8 · §9.2 runner 행).
+"""plans/154 W3 — 러너 조립(§4.7 · §4.8 · §9.2 runner 행).
 
 실 LLM 0 · sre_agent 프로세스 0. 실행 흐름은 프로세스 기동·MCP 호출을 바꿔 끼운 채로 검사하고,
 PID 관리만 실제 무해한 `sleep` 프로세스로 검사한다(종단은 `test_bench_e2e_fake_llm.py`).

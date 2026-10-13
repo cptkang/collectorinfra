@@ -394,7 +394,7 @@ class TestGateMerge:
         assert rec["condition_log"] == "x" * 200  # 200자 상한
 
     async def test_analysis_marker_stays_in_evidence_with_analysis_flag_on(self, tmp_path):
-        # (plans/150 W1) 분석 실패 표시(`stage_evidence.analysis`)는 플래그와 무관하게 그대로 남고,
+        # (plans/153 W1) 분석 실패 표시(`stage_evidence.analysis`)는 플래그와 무관하게 그대로 남고,
         # 플래그 on이면 `analysis.failed`가 함께 실린다(텍스트는 비운다).
         store = DecisionStore(str(tmp_path / "d.jsonl"))
         state = _gate_state(make_event(severity=3))

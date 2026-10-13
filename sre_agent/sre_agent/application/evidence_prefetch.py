@@ -44,7 +44,7 @@ _GRANULARITY_MINUTES = {"h": 60, "d": 1440, "m": 43200}
 TOOL_ALARMS = "polestar_incident_alarms"
 TOOL_METRIC = "polestar_metric_trend"
 TOOL_CHANGES = "polestar_change_history"   # plans/91 1-2 — 배치 말미(플래그 on일 때만)
-# plans/150 R-4 — APM(제니퍼) 트리거인데 폴스타 소스를 모를 때. 제니퍼 dbId를 폴스타 도구에 넘기면
+# plans/153 R-4 — APM(제니퍼) 트리거인데 폴스타 소스를 모를 때. 제니퍼 dbId를 폴스타 도구에 넘기면
 # mcp_server가 「알 수 없는 소스」로 전 축을 결손 처리한다 — 호출 자체를 하지 않고 이 사실만 남긴다.
 INFRA_SOURCE_UNKNOWN_NOTE = "인프라 소스 미상 — 폴스타 사전수집 생략"
 
@@ -59,9 +59,9 @@ class EvidenceScope:
     granularity: str = "h"
     change_overlay: bool = False   # plans/91 1-2 — True면 변경 이력 1건을 배치 말미에 더한다
     related_servers: tuple[str, ...] = ()   # plans/91 1-3 — 연관 서버(알람 1건씩만 추가 수집)
-    # plans/150 R-4 — True면 폴스타 도구를 호출하지 않는다(source 미상).
+    # plans/153 R-4 — True면 폴스타 도구를 호출하지 않는다(source 미상).
     skip_infra: bool = False
-    # plans/150 §4.6 — 사건 멤버(추가 호출 없이 타임라인 편입)와 그 해석 노트.
+    # plans/153 §4.6 — 사건 멤버(추가 호출 없이 타임라인 편입)와 그 해석 노트.
     episode_points: tuple[EpisodePoint, ...] = ()
     episode_notes: tuple[str, ...] = ()
 
@@ -77,7 +77,7 @@ def scope_from_job(
 
     기준시각·소스·서버명 중 하나라도 없으면 None(사전수집 불가 — 조사는 그대로 진행).
 
-    plans/150 R-4(플래그 무관 결함 교정): APM 트리거(`is_apm_trigger` — 지침·dispatcher와
+    plans/153 R-4(플래그 무관 결함 교정): APM 트리거(`is_apm_trigger` — 지침·dispatcher와
     같은 판정)의 dbId는 제니퍼 소스라 폴스타 도구의 source가 될 수 없다.
     `cross_source`(CROSS_SOURCE_INVESTIGATION_ENABLED)이고 `meta.episode.infra_db_ids[0]`가
     있으면 그것을 쓰고, 아니면 폴스타 축을 호출하지 않는 범위(`skip_infra`)를 돌려준다.
@@ -131,7 +131,7 @@ def scope_from_job(
 def build_calls(scope: EvidenceScope) -> list[tuple[str, dict]]:
     """배치 호출 목록 — 전 알람 1 + 지표 4(순서 고정, 결과 해석이 이 순서에 의존).
 
-    `skip_infra`(plans/150 R-4)면 빈 목록.
+    `skip_infra`(plans/153 R-4)면 빈 목록.
     """
     if scope.skip_infra:
         return []
@@ -224,7 +224,7 @@ def _changes(data: dict, scope: EvidenceScope, notes: list[str]) -> list[ChangeP
 def prefetch_and_correlate(scope: EvidenceScope, call_batch: BatchCaller) -> CorrelationResult:
     """도구 배치를 호출하고 상관을 계산한다. 축별 실패는 notes로 남기고 계산은 계속한다.
 
-    `skip_infra`(plans/150 R-4)면 배치를 부르지 않고 「인프라 소스 미상」 노트와
+    `skip_infra`(plans/153 R-4)면 배치를 부르지 않고 「인프라 소스 미상」 노트와
     사건 멤버만으로 계산한다.
     """
     if scope.skip_infra:

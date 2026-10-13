@@ -53,7 +53,7 @@ class ChangePoint:
 
 @dataclass(frozen=True)
 class EpisodePoint:
-    """외부 사건 스냅샷의 멤버 1건(plans/150 §4.6) — 추가 호출 없이 타임라인에 편입한다.
+    """외부 사건 스냅샷의 멤버 1건(plans/153 §4.6) — 추가 호출 없이 타임라인에 편입한다.
 
     `kind`·`detail`은 호출자가 정한다(벤더 중립 — 여기서는 시각 정렬만).
     """
@@ -66,7 +66,7 @@ class EpisodePoint:
 @dataclass(frozen=True)
 class TimelineItem:
     t_offset_min: int
-    kind: str        # "metric" | "change" | "alarm" | "apm_event"(plans/150 — 사건 멤버)
+    kind: str        # "metric" | "change" | "alarm" | "apm_event"(plans/153 — 사건 멤버)
     detail: str
 
 
@@ -213,7 +213,7 @@ def merge_timeline(
 ) -> list[TimelineItem]:
     """§6.1 — 알람 + 지표 이상(onset·peak) + 변경 이벤트를 기준시각 좌표계로 정렬한다.
 
-    `episode`(plans/150 — 사건 스냅샷 멤버)도 같은 축에 넣는다.
+    `episode`(plans/153 — 사건 스냅샷 멤버)도 같은 축에 넣는다.
     """
     items: list[TimelineItem] = []
     for e in episode or []:
@@ -253,7 +253,7 @@ def correlate(
 
     `changes`가 None이면(오버레이 off·미수집) 결과는 종전과 동일하다 — `change_finding=None`.
     `related_alarms`(plans/91 1-3)는 타임라인·notes에만 실린다 — 요약·선행성은 대표 서버 알람 기준을 유지한다.
-    `episode_points`(plans/150 §4.6 — 사건 스냅샷 멤버)도 타임라인에만 실린다.
+    `episode_points`(plans/153 §4.6 — 사건 스냅샷 멤버)도 타임라인에만 실린다.
     `alarm_axis=False`는 알람 축을 조회하지 않은 경우다 — 「알람 0건」 노트를 내지 않는다
     (조회하지 않은 것을 0건으로 단정하지 않는다).
     """

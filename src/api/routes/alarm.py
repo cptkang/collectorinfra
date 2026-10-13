@@ -528,14 +528,14 @@ class AlarmCapabilitiesResponse(BaseModel):
         default=False,
         description=(
             "자동 조사 브리핑 조회 가용 = 게이트 AND 조사 트리거 AND 조사 서비스 URL 설정 "
-            "(plans/150 W2 · 기본 off)"
+            "(plans/153 W2 · 기본 off)"
         ),
     )
     investigation_followup_timeout_seconds: float = Field(
         default=300.0,
         description=(
             "조사 후속 조회 전체 타임아웃(초) — 웹이 진행 중 조사를 다시 조회하는 상한 "
-            "(NOISE_INVESTIGATION_FOLLOWUP_TIMEOUT_SECONDS · plans/150 W2)"
+            "(NOISE_INVESTIGATION_FOLLOWUP_TIMEOUT_SECONDS · plans/153 W2)"
         ),
     )
 
@@ -1612,7 +1612,7 @@ async def alarm_capabilities(
             getattr(ng, "alarm_prompt_llm_suggest_enabled", False)
         ),
         suppress_max_severity=int(getattr(ng, "suppress_max_severity", 2)),
-        # plans/150 W2: 조사가 실제로 돌 수 있는 조합일 때만 — 카드가 조사 섹션을 지연 로드할지.
+        # plans/153 W2: 조사가 실제로 돌 수 있는 조합일 때만 — 카드가 조사 섹션을 지연 로드할지.
         investigation_enabled=gate_on
         and bool(getattr(ng, "investigation_trigger_enabled", False))
         and bool(getattr(ng, "investigation_service_url", "")),
@@ -1622,7 +1622,7 @@ async def alarm_capabilities(
     )
 
 
-# ─── 자동 조사 브리핑 조회 (plans/150 W2 · D-323 G-3 (a)) ──────────────────────
+# ─── 자동 조사 브리핑 조회 (plans/153 W2 · D-325 G-3 (a)) ──────────────────────
 
 # 아직 종결되지 않은 조사를 sre_agent에 다시 물을 때 종결로 보는 상태(submit/poll 계약 · D-123).
 _INVESTIGATION_TERMINAL_POLL: frozenset[str] = frozenset(
@@ -1696,7 +1696,7 @@ def _assert_investigation_zone(
     - 제한 스코프에서는 알람마다 db_id를 조사 레코드의 `alarm_db_ids` → 판정 기록 순으로 찾고,
       **하나라도 모르거나 범위 밖이면 403**이다. `_zone_permits`의 "db_id 없음 = 허용" 하위호환을
       여기서는 쓰지 않는다 — 판정 기록이 tail 밖으로 밀린 알람이나 타 존 멤버가 섞인 사건 조사의
-      브리핑이 새지 않게 한다(plans/150 W2 교정 · 보안 H1).
+      브리핑이 새지 않게 한다(plans/153 W2 교정 · 보안 H1).
     - 걸린 알람이 없으면(제한 스코프) 존을 정할 수 없으므로 403.
 
     Raises:
@@ -1862,7 +1862,7 @@ async def get_alarm_investigation(
     request: Request,
     current_user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    """알람 id → 최신 조사(plans/150 §4.2)."""
+    """알람 id → 최신 조사(plans/153 §4.2)."""
     config = request.app.state.config
     # 알람 수신 권한이 없는 사용자는 저장소를 읽기 전에 403.
     _alarm_zone_scope(request, current_user)
@@ -1892,7 +1892,7 @@ async def get_investigation(
     request: Request,
     current_user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    """조사 id → 최신 조사(plans/150 §4.2)."""
+    """조사 id → 최신 조사(plans/153 §4.2)."""
     # 알람 수신 권한이 없는 사용자는 레코드 유무와 무관하게 403.
     _alarm_zone_scope(request, current_user)
     store = _investigation_store(request.app.state.config)

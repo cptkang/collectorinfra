@@ -253,7 +253,7 @@ class TestDomain:
         assert d["apm_investigation_id"] == "inv-9" and d["members"][0]["late_promoted"] is True
 
     def test_to_dict_members_carry_alarm_fields(self):
-        """(plans/150 W4 §4.4) 멤버에 alarm_name·kind·was_kinds·level — `EpisodeAlarm` 보유 값."""
+        """(plans/153 W4 §4.4) 멤버에 alarm_name·kind·was_kinds·level — `EpisodeAlarm` 보유 값."""
         ep = _episode(EpisodeMember(_ea("J-1", name="SERVICE_QUEUING", level="warning"), 0))
         m = ep.to_dict()["members"][0]
         assert (m["alarm_name"], m["kind"], m["was_kinds"], m["level"]) == (
@@ -794,7 +794,7 @@ class TestWorkerInvestigationOnce:
         assert all(i["episode_id"] == ep.id for i in store.investigations)
 
     async def test_episode_investigation_id_wins_for_apm_followups(self, clock):
-        """(plans/150 W4 §4.5) 종합 조사가 있으면 제니퍼 후속 알람은 그 id로 연결된다."""
+        """(plans/153 W4 §4.5) 종합 조사가 있으면 제니퍼 후속 알람은 그 id로 연결된다."""
         w, g, store, client = await self._run("shadow")
         ep = w._episodes.episodes()[0]
         ep.episode_investigation_id, ep.episode_investigation_status = "inv-ep", "submitted"

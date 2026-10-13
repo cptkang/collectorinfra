@@ -1,4 +1,4 @@
-"""장애 조사 품질 벤치마크 실행 진입 (plans/151 §4.1 · §9.3).
+"""장애 조사 품질 벤치마크 실행 진입 (plans/154 §4.1 · §9.3).
 
 `sre_agent/scripts`에는 `__init__.py`가 없어 패키지로 import되지 않는다. 이 파일이 자기 디렉터리를
 import 경로에 올리고 `investigation_bench.__main__.main`을 부른다.

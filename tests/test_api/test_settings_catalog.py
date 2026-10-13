@@ -205,9 +205,9 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     # plans/144 Q-4·W3·W4 NOISE_DEDUP_SEVERITY_RISE_BYPASS·CROSS_SOURCE_MODE·
     # CROSS_SOURCE_RULES_PATH·EPISODE_IDLE_SECONDS·APP_IMPACT_LATE_PROMOTION_ENABLED·
     # APM_HEALTHY_DEMOTION_SHADOW +6 ·
-    # plans/150 W1 NOISE_DECISION_ANALYSIS_TEXT_ENABLED +1 ·
-    # plans/150 W2 NOISE_INVESTIGATION_STORE_PATH·STORE_MAX_LINES +2 ·
-    # plans/150 W4 NOISE_INVESTIGATION_EPISODE_CONTEXT_ENABLED +1
+    # plans/153 W1 NOISE_DECISION_ANALYSIS_TEXT_ENABLED +1 ·
+    # plans/153 W2 NOISE_INVESTIGATION_STORE_PATH·STORE_MAX_LINES +2 ·
+    # plans/153 W4 NOISE_INVESTIGATION_EPISODE_CONTEXT_ENABLED +1
     assert len(items) == 406
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
@@ -366,10 +366,10 @@ def test_t2_group_and_field_counts():
     # plans/141 W2 RAG_EMPTY_RETRIES +1(rag 기존 그룹 — 그룹 수 불변) ·
     # plans/144 W1 NOISE_APM_NOISE_POLICY_ENABLED +1(noise_gate 기존 그룹 — 그룹 수 불변) ·
     # plans/144 Q-4·W3·W4 +6(noise_gate 기존 그룹 — 그룹 수 불변) ·
-    # plans/150 W1 NOISE_DECISION_ANALYSIS_TEXT_ENABLED +1(noise_gate 기존 그룹 — 그룹 수 불변) ·
-    # plans/150 W2 NOISE_INVESTIGATION_STORE_PATH·STORE_MAX_LINES +2
+    # plans/153 W1 NOISE_DECISION_ANALYSIS_TEXT_ENABLED +1(noise_gate 기존 그룹 — 그룹 수 불변) ·
+    # plans/153 W2 NOISE_INVESTIGATION_STORE_PATH·STORE_MAX_LINES +2
     # (noise_gate 기존 그룹 — 그룹 수 불변) ·
-    # plans/150 W4 NOISE_INVESTIGATION_EPISODE_CONTEXT_ENABLED +1
+    # plans/153 W4 NOISE_INVESTIGATION_EPISODE_CONTEXT_ENABLED +1
     # (noise_gate 기존 그룹 — 그룹 수 불변)
     assert len(index) == 406
     # plans/103 TIER3_PLAN_LOOP_ENABLED +1 · plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1

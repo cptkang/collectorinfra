@@ -1,4 +1,4 @@
-"""plans/151 W3 — 반출 묶음 가림·잔존 검사(§6.5 · D-324 ⑥).
+"""plans/154 W3 — 반출 묶음 가림·잔존 검사(§6.5 · D-324 ⑥).
 
 픽스처 run(`tests/fixtures/investigation_bench/export/run/`)에 내부 값을 심어 두고 실행 환경
 (OS 계정 · 호스트명 · 홈)은 monkeypatch로 같은 값을 심는다. 실 LLM 0 · 네트워크 0.

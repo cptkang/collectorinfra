@@ -1,4 +1,4 @@
-"""가짜 세계 MCP 서버 (plans/151 §4.10 — 이 모듈의 정본).
+"""가짜 세계 MCP 서버 (plans/154 §4.10 — 이 모듈의 정본).
 
 스냅샷(`tool_schemas.json`)의 도구를 이름·설명·`inputSchema`·`outputSchema` 그대로 등록하고, 러너가
 `POST /_bench/active {world_id, trial[, arm]}`로 지정한 **현재 세계** 하나의 `tools:` 규칙으로

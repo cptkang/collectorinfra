@@ -997,9 +997,9 @@ memory 8GiB / oom_kills 3)을 조사 서술이 집어냈는지 **문자열로 �
 
 ---
 
-## 10. 조사 품질 벤치마크 (plans/151)
+## 10. 조사 품질 벤치마크 (plans/154)
 
-> 명령의 정본은 `plans/151-WIP-sre-investigation-quality-benchmark.md` §9.3이다. 이 절은 구성과 절차의 요지만 옮긴다.
+> 명령의 정본은 `plans/154-WIP-sre-investigation-quality-benchmark.md` §9.3이다. 이 절은 구성과 절차의 요지만 옮긴다.
 > 근거 결정: D-324(벤치) · D-127·D-240(과금 게이트) · D-222(비과금 평면) · D-301(누출 관문 = 미기록).
 
 ### 10.1 목적

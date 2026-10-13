@@ -1,4 +1,4 @@
-"""벤치 러너 — 프로세스 기동 → 세계별 k회 submit/poll → raw.jsonl (plans/151 §4.7 · §4.8 · §4.9).
+"""벤치 러너 — 프로세스 기동 → 세계별 k회 submit/poll → raw.jsonl (plans/154 §4.7 · §4.8 · §4.9).
 
 한 번의 `--run`:
 1. 명세 검사·과금 평면 차단·포트 확인(`preflight.static_checks`) — `--dry-run`은 여기서 계획만 출력.

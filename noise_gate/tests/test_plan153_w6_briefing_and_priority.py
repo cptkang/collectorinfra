@@ -1,4 +1,4 @@
-"""plans/150 W6 — 「크로스소스」 브리핑 줄 · 조사 조회 우선순위 · 종합 조사 후속 표지.
+"""plans/153 W6 — 「크로스소스」 브리핑 줄 · 조사 조회 우선순위 · 종합 조사 후속 표지.
 
     A. `render_briefing_lines` — `cross_source`가 있으면 원 키 나열 대신 「크로스소스」 결정적
        요약 줄 · 없으면 출력 비트 동일(채팅·workb·웹 공용)
@@ -23,7 +23,7 @@ from noise_gate.domain.alarm import AlarmAnalysisResult, AlarmEvent
 from noise_gate.domain.investigation_briefing import render_briefing_lines
 from noise_gate.infrastructure.investigation_store import InvestigationStore
 
-BRIEFING_MOCK = Path(__file__).resolve().parents[1] / "testdata" / "plan150" / "briefing_mock.json"
+BRIEFING_MOCK = Path(__file__).resolve().parents[1] / "testdata" / "plan153" / "briefing_mock.json"
 
 
 def _mock() -> dict[str, Any]:

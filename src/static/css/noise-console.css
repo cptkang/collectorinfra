@@ -347,7 +347,7 @@
 .signals .sig-name { color: var(--text-secondary) }
 .signals .sig-key { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted) }
 .signals .sig-desc { font-size: 10.5px; color: var(--text-muted); line-height: 1.5; margin-top: 2px }
-/* (plans/150 W1) 드로어 머리 사유 요약 · 원래→최종 티어 칩 · 「발생 원인과 처리」(ⓐ 처리 안내 → ⓑ AI 추정) */
+/* (plans/153 W1) 드로어 머리 사유 요약 · 원래→최종 티어 칩 · 「발생 원인과 처리」(ⓐ 처리 안내 → ⓑ AI 추정) */
 .drawer-summary { margin: 0 0 12px }
 .drawer-summary-text { margin: 6px 0 0; font-size: 12px; line-height: 1.6; color: var(--text) }
 .tier-shift {

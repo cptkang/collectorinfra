@@ -414,7 +414,7 @@ class TestGraphWiring:
         assert "investigation_trigger" not in nodes
 
 
-# ── 9. (plans/150 W2) 조사 저장소 기록 — 인라인 종결·생략 경로 ──────────────────
+# ── 9. (plans/153 W2) 조사 저장소 기록 — 인라인 종결·생략 경로 ──────────────────
 def _store_config(ng, client, inv_store, store=None) -> dict:
     cfg = _config(ng, client, store)
     cfg["configurable"]["investigation_store"] = inv_store

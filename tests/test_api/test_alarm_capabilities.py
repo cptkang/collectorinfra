@@ -70,8 +70,8 @@ def test_capabilities_expose_no_paths_or_secrets():
         "feedback_enabled", "incident_tracking", "sse_bridge",
         "suppress_stream", "suppress_max_severity",
         "prompt_suggest_enabled",   # Plan 86 — 불리언(경로·시크릿 아님)
-        "investigation_enabled",    # plans/150 W2 — 불리언(서비스 URL 자체는 싣지 않는다)
-        "investigation_followup_timeout_seconds",  # plans/150 W2 교정 — 실수(웹 재조회 상한)
+        "investigation_enabled",    # plans/153 W2 — 불리언(서비스 URL 자체는 싣지 않는다)
+        "investigation_followup_timeout_seconds",  # plans/153 W2 교정 — 실수(웹 재조회 상한)
     }
     for value in body.values():
         assert isinstance(value, (bool, int, float)), value

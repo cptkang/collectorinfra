@@ -1,6 +1,6 @@
-"""plans/151 W1 — 계측 보강(M-1~M-5) 회귀 고정.
+"""plans/154 W1 — 계측 보강(M-1~M-5) 회귀 고정.
 
-W0(`test_plan151_w0_instrumentation_gaps.py`)가 키 이름·속성을 고정했고, 여기서는 W1 구현의 나머지
+W0(`test_plan154_w0_instrumentation_gaps.py`)가 키 이름·속성을 고정했고, 여기서는 W1 구현의 나머지
 계약을 고정한다(§9.2 W1 행):
 
 - step 상한 미완주 → `status=done` 유지 + `incomplete: true`(실 holmes 경로 종단)
@@ -31,7 +31,7 @@ from sre_agent.application.investigation_dispatcher import INSTRUMENTATION_KEYS
 from sre_agent.diagnosis import DiagnosisResult, _StreamDrain
 from sre_agent.interface.mcp_service import create_service, get_job_store
 from sre_agent.settings import AgentSettings
-from test_plan151_w0_instrumentation_gaps import (
+from test_plan154_w0_instrumentation_gaps import (
     MODEL,
     RAW_SENTINEL,
     _agent_with_real_holmes,

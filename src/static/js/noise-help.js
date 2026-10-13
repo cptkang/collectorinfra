@@ -10,7 +10,7 @@
  * API(`summary.stages[].description`)로 받는다. 판정을 고치는 사람이 설명을 함께 고치게 하려는
  * 것이라, 화면 쪽에 사본을 두면 둘이 어긋난다. 여기에는 단계별 **추가 관련 설정**만 둔다.
  *
- * (plans/150 W1) 드로어 머리 **사유 요약**(`summary`)과 「발생 원인과 처리」 섹션 문구(`cause`)도 여기가
+ * (plans/153 W1) 드로어 머리 **사유 요약**(`summary`)과 「발생 원인과 처리」 섹션 문구(`cause`)도 여기가
  * 정본이다. 사유 요약은 "이 알람"을 말하고 단계 설명은 "규칙"을 말한다 — 둘을 겹쳐 쓰지 않는다.
  * 처리 안내 문장은 판정 코드 옆 도메인 정본(`STAGE_HANDLING`)을 API(`summary.stages[].handling`)로 받는다.
  *
@@ -304,11 +304,11 @@ window.NOISE_HELP = {
         "apm_healthy_shadow.would_demote": "제니퍼 정상 강등 — 했을 강등",
         "apm_healthy_shadow.window_minutes": "제니퍼 정상 강등 — 조회 창",
         "apm_healthy_shadow.source": "제니퍼 정상 강등 — 근거 출처",
-        // plans/150 W1 — AI 분석이 실패해 원문 알람으로 판단한 건(게이트가 남기는 표시)
+        // plans/153 W1 — AI 분석이 실패해 원문 알람으로 판단한 건(게이트가 남기는 표시)
         analysis: "AI 분석",
     },
 
-    // plans/150 W1 — 드로어 머리 사유 요약 1문단(§4.8). 결정적 템플릿이다(LLM 서술 아님).
+    // plans/153 W1 — 드로어 머리 사유 요약 1문단(§4.8). 결정적 템플릿이다(LLM 서술 아님).
     // `{키}`: 단계 근거(`stage_evidence` — 중첩은 `부모.자식`) 또는 레코드 값(stage_label·tier·from_tier).
     // `[ … ]`는 선택 구간 — 안의 키가 하나라도 없으면 구간째 뺀다(옛 레코드에서도 문장이 깨지지 않게).
     summary: {
@@ -351,7 +351,7 @@ window.NOISE_HELP = {
         chipPromoted: "승격",
     },
 
-    // plans/150 W1 — 드로어 「발생 원인과 처리」(§4.9 · G-8) — ⓐ 처리 안내(위) → ⓑ AI 추정(아래).
+    // plans/153 W1 — 드로어 「발생 원인과 처리」(§4.9 · G-8) — ⓐ 처리 안내(위) → ⓑ AI 추정(아래).
     cause: {
         title: "발생 원인과 처리",
         handlingHead: "처리 안내",

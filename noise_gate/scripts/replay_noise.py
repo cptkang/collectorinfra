@@ -19,7 +19,7 @@ noise_ctx는 **주입 가능한 공급 함수**(`NoiseCtxProvider`)로 받는다
 입력 순서대로 사건을 묶고 크로스소스 신호를 정책에 넘긴다(발생 시각을 시계로 쓴다 · 존은
 레지스트리로 푼다 · 해소 짝맞춤 지문은 APM이면 정규화 유형). 요약에 `cross_source`(사건 수 ·
 「했을 강등」 수 · link 수 · 실제 상한 수 · 빠진 조건 분포)를 더한다. off면 출력이 종전과 같다.
-(plans/150 W4) 같은 모드에서 사건 종합 조사 발주 조건(`episode_investigation_due` — 두 소스 멤버 ·
+(plans/153 W4) 같은 모드에서 사건 종합 조사 발주 조건(`episode_investigation_due` — 두 소스 멤버 ·
 링크 ≥1 · 통보 멤버 ≥1 · 사건당 1회)이 처음 성립한 알람 행에 `episode_investigation: true`를 달고
 요약 `cross_source.episode_investigations`에 발주 수를 센다(조사 서비스는 부르지 않는다).
 
@@ -236,7 +236,7 @@ def replay(
             row["cross_source"] = cross_source
             if cross_source is not None:
                 tracker.record_tier(cross_source["episode_id"], event.alarm_id, decision.tier)
-                # (plans/150 W4) 종합 조사 발주 조건이 처음 성립한 알람 — 워커와 같은 조건 · 1회.
+                # (plans/153 W4) 종합 조사 발주 조건이 처음 성립한 알람 — 워커와 같은 조건 · 1회.
                 ep = tracker.get(cross_source["episode_id"])
                 if ep is not None and episode_investigation_due(ep):
                     ep.episode_investigation_status = "replayed"

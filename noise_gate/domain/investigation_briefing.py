@@ -39,10 +39,10 @@ _ORDERED: tuple[tuple[str, str], ...] = (
 )
 
 #: 순서 목록 밖 키 중 라벨만 한글로 바꾸는 것(렌더 위치·값은 원 키와 같다). 스텁 브리핑의
-#: `message`가 웹 브리핑 줄에 영문 키로 보이지 않게 한다(plans/150 W2 교정).
+#: `message`가 웹 브리핑 줄에 영문 키로 보이지 않게 한다(plans/153 W2 교정).
 _EXTRA_LABELS: dict[str, str] = {"message": "안내"}
 
-#: (plans/150 §4.7) `cross_source` 블록의 소스 라벨 · 도구 뒷받침 표기. 모르는 소스는 원 키명.
+#: (plans/153 §4.7) `cross_source` 블록의 소스 라벨 · 도구 뒷받침 표기. 모르는 소스는 원 키명.
 _SOURCE_LABELS: dict[str, str] = {SOURCE_POLESTAR: "폴스타", SOURCE_JENNIFER: "제니퍼"}
 _SUPPORT_LABELS: dict[bool | None, str] = {True: "양쪽", False: "한쪽", None: "인용 없음"}
 
@@ -101,7 +101,7 @@ def _render_lag(lag: object) -> str:
 
 
 def _render_cross_source(cs: dict[str, Any]) -> str:
-    """크로스소스 블록을 결정적 한국어 요약으로 편다(plans/150 §4.7 — 키 나열 대신).
+    """크로스소스 블록을 결정적 한국어 요약으로 편다(plans/153 §4.7 — 키 나열 대신).
 
     `사건 호스트 h · 폴스타 1건 · 제니퍼 1건` / `APM 도구 연결 · 호출 n회`(또는 미연결) /
     링크마다 `규칙 r: 원인 → 결과 (270초) · 도구 뒷받침: 양쪽|한쪽|인용 없음`.
@@ -153,7 +153,7 @@ def render_briefing_lines(briefing: dict) -> list[tuple[str, str]]:
     """브리핑 dict → `[(라벨, 평문 값), ...]` 순서 고정. 표현 매체 비의존(순수 함수).
 
     - 순서 키는 `_ORDERED` 순, 그 외 키는 원 키명으로 말미에 정렬 렌더한다.
-    - (plans/150 §4.7) `cross_source`(선택 키)는 원 키 나열 대신 「크로스소스」 라벨의 결정적 요약
+    - (plans/153 §4.7) `cross_source`(선택 키)는 원 키 나열 대신 「크로스소스」 라벨의 결정적 요약
       줄로 편다 — 키가 없으면 출력은 종전과 비트 동일하다.
     - 빈 값(`None`·`""`·`[]`·`{}`·`False`)은 라벨째 생략한다.
     - `_SUPPRESSED`는 출력하지 않는다. 스텁 판정은 호출자 몫이다.

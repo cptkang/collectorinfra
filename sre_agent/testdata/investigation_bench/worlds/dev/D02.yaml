@@ -1,4 +1,4 @@
-# plans/151 §4.6 D02 — JVM 힙 누수 → OOM kill(memory_leak_oom · app · 함정 없음)
+# plans/154 §4.6 D02 — JVM 힙 누수 → OOM kill(memory_leak_oom · app · 함정 없음)
 id: D02
 split: dev
 title: 주문 API JVM 힙 누수 후 OOM kill

@@ -1,4 +1,4 @@
-# plans/151 §4.6 H07 — 홀드아웃(D10과 같은 kind · disk_full · 함정: 강한 유인 — 상시 고부하 CPU) · 개선 채택 판정 전용
+# plans/154 §4.6 H07 — 홀드아웃(D10과 같은 kind · disk_full · 함정: 강한 유인 — 상시 고부하 CPU) · 개선 채택 판정 전용
 id: H07
 split: holdout
 title: 적재 후 삭제 단계 실패로 스테이징 볼륨 포화(변환 전용 고부하 서버)

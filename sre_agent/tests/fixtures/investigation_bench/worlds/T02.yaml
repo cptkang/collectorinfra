@@ -1,4 +1,4 @@
-# 테스트 전용 소형 세계 — 세계 전환·기본 응답 검사용(plans/151 W2). default·incident_window 없음.
+# 테스트 전용 소형 세계 — 세계 전환·기본 응답 검사용(plans/154 W2). default·incident_window 없음.
 id: T02
 split: dev
 title: 정상(무장애) 세계(테스트)

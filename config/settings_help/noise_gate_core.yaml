@@ -517,7 +517,7 @@ settings:
     recommendation: 기본 20000 유지. 화면이 느리면 줄인다.
     related: [NOISE_DECISION_STORE_PATH, NOISE_DECISION_STORE_ENABLED]
 
-  # ── plans/150 W1 · D-323: 판정 기록에 AI 분석 서술 저장 ──
+  # ── plans/153 W1 · D-325: 판정 기록에 AI 분석 서술 저장 ──
 
   NOISE_DECISION_ANALYSIS_TEXT_ENABLED:
     example: >-

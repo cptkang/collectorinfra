@@ -1,4 +1,4 @@
-# plans/151 §4.6 D05 — 배포 직후 CPU 상승(change_induced · change · 함정: 단서가 변경 이력에만 있음)
+# plans/154 §4.6 D05 — 배포 직후 CPU 상승(change_induced · change · 함정: 단서가 변경 이력에만 있음)
 id: D05
 split: dev
 title: 가격 계산 서비스 신규 버전 배포 직후 CPU 상승

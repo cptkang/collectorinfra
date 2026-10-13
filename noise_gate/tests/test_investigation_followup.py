@@ -160,7 +160,7 @@ class TestTriggerSubmitOnly:
         assert client.submit_calls and client.poll_calls == []
         assert out["investigation_pending"] == {
             "investigation_id": "inv-1", "alarm_id": "A-1", "fingerprint": "fp-1",
-            "alarm_db_ids": {"A-1": "db1"},  # (plans/150 W2 교정) 후속 저장 행의 존 검사 근거
+            "alarm_db_ids": {"A-1": "db1"},  # (plans/153 W2 교정) 후속 저장 행의 존 검사 근거
         }
         # 브리핑은 아직 없다 — 통보는 지연 없이 즉시 나간다.
         assert "investigation_briefing" not in out
@@ -518,7 +518,7 @@ class TestInvestigationIdOnCardPayload:
         assert result.investigation_id == "inv-88"
 
 
-# ── 9. (plans/150 W2 · G-4) 후속 poll·저장과 workb 후속 발송 분리 ──────────────
+# ── 9. (plans/153 W2 · G-4) 후속 poll·저장과 workb 후속 발송 분리 ──────────────
 def _inv_store(tmp_path):
     from noise_gate.infrastructure.investigation_store import InvestigationStore
 

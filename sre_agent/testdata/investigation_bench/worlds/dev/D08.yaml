@@ -1,4 +1,4 @@
-# plans/151 §4.6 D08 — 회선 단절 → 같은 사이트 다수 서버 무응답(network_site · network · 함정 없음 — 원인은 스위치)
+# plans/154 §4.6 D08 — 회선 단절 → 같은 사이트 다수 서버 무응답(network_site · network · 함정 없음 — 원인은 스위치)
 id: D08
 split: dev
 title: 사이트 L3 스위치 업링크 단절로 서버 다수 무응답

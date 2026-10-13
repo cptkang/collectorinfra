@@ -381,7 +381,7 @@ def _mask_fn(request: Request):  # noqa: ANN201
 
 
 def _investigation_block(request: Request, alarm_id: str) -> dict[str, Any] | None:
-    """결정 추적에 붙일 자동 조사 요약(plans/150 W2) — 조사 레코드가 없으면 None(키 없음).
+    """결정 추적에 붙일 자동 조사 요약(plans/153 W2) — 조사 레코드가 없으면 None(키 없음).
 
     운영자 경로는 원문과 원 브리핑, 사용자 경로는 마스킹·원 브리핑 제외다(G-3 (a) — `analysis`와
     같은 갈래). 저장소만 읽는다 — 조사 서비스 재조회는 `/alarm/investigations/*` 몫이다.
@@ -462,7 +462,7 @@ def _stage_meta(stage: str, ng: Any) -> dict[str, Any]:
 
     게이트가 꺼지면 전 단계가 평가되지 않는다. 게이트가 켜지면 `_STAGE_ENABLE_FIELDS`의
     8단계만 설정값을 따르고, 나머지(와 `unknown`)는 항상 평가된다.
-    (plans/150 W1) 처리 안내(`handling`)도 같은 방식으로 도메인 정본에서 싣는다.
+    (plans/153 W1) 처리 안내(`handling`)도 같은 방식으로 도메인 정본에서 싣는다.
     """
     from noise_gate.domain.notification_policy import STAGE_DESCRIPTIONS
     from noise_gate.domain.stage_handling import STAGE_HANDLING
@@ -704,7 +704,7 @@ async def noise_decision_trace(
     )
     if decision is None:
         raise HTTPException(status_code=404, detail="해당 알람의 발송 판단이 없습니다.")
-    # (plans/150 W2) 자동 조사 요약 — 조사 레코드가 있을 때만 키를 더한다(없으면 응답 비트 동일).
+    # (plans/153 W2) 자동 조사 요약 — 조사 레코드가 있을 때만 키를 더한다(없으면 응답 비트 동일).
     investigation = _investigation_block(request, alarm_id)
     if investigation is not None:
         decision["investigation"] = investigation

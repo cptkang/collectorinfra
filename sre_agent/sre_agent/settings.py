@@ -114,7 +114,7 @@ class AgentSettings(BaseSettings):
     investigation_max_concurrent: int = 2
     # 시간당 조사 횟수 상한. None이면 예산 가드 off. 초과 시 신규 조사 거부.
     investigation_hourly_budget: int | None = None
-    # 조사 감사 JSONL 경로(plans/151 W1 · §4.7 — 벤치 감사를 운영 감사와 분리).
+    # 조사 감사 JSONL 경로(plans/154 W1 · §4.7 — 벤치 감사를 운영 감사와 분리).
     # None이면 기본 `sre_agent/.data/investigation_audit.jsonl`(비트 동일).
     # 값이 있으면 JobStore·dispatcher가 그 파일에만 쓴다.
     investigation_audit_path: str | None = None
@@ -176,7 +176,7 @@ class AgentSettings(BaseSettings):
     # severity_judge_enabled와 함께 켠다 — judge가 꺼져 있으면 합칠 판정이 없다.
     # **만료일 2027-03-29**(D-161 ① · 6개월).
     apm_signatures_enabled: bool = False
-    # 크로스소스 조사(plans/150 W5 · §4.6·§4.7 · D-323 ⑨). 기본 off = 페이로드
+    # 크로스소스 조사(plans/153 W5 · §4.6·§4.7 · D-325 ⑨). 기본 off = 페이로드
     # `meta.episode`를 무시해 질문·지침·브리핑·감사가 비트 동일.
     # 켜면 `meta.episode`(noise_gate 사건 추적기 스냅샷 — 여기서 사건을 재구성하지 않는다 ·
     # G-5 (a))에 인프라·애플리케이션 멤버가 모두 있을 때 크로스소스 질문 · OS+APM 플레이북

@@ -1,4 +1,4 @@
-"""사전 점검 — 과금 평면 차단 · LLM 엔드포인트 · 포트 · 버전 (plans/151 §6.4 · §6.7 · D-324 ⑤).
+"""사전 점검 — 과금 평면 차단 · LLM 엔드포인트 · 포트 · 버전 (plans/154 §6.4 · §6.7 · D-324 ⑤).
 
 판정 입력은 **실행 명세와 sre_agent 설정 필드 이름**뿐이다. 명세 `llm.model`·`llm.api_base`가 실험군
 환경변수 `MODEL`·`API_BASE`가 되고 sre_agent가 그것을 `AgentSettings.model`·`.api_base` 필드로

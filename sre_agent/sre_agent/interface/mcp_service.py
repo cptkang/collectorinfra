@@ -88,7 +88,7 @@ class StaticBearerAuthMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
-#: 크로스소스 질문(plans/150 §4.6) — 규칙은 「가설」로만 제시한다
+#: 크로스소스 질문(plans/153 §4.6) — 규칙은 「가설」로만 제시한다
 #: (결합 근거는 사건 추적기 판정 · 인과 아님).
 CROSS_SOURCE_QUESTION_TEMPLATE = (
     "{host}에서 인프라(폴스타) 알람 {causes}와 애플리케이션(제니퍼) 이벤트 {effects}이 "
@@ -126,7 +126,7 @@ def _cross_source_question(server: str, when: str | None, xs: EpisodeContext) ->
 def _job_to_question(job, settings: AgentSettings | None = None) -> str:
     """조사 잡을 DiagnosisAgent 질의 문자열로 변환한다(pull은 question, push는 이벤트 요약).
 
-    `settings.cross_source_investigation_enabled`(plans/150 §4.6)이고 `meta.episode`에
+    `settings.cross_source_investigation_enabled`(plans/153 §4.6)이고 `meta.episode`에
     두 소스 멤버가 모두 있으면 크로스소스 질문을 만든다. settings 미지정·플래그 off·
     한쪽 소스 사건이면 종전 문자열 그대로다.
     """
@@ -271,7 +271,7 @@ def create_service(
     if job_store is not None:
         store = job_store
     else:
-        # 감사 경로 분리(plans/151 W1) — None이면 두 생산자 모두 기본 경로(종전 그대로).
+        # 감사 경로 분리(plans/154 W1) — None이면 두 생산자 모두 기본 경로(종전 그대로).
         audit_path = settings.investigation_audit_path
         store = JobStore(
             settings, executor=_build_dispatcher(settings, audit_path), audit_path=audit_path

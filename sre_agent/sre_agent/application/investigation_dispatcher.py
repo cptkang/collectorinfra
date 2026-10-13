@@ -16,7 +16,7 @@ HolmesGPT ReAct 조사 루프를 감싸되, **트리거·dedup·동시성·타�
 4. 시간당 예산 — `investigation_hourly_budget` 초과 시 신규 조사 거부.
 5. 토큰 비용 감사 — DiagnosisResult.total_tokens/total_cost를 잡·decision JSONL에 기록.
 
-계측 가산 키(plans/151 W1 · D-324 ⑦ — 플래그 없이 상시 · 동작 무변경): 종결한 잡(`instrumentation`
+계측 가산 키(plans/154 W1 · D-324 ⑦ — 플래그 없이 상시 · 동작 무변경): 종결한 잡(`instrumentation`
 → `summary()`)과 `done` 감사에 `incomplete`·`elapsed_s`·`prefetch_s`·`steps`·`tool_calls_n`·`model`·
 `max_steps`·`tool_calls[{name, args_digest, status}]`(원시 출력·인자 원문 제외)를 더한다. 타임아웃·
 실패는 얻을 수 있는 `elapsed_s`·`model`·`max_steps`만. 미완주는 `status=done` 유지(D-123 어휘 불변).
@@ -72,7 +72,7 @@ logger = logging.getLogger(__name__)
 # dedup dict 방어적 하드 상한(ttl sweep에 더해 무한 성장 방지).
 _MAX_DEDUP_KEYS = 4096
 
-#: `done` 잡·감사의 계측 가산 키(plans/151 W1 · D-324 ⑦ — 상시). 감사 키 집합을 단언하는 테스트는
+#: `done` 잡·감사의 계측 가산 키(plans/154 W1 · D-324 ⑦ — 상시). 감사 키 집합을 단언하는 테스트는
 #: 이 키를 빼고 종전 키와 비교한다(키 이름의 단일 출처).
 INSTRUMENTATION_KEYS: tuple[str, ...] = (
     "incomplete", "elapsed_s", "prefetch_s", "steps", "tool_calls_n", "model", "max_steps",
@@ -117,17 +117,17 @@ class JobLike(Protocol):
     reference_time: str | None
     lookback_minutes: int | None
     correlation: dict | None
-    # 계측 가산 키(plans/151 W1) — 종결 시 dispatcher가 채운다.
+    # 계측 가산 키(plans/154 W1) — 종결 시 dispatcher가 채운다.
     instrumentation: dict | None
 
 
 @dataclass
 class _AnswerOnly:
-    """미완주 결과의 판정·브리핑 입력 — 답변만 남긴다(plans/151 W1).
+    """미완주 결과의 판정·브리핑 입력 — 답변만 남긴다(plans/154 W1).
 
     W1부터 미완주 결과도 상한 직전까지의 도구 기록을 싣지만(계측·벤치 입력), 판정·브리핑은 종전처럼
     도구 기록 없이 답변만 본다 — 동작 무변경(D-324 ⑦). 부분 기록으로 브리핑을 만드는 일은 별도
-    플래그 개선 후보(plans/151 H-5) 몫이다.
+    플래그 개선 후보(plans/154 H-5) 몫이다.
     """
 
     answer: str
@@ -157,7 +157,7 @@ def _host_key(job: JobLike, episode_scoped: bool = False) -> tuple[str, ...] | N
     키가 되어 가드를 비껴간다.** 해소하려면 이름 해소가 필요한데 그건 본체(`cmm_resource`) 소관이라
     여기서 부를 수 없다(D-118 경계) — 완화가 아니라 **명시된 잔여 한계**다.
 
-    **종합 조사**(plans/150 §4.5 · `episode_scoped` = `cross_source_investigation_enabled`):
+    **종합 조사**(plans/153 §4.5 · `episode_scoped` = `cross_source_investigation_enabled`):
     종합 조사 페이로드는 대표(원인) 알람 event를 실어 키가 그 알람의 단독 조사와 같다 —
     단독 조사가 도는 동안 제출되면 거부되고 사건당 1회라 재시도도 없다. 그래서 종합 조사는
     `(db_id, host, "episode")`로 따로 잡는다(같은 호스트 종합 조사끼리의 중복 차단은 유지).
@@ -436,7 +436,7 @@ class InvestigationDispatcher:
 
         조사 전에 결정적 사전수집(plans/50 G4)을 돈다 — 결과는 `job.correlation`에 실려 조사 지침
         (`build_guidance`)과 브리핑이 읽는다. 사전수집은 조사를 막지 않는다(실패 → None + 감사).
-        `started`는 계측 기준 시각(`self._clock`)이다(plans/151 W1).
+        `started`는 계측 기준 시각(`self._clock`)이다(plans/154 W1).
         """
         prefetch_started = self._clock()
         job.correlation = self._prefetch(job)
@@ -451,7 +451,7 @@ class InvestigationDispatcher:
             job.briefing = {"stub": True, "message": job.verdict, "elements": None}
             job.tool_calls_summary, job.tokens, job.cost = [], 0, 0.0
             # 조사 스레드는 버려져 부분 토큰·도구 기록은 얻을 수 없다
-            # — 얻을 수 있는 키만 싣는다(plans/151 W1).
+            # — 얻을 수 있는 키만 싣는다(plans/154 W1).
             job.instrumentation = self._run_meta(started)
             job.updated_at = self._wall_clock()
             self._audit({"event": "timeout", "investigation_id": job.investigation_id,
@@ -482,7 +482,7 @@ class InvestigationDispatcher:
         xs = active_episode(job.payload, self._settings.cross_source_investigation_enabled,
                             getattr(job, "reference_time", None))
         if xs is not None:
-            # plans/150 §4.6·§4.7 — 두 소스 멤버가 있는 사건만.
+            # plans/153 §4.6·§4.7 — 두 소스 멤버가 있는 사건만.
             # off·한쪽 소스면 인자를 넘기지 않는다(종전 호출 동일).
             briefing_kwargs["cross_source"] = xs
             briefing_kwargs["apm_tools_connected"] = bool(self._settings.apm_mcp_url)
@@ -520,7 +520,7 @@ class InvestigationDispatcher:
         self._audit(record)
 
     def _run_meta(self, started: float | None) -> dict:
-        """종결 공통 계측 키 — 경과 초·조사 모델·step 상한(plans/151 W1).
+        """종결 공통 계측 키 — 경과 초·조사 모델·step 상한(plans/154 W1).
 
         `elapsed_s`는 동시 상한 통과 시각부터다(사전수집 포함). 기준점이 없으면 None.
         """
@@ -533,7 +533,7 @@ class InvestigationDispatcher:
     def _instrumentation(
         self, result: DiagnosisLike, incomplete: bool, started: float, prefetch_s: float
     ) -> dict:
-        """`done` 계측 가산 키(plans/151 W1 · M-1·M-4·M-5).
+        """`done` 계측 가산 키(plans/154 W1 · M-1·M-4·M-5).
 
         `tool_calls`는 `{name, args_digest, status}`만 싣는다 — 원시 출력·오류 본문·인자 원문은
         크기·민감도 때문에 넣지 않는다. `args_digest`는 정체 가드와 같은 인자 표기
@@ -558,7 +558,7 @@ class InvestigationDispatcher:
         }
 
     def _episode_audit(self, job: JobLike) -> dict:
-        """plans/150 §4.6 감사 키 `episode_id`·`kind`·`cross_source_links`.
+        """plans/153 §4.6 감사 키 `episode_id`·`kind`·`cross_source_links`.
 
         플래그 on이고 `meta.episode`가 있을 때만 붙는다 — off면 빈 dict라 감사 레코드가
         종전과 비트 동일하다. `kind`는 `meta.investigation_kind`(종합 조사 "episode"),

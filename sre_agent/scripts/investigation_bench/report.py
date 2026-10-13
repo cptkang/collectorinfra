@@ -1,4 +1,4 @@
-"""벤치 보고서 `report.md` (plans/151 §4.9 · §6.2 · §6.7).
+"""벤치 보고서 `report.md` (plans/154 §4.9 · §6.2 · §6.7).
 
 입력은 run(또는 `.bundle`) 디렉터리의 `manifest.json`·`raw.jsonl`·`scores.jsonl`·
 `gpu_samples.jsonl`(있을 때)뿐이다. 같은 입력이면 같은 바이트다 — 시각 같은 비결정 값은 manifest에

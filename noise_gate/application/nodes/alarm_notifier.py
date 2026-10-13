@@ -500,7 +500,7 @@ def _spawn_investigation_followup(
     조건(플래그 off·pending 없음·상한 초과·이벤트 루프 부재)에서는 조용히 넘어가되,
     상한 초과만은 사유를 로그로 남긴다(침묵 폴백 금지 — 유실이 아니라 의도된 차단임을 남긴다).
 
-    (plans/150 W2 · G-4 · D-137 ④ 부분 개정) poll·저장과 workb 후속 발송을 분리한다 — 조사
+    (plans/153 W2 · G-4 · D-137 ④ 부분 개정) poll·저장과 workb 후속 발송을 분리한다 — 조사
     저장소가 주입돼 있으면 workb 즉시 통보가 실패·미설정이어도 태스크를 띄워 종결 상태를 저장하고,
     **workb 후속 발송만** 종전 조건(즉시 통보 성공)을 지킨다. 저장소가 없으면 종전과 같다.
     """
@@ -527,7 +527,7 @@ def spawn_episode_investigation_followup(
     store: Any,  # DecisionStore | None
     inv_store: Any = None,  # InvestigationStore | None
 ) -> bool:
-    """사건 종합 조사의 후속 poll·저장·workb 후속 1건을 백그라운드로 띄운다 (plans/150 §4.5).
+    """사건 종합 조사의 후속 poll·저장·workb 후속 1건을 백그라운드로 띄운다 (plans/153 §4.5).
 
     `result`는 대표 알람의 분석 결과다(후속 메시지가 그 알람을 가리킨다). 규칙은 단독 조사 후속을
     준용한다 — workb 후속은 `investigation_followup_enabled`이고 대표 알람의 즉시 통보가 workb로
@@ -694,7 +694,7 @@ async def _deliver_investigation_followup(
     gate_cfg,  # noqa: ANN001 — NoiseGateConfig (덕 타이핑)
     store,  # noqa: ANN001 — DecisionStore | None (덕 타이핑)
     *,
-    inv_store=None,  # noqa: ANN001 — InvestigationStore | None (plans/150 W2)
+    inv_store=None,  # noqa: ANN001 — InvestigationStore | None (plans/153 W2)
     send_workb: bool = True,
 ) -> None:
     """조사 종결까지 poll한 뒤 브리핑을 후속 메시지로 발송한다 (Plan 66 3-E).
@@ -703,7 +703,7 @@ async def _deliver_investigation_followup(
     다음 알람 처리에 영향을 주지 않으며, 최종 상태는 사유와 함께 감사에 남긴다(침묵 금지).
     브리핑도 상향 안내도 없으면 발송하지 않는다(빈 후속 메시지 금지).
 
-    (plans/150 W2 · G-4) 종결 상태·브리핑은 발송 여부와 무관하게 조사 저장소에 먼저 남긴다
+    (plans/153 W2 · G-4) 종결 상태·브리핑은 발송 여부와 무관하게 조사 저장소에 먼저 남긴다
     (`source="followup"`). `send_workb=False`(즉시 통보 미발송)면 workb 후속은 보내지 않는다.
     """
     investigation_id = pending.get("investigation_id") or ""
@@ -760,7 +760,7 @@ async def _deliver_investigation_followup(
 
     try:
         if pending.get("kind") == "episode":
-            # (plans/150 W6) 종합 조사 후속만 표지를 단다 — 단독 조사 후속 호출은 종전과 같다.
+            # (plans/153 W6) 종합 조사 후속만 표지를 단다 — 단독 조사 후속 호출은 종전과 같다.
             await _send_workb_followup(
                 cfg.workb, result, briefing, escalation,
                 episode_note=episode_followup_note(pending),
@@ -787,7 +787,7 @@ async def _poll_until_terminal(
     """자체 클라이언트로 조사 종결까지 poll한다(상위 wait_for가 전체 유계).
 
     (briefing, 상태, verdict, 사유)를 돌려준다 — 사유는 실패·거부·타임아웃·스텁 응답의
-    `reason`·`error`(조사 저장소에 보존 · plans/150 W2 교정).
+    `reason`·`error`(조사 저장소에 보존 · plans/153 W2 교정).
 
     워커가 주입한 공유 클라이언트를 쓰지 않는다 — 이 폴링은 통보 이후까지 살아있는데 워커는
     다음 알람을 처리하며 같은 인스턴스를 connect/disconnect하므로 세션이 서로 끊긴다.
@@ -848,9 +848,9 @@ def _store_followup(
     verdict: Any,
     briefing: dict[str, Any] | None,
 ) -> None:
-    """후속 poll의 종결 상태를 조사 저장소에 남긴다(plans/150 W2 · 미주입·실패는 graceful).
+    """후속 poll의 종결 상태를 조사 저장소에 남긴다(plans/153 W2 · 미주입·실패는 graceful).
 
-    (plans/150 W4) 사건 종합 조사의 pending은 `kind="episode"`·`alarm_ids`(멤버 전부)를 담는다 —
+    (plans/153 W4) 사건 종합 조사의 pending은 `kind="episode"`·`alarm_ids`(멤버 전부)를 담는다 —
     없으면 단독 조사(`kind="alarm"`·`alarm_ids=[alarm_id]`)로 종전과 같다.
     pending의 `alarm_db_ids`(트리거가 실은 멤버 db_id)는 있으면 그대로 넘긴다
     (조회 API 존 검사 근거).
@@ -1278,7 +1278,7 @@ async def _send_workb_late_promotion(
 
 
 def episode_followup_note(pending: dict[str, Any]) -> str:
-    """종합 조사 후속 메시지 머리 표지 1줄(plans/150 W6 · §4.5) — 사건 id·멤버 알람 수를 붙인다."""
+    """종합 조사 후속 메시지 머리 표지 1줄(plans/153 W6 · §4.5) — 사건 id·멤버 알람 수를 붙인다."""
     note = "같은 사건(폴스타×제니퍼) 종합 조사"
     parts: list[str] = []
     if pending.get("episode_id"):
@@ -1303,7 +1303,7 @@ def build_followup_body(
     식별할 최소 정보(알람명·서버·알람ID)만 머리에 두고 브리핑·상향 안내 블록을 붙인다.
     블록 렌더는 인라인 첨부(CW-A/CW-C)와 **같은 함수**를 쓴다 — 두 모드의 표현이 갈리지 않는다.
 
-    `episode_note`(plans/150 W6)는 사건 종합 조사 후속의 머리 표지 1줄이다 — None이면 종전과 같다.
+    `episode_note`(plans/153 W6)는 사건 종합 조사 후속의 머리 표지 1줄이다 — None이면 종전과 같다.
     """
     ev = result.alarm_event
     body = (
@@ -1335,7 +1335,7 @@ async def _send_workb_followup(
 
     수신자·인증·엔드포인트는 원 통보와 동일하고 제목만 후속임을 드러낸다. webhook 채널은
     후속 대상이 아니다 — 기계 연동 채널은 원 알람을 이미 받았고, 브리핑은 사람이 읽는 정보다.
-    `episode_note`는 사건 종합 조사 후속의 본문 머리 표지(plans/150 W6 · None이면 종전과 같다).
+    `episode_note`는 사건 종합 조사 후속의 본문 머리 표지(plans/153 W6 · None이면 종전과 같다).
     """
     if not workb_cfg.base_url:
         raise ValueError("WORKB_BASE_URL이 설정되지 않았습니다.")

@@ -1,4 +1,4 @@
-"""plans/151 W4 — 세계 린트 단위 테스트(`investigation_bench/lint.py`).
+"""plans/154 W4 — 세계 린트 단위 테스트(`investigation_bench/lint.py`).
 
 임시 세계 디렉터리(개발 1 · 홀드아웃 1)를 만들고 규칙 하나씩 어겨 그 규칙이 걸리는지 본다.
 홀드아웃 토큰 검사는 임시 소스 경로(`source_root`)를 주입해 실제 `sre_agent/sre_agent/`를

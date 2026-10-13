@@ -1,4 +1,4 @@
-"""plans/150 W2 — 자동 조사 브리핑 조회 API (§4.2 · G-3 (a)).
+"""plans/153 W2 — 자동 조사 브리핑 조회 API (§4.2 · G-3 (a)).
 
 - `GET /alarm/investigations/by-alarm/{alarm_id}` · `/alarm/investigations/{investigation_id}`
   — 없음(`status: none`) · 존 403 · 사용자 마스킹/원 dict 제외 · 운영자 원문/원 dict

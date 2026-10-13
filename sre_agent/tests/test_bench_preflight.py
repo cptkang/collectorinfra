@@ -1,4 +1,4 @@
-"""plans/151 W3 — 사전 점검(§6.4 · §6.7 · §9.2 preflight 행).
+"""plans/154 W3 — 사전 점검(§6.4 · §6.7 · §9.2 preflight 행).
 
 실 LLM 0 · 외부 네트워크 0. LLM 엔드포인트는 `httpx.MockTransport`로 흉내 내고, 포트 검사는
 127.0.0.1 임의 포트만 쓴다.

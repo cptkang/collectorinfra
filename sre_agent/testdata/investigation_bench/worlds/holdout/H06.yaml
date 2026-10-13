@@ -1,4 +1,4 @@
-# plans/151 §4.6 H06 — 홀드아웃(D09와 같은 kind · no_fault · 함정: 기권 기대) · 개선 채택 판정 전용
+# plans/154 §4.6 H06 — 홀드아웃(D09와 같은 kind · no_fault · 함정: 기권 기대) · 개선 채택 판정 전용
 id: H06
 split: holdout
 title: 단발 메모리 경보 후 자연 회복(무장애)

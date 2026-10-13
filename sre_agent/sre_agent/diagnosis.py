@@ -3,7 +3,7 @@
 holmesgpt 0.36.0 실측 API 기준:
 - Config(model, api_key, max_steps, ...) → create_toolcalling_llm() → ToolCallingLLM
 - build_initial_ask_messages()로 시스템/유저 프롬프트 조립 후 `call_stream`을 직접 소비한다
-  (`_StreamDrain` — 결과 조립은 holmes `ToolCallingLLM.call()`과 같다 · plans/151 W1)
+  (`_StreamDrain` — 결과 조립은 holmes `ToolCallingLLM.call()`과 같다 · plans/154 W1)
 """
 
 import logging
@@ -105,19 +105,19 @@ class DiagnosisResult:
     # True면 후처리(briefing/severity_judge)가 "가설/한계"로 표기하고, escalate 신호로
     # 취급하지 않는다(재현율 우선 — 미완주가 상향 근거가 되면 오탐 폭주).
     incomplete: bool = False
-    # 조사 LLM 턴 수(holmes `LLMResult.num_llm_calls` · plans/151 W1). 상한 예외면 예외 문구의 i.
+    # 조사 LLM 턴 수(holmes `LLMResult.num_llm_calls` · plans/154 W1). 상한 예외면 예외 문구의 i.
     steps: int | None = None
 
 
 class _StreamDrain:
-    """holmes `ToolCallingLLM.call_stream`을 직접 소비하는 `call()` 대체 (plans/151 W1 · M-2).
+    """holmes `ToolCallingLLM.call_stream`을 직접 소비하는 `call()` 대체 (plans/154 W1 · M-2).
 
     holmes 0.36.0 `call()`은 `call_stream`을 끝까지 돌리는 래퍼라 step 상한 예외가 오르면 그때까지의
     도구 기록·누적 토큰(지역 변수)이 버려진다. 여기서는 `call()`의 조립(ANSWER_END의 `tool_call_id`
     기준 dedup · `num_llm_calls` 대입 · 라운드별 `costs` 누적 · APPROVAL_REQUIRED 처리)을 그대로
     따르되, 진행 중 기록을 인스턴스에 남겨 예외 뒤에도 `partial()`로 회수한다.
     정상 완주 결과는 `call()`과 필드 단위로 같다
-    (`tests/test_plan151_w1_instrumentation.py` 동등성 테스트).
+    (`tests/test_plan154_w1_instrumentation.py` 동등성 테스트).
     sre_agent는 approval_callback을 쓰지 않으므로 `call(messages)` 기본 인자 경로만 옮긴다.
     """
 
@@ -358,7 +358,7 @@ class DiagnosisAgent:
         (침묵 실패 금지·부분/사유 전달). 결정적 가드: 상한 자체는 escalate 신호가 아니다.
         그 외 예외는 그대로 전파(진짜 오류는 dispatcher가 failed로 확정).
 
-        plans/151 W1: holmes를 `call_stream` 직접 소비(`_StreamDrain`)로 부른다 — 상한 예외에서도
+        plans/154 W1: holmes를 `call_stream` 직접 소비(`_StreamDrain`)로 부른다 — 상한 예외에서도
         그때까지의 도구 기록·토큰·step 수를 미완주 결과에 싣는다(답변 문구는 종전 그대로).
         상한 턴에서 예외 없이 결론을 낸 경우(`steps == max_steps`)는 미완주로 바꾸지 않는다.
         """

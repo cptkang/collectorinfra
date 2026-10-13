@@ -79,9 +79,9 @@ _STRONG = "strong"
 # 메모리 가드(R-6) — 열린 사건 수 · 사건당 멤버 수 상한. 넘치면 오래된 것부터 정리한다.
 MAX_EPISODES = 5000
 MAX_MEMBERS_PER_EPISODE = 200
-# (plans/150 W4 · §4.4) 사건에 누적 보관하는 결합 링크 상한 — 넘치면 오래된 것부터 정리한다.
+# (plans/153 W4 · §4.4) 사건에 누적 보관하는 결합 링크 상한 — 넘치면 오래된 것부터 정리한다.
 MAX_LINKS_PER_EPISODE = 50
-# (plans/150 W4 · §4.4) 조사 페이로드 사건 스냅샷의 멤버 상한(최근 순 앞쪽만 싣는다).
+# (plans/153 W4 · §4.4) 조사 페이로드 사건 스냅샷의 멤버 상한(최근 순 앞쪽만 싣는다).
 SNAPSHOT_MAX_MEMBERS = 20
 
 
@@ -159,7 +159,7 @@ class CrossSourceLink:
     action: str                 # "demote" | "link"
     enforce: bool               # 규칙 단위 enforce 열
     missing: tuple[str, ...]
-    # (plans/150 W4) 증상 알람 id — 사건 스냅샷 링크 전용. `to_dict`(신호·판정 근거)에는 싣지 않는다
+    # (plans/153 W4) 증상 알람 id — 사건 스냅샷 링크 전용. `to_dict`(신호·판정 근거)에는 싣지 않는다
     # (판정 레코드 비트 동일).
     effect_alarm_id: str = ""
 
@@ -176,7 +176,7 @@ class CrossSourceLink:
         }
 
     def snapshot_link(self) -> dict[str, Any]:
-        """조사 페이로드 `meta.episode.links[]` 한 행(plans/150 §4.4)."""
+        """조사 페이로드 `meta.episode.links[]` 한 행(plans/153 §4.4)."""
         return {
             "rule_id": self.rule_id,
             "cause_alarm_id": self.cause_alarm_id,
@@ -283,9 +283,9 @@ class Episode:
     cause_ids: list[str] = field(default_factory=list)
     # (W4 · §4.5) 이 사건에서 APM 알람이 제출한 조사 id — 사건당 1회 제출의 기준(빈 값 = 없음).
     apm_investigation_id: str = ""
-    # (plans/150 W4 · §4.4) `observe()`가 고른 결합 링크 누적(도착 순 · 상한 MAX_LINKS_PER_EPISODE).
+    # (plans/153 W4 · §4.4) `observe()`가 고른 결합 링크 누적(도착 순 · 상한 MAX_LINKS_PER_EPISODE).
     links: list[CrossSourceLink] = field(default_factory=list)
-    # (plans/150 W4 · §4.5) 사건 종합 조사 — 시도 상태(빈 값 = 미시도 · 시도는 성패와 무관하게
+    # (plans/153 W4 · §4.5) 사건 종합 조사 — 시도 상태(빈 값 = 미시도 · 시도는 성패와 무관하게
     # 1회)와 제출된 조사 id(빈 값 = 없음).
     episode_investigation_status: str = ""
     episode_investigation_id: str = ""
@@ -328,7 +328,7 @@ class Episode:
 
 
 def _member_dict(m: EpisodeMember) -> dict[str, Any]:
-    """멤버 한 건 — 관제 조회(`Episode.to_dict`)와 조사 스냅샷이 같은 키를 쓴다(plans/150 §4.4)."""
+    """멤버 한 건 — 관제 조회(`Episode.to_dict`)와 조사 스냅샷이 같은 키를 쓴다(plans/153 §4.4)."""
     a = m.alarm
     return {
         "alarm_id": a.alarm_id,
@@ -362,7 +362,7 @@ def episode_snapshot(
     *,
     max_members: int = SNAPSHOT_MAX_MEMBERS,
 ) -> dict[str, Any]:
-    """조사 페이로드 `meta.episode` 스냅샷(plans/150 §4.4 · 사본 — 사건 상태는 영속화하지 않는다).
+    """조사 페이로드 `meta.episode` 스냅샷(plans/153 §4.4 · 사본 — 사건 상태는 영속화하지 않는다).
 
     members·links는 **최근 순**(도착 역순)이다. members는 `max_members`건, links는 사건 누적
     상한(MAX_LINKS_PER_EPISODE)까지. rules는 이 사건의 링크에 걸린 규칙만, infra_db_ids는 폴스타
@@ -398,7 +398,7 @@ def episode_snapshot(
 
 
 def episode_investigation_due(ep: Episode) -> bool:
-    """사건 종합 조사를 지금 낼 조건인가(plans/150 §4.5 · G-6 (a)).
+    """사건 종합 조사를 지금 낼 조건인가(plans/153 §4.5 · G-6 (a)).
 
     전부 만족해야 True: 아직 시도 안 함 · 폴스타·제니퍼 멤버 각 ≥1 · 결합 링크(link·demote) ≥1 ·
     멤버 중 최종 티어 PAGE·TICKET ≥1(아무도 통보받지 않은 사건은 조사하지 않는다 — 예산 보호).
@@ -557,7 +557,7 @@ class EpisodeTracker:
             signal.update(chosen.to_dict())
             signal["applied"] = False
             ep.mark_cause(chosen.cause_alarm_id)
-            # (plans/150 W4) 신호의 링크를 사건에 누적 — 조사 스냅샷의 links 재료(판정 무관).
+            # (plans/153 W4) 신호의 링크를 사건에 누적 — 조사 스냅샷의 links 재료(판정 무관).
             ep.links.append(chosen)
             if len(ep.links) > MAX_LINKS_PER_EPISODE:
                 del ep.links[: len(ep.links) - MAX_LINKS_PER_EPISODE]

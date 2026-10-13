@@ -1,4 +1,4 @@
-# plans/151 §4.6 D07 — DB 락 대기 → WAS 응답 지연 알람(cross_host_cascade · db · 함정: 원인이 다른 호스트)
+# plans/154 §4.6 D07 — DB 락 대기 → WAS 응답 지연 알람(cross_host_cascade · db · 함정: 원인이 다른 호스트)
 id: D07
 split: dev
 title: DB 행 락 대기가 WAS 다수 응답 지연으로 번짐

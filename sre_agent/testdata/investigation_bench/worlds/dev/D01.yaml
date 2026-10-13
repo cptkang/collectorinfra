@@ -1,4 +1,4 @@
-# plans/151 §4.6 D01 — 배치 프로세스 폭주(cpu_runaway · app · 함정 없음)
+# plans/154 §4.6 D01 — 배치 프로세스 폭주(cpu_runaway · app · 함정 없음)
 id: D01
 split: dev
 title: 정산 배치 프로세스 CPU 폭주

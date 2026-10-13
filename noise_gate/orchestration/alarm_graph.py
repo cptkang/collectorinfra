@@ -83,7 +83,7 @@ class AlarmState(TypedDict):
     # plans/144 W5: 통보문 사건 묶음 표시 요약 {episode_id, member_count}(cross_source_mode ∈
     # annotate·enforce이고 사건 소속일 때만 · 그 밖에는 키가 없다). 표시 전용 · 선언 필수.
     episode_summary: dict[str, Any] | None
-    # plans/150 W4 §4.4: 워커가 만든 제출 시점 사건 스냅샷(`cross_source.episode_snapshot` 사본)
+    # plans/153 W4 §4.4: 워커가 만든 제출 시점 사건 스냅샷(`cross_source.episode_snapshot` 사본)
     # (investigation_episode_context_enabled + 사건 추적기 + 사건 소속일 때만 · 그 밖에는 키가
     # 없다).
     # 조사 페이로드 `meta.episode` 전용 · 판정 무관 · 선언 필수.

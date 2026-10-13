@@ -1,4 +1,4 @@
-# plans/151 §4.6 D09 — 일시 스파이크 · 이미 정상(no_fault · 함정: 기권 기대)
+# plans/154 §4.6 D09 — 일시 스파이크 · 이미 정상(no_fault · 함정: 기권 기대)
 id: D09
 split: dev
 title: 단발 CPU 스파이크 후 정상 복귀(무장애)

@@ -154,7 +154,7 @@ class _RecordingStore:
     ) -> None:
         # 프로덕션 DecisionStore.record 시그니처를 대역이 그대로 미러링한다
         # (B-7 L-2 감사 필드 · Plan 54 알람명/서버명 추가 · plans/112 근거·식별 필드 추가 ·
-        # plans/150 W1 AI 분석 서술).
+        # plans/153 W1 AI 분석 서술).
         self.records.append((decision, alarm_id))
 
 

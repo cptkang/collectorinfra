@@ -1,4 +1,4 @@
-"""벤치 CLI (plans/151 §9.3.0 — 옵션 계약의 정본은 계획서 표).
+"""벤치 CLI (plans/154 §9.3.0 — 옵션 계약의 정본은 계획서 표).
 
 동작 하나 = `_ACTIONS`의 함수 하나 + 상호 배타 그룹의 옵션 하나. `--lint`는 W4(`lint`)다.
 채점·보고서·반출(`--report`·`--rejudge`·`--export`)은 W3a 모듈(`judge`·`report`·`export`)에

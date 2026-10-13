@@ -1,8 +1,8 @@
-"""plans/150 W6 — 크로스소스 종합 조사 가짜 LLM 종단.
+"""plans/153 W6 — 크로스소스 종합 조사 가짜 LLM 종단.
 
 폴스타 CPU → 제니퍼 큐잉 → 종합 조사 → 웹 조회.
 
-픽스처 `noise_gate/testdata/plan150/cross_source_incident.jsonl`(폴스타 CPU PAGE → 270초 뒤 같은
+픽스처 `noise_gate/testdata/plan153/cross_source_incident.jsonl`(폴스타 CPU PAGE → 270초 뒤 같은
 호스트 제니퍼 큐잉)을 실제 워커(`AlarmWorker._process`)에 넣는다. 그래프는 분석(LLM)만 가짜로
 채우고 **실제** 판정 노드(`notification_gate_node` — 판정 감사 기록 포함)·조사 트리거 노드·
 후속 poll 경로(`_spawn_investigation_followup` · 종합 조사 후속)를 부른다. 조사 서비스는 띄우지
@@ -39,9 +39,9 @@ from noise_gate.infrastructure.investigation_store import InvestigationStore
 from noise_gate.scripts import replay_noise as rn
 from noise_gate.tests.test_plan144_cross_source import SHIPPED_RULES, _Clock, _Redis
 from tests.test_api.test_noise_dashboard_api import _make_client, _make_user_client
-from tests.test_api.test_plan150_w2_investigation_api import ADMIN, _alarm_client, _config
+from tests.test_api.test_plan153_w2_investigation_api import ADMIN, _alarm_client, _config
 
-TESTDATA = Path(__file__).resolve().parents[2] / "noise_gate" / "testdata" / "plan150"
+TESTDATA = Path(__file__).resolve().parents[2] / "noise_gate" / "testdata" / "plan153"
 INCIDENT = TESTDATA / "cross_source_incident.jsonl"
 BRIEFING_MOCK = TESTDATA / "briefing_mock.json"
 

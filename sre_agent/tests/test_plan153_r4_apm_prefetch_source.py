@@ -1,6 +1,6 @@
-"""plans/150 W0 · R-4 — APM(제니퍼) 트리거 잡의 증거 사전수집 소스 결함 확정.
+"""plans/153 W0 · R-4 — APM(제니퍼) 트리거 잡의 증거 사전수집 소스 결함 확정.
 
-plans/150 §2.2 추론: 사전수집(`evidence_prefetch.scope_from_job`)이 `event.dbId`를 그대로
+plans/153 §2.2 추론: 사전수집(`evidence_prefetch.scope_from_job`)이 `event.dbId`를 그대로
 폴스타 도구의 `source`로 넘긴다. 제니퍼 트리거면 dbId가 `jennifer`·`jennifer_<source_id>`
 (apm_gateway `alarm_db_id`)라 mcp_server `_resolve_engine`이 「알 수 없는 소스」 ValueError →
 도구가 `{error}`를 돌려주고, 사전수집 5축(알람 1 + 지표 4)이 전부 「결손」으로 브리핑 한계에 실린다.
@@ -13,12 +13,12 @@ plans/150 §2.2 추론: 사전수집(`evidence_prefetch.scope_from_job`)이 `eve
   결손)을 고정했고, W5 교정(`evidence_prefetch.scope_from_job` — `is_apm_trigger`면
   제니퍼 dbId를 쓰지 않는다)과 함께 지웠다.
   그 클래스의 대조군(폴스타 트리거 불변)은 아래로 옮겼다.
-- `TestR4ExpectedBehavior`: plans/150 §4.6 기대 동작(W5에서 xfail 해제).
+- `TestR4ExpectedBehavior`: plans/153 §4.6 기대 동작(W5에서 xfail 해제).
 - mcp_server 쪽 「알 수 없는 소스 → {error}」는 경계(D-118 · 양방향 import 0) 때문에 여기서
-  import하지 않는다 — `mcp_server/tests/test_plan150_r4_unknown_source.py`가 확인한다. 여기서는
+  import하지 않는다 — `mcp_server/tests/test_plan153_r4_unknown_source.py`가 확인한다. 여기서는
   그 응답 모양을 가짜 배치 호출기로 재현한다.
 
-픽스처: `tests/fixtures/plan150/apm_trigger_payloads.json`(noise_gate `build_trigger_payload`
+픽스처: `tests/fixtures/plan153/apm_trigger_payloads.json`(noise_gate `build_trigger_payload`
 실 출력 사본 — noise_gate 파일을 읽지 않는다).
 """
 
@@ -34,7 +34,7 @@ from sre_agent.application.investigation_jobs import JobStore
 from sre_agent.interface import mcp_service
 from sre_agent.settings import AgentSettings
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "plan150"
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "plan153"
 PAYLOADS = json.loads((FIXTURES / "apm_trigger_payloads.json").read_text(encoding="utf-8"))
 
 # mcp_server 등록 소스(폴스타 계열만 — 제니퍼 소스는 mcp_server 설정에 존재하지 않는다).
@@ -111,7 +111,7 @@ class TestFixtureShape:
 
 
 class TestR4ExpectedBehavior:
-    """plans/150 §4.6 사전수집 소스 — W5 교정."""
+    """plans/153 §4.6 사전수집 소스 — W5 교정."""
 
     @pytest.mark.parametrize("db_id", ["jennifer", "jennifer_common"])
     def test_apm_trigger_without_infra_source_skips_polestar(self, monkeypatch, tmp_path, db_id):

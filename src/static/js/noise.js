@@ -762,7 +762,7 @@
                 + (item.stage_label || item.stage || "") + " · " + fmtTime(item.ts);
             node.appendChild(el("div", "rs", meta));
             node.appendChild(el("div", "rs", item.reason || ""));
-            // (plans/150 W1) AI 추정 원인 한 줄 — 출처를 앞에 붙인다(판정 근거와 섞지 않는다).
+            // (plans/153 W1) AI 추정 원인 한 줄 — 출처를 앞에 붙인다(판정 근거와 섞지 않는다).
             var cause = causeShort(item);
             if (cause) node.appendChild(el("div", "rs rs-ai", (HELP.cause || {}).feedCausePrefix + cause));
 
@@ -876,7 +876,7 @@
             stage_label: "",
             reason: payload.tier_reason,
             ts: payload.received_at || payload.alarm_time || new Date().toISOString(),
-            // (plans/150 W1) 스트림의 AI 분석 서술을 버리지 않고 행에 담는다(출처 = 스트림 ·
+            // (plans/153 W1) 스트림의 AI 분석 서술을 버리지 않고 행에 담는다(출처 = 스트림 ·
             // 분석 실패 표시는 스트림에 없다 — 드로어는 서버 레코드로 다시 그린다).
             analysis: streamAnalysis(payload),
         };
@@ -949,7 +949,7 @@
     drawerTrace.parentNode.insertBefore(drawerTraceHead, drawerTrace);
     drawerTrace.parentNode.insertBefore(drawerEvidenceHead, drawerTrace.nextSibling);
     drawerTrace.parentNode.insertBefore(drawerEvidence, drawerEvidenceHead.nextSibling);
-    // (plans/150 W1) 머리 사유 요약(판단 요약 표 위) · 「발생 원인과 처리」(판단 경로 위).
+    // (plans/153 W1) 머리 사유 요약(판단 요약 표 위) · 「발생 원인과 처리」(판단 경로 위).
     // 문구는 noise-help.js가 정본이다(이 시점에는 아래 HELP 변수가 아직 대입 전이라 직접 읽는다).
     var drawerSummary = el("div", "drawer-summary");
     drawerSummary.id = "drawerSummary";
@@ -1026,7 +1026,7 @@
         }
         addFactRow(drawerFactsBody, "관련 판단", relatedText(record));
 
-        // (plans/150 W1) 사유 요약 1문단 + 「원래 티어 → 최종 티어」 칩 — 결정적 템플릿.
+        // (plans/153 W1) 사유 요약 1문단 + 「원래 티어 → 최종 티어」 칩 — 결정적 템플릿.
         drawerSummary.innerHTML = "";
         var shiftChip = tierShiftChip(record);
         if (shiftChip) drawerSummary.appendChild(shiftChip);
@@ -1521,7 +1521,7 @@
         }
     }
 
-    // ── 사유 요약 · 처리 안내 · AI 추정 (plans/150 W1 · §4.8 · §4.9) ────────
+    // ── 사유 요약 · 처리 안내 · AI 추정 (plans/153 W1 · §4.8 · §4.9) ────────
     // 사유 요약·처리 안내는 결정적 템플릿이다(D-035) — 문구 정본은 noise-help.js(summary)와 도메인
     // STAGE_HANDLING(API `summary.stages[].handling`). AI 추정(`analysis`)은 출처를 따로 표기하고 위
     // 두 문장과 합치지 않는다(G-8).
@@ -1694,7 +1694,7 @@
         drawerCause.appendChild(aiBlock);
     }
 
-    // ⓒ 조사 브리핑(plans/150 W3 · G-8 (a)) — ⓐ·ⓑ 아래에 붙인다. 렌더는 알람 카드와 같은 공용 함수
+    // ⓒ 조사 브리핑(plans/153 W3 · G-8 (a)) — ⓐ·ⓑ 아래에 붙인다. 렌더는 알람 카드와 같은 공용 함수
     // (`briefing-view.js` BriefingView.renderBody — D-247 공용 패널). 행 레코드에는 조사 블록이 없으므로
     // 드로어를 열 때(= 펼칠 때) `decisions/{alarm_id}`의 `investigation` 블록을 1회 읽는다. 블록이 없으면
     // 칸 자체를 그리지 않는다. 미종결이면 공용 컨트롤러가 15초 간격(상한 300초)으로 조회 API를 다시
@@ -2009,7 +2009,7 @@
             },
         },
         basis: { head: "근거", cls: "wrap", render: stageBasis },
-        // (plans/150 W1) AI 추정 원인(80자 · 저장된 판단이 하나라도 있을 때만 칸) · 처리 안내(짧게).
+        // (plans/153 W1) AI 추정 원인(80자 · 저장된 판단이 하나라도 있을 때만 칸) · 처리 안내(짧게).
         cause: {
             head: (HELP.cause || {}).colCause, cls: "wrap",
             when: function (it) { return !!analysisOf(it); },
@@ -2665,7 +2665,7 @@
         P.chips.appendChild(demotedToggle(ps));
     }
 
-    // (plans/150 W1) 「강등됨」 보조 필터 — 원래 티어(기록된 값)보다 최종 티어가 낮은 판단만 본다.
+    // (plans/153 W1) 「강등됨」 보조 필터 — 원래 티어(기록된 값)보다 최종 티어가 낮은 판단만 본다.
     // 서버 페이지(50건) 안에서 거르는 클라이언트 필터라 수는 「이 쪽」 기준이다(총 건수·칩은 그대로).
     function demotedToggle(ps) {
         var C = HELP.cause || {};

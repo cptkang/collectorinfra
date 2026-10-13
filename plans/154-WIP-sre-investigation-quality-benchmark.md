@@ -1,15 +1,16 @@
-# 151. sre_agent 장애 조사 품질 벤치마크 — 정답이 있는 합성 장애 세계로 HolmesGPT 조사를 반복 측정하고, 실패 유형에서 개선점을 찾아 A/B로 채택한다
+# 154. sre_agent 장애 조사 품질 벤치마크 — 정답이 있는 합성 장애 세계로 HolmesGPT 조사를 반복 측정하고, 실패 유형에서 개선점을 찾아 A/B로 채택한다
 
+> **번호 변경(2026-10-13)**: 구 `plans/151` → **`plans/154`** — `main` 머지 때 번호 충돌(`main`의 151 = ITAM 6회차 결과 교정). 함께 `plans/150` → `plans/153`(알람 설명 3종) · D-323 → D-325. 결정 D-324는 그대로다. 파일명·참조·테스트 파일명(`test_plan151_*` → `test_plan154_*`)을 일괄 변경했고, 사용자 원문 인용("151번 계획…")은 그대로 둔다.
 > **작성일**: 2026-10-12 · **v1.0** · **v1.1**(같은 날 — 사용자 인터뷰로 게이트 G-1~G-8 확정 · 측정은 내부망 사내 vLLM 중심 · 외부망 Claude Code 검토 루프 · 로컬 MLX 최소화) · **v1.2**(2026-10-13 — 실행 구성 §4.7~§4.11 · 테스트 방법 §9 상세) · **v1.3**(같은 날 — 내부망 GPU 서버 동거 실행 · LLM 백엔드 vLLM 기본 / FabriX(`fabrix_proxy`) 대체 · §6.7) · **v1.4**(같은 날 — 실행 명령 정본 §9.3)
 > **상태**: **WIP — W0~W5 구현 완료(2026-10-13) · W6 사용자 실행 대기**(내부망 GPU 서버 1회차 A/A · 명령 §9.3.7) · W7은 W6 반출 묶음 수신 뒤 · W8 미착수 · 게이트 G-1~G-8 **확정**(2026-10-12 인터뷰 · §10) · D-324 본문 등재 · 결과 요약: W0 실측 §4.7 · W2 §4.10 · W3 §4.5·§4.7 · W5 MLX 3세계 §9.3.5 · 키트 §9.3.6
 > **요청(사용자 2026-10-12)**: *"sre_agent를 통해 장애 분석을 하는 기능에 대해 벤치마크 테스트를 통해 개선포인트를 개측하여 개선을 진행하려고 한다. 관련 계회파일을 작성하라."*
 > **해석**: 「개측」 = 계측(측정). 이 계획의 대상은 **조사 품질**(원인을 맞히는가 · 근거를 대는가 · 끝까지 가는가 · 얼마나 드는가)이다. 노이즈 게이트 판정 품질(`noise_gate`)과 본체 text2sql 벤치(`scripts/bench`·`scripts/scenario`·`scripts/itam_bench`)는 범위 밖이다.
 > **입력**: 저장소 `3c4adab` 읽기·grep 실측(서브에이전트 1갈래 — sre_agent 흐름·설정·도구·평가 자산·관측성) + 대화 중 `file:line` 재대조. 실 LLM 호출 0 · 서버 기동 0 · 패키지 설치 0.
-> **관련 계획**: `plans/sre-agent/02`(HolmesGPT 조사 — §12 수용 기준은 구조·안전만) · `plans/91`(장애 조사 잔여 — 1-14 사내 vLLM 완주 판정 대기 · 1-17 MLX 9B 40 step 미완주) · **`plans/150`**(WIP — W5가 sre_agent 질문·지침·사전수집·`cross_source` 블록을 바꾼다 · §8 순서 조율) · **`plans/101`**(ML RCA — 라벨 스키마·브리핑 채점 P-24·누수 금지 KL-3를 이 벤치가 그대로 쓴다) · `plans/93`·`plans/97`(벤치 판정·반출 관례) · `plans/135`(벤치 계약 문서 형식)
+> **관련 계획**: `plans/sre-agent/02`(HolmesGPT 조사 — §12 수용 기준은 구조·안전만) · `plans/91`(장애 조사 잔여 — 1-14 사내 vLLM 완주 판정 대기 · 1-17 MLX 9B 40 step 미완주) · **`plans/153`**(WIP — W5가 sre_agent 질문·지침·사전수집·`cross_source` 블록을 바꾼다 · §8 순서 조율) · **`plans/101`**(ML RCA — 라벨 스키마·브리핑 채점 P-24·누수 금지 KL-3를 이 벤치가 그대로 쓴다) · `plans/93`·`plans/97`(벤치 판정·반출 관례) · `plans/135`(벤치 계약 문서 형식)
 > **관련 결정**: D-035(결정적=판단 · LLM=서술) · D-118·D-139(`sre_agent` 독립 패키지 · 양방향 import 0) · D-119(관측 읽기 경계 = `mcp_server`) · **D-120**(Gemini = 개발 전용 · 운영 데이터 외부 송신 금지) · D-123(조사 서비스 submit/poll · 상태 어휘) · **D-127·D-240**(실 LLM = 로컬 MLX · 과금 평면 건별 승인) · D-213(조사 타임아웃 join 타임박스) · D-229·D-230(배선 교정 · 실 조사 LLM 게이트) · **D-238**(처분 어휘 — 대조군 최적 = `기각`) · **D-219**(관측 0 = 판정 불가 · 무효표 고지) · D-254(축은 값을 읽는 코드가 있어야) · D-303(회귀)
 > **D-번호**: **D-324 본문 등재**(2026-10-12 · `docs/decisions/D-324.md` · 「sre_agent 조사 품질 벤치마크 계약」)
-> **계획 시작 SHA**: `f4a95f52971e0227cfb761a258e1b9d010f97950`(2026-10-13 구현 착수 — 설계 입력 `3c4adab` 뒤에 `plans/150` 커밋 `1686f3b`가 랜딩해 회귀 기준을 착수 시점으로 옮김)
-> **회귀 대상 파일(W0~W5 확정 · 2026-10-13)**: `sre_agent/.env.example` `sre_agent/sre_agent/application/investigation_dispatcher.py` `sre_agent/sre_agent/application/investigation_jobs.py` `sre_agent/sre_agent/diagnosis.py` `sre_agent/sre_agent/interface/mcp_service.py` `sre_agent/sre_agent/settings.py` `sre_agent/tests/test_apm_consumer.py` `sre_agent/tests/test_briefing_builder.py` `sre_agent/tests/test_diagnosis_guard.py` `sre_agent/scripts/inv_bench.py` `sre_agent/scripts/investigation_bench/__init__.py` `sre_agent/scripts/investigation_bench/__main__.py` `sre_agent/scripts/investigation_bench/_serve.py` `sre_agent/scripts/investigation_bench/export.py` `sre_agent/scripts/investigation_bench/fake_llm.py` `sre_agent/scripts/investigation_bench/judge.py` `sre_agent/scripts/investigation_bench/lint.py` `sre_agent/scripts/investigation_bench/preflight.py` `sre_agent/scripts/investigation_bench/report.py` `sre_agent/scripts/investigation_bench/runner.py` `sre_agent/scripts/investigation_bench/schema.py` `sre_agent/scripts/investigation_bench/world_server.py` `sre_agent/scripts/investigation_bench/worlds.py` `sre_agent/tests/test_bench_e2e_fake_llm.py` `sre_agent/tests/test_bench_export.py` `sre_agent/tests/test_bench_judge.py` `sre_agent/tests/test_bench_lint.py` `sre_agent/tests/test_bench_preflight.py` `sre_agent/tests/test_bench_runner.py` `sre_agent/tests/test_bench_schema_drift.py` `sre_agent/tests/test_bench_world_server.py` `sre_agent/tests/test_bench_worlds_selfcheck.py` `sre_agent/tests/test_plan151_verify_judge.py` `sre_agent/tests/test_plan151_verify_security.py` `sre_agent/tests/test_plan151_w0_instrumentation_gaps.py` `sre_agent/tests/test_plan151_w1_instrumentation.py` + 데이터 `sre_agent/testdata/investigation_bench/*` · `sre_agent/tests/fixtures/investigation_bench/*` · 문서 `docs/26_sre_agent_guide.md` §10 (계획 예정에 있던 `briefing_builder.py`·`evidence_prefetch.py`·`investigation_guidance.py`는 W0~W5에서 바꾸지 않음 — H-후보는 W7)
+> **계획 시작 SHA**: `f4a95f52971e0227cfb761a258e1b9d010f97950`(2026-10-13 구현 착수 — 설계 입력 `3c4adab` 뒤에 `plans/153` 커밋 `1686f3b`가 랜딩해 회귀 기준을 착수 시점으로 옮김)
+> **회귀 대상 파일(W0~W5 확정 · 2026-10-13)**: `sre_agent/.env.example` `sre_agent/sre_agent/application/investigation_dispatcher.py` `sre_agent/sre_agent/application/investigation_jobs.py` `sre_agent/sre_agent/diagnosis.py` `sre_agent/sre_agent/interface/mcp_service.py` `sre_agent/sre_agent/settings.py` `sre_agent/tests/test_apm_consumer.py` `sre_agent/tests/test_briefing_builder.py` `sre_agent/tests/test_diagnosis_guard.py` `sre_agent/scripts/inv_bench.py` `sre_agent/scripts/investigation_bench/__init__.py` `sre_agent/scripts/investigation_bench/__main__.py` `sre_agent/scripts/investigation_bench/_serve.py` `sre_agent/scripts/investigation_bench/export.py` `sre_agent/scripts/investigation_bench/fake_llm.py` `sre_agent/scripts/investigation_bench/judge.py` `sre_agent/scripts/investigation_bench/lint.py` `sre_agent/scripts/investigation_bench/preflight.py` `sre_agent/scripts/investigation_bench/report.py` `sre_agent/scripts/investigation_bench/runner.py` `sre_agent/scripts/investigation_bench/schema.py` `sre_agent/scripts/investigation_bench/world_server.py` `sre_agent/scripts/investigation_bench/worlds.py` `sre_agent/tests/test_bench_e2e_fake_llm.py` `sre_agent/tests/test_bench_export.py` `sre_agent/tests/test_bench_judge.py` `sre_agent/tests/test_bench_lint.py` `sre_agent/tests/test_bench_preflight.py` `sre_agent/tests/test_bench_runner.py` `sre_agent/tests/test_bench_schema_drift.py` `sre_agent/tests/test_bench_world_server.py` `sre_agent/tests/test_bench_worlds_selfcheck.py` `sre_agent/tests/test_plan154_verify_judge.py` `sre_agent/tests/test_plan154_verify_security.py` `sre_agent/tests/test_plan154_w0_instrumentation_gaps.py` `sre_agent/tests/test_plan154_w1_instrumentation.py` + 데이터 `sre_agent/testdata/investigation_bench/*` · `sre_agent/tests/fixtures/investigation_bench/*` · 문서 `docs/26_sre_agent_guide.md` §10 (계획 예정에 있던 `briefing_builder.py`·`evidence_prefetch.py`·`investigation_guidance.py`는 W0~W5에서 바꾸지 않음 — H-후보는 W7)
 
 ---
 
@@ -89,7 +90,7 @@ LLM 심판(채점을 LLM에 맡기는 것)은 쓰지 않는다(D-035 · 비결�
 | M-4 | `done` 감사 레코드에 지연·step 수·도구 호출 수·모델명이 없다(level·confidence·escalate·signals·tokens·cost만) | `application/investigation_dispatcher.py:459-472` |
 | M-5 | 원시 도구 기록(`ToolCallRecord` — 인자·상태·출력)은 판정·정체 가드에만 쓰이고 잡에 남지 않는다. 잡에는 description 목록뿐 | `diagnosis.py:21-75` · `application/investigation_dispatcher.py:455` |
 
-**(W0 실측 2026-10-13 · holmesgpt 0.36.0 · 앵커는 HEAD f4a95f5 기준으로 다시 뽑음)** M-1~M-5는 `sre_agent/tests/test_plan151_w0_instrumentation_gaps.py`에 `xfail(strict=True)` 8건으로 고정했다(키 이름 = §7 W1 행 · 결과 속성 `DiagnosisResult.steps` 신설 전제).
+**(W0 실측 2026-10-13 · holmesgpt 0.36.0 · 앵커는 HEAD f4a95f5 기준으로 다시 뽑음)** M-1~M-5는 `sre_agent/tests/test_plan154_w0_instrumentation_gaps.py`에 `xfail(strict=True)` 8건으로 고정했다(키 이름 = §7 W1 행 · 결과 속성 `DiagnosisResult.steps` 신설 전제).
 
 - **step 수·토큰은 얻을 수 있다**: `LLMResult`(`holmes/core/tool_calling_llm.py:179-187`)에 `num_llm_calls`(LLM 호출 수 = step)와 `RequestStats` 상속 필드 `total_tokens`·`prompt_tokens`·`completion_tokens`·`total_cost`가 있다. 덤프 실측: 도구 1턴 + 결론 1턴 → `num_llm_calls=2`, usage 120×2 → `total_tokens=240`.
 - **M-2 회수는 가능하다(H-5 실현 가능)**: `ToolCallingLLM.call`(575-694)은 `call_stream`을 끝까지 소비하는 래퍼라, step 상한 `Exception`(1460)이 오르면 `call`의 지역 변수 `all_tool_calls`(588)·`accumulated_stats`(591)가 버려진다. 넘긴 `messages`는 복사돼(1091) 변이도 없다. 대신 `call_stream`을 직접 소비하면 턴마다 `TOOL_RESULT`(도구 1건 `to_client_dict` — 이름·status·params·출력)와 `TOKEN_COUNT`(`metadata["costs"]` = 누적 RequestStats — 1028)가 나오므로 예외 직전까지 전부 회수된다. 덤프 실측: max_steps=3 loop에서 예외 전에 도구 결과 3건·누적 360 토큰을 받았다. step 수는 예외 문구 `i/max_steps`에도 있다.
@@ -276,7 +277,7 @@ script:                                         # 가짜 LLM 대본 — 테스�
 | D13 | dev | inode_exhaustion | os | 용량은 여유(유인) |
 | D14 | dev | process_down(서비스 프로세스 종료) | app | — |
 | D15 | dev | time_window(원인은 알람 시각 이전 · 지금은 정상) | os | `reference_time` 사용 검증 — W4 구현은 라벨 kind `memory_exhaustion` + 시간창 함정 |
-| D16 | dev | apm_pool_exhaustion(제니퍼 DB 커넥션 풀 고갈) | app | **크로스소스 — `plans/150` W5 뒤** |
+| D16 | dev | apm_pool_exhaustion(제니퍼 DB 커넥션 풀 고갈) | app | **크로스소스 — `plans/153` W5 뒤** |
 | H01~H08 | holdout | D01·D02·D03·D05·D07·D09·D10·D16과 같은 kind · 다른 호스트·프로세스·수치·문구 | | 개선 채택 판정 전용 |
 
 - 이벤트 모양은 `noise_gate/scripts/mock_polestar_events.py`의 `cascade`·`change-corr`·`net-site-cascade` 시나리오를 빌린다(티어 기대값은 쓰지 않는다).
@@ -425,11 +426,11 @@ arms:
 
 기준선 전이라 **채택 대상이 아니라 실험군 후보**다. 1회차(W6) 실패 유형 분포를 외부망 검토(W7)가 진단해 상위 유형을 가리키는 후보부터 다음 회차에 올리고, 표에 없는 새 가설도 검토에서 추가할 수 있다.
 
-| ID | 가설 | 겨냥 유형 | 손댈 곳 | 플래그(기본 off) | `plans/150`과의 관계 |
+| ID | 가설 | 겨냥 유형 | 손댈 곳 | 플래그(기본 off) | `plans/153`과의 관계 |
 |---|---|---|---|---|---|
-| H-1 | 알람 kind별 질문 템플릿(고정 1종 → kind 축약 트리아지)이 step을 줄이고 F-MISS를 줄인다 | F-INC · F-MISS | `interface/mcp_service.py:85` | `investigation_question_by_kind` | 150 §4.6이 질문을 크로스소스용으로 확장 — **150 W5 랜딩 뒤 그 위에 얹는다** |
-| H-2 | 사전수집을 기본 on으로 + 축을 kind에 맞춰 고른다(현 4축 고정) | F-MISS · F-INC | `application/evidence_prefetch.py:27` · `settings.py:166` | 기존 `evidence_correlation_enabled` + 신규 `evidence_prefetch_axes_by_kind` | 150이 사전수집 소스를 고친다 — 뒤에 |
-| H-3 | 사전수집 결과 요약을 지침 앞에 넣어 같은 조회를 막는다(W0 실측: 지침에는 `correlation_note` 한 단락 — 이상 판정 지표·알람 요약·타임라인 앞 12줄만 들어가고 정상 지표·원 시계열·사전수집이 부른 도구·인자 목록은 빠진다 → 전제 성립) | F-LOOP · F-INC | `application/investigation_guidance.py` | `prefetch_summary_in_guidance` | 지침 조립 순서를 150이 바꾼다 — 뒤에 |
+| H-1 | 알람 kind별 질문 템플릿(고정 1종 → kind 축약 트리아지)이 step을 줄이고 F-MISS를 줄인다 | F-INC · F-MISS | `interface/mcp_service.py:85` | `investigation_question_by_kind` | 153 §4.6이 질문을 크로스소스용으로 확장 — **153 W5 랜딩 뒤 그 위에 얹는다** |
+| H-2 | 사전수집을 기본 on으로 + 축을 kind에 맞춰 고른다(현 4축 고정) | F-MISS · F-INC | `application/evidence_prefetch.py:27` · `settings.py:166` | 기존 `evidence_correlation_enabled` + 신규 `evidence_prefetch_axes_by_kind` | 153이 사전수집 소스를 고친다 — 뒤에 |
+| H-3 | 사전수집 결과 요약을 지침 앞에 넣어 같은 조회를 막는다(W0 실측: 지침에는 `correlation_note` 한 단락 — 이상 판정 지표·알람 요약·타임라인 앞 12줄만 들어가고 정상 지표·원 시계열·사전수집이 부른 도구·인자 목록은 빠진다 → 전제 성립) | F-LOOP · F-INC | `application/investigation_guidance.py` | `prefetch_summary_in_guidance` | 지침 조립 순서를 153이 바꾼다 — 뒤에 |
 | H-4 | 인용 검증을 결정화한다 — 인용 수치를 도구 출력과 대조해 없으면 가설 강등·`limitations`에 표기(현 마커 문자열 검사) | F-HALLU · F-CITE | `application/briefing_builder.py:30,143` + `ToolCallRecord` 출력 사용 | `citation_value_check` | 독립 |
 | H-5 | 미완주 시 수집된 도구 출력으로 결정적 부분 브리핑을 만든다(현 answer 문구만) | F-INC의 피해 축소 | `diagnosis.py:212-225` · `briefing_builder.py` | `partial_briefing_on_incomplete` | 독립 · W0 실측: `llm.call` 예외 경로로는 회수 불가, `call_stream`을 직접 소비하면 도구 결과·누적 토큰 회수 가능 → 실현 가능 |
 | H-6 | 기본 off 기능 6종(`severity_judge`·`remediation_recommender`·`evidence_change_overlay`·`openmetrics_guidance`·`apm_guidance`·`apm_signatures`)을 하나씩 켠다 | 각 기능 겨냥 유형 | 설정만 | 기존 플래그 | 독립 — 축 측정만 |
@@ -519,11 +520,11 @@ arms:
 
 | Wave | 범위 | 산출 | 검증 |
 |---|---|---|---|
-| **W0** | 실측·기준 고정 | `sre_agent/.venv` 설치(holmesgpt 0.36.0) · holmes `LLMResult`·예외 경로에서 step 수·부분 도구 기록 회수 가능 여부(`inspect` 실측 → H-5 실현성) · MCP 서버 등록 시점(기동 1회 vs 조사마다) · 사전수집 결과가 지침에 어디까지 들어가는지(H-3 전제) · M-1~M-5를 실패 테스트로 고정 · `plans/150` W5 진행 상태 확인 | 신규 테스트만(실패 상태로 커밋하지 않고 `xfail(strict=True)`) |
-| **W1** | 계측 보강(M-1~M-5) | 잡·`done` 감사에 가산 키 `incomplete` · `elapsed_s` · `prefetch_s` · `steps`(W0에서 얻을 수 있을 때) · `tool_calls_n` · `model` · `max_steps` · 도구 기록 요약 `tool_calls[{name, args_digest, status}]`(원시 출력 제외 — 크기·민감도) · 미완주·타임아웃의 토큰 보존(가능 범위) · 미완주는 `status` 유지 + `incomplete:true`(G-3) · 설정 `investigation_audit_path`(기본 None = 현행 `.data/investigation_audit.jsonl` · 비트 동일 — 벤치 감사 분리 §4.7) | §9.2 L2 — `test_plan151_w1_instrumentation.py` · 기존 `test_investigation_jobs` · `test_diagnosis_*` · `test_payload_contract` · noise_gate 소비자 5종(§9.2) |
+| **W0** | 실측·기준 고정 | `sre_agent/.venv` 설치(holmesgpt 0.36.0) · holmes `LLMResult`·예외 경로에서 step 수·부분 도구 기록 회수 가능 여부(`inspect` 실측 → H-5 실현성) · MCP 서버 등록 시점(기동 1회 vs 조사마다) · 사전수집 결과가 지침에 어디까지 들어가는지(H-3 전제) · M-1~M-5를 실패 테스트로 고정 · `plans/153` W5 진행 상태 확인 | 신규 테스트만(실패 상태로 커밋하지 않고 `xfail(strict=True)`) |
+| **W1** | 계측 보강(M-1~M-5) | 잡·`done` 감사에 가산 키 `incomplete` · `elapsed_s` · `prefetch_s` · `steps`(W0에서 얻을 수 있을 때) · `tool_calls_n` · `model` · `max_steps` · 도구 기록 요약 `tool_calls[{name, args_digest, status}]`(원시 출력 제외 — 크기·민감도) · 미완주·타임아웃의 토큰 보존(가능 범위) · 미완주는 `status` 유지 + `incomplete:true`(G-3) · 설정 `investigation_audit_path`(기본 None = 현행 `.data/investigation_audit.jsonl` · 비트 동일 — 벤치 감사 분리 §4.7) | §9.2 L2 — `test_plan154_w1_instrumentation.py` · 기존 `test_investigation_jobs` · `test_diagnosis_*` · `test_payload_contract` · noise_gate 소비자 5종(§9.2) |
 | **W2** | 세계 서버 · 스키마 | `world_server.py` · `--schema-snapshot` · `tool_schemas.json` · 생성기 지시(`gen`) · 호출 로그 | 세계 서버 단위 테스트(라우팅·매처·기본 응답·인자 오류 판정) · 스냅샷 드리프트 테스트 |
 | **W3** | 러너 · 채점 · 보고 · 사전 점검 · 반출 | `runner.py`(벤치 포트·env 오버라이드·submit/poll·반복·교차 순서) · `judge.py`(§4.4·§4.5) · `report.py`(오답 검토표 포함) · `preflight.py`(§6.4 — `--site closed` · tool-calling 왕복) · `export.py`(§6.5) · `--rejudge` | 채점기 단위 테스트(손으로 쓴 브리핑 픽스처 — 지표별 경계값) · 반출 가림·잔존 검사 테스트(심은 내부 주소·계정이 걸리는가) · **가짜 LLM 종단**(holmes 대신 고정 응답 — 실 프로세스 sre_agent + 세계 서버 + 러너가 raw.jsonl·report.md·묶음까지) |
-| **W4** | 세계 24건 · 린트 | `worlds/dev/D01~D16` · `worlds/holdout/H01~H08`(D16·H08은 150 W5 뒤) · `lint.py` | 린트 통과 · 세계마다 「모범 답안 브리핑」 픽스처로 채점기가 PASS를 내는지(세계 자체 결함 점검) |
+| **W4** | 세계 24건 · 린트 | `worlds/dev/D01~D16` · `worlds/holdout/H01~H08`(D16·H08은 153 W5 뒤) · `lint.py` | 린트 통과 · 세계마다 「모범 답안 브리핑」 픽스처로 채점기가 PASS를 내는지(세계 자체 결함 점검) |
 | **W5** | 외부망 실 LLM 확인 · 내부망 키트 | 로컬 MLX **대표 3세계 × 1회**(sre_agent `model`/`api_base`가 127.0.0.1 MLX인지 `--preflight`로 확인 뒤) — 계측 키·채점·묶음이 실 LLM 출력으로 끝까지 도는지만 본다(점수는 쓰지 않음) · 내부망 키트(GPU 서버용 sre_agent venv 재현 — 대상 플랫폼 휠 반입 또는 내부 미러 · 사내 vLLM·`fabrix_proxy` 명세 예시 · `--site closed` 실행 · GPU 샘플링 · 반출 절차 · `docs/26` 1절 · §6.7) | 3건 완주 여부와 무관하게 raw·scores·묶음 생성 · 묶음 잔존 검사 통과 |
 | **W6** | 내부망 1회차 (사용자) | GPU 서버 · 사내 vLLM · 대조군 A/A(144회) → 묶음 반출 · `plans/91` 1-14 판정 입력 겸용 · (선택) FabriX 기준선은 148 G-4 통과 뒤 `closed_round1_fabrix.yaml`로 별도 회차 | 사전 점검 통과(tool-calling 포함) · 무효표율 ≤ 20% |
 | **W7** | 외부망 검토 (Claude Code · 회차마다) | §6.6 — ① 채점 교정 → `--rejudge` ② 실패 원인 진단 · 개선점 장부 · 다음 회차 실험군 제안(사용자 확정) ③ 확정 후보를 플래그 1개씩 구현 · MLX 대표 1~2세계 × 1회 | ①은 재채점 전후 대조표 · ③은 후보별 자기 테스트 · 플래그 off 비트 동일 테스트 · `regress.py --no-tests` |
@@ -531,11 +532,11 @@ arms:
 
 의존: W0 → W1 → W3 · W2 → W3 · W3 → W4 → W5 → W6 → W7 ⇄ W8. W2와 W1은 병렬 가능. 계획 종료는 사용자가 정한다(후보 소진 또는 목표 도달) — 그때 모듈 단위 회귀 1회.
 
-### 7.1 `plans/150`과의 순서 (G-6)
+### 7.1 `plans/153`과의 순서 (G-6)
 
-- W0~W4는 **신규 파일만** 만든다(W1 제외 — W1은 `diagnosis.py`·`investigation_dispatcher.py`·`investigation_jobs.py`를 건드린다. 150 W5의 변경 대상은 질문·지침·사전수집·브리핑이라 겹침이 적지만, W1 착수 전 150 작업 트리 상태를 확인하고 같은 파일이면 150 W5 랜딩 뒤로 미룬다).
-- **기준선(W6 내부망 1회차)은 150 W5 랜딩 뒤에 잰다.** 앞에서 재면 150이 질문·지침을 바꾼 순간 기준선이 무효가 된다. 하네스(W0~W5)는 150과 병행한다.
-- H-1·H-2·H-3·H-7은 150이 바꾼 코드 위에 얹는다.
+- W0~W4는 **신규 파일만** 만든다(W1 제외 — W1은 `diagnosis.py`·`investigation_dispatcher.py`·`investigation_jobs.py`를 건드린다. 153 W5의 변경 대상은 질문·지침·사전수집·브리핑이라 겹침이 적지만, W1 착수 전 153 작업 트리 상태를 확인하고 같은 파일이면 153 W5 랜딩 뒤로 미룬다).
+- **기준선(W6 내부망 1회차)은 153 W5 랜딩 뒤에 잰다.** 앞에서 재면 153이 질문·지침을 바꾼 순간 기준선이 무효가 된다. 하네스(W0~W5)는 153과 병행한다.
+- H-1·H-2·H-3·H-7은 153이 바꾼 코드 위에 얹는다.
 
 ---
 
@@ -586,8 +587,8 @@ arms:
 
 | 파일 | Wave | 핵심 케이스 |
 |---|---|---|
-| `test_plan151_w1_instrumentation.py` | W1 | step 상한 미완주 → `status=done` 유지 + `incomplete:true` · 정상 완주 → `incomplete:false` · 타임아웃 잡에도 `elapsed_s`·`model`·`max_steps` 키 · `done` 감사 이벤트에 가산 키 전부 · `tool_calls[]`에 원시 도구 출력이 없다(이름·인자 요약·상태만) · `investigation_audit_path` 미설정 = 기존 경로(비트 동일) · 설정 시 그 경로에만 쓴다 |
-| noise_gate 소비자 5종(기존) | W1 | `test_investigation_followup` · `test_investigation_trigger` · `test_investigation_target_state` · `test_plan150_w2_investigation_store` · `test_plan150_w4_episode_investigation` — 가산 키가 있는 응답을 줘도 통과(필요하면 픽스처에 키만 더한다 · 단언 변경 없음) |
+| `test_plan154_w1_instrumentation.py` | W1 | step 상한 미완주 → `status=done` 유지 + `incomplete:true` · 정상 완주 → `incomplete:false` · 타임아웃 잡에도 `elapsed_s`·`model`·`max_steps` 키 · `done` 감사 이벤트에 가산 키 전부 · `tool_calls[]`에 원시 도구 출력이 없다(이름·인자 요약·상태만) · `investigation_audit_path` 미설정 = 기존 경로(비트 동일) · 설정 시 그 경로에만 쓴다 |
+| noise_gate 소비자 5종(기존) | W1 | `test_investigation_followup` · `test_investigation_trigger` · `test_investigation_target_state` · `test_plan153_w2_investigation_store` · `test_plan153_w4_episode_investigation` — 가산 키가 있는 응답을 줘도 통과(필요하면 픽스처에 키만 더한다 · 단언 변경 없음) |
 | `test_bench_world_server.py` | W2 | 스냅샷의 도구 이름·인자 스키마가 그대로 등록된다 · 매처 첫 일치 우선 · 부분집합 일치 · `default` · 정의 없는 도구 = 빈 결과 · 현재 세계 밖 호스트 → 「대상 없음」 + `arg_error=host` · 사건 구간을 안 덮는 시간창 → 빈 결과 + `arg_error=time_window` · `gen` 같은 인자 = 같은 응답(두 번 호출 대조) · 오류 주입 모양 · 제어 엔드포인트가 루프백에만 바인딩 · 호출 로그 한 줄 필드 |
 | `test_bench_schema_drift.py` | W2 | 세계 YAML이 스냅샷에 없는 도구·인자를 쓰면 린트 실패 · 스냅샷 해시가 manifest에 실린다 · 실 서버가 떠 있지 않으면 대조를 건너뛰고 「미대조」를 manifest에 남긴다 |
 | `test_bench_judge.py` | W3 | RC@1: entity와 kind 둘 다 맞아야 적중(하나만이면 부분 점수 기록) · 별칭·대소문자·공백·한영 혼용 정규화 · RC@3 순위 경계 · ECR: `cite` 토큰이 브리핑에 있어도 **세계 서버가 그 응답을 내준 적 없으면 불인정** · HALLU: 숫자+단위 추출 · 반올림(98.4 ↔ 98) · 단위 환산(MB↔GB) · 알람 이벤트 자체의 값은 허용 · 시각·호스트명 속 숫자는 수치 주장이 아님 · DIST · ABST(무장애에 단정 / 근거 충분한데 불충분) · 실패 유형 우선순위(F-INFRA > F-TMO > … > F-CITE) · 무효표는 분모 제외 · Maj@k · **재채점 멱등**(같은 입력 두 번 = 같은 `scores.jsonl`) |
@@ -637,7 +638,7 @@ python3.13 -m venv .venv
 
 ```bash
 # [개발 맥 · CWD=sre_agent · sre_agent/.venv] — 자기가 쓰거나 바꾼 파일만
-.venv/bin/python -m pytest tests/test_plan151_w1_instrumentation.py -q            # W1
+.venv/bin/python -m pytest tests/test_plan154_w1_instrumentation.py -q            # W1
 .venv/bin/python -m pytest tests/test_bench_world_server.py tests/test_bench_schema_drift.py -q   # W2
 .venv/bin/python -m pytest tests/test_bench_judge.py tests/test_bench_preflight.py \
     tests/test_bench_runner.py tests/test_bench_export.py tests/test_bench_e2e_fake_llm.py -q   # W3
@@ -648,8 +649,8 @@ python3.13 -m venv .venv
 # [개발 맥 · CWD=레포 루트 · 루트 .venv] — W1의 noise_gate 소비자 5종
 .venv/bin/python -m pytest noise_gate/tests/test_investigation_followup.py \
     noise_gate/tests/test_investigation_trigger.py noise_gate/tests/test_investigation_target_state.py \
-    noise_gate/tests/test_plan150_w2_investigation_store.py \
-    noise_gate/tests/test_plan150_w4_episode_investigation.py -q
+    noise_gate/tests/test_plan153_w2_investigation_store.py \
+    noise_gate/tests/test_plan153_w4_episode_investigation.py -q
 
 # [개발 맥 · CWD=레포 루트] — 정적 게이트(ruff·mypy·arch·overfit)
 python scripts/regress.py --no-tests --files <이 Wave가 바꾼 파일…>
@@ -796,7 +797,7 @@ B=.data/investigation_bench/imported/<run_id>.bundle
 Claude Code 세션에 주는 요청 예(§6.6 · 홀드아웃 열람 규칙 포함):
 
 ```text
-plans/151 §6.6 절차로 sre_agent/.data/investigation_bench/imported/<run_id>.bundle 을 검토하라.
+plans/154 §6.6 절차로 sre_agent/.data/investigation_bench/imported/<run_id>.bundle 을 검토하라.
 ① 채점 교정안(홀드아웃 포함) → 커밋 후 --rejudge 전후 대조표
 ② 실패 원인 진단·개선 후보 — 개발셋 원문만 읽는다(홀드아웃은 집계만)
 ③ 사용자가 확정한 후보만 플래그 1개로 구현 · MLX 대표 1~2세계 × 1회
@@ -809,10 +810,10 @@ plans/151 §6.6 절차로 sre_agent/.data/investigation_bench/imported/<run_id>.
 | Wave | 완료 = 아래가 모두 참 |
 |---|---|
 | W0 | 실측 결과가 계획서 §2·§4.7·§4.11에 반영(holmes step 수 회수 가능 여부 · MCP 등록 시점 · litellm 요청 모양 덤프 · 사전수집/도구 호출 구분 방법) · M-1~M-5 `xfail(strict=True)` 고정 |
-| W1 | `test_plan151_w1_instrumentation.py` 통과 · W0 xfail이 통과로 바뀜(strict라 자동 검출) · noise_gate 소비자 5종 통과 · `regress.py --no-tests` 통과 |
+| W1 | `test_plan154_w1_instrumentation.py` 통과 · W0 xfail이 통과로 바뀜(strict라 자동 검출) · noise_gate 소비자 5종 통과 · `regress.py --no-tests` 통과 |
 | W2 | `test_bench_world_server.py`·`test_bench_schema_drift.py` 통과 · `tool_schemas.json` 커밋 |
 | W3 | 9.2의 W3 행 전부 통과 · `test_bench_e2e_fake_llm.py`가 2분 안에 끝남 |
-| W4 | 세계 24건(D16·H08은 150 W5 뒤) 린트 통과 · 자기검증 전건 통과 |
+| W4 | 세계 24건(D16·H08은 153 W5 뒤) 린트 통과 · 자기검증 전건 통과 |
 | W5 | MLX 3건 raw·scores 생성 · 묶음 잔존 검사 통과 · 내부망 키트·`docs/26` 절 작성 |
 | W6~W8 | §7 표의 검증 칸 |
 
@@ -835,10 +836,10 @@ plans/151 §6.6 절차로 sre_agent/.data/investigation_bench/imported/<run_id>.
 |---|---|---|---|
 | **G-1** | 장애 세계 구현 | (a) 가짜 세계 MCP 서버(도구 응답 합성) (b) 샌드박스 PG에 장애 픽스처 적재 + 실 `mcp_server` (c) (a) 기본 + 소수 세계를 (b)로 교차 확인 | **(a)** — 정답·응답을 세계마다 통제 · 운영 반출 문제 없음 · 현 샌드박스 메트릭은 더미라 (b)는 픽스처 신규 작성 비용이 크다. (c)는 W6 이후 필요해지면 |
 | **G-2** | 계측 키(W1) 추가 방식 | (a) 잡·감사에 가산 키 상시(동작 무변경) (b) 플래그 뒤 | **(a)** — 동작이 아니라 기록이고, 플래그로 숨기면 운영 감사에서 미완주를 영영 못 본다 |
-| **G-3** | 미완주 표기 | (a) `status`는 `done` 유지 + `incomplete:true` 가산 (b) 새 상태 `incomplete` | **(a)** — D-123 상태 어휘와 noise_gate 소비자(후속 통보·150 조사 저장소)를 건드리지 않는다 |
+| **G-3** | 미완주 표기 | (a) `status`는 `done` 유지 + `incomplete:true` 가산 (b) 새 상태 `incomplete` | **(a)** — D-123 상태 어휘와 noise_gate 소비자(후속 통보·153 조사 저장소)를 건드리지 않는다 |
 | **G-4** | 판정 모델 | (a) 개발 루프 = 로컬 MLX · 기본값 변경 = 폐쇄망 운영 모델 재확인 뒤 (b) MLX 결과만으로 기본값 변경 (c) Gemini 병행(과금 · 건별 승인) | **(a)** |
 | **G-5** | 채점 | (a) 결정적 채점만 (b) + 로컬 MLX LLM 심판을 참고 지표로 | **(a)** — 별칭 누락은 오답 검토표로 메운다. (b)는 심판 자체의 신뢰도를 또 재야 한다 |
-| **G-6** | `plans/150`과의 순서 | (a) W0~W4 즉시 병행 · 기준선(W5)·개선(W6)은 150 W5 랜딩 뒤 (b) 150 완료 뒤 전체 착수 | **(a)** |
+| **G-6** | `plans/153`과의 순서 | (a) W0~W4 즉시 병행 · 기준선(W5)·개선(W6)은 153 W5 랜딩 뒤 (b) 153 완료 뒤 전체 착수 | **(a)** |
 | **G-7** | 규모 | (a) 개발 16 + 홀드아웃 8 · k=3 (b) k=5 (c) 세계 40건 | **(a)** — A/A 잡음폭이 크면 그때 (b) |
 | **G-8** | 채택 규칙 | (a) §6.2 — 홀드아웃 · A/A 잡음폭 · 가드 지표 · D-238 처분 어휘 (b) 개발+홀드아웃 합산 | **(a)** |
 
@@ -850,7 +851,7 @@ plans/151 §6.6 절차로 sre_agent/.data/investigation_bench/imported/<run_id>.
 | G-2·G-3 | (a) 상시 가산 · `status` 유지 + `incomplete:true` | W1 그대로 |
 | G-4 | (a) — 측정 모델 = **내부망 사내 vLLM**(FabriX 제외) → **v1.3 개정(2026-10-13)**: 측정은 **GPU 서버 동거**(sre_agent·벤치를 vLLM 서버에) · 백엔드는 vLLM 기본 · **FabriX(`fabrix_proxy`)는 대체 백엔드**(148 G-4 통과 전제 · 자기 기준선 · 교차 비교 금지) | §1.3 · §6.7 · W5·W6 · R-12~R-14 |
 | G-5 | (a) 결정적 채점 **+ 결과 로그를 남겨 외부망 Claude Code가 검토** — 산출: 채점 교정안 · 실패 원인 진단·개선 후보 · 개선 코드(스킬화는 하지 않음) | §6.5 반출 묶음 · §6.6 검토 · W7 |
-| G-6 | (a) 하네스 병행 · 측정은 150 W5 뒤 | §7.1 |
+| G-6 | (a) 하네스 병행 · 측정은 153 W5 뒤 | §7.1 |
 | G-7 | (a) 16 + 8 · k=3 — 단 **MLX는 느리니 최소화하고 대부분 내부망에서** → 외부망 MLX는 대표 3세계 × 1회 | §6.1 · W5 |
 | G-8 | (a) | §6.2 |
 | (추가) 반출 범위 | 브리핑 전문 · 도구 호출·응답 로그 포함 · 내부 주소·계정·경로만 가림 | §6.5 |
@@ -869,7 +870,7 @@ plans/151 §6.6 절차로 sre_agent/.data/investigation_bench/imported/<run_id>.
 
 | 날짜 | 내용 |
 |---|---|
-| 2026-10-12 | **v1.0 신규(`-TODO`)** — 현행 실측(조사 경로 · 설정 축 · 계측 빈칸 M-1~M-5 · 평가 자산 · 원인 정답 0건) · 합성 장애 세계 벤치 설계(세계 서버 · 스키마 드리프트 가드 · 결정적 채점 8지표 · 실패 유형 12종) · 세계 24건 초안 · 개선 후보 H-1~H-8 · 판정 규칙(A/A 잡음폭 · 홀드아웃 · D-238) · Wave W0~W7 · `plans/150` 순서 조율 · 게이트 G-1~G-8 · D-324 예약 · 코드 0 |
+| 2026-10-12 | **v1.0 신규(`-TODO`)** — 현행 실측(조사 경로 · 설정 축 · 계측 빈칸 M-1~M-5 · 평가 자산 · 원인 정답 0건) · 합성 장애 세계 벤치 설계(세계 서버 · 스키마 드리프트 가드 · 결정적 채점 8지표 · 실패 유형 12종) · 세계 24건 초안 · 개선 후보 H-1~H-8 · 판정 규칙(A/A 잡음폭 · 홀드아웃 · D-238) · Wave W0~W7 · `plans/153` 순서 조율 · 게이트 G-1~G-8 · D-324 예약 · 코드 0 |
 | 2026-10-12 | **v1.1** — 사용자 인터뷰로 G-1~G-8 확정(§10 확정표). 바뀐 것: 측정을 내부망 사내 vLLM 회차로 옮김(W6 1회차 A/A · W8 N회차) · 외부망 Claude Code 검토 W7 신설(채점 교정 → `--rejudge` · 실패 원인 진단·개선 후보 · 플래그 뒤 개선 코드 · 홀드아웃 열람 규칙 §6.6) · 반출 묶음 §6.5(전문 + 내부 주소·계정·경로 가림 · 잔존 검사 관문 · `export.py`) · 외부망 MLX를 대표 3세계 × 1회로 축소(W5) · 사전 점검에 `--site closed`·tool-calling 왕복 · 모델 축 제거(FabriX 범위 밖) · 위험 R-9~R-11 · D-324 본문 등재 · 코드 0 |
 | 2026-10-13 | **v1.2** — 사용자 요청 *"151번 계획에 구성 및 테스트 방법도 자세히 추가로 정리하라."* 추가: §4.7 실행 구성(프로세스·포트 토폴로지 · 벤치 전용 진입 `_serve.py` — 운영 진입 포트 상수 `mcp_service.py:45` · 실험군 = 프로세스 · 빈 cwd + OS env 주입으로 `.env`·`.encenv` 차단 · 실험군 env 표 · 실행 명세 YAML) · §4.8 실행 순서 · §4.9 산출 파일 데이터 계약(`world_calls.jsonl` 신설 · `--rejudge` 보존 규칙) · §4.10 세계 서버 규칙(현재 세계 = 러너 지정 · 호스트·시간창 인자 오류) · §4.11 가짜 LLM(세계 대본 재생 · 테스트 전용) · §4.2에 `hosts`·`incident_window`·`script` · W1에 설정 `investigation_audit_path`(기본 None = 비트 동일 — 감사 경로 고정 `investigation_jobs.py:57`) · §9를 테스트 계층 L0~L6 · 파일별 핵심 케이스 · 실 LLM 실행 절차(외부망 MLX · 내부망 6단계) · Wave별 완료 기준으로 확장 · §9.6 매뉴얼 연동 Wave를 W8로 바로잡음 · 코드 0 |
 | 2026-10-13 | **v1.3** — 사용자 지시 *"내부망에서는 holmesGPT는 GPU에서 돌릴 예정이다. 또한 필요한경우 fabrix나 vLLM에서 LLM을 사용할 예정이다."* + 확인 답(같은 GPU 서버에 함께 · FabriX = 대체 백엔드). 바뀐 것: §6.7 신설(GPU 서버 동거 배치 · venv 재현 · 포트 · GPU 경합 기록과 지연 처분 조건 · 백엔드 표 — vLLM 기본 / `fabrix_proxy` 대체: 148 G-4 통과 전제 · 자기 기준선 · 교차 비교 금지 · 호출량 확인 · PII 차단 무효표) · 실행 명세 `llm.backend`·`host.gpu_sample_interval_s` · manifest 백엔드·서빙·호스트·GPU 칸 · 사전 점검(closed의 127.0.0.1 허용 · FabriX 비과금) · §1.3 FabriX 범위 밖을 「교차 비교」로 좁힘 · W5 키트 · W6 · §9.3 내부망 절차 · R-12~R-14 · G-4 확정표 개정 · D-324 ⑤ 부기 · 코드 0 |

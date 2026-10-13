@@ -1,4 +1,4 @@
-# 내부망 N회차 템플릿 — 대조군 + 그 회차 실험군(W7 외부망 검토가 채운다 · plans/151 §6.5 · §6.6)
+# 내부망 N회차 템플릿 — 대조군 + 그 회차 실험군(W7 외부망 검토가 채운다 · plans/154 §6.5 · §6.6)
 # 실험군 값 = sre_agent 설정 환경변수(플래그 1개 · 기본 off = 비트 동일). 대조군은 빈 값(현행 기본값).
 # 러너 고정 키(MODEL·API_BASE·GEMINI_*·*_MCP_URL·INVESTIGATION_AUDIT_PATH 등)와
 # INVESTIGATION_DEDUP_TTL_SECONDS·INVESTIGATION_HOURLY_BUDGET은 쓸 수 없다(러너가 거부).

@@ -1,4 +1,4 @@
-"""크로스소스 사건 스냅샷 해석 (plans/150 §4.4·§4.6 · D-323 ⑤⑨ · D-035).
+"""크로스소스 사건 스냅샷 해석 (plans/153 §4.4·§4.6 · D-325 ⑤⑨ · D-035).
 
 noise_gate 사건 추적기가 트리거 페이로드 `meta.episode`에 실어 보낸
 스냅샷을 **읽기만** 한다 — 사건을 여기서 재구성하지 않는다(G-5 (a)).
@@ -24,11 +24,11 @@ from sre_agent.domain.correlation import EpisodePoint, TimelineItem, merge_timel
 SOURCE_INFRA = "polestar"
 SOURCE_APM = "jennifer"
 
-#: 송신 측 상한과 같은 값(멤버 20 · 링크 50 — plans/150 §4.4). 넘치면 최근 순 앞쪽만 쓴다.
+#: 송신 측 상한과 같은 값(멤버 20 · 링크 50 — plans/153 §4.4). 넘치면 최근 순 앞쪽만 쓴다.
 EPISODE_MEMBERS_MAX = 20
 EPISODE_LINKS_MAX = 50
 
-#: 종합 조사 표지 `meta.investigation_kind`(plans/150 §4.5 — 사건당 1회 종합 조사).
+#: 종합 조사 표지 `meta.investigation_kind`(plans/153 §4.5 — 사건당 1회 종합 조사).
 INVESTIGATION_KIND_EPISODE = "episode"
 
 #: 프롬프트에 싣는 외부 문자열(알람명·규칙 id 등) 상한 — `prompt_text`.

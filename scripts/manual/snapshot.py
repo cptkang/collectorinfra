@@ -153,7 +153,7 @@ PROFILES = {
         "NOISE_SILENCE_ENABLED": "true",
         # 알람 카드의 피드백 버튼(유효·노이즈)은 이 플래그가 켜져야 보인다 — 캡처 서버엔 워커가 없어 LLM 호출은 없다
         "NOISE_ENABLE_LLM_ACTIONABILITY": "true",
-        # 조사 브리핑 장면(plans/150) — 예시 조사 기록(alarms.seed_briefing)을 읽는
+        # 조사 브리핑 장면(plans/153) — 예시 조사 기록(alarms.seed_briefing)을 읽는
         # 저장소 경로를 명시한다. 조사 트리거는 끈다: 켜면 capabilities 가 모든 알람
         # 카드에 「조사 브리핑」 칸을 붙여 다른 알람 장면이 바뀐다.
         # 칸은 조사 id 가 실린 예시 카드에만 붙는다

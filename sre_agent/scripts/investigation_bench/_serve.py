@@ -1,4 +1,4 @@
-"""벤치 전용 sre_agent 진입점 (plans/151 §4.7).
+"""벤치 전용 sre_agent 진입점 (plans/154 §4.7).
 
 운영 진입점 `run_service.py`는 포트가 상수(`DEFAULT_PORT = 9098`)라 벤치 포트를 줄 수 없다.
 이 파일은

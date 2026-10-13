@@ -1,7 +1,7 @@
-"""plans/150 W0 — flags-off 비트 동일 기준선(판정 레코드 · 조사 페이로드) + 사건·브리핑 픽스처.
+"""plans/153 W0 — flags-off 비트 동일 기준선(판정 레코드 · 조사 페이로드) + 사건·브리핑 픽스처.
 
 이후 Wave(W1 판정 레코드 `analysis` · W4 `meta.episode`/`meta.cross_source`)가 플래그를 더해도
-**기본값(off)에서는** 아래 산출이 지금과 한 글자도 달라지면 안 된다(plans/150 §3 ①·⑥).
+**기본값(off)에서는** 아래 산출이 지금과 한 글자도 달라지면 안 된다(plans/153 §3 ①·⑥).
 
     ① 판정 레코드 JSONL 한 줄 — `notification_gate_node`가 실 `DecisionStore`에 쓴 레코드 전체
        (`ts` 제외 — 기록 시각이라 비결정). 설정은 실 `NoiseGateConfig` 기본값(.env·NOISE_* 차단)이라
@@ -13,7 +13,7 @@
 겹치지 않게, 여기서는 **직렬화된 산출 전체**를 골든으로 박는다.
 
 골든 재생성은 **산출을 의도적으로 바꾼 경우에만** 한다(그때는 결정 기록이 먼저다):
-    python -m noise_gate.tests.test_plan150_w0_baseline --write
+    python -m noise_gate.tests.test_plan153_w0_baseline --write
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from noise_gate.infrastructure.decision_store import DecisionStore
 from noise_gate.infrastructure.polestar_noise_context import _unavailable
 from noise_gate.scripts import replay_noise as rn
 
-TESTDATA = Path(__file__).resolve().parents[1] / "testdata" / "plan150"
+TESTDATA = Path(__file__).resolve().parents[1] / "testdata" / "plan153"
 INCIDENT = TESTDATA / "cross_source_incident.jsonl"
 BRIEFING_MOCK = TESTDATA / "briefing_mock.json"
 DECISION_GOLDEN = TESTDATA / "decision_records.golden.json"

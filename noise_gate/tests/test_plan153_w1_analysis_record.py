@@ -1,4 +1,4 @@
-"""plans/150 W1 — 판정 레코드 `analysis` 가산(G-7 (a)) · 처리 안내 정본 `STAGE_HANDLING`.
+"""plans/153 W1 — 판정 레코드 `analysis` 가산(G-7 (a)) · 처리 안내 정본 `STAGE_HANDLING`.
 
     1. 게이트 노드 — `decision_analysis_text_enabled` off(기본)면 레코드에 키가 없고(비트 동일),
        on이면 이미 만든 AI 분석 3필드를 각 500자로 잘라 싣는다. 분석 실패면 폴백 문구를 저장하지

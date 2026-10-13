@@ -1,4 +1,4 @@
-# plans/151 §4.6 D12 — 호스트 다운(target_unavailable · os · 가용성 판정)
+# plans/154 §4.6 D12 — 호스트 다운(target_unavailable · os · 가용성 판정)
 id: D12
 split: dev
 title: DB 보조 서버 호스트 다운(상위 스위치 정상)

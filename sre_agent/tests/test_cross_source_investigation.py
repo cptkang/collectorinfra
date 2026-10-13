@@ -1,4 +1,4 @@
-"""plans/150 W5 — sre_agent 크로스소스 조사 수신 확장(§4.6·§4.7 · D-323 ⑨).
+"""plans/153 W5 — sre_agent 크로스소스 조사 수신 확장(§4.6·§4.7 · D-325 ⑨).
 
 `meta.episode`(noise_gate 사건 추적기 스냅샷)를 받아 질문·지침·사전수집 타임라인·규칙 가설·한계·
 브리핑 `cross_source` 블록·감사 키를 만든다. 필수 확인:
@@ -7,7 +7,7 @@
 - 혼합 사건 on · 한쪽 소스 사건 on(크로스소스 아님) · APM 도구 미연결 한계 · 멤버 상한 절단.
 
 실 LLM 없음(가짜 diagnose_fn · 가짜 배치 호출기). noise_gate는 import하지 않는다(D-118 — 페이로드는
-`tests/fixtures/plan150/apm_trigger_payloads.json` 사본 + 여기서 붙인 `meta.episode`).
+`tests/fixtures/plan153/apm_trigger_payloads.json` 사본 + 여기서 붙인 `meta.episode`).
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ from sre_agent.domain.severity_signatures import ImportanceVerdict
 from sre_agent.interface import mcp_service
 from sre_agent.settings import AgentSettings
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "plan150"
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "plan153"
 PAYLOADS = json.loads((FIXTURES / "apm_trigger_payloads.json").read_text(encoding="utf-8"))
 REF = "2026-10-07T09:04:30"  # 픽스처 alarmTime 20261007090430
 

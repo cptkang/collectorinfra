@@ -1,4 +1,4 @@
-# 내부망 1회차 — 대조군 A/A 기준선 · 사내 vLLM (plans/151 §6.5 · §6.7 · §9.3.7)
+# 내부망 1회차 — 대조군 A/A 기준선 · 사내 vLLM (plans/154 §6.5 · §6.7 · §9.3.7)
 # 저장소 밖 작업 폴더에 복사해 고친다: llm.model = openai/<vLLM served name> ·
 # base_env = 운영 실효값(MAX_STEPS · INVESTIGATION_TIMEOUT_SECONDS · OVERRIDE_MAX_CONTENT_SIZE · OVERRIDE_MAX_OUTPUT_TOKEN)
 run:
