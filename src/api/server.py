@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.api.routes import admin, admin_auth, alarm, apm_jobs, conversation, db_structure, doc_search, health, noise_dashboard, query, schema_cache, scope, ui, user_auth
+from src.api.routes import result_viz
 from src.config import AppConfig, load_config
 from src.graph import build_graph
 from src.routing.apm_source_health import SourceHealthReport
@@ -685,6 +686,10 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     # 라우트 등록
     application.include_router(health.router, prefix="/api/v1", tags=["health"])
     application.include_router(query.router, prefix="/api/v1", tags=["query"])
+    # (plans/160 A-3) 조회 결과 그래프·해설 — RESULT_VIZ_CHART_ENABLED 켰을 때만 등록(기동 시 1회).
+    # 끄면 라우트가 없어 인증 없는 요청도 404다(현행과 같다).
+    if config.result_viz.chart_enabled:
+        application.include_router(result_viz.router, prefix="/api/v1", tags=["query"])
     application.include_router(alarm.router, prefix="/api/v1", tags=["alarm"])
     application.include_router(
         admin_auth.router, prefix="/api/v1", tags=["admin-auth"]

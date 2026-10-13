@@ -107,6 +107,93 @@ captures:
     login: user
     steps:
       - send: "vcore, cpu, core은 동의어이다. 캐시에 등록하라."
+  # ── 사용자: 결과 그래프·용어 사전·값 해석·표 넓게 보기(plans/160 · D-327) ─────────
+  # `capture-viz` 서버(두 플래그 on · LLM 주소 닫힘 = LLM 호출 0 — snapshot.py). 힙 추세는 손 제작 재생 파일
+  # (fixtures/queries/3ee6ec6113ecd276.json · `handmade` 사유 — 로컬 제니퍼는 라이선스가 없어 녹화 불가)
+  - id: result-chart-line
+    server: capture-viz
+    login: user
+    steps:
+      - send: "지난 6시간 힙 메모리 추세 보여줘"
+      - click: ".message--agent:last-child .result-viz-toggle"
+      - wait: ".message--agent:last-child .result-viz-chart canvas"
+      - wait: 800
+      - eval: "document.querySelector('.message--agent:last-child .result-viz-toggle').scrollIntoView({block: 'start'})"
+      - wait: 300
+    callouts: [[1, ".message--agent:last-child .result-viz-toggle"], [2, ".message--agent:last-child .result-viz-chart"], [3, ".message--agent:last-child table.result-viz-grid"]]
+  - id: result-chart-bar
+    server: capture-viz
+    login: user
+    steps:
+      - send: "2026년 5월 서버별 CPU 사용률 평균이 높은 상위 5대를 보여줘"
+      - click: ".message--agent:last-child .result-viz-toggle"
+      - wait: ".message--agent:last-child .result-viz-chart canvas"
+      - wait: 800
+      - eval: "document.querySelector('.message--agent:last-child .result-viz-toggle').scrollIntoView({block: 'start'})"
+      - wait: 300
+    callouts: [[1, ".message--agent:last-child .result-viz-toggle"], [2, ".message--agent:last-child .result-viz-chart"]]
+  # 머리글은 사전 적중 칼럼(heap_used_mb — config/result_glossary.yaml)이라 LLM 이 필요 없다
+  - id: result-glossary
+    server: capture-viz
+    login: user
+    steps:
+      - send: "지난 6시간 힙 메모리 추세 보여줘"
+      - click: ".message--agent:last-child .result-viz-toggle"
+      - wait: ".message--agent:last-child table.result-viz-grid"
+      - wait: 800
+      - eval: "document.querySelector('.message--agent:last-child .result-viz-grid-title').scrollIntoView({block: 'start'})"
+      - wait: 300
+      - click: ".message--agent:last-child table.result-viz-grid thead button[data-rv-col='heap_used_mb']"
+      - wait: ".result-viz-pop .result-viz-badge"
+      - wait: 300
+    callouts: [[1, ".message--agent:last-child table.result-viz-grid thead button[data-rv-col='heap_used_mb']"], [2, ".result-viz-pop"]]
+  # 값 해석의 LLM 문장 자리는 LLM 주소가 닫혀 있어 「해석 문장 없음 — LLM 호출 실패(…)」로 찍힌다(계산값은 결정적)
+  - id: result-interpret
+    server: capture-viz
+    login: user
+    steps:
+      - send: "지난 6시간 힙 메모리 추세 보여줘"
+      - click: ".message--agent:last-child .result-viz-toggle"
+      - wait: ".message--agent:last-child table.result-viz-grid"
+      - wait: 800
+      - eval: "document.querySelector('.message--agent:last-child .result-viz-grid-title').scrollIntoView({block: 'start'})"
+      - wait: 300
+      - click: ".message--agent:last-child table.result-viz-grid tbody tr:nth-child(5) button[data-rv-col='heap_used_mb']"
+      - wait: ".result-viz-pop .result-viz-pop-llm"
+      - wait: 300
+    callouts: [[1, ".message--agent:last-child table.result-viz-grid tbody tr:nth-child(5) button[data-rv-col='heap_used_mb']"], [2, ".result-viz-pop .result-viz-facts"], [3, ".result-viz-pop .result-viz-pop-llm"]]
+  # 질의 이력은 기본 접힘 — 처리 현황만 접으면 둘 다 접힌 상태다
+  - id: table-wide-panels
+    server: capture-viz
+    login: user
+    steps:
+      - click: "#panelToggle"
+      - send: "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량을 조회해줘"
+      - eval: "document.querySelector('.message--agent:last-child .response-text table').scrollIntoView({block: 'center'})"
+      - wait: 300
+    callouts: [[1, "#historyToggle"], [2, "#panelToggle"], [3, ".message--agent:last-child .response-text table"]]
+  - id: table-expand-btn
+    server: capture-viz
+    login: user
+    steps:
+      - click: "#historyToggle"
+      - send: "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량을 조회해줘"
+      - eval: "document.querySelector('.message--agent:last-child .result-table-wrap').scrollIntoView({block: 'center'})"
+      - wait: ".message--agent:last-child .table-expand-btn:not([hidden])"
+      - wait: 300
+    callouts: [[1, ".message--agent:last-child .table-expand-btn"]]
+  - id: table-expand-overlay
+    server: capture-viz
+    login: user
+    steps:
+      - click: "#historyToggle"
+      - send: "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량을 조회해줘"
+      - eval: "document.querySelector('.message--agent:last-child .result-table-wrap').scrollIntoView({block: 'center'})"
+      - wait: ".message--agent:last-child .table-expand-btn:not([hidden])"
+      - click: ".message--agent:last-child .table-expand-btn"
+      - wait: ".table-expand-overlay"
+      - wait: 300
+    callouts: [[1, ".table-expand-overlay table thead"], [2, ".table-expand-close"]]
   # ── 사용자: 조회 범위와 역질문 ───────────────────────────
   # 존 장면은 전 존 권한인 관리자로 찍고 대화 영역만 잘라 낸다(사례 계정은 샌드박스 권한만 — run_capture.py)
   - id: scope-chip

@@ -1543,6 +1543,21 @@ class RagConfig(BaseSettings):
     model_config = {"env_prefix": "RAG_", "env_file": ".env", "extra": "ignore"}
 
 
+class ResultVizConfig(BaseSettings):
+    """조회 결과 그래프 보기 · 칼럼 용어 사전 · 값 해석 (plans/160 · D-327).
+
+    둘 다 **기본 off**(D-162) — 끄면 응답 `chart`는 None이고 해당 API는 404라 현행과 같다.
+    기동 시 1회 해석한다(`RELOADABLE_KEYS` 미등재 = 재시작 반영).
+    """
+
+    # 그래프 보기 — 응답 `chart` 신호 · `GET /query/{id}/chart`
+    chart_enabled: bool = False
+    # 칼럼 용어 사전 · 값 해석 — 격자 머리글·셀 링크 · `/glossary` · `/interpret`
+    explain_enabled: bool = False
+
+    model_config = {"env_prefix": "RESULT_VIZ_", "env_file": ".env", "extra": "ignore"}
+
+
 class AppConfig(BaseSettings):
     """애플리케이션 전체 설정을 통합 관리한다."""
 
@@ -1576,6 +1591,8 @@ class AppConfig(BaseSettings):
     intent_frame: IntentFrameConfig = Field(default_factory=IntentFrameConfig)
     # plans/126: 문서 RAG(FabriX Retrieval) — 기본 off · 라우팅 미포함(plans/125 소유)
     rag: RagConfig = Field(default_factory=RagConfig)
+    # plans/160: 조회 결과 그래프 보기·값 해석 — 기본 off
+    result_viz: ResultVizConfig = Field(default_factory=ResultVizConfig)
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"
 

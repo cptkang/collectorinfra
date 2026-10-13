@@ -10,6 +10,8 @@
 - ``record``  : 사례 녹화 — 실 그래프 · 로컬 MLX 두 평면 · 샌드박스 데이터 DB
 - ``alarm``   : 알람 녹화 — 알람 워커 · 노이즈 게이트 · 로컬 MLX
 - ``capture`` : 캡처 — 재생 그래프 · LLM 호출 0
+- ``capture-viz`` : 결과 그래프·값 해석 장면(plans/160) — ``capture`` + 두 플래그 on ·
+  LLM 주소를 닫힌 포트로
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ APP_DIRS = {
     "alarm": BUILD / "app-alarm",
     "capture": BUILD / "app-capture",
     "capture-zones": BUILD / "app-capture-zones",
+    "capture-viz": BUILD / "app-capture-viz",
 }
 APP = APP_DIRS["record"]
 FIXTURES = REPO / "scripts" / "manual" / "fixtures"
@@ -168,6 +171,19 @@ PROFILES = {
 PROFILES["capture-zones"] = {
     **PROFILES["capture"],
     "ACTIVE_DB_IDS": "polestar,polestar_cm_gp,polestar_cm_yd,polestar_b0",
+}
+# 결과 그래프·용어 사전·값 해석 장면 전용(plans/160 · D-327) — 두 플래그는 기본 off 라
+# 기본 캡처 서버에 켜면 막대로 그릴 수 있는 답(상위 N 등)을 찍는 기존 장면마다
+# 「그래프로 보기」 버튼이 새로 찍힌다.
+# 값 해석은 LLM 문장을 붙이므로 두 평면 주소를 닫힌 루프백 포트로 바꿔 **LLM 호출 0**을 보장한다 —
+# 해석 팝오버는 계산값 + 「해석 문장 없음 — LLM 호출 실패」로 찍힌다(MLX 서버가 떠 있어도 같다).
+# 머리글 용어 사전은 사전 적중 칼럼만 찍는다(LLM 불필요)
+PROFILES["capture-viz"] = {
+    **PROFILES["capture"],
+    "RESULT_VIZ_CHART_ENABLED": "true",
+    "RESULT_VIZ_EXPLAIN_ENABLED": "true",
+    "LLM_MLX_BASE_URL": "http://127.0.0.1:9/v1",
+    "ORCHESTRATOR_BASE_URL": "http://127.0.0.1:9/v1",
 }
 
 

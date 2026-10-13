@@ -157,7 +157,7 @@ def main() -> None:
                 f"포트 {PORT} 이 이미 쓰이고 있다 — 이전 캡처 서버(--keep)나 녹화 서버를 먼저 내린다"
             )
     snapshot.reset_capture_db()
-    profiles = ("capture", "capture-zones")
+    profiles = ("capture", "capture-zones", "capture-viz")
     rc = 0
     for i, profile in enumerate(profiles):
         rc |= _serve_and_capture(profile, a.only, keep=a.keep and i == len(profiles) - 1)

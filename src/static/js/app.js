@@ -1157,6 +1157,8 @@
         appendApmJobCards(el.querySelector(".message-bubble"), data.disclosures);   // plans/134 W0-B
 
         chatMessages.appendChild(el);
+        if (window.ResultViz) ResultViz.enhanceTables(el);   // plans/160 D — 표 넓게 보기(넘침 판정은 DOM 부착 뒤)
+        if (window.ResultViz) ResultViz.attach(el.querySelector(".message-bubble"), data, { headers: getAuthHeaders });   // plans/160 A — 그래프로 보기
         scrollToBottomIfSticky();
     }
 
@@ -1846,6 +1848,7 @@
                     processing_time_ms: metaData.processing_time_ms,
                     has_file: metaData.has_file,
                     file_name: metaData.file_name,
+                    chart: metaData.chart,   // plans/160 A
                 },
                 time: new Date(),
             });
@@ -1975,6 +1978,8 @@
 
         // Remove streaming IDs to prevent conflicts
         var streamingMsg = document.getElementById("streamingMessage");
+        if (streamingMsg && window.ResultViz) ResultViz.enhanceTables(streamingMsg);   // plans/160 D — 최종 렌더 뒤 1회
+        if (streamingMsg && window.ResultViz) ResultViz.attach(streamingMsg.querySelector(".message-bubble"), meta, { headers: getAuthHeaders });   // plans/160 A
         if (streamingMsg) streamingMsg.removeAttribute("id");
         ["streamingText", "streamingCursor", "streamingTime", "streamingMeta", "streamingSql", "streamingStatus", "streamingStatusText", "streamingStatusElapsed", "streamingStages"].forEach(function(id) {
             var el = document.getElementById(id);
@@ -2837,6 +2842,7 @@
                     processing_time_ms: metaData.processing_time_ms,
                     has_file: metaData.has_file,
                     file_name: metaData.file_name,
+                    chart: metaData.chart,   // plans/160 A
                 },
                 time: new Date(),
             });
@@ -4572,6 +4578,10 @@
                 time: at,
                 // 작업 카드(plans/134 W0-B) — 작업 결과는 서버 장부에 남아 있어 다시 이어 볼 수 있다
                 disclosures: t.disclosures,
+                // plans/160 A — 그래프 버튼만 살린다. query_id가 아니라 별도 키로 넘겨 CSV 링크는 생기지 않는다
+                // (결과가 만료됐으면 패널이 「결과가 만료되었습니다」를 보인다)
+                chart: t.chart,
+                result_query_id: t.query_id,
             });
             // 역질문 턴은 db_scope가 없다 — 직전 보고값을 유지하는 renderDbScopeChip 규칙과 같다
             if (t.db_scope) lastScope = t.db_scope;

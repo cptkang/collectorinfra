@@ -376,7 +376,9 @@ def test_samples_have_no_secrets() -> None:
 def test_capture_queries_have_recordings() -> None:
     """캡처 장면이 보내는 질문마다 유지된 녹화가 있다.
 
-    없으면 재생 서버가 「녹화 없음」을 찍는다."""
+    없으면 재생 서버가 「녹화 없음」을 찍는다. 실 녹화(샘플)가 원칙이고, 녹화할 수 없는 응답
+    모양(예: 제니퍼 힙 추세 — 로컬 제니퍼 라이선스 없음)은 사유(``handmade``)를 적은 손 제작
+    재생 파일만 인정한다(plans/160 W6)."""
     import sys
 
     sys.path.insert(0, str(REPO))
@@ -387,6 +389,10 @@ def test_capture_queries_have_recordings() -> None:
         for p in (MANUAL / "fixtures" / "samples").glob("*.json")
         for t in json.loads(p.read_text(encoding="utf-8"))["turns"]
     }
+    for p in (MANUAL / "fixtures" / "queries").glob("*.json"):
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        if str(doc.get("handmade") or "").strip() and doc.get("key") == p.stem:
+            keys.add(doc["key"])
     missing = []
     for cap in CAPTURES.values():
         upload = None
