@@ -1,0 +1,74 @@
+# plans/154 §4.6 D05 — 배포 직후 CPU 상승(change_induced · change · 함정: 단서가 변경 이력에만 있음)
+id: D05
+split: dev
+title: 가격 계산 서비스 신규 버전 배포 직후 CPU 상승
+event:
+  dbId: polestar
+  serverName: bw-d05-app01
+  hostname: bw-d05-app01
+  ipAddress: 192.0.2.15
+  resourceAncestry: ""
+  alarmId: "bw-d05-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "CPU 사용률 임계 초과"
+  alarmTime: "20261012143000"
+  conditions: "> 85%"
+  conditionLog: "[CPU 사용률 (> 85%, 3회 연속)]"
+label:
+  root_entity: {host: bw-d05-app01, component: bwd05-pricing}
+  layer: change
+  kind: change_induced
+  change_related: true
+  aliases:
+    kind: [배포 직후, 배포 영향, 배포 변경, 변경 영향, 신규 버전 배포, release regression]
+key_evidence:
+  - {tool: polestar_change_history, cite: [v4.2.0]}
+  - {tool: polestar_metric_trend, match: {kind: cpu}, cite: ["88.6"]}
+distractors:
+  - {kind: cpu_runaway, aliases: [CPU 폭주, 프로세스 폭주, 무한 루프]}
+expect:
+  abstain: false
+hosts: [bw-d05-app01]
+incident_window: {start: -60m, end: 0m}
+tools:
+  polestar_change_history:
+    - reply:
+        rows:
+          - {change_time: "2026-10-12T13:55:00", change_type: "애플리케이션 배포", description: "bwd05-pricing v4.2.0 배포 (캐시 설정 변경 포함)", operator: release-bot}
+        row_count: 1
+        source_kind: postgresql
+  polestar_metric_trend:
+    - match: {kind: cpu}
+      reply:
+        rows: {gen: {base: 28, spike_at: -30m, to: 87, noise: 1.5}}
+        row_count: 12
+        latest: 88.6
+        unit: "%"
+        source_kind: postgresql
+    - match: {kind: memory}
+      reply:
+        rows: {gen: {base: 47, noise: 1}}
+        row_count: 12
+        unit: "%"
+        source_kind: postgresql
+  polestar_process_snapshot:
+    - reply:
+        rows:
+          - {pid: 7781, name: java, args: "-jar bwd05-pricing-4.2.0.jar", pcpu: 342.0, p100cpu: 86.0, pmem: 18.3, elapsed: "00:34:02", state: R}
+        row_count: 1
+        captured_at: "2026-10-12T14:30:10"
+        source_kind: polestar_api
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d05-app01, kind: cpu}}
+    - {call: polestar_change_history, args: {source: polestar, server_name: bw-d05-app01, reference_time: "2026-10-12T14:30:00"}}
+    - {answer: "bw-d05-app01 13:55 bwd05-pricing v4.2.0 배포 직후 CPU 상승 — 배포 영향으로 판단: CPU 사용률 88.6% (polestar_metric_trend) · 배포 기록 (polestar_change_history)"}
+  neg:
+    F-DIST:
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d05-app01, kind: cpu}}
+      - {call: polestar_process_snapshot, args: {hostname: bw-d05-app01}}
+      - {answer: "bw-d05-app01 java 프로세스 CPU 폭주 (polestar_process_snapshot)"}

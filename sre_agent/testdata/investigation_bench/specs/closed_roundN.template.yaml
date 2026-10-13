@@ -1,0 +1,28 @@
+# 내부망 N회차 템플릿 — 대조군 + 그 회차 실험군(W7 외부망 검토가 채운다 · plans/154 §6.5 · §6.6)
+# 실험군 값 = sre_agent 설정 환경변수(플래그 1개 · 기본 off = 비트 동일). 대조군은 빈 값(현행 기본값).
+# 러너 고정 키(MODEL·API_BASE·GEMINI_*·*_MCP_URL·INVESTIGATION_AUDIT_PATH 등)와
+# INVESTIGATION_DEDUP_TTL_SECONDS·INVESTIGATION_HOURLY_BUDGET은 쓸 수 없다(러너가 거부).
+run:
+  site: closed
+  splits: [dev, holdout]
+  worlds: all
+  worlds_dir: testdata/investigation_bench/worlds
+  k: 3
+  order: interleave
+  poll_interval_s: 2
+  per_run_timeout_s: 420
+llm:
+  backend: vllm
+  model: "openai/<served>"
+  api_base: "http://127.0.0.1:8000/v1"
+  api_key: dummy
+host:
+  gpu_sample_interval_s: 30
+base_env:
+  MAX_STEPS: 40
+  INVESTIGATION_TIMEOUT_SECONDS: 300
+  # OVERRIDE_MAX_CONTENT_SIZE: <운영 실효값>
+  # OVERRIDE_MAX_OUTPUT_TOKEN: <운영 실효값>
+arms:
+  control: {}
+  # <후보 id>: {<플래그 환경변수>: true}

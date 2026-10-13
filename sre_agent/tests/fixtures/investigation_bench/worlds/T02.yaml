@@ -1,0 +1,28 @@
+# 테스트 전용 소형 세계 — 세계 전환·기본 응답 검사용(plans/154 W2). default·incident_window 없음.
+id: T02
+split: dev
+title: 정상(무장애) 세계(테스트)
+event:
+  serverName: bw-t02-web01
+  hostname: bw-t02-web01
+  severity: 2
+  alarmName: "응답 지연"
+  alarmTime: "2026-10-12T10:00:00"
+label:
+  root_entity: {host: bw-t02-web01}
+  layer: app
+  kind: none
+  change_related: false
+hosts: [bw-t02-web01]
+tools:
+  polestar_metric_trend:
+    - match: {kind: memory}
+      reply: {rows: [{value: 41.0}], row_count: 1}
+# W3 종단(L3) 보강 — 가짜 LLM 모범 대본·핵심 증거
+expect: {abstain: true}   # 무장애 세계 — 모범 답변은 도구 인용 없이 서술해 저신뢰(기권)로 남는다
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: memory}, cite: ["41"]}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-t02-web01, kind: memory}}
+    - {answer: "bw-t02-web01 메모리 41.0%로 정상 범위 — 장애 징후 없음"}   # 인용 표지(근거·출처·도구명) 없음 = 저신뢰

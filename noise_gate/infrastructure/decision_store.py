@@ -63,6 +63,9 @@ _MASKED_TEXT_KEYS: tuple[str, ...] = (
 )
 # related(대표·원 발생 판단)에서 마스킹하는 키 — 목록 행의 같은 필드와 같은 규칙이다.
 _RELATED_MASKED_KEYS: tuple[str, ...] = ("alarm_name", "server_name")
+# (plans/153 W1 · G-7 (a)) 사용자 경로에서만 안쪽 문자열을 마스킹하는 최상위 dict 키 — AI 분석
+# 서술은 서버명·IP·명령줄을 담을 수 있다(R-1). 운영자 경로는 원문을 준다.
+_USER_MASKED_NESTED_KEYS: tuple[str, ...] = ("analysis",)
 
 
 def _mask_nested(value: Any, mask_fn: Callable[[str], str]) -> Any:
@@ -124,6 +127,7 @@ class DecisionStore:
         db_id: str = "",
         resource_name: str = "",
         condition_log: str = "",
+        analysis: dict[str, Any] | None = None,
     ) -> None:
         """결정을 JSONL 한 줄로 append 한다.
 
@@ -163,6 +167,12 @@ class DecisionStore:
         db_id·resource_name·condition_log(plans/112 S6 · G-2): 침묵 매처가 쓰는 식별 필드와 "이
         알람이 울린 실제 값"이다. condition_log는 값이 섞이므로 `_CONDITION_LOG_MAX`자에서 자르고,
         관제 조회는 운영자 경로에서만 내보낸다(`_view`). 빈 값이면 키를 넣지 않는다.
+
+        analysis(plans/153 W1 · G-7 (a)): AI 분석 서술
+        `{summary, probable_cause, recommended_action, failed}`를 최상위 필드로 기록한다.
+        길이 상한·실패 처리는 호출부(게이트 노드)가 정한다 —
+        여기서는 받은 dict를 그대로 싣는다. 판정과 무관한 감사 가산 필드이며, None이면 키를 넣지
+        않아 기존 스냅샷과 비트 동일하다(플래그 off).
         """
         if not self.enabled:
             return
@@ -200,6 +210,8 @@ class DecisionStore:
             record["condition_log"] = condition_log[:_CONDITION_LOG_MAX]
         if stage_evidence:
             record["stage_evidence"] = stage_evidence
+        if analysis is not None:
+            record["analysis"] = analysis
         # (plans/92 O4) Prometheus 증가 카운터 — 파일 퍼널과 병존한다(값이 다르면 파일 퍼널이 정본).
         record_decision(stage=stage, reason=str(decision.reason or ""), tier=str(decision.tier))
         try:
@@ -1087,6 +1099,8 @@ class DecisionStore:
         뺀다 — **기본이 사용자 뷰**라 호출부가 모드를 빠뜨려도 실측값·운영자 계정이 새지 않는다
         (fail-closed · G-2 (c) · D-247).
         마스킹은 문자열 값에만 적용한다 — 숫자·불리언 신호는 판정 근거라 가려지면 안 된다.
+        AI 분석 서술(`_USER_MASKED_NESTED_KEYS`)은 사용자 뷰에서만 가리고 운영자 뷰는 원문이다
+        (plans/153 W1).
         """
         view = dict(rec)
         view["stage"] = self._stage_of(rec)
@@ -1119,4 +1133,8 @@ class DecisionStore:
                 k: (mask_fn(v) if k in _RELATED_MASKED_KEYS and isinstance(v, str) else v)
                 for k, v in related.items()
             }
+        if not operator_view:
+            for key in _USER_MASKED_NESTED_KEYS:
+                if isinstance(view.get(key), dict):
+                    view[key] = _mask_nested(view[key], mask_fn)
         return view

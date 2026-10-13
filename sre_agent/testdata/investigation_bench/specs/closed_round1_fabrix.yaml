@@ -1,0 +1,27 @@
+# 내부망 FabriX 기준선(대체 백엔드) — fabrix_proxy · plans/148 G-4 통과 뒤만 (plans/154 §6.7 · §9.3.7)
+# FabriX A/A는 vLLM 기준선과 섞지 않는다. 사전 점검이 예상 호출 수를 출력한다 — worlds·k로 규모를 줄인다.
+# llm.model = openai/<프록시 /v1/models 이름>
+run:
+  site: closed
+  splits: [dev, holdout]
+  worlds: all
+  worlds_dir: testdata/investigation_bench/worlds
+  k: 3
+  order: interleave
+  poll_interval_s: 2
+  per_run_timeout_s: 420
+llm:
+  backend: fabrix_proxy
+  model: "openai/<proxy model>"
+  api_base: "http://127.0.0.1:9095/v1"
+  api_key: dummy
+host:
+  gpu_sample_interval_s: 30
+base_env:
+  MAX_STEPS: 40
+  INVESTIGATION_TIMEOUT_SECONDS: 300
+  # OVERRIDE_MAX_CONTENT_SIZE: <운영 실효값>
+  # OVERRIDE_MAX_OUTPUT_TOKEN: <운영 실효값>
+arms:
+  control: {}
+  control_b: {}

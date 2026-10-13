@@ -2,20 +2,33 @@
 
 holmesgpt 0.36.0 실측 API 기준:
 - Config(model, api_key, max_steps, ...) → create_toolcalling_llm() → ToolCallingLLM
-- build_initial_ask_messages()로 시스템/유저 프롬프트 조립 후 llm.call(messages)
+- build_initial_ask_messages()로 시스템/유저 프롬프트 조립 후 `call_stream`을 직접 소비한다
+  (`_StreamDrain` — 결과 조립은 holmes `ToolCallingLLM.call()`과 같다 · plans/154 W1)
 """
 
+import logging
+import re
 from dataclasses import dataclass, field
 
 from holmes.config import Config
+from holmes.core.llm_usage import RequestStats
 from holmes.core.prompt import build_initial_ask_messages
-from holmes.core.tool_calling_llm import ToolCallingLLM
+from holmes.core.tool_calling_llm import LLMResult, ToolCallingLLM
 from holmes.core.tools import PrerequisiteCacheMode, ToolsetTag
+from holmes.utils.colors import AI_COLOR
+from holmes.utils.stream import StreamEvents
 
 from sre_agent.infrastructure.bash_write_guard import install_bash_write_guard
 from sre_agent.infrastructure.llm_message_guard import install_system_message_guard
 from sre_agent.settings import AgentSettings
 from sre_agent.toolset_profiles import LOAD_GUARD_NOTE, vm_profile
+
+# holmes `call()`이 쓰는 표시 로거(같은 이름) — 직접 소비로 바꿔도 콘솔 진행 표시를 유지한다.
+display_logger = logging.getLogger("holmes.display.tool_calling_llm")
+logger = logging.getLogger(__name__)
+
+# holmes step 상한 예외 문구 `Too many LLM calls - exceeded max_steps: i/N`의 i.
+_STEP_LIMIT_RE = re.compile(r"max_steps:\s*(\d+)\s*/")
 
 
 def to_tool_records(tool_calls: list | None) -> list["ToolCallRecord"]:
@@ -92,6 +105,148 @@ class DiagnosisResult:
     # True면 후처리(briefing/severity_judge)가 "가설/한계"로 표기하고, escalate 신호로
     # 취급하지 않는다(재현율 우선 — 미완주가 상향 근거가 되면 오탐 폭주).
     incomplete: bool = False
+    # 조사 LLM 턴 수(holmes `LLMResult.num_llm_calls` · plans/154 W1). 상한 예외면 예외 문구의 i.
+    steps: int | None = None
+
+
+class _StreamDrain:
+    """holmes `ToolCallingLLM.call_stream`을 직접 소비하는 `call()` 대체 (plans/154 W1 · M-2).
+
+    holmes 0.36.0 `call()`은 `call_stream`을 끝까지 돌리는 래퍼라 step 상한 예외가 오르면 그때까지의
+    도구 기록·누적 토큰(지역 변수)이 버려진다. 여기서는 `call()`의 조립(ANSWER_END의 `tool_call_id`
+    기준 dedup · `num_llm_calls` 대입 · 라운드별 `costs` 누적 · APPROVAL_REQUIRED 처리)을 그대로
+    따르되, 진행 중 기록을 인스턴스에 남겨 예외 뒤에도 `partial()`로 회수한다.
+    정상 완주 결과는 `call()`과 필드 단위로 같다
+    (`tests/test_plan154_w1_instrumentation.py` 동등성 테스트).
+    sre_agent는 approval_callback을 쓰지 않으므로 `call(messages)` 기본 인자 경로만 옮긴다.
+    """
+
+    def __init__(self, llm: ToolCallingLLM) -> None:
+        self._llm = llm
+        self.tool_calls: list[dict] = []
+        self.num_llm_calls = 0
+        # 끝난 스트림 라운드의 누적(`call()`의 accumulated_stats)
+        self._stats = RequestStats()
+        # 진행 중 라운드의 마지막 TOKEN_COUNT `costs`(그 라운드의 누적값)
+        self._round_costs: dict = {}
+
+    def run(self, messages: list[dict]) -> LLMResult:
+        """`call(messages)`와 같은 결과를 돌려준다. 예외는 그대로 전파한다."""
+        tool_decisions = None
+        tool_number_offset = 0
+        while True:
+            stream = self._llm.call_stream(
+                msgs=messages,
+                enable_tool_approval=False,
+                tool_decisions=tool_decisions,
+                tool_number_offset=tool_number_offset,
+                iteration_offset=self.num_llm_calls,
+            )
+            tool_decisions = None
+            terminal_data = None
+            terminal_event = None
+            start_tool_count = 0
+            saw_tool_results = False
+            for event in stream:
+                # 표시 로그는 `call()`과 같다(도구 묶음이 끝나면 빈 줄).
+                if saw_tool_results and event.event != StreamEvents.TOOL_RESULT:
+                    display_logger.info("")
+                    saw_tool_results = False
+                if event.event == StreamEvents.START_TOOL:
+                    start_tool_count += 1
+                elif event.event == StreamEvents.TOOL_RESULT:
+                    tool_number_offset += 1
+                    saw_tool_results = True
+                    self.tool_calls.append(event.data)
+                    if start_tool_count > 0:
+                        display_logger.info(
+                            f"The AI requested [bold]{start_tool_count}[/bold] tool call(s)."
+                        )
+                        start_tool_count = 0
+                elif event.event == StreamEvents.TOKEN_COUNT:
+                    # `call()`에 없는 유일한 분기 — 라운드 누적 비용을 붙든다(상한 예외 회수용).
+                    costs = (event.data.get("metadata") or {}).get("costs")
+                    if isinstance(costs, dict):
+                        self._round_costs = dict(costs)
+                elif event.event == StreamEvents.AI_MESSAGE:
+                    reasoning = event.data.get("reasoning")
+                    content = event.data.get("content")
+                    if reasoning:
+                        display_logger.info(
+                            f"[italic dim]AI reasoning:\n\n{reasoning}[/italic dim]\n"
+                        )
+                    if content and content.strip():
+                        display_logger.info(f"[bold {AI_COLOR}]AI:[/bold {AI_COLOR}] {content}")
+                elif event.event in (StreamEvents.ANSWER_END, StreamEvents.APPROVAL_REQUIRED):
+                    terminal_data = event.data
+                    terminal_event = event.event
+                    break
+
+            if not terminal_data:
+                raise Exception("Stream ended without ANSWER_END or APPROVAL_REQUIRED")
+
+            # call_stream은 오프셋을 포함한 절대 턴 수를 준다 — 누적이 아니라 대입(`call()`과 같다).
+            self.num_llm_calls = terminal_data.get("num_llm_calls", 0)
+            self._stats += RequestStats(**terminal_data.get("costs", {}))
+            self._round_costs = {}
+
+            if terminal_event == StreamEvents.APPROVAL_REQUIRED:
+                pending_frontend = terminal_data.get("pending_frontend_tool_calls", [])
+                if pending_frontend:
+                    logger.warning(
+                        "Frontend tool calls requested but no frontend available in sync mode. "
+                        f"Pending: {[fc['tool_name'] for fc in pending_frontend]}"
+                    )
+                    return LLMResult(
+                        result=(
+                            "Investigation paused: the AI requested frontend-defined tools "
+                            "that cannot be executed in sync mode."
+                        ),
+                        tool_calls=self.tool_calls,  # type: ignore[arg-type]  # holmes call()과 같이 dict를 넘긴다
+                        num_llm_calls=self.num_llm_calls,
+                        messages=terminal_data.get("messages"),
+                        metadata=terminal_data.get("metadata"),
+                        finish_reason=(terminal_data.get("metadata") or {}).get("finish_reason"),
+                        **self._stats.model_dump(),
+                    )
+                messages = terminal_data["messages"]
+                tool_decisions = self._llm._prompt_for_approval_decisions(
+                    terminal_data["pending_approvals"], None
+                )
+                continue
+
+            return LLMResult(
+                result=terminal_data["content"],
+                tool_calls=self._deduped(),  # type: ignore[arg-type]
+                num_llm_calls=self.num_llm_calls,
+                messages=terminal_data["messages"],
+                metadata=terminal_data.get("metadata"),
+                finish_reason=(terminal_data.get("metadata") or {}).get("finish_reason"),
+                **self._stats.model_dump(),
+            )
+
+    def partial(self, steps: int | None) -> LLMResult:
+        """예외 직전까지 회수한 도구 기록·누적 토큰으로 부분 결과를 만든다(답변 없음)."""
+        stats = self._stats.model_copy()
+        stats += RequestStats(**self._round_costs)
+        return LLMResult(
+            tool_calls=self._deduped(),  # type: ignore[arg-type]
+            num_llm_calls=steps,
+            **stats.model_dump(),
+        )
+
+    def _deduped(self) -> list[dict]:
+        """같은 `tool_call_id`는 마지막 기록만 남긴다(holmes `call()`의 ANSWER_END dedup)."""
+        deduped: dict = {}
+        for tc in self.tool_calls:
+            deduped[tc.get("tool_call_id", id(tc))] = tc
+        return list(deduped.values())
+
+
+def _steps_from_error(msg: str, fallback: int) -> int:
+    """step 상한 예외 문구에서 도달 턴 수 i를 읽는다(형식이 다르면 상한값)."""
+    m = _STEP_LIMIT_RE.search(msg)
+    return int(m.group(1)) if m else fallback
 
 
 def _apply_token_budget(llm, settings: AgentSettings) -> None:
@@ -202,6 +357,10 @@ class DiagnosisAgent:
         **구조화 미완주 결과**(`incomplete=True`)로 graceful 반환한다 — Plan 02 §12-④
         (침묵 실패 금지·부분/사유 전달). 결정적 가드: 상한 자체는 escalate 신호가 아니다.
         그 외 예외는 그대로 전파(진짜 오류는 dispatcher가 failed로 확정).
+
+        plans/154 W1: holmes를 `call_stream` 직접 소비(`_StreamDrain`)로 부른다 — 상한 예외에서도
+        그때까지의 도구 기록·토큰·step 수를 미완주 결과에 싣는다(답변 문구는 종전 그대로).
+        상한 턴에서 예외 없이 결론을 낸 경우(`steps == max_steps`)는 미완주로 바꾸지 않는다.
         """
         messages = build_initial_ask_messages(
             initial_user_prompt=question,
@@ -209,18 +368,25 @@ class DiagnosisAgent:
             tool_executor=self.llm.tool_executor,
             system_prompt_additions=_with_load_guard_note(system_prompt_additions),
         )
+        drain = _StreamDrain(self.llm)
         try:
-            result = self.llm.call(messages)
+            result = drain.run(messages)
         except Exception as exc:  # noqa: BLE001 — holmes는 전용 예외 클래스 없이 plain Exception
             msg = str(exc)
             if "max_steps" in msg or "Too many LLM calls" in msg:
+                partial = drain.partial(_steps_from_error(msg, self.settings.max_steps))
                 return DiagnosisResult(
                     answer=(
                         f"[미완주] 조사가 step 상한({self.settings.max_steps})에 도달해 "
                         f"결론을 도출하지 못했습니다({msg}). 수집된 근거가 불충분하므로 "
                         f"가설/한계로 취급합니다."
                     ),
+                    tool_calls=[tc.description for tc in (partial.tool_calls or [])],
+                    tool_outputs=to_tool_records(partial.tool_calls),
+                    total_tokens=partial.total_tokens,
+                    total_cost=partial.total_cost,
                     incomplete=True,
+                    steps=partial.num_llm_calls,
                 )
             raise
         return DiagnosisResult(
@@ -229,4 +395,5 @@ class DiagnosisAgent:
             tool_outputs=to_tool_records(result.tool_calls),
             total_tokens=result.total_tokens,
             total_cost=result.total_cost,
+            steps=result.num_llm_calls,
         )

@@ -1018,6 +1018,11 @@ class NoiseGateConfig(BaseSettings):
     # (Plan 54) 관제 화면 조회가 파일 끝에서 되짚는 줄 수 상한 — 감사 파일은 그대로 두고
     # 화면 응답만 보호한다. 운영 지표(aggregate/meta_alerts)는 종전대로 전량 스캔한다.
     decision_store_max_lines: int = 20000
+    # (plans/153 W1 · G-7 (a)) 판정 레코드에 AI 분석 서술
+    # (summary·probable_cause·recommended_action · 각 500자)을 `analysis` 필드로 가산한다
+    # — 게이트 앞에서 이미 만든 분석을 옮길 뿐 추가 LLM 0.
+    # 판정(티어·사유·우선순위·단계)과 무관하다. 기본 off면 레코드가 현행과 비트 동일하다.
+    decision_analysis_text_enabled: bool = False
     # ── Plan 54 모듈 4: 운영자 침묵(Silence) 규칙 ──
     # 기본 off — 켜기 전에는 워커가 규칙을 조회조차 하지 않아 판정이 현행과 비트 동일하다.
     # 심각도 3은 이 기능이 켜져 있어도 어떤 규칙으로도 침묵되지 않는다(게이트 단락이 앞선다).
@@ -1128,6 +1133,22 @@ class NoiseGateConfig(BaseSettings):
     investigation_followup_enabled: bool = False           # (3-E) 즉시통보+후속 브리핑 옵트인
     investigation_followup_timeout_seconds: float = 300.0  # (3-E) 후속 poll 전체 타임아웃(초·조사 서비스 dispatcher 상한 정렬)
     investigation_followup_max_inflight: int = 8           # (3-E) 동시 진행 후속 태스크 상한(알람 폭주 시 spawn 차단·사유 로그)
+    # ── plans/153 W2 · D-325 G-1 (a): 조사 저장소 (브리핑 웹 조회용 별도 JSONL) ──
+    # 조사 상태 전이(submitted → done/failed/timeout …)와 브리핑 원본(32KB 상한)을 1행씩 남긴다.
+    # 판정 감사(`decision_store_path`)와 파일을 나눠 관제 tail 스캔에 큰 레코드가 끼지 않게 한다.
+    # 워커는 조사 트리거가 켜졌을 때만 저장소를 만든다 — 트리거 off면 파일 생성 0(비트 동일).
+    investigation_store_path: str = "logs/alarm_investigations.jsonl"
+    # 조회(`/alarm/investigations/*` · 관제 결정 추적의 `investigation` 블록)가 파일 끝에서 되짚는
+    # 줄 수 상한. 브리핑 행은 수 KB~32KB라 판정 감사(20000)보다 작게 잡는다.
+    investigation_store_max_lines: int = 2000
+    # ── plans/153 W4 · D-325 G-5 (a)·G-6 (a): 조사 페이로드 사건 스냅샷 · 사건당 1회 종합 조사 ──
+    # 켜면 사건 추적기(cross_source_mode≠off — shadow도 판정 불변으로 사건만 만든다)에 묶인
+    # 알람의 조사 페이로드에 `meta.episode`(제출 시점 사건 스냅샷)·`meta.cross_source`(이 알람의
+    # 결합 판정)를 싣고, 사건에 폴스타·제니퍼 멤버와 결합 링크가 처음 갖춰지면(통보 멤버 ≥1)
+    # 그 사건에 대해 `kind="episode"` 종합 조사를 1회 제출한다. 판정·티어·사유는 바꾸지 않는다
+    # (관측·조사 입력만). 조사 트리거(investigation_trigger_enabled)가 꺼져 있으면 아무것도
+    # 하지 않는다. 기본 off = 비트 동일.
+    investigation_episode_context_enabled: bool = False
     # ── Plan 64 CW-B: pull 위임 (deepagents/시멘틱 라우팅 fault_diagnosis 의도 → sre_diagnose) ──
     # 사용자가 "○○ 서버 원인 분석해줘"류로 장애 진단을 요청하면(pull), 시멘틱 라우터가
     # fault_diagnosis 의도로 분류하고 신규 노드가 sre_agent에 sre_diagnose(question, server?, host?,

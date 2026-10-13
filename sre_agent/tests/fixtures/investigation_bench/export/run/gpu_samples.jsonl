@@ -1,0 +1,1 @@
+{"ts": "2026-10-13T12:00:05", "gpus": [{"index": 0, "util": 87, "mem_used_mb": 70000}], "procs": [{"pid": 4242, "user": "vllmop", "process_name": "/opt/vllm/venv/bin/python3"}]}

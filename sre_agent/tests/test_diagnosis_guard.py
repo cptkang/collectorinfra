@@ -7,6 +7,7 @@ holmes가 max_steps 상한 도달 시 던지는 plain Exception을 하드 실패
 
 from unittest.mock import MagicMock, patch
 
+from holmes.utils.stream import StreamEvents, StreamMessage
 from sre_agent.diagnosis import DiagnosisAgent
 from sre_agent.settings import AgentSettings
 
@@ -24,7 +25,7 @@ def _agent(max_steps: int = 5) -> DiagnosisAgent:
 def test_ask_graceful_on_step_limit(_msgs, _rec):
     """step 상한 예외 → incomplete=True·사유 노출·하드 실패 없음."""
     agent = _agent(max_steps=5)
-    agent._llm.call.side_effect = Exception("Too many LLM calls - exceeded max_steps: 5/5")
+    agent._llm.call_stream.side_effect = Exception("Too many LLM calls - exceeded max_steps: 5/5")
 
     r = agent.ask("svr-web-01 장애 원인을 조사하라")
 
@@ -38,7 +39,7 @@ def test_ask_graceful_on_step_limit(_msgs, _rec):
 def test_ask_propagates_non_step_limit_exception(_msgs, _rec):
     """step 상한이 아닌 진짜 오류는 그대로 전파(dispatcher가 failed로 확정)."""
     agent = _agent()
-    agent._llm.call.side_effect = RuntimeError("prometheus 연결 실패")
+    agent._llm.call_stream.side_effect = RuntimeError("prometheus 연결 실패")
 
     try:
         agent.ask("조사")
@@ -52,12 +53,13 @@ def test_ask_propagates_non_step_limit_exception(_msgs, _rec):
 def test_ask_normal_completion_not_incomplete(_msgs, _rec):
     """정상 완주는 incomplete=False."""
     agent = _agent()
-    result = MagicMock()
-    result.result = "CPU 정상. node_load1 인용."
-    result.tool_calls = []
-    result.total_tokens = 123
-    result.total_cost = 0.01
-    agent._llm.call.return_value = result
+    # plans/154 W1: ask()는 holmes `call_stream`을 직접 소비한다
+    # — 종결 이벤트 1건으로 종전 mock 결과와 같은 값을 만든다.
+    agent._llm.call_stream.return_value = iter([StreamMessage(
+        event=StreamEvents.ANSWER_END,
+        data={"content": "CPU 정상. node_load1 인용.", "messages": [], "num_llm_calls": 1,
+              "costs": {"total_tokens": 123, "total_cost": 0.01}},
+    )])
 
     r = agent.ask("조사")
 

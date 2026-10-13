@@ -1898,3 +1898,33 @@
 - **실수**: 계획 끝 회귀에서 본체 줄이 `통과 3 · 실패 0`이고 귀속이 「실패 없음」이라 통과처럼 보였다. 실제로는 도구가 붙인 `-n 8`을 pytest가 인식하지 못해 본체 실행이 rc=4로 끝났고, 직렬 마커분 3건만 돌았다(로그 아래에 `! 본체 pytest 오류 rc=4` 한 줄만 있음)
 - **원인**: 이 작업 트리는 `.venv`가 없어 pyenv 전역 python을 쓰는데, 거기에 dev extra(`pytest-xdist`)가 설치돼 있지 않았다. 귀속 요약만 보고 통과 수와 정적 건수의 차이를 보지 않았다
 - **방지책**: `regress.py` 결과는 `! … rc=` 경고 줄과 「정적 N건 → 통과 M」의 크기 차이를 먼저 본다. xdist가 없으면 환경을 바꾸지 말고 `split_workers`를 (0,0)으로 바꿔 끼운 래퍼로 같은 선택을 직렬 실행하거나 `pip install -e ".[dev]"` 여부를 사용자에게 묻는다
+
+### 2026-10-12 · (plans/153 설계·W4) 사건당 1회 종합 조사가 sre_agent 같은 호스트 동시 조사 가드와 조사 구간을 통과하는지 확인하지 않았다
+- **실수**: 계획서 §4.5가 종합 조사를 「대표(원인) 알람 event + `meta.episode`」로 제출하게 설계했고 W4가 그대로 구현했다. 대표 event를 쓰면 sre_agent dispatcher의 같은 호스트 가드 키 `(db_id, host)`가 원인 알람 단독 조사와 같아, 원인 조사(실측 ~161s)가 끝나기 전 제출된 종합 조사가 `host_investigation_in_flight`로 거부되고(사건당 1회라 재시도 없음), 기준시각이 원인 알람 시각이라 「기준시각 이전 60분」 구간에 증상 멤버가 빠졌다. 뒤이은 제니퍼 알람은 거부된 종합 조사로 연결돼 아무 조사도 받지 못했다. verifier가 xfail(strict)로 확정 → 플래그 on에서 가드 키 `(db_id, host, "episode")` 분리 · 기준시각 = 최신 멤버 · 실패한 종합 조사 미연결로 교정
+- **원인**: 새 조사 종류를 기존 submit 계약(D-123)에 「meta 가산 키만」으로 얹으면서, 수신 측이 event 필드로 하는 부수 판단(동시 조사 가드·조사 구간·dedup)을 전수 확인하지 않았다. 계약 테스트는 키 모양만 봤다
+- **방지책**: 기존 페이로드를 재사용해 새 종류의 잡을 만들 때는 수신 측에서 event 필드를 읽는 가드·윈도·키 계산을 `grep -n "serverName\|alarmTime\|_host_key\|reference_time"`으로 전수 뽑아 새 종류에서도 의도대로 동작하는지 표로 확인한다. 계약 테스트는 생산자 실 출력을 수신 측 실 경로(가드·구간 포함)에 넣는 왕복으로 쓴다
+
+### 2026-10-12 · (plans/153 회귀) regress.py가 pytest-xdist 부재로 멈추고, sre_agent 패키지 단계를 「미실행」으로 넘겼다
+- **실수**: 이 체크아웃(`collectorinfra_second`)의 pyenv 인터프리터엔 pytest-xdist가 없어 `regress.py`가 `-n`에서 rc=4로 멈췄고, `sre_agent/.venv`가 없어 regress 마지막 단계가 sre_agent 패키지(변경 16파일)를 「미실행」으로 표시한 채 넘어갔다. 범위 줄만 보면 sre_agent까지 돈 것처럼 읽힐 수 있었다
+- **원인**: 회귀 도구가 실행 환경(xdist·패키지별 venv)을 전제로 하는데 형제 체크아웃에서는 그 전제가 깨진다. 「미실행」 줄은 실패가 아니라 rc에 반영되지 않는다
+- **방지책**: 형제 체크아웃에서 회귀를 돌릴 때는 `regress.split_workers`를 `(0, 0)`으로 바꾼 직렬 래퍼(패키지 설치 없이)를 쓰고, 출력의 `④ 패키지 전체 … → 미실행` 줄을 반드시 확인해 그 패키지는 실제 venv(예: 형제 체크아웃 `collectorinfra/sre_agent/.venv` · **`cd sre_agent` cwd**)로 따로 돌려 결과를 보고에 함께 적는다
+
+### 2026-10-13 · (plans/154 W1) 감사 레코드에 가산 키를 더하면서 키 집합을 정확히 단언하는 기존 테스트를 찾지 않았다
+- **실수**: W1이 조사 `done` 감사에 계측 가산 키(`incomplete`·`elapsed_s`·`steps`·`tool_calls` 등)를 더하고 지정 테스트 12파일만 돌려 통과로 보고했다. 계획 끝 모듈 회귀에서 `sre_agent/tests/test_apm_consumer.py::test_dispatcher_off_briefing_and_audit_unchanged_even_with_stall`이 감사 키 집합을 종전 8키와 **정확히 같다**고 단언해 실패했다(위임 프롬프트의 검증 목록에도 그 파일이 없었다)
+- **원인**: 「가산 키만 → 소비자 무영향」을 소비자(noise_gate) 쪽만 확인했고, 같은 패키지 안에서 레코드 모양을 `set(x) == {…}`로 고정한 회귀 테스트를 전수 grep하지 않았다. 팀 리드도 검증 목록을 파일명 연상으로 골랐다
+- **방지책**: 레코드·응답에 키를 더하는 변경은 착수 전에 `grep -rn "set(done)\|set(record)\|set(summary\|keys()) == {\|== {\"event\"" <패키지>/tests`로 정확 일치 단언을 전수 뽑아 검증 목록에 넣는다. 가산 키는 공개 상수(예: `INSTRUMENTATION_KEYS`)로 두고 테스트는 「상수 제외 집합 == 종전 키」로 단언한다
+
+### 2026-10-13 · (plans/154 W3b) 실험군 프로세스의 `.env` 차단을 「빈 cwd」로만 막았다고 단정했다
+- **실수**: 벤치 러너가 실험군(sre_agent 조사 서비스)을 빈 cwd + 최소 env로 띄우면 `.env`가 섞이지 않는다고 계획·구현·문서(docs/26 §10.7)에 적었다. 그러나 litellm은 import 때 `LITELLM_MODE`가 기본(DEV)이면 `load_dotenv()`로 설치 위치에서 위로 `.env`를 찾아 `os.environ`에 싣는다 — verifier 실측으로 루트 `.env` 키 10개가 실험군에 들어왔다(과금 평면은 뚫리지 않음).
+- **원인**: pydantic-settings의 `env_file`(cwd 기준)만 보고, 의존 라이브러리가 import 부수효과로 env를 읽는지 확인하지 않았다. 차단을 주장하면서 실 프로세스의 `os.environ`을 에코로 대조하는 테스트가 없었다.
+- **방지책**: 실험군 env 고정에 `LITELLM_MODE=PRODUCTION`을 넣고, 에코에 「기본값과 다른 설정 필드 이름」을 실어 명세·러너가 정한 필드 밖이면 exit 2로 막는다. 「X가 섞이지 않는다」 같은 격리 주장은 실 하위 프로세스의 환경을 읽어 단언하는 테스트로 고정하고, 의존 패키지의 import 부수효과(`load_dotenv` 등)를 grep으로 확인한다.
+
+### 2026-10-13 · 가짜 LLM 응답 전체를 == 비교해 밀리초 시각 id로 간헐 실패
+- **실수**: `test_bench_e2e_fake_llm.py`가 「같은 요청 = 같은 응답」을 응답 dict 전체 `==`로 단언했다. 응답 `id`가 `time.time()*1000`, `created`가 초 단위 시각이라 두 호출 사이에 밀리초가 바뀌면 실패했다(3회 중 1회 재현).
+- **원인**: 결정성 단언 대상에 시각 파생 필드를 포함했다.
+- **방지책**: 결정성 단언은 의미 필드(`choices`·`usage`)만 비교한다. 시각·난수 파생 필드(id·created·ts)는 비교에서 뺀다.
+
+### 2026-10-13 · APM 벤치가 설정 에코에 운영자 토큰을 넘기지 않아 인증 켜진 E2에서 기동 검증 401
+- **실수**: `scripts/apm_bench/driver.py`가 `verify_profile(handle, expected, None, …)`로 운영자 토큰을 고정 `None`으로 넘겼다. 인증이 켜진 내부망 본체에서 `/admin/settings/schema`가 401이 되어 `[중단] 기동 검증 실패: 설정 에코 미확인 (http 401 - 관리자 토큰 필요)`로 멈췄다(plans/152 W8 1회차).
+- **원인**: 외부망 E1은 `.env`가 없어 인증이 꺼진 본체만 돌았고, 같은 기동 검증을 쓰는 ITAM 벤치(`itam_bench/__main__.py` `admin_login`)의 운영자 로그인 단계를 옮기지 않았다.
+- **방지책**: `ServerHandle`+`verify_profile`을 쓰는 새 하네스는 `resolve_admin_credentials`→`admin_login`으로 운영자 토큰을 받아 넘긴다. 폐쇄망 키트 완주 검증에는 `AUTH_ENABLED=true` 조건을 포함한다.

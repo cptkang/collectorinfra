@@ -160,6 +160,7 @@ class TestTriggerSubmitOnly:
         assert client.submit_calls and client.poll_calls == []
         assert out["investigation_pending"] == {
             "investigation_id": "inv-1", "alarm_id": "A-1", "fingerprint": "fp-1",
+            "alarm_db_ids": {"A-1": "db1"},  # (plans/153 W2 교정) 후속 저장 행의 존 검사 근거
         }
         # 브리핑은 아직 없다 — 통보는 지연 없이 즉시 나간다.
         assert "investigation_briefing" not in out
@@ -255,7 +256,7 @@ class TestNotifierFollowupDelivery:
 
         async def fake_poll(inv_id, gate_cfg):
             order.append(f"poll:{inv_id}")
-            return {"cause": "OOM", "evidence": "dmesg L.882"}, "done", None
+            return {"cause": "OOM", "evidence": "dmesg L.882"}, "done", None, None
 
         async def fake_send_followup(workb_cfg, result, briefing, escalation):
             order.append("followup_send")
@@ -313,7 +314,7 @@ class TestNotifierFollowupDelivery:
         sent_followups: list = []
 
         async def fake_poll(inv_id, gate_cfg):
-            return None, "failed", None
+            return None, "failed", None, None
 
         monkeypatch.setattr(notifier_mod, "_poll_until_terminal", fake_poll)
         monkeypatch.setattr(
@@ -336,7 +337,7 @@ class TestNotifierFollowupDelivery:
         _patch_senders(monkeypatch)
 
         async def fake_poll(inv_id, gate_cfg):
-            return {"cause": "OOM"}, "done", None
+            return {"cause": "OOM"}, "done", None, None
 
         async def failing_send(*a):
             raise RuntimeError("workb 500")
@@ -359,7 +360,7 @@ class TestNotifierFollowupDelivery:
         captured: list[tuple] = []
 
         async def fake_poll(inv_id, gate_cfg):
-            return {"cause": "OOM"}, "done", {"escalate": True, "level": "critical"}
+            return {"cause": "OOM"}, "done", {"escalate": True, "level": "critical"}, None
 
         async def fake_send_followup(workb_cfg, result, briefing, escalation):
             captured.append((briefing, escalation))
@@ -383,7 +384,7 @@ class TestNotifierFollowupDelivery:
         captured: list[tuple] = []
 
         async def fake_poll(inv_id, gate_cfg):
-            return {"cause": "OOM"}, "done", {"escalate": True, "level": "critical"}
+            return {"cause": "OOM"}, "done", {"escalate": True, "level": "critical"}, None
 
         async def fake_send_followup(workb_cfg, result, briefing, escalation):
             captured.append((briefing, escalation))
@@ -496,7 +497,7 @@ class TestInvestigationIdOnCardPayload:
             pass
 
         async def fake_poll(inv_id, gate_cfg):
-            return None, "done", None
+            return None, "done", None, None
 
         monkeypatch.setattr(notifier_mod, "_send_workb_followup", fake_send_followup)
         monkeypatch.setattr(notifier_mod, "_poll_until_terminal", fake_poll)
@@ -515,3 +516,252 @@ class TestInvestigationIdOnCardPayload:
         state = {"analysis_result": result, "notification_decision": _decision(), "investigation_id": "inv-88"}
         await alarm_notifier_node(state, _notifier_config(_ng(investigation_followup_enabled=False)))
         assert result.investigation_id == "inv-88"
+
+
+# ── 9. (plans/153 W2 · G-4) 후속 poll·저장과 workb 후속 발송 분리 ──────────────
+def _inv_store(tmp_path):
+    from noise_gate.infrastructure.investigation_store import InvestigationStore
+
+    return InvestigationStore(str(tmp_path / "inv.jsonl"))
+
+
+def _inv_rows(tmp_path) -> list[dict]:
+    import json
+
+    path = tmp_path / "inv.jsonl"
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def _store_notifier_config(ng, inv_store, store=None) -> dict:
+    cfg = _notifier_config(ng, store)
+    cfg["configurable"]["investigation_store"] = inv_store
+    return cfg
+
+
+_PENDING = {"investigation_id": "inv-1", "alarm_id": "A-1", "fingerprint": "fp-1"}
+
+
+class TestFollowupStoreSeparation:
+    async def test_submit_only_records_submitted_row(self, tmp_path):
+        cfg = _trigger_config(_ng(), FakeSubmitClient(), None)
+        cfg["configurable"]["investigation_store"] = _inv_store(tmp_path)
+        out = await investigation_trigger_node(_trigger_state(_decision()), cfg)
+        # 사건 미소속이면 episode_id 키 없음 · 멤버 db_id는 실린다(W2 교정).
+        assert out["investigation_pending"] == {**_PENDING, "alarm_db_ids": {"A-1": "db1"}}
+        (row,) = _inv_rows(tmp_path)
+        assert row["status"] == "submitted" and row["source"] == "followup"
+        assert row["investigation_id"] == "inv-1" and row["alarm_ids"] == ["A-1"]
+        assert row["alarm_db_ids"] == {"A-1": "db1"}
+
+    async def test_submit_rejected_records_reason(self, tmp_path):
+        cfg = _trigger_config(
+            _ng(), FakeSubmitClient(status="rejected", reason="필수 event 필드 결측"), None
+        )
+        cfg["configurable"]["investigation_store"] = _inv_store(tmp_path)
+        assert await investigation_trigger_node(_trigger_state(_decision()), cfg) == {}
+        (row,) = _inv_rows(tmp_path)
+        assert row["status"] == "rejected" and row["reason"] == "필수 event 필드 결측"
+
+    async def test_pending_carries_episode_id_when_present(self):
+        state = _trigger_state(_decision())
+        state["cross_source"] = {"episode_id": "ep-1"}
+        out = await investigation_trigger_node(
+            state, _trigger_config(_ng(), FakeSubmitClient(), None)
+        )
+        assert out["investigation_pending"]["episode_id"] == "ep-1"
+
+    async def test_workb_sent_stores_done_and_sends_followup(self, monkeypatch, tmp_path):
+        _patch_senders(monkeypatch)
+        sent: list = []
+
+        async def fake_poll(inv_id, gate_cfg):
+            return (
+                {"cause": "OOM", "limitations": ["로그 미연결"]}, "done", {"level": "high"}, None
+            )
+
+        async def fake_send_followup(workb_cfg, result, briefing, escalation):
+            sent.append(briefing)
+
+        monkeypatch.setattr(notifier_mod, "_poll_until_terminal", fake_poll)
+        monkeypatch.setattr(notifier_mod, "_send_workb_followup", fake_send_followup)
+        store = RecordingStore()
+        state = {"analysis_result": _result(), "investigation_pending": dict(_PENDING)}
+        await alarm_notifier_node(state, _store_notifier_config(_ng(), _inv_store(tmp_path), store))
+        await _drain_followups()
+
+        assert sent == [{"cause": "OOM", "limitations": ["로그 미연결"]}]
+        (row,) = _inv_rows(tmp_path)
+        assert row["status"] == "done" and row["source"] == "followup"
+        assert row["briefing"]["cause"] == "OOM" and row["verdict"] == {"level": "high"}
+        assert store.records[-1]["status"] == "done"  # 판정 감사는 종전 그대로
+
+    async def test_workb_failed_still_polls_and_stores_without_followup(
+        self, monkeypatch, tmp_path
+    ):
+        """G-4 — 즉시 통보 실패여도 poll·저장은 돈다. workb 후속은 보내지 않는다(D-137 ④)."""
+        async def failing_workb(cfg, result, snap=None, **kwargs):
+            raise RuntimeError("workb down")
+
+        sent: list = []
+        polled: list = []
+
+        async def fake_poll(inv_id, gate_cfg):
+            polled.append(inv_id)
+            return {"cause": "OOM"}, "done", None, None
+
+        async def fake_send_followup(*a):
+            sent.append(a)
+
+        monkeypatch.setattr(notifier_mod, "_send_workb", failing_workb)
+        monkeypatch.setattr(notifier_mod, "_poll_until_terminal", fake_poll)
+        monkeypatch.setattr(notifier_mod, "_send_workb_followup", fake_send_followup)
+        store = RecordingStore()
+        state = {"analysis_result": _result(), "investigation_pending": dict(_PENDING)}
+        await alarm_notifier_node(state, _store_notifier_config(_ng(), _inv_store(tmp_path), store))
+        await _drain_followups()
+
+        assert polled == ["inv-1"] and sent == []
+        assert _inv_rows(tmp_path)[-1]["status"] == "done"
+        assert store.records[-1]["status"] == "done/followup_send_skipped"
+
+    async def test_workb_not_configured_still_stores(self, monkeypatch, tmp_path):
+        async def unconfigured_workb(cfg, result, snap=None, **kwargs):
+            raise notifier_mod.WorkbNotConfiguredError("WORKB_BASE_URL 없음")
+
+        sent: list = []
+
+        async def fake_poll(inv_id, gate_cfg):
+            return {"cause": "OOM"}, "done", None, None
+
+        monkeypatch.setattr(notifier_mod, "_send_workb", unconfigured_workb)
+        monkeypatch.setattr(notifier_mod, "_poll_until_terminal", fake_poll)
+        monkeypatch.setattr(
+            notifier_mod, "_send_workb_followup", lambda *a: sent.append(a)
+        )
+        state = {"analysis_result": _result(), "investigation_pending": dict(_PENDING)}
+        await alarm_notifier_node(state, _store_notifier_config(_ng(), _inv_store(tmp_path)))
+        await _drain_followups()
+
+        assert sent == []
+        assert _inv_rows(tmp_path)[-1]["status"] == "done"
+
+    async def test_webhook_only_channel_still_stores(self, monkeypatch, tmp_path):
+        # workb 채널이 아예 없는 구성 — 저장은 하고 workb 후속은 보내지 않는다.
+        _patch_senders(monkeypatch)
+        sent: list = []
+
+        async def fake_poll(inv_id, gate_cfg):
+            return {"cause": "OOM"}, "done", None, None
+
+        monkeypatch.setattr(notifier_mod, "_poll_until_terminal", fake_poll)
+        monkeypatch.setattr(
+            notifier_mod, "_send_workb_followup", lambda *a: sent.append(a)
+        )
+        state = {
+            "analysis_result": _result(channels=("webhook",)),
+            "investigation_pending": dict(_PENDING),
+        }
+        await alarm_notifier_node(state, _store_notifier_config(_ng(), _inv_store(tmp_path)))
+        await _drain_followups()
+        assert sent == [] and _inv_rows(tmp_path)[-1]["status"] == "done"
+
+    async def test_timeout_stores_timeout_with_reason(self, monkeypatch, tmp_path):
+        _patch_senders(monkeypatch)
+
+        async def never_terminal(inv_id, gate_cfg):
+            await asyncio.sleep(10)
+
+        monkeypatch.setattr(notifier_mod, "_poll_until_terminal", never_terminal)
+        state = {"analysis_result": _result(), "investigation_pending": dict(_PENDING)}
+        await alarm_notifier_node(
+            state,
+            _store_notifier_config(
+                _ng(investigation_followup_timeout_seconds=0.05), _inv_store(tmp_path)
+            ),
+        )
+        await _drain_followups()
+        (row,) = _inv_rows(tmp_path)
+        assert row["status"] == "timeout" and "타임아웃" in row["reason"]
+
+    async def test_no_client_stores_failed_with_reason(self, monkeypatch, tmp_path):
+        _patch_senders(monkeypatch)
+
+        async def no_client(inv_id, gate_cfg):
+            return None, "followup_no_client", None, None
+
+        monkeypatch.setattr(notifier_mod, "_poll_until_terminal", no_client)
+        state = {"analysis_result": _result(), "investigation_pending": dict(_PENDING)}
+        await alarm_notifier_node(state, _store_notifier_config(_ng(), _inv_store(tmp_path)))
+        await _drain_followups()
+        (row,) = _inv_rows(tmp_path)
+        assert row["status"] == "failed" and "URL" in row["reason"]
+
+    async def test_inflight_cap_still_applies_with_store(self, monkeypatch, tmp_path):
+        async def failing_workb(cfg, result, snap=None, **kwargs):
+            raise RuntimeError("workb down")
+
+        async def idle():
+            await asyncio.sleep(0.2)
+
+        monkeypatch.setattr(notifier_mod, "_send_workb", failing_workb)
+        filler = asyncio.create_task(idle())
+        notifier_mod._FOLLOWUP_TASKS.add(filler)
+        state = {"analysis_result": _result(), "investigation_pending": dict(_PENDING)}
+        await alarm_notifier_node(
+            state,
+            _store_notifier_config(
+                _ng(investigation_followup_max_inflight=1), _inv_store(tmp_path)
+            ),
+        )
+        assert notifier_mod._FOLLOWUP_TASKS == {filler}
+        filler.cancel()
+
+    @pytest.mark.parametrize(
+        ("res", "status", "reason"),
+        [
+            ({"status": "failed", "error": "RuntimeError: holmes 실패"}, "failed",
+             "RuntimeError: holmes 실패"),
+            ({"status": "rejected", "reason": "같은 호스트 조사 진행 중"}, "rejected",
+             "같은 호스트 조사 진행 중"),
+            ({"status": "stub", "reason": "LLM 키 부재",
+              "briefing": {"stub": True, "message": "조사 미실행(스텁)"}}, "done", "LLM 키 부재"),
+        ],
+    )
+    async def test_poll_reason_is_kept_in_store(self, monkeypatch, tmp_path, res, status, reason):
+        """(W2 교정) 실패·거부·스텁 poll 응답의 사유를 조사 저장소 사유로 보존한다."""
+        import noise_gate.infrastructure.sre_agent_client as sre_client_mod
+
+        class _Client:
+            async def connect(self) -> None:
+                return None
+
+            async def disconnect(self) -> None:
+                return None
+
+            async def poll(self, investigation_id: str) -> dict:
+                return dict(res)
+
+        _patch_senders(monkeypatch)
+        monkeypatch.setattr(sre_client_mod, "build_sre_agent_client", lambda gate_cfg: _Client())
+        state = {"analysis_result": _result(), "investigation_pending": dict(_PENDING)}
+        await alarm_notifier_node(state, _store_notifier_config(_ng(), _inv_store(tmp_path)))
+        await _drain_followups()
+        (row,) = _inv_rows(tmp_path)
+        assert row["status"] == status and row["reason"] == reason
+
+    async def test_followup_row_carries_pending_db_ids(self, monkeypatch, tmp_path):
+        """(W2 교정) pending의 `alarm_db_ids`를 후속 종결 행에 그대로 싣는다(존 검사 근거)."""
+        _patch_senders(monkeypatch)
+
+        async def fake_poll(inv_id, gate_cfg):
+            return {"cause": "OOM"}, "done", None, None
+
+        monkeypatch.setattr(notifier_mod, "_poll_until_terminal", fake_poll)
+        pending = {**_PENDING, "kind": "episode", "episode_id": "ep-1", "alarm_ids": ["A-1", "B-1"],
+                   "alarm_db_ids": {"A-1": "db1", "B-1": "db2"}}
+        state = {"analysis_result": _result(), "investigation_pending": pending}
+        await alarm_notifier_node(state, _store_notifier_config(_ng(), _inv_store(tmp_path)))
+        await _drain_followups()
+        (row,) = _inv_rows(tmp_path)
+        assert row["alarm_db_ids"] == {"A-1": "db1", "B-1": "db2"}
+        assert row["kind"] == "episode" and row["alarm_ids"] == ["A-1", "B-1"]

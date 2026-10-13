@@ -2813,6 +2813,79 @@ body.auth-pending .auth-splash {
     color: var(--text);
 }
 
+/* ─── plans/153 W3: 조사 브리핑 — 카드 접이식 섹션 ─── */
+
+.alarm-briefing-toggle {
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-family: var(--font-display);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+}
+
+.alarm-briefing-toggle::before { content: "▾ "; display: inline-block; }
+.alarm-briefing-section--collapsed .alarm-briefing-toggle::before { content: "▸ "; }
+.alarm-briefing-toggle:hover { color: var(--text); }
+.alarm-briefing-section--collapsed .alarm-briefing-body { display: none; }
+.alarm-briefing-body { margin-top: 4px; }
+
+/* ─── plans/153 W3: 조사 브리핑 공용 본문(briefing-view.js) — 카드·관제 드로어가 함께 쓴다 ─── */
+
+.bv { display: flex; flex-direction: column; gap: 6px; font-size: 0.78rem; line-height: 1.55; color: var(--text); }
+.bv-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.bv-chip {
+    font-size: 0.68rem; font-weight: 700; padding: 1px 7px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--text-secondary); background: var(--bg-deep);
+}
+.bv-chip--running { color: var(--info); border-color: var(--info); background: var(--info-bg); }
+.bv-chip--done { color: var(--success); border-color: var(--success); background: var(--success-bg); }
+.bv-chip--fail { color: var(--error); border-color: var(--error); background: var(--error-bg); }
+.bv-chip--linked { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-glow); }
+.bv-chip--none { color: var(--text-muted); }
+.bv-src {
+    font-size: 0.65rem; padding: 1px 6px; border-radius: 4px;
+    border: 1px solid var(--border); color: var(--text-muted); background: var(--bg-deep);
+}
+.bv-meta { font-size: 0.68rem; color: var(--text-muted); }
+.bv-mono { font-family: var(--font-mono); }
+.bv-nowrap { white-space: nowrap; }
+.bv-reason { font-size: 0.75rem; color: var(--text-secondary); }
+.bv-reason--fail { color: var(--error); }
+.bv-note { font-size: 0.75rem; color: var(--text-muted); }
+.bv-note--warn { color: var(--warning); }
+.bv-lines { display: flex; flex-direction: column; gap: 6px; }
+.bv-item { display: grid; grid-template-columns: 4.8em 1fr; gap: 8px; }
+.bv-item--limit {
+    padding: 4px 6px; border-radius: 6px;
+    border: 1px solid var(--warning); background: var(--warning-bg);
+}
+.bv-label { font-size: 0.7rem; font-weight: 600; color: var(--text-muted); }
+.bv-text { min-width: 0; overflow-wrap: anywhere; }
+.bv-line { white-space: pre-wrap; }
+.bv-badge {
+    display: inline-block; font-size: 0.65rem; font-weight: 700; padding: 0 5px; border-radius: 4px;
+    border: 1px solid var(--warning); color: var(--warning); background: var(--warning-bg);
+}
+.bv-badge--open { border-color: var(--error); color: var(--error); background: var(--error-bg); }
+.bv-gated { margin-top: 2px; font-size: 0.72rem; color: var(--text-secondary); }
+.bv-cross { display: flex; flex-direction: column; gap: 4px; border-top: 1px dashed var(--border); padding-top: 6px; }
+.bv-cross-meta, .bv-cross-apm { font-size: 0.72rem; color: var(--text-secondary); }
+.bv-cross-apm--off { color: var(--warning); }
+.bv-cross-empty { font-size: 0.72rem; color: var(--text-muted); }
+.bv-cross-table { width: 100%; border-collapse: collapse; font-size: 0.72rem; }
+.bv-cross-table th, .bv-cross-table td {
+    text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--table-cell-border);
+}
+.bv-cross-table th { color: var(--text-muted); font-weight: 600; }
+.bv-support { font-size: 0.65rem; font-weight: 700; padding: 0 5px; border-radius: 4px; border: 1px solid var(--border); }
+.bv-support--both { color: var(--success); border-color: var(--success); background: var(--success-bg); }
+.bv-support--one { color: var(--warning); border-color: var(--warning); background: var(--warning-bg); }
+.bv-support--none { color: var(--text-muted); }
+
 /* ─── D-049: incident 확인(ack) 버튼 ─── */
 
 .alarm-ack-section {

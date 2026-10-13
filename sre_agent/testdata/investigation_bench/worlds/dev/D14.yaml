@@ -1,0 +1,72 @@
+# plans/154 §4.6 D14 — 서비스 프로세스 종료(process_down · app · 함정 없음)
+id: D14
+split: dev
+title: 게이트웨이 프로세스 비정상 종료 후 미기동
+event:
+  dbId: polestar
+  serverName: bw-d14-app01
+  hostname: bw-d14-app01
+  ipAddress: 192.0.2.24
+  resourceAncestry: ""
+  alarmId: "bw-d14-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "서비스 포트 응답 없음"
+  alarmTime: "20261012152000"
+  conditions: "port 8443 = CLOSED"
+  conditionLog: "[포트 점검 (8443 = CLOSED, 2회 연속)]"
+label:
+  root_entity: {host: bw-d14-app01, component: bwd14-gateway}
+  layer: app
+  kind: process_down
+  change_related: false
+  aliases:
+    kind: [프로세스 종료, 프로세스 다운, 서비스 프로세스 중지, process down, 프로세스 비정상 종료]
+key_evidence:
+  - {tool: polestar_incident_alarms, cite: [bwd14-gateway, "137"]}
+  - {tool: polestar_process_snapshot, cite: [미기동]}
+expect:
+  abstain: false
+hosts: [bw-d14-app01]
+incident_window: {start: -20m, end: 0m}
+tools:
+  polestar_incident_alarms:
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-12T15:12:05", alarm_name: "프로세스 감시", message: "bwd14-gateway 프로세스 사라짐 (exit code 137)"}
+          - {alarm_time: "2026-10-12T15:20:00", alarm_name: "서비스 포트 응답 없음", severity: 2}
+        row_count: 2
+        source_kind: postgresql
+  polestar_process_snapshot:
+    - reply:
+        rows:
+          - {pid: 3310, name: bwd14-agent, pcpu: 0.4, pmem: 0.6, state: S, elapsed: "21-06:02:11"}
+          - {pid: 902, name: sshd, pcpu: 0.0, pmem: 0.1, state: S, elapsed: "21-06:03:40"}
+        row_count: 2
+        note: "감시 대상 bwd14-gateway 미기동"
+        captured_at: "2026-10-12T15:20:30"
+        source_kind: polestar_api
+  polestar_metric_trend:
+    - match: {kind: cpu}
+      reply:
+        rows: [{value: 6.2}]
+        row_count: 1
+        unit: "%"
+        source_kind: postgresql
+  polestar_resource_status:
+    - reply:
+        rows: [{name: bw-d14-app01, avail_status: UP, maintenance: false}]
+        row_count: 1
+        source_kind: postgresql
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-d14-app01, reference_time: "2026-10-12T15:20:00"}}
+    - {call: polestar_process_snapshot, args: {hostname: bw-d14-app01}}
+    - {answer: "bw-d14-app01 bwd14-gateway 프로세스 종료(exit code 137) 후 미기동 (polestar_incident_alarms · polestar_process_snapshot)"}
+  neg:
+    F-MISS:
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d14-app01, kind: cpu}}
+      - {answer: "bw-d14-app01 CPU 부하로 포트 응답 지연 (polestar_metric_trend)"}

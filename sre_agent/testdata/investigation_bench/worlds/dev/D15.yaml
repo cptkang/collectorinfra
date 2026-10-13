@@ -1,0 +1,84 @@
+# plans/154 §4.6 D15 — 알람 시각 직전 메모리 고갈 · 지금은 정상(memory_exhaustion · os · 함정: 시간창 — reference_time 사용 검증)
+# 사건 기준시각(reference_time)으로 조회해야 그 시점 값이 나온다. 기준시각 없이 부르면 「최근 값」(정상)이고,
+# 사건 구간을 덮지 않는 시간창은 빈 결과 + arg_error=time_window다(세계 서버 §4.10).
+id: D15
+split: dev
+title: 야간 일괄 작업 중 메모리 고갈 — 조사 시점에는 회복
+event:
+  dbId: polestar
+  serverName: bw-d15-app01
+  hostname: bw-d15-app01
+  ipAddress: 192.0.2.25
+  resourceAncestry: ""
+  alarmId: "bw-d15-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "서비스 응답 없음"
+  alarmTime: "20261011234000"
+  conditions: "= TIMEOUT"
+  conditionLog: "[응답 없음 (= TIMEOUT, 3회 연속)]"
+label:
+  root_entity: {host: bw-d15-app01}
+  layer: os
+  kind: memory_exhaustion
+  change_related: false
+  aliases:
+    kind: [메모리 고갈, 가용 메모리 소진, 메모리 부족, memory exhaustion, 메모리 소진]
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: memory, reference_time: "2026-10-11T23:40:00"}, cite: ["99.6"]}
+  - {tool: polestar_incident_alarms, cite: [112MB]}
+expect:
+  abstain: false
+hosts: [bw-d15-app01]
+incident_window: {start: -30m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: memory, reference_time: "2026-10-11T23:40:00"}
+      reply:
+        rows:
+          - {ts: "2026-10-11T23:10:00", value: 71.4}
+          - {ts: "2026-10-11T23:25:00", value: 90.3}
+          - {ts: "2026-10-11T23:35:00", value: 99.6}
+        row_count: 3
+        unit: "%"
+        source_kind: postgresql
+    - match: {kind: memory}
+      reply:
+        rows: [{ts: "2026-10-13T08:00:00", value: 38.2}]
+        row_count: 1
+        unit: "%"
+        note: "최근 수집 값"
+        source_kind: postgresql
+    - match: {kind: cpu}
+      reply:
+        rows: [{value: 24.5}]
+        row_count: 1
+        unit: "%"
+        source_kind: postgresql
+  polestar_incident_alarms:
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-11T23:33:00", alarm_name: "가용 메모리 임계 미만", value: "free 112MB"}
+          - {alarm_time: "2026-10-11T23:40:00", alarm_name: "서비스 응답 없음", severity: 2}
+        row_count: 2
+        source_kind: postgresql
+  polestar_process_snapshot:
+    - reply:
+        rows:
+          - {pid: 4410, name: java, pcpu: 3.2, pmem: 28.0, state: S, elapsed: "00:05:12"}
+        row_count: 1
+        captured_at: "2026-10-13T08:00:05"
+        source_kind: polestar_api
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d15-app01, kind: memory, reference_time: "2026-10-11T23:40:00", lookback_minutes: 60}}
+    - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-d15-app01, reference_time: "2026-10-11T23:40:00"}}
+    - {answer: "bw-d15-app01 알람 시각 직전 가용 메모리 소진 — 메모리 사용률 99.6% (polestar_metric_trend) · free 112MB 경보 (polestar_incident_alarms) · 현재는 회복"}
+  neg:
+    F-ARG:    # 사건 구간을 덮지 않는 기준시각(조사 시점)으로만 조회
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d15-app01, kind: memory, reference_time: "2026-10-13T09:00:00", lookback_minutes: 60}}
+      - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-d15-app01, reference_time: "2026-10-13T09:00:00"}}
+      - {answer: "bw-d15-app01 현재 메모리·알람 모두 정상 범위 — 원인 미확정 (polestar_metric_trend)"}

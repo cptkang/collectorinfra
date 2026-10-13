@@ -10,6 +10,10 @@
  * API(`summary.stages[].description`)로 받는다. 판정을 고치는 사람이 설명을 함께 고치게 하려는
  * 것이라, 화면 쪽에 사본을 두면 둘이 어긋난다. 여기에는 단계별 **추가 관련 설정**만 둔다.
  *
+ * (plans/153 W1) 드로어 머리 **사유 요약**(`summary`)과 「발생 원인과 처리」 섹션 문구(`cause`)도 여기가
+ * 정본이다. 사유 요약은 "이 알람"을 말하고 단계 설명은 "규칙"을 말한다 — 둘을 겹쳐 쓰지 않는다.
+ * 처리 안내 문장은 판정 코드 옆 도메인 정본(`STAGE_HANDLING`)을 API(`summary.stages[].handling`)로 받는다.
+ *
  * 수치·키는 코드와 대조했다(2026-09-22): 매트릭스 표(`_matrix_tier`) · 피드 60건·30초 재동기화
  * (`noise.js` FEED_MAX·RESYNC_MS) · 조회 상한 기본 20,000줄 · 메타경보 창·임계·최소 건수 ·
  * 침묵 최대 존속 7일 · 상위 억제 10개.
@@ -173,6 +177,15 @@ window.NOISE_HELP = {
             caution: "운영자 화면에서만 남길 수 있습니다. 작성자 계정이 함께 기록됩니다.",
             keys: ["NOISE_CROSS_SOURCE_MODE", "NOISE_FEEDBACK_STORE_ENABLED"],
         },
+        "drawer.cause": {
+            title: "발생 원인과 처리",
+            def: "위 칸은 판정 단계·티어로 정한 고정 처리 안내(판정 근거)이고, 아래 칸은 AI가 알람 문구만 "
+                + "읽고 만든 추정 원인·권고입니다. 둘을 섞어 한 문장으로 만들지 않습니다.",
+            read: "위 칸을 먼저 따르십시오. AI 추정은 노이즈 판정 **전에** 만들어져, 억제·강등된 알람에서는 "
+                + "처리 안내와 어긋날 수 있습니다.",
+            caution: "AI 추정은 검증되지 않은 서술입니다. 저장 기능이 꺼져 있던 시점의 판단에는 AI 추정이 없습니다.",
+            keys: ["NOISE_DECISION_ANALYSIS_TEXT_ENABLED"],
+        },
         "panel.bucket": {
             title: "구간 판단 목록",
             def: "추이 그래프의 막대 1개(한 구간) 동안 게이트가 내린 판단입니다. 총 건수는 그 막대의 합계와 "
@@ -291,5 +304,72 @@ window.NOISE_HELP = {
         "apm_healthy_shadow.would_demote": "제니퍼 정상 강등 — 했을 강등",
         "apm_healthy_shadow.window_minutes": "제니퍼 정상 강등 — 조회 창",
         "apm_healthy_shadow.source": "제니퍼 정상 강등 — 근거 출처",
+        // plans/153 W1 — AI 분석이 실패해 원문 알람으로 판단한 건(게이트가 남기는 표시)
+        analysis: "AI 분석",
+    },
+
+    // plans/153 W1 — 드로어 머리 사유 요약 1문단(§4.8). 결정적 템플릿이다(LLM 서술 아님).
+    // `{키}`: 단계 근거(`stage_evidence` — 중첩은 `부모.자식`) 또는 레코드 값(stage_label·tier·from_tier).
+    // `[ … ]`는 선택 구간 — 안의 키가 하나라도 없으면 구간째 뺀다(옛 레코드에서도 문장이 깨지지 않게).
+    summary: {
+        demoted: "이 알람은 「{stage_label}」 단계에서 {from_tier} → {tier}로 강등됐습니다.",
+        promoted: "이 알람은 「{stage_label}」 단계에서 {from_tier} → {tier}로 승격됐습니다.",
+        decided: "이 알람은 「{stage_label}」 단계에서 {tier}로 판단됐습니다.",
+        unknownHead: "최종 판단은 {tier}입니다.",
+        stages: {
+            non_alarm: "알람 표지 없이 승인·안내성 문구만 있어 알람이 아닌 메시지로 분류했습니다"
+                + "[(걸린 표지 단어: {markers})].",
+            severity3: "실효 심각도 3이라 억제 단계를 거치지 않고 곧바로 통보했습니다.",
+            self_heal: "같은 알람의 발생과 짝지어진 해소라 스스로 복구된 것으로 봤습니다"
+                + "[(발생→해소 {heal_seconds})].",
+            resolved: "짝지을 발생이 없는 해소 이벤트입니다.",
+            collection_failed: "중요도·유지보수 등 부가 신호를 가져오지 못해 보수적으로 통보했습니다.",
+            maintenance: "수집원이 유지보수 모드로 알려준 자원의 알람이라 새로 통보하지 않았습니다.",
+            silence: "운영자 침묵 규칙[ {rule_id}]에 걸려 통보하지 않았습니다[(매처 {matcher_summary})].",
+            dependency: "상위 자원[ {root_resource_name}]이 비정상이라 연쇄 알람으로 봤습니다.",
+            inhibition: "같은 서버의 상위 알람[ 「{inhibitor}」][(심각도 {inhibitor_severity}, {age_seconds} 전)]이 "
+                + "진행 중이라 이 알람은 음소거됐습니다.",
+            flapping: "발생·해소가 진동해 안정될 때까지 통보를 보류했습니다[(상태 변화율 {flap_percent}% · 상한 {high}%)].",
+            storm: "같은 서버에 알람이 몰려 대표 외 알람으로 억제했습니다"
+                + "[(창 {window_seconds} 안 {window_count}건 / 임계 {threshold}건)].",
+            correlation: "여러 호스트의 비슷한 알람과 한 묶음으로 판단돼 대표 외 알람으로 억제했습니다.",
+            cross_source: "같은 호스트[({cross_source.host_key})]의 원인 알람[ {cross_source.cause_alarm_id}]이 "
+                + "통보된 채 해소되지 않아 원인으로 판단됐습니다."
+                + "[ 이 알람은 그보다 {cross_source.lag_seconds} 늦게 발생했습니다.]"
+                + "[ 적용 규칙: {cross_source.rule_id}.]",
+            annotation: "계획 작업 주석이 있고 다른 근거가 함께 뒷받침해 화면 표시로 낮췄습니다"
+                + "[(뒷받침: {corroborated_by})].",
+            matrix: "앞 단계에 걸리지 않아 심각도×중요도 표와 보조 신호로 정했습니다."
+                + "[ 승격 근거: {promote}.][ 강등 근거: {demote}.]",
+            unknown: "어느 단계에서 확정됐는지 기록되지 않은 옛 판단입니다.",
+        },
+        // 묶기만 — 크로스소스 사건에 묶였지만 이 판단에서 강등하지 않았을 때(결정 단계와 무관하게 덧붙인다).
+        linked: "같은 사건으로 묶였지만 강등하지 않았습니다[ — 빠진 조건: {cross_source.missing}].",
+        // 「원래 티어 → 최종 티어」 칩(원래 티어 = 크로스소스 상한 전 · 매트릭스 기본 티어 — 기록된 값만)
+        chipTitle: "원래 티어 → 최종 티어",
+        chipDemoted: "강등",
+        chipPromoted: "승격",
+    },
+
+    // plans/153 W1 — 드로어 「발생 원인과 처리」(§4.9 · G-8) — ⓐ 처리 안내(위) → ⓑ AI 추정(아래).
+    cause: {
+        title: "발생 원인과 처리",
+        handlingHead: "처리 안내",
+        handlingBadge: "판정 근거 · 고정 안내",
+        handlingMissing: "처리 안내를 아직 불러오지 못했습니다 — 집계가 갱신된 뒤 다시 여십시오.",
+        aiHead: "AI 추정 원인·권고",
+        aiBadge: "AI 추정 · 알람 문구 기반 · 검증 안 됨",
+        aiLead: "아래 AI 추정은 노이즈 판정 전에 알람 문구만으로 만든 것입니다",
+        aiNotStored: "이 판단이 기록될 때는 AI 추정을 저장하지 않았습니다",
+        aiFailed: "AI 분석 실패",
+        fields: { summary: "요약", probable_cause: "추정 원인", recommended_action: "권고 조치" },
+        // 목록 열 · 실시간 피드 줄
+        colCause: "AI 추정 원인",
+        colHandling: "처리 안내",
+        feedCausePrefix: "AI 추정: ",
+        // 패널 보조 필터 — 원래 티어보다 최종 티어가 낮은 판단만(현재 쪽 안에서 거른다)
+        demotedFilter: "강등됨만",
+        demotedFilterScope: "이 쪽",
+        demotedEmpty: "이 쪽에 강등된 판단이 없습니다 — 다음 쪽을 보거나 필터를 끄십시오.",
     },
 };

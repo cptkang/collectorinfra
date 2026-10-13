@@ -1,0 +1,80 @@
+# plans/154 §4.6 D02 — JVM 힙 누수 → OOM kill(memory_leak_oom · app · 함정 없음)
+id: D02
+split: dev
+title: 주문 API JVM 힙 누수 후 OOM kill
+event:
+  dbId: polestar
+  serverName: bw-d02-was01
+  hostname: bw-d02-was01
+  ipAddress: 192.0.2.12
+  resourceAncestry: ""
+  alarmId: "bw-d02-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "프로세스 재시작 감지"
+  alarmTime: "20261012043000"
+  conditions: "= RESTART"
+  conditionLog: "[프로세스 재기동 (= RESTART)] java pid 변경"
+label:
+  root_entity: {host: bw-d02-was01, component: bwd02-order-api}
+  layer: app
+  kind: memory_leak_oom
+  change_related: false
+  aliases:
+    kind: [메모리 누수, 힙 누수, heap leak, OOM kill, OutOfMemory]
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: memory}, cite: ["97.8"]}
+  - {tool: polestar_incident_alarms, cite: [OOM killer]}
+expect:
+  abstain: false
+hosts: [bw-d02-was01]
+incident_window: {start: -60m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: memory}
+      reply:
+        rows:
+          - {ts: "2026-10-12T03:40:00", value: 62.4}
+          - {ts: "2026-10-12T03:50:00", value: 70.1}
+          - {ts: "2026-10-12T04:00:00", value: 78.9}
+          - {ts: "2026-10-12T04:10:00", value: 86.3}
+          - {ts: "2026-10-12T04:20:00", value: 93.5}
+          - {ts: "2026-10-12T04:25:00", value: 97.8}
+          - {ts: "2026-10-12T04:30:00", value: 31.2}
+        row_count: 7
+        unit: "%"
+        source_kind: postgresql
+    - match: {kind: cpu}
+      reply:
+        rows: {gen: {base: 41, noise: 2}}
+        row_count: 12
+        unit: "%"
+        source_kind: postgresql
+  polestar_incident_alarms:
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-12T04:12:00", alarm_name: "메모리 사용률 임계 초과", severity: 1}
+          - {alarm_time: "2026-10-12T04:28:00", alarm_name: "커널 메시지", message: "java(pid 22871) 종료 — OOM killer 기록"}
+          - {alarm_time: "2026-10-12T04:30:00", alarm_name: "프로세스 재시작 감지", severity: 2}
+        row_count: 3
+        source_kind: postgresql
+  polestar_process_snapshot:
+    - reply:
+        rows:
+          - {pid: 23904, name: java, args: "-Xmx8g -jar bwd02-order-api.jar", pcpu: 12.4, pmem: 9.8, elapsed: "00:01:40", state: S}
+        row_count: 1
+        captured_at: "2026-10-12T04:31:00"
+        source_kind: polestar_api
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d02-was01, kind: memory}}
+    - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-d02-was01, reference_time: "2026-10-12T04:30:00"}}
+    - {answer: "bw-d02-was01 bwd02-order-api JVM 힙 누수 → OOM kill: 메모리 사용률이 97.8%까지 단조 증가 (polestar_metric_trend) · 04:28 OOM killer 기록 후 재시작 (polestar_incident_alarms)"}
+  neg:
+    F-HALLU:
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d02-was01, kind: memory}}
+      - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-d02-was01, reference_time: "2026-10-12T04:30:00"}}
+      - {answer: "bw-d02-was01 JVM 힙 누수 → OOM kill: 메모리 사용률 99.6%·97.8% (polestar_metric_trend) · OOM killer 기록 (polestar_incident_alarms)"}
