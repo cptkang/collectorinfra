@@ -665,6 +665,7 @@ def _stages(client, base) -> dict[str, dict]:
 @pytest.mark.parametrize("mode", MODES)
 def test_summary_stages_carry_description_and_enable_key(tmp_path, mode):
     from noise_gate.domain.notification_policy import STAGE_DESCRIPTIONS, STAGE_ORDER
+    from noise_gate.domain.stage_handling import STAGE_HANDLING
 
     # unknown 단계가 나오도록 판별 불가 사유의 구 레코드를 하나 넣는다.
     _seed_decisions(tmp_path, [_decision_record(stage=None, reason="정체불명 사유")])
@@ -674,6 +675,8 @@ def test_summary_stages_carry_description_and_enable_key(tmp_path, mode):
     for key, row in stages.items():
         assert row["description"] == STAGE_DESCRIPTIONS[key] and row["description"]
         assert row["enable_key"] == _EXPECTED_ENABLE_KEYS.get(key)
+        # (plans/153 W1) 처리 안내도 도메인 정본 그대로 — 단계 기본 문장(`*`)은 늘 있다.
+        assert row["handling"] == STAGE_HANDLING[key] and row["handling"]["*"]
 
 
 def test_stage_descriptions_cover_every_stage_and_unknown():
@@ -829,6 +832,21 @@ def test_s6_string_fields_are_masked(tmp_path, mode):
     assert item["stage_evidence"] == {"inhibitor": "***", "inhibitor_severity": 2}
     if mode == "admin":
         assert item["condition_log"] == "***"
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_analysis_text_masked_on_user_path_only(tmp_path, mode):
+    # (plans/153 W1 · R-1) AI 분석 서술은 사용자 경로에서만 가리고 운영자 경로는 원문이다.
+    secret = "sk-abcdefghijklmnopqrstuvwxyz012345"
+    _seed_decisions(tmp_path, [_decision_record(
+        alarm_id="m2", analysis={"summary": secret, "probable_cause": "c",
+                                 "recommended_action": secret, "failed": False},
+    )])
+    client, base = _mode_client(mode, _make_config(tmp_path))
+    item = client.get(f"{base}/decisions").json()["items"][0]
+    expected = secret if mode == "admin" else "***"
+    assert item["analysis"] == {"summary": expected, "probable_cause": "c",
+                                "recommended_action": expected, "failed": False}
 
 
 # ─── plans/112 잔여 처리 — m-2 시각 불명 레코드 · m-5 정책 탭 키 ─────────

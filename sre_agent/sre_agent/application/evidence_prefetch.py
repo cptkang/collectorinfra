@@ -16,7 +16,20 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sre_agent.domain.correlation import AlarmPoint, ChangePoint, CorrelationResult, MetricSeries, correlate
+from sre_agent.domain.correlation import (
+    AlarmPoint,
+    ChangePoint,
+    CorrelationResult,
+    EpisodePoint,
+    MetricSeries,
+    correlate,
+)
+from sre_agent.domain.cross_source_episode import (
+    active_episode,
+    episode_from_payload,
+    episode_points,
+)
+from sre_agent.domain.investigation_limits import is_apm_trigger
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +44,9 @@ _GRANULARITY_MINUTES = {"h": 60, "d": 1440, "m": 43200}
 TOOL_ALARMS = "polestar_incident_alarms"
 TOOL_METRIC = "polestar_metric_trend"
 TOOL_CHANGES = "polestar_change_history"   # plans/91 1-2 — 배치 말미(플래그 on일 때만)
+# plans/153 R-4 — APM(제니퍼) 트리거인데 폴스타 소스를 모를 때. 제니퍼 dbId를 폴스타 도구에 넘기면
+# mcp_server가 「알 수 없는 소스」로 전 축을 결손 처리한다 — 호출 자체를 하지 않고 이 사실만 남긴다.
+INFRA_SOURCE_UNKNOWN_NOTE = "인프라 소스 미상 — 폴스타 사전수집 생략"
 
 
 @dataclass(frozen=True)
@@ -43,10 +59,16 @@ class EvidenceScope:
     granularity: str = "h"
     change_overlay: bool = False   # plans/91 1-2 — True면 변경 이력 1건을 배치 말미에 더한다
     related_servers: tuple[str, ...] = ()   # plans/91 1-3 — 연관 서버(알람 1건씩만 추가 수집)
+    # plans/153 R-4 — True면 폴스타 도구를 호출하지 않는다(source 미상).
+    skip_infra: bool = False
+    # plans/153 §4.6 — 사건 멤버(추가 호출 없이 타임라인 편입)와 그 해석 노트.
+    episode_points: tuple[EpisodePoint, ...] = ()
+    episode_notes: tuple[str, ...] = ()
 
 
 def scope_from_job(
     job, *, baseline_periods: int = 24, change_overlay: bool = False, related_hosts_max: int = 0,
+    cross_source: bool = False,
 ) -> EvidenceScope | None:  # noqa: ANN001 — JobLike
     """잡에서 사전수집 범위를 뽑는다. 두 진입점의 payload 형태가 다르다(`_host_key`와 같은 이유):
 
@@ -54,6 +76,12 @@ def scope_from_job(
         pull 진단    payload["db_id"|"server_name"]
 
     기준시각·소스·서버명 중 하나라도 없으면 None(사전수집 불가 — 조사는 그대로 진행).
+
+    plans/153 R-4(플래그 무관 결함 교정): APM 트리거(`is_apm_trigger` — 지침·dispatcher와
+    같은 판정)의 dbId는 제니퍼 소스라 폴스타 도구의 source가 될 수 없다.
+    `cross_source`(CROSS_SOURCE_INVESTIGATION_ENABLED)이고 `meta.episode.infra_db_ids[0]`가
+    있으면 그것을 쓰고, 아니면 폴스타 축을 호출하지 않는 범위(`skip_infra`)를 돌려준다.
+    `cross_source`이고 두 소스 멤버가 있는 사건이면 멤버를 타임라인 점으로 싣는다.
     """
     ref = getattr(job, "reference_time", None)
     if not ref:
@@ -62,10 +90,29 @@ def scope_from_job(
     if not isinstance(payload, dict):
         return None
     event = payload.get("event") or {}
-    source = str(event.get("dbId") or payload.get("db_id") or "").strip()
     server = str(event.get("serverName") or payload.get("server_name") or "").strip()
-    if not source or not server:
+    skip_infra = False
+    if is_apm_trigger(payload):
+        episode = episode_from_payload(payload) if cross_source else None
+        source = episode.infra_db_ids[0] if episode is not None and episode.infra_db_ids else ""
+        skip_infra = not source
+    else:
+        source = str(event.get("dbId") or payload.get("db_id") or "").strip()
+    if (not source and not skip_infra) or not server:
         return None
+    points: tuple[EpisodePoint, ...] = ()
+    point_notes: tuple[str, ...] = ()
+    xs = active_episode(payload, cross_source, ref)
+    if xs is not None:
+        pts, pnotes = episode_points(xs)
+        points, point_notes = tuple(pts), tuple(pnotes)
+    if skip_infra:
+        return EvidenceScope(
+            source="", server_name=server, reference_time=ref,
+            lookback_minutes=int(getattr(job, "lookback_minutes", None) or 60),
+            baseline_periods=int(baseline_periods), skip_infra=True,
+            episode_points=points, episode_notes=point_notes,
+        )
     # plans/91 1-3: 게이트 E4가 판정한 root 서버 **이름**(meta.root_resource_name)만 소비 — 토폴로지 재조회 없음(D-207).
     related: tuple[str, ...] = ()
     if int(related_hosts_max) > 0:
@@ -77,11 +124,17 @@ def scope_from_job(
         source=source, server_name=server, reference_time=ref,
         lookback_minutes=int(getattr(job, "lookback_minutes", None) or 60),
         baseline_periods=int(baseline_periods), change_overlay=bool(change_overlay), related_servers=related,
+        episode_points=points, episode_notes=point_notes,
     )
 
 
 def build_calls(scope: EvidenceScope) -> list[tuple[str, dict]]:
-    """배치 호출 목록 — 전 알람 1 + 지표 4(순서 고정, 결과 해석이 이 순서에 의존)."""
+    """배치 호출 목록 — 전 알람 1 + 지표 4(순서 고정, 결과 해석이 이 순서에 의존).
+
+    `skip_infra`(plans/153 R-4)면 빈 목록.
+    """
+    if scope.skip_infra:
+        return []
     base = {"source": scope.source, "server_name": scope.server_name,
             "reference_time": scope.reference_time, "lookback_minutes": scope.lookback_minutes}
     calls: list[tuple[str, dict]] = [(TOOL_ALARMS, dict(base))]
@@ -169,7 +222,16 @@ def _changes(data: dict, scope: EvidenceScope, notes: list[str]) -> list[ChangeP
 
 
 def prefetch_and_correlate(scope: EvidenceScope, call_batch: BatchCaller) -> CorrelationResult:
-    """도구 배치를 호출하고 상관을 계산한다. 축별 실패는 notes로 남기고 계산은 계속한다."""
+    """도구 배치를 호출하고 상관을 계산한다. 축별 실패는 notes로 남기고 계산은 계속한다.
+
+    `skip_infra`(plans/153 R-4)면 배치를 부르지 않고 「인프라 소스 미상」 노트와
+    사건 멤버만으로 계산한다.
+    """
+    if scope.skip_infra:
+        return correlate(
+            scope.reference_time, [], [], [INFRA_SOURCE_UNKNOWN_NOTE, *scope.episode_notes],
+            episode_points=list(scope.episode_points), alarm_axis=False,
+        )
     calls = build_calls(scope)
     raws = call_batch(calls)
     if len(raws) != len(calls):
@@ -209,7 +271,12 @@ def prefetch_and_correlate(scope: EvidenceScope, call_batch: BatchCaller) -> Cor
                 continue
             related[host] = _alarms(data, notes, server=host)
 
-    return correlate(scope.reference_time, alarms, series, notes, changes=changes, related_alarms=related)
+    notes.extend(scope.episode_notes)
+    return correlate(
+        scope.reference_time, alarms, series, notes, changes=changes, related_alarms=related,
+        episode_points=list(scope.episode_points) or None,
+    )
 
 
-__all__ = ["EvidenceScope", "METRIC_KINDS", "TOOL_CHANGES", "scope_from_job", "build_calls", "prefetch_and_correlate"]
+__all__ = ["EvidenceScope", "METRIC_KINDS", "TOOL_CHANGES", "INFRA_SOURCE_UNKNOWN_NOTE",
+           "scope_from_job", "build_calls", "prefetch_and_correlate"]

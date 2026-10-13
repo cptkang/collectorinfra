@@ -1,0 +1,19 @@
+{
+  "run_id": "20261013-120000-closed",
+  "commit": "f4a95f52971e0227cfb761a258e1b9d010f97950",
+  "worlds": {"E01": "sha256:1111"},
+  "backend": "vllm",
+  "model": "openai/qwen3-32b",
+  "llm": {"backend": "vllm", "model": "openai/qwen3-32b", "api_base": "http://gpu-vllm.corp.internal:8000/v1"},
+  "host": {
+    "os": "Linux-5.15-x86_64",
+    "hostname": "gpu-node7.corp.internal",
+    "cpu_count": 64,
+    "gpu": {"model": "NVIDIA A100 80GB", "count": 2, "driver": "550.54"},
+    "gpu_processes_before": [
+      {"pid": 4242, "user": "vllmop", "process_name": "/opt/vllm/venv/bin/python3", "used_memory_mb": 70000}
+    ]
+  },
+  "spec": {"worlds_dir": "/home/benchsvc/collectorinfra/sre_agent/testdata/investigation_bench/worlds", "k": 3},
+  "judge_version": "j1"
+}

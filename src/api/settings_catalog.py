@@ -109,6 +109,7 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_DECISION_STORE_PATH": "기본 동작",
     "NOISE_DECISION_STORE_ENABLED": "기본 동작",
     "NOISE_DECISION_STORE_MAX_LINES": "기본 동작",
+    "NOISE_DECISION_ANALYSIS_TEXT_ENABLED": "기본 동작",
     # (Plan 54 · D-196) 운영자 침묵 규칙 — 억제를 사람이 직접 거는 유일한 경로.
     "NOISE_SILENCE_ENABLED": "중복·연쇄 억제",
     "NOISE_SILENCE_STORE_PATH": "중복·연쇄 억제",
@@ -207,6 +208,9 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_INVESTIGATION_FOLLOWUP_ENABLED": "자동 장애 조사",
     "NOISE_INVESTIGATION_FOLLOWUP_TIMEOUT_SECONDS": "자동 장애 조사",
     "NOISE_INVESTIGATION_FOLLOWUP_MAX_INFLIGHT": "자동 장애 조사",
+    "NOISE_INVESTIGATION_STORE_PATH": "자동 장애 조사",
+    "NOISE_INVESTIGATION_STORE_MAX_LINES": "자동 장애 조사",
+    "NOISE_INVESTIGATION_EPISODE_CONTEXT_ENABLED": "자동 장애 조사",
     "NOISE_FAULT_DIAGNOSIS_ENABLED": "자동 장애 조사",
     "NOISE_FAULT_ESCALATION_ENABLED": "자동 장애 조사",
     # (plans/87 J4) APM 게이트웨이 fatal 이벤트로 폴스타 알람 승격(app_impact)

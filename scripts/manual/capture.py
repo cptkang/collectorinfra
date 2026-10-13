@@ -219,6 +219,13 @@ def _alarm_replay(opt: dict) -> None:
     )
     r = redis.Redis(host=env["REDIS_HOST"], port=int(env["REDIS_PORT"]), db=int(env["REDIS_DB"]))
     src = HERE / "fixtures" / "alarms"
+    # 조사 브리핑 장면 — 손으로 만든 예시 카드(alarms.seed_briefing 과 짝)
+    if opt.get("only") == "briefing":
+        data = json.loads((src / "briefing.json").read_text(encoding="utf-8"))
+        for card in data.get("cards") or []:
+            r.publish(env["NOISE_SSE_BRIDGE_CHANNEL"], json.dumps(card, ensure_ascii=False))
+            time.sleep(0.3)
+        return
     for name, ch in (
         ("incident.jsonl", env["NOISE_INCIDENT_EVENT_CHANNEL"]),
         ("sse.jsonl", env["NOISE_SSE_BRIDGE_CHANNEL"]),

@@ -1,0 +1,71 @@
+# plans/154 §4.6 H03 — 홀드아웃(D03과 같은 kind · disk_full · 유인: 주기 집계 작업의 CPU) · 개선 채택 판정 전용
+id: H03
+split: holdout
+title: 로그 압축 스크립트 실패로 로그 볼륨 포화
+event:
+  dbId: polestar
+  serverName: bw-h03-web02
+  hostname: bw-h03-web02
+  ipAddress: 198.51.100.33
+  resourceAncestry: ""
+  alarmId: "bw-h03-0001"
+  severity: 3
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "로그 볼륨 여유 공간 부족"
+  alarmTime: "20261009224000"
+  conditions: "> 93%"
+  conditionLog: "[볼륨 점유율 (> 93%)]"
+label:
+  root_entity: {host: bw-h03-web02, component: /app/logs/bwh03}
+  layer: os
+  kind: disk_full
+  change_related: false
+  aliases:
+    kind: [디스크 포화, 파일시스템 포화, 로그 적체, filesystem full, 로그 정리 실패]
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: filesystem}, cite: ["97.6", /app/logs/bwh03]}
+  - {tool: polestar_incident_alarms, cite: [bwh03_logpack]}
+distractors:
+  - {kind: cpu_high, aliases: [CPU 과부하, CPU 급등, CPU 사용률 급등]}
+expect:
+  abstain: false
+hosts: [bw-h03-web02]
+incident_window: {start: -50m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: filesystem}
+      reply:
+        rows:
+          - {mount: /app/logs/bwh03, value: 97.6, used_gb: 195.2, size_gb: 200.0}
+          - {mount: /, value: 27.4, used_gb: 8.2, size_gb: 30.0}
+        row_count: 2
+        unit: "%"
+        source_kind: postgresql
+    - match: {kind: cpu}
+      reply:
+        rows: {gen: {base: 18, spike_at: -20m, to: 71, noise: 2, points: 6, step: 10m}}
+        row_count: 6
+        unit: "%"
+        note: "30분 주기 집계 작업으로 70%대 — 평소와 동일"
+        source_kind: postgresql
+  polestar_incident_alarms:
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-09T21:05:00", alarm_name: "로그 압축 스크립트 오류", message: "bwh03_logpack 비정상 종료 — 압축본 생성 불가"}
+          - {alarm_time: "2026-10-09T22:40:00", alarm_name: "로그 볼륨 여유 공간 부족", severity: 3}
+        row_count: 2
+        source_kind: postgresql
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-h03-web02, kind: filesystem}}
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-h03-web02, kind: cpu}}
+    - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-h03-web02, reference_time: "2026-10-09T22:40:00"}}
+    - {answer: "bw-h03-web02 /app/logs/bwh03 로그 적체로 파일시스템 포화 — 점유율 97.6% (polestar_metric_trend) · bwh03_logpack 압축 작업 실패 (polestar_incident_alarms) · 70%대 CPU는 평소와 같은 집계 주기"}
+  neg:
+    F-DIST:
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-h03-web02, kind: filesystem}}
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-h03-web02, kind: cpu}}
+      - {answer: "bw-h03-web02 CPU 급등이 원인 (polestar_metric_trend)"}

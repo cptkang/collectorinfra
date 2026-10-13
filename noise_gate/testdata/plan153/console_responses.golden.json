@@ -1,0 +1,700 @@
+{
+  "user_list": {
+    "items": [
+      {
+        "alarm_id": "P150-MNT-1",
+        "tier": "suppress",
+        "reason": "유지보수 모드 — 신규 발송 억제(감사 기록)",
+        "priority": 13,
+        "fingerprint": "ba1cdaa6b5eced7f3913f9fe547e7719f58cc3c7",
+        "signals": {
+          "severity": 1,
+          "ai_severity": null,
+          "effective_severity": 1,
+          "importance": "높음",
+          "maintenance": true,
+          "parent_avail_status": null,
+          "pattern": "",
+          "is_routine": null,
+          "noti_policy": null,
+          "flapping": false,
+          "self_heal": false,
+          "storm": false,
+          "llm_actionability": null,
+          "cascaded": null,
+          "root_resource": null,
+          "correlated": false
+        },
+        "stage": "maintenance",
+        "alarm_name": "CPU 사용률",
+        "server_name": "xsapp01",
+        "db_id": "polestar_cm_gp",
+        "resource_name": "CPU",
+        "stage_label": "유지보수"
+      },
+      {
+        "alarm_id": "P150-CPU-1",
+        "tier": "page",
+        "reason": "매트릭스(심각도2×중요도높음) → page → 최종 page",
+        "priority": 323,
+        "fingerprint": "ba1cdaa6b5eced7f3913f9fe547e7719f58cc3c7",
+        "signals": {
+          "severity": 2,
+          "ai_severity": null,
+          "effective_severity": 2,
+          "importance": "높음",
+          "maintenance": false,
+          "parent_avail_status": null,
+          "pattern": "",
+          "is_routine": null,
+          "noti_policy": null,
+          "flapping": false,
+          "self_heal": false,
+          "storm": false,
+          "llm_actionability": null,
+          "cascaded": null,
+          "root_resource": null,
+          "correlated": false
+        },
+        "stage": "matrix",
+        "alarm_name": "CPU 사용률",
+        "server_name": "xsapp01",
+        "db_id": "polestar_cm_gp",
+        "resource_name": "CPU",
+        "stage_evidence": {
+          "base_tier": "page",
+          "promote": [],
+          "demote": []
+        },
+        "stage_label": "우선순위 매트릭스"
+      },
+      {
+        "alarm_id": "P150-ERR-1",
+        "tier": "page",
+        "reason": "매트릭스(심각도2×중요도높음) → page → 최종 page",
+        "priority": 323,
+        "fingerprint": "ba1cdaa6b5eced7f3913f9fe547e7719f58cc3c7",
+        "signals": {
+          "severity": 2,
+          "ai_severity": null,
+          "effective_severity": 2,
+          "importance": "높음",
+          "maintenance": false,
+          "parent_avail_status": null,
+          "pattern": "",
+          "is_routine": null,
+          "noti_policy": null,
+          "flapping": false,
+          "self_heal": false,
+          "storm": false,
+          "llm_actionability": null,
+          "cascaded": null,
+          "root_resource": null,
+          "correlated": false
+        },
+        "stage": "matrix",
+        "alarm_name": "CPU 사용률",
+        "server_name": "xsapp01",
+        "db_id": "polestar_cm_gp",
+        "resource_name": "CPU",
+        "stage_evidence": {
+          "base_tier": "page",
+          "promote": [],
+          "demote": [],
+          "analysis": "AI 분석 실패 — 원문 알람으로 판단"
+        },
+        "stage_label": "우선순위 매트릭스"
+      },
+      {
+        "alarm_id": "jennifer:p150q0000000001",
+        "tier": "page",
+        "reason": "신호 수집 실패 — 보수적 PAGE",
+        "priority": 322,
+        "fingerprint": "96e51561b6c4d58025d143f7bf90b029b3b4bb44",
+        "signals": {
+          "severity": 2,
+          "ai_severity": null,
+          "effective_severity": 2,
+          "importance": "보통",
+          "maintenance": false,
+          "parent_avail_status": null,
+          "pattern": "",
+          "is_routine": null,
+          "noti_policy": null,
+          "flapping": false,
+          "self_heal": false,
+          "storm": false,
+          "llm_actionability": null,
+          "cascaded": null,
+          "root_resource": null,
+          "correlated": false
+        },
+        "stage": "collection_failed",
+        "alarm_name": "SERVICE_QUEUING",
+        "server_name": "xsapp01",
+        "db_id": "jennifer_common",
+        "resource_name": "xsapp01_was01",
+        "stage_evidence": {
+          "episode_id": "ep-p150fixture",
+          "cross_source": {
+            "mode": "shadow",
+            "host_key": "xsapp01",
+            "rule_id": "host_resource_to_was_latency",
+            "cause_alarm_id": "P150-CPU-1",
+            "lag_seconds": 270.0,
+            "action": "demote",
+            "enforce": false,
+            "missing": [],
+            "applied": false
+          }
+        },
+        "stage_label": "수집 실패 보수화"
+      }
+    ],
+    "total": 4,
+    "page": 1,
+    "size": 50,
+    "facets": {
+      "tiers": {
+        "page": 3,
+        "ticket": 0,
+        "dashboard": 0,
+        "suppress": 1
+      },
+      "stages": {
+        "collection_failed": 1,
+        "matrix": 2,
+        "maintenance": 1
+      }
+    }
+  },
+  "operator_list": {
+    "items": [
+      {
+        "alarm_id": "P150-MNT-1",
+        "tier": "suppress",
+        "reason": "유지보수 모드 — 신규 발송 억제(감사 기록)",
+        "priority": 13,
+        "fingerprint": "ba1cdaa6b5eced7f3913f9fe547e7719f58cc3c7",
+        "signals": {
+          "severity": 1,
+          "ai_severity": null,
+          "effective_severity": 1,
+          "importance": "높음",
+          "maintenance": true,
+          "parent_avail_status": null,
+          "pattern": "",
+          "is_routine": null,
+          "noti_policy": null,
+          "flapping": false,
+          "self_heal": false,
+          "storm": false,
+          "llm_actionability": null,
+          "cascaded": null,
+          "root_resource": null,
+          "correlated": false
+        },
+        "stage": "maintenance",
+        "alarm_name": "CPU 사용률",
+        "server_name": "xsapp01",
+        "db_id": "polestar_cm_gp",
+        "resource_name": "CPU",
+        "condition_log": "[98 % (> 90 %, 3회 연속)]",
+        "stage_label": "유지보수"
+      },
+      {
+        "alarm_id": "P150-CPU-1",
+        "tier": "page",
+        "reason": "매트릭스(심각도2×중요도높음) → page → 최종 page",
+        "priority": 323,
+        "fingerprint": "ba1cdaa6b5eced7f3913f9fe547e7719f58cc3c7",
+        "signals": {
+          "severity": 2,
+          "ai_severity": null,
+          "effective_severity": 2,
+          "importance": "높음",
+          "maintenance": false,
+          "parent_avail_status": null,
+          "pattern": "",
+          "is_routine": null,
+          "noti_policy": null,
+          "flapping": false,
+          "self_heal": false,
+          "storm": false,
+          "llm_actionability": null,
+          "cascaded": null,
+          "root_resource": null,
+          "correlated": false
+        },
+        "stage": "matrix",
+        "alarm_name": "CPU 사용률",
+        "server_name": "xsapp01",
+        "db_id": "polestar_cm_gp",
+        "resource_name": "CPU",
+        "condition_log": "[98 % (> 90 %, 3회 연속)]",
+        "stage_evidence": {
+          "base_tier": "page",
+          "promote": [],
+          "demote": []
+        },
+        "stage_label": "우선순위 매트릭스"
+      },
+      {
+        "alarm_id": "P150-ERR-1",
+        "tier": "page",
+        "reason": "매트릭스(심각도2×중요도높음) → page → 최종 page",
+        "priority": 323,
+        "fingerprint": "ba1cdaa6b5eced7f3913f9fe547e7719f58cc3c7",
+        "signals": {
+          "severity": 2,
+          "ai_severity": null,
+          "effective_severity": 2,
+          "importance": "높음",
+          "maintenance": false,
+          "parent_avail_status": null,
+          "pattern": "",
+          "is_routine": null,
+          "noti_policy": null,
+          "flapping": false,
+          "self_heal": false,
+          "storm": false,
+          "llm_actionability": null,
+          "cascaded": null,
+          "root_resource": null,
+          "correlated": false
+        },
+        "stage": "matrix",
+        "alarm_name": "CPU 사용률",
+        "server_name": "xsapp01",
+        "db_id": "polestar_cm_gp",
+        "resource_name": "CPU",
+        "condition_log": "[98 % (> 90 %, 3회 연속)]",
+        "stage_evidence": {
+          "base_tier": "page",
+          "promote": [],
+          "demote": [],
+          "analysis": "AI 분석 실패 — 원문 알람으로 판단"
+        },
+        "stage_label": "우선순위 매트릭스"
+      },
+      {
+        "alarm_id": "jennifer:p150q0000000001",
+        "tier": "page",
+        "reason": "신호 수집 실패 — 보수적 PAGE",
+        "priority": 322,
+        "fingerprint": "96e51561b6c4d58025d143f7bf90b029b3b4bb44",
+        "signals": {
+          "severity": 2,
+          "ai_severity": null,
+          "effective_severity": 2,
+          "importance": "보통",
+          "maintenance": false,
+          "parent_avail_status": null,
+          "pattern": "",
+          "is_routine": null,
+          "noti_policy": null,
+          "flapping": false,
+          "self_heal": false,
+          "storm": false,
+          "llm_actionability": null,
+          "cascaded": null,
+          "root_resource": null,
+          "correlated": false
+        },
+        "stage": "collection_failed",
+        "alarm_name": "SERVICE_QUEUING",
+        "server_name": "xsapp01",
+        "db_id": "jennifer_common",
+        "resource_name": "xsapp01_was01",
+        "condition_log": "서비스 큐잉 (value=41)",
+        "stage_evidence": {
+          "episode_id": "ep-p150fixture",
+          "cross_source": {
+            "mode": "shadow",
+            "host_key": "xsapp01",
+            "rule_id": "host_resource_to_was_latency",
+            "cause_alarm_id": "P150-CPU-1",
+            "lag_seconds": 270.0,
+            "action": "demote",
+            "enforce": false,
+            "missing": [],
+            "applied": false
+          }
+        },
+        "stage_label": "수집 실패 보수화"
+      }
+    ],
+    "total": 4,
+    "page": 1,
+    "size": 50,
+    "facets": {
+      "tiers": {
+        "page": 3,
+        "ticket": 0,
+        "dashboard": 0,
+        "suppress": 1
+      },
+      "stages": {
+        "collection_failed": 1,
+        "matrix": 2,
+        "maintenance": 1
+      }
+    }
+  },
+  "user_trace_polestar": {
+    "decision": {
+      "alarm_id": "P150-CPU-1",
+      "tier": "page",
+      "reason": "매트릭스(심각도2×중요도높음) → page → 최종 page",
+      "priority": 323,
+      "fingerprint": "ba1cdaa6b5eced7f3913f9fe547e7719f58cc3c7",
+      "signals": {
+        "severity": 2,
+        "ai_severity": null,
+        "effective_severity": 2,
+        "importance": "높음",
+        "maintenance": false,
+        "parent_avail_status": null,
+        "pattern": "",
+        "is_routine": null,
+        "noti_policy": null,
+        "flapping": false,
+        "self_heal": false,
+        "storm": false,
+        "llm_actionability": null,
+        "cascaded": null,
+        "root_resource": null,
+        "correlated": false
+      },
+      "stage": "matrix",
+      "alarm_name": "CPU 사용률",
+      "server_name": "xsapp01",
+      "db_id": "polestar_cm_gp",
+      "resource_name": "CPU",
+      "stage_evidence": {
+        "base_tier": "page",
+        "promote": [],
+        "demote": []
+      },
+      "stage_label": "우선순위 매트릭스"
+    },
+    "timeline": [
+      {
+        "stage": "non_alarm",
+        "label": "비운영 알람",
+        "status": "passed"
+      },
+      {
+        "stage": "severity3",
+        "label": "심각도3 단락",
+        "status": "passed"
+      },
+      {
+        "stage": "self_heal",
+        "label": "자가복구 상관",
+        "status": "passed"
+      },
+      {
+        "stage": "resolved",
+        "label": "독립 해소",
+        "status": "passed"
+      },
+      {
+        "stage": "collection_failed",
+        "label": "수집 실패 보수화",
+        "status": "passed"
+      },
+      {
+        "stage": "maintenance",
+        "label": "유지보수",
+        "status": "passed"
+      },
+      {
+        "stage": "silence",
+        "label": "침묵 규칙",
+        "status": "passed"
+      },
+      {
+        "stage": "dependency",
+        "label": "의존성 연쇄",
+        "status": "passed"
+      },
+      {
+        "stage": "inhibition",
+        "label": "인히비션",
+        "status": "passed"
+      },
+      {
+        "stage": "flapping",
+        "label": "플래핑",
+        "status": "passed"
+      },
+      {
+        "stage": "storm",
+        "label": "스톰",
+        "status": "passed"
+      },
+      {
+        "stage": "correlation",
+        "label": "크로스-호스트 상관",
+        "status": "passed"
+      },
+      {
+        "stage": "cross_source",
+        "label": "크로스소스 사건 상관",
+        "status": "passed"
+      },
+      {
+        "stage": "annotation",
+        "label": "계획-무해 주석",
+        "status": "passed"
+      },
+      {
+        "stage": "matrix",
+        "label": "우선순위 매트릭스",
+        "status": "decided"
+      }
+    ]
+  },
+  "operator_trace_jennifer": {
+    "decision": {
+      "alarm_id": "jennifer:p150q0000000001",
+      "tier": "page",
+      "reason": "신호 수집 실패 — 보수적 PAGE",
+      "priority": 322,
+      "fingerprint": "96e51561b6c4d58025d143f7bf90b029b3b4bb44",
+      "signals": {
+        "severity": 2,
+        "ai_severity": null,
+        "effective_severity": 2,
+        "importance": "보통",
+        "maintenance": false,
+        "parent_avail_status": null,
+        "pattern": "",
+        "is_routine": null,
+        "noti_policy": null,
+        "flapping": false,
+        "self_heal": false,
+        "storm": false,
+        "llm_actionability": null,
+        "cascaded": null,
+        "root_resource": null,
+        "correlated": false
+      },
+      "stage": "collection_failed",
+      "alarm_name": "SERVICE_QUEUING",
+      "server_name": "xsapp01",
+      "db_id": "jennifer_common",
+      "resource_name": "xsapp01_was01",
+      "condition_log": "서비스 큐잉 (value=41)",
+      "stage_evidence": {
+        "episode_id": "ep-p150fixture",
+        "cross_source": {
+          "mode": "shadow",
+          "host_key": "xsapp01",
+          "rule_id": "host_resource_to_was_latency",
+          "cause_alarm_id": "P150-CPU-1",
+          "lag_seconds": 270.0,
+          "action": "demote",
+          "enforce": false,
+          "missing": [],
+          "applied": false
+        }
+      },
+      "stage_label": "수집 실패 보수화"
+    },
+    "timeline": [
+      {
+        "stage": "non_alarm",
+        "label": "비운영 알람",
+        "status": "passed"
+      },
+      {
+        "stage": "severity3",
+        "label": "심각도3 단락",
+        "status": "passed"
+      },
+      {
+        "stage": "self_heal",
+        "label": "자가복구 상관",
+        "status": "passed"
+      },
+      {
+        "stage": "resolved",
+        "label": "독립 해소",
+        "status": "passed"
+      },
+      {
+        "stage": "collection_failed",
+        "label": "수집 실패 보수화",
+        "status": "decided"
+      },
+      {
+        "stage": "maintenance",
+        "label": "유지보수",
+        "status": "short_circuited"
+      },
+      {
+        "stage": "silence",
+        "label": "침묵 규칙",
+        "status": "short_circuited"
+      },
+      {
+        "stage": "dependency",
+        "label": "의존성 연쇄",
+        "status": "short_circuited"
+      },
+      {
+        "stage": "inhibition",
+        "label": "인히비션",
+        "status": "short_circuited"
+      },
+      {
+        "stage": "flapping",
+        "label": "플래핑",
+        "status": "short_circuited"
+      },
+      {
+        "stage": "storm",
+        "label": "스톰",
+        "status": "short_circuited"
+      },
+      {
+        "stage": "correlation",
+        "label": "크로스-호스트 상관",
+        "status": "short_circuited"
+      },
+      {
+        "stage": "cross_source",
+        "label": "크로스소스 사건 상관",
+        "status": "short_circuited"
+      },
+      {
+        "stage": "annotation",
+        "label": "계획-무해 주석",
+        "status": "short_circuited"
+      },
+      {
+        "stage": "matrix",
+        "label": "우선순위 매트릭스",
+        "status": "short_circuited"
+      }
+    ]
+  },
+  "user_trace_analysis_failed": {
+    "decision": {
+      "alarm_id": "P150-ERR-1",
+      "tier": "page",
+      "reason": "매트릭스(심각도2×중요도높음) → page → 최종 page",
+      "priority": 323,
+      "fingerprint": "ba1cdaa6b5eced7f3913f9fe547e7719f58cc3c7",
+      "signals": {
+        "severity": 2,
+        "ai_severity": null,
+        "effective_severity": 2,
+        "importance": "높음",
+        "maintenance": false,
+        "parent_avail_status": null,
+        "pattern": "",
+        "is_routine": null,
+        "noti_policy": null,
+        "flapping": false,
+        "self_heal": false,
+        "storm": false,
+        "llm_actionability": null,
+        "cascaded": null,
+        "root_resource": null,
+        "correlated": false
+      },
+      "stage": "matrix",
+      "alarm_name": "CPU 사용률",
+      "server_name": "xsapp01",
+      "db_id": "polestar_cm_gp",
+      "resource_name": "CPU",
+      "stage_evidence": {
+        "base_tier": "page",
+        "promote": [],
+        "demote": [],
+        "analysis": "AI 분석 실패 — 원문 알람으로 판단"
+      },
+      "stage_label": "우선순위 매트릭스"
+    },
+    "timeline": [
+      {
+        "stage": "non_alarm",
+        "label": "비운영 알람",
+        "status": "passed"
+      },
+      {
+        "stage": "severity3",
+        "label": "심각도3 단락",
+        "status": "passed"
+      },
+      {
+        "stage": "self_heal",
+        "label": "자가복구 상관",
+        "status": "passed"
+      },
+      {
+        "stage": "resolved",
+        "label": "독립 해소",
+        "status": "passed"
+      },
+      {
+        "stage": "collection_failed",
+        "label": "수집 실패 보수화",
+        "status": "passed"
+      },
+      {
+        "stage": "maintenance",
+        "label": "유지보수",
+        "status": "passed"
+      },
+      {
+        "stage": "silence",
+        "label": "침묵 규칙",
+        "status": "passed"
+      },
+      {
+        "stage": "dependency",
+        "label": "의존성 연쇄",
+        "status": "passed"
+      },
+      {
+        "stage": "inhibition",
+        "label": "인히비션",
+        "status": "passed"
+      },
+      {
+        "stage": "flapping",
+        "label": "플래핑",
+        "status": "passed"
+      },
+      {
+        "stage": "storm",
+        "label": "스톰",
+        "status": "passed"
+      },
+      {
+        "stage": "correlation",
+        "label": "크로스-호스트 상관",
+        "status": "passed"
+      },
+      {
+        "stage": "cross_source",
+        "label": "크로스소스 사건 상관",
+        "status": "passed"
+      },
+      {
+        "stage": "annotation",
+        "label": "계획-무해 주석",
+        "status": "passed"
+      },
+      {
+        "stage": "matrix",
+        "label": "우선순위 매트릭스",
+        "status": "decided"
+      }
+    ]
+  }
+}

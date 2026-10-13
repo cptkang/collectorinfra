@@ -5,7 +5,9 @@
 `_default_diagnose_fn`이 `DiagnosisAgent.ask()`에 넘긴다.
 
 구성(순서 고정): ① REMOTE_VM_SHELL_NOTE(원격 프로파일) ② 사건 구간 지침(잡의 reference_time —
-도구 호출에 앵커 인자를 쓰라는 지시) ③ 상관 결과 ④ kind별 플레이북(plans/91 1-5 · plans/51 §6 —
+도구 호출에 앵커 인자를 쓰라는 지시) ③ 상관 결과 ③′ 크로스소스 사건
+(settings.cross_source_investigation_enabled이고 두 소스 멤버가 있을 때만 · plans/153 §4.6)
+④ kind별 플레이북(plans/91 1-5 · plans/51 §6 —
 결정적 문구) ⑤ OpenMetrics 서술 노트(settings.openmetrics_guidance_enabled일 때만 ·
 plans/92 O3 · R-12) ⑥ APM 노트(settings.apm_guidance_enabled일 때만 · plans/87 J3)
 ⑦ settings.investigation_guidance_extra(운영자 자유 지침).
@@ -16,6 +18,16 @@ plans/92 O3 · R-12) ⑥ APM 노트(settings.apm_guidance_enabled일 때만 · p
 
 from __future__ import annotations
 
+from sre_agent.domain.correlation import format_offset, offset_minutes
+from sre_agent.domain.cross_source_episode import (
+    APM_TOOLS_NOT_CONNECTED_LIMIT,
+    STRONG_ONLY_NOTE,
+    EpisodeContext,
+    active_episode,
+    prompt_text,
+    selector_text,
+    source_name,
+)
 from sre_agent.domain.investigation_limits import (
     APM_UNAVAILABLE_CODES,
     is_apm_resource_type,
@@ -363,6 +375,101 @@ def apm_notes(settings, job) -> list[str]:  # noqa: ANN001 — AgentSettings · 
     return notes
 
 
+# ---------------------------------------------------------------------
+# 크로스소스 사건 노트 (plans/153 §4.6 · D-325 ⑨ · D-035 — 결정적 문구, LLM 0)
+#
+# 사건 스냅샷은 noise_gate 사건 추적기가 묶은 결과다(G-5 (a)) — 여기서는 표로 옮기기만
+# 하고, 규칙은 「가설」로만 제시해 LLM이 두 소스 도구로 확인·반증하게 한다.
+# 플래그 off·한쪽 소스 사건이면 붙지 않는다.
+# ---------------------------------------------------------------------
+
+CROSS_SOURCE_NOTE_HEADER = (
+    "크로스소스 사건(사건 추적기 스냅샷 — 코드가 같은 호스트로 묶은 결과이며 인과 판정이 아니다):"
+)
+
+
+def _member_time(ctx: EpisodeContext, occurred_at: str | None) -> str:
+    if occurred_at is None:
+        return "시각 미상"
+    if not ctx.reference_time:
+        return occurred_at
+    try:
+        return f"{format_offset(offset_minutes(ctx.reference_time, occurred_at))} ({occurred_at})"
+    except ValueError:
+        return occurred_at
+
+
+def _lag_text(lag: float | None) -> str:
+    if lag is None:
+        return "시차 미상"
+    return f"원인이 {int(lag)}초 선행" if lag >= 0 else f"원인이 {int(-lag)}초 후행(규칙 창 허용)"
+
+
+def cross_source_note(settings, ctx: EpisodeContext) -> str:  # noqa: ANN001 — AgentSettings
+    """③′ 크로스소스 사건 노트.
+
+    멤버 표 · 규칙 창 · 링크(가설) · apm 구간 도구 · strong 매칭 고지 · 한계.
+    """
+    lines = [
+        CROSS_SOURCE_NOTE_HEADER,
+        f"- 사건 {prompt_text(ctx.episode_id) or '?'} · "
+        f"호스트 키 {prompt_text(ctx.host_key) or '?'} · "
+        f"존 {prompt_text(ctx.zone) or '?'} · 멤버 인프라 {len(ctx.infra_members)}건 · "
+        f"애플리케이션 {len(ctx.apm_members)}건",
+        f"- {STRONG_ONLY_NOTE} — 다른 호스트 표기로 들어온 알람은 이 표에 없으니 "
+        "필요하면 도구로 따로 찾는다.",
+        "사건 멤버(최근 순):",
+        "| 시각 | 소스 | 알람명 | kind/was_kind |",
+        "|---|---|---|---|",
+    ]
+    for m in ctx.members:
+        when, source = _member_time(ctx, m.occurred_at), source_name(prompt_text(m.source))
+        label, trait = prompt_text(m.label), prompt_text(m.trait)
+        lines.append(f"| {when} | {source} | {label} | {trait or '-'} |")
+    if ctx.rules:
+        lines.append("걸린 규칙(창은 증상 시각 기준):")
+        for r in ctx.rules:
+            before = "?" if r.cause_before_seconds is None else r.cause_before_seconds
+            after = "?" if r.cause_after_seconds is None else r.cause_after_seconds
+            lines.append(
+                f"- 규칙 {prompt_text(r.id)}: 원인 {selector_text(r.cause)} → "
+                f"증상 {selector_text(r.effect)} · "
+                f"창: 원인이 증상 {before}초 전 ~ {after}초 후"
+            )
+    if ctx.valid_links:
+        lines.append(
+            "규칙 가설(결합 근거일 뿐이다 — 두 소스 도구로 선후를 확인하고 반증까지 검토하라):"
+        )
+        for lk in ctx.valid_links:
+            cause = prompt_text(ctx.link_label(lk.cause_alarm_id))
+            effect = prompt_text(ctx.link_label(lk.effect_alarm_id))
+            rule_id = prompt_text(lk.rule_id)
+            lines.append(f"- {cause} → {effect} · {_lag_text(lk.lag_seconds)} (규칙 {rule_id})")
+    lines.extend(f"- 한계: {n}" for n in (*ctx.excluded_link_notes(), *ctx.notes))
+    lines.append(
+        "애플리케이션(APM) 구간 도구: " + " · ".join(APM_ANCHORED_TOOLS)
+        + " — 사건 구간 인자(reference_time·lookback_minutes)를 함께 넘긴다."
+    )
+    if not getattr(settings, "apm_mcp_url", ""):
+        lines.append(f"{APM_TOOLS_NOT_CONNECTED_LIMIT}하고, 그 사실을 결론의 한계에 적는다.")
+    return "\n".join(lines)
+
+
+def cross_source_playbooks(job, ctx: EpisodeContext) -> list[str]:  # noqa: ANN001 — JobLike
+    """혼합 사건 플레이북 — OS 플레이북(트리거·인프라 멤버 kind) **과** APM 플레이북을 병기한다."""
+    kinds: list[str] = []
+    trigger_kind = alarm_kind_from_job(job)
+    if trigger_kind and trigger_kind != "apm":
+        kinds.append(trigger_kind)
+    for m in ctx.infra_members:
+        kind = m.kind if m.kind in PLAYBOOK_NOTES else classify_alarm_kind(None, m.alarm_name)
+        if kind and kind != "apm":
+            kinds.append(kind)
+    notes = [PLAYBOOK_NOTES[k] for k in dict.fromkeys(kinds) if k in PLAYBOOK_NOTES]
+    notes.append(apm_playbook_note(trigger_hints(job)))
+    return notes
+
+
 def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
     """조사 지침을 조립한다. 넣을 것이 없으면 None(`ask()`는 부하 가드만 붙인다).
 
@@ -372,6 +479,10 @@ def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa
 
     `apm_guidance_enabled`면 ②에 apm_* 구간 도구를 더하고, ④는 apm 사건(kind `apm` 또는 트리거
     `meta.hints.solution == "apm"`)이면 OS 플레이북 대신 APM 플레이북 하나만 싣는다.
+
+    `cross_source_investigation_enabled`이고 `meta.episode`에 두 소스 멤버가 있으면
+    (plans/153 §4.6) ③ 뒤에 ③′ 크로스소스 사건 노트를 넣고, ④는 OS 플레이북과
+    APM 플레이북을 **병기**한다(대체 아님).
     """
     apm_on = bool(getattr(settings, "apm_guidance_enabled", False))
     parts: list[str] = []
@@ -387,12 +498,22 @@ def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa
     corr = correlation_note(getattr(job, "correlation", None))
     if corr:
         parts.append(corr)
-    if apm_on and is_apm_trigger(getattr(job, "payload", None)):   # kind apm 또는 hints.solution == apm
-        playbook: str | None = apm_playbook_note(trigger_hints(job))
+    xs = active_episode(
+        getattr(job, "payload", None),
+        bool(getattr(settings, "cross_source_investigation_enabled", False)),
+        getattr(job, "reference_time", None),
+    )
+    if xs is not None:
+        parts.append(cross_source_note(settings, xs))
+        parts.extend(cross_source_playbooks(job, xs))
     else:
-        playbook = playbook_note(alarm_kind_from_job(job))
-    if playbook:
-        parts.append(playbook)
+        # kind apm 또는 hints.solution == apm
+        if apm_on and is_apm_trigger(getattr(job, "payload", None)):
+            playbook: str | None = apm_playbook_note(trigger_hints(job))
+        else:
+            playbook = playbook_note(alarm_kind_from_job(job))
+        if playbook:
+            parts.append(playbook)
     if getattr(settings, "openmetrics_guidance_enabled", False):
         parts.append(OPENMETRICS_NOTE)
     if apm_on:
@@ -407,4 +528,6 @@ __all__ = ["ANCHORED_TOOLS", "APM_ANCHORED_TOOLS", "INCIDENT_SCOPE_NOTE_TEMPLATE
            "OPENMETRICS_NOTE", "APM_UNAVAILABLE_CODES", "APM_FOCUS_NOTE_TEMPLATE", "APM_REALTIME_NOTE",
            "APM_FALLBACK_NOTE", "APM_NOT_CONFIGURED_NOTE", "APM_PLAYBOOK_NOTE",
            "incident_scope_note", "correlation_note", "classify_alarm_kind", "alarm_kind_from_job",
-           "trigger_hints", "playbook_note", "apm_playbook_note", "apm_notes", "build_guidance"]
+           "trigger_hints", "playbook_note", "apm_playbook_note", "apm_notes",
+           "CROSS_SOURCE_NOTE_HEADER", "cross_source_note", "cross_source_playbooks",
+           "build_guidance"]

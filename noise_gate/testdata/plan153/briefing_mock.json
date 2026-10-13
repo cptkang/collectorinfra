@@ -1,0 +1,43 @@
+{
+  "severity": {
+    "level": "경고",
+    "confidence": "medium",
+    "escalate": false,
+    "gate_tier": "page",
+    "signals": [
+      "cpu_saturation"
+    ],
+    "evidence_insufficient": false
+  },
+  "summary": "xsapp01 CPU 사용률이 09:00부터 98%로 포화됐다 ← polestar_metric_trend",
+  "timeline": [
+    "T-5m 메트릭 CPU 사용률 98% (baseline 대비 z=4.1)",
+    "T-5m 알람 CPU 사용률 (심각도 2)",
+    "T+0m 알람 SERVICE_QUEUING xsapp01_was01 (value=41) ← apm_events"
+  ],
+  "bottleneck": "CPU 포화(사용률 90% 초과 지속)",
+  "cause": "CPU 포화가 WAS 서비스 큐잉에 선행 ← polestar_metric_trend",
+  "root_cause_hypotheses": [
+    {
+      "rank": 1,
+      "cause": "cpu sustained 이상이 첫 알람에 5분 선행",
+      "confidence": "high",
+      "evidence": [
+        "T-5m 메트릭 CPU 사용률 98% (baseline 대비 z=4.1)"
+      ],
+      "reasoning": "cpu onset T-5m · peak 98.0 · z=4.1. 상관 ≠ 인과 — 가설 신뢰도는 선행성·지속성(결정적 상관)에서 도출한 것이며 인과 확정이 아님"
+    }
+  ],
+  "recommendation": {
+    "items": [
+      "xsapp01 상위 CPU 프로세스 확인(ps·top)"
+    ],
+    "note": "※ 실행은 운영자 승인 후 수동 — 시스템은 제안만(자동 실행 경로 없음)"
+  },
+  "limitations": [
+    "프로세스·자원 스냅샷은 조사 시점 단면일 수 있음",
+    "상관 ≠ 인과 — 가설 신뢰도는 선행성·지속성(결정적 상관)에서 도출한 것이며 인과 확정이 아님"
+  ],
+  "citations_verified": true,
+  "hypotheses": []
+}

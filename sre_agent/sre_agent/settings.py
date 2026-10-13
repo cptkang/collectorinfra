@@ -1,6 +1,6 @@
 """에이전트 설정 — .env 로딩은 pydantic-settings 필드로만 판정한다 (os.getenv 금지)."""
 
-from pydantic import AliasChoices, Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 실 조사 LLM 게이트의 스텁 사유 — 사용자·감사에 그대로 노출된다(침묵 금지 · D-123 ⑦ · D-230).
@@ -114,6 +114,22 @@ class AgentSettings(BaseSettings):
     investigation_max_concurrent: int = 2
     # 시간당 조사 횟수 상한. None이면 예산 가드 off. 초과 시 신규 조사 거부.
     investigation_hourly_budget: int | None = None
+    # 조사 감사 JSONL 경로(plans/154 W1 · §4.7 — 벤치 감사를 운영 감사와 분리).
+    # None이면 기본 `sre_agent/.data/investigation_audit.jsonl`(비트 동일).
+    # 값이 있으면 JobStore·dispatcher가 그 파일에만 쓴다.
+    investigation_audit_path: str | None = None
+
+    @field_validator("investigation_audit_path")
+    @classmethod
+    def _blank_audit_path_is_default(cls, value: str | None) -> str | None:
+        """빈 값(공백 포함)은 None(기본 경로)으로 본다.
+
+        `INVESTIGATION_AUDIT_PATH=`처럼 비워 두면 `Path("")`가 현재 디렉토리가 되어 감사 쓰기가
+        실패하고 기동 시 `recover_on_start`가 `IsADirectoryError`로 죽는다.
+        """
+        if value is not None and not value.strip():
+            return None
+        return value
     # ── 비선두 system 메시지 강등 가드 (D-213 후속) — **기본 on(명시적 예외)** ──
     # Qwen 채팅 템플릿(vLLM)은 system을 맨 앞에만 허용하는데, holmes 컨텍스트 압축이
     # 압축 결과 말미에 role="system" 안내를 붙여 `System message must be at the beginning.`
@@ -160,6 +176,19 @@ class AgentSettings(BaseSettings):
     # severity_judge_enabled와 함께 켠다 — judge가 꺼져 있으면 합칠 판정이 없다.
     # **만료일 2027-03-29**(D-161 ① · 6개월).
     apm_signatures_enabled: bool = False
+    # 크로스소스 조사(plans/153 W5 · §4.6·§4.7 · D-325 ⑨). 기본 off = 페이로드
+    # `meta.episode`를 무시해 질문·지침·브리핑·감사가 비트 동일.
+    # 켜면 `meta.episode`(noise_gate 사건 추적기 스냅샷 — 여기서 사건을 재구성하지 않는다 ·
+    # G-5 (a))에 인프라·애플리케이션 멤버가 모두 있을 때 크로스소스 질문 · OS+APM 플레이북
+    # 병기 · 사건 멤버 타임라인 · 규칙 가설 · 브리핑 `cross_source` 블록 · 감사 키
+    # (episode_id·kind·cross_source_links)가 붙는다. APM 트리거 사전수집은
+    # `meta.episode.infra_db_ids[0]`를 폴스타 소스로 쓴다(없으면 폴스타 축 생략 —
+    # 이 부분은 플래그 무관 R-4).
+    # 운영 메모: `APM_MCP_URL`과 함께 켠다 — 비면 브리핑 한계에
+    # "애플리케이션(APM) 도구 미연결"이 강제로 실린다.
+    # **만료일 2027-04-12**(D-161 ① · 6개월) — 사건 결합 운영 실측(plans/144 W6 shadow) 후
+    # 상시화 또는 삭제를 판정한다.
+    cross_source_investigation_enabled: bool = False
     # 사건 구간 증거 사전수집 + 결정적 상관(plans/50 G4 · D-197). 기본 off — 켜면 잡에 reference_time이
     # 있을 때 조사 전에 mcp_server 도구(전 알람 1 + 지표 4)를 코드가 호출해 선행 신호·타임라인을 계산하고
     # 조사 지침·브리핑에 싣는다. LLM 호출 0. 실패해도 조사를 막지 않는다(상관 없음 + 감사).

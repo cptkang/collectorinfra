@@ -4915,6 +4915,10 @@
                 '</div>';
         }
 
+        // plans/153 W3: 자동 조사 브리핑 — 조사 id가 실렸거나 조사 기능이 켜져 있을 때만 접힌 섹션을 둔다.
+        // 펼칠 때만 조회한다(카드 렌더 시 자동 호출 금지 — 알람 폭주 때 호출이 같이 폭증하지 않게).
+        var briefingHtml = hasAlarmBriefing(data) ? renderAlarmBriefingSection() : "";
+
         // D-049: incident 확인(ack) 버튼 — incident_id가 있을 때만 표시(비-incident 알람 불변)
         var ackHtml = "";
         if (data.incident_id) {
@@ -4962,6 +4966,7 @@
                     processHtml +
                     patternHtml +
                     episodeHtml +
+                    briefingHtml +
                     ackHtml +
                     promptHtml +
                     feedbackHtml +
@@ -4989,6 +4994,9 @@
         // Plan 52 E4: 피드백 버튼 바인딩(closure로 data 캡처 — 인라인 onclick 미사용, D-049 패턴)
         bindAlarmFeedback(el, data);
 
+        // plans/153 W3: 조사 브리핑 펼치기·접기(같은 closure 패턴)
+        if (briefingHtml) bindAlarmBriefing(el, data);
+
         // 보고 있지 않은 동안 도착한 알람만 미확인으로 센다(채팅 스크롤은 건드리지 않는다).
         if (activeView !== "alarm") {
             alarmUnreadCount += 1;
@@ -4999,6 +5007,54 @@
         }
         updateAlarmScrollBtn();
         updateAlarmViewState();
+    }
+
+    // plans/153 W3: 조사 브리핑 섹션 표시 조건 — 카드에 조사 id가 있거나 capabilities가 조사 가용을 알릴 때.
+    // 공용 렌더(briefing-view.js)가 없으면 그리지 않는다.
+    function hasAlarmBriefing(data) {
+        if (!window.BriefingView) return false;
+        return !!(data.investigation_id ||
+            (data.alarm_id && alarmCapabilities && alarmCapabilities.investigation_enabled));
+    }
+
+    function renderAlarmBriefingSection() {
+        return '<div class="alarm-section alarm-briefing-section alarm-briefing-section--collapsed">' +
+                '<button type="button" class="alarm-briefing-toggle" aria-expanded="false">' +
+                    escapeHtml(window.BriefingView.TEXT.title) + '</button>' +
+                '<div class="alarm-briefing-body"></div>' +
+            '</div>';
+    }
+
+    // 펼칠 때 조회 API를 부르고, 조사 중이면 공용 컨트롤러가 15초 간격으로 다시 묻는다(상한 =
+    // capabilities 값 또는 300초). 접으면 타이머를 멈춘다. 알람 id가 있으면 항상 by-alarm 경로로 묻는다 —
+    // 서버 우선순위(① 종결된 사건 종합 조사 ② 자기 단독 조사 ③ 최신)는 그 경로에만 있어, 카드에 실린
+    // 단독 조사 id로 물으면 종합 조사를 못 본다. 알람 id가 없을 때만 조사 id로 묻는다.
+    function bindAlarmBriefing(el, data) {
+        var section = el.querySelector(".alarm-briefing-section");
+        if (!section) return;
+        var toggle = section.querySelector(".alarm-briefing-toggle");
+        var body = section.querySelector(".alarm-briefing-body");
+        var path = data.alarm_id
+            ? "/api/v1/alarm/investigations/by-alarm/" + encodeURIComponent(data.alarm_id)
+            : "/api/v1/alarm/investigations/" + encodeURIComponent(data.investigation_id);
+        var panel = window.BriefingView.attach(body, {
+            limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
+            load: async function () {
+                var resp = await fetch(path, { headers: getAuthHeaders() });
+                if (!resp.ok) {
+                    var detail = await resp.json().catch(function () { return {}; });
+                    throw new Error(detail.detail || ("HTTP " + resp.status));
+                }
+                return resp.json();
+            },
+        });
+        toggle.addEventListener("click", function () {
+            var open = section.classList.contains("alarm-briefing-section--collapsed");
+            section.classList.toggle("alarm-briefing-section--collapsed", !open);
+            toggle.setAttribute("aria-expanded", open ? "true" : "false");
+            if (open) panel.open();
+            else panel.close();
+        });
     }
 
     // Plan 86: 추천 질의 칩을 DOM으로 만들고 closure로 프롬프트 전문을 캡친다.

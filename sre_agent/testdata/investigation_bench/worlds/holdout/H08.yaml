@@ -1,0 +1,58 @@
+# plans/154 §4.6 H08 — 홀드아웃(D16과 같은 kind · apm_pool_exhaustion · 크로스소스 apm_*) · 개선 채택 판정 전용
+id: H08
+split: holdout
+title: 결제 WAS의 JDBC 연결 풀 소진으로 결제 응답 지연
+event:
+  dbId: polestar
+  serverName: bw-h08-was02
+  hostname: bw-h08-was02
+  ipAddress: 198.51.100.38
+  resourceAncestry: ""
+  alarmId: "bw-h08-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "결제 응답 지연 경보"
+  alarmTime: "20261009133000"
+  conditions: "> 6000ms"
+  conditionLog: "[결제 거래 응답 (> 6000ms)]"
+label:
+  root_entity: {host: bw-h08-was02, component: jdbc/bwh08PayDS}
+  layer: app
+  kind: apm_pool_exhaustion
+  change_related: false
+  aliases:
+    kind: [커넥션 풀 고갈, DB 풀 고갈, 커넥션 풀 소진, connection pool exhaustion, JDBC 풀 소진]
+key_evidence:
+  - {tool: apm_resource_pool, cite: [jdbc/bwh08PayDS, "100.0"]}
+  - {tool: apm_slow_transactions, cite: ["8870"]}
+expect:
+  abstain: false
+hosts: [bw-h08-was02]
+incident_window: {start: -25m, end: 0m}
+tools:
+  apm_resource_pool:
+    - reply:
+        rows:
+          - {instance_name: bwh08-was02-pay, pool: jdbc/bwh08PayDS, active: 120, max: 120, usage_pct: 100.0, waiting_threads: 211}
+        row_count: 1
+        verdict: "풀 사용 한계 도달"
+        source_kind: apm_api
+        source: jennifer
+        tool: apm_resource_pool
+  apm_slow_transactions:
+    - reply:
+        rows:
+          - {guid: g-c210, service: /pay/approve, elapsed_ms: 9310, sql_ms: 210, fetch_ms: 18, external_ms: 40, wait_conn_ms: 8870}
+        row_count: 1
+        verdict: "외부 호출·SQL 지연 아님 — 연결 획득 대기 우세"
+        source_kind: apm_api
+        source: jennifer
+        tool: apm_slow_transactions
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: apm_resource_pool, args: {hostname: bw-h08-was02}}
+    - {call: apm_slow_transactions, args: {hostname: bw-h08-was02}}
+    - {answer: "bw-h08-was02 jdbc/bwh08PayDS 커넥션 풀 소진 — 사용률 100.0%·대기 211 (apm_resource_pool) · 연결 획득 대기 8870ms (apm_slow_transactions)"}

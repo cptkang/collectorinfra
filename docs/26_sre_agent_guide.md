@@ -994,3 +994,87 @@ memory 8GiB / oom_kills 3)을 조사 서술이 집어냈는지 **문자열로 �
 | `plans/sre-agent/04-polestar-mcp-integration.md` | mcp_server 고수준 도구 확장 |
 | `plans/sre-agent/06-remote-vm-access.md` | 원격 VM 2축 데이터 경로 |
 | `sre_agent/README.md` | 패키지 최소 안내(경계 불변식·개발 명령) |
+
+---
+
+## 10. 조사 품질 벤치마크 (plans/154)
+
+> 명령의 정본은 `plans/154-WIP-sre-investigation-quality-benchmark.md` §9.3이다. 이 절은 구성과 절차의 요지만 옮긴다.
+> 근거 결정: D-324(벤치) · D-127·D-240(과금 게이트) · D-222(비과금 평면) · D-301(누출 관문 = 미기록).
+
+### 10.1 목적
+
+정답이 있는 합성 장애 세계(개발 16 · 홀드아웃 8 = 24건)에 HolmesGPT 조사를 반복으로 돌려 근본 원인 적중·근거 인용·환각·완주율·지연을 잰다. 실패 유형(F-*)에서 개선 후보를 찾고, 후보를 플래그 1개(기본 off)로 구현해 같은 백엔드의 대조군과 A/B로 비교한 뒤 채택 여부를 정한다. 측정은 내부망 GPU 서버에서 사용자가 돌리고(회차), 외부망은 하네스 개발·MLX 로직 확인·반출 묶음 검토만 한다.
+
+### 10.2 구성
+
+한 번의 `--run`이 아래 프로세스를 띄우고 끝나면 자기 PID만 내린다. 벤치 포트는 19180~19299이고, 운영·개발 기본 포트(9097·9098·9099·8080)는 쓰지 않는다.
+
+| 구성 요소 | 위치 | 하는 일 |
+|---|---|---|
+| CLI | `sre_agent/scripts/inv_bench.py` | 모드 진입(`--show-env`·`--preflight`·`--run`·`--status`·`--cleanup`·`--resume`·`--report`·`--rejudge`·`--export`·`--lint`·`--schema-snapshot`) |
+| 세계 서버 | `scripts/investigation_bench/world_server.py` | `127.0.0.1:19190/sse`(polestar_*·prom_*·om_*) · `19191/sse`(apm_* — APM 세계가 있을 때만). 실 `mcp_server`·`apm_gateway`의 도구 표면(`tool_schemas.json`)을 흉내 내고 현재 세계의 답을 낸다 |
+| 실험군 sre_agent | `scripts/investigation_bench/_serve.py --port 19200…` | 실험군마다 프로세스 1개. cwd는 빈 `<run>/arm-<name>/`이고, 설정은 OS 환경변수로만 준다(`.env`·`.encenv` 미적재). 기동 직후 실효 설정 에코를 `settings_echo.json`에 쓴다 |
+| 러너 · 채점 · 보고 | `runner.py` · `judge.py` · `report.py` | 세계마다 실험군을 번갈아 직렬로 submit/poll → `raw.jsonl` · `scores.jsonl` · `report.md` |
+| 사전 점검 | `preflight.py` | 과금 평면 판정 · 포트 · tool-calling 왕복 1회 · 버전 |
+| 반출 | `export.py` | 가림 + 잔존 검사 → `<run_id>.bundle/` |
+
+세계 YAML은 `sre_agent/testdata/investigation_bench/worlds/{dev,holdout}/`, 실행 명세는 `…/specs/`(`local_smoke.yaml` · `closed_round1.yaml` · `closed_round1_fabrix.yaml` · `closed_roundN.template.yaml` · 테스트용 `fake_e2e.yaml`)에 있다. run 디렉터리는 `sre_agent/.data/investigation_bench/<run_id>/`(gitignore)다.
+
+### 10.3 외부망 — 린트 · 가짜 LLM 종단 · 로컬 MLX 확인
+
+모든 명령은 **`sre_agent/` 안에서 `sre_agent/.venv`로** 돈다(계획서 §9.3.4·§9.3.5).
+
+```bash
+# [개발 맥 · CWD=sre_agent · sre_agent/.venv] — 실 LLM 0
+.venv/bin/python scripts/inv_bench.py --lint
+.venv/bin/python scripts/inv_bench.py --run --spec testdata/investigation_bench/specs/fake_e2e.yaml --test
+
+# 로컬 MLX(D01·D03·D09 × k=1 · 대조군) — 레포 루트 다른 터미널에서 MLX_PORT=8080 scripts/mlx_server.sh 를 먼저 띄운다
+S=testdata/investigation_bench/specs/local_smoke.yaml
+.venv/bin/python scripts/inv_bench.py --show-env  --spec $S   # MODEL=openai/… · API_BASE=127.0.0.1:8080 · GEMINI 키 공란
+.venv/bin/python scripts/inv_bench.py --preflight --spec $S   # exit 0이어야 다음
+.venv/bin/python scripts/inv_bench.py --run       --spec $S
+.venv/bin/python scripts/inv_bench.py --export .data/investigation_bench/<run_id>
+```
+
+- `local_smoke.yaml`의 `llm.model`은 MLX 서버가 **적재한 모델**(`scripts/mlx_server.sh`의 `--model`)에 `openai/`를 붙인 값이다. `/v1/models`는 로컬 캐시의 모델을 전부 나열하므로 거기서 아무 이름이나 고르면 요청마다 모델을 다시 적재한다.
+- MLX 점수는 처분에 쓰지 않는다(로직 확인용). MLX 서버는 자기가 띄운 PID만 끈다.
+
+### 10.4 내부망 키트 만들기 (외부망에서)
+
+키트는 저장소 커밋과 `dist/inv_bench_kit/`(gitignore)로 구성된다. `dist/inv_bench_kit/`에는 `requirements.lock`(holmesgpt 0.36.0 고정) · `wheels/` · `COMMIT`이 들어간다. 명령은 계획서 §9.3.6을 따른다(`pip freeze` → 대상 플랫폼 `pip download --only-binary=:all:`).
+
+- 플랫폼 태그는 **`manylinux_2_28_x86_64`와 `manylinux2014_x86_64`를 함께** 준다. 2014 태그만 주면 confluent-kafka·jq·pymssql·pyroaring·tiktoken을 받지 못한다. 그래서 **GPU 서버는 glibc 2.28 이상이어야 한다**. 받은 내역은 키트의 `no_binary.txt`에 적혀 있다.
+- clickhouse-sqlalchemy==0.3.2는 바이너리 휠이 없다. sdist를 `pip wheel --no-deps`로 순수 파이썬 휠(py3-none-any)로 만들어 넣는다.
+- 가정은 리눅스 x86_64 · Python 3.13이다. GPU 서버가 다르면 `--platform`·`--python-version`을 바꿔 다시 받는다.
+
+### 10.5 내부망 GPU 서버 — 회차 실행
+
+sre_agent·세계 서버·CLI를 vLLM이 도는 GPU 서버에 함께 올린다(HolmesGPT는 CPU · GPU는 vLLM). 명령은 계획서 §9.3.7을 따른다.
+
+1. **venv 재현(1회)**: `python3.13 -m venv .venv` → `pip install --no-index --find-links <키트>/wheels -r <키트>/requirements.lock` → `pip install --no-index --find-links <키트>/wheels --no-deps -e .`
+2. **매 회차 점검**: `nvidia-smi`(다른 작업이 GPU를 쓰는지) · `curl -s --noproxy '*' http://127.0.0.1:8000/v1/models`(served name · `max_model_len`)
+3. **명세**: `closed_round1.yaml`을 저장소 밖 작업 폴더로 복사한 뒤 `run.site=closed` · `llm.backend=vllm` · `llm.model=openai/<served name>` · `llm.api_base`를 고친다. `base_env`에는 운영 실효값을 적는다.
+4. **실행**: 모든 모드에 `--site closed`를 붙인다. 명세와 CLI가 **둘 다 `closed`일 때만** 사설 주소 LLM을 허용한다. 순서는 `--show-env` → `--preflight`(실패면 멈춤) → `--run --dry-run` → `nohup … --run`이다. 진행은 `--status`로 보고, 비정상 종료 뒤에는 `--cleanup`·`--resume`을 쓴다.
+5. **판정 조건**: `report.md` 머리의 무효표율이 20% 이하여야 한다. 20%를 넘으면 처분은 `판정 불가`다(계획서 §6.2).
+
+**백엔드**: 기본은 같은 GPU 서버의 **vLLM**이다. **FabriX**(`fabrix_proxy` · 기본 9095)는 대체 백엔드이며 `plans/148` 1단계 판정(G-4)을 통과한 뒤에만 `closed_round1_fabrix.yaml`로 돌린다. FabriX 회차는 자기 기준선(A/A)을 따로 재고, vLLM 회차와 섞어 처분하지 않는다. FabriX 호출량은 `--preflight`가 출력하는 예상 호출 수를 보고 명세의 `worlds`·`k`로 정한다. FabriX PII 필터 차단은 무효표(F-INFRA · `pii_block`)로 따로 센다.
+
+### 10.6 반출 절차 · 가림 대상
+
+```bash
+.venv/bin/python scripts/inv_bench.py --export .data/investigation_bench/<run_id>
+#   → .data/investigation_bench/<run_id>.bundle/ 만 외부망으로 가져간다
+```
+
+- 묶음에는 `manifest.json` · `world_calls.jsonl` · `raw.jsonl`(브리핑 전문 포함) · `scores.jsonl` · `report.md` · `gpu_samples.jsonl`(있을 때) · 실험군별 `settings_echo.json`·`stderr.log` 마지막 200줄이 들어간다. 세계 YAML은 넣지 않고 커밋 해시로 가리킨다.
+- **가리는 것**은 `api_base` 호스트 · 실행 OS 계정 · 서버 호스트명 · 내부 절대 경로 · `nvidia-smi` 프로세스 목록의 사용자명·경로다.
+- 가린 뒤 잔존 검사를 돌린다. 검사 대상은 설정에서 읽은 원값 · 사설 IP 대역 · 홈 경로 패턴이다. **걸리면 묶음을 만들지 않는다**(D-301 준용). 외부망 검토 절차는 계획서 §6.6·§9.3.8이다.
+
+### 10.7 과금 차단 규칙
+
+- `--preflight`(모든 `--run`의 첫 단계)는 sre_agent 실효 설정의 `model`·`api_base`만 보고 판정한다. 진행 조건은 `openai/…` 프리픽스이면서 `api_base`가 ① 127.0.0.1/localhost(외부망 MLX)이거나 ② `--site closed`일 때 127.0.0.1·사설 주소·내부 호스트인 경우다. `gemini/…`·`anthropic/…`·공용 API 호스트는 거부한다(exit 2).
+- 실험군 환경에서는 `GEMINI_API_KEY`·`LLM_GEMINI_API_KEY`를 둘 다 빈 값으로 덮는다. `.env` 유입은 세 겹으로 막는다. ① cwd가 빈 디렉터리라 sre_agent 설정(pydantic `env_file`)이 `.env`·`.encenv`를 읽지 못한다. ② litellm은 기본 모드(DEV)면 import 때 `load_dotenv()`로 **설치 위치에서 위로** `.env`를 찾아 프로세스 환경에 싣는다 — 빈 cwd로는 못 막으므로 `LITELLM_MODE=PRODUCTION`을 고정해 끈다. ③ 실험군이 남긴 설정 에코의 「기본값과 다른 필드」가 러너·명세가 정한 것뿐인지, 금지 키(`INVESTIGATION_HOURLY_BUDGET`·`INVESTIGATION_DEDUP_TTL_SECONDS`)가 미설정인지 대조하고, 어긋나면 exit 2로 멈춘다.
+- tool-calling 왕복 1회가 실패하면 회차 전체를 시작하지 않는다.
+- `--allow-billed`는 승인 문구를 인자로 받아 manifest에 남긴다. 승인은 건마다 받는다(D-127 — 포괄 승인 없음). 외부망 실 LLM은 로컬 MLX로만 돌리고, 두 평면이 모두 `mlx`일 때만 승인 없이 실행한다(D-240).

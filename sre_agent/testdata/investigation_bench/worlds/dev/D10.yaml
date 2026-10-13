@@ -1,0 +1,80 @@
+# plans/154 §4.6 D10 — 스풀 디스크 포화(disk_full · os · 함정: 강한 유인 — CPU 90%대 상시)
+id: D10
+split: dev
+title: 스풀 정리 작업 중단으로 디스크 포화(CPU 상시 고부하 서버)
+event:
+  dbId: polestar
+  serverName: bw-d10-app01
+  hostname: bw-d10-app01
+  ipAddress: 192.0.2.20
+  resourceAncestry: ""
+  alarmId: "bw-d10-0001"
+  severity: 3
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "디스크 사용률 경고"
+  alarmTime: "20261012053000"
+  conditions: "> 97%"
+  conditionLog: "[디스크 사용률 (> 97%)]"
+label:
+  root_entity: {host: bw-d10-app01, component: /data/spool}
+  layer: os
+  kind: disk_full
+  change_related: false
+  aliases:
+    kind: [디스크 포화, 파일시스템 포화, 스풀 적체, filesystem full, 디스크 가득]
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: filesystem}, cite: ["99.3", /data/spool]}
+  - {tool: polestar_incident_alarms, cite: [bwd10_spool_purge]}
+distractors:
+  - {kind: cpu_high, aliases: [CPU 과부하, CPU 고부하, CPU 포화]}
+expect:
+  abstain: false
+hosts: [bw-d10-app01]
+incident_window: {start: -60m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: filesystem}
+      reply:
+        rows:
+          - {mount: /data/spool, value: 99.3, used_gb: 495.1, size_gb: 500.0}
+          - {mount: /, value: 38.2, used_gb: 11.5, size_gb: 30.0}
+        row_count: 2
+        unit: "%"
+        source_kind: postgresql
+    - match: {kind: cpu}
+      reply:
+        rows: {gen: {base: 92, noise: 3}}
+        row_count: 12
+        latest: 93.7
+        unit: "%"
+        note: "지난 30일 평균 91.8% — 렌더링 전용 상시 고부하 서버"
+        source_kind: postgresql
+  polestar_process_snapshot:
+    - reply:
+        rows:
+          - {pid: 8812, name: bwd10_render, pcpu: 702.0, p100cpu: 88.2, pmem: 22.0, state: R, elapsed: "19-03:44:10"}
+          - {pid: 8840, name: bwd10_spool_writer, pcpu: 3.1, p100cpu: 0.4, pmem: 4.1, state: S, elapsed: "19-03:44:02"}
+        row_count: 2
+        captured_at: "2026-10-12T05:30:20"
+        source_kind: polestar_api
+  polestar_incident_alarms:
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-12T04:40:00", alarm_name: "스풀 정리 작업 미실행", message: "bwd10_spool_purge cron 비활성 — 마지막 성공 2026-10-05"}
+          - {alarm_time: "2026-10-12T05:30:00", alarm_name: "디스크 사용률 경고", severity: 3}
+        row_count: 2
+        source_kind: postgresql
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d10-app01, kind: filesystem}}
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d10-app01, kind: cpu}}
+    - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-d10-app01, reference_time: "2026-10-12T05:30:00"}}
+    - {answer: "bw-d10-app01 /data/spool 디스크 포화 — 사용률 99.3% (polestar_metric_trend) · bwd10_spool_purge 정리 작업 중단 (polestar_incident_alarms) · CPU 93.7%는 평시 상시 수준"}
+  neg:
+    F-DIST:
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d10-app01, kind: filesystem}}
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d10-app01, kind: cpu}}
+      - {answer: "bw-d10-app01 CPU 과부하가 원인 — 93.7% (polestar_metric_trend)"}

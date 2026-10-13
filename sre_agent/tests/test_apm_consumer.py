@@ -22,7 +22,10 @@ from sre_agent.application.briefing_builder import (
     UNRESOLVED_PREFIX,
     build_briefing,
 )
-from sre_agent.application.investigation_dispatcher import InvestigationDispatcher
+from sre_agent.application.investigation_dispatcher import (
+    INSTRUMENTATION_KEYS,
+    InvestigationDispatcher,
+)
 from sre_agent.application.investigation_guidance import (
     ANCHORED_TOOLS,
     APM_ANCHORED_TOOLS,
@@ -503,5 +506,7 @@ def test_dispatcher_off_briefing_and_audit_unchanged_even_with_stall():
         answer=_ANSWER, verdict=ImportanceVerdict(level="경고", confidence="none", escalate=False),
         tool_names=["apm_events"] * 3, gate_tier=None, remediation=None)
     done = [r for r in audit if r.get("event") == "done"][0]
-    assert set(done) == {"event", "investigation_id", "level", "confidence", "escalate", "signals",
-                         "tokens", "cost"}
+    # plans/154 W1 계측 가산 키(D-324 ⑦ — 상시)를 뺀 나머지가 종전 8키와 같다 — 정체·APM 키는 없다.
+    assert set(done) - set(INSTRUMENTATION_KEYS) == {
+        "event", "investigation_id", "level", "confidence", "escalate", "signals", "tokens", "cost"}
+    assert "unresolved" not in done

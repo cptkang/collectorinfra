@@ -1,0 +1,70 @@
+# plans/154 §4.6 D08 — 회선 단절 → 같은 사이트 다수 서버 무응답(network_site · network · 함정 없음 — 원인은 스위치)
+id: D08
+split: dev
+title: 사이트 L3 스위치 업링크 단절로 서버 다수 무응답
+event:
+  dbId: polestar
+  serverName: bw-d08-app03
+  hostname: bw-d08-app03
+  ipAddress: 192.0.2.83
+  resourceAncestry: ""
+  alarmId: "bw-d08-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "가용성"
+  alarmTime: "20261012162000"
+  conditions: "= DOWN, 2회 연속"
+  conditionLog: "[DOWN (= DOWN, 2회 연속)]"
+label:
+  root_entity: {host: bw-d08-l3sw01, component: uplink}
+  layer: network
+  kind: network_site
+  change_related: false
+  aliases:
+    kind: [회선 단절, 회선 장애, 네트워크 단절, 링크 다운, uplink down, network outage]
+key_evidence:
+  - {tool: polestar_topology, cite: [bw-d08-l3sw01]}
+  - {tool: polestar_incident_alarms, match: {server_name: bw-d08-l3sw01}, cite: [uplink]}
+expect:
+  abstain: false
+hosts: [bw-d08-app01, bw-d08-app02, bw-d08-app03, bw-d08-l3sw01]
+incident_window: {start: -20m, end: 0m}
+tools:
+  polestar_topology:
+    - reply:
+        rows:
+          - {relation: ancestor, name: bw-d08-l3sw01, type: network.Switch, status: DOWN}
+          - {relation: sibling, name: bw-d08-app01, type: server, status: DOWN}
+          - {relation: sibling, name: bw-d08-app02, type: server, status: DOWN}
+        row_count: 3
+        source_kind: postgresql
+  polestar_incident_alarms:
+    - match: {server_name: bw-d08-l3sw01}
+      reply:
+        rows:
+          - {alarm_time: "2026-10-12T16:18:40", alarm_name: "인터페이스 상태 변경", message: "uplink Te1/0/49 링크 down — 회선 사업자 장애 접수"}
+        row_count: 1
+        source_kind: postgresql
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-12T16:19:30", alarm_name: "가용성", severity: 2}
+        row_count: 1
+        source_kind: postgresql
+  polestar_resource_status:
+    - reply:
+        rows: [{name: bw-d08-app03, avail_status: DOWN, maintenance: false}]
+        row_count: 1
+        source_kind: postgresql
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_topology, args: {source: polestar, server_name: bw-d08-app03}}
+    - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-d08-l3sw01, reference_time: "2026-10-12T16:20:00"}}
+    - {answer: "bw-d08-l3sw01 uplink 링크 다운(회선 단절)으로 같은 사이트 서버 3대 무응답 (polestar_topology · polestar_incident_alarms)"}
+  neg:
+    F-ABST:   # 원인은 맞지만 도구 인용이 없어 저신뢰(가설)로 남는다
+      - {call: polestar_topology, args: {source: polestar, server_name: bw-d08-app03}}
+      - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-d08-l3sw01, reference_time: "2026-10-12T16:20:00"}}
+      - {answer: "bw-d08-l3sw01 uplink 회선 단절로 같은 사이트 서버 무응답"}
