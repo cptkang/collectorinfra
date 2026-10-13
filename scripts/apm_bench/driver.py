@@ -219,7 +219,26 @@ def _bench_client_class() -> type:
     return BenchClient
 
 
-# --- 가드 감시 -------------------------------------------------------------------------
+def _admin_token(port: int) -> tuple[str | None, str | None]:
+    """설정 에코용 운영자 토큰 — 본체 설정의 `ADMIN_USERNAME`/`ADMIN_PASSWORD` 로 받는다.
+
+    `/admin/settings/schema` 는 `require_admin_user` 라 인증이 켜진 본체(E2)에서는 토큰 없이
+    401 이다(ITAM 벤치 `__main__.py` 와 같은 방식). 인증이 꺼진 본체(E1)는 토큰 없이 열린다.
+    """
+    from scripts.scenario.client import ClientConfig, ScenarioClient
+    from scripts.scenario.runner import resolve_admin_credentials
+
+    user, password = resolve_admin_credentials(None, None)
+    if not (user and password):
+        return None, "운영자 계정 없음(ADMIN_USERNAME·ADMIN_PASSWORD)"
+    probe = ScenarioClient(ClientConfig(port=port))
+    try:
+        return probe.admin_login(user, password)
+    finally:
+        probe.close()
+
+
+# --- 가드 감시-------------------------------------------------------------------------
 
 
 class GuardFeed:
@@ -885,7 +904,11 @@ def run(
                               log_path=session / "server.log", entry_module=ENTRY_MODULE)
         say(f"[2/4] 본체 기동 — 프로파일 {PROFILE} · 포트 {port}")
         handle.start()
-        status = verify_profile(handle, expected, None, expected_tier=EXPECTED_TIER)
+        healthy, _ = handle.wait_healthy()  # 운영자 로그인은 본체가 뜬 뒤에만
+        admin_token, admin_error = _admin_token(port) if healthy else (None, None)
+        status = verify_profile(handle, expected, admin_token, expected_tier=EXPECTED_TIER)
+        if admin_error and not status.valid:
+            status.reasons.append(admin_error)
         meta["tier"], meta["degraded_reason"] = status.tier, status.degraded_reason
         if not status.valid:
             raise RuntimeError("기동 검증 실패: " + "; ".join(status.reasons))

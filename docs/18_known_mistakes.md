@@ -1923,3 +1923,8 @@
 - **실수**: `test_bench_e2e_fake_llm.py`가 「같은 요청 = 같은 응답」을 응답 dict 전체 `==`로 단언했다. 응답 `id`가 `time.time()*1000`, `created`가 초 단위 시각이라 두 호출 사이에 밀리초가 바뀌면 실패했다(3회 중 1회 재현).
 - **원인**: 결정성 단언 대상에 시각 파생 필드를 포함했다.
 - **방지책**: 결정성 단언은 의미 필드(`choices`·`usage`)만 비교한다. 시각·난수 파생 필드(id·created·ts)는 비교에서 뺀다.
+
+### 2026-10-13 · APM 벤치가 설정 에코에 운영자 토큰을 넘기지 않아 인증 켜진 E2에서 기동 검증 401
+- **실수**: `scripts/apm_bench/driver.py`가 `verify_profile(handle, expected, None, …)`로 운영자 토큰을 고정 `None`으로 넘겼다. 인증이 켜진 내부망 본체에서 `/admin/settings/schema`가 401이 되어 `[중단] 기동 검증 실패: 설정 에코 미확인 (http 401 - 관리자 토큰 필요)`로 멈췄다(plans/152 W8 1회차).
+- **원인**: 외부망 E1은 `.env`가 없어 인증이 꺼진 본체만 돌았고, 같은 기동 검증을 쓰는 ITAM 벤치(`itam_bench/__main__.py` `admin_login`)의 운영자 로그인 단계를 옮기지 않았다.
+- **방지책**: `ServerHandle`+`verify_profile`을 쓰는 새 하네스는 `resolve_admin_credentials`→`admin_login`으로 운영자 토큰을 받아 넘긴다. 폐쇄망 키트 완주 검증에는 `AUTH_ENABLED=true` 조건을 포함한다.

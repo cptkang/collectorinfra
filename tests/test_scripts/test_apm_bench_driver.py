@@ -384,6 +384,26 @@ def test_collect_inventory_names_and_errors() -> None:
     assert hosts == {"a": ["h"]}  # 호스트 빈 행은 대응 없음
 
 
+def test_admin_token_uses_configured_operator(monkeypatch: pytest.MonkeyPatch) -> None:
+    """인증이 켜진 본체(E2)의 설정 에코는 운영자 토큰이 있어야 열린다 — 설정 계정으로 받는다."""
+    from scripts.scenario import client as sc
+    from scripts.scenario import runner as sr
+
+    seen: list[tuple[str, str]] = []
+
+    def fake_login(self: object, user: str, password: str) -> tuple[str, None]:
+        seen.append((user, password))
+        return "admin-jwt", None
+
+    monkeypatch.setattr(sr, "resolve_admin_credentials", lambda _u, _p: ("ops", "pw"))
+    monkeypatch.setattr(sc.ScenarioClient, "admin_login", fake_login)
+    assert dv._admin_token(1) == ("admin-jwt", None) and seen == [("ops", "pw")]
+
+    monkeypatch.setattr(sr, "resolve_admin_credentials", lambda _u, _p: (None, None))
+    token, error = dv._admin_token(1)
+    assert token is None and error is not None and "ADMIN_USERNAME" in error
+
+
 # --- E1 종단 ------------------------------------------------------------------------------
 
 
