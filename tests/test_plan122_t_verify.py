@@ -622,7 +622,7 @@ def test_future_slot_on_filter_phrase_is_dropped_not_clarified(query, reason):
 def test_minutes_are_resolved_not_defaulted(query):
     """verify-122t D8(교정됨): 「최근 N분」은 기간 미지정 기본값으로 조용히 가지 않는다.
 
-    D-326: 종전 기대값(되묻기 `unresolved`)을 교체 — 분이 해석기 단위가 되어 사건은 분 경계까지
+    D-328: 종전 기대값(되묻기 `unresolved`)을 교체 — 분이 해석기 단위가 되어 사건은 분 경계까지
     N분, 통계는 시 경계로 넓히고 `minute_widened_to_hour`를 고지한다(기본값 아님).
     """
     qt = resolve_query_time(query, NOW)

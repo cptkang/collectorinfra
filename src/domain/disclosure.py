@@ -192,7 +192,7 @@ KIND_TABLE: dict[str, KindSpec] = {
                 "year_inferred", "multiple_periods",
                 # 알람 경로 예외(`subject="event"` · D-291)
                 "event_no_default_period", "event_to_now",
-                # 분 단위 통계 시 확장(D-326 ③ — 본문은 `[조회 기간]` 줄 문구로 싣는다)
+                # 분 단위 통계 시 확장(D-328 ③ — 본문은 `[조회 기간]` 줄 문구로 싣는다)
                 "minute_widened_to_hour",
             )
         ),
@@ -355,7 +355,7 @@ _PERIOD_NOTE_PHRASES: dict[str, str] = {
     ts.NOTE_YEAR_INFERRED: "연도 미지정 — 가장 최근 연도로 해석",
     ts.NOTE_DISPLAY_GRAIN_UNALIGNED: "요청한 집계 단위를 기간 경계에 맞춰 조정",
     ts.NOTE_FUTURE_PERIOD: "아직 오지 않은 기간 포함",
-    # 「최근 30분」 통계 — 머리 문구가 넓힌 정시 구간과 원문 스팬을 이미 적는다(D-326 ③)
+    # 「최근 30분」 통계 — 머리 문구가 넓힌 정시 구간과 원문 스팬을 이미 적는다(D-328 ③)
     ts.NOTE_MINUTE_WIDENED: "시 단위 통계라 분 단위 기간을 정시 구간으로 넓혀 조회했습니다",
 }
 _LLM_SOURCE_PHRASE = "모델 해석 — 다르면 날짜를 직접 적어 주세요"

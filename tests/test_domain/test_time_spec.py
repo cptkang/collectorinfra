@@ -349,7 +349,7 @@ class TestEventSubjectAndClarify:
 
 
 class TestMinuteUnit:
-    """plans/159 W1 · D-326 — 분 단위(사례 표는 `test_plan159_minute_period.py`)."""
+    """plans/159 W1 · D-328 — 분 단위(사례 표는 `test_plan159_minute_period.py`)."""
 
     NOW_M = datetime(2026, 10, 13, 10, 37, 42, 123, tzinfo=KST)
 
@@ -407,7 +407,7 @@ class TestMinuteUnit:
         assert (res.start, res.end) == (kst(2026, 10, 13, 10, 32), kst(2026, 10, 13, 10, 37))
 
     def test_hour_rolling_unchanged(self) -> None:
-        """시 단위 롤링(「최근 3시간」)의 정시 절단은 바꾸지 않는다(D-326 ⑥)."""
+        """시 단위 롤링(「최근 3시간」)의 정시 절단은 바꾸지 않는다(D-328 ⑥)."""
         spec = TimeSpec(relation="last", n=3, unit="hour", completeness="rolling")
         for subject in ("event", "metric"):
             res = resolve(spec, self.NOW_M, subject=subject)  # type: ignore[arg-type]

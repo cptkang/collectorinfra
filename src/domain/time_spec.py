@@ -25,7 +25,7 @@ LLM 슬롯(`time_expr.slot_to_spec`)이 만든 `TimeSpec`을 기준 시각(요�
 - 연도 없는 절대값은 "미래가 아닌 가장 최근 발생"(D-185 · 당월 허용)
 - 기간 표현이 여럿이면(비교 질의) 모두를 덮는 최소 구간(`cover`)과 `multiple_periods`
 
-분 단위(2026-10-13 사용자 확정 · D-326): `unit="minute"`은 `last`·`ago`(「최근 30분」·「5분 전」)만
+분 단위(2026-10-13 사용자 확정 · D-328): `unit="minute"`은 `last`·`ago`(「최근 30분」·「5분 전」)만
 받는다 — `this`·`to_date`·`next`·`absolute`와 롤링 밖 완결성은 `TimeSpecError("invalid_spec")`
 (되묻기).
 - 사건 = `[분 경계(기준 시각) − N분, 분 경계(기준 시각))` — 정시로 깎지 않는다. 「N분 전」도 같다
@@ -97,7 +97,7 @@ NOTE_YEAR_INFERRED = "year_inferred"                # 연도 미상 — 미래�
 NOTE_MULTIPLE_PERIODS = "multiple_periods"          # 기간 표현 여럿 — 모두를 덮는 구간
 NOTE_EVENT_NO_DEFAULT = "event_no_default_period"   # 사건(알람) 기간 미지정 — 기간 조건 없음(D-291)
 NOTE_EVENT_TO_NOW = "event_to_now"                  # 사건(알람) 진행 중 기간 — 기준 시각까지(D-291)
-NOTE_MINUTE_WIDENED = "minute_widened_to_hour"      # 분 단위 통계 — 시 경계로 넓혔다(D-326)
+NOTE_MINUTE_WIDENED = "minute_widened_to_hour"      # 분 단위 통계 — 시 경계로 넓혔다(D-328)
 
 _GRAIN_RANK: dict[str, int] = {"hour": 0, "day": 1, "month": 2}
 _GRAIN_OF: dict[str, Grain] = {"hour": "hour", "day": "day", "month": "month"}
@@ -108,7 +108,7 @@ _UNIT_GRAIN: dict[str, Grain] = {
 }
 _MONTHS_PER: dict[str, int] = {"month": 1, "quarter": 3, "half": 6, "year": 12}
 _NEEDS_UNIT: frozenset[str] = frozenset({"last", "this", "next", "ago", "to_date"})
-#: 분 단위를 받는 관계(D-326) — 「이번 분」·「다음 N분」·달력 분은 실사용 표현이 아니라 되묻는다.
+#: 분 단위를 받는 관계(D-328) — 「이번 분」·「다음 N분」·달력 분은 실사용 표현이 아니라 되묻는다.
 _MINUTE_RELATIONS: frozenset[str] = frozenset({"last", "ago"})
 
 
@@ -670,7 +670,7 @@ def resolve(spec: TimeSpec, now: datetime, *, subject: Subject = "metric") -> Ti
 
     unit = spec.unit
     n = spec.n or 1
-    if unit == "minute":  # last·ago만 온다(TimeSpec 검증 · D-326)
+    if unit == "minute":  # last·ago만 온다(TimeSpec 검증 · D-328)
         return _resolve_minute(spec, n, event, now, anchor_at)
     if rel == "last":
         assert unit is not None
@@ -760,7 +760,7 @@ def resolve(spec: TimeSpec, now: datetime, *, subject: Subject = "metric") -> Ti
 def _resolve_minute(
     spec: TimeSpec, n: int, event: bool, now: datetime, anchor_at: datetime
 ) -> TimeResolution:
-    """분 단위 「최근 N분」·「N분 전」(D-326 — 모듈 머리말).
+    """분 단위 「최근 N분」·「N분 전」(D-328 — 모듈 머리말).
 
     사건은 기준 시각의 분 경계에서 끝나는 N분이다(「N분 전」 = 그때부터 지금까지 — 1분 칸 하나로
     읽으면 0건이 정상처럼 보인다). 통계는 시 통계보다 잘게 자를 수 없어 직전 정시에서 끝나는

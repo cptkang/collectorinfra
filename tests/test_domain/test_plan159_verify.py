@@ -1,4 +1,4 @@
-"""plans/159 독립 검증(D-326) — 결함 재현(xfail strict) + 경계 고정.
+"""plans/159 독립 검증(D-328) — 결함 재현(xfail strict) + 경계 고정.
 
 기준 시각 2026-10-13(화) 10:37 KST. 실 LLM·DB·네트워크 0. 결함은 `xfail(strict=True)`로 남긴다 —
 교정되면 XPASS가 실패로 떠서 마커를 지우게 한다(V-1~V-4는 W1 교정 라운드에서 해제).
@@ -39,7 +39,7 @@ def test_hour_period_with_suffix_then_minute_interval_keeps_hour(text: str) -> N
 
 # 교정됨 — W1 교정 라운드에서 xfail 해제(기대값 그대로):
 # V-2: `hour_minute` 합성이 바로 뒤 빈도 어휘(간격·마다)를 보지 않는다 — 「지난 3시간 10분
-# 간격」이 190분 기간이 된다(D-326 ⑧ 「5분 간격·5분마다」는 기간 아님 · 기준 SHA는 3시간)
+# 간격」이 190분 기간이 된다(D-328 ⑧ 「5분 간격·5분마다」는 기간 아님 · 기준 SHA는 3시간)
 @pytest.mark.parametrize("text", [
     "지난 3시간 10분 간격 TPS 추세",
     "최근 3시간 5분마다 CPU",
@@ -52,7 +52,7 @@ def test_composite_does_not_swallow_adjacent_minute_interval(text: str) -> None:
 
 # 교정됨 — W1 교정 라운드에서 xfail 해제(기대값 그대로):
 # V-3: `last_n`(접두 「최근」)은 단위 뒤 빈도·수량 어휘를 보지 않는다 — 「최근 5분 간격」·
-# 「최근 30분 이상 걸린」이 분 기간이 된다(D-326 ⑧ · 기준 SHA는 기간 없음 = 기본값)
+# 「최근 30분 이상 걸린」이 분 기간이 된다(D-328 ⑧ · 기준 SHA는 기간 없음 = 기본값)
 @pytest.mark.parametrize("text", [
     "최근 5분 간격으로 CPU 추이",
     "최근 5분마다 수집된 CPU",
@@ -63,7 +63,7 @@ def test_prefixed_minute_frequency_or_quantity_is_not_a_period(text: str) -> Non
     assert not [s for s in recognize(text) if s.unit == "minute"]
 
 
-# ── 슬롯 경로: 시각 뒤 분(D-326 ⑤) ───────────────────────────────────────────────
+# ── 슬롯 경로: 시각 뒤 분(D-328 ⑤) ───────────────────────────────────────────────
 
 # 교정됨 — W1 교정 라운드에서 xfail 해제(기대값 그대로):
 # V-4: 시각 뒤 분은 규칙이 일부러 흔적으로 남기지만(⑤ 되묻기) 슬롯 경로(`slot_to_spec`)에 같은

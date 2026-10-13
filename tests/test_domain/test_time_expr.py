@@ -303,7 +303,7 @@ class TestInterpretDetail:
 
 
 class TestMinuteRecognizer:
-    """plans/159 W1 · D-326 — 분 단위 인식(구간 사례 표는 `test_plan159_minute_period.py`)."""
+    """plans/159 W1 · D-328 — 분 단위 인식(구간 사례 표는 `test_plan159_minute_period.py`)."""
 
     @pytest.mark.parametrize("text, relation, n, span", [
         ("최근 30분 응답시간", "last", 30, "최근 30분"),

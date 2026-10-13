@@ -194,7 +194,7 @@ class TestDeadlineWithinFilter:
     @pytest.mark.parametrize("query", [
         "3개월 안에 발생한 알람",
         "3개월 내 장애 이력",
-        # D-326: 「최근 5분 CPU 사용률」·「최근 5분 내 종료된 프로세스」는 분 단위 규칙이 잡는다
+        # D-328: 「최근 5분 CPU 사용률」·「최근 5분 내 종료된 프로세스」는 분 단위 규칙이 잡는다
         # (아래 `test_recent_minutes_are_resolved`) — 규칙이 못 잡는 분 표현으로 교체
         "5분 내 CPU 사용률",
         "5분 내 종료된 프로세스",
@@ -207,7 +207,7 @@ class TestDeadlineWithinFilter:
 
     @pytest.mark.parametrize("query", ["최근 5분 CPU 사용률", "최근 5분 내 종료된 프로세스"])
     def test_recent_minutes_are_resolved(self, query: str) -> None:
-        """D-326: 종전 기대값(되묻기)을 교체 — 사건은 분 경계까지 5분, 통계는 시 경계로 넓힌다."""
+        """D-328: 종전 기대값(되묻기)을 교체 — 사건은 분 경계까지 5분, 통계는 시 경계로 넓힌다."""
         qt = resolve_query_time(query, NOW)
         assert qt.clarify is None
         assert qt.event is not None and (qt.event.start, qt.event.end) == (
