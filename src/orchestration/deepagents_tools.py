@@ -33,6 +33,7 @@ from src.utils.prior_dependency import (
 )
 from src.orchestration.subagents import (
     SUBAGENT_REGISTRY,
+    SubAgentSpec,
     _extract_identity_rows,
     _make_isolated_input,
 )
@@ -81,6 +82,11 @@ _TOOL_NAMES: dict[str, str] = {
     "general_inference": "general_answer",
     # Plan 78 W3-4 — 동사+목적어. 이름 정렬만으로 호출 오류가 크게 준다(arXiv 2510.07248).
     "host_inspect": "inspect_host",
+}
+#: 조건부 처리기 → 도구 이름(plans/142 G-8 (b) — 활성일 때만 노출 · `portal_help.PORTAL_TOOL_NAME`과
+#: 같은 값). 위 고정 목록(`_TOOL_NAMES` — 항상 노출)과 나눠 둔다.
+_CONDITIONAL_TOOL_NAMES: dict[str, str] = {
+    "portal_help": "answer_portal_help",
 }
 
 
@@ -308,7 +314,9 @@ async def _run_subagent_tool(
             "deepagents 도구 결정적 교정 — data_query→alarm_query (sub_query=%r)", sub_query
         )
         agent_name = "alarm_query"
-    spec = SUBAGENT_REGISTRY.get(agent_name) or _fallback_spec()
+    spec = (SUBAGENT_REGISTRY.get(agent_name)
+            or _conditional_tool_specs(app_config).get(agent_name)
+            or _fallback_spec())
     # 호출 시작 순번. collector는 도구가 **끝날 때** 늘어나므로 길이로 세면 병렬 호출이
     # 같은 order(=같은 task_id)를 받아 `{task_id: result}`에서 하나가 덮어써졌다
     # (plans/49 §12.3 B-2). 전용 카운터는 순차 호출에서 len(collector)+1과 같은 값이라
@@ -427,7 +435,18 @@ def _referenced_but_empty(sub_query: str, collector: list) -> tuple[list[str], d
     return ids, prior
 
 
-def _fallback_spec():
+def _conditional_tool_specs(app_config: Any) -> dict[str, SubAgentSpec]:
+    """1단에 노출하는 조건부 처리기(plans/142 G-8 (b) — 포탈 도움말뿐) — 비활성이면 빈 dict.
+
+    활성 판정은 설정 스위치 ∧ 색인 적재(프로세스 1회 캐시)라 기동 뒤 값이 바뀌지 않는다 — 도구
+    목록이 턴마다 흔들리지 않는다(78 P14).
+    """
+    from src.orchestration.portal_help import active_portal_subagents  # 지연 — 순환 방지
+
+    return active_portal_subagents(app_config)
+
+
+def _fallback_spec() -> SubAgentSpec:
     """fallback(general-purpose) subagent 스펙을 반환한다."""
     for spec in SUBAGENT_REGISTRY.values():
         if spec.fallback:
@@ -460,8 +479,12 @@ def build_tools(
     # **목록은 고정한다**(78 P14): 조사 경로가 비활성이어도 도구를 빼지 않는다 —
     # 도구 정의는 컨텍스트 접두부라 목록이 흔들리면 이후 전 턴의 KV 캐시가 무효화된다.
     # 가용성 제어는 handler 진입부 게이트가 담당한다(`run_host_inspect` — 구조화 거부).
-    for agent_name, spec in SUBAGENT_REGISTRY.items():
-        tool_name = _TOOL_NAMES.get(agent_name, agent_name)
+    # 조건부 처리기(포탈 도움말 · plans/142 G-8 (b))는 활성일 때만 목록 끝에 붙는다 — 활성은 기동 시
+    # 1회 값이라 위 고정 원칙과 충돌하지 않는다(비활성 배포는 종전 목록 그대로).
+    conditional = _conditional_tool_specs(app_config)
+    for agent_name, spec in (*SUBAGENT_REGISTRY.items(), *conditional.items()):
+        tool_name = (_TOOL_NAMES.get(agent_name)
+                     or _CONDITIONAL_TOOL_NAMES.get(agent_name, agent_name))
 
         def _make_coroutine(name: str):
             async def _run(sub_query: str) -> str:

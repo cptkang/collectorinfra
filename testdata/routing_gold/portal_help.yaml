@@ -1,0 +1,278 @@
+# 포탈 기능 도움말 골든셋 (plans/142 §7 · W5)
+#
+# 목적: 「이 포탈의 기능·화면 용어·사용 방법」 질문(양성)이 `portal_help`로 가고, 같은 낱말을 쓰는
+#   데이터 조회·실제 등록 요청·포탈 밖 일반 개념 질문(음성)은 종전 담당에 남는지 잰다.
+#
+# 채점기:
+#   M-1 검색 회수율 recall@4(결정적 · LLM 0) — tests/test_portal_help_gold.py
+#       양성마다 실 색인(src/static/manual/help_index.json)을 역할 필터(role)대로 검색해 상위 4건 안에
+#       기대 절(expect.sections — 어느 하나)이 있는지 본다. 음성은 `redirect: false`인 항목만 G-5
+#       되돌림 불성립(`portal_redirect_match` → None)을 단언한다(role 이 있으면 그 역할 · 없으면 두 권).
+#   M-2 라우팅(로컬 MLX 두 평면 · 2단 intent_planner 노드 — 계층 A 단락·G-5 되돌림 포함)
+#       — scripts/eval_portal_help.py. 양성 → `portal_help` 단일 task 비율 · 음성 → `portal_help`가
+#       계획에 든 비율(오탐). `expect.agents`(음성)는 종전 담당이며 참고로만 본다(오탐 판정과 무관).
+#
+# 필드:
+#   polarity : positive | negative
+#   role     : user | admin — 검색 역할 필터(admin = 두 권 · user = 사용자 매뉴얼만 · G-2).
+#              (음성) 있으면 되돌림 판정 역할(V-2 — 되돌림은 호출자 역할로 매칭) · 없으면 두 권.
+#   category : (음성) data_lookup(같은 낱말의 데이터 조회) · real_registration(실제 등록·관리 요청) ·
+#              general_concept(포탈 밖 일반 개념·사용법)
+#   expect.sections : (양성) 기대 근거 절 `<manual>:<section_id>` — 실 색인 section_id로 실측해 적었다.
+#   expect.agents   : (음성) 종전 담당 후보(참고)
+#   redirect : (음성) false면 결정적 G-5 되돌림이 성립하지 않아야 한다.
+#   prior    : (2턴) 앞 턴 — 노드 상태 `conversation_context`(turn_count 2 · 앞 턴 요약)로 주입한다.
+#              요약 문구는 수기 작성이다(런타임 context_resolver 산출물 아님).
+#
+# 양성 문장은 매뉴얼에 실제 있는 기능만 쓴다(사용자 매뉴얼 14 · 관리자 매뉴얼 6 — 요청 예시 2건 ·
+# 2턴 2건 포함). 대표 W0 문항은 pu-01(등록 오인 재현)·pu-02(1단 직답 오답)·pu-03(G-5 되돌림 미성립).
+
+version: 1
+items:
+  # ── 양성 — 사용자 매뉴얼 14 ─────────────────────────────────────────
+  - id: pu-01
+    polarity: positive
+    role: user
+    query: "itam db에 유사어를 등록하려고 한다. 어떻게 해야 되냐?"
+    expect: {sections: ["user:U-37"]}
+    note: "요청 예시 1 · W0 문항 1(분해가 cache_management로 보냈다 — 등록 오인)"
+
+  - id: pu-02
+    polarity: positive
+    role: user
+    query: "노이즈 캔슬링의 '수신 알람'은 무엇인지 설명하라."
+    expect: {sections: ["user:U-44"]}
+    note: "요청 예시 2 · W0 문항 2(1단 직답 오답) — 「수신 알람」은 U-44 항목"
+
+  - id: pu-03
+    polarity: positive
+    role: user
+    query: "결과를 엑셀로 내려받으려면 어떻게 해?"
+    expect: {sections: ["user:U-22", "user:U-23"]}
+    note: "W0 문항 3 — CSV 다운로드(Excel에서 열림 · U-22) 또는 결과 파일 내려받기(U-23)"
+
+  - id: pu-04
+    polarity: positive
+    role: user
+    query: "실행된 SQL은 어디서 볼 수 있어?"
+    expect: {sections: ["user:U-21"]}
+
+  - id: pu-05
+    polarity: positive
+    role: user
+    query: "노이즈 관제 화면은 어떻게 읽어?"
+    expect: {sections: ["user:U-44"]}
+
+  - id: pu-06
+    polarity: positive
+    role: user
+    query: "이전 질문을 다시 불러오려면 어떻게 해?"
+    expect: {sections: ["user:U-12"]}
+
+  - id: pu-07
+    polarity: positive
+    role: user
+    query: "양식 파일 첨부는 어떻게 해?"
+    expect: {sections: ["user:U-26"]}
+
+  - id: pu-08
+    polarity: positive
+    role: user
+    query: "SQL 실행 승인이 뭐야?"
+    expect: {sections: ["user:U-38"]}
+
+  - id: pu-09
+    polarity: positive
+    role: user
+    query: "알람 확인(ack)은 어떻게 해?"
+    expect: {sections: ["user:U-43"]}
+
+  - id: pu-10
+    polarity: positive
+    role: user
+    query: "화면 테마를 다크로 바꾸는 방법 알려줘"
+    expect: {sections: ["user:U-08"]}
+
+  - id: pu-11
+    polarity: positive
+    role: user
+    query: "DB 연결 경고 배너는 무슨 뜻이야?"
+    expect: {sections: ["user:U-07"]}
+
+  - id: pu-12
+    polarity: positive
+    role: user
+    query: "매핑 보고서는 무엇인가요?"
+    expect: {sections: ["user:U-31"]}
+
+  - id: pu-13
+    polarity: positive
+    role: user
+    query: "그럼 억제율은 무슨 뜻이야?"
+    prior:
+      query: "노이즈 관제 화면은 어떻게 봐?"
+      summary: "포탈 도움말 — 사용자 매뉴얼 U-44 「노이즈 관제 화면 읽기」 근거로 KPI 카드·퍼널·결정 이력 읽는 법을 안내함"
+    expect: {sections: ["user:U-44"]}
+    note: "2턴 후속 — 「억제율」은 U-44 항목"
+
+  - id: pu-14
+    polarity: positive
+    role: user
+    query: "첨부한 원본은 다시 받을 수 있어?"
+    prior:
+      query: "보안(DRM) 문서를 첨부하려면 어떻게 해?"
+      summary: "포탈 도움말 — 사용자 매뉴얼 U-33 「보안(DRM) 문서 첨부」 근거로 첨부 방법을 안내함"
+    expect: {sections: ["user:U-28"]}
+    note: "2턴 후속 — 방법 의문 표지가 없어 G-5 되돌림 대상이 아니다(분해 LLM 몫)"
+
+  # ── 양성 — 관리자 매뉴얼 6 (role: admin) ───────────────────────────
+  - id: pa-01
+    polarity: positive
+    role: admin
+    query: "사용자 비밀번호 초기화는 어떻게 해?"
+    expect: {sections: ["admin:A-32"]}
+
+  - id: pa-02
+    polarity: positive
+    role: admin
+    query: "침묵(Silence) 규칙은 어떻게 추가해?"
+    expect: {sections: ["admin:A-45"]}
+
+  - id: pa-03
+    polarity: positive
+    role: admin
+    query: "설정 리로드는 무엇인가?"
+    expect: {sections: ["admin:A-10"]}
+
+  - id: pa-04
+    polarity: positive
+    role: admin
+    query: "DB 연결 테스트는 어떻게 해?"
+    expect: {sections: ["admin:A-14"]}
+
+  - id: pa-05
+    polarity: positive
+    role: admin
+    query: "감사 로그에서 오래된 로그 정리는 어떻게 해?"
+    expect: {sections: ["admin:A-37"]}
+
+  - id: pa-06
+    polarity: positive
+    role: admin
+    query: "워치독 카드의 무수신 경보는 무슨 뜻이야?"
+    expect: {sections: ["admin:A-44"]}
+
+  # ── 음성 14 ─────────────────────────────────────────────────────────
+  - id: ng-01
+    polarity: negative
+    category: data_lookup
+    query: "오늘 수신 알람 몇 건이야"
+    expect: {agents: [alarm_query]}
+    redirect: false
+    note: "W0 문항 4 — 같은 낱말(수신 알람)의 데이터 조회"
+
+  - id: ng-02
+    polarity: negative
+    category: data_lookup
+    query: "어제 억제된 알람 목록 보여줘"
+    expect: {agents: [alarm_query]}
+    redirect: false
+
+  - id: ng-03
+    polarity: negative
+    category: data_lookup
+    query: "CPU 사용률 상위 10건 엑셀로 내려줘"
+    expect: {agents: [data_query]}
+    redirect: false
+    note: "분해 절 대조 예 「CPU 상위 10건 엑셀로」와 같은 꼴"
+
+  - id: ng-04
+    polarity: negative
+    category: data_lookup
+    query: "노이즈 캔슬링으로 억제된 알람 건수 알려줘"
+    expect: {agents: [alarm_query]}
+    redirect: false
+    note: "같은 낱말(노이즈 캔슬링 — U-44 별칭)의 데이터 조회"
+
+  - id: ng-05
+    polarity: negative
+    category: real_registration
+    query: "hostname에 '장비이름' 유사어 등록해줘"
+    expect: {agents: [cache_management, synonym_registration]}
+    redirect: false
+    note: "분해 절 대조 예 그대로 — 실제 등록 요청"
+
+  - id: ng-06
+    polarity: negative
+    category: real_registration
+    query: "vcore를 cpu의 유사어로 등록해줘"
+    expect: {agents: [cache_management, synonym_registration]}
+    redirect: false
+
+  - id: ng-07
+    polarity: negative
+    category: real_registration
+    query: "스키마 캐시 갱신해줘"
+    expect: {agents: [cache_management]}
+    redirect: false
+
+  - id: ng-08
+    polarity: negative
+    category: general_concept
+    query: "쿠버네티스 사용법"
+    expect: {agents: [general_inference]}
+    redirect: false
+    note: "분해 절 대조 예 그대로 — 포탈 밖 외부 제품 사용법"
+
+  - id: ng-09
+    polarity: negative
+    category: general_concept
+    query: "CPU 사용률이 뭐야"
+    expect: {agents: [general_inference]}
+    redirect: false
+
+  - id: ng-10
+    polarity: negative
+    category: general_concept
+    query: "리눅스에서 디스크 사용량 확인하는 방법 알려줘"
+    expect: {agents: [general_inference]}
+    redirect: false
+
+  # ── 음성 — 일반 사용자의 일반 IT 질문(관리자 매뉴얼 용어 포함 · V-2) ──────
+  #    되돌림은 호출자 역할로 매칭한다 — 일반 사용자는 사용자 매뉴얼만 보므로 관리자 매뉴얼 용어에
+  #    끌려 「관리자 기능입니다」로 끝나지 않는다(종전 두 권 매칭 실측: A-59 · A-43 · A-32 · A-42).
+  - id: ng-11
+    polarity: negative
+    category: general_concept
+    role: user
+    query: "장애 재현 절차가 뭐야"
+    expect: {agents: [general_inference]}
+    redirect: false
+    note: "V-2 — 두 권 매칭이면 A-59(0.633)로 되돌렸다"
+
+  - id: ng-12
+    polarity: negative
+    category: general_concept
+    role: user
+    query: "redis 재연결 간격 설정 방법"
+    expect: {agents: [general_inference]}
+    redirect: false
+    note: "V-2 — 두 권 매칭이면 A-43"
+
+  - id: ng-13
+    polarity: negative
+    category: general_concept
+    role: user
+    query: "윈도우 비밀번호 초기화 방법"
+    expect: {agents: [general_inference]}
+    redirect: false
+    note: "V-2 — 두 권 매칭이면 A-32"
+
+  - id: ng-14
+    polarity: negative
+    category: general_concept
+    role: user
+    query: "데이터 마스킹이 뭐야"
+    expect: {agents: [general_inference]}
+    redirect: false
+    note: "V-2 — 두 권 매칭이면 A-42"

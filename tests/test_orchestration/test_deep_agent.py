@@ -12,7 +12,7 @@
 
 import pytest
 
-from src.config import AppConfig, OrchestratorConfig
+from src.config import AppConfig, OrchestratorConfig, PortalHelpConfig
 from src.llm import create_orchestrator_llm
 from src.orchestration.deep_agent import (
     build_deep_agent,
@@ -241,6 +241,8 @@ def test_build_tools_exposes_five_named_tools(mock_config):
     **목록은 플래그와 무관하게 고정**이다(78 P14) — `host_inspect`도 비활성일 때
     목록에 남고, 가용성은 handler 게이트가 구조화 거부로 제어한다.
     """
+    # 포탈 도움말 도구(plans/142 G-8 (b))는 활성일 때만 끝에 붙는다 — 고정 목록만 본다
+    mock_config.portal_help = PortalHelpConfig(_env_file=None, enabled=False)
     tools = build_tools(worker_llm=None, app_config=mock_config)
     assert len(tools) == len(SUBAGENT_REGISTRY)
     names = {t.name for t in tools}

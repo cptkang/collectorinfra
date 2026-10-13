@@ -540,6 +540,18 @@ solutions:
     family: prometheus
     aliases: ["프로메테우스", "Prometheus"]
 
+  # plans/142 G-4(D-315) — AIOps 포탈 매뉴얼(사용자·관리자 매뉴얼 · 포탈 기능 도움말 `portal_help`).
+  # **데이터 소스가 아니다**(`data_source: false`) — 명시 명령(「AIOps 포탈에서 수신 알람을 설명해줘」 ·
+  # 계층 A ③.9)의 별칭 정본만 둔다. `solutions()`·비DB 시스템·소스 유사어(입력 파서 힌트·명시 소스
+  # 고정·「연결되어 있지 않음」 안내·직전 DB 승계 차단)·관리자 소스 권한 목록·소스 선택 칩 어디에도
+  # 오르지 않는다 — 「AIOps 포탈에서 CPU 사용률 상위 10건」은 종전과 같은 데이터 조회다. 답변
+  # 영역(`capabilities`)·보기·backend 는 두지 않는다. 맨 「매뉴얼」은 넣지 않는다(본부 전산관리매뉴얼과
+  # 충돌 — 위 doc 별칭 주석과 같은 근거).
+  - code: portal
+    label: AIOps 포탈 매뉴얼
+    data_source: false
+    aliases: ["포탈 매뉴얼", "사용자 매뉴얼", "관리자 매뉴얼", "AIOps 포탈", "포탈 도움말"]
+
   # 향후 편입 예시 (현재 미등록 — plans/55 소관):
   # - code: dpm
   #   label: DPM(DB 성능)

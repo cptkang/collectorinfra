@@ -49,7 +49,8 @@ GROUP_ORDER: tuple[str, ...] = (
     "llm", "orchestrator", "router", "dbhub", "query", "synonym", "text2sql",
     "intent_frame", "composite", "security", "host_authz", "server", "admin", "auth",
     "multi_db", "polestar_rest", "redis", "schema_cache", "audit", "observability",
-    "alarm", "workb", "noise_gate", "drm", "rag", "result_viz", TOP_LEVEL_GROUP,
+    "alarm", "workb", "noise_gate", "drm", "rag", "result_viz", "portal_help",
+    TOP_LEVEL_GROUP,
 )
 
 GROUP_TITLES: dict[str, str] = {
@@ -79,6 +80,7 @@ GROUP_TITLES: dict[str, str] = {
     "drm": "DRM 복호화",
     "rag": "문서 검색(RAG)",
     "result_viz": "결과 그래프·값 해석",
+    "portal_help": "포탈 도움말",
     TOP_LEVEL_GROUP: "전역",
 }
 

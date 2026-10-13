@@ -1,0 +1,2670 @@
+{
+ "key": "f2f49d86a9a82ca3",
+ "query": "노이즈 캔슬링의 '수신 알람'은 무엇인지 설명하라.",
+ "has_file": false,
+ "has_answers": false,
+ "recorded_at": "2026-10-13T18:25:17",
+ "events": [
+  {
+   "event": "on_chain_start",
+   "name": "LangGraph",
+   "depth": 0
+  },
+  {
+   "event": "on_chain_start",
+   "name": "context_resolver",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "context_resolver",
+   "depth": 1,
+   "output": {
+    "conversation_context": null,
+    "current_node": "context_resolver",
+    "demonstrative_without_antecedent": false
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "input_parser",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "input_parser",
+   "depth": 1,
+   "output": {
+    "parsed_requirements": {
+     "query_targets": [],
+     "filter_conditions": [],
+     "time_range": null,
+     "output_format": "text",
+     "aggregation": null,
+     "limit": null,
+     "target_sheets": null,
+     "field_mapping_hints": [],
+     "target_db_hints": [],
+     "time_expr": null,
+     "original_query": "노이즈 캔슬링의 '수신 알람'은 무엇인지 설명하라.",
+     "synonym_registration": null
+    },
+    "template_structure": null,
+    "target_sheets": null,
+    "unanchored_query_targets": [],
+    "current_node": "input_parser",
+    "error_message": null,
+    "time_resolution": {
+     "version": 1,
+     "anchor_at": "2026-10-13T18:24:58.798942+09:00",
+     "metric": {
+      "start": "2026-09-01T00:00:00+09:00",
+      "end": "2026-10-01T00:00:00+09:00",
+      "grain": "month",
+      "completeness": "complete",
+      "source": "default",
+      "anchor_at": "2026-10-13T18:24:58.798942+09:00",
+      "span": "",
+      "unbounded": false,
+      "notes": [
+       "default_period"
+      ],
+      "anchor": "now",
+      "label": "2026-09-01 ~ 2026-09-30"
+     },
+     "event": {
+      "start": null,
+      "end": null,
+      "grain": "month",
+      "completeness": "complete",
+      "source": "default",
+      "anchor_at": "2026-10-13T18:24:58.798942+09:00",
+      "span": "",
+      "unbounded": true,
+      "notes": [
+       "event_no_default_period"
+      ],
+      "anchor": "now",
+      "label": "전체 보관 기간(기간 조건 없음)"
+     },
+     "clarify": null,
+     "slot_status": "absent",
+     "slot_reason": null,
+     "present": false
+    }
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "field_mapper",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "field_mapper",
+   "depth": 1,
+   "output": {
+    "current_node": "field_mapper",
+    "column_mapping": null,
+    "db_column_mapping": null,
+    "mapping_sources": null,
+    "mapped_db_ids": null,
+    "llm_inference_details": null,
+    "mapping_report_md": null
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "intent_planner",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "intent_planner",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "portal_help",
+      "sub_query": "노이즈 캔슬링의 '수신 알람'이 무엇인지 설명하라",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "pending",
+      "areas": [],
+      "requested_source": ""
+     }
+    ],
+    "is_composite": false,
+    "current_node": "intent_planner",
+    "plan_path": "llm_decompose",
+    "clarification_needed": null
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "agent_orchestrator",
+   "depth": 1
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t1",
+    "order": 1,
+    "total": 1,
+    "agent": "portal_help",
+    "sub_query": "노이즈 캔슬링의 '수신 알람'이 무엇인지 설명하라",
+    "input_from": [],
+    "phase": "start",
+    "status": "in_progress"
+   }
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "수"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "신"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 알"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "람"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 고"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "른"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 기간"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "에"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 알"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "람"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 거"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "르"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "기가"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 내"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "린"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 판단"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "의"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 수"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "입니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 값"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 판단"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 반드시"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 네"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 결과"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 중"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 하나"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "므로"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 옆"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " PAGE"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "·"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "T"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "ICK"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "ET"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "·"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "D"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "ASHBOARD"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "·"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "SUP"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "PRESS"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 카드"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "의"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 값을"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 더"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "한"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 것과"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 같습니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 또한"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 퍼"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "널"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 머"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "리의"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " '"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "수"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "신"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "'"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "과"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 같은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 값"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "이며"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 숫"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "자는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 천"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 단위"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 쉼"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "표"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "로"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 표시됩니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "읽"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 법"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "으로는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 알"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "람"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 해소"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "될"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 때"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 오는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 해소"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 알림"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "도"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 한"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 건"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "의"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 판단"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "으로"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 들어"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "갑니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 해소"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 알림"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 대부분"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " SUP"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "PRESS"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "로"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 끝나"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "므로"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 숫"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "자는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " '"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "장애"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 건"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "수"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "'"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "보다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 크"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "고"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " SUP"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "PRESS"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 비중"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "도"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 그만큼"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 높아"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 보입니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 카드"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 아래"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 줄"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " '"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "2"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "4"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "H"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " ·"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 게"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "이트"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 동작"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 중"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "'"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "처럼"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 기간"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "과"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 알"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "람"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 거"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "르"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "기의"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 켜"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "짐"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 상태를"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 적"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "으며"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 처음"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 불러"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "오"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "기"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 전"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "에는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 영"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "문"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 안내"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "가"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 잠"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "깐"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 보입니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "\n\n"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "카드"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "를"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 누"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "르면"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 기간"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 안"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 판단"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 전체"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "가"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 세부"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 리스트"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "로"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 열"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "립니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 아래"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 줄"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " '"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "게"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "이트"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 꺼"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "짐"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "'"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "이면"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 새"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 판단"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "이"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 만들어"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "지지"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 않으며"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": ","
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 숫"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "자는"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 꺼"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "지기"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 전에"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 남은"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 기록"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "만"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": " 셉"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "니다"
+  },
+  {
+   "event": "on_chat_model_stream",
+   "name": "MLXChatOpenAI",
+   "depth": 2,
+   "node": "agent_orchestrator",
+   "tags": [
+    "user_response"
+   ],
+   "content": "."
+  },
+  {
+   "event": "on_custom_event",
+   "name": "task",
+   "depth": 1,
+   "data": {
+    "task_id": "t1",
+    "order": 1,
+    "total": 1,
+    "agent": "portal_help",
+    "sub_query": "노이즈 캔슬링의 '수신 알람'이 무엇인지 설명하라",
+    "input_from": [],
+    "phase": "end",
+    "status": "completed"
+   }
+  },
+  {
+   "event": "on_chain_end",
+   "name": "agent_orchestrator",
+   "depth": 1,
+   "output": {
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "portal_help",
+      "sub_query": "노이즈 캔슬링의 '수신 알람'이 무엇인지 설명하라",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed",
+      "areas": [],
+      "requested_source": ""
+     }
+    ],
+    "task_results": {
+     "t1": {
+      "final_response": "수신 알람은 고른 기간에 알람 거르기가 내린 판단의 수입니다.\n\n이 값은 판단이 반드시 네 결과 중 하나이므로, 옆 PAGE·TICKET·DASHBOARD·SUPPRESS 카드의 값을 더한 것과 같습니다. 또한 퍼널 머리의 '수신'과 같은 값이며, 숫자는 천 단위 쉼표로 표시됩니다.\n\n읽는 법으로는 알람이 해소될 때 오는 해소 알림도 한 건의 판단으로 들어갑니다. 해소 알림은 대부분 SUPPRESS로 끝나므로, 이 숫자는 '장애 건수'보다 크고 SUPPRESS 비중도 그만큼 높아 보입니다. 카드 아래 줄은 '24H · 게이트 동작 중'처럼 기간과 알람 거르기의 켜짐 상태를 적으며, 처음 불러오기 전에는 영문 안내가 잠깐 보입니다.\n\n카드를 누르면 기간 안 판단 전체가 세부 리스트로 열립니다. 아래 줄이 '게이트 꺼짐'이면 새 판단이 만들어지지 않으며, 숫자는 꺼지기 전에 남은 기록만 셉니다.\n\n**매뉴얼에서 보기**\n- [U-44 노이즈 관제 화면 읽기 — 수신 알람](/manual/user#u-44-d-2-11)",
+      "portal_help": {
+       "status": "ok",
+       "sections": [
+        "user:U-44"
+       ],
+       "reason": "",
+       "llm_calls": 1
+      },
+      "source_status": [
+       {
+        "system": "portal",
+        "label": "AIOps 포탈 매뉴얼",
+        "status": "ok",
+        "rows": 1,
+        "reason": ""
+       }
+      ]
+     }
+    },
+    "current_node": "agent_orchestrator",
+    "orchestrator_round_sec": 9.814
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "replanner",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "replanner",
+   "depth": 1,
+   "output": {
+    "needs_replan": false,
+    "replan_history": [],
+    "current_node": "replanner"
+   }
+  },
+  {
+   "event": "on_chain_start",
+   "name": "result_aggregator",
+   "depth": 1
+  },
+  {
+   "event": "on_chain_end",
+   "name": "result_aggregator",
+   "depth": 1,
+   "output": {
+    "final_response": "수신 알람은 고른 기간에 알람 거르기가 내린 판단의 수입니다.\n\n이 값은 판단이 반드시 네 결과 중 하나이므로, 옆 PAGE·TICKET·DASHBOARD·SUPPRESS 카드의 값을 더한 것과 같습니다. 또한 퍼널 머리의 '수신'과 같은 값이며, 숫자는 천 단위 쉼표로 표시됩니다.\n\n읽는 법으로는 알람이 해소될 때 오는 해소 알림도 한 건의 판단으로 들어갑니다. 해소 알림은 대부분 SUPPRESS로 끝나므로, 이 숫자는 '장애 건수'보다 크고 SUPPRESS 비중도 그만큼 높아 보입니다. 카드 아래 줄은 '24H · 게이트 동작 중'처럼 기간과 알람 거르기의 켜짐 상태를 적으며, 처음 불러오기 전에는 영문 안내가 잠깐 보입니다.\n\n카드를 누르면 기간 안 판단 전체가 세부 리스트로 열립니다. 아래 줄이 '게이트 꺼짐'이면 새 판단이 만들어지지 않으며, 숫자는 꺼지기 전에 남은 기록만 셉니다.\n\n**매뉴얼에서 보기**\n- [U-44 노이즈 관제 화면 읽기 — 수신 알람](/manual/user#u-44-d-2-11)",
+    "current_node": "result_aggregator",
+    "query_results": [],
+    "messages": [
+     {
+      "__msg__": "ai",
+      "content": "수신 알람은 고른 기간에 알람 거르기가 내린 판단의 수입니다.\n\n이 값은 판단이 반드시 네 결과 중 하나이므로, 옆 PAGE·TICKET·DASHBOARD·SUPPRESS 카드의 값을 더한 것과 같습니다. 또한 퍼널 머리의 '수신'과 같은 값이며, 숫자는 천 단위 쉼표로 표시됩니다.\n\n읽는 법으로는 알람이 해소될 때 오는 해소 알림도 한 건의 판단으로 들어갑니다. 해소 알림은 대부분 SUPPRESS로 끝나므로, 이 숫자는 '장애 건수'보다 크고 SUPPRESS 비중도 그만큼 높아 보입니다. 카드 아래 줄은 '24H · 게이트 동작 중'처럼 기간과 알람 거르기의 켜짐 상태를 적으며, 처음 불러오기 전에는 영문 안내가 잠깐 보입니다.\n\n카드를 누르면 기간 안 판단 전체가 세부 리스트로 열립니다. 아래 줄이 '게이트 꺼짐'이면 새 판단이 만들어지지 않으며, 숫자는 꺼지기 전에 남은 기록만 셉니다.\n\n**매뉴얼에서 보기**\n- [U-44 노이즈 관제 화면 읽기 — 수신 알람](/manual/user#u-44-d-2-11)"
+     }
+    ]
+   }
+  },
+  {
+   "event": "on_chain_end",
+   "name": "LangGraph",
+   "depth": 0,
+   "output": {
+    "user_query": "노이즈 캔슬링의 '수신 알람'은 무엇인지 설명하라.",
+    "uploaded_file": null,
+    "file_type": null,
+    "parsed_requirements": {
+     "query_targets": [],
+     "filter_conditions": [],
+     "time_range": null,
+     "output_format": "text",
+     "aggregation": null,
+     "limit": null,
+     "target_sheets": null,
+     "field_mapping_hints": [],
+     "target_db_hints": [],
+     "time_expr": null,
+     "original_query": "노이즈 캔슬링의 '수신 알람'은 무엇인지 설명하라.",
+     "synonym_registration": null
+    },
+    "template_structure": null,
+    "target_sheets": null,
+    "csv_sheet_data": null,
+    "relevant_tables": [],
+    "schema_info": {},
+    "schema_cache_source": null,
+    "table_selection": null,
+    "column_descriptions": {},
+    "column_synonyms": {},
+    "resource_type_synonyms": {},
+    "eav_name_synonyms": {},
+    "generated_sql": "",
+    "sql_candidates": null,
+    "text2sql_fallback": null,
+    "smq_derivation": null,
+    "column_value_index": null,
+    "synonym_usage": null,
+    "pii_block_diagnosis": null,
+    "prompt_budget": null,
+    "template_assembly": null,
+    "validation_result": {
+     "passed": false,
+     "reason": "",
+     "auto_fixed_sql": null
+    },
+    "query_results": [],
+    "organized_data": {
+     "summary": "",
+     "rows": [],
+     "column_mapping": null,
+     "resolved_mapping": null,
+     "is_sufficient": false,
+     "sheet_mappings": null
+    },
+    "retry_count": 0,
+    "error_message": null,
+    "current_node": "result_aggregator",
+    "resolved_limit": null,
+    "raw_user_query": null,
+    "display_query": null,
+    "intent_frame": null,
+    "rewrite_trace": null,
+    "query_attempts": [],
+    "column_mapping": null,
+    "db_column_mapping": null,
+    "mapping_sources": null,
+    "mapped_db_ids": null,
+    "pending_synonym_registrations": null,
+    "llm_inference_details": null,
+    "mapping_report_md": null,
+    "form_month_anchor": null,
+    "form_fill_answers": null,
+    "form_fill_overrides": null,
+    "form_fill_literals": null,
+    "form_fill_candidates": null,
+    "pending_form_fill": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "form_fill_remember": null,
+    "last_form_signature": null,
+    "pending_synonym_reuse": null,
+    "active_db_engine": null,
+    "routing_intent": null,
+    "target_databases": [],
+    "active_db_id": null,
+    "db_results": {},
+    "db_schemas": {},
+    "db_errors": {},
+    "is_multi_db": false,
+    "user_specified_db": null,
+    "selected_db_ids": null,
+    "selected_sources": null,
+    "source_choice": null,
+    "turn_sources": null,
+    "source_selection_meta": null,
+    "source_switch": null,
+    "selected_apm_source_ids": null,
+    "apm_source_basis": null,
+    "apm_source_answer_text": null,
+    "apm_source_clarification": null,
+    "apm_source_scope": null,
+    "apm_source_pending": null,
+    "zone_clarification_allowed": true,
+    "zone_clarification": null,
+    "reuse_parsed_requirements": null,
+    "zone_reentry_plan": null,
+    "reuse_task_plan": null,
+    "db_scope_source": null,
+    "db_scope_reset": false,
+    "required_capabilities": null,
+    "capability_chain": null,
+    "entity_probe": null,
+    "messages": [
+     {
+      "__msg__": "human",
+      "content": "노이즈 캔슬링의 '수신 알람'은 무엇인지 설명하라."
+     },
+     {
+      "__msg__": "ai",
+      "content": "수신 알람은 고른 기간에 알람 거르기가 내린 판단의 수입니다.\n\n이 값은 판단이 반드시 네 결과 중 하나이므로, 옆 PAGE·TICKET·DASHBOARD·SUPPRESS 카드의 값을 더한 것과 같습니다. 또한 퍼널 머리의 '수신'과 같은 값이며, 숫자는 천 단위 쉼표로 표시됩니다.\n\n읽는 법으로는 알람이 해소될 때 오는 해소 알림도 한 건의 판단으로 들어갑니다. 해소 알림은 대부분 SUPPRESS로 끝나므로, 이 숫자는 '장애 건수'보다 크고 SUPPRESS 비중도 그만큼 높아 보입니다. 카드 아래 줄은 '24H · 게이트 동작 중'처럼 기간과 알람 거르기의 켜짐 상태를 적으며, 처음 불러오기 전에는 영문 안내가 잠깐 보입니다.\n\n카드를 누르면 기간 안 판단 전체가 세부 리스트로 열립니다. 아래 줄이 '게이트 꺼짐'이면 새 판단이 만들어지지 않으며, 숫자는 꺼지기 전에 남은 기록만 셉니다.\n\n**매뉴얼에서 보기**\n- [U-44 노이즈 관제 화면 읽기 — 수신 알람](/manual/user#u-44-d-2-11)"
+     }
+    ],
+    "thread_id": "ccc43114-64eb-4dce-9f34-49bcadf2eeaa",
+    "conversation_context": null,
+    "awaiting_approval": false,
+    "approval_context": null,
+    "approval_action": null,
+    "approval_modified_sql": null,
+    "user_id": "demo_user",
+    "user_department": "인프라운영팀",
+    "user_role": "user",
+    "allowed_db_ids": [
+     "polestar"
+    ],
+    "allowed_sources": [],
+    "request_id": null,
+    "client_ip": null,
+    "accessed_tables": [],
+    "execution_groups": null,
+    "group_results": null,
+    "group_packets": null,
+    "db_result_summary": null,
+    "db_executed_sqls": null,
+    "merged_ranking": null,
+    "merged_aggregates": null,
+    "empty_diagnosis": null,
+    "spike_notes": null,
+    "discovery_trace": null,
+    "scope_narrowed": null,
+    "disclosures": null,
+    "turn_disclosures": null,
+    "demonstrative_without_antecedent": false,
+    "unanchored_query_targets": [],
+    "time_resolution": {
+     "version": 1,
+     "anchor_at": "2026-10-13T18:24:58.798942+09:00",
+     "metric": {
+      "start": "2026-09-01T00:00:00+09:00",
+      "end": "2026-10-01T00:00:00+09:00",
+      "grain": "month",
+      "completeness": "complete",
+      "source": "default",
+      "anchor_at": "2026-10-13T18:24:58.798942+09:00",
+      "span": "",
+      "unbounded": false,
+      "notes": [
+       "default_period"
+      ],
+      "anchor": "now",
+      "label": "2026-09-01 ~ 2026-09-30"
+     },
+     "event": {
+      "start": null,
+      "end": null,
+      "grain": "month",
+      "completeness": "complete",
+      "source": "default",
+      "anchor_at": "2026-10-13T18:24:58.798942+09:00",
+      "span": "",
+      "unbounded": true,
+      "notes": [
+       "event_no_default_period"
+      ],
+      "anchor": "now",
+      "label": "전체 보관 기간(기간 조건 없음)"
+     },
+     "clarify": null,
+     "slot_status": "absent",
+     "slot_reason": null,
+     "present": false
+    },
+    "final_response": "수신 알람은 고른 기간에 알람 거르기가 내린 판단의 수입니다.\n\n이 값은 판단이 반드시 네 결과 중 하나이므로, 옆 PAGE·TICKET·DASHBOARD·SUPPRESS 카드의 값을 더한 것과 같습니다. 또한 퍼널 머리의 '수신'과 같은 값이며, 숫자는 천 단위 쉼표로 표시됩니다.\n\n읽는 법으로는 알람이 해소될 때 오는 해소 알림도 한 건의 판단으로 들어갑니다. 해소 알림은 대부분 SUPPRESS로 끝나므로, 이 숫자는 '장애 건수'보다 크고 SUPPRESS 비중도 그만큼 높아 보입니다. 카드 아래 줄은 '24H · 게이트 동작 중'처럼 기간과 알람 거르기의 켜짐 상태를 적으며, 처음 불러오기 전에는 영문 안내가 잠깐 보입니다.\n\n카드를 누르면 기간 안 판단 전체가 세부 리스트로 열립니다. 아래 줄이 '게이트 꺼짐'이면 새 판단이 만들어지지 않으며, 숫자는 꺼지기 전에 남은 기록만 셉니다.\n\n**매뉴얼에서 보기**\n- [U-44 노이즈 관제 화면 읽기 — 수신 알람](/manual/user#u-44-d-2-11)",
+    "output_file": null,
+    "output_file_name": null,
+    "task_plan": [
+     {
+      "task_id": "t1",
+      "agent": "portal_help",
+      "sub_query": "노이즈 캔슬링의 '수신 알람'이 무엇인지 설명하라",
+      "depends_on": [],
+      "input_from": [],
+      "order": 1,
+      "status": "completed",
+      "areas": [],
+      "requested_source": ""
+     }
+    ],
+    "task_results": {
+     "t1": {
+      "final_response": "수신 알람은 고른 기간에 알람 거르기가 내린 판단의 수입니다.\n\n이 값은 판단이 반드시 네 결과 중 하나이므로, 옆 PAGE·TICKET·DASHBOARD·SUPPRESS 카드의 값을 더한 것과 같습니다. 또한 퍼널 머리의 '수신'과 같은 값이며, 숫자는 천 단위 쉼표로 표시됩니다.\n\n읽는 법으로는 알람이 해소될 때 오는 해소 알림도 한 건의 판단으로 들어갑니다. 해소 알림은 대부분 SUPPRESS로 끝나므로, 이 숫자는 '장애 건수'보다 크고 SUPPRESS 비중도 그만큼 높아 보입니다. 카드 아래 줄은 '24H · 게이트 동작 중'처럼 기간과 알람 거르기의 켜짐 상태를 적으며, 처음 불러오기 전에는 영문 안내가 잠깐 보입니다.\n\n카드를 누르면 기간 안 판단 전체가 세부 리스트로 열립니다. 아래 줄이 '게이트 꺼짐'이면 새 판단이 만들어지지 않으며, 숫자는 꺼지기 전에 남은 기록만 셉니다.\n\n**매뉴얼에서 보기**\n- [U-44 노이즈 관제 화면 읽기 — 수신 알람](/manual/user#u-44-d-2-11)",
+      "portal_help": {
+       "status": "ok",
+       "sections": [
+        "user:U-44"
+       ],
+       "reason": "",
+       "llm_calls": 1
+      },
+      "source_status": [
+       {
+        "system": "portal",
+        "label": "AIOps 포탈 매뉴얼",
+        "status": "ok",
+        "rows": 1,
+        "reason": ""
+       }
+      ]
+     }
+    },
+    "is_composite": false,
+    "prior_rows": null,
+    "prior_targets": null,
+    "dependency_notes": null,
+    "clarification_needed": null,
+    "plan_path": "llm_decompose",
+    "decompose_fallback": null,
+    "replan_count": 0,
+    "needs_replan": false,
+    "replan_history": [],
+    "request_deadline": 452509.854263333,
+    "orchestrator_round_sec": 9.814,
+    "replan_stop_notice": null,
+    "needs_plan": null,
+    "task_outcomes": []
+   }
+  }
+ ],
+ "complete": true
+}

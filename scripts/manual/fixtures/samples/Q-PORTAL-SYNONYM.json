@@ -1,0 +1,42 @@
+{
+ "id": "Q-PORTAL-SYNONYM",
+ "turns": [
+  {
+   "query": "itam db에 유사어를 등록하려고 한다. 어떻게 해야 되냐?",
+   "file": null,
+   "key": "40cd5dcc997d743e",
+   "elapsed_s": 40.6,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "itam db 에 유사어를 등록하려면 입력창에 기준 항목과 추가하려는 낱말을 함께 적으세요. 예를 들어 \"(항목)에 '(낱말)' 유사 단어를 추가해줘\"와 같은 형식으로 작성하면 됩니다.\n\n시스템은 이 내용을 분석하여 기준 항목을 찾습니다. 기준 항목을 찾을 수 있으면 등록을 진행하지만, 못 찾으면 방법을 안내합니다. 등록한 말은 모든 사용자에게 적용되며, DB 유사어는 폴스타와 자산관리 (ITAM) 가 함께 사용합니다.\n\n주의할 점은 DB 가 아닌 소스 (예: 제니퍼, 사내 문서) 를 언급하거나 소스 이름을 넣어 등록할 경우, DB 유사어에 넣지 않고 관리자가 설정 파일로 관리한다고 안내한다는 것입니다. 또한 뜻이 모호하면 등록하지 않고 다시 묻습니다. 등록 후 등록 결과가 확인되도록 하시고, 잘못 등록했으면 관리자에게 삭제를 요청하세요.\n\n아래 입력 예를 참고하세요.\n\n**입력 예**\n```text\nvcore, cpu, core은 동의어이다. 캐시에 등록하라.\nhostname에 '장비이름' 유사 단어를 추가해줘\n```\n형식:\n```text\n(항목)에 '(낱말)' 유사 단어를 추가해줘\n```\n\n**매뉴얼에서 보기**\n- [U-37 유사어 등록](/manual/user#u-37)",
+    "row_count": 0,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": []
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-10-13T18:24:58",
+ "review": {
+  "verdict": "partly",
+  "notes": "대리 판정(에이전트) — 근거 U-37 1건·입력 예(U-37 사례 원문 2줄+형식 1줄)·링크 모두 매뉴얼과 바이트 일치. 서술 둘째 문단의 「시스템이 기준 항목을 찾아 있으면 등록·없으면 안내」는 U-37 how 3(기준 항목 없이 낱말만 보냈을 때)의 조건을 빼고 일반화했고, 「등록 후 등록 결과가 확인되도록 하시고」는 어색한 문장 — 본문 포인트에 밝힘",
+  "at": "2026-10-13"
+ }
+}

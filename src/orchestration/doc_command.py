@@ -73,9 +73,9 @@ def _doc_aliases() -> tuple[str, ...]:
     return ()
 
 
-def _other_source_terms(doc_aliases: Sequence[str]) -> tuple[str, ...]:
-    """문서 외 소스를 지목하는 등록 표면어(위치·환경·제품·DB·비DB 시스템 별칭)."""
-    excluded = set(doc_aliases)
+def _other_source_terms(own_aliases: Sequence[str]) -> tuple[str, ...]:
+    """지목한 소스 밖의 소스를 지목하는 등록 표면어(위치·환경·제품·DB·비DB 시스템 별칭)."""
+    excluded = set(own_aliases)
     return tuple(t for t in get_registry().new_db_signal_terms() if t and t not in excluded)
 
 
@@ -138,16 +138,16 @@ def match_collections(text: str, collections: Sequence[DocCollection]) -> list[s
     return picked
 
 
-def _is_command_word(word: str) -> bool:
-    return any(word.startswith(v) for v in _COMMAND_VERBS)
+def _is_command_word(word: str, verbs: Sequence[str] = _COMMAND_VERBS) -> bool:
+    return any(word.startswith(v) for v in verbs)
 
 
-def _strip_command_tail(words: list[str]) -> list[str]:
+def _strip_command_tail(words: list[str], verbs: Sequence[str] = _COMMAND_VERBS) -> list[str]:
     """문장 끝 명령 꼬리(「을/를 검색해줘」·「찾아 줘」·「검색하시오」)를 뗀다."""
     kept = list(words)
     while kept and kept[-1].strip(_TRAILING_PUNCT) in _COMMAND_FILLERS:
         kept.pop()
-    if not kept or not _is_command_word(kept[-1].strip(_TRAILING_PUNCT)):
+    if not kept or not _is_command_word(kept[-1].strip(_TRAILING_PUNCT), verbs):
         return list(words)
     kept.pop()
     while kept and kept[-1].strip(_TRAILING_PUNCT) in _COMMAND_FILLERS:
@@ -162,47 +162,88 @@ def _strip_command_tail(words: list[str]) -> list[str]:
     return kept
 
 
-def parse_doc_command(user_query: str, app_config: Any) -> DocCommand | None:
-    """원문이 문서 검색 명령이면 판정 결과, 아니면 None(종전 분해로 간다).
+@dataclass(frozen=True)
+class DesignatedCommand:
+    """지목 명령 판정 결과(소스 무관 — 문서 검색 ②.9 · 포탈 도움말 ③.9가 함께 쓴다)."""
 
-    판정(전부 결정적 · LLM 0):
-        1. 조사(에서는·에서·으로·로)가 붙은 지목 구간에 문서 소스 별칭이 있다
-        2. 그 지목 구간 **뒤**에 검색 동사(검색·찾아·찾기·조회·알려)가 있다
-        3. 다른 지목 구간에 문서 외 소스 표면어가 없다(복합 질의 제외 — D-307 ⑤)
+    #: 지목 구간 안의 가장 긴 별칭(사용자가 쓴 표현 — 안내 문구용 · D-264)
+    hint: str
+    #: 조사를 뗀 지목 구간(문서군 고정 대조 재료)
+    target: str
+    #: 지목 구간·명령 꼬리를 뗀 질의
+    query: str
+
+
+def parse_designated_command(
+    user_query: str,
+    aliases: Sequence[str],
+    *,
+    verbs: Sequence[str] = _COMMAND_VERBS,
+    label: str = "문서 검색",
+) -> DesignatedCommand | None:
+    """「<등록 이름>에서 … <명령 동사>」 형태면 판정 결과, 아니면 None(전부 결정적 · LLM 0).
+
+    판정:
+        1. 조사(에서는·에서·으로·로)가 붙은 지목 구간에 `aliases` 중 하나가 있다
+        2. 그 지목 구간 **뒤**에 명령 동사(`verbs`)가 있다
+        3. 다른 지목 구간에 다른 소스 표면어(위치·환경·제품·DB·비DB 시스템 별칭 — `aliases` 제외)가
+           없다(복합 질의 제외 — D-307 ⑤)
         4. 지목 구간과 명령 꼬리를 뗀 질의가 비지 않는다
+
+    Args:
+        user_query: 사용자 원문
+        aliases: 지목으로 인정할 등록 이름(레지스트리 정본)
+        verbs: 명령 동사 어간(어절 시작 대조)
+        label: 보류 로그에 쓸 명령 이름
     """
     text = (user_query or "").strip()
-    if not text:
-        return None
-    aliases = _doc_aliases()
-    if not aliases:
+    if not text or not aliases:
         return None
     words = text.split()
     designators = _designators(words, aliases)
-    doc_hits = [d for d in designators if d.alias]
-    if not doc_hits:
+    hits = [d for d in designators if d.alias]
+    if not hits:
         return None
-    hit = doc_hits[0]
+    hit = hits[0]
     tail = " ".join(words[hit.end + 1:])
-    if not any(v in tail for v in _COMMAND_VERBS):
+    if not any(v in tail for v in verbs):
         return None
     others = _other_source_terms(aliases)
     for d in designators:
         if d.alias or d.start <= hit.end and d.end >= hit.start:
             continue
         if any(term_in_text(t, d.text) for t in others):
-            logger.info("문서 검색 명령 보류 — 다른 소스 지목 동반(복합 질의 · D-307 ⑤): %s", d.text)
+            logger.info("%s 명령 보류 — 다른 소스 지목 동반(복합 질의 · D-307 ⑤): %s",
+                        label, d.text)
             return None
     remaining = words[:hit.start] + words[hit.end + 1:]
-    query = " ".join(_strip_command_tail(remaining)).strip(_TRAILING_PUNCT)
+    query = " ".join(_strip_command_tail(remaining, verbs)).strip(_TRAILING_PUNCT)
     if not query:
         return None
+    return DesignatedCommand(hint=hit.alias, target=hit.text, query=query)
 
+
+def parse_doc_command(user_query: str, app_config: Any) -> DocCommand | None:
+    """원문이 문서 검색 명령이면 판정 결과, 아니면 None(종전 분해로 간다).
+
+    판정(전부 결정적 · LLM 0)은 `parse_designated_command`(문서 소스 별칭 · 검색 동사
+    검색·찾아·찾기·조회·알려)다. 문서군은 지목 구간 안에서만 고정한다(D-307 ③).
+    """
+    command = parse_designated_command(user_query, _doc_aliases())
+    if command is None:
+        return None
     active = doc_active(app_config)
     views: list[str] = []
     if active:
-        views = [view_id(cid) for cid in match_collections(hit.text, doc_views(app_config))]
-    return DocCommand(hint=hit.alias, active=active, views=views, query=query)
+        views = [view_id(cid) for cid in match_collections(command.target, doc_views(app_config))]
+    return DocCommand(hint=command.hint, active=active, views=views, query=command.query)
 
 
-__all__ = ["DOC_COMMAND_PATH", "DocCommand", "match_collections", "parse_doc_command"]
+__all__ = [
+    "DOC_COMMAND_PATH",
+    "DesignatedCommand",
+    "DocCommand",
+    "match_collections",
+    "parse_designated_command",
+    "parse_doc_command",
+]

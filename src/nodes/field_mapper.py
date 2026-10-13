@@ -79,6 +79,21 @@ async def field_mapper(
             (state.get("user_query") or "")[:80],
         )
         synonym_reg = None
+    # 결정적 가드(plans/142 W4): 대기 목록이 없고 질의가 방법 의문(「어떻게」「방법」 등)이면
+    # 「등록」이 있어도 등록 신호를 버린다.
+    # 「itam db에 유사어를 등록하려고 한다. 어떻게 해야 되냐?」를
+    # 입력 분석 LLM 이 {mode: all} 로 내 사용 방법 질문이 등록 흐름으로 들어갔다
+    # (2026-10-13 로컬 MLX 실측). 대기 목록이 있는 멀티턴 등록 답변은 종전대로 처리한다.
+    if synonym_reg and not state.get("pending_synonym_registrations"):
+        from src.utils.help_question import is_method_question
+
+        if is_method_question(state.get("user_query") or ""):
+            logger.warning(
+                "synonym_registration 신호 무시 — 대기 목록 없음·방법 의문"
+                "(등록 오인 가드): %r",
+                (state.get("user_query") or "")[:80],
+            )
+            synonym_reg = None
     if synonym_reg:
         # 신규 동의어 집합 선언("vcore, cpu, core은 동의어이다. 등록하라")은 이 분기의
         # 소관이 아니다 — pending 없이 가로채면 "등록할 매핑 없음"으로 오종결되어

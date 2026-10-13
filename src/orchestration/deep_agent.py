@@ -18,7 +18,7 @@ from langchain_core.messages import AIMessage
 from src.config import AppConfig
 from src.orchestration.deepagents_tools import build_tools
 from src.orchestration.task_progress import emit_step
-from src.prompts.orchestrator import ORCHESTRATOR_INSTRUCTIONS
+from src.prompts.orchestrator import render_orchestrator_instructions
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,11 @@ def build_deep_agent(
     orchestrator = create_orchestrator_llm(config)
     worker = worker_llm or create_llm(config)
     tools = build_tools(worker, config, ambient_state, collector=collector)
+    # 포탈 도움말 도구가 목록에 들었을 때만 지침에 규칙·도구 줄을 더한다(plans/142 G-8 (b)) —
+    # 판정은 `build_tools`와 같은 함수다(도구와 지침이 어긋나지 않게).
+    from src.orchestration.portal_help import portal_active
+
+    instructions = render_orchestrator_instructions(portal_active(config))
 
     logger.info(
         "deepagents 에이전트 조립: 오케스트레이터=%s(%s), 도구 %d개, 워커=%s",
@@ -132,7 +137,7 @@ def build_deep_agent(
     return create_deep_agent(
         tools=tools,
         model=orchestrator,
-        system_prompt=ORCHESTRATOR_INSTRUCTIONS,
+        system_prompt=instructions,
     )
 
 

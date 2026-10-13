@@ -1708,6 +1708,13 @@ async def run_general_inference(
         if task.get("source_clarification"):
             out["zone_clarification"] = task["source_clarification"]
         return out
+    # 포탈 기능 질문 되돌림(plans/142 G-5 (b) · D-315) — 1·2단 수렴점. 사용법 단락(③.8) 질의·고정
+    # 안내는 대상이 아니고, 좁은 결정적 판정(매뉴얼 항목명·의문 표지·검색 1위)이 성립할 때만이다.
+    from src.orchestration.portal_help import redirect_general_inference  # 지연 — 순환 방지
+
+    redirected = await redirect_general_inference(task, isolated, llm=llm, app_config=app_config)
+    if redirected is not None:
+        return redirected
     return await general_inference(isolated, llm=llm, app_config=app_config)
 
 

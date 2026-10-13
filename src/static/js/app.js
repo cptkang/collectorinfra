@@ -494,6 +494,8 @@
         fault_diagnosis: "장애 진단",
         // plans/127: 조건부 처리기(활성일 때만 계획에 오른다)
         doc_query: "문서 검색",
+        // plans/142: 포탈 기능 도움말(매뉴얼 근거 — 활성일 때만)
+        portal_help: "포탈 도움말",
     };
 
     // 도구 이름 → 사용자용 라벨 (plans/89 · D-204). 서버는 원시 이름만 낸다 —
@@ -506,6 +508,7 @@
         register_synonym: "유사어 등록",
         general_answer: "일반 답변 생성",
         inspect_host: "호스트 점검",
+        answer_portal_help: "포탈 도움말",
         write_todos: "작업 계획 수립",
         task: "하위 작업 위임",
         read_file: "작업 메모 확인",

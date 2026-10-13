@@ -26,7 +26,7 @@ import json
 
 import pytest
 
-from src.config import AppConfig, MultiDBConfig, RouterConfig
+from src.config import AppConfig, MultiDBConfig, PortalHelpConfig, RouterConfig
 from src.orchestration.schemas import DecomposedPlan, OwnershipDecomposedPlan
 from src.prompts.intent_planner import (
     INTENT_PLANNER_SYSTEM_TEMPLATE,
@@ -52,6 +52,8 @@ def _cfg(*, ownership: bool, active: list[str] | None = None) -> AppConfig:
             capability_ownership_enabled=ownership, two_stage_enabled=False, unknown_enabled=False
         ),
         enable_semantic_routing=True,
+        # 포탈 도움말(plans/142 · 기본 on)은 분해 프롬프트·구조화 모델을 바꾼다 — 소유 플래그만 본다
+        portal_help=PortalHelpConfig(_env_file=None, enabled=False),
     )
 
 

@@ -10,6 +10,7 @@
 #   case_na     사례가 성립하지 않는 사유(순수 UI 항목) — cases 와 둘 중 하나는 있어야 한다(사용자만)
 #   no_ui       화면 버튼 없이 채팅·API 로 쓰는 기능
 #   detail_src  「자세히 보기」의 근거 파일(저장소 상대 경로) — 이 필드가 있는 항목만 자세히 보기를 싣는다(plans/116 §11)
+#   aliases     (선택) 화면 표면어가 갈리는 다른 이름 — 기능 질의응답 색인의 검색 질의 확장(plans/142 §3.1) + G-5 되돌림 판정 용어(`portal_redirect_match` (a) — 공백 제외 3자 이상 별칭만 · D-004 부기 2026-10-13 사용자 승인 · D-315)
 #
 # ignore: 역방향 감시(화면 버튼·탭 id 중 manifest 미등재)에서 제외할 id — 사유 필수
 
@@ -49,7 +50,7 @@ user:
   # 4. 결과 읽기·내려받기
   - {id: U-20, title: 결과 읽기, anchors: ["ROWS", "TIME"], files: *IDX, captures: [answer-table], cases: [Q-SERVER-LIST]}
   - {id: U-21, title: 실행된 SQL 보기, anchors: ["실행된 SQL 보기"], files: *IDX, captures: [answer-sql, progress-panel], case_na: "모든 조회 사례에 붙는 버튼 — 조작 화면만 싣는다(사례는 U-19~U-22)"}
-  - {id: U-22, title: CSV로 내려받기, anchors: ["CSV 다운로드"], files: *IDX, captures: [answer-table], cases: [Q-SERVER-LIST]}
+  - {id: U-22, title: CSV로 내려받기, anchors: ["CSV 다운로드"], files: *IDX, captures: [answer-table], cases: [Q-SERVER-LIST], aliases: [엑셀]}
   - {id: U-23, title: 결과 파일 내려받기, anchors: ["다운로드"], files: *IDX, captures: [answer-file], cases: [Q-EXCEL-OUT]}
   - {id: U-58, title: 결과를 그래프로 보기, anchors: ["그래프로 보기", "그래프 접기"], files: [src/static/js/result-viz.js], captures: [result-chart-line, result-chart-bar], cases: [Q-CPU-MONTH]}
   - {id: U-59, title: 칼럼 용어 사전·값 해석, anchors: ["용어 사전", "사전 미등재 · LLM 생성", "LLM 해석 · 참고용"], files: [src/static/js/result-viz.js], captures: [result-glossary, result-interpret, result-answer-table-explain], case_na: "해석 문장은 AI가 매번 새로 쓰고 사전 설명은 관리자 등록에 따라 달라 녹화 사례 하나로 고정할 수 없다 — 그래프 사례는 U-58, 본문에 표지·계산값 설명을 싣는다"}
@@ -84,6 +85,7 @@ user:
   - {id: U-51, title: "제니퍼(WAS) 조회 — 기간·개수·조건 · 두 기간 비교 · 통계·지표 목록·소스 변경", anchors: ["#prompt"], files: *IDX, captures: [], case_na: "제니퍼 연결과 실데이터가 있어야 답이 나와 녹화 사례를 만들 수 없다(로컬 제니퍼는 라이선스가 없어 도메인 0건) — 본문에 질문 예와 조회 방식을 싣는다", no_ui: true}
   - {id: U-52, title: "제니퍼(WAS) 이어 묻기 · 변경 전후 비교 · 설정·관리 조회", anchors: ["#prompt"], files: *IDX, captures: [], case_na: "제니퍼 연결과 실데이터(트랜잭션·실행 중 요청·설정)가 있어야 답이 나와 녹화 사례를 만들 수 없다(로컬 제니퍼는 라이선스가 없어 도메인 0건) — 본문에 질문 예와 되묻기 문구를 싣는다", no_ui: true}
   - {id: U-54, title: "제니퍼(WAS) 여러 서버·정보 한 번에 · 전체 순위·이벤트 · 서비스·업무 · 소스 지정", anchors: ["#prompt"], files: *IDX, captures: [], case_na: "제니퍼 연결과 여러 도메인의 실데이터가 있어야 답이 나와 녹화 사례를 만들 수 없다(로컬 제니퍼는 라이선스가 없어 도메인 0건) — 본문에 질문 예(가상 이름)와 안내 문구를 싣는다", no_ui: true}
+  - {id: U-61, title: "포탈 기능·사용법 물어보기(매뉴얼로 답하기)", anchors: ["#prompt", "포탈 도움말"], files: *IDX, captures: [], cases: [Q-PORTAL-SYNONYM, Q-PORTAL-NOISE], no_ui: true}
   # 9. 이벤트 알람
   - {id: U-40, title: 알람 탭과 알람 카드, anchors: ["이벤트 알람", "#alarmList", "#alarmTabBadge", "data-view=\"alarm\"", "alarm-briefing-toggle"], files: *IDX, captures: [alarm-list, alarm-briefing], case_na: 수신 화면}
   - {id: U-41, title: 알람 거르기·찾기, anchors: ["#alarmSearch", "#alarmFilterReset", "#alarmClearBtn"], files: *IDX, captures: [alarm-list], case_na: 필터 조작}
@@ -91,8 +93,8 @@ user:
   - {id: U-43, title: 알람 확인(ack)·피드백, anchors: ["이 알람이 유용했나요?", "유효", "노이즈"], files: *IDX, captures: [alarm-feedback], case_na: 카드 버튼}
   - {id: U-57, title: 조사 브리핑 읽는 법, anchors: ["두 소스 타임라인", "같은 사건 조사로 연결됨", "자동 조사 · 도구 출력 인용"], files: [src/static/js/briefing-view.js], captures: [], case_na: "자동 조사 결과는 조사 서비스가 실제 장애를 조사해야 생겨 녹화 사례를 만들 수 없다 — 화면 예시는 U-40·U-44 그림(손으로 만든 예시 조사)을 본다"}
   # 10. 노이즈 관제
-  - {id: U-44, title: 노이즈 관제 화면 읽기, anchors: ["#decSearchBtn", "#closeDrawer", "data-range=\"24h\"", "강등됨만", "발생 원인과 처리", "AI 추정 · 알람 문구 기반 · 검증 안 됨"], files: [src/static/noise.html, src/static/js/noise.js, src/static/js/noise-help.js], captures: [noise-user, noise-drawer, noise-drawer-cause], case_na: 읽기 전용 화면, detail_src: [src/static/noise.html, src/static/js/noise.js, src/static/js/noise-help.js, src/static/js/briefing-view.js, noise_gate/domain/stage_handling.py, noise_gate/infrastructure/investigation_store.py, src/api/routes/noise_dashboard.py, noise_gate/infrastructure/decision_store.py, noise_gate/domain/notification_policy.py, noise_gate/application/nodes/notification_gate.py, noise_gate/application/alarm_worker.py, src/config.py]}
-  - {id: U-45, title: 알람이 걸러지는 원리, anchors: ["판단 경로", "신호 스냅샷", "처리 안내"], files: [src/static/js/noise-help.js], captures: [], case_na: 판단 원리 설명 절, detail_src: [noise_gate/domain/notification_policy.py, noise_gate/domain/stage_handling.py, noise_gate/domain/severity.py, noise_gate/domain/flapping.py, noise_gate/domain/correlation.py, noise_gate/domain/cross_source.py, noise_gate/domain/silence.py, noise_gate/application/alarm_worker.py, noise_gate/application/nodes/notification_gate.py, noise_gate/application/nodes/alarm_analyzer.py, noise_gate/application/nodes/alarm_notifier.py, noise_gate/infrastructure/ticket_queue.py, noise_gate/infrastructure/incident_events.py, noise_gate/orchestration/alarm_graph.py, src/config.py, src/static/js/app.js, docs/28_noise_cancellation_operator_guide.md]}
+  - {id: U-44, title: 노이즈 관제 화면 읽기, anchors: ["#decSearchBtn", "#closeDrawer", "data-range=\"24h\"", "강등됨만", "발생 원인과 처리", "AI 추정 · 알람 문구 기반 · 검증 안 됨"], files: [src/static/noise.html, src/static/js/noise.js, src/static/js/noise-help.js], captures: [noise-user, noise-drawer, noise-drawer-cause], case_na: 읽기 전용 화면, detail_src: [src/static/noise.html, src/static/js/noise.js, src/static/js/noise-help.js, src/static/js/briefing-view.js, noise_gate/domain/stage_handling.py, noise_gate/infrastructure/investigation_store.py, src/api/routes/noise_dashboard.py, noise_gate/infrastructure/decision_store.py, noise_gate/domain/notification_policy.py, noise_gate/application/nodes/notification_gate.py, noise_gate/application/alarm_worker.py, src/config.py], aliases: [노이즈 캔슬링]}
+  - {id: U-45, title: 알람이 걸러지는 원리, anchors: ["판단 경로", "신호 스냅샷", "처리 안내"], files: [src/static/js/noise-help.js], captures: [], case_na: 판단 원리 설명 절, detail_src: [noise_gate/domain/notification_policy.py, noise_gate/domain/stage_handling.py, noise_gate/domain/severity.py, noise_gate/domain/flapping.py, noise_gate/domain/correlation.py, noise_gate/domain/cross_source.py, noise_gate/domain/silence.py, noise_gate/application/alarm_worker.py, noise_gate/application/nodes/notification_gate.py, noise_gate/application/nodes/alarm_analyzer.py, noise_gate/application/nodes/alarm_notifier.py, noise_gate/infrastructure/ticket_queue.py, noise_gate/infrastructure/incident_events.py, noise_gate/orchestration/alarm_graph.py, src/config.py, src/static/js/app.js, docs/28_noise_cancellation_operator_guide.md], aliases: [노이즈 캔슬링]}
 admin:
   # 1. 관리자 개요
   - {id: A-01, title: 권한 체계, anchors: ["#adminEntryLink"], files: *IDX, captures: []}
@@ -147,7 +149,7 @@ admin:
   - {id: A-40, title: DRM 상태, anchors: ["#refreshDrmBtn", "data-tab=\"drm\""], files: *DASH, captures: [drm]}
   - {id: A-41, title: 복호화 진단, anchors: ["#drmVerifyBtn"], files: *DASH, captures: [drm]}
   # 9. 노이즈 캔슬링 관제(관리자)
-  - {id: A-42, title: 사용자 화면과 다른 점, anchors: ["#streamPill", "#healthPill", "data-pane=\"decisions\""], files: *ANOISE, captures: [noise-admin], detail_src: [src/static/admin/noise.html, src/static/js/noise.js, src/static/noise.html, src/api/routes/noise_dashboard.py, noise_gate/infrastructure/decision_store.py, noise_gate/infrastructure/investigation_store.py, src/api/routes/alarm.py, src/static/js/briefing-view.js, src/api/dependencies.py, src/config.py]}
+  - {id: A-42, title: 사용자 화면과 다른 점, anchors: ["#streamPill", "#healthPill", "data-pane=\"decisions\""], files: *ANOISE, captures: [noise-admin], detail_src: [src/static/admin/noise.html, src/static/js/noise.js, src/static/noise.html, src/api/routes/noise_dashboard.py, noise_gate/infrastructure/decision_store.py, noise_gate/infrastructure/investigation_store.py, src/api/routes/alarm.py, src/static/js/briefing-view.js, src/api/dependencies.py, src/config.py], aliases: [노이즈 관제]}
   - {id: A-43, title: 실시간 결정 피드, anchors: ["#feed", "#streamPill"], files: *ANOISE, captures: [noise-admin], detail_src: [src/static/js/noise.js, src/api/routes/noise_dashboard.py, src/api/dependencies.py, src/api/server.py, noise_gate/application/nodes/alarm_notifier.py, noise_gate/infrastructure/sse_bridge.py, noise_gate/infrastructure/incident_events.py, src/api/routes/alarm.py, src/api/routes/user_auth.py, src/api/settings_catalog.py, src/config.py]}
   - {id: A-44, title: 억제기 상태와 워치독, anchors: ["#ratioRing", "#watchRing", "#healthPill"], files: *ANOISE, captures: [noise-admin-health], detail_src: [src/api/routes/noise_dashboard.py, noise_gate/infrastructure/decision_store.py, src/static/js/noise.js, src/config.py, src/api/settings_catalog.py, noise_gate/application/alarm_worker.py]}
   - {id: A-45, title: 침묵(Silence) 규칙, anchors: ["#addSilenceBtn", "#showInactive", "#silenceThisBtn", "data-pane=\"silence\""], files: *ANOISE, captures: [noise-silence], detail_src: [src/api/routes/noise_dashboard.py, src/static/admin/noise.html, src/static/js/noise.js, src/config.py, src/security/audit_logger.py, noise_gate/application/alarm_worker.py, noise_gate/domain/silence.py, noise_gate/infrastructure/silence_store.py, noise_gate/domain/notification_policy.py]}
@@ -177,6 +179,7 @@ admin:
   - {id: A-70, title: 질의 기간 해석 설정, anchors: ["time_resolution_enabled"], files: [src/config.py], captures: [], no_ui: true}
   - {id: A-74, title: 결과 그래프·값 해석 설정, anchors: ["RESULT_VIZ_CHART_ENABLED", "RESULT_VIZ_EXPLAIN_ENABLED"], files: [config/settings_help/result_viz.yaml], captures: [], no_ui: true}
   - {id: A-75, title: 결과 용어 사전 보강, anchors: ["terms:", "glossary_miss"], files: [config/result_glossary.yaml, src/semantic/result_explainer.py], captures: [], no_ui: true}
+  - {id: A-76, title: 포탈 도움말(채팅 기능 질의응답) 설정, anchors: ["PORTAL_HELP_ENABLED", "포탈 도움말"], files: [.env.example, src/api/settings_catalog.py], captures: [], no_ui: true}
   - {id: A-55, title: LLM 설정, anchors: ["LLM_PROVIDER"], files: [.env.example], captures: [], no_ui: true}
   - {id: A-56, title: Redis 백업·이관, anchors: ["redis"], files: [docs/14_redis_export_import_guide.md], captures: [], no_ui: true}
   - {id: A-57, title: 장애 조사(sre_agent) 연동, anchors: ["sre_agent"], files: [docs/26_sre_agent_guide.md], captures: [], no_ui: true}
