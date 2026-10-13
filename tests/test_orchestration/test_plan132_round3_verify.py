@@ -145,11 +145,18 @@ async def test_defect_owner_named_in_text_but_missing_from_hints():
     assert "itam" not in (seen["executed"] or [])
 
 
-def test_defect_past_termination_within_minutes_still_clarifies():
-    """「최근 5분 내 종료된 프로세스」는 만료 필터가 아니라 과거 사건 기간이다 — 분 단위는 해석기가
-    못 잡으므로 종전처럼 되물어야 한다(D-309 검증 D8). 과거형(종료된·끝난)이 마감 동사로 잡혀
-    직전 완결 월 기본값으로 간다."""
-    assert resolve_query_time("최근 5분 내 종료된 프로세스", NOW).clarify == "unresolved"
+def test_defect_past_termination_within_minutes_is_a_period():
+    """「최근 5분 내 종료된 프로세스」는 만료 필터가 아니라 과거 사건 기간이다(D-309 검증 D8) —
+    과거형(종료된·끝난)이 마감 동사로 잡혀 직전 완결 월 기본값으로 가면 안 된다.
+
+    D-326: 종전 기대값(분 단위 미지원 → 되묻기 `unresolved`)을 교체 — 이제 규칙이 「최근 5분」을
+    잡아 사건 `[10:32, 10:37)`(분 경계)로 해석한다. 맨 「5분 내 종료된」은 여전히 흔적(되묻기)이다.
+    """
+    now = datetime(2026, 10, 13, 10, 37)
+    qt = resolve_query_time("최근 5분 내 종료된 프로세스", now)
+    assert qt.clarify is None and qt.event is not None
+    assert (qt.event.start.strftime("%H:%M"), qt.event.end.strftime("%H:%M")) == ("10:32", "10:37")
+    assert resolve_query_time("5분 내 종료된 프로세스", now).clarify == "unresolved"
 
 
 # ── 수용 기준·경계 확인(통과 기대) ───────────────────────────────────────────
@@ -201,7 +208,8 @@ def test_deadline_variants_not_clarified(query: str) -> None:
 
 @pytest.mark.parametrize("query", [
     "3개월 안에 발생한 알람",
-    "최근 5분",
+    # D-326: 「최근 5분」은 이제 규칙이 잡는다(분 단위) — 흔적으로 남는 분 표현(시각 뒤 분)으로 교체
+    "10시 30분부터",
     "6개월 안에 지원종료 예정. 3개월 안에 발생한 알람",   # 문장 경계 — 둘째 흔적은 유지
     "3개월 안에 발생한 장애와 그 이후 조치 완료 건",      # 15자 밖 무관 동사
 ])

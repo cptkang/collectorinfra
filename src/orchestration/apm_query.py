@@ -92,6 +92,7 @@ from src.domain.time_spec import (
     KST,
     NOTE_MULTIPLE_PERIODS,
     UNITS,
+    TimeSpec,
     TimeSpecError,
     floor_to_unit,
     resolve,
@@ -158,6 +159,10 @@ COMPARE_ASK_NOTE = ("비교할 두 기간을 정하지 못해 조회하지 않�
 #: 되묻는다(V6-5).
 COMPARE_ELAPSED_NOTE = ("이번 기간은 아직 지난 시간이 없어 비교할 수 없습니다 — "
                         "「지난주와 지지난주」처럼 비교할 기간을 지정해 주세요")
+#: 분 단위 기간을 시 단위 통계 구간으로 넓히자 두 기간이 겹칠 때의 되묻기 머리(plans/159 · D-326 ③)
+#: — 뒤에 넓힌 두 구간을 붙인다.
+COMPARE_OVERLAP_NOTE = ("두 기간이 겹쳐 비교하지 않았습니다 — 비교는 시 단위 통계라 분 단위 기간을 "
+                        "직전 정시까지의 시간 구간으로 넓힙니다")
 #: 기간을 줬는데 행이 0건일 때의 고지 — 보존 기간 만료로 단정하지 않는다(plans/134 W6 M-7 · W10).
 EMPTY_PERIOD_NOTE = ("요청 기간에 행이 없습니다 — 원천 보존 기간은 확인 전(W10)이라 기간 밖인지는"
                      " 단정하지 않습니다")
@@ -634,6 +639,21 @@ def _stamp(at: datetime) -> str:
     return f"{at:%Y-%m-%d %H:%M}"
 
 
+#: 분 단위 기간을 넓혔을 때 비교 안내에 붙이는 문구(plans/159 · D-326 ③).
+_MINUTE_WIDENED_RULE = "시 단위 통계라 분 단위 기간을 정시 구간으로 넓혀"
+
+
+def _hour_stats_period(period: _Period, anchor: datetime) -> _Period:
+    """분 단위 기간 → 시 단위 통계 구간 — 통계 해석(직전 정시에서 끝나는 ⌈N/60⌉시간 · D-326 ③)을
+    공개 해석기로 다시 계산한다(사본 금지 — D-131). 비교 도구가 시 단위 통계라 분 끝을 정시로
+    깎으면 구간이 뒤집히거나(10:07 ~ 10:00 → 되묻기) 게이트웨이의 시 경계 확장에서 구간이 겹친다.
+    """
+    minutes = int((period.end - period.start).total_seconds() // 60)
+    res = resolve(TimeSpec(relation="last", n=minutes, unit="minute"), anchor, subject="metric")
+    assert res.start is not None and res.end is not None  # last는 양 끝이 있다
+    return _Period(res.start, res.end, period.unit, period.kind)
+
+
 def plan_compare_window(query_time: QueryTime | None) -> WindowPlan:
     """두 기간 비교 창 — 기준(baseline)·비교(current) 구간을 해석에서 결정적으로 정한다(A-1).
 
@@ -643,7 +663,9 @@ def plan_compare_window(query_time: QueryTime | None) -> WindowPlan:
       짧아 같은 경과 시간이 이번 기간 시작을 넘으면 기준 끝을 이번 기간 시작에서 자른다(앞 기간
       전체 · 겹침 없음 — V6-1).
     - **기간 1개 · 롤링**(「최근 7일」·「최근 3시간」): 그 기간이 비교이고 기준은 **바로 앞 같은
-      길이** 구간이다(`start − 길이 ~ start` · V6-4).
+      길이** 구간이다(`start − 길이 ~ start` · V6-4). 분 단위(「최근 30분」)는 비교 도구가 시 단위
+      통계라 통계 해석대로 정시 구간으로 넓힌다(D-326 ③ — 「최근 30분」 = 직전 정시 1시간). 기간
+      2개 중 분 단위가 있어도 같다 — 넓힌 뒤 겹치면 그 사유로 되묻는다(`COMPARE_OVERLAP_NOTE`).
     - **기간 1개 · 지난 기간**(「지난주 대비」 — 끝이 기준 시각과 같아도 지난 기간이다): 그 기간이
       기준이고 비교는 바로 뒤 같은 길이 구간을 기준 시각까지(이번 주 지금까지)다.
     - **길이 맞춤**: 진행 중인 구간의 끝은 기준 시각의 정시다(시 단위 통계라 진행 중인 시간대는
@@ -661,11 +683,21 @@ def plan_compare_window(query_time: QueryTime | None) -> WindowPlan:
     rule = ""
     rolling = False
     if len(periods) == 2:
+        widened = any(p.unit == "minute" for p in periods)
+        if widened:
+            periods = [_hour_stats_period(p, query_time.anchor_at) if p.unit == "minute" else p
+                       for p in periods]
         first, last = sorted(periods, key=lambda p: (p.start, p.end))
+        if widened and first.end > last.start:  # 넓힌 뒤 겹침(같은 시작 포함) — 사유를 말한다
+            return WindowPlan("ask", note=(
+                f"{COMPARE_OVERLAP_NOTE}({_stamp(first.start)} ~ {_stamp(first.end)} · "
+                f"{_stamp(last.start)} ~ {_stamp(last.end)})"))
         if first.start == last.start:
             return WindowPlan("ask", note=COMPARE_ASK_NOTE)
         base, cur = (first.start, first.end), (last.start, min(last.end, hour))
         in_progress = last.kind == _IN_PROGRESS
+        if widened:
+            rule = f"{_MINUTE_WIDENED_RULE} 비교"
     else:
         (period,) = periods
         start, end = period.start, period.end
@@ -680,9 +712,13 @@ def plan_compare_window(query_time: QueryTime | None) -> WindowPlan:
             if back + elapsed > start:
                 rule = "앞 기간이 더 짧아 앞 기간 전체와 비교"
         elif period.kind == _ROLLING:  # 그 기간이 비교, 기준은 바로 앞 같은 길이
+            rule = "요청 기간과 바로 앞 같은 길이 기간을 비교"
+            if period.unit == "minute":  # 분 구간은 시 단위 통계 구간으로(`_hour_stats_period`)
+                hourly = _hour_stats_period(period, query_time.anchor_at)
+                start, end = hourly.start, hourly.end
+                rule = f"{_MINUTE_WIDENED_RULE} 바로 앞 같은 길이 기간과 비교"
             cur = (start, min(end, hour))
             base = (start - (cur[1] - cur[0]), start)
-            rule = "요청 기간과 바로 앞 같은 길이 기간을 비교"
             rolling = True
         else:  # 지난 기간 — 그 기간이 기준, 비교는 바로 뒤 같은 길이를 기준 시각까지
             base = (start, end)

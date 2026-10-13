@@ -619,9 +619,17 @@ def test_future_slot_on_filter_phrase_is_dropped_not_clarified(query, reason):
 
 
 @pytest.mark.parametrize("query", ["최근 5분 CPU 사용률", "최근 10분 알람"])
-def test_minutes_are_clarified_not_defaulted(query):
-    """verify-122t D8(교정됨): 「최근 N분」은 기간 미지정 기본값으로 조용히 가지 않고 되묻는다."""
-    assert resolve_query_time(query, NOW).clarify == "unresolved"
+def test_minutes_are_resolved_not_defaulted(query):
+    """verify-122t D8(교정됨): 「최근 N분」은 기간 미지정 기본값으로 조용히 가지 않는다.
+
+    D-326: 종전 기대값(되묻기 `unresolved`)을 교체 — 분이 해석기 단위가 되어 사건은 분 경계까지
+    N분, 통계는 시 경계로 넓히고 `minute_widened_to_hour`를 고지한다(기본값 아님).
+    """
+    qt = resolve_query_time(query, NOW)
+    assert qt.clarify is None
+    assert qt.metric is not None and qt.metric.source == "rule"
+    assert "minute_widened_to_hour" in qt.metric.notes
+    assert qt.event is not None and qt.event.end == NOW
 
 
 # verify-122t D4(교정됨 — impl-notice): 「당월 1일부터 어제까지」 각주가

@@ -679,8 +679,9 @@ def judge_window(expect_window: str, observed: Mapping[str, Any],
 
     관측 구간은 **실제 조회 창**(성공 호출 봉투 `window` = `{start, end, minutes}`)이 정본이고, 호출
     창이 없을 때만 요청 시간 해석(`time_resolution.metric` — 규칙·슬롯이 기간을 잡았을 때)을 쓴다.
-    분 단위 상대 기간(「최근 30분」)은 요청 해석이 `clarify=unresolved`로 남고 task 시간 해석이
-    창을 정하는 경우가 실측돼(W3 실측 2026-10-12) 해석 하나만으로는 판정할 수 없다.
+    분 단위 상대 기간(「최근 30분」)은 요청 해석(통계)이 직전 정시까지 ⌈N/60⌉시간으로 넓혀지고
+    (`minute_widened_to_hour` · D-326) 실제 호출 창은 분 그대로일 수 있어 해석 하나만으로는 판정할
+    수 없다.
 
     - `none`·`default`·`current`: 명시 기간이 생기지 않았고(해석 출처 `default` 또는 해석 없음)
       모든 호출 창이 송신 시각 근처에서 끝난다(과거로 밀린 창 = 지어낸 기간). 참조 호출

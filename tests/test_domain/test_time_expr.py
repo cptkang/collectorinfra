@@ -300,3 +300,53 @@ class TestInterpretDetail:
         detail = interpret_detail("지난달 CPU", self.NOW)
         assert detail.clarify is None and detail.resolution is not None
         assert detail.resolution == interpret("지난달 CPU", self.NOW)
+
+
+class TestMinuteRecognizer:
+    """plans/159 W1 · D-326 — 분 단위 인식(구간 사례 표는 `test_plan159_minute_period.py`)."""
+
+    @pytest.mark.parametrize("text, relation, n, span", [
+        ("최근 30분 응답시간", "last", 30, "최근 30분"),
+        ("30분간 에러", "last", 30, "30분간"),
+        ("last 30 minutes cpu", "last", 30, "last 30 minutes"),
+        ("최근 2시간 반 CPU", "last", 150, "최근 2시간 반"),
+        ("최근 한 시간 반 CPU", "last", 90, "최근 한 시간 반"),
+        ("1시간 30분 동안", "last", 90, "1시간 30분 동안"),
+        ("5분 전 에러", "ago", 5, "5분 전"),
+        ("15분 전부터 지금까지", "ago", 15, "15분 전부터"),
+    ])
+    def test_minute_specs(self, text: str, relation: str, n: int, span: str) -> None:
+        (spec,) = periods(text)
+        assert (spec.relation, spec.n, spec.unit, spec.span) == (relation, n, "minute", span)
+
+    @pytest.mark.parametrize("text", [
+        "3분기 매출", "분석 결과", "분류별 건수", "분야별", "분포", "세 분이 접속",
+        "5분 간격", "5분마다", "30분 이상 걸린 거래", "3일 간격 백업",
+    ])
+    def test_not_minute_period(self, text: str) -> None:
+        assert all(s.unit != "minute" for s in periods(text))
+        assert not [s for s in periods(text) if s.relation == "last"]
+
+    def test_half_inside_word_is_not_half_hour(self) -> None:
+        """「최근 1시간 반영된」의 「반」은 30분이 아니다 — 「최근 1시간」 그대로."""
+        (spec,) = periods("최근 1시간 반영된 데이터")
+        assert (spec.n, spec.unit) == (1, "hour")
+
+    def test_clock_minute_is_not_period(self) -> None:
+        assert periods("10시 30분 동안 CPU") == []
+        assert periods("10시 30분 전 알람") == []
+
+    def test_slot_minute_passes_with_span_check(self) -> None:
+        """슬롯 unit=minute은 통과 — 스팬 대조와 상한 검사는 그대로다."""
+        text = "최근 30분 응답시간"
+        spec, reason = slot_to_spec(_slot(relation="last", n=30, unit="minute", span="최근 30분"),
+                                    text)
+        assert reason is None and spec is not None and spec.unit == "minute"
+        _, reason = slot_to_spec(_slot(relation="last", n=45, unit="minute", span="최근 30분"),
+                                 text)
+        assert reason == "n_mismatch_span"
+        _, reason = slot_to_spec(_slot(relation="last", n=10081, unit="minute", span="최근 30분"),
+                                 text)
+        assert reason == "n_out_of_range"
+        _, reason = slot_to_spec(_slot(relation="this", unit="minute", span="최근 30분"), text)
+        assert reason == "invalid_spec"

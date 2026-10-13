@@ -194,14 +194,27 @@ class TestDeadlineWithinFilter:
     @pytest.mark.parametrize("query", [
         "3개월 안에 발생한 알람",
         "3개월 내 장애 이력",
-        "최근 5분 CPU 사용률",
-        "최근 5분 내 종료된 프로세스",
+        # D-326: 「최근 5분 CPU 사용률」·「최근 5분 내 종료된 프로세스」는 분 단위 규칙이 잡는다
+        # (아래 `test_recent_minutes_are_resolved`) — 규칙이 못 잡는 분 표현으로 교체
+        "5분 내 CPU 사용률",
+        "5분 내 종료된 프로세스",
         "3개월 안에 만료된 인증서",
         "6개월 내에 계약이 끝난 서버",
         "1년 안에 기한이 도래한 점검 건",
     ])
     def test_plain_within_stays_trace(self, query: str) -> None:
         assert resolve_query_time(query, NOW).clarify == "unresolved"
+
+    @pytest.mark.parametrize("query", ["최근 5분 CPU 사용률", "최근 5분 내 종료된 프로세스"])
+    def test_recent_minutes_are_resolved(self, query: str) -> None:
+        """D-326: 종전 기대값(되묻기)을 교체 — 사건은 분 경계까지 5분, 통계는 시 경계로 넓힌다."""
+        qt = resolve_query_time(query, NOW)
+        assert qt.clarify is None
+        assert qt.event is not None and (qt.event.start, qt.event.end) == (
+            datetime(2026, 9, 29, 9, 55, tzinfo=KST), NOW)
+        assert qt.metric is not None and (qt.metric.start, qt.metric.end) == (
+            kst(2026, 9, 29, 9), NOW)
+        assert "minute_widened_to_hour" in qt.metric.notes
 
     @pytest.mark.parametrize(
         "query", ["이번 분기에 유지보수 계약이 끝나는 서버", "5년 이상 된 서버"]

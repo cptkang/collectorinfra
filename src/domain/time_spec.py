@@ -25,6 +25,13 @@ LLM 슬롯(`time_expr.slot_to_spec`)이 만든 `TimeSpec`을 기준 시각(요�
 - 연도 없는 절대값은 "미래가 아닌 가장 최근 발생"(D-185 · 당월 허용)
 - 기간 표현이 여럿이면(비교 질의) 모두를 덮는 최소 구간(`cover`)과 `multiple_periods`
 
+분 단위(2026-10-13 사용자 확정 · D-326): `unit="minute"`은 `last`·`ago`(「최근 30분」·「5분 전」)만
+받는다 — `this`·`to_date`·`next`·`absolute`와 롤링 밖 완결성은 `TimeSpecError("invalid_spec")`
+(되묻기).
+- 사건 = `[분 경계(기준 시각) − N분, 분 경계(기준 시각))` — 정시로 깎지 않는다. 「N분 전」도 같다
+- 통계 = 시 경계로 넓힌다 — 끝 = 직전 정시 · 길이 = ⌈N/60⌉시간 + `minute_widened_to_hour` 고지
+  (시 통계보다 잘게 자를 수 없다 — 침묵 확장 금지)
+
 사건(알람) 예외(2026-09-30 사용자 확정 · D-291 — §10.3.1 「알람 경로」 행):
 `subject="event"`로 부르면
 - 기간 없음 = **기간 조건 없음**(unbounded · `event_no_default_period`) — 직전 완결 월
@@ -54,7 +61,7 @@ KST = timezone(timedelta(hours=9))
 Relation = Literal[
     "last", "this", "next", "ago", "since", "until", "between", "to_date", "absolute", "none"
 ]
-Unit = Literal["hour", "day", "week", "month", "quarter", "half", "year"]
+Unit = Literal["minute", "hour", "day", "week", "month", "quarter", "half", "year"]
 Completeness = Literal["complete", "rolling", "to_date"]
 Anchor = Literal["now", "explicit"]
 Grain = Literal["hour", "day", "month"]
@@ -75,7 +82,7 @@ SUBJECTS: frozenset[str] = frozenset(get_args(Subject))
 
 #: 단위별 n 상한 — 보존 기간이 아니라 **값 범위 검사**(환각·오타 차단)용 상한이다.
 N_MAX: dict[str, int] = {
-    "hour": 24 * 366, "day": 3660, "week": 520, "month": 120,
+    "minute": 60 * 24 * 7, "hour": 24 * 366, "day": 3660, "week": 520, "month": 120,
     "quarter": 40, "half": 20, "year": 10,
 }
 
@@ -90,16 +97,19 @@ NOTE_YEAR_INFERRED = "year_inferred"                # 연도 미상 — 미래�
 NOTE_MULTIPLE_PERIODS = "multiple_periods"          # 기간 표현 여럿 — 모두를 덮는 구간
 NOTE_EVENT_NO_DEFAULT = "event_no_default_period"   # 사건(알람) 기간 미지정 — 기간 조건 없음(D-291)
 NOTE_EVENT_TO_NOW = "event_to_now"                  # 사건(알람) 진행 중 기간 — 기준 시각까지(D-291)
+NOTE_MINUTE_WIDENED = "minute_widened_to_hour"      # 분 단위 통계 — 시 경계로 넓혔다(D-326)
 
 _GRAIN_RANK: dict[str, int] = {"hour": 0, "day": 1, "month": 2}
 _GRAIN_OF: dict[str, Grain] = {"hour": "hour", "day": "day", "month": "month"}
 _COARSE_TO_FINE: tuple[Grain, ...] = ("month", "day", "hour")
 _UNIT_GRAIN: dict[str, Grain] = {
-    "hour": "hour", "day": "day", "week": "day",
+    "minute": "hour", "hour": "hour", "day": "day", "week": "day",
     "month": "month", "quarter": "month", "half": "month", "year": "month",
 }
 _MONTHS_PER: dict[str, int] = {"month": 1, "quarter": 3, "half": 6, "year": 12}
 _NEEDS_UNIT: frozenset[str] = frozenset({"last", "this", "next", "ago", "to_date"})
+#: 분 단위를 받는 관계(D-326) — 「이번 분」·「다음 N분」·달력 분은 실사용 표현이 아니라 되묻는다.
+_MINUTE_RELATIONS: frozenset[str] = frozenset({"last", "ago"})
 
 
 class TimeSpecError(ValueError):
@@ -231,6 +241,13 @@ class TimeSpec:
                 raise TimeSpecError("anchor_explicit_unsupported_relation", self.relation)
         if self.unbounded and self.relation != "none":
             raise TimeSpecError("unbounded_with_period", self.relation)
+        if self.unit == "minute" and (
+            self.relation not in _MINUTE_RELATIONS
+            or self.completeness not in (None, "rolling")
+        ):
+            raise TimeSpecError(
+                "invalid_spec", f"minute with {self.relation}/{self.completeness}"
+            )
         if self.relation == "absolute" and self.unit is not None and self.abs_start is not None:
             _check_calendar_unit(self.unit, self.abs_start)
 
@@ -378,7 +395,9 @@ def _to_kst(dt: datetime) -> datetime:
 
 
 def _floor(dt: datetime, unit: str) -> datetime:
-    """단위 시작으로 내린다(주 = 월요일 · 분기 = 1·4·7·10월 · 반기 = 1·7월)."""
+    """단위 시작으로 내린다(분 = 초 버림 · 주 = 월요일 · 분기 = 1·4·7·10월 · 반기 = 1·7월)."""
+    if unit == "minute":
+        return dt.replace(second=0, microsecond=0)
     dt = dt.replace(minute=0, second=0, microsecond=0)
     if unit == "hour":
         return dt
@@ -407,6 +426,8 @@ def _add_months(dt: datetime, k: int) -> datetime:
 
 def _shift(dt: datetime, unit: str, k: int) -> datetime:
     """단위 k칸 이동."""
+    if unit == "minute":
+        return dt + timedelta(minutes=k)
     if unit == "hour":
         return dt + timedelta(hours=k)
     if unit == "day":
@@ -649,6 +670,8 @@ def resolve(spec: TimeSpec, now: datetime, *, subject: Subject = "metric") -> Ti
 
     unit = spec.unit
     n = spec.n or 1
+    if unit == "minute":  # last·ago만 온다(TimeSpec 검증 · D-326)
+        return _resolve_minute(spec, n, event, now, anchor_at)
     if rel == "last":
         assert unit is not None
         completeness = spec.completeness or ("rolling" if unit == "hour" else "complete")
@@ -732,6 +755,25 @@ def resolve(spec: TimeSpec, now: datetime, *, subject: Subject = "metric") -> Ti
             notes.append(NOTE_YEAR_INFERRED)
 
     return _finish(spec, start, end, completeness, cap, notes, now, anchor_at)
+
+
+def _resolve_minute(
+    spec: TimeSpec, n: int, event: bool, now: datetime, anchor_at: datetime
+) -> TimeResolution:
+    """분 단위 「최근 N분」·「N분 전」(D-326 — 모듈 머리말).
+
+    사건은 기준 시각의 분 경계에서 끝나는 N분이다(「N분 전」 = 그때부터 지금까지 — 1분 칸 하나로
+    읽으면 0건이 정상처럼 보인다). 통계는 시 통계보다 잘게 자를 수 없어 직전 정시에서 끝나는
+    ⌈N/60⌉시간으로 넓히고 고지한다(시 단위 롤링 「최근 N시간」과 같은 끝).
+    """
+    if event:
+        end = _floor(anchor_at, "minute")
+        return _finish(spec, _shift(end, "minute", -n), end, "rolling", "hour", [], now, anchor_at)
+    end = _floor(anchor_at, "hour")
+    start = _shift(end, "hour", -((n + 59) // 60))
+    return _finish(
+        spec, start, end, "rolling", "hour", [NOTE_MINUTE_WIDENED], now, anchor_at
+    )
 
 
 def _finish(
@@ -872,7 +914,7 @@ def ceil_to_unit(dt: datetime, unit: str) -> datetime:
 
 
 def shift_unit(dt: datetime, unit: str, k: int) -> datetime:
-    """단위 k칸 이동(월 이상은 말일 보정)."""
+    """단위 k칸 이동(분·시·일·주는 고정 길이 · 월 이상은 말일 보정)."""
     if unit not in UNITS:
         raise TimeSpecError("invalid_unit", unit)
     return _shift(dt, unit, k)
@@ -981,7 +1023,8 @@ __all__ = [
     "ANCHORS", "COMPLETENESS", "DISPLAY_GRAINS", "GRAINS", "KST", "N_MAX",
     "NOTE_CURRENT_MONTH_EXCLUDED", "NOTE_DEFAULT_PERIOD", "NOTE_DISPLAY_GRAIN_UNALIGNED",
     "NOTE_EMPTY_RANGE", "NOTE_EVENT_NO_DEFAULT", "NOTE_EVENT_TO_NOW", "NOTE_FUTURE_PERIOD",
-    "NOTE_MULTIPLE_PERIODS", "NOTE_PERIOD_IN_PROGRESS", "NOTE_YEAR_INFERRED", "RELATIONS",
+    "NOTE_MINUTE_WIDENED", "NOTE_MULTIPLE_PERIODS", "NOTE_PERIOD_IN_PROGRESS", "NOTE_YEAR_INFERRED",
+    "RELATIONS",
     "RELATIVE_WINDOW_KINDS", "SOURCES", "SUBJECTS", "UNITS",
     "Anchor", "Completeness", "DisplayGrain", "Grain", "PartialDate", "Relation", "Source",
     "Subject", "TimeResolution", "TimeSpec", "TimeSpecError", "Unit",
