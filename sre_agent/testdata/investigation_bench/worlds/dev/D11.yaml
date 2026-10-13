@@ -1,0 +1,73 @@
+# plans/154 §4.6 D11 — 피드 에이전트 메모리 누수(memory_leak · app · 함정: 메트릭 도구 일부 오류 — 한계 서술 기대)
+id: D11
+split: dev
+title: 피드 수집 에이전트 RSS 누수(메모리 추이 도구 오류)
+event:
+  dbId: polestar
+  serverName: bw-d11-app01
+  hostname: bw-d11-app01
+  ipAddress: 192.0.2.21
+  resourceAncestry: ""
+  alarmId: "bw-d11-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "가용 메모리 부족 경고"
+  alarmTime: "20261012133000"
+  conditions: "< 5%"
+  conditionLog: "[가용 메모리 (< 5%)]"
+label:
+  root_entity: {host: bw-d11-app01, component: bwd11_feed_agent}
+  layer: app
+  kind: memory_leak
+  change_related: false
+  aliases:
+    kind: [메모리 누수, memory leak, RSS 누수, 메모리 점유 증가]
+key_evidence:
+  - {tool: polestar_process_snapshot, cite: [bwd11_feed_agent, "72.6"]}
+  - {tool: prom_metric_range, match: {metric: process_resident_memory_bytes}, cite: ["11.6"]}
+expect:
+  abstain: false
+hosts: [bw-d11-app01]
+incident_window: {start: -60m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: memory}
+      reply: {error: "DB 조회 시간 초과(statement timeout)", inject: true}
+    - match: {kind: cpu}
+      reply:
+        rows: [{value: 18.7}]
+        row_count: 1
+        unit: "%"
+        source_kind: postgresql
+  polestar_process_snapshot:
+    - reply:
+        rows:
+          - {pid: 5521, name: bwd11_feed_agent, pcpu: 9.5, pmem: 72.6, rss_mb: 11840.0, state: S, elapsed: "6-03:12:44"}
+          - {pid: 912, name: sshd, pcpu: 0.0, pmem: 0.1, rss_mb: 7.9, state: S, elapsed: "40-00:01:12"}
+        row_count: 2
+        captured_at: "2026-10-12T13:30:40"
+        source_kind: polestar_api
+  prom_metric_range:
+    - match: {metric: process_resident_memory_bytes}
+      reply:
+        rows:
+          - {ts: "2026-10-06T13:30:00", rss_gb: 4.2}
+          - {ts: "2026-10-08T13:30:00", rss_gb: 6.8}
+          - {ts: "2026-10-10T13:30:00", rss_gb: 9.5}
+          - {ts: "2026-10-12T13:30:00", rss_gb: 11.6}
+        row_count: 4
+        note: "재기동 없이 단조 증가"
+  default: {rows: [], row_count: 0}
+script:
+  model:   # 메모리 추이 도구 오류를 한계로 적고, 다른 도구로 결론(마지막 인용 줄이 원인이 된다)
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d11-app01, kind: memory}}
+    - {call: polestar_process_snapshot, args: {hostname: bw-d11-app01, sort: mem}}
+    - {call: prom_metric_range, args: {hostname: bw-d11-app01, metric: process_resident_memory_bytes}}
+    - {answer: "한계: 메모리 추이(polestar_metric_trend)는 조회 시간 초과로 실패\nbw-d11-app01 bwd11_feed_agent 메모리 누수 — RSS 11840.0MB·pmem 72.6% (polestar_process_snapshot) · 6일간 11.6GB까지 단조 증가 (prom_metric_range)"}
+  neg:
+    F-HALLU:  # 실패한 도구의 값을 지어냄
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d11-app01, kind: memory}}
+      - {call: polestar_process_snapshot, args: {hostname: bw-d11-app01, sort: mem}}
+      - {answer: "bw-d11-app01 bwd11_feed_agent 메모리 누수 — 메모리 사용률 96.4% (polestar_metric_trend) · pmem 72.6% (polestar_process_snapshot)"}

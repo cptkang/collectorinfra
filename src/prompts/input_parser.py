@@ -182,8 +182,9 @@ INPUT_PARSER_TIME_SLOT_SECTION = """
   - absolute: 달력 기간 하나 (「2026년 9월」, 「작년 6월」, 「9월 15일」 — start 필수)
   - none: 기간은 없고 표시 입도만 있음 (「일별」, 「시간 단위」)
 - **n**: 단위 개수(정수). last·next·ago에서 씁니다. 없으면 null
-- **unit**: hour · day · week · month · quarter · half · year 중 하나.
+- **unit**: minute · hour · day · week · month · quarter · half · year 중 하나.
   last·this·next·ago·to_date에서 필수, 그 밖에는 null 가능
+  (「최근 30분」은 n=30·unit=minute. 「10시 30분」처럼 시각 뒤에 붙은 분은 unit이 아닙니다)
 - **completeness**: complete(끝난 단위만) · rolling(지금부터 거슬러 셈) ·
   to_date(진행 중인 단위 포함) 중 하나 또는 null. 원문이 정하지 않으면 null
 - **anchor**: now(지금 기준) · explicit(원문의 특정 날짜 기준) 중 하나 또는 null.

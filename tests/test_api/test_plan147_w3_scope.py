@@ -122,14 +122,14 @@ def test_axis_absent_when_apm_inactive_and_payload_unchanged() -> None:
 
 
 def test_axis_absent_when_only_one_source_available() -> None:
-    sel.set_available_apm_sources({"common"})  # 레지스트리 3 중 2개 미연결
+    sel.set_available_apm_sources({"cm_prd"})  # 레지스트리 3 중 2개 미연결
     assert [a["axis"] for a in _axes(_config())] == ["zone_group"]
 
 
 def test_unavailable_source_is_not_an_option() -> None:
-    sel.set_available_apm_sources({"bank", "common"})
+    sel.set_available_apm_sources({"b0", "cm_prd"})
     apm = _axes(_config())[-1]
-    assert [o["key"] for o in apm["options"]] == ["bank", "common", "*"]
+    assert [o["key"] for o in apm["options"]] == ["b0", "cm_prd", "*"]
 
 
 def test_axis_absent_with_single_registry_source(monkeypatch) -> None:
@@ -173,8 +173,8 @@ def test_followup_input_clears_only_apm_scope() -> None:
 def test_reset_apm_source_scope_reasks_next_question(env, route) -> None:  # noqa: F811
     client, thread = env.client(), f"p147-w3-reset-{route}"
     out = _post(client, route, "김포 WAS 응답시간", thread)
-    assert env.gw.take() == [["common"]]
-    assert out["apm_source_scope"]["ids"] == ["common"]
+    assert env.gw.take() == [["cm_prd"]]
+    assert out["apm_source_scope"]["ids"] == ["cm_prd"]
 
     out = _post(client, route, "힙 사용률은?", thread, reset_apm_source_scope=True)
     assert env.gw.take() == [], "승계가 끊겨 조회 0 + 되묻기"
@@ -185,16 +185,16 @@ def test_reset_apm_source_scope_reasks_next_question(env, route) -> None:  # noq
     assert values["apm_source_pending"]["query"] == "힙 사용률은?"
     assert values["db_scope_reset"] is False, "DB 스코프 해제 표지는 세우지 않는다"
 
-    out = _post(client, route, "힙 사용률은?", thread, selected_apm_source_ids=["legacy"])
-    assert env.gw.take() == [["legacy"]], "되묻기 버튼 답 → 그 소스로"
+    out = _post(client, route, "힙 사용률은?", thread, selected_apm_source_ids=["cm_stg"])
+    assert env.gw.take() == [["cm_stg"]], "되묻기 버튼 답 → 그 소스로"
     assert out["apm_source_scope"]["basis"] == "answered"
 
 
 def test_reset_without_prior_scope_is_harmless(env) -> None:  # noqa: F811
     client, thread = env.client(), "p147-w3-reset-noop"
     _post(client, "json", "레거시 WAS 응답시간", thread, reset_apm_source_scope=True)
-    assert env.gw.take() == [["legacy"]], "같은 턴의 지목은 그대로 성립한다"
-    assert _thread_values(env, thread)["apm_source_scope"]["ids"] == ["legacy"]
+    assert env.gw.take() == [["b0"]], "같은 턴의 지목은 그대로 성립한다"
+    assert _thread_values(env, thread)["apm_source_scope"]["ids"] == ["b0"]
 
 
 # ── 4. 화면 배선(정적) ───────────────────────────────────────────────────────

@@ -27,6 +27,12 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 
 from src.api.dependencies import require_user
+from src.api.result_chart_view import (
+    chart_carry,
+    chart_field,
+    result_tables_of,
+    viz_store_fields,
+)
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
 from src.api.stream_failure import (
     CUT_HARD_CAP,
@@ -2343,6 +2349,8 @@ async def _timeout_sse_event(
     trace: StreamTrace,
     message: str,
     owner: str | None,
+    config: Any,
+    user_query: str,
     timeline: dict[str, Any] | None = None,
 ) -> str:
     """상한에 걸린 스트림이 내보낼 마지막 이벤트 (plans/114 P-2 · G-E).
@@ -2356,7 +2364,13 @@ async def _timeout_sse_event(
             partial, query_id=query_id, thread_id=thread_id,
             start_time=start_time, limit_sec=limit_sec,
         )
-        _store_result(query_id, {**data, "query_results": partial.rows}, owner=owner)
+        # plans/160 A-2 — 부분 결과는 표 경계를 싣지 않는다(추적 행이 집계본과 다를 수 있다)
+        chart = chart_field(config, partial.rows, None)
+        data = {**data, **chart_carry(chart)}
+        _store_result(query_id, {
+            **data, "query_results": partial.rows,
+            **viz_store_fields(chart, user_query=user_query, tables=None),
+        }, owner=owner)
         event = {"type": "done", **data}
         if timeline is not None:
             event["timeline"] = timeline
@@ -2377,6 +2391,8 @@ async def _delivery_cut_sse_event(
     query_id: str,
     thread_id: str | None,
     owner: str | None,
+    config: Any,
+    user_query: str,
     timeline: dict[str, Any],
 ) -> str:
     """첫 답변 **뒤** 상한(토큰 간 idle · 전체 상한)에 걸린 스트림의 마지막 이벤트 (plans/119 T-5).
@@ -2403,7 +2419,12 @@ async def _delivery_cut_sse_event(
         "row_count": len(rows),
         "processing_time_ms": watch.elapsed_ms(),
     }
-    _store_result(query_id, {**data, "query_results": rows}, owner=owner)
+    chart = chart_field(config, rows, None)   # plans/160 A-2 — 부분 결과는 표 경계 없음
+    data.update(chart_carry(chart))
+    _store_result(query_id, {
+        **data, "query_results": rows,
+        **viz_store_fields(chart, user_query=user_query, tables=None),
+    }, owner=owner)
     return _sse_event({"type": "done", **data, "timeline": timeline})
 
 
@@ -2419,6 +2440,8 @@ async def _stream_cut_sse_event(
     trace: StreamTrace,
     message: str,
     owner: str | None,
+    config: Any,
+    user_query: str,
 ) -> str:
     """스트림 상한 출구 하나 — 사유별로 나눈다 (plans/119 T-5 · 두 스트림 라우트 공유).
 
@@ -2432,11 +2455,13 @@ async def _stream_cut_sse_event(
             tracked_rows=tracked_rows, query_id=query_id, thread_id=thread_id,
             start_time=watch.start_time, limit_sec=watch.caps.limit_sec,
             trace=trace, message=message, owner=owner, timeline=timeline,
+            config=config, user_query=user_query,
         )
     return await _delivery_cut_sse_event(
         graph, thread_config,
         watch=watch, kind=kind, tracked_rows=tracked_rows,
         query_id=query_id, thread_id=thread_id, owner=owner, timeline=timeline,
+        config=config, user_query=user_query,
     )
 
 
@@ -2562,9 +2587,12 @@ async def process_query(
                 partial, query_id=query_id, thread_id=thread_id,
                 start_time=start_time, limit_sec=effective_timeout,
             )
-            _store_result(
-                query_id, {**data, "query_results": partial.rows}, owner=current_user.get("sub")
-            )
+            chart = chart_field(config, partial.rows, None)   # plans/160 A-2
+            data.update(chart_carry(chart))
+            _store_result(query_id, {
+                **data, "query_results": partial.rows,
+                **viz_store_fields(chart, user_query=body.query, tables=None),
+            }, owner=current_user.get("sub"))
             return await turn.response(QueryResponse(**data))
         raise HTTPException(
             status_code=504,
@@ -2628,12 +2656,20 @@ async def process_query(
         **_apm_source_fields(result),  # plans/147 제니퍼 소스 되묻기·승계
         **_clarify_turn_fields(time_clar),  # 기간 되묻기 턴 — 직전 턴 SQL·행·파일 미탑재(D5)
     }
-    _store_result(query_id, {
+    store_data = {
         **response_data,
         "output_file": result.get("output_file"),
         "mapping_report_md": result.get("mapping_report_md"),
         "query_results": result.get("query_results", []),
         **_clarify_store_fields(time_clar),
+    }
+    # 그래프 보기 신호(plans/160 A-2) — 저장하는 행 그대로로 판정한다(되묻기 턴은 빈 행)
+    tables = result_tables_of(result)
+    response_data["chart"] = chart_field(
+        config, store_data["query_results"], tables, status=response_data["status"])
+    _store_result(query_id, {
+        **store_data,
+        **viz_store_fields(response_data["chart"], user_query=body.query, tables=tables),
     }, owner=current_user.get("sub"))
 
     return await turn.response(QueryResponse(**response_data))
@@ -2811,6 +2847,7 @@ async def process_query_stream(
                                     trace=_trace,
                                     message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
                                     owner=current_user.get("sub"),
+                                    config=config, user_query=body.query,   # plans/160 A-2
                                 )
                                 return
                             if _ev_kind == "tick":
@@ -2965,11 +3002,18 @@ async def process_query_stream(
                                         "source_switch": _scope_state.get("source_switch"),
                                         **_apm_source_fields(_scope_state),  # plans/147
                                     }
+                                    _rows = output.get("query_results") or _tracked_query_results
+                                    # 그래프 보기 신호(plans/160 A-2) — 표 경계는 누적 상태에서
+                                    _tables = result_tables_of(_scope_state)
+                                    response_data["chart"] = chart_field(
+                                        config, _rows, _tables, status=response_data["status"])
                                     _store_result(query_id, {
                                         **response_data,
                                         "output_file": output.get("output_file"),
                                         "mapping_report_md": output.get("mapping_report_md"),
-                                        "query_results": output.get("query_results") or _tracked_query_results,
+                                        "query_results": _rows,
+                                        **viz_store_fields(response_data["chart"],
+                                                           user_query=body.query, tables=_tables),
                                     }, owner=current_user.get("sub"))
 
                                     yield _sse_event({
@@ -2997,6 +3041,7 @@ async def process_query_stream(
                                         "clarification": response_data.get("clarification"),
                                         "source_switch": response_data.get("source_switch"),
                                         **_apm_source_fields(response_data),  # plans/147
+                                        **chart_carry(response_data["chart"]),  # plans/160 A-2
                                         **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
                                         # 단계 타임라인(plans/119 T-0)
                                         "timeline": _finish_timeline(_watch, query_id, done=True),
@@ -3073,12 +3118,20 @@ async def process_query_stream(
                 **_apm_source_fields(result),  # plans/147
                 **_turn_fields,  # 기간 되묻기 턴(D5)
             }
-            _store_result(query_id, {
+            _store_data = {
                 **response_data,
                 "output_file": result.get("output_file"),
                 "mapping_report_md": result.get("mapping_report_md"),
                 "query_results": result.get("query_results", []),
                 **_clarify_store_fields(_time_clar),
+            }
+            # 그래프 보기 신호(plans/160 A-2) — 저장하는 행 그대로로 판정한다
+            _tables = result_tables_of(result)
+            response_data["chart"] = chart_field(
+                config, _store_data["query_results"], _tables, status=response_data["status"])
+            _store_result(query_id, {
+                **_store_data,
+                **viz_store_fields(response_data["chart"], user_query=body.query, tables=_tables),
             }, owner=current_user.get("sub"))
 
             yield _sse_event({
@@ -3105,6 +3158,7 @@ async def process_query_stream(
                 "clarification": response_data.get("clarification"),
                 "source_switch": response_data.get("source_switch"),  # plans/132 W5
                 **_apm_source_fields(response_data),  # plans/147
+                **chart_carry(response_data["chart"]),  # plans/160 A-2
                 **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
                 "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0
             })
@@ -3119,6 +3173,7 @@ async def process_query_stream(
                 trace=_trace,
                 message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
                 owner=current_user.get("sub"),
+                config=config, user_query=body.query,   # plans/160 A-2
             )
         except Exception as e:
             logger.error(f"SSE 스트리밍 에러: {e}")
@@ -3287,9 +3342,12 @@ async def process_file_query(
                 partial, query_id=query_id, thread_id=actual_thread_id,
                 start_time=start_time, limit_sec=limit_sec,
             )
-            _store_result(
-                query_id, {**data, "query_results": partial.rows}, owner=current_user.get("sub")
-            )
+            chart = chart_field(config, partial.rows, None)   # plans/160 A-2
+            data.update(chart_carry(chart))
+            _store_result(query_id, {
+                **data, "query_results": partial.rows,
+                **viz_store_fields(chart, user_query=query, tables=None),
+            }, owner=current_user.get("sub"))
             return await turn.response(QueryResponse(**data))
         raise HTTPException(status_code=504, detail="처리 시간이 초과되었습니다.")
     except Exception as e:
@@ -3331,7 +3389,7 @@ async def process_file_query(
         **({"clarification": time_clar} if time_clar else {}),  # plans/122 T-4
         **_clarify_turn_fields(time_clar),  # 기간 되묻기 턴 — 직전 턴 SQL·행·파일 미탑재(D5)
     }
-    _store_result(query_id, {
+    store_data = {
         **response_data,
         "output_file": result.get("output_file"),
         "mapping_report_md": result.get("mapping_report_md"),
@@ -3342,6 +3400,14 @@ async def process_file_query(
         #   다중 워커 환경에서는 워커 간 유실 가능 — TTL/공유 스토리지 도입을 검토할 것.
         "uploaded_file": file_bytes,
         "uploaded_file_name": file.filename,
+    }
+    # 그래프 보기 신호(plans/160 A-2) — 저장하는 행 그대로로 판정한다
+    tables = result_tables_of(result)
+    response_data["chart"] = chart_field(
+        config, store_data["query_results"], tables, status=response_data["status"])
+    _store_result(query_id, {
+        **store_data,
+        **viz_store_fields(response_data["chart"], user_query=query, tables=tables),
     }, owner=current_user.get("sub"))
 
     return await turn.response(QueryResponse(**response_data))
@@ -3641,6 +3707,7 @@ async def process_file_query_stream(
                                     trace=_trace,
                                     message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
                                     owner=current_user.get("sub"),
+                                    config=config, user_query=query,   # plans/160 A-2
                                 )
                                 return
                             if _ev_kind == "tick":
@@ -3778,11 +3845,18 @@ async def process_file_query_stream(
                                         # 기간 되묻기(plans/122 T-4)
                                         **({"clarification": _time_clar} if _time_clar else {}),
                                     }
+                                    _rows = output.get("query_results") or _tracked_query_results
+                                    # 그래프 보기 신호(plans/160 A-2) — 표 경계는 누적 상태에서
+                                    _tables = result_tables_of(_scope_state)
+                                    response_data["chart"] = chart_field(
+                                        config, _rows, _tables, status=response_data["status"])
                                     _store_result(query_id, {
                                         **response_data,
                                         "output_file": output.get("output_file"),
                                         "mapping_report_md": output.get("mapping_report_md"),
-                                        "query_results": output.get("query_results") or _tracked_query_results,
+                                        "query_results": _rows,
+                                        **viz_store_fields(response_data["chart"],
+                                                           user_query=query, tables=_tables),
                                         # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관.
                                         # TODO(§14.5): 인메모리 dict — 원본 누적 시 메모리 증가/다중 워커 유실 가능.
                                         #   TTL/공유 스토리지 도입 검토.
@@ -3812,6 +3886,7 @@ async def process_file_query_stream(
                                         **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
                                         **_plan_summary_carry(response_data),  # TP-0.1
                                         **_clarification_carry(response_data),  # plans/122 T-4
+                                        **chart_carry(response_data["chart"]),  # plans/160 A-2
                                         **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
                                         # 단계 타임라인(plans/119 T-0)
                                         "timeline": _finish_timeline(_watch, query_id, done=True),
@@ -3869,7 +3944,7 @@ async def process_file_query_stream(
                 **({"clarification": _time_clar} if _time_clar else {}),  # plans/122 T-4
                 **_turn_fields,  # 기간 되묻기 턴(D5)
             }
-            _store_result(query_id, {
+            _store_data = {
                 **response_data,
                 "output_file": result.get("output_file"),
                 "mapping_report_md": result.get("mapping_report_md"),
@@ -3879,6 +3954,14 @@ async def process_file_query_stream(
                 # TODO(§14.5): 인메모리 dict — 원본 누적 시 메모리 증가/다중 워커 유실 가능.
                 "uploaded_file": file_bytes,
                 "uploaded_file_name": file.filename,
+            }
+            # 그래프 보기 신호(plans/160 A-2) — 저장하는 행 그대로로 판정한다
+            _tables = result_tables_of(result)
+            response_data["chart"] = chart_field(
+                config, _store_data["query_results"], _tables, status=response_data["status"])
+            _store_result(query_id, {
+                **_store_data,
+                **viz_store_fields(response_data["chart"], user_query=query, tables=_tables),
             }, owner=current_user.get("sub"))
             yield _sse_event({
                 "type": "done",
@@ -3901,6 +3984,7 @@ async def process_file_query_stream(
                 **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
                 **_plan_summary_carry(response_data),  # TP-0.1
                 **_clarification_carry(response_data),  # plans/122 T-4
+                **chart_carry(response_data["chart"]),  # plans/160 A-2
                 **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
                 "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0
             })
@@ -3915,6 +3999,7 @@ async def process_file_query_stream(
                 trace=_trace,
                 message="처리 시간이 초과되었습니다.",
                 owner=current_user.get("sub"),
+                config=config, user_query=query,   # plans/160 A-2
             )
         except Exception as e:
             logger.error(f"파일 SSE 스트리밍 에러: {e}")

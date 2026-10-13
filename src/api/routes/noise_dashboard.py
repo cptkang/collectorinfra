@@ -118,6 +118,13 @@ class FunnelStage(BaseModel):
     enable_key: str | None = Field(
         default=None, description="이 단계를 켜는 설정 env 키(항상 평가되는 단계는 null)"
     )
+    handling: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "처리 안내(티어 키 → 문장, `*`는 단계 기본 · 도메인 정본 STAGE_HANDLING). "
+            "`[ … {키} … ]`는 단계 근거 값이 있을 때만 그리는 선택 구간"
+        ),
+    )
 
 
 class NoiseSummaryResponse(BaseModel):
@@ -373,6 +380,32 @@ def _mask_fn(request: Request):  # noqa: ANN201
     return _mask
 
 
+def _investigation_block(request: Request, alarm_id: str) -> dict[str, Any] | None:
+    """결정 추적에 붙일 자동 조사 요약(plans/153 W2) — 조사 레코드가 없으면 None(키 없음).
+
+    운영자 경로는 원문과 원 브리핑, 사용자 경로는 마스킹·원 브리핑 제외다(G-3 (a) — `analysis`와
+    같은 갈래). 저장소만 읽는다 — 조사 서비스 재조회는 `/alarm/investigations/*` 몫이다.
+    """
+    from noise_gate.infrastructure.investigation_store import (
+        InvestigationStore,
+        investigation_view,
+    )
+
+    ng = _gate_cfg(request)
+    path = getattr(ng, "investigation_store_path", "")
+    if not path:
+        return None
+    rec = InvestigationStore(
+        path, int(getattr(ng, "investigation_store_max_lines", 2000))
+    ).get_by_alarm(alarm_id)
+    if rec is None:
+        return None
+    operator = _is_operator_path(request)
+    return investigation_view(
+        rec, mask_fn=None if operator else _mask_fn(request), operator_view=operator
+    )
+
+
 def _mark_operator_path(request: Request) -> None:
     """운영자 경로(`/admin/noise/*`)로 들어온 요청임을 표시한다(라우터 레벨 의존성).
 
@@ -429,8 +462,10 @@ def _stage_meta(stage: str, ng: Any) -> dict[str, Any]:
 
     게이트가 꺼지면 전 단계가 평가되지 않는다. 게이트가 켜지면 `_STAGE_ENABLE_FIELDS`의
     8단계만 설정값을 따르고, 나머지(와 `unknown`)는 항상 평가된다.
+    (plans/153 W1) 처리 안내(`handling`)도 같은 방식으로 도메인 정본에서 싣는다.
     """
     from noise_gate.domain.notification_policy import STAGE_DESCRIPTIONS
+    from noise_gate.domain.stage_handling import STAGE_HANDLING
 
     field_name = _STAGE_ENABLE_FIELDS.get(stage)
     gate_on = bool(ng.enable_noise_gate)
@@ -442,6 +477,7 @@ def _stage_meta(stage: str, ng: Any) -> dict[str, Any]:
         "description": STAGE_DESCRIPTIONS.get(stage, ""),
         "enabled": enabled,
         "enable_key": _env_key(field_name) if field_name else None,
+        "handling": dict(STAGE_HANDLING.get(stage, {})),
     }
 
 
@@ -471,7 +507,7 @@ def _to_item(rule, now: datetime) -> SilenceItem:  # noqa: ANN001
         "티어별 건수·억제율·액션가능 비율과 **단계별 억제량(퍼널)**을 반환합니다.<br/>"
         "모든 결정은 정확히 한 단계에서 종결되므로 단계별 종결 수의 합은 수신 건수와 같습니다.<br/>"
         "단계마다 설명(`description`)·현재 설정의 평가 여부(`enabled`)·켜는 설정 키"
-        "(`enable_key`)를 함께 줍니다."
+        "(`enable_key`)·처리 안내(`handling`)를 함께 줍니다."
     ),
     tags=["noise-console"],
 )
@@ -651,7 +687,8 @@ async def noise_decisions(
     summary="발송 판단 추적(단일)",
     description=(
         "알람 1건의 가장 최근 결정을 파이프라인 단계·신호 스냅샷과 함께 반환합니다.<br/>"
-        "결정 단계 앞은 통과, 뒤는 단락(평가되지 않음)입니다."
+        "결정 단계 앞은 통과, 뒤는 단락(평가되지 않음)입니다.<br/>"
+        "자동 조사 기록이 있으면 decision.investigation에 조사 요약을 함께 싣습니다."
     ),
     tags=["noise-console"],
 )
@@ -667,6 +704,10 @@ async def noise_decision_trace(
     )
     if decision is None:
         raise HTTPException(status_code=404, detail="해당 알람의 발송 판단이 없습니다.")
+    # (plans/153 W2) 자동 조사 요약 — 조사 레코드가 있을 때만 키를 더한다(없으면 응답 비트 동일).
+    investigation = _investigation_block(request, alarm_id)
+    if investigation is not None:
+        decision["investigation"] = investigation
 
     decided_stage = decision.get("stage", "")
     try:

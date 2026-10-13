@@ -1157,6 +1157,8 @@
         appendApmJobCards(el.querySelector(".message-bubble"), data.disclosures);   // plans/134 W0-B
 
         chatMessages.appendChild(el);
+        if (window.ResultViz) ResultViz.enhanceTables(el);   // plans/160 D — 표 넓게 보기(넘침 판정은 DOM 부착 뒤)
+        if (window.ResultViz) ResultViz.attach(el.querySelector(".message-bubble"), data, { headers: getAuthHeaders });   // plans/160 A — 그래프로 보기
         scrollToBottomIfSticky();
     }
 
@@ -1846,6 +1848,7 @@
                     processing_time_ms: metaData.processing_time_ms,
                     has_file: metaData.has_file,
                     file_name: metaData.file_name,
+                    chart: metaData.chart,   // plans/160 A
                 },
                 time: new Date(),
             });
@@ -1975,6 +1978,8 @@
 
         // Remove streaming IDs to prevent conflicts
         var streamingMsg = document.getElementById("streamingMessage");
+        if (streamingMsg && window.ResultViz) ResultViz.enhanceTables(streamingMsg);   // plans/160 D — 최종 렌더 뒤 1회
+        if (streamingMsg && window.ResultViz) ResultViz.attach(streamingMsg.querySelector(".message-bubble"), meta, { headers: getAuthHeaders });   // plans/160 A
         if (streamingMsg) streamingMsg.removeAttribute("id");
         ["streamingText", "streamingCursor", "streamingTime", "streamingMeta", "streamingSql", "streamingStatus", "streamingStatusText", "streamingStatusElapsed", "streamingStages"].forEach(function(id) {
             var el = document.getElementById(id);
@@ -2837,6 +2842,7 @@
                     processing_time_ms: metaData.processing_time_ms,
                     has_file: metaData.has_file,
                     file_name: metaData.file_name,
+                    chart: metaData.chart,   // plans/160 A
                 },
                 time: new Date(),
             });
@@ -4572,6 +4578,10 @@
                 time: at,
                 // 작업 카드(plans/134 W0-B) — 작업 결과는 서버 장부에 남아 있어 다시 이어 볼 수 있다
                 disclosures: t.disclosures,
+                // plans/160 A — 그래프 버튼만 살린다. query_id가 아니라 별도 키로 넘겨 CSV 링크는 생기지 않는다
+                // (결과가 만료됐으면 패널이 「결과가 만료되었습니다」를 보인다)
+                chart: t.chart,
+                result_query_id: t.query_id,
             });
             // 역질문 턴은 db_scope가 없다 — 직전 보고값을 유지하는 renderDbScopeChip 규칙과 같다
             if (t.db_scope) lastScope = t.db_scope;
@@ -4915,6 +4925,10 @@
                 '</div>';
         }
 
+        // plans/153 W3: 자동 조사 브리핑 — 조사 id가 실렸거나 조사 기능이 켜져 있을 때만 접힌 섹션을 둔다.
+        // 펼칠 때만 조회한다(카드 렌더 시 자동 호출 금지 — 알람 폭주 때 호출이 같이 폭증하지 않게).
+        var briefingHtml = hasAlarmBriefing(data) ? renderAlarmBriefingSection() : "";
+
         // D-049: incident 확인(ack) 버튼 — incident_id가 있을 때만 표시(비-incident 알람 불변)
         var ackHtml = "";
         if (data.incident_id) {
@@ -4962,6 +4976,7 @@
                     processHtml +
                     patternHtml +
                     episodeHtml +
+                    briefingHtml +
                     ackHtml +
                     promptHtml +
                     feedbackHtml +
@@ -4989,6 +5004,9 @@
         // Plan 52 E4: 피드백 버튼 바인딩(closure로 data 캡처 — 인라인 onclick 미사용, D-049 패턴)
         bindAlarmFeedback(el, data);
 
+        // plans/153 W3: 조사 브리핑 펼치기·접기(같은 closure 패턴)
+        if (briefingHtml) bindAlarmBriefing(el, data);
+
         // 보고 있지 않은 동안 도착한 알람만 미확인으로 센다(채팅 스크롤은 건드리지 않는다).
         if (activeView !== "alarm") {
             alarmUnreadCount += 1;
@@ -4999,6 +5017,54 @@
         }
         updateAlarmScrollBtn();
         updateAlarmViewState();
+    }
+
+    // plans/153 W3: 조사 브리핑 섹션 표시 조건 — 카드에 조사 id가 있거나 capabilities가 조사 가용을 알릴 때.
+    // 공용 렌더(briefing-view.js)가 없으면 그리지 않는다.
+    function hasAlarmBriefing(data) {
+        if (!window.BriefingView) return false;
+        return !!(data.investigation_id ||
+            (data.alarm_id && alarmCapabilities && alarmCapabilities.investigation_enabled));
+    }
+
+    function renderAlarmBriefingSection() {
+        return '<div class="alarm-section alarm-briefing-section alarm-briefing-section--collapsed">' +
+                '<button type="button" class="alarm-briefing-toggle" aria-expanded="false">' +
+                    escapeHtml(window.BriefingView.TEXT.title) + '</button>' +
+                '<div class="alarm-briefing-body"></div>' +
+            '</div>';
+    }
+
+    // 펼칠 때 조회 API를 부르고, 조사 중이면 공용 컨트롤러가 15초 간격으로 다시 묻는다(상한 =
+    // capabilities 값 또는 300초). 접으면 타이머를 멈춘다. 알람 id가 있으면 항상 by-alarm 경로로 묻는다 —
+    // 서버 우선순위(① 종결된 사건 종합 조사 ② 자기 단독 조사 ③ 최신)는 그 경로에만 있어, 카드에 실린
+    // 단독 조사 id로 물으면 종합 조사를 못 본다. 알람 id가 없을 때만 조사 id로 묻는다.
+    function bindAlarmBriefing(el, data) {
+        var section = el.querySelector(".alarm-briefing-section");
+        if (!section) return;
+        var toggle = section.querySelector(".alarm-briefing-toggle");
+        var body = section.querySelector(".alarm-briefing-body");
+        var path = data.alarm_id
+            ? "/api/v1/alarm/investigations/by-alarm/" + encodeURIComponent(data.alarm_id)
+            : "/api/v1/alarm/investigations/" + encodeURIComponent(data.investigation_id);
+        var panel = window.BriefingView.attach(body, {
+            limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
+            load: async function () {
+                var resp = await fetch(path, { headers: getAuthHeaders() });
+                if (!resp.ok) {
+                    var detail = await resp.json().catch(function () { return {}; });
+                    throw new Error(detail.detail || ("HTTP " + resp.status));
+                }
+                return resp.json();
+            },
+        });
+        toggle.addEventListener("click", function () {
+            var open = section.classList.contains("alarm-briefing-section--collapsed");
+            section.classList.toggle("alarm-briefing-section--collapsed", !open);
+            toggle.setAttribute("aria-expanded", open ? "true" : "false");
+            if (open) panel.open();
+            else panel.close();
+        });
     }
 
     // Plan 86: 추천 질의 칩을 DOM으로 만들고 closure로 프롬프트 전문을 캡친다.

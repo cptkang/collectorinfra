@@ -156,7 +156,7 @@ DISCLOSURE_KIND_GRADES: dict[str, str] = {
         "structure_missing", "descriptions_missing",
         "default_period", "current_month_excluded", "empty_range", "period_in_progress",
         "future_period", "display_grain_unaligned", "year_inferred", "multiple_periods",
-        "event_no_default_period", "event_to_now",
+        "event_no_default_period", "event_to_now", "minute_widened_to_hour",
     )},
     # 134 APM(SPEC-apm-question-coverage §7.5) — 접수는 데이터 답이 아니라 partial
     "apm_job_accepted": "partial", "apm_full_result_file": "neutral",

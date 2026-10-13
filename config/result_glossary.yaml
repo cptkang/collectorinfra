@@ -1,0 +1,94 @@
+# 조회 결과 칼럼 용어 사전 (plans/160 §2.3 B-1 · D-327)
+#
+# 결과 표 머리글을 누르면 보여 줄 칼럼 설명이다. DB 칼럼은 프로필·지식·스키마 캐시 설명을
+# 런타임에 조회하므로 여기에 사본을 두지 않는다 — 여기는 그 밖의 중립 키(APM 게이트웨이가
+# 돌려주는 칼럼 등)만 둔다. 게이트웨이 코드를 import하지 않으려고 본체가 이 사본을 소유한다(D-274).
+#
+# 형식: terms.<칼럼 키>.text = 한국어 뜻 · unit = 단위(확신 없으면 빈 문자열).
+# LLM이 만든 설명은 여기에 자동으로 적지 않는다 — 로그 `glossary_miss`를 보고 사람이 보강한다.
+version: 1
+terms:
+  heap_used_mb:
+    text: "JVM 힙 메모리 중 현재 사용 중인 양"
+    unit: "MB"
+  heap_committed_mb:
+    text: "JVM이 힙 용도로 운영체제에서 확보해 둔 메모리 양(사용 가능한 힙 크기)"
+    unit: "MB"
+  non_heap_used_mb:
+    text: "JVM 힙 밖 메모리(메타스페이스·코드 캐시 등) 중 현재 사용 중인 양"
+    unit: "MB"
+  gc_time_usage_pct:
+    text: "수집 구간 동안 가비지 컬렉션(GC)에 쓴 시간의 비중"
+    unit: "%"
+  process_cpu_pct:
+    text: "애플리케이션 프로세스의 CPU 사용률"
+    unit: "%"
+  process_memory_mb:
+    text: "애플리케이션 프로세스가 사용 중인 메모리 양"
+    unit: "MB"
+  thread_current:
+    text: "현재 살아 있는 JVM 스레드 수"
+    unit: "개"
+  thread_daemon:
+    text: "현재 스레드 중 데몬 스레드 수"
+    unit: "개"
+  thread_started:
+    text: "JVM 기동 이후 시작된 스레드의 누적 수"
+    unit: "개"
+  socket_count:
+    text: "프로세스가 열어 둔 소켓 수"
+    unit: "개"
+  file_count:
+    text: "프로세스가 열어 둔 파일 수"
+    unit: "개"
+  collection_count:
+    text: "가비지 컬렉션(GC) 수행 횟수"
+    unit: "회"
+  heap_usage_ratio:
+    text: "힙 사용량을 확보된 힙 크기로 나눈 비율(사용 MB ÷ 확보 MB · 1에 가까울수록 확보분을 많이 씀)"
+    unit: ""
+  response_time_avg_ms:
+    text: "서비스(트랜잭션) 평균 응답 시간"
+    unit: "ms"
+  tps:
+    text: "초당 처리 트랜잭션 수"
+    unit: "건/초"
+  active_services:
+    text: "현재 처리 중인 서비스(트랜잭션) 수"
+    unit: "개"
+  bad_response_active_services:
+    text: "처리 중인 서비스 중 응답이 기준보다 오래 걸리고 있는 서비스 수"
+    unit: "개"
+  reject_rate:
+    text: "요청 중 처리하지 못하고 거부된 비율"
+    unit: ""
+  concurrent_users:
+    text: "동시 사용자 수"
+    unit: "명"
+  arrival_rate:
+    text: "단위 시간당 들어온 요청 수(도착률)"
+    unit: ""
+  db_pool_active:
+    text: "DB 연결 풀에서 현재 사용 중인 연결 수"
+    unit: "개"
+  db_pool_idle_avg:
+    text: "DB 연결 풀의 유휴 연결 수 평균"
+    unit: "개"
+  db_pool_configured_avg:
+    text: "DB 연결 풀에 설정된 연결 수 평균"
+    unit: "개"
+  time_ms:
+    text: "측정 시각(1970-01-01 UTC 기준 밀리초 타임스탬프)"
+    unit: "ms"
+  instance_id:
+    text: "APM이 붙인 애플리케이션 인스턴스(에이전트) 식별 번호"
+    unit: ""
+  instance_name:
+    text: "APM에 등록된 애플리케이션 인스턴스 이름"
+    unit: ""
+  domain_id:
+    text: "APM 도메인(인스턴스를 묶는 관제 단위) 식별 번호"
+    unit: ""
+  source_id:
+    text: "데이터를 가져온 APM 소스(서버) 식별자"
+    unit: ""

@@ -252,6 +252,13 @@ class TestDomain:
         d = ep.to_dict()
         assert d["apm_investigation_id"] == "inv-9" and d["members"][0]["late_promoted"] is True
 
+    def test_to_dict_members_carry_alarm_fields(self):
+        """(plans/153 W4 §4.4) 멤버에 alarm_name·kind·was_kinds·level — `EpisodeAlarm` 보유 값."""
+        ep = _episode(EpisodeMember(_ea("J-1", name="SERVICE_QUEUING", level="warning"), 0))
+        m = ep.to_dict()["members"][0]
+        assert (m["alarm_name"], m["kind"], m["was_kinds"], m["level"]) == (
+            "SERVICE_QUEUING", "", ["was_heap_pressure"], "warning")
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # B. 게이트 노드 — 사건 저장소 우선
@@ -304,7 +311,7 @@ class TestGateEpisodeStore:
         assert client.calls == [{
             "hostname": "was-app-01", "reference_time": "2026-09-29T10:15:00",
             "lookback_minutes": 10, "level": "fatal", "investigation_id": "P-1",
-            "source_ids": ["common"],
+            "source_ids": ["cm_prd", "cm_stg"],  # plans/161 — 공동존 알람은 공동존 제니퍼 두 소스
         }]
 
     async def test_episode_value_never_promotes_page_or_suppress(self):
@@ -785,6 +792,16 @@ class TestWorkerInvestigationOnce:
         assert [i["status"] for i in store.investigations] == ["done", "episode_existing"]
         assert store.investigations[1]["investigation_id"] == "inv-1"
         assert all(i["episode_id"] == ep.id for i in store.investigations)
+
+    async def test_episode_investigation_id_wins_for_apm_followups(self, clock):
+        """(plans/153 W4 §4.5) 종합 조사가 있으면 제니퍼 후속 알람은 그 id로 연결된다."""
+        w, g, store, client = await self._run("shadow")
+        ep = w._episodes.episodes()[0]
+        ep.episode_investigation_id, ep.episode_investigation_status = "inv-ep", "submitted"
+        await _feed(w, _jrec("J-3", at="20261007090100", name="ERROR_T3"), 3)
+        assert g.states[2]["episode_investigation"] == {"episode_id": ep.id,
+                                                        "investigation_id": "inv-ep"}
+        assert len(client.payloads) == 1
 
     async def test_off_submits_each(self, clock):
         _, g, store, client = await self._run("off")

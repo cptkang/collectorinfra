@@ -1,8 +1,8 @@
 """plans/87 J8 · D-287 ④ — 레지스트리 `solutions[].sources`(제니퍼 소스 ↔ 존 정본) 로더·조회.
 
 고정하는 계약:
-  1. 정본 데이터 — `solutions[apm].sources` = bank(은행존) · common(공동존) ·
-     legacy(은행존 · G-14 ①), 선언 순서 그대로.
+  1. 정본 데이터 — `solutions[apm].sources` = b0(은행존) · cm_prd(공동존) ·
+     cm_stg(공동존) — 운영 확정값(D-329 · 레거시는 b0에 병합), 선언 순서 그대로.
   2. 검증 실패는 `RegistryError`다 — 알람 존 판정(RBAC)의 정본이라 틀린 항목을 조용히 버리지 않는다.
   3. `alarm_source` — 알람 dbId `{family}_{소스 id}` → (시스템, 소스). 단일 설정
      (`db_id == family`)은 None(경고 없음) · 표에 없는 소스 id는 None + id별 경고 1회(M-4).
@@ -37,9 +37,10 @@ def test_registry_declares_three_jennifer_sources_in_order() -> None:
     sources = get_registry().sources_of("apm")
     # plans/147 W1 — 행마다 `terms`가 붙었다(단어는 test_plan147_source_select가 고정) · 의도된 갱신
     assert [(s.id, s.label, s.zone) for s in sources] == [
-        ("bank", "은행존 제니퍼", "bankjon"),
-        ("common", "공동존 제니퍼", "gongjon"),
-        ("legacy", "레거시 제니퍼", "bankjon"),
+        # plans/161 — 운영 확정 3소스(D-329) · 의도된 갱신
+        ("b0", "은행 제니퍼", "bankjon"),
+        ("cm_prd", "공동존 운영 제니퍼", "gongjon"),
+        ("cm_stg", "공동존 개발/스테이징 제니퍼", "gongjon"),
     ]
 
 
@@ -111,9 +112,9 @@ def test_absent_sources_key_is_empty_tuple() -> None:
 
 def test_alarm_source_resolves_registry_sources() -> None:
     reg = get_registry()
-    assert reg.alarm_source("jennifer_bank") == ("apm", reg.sources_of("apm")[0])
-    assert reg.alarm_source("jennifer_common")[1].zone == "gongjon"
-    assert reg.alarm_source("jennifer_legacy")[1].zone == "bankjon"
+    assert reg.alarm_source("jennifer_b0") == ("apm", reg.sources_of("apm")[0])
+    assert reg.alarm_source("jennifer_cm_prd")[1].zone == "gongjon"
+    assert reg.alarm_source("jennifer_cm_stg")[1].zone == "gongjon"
 
 
 def test_single_setting_default_is_none_without_warning(caplog) -> None:

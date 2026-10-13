@@ -66,7 +66,7 @@
 | 항목 | 상태 (2026-09-29 실측) |
 |---|---|
 | 제니퍼 연동 코드 | **J1~J4 구현(v4 · 2026-09-29)** — 게이트웨이 `apm_gateway/apm_gateway/`(허용목록·클라이언트·정합·`apm_*` 8종·WAS 판정·폴러·MCP 서버) · `sre_agent` 소비측(두 번째 MCP 서버·APM 지침·판정 승격·WAS 권고) · `noise_gate` 소비측(`apm` kind 선판정·배지·트리거 힌트·`app_impact` 승격). `mcp_server`·`src`(질의 경로)에는 제니퍼 코드 0건 |
-| 제니퍼 소스 | **여러 개(v5 · J8 · D-287)** — 게이트웨이 1개가 뷰 서버 N개(예 `bank`·`common`·`legacy`)를 묶는다. 소스 ↔ 존 정본은 루트 레지스트리 `solutions[apm].sources[]`(레거시 = 은행존). 단일 설정은 소스 `default`(존 없음 · v4와 같음) — §4.2·§4.4 |
+| 제니퍼 소스 | **여러 개(v5 · J8 · D-287)** — 게이트웨이 1개가 뷰 서버 N개(운영 `b0`·`cm_prd`·`cm_stg` — D-329)를 묶는다. 소스 ↔ 존 정본은 루트 레지스트리 `solutions[apm].sources[]`(레거시 제니퍼는 `b0`에 병합 · 은행존). 단일 설정은 소스 `default`(존 없음 · v4와 같음) — §4.2·§4.4 |
 | 연동 구조(확정) | **독립 최상위 패키지 `apm_gateway/`** — 자체 MCP 서버 · 독립 프로세스. 제니퍼 Open API(REST · Bearer 토큰)를 게이트웨이가 직접 호출한다(G-1 · G-8 · D-274) |
 | 제니퍼 설정 키 | 제니퍼 URL·토큰은 **`apm_gateway/.env`에만**(예시 `apm_gateway/.env.example` · §4.2). 소비자는 게이트웨이 MCP 주소·Bearer만 갖는다(`sre_agent/.env` `APM_MCP_*` · 루트 `.env` `NOISE_APM_MCP_*` — §4.6·§4.7). 전부 기본 off·빈 값 = 현행과 비트 동일 |
 | 재사용할 기존 기계 | **전례로 있다** — `mcp_server`의 HTTP 도구·반환 계약·Bearer 미들웨어(게이트웨이가 **복제**), `sre_agent`의 MCP 서버 등록, `noise_gate`의 `alarm:raw` 형식·MCP 클라이언트, OpenMetrics 노출 기계(`om_exposition.py` — 복제 또는 추출은 G-12) |
@@ -607,17 +607,17 @@ REDIS_PASSWORD=
 ```dotenv
 # 소스 id JSON 배열 — 소문자 슬러그 [a-z][a-z0-9_]{0,15} · 예약어 default·api · 선언 순서 = 조회·표시 순서
 # id는 루트 config/db_registry.yaml solutions[apm].sources[].id와 같게 둔다(존은 레지스트리가 정한다)
-JENNIFER_SOURCES=["bank","common","legacy"]
-# 소스마다 필수 두 키 — <ID>는 id 대문자(bank → JENNIFER_BANK_*) · 토큰은 소스별 AIOps 전용 토큰
-JENNIFER_BANK_API_URL=https://jennifer-bank.example.internal:7900
-JENNIFER_BANK_API_TOKEN=<은행존 뷰 서버 토큰>
-JENNIFER_COMMON_API_URL=https://jennifer-common.example.internal:7900
-JENNIFER_COMMON_API_TOKEN=<공동존 뷰 서버 토큰>
-JENNIFER_LEGACY_API_URL=https://jennifer-legacy.example.internal:7900
-JENNIFER_LEGACY_API_TOKEN=<레거시 뷰 서버 토큰>
+JENNIFER_SOURCES=["b0","cm_prd","cm_stg"]
+# 소스마다 필수 두 키 — <ID>는 id 대문자(cm_prd → JENNIFER_CM_PRD_*) · 토큰은 소스별 AIOps 전용 토큰
+JENNIFER_B0_API_URL=https://jennifer-b0.example.internal:7900
+JENNIFER_B0_API_TOKEN=<은행 제니퍼 뷰 서버 토큰>
+JENNIFER_CM_PRD_API_URL=https://jennifer-cm-prd.example.internal:7900
+JENNIFER_CM_PRD_API_TOKEN=<공동존 운영 제니퍼 뷰 서버 토큰>
+JENNIFER_CM_STG_API_URL=https://jennifer-cm-stg.example.internal:7900
+JENNIFER_CM_STG_API_TOKEN=<공동존 개발/스테이징 제니퍼 뷰 서버 토큰>
 # 선택 키 — 비면 전역 JENNIFER_DOMAIN_IDS·JENNIFER_API_TIMEOUT_SECONDS·JENNIFER_RATE_LIMIT_PER_SEC·JENNIFER_MAX_RESPONSE_BYTES
-JENNIFER_LEGACY_API_TIMEOUT_SECONDS=4
-JENNIFER_LEGACY_DOMAIN_IDS=[3000]
+JENNIFER_CM_STG_API_TIMEOUT_SECONDS=4
+JENNIFER_CM_STG_DOMAIN_IDS=[3000]
 ```
 
 - 기동 실패(메시지 1줄 · 종료 코드 2 · 값은 싣지 않는다): 두 방식 동시 설정 · 소스 필수 키(`_API_URL`·`_API_TOKEN`) 누락 · id 형식 위반·예약어·중복 · `JENNIFER_SOURCES`가 문자열 JSON 배열이 아님.
@@ -662,8 +662,8 @@ APM_GATEWAY_BEARER_TOKENS={"chat": "<본체용>", "investigation": "<sre_agent�
 # [CWD=apm_gateway/ · 루트 venv 공유 — mcp_server와 같은 방식(둘 다 Python ≥3.11) · 설정은 apm_gateway/.env]
 cd apm_gateway && ../.venv/bin/python -m apm_gateway
 # 기동 로그 예(v5 — 소스 id와 설정 여부만 · URL·토큰 값 없음):
-#   APM 게이트웨이 시작: 127.0.0.1:9096 · 허용 경로 41(134 W3·W4 — 종전 37 · 134 W5~W7 36 · v4 16) · {'sources': [{'id': 'bank', 'url_set': True, 'token_set': True, 'domain_filter': []},
-#   {'id': 'common', …}], 'bearer': True, 'poller': False, 'poll_interval': 30, 'overrides': 0}
+#   APM 게이트웨이 시작: 127.0.0.1:9096 · 허용 경로 41(134 W3·W4 — 종전 37 · 134 W5~W7 36 · v4 16) · {'sources': [{'id': 'b0', 'url_set': True, 'token_set': True, 'domain_filter': []},
+#   {'id': 'cm_prd', …}, {'id': 'cm_stg', …}], 'bearer': True, 'poller': False, 'poll_interval': 30, 'overrides': 0}
 #   (단일 설정이면 sources = [{'id': 'default', …}] · 둘 다 비면 [])
 #   (Bearer가 비면) 전송 인증 off(APM_GATEWAY_BEARER_TOKEN 미설정) — 운영 배치에서는 필수
 #   (설정 오류면) APM 게이트웨이 설정 오류 — 기동 중단: JENNIFER_SOURCES와 단일 설정 키(…)를 함께 쓸 수 없다 …  (종료 코드 2)
@@ -690,22 +690,25 @@ solutions:
     family: jennifer
     views: [ ... ]            # plans/125 — 보기 id → 게이트웨이 도구
     sources:                  # v5 · J8 · D-287 ④ — 제니퍼 소스 ↔ 존 정본 · terms는 plans/147 · D-322
-      - {id: bank, label: 은행존 제니퍼, zone: bankjon,
-         terms: ["은행존", "은행", "K리전", "은행존 제니퍼"]}
-      - {id: common, label: 공동존 제니퍼, zone: gongjon,
-         terms: ["공동존", "공동", "김포", "여의도", "운영", "개발", "스테이징", "DR", "공동존 제니퍼"]}
-      - {id: legacy, label: 레거시 제니퍼, zone: bankjon,
-         terms: ["은행존", "은행", "레거시", "레거시 제니퍼"]}
+      - {id: b0, label: 은행 제니퍼, zone: bankjon,
+         terms: ["은행존", "은행", "은행 제니퍼", "레거시", "레거시 제니퍼"]}
+      - {id: cm_prd, label: 공동존 운영 제니퍼, zone: gongjon,
+         terms: ["공동존 운영", "김포", "운영", "DR", "공동존 운영 제니퍼"]}
+      - {id: cm_stg, label: 공동존 개발/스테이징 제니퍼, zone: gongjon,
+         terms: ["공동존 개발", "개발", "스테이징", "여의도", "공동존 개발/스테이징 제니퍼"]}
 ```
 
+- 소스 id는 D-329(2026-10-13)로 `b0`·`cm_prd`·`cm_stg` 확정(종전 잠정 `bank`·`common`·`legacy` — 레거시는 `b0`에 병합 · `plans/161`). 소스 간 공유 단어는 0이다.
+  「DR」이 `cm_prd`인 것은 사용자 확정값이며 DB 존 용어(D-271)와 별개다. 이 문서의 실측 기록(87 §0.14·로컬 Docker 두 소스 등)은 당시 id 그대로 둔다.
+
 - **정본은 레지스트리 하나다**(D-053) — 게이트웨이는 존을 모른다(루트 `config/`를 읽지 않는다 · D-274 ③). 소비자(본체 알람 라우트·`noise_gate`)가 이 표로 존을 푼다.
-- 레거시 소스는 은행존이다(G-14 ① — `zones` 라벨 「은행존(K리전 은행/레거시)」).
+- 레거시 제니퍼는 은행존이며 D-329부터 별도 소스가 아니라 `b0`에 병합됐다(G-14 ① — `zones` 라벨 「은행존(K리전 은행/레거시)」).
 - 로더 검증(`src/routing/registry.py` `_parse_sources` — 틀리면 `RegistryError`로 로드 실패): id 형식(`[a-z][a-z0-9_]{0,15}`) · 예약어 `default`·`api` · 같은 솔루션 안 중복 ·
   선언되지 않은 존. `zone`을 비우면 존 없는 소스(전 존 구독자·관리자만).
 - 조회 함수: `sources_of("apm")`(선언 순서) · `alarm_source(db_id)` — 알람 `dbId` `jennifer_<id>`(= `{family}_{id}`) → (시스템, 소스). 단일 설정 `jennifer`는 존 없음(경고 없음),
   표에 없는 `jennifer_<id>`는 **id별 경고 1회** 뒤 존 없음. 알람 존 판정 `src/routing/zones.py` `db_id_to_zone`이 이 함수를 쓴다(§8.4 ⑥).
 - `terms`(plans/147 · D-322 ②): 채팅에서 **이 소스를 고르는 사전 정의 단어**다. APM task 안에서만 쓰고 시스템 유사어·위치 힌트(`target_db_hints`)가 아니다(D-293).
-  한 소스에만 걸리는 단어(「김포」·「레거시」)는 그 소스만 조회하고, 여러 소스에 걸리는 단어(「은행존」)나 지목 없음은 조회 없이 되묻는다(소스가 2개 이상인 배포만).
+  한 소스에만 걸리는 단어(「김포」·「레거시」)는 그 소스만 조회하고, 여러 소스에 걸리는 단어나 지목 없음은 조회 없이 되묻는다(소스가 2개 이상인 배포만 · D-329 확정 표는 소스 간 공유 단어 0).
   비워도 된다(그 소스는 되묻기 답·화면 선택·id 지목으로만 고른다).
 
 **소스 추가 체크리스트(D-322 ⑥ — 코드 수정 0)** 【plans/147 W4】
@@ -759,10 +762,10 @@ overrides: []
 #    port: 8080
 #    kind: tomcat
 # (v5 · J8 — 다중 소스) override에 source_id를 주면 그 소스에만 쓴다(없으면 전 소스)
-#    source_id: bank
-# (v5 · J8) 소스별 규칙 — 있으면 그 소스는 전역 match_rules 대신 쓴다(레거시 명명 규칙이 다를 때 · J0-O 실측 뒤 채운다)
+#    source_id: b0
+# (v5 · J8) 소스별 규칙 — 있으면 그 소스는 전역 match_rules 대신 쓴다(소스별 명명 규칙이 다를 때 — 예 레거시를 병합한 b0 · J0-O 실측 뒤 채운다)
 # per_source:
-#   legacy:
+#   b0:
 #     match_rules: [{kind: host_name}, {kind: exact}]
 ```
 
@@ -817,7 +820,7 @@ overrides: []
 - 게이트웨이 클라이언트는 `noise_gate/infrastructure/apm_gateway_client.py`다(`sre_agent_client.py` 전례 — SSE · Bearer · 호출 타임아웃 5초 · TCP 사전 도달성 확인 · 미가용이면 30초 동안 재시도 안 함).
   켜졌는데 URL이 비었거나 생성에 실패하면 기동 로그에 경고를 남기고 승격 없이 진행한다.
 - **존 좁히기(v5 · J8)** — `app_impact` 조회는 알람 DB의 존에 대응하는 제니퍼 소스만 `source_ids`로 넘긴다(`notification_gate.py` `apm_source_ids_for` — 예 `polestar_b0` →
-  `["bank","legacy"]` · `polestar_cm_gp`·`polestar_cm_yd` → `["common"]`). 존이 없거나 그 존에 소스가 없으면 인자를 넣지 않는다(전 소스 — 종전 호출과 같다). 다른 존의 같은
+  `["b0"]` · `polestar_cm_gp`·`polestar_cm_yd` → `["cm_prd","cm_stg"]`). 존이 없거나 그 존에 소스가 없으면 인자를 넣지 않는다(전 소스 — 종전 호출과 같다). 다른 존의 같은
   hostname 인스턴스 이벤트로 승격하지 않게 하려는 것이다. 게이트웨이가 모르는 id라고 답하면(`invalid_argument` — 레지스트리·게이트웨이 소스 불일치) 판정은 그대로 두고 사유를
   `stage_evidence.app_impact_error`에 남긴다 — **전 소스로 다시 부르지 않는다.** 단일 설정 게이트웨이(`default`)에 레지스트리 소스가 있는 배포는 이 상태가 되므로,
   `app_impact`를 켜기 전에 게이트웨이를 다중 설정으로 맞춘다.
@@ -1037,15 +1040,15 @@ overrides: []
   "source": "jennifer",
   "tool": "apm_runtime_health",
   "instance_resolution": {"matched": true, "confidence": "high", "reason": "host_name", "instances": [1001, 1002],
-                          "instance_refs": [{"source_id": "bank", "domain_id": 1000, "instance_id": 1001},
-                                            {"source_id": "bank", "domain_id": 1000, "instance_id": 1002}]},
+                          "instance_refs": [{"source_id": "b0", "domain_id": 1000, "instance_id": 1001},
+                                            {"source_id": "b0", "domain_id": 1000, "instance_id": 1002}]},
   "window": {"start": "2026-09-29T09:30:00+09:00", "end": "2026-09-29T10:00:00+09:00", "minutes": 30},
   "was_signals": [{"kind": "was_heap_pressure", "level": "WARNING", "category": "medium", "label": "힙 메모리 압박",
                    "evidence": "heap 사용률 ≥ 0.9 연속 3샘플(최근 0.99)", "instance_id": 1001, "source_tool": "apm_runtime_health",
-                   "source_id": "bank"}],
+                   "source_id": "b0"}],
   "limits": ["[한계] ..."],
-  "sources": [{"source_id": "bank", "status": "ok", "reason": ""},
-              {"source_id": "common", "status": "no_match", "reason": ""}]
+  "sources": [{"source_id": "b0", "status": "ok", "reason": ""},
+              {"source_id": "cm_prd", "status": "no_match", "reason": ""}]
 }
 ```
 
@@ -1159,7 +1162,7 @@ hostname으로 다시 `apm_instance_map(hostname=…)`을 불러(E1r) 인스턴�
      - business: "결제"                       # 필수 — 업무명(대소문자·구분자 무시로 비교)
        aliases: ["페이", "payment"]           # 선택 — 같은 업무의 다른 이름
        instances: ["abc-was-01", "abc-was-02"]  # 필수 — 제니퍼 인스턴스 이름(정확히 · 대소문자 무시)
-       source_id: bank                        # 선택 — 그 제니퍼 소스에서만 찾는다(없으면 전 소스)
+       source_id: b0                          # 선택 — 그 제니퍼 소스에서만 찾는다(없으면 전 소스)
    ```
 
 2. **저장소의 기본값은 빈 목록(`business_map: []`)이다** — 운영 업무명·인스턴스 실명은 배포 환경의 파일에만 적는다(수동 `overrides`와 같다). 위 예는 가상 이름이다.
@@ -1316,7 +1319,7 @@ hostname으로 다시 `apm_instance_map(hostname=…)`을 불러(E1r) 인스턴�
    게이트웨이 다운이면 0.001초 만에 `gateway_unreachable`로 넘어가고 쿨다운 중에는 0초 · Bearer 불일치(401)는 v4.1 당시 `… unhandled errors in a TaskGroup (1 sub-exception)`으로만 남았다 →
    **2026-10-01 수정(87 §0.12 F-4)**: `gateway_error — 게이트웨이 호출 실패(apm_events): HTTP 401 인증 실패 — NOISE_APM_MCP_TOKEN이 게이트웨이의 APM_GATEWAY_BEARER_TOKEN과 같은지 확인`(Bearer 없음도 같음 · 로컬 게이트웨이 실측 · §11).
 2. **소스 배지** — 게이트웨이 이벤트(`dbId="jennifer"`·`"jennifer_<id>"`)는 배지가 **「제니퍼」**다. 레지스트리 DB가 아니라서 `db_id` 해석 앞에서 분기한다.
-   툴팁은 `제니퍼 — <존 약칭> <제니퍼 도메인>; <dbId>`다(v5 — 예 `제니퍼 — 은행존 운영도메인; jennifer_legacy` · 존은 레지스트리 `sources[]`에서 · 존 없는 소스와 단일 설정은
+   툴팁은 `제니퍼 — <존 약칭> <제니퍼 도메인>; <dbId>`다(v5 — 예 `제니퍼 — 은행존 운영도메인; jennifer_b0` · 존은 레지스트리 `sources[]`에서 · 존 없는 소스와 단일 설정은
    v4 그대로 `제니퍼 — <도메인>; jennifer`). hostname 역조회(D-188)가 폴스타 서버를 찾아도 배지는 바뀌지 않는다(`noise_gate/application/server_identity.py`).
 3. **알람 kind 분류 충돌(87 R-16) — 해소.** 게이트 `classify_alarm_kind`(`noise_gate/domain/process_rank.py`)와 조사측 동형 함수가 `resourceType="apm.Instance"`를
    OS 키워드보다 **먼저** `apm`으로 판정한다(대칭 · 플래그 무관 — 게이트웨이 이벤트에서만 발현). 결과(U-13 확정안):
@@ -1331,7 +1334,7 @@ hostname으로 다시 `apm_instance_map(hostname=…)`을 불러(E1r) 인스턴�
 6. **알람 존 전달 — v5에서 F-7 해소**(87 §0.13 (6) · D-287 ④). 알람 수신 범위(알림그룹 = 존)는 이벤트 `dbId`의 존으로 거른다(`src/api/routes/alarm.py`
    `event_visible_to` · ack·피드백 `_zone_permits`). v4의 `dbId="jennifer"`는 레지스트리 DB가 아니라 존이 없었고, 그래서 **존 일부만 받는 구독자에게 APM 알람이 가지 않고
    ack·피드백도 막혔다**(전 존 구독자·관리자만 봤다). v5는 `src/routing/zones.py` `db_id_to_zone`이 `jennifer_<id>`를 레지스트리 `sources[]`로 풀어 — 은행존 구독자는
-   `jennifer_bank`·`jennifer_legacy`, 공동존 구독자는 `jennifer_common` 알람을 받고 ack할 수 있다. 존 없는 소스(단일 설정 `jennifer` · 표에 없는 id · `zone` 빈 값)는 종전대로
+   `jennifer_b0`, 공동존 구독자는 `jennifer_cm_prd`·`jennifer_cm_stg` 알람을 받고 ack할 수 있다. 존 없는 소스(단일 설정 `jennifer` · 표에 없는 id · `zone` 빈 값)는 종전대로
    전 존 구독자·관리자만 본다(`tests/test_api/test_plan87_j8_apm_alarm_zone.py`).
 
 ---

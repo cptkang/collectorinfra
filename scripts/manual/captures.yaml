@@ -107,6 +107,105 @@ captures:
     login: user
     steps:
       - send: "vcore, cpu, core은 동의어이다. 캐시에 등록하라."
+  # ── 사용자: 결과 그래프·용어 사전·값 해석·표 넓게 보기(plans/160 · D-327) ─────────
+  # `capture-viz` 서버(두 플래그 on · LLM 주소 닫힘 = LLM 호출 0 — snapshot.py). 힙 추세는 손 제작 재생 파일
+  # (fixtures/queries/3ee6ec6113ecd276.json · `handmade` 사유 — 로컬 제니퍼는 라이선스가 없어 녹화 불가)
+  - id: result-chart-line
+    server: capture-viz
+    login: user
+    steps:
+      - send: "지난 6시간 힙 메모리 추세 보여줘"
+      - click: ".message--agent:last-child .result-viz-toggle"
+      - wait: ".message--agent:last-child .result-viz-chart canvas"
+      - wait: 800
+      - eval: "document.querySelector('.message--agent:last-child .result-viz-toggle').scrollIntoView({block: 'start'})"
+      - wait: 300
+    callouts: [[1, ".message--agent:last-child .result-viz-toggle"], [2, ".message--agent:last-child .result-viz-chart"], [3, ".message--agent:last-child table.result-viz-grid"]]
+  - id: result-chart-bar
+    server: capture-viz
+    login: user
+    steps:
+      - send: "2026년 5월 서버별 CPU 사용률 평균이 높은 상위 5대를 보여줘"
+      - click: ".message--agent:last-child .result-viz-toggle"
+      - wait: ".message--agent:last-child .result-viz-chart canvas"
+      - wait: 800
+      - eval: "document.querySelector('.message--agent:last-child .result-viz-toggle').scrollIntoView({block: 'start'})"
+      - wait: 300
+    callouts: [[1, ".message--agent:last-child .result-viz-toggle"], [2, ".message--agent:last-child .result-viz-chart"]]
+  # 머리글은 사전 적중 칼럼(heap_used_mb — config/result_glossary.yaml)이라 LLM 이 필요 없다
+  - id: result-glossary
+    server: capture-viz
+    login: user
+    steps:
+      - send: "지난 6시간 힙 메모리 추세 보여줘"
+      - click: ".message--agent:last-child .result-viz-toggle"
+      - wait: ".message--agent:last-child table.result-viz-grid"
+      - wait: 800
+      - eval: "document.querySelector('.message--agent:last-child .result-viz-grid-title').scrollIntoView({block: 'start'})"
+      - wait: 300
+      - click: ".message--agent:last-child table.result-viz-grid thead button[data-rv-col='heap_used_mb']"
+      - wait: ".result-viz-pop .result-viz-badge"
+      - wait: 300
+    callouts: [[1, ".message--agent:last-child table.result-viz-grid thead button[data-rv-col='heap_used_mb']"], [2, ".result-viz-pop"]]
+  # 값 해석의 LLM 문장 자리는 LLM 주소가 닫혀 있어 「해석 문장 없음 — LLM 호출 실패(…)」로 찍힌다(계산값은 결정적)
+  - id: result-interpret
+    server: capture-viz
+    login: user
+    steps:
+      - send: "지난 6시간 힙 메모리 추세 보여줘"
+      - click: ".message--agent:last-child .result-viz-toggle"
+      - wait: ".message--agent:last-child table.result-viz-grid"
+      - wait: 800
+      - eval: "document.querySelector('.message--agent:last-child .result-viz-grid-title').scrollIntoView({block: 'start'})"
+      - wait: 300
+      - click: ".message--agent:last-child table.result-viz-grid tbody tr:nth-child(5) button[data-rv-col='heap_used_mb']"
+      - wait: ".result-viz-pop .result-viz-pop-llm"
+      - wait: 300
+    callouts: [[1, ".message--agent:last-child table.result-viz-grid tbody tr:nth-child(5) button[data-rv-col='heap_used_mb']"], [2, ".result-viz-pop .result-viz-facts"], [3, ".result-viz-pop .result-viz-pop-llm"]]
+  # 답 본문 표 해설(plans/160 §8) — 코드가 원본 행으로 렌더한 답 표에 밑줄 링크가 붙는다.
+  # 월간 통계 추세는 손 제작 재생 파일(fixtures/queries/720fee46a68a27bf.json · 서버·값 가상)
+  - id: result-answer-table-explain
+    server: capture-viz
+    login: user
+    steps:
+      - send: "svr-db-01 서버의 메모리 사용률 6개월 추세 보여줘"
+      - wait: ".message--agent:last-child .response-text table[data-rv-explain] tbody button"
+      - click: ".message--agent:last-child .response-text table tbody tr:nth-child(3) button[data-rv-col='mem_max_pct']"
+      - wait: ".result-viz-pop .result-viz-pop-llm"
+      - wait: 300
+    callouts: [[1, ".message--agent:last-child .response-text table thead button[data-rv-col='stat_month']"], [2, ".message--agent:last-child .response-text table tbody tr:nth-child(3) button[data-rv-col='mem_max_pct']"], [3, ".result-viz-pop"], [4, ".message--agent:last-child .result-viz-toggle"]]
+  # 질의 이력은 기본 접힘 — 처리 현황만 접으면 둘 다 접힌 상태다
+  - id: table-wide-panels
+    server: capture-viz
+    login: user
+    steps:
+      - click: "#panelToggle"
+      - send: "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량을 조회해줘"
+      - eval: "document.querySelector('.message--agent:last-child .response-text table').scrollIntoView({block: 'center'})"
+      - wait: 300
+    callouts: [[1, "#historyToggle"], [2, "#panelToggle"], [3, ".message--agent:last-child .response-text table"]]
+  - id: table-expand-btn
+    server: capture-viz
+    login: user
+    steps:
+      - click: "#historyToggle"
+      - send: "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량을 조회해줘"
+      - eval: "document.querySelector('.message--agent:last-child .result-table-wrap').scrollIntoView({block: 'center'})"
+      - wait: ".message--agent:last-child .table-expand-btn:not([hidden])"
+      - wait: 300
+    callouts: [[1, ".message--agent:last-child .table-expand-btn"]]
+  - id: table-expand-overlay
+    server: capture-viz
+    login: user
+    steps:
+      - click: "#historyToggle"
+      - send: "cocm-hdkapp01 서버의 OS 종류·버전, IP주소, CPU 모델, 메모리 용량을 조회해줘"
+      - eval: "document.querySelector('.message--agent:last-child .result-table-wrap').scrollIntoView({block: 'center'})"
+      - wait: ".message--agent:last-child .table-expand-btn:not([hidden])"
+      - click: ".message--agent:last-child .table-expand-btn"
+      - wait: ".table-expand-overlay"
+      - wait: 300
+    callouts: [[1, ".table-expand-overlay table thead"], [2, ".table-expand-close"]]
   # ── 사용자: 조회 범위와 역질문 ───────────────────────────
   # 존 장면은 전 존 권한인 관리자로 찍고 대화 영역만 잘라 낸다(사례 계정은 샌드박스 권한만 — run_capture.py)
   - id: scope-chip
@@ -144,7 +243,7 @@ captures:
       - click: "#sendBtn"
       - wait: ".apm-source-clarify"
       - wait_answer: null
-      - check: ".apm-source-clarify input[value='common']"
+      - check: ".apm-source-clarify input[value='cm_prd']"
     clip: ".chat-main"
     pad: 0
     callouts: [[1, ".apm-source-clarify .zone-clarify-items"], [2, ".apm-source-clarify .zone-clarify-confirm"], [3, "#apmScopePick"]]
@@ -159,7 +258,7 @@ captures:
       - click: "#sendBtn"
       - wait: ".apm-source-clarify"
       - wait_answer: null
-      - check: ".apm-source-clarify input[value='common']"
+      - check: ".apm-source-clarify input[value='cm_prd']"
       - click: ".apm-source-clarify .zone-clarify-confirm"
       - wait: "#apmScopeChip[data-state='selected']"
       - wait_answer: null
@@ -179,7 +278,7 @@ captures:
       - wait: "#apmScopeChip:not([hidden])"
       - click: "#apmScopePick"
       - wait: "#apmScopePopover:not([hidden])"
-      - check: "#apmScopePopover input[value='common']"
+      - check: "#apmScopePopover input[value='cm_prd']"
       - wait: 300
     clip: ".chat-main"
     pad: 0
@@ -283,6 +382,22 @@ captures:
       - wait: "#promptConfirm"
       - wait: 500
     callouts: [[1, "#promptConfirm"], [2, "#prompt"]]
+  # 조사 브리핑(plans/153) — 예시 카드·조사 기록은 손으로 만든 것(fixtures/alarms/briefing.json)
+  - id: alarm-briefing
+    login: admin
+    height: 1300
+    steps:
+      - click: ".view-tab[data-view='alarm']"
+      - wait: 1500
+      - alarm_replay: {only: briefing}
+      - wait: "#alarmList .message--alarm .alarm-briefing-toggle"
+      - wait: 800
+      - click: "#alarmList .alarm-briefing-toggle"
+      - wait: "#alarmList .alarm-briefing-body .bv-item--limit"
+      - wait: 600
+    clip: "#alarmList .message--alarm:has(.alarm-briefing-section)"
+    pad: 8
+    callouts: [[1, "#alarmList .alarm-briefing-toggle"], [2, "#alarmList .bv-chip"], [3, "#alarmList .bv-badge--hypo"], [4, "#alarmList .bv-item--limit"], [5, "#alarmList .bv-gated"]]
   - id: noise-user
     login: user
     steps:
@@ -296,6 +411,21 @@ captures:
       - click: "#decisionBody tr >> nth=0"
       - wait: "#drawer"
       - wait: 800
+  - id: noise-drawer-cause
+    login: user
+    height: 1120
+    steps:
+      - goto: /noise
+      - wait: 2500
+      - fill: ["#decSearch", "WAS 응답 지연"]
+      - click: "#decSearchBtn"
+      - wait: "#decisionBody tr:has-text('WAS 응답 지연')"
+      - click: "#decisionBody tr:has-text('WAS 응답 지연') >> nth=0"
+      - wait: "#drawerCause .cause-briefing .bv-cross-table"
+      - wait: 800
+    clip: "#drawer"
+    pad: 0
+    callouts: [[1, "#drawerSummary .tier-shift"], [2, "#drawerSummary .drawer-summary-text"], [3, "#drawerCause .cause-handling"], [4, "#drawerCause .cause-ai"], [5, "#drawerCause .cause-briefing"]]
   - id: noise-admin
     login: admin
     steps:

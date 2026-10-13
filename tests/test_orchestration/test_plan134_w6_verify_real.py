@@ -61,7 +61,7 @@ def _default_stats(sid: str, d: int, iid: int, lo: int, hi: int) -> list[dict] |
     """인스턴스 1개 · 구간의 애플리케이션 행(합성) — 시간 수에 비례한 호출 · 인스턴스별 평균."""
     hours = max(1, (hi - lo) // 3_600_000)
     calls = ((iid % 7) + 1) * 10 * hours
-    avg = ((iid * 31 + (0 if sid == "bank" else 7)) % 97 + 1) * 10
+    avg = ((iid * 31 + (0 if sid == "b0" else 7)) % 97 + 1) * 10
     return [{"name": "/order", "calls": calls, "failures": iid % 5,
              "responseTime": float(avg), "maxResponseTime": avg * 3,
              "totalResponseTime": calls * avg}]
@@ -92,9 +92,9 @@ class _W6Model(_Model):
 
 def _models(*, bank_hosts: list[str], bank_domains: int, common_hosts: list[str],
             common_domains: int, hostless: bool = False) -> dict[str, _W6Model]:
-    return {"bank": _W6Model("bank", _TOKENS["bank"], hosts=bank_hosts, domains=bank_domains,
+    return {"b0": _W6Model("b0", _TOKENS["b0"], hosts=bank_hosts, domains=bank_domains,
                              hostless=hostless),
-            "common": _W6Model("common", _TOKENS["common"], hosts=common_hosts,
+            "cm_prd": _W6Model("cm_prd", _TOKENS["cm_prd"], hosts=common_hosts,
                                domains=common_domains)}
 
 
@@ -245,16 +245,16 @@ async def test_v6_2_recent_hours_window_reaches_the_anchor(live) -> None:
 # ── E2: A-1 두 기간 비교 ─────────────────────────────────────────────────────────
 
 def _compare_stats(cut: int):
-    """기준(구간 시작 < cut) / 비교 구간 — bank web01: 기준 100호출 → 비교 150호출,
-    common web01: 기준 통계 행 없음(N/A — 0으로 채우지 않아야 한다) → 비교 50호출."""
+    """기준(구간 시작 < cut) / 비교 구간 — b0 web01: 기준 100호출 → 비교 150호출,
+    cm_prd web01: 기준 통계 행 없음(N/A — 0으로 채우지 않아야 한다) → 비교 50호출."""
 
     def fn(sid: str, d: int, iid: int, lo: int, hi: int) -> list[dict] | None:
         baseline = lo < cut
-        if sid == "common" and baseline:
+        if sid == "cm_prd" and baseline:
             return []
-        calls = {("bank", True): 100, ("bank", False): 150, ("common", False): 50}[
+        calls = {("b0", True): 100, ("b0", False): 150, ("cm_prd", False): 50}[
             (sid, baseline)]
-        fails = 2 if (sid, baseline) == ("bank", True) else 3 if sid == "bank" else 0
+        fails = 2 if (sid, baseline) == ("b0", True) else 3 if sid == "b0" else 0
         avg = 200 if baseline else 300
         return [{"name": "/order", "calls": calls, "failures": fails, "responseTime": float(avg),
                  "maxResponseTime": avg * 4, "totalResponseTime": calls * avg}]
@@ -281,11 +281,11 @@ async def test_e2_last_week_compare_sends_two_half_open_windows_and_says_na(live
     assert windows == {(_ms(datetime(2026, 9, 28, tzinfo=KST)),
                         _ms(datetime(2026, 9, 29, 10, tzinfo=KST))),
                        (_ms(cur_start), _ms(datetime(2026, 10, 6, 10, tzinfo=KST)))}, windows
-    assert len(hits) == 4, "인스턴스 2(bank·common web01) × 구간 2"
+    assert len(hits) == 4, "인스턴스 2(b0·cm_prd web01) × 구간 2"
     block = _judgement_block(_final(state))
     line = next((ln for ln in block.splitlines() if "기준" in ln and "비교" in ln), "")
     assert line, block
-    # 기준 = bank만(100) · 비교 = 150 + 50 = 200 → +100% (common 기준 0으로 채우지 않음)
+    # 기준 = b0만(100) · 비교 = 150 + 50 = 200 → +100% (cm_prd 기준 0으로 채우지 않음)
     assert "호출 100 → 200(+100.0%)" in line, line
     assert "N/A" not in line.split("호출")[1].split("·")[0], line
     assert res["source_status"][0]["status"] in ("ok", "partial"), res["source_status"]
@@ -323,7 +323,7 @@ async def test_e2_compare_without_a_period_asks_and_opens_nothing(live) -> None:
 
 def _period_oracle(stack: _Stack, lo: int, hi: int, n: int, *,
                    failed: set[tuple[str, int]] = frozenset()) -> list[tuple[str, int, int, float]]:
-    order = {"bank": 0, "common": 1}
+    order = {"b0": 0, "cm_prd": 1}
     items = []
     for sid, d, iid, _h in _instances(stack):
         if (sid, d) in failed:
@@ -366,18 +366,18 @@ async def test_e3_yesterday_slowest_was_is_a_period_ranking(live) -> None:
 
 async def test_e3_failed_domain_makes_the_period_ranking_provisional(live) -> None:
     stack, rec = live
-    stack.models["common"].fail["/api/status/application"].add(3)
+    stack.models["cm_prd"].fail["/api/status/application"].add(3)
     try:
         state = await _turn(stack, "어제 응답시간 가장 느린 WAS 5개",
                             _task(["apm.ranking"], view_args={"apm.ranking": {
                                 "metric": "response_time_avg_ms", "n": 5}}))
     finally:
-        stack.models["common"].fail["/api/status/application"].discard(3)
+        stack.models["cm_prd"].fail["/api/status/application"].discard(3)
     res = _res(state)
     lo, hi = _ms(datetime(2026, 10, 5, tzinfo=KST)), _ms(datetime(2026, 10, 6, tzinfo=KST))
     got = [(r["source_id"], r["domain_id"], r["instance_id"], r["value"])
            for r in res["query_results"]]
-    assert got == _period_oracle(stack, lo, hi, 5, failed={("common", 3)}), got
+    assert got == _period_oracle(stack, lo, hi, 5, failed={("cm_prd", 3)}), got
     block = _judgement_block(_final(state))
     assert "잠정 순위 — 조회 실패 도메인 1곳 제외" in block, block
     assert "전체 순위" not in _final(state)
@@ -443,7 +443,7 @@ async def test_e4_untargeted_twenty_five_instances_queries_the_top_twenty(sized)
     assert rec.named("apm_instance_map") == []
     (batch,) = rec.named("apm_app_health")
     # 오라클 — 실시간 tps(= instanceId % 50) 내림차순 상위 20
-    tps = sorted(((-(iid % 50), {"bank": 0, "common": 1}[sid], d, iid, sid, host)
+    tps = sorted(((-(iid % 50), {"b0": 0, "cm_prd": 1}[sid], d, iid, sid, host)
                   for sid, d, iid, host in _instances(stack)))[:20]
     top_hosts = {host for *_, host in tps if host}
     top_hostless = [(sid, iid) for *_, iid, sid, host in tps if not host]
@@ -460,8 +460,8 @@ async def test_e4_untargeted_twenty_five_instances_queries_the_top_twenty(sized)
 
 
 async def test_v6_3_top_n_results_are_at_most_n_instances(sized) -> None:
-    """상위 12 = 호스트 없는 batch-was(tps 49) + bank web12~web02(tps 12~2 — 동률 2는 소스 순서로
-    bank). common web02~web04는 순위 밖인데 hostname 대상 web02~web04가 두 소스를 다 부른다."""
+    """상위 12 = 호스트 없는 batch-was(tps 49) + b0 web12~web02(tps 12~2 — 동률 2는 소스 순서로
+    b0). cm_prd web02~web04는 순위 밖인데 hostname 대상 web02~web04가 두 소스를 다 부른다."""
     stack, rec = sized(**_25)
     state = await _turn(stack, "WAS 응답시간", _task(["apm.app_health"]), top_n=12)
     (note,) = _kinds(_res(state))[disc.APM_UNTARGETED_SCOPE]

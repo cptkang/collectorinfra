@@ -412,3 +412,123 @@ class TestGraphWiring:
             ),
         )).get_graph().nodes.keys())
         assert "investigation_trigger" not in nodes
+
+
+# ── 9. (plans/153 W2) 조사 저장소 기록 — 인라인 종결·생략 경로 ──────────────────
+def _store_config(ng, client, inv_store, store=None) -> dict:
+    cfg = _config(ng, client, store)
+    cfg["configurable"]["investigation_store"] = inv_store
+    return cfg
+
+
+def _inv_rows(path) -> list[dict]:
+    import json
+
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+class TestInvestigationStoreRecording:
+    async def test_inline_done_records_briefing(self, tmp_path):
+        from noise_gate.infrastructure.investigation_store import InvestigationStore
+
+        path = tmp_path / "inv.jsonl"
+        client = FakeSreClient(
+            briefing={"cause": "OOM", "recommendation": "힙 상향"},
+            poll_status="done", verdict={"level": "critical", "escalate": False},
+        )
+        out = await investigation_trigger_node(
+            _state(_decision()), _store_config(_ng_cfg(), client, InvestigationStore(str(path)))
+        )
+        # state 반환은 종전과 같다(저장은 부가 기록).
+        assert out == {"investigation_briefing": {"cause": "OOM", "recommendation": "힙 상향"},
+                       "investigation_id": "inv-1"}
+        (row,) = _inv_rows(path)
+        assert row["investigation_id"] == "inv-1" and row["alarm_ids"] == ["A-1"]
+        assert row["status"] == "done" and row["source"] == "inline"
+        assert row["verdict"] == {"level": "critical", "escalate": False}
+        assert row["briefing"] == {"cause": "OOM", "recommendation": "힙 상향"}
+        assert [line["label"] for line in row["briefing_lines"]] == ["원인", "권고"]
+
+    async def test_inline_rejected_records_reason(self, tmp_path):
+        from noise_gate.infrastructure.investigation_store import InvestigationStore
+
+        path = tmp_path / "inv.jsonl"
+        st = _state(_decision())
+        st["alarm_event"] = _event(server="", host="")
+        await investigation_trigger_node(
+            st, _store_config(_ng_cfg(), FakeSreClient(), InvestigationStore(str(path)))
+        )
+        (row,) = _inv_rows(path)
+        assert row["status"] == "rejected"
+        assert row["reason"].startswith("필수 event 필드 결측")
+        assert "verdict" not in row and "briefing" not in row
+
+    async def test_inline_timeout_records_reason(self, tmp_path):
+        from noise_gate.infrastructure.investigation_store import InvestigationStore
+
+        path = tmp_path / "inv.jsonl"
+        ng = _ng_cfg(investigation_total_timeout_seconds=0.05)
+        await investigation_trigger_node(
+            _state(_decision()),
+            _store_config(ng, FakeSreClient(never_terminal=True), InvestigationStore(str(path))),
+        )
+        (row,) = _inv_rows(path)
+        assert row["status"] == "timeout" and "타임아웃" in row["reason"]
+
+    async def test_inline_service_down_records_failed(self, tmp_path):
+        from noise_gate.infrastructure.investigation_store import InvestigationStore
+
+        path = tmp_path / "inv.jsonl"
+        client = FakeSreClient(connect_error=ConnectionRefusedError("down"))
+        await investigation_trigger_node(
+            _state(_decision()), _store_config(_ng_cfg(), client, InvestigationStore(str(path)))
+        )
+        (row,) = _inv_rows(path)
+        assert row["status"] == "failed" and row["reason"] == "조사 서비스 연결 실패"
+
+    async def test_authz_denied_records_rejected(self, tmp_path):
+        from noise_gate.infrastructure.investigation_store import InvestigationStore
+
+        path = tmp_path / "inv.jsonl"
+        client = FakeSreClient()
+        cfg = _store_config(_ng_cfg(), client, InvestigationStore(str(path)))
+        # 알 수 없는 인가 모드는 fail-closed로 거부된다(Plan 78 W3-5).
+        cfg["configurable"]["app_config"] = _app_cfg(_ng_cfg(), authz_mode="bogus_mode")
+        await investigation_trigger_node(_state(_decision()), cfg)
+        assert client.submit_calls == []
+        (row,) = _inv_rows(path)
+        assert row["status"] == "rejected" and row["investigation_id"] is None
+        assert "인가 거부" in row["reason"]
+
+    async def test_episode_existing_records_link_row(self, tmp_path):
+        from noise_gate.infrastructure.investigation_store import InvestigationStore
+
+        path = tmp_path / "inv.jsonl"
+        st = _state(_decision())
+        st["alarm_event"] = AlarmEvent(
+            db_id="db1", server_name="srv-1", hostname="h1", ip_address="10.0.0.1",
+            resource_ancestry="", alarm_id="J-2", severity=3, alarm_status="NOT_ACK",
+            resource_type="apm.Instance", resource_name="was-1", alarm_name="ERROR_JVM_DOWN",
+            alarm_time=datetime(2026, 10, 12, 9, 0, 0), conditions="", condition_log="",
+        )
+        st["cross_source"] = {"episode_id": "ep-1"}
+        st["episode_investigation"] = {"episode_id": "ep-1", "investigation_id": "inv-0"}
+        client = FakeSreClient()
+        out = await investigation_trigger_node(
+            st, _store_config(_ng_cfg(), client, InvestigationStore(str(path)))
+        )
+        assert out == {} and client.submit_calls == []
+        (row,) = _inv_rows(path)
+        assert row == {
+            "investigation_id": "inv-0", "alarm_ids": ["J-2"], "kind": "alarm",
+            "status": "episode_existing", "episode_id": "ep-1",
+            "alarm_db_ids": {"J-2": "db1"},  # (W2 교정) 조회 API 존 검사 근거
+            "ts": row["ts"], "source": "inline",
+        }
+
+    async def test_no_store_injected_writes_nothing(self, tmp_path):
+        # 저장소 미주입(트리거 off·워커 밖) — 종전 경로 그대로, 파일 0.
+        client = FakeSreClient(poll_status="done", briefing={"cause": "x"})
+        out = await investigation_trigger_node(_state(_decision()), _config(_ng_cfg(), client))
+        assert out["investigation_briefing"] == {"cause": "x"}
+        assert list(tmp_path.iterdir()) == []

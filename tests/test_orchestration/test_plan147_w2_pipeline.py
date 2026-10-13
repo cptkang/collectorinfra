@@ -65,7 +65,7 @@ class _Gateway:
 
     async def call_tool(self, name: str, arguments: dict):
         self.calls.append((name, dict(arguments)))
-        picked = arguments.get("source_ids") or ["bank", "common", "legacy"]
+        picked = arguments.get("source_ids") or ["b0", "cm_prd", "cm_stg"]
         env = {"rows": [{"source_id": s, "instance_id": 11, "instance_name": f"{s}-was1",
                          "tps": 3.5, "avg_response_ms": 812} for s in picked],
                "row_count": len(picked), "queried_at": "2026-10-08T10:00:00+09:00",
@@ -133,10 +133,10 @@ async def test_composite_asks_apm_source_while_polestar_answers(gateway) -> None
     assert [t["task_id"] for t in turn["state"]["task_plan"]] == ["t1", "t2"], "대체 task 0"
     out = turn["out"]
     ask = out["apm_source_clarification"]
-    assert [o["key"] for o in ask["options"]] == ["bank", "common", "legacy", "*"]
+    assert [o["key"] for o in ask["options"]] == ["b0", "cm_prd", "cm_stg", "*"]
     assert ask["multi"] is True and ask["allow_all"] is True
     assert out["apm_source_pending"] == {"query": query,
-                                         "choices": ["bank", "common", "legacy", "*"]}
+                                         "choices": ["b0", "cm_prd", "cm_stg", "*"]}
     assert "42.5" in out["final_response"], "폴스타 부분은 정상 답"
     assert ask["question"] in out["final_response"], "되묻기 문구가 답에 남는다"
     assert out.get("apm_source_scope") is None
@@ -147,23 +147,23 @@ async def test_composite_asks_apm_source_while_polestar_answers(gateway) -> None
 async def test_composite_with_location_word_queries_common_and_records_scope(gateway) -> None:
     query = "김포 web01 서버 CPU 사용률과 WAS 응답시간 알려줘"
     turn = await _turn(query, "web01 WAS 응답시간")
-    assert {tuple(a.get("source_ids") or ()) for _, a in gateway.calls} == {("common",)}
+    assert {tuple(a.get("source_ids") or ()) for _, a in gateway.calls} == {("cm_prd",)}
     out = turn["out"]
     assert out.get("apm_source_clarification") is None and out.get("apm_source_pending") is None
-    assert out["apm_source_scope"] == {"ids": ["common"], "basis": "named",
-                                       "last_target_sources": ["common"]}
-    assert "common-was1" in out["final_response"] and "42.5" in out["final_response"]
-    assert "공동존 제니퍼만 조회했습니다(근거: 「김포」)" in out["final_response"]
+    assert out["apm_source_scope"] == {"ids": ["cm_prd"], "basis": "named",
+                                       "last_target_sources": ["cm_prd"]}
+    assert "cm_prd-was1" in out["final_response"] and "42.5" in out["final_response"]
+    assert "공동존 운영 제니퍼만 조회했습니다(근거: 「김포」)" in out["final_response"]
 
 
 @pytest.mark.asyncio
 async def test_answer_turn_scope_basis_answered(gateway) -> None:
     query = "web01 서버 CPU 사용률과 WAS 응답시간 알려줘"
-    turn = await _turn(query, "web01 WAS 응답시간", selected_apm_source_ids=["bank", "legacy"],
+    turn = await _turn(query, "web01 WAS 응답시간", selected_apm_source_ids=["b0", "cm_stg"],
                        apm_source_basis="answered")
-    assert {tuple(a["source_ids"]) for _, a in gateway.calls} == {("bank", "legacy")}
+    assert {tuple(a["source_ids"]) for _, a in gateway.calls} == {("b0", "cm_stg")}
     assert turn["out"]["apm_source_scope"] == {
-        "ids": ["bank", "legacy"], "basis": "answered", "last_target_sources": ["bank", "legacy"]}
+        "ids": ["b0", "cm_stg"], "basis": "answered", "last_target_sources": ["b0", "cm_stg"]}
 
 
 # ── AC-8 ─────────────────────────────────────────────────────────────────────

@@ -194,6 +194,13 @@ class QueryResponse(BaseModel):
         default=None,
         description="요청 시간 해석(기준 시각·성능/알람 [start, end)·입도·출처·되묻기 사유)",
     )
+    # plans/160 A-2 (D-327): 그래프 보기 신호 — {kind, tables: [{index, label, kind}]}(데이터 없음 ·
+    # `GET /query/{id}/chart`가 데이터를 준다). 선언하지 않으면 pydantic이 조용히 버린다.
+    # 플래그 off면 None.
+    chart: dict[str, Any] | None = Field(
+        default=None,
+        description="그래프 보기 신호(첫 표 종류 · 그릴 수 있는 표의 번호·라벨·종류)",
+    )
 
 
 class HealthResponse(BaseModel):

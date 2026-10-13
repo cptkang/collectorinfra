@@ -12,18 +12,24 @@ import pytest
 
 from src.domain.time_spec import (
     KST,
+    N_MAX,
     NOTE_DEFAULT_PERIOD,
     NOTE_EMPTY_RANGE,
     NOTE_FUTURE_PERIOD,
+    NOTE_MINUTE_WIDENED,
     NOTE_MULTIPLE_PERIODS,
+    UNITS,
     PartialDate,
     TimeResolution,
     TimeSpec,
     TimeSpecError,
+    ceil_to_unit,
     cover,
     default_resolution,
+    floor_to_unit,
     relative_window,
     resolve,
+    shift_unit,
     window_around,
 )
 
@@ -340,3 +346,70 @@ class TestEventSubjectAndClarify:
         """연도 없는 월은 「미래가 아닌 가장 최근」이라 되묻지 않는다(D-185 유지)."""
         res = resolve(TimeSpec("absolute", abs_start=PartialDate(month=12)), NOW)
         assert (res.start, res.end) == (kst(2025, 12, 1), kst(2026, 1, 1))
+
+
+class TestMinuteUnit:
+    """plans/159 W1 · D-328 — 분 단위(사례 표는 `test_plan159_minute_period.py`)."""
+
+    NOW_M = datetime(2026, 10, 13, 10, 37, 42, 123, tzinfo=KST)
+
+    def test_unit_and_n_max(self) -> None:
+        assert "minute" in UNITS and N_MAX["minute"] == 60 * 24 * 7
+        TimeSpec(relation="last", n=N_MAX["minute"], unit="minute")
+        with pytest.raises(TimeSpecError) as exc:
+            TimeSpec(relation="last", n=N_MAX["minute"] + 1, unit="minute")
+        assert _code(exc) == "n_out_of_range"
+
+    @pytest.mark.parametrize("relation", ["this", "to_date", "next"])
+    def test_unsupported_relations_are_invalid_spec(self, relation: str) -> None:
+        """「이번 분」·「다음 N분」은 실사용 표현이 아니다 — 되묻기(invalid_spec)."""
+        with pytest.raises(TimeSpecError) as exc:
+            TimeSpec(relation=relation, n=5, unit="minute")  # type: ignore[arg-type]
+        assert _code(exc) == "invalid_spec"
+
+    def test_absolute_minute_is_invalid_spec(self) -> None:
+        with pytest.raises(TimeSpecError) as exc:
+            TimeSpec(relation="absolute", unit="minute", abs_start=PartialDate(month=9, day=1))
+        assert _code(exc) == "invalid_spec"
+
+    @pytest.mark.parametrize("completeness", ["complete", "to_date"])
+    def test_non_rolling_completeness_is_invalid_spec(self, completeness: str) -> None:
+        with pytest.raises(TimeSpecError) as exc:
+            TimeSpec(relation="last", n=5, unit="minute",
+                     completeness=completeness)  # type: ignore[arg-type]
+        assert _code(exc) == "invalid_spec"
+
+    def test_public_floor_ceil_shift_accept_minute(self) -> None:
+        """공개 원시 연산이 분을 받는다(별도 분 함수 없음 — D-131)."""
+        assert floor_to_unit(self.NOW_M, "minute") == kst(2026, 10, 13, 10, 37)
+        assert ceil_to_unit(self.NOW_M, "minute") == kst(2026, 10, 13, 10, 38)
+        assert ceil_to_unit(kst(2026, 10, 13, 10, 37), "minute") == kst(2026, 10, 13, 10, 37)
+        assert shift_unit(kst(2026, 10, 13, 10, 37), "minute", -90) == kst(2026, 10, 13, 9, 7)
+        # 시 단위 내림은 종전대로 분을 버린다
+        assert floor_to_unit(self.NOW_M, "hour") == kst(2026, 10, 13, 10)
+
+    def test_event_ends_at_minute_boundary(self) -> None:
+        res = resolve(TimeSpec(relation="last", n=30, unit="minute"), self.NOW_M, subject="event")
+        assert (res.start, res.end) == (kst(2026, 10, 13, 10, 7), kst(2026, 10, 13, 10, 37))
+        assert (res.grain, res.completeness, res.notes) == ("hour", "rolling", ())
+        assert res.label() == "2026-10-13 10:07 ~ 2026-10-13 10:37"
+
+    @pytest.mark.parametrize("n, start_hour", [(1, 9), (60, 9), (61, 8), (90, 8), (120, 8)])
+    def test_metric_widens_to_hours(self, n: int, start_hour: int) -> None:
+        """통계 = 직전 정시에서 끝나는 ⌈N/60⌉시간 + 고지(침묵 확장 금지)."""
+        res = resolve(TimeSpec(relation="last", n=n, unit="minute"), self.NOW_M)
+        assert (res.start, res.end) == (kst(2026, 10, 13, start_hour), kst(2026, 10, 13, 10))
+        assert NOTE_MINUTE_WIDENED in res.notes and res.completeness == "rolling"
+
+    def test_ago_reads_as_since_then(self) -> None:
+        """「5분 전」은 1분 칸 하나가 아니라 그때부터 기준 시각까지다."""
+        res = resolve(TimeSpec(relation="ago", n=5, unit="minute"), self.NOW_M, subject="event")
+        assert (res.start, res.end) == (kst(2026, 10, 13, 10, 32), kst(2026, 10, 13, 10, 37))
+
+    def test_hour_rolling_unchanged(self) -> None:
+        """시 단위 롤링(「최근 3시간」)의 정시 절단은 바꾸지 않는다(D-328 ⑥)."""
+        spec = TimeSpec(relation="last", n=3, unit="hour", completeness="rolling")
+        for subject in ("event", "metric"):
+            res = resolve(spec, self.NOW_M, subject=subject)  # type: ignore[arg-type]
+            assert (res.start, res.end) == (kst(2026, 10, 13, 7), kst(2026, 10, 13, 10))
+            assert NOTE_MINUTE_WIDENED not in res.notes

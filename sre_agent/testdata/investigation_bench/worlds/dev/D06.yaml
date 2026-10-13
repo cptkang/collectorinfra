@@ -1,0 +1,75 @@
+# plans/154 §4.6 D06 — 스왑 스래싱(swap_thrash · os · 함정 없음)
+id: D06
+split: dev
+title: 캐시 적재 프로세스의 메모리 과점유로 스왑 스래싱
+event:
+  dbId: polestar
+  serverName: bw-d06-app01
+  hostname: bw-d06-app01
+  ipAddress: 192.0.2.16
+  resourceAncestry: ""
+  alarmId: "bw-d06-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "Load Average 임계 초과"
+  alarmTime: "20261012092000"
+  conditions: "> 32"
+  conditionLog: "[Load Average 5분 (> 32)]"
+label:
+  root_entity: {host: bw-d06-app01, component: bwd06_cache_loader}
+  layer: os
+  kind: swap_thrash
+  change_related: false
+  aliases:
+    kind: [스왑 스래싱, 스왑 과다, swap thrashing, 페이징 폭증, 스왑 사용 급증]
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: memory}, cite: ["87.5"]}
+  - {tool: prom_metric_range, match: {metric: node_vmstat_pswpout}, cite: ["4210"]}
+expect:
+  abstain: false
+hosts: [bw-d06-app01]
+incident_window: {start: -40m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: memory}
+      reply:
+        rows: [{value: 99.1, swap_used_pct: 87.5}]
+        row_count: 1
+        unit: "%"
+        source_kind: postgresql
+    - match: {kind: cpu}
+      reply:
+        rows: [{value: 45.2, iowait: 38.0}]
+        row_count: 1
+        unit: "%"
+        source_kind: postgresql
+  prom_metric_range:
+    - match: {metric: node_vmstat_pswpout}
+      reply:
+        rows:
+          - {ts: "2026-10-12T08:50:00", value: 15.0}
+          - {ts: "2026-10-12T09:15:00", value: 4210.0}
+        row_count: 2
+        note: "평시 초당 12 페이지 수준"
+  polestar_process_snapshot:
+    - reply:
+        rows:
+          - {pid: 6120, name: bwd06_cache_loader, pcpu: 22.0, pmem: 61.4, state: D, elapsed: "00:52:18"}
+          - {pid: 1180, name: nginx, pcpu: 3.0, pmem: 1.2, state: S, elapsed: "12-08:11:40"}
+        row_count: 2
+        captured_at: "2026-10-12T09:20:15"
+        source_kind: polestar_api
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d06-app01, kind: memory}}
+    - {call: prom_metric_range, args: {hostname: bw-d06-app01, metric: node_vmstat_pswpout}}
+    - {answer: "bw-d06-app01 스왑 스래싱 — 메모리 99.1%·스왑 87.5% (polestar_metric_trend) · pswpout 4210/s로 평시의 수백 배 (prom_metric_range)"}
+  neg:
+    F-LOOP:   # 같은 도구·같은 인자(null 인자는 「없음」 — 채점기 정규화) 3회 = 정체
+      - {call: polestar_process_snapshot, args: {hostname: bw-d06-app01}}
+      - {call: polestar_process_snapshot, args: {hostname: bw-d06-app01, top_n: null}}
+      - {call: polestar_process_snapshot, args: {hostname: bw-d06-app01, sort: null}}
+      - {answer: "bw-d06-app01 원인 미확정 — 상위 프로세스 목록만 확인 (polestar_process_snapshot)"}

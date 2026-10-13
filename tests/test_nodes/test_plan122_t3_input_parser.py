@@ -118,6 +118,13 @@ class TestPromptContract:
             if slot is None:
                 assert qt.slot_status == SLOT_ABSENT
 
+    def test_minute_unit_listed_with_example_and_clock_guard(self) -> None:
+        """분 단위(D-328) — 단위 목록·예시에 minute이 있고, 시각 뒤 분은 단위가 아니다."""
+        section = INPUT_PARSER_TIME_SLOT_SECTION
+        assert re.search(r"\*\*unit\*\*: minute · hour ·", section)
+        assert "「최근 30분」은 n=30·unit=minute" in section
+        assert "「10시 30분」처럼 시각 뒤에 붙은 분은 unit이 아닙니다" in section
+
     def test_anchor_line_is_date_only(self) -> None:
         line = time_anchor_line(NOW.date())
         assert line.startswith("\n## 기준 시각\n오늘은 2026-10-06(화) KST입니다.")

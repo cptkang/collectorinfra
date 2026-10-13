@@ -60,11 +60,11 @@ from apm_gateway.interface.server import create_server
 
 async def main():
     spool = tempfile.mkdtemp(prefix="verify-134-w34-schema-")
-    cfg = load_config({"JENNIFER_SOURCES": '["bank","common"]',
-                       "JENNIFER_BANK_API_URL": "http://127.0.0.1:1",
-                       "JENNIFER_BANK_API_TOKEN": "x1",
-                       "JENNIFER_COMMON_API_URL": "http://127.0.0.1:1",
-                       "JENNIFER_COMMON_API_TOKEN": "x2", "APM_SPOOL_DIR": spool})
+    cfg = load_config({"JENNIFER_SOURCES": '["b0","cm_prd"]',
+                       "JENNIFER_B0_API_URL": "http://127.0.0.1:1",
+                       "JENNIFER_B0_API_TOKEN": "x1",
+                       "JENNIFER_CM_PRD_API_URL": "http://127.0.0.1:1",
+                       "JENNIFER_CM_PRD_API_TOKEN": "x2", "APM_SPOOL_DIR": spool})
     tools = ApmTools(build_source_set(cfg), cfg)
     jobs = JobManager.from_config(cfg, envelope=tools.ok, error_envelope=tools.err)
     mcp = create_server(tools, jobs=jobs, port=0)
@@ -136,22 +136,22 @@ class _Capture:
         if name == "apm_instance_map":
             if args.get("query") or args.get("business"):  # 대상 텍스트 해석 — 인스턴스 2개
                 return _env(name, [
-                    {"source_id": "bank", "instance_id": 1002, "instance_name": "abc-was02",
+                    {"source_id": "b0", "instance_id": 1002, "instance_name": "abc-was02",
                      "domain_id": 2000, "hostname": "", "match_confidence": None,
                      "match_tier": "exact"},
-                    {"source_id": "common", "instance_id": 3003, "instance_name": "abc-was02",
+                    {"source_id": "cm_prd", "instance_id": 3003, "instance_name": "abc-was02",
                      "domain_id": 2000, "hostname": "", "match_confidence": None,
                      "match_tier": "exact"}])
             if not args.get("hostname") and "targets" not in args:  # 첫 홉 — 정합 2 · 호스트 없음 1
                 return _env(name, [
-                    {"source_id": "bank", "instance_id": 11, "instance_name": "w1",
+                    {"source_id": "b0", "instance_id": 11, "instance_name": "w1",
                      "domain_id": 1, "hostname": "web01", "match_confidence": "exact"},
-                    {"source_id": "bank", "instance_id": 12, "instance_name": "w2",
+                    {"source_id": "b0", "instance_id": 12, "instance_name": "w2",
                      "domain_id": 1, "hostname": "web02", "match_confidence": "exact"},
-                    {"source_id": "common", "instance_id": 13, "instance_name": "batch-was",
+                    {"source_id": "cm_prd", "instance_id": 13, "instance_name": "batch-was",
                      "domain_id": 1, "hostname": "", "match_confidence": None}])
             return _env(name, [{"hostname": args.get("hostname"), "instance_id": 11,
-                                "match_confidence": "exact", "source_id": "bank"}])
+                                "match_confidence": "exact", "source_id": "b0"}])
         return _env(name, [{"tool_row": name, "hostname": args.get("hostname")}])
 
     async def call_tool(self, name: str, arguments: dict):
@@ -254,7 +254,7 @@ def _cases() -> list[tuple[str, str, dict, dict, dict, list[str] | None]]:
                             None))
             # 소스 지목(대상 모양마다 1번 · 조건 없음)
             out.append((f"{view.id}|{tname}|sources", view.id, task_extra, iso_extra, {},
-                        ["bank"]))
+                        ["b0"]))
     return out
 
 
@@ -285,7 +285,7 @@ def _item_errors(item: Any, keys: list[str]) -> list[str]:
     iid = item.get("instance_id")
     if iid is not None and (isinstance(iid, bool) or not isinstance(iid, int) or iid < 0):
         errs.append(f"instance_id 형식 {iid!r}")
-    if "source_id" in item and item["source_id"] not in ("bank", "common", "legacy"):
+    if "source_id" in item and item["source_id"] not in ("b0", "cm_prd", "cm_stg"):
         errs.append(f"source_id {item['source_id']!r}")
     return errs
 

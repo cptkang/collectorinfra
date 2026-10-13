@@ -1,0 +1,70 @@
+# plans/154 §4.6 H05 — 홀드아웃(D07과 같은 kind · cross_host_cascade · 함정: 원인이 다른 호스트) · 개선 채택 판정 전용
+id: H05
+split: holdout
+title: DB 테이블 잠금 대기가 WAS 트랜잭션 처리 지연으로 번짐
+event:
+  dbId: polestar
+  serverName: bw-h05-was03
+  hostname: bw-h05-was03
+  ipAddress: 198.51.100.35
+  resourceAncestry: ""
+  alarmId: "bw-h05-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "트랜잭션 처리 지연"
+  alarmTime: "20261008154500"
+  conditions: "> 7000ms"
+  conditionLog: "[트랜잭션 평균 처리시간 (> 7000ms)]"
+label:
+  root_entity: {host: bw-h05-db02, component: table lock}
+  layer: db
+  kind: cross_host_cascade
+  change_related: false
+  aliases:
+    kind: [DB 지연, DB 락 대기, 락 경합, 테이블 락, 데이터베이스 응답 지연]
+key_evidence:
+  - {tool: polestar_incident_alarms, match: {server_name: bw-h05-db02}, cite: [잠금 대기, "87"]}
+  - {tool: polestar_topology, cite: [bw-h05-db02]}
+expect:
+  abstain: false
+hosts: [bw-h05-was03, bw-h05-was04, bw-h05-db02]
+incident_window: {start: -35m, end: 0m}
+tools:
+  polestar_topology:
+    - reply:
+        rows:
+          - {relation: ancestor, name: bw-h05-db02, type: database, status: 경고}
+          - {relation: peer, name: bw-h05-was04, type: server, status: 경고}
+        row_count: 2
+        source_kind: postgresql
+  polestar_incident_alarms:
+    - match: {server_name: bw-h05-db02}
+      reply:
+        rows:
+          - {alarm_time: "2026-10-08T15:31:00", alarm_name: "잠금 대기 세션 급증", value: "blocked sessions 87"}
+        row_count: 1
+        source_kind: postgresql
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-08T15:44:00", alarm_name: "트랜잭션 처리 지연", severity: 2}
+        row_count: 1
+        source_kind: postgresql
+  polestar_metric_trend:
+    - match: {kind: cpu}
+      reply:
+        rows: [{value: 33.8}]
+        row_count: 1
+        unit: "%"
+        source_kind: postgresql
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_topology, args: {source: polestar, server_name: bw-h05-was03}}
+    - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-h05-db02, reference_time: "2026-10-08T15:45:00"}}
+    - {answer: "bw-h05-db02 잠금 대기 세션 87개 급증으로 DB 락 대기 — WAS 처리 지연은 연쇄 영향 (polestar_incident_alarms · polestar_topology)"}
+  neg:
+    F-ARG:
+      - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-h05-db09, reference_time: "2026-10-08T15:45:00"}}
+      - {answer: "bw-h05-was03 원인 파악 불가 — DB 측 이력 없음 (polestar_incident_alarms)"}

@@ -1,0 +1,67 @@
+# plans/154 §4.6 D04 — 야간 백업 I/O 대기(disk_io_saturation · os · 함정 없음)
+id: D04
+split: dev
+title: 야간 백업이 디스크 I/O를 포화시켜 응답 지연
+event:
+  dbId: polestar
+  serverName: bw-d04-db01
+  hostname: bw-d04-db01
+  ipAddress: 192.0.2.14
+  resourceAncestry: ""
+  alarmId: "bw-d04-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "서비스 응답 지연 경고"
+  alarmTime: "20261012011500"
+  conditions: "> 3000ms"
+  conditionLog: "[응답시간 (> 3000ms, 2회 연속)]"
+label:
+  root_entity: {host: bw-d04-db01, component: bwd04_nightly_backup}
+  layer: os
+  kind: disk_io_saturation
+  change_related: false
+  aliases:
+    kind: [디스크 I/O 포화, I/O 대기, iowait, I/O 병목, 백업 I/O]
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: disk_io}, cite: ["99.2"]}
+  - {tool: polestar_process_snapshot, cite: [bwd04_nightly_backup]}
+expect:
+  abstain: false
+hosts: [bw-d04-db01]
+incident_window: {start: -30m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: disk_io}
+      reply:
+        rows:
+          - {device: sdb, util_pct: 99.2, await_ms: 184.0, read_mb_s: 412.0}
+          - {device: sda, util_pct: 7.5, await_ms: 2.1, read_mb_s: 1.2}
+        row_count: 2
+        unit: "%"
+        source_kind: postgresql
+    - match: {kind: cpu}
+      reply:
+        rows: [{value: 31.5, iowait: 46.8}]
+        row_count: 1
+        unit: "%"
+        source_kind: postgresql
+  polestar_process_snapshot:
+    - reply:
+        rows:
+          - {pid: 30112, name: bwd04_nightly_backup, pcpu: 18.2, pmem: 1.1, state: D, elapsed: "00:14:51"}
+          - {pid: 2210, name: postgres, pcpu: 6.3, pmem: 24.0, state: D, elapsed: "40-02:00:13"}
+        row_count: 2
+        captured_at: "2026-10-12T01:15:20"
+        source_kind: polestar_api
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d04-db01, kind: disk_io}}
+    - {call: polestar_process_snapshot, args: {hostname: bw-d04-db01}}
+    - {answer: "bw-d04-db01 디스크 I/O 포화 — sdb 사용률 99.2%·await 184.0ms (polestar_metric_trend) · bwd04_nightly_backup 백업 I/O가 원인 (polestar_process_snapshot)"}
+  neg:
+    F-MISS:
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d04-db01, kind: cpu}}
+      - {answer: "bw-d04-db01 CPU 부족으로 응답 지연 (polestar_metric_trend)"}

@@ -1,0 +1,1 @@
+{"model": "openai/qwen3-32b", "api_base": "http://gpu-vllm.corp.internal:8000/v1", "max_steps": 20, "investigation_audit_path": "/home/benchsvc/collectorinfra/sre_agent/.data/investigation_bench/20261013-120000-closed/arm-control/audit.jsonl"}

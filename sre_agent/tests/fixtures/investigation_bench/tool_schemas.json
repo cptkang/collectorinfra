@@ -1,0 +1,670 @@
+{
+  "polestar": [
+    {
+      "name": "list_sources",
+      "description": "등록된 활성 데이터소스 목록을 반환한다.\n\nReturns:\n    JSON 문자열 - 소스 목록\n",
+      "inputSchema": {
+        "properties": {},
+        "title": "list_sourcesArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "list_sourcesOutput",
+        "type": "object"
+      }
+    },
+    {
+      "name": "polestar_alarm_history",
+      "description": "동일 (서버, 알람명)의 과거 알람 이력을 조회한다.\n\nArgs:\n    source: 데이터소스(db_id).\n    server_name: 폴스타 등록 서버명(cmm_resource.name).\n    alarm_name: 알람 정의명(cmm_alarm_def.name).\n    hours: 조회 창(시간). 기본 168(7일).\n    exclude_alarm_id: 제외할 알람 ID(현재 이벤트 자기 제외용).\n    reference_time: 사건 기준시각(ISO 8601, DB 벽시계). 지정하면 now 대신 이 시각을 앵커로\n        [기준시각 − lookback, 기준시각] 구간을 조회한다.\n    lookback_minutes: 기준시각 이전 조회 폭(분). 미지정 시 hours*60.\n    ctx: MCP 컨텍스트.\n\nReturns:\n    JSON 문자열 {rows, row_count, queried_at, source_kind[, window]} 또는 {error}.\n",
+      "inputSchema": {
+        "properties": {
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "server_name": {
+            "title": "Server Name",
+            "type": "string"
+          },
+          "alarm_name": {
+            "title": "Alarm Name",
+            "type": "string"
+          },
+          "hours": {
+            "default": 168,
+            "title": "Hours",
+            "type": "integer"
+          },
+          "exclude_alarm_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Exclude Alarm Id"
+          },
+          "reference_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reference Time"
+          },
+          "lookback_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Lookback Minutes"
+          }
+        },
+        "required": [
+          "source",
+          "server_name",
+          "alarm_name"
+        ],
+        "title": "polestar_alarm_historyArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "polestar_alarm_historyOutput",
+        "type": "object"
+      }
+    },
+    {
+      "name": "polestar_incident_alarms",
+      "description": "사건 구간 안에서 서버에 발생한 **전 알람**(알람명 불문)을 시간순으로 조회한다.\n\n`polestar_alarm_history`가 같은 알람의 과거 이력이라면, 이 도구는 사건 구간의 알람 축이다\n(타임라인 병합 · 선행 알람 탐색 — plans/50 §4.1·§6.1).\n\nArgs:\n    source: 데이터소스(db_id).\n    server_name: 폴스타 등록 서버명.\n    reference_time: 사건 기준시각(ISO 8601, DB 벽시계). 필수.\n    lookback_minutes: 기준시각 이전 조회 폭(분). 기본 60.\n    alarm_name: 지정하면 그 알람명만.\n    ctx: MCP 컨텍스트.\n\nReturns:\n    JSON 문자열 {rows, row_count, queried_at, source_kind, window} 또는 {error}.\n",
+      "inputSchema": {
+        "properties": {
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "server_name": {
+            "title": "Server Name",
+            "type": "string"
+          },
+          "reference_time": {
+            "title": "Reference Time",
+            "type": "string"
+          },
+          "lookback_minutes": {
+            "default": 60,
+            "title": "Lookback Minutes",
+            "type": "integer"
+          },
+          "alarm_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alarm Name"
+          }
+        },
+        "required": [
+          "source",
+          "server_name",
+          "reference_time"
+        ],
+        "title": "polestar_incident_alarmsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "polestar_incident_alarmsOutput",
+        "type": "object"
+      }
+    },
+    {
+      "name": "polestar_metric_trend",
+      "description": "서버의 사용률 시계열(최신 periods개, 또는 사건 구간)을 조회한다.\n\nArgs:\n    source: 데이터소스(db_id).\n    server_name: 폴스타 등록 서버명.\n    kind: cpu | memory | filesystem | disk_io.\n    granularity: h(시간) | d(일) | m(월). 기본 h.\n    periods: 반환 기간 수(최신 우선). 기본 24.\n    reference_time: 사건 기준시각(ISO 8601, DB 벽시계). 지정하면 최신 N개 대신\n        [기준시각 − lookback, 기준시각] 구간을 조회한다.\n    lookback_minutes: 기준시각 이전 조회 폭(분). 미지정 시 granularity 1단위.\n    baseline_periods: 사건 구간 직전에 포함할 baseline 기간 수(granularity 단위).\n        응답 `window.stat_date_incident_from`으로 baseline/사건 구간을 가른다.\n    ctx: MCP 컨텍스트.\n\nReturns:\n    JSON 문자열 {rows, row_count, queried_at, source_kind[, window]} 또는 {error}.\n",
+      "inputSchema": {
+        "properties": {
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "server_name": {
+            "title": "Server Name",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "granularity": {
+            "default": "h",
+            "title": "Granularity",
+            "type": "string"
+          },
+          "periods": {
+            "default": 24,
+            "title": "Periods",
+            "type": "integer"
+          },
+          "reference_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reference Time"
+          },
+          "lookback_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Lookback Minutes"
+          },
+          "baseline_periods": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Baseline Periods"
+          }
+        },
+        "required": [
+          "source",
+          "server_name",
+          "kind"
+        ],
+        "title": "polestar_metric_trendArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "polestar_metric_trendOutput",
+        "type": "object"
+      }
+    },
+    {
+      "name": "prom_metric_range",
+      "description": "서버(hostname)의 메트릭 시계열(window)을 조회한다(Prometheus range).\n\n서버가 ``{nodename=\"<hostname>\"}`` 필터를 결정적으로 조립한다(§5-0). metric은\nbare 메트릭 이름만 허용한다.\n\nArgs:\n    hostname: 폴스타 등록 서버명(=Prometheus nodename 라벨).\n    metric: bare 메트릭 이름(예: node_cpu_seconds_total).\n    window: 조회 창(예: 1h, 30m, 15s). 기본 1h.\n    step: 해상도 스텝(예: 60s, 15s). 기본 60s.\n    reference_time: 사건 기준시각(ISO 8601). 지정하면 now 대신 이 시각이 창의 끝이다.\n    ctx: MCP 컨텍스트.\n\nReturns:\n    JSON 문자열 {data, queried_at, source_kind} 또는 {error}.\n",
+      "inputSchema": {
+        "properties": {
+          "hostname": {
+            "title": "Hostname",
+            "type": "string"
+          },
+          "metric": {
+            "title": "Metric",
+            "type": "string"
+          },
+          "window": {
+            "default": "1h",
+            "title": "Window",
+            "type": "string"
+          },
+          "step": {
+            "default": "60s",
+            "title": "Step",
+            "type": "string"
+          },
+          "reference_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reference Time"
+          }
+        },
+        "required": [
+          "hostname",
+          "metric"
+        ],
+        "title": "prom_metric_rangeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "prom_metric_rangeOutput",
+        "type": "object"
+      }
+    }
+  ],
+  "apm": [
+    {
+      "name": "apm_app_health",
+      "description": "WAS 골든 시그널 — 평균 응답시간·TPS·액티브 서비스·PLC 거절률·방문·호출 수·액티브 구간\n4칸(현재) + 구간 p50/p95·에러율(1분 조각으로 창 전체) + 긴 창은 시 단위 합계 + 판정.\nhostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은\napm_instance_map(query=…)로 먼저 찾는다.",
+      "inputSchema": {
+        "properties": {
+          "hostname": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Hostname"
+          },
+          "instance_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Instance Name"
+          },
+          "instance_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Instance Id"
+          },
+          "reference_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reference Time"
+          },
+          "lookback_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Lookback Minutes"
+          },
+          "source_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Ids"
+          },
+          "investigation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Investigation Id"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thread Id"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "결과·작업 소유자(불투명 문자열). 작업 도구는 같은 owner일 때만 응답한다",
+            "title": "Owner"
+          },
+          "wait_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "이 초 안에 끝나지 않으면 작업 핸들(job)을 돌려주고 백그라운드로 계속한다(apm_job_status로 확인). 비우면 끝날 때까지 기다린다",
+            "title": "Wait Seconds"
+          },
+          "targets": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "여러 대상을 한 번에(작업 1개 — 예상·진행·대상별 부분 실패 · 개수 상한 없음). 항목 = {hostname 또는 instance_name(둘 다 = AND) · source_id(선택) · instance_id(이 도구가 받을 때만)}. 최상위 hostname·instance_name·instance_id와 함께 줄 수 없다. 행에 target_index, 대상별 요약·실패는 batch",
+            "title": "Targets"
+          }
+        },
+        "title": "apm_app_healthArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "apm_app_healthOutput",
+        "type": "object"
+      }
+    },
+    {
+      "name": "apm_period_compare",
+      "description": "두 명시 구간 비교(평소 대비) — 시 단위 통계로 인스턴스별·전체 호출·실패·실패율·호출 수\n가중 평균·최대 응답시간과 증감(기준 0 = N/A). 구간은 정시 경계로 넓힌다 · p95 없음.\nhostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은\napm_instance_map(query=…)로 먼저 찾는다.",
+      "inputSchema": {
+        "properties": {
+          "current_start": {
+            "description": "비교 구간 시작(ISO 8601 · 시간대 없으면 APM_TIMEZONE)",
+            "title": "Current Start",
+            "type": "string"
+          },
+          "current_end": {
+            "description": "비교 구간 끝(ISO 8601)",
+            "title": "Current End",
+            "type": "string"
+          },
+          "baseline_start": {
+            "description": "기준 구간 시작(ISO 8601 · 예 지난주)",
+            "title": "Baseline Start",
+            "type": "string"
+          },
+          "baseline_end": {
+            "description": "기준 구간 끝(ISO 8601)",
+            "title": "Baseline End",
+            "type": "string"
+          },
+          "hostname": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Hostname"
+          },
+          "instance_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Instance Name"
+          },
+          "source_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Ids"
+          },
+          "n": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "인스턴스 행 N개(현재 구간 호출 수 순). 비우면 전부",
+            "title": "N"
+          },
+          "full": {
+            "default": false,
+            "description": "true면 상위 N 대신 전체 행(정렬 유지 · 큰 결과는 결과 파일 artifact)",
+            "title": "Full",
+            "type": "boolean"
+          },
+          "investigation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Investigation Id"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thread Id"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "결과·작업 소유자(불투명 문자열). 작업 도구는 같은 owner일 때만 응답한다",
+            "title": "Owner"
+          },
+          "wait_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "이 초 안에 끝나지 않으면 작업 핸들(job)을 돌려주고 백그라운드로 계속한다(apm_job_status로 확인). 비우면 끝날 때까지 기다린다",
+            "title": "Wait Seconds"
+          },
+          "targets": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "여러 대상을 한 번에(작업 1개 — 예상·진행·대상별 부분 실패 · 개수 상한 없음). 항목 = {hostname 또는 instance_name(둘 다 = AND) · source_id(선택) · instance_id(이 도구가 받을 때만)}. 최상위 hostname·instance_name·instance_id와 함께 줄 수 없다. 행에 target_index, 대상별 요약·실패는 batch",
+            "title": "Targets"
+          }
+        },
+        "required": [
+          "current_start",
+          "current_end",
+          "baseline_start",
+          "baseline_end"
+        ],
+        "title": "apm_period_compareArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "apm_period_compareOutput",
+        "type": "object"
+      }
+    },
+    {
+      "name": "gateway_health",
+      "description": "게이트웨이 상태 — APM 소스별 설정·도달 여부·도메인 수 · 허용 경로 수 · 전체 상태 ·\n폴러 상태(조회용 이벤트 버퍼 포함) · 작업 실행 현황(헬스체크용).",
+      "inputSchema": {
+        "properties": {},
+        "title": "gateway_healthArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "gateway_healthOutput",
+        "type": "object"
+      }
+    }
+  ]
+}

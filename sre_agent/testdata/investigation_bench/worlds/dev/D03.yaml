@@ -1,0 +1,75 @@
+# plans/154 §4.6 D03 — 로그 미회전으로 파일시스템 포화(disk_full · os · 유인: 정시 배치의 정상 CPU 패턴)
+id: D03
+split: dev
+title: 로그 미회전으로 파일시스템 포화
+event:
+  dbId: polestar
+  serverName: bw-d03-app01
+  hostname: bw-d03-app01
+  ipAddress: 192.0.2.13
+  resourceAncestry: ""
+  alarmId: "bw-d03-0001"
+  severity: 3
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "파일시스템 사용률 임계 초과"
+  alarmTime: "20261012031500"
+  conditions: "> 95%"
+  conditionLog: "[파일시스템 사용률 (> 95%)]"
+label:
+  root_entity: {host: bw-d03-app01, component: /var/log}
+  layer: os
+  kind: disk_full
+  change_related: false
+  aliases:
+    kind: [디스크 포화, 파일시스템 포화, 파일시스템 가득, filesystem full, 로그 미회전, logrotate 실패]
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: filesystem}, cite: ["98.4", /var/log]}
+  - {tool: polestar_incident_alarms, cite: [logrotate]}
+distractors:
+  - {kind: cpu_high, aliases: [CPU 과부하, CPU 사용률 급등, CPU 폭주]}
+expect:
+  abstain: false
+hosts: [bw-d03-app01]
+incident_window: {start: -45m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: filesystem}
+      reply:
+        rows:
+          - {mount: /var/log, value: 98.4, used_gb: 47.2, size_gb: 48.0}
+          - {mount: /, value: 41.0, used_gb: 12.3, size_gb: 30.0}
+        row_count: 2
+        unit: "%"
+        source_kind: postgresql
+    - match: {kind: cpu}
+      reply:
+        rows: {gen: {base: 22, spike_at: -15m, to: 63, noise: 2, points: 6, step: 10m}}
+        row_count: 6
+        unit: "%"
+        note: "매시 정각 60%대 상승 — 지난 14일 같은 패턴"
+        source_kind: postgresql
+  polestar_incident_alarms:
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-12T00:05:00", alarm_name: "로그 순환 작업 실패", message: "logrotate exit 1 — /etc/logrotate.d/bwd03app 권한 오류"}
+          - {alarm_time: "2026-10-12T03:15:00", alarm_name: "파일시스템 사용률 임계 초과", severity: 3}
+        row_count: 2
+        source_kind: postgresql
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d03-app01, kind: filesystem}}
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d03-app01, kind: cpu}}
+    - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-d03-app01, reference_time: "2026-10-12T03:15:00"}}
+    - {answer: "bw-d03-app01 /var/log 파일시스템 포화 — 사용률 98.4% (polestar_metric_trend) · 00:05 logrotate 실패 이후 로그 미회전 (polestar_incident_alarms) · 정각 CPU 상승은 지난 14일 같은 패턴"}
+  neg:
+    F-DIST:
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d03-app01, kind: filesystem}}
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d03-app01, kind: cpu}}
+      - {answer: "bw-d03-app01 정각마다 CPU 과부하가 원인 (polestar_metric_trend)"}
+    F-CITE:
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d03-app01, kind: filesystem}}
+      - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-d03-app01, reference_time: "2026-10-12T03:15:00"}}
+      - {answer: "bw-d03-app01 파일시스템 포화가 원인 (polestar_metric_trend)"}

@@ -44,8 +44,8 @@ apm_gateway/                   자체 pyproject · 자체 cwd · 루트 venv 공
 | 키 | 기본 | 뜻 |
 |---|---|---|
 | `JENNIFER_API_URL` · `JENNIFER_API_TOKEN` | 빈 값 | **단일 설정** — Open API 주소 · AIOps 전용 토큰. `JENNIFER_SOURCES`가 비고 URL이 있으면 소스 `default` 1개(v4 동작). 둘 다 비면 소스 0개 → 도구는 `not_configured` |
-| `JENNIFER_SOURCES` | 빈 값 | **다중 설정**(J8) — 소스 id JSON 배열(예 `["bank","common","legacy"]` · 선언 순서 = 조회·표시 순서). id = 소문자 슬러그 `[a-z][a-z0-9_]{0,15}` · 예약어 `default`·`api` · 중복 금지. 루트 레지스트리 `solutions[apm].sources[].id`와 같게 둔다 |
-| `JENNIFER_<ID>_API_URL` · `JENNIFER_<ID>_API_TOKEN` | — | 소스별 필수(`<ID>` = id 대문자 — `bank` → `JENNIFER_BANK_API_URL`) · 토큰은 소스별 AIOps 전용 토큰 |
+| `JENNIFER_SOURCES` | 빈 값 | **다중 설정**(J8) — 소스 id JSON 배열(예 `["b0","cm_prd","cm_stg"]` — 운영 확정 D-329 · 선언 순서 = 조회·표시 순서). id = 소문자 슬러그 `[a-z][a-z0-9_]{0,15}` · 예약어 `default`·`api` · 중복 금지. 루트 레지스트리 `solutions[apm].sources[].id`와 같게 둔다 |
+| `JENNIFER_<ID>_API_URL` · `JENNIFER_<ID>_API_TOKEN` | — | 소스별 필수(`<ID>` = id 대문자 — `cm_prd` → `JENNIFER_CM_PRD_API_URL`) · 토큰은 소스별 AIOps 전용 토큰 |
 | `JENNIFER_<ID>_DOMAIN_IDS` · `_API_TIMEOUT_SECONDS` · `_RATE_LIMIT_PER_SEC` · `_MAX_RESPONSE_BYTES` | 전역 값 | 소스별 선택 — 비면 아래 전역 `JENNIFER_*` 값 |
 | `JENNIFER_DOMAIN_IDS` | `[]` | 조회 도메인 제한(비면 `/api/domain` 전체) — 좁히기만 |
 | `JENNIFER_API_TIMEOUT_SECONDS` · `JENNIFER_RATE_LIMIT_PER_SEC` · `JENNIFER_MAX_RESPONSE_BYTES` | 10 · 5 · 4194304 | 호출별 timeout(서버 강제) · 초당 상한(폴러·동기 호출·백그라운드 작업이 나눈다 — 대기열은 우선순위 순 · §3.3) · **응답 본문 메모리 임계**(넘으면 `APM_SPOOL_DIR/tmp`의 임시 파일로 받아 점진 파싱 — 오류로 끊지 않는다 · 134 W0-B에서 「응답 크기 상한」에서 의미 변경 · D-296 ④) — 소스 클라이언트마다 따로 |
@@ -117,12 +117,12 @@ apm_gateway/                   자체 pyproject · 자체 cwd · 루트 venv 공
 {"rows": [...], "row_count": 1, "queried_at": "ISO", "source_kind": "apm_api", "source": "jennifer",
  "tool": "apm_runtime_health",
  "instance_resolution": {"matched": true, "confidence": "high", "reason": "host_name", "instances": [1001],
-                         "instance_refs": [{"source_id": "bank", "domain_id": 1000, "instance_id": 1001}]},
+                         "instance_refs": [{"source_id": "b0", "domain_id": 1000, "instance_id": 1001}]},
  "window": {"start": "ISO", "end": "ISO", "minutes": 30},
  "was_signals": [ ... §4 ... ],
  "limits": ["[한계] ..."],
- "sources": [{"source_id": "bank", "status": "ok", "reason": ""},
-             {"source_id": "common", "status": "unavailable", "reason": "source_unavailable: ..."}]}
+ "sources": [{"source_id": "b0", "status": "ok", "reason": ""},
+             {"source_id": "cm_prd", "status": "unavailable", "reason": "source_unavailable: ..."}]}
 ```
 `window`는 구간 인자를 쓴 도구만 · `was_signals`는 판정 도구만(빈 배열 가능) · `limits`는 비어도 키가 있다.
 
@@ -235,7 +235,7 @@ business_map:
   - business: "대출"                     # 필수 · 비지 않은 문자열
     aliases: ["여신"]                     # 선택 · 문자열 목록
     instances: ["WAS-EXAMPLE-01", "WAS-EXAMPLE-02"]   # 필수 · 비지 않은 문자열 목록(정확한 인스턴스 이름)
-    source_id: bank                       # 선택 · 그 소스에서만 찾는다
+    source_id: b0                         # 선택 · 그 소스에서만 찾는다
 ```
   형식이 틀린 항목은 기동 시 순번만 경고하고 뺀다(침묵 금지 · 목록이 아니면 전체 무시). `source_id`가 설정 소스에 없으면 기동 경고(`overrides`의 미등록 소스 경고와 같은 방식). 운영 업무명·인스턴스 실명은 저장소 기본값에 넣지 않는다(기본 `business_map: []`).
 
@@ -322,7 +322,7 @@ business_map:
 ```json
 {"kind": "was_heap_pressure", "level": "WARNING", "category": "medium", "label": "힙 메모리 압박",
  "evidence": "heap_used/committed=0.93 (930.0MB/1000.0MB)", "instance_id": 1001, "source_tool": "apm_runtime_health",
- "source_id": "bank"}
+ "source_id": "b0"}
 ```
 
 | kind | 판정(도구 출력 기반 · 잠정 임계 = `config/was_signatures.yaml`) | level | category | label |
@@ -351,7 +351,7 @@ business_map:
  "resourceType": "apm.Instance", "resourceName": "<instanceName>",
  "alarmName": "<errorType, 비면 metricsName>", "alarmTime": "yyyyMMddHHmmss(APM_TIMEZONE)",
  "conditions": "JENNIFER EVENT <level> — <alarmName>", "conditionLog": "<마스킹 message> (value=<value>)",
- "apm": {"source": "jennifer", "source_id": "bank", "domain_id": 1000, "domain_name": "...", "instance_id": 1001, "instance_name": "...",
+ "apm": {"source": "jennifer", "source_id": "b0", "domain_id": 1000, "domain_name": "...", "instance_id": 1001, "instance_name": "...",
          "event_type": "<alarmName>", "event_type_norm": "<정규화 유형>", "event_kind": "error|metric", "level": "fatal|warning|normal",
          "value": 0.0, "txid": "", "time_ms": 0, "application": "<마스킹>",
          "match_confidence": "high|medium|none", "match_reason": "...",

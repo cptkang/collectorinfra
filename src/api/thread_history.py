@@ -105,6 +105,8 @@ class TurnRecorder:
             "db_scope": payload.get("db_scope"),
             # 응답 고지(plans/134 W0-B) — 대화를 다시 불러도 작업 카드(ref)를 복원한다
             "disclosures": payload.get("disclosures"),
+            # 그래프 보기 신호(plans/160 A-2) — 복원한 대화에도 「그래프로 보기」 버튼을 띄운다
+            "chart": payload.get("chart"),
         }
         try:
             await asyncio.wait_for(

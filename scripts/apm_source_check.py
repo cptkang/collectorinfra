@@ -92,7 +92,7 @@ def gateway_source_ids(env: GatewayEnv) -> tuple[tuple[str, ...], list[str]]:
             raise CheckError(f"JENNIFER_SOURCES가 JSON 배열이 아닙니다: {e.msg}") from e
         if not isinstance(parsed, list) or not all(isinstance(x, str) for x in parsed):
             raise CheckError('JENNIFER_SOURCES는 문자열 JSON 배열이어야 합니다'
-                             '(예: ["bank", "common"])')
+                             '(예: ["b0", "cm_prd", "cm_stg"])')
         ids = tuple(x.strip() for x in parsed)
         if env.has("JENNIFER_API_URL") or env.has("JENNIFER_API_TOKEN"):
             problems.append("JENNIFER_SOURCES와 단일 설정 키(JENNIFER_API_URL·JENNIFER_API_TOKEN)를"

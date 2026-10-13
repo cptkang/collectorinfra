@@ -16,7 +16,8 @@ import json
 import logging
 import time
 import uuid
-from typing import Any, Optional
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -37,6 +38,9 @@ from noise_gate.domain.alarm import (
     AlarmHistoryStats,
     ProcessSnapshot,
 )
+
+if TYPE_CHECKING:
+    from noise_gate.infrastructure.investigation_store import InvestigationStore
 
 logger = logging.getLogger(__name__)
 
@@ -519,6 +523,20 @@ class AlarmCapabilitiesResponse(BaseModel):
     suppress_max_severity: int = Field(description="억제 허용 최대 심각도(그 위는 강등 불가)")
     prompt_suggest_enabled: bool = Field(
         default=False, description="알람 조회 질의 LLM 추천 활성 (Plan 86 · 기본 off)"
+    )
+    investigation_enabled: bool = Field(
+        default=False,
+        description=(
+            "자동 조사 브리핑 조회 가용 = 게이트 AND 조사 트리거 AND 조사 서비스 URL 설정 "
+            "(plans/153 W2 · 기본 off)"
+        ),
+    )
+    investigation_followup_timeout_seconds: float = Field(
+        default=300.0,
+        description=(
+            "조사 후속 조회 전체 타임아웃(초) — 웹이 진행 중 조사를 다시 조회하는 상한 "
+            "(NOISE_INVESTIGATION_FOLLOWUP_TIMEOUT_SECONDS · plans/153 W2)"
+        ),
     )
 
 
@@ -1572,7 +1590,7 @@ async def alarm_feedback_summary(
     summary="알람 UI 기능 가용성",
     description=(
         "카드 UI가 버튼(피드백·확인)을 렌더할지 결정하기 위한 게이트 상태입니다.<br/>"
-        "불리언·정수만 반환하며 경로·시크릿은 노출하지 않습니다."
+        "불리언·숫자만 반환하며 경로·시크릿은 노출하지 않습니다."
     ),
     tags=["alarm"],
 )
@@ -1594,7 +1612,296 @@ async def alarm_capabilities(
             getattr(ng, "alarm_prompt_llm_suggest_enabled", False)
         ),
         suppress_max_severity=int(getattr(ng, "suppress_max_severity", 2)),
+        # plans/153 W2: 조사가 실제로 돌 수 있는 조합일 때만 — 카드가 조사 섹션을 지연 로드할지.
+        investigation_enabled=gate_on
+        and bool(getattr(ng, "investigation_trigger_enabled", False))
+        and bool(getattr(ng, "investigation_service_url", "")),
+        investigation_followup_timeout_seconds=float(
+            getattr(ng, "investigation_followup_timeout_seconds", 300.0)
+        ),
     )
+
+
+# ─── 자동 조사 브리핑 조회 (plans/153 W2 · D-325 G-3 (a)) ──────────────────────
+
+# 아직 종결되지 않은 조사를 sre_agent에 다시 물을 때 종결로 보는 상태(submit/poll 계약 · D-123).
+_INVESTIGATION_TERMINAL_POLL: frozenset[str] = frozenset(
+    {"done", "failed", "timeout", "stub", "rejected", "not_found"}
+)
+
+#: 같은 조사의 지연 poll 최소 간격(초) — 카드 재조회·여러 사용자가 조사 서비스를 두드리지 않게.
+_INVESTIGATION_POLL_MIN_INTERVAL = 10.0
+#: 조사별 마지막 poll 시각(monotonic)과 동시성 1 잠금 — 키는 (저장소 경로, 조사 id).
+#: 간격이 지난 키는 다음 호출에서 sweep 한다(프로세스 in-memory dict는 키 만료 sweep 원칙).
+_INVESTIGATION_POLL_AT: dict[tuple[str, str], float] = {}
+_INVESTIGATION_POLL_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _is_alarm_operator(config: Any, current_user: dict[str, Any]) -> bool:
+    """운영자 뷰 여부 — SSE 스트림의 SUPPRESS 수신 판정과 같은 식(개발 모드는 운영자)."""
+    return bool(not config.auth.enabled) or (
+        bool(current_user) and current_user.get("role") == "admin"
+    )
+
+
+def _investigation_mask_fn(config: Any) -> Callable[[str], str]:
+    """사용자 뷰 마스킹 함수 — 관제(`noise_dashboard._mask_fn`)와 같은 값 패턴 방식."""
+    from src.security.data_masker import DataMasker
+
+    mask = str(config.security.mask_pattern)
+
+    def _mask(text: str) -> str:
+        for pattern in DataMasker.SENSITIVE_VALUE_PATTERNS:
+            if pattern.match(text):
+                return mask
+        return text
+
+    return _mask
+
+
+def _investigation_store(config: Any) -> InvestigationStore | None:
+    """조사 저장소(읽기) — 경로 설정이 없으면 None(조회할 것이 없다)."""
+    from noise_gate.infrastructure.investigation_store import InvestigationStore
+
+    ng = config.noise_gate
+    path = getattr(ng, "investigation_store_path", "")
+    if not path:
+        return None
+    return InvestigationStore(path, int(getattr(ng, "investigation_store_max_lines", 2000)))
+
+
+def _decision_db_id(config: Any, alarm_id: str) -> str | None:
+    """판정 레코드의 db_id — 조사 레코드에 db_id가 없을 때의 존 판정 폴백(없으면 None)."""
+    from noise_gate.infrastructure.decision_store import DecisionStore
+
+    ng = config.noise_gate
+    decision = DecisionStore(
+        ng.decision_store_path,
+        bool(getattr(ng, "decision_store_enabled", True)),
+        int(getattr(ng, "decision_store_max_lines", 20000)),
+    ).get_decision(alarm_id)
+    db_id = (decision or {}).get("db_id")
+    return str(db_id) if db_id else None
+
+
+def _assert_investigation_zone(
+    request: Request,
+    current_user: dict[str, Any],
+    alarm_ids: list[str],
+    known_db_ids: dict[str, str] | None = None,
+) -> None:
+    """조사 응답의 존 검사 — 조사에 걸린 알람 **전부**가 사용자 존 안이어야 한다(fail-closed).
+
+    - 존 집합이 비면 403. 전 존(관리자·개발 모드)이면 통과한다(판정 기록을 읽지 않는다).
+    - 제한 스코프에서는 알람마다 db_id를 조사 레코드의 `alarm_db_ids` → 판정 기록 순으로 찾고,
+      **하나라도 모르거나 범위 밖이면 403**이다. `_zone_permits`의 "db_id 없음 = 허용" 하위호환을
+      여기서는 쓰지 않는다 — 판정 기록이 tail 밖으로 밀린 알람이나 타 존 멤버가 섞인 사건 조사의
+      브리핑이 새지 않게 한다(plans/153 W2 교정 · 보안 H1).
+    - 걸린 알람이 없으면(제한 스코프) 존을 정할 수 없으므로 403.
+
+    Raises:
+        HTTPException: 권한 없음(403).
+    """
+    scope = _alarm_zone_scope(request, current_user)
+    if scope is None:
+        return
+    config = request.app.state.config
+    known = known_db_ids or {}
+    if not alarm_ids:
+        raise HTTPException(status_code=403, detail="해당 존의 알람에 대한 권한이 없습니다.")
+    for alarm_id in alarm_ids:
+        db_id = known.get(alarm_id) or _decision_db_id(config, alarm_id)
+        if not db_id or not _zone_permits(scope, db_id):
+            raise HTTPException(
+                status_code=403, detail="해당 존의 알람에 대한 권한이 없습니다."
+            )
+
+
+def _sweep_investigation_polls(now: float) -> None:
+    """간격이 지난 poll 시각·잠금을 지운다(진행 중인 잠금은 남긴다)."""
+    expired = [
+        key for key, at in _INVESTIGATION_POLL_AT.items()
+        if now - at >= _INVESTIGATION_POLL_MIN_INTERVAL
+    ]
+    for key in expired:
+        lock = _INVESTIGATION_POLL_LOCKS.get(key)
+        if lock is not None and lock.locked():
+            continue
+        _INVESTIGATION_POLL_AT.pop(key, None)
+        _INVESTIGATION_POLL_LOCKS.pop(key, None)
+
+
+async def _refresh_investigation(
+    store: InvestigationStore, rec: dict[str, Any], ng: Any
+) -> tuple[dict[str, Any], str | None]:
+    """미종결 조사를 sre_agent에 poll해 종결이면 저장하고 최신 레코드를 돌려준다.
+
+    조사 id별로 동시에 1건만 poll하고(`asyncio.Lock`), 마지막 poll 뒤
+    `_INVESTIGATION_POLL_MIN_INTERVAL`초 안의 재요청은 poll 없이 저장소 상태로 응답한다.
+
+    Returns:
+        (레코드, 재조회 실패 사유 또는 None)
+    """
+    investigation_id = str(rec.get("investigation_id") or "")
+    if not investigation_id:
+        return rec, None
+    key = (str(store.path), investigation_id)
+    _sweep_investigation_polls(time.monotonic())
+    lock = _INVESTIGATION_POLL_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        last = _INVESTIGATION_POLL_AT.get(key)
+        if last is not None and time.monotonic() - last < _INVESTIGATION_POLL_MIN_INTERVAL:
+            return store.get_by_investigation(investigation_id) or rec, None
+        _INVESTIGATION_POLL_AT[key] = time.monotonic()
+        return await _poll_investigation(store, rec, investigation_id, ng)
+
+
+async def _poll_investigation(
+    store: InvestigationStore, rec: dict[str, Any], investigation_id: str, ng: Any
+) -> tuple[dict[str, Any], str | None]:
+    """조사 서비스에 1회 poll한다(`_refresh_investigation`의 잠금 안에서만 부른다).
+
+    요청마다 새 클라이언트를 쓴다(워커 공유 클라이언트와 세션이 섞이지 않게 — 후속 폴링과 같은
+    이유). 호출 전체를 `investigation_mcp_call_timeout_seconds`로 묶는다. 실패하면 저장소 상태를
+    그대로 두고 사유를 돌려준다(침묵 금지). 미종결(running)은 저장하지 않는다(재조회마다 행이
+    쌓이지 않게). 종결이어도 저장소에 이미 종결 행이 있으면(후속 폴링 등이 먼저 씀) 다시 쓰지
+    않는다.
+    실패·거부·타임아웃·스텁 응답의 `reason`·`error`는 레코드 사유로 남긴다.
+    """
+    from noise_gate.infrastructure.investigation_store import (
+        ACTIVE_STATUSES,
+        STATUS_RUNNING,
+        terminal_poll_reason,
+    )
+    from noise_gate.infrastructure.sre_agent_client import build_sre_agent_client
+
+    client = build_sre_agent_client(ng)
+    if client is None:
+        return rec, "조사 서비스 URL 미설정 — 진행 상태를 다시 조회할 수 없습니다"
+    timeout = float(getattr(ng, "investigation_mcp_call_timeout_seconds", 10.0))
+
+    async def _poll() -> dict[str, Any]:
+        await client.connect()
+        try:
+            return await client.poll(investigation_id)
+        finally:
+            await client.disconnect()
+
+    try:
+        res = await asyncio.wait_for(_poll(), timeout=timeout)
+    except TimeoutError:
+        return rec, f"조사 서비스 재조회 타임아웃({timeout:.0f}s 초과)"
+    except Exception as exc:  # noqa: BLE001 — 재조회 실패는 저장소 상태로 응답한다
+        logger.warning("조사 재조회 실패: inv=%s", investigation_id, exc_info=True)
+        return rec, f"조사 서비스 재조회 실패: {type(exc).__name__}"
+    status = str(res.get("status") or "")
+    if status not in _INVESTIGATION_TERMINAL_POLL:
+        return ({**rec, "status": STATUS_RUNNING} if status else rec), None
+    current = store.get_by_investigation(investigation_id)
+    if current is not None and current.get("status") not in ACTIVE_STATUSES:
+        return current, None
+    store.record(
+        investigation_id=investigation_id,
+        alarm_ids=list(rec.get("alarm_ids") or []),
+        kind=str(rec.get("kind") or "alarm"),
+        episode_id=rec.get("episode_id"),
+        status=status,
+        source="api_poll",
+        verdict=res.get("verdict"),
+        briefing=res.get("briefing") if isinstance(res.get("briefing"), dict) else None,
+        reason=terminal_poll_reason(res),
+    )
+    return store.get_by_investigation(investigation_id) or rec, None
+
+
+async def _investigation_response(
+    request: Request,
+    current_user: dict[str, Any],
+    rec: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """조사 레코드 → 응답(지연 poll · 사용자 마스킹/운영자 원문). 존 검사는 호출부가 먼저 한다."""
+    from noise_gate.infrastructure.investigation_store import (
+        ACTIVE_STATUSES,
+        investigation_view,
+    )
+
+    if rec is None:
+        return {"status": "none"}
+    config = request.app.state.config
+    poll_reason: str | None = None
+    if rec.get("status") in ACTIVE_STATUSES:
+        store = _investigation_store(config)
+        if store is not None:
+            rec, poll_reason = await _refresh_investigation(store, rec, config.noise_gate)
+    operator = _is_alarm_operator(config, current_user)
+    view = investigation_view(
+        rec,
+        mask_fn=None if operator else _investigation_mask_fn(config),
+        operator_view=operator,
+    )
+    if poll_reason:
+        view["reason"] = poll_reason
+    return view
+
+
+@router.get(
+    "/alarm/investigations/by-alarm/{alarm_id}",
+    summary="알람의 자동 조사 브리핑 조회",
+    description=(
+        "알람 1건에 걸린 자동 조사의 상태·브리핑을 반환합니다(없으면 status=none).<br/>"
+        "여러 건이면 종결된 종합 조사 → 그 알람의 단독 조사 → 최신 순으로 고릅니다.<br/>"
+        "미종결이면 조사 서비스에 재조회합니다(조사마다 10초에 1회). 사용자 경로는 마스킹, "
+        "관리자는 원문과 원 브리핑을 받습니다.<br/>"
+        "존 권한은 이 알람과 조사에 걸린 알람 전부로 검사합니다 — 존 제한 사용자는 db_id를 "
+        "확인할 수 없는 알람도 403입니다."
+    ),
+    tags=["alarm"],
+)
+async def get_alarm_investigation(
+    alarm_id: str,
+    request: Request,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """알람 id → 최신 조사(plans/153 §4.2)."""
+    config = request.app.state.config
+    # 알람 수신 권한이 없는 사용자는 저장소를 읽기 전에 403.
+    _alarm_zone_scope(request, current_user)
+    store = _investigation_store(config)
+    rec = store.get_by_alarm(alarm_id) if store is not None else None
+    member_ids = [a for a in (rec or {}).get("alarm_ids") or [] if a != alarm_id]
+    # 레코드가 없어도 이 알람의 존을 먼저 본다 — 권한 없는(또는 존을 모르는) 알람은 존재 여부와
+    # 무관하게 403이다.
+    _assert_investigation_zone(
+        request, current_user, [alarm_id, *member_ids], (rec or {}).get("alarm_db_ids")
+    )
+    return await _investigation_response(request, current_user, rec)
+
+
+@router.get(
+    "/alarm/investigations/{investigation_id}",
+    summary="자동 조사 브리핑 조회(조사 id)",
+    description=(
+        "조사 id의 최신 상태·브리핑을 반환합니다(없으면 status=none).<br/>"
+        "존 권한은 조사에 걸린 알람 전부로 검사합니다 — 존 제한 사용자는 하나라도 타 존이거나 "
+        "db_id를 확인할 수 없으면 403입니다."
+    ),
+    tags=["alarm"],
+)
+async def get_investigation(
+    investigation_id: str,
+    request: Request,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """조사 id → 최신 조사(plans/153 §4.2)."""
+    # 알람 수신 권한이 없는 사용자는 레코드 유무와 무관하게 403.
+    _alarm_zone_scope(request, current_user)
+    store = _investigation_store(request.app.state.config)
+    rec = store.get_by_investigation(investigation_id) if store is not None else None
+    if rec is not None:
+        _assert_investigation_zone(
+            request, current_user, list(rec.get("alarm_ids") or []), rec.get("alarm_db_ids")
+        )
+    return await _investigation_response(request, current_user, rec)
 
 
 # ─── 폴스타 원문 메시지 분석 엔드포인트 ──────────────────────────────────────

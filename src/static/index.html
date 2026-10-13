@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KB AIOps 포탈</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css?v=26">
+    <link rel="stylesheet" href="/static/css/style.css?v=28">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
 </head>
@@ -381,7 +381,11 @@
 
     <script src="/static/js/marked.min.js?v=1"></script>
     <!-- app.js 변경 시 v를 올려야 브라우저 캐시가 갱신된다(D-187: v=2 캐시로 저장 값 패널 미표시 실측) -->
-    <script src="/static/js/app.js?v=20"></script>
+    <!-- plans/153 W3: 조사 브리핑 공용 렌더(관제 드로어와 같은 파일) — app.js보다 먼저 -->
+    <script src="/static/js/briefing-view.js?v=2"></script>
+    <script src="/static/vendor/chartjs/chart.umd.min.js?v=1"></script>
+    <script src="/static/js/result-viz.js?v=4"></script>
+    <script src="/static/js/app.js?v=24"></script>
 </body>
 
 </html>

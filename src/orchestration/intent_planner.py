@@ -24,6 +24,7 @@ from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.nodes.input_parser import LOCATION_HINT_TERMS
+from src.observability import run_capture
 from src.domain.task_frame import render_task_query, task_spans, verify_task_frames
 from src.prompts.intent_planner import (
     INTENT_PLANNER_SYSTEM_TEMPLATE,
@@ -1256,6 +1257,7 @@ def _sanitize_task_views(result: dict[str, Any], app_config: AppConfig) -> None:
     """
     from src.orchestration.conditional_agents import sanitize_task_views
 
+    run_capture.emit("apm_plan_raw", result)  # 정제 전 원출력(plans/152 §3.6 — 수신기가 즉시 복사)
     cut = sanitize_task_views(result, app_config)
     if cut:
         logger.info("intent_planner: 문서 task 의존 제거(간선 없음 · plans/127) — %s", cut)

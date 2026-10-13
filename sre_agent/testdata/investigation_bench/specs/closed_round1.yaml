@@ -1,0 +1,27 @@
+# 내부망 1회차 — 대조군 A/A 기준선 · 사내 vLLM (plans/154 §6.5 · §6.7 · §9.3.7)
+# 저장소 밖 작업 폴더에 복사해 고친다: llm.model = openai/<vLLM served name> ·
+# base_env = 운영 실효값(MAX_STEPS · INVESTIGATION_TIMEOUT_SECONDS · OVERRIDE_MAX_CONTENT_SIZE · OVERRIDE_MAX_OUTPUT_TOKEN)
+run:
+  site: closed
+  splits: [dev, holdout]
+  worlds: all
+  worlds_dir: testdata/investigation_bench/worlds
+  k: 3
+  order: interleave
+  poll_interval_s: 2
+  per_run_timeout_s: 420
+llm:
+  backend: vllm
+  model: "openai/<served>"
+  api_base: "http://127.0.0.1:8000/v1"
+  api_key: dummy
+host:
+  gpu_sample_interval_s: 30
+base_env:
+  MAX_STEPS: 40
+  INVESTIGATION_TIMEOUT_SECONDS: 300
+  # OVERRIDE_MAX_CONTENT_SIZE: <운영 실효값>
+  # OVERRIDE_MAX_OUTPUT_TOKEN: <운영 실효값>
+arms:
+  control: {}
+  control_b: {}

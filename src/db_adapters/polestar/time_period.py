@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from src.domain.query_time import QueryTime
+from src.domain.sql_disclosure import strip_sql_comments
 from src.domain.time_spec import (
     SPAN_MAX_CHARS,
     Grain,
@@ -108,7 +109,11 @@ def sql_applies_period(sql: str, res: TimeResolution) -> bool:
 
     통계 경계(`lo`와 `hi` 또는 `last`) 또는 알람 경계(시작·끝 TIMESTAMP)가 따옴표 리터럴로 함께
     들어 있으면 참이다. 기간 조건 없음(unbounded)·빈 SQL이면 거짓.
+
+    주석(`--`·`/* */`)은 빼고 본다 — 생성기가 머리 주석에 요청 기간(「'202604' ~ '202609'」)을
+    적고 본문은 다른 기간으로 조회해도 주석의 리터럴만으로 요청 기간을 고지하던 거짓 고지를 막는다.
     """
+    sql = strip_sql_comments(sql)
     if not sql:
         return False
     sb = stat_bounds(res)

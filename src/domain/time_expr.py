@@ -20,6 +20,9 @@
 - 「3개월」의 '월'은 달력 월이 아니다(숫자 바로 뒤 '월'만 달력 월)
 - 「지난주」(달력 주)와 「지난 N주」(완결 N×7일)는 어휘로 가른다. 「지난 N년」은 완결 12N개월이고
   「작년」은 달력 연이다(plans/122 T-2 구현 시 정함)
+- 분(D-328): 숫자 바로 뒤 「분」만 단위다(「분기」·「분석」·「분당」 등 제외 · 한글 수사 불가 —
+  「세 분」은 사람 수). 「N시간 M분」·「N시간 반」은 한 명세(60N+M분)다. 시각 뒤 분(「10시 30분」)은
+  기간이 아니라 흔적으로 남겨 되묻는다. 「5분 간격」의 「간」은 기간 접미가 아니다
 
 겹치는 스팬 처리: 아래 `_RULES`의 **우선순위 순서**로 매칭하고, 이미 채택된 스팬과 한 글자라도
 겹치는 후순위 매칭은 버린다. 그래서 더 구체적인 표현(범위 > 날짜 > 반기·분기 > 연월 > 상대 N >
@@ -73,8 +76,19 @@ _KO_NUMERALS: dict[str, int] = {
 # 긴 어휘가 먼저 오도록(「열한」이 「열」보다 먼저)
 _KO_NUM = "|".join(sorted(_KO_NUMERALS, key=len, reverse=True))
 _NUM = rf"(?P<num>\d{{1,4}}|{_KO_NUM})"
-_UNIT = r"(?P<unit>개\s*월|달|주일|주|일|시간|년|months?|weeks?|days?|hours?|years?)"
-_SUFFIX = r"(?P<suf>\s*(?:간|동안|치))"
+# 분(D-328) — 「분기·분석·분류·분야·분포·분당·분량·분산·분할·분배·분리·분위」와 분수(「10분의 1」)는
+# 단위가 아니다
+_MIN = r"분(?!기|석|류|야|포|당|량|산|할|배|리|위|의\s*\d)"
+# 분 뒤 빈도·수량 어휘 — 「5분 간격」·「5분마다」·「30분 이상 걸린」은 기간이 아니다(D-328 ⑧).
+# 분 단위에만 건다(시·일 단위의 같은 표현은 종전 동작 그대로 — plans/159 §9). 「이내」 같은 만료
+# 필터 어휘는 넣지 않는다 — 「최근 30분 이내」는 기간이다
+_MIN_NOT_PERIOD_WORDS = r"이상|이하|미만|초과|넘|째|번째|씩|마다|간격|주기|만에"
+_MIN_PERIOD = rf"{_MIN}(?!\s*(?:{_MIN_NOT_PERIOD_WORDS}))"
+_UNIT = (
+    rf"(?P<unit>개\s*월|달|주일|주|일|시간|년|{_MIN_PERIOD}"
+    r"|months?|weeks?|days?|hours?|minutes?|years?)"
+)
+_SUFFIX = r"(?P<suf>\s*(?:간(?!격)|동안|치))"  # 「5분 간격」은 빈도다(기간 아님)
 _PREFIX = r"(?P<pre>지난|최근|과거|직전|last|past)"
 # 한글 수사는 이 단위와만 어울린다(「세 달」은 되고 「세 일」은 안 된다)
 _KO_NUM_UNITS: frozenset[str] = frozenset({"month", "week", "hour"})
@@ -103,6 +117,8 @@ def _unit_of(raw: str) -> str:
         return "day"
     if r == "시간" or r.startswith("hour"):
         return "hour"
+    if r == "분" or r.startswith("minute"):
+        return "minute"
     return "year"
 
 
@@ -234,8 +250,8 @@ def _last_n(n: int, unit: str) -> TimeSpec:
         return TimeSpec(relation="last", n=n * 7, unit="day")
     if unit == "year":
         return TimeSpec(relation="last", n=n * 12, unit="month")
-    if unit == "hour":
-        return TimeSpec(relation="last", n=n, unit="hour", completeness="rolling")
+    if unit in ("hour", "minute"):
+        return TimeSpec(relation="last", n=n, unit=cast(Unit, unit), completeness="rolling")
     return TimeSpec(relation="last", n=n, unit=cast(Unit, unit))
 
 
@@ -244,7 +260,66 @@ def _b_last_n(m: re.Match[str], text: str) -> _Built | None:
     unit = _unit_of(m.group("unit"))
     if not raw.isdigit() and unit not in _KO_NUM_UNITS:
         return None
+    if unit == "minute" and _after_clock(text, m.start("num")):
+        return None
+    if unit == "hour" and m.group("suf") is None and _MINUTE_TAIL_RE.match(text, m.end("unit")):
+        # 「N시간 M분」 합성이 거부됐다(분 상한 초과) — M분을 버리지 않고 흔적으로 둔다
+        return None
     return _last_n(_num(raw), unit), m.end()
+
+
+# 시각 뒤 분(「10시 30분」 · D-328 ⑤) — 기간 단위가 아니다. 흔적으로 남아 되묻는다
+_CLOCK_BEFORE_RE = re.compile(r"\d{1,2}\s*시\s*$")
+# 「N시간 반」의 「반」 — 「반영·반기·반복」처럼 낱말 일부면 아니다
+_HALF_END = r"(?=$|[^가-힣]|동안|간(?!격)|치|전)"
+_MINUTE_PART = (
+    rf"(?:\d{{1,2}}\s*{_MIN_PERIOD}|반{_HALF_END}(?!\s*(?:{_MIN_NOT_PERIOD_WORDS})))"
+)
+_MINUTE_TAIL_RE = re.compile(rf"\s*{_MINUTE_PART}")
+# 「N분 전」 뒤 — 「전체·전부·전송」 등 낱말 일부와 「전까지·전보다」(끝·비교)는 받지 않는다
+_AGO = r"\s*전(?=$|[^가-힣]|에|부터|이후|의|쯤)(?:\s*(?:부터|이후))?"
+
+
+def _after_clock(text: str, start: int) -> bool:
+    return bool(_CLOCK_BEFORE_RE.search(text[:start]))
+
+
+# 슬롯 가드(D-328 ⑤⑧) — LLM이 unit=minute을 내도 규칙과 같은 판정으로 거절한다
+_CLOCK_MINUTE_RE = re.compile(rf"\d{{1,2}}\s*시\s*\d{{1,2}}\s*{_MIN}")
+_MINUTE_FREQ_RE = re.compile(rf"\d+\s*{_MIN}\s*(?:{_MIN_NOT_PERIOD_WORDS})")
+
+
+def _minute_not_period(text: str, start: int, end: int) -> bool:
+    """원문 `[start, end)` 스팬의 분이 기간 단위가 아닌가 — 시각 뒤 분 · 빈도·수량."""
+    return any(
+        m.start() < end and start < m.end()
+        for pattern in (_CLOCK_MINUTE_RE, _MINUTE_FREQ_RE)
+        for m in pattern.finditer(text)
+    )
+
+
+def _b_hour_minute(m: re.Match[str], text: str) -> _Built | None:
+    """「최근 1시간 30분」·「2시간 반 동안」·「1시간 30분 전」 → 한 명세 60N+M분(D-328 ④).
+
+    접두(지난·최근)·접미(간·동안·치)·「전」이 없는 맨 「1시간 30분」은 맨 「N시간」처럼 흔적이다.
+    """
+    part = _compact(m.group("mpart"))
+    minutes = 30 if part.startswith("반") else int(re.sub(r"\D", "", part))
+    if minutes >= 60:
+        return None  # 「1시간 70분」 — 합성하지 않는다(시간 규칙도 꼬리를 보고 물러나 되묻는다)
+    n = _num(m.group("hh")) * 60 + minutes
+    if m.group("ago"):
+        return TimeSpec(relation="ago", n=n, unit="minute"), m.end()
+    if m.group("pre") is None and m.group("suf") is None:
+        return None
+    return TimeSpec(relation="last", n=n, unit="minute", completeness="rolling"), m.end()
+
+
+def _b_minute_ago(m: re.Match[str], text: str) -> _Built | None:
+    """「5분 전」·「15분 전부터」 → 기준 시각까지의 N분(D-328 ②)."""
+    if _after_clock(text, m.start("num")):
+        return None
+    return TimeSpec(relation="ago", n=int(m.group("num")), unit="minute"), m.end()
 
 
 _DAY_WORDS: dict[str, int] = {"일주일": 7, "하루": 1, "이틀": 2, "사흘": 3, "나흘": 4}
@@ -311,6 +386,13 @@ _RULES: tuple[_Rule, ...] = (
     _Rule("month", re.compile(
         r"(?<![\d.\-/])(?P<m>\d{1,2})\s*월"
     ), _b_month),
+    _Rule("hour_minute", re.compile(
+        rf"(?:{_PREFIX}\s*|(?<![가-힣0-9A-Za-z]))(?P<hh>\d{{1,3}}|{_KO_NUM})\s*시간\s*"
+        rf"(?P<mpart>{_MINUTE_PART})(?:(?P<ago>{_AGO})|{_SUFFIX})?", re.IGNORECASE
+    ), _b_hour_minute),
+    _Rule("minute_ago", re.compile(
+        rf"(?<![가-힣0-9A-Za-z])(?P<num>\d{{1,5}})\s*{_MIN}{_AGO}"
+    ), _b_minute_ago),
     _Rule("last_n", re.compile(rf"{_PREFIX}\s*{_NUM}\s*{_UNIT}{_SUFFIX}?", re.IGNORECASE),
           _b_last_n),
     _Rule("n_suffixed", re.compile(
@@ -473,11 +555,12 @@ def _recognize(
 # 「6개월 안에 지원 종료」·「6개월 내 만료」도 같은 만료 필터다 — 「안에·내」 뒤 한 문장·15자 안에
 # 마감 동사가 올 때만 뺀다(plans/132 ITAM-103·109). 맨 「3개월 안에 발생한 알람」은 흔적 그대로다.
 # 과거·완료형(「종료된」·「만료됐」·「끝난」·「도래한」)은 지난 사건의 조회 기간이라 흔적으로 남긴다
-# — 「최근 5분 내 종료된 프로세스」는 종전처럼 되묻는다(plans/132 3회차 검증).
+# — 맨 「5분 내 종료된 프로세스」는 되묻는다(plans/132 3회차 검증 · 「최근 5분 내」는 D-328로
+# 규칙이 잡는다).
 # 단위 대안은 서로 접두가 겹치지 않게 막는다 — 「1시간 이상」이 「시간」에서 막힌 뒤 「시」로
 # 되짚어 흔적이 되던 것(검증 D1)을 끊는다. 「3시스템」의 「시」도 시각이 아니다(리뷰 M-2).
-# 「분」(최근 5분)은 해석기 단위에 없어 흔적으로만 잡는다 — 기간 미지정 기본값으로 조용히
-# 가지 않고 되묻는다(검증 D8).
+# 「분」은 규칙(「최근 5분」·「30분간」·「5분 전」 — D-328)이 못 잡은 것만 흔적이다 — 시각 뒤 분
+# (「10시 30분부터」)·맨 「30분」은 기간 미지정 기본값으로 조용히 가지 않고 되묻는다(검증 D8).
 _NOT_PERIOD_AFTER = (
     r"(?!\s*(?:이상|이하|미만|초과|넘|째|번째|차"
     r"|이내|안\s*남|남은|남았|후|뒤|씩|마다|간격|주기|만에"
@@ -689,7 +772,8 @@ def slot_to_spec(slot: Any, text: str) -> tuple[TimeSpec | None, str | None]:
     사유 코드: slot_not_object · relation_missing · invalid_relation · no_time_expression ·
     span_missing · span_not_in_text(환각 기간 차단) · deadline_value(지원 종료·만료 같은 날짜 속성
     조건의 값 — 조회 기간 아님) · invalid_n · n_out_of_range ·
-    n_mismatch_span · invalid_unit · unit_missing · invalid_completeness · invalid_anchor ·
+    n_mismatch_span · minute_not_period(시각 뒤 분·「5분 간격」 — D-328) · invalid_unit ·
+    unit_missing · invalid_completeness · invalid_anchor ·
     anchor_data_latest_unsupported(G-15) · invalid_display_grain · invalid_partial_date ·
     month_out_of_range · day_out_of_range · hour_out_of_range · year_out_of_range ·
     year_not_in_span · date_mismatch_span · start_missing · end_missing 등(`TimeSpecError.code`)
@@ -744,6 +828,9 @@ def slot_to_spec(slot: Any, text: str) -> tuple[TimeSpec | None, str | None]:
             span_pos=pos,
             source="llm",
         )
+        if unit == "minute" and _minute_not_period(text, *pos):
+            # 「10시 30분부터」·「5분 간격」 — 규칙이 일부러 흔적·비기간으로 둔 분(D-328 ⑤⑧)
+            raise TimeSpecError("minute_not_period", text[pos[0]:pos[1]])
         # 값 범위(TimeSpec 검증) 다음에 스팬 대조 — 사유 코드가 더 근본적인 쪽을 먼저 낸다
         _check_span_values(relation, n, [p for p in (start, end) if p is not None], span)
     except TimeSpecError as exc:

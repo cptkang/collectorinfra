@@ -1,0 +1,17 @@
+# plans/152 §3.9 · D-323 — APM few-shot 수정 이력 (개선 루프 W5)
+#
+# few-shot(F1~F4)을 고칠 때마다 항목 1개를 덧붙인다(`scripts.apm_bench.loop.append_entry` — 손으로 써도 된다).
+# `--compare`가 이 파일로 대상 실패 ID 해소 여부를 보고, 같은 ID의 수정 횟수를 세어
+# 2회 뒤에도 남으면 결정적 처리(코드) 승격 목록에 올린다(§3.5 승격 규칙).
+#
+# 칸
+# - round: 회차(1부터 정수 — 같은 내부망 run 근거로 고친 항목은 같은 회차)
+# - date: 수정 날짜 YYYY-MM-DD
+# - targets: 대상 실패 ID 목록 `scenario_id#turn`(turn 0부터) — **dev 턴만**(holdout 은 수정 대상이 아니다 · 권고 ③)
+# - locus: 고친 위치 목록 — {slot: F1|F2|F3|F4, view: 보기 id(F1), arg: 인자 이름, example: 예문 번호(1부터)}
+#     F1 = 레지스트리 solutions[apm].views 예문·label · F2 = 분해 프롬프트 APM 절 · F3 = 교차 예시 · F4 = 재선택 프롬프트
+# - fingerprints: {before: {F1, F2, F3, F4, …}, after: {…}} — `scripts.apm_bench.fingerprints.fewshot_fingerprints()` 값
+# - run_id: 근거 run(이 수정의 원인이 된 내부망 run id)
+# - memo: 메모(자유 · 운영 이름 금지)
+
+entries: []
