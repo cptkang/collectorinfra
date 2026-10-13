@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-12 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
+> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-13 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -143,7 +143,7 @@
 | 98 | [`98-run-20260915-code-fixes.md`](./98-run-20260915-code-fixes.md) | 98. run `20260915-131903` 확정 결함 코드 수정 계획 — 수정 단위 15종 · 앵커·전후 동작·검증 | **완결(시점 문서 · 2026-09-21 D-208 2차 적용)** *(상세: 계획서 머리)* | 2026-09-21 |
 | 99 | [`99-rerun-experiment-design.md`](./99-rerun-experiment-design.md) | 99. 재측정 실험 설계 — 무엇을 답하려고 10시간을 쓰는가 | **완결(시점 문서 · 2026-09-21 D-208 2차 적용)** *(상세: 계획서 머리)* | 2026-09-21 |
 | 100 | [`100-WIP-mlx-local-llm-provider.md`](./100-WIP-mlx-local-llm-provider.md) | 100. 맥북(Apple Silicon) 로컬 테스트 LLM — MLX provider 추가 | 부분 구현(CU-1~CU-7 랜딩 · §7 권장안 채택 D-222 · 잔여 = Phase 4 다도구 루프 품질 판단(R-1) · 캐시 상한 조정 · Ollama 비교 — §5 Phase 4 결과 · §9) *(상세: 계획서 머리)* | 2026-09-17 |
-| 101 | [`101-TODO-ml-fault-diagnosis-prediction-rca.md`](./101-TODO-ml-fault-diagnosis-prediction-rca.md) | 101. ML 기반 장애 진단·예측·RCA — 폴스타·제니퍼·DPM 연계, HolmesGPT에 정량 증거 공급 | 계획(코드 0건 · 사용자 확정 게이트 G-1~G-11 대기(G-8 허용 확정) · 확인 사항 J-1~J-11 대기) *(상세: 계획서 머리)* | 2026-09-20 |
+| 101 | [`101-TODO-ml-fault-diagnosis-prediction-rca.md`](./101-TODO-ml-fault-diagnosis-prediction-rca.md) | 101. ML 기반 장애 진단·예측·RCA — 폴스타·제니퍼·DPM 연계, HolmesGPT에 정량 증거 공급 | 계획(코드 0건) · **v6(2026-10-13)** G5 = ML 장애 분석 서버(혼합 배치 · GA-1~GA-6 · 판정 독립 I-11 · LLM 서빙 부차) · v5 SMS×APM 복합 분석·함수 단위 집계 · 게이트 G-1~G-17 대기(G-8·G-15 확정 · G-7 재질의) · J-1~J-21 대기 *(상세: 계획서 머리)* | 2026-10-13 |
 | 102 | [`102-WIP-polestar-itam-cross-system-routing.md`](./102-WIP-polestar-itam-cross-system-routing.md) | 102. 폴스타 ↔ 자산관리(ITAM) 교차 시스템 질의 — 답변 영역 라우팅 · 값 기반 키 브리지 · 식별자 소재 프로브 | **부분 구현(v6 · 2026-09-21 처분 반영)** *(상세: 계획서 머리)* | 2026-09-17 · **2026-09-23 D-251: 기준 운영 단 2단 — L-5 목표가 1단 off로 바뀜** |
 | 103 | [`103-WIP-tier3-langgraph-full-parity.md`](./103-WIP-tier3-langgraph-full-parity.md) | 103. 사다리 3단 기능 동등성 — LangGraph 네이티브 구성으로 1단(deep_agent)·2단 전 기능을 3단에서 제공 | **부분 구현 · 잔여 있음**(2026-09-22 v1.2 · `plans/111` C-4·C-5 범위 — §4.1): P0-1(추적 프록시 서브그래프·인터럽트 호환) · P0-2(팬인 키 `task_outcomes` · 루프 한정 턴 초기화 — 2단 K-5 미해소) · P0-3 부분(SSE 서브그래프 종료 무시 — 인터럽트 감지는 P3와) · P1-1(`task_run` 서브그래프) · P2-1(`needs_plan` ·… *(상세: 계획서 머리)* | 2026-09-23 · **2026-09-23 D-251: 3단은 2단 대비 비교 arm — 계속 진행** |
 | 104 | [`104-WIP-admin-db-structure-analysis.md`](./104-WIP-admin-db-structure-analysis.md) | 104. DB 구조 분석을 질의 경로 HITL에서 관리자 페이지로 — MCP 연결 DB 목록 · 신규 시스템 연동(스키마 수집·캐시 등록·준비도) · 스키마 변경·신규 내용 점검 · 구조 분석 초안·승인·버전 | **구현(잔여 있음) · 2026-09-17 사용자 지시로 작업 중지** *(상세: 계획서 머리)* | 2026-09-17 |
