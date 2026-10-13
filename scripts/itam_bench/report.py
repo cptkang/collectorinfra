@@ -394,6 +394,47 @@ def _definition_rows(
     return rows, warnings
 
 
+#: P1 초안은 승인됐는데 승인 프로필에 P1 자산이 없을 때(plans/151 W11 · F13 · 고정 문구) — 리포트
+#: §0 경고 줄과 `--run` 시작 콘솔 `[주의]`가 같이 쓴다.
+P1_ASSETS_MISSING_WARNING = (
+    "P1 초안은 승인됐지만 승인 프로필에 P1 자산이 없다 — 반입이 프로필 파일을 덮었거나 "
+    "되돌렸을 수 있다. P1 재실행 뒤 승인한다"
+)
+
+
+def p1_asset_counts(catalog: Mapping[str, Any]) -> dict[str, Any] | None:
+    """승인 프로필의 P1 자산 수(plans/151 W11 · 이름·수만) — 관계 수 · 코드값 칸 수 · 쿼리 규칙 수 ·
+    교차 질의 식별 키 테이블. P1 초안(`p1`)이나 승인 프로필이 없으면 None.
+    """
+    approved = catalog.get("approved_profile")
+    if not catalog.get("p1") or not isinstance(approved, Mapping):
+        return None
+    counts = approved.get("counts")
+    counts = counts if isinstance(counts, Mapping) else {}
+    code_values = counts.get("code_values")
+    entity = approved.get("entity_keys")
+    return {
+        "relationships": len(approved.get("relationships") or []),
+        "code_value_columns": len(code_values) if isinstance(code_values, Mapping) else 0,
+        "query_rules": counts.get("query_rules") or 0,
+        "entity_table": entity.get("table") if isinstance(entity, Mapping) else None,
+    }
+
+
+def p1_assets_missing(catalog: Mapping[str, Any]) -> bool:
+    """P1 초안 승인 · 승인 프로필 관계 0 · 코드값 칸 0 — 반입이 P1 자산을 지운 꼴(plans/151 F13).
+
+    리포트 §0 경고와 `--run` 시작 콘솔 경고의 단일 판정이다.
+    """
+    assets = p1_asset_counts(catalog)
+    return (
+        assets is not None
+        and (catalog.get("p1") or {}).get("status") == "approved"
+        and assets["relationships"] == 0
+        and assets["code_value_columns"] == 0
+    )
+
+
 def _p1_section(
     catalog: Mapping[str, Any],
     code_samples: Mapping[str, Any] | None,
@@ -432,6 +473,19 @@ def _p1_section(
     if p1:
         rows.append(["치환 코드값(code_samples.yaml)", summary_line(code_samples)])
     rows += definition_rows
+    assets = p1_asset_counts(catalog)
+    if assets is not None:
+        rows.append(
+            [
+                "승인 프로필 P1 자산",
+                f"관계 {assets['relationships']} · 코드값 칸 {assets['code_value_columns']} · "
+                f"쿼리 규칙 {assets['query_rules']}",
+            ]
+        )
+        if not definition_rows:  # 식별 키 테이블 행은 정의 행과 함께 나온다 — 없을 때만 여기서
+            rows.append(["교차 질의 식별 키 테이블", assets["entity_table"] or "—"])
+        if p1_assets_missing(catalog):
+            definition_warnings = [*definition_warnings, f"> 경고 — {P1_ASSETS_MISSING_WARNING}."]
     lines = ["## 0. P1 근거(「DB 구조」 탭 결과 읽기 · 값 0)", ""]
     lines += _table(["항목", "값"], rows)
     if definition_warnings:

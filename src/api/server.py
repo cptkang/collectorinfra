@@ -532,13 +532,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
 
     yield
 
+    # 종료 시: 취소한 태스크를 기다릴 때 CancelledError(BaseException)도 삼킨다 — 처리 도중 취소되면
+    # 그대로 새어 나와 「Application shutdown failed」로 아래 정리 단계를 건너뛰었다.
+    import asyncio as _asyncio
+
     # 종료 시: 알람 워커 정리
     if alarm_worker_task:
         alarm_worker_task.cancel()
         try:
-            import asyncio as _asyncio
             await alarm_worker_task
-        except Exception:
+        except (Exception, _asyncio.CancelledError):
             pass
 
     # 종료 시: SSE 브리지 구독 task·Redis 연결 정리
@@ -548,7 +551,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         sse_bridge_task.cancel()
         try:
             await sse_bridge_task
-        except Exception:
+        except (Exception, _asyncio.CancelledError):
             pass
     if sse_bridge_redis is not None:
         try:
@@ -563,7 +566,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         incident_sub_task.cancel()
         try:
             await incident_sub_task
-        except Exception:
+        except (Exception, _asyncio.CancelledError):
             pass
     if incident_redis is not None:
         try:
@@ -581,7 +584,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         audit_retention_task.cancel()
         try:
             await audit_retention_task
-        except Exception:
+        except (Exception, _asyncio.CancelledError):
             pass
 
     # 종료 시: 파일 로그 정리 주기 태스크 정리 (D-140/D-141)
@@ -589,7 +592,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         file_log_retention_task.cancel()
         try:
             await file_log_retention_task
-        except Exception:
+        except (Exception, _asyncio.CancelledError):
             pass
 
     # 종료 시: 인증 DB 풀 정리 — 그 전에 조회 경로가 띄워 둔 쿼리 실행 감사 DB 쓰기를 마친다(D-261 부기)
