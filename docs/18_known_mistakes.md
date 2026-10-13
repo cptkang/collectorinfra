@@ -1874,3 +1874,13 @@
 - **실수**: 이 체크아웃(`collectorinfra_second`)의 pyenv 인터프리터엔 pytest-xdist가 없어 `regress.py`가 `-n`에서 rc=4로 멈췄고, `sre_agent/.venv`가 없어 regress 마지막 단계가 sre_agent 패키지(변경 16파일)를 「미실행」으로 표시한 채 넘어갔다. 범위 줄만 보면 sre_agent까지 돈 것처럼 읽힐 수 있었다
 - **원인**: 회귀 도구가 실행 환경(xdist·패키지별 venv)을 전제로 하는데 형제 체크아웃에서는 그 전제가 깨진다. 「미실행」 줄은 실패가 아니라 rc에 반영되지 않는다
 - **방지책**: 형제 체크아웃에서 회귀를 돌릴 때는 `regress.split_workers`를 `(0, 0)`으로 바꾼 직렬 래퍼(패키지 설치 없이)를 쓰고, 출력의 `④ 패키지 전체 … → 미실행` 줄을 반드시 확인해 그 패키지는 실제 venv(예: 형제 체크아웃 `collectorinfra/sre_agent/.venv` · **`cd sre_agent` cwd**)로 따로 돌려 결과를 보고에 함께 적는다
+
+### 2026-10-13 · (plans/151 W1) 감사 레코드에 가산 키를 더하면서 키 집합을 정확히 단언하는 기존 테스트를 찾지 않았다
+- **실수**: W1이 조사 `done` 감사에 계측 가산 키(`incomplete`·`elapsed_s`·`steps`·`tool_calls` 등)를 더하고 지정 테스트 12파일만 돌려 통과로 보고했다. 계획 끝 모듈 회귀에서 `sre_agent/tests/test_apm_consumer.py::test_dispatcher_off_briefing_and_audit_unchanged_even_with_stall`이 감사 키 집합을 종전 8키와 **정확히 같다**고 단언해 실패했다(위임 프롬프트의 검증 목록에도 그 파일이 없었다)
+- **원인**: 「가산 키만 → 소비자 무영향」을 소비자(noise_gate) 쪽만 확인했고, 같은 패키지 안에서 레코드 모양을 `set(x) == {…}`로 고정한 회귀 테스트를 전수 grep하지 않았다. 팀 리드도 검증 목록을 파일명 연상으로 골랐다
+- **방지책**: 레코드·응답에 키를 더하는 변경은 착수 전에 `grep -rn "set(done)\|set(record)\|set(summary\|keys()) == {\|== {\"event\"" <패키지>/tests`로 정확 일치 단언을 전수 뽑아 검증 목록에 넣는다. 가산 키는 공개 상수(예: `INSTRUMENTATION_KEYS`)로 두고 테스트는 「상수 제외 집합 == 종전 키」로 단언한다
+
+### 2026-10-13 · (plans/151 W3b) 실험군 프로세스의 `.env` 차단을 「빈 cwd」로만 막았다고 단정했다
+- **실수**: 벤치 러너가 실험군(sre_agent 조사 서비스)을 빈 cwd + 최소 env로 띄우면 `.env`가 섞이지 않는다고 계획·구현·문서(docs/26 §10.7)에 적었다. 그러나 litellm은 import 때 `LITELLM_MODE`가 기본(DEV)이면 `load_dotenv()`로 설치 위치에서 위로 `.env`를 찾아 `os.environ`에 싣는다 — verifier 실측으로 루트 `.env` 키 10개가 실험군에 들어왔다(과금 평면은 뚫리지 않음).
+- **원인**: pydantic-settings의 `env_file`(cwd 기준)만 보고, 의존 라이브러리가 import 부수효과로 env를 읽는지 확인하지 않았다. 차단을 주장하면서 실 프로세스의 `os.environ`을 에코로 대조하는 테스트가 없었다.
+- **방지책**: 실험군 env 고정에 `LITELLM_MODE=PRODUCTION`을 넣고, 에코에 「기본값과 다른 설정 필드 이름」을 실어 명세·러너가 정한 필드 밖이면 exit 2로 막는다. 「X가 섞이지 않는다」 같은 격리 주장은 실 하위 프로세스의 환경을 읽어 단언하는 테스트로 고정하고, 의존 패키지의 import 부수효과(`load_dotenv` 등)를 grep으로 확인한다.

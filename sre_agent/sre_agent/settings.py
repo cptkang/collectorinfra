@@ -1,6 +1,6 @@
 """에이전트 설정 — .env 로딩은 pydantic-settings 필드로만 판정한다 (os.getenv 금지)."""
 
-from pydantic import AliasChoices, Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 실 조사 LLM 게이트의 스텁 사유 — 사용자·감사에 그대로 노출된다(침묵 금지 · D-123 ⑦ · D-230).
@@ -114,6 +114,22 @@ class AgentSettings(BaseSettings):
     investigation_max_concurrent: int = 2
     # 시간당 조사 횟수 상한. None이면 예산 가드 off. 초과 시 신규 조사 거부.
     investigation_hourly_budget: int | None = None
+    # 조사 감사 JSONL 경로(plans/151 W1 · §4.7 — 벤치 감사를 운영 감사와 분리).
+    # None이면 기본 `sre_agent/.data/investigation_audit.jsonl`(비트 동일).
+    # 값이 있으면 JobStore·dispatcher가 그 파일에만 쓴다.
+    investigation_audit_path: str | None = None
+
+    @field_validator("investigation_audit_path")
+    @classmethod
+    def _blank_audit_path_is_default(cls, value: str | None) -> str | None:
+        """빈 값(공백 포함)은 None(기본 경로)으로 본다.
+
+        `INVESTIGATION_AUDIT_PATH=`처럼 비워 두면 `Path("")`가 현재 디렉토리가 되어 감사 쓰기가
+        실패하고 기동 시 `recover_on_start`가 `IsADirectoryError`로 죽는다.
+        """
+        if value is not None and not value.strip():
+            return None
+        return value
     # ── 비선두 system 메시지 강등 가드 (D-213 후속) — **기본 on(명시적 예외)** ──
     # Qwen 채팅 템플릿(vLLM)은 system을 맨 앞에만 허용하는데, holmes 컨텍스트 압축이
     # 압축 결과 말미에 role="system" 안내를 붙여 `System message must be at the beginning.`

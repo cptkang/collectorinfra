@@ -1,0 +1,22 @@
+# 외부망 로컬 MLX 스모크(L5 · W5) — D01·D03·D09 × k=1 · 대조군만 (plans/151 §9.3.5)
+# 세계는 W4가 만든다. MLX 서버: 레포 루트에서 MLX_PORT=8080 scripts/mlx_server.sh
+# model은 openai/<mlx_server.sh가 띄운 --model>이다(/v1/models는 캐시 모델을 전부 나열 — 거기서 고르면 재적재).
+run:
+  site: local
+  splits: [dev]
+  worlds: [D01, D03, D09]
+  worlds_dir: testdata/investigation_bench/worlds
+  k: 1
+  order: interleave
+  poll_interval_s: 2
+  per_run_timeout_s: 420
+llm:
+  backend: mlx
+  model: "openai/mlx-community/Qwen3.5-9B-OptiQ-4bit"
+  api_base: "http://127.0.0.1:8080/v1"
+  api_key: dummy
+host:
+  gpu_sample_interval_s: 0
+base_env: {MAX_STEPS: 40, INVESTIGATION_TIMEOUT_SECONDS: 300}
+arms:
+  control: {}

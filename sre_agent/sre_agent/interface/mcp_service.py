@@ -271,7 +271,11 @@ def create_service(
     if job_store is not None:
         store = job_store
     else:
-        store = JobStore(settings, executor=_build_dispatcher(settings))
+        # 감사 경로 분리(plans/151 W1) — None이면 두 생산자 모두 기본 경로(종전 그대로).
+        audit_path = settings.investigation_audit_path
+        store = JobStore(
+            settings, executor=_build_dispatcher(settings, audit_path), audit_path=audit_path
+        )
 
     mcp = FastMCP("sre-agent", host=DEFAULT_HOST, port=DEFAULT_PORT)
 

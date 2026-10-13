@@ -1,0 +1,77 @@
+# plans/151 §4.6 D01 — 배치 프로세스 폭주(cpu_runaway · app · 함정 없음)
+id: D01
+split: dev
+title: 정산 배치 프로세스 CPU 폭주
+event:
+  dbId: polestar
+  serverName: bw-d01-app01
+  hostname: bw-d01-app01
+  ipAddress: 192.0.2.11
+  resourceAncestry: ""
+  alarmId: "bw-d01-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "CPU 사용률 임계 초과"
+  alarmTime: "20261012021000"
+  conditions: "> 90%"
+  conditionLog: "[CPU 사용률 (> 90%, 3회 연속)]"
+label:
+  root_entity: {host: bw-d01-app01, component: bwd01_settle_batch}
+  layer: app
+  kind: cpu_runaway
+  change_related: false
+  aliases:
+    kind: [CPU 폭주, 프로세스 폭주, 배치 폭주, runaway process, 무한 루프]
+key_evidence:
+  - {tool: polestar_process_snapshot, cite: [bwd01_settle_batch]}
+  - {tool: polestar_metric_trend, match: {kind: cpu}, cite: ["97.4"]}
+expect:
+  abstain: false
+hosts: [bw-d01-app01]
+incident_window: {start: -45m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: cpu}
+      reply:
+        rows: {gen: {base: 34, spike_at: -40m, to: 96, noise: 1.5}}
+        row_count: 12
+        latest: 97.4
+        unit: "%"
+        source_kind: postgresql
+    - match: {kind: memory}
+      reply:
+        rows: {gen: {base: 52, noise: 1}}
+        row_count: 12
+        latest: 52.8
+        unit: "%"
+        source_kind: postgresql
+  polestar_process_snapshot:
+    - reply:
+        rows:
+          - {pid: 41822, name: bwd01_settle_batch, pcpu: 389.5, p100cpu: 97.1, pmem: 3.2, elapsed: "02:41:07", state: R}
+          - {pid: 1201, name: java, pcpu: 4.1, p100cpu: 1.0, pmem: 21.4, elapsed: "31-04:10:22", state: S}
+        row_count: 2
+        captured_at: "2026-10-12T02:10:30"
+        source_kind: polestar_api
+  polestar_incident_alarms:
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-12T01:52:00", alarm_name: "CPU 사용률 임계 초과", severity: 1}
+          - {alarm_time: "2026-10-12T02:10:00", alarm_name: "CPU 사용률 임계 초과", severity: 2}
+        row_count: 2
+        source_kind: postgresql
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d01-app01, kind: cpu}}
+    - {call: polestar_process_snapshot, args: {hostname: bw-d01-app01}}
+    - {answer: "bw-d01-app01 정산 배치 bwd01_settle_batch CPU 폭주 — CPU 사용률 97.4% (polestar_metric_trend) · 단일 프로세스가 p100cpu 97.1% 점유 (polestar_process_snapshot)"}
+  neg:
+    F-READ:
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d01-app01, kind: cpu}}
+      - {call: polestar_process_snapshot, args: {hostname: bw-d01-app01}}
+      - {answer: "bw-d01-app01 메모리 누수로 인한 성능 저하 (polestar_metric_trend)"}
+    F-INC:
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d01-app01, kind: cpu}, repeat: true}

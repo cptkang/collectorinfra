@@ -1,0 +1,24 @@
+# 채점기 테스트 전용 세계 — 원인 호스트(DB) ≠ 알람 호스트(앱) (plans/151 W3 · test_bench_judge)
+id: J03
+split: holdout
+title: DB 테이블스페이스 포화로 앱 지연(채점 테스트)
+event:
+  serverName: bw-j03-app01
+  hostname: bw-j03-app01
+  severity: 3
+  alarmName: "응답 지연 임계 초과"
+  alarmTime: "20261012031500"
+label:
+  root_entity: {host: bw-j03-db01}
+  layer: db
+  kind: tablespace_full
+  change_related: false
+  aliases:
+    kind: [테이블스페이스 포화]
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: tablespace}, cite: ["99"]}
+hosts: [bw-j03-app01, bw-j03-db01]
+tools:
+  polestar_metric_trend:
+    - match: {kind: tablespace}
+      reply: {rows: [{value: 99.1}], row_count: 1}

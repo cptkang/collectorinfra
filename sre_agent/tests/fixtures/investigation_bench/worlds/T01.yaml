@@ -1,0 +1,45 @@
+# 테스트 전용 소형 세계 — 세계 서버 매처·호스트·시간창·생성기·오류 주입 검사용(plans/151 W2)
+id: T01
+split: dev
+title: 로그 미회전으로 파일시스템 포화(테스트)
+event:
+  serverName: bw-t01-app01
+  hostname: bw-t01-app01
+  severity: 3
+  alarmName: "파일시스템 사용률 임계 초과"
+  alarmTime: "20261012031500"
+label:
+  root_entity: {host: bw-t01-app01, component: "/var/log"}
+  layer: os
+  kind: disk_full
+  change_related: false
+  aliases: {kind: ["파일시스템 포화"]}   # W3 종단(L3) — 모범 답변 서술을 채점기가 원인으로 읽게
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: filesystem}, cite: ["98", "/var/log"]}
+hosts: [bw-t01-app01, bw-t01-db01]
+incident_window: {start: -45m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: filesystem}
+      reply: {rows: [{mount: /var/log, value: 98.4}], row_count: 1, unit: "%"}
+    - match: {kind: filesystem, granularity: d}          # 앞 규칙이 먼저 맞으므로 닿지 않는다
+      reply: {rows: [], row_count: 0, note: unreachable}
+    - match: {kind: cpu}
+      reply:
+        kind: cpu
+        series: {gen: {base: 45, spike_at: -30m, to: 60, noise: 2, points: 6, step: 10m}}
+  polestar_incident_alarms:
+    - reply: {error: "DB 연결 시간 초과", inject: true}
+  apm_app_health:
+    - match: {hostname: bw-t01-app01}
+      reply: {rows: [{tps: 12.5}], row_count: 1}
+    - reply: {error: "제니퍼 응답 지연", code: source_unavailable, inject: true}
+  default: {error: null, rows: []}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-t01-app01, kind: filesystem}}
+    - {answer: "bw-t01-app01 /var/log 파일시스템 포화 — 사용률 98.4% (polestar_metric_trend)"}   # 도구명 = 인용(가설 강등 방지)
+  neg:
+    F-DIST:
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-t01-app01, kind: cpu}}
+      - {answer: "CPU 과부하가 원인"}

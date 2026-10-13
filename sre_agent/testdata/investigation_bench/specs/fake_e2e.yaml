@@ -1,0 +1,24 @@
+# 가짜 LLM 종단(L3) — 세계 2 × 실험군 2 × k=1 (plans/151 §4.7 · §9.3.4 · 테스트 전용 · --test 필요)
+# 세계·스냅샷은 테스트 픽스처를 쓴다. 포트는 §4.7 벤치 포트(테스트는 0 = 빈 포트로 덮어 쓴다).
+run:
+  site: local
+  splits: [dev]
+  worlds: [T01, T02]
+  worlds_dir: tests/fixtures/investigation_bench/worlds
+  snapshot: tests/fixtures/investigation_bench/tool_schemas.json
+  k: 1
+  order: interleave
+  poll_interval_s: 0.5
+  per_run_timeout_s: 90
+  ports: {fake_llm: 19180, world: 19190, world_apm: 19191, arm_base: 19200}
+llm:
+  backend: fake
+  model: "openai/fake-bench"
+  api_key: dummy
+  script: model          # 가짜 LLM 대본 — model | neg.<코드>
+host:
+  gpu_sample_interval_s: 0
+base_env: {MAX_STEPS: 10, INVESTIGATION_TIMEOUT_SECONDS: 60}
+arms:
+  control: {}
+  control_b: {}

@@ -1,0 +1,54 @@
+# plans/151 §4.6 H06 — 홀드아웃(D09와 같은 kind · no_fault · 함정: 기권 기대) · 개선 채택 판정 전용
+id: H06
+split: holdout
+title: 단발 메모리 경보 후 자연 회복(무장애)
+event:
+  dbId: polestar
+  serverName: bw-h06-api01
+  hostname: bw-h06-api01
+  ipAddress: 198.51.100.36
+  resourceAncestry: ""
+  alarmId: "bw-h06-0001"
+  severity: 1
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "메모리 사용량 경보"
+  alarmTime: "20261009173500"
+  conditions: "> 85%"
+  conditionLog: "[메모리 사용량 (> 85%)]"
+label:
+  root_entity: {host: bw-h06-api01}
+  layer: none
+  kind: no_fault
+  change_related: false
+  aliases:
+    kind: [일시 스파이크, 순간 급등, 정상 복귀, 자연 회복]
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: memory}, cite: ["54.1"]}
+expect:
+  abstain: true
+hosts: [bw-h06-api01]
+incident_window: {start: -10m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: memory}
+      reply:
+        rows:
+          - {ts: "2026-10-09T17:30:00", value: 52.7}
+          - {ts: "2026-10-09T17:35:00", value: 86.9}
+          - {ts: "2026-10-09T17:40:00", value: 54.1}
+        row_count: 3
+        unit: "%"
+        source_kind: postgresql
+  polestar_incident_alarms:
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-09T17:35:00", alarm_name: "메모리 사용량 경보", severity: 1, status: 해제}
+        row_count: 1
+        source_kind: postgresql
+  default: {rows: [], row_count: 0}
+script:
+  model:   # 기권 — 도구명·인용 표지 없이 서술
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-h06-api01, kind: memory}}
+    - {answer: "bw-h06-api01 메모리는 경보 시점 86.9% 직후 54.1%로 내려가 이어지는 이상 없음\n장애로 볼 신호 없음 — 경과 관찰 권장"}

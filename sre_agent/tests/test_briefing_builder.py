@@ -259,7 +259,7 @@ def _incomplete_answer() -> str:
 
     agent = DiagnosisAgent(settings=AgentSettings(_env_file=None, model="test/model", max_steps=40), toolsets={})
     agent._llm = MagicMock()
-    agent._llm.call.side_effect = Exception("Too many LLM calls - exceeded max_steps: 40/40")
+    agent._llm.call_stream.side_effect = Exception("Too many LLM calls - exceeded max_steps: 40/40")
     with patch("sre_agent.diagnosis.build_initial_ask_messages", return_value=[]):
         r = agent.ask("q")
     assert r.incomplete and r.tool_outputs == []

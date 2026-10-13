@@ -81,10 +81,18 @@ class InvestigationJob:
     lookback_minutes: int | None = None
     # 결정적 상관 결과(CorrelationResult.to_dict — plans/50 G4). 사전수집 off·불가면 None.
     correlation: dict | None = None
+    # 계측 가산 키(plans/151 W1 · D-324 ⑦) — dispatcher가 종결 시 채우고 `summary()`가 펼친다.
+    # done: incomplete·elapsed_s·prefetch_s·steps·tool_calls_n·model·max_steps·
+    #       tool_calls[{name, args_digest, status}]
+    # timeout·failed: elapsed_s·model·max_steps. 원시 도구 기록(ToolCallRecord)은 남기지 않는다.
+    instrumentation: dict | None = None
 
     def summary(self) -> dict:
-        """§3 `sre_get_investigation`/`sre_list_investigations` 반환 스키마."""
-        return {
+        """§3 `sre_get_investigation`/`sre_list_investigations` 반환 스키마.
+
+        계측 가산 키(`instrumentation`)는 종전 키 뒤에 더한다 — 종전 키는 그대로다(R-8).
+        """
+        summary = {
             "investigation_id": self.investigation_id,
             "kind": self.kind,
             "status": self.status,
@@ -102,6 +110,8 @@ class InvestigationJob:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+        summary.update(self.instrumentation or {})
+        return summary
 
 
 # executor(dispatcher 인터페이스): 잡을 받아 in-place로 terminal 상태(및 briefing/verdict 등)를

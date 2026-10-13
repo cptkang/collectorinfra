@@ -1,0 +1,62 @@
+# plans/151 §4.6 H01 — 홀드아웃(D01과 같은 kind · cpu_runaway) · 개선 채택 판정 전용
+id: H01
+split: holdout
+title: 대사 작업 무한 반복으로 프로세서 점유
+event:
+  dbId: polestar
+  serverName: bw-h01-bat02
+  hostname: bw-h01-bat02
+  ipAddress: 198.51.100.31
+  resourceAncestry: ""
+  alarmId: "bw-h01-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "프로세서 부하 경고"
+  alarmTime: "20261009021500"
+  conditions: "> 92%"
+  conditionLog: "[프로세서 점유율 (> 92%, 5회 지속)]"
+label:
+  root_entity: {host: bw-h01-bat02, component: bwh01_recon_job}
+  layer: app
+  kind: cpu_runaway
+  change_related: false
+  aliases:
+    kind: [CPU 폭주, 프로세스 폭주, 무한 루프, runaway process, 작업 폭주]
+key_evidence:
+  - {tool: polestar_process_snapshot, cite: [bwh01_recon_job]}
+  - {tool: polestar_metric_trend, match: {kind: cpu}, cite: ["98.9"]}
+expect:
+  abstain: false
+hosts: [bw-h01-bat02]
+incident_window: {start: -60m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: cpu}
+      reply:
+        rows: {gen: {base: 29, spike_at: -55m, to: 97, noise: 1}}
+        row_count: 12
+        latest: 98.9
+        unit: "%"
+        source_kind: postgresql
+    - match: {kind: memory}
+      reply:
+        rows: {gen: {base: 36, noise: 1}}
+        row_count: 12
+        unit: "%"
+        source_kind: postgresql
+  polestar_process_snapshot:
+    - reply:
+        rows:
+          - {pid: 77310, name: bwh01_recon_job, pcpu: 1570.2, p100cpu: 98.3, pmem: 1.9, elapsed: "05:12:40", state: R}
+          - {pid: 640, name: crond, pcpu: 0.1, p100cpu: 0.0, pmem: 0.1, elapsed: "88-01:00:51", state: S}
+        row_count: 2
+        captured_at: "2026-10-09T02:15:40"
+        source_kind: polestar_api
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-h01-bat02, kind: cpu}}
+    - {call: polestar_process_snapshot, args: {hostname: bw-h01-bat02}}
+    - {answer: "bw-h01-bat02 대사 작업 bwh01_recon_job 무한 루프로 CPU 폭주 — 프로세서 점유 98.9% (polestar_metric_trend) · 해당 프로세스 p100cpu 98.3% (polestar_process_snapshot)"}

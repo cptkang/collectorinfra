@@ -1,0 +1,69 @@
+# plans/151 §4.6 D12 — 호스트 다운(target_unavailable · os · 가용성 판정)
+id: D12
+split: dev
+title: DB 보조 서버 호스트 다운(상위 스위치 정상)
+event:
+  dbId: polestar
+  serverName: bw-d12-db02
+  hostname: bw-d12-db02
+  ipAddress: 192.0.2.22
+  resourceAncestry: ""
+  alarmId: "bw-d12-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "가용성"
+  alarmTime: "20261012190500"
+  conditions: "= DOWN, 3회 연속"
+  conditionLog: "[DOWN (= DOWN, 3회 연속)] ping 무응답"
+label:
+  root_entity: {host: bw-d12-db02}
+  layer: os
+  kind: target_unavailable
+  change_related: false
+  aliases:
+    kind: [호스트 다운, 서버 다운, 호스트 정지, host down, 서버 전원 꺼짐]
+key_evidence:
+  - {tool: polestar_resource_status, cite: [DOWN]}
+  - {tool: polestar_topology, cite: [bw-d12-sw01]}
+expect:
+  abstain: false
+hosts: [bw-d12-db02, bw-d12-db01, bw-d12-sw01]
+incident_window: {start: -10m, end: 0m}
+tools:
+  polestar_resource_status:
+    - reply:
+        rows:
+          - {name: bw-d12-db02, avail_status: DOWN, last_up: "2026-10-12T18:58:20", maintenance: false}
+          - {name: "bw-d12-db02:agent", avail_status: DOWN, last_up: "2026-10-12T18:58:20", maintenance: false}
+        row_count: 2
+        source_kind: postgresql
+  polestar_topology:
+    - reply:
+        rows:
+          - {relation: ancestor, name: bw-d12-sw01, type: network.Switch, status: 정상}
+          - {relation: peer, name: bw-d12-db01, type: database, status: 정상}
+        row_count: 2
+        source_kind: postgresql
+  polestar_incident_alarms:
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-12T18:59:10", alarm_name: "에이전트 연결 끊김", severity: 1}
+          - {alarm_time: "2026-10-12T19:05:00", alarm_name: "가용성", severity: 2}
+        row_count: 2
+        source_kind: postgresql
+  polestar_metric_trend:
+    - reply:
+        rows: []
+        row_count: 0
+        note: "18:58 이후 수집 값 없음"
+        source_kind: postgresql
+  polestar_process_snapshot:
+    - reply: {error: "에이전트 응답 없음", inject: true}
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_resource_status, args: {source: polestar, server_name: bw-d12-db02}}
+    - {call: polestar_topology, args: {source: polestar, server_name: bw-d12-db02}}
+    - {answer: "bw-d12-db02 호스트 다운 — 서버·에이전트 모두 DOWN (polestar_resource_status) · 상위 스위치 bw-d12-sw01은 정상이라 네트워크 장애 아님 (polestar_topology)"}

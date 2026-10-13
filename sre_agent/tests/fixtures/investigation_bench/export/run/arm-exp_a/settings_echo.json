@@ -1,0 +1,1 @@
+{"model": "openai/qwen3-32b", "api_base": "http://127.0.0.1:19185/v1", "max_steps": 20}

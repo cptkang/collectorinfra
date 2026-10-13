@@ -1,0 +1,68 @@
+# plans/151 §4.6 D13 — inode 고갈(inode_exhaustion · os · 함정: 용량은 여유 — 「공간 부족」 메시지가 유인)
+id: D13
+split: dev
+title: 메시지 큐 스풀의 소형 파일 폭증으로 inode 고갈
+event:
+  dbId: polestar
+  serverName: bw-d13-app01
+  hostname: bw-d13-app01
+  ipAddress: 192.0.2.23
+  resourceAncestry: ""
+  alarmId: "bw-d13-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "파일 생성 실패 경고"
+  alarmTime: "20261012074000"
+  conditions: "= ERROR"
+  conditionLog: "[로그 기록 오류 (No space left on device)]"
+label:
+  root_entity: {host: bw-d13-app01, component: /var/spool/bwd13mq}
+  layer: os
+  kind: inode_exhaustion
+  change_related: false
+  aliases:
+    kind: [inode 고갈, inode 부족, 아이노드 고갈, inode exhaustion, inode 소진]
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: filesystem}, cite: ["100.0", /var/spool/bwd13mq]}
+  - {tool: polestar_incident_alarms, cite: ["2,140,332"]}
+distractors:
+  - {kind: disk_full, aliases: [디스크 용량 부족, 용량 포화, 디스크 포화, 디스크 가득]}
+expect:
+  abstain: false
+hosts: [bw-d13-app01]
+incident_window: {start: -60m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: filesystem}
+      reply:
+        rows:
+          - {mount: /var/spool/bwd13mq, value: 41.2, inode_used_pct: 100.0, inodes_free: 0}
+          - {mount: /, value: 35.0, inode_used_pct: 12.4, inodes_free: 1650211}
+        row_count: 2
+        unit: "%"
+        source_kind: postgresql
+    - match: {kind: cpu}
+      reply:
+        rows: [{value: 12.3}]
+        row_count: 1
+        unit: "%"
+        source_kind: postgresql
+  polestar_incident_alarms:
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-12T07:10:00", alarm_name: "큐 적재 지연", message: "bwd13mq 처리 지연 — 미처리 메시지 파일 2,140,332개"}
+          - {alarm_time: "2026-10-12T07:40:00", alarm_name: "파일 생성 실패 경고", severity: 2}
+        row_count: 2
+        source_kind: postgresql
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d13-app01, kind: filesystem}}
+    - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-d13-app01, reference_time: "2026-10-12T07:40:00"}}
+    - {answer: "bw-d13-app01 /var/spool/bwd13mq inode 고갈 — 용량은 41.2%로 여유지만 inode 100.0% 소진 (polestar_metric_trend) · 미처리 메시지 파일 2,140,332개 적체 (polestar_incident_alarms)"}
+  neg:
+    F-DIST:
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d13-app01, kind: filesystem}}
+      - {answer: "bw-d13-app01 디스크 용량 부족이 원인 — No space left 기록 (polestar_metric_trend)"}

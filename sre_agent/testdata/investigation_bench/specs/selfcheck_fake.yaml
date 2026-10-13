@@ -1,0 +1,23 @@
+# 세계 자기검증(L4 · plans/151 §9.1 · W4) — 전 세계 × 모범 대본 · 가짜 LLM · 테스트 전용(--test 필요)
+# tests/test_bench_worlds_selfcheck.py가 이 명세의 llm·base_env를 쓰고 대본(model · neg.<코드>)만 바꿔 돈다.
+# MAX_STEPS는 작게 둔다 — 음성 대본 F-INC(repeat: true)가 step 상한을 빨리 소진하도록.
+# 모범 대본은 도구 호출 5회 이하로 쓴다(답 턴 포함 6 ≤ MAX_STEPS).
+run:
+  site: local
+  splits: [dev, holdout]
+  worlds: all
+  k: 1
+  order: interleave
+  poll_interval_s: 0.2
+  per_run_timeout_s: 60
+  ports: {fake_llm: 19180, world: 19190, world_apm: 19191, arm_base: 19200}
+llm:
+  backend: fake
+  model: "openai/fake-bench"
+  api_key: dummy
+  script: model
+host:
+  gpu_sample_interval_s: 0
+base_env: {MAX_STEPS: 8, INVESTIGATION_TIMEOUT_SECONDS: 45}
+arms:
+  control: {}

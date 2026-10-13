@@ -16,6 +16,11 @@ HolmesGPT ReAct 조사 루프를 감싸되, **트리거·dedup·동시성·타�
 4. 시간당 예산 — `investigation_hourly_budget` 초과 시 신규 조사 거부.
 5. 토큰 비용 감사 — DiagnosisResult.total_tokens/total_cost를 잡·decision JSONL에 기록.
 
+계측 가산 키(plans/151 W1 · D-324 ⑦ — 플래그 없이 상시 · 동작 무변경): 종결한 잡(`instrumentation`
+→ `summary()`)과 `done` 감사에 `incomplete`·`elapsed_s`·`prefetch_s`·`steps`·`tool_calls_n`·`model`·
+`max_steps`·`tool_calls[{name, args_digest, status}]`(원시 출력·인자 원문 제외)를 더한다. 타임아웃·
+실패는 얻을 수 있는 `elapsed_s`·`model`·`max_steps`만. 미완주는 `status=done` 유지(D-123 어휘 불변).
+
 in-memory 상태(dedup dict·budget window)는 **값 bound + 키 만료 sweep**을 동시 구현한다
 (CLAUDE.md Known Mistakes — 데몬 dict는 값 bound뿐 아니라 키 sweep도).
 
@@ -28,12 +33,14 @@ domain(severity_signatures)뿐이다(application→domain 허용). LLM 키 부�
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import threading
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -64,6 +71,13 @@ logger = logging.getLogger(__name__)
 
 # dedup dict 방어적 하드 상한(ttl sweep에 더해 무한 성장 방지).
 _MAX_DEDUP_KEYS = 4096
+
+#: `done` 잡·감사의 계측 가산 키(plans/151 W1 · D-324 ⑦ — 상시). 감사 키 집합을 단언하는 테스트는
+#: 이 키를 빼고 종전 키와 비교한다(키 이름의 단일 출처).
+INSTRUMENTATION_KEYS: tuple[str, ...] = (
+    "incomplete", "elapsed_s", "prefetch_s", "steps", "tool_calls_n", "model", "max_steps",
+    "tool_calls",
+)
 
 
 # ── 구조적 타입(Protocol) — application 세부에 직접 의존하지 않기 위함 ──
@@ -103,6 +117,24 @@ class JobLike(Protocol):
     reference_time: str | None
     lookback_minutes: int | None
     correlation: dict | None
+    # 계측 가산 키(plans/151 W1) — 종결 시 dispatcher가 채운다.
+    instrumentation: dict | None
+
+
+@dataclass
+class _AnswerOnly:
+    """미완주 결과의 판정·브리핑 입력 — 답변만 남긴다(plans/151 W1).
+
+    W1부터 미완주 결과도 상한 직전까지의 도구 기록을 싣지만(계측·벤치 입력), 판정·브리핑은 종전처럼
+    도구 기록 없이 답변만 본다 — 동작 무변경(D-324 ⑦). 부분 기록으로 브리핑을 만드는 일은 별도
+    플래그 개선 후보(plans/151 H-5) 몫이다.
+    """
+
+    answer: str
+    total_tokens: int = 0
+    total_cost: float = 0.0
+    tool_calls: list[str] = field(default_factory=list)
+    tool_outputs: Sequence[ToolOutputLike] = ()
 
 
 DiagnoseFn = Callable[[JobLike], DiagnosisLike]
@@ -373,9 +405,12 @@ class InvestigationDispatcher:
     # ── 백그라운드 워커(동시 상한 · 전체 타임아웃 · 후처리) ─────
 
     def _worker(self, job: JobLike) -> None:
+        started: float | None = None
         try:
             with self._semaphore:  # 동시 상한
-                self._run_and_postprocess(job)
+                # 계측 기준점 — 동시 상한 대기는 빼고 조사(사전수집 포함)부터 잰다.
+                started = self._clock()
+                self._run_and_postprocess(job, started)
         except BaseException as exc:  # noqa: BLE001 — Exception만 잡으면 잡이 영구 running으로 남는다
             # ★ `Exception`이 아니라 `BaseException`이다 (D-213 근본원인 · 2026-09-11 스택 덤프 확정).
             # `asyncio.CancelledError`는 3.8+에서 **BaseException 파생**이라 `except Exception`을
@@ -386,22 +421,26 @@ class InvestigationDispatcher:
             # 상대가 없다 — 잡을 failed로 확정하는 것이 유일하게 옳은 처리다.
             job.status = "failed"
             job.error = f"dispatcher 워커 예외: {type(exc).__name__}: {exc}"
+            job.instrumentation = self._run_meta(started)
             job.updated_at = self._wall_clock()
             logger.exception("dispatcher 워커 예외: investigation_id=%s", job.investigation_id)
             self._audit({"event": "failed", "investigation_id": job.investigation_id,
-                         "error": job.error, **self._episode_audit(job)})
+                         "error": job.error, **job.instrumentation, **self._episode_audit(job)})
         finally:
             self._release_host(job)
             with self._lock:
                 self._workers.discard(threading.current_thread())
 
-    def _run_and_postprocess(self, job: JobLike) -> None:
+    def _run_and_postprocess(self, job: JobLike, started: float) -> None:
         """전체 타임아웃 하에 조사를 실행하고 severity_judge·briefing으로 후처리한다.
 
         조사 전에 결정적 사전수집(plans/50 G4)을 돈다 — 결과는 `job.correlation`에 실려 조사 지침
         (`build_guidance`)과 브리핑이 읽는다. 사전수집은 조사를 막지 않는다(실패 → None + 감사).
+        `started`는 계측 기준 시각(`self._clock`)이다(plans/151 W1).
         """
+        prefetch_started = self._clock()
         job.correlation = self._prefetch(job)
+        prefetch_s = round(self._clock() - prefetch_started, 3)
         try:
             result = self._investigate_with_timeout(job)
         except asyncio.TimeoutError:
@@ -411,25 +450,32 @@ class InvestigationDispatcher:
             job.verdict = f"조사 타임아웃(미완주) — investigation_timeout_seconds({self._timeout}s) 초과"
             job.briefing = {"stub": True, "message": job.verdict, "elements": None}
             job.tool_calls_summary, job.tokens, job.cost = [], 0, 0.0
+            # 조사 스레드는 버려져 부분 토큰·도구 기록은 얻을 수 없다
+            # — 얻을 수 있는 키만 싣는다(plans/151 W1).
+            job.instrumentation = self._run_meta(started)
             job.updated_at = self._wall_clock()
             self._audit({"event": "timeout", "investigation_id": job.investigation_id,
-                         "timeout_s": self._timeout, **self._episode_audit(job)})
+                         "timeout_s": self._timeout, **job.instrumentation,
+                         **self._episode_audit(job)})
             return
 
+        incomplete = bool(getattr(result, "incomplete", False))
+        # 미완주면 판정·브리핑 입력은 답변만(종전 동작) — 부분 도구 기록은 계측 키에만 쓴다.
+        basis: DiagnosisLike = _AnswerOnly(result.answer) if incomplete else result
         gate_severity, gate_tier = self._gate_context(job)
-        verdict = self._run_severity_judge(gate_severity, result)
+        verdict = self._run_severity_judge(gate_severity, basis)
         briefing_kwargs: dict = {}
         if getattr(job, "correlation", None):
             briefing_kwargs["correlation"] = job.correlation   # 없을 땐 인자 자체를 넘기지 않는다(종전 호출 동일)
         stalls: list[tuple[str, str, int]] = []
         if self._settings.apm_guidance_enabled:
             # plans/87 J3 — APM 한계·소스 라벨·정체 가드(사후 판정). off면 인자를 넘기지 않는다(종전 호출 동일).
-            stalls = repeated_calls(self._call_keys(result))
+            stalls = repeated_calls(self._call_keys(basis))
             briefing_kwargs["limitations"] = apm_limitations(
-                apm_payloads(self._tool_texts(result)),
+                apm_payloads(self._tool_texts(basis)),
                 apm_configured=bool(self._settings.apm_mcp_url),
                 apm_incident=is_apm_trigger(job.payload),
-                apm_called=any(to.tool_name.startswith("apm_") for to in result.tool_outputs),
+                apm_called=any(to.tool_name.startswith("apm_") for to in basis.tool_outputs),
             ) + [stall_limitation(*s) for s in stalls]
             briefing_kwargs["source_labels"] = True
             briefing_kwargs["unresolved"] = bool(stalls)
@@ -443,7 +489,7 @@ class InvestigationDispatcher:
         briefing = self._briefing_fn(
             answer=result.answer,
             verdict=verdict,
-            tool_names=[to.tool_name for to in result.tool_outputs],
+            tool_names=[to.tool_name for to in basis.tool_outputs],
             gate_tier=gate_tier,
             remediation=self._recommend_remediation(verdict),
             **briefing_kwargs,
@@ -455,6 +501,7 @@ class InvestigationDispatcher:
         job.tool_calls_summary = list(result.tool_calls)
         job.tokens = result.total_tokens
         job.cost = result.total_cost
+        job.instrumentation = self._instrumentation(result, incomplete, started, prefetch_s)
         job.updated_at = self._wall_clock()
         record = {
             "event": "done",
@@ -468,8 +515,47 @@ class InvestigationDispatcher:
         }
         if stalls:
             record["unresolved"] = [f"{name} x{n}" for name, _args, n in stalls]  # 정체 가드(미결)만 추가 키
+        record.update(job.instrumentation)
         record.update(self._episode_audit(job))
         self._audit(record)
+
+    def _run_meta(self, started: float | None) -> dict:
+        """종결 공통 계측 키 — 경과 초·조사 모델·step 상한(plans/151 W1).
+
+        `elapsed_s`는 동시 상한 통과 시각부터다(사전수집 포함). 기준점이 없으면 None.
+        """
+        return {
+            "elapsed_s": round(self._clock() - started, 3) if started is not None else None,
+            "model": self._settings.model,
+            "max_steps": self._settings.max_steps,
+        }
+
+    def _instrumentation(
+        self, result: DiagnosisLike, incomplete: bool, started: float, prefetch_s: float
+    ) -> dict:
+        """`done` 계측 가산 키(plans/151 W1 · M-1·M-4·M-5).
+
+        `tool_calls`는 `{name, args_digest, status}`만 싣는다 — 원시 출력·오류 본문·인자 원문은
+        크기·민감도 때문에 넣지 않는다. `args_digest`는 정체 가드와 같은 인자 표기
+        (키 정렬 JSON — 없으면 holmes 호출 요약)의 sha256 앞 12자라, 같은 인자면 같고 다르면 다르다.
+        `steps`는 결과가 실을 때만 값이 있다(없으면 None).
+        """
+        calls = [
+            {
+                "name": name,
+                "args_digest": hashlib.sha256(args.encode("utf-8")).hexdigest()[:12],
+                "status": str(getattr(to, "status", None) or "unknown"),
+            }
+            for (name, args), to in zip(self._call_keys(result), result.tool_outputs)
+        ]
+        return {
+            "incomplete": incomplete,
+            **self._run_meta(started),
+            "prefetch_s": prefetch_s,
+            "steps": getattr(result, "steps", None),
+            "tool_calls_n": len(result.tool_outputs),
+            "tool_calls": calls,
+        }
 
     def _episode_audit(self, job: JobLike) -> dict:
         """plans/150 §4.6 감사 키 `episode_id`·`kind`·`cross_source_links`.
@@ -673,6 +759,7 @@ class InvestigationDispatcher:
 
 __all__ = [
     "InvestigationDispatcher",
+    "INSTRUMENTATION_KEYS",
     "GUARD_TARGET_UNAVAILABLE",
     "ToolOutputLike",
     "DiagnosisLike",

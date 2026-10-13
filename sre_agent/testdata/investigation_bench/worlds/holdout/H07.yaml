@@ -1,0 +1,67 @@
+# plans/151 §4.6 H07 — 홀드아웃(D10과 같은 kind · disk_full · 함정: 강한 유인 — 상시 고부하 CPU) · 개선 채택 판정 전용
+id: H07
+split: holdout
+title: 적재 후 삭제 단계 실패로 스테이징 볼륨 포화(변환 전용 고부하 서버)
+event:
+  dbId: polestar
+  serverName: bw-h07-etl01
+  hostname: bw-h07-etl01
+  ipAddress: 198.51.100.37
+  resourceAncestry: ""
+  alarmId: "bw-h07-0001"
+  severity: 3
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "스테이징 볼륨 임계 경보"
+  alarmTime: "20261008031000"
+  conditions: "> 96%"
+  conditionLog: "[스테이징 볼륨 점유 (> 96%)]"
+label:
+  root_entity: {host: bw-h07-etl01, component: /data/bwh07_stage}
+  layer: os
+  kind: disk_full
+  change_related: false
+  aliases:
+    kind: [디스크 포화, 파일시스템 포화, 스테이징 적체, 디스크 가득, 볼륨 가득]
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: filesystem}, cite: ["99.7", /data/bwh07_stage]}
+  - {tool: polestar_incident_alarms, cite: [bwh07_cleanup]}
+distractors:
+  - {kind: cpu_high, aliases: [CPU 과부하, CPU 고부하, 프로세서 과부하]}
+expect:
+  abstain: false
+hosts: [bw-h07-etl01]
+incident_window: {start: -40m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: filesystem}
+      reply:
+        rows:
+          - {mount: /data/bwh07_stage, value: 99.7, used_gb: 1994.0, size_gb: 2000.0}
+          - {mount: /, value: 44.6, used_gb: 13.4, size_gb: 30.0}
+        row_count: 2
+        unit: "%"
+        source_kind: postgresql
+    - match: {kind: cpu}
+      reply:
+        rows: {gen: {base: 94, noise: 2}}
+        row_count: 12
+        latest: 95.2
+        unit: "%"
+        note: "변환 작업 전용 — 최근 한 달 평균 94.6%"
+        source_kind: postgresql
+  polestar_incident_alarms:
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-08T02:30:00", alarm_name: "적재 후 파일 삭제 단계 실패", message: "bwh07_cleanup 단계 오류 — 처리 완료 파일 미삭제 9일째"}
+          - {alarm_time: "2026-10-08T03:10:00", alarm_name: "스테이징 볼륨 임계 경보", severity: 3}
+        row_count: 2
+        source_kind: postgresql
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-h07-etl01, kind: filesystem}}
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-h07-etl01, kind: cpu}}
+    - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-h07-etl01, reference_time: "2026-10-08T03:10:00"}}
+    - {answer: "bw-h07-etl01 /data/bwh07_stage 스테이징 적체로 디스크 포화 — 99.7% (polestar_metric_trend) · bwh07_cleanup 삭제 단계 실패 (polestar_incident_alarms) · CPU 95.2%는 평소 수준"}

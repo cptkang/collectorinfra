@@ -1,0 +1,1 @@
+{"ts": "2026-10-13T12:00:01.000+00:00", "world_id": "E01", "trial": 1, "arm": "control", "endpoint": "polestar", "tool": "polestar_metric_trend", "args": {"server_name": "bw-e01-app01", "kind": "filesystem"}, "matcher": "polestar_metric_trend#0", "arg_error": null, "reply": {"rows": [{"mount": "/var/log", "value": 98.4}], "row_count": 1}, "reply_hash": "abc"}

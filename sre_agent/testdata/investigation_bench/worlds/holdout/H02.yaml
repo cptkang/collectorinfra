@@ -1,0 +1,62 @@
+# plans/151 §4.6 H02 — 홀드아웃(D02와 같은 kind · memory_leak_oom) · 개선 채택 판정 전용
+id: H02
+split: holdout
+title: 원장 서비스 힙 누수 후 커널 강제 종료
+event:
+  dbId: polestar
+  serverName: bw-h02-api03
+  hostname: bw-h02-api03
+  ipAddress: 198.51.100.32
+  resourceAncestry: ""
+  alarmId: "bw-h02-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "애플리케이션 프로세스 재기동"
+  alarmTime: "20261008064500"
+  conditions: "= RESTARTED"
+  conditionLog: "[감시 프로세스 재기동 확인] ledger pid 교체"
+label:
+  root_entity: {host: bw-h02-api03, component: bwh02-ledger-svc}
+  layer: app
+  kind: memory_leak_oom
+  change_related: false
+  aliases:
+    kind: [메모리 누수, 힙 누수, OOM kill, out of memory, 힙 고갈]
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: memory}, cite: ["98.5"]}
+  - {tool: polestar_incident_alarms, cite: [out of memory]}
+expect:
+  abstain: false
+hosts: [bw-h02-api03]
+incident_window: {start: -90m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: memory}
+      reply:
+        rows:
+          - {ts: "2026-10-08T05:20:00", value: 55.0}
+          - {ts: "2026-10-08T05:35:00", value: 66.3}
+          - {ts: "2026-10-08T05:50:00", value: 74.8}
+          - {ts: "2026-10-08T06:05:00", value: 83.9}
+          - {ts: "2026-10-08T06:20:00", value: 91.2}
+          - {ts: "2026-10-08T06:35:00", value: 98.5}
+          - {ts: "2026-10-08T06:45:00", value: 28.7}
+        row_count: 7
+        unit: "%"
+        source_kind: postgresql
+  polestar_incident_alarms:
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-08T06:22:00", alarm_name: "메모리 임계 경고", severity: 1}
+          - {alarm_time: "2026-10-08T06:41:00", alarm_name: "커널 로그", message: "ledger 프로세스(pid 51207) out of memory 강제 종료"}
+          - {alarm_time: "2026-10-08T06:45:00", alarm_name: "애플리케이션 프로세스 재기동", severity: 2}
+        row_count: 3
+        source_kind: postgresql
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-h02-api03, kind: memory}}
+    - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-h02-api03, reference_time: "2026-10-08T06:45:00"}}
+    - {answer: "bw-h02-api03 bwh02-ledger-svc 힙 누수로 out of memory 강제 종료 — 메모리 98.5%까지 지속 상승 (polestar_metric_trend) · 커널 로그 강제 종료 기록 (polestar_incident_alarms)"}

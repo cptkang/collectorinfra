@@ -1,0 +1,70 @@
+# plans/151 §4.6 D16 — 제니퍼 DB 커넥션 풀 고갈(apm_pool_exhaustion · app · 크로스소스 — apm_* 도구 · plans/150 W5 뒤)
+id: D16
+split: dev
+title: 주문 WAS의 JDBC 커넥션 풀 고갈로 응답 지연
+event:
+  dbId: polestar
+  serverName: bw-d16-was01
+  hostname: bw-d16-was01
+  ipAddress: 192.0.2.26
+  resourceAncestry: ""
+  alarmId: "bw-d16-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "서비스 응답시간 경고"
+  alarmTime: "20261012103000"
+  conditions: "> 4000ms"
+  conditionLog: "[서비스 평균 응답시간 (> 4000ms)]"
+label:
+  root_entity: {host: bw-d16-was01, component: jdbc/bwd16OrderDS}
+  layer: app
+  kind: apm_pool_exhaustion
+  change_related: false
+  aliases:
+    kind: [커넥션 풀 고갈, DB 풀 고갈, 커넥션 풀 포화, connection pool exhaustion, 풀 고갈]
+key_evidence:
+  - {tool: apm_resource_pool, cite: [jdbc/bwd16OrderDS, "100.0"]}
+  - {tool: apm_slow_transactions, cite: ["8100"]}
+expect:
+  abstain: false
+hosts: [bw-d16-was01]
+incident_window: {start: -30m, end: 0m}
+tools:
+  apm_resource_pool:
+    - reply:
+        rows:
+          - {instance_name: bwd16-was01-inst1, pool: jdbc/bwd16OrderDS, active: 80, max: 80, usage_pct: 100.0, waiting_threads: 143}
+        row_count: 1
+        verdict: "DB 풀 고갈"
+        source_kind: apm_api
+        source: jennifer
+        tool: apm_resource_pool
+  apm_slow_transactions:
+    - reply:
+        rows:
+          - {guid: g-7f3a, service: /order/submit, elapsed_ms: 8420, sql_ms: 120, fetch_ms: 30, external_ms: 0, wait_conn_ms: 8100}
+          - {guid: g-7f41, service: /order/list, elapsed_ms: 6930, sql_ms: 95, fetch_ms: 22, external_ms: 0, wait_conn_ms: 6680}
+        row_count: 2
+        verdict: "SQL 실행 지연 아님 — 커넥션 대기"
+        source_kind: apm_api
+        source: jennifer
+        tool: apm_slow_transactions
+  polestar_metric_trend:
+    - match: {kind: cpu}
+      reply:
+        rows: [{value: 27.9}]
+        row_count: 1
+        unit: "%"
+        source_kind: postgresql
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: apm_resource_pool, args: {hostname: bw-d16-was01}}
+    - {call: apm_slow_transactions, args: {hostname: bw-d16-was01}}
+    - {answer: "bw-d16-was01 jdbc/bwd16OrderDS 커넥션 풀 고갈 — 사용률 100.0%·대기 스레드 143 (apm_resource_pool) · 커넥션 대기 8100ms (apm_slow_transactions)"}
+  neg:
+    F-CITE:
+      - {call: apm_resource_pool, args: {hostname: bw-d16-was01}}
+      - {answer: "bw-d16-was01 커넥션 풀 고갈 (apm_resource_pool)"}

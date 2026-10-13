@@ -1,0 +1,35 @@
+# 채점기 테스트 전용 세계 — 원인 호스트 = 알람 호스트 · 유인 1종 (plans/151 W3 · test_bench_judge)
+id: J01
+split: holdout
+title: 로그 미회전으로 파일시스템 포화(채점 테스트)
+event:
+  serverName: bw-j01-app01
+  hostname: bw-j01-app01
+  severity: 3
+  alarmName: "파일시스템 사용률 임계 90% 초과"
+  alarmTime: "20261012031500"
+label:
+  root_entity: {host: bw-j01-app01, component: "/var/log"}
+  layer: os
+  kind: disk_full
+  change_related: false
+  aliases:
+    kind: [디스크 포화, 파일시스템 가득, filesystem full, 로그 미회전, logrotate 실패]
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: filesystem}, cite: ["98", "/var/log"]}
+  - {tool: polestar_incident_alarms, cite: ["logrotate"]}
+distractors:
+  - {kind: cpu_high, aliases: [CPU 과부하, CPU 사용률 급등]}
+expect:
+  abstain: false
+hosts: [bw-j01-app01, bw-j01-db01]
+incident_window: {start: -45m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: filesystem}
+      reply: {rows: [{mount: /var/log, value: 98.4, used_mb: 2048}], row_count: 1, unit: "%"}
+    - match: {kind: cpu}
+      reply: {rows: [{value: 61.2}], row_count: 1, note: "매시 정각 60%대 — 지난 14일 동일 패턴"}
+  polestar_incident_alarms:
+    - reply: {rows: [{msg: "logrotate 실패 3회"}], row_count: 1}
+  default: {rows: [], row_count: 0}

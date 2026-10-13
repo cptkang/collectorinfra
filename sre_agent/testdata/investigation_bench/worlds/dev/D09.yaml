@@ -1,0 +1,65 @@
+# plans/151 §4.6 D09 — 일시 스파이크 · 이미 정상(no_fault · 함정: 기권 기대)
+id: D09
+split: dev
+title: 단발 CPU 스파이크 후 정상 복귀(무장애)
+event:
+  dbId: polestar
+  serverName: bw-d09-web01
+  hostname: bw-d09-web01
+  ipAddress: 192.0.2.19
+  resourceAncestry: ""
+  alarmId: "bw-d09-0001"
+  severity: 1
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "CPU 사용률 임계 초과"
+  alarmTime: "20261012114500"
+  conditions: "> 80%"
+  conditionLog: "[CPU 사용률 (> 80%)]"
+label:
+  root_entity: {host: bw-d09-web01}
+  layer: none
+  kind: no_fault
+  change_related: false
+  aliases:
+    kind: [일시 스파이크, 순간 급등, 정상 복귀, transient spike]
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: cpu}, cite: ["21.9"]}
+expect:
+  abstain: true
+hosts: [bw-d09-web01]
+incident_window: {start: -15m, end: 0m}
+tools:
+  polestar_metric_trend:
+    - match: {kind: cpu}
+      reply:
+        rows:
+          - {ts: "2026-10-12T11:40:00", value: 23.4}
+          - {ts: "2026-10-12T11:45:00", value: 84.2}
+          - {ts: "2026-10-12T11:50:00", value: 21.9}
+        row_count: 3
+        unit: "%"
+        source_kind: postgresql
+    - match: {kind: memory}
+      reply:
+        rows: [{value: 44.0}]
+        row_count: 1
+        unit: "%"
+        source_kind: postgresql
+  polestar_incident_alarms:
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-12T11:45:00", alarm_name: "CPU 사용률 임계 초과", severity: 1, status: CLEARED}
+        row_count: 1
+        source_kind: postgresql
+  default: {rows: [], row_count: 0}
+script:
+  model:   # 기권 — 도구명·인용 표지(근거·출처·인용·←) 없이 서술 → 저신뢰
+    - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d09-web01, kind: cpu}}
+    - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-d09-web01, reference_time: "2026-10-12T11:45:00"}}
+    - {answer: "bw-d09-web01 CPU는 알람 시점 84.2% 뒤 21.9%로 돌아와 지속 이상이 보이지 않음\n장애로 단정할 징후 없음 — 추가 관찰 권장"}
+  neg:
+    F-ABST:   # 무장애 세계에서 도구를 인용해 단정
+      - {call: polestar_metric_trend, args: {source: polestar, server_name: bw-d09-web01, kind: cpu}}
+      - {answer: "bw-d09-web01 웹 서비스 과부하가 원인 — CPU 84.2% (polestar_metric_trend)"}

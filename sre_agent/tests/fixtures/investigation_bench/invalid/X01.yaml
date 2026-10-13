@@ -1,0 +1,19 @@
+# 테스트 전용 — 스냅샷에 없는 도구·인자를 일부러 쓴 세계(드리프트 검사 실패 기대 · plans/151 W2)
+id: X01
+split: dev
+event: {serverName: bw-x01-app01, alarmTime: "20261012031500"}
+hosts: [bw-x01-app01]
+key_evidence:
+  - {tool: polestar_metric_trend, match: {metric: filesystem}, cite: ["98"]}   # 실 인자는 kind
+tools:
+  polestar_metric_trend:
+    - match: {metric: filesystem}                                              # 실 인자는 kind
+      reply: {rows: []}
+  polestar_disk_usage:                                                         # 스냅샷에 없는 도구
+    - reply: {rows: []}
+  default: {rows: []}
+script:
+  model:
+    - {call: polestar_metric_trend, args: {server_name: bw-x01-app01, kind: filesystem, hostname_typo: x}}
+    - {call: polestar_unknown_tool, args: {}}
+    - {answer: "끝"}

@@ -1,0 +1,88 @@
+# plans/151 §4.6 D07 — DB 락 대기 → WAS 응답 지연 알람(cross_host_cascade · db · 함정: 원인이 다른 호스트)
+id: D07
+split: dev
+title: DB 행 락 대기가 WAS 다수 응답 지연으로 번짐
+event:
+  dbId: polestar
+  serverName: bw-d07-was01
+  hostname: bw-d07-was01
+  ipAddress: 192.0.2.17
+  resourceAncestry: ""
+  alarmId: "bw-d07-0001"
+  severity: 2
+  alarmStatus: NOT_ACK
+  resourceType: server.Server
+  resourceName: ""
+  alarmName: "응답시간 임계 초과"
+  alarmTime: "20261012101500"
+  conditions: "> 5000ms"
+  conditionLog: "[평균 응답시간 (> 5000ms, 3회 연속)]"
+label:
+  root_entity: {host: bw-d07-db01, component: row lock}
+  layer: db
+  kind: cross_host_cascade
+  change_related: false
+  aliases:
+    kind: [DB 지연, DB 응답 지연, DB 락 대기, 락 경합, lock wait, 데이터베이스 지연]
+key_evidence:
+  - {tool: polestar_incident_alarms, match: {server_name: bw-d07-db01}, cite: [락 대기, "312"]}
+  - {tool: polestar_topology, cite: [bw-d07-db01]}
+distractors:
+  - {kind: was_cpu, aliases: [WAS CPU 과부하, CPU 과부하]}
+expect:
+  abstain: false
+hosts: [bw-d07-was01, bw-d07-was02, bw-d07-db01]
+incident_window: {start: -40m, end: 0m}
+tools:
+  polestar_topology:
+    - reply:
+        rows:
+          - {relation: ancestor, name: bw-d07-db01, type: database, status: 정상}
+          - {relation: peer, name: bw-d07-was02, type: server, status: 경고}
+        row_count: 2
+        source_kind: postgresql
+  polestar_incident_alarms:
+    - match: {server_name: bw-d07-db01}
+      reply:
+        rows:
+          - {alarm_time: "2026-10-12T09:52:00", alarm_name: "DB 세션 락 대기 증가", value: "lock wait 312건"}
+        row_count: 1
+        source_kind: postgresql
+    - match: {server_name: bw-d07-was02}
+      reply:
+        rows:
+          - {alarm_time: "2026-10-12T10:13:00", alarm_name: "응답시간 임계 초과", severity: 2}
+        row_count: 1
+        source_kind: postgresql
+    - reply:
+        rows:
+          - {alarm_time: "2026-10-12T10:15:00", alarm_name: "응답시간 임계 초과", severity: 2}
+        row_count: 1
+        source_kind: postgresql
+  polestar_metric_trend:
+    - match: {server_name: bw-d07-was01, kind: cpu}
+      reply:
+        rows: [{value: 38.4}]
+        row_count: 1
+        unit: "%"
+        source_kind: postgresql
+    - match: {server_name: bw-d07-db01, kind: disk_io}
+      reply:
+        rows: [{device: sdc, util_pct: 72.5, await_ms: 9.4}]
+        row_count: 1
+        unit: "%"
+        source_kind: postgresql
+  default: {rows: [], row_count: 0}
+script:
+  model:
+    - {call: polestar_topology, args: {source: polestar, server_name: bw-d07-was01}}
+    - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-d07-db01, reference_time: "2026-10-12T10:15:00"}}
+    - {answer: "bw-d07-db01 DB 락 대기 312건 증가로 DB 응답 지연 — WAS 응답시간 알람은 그 여파 (polestar_incident_alarms · polestar_topology)"}
+  neg:
+    F-ARG:    # 등록되지 않은 DB 호스트명으로만 조회 — 핵심 증거 도구 호출이 전부 인자 오류
+      - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-d07-db02, reference_time: "2026-10-12T10:15:00"}}
+      - {answer: "bw-d07-was01 원인 미확정 — DB 서버 알람 조회 결과 없음 (polestar_incident_alarms)"}
+    F-READ:
+      - {call: polestar_topology, args: {source: polestar, server_name: bw-d07-was01}}
+      - {call: polestar_incident_alarms, args: {source: polestar, server_name: bw-d07-was01, reference_time: "2026-10-12T10:15:00"}}
+      - {answer: "bw-d07-was01 WAS 스레드 풀 부족이 원인 (polestar_incident_alarms)"}

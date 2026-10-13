@@ -1,0 +1,22 @@
+# 채점기 테스트 전용 세계 — 무장애(기권 기대) · 유인 1종 (plans/151 W3 · test_bench_judge)
+id: J02
+split: dev
+title: 정시 배치의 정상 CPU 패턴(채점 테스트)
+event:
+  serverName: bw-j02-app01
+  hostname: bw-j02-app01
+  severity: 2
+  alarmName: "CPU 사용률 임계 초과"
+  alarmTime: "20261012030000"
+label: {}
+key_evidence:
+  - {tool: polestar_metric_trend, match: {kind: cpu}, cite: ["14일"]}
+distractors:
+  - {kind: cpu_high, aliases: [CPU 과부하]}
+expect:
+  abstain: true
+hosts: [bw-j02-app01]
+tools:
+  polestar_metric_trend:
+    - match: {kind: cpu}
+      reply: {rows: [{value: 62.0}], row_count: 1, note: "매시 정각 60%대 — 지난 14일 동일 패턴"}
