@@ -68,3 +68,8 @@ apm_gateway/testdata/jennifer/**/*.zip
 apm_gateway/testdata/jennifer/**/license*
 apm_gateway/testdata/jennifer/recorded/raw/
 apm_gateway/var/
+
+# 시연 환경 값 파일(운영 값) — 저장소 밖에 두는 것이 원칙, 안에 둔 경우의 보호선 (D-326)
+testdata/demo/env.*.yaml
+!testdata/demo/env.sandbox.yaml
+!testdata/demo/env.closed.template.yaml
