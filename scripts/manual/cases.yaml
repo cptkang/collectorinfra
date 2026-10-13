@@ -112,6 +112,18 @@ cases:
     note: 스냅샷의 config 사본에서 실행된다 — 저장소 정본 파일은 건드리지 않는다
     turns:
       - query: "polestar DB의 스키마 캐시를 갱신해줘"
+  - id: Q-PORTAL-SYNONYM
+    feature: U-57
+    scenario_ref: ""
+    note: 매뉴얼 전용 — 기능 요청 원문(plans/142 머리 · 사용자 2026-10-07)의 예문 1 · 근거 절은 U-37
+    turns:
+      - query: "itam db에 유사어를 등록하려고 한다. 어떻게 해야 되냐?"
+  - id: Q-PORTAL-NOISE
+    feature: U-57
+    scenario_ref: ""
+    note: 매뉴얼 전용 — 기능 요청 원문(plans/142 머리 · 사용자 2026-10-07)의 예문 2 · 근거 절은 U-44 항목 「수신 알람」
+    turns:
+      - query: "노이즈 캔슬링의 '수신 알람'은 무엇인지 설명하라."
   # ── 6장 양식 채우기 ───────────────────────────────────────
   - id: F-SERVER-LIST
     feature: U-27

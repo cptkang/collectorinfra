@@ -1,0 +1,42 @@
+{
+ "id": "Q-PORTAL-NOISE",
+ "turns": [
+  {
+   "query": "노이즈 캔슬링의 '수신 알람'은 무엇인지 설명하라.",
+   "file": null,
+   "key": "f2f49d86a9a82ca3",
+   "elapsed_s": 18.2,
+   "nodes": [
+    "context_resolver",
+    "input_parser",
+    "field_mapper",
+    "intent_planner",
+    "agent_orchestrator",
+    "replanner",
+    "result_aggregator"
+   ],
+   "done": {
+    "type": "done",
+    "response": "수신 알람은 고른 기간에 알람 거르기가 내린 판단의 수입니다.\n\n이 값은 판단이 반드시 네 결과 중 하나이므로, 옆 PAGE·TICKET·DASHBOARD·SUPPRESS 카드의 값을 더한 것과 같습니다. 또한 퍼널 머리의 '수신'과 같은 값이며, 숫자는 천 단위 쉼표로 표시됩니다.\n\n읽는 법으로는 알람이 해소될 때 오는 해소 알림도 한 건의 판단으로 들어갑니다. 해소 알림은 대부분 SUPPRESS로 끝나므로, 이 숫자는 '장애 건수'보다 크고 SUPPRESS 비중도 그만큼 높아 보입니다. 카드 아래 줄은 '24H · 게이트 동작 중'처럼 기간과 알람 거르기의 켜짐 상태를 적으며, 처음 불러오기 전에는 영문 안내가 잠깐 보입니다.\n\n카드를 누르면 기간 안 판단 전체가 세부 리스트로 열립니다. 아래 줄이 '게이트 꺼짐'이면 새 판단이 만들어지지 않으며, 숫자는 꺼지기 전에 남은 기록만 셉니다.\n\n**매뉴얼에서 보기**\n- [U-44 노이즈 관제 화면 읽기 — 수신 알람](/manual/user#u-44-d-2-11)",
+    "row_count": 0,
+    "executed_sql": null,
+    "has_file": false,
+    "file_name": null,
+    "awaiting_approval": false,
+    "clarification": null,
+    "form_fill_clarification": null,
+    "form_memory_panel": null,
+    "message": null,
+    "code": null
+   },
+   "rows_head": []
+  }
+ ],
+ "reviewed": true,
+ "recorded_at": "2026-10-13T18:25:17",
+ "review": {
+  "verdict": "ok",
+  "notes": "대리 판정(에이전트) — 근거 U-44 항목 「수신 알람」 1건. 서술의 정의(판단 수)·네 결과 합·퍼널 머리 「수신」과 같음·천 단위 쉼표·해소 알림 포함·카드 아래 줄·게이트 꺼짐 설명이 매뉴얼 항목 문장과 일치하고 지어낸 내용 없음. 근거 절에 사례가 없어 입력 예 칸 없음(정상)",
+  "at": "2026-10-13"
+ }
+}

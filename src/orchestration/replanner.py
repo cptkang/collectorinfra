@@ -63,6 +63,9 @@ _MAX_SUMMARY_TEXT_CHARS = 1500
 #: 문서 조건부 처리기 이름(plans/127 — `doc_query.DOC_QUERY_AGENT`와 같은 값 · import 순환을 피해
 #: 문자열로 둔다). 문서 전용 계획 결정적 종료·문서 재검색 중복 방지가 읽는다.
 _DOC_AGENT = "doc_query"
+#: 포탈 도움말 조건부 처리기 이름(plans/142 — `portal_help.PORTAL_HELP_AGENT`와 같은 값 ·
+#: 문자열로 둔다 · import 순환 방지). 포탈 전용 계획 결정적 종료가 읽는다.
+_PORTAL_AGENT = "portal_help"
 #: 비SQL 조건부 처리기(plans/125·127 — 문자열로 둔다 · import 순환 방지). 이 처리기의 실패(연결 안
 #: 됨 · 0건 · 도구 오류 · 창 밖)는 **소스 불가 종결**이다 — 다른 소스로 바꾸면 침묵 대체가 된다(125
 #: §4.6).
@@ -179,6 +182,21 @@ async def replanner(
         isinstance(t, dict) and t.get("agent") == _DOC_AGENT for t in _tasks_now
     ) and all(isinstance(_results_now.get(str(t.get("task_id"))), dict) for t in _tasks_now):
         logger.info("replanner: 문서 전용 계획 완료 — LLM 평가 없이 종료(plans/127 G-12)")
+        return {
+            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
+        }
+
+    # 포탈 전용 계획(plans/142 · D-315 — 문서 전용 계획과 같은 규칙): 매뉴얼 답은 완결이다
+    # (실패도 사유와 관련 절 링크를 들고 온다). 재계획이 붙일 후속은 같은 매뉴얼 재검색이거나 일반
+    # 안내 보충뿐이라 평가 LLM 을 생략한다. 계획은 portal_help task 와 결정적 안내
+    # (`direct_response`) task 로만 이뤄지고 portal_help 가 하나 이상이어야 한다.
+    if _tasks_now and all(
+        isinstance(t, dict) and (t.get("agent") == _PORTAL_AGENT or t.get("direct_response"))
+        for t in _tasks_now
+    ) and any(t.get("agent") == _PORTAL_AGENT for t in _tasks_now) and all(
+        isinstance(_results_now.get(str(t.get("task_id"))), dict) for t in _tasks_now
+    ):
+        logger.info("replanner: 포탈 전용 계획 완료 — LLM 평가 없이 종료(plans/142)")
         return {
             "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
         }

@@ -39,7 +39,7 @@ from src.domain.clarification_policy import (
     SourceSlotDecision,
     decide_source_slot,
 )
-from src.orchestration import apm_query, doc_query
+from src.orchestration import apm_query, doc_query, portal_help
 from src.orchestration.subagents import SubAgentSpec
 from src.routing.db_authz import authorized_db_ids, is_source_allowed
 from src.routing.registry import get_registry
@@ -80,9 +80,14 @@ SOURCE_SELECT_KIND = "source_select"
 
 
 def active_conditional_agents(app_config: Any) -> dict[str, SubAgentSpec]:
-    """활성인 조건부 처리기(선언 순서: APM → 문서) — 비활성이면 빈 dict."""
+    """활성인 조건부 처리기(선언 순서: APM → 문서 → 포탈 도움말) — 비활성이면 빈 dict.
+
+    포탈 도움말(`portal_help` · plans/142)은 데이터 소스 처리기가 아니라 `SYSTEM_AGENTS`에는 없다 —
+    명시 소스 고정·소스 슬롯·소스 기억이 이 처리기로 task 를 바꾸지 않는다.
+    """
     agents = dict(apm_query.active_extra_subagents(app_config))
     agents.update(doc_query.active_doc_subagents(app_config))
+    agents.update(portal_help.active_portal_subagents(app_config))
     return agents
 
 
@@ -93,7 +98,9 @@ def sanitize_task_views(result: dict[str, Any], app_config: Any) -> list[str]:
         의존을 끊은 문서 task id(경과 노트용 — 없으면 빈 목록)
     """
     tasks = [t for t in result.get("tasks") or [] if isinstance(t, dict)]
-    doc_ids = {str(t.get("task_id")) for t in tasks if t.get("agent") == doc_query.DOC_QUERY_AGENT}
+    # 간선 없는 텍스트 처리기(문서 · 포탈 도움말 — plans/142) — 의존을 끊는다
+    doc_ids = {str(t.get("task_id")) for t in tasks
+               if t.get("agent") in (doc_query.DOC_QUERY_AGENT, portal_help.PORTAL_HELP_AGENT)}
     cut: list[str] = []
     for task in tasks:
         raw = task.pop("views", None)

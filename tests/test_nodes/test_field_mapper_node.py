@@ -646,3 +646,92 @@ async def test_misclassified_registration_on_form_query_is_ignored():
     )
     result = await field_mapper(state)
     assert "등록할 유사어 매핑이 없습니다" not in (result.get("final_response") or "")
+
+
+# === 등록 오인 가드 — 방법 의문 (plans/142 W4) ===
+
+_HANDLE_REG = "src.nodes.field_mapper._handle_synonym_registration"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "itam db에 유사어를 등록하려고 한다. 어떻게 해야 되냐?",
+        "유사어 등록은 어떻게 해?",
+    ],
+)
+async def test_method_question_registration_signal_ignored(query: str) -> None:
+    """대기 목록 없는 방법 의문은 「등록」이 있어도 등록 흐름에 들어가지 않는다.
+
+    2026-10-13 로컬 MLX 실측(W0): 사용 방법 질문이 {mode: all} 로 분류되어
+    「등록할 유사어 매핑이 없습니다」로 끝났다.
+    """
+    state = _make_state(
+        user_query=query,
+        parsed_requirements={"synonym_registration": {"mode": "all"}},
+    )
+    with patch(_HANDLE_REG, new_callable=AsyncMock) as handle:
+        result = await field_mapper(state)
+    handle.assert_not_called()
+    assert "등록할 유사어 매핑이 없습니다" not in (result.get("final_response") or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "hostname에 '장비이름' 유사 단어를 추가해줘",
+        "hostname에 '장비이름' 유사어 등록해줘",
+        # 「하려면」 단독 + 명령형 요청 어미는 방법 의문이 아니다(plans/142 V-7)
+        "CPU를 조회하려면 vcore도 인식하도록 유사어 등록해줘",
+    ],
+)
+async def test_registration_command_still_enters_flow(query: str) -> None:
+    """방법 의문이 아닌 등록 명령은 종전대로 등록 흐름에 진입한다.
+
+    「추가해줘」 문장은 「등록」이 없어 기존 D-252 가드가 신호를 버린다 — 이 경우 진입하지 않는 것이
+    종전 동작이므로 「등록」 유무에 따라 기대를 나눈다.
+    """
+    state = _make_state(
+        user_query=query,
+        parsed_requirements={"synonym_registration": {"mode": "all"}},
+    )
+    with patch(_HANDLE_REG, new_callable=AsyncMock, return_value=None) as handle:
+        await field_mapper(state)
+    if "등록" in query:
+        handle.assert_called_once()
+    else:
+        handle.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_method_question_with_pending_keeps_flow() -> None:
+    """대기 목록이 있는 턴은 방법 의문이 섞여도 종전대로 등록 흐름에 진입한다."""
+    pending = [{"field": "서버명", "column": "cmm_resource.hostname", "db_id": "polestar"}]
+    state = _make_state(
+        user_query="어떻게 하면 되지? 전체 등록해줘",
+        parsed_requirements={"synonym_registration": {"mode": "all"}},
+        pending_synonym_registrations=pending,
+    )
+    with patch(
+        _HANDLE_REG,
+        new_callable=AsyncMock,
+        return_value={"final_response": "등록 완료", "current_node": "field_mapper"},
+    ) as handle:
+        result = await field_mapper(state)
+    handle.assert_called_once()
+    assert result["final_response"] == "등록 완료"
+
+
+@pytest.mark.asyncio
+async def test_synonym_set_declaration_unchanged_by_method_guard() -> None:
+    """동의어 집합 선언(D-142)은 방법 의문 가드와 무관하게 종전대로 등록 분기를 건너뛴다."""
+    state = _make_state(
+        user_query="vcore, cpu, core은 동의어이다. 캐시에 등록하라.",
+        parsed_requirements={"synonym_registration": {"mode": "all"}},
+    )
+    with patch(_HANDLE_REG, new_callable=AsyncMock) as handle:
+        result = await field_mapper(state)
+    handle.assert_not_called()
+    assert "final_response" not in result

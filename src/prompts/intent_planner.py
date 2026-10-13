@@ -580,6 +580,51 @@ def render_intent_planner_doc_template(
     return head + section + sep + tail
 
 
+# ══════════════════════════════════════════════════════════════════════════ 조건부 처리기 —
+# AIOps 포탈 기능 도움말 `portal_help` (plans/142 §5 계층 B · D-315) — 활성일 때만
+# ══════════════════════════════════════════════════════════════════════════
+#
+# `PORTAL_HELP_ENABLED` ∧ 매뉴얼 색인 성립일 때만 담당 목록 한 줄과 절을 **삽입만** 한다
+# (우선순위 표 본문 변경 0 · 비활성 배포는 바이트 불변). APM·문서 절과 같은 앵커를 쓰므로 함께
+# 켜지면 담당 줄·절은 그 뒤에 온다. 대조 예 4쌍은 plans/142 §5 그대로다(데이터 요청은 종전 담당).
+
+INTENT_PLANNER_PORTAL_SECTION = """## AIOps 포탈 기능 도움말 — `portal_help`
+
+이 포탈(AIOps — 사용자가 지금 쓰고 있는 이 시스템)의 **기능·화면 용어·사용 방법**을 묻는 질문은 **`portal_help`** 담당입니다. 사용자·관리자 매뉴얼에서 찾아 근거로 답합니다(데이터 조회가 아닙니다).
+
+- 데이터를 달라는 요청(건수·목록·수치·현황)은 화면 용어가 들어 있어도 종전 담당입니다(`data_query`·`alarm_query` 등).
+- 유사어·캐시 같은 기능 이름이 있어도 **사용 방법·절차**를 묻는 질문이면 `portal_help`입니다(위 `cache_management` 우선 규칙의 예외). 실제로 등록·삭제·변경을 시키는 문장은 종전대로 `cache_management`입니다.
+- 포탈 밖의 일반 IT 개념·외부 제품 사용법은 종전대로 `general_inference`입니다.
+- `portal_help` task는 다른 task의 입력이 되지 않습니다 — `depends_on`·`input_from` 없이 독립 task로 두세요. `sub_query`에는 사용자가 쓴 화면 용어를 그대로 둡니다.
+- 대조 예:
+  - 「수신 알람이 뭐야」 → `portal_help` / 「오늘 수신 알람 몇 건」 → `alarm_query`
+  - 「유사어 등록 방법」 → `portal_help` / 「hostname에 '장비이름' 유사어 등록해줘」 → `cache_management`
+  - 「결과 엑셀 내려받는 법」 → `portal_help` / 「CPU 상위 10건 엑셀로」 → `data_query`
+  - 「포탈 기능 설명」 → `portal_help` / 「쿠버네티스 사용법」 → `general_inference`
+- 예: {{"task_id": "t1", "agent": "portal_help", "sub_query": "수신 알람이 뭐야", "depends_on": [], "input_from": [], "order": 1}}
+
+"""  # noqa: E501
+
+
+def render_intent_planner_portal_template(base: str, agent_line: str) -> str:
+    """포탈 도움말 활성 전용 — 담당 줄은 담당 목록 끝에, 절은 「작업 분해 규칙」 앞에 삽입만 한다.
+
+    Args:
+        base: 기본 템플릿 또는 다른 옵트인 렌더본(소유·task 프레임·APM·문서와 함께 켜질 수 있다)
+        agent_line: 담당 목록 한 줄(`- **portal_help**: …`)
+
+    Raises:
+        RuntimeError: 앵커가 정확히 1회 나타나지 않는다(삽입 위치가 흔들림)
+    """
+    for anchor in (_APM_AGENT_ANCHOR, _APM_SECTION_ANCHOR):
+        if base.count(anchor) != 1:
+            raise RuntimeError(f"분해 프롬프트 삽입 앵커가 1회가 아니다: {anchor!r}")
+    head, sep, tail = base.partition(_APM_AGENT_ANCHOR)
+    rendered = head + "\n" + agent_line + sep + tail
+    head, sep, tail = rendered.partition(_APM_SECTION_ANCHOR)
+    return head + INTENT_PLANNER_PORTAL_SECTION + sep + tail
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 답변 영역·요청 소스 칸 (plans/132 N-5 · G-6 (a) — 121 TP-2.2 중 두 칸만) — 항상 켜짐
 # ══════════════════════════════════════════════════════════════════════════

@@ -197,6 +197,7 @@ D-251은 **항상 on**(기준 단)으로 고정했다 — 어느 쪽이든 DB �
   └─ src/orchestration/deep_agent.py:19   → deepagents_tools.build_tools
   │    └─ deepagents_tools.py:20          → intent_planner.has_alarm_signal          [2단 모듈]
   │    └─ deepagents_tools.py:21          → subagents.SUBAGENT_REGISTRY               [2단 모듈]
+  │    └─ deepagents_tools.py             → portal_help(활성일 때만 도구 1종 — D-315 ⑧) [2단 조건부 처리기]
   │                                          subagents._extract_identity_rows
   │                                          subagents._make_isolated_input
   └─ src/orchestration/deep_agent.py:460  → result_aggregator.result_aggregator       [2단 노드]

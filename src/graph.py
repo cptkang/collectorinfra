@@ -58,6 +58,7 @@ from src.orchestration import (
     select_orchestration_backend,
 )
 from src.orchestration.entity_locator import entity_locator, probe_halted
+from src.orchestration.portal_help import log_portal_help_startup
 from src.orchestration.sequential_runner import sequential_entry, sequential_runner
 from src.orchestration.tier3_plan import (
     TASK_RUN_NODE,
@@ -967,5 +968,7 @@ def build_graph(config: AppConfig, checkpointer=None):
     log_investigation_startup(config)
     # 어댑터 제품군 DB가 활성인데 담당 ID 설정이 비면 경고 1줄(plans/116 §10.3 — 동작 불변).
     log_adapter_ownership_startup(config)
+    # 포탈 도움말 확정값 1줄(plans/142 — 색인 부재·손상이면 비활성 사유 · 침묵 금지).
+    log_portal_help_startup(config)
 
     return compiled

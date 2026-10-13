@@ -178,7 +178,8 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     env_file = _use_env_file(monkeypatch, tmp_path, "LLM_MODEL=from-file\n")
     response = await get_settings_schema(_ADMIN)
 
-    assert len(response.groups) == 26  # plans/107 intent_frame +1 · plans/126 rag +1
+    # plans/107 intent_frame +1 · plans/126 rag +1 · plans/142 portal_help +1
+    assert len(response.groups) == 27
     assert response.env_file_path == str(env_file)
     items = {
         item.env_key: item
@@ -204,8 +205,9 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     # plans/144 W1 NOISE_APM_NOISE_POLICY_ENABLED +1 ·
     # plans/144 Q-4·W3·W4 NOISE_DEDUP_SEVERITY_RISE_BYPASS·CROSS_SOURCE_MODE·
     # CROSS_SOURCE_RULES_PATH·EPISODE_IDLE_SECONDS·APP_IMPACT_LATE_PROMOTION_ENABLED·
-    # APM_HEALTHY_DEMOTION_SHADOW +6
-    assert len(items) == 402
+    # APM_HEALTHY_DEMOTION_SHADOW +6 ·
+    # plans/142 W3 PORTAL_HELP_ENABLED +1(신규 그룹 portal_help)
+    assert len(items) == 403
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -343,7 +345,7 @@ def test_t2_group_and_field_counts():
     """
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
-    assert len(group_keys) == 26
+    assert len(group_keys) == 27  # plans/142 W3 신규 그룹 portal_help +1
     # plans/111 COMPOSITE_TASK_FRAME_ENABLED +1 · plans/103 TIER3_PLAN_LOOP_ENABLED +1 ·
     # plans/82 v7.1 API_SSE_GROUP_PREVIEW_ROWS +1 ·
     # plans/92 O4 OBS_METRICS_{ENDPOINT_ENABLED,BEARER_TOKEN} +2 ·
@@ -362,8 +364,9 @@ def test_t2_group_and_field_counts():
     # plans/143 W6 TEXT2SQL_TEMPLATE_ASSEMBLY +1(text2sql 기존 그룹 — 그룹 수 불변) ·
     # plans/141 W2 RAG_EMPTY_RETRIES +1(rag 기존 그룹 — 그룹 수 불변) ·
     # plans/144 W1 NOISE_APM_NOISE_POLICY_ENABLED +1(noise_gate 기존 그룹 — 그룹 수 불변) ·
-    # plans/144 Q-4·W3·W4 +6(noise_gate 기존 그룹 — 그룹 수 불변)
-    assert len(index) == 402
+    # plans/144 Q-4·W3·W4 +6(noise_gate 기존 그룹 — 그룹 수 불변) ·
+    # plans/142 W3 PORTAL_HELP_ENABLED +1(신규 그룹 portal_help — 그룹 수 +1)
+    assert len(index) == 403
     # plans/103 TIER3_PLAN_LOOP_ENABLED +1 · plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1
     assert len([s for s in index.values() if s.group_key == "general"]) == 21
 

@@ -1522,6 +1522,23 @@ class RagConfig(BaseSettings):
     model_config = {"env_prefix": "RAG_", "env_file": ".env", "extra": "ignore"}
 
 
+class PortalHelpConfig(BaseSettings):
+    """포탈 기능 도움말 `portal_help` 설정 (plans/142 · D-315).
+
+    켜져 있고 매뉴얼 색인(`src/static/manual/help_index.json` — 매뉴얼 빌드 산출물)이 성립할 때만
+    1·2단에 처리기·분해 절·1단 도구·명시 명령(③.9)·`general_inference` 되돌림(G-5 (b))이 붙는다.
+    색인이 없거나 손상이면 켜도 비활성이고 기동 로그 1줄로 사유를 남긴다(침묵 금지).
+    """
+
+    # **기본 on = 「신규 플래그 기본 off」(plans/80 §5.4-③ · D-162)의 명시 예외** — 사용자 확정
+    # 2026-10-13 · plans/142 G-7 · D-315. 근거: 매뉴얼은 무인증 공개 자료(D-252 ①)이고 데이터 소스가
+    # 아니며, 켠 상태가 사용법·포탈 기능 질문 밖의 기존 질의를 바꾸지 않는지 회귀로 확인한다.
+    # 분해 프롬프트 접두·1단 도구 목록을 바꾸는 값이라 기동 시 1회 해석한다(재시작 반영).
+    enabled: bool = True
+
+    model_config = {"env_prefix": "PORTAL_HELP_", "env_file": ".env", "extra": "ignore"}
+
+
 class AppConfig(BaseSettings):
     """애플리케이션 전체 설정을 통합 관리한다."""
 
@@ -1555,6 +1572,8 @@ class AppConfig(BaseSettings):
     intent_frame: IntentFrameConfig = Field(default_factory=IntentFrameConfig)
     # plans/126: 문서 RAG(FabriX Retrieval) — 기본 off · 라우팅 미포함(plans/125 소유)
     rag: RagConfig = Field(default_factory=RagConfig)
+    # plans/142: 포탈 기능 도움말(매뉴얼 근거) — 기본 on(G-7 (b) 예외 · 근거는 클래스 주석)
+    portal_help: PortalHelpConfig = Field(default_factory=PortalHelpConfig)
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"
 

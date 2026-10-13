@@ -229,6 +229,10 @@ class SolutionSpec:
         sources: 소스 ↔ 존 표(plans/87 J8 · D-287 ④ — 제니퍼 뷰 서버 N개) — 선언 순서.
         aliases: 사용자가 이 시스템을 부르는 이름·유사어(plans/132 N-1) — 명시 소스 인식 전용.
             DB 시스템의 유사어는 `databases[].aliases`가 정본이라 여기에는 비DB 시스템만 둔다.
+        data_source: 관측 데이터 소스인가(plans/142 G-4 · D-315). false 인 항목(포탈 매뉴얼)은
+            명시 명령 별칭만 담는 안내 항목이라 `solutions()`·비DB 시스템·소스 유사어 어디에도
+            오르지 않는다 — 조회 task·소스 안내·소스 권한·소스 선택 칩을 바꾸지 않는다. 읽기는
+            `help_systems()`.
     """
 
     code: str
@@ -241,6 +245,7 @@ class SolutionSpec:
     views: tuple[ViewSpec, ...] = ()
     sources: tuple[SourceSpec, ...] = ()
     aliases: tuple[str, ...] = ()
+    data_source: bool = True
 
 
 @dataclass(frozen=True)
@@ -373,9 +378,18 @@ class DBRegistry:
         """등록된 관측 솔루션을 `order` 순으로 반환한다.
 
         선언 순서가 아니라 `order`가 정본이다 — 조회 순서를 YAML 줄 위치에 의존시키면
-        무관한 편집이 실행 순서를 바꾼다.
+        무관한 편집이 실행 순서를 바꾼다. 데이터 소스가 아닌 안내 항목(`data_source: false`)은
+        넣지 않는다(plans/142 G-4 — `help_systems()`).
         """
-        return tuple(sorted(self.solutions_, key=lambda s: (s.order, s.code)))
+        return tuple(sorted((s for s in self.solutions_ if s.data_source),
+                            key=lambda s: (s.order, s.code)))
+
+    def help_systems(self) -> tuple[SolutionSpec, ...]:
+        """데이터 소스가 아닌 안내 항목(`data_source: false` — 포탈 매뉴얼 · plans/142 G-4).
+
+        명시 명령 별칭(「AIOps 포탈에서 … 설명해줘」)의 정본만 담는다 — 조회 경로는 읽지 않는다.
+        """
+        return tuple(s for s in self.solutions_ if not s.data_source)
 
     def zone_groups(self) -> tuple[ZoneGroupSpec, ...]:
         """존 그룹을 `query_order` 순으로 반환한다(은행존 → 공동존).
@@ -884,6 +898,9 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
                 raw.get("sources"), solution=str(raw["code"]), declared_zones=zone_code_set
             ),
             aliases=_as_str_tuple(raw.get("aliases")),
+            # 따옴표 친 "false"·"no"·"0"도 거짓 — bool("false")는 참이다(plans/142 V-8)
+            data_source=str(raw.get("data_source", True)).strip().lower()
+            not in {"false", "no", "0", "off", "none", ""},
         )
         for raw in data.get("solutions") or []
         if isinstance(raw, dict) and raw.get("code")

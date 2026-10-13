@@ -259,12 +259,14 @@ def test_replanner_example_keeps_user_condition():
 
 def _planner_cfg(*, ownership: bool = False, task_frame: bool = False) -> Any:
     """검증 대상 두 플래그를 명시한 설정 사본(.env 누수 차단)."""
-    from src.config import load_config
+    from src.config import PortalHelpConfig, load_config
 
     base = load_config().model_copy(deep=True)
     return base.model_copy(update={
         "composite": base.composite.model_copy(update={"task_frame_enabled": task_frame}),
         "router": base.router.model_copy(update={"capability_ownership_enabled": ownership}),
+        # 포탈 도움말(plans/142 · 기본 on)은 분해 프롬프트에 절을 삽입한다 — 종전 렌더 고정
+        "portal_help": PortalHelpConfig(_env_file=None, enabled=False),
     })
 
 
