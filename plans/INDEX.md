@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-13 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
+> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-14 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -204,6 +204,8 @@
 | 159 | [`159-minute-period-resolution.md`](./159-minute-period-resolution.md) | 159. 분 단위 기간 해석 — 「최근 30분」·「10분치」가 시간 되묻기로 끝나 제니퍼 조회에 닿지 않는 결함 교정(152 E1 12+4턴) | **완료(2026-10-13)** · D-328 · 사건 분 그대로 · 통계 시 확장+고지 · 「N시간 M분/반」 합성 · 빈도 어휘·슬롯 가드 · 152 E1 87.6→97.7% · 회귀 신규 실패 0 · 매뉴얼 · 후속: 시각 시작점·한자어 수사 *(상세: 계획서 §9)* | 2026-10-13 |
 | 160 | [`160-result-chart-and-field-explain.md`](./160-result-chart-and-field-explain.md) | 160. 조회 결과 그래프 보기 · 칼럼 용어 사전 · 값 해석 링크 · 표 넓게 보기 | **완료** · W0~W6 + §8 개정(답 본문 표 해설 · YYYYMM 시간 축) · **D-327** · 결정적 차트 판정 · `/chart`·`/glossary`·`/interpret`(플래그 기본 off) · 용어 사전 28키 · 표 넓게 보기 · 매뉴얼 U-58~60·A-74~75 · 회귀 원래 실패 66(새 0) · 잔여 §7.4 *(상세: 계획서 §7)* | 2026-10-13 |
 | 161 | [`161-WIP-apm-sources-production-ids.md`](./161-WIP-apm-sources-production-ids.md) | 161. 저장소 제니퍼(APM) 소스 구성을 폐쇄망 운영 구성으로 일치 | **WIP** · **D-329** · `bank`·`common`·`legacy` → `b0`·`cm_prd`·`cm_stg`(terms 확정) · 테스트·픽스처·벤치 시나리오·매뉴얼 갱신 · 잔여: 캡처 4장 · 복합 단어 제외 꼬리 결정 *(상세: 계획서 머리)* | 2026-10-13 |
+| 162 | [`162-WIP-codebase-smell-refactoring.md`](./162-WIP-codebase-smell-refactoring.md) | 162. 저장소 전반 코드 스멜 정리 — SOLID·SSOT·선별 패턴 적용 구조 리팩터링 | **WIP** · v1.2 단계표(§0.1) 0~8 — 0 커밋(완료) → 1 162 W0∥163 W0(진행 중) → 2 163 W1 → 3·4 162 W1·W2 → 5~7 W3~W5 별도 계획 14건 → 8 정리 · 스멜 48건 전부 배정 *(상세: 계획서 머리)* | 2026-10-14 |
+| 163 | [`163-WIP-security-hardening-separated.md`](./163-WIP-security-hardening-separated.md) | 163. 보안 강화 분리 건 — mcp_server 읽기 전용 단일 지점 · 사용자 토큰 `type` 검증 · 예외 문자열 비노출 · LLM 클라이언트 env 폴백 | **WIP**(W0 진행 중) · 162에서 분리한 행동 변경 보안 4건(S1 mcp_server 읽기 전용 단일 지점 · S2 사용자 토큰 `type` · S3 예외 문자열 비노출 · X6 LLM env 폴백) · security-auditor 동반 · W0 = 162 단계 1 · W1 = 단계 2(162 W1 전) *(상세: 계획서 머리)* | 2026-10-14 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |
