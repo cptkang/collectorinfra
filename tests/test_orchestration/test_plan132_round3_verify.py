@@ -209,12 +209,26 @@ def test_deadline_variants_not_clarified(query: str) -> None:
 @pytest.mark.parametrize("query", [
     "3개월 안에 발생한 알람",
     # D-328: 「최근 5분」은 이제 규칙이 잡는다(분 단위) — 흔적으로 남는 분 표현(시각 뒤 분)으로 교체
-    "10시 30분부터",
+    # plans/156 G-1: 「10시 30분부터」는 시각 규칙이 맡는다 — 여전히 되묻는 「동안」으로 교체
+    "10시 30분 동안 발생한 알람",
     "6개월 안에 지원종료 예정. 3개월 안에 발생한 알람",   # 문장 경계 — 둘째 흔적은 유지
     "3개월 안에 발생한 장애와 그 이후 조치 완료 건",      # 15자 밖 무관 동사
 ])
 def test_plain_within_still_trace(query: str) -> None:
     assert resolve_query_time(query, NOW).clarify == "unresolved"
+
+
+def test_clock_minute_start_still_asked() -> None:
+    """종전 행 「10시 30분부터」 — 표지 없는 10시라 오전·오후를 되묻는다(plans/156 2026-10-14 확정 ·
+    4073f7f처럼 기본값으로 조용히 가지 않는다)."""
+    assert resolve_query_time("10시 30분부터", NOW).clarify == "clock_meridiem"
+
+
+@pytest.mark.parametrize("query", ["10시 30분 이후 생성된 알람", "9시 이후 생성된 티켓"])
+def test_clock_attr_filter_not_clarified(query: str) -> None:
+    """날짜 없는 시각 + 속성 동사(「생성된」)는 조회 기간이 아니다 — 되묻지 않는다(plans/156)."""
+    qt = resolve_query_time(query, NOW)
+    assert qt.clarify is None and qt.metric is not None and qt.metric.source == "default"
 
 
 def test_inline_flag_does_not_leak_case_insensitivity():

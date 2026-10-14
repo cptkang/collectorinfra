@@ -361,7 +361,7 @@ ViewArgSpec(name, type: "int"|"bool"|"enum"|"str"|"text"|"str_list"|"catalog",
 | `apm_change_detection` | neutral | — | task | 변경 감지 시각이며 배포 확정 아님(W2) |
 | `apm_masked_fields` | neutral | — | task | 개인정보·자격증명 가림(G-11 미결 · 게이트웨이 봉투 `disclosures`가 칸 이름만 실어 보낸다) |
 | `apm_unresolved_condition` | guide | ✔ | task | 해석하지 못한 조건·기능 — 다른 조회로 대신하지 않았음 |
-| `apm_untargeted_scope` | neutral | ✔ | task | 대상 서버 미지정 — 건강한 부하 순위로 상위 N개만 골라 조회(의도된 범위 제한 · 실패 아님 · W6 ④ 교정 1). 실패가 섞이면(잠정 순위 · 순위 실패 폴백 · 결과 파일 읽기 실패) `apm_partial_sources` |
+| `apm_untargeted_scope` | neutral | ✔ | task | 대상 서버 미지정 — 건강한 부하 순위로 상위 N개만 골라 조회(의도된 범위 제한 · 실패 아님 · W6 ④ 교정 1) · 직전 대상 승계 좁힘(plans/157 — 「직전 대상 n건(…)을 이어서 조회했습니다」). 실패가 섞이면(잠정 순위 · 순위 실패 폴백 · 결과 파일 읽기 실패) `apm_partial_sources` |
 
 의무 고지는 모두 답 본문에, 비의무 처리기 고지는 우선순위 순 **본문 최대 3줄**(`[안내] …`)이고 나머지는 구조 필드에만 남는다(plans/123 W-9 — W2 검증 B1 이전에는 비의무가 본문에 0줄이었다). 게이트웨이 봉투의 `disclosures`는 등록 kind만 통과시킨다. 작업 카드용 참조는 고지 항목의 선택 칸 `ref`(`{"apm_job_id": …}`)로 싣는다 — `Disclosure`에 선택 칸 `ref`를 더하고 `make`·`dedupe`가 보존한다. 네 진입점(비스트림·스트림 × 텍스트·파일)은 이미 `disclosures[]`를 같은 모양으로 싣는다(plans/123 W-8).
 

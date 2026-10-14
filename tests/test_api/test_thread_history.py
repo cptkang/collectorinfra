@@ -273,20 +273,23 @@ def _query_client(repo: _FakeRepo, app_config) -> TestClient:
 def test_every_entry_point_records_the_turn(route: str, app_config) -> None:
     repo = _FakeRepo()
     client = _query_client(repo, app_config)
+    # 위치어가 있어야 파일 경로의 존 역질문(`_file_zone_clarification_or_none`)을 지나
+    # 그래프까지 간다
+    query = "김포 양식 채워줘"
     if "file" in route:
         r = client.post(
             "/api/v1" + route,
-            data={"query": "양식 채워줘", "thread_id": "th-file"},
+            data={"query": query, "thread_id": "th-file"},
             files={"file": ("f.xlsx", io.BytesIO(b"PK\x03\x04dummy"), "application/octet-stream")},
         )
     else:
-        r = client.post("/api/v1" + route, json={"query": "양식 채워줘", "thread_id": "th-text"})
+        r = client.post("/api/v1" + route, json={"query": query, "thread_id": "th-text"})
     assert r.status_code == 200, r.text
     assert len(repo.turns) == 1, f"{route}: 완결된 턴이 기록되지 않았다"
     owner, turn = repo.turns[0]
     assert owner == "user:u1"
     assert turn["thread_id"] == ("th-file" if "file" in route else "th-text")
-    assert turn["user_query"] == "양식 채워줘"
+    assert turn["user_query"] == query
     assert turn["response"] == "김포 서버 3대입니다"
     assert turn["executed_sql"] == "SELECT 1"
     assert turn["has_upload"] is ("file" in route)

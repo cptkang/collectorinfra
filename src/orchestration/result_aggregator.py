@@ -34,6 +34,7 @@ from src.nodes.output_generator import (
 )
 from src.orchestration.apm_query import (
     APM_QUERY_AGENT,
+    LAST_TARGETS_KEY,
     SOURCE_CLARIFICATION_KEY,
     reference_views_only,
     table_label,
@@ -834,7 +835,11 @@ def _apply_apm_source_state(result: dict[str, Any], state: AgentState) -> dict[s
       답 판정용 대기 값(`apm_source_pending` = 원 질문 · 선택지)을 함께 쓴다. 같은 턴의 다른 task
       결과는 그대로 둔다(존 역질문 단락과 달리 부분 답 + 되묻기).
     - 승계(`apm_source_scope`): 사다리가 승계 값을 낸 APM task(마지막 것) — 근거·소스 + 이번 턴 행이
-      온 소스(`last_target_sources` — 지시어 후속 재료).
+      온 소스(`last_target_sources` — 지시어 후속 재료) + 대상별 조회의 해석 인스턴스
+      (`last_targets` — 대상 생략 후속 재료 · plans/157 W3 · 있을 때만 싣는다).
+      APM task가 있었는데 승계 값을 내지 않은 턴(소스 되묻기·미연결·보기 미선택·인가 거부 등)은
+      앞 턴 스코프에서 `last_targets`만 뺀다 — 대상별 조회가 아닌 턴을 건너 두 턴 전 대상을 잇지
+      않게 한다(C-2). 뺄 것이 없으면 쓰지 않는다(종전 바이트 불변).
     존 역질문이 이 턴의 답이면(다른 task 결과를 버리는 단락) 아무것도 쓰지 않는다. 없으면 원본
     그대로다.
     """
@@ -843,16 +848,25 @@ def _apply_apm_source_state(result: dict[str, Any], state: AgentState) -> dict[s
     task_results = state.get("task_results") or {}
     ask: dict[str, Any] | None = None
     scope: dict[str, Any] | None = None
+    apm_planned = False
     for task in sorted(state.get("task_plan") or [], key=lambda t: t.get("order", 0)):
         res = task_results.get(str(task.get("task_id")))
-        if task.get("agent") != APM_QUERY_AGENT or not isinstance(res, dict):
+        if task.get("agent") != APM_QUERY_AGENT:
+            continue
+        apm_planned = True
+        if not isinstance(res, dict):
             continue
         if ask is None and isinstance(res.get(SOURCE_CLARIFICATION_KEY), dict):
             ask = res[SOURCE_CLARIFICATION_KEY]
         picked = (res.get(APM_META_KEY) or {}).get("source_selection") or {}
         if isinstance(picked.get("scope"), dict):
             scope = {**picked["scope"],
-                     "last_target_sources": list(picked.get("last_target_sources") or [])}
+                     "last_target_sources": list(picked.get("last_target_sources") or []),
+                     **({LAST_TARGETS_KEY: list(picked[LAST_TARGETS_KEY])}
+                        if picked.get(LAST_TARGETS_KEY) else {})}
+    prev = state.get("apm_source_scope")
+    if scope is None and apm_planned and isinstance(prev, dict) and LAST_TARGETS_KEY in prev:
+        scope = {k: v for k, v in prev.items() if k != LAST_TARGETS_KEY}
     if ask is None and scope is None:
         return result
     out = dict(result)

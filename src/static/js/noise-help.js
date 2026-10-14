@@ -33,9 +33,14 @@ window.NOISE_HELP = {
         "kpi.page": {
             title: "PAGE",
             def: "즉시 통보한 판단입니다. 경로는 셋입니다 — 심각도 3(항상 · 억제 단계를 거치지 않음), "
-                + "부가 신호 수집 실패(보수적으로 호출), 우선순위 매트릭스(예: 심각도 2×중요도 높음, "
-                + "또는 한 단계 승격).",
-            read: "운영자가 곧바로 대응해야 했던 양입니다. 급증은 실장애 또는 오탐 폭주 신호입니다.",
+                + "부가 신호 수집 실패(보수적으로 호출 — 「수집 실패는 심각도3만 PAGE」를 켜면 심각도 3만), "
+                + "우선순위 매트릭스(예: 심각도 2×중요도 높음, 또는 한 단계 승격). PAGE 재판정이 켜져 "
+                + "있으면 그 뒤 마지막 관문에서 이미 통보된 사건의 반복을 TICKET으로 내립니다.",
+            formula: "재판정 전 PAGE = PAGE(재판정 후) + 재판정 강등 · 했을 PAGE = PAGE − (재판정이 "
+                + "강등했을 건 ∪ 수집 실패 sev3만이었으면 PAGE가 아니었을 건) — 한 건은 한 번만 뺍니다.",
+            read: "운영자가 곧바로 대응해야 했던 양입니다. 급증은 실장애 또는 오탐 폭주 신호입니다. 큰 숫자는 "
+                + "실제로 나간 PAGE입니다(강제 모드면 재판정 후). 아래 줄은 강제 모드에서 「재판정 전」 수와 "
+                + "강등 수를, 기록만 모드에서 「했을 PAGE」(켰다면 나갔을 PAGE)를 보입니다.",
             admin: {
                 caution: "즉시 경로라 실시간 스트림에 실리지 않습니다 — 피드는 30초마다 결정 기록과 다시 "
                     + "맞춰 PAGE를 채웁니다.",
@@ -43,6 +48,7 @@ window.NOISE_HELP = {
             user: {
                 caution: "이 화면은 실시간 스트림 없이 30초마다 결정 기록에서 새로 읽습니다.",
             },
+            keys: ["NOISE_PAGE_REVIEW_MODE", "NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY"],
         },
         "kpi.ticket": {
             title: "TICKET",
@@ -82,6 +88,9 @@ window.NOISE_HELP = {
                 + "비율(SUPPRESS·DASHBOARD). 오른쪽 수 = 이 단계에서 확정된 건수(괄호는 그중 캔슬). "
                 + "흐린 행 = 이 기간 0건(꺼진 단계 포함 — 단계 (!)에서 켜짐 여부를 확인). 행을 누르면 그 "
                 + "단계의 판단 목록이, 머리의 '수신'·'PAGE' 수치를 누르면 해당 목록이 열립니다.",
+            caution: "맨 아래 'PAGE 재판정'은 PAGE로 이미 끝난 판단을 다시 보는 관문입니다. 강등 건도 원래 "
+                + "단계에서 끝난 것으로 세므로(단계별 종결 합 = 수신) 이 행의 수는 '강등(또는 했을 강등) / "
+                + "재판정 건수'로 따로 적습니다.",
         },
         "chart": {
             title: "티어 분포 추이",
@@ -121,7 +130,11 @@ window.NOISE_HELP = {
             def: "마지막 판단 이후 경과 시간입니다.",
             read: "메타경보 창 안의 판단 수가 최소치 미만이면 '무수신'입니다 — 수집·게이트 경로가 멈췄을 "
                 + "수 있습니다.",
-            keys: ["NOISE_META_ALERT_MIN_EVENTS", "NOISE_META_ALERT_WINDOW_SECONDS"],
+            caution: "수집 실패율 경보(창 안 판단 중 부가 신호 수집 실패 비율이 임계 초과)도 이 칸 아래에 "
+                + "적습니다 — DB 지연·미등록 DB 같은 수집 경로 원인을 고치라는 신호입니다. 임계 0이면 세지 "
+                + "않습니다.",
+            keys: ["NOISE_META_ALERT_MIN_EVENTS", "NOISE_META_ALERT_WINDOW_SECONDS",
+                "NOISE_META_ALERT_COLLECTION_FAILED_RATIO"],
         },
         "top": {
             title: "상위 억제 알람 유형",
@@ -200,6 +213,10 @@ window.NOISE_HELP = {
         resolved: ["NOISE_RESOLVED_TO_DASHBOARD"],
         // plans/144 — 실제로 낮추는 것은 강제(enforce) 모드에서 규칙 단위로 켠 행뿐이다.
         cross_source: ["NOISE_CROSS_SOURCE_MODE", "NOISE_CROSS_SOURCE_RULES_PATH", "NOISE_EPISODE_IDLE_SECONDS"],
+        // plans/162 — 켜는 순서 off → shadow(24h 판독) → enforce
+        page_review: ["NOISE_PAGE_REVIEW_REMINDER_HOURS", "NOISE_PAGE_REVIEW_HOST_WINDOW_MINUTES",
+            "NOISE_PAGE_REVIEW_FANOUT_WINDOW_MINUTES", "NOISE_PAGE_REVIEW_ALWAYS_PAGE_CSV"],
+        collection_failed: ["NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY"],
     },
 
     // 결정 추적 드로어 "신호 스냅샷" 16키 — 영문 키 옆에 한국어 이름·설명을 붙인다.
@@ -306,6 +323,27 @@ window.NOISE_HELP = {
         "apm_healthy_shadow.source": "제니퍼 정상 강등 — 근거 출처",
         // plans/153 W1 — AI 분석이 실패해 원문 알람으로 판단한 건(게이트가 남기는 표시)
         analysis: "AI 분석",
+        // plans/162 W3 — PAGE 재판정(D-330) · 수집 실패 sev3만 PAGE(R4)
+        page_review: "PAGE 재판정",
+        "page_review.mode": "PAGE 재판정 — 모드",
+        "page_review.rule": "PAGE 재판정 — 적중 규칙",
+        "page_review.would_demote": "PAGE 재판정 — 강등(했을 강등)",
+        "page_review.keep": "PAGE 재판정 — PAGE 유지 사유",
+        "page_review.page_alarm_id": "PAGE 재판정 — 사건 최초 PAGE 알람",
+        "page_review.last_page_alarm_id": "PAGE 재판정 — 마지막 대표 PAGE 알람",
+        "page_review.first_page_ts": "PAGE 재판정 — 최초 PAGE 시각",
+        "page_review.repeat_count": "PAGE 재판정 — 반복 수",
+        "page_review.host_page_alarm_id": "PAGE 재판정 — 같은 서버 먼저 통보된 PAGE 알람",
+        "page_review.host_page_ts": "PAGE 재판정 — 같은 서버 PAGE 시각",
+        "page_review.fanout_hosts": "PAGE 재판정 — 동시 발생 서버 수",
+        "page_review.representative_alarm_id": "PAGE 재판정 — 동시 발생 대표 PAGE 알람",
+        "page_review.unresolved_hours": "PAGE 재판정 — 미해소 경과(시간)",
+        original_stage: "강등 전 결정 단계",
+        original_reason: "강등 전 사유",
+        collection_failed: "수집 실패(심각도3만 PAGE — 매트릭스로 판정)",
+        collection_failed_sev3_only: "수집 실패 심각도3만 PAGE(기록만)",
+        "collection_failed_sev3_only.mode": "수집 실패 sev3만 — 모드",
+        "collection_failed_sev3_only.would_tier": "수집 실패 sev3만 — 켰다면 티어",
     },
 
     // plans/153 W1 — 드로어 머리 사유 요약 1문단(§4.8). 결정적 템플릿이다(LLM 서술 아님).
@@ -341,14 +379,60 @@ window.NOISE_HELP = {
                 + "[(뒷받침: {corroborated_by})].",
             matrix: "앞 단계에 걸리지 않아 심각도×중요도 표와 보조 신호로 정했습니다."
                 + "[ 승격 근거: {promote}.][ 강등 근거: {demote}.]",
+            page_review: "앞 단계에서 PAGE로 정했지만 이미 통보된 사건의 반복으로 보여 TICKET으로 내렸습니다"
+                + "(억제가 아닙니다 — 원래 단계·사유는 「판단 경로」에 있습니다).",
             unknown: "어느 단계에서 확정됐는지 기록되지 않은 옛 판단입니다.",
         },
         // 묶기만 — 크로스소스 사건에 묶였지만 이 판단에서 강등하지 않았을 때(결정 단계와 무관하게 덧붙인다).
         linked: "같은 사건으로 묶였지만 강등하지 않았습니다[ — 빠진 조건: {cross_source.missing}].",
+        // plans/162 W3 — PAGE 재판정 기록만(shadow)에서 강등했을 판단(판정은 PAGE 그대로).
+        reviewShadow: "PAGE 재판정을 강제로 켰다면 TICKET으로 내렸을 판단입니다[({page_review.rule})].",
         // 「원래 티어 → 최종 티어」 칩(원래 티어 = 크로스소스 상한 전 · 매트릭스 기본 티어 — 기록된 값만)
         chipTitle: "원래 티어 → 최종 티어",
         chipDemoted: "강등",
         chipPromoted: "승격",
+    },
+
+    // plans/162 W3 — PAGE 재판정(D-330) 화면 문구. `{키}`·`[ … ]` 규칙은 summary와 같다
+    // (kpi·funnel은 `/summary`의 `page_review` 수치, rules·outcomeKeep은 단계 근거 `page_review.*`).
+    pageReview: {
+        kpi: {
+            off: "즉시 통보",
+            enforce: "재판정 후 · 재판정 전 {pre_review_page}(강등 {demoted})",
+            shadow: "즉시 통보 · 했을 PAGE {would_page}(기록만)",
+        },
+        funnel: {
+            enforce: "강등 {demoted} / 재판정 {reviewed}",
+            shadow: "했을 강등 {would_demote} / 재판정 {reviewed}",
+        },
+        rules: {
+            R1: "진행 중 사건 반복[ — 최초 PAGE {page_review.first_page_ts}][ · 반복 {page_review.repeat_count}회]",
+            R2: "같은 서버의 다른 사건 진행 중[ — 먼저 통보 {page_review.host_page_ts}]",
+            R3: "동시 발생[ {page_review.fanout_hosts}대] 중 대표 외",
+        },
+        firstPage: "새 사건의 첫 PAGE",
+        outcomeDemoted: "→ TICKET으로 강등",
+        outcomeWouldDemote: "→ 기록만: 강제였다면 TICKET으로 강등",
+        outcomeKeep: "→ PAGE 유지({page_review.keep}[ · 미해소 {page_review.unresolved_hours}시간])",
+        outcomeKept: "→ PAGE 유지",
+        step: {
+            demoted: "재판정: TICKET으로 강등",
+            wouldDemote: "재판정(기록만): 강등했을 판단",
+            kept: "재판정: PAGE 유지",
+        },
+        link: { R1: "최초 PAGE 판단 열기", R2: "먼저 통보된 PAGE 판단 열기", R3: "대표 PAGE 판단 열기" },
+        factBasis: "PAGE 재판정",
+        factLink: "묶인 대표 PAGE",
+        factBundled: "묶인 알림",
+        bundled: "{n}건 — 이 PAGE에 반복·동반으로 묶여 TICKET이 된(또는 기록만 모드에서 됐을) 알림",
+    },
+
+    // plans/162 R4 — 메타경보 유형 → 한국어 문장(운영자 화면 상태 표시 · `{키}`는 경보 값).
+    metaAlerts: {
+        high_suppress_ratio: "억제율 {value} — 임계 {threshold} 초과(창 {window_seconds})",
+        no_events: "판단 {total}건 — 최소 {min_events}건 미만(창 {window_seconds})",
+        collection_failed_ratio: "수집 실패율 {value}({count}/{total}건) — 임계 {threshold} 초과"
+            + "(창 {window_seconds})",
     },
 
     // plans/153 W1 — 드로어 「발생 원인과 처리」(§4.9 · G-8) — ⓐ 처리 안내(위) → ⓑ AI 추정(아래).

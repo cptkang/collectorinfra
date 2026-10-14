@@ -162,6 +162,11 @@ _STAGE_EVIDENCE_KEYS: dict[str, set[str]] = {
     },
     policy.STAGE_ANNOTATION: {"corroborated_by"},
     policy.STAGE_MATRIX: {"base_tier", "promote", "demote"},
+    # (plans/162) 재판정 근거 블록 — 규칙별 대표 알람 id.
+    policy.STAGE_PAGE_REVIEW: {
+        "page_review.page_alarm_id", "page_review.host_page_alarm_id",
+        "page_review.representative_alarm_id", "original_stage", "original_reason",
+    },
 }
 
 

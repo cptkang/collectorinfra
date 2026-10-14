@@ -69,7 +69,7 @@ def test_prefixed_minute_frequency_or_quantity_is_not_a_period(text: str) -> Non
 # V-4: 시각 뒤 분은 규칙이 일부러 흔적으로 남기지만(⑤ 되묻기) 슬롯 경로(`slot_to_spec`)에 같은
 # 결정적 가드가 없다 — LLM이 unit=minute 슬롯을 내면 「10시 30분부터」가 최근 30분으로 수락된다
 @pytest.mark.parametrize("text, span", [
-    ("10시 30분부터 알람", "30분"),
+    ("10시 30분부터 알람", "30분"),      # 2026-10-14 확정 — 표지 없는 10시라 오전·오후를 되묻는다
     ("14시 30분 알람", "30분"),
     ("10시 30분부터 알람", "10시 30분부터"),
 ])
@@ -77,6 +77,16 @@ def test_slot_minute_after_clock_is_still_asked(text: str, span: str) -> None:
     slot = {"relation": "last", "n": 30, "unit": "minute", "span": span}
     qt = resolve_query_time(text, NOW, slot=slot)
     assert qt.clarify is not None, (qt.slot_status, qt.event)
+
+
+# plans/156 확정 (c) — 「오전 10시 30분부터」(10:37)는 시각 규칙이 풀고(통계는 직전 정시 한 시간)
+# 되묻지 않는다. V-4의 요지(분 슬롯이 「최근 30분」으로 수락되지 않음)는 그대로 고정한다
+@pytest.mark.parametrize("span", ["30분", "오전 10시 30분부터"])
+def test_slot_minute_after_clock_not_accepted_as_last_minutes(span: str) -> None:
+    slot = {"relation": "last", "n": 30, "unit": "minute", "span": span}
+    qt = resolve_query_time("오전 10시 30분부터 알람", NOW, slot=slot)
+    assert qt.clarify is None and qt.slot_status != "accepted", qt.slot_status
+    assert qt.event is not None and (qt.event.start, qt.event.end) == (_at(10, 30), _at(10, 37))
 
 
 # ── 경계 계산(통과 고정) ────────────────────────────────────────────────────────

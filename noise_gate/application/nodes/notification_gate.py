@@ -16,6 +16,9 @@ alarm_analyzer 다음에 위치하여, 결정적 정책 함수 `decide_notificat
       소스(`source_ids`)로 좁힌다 — 존에 소스가 없으면 전 소스.
     - (plans/153 W1 · G-7 (a)) decision_analysis_text_enabled일 때만 이미 만든 AI 분석 서술 3필드를
       판정 레코드 `analysis`로 옮긴다(추가 LLM 0 · 판정 불변 · off면 키 없음 = 비트 동일).
+    - (plans/162 · D-330) page_review_mode≠off이고 워커가 `page_review_signals`를 실었을 때만, 최종
+      판정이 PAGE면 마지막 관문 `review_page`로 다시 본다(앱 영향 재판정 뒤 · 감사 기록 앞). 신호가
+      없으면(API 시험 경로 등) 부르지 않는다. off(기본)면 이 블록에 들어오지 않아 비트 동일.
 
 계층: application → domain(notification_policy.decide_notification) 단방향 의존만 사용한다.
 """
@@ -31,12 +34,15 @@ from langchain_core.runnables import RunnableConfig
 from noise_gate.domain.cross_source import APP_IMPACT_LEVELS
 from noise_gate.domain.notification_policy import (
     STAGE_MATRIX,
+    STAGE_PAGE_REVIEW,
     TIER_DASHBOARD,
     TIER_PAGE,
     TIER_TICKET,
     NotificationDecision,
     decide_notification,
 )
+from noise_gate.domain.page_review import MODE_OFF as PAGE_REVIEW_OFF
+from noise_gate.domain.page_review import review_page
 from noise_gate.domain.process_rank import classify_alarm_kind, is_apm_event
 
 logger = logging.getLogger(__name__)
@@ -159,6 +165,11 @@ async def notification_gate_node(
             )
             decision = promoted
 
+    # (plans/162 · D-330) 마지막 관문 — PAGE 필요성 재판정. 워커 레지스트리 신호가 있을 때만 부른다.
+    page_signals = state.get("page_review_signals")
+    if page_signals and getattr(gate_cfg, "page_review_mode", PAGE_REVIEW_OFF) != PAGE_REVIEW_OFF:
+        decision = review_page(decision, page_signals, gate_cfg)
+
     store = configurable.get("decision_store")
     if store is not None:
         try:
@@ -166,9 +177,13 @@ async def notification_gate_node(
             # 워커 탐지가 아는 것(detection_evidence[결정 단계]). 다른 단계의 탐지값은 싣지 않는다
             # (예: 스톰이 탐지됐어도 인히비션이 먼저 결정했다면 스톰 창은 이 판단의 근거가 아니다).
             detected = state.get("detection_evidence") or {}
+            # (plans/162) 재판정 강등이면 탐지 근거는 원 단계 기준으로 고른다.
+            evidence_stage = getattr(decision, "stage", "")
+            if evidence_stage == STAGE_PAGE_REVIEW:
+                evidence_stage = (decision.evidence or {}).get("original_stage", "")
             stage_evidence = {
                 **(getattr(decision, "evidence", None) or {}),
-                **(detected.get(getattr(decision, "stage", "")) or {}),
+                **(detected.get(evidence_stage) or {}),
                 # (plans/87 J4) 게이트웨이 조회 실패 사유 — 판정은 바뀌지 않았다(없으면 키 없음).
                 **app_impact_audit,
             }

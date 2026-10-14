@@ -21,10 +21,14 @@ from pathlib import Path
 from typing import Any, Optional
 
 from noise_gate.domain.notification_policy import (
+    EVIDENCE_COLLECTION_FAILED,
+    EVIDENCE_COLLECTION_FAILED_SHADOW,
     NotificationDecision,
+    STAGE_COLLECTION_FAILED,
     STAGE_CORRELATION,
     STAGE_LABELS,
     STAGE_ORDER,
+    STAGE_PAGE_REVIEW,
     STAGE_SELF_HEAL,
     STAGE_UNKNOWN,
     TIER_DASHBOARD,
@@ -52,6 +56,15 @@ _OPERATOR_ONLY_KEYS: tuple[str, ...] = ("condition_log",)
 # 운영자 경로에서만 싣는 `stage_evidence` 안의 키 — 침묵 규칙을 만든 운영자 계정. 침묵 관리
 # (`/silences`)가 운영자 전용인 것(D-245)과 같은 이유로 사용자 경로에는 내보내지 않는다(D-247).
 _OPERATOR_ONLY_EVIDENCE_KEYS: tuple[str, ...] = ("created_by",)
+
+# (plans/162 W3) PAGE 재판정 근거 블록 키(`page_review.EVIDENCE_KEY`와 같은 값)와, 강등·했을 강등
+# 레코드가 「묶인」 대표 PAGE를 가리키는 근거 안 키 — R1 최초 PAGE · R2 같은 호스트 PAGE · R3 대표.
+_PAGE_REVIEW_KEY = "page_review"
+_PAGE_REVIEW_POINTER_KEYS: tuple[str, ...] = (
+    "page_alarm_id",
+    "host_page_alarm_id",
+    "representative_alarm_id",
+)
 
 # 화면에 내보내기 전 마스킹하는 최상위 문자열 키.
 _MASKED_TEXT_KEYS: tuple[str, ...] = (
@@ -558,6 +571,7 @@ class DecisionStore:
         window_seconds: int,
         suppress_ratio_threshold: float,
         min_events: int,
+        collection_failed_ratio_threshold: float = 0.0,
     ) -> list[dict]:
         """억제기 메타모니터링 경보를 산출한다(Google SRE "모니터를 모니터링").
 
@@ -566,8 +580,11 @@ class DecisionStore:
               (억제기가 과도하게 억제 — 진짜 장애 묵살 위험).
             - 창 내 total < min_events → no_events
               (이벤트 무수신 — 억제기·수집 경로 장애 가능성).
+            - (plans/162 R4 · D-330 ③) collection_failed_ratio_threshold > 0이고 창 내 수집 실패
+              비율 > 임계 → collection_failed_ratio(DB 지연·미등록 db_id 등 원인 수정 신호).
+              0(기본)이면 평가하지 않는다(추가 스캔 없음 — 현행과 비트 동일).
 
-        둘은 OR 조건이며 동시 충족 시 모두 반환한다. 정상이면 빈 리스트.
+        모두 OR 조건이며 동시 충족 시 모두 반환한다. 정상이면 빈 리스트.
         """
         agg = self.aggregate(window_seconds=window_seconds)
         total = agg["total"]
@@ -588,7 +605,69 @@ class DecisionStore:
                 "min_events": min_events,
                 "window_seconds": window_seconds,
             })
+        if collection_failed_ratio_threshold > 0:
+            failed, scanned = self._collection_failed_counts(window_seconds)
+            ratio = (failed / scanned) if scanned else 0.0
+            if scanned > 0 and ratio > collection_failed_ratio_threshold:
+                alerts.append({
+                    "type": "collection_failed_ratio",
+                    "value": ratio,
+                    "threshold": collection_failed_ratio_threshold,
+                    "window_seconds": window_seconds,
+                    "count": failed,
+                    "total": scanned,
+                })
         return alerts
+
+    @classmethod
+    def _is_collection_failed(cls, rec: dict[str, Any]) -> bool:
+        """결정 레코드가 신호 수집 실패 판단인지 본다(plans/162 R4).
+
+        step 5 단계(구 레코드는 사유 접두) · 플래그 on 표지(`stage_evidence.collection_failed`) ·
+        재판정 강등 전 원 단계가 step 5인 경우를 모두 센다.
+        """
+        if cls._stage_of(rec) == STAGE_COLLECTION_FAILED:
+            return True
+        evidence = rec.get("stage_evidence")
+        if not isinstance(evidence, dict):
+            return False
+        return (
+            evidence.get(EVIDENCE_COLLECTION_FAILED) is True
+            or evidence.get("original_stage") == STAGE_COLLECTION_FAILED
+        )
+
+    def _collection_failed_counts(self, window_seconds: int) -> tuple[int, int]:
+        """창 내 결정 레코드의 (수집 실패 건수, 전체 건수)를 센다(plans/162 R4).
+
+        `aggregate`와 같은 전량 스캔·창 규칙이다 — 손상된 줄과 비-decision 레코드(`type` 보유)는
+        제외한다. 파일 부재·비활성·읽기 실패면 (0, 0)이다.
+        """
+        if not self.enabled or not self.path.exists():
+            return 0, 0
+        cutoff_ts = datetime.now(UTC).timestamp() - window_seconds
+        failed = 0
+        total = 0
+        try:
+            with self.path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(rec, dict) or rec.get("type"):
+                        continue
+                    if not self._within_window(rec, cutoff_ts):
+                        continue
+                    total += 1
+                    if self._is_collection_failed(rec):
+                        failed += 1
+        except OSError as exc:
+            logger.warning("결정 감사 수집 실패율 읽기 실패(무시): %s", exc)
+            return 0, 0
+        return failed, total
 
     @staticmethod
     def _parse_ts(raw) -> Optional[datetime]:  # noqa: ANN001
@@ -656,6 +735,39 @@ class DecisionStore:
             records.append(rec)
         return records
 
+    def recent_decisions(self, window_seconds: int) -> list[dict[str, Any]]:
+        """최근 `window_seconds` 안의 결정 레코드를 시간순으로 돌려준다(읽기 전용).
+
+        (plans/162 §4.5) 워커 PAGE 레지스트리의 기동 복원 재료다. 관제 조회(`_tail_records`)와
+        달리 max_lines 줄 상한을 두지 않는다 — 운영 볼륨에서 줄 수로 잘리면 복원 창이 시간 창보다
+        짧아지기 때문이다. 파일을 순차 스트리밍해 시간 창 안의 결정 레코드만 메모리에 남긴다
+        (`aggregate`와 같은 전량 스캔). 비-decision 레코드·손상된 줄은 제외하고, 파일 부재·비활성
+        이면 빈 목록이다.
+        """
+        if not self.enabled or not self.path.exists():
+            return []
+        cutoff_ts = datetime.now(UTC).timestamp() - window_seconds
+        records: list[dict[str, Any]] = []
+        try:
+            with self.path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(rec, dict) or rec.get("type"):
+                        continue
+                    if not self._within_window(rec, cutoff_ts):
+                        continue
+                    records.append(rec)
+        except OSError as exc:
+            logger.warning("결정 감사 복원 읽기 실패(무시): %s", exc)
+            return []
+        return records
+
     @staticmethod
     def _stage_of(rec: dict) -> str:
         """레코드의 결정 단계를 돌려준다(구 레코드는 사유 접두로 폴백)."""
@@ -663,6 +775,77 @@ class DecisionStore:
         if stage:
             return str(stage)
         return stage_from_reason(str(rec.get("reason", "")))
+
+    @staticmethod
+    def _review_block(rec: dict[str, Any]) -> dict[str, Any] | None:
+        """레코드의 PAGE 재판정 근거 블록(`stage_evidence.page_review`)을 돌려준다(없으면 None)."""
+        evidence = rec.get("stage_evidence")
+        if not isinstance(evidence, dict):
+            return None
+        block = evidence.get(_PAGE_REVIEW_KEY)
+        return block if isinstance(block, dict) else None
+
+    @classmethod
+    def _funnel_stage_of(cls, rec: dict[str, Any]) -> str:
+        """퍼널이 종결을 세는 단계 — 재판정 강등은 **원 단계**로 센다(plans/162 W3).
+
+        강등 레코드(`stage=page_review`)는 원 단계에서 PAGE로 끝난 뒤 마지막 관문에서 내려온
+        것이다. 결정 단계(`page_review`)로 세면 원 단계 뒤 단계들의 도달 수(residual)가 부풀므로,
+        근거의 `original_stage`가 판정 순서 안의 단계면 그 단계로 센다. 없으면 결정 단계 그대로다.
+        """
+        stage = cls._stage_of(rec)
+        if stage != STAGE_PAGE_REVIEW:
+            return stage
+        evidence = rec.get("stage_evidence")
+        original = evidence.get("original_stage") if isinstance(evidence, dict) else None
+        if isinstance(original, str) and original in STAGE_ORDER and original != STAGE_PAGE_REVIEW:
+            return original
+        return stage
+
+    @classmethod
+    def _page_review_counts(cls, records: list[dict[str, Any]]) -> dict[str, int]:
+        """창 안 레코드의 PAGE 재판정 집계(plans/162 W3 · D-330 — 읽기 전용).
+
+        - `reviewed`: 재판정을 거친 레코드(근거 블록 보유 — shadow·enforce, 유지·강등 모두).
+        - `demoted`: 실제 강등(결정 단계 `page_review`). `pre_review_page` = PAGE + `demoted`.
+        - `would_demote`: 판정은 PAGE 그대로인데 블록이 「강등했을 것」(shadow)인 건.
+        - `would_demote_collection_failed`: 수집 실패 PAGE 중 「sev3만 PAGE」였으면 PAGE가
+          아니었을 건(`collection_failed_sev3_only.would_tier != page` · R4 shadow).
+        - `would_page`: PAGE 중 위 두 사유 어느 쪽에도 해당하지 않는 건 — 한 레코드는 한 번만 뺀다.
+        """
+        reviewed = demoted = would_demote = would_cf = page = removed = 0
+        for rec in records:
+            block = cls._review_block(rec)
+            if block is not None:
+                reviewed += 1
+            if cls._stage_of(rec) == STAGE_PAGE_REVIEW:
+                demoted += 1
+                continue
+            if str(rec.get("tier", "")) != TIER_PAGE:
+                continue
+            page += 1
+            by_review = block is not None and block.get("would_demote") is True
+            evidence = rec.get("stage_evidence")
+            cf = (
+                evidence.get(EVIDENCE_COLLECTION_FAILED_SHADOW)
+                if isinstance(evidence, dict)
+                else None
+            )
+            by_cf = isinstance(cf, dict) and cf.get("would_tier") not in (None, TIER_PAGE)
+            if by_review:
+                would_demote += 1
+            if by_cf:
+                would_cf += 1
+            if by_review or by_cf:
+                removed += 1
+        return {
+            "reviewed": reviewed,
+            "demoted": demoted,
+            "pre_review_page": page + demoted,
+            "would_demote": would_demote,
+            "would_demote_collection_failed": would_cf,
+            "would_page": page - removed,
+        }
 
     def funnel(self, *, window_seconds: Optional[int] = None) -> dict:
         """단계별 잔여·종결·억제량(퍼널)을 산출한다 (Plan 54 §4 centerpiece).
@@ -672,12 +855,22 @@ class DecisionStore:
         통보되지 않은 결과(SUPPRESS·DASHBOARD)다. 단계 순서는 판정 코드의 `STAGE_ORDER`
         하나에서 오며, 매핑 실패 레코드는 `unknown` 단계에 모아 **버리지 않는다**.
 
+        (plans/162 W3) PAGE 재판정(`page_review`)은 PAGE로 **이미 종결된** 판단을 다시 보는 마지막
+        관문이라 다음 규칙으로 센다 — 항등식 `Σ terminated == raw`는 그대로 성립한다:
+            - 강등 레코드의 종결은 **원 단계**(`original_stage`)로 센다(`_funnel_stage_of`).
+              앞 단계의 residual이 강등 건으로 부풀지 않는다. 그래서 `page_review` 행의
+              terminated·cut은 0이다
+              (원 단계를 못 읽는 손상 레코드만 예외적으로 여기서 종결된다).
+            - `page_review` 행의 `residual`만 「재판정을 거친 레코드 수」(`page_review.reviewed`)로
+              바꿔 싣는다 — 이 관문에 도달하는 것은 앞 단계 잔여가 아니라 PAGE 판정이기 때문이다.
+            - 강등·했을 강등·재판정 전 PAGE는 별도 키 `page_review`(`_page_review_counts`)로 준다.
+
         Args:
             window_seconds: 집계 창(None이면 전체).
 
         Returns:
             `{raw, tiers, suppress_ratio, actionable_ratio, stages[{stage,label,residual,
-            terminated,cut}]}`. 파일 부재·비활성이면 raw=0과 빈 stages.
+            terminated,cut}], page_review{…}}`. 파일 부재·비활성이면 raw=0과 빈 stages.
         """
         records = self._tail_records(window_seconds)
         raw = len(records)
@@ -687,10 +880,11 @@ class DecisionStore:
         for rec in records:
             tier = str(rec.get("tier", ""))
             tiers[tier] = tiers.get(tier, 0) + 1
-            stage = self._stage_of(rec)
+            stage = self._funnel_stage_of(rec)
             terminated[stage] = terminated.get(stage, 0) + 1
             if tier in _CANCELLED_TIERS:
                 cut[stage] = cut.get(stage, 0) + 1
+        review = self._page_review_counts(records)
 
         # unknown은 순서 끝에 붙인다(도달 순서를 알 수 없으므로 잔여 계산을 왜곡하지 않게).
         order = list(STAGE_ORDER)
@@ -704,7 +898,12 @@ class DecisionStore:
             stages.append({
                 "stage": stage,
                 "label": STAGE_LABELS.get(stage, stage),
-                "residual": remaining,
+                # 재판정 관문의 도달 수는 「재판정을 거친 레코드」다
+                # (위 독스트링 — 잔여 계산과 무관). 손상 강등 레코드가 여기서 종결되면
+                # residual이 terminated보다 작아지지 않게 큰 쪽을 싣는다.
+                "residual": (
+                    max(review["reviewed"], done) if stage == STAGE_PAGE_REVIEW else remaining
+                ),
                 "terminated": done,
                 "cut": cut.get(stage, 0),
             })
@@ -723,6 +922,7 @@ class DecisionStore:
             "suppress_ratio": (suppress / raw) if raw else 0.0,
             "actionable_ratio": (actionable / raw) if raw else 0.0,
             "stages": stages,
+            "page_review": review,
         }
 
     def timeseries(
@@ -956,6 +1156,7 @@ class DecisionStore:
         page_indexes = matched[start : start + size]
 
         fp_index: dict[str, list[int]] | None = None
+        bundled: dict[str, int] | None = None
         items: list[dict[str, Any]] = []
         for index in page_indexes:
             rec = tail[index]
@@ -963,6 +1164,10 @@ class DecisionStore:
                 if fp_index is None:
                     fp_index = self._fingerprint_index(tail)
                 rec = {**rec, "related": self._related_of(index, tail, fp_index)}
+            if str(rec.get("tier", "")) == TIER_PAGE:
+                if bundled is None:
+                    bundled = self._bundled_index(tail)
+                rec = self._with_bundled(rec, bundled)
             items.append(self._view(rec, mask_fn, operator_view=operator_view))
         return {
             "items": items,
@@ -1077,13 +1282,42 @@ class DecisionStore:
         target = str(alarm_id or "")
         if not target:
             return None
+        tail = self._tail_records(None)
         found: Optional[dict] = None
-        for rec in self._tail_records(None):
+        for rec in tail:
             if str(rec.get("alarm_id", "")) == target:
                 found = rec
         if found is None:
             return None
+        if str(found.get("tier", "")) == TIER_PAGE:
+            found = self._with_bundled(found, self._bundled_index(tail))
         return self._view(found, mask_fn, operator_view=operator_view)
+
+    @classmethod
+    def _bundled_index(cls, tail: list[dict[str, Any]]) -> dict[str, int]:
+        """대표 PAGE alarm_id → 그 PAGE에 「묶인」 레코드 수 색인(plans/162 G-6 · 추가 스캔 0).
+
+        묶인 레코드 = 재판정 근거가 강등(enforce) 또는 했을 강등(shadow — `would_demote`)이고
+        대표 포인터(`_PAGE_REVIEW_POINTER_KEYS` — R1 최초 PAGE · R2 같은 호스트 PAGE · R3 대표)가
+        그 alarm_id를 가리키는 것. 범위는 tail 전체(결정 기록 최근 구간)다 — related 해석과 같다.
+        """
+        index: dict[str, int] = {}
+        for rec in tail:
+            block = cls._review_block(rec)
+            if block is None or block.get("would_demote") is not True:
+                continue
+            for key in _PAGE_REVIEW_POINTER_KEYS:
+                target = block.get(key)
+                if isinstance(target, str) and target:
+                    index[target] = index.get(target, 0) + 1
+                    break  # 규칙 하나가 대표 하나를 가리킨다 — 한 레코드는 한 번만 센다
+        return index
+
+    @staticmethod
+    def _with_bundled(rec: dict[str, Any], bundled: dict[str, int]) -> dict[str, Any]:
+        """PAGE 레코드에 묶인 알림 수(`page_review_bundled`)를 붙인 사본 — 0이면 원본 그대로."""
+        count = bundled.get(str(rec.get("alarm_id", "") or ""), 0)
+        return {**rec, "page_review_bundled": count} if count else rec
 
     def _view(
         self,

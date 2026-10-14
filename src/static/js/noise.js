@@ -216,6 +216,7 @@
         document.getElementById("kpiRawSub").textContent =
             state.range.toUpperCase() + " · " + (data.gate_enabled ? "게이트 동작 중" : "게이트 꺼짐");
         document.getElementById("kpiPage").textContent = fmtInt(data.tiers.page);
+        document.getElementById("kpiPageSub").textContent = pageReviewKpiText(data.page_review);
         document.getElementById("kpiTicket").textContent = fmtInt(data.tiers.ticket);
         document.getElementById("kpiDashboard").textContent = fmtInt(data.tiers.dashboard);
         document.getElementById("kpiSuppress").textContent = fmtInt(data.tiers.suppress);
@@ -231,6 +232,23 @@
         renderFunnel(data);
         renderTierCards(data);
         fillStageFilter(data.stages);
+    }
+
+    // (plans/162 W3 · D-330) PAGE 카드 아래 줄 — 재판정 전/후를 함께 보인다. 큰 숫자는 언제나 실제
+    // PAGE(enforce = 재판정 후)다. `page_review`는 모드가 off면 응답에 없다(아래 줄 = 종전 문구).
+    function pageReviewKpiText(review) {
+        var K = (HELP.pageReview || {}).kpi || {};
+        if (!review) return K.off || "즉시 통보";
+        var lookup = function (key) { return fmtInt(review[key] || 0); };
+        return fillTemplate(review.mode === "enforce" ? K.enforce : K.shadow, lookup);
+    }
+
+    // 퍼널 `page_review` 행 오른쪽 수 — 종결은 원 단계로 세므로(항등식 유지) 강등·했을 강등을 따로 쓴다.
+    function pageReviewRowText(review) {
+        var F = (HELP.pageReview || {}).funnel || {};
+        if (!review) return "";
+        var lookup = function (key) { return fmtInt(review[key] || 0); };
+        return fillTemplate(review.mode === "enforce" ? F.enforce : F.shadow, lookup);
     }
 
     function renderFunnel(data) {
@@ -272,9 +290,15 @@
             var label = stage.terminated
                 ? "-" + fmtInt(stage.terminated) + (stage.cut ? " (캔슬 " + fmtInt(stage.cut) + ")" : "")
                 : "—";
+            var reviewText = stage.stage === "page_review" ? pageReviewRowText(data.page_review) : "";
+            if (reviewText) {
+                label = reviewText;
+                if (data.page_review.demoted || data.page_review.would_demote) row.classList.remove("is-idle");
+            }
             row.appendChild(el("div", "val", label));
             row.title = stage.label + " · 도달 " + fmtInt(stage.residual)
-                + " · 종결 " + fmtInt(stage.terminated) + " · 캔슬 " + fmtInt(stage.cut);
+                + " · 종결 " + fmtInt(stage.terminated) + " · 캔슬 " + fmtInt(stage.cut)
+                + (reviewText ? " · " + reviewText : "");
             host.appendChild(row);
         });
     }
@@ -677,6 +701,8 @@
         pill.appendChild(document.createTextNode(
             data.healthy ? "억제기 정상" : "억제기 경고 " + data.alerts.length + "건"
         ));
+        // 경고 원인을 한국어로 — 게이지 둘이 못 보이는 원인(수집 실패율 · plans/162 R4)도 여기서 읽힌다.
+        pill.title = data.alerts.map(metaAlertText).join("\n");
 
         var ratio = Math.round(Number(data.suppress_ratio || 0) * 100);
         var ring = document.getElementById("ratioRing");
@@ -696,10 +722,27 @@
         watchRing.style.background = "conic-gradient("
             + (stale ? "var(--warning)" : "var(--success)") + " 100%, var(--border) 0)";
         document.getElementById("watchText").textContent = stale ? "무수신" : "LIVE";
+        // (plans/162 R4) 수집 실패율 경보 — 무수신과 같은 「수집 경로 점검」 신호라 워치독 칸에 단다.
+        var failed = data.alerts.filter(function (a) { return a.type === "collection_failed_ratio"; })[0];
         document.getElementById("watchNote").innerHTML =
             "마지막 결정 " + fmtAge(data.last_event_age_seconds) + "<br>"
             + (data.last_event_ts ? fmtTime(data.last_event_ts) : "기록 없음")
-            + (stale ? "<br><strong>수신이 끊겼습니다</strong>" : "");
+            + (stale ? "<br><strong>수신이 끊겼습니다</strong>" : "")
+            + (failed ? "<br><strong>" + metaAlertText(failed) + "</strong>" : "");  // 문구 정본·숫자만 — 원문 없음
+    }
+
+    // 메타경보 1건 → 한국어 문장(문구 정본 noise-help.js `metaAlerts` · 모르는 유형은 유형 키 그대로).
+    function metaAlertText(alert) {
+        var M = HELP.metaAlerts || {};
+        var template = M[alert.type];
+        if (!template) return String(alert.type || "");
+        return fillTemplate(template, function (key) {
+            var v = alert[key];
+            if (v === null || v === undefined) return "";
+            if (key === "value" || key === "threshold") return fmtPct(v);
+            if (key === "window_seconds") return Math.round(v / 60) + "분";
+            return fmtInt(v);
+        });
     }
 
     async function loadTopSuppressed() {
@@ -980,14 +1023,28 @@
         }
     }
 
-    // 타임라인은 서버 `noise_decision_trace`와 같은 규칙으로 클라이언트가 계산한다 —
+    // 타임라인은 서버 `noise_decision_trace`(`_trace_timeline`)와 같은 규칙으로 클라이언트가 계산한다 —
     // 순서는 `summary.stages`(= 판정 코드의 STAGE_ORDER, `unknown` 제외)에서 온다.
+    // (plans/162 W3) 재판정 강등은 원 단계가 결정, 재판정 근거가 있으면 `page_review` 칸은 `reviewed`다.
     function timelineFor(record) {
         var order = (state.stages || []).filter(function (s) { return s.stage !== "unknown"; });
+        var e = evidenceOf(record);
+        var reviewed = !!reviewBlock(record);
+        var decidedStage = record.stage;
+        if (decidedStage === "page_review" && e.original_stage
+            && order.some(function (s) { return s.stage === e.original_stage; })) {
+            decidedStage = e.original_stage;
+            reviewed = true;
+        }
+        // 재판정을 거치지 않은 레코드는 page_review 칸을 생략한다(서버 `_trace_timeline`과 같은 규칙).
+        if (!reviewed && decidedStage !== "page_review") {
+            order = order.filter(function (s) { return s.stage !== "page_review"; });
+        }
         var decided = -1;
-        order.forEach(function (s, i) { if (s.stage === record.stage) decided = i; });
+        order.forEach(function (s, i) { if (s.stage === decidedStage) decided = i; });
         return order.map(function (s, i) {
             var status = decided < 0 ? "unknown"
+                : reviewed && s.stage === "page_review" && i > decided ? "reviewed"
                 : i < decided ? "passed"
                 : i === decided ? "decided"
                 : "short_circuited";
@@ -1025,6 +1082,14 @@
             addFactRow(drawerFactsBody, "직전 창 재발", fmtInt(record.recurrence.count) + "회");
         }
         addFactRow(drawerFactsBody, "관련 판단", relatedText(record));
+        // (plans/162 W3 · G-6) PAGE 재판정 근거 · 대표 PAGE 링크 · 대표 PAGE에 묶인 알림 수.
+        var R = HELP.pageReview || {};
+        addFactRow(drawerFactsBody, R.factBasis, reviewBasis(record));
+        addFactRow(drawerFactsBody, R.factLink, reviewLinkButton(record));
+        if (record.page_review_bundled) {
+            addFactRow(drawerFactsBody, R.factBundled,
+                fillTemplate(R.bundled, function () { return fmtInt(record.page_review_bundled); }));
+        }
 
         // (plans/153 W1) 사유 요약 1문단 + 「원래 티어 → 최종 티어」 칩 — 결정적 템플릿.
         drawerSummary.innerHTML = "";
@@ -1055,11 +1120,17 @@
 
                 var note = step.status === "decided" ? " — 여기서 결정"
                     : step.status === "short_circuited" ? " (단락 — 평가되지 않음)"
+                    : step.status === "reviewed" ? " — " + reviewStepNote(record)
                     : "";
                 var text = el("div", "txt", step.label + note);
-                if (step.status === "decided" && record.reason) {
-                    text.appendChild(el("div", "rs", record.reason));
-                }
+                // 재판정 강등이면 원 단계 아래에는 원 사유, 재판정 칸 아래에는 강등 사유를 단다.
+                var demotedByReview = record.stage === "page_review" && step.stage !== "page_review";
+                var stepReason = step.status === "decided"
+                    ? (demotedByReview ? evidenceOf(record).original_reason || "" : record.reason)
+                    : step.status === "reviewed"
+                        ? (record.stage === "page_review" ? record.reason : reviewBasis(record))
+                        : "";
+                if (stepReason) text.appendChild(el("div", "rs", stepReason));
                 row.appendChild(text);
                 drawerTrace.appendChild(row);
             });
@@ -1326,6 +1397,16 @@
             severity: "증상 심각도 3",
         },
         "apm_healthy_shadow.source": { mcp: "APM 조회", episode: "사건 저장소" },
+        // plans/162 W3 — PAGE 재판정 근거(D-330)
+        "page_review.mode": { shadow: "기록만(shadow)", enforce: "강제(enforce)" },
+        "page_review.rule": {
+            R1: "R1 진행 중 사건 반복", R2: "R2 같은 서버 사건 진행 중", R3: "R3 다수 서버 동시 발생(대표 외)",
+        },
+        "page_review.keep": {
+            always_page: "운영자 지정 항상 PAGE", app_impact: "앱 영향(APM fatal)",
+            reminder: "미해소 리마인더", severity_rise: "심각도 상승",
+        },
+        "collection_failed_sev3_only.mode": { shadow: "기록만(shadow)" },
     };
 
     function evidenceValue(key, value) {
@@ -1339,7 +1420,11 @@
         if (value === false) return "아니오";
         if (value === null || value === undefined || value === "") return "—";
         if (key === "expires_at") return fmtTime(value);
-        if (key === "base_tier" || key === "capped_from") return TIER_NAMES[value] || String(value);
+        if (key === "base_tier" || key === "capped_from" || key === "collection_failed_sev3_only.would_tier") {
+            return TIER_NAMES[value] || String(value);
+        }
+        if (key === "original_stage") return stageLabel(value);
+        if (/_ts$/.test(key)) return fmtTime(value);
         if (/_seconds$/.test(key)) return fmtDuration(value);
         if (/_minutes$/.test(key)) return value + "분";
         return words[value] || String(value);
@@ -1516,8 +1601,67 @@
                 ? "뒷받침: " + evidenceValue("corroborated_by", e.corroborated_by) : "";
         case "matrix":
             return matrixFormula(item);
+        case "page_review":
+            return reviewBasis(item);
         default:
             return "";
+        }
+    }
+
+    // ── PAGE 재판정 (plans/162 W3 · D-330) ─────────────────────────────────
+    // 근거는 `stage_evidence.page_review`(도메인 `review_page`)다. 문구 정본은 noise-help.js `pageReview`.
+    // 원문 식별자(알람 id)는 문장에 넣지 않는다 — 대표 PAGE는 링크 버튼으로만 연다.
+
+    function reviewBlock(item) {
+        var block = evidenceOf(item).page_review;
+        return block && typeof block === "object" && !Array.isArray(block) ? block : null;
+    }
+
+    // 재판정 근거 한 줄 — 규칙(또는 새 사건) + 결과(강등 · 했을 강등 · 유지와 보존 사유).
+    function reviewBasis(item) {
+        var block = reviewBlock(item);
+        if (!block) return "";
+        var R = HELP.pageReview || {};
+        var lookup = evidenceLookup(item);
+        var head = block.rule ? fillTemplate((R.rules || {})[block.rule] || block.rule, lookup)
+            : block.keep === "reminder" ? "" : R.firstPage;
+        var outcome = item.stage === "page_review" ? R.outcomeDemoted
+            : block.would_demote === true ? R.outcomeWouldDemote
+            : block.keep ? fillTemplate(R.outcomeKeep, lookup)
+            : R.outcomeKept;
+        return [head, outcome].filter(Boolean).join(" ");
+    }
+
+    // 판단 경로의 재판정 칸 꼬리말.
+    function reviewStepNote(item) {
+        var N = (HELP.pageReview || {}).step || {};
+        var block = reviewBlock(item) || {};
+        if (item.stage === "page_review") return N.demoted;
+        return block.would_demote === true ? N.wouldDemote : N.kept;
+    }
+
+    // 강등·했을 강등 판단이 가리키는 대표 PAGE(R1 최초 · R2 같은 서버 · R3 대표)의 결정 추적 링크.
+    function reviewLinkButton(item) {
+        var block = reviewBlock(item);
+        if (!block || !block.rule) return null;
+        var target = block.page_alarm_id || block.host_page_alarm_id || block.representative_alarm_id;
+        if (!target || target === item.alarm_id) return null;
+        var label = ((HELP.pageReview || {}).link || {})[block.rule] || "대표 PAGE 판단 열기";
+        var button = el("button", "mini-btn", label);
+        button.type = "button";
+        button.addEventListener("click", function () { openLinkedDecision(target); });
+        return button;
+    }
+
+    // 드로어 안에서 다른 판단으로 넘어간다 — 처음 연 진입점(복귀 포커스)은 그대로 둔다.
+    async function openLinkedDecision(alarmId) {
+        try {
+            var data = await getJSON(API + "/decisions/" + encodeURIComponent(alarmId));
+            if (!data) return;
+            renderDrawer(data.decision, data.timeline);
+            drawerClose.focus();
+        } catch (err) {
+            showError(err.message);
         }
     }
 
@@ -1553,6 +1697,8 @@
         var e = evidenceOf(item);
         if (e.capped_from) return String(e.capped_from);
         if (item && item.stage === "matrix" && e.base_tier) return String(e.base_tier);
+        // (plans/162 W3) 재판정 강등은 원 단계에서 PAGE였다 — 근거에 원 단계가 있을 때만.
+        if (item && item.stage === "page_review" && e.original_stage) return "page";
         return "";
     }
 
@@ -1613,6 +1759,11 @@
         var cs = crossSource(item);
         if (item.stage !== "cross_source" && cs.cause_alarm_id && cs.applied !== true) {
             parts.push(fillTemplate(S.linked, lookup));
+        }
+        // (plans/162 W3) PAGE 재판정 기록만(shadow) — 판정은 그대로지만 강등했을 판단이다.
+        var block = reviewBlock(item);
+        if (block && block.would_demote === true && item.stage !== "page_review") {
+            parts.push(fillTemplate(S.reviewShadow, lookup));
         }
         return parts.filter(Boolean).join(" ");
     }

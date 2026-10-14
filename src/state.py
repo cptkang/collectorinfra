@@ -260,8 +260,10 @@ class AgentState(TypedDict):
     #     단어로 보고 다시 되묻는다. 라우트가 질의를 되묻기 원 질문으로 바꿀 때만 싣는다 — 요청
     #     스코프.
     #   apm_source_clarification: APM task의 소스 되묻기 페이로드(응답 키 같음) — 요청 스코프.
-    #   apm_source_scope: 대화 승계 값 `{ids, basis, last_target_sources}` — 스레드 범위(집계기가
-    #     쓰고 스코프 칩 해제 `reset_db_scope`가 비운다).
+    #   apm_source_scope: 대화 승계 값 `{ids, basis, last_target_sources[, last_targets]}` — 스레드
+    #     범위(집계기가 쓰고 스코프 칩 해제 `reset_db_scope`·제니퍼 칩 ×가 비운다). `last_targets`
+    #     `[{text, kind, source_id}]`는 대상 생략 후속의 승계 재료(plans/157 W3 · 응답에는 싣지
+    #     않는다).
     #   apm_source_pending: 되묻기 대기 `{query, choices}` — 되묻기 턴에 집계기가 쓰고 다음 턴
     #     라우트가 입력 조립 전에 읽는다(입력 델타가 None으로 덮는다).
     selected_apm_source_ids: list[str] | None

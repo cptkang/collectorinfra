@@ -1,0 +1,8 @@
+# plans/152 A.3 — E2(내부망) 벤치 로컬 설정 양식
+#
+# `python -m scripts.apm_bench --init-local`이 testdata/apm_bench/local/bench.local.yaml 로 복사한다(권한 600 ·
+# .gitignore 대상 — 커밋·반출 금지).
+#
+# 바꾸는 법: 제니퍼 콘솔이나 서버 정보에서 뷰 서버 버전을 확인해 CHANGE_ME 를 그 값으로 바꾼다
+# (예: "5.6.5.11" — 따옴표로 감싼다). 허용 API로는 얻을 수 없다. 5.6.2.18 미만이면 실행하지 않고 보고한다.
+view_server_version: CHANGE_ME

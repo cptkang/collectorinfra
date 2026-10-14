@@ -1,6 +1,6 @@
 # 스멜 → 처방 카탈로그 (이 저장소 실측 사례 포함)
 
-스멜 이름은 Fowler(2018)·Sharma & Spinellis(2018) 용어를 따른다. 「사례」는 `plans/162`(분석 SHA `7ba5c96`)의 스멜 ID다 — 줄 번호는 그 시점 값이니 작업 전에 다시 찾는다.
+스멜 이름은 Fowler(2018)·Sharma & Spinellis(2018) 용어를 따른다. 「사례」는 `plans/166`(분석 SHA `7ba5c96`)의 스멜 ID다 — 줄 번호는 그 시점 값이니 작업 전에 다시 찾는다.
 
 | 스멜 | 알아보는 신호 | 처방(기법) | 원칙/패턴 | 하지 말 것 | 사례 |
 |---|---|---|---|---|---|
@@ -15,7 +15,7 @@
 | **SSOT 위반 — 설정 기본값 이중 정의** | `getattr(cfg, "필드", 기본)`의 기본이 필드 기본과 다름 | 존재하는 필드는 `cfg.<그룹>.<필드>` 직접 접근 · 재유입 린트(D-331 ②) | SSOT · fail-fast | 폴백값을 필드 기본에 「맞춰」 남기기 | X1 약 80곳(`zone_group_exclusive` 폴백 True ↔ 필드 False) |
 | **Hidden global dependency** | 하위 계층이 `load_config()`·`os.getenv`를 직접 호출 · 테스트가 `cache_clear`·monkeypatch 의존 | 인자·생성자 주입 | DIP | 구현 하나뿐인 Protocol 신설 | X2 `pii_filter` · X6(동작 변경 — `plans/163`) |
 | **Facade bypass (Inappropriate Intimacy)** | 외부가 `obj._private` 직접 접근 | Facade에 공개 메서드 추가 → 호출부 교체 → 우회 0 확인 | Facade 완결 · 캡슐화 | 새 Facade 층 신설 | I1 `_redis_cache` 10곳 |
-| **`_` 접두 공유 함수** | `from x import _name`이 모듈 밖에 | 공개명 승격 + 옛 이름 별칭 1사이클(D-330 ③) | 명시적 인터페이스 | 별칭 없이 바로 개명 | O4 `_make_isolated_input` · M2 `_Limits` |
+| **`_` 접두 공유 함수** | `from x import _name`이 모듈 밖에 | 공개명 승격 + 옛 이름 별칭 1사이클(D-336 ③) | 명시적 인터페이스 | 별칭 없이 바로 개명 | O4 `_make_isolated_input` · M2 `_Limits` |
 | **Cyclic dependency** | 함수 내부 지연 import로 순환 회피 | 의존 없는 leaf 모듈(타입·스펙)을 분리 → 상단 import | ADP(비순환 의존) | `TYPE_CHECKING` 남발로 감추기 | O4/O5 `SubAgentSpec` |
 | **Misplaced helper** | 그래프 노드 패키지에 노드가 아닌 순수 헬퍼 → 노드 간 import 경고 | Move Module(비노드 application 하위로) | SRP · 계층 정합 | 「그래프 간선으로 해결」 | N3 `column_deriver` 등 |
 | **Primitive Obsession (dict 상태)** | 키 오타·누락 사고 반복 · 출력 노드가 선언 안 된 키를 읽음 | TypedDict 선언 · 키 정합 테스트 | 타입으로 SSOT | 전면 dataclass/pydantic 전환(체크포인터·`**extra`와 충돌) | N6 `AgentState` 136필드 · O7 핸들러 결과 |

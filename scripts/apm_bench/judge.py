@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .record import TurnRecord, Verdict
+from .record import INSTANCE_UNRESOLVED, TurnRecord, Verdict
 from .scenarios import ANY_VALUE, PLACEHOLDER_RE, CoverageReport, RegistryInfo, Scenario
 
 AXES: tuple[str, ...] = ("source", "views", "target", "window", "args")
@@ -69,6 +69,19 @@ WINDOW_ARGS: frozenset[str] = frozenset(
 )
 #: 비교 창 표지(`time_spec.NOTE_MULTIPLE_PERIODS`).
 NOTE_MULTIPLE_PERIODS = "multiple_periods"
+
+# --- 오류 호출 단계(plans/164 §4.3-3) ---------------------------------------------------------
+#: 대상 해석이 부르는 인스턴스 목록 보기(`apm_query.INSTANCES_VIEW` 사본) — 이름 검색·업무명 간선
+#: 정합 호출이 모두 이 보기의 도구로 간다.
+INSTANCES_VIEW = "apm.instances"
+#: 오류 감사 줄의 호출 단계 — 보기 호출(처리기 `meta.failures`와 맞음) · 대상 해석(남는
+#: `instance_unresolved`) · 판별 불가(현행대로 `gw_error`).
+STAGE_VIEW, STAGE_RESOLVE, STAGE_UNKNOWN = "view", "resolve", "unknown"
+#: target 축 실패 하위 사유(`target_fail_reason`) 전수.
+TARGET_FAIL_REASONS: tuple[str, ...] = (
+    "kind_mismatch", "unresolved", "other_target", "dropped", "unexpected_target",
+    "not_untargeted", "ref_not_called", "other",
+)
 
 
 # --- 분류 13종(§3.5 표) -------------------------------------------------------------------
@@ -625,6 +638,24 @@ def judge_target(scenario: Scenario, turn_index: int, observed: Mapping[str, Any
     return axis, detail, cats
 
 
+def target_fail_reason(detail: Mapping[str, Any]) -> str:
+    """target 축 실패 근거(`axis_detail.target`) → 하위 사유(`TARGET_FAIL_REASONS` 중 하나).
+
+    판정이 남긴 칸에서 다시 읽는다(판정 자체는 바꾸지 않는다 — 옛 레코드에도 같은 값이 나온다).
+    """
+    expected = detail.get("expected")
+    if expected == "none":
+        return "unexpected_target"
+    if expected == "untargeted":
+        return "not_untargeted"
+    if "reference_views" in detail:
+        return "ref_not_called"
+    for key in ("kind_mismatch", "unresolved", "other_target", "dropped"):
+        if detail.get(key):
+            return key
+    return "other"
+
+
 # --- 축 ④ 구간 ------------------------------------------------------------------------------
 
 
@@ -895,10 +926,72 @@ def _probe_status(record: Mapping[str, Any], index: int) -> str | None:
     return None
 
 
-def judge_results(record: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+def error_stages(observed: Mapping[str, Any],
+                 registry: RegistryInfo | None = None) -> list[dict[str, str]]:
+    """오류 감사 줄(호출 `error`) → `{tool, code, stage}`(호출 순서).
+
+    감사 줄은 해석 호출과 보기 호출을 가르지 않는다(`search=` 꼬리 없음). 그래서 드라이버가 실은
+    처리기 보기 호출 실패(`observed.view_failures` — 보기 · 오류 코드)를 (보기 도구, 코드)별 건수로
+    감사 줄과 맞춰, 맞는 줄은 `view`, 남는 `instance_unresolved` 줄은 대상 해석이 있었던 턴의
+    인스턴스 목록 도구일 때만 `resolve`(업무명 간선 정합의 「그 서버에 인스턴스 없음」 = 0건 ·
+    이름 검색 실패)로 본다. 나머지는 `unknown`.
+
+    작업 도구 오류(`job_not_ready`·`job_not_found`)는 따로 가르지 않는다 — 본체 폴링 감사 줄은
+    thread_id 가 없어 드라이버가 턴 호출로 모으지 않는다(`AuditTail.collect` 스레드 필터).
+
+    판별을 포기하고 전부 `unknown`(현행대로 `gw_error`)으로 두는 경우 — 보수적(G-5 (a)):
+    `view_failures` 칸이 없음(옛 레코드 · 처리기 결과 캡처 없음) · 레지스트리 없음 · 보기 실패가
+    감사 줄보다 많음(감사 없는 실패가 섞여 건수 맞추기가 성립하지 않음) · 인스턴스 목록 도구를 쓰는
+    보기에 코드 없는 실패(예외 문형 — 시간 초과 등)가 있음(그 보기 호출이 같은 도구의
+    `instance_unresolved` 줄을 남겼는지 가를 수 없다). 코드 없는 실패가 다른 도구 보기나 보기 없는
+    대상 고지(「해석 0건」 등 게이트웨이 호출이 아닌 것)에만 있으면 해석 단계 판별에 끼지 않는다.
+    """
+    errors = [(str(c.get("tool")), str(c.get("error"))) for c in _calls(observed)
+              if c.get("error")]
+    failures = observed.get("view_failures")
+    unknown = [{"tool": t, "code": e, "stage": STAGE_UNKNOWN} for t, e in errors]
+    if not errors or registry is None or not isinstance(failures, list):
+        return unknown
+    instances = registry.views.get(INSTANCES_VIEW)
+    resolve_tool = str(instances.tool) if instances is not None else None
+    budget: Counter[tuple[str, str]] = Counter()
+    uncoded_tools: set[str] = set()
+    for failure in failures:
+        if not isinstance(failure, Mapping):
+            continue
+        view = registry.views.get(str(failure.get("view")))
+        code = failure.get("code")
+        if view is None:
+            continue
+        if isinstance(code, str) and code:
+            budget[(str(view.tool), code)] += 1
+        else:
+            uncoded_tools.add(str(view.tool))
+    if resolve_tool in uncoded_tools:  # 코드 없는 보기 실패가 해석과 같은 도구 — 모호
+        return unknown
+    out: list[dict[str, str]] = []
+    for tool, code in errors:
+        stage = STAGE_UNKNOWN
+        if budget[(tool, code)] > 0:
+            budget[(tool, code)] -= 1
+            stage = STAGE_VIEW
+        out.append({"tool": tool, "code": code, "stage": stage})
+    if +budget:  # 맞추지 못한 보기 실패가 남았다 — 건수 맞추기가 성립하지 않는다
+        return unknown
+    resolved_texts = any(isinstance(t, Mapping) for t in observed.get("targets") or [])
+    for item in out:
+        if (item["stage"] == STAGE_UNKNOWN and item["code"] == INSTANCE_UNRESOLVED
+                and item["tool"] == resolve_tool and resolved_texts):
+            item["stage"] = STAGE_RESOLVE
+    return out
+
+
+def judge_results(record: Mapping[str, Any],
+                  registry: RegistryInfo | None = None) -> tuple[dict[str, Any], list[str]]:
     """게이트웨이 오류 · 행 0(P층 대조 반영) · 판정 줄 탈락.
 
-    - `gw_error`: 호출 하나라도 `error`
+    - `gw_error`: 호출 하나라도 `error` — 단, 대상 해석 단계(`error_stages`의 `resolve`)
+      `instance_unresolved`는 오류가 아니라 정보성 `resolve_miss`(건수만 · 분류 아님)로 센다
     - `empty_result`: 오류 없는 호출이 있고 그 행 합이 0. 행 0 호출이 전부 P층 `no_data`(같은
       인자 직접 재호출도 0행)면 데이터 없음으로 보고 붙이지 않는다
     - `answer_drop`: 행 > 0 · 처리기 판정 줄(`answer_lines`)이 있는데 그중 하나라도 최종 응답에 없다
@@ -910,9 +1003,12 @@ def judge_results(record: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]
     ok_calls = [(i, c) for i, c in enumerate(calls) if not c.get("error")]
     counted = [(i, c) for i, c in ok_calls if isinstance(c.get("rows"), int)]
     rows = sum(int(c["rows"]) for _, c in counted)
-    detail: dict[str, Any] = {"calls": len(calls), "errors": errors, "rows": rows}
+    stages = error_stages(observed, registry)
+    resolve_miss = sum(1 for s in stages if s["stage"] == STAGE_RESOLVE)
+    detail: dict[str, Any] = {"calls": len(calls), "errors": errors, "rows": rows,
+                              "error_stages": stages, "resolve_miss": resolve_miss}
     cats: list[str] = []
-    if errors:
+    if len(errors) > resolve_miss:
         cats.append("gw_error")
     zero = [i for i, c in counted if c["rows"] == 0]
     if counted and rows == 0:
@@ -1085,9 +1181,16 @@ def judge_turn(scenario: Scenario, turn_index: int, record: Mapping[str, Any],
         "자리표 값 없음")
     if missing_value:
         detail["unjudged"] = f"placeholder_missing:{detail['target'].get('placeholder')}"
+    else:
+        # 실행 전 키트 검사에서 인벤토리에 「없음」인 자리표를 쓴 일반 턴도 같은 결로 판정 불가다
+        # (plans/164 G-4 (a) · `kit.mark_absent` — 「여럿」은 표시하지 않아 분모에 남는다)
+        absent = (record.get("extra") or {}).get("kit_absent") or []
+        if absent:
+            missing_value = True
+            detail["unjudged"] = f"placeholder_missing:{absent[0]}"
     win_axis, detail["window"], win_cats = judge_window(expect.window, observed,
                                                        record.get("sent_at"))
-    detail["results"], res_cats = judge_results(record)
+    detail["results"], res_cats = judge_results(record, registry)
     axes = {"source": src_axis, "views": view_axis, "target": tgt_axis, "window": win_axis,
             "args": arg_axis}
     unexpected = None
@@ -1159,6 +1262,14 @@ def summarize(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
     정확도 분모는 **일반 턴**(건너뜀·판정 불가·되묻기 정답·거절 정답 제외)이다. 되묻기·거절은 따로
     센다. 분류는 턴의 전 분류(`categories`)와 대표 분류(첫째)를 각각 센다.
+
+    plans/164 W3(턴 통과·분모는 그대로 · 집계만 더한다):
+    - `primary_categories`: 분류가 붙은 판정 턴 전부의 대표 분류(**통과 턴·되묻기·거절 정답 턴
+      포함** — 종전 의미 그대로)
+    - `primary_failure_categories`: **실패한 일반 턴**만의 대표 분류(실패 원인 표)
+    - `error_calls`: 오류 감사 줄의 (도구 · 오류 코드 · 호출 단계) 건수(많은 순)
+    - `resolve_miss`: 대상 해석 단계 `instance_unresolved`(`gw_error`에서 뺀 것) — 턴 수·줄 수
+    - `target_fail_reasons`: 일반 턴 target 축 실패의 하위 사유(`TARGET_FAIL_REASONS`) 건수
     """
     skipped = [r for r in records if _is_skipped(r)]
     unjudged = [r for r in records if not _is_skipped(r) and _is_unjudged(r)]
@@ -1197,6 +1308,21 @@ def summarize(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 fewshot_locus.update(info.get("locus") or [])
     copies = [{"turn": _ref(r), **r["verdict"]["fewshot_copy"]} for r in scored
               if r["verdict"].get("fewshot_copy")]
+    primary_failure = Counter(r["verdict"]["categories"][0] for r in normal
+                              if not r["verdict"].get("turn_pass")
+                              and r["verdict"].get("categories"))
+    error_calls: Counter[tuple[str, str, str]] = Counter()
+    resolve_turns = resolve_calls = 0
+    for r in live:
+        res = ((r.get("verdict") or {}).get("axis_detail") or {}).get("results") or {}
+        error_calls.update((str(s.get("tool")), str(s.get("code")), str(s.get("stage")))
+                           for s in res.get("error_stages") or [] if isinstance(s, Mapping))
+        miss = int(res.get("resolve_miss") or 0)
+        resolve_turns += 1 if miss else 0
+        resolve_calls += miss
+    target_reasons = Counter(
+        target_fail_reason((v.get("axis_detail") or {}).get("target") or {})
+        for v in verdicts if (v.get("axes") or {}).get("target") == FAIL)
 
     def _side(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         passed = [r for r in rows if (r.get("verdict") or {}).get("turn_pass")]
@@ -1213,6 +1339,11 @@ def summarize(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "by_cov": dict(sorted(by_cov.items())),
         "categories": dict(all_cats.most_common()),
         "primary_categories": dict(primary.most_common()),
+        "primary_failure_categories": dict(primary_failure.most_common()),
+        "error_calls": [{"tool": t, "code": c, "stage": s, "count": n}
+                        for (t, c, s), n in error_calls.most_common()],
+        "resolve_miss": {"turns": resolve_turns, "calls": resolve_calls},
+        "target_fail_reasons": dict(target_reasons.most_common()),
         "fewshot_locus": dict(fewshot_locus.most_common()),
         "code_fixes": code_fixes,
         "fewshot_copies": copies,
@@ -1347,9 +1478,15 @@ __all__ = [
     "CATEGORY_BY_NAME",
     "CODE_FILLED_ARGS",
     "HOURLY_EDGE_TOL_MIN",
+    "INSTANCES_VIEW",
+    "INSTANCE_UNRESOLVED",
     "PRE_GATE_DEFAULT",
     "PRE_GRAPH_CLARIFY",
     "PreGraphClarify",
+    "STAGE_RESOLVE",
+    "STAGE_UNKNOWN",
+    "STAGE_VIEW",
+    "TARGET_FAIL_REASONS",
     "WINDOW_ARGS",
     "WINDOW_END_TOL_MIN",
     "WINDOW_LATE_SLACK_MIN",
@@ -1359,6 +1496,7 @@ __all__ = [
     "ExampleParseError",
     "ParsedExample",
     "effective_views",
+    "error_stages",
     "example_table",
     "excluded_arg_reason",
     "find_fewshot_copy",
@@ -1377,5 +1515,6 @@ __all__ = [
     "pre_graph_clarify",
     "run_invalid",
     "summarize",
+    "target_fail_reason",
     "target_placeholder",
 ]

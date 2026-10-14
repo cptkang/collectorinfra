@@ -139,6 +139,7 @@ class QueryResponse(BaseModel):
         description="제니퍼 소스 되묻기 — 선택지(키 = 소스 id · `*` = 전체)와 원 질문(plans/147)",
     )
     # plans/147: 현재 대화의 제니퍼 소스 승계 {ids, basis, last_target_sources} — 스코프 칩이 그린다
+    # (내부 승계 재료 `last_targets`(plans/157 W3)는 라우트가 빼고 싣는다)
     apm_source_scope: dict[str, Any] | None = Field(
         default=None,
         description="제니퍼 소스 승계 — 소스 id(`*` = 전체)·근거(selected|answered|named|all)",

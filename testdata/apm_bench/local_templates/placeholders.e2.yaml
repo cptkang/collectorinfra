@@ -1,0 +1,64 @@
+# plans/164 · plans/152 A.1 — E2(내부망) 자리표 로컬 파일 양식
+#
+# `python -m scripts.apm_bench --init-local`이 이 양식을 testdata/apm_bench/local/placeholders.e2.yaml 로
+# 복사한다(권한 600 · 있으면 덮어쓰지 않는다). 이 양식 파일에는 운영 값을 넣지 않는다 — 값은 복사본에만.
+# testdata/apm_bench/local/ 은 .gitignore 대상이다(커밋 금지 · 저장소째 반출할 때 이 폴더를 뺀다).
+#
+# 바꾸는 법
+# 1. 값이 CHANGE_ME 로 시작하는 칸을 모두 운영 인벤토리(제니퍼 콘솔 · 운영 게이트웨이의 인스턴스·업무·
+#    서비스 목록)의 실제 값으로 바꾼다. 하나라도 남아 있으면 E2 --run 이 시작 전에 exit 2 로 멈춘다.
+# 2. 값은 모두 문자열로 쓴다(숫자도 "4242"처럼 따옴표).
+# 3. 저장 뒤 확인: python -m scripts.apm_bench --run --env e2 --smoke
+#    (실행 전 키트 검사가 자리표마다 운영 인벤토리에 있음·없음·여럿을 값 없이 알려 준다)
+# 4. 복사본은 커밋·반출 금지다. 권한은 600 으로 둔다(chmod 600 testdata/apm_bench/local/placeholders.e2.yaml).
+
+# 시나리오 프롬프트·기대 인자를 채우는 값(16종 필수)
+values:
+  inst_1: CHANGE_ME        # 일반 인스턴스 이름 1
+  inst_2: CHANGE_ME        # 일반 인스턴스 이름 2(inst_1과 다른 것)
+  inst_c: CHANGE_ME        # 공동존(운영) 소스의 인스턴스 이름
+  inst_b: CHANGE_ME        # 은행존 소스의 인스턴스 이름
+  inst_w: CHANGE_ME        # 운영자가 지정한 WAS 접촉 허용 인스턴스 1개(요청 상세·로드 클래스·환경변수 대상)
+  host_1: CHANGE_ME        # WAS 호스트명(짧은 이름)
+  host_2: CHANGE_ME        # WAS 호스트명(FQDN 형태 권장)
+  biz_1: CHANGE_ME         # 업무명 1
+  biz_2: CHANGE_ME         # 업무명 2
+  svc_1: CHANGE_ME         # 서비스·도메인명 1
+  svc_2: CHANGE_ME         # 서비스·도메인명 2
+  url_1: CHANGE_ME         # 애플리케이션 URL 하나(예: /order/list 형태)
+  pid_1: CHANGE_ME         # host_1 위 WAS 프로세스 PID(따옴표 문자열)
+  guid_1: CHANGE_ME        # 최근 거래 GUID 하나
+  user_1: CHANGE_ME        # 제니퍼 계정 하나(민감 API — 응답 모양만 기록)
+  domain_id_1: CHANGE_ME   # 도메인 번호(따옴표 문자열)
+
+# E1 가짜 LLM 전용 — E2에서는 그대로 둔다
+any_values:
+  metrics: [heap_used]
+  error_type: OUTOFMEMORY
+
+# 소스 되묻기 자동 답의 소스 id(b0 · cm_prd · cm_stg 중 하나 — D-329)
+sources:
+  default: cm_prd
+  by_placeholder:          # 대상 자리표마다 그 값이 실제로 속한 소스 id
+    inst_1: CHANGE_ME
+    inst_2: CHANGE_ME
+    inst_b: b0
+    inst_c: cm_prd
+    inst_w: CHANGE_ME
+    host_1: CHANGE_ME
+    host_2: CHANGE_ME
+    biz_1: CHANGE_ME
+    biz_2: CHANGE_ME
+    svc_1: CHANGE_ME
+    svc_2: CHANGE_ME
+
+# 소스 id → 자동 답 문구(그 소스 하나로 읽히는 말 — D-322 부기 ①). 보통 그대로 둔다
+answers:
+  b0: 은행 제니퍼
+  cm_prd: 공동존 운영
+  cm_stg: 공동존 개발
+
+# 누출 관문 카나리아 — --init-local 이 임의 토큰으로 채운다(바꿀 필요 없음)
+canaries:
+  - __CANARY_1__
+  - __CANARY_2__

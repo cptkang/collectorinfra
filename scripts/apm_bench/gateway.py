@@ -505,7 +505,8 @@ def start_gateway(
 
 
 def gateway_var_absent() -> bool:
-    """게이트웨이가 기본 스풀(`apm_gateway/var`)을 남기지 않았는가."""
+    """지금 기본 스풀(`apm_gateway/var`)이 없는가 — 존재 여부뿐이다(이번 run 이 만들었는지는
+    `kit.var_changes` 전후 비교가 본다)."""
     return not (GW_ROOT / "var").exists()
 
 

@@ -24,6 +24,7 @@ from noise_gate.domain.notification_policy import (
     STAGE_MATRIX,
     STAGE_NON_ALARM,
     STAGE_ORDER,
+    STAGE_PAGE_REVIEW,
     STAGE_RESOLVED,
     STAGE_SELF_HEAL,
     STAGE_SEVERITY3,
@@ -59,8 +60,9 @@ class TestStageOrderContract:
         assert set(STAGE_ORDER) == set(STAGE_LABELS)
 
     def test_matrix_is_last(self):
-        # 매트릭스는 억제 단계를 모두 통과한 알람이 도달하는 최종 관문이다.
-        assert STAGE_ORDER[-1] == STAGE_MATRIX
+        # 매트릭스는 억제 단계를 모두 통과한 알람이 도달하는 decide_notification의 최종 관문이고,
+        # (plans/162) PAGE 재판정은 그 뒤 게이트 노드에서 붙는 마지막 관문이다.
+        assert STAGE_ORDER[-2:] == (STAGE_MATRIX, STAGE_PAGE_REVIEW)
 
     def test_severity3_precedes_every_suppression_stage(self):
         # 심각도3 단락이 억제 단계보다 앞에 있어야 "억제 단계 미경유"가 순서로도 성립한다.
@@ -237,7 +239,8 @@ class TestStagePerDecisionPoint:
             STAGE_MATRIX,
         }
         assert covered <= set(STAGE_ORDER)
-        assert len(covered) == len(STAGE_ORDER) - 1  # 침묵만 미도달
+        # 침묵 · PAGE 재판정(decide_notification 밖 — plans/162)만 미도달
+        assert len(covered) == len(STAGE_ORDER) - 2
 
 
 class TestStageDoesNotAffectDecision:

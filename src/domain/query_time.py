@@ -30,12 +30,16 @@ from datetime import datetime
 from typing import Any
 
 from src.domain.time_expr import (
+    CLARIFY_CLOCK_MERIDIEM,
+    CLARIFY_CLOCK_RANGE_IN_PROGRESS,
     CLARIFY_CODES,
     CLARIFY_FUTURE_EXPLICIT,
     CLARIFY_FUTURE_RELATIVE,
+    CLARIFY_INVALID_CLOCK,
     CLARIFY_INVALID_DATE,
     CLARIFY_INVALID_SPEC,
     CLARIFY_UNRESOLVED,
+    SLOT_REASON_CLOCK_MERIDIEM,
     interpret_detail,
     recognize,
     slot_to_spec,
@@ -201,6 +205,12 @@ def _resolve(text: str, now: datetime, slot: Any) -> QueryTime:
             spec, reason = None, "present_not_period"
         if reason == "no_time_expression":
             reason = None
+        elif reason == SLOT_REASON_CLOCK_MERIDIEM:
+            # 표지 없는 1~12시 — 규칙과 같이 오전·오후를 되묻는다(2026-10-14 사용자 확정)
+            return QueryTime(
+                now, None, None, clarify=CLARIFY_CLOCK_MERIDIEM,
+                slot_status=SLOT_REJECTED, slot_reason=reason,
+            )
         elif spec is None:
             status = SLOT_REJECTED
         else:
@@ -213,6 +223,11 @@ def _resolve(text: str, now: datetime, slot: Any) -> QueryTime:
                 if exc.code == "future_explicit_period":
                     return QueryTime(
                         now, None, None, clarify="future_explicit",
+                        slot_status=SLOT_REJECTED, slot_reason=exc.code,
+                    )
+                if exc.code == "clock_range_empty":  # 규칙과 같은 되묻기(plans/156 W2 교정)
+                    return QueryTime(
+                        now, None, None, clarify=CLARIFY_CLOCK_RANGE_IN_PROGRESS,
                         slot_status=SLOT_REJECTED, slot_reason=exc.code,
                     )
                 status, reason = SLOT_REJECTED, exc.code
@@ -270,6 +285,11 @@ def resolve_task_time(text: str, base: QueryTime, *, original: str | None = None
 #: 되묻기 사유 코드 → 사유 문장(plans/122 T-3 · D-291 「해석 불가 = 되묻기」 · D-275 ⑪).
 _CLARIFY_REASONS: dict[str, str] = {
     CLARIFY_INVALID_DATE: "요청하신 기간에 달력에 없는 날짜가 있어 조회하지 않았습니다.",
+    CLARIFY_INVALID_CLOCK: "요청하신 시각이 없는 시각(0~23시 · 0~59분 밖)이라 조회하지 않았습니다.",
+    CLARIFY_CLOCK_MERIDIEM: "요청하신 시각이 오전인지 오후인지 알 수 없어 조회하지 않았습니다.",
+    CLARIFY_CLOCK_RANGE_IN_PROGRESS: (
+        "통계는 정시 단위로 집계되어, 아직 끝나지 않은 시간대만으로는 조회할 수 없습니다."
+    ),
     CLARIFY_FUTURE_EXPLICIT: "요청하신 기간은 아직 오지 않은 기간이라 조회할 데이터가 없습니다.",
     CLARIFY_FUTURE_RELATIVE: "미래 기간(내년·다음 달 등)은 조회할 데이터가 없습니다.",
     CLARIFY_UNRESOLVED: "기간 표현을 해석하지 못해 조회하지 않았습니다.",
@@ -278,6 +298,15 @@ _CLARIFY_REASONS: dict[str, str] = {
 _CLARIFY_EXAMPLES = (
     "「지난달」·「2026년 9월」·「최근 7일」·「어제」처럼 조회할 기간을 다시 알려 주세요."
 )
+#: 시각 되묻기는 시각 예를 든다(plans/156 W2 교정)
+_CLOCK_EXAMPLES = "「오전 9시」·「오후 2시 30분」·「14시」처럼 시각을 다시 알려 주세요."
+_CLARIFY_EXAMPLES_BY_CODE: dict[str, str] = {
+    CLARIFY_INVALID_CLOCK: _CLOCK_EXAMPLES,
+    CLARIFY_CLOCK_MERIDIEM: _CLOCK_EXAMPLES,
+    CLARIFY_CLOCK_RANGE_IN_PROGRESS: (
+        "「오전 9시부터 오전 10시까지」처럼 끝난 시각까지로 알려 주세요."
+    ),
+}
 
 
 def clarify_message(code: str) -> str:
@@ -289,7 +318,7 @@ def clarify_message(code: str) -> str:
     「해석하지 못했다」 문구로 낸다.
     """
     reason = _CLARIFY_REASONS.get(code, _CLARIFY_REASONS[CLARIFY_UNRESOLVED])
-    return f"[조회 기간] {reason} {_CLARIFY_EXAMPLES}"
+    return f"[조회 기간] {reason} {_CLARIFY_EXAMPLES_BY_CODE.get(code, _CLARIFY_EXAMPLES)}"
 
 
 __all__ = [

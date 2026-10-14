@@ -32,6 +32,12 @@ LLM 슬롯(`time_expr.slot_to_spec`)이 만든 `TimeSpec`을 기준 시각(요�
 - 통계 = 시 경계로 넓힌다 — 끝 = 직전 정시 · 길이 = ⌈N/60⌉시간 + `minute_widened_to_hour` 고지
   (시 통계보다 잘게 자를 수 없다 — 침묵 확장 금지)
 
+시 단위 롤링(2026-10-14 사용자 확정 · plans/156 G-3·G-6 (a) — D-291 ②·D-328 ⑥ 개정): 「최근 N시간」
+(`last`·`hour`·rolling)과 「N시간 전」(`ago`·`hour`)은 같은 구간이다.
+- 사건 = `[분 경계(기준 시각) − N시간, 분 경계(기준 시각))` — 10:37의 「최근 3시간」 =
+  `[07:37, 10:37)`
+- 통계 = `[직전 정시 − N시간, 직전 정시)` — 시 통계 입도라 정시 유지(D-328 ③ · 고지 없음)
+
 사건(알람) 예외(2026-09-30 사용자 확정 · D-291 — §10.3.1 「알람 경로」 행):
 `subject="event"`로 부르면
 - 기간 없음 = **기간 조건 없음**(unbounded · `event_no_default_period`) — 직전 완결 월
@@ -40,6 +46,24 @@ LLM 슬롯(`time_expr.slot_to_spec`)이 만든 `TimeSpec`을 기준 시각(요�
 - 진행 중 기간(`this`·`to_date` · 진행 중인 명시 달력 기간) = 시작 ~ **기준 시각**(`event_to_now`) —
   통계의 「어제까지·완결 월」 절단(D-201 · G-15 ③)은 **성능 통계** 사정이라 사건에는
   쓰지 않는다(D-05)
+
+시각(2026-10-14 사용자 확정 · plans/156 G-1·G-2 (a)): 시작·끝에 시(`hour`)가 있는
+since·until·between과 absolute(단위 없음·시)는 `_resolve_clock`이 푼다.
+- 사건 = 분 정밀 — 「오늘 9시부터」 = `[09:00, 분 경계(기준 시각))` · 「9시부터 10시까지」 =
+  `[09:00, 10:00)`(끝 시각 미포함 정각 · 반열림). 끝이 기준 시각 뒤면 기준 시각에서 자른다
+- 통계 = 시 경계로 넓힌다(시작 내림 · 끝 올림 — 직전 정시 이하로 제한) · 분 시각이면
+  `minute_widened_to_hour`. 시작 시각의 시가 아직 진행 중이라 넓힌 구간이 비면(「10시 30분부터」·
+  「10시 알람」을 10:37에) 되묻지 않고 직전 정시 한 시간 `[09:00, 10:00)`(완결)으로 대체하고
+  `clock_previous_hour`를 단다(2026-10-14 사용자 확정 (c) — 끝이 열린 since와 시점 단독만).
+  끝이 명시된 닫힌 범위(between — 「10시부터 10시 30분까지」)가 비면 `clock_range_empty`(되묻기 —
+  `time_expr`가 `clock_range_in_progress`로 올린다)
+- 사건의 진행 중 기간(since · 끝이 기준 시각 뒤)은 `event_to_now`를 단다(D-291). 분 첫머리
+  (10:30:20의 「10시 30분부터」)라 분 경계로 깎으면 비는 구간은 기준 시각까지 둔다
+- 시점 단독(absolute — 「어제 10시 알람」·「14시 30분 알람」) = 그 시 한 칸 `[14:00, 15:00)`
+- 시작 시각이 기준 시각 뒤면 연도 명시 여부와 무관하게 `future_explicit_period`(되묻기) · 시작 ≥ 끝
+  (「오늘 14시부터 9시까지」)이면 `clock_range_reversed`(되묻기 — 정렬하지 않는다)
+- 연도 추론(D-185)은 날짜까지만 비교한다 — 「10월 13일 14시」를 10월 13일 10:37에 물으면 올해(미래 →
+  되묻기)지 작년이 아니다
 
 되묻기(2026-09-30 사용자 확정 · D-291): 연도를 명시한 기간이 **통째로 미래**면(시작 > 기준 시각)
 `TimeSpecError("future_explicit_period")` — 호출부가 되묻는다. 존재하지 않는 월·날짜는 인식기
@@ -98,6 +122,8 @@ NOTE_MULTIPLE_PERIODS = "multiple_periods"          # 기간 표현 여럿 — �
 NOTE_EVENT_NO_DEFAULT = "event_no_default_period"   # 사건(알람) 기간 미지정 — 기간 조건 없음(D-291)
 NOTE_EVENT_TO_NOW = "event_to_now"                  # 사건(알람) 진행 중 기간 — 기준 시각까지(D-291)
 NOTE_MINUTE_WIDENED = "minute_widened_to_hour"      # 분 단위 통계 — 시 경계로 넓혔다(D-328)
+#: 시각 시작점의 시가 진행 중이라 통계 구간이 비었다 — 직전 정시 한 시간으로 대체했다(plans/156 (c))
+NOTE_CLOCK_PREVIOUS_HOUR = "clock_previous_hour"
 
 _GRAIN_RANK: dict[str, int] = {"hour": 0, "day": 1, "month": 2}
 _GRAIN_OF: dict[str, Grain] = {"hour": "hour", "day": "day", "month": "month"}
@@ -127,11 +153,16 @@ class TimeSpecError(ValueError):
 
 @dataclass(frozen=True)
 class PartialDate:
-    """절대 시점의 부분값 — 연·월·일·시 중 아는 것만 둔다(plans/122 §10.3 「절대 시작·끝」).
+    """절대 시점의 부분값 — 연·월·일·시·분 중 아는 것만 둔다(plans/122 §10.3 「절대 시작·끝」).
 
     `year_offset`은 「작년 6월」·「올해 하반기」처럼 **기준 연도 대비 상대 연도**다(0 = 올해,
     -1 = 작년). 인식기가 기준 시각 없이 명세를 만들 수 있게 하고, LLM이 연도를 계산하지 않게 한다.
     `year`와 함께 쓸 수 없다. 둘 다 없으면 해석기가 "미래가 아닌 가장 최근"으로 연도를 정한다.
+
+    `minute`(plans/156 G-1)은 시각의 분이다 — `hour`가 있어야 한다. 정밀도(`precision`)는 시
+    그대로다(분은 시 안의 위치). `day_offset`은 시각 앞 「오늘(0)·어제(-1)·그제(-2)」 — 규칙
+    인식기 전용이며(LLM 슬롯 키 아님) 연·월·일과 함께 쓸 수 없고 `hour`가 있어야 한다. +1은
+    「오늘 …부터 자정까지」의 끝(다음 날 0시 · `hour=0`)에만 쓴다(plans/156 J-3).
     """
 
     year: int | None = None
@@ -139,9 +170,14 @@ class PartialDate:
     day: int | None = None
     hour: int | None = None
     year_offset: int | None = None
+    minute: int | None = None
+    day_offset: int | None = None
 
     def __post_init__(self) -> None:
-        if all(v is None for v in (self.year, self.month, self.day, self.hour, self.year_offset)):
+        if all(v is None for v in (
+            self.year, self.month, self.day, self.hour, self.year_offset, self.minute,
+            self.day_offset,
+        )):
             raise TimeSpecError("partial_date_empty")
         if self.year is not None and self.year_offset is not None:
             raise TimeSpecError("partial_date_year_conflict")
@@ -158,15 +194,29 @@ class PartialDate:
             ref_year = self.year if self.year is not None else 2000
             if not 1 <= self.day <= calendar.monthrange(ref_year, self.month)[1]:
                 raise TimeSpecError("day_out_of_range", f"{self.month}/{self.day}")
+        if self.day_offset is not None:
+            if any(v is not None for v in (self.year, self.year_offset, self.month, self.day)):
+                raise TimeSpecError("partial_date_day_conflict")
+            # +1은 「오늘 …부터 자정까지」의 끝(다음 날 0시)만 — 시작점으로는 쓰지 않는다(J-3)
+            midnight_end = self.day_offset == 1 and self.hour == 0 and self.minute is None
+            if not (-7 <= self.day_offset <= 0 or midnight_end):
+                raise TimeSpecError("day_out_of_range", f"offset {self.day_offset}")
+            if self.hour is None:
+                raise TimeSpecError("partial_date_gap", "day_offset without hour")
         if self.hour is not None:
-            if self.day is None:
+            if self.day is None and self.day_offset is None:
                 raise TimeSpecError("partial_date_gap", "hour without day")
             if not 0 <= self.hour <= 23:
                 raise TimeSpecError("hour_out_of_range", str(self.hour))
+        if self.minute is not None:
+            if self.hour is None:
+                raise TimeSpecError("partial_date_gap", "minute without hour")
+            if not 0 <= self.minute <= 59:
+                raise TimeSpecError("minute_out_of_range", str(self.minute))
 
     @property
     def precision(self) -> Unit:
-        """가장 세밀한 필드의 단위(시 > 일 > 월 > 연)."""
+        """가장 세밀한 필드의 단위(시 > 일 > 월 > 연) — 분은 시 안의 위치라 시로 본다."""
         if self.hour is not None:
             return "hour"
         if self.day is not None:
@@ -488,7 +538,8 @@ def _infer_year(p: PartialDate, now: datetime) -> tuple[int, bool]:
     for back in range(0, 9):  # 2월 29일은 최대 8년 전까지 거슬러 윤년을 찾는다
         year = now.year - back
         try:
-            start = _partial_datetime(p, year)
+            # 날짜까지만 비교한다 — 시각이 미래인 오늘(「10월 13일 14시」)은 작년이 아니라 되묻기다
+            start = datetime(year, p.month or 1, p.day or 1, tzinfo=KST)
         except ValueError:
             continue
         if start <= now:
@@ -498,10 +549,13 @@ def _infer_year(p: PartialDate, now: datetime) -> tuple[int, bool]:
 
 def _partial_datetime(p: PartialDate, year: int) -> datetime:
     """연도를 정한 PartialDate의 시작 시각(KST)."""
-    return datetime(year, p.month or 1, p.day or 1, p.hour or 0, tzinfo=KST)
+    return datetime(year, p.month or 1, p.day or 1, p.hour or 0, p.minute or 0, tzinfo=KST)
 
 
 def _partial_start(p: PartialDate, now: datetime) -> tuple[datetime, bool]:
+    if p.day_offset is not None:  # 「오늘·어제·그제 + 시각」(plans/156) — 연도 추론 없음
+        day = _floor(now, "day") + timedelta(days=p.day_offset)
+        return day.replace(hour=p.hour or 0, minute=p.minute or 0), False
     year, inferred = _infer_year(p, now)
     try:
         return _partial_datetime(p, year), inferred
@@ -668,10 +722,16 @@ def resolve(spec: TimeSpec, now: datetime, *, subject: Subject = "metric") -> Ti
             notes=(NOTE_DEFAULT_PERIOD, *gnotes),
         )
 
+    if _clock_parts(spec):
+        return _resolve_clock(spec, now, event)
     unit = spec.unit
     n = spec.n or 1
     if unit == "minute":  # last·ago만 온다(TimeSpec 검증 · D-328)
         return _resolve_minute(spec, n, event, now, anchor_at)
+    if unit == "hour" and (
+        rel == "ago" or (rel == "last" and (spec.completeness or "rolling") == "rolling")
+    ):
+        return _resolve_hour_rolling(spec, n, event, now, anchor_at)
     if rel == "last":
         assert unit is not None
         completeness = spec.completeness or ("rolling" if unit == "hour" else "complete")
@@ -774,6 +834,110 @@ def _resolve_minute(
     return _finish(
         spec, start, end, "rolling", "hour", [NOTE_MINUTE_WIDENED], now, anchor_at
     )
+
+
+def _resolve_hour_rolling(
+    spec: TimeSpec, n: int, event: bool, now: datetime, anchor_at: datetime
+) -> TimeResolution:
+    """시 단위 롤링 「최근 N시간」과 「N시간 전」(plans/156 G-3·G-6 (a) — 모듈 머리말).
+
+    사건은 기준 시각의 분 경계에서 끝나는 N시간이다(분 단위 · 진행 중 기간과 같은 끝 — 정시로
+    깎으면 최근 최대 59분의 사건이 빠진다). 통계는 시 통계 입도 한계로 직전 정시에서 끝난다.
+    「N시간 전」은 「N분 전」(D-328 ②)과 같게 그때부터 지금까지로 읽는다.
+    """
+    end = _floor(anchor_at, "minute" if event else "hour")
+    return _finish(spec, _shift(end, "hour", -n), end, "rolling", "hour", [], now, anchor_at)
+
+
+def _clock_parts(spec: TimeSpec) -> bool:
+    """시각(시)이 있는 시작·끝 명세인가 — `_resolve_clock` 대상(plans/156 G-1).
+
+    absolute는 단위가 없거나 시일 때만이다(「9월 15일 10시」 + unit=day는 종전대로 그 날 하루).
+    """
+    rel = spec.relation
+    if rel == "absolute" and spec.unit not in (None, "hour"):
+        return False
+    parts = {
+        "absolute": (spec.abs_start,), "since": (spec.abs_start,),
+        "until": (spec.abs_end,), "between": (spec.abs_start, spec.abs_end),
+    }.get(rel, ())
+    return any(p is not None and p.hour is not None for p in parts)
+
+
+def _clock_bound(p: PartialDate, now: datetime, *, end: bool) -> tuple[datetime, bool]:
+    """시각 경계 — 시가 있으면 그 시점(분 정밀 · 끝이면 미포함 정각), 없으면 날짜 칸.
+
+    날짜 칸의 끝은 다음 칸 시작이다(종전 between·until과 같다).
+    """
+    point, inferred = _partial_start(p, now)
+    if end and p.hour is None:
+        point = _shift(point, p.precision, 1)
+    return point, inferred
+
+
+def _resolve_clock(spec: TimeSpec, now: datetime, event: bool) -> TimeResolution:
+    """시각 시작점·범위(plans/156 G-1·G-2 (a) — 모듈 머리말 「시각」).
+
+    사건은 분 정밀(끝 = 분 경계의 기준 시각 이하), 통계는 시 경계로 넓힌다(끝은 직전 정시 이하).
+    시점 단독(absolute)은 두 주체 모두 그 시 한 칸이다.
+    """
+    rel = spec.relation
+    notes: list[str] = []
+    inferred = False
+    start: datetime | None = None
+    end: datetime | None = None
+    if rel != "until":
+        assert spec.abs_start is not None  # TimeSpec 검증이 보장
+        start, inferred = _clock_bound(spec.abs_start, now, end=False)
+    if rel in ("until", "between"):
+        assert spec.abs_end is not None
+        end, end_inferred = _clock_bound(spec.abs_end, now, end=True)
+        inferred = inferred or end_inferred
+    elif rel == "absolute":
+        assert start is not None
+        start = _floor(start, "hour")
+        end = _shift(start, "hour", 1)
+    if start is not None and end is not None and start >= end:
+        raise TimeSpecError("clock_range_reversed", f"{start} >= {end}")
+    if start is not None and start > now:
+        raise TimeSpecError("future_explicit_period", start.isoformat())
+    if inferred:
+        notes.append(NOTE_YEAR_INFERRED)
+    in_progress = end is not None and end > now
+    if in_progress:
+        notes.append(NOTE_PERIOD_IN_PROGRESS)
+    completeness: Completeness = (
+        "to_date" if rel == "since" or in_progress else spec.completeness or "complete"
+    )
+    if event:
+        if end is None or end > now:
+            # 진행 중 기간 = 기준 시각까지(D-291 — 진행 중 달력 기간 `this`와 같게)
+            notes.append(NOTE_EVENT_TO_NOW)
+        limit = _floor(now, "minute")
+        end = limit if end is None else min(end, limit)
+        if start is not None and start >= end:
+            # 분 첫머리(10:30:20의 「10시 30분부터」) — 분 경계로 깎으면 비므로 기준 시각까지 둔다
+            end = max(start, now.replace(microsecond=0))
+    else:
+        limit = _floor(now, "hour")
+        end = limit if end is None else min(_ceil(end, "hour"), limit)
+        if start is not None:
+            start = _floor(start, "hour")
+        if start is not None and start >= end:
+            if rel == "between":
+                # 끝이 명시된 닫힌 범위(10:37의 「10시부터 10시 30분까지」) — 직전 정시로 바꾸면
+                # 요청 범위를 벗어난다. 되묻는다(2026-10-14 사용자 확정)
+                raise TimeSpecError("clock_range_empty", f"{start} >= {end}")
+            # 「10시 30분부터」·「10시 알람」을 10:37에 — 시작 시각의 시가 진행 중이라 넓힌
+            # 통계 구간이 비었다. 되묻지 않고 직전 정시 한 시간(완결 구간)으로 대체한다
+            # (plans/156 확정 (c))
+            start = _shift(end, "hour", -1)
+            completeness = "complete"
+            notes = [n for n in notes if n != NOTE_PERIOD_IN_PROGRESS]
+            notes.append(NOTE_CLOCK_PREVIOUS_HOUR)
+        elif any(p is not None and p.minute for p in (spec.abs_start, spec.abs_end)):
+            notes.append(NOTE_MINUTE_WIDENED)
+    return _finish(spec, start, end, completeness, "hour", notes, now, now)
 
 
 def _finish(
@@ -1023,7 +1187,8 @@ __all__ = [
     "ANCHORS", "COMPLETENESS", "DISPLAY_GRAINS", "GRAINS", "KST", "N_MAX",
     "NOTE_CURRENT_MONTH_EXCLUDED", "NOTE_DEFAULT_PERIOD", "NOTE_DISPLAY_GRAIN_UNALIGNED",
     "NOTE_EMPTY_RANGE", "NOTE_EVENT_NO_DEFAULT", "NOTE_EVENT_TO_NOW", "NOTE_FUTURE_PERIOD",
-    "NOTE_MINUTE_WIDENED", "NOTE_MULTIPLE_PERIODS", "NOTE_PERIOD_IN_PROGRESS", "NOTE_YEAR_INFERRED",
+    "NOTE_CLOCK_PREVIOUS_HOUR", "NOTE_MINUTE_WIDENED", "NOTE_MULTIPLE_PERIODS",
+    "NOTE_PERIOD_IN_PROGRESS", "NOTE_YEAR_INFERRED",
     "RELATIONS",
     "RELATIVE_WINDOW_KINDS", "SOURCES", "SUBJECTS", "UNITS",
     "Anchor", "Completeness", "DisplayGrain", "Grain", "PartialDate", "Relation", "Source",

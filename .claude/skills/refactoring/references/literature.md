@@ -52,7 +52,7 @@
 
 ## 조사 공백
 
-- Python 같은 동적 언어의 리팩터 안전성(동적 속성 접근·monkeypatch 추적)을 직접 다룬 동료심사 문헌은 이번 조사에서 확인하지 못했다. 이 스킬의 seam 보존 규칙(D-330 ②)은 Feathers의 이음매 개념과 저장소 실측(`apm_query._SESSION_FACTORY` 38파일 52곳)에 근거한다.
+- Python 같은 동적 언어의 리팩터 안전성(동적 속성 접근·monkeypatch 추적)을 직접 다룬 동료심사 문헌은 이번 조사에서 확인하지 못했다. 이 스킬의 seam 보존 규칙(D-336 ②)은 Feathers의 이음매 개념과 저장소 실측(`apm_query._SESSION_FACTORY` 38파일 52곳)에 근거한다.
 - 특성화 테스트는 사실상 단행본(Feathers)이 유일한 출처다.
 - 복제 제거의 위험은 Kapser & Godfrey 한 편만 확인했다.
 

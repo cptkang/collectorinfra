@@ -28,7 +28,7 @@ from src.domain.query_time import (
     clarify_message,
     resolve_query_time,
 )
-from src.domain.time_expr import SLOT_KEYS
+from src.domain.time_expr import SLOT_KEYS, slot_to_spec
 from src.domain.time_spec import ANCHORS, COMPLETENESS, DISPLAY_GRAINS, KST, RELATIONS, UNITS
 from src.prompts.input_parser import (
     INPUT_PARSER_CSV_CONTEXT_PROMPT,
@@ -100,7 +100,7 @@ class TestPromptContract:
             assert f'"{key}"' in INPUT_PARSER_TIME_SLOT_SECTION, key
         for value in (*RELATIONS, *UNITS, *COMPLETENESS, *ANCHORS, *DISPLAY_GRAINS):
             assert re.search(rf"\b{value}\b", INPUT_PARSER_TIME_SLOT_SECTION), value
-        for key in ("year", "year_offset", "month", "day", "hour"):
+        for key in ("year", "year_offset", "month", "day", "hour", "minute"):
             assert f'"{key}"' in INPUT_PARSER_TIME_SLOT_SECTION, key
 
     def test_examples_pass_slot_validation(self) -> None:
@@ -109,9 +109,11 @@ class TestPromptContract:
             r'입력: "(.+?)"\ntime_expr: (null|\{.*?\})\n\n', INPUT_PARSER_TIME_SLOT_SECTION + "\n",
             re.S,
         )
-        assert len(examples) == 5
+        assert len(examples) == 7  # plans/156 W5 — 「N시간 전」·시각 시작점(hour·minute) 예시 추가
         for text, slot_json in examples:
             slot = json.loads(slot_json)
+            if slot is not None:  # 규칙이 먼저 잡아도(unused) 슬롯 자체가 검증기를 통과해야 한다
+                assert slot_to_spec(slot, text)[1] is None, text
             qt = resolve_query_time(text, NOW, slot=slot)
             assert qt.clarify is None, text
             assert qt.slot_status != SLOT_REJECTED, (text, qt.slot_reason)
@@ -124,6 +126,14 @@ class TestPromptContract:
         assert re.search(r"\*\*unit\*\*: minute · hour ·", section)
         assert "「최근 30분」은 n=30·unit=minute" in section
         assert "「10시 30분」처럼 시각 뒤에 붙은 분은 unit이 아닙니다" in section
+
+    def test_clock_minute_and_meridiem_guidance(self) -> None:
+        """plans/156 W5 — 시각의 분(minute)·24시제 설명과 표지 없는 1~12시 비움 규칙이 있다."""
+        section = INPUT_PARSER_TIME_SLOT_SECTION
+        assert "hour는 24시제(「오후 2시」는 14)" in section
+        assert "minute은 시각의 분" in section
+        assert "표지가 없는 1~12시" in section
+        assert "hour를 비우고 span은 원문 그대로 둡니다" in section
 
     def test_anchor_line_is_date_only(self) -> None:
         line = time_anchor_line(NOW.date())

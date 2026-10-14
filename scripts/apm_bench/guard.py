@@ -82,7 +82,8 @@ def check_view_server_version(env: str, version: str | None) -> tuple[bool, str]
     parsed = parse_version(version)
     if parsed is None:
         return False, ("뷰 서버 버전을 도구로 얻을 수 없다 — --view-server-version 으로 넣는다"
-                       if not version else f"버전 형식이 아니다: {version!r}")
+                       if not version else  # 값 미출력 — 오입력이 다른 비밀일 수 있다
+                       "뷰 서버 버전 형식이 아니다(숫자.숫자… 예 5.6.2.18) — 값은 출력하지 않는다")
     padded = parsed + (0,) * (len(VIEW_SERVER_MIN) - len(parsed))
     if padded < VIEW_SERVER_MIN:
         return False, (f"뷰 서버 {version} < {'.'.join(map(str, VIEW_SERVER_MIN))} — 실행하지 "

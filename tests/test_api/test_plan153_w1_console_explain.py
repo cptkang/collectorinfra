@@ -109,6 +109,7 @@ _JS_FUNCTIONS = (
     "fillTemplate", "originalTier", "tierShift", "evidenceLookup", "reasonSummary",
     "handlingText", "handlingShort", "evidenceOf", "crossSource", "evidenceValue", "fmtDuration",
     "fmtTime", "causeShort", "analysisOf", "analysisFailed", "stageLabel", "stageMeta",
+    "reviewBlock",  # plans/162 W3 — reasonSummary가 PAGE 재판정 기록만(shadow) 문장에 쓴다
 )
 
 

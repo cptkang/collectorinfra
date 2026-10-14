@@ -303,10 +303,11 @@ def test_decision_snapshot_is_bit_identical():
 
 def test_snapshot_covers_every_stage():
     # 스냅샷이 15단계를 모두 밟는지 고정한다 — 케이스가 조용히 빠지면 비트 동일이 공허해진다.
-    from noise_gate.domain.notification_policy import STAGE_ORDER
+    # (plans/162) PAGE 재판정은 decide_notification 밖(게이트 노드)의 단계라 스냅샷 대상이 아니다.
+    from noise_gate.domain.notification_policy import STAGE_ORDER, STAGE_PAGE_REVIEW
 
     expected = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    assert {row["stage"] for row in expected.values()} == set(STAGE_ORDER)
+    assert {row["stage"] for row in expected.values()} == set(STAGE_ORDER) - {STAGE_PAGE_REVIEW}
 
 
 if __name__ == "__main__":  # pragma: no cover — 픽스처 재생성(의도적 판정 변경 시에만)

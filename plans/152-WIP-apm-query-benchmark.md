@@ -1,7 +1,7 @@
 # 152. 제니퍼 APM 조회 벤치마크 — API 전수(경로 × 선택 인자) 사용자 프롬프트를 운영 경로로 돌려 선택 정확도를 판정하고, 반출 근거로 few-shot을 고쳐 정확도를 올린다
 
-> **작성일**: 2026-10-12 · **v1.0**(최초) · **v1.1**(2026-10-12 — 사용자 인터뷰 G-1~G-8 확정 반영 · 정확도 중심 · API 전수 시나리오 · 운영 뷰 서버 허용 범위 · 반출 근거 묶음 · few-shot 개선 루프 · D-323) · **v1.2**(2026-10-13 — 외부망 구현 W0~W7 · 실행 방법 §10 · 폐쇄망 키트 부록 A) · **v1.3**(2026-10-13 — 남은 질문 정리: 후속 계획 156·157·158 · xdist 설치 · CLI 옵션 유지 · `logs/` 감사 로그 유지)
-> **상태**: **WIP — 외부망 W0~W7 완료(2026-10-13) · 내부망 W8(1회차 실행·반출) 잔여** · 결정 **D-323** · E1(가짜 LLM) 턴 정확도 87.6% → 159 교정 뒤 97.7% — 남은 실패 3턴은 `plans/157`(존 사전 게이트 · APM 대상 미승계 · 벤치 드라이버) · 실행 방법 §10 · 폐쇄망 키트 부록 A
+> **작성일**: 2026-10-12 · **v1.0**(최초) · **v1.1**(2026-10-12 — 사용자 인터뷰 G-1~G-8 확정 반영 · 정확도 중심 · API 전수 시나리오 · 운영 뷰 서버 허용 범위 · 반출 근거 묶음 · few-shot 개선 루프 · D-323) · **v1.2**(2026-10-13 — 외부망 구현 W0~W7 · 실행 방법 §10 · 폐쇄망 키트 부록 A) · **v1.3**(2026-10-13 — 남은 질문 정리: 후속 계획 156·157·158 · xdist 설치 · CLI 옵션 유지 · `logs/` 감사 로그 유지) · **v1.4**(2026-10-14 — 157·156·164 통합 반영: 실행 디렉터리 `results/apm_bench/<run_id>/` 자동 · E2 한 줄 실행(로컬 파일 자동 탐색) · `--smoke`·`--bg`·`--status` · `--audit-digest [<run_id>]` · run_id만으로 `--regate`·`--compare`·`--replay`)
+> **상태**: **WIP — 외부망 W0~W7 완료(2026-10-13) · 내부망 W8(1회차 실행·반출) 잔여** · 2026-10-14 157·156·164 통합 반영(E1 129/129 · 악화 0 · 실행 산출물 `results/apm_bench/<run_id>/` · 1회차 교정은 `plans/164`) · 결정 **D-323** · E1(가짜 LLM) 턴 정확도 87.6% → 159 교정 뒤 97.7% — 남은 실패 3턴은 `plans/157`(존 사전 게이트 · APM 대상 미승계 · 벤치 드라이버) · 실행 방법 §10 · 폐쇄망 키트 부록 A
 > **요청 원문(2026-10-12)**: *"apm의 api를 테스트하여 사용자 프롬프트에 따른 조회성능을 높일 수 있도록 하려고 한다. apm 벤치마크 테스트 계획을 작성하라."*
 > **인터뷰 답(2026-10-12)**: ① 성능 = **답이 틀린다**(정확도) ② *"제니퍼 api를 분석하여 api를 모두 조회하는 프롬프트를 생성하라."* ③ 커버리지 = **경로 × 선택 인자** ④ *"뷰 서버를 통해 api를 호출하니 제약이 크지 않을까? 검토해보고 허용범위를 정하라."* ⑤ *"우선 개발 뷰 서버 없이 진행하라."* ⑥ 반출 이름 = **형식 보존 치환** ⑦ *"반출하는 정보를 보고 apm의 사용자 프롬프트 응답 정확도를 높일 수 있어야 한다."* ⑧ *"원하는 결과가 안나올 경우 사용자 프롬프트의 fewshot정보를 수정하거나 하는 방법으로 수정할 계획이다."* → 정리안 *"이대로 확정"*(개발 70 · 홀드아웃 30 포함).
 > **성격**: 현행 실측 + 설계 + 작업 분해. 이 계획은 **측정 기계와 개선 루프 절차**를 만든다. 회차별 교정(few-shot·코드)은 회차마다 후속 계획으로 연다(ITAM 벤치 135 → 139·146·149·150·151과 같은 방식).
@@ -351,12 +351,14 @@ few-shot 원문은 반출하지 않는다 — 같은 SHA에서 외부망이 그�
 - 2026-10-13 — **검증 교정 완료**: 지적 전건 수정(벤치 측만 · 게이트웨이 코드 변경 0) — 게이트웨이 DEBUG 응답 줄 접기로 429·타임아웃 판정 · E2 과금 평면 exit 2 · 토큰 사전 값 전부 적용 + 관문 토큰 대조 · 2자·camelCase 토큰 · report/예문 절 holdout 건수만 · replay 기본 dev · `load_log(holdout_ids)` · `_contains` 경계 일치 · `placeholder_missing` 판정 불가 · 지연 하한 E1 전용 · 비율 단위 도구 호출 · P층 `guard.healthy`·무거운 0행 미재호출 · WAS 키 cov 경로 전부 · compare 공통 턴 판정. verify xfail 표지 0. 테스트 10파일 **248 passed**. E1 `--skip-heavy` 재실행 87.1%(108/124 · 직전과 동일) · 관문 통과 · 가드 tool_calls 105 · http 응답 403 · 타임아웃 0 · 429 0. 남은 근사: 동시 도구의 타임아웃 귀속은 근사(중단이 늦어지는 쪽) · dict 키는 토큰 사전 밖(원이름 전체는 치환). E2 반출본은 이름 토큰과 겹치는 코드 값도 가짜 값이 된다(A.2 6).
 - 2026-10-13 — **계획 끝 모듈 단위 회귀 1회**(`regress.py --base ee13b47 --files` 회귀 대상 파일 전부): 본체 통과 2,658 · 실패 6(전부 `[원래 실패]` — `test_plan146_demonstrative_zero_rows`·`test_plan150_sample_antecedent`·`test_eval_routing_modes` 2·`test_intent_extraction_typing` 2) · arch_check·overfit_check·mypy 통과 · ruff 이번 diff 줄 4건(`record.py` 긴 주석) → 고친 뒤 `--no-tests` 재확인 통과 · `범위: 모듈 단위 — 전체 미실행` · `[전체 회귀 권고]` 없음. 이 python에는 `pytest-xdist`가 없어 도구의 `-n` 실행이 rc=4로 끝났다 → 도구를 바꾸지 않고 워커 0(직렬)으로 같은 선택을 돌렸다(§10.2 주의).
 - 2026-10-13 — **남은 질문 정리**(사용자 *"결함은 후속 계획을 만들고 필요한 것은 설치하고 나머지는 권고에 맞게 진행하라."*): ① 존 사전 게이트·APM 대상 미승계·벤치 드라이버 결함 → `plans/157` · 159가 남긴 시간 해석 틈 → `plans/156` · 반복 「원래 실패」 테스트 → `plans/158`. ② `pytest-xdist`(dev extra · 3.8.0)를 개발 맥 python에 설치 — `regress.py` 병렬 실행 복구(§10.2 직렬 래퍼 주의는 xdist 없는 환경용으로 남긴다). ③ CLI `--skip-heavy`·`--term-policy`는 정식 옵션으로 유지(부록 A 키트가 쓰고, 자리표·허용 목록을 본체 기동 전에 검사한다). ④ 내부망 실행 때 본체가 `logs/`에 남기는 운영 이름은 그대로 둔다 — 감사 로그는 끄지 않는다(모든 질의 실행은 감사 대상 · 보안 원칙), `logs/`는 `.gitignore` 대상이고 A.7 반출 금지 목록에 있다. 벤치용 감사 로그 끄기 옵션은 만들지 않는다. D-323 부기.
-- **남은 일(내부망 · W8)**: 운영 협의(업무 외 시간대 · U-7) → 부록 A대로 1회차 실행(`--skip-heavy`) → 관문 통과 6종 반출 → 외부망에서 회차 교정 계획(`plans/NN-TODO-apm-bench-round1.md`)을 연다. **제품 결함 2건**(분 단위 기간 → `plans/159-minute-period-resolution.md` — 2026-10-13 완료 · E1 87.6% → 97.7% · 존 사전 게이트 → `plans/157-TODO-apm-bench-residual-defects.md`)은 별도 후속 계획으로 열었다. 159 뒤 남은 E1 실패 3턴(존 사전 게이트 · APM 대상 미승계 · 벤치 드라이버 소스 답 턴)도 157이 맡는다.
+- 2026-10-14 — **내부망 W8 1회차 결과 수신(반출 실패)**: run `20261013_1827` · E2 · 뷰 서버 5.6.5.11 · 2단 확정 · 무거운 등급 포함 실행(`--skip-heavy` 미사용) · 8102.7초 · 호출 b0 367/cm_prd 650/cm_stg 66 · 타임아웃 0 · 429 0 · P층 0 · **턴 정확도 28.0%(35/125 · dev 24.7 · holdout 36.1)** · 축 source 84.0/views 82.6/**target 36.4**/window 90.9/args 74.4 · 대표 분류 gw_error 59 등. **누출 관문 위반 6건**(`user_info` 3 `observed.response` · `pii_value` 3 `evidence.reselect.output[0]`)으로 산출물 미기록 — 받은 것은 실행 로그·`leak_check.json`뿐. 분석: 대표 분류는 통과 턴을 포함하고 비축 분류 `gw_error`가 맨 앞이라 target 실패를 가린다 · `pii_value`는 근거 묶음 키 `output`이 `SKIP_KEYS` 밖이라 보기 id 낱말이 인벤토리 토큰 대조에 걸린 거짓 양성(확정 — 같은 값의 `result_views` 칸은 위반 없음) · `user_info`는 관문만 실행 계정·호스트를 대조하고 치환기는 모르는 비대칭(root 실행 추정) · `var/` 경고는 존재 기반 판정이라 이전 잔재일 가능성. 후속 = **`plans/164-WIP-apm-bench-e2-round1.md`**(관문 교정 · 안전 요약 · 집계 교정 · 재실행). few-shot 회차 계획(A.8)은 164 재실행 반출 뒤 연다.
+- 2026-10-14 — **157·156·164 통합 진행 반영**(사용자 *"apm_bench와 관련된 계획 152, 156, 157, 164 등의 계획을 종합적으로 판단하여 구현하라. 또한 apm_bench 로그 파일은 results/apm_bench 폴더에 모아서 정리하도록 구현하라."* · 시작 SHA `4073f7f`): 157 결함 3건·156 시간 표현 후속 완료 · 164(E2 1회차 교정) W1~W5 완료 · **E1 전체(가짜 LLM · `--probe`) run `20261014-161040-e1-4073f7f` 129/129(100%) · `--compare base_4073f7f` 악화 0**. §10·부록 A 갱신(v1.4): 실행 산출물·실행 로그·PID를 `results/apm_bench/<run_id>/`에 벤치가 직접 모은다(run_id·파일명 자동 · `--out` 선택 · `--bg`·`--status`) · E2 한 줄 실행(로컬 파일 자동 탐색 · `--skip-heavy`·`--probe` 기본 on) · `--smoke` · `--audit-digest [<run_id>]` · `--regate`·`--compare`·`--replay`는 run_id만으로. 이 계획의 코드 변경은 없다(문서만).
+- **남은 일(내부망 · W8)**: 운영 협의(업무 외 시간대 · U-7) → 부록 A대로 1회차 실행(`--skip-heavy`) → 관문 통과 6종 반출 → 외부망에서 회차 교정 계획(`plans/NN-TODO-apm-bench-round1.md`)을 연다. **제품 결함 2건**(분 단위 기간 → `plans/159-minute-period-resolution.md` — 2026-10-13 완료 · E1 87.6% → 97.7% · 존 사전 게이트 → `plans/157-apm-bench-residual-defects.md`)은 별도 후속 계획으로 열었다. 159 뒤 남은 E1 실패 3턴(존 사전 게이트 · APM 대상 미승계 · 벤치 드라이버 소스 답 턴)도 157이 맡는다.
 
 ## 10. 실행 방법
 
 > **실측일 2026-10-13**(W6·W7): HEAD `ee13b47`에 이 계획의 미커밋 작업 트리를 얹은 상태, 저장소 `.env`·`.encenv` 없음(코드 기본값 = 워커 `ollama`·오케스트레이터 `vllm`), Apple Silicon 맥북. 명령 옆 결과는 이날 한 번씩 돌린 값이다. 과금 LLM과 운영 뷰 서버를 쓰는 명령은 돌리지 않았고, 그런 명령에는 「미실행」이라고 적었다.
-> 명령은 모두 저장소 루트에서 돌린다. `<out>`은 저장소 밖 작업 디렉터리다. `--out`을 빼면 산출물이 저장소 `results/apm_bench/`에 쌓이므로 늘 붙인다.
+> 명령은 모두 저장소 루트에서 돌린다. `--run`은 산출물을 run마다 `results/apm_bench/<run_id>/`(`.gitignore` 대상 · run_id 예 `20261014-155020-e2-<SHA 7자>` · 스모크는 `-smoke` 접미)에 자동으로 모으므로 `--out`은 **선택**이다(명시하면 그 경로 · 2026-10-14 W2b — `plans/164` §5). `<out>`은 그때 쓰는 작업 디렉터리다.
 
 ### 10.1 사전 준비
 
@@ -407,6 +409,8 @@ python -m pytest tests/test_scripts/test_apm_bench_capture.py tests/test_scripts
 
 종료 코드: **0** 정상 · **1** run 무효(APM 관측 0)·누출 관문 실패·근거 필수 칸 누락·린트/커버리지 위반·모르는 시나리오 id · **2** 사전 점검 차단(뷰 서버 버전·자리표 파일·허용 목록 파일·MLX 평면·E2 금지 조합). argparse 인자 오류도 2다.
 
+> 아래 표의 `--out <out>/…`은 2026-10-13 실측 당시 명령을 그대로 둔 이력이다. 지금 `--out`은 선택이다 — 빼면 `--run`은 `results/apm_bench/<run_id>/`, `--compare`·`--replay`는 파일 없이 콘솔에만 낸다. 또 `--compare`·`--replay`·`--regate`는 경로 대신 run_id만 받아도 된다(2026-10-14 W2b).
+
 | # | 명령 | 실측 결과 |
 |---|---|---|
 | ① | `python -m scripts.apm_bench` (= `--dry-run`) | exit 0 · 2.7초 · `시나리오 121건 · 턴 135 · dev 85 / holdout 36 (29.8%)` · `heavy 5 · was_touch 6 (e2_skip 3) · sensitive 4` · 경고 3(`P-e2-only` — `COV-ACTIVE-DETAIL`·`COV-ENV`·`COV-LOADED-CLASS`의 holdout은 외부망 전용) · `결과 : 통과`. LLM·네트워크를 쓰지 않는다 |
@@ -429,8 +433,8 @@ python -m pytest tests/test_scripts/test_apm_bench_capture.py tests/test_scripts
 - 일정은 `guard.schedule`이 정한다. 무거운 등급(heavy)은 맨 끝에 최대 5개를 돌리고, 앞 단계에 중단·타임아웃·429가 하나라도 있으면 건너뛴다(`heavy_gate`). E2에서는 `e2_skip`을 건너뛰고 WAS 접촉 API는 경로당 1회만 돈다(`was_once`).
 - `--probe`는 P층(§3.3)이다. 빈 결과를 같은 인자로 재호출하고, `interval_minute`·`sort_by_metrics`·`max_row` 허용값을 1회씩 탐침한다. 탐침 대상은 자리표 `inst_1`이다.
 - `--debug-raw <dir>`는 E1 전용이다. 치환 전 `records.jsonl`·`meta.json`과 `server.log`·`gateway.log`·`capture.jsonl`을 남긴다. E1이라 합성 이름뿐이지만 반출물이 아니다.
-- `--term-policy <파일>`: 일반 단어 허용 목록. 기본값은 `testdata/apm_bench/term_policy.yaml`(빈 목록 = 기본 거부)이다. `--placeholders`와 이 파일은 본체를 띄우기 **전에** 읽고, 못 읽거나 형식이 틀리면 exit 2다.
-- `--view-server-version`: E2에서 필수다(5.6.2.18 이상). E1에서는 검사하지 않는다. 값을 주면 그 값을, 주지 않으면 `e1-mock(해당 없음)`을 기록한다.
+- `--term-policy <파일>`: 일반 단어 허용 목록. 기본값은 E1 = `testdata/apm_bench/term_policy.yaml`(빈 목록 = 기본 거부) · **E2 = `testdata/apm_bench/local/term_policy.local.yaml` 자동 탐색**(없고 인자도 없으면 exit 2 · 자리표 `placeholders.e2.yaml`도 같다). 로컬 디렉터리·파일은 현재 계정 소유 · 심볼릭 링크 아님 · 그룹·기타 쓰기 없음이어야 한다(명시 파일도 같은 조건). `--placeholders`와 이 파일은 본체를 띄우기 **전에** 읽고, 못 읽거나 형식이 틀리면 exit 2다.
+- `--view-server-version`: E2에서 값이 필요하다(5.6.2.18 이상) — 인자가 없으면 `testdata/apm_bench/local/bench.local.yaml`의 `view_server_version` 한 줄을 자동으로 읽고, 둘 다 없으면 exit 2. 명시 인자가 우선한다. E1에서는 검사하지 않고 `e1-mock(해당 없음)`을 기록한다.
 
 ### 10.4 산출물 읽는 법
 
@@ -464,18 +468,18 @@ python -m pytest tests/test_scripts/test_apm_bench_capture.py tests/test_scripts
 
 ### 10.6 내부망 실행 요약 (상세는 부록 A)
 
-1. 같은 SHA 체크아웃(운영 게이트웨이와 다른 디렉터리 권장)의 `apm_gateway/.env`에 소스 URL·토큰을 넣는다. 본체 `.env`에는 FabriX를 둔다.
-2. 운영 인벤토리에서 자리표 로컬 파일을 만들고 채움 검사를 한다(A.1). 허용 목록 로컬 사본을 검토한다(A.2).
-3. 뷰 서버 버전은 운영자가 확인해 입력한다. 5.6.2.18 미만이면 실행하지 않는다(A.3).
-4. 업무 외 시간에 1회차는 `--skip-heavy`로 돌린다. 앞 회차가 정상이었으면 다음 회차는 무거운 등급을 포함한다(A.6).
+1. 같은 SHA 체크아웃(운영 게이트웨이와 다른 디렉터리 권장)의 `apm_gateway/.env`에 소스 URL·토큰을 넣는다. 본체 `.env`에는 FabriX를 둔다. 실행 계정은 비root 전용 계정이다(E2 root면 exit 2).
+2. `testdata/apm_bench/local/`에 로컬 파일 3개를 둔다 — `placeholders.e2.yaml`(A.1 · 채움 검사) · `term_policy.local.yaml`(A.2 검토) · `bench.local.yaml`(A.3 `view_server_version: <운영자 확인 값>` 한 줄). 권한은 `chmod 700 testdata/apm_bench/local; chmod 600 testdata/apm_bench/local/*`. E2는 이 셋을 자동으로 찾는다(없거나 권한이 틀리면 exit 2). 명시 인자(`--placeholders`·`--term-policy`·`--view-server-version`)가 늘 우선이다.
+3. 뷰 서버 버전이 5.6.2.18 미만이면 실행하지 않는다(A.3).
+4. 업무 외 시간에 `python -m scripts.apm_bench --run --env e2 --smoke`(스모크) → 통과하면 `python -m scripts.apm_bench --run --env e2 --bg`(전체 · 분리 실행) → `python -m scripts.apm_bench --status`로 진행을 본다(A.6). E2 기본은 `--skip-heavy`·`--probe` 켬이다(끄기 `--no-skip-heavy`·`--no-probe`).
 5. 허용 범위와 자동 중단(§3.7 · A.5)은 벤치가 자동으로 지킨다. 중단되면 `run.json`의 `abort_reason`을 보고 다시 시도하지 않는다.
-6. 반출 전 관문: `leak_check.json`의 `passed: true`와 파일 6종을 확인한다. 반출하는 것은 그 6종뿐이다(A.7).
+6. 반출은 `results/apm_bench/<run_id>/`에서 선별 목록 + `manifest.sha256`으로만 한다(A.7). 관문 실패면 치환 전 재료는 `~/apm_bench_quarantine/<run_id>/`에 격리되고 반출하지 않는다.
 
 ### 10.7 자주 나는 오류와 대처
 
 | 증상 | 원인 | 대처 |
 |---|---|---|
-| exit 2 `뷰 서버 버전을 도구로 얻을 수 없다 — --view-server-version 으로 넣는다` | E2에서 버전을 주지 않았다. 허용 API에는 뷰 서버 버전이 없다(`/api/instance` 버전은 에이전트 버전) | 운영자가 확인한 값을 `--view-server-version 5.x.y.z`로 준다 |
+| exit 2 `뷰 서버 버전을 도구로 얻을 수 없다 — --view-server-version 으로 넣는다` | E2에서 버전을 주지 않았다. 허용 API에는 뷰 서버 버전이 없다(`/api/instance` 버전은 에이전트 버전) | 운영자가 확인한 값을 `testdata/apm_bench/local/bench.local.yaml`에 `view_server_version: 5.x.y.z` 한 줄로 적거나 `--view-server-version 5.x.y.z`로 준다(E2는 로컬 파일이 없으면 이 줄 대신 「E2 로컬 파일이 없다」 안내 3줄로 멈춘다) |
 | exit 2 `뷰 서버 5.6.2.1 < 5.6.2.18 — 실행하지 않는다(D-323 ①)` | 뷰 서버가 하한 미만이다(Jetty 세션 누적 위험) | 실행하지 않고 보고한다 |
 | exit 2 `E2 는 --placeholders(…)가 필수다` · exit 2 `자리표·허용 목록 파일을 읽지 못했다 — [Errno 2] …` | E2에 자리표 파일을 주지 않았거나 경로가 틀렸다. `--term-policy`도 같다(형식 위반 — 숫자만인 항목, 여러 토큰 등 — 도 exit 2) | 경로를 고친다. 자리표 채움 검사(A.1)를 먼저 돌린다 |
 | 턴이 `판정 불가 · 자리표 미등록: …` | 자리표 파일에 시나리오가 쓰는 이름이 없다(16종 필요) | A.1 채움 검사 명령으로 미등록 목록을 보고 채운다 |
@@ -488,15 +492,24 @@ python -m pytest tests/test_scripts/test_apm_bench_capture.py tests/test_scripts
 | `scripts/mlx_server.sh` `포트 … 를 다른 프로세스가 쓰고 있다` | 기본 8080이나 고른 포트가 이미 쓰이고 있다 | `python -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1])"`로 빈 포트를 골라 `LLM_MLX_BASE_URL`에 넣는다. 다른 세션의 프로세스는 종료하지 않는다 |
 | exit 1 `[중단] 기동 검증 실패: …` | 본체 설정 에코가 프로파일 `tier2_intent` 주입값과 다르거나, 사다리가 2단 `intent_orchestration`으로 확정되지 않았다 | 메시지 뒤 사유를 본다. E1이면 `--debug-raw`의 `server.log`에서 기동 에코와 `record_ladder_resolution` 줄을 본다 |
 | `.env`에 다른 MCP 소스가 있는데 그 값이 그대로 남는다 | dict env(`MCP_SOURCE_ENDPOINTS`·`MCP_SOURCE_TOKENS`)는 `.env` 값과 **키 단위로 병합**된다. 벤치는 APM 키 하나만 덮는다 | 정상 동작이다. APM 키가 벤치 게이트웨이 주소로 덮였는지는 `--debug-raw`의 `server.log`에서 확인한다 |
-| `[경고] apm_gateway/var 가 남았다` | 게이트웨이가 기본 스풀을 썼다(스풀 경로 주입 실패, 또는 수동으로 띄운 게이트웨이) | 벤치가 띄운 것이면 결함으로 보고한다. 끝나면 `ls apm_gateway/var`가 없어야 한다 |
+| `[경고] apm_gateway/var — 이번 run 에서 새 파일 N · 바뀐 파일 M …` | 벤치가 run 전후 `apm_gateway/var`를 비교했더니 새로 생기거나 바뀐 파일이 있다(스풀 경로 주입 실패, 또는 같은 체크아웃에서 다른 게이트웨이가 돌았다). 이전부터 있던 파일만이면 `[정보] … 이전부터 있음` 줄만 나온다 | 내용을 보고 판단한다. 벤치가 띄운 게이트웨이 탓이면 결함으로 보고한다 |
 | 기동 실패 `게이트웨이 포트 대기 30초 초과`·`게이트웨이 기동 실패(exit …)` | 의존 미설치(`mcp<2`), 또는 E2 `apm_gateway/.env` 형식 오류(`JENNIFER_SOURCES`와 단일 설정을 함께 씀 등) | 오류 끝부분이 메시지에 실린다. E1이면 `--debug-raw`의 `gateway.log`를 본다 |
-| `[실패] 누출 관문 — 위반 N건 {...} · 산출물 미기록` (exit 1) | 반출본에 원이름·카나리아·PII·사용자 정보가 남았다 | `<out>/leak_check.json`의 `violations[].rule`·파일·위치를 본다. `canary` → 자리표 파일의 카나리아가 새어 나왔다. `pii_value` → 인벤토리·자리표 원이름이나 GUID/txid 원값이 남았다(치환 누락). `user_info` → 로그인 계정·OS 사용자·호스트명·홈 경로·JWT·Bearer가 섞였다. `pii_regex` → IP 등 PII 정규식, 또는 이 run의 가짜 값이 아닌 GUID 모양. 허용 목록에 단어를 넣어 우회하지 않는다. 원인 코드를 고친 뒤 다시 돌린다 |
+| `[실패] 누출 관문 — 위반 N건 {...} · 산출물 미기록` (exit 1) | 반출본에 원이름·카나리아·PII·사용자 정보가 남았다 | `<out>/leak_check.json`의 `violations[].rule`·파일·위치를 본다. `canary` → 자리표 파일의 카나리아가 새어 나왔다. `pii_value` → 인벤토리·자리표 원이름이나 GUID/txid 원값이 남았다(치환 누락). `user_info` → 로그인 계정·OS 사용자·호스트명·홈 경로·JWT·Bearer가 섞였다. `pii_regex` → IP 등 PII 정규식, 또는 이 run의 가짜 값이 아닌 GUID 모양. 허용 목록에 단어를 넣어 우회하지 않는다. 원인 코드를 고친 뒤 다시 돌린다. 치환 전 재료는 `~/apm_bench_quarantine/<run_id>/`에 격리되므로(반출 금지 · 최대 14일) 위생 코드를 고친 체크아웃에서 `python -m scripts.apm_bench --regate <run_id>`로 실행 없이 재관문할 수 있다 · 지우기 `--purge <run_id>` |
 | `결과 : 실패 — run 무효 — APM 관측 턴 0` (exit 1) | 본체가 APM을 한 번도 부르지 않았다(게이트웨이 미연결·사다리 강등 등 · D-219 ③) | `사다리` 줄과 `호출` 줄을 본다. E1이면 `--debug-raw`로 `server.log`를 본다 |
 | `[중단] 가드 — latency_3x` / `timeout_ratio` / `quota_429` / `budget:<소스>` | 자동 중단(§3.7)이 걸렸다. 남은 시나리오는 `aborted:<사유>`로 기록된다 | E2에서는 다시 시도하지 않고 운영 조직에 보고한다. E1에서 다른 무거운 작업과 동시에 돌리면 지연 기준선이 흔들릴 수 있으므로 단독으로 돌린다 |
 | 분 단위 기간(「지난 30분」·「최근 10분」 등) 턴이 시간 되묻기로 실패 | **제품 결함**이다: `src/domain/time_spec.py` Unit에 minute이 없어 `time_expr`가 `invalid_unit`으로 끝난다(§9 W2). 판정은 `window_wrong`이고 지목은 `code:input_parser`·`code:plan_window` | few-shot으로 고칠 수 없다. 회차 교정 계획의 코드 교정 대상이다. MLX 대표 턴을 고를 때도 빼야 한다 |
 | `APM-JSERVER-domains#0`이 `source_miss`(`code:route_zone_gate`) | 존 사전 게이트가 APM 질문을 가로챈다(`src/api/routes/query.py` 존 게이트). 활성 시스템이 1개인 로컬 조건에서 나타난다 | 코드 교정 대상이다(제품 결함 ②) |
 | `Redis 연결 실패, 파일 캐시로 폴백` 경고 | 로컬에 Redis가 없다 | 무시해도 된다 |
 | `enable_semantic_routing 미입력 → …` 두 줄 | `.env`가 없어 사다리 플래그가 미입력이다 | 무시해도 된다. 벤치 본체는 프로파일 `tier2_intent`로 2단을 고정한다 |
+| exit 2 `E2 로컬 파일이 없다 — 아래 위치에 두고 다시 실행한다` | E2가 자동으로 찾는 `testdata/apm_bench/local/`의 `placeholders.e2.yaml`·`term_policy.local.yaml`·`bench.local.yaml` 중 없는 것이 있다(명시 인자도 없음) | `python -m scripts.apm_bench --init-local`로 양식을 만들고 `CHANGE_ME` 칸을 채운다(A.0~A.3). `bench.local.yaml`은 `view_server_version: <운영자 확인 값>` 한 줄이다 |
+| exit 2 `E2 로컬 파일에 바꾸지 않은 칸(값 CHANGE_ME)이 남았다` | `--init-local` 양식의 칸을 다 바꾸지 않았다(파일별 칸 수만 출력) | 해당 파일의 `CHANGE_ME` 값을 운영 값으로 바꾼다(A.1 · A.3) |
+| exit 2 `… 를 신뢰할 수 없다 — 심볼릭 링크다 / 현재 계정 소유가 아니다 / 그룹·기타 쓰기 권한이 있다` | 로컬 디렉터리·파일이 실행 계정 소유가 아니거나, 그룹·기타 쓰기 비트가 있거나, 심링크다 | `chmod 700 testdata/apm_bench/local; chmod 600 testdata/apm_bench/local/*` · 소유 계정에서 실행 · 심링크 대신 실파일 |
+| exit 2 `E2 는 root 로 실행하지 않는다` | E2를 root로 돌렸다 | 비root 전용 계정(3자 이상 무의미 이름 · 홈 경로에 운영 서버 이름 없음)으로 다시 돌린다 |
+| exit 2 `사용자 정보가 … 과 겹친다 — 종류 …` | 로그인 계정·OS 사용자·호스트 짧은 이름·홈 디렉터리 이름이 인벤토리 이름이나 코드 어휘와 겹친다(턴 송신 전에 멈춤 · 값 미출력) | 겹치지 않는 전용 실행 계정·호스트에서 다시 돌린다. 짧은 호스트명이 흔한 낱말이면 걸릴 수 있으므로 전용 실행 호스트를 권장한다 |
+| exit 2 `run 디렉터리에 실행 중인 run 이 있다(run.pid …)` | `--out`으로 준 run 디렉터리에 살아 있는(또는 다른 계정) `run.pid`가 있다 | 다른 `--out`을 주거나 그 run이 끝난 뒤 다시 돌린다(`--out`을 빼면 새 run_id 디렉터리를 쓴다) |
+| `--status`가 `프로세스 없음 — 강제 종료·크래시 추정(run 메타 미갱신)` | `--bg` 자식이 끝을 기록하지 못하고 죽었다 | `--bg` 없이 같은 명령을 다시 돌려 콘솔에서 traceback을 확인한다 |
+| `--status`가 `낡은 run.pid(다른 run 의 기록) — …` | 강제 종료 등으로 지난 run의 `run.pid`가 남았다 | 그 run은 끝난 것으로 본다. 새 run은 `--out` 없이 돌리면 새 디렉터리를 쓴다 |
+| `--status` 마지막 줄이 `(검증 불가)` | `run.log` 마지막 줄이 화이트리스트 문형이 아니다(값이 섞였을 수 있어 출력하지 않는다) | run이 끝난 뒤 `run_meta.json` 상태와 산출물로 판단한다 |
 
 ---
 
@@ -511,39 +524,46 @@ python -m pytest tests/test_scripts/test_apm_bench_capture.py tests/test_scripts
 | 코드 | 같은 SHA 체크아웃 · `pip install -e ".[dev,document,deepagents]"`. 운영 게이트웨이와 **다른 디렉터리를 권장**한다 — 그래야 벤치 전용 토큰을 그 체크아웃의 `apm_gateway/.env`에만 둘 수 있다. 같은 디렉터리여도 벤치는 운영 `.env`를 읽기만 하고 고치지 않는다 | — |
 | 본체 설정 | 그 체크아웃의 `.env`(FabriX 워커 평면, 내부망 정본 값). 벤치는 프로파일 `tier2_intent`를 덮어 2단을 고정한다 | 금지 |
 | 게이트웨이 설정 | 그 체크아웃의 `apm_gateway/.env`: `JENNIFER_SOURCES`(레지스트리 `solutions[apm].sources[].id`와 같은 id) + 소스별 `JENNIFER_<ID>_API_URL`·`JENNIFER_<ID>_API_TOKEN`(가능하면 벤치 전용 AIOps 토큰). 셸에 `JENNIFER_*`를 export해도 벤치가 걷어내므로 **반드시 이 파일**에 둔다. 속도·폴러·스풀·포트·주체 토큰은 벤치가 덮으므로 적지 않아도 된다 | 금지 |
-| 자리표 로컬 파일 | 저장소 밖(예: `~/apm_bench_local/placeholders.e2.yaml` · 권한 600) | 금지 |
-| 허용 목록 로컬 사본 | 저장소 밖(예: `~/apm_bench_local/term_policy.local.yaml` · 권한 600) | 금지 |
-| 산출 디렉터리 | 저장소 밖(예: `~/apm_bench_out/<회차>/`) | 6종만(A.7) |
+| 실행 계정 | 비root 전용 계정(3자 이상 무의미 이름 · 홈 경로에 운영 서버 이름 없음). E2를 root로 돌리면 exit 2. 짧은 호스트명이 흔한 낱말이면 사용자 정보 충돌로 멈출 수 있어 전용 실행 호스트를 권장한다 | — |
+| 자리표 로컬 파일 | `testdata/apm_bench/local/placeholders.e2.yaml`(A.1) | 금지 |
+| 허용 목록 로컬 사본 | `testdata/apm_bench/local/term_policy.local.yaml`(A.2) | 금지 |
+| 벤치 로컬 설정 | `testdata/apm_bench/local/bench.local.yaml` — `view_server_version: <운영자 확인 값>` 한 줄(A.3) | 금지 |
+| 산출 디렉터리 | 자동: 저장소 `results/apm_bench/<run_id>/`(`.gitignore` 대상 · `--out`으로 바꿀 수 있다) | 선별 목록만(A.7) |
+| 격리 디렉터리 | 자동: `~/apm_bench_quarantine/<run_id>/`(관문 실패 때만 · 700/600 · 최대 14일) | 금지 |
+
+`testdata/apm_bench/local/` 세 파일은 E2가 자동으로 찾는다(명시 인자가 늘 우선). 하나라도 없으면 둘 위치를 안내하고 exit 2다. 디렉터리·파일은 실행 계정 소유 · 그룹/기타 쓰기 비트 없음 · 심링크 아님이어야 한다(아니면 exit 2): `chmod 700 testdata/apm_bench/local; chmod 600 testdata/apm_bench/local/*`.
 
 본체가 인증을 켜 두었으면 벤치는 내장 테스트 계정(`scripts/scenario/runner.py` `DEFAULT_USER_ID`)으로 로그인하므로 그 계정이 있어야 한다.
 
 ### A.1 자리표 로컬 파일
 
-1. 형식 견본 `testdata/apm_bench/placeholders.e1.yaml`을 저장소 밖으로 복사한다: `mkdir -p ~/apm_bench_local && chmod 700 ~/apm_bench_local && cp testdata/apm_bench/placeholders.e1.yaml ~/apm_bench_local/placeholders.e2.yaml && chmod 600 ~/apm_bench_local/placeholders.e2.yaml`
+1. `python -m scripts.apm_bench --init-local`로 로컬 파일 3개 양식을 만든다(`testdata/apm_bench/local/` 700 · 파일 600 · 있는 파일은 덮어쓰지 않음 · 양식 원본 `testdata/apm_bench/local_templates/`·`term_policy.yaml` · 카나리아는 임의 토큰으로 채워짐). 값이 `CHANGE_ME`인 칸이 바꿀 칸이고, 하나라도 남으면 E2 `--run`이 실행 전에 칸 수만 안내하고 exit 2다. 이 경로·이름이면 E2가 자동으로 찾는다(다른 경로는 `--placeholders`).
 2. 운영 인벤토리(제니퍼 콘솔 · 운영 게이트웨이의 인스턴스·업무·서비스 목록)에서 칸을 채운다.
    - `values`(16종 필수): `inst_1`·`inst_2`(일반 인스턴스 둘) · `inst_c`(공동존 소스 인스턴스) · `inst_b`(은행존 소스 인스턴스) · `inst_w`(**운영자가 지정한 WAS 접촉 허용 인스턴스 1개** — 실행 중 요청 상세·로드된 클래스·환경변수 대상) · `host_1`·`host_2`(WAS 호스트명 — `host_2`는 FQDN 형태 권장) · `biz_1`·`biz_2`(업무명) · `svc_1`·`svc_2`(서비스·도메인명) · `url_1`(애플리케이션 URL 하나) · `pid_1`(`host_1` 위 WAS 프로세스 PID) · `guid_1`(최근 거래 GUID 하나) · `user_1`(제니퍼 계정 하나 — 민감 API라 응답 모양만 기록) · `domain_id_1`(도메인 번호). 값은 모두 문자열로 쓴다(`"4242"`).
    - `any_values`: 기대 인자 `*` 중 레지스트리 허용값 선언이 없는 인자의 값이다. E1 가짜 LLM 전용이므로 E2에서는 견본 그대로 둬도 된다.
-   - `sources`: 소스 되묻기 자동 답. `default`(그 밖 대상의 소스 id)와 `by_placeholder`(`inst_b: b0` · `inst_c: cm_prd`처럼 자리표 → 소스 id).
+   - `sources`: 소스 되묻기 자동 답. `default`(그 밖 대상의 소스 id)와 `by_placeholder`(`inst_b: b0` · `inst_c: cm_prd`처럼 자리표 → 소스 id). 대상 자리표(`inst_*`·`host_*`·`biz_*`·`svc_*`)의 실제 소스를 **모두** 채운다 — 빠진 자리표는 자동 답이 `default`로 보내므로 벤치가 실행 전 키트 검사에서 「`by_placeholder` 미대응」 경고를 낸다.
    - `answers`: 소스 id → 자동 답 문구. 라우트가 그 소스 하나로 읽는 말이어야 한다(D-322 부기 ①). D-329 확정 표는 소스 간 공유 단어가 0이라 그 소스의 `terms` 한 단어(예 b0 「은행 제니퍼」)면 하나로 읽힌다.
    - `canaries`: 누출 관문 카나리아. 운영 데이터에 절대 나오지 않을 고유 문자열 1~2개(예: 임의 난수 토큰)를 넣는다.
 3. 채움 검사(시나리오가 쓰는 자리표가 다 있는지 확인). 실측: E1 사본은 `필요 16 · 미등록 없음`으로 exit 0, 일부를 비운 파일은 미등록 15개 목록을 내고 exit 1.
 
 ```bash
-python -c "import re,sys,yaml; from pathlib import Path; need=set(re.findall(r'\{\{(\w+_(?:\d+|[a-z]))\}\}', Path('testdata/apm_bench/scenarios.yaml').read_text())); v=(yaml.safe_load(open(sys.argv[1])) or {}).get('values') or {}; miss=sorted(n for n in need if not str(v.get(n) or '').strip()); print(f'필요 {len(need)} · 미등록', miss or '없음'); sys.exit(1 if miss else 0)" ~/apm_bench_local/placeholders.e2.yaml
+python -c "import re,sys,yaml; from pathlib import Path; need=set(re.findall(r'\{\{(\w+_(?:\d+|[a-z]))\}\}', Path('testdata/apm_bench/scenarios.yaml').read_text())); v=(yaml.safe_load(open(sys.argv[1])) or {}).get('values') or {}; miss=sorted(n for n in need if not str(v.get(n) or '').strip()); print(f'필요 {len(need)} · 미등록', miss or '없음'); sys.exit(1 if miss else 0)" testdata/apm_bench/local/placeholders.e2.yaml
 ```
+
+4. 실행하면 벤치가 키트 검사를 자동으로 한다(값 미출력): 자리표마다 운영 인벤토리에 「있음·없음·여럿·검사 불가」. 「없음」 자리표를 쓴 일반 턴은 판정 불가로 분모에서 빠지고, 「여럿」은 경고만 낸다. 인벤토리 도구가 실패한 종류는 「검사 불가」로 두고 분리하지 않는다. 「없음」이 나오면 그 칸을 인벤토리 실값으로 고친다.
 
 ### A.2 `term_policy` 검토 (기본 거부)
 
 1. 저장소 정본 `testdata/apm_bench/term_policy.yaml`은 빈 목록이다. 이 상태면 이름 토큰이 전부 형식 보존 가짜 값으로 바뀐다. 검토 절차는 파일 머리 주석 1~4를 따른다.
-2. 로컬 사본을 만든다: `cp testdata/apm_bench/term_policy.yaml ~/apm_bench_local/term_policy.local.yaml && chmod 600 ~/apm_bench_local/term_policy.local.yaml`.
+2. 로컬 사본은 `--init-local`이 만든다(빈 목록 그대로도 유효 — 가장 보수적).
 3. 운영자가 사람·조직·고객·고유 시스템을 식별하지 않는 업무 일반 단어만 `terms:`에 넣는다(업무 분류어·계층 약어·환경 약어 등). 한 항목은 토큰 하나여야 하고 숫자만인 항목은 받지 않는다(형식이 틀리면 run 시작 전에 exit 2). 한↔영 약어 쌍은 둘 다 넣거나 둘 다 뺀다.
 4. 넣은 단어 수와 검토자·날짜는 폐쇄망 반출 기록에 남긴다(단어 자체는 `report.md` §11에 수로만 나온다).
-5. 실행할 때 `--term-policy ~/apm_bench_local/term_policy.local.yaml`로 넘긴다. 저장소 파일을 고치지 않는다.
+5. E2는 `testdata/apm_bench/local/term_policy.local.yaml`을 **자동으로 읽는다**(`--term-policy`를 붙이지 않아도 된다 · 다른 경로를 쓸 때만 `--term-policy <파일>` — 명시 인자가 우선). 저장소 파일을 고치지 않는다.
 6. ASCII 2자 토큰(`db`·`ap` 등)과 camelCase 결합 소문자형도 기본 거부다. 토큰 사전은 반출 레코드의 문자열 값 전부에 적용되므로, 이름 토큰과 같은 일반 코드 값(`domain`·`db` 등)도 허용 목록에 없으면 가짜 값으로 바뀐다(§3.8 구현 부기). 반출본 `report.md` §11 위생 주의에서 손실을 확인하고 다음 회차 허용 목록에 반영한다.
 
 ### A.3 뷰 서버 버전
 
-허용 API로는 뷰 서버 버전을 얻을 수 없다. 운영자가 제니퍼 콘솔이나 서버 정보에서 확인해 `--view-server-version`으로 넣는다. **5.6.2.18 미만이면 실행하지 않고 보고한다**(그 아래는 토큰 호출마다 Jetty 세션이 쌓인다 · §3.7). 버전 값은 `run.json`에 남고, 반출물에도 그대로 실린다(운영 이름이 아님).
+허용 API로는 뷰 서버 버전을 얻을 수 없다. 운영자가 제니퍼 콘솔이나 서버 정보에서 확인해 `testdata/apm_bench/local/bench.local.yaml`에 `view_server_version: 5.6.5.11`(예)처럼 한 줄로 적는다(권한 600). E2가 자동으로 읽고, `--view-server-version`을 주면 그 값이 우선한다. **5.6.2.18 미만이면 실행하지 않고 보고한다**(그 아래는 토큰 호출마다 Jetty 세션이 쌓인다 · §3.7). 버전 값은 `run.json`에 남고, 반출물에도 그대로 실린다(운영 이름이 아님).
 
 ### A.4 벤치 전용 게이트웨이
 
@@ -571,24 +591,21 @@ python -c "import re,sys,yaml; from pathlib import Path; need=set(re.findall(r'\
 
 1. 시간대: 업무 외 시간(정확한 시간대는 운영 조직과 협의 · §6 ①). 시작 전에 운영 게이트웨이와 뷰 서버가 정상인지 운영자가 확인한다.
 2. 정적 확인: `python -m scripts.apm_bench --dry-run`(exit 0)과 A.1 채움 검사(exit 0).
-3. **1회차(무거운 등급 끔)**:
-   ```bash
-   python -m scripts.apm_bench --run --env e2 \
-     --placeholders ~/apm_bench_local/placeholders.e2.yaml \
-     --term-policy ~/apm_bench_local/term_policy.local.yaml \
-     --view-server-version <운영자 확인 값> --skip-heavy --probe \
-     --out ~/apm_bench_out/r1
-   ```
-   예상 호출 수는 약 1,300회(§3.7)이고, 초당 2회 상한이라 호출만으로 10분 이상 걸린다. E1 소요(약 10분)는 참고만 한다.
-4. 1회차가 중단 없이 끝났고 타임아웃·429가 0이면, 다음 회차에서 `--skip-heavy`를 빼고 돈다(무거운 등급은 맨 끝·최대 5개).
-5. 끝나면 확인한다: `ls apm_gateway/var`가 없어야 하고, 벤치가 띄운 프로세스가 남지 않아야 한다(`ps`에 `apm_bench._serve`·`python -m apm_gateway` 중 벤치 세션 것이 없을 것).
+3. **스모크**: `python -m scripts.apm_bench --run --env e2 --smoke` — 내장 10시나리오(`plans/164` §5 1단계)만 돈다. E2 기본으로 `testdata/apm_bench/local/` 세 파일 자동 · `--skip-heavy`·`--probe` 켬이고, 콘솔에 「자동: …」 줄로 출처만 찍는다. 실행 전 점검(root · 사용자 정보 충돌 · 키트 검사 · `by_placeholder` 미대응 · `apm_gateway/var` 기준)이 exit 2나 경고를 내면 고친 뒤 진행한다. 관문을 통과하지 못하면 전체를 돌리지 않는다(A.7).
+4. **전체(무거운 등급 끔)**: `python -m scripts.apm_bench --run --env e2 --bg` — 분리 실행이라 run_id와 `--status` 명령을 찍고 바로 끝난다(`nohup`·리다이렉트 불필요 · 콘솔은 `results/apm_bench/<run_id>/run.log`). 진행은 `python -m scripts.apm_bench --status [<run_id>]`(생략 = 최근 run · 상태·PID·경과·`run.log` 마지막 줄)로 본다. 예상 호출 수는 약 1,300회(§3.7)이고, 초당 2회 상한이라 호출만으로 10분 이상 걸린다(E2 1회차 실측 8,102.7초 · `plans/164` §2.8).
+5. 전체 run이 중단 없이 끝났고 타임아웃·429가 0이면, 다음 회차에서 `--no-skip-heavy`로 무거운 등급을 포함한다(맨 끝·최대 5개).
+6. 끝나면 확인한다: `run_meta.json` 상태가 `done`(`aborted`면 A.5) · 콘솔의 `apm_gateway/var` 전후 비교 줄(새로 생기거나 바뀐 파일이 있으면 `[경고]` — 내용을 보고 판단) · 벤치가 띄운 프로세스가 남지 않을 것(`ps`에 `apm_bench._serve`·`python -m apm_gateway` 중 벤치 세션 것이 없을 것).
 
 ### A.7 반출 관문과 목록
 
-- **관문**: `<out>/leak_check.json`이 `"passed": true`이고, 디렉터리에 아래 6종이 모두 있을 때만 반출한다. 관문에 실패하면 `leak_check.json`만 남는다. 이 경우 반출하지 않고 `violations[].rule`을 외부망에 말로 알린다(값은 알리지 않는다).
-- **반출 목록(6종)**: `run.json` · `trace.jsonl` · `probe.jsonl` · `coverage.md` · `report.md` · `leak_check.json`.
-- **반출 금지**: 자리표 로컬 파일 · 허용 목록 로컬 사본 · 본체·게이트웨이 `.env` · 게이트웨이·서버 로그 · 캡처(`capture.jsonl`) · 체크포인트 · 세션 임시 디렉터리 · `--debug-raw`(E2는 거부됨) · 화면 캡처 · `logs/` 아래 파일 일체.
+- **run 디렉터리** `results/apm_bench/<run_id>/`(자동): `run.log`(화이트리스트 직렬화본만 · 관문 실패 시 억제) · `run.pid`(끝나면 삭제) · `run_meta.json`(상태 `running` → `done`/`aborted` · 시작/끝 · sha · flags · kit) · `scenarios.yaml` 사본 · `summary_safe.json` · `leak_check.json` · `manifest.sha256` · (관문 통과 시) 6종 산출물.
+- **관문**: `leak_check.json`이 `"passed": true`이고 아래 6종이 모두 있을 때 「통과」다. 관문에 실패하면 6종은 기록되지 않고, 치환 전 재료는 `~/apm_bench_quarantine/<run_id>/`(700/600 · 저장소·`results/`·run 디렉터리 하위 거부 · 최대 14일)에 격리된다. 위생 코드를 고친 체크아웃에서 `python -m scripts.apm_bench --regate <run_id>`로 실행 없이 다시 관문을 돌리고, 지우기는 `--purge <run_id>`(생략 시 14일 지난 격리본만 — 이름이 run_id 형식이고 격리본 표지가 있는 것만)다. `violations[].rule`은 외부망에 알린다(값은 알리지 않는다).
+- **반출 방식**: `manifest.sha256`에 적힌 선별 목록으로만 옮긴다 — 디렉터리 통째 복사·압축 금지.
+- **반출 목록 — 관문 통과**: 6종(`run.json` · `trace.jsonl` · `probe.jsonl` · `coverage.md` · `report.md` · `leak_check.json`) + `summary_safe.json` + `run.log` + `run_meta.json` + `manifest.sha256`.
+- **반출 목록 — 관문 실패**: `leak_check.json` + `summary_safe.json`(있을 때만) + `run.log` + `run_meta.json` + `manifest.sha256`.
+- **반출 금지**: `~/apm_bench_quarantine/`(격리본) · `testdata/apm_bench/local/`(`.gitignore` 대상 · 저장소째 반출 시 제외 — 자리표 로컬 파일 · 허용 목록 로컬 사본 · `bench.local.yaml`) · 본체·게이트웨이 `.env` 류 · 게이트웨이·서버 로그 · 캡처(`capture.jsonl`) · 체크포인트 · 세션 임시 디렉터리 · `--debug-raw`(E2는 거부됨) · 화면 캡처 · `logs/` 아래 파일 일체 · run 디렉터리의 `scenarios.yaml` 사본(매니페스트 밖) · 콘솔을 따로 리다이렉트한 파일(강제 종료 시 재검사가 안 된다 — `run.log`를 쓴다).
 - **`logs/`(본체 감사 로그 등)**: 운영 이름이 그대로 남는다. 감사 로그는 끄지 않고(보안 원칙 — 모든 질의 실행은 감사 대상) 내부망 실행 머신의 보존 정책을 따른다. 외부 매체로 옮기지 않는다(2026-10-13 확정 · D-323 부기).
+- **감사 로그 진단표 `audit_digest.json`(`plans/164` §4.0 W0a · 2026-10-14 추가)**: `logs/` 원본이 아니라 `python -m scripts.apm_bench --audit-digest [<run_id>]`가 화이트리스트 어휘(시나리오 id·보기 id·outcome·사유 코드·되묻기 종류·숫자)로만 만든 파생 요약이다. run_id 모드면 run 디렉터리에 쓰인다. **사람이 파일을 열어 운영 이름·호스트·사용자 id가 없음을 확인한 뒤** 이 파일만 반출한다(절차 `plans/164` §5 W0a). 본체 `logs/` 원본은 옮기지도 반출하지도 않는다.
 - 반출 전에 `report.md` 머리의 `SHA`와 `fingerprints`를 확인한다. 외부망은 같은 SHA로 F1~F4를 다시 렌더한다(few-shot 원문은 반출하지 않는다).
 
 ### A.8 회차 교정 계획으로 넘기는 법
@@ -621,6 +638,7 @@ python -c "import re,sys,yaml; from pathlib import Path; need=set(re.findall(r'\
 
 ## 변경 이력
 
+- **v1.4**(2026-10-14) — 실행 명령 간소화(W2b) — results/apm_bench/<run_id>/ 자동 · E2 한 줄 · --smoke·--bg·--status · audit-digest run_id 모드(§10 머리 · 10.3 머리 주석 · 10.6 · 10.7 새 행 · A.0 · A.1 · A.3 · A.6 · A.7 · `plans/164` §5).
 - **v1.2**(2026-10-13) — 외부망 구현 W0~W7(`scripts/apm_bench/` 14모듈 · 본체 emit 3지점 · 테스트 10파일 248건) · 독립 검증 지적(High 1 · Medium 4 · Low 6) 교정 · §10 실행 방법 · 부록 A 폐쇄망 키트 · 상태 TODO → WIP(내부망 W8 잔여) · 파일명 `152-TODO-…` → `152-WIP-…`.
 - **v1.1**(2026-10-12) — 인터뷰 확정 반영: 정확도 중심 · API 전수(경로 × 선택 인자) 시나리오 · 개발 70/홀드아웃 30 · 운영 뷰 서버 허용 범위(§3.7) · 반출 근거 묶음 · 토큰 단위 치환 + 일반 단어 허용 목록 · few-shot 위치 F1~F4 · `fewshot_copy` · 개선 루프(§3.9) · D-323.
 - **v1.0**(2026-10-12) — 최초 작성.
