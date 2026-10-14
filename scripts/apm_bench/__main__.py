@@ -14,15 +14,17 @@
                     --mlx-url · --mlx-model · --probe/--no-probe(P층 — 빈 결과 판별 · 허용값
                     탐침 · 기본 E2 켬 · E1 끔)
                     --placeholders <파일>(E1 기본 testdata/apm_bench/placeholders.e1.yaml ·
-                    E2 기본 ~/apm_bench_local/placeholders.e2.yaml · 저장소 밖 로컬 전용) ·
+                    E2 기본 testdata/apm_bench/local/placeholders.e2.yaml · 로컬 전용 ·
+                    커밋·반출 금지) ·
                     --only <id…> · --smoke(plans/164 §5 스모크 10개 · --only 와 함께 못 씀) ·
                     --limit N · --debug-raw <dir>(E1 전용 원본)
-                    · --view-server-version(E2 필수 · 기본 ~/apm_bench_local/bench.local.yaml
+                    · --view-server-version(E2 필수 · 기본 testdata/apm_bench/local/bench.local.yaml
                     `view_server_version` · 5.6.2.18 미만이면 exit 2)
                     · --skip-heavy/--no-skip-heavy(무거운 등급 끄기 — 건너뜀 `heavy_off` · 기본
                     E2 켬 · E1 끔)
                     · --term-policy <파일>(일반 단어 허용 목록 · E1 기본 testdata/apm_bench/
-                    term_policy.yaml = 빈 목록 · E2 기본 ~/apm_bench_local/term_policy.local.yaml)
+                    term_policy.yaml = 빈 목록 · E2 기본
+                    testdata/apm_bench/local/term_policy.local.yaml)
                     · --bg(분리 실행 — run id · `--status` 명령을 찍고 바로 exit 0)
                     E2 로컬 파일이 없으면 둘 위치를 안내하고 exit 2(plans/164 W2b) — 자동으로
                     채운 값은 「자동: …」 한 줄씩(출처만) 찍는다
@@ -34,6 +36,8 @@
                     관문 성패와 무관) · `manifest.sha256`(반출 허용 파일 목록) · `scenarios.yaml`
                     (저장소 안 시나리오 사본). 관문 실패면 치환 전 재료를 저장소 밖 격리 경로에
                     700/600 으로 보관한다(반출 금지 · 14일 보존)
+    --init-local    E2 로컬 파일 양식 3개를 testdata/apm_bench/local/ 에 만든다(700/600 ·
+                    있는 파일은 그대로 · 바꿀 칸은 값 CHANGE_ME — 남으면 E2 --run 이 exit 2)
     --status [RUN_ID] run 상태(run 메타 · PID 생존 · 경과 · run.log 마지막 줄 · 생략 = 최근 run)
     --regate RUN    격리본 → 치환 → 근거 → 관문 → 산출물 재기록(실행 없음 · run id · 격리 디렉터리 ·
                     run 디렉터리) — 격리본이 현재 계정 소유 · 700 이 아니면 exit 2
@@ -268,13 +272,18 @@ def make_run_id(env: str, sha: str, now: datetime | None = None, *, smoke: bool 
     return f"{stamp}-{env}-{sha[:7]}" + ("-smoke" if smoke else "")
 
 
-#: 로컬 전용 파일 디렉터리(`~/apm_bench_local/` — 저장소 밖 · 반출 금지 · plans/164 W2b).
-LOCAL_DIRNAME = "apm_bench_local"
+#: 로컬 전용 파일 디렉터리(`testdata/apm_bench/local/` — `.gitignore` 보호선 · 커밋·반출 금지 ·
+#: plans/164 W2b · D-323 부기 2026-10-14 — 종전 `~/apm_bench_local/`).
+LOCAL_DIR = SCENARIOS_PATH.parent / "local"
+LOCAL_LABEL = "testdata/apm_bench/local"
 LOCAL_PLACEHOLDERS = "placeholders.e2.yaml"
 LOCAL_TERM_POLICY = "term_policy.local.yaml"
 #: 작은 로컬 설정(키 화이트리스트 `BENCH_LOCAL_KEYS` — 모르는 키는 경고 후 무시).
 LOCAL_BENCH = "bench.local.yaml"
 BENCH_LOCAL_KEYS: frozenset[str] = frozenset({"view_server_version"})
+#: `--init-local` 양식(저장소 — 운영 값 없음). 바꿀 칸은 값이 `UNFILLED`로 시작한다.
+LOCAL_TEMPLATES = SCENARIOS_PATH.parent / "local_templates"
+UNFILLED = "CHANGE_ME"
 #: `--smoke` 내장 목록(plans/164 §5 1단계 — 앞 6개 = 1회차 위반 턴 · 뒤 4개 = 대상 종류별 대표).
 SMOKE_IDS: tuple[str, ...] = (
     "APM-BIZTREND-interval", "APM-PROC-pid-host", "APM-JSERVER-dbpath",
@@ -284,13 +293,13 @@ SMOKE_IDS: tuple[str, ...] = (
 
 
 def local_path(name: str) -> Path:
-    """`~/apm_bench_local/<name>`(호출 시점 홈)."""
-    return Path.home() / LOCAL_DIRNAME / name
+    """`testdata/apm_bench/local/<name>`."""
+    return LOCAL_DIR / name
 
 
-def tilde(name: str) -> str:
-    """콘솔용 로컬 파일 표기(홈 경로 = 사용자 정보라 `~`로 적는다)."""
-    return f"~/{LOCAL_DIRNAME}/{name}"
+def local_label(name: str) -> str:
+    """콘솔용 로컬 파일 표기(저장소 상대 경로 — 절대 경로에는 홈 = 사용자 정보가 섞인다)."""
+    return f"{LOCAL_LABEL}/{name}"
 
 
 #: 로컬 파일 신뢰 조건 안내(위반 시 고정 문구 — 경로는 `~` 표기 · 값 미출력).
@@ -322,16 +331,17 @@ def untrusted_reason(path: Path, *, directory: bool = False) -> str | None:
 
 
 def local_untrusted(name: str) -> str | None:
-    """`~/apm_bench_local/`과 그 안 `name`의 신뢰 검사 → 중단 문구(없으면 None)."""
-    why = untrusted_reason(Path.home() / LOCAL_DIRNAME, directory=True)
+    """`testdata/apm_bench/local/`과 그 안 `name`의 신뢰 검사 → 중단 문구(없으면 None)."""
+    why = untrusted_reason(LOCAL_DIR, directory=True)
     if why:
-        return f"~/{LOCAL_DIRNAME}/ 를 신뢰할 수 없다 — {why} ({TRUST_HINT})"
+        return f"{LOCAL_LABEL}/ 를 신뢰할 수 없다 — {why} ({TRUST_HINT})"
     why = untrusted_reason(local_path(name))
-    return f"{tilde(name)} 를 신뢰할 수 없다 — {why} ({TRUST_HINT})" if why else None
+    return f"{local_label(name)} 를 신뢰할 수 없다 — {why} ({TRUST_HINT})" if why else None
 
 
 def read_bench_local() -> tuple[dict[str, str], str | None]:
-    """`~/apm_bench_local/bench.local.yaml` → (화이트리스트 키 값, 못 읽은 사유). 없으면 ({}, None).
+    """`testdata/apm_bench/local/bench.local.yaml` → (화이트리스트 키 값, 못 읽은 사유).
+    없으면 ({}, None).
 
     값은 문자열로 바꾼다(YAML 이 `5.6`을 실수로 읽는다). 모르는 키는 이름 없이 건수만 경고한다.
     """
@@ -346,18 +356,74 @@ def read_bench_local() -> tuple[dict[str, str], str | None]:
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:  # 원문·경로 미출력
-        return {}, f"{tilde(LOCAL_BENCH)} 를 읽지 못했다 — {type(exc).__name__}"
+        return {}, f"{local_label(LOCAL_BENCH)} 를 읽지 못했다 — {type(exc).__name__}"
     if data is None:
         return {}, None
     if not isinstance(data, dict):
-        return {}, f"{tilde(LOCAL_BENCH)} 는 `키: 값` 매핑이어야 한다"
+        return {}, f"{local_label(LOCAL_BENCH)} 는 `키: 값` 매핑이어야 한다"
     unknown = [k for k in data if k not in BENCH_LOCAL_KEYS]
     if unknown:
-        say(f"[경고] {tilde(LOCAL_BENCH)} 모르는 키 {len(unknown)}개 무시 — 아는 키: "
+        say(f"[경고] {local_label(LOCAL_BENCH)} 모르는 키 {len(unknown)}개 무시 — 아는 키: "
             f"{', '.join(sorted(BENCH_LOCAL_KEYS))}")
     return {k: str(v) for k, v in data.items()
             if k in BENCH_LOCAL_KEYS and isinstance(v, (str, int, float))
             and not isinstance(v, bool)}, None
+
+
+def unfilled_count(path: Path) -> int:
+    """YAML 파일에서 값이 `UNFILLED`로 시작하는 칸 수(주석은 세지 않는다 · 못 읽으면 0 — 읽기
+    오류는 뒤 사전 점검이 따로 낸다)."""
+    import yaml
+
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return 0
+
+    def walk(node: object) -> int:
+        if isinstance(node, dict):
+            return sum(walk(v) for v in node.values())
+        if isinstance(node, list):
+            return sum(walk(v) for v in node)
+        return int(isinstance(node, str) and node.strip().startswith(UNFILLED))
+
+    return walk(data)
+
+
+def cmd_init_local(args: argparse.Namespace) -> int:
+    """`testdata/apm_bench/local/`에 E2 로컬 파일 3개 양식을 만든다(디렉터리 700 · 파일 600 ·
+    있는 파일은 덮어쓰지 않는다). 자리표 카나리아는 임의 토큰으로 채운다. 바꿀 칸 수와 다음 명령을
+    찍는다."""
+    import secrets
+
+    from .hygiene import TERM_POLICY_PATH
+
+    base = LOCAL_DIR
+    why = untrusted_reason(base, directory=True)
+    if why:
+        say(f"[중단] {LOCAL_LABEL}/ 를 신뢰할 수 없다 — {why} ({TRUST_HINT})")
+        return 2
+    base.mkdir(mode=0o700, exist_ok=True)
+    base.chmod(0o700)
+    for name, src in ((LOCAL_PLACEHOLDERS, LOCAL_TEMPLATES / LOCAL_PLACEHOLDERS),
+                      (LOCAL_TERM_POLICY, TERM_POLICY_PATH),
+                      (LOCAL_BENCH, LOCAL_TEMPLATES / LOCAL_BENCH)):
+        dest = local_path(name)
+        if dest.exists() or dest.is_symlink():
+            say(f"있음(그대로 둠): {local_label(name)}")
+        else:
+            text = src.read_text(encoding="utf-8")
+            for slot in ("__CANARY_1__", "__CANARY_2__"):
+                text = text.replace(slot, f"cnry-{secrets.token_hex(8)}")
+            fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            say(f"만듦        : {local_label(name)}")
+        count = unfilled_count(dest)
+        if count:
+            say(f"  → 바꿀 칸 {count}개(값이 {UNFILLED}) — 파일 머리 주석의 「바꾸는 법」을 따른다")
+    say("다음: 값을 채운 뒤 python -m scripts.apm_bench --run --env e2 --smoke")
+    return 0
 
 
 def apply_run_defaults(args: argparse.Namespace) -> dict[str, str | None] | int:
@@ -367,8 +433,9 @@ def apply_run_defaults(args: argparse.Namespace) -> dict[str, str | None] | int:
     소유 · 심볼릭 링크 아님 · 그룹·기타 쓰기 없음이어야 한다 · `untrusted_reason`).
 
     - `--smoke` → `--only SMOKE_IDS`(`--only`와 함께면 2)
-    - E2: `--placeholders`·`--term-policy` 미지정 → `~/apm_bench_local/` 기본 파일 · 뷰 서버 버전
-      미지정 → `bench.local.yaml` `view_server_version` · `--skip-heavy`·`--probe` 미지정 → 켬
+    - E2: `--placeholders`·`--term-policy` 미지정 → `testdata/apm_bench/local/` 기본 파일 ·
+      뷰 서버 버전 미지정 → `bench.local.yaml` `view_server_version` ·
+      `--skip-heavy`·`--probe` 미지정 → 켬
     - E1: 종전 그대로(저장소 testdata 자리표 · 허용 목록 · 두 플래그 끔)
     """
     args.env = args.env or "e1"
@@ -405,9 +472,9 @@ def apply_run_defaults(args: argparse.Namespace) -> dict[str, str | None] | int:
         if local_path(name).is_file():
             setattr(args, attr, str(local_path(name)))
             sources[attr] = "local_default"
-            say(f"자동: {what} — {tilde(name)}")
+            say(f"자동: {what} — {local_label(name)}")
         else:
-            missing.append(f"  {tilde(name)} — {what}(또는 {flag} <파일>)")
+            missing.append(f"  {local_label(name)} — {what}(또는 {flag} <파일>)")
     if not args.view_server_version:
         values, why = read_bench_local()
         if why:
@@ -416,13 +483,30 @@ def apply_run_defaults(args: argparse.Namespace) -> dict[str, str | None] | int:
         if values.get("view_server_version"):
             args.view_server_version = values["view_server_version"]
             sources["view_server_version"] = "bench_local"
-            say(f"자동: 뷰 서버 버전 — {tilde(LOCAL_BENCH)}")
+            say(f"자동: 뷰 서버 버전 — {local_label(LOCAL_BENCH)}")
         else:
-            missing.append(f"  {tilde(LOCAL_BENCH)} — `view_server_version: <운영자 확인 값>` 한 줄"
+            missing.append(f"  {local_label(LOCAL_BENCH)} — "
+                           "`view_server_version: <운영자 확인 값>` 한 줄"
                            "(도구로 얻을 수 없다 · 또는 --view-server-version)")
     if missing:
         say("[중단] E2 로컬 파일이 없다 — 아래 위치에 두고 다시 실행한다(저장소 밖 · 반출 금지):")
         for line in missing:
+            say(line)
+        say("  (양식 만들기: python -m scripts.apm_bench --init-local)")
+        return 2
+    unfilled: list[str] = []
+    count = unfilled_count(Path(args.placeholders).expanduser())
+    if count:
+        label = (local_label(LOCAL_PLACEHOLDERS) if sources["placeholders"] == "local_default"
+                 else "--placeholders 파일")
+        unfilled.append(f"  {label} — {count}칸")
+    if (sources["view_server_version"] == "bench_local"
+            and str(args.view_server_version).strip().startswith(UNFILLED)):
+        unfilled.append(f"  {local_label(LOCAL_BENCH)} — view_server_version")
+    if unfilled:
+        say(f"[중단] E2 로컬 파일에 바꾸지 않은 칸(값 {UNFILLED})이 남았다 — 운영 값으로 바꾼다"
+            "(파일 머리 주석 「바꾸는 법」):")
+        for line in unfilled:
             say(line)
         return 2
     for attr, flag in (("skip_heavy", "--skip-heavy"), ("probe", "--probe")):
@@ -1859,6 +1943,7 @@ MODES: dict[str, Callable[[argparse.Namespace], int]] = {
     "regate": cmd_regate,
     "purge": cmd_purge,
     "status": cmd_status,
+    "init_local": cmd_init_local,
 }
 
 
@@ -1888,6 +1973,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="격리본 삭제(run id · 생략 = 14일 지난 것 전부)")
     mode.add_argument("--status", nargs="?", const="", default=None, metavar="RUN_ID",
                       help="run 상태(run id · run 디렉터리 · 생략 = 최근 run)")
+    mode.add_argument("--init-local", action="store_true",
+                      help="E2 로컬 파일 양식 3개 → testdata/apm_bench/local/(있으면 그대로 둠)")
     parser.add_argument("--scenarios", default=None,  # None = 기본 경로(명시 여부 판별용)
                         help=f"시나리오 YAML(기본 {SCENARIOS_PATH.relative_to(REPO_ROOT)})")
     parser.add_argument(
@@ -1907,7 +1994,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="--run P층(빈 결과 판별 · 허용값 탐침 · 기본 E2 켬 · E1 끔)")
     parser.add_argument("--placeholders", default=None,
                         help="--run 자리표 파일(E1 기본 testdata · E2 기본 "
-                             f"{tilde(LOCAL_PLACEHOLDERS)})")
+                             f"{local_label(LOCAL_PLACEHOLDERS)})")
     parser.add_argument("--only", nargs="+", default=None, metavar="ID", help="--run 시나리오 id")
     parser.add_argument("--smoke", action="store_true",
                         help=f"--run 스모크 목록 {len(SMOKE_IDS)}개(plans/164 §5 · --only 와 함께 "
@@ -1916,7 +2003,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--debug-raw", default=None, help="--run E1 원본 디렉터리")
     parser.add_argument("--view-server-version", default=None,
                         help="--run E2 뷰 서버 버전(운영자 입력 · 5.6.2.18 이상 · 기본 "
-                             f"{tilde(LOCAL_BENCH)} view_server_version)")
+                             f"{local_label(LOCAL_BENCH)} view_server_version)")
     parser.add_argument("--skip-heavy", action=argparse.BooleanOptionalAction, default=None,
                         help="--run 무거운 등급 시나리오를 돌지 않는다(건너뜀 heavy_off · 기본 "
                              "E2 켬 · E1 끔)")
@@ -1925,7 +2012,7 @@ def build_parser() -> argparse.ArgumentParser:
                              f"비밀번호는 환경변수 {PASSWORD_ENV} 또는 프롬프트")
     parser.add_argument("--term-policy", default=None,
                         help="--run 일반 단어 허용 목록(E1 기본 testdata/apm_bench/"
-                             f"term_policy.yaml · E2 기본 {tilde(LOCAL_TERM_POLICY)})")
+                             f"term_policy.yaml · E2 기본 {local_label(LOCAL_TERM_POLICY)})")
     parser.add_argument("--since", default=None,
                         help="--audit-digest 창 시작(ISO-8601 · 오프셋 필수)")
     parser.add_argument("--until", default=None,

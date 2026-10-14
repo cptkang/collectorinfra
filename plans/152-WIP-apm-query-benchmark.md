@@ -433,8 +433,8 @@ python -m pytest tests/test_scripts/test_apm_bench_capture.py tests/test_scripts
 - 일정은 `guard.schedule`이 정한다. 무거운 등급(heavy)은 맨 끝에 최대 5개를 돌리고, 앞 단계에 중단·타임아웃·429가 하나라도 있으면 건너뛴다(`heavy_gate`). E2에서는 `e2_skip`을 건너뛰고 WAS 접촉 API는 경로당 1회만 돈다(`was_once`).
 - `--probe`는 P층(§3.3)이다. 빈 결과를 같은 인자로 재호출하고, `interval_minute`·`sort_by_metrics`·`max_row` 허용값을 1회씩 탐침한다. 탐침 대상은 자리표 `inst_1`이다.
 - `--debug-raw <dir>`는 E1 전용이다. 치환 전 `records.jsonl`·`meta.json`과 `server.log`·`gateway.log`·`capture.jsonl`을 남긴다. E1이라 합성 이름뿐이지만 반출물이 아니다.
-- `--term-policy <파일>`: 일반 단어 허용 목록. 기본값은 E1 = `testdata/apm_bench/term_policy.yaml`(빈 목록 = 기본 거부) · **E2 = `~/apm_bench_local/term_policy.local.yaml` 자동 탐색**(없고 인자도 없으면 exit 2 · 자리표 `placeholders.e2.yaml`도 같다). 로컬 디렉터리·파일은 현재 계정 소유 · 심볼릭 링크 아님 · 그룹·기타 쓰기 없음이어야 한다(명시 파일도 같은 조건). `--placeholders`와 이 파일은 본체를 띄우기 **전에** 읽고, 못 읽거나 형식이 틀리면 exit 2다.
-- `--view-server-version`: E2에서 값이 필요하다(5.6.2.18 이상) — 인자가 없으면 `~/apm_bench_local/bench.local.yaml`의 `view_server_version` 한 줄을 자동으로 읽고, 둘 다 없으면 exit 2. 명시 인자가 우선한다. E1에서는 검사하지 않고 `e1-mock(해당 없음)`을 기록한다.
+- `--term-policy <파일>`: 일반 단어 허용 목록. 기본값은 E1 = `testdata/apm_bench/term_policy.yaml`(빈 목록 = 기본 거부) · **E2 = `testdata/apm_bench/local/term_policy.local.yaml` 자동 탐색**(없고 인자도 없으면 exit 2 · 자리표 `placeholders.e2.yaml`도 같다). 로컬 디렉터리·파일은 현재 계정 소유 · 심볼릭 링크 아님 · 그룹·기타 쓰기 없음이어야 한다(명시 파일도 같은 조건). `--placeholders`와 이 파일은 본체를 띄우기 **전에** 읽고, 못 읽거나 형식이 틀리면 exit 2다.
+- `--view-server-version`: E2에서 값이 필요하다(5.6.2.18 이상) — 인자가 없으면 `testdata/apm_bench/local/bench.local.yaml`의 `view_server_version` 한 줄을 자동으로 읽고, 둘 다 없으면 exit 2. 명시 인자가 우선한다. E1에서는 검사하지 않고 `e1-mock(해당 없음)`을 기록한다.
 
 ### 10.4 산출물 읽는 법
 
@@ -469,7 +469,7 @@ python -m pytest tests/test_scripts/test_apm_bench_capture.py tests/test_scripts
 ### 10.6 내부망 실행 요약 (상세는 부록 A)
 
 1. 같은 SHA 체크아웃(운영 게이트웨이와 다른 디렉터리 권장)의 `apm_gateway/.env`에 소스 URL·토큰을 넣는다. 본체 `.env`에는 FabriX를 둔다. 실행 계정은 비root 전용 계정이다(E2 root면 exit 2).
-2. `~/apm_bench_local/`에 로컬 파일 3개를 둔다 — `placeholders.e2.yaml`(A.1 · 채움 검사) · `term_policy.local.yaml`(A.2 검토) · `bench.local.yaml`(A.3 `view_server_version: <운영자 확인 값>` 한 줄). 권한은 `chmod 700 ~/apm_bench_local; chmod 600 ~/apm_bench_local/*`. E2는 이 셋을 자동으로 찾는다(없거나 권한이 틀리면 exit 2). 명시 인자(`--placeholders`·`--term-policy`·`--view-server-version`)가 늘 우선이다.
+2. `testdata/apm_bench/local/`에 로컬 파일 3개를 둔다 — `placeholders.e2.yaml`(A.1 · 채움 검사) · `term_policy.local.yaml`(A.2 검토) · `bench.local.yaml`(A.3 `view_server_version: <운영자 확인 값>` 한 줄). 권한은 `chmod 700 testdata/apm_bench/local; chmod 600 testdata/apm_bench/local/*`. E2는 이 셋을 자동으로 찾는다(없거나 권한이 틀리면 exit 2). 명시 인자(`--placeholders`·`--term-policy`·`--view-server-version`)가 늘 우선이다.
 3. 뷰 서버 버전이 5.6.2.18 미만이면 실행하지 않는다(A.3).
 4. 업무 외 시간에 `python -m scripts.apm_bench --run --env e2 --smoke`(스모크) → 통과하면 `python -m scripts.apm_bench --run --env e2 --bg`(전체 · 분리 실행) → `python -m scripts.apm_bench --status`로 진행을 본다(A.6). E2 기본은 `--skip-heavy`·`--probe` 켬이다(끄기 `--no-skip-heavy`·`--no-probe`).
 5. 허용 범위와 자동 중단(§3.7 · A.5)은 벤치가 자동으로 지킨다. 중단되면 `run.json`의 `abort_reason`을 보고 다시 시도하지 않는다.
@@ -479,7 +479,7 @@ python -m pytest tests/test_scripts/test_apm_bench_capture.py tests/test_scripts
 
 | 증상 | 원인 | 대처 |
 |---|---|---|
-| exit 2 `뷰 서버 버전을 도구로 얻을 수 없다 — --view-server-version 으로 넣는다` | E2에서 버전을 주지 않았다. 허용 API에는 뷰 서버 버전이 없다(`/api/instance` 버전은 에이전트 버전) | 운영자가 확인한 값을 `~/apm_bench_local/bench.local.yaml`에 `view_server_version: 5.x.y.z` 한 줄로 적거나 `--view-server-version 5.x.y.z`로 준다(E2는 로컬 파일이 없으면 이 줄 대신 「E2 로컬 파일이 없다」 안내 3줄로 멈춘다) |
+| exit 2 `뷰 서버 버전을 도구로 얻을 수 없다 — --view-server-version 으로 넣는다` | E2에서 버전을 주지 않았다. 허용 API에는 뷰 서버 버전이 없다(`/api/instance` 버전은 에이전트 버전) | 운영자가 확인한 값을 `testdata/apm_bench/local/bench.local.yaml`에 `view_server_version: 5.x.y.z` 한 줄로 적거나 `--view-server-version 5.x.y.z`로 준다(E2는 로컬 파일이 없으면 이 줄 대신 「E2 로컬 파일이 없다」 안내 3줄로 멈춘다) |
 | exit 2 `뷰 서버 5.6.2.1 < 5.6.2.18 — 실행하지 않는다(D-323 ①)` | 뷰 서버가 하한 미만이다(Jetty 세션 누적 위험) | 실행하지 않고 보고한다 |
 | exit 2 `E2 는 --placeholders(…)가 필수다` · exit 2 `자리표·허용 목록 파일을 읽지 못했다 — [Errno 2] …` | E2에 자리표 파일을 주지 않았거나 경로가 틀렸다. `--term-policy`도 같다(형식 위반 — 숫자만인 항목, 여러 토큰 등 — 도 exit 2) | 경로를 고친다. 자리표 채움 검사(A.1)를 먼저 돌린다 |
 | 턴이 `판정 불가 · 자리표 미등록: …` | 자리표 파일에 시나리오가 쓰는 이름이 없다(16종 필요) | A.1 채움 검사 명령으로 미등록 목록을 보고 채운다 |
@@ -501,8 +501,9 @@ python -m pytest tests/test_scripts/test_apm_bench_capture.py tests/test_scripts
 | `APM-JSERVER-domains#0`이 `source_miss`(`code:route_zone_gate`) | 존 사전 게이트가 APM 질문을 가로챈다(`src/api/routes/query.py` 존 게이트). 활성 시스템이 1개인 로컬 조건에서 나타난다 | 코드 교정 대상이다(제품 결함 ②) |
 | `Redis 연결 실패, 파일 캐시로 폴백` 경고 | 로컬에 Redis가 없다 | 무시해도 된다 |
 | `enable_semantic_routing 미입력 → …` 두 줄 | `.env`가 없어 사다리 플래그가 미입력이다 | 무시해도 된다. 벤치 본체는 프로파일 `tier2_intent`로 2단을 고정한다 |
-| exit 2 `E2 로컬 파일이 없다 — 아래 위치에 두고 다시 실행한다` | E2가 자동으로 찾는 `~/apm_bench_local/`의 `placeholders.e2.yaml`·`term_policy.local.yaml`·`bench.local.yaml` 중 없는 것이 있다(명시 인자도 없음) | 안내된 위치에 파일을 둔다(A.0~A.3). `bench.local.yaml`은 `view_server_version: <운영자 확인 값>` 한 줄이다 |
-| exit 2 `… 를 신뢰할 수 없다 — 심볼릭 링크다 / 현재 계정 소유가 아니다 / 그룹·기타 쓰기 권한이 있다` | 로컬 디렉터리·파일이 실행 계정 소유가 아니거나, 그룹·기타 쓰기 비트가 있거나, 심링크다 | `chmod 700 ~/apm_bench_local; chmod 600 ~/apm_bench_local/*` · 소유 계정에서 실행 · 심링크 대신 실파일 |
+| exit 2 `E2 로컬 파일이 없다 — 아래 위치에 두고 다시 실행한다` | E2가 자동으로 찾는 `testdata/apm_bench/local/`의 `placeholders.e2.yaml`·`term_policy.local.yaml`·`bench.local.yaml` 중 없는 것이 있다(명시 인자도 없음) | `python -m scripts.apm_bench --init-local`로 양식을 만들고 `CHANGE_ME` 칸을 채운다(A.0~A.3). `bench.local.yaml`은 `view_server_version: <운영자 확인 값>` 한 줄이다 |
+| exit 2 `E2 로컬 파일에 바꾸지 않은 칸(값 CHANGE_ME)이 남았다` | `--init-local` 양식의 칸을 다 바꾸지 않았다(파일별 칸 수만 출력) | 해당 파일의 `CHANGE_ME` 값을 운영 값으로 바꾼다(A.1 · A.3) |
+| exit 2 `… 를 신뢰할 수 없다 — 심볼릭 링크다 / 현재 계정 소유가 아니다 / 그룹·기타 쓰기 권한이 있다` | 로컬 디렉터리·파일이 실행 계정 소유가 아니거나, 그룹·기타 쓰기 비트가 있거나, 심링크다 | `chmod 700 testdata/apm_bench/local; chmod 600 testdata/apm_bench/local/*` · 소유 계정에서 실행 · 심링크 대신 실파일 |
 | exit 2 `E2 는 root 로 실행하지 않는다` | E2를 root로 돌렸다 | 비root 전용 계정(3자 이상 무의미 이름 · 홈 경로에 운영 서버 이름 없음)으로 다시 돌린다 |
 | exit 2 `사용자 정보가 … 과 겹친다 — 종류 …` | 로그인 계정·OS 사용자·호스트 짧은 이름·홈 디렉터리 이름이 인벤토리 이름이나 코드 어휘와 겹친다(턴 송신 전에 멈춤 · 값 미출력) | 겹치지 않는 전용 실행 계정·호스트에서 다시 돌린다. 짧은 호스트명이 흔한 낱말이면 걸릴 수 있으므로 전용 실행 호스트를 권장한다 |
 | exit 2 `run 디렉터리에 실행 중인 run 이 있다(run.pid …)` | `--out`으로 준 run 디렉터리에 살아 있는(또는 다른 계정) `run.pid`가 있다 | 다른 `--out`을 주거나 그 run이 끝난 뒤 다시 돌린다(`--out`을 빼면 새 run_id 디렉터리를 쓴다) |
@@ -524,19 +525,19 @@ python -m pytest tests/test_scripts/test_apm_bench_capture.py tests/test_scripts
 | 본체 설정 | 그 체크아웃의 `.env`(FabriX 워커 평면, 내부망 정본 값). 벤치는 프로파일 `tier2_intent`를 덮어 2단을 고정한다 | 금지 |
 | 게이트웨이 설정 | 그 체크아웃의 `apm_gateway/.env`: `JENNIFER_SOURCES`(레지스트리 `solutions[apm].sources[].id`와 같은 id) + 소스별 `JENNIFER_<ID>_API_URL`·`JENNIFER_<ID>_API_TOKEN`(가능하면 벤치 전용 AIOps 토큰). 셸에 `JENNIFER_*`를 export해도 벤치가 걷어내므로 **반드시 이 파일**에 둔다. 속도·폴러·스풀·포트·주체 토큰은 벤치가 덮으므로 적지 않아도 된다 | 금지 |
 | 실행 계정 | 비root 전용 계정(3자 이상 무의미 이름 · 홈 경로에 운영 서버 이름 없음). E2를 root로 돌리면 exit 2. 짧은 호스트명이 흔한 낱말이면 사용자 정보 충돌로 멈출 수 있어 전용 실행 호스트를 권장한다 | — |
-| 자리표 로컬 파일 | `~/apm_bench_local/placeholders.e2.yaml`(A.1) | 금지 |
-| 허용 목록 로컬 사본 | `~/apm_bench_local/term_policy.local.yaml`(A.2) | 금지 |
-| 벤치 로컬 설정 | `~/apm_bench_local/bench.local.yaml` — `view_server_version: <운영자 확인 값>` 한 줄(A.3) | 금지 |
+| 자리표 로컬 파일 | `testdata/apm_bench/local/placeholders.e2.yaml`(A.1) | 금지 |
+| 허용 목록 로컬 사본 | `testdata/apm_bench/local/term_policy.local.yaml`(A.2) | 금지 |
+| 벤치 로컬 설정 | `testdata/apm_bench/local/bench.local.yaml` — `view_server_version: <운영자 확인 값>` 한 줄(A.3) | 금지 |
 | 산출 디렉터리 | 자동: 저장소 `results/apm_bench/<run_id>/`(`.gitignore` 대상 · `--out`으로 바꿀 수 있다) | 선별 목록만(A.7) |
 | 격리 디렉터리 | 자동: `~/apm_bench_quarantine/<run_id>/`(관문 실패 때만 · 700/600 · 최대 14일) | 금지 |
 
-`~/apm_bench_local/` 세 파일은 E2가 자동으로 찾는다(명시 인자가 늘 우선). 하나라도 없으면 둘 위치를 안내하고 exit 2다. 디렉터리·파일은 실행 계정 소유 · 그룹/기타 쓰기 비트 없음 · 심링크 아님이어야 한다(아니면 exit 2): `chmod 700 ~/apm_bench_local; chmod 600 ~/apm_bench_local/*`.
+`testdata/apm_bench/local/` 세 파일은 E2가 자동으로 찾는다(명시 인자가 늘 우선). 하나라도 없으면 둘 위치를 안내하고 exit 2다. 디렉터리·파일은 실행 계정 소유 · 그룹/기타 쓰기 비트 없음 · 심링크 아님이어야 한다(아니면 exit 2): `chmod 700 testdata/apm_bench/local; chmod 600 testdata/apm_bench/local/*`.
 
 본체가 인증을 켜 두었으면 벤치는 내장 테스트 계정(`scripts/scenario/runner.py` `DEFAULT_USER_ID`)으로 로그인하므로 그 계정이 있어야 한다.
 
 ### A.1 자리표 로컬 파일
 
-1. 형식 견본 `testdata/apm_bench/placeholders.e1.yaml`을 저장소 밖으로 복사한다: `mkdir -p ~/apm_bench_local && chmod 700 ~/apm_bench_local && cp testdata/apm_bench/placeholders.e1.yaml ~/apm_bench_local/placeholders.e2.yaml && chmod 600 ~/apm_bench_local/placeholders.e2.yaml`. 이 경로·이름이면 E2가 자동으로 찾는다(다른 경로는 `--placeholders`).
+1. `python -m scripts.apm_bench --init-local`로 로컬 파일 3개 양식을 만든다(`testdata/apm_bench/local/` 700 · 파일 600 · 있는 파일은 덮어쓰지 않음 · 양식 원본 `testdata/apm_bench/local_templates/`·`term_policy.yaml` · 카나리아는 임의 토큰으로 채워짐). 값이 `CHANGE_ME`인 칸이 바꿀 칸이고, 하나라도 남으면 E2 `--run`이 실행 전에 칸 수만 안내하고 exit 2다. 이 경로·이름이면 E2가 자동으로 찾는다(다른 경로는 `--placeholders`).
 2. 운영 인벤토리(제니퍼 콘솔 · 운영 게이트웨이의 인스턴스·업무·서비스 목록)에서 칸을 채운다.
    - `values`(16종 필수): `inst_1`·`inst_2`(일반 인스턴스 둘) · `inst_c`(공동존 소스 인스턴스) · `inst_b`(은행존 소스 인스턴스) · `inst_w`(**운영자가 지정한 WAS 접촉 허용 인스턴스 1개** — 실행 중 요청 상세·로드된 클래스·환경변수 대상) · `host_1`·`host_2`(WAS 호스트명 — `host_2`는 FQDN 형태 권장) · `biz_1`·`biz_2`(업무명) · `svc_1`·`svc_2`(서비스·도메인명) · `url_1`(애플리케이션 URL 하나) · `pid_1`(`host_1` 위 WAS 프로세스 PID) · `guid_1`(최근 거래 GUID 하나) · `user_1`(제니퍼 계정 하나 — 민감 API라 응답 모양만 기록) · `domain_id_1`(도메인 번호). 값은 모두 문자열로 쓴다(`"4242"`).
    - `any_values`: 기대 인자 `*` 중 레지스트리 허용값 선언이 없는 인자의 값이다. E1 가짜 LLM 전용이므로 E2에서는 견본 그대로 둬도 된다.
@@ -546,7 +547,7 @@ python -m pytest tests/test_scripts/test_apm_bench_capture.py tests/test_scripts
 3. 채움 검사(시나리오가 쓰는 자리표가 다 있는지 확인). 실측: E1 사본은 `필요 16 · 미등록 없음`으로 exit 0, 일부를 비운 파일은 미등록 15개 목록을 내고 exit 1.
 
 ```bash
-python -c "import re,sys,yaml; from pathlib import Path; need=set(re.findall(r'\{\{(\w+_(?:\d+|[a-z]))\}\}', Path('testdata/apm_bench/scenarios.yaml').read_text())); v=(yaml.safe_load(open(sys.argv[1])) or {}).get('values') or {}; miss=sorted(n for n in need if not str(v.get(n) or '').strip()); print(f'필요 {len(need)} · 미등록', miss or '없음'); sys.exit(1 if miss else 0)" ~/apm_bench_local/placeholders.e2.yaml
+python -c "import re,sys,yaml; from pathlib import Path; need=set(re.findall(r'\{\{(\w+_(?:\d+|[a-z]))\}\}', Path('testdata/apm_bench/scenarios.yaml').read_text())); v=(yaml.safe_load(open(sys.argv[1])) or {}).get('values') or {}; miss=sorted(n for n in need if not str(v.get(n) or '').strip()); print(f'필요 {len(need)} · 미등록', miss or '없음'); sys.exit(1 if miss else 0)" testdata/apm_bench/local/placeholders.e2.yaml
 ```
 
 4. 실행하면 벤치가 키트 검사를 자동으로 한다(값 미출력): 자리표마다 운영 인벤토리에 「있음·없음·여럿·검사 불가」. 「없음」 자리표를 쓴 일반 턴은 판정 불가로 분모에서 빠지고, 「여럿」은 경고만 낸다. 인벤토리 도구가 실패한 종류는 「검사 불가」로 두고 분리하지 않는다. 「없음」이 나오면 그 칸을 인벤토리 실값으로 고친다.
@@ -554,15 +555,15 @@ python -c "import re,sys,yaml; from pathlib import Path; need=set(re.findall(r'\
 ### A.2 `term_policy` 검토 (기본 거부)
 
 1. 저장소 정본 `testdata/apm_bench/term_policy.yaml`은 빈 목록이다. 이 상태면 이름 토큰이 전부 형식 보존 가짜 값으로 바뀐다. 검토 절차는 파일 머리 주석 1~4를 따른다.
-2. 로컬 사본을 만든다: `cp testdata/apm_bench/term_policy.yaml ~/apm_bench_local/term_policy.local.yaml && chmod 600 ~/apm_bench_local/term_policy.local.yaml`.
+2. 로컬 사본은 `--init-local`이 만든다(빈 목록 그대로도 유효 — 가장 보수적).
 3. 운영자가 사람·조직·고객·고유 시스템을 식별하지 않는 업무 일반 단어만 `terms:`에 넣는다(업무 분류어·계층 약어·환경 약어 등). 한 항목은 토큰 하나여야 하고 숫자만인 항목은 받지 않는다(형식이 틀리면 run 시작 전에 exit 2). 한↔영 약어 쌍은 둘 다 넣거나 둘 다 뺀다.
 4. 넣은 단어 수와 검토자·날짜는 폐쇄망 반출 기록에 남긴다(단어 자체는 `report.md` §11에 수로만 나온다).
-5. E2는 `~/apm_bench_local/term_policy.local.yaml`을 **자동으로 읽는다**(`--term-policy`를 붙이지 않아도 된다 · 다른 경로를 쓸 때만 `--term-policy <파일>` — 명시 인자가 우선). 저장소 파일을 고치지 않는다.
+5. E2는 `testdata/apm_bench/local/term_policy.local.yaml`을 **자동으로 읽는다**(`--term-policy`를 붙이지 않아도 된다 · 다른 경로를 쓸 때만 `--term-policy <파일>` — 명시 인자가 우선). 저장소 파일을 고치지 않는다.
 6. ASCII 2자 토큰(`db`·`ap` 등)과 camelCase 결합 소문자형도 기본 거부다. 토큰 사전은 반출 레코드의 문자열 값 전부에 적용되므로, 이름 토큰과 같은 일반 코드 값(`domain`·`db` 등)도 허용 목록에 없으면 가짜 값으로 바뀐다(§3.8 구현 부기). 반출본 `report.md` §11 위생 주의에서 손실을 확인하고 다음 회차 허용 목록에 반영한다.
 
 ### A.3 뷰 서버 버전
 
-허용 API로는 뷰 서버 버전을 얻을 수 없다. 운영자가 제니퍼 콘솔이나 서버 정보에서 확인해 `~/apm_bench_local/bench.local.yaml`에 `view_server_version: 5.6.5.11`(예)처럼 한 줄로 적는다(권한 600). E2가 자동으로 읽고, `--view-server-version`을 주면 그 값이 우선한다. **5.6.2.18 미만이면 실행하지 않고 보고한다**(그 아래는 토큰 호출마다 Jetty 세션이 쌓인다 · §3.7). 버전 값은 `run.json`에 남고, 반출물에도 그대로 실린다(운영 이름이 아님).
+허용 API로는 뷰 서버 버전을 얻을 수 없다. 운영자가 제니퍼 콘솔이나 서버 정보에서 확인해 `testdata/apm_bench/local/bench.local.yaml`에 `view_server_version: 5.6.5.11`(예)처럼 한 줄로 적는다(권한 600). E2가 자동으로 읽고, `--view-server-version`을 주면 그 값이 우선한다. **5.6.2.18 미만이면 실행하지 않고 보고한다**(그 아래는 토큰 호출마다 Jetty 세션이 쌓인다 · §3.7). 버전 값은 `run.json`에 남고, 반출물에도 그대로 실린다(운영 이름이 아님).
 
 ### A.4 벤치 전용 게이트웨이
 
@@ -590,7 +591,7 @@ python -c "import re,sys,yaml; from pathlib import Path; need=set(re.findall(r'\
 
 1. 시간대: 업무 외 시간(정확한 시간대는 운영 조직과 협의 · §6 ①). 시작 전에 운영 게이트웨이와 뷰 서버가 정상인지 운영자가 확인한다.
 2. 정적 확인: `python -m scripts.apm_bench --dry-run`(exit 0)과 A.1 채움 검사(exit 0).
-3. **스모크**: `python -m scripts.apm_bench --run --env e2 --smoke` — 내장 10시나리오(`plans/164` §5 1단계)만 돈다. E2 기본으로 `~/apm_bench_local/` 세 파일 자동 · `--skip-heavy`·`--probe` 켬이고, 콘솔에 「자동: …」 줄로 출처만 찍는다. 실행 전 점검(root · 사용자 정보 충돌 · 키트 검사 · `by_placeholder` 미대응 · `apm_gateway/var` 기준)이 exit 2나 경고를 내면 고친 뒤 진행한다. 관문을 통과하지 못하면 전체를 돌리지 않는다(A.7).
+3. **스모크**: `python -m scripts.apm_bench --run --env e2 --smoke` — 내장 10시나리오(`plans/164` §5 1단계)만 돈다. E2 기본으로 `testdata/apm_bench/local/` 세 파일 자동 · `--skip-heavy`·`--probe` 켬이고, 콘솔에 「자동: …」 줄로 출처만 찍는다. 실행 전 점검(root · 사용자 정보 충돌 · 키트 검사 · `by_placeholder` 미대응 · `apm_gateway/var` 기준)이 exit 2나 경고를 내면 고친 뒤 진행한다. 관문을 통과하지 못하면 전체를 돌리지 않는다(A.7).
 4. **전체(무거운 등급 끔)**: `python -m scripts.apm_bench --run --env e2 --bg` — 분리 실행이라 run_id와 `--status` 명령을 찍고 바로 끝난다(`nohup`·리다이렉트 불필요 · 콘솔은 `results/apm_bench/<run_id>/run.log`). 진행은 `python -m scripts.apm_bench --status [<run_id>]`(생략 = 최근 run · 상태·PID·경과·`run.log` 마지막 줄)로 본다. 예상 호출 수는 약 1,300회(§3.7)이고, 초당 2회 상한이라 호출만으로 10분 이상 걸린다(E2 1회차 실측 8,102.7초 · `plans/164` §2.8).
 5. 전체 run이 중단 없이 끝났고 타임아웃·429가 0이면, 다음 회차에서 `--no-skip-heavy`로 무거운 등급을 포함한다(맨 끝·최대 5개).
 6. 끝나면 확인한다: `run_meta.json` 상태가 `done`(`aborted`면 A.5) · 콘솔의 `apm_gateway/var` 전후 비교 줄(새로 생기거나 바뀐 파일이 있으면 `[경고]` — 내용을 보고 판단) · 벤치가 띄운 프로세스가 남지 않을 것(`ps`에 `apm_bench._serve`·`python -m apm_gateway` 중 벤치 세션 것이 없을 것).
@@ -602,7 +603,7 @@ python -c "import re,sys,yaml; from pathlib import Path; need=set(re.findall(r'\
 - **반출 방식**: `manifest.sha256`에 적힌 선별 목록으로만 옮긴다 — 디렉터리 통째 복사·압축 금지.
 - **반출 목록 — 관문 통과**: 6종(`run.json` · `trace.jsonl` · `probe.jsonl` · `coverage.md` · `report.md` · `leak_check.json`) + `summary_safe.json` + `run.log` + `run_meta.json` + `manifest.sha256`.
 - **반출 목록 — 관문 실패**: `leak_check.json` + `summary_safe.json`(있을 때만) + `run.log` + `run_meta.json` + `manifest.sha256`.
-- **반출 금지**: `~/apm_bench_quarantine/`(격리본) · `~/apm_bench_local/`(자리표 로컬 파일 · 허용 목록 로컬 사본 · `bench.local.yaml`) · 본체·게이트웨이 `.env` 류 · 게이트웨이·서버 로그 · 캡처(`capture.jsonl`) · 체크포인트 · 세션 임시 디렉터리 · `--debug-raw`(E2는 거부됨) · 화면 캡처 · `logs/` 아래 파일 일체 · run 디렉터리의 `scenarios.yaml` 사본(매니페스트 밖) · 콘솔을 따로 리다이렉트한 파일(강제 종료 시 재검사가 안 된다 — `run.log`를 쓴다).
+- **반출 금지**: `~/apm_bench_quarantine/`(격리본) · `testdata/apm_bench/local/`(`.gitignore` 대상 · 저장소째 반출 시 제외 — 자리표 로컬 파일 · 허용 목록 로컬 사본 · `bench.local.yaml`) · 본체·게이트웨이 `.env` 류 · 게이트웨이·서버 로그 · 캡처(`capture.jsonl`) · 체크포인트 · 세션 임시 디렉터리 · `--debug-raw`(E2는 거부됨) · 화면 캡처 · `logs/` 아래 파일 일체 · run 디렉터리의 `scenarios.yaml` 사본(매니페스트 밖) · 콘솔을 따로 리다이렉트한 파일(강제 종료 시 재검사가 안 된다 — `run.log`를 쓴다).
 - **`logs/`(본체 감사 로그 등)**: 운영 이름이 그대로 남는다. 감사 로그는 끄지 않고(보안 원칙 — 모든 질의 실행은 감사 대상) 내부망 실행 머신의 보존 정책을 따른다. 외부 매체로 옮기지 않는다(2026-10-13 확정 · D-323 부기).
 - **감사 로그 진단표 `audit_digest.json`(`plans/164` §4.0 W0a · 2026-10-14 추가)**: `logs/` 원본이 아니라 `python -m scripts.apm_bench --audit-digest [<run_id>]`가 화이트리스트 어휘(시나리오 id·보기 id·outcome·사유 코드·되묻기 종류·숫자)로만 만든 파생 요약이다. run_id 모드면 run 디렉터리에 쓰인다. **사람이 파일을 열어 운영 이름·호스트·사용자 id가 없음을 확인한 뒤** 이 파일만 반출한다(절차 `plans/164` §5 W0a). 본체 `logs/` 원본은 옮기지도 반출하지도 않는다.
 - 반출 전에 `report.md` 머리의 `SHA`와 `fingerprints`를 확인한다. 외부망은 같은 SHA로 F1~F4를 다시 렌더한다(few-shot 원문은 반출하지 않는다).

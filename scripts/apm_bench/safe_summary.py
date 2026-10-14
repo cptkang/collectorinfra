@@ -98,7 +98,8 @@ GATE_FILES: frozenset[str] = frozenset({"trace.jsonl", "run.json", "probe.jsonl"
 #: 사용자 정보 종류(`__main__.run_user_values` 키 — 값은 싣지 않는다).
 USER_INFO_KINDS: frozenset[str] = frozenset({"login_id", "os_user", "host", "host_short", "home"})
 QUARANTINE = ("none", "default_local", "explicit")
-#: 로컬 기본 파일 출처(`~/apm_bench_local/` 자동 탐색 — plans/164 W2b) · 벤치 본체 사용자 종류.
+#: 로컬 기본 파일 출처(`testdata/apm_bench/local/` 자동 탐색 — plans/164 W2b) ·
+#: 벤치 본체 사용자 종류.
 FILE_SOURCES = ("default", "e1_default", "local_default", "explicit")
 VIEW_VERSION_SOURCES = ("explicit", "bench_local")
 BENCH_USERS = ("anonymous", "login_user")

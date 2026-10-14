@@ -26,6 +26,7 @@ import pytest
 from scripts.apm_bench import SCENARIOS_PATH
 from scripts.apm_bench import __main__ as cli
 from scripts.apm_bench import audit_digest as ad
+from scripts.apm_bench import driver
 from scripts.apm_bench import hygiene as hy
 from scripts.apm_bench import loop as lp
 from scripts.apm_bench import rundir as rd
@@ -43,6 +44,7 @@ def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cli, "LOCAL_DIR", home / LOCAL)  # 저장소 testdata/apm_bench/local/ 대신
     monkeypatch.setattr(rd, "default_quarantine_base", lambda: tmp_path / "quarantine")
     monkeypatch.setattr(cli, "RESULTS_ROOT", tmp_path / "results")
     monkeypatch.setattr(ad, "AUDIT_LOG_DIR", tmp_path / "logs")
@@ -91,9 +93,9 @@ def test_e2_local_defaults_autodiscovered(tmp_path: Path, _isolate: Path,
     assert _run(["--run", "--env", "e2", "--only", SCENARIO, "--out", str(out)], seen) == 0
     assert seen["env"] == "e2" and seen["view_server_version"] == VIEW and seen["probe"]
     printed = capsys.readouterr().out
-    assert f"자동: 자리표 — ~/{LOCAL}/{cli.LOCAL_PLACEHOLDERS}" in printed
-    assert f"자동: 일반 단어 허용 목록 — ~/{LOCAL}/{cli.LOCAL_TERM_POLICY}" in printed
-    assert f"자동: 뷰 서버 버전 — ~/{LOCAL}/{cli.LOCAL_BENCH}" in printed
+    assert f"자동: 자리표 — {cli.LOCAL_LABEL}/{cli.LOCAL_PLACEHOLDERS}" in printed
+    assert f"자동: 일반 단어 허용 목록 — {cli.LOCAL_LABEL}/{cli.LOCAL_TERM_POLICY}" in printed
+    assert f"자동: 뷰 서버 버전 — {cli.LOCAL_LABEL}/{cli.LOCAL_BENCH}" in printed
     assert "모르는 키 1개 무시" in printed and "operator_note" not in printed
     assert str(_isolate) not in printed  # 홈 경로 미출력
     flags = _meta(out)["flags"]
@@ -112,7 +114,7 @@ def test_e2_missing_local_files_exit_2_with_guidance(tmp_path: Path,
     assert cli.cmd_run(args, driver_run=lambda *a, **k: called.append(1)) == 2
     printed = capsys.readouterr().out
     for name in (cli.LOCAL_PLACEHOLDERS, cli.LOCAL_TERM_POLICY, cli.LOCAL_BENCH):
-        assert f"~/{LOCAL}/{name}" in printed
+        assert f"{cli.LOCAL_LABEL}/{name}" in printed
     assert "view_server_version" in printed and str(tmp_path) not in printed
     assert called == [] and not (tmp_path / "results").exists()
     # 명시 인자로 채운 칸은 안내하지 않는다
@@ -128,7 +130,7 @@ def test_bench_local_without_version_or_broken_exit_2(_isolate: Path,
     (local / cli.LOCAL_BENCH).write_text("other: 1\n", encoding="utf-8")
     argv = ["--run", "--env", "e2", "--only", SCENARIO]
     assert _run(argv) == 2
-    assert f"~/{LOCAL}/{cli.LOCAL_BENCH} — `view_server_version" in capsys.readouterr().out
+    assert f"{cli.LOCAL_LABEL}/{cli.LOCAL_BENCH} — `view_server_version" in capsys.readouterr().out
     (local / cli.LOCAL_BENCH).write_text("- 5.6.5.11\n", encoding="utf-8")  # 매핑 아님
     assert _run(argv) == 2
     (local / cli.LOCAL_BENCH).write_text("view_server_version: 5.6.1.0\n", encoding="utf-8")
@@ -613,12 +615,13 @@ def test_e2_local_files_must_be_trusted(tmp_path: Path, _isolate: Path,
     local.chmod(0o777)
     assert _run(argv) == 2
     printed = capsys.readouterr().out
-    assert f"~/{LOCAL}/ 를 신뢰할 수 없다 — 그룹·기타 쓰기 권한이 있다" in printed
+    assert f"{cli.LOCAL_LABEL}/ 를 신뢰할 수 없다 — 그룹·기타 쓰기 권한이 있다" in printed
     assert str(_isolate) not in printed
     local.chmod(0o700)
     (local / cli.LOCAL_PLACEHOLDERS).chmod(0o666)
     assert _run(argv) == 2
-    assert f"~/{LOCAL}/{cli.LOCAL_PLACEHOLDERS} 를 신뢰할 수 없다" in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert f"{cli.LOCAL_LABEL}/{cli.LOCAL_PLACEHOLDERS} 를 신뢰할 수 없다" in printed
     (local / cli.LOCAL_PLACEHOLDERS).chmod(0o600)
     real = tmp_path / "real_bench.yaml"
     (local / cli.LOCAL_BENCH).rename(real)
@@ -803,3 +806,61 @@ def test_status_last_line_summary_and_warning_shapes() -> None:
     for line in (f"locus 상위 : {HOSTNAME} 3", f"축         : {HOSTNAME} 100.0%",
                  f"자리표 실재: {HOSTNAME} 있음"):
         assert rd.safe_log_line(line) is None, line
+
+
+# ⑨ `--init-local` 양식 · 바꾸지 않은 칸 가드 ------------------------------------------------
+
+
+def test_init_local_creates_templates_and_keeps_existing(
+        _isolate: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """양식 3개(700/600) · 카나리아 임의 토큰 · 바꿀 칸 수 안내 · 두 번째 실행은 덮어쓰지 않는다."""
+    assert cli.main(["--init-local"]) == 0
+    local = _isolate / LOCAL
+    assert local.stat().st_mode & 0o777 == 0o700
+    for name in (cli.LOCAL_PLACEHOLDERS, cli.LOCAL_TERM_POLICY, cli.LOCAL_BENCH):
+        assert (local / name).stat().st_mode & 0o777 == 0o600
+    holder = driver.load_placeholders(local / cli.LOCAL_PLACEHOLDERS)
+    assert len(holder.canaries) == 2 and all(c.startswith("cnry-") for c in holder.canaries)
+    assert holder.canaries[0] != holder.canaries[1]
+    need = {n for n in sc.placeholders_of(SCENARIOS_PATH.read_text(encoding="utf-8"))
+            if sc.is_allowed_placeholder(n)}
+    assert need <= set(holder.values)  # 시나리오가 쓰는 자리표가 양식에 다 있다
+    hy.load_term_policy(local / cli.LOCAL_TERM_POLICY)  # 빈 목록 — 그대로 유효
+    printed = capsys.readouterr().out
+    assert printed.count("만듦") == 3 and "바꿀 칸" in printed and str(_isolate) not in printed
+    (local / cli.LOCAL_BENCH).write_text(f"view_server_version: {VIEW}\n", encoding="utf-8")
+    assert cli.main(["--init-local"]) == 0
+    assert printed.count("만듦") == 3
+    assert capsys.readouterr().out.count("있음(그대로 둠)") == 3
+    assert VIEW in (local / cli.LOCAL_BENCH).read_text(encoding="utf-8")
+
+
+def test_e2_unfilled_template_exit_2_before_driver(
+        tmp_path: Path, _isolate: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """양식 그대로면 드라이버 전 exit 2 · 칸 수만 안내(값·홈 경로 미출력) · 채우면 진행."""
+    assert cli.main(["--init-local"]) == 0
+    capsys.readouterr()
+    called: list[Any] = []
+    args = cli.build_parser().parse_args(["--run", "--env", "e2"])
+    assert cli.cmd_run(args, driver_run=lambda *a, **k: called.append(1)) == 2
+    printed = capsys.readouterr().out
+    assert "바꾸지 않은 칸" in printed
+    assert f"{cli.LOCAL_LABEL}/{cli.LOCAL_PLACEHOLDERS} — 25칸" in printed
+    assert f"{cli.LOCAL_LABEL}/{cli.LOCAL_BENCH} — view_server_version" in printed
+    assert called == [] and str(_isolate) not in printed
+    local = _local_files(_isolate)  # E1 견본 값으로 채운 상태
+    seen: dict[str, Any] = {}
+    out = tmp_path / "out"
+    assert _run(["--run", "--env", "e2", "--only", SCENARIO, "--out", str(out)], seen) == 0
+    assert cli.unfilled_count(local / cli.LOCAL_PLACEHOLDERS) == 0
+
+
+def test_local_dir_is_git_ignored() -> None:
+    """기본 로컬 디렉터리(운영 값)는 저장소 안이라 `.gitignore` 보호선이 있어야 한다(D-323 부기)."""
+    root = SCENARIOS_PATH.parents[2]  # (자동 격리가 LOCAL_DIR 을 tmp 로 바꿔 두므로 표기로 대조)
+    assert (root / cli.LOCAL_LABEL) == SCENARIOS_PATH.parent / "local"
+    for name in (cli.LOCAL_PLACEHOLDERS, cli.LOCAL_TERM_POLICY, cli.LOCAL_BENCH):
+        rel = f"{cli.LOCAL_LABEL}/{name}"
+        done = subprocess.run(["git", "check-ignore", "-q", "--no-index", rel],
+                              cwd=root, check=False)
+        assert done.returncode == 0, rel
