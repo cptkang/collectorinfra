@@ -54,7 +54,7 @@ def test_closed_template_flags_blank_values() -> None:
     env = load_environment(CLOSED_TEMPLATE)
     chosen, _ = select_sessions(catalog, env)
     problems = [p for s in chosen for p in render_session(s, env)[1]]
-    assert any("server_db" in p for p in problems)
+    assert any("apm_instance" in p for p in problems)
 
 
 def test_every_placeholder_in_catalog_is_declared_in_both_env_files() -> None:
@@ -71,7 +71,7 @@ def test_core_set_covers_every_group() -> None:
     catalog = load_catalog()
     groups = {s.group_id for s in catalog.sessions}
     core_groups = {s.group_id for s in catalog.sessions if s.core}
-    assert groups - {"G8"} <= core_groups
+    assert groups <= core_groups
 
 
 def test_unknown_turn_key_and_source_are_reported(tmp_path: Path) -> None:
@@ -101,10 +101,10 @@ def test_render_fills_placeholders_and_reports_missing() -> None:
 
 def test_select_skips_sessions_needing_unconnected_sources() -> None:
     catalog = load_catalog()
-    chosen, skipped = select_sessions(catalog, _env(("polestar",)), only=["G1-1", "G3-1", "ZZ"])
-    assert [s.id for s in chosen] == ["G1-1"]
+    chosen, skipped = select_sessions(catalog, _env(("polestar", "itam")), only=["C1", "A1", "ZZ"])
+    assert [s.id for s in chosen] == ["C1"]
     reasons = {s.id: r for s, r in skipped}
-    assert "itam" in reasons["G3-1"]
+    assert "apm" in reasons["A1"]
     assert "카탈로그에 없는" in reasons["ZZ"]
 
 
@@ -135,8 +135,9 @@ def test_form_fill_and_apm_and_text_questions() -> None:
     assert auto_answer(form, last_query="x") == {
         "query": "[양식 미해결 항목 답변]", "form_fill_answers": {"담당자": {"action": "blank", "value": None}}}
     apm = pending_question({"apm_source_clarification": {
-        "original_query": "q", "options": [{"key": "bank"}, {"key": "common"}]}})
-    assert auto_answer(apm, last_query="x", apm_preference=("common",))["selected_apm_source_ids"] == ["common"]
+        "original_query": "q", "options": [{"key": "b0"}, {"key": "cm_prd"}]}})
+    assert auto_answer(apm, last_query="x", apm_preference=("cm_prd",))["selected_apm_source_ids"] == ["cm_prd"]
+    assert auto_answer(apm, last_query="x", apm_preference=("zz",))["selected_apm_source_ids"] == ["b0"]
     text = pending_question({"clarification": {"question": "기간은?"}})
     assert text == Question("text", {"question": "기간은?"})
     assert auto_answer(text, last_query="x") is None
