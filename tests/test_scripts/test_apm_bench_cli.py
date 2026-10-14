@@ -21,6 +21,19 @@ from scripts.apm_bench.scenarios import fill_placeholders
 SCENARIO = "APM-INST-host"  # 단일 턴 · 대상 host:1 · 보기 apm.instances
 OUTPUTS = {"trace.jsonl", "run.json", "probe.jsonl", "coverage.md", "report.md",
            "leak_check.json"}
+#: run 디렉터리 관리 파일(plans/164 W2a) — 관문 성패와 무관하게 남는다.
+RUN_DIR_FILES = {"run_meta.json", "run.log", "summary_safe.json", "manifest.sha256",
+                 "scenarios.yaml"}
+
+
+@pytest.fixture(autouse=True)
+def _quarantine_in_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """관문 실패 격리본이 실제 홈(`~/apm_bench_quarantine`)에 쌓이지 않게 한다 · E2 로컬 기본 파일
+    (`~/apm_bench_local/` — plans/164 W2b) 자동 탐색이 실제 홈을 보지 않게 한다."""
+    from scripts.apm_bench import rundir
+
+    monkeypatch.setattr(rundir, "default_quarantine_base", lambda: tmp_path / "quarantine")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
 
 def _observed(values: dict[str, str], *, apm_called: bool = True,
@@ -88,7 +101,7 @@ def test_run_writes_six_outputs(tmp_path: Path) -> None:
     seen: dict[str, Any] = {}
     code, out = _run(tmp_path, seen=seen)
     assert code == 0
-    assert {p.name for p in out.iterdir()} == OUTPUTS
+    assert {p.name for p in out.iterdir()} == OUTPUTS | RUN_DIR_FILES
     assert seen["picked"] == [SCENARIO] and seen["llm"] == "fake" and not seen["probe"]
     meta = json.loads((out / "run.json").read_text(encoding="utf-8"))
     for key in ("run_id", "sha", "dirty", "env", "tier", "planes", "llm", "view_server_version",
@@ -130,9 +143,21 @@ def test_run_invalid_exits_1(tmp_path: Path) -> None:
 def test_gate_failure_writes_nothing_but_leak_check(tmp_path: Path,
                                                     monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "run_user_values", lambda *_a: {"login_id": "zz-run-user-9"})
-    code, out = _run(tmp_path, response="조회자 zz-run-user-9")
+    # 자유 문장 칸(response 등)의 사용자 정보는 치환기가 표지로 바꾼다(plans/164 W1) — 그 밖
+    # 문장 칸(`degraded_reason`)에 두어 관문이 막는지 본다
+    base = _fake_driver({})
+
+    def driver_run(*a: Any, **k: Any) -> Any:
+        records, meta = base(*a, **k)
+        records[0]["observed"]["degraded_reason"] = "조회자 zz-run-user-9"
+        return records, meta
+
+    out = tmp_path / "out"
+    args = cli.build_parser().parse_args(
+        ["--run", "--env", "e1", "--only", SCENARIO, "--out", str(out)])
+    code = cli.cmd_run(args, driver_run=driver_run)
     assert code == 1
-    assert {p.name for p in out.iterdir()} == {"leak_check.json"}
+    assert {p.name for p in out.iterdir()} == {"leak_check.json"} | RUN_DIR_FILES
     check = json.loads((out / "leak_check.json").read_text(encoding="utf-8"))
     assert check["passed"] is False and {v["rule"] for v in check["violations"]} == {"user_info"}
 
@@ -190,6 +215,14 @@ def test_term_policy_path_and_unreadable_files_exit_2(tmp_path: Path) -> None:
     assert called == []
 
 
+def _assert_aborted_run_dir(out: Path) -> None:
+    """드라이버 전 중단 run — 산출물 없이 run 메타(aborted)·실행 로그·매니페스트만 남는다."""
+    assert {p.name for p in out.iterdir()} == {"run_meta.json", "run.log", "manifest.sha256",
+                                               "scenarios.yaml"}
+    meta = json.loads((out / "run_meta.json").read_text(encoding="utf-8"))
+    assert meta["status"] == "aborted" and meta["exit_code"] == 2
+
+
 def test_llm_mlx_blocked_exits_2(tmp_path: Path) -> None:
     """`--llm mlx` 사전 점검 실패(드라이버 `LLMBlockedError`)는 exit 2 · 산출물 없음."""
     seen: dict[str, Any] = {}
@@ -203,7 +236,7 @@ def test_llm_mlx_blocked_exits_2(tmp_path: Path) -> None:
          "--out", str(tmp_path / "out")])
     assert cli.cmd_run(args, driver_run=blocked) == 2
     assert seen["llm"] == "mlx" and seen["mlx_url"] == "http://127.0.0.1:9/v1"
-    assert not (tmp_path / "out").exists()
+    _assert_aborted_run_dir(tmp_path / "out")
 
 
 def test_llm_mlx_real_driver_blocks_before_start(tmp_path: Path,
@@ -227,9 +260,10 @@ def test_e2_billing_plane_real_driver_exits_2(tmp_path: Path,
     monkeypatch.setattr(dv.gw, "start_gateway", lambda *a, **k: pytest.fail("기동하면 안 된다"))
     args = cli.build_parser().parse_args(
         ["--run", "--env", "e2", "--view-server-version", "5.6.2.18", "--placeholders",
-         str(cli.PLACEHOLDERS_E1), "--only", SCENARIO, "--out", str(tmp_path / "out")])
+         str(cli.PLACEHOLDERS_E1), "--term-policy", str(hy.TERM_POLICY_PATH), "--only", SCENARIO,
+         "--out", str(tmp_path / "out")])
     assert cli.cmd_run(args) == 2
-    assert not (tmp_path / "out").exists()
+    _assert_aborted_run_dir(tmp_path / "out")
 
 
 def test_fewshot_check_modes(monkeypatch: pytest.MonkeyPatch,
@@ -314,7 +348,8 @@ def test_replay_warns_on_holdout_turns(tmp_path: Path, monkeypatch: pytest.Monke
 
 
 def test_main_routes_every_mode() -> None:
-    assert set(cli.MODES) == {"dry_run", "coverage", "run", "fewshot_check", "compare", "replay"}
+    assert set(cli.MODES) == {"dry_run", "coverage", "run", "fewshot_check", "compare", "replay",
+                              "audit_digest", "regate", "purge", "status"}
 
 
 def test_login_password_env_then_blocked(monkeypatch: pytest.MonkeyPatch) -> None:

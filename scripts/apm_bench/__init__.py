@@ -11,6 +11,8 @@ APM 사용자가 칠 법한 **사용자 프롬프트**(`testdata/apm_bench/scena
   --fewshot-check 예문 과적합 · APM 절 크기 상한
   --compare A B   두 run 산출물 대조
   --replay DIR    실패 턴 분해·재선택 재현(실 MLX · 방향 확인용)
+  --audit-digest [RUN_ID|LOG…]  본체 감사 로그 → 화이트리스트 진단표(plans/164 W0a · LLM·네트워크 0)
+  --status [RUN_ID]  run 상태(run 메타 · PID · 경과 · run.log 마지막 줄 · plans/164 W2b)
 
 모듈 경계 (plans/152 §3):
   scenarios  시나리오 로더(dataclass) · 자리표 채우기 · 린트 · 정합 · 분할 · 커버리지

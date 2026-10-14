@@ -456,3 +456,21 @@ def test_server_overrides_auth_off_by_default(tmp_path: Path) -> None:
     assert overrides["API_HOST"] == "127.0.0.1"
     kept, _ = dv._server_overrides("e2", tmp_path, proc, None, keep_auth=True)  # type: ignore[arg-type]
     assert "AUTH_ENABLED" not in kept and kept["API_HOST"] == "127.0.0.1"
+
+
+def test_server_overrides_e1_active_db_ids(tmp_path: Path) -> None:
+    """E1 만 폐쇄망형 활성 DB(폴스타 존 DB)를 주입해 설정 에코로 대조한다(plans/157 G-1 (a)).
+
+    E2 는 본체 `.env` 가 정본이라 넣지 않는다.
+    """
+    from src.routing.registry import get_registry
+
+    proc = type("P", (), {"sse_url": "http://127.0.0.1:1/sse",
+                          "tokens": {gw.CHAT_PRINCIPAL: "t"}})()
+    expected, overrides = dv._server_overrides("e1", tmp_path, proc, None)  # type: ignore[arg-type]
+    ids = expected["ACTIVE_DB_IDS"].split(",")
+    assert overrides["ACTIVE_DB_IDS"] == expected["ACTIVE_DB_IDS"]
+    assert 1 <= len(ids) <= 2
+    assert get_registry().systems_of(ids) == {"polestar"}  # 존을 가진 시스템 하나 + 제니퍼 = 2
+    e2_expected, e2_overrides = dv._server_overrides("e2", tmp_path, proc, None)  # type: ignore[arg-type]
+    assert "ACTIVE_DB_IDS" not in e2_expected and "ACTIVE_DB_IDS" not in e2_overrides

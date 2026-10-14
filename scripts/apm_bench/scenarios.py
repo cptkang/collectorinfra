@@ -473,10 +473,13 @@ class RegistryInfo:
     Attributes:
         views: 보기 id → `ViewSpec`(선언 순서)
         source_ids: 소스 id 집합
+        source_labels: 소스 표시 이름(레지스트리 `label` — 저장소 공개 값 · 반출 위생의 소스
+            라벨 닫힌 어휘 · plans/164 W1)
     """
 
     views: dict[str, Any]
     source_ids: frozenset[str]
+    source_labels: frozenset[str] = frozenset()
 
     @property
     def arg_keys(self) -> frozenset[str]:
@@ -496,8 +499,9 @@ def load_registry_info(path: Path | None = None) -> RegistryInfo:
 
     registry = load_registry(path)
     views = {view.id: view for view in registry.views_of(SOLUTION)}
-    sources = frozenset(source.id for source in registry.sources_of(SOLUTION))
-    return RegistryInfo(views=views, source_ids=sources)
+    specs = registry.sources_of(SOLUTION)
+    return RegistryInfo(views=views, source_ids=frozenset(source.id for source in specs),
+                        source_labels=frozenset(s.label for s in specs if s.label))
 
 
 def _value_issue(arg: Any, value: Any) -> str | None:

@@ -29,11 +29,12 @@ import dataclasses
 import functools
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -44,7 +45,15 @@ import yaml
 
 from . import gateway as gw
 from . import guard as gd
-from .record import RECORD_VERSION, Call, Observed, Reselect, SanitizeChange, TurnRecord
+from .record import (
+    ERROR_CODES,
+    RECORD_VERSION,
+    Call,
+    Observed,
+    Reselect,
+    SanitizeChange,
+    TurnRecord,
+)
 from .scenarios import (
     PlaceholderError,
     RegistryInfo,
@@ -99,6 +108,92 @@ ProbeFn = Callable[[CallTool, Callable[[], bool], list[TurnRecord]], Any]
 class LLMBlockedError(RuntimeError):
     """LLM 사전 점검 실패 — `--llm mlx` 점검 실패 또는 E2 본체 평면이 과금 평면(D-222). 실 LLM 을
     부르지 않고 아무것도 띄우지 않는다(호출 측 exit 2)."""
+
+
+#: 드라이버 중단 고정 문구(`RunAbortError.phrase`) — 실행 로그에는 이 문구와 오류 코드만 찍는다
+#: (plans/164 W2a — 예외 원문에 인벤토리 오류 사유·로그인 오류 본문·기동 검증 사유가 섞인다).
+ABORT_INVENTORY_EMPTY = "인벤토리 이름 0개 — 누출 관문 원이름 대조 집합이 비어 실행하지 않는다"
+ABORT_VERIFY_FAILED = "기동 검증 실패(사다리·설정 에코 — 원문은 벤치 세션의 서버 로그)"
+ABORT_LOGIN_FAILED = "로그인 실패(--user 계정·비밀번호 확인)"
+ABORT_NO_PORT = "본체 포트를 고르지 못했다"
+#: 무거운 등급 실행 조건 불충족 건너뜀 사유(`verdict.skipped` — 안전 요약 고정 어휘).
+HEAVY_GATE_REASON = "heavy_gate:앞 단계 비정상(타임아웃·429)"
+#: 가드 중단 사유(`guard.Guard.abort` 값 — `budget:<소스>`는 따로 본다).
+GUARD_ABORTS: frozenset[str] = frozenset({"quota_429", "timeout_ratio", "latency_3x"})
+#: 예외 클래스 이름 모양(인벤토리 수집 실패 사유 `<도구>:<예외 이름>` 판별용).
+_EXC_NAME = re.compile(r"[A-Z][A-Za-z0-9]*(?:Error|Exception|Timeout|Exit|Group)")
+
+
+class RunAbortError(RuntimeError):
+    """드라이버 중단 — 고정 문구(`ABORT_*`)와 오류 코드(`record.ERROR_CODES` 교집합)만 싣는다.
+
+    호출 측은 `str(exc)` 대신 `phrase`·`codes`로 한 줄을 만든다(plans/164 W2a). 메시지에도 원문을
+    넣지 않는다 — 누가 `str(exc)`를 찍어도 운영 이름이 새지 않게.
+
+    Attributes:
+        phrase: 고정 문구
+        codes: 오류 코드(정렬 · 중복 없음)
+    """
+
+    def __init__(self, phrase: str, codes: Sequence[str] = ()) -> None:
+        self.phrase = phrase
+        self.codes = tuple(sorted({c for c in codes if c in ERROR_CODES}))
+        super().__init__(phrase + (f" ({', '.join(self.codes)})" if self.codes else ""))
+
+
+def guarded_names(names: Iterable[str], sources: Iterable[str],
+                  registry_sources: Iterable[str]) -> list[str]:
+    """관문 원이름 대조 집합 — 인벤토리 이름 + 레지스트리 밖 소스 id(E2 게이트웨이 `.env`
+    `JENNIFER_SOURCES` · plans/164 W1 N-1 — 원이름처럼 치환·대조한다)."""
+    known = set(registry_sources)
+    return [*names, *(s for s in sources if s not in known)]
+
+
+def safe_abort_reason(reason: str | None, sources: Iterable[str]) -> str | None:
+    """가드 중단 사유 → 고정 어휘(`GUARD_ABORTS` · `budget:<레지스트리 소스 id>` · 그 밖은
+    `budget:other`·`other`). None 이면 None — 실행 로그·안전 요약용(plans/164 W2a)."""
+    if reason is None:
+        return None
+    if reason in GUARD_ABORTS:
+        return reason
+    if reason.startswith("budget:"):
+        return reason if reason.removeprefix("budget:") in set(sources) else "budget:other"
+    return "other"
+
+
+def inventory_error_summary(errors: Iterable[str]) -> dict[str, Any]:
+    """인벤토리 수집 실패 사유(`<도구>:<사유>`) → 어휘만 남긴 요약.
+
+    Returns:
+        `{"codes": {"<도구>:<오류 코드>": 건수}, "exceptions": {"<도구>": 건수}, "other": 건수}` —
+        도구는 `INVENTORY_CALLS` · 코드는 `record.ERROR_CODES` 교집합 · 예외 이름은 건수만(이름은
+        버린다) · 그 밖(자유 문장 사유)은 건수만
+    """
+    tools = {tool for tool, _, _ in INVENTORY_CALLS}
+    codes: dict[str, int] = {}
+    exceptions: dict[str, int] = {}
+    other = 0
+    for item in errors:
+        tool, _, why = str(item).partition(":")
+        code = why.split(":", 1)[0].strip()
+        if tool in tools and code in ERROR_CODES:
+            codes[f"{tool}:{code}"] = codes.get(f"{tool}:{code}", 0) + 1
+        elif tool in tools and _EXC_NAME.fullmatch(why.strip()):
+            exceptions[tool] = exceptions.get(tool, 0) + 1
+        else:
+            other += 1
+    return {"codes": dict(sorted(codes.items())), "exceptions": dict(sorted(exceptions.items())),
+            "other": other}
+
+
+def _inventory_error_text(errors: Sequence[str]) -> str:
+    """진행 줄용 인벤토리 실패 요약(어휘만 — `inventory_error_summary`)."""
+    summary = inventory_error_summary(errors)
+    parts = [f"{k} {n}" for k, n in summary["codes"].items()]
+    parts += [f"{k}:예외 {n}" for k, n in summary["exceptions"].items()]
+    if summary["other"]:
+        parts.append(f"그 밖 {summary['other']}")
+    return ", ".join(parts)
 
 
 def now_kst() -> str:
@@ -184,6 +279,29 @@ def turn_placeholders(turn: Turn, values: Mapping[str, str], *,
     if inherited:
         names.append(inherited)
     return {n: values[n] for n in dict.fromkeys(names) if n in values}
+
+
+def parse_for_turn(scenario: Scenario, idx: int, values: Mapping[str, str]) -> dict[str, Any]:
+    """턴의 가짜 입력 파싱 답 — 소스 되묻기 답 턴이면 대기 중인 원 질문 기준(plans/157 G-5).
+
+    답 턴(`reply_to == "source"`)이면 라우트가 답 문장을 원 질문으로 바꿔 다시 파싱한다(`query.py`
+    `_apm_source_text_answer` → `turn_query = pending["query"]`). 그래서 기간 표현(`time_slot`)·
+    호스트 자리표 필터는 **원 질문 템플릿·문장**에서 뽑고, 기대 창은 **이번(답) 턴의
+    `expect.window`**를 쓴다. 답 턴이 연쇄되면 `reply_to` 사슬을 거슬러 최초 질문을 쓴다(대기
+    질문은 최초 원 질문이다). 되묻기 뒤라도 답 턴이 아닌 턴은 종전대로 자기 문장 기준이다.
+
+    Raises:
+        PlaceholderError: 기준 문장의 자리표가 `values`에 없을 때
+    """
+    from .fake_llm import parse_from_turn
+
+    turn = scenario.turns[idx]
+    first = idx
+    while first > 0 and scenario.turns[first].reply_to == "source":
+        first -= 1
+    asked = scenario.turns[first]
+    return parse_from_turn(turn.expect, asked.prompt, fill_placeholders(asked.prompt, values),
+                           mapping=values)
 
 
 # --- SSE done 보관 --------------------------------------------------------------------
@@ -413,9 +531,11 @@ def build_observed(
         }
     selected = [str(i.get("apm_instance_name")) for m in metas
                 for i in (m.get("targets") or {}).get("instances") or []]
+    # searched·failures 는 건수만 — 원문은 서버·검색어 이름이 섞인 자유 문장이다(plans/164 §4.3-3)
     targets = [
         {"text": t.get("text"), "kind": t.get("kind"), "resolved": bool(t.get("instances")),
-         "candidates": list(t.get("suggestions") or []), "selected": selected}
+         "candidates": list(t.get("suggestions") or []), "selected": selected,
+         "searched": len(t.get("searched") or []), "failures": len(t.get("failures") or [])}
         for m in metas for t in (m.get("targets") or {}).get("texts") or []
     ]
     disclosures = [d for d in done.get("disclosures") or [] if isinstance(d, dict)]
@@ -425,7 +545,7 @@ def build_observed(
     apm_called = bool(audit)
     clar = done.get("apm_source_clarification")
     clarify_kind, clarify_text = _clarify(clar, done, disclosures, response)
-    return {
+    observed: Observed = {
         "agents": agents,
         "plan_raw": plan_raw,
         "plan_final": plan_final,
@@ -453,6 +573,25 @@ def build_observed(
         "apm_called": apm_called,
         "error": getattr(obs, "error", None),
     }
+    if results:
+        # 처리기 보기 호출 실패(보기 · 오류 코드) — 판정이 오류 감사 줄을 보기·해석 단계로 가른다
+        # (`judge.error_stages` · plans/164 §4.3-3). 처리기 결과 캡처가 없으면 칸을 두지 않는다
+        # (판별 포기 = 현행 `gw_error`)
+        observed["view_failures"] = [
+            {"view": f.get("view"), "code": _error_code(f.get("reason"))}
+            for m in metas for f in m.get("failures") or [] if isinstance(f, dict)
+        ]
+    return observed
+
+
+def _error_code(reason: Any) -> str | None:
+    """처리기 실패 사유(`"<코드>: <사유>"`) → 오류 코드.
+
+    알려진 코드(`record.ERROR_CODES` — 게이트웨이 오류 어휘 사본 + 처리기 코드)가 아니면 None —
+    자유 문장(서버·대상 이름이 섞인다)이나 코드 모양의 이름 조각(소문자 호스트명)은 보관하지 않는다.
+    """
+    code = str(reason or "").split(":", 1)[0].strip()
+    return code if code in ERROR_CODES else None
 
 
 # --- LLM 평면 · 인벤토리 ------------------------------------------------------------------
@@ -509,7 +648,8 @@ def _leaf_error(exc: BaseException) -> str:
 
 
 def collect_inventory(
-    call_tool: CallTool, *, hosts: dict[str, list[str]] | None = None
+    call_tool: CallTool, *, hosts: dict[str, list[str]] | None = None,
+    sources: dict[str, set[str]] | None = None,
 ) -> tuple[list[str], int, list[str]]:
     """게이트웨이 목록 도구로 인스턴스·호스트·업무·도메인 이름을 모은다(관문 원이름 대조 집합).
 
@@ -517,6 +657,8 @@ def collect_inventory(
         call_tool: 게이트웨이 도구 호출
         hosts: 주면 인스턴스 이름(casefold) → 호스트 이름 목록을 채운다(대상 승계 판정 보조 —
             「그 서버」가 앞 턴 인스턴스의 호스트로 이어졌는지 본다)
+        sources: 주면 이름(casefold) → 그 이름이 나온 행의 소스 id 를 채운다(행에 소스 표지
+            `source_id`가 있을 때만 · 키트 검사 소스 대응 범위 — plans/164 §4.2 (d)-2)
 
     Returns:
         (이름 목록 · 정렬 · 중복 없음, 부른 도구 수, 실패 사유) — 도구 하나가 실패해도 나머지는
@@ -536,8 +678,13 @@ def collect_inventory(
             errors.append(f"{tool}:{envelope.get('error')}")
         for row in envelope.get("rows") or []:
             if isinstance(row, dict):
-                names.update(str(row[k]).strip() for k in keys
-                             if isinstance(row.get(k), str) and row[k].strip())
+                got = [str(row[k]).strip() for k in keys
+                       if isinstance(row.get(k), str) and row[k].strip()]
+                names.update(got)
+                sid = row.get("source_id")
+                if sources is not None and isinstance(sid, str) and sid.strip():
+                    for name in got:
+                        sources.setdefault(name.casefold(), set()).add(sid.strip())
                 inst, host = row.get("instance_name"), row.get("host_name")
                 if hosts is not None and isinstance(inst, str) and isinstance(host, str) \
                         and inst.strip() and host.strip():
@@ -624,7 +771,7 @@ def _base_record(scenario: Scenario, idx: int, turn: Turn, values: Mapping[str, 
 
 
 def _run_scenario(ctx: _Ctx, scenario: Scenario) -> list[TurnRecord]:
-    from .fake_llm import parse_from_turn, plan_from_expect
+    from .fake_llm import plan_from_expect
 
     values = ctx.placeholders.values
     records: list[TurnRecord] = []
@@ -637,6 +784,7 @@ def _run_scenario(ctx: _Ctx, scenario: Scenario) -> list[TurnRecord]:
             break
         try:
             prompt = fill_placeholders(turn.prompt, values)
+            parse = parse_for_turn(scenario, idx, values) if ctx.fake is not None else None
         except PlaceholderError as exc:
             record = _base_record(scenario, idx, turn, values, None)
             record["observed"] = {"error": f"자리표 미등록: {exc}"}
@@ -656,7 +804,7 @@ def _run_scenario(ctx: _Ctx, scenario: Scenario) -> list[TurnRecord]:
             if ctx.plan_hook is not None:
                 plan = ctx.plan_hook(scenario, idx, plan) or plan
             ctx.fake.set_plan(plan)
-            ctx.fake.set_parse(parse_from_turn(turn.expect, turn.prompt, prompt, mapping=values))
+            ctx.fake.set_parse(parse)
         record["sent_at"] = now_kst()
         obs, done, captures, audit, kinds = _send(ctx, prompt, thread_id)
         thread_id = done.get("thread_id") or thread_id
@@ -720,6 +868,13 @@ def _measure_baseline(gateway_proc: gw.GatewayProc, audit: gw.AuditTail, feed: G
 #: 벤치 본체는 `--user`(인증 유지)여도 루프백에만 연다.
 LOOPBACK_ENV = {"API_HOST": "127.0.0.1"}
 NO_AUTH_ENV = {"AUTH_ENABLED": "false", **LOOPBACK_ENV}
+#: E1 활성 DB — 폐쇄망형 구성(폴스타 존 DB + 제니퍼 · 활성 시스템 2개)을 닮게 한다
+#: (plans/157 G-1 (a)). 활성 DB가 0건이면 시스템이 제니퍼 하나라 라우트 존 게이트가 task
+#: 게이트로 위임되지 않아, 「…서버별…」 같은 APM 질문이 그래프 전에 존 되묻기로 끝난다(측정
+#: 환경 부정합 — 제품 결함 아님). `.env` 와 무관하게 명시 주입해 밀봉하고 설정 에코로 대조한다.
+#: E1 은 DB를 조회하지 않는다 — id는 레지스트리 정본의 공동존 두 DB(시나리오 위치어 「김포」·
+#: 「여의도」가 가리키는 DB와 같다). E2 는 본체 `.env` 가 정본이라 넣지 않는다.
+E1_ENV = {"ACTIVE_DB_IDS": "polestar_cm_gp,polestar_cm_yd"}
 
 
 def _server_overrides(env: str, session: Path, gateway_proc: gw.GatewayProc,
@@ -733,7 +888,8 @@ def _server_overrides(env: str, session: Path, gateway_proc: gw.GatewayProc,
     from ._serve import CAPTURE_ENV
 
     expected = {**ISOLATION_ENV, **load_profiles()[PROFILE],
-                **(LOOPBACK_ENV if keep_auth else NO_AUTH_ENV)}
+                **(LOOPBACK_ENV if keep_auth else NO_AUTH_ENV),
+                **(E1_ENV if env == "e1" else {})}
     overrides = {
         **expected,
         "CHECKPOINT_DB_URL": str(session / "checkpoints.db"),
@@ -775,7 +931,7 @@ def _pick_port() -> int:
         port = pick_port()
         if port not in gw.FORBIDDEN_PORTS:
             return port
-    raise RuntimeError("본체 포트를 고르지 못했다")
+    raise RunAbortError(ABORT_NO_PORT)
 
 
 def run(
@@ -795,6 +951,8 @@ def run(
     say: Callable[[str], None] = print,
     user_id: str | None = None,
     password: str | None = None,
+    inventory_check: Callable[[list[str]], None] | None = None,
+    kit_check: Callable[[list[str], dict[str, set[str]], list[str]], None] | None = None,
 ) -> tuple[list[TurnRecord], dict[str, Any]]:
     """시나리오를 2단 본체로 돌려 턴 레코드와 run 메타를 돌려준다.
 
@@ -814,13 +972,18 @@ def run(
         say: 진행 출력
         user_id · password: 인증이 켜진 본체의 질의 로그인 계정(None = 내장 테스트 계정 —
             운영 인증 DB 에는 없을 수 있다)
+        inventory_check: 인벤토리 이름 → None(멈출 때는 예외) — 수집 직후 · 턴 송신 전에 부른다
+            (plans/164 W1 사용자 정보 충돌 검사 · 예외는 정리 뒤 그대로 올린다)
+        kit_check: (인벤토리 이름, 이름 → 소스 id, 수집 실패 사유) → None — `inventory_check` 뒤
+            · 턴 송신 전에 부른다(plans/164 §4.2 (d) 실행 전 키트 검사 · 출력만 하고 멈추지 않는다)
 
     Raises:
         ValueError: 뷰 서버 버전 미달·미입력(E2) · E2 에 `out_dir` · E2 에 `llm="mlx"`
         LLMBlockedError: `llm="mlx"` 사전 점검 실패 · E2 본체 평면 중 하나라도 과금 평면
             (`preflight.external_planes` — 워커 `fabrix·ollama·mlx` · 오케스트레이터 `vllm·mlx`
             밖 · 못 읽음 포함 · D-222). 아무것도 띄우지 않는다. 우회 옵션은 두지 않는다
-        RuntimeError: 기동·기동 검증 실패
+        RunAbortError: 기동 검증·로그인 실패 · 포트 없음 · E2 인벤토리 이름 0 — 고정 문구와 오류
+            코드만 싣는다(plans/164 W2a · 실행 로그에 원문이 남지 않게)
     """
     from scripts.scenario.client import ClientConfig
     from scripts.scenario.runner import (
@@ -890,31 +1053,41 @@ def run(
                                  session / "fixtures")
         else:
             sources = sorted({*sources, *gw.dotenv_sources()})
-        say(f"[1/4] 게이트웨이 기동 — {env} · 소스 {', '.join(sources)} · 초당 "
-            f"{gw.BENCH_RATE_PER_SEC:g}회")
+        known = [s for s in sources if s in registry.source_ids]  # 그 밖(.env 소스)은 수만
+        say(f"[1/4] 게이트웨이 기동 — {env} · 소스 {', '.join(known)}"
+            + (f" 외 {len(sources) - len(known)}개" if len(sources) > len(known) else "")
+            + f" · 초당 {gw.BENCH_RATE_PER_SEC:g}회")
         gateway_proc = gw.start_gateway(session, sources=sources, mock=mock)
         audit = gw.AuditTail(gateway_proc.log_path)
 
         def on_abort(reason: str) -> None:
-            say(f"      [중단] 가드 — {reason} · 게이트웨이를 멈춘다")
+            say(f"      [중단] 가드 — {safe_abort_reason(reason, registry.source_ids)} · "
+                "게이트웨이를 멈춘다")
             if gateway_proc is not None:
                 gateway_proc.stop()
 
         feed = GuardFeed(audit, guard, on_abort)
         _measure_baseline(gateway_proc, audit, feed, say)
         instance_hosts: dict[str, list[str]] = {}
+        name_sources: dict[str, set[str]] = {}
         names, inv_calls, inv_errors = collect_inventory(
             functools.partial(gateway_proc.call_tool, timeout_sec=INVENTORY_TIMEOUT_SEC),
-            hosts=instance_hosts)
+            hosts=instance_hosts, sources=name_sources)
         feed.pump()
         if env == "e2" and not names:
             # 원이름 대조 집합이 비면 누출 관문이 자리표 값만 본다 — 반출본 안전을 보장 못 한다
-            raise RuntimeError("인벤토리 이름 0개 — 누출 관문 원이름 대조 집합이 비어 실행하지 "
-                               f"않는다({', '.join(inv_errors) or '목록 빈 응답'})")
-        meta["inventory_names"] = names  # 관문 원이름 대조 집합 — 호출 측이 run.json 에서 뺀다
+            raise RunAbortError(ABORT_INVENTORY_EMPTY,
+                           [c.split(":", 1)[1] for c in
+                            inventory_error_summary(inv_errors)["codes"]])
+        guarded = guarded_names(names, sources, registry.source_ids)
+        if inventory_check is not None:
+            inventory_check(guarded)
+        meta["inventory_names"] = guarded  # 관문 원이름 대조 집합 — 호출 측이 run.json 에서 뺀다
         meta["inventory"] = {"calls": inv_calls, "names": len(names), "errors": inv_errors}
         say(f"      인벤토리 이름 {len(names)}개(도구 {inv_calls}회"
-            + (f" · 실패 {', '.join(inv_errors)}" if inv_errors else "") + ")")
+            + (f" · 실패 {_inventory_error_text(inv_errors)}" if inv_errors else "") + ")")
+        if kit_check is not None:
+            kit_check(list(names), name_sources, list(inv_errors))
         llm_url: str | None = None
         llm_model: str | None = None
         if env == "e1" and llm == "fake":
@@ -943,7 +1116,7 @@ def run(
             status.reasons.append(admin_error)
         meta["tier"], meta["degraded_reason"] = status.tier, status.degraded_reason
         if not status.valid:
-            raise RuntimeError("기동 검증 실패: " + "; ".join(status.reasons))
+            raise RunAbortError(ABORT_VERIFY_FAILED)
         say(f"      사다리 확정: {status.tier} (사유 {status.degraded_reason})")
         token: str | None = None
         login_id = user_id or DEFAULT_USER_ID
@@ -955,7 +1128,7 @@ def run(
             finally:
                 login_client.close()
             if not token:
-                raise RuntimeError(f"로그인 실패: {(error or '')[:200]}")
+                raise RunAbortError(ABORT_LOGIN_FAILED)
         source = TokenSource(
             token=token,
             relogin=(user_relogin(port, login_id, login_password)
@@ -982,8 +1155,7 @@ def run(
             say(f"      {order:>3}/{len(plan.light)} {scenario.id}")
         for scenario in plan.heavy:
             if not guard.healthy:
-                reason = (f"aborted:{guard.aborted}" if guard.aborted
-                          else "heavy_gate:앞 단계 비정상(타임아웃·429)")
+                reason = f"aborted:{guard.aborted}" if guard.aborted else HEAVY_GATE_REASON
                 records += _skipped(scenario, reason, placeholders.values)
                 continue
             records += _run_scenario(ctx, scenario)
@@ -1027,6 +1199,8 @@ def run(
         "aborted": guard.aborted,
         "turns": sum(1 for r in records if not r["verdict"].get("skipped")),
         "apm_observed_turns": sum(1 for r in records if r["observed"].get("apm_called")),
+        # 하위 호환 — run 끝 시점 존재 여부뿐(이번 run 의 생성·변경은 `__main__`의 전후 비교 ·
+        # `gateway_var`)
         "gateway_var_absent": gw.gateway_var_absent(),
     })
     return records, meta
@@ -1041,6 +1215,11 @@ __all__ = [
     "MLX_DEFAULT_URL",
     "MLX_DEFAULT_MODEL",
     "LLMBlockedError",
+    "RunAbortError",
+    "HEAVY_GATE_REASON",
+    "inventory_error_summary",
+    "guarded_names",
+    "safe_abort_reason",
     "mlx_blockers",
     "collect_inventory",
     "Placeholders",

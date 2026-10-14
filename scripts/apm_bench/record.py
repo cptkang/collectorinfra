@@ -17,6 +17,24 @@ from typing import Any, TypedDict
 #: 레코드 형식 버전 — 칸을 바꾸면 올린다.
 RECORD_VERSION = 1
 
+#: 게이트웨이 오류 코드 사본(`apm_gateway/apm_gateway/domain/errors.py` `ERROR_CODES` — 벤치는
+#: 게이트웨이를 import 하지 않는다 · D-274). 정본과 같은지는 테스트가 파일 텍스트로 대조한다.
+#: **벤치 안 유일한 사본이다**(plans/164 W2a) — `judge`·`audit_digest`·`safe_summary`는 여기서
+#: import 한다.
+GATEWAY_ERROR_CODES: frozenset[str] = frozenset({
+    "not_configured", "invalid_argument", "instance_unresolved", "profile_ref_mismatch",
+    "source_unavailable", "contract_violation", "apm_quota_exceeded", "apm_api_error",
+    "rate_limited", "job_not_found", "job_not_ready",
+})
+#: 대상 해석 실패 코드(`GATEWAY_ERROR_CODES` 원소 — 판정기가 호출 단계를 가를 때 쓴다 ·
+#: plans/164 §4.3-3).
+INSTANCE_UNRESOLVED = "instance_unresolved"
+#: 처리기가 직접 붙이는 실패 코드(`src/orchestration/apm_query.py` — 배치 결과에 대상 항목 없음).
+HANDLER_ERROR_CODES: frozenset[str] = frozenset({"batch_missing"})
+#: `view_failures[].code`가 받는 오류 코드(밖이면 None — 사유 원문의 이름 조각을 코드로 받지
+#: 않는다).
+ERROR_CODES: frozenset[str] = GATEWAY_ERROR_CODES | HANDLER_ERROR_CODES
+
 
 class PlanTask(TypedDict, total=False):
     """분해가 낸 APM task 하나(관측 지점 ② 원출력 · ① 디스패치 task)."""
@@ -59,6 +77,8 @@ class TargetText(TypedDict, total=False):
     resolved: bool
     candidates: list[str]  # 게이트웨이 후보 이름
     selected: list[str]
+    searched: int  # 해석 근거 검색 수(처리기 `targets.texts[].searched` 건수 — 원문 미보관)
+    failures: int  # 해석 실패 수(`targets.texts[].failures` 건수 — 원문은 이름이 섞인 자유 문장)
 
 
 class Call(TypedDict, total=False):
@@ -104,6 +124,9 @@ class Observed(TypedDict, total=False):
     node_elapsed_ms: dict[str, Any]
     elapsed_ms: int | None
     apm_called: bool  # APM 도구 호출이 하나라도 관측됐는가(D-219 ③ 관측 0 판정)
+    # 처리기 보기 호출 실패 `{view, code}`(code = 실패 사유의 오류 코드 · 코드 모양이 아니면 None) —
+    # 처리기 결과 캡처가 있을 때만 둔다. 판정이 오류 감사 줄의 호출 단계를 가른다(plans/164 §4.3-3)
+    view_failures: list[dict[str, Any]]
     error: str | None  # 턴 자체 실패(HTTP·SSE·타임아웃)
 
 
@@ -153,6 +176,10 @@ class TurnRecord(TypedDict, total=False):
 
 __all__ = [
     "RECORD_VERSION",
+    "ERROR_CODES",
+    "GATEWAY_ERROR_CODES",
+    "HANDLER_ERROR_CODES",
+    "INSTANCE_UNRESOLVED",
     "PlanTask",
     "SanitizeChange",
     "Reselect",

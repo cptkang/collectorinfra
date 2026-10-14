@@ -815,11 +815,14 @@ def _apm_source_fields(state: Mapping[str, Any]) -> dict[str, Any]:
     같은 모양으로 싣는다. 값이 없으면 키를 싣지 않는다(소스 <2 배포 스트림 바이트 불변).
 
     스트림 입력은 누적 상태(`_scope_state`)다 — 승계 값은 체크포인트에서, 되묻기는 집계기 델타에서
-    온다.
+    온다. 승계 값의 `last_targets`(plans/157 W3 — 인스턴스 이름)는 다음 턴 처리기만 읽는 내부
+    승계 재료라 빼고 싣는다(체크포인트 값은 그대로).
     """
     out: dict[str, Any] = {}
     for key in ("apm_source_clarification", "apm_source_scope"):
         value = state.get(key)
+        if value and key == "apm_source_scope" and isinstance(value, dict):
+            value = {k: v for k, v in value.items() if k != "last_targets"}
         if value:
             out[key] = value
     return out

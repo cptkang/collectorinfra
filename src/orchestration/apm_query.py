@@ -501,13 +501,21 @@ def _resolved_bounds(query_time: QueryTime) -> tuple[datetime | None, datetime] 
     """요청 시간 해석(D-309)의 사건 주체 구간 — 기간이 없거나 「현재·지금」이면 None(현재값).
 
     사건 주체(`event`)는 기간 미지정 = 기간 조건 없음 · 진행 중 기간 = 기준 시각까지다(D-291) —
-    현재값 조회와 같은 뜻이다. 반개구간 `[start, end)` 그대로 쓴다.
+    현재값 조회와 같은 뜻이다. 반개구간 `[start, end)` 그대로 쓴다. 단 시 단위 롤링(「최근 3시간」·
+    「3시간 전」)은 사건 해석이 기준 시각 분 경계에서 끝나므로(plans/156 G-3) 그 기간만 시 단위 통계
+    구간(직전 정시 끝)으로 되돌린다 — 제니퍼 창은 종전 그대로다(range 보기 롤링 보정 V6-2 · hourly
+    보기 정시 끝).
     """
     event = query_time.event
     if event is None or event.unbounded or event.end is None:
         return None
     if query_time.present and not query_time.explicit:
         return None
+    periods = _period_list(query_time)
+    if periods and any(_is_hour_rolling(p) for p in periods):
+        periods = [_hour_stats_period(p, query_time.anchor_at) if _is_hour_rolling(p) else p
+                   for p in periods]
+        return min(p.start for p in periods), max(p.end for p in periods)
     return event.start, event.end
 
 
@@ -643,10 +651,18 @@ def _stamp(at: datetime) -> str:
 _MINUTE_WIDENED_RULE = "시 단위 통계라 분 단위 기간을 정시 구간으로 넓혀"
 
 
+def _is_hour_rolling(period: _Period) -> bool:
+    """시 단위 롤링(「최근 3시간」·「3시간 전」)인가 — 사건 해석이 기준 시각 분 경계에서 끝난다
+    (plans/156 G-3 · D-333). 제니퍼 창은 종전처럼 통계 해석(직전 정시 끝)을 쓴다."""
+    return period.unit == "hour" and period.kind == _ROLLING
+
+
 def _hour_stats_period(period: _Period, anchor: datetime) -> _Period:
-    """분 단위 기간 → 시 단위 통계 구간 — 통계 해석(직전 정시에서 끝나는 ⌈N/60⌉시간 · D-328 ③)을
-    공개 해석기로 다시 계산한다(사본 금지 — D-131). 비교 도구가 시 단위 통계라 분 끝을 정시로
-    깎으면 구간이 뒤집히거나(10:07 ~ 10:00 → 되묻기) 게이트웨이의 시 경계 확장에서 구간이 겹친다.
+    """분 단위·시 단위 롤링 기간 → 시 단위 통계 구간 — 통계 해석(직전 정시에서 끝나는 ⌈N/60⌉시간 ·
+    D-328 ③)을 공개 해석기로 다시 계산한다(사본 금지 — D-131). 비교 도구가 시 단위 통계라 분 끝을
+    정시로 깎으면 구간이 뒤집히거나(10:07 ~ 10:00 → 되묻기) 게이트웨이의 시 경계 확장에서 구간이
+    겹친다. 시 단위 롤링(N시간 = 60N분)은 통계 해석 「최근 N시간」과 같은 구간이 된다
+    (plans/156 G-3).
     """
     minutes = int((period.end - period.start).total_seconds() // 60)
     res = resolve(TimeSpec(relation="last", n=minutes, unit="minute"), anchor, subject="metric")
@@ -687,6 +703,9 @@ def plan_compare_window(query_time: QueryTime | None) -> WindowPlan:
         if widened:
             periods = [_hour_stats_period(p, query_time.anchor_at) if p.unit == "minute" else p
                        for p in periods]
+        # 시 단위 롤링도 통계 구간으로(plans/156 G-3 — 종전 구간 · 넓힘 고지 없음)
+        periods = [_hour_stats_period(p, query_time.anchor_at) if _is_hour_rolling(p) else p
+                   for p in periods]
         first, last = sorted(periods, key=lambda p: (p.start, p.end))
         if widened and first.end > last.start:  # 넓힌 뒤 겹침(같은 시작 포함) — 사유를 말한다
             return WindowPlan("ask", note=(
@@ -717,6 +736,9 @@ def plan_compare_window(query_time: QueryTime | None) -> WindowPlan:
                 hourly = _hour_stats_period(period, query_time.anchor_at)
                 start, end = hourly.start, hourly.end
                 rule = f"{_MINUTE_WIDENED_RULE} 바로 앞 같은 길이 기간과 비교"
+            elif _is_hour_rolling(period):  # 시 단위 롤링도 통계 구간으로(plans/156 G-3)
+                hourly = _hour_stats_period(period, query_time.anchor_at)
+                start, end = hourly.start, hourly.end
             cur = (start, min(end, hour))
             base = (start - (cur[1] - cur[0]), start)
             rolling = True
@@ -1812,6 +1834,93 @@ async def _apply_source_decision(
     return out
 
 
+# ── 직전 대상 승계 (plans/157 W3 · 결함 ② — 130 M-5 대상 칸) ─────────────────────
+
+#: 스레드 키 `apm_source_scope` 안의 승계 재료 칸 — `[{text, kind, source_id}]`. 처리기는 메타
+#: `source_selection`에 싣고 집계기가 스레드 키로 옮긴다(`last_target_sources`와 같은 지점 · 같은
+#: 초기화 — 칩 해제·스코프 해제가 키째 비운다).
+LAST_TARGETS_KEY = "last_targets"
+
+
+def _per_target_views(views: list[str], by_id: dict[str, ViewSpec]) -> bool:
+    """고른 보기가 모두 대상별 보기인가 — 대상이 필수인 종전 보기(`required_input`)만이다.
+
+    인스턴스 목록(첫 홉)·전체 보기(지표 목록)·선택 대상(`optional` — 설정·관리)·이름·참조 보기는
+    아니다(`default_views`·`scoped_targets`가 직전 대상으로 좁히지 않는 보기와 같은 구분). 승계
+    재료를 쓰는 조건이자 읽는 조건이다(G-3 ③ · C-2).
+    """
+    return bool(views) and all(
+        by_id[v].target == "" and bool(by_id[v].required_input) for v in views)
+
+
+def inherited_targets(task: dict[str, Any], isolated: dict[str, Any], views: list[str],
+                      by_id: dict[str, ViewSpec],
+                      decision: source_select.SourceDecision) -> list[dict[str, str]]:
+    """대상을 생략한 후속 턴이 이을 직전 APM 대상 — 분해 `targets` 모양(G-3 (a) · 결정적 AND).
+
+    ① 직전 턴이 APM을 조회했고(`previous_sources`) 스레드 키에 그 턴의 대상 기록이 있다
+    ② 이번 턴 task에 대상 텍스트(`targets`)·서버 식별자·선행 결과 대상이 없다 — 복합 계획이면
+       잇지 않는다(형제 task가 말한 대상을 이 task가 빠뜨렸을 수 있다 · `explicit_targets`와 같은
+       보수 규칙)
+    ③ 고른 보기가 모두 대상별 보기다(`_per_target_views`)
+    ④ 이번 턴이 소스를 바꾸지 않았다 — 사다리 단 3(승계)이거나, 소스 단어 없이 분해 LLM
+       `sources`만으로 정한 소스(단 2 · 근거 단어 0)가 승계 값 안에 있다. 분해는 앞 턴 맥락의
+       소스를 다시 내곤 한다(실측 E1 `APM-SRC-inherit#1` — `sources: [cm_prd]`) — 같은 소스 재언급은
+       변경이 아니다. 소스 단어·화면 선택·되묻기 답이면 아니다
+    하나라도 아니면 빈 목록(현행 그대로). 소스 사다리가 고른 소스 밖의 기록은 버린다.
+    """
+    scope = isolated.get("apm_source_scope")
+    scope = scope if isinstance(scope, dict) else {}
+    if decision.action != "query" or not _same_sources(decision, scope):
+        return []
+    if not _per_target_views(views, by_id) or isolated.get("is_composite"):
+        return []
+    if sanitize_targets(task.get("targets")) or resolve_apm_targets(
+            {**isolated, "conversation_context": {}}):
+        return []
+    ctx = isolated.get("conversation_context") or {}
+    if APM_SYSTEM not in (ctx.get("previous_sources") or []):
+        return []
+    items = scope.get(LAST_TARGETS_KEY)
+    allowed = set(decision.source_ids)
+    return sanitize_targets([
+        {"text": item.get("text"), "kind": item.get("kind")}
+        for item in items if isinstance(item, dict) and item.get("source_id") in allowed
+    ] if isinstance(items, list) else [])
+
+
+def _same_sources(decision: source_select.SourceDecision, scope: dict[str, Any]) -> bool:
+    """이번 턴 소스 결정이 소스를 바꾸지 않았는가(G-3 ④ — `inherited_targets`)."""
+    if decision.basis == "inherited":
+        return True
+    if decision.basis != "named" or decision.evidence:  # 소스 단어 · 화면 선택 · 되묻기 답
+        return False
+    ids = {str(i) for i in scope.get("ids") or ()}
+    return bool(ids) and (source_select.ALL_SOURCES in ids or set(decision.source_ids) <= ids)
+
+
+def _inherited_notice(targets: list[dict[str, str]], source: str) -> disc.Disclosure:
+    """승계 고지(의무·중립) — 사용자가 알아야 하는 좁힘이다(G-3 (a))."""
+    names = [_shown(t["text"]) for t in targets]
+    shown = ", ".join(names[:5]) + (f" 외 {len(names) - 5}개" if len(names) > 5 else "")
+    return disc.make(disc.APM_UNTARGETED_SCOPE,
+                     f"직전 대상 {len(targets)}건({shown})을 이어서 조회했습니다 — 다른 대상은"
+                     " 이름을 말해 주세요.", source=source)
+
+
+def _last_targets(instances: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """이번 턴이 조회한 해석 인스턴스 → 승계 재료 `[{text, kind, source_id}]`(이름·소스로 한 번)."""
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for inst in instances:
+        key = (str(inst["source_id"]), str(inst["instance_name"]).casefold())
+        if key not in seen:
+            seen.add(key)
+            out.append({"text": str(inst["instance_name"]), "kind": "instance",
+                        "source_id": str(inst["source_id"])})
+    return out
+
+
 def _with_source_labels(rows: list[dict[str, Any]],
                         specs: tuple[SourceSpec, ...]) -> list[dict[str, Any]]:
     """`source_id`가 있는 행 바로 뒤에 소스 라벨 칸을 더한다(모르는 id는 원문)."""
@@ -2155,6 +2264,13 @@ async def run_apm_query(
         if refused is not None:
             return refused
         source_ids = decision.source_ids
+        # 대상을 생략한 후속 — 직전 대상을 분해가 낸 것처럼 싣고 종전 대상 해석을 그대로 탄다
+        # (plans/157 W3 · 새 해석 경로 없음)
+        inherited = inherited_targets(task, isolated, views, by_id, decision)
+        if inherited:
+            logger.info("%s 직전 대상 승계: %d건", APM_QUERY_AGENT, len(inherited))
+            task = {**task, "targets": inherited}
+            notices.append(_inherited_notice(inherited, source))
     ledger: list[LinkEntry] = []
     linked: dict[str, list[str]] = {}
 
@@ -2500,6 +2616,11 @@ async def run_apm_query(
         # 지시어 후속의 승계 재료(단 3) — 이번 턴 행이 온 소스(선언 순서)
         found = {r.get("source_id") for r in rows}
         meta["source_selection"]["last_target_sources"] = [s.id for s in specs if s.id in found]
+        # 대상 생략 후속의 승계 재료(plans/157 W3) — 대상별 보기로 조회한 해석 인스턴스만(목록·설정
+        # 보기 턴은 싣지 않는다 · C-2). 없으면 키를 싣지 않는다(종전 스코프 바이트 불변)
+        last = _last_targets(instances) if _per_target_views(views, by_id) else []
+        if last:
+            meta["source_selection"][LAST_TARGETS_KEY] = last
     shown = display_rows(rows)
     if any(a is not b for a, b in zip(shown, rows)):
         extra[DISPLAY_CUT_KEY] = True

@@ -157,6 +157,7 @@ DISCLOSURE_KIND_GRADES: dict[str, str] = {
         "default_period", "current_month_excluded", "empty_range", "period_in_progress",
         "future_period", "display_grain_unaligned", "year_inferred", "multiple_periods",
         "event_no_default_period", "event_to_now", "minute_widened_to_hour",
+        "clock_previous_hour",  # plans/156 (c) — 시각 시작점의 시 진행 중 → 직전 정시 한 시간
     )},
     # 134 APM(SPEC-apm-question-coverage §7.5) — 접수는 데이터 답이 아니라 partial
     "apm_job_accepted": "partial", "apm_full_result_file": "neutral",

@@ -86,7 +86,9 @@ class TestCaseTable:
         periods = [s for s in recognize("지난 3시간 TPS 추세 10분 간격") if s.relation != "none"]
         assert [(s.n, s.unit, s.span) for s in periods] == [(3, "hour", "지난 3시간")]
         ev, me = _both("지난 3시간 TPS 추세 10분 간격")
-        assert _hm(ev) == _hm(me) == ("07:00", "10:00")  # 시 단위 롤링 정시 절단은 그대로(⑥)
+        # plans/156 G-3 (D-333) — 사건 시 단위 롤링은 기준 시각 분 경계까지 · 통계는 정시 그대로
+        assert _hm(ev) == ("07:37", "10:37")
+        assert _hm(me) == ("07:00", "10:00")
         assert me is not None and NOTE_MINUTE_WIDENED not in me.notes
 
 
@@ -108,13 +110,33 @@ class TestNotPeriod:
 
 
 class TestClarify:
+    # plans/156 G-1 — 「10시 30분부터」·「14시 30분 알람」은 시각 규칙이 해석한다(D-328 ⑤ 개정) →
+    # 아래 test_clock_minute_is_resolved_by_clock_rule로 옮겼다. 시각 뒤 「동안·전」은 계속 되묻는다
     @pytest.mark.parametrize("text", [
-        "10시 30분부터", "14시 30분 알람", "10시 30분 동안 CPU", "10시 30분 전 알람",
+        "10시 30분 동안 CPU", "10시 30분 전 알람",
     ])
     def test_minute_after_clock_is_asked(self, text: str) -> None:
         """시각 뒤 분은 기간 단위가 아니다 — 흔적으로 남아 종전처럼 되묻는다(⑤)."""
         for subject in ("event", "metric"):
             assert interpret_detail(text, NOW, subject=subject).clarify == "unresolved"
+
+    def test_clock_minute_is_resolved_by_clock_rule(self) -> None:
+        """plans/156 G-1 — 시각 뒤 분은 시각의 일부다. 10:37 기준 「14시 30분」은 미래라 되묻고,
+        「오전 10시 30분부터」는 사건 [10:30, 10:37) · 통계는 넓힌 구간이 비어 직전 정시 한 시간으로
+        대체한다(plans/156 확정 (c)). 표지 없는 「10시 30분부터」는 오전·오후를 되묻는다(2026-10-14
+        확정)."""
+        for subject in ("event", "metric"):
+            assert interpret_detail("14시 30분 알람", NOW, subject=subject).clarify == (
+                "future_explicit")
+            assert interpret_detail("10시 30분부터", NOW, subject=subject).clarify == (
+                "clock_meridiem")
+        ev = interpret_detail("오전 10시 30분부터", NOW, subject="event").resolution
+        assert ev is not None and (ev.start, ev.end) == (
+            NOW.replace(minute=30), NOW.replace(minute=37))
+        # plans/156 확정 (c) — 되묻지 않고 직전 정시 [09:00, 10:00)
+        mt = interpret_detail("오전 10시 30분부터", NOW, subject="metric").resolution
+        assert mt is not None and (mt.start, mt.end) == (
+            NOW.replace(hour=9, minute=0), NOW.replace(minute=0))
 
     @pytest.mark.parametrize("text", ["최근 10081분", "최근 200시간 30분"])
     def test_over_n_max_is_asked(self, text: str) -> None:

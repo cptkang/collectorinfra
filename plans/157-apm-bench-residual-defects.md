@@ -1,7 +1,7 @@
 # 157. 제니퍼 APM 벤치 잔여 결함 3건 — 존 사전 게이트의 APM 가로채기 · APM 대상 멀티턴 미승계 · 벤치 드라이버 파싱 답 어긋남
 
-> **작성일**: 2026-10-13 · **v1.0**(최초 · 코드 0)
-> **상태**: **TODO(코드 0건)** — 게이트 G-1~G-6 사용자 확정 대기 · 결정 번호는 확정 뒤 등재(메인 세션)
+> **작성일**: 2026-10-13 · **v1.1**(2026-10-14 — W0~W4 완료 · 커밋 없음)
+> **상태**: **완료**(2026-10-14 · 커밋 없음) — 게이트 권고안 일괄 채택 · 결함 3건 해소(E1 129/129 · 악화 0) · 결정 **D-334**(130 M-5 대상 칸 흡수) · 매뉴얼 U-55 · 통합 모듈 회귀 rc 0(원래 실패만) · 열린 질문은 §10 「남긴 것」
 > **요청 원문(2026-10-13)**: *"결함은 후속 계획을 만들고 필요한 것은 설치하고 나머지는 권고에 맞게 진행하라."* → 계획 작성까지만.
 > **발견 경위**: `plans/152`(제니퍼 APM 조회 벤치마크 · D-323) 외부망 E1 — `plans/159` 교정 뒤 턴 정확도 **97.7%(126/129)**. 남은 실패 3턴은 모두 159 이전 기준 run에서도 실패하던 결함이다(152 §9). 가짜 LLM이 정답 계획을 넣어도 나므로 few-shot으로 고칠 수 없다(`분류: 코드 교정 목록`).
 > **성격**: 현행 실측 + 결정 충돌 정리 + 설계 + 작업 분해. 제품 결함 2건 + 측정 도구 결함 1건.
@@ -10,8 +10,8 @@
 > **실측 기준**: 2026-10-13 `main` HEAD `6810336` **+ 미커밋 작업 트리**(plans/159 변경 — `src/domain/time_*.py`·`src/orchestration/apm_query.py`·`src/prompts/input_parser.py` 등). `file:line`은 이 시점 값이다 — W0에서 다시 대조한다. 벤치 산출물: 159 E1 재측정 run(`e1b` — 턴별 판정·`trace.jsonl`).
 > **병합 후 주의(2026-10-13)**: 작성 직후 `origin/main` 병합(`6402907`)으로 원격 커밋 `dbd8090`(「APM 벤치 코드 수정」 — 설정 에코 운영자 토큰 `_admin_token` 추가 · 내부망 W8 1회차에서 기동 검증 401 발견)이 들어와 `scripts/apm_bench/driver.py` 줄 번호가 약 +19 밀렸다(`:629` → 약 `:648` · `:687` → 약 `:706`). W0에서 다시 대조한다. 같은 커밋으로 152 W8 1회차가 내부망에서 시도됐음을 알 수 있다 — W4 재측정 전 W8 결과 반출본이 있으면 대조한다.
 > **소스 id 변경 주의(2026-10-13 · `plans/161` · D-329)**: 소스가 `b0`·`cm_prd`·`cm_stg`로 바뀌며 `APM-SRC-*` 시나리오 문구가 바뀌었다(`APM-SRC-common`→`APM-SRC-cm-prd` · ambiguous 0턴 「김포랑 여의도 …」·1턴 답 「공동존 운영」 · inherit 0턴 「김포 {{inst_c}} 최근 1시간 이벤트」(cm_prd)). 아래 재현 문구·소스 id(`common`·`bank`)는 당시 기록이다 — 재현은 새 문구로 한다.
-> **계획 시작 SHA**: `6810336`(159 변경이 커밋된 뒤라면 그 커밋 SHA로 W0에서 갱신 — `--base`가 159 변경을 이 계획의 변경으로 오인하지 않게)
-> **회귀 대상 파일**(예정): `scripts/apm_bench/driver.py` · `scripts/apm_bench/fake_llm.py`(필요 시) · `scripts/apm_bench/judge.py`(필요 시) · `src/orchestration/apm_query.py` · `src/api/routes/query.py`(결함 ① G-1 (b) 채택 시만) · `src/state.py`·`src/api/routes/query.py` 스레드 키 갱신부(결함 ② 저장 단위에 따라) · `scripts/manual/content/user.md`·`src/static/manual/user.html`(결함 ② 사용자 동작 변경 시) · 테스트 신규 3(`tests/test_scripts/test_apm_bench_driver_parse.py` · `tests/test_orchestration/test_plan157_apm_target_inherit.py` · `tests/test_api/test_plan157_zone_gate_apm.py`) · 개정 0~2
+> **계획 시작 SHA**: `4073f7f`(2026-10-14 착수 시 확정 · 152·156·164 통합 진행과 같은 base)
+> **회귀 대상 파일**(확정): `src/orchestration/{apm_query,result_aggregator}.py` · `src/api/routes/query.py` · `src/api/schemas.py`(주석) · `src/state.py`(주석) · `spec/SPEC-apm-question-coverage.md` · `scripts/apm_bench/driver.py`(W1·W2분 — 164와 공유) · `scripts/manual/content/user.md` · `src/static/manual/user.html` · `src/static/manual/help_index.json` · 테스트: `tests/test_api/test_plan157_zone_gate_apm.py` · `tests/test_orchestration/test_plan157_{apm_target_inherit,verify}.py` · `tests/test_orchestration/test_plan132_round3_verify.py` · `tests/test_scripts/test_apm_bench_driver_parse{,_verify}.py`
 
 ---
 
@@ -99,6 +99,8 @@ ctx.fake.set_parse(parse_from_turn(turn.expect, turn.prompt, prompt, mapping=val
 ---
 
 ## 3. 사용자 확정 게이트 (권고안 = 첫 항)
+
+> **확정 2026-10-14 · 사용자 *권고안 일괄 채택*** — G-1 (a) · G-2 (b) · G-3 (a) · G-4 (a) · G-5 (a) · G-6 (a). 결정 D-334(신규 · G-2 (b) — 130 M-5 대상 칸 흡수).
 
 | # | 질문 | **권고** | 대안 |
 |---|---|---|---|
@@ -203,9 +205,20 @@ ctx.fake.set_parse(parse_from_turn(turn.expect, turn.prompt, prompt, mapping=val
 ## 10. 진행 기록
 
 - 2026-10-13 — v1.0 작성(코드 0). 실측: `e1b` run 3턴 기록 · 결함별 원인 `file:line` · 존 게이트 폐쇄망 재현 판정(표 §1.2 — 2단·폴스타 활성·제니퍼 활성이면 비재현) · 130 M-5 대상 칸 잔여 확인.
+- 2026-10-14 — **통합 진행**(사용자 *"apm_bench와 관련된 계획 152, 156, 157, 164 등의 계획을 종합적으로 판단하여 구현하라."* · 통합 team-lead · 시작 SHA `4073f7f`). **순서 근거**: W1(드라이버 측정 결함)을 맨 앞에 두어야 이후 E1 비교가 믿을 만하고, W1·W2가 `driver.py`를 고쳐 164(같은 파일의 반출 위생)보다 먼저 끝냈다. W3(제품 승계)는 156 제품 트랙과 병렬. W4 재측정은 156·164와 합쳐 최종 E1 1회로 대신했다.
+- 2026-10-14 — **W1**(결함 ③): `driver.parse_for_turn` 순수 함수 — 소스 되묻기 답 턴의 가짜 파싱 답을 직전 원 질문 문장으로 만든다(기대 창은 답 턴 expect) · 자동 답 루프 불변 · 테스트 `test_apm_bench_driver_parse{,_verify}.py`. T-1(자동 답 소스 오배정)은 코드로 고치지 않고 164 키트 경고만 둔다.
+- 2026-10-14 — **W2**(결함 ① G-1 (a)): E1 주입값 `ACTIVE_DB_IDS=polestar_cm_gp,polestar_cm_yd`(E2 불변 · 설정 에코 대조) · 실측: DB 연결은 기동 헬스체크 2건 `Connection refused`뿐, 질의 경로 무영향 · 회귀 테스트 `test_plan157_zone_gate_apm.py`(2단+존 DB+APM 통과 · 활성 DB 0건은 현행 되묻기). `APM-JSERVER-domains#0` 통과.
+- 2026-10-14 — **W3**(결함 ② · D-334): `apm_source_scope.last_targets` 기록·결정적 AND 승계·의무 고지·덮어쓰기/해제 가드 · 응답 미노출(`_apply_source_fields`) · SPEC §7.5 · 매뉴얼 U-55. 교정 3라운드 — 3차: LLM이 같은 소스를 다시 낸 경우(`inherited` · 근거 단어 빈 `named`)를 소스 변경으로 보지 않음(`_same_sources` · D-334 부기). 알려진 한계(`zone_clarification` 답 턴 잔존)는 사용자 확정으로 그대로 둔다(D-334 주의 ④).
+- 2026-10-14 — **W4 재측정**(152·156·164 포함 최종 E1 1회 · 가짜 LLM · `--probe`): run `20261014-161040-e1-4073f7f` **129/129(100%)** · 축 전부 100% · 관문 통과 · `--compare base_4073f7f` holdout 40/40 불변 · dev 96.6→100 · **악화 0** · 3턴 해소(`APM-JSERVER-domains#0` source_miss · `APM-SRC-ambiguous#1` window_wrong · `APM-SRC-inherit#1` target_wrong). 이탈: `--skip-heavy` 없이 무거운 등급 포함(기준 run과 같은 조건).
+- 2026-10-14 — **MLX 1회**(두 평면 mlx 확인 · Qwen3.5-9B-OptiQ-4bit · 127.0.0.1:18471 · 자기 PID 종료): `--only APM-SRC-inherit` run `20261014-161101-e1-4073f7f` 턴 0/2 — 둘 다 `arg_hallucination`(n=100 · interval_minute — few-shot 사안) · target 축 2/2. #1은 ymp67_o로 좁혀졌지만 D-334 고지가 없다 — 4073f7f부터 있던 `previous_entities` hostname 승계(`resolve_apm_targets`) 경로라 D-334 결함 아님(#0이 호스트 식별자로 조회해 `last_targets` 미기록).
+- 2026-10-14 — **계획 끝 모듈 회귀**(`regress.py --base 4073f7f --files <머리 16개>`): rc 1 — 실패 50 = `[원래 실패]` 48(라우트·스트림 테스트 — plan119·122_t4·stream 계열 · 4073f7f에서도 실패) + `[새 테스트 실패]` 2(`test_apm_bench_w2b.py` — 회귀 도중 164 W2b 교정 2라운드가 같은 테스트를 고치던 경합 · 단독 재실행 2 passed · 164 재회귀 733 passed 0 failed) · arch·overfit 통과 · ruff 225·mypy 219(이번 diff 줄 0) · 권고 블록 없음 · `범위: 모듈 단위 — 전체 미실행` · 산출물 `logs/regress/20261014-163545-80908`.
+- 2026-10-14 — **통합 모듈 회귀 1회**(메인 지시 — 152·156·157·164 기준 대비 전체 변경 63파일 · `regress.py --base 4073f7f --files …` · 모든 교정 반영 뒤): rc 0 · 본체 통과 9,467 · 실패 48(전부 `[원래 실패]` — 라우트·스트림·plan122_t4 등 4073f7f에서도 실패) · arch·overfit 통과 · ruff 293·mypy 219(이번 diff 줄 0) · 권고 블록 없음 · `범위: 모듈 단위 — 전체 미실행` · 산출물 `logs/regress/20261014-164850-7453`.
+- `plans/130` 통지: M-5 대상 칸 잔여는 D-334·이 계획이 흡수(130 본문 불변 · 통지 1줄).
+- **남긴 것(열린 질문)**: ① 기존 `previous_entities` hostname 승계도 좁힘 고지를 붙일지(권고: `hostnames`가 conversation_context에서만 왔을 때 같은 고지) ② MLX `arg_hallucination`(n=100 · interval_minute)은 152 few-shot 루프 대상 ③ 3단 경로 `targets` 미운반(130 잔여).
 
 ## 11. 변경 이력
 
 | 일자 | 버전 | 내용 |
 |---|---|---|
+| 2026-10-14 | v1.1 | W0~W4 완료 · D-334 · 상태 완료 · 파일명 태그 제거(`157-TODO-…` → `157-…`) |
 | 2026-10-13 | v1.0 | 최초 작성 — 결함 3건 · 게이트 G-1~G-6 · W0~W4 |

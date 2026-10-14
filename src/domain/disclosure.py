@@ -194,6 +194,8 @@ KIND_TABLE: dict[str, KindSpec] = {
                 "event_no_default_period", "event_to_now",
                 # 분 단위 통계 시 확장(D-328 ③ — 본문은 `[조회 기간]` 줄 문구로 싣는다)
                 "minute_widened_to_hour",
+                # 시각 시작점의 시가 진행 중 — 통계를 직전 정시 한 시간으로 대체(plans/156 (c))
+                "clock_previous_hour",
             )
         ),
         # 134 APM(SPEC-apm-question-coverage §7.5) — 등급·의무·범위는 SPEC 표 그대로
@@ -357,6 +359,10 @@ _PERIOD_NOTE_PHRASES: dict[str, str] = {
     ts.NOTE_FUTURE_PERIOD: "아직 오지 않은 기간 포함",
     # 「최근 30분」 통계 — 머리 문구가 넓힌 정시 구간과 원문 스팬을 이미 적는다(D-328 ③)
     ts.NOTE_MINUTE_WIDENED: "시 단위 통계라 분 단위 기간을 정시 구간으로 넓혀 조회했습니다",
+    # 「10시 30분부터」를 10:37에 — 시 통계에 아직 완결된 10시대가 없다(plans/156 (c))
+    ts.NOTE_CLOCK_PREVIOUS_HOUR: (
+        "시작 시각의 시간대가 아직 끝나지 않아 시 단위 통계는 직전 정시 한 시간으로 조회했습니다"
+    ),
 }
 _LLM_SOURCE_PHRASE = "모델 해석 — 다르면 날짜를 직접 적어 주세요"
 #: 원문 스팬 에코 상한·정규화는 `time_spec.display_span`이 단일 출처다
