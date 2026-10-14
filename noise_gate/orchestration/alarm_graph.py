@@ -88,6 +88,10 @@ class AlarmState(TypedDict):
     # 없다).
     # 조사 페이로드 `meta.episode` 전용 · 판정 무관 · 선언 필수.
     episode_snapshot: dict[str, Any] | None
+    # plans/162 · D-330: 워커 PAGE 레지스트리가 만든 재판정 재료(`PageReviewSignals`)
+    # (page_review_mode≠off이고 게이트로 가는 비해소 알람일 때만 · off면 입력에 키 자체가 없다).
+    # 게이트 노드의 마지막 관문 `review_page`가 소비한다 · 선언 필수.
+    page_review_signals: dict[str, Any] | None
 
 
 def build_alarm_graph(config=None):  # noqa: ANN001

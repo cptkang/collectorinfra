@@ -349,7 +349,10 @@ class AlarmMetricsResponse(BaseModel):
         default=None, description="최근 결정 이후 경과(초). 기록 없으면 null"
     )
     meta_alerts: list[dict[str, Any]] = Field(
-        description="억제기 메타경보(high_suppress_ratio/no_events). 정상이면 빈 배열"
+        description=(
+            "억제기 메타경보(high_suppress_ratio/no_events/collection_failed_ratio). "
+            "정상이면 빈 배열"
+        )
     )
     mtta_seconds: Optional[float] = Field(
         default=None,
@@ -1175,6 +1178,10 @@ async def alarm_metrics(
         window_seconds=window,
         suppress_ratio_threshold=ng.meta_alert_suppress_ratio,
         min_events=ng.meta_alert_min_events,
+        # (plans/162 R4) 기본 0 = 끔. 구 config(필드 부재)도 끔으로 읽는다.
+        collection_failed_ratio_threshold=float(
+            getattr(ng, "meta_alert_collection_failed_ratio", 0.0)
+        ),
     )
 
     # ── D-049: incident_store 주입 시 MTTA/incident_mttr/사건전환율 채움 ──

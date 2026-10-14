@@ -76,6 +76,7 @@ _BASE_POLICY_FIELDS: tuple[str, ...] = (
     "meta_alert_suppress_ratio",
     "meta_alert_window_seconds",
     "meta_alert_min_events",
+    "page_review_mode",  # (plans/162 W3) PAGE 재판정 모드 — 단계 설명이 켜는 키로 인용한다(m-5)
 )
 
 # 단계 → 그 단계를 켜는 설정 필드(plans/112 S4). 여기 없는 단계는 게이트가 켜져 있으면 항상
@@ -90,6 +91,17 @@ _STAGE_ENABLE_FIELDS: dict[str, str] = {
     "correlation": "cross_host_correlation_enabled",
     "annotation": "annotation_planned_suppress",
 }
+
+# (plans/162 W3) PAGE 재판정 단계는 bool 플래그가 아니라 모드 문자열(off|shadow|enforce)로 켠다 —
+# 문자열 "off"도 truthy라 `_STAGE_ENABLE_FIELDS`에 넣지 않고 `_stage_meta`가 따로 판정한다.
+_PAGE_REVIEW_STAGE = "page_review"
+_PAGE_REVIEW_MODE_FIELD = "page_review_mode"
+
+
+def _page_review_mode(ng: Any) -> str:
+    """PAGE 재판정 모드(off|shadow|enforce — 미설정·빈 값은 off)."""
+    return str(getattr(ng, _PAGE_REVIEW_MODE_FIELD, "off") or "off").strip().lower()
+
 
 # 정책 탭 = 기존 정책 필드 ∪ 단계 활성 필드(plans/112 m-5). 단계 설명이 "켜는 설정"으로 인용하는
 # 키가 정책 탭에 빠지지 않게 **표 하나에서 파생**한다 — 기존 항목의 순서는 그대로, 없던 것만 뒤에.
@@ -127,6 +139,24 @@ class FunnelStage(BaseModel):
     )
 
 
+class PageReviewSummary(BaseModel):
+    """PAGE 재판정 전/후 집계 (plans/162 W3 · D-330) — 모드가 off면 응답에 키 자체가 없다."""
+
+    mode: str = Field(description="현재 설정의 재판정 모드(shadow|enforce)")
+    reviewed: int = Field(description="창 안에서 재판정을 거친 판단 수(유지·강등 모두)")
+    pre_review_page: int = Field(description="재판정 전 PAGE = 지금 PAGE + 재판정 강등")
+    demoted: int = Field(description="재판정으로 TICKET으로 내린 판단 수(enforce)")
+    would_demote: int = Field(description="PAGE 그대로지만 재판정이 강등했을 판단 수(shadow)")
+    would_demote_collection_failed: int = Field(
+        description="수집 실패 PAGE 중 「심각도3만 PAGE」였으면 PAGE가 아니었을 수(shadow)"
+    )
+    would_page: int = Field(
+        description=(
+            "했을 PAGE = PAGE − (재판정 했을 강등 ∪ 수집 실패 했을 강등) — 한 건은 한 번만 뺀다"
+        )
+    )
+
+
 class NoiseSummaryResponse(BaseModel):
     """KPI + 퍼널."""
 
@@ -137,6 +167,9 @@ class NoiseSummaryResponse(BaseModel):
     stages: list[FunnelStage]
     range: str
     gate_enabled: bool
+    # (plans/162 W3) 모드 off면 넣지 않는다 — 라우트가 `response_model_exclude_unset`로 키를 빼므로
+    # off 응답은 이 필드 도입 전과 같은 키 집합이다.
+    page_review: PageReviewSummary | None = None
 
 
 class TimeseriesPoint(BaseModel):
@@ -461,7 +494,8 @@ def _stage_meta(stage: str, ng: Any) -> dict[str, Any]:
     """퍼널 단계 1칸의 설명·활성 여부·켜는 설정 키를 만든다 (plans/112 S4).
 
     게이트가 꺼지면 전 단계가 평가되지 않는다. 게이트가 켜지면 `_STAGE_ENABLE_FIELDS`의
-    8단계만 설정값을 따르고, 나머지(와 `unknown`)는 항상 평가된다.
+    8단계와 PAGE 재판정(모드 ≠ off · plans/162)만 설정값을 따르고, 나머지(와 `unknown`)는 항상
+    평가된다.
     (plans/153 W1) 처리 안내(`handling`)도 같은 방식으로 도메인 정본에서 싣는다.
     """
     from noise_gate.domain.notification_policy import STAGE_DESCRIPTIONS
@@ -469,7 +503,11 @@ def _stage_meta(stage: str, ng: Any) -> dict[str, Any]:
 
     field_name = _STAGE_ENABLE_FIELDS.get(stage)
     gate_on = bool(ng.enable_noise_gate)
-    if field_name is None:
+    if stage == _PAGE_REVIEW_STAGE:
+        # (plans/162 W3) 모드 문자열 — off가 아닐 때만 평가된다(shadow도 평가는 한다).
+        field_name = _PAGE_REVIEW_MODE_FIELD
+        enabled = gate_on and _page_review_mode(ng) != "off"
+    elif field_name is None:
         enabled = gate_on
     else:
         enabled = gate_on and bool(getattr(ng, field_name, False))
@@ -502,12 +540,15 @@ def _to_item(rule, now: datetime) -> SilenceItem:  # noqa: ANN001
 @read_router.get(
     "/summary",
     response_model=NoiseSummaryResponse,
+    response_model_exclude_unset=True,
     summary="노이즈 캔슬링 KPI + 퍼널",
     description=(
         "티어별 건수·억제율·액션가능 비율과 **단계별 억제량(퍼널)**을 반환합니다.<br/>"
         "모든 결정은 정확히 한 단계에서 종결되므로 단계별 종결 수의 합은 수신 건수와 같습니다.<br/>"
         "단계마다 설명(`description`)·현재 설정의 평가 여부(`enabled`)·켜는 설정 키"
-        "(`enable_key`)·처리 안내(`handling`)를 함께 줍니다."
+        "(`enable_key`)·처리 안내(`handling`)를 함께 줍니다.<br/>"
+        "PAGE 재판정이 켜져 있으면(shadow·enforce) `page_review`에 재판정 전/후 PAGE·강등·"
+        "했을 PAGE를 줍니다. 강등 건의 종결은 원 단계로 세므로 위 항등식은 그대로입니다."
     ),
     tags=["noise-console"],
 )
@@ -519,6 +560,10 @@ async def noise_summary(
     window = _resolve_range(range)
     funnel = _decision_store(request).funnel(window_seconds=window)
     ng = _gate_cfg(request)
+    extra: dict[str, Any] = {}
+    mode = _page_review_mode(ng)
+    if mode != "off":
+        extra["page_review"] = PageReviewSummary(mode=mode, **funnel["page_review"])
     return NoiseSummaryResponse(
         raw=funnel["raw"],
         tiers=funnel["tiers"],
@@ -527,6 +572,7 @@ async def noise_summary(
         stages=[FunnelStage(**s, **_stage_meta(s["stage"], ng)) for s in funnel["stages"]],
         range=range,
         gate_enabled=bool(ng.enable_noise_gate),
+        **extra,
     )
 
 
@@ -619,6 +665,9 @@ async def noise_health(
         window_seconds=window,
         suppress_ratio_threshold=threshold,
         min_events=min_events,
+        collection_failed_ratio_threshold=float(
+            getattr(ng, "meta_alert_collection_failed_ratio", 0.0)
+        ),
     )
     return NoiseHealthResponse(
         healthy=not alerts,
@@ -687,7 +736,8 @@ async def noise_decisions(
     summary="발송 판단 추적(단일)",
     description=(
         "알람 1건의 가장 최근 결정을 파이프라인 단계·신호 스냅샷과 함께 반환합니다.<br/>"
-        "결정 단계 앞은 통과, 뒤는 단락(평가되지 않음)입니다.<br/>"
+        "결정 단계 앞은 통과, 뒤는 단락(평가되지 않음)입니다. PAGE 재판정을 거친 판단은 원 단계가 "
+        "결정, `page_review`가 `reviewed`입니다.<br/>"
         "자동 조사 기록이 있으면 decision.investigation에 조사 요약을 함께 싣습니다."
     ),
     tags=["noise-console"],
@@ -709,16 +759,41 @@ async def noise_decision_trace(
     if investigation is not None:
         decision["investigation"] = investigation
 
+    return {"decision": decision, "timeline": _trace_timeline(decision, STAGE_ORDER, STAGE_LABELS)}
+
+
+def _trace_timeline(
+    decision: dict[str, Any], order: tuple[str, ...], labels: dict[str, str]
+) -> list[dict[str, str]]:
+    """결정 1건의 단계 타임라인 — 결정 단계 앞은 통과, 뒤는 단락이다.
+
+    (plans/162 W3) PAGE 재판정은 PAGE로 이미 결정된 뒤의 마지막 관문이다. 강등 레코드는 원 단계
+    (`original_stage`)를 `decided`로 두고, 재판정 근거 블록이 있는 레코드(강등·shadow·유지)는
+    `page_review` 칸을 `reviewed`(결정 뒤 재판정됨)로 둔다 — 원 단계와 재판정 사이 단계는 단락이다.
+    재판정을 거치지 않은 레코드는 page_review 칸을 생략한다 — 구 레코드·mode off 응답 비트 동일.
+    (원 단계를 못 읽는 손상 강등 레코드는 결정 단계가 page_review라 칸을 남긴다.)
+    """
+    evidence = decision.get("stage_evidence")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    reviewed = isinstance(evidence.get(_PAGE_REVIEW_STAGE), dict)
     decided_stage = decision.get("stage", "")
+    original = evidence.get("original_stage")
+    if decided_stage == _PAGE_REVIEW_STAGE and isinstance(original, str) and original in order:
+        decided_stage = original
+        reviewed = True
     try:
-        decided_index = STAGE_ORDER.index(decided_stage)
+        decided_index = order.index(decided_stage)
     except ValueError:
         decided_index = -1  # unknown 단계 — 어느 지점도 강조하지 않는다
 
     timeline = []
-    for index, stage in enumerate(STAGE_ORDER):
+    for index, stage in enumerate(order):
+        if stage == _PAGE_REVIEW_STAGE and not reviewed and decided_stage != stage:
+            continue
         if decided_index < 0:
             status = "unknown"
+        elif reviewed and stage == _PAGE_REVIEW_STAGE and index > decided_index:
+            status = "reviewed"
         elif index < decided_index:
             status = "passed"
         elif index == decided_index:
@@ -727,10 +802,10 @@ async def noise_decision_trace(
             status = "short_circuited"
         timeline.append({
             "stage": stage,
-            "label": STAGE_LABELS.get(stage, stage),
+            "label": labels.get(stage, stage),
             "status": status,
         })
-    return {"decision": decision, "timeline": timeline}
+    return timeline
 
 
 @router.get(

@@ -646,6 +646,9 @@ _EXPECTED_ENABLE_KEYS = {
     "correlation": "NOISE_CROSS_HOST_CORRELATION_ENABLED",
     "annotation": "NOISE_ANNOTATION_PLANNED_SUPPRESS",
 }
+# (plans/162 W3) PAGE 재판정은 bool이 아니라 모드 문자열로 켠다 — `_STAGE_ENABLE_FIELDS` 밖에서
+# `_stage_meta`가 따로 판정하므로 enable_key 기대값만 여기 더한다.
+_EXPECTED_STAGE_KEYS = {**_EXPECTED_ENABLE_KEYS, "page_review": "NOISE_PAGE_REVIEW_MODE"}
 _ENABLE_FIELDS = {
     "non_alarm": "non_alarm_filter_enabled",
     "silence": "silence_enabled",
@@ -674,7 +677,7 @@ def test_summary_stages_carry_description_and_enable_key(tmp_path, mode):
     assert set(stages) == set(STAGE_ORDER) | {"unknown"}
     for key, row in stages.items():
         assert row["description"] == STAGE_DESCRIPTIONS[key] and row["description"]
-        assert row["enable_key"] == _EXPECTED_ENABLE_KEYS.get(key)
+        assert row["enable_key"] == _EXPECTED_STAGE_KEYS.get(key)
         # (plans/153 W1) 처리 안내도 도메인 정본 그대로 — 단계 기본 문장(`*`)은 늘 있다.
         assert row["handling"] == STAGE_HANDLING[key] and row["handling"]["*"]
 
@@ -718,6 +721,7 @@ def test_every_console_env_key_exists_in_settings_catalog():
     catalog = set(field_index())
     keys = [noise_routes._env_key(f) for f in noise_routes._POLICY_FIELDS]
     keys += [noise_routes._env_key(f) for f in noise_routes._STAGE_ENABLE_FIELDS.values()]
+    keys.append(noise_routes._env_key(noise_routes._PAGE_REVIEW_MODE_FIELD))
     assert [k for k in keys if k not in catalog] == []
     assert set(noise_routes._STAGE_ENABLE_FIELDS) == set(_EXPECTED_ENABLE_KEYS)
 

@@ -53,6 +53,8 @@ from noise_gate.domain.cross_source import (
     late_promotion_targets,
 )
 from noise_gate.domain.flapping import MAX_STATES, flap_percent, update_flap_state
+from noise_gate.domain.page_review import MODE_OFF as PAGE_REVIEW_OFF
+from noise_gate.domain.page_review import PageRegistry, fanout_key_of, host_key_of
 from noise_gate.domain.notification_policy import (
     STAGE_FLAPPING,
     STAGE_INHIBITION,
@@ -268,6 +270,10 @@ class AlarmWorker:
         # 보관 시각). investigation_episode_context_enabled + 조사 트리거 + 추적기일 때만 담는다
         # (사건 상태 영속화 없음 — G-8). 상한 _EPISODE_CTX_MAX.
         self._episode_ctx: dict[str, tuple[str, Any, Any, float]] = {}
+        # (plans/162 · D-330) PAGE 필요성 재판정 레지스트리 — page_review_mode≠off(+게이트)일 때만
+        # 기동 시 1회 생성하고 판정 기록 꼬리로 복원한다. None이면 재판정 신호·state 키 모두 없다
+        # (비트 동일). 창 밖 sweep·키 상한은 레지스트리가 한다.
+        self._page_registry: PageRegistry | None = None
 
     def _build_history_repo(self):  # noqa: ANN202
         """이력 조회 리포지토리를 생성한다 (Plan 47).
@@ -381,6 +387,71 @@ class AlarmWorker:
             on_evict=lambda what, n: logger.warning(
                 "크로스소스 사건 상한 초과(%s) — 오래된 %d건 정리", what, n
             ),
+        )
+
+    def _build_page_registry(self) -> PageRegistry | None:
+        """PAGE 필요성 재판정 레지스트리를 생성한다 (plans/162 §4.5 · 기동 시 1회).
+
+        enable_noise_gate AND page_review_mode≠off일 때만 만든다(기본 off → None → 비트 동일).
+        """
+        gate = self._config.noise_gate
+        mode = str(getattr(gate, "page_review_mode", PAGE_REVIEW_OFF) or PAGE_REVIEW_OFF)
+        if not gate.enable_noise_gate or mode == PAGE_REVIEW_OFF:
+            return None
+        logger.info("PAGE 필요성 재판정 활성: mode=%s", mode)
+        return PageRegistry(
+            host_window_minutes=int(getattr(gate, "page_review_host_window_minutes", 30)),
+            fanout_window_minutes=int(getattr(gate, "page_review_fanout_window_minutes", 10)),
+            reminder_hours=int(getattr(gate, "page_review_reminder_hours", 24)),
+            reopen_quiet_minutes=int(getattr(gate, "page_review_reopen_quiet_minutes", 30)),
+            on_evict=lambda what, n: logger.warning(
+                "PAGE 재판정 레지스트리 상한 초과(%s) — 오래된 %d건 정리", what, n
+            ),
+        )
+
+    def _restore_page_registry(self, now: float) -> None:
+        """판정 기록 꼬리(최근 max(reminder_hours, 24)시간)로 레지스트리를 다시 채운다.
+
+        재기동 직후 진행 중 사건이 일괄 재PAGE되는 것을 막는다(plans/162 H2). 실패하면 빈
+        레지스트리로 시작하고 경고 1줄을 남긴다(보수 = 현행 동작).
+        """
+        registry = self._page_registry
+        if registry is None:
+            return
+        store = self._decision_store
+        reader = getattr(store, "recent_decisions", None)
+        if reader is None:
+            logger.warning("PAGE 재판정 복원 생략 — 판정 기록 저장소 없음(빈 상태로 시작)")
+            return
+        if not getattr(store, "enabled", True):
+            logger.warning("PAGE 재판정 복원 생략 — 판정 기록 비활성(빈 상태로 시작)")
+            return
+        hours = int(getattr(self._config.noise_gate, "page_review_reminder_hours", 24))
+        try:
+            records = reader(PageRegistry.restore_window_seconds(hours))
+            applied = registry.restore(records, now)
+        except Exception as exc:  # noqa: BLE001 — 복원 실패가 워커 기동을 막지 않는다
+            self._page_registry = self._build_page_registry()
+            logger.warning("PAGE 재판정 복원 실패 — 빈 상태로 시작: %s", exc)
+            return
+        logger.info("PAGE 재판정 복원: 레코드 %d건 · 대표 지문 %d건", applied, len(registry))
+
+    def _observe_page(
+        self, event: AlarmEvent, fingerprint: str, result: Any, now: float
+    ) -> None:
+        """그래프가 낸 최종 판정을 PAGE 레지스트리에 반영한다(해소 · 대표 PAGE · 강등 반복 수)."""
+        if self._page_registry is None:
+            return
+        decision = result.get("notification_decision") if isinstance(result, dict) else None
+        if decision is None:
+            return
+        self._page_registry.observe(
+            decision,
+            fingerprint=str(getattr(decision, "fingerprint", "") or fingerprint),
+            host_key=host_key_of(event.db_id, event.server_name or event.hostname),
+            fanout_key=fanout_key_of(event.db_id, event.alarm_name),
+            alarm_id=event.alarm_id,
+            now=now,
         )
 
     def _observe_episode(
@@ -1135,6 +1206,9 @@ class AlarmWorker:
         # (Plan 60 B-7 L-2/L-4) 로컬 임베딩 provider — 두 주석 플래그 모두 off면 None(회귀 0).
         self._embedding_provider = self._build_embedding_provider()
         self._decision_store = self._build_decision_store()
+        # (plans/162) PAGE 재판정 레지스트리 — off(기본)면 None(복원·신호 모두 없음).
+        self._page_registry = self._build_page_registry()
+        self._restore_page_registry(time.time())
         self._investigation_store = self._build_investigation_store()
         self._silence_store = self._build_silence_store()
         self._ticket_queue = self._build_ticket_queue()
@@ -1293,6 +1367,11 @@ class AlarmWorker:
             # (plans/144 W5) 통보문 사건 묶음 표시용 요약(annotate·enforce + 사건 소속일 때만).
             episode_summary: dict[str, Any] | None = None
             episode_snapshot_: dict[str, Any] | None = None
+            # (plans/162) PAGE 재판정 신호 — 레지스트리(page_review_mode≠off)가 있고 비해소일 때만.
+            # 레지스트리가 없으면 그래프 입력에 키 자체를 넣지 않는다(비트 동일).
+            page_review_signals: dict[str, Any] | None = None
+            # 그래프 뒤 레지스트리 반영용(지문·시각) — 레지스트리가 있을 때만 채운다.
+            page_observe: tuple[str, float] | None = None
 
             if gate_on:
                 # ── Plan 52 게이트 활성 경로 ──
@@ -1457,6 +1536,15 @@ class AlarmWorker:
                 episode_investigation = self._episode_investigation(cross_source, event)
                 episode_summary = self._episode_summary(cross_source)
                 episode_snapshot_ = self._episode_snapshot(cross_source)
+                if self._page_registry is not None:
+                    page_observe = (fingerprint, now)
+                    if not event.is_clear:
+                        page_review_signals = dict(self._page_registry.signals_for(
+                            fingerprint,
+                            host_key_of(event.db_id, event.server_name or event.hostname),
+                            fanout_key_of(event.db_id, event.alarm_name),
+                            now,
+                        ))
             else:
                 # ── 기존 경로 (게이트 off — 무변경) ──
                 if self._is_duplicate(event, dedup):
@@ -1530,6 +1618,12 @@ class AlarmWorker:
                     # (plans/153 W4) 제출 시점 사건 스냅샷 — 사건 맥락 on·사건 소속일 때만 키
                     # (비트 동일).
                     **({"episode_snapshot": episode_snapshot_} if episode_snapshot_ else {}),
+                    # (plans/162) PAGE 재판정 재료 — 레지스트리가 있는 비해소 알람만 키
+                    # (비트 동일).
+                    **(
+                        {"page_review_signals": page_review_signals}
+                        if page_review_signals is not None else {}
+                    ),
                 },
                 config={
                     "configurable": {
@@ -1582,6 +1676,15 @@ class AlarmWorker:
                 self._record_episode_tier(cross_source, event, graph_result)
                 # (plans/144 W4) 조사 id 기록 · 사후 승격 후보·통보 — 개별 try/except(내부).
                 await self._after_episode_graph(cross_source, event, graph_result, now)
+            # (plans/162) 최종 판정을 PAGE 레지스트리에 반영 — 실패는 처리 흐름을 막지 않는다.
+            if page_observe is not None:
+                try:
+                    self._observe_page(event, page_observe[0], graph_result, page_observe[1])
+                except Exception:  # noqa: BLE001 — 레지스트리 갱신 실패는 발송·ACK와 무관
+                    logger.warning(
+                        "PAGE 재판정 레지스트리 갱신 실패(무시): alarm_id=%s",
+                        event.alarm_id, exc_info=True,
+                    )
         except Exception as exc:
             logger.exception("알람 처리 실패: msg_id=%s", msg_id)
             # (D-184) ACK 전에 dead-letter 스트림에 원문+사유를 보관한다 — 실패 건이 흔적 없이

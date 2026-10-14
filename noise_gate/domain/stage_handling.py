@@ -116,6 +116,13 @@ STAGE_HANDLING: dict[str, dict[str, str]] = {
         "dashboard": "같은 알람이 늘어나면 확인하세요 — 통보 없이 화면에만 남긴 알람입니다.",
         "suppress": "조치 불필요 — 기록만 남긴 알람입니다.",
     },
+    "page_review": {
+        HANDLING_DEFAULT: (
+            "먼저 통보된 대표 PAGE[ {page_review.page_alarm_id}][ {page_review.host_page_alarm_id}]"
+            "[ {page_review.representative_alarm_id}]를 처리할 때 함께 확인하세요 — 이미 통보된 "
+            "사건의 반복으로 보고 TICKET으로 내렸습니다."
+        ),
+    },
     "unknown": {
         HANDLING_DEFAULT: (
             "티어와 사유를 보고 판단하세요 — 어느 단계에서 확정됐는지 기록되지 않은 옛 판단입니다."

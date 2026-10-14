@@ -212,7 +212,9 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     # plans/153 W4 NOISE_INVESTIGATION_EPISODE_CONTEXT_ENABLED +1 ·
     # plans/160 W2 RESULT_VIZ_{CHART,EXPLAIN}_ENABLED +2(신규 그룹 result_viz)
     # plans/142 W3 PORTAL_HELP_ENABLED +1(신규 그룹 portal_help)
-    assert len(items) == 409
+    # plans/162 W1 NOISE_PAGE_REVIEW_* +7(noise_gate 기존 그룹 — 그룹 수 불변)
+    # plans/162 W2 NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY·META_ALERT_COLLECTION_FAILED_RATIO +2
+    assert len(items) == 418
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -377,7 +379,9 @@ def test_t2_group_and_field_counts():
     # (noise_gate 기존 그룹 — 그룹 수 불변) ·
     # plans/160 W2 RESULT_VIZ_{CHART,EXPLAIN}_ENABLED +2(신규 그룹 result_viz +1)
     # plans/142 W3 PORTAL_HELP_ENABLED +1(신규 그룹 portal_help — 그룹 수 +1)
-    assert len(index) == 409
+    # plans/162 W1 NOISE_PAGE_REVIEW_* +7(noise_gate 기존 그룹 — 그룹 수 불변)
+    # plans/162 W2 NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY·META_ALERT_COLLECTION_FAILED_RATIO +2
+    assert len(index) == 418
     # plans/103 TIER3_PLAN_LOOP_ENABLED +1 · plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1
     assert len([s for s in index.values() if s.group_key == "general"]) == 21
 

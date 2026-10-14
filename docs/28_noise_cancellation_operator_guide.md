@@ -5,7 +5,8 @@
 > **범위**: 카드에 붙은 버튼 3종이 각각 무엇을 바꾸는지, 노이즈 캔슬링 전체 흐름의 어느 지점에
 > 개입하는지, 그래서 **어떤 순서로 쓰면 억제 품질이 올라가는지**.
 > **근거 결정**: D-048(4-티어 게이트·재현율 우선)·D-048.11(E4 LLM 액션가능성 피드백 few-shot)·
-> D-049(ack/incident 라이프사이클 계측)·D-035(결정적=판단 / LLM=주석 경계).
+> D-049(ack/incident 라이프사이클 계측)·D-035(결정적=판단 / LLM=주석 경계)·
+> D-330(PAGE 재판정·수집 실패 심각도3만 PAGE — §4-C).
 > **선행 문서**: `docs/16`(Plan 52 게이트 테스트 정본) · `docs/20`(Plan 60 기능 테스트) ·
 > `plans/52-alarm-noise-cancellation.md`(설계 정본). 본 문서는 **테스트가 아니라 운영 사용법**만 다룬다.
 > **실측일**: 2026-08-28 — 코드(`noise_gate/`, `src/api/routes/alarm.py`, `src/static/js/app.js`)와
@@ -219,6 +220,82 @@ HolmesGPT는 SDK로 임포트돼 `sre_agent` 프로세스 안에서 ReAct 루프
 
 ---
 
+## 4-C. PAGE 재판정(`page_review`)과 수집 실패 PAGE 보수화(R4) — plans/162 · D-330
+
+**PAGE는 「심각도가 높은 알람」이 아니라 「사람이 지금 새로 움직여야 하는 사건의 첫 알림」이다.**
+앞 단계가 PAGE로 정한 알람만 마지막 관문 `page_review`가 결정적 규칙(LLM 미사용)으로 한 번 더 본다.
+
+| 규칙 | 내리는 경우 | 묶이는 대상(드로어 링크) |
+|---|---|---|
+| R1 | 같은 지문의 사건이 아직 열려 있다(해소 없음, 또는 해소 뒤 `NOISE_PAGE_REVIEW_REOPEN_QUIET_MINUTES` 안 재발) | 최초 PAGE |
+| R2 | 같은 서버에서 다른 사건이 `NOISE_PAGE_REVIEW_HOST_WINDOW_MINUTES` 안에 이미 PAGE됐다 | 먼저 통보된 PAGE |
+| R3 | `NOISE_PAGE_REVIEW_FANOUT_WINDOW_MINUTES` 안에 같은 알람이 여러 서버에서 떴고 대표(`NOISE_PAGE_REVIEW_FANOUT_PAGE_MAX`대) 밖이다 | 대표 PAGE |
+
+- **내리는 곳은 TICKET이다 — 억제가 아니다.** 감사 기록·화면 표시는 그대로 남고, 묶인 대표 PAGE의
+  드로어에 「묶인 알림 N건」이 붙는다.
+- **PAGE를 지키는 경우**: 심각도 상승 · 앱 영향 fatal · 미해소 리마인더(`NOISE_PAGE_REVIEW_REMINDER_HOURS`,
+  기본 24시간마다 1회) · 운영자 지정 알람(`NOISE_PAGE_REVIEW_ALWAYS_PAGE_CSV`, 알람명 글롭 CSV).
+- **R4 — 수집 실패는 심각도3만 PAGE**: `NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY=true`면 신호 수집에
+  실패한 알람은 심각도3만 PAGE이고, 그 밖은 중요도 「보통」으로 매트릭스를 탄다(심각도2 → TICKET).
+  off(기본)는 종전 「수집 실패 → 보수적 PAGE」와 같다.
+
+### 4-C.1 켜는 순서 — off → shadow(24시간) → enforce
+
+| 단계 | `NOISE_PAGE_REVIEW_MODE` | 동작 | 넘어가는 조건 |
+|---|---|---|---|
+| ① | `off`(기본) | 평가하지 않는다. 판정·화면이 종전과 같다 | — |
+| ② | `shadow` | 판정은 그대로, 「했을 강등」만 감사(`stage_evidence.page_review`)에 남긴다 | 24시간 운영 뒤 아래 판독 기준 충족 |
+| ③ | `enforce` | 강등을 실행한다(PAGE → TICKET) | — |
+
+shadow 단계에서는 R4 플래그를 끈 채로 둔다. 그러면 수집 실패 PAGE에도 「켰다면 무슨 티어였을지」가
+감사(`stage_evidence.collection_failed_sev3_only.would_tier`)에 함께 남아, 화면의 「했을 PAGE」에 R4 효과까지
+들어간다.
+
+```bash
+# .env — 인라인 주석 금지(pydantic-settings가 값에 포함시킨다)
+NOISE_PAGE_REVIEW_MODE=shadow
+NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY=false
+NOISE_META_ALERT_COLLECTION_FAILED_RATIO=0.05
+```
+
+enforce로 넘어갈 때는 다음 두 줄로 바꾼다. 두 키 모두 **기동 시 1회 해석**이라 API 서버를 재기동해야 한다.
+
+```bash
+NOISE_PAGE_REVIEW_MODE=enforce
+NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY=true
+```
+
+### 4-C.2 shadow 판독법 — 「했을 PAGE ≤ 20 · 놓친 사건 0」
+
+1. **했을 PAGE 수** — 노이즈 관제 화면을 범위 `24h`로 두고 PAGE 카드 아래 줄
+   「즉시 통보 · 했을 PAGE N(기록만)」의 N을 본다. 같은 값이 `GET /api/v1/admin/noise/summary?range=24h`의
+   `page_review.would_page`다(재판정 강등 예정과 R4로 PAGE가 아니게 될 건을 한 번씩만 뺀 수).
+   **N ≤ 20**이어야 한다.
+2. **놓친 사건 0** — 「했을 강등」 건마다 묶일 대표 PAGE가 있어야 한다. 퍼널 「PAGE 재판정」 행의
+   「했을 강등 N / 재판정 M」에서 강등 예정 건을 열어, 드로어의 「묶인 대표 PAGE」 링크(최초 PAGE·먼저 통보된
+   PAGE·대표 PAGE 판단 열기)가 실제 PAGE 판단으로 열리는지 확인한다. 링크가 없거나 열리지 않는 건이
+   하나라도 있으면 enforce로 넘기지 않는다. 전수 확인은 분석 스크립트
+   `python -m noise_gate.scripts.page_audit --hours 24 --days 7`의 묶음 검증(고아 0)으로 한다.
+3. **enforce 뒤** — PAGE 카드 아래 줄이 「재판정 후 · 재판정 전 N(강등 M)」으로 바뀐다. 카드 값이 재판정 후
+   PAGE이고, 「재판정 전」은 같은 범위에서 앞 단계가 PAGE로 정했던 수다.
+
+퍼널에서 재판정으로 내려간 건은 **원래 PAGE를 낸 단계**(매트릭스·심각도3 등)에서 종결로 센다. 「PAGE 재판정」
+행은 재판정을 거친 수만 보이고 종결로 세지 않는다 — 그래서 단계별 종결 합은 강등 전후로 같다.
+
+### 4-C.3 수집 실패율 메타경보
+
+`NOISE_META_ALERT_COLLECTION_FAILED_RATIO`(기본 `0` = 끔)를 0보다 크게 두면, 메타경보 창
+(`NOISE_META_ALERT_WINDOW_SECONDS`) 안 결정 중 신호 수집 실패 비율이 그 값을 넘을 때 관제 화면 상태 표시에
+「수집 실패율 …(건수/전체) — 임계 … 초과」가 뜬다(`/health`의 `collection_failed_ratio`). DB 지연·미등록
+`db_id` 같은 원인을 고치라는 신호다.
+
+- **분모·분자는 R4 플래그 on/off와 같은 모집단이다.** 수집 실패 단계로 끝난 결정, 플래그 on이라 매트릭스로
+  넘어간 수집 실패(`stage_evidence.collection_failed`), 재판정으로 강등된 원 단계가 수집 실패인 결정을 모두
+  센다. 그래서 R4를 켜도 실패율이 줄어 보이지 않는다.
+- 0.05(5%)는 시작값 예시다. 평소 실패율을 shadow 기간에 보고 그보다 조금 높게 잡는다.
+
+---
+
 ## 5. 활성화 상태 확인 및 켜는 방법
 
 ### 5.1 현재 상태 확인
@@ -425,6 +502,8 @@ curl -s -X POST http://localhost:8000/api/v1/alarm/feedback \
 | 운영 지표 | `GET /api/v1/alarm/metrics` |
 | 피드백 적재 파일 | `logs/alarm_feedback.jsonl` |
 | 판단 감사 파일 | `logs/alarm_decisions.jsonl` (SUPPRESS 포함 — 억제 ≠ 삭제) |
+| PAGE 재판정 수치 | `GET /api/v1/admin/noise/summary?range=24h` → `page_review`(모드 off면 키 없음 · §4-C) |
+| 수집 실패율 경보 | `GET /api/v1/admin/noise/health` → `alerts[].type == collection_failed_ratio` (§4-C.3) |
 | 관리자 화면 | `/admin` → **열린 사건** 탭 |
 | 카드 렌더 코드 | `src/static/js/app.js:2497`(ack) · `:2507`(피드백) |
 | few-shot 조회 | `noise_gate/infrastructure/feedback_store.py:85` |

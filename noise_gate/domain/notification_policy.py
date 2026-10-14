@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any
 
 from noise_gate.domain.cross_source import ACTION_DEMOTE, MODE_ENFORCE
@@ -77,6 +77,9 @@ STAGE_CORRELATION = "correlation"              # step 7.5 크로스-호스트 �
 STAGE_CROSS_SOURCE = "cross_source"            # step 7.6 크로스소스 사건 상관(plans/144 W3)
 STAGE_ANNOTATION = "annotation"                # step 7.7 계획-무해 주석 강등
 STAGE_MATRIX = "matrix"                        # step 8~9 매트릭스 + 보조 조정(최종 관문)
+# (plans/162 · D-330) 마지막 관문 — PAGE만 결정적 규칙으로 다시 보고 사건 반복이면
+# TICKET으로 내린다. decide_notification 밖(게이트 노드 · page_review.review_page)에서 붙는다.
+STAGE_PAGE_REVIEW = "page_review"
 
 # 파이프라인 **선언 순서** — 퍼널의 단계 배열이 이 튜플 하나에서 온다.
 # 집계 계층이 순서를 따로 알면 어긋나므로, 순서의 정본은 판정 코드와 같은 파일에 둔다.
@@ -96,6 +99,7 @@ STAGE_ORDER: tuple[str, ...] = (
     STAGE_CROSS_SOURCE,
     STAGE_ANNOTATION,
     STAGE_MATRIX,
+    STAGE_PAGE_REVIEW,
 )
 
 # 단계 표시명(관제 화면 라벨) — UI가 영문 키를 그대로 노출하지 않게 한다.
@@ -115,6 +119,7 @@ STAGE_LABELS: dict[str, str] = {
     STAGE_CROSS_SOURCE: "크로스소스 사건 상관",
     STAGE_ANNOTATION: "계획-무해 주석",
     STAGE_MATRIX: "우선순위 매트릭스",
+    STAGE_PAGE_REVIEW: "PAGE 재판정",
 }
 
 
@@ -138,6 +143,7 @@ _REASON_STAGE_PREFIXES: tuple[tuple[str, str], ...] = (
     ("크로스소스 사건 상관", STAGE_CROSS_SOURCE),
     ("계획-무해 주석", STAGE_ANNOTATION),
     ("매트릭스", STAGE_MATRIX),
+    ("PAGE 재판정", STAGE_PAGE_REVIEW),
 )
 
 # 매핑 실패 레코드가 모이는 자리 — **버리지 않는다**(합계 항등식이 깨지면 퍼널이 거짓말을 한다).
@@ -168,7 +174,9 @@ STAGE_DESCRIPTIONS: dict[str, str] = {
     ),
     STAGE_COLLECTION_FAILED: (
         "중요도·유지보수 등 부가 신호를 가져오지 못하면, 심각도 1 이상은 보수적으로 "
-        "PAGE입니다(재현율 우선)."
+        "PAGE입니다(재현율 우선). 「수집 실패 시 심각도3만 PAGE」 설정을 켜면 이 단계는 "
+        "PAGE를 내지 않습니다 — 심각도 3은 심각도3 단락에서 PAGE이고, 그 밖은 중요도 "
+        "보통으로 다음 단계를 탑니다."
     ),
     STAGE_MAINTENANCE: (
         "수집원이 유지보수 모드로 알려준 자원의 알람은 신규 발송을 억제합니다"
@@ -216,6 +224,15 @@ STAGE_DESCRIPTIONS: dict[str, str] = {
         "이벤트가 있을 때 DASHBOARD·TICKET을 PAGE로 올립니다(SUPPRESS는 그대로). 제니퍼 유형 "
         "정책이 켜져 있으면 지표형 경고(심각도 2)가 창 안에 반복되지 않았을 때 한 단계 내립니다"
         "(이 사유만으로는 DASHBOARD 아래로 내리지 않습니다)."
+    ),
+    STAGE_PAGE_REVIEW: (
+        "앞 단계에서 PAGE로 정해진 알람만 다시 봅니다. 이미 통보된 사건의 반복이면 TICKET으로 "
+        "내립니다 — 같은 알람의 열린 사건 반복(해소 뒤 짧은 유예 안의 재발 포함), 같은 서버에서 "
+        "먼저 통보된 사건이 진행 중이고 이번 심각도가 그보다 높지 않을 때, 같은 존·같은 알람이 "
+        "여러 서버에서 동시에 울릴 때의 대표 외 서버입니다. 새 사건의 첫 PAGE · 심각도 상승 · "
+        "앱 영향(APM fatal) · 오래 해소되지 않은 사건의 리마인더 · 운영자가 지정한 알람은 그대로 "
+        "PAGE입니다. 억제가 아니라 강등이며 기록은 남습니다. 끈 상태(기본)에서는 평가하지 않고, "
+        "기록 모드에서는 판정을 바꾸지 않고 「내렸을 것」만 남깁니다."
     ),
     STAGE_UNKNOWN: (
         "단계 라벨이 없고 사유 문구로도 판별되지 않은 옛 레코드입니다. 버리지 않고 모아 "
@@ -391,6 +408,34 @@ def _priority(tier: str, effective_severity: int, importance: str) -> int:
     )
 
 
+# (plans/162 R4 · D-330 ③) 수집 실패 근거 키 — 감사·메타경보(`collection_failed_ratio`)·
+# W0 스크립트가 센다. EVIDENCE_COLLECTION_FAILED는 플래그 on일 때 「off였으면 step 5 보수 PAGE가
+# 됐을 판정」(step 5 통과 뒤 판정)에만 True로 싣고 — off의 stage==collection_failed와 같은
+# 모집단이다 —
+# EVIDENCE_COLLECTION_FAILED_SHADOW는 플래그 off + page_review_mode=shadow일 때 step 5 PAGE에
+# 「플래그 on이었으면 나왔을 티어」를 싣는다(판정 불변).
+EVIDENCE_COLLECTION_FAILED = "collection_failed"
+EVIDENCE_COLLECTION_FAILED_SHADOW = "collection_failed_sev3_only"
+_PAGE_REVIEW_SHADOW = "shadow"  # page_review.MODE_SHADOW와 같은 값(page_review가 이 모듈을 import)
+
+
+class _ConfigOverride:
+    """config 속성 일부만 덮어쓴 읽기 전용 보기(shadow 「했을 판정」 재계산용 · 순수).
+
+    나머지 속성은 원 config에서 읽는다 — `getattr(보기, 이름, 기본값)` 안전 접근이 그대로 통한다.
+    """
+
+    def __init__(self, base: object, **overrides: Any) -> None:
+        self._base = base
+        self._overrides = overrides
+
+    def __getattr__(self, name: str) -> Any:
+        overrides = self.__dict__.get("_overrides", {})
+        if name in overrides:
+            return overrides[name]
+        return getattr(self.__dict__.get("_base"), name)
+
+
 def decide_notification(
     event,
     history_stats,
@@ -422,6 +467,16 @@ def decide_notification(
         cascaded, root_resource, root_resource_name(=E4), root_notified(=E4 enricher 산출),
         change_nearby, change_candidates(=E5), source}
     수집 실패(None 또는 source=="unavailable") 시 보수화 후 effective_severity>=1이면 PAGE.
+
+    plans/162 R4 · D-330 ③(collection_failed_page_sev3_only 뒤 — 기본 False면 위 동작 그대로):
+        - on이면 step 5가 PAGE를 내지 않는다. 심각도3은 step 3에서 이미 PAGE이고, 그 밖은 중요도
+          「보통」(step 2 보수화 값)으로 뒤 단계(유지보수·침묵·…·매트릭스)를 그대로 탄다
+          (sev2 → TICKET).
+        - on이면 step 5를 통과한 판정(수집 실패 · 실효 심각도>=1 · step 0.5/3/4에서 끝나지 않음)의
+          evidence에만 EVIDENCE_COLLECTION_FAILED=True를 싣는다 — off의 step 5 PAGE와 같은 모집단.
+        - off이고 page_review_mode=="shadow"면 step 5 PAGE는 그대로 두고 evidence에
+          {EVIDENCE_COLLECTION_FAILED_SHADOW: {"mode": "shadow", "would_tier": …}}만 싣는다.
+          would_tier는 같은 입력·플래그 on으로 한 번 더 판정한 티어다(같은 now — 결정적).
 
     Plan 54 침묵(step 6.2 — silence_enabled 뒤, 규칙 미주입이면 무변경):
         - silence_rules(인자)는 워커가 저장소에서 읽어 넘기는 **활성 규칙 목록**이다. 매칭은
@@ -516,6 +571,10 @@ def decide_notification(
     annotation_planned_suppress = bool(
         getattr(config, "annotation_planned_suppress", False)
     )
+    # (plans/162 R4 · D-330 ③) 옵트인 — 기본 off면 step 5 보수 PAGE 그대로(비트 동일).
+    collection_failed_sev3_only = bool(
+        getattr(config, "collection_failed_page_sev3_only", False)
+    )
 
     # ── step 1: 실효 심각도 (E3 — AI 메시지 심각도 상향 전용 보강) ──
     # 실효심각도 = max(폴스타 severity, AI 상향등급). max()가 하향 불가를 보장한다(상향 전용·R-10).
@@ -609,6 +668,9 @@ def decide_notification(
         and cross_source.get("enforce") is True
     )
 
+    # (plans/162 R4) 수집 실패 표지 — step 5를 통과한 뒤에만 켠다(아래 step 5 참조).
+    mark_collection_failed = False
+
     def _decision(
         tier: str, reason: str, stage: str, evidence: dict[str, Any] | None = None
     ) -> NotificationDecision:
@@ -618,6 +680,9 @@ def decide_notification(
         evidence(plans/112 S6)도 같다 — 결정 지점이 이미 계산한 값을 옮겨 담을 뿐이다.
         """
         merged = dict(evidence or {})
+        if mark_collection_failed:
+            # (plans/162 R4) 수집 실패 표지 — 단계가 매트릭스 등으로 바뀌어도 셀 수 있게 싣는다.
+            merged[EVIDENCE_COLLECTION_FAILED] = True
         if apm_policy:
             # (plans/144 §6.2) 제니퍼 정책 근거 — 결정 단계와 무관하게 싣는다(감사 전용).
             merged["apm_policy"] = dict(apm_policy)
@@ -675,10 +740,43 @@ def decide_notification(
         )
 
     # ── step 5: 수집 실패 보수 처리(심각도/해소 규칙 다음) ────
-    if collection_failed and effective_severity >= 1:
+    # (plans/162 R4 · D-330 ③) 플래그 on이면 여기서 PAGE를 내지 않는다 — 심각도3은 step 3에서 이미
+    # PAGE이고, 그 밖은 중요도 「보통」으로 뒤 단계를 그대로 탄다.
+    if collection_failed and effective_severity >= 1 and not collection_failed_sev3_only:
+        shadow_evidence: dict[str, Any] | None = None
+        if str(getattr(config, "page_review_mode", "off") or "off") == _PAGE_REVIEW_SHADOW:
+            # 같은 입력·같은 now로 플래그 on 판정을 한 번 더 계산한다(재귀는 on 경로라 1단계뿐).
+            would = decide_notification(
+                event,
+                history_stats,
+                analysis,
+                noise_ctx,
+                _ConfigOverride(config, collection_failed_page_sev3_only=True),
+                self_heal=self_heal,
+                inhibited=inhibited,
+                flapping=flapping,
+                storm=storm,
+                correlated=correlated,
+                annotation=annotation,
+                silence_rules=silence_rules,
+                now=now or datetime.now(UTC),
+                apm_policy=apm_policy,
+                cross_source=cross_source,
+            )
+            shadow_evidence = {
+                EVIDENCE_COLLECTION_FAILED_SHADOW: {
+                    "mode": _PAGE_REVIEW_SHADOW,
+                    "would_tier": would.tier,
+                }
+            }
         return _decision(
-            TIER_PAGE, "신호 수집 실패 — 보수적 PAGE", STAGE_COLLECTION_FAILED
+            TIER_PAGE,
+            "신호 수집 실패 — 보수적 PAGE",
+            STAGE_COLLECTION_FAILED,
+            shadow_evidence,
         )
+    # 플래그 on — off였으면 위에서 PAGE로 끝났을 판정에만 표지를 싣는다(off와 같은 모집단).
+    mark_collection_failed = collection_failed and effective_severity >= 1
 
     # ── step 6: 유지보수 모드 → SUPPRESS(기록 유지) ──────────
     if maintenance:

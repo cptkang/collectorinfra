@@ -131,6 +131,7 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_META_ALERT_SUPPRESS_RATIO": "메타 알림·보강",
     "NOISE_META_ALERT_WINDOW_SECONDS": "메타 알림·보강",
     "NOISE_META_ALERT_MIN_EVENTS": "메타 알림·보강",
+    "NOISE_META_ALERT_COLLECTION_FAILED_RATIO": "메타 알림·보강",
     "NOISE_ENABLE_AI_SEVERITY_BOOST": "메타 알림·보강",
     "NOISE_AI_SEVERITY_ESCALATE_ONLY": "메타 알림·보강",
     "NOISE_BUSINESS_HOURS_CSV": "메타 알림·보강",
@@ -229,6 +230,16 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_EPISODE_IDLE_SECONDS": "폴스타×제니퍼 복합 판정",
     "NOISE_APP_IMPACT_LATE_PROMOTION_ENABLED": "폴스타×제니퍼 복합 판정",
     "NOISE_APM_HEALTHY_DEMOTION_SHADOW": "폴스타×제니퍼 복합 판정",
+    # (plans/162 · D-330) 마지막 관문 PAGE 필요성 재판정 — 정의 순서상 복합 판정 직후(구획 연속)
+    "NOISE_PAGE_REVIEW_MODE": "PAGE 재판정",
+    "NOISE_PAGE_REVIEW_HOST_WINDOW_MINUTES": "PAGE 재판정",
+    "NOISE_PAGE_REVIEW_FANOUT_WINDOW_MINUTES": "PAGE 재판정",
+    "NOISE_PAGE_REVIEW_FANOUT_PAGE_MAX": "PAGE 재판정",
+    "NOISE_PAGE_REVIEW_REMINDER_HOURS": "PAGE 재판정",
+    "NOISE_PAGE_REVIEW_REOPEN_QUIET_MINUTES": "PAGE 재판정",
+    "NOISE_PAGE_REVIEW_ALWAYS_PAGE_CSV": "PAGE 재판정",
+    # (plans/162 R4 · D-330 ③) 수집 실패 PAGE 범위 — 정의 순서상 재판정 직후(구획 연속)
+    "NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY": "PAGE 재판정",
 }
 
 #: `.encenv.example` 파싱 외에 수동으로 시크릿 취급하는 키.
@@ -388,6 +399,7 @@ RELOADABLE_KEYS: frozenset[str] = frozenset({
     "NOISE_META_ALERT_SUPPRESS_RATIO",
     "NOISE_META_ALERT_WINDOW_SECONDS",
     "NOISE_META_ALERT_MIN_EVENTS",
+    "NOISE_META_ALERT_COLLECTION_FAILED_RATIO",
     "NOISE_FORMAT_TOLERANT_PARSING_ENABLED",
     "NOISE_FAULT_DIAGNOSIS_ENABLED",  # 그래프 빌드 시점 게이팅 — 워커 미소비 실측
     # --- 문서 RAG (plans/126 · docs/32) — 엔진·CLI·API 가 호출 시점에 config 에서 읽는다.

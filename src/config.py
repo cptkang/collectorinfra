@@ -968,6 +968,9 @@ class NoiseGateConfig(BaseSettings):
     meta_alert_suppress_ratio: float = 0.9    # (E3) 억제율 이 값 초과 시 메타경보
     meta_alert_window_seconds: int = 3600     # (E3) 메타경보·운영지표 집계 창 (1h)
     meta_alert_min_events: int = 1            # (E3) 창 내 이벤트 수가 이 값 미만이면 무수신 메타경보
+    # (plans/162 R4 · D-330 ③) 창 내 결정 중 신호 수집 실패 비율이 이 값을 넘으면 메타경보
+    # collection_failed_ratio — DB 지연·미등록 db_id 등 원인을 고치게 한다. 0(기본) = 끔(비트 동일).
+    meta_alert_collection_failed_ratio: float = 0.0
     enable_ai_severity_boost: bool = False    # (E3) AI 메시지 심각도 보강 (상향 전용)
     ai_severity_escalate_only: bool = True    # (E3) True=상향만 (하향 억제 금지) — 안전 고정 권장
     # ── Plan 60 E3: 동적 baseline 이상탐지 (D-079) — 순수 Python Holt-Winters(stdlib only) ──
@@ -1200,8 +1203,33 @@ class NoiseGateConfig(BaseSettings):
     # 「강등했을 것」만 남긴다(판정 불변). 둘 다 기본 off = 비트 동일.
     app_impact_late_promotion_enabled: bool = False  # (W4) 늦게 온 제니퍼 심각 이벤트 사후 승격
     apm_healthy_demotion_shadow: bool = False  # (W4) 제니퍼 정상 → 폴스타 경고 강등 shadow 기록
+    # ── plans/162 · D-330: 마지막 관문 「PAGE 필요성 재판정」(page_review) ──
+    # 앞 15단계가 PAGE로 정한 알람만 결정적 규칙(LLM 미사용)으로 다시 본다.
+    # 열린 사건 반복(R1) · 같은 호스트 진행 중 사건(R2) · 다수 호스트 동시 발생의 대표 외(R3)면
+    # TICKET(억제 아님 · 감사 기록 유지). 새 사건 첫 PAGE · 심각도 상승 · 앱 영향 fatal ·
+    # 미해소 리마인더 · 운영자 지정 알람은 PAGE.
+    # 모드: off(기본 · 평가·워커 상태 없음 → 비트 동일) · shadow(판정 불변 · 「했을 강등」만
+    # 감사) · enforce(강등 실행). D-035·D-048 원 문구는 enforce 전까지 운영 동작이다.
+    # 기동 시 1회 해석.
+    page_review_mode: Literal["off", "shadow", "enforce"] = "off"  # (plans/162) 모드
+    page_review_host_window_minutes: int = 30     # (plans/162 R2) 같은 호스트 사건 창(분)
+    page_review_fanout_window_minutes: int = 10   # (plans/162 R3) 동시 발생 창(분)
+    page_review_fanout_page_max: int = 1          # (plans/162 R3) 창 안 대표 PAGE 호스트 수
+    page_review_reminder_hours: int = 24          # (plans/162 보존 4) 미해소 리마인더 간격(시)
+    page_review_reopen_quiet_minutes: int = 30    # (plans/162 R1) 해소 뒤 재발 유예(분)
+    page_review_always_page_csv: str = ""         # (plans/162 보존 5) 항상 PAGE 알람명 글롭 CSV
+    # (plans/162 R4 · D-330 ③) 신호 수집 실패 시 PAGE는 심각도3만 — 그 밖은 중요도 「보통」으로
+    # 매트릭스를 탄다(sev2 → TICKET · D-048 「실패 시 보수적 PAGE」 개정). 기본 off = 현행 보수
+    # PAGE와 비트 동일(D-048 원 문구는 on 전까지 운영 동작). off + page_review_mode=shadow면
+    # 판정 불변으로 「했을 티어」만 감사에 남긴다. 기동 시 1회 해석.
+    collection_failed_page_sev3_only: bool = False
 
     model_config = {"env_prefix": "NOISE_", "env_file": ".env", "extra": "ignore"}
+
+    @property
+    def page_review_always_page_globs(self) -> list[str]:
+        """page_review_always_page_csv → 알람명 글롭 목록(plans/162 보존 5). 빈 항목은 버린다."""
+        return [g.strip() for g in self.page_review_always_page_csv.split(",") if g.strip()]
 
     @property
     def importance_value_map(self) -> dict[str, str]:
