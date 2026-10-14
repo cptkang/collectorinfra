@@ -55,6 +55,7 @@ from src.sql_validation import (
     validate_sql,
 )
 from src.utils.query_gen_common import surface_query_for_judgment
+from src.utils.user_error import safe_error_text
 
 logger = logging.getLogger(__name__)
 _audit_logger = structlog.get_logger("audit")
@@ -215,8 +216,11 @@ def deadline_stop_message(
     else:
         why = f"조회 마감까지 {max(0.0, remaining_sec):.0f}초 < 직전 SQL 생성 {need_sec:.0f}초"
     message = f"답변할 시간을 남기려고 {stage}을(를) 하지 않았습니다({why})."
-    if last_reason:
-        message += f" 마지막 실패 사유: {last_reason}"
+    # 마지막 실패 사유는 고정 사유·머리말만 싣는다 — 「SQL 실행 에러: {e}」의 예외 원문은 버린다
+    # (plans/163 S3+ · 원문은 실행·검증 노드 로그에 남는다)
+    shown = safe_error_text(last_reason)
+    if shown:
+        message += f" 마지막 실패 사유: {shown}"
     return message
 
 

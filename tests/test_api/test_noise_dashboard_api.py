@@ -1023,10 +1023,11 @@ def test_operator_path_checks_signature_type_and_sub(tmp_path, token):
 
 
 def test_admin_type_claim_signed_with_user_secret_is_not_operator(tmp_path):
-    # type=admin이어도 사용자 시크릿 서명이면 운영자가 아니다 — 사용자 경로에서 역할로 403.
+    # type=admin이어도 사용자 시크릿 서명이면 운영자가 아니다 — 사용자 경로도 type!="user"라
+    # 토큰 검증 단계에서 401(plans/163 S2 · 종전에는 역할 판정까지 가서 403).
     client = _stream_client(tmp_path)
     forged = _jwt(_USER_SECRET, sub="u1", type="admin", role="user")
-    assert client.get(_STREAM, headers=_bearer(forged)).status_code == 403
+    assert client.get(_STREAM, headers=_bearer(forged)).status_code == 401
 
 
 def test_operator_token_is_not_accepted_from_query(tmp_path):

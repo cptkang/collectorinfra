@@ -84,6 +84,7 @@ from src.orchestration.tier3_plan import (
 from src.routing.db_authz import ACCESS_DENIED_INTENT, authorized_router
 from src.routing.semantic_router import semantic_router
 from src.state import AgentState
+from src.utils.user_error import GENERIC_TASK_ERROR, request_id, user_error_text
 
 logger = logging.getLogger(__name__)
 
@@ -390,7 +391,18 @@ def _error_response_node(state: AgentState) -> dict:
             "current_node": "error_response",
             "messages": [AIMessage(content=response)],
         }
-    error_msg = state.get("error_message") if state.get("error_message") is not None else "알 수 없는 에러가 발생했습니다."
+    raw_error = state.get("error_message")
+    if raw_error is None:
+        error_msg = "알 수 없는 에러가 발생했습니다."
+    else:
+        # 실패 사유 원문(「SQL 실행 에러: {e}」 등)은 고정 사유·머리말만 보이고, 보일 수 없으면
+        # 고정 문구 + 요청 번호 — 원문은 서버 로그(plans/163 S3+)
+        error_msg = user_error_text(raw_error)
+        if error_msg != raw_error:
+            rid = request_id()
+            logger.warning("오류 응답 실패 사유 원문 (요청 %s): %s", rid, raw_error)
+            if error_msg == GENERIC_TASK_ERROR:
+                error_msg = f"{error_msg} (요청 {rid})"
     response = (
         f"죄송합니다. 요청을 처리하는 중 문제가 발생했습니다.\n"
         f"에러 내용: {error_msg}\n"
@@ -527,9 +539,9 @@ def build_graph(config: AppConfig, checkpointer=None):
     # Plan 49 / D-037 트랙 B: deepagents 실제 패키지(vLLM 오케스트레이터 + FabriX 워커) 백엔드 선택.
     # enable_deepagents_package=on + 오케스트레이터 가용 시 "deep_agent", 그 외 "semantic_router"(§4.6).
     # 실행 경로 4종은 대등한 병존이 아니라 위에서부터 성립하는 한 단만 확정되는
-    # 사다리다 — 기준 경로는 3단 semantic_router, 1단 deep_agent는 부가 경로(opt-in)다
-    # (D-225). 구조·활성 조건·확정 사유·모듈 의존 방향은
-    # docs/21_orchestration_ladder.md가 단일 출처다.
+    # 사다리다 — 기준 경로는 2단 intent_orchestration(3단 semantic_router는 비교 arm),
+    # 1단 deep_agent는 부가 경로(opt-in)다(D-251 · D-225 개정).
+    # 구조·활성 조건·확정 사유·모듈 의존 방향은 docs/21_orchestration_ladder.md가 단일 출처다.
     # 특히 §7: 배선은 배타적이지만 모듈 의존은 아니다(1단이 2·3단 모듈을 재사용).
     # 빌드 시 1회 가용성 판정으로 백엔드를 확정한다(결정적). 가용 판정이어도 deepagents 패키지
     # 미설치(폐쇄망 wheel 미반입)면 RuntimeError가 발생하므로, 빌드 시점에 조립을 시도해보고
@@ -612,9 +624,16 @@ def build_graph(config: AppConfig, checkpointer=None):
             partial(replanner, llm=llm, app_config=config),
         )
 
+    # 3·4단 빌드에서만 등록하는 단일 DB 꼬리(schema_analyzer … output_generator·error_response).
+    # 1단은 도구 루프, 2단은 서브에이전트가 노드 함수를 직접 호출하므로 그래프 노드로는
+    # 닿지 않는다 — 상위 단이 성립하면 하위 단 노드는 등록하지 않는다(plans/163 D1 ·
+    # docs/21 §2 배타성은 빌드 타임).
+    single_db_tail = not use_deep_agent and not config.enable_intent_orchestration
+
     # 시멘틱 라우팅 노드 (멀티 DB 지원)
-    # 트랙 B(deep_agent) 활성 시에는 등록하지 않는다(상호 배타, 죽은 노드 방지).
-    if config.enable_semantic_routing and not use_deep_agent:
+    # 1단(deep_agent)·2단(intent_orchestration) 확정 시에는 등록하지 않는다(상호 배타, 죽은
+    # 노드 방지 — plans/163 D1).
+    if config.enable_semantic_routing and single_db_tail:
         # 사용자별 DB 인가(plans/104 C-4 · D-232)는 라우터 노드 경계에서 한 번만 건다 —
         # 라우터 본체는 반환 지점이 여러 곳이라 안에서 거르면 빠뜨린다.
         graph.add_node(
@@ -711,36 +730,37 @@ def build_graph(config: AppConfig, checkpointer=None):
             partial(entity_locator, app_config=config),
         )
 
-    graph.add_node(
-        "schema_analyzer",
-        partial(schema_analyzer, llm=llm, app_config=config),
-    )
-    graph.add_node(
-        "query_generator",
-        partial(query_generator, llm=llm, app_config=config),
-    )
-    graph.add_node(
-        "query_validator",
-        partial(query_validator, app_config=config),
-    )
+    if single_db_tail:
+        graph.add_node(
+            "schema_analyzer",
+            partial(schema_analyzer, llm=llm, app_config=config),
+        )
+        graph.add_node(
+            "query_generator",
+            partial(query_generator, llm=llm, app_config=config),
+        )
+        graph.add_node(
+            "query_validator",
+            partial(query_validator, app_config=config),
+        )
 
-    # Phase 3: approval_gate (SQL 승인 활성화 시)
-    if config.enable_sql_approval:
-        graph.add_node("approval_gate", approval_gate)
+        # Phase 3: approval_gate (SQL 승인 활성화 시)
+        if config.enable_sql_approval:
+            graph.add_node("approval_gate", approval_gate)
 
-    graph.add_node(
-        "query_executor",
-        partial(query_executor, app_config=config),
-    )
-    graph.add_node(
-        "result_organizer",
-        partial(result_organizer, llm=llm, app_config=config),
-    )
-    graph.add_node(
-        "output_generator",
-        partial(output_generator, llm=llm, app_config=config),
-    )
-    graph.add_node("error_response", _error_response_node)
+        graph.add_node(
+            "query_executor",
+            partial(query_executor, app_config=config),
+        )
+        graph.add_node(
+            "result_organizer",
+            partial(result_organizer, llm=llm, app_config=config),
+        )
+        graph.add_node(
+            "output_generator",
+            partial(output_generator, llm=llm, app_config=config),
+        )
+        graph.add_node("error_response", _error_response_node)
 
     # --- 엣지 정의 ---
 
@@ -866,68 +886,73 @@ def build_graph(config: AppConfig, checkpointer=None):
         # 레거시 모드
         graph.add_edge("field_mapper", "schema_analyzer")
 
-    # 단일 DB 경로: schema_analyzer -> query_generator 직행.
-    # 구조 승인 HITL 게이트 노드는 plans/104(D-227)에서 삭제됐다 — 질의 경로는
-    # 구조를 분석하지 않고 수동 프로필·관리자 승인본을 읽기만 한다(없으면 사유 노트).
-    graph.add_edge("schema_analyzer", "query_generator")
-    graph.add_edge("query_generator", "query_validator")
+    # 단일 DB 꼬리 배선은 노드가 등록된 3·4단 빌드에서만 한다(plans/163 D1).
+    if single_db_tail:
+        # 단일 DB 경로: schema_analyzer -> query_generator 직행.
+        # 구조 승인 HITL 게이트 노드는 plans/104(D-227)에서 삭제됐다 — 질의 경로는
+        # 구조를 분석하지 않고 수동 프로필·관리자 승인본을 읽기만 한다(없으면 사유 노트).
+        graph.add_edge("schema_analyzer", "query_generator")
+        graph.add_edge("query_generator", "query_validator")
 
-    # query_validator 이후: 조건부 라우팅
-    if config.enable_sql_approval:
-        # SQL 승인 활성화: validator -> approval_gate -> executor
+        # query_validator 이후: 조건부 라우팅
+        if config.enable_sql_approval:
+            # SQL 승인 활성화: validator -> approval_gate -> executor
+            graph.add_conditional_edges(
+                "query_validator",
+                partial(
+                    route_after_validation_with_approval,
+                    max_retry=config.query.max_retry_count,
+                ),
+                {
+                    "approval_gate": "approval_gate",
+                    "query_generator": "query_generator",
+                    "error_response": "error_response",
+                },
+            )
+            graph.add_conditional_edges(
+                "approval_gate",
+                route_after_approval,
+                {
+                    "query_executor": "query_executor",
+                    "query_validator": "query_validator",
+                    END: END,
+                },
+            )
+        else:
+            graph.add_conditional_edges(
+                "query_validator",
+                partial(route_after_validation, max_retry=config.query.max_retry_count),
+                {
+                    "query_executor": "query_executor",
+                    "query_generator": "query_generator",
+                    "error_response": "error_response",
+                },
+            )
+
+        # query_executor 이후: 조건부 라우팅
         graph.add_conditional_edges(
-            "query_validator",
-            partial(route_after_validation_with_approval, max_retry=config.query.max_retry_count),
+            "query_executor",
+            partial(route_after_execution, max_retry=config.query.max_retry_count),
             {
-                "approval_gate": "approval_gate",
+                "result_organizer": "result_organizer",
                 "query_generator": "query_generator",
                 "error_response": "error_response",
             },
         )
+
+        # result_organizer 이후: 조건부 라우팅
         graph.add_conditional_edges(
-            "approval_gate",
-            route_after_approval,
+            "result_organizer",
+            partial(route_after_organization, max_retry=config.query.max_retry_count),
             {
-                "query_executor": "query_executor",
-                "query_validator": "query_validator",
-                END: END,
-            },
-        )
-    else:
-        graph.add_conditional_edges(
-            "query_validator",
-            partial(route_after_validation, max_retry=config.query.max_retry_count),
-            {
-                "query_executor": "query_executor",
+                "output_generator": "output_generator",
                 "query_generator": "query_generator",
-                "error_response": "error_response",
             },
         )
 
-    # query_executor 이후: 조건부 라우팅
-    graph.add_conditional_edges(
-        "query_executor",
-        partial(route_after_execution, max_retry=config.query.max_retry_count),
-        {
-            "result_organizer": "result_organizer",
-            "query_generator": "query_generator",
-            "error_response": "error_response",
-        },
-    )
-
-    # result_organizer 이후: 조건부 라우팅
-    graph.add_conditional_edges(
-        "result_organizer",
-        partial(route_after_organization, max_retry=config.query.max_retry_count),
-        {
-            "output_generator": "output_generator",
-            "query_generator": "query_generator",
-        },
-    )
-
-    # 종단 엣지
-    graph.add_edge("output_generator", END)
-    graph.add_edge("error_response", END)
+        # 종단 엣지
+        graph.add_edge("output_generator", END)
+        graph.add_edge("error_response", END)
 
     # --- 체크포인트 ---
     if checkpointer is None:
@@ -935,7 +960,7 @@ def build_graph(config: AppConfig, checkpointer=None):
 
     # Phase 3: HITL 승인 시 interrupt_before 설정
     interrupt_before = []
-    if config.enable_sql_approval:
+    if config.enable_sql_approval and single_db_tail:
         interrupt_before.append("approval_gate")
 
     compiled = graph.compile(

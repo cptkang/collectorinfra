@@ -785,8 +785,10 @@ async def _generate_validated_sql(
             break
         # T-3: 재생성 직전 시간 게이트 — 조회 마감까지 남은 시간이 방금 잰 생성 소요보다
         # 짧으면 멈춘다.
+        # 마지막 사유는 단일 경로(「SQL 검증 실패: …」)와 같은 머리말로 넘긴다 — 사용자 문구에는
+        # 머리말만 실린다(plans/163 S3+ · 검증 사유 원문은 위 경고 로그)
         _blocked = _deadline_blocks(
-            run, _last_gen, stage="SQL 재생성", last_reason=validation_error,
+            run, _last_gen, stage="SQL 재생성", last_reason=f"SQL 검증 실패: {validation_error}",
         )
         if _blocked:
             logger.warning("DB '%s' %s", db_id, _blocked)

@@ -27,6 +27,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 
 from src.api.dependencies import require_user
+from src.api.error_detail import current_request_id, user_error_detail
 from src.api.result_chart_view import (
     chart_carry,
     chart_field,
@@ -55,6 +56,7 @@ from src.security.data_masker import DataMasker
 from src.utils.deadline import bind_request_deadline, unbind_request_deadline
 from src.utils.json_extract import coerce_content_text
 from src.utils.progress_events import ANSWER_PREFIX_EVENT
+from src.utils.user_error import db_error_text, user_error_text, validation_reason_text
 from src.routing.db_authz import SELECTION_DENIED_MESSAGE, authorized_db_ids, filter_selected_db_ids
 from src.state import create_followup_input, create_initial_state
 from src.routing.db_scope import build_db_scope
@@ -85,6 +87,10 @@ _ZONE_SCAN_LIMIT = _ALL_QUERY_LIMIT
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+#: 그래프 실행 예외의 사용자 문구(plans/163 S3) — 원문은 `user_error_detail`이 서버 로그에 남기고
+#: 응답에는 이 문구 + 「(요청 {번호})」만 싣는다.
+_GRAPH_ERROR_MESSAGE = "처리 중 오류가 발생했습니다"
 
 # 비동기 결과 저장소
 _MAX_RESULTS_STORE_SIZE = 1000
@@ -272,6 +278,9 @@ _STREAM_KNOWN_NODES: frozenset[str] = frozenset({
     "deep_agent", "fault_diagnosis", "cache_management",
     # plans/103 P2 · plans/111 C-4·C-5: 3단 계획 루프(`TIER3_PLAN_LOOP_ENABLED`)
     "plan", "normalize", "dispatch", "task_run", "join", "replan", "finalize",
+    # plans/163 D5: 그래프가 등록하는데 빠져 있던 3·4단 옵트인 노드 — 식별자 소재 프로브
+    # (`cross_system_probe_enabled`) · 순차 2-pass(`composite.sequential_fallback_tiers_enabled`)
+    "entity_locator", "sequential_runner",
 })
 
 
@@ -458,7 +467,15 @@ def _progress_sse_payload(event: dict, current_node: str | None, start_time: flo
         if data.get("label"):
             base["label"] = str(data["label"])[:200]
         if data.get("detail"):  # 단계 실패 사유(D-242) — 있을 때만 싣는다
-            base["detail"] = str(data["detail"])[:300]
+            # 예외 원문(「SQL 실행 에러: {e}」 등)은 SSE 본문에 싣지 않는다 — 고정 사유만 보이고
+            # 나머지는 고정 문구로 바꾼다(plans/163 S3+). 원문은 여기서 로그로 남긴다.
+            shown = user_error_text(data["detail"])
+            if shown != data["detail"]:
+                logger.warning(
+                    "진행 단계 실패 사유 (요청 %s · %s): %r",
+                    current_request_id(), name, data["detail"],
+                )
+            base["detail"] = shown[:300]
     return base
 
 
@@ -747,11 +764,18 @@ def _summarize_tasks(tasks: list[dict], results: dict | None = None) -> list[dic
             rows = res.get("query_results")
             if isinstance(rows, list):
                 item["row_count"] = len(rows)
+            # 실패 사유는 화면(파이프라인 상세)에 고정 사유만 보인다 — 예외 원문은 고정 문구로
+            # 바꾼다(plans/163 S3+). 원문은 task 진행 이벤트(`emit_task_progress`)가 로그로 남긴다.
+            # DB별 사유는 예외 보간부만 떼고 산출 발췌(D-153 후속2)·마감 문구는 남긴다
+            # (원문은 실행기 로그).
             db_errors = res.get("db_errors")
             if db_errors:
-                item["db_errors"] = db_errors
+                item["db_errors"] = (
+                    {k: db_error_text(v) for k, v in db_errors.items()}
+                    if isinstance(db_errors, dict) else db_error_text(db_errors)
+                )
             elif res.get("error"):
-                item["error"] = res.get("error")
+                item["error"] = user_error_text(res.get("error"), result=res)
             # 제니퍼 소스 되묻기(plans/147)는 오류가 아니다 — `error`는 재계획 종결 판정용으로
             # 남기고 처리 현황은 이 표지로 「확인 필요」를 보인다(미연결 안내는 표지 없음 —
             # 종전 표시)
@@ -881,12 +905,6 @@ def _clarify_store_fields(clarification: Mapping[str, Any] | None) -> dict[str, 
     if not clarification:
         return {}
     return {"query_results": [], "output_file": None, "mapping_report_md": None}
-
-
-def _clarification_carry(response_data: Mapping[str, Any]) -> dict[str, Any]:
-    """파일 경로 `done`의 역질문 키 — 응답 조립본에 있을 때만 싣는다(종전 `done` 바이트 불변)."""
-    clarification = response_data.get("clarification")
-    return {"clarification": clarification} if clarification else {}
 
 
 def _scope_reexpand_field(state: dict[str, Any]) -> dict[str, Any]:
@@ -1079,7 +1097,8 @@ def _extract_node_progress(
             result = output.get("validation_result", {})
             return {
                 "passed": result.get("passed", False),
-                "reason": result.get("reason", ""),
+                # 파서 예외·백엔드 응답 원문은 떼고 보인다(plans/163 S3+ · 원문은 노드 로그)
+                "reason": validation_reason_text(result.get("reason", "")),
             }
 
         elif node_name == "query_executor":
@@ -1092,7 +1111,9 @@ def _extract_node_progress(
                 ),
             }
             if error:
-                data["error"] = error
+                # 실행 에러 원문(「DB 연결 에러: {e}」)은 머리말만 보인다(plans/163 S3+ · 원문은
+                # 노드 로그와 스트림 단계 기록에 남는다)
+                data["error"] = user_error_text(error)
             return data
 
         elif node_name == "result_organizer":
@@ -2318,6 +2339,16 @@ async def _partial_on_timeout(
     )
 
 
+#: 처리 상한 부분 결과 `done`을 정상 `done`과 같은 키 집합으로 맞추는 빈 값(plans/163 D6) — 값은
+#: 비스트림 부분 결과 응답(`QueryResponse` 기본값)과 같다. 화면은 이 키들을 참·거짓으로만 읽어
+#: (`if (!ctx) return` 등) 없는 키와 null이 같게 동작한다.
+_PARTIAL_DONE_DEFAULTS: dict[str, Any] = {
+    "executed_sql": None, "has_file": False, "file_name": None, "awaiting_approval": False,
+    "turn_count": None, "has_mapping_report": False, "form_fill_clarification": None,
+    "form_memory_panel": None, "db_scope": None, "clarification": None, "source_switch": None,
+}
+
+
 def _partial_response_data(
     answer: PartialAnswer,
     *,
@@ -2371,7 +2402,7 @@ async def _timeout_sse_event(
             **data, "query_results": partial.rows,
             **viz_store_fields(chart, user_query=user_query, tables=None),
         }, owner=owner)
-        event = {"type": "done", **data}
+        event = {"type": "done", **_PARTIAL_DONE_DEFAULTS, **data}
         if timeline is not None:
             event["timeline"] = timeline
         return _sse_event(event)
@@ -2425,7 +2456,7 @@ async def _delivery_cut_sse_event(
         **data, "query_results": rows,
         **viz_store_fields(chart, user_query=user_query, tables=None),
     }, owner=owner)
-    return _sse_event({"type": "done", **data, "timeline": timeline})
+    return _sse_event({"type": "done", **_PARTIAL_DONE_DEFAULTS, **data, "timeline": timeline})
 
 
 async def _stream_cut_sse_event(
@@ -2599,10 +2630,10 @@ async def process_query(
             detail="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
         )
     except Exception as e:
-        logger.error(f"그래프 실행 에러: {e}")
+        # 예외 원문은 서버 로그에만 — 응답은 고정 문구 + 요청 번호(plans/163 S3)
         raise HTTPException(
             status_code=500,
-            detail=f"처리 중 오류가 발생했습니다: {str(e)}",
+            detail=user_error_detail(_GRAPH_ERROR_MESSAGE, e, logger, request),
         )
     finally:
         _unbind_deadline(_deadline_token)
@@ -3144,6 +3175,8 @@ async def process_query_stream(
                 "executed_sql": response_data["executed_sql"],
                 "has_file": response_data["has_file"],
                 "file_name": response_data.get("file_name"),
+                # astream 경로와 같은 키(plans/163 D6) — 폴백에서만 빠져 있었다
+                "awaiting_approval": result.get("awaiting_approval", False),
                 "turn_count": turn_count,
                 "has_mapping_report": response_data.get("has_mapping_report", False),
                 "form_fill_clarification": response_data.get("form_fill_clarification"),
@@ -3176,9 +3209,8 @@ async def process_query_stream(
                 config=config, user_query=body.query,   # plans/160 A-2
             )
         except Exception as e:
-            logger.error(f"SSE 스트리밍 에러: {e}")
             yield _sse_event(_stream_error_payload(
-                f"처리 중 오류가 발생했습니다: {str(e)}",
+                user_error_detail(_GRAPH_ERROR_MESSAGE, e, logger, request),   # plans/163 S3
                 _trace, code="exception", start_time=start_time, limit_sec=effective_timeout,
                 timeline=_finish_timeline(_watch, query_id),
             ))
@@ -3215,13 +3247,17 @@ async def process_file_query(
     """양식 파일과 함께 질의를 처리한다."""
     # 감사(D-183): 파일 경로도 텍스트 경로와 대칭으로 기록한다
     # (한쪽만 기록하는 비대칭은 이 저장소의 반복 실수 유형이다).
+    # query_id·thread_id는 요청 수신 시점에 정한다 — 텍스트 경로(`body.thread_id or query_id`)와
+    # 같은 값이 감사(D-183)·사전 게이트 응답·그래프 실행에 함께 쓰인다(plans/163 D6).
+    query_id = str(uuid.uuid4())
+    actual_thread_id = thread_id or query_id
     await _audit_user_request(
         request,
         current_user,
         user_query=query,
         output_format="file",
         has_file=True,
-        thread_id=thread_id,
+        thread_id=actual_thread_id,
     )
     # 질의응답 스레드 기록(D-248) — 텍스트 경로와 대칭
     turn = TurnRecorder(request, current_user, user_query=query, has_upload=True)
@@ -3243,21 +3279,21 @@ async def process_file_query(
     )
     if _selection_denied:
         return await turn.response(QueryResponse(
-            query_id=str(uuid.uuid4()),
+            query_id=query_id,
             status="success",
             response=SELECTION_DENIED_MESSAGE,
-            thread_id=thread_id,
+            thread_id=actual_thread_id,
         ))
     clarification = _file_zone_clarification_or_none(
         query, selected_list, request.app.state.config, current_user
     )
     if clarification:
-        await _audit_clarification(clarification, current_user, thread_id)
+        await _audit_clarification(clarification, current_user, actual_thread_id)
         return await turn.response(QueryResponse(
-            query_id=str(uuid.uuid4()),
+            query_id=query_id,
             status="clarification",
             response=clarification["question"],
-            thread_id=thread_id,
+            thread_id=actual_thread_id,
             clarification=clarification,
             **_pre_gate_plan_summary(),  # plans/121 TP-0.1
         ))
@@ -3293,13 +3329,11 @@ async def process_file_query(
         except Exception as e:
             logger.warning("Excel→CSV 변환 실패, 기존 방식으로 진행: %s", e)
 
-    # 4. 초기 State 생성
-    query_id = str(uuid.uuid4())
+    # 4. 초기 State 생성 (query_id·actual_thread_id는 요청 수신 시점에 정했다)
     start_time = time.time()
 
     graph = request.app.state.graph
     config = request.app.state.config
-    actual_thread_id = thread_id or query_id
 
     initial_state = create_initial_state(
         user_query=_substitute_zone_placeholder(query, selected_list),
@@ -3351,10 +3385,10 @@ async def process_file_query(
             return await turn.response(QueryResponse(**data))
         raise HTTPException(status_code=504, detail="처리 시간이 초과되었습니다.")
     except Exception as e:
-        logger.error(f"파일 질의 처리 에러: {e}")
+        # 예외 원문은 서버 로그에만 — 응답은 고정 문구 + 요청 번호(plans/163 S3)
         raise HTTPException(
             status_code=500,
-            detail=f"처리 중 오류가 발생했습니다: {str(e)}",
+            detail=user_error_detail(_GRAPH_ERROR_MESSAGE, e, logger, request),
         )
     finally:
         _unbind_deadline(_deadline_token)
@@ -3387,6 +3421,9 @@ async def process_file_query(
         **_scope_reexpand_field(result),  # plans/123 W-2 ②
         **_plan_summary_field(result),  # TP-0.1
         **({"clarification": time_clar} if time_clar else {}),  # plans/122 T-4
+        # 키는 텍스트 경로와 같게 두되 값은 항상 null — 파일 경로는 소스 전환을 지원하지 않는다
+        # (칩이 양식 파일 없이 텍스트 경로로 재질의한다 · plans/163 D6)
+        "source_switch": None,
         **_clarify_turn_fields(time_clar),  # 기간 되묻기 턴 — 직전 턴 SQL·행·파일 미탑재(D5)
     }
     store_data = {
@@ -3524,13 +3561,17 @@ async def process_file_query_stream(
     """파일 업로드와 함께 SSE 스트리밍 방식으로 질의를 처리한다."""
     # 감사(D-183): 파일 경로도 텍스트 경로와 대칭으로 기록한다
     # (한쪽만 기록하는 비대칭은 이 저장소의 반복 실수 유형이다).
+    # query_id·thread_id는 요청 수신 시점에 정한다 — 텍스트 경로(`body.thread_id or query_id`)와
+    # 같은 값이 감사(D-183)·사전 게이트 응답·그래프 실행에 함께 쓰인다(plans/163 D6).
+    query_id = str(uuid.uuid4())
+    actual_thread_id = thread_id or query_id
     await _audit_user_request(
         request,
         current_user,
         user_query=query,
         output_format="file",
         has_file=True,
-        thread_id=thread_id,
+        thread_id=actual_thread_id,
     )
     # 질의응답 스레드 기록(D-248) — 텍스트 경로와 대칭
     turn = TurnRecorder(request, current_user, user_query=query, has_upload=True)
@@ -3551,14 +3592,13 @@ async def process_file_query_stream(
         selected_list, current_user
     )
     if _selection_denied:
-        _denied_qid = str(uuid.uuid4())
 
         async def selection_denied_file_generator() -> AsyncGenerator[str, None]:
             yield _sse_event({
                 "type": "done",
                 "response": SELECTION_DENIED_MESSAGE,
-                "query_id": _denied_qid,
-                "thread_id": thread_id,
+                "query_id": query_id,
+                "thread_id": actual_thread_id,
             })
 
         return StreamingResponse(
@@ -3574,14 +3614,14 @@ async def process_file_query_stream(
         query, selected_list, request.app.state.config, current_user
     )
     if clarification:
-        await _audit_clarification(clarification, current_user, thread_id)
-        _clar_qid = str(uuid.uuid4())
+        await _audit_clarification(clarification, current_user, actual_thread_id)
+
         async def file_clarification_generator() -> AsyncGenerator[str, None]:
             yield _sse_event({
                 "type": "done",
                 "response": clarification["question"],
-                "query_id": _clar_qid,
-                "thread_id": thread_id,
+                "query_id": query_id,
+                "thread_id": actual_thread_id,
                 "clarification": clarification,
                 **_pre_gate_plan_summary(),  # plans/121 TP-0.1
             })
@@ -3629,10 +3669,8 @@ async def process_file_query_stream(
         except Exception as e:
             logger.warning("Excel→CSV 변환 실패, 기존 방식으로 진행: %s", e)
 
-    query_id = str(uuid.uuid4())
     graph = request.app.state.graph
     config = request.app.state.config
-    actual_thread_id = thread_id or query_id
 
     initial_state = create_initial_state(
         user_query=_substitute_zone_placeholder(query, selected_list),
@@ -3842,8 +3880,12 @@ async def process_file_query_stream(
                                         **_time_resolution_field(_scope_state),  # plans/122 T-4
                                         **_scope_reexpand_field(_scope_state),  # plans/123 W-2 ②
                                         **_plan_summary_field(_scope_state),  # TP-0.1
-                                        # 기간 되묻기(plans/122 T-4)
-                                        **({"clarification": _time_clar} if _time_clar else {}),
+                                        # 기간 되묻기(plans/122 T-4) — 파일 경로의 역질문은
+                                        # 이것뿐이다(후단 존 게이트는 텍스트 채널만 · D-143 후속2)
+                                        "clarification": _time_clar,
+                                        # 텍스트 경로와 같은 키 · 값은 항상 null — 파일 경로는
+                                        # 소스 전환 미지원(plans/163 D6)
+                                        "source_switch": None,
                                     }
                                     _rows = output.get("query_results") or _tracked_query_results
                                     # 그래프 보기 신호(plans/160 A-2) — 표 경계는 누적 상태에서
@@ -3885,7 +3927,9 @@ async def process_file_query_stream(
                                         **_time_resolution_field(response_data),  # plans/122 T-4
                                         **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
                                         **_plan_summary_carry(response_data),  # TP-0.1
-                                        **_clarification_carry(response_data),  # plans/122 T-4
+                                        # 텍스트 경로와 같은 키 — 값이 없어도 null(plans/163 D6)
+                                        "clarification": response_data.get("clarification"),
+                                        "source_switch": response_data.get("source_switch"),
                                         **chart_carry(response_data["chart"]),  # plans/160 A-2
                                         **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
                                         # 단계 타임라인(plans/119 T-0)
@@ -3941,7 +3985,9 @@ async def process_file_query_stream(
                 **_time_resolution_field(result),  # plans/122 T-4
                 **_scope_reexpand_field(result),  # plans/123 W-2 ②
                 **_plan_summary_field(result),  # TP-0.1
-                **({"clarification": _time_clar} if _time_clar else {}),  # plans/122 T-4
+                "clarification": _time_clar,  # plans/122 T-4
+                # 텍스트와 같은 키 · 값은 항상 null — 파일 경로는 소스 전환 미지원(plans/163 D6)
+                "source_switch": None,
                 **_turn_fields,  # 기간 되묻기 턴(D5)
             }
             _store_data = {
@@ -3973,6 +4019,8 @@ async def process_file_query_stream(
                 "executed_sql": response_data["executed_sql"],
                 "has_file": response_data["has_file"],
                 "file_name": response_data.get("file_name"),
+                # astream 경로와 같은 키(plans/163 D6) — 파일 경로는 승인 대기를 내지 않는다
+                "awaiting_approval": False,
                 "turn_count": turn_count,
                 "has_mapping_report": response_data.get("has_mapping_report", False),
                 "form_fill_clarification": response_data.get("form_fill_clarification"),
@@ -3983,7 +4031,9 @@ async def process_file_query_stream(
                 **_time_resolution_field(response_data),  # plans/122 T-4
                 **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
                 **_plan_summary_carry(response_data),  # TP-0.1
-                **_clarification_carry(response_data),  # plans/122 T-4
+                # 텍스트 경로와 같은 키 — 값이 없어도 null로 싣는다(plans/163 D6)
+                "clarification": response_data.get("clarification"),
+                "source_switch": response_data.get("source_switch"),
                 **chart_carry(response_data["chart"]),  # plans/160 A-2
                 **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
                 "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0
@@ -4002,9 +4052,8 @@ async def process_file_query_stream(
                 config=config, user_query=query,   # plans/160 A-2
             )
         except Exception as e:
-            logger.error(f"파일 SSE 스트리밍 에러: {e}")
             yield _sse_event(_stream_error_payload(
-                f"처리 중 오류가 발생했습니다: {str(e)}",
+                user_error_detail(_GRAPH_ERROR_MESSAGE, e, logger, request),   # plans/163 S3
                 _trace, code="exception", start_time=start_time,
                 limit_sec=limit_sec,
                 timeline=_finish_timeline(_watch, query_id),

@@ -125,6 +125,7 @@ from src.utils.json_extract import extract_json_from_response
 from src.utils.prior_dependency import NOTE_BRIDGE, NOTE_TRACE
 from src.utils.prior_targets import TargetRef, resolve_targets
 from src.utils.query_gen_common import refers_to_demonstrative_server
+from src.utils.user_error import request_id
 
 logger = logging.getLogger(__name__)
 
@@ -1122,6 +1123,41 @@ def _envelope_error(envelope: dict[str, Any]) -> str | None:
     if envelope.get("error"):
         return f"{envelope.get('error')}: {str(envelope.get('reason') or '')[:160]}"
     return None
+
+
+#: 호출 오류의 게이트웨이 오류 코드(`_envelope_error`·작업 상태 —
+#: 「instance_unresolved: …」의 머리).
+_GATEWAY_CODE_RE = re.compile(r"([a-z][a-z0-9_]*):")
+#: 사유를 게이트웨이가 인자·대상 검사로 직접 짓는 오류 코드(SPEC-apm-gateway §3.2) — 사유까지
+#: 보인다(모르는 지표 후보 · 대상 불일치). 그 밖 코드(제니퍼 응답·연결·작업 실패)는 코드만.
+_GUIDANCE_CODES: frozenset[str] = frozenset({
+    "invalid_argument", "instance_unresolved", "profile_ref_mismatch",
+})
+
+
+def _call_failure_text(label: str, failures: list[tuple[str | None, str]]) -> str:
+    """호출 실패의 답 본문 문구 — 대상·오류 코드와 요청 번호만, 사유 원문은 로그(plans/163 S3+).
+
+    사유에는 제니퍼 응답 원문과 예외 문자열이 섞인다. 오류 코드(소문자 식별자)는 게이트웨이 계약
+    값이라 그대로 보이고, 게이트웨이가 직접 지은 안내 사유(`_GUIDANCE_CODES`)는 사유까지 보인다.
+
+    Args:
+        label: 소스 표시명
+        failures: (대상 — 없으면 None, 호출 오류 원문) 목록
+    """
+    rid = request_id()
+    logger.warning("%s 호출 실패 (요청 %s): %s", label, rid,
+                   "; ".join(f"{who or '-'}: {err}" for who, err in failures))
+    shown: list[str] = []
+    for who, err in failures[:3]:
+        code = _GATEWAY_CODE_RE.match(err)
+        shown_err = (err if code and code.group(1) in _GUIDANCE_CODES
+                     else code.group(1) if code else None)
+        text = ": ".join(x for x in (who, shown_err) if x)
+        if text:
+            shown.append(text)
+    tail = f"(요청 {rid} · 상세 사유는 서버 로그)"
+    return f"{'; '.join(shown)} {tail}" if shown else tail
 
 
 async def _run_calls(session: Any, calls: list[_Call], concurrency: int,
@@ -2390,9 +2426,13 @@ async def run_apm_query(
             calls = _unbatched(wire, meta)
             calls += answers  # 게이트웨이에 다시 묻지 않는다(해석 검색이 이미 부른 행)
     except SourceMcpError as e:
+        # 연결 예외 원문은 답 본문에 싣지 않는다 — 요청 번호만, 원문은 로그(plans/163 S3+)
+        rid = request_id()
+        logger.warning("APM 게이트웨이 연결 실패 (요청 %s · %s): %s", rid, label, e)
         meta["source_status"] = _status(label, "unavailable", 0, str(e))
-        return _refusal(f"{label}에 연결하지 못해 조회하지 않았습니다({e}). 다른 소스의 값으로 대신"
-                        " 답하지 않았습니다.", "source_unavailable", meta, notices)
+        return _refusal(f"{label}에 연결하지 못해 조회하지 않았습니다(요청 {rid}). "
+                        "다른 소스의 값으로 대신 답하지 않았습니다.",
+                        "source_unavailable", meta, notices)
 
     # 조회한 대상 — 종전 보기의 대상(첫 홉 포함) 뒤에 선택 대상·참조 보기가 부른 서버를 잇는다
     meta["hostnames"] = list(dict.fromkeys(
@@ -2429,7 +2469,9 @@ async def run_apm_query(
     if calls and not ok_calls:
         meta["source_status"] = _status(label, "unavailable", 0,
                                         "; ".join(f["reason"] for f in meta["failures"][:3]))
-        return _refusal(f"{label} 조회가 모두 실패했습니다 — " + meta["source_status"]["reason"],
+        shown = _call_failure_text(label, [(f.get("hostname") or f.get("target"),
+                                            str(f.get("reason") or "")) for f in meta["failures"]])
+        return _refusal(f"{label} 조회가 모두 실패했습니다 — {shown}",
                         "apm_calls_failed", meta, disclosures)
     if not calls and blocked:
         return _blocked_refusal(label, blocked, meta, disclosures)
@@ -2442,10 +2484,9 @@ async def run_apm_query(
         meta["source_status"] = _status(label, "not_queried", 0, "대상 텍스트 해석 0건")
         text = "\n".join(d["text"] for d in disclosures if d["kind"] in (
             disc.APM_UNRESOLVED_CONDITION, disc.APM_PARTIAL_SOURCES))
-        errors = [c.error for c in calls if c.error]
-        if errors:  # 함께 고른 다른 보기의 실패도 답에 싣는다(사유를 가리지 않는다)
-            text += (f"\n{label} 조회 실패 {len(errors)}건 — "
-                     + "; ".join(e[:120] for e in errors[:3]))
+        errors = [(c.hostname, c.error) for c in calls if c.error]
+        if errors:  # 함께 고른 다른 보기의 실패도 답에 싣는다(원문은 로그 — plans/163 S3+)
+            text += f"\n{label} 조회 실패 {len(errors)}건 — " + _call_failure_text(label, errors)
         return _refusal(text, "apm_target_unresolved", meta, disclosures)
     if not calls:
         reason = "; ".join(f["reason"] for f in meta["failures"][:3]) or "조회 대상이 없습니다"

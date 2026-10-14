@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+import structlog
+
 from src.config import AppConfig
 from src.schema_cache.fingerprint import (
     FINGERPRINT_SQL,
@@ -1548,7 +1550,8 @@ class SchemaCacheManager:
         self, db_id: str, schema_dict: dict[str, Any] | None, descriptions: dict[str, str]
     ) -> dict[str, str]:
         """설명 정본 파일(`config/knowledge/{db_id}/column_descriptions.yaml` · D-316 ④)에서
-        Redis에 없는 컬럼 설명만 채운다 — 스키마 로드 때 프로세스당 DB별 1회(설명 백업 복원 뒤).
+        Redis에 없는 컬럼 설명만 채운다 — 스키마 로드 때 프로세스당 DB별 1회(설명 백업 복원 뒤 ·
+        캐시 무효화 `invalidate`·`invalidate_all` 뒤에는 다시 1회).
 
         - 파일 없음(폴스타 등)·형식 오류: 무동작(Redis 쓰기 0).
         - 기존 설명(내부망 LLM·주석·관리자 적용·운영자 편집)은 HSETNX로 덮지 않는다. 컬럼 설명에는
@@ -1794,11 +1797,17 @@ class SchemaCacheManager:
             )
 
         except Exception as e:
-            logger.error("캐시 갱신 실패 (db_id=%s): %s", db_id, e)
+            # 예외 원문(DB 연결 오류 — 호스트·계정이 섞임)은 로그에만, 결과 문구는 관리자
+            # 응답 A안 형식(plans/163 S3). 요청 번호는 감사 미들웨어가 바인딩한 structlog 값.
+            rid = structlog.contextvars.get_contextvars().get("request_id") or "-"
+            logger.error("캐시 갱신 실패 (db_id=%s · 요청 %s)", db_id, rid, exc_info=e)
             return CacheRefreshResult(
                 db_id=db_id,
                 status="error",
-                message=str(e),
+                message=(
+                    f"스키마 캐시 갱신 실패했습니다 ({type(e).__name__} · 요청 {rid})"
+                    " — 상세는 서버 로그"
+                ),
             )
 
     # === 관리 ===
@@ -1817,6 +1826,7 @@ class SchemaCacheManager:
             삭제 성공 여부
         """
         self._memory_cache.invalidate(db_id)
+        self._knowledge_done.discard(db_id)  # 설명 정본 파일 적재를 다음 로드에 다시(D-316 ④)
         success = False
         if self._backend == "redis" and await self.ensure_redis_connected():
             if await self._redis_cache.invalidate(db_id):
@@ -1834,6 +1844,7 @@ class SchemaCacheManager:
             삭제된 항목 수
         """
         self._memory_cache.invalidate()
+        self._knowledge_done.clear()  # 설명 정본 파일 적재를 다음 로드에 다시(D-316 ④)
         count = 0
         if self._backend == "redis" and await self.ensure_redis_connected():
             count += await self._redis_cache.invalidate_all()

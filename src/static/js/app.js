@@ -479,6 +479,9 @@
         cache_management: "캐시 관리",
         approval_gate: "SQL 승인 대기",
         synonym_registrar: "유사어 등록",
+        // plans/163 D5: 3·4단 옵트인 노드(서버 화이트리스트와 대칭)
+        entity_locator: "서버 소재 확인",
+        sequential_runner: "순차 실행",
     };
 
     // task agent 식별자 → 사용자용 라벨 (처리 현황 작업 목록 표시)

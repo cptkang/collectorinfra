@@ -13,7 +13,7 @@
 LLM_GEMINI_API_KEY=
 
 # Ollama Gateway API 키 (선택, 게이트웨이 사용 시)
-LLM_API_KEY=
+LLM_OLLAMA_API_KEY=
 
 # FabriX API 키 (LLM_PROVIDER=fabrix 시)
 LLM_FABRIX_API_KEY=

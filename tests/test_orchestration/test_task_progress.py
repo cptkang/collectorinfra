@@ -153,4 +153,5 @@ def test_orchestrator_level_loop_emits_in_order(monkeypatch, captured):
                    ("t2", "start", "in_progress"), ("t2", "end", "failed")], seq
     ends = [d for n, d in captured if d["phase"] == "end"]
     assert ends[0]["row_count"] == 1 and ends[0]["total"] == 2
-    assert ends[1]["error"] == "boom"
+    # 예외 원문은 진행 패널에 싣지 않는다 — 고정 문구(plans/163 S3+ · 원문은 로그)
+    assert ends[1]["error"] == "작업 처리 중 오류가 발생했습니다"

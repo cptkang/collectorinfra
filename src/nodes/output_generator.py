@@ -67,6 +67,7 @@ from src.utils.query_gen_common import (
     render_elliptical_succession_note,
     resolve_stat_month_range,
 )
+from src.utils.user_error import db_error_text
 
 logger = logging.getLogger(__name__)
 
@@ -1736,7 +1737,8 @@ def _append_zone_coverage_notes(response: str, state: AgentState) -> str:
     if db_errors:
         lines.append("**[일부 존 조회 실패]**")
         for db_id, err in db_errors.items():
-            lines.append(f"- {db_id}: {str(err)[:150]}")
+            # 예외 보간부만 떼고 검증 사유·산출 발췌(D-153 후속2)·마감 문구는 남긴다(plans/163 S3+)
+            lines.append(f"- {db_id}: {db_error_text(err)[:150]}")
 
     # 멀티 존 조회의 존별 건수 — "그 존에 없음(0건)"과 "조회 누락"을 사용자가 구별할 수 있게
     # 한다. 전 존 0행은 기존 0건 안내가 담당한다. 정상 조회 턴(전 존 1행 이상)에도 싣는다 —

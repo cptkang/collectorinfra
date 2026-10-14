@@ -190,7 +190,9 @@ async def test_judgement_failure_is_warned_and_save_proceeds(env_file, monkeypat
 
     assert "ACTIVE_DB_IDS=polestar,itam" in env_file.read_text(encoding="utf-8")
     assert set(response.readiness_warnings) == {"_error"}
-    assert "MCP 연결 실패" in response.readiness_warnings["_error"]
+    # plans/163 S3 — 예외 원문은 서버 로그에만, 응답은 예외 종류·요청 번호
+    assert "MCP 연결 실패" not in response.readiness_warnings["_error"]
+    assert "RuntimeError · 요청 req-1" in response.readiness_warnings["_error"]
     assert "판정하지 못했습니다" in response.message
     assert audit.entries[0].extra["readiness_warnings"] == response.readiness_warnings
 
@@ -223,7 +225,8 @@ async def test_service_factory_failure_is_warned(env_file, monkeypatch):
         EnvUpdateRequest(settings={"ACTIVE_DB_IDS": "polestar,itam"}),
         _ADMIN,
     )
-    assert "서비스 모듈 없음" in response.readiness_warnings["_error"]
+    assert "서비스 모듈 없음" not in response.readiness_warnings["_error"]  # plans/163 S3
+    assert "ImportError · 요청 req-1" in response.readiness_warnings["_error"]
 
 
 async def test_missing_running_config_is_warned(env_file, monkeypatch):

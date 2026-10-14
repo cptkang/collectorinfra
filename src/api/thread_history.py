@@ -89,7 +89,8 @@ class TurnRecorder:
 
     async def record(self, payload: dict[str, Any]) -> None:
         thread_id = payload.get("thread_id")
-        # 스레드가 없는 응답(파일 경로의 첫 턴 역질문 등)은 이어 붙일 곳이 없다.
+        # 스레드가 없는 응답은 이어 붙일 곳이 없다. 질의 진입점 4곳(텍스트·파일 × 일반·스트림)은
+        # 사전 게이트 응답까지 모두 thread_id를 채우므로(plans/163 D6) 지금은 방어 분기다.
         if not self._repo or not self._owner or not thread_id:
             return
         turn = {

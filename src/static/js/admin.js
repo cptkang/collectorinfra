@@ -1298,7 +1298,8 @@
         banner.appendChild(title);
         if (warnings._error) {
             var errorLine = document.createElement("div");
-            errorLine.textContent = "준비도를 판정하지 못했습니다: " + warnings._error;
+            // 서버 문구가 이미 「… 실패했습니다 (…) — 상세는 서버 로그」·「… 시간 초과」 형태다(plans/163 S3)
+            errorLine.textContent = warnings._error;
             banner.appendChild(errorLine);
         }
         Object.keys(warnings).forEach(function (dbId) {

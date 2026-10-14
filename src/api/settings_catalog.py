@@ -232,7 +232,8 @@ SECTION_BY_KEY: dict[str, str] = {
 }
 
 #: `.encenv.example` 파싱 외에 수동으로 시크릿 취급하는 키.
-#: - LLM_OLLAMA_API_KEY: `LLMConfig.model_post_init`가 `LLM_API_KEY`(.encenv)로 보정한다.
+#: - LLM_OLLAMA_API_KEY: Ollama 게이트웨이 인증 키(`.encenv` 관리).
+#:   plans/163 X6+ 이후 `LLM_API_KEY` 보정은 없다.
 #: - DBHUB_BEARER_TOKEN / ORCHESTRATOR_API_KEY: 전송 인증 크레덴셜(Plan 68 §1.1).
 _MANUAL_SECRET_KEYS: frozenset[str] = frozenset({
     "LLM_OLLAMA_API_KEY",

@@ -109,6 +109,23 @@ def _validate_production_secrets(config) -> None:
         )
 
 
+def _warn_shared_jwt_secret(config: AppConfig) -> None:
+    """운영 모드에서 사용자·운영자 JWT 시크릿이 둘 다 명시 설정되고 같으면 경고 로그를 남긴다.
+
+    D-070 시크릿 분리가 설정으로 무너진 경우다. 기동은 막지 않는다(plans/163 §3 — 경고까지만).
+    자동 생성 시크릿(명시 설정 아님)은 서로 다른 랜덤 값이라 검사하지 않는다.
+    """
+    if not config.auth.enabled:
+        return
+    if not (config.auth._jwt_secret_explicit and config.admin._jwt_secret_explicit):
+        return
+    if config.auth.jwt_secret == config.admin.jwt_secret:
+        logger.warning(
+            "AUTH_JWT_SECRET과 ADMIN_JWT_SECRET이 같은 값입니다 — 사용자/운영자 토큰 시크릿을 "
+            "서로 다른 값으로 설정하세요(D-070)."
+        )
+
+
 async def _seed_admin_user(user_repo, config) -> None:
     """활성 관리자가 0명이고 env 부트스트랩 크레덴셜이 있으면 seed admin을 1회 생성한다(멱등, §9.2).
 
@@ -306,6 +323,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
 
     # D-071: 운영 모드 필수 크레덴셜·시크릿 검증(미설정 시 기동 거부)
     _validate_production_secrets(config)
+    _warn_shared_jwt_secret(config)
 
     # SQL 파일 로거 초기화 (logs/sql/ — D-140)
     from src.utils.sql_file_logger import init_sql_file_logger

@@ -83,28 +83,6 @@ class LLMConfig(BaseSettings):
                 )
         return v
 
-    def model_post_init(self, __context: object) -> None:
-        """환경변수를 직접 읽어 보정한다."""
-        import os
-
-        # FabriX 환경변수 (LLM_ 접두사 또는 직접)
-        if not self.fabrix_base_url:
-            self.fabrix_base_url = os.getenv("FABRIX_BASE_URL", "")
-        if not self.fabrix_api_key:
-            self.fabrix_api_key = os.getenv("FABRIX_API_KEY", "")
-        if not self.fabrix_client_key:
-            self.fabrix_client_key = os.getenv("FABRIX_CLIENT_KEY", "")
-        if not self.fabrix_chat_model:
-            self.fabrix_chat_model = os.getenv("FABRIX_CHAT_MODEL", "")
-
-        # Gemini API 키
-        if not self.gemini_api_key:
-            self.gemini_api_key = os.getenv("GOOGLE_API_KEY", "")
-
-        # Ollama API 키 (게이트웨이용)
-        if not self.ollama_api_key:
-            self.ollama_api_key = os.getenv("LLM_API_KEY", "")
-
 
 class OrchestratorConfig(BaseSettings):
     """deepagents 오케스트레이터(vLLM, OpenAI 호환) 설정 (Plan 49 / D-037, 트랙 B).

@@ -1,0 +1,884 @@
+{
+  "cpu_month_series_concat": {
+    "identical": true,
+    "multi": {
+      "child_eav": [],
+      "concat_eav": [
+        [
+          "제조사(모델명)",
+          "Vendor",
+          "Model"
+        ]
+      ],
+      "db_engine": "postgresql",
+      "db_schema": "",
+      "eav_pattern": {
+        "attribute_column": "name",
+        "config_table": "core_config_prop",
+        "direct_join": {
+          "config_column": "configuration_id",
+          "entity_column": "resource_conf_id"
+        },
+        "entity_table": "cmm_resource",
+        "known_attributes": [
+          {
+            "description": "서버 제조사 [resource_type: server.Server]",
+            "name": "Vendor"
+          },
+          {
+            "description": "모델명 [resource_type: server.Server]",
+            "name": "Model"
+          },
+          {
+            "description": "CPU 모델 [resource_type: server.Cpus]",
+            "name": "MODEL"
+          },
+          {
+            "description": "CPU 제조사 [resource_type: server.Cpus]",
+            "name": "VENDOR"
+          },
+          {
+            "description": "메모리 용량 [resource_type: server.Memory]",
+            "name": "TotalSize"
+          }
+        ],
+        "type": "eav",
+        "value_column": "stringvalue_short"
+      },
+      "limit": 100000,
+      "metric_fields": [],
+      "metric_table": "cmm_metric_stat_m",
+      "month_measures": [
+        [
+          "월중평균사용률(최근 6개월간)|M",
+          "server.Cpus",
+          "avg_val",
+          "202601"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M",
+          "server.Cpus",
+          "max_val",
+          "202601"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+1",
+          "server.Cpus",
+          "avg_val",
+          "202602"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+1",
+          "server.Cpus",
+          "max_val",
+          "202602"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+2",
+          "server.Cpus",
+          "avg_val",
+          "202603"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+2",
+          "server.Cpus",
+          "max_val",
+          "202603"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+3",
+          "server.Cpus",
+          "avg_val",
+          "202604"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+3",
+          "server.Cpus",
+          "max_val",
+          "202604"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+4",
+          "server.Cpus",
+          "avg_val",
+          "202605"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+4",
+          "server.Cpus",
+          "max_val",
+          "202605"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+5",
+          "server.Cpus",
+          "avg_val",
+          "202606"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+5",
+          "server.Cpus",
+          "max_val",
+          "202606"
+        ]
+      ],
+      "period": null,
+      "regular_entries": [
+        [
+          "호스트명",
+          "cmm_resource.hostname"
+        ],
+        [
+          "비고",
+          "cmm_resource.name"
+        ]
+      ],
+      "server_eav": [],
+      "stat_month": [
+        "202606",
+        "202606"
+      ]
+    },
+    "multi_sql_sha256": "d4eb7e8d9719eb0d827a0932012f9d9fbbf10330718451eced1f9c11cc53cd3e",
+    "single": {
+      "child_eav": [],
+      "concat_eav": [
+        [
+          "제조사(모델명)",
+          "Vendor",
+          "Model"
+        ]
+      ],
+      "db_engine": "postgresql",
+      "db_schema": "",
+      "eav_pattern": {
+        "attribute_column": "name",
+        "config_table": "core_config_prop",
+        "direct_join": {
+          "config_column": "configuration_id",
+          "entity_column": "resource_conf_id"
+        },
+        "entity_table": "cmm_resource",
+        "known_attributes": [
+          {
+            "description": "서버 제조사 [resource_type: server.Server]",
+            "name": "Vendor"
+          },
+          {
+            "description": "모델명 [resource_type: server.Server]",
+            "name": "Model"
+          },
+          {
+            "description": "CPU 모델 [resource_type: server.Cpus]",
+            "name": "MODEL"
+          },
+          {
+            "description": "CPU 제조사 [resource_type: server.Cpus]",
+            "name": "VENDOR"
+          },
+          {
+            "description": "메모리 용량 [resource_type: server.Memory]",
+            "name": "TotalSize"
+          }
+        ],
+        "type": "eav",
+        "value_column": "stringvalue_short"
+      },
+      "limit": 100000,
+      "metric_fields": [],
+      "metric_table": "cmm_metric_stat_m",
+      "month_measures": [
+        [
+          "월중평균사용률(최근 6개월간)|M",
+          "server.Cpus",
+          "avg_val",
+          "202601"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M",
+          "server.Cpus",
+          "max_val",
+          "202601"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+1",
+          "server.Cpus",
+          "avg_val",
+          "202602"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+1",
+          "server.Cpus",
+          "max_val",
+          "202602"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+2",
+          "server.Cpus",
+          "avg_val",
+          "202603"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+2",
+          "server.Cpus",
+          "max_val",
+          "202603"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+3",
+          "server.Cpus",
+          "avg_val",
+          "202604"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+3",
+          "server.Cpus",
+          "max_val",
+          "202604"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+4",
+          "server.Cpus",
+          "avg_val",
+          "202605"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+4",
+          "server.Cpus",
+          "max_val",
+          "202605"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+5",
+          "server.Cpus",
+          "avg_val",
+          "202606"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+5",
+          "server.Cpus",
+          "max_val",
+          "202606"
+        ]
+      ],
+      "period": null,
+      "regular_entries": [
+        [
+          "호스트명",
+          "cmm_resource.hostname"
+        ],
+        [
+          "비고",
+          "cmm_resource.name"
+        ]
+      ],
+      "server_eav": [],
+      "stat_month": [
+        "202606",
+        "202606"
+      ]
+    },
+    "single_sql_sha256": "d4eb7e8d9719eb0d827a0932012f9d9fbbf10330718451eced1f9c11cc53cd3e"
+  },
+  "db2_b0_query_time": {
+    "identical": true,
+    "multi": {
+      "child_eav": [],
+      "concat_eav": [
+        [
+          "제조사(모델명)",
+          "Vendor",
+          "Model"
+        ]
+      ],
+      "db_engine": "db2",
+      "db_schema": "POLESTAR",
+      "eav_pattern": {
+        "attribute_column": "name",
+        "config_table": "core_config_prop",
+        "direct_join": {
+          "config_column": "configuration_id",
+          "entity_column": "resource_conf_id"
+        },
+        "entity_table": "cmm_resource",
+        "known_attributes": [
+          {
+            "description": "서버 제조사 [resource_type: server.Server]",
+            "name": "Vendor"
+          },
+          {
+            "description": "모델명 [resource_type: server.Server]",
+            "name": "Model"
+          },
+          {
+            "description": "CPU 모델 [resource_type: server.Cpus]",
+            "name": "MODEL"
+          },
+          {
+            "description": "CPU 제조사 [resource_type: server.Cpus]",
+            "name": "VENDOR"
+          },
+          {
+            "description": "메모리 용량 [resource_type: server.Memory]",
+            "name": "TotalSize"
+          }
+        ],
+        "type": "eav",
+        "value_column": "stringvalue_short"
+      },
+      "limit": 100000,
+      "metric_fields": [
+        "CPU 평균 사용률",
+        "메모리 최대 사용률"
+      ],
+      "metric_table": "cmm_metric_stat_m",
+      "month_measures": null,
+      "period": {
+        "__type__": "TimeResolution",
+        "anchor": "now",
+        "anchor_at": "2026-09-29T10:00:00+09:00",
+        "completeness": "complete",
+        "end": "2026-09-01T00:00:00+09:00",
+        "grain": "month",
+        "notes": [],
+        "source": "rule",
+        "span": "최근 3개월",
+        "start": "2026-06-01T00:00:00+09:00",
+        "unbounded": false
+      },
+      "regular_entries": [
+        [
+          "서버명",
+          "cmm_resource.name"
+        ],
+        [
+          "호스트명",
+          "cmm_resource.hostname"
+        ]
+      ],
+      "server_eav": [],
+      "stat_month": [
+        "202606",
+        "202608"
+      ]
+    },
+    "multi_sql_sha256": "aa5e84db4762d1967f8b6179a1ba0ed1a83b442d872eab4d364815209d2a7445",
+    "single": {
+      "child_eav": [],
+      "concat_eav": [
+        [
+          "제조사(모델명)",
+          "Vendor",
+          "Model"
+        ]
+      ],
+      "db_engine": "db2",
+      "db_schema": "POLESTAR",
+      "eav_pattern": {
+        "attribute_column": "name",
+        "config_table": "core_config_prop",
+        "direct_join": {
+          "config_column": "configuration_id",
+          "entity_column": "resource_conf_id"
+        },
+        "entity_table": "cmm_resource",
+        "known_attributes": [
+          {
+            "description": "서버 제조사 [resource_type: server.Server]",
+            "name": "Vendor"
+          },
+          {
+            "description": "모델명 [resource_type: server.Server]",
+            "name": "Model"
+          },
+          {
+            "description": "CPU 모델 [resource_type: server.Cpus]",
+            "name": "MODEL"
+          },
+          {
+            "description": "CPU 제조사 [resource_type: server.Cpus]",
+            "name": "VENDOR"
+          },
+          {
+            "description": "메모리 용량 [resource_type: server.Memory]",
+            "name": "TotalSize"
+          }
+        ],
+        "type": "eav",
+        "value_column": "stringvalue_short"
+      },
+      "limit": 100000,
+      "metric_fields": [
+        "CPU 평균 사용률",
+        "메모리 최대 사용률"
+      ],
+      "metric_table": "cmm_metric_stat_m",
+      "month_measures": null,
+      "period": {
+        "__type__": "TimeResolution",
+        "anchor": "now",
+        "anchor_at": "2026-09-29T10:00:00+09:00",
+        "completeness": "complete",
+        "end": "2026-09-01T00:00:00+09:00",
+        "grain": "month",
+        "notes": [],
+        "source": "rule",
+        "span": "최근 3개월",
+        "start": "2026-06-01T00:00:00+09:00",
+        "unbounded": false
+      },
+      "regular_entries": [
+        [
+          "서버명",
+          "cmm_resource.name"
+        ],
+        [
+          "호스트명",
+          "cmm_resource.hostname"
+        ]
+      ],
+      "server_eav": [],
+      "stat_month": [
+        "202606",
+        "202608"
+      ]
+    },
+    "single_sql_sha256": "aa5e84db4762d1967f8b6179a1ba0ed1a83b442d872eab4d364815209d2a7445"
+  },
+  "memory_month_series_capacity": {
+    "identical": true,
+    "multi": {
+      "child_eav": [
+        [
+          "처리능력|(GB)",
+          "TotalSize",
+          "server.Memory"
+        ]
+      ],
+      "concat_eav": [
+        [
+          "제조사(모델명)",
+          "Vendor",
+          "Model"
+        ]
+      ],
+      "db_engine": "postgresql",
+      "db_schema": "",
+      "eav_pattern": {
+        "attribute_column": "name",
+        "config_table": "core_config_prop",
+        "direct_join": {
+          "config_column": "configuration_id",
+          "entity_column": "resource_conf_id"
+        },
+        "entity_table": "cmm_resource",
+        "known_attributes": [
+          {
+            "description": "서버 제조사 [resource_type: server.Server]",
+            "name": "Vendor"
+          },
+          {
+            "description": "모델명 [resource_type: server.Server]",
+            "name": "Model"
+          },
+          {
+            "description": "CPU 모델 [resource_type: server.Cpus]",
+            "name": "MODEL"
+          },
+          {
+            "description": "CPU 제조사 [resource_type: server.Cpus]",
+            "name": "VENDOR"
+          },
+          {
+            "description": "메모리 용량 [resource_type: server.Memory]",
+            "name": "TotalSize"
+          }
+        ],
+        "type": "eav",
+        "value_column": "stringvalue_short"
+      },
+      "limit": 100000,
+      "metric_fields": [],
+      "metric_table": "cmm_metric_stat_m",
+      "month_measures": [
+        [
+          "월중평균사용률(최근 6개월간)|M",
+          "server.Memory",
+          "avg_val",
+          "202601"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M",
+          "server.Memory",
+          "max_val",
+          "202601"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+1",
+          "server.Memory",
+          "avg_val",
+          "202602"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+1",
+          "server.Memory",
+          "max_val",
+          "202602"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+2",
+          "server.Memory",
+          "avg_val",
+          "202603"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+2",
+          "server.Memory",
+          "max_val",
+          "202603"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+3",
+          "server.Memory",
+          "avg_val",
+          "202604"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+3",
+          "server.Memory",
+          "max_val",
+          "202604"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+4",
+          "server.Memory",
+          "avg_val",
+          "202605"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+4",
+          "server.Memory",
+          "max_val",
+          "202605"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+5",
+          "server.Memory",
+          "avg_val",
+          "202606"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+5",
+          "server.Memory",
+          "max_val",
+          "202606"
+        ]
+      ],
+      "period": null,
+      "regular_entries": [
+        [
+          "호스트명",
+          "cmm_resource.hostname"
+        ],
+        [
+          "비고",
+          "cmm_resource.name"
+        ]
+      ],
+      "server_eav": [],
+      "stat_month": [
+        "202606",
+        "202606"
+      ]
+    },
+    "multi_sql_sha256": "5b96eb0e72eb2fb913f7eee2a49a1eaadd3da33b2c9b29f5d2e354a25c635a45",
+    "single": {
+      "child_eav": [
+        [
+          "처리능력|(GB)",
+          "TotalSize",
+          "server.Memory"
+        ]
+      ],
+      "concat_eav": [
+        [
+          "제조사(모델명)",
+          "Vendor",
+          "Model"
+        ]
+      ],
+      "db_engine": "postgresql",
+      "db_schema": "",
+      "eav_pattern": {
+        "attribute_column": "name",
+        "config_table": "core_config_prop",
+        "direct_join": {
+          "config_column": "configuration_id",
+          "entity_column": "resource_conf_id"
+        },
+        "entity_table": "cmm_resource",
+        "known_attributes": [
+          {
+            "description": "서버 제조사 [resource_type: server.Server]",
+            "name": "Vendor"
+          },
+          {
+            "description": "모델명 [resource_type: server.Server]",
+            "name": "Model"
+          },
+          {
+            "description": "CPU 모델 [resource_type: server.Cpus]",
+            "name": "MODEL"
+          },
+          {
+            "description": "CPU 제조사 [resource_type: server.Cpus]",
+            "name": "VENDOR"
+          },
+          {
+            "description": "메모리 용량 [resource_type: server.Memory]",
+            "name": "TotalSize"
+          }
+        ],
+        "type": "eav",
+        "value_column": "stringvalue_short"
+      },
+      "limit": 100000,
+      "metric_fields": [],
+      "metric_table": "cmm_metric_stat_m",
+      "month_measures": [
+        [
+          "월중평균사용률(최근 6개월간)|M",
+          "server.Memory",
+          "avg_val",
+          "202601"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M",
+          "server.Memory",
+          "max_val",
+          "202601"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+1",
+          "server.Memory",
+          "avg_val",
+          "202602"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+1",
+          "server.Memory",
+          "max_val",
+          "202602"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+2",
+          "server.Memory",
+          "avg_val",
+          "202603"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+2",
+          "server.Memory",
+          "max_val",
+          "202603"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+3",
+          "server.Memory",
+          "avg_val",
+          "202604"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+3",
+          "server.Memory",
+          "max_val",
+          "202604"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+4",
+          "server.Memory",
+          "avg_val",
+          "202605"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+4",
+          "server.Memory",
+          "max_val",
+          "202605"
+        ],
+        [
+          "월중평균사용률(최근 6개월간)|M+5",
+          "server.Memory",
+          "avg_val",
+          "202606"
+        ],
+        [
+          "월중 Peak시 사용률(최근 6개월간)|M+5",
+          "server.Memory",
+          "max_val",
+          "202606"
+        ]
+      ],
+      "period": null,
+      "regular_entries": [
+        [
+          "호스트명",
+          "cmm_resource.hostname"
+        ],
+        [
+          "비고",
+          "cmm_resource.name"
+        ]
+      ],
+      "server_eav": [],
+      "stat_month": [
+        "202606",
+        "202606"
+      ]
+    },
+    "single_sql_sha256": "5b96eb0e72eb2fb913f7eee2a49a1eaadd3da33b2c9b29f5d2e354a25c635a45"
+  },
+  "no_month_mixed_eav": {
+    "identical": true,
+    "multi": {
+      "child_eav": [
+        [
+          "CPU 코어 수",
+          "LOGICALCORE",
+          "server.Cpus"
+        ],
+        [
+          "메모리 용량",
+          "TotalSize",
+          "server.Memory"
+        ]
+      ],
+      "concat_eav": null,
+      "db_engine": "postgresql",
+      "db_schema": "",
+      "eav_pattern": {
+        "attribute_column": "name",
+        "config_table": "core_config_prop",
+        "direct_join": {
+          "config_column": "configuration_id",
+          "entity_column": "resource_conf_id"
+        },
+        "entity_table": "cmm_resource",
+        "known_attributes": [
+          {
+            "description": "OS 버전 [resource_type: server.Server]",
+            "name": "OSVerson"
+          },
+          {
+            "description": "논리 코어 [resource_type: server.Cpus]",
+            "name": "LOGICALCORE"
+          },
+          {
+            "description": "메모리 용량 [resource_type: server.Memory]",
+            "name": "TotalSize"
+          }
+        ],
+        "type": "eav",
+        "value_column": "stringvalue_short"
+      },
+      "limit": 100000,
+      "metric_fields": [
+        "CPU 평균 사용률"
+      ],
+      "metric_table": "cmm_metric_stat_m",
+      "month_measures": null,
+      "period": null,
+      "regular_entries": [
+        [
+          "서버 이름",
+          "cmm_resource.name"
+        ],
+        [
+          "IP 주소",
+          "cmm_resource.ipaddress"
+        ]
+      ],
+      "server_eav": [
+        [
+          "OS 버전",
+          "OSVerson"
+        ]
+      ],
+      "stat_month": [
+        "202606",
+        "202606"
+      ]
+    },
+    "multi_sql_sha256": "adfcbaabddf573890b4ea754fcdad5244f5db94de80b13d63adb6f3928b02cc6",
+    "single": {
+      "child_eav": [
+        [
+          "CPU 코어 수",
+          "LOGICALCORE",
+          "server.Cpus"
+        ],
+        [
+          "메모리 용량",
+          "TotalSize",
+          "server.Memory"
+        ]
+      ],
+      "concat_eav": null,
+      "db_engine": "postgresql",
+      "db_schema": "",
+      "eav_pattern": {
+        "attribute_column": "name",
+        "config_table": "core_config_prop",
+        "direct_join": {
+          "config_column": "configuration_id",
+          "entity_column": "resource_conf_id"
+        },
+        "entity_table": "cmm_resource",
+        "known_attributes": [
+          {
+            "description": "OS 버전 [resource_type: server.Server]",
+            "name": "OSVerson"
+          },
+          {
+            "description": "논리 코어 [resource_type: server.Cpus]",
+            "name": "LOGICALCORE"
+          },
+          {
+            "description": "메모리 용량 [resource_type: server.Memory]",
+            "name": "TotalSize"
+          }
+        ],
+        "type": "eav",
+        "value_column": "stringvalue_short"
+      },
+      "limit": 100000,
+      "metric_fields": [
+        "CPU 평균 사용률"
+      ],
+      "metric_table": "cmm_metric_stat_m",
+      "month_measures": null,
+      "period": null,
+      "regular_entries": [
+        [
+          "서버 이름",
+          "cmm_resource.name"
+        ],
+        [
+          "IP 주소",
+          "cmm_resource.ipaddress"
+        ]
+      ],
+      "server_eav": [
+        [
+          "OS 버전",
+          "OSVerson"
+        ]
+      ],
+      "stat_month": [
+        "202606",
+        "202606"
+      ]
+    },
+    "single_sql_sha256": "adfcbaabddf573890b4ea754fcdad5244f5db94de80b13d63adb6f3928b02cc6"
+  }
+}

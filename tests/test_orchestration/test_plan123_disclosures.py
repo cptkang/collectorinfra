@@ -263,7 +263,9 @@ async def test_w6_validation_budget_is_failure_notice() -> None:
     )
 
     assert "데이터가 없습니다" not in f["text"]
-    assert "검증을 통과하지 못해" in f["text"] and "컬럼 없음" in f["text"]
+    assert "검증을 통과하지 못해" in f["text"]
+    # 검증 사유(생성 SQL 조각이 보간된다)는 「(마지막 사유: …)」에 싣지 않는다(plans/163 S3+)
+    assert "컬럼 없음" not in f["text"] and "마지막 사유" not in f["text"]
     assert f["disclosures"][0]["kind"] == disc.FAIL_VALIDATION_BUDGET
 
 

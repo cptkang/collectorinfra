@@ -315,13 +315,14 @@ def test_3단_기준선이면_노드_집합이_달라져_잰다(mock_config, sem
     assert _snapshot(base, arm).unreachable_arms() == {}
 
 
-def test_2단은_등록만_되고_배선되지_않은_승인_노드도_도달_불가다(
+def test_2단은_승인_노드를_등록하지_않아_승인_축도_도달_불가다(  # noqa: N802
         mock_config, semantic_backend) -> None:
-    """2단은 `approval_gate` 를 등록하지만 START 에서 닿지 않는다(에이전트 내부 파이프라인)."""
+    """2단은 `approval_gate` 를 등록하지 않는다(plans/163 D1 — 하위 단 노드 미등록 · 종전에는
+    등록만 되고 START 에서 닿지 않았다). 승인 축은 여전히 도달 불가로 판정된다."""
     base = _reach(_cfg(mock_config, tier=2))
     arm = _reach(_cfg(mock_config, tier=2, approval=True))
 
-    assert "approval_gate" in graph_module.build_graph(
+    assert "approval_gate" not in graph_module.build_graph(
         _cfg(mock_config, tier=2, approval=True), checkpointer=InMemorySaver()).get_graph().nodes
     assert _snapshot(base, arm, axis="ENABLE_SQL_APPROVAL").unreachable_arms()
 

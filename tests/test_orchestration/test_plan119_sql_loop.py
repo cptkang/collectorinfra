@@ -283,7 +283,8 @@ class TestSingleDeadline:
         assert stop["reason"] == qv.REGEN_STOP_DEADLINE
         assert "상수 SELECT" in stop["detail"]  # 마지막 검증 사유
         assert "10초 < 직전 SQL 생성 20초" in out["regen_stop_response"]
-        assert "마지막 실패 사유" in out["regen_stop_response"]
+        assert "마지막 실패 사유: SQL 검증 실패" in out["regen_stop_response"]
+        assert "상수 SELECT" not in out["regen_stop_response"]  # 검증 사유 원문(plans/163 S3+)
 
     @pytest.mark.asyncio
     async def test_deadline_after_prose_keeps_the_prose(self, monkeypatch):
@@ -465,7 +466,9 @@ class TestMultiDeadline:
         assert run.regen_stops["gp"]["reason"] == qv.REGEN_STOP_DEADLINE
         # detail은 마지막 검증 사유 그대로(사용자 문구는 반환 오류 쪽)
         assert run.regen_stops["gp"]["detail"].startswith("테이블을 하나도 조회하지 않는")
-        assert "10초 < 직전 SQL 생성 20초" in err and "마지막 실패 사유" in err
+        assert "10초 < 직전 SQL 생성 20초" in err and "마지막 실패 사유: SQL 검증 실패" in err
+        # 검증 사유 원문은 사용자 문구에 싣지 않는다(plans/163 S3+)
+        assert "테이블을 하나도" not in err
 
     @pytest.mark.asyncio
     async def test_no_deadline_keeps_legacy_attempts(self, monkeypatch):

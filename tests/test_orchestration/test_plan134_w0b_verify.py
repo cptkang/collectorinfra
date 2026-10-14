@@ -383,7 +383,9 @@ async def test_jobs_ending_without_result_are_failures(gateway, deadline, state)
             {JOB: [_env("apm_job_status", [], job=_handle(state, error=error))]})
     res = await _run(["apm.slow_tx"], "web01")
     assert res["degraded_reason"] == "apm_calls_failed"
-    assert f"사유-{state}" in res["final_response"]
+    # 작업 실패 사유 원문은 답 본문에 싣지 않는다 — 대상·코드만(plans/163 S3+ · 원문은 로그)
+    assert f"web01: {state}" in res["final_response"]
+    assert f"사유-{state}" not in res["final_response"]
     assert res["source_status"][0]["status"] == "unavailable"
 
 

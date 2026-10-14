@@ -77,11 +77,22 @@ task 단위로 고정**한다(task 질의가 가리키는 원문 힌트 부분�
 ```python
 if use_deep_agent:                                              # 1단 (부가 경로 opt-in)
     graph.add_node("deep_agent", ...)
-if config.enable_intent_orchestration and not use_deep_agent:   # 2단 (배선 기본 off)
+if config.enable_intent_orchestration and not use_deep_agent:   # 2단 (기준 경로 · D-251)
     graph.add_node("intent_planner", ...); ...
-if config.enable_semantic_routing and not use_deep_agent:       # 3단 (기준 경로)
-    graph.add_node("semantic_router", ...)
+# 3·4단 빌드에서만 참 — 1·2단 빌드에는 아래 노드를 등록하지 않는다(plans/163 D1)
+single_db_tail = not use_deep_agent and not config.enable_intent_orchestration
+if config.enable_semantic_routing and single_db_tail:           # 3단 (비교 arm)
+    graph.add_node("semantic_router", ...); ...
+if single_db_tail:                                              # 3·4단 공용 단일 DB 꼬리
+    graph.add_node("schema_analyzer", ...); ...                 # … output_generator · error_response
+    if config.enable_sql_approval:
+        graph.add_node("approval_gate", approval_gate)
 ```
+
+1·2단 빌드에는 3단 노드·단일 DB 꼬리(schema_analyzer … output_generator·error_response)·
+`approval_gate`와 그 `interrupt_before`가 **등록되지 않는다**(plans/163 D1 — 종전에는 START에서
+닿지 않는 채로 등록돼 있었다). 1단은 도구 루프, 2단은 서브에이전트가 노드 **함수**를 직접 호출하므로
+그래프 노드 이름을 쓰지 않는다. 하위 단이 확정되는 구성에서는 그대로 등록된다.
 
 이어서 배선도 `if / elif / elif / else` 체인이다. 따라서:
 

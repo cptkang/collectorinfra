@@ -29,6 +29,7 @@ from src.api.dependencies import (
     require_user,
     resolve_stream_user,
 )
+from src.api.error_detail import admin_error_detail
 from src.routing.zones import all_zones, db_id_to_zone
 from noise_gate.domain.severity import coerce_severity, parse_severity
 from noise_gate.domain.alarm import (
@@ -965,7 +966,7 @@ async def analyze_alarm_test(
             analysis=None,
             notification_channels=channels,
             notification_preview=NotificationPreview(),
-            error=f"알람 분석 실패: {exc}",
+            error=admin_error_detail("알람 분석", exc, logger, request),
             processing_time_ms=elapsed_ms,
         )
 
@@ -1051,7 +1052,7 @@ async def analyze_alarm_test(
             notifications_sent = sent_result.notifications_sent if sent_result else {}
         except Exception as exc:
             notifications_sent = {ch: False for ch in channels}
-            analyzer_error = f"알림 발송 실패: {exc}"
+            analyzer_error = admin_error_detail("알림 발송", exc, logger, request)
 
     elapsed_ms = (time.time() - start_time) * 1000
 
@@ -2015,7 +2016,7 @@ async def analyze_alarm_raw(
             analysis=None,
             notification_channels=[],
             notification_preview=NotificationPreview(),
-            error=f"메시지 파싱 실패: {exc}",
+            error=admin_error_detail("메시지 파싱", exc, logger, request),
             processing_time_ms=(time.time() - start_time) * 1000,
         )
 
@@ -2072,7 +2073,7 @@ async def analyze_alarm_raw(
             analysis=None,
             notification_channels=channels,
             notification_preview=NotificationPreview(),
-            error=f"알람 분석 실패: {exc}",
+            error=admin_error_detail("알람 분석", exc, logger, request),
             processing_time_ms=elapsed_ms,
         )
 
@@ -2156,7 +2157,7 @@ async def analyze_alarm_raw(
             notifications_sent = sent_result.notifications_sent if sent_result else {}
         except Exception as exc:
             notifications_sent = {ch: False for ch in channels}
-            analyzer_error = f"알림 발송 실패: {exc}"
+            analyzer_error = admin_error_detail("알림 발송", exc, logger, request)
 
     elapsed_ms = (time.time() - start_time) * 1000
 

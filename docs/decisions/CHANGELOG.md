@@ -8,6 +8,8 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-14 | D-153 | 부기 — 후속2 산출 발췌 화면 노출 유지 · 같은 각주·작업 카드의 예외 원문만 머리말로 축약(`db_error_text` · plans/163 S3+ · 사용자 확정 (a)) |
+| 2026-10-14 | D-003 · D-294 · D-316 | 부기 — D-003: MCP 서버 읽기 전용 강화(허용 목록 검사기 · `DBPoolManager.execute` 단일 지점 · PG·MariaDB 세션 RO · 스키마 헬퍼 주입 수정) · D-294: `asset_drafts`·`ddl_comments` 관리자 자산 보존 · D-316: `invalidate(db_id)`도 `knowledge_seeded` 삭제·재적재(`plans/163` W1) |
 | 2026-10-14 | D-332 | 부기 — 사내망 구간은 TLS 불요(사용자 확정): FabriX·폴스타 REST 클라이언트 `verify=False`는 의도 · `plans/163` 미편입 · 스킬 D절 반영 |
 | 2026-10-14 | D-332 | 신규 — 프로젝트 스킬 2종: `refactoring`(D-330·D-331 절차 · 스멜 카탈로그 · 문헌 · `smell_metrics.py`) · `secure-coding`(영역 A~F 규칙 · ASVS v5.0.0·Top 10:2025·LLM Top 10 2025·CWE·RFC 8725 · `secure_scan.py`) — 스킬은 절차서, 정본은 D-번호·계획서 |
 | 2026-10-14 | D-331 | 신규 — 품질 게이트 조정: ① arch_check 「노드 간 직접 의존」 경고를 노드 패키지 간(`src.nodes.*`↔`src.nodes.*` · `noise_gate.application.nodes.*`)으로 한정(경고 117→43 기준선) ② 설정 `getattr` 폴백≠필드 기본 AST 린트 신설 · X1 치환 후 CI 게이트 (`plans/162` U-4·U-7 · 구현 W1) |

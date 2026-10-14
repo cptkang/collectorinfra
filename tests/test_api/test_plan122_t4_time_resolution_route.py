@@ -246,12 +246,12 @@ def test_clarify_end_fallback_ainvoke(route, app_config):
 
 @pytest.mark.parametrize("route", ("file", "file_stream"))
 def test_file_answer_without_clarify_keeps_completed_shape(route, app_config):
-    """파일 경로 종전 모양 — 되묻기가 아니면 `clarification` 키가 없다(스트림 바이트 불변)."""
+    """파일 경로 — 되묻기가 아니면 `clarification`은 null이다. 스트림 `done`도 텍스트 경로처럼
+    키를 항상 싣는다(plans/163 D6 — 종전에는 키 자체가 없었다)."""
     out = _call(_client(_Graph(_answer_nodes(TR)), app_config), route)
     if route == "file":
-        assert out["status"] == "completed" and out["clarification"] is None
-    else:
-        assert "clarification" not in out
+        assert out["status"] == "completed"
+    assert "clarification" in out and out["clarification"] is None
 
 
 def test_response_model_declares_time_resolution():

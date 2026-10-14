@@ -40,6 +40,7 @@ from src.state import AgentState
 from src.utils.deadline import retrieval_remaining
 from src.utils.json_extract import extract_json_from_response
 from src.utils.query_gen_common import term_in_text
+from src.utils.user_error import safe_error_text
 from src.utils.prior_dependency import (
     NOTE_DECOMPOSE,
     NOTE_DESCRIPTIONS_MISSING,
@@ -1207,7 +1208,9 @@ def _regen_stop_notice(stopped: list[tuple[dict[str, Any], dict[str, Any]]]) -> 
             str(stop.get("reason") or ""), _REGEN_STOP_FALLBACK_TEXT,
         )
         query = " ".join(str(prior.get("sub_query") or "").split())[:_MAX_NOTICE_QUERY_CHARS]
-        detail = " ".join(str(stop.get("detail") or "").split())[:_MAX_NOTICE_DETAIL_CHARS]
+        # 마지막 사유는 고정 사유·머리말만 싣는다 — 실행 예외·검증 사유(생성 SQL 조각)가 보간된
+        # 원문은 버린다(plans/163 S3+ · 원문은 SQL 루프·검증 노드 로그에 남는다)
+        detail = (safe_error_text(stop.get("detail")) or "")[:_MAX_NOTICE_DETAIL_CHARS]
         line = (
             f"「{query}」 조회는 {reason}. "
             "같은 조회를 다시 맡기지 않고 지금까지의 결과로 답했습니다"

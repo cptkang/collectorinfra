@@ -57,6 +57,12 @@ from src.utils.empty_antecedent import (
 )
 from src.utils.prior_dependency import REASON_PRIOR_EMPTY, render_dependency_notes
 from src.utils.progress_events import emit_answer_prefix
+from src.utils.user_error import (
+    GENERIC_TASK_ERROR,
+    request_id,
+    safe_error_text,
+    user_error_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1324,13 +1330,22 @@ async def _finalize_task(
         {"order", "agent", "text", "output_file", "output_file_name", "error"} dict
     """
     agent = task.get("agent", "")
+    # task 실패 사유는 화면에 고정 사유만 보인다 — 예외 원문은 고정 문구로 바꾸고 원문은 로그에만
+    # 둔다(plans/163 S3+). 부분 실패 안내(`_merge_finalized`)·합성 입력이 이 값을 쓴다.
+    raw_error = res.get("error")
+    shown_error = user_error_text(raw_error, result=res) if raw_error else raw_error
+    if raw_error and shown_error != raw_error:
+        logger.warning(
+            "result_aggregator task 오류 (task=%s · 요청 %s): %r",
+            task.get("task_id"), request_id(), raw_error,
+        )
     base: dict = {
         "order": task.get("order", 0),
         "agent": agent,
         "text": "",
         "output_file": None,
         "output_file_name": None,
-        "error": res.get("error"),
+        "error": shown_error,
         # CSV 다운로드/row_count용 원시 결과를 보존한다(orchestration 경로에서 query_results를
         # top-level state로 승격하기 위함 — process_query 전체 프로세스 CSV 등, D-047).
         "query_results": res.get("query_results") or [],
@@ -1407,12 +1422,15 @@ async def _finalize_task(
         except Exception as e:
             # exc_info 필수 — 라이브에서 "'NoneType' object has no attribute 'get'"만
             # 남아 발생 지점을 특정할 수 없었다(2026-07-30 B0 CPU 양식 실측).
+            # 답 본문·task 요약에는 원문 대신 고정 문구 + 요청 번호(plans/163 S3) — 원문은
+            # 이 로그에만.
+            rid = request_id()
             logger.error(
-                "result_aggregator output_generator 실패 (task=%s): %s",
-                task.get("task_id"), e, exc_info=True,
+                "result_aggregator output_generator 실패 (task=%s · 요청 %s): %s",
+                task.get("task_id"), rid, e, exc_info=True,
             )
-            base["text"] = f"결과 생성 중 오류가 발생했습니다: {e}"
-            base["error"] = base["error"] or str(e)
+            base["text"] = f"결과 생성 중 오류가 발생했습니다 (요청 {rid})"
+            base["error"] = base["error"] or "결과 생성 실패"
         return base
 
     # 텍스트 계열: final_response 직접 사용
@@ -1421,8 +1439,13 @@ async def _finalize_task(
     if text:
         base["text"] = _with_handler_notices(
             _with_answer_lines(text, _handler_answer_lines(res)), handler)
-    elif res.get("error"):
-        base["text"] = f"작업 처리 중 오류가 발생했습니다: {res['error']}"
+    elif base["error"]:
+        # 고정 사유(「모든 DB 쿼리가 실패했습니다.」 등)는 그대로 보이고, 예외 원문은 고정 문구 +
+        # 요청 번호로 바꾼다(plans/163 S3+ — 원문은 위에서 로그로 남겼다).
+        if base["error"] == GENERIC_TASK_ERROR:
+            base["text"] = f"{GENERIC_TASK_ERROR} (요청 {request_id()})"
+        else:
+            base["text"] = f"{GENERIC_TASK_ERROR}: {base['error']}"
     else:
         base["text"] = "처리 결과가 없습니다."
     # SQL 루프가 사유 문구로 끝낸 조회(산문 조기 종결 · 조회 마감 — plans/119 N-5·T-3)도 kind를
@@ -1515,7 +1538,12 @@ def _failure_disclosure(task: dict[str, Any], res: dict[str, Any]) -> disc.Discl
         kind = str(stop["reason"])
     else:
         kind = disc.QUERY_FAILED
-    text = disc.failure_text(kind, subject=str(task.get("sub_query") or ""), detail=detail)
+    # 고지 본문의 「(마지막 사유: …)」에는 고정 사유만 싣는다 — 실행 예외·검증 사유(생성 SQL
+    # 조각)가 보간된 원문은 버린다(plans/163 S3+ · kind 문구가 실패 종류를 이미 말한다).
+    # kind 판정은 원문으로 한다.
+    text = disc.failure_text(
+        kind, subject=str(task.get("sub_query") or ""), detail=safe_error_text(detail),
+    )
     return disc.make(kind, text, source=f"task:{task.get('task_id')}")
 
 

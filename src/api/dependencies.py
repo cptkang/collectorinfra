@@ -39,10 +39,14 @@ def _verify_user_token(token: str, secret: str) -> dict:
         토큰 payload dict
 
     Raises:
-        HTTPException: 토큰이 유효하지 않을 때
+        HTTPException: 토큰이 유효하지 않을 때(사용자 토큰이 아닌 경우 포함)
     """
     try:
         payload = jwt.decode(token, secret, algorithms=["HS256"])
+        # 서명 통과 ≠ 사용자 토큰(plans/163 S2): 운영자 쪽(verify_admin_token)과 대칭으로
+        # type=="user"가 아니면 거부한다 — 시크릿이 같게 설정돼도 종류 교차 통과를 막는다.
+        if payload.get("type") != "user":
+            raise HTTPException(status_code=401, detail="사용자 토큰이 아닙니다.")
         sub = payload.get("sub")
         if not sub:
             raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")

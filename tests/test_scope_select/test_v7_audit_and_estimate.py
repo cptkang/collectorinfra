@@ -93,7 +93,14 @@ class TestR6ClarificationAudit:
     def test_every_pre_gate_entry_point_records_the_fire(self):
         """경로 대칭 — 텍스트 2 · 파일 2 진입점이 모두 발동을 기록한다(한쪽만 기록하면 발동률이 틀린다)."""
         src = Path(route.__file__).read_text(encoding="utf-8")
-        assert src.count("await _audit_clarification(clarification, current_user, thread_id)") == 4
+        # 파일 경로는 요청 수신 시점에 정한 `actual_thread_id`(= thread_id or query_id)를 넘긴다 —
+        # 텍스트 경로의 `thread_id`(= body.thread_id or query_id)와 같은 값이다(plans/163 D6).
+        fires = re.findall(
+            r"await _audit_clarification\(clarification, current_user, "
+            r"(thread_id|actual_thread_id)\)",
+            src,
+        )
+        assert sorted(fires) == ["actual_thread_id", "actual_thread_id", "thread_id", "thread_id"]
         assert src.count("await _audit_scope_narrowed(input_state, current_user, thread_id)") == 2
 
 

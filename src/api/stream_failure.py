@@ -7,6 +7,8 @@
 
 판정·재시도는 하지 않는다 — 경위를 보고 다시 할지는 사용자가 정한다.
 error 이벤트의 ``message``는 바꾸지 않는다(하네스가 문구로 실패 유형을 분류한다).
+실패 사유 **원문**은 경위에 싣지 않고 요청 번호와 함께 서버 로그에 남긴다(plans/163 S3+) —
+경위에는 어느 단계가 실패했는지(종류·이름·상태)만 남는다.
 
 plans/119 T-5·T-0(D-267 ⑦)에서 같은 관측 위에 두 가지를 더 얹는다 — 스트림 상한의 세 시계
 (`StreamCaps`)와 단계 경계 타임라인(`StreamTimeline`). 둘 다 라우트가 이미 받는 이벤트만 본다.
@@ -14,16 +16,24 @@ plans/119 T-5·T-0(D-267 ⑦)에서 같은 관측 위에 두 가지를 더 얹�
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Mapping
 from typing import Any
 
+from src.api.error_detail import current_request_id
 from src.domain.partial_result import extract_partial_answer
+
+logger = logging.getLogger(__name__)
 
 #: 페이로드에 싣는 단계 수 상한 — 넘치면 앞쪽(오래된 것)을 버리고 버린 수를 알린다.
 _MAX_STEPS = 30
 #: 실패 사유 한 건의 글자 수 상한.
 _MAX_TEXT = 300
+#: 실패 단계의 표시 문구(plans/163 S3+). 실패 사유 원문(노드 `error_message`·단계 `detail`·작업
+#: `error`)에는 DB 오류·SQL·외부 응답이 섞이므로 error 이벤트에 싣지 않고 서버 로그에만 둔다.
+#: 단계 종류·이름·상태·소요 시간(비밀 아님)은 그대로 싣는다.
+_FAILED_DETAIL = "실패 — 상세는 서버 로그"
 
 
 def _clip(text: Any) -> str | None:
@@ -71,9 +81,11 @@ class StreamTrace:
         entry["end_ms"] = at_ms
         detail = _clip(error)
         if detail:
+            rid = current_request_id()
+            logger.warning("스트림 단계 실패 (요청 %s): %s %s — %r", rid, kind, name, detail)
             entry["status"] = "failed"
-            entry["detail"] = detail
-            self._last_error = detail
+            entry["detail"] = _FAILED_DETAIL
+            self._last_error = f"{name} 단계 실패 (요청 {rid}) — 상세는 서버 로그"
         else:
             entry["status"] = status
             entry["detail"] = _clip(note)

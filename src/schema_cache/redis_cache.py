@@ -37,6 +37,8 @@ ADMIN_ASSET_SUFFIXES = frozenset({
     "check_result",
     "registration",
     "description_drafts",
+    "asset_drafts",  # D-294 자산 자동 생성 초안
+    "ddl_comments",  # D-294 ⑨ DDL 등록 때 읽은 주석(DDL을 다시 등록해야만 되살아난다)
 })
 
 
@@ -549,9 +551,9 @@ class RedisSchemaCache:
 
         한 번 적재한 키는 DB별 집합(`schema:{db_id}:knowledge_seeded`)에 남기고 다시 채우지 않는다 —
         운영자가 지운 설명이 재기동 때 되살아나지 않게. 해시에 없고 집합에도 없는 키만 채운다.
-        주의: 정본 파일 내용이 바뀌어도 이미 적재한 키는 다시 채우지 않는다(전체 캐시 삭제
-        `invalidate_all`은 집합도 지운다). `meta.description_status`는 건드리지 않는다(관리자 등록
-        상태가 아니다).
+        주의: 정본 파일 내용이 바뀌어도 이미 적재한 키는 다시 채우지 않는다(캐시 삭제
+        `invalidate(db_id)`·`invalidate_all`은 설명과 함께 집합도 지운다).
+        `meta.description_status`는 건드리지 않는다(관리자 등록 상태가 아니다).
 
         Args:
             db_id: DB 식별자
@@ -1635,6 +1637,8 @@ class RedisSchemaCache:
         글로벌 사전을 삭제하려면 delete_global_synonyms()를 사용한다.
         관리자 자산 키(`ADMIN_ASSET_SUFFIXES`)는 삭제 목록에 없다 — 적용본 `structure_meta`는
         지워지지만 버전 목록·파일 백업에서 복원된다(plans/104).
+        설명 적재 기록 집합(`knowledge_seeded`)은 `descriptions`와 함께 지운다 — 남기면 지운
+        설명이 정본 파일에서 다시 채워지지 않는다(D-316 ④).
 
         Args:
             db_id: DB 식별자
@@ -1654,6 +1658,7 @@ class RedisSchemaCache:
                     "tables",
                     "relationships",
                     "descriptions",
+                    "knowledge_seeded",
                     "synonyms",
                     "fingerprint_checked_at",
                     "structure_meta",
@@ -1680,7 +1685,8 @@ class RedisSchemaCache:
         - schema:db_description_origin (DB_DESCRIPTION_ORIGIN_KEY)
 
         관리자 자산 키 `schema:{db_id}:{ADMIN_ASSET_SUFFIXES}`(버전·초안·스냅샷·점검 결과·
-        등록 상태 — plans/104)도 보존한다. DB별 synonyms는 삭제 대상에 포함된다.
+        등록 상태 — plans/104 · 자산 초안·DDL 주석 — D-294)도 보존한다. DB별 synonyms는 삭제
+        대상에 포함된다.
 
         Returns:
             삭제된 키 수

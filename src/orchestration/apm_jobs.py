@@ -32,6 +32,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+import structlog
+
 from src.clients.source_mcp_client import SourceMcpError, open_source_session
 from src.domain.user import UserRole
 from src.infrastructure.apm_job_store import ApmJobStore, get_apm_job_store, is_job_id
@@ -215,6 +217,29 @@ async def poll_job(
             return status
 
 
+#: 게이트웨이가 스스로 끝낸 작업의 오류 코드(계약 — `apm_gateway` domain/jobs) → 화면 문구.
+_JOB_ERROR_TEXT: dict[str, str] = {
+    "cancelled": "취소 요청으로 끝났습니다.",
+    "stalled": "진행이 멈춰 게이트웨이가 작업을 끝냈습니다.",
+    "interrupted": "게이트웨이가 다시 시작돼 작업이 중단됐습니다 — 다시 요청해야 합니다.",
+}
+
+
+def _public_job_error(job_id: Any, error: Any) -> Any:
+    """작업 상태 응답의 `error` — 게이트웨이 사유 원문 대신 고정 문구(plans/163 S3+).
+
+    결과 받기 409가 사유를 서버 로그로만 보내는 것과 맞춘다. 원문은 `_refresh`가 바뀔 때 한 번
+    로그로 남긴다. 화면(작업 카드)은 `error.reason`을 그대로 보이므로 그 칸을 코드별 고정 문구로
+    채운다(취소·정체·중단은 게이트웨이가 정한 종결이라 문구로 풀고, 그 밖은 서버 로그 안내).
+    """
+    if not isinstance(error, Mapping) or not error.get("reason"):
+        return error
+    text = _JOB_ERROR_TEXT.get(str(error.get("code") or "")) or (
+        f"작업이 실패했습니다 — 사유는 서버 로그에 남겼습니다(작업 {str(job_id or '')[:8]})."
+    )
+    return {**{k: v for k, v in error.items() if k != "reason"}, "reason": text}
+
+
 # ── 장부 등록 ─────────────────────────────────────────────────────────────────
 
 def store_for(app_config: Any) -> ApmJobStore:
@@ -380,6 +405,15 @@ class ApmJobService:
         return envelope
 
     async def _refresh(self, record: dict[str, Any], envelope: Mapping[str, Any]) -> None:
+        error = (job_handle(envelope) or {}).get("error")
+        if error and error != record.get("error"):
+            # 게이트웨이 실패 사유는 화면에 싣지 않으므로(`_view`) 여기서 로그로 남긴다 —
+            # 장부의 이전 값과 다를 때만 남겨 카드 폴링마다 쌓이지 않게 한다(plans/163 S3+).
+            logger.warning(
+                "APM 작업 실패 사유 (요청 %s): job_id=%s 오류=%r",
+                structlog.contextvars.get_contextvars().get("request_id") or "-",
+                record["job_id"][:8], error,
+            )
         try:
             await self._store.update(record["job_id"], ledger_fields(envelope))
         except Exception as e:  # noqa: BLE001 — 상태 캐시 갱신 실패가 응답을 막지 않는다
@@ -403,7 +437,8 @@ class ApmJobService:
             "created_at": handle.get("created_at", record.get("created_at")),
             "updated_at": handle.get("updated_at", record.get("updated_at")),
             "expires_at": handle.get("expires_at", record.get("expires_at")),
-            "error": handle.get("error", record.get("error")),
+            "error": _public_job_error(record.get("job_id"),
+                                       handle.get("error", record.get("error"))),
             "view": record.get("view"),
             "view_label": record.get("view_label"),
             "hostname": record.get("hostname"),
@@ -460,10 +495,20 @@ class ApmJobService:
         state = str(handle.get("state") or "")
         if state not in READABLE_STATES:
             reason = (handle.get("error") or {}).get("reason") if handle.get("error") else ""
+            note = ""
+            if reason:
+                # 게이트웨이 사유는 외부 응답 원문이라 사용자 문구에 싣지 않는다 — 요청 번호와
+                # 함께 서버 로그에만 둔다(plans/163 S3). 계층상 `src.api` 헬퍼 대신 structlog
+                # 컨텍스트를 직접 읽는다.
+                rid = structlog.contextvars.get_contextvars().get("request_id") or "-"
+                logger.warning(
+                    "APM 작업 결과 받기 불가 (요청 %s): job_id=%s 상태=%s 사유=%r",
+                    rid, job_id[:8], state, reason,
+                )
+                note = f" 사유는 서버 로그에 남겼습니다 (요청 {rid})."
             raise JobConflictError(
                 f"작업이 {state or '알 수 없는'} 상태라 결과를 받을 수 없습니다"
-                + (f" — {reason}" if reason else "")
-                + "(완료·부분 완료만 받을 수 있습니다)."
+                "(완료·부분 완료만 받을 수 있습니다)." + note
             )
         artifact = envelope.get("artifact") or {}
         if fmt == "txt":

@@ -85,19 +85,30 @@ def _sql_literal(value: str) -> str:
 
     MCP는 파라미터 바인딩이 없으므로 모든 외부 입력 문자열은 이 함수를 거쳐 보간한다
     (§6-2 이스케이프 계약 — 단위 테스트로 고정).
+
+    백슬래시가 든 값은 거부한다 — MariaDB 소스도 PostgreSQL 분기 SQL을 받는데(`_resolve_engine`),
+    MariaDB 기본 sql_mode에서는 백슬래시가 이스케이프 문자라 `\\'`로 리터럴을 탈출할 수 있다.
+    PostgreSQL·DB2에서는 백슬래시가 일반 문자라 이중화하면 값이 바뀌므로, 엔진 공통으로 맞는
+    표현이 없다.
+
+    Raises:
+        ValueError: 값에 백슬래시가 있을 때
     """
-    cleaned = str(value).replace("\x00", "").replace("'", "''")
+    text = str(value)
+    if "\\" in text:
+        raise ValueError("값에 백슬래시(\\)를 쓸 수 없습니다")
+    cleaned = text.replace("\x00", "").replace("'", "''")
     return f"'{cleaned}'"
 
 
 def _id_literal(value: Any) -> str:
     """식별자(alarm_id 등)를 안전하게 보간한다.
 
-    순수 숫자면 바인딩 없이도 인젝션이 불가능하므로 정수 리터럴로, 그 외에는
+    ASCII 십진수만이면 바인딩 없이도 인젝션이 불가능하므로 정수 리터럴로, 그 외에는
     ``_sql_literal``로 이스케이프한다(엔진 무관 — DB2의 문자열↔숫자 캐스트 회피).
     """
     s = str(value).strip()
-    if s.isdigit():
+    if s.isascii() and s.isdecimal():
         return s
     return _sql_literal(s)
 
@@ -882,8 +893,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         except ValueError as e:
             return _err(str(e))
         limit = pool.get_source_config(source).max_rows
-        sql = build_resource_status_sql(is_db2, server_name, limit)
         try:
+            sql = build_resource_status_sql(is_db2, server_name, limit)
             rows = await pool.execute(source, sql)
             return _ok(rows, source, engine)
         except Exception as e:
@@ -916,11 +927,11 @@ def register_polestar_tools(mcp: FastMCP) -> None:
             return _err(str(e))
         limit = pool.get_source_config(source).max_rows
         hops = _clamp(max_hops, 1, 10)
-        sql = build_topology_sql(is_db2, server_name, hops, limit)
         extra: dict[str, Any] = {}
         if is_db2:
             extra["note"] = "DB2(b0)는 1홉 폴백 — 다홉 토폴로지는 PostgreSQL만 지원"
         try:
+            sql = build_topology_sql(is_db2, server_name, hops, limit)
             rows = await pool.execute(source, sql)
             return _ok(rows, source, engine, **extra)
         except Exception as e:
@@ -1012,8 +1023,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         except ValueError as e:
             return _err(str(e))
         limit = pool.get_source_config(source).max_rows
-        sql = build_os_config_sql(is_db2, hostname, limit)
         try:
+            sql = build_os_config_sql(is_db2, hostname, limit)
             rows = await pool.execute(source, sql)
             return _ok(rows, source, engine)
         except Exception as e:
@@ -1060,14 +1071,19 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         if reference_time is not None:
             try:
                 cutoff_epoch, until_epoch = change_history_window_epochs(reference_time, lookback_minutes, hours=hours)
+                sql = build_change_history_sql(
+                    server_name, cutoff_epoch, limit, until_epoch=until_epoch
+                )
             except ValueError as e:
                 return _err(str(e))
             window = {"reference_time": parse_reference_time(reference_time).isoformat(),
                       "incident_from_epoch": cutoff_epoch, "reference_epoch": until_epoch}
-            sql = build_change_history_sql(server_name, cutoff_epoch, limit, until_epoch=until_epoch)
         else:
             cutoff_epoch = int(time.time()) - _clamp(hours, 1, 24 * 365) * 3600
-            sql = build_change_history_sql(server_name, cutoff_epoch, limit)
+            try:
+                sql = build_change_history_sql(server_name, cutoff_epoch, limit)
+            except ValueError as e:
+                return _err(str(e))
         try:
             rows = await pool.execute(source, sql)
             return _ok(rows, source, engine, window=window) if window else _ok(rows, source, engine)
@@ -1096,8 +1112,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
             is_db2, engine = _resolve_engine(pool, source)
         except ValueError as e:
             return _err(str(e))
-        sql = build_condition_log_sql(is_db2, alarm_id)
         try:
+            sql = build_condition_log_sql(is_db2, alarm_id)
             rows = await pool.execute(source, sql)
             return _ok(rows, source, engine)
         except Exception as e:

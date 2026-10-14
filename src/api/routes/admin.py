@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from src.api.admin_audit import log_admin_event as _log_settings_event
 from src.api.dependencies import require_admin_user
+from src.api.error_detail import admin_error_detail
 from src.api.settings_catalog import (
     FieldError,
     SettingsSchemaResponse,
@@ -454,8 +455,8 @@ async def _active_db_readiness_warnings(
         logger.warning("ACTIVE_DB_IDS 준비도 판정 시간 초과: %s", added_db_ids)
         return {"_error": f"준비도 판정 시간 초과({_READINESS_TIMEOUT_SECONDS:g}초)"}
     except Exception as e:
-        logger.warning("ACTIVE_DB_IDS 준비도 판정 실패: %s: %s", added_db_ids, e)
-        return {"_error": f"준비도 판정 실패: {type(e).__name__}: {e}"}
+        logger.warning("ACTIVE_DB_IDS 준비도 판정 실패: %s", added_db_ids)
+        return {"_error": admin_error_detail("준비도 판정", e, logger, request)}
 
     warnings: dict[str, Any] = {}
     for db_id in added_db_ids:
@@ -616,8 +617,7 @@ async def get_settings_schema(
         # lru_cache(load_config)를 우회한 fresh 인스턴스 — OS env/.encenv가 반영된 실효값
         config = AppConfig()
     except Exception as e:
-        logger.error("실효값 계산 실패: %s", e)
-        warnings.append(f"현재 적용 중인 값을 계산하지 못했습니다: {e}")
+        warnings.append(admin_error_detail("현재 적용값 계산", e, logger))
 
     if not _ENV_FILE.exists():
         warnings.append(f".env 파일이 없습니다({_ENV_FILE}). 저장 시 새로 생성됩니다.")
@@ -770,8 +770,9 @@ async def update_settings(
     try:
         _atomic_write_env(_compose_env_content(updates, set(reset_keys)))
     except Exception as e:
-        logger.error("설정 저장 실패: %s", e)
-        raise HTTPException(status_code=500, detail=f"설정 저장에 실패했습니다: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=admin_error_detail("설정 저장", e, logger, request)
+        )
 
     # 8. load_config 캐시 무효화 (즉시 반영 경로용 — 대부분의 설정은 재시작이 필요하다)
     from src.config import load_config
@@ -883,10 +884,10 @@ async def reload_settings(
     try:
         fresh = load_config()
     except Exception as e:
-        logger.error("설정 리로드 실패(설정 로드 불가) — 기존 설정 유지: %s", e)
         raise HTTPException(
             status_code=400,
-            detail=f"설정 로드에 실패했습니다 — 기존 설정이 유지됩니다: {e}",
+            detail=admin_error_detail("설정 로드", e, logger, request)
+            + " · 기존 설정이 유지됩니다",
         )
 
     # 개발 모드(JWT 시크릿 미설정)에서는 AppConfig 재생성이 시크릿을 재추첨해 기존 발급
@@ -929,10 +930,10 @@ async def reload_settings(
             build_graph, fresh, checkpointer=checkpointer
         )
     except Exception as e:
-        logger.error("설정 리로드 중 그래프 재빌드 실패 — 기존 그래프·설정 유지: %s", e)
         raise HTTPException(
             status_code=500,
-            detail=f"그래프 재빌드에 실패했습니다 — 기존 설정이 유지됩니다: {e}",
+            detail=admin_error_detail("그래프 재빌드", e, logger, request)
+            + " · 기존 설정이 유지됩니다",
         )
 
     # 싱글톤 리셋 — 옛 redis 연결은 닫고(자원 누수 방지), 다음 접근부터 fresh 설정으로 재생성.
@@ -1102,10 +1103,9 @@ async def update_db_config(
             message="DB 연결 설정이 업데이트되었습니다.",
         )
     except Exception as e:
-        logger.error(f"DB 설정 저장 실패: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"DB 설정 저장에 실패했습니다: {str(e)}",
+            detail=admin_error_detail("DB 설정 저장", e, logger),
         )
 
 
@@ -1161,11 +1161,10 @@ async def test_db_connection(
             details="asyncpg 패키지를 설치해주세요: pip install asyncpg",
         )
     except Exception as e:
-        logger.error(f"DB 연결 테스트 실패: {e}")
         return DbTestResponse(
             success=False,
-            message="DB 연결에 실패했습니다.",
-            details=str(e),
+            message=admin_error_detail("DB 연결 테스트", e, logger),
+            details=None,
         )
 
 
@@ -1746,7 +1745,12 @@ async def get_audit_logs_paginated(
             page_size=page_size,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"날짜 형식 오류: {e}") from e
+        raise HTTPException(
+            status_code=400,
+            detail=admin_error_detail(
+                "감사 로그 날짜 해석", e, logger, request, input_error=True
+            ),
+        ) from e
     except AttributeError:
         # query_logs_paginated 미구현 시 기존 메서드 폴백
         logs = await audit_repo.query_logs(
@@ -1795,7 +1799,12 @@ async def get_audit_stats(
             end_date=end_date,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"날짜 형식 오류: {e}") from e
+        raise HTTPException(
+            status_code=400,
+            detail=admin_error_detail(
+                "감사 통계 날짜 해석", e, logger, request, input_error=True
+            ),
+        ) from e
     except AttributeError:
         return {"error": "통계 기능이 지원되지 않습니다."}
 
