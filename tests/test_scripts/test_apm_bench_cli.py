@@ -29,11 +29,12 @@ RUN_DIR_FILES = {"run_meta.json", "run.log", "summary_safe.json", "manifest.sha2
 @pytest.fixture(autouse=True)
 def _quarantine_in_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """관문 실패 격리본이 실제 홈(`~/apm_bench_quarantine`)에 쌓이지 않게 한다 · E2 로컬 기본 파일
-    (`~/apm_bench_local/` — plans/164 W2b) 자동 탐색이 실제 홈을 보지 않게 한다."""
+    (`testdata/apm_bench/local/` — plans/164 W2b) 자동 탐색이 실제 저장소 파일을 보지 않게 한다."""
     from scripts.apm_bench import rundir
 
     monkeypatch.setattr(rundir, "default_quarantine_base", lambda: tmp_path / "quarantine")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(cli, "LOCAL_DIR", tmp_path / "home" / "local")
 
 
 def _observed(values: dict[str, str], *, apm_called: bool = True,
@@ -349,7 +350,7 @@ def test_replay_warns_on_holdout_turns(tmp_path: Path, monkeypatch: pytest.Monke
 
 def test_main_routes_every_mode() -> None:
     assert set(cli.MODES) == {"dry_run", "coverage", "run", "fewshot_check", "compare", "replay",
-                              "audit_digest", "regate", "purge", "status"}
+                              "audit_digest", "regate", "purge", "status", "init_local"}
 
 
 def test_login_password_env_then_blocked(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -299,7 +299,7 @@ E1은 가짜 LLM이 정답 계획을 넣어 args·views가 100%였다(152 §9). 
 > |---|---|
 > | 실행 위치 | 이 계획을 반영한 SHA 체크아웃 루트 · `config/`·`.env`·`apm_gateway/.env`는 폐쇄망 정본 유지 |
 > | 계정·호스트 | 비root 전용 계정(3자 이상 무의미 이름 · E2 root면 exit 2) · 전용 실행 호스트 권장(짧은 호스트명이 흔한 낱말이면 멈출 수 있다) |
-> | 로컬 파일 | `~/apm_bench_local/placeholders.e2.yaml` · `term_policy.local.yaml` · `bench.local.yaml`(`view_server_version: <운영자 확인 값>`) — `chmod 700` 디렉터리 · `600` 파일 · 저장소 밖 · 반출 금지. E2가 자동으로 읽는다 |
+> | 로컬 파일 | `testdata/apm_bench/local/placeholders.e2.yaml` · `term_policy.local.yaml` · `bench.local.yaml`(`view_server_version: <운영자 확인 값>`) — `python -m scripts.apm_bench --init-local`이 양식을 만든다(700/600 · 있는 파일은 그대로) → 값이 `CHANGE_ME`인 칸을 운영 값으로 바꾼다(파일 머리 주석 「바꾸는 법」 · 남아 있으면 E2 `--run`이 exit 2). 저장소 밖 · 반출 금지. E2가 자동으로 읽는다 |
 > | 0. 1회차 진단표 | `python -m scripts.apm_bench --audit-digest 20261013_1827` → `results/apm_bench/20261013_1827_audit/audit_digest.json`을 눈으로 확인 후 그 파일 1개 반출 |
 > | 1. 스모크 | `python -m scripts.apm_bench --run --env e2 --smoke` — 관문 통과 확인 전에는 전체를 돌리지 않는다 |
 > | 2. 전체 | `python -m scripts.apm_bench --run --env e2 --bg` → 진행 확인 `python -m scripts.apm_bench --status` |
@@ -313,7 +313,7 @@ E1은 가짜 LLM이 정답 계획을 넣어 args·views가 100%였다(152 §9). 
 python -m scripts.apm_bench --audit-digest 20261013_1827
 ```
    1회차는 run 메타가 없어 벤치가 나머지를 자동으로 채우고 「자동: …」 줄로 출처만 찍는다 — 시작 = run id 시각(실행 머신 로컬) · 끝 = 실행 로그 `run_20261013_1827.log`의 「소요 N초」(run 디렉터리 · 현재 디렉터리 · `~/apm_bench_out` 순으로 찾음 — 없으면 `--duration 8102.7`) · 창 = 앞뒤 5분 여유 · 감사 로그 = 창이 걸친 로컬 날짜의 `logs/audit-<날짜>*.jsonl`(자정 넘김 · 로테이션 `audit-YYYY-MM-DD.N.jsonl` 포함) · `--env e2`. 출력은 `results/apm_bench/20261013_1827_audit/audit_digest.json`이고 머리에 `window_estimated: true`가 붙는다. 1회차는 `--skip-heavy`를 쓰지 않았으므로 붙이지 않는다(구 방식 run에는 자동으로 붙지 않는다).
-2. **시나리오 파일**: 1회차 SHA를 모르므로 HEAD 시나리오를 쓰고 `[경고] run SHA 미상 — HEAD 시나리오 사용`과 id 변경 가능성(205d904 `APM-SRC-common` → `APM-SRC-cm-prd`) 경고를 낸다(exit 0). 1회차 SHA를 알면 `git show <1회차 SHA>:testdata/apm_bench/scenarios.yaml > ~/apm_bench_local/scenarios.r1.yaml`로 사본을 만들어 `--scenarios`로 준다. 머리의 「일반 113 · 무거운 5 · 건너뜀 3시나리오(e2_skip 4턴)」가 실행 로그와 같은지 본다.
+2. **시나리오 파일**: 1회차 SHA를 모르므로 HEAD 시나리오를 쓰고 `[경고] run SHA 미상 — HEAD 시나리오 사용`과 id 변경 가능성(205d904 `APM-SRC-common` → `APM-SRC-cm-prd`) 경고를 낸다(exit 0). 1회차 SHA를 알면 `git show <1회차 SHA>:testdata/apm_bench/scenarios.yaml > testdata/apm_bench/local/scenarios.r1.yaml`로 사본을 만들어 `--scenarios`로 준다. 머리의 「일반 113 · 무거운 5 · 건너뜀 3시나리오(e2_skip 4턴)」가 실행 로그와 같은지 본다.
 3. **명시 인자 우선**: 자동 창이 맞지 않으면 `--since`·`--until`(ISO-8601 · 오프셋 필수 · 예 `2026-10-13T18:20:00+09:00`)·`--scenarios`·`--env`를 직접 준다 — 늘 자동값보다 우선한다. since > until이면 exit 2.
 4. **혼입 확인**: 그날 같은 체크아웃에서 운영 질의·pytest·다른 벤치가 돌았는지 확인한다. 진단표 머리 `input` 블록의 「다른 사용자 줄」·`unmatched` 스레드 수가 0이 아니면 그 수를 함께 알린다(값은 나오지 않는다). **벤치 본체는 인증을 끈 채 떠서 그 시간에 누가 그 본체 포트로 웹 질의를 했다면 같은 `anonymous`로 남아 걸러지지 않는다** — 벤치 실행 중 그 포트를 다른 사람이 쓰지 않았는지(벤치 본체는 127.0.0.1 임시 포트라 원격 접속은 불가하나 같은 머신 사용자는 가능) 확인한다.
 5. **exit 1**이면 자기 점검이 어휘 밖 문자열을 막은 것이다 — 파일이 없으니 반출하지 말고 콘솔 메시지(값 없음)만 알린다.
@@ -323,7 +323,7 @@ python -m scripts.apm_bench --audit-digest 20261013_1827
 
 **사전**
 1. 같은 SHA 체크아웃(이 계획 반영) · `config/`·`.env`·`apm_gateway/.env`는 폐쇄망 정본 유지(docs/18 2026-10-13 「반입 목록에 `config/db_registry.yaml`」 방지책).
-2. 실행 계정: 비root 전용 계정(G-3 — 3자 이상 무의미 이름 · 홈 경로에 운영 서버 이름 없음 · E2 root면 exit 2) · 전용 실행 호스트 권장(짧은 호스트명이 흔한 낱말이면 사용자 정보 충돌로 멈출 수 있다) · 로컬 파일 3개 `~/apm_bench_local/placeholders.e2.yaml`·`term_policy.local.yaml`·`bench.local.yaml`(`view_server_version: <운영자 확인 값>` 한 줄 — 도구로 얻을 수 없다)을 두고 `chmod 700 ~/apm_bench_local; chmod 600 ~/apm_bench_local/*`(152 A.0). 산출물은 `results/apm_bench/<run_id>/`에 자동으로 모인다(`.gitignore` 대상).
+2. 실행 계정: 비root 전용 계정(G-3 — 3자 이상 무의미 이름 · 홈 경로에 운영 서버 이름 없음 · E2 root면 exit 2) · 전용 실행 호스트 권장(짧은 호스트명이 흔한 낱말이면 사용자 정보 충돌로 멈출 수 있다) · 로컬 파일 3개 `testdata/apm_bench/local/placeholders.e2.yaml`·`term_policy.local.yaml`·`bench.local.yaml`(`view_server_version: <운영자 확인 값>` 한 줄 — 도구로 얻을 수 없다)을 둔다 — `python -m scripts.apm_bench --init-local`로 양식(700/600)을 만들고 값이 `CHANGE_ME`인 칸을 바꾼다(남아 있으면 E2 `--run` exit 2 · 152 A.0). 산출물은 `results/apm_bench/<run_id>/`에 자동으로 모인다(`.gitignore` 대상).
 3. `--dry-run` exit 0 · A.1 채움 검사 exit 0 · 로컬 자리표의 `sources.by_placeholder`에 대상 자리표(`inst_*`·`host_*`·`biz_*`·`svc_*`)의 실제 소스를 채운다(T-1 — 빠지면 실행 전 「`by_placeholder` 미대응」 경고).
 4. `apm_gateway/var`는 벤치가 run 전후 비교로 알려 준다 — 새로 생기거나 바뀐 파일이 있으면 `[경고]`, 이전부터 있던 것만이면 `[정보]` 줄이다. 경고가 나면 내용을 보고 판단한다.
 
@@ -347,7 +347,7 @@ python -m scripts.apm_bench --status          # 생략 = 최근 run · 상태·P
 - 관문 실패: `leak_check.json` + `summary_safe.json`(그 파일이 관문을 통과해 존재할 때만) + `run.log` + `run_meta.json` + `manifest.sha256`.
 - 감사 로그 진단표 `audit_digest.json`(W0a — 눈 확인 후).
 - 반출은 선별 목록 + `manifest.sha256`으로만 한다(디렉터리 통째 복사·압축 금지).
-- 반출 금지(현행 A.7 + 추가): `~/apm_bench_quarantine/` · `~/apm_bench_local/` · `.env` 류 · `logs/` · 세션 임시 파일 · run 디렉터리의 `scenarios.yaml` 사본(매니페스트 밖) · 콘솔을 따로 리다이렉트한 파일(강제 종료 시 재검사 안 됨 — `run.log`를 쓴다).
+- 반출 금지(현행 A.7 + 추가): `~/apm_bench_quarantine/` · `testdata/apm_bench/local/`(`.gitignore` 대상 · 저장소째 반출 시 제외) · `.env` 류 · `logs/` · 세션 임시 파일 · run 디렉터리의 `scenarios.yaml` 사본(매니페스트 밖) · 콘솔을 따로 리다이렉트한 파일(강제 종료 시 재검사 안 됨 — `run.log`를 쓴다).
 
 ---
 
@@ -440,6 +440,8 @@ python -m scripts.apm_bench --status          # 생략 = 최근 run · 상태·P
 - 2026-10-14 — **사용자 지시**(「내부망에서 벤치마크를 돌릴 예정이다. 단위 테스트 위주로 진행하고 구현하라. 시간이 너무 오래 진행되고 있다.」): 이후 벤치·MLX run과 추가 검증 라운드는 하지 않았다. W1 4라운드·W2b 2라운드(메인 직접 지시)는 위 E1 run 뒤 변경이라 단위 테스트(apm_bench 567 passed)로만 확인했다 — E2 실동작 확인은 W6 내부망 run 몫.
 - 2026-10-14 — **계획 끝 모듈 회귀**(`regress.py --base 4073f7f --files <머리 29개>` · 메인 직접 교정 반영 뒤 재실행): rc 0 · 본체 통과 733 · 실패 0 · arch·overfit 통과 · ruff 위반 5(이번 diff 줄 0) · mypy 미실행(대상 파일 없음 — 루트 venv 미설치 · 수동 mypy 0) · 권고 블록 없음 · `범위: 모듈 단위 — 전체 미실행` · 산출물 `logs/regress/20261014-164029-90798`.
 - 2026-10-14 — **통합 모듈 회귀 1회**(메인 지시 — 152·156·157·164 기준 대비 전체 변경 63파일 · `regress.py --base 4073f7f --files …` · 모든 교정 반영 뒤): rc 0 · 본체 통과 9,467 · 실패 48(전부 `[원래 실패]` — 라우트·스트림·plan122_t4 등 4073f7f에서도 실패) · arch·overfit 통과 · ruff 293·mypy 219(이번 diff 줄 0) · 권고 블록 없음 · `범위: 모듈 단위 — 전체 미실행` · 산출물 `logs/regress/20261014-164850-7453`.
+- 2026-10-14 — **`--init-local`**(사용자 지시 「이런 파일들 니가 다 만들어 놔. 값 바꾸는 방법을 가이드하고.」 — E2 `--run --bg`가 「E2 로컬 파일이 없다」로 멈춘 뒤): `python -m scripts.apm_bench --init-local`이 `~/apm_bench_local/`(700)에 양식 3개(600)를 만든다 — 원본 `testdata/apm_bench/local_templates/{placeholders.e2,bench.local}.yaml`(운영 값 없음 · 머리 주석 「바꾸는 법」)·`term_policy.yaml` · 카나리아 임의 토큰 · 있는 파일은 덮어쓰지 않음. 값이 `CHANGE_ME`인 칸이 남으면 E2 `--run`이 드라이버 전에 파일별 칸 수만 안내하고 exit 2(주석은 세지 않는다). 없음 안내 끝에 `--init-local` 한 줄 추가. 테스트 `test_apm_bench_w2b.py` ⑨ 2건 · MODES 단언 갱신.
+- 2026-10-14 — **로컬 파일 기본 위치 이동**(사용자 지시 「기본 위치는 testdata 폴더 밑을 찾도록 수정하라.」 · 확인 질문에 「testdata + 보호선」 선택 · D-323 부기): E2 기본 위치를 `~/apm_bench_local/` → 저장소 `testdata/apm_bench/local/`(`LOCAL_DIR` · 표기 `LOCAL_LABEL`)로 옮겼다. `.gitignore`에 `testdata/apm_bench/local/` 보호선 · 무시 여부 단언 테스트(`test_local_dir_is_git_ignored`). 신뢰 조건(소유·심링크·go-w)·`CHANGE_ME` 가드·`--init-local`·명시 인자 우선은 그대로. 콘솔 표기는 저장소 상대 경로. 저장소째 반출할 때 이 폴더를 뺀다.
 - **위험·잔여**: 구분자 변형(`z_bench`) 미치환 · 원이름 토큰이 코드 어휘 낱말과 같으면 치환·대조 안 함(보호 범위 넓어짐 — 원이름 전체 대조는 유지) · 레지스트리 밖 소스 라벨이 자유 문장에 섞이면 못 막음 · NFKC로 전각·호환 문자가 바뀐 모양으로 실림 · 짧은 호스트명이 흔한 낱말이면 E2 정지(→ 전용 실행 호스트·계정) · N-2가 넓게 멈춤 · 「없음」 턴도 송신됨 · trace/report `placeholder_missing:host_1`의 host 토큰 치환 · `--bg` 크래시 traceback 미보존 · 경로 목록 방식 `--audit-digest`는 skip-heavy 기본 off · 같은 계정 PID 재사용 판별 불가 · `ps eww`로 `APM_BENCH_BG_ARGV`가 같은 계정에 보임 · `--bg` 자식이 부모 셸 export를 모두 받음(의도) · E2에서 `--term-policy`·로컬 파일 모두 없으면 exit 2(의도) · `--status`·거부 문구는 벤치 CLI라 매뉴얼 대상 아님.
 - **열린 질문(G-8 — 사용자)**: 1회차 체크아웃 SHA는 「모른다」로 확정(경고 내고 HEAD 시나리오) · 나머지(작업 트리 변경 · `--probe`·`--term-policy` 사용 여부 · 실행 계정 · 본체 `ACTIVE_DB_IDS` · `sources.by_placeholder` 범위 · 실행 호스트가 제니퍼 감시 대상인지 · 157 교정을 재실행 SHA에 넣을지)는 W6 재실행 전 확인 — 권고 없는 판단은 현행 비트 동일로 두었다.
 

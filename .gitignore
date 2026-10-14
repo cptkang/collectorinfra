@@ -74,5 +74,8 @@ testdata/demo/env.*.yaml
 !testdata/demo/env.sandbox.yaml
 !testdata/demo/env.closed.template.yaml
 
+# apm_bench E2 로컬 파일(운영 값 — 자리표·허용 목록·뷰 서버 버전) — 커밋·반출 금지 (D-323 부기 2026-10-14)
+testdata/apm_bench/local/
+
 # 테스트가 MagicMock 객체를 경로로 넘겨 만드는 스키마 캐시 잔여물
 MagicMock/
