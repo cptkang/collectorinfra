@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import re
 import shutil
 import tempfile
 from collections.abc import Iterator
@@ -56,8 +57,12 @@ def test_bench_reaches_no_job_control_tool() -> None:
     tools = {v.tool for v in registry.views.values()} | {"gateway_health", *(
         t for t, *_ in dv.INVENTORY_CALLS)}
     assert not {t for t in tools if "job" in t}
+    # `apm_job_accepted`는 도구가 아니라 감사 로그 결과 종류 어휘(audit_digest)라 허용한다
+    allowed = {"apm_job_accepted"}
+    assert not allowed & {"apm_job_status", "apm_job_read", "apm_job_cancel", "apm_job_result"}
     for path in BENCH_DIR.glob("*.py"):
-        assert "apm_job_" not in path.read_text(encoding="utf-8"), path.name
+        found = set(re.findall(r"apm_job_[A-Za-z0-9_]+", path.read_text(encoding="utf-8")))
+        assert not found - allowed, (path.name, sorted(found - allowed))
 
 
 # --- [High] 팬아웃·복합 도구의 429 를 가드가 못 본다 ---------------------------------------

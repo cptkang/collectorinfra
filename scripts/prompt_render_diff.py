@@ -19,6 +19,9 @@ R1 잔여분(Template A/B SQL 예제·알람 템플릿)은 diff≠0 블록이 �
     python scripts/prompt_render_diff.py --blocks    # 플래그 ON/OFF 블록별 비교 + 사유
     python scripts/prompt_render_diff.py --blocks --profile polestar_cm_gp
                                                     # 구조 정본까지 주입한 ON 렌더(패턴 A 포함)
+    python scripts/prompt_render_diff.py --prompts <base_sha>
+                                                    # src/prompts/*.py 모듈 상수를 base와 대조
+                                                    # (일치·변경·신설·삭제 표 · 보고 전용)
 
 프롬프트 지식 변경 이력 (정본 대조로 발견·교정한 건 — 전건 사유 명시):
     2026-07-29 Template A/B의 호스트명·IP 조회를 EAV(`cc.name='Hostname'`/`'IPaddress'`)에서
@@ -56,8 +59,11 @@ R1 잔여분(Template A/B SQL 예제·알람 템플릿)은 diff≠0 블록이 �
 from __future__ import annotations
 
 import argparse
+import ast
 import difflib
 import hashlib
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -182,6 +188,152 @@ def _report_blocks(catalog: dict | None, *, label: str) -> int:
     return missing_reason
 
 
+# ──────────────────────────────────────────────
+# --prompts: src/prompts/*.py 모듈 상수 base 대조 (plans/156 W5 — 159 W2 수동 절차의 도구화)
+# ──────────────────────────────────────────────
+
+_PROMPTS_DIR = "src/prompts"
+_CONST_NAME = re.compile(r"_?[A-Z][A-Z0-9_]*")
+#: 평가에 쓰는 순수 str 메서드(인자도 상수 식일 때만) — `"…".format(…)`·`X.removesuffix(…)` 꼴
+_STR_METHODS: frozenset[str] = frozenset({
+    "format", "removeprefix", "removesuffix", "replace", "strip", "lstrip", "rstrip",
+})
+
+
+def _eval_str(node: ast.expr, known: dict[str, str]) -> str | None:
+    """문자열 상수 식을 평가한다 — 리터럴·`+` 연결·앞서 정의된 같은 모듈 이름·순수 str 메서드.
+
+    f-string·임포트한 이름·그 밖의 호출은 None(평가 불가)이다. 소스를 실행하지 않는다.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return known.get(node.id)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _eval_str(node.left, known), _eval_str(node.right, known)
+        return None if left is None or right is None else left + right
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _STR_METHODS
+    ):
+        owner = _eval_str(node.func.value, known)
+        args = [_eval_arg(a, known) for a in node.args]
+        kwargs = {k.arg: _eval_arg(k.value, known) for k in node.keywords}
+        if owner is None or None in args or None in kwargs.values() or None in kwargs:
+            return None
+        try:
+            result = getattr(owner, node.func.attr)(*args, **kwargs)
+        except (KeyError, IndexError, ValueError, TypeError):  # 「{x}」 자리 불일치 등
+            return None
+        return result if isinstance(result, str) else None
+    return None
+
+
+def _eval_arg(node: ast.expr, known: dict[str, str]) -> str | int | None:
+    """str 메서드 인자 — 문자열 상수 식 또는 정수 리터럴."""
+    if isinstance(node, ast.Constant) and type(node.value) is int:
+        return node.value
+    return _eval_str(node, known)
+
+
+def _module_constants(source: str) -> tuple[dict[str, str], list[str]]:
+    """모듈 수준 대문자 이름 문자열 상수 — (평가된 상수, 평가 불가 이름). 소스는 AST로만 읽는다.
+
+    평가 불가는 문자열 식으로 보이는 것(f-string · `+` 연결 · 메서드 호출)만 센다 —
+    `frozenset({...})` 같은 비문자열 상수는 대상이 아니다.
+    """
+    known: dict[str, str] = {}
+    constants: dict[str, str] = {}
+    skipped: list[str] = []
+    for stmt in ast.parse(source).body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target, value = stmt.targets[0], stmt.value
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            target, value = stmt.target, stmt.value
+        else:
+            continue
+        if not isinstance(target, ast.Name):
+            continue
+        text = _eval_str(value, known)
+        if text is not None:
+            known[target.id] = text  # 소문자 이름도 뒤 상수의 재료로는 쓴다
+        if not _CONST_NAME.fullmatch(target.id):
+            continue
+        if text is not None:
+            constants[target.id] = text
+        elif isinstance(value, ast.JoinedStr | ast.BinOp) or (
+            isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)
+        ):
+            skipped.append(target.id)
+    return constants, skipped
+
+
+def _git(root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=root, check=True, capture_output=True, text=True,
+    ).stdout
+
+
+def _base_prompt_sources(sha: str, root: Path) -> dict[str, str]:
+    """`<sha>:src/prompts/**.py` 원문 — 파일 경로(저장소 상대) → 소스."""
+    names = _git(root, "ls-tree", "-r", "--name-only", sha, "--", _PROMPTS_DIR).splitlines()
+    return {n: _git(root, "show", f"{sha}:{n}") for n in names if n.endswith(".py")}
+
+
+def _worktree_prompt_sources(root: Path) -> dict[str, str]:
+    """작업 트리의 src/prompts/**.py 원문 — 파일 경로(저장소 상대) → 소스."""
+    return {
+        p.relative_to(root).as_posix(): p.read_text(encoding="utf-8")
+        for p in sorted((root / _PROMPTS_DIR).rglob("*.py"))
+    }
+
+
+def _compare_prompt_constants(
+    base: dict[str, str], head: dict[str, str]
+) -> tuple[list[tuple[str, str, str, int | None, int | None]], list[str]]:
+    """파일별 상수를 대조한다 — (행[(상태, 파일, 상수, 전 길이, 후 길이)], 평가 불가 목록)."""
+    rows: list[tuple[str, str, str, int | None, int | None]] = []
+    skipped: list[str] = []
+    for path in sorted(set(base) | set(head)):
+        before, skip_b = _module_constants(base[path]) if path in base else ({}, [])
+        after, skip_a = _module_constants(head[path]) if path in head else ({}, [])
+        skipped += [f"{path}:{n}" for n in sorted(set(skip_b) | set(skip_a))]
+        for name in sorted(set(before) | set(after)):
+            b, a = before.get(name), after.get(name)
+            status = (
+                "신설" if b is None else "삭제" if a is None else "일치" if a == b else "변경"
+            )
+            rows.append((
+                status, path, name,
+                None if b is None else len(b), None if a is None else len(a),
+            ))
+    return rows, skipped
+
+
+def _report_prompts(sha: str, root: Path = REPO_ROOT) -> int:
+    """`src/prompts/*.py` 모듈 상수를 base 커밋과 대조해 표로 낸다(보고 전용 — 사유 요구 없음)."""
+    try:
+        base = _base_prompt_sources(sha, root)
+    except subprocess.CalledProcessError as exc:
+        print(f"git 조회 실패({sha}): {exc.stderr.strip()}")
+        return 2
+    rows, skipped = _compare_prompt_constants(base, _worktree_prompt_sources(root))
+    counts = {s: sum(1 for r in rows if r[0] == s) for s in ("일치", "변경", "신설", "삭제")}
+    print(f"\n[src/prompts 상수 대조 — base {sha} ↔ 작업 트리] 총 {len(rows)}개 / "
+          + " / ".join(f"{k} {v}" for k, v in counts.items()))
+    for status, path, name, b, a in rows:
+        if status == "일치":
+            continue
+        size = f"{'-' if b is None else b}자 → {'-' if a is None else a}자"
+        print(f"  {status}  {path}  {name}  ({size})")
+    if not any(r[0] != "일치" for r in rows):
+        print("  변경 0 — 전 상수 바이트 일치")
+    if skipped:
+        print(f"  평가 불가(비교 제외 — f-string·호출 등) {len(skipped)}건: " + ", ".join(skipped))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="프롬프트 정본 렌더 diff 리포트")
     parser.add_argument("--ci", action="store_true", help="차이(또는 사유 미기재)가 있으면 exit 1")
@@ -189,7 +341,15 @@ def main() -> int:
                         help="옵트인 플래그 ON/OFF를 블록 단위로 비교하고 사유를 리포트")
     parser.add_argument("--profile", metavar="DB_ID",
                         help="구조 정본(db_profiles/{DB_ID}.yaml)까지 주입해 패턴 A 블록도 렌더")
+    parser.add_argument("--prompts", metavar="BASE_SHA",
+                        help="src/prompts/*.py 모듈 상수를 BASE_SHA와 대조(일치·변경·신설·삭제 표)")
     args = parser.parse_args()
+
+    if args.prompts:
+        print("=" * 78)
+        print("src/prompts 모듈 상수 — base 대조")
+        print("=" * 78)
+        return _report_prompts(args.prompts)
 
     print("=" * 78)
     print("폴스타 시스템 프롬프트 — 정본 렌더 diff")

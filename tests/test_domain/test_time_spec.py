@@ -409,7 +409,12 @@ class TestMinuteUnit:
     def test_hour_rolling_unchanged(self) -> None:
         """시 단위 롤링(「최근 3시간」)의 정시 절단은 바꾸지 않는다(D-328 ⑥)."""
         spec = TimeSpec(relation="last", n=3, unit="hour", completeness="rolling")
+        # plans/156 G-3 (D-333) — 사건은 기준 시각 분 경계까지 · 통계는 정시 유지
+        expected = {
+            "event": (kst(2026, 10, 13, 7, 37), kst(2026, 10, 13, 10, 37)),
+            "metric": (kst(2026, 10, 13, 7), kst(2026, 10, 13, 10)),
+        }
         for subject in ("event", "metric"):
             res = resolve(spec, self.NOW_M, subject=subject)  # type: ignore[arg-type]
-            assert (res.start, res.end) == (kst(2026, 10, 13, 7), kst(2026, 10, 13, 10))
+            assert (res.start, res.end) == expected[subject]
             assert NOTE_MINUTE_WIDENED not in res.notes

@@ -190,7 +190,9 @@ INPUT_PARSER_TIME_SLOT_SECTION = """
 - **anchor**: now(지금 기준) · explicit(원문의 특정 날짜 기준) 중 하나 또는 null.
   「9월 15일 기준 최근 7일」이면 explicit이고 start에 그 날짜를 적습니다
 - **start** · **end**: 원문에 있는 키만 넣은 객체 또는 null.
-  키는 {"year": 숫자, "year_offset": 숫자, "month": 숫자, "day": 숫자, "hour": 숫자}
+  키는 {"year": 숫자, "year_offset": 숫자, "month": 숫자, "day": 숫자, "hour": 숫자, "minute": 숫자}
+  hour는 24시제(「오후 2시」는 14), minute은 시각의 분(「10시 30분」·「10시 반」의 30)이며
+  둘은 month·day와 함께 적습니다
 - **display_grain**: hour(시간 단위·시간별) · day(일별·일 단위) · month(월별) · none 중 하나
 - **span**: 원문에서 기간 표현 부분을 글자 그대로 복사한 문자열
 
@@ -204,6 +206,9 @@ INPUT_PARSER_TIME_SLOT_SECTION = """
 5. 「시간 단위」·「일별」처럼 입도만 있고 기간이 없으면 relation=none으로 적고
    display_grain에 그 입도를, span에 그 입도 표현을 적습니다.
 6. span은 원문에 실제로 있는 글자여야 합니다. 바꾸어 쓰거나 요약하지 마세요.
+7. 오전·오후·새벽·아침·저녁·밤 표지가 없는 1~12시(「2시 반」, 「3시부터」)는 오전·오후를
+   추측해 hour를 채우지 마세요. hour를 비우고 span은 원문 그대로 둡니다(시스템이 되묻습니다).
+   「0시」와 13~23시는 그대로 적습니다.
 
 기간 슬롯 예시 (time_expr 값만):
 
@@ -223,6 +228,15 @@ time_expr: {"relation": "ago", "n": 2, "unit": "week", "completeness": null, "an
 time_expr: {"relation": "absolute", "n": null, "unit": "month", "completeness": null,
             "anchor": null, "start": {"year_offset": -1, "month": 6}, "end": null,
             "display_grain": "day", "span": "작년 6월"}
+
+입력: "3시간 전 응답시간"
+time_expr: {"relation": "ago", "n": 3, "unit": "hour", "completeness": null, "anchor": null,
+            "start": null, "end": null, "display_grain": "none", "span": "3시간 전"}
+
+입력: "9월 15일 오전 10시 30분부터 알람"
+time_expr: {"relation": "since", "n": null, "unit": null, "completeness": null, "anchor": null,
+            "start": {"month": 9, "day": 15, "hour": 10, "minute": 30}, "end": null,
+            "display_grain": "none", "span": "9월 15일 오전 10시 30분부터"}
 
 입력: "현재 CPU 사용률 상위 5대"
 time_expr: null
