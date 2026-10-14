@@ -67,7 +67,7 @@ from src.utils.query_gen_common import (
     render_elliptical_succession_note,
     resolve_stat_month_range,
 )
-from src.utils.user_error import db_error_text
+from src.utils.user_error import db_error_text, request_id
 
 logger = logging.getLogger(__name__)
 
@@ -2923,7 +2923,9 @@ def _generate_document_file(
             }
 
     except Exception as e:
-        logger.error("파일 생성 실패 (%s): %s", output_format, e)
-        return {"reason": f"양식 채우기 중 오류가 발생했습니다: {e}"}
+        # 사유는 응답(「사유:」)에 실린다 — 예외 원문 대신 요청 번호, 원문은 로그(plans/163 S3+)
+        rid = request_id()
+        logger.error("파일 생성 실패 (%s · 요청 %s): %s", output_format, rid, e)
+        return {"reason": f"양식 채우기 중 오류가 발생했습니다 (요청 {rid})"}
 
     return {"reason": "알 수 없는 이유로 양식을 생성하지 못했습니다."}

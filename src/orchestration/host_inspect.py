@@ -29,6 +29,7 @@ from src.config import AppConfig
 from src.db import get_db_client
 from src.orchestration.db_access import access_denied_result, authorize_targets
 from src.utils.prior_targets import TargetRef
+from src.utils.user_error import request_id
 
 logger = logging.getLogger(__name__)
 
@@ -138,9 +139,15 @@ def _organize_db_rows(result: dict[str, Any], profile: str) -> dict[str, Any]:
         kinds = result.get("kinds") or ([result["kind"]] if result.get("kind") else [])
         labels = ", ".join(_METRIC_KIND_LABELS.get(k, str(k)) for k in kinds)
         parts.append(f"지표 {labels} · 기간은 최근 24시간(시간 단위)입니다.")
-        for kind, reason in (result.get("kind_errors") or {}).items():
-            label = _METRIC_KIND_LABELS.get(kind, kind)
-            parts.append(f"{label} 추세는 조회하지 못했습니다({reason}).")
+        kind_errors = result.get("kind_errors") or {}
+        if kind_errors:
+            # 실패 사유(도구 호출 예외·서버 응답 원문)는 요약(답 본문)에 싣지 않는다 — 요청 번호만,
+            # 원문은 로그(plans/163 S3+)
+            rid = request_id()
+            logger.warning("host_inspect 지표 종류별 조회 실패 (요청 %s): %s", rid, kind_errors)
+            for kind in kind_errors:
+                label = _METRIC_KIND_LABELS.get(kind, kind)
+                parts.append(f"{label} 추세는 조회하지 못했습니다(요청 {rid}).")
     return {
         "organized_data": {
             "summary": " ".join(parts),
@@ -457,7 +464,14 @@ async def run_host_inspect(
 
     # 반환 계약은 **서버가 정본**이다(D-122) — 본체는 변형하지 않고 그대로 싣는다.
     if isinstance(result, dict) and result.get("error"):
-        return {**result, DEGRADED_KEY: "inspect_failed", "final_response": str(result["error"])}
+        # `degraded_reason`이 붙은 문구는 판별기가 처리기 문구로 믿고 그대로 보인다 — 도구 호출
+        # 예외·서버 응답 원문을 넣지 않고 요청 번호만, 원문은 로그(plans/163 S3+)
+        rid = request_id()
+        logger.warning("host_inspect 조사 실패 (요청 %s · profile=%s): %s",
+                       rid, profile, result["error"])
+        message = f"호스트 조사에 실패했습니다 (요청 {rid}) — 상세 사유는 서버 로그에 남겼습니다."
+        return {**result, "error": message, DEGRADED_KEY: "inspect_failed",
+                "final_response": message}
 
     payload: dict[str, Any] = {**result, "profile": profile}
     # 서버 계약에 `target`이 있으면(`om_metric_instant` — 스크레이프 허용목록 타깃 이름)

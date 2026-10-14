@@ -1127,12 +1127,24 @@ def _envelope_error(envelope: dict[str, Any]) -> str | None:
 
 #: 호출 오류의 게이트웨이 오류 코드(`_envelope_error`·작업 상태 —
 #: 「instance_unresolved: …」의 머리).
-_GATEWAY_CODE_RE = re.compile(r"([a-z][a-z0-9_]*):")
+#: 「코드: 사유」 꼴만 코드로 본다 — 「postgresql://…」 같은 원문의 스킴을 코드로 읽지 않는다.
+_GATEWAY_CODE_RE = re.compile(r"([a-z][a-z0-9_]*): ")
 #: 사유를 게이트웨이가 인자·대상 검사로 직접 짓는 오류 코드(SPEC-apm-gateway §3.2) — 사유까지
 #: 보인다(모르는 지표 후보 · 대상 불일치). 그 밖 코드(제니퍼 응답·연결·작업 실패)는 코드만.
 _GUIDANCE_CODES: frozenset[str] = frozenset({
     "invalid_argument", "instance_unresolved", "profile_ref_mismatch",
 })
+#: 예외 종류 이름 머리(「RuntimeError: …」 — `_lookup` 의 호출 예외) — 종류 이름만 보인다.
+_EXC_TYPE_RE = re.compile(r"([A-Z][A-Za-z0-9]*(?:Error|Exception)): ")
+#: 첫 홉 목록 작업이 마감을 넘긴 사유 — 코드가 지은 고정 문장이라 그대로 보인다.
+_FIRST_HOP_TIMEOUT_ERROR = ("인스턴스 목록 조회가 처리 시간 안에 끝나지 않아 대상 서버를 고르지 "
+                            "못했습니다(목록 작업은 취소했습니다)")
+#: 소스 MCP 세션(`source_mcp_client`)이 원문 없이 지은 사유 — 그대로 보인다(시간 초과·세션 중단·
+#: 연결 실패의 예외 종류 이름).
+_CODE_PHRASE_RE = re.compile(
+    r"[^\n:]{1,60} (?:도구 호출 시간 초과\([a-z][a-z0-9_]*, \d+(?:\.\d+)?초\)"
+    r"|세션이 중단됐습니다|연결·호출 실패: [A-Za-z][A-Za-z0-9_]*)"
+)
 
 
 def _call_failure_text(label: str, failures: list[tuple[str | None, str]]) -> str:
@@ -1150,14 +1162,63 @@ def _call_failure_text(label: str, failures: list[tuple[str | None, str]]) -> st
                    "; ".join(f"{who or '-'}: {err}" for who, err in failures))
     shown: list[str] = []
     for who, err in failures[:3]:
-        code = _GATEWAY_CODE_RE.match(err)
-        shown_err = (err if code and code.group(1) in _GUIDANCE_CODES
-                     else code.group(1) if code else None)
-        text = ": ".join(x for x in (who, shown_err) if x)
+        text = ": ".join(x for x in (who, _shown_call_error(err)) if x)
         if text:
             shown.append(text)
     tail = f"(요청 {rid} · 상세 사유는 서버 로그)"
     return f"{'; '.join(shown)} {tail}" if shown else tail
+
+
+def _shown_call_error(err: str) -> str | None:
+    """호출 오류 중 화면에 보일 부분 — 안내 코드면 사유까지, 그 밖은 코드만(코드 없으면 None).
+
+    코드가 원문 없이 지은 사유(`_FIRST_HOP_TIMEOUT_ERROR`·`_CODE_PHRASE_RE`)는 그대로, 예외
+    종류 이름 머리는 종류 이름만 보인다.
+    """
+    if err == _FIRST_HOP_TIMEOUT_ERROR or _CODE_PHRASE_RE.fullmatch(err):
+        return err
+    exc = _EXC_TYPE_RE.match(err)
+    if exc:
+        return exc.group(1)
+    code = _GATEWAY_CODE_RE.match(err)
+    if not code:
+        return None
+    return err if code.group(1) in _GUIDANCE_CODES else code.group(1)
+
+
+def _public_call_error(err: str, *, where: str) -> str:
+    """단계·고지에 담는 호출 오류 — 코드(안내 코드는 사유까지)와 요청 번호만, 원문은 로그.
+
+    첫 홉(`step["error"]`·`rank_error`)·결과 파일 읽기·대상 해석 검색의 사유는 고지·결정적 요약
+    (요약 LLM 입력)·조회하지 않은 답에 실린다(plans/163 S3+).
+
+    Args:
+        err: 호출 오류 원문
+        where: 로그에 남길 단계 이름
+    """
+    rid = request_id()
+    logger.warning("%s %s 호출 오류 (요청 %s): %s", APM_QUERY_AGENT, where, rid, err)
+    shown = _shown_call_error(err)
+    return f"{shown} (요청 {rid})" if shown else f"호출 실패 (요청 {rid})"
+
+
+def _failed_targets_text(label: str, failed: list[tuple[str, str]]) -> str:
+    """「조회하지 못한 대상 N건」 줄 — 대상(오류 코드)과 요청 번호만, 원문은 로그(plans/163 S3+).
+
+    접수 답(`_accepted_answer`)과 결정적 요약(`_summary` — 요약 LLM 입력)이 같이 쓴다.
+
+    Args:
+        label: 소스 표시명
+        failed: (대상 이름, 호출 오류 원문) 목록
+    """
+    rid = request_id()
+    logger.warning("%s 조회하지 못한 대상 (요청 %s): %s", label, rid,
+                   "; ".join(f"{who}: {err}" for who, err in failed))
+    shown = ", ".join(
+        f"{who}({err[:60]})" if err else who
+        for who, err in ((who, _shown_call_error(err)) for who, err in failed[:3])
+    )
+    return f"조회하지 못한 대상 {len(failed)}건: {shown} (요청 {rid} · 상세 사유는 서버 로그)"
 
 
 async def _run_calls(session: Any, calls: list[_Call], concurrency: int,
@@ -2668,7 +2729,7 @@ async def _ranking_step(
     if call.error is None and jobs.is_live(call.envelope):
         await _await_first_hop(session, call, scope)
     if call.error:
-        step["error"] = call.error
+        step["error"] = _public_call_error(call.error, where=f"첫 홉({view.tool})")
         return [], [], step
     env = call.envelope or {}
     rows = [r for r in env.get("rows") or [] if isinstance(r, dict)]
@@ -2739,7 +2800,7 @@ async def _insert_instances_step(
     if call.error is None and jobs.is_live(call.envelope):
         await _await_first_hop(session, call, scope)
     if call.error:
-        step["error"] = call.error
+        step["error"] = _public_call_error(call.error, where=f"첫 홉({view.tool})")
         return [], [], step
     env = call.envelope or {}
     rows = [r for r in env.get("rows") or [] if isinstance(r, dict)]
@@ -2787,10 +2848,11 @@ async def _read_result_file(session: Any, env: dict[str, Any], scope: _JobScope,
             part = await session.call_tool(jobs.READ_TOOL, {
                 "job_id": str(job_id), "owner": scope.owner, "chunk": index})
         except SourceMcpError as e:
-            reason = str(e)[:120]
+            reason = str(e)
         else:
             reason = _envelope_error(part) or ""
         if reason:
+            reason = _public_call_error(reason, where="결과 파일 읽기")
             return (out if len(out) >= len(inline) else inline,
                     f"결과 파일 청크 {index + 1}/{len(chunks)} 읽기 실패 — {reason}")
         out += [r for r in part.get("rows") or [] if isinstance(r, dict)]
@@ -2972,7 +3034,8 @@ async def _gateway_search(session: Any, arg: str, text: str, view: ViewSpec, dom
     call = _Call(view, None, _search_args(scope, domain_id, **{arg: text}))
     await _lookup(session, [call], 1, scope)
     if call.error:
-        found.errors.append(f"{found.searched} 검색 실패 — {call.error[:160]}")
+        found.errors.append(f"{found.searched} 검색 실패 — "
+                            + _public_call_error(call.error, where="대상 해석 검색"))
         return found
     env = call.envelope or {}
     found.answered = True
@@ -3032,7 +3095,8 @@ async def _business_hosts(session: Any, text: str, view: ViewSpec, domain_id: An
     for call in calls:
         if call.error:
             if "instance_unresolved" not in call.error:
-                found.errors.append(f"{call.hostname} 인스턴스 정합 실패 — {call.error[:120]}")
+                found.errors.append(f"{call.hostname} 인스턴스 정합 실패 — "
+                                    + _public_call_error(call.error, where="인스턴스 정합"))
             continue
         for row in (call.envelope or {}).get("rows") or []:
             if isinstance(row, dict):  # 정합 행에는 hostname 칸이 없다 — 그 서버의 인스턴스다
@@ -3323,8 +3387,7 @@ async def _await_first_hop(session: Any, call: _Call, scope: _JobScope) -> None:
         await session.call_tool(jobs.CANCEL_TOOL, {"job_id": job_id, "owner": scope.owner})
     except SourceMcpError as e:
         logger.warning("인스턴스 목록 작업 취소 실패(job_id=%s): %s", job_id[:8], e)
-    call.error = ("인스턴스 목록 조회가 처리 시간 안에 끝나지 않아 대상 서버를 고르지 못했습니다"
-                  "(목록 작업은 취소했습니다)")
+    call.error = _FIRST_HOP_TIMEOUT_ERROR
 
 
 def _partial_text(call: _Call, envelope: dict[str, Any]) -> str:
@@ -3420,10 +3483,10 @@ def _accepted_answer(label: str, accepted: list[_Call], meta: dict[str, Any],
     lines = [d["text"] for d in disclosures if d["kind"] == disc.APM_JOB_ACCEPTED]
     body = [f"{label} 조회가 오래 걸려 작업으로 접수했습니다 — 아직 조회 결과가 아닙니다.",
             *(f"- {line}" for line in lines)]
-    failed = [f for f in meta["failures"] if f.get("hostname")]
+    failed = [(str(f["hostname"]), str(f.get("reason") or ""))
+              for f in meta["failures"] if f.get("hostname")]
     if failed:
-        shown = ", ".join(f"{f['hostname']}({f['reason'][:60]})" for f in failed[:3])
-        body.append(f"조회하지 못한 대상 {len(failed)}건: {shown}")
+        body.append(_failed_targets_text(label, failed))
     if any(c.ledger == "memory" for c in accepted):
         body.append("작업 기록이 서버 메모리에만 있어 서버가 다시 시작되면 작업 카드에서 결과를"
                     " 받을 수 없습니다.")
@@ -3984,11 +4047,11 @@ def _summary(label: str, views: list[str], by_id: dict[str, ViewSpec], meta: dic
             parts.append(f"인스턴스 목록 조회 실패: {step['error']}")
     parts += meta["notes"][:3]
     parts += meta.get("limits", [])[:3]
-    failed = [f for f in meta["failures"] if f.get("hostname") or f.get("instance")]
+    failed = [(str(f.get("hostname") or f["instance"].get("instance_name")),
+               str(f.get("reason") or ""))
+              for f in meta["failures"] if f.get("hostname") or f.get("instance")]
     if failed:
-        shown = ", ".join(f"{f['hostname'] or f['instance'].get('instance_name')}"
-                          f"({f['reason'][:60]})" for f in failed[:3])
-        parts.append(f"조회하지 못한 대상 {len(failed)}건: {shown}")
+        parts.append(_failed_targets_text(label, failed))
     lines = _answer_lines(meta)
     if lines:  # 결정적 판정·집계(plans/134 M-1) — 요약 입력에도 싣는다
         parts.append("판정·집계: " + " / ".join(lines))

@@ -770,8 +770,10 @@ async def _finalize_merged_rows(
         out = await output_generator(out_state, llm=llm, app_config=app_config)
         text = out.get("final_response", "")
     except Exception as e:  # noqa: BLE001 — 표 생성 실패는 로그 후 최소 안내
-        logger.error("result_aggregator 병합 표 생성 실패: %s", e)
-        text = f"통합 결과 {len(merged_rows)}건을 정리하는 중 오류가 발생했습니다: {e}"
+        # 예외 원문은 답 본문에 싣지 않는다 — 요청 번호만, 원문은 로그(plans/163 S3+)
+        rid = request_id()
+        logger.error("result_aggregator 병합 표 생성 실패 (요청 %s): %s", rid, e)
+        text = f"통합 결과 {len(merged_rows)}건을 정리하는 중 오류가 발생했습니다 (요청 {rid})"
     result: dict[str, Any] = {
         "final_response": text,
         "current_node": "result_aggregator",

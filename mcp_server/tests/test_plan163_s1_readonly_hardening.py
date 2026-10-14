@@ -321,6 +321,14 @@ _BYPASS_SQL = [
     "SELECT SYSPROC.ADMIN_CMD('RUNSTATS ON TABLE t') FROM SYSIBM.SYSDUMMY1",
     "SELECT UTL_FILE.FOPEN('D', 'f', 'w') FROM SYSIBM.SYSDUMMY1",
     "SELECT SYSPROC . ENV_GET_INST_INFO() FROM SYSIBM.SYSDUMMY1",
+    # 후속 교정(security-auditor Low) — 통계 초기화 · 트랜잭션 ID 할당 · 인덱스 정비
+    "SELECT pg_stat_statements_reset()",
+    "SELECT txid_current()",
+    "SELECT pg_current_xact_id()",
+    "SELECT brin_summarize_new_values('idx'::regclass)",
+    "SELECT brin_summarize_range('idx'::regclass, 0)",
+    "SELECT brin_desummarize_range('idx'::regclass, 0)",
+    "SELECT gin_clean_pending_list('idx'::regclass)",
 ]
 
 
@@ -351,6 +359,9 @@ _ALLOWED_SQL = [
     "SELECT xml_data, sleep_count FROM t WHERE a = 'SLEEP(1)'",
     "SELECT * FROM t WHERE a >= 1 AND b <= 2 AND c <> 3",
     "SELECT 'U&\"x\"' AS s",
+    # 후속 교정 오탐 확인 — 트랜잭션 ID·스냅숏을 할당 없이 읽기만 하는 함수는 막지 않는다
+    "SELECT txid_current_if_assigned(), pg_current_xact_id_if_assigned()",
+    "SELECT txid_current_snapshot(), pg_current_snapshot()",
 ]
 
 

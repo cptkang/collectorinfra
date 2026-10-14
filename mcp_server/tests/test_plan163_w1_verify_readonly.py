@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import pytest
-
 from mcp_server.security import ReadOnlyViolationError, validate_readonly
 
 # PG·DB2에서는 리터럴 'C:\Windows\' 뒤에 정상 조건이 이어지는 SELECT다.

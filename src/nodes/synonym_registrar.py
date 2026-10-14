@@ -16,6 +16,7 @@ from src.config import AppConfig, load_config
 from src.llm import create_llm
 from src.routing.intent_confirm import classify_registration_intent
 from src.state import AgentState
+from src.utils.user_error import request_id
 
 logger = logging.getLogger(__name__)
 
@@ -155,12 +156,15 @@ async def synonym_registrar(
             )
 
     except Exception as e:
-        logger.error("synonym_registrar: Redis 등록 실패 - %s", e)
+        # 예외 원문은 응답·상태에 싣지 않는다 — 요청 번호만, 원문은 로그(plans/163 S3+)
+        rid = request_id()
+        logger.error("synonym_registrar: Redis 등록 실패 (요청 %s) - %s", rid, e)
+        message = f"유사어 등록 중 오류가 발생했습니다 (요청 {rid})"
         return {
-            "final_response": f"유사어 등록 중 오류가 발생했습니다: {e}",
+            "final_response": message,
             "pending_synonym_registrations": None,
             "current_node": "synonym_registrar",
-            "error_message": str(e),
+            "error_message": message,
         }
 
     response = f"{len(registered)}건 유사어 등록 완료:\n"

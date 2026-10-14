@@ -516,6 +516,7 @@ def test_query_validator_node_complete_reason(reason, shown) -> None:
 # ── S3+ 교정 3차: DB별 사유 — 예외 보간부만 떼고 산출 발췌(D-153 후속2)는 남긴다 ──────
 
 _EXCERPT = " | LLM 산출 발췌: 'blocked by the filter'"
+_DEADLINE_MSG = "답변할 시간을 남기려고 SQL 재생성을(를) 하지 않았습니다(조회 마감 경과)."
 
 
 @pytest.mark.parametrize(("raw", "shown"), [
@@ -524,8 +525,7 @@ _EXCERPT = " | LLM 산출 발췌: 'blocked by the filter'"
      "DB 'gp' 실행 에러 | 재생성 1회 후 재실패"),
     (f"DB 'gp' 실행 에러: {SECRET} | 재생성 1회 시도했으나 검증 실패: SQL 파싱 에러: {SECRET}",
      "DB 'gp' 실행 에러 | 재생성 1회 시도했으나 검증 실패: SQL 파싱 에러"),
-    (f"DB 'gp' 실행 에러: {SECRET} | 답변할 시간을 남기려고 SQL 재생성을(를) 하지 않았습니다(x).",
-     "DB 'gp' 실행 에러 | 답변할 시간을 남기려고 SQL 재생성을(를) 하지 않았습니다(x)."),
+    (f"DB 'gp' 실행 에러: {SECRET} | {_DEADLINE_MSG}", f"DB 'gp' 실행 에러 | {_DEADLINE_MSG}"),
     # 비-SQL 산출 발췌·코드 원인 문구는 남는다(D-153 후속2)
     (f"SQL 검증 실패: FabriX PII 필터 차단 응답{_EXCERPT}",
      f"SQL 검증 실패: FabriX PII 필터 차단 응답{_EXCERPT}"),
@@ -638,3 +638,276 @@ def test_graph_error_response_hides_raw_with_request_id(bound_rid, caplog) -> No
 def test_graph_error_response_keeps_safe_head(bound_rid, raw, shown) -> None:
     response = _error_response(raw)
     assert SECRET not in response and shown in response
+
+
+# ── S3+ 후속 교정(security-auditor): 판별기를 거치지 않던 사용자 노출 경로 ──────────
+
+
+@pytest.mark.asyncio
+async def test_host_inspect_failure_hides_client_exception(monkeypatch, bound_rid, caplog) -> None:
+    """조사 도구 호출 예외(`{tool} 호출 실패: {e}`)는 거부 문구(`degraded_reason`)에 싣지 않는다.
+
+    `degraded_reason`이 붙은 결과는 판별기가 처리기 문구로 믿고 그대로 보이므로(`user_error_text`)
+    처리기가 문구를 지을 때 원문을 빼야 한다.
+    """
+    from src.orchestration.host_inspect import DEGRADED_KEY
+    from src.utils.user_error import user_error_text
+    from tests.test_composite import test_plan121_host_inspect_result as hr
+
+    def boom(tool, args):
+        raise RuntimeError(SECRET)
+
+    hr._real_client(monkeypatch, boom)
+    with caplog.at_level(logging.WARNING):
+        res = await hr.run_host_inspect({"sub_query": "svweb001 OS 정보"}, hr._HOST, llm=None,
+                                        app_config=hr._cfg(investigation=True))
+    assert res[DEGRADED_KEY] == "inspect_failed"
+    for text in (res["error"], res["final_response"], user_error_text(res["error"], result=res)):
+        assert SECRET not in text and f"요청 {bound_rid}" in text
+    assert SECRET in caplog.text and bound_rid in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_host_inspect_kind_failure_summary_hides_reason(monkeypatch, bound_rid,
+                                                              caplog) -> None:
+    from tests.test_composite import test_plan121_host_inspect_result as hr
+
+    def payload(tool, args):
+        return {"error": SECRET} if args.get("kind") == "memory" else hr._db_payload(tool, args)
+
+    hr._real_client(monkeypatch, payload)
+    with caplog.at_level(logging.WARNING):
+        res = await hr.run_host_inspect(
+            {"sub_query": "svweb001 사용률 추세"}, hr._trend_isolated(["CPU", "메모리"]),
+            llm=None, app_config=hr._cfg(investigation=True))
+    summary = res["organized_data"]["summary"]
+    assert SECRET not in summary
+    assert f"메모리 추세는 조회하지 못했습니다(요청 {bound_rid})." in summary
+    assert SECRET in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_merged_rows_output_failure_hides_exception(bound_rid, caplog) -> None:
+    from src.orchestration.result_aggregator import _finalize_merged_rows
+    from src.state import create_initial_state
+
+    agg_mod = sys.modules["src.orchestration.result_aggregator"]
+
+    async def boom(*a, **k):
+        raise RuntimeError(SECRET)
+
+    with patch.object(agg_mod, "output_generator", new=boom), caplog.at_level(logging.ERROR):
+        out = await _finalize_merged_rows([{"hostname": "a"}], create_initial_state("q"),
+                                          llm=AsyncMock(), app_config=SimpleNamespace())
+    assert SECRET not in out["final_response"]
+    assert out["final_response"] == (
+        f"통합 결과 1건을 정리하는 중 오류가 발생했습니다 (요청 {bound_rid})")
+    assert SECRET in caplog.text and bound_rid in caplog.text
+
+
+def _raise_cache_manager(monkeypatch) -> None:
+    import src.schema_cache.cache_manager as cm
+
+    def boom(*a, **k):
+        raise RuntimeError(SECRET)
+
+    monkeypatch.setattr(cm, "get_cache_manager", boom)
+
+
+_PENDING = [{"index": 1, "db_id": "polestar", "column": "cmm_resource.hostname",
+             "field": "서버명"}]
+
+
+@pytest.mark.asyncio
+async def test_field_mapper_synonym_registration_hides_exception(monkeypatch, bound_rid,
+                                                                 caplog) -> None:
+    from src.nodes.field_mapper import _handle_synonym_registration
+    from src.state import create_initial_state
+
+    _raise_cache_manager(monkeypatch)
+    state = create_initial_state("전체 등록")
+    state["pending_synonym_registrations"] = _PENDING
+    with caplog.at_level(logging.ERROR):
+        out = await _handle_synonym_registration(state, {"mode": "all"}, SimpleNamespace())
+    assert out is not None
+    assert out["final_response"] == f"유사어 등록 중 오류가 발생했습니다 (요청 {bound_rid})"
+    assert SECRET in caplog.text and bound_rid in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_synonym_registrar_hides_exception(monkeypatch, bound_rid, caplog) -> None:
+    from src.nodes.synonym_registrar import synonym_registrar
+    from src.state import create_initial_state
+
+    _raise_cache_manager(monkeypatch)
+    state = create_initial_state("전체 등록")
+    state["pending_synonym_registrations"] = _PENDING
+    with caplog.at_level(logging.ERROR):
+        out = await synonym_registrar(state, app_config=SimpleNamespace())
+    assert out["final_response"] == f"유사어 등록 중 오류가 발생했습니다 (요청 {bound_rid})"
+    assert SECRET not in str(out.get("error_message"))
+    assert SECRET in caplog.text and bound_rid in caplog.text
+
+
+def test_form_fill_exception_reason_hides_exception(monkeypatch, bound_rid, caplog) -> None:
+    import src.document.excel_writer as ew
+    from src.nodes.output_generator import _generate_document_file
+
+    def boom(**kwargs):
+        raise RuntimeError(SECRET)
+
+    monkeypatch.setattr(ew, "fill_excel_template", boom)
+    state = {"organized_data": {"rows": [], "column_mapping": {"서버명": "hostname"}},
+             "template_structure": {"sheets": []}, "uploaded_file": b"x"}
+    with caplog.at_level(logging.ERROR):
+        out = _generate_document_file(state, "xlsx")
+    assert out == {"reason": f"양식 채우기 중 오류가 발생했습니다 (요청 {bound_rid})"}
+    assert SECRET in caplog.text and bound_rid in caplog.text
+
+
+def _apm_failed_meta() -> dict:
+    return {"failures": [
+        {"view": "apm.app_health", "hostname": "web01", "reason": f"source_unavailable: {SECRET}"},
+        {"view": "apm.app_health", "hostname": "web02",
+         "reason": f"APM 게이트웨이 연결·호출 실패: {SECRET}"},
+    ], "provenance": [], "hostnames": ["web01", "web02"], "inserted_steps": [], "notes": [],
+        "limits": []}
+
+
+def test_apm_accepted_answer_hides_failure_reason(bound_rid, caplog) -> None:
+    from src.orchestration.apm_query import _accepted_answer
+
+    with caplog.at_level(logging.WARNING):
+        res = _accepted_answer("제니퍼", [], _apm_failed_meta(), [])
+    assert SECRET not in res["final_response"]
+    assert ("조회하지 못한 대상 2건: web01(source_unavailable), web02 "
+            f"(요청 {bound_rid} · 상세 사유는 서버 로그)") in res["final_response"]
+    assert SECRET in caplog.text and bound_rid in caplog.text
+
+
+def test_apm_summary_hides_failure_reason(bound_rid) -> None:
+    from src.orchestration.apm_query import _summary
+
+    text = _summary("제니퍼", [], {}, _apm_failed_meta(), 0)
+    assert SECRET not in text
+    assert "조회하지 못한 대상 2건: web01(source_unavailable), web02 (요청" in text
+
+
+@pytest.mark.parametrize("raw", [
+    "DB 'a' 실행 에러: boom / 답변할 시간을 남기려고 x postgres://u:p@h",
+    "답변할 시간을 남기려고 x postgres://u:p@h",
+    "DB 'a' 실행 에러: boom | 답변할 시간을 남기려고 x postgres://u:p@h",
+    "질문에 맞는 조회 대상 테이블을 찾지 못했습니다 — 무엇을 찾는지 알려 주세요 postgres://u:p@h",
+    ("답변할 시간을 남기려고 SQL 재생성을(를) 하지 않았습니다(조회 마감 경과)."
+     " 마지막 실패 사유: postgres://u:p@h"),
+])
+def test_db_error_text_fixed_phrases_must_match_whole(raw) -> None:
+    """조회 마감·선별 0개 문구는 머리만 맞아서는 통과하지 않는다(꼬리 원문이 따라 나오지 않는다)."""
+    from src.utils.user_error import db_error_text
+
+    assert "postgres://u:p@h" not in db_error_text(raw)
+
+
+@pytest.mark.parametrize("stage", ["스키마 분석", "SQL 생성", "SQL 재생성"])
+@pytest.mark.parametrize(("remaining", "need", "last"), [
+    (None, None, None), (10.0, 20.0, None), (10.0, 20.0, f"SQL 실행 에러: {SECRET}"),
+    (-5.0, 3.0, "모든 DB 쿼리가 실패했습니다."),
+])
+def test_db_error_text_keeps_real_deadline_messages(stage, remaining, need, last) -> None:
+    from src.nodes.query_validator import deadline_stop_message
+    from src.utils.user_error import db_error_text
+
+    message = deadline_stop_message(stage, remaining_sec=remaining, need_sec=need,
+                                    last_reason=last)
+    assert db_error_text(message) == message
+    assert db_error_text(f"DB 'a' 실행 에러: {SECRET} | {message}") == (
+        f"DB 'a' 실행 에러 | {message}")
+
+
+# ── S3+ 후속 교정 2: 제니퍼 첫 홉·대상 해석 단계의 호출 오류 원문 ──────────────────
+
+
+def _apm_gateway(monkeypatch, **replies):
+    from tests.test_orchestration import test_plan134_w2_verify as w2
+
+    gw = w2._Gateway({**w2._ALL_REPLIES, **replies})
+    monkeypatch.setattr(w2.aq, "_SESSION_FACTORY", gw.factory())
+    return w2
+
+
+@pytest.mark.asyncio
+async def test_apm_rank_failure_reason_hidden_in_first_hop_notice(monkeypatch, bound_rid,
+                                                                   caplog) -> None:
+    """부하 순위 실패 사유(「부하 순위를 받지 못해(…)」)는 코드와 요청 번호만 — 고지·요약 모두."""
+    w2 = _apm_gateway(monkeypatch, apm_fleet=_apm_err("apm_fleet", "apm_api_error"))
+    with caplog.at_level(logging.WARNING):
+        res = await w2._run(["apm.app_health"])
+    assert SECRET not in json.dumps(res, ensure_ascii=False, default=str)
+    assert f"부하 순위를 받지 못해(apm_api_error (요청 {bound_rid}))" in (
+        res["organized_data"]["summary"])
+    assert SECRET in caplog.text and bound_rid in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_apm_first_hop_total_failure_refusal_hides_reason(monkeypatch, bound_rid) -> None:
+    """첫 홉(순위·목록)이 모두 실패해 조회하지 않은 답에도 사유 원문이 없다."""
+    w2 = _apm_gateway(monkeypatch, apm_fleet=_apm_err("apm_fleet", "apm_api_error"),
+                      apm_instance_map=_apm_err("apm_instance_map", "source_unavailable"))
+    res = await w2._run(["apm.app_health"])
+    assert SECRET not in res["final_response"]
+    assert SECRET not in json.dumps(res.get("disclosures") or [], ensure_ascii=False)
+    assert f"source_unavailable (요청 {bound_rid})" in res["final_response"]
+
+
+@pytest.mark.asyncio
+async def test_apm_target_search_failure_notice_hides_reason(monkeypatch, bound_rid) -> None:
+    """대상 텍스트 해석 검색 실패 고지(「… 검색 실패 — …」)에 원문을 싣지 않는다."""
+    w2 = _apm_gateway(monkeypatch,
+                      apm_instance_map=_apm_err("apm_instance_map", "apm_api_error"))
+    task = {"task_id": "t1", "agent": "apm_query", "views": ["apm.app_health"],
+            "sub_query": "질의", "targets": [{"text": "zzz", "kind": "instance"}]}
+    res = await w2.aq.run_apm_query(task, w2._isolated(), llm=None, app_config=w2._cfg(),
+                                    now=w2.NOW)
+    texts = json.dumps([res.get("final_response"), res.get("disclosures")], ensure_ascii=False)
+    assert SECRET not in texts
+    assert f"검색 실패 — apm_api_error (요청 {bound_rid})" in texts
+
+
+@pytest.mark.asyncio
+async def test_apm_result_file_read_failure_hides_reason(bound_rid, caplog) -> None:
+    from src.orchestration import apm_query as aq
+
+    class _Down:
+        async def call_tool(self, name, args):
+            raise aq.SourceMcpError(SECRET)
+
+    env = {"artifact": {"job_id": "j1", "chunks": [{"index": 0}]}}
+    with caplog.at_level(logging.WARNING):
+        rows, short = await aq._read_result_file(_Down(), env, SimpleNamespace(owner="o"),
+                                                 [{"a": 1}], 10)
+    assert rows == [{"a": 1}]
+    assert short == f"결과 파일 청크 1/1 읽기 실패 — 호출 실패 (요청 {bound_rid})"
+    assert SECRET in caplog.text and bound_rid in caplog.text
+
+
+def _apm_err(tool: str, code: str) -> dict:
+    return {"error": code, "reason": SECRET, "source_kind": "apm_api", "source": "jennifer",
+            "tool": tool}
+
+
+@pytest.mark.parametrize(("err", "shown"), [
+    (f"apm_api_error: {SECRET}", "apm_api_error"),
+    ("instance_unresolved: web01 불일치", "instance_unresolved: web01 불일치"),
+    ("postgresql://u:p@h/db", None),  # 원문의 스킴은 오류 코드가 아니다
+    (f"APM 게이트웨이 연결·호출 실패: {SECRET}", None),
+    # 예외 종류 이름 머리는 종류 이름만, 코드가 원문 없이 지은 사유는 그대로
+    (f"RuntimeError: {SECRET}", "RuntimeError"),
+    ("APM 게이트웨이 도구 호출 시간 초과(apm_instance_map, 30초)",
+     "APM 게이트웨이 도구 호출 시간 초과(apm_instance_map, 30초)"),
+    ("APM 게이트웨이 연결·호출 실패: ConnectError", "APM 게이트웨이 연결·호출 실패: ConnectError"),
+    (f"APM 게이트웨이 도구 오류(apm_instance_map): {SECRET}", None),
+])
+def test_apm_shown_call_error_reads_only_code_prefix(err, shown) -> None:
+    from src.orchestration.apm_query import _shown_call_error
+
+    assert _shown_call_error(err) == shown

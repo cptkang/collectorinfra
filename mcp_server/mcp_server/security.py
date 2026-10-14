@@ -79,7 +79,9 @@ _LOCKING_CLAUSE = re.compile(
 )
 
 # SELECT 안에서 부작용을 내는 함수(세션 설정 변경 · 백엔드 종료 · 서버 파일 읽기/쓰기 ·
-# 시퀀스 전진 · 원격 실행 · 잠금 · 임의 질의 실행). 리터럴·주석을 지운 본문에서 `이름(` 호출
+# 시퀀스 전진 · 원격 실행 · 잠금 · 임의 질의 실행 · 통계 초기화 · 트랜잭션 ID 할당 · 인덱스 정비).
+# `txid_current`·`pg_current_xact_id`는 바로 뒤가 `(`일 때만 걸려 `_if_assigned`·`_snapshot`
+# 같은 읽기 함수는 통과한다. 리터럴·주석을 지운 본문에서 `이름(` 호출
 # 형태만 본다.
 _SIDE_EFFECT_FUNCTION = re.compile(
     r"\b("
@@ -92,6 +94,9 @@ _SIDE_EFFECT_FUNCTION = re.compile(
     r"|pg_create_\w*replication_slot|pg_drop_replication_slot|pg_copy_\w*replication_slot"
     r"|pg_replication_origin_\w+|pg_replication_slot_advance|pg_logical_slot_get_\w+"
     r"|\w*_to_xml\w*"
+    r"|pg_stat_statements_reset|txid_current|pg_current_xact_id"
+    r"|brin_summarize_new_values|brin_summarize_range|brin_desummarize_range"
+    r"|gin_clean_pending_list"
     r"|get_lock|release_lock|release_all_locks|load_file|sys_exec|sys_eval|master_pos_wait"
     r"|sleep|benchmark"
     r")\s*\(",

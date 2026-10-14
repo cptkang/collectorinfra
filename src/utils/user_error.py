@@ -116,10 +116,23 @@ def validation_reason_text(reason: Any) -> str:
 _EXCERPT_SEP = " | LLM 산출 발췌: "
 #: 검증 실패 DB 사유의 머리말(`multi_db_executor` — 뒤는 검증 사유).
 _DB_VALIDATION_HEAD = "SQL 검증 실패: "
-#: 조회 마감 사용자 문구의 시작(`query_validator.deadline_stop_message` — 꼬리는 이미 판별됨).
+#: 조회 마감 사용자 문구의 시작(`query_validator.deadline_stop_message`) — 사유 이음 분할용.
 _DEADLINE_HEAD = "답변할 시간을 남기려고"
+#: 조회 마감 사용자 문구 전체 꼴(`deadline_stop_message` — 단계 3종 · 사유 2종 ·
+#: 꼬리는 고정 사유·머리말).
+#: 머리만 맞는 문자열의 뒤 원문이 따라 나오지 않게 전체를 맞춘다.
+_DEADLINE_RE = re.compile(
+    r"답변할 시간을 남기려고 (?:스키마 분석|SQL 생성|SQL 재생성)을\(를\) 하지 않았습니다"
+    r"\((?:조회 마감 경과|조회 마감까지 \d+초 < 직전 SQL 생성 \d+초)\)\."
+    r"(?: 마지막 실패 사유: (?P<reason>.+))?"
+)
 #: 테이블 선별 0개 안내의 시작(`table_selection.SELECTION_NONE_MESSAGE` — 일치는 테스트가 지킨다).
 _SELECTION_NONE_HEAD = "질문에 맞는 조회 대상 테이블을 찾지 못했습니다"
+#: 테이블 선별 0개 안내 전체 꼴(`table_selection.selection_none_guidance` —
+#: 업무 영역 예시는 괄호 없이).
+_SELECTION_NONE_RE = re.compile(
+    rf"{_SELECTION_NONE_HEAD} — 무엇을 찾는지 알려 주세요(?:\(예: [^()]*\))?"
+)
 #: 코드가 지은 DB별 고정 사유(`multi_db_executor` — 미등록 DB · 테이블 없음).
 _DB_FIXED_RE = re.compile(
     r"DB '[^']*'(?:이\(가\) 레지스트리에 등록되지 않았습니다|에서 테이블을 찾을 수 없습니다)\."
@@ -146,19 +159,33 @@ _DB_SUMMARY_LINE_RE = re.compile(r"\n(?=\[[^\]\n]*\] )")
 _DB_SUMMARY_NAME_RE = re.compile(r"(\[[^\]\n]*\]) (.*)", re.DOTALL)
 
 
+def _is_deadline_message(text: str) -> bool:
+    """코드가 지은 조회 마감 문구 그대로인가 — 꼬리(마지막 실패 사유)도 보일 수 있는 값이다."""
+    matched = _DEADLINE_RE.fullmatch(text)
+    if not matched:
+        return False
+    reason = matched.group("reason")
+    return reason is None or safe_error_text(reason) == reason
+
+
 def _db_error_part(text: str) -> str:
     """DB별 사유 한 건의 판별(`db_error_text`의 단위)."""
     if text.startswith(_DB_VALIDATION_HEAD):
         reason, sep, excerpt = text[len(_DB_VALIDATION_HEAD):].partition(_EXCERPT_SEP)
         return f"{_DB_VALIDATION_HEAD}{validation_reason_text(reason)}{sep}{excerpt}"
-    if text.startswith((_DEADLINE_HEAD, _SELECTION_NONE_HEAD)) or _DB_FIXED_RE.fullmatch(text):
+    if (
+        _is_deadline_message(text)
+        or _SELECTION_NONE_RE.fullmatch(text)
+        or _DB_FIXED_RE.fullmatch(text)
+    ):
         return text
     exec_error = _DB_EXEC_RE.fullmatch(text)
     if exec_error:
         head, rest = exec_error.groups()
         deadline_at = rest.find(f" | {_DEADLINE_HEAD}")
         if deadline_at >= 0:
-            return f"{head}{rest[deadline_at:]}"
+            deadline = rest[deadline_at + len(" | "):]
+            return f"{head} | {deadline}" if _is_deadline_message(deadline) else head
         for marker, keeps_reason in _DB_EXEC_TAILS:
             at = rest.find(marker)
             if at >= 0:
