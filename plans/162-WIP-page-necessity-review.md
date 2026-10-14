@@ -315,10 +315,10 @@ W1에서 도메인 `review_page`가 생기면 스크립트는 자체 시뮬레�
 python -m noise_gate.scripts.page_audit --dry-run                 # 입력 위치·건수·창만 출력(쓰기 없음)
 python -m noise_gate.scripts.page_audit --hours 24 --days 7       # 기본: 감사 + alarm:raw + alarm:dead
 python -m noise_gate.scripts.page_audit --hours 24 --no-stream    # Redis 없이 감사 파일만
-    [--decisions logs/alarm_decisions.jsonl] [--out logs/page_audit] [--summary-only]
+    [--decisions logs/alarm_decisions.jsonl] [--out results/page_audit] [--summary-only]
 ```
 
-- 출력: `logs/page_audit/<YYYYMMDD-HHMMSS>/` 아래 `summary.json` · `summary.md` · `policy_snapshot.json` · `leak_check.json` · `alarms.jsonl`(`--summary-only`면 생략). `logs/`는 git 추적 밖이다.
+- 출력: `results/page_audit/<YYYYMMDD-HHMMSS>/` 아래 `summary.json` · `summary.md` · `policy_snapshot.json` · `leak_check.json` · `alarms.jsonl`(`--summary-only`면 생략). `results/`는 git 추적 밖이다(`.gitignore`).
 - Redis 접속은 `AppConfig().redis` 설정을 쓴다. 래퍼 클래스가 `xrange`·`xinfo_groups`·`xpending`만 노출해 쓰기 명령을 코드 수준에서 막는다.
 - 의존은 stdlib + `redis`(이미 설치) + `noise_gate.domain`(시그니처 스캔·지문·매트릭스 순수 함수) + `noise_gate.application.server_identity.is_apm_source`. `src/`는 `AppConfig` 하나만 읽는다(`replay_noise.py`와 같은 높이).
 

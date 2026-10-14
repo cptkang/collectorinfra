@@ -27,7 +27,7 @@ LLM을 부르지 않는다(메시지형 판별 규칙을 워커와 같게 쓰려
     python -m noise_gate.scripts.page_audit --dry-run
     python -m noise_gate.scripts.page_audit --hours 24 --days 7
     python -m noise_gate.scripts.page_audit --hours 24 --no-stream \\
-        [--decisions logs/alarm_decisions.jsonl] [--out logs/page_audit] [--summary-only]
+        [--decisions logs/alarm_decisions.jsonl] [--out results/page_audit] [--summary-only]
 """
 
 from __future__ import annotations
@@ -1900,7 +1900,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-stream", action="store_true", help="Redis 없이 감사 파일만")
     parser.add_argument("--decisions", type=Path, default=None,
                         help="판정 감사 JSONL(기본 NOISE_DECISION_STORE_PATH)")
-    parser.add_argument("--out", type=Path, default=Path("logs/page_audit"), help="출력 루트")
+    parser.add_argument("--out", type=Path, default=Path("results/page_audit"), help="출력 루트")
     parser.add_argument("--summary-only", action="store_true", help="alarms.jsonl 생략")
     parser.add_argument("--max-stream-entries", type=int, default=DEFAULT_MAX_STREAM_ENTRIES,
                         help=f"스트림별 읽기 상한(기본 {DEFAULT_MAX_STREAM_ENTRIES:,}) — "
