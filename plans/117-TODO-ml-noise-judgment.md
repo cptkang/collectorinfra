@@ -1,7 +1,8 @@
 # 117. 머신러닝 기반 노이즈 판정 — 알람 "대응 필요 확률"을 게이트 보조 신호로 넣는다
 
 > **작성일**: 2026-09-23
-> **상태**: 분석·계획(코드 0건) — 파일명 `-TODO`. 사용자 확정 게이트 G-1~G-8 대기(§8).
+> **상태**: 분석·계획(코드 0건) — 파일명 `-TODO`. 사용자 확정 게이트 G-1~G-5·G-7·G-9 대기(§8 · G-6은 `plans/101` G-18로 이관 · G-8은 101 J-6·C-1 확인 사항으로 강등).
+> **정리(2026-10-13 · v1.1)**: `plans/101`과 통합 여부를 검토해 **분리 유지 + 경계·의존·중복 게이트 상호 참조**로 정리했다(§1.3·§1.4). 공통 기반(라벨 키·데이터 카드·리플레이셋·누수 감사기·`ml_batch`·반입·게이트 신호 리더)은 **101 소유**이고 이 계획은 소비만 한다. 이 계획이 착수에 필요한 101 게이트는 G-1·G-9·G-10·G-11·G-18뿐이다(101 G-2~G-7 확정을 기다리지 않는다). 2026-09-23 이후 바뀐 현행(D-318 · D-317 · D-325)을 §2.1·§2.3에 반영했다.
 >
 > **요청 원문(2026-09-23)**: *"머신러닝 기반 노이즈 판정을 추가하려면 어떻게 해야 하냐?"* → 답변 뒤 *"ML구현 계획을 별도의 계획파일로 작성하고 앞서 노이즈 캔슬링 동작 방법은 메뉴얼에 더 자세한 내용이 들어가도록 반영하라."*
 >
@@ -38,6 +39,33 @@
 
 101은 게이트 신호를 **이상 점수(상향 전용)**로만 설계했다(101 §4.6 · CU-22·CU-23). 이 계획은 101에 없는 **노이즈 분류(강등 방향 자문)**를 더한다. 배치·반입·평가 규약·누수 금지(KL-1~KL-6)는 101을 그대로 따르고 새로 만들지 않는다. 101이 먼저 만드는 산출물(리플레이셋 빌더 · 누수 감사기 · `ml_batch` 골격 · 피드백 이벤트 키 G-9)을 이 계획이 재사용한다.
 
+**소유 분담(2026-10-13 정리)** — 같은 산출물을 두 계획이 따로 만들지 않는다.
+
+| 산출물 | 소유 | 이 계획의 몫 |
+|---|---|---|
+| 피드백 이벤트 키(`alarm_id`·`fingerprint`·`root_cause`) | 101 CU-6(G-9) | 없음 — 랜딩 뒤 라벨로 소비 |
+| 데이터 카드 | 101 M0(J-1~J-11) | 라벨 수·분포·존별 열 추가 요청(J-10과 같은 조회) |
+| 리플레이셋 빌더 · 누수 감사기 · 분할기 | 101 CU-4 | 노이즈 라벨 열 추가(§6 M1) |
+| `ml_batch` 엔트리 · 모델 저장(skops+SQLite 메타) · `REDIS_URL` | 101 CU-2·CU-12 | 노이즈 학습·스코어링 잡 1개 추가(§6 M2·M3) |
+| `sre_agent` `ml` extra(scikit-learn·skops·redis) · 반입 | 101 CU-1 · J-6 · C-1 | 추가 의존 0(101 `ml` extra에 이미 포함) |
+| `noise_gate/infrastructure/ml_signal_reader.py` | **공용 1개**(101 CU-22 · 먼저 착수한 쪽이 신설하고 다른 쪽이 확장 — 이 계획 몫은 `ml:noise:*` 읽기) | 키 계열·플래그·`signals` 자리 공존 방식은 G-9 |
+| step9 노이즈 신호 · holdout · 노이즈 모델 | **이 계획** | 전부 |
+
+### 1.4 `plans/101` 게이트와의 대응 (2026-10-13 정리)
+
+| 이 계획 | 101 | 관계 |
+|---|---|---|
+| G-1 ML 권한(step9 자문) | **I-4 escalate-only** · G-5 · D-223 ⑥(예약) | **충돌** — (가) 확정 시 101 I-4를 "이상 점수 신호는 escalate-only"로 한정하고 노이즈 신호는 이 계획 §4.6 규칙을 따른다(101 §4.1 I-4 부기). D-253이 D-223 ⑥ 확장을 담는다 |
+| G-2 강등 하한 | — | 이 계획 고유. 현행 선례: step9 지속 조건 미달 단독 강등의 DASHBOARD 하한(`plans/144` G-1 (b)) · 크로스소스 증상 DASHBOARD 상한(D-317 ④) |
+| G-3 약한 라벨 | G-9(라벨 수집) · R-13(상반 라벨) | 의존 — 라벨 원천은 101 G-9 결과를 쓴다 |
+| G-4 처음 보는 지문 | — | 이 계획 고유 |
+| G-5 재학습 주기 | §9 「수명」(재적합 주기·드리프트) | 이 계획 모델에만 적용. 101 M7c 모델이 생기면 같은 주기 규칙을 쓴다 |
+| ~~G-6 로그 읽기 경로~~ | **G-18**(신설 · 원 G-12 — 101 v4 G-12와 충돌로 재채번) | **이관** — 101 F0 빌더도 같은 본체 JSONL(피드백·결정)을 읽으므로 공통 결정이다 |
+| G-7 holdout | — | 이 계획 고유 |
+| ~~G-8 반입~~ | J-6 · C-1 | **강등** — 결정이 아니라 반입 일정 확인이다. 101 G-8(holmesgpt 버전)과 번호만 같고 다른 항목이다 |
+| G-9 신호 공존(신설) | CU-22·CU-23 | 키·플래그·기록 자리 충돌 정리 |
+| — | G-1(배치) · G-10(평가 위치) · G-11(Redis 전달) | **선행** — 이 계획은 셋 다 (가)를 전제로 쓰였다. 101 G-2~G-7(착수 순서·DPM·예측 통보·이상 점수 수위·벤더 AI·파운데이션 모델)은 이 계획과 무관하다 |
+
 ---
 
 ## 2. 현행 실측
@@ -59,19 +87,22 @@
 | step8 매트릭스 | 심각도×중요도 | — |
 | **step9 보조 조정** | `promote`가 있으면 1단계 승격(강등 무시), 없고 `demote`만 있으면 1단계 강등(하한 SUPPRESS) | — |
 
-step9의 현행 신호(`notification_policy.py` step9 블록):
+step9의 현행 신호(`notification_policy.py` step9 블록 · **2026-10-13 재실측** — 아래 부기 참조):
 
 | 방향 | 신호 | 조건 |
 |---|---|---|
 | promote | 폴스타 통보 정책 `notify` | — |
-| promote | `is_routine=False`(LLM) | — |
+| ~~promote~~ | ~~`is_routine=False`(LLM)~~ | **D-318(2026-10-07)로 제거** — 스냅샷에는 남는다 |
 | promote | LLM actionability `actionable` | `enable_llm_actionability` |
 | promote | 변경 근접 | `change_correlation_enabled` |
 | demote | 폴스타 비통보 정책 `suppress` | — |
 | demote | `is_routine=True`(LLM) | 실효 심각도 ≤ `suppress_max_severity` |
 | demote | LLM actionability `noise` | 위와 같음 + `enable_llm_actionability` |
+| demote | 제니퍼 지표형 경고 지속 조건 미달 | 심각도 2 · 정책 경로(`plans/144` §4.2). **이 사유만으로 강등하면 하한 DASHBOARD**(`set(demote) == {지속 조건 미달}`) |
 
 → **ML 노이즈 점수는 이 표에 한 행으로 들어간다.** 새 단계를 만들지 않는다.
+
+- **부기(2026-10-13)**: 작성 이후 step9 주변이 바뀌었다. ① D-318 — `is_routine=False` 승격 제거. ② `plans/144`(D-317) — 지속 조건 미달 강등 행과 **"단독 강등 사유면 DASHBOARD 하한"** 분기가 생겼다. G-2 (가)는 이 분기의 허용 집합에 ML 노이즈 사유를 더하는 형태로 구현할 수 있다(새 하한 기계 불필요). ③ step 7.6 크로스소스 사건 상관(DASHBOARD 상한) · step 9.5 앱 영향 승격(D-195 ② — DASHBOARD·TICKET → PAGE, SUPPRESS는 되살리지 않음)이 step9 앞뒤에 있다. ML 강등 결과가 DASHBOARD면 9.5가 다시 PAGE로 올릴 수 있다 — 승격 우선 원칙과 같은 방향이라 그대로 둔다. ④ 같은 블록 주석이 **"signals 동결 스키마는 확장하지 않는다(change_nearby 전례 — 근거는 reason·evidence)"**를 선례로 적고 있다 → §4.5 `signals.ml` 추가는 G-9에서 다시 정한다.
 
 ### 2.2 결정 기록 — 피처·약한 라벨 원천
 
@@ -88,6 +119,8 @@ step9의 현행 신호(`notification_policy.py` step9 블록):
 | incident ack/resolve(PG · D-049) | 사건 | `incident_tracking_enabled` 코드 기본 False · 개발 `.env` false | **PAGE만 incident가 된다** → 양성 라벨이 PAGE에 편향 |
 | 침묵 규칙 | 알람 패턴 | `silence_enabled` 코드 기본 False | 운영자 억제 의사 — 약한 음성 라벨 |
 | SUPPRESS된 알람 | 이벤트 | 카드 미표시 → 피드백 불가 | **선택 편향**: 억제된 알람은 라벨을 다시 못 받는다 |
+| 크로스소스 사건 id · 사건 단위 피드백(2026-10-13 추가) | 사건(episode) | D-317 ⑦ — 사건 id가 결정 기록·`alarm:incident`·조사 페이로드에 실린다(`plans/117` 라벨 조인 키로 명시) · 피드백 2동작(묶음 분리 · 강등 증상 조치 필요) | 사건 상태는 워커 메모리라 재기동 시 소실(D-317 G-8). 강등 증상 "조치 필요"는 **거짓 강등 양성 라벨**로 쓸 수 있다 |
+| 조사 저장소 `logs/alarm_investigations.jsonl`(2026-10-13 추가) | 조사 | D-325 ① — 브리핑 원본(32KB 상한)·상태 전이. ⑦ 판정 레코드 `analysis`(AI 추정 · 플래그 기본 off) | 조사 verdict는 **사후 값** → 라벨 쪽에만(KL-3). `analysis`는 게이트 앞 LLM 산출이라 판단 시점 값이지만 LLM 비결정 출력 — 피처 편입은 M1에서 별도 판단 |
 
 ### 2.4 의존성·반입
 
@@ -159,7 +192,7 @@ noise_gate AlarmWorker (본체 프로세스)
 - **알람마다 모델을 호출하지 않는다.** 피처 대부분이 이력 기반이라 지문 단위로 미리 계산할 수 있다. 워커 지연 0, `sre_agent` 장애 시 키 만료 → 신호 없음 = 현행 동작(101 G-11 (가)와 같은 원리).
 - 처음 보는 지문(키 없음)은 신호 없음으로 처리한다. 알람명 단위 폴백 키 `ml:noise:name:{db_id}:{alarm_name}` 사용 여부는 G-4.
 - `sre_agent` ↔ `noise_gate` import 0 유지(D-118). 계약은 Redis 키 스키마뿐이다.
-- 로그 JSONL은 본체 프로세스의 `logs/`에 있다. `ml_batch`가 그 파일을 읽는 경로(같은 호스트 파일 읽기 vs 본체가 내보내기)는 G-6.
+- 로그 JSONL은 본체 프로세스의 `logs/`에 있다. `ml_batch`가 그 파일을 읽는 경로(같은 호스트 파일 읽기 vs 본체가 내보내기)는 **101 G-18**(2026-10-13 이관 — 101 F0 리플레이셋 빌더도 같은 파일을 읽는다).
 
 ### 4.5 게이트 연계 — 모드
 
@@ -173,6 +206,7 @@ noise_gate AlarmWorker (본체 프로세스)
 | advise | step9에 신호 추가 | 1단계 이내 |
 
 - `signals`는 동결 스키마다(`_signals()` "모든 키 필수"). `ml` 키 추가는 스키마 버전 변경이므로 관제 화면·분석 스크립트 소비처를 함께 grep해 갱신한다.
+- **(2026-10-13) 101과 자리가 겹친다** — 101 CU-23도 같은 `signals.ml`에 이상 점수를 기록하고, 플래그도 `ML_GATE_SIGNAL_MODE`(101 · 끝단 `escalate`)와 `NOISE_ML_SIGNAL_MODE`(이 계획 · 끝단 `advise`) 두 개다. 두 신호는 반영 지점(이상 점수 = step1 `anomaly_severity` 슬롯 · 노이즈 = step9)과 방향이 달라 같은 플래그로 묶기 어렵다. 기록 자리·플래그 공존 방식은 G-9.
 
 ### 4.6 advise 규칙과 안전 가드
 
@@ -182,6 +216,7 @@ p ≤ θ_lo  AND 실효심각도 ≤ suppress_max_severity → demote.append("ML
 ```
 
 - 심각도 3은 step3에서 끝나므로 닿지 않는다(불변).
+- DASHBOARD 하한은 현행 step9의 "단독 강등 사유 하한" 분기(`plans/144` 지속 조건 미달 — §2.1 부기 ②)에 ML 노이즈 사유를 더해 구현한다. 지속 조건 미달과 ML 노이즈가 함께 있어도 하한은 DASHBOARD다.
 - 승격 신호가 하나라도 있으면 ML 강등은 무시된다(현행 기계 그대로).
 - **ML 단독 강등의 하한은 DASHBOARD**로 둔다(G-2). SUPPRESS까지 내리면 카드가 사라져 피드백이 끊기고, 모델이 자기 판단을 검증받지 못한다(§2.3 선택 편향).
 - **탐색 표본**: ML 강등 대상 중 비율 ε(예: 5%)은 강등하지 않고 원래 티어로 보내며 `signals.ml.holdout=true`로 표시한다. 오억제율을 측정할 유일한 표본이다(G-7).
@@ -212,11 +247,11 @@ p ≤ θ_lo  AND 실효심각도 ≤ suppress_max_severity → demote.append("ML
 
 | 단계 | 산출물 | 변경 대상 | 선행 |
 |---|---|---|---|
-| **M0 라벨 확보** | 피드백 이벤트 키(`alarm_id`·`fingerprint`) · incident 추적 운영 on 검토 · 데이터 카드(라벨 수·분포·존별) | `noise_gate/infrastructure/feedback_store.py` · `src/api/routes/alarm.py` 요청 스키마 · `src/static/js/app.js` 전송 필드 · 운영 `.env`(사용자) | 101 G-9 |
+| **M0 라벨 확보** | 피드백 이벤트 키(`alarm_id`·`fingerprint`) · incident 추적 운영 on 검토 · 데이터 카드(라벨 수·분포·존별) | **코드는 101 CU-6이 구현**(`feedback_store.py`·`alarm.py` 요청 스키마 · `app.js` 전송 필드 — 이 계획에서 따로 만들지 않는다) · 데이터 카드는 101 M0 산출물에 노이즈 라벨 열 추가 · 운영 `.env`(사용자) | 101 G-9 · 101 M0 |
 | M1 평가셋·기준선 | 리플레이셋에 노이즈 라벨 열 추가 · 기준선 2종 점수 | `sre_agent/scripts/ml/`(101 산출물 확장) | 101 M0·F0 |
 | M2 모델 | GBDT + 보정 · skops 저장 · 모델 카드 | `sre_agent/sre_agent/ml/noise/`(신규) | M1 · 반입(G-8) |
 | M3 스코어 발행 | `ml_batch` 스코어링 잡 · `ml:noise:*` 키 계약 문서 | `sre_agent/sre_agent/ml_batch`(101) | M2 |
-| M4 게이트 연계 | `ml_signal_reader`(개별 try/except · 부분 반환) · `NOISE_ML_SIGNAL_MODE` · step9 행 추가 · `signals.ml` · 드로어 표시 | `noise_gate/infrastructure/ml_signal_reader.py`(신규 · 101 CU-22와 통합) · `noise_gate/domain/notification_policy.py` · `src/config.py` · `src/static/js/noise.js` | M3 |
+| M4 게이트 연계 | `ml_signal_reader`에 `ml:noise:*` 읽기 추가(개별 try/except · 부분 반환) · 모드 플래그 · step9 행 추가 · ML 기록 자리(G-9) · 드로어 표시 | `noise_gate/infrastructure/ml_signal_reader.py`(**101 CU-22가 먼저 만들면 확장 · 이 계획이 먼저면 신설하고 101이 확장** — 모듈 1개) · `noise_gate/domain/notification_policy.py` · `src/config.py` · `src/static/js/noise.js` | M3 |
 | M5 섀도→advise | 섀도 보고서 · 전환 결정 · 매뉴얼 갱신(`scripts/manual/content/admin.md` 9장) | 문서 · `.env`(사용자) | §5 조건 |
 
 - 각 단계 테스트: M4는 `off` 비트 동일 회귀 테스트(`noise_gate/tests/test_gate_off_regression.py` 계열) · 심각도 3 불변 · 승격 우선 · DASHBOARD 하한 · holdout 표시 · 키 만료/Redis 실패 시 신호 없음.
@@ -246,9 +281,10 @@ p ≤ θ_lo  AND 실효심각도 ≤ suppress_max_severity → demote.append("ML
 | G-3 | 약한 라벨 사용 | (가) 피드백·incident만 (나) 침묵·자가복구 약한 라벨 포함(가중) | (나) — 표본 수 확보. 평가는 강 라벨만 |
 | G-4 | 처음 보는 지문 | (가) 신호 없음 (나) 알람명 단위 폴백 키 | (가) — 단순 · 재현율 쪽 |
 | G-5 | 재학습 주기 | 주 1회 / 월 1회 / 수동 | 월 1회 + 수동 — 모델 버전을 결정 기록에 남긴다 |
-| G-6 | `ml_batch`의 로그 읽기 경로 | (가) 같은 호스트 파일 읽기 (나) 본체가 주기 내보내기 | 101 G-11과 함께 결정 |
+| ~~G-6~~ | ~~`ml_batch`의 로그 읽기 경로~~ | — | **101 G-18로 이관(2026-10-13)** — 101 F0 빌더와 공통 결정. 이 계획은 101 G-18 결과를 따른다 |
 | G-7 | holdout 비율 · 허용 오억제 | ε=5% · 0건 | 운영 통보량을 보고 결정 |
-| G-8 | 반입 | scikit-learn + skops를 101 반입 협의에 포함 | 포함 |
+| ~~G-8~~ | ~~반입~~ | — | **101 J-6·C-1로 강등(2026-10-13)** — scikit-learn·skops는 101 `ml` extra(CU-1)에 이미 들어 있어 별도 결정이 없다. 남은 것은 반입 일정 확인(101 J-6)뿐이다 |
+| **G-9**(2026-10-13 신설) | 101 이상 점수 신호와의 공존 — 게이트 쪽 기록 자리 · 모드 플래그 | 기록: (가) `evidence`·`reason`에 싣고 `signals` 동결 스키마는 건드리지 않음(change_nearby·app_impact 선례) (나) `signals.ml = {anomaly, noise}` 하위 키로 스키마 1회 확장(소비처 전수 갱신). 플래그: (ㄱ) 신호 계열별 2개 유지(101 `ML_GATE_SIGNAL_MODE` · 이 계획 `NOISE_ML_SIGNAL_MODE`) (ㄴ) 1개로 통합 | **(가)+(ㄱ)** — 동결 스키마 확장을 피하는 현행 선례를 따르고, 두 신호는 반영 지점(step1 슬롯 vs step9)·방향(상향 전용 vs 자문)·전환 조건(101 §6.3 vs 이 계획 §5)이 달라 한 플래그로 묶으면 한쪽만 켤 수 없다. 리더 모듈은 1개(§1.3). 101 CU-23에도 같은 선택을 적용한다 |
 
 ---
 
@@ -266,3 +302,4 @@ p ≤ θ_lo  AND 실효심각도 ≤ suppress_max_severity → demote.append("ML
 | 버전 | 날짜 | 내용 |
 |---|---|---|
 | v1 | 2026-09-23 | 최초 작성 — 사용자 지시로 ML 노이즈 판정 계획을 별도 파일로. D-253 예약 |
+| v1.1 | 2026-10-13 | `plans/101`과 통합 검토 → **분리 유지 + 상호 참조 정리**(통합 시 101 비대화·서로 다른 문제/소비처·117 참조처 다수(D-317 ⑦·매뉴얼·코드 주석·144) 갱신 비용 · 공용 기반 계획 신설은 소비처 2개뿐이라 이득 작음). §1.3 소유 분담 · §1.4 101 게이트 대응 신설 · §2.1 step9 재실측(D-318 · 144 DASHBOARD 하한 분기) · §2.3 라벨 원천 2행(D-317 ⑦ 사건 id · D-325 조사 저장소) · §4.5·§4.6 · §6 M0·M4 소유 · §8 G-6 → 101 G-18 이관 · G-8 강등 · G-9 신설. 코드 0건 유지 |
