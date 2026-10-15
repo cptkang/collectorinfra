@@ -4,9 +4,10 @@
 몇 건이 되는가」를 한 번의 실행으로 낸다. 제품 코드(워커·게이트·도메인)는 바꾸지 않는 별도
 스크립트이고, 내부망 서버에서 사람이 한 번씩 돌린다.
 
-- **읽기 전용** — 판정 감사 파일은 읽기만 한다. Redis는 `XRANGE`·`XINFO GROUPS`·`XPENDING`만
-  쓴다(`ReadOnlyStreams`가 그 셋만 노출한다 — 소비자 그룹·소비 위치를 건드리지 않는다).
-  Redis 계정은 읽기 전용 ACL(`+xrange +xinfo +xpending`)을 권장한다.
+- **읽기 전용** — 판정 감사 파일은 읽기만 한다. Redis는 `XRANGE`·`XINFO GROUPS`·`XPENDING`과
+  (§12.5 T4) `XINFO CONSUMERS`만 쓴다(`ReadOnlyStreams`가 앞 셋, `ConsumerInfoStreams`가 넷째를
+  더 노출한다 — 소비자 그룹·소비 위치를 건드리지 않는다). Redis 계정은 읽기 전용 ACL
+  (`+xrange +xinfo|groups +xinfo|consumers +xpending`)을 권장한다.
   DB·LLM·게이트웨이는 부르지 않는다.
 - **비식별 산출물만** — 알람 단위 행은 `page_audit_sanitize.Sanitizer`(허용 목록)를 거친다. 산출물은
   임시 폴더에 쓰고 누출 검사를 통과해야 확정 폴더로 옮긴다. 걸리면 `leak_check.json`(파일·종류·
@@ -19,7 +20,9 @@
 
 what-if 재판정 R1~R3은 도메인 `noise_gate.domain.page_review`(`PageRegistry` + `review_page`,
 enforce 가정)를 그대로 부른다 — 규칙 정의의 출처가 하나다. 생성 경로 규칙(R4·R5)은
-`generation_tier`, 만성 규칙(R6)은 이 스크립트의 `_r6`이다.
+`generation_tier`, 만성 규칙(R6)은 이 스크립트의 `_r6`이다. (§12.5 T6) 추가 시나리오의 제니퍼
+심각도3 유형 정책(`APM_SEV3_POLICY`)은 도메인 `decide_notification`(`apm_sev3_policy_enabled`
+on)을 판정 레코드로 다시 불러 정한다(재구현 없음 · D-336).
 
 `is_message_alarm`(application `alarm_analyzer`) import로 `src.llm`이 함께 올라오지만 이 스크립트는
 LLM을 부르지 않는다(메시지형 판별 규칙을 워커와 같게 쓰려고 그 함수만 쓴다).
@@ -28,7 +31,8 @@ LLM을 부르지 않는다(메시지형 판별 규칙을 워커와 같게 쓰려
     python -m noise_gate.scripts.page_audit --dry-run
     python -m noise_gate.scripts.page_audit --hours 24 --days 7
     python -m noise_gate.scripts.page_audit --hours 24 --no-stream \\
-        [--decisions logs/alarm_decisions.jsonl] [--out results/page_audit] [--summary-only]
+        [--decisions logs/alarm_decisions.jsonl] [--out results/page_audit] [--summary-only] \\
+        [--idle-close-minutes 30 60]
 """
 
 from __future__ import annotations
@@ -54,6 +58,7 @@ from noise_gate.application.nodes.alarm_analyzer import is_message_alarm
 from noise_gate.application.server_identity import is_apm_source, zone_labels_for
 from noise_gate.domain.alarm import AlarmEvent
 from noise_gate.domain.notification_policy import (
+    NOISE_SOURCE_APM_POLICY,
     STAGE_ANNOTATION,
     STAGE_COLLECTION_FAILED,
     STAGE_CORRELATION,
@@ -78,6 +83,7 @@ from noise_gate.domain.notification_policy import (
     TIER_TICKET,
     NotificationDecision,
     _matrix_tier,
+    decide_notification,
 )
 from noise_gate.domain.page_review import (
     EVIDENCE_KEY,
@@ -93,6 +99,7 @@ from noise_gate.domain.page_review import (
 )
 from noise_gate.domain.severity import coerce_severity
 from noise_gate.domain.severity_signatures import scan_signature_severity
+from noise_gate.infrastructure.apm_noise_context import DEFAULT_POLICY_PATH, load_policy
 from noise_gate.scripts import page_audit_xsource as xsource
 from noise_gate.scripts.page_audit_sanitize import (
     IDENT_ALARM_ID,
@@ -100,6 +107,7 @@ from noise_gate.scripts.page_audit_sanitize import (
     IDENT_IP,
     IDENT_RESOURCE,
     KST,
+    OTHER,
     AlarmContext,
     IdentifierSet,
     Pseudonymizer,
@@ -167,6 +175,23 @@ _REP_LINK: dict[str, tuple[str, float]] = {
     RULE_SAME_HOST: ("host_page_alarm_id", float(R2_HOST_WINDOW_S)),
     RULE_FANOUT: ("representative_alarm_id", float(R3_FANOUT_WINDOW_S)),
 }
+# (§12.5 T6) 추가 시나리오 — 제니퍼 심각도3 유형 정책(W5 · D-336). 생성 경로 규칙처럼 재판정
+# 앞에서 적용한다. 판정은 도메인 `decide_notification`(`apm_sev3_policy_enabled` on)이 한다.
+RULE_APM_SEV3 = "APM_SEV3_POLICY"
+_GENERATION_LIKE: tuple[str, ...] = (*GENERATION_RULES, RULE_APM_SEV3)
+# 제니퍼 sev3 PAGE인데 판정 레코드에 정책 경로 근거(`apm_policy`)가 없어 다시 판정할 수 없는 건.
+APM_SEV3_UNREPRODUCIBLE = "unreproducible"
+_APM_SEV3_CONFIG = SimpleNamespace(apm_sev3_policy_enabled=True, enable_ai_severity_boost=True)
+# 추가 시나리오(이름 → 규칙 묶음 · 적용 순서). 기존 S8 `rules`와 섞지 않고 `scenarios`에 싣는다.
+SCENARIO_R1_R3 = "R1~R3"
+SCENARIO_APM_SEV3_R1_R3 = f"{RULE_APM_SEV3}+R1~R3"
+SCENARIOS: dict[str, tuple[str, ...]] = {
+    RULE_APM_SEV3: (RULE_APM_SEV3,),
+    SCENARIO_R1_R3: DOMAIN_RULES,
+    SCENARIO_APM_SEV3_R1_R3: (RULE_APM_SEV3, *DOMAIN_RULES),
+}
+# F4 무소식 닫힘(`page_review_idle_close_minutes`) 값별로 다시 돌리는 시나리오.
+_IDLE_SCENARIOS: tuple[str, ...] = (SCENARIO_R1_R3, SCENARIO_APM_SEV3_R1_R3)
 # 스트림 읽기 상한(항목 수 · 스트림별) — 7일 운영량을 넉넉히 덮는 값. 넘으면 멈추고 안내한다.
 DEFAULT_MAX_STREAM_ENTRIES = 500_000
 
@@ -247,7 +272,30 @@ class ReadOnlyStreams:
         return dict(self._read[2](name, groupname))
 
 
-def open_streams(redis_cfg: Any) -> ReadOnlyStreams:
+class ConsumerInfoStreams(ReadOnlyStreams):
+    """`ReadOnlyStreams` + `XINFO CONSUMERS`(읽기 명령) — 소비자별 idle·pending 판독(§12.5 T4).
+
+    읽기 3종 래퍼의 공개 명령 집합은 그대로 두고 이 하위 클래스만 넷째 읽기 명령을 더 노출한다.
+    쓰기·소비 명령은 여기에도 없다. 원 클라이언트는 클로저에만 담는다.
+    """
+
+    __slots__ = ("_consumers",)
+
+    def __init__(self, client: Any) -> None:
+        """동기 Redis 클라이언트(또는 같은 모양의 가짜)를 받는다."""
+        super().__init__(client)
+
+        def _xinfo_consumers(name: str, groupname: str) -> Any:
+            return client.xinfo_consumers(name, groupname)
+
+        self._consumers = _xinfo_consumers
+
+    def xinfo_consumers(self, name: str, groupname: str) -> list[dict[Any, Any]]:
+        """`XINFO CONSUMERS` — 그룹의 소비자 목록(이름·pending·idle)."""
+        return list(self._consumers(name, groupname))
+
+
+def open_streams(redis_cfg: Any) -> ConsumerInfoStreams:
     """`AppConfig().redis` 설정으로 동기 클라이언트를 열어 읽기 전용 래퍼로 감싼다."""
     import redis
 
@@ -260,7 +308,7 @@ def open_streams(redis_cfg: Any) -> ReadOnlyStreams:
         socket_timeout=float(redis_cfg.socket_timeout),
         decode_responses=False,
     )
-    return ReadOnlyStreams(client)
+    return ConsumerInfoStreams(client)
 
 
 def _s(value: Any) -> str:
@@ -316,8 +364,40 @@ def read_stream(
     return out
 
 
+# 워커 소비자 이름(`noise_gate/application/alarm_worker.py` `_CONSUMER_NAME` 사본 — 워커 모듈은
+# 그래프·LLM 의존을 끌고 와 import하지 않는다). 이 이름만 그대로 싣고 그 밖은 `<other>`다 — 운영
+# 배포가 소비자 이름에 호스트명을 쓸 수 있다(§12.5 T4).
+KNOWN_CONSUMER_NAMES = frozenset({"worker-1"})
+
+
+def _num_or_none(value: object) -> int | None:
+    """수치면 int, 아니면 None(bool 제외)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
+def _consumer_details(streams: ConsumerInfoStreams, key: str, group: str) -> list[dict[str, Any]]:
+    """`XINFO CONSUMERS` → [{name(열거), pending, idle_ms, inactive_ms}] (§12.5 T4)."""
+    out: list[dict[str, Any]] = []
+    for c in streams.xinfo_consumers(key, group):
+        norm = {_s(k): v for k, v in c.items()}
+        name = _s(norm.get("name", ""))
+        out.append({
+            "name": name if name in KNOWN_CONSUMER_NAMES else OTHER,
+            "pending": _num_or_none(norm.get("pending")),
+            "idle_ms": _num_or_none(norm.get("idle")),
+            "inactive_ms": _num_or_none(norm.get("inactive")),
+        })
+    return out
+
+
 def _group_info(streams: ReadOnlyStreams, key: str, group: str) -> dict[str, Any]:
-    """소비자 그룹 요약 — 마지막 전달 id·대기·지연·소비자 수(소비자 이름은 싣지 않는다)."""
+    """소비자 그룹 요약 — 마지막 전달 id·대기·지연·소비자 수(소비자 이름은 열거 허용만).
+
+    (§12.5 T4) XPENDING 요약의 최소·최대 id(미판정 구간)를 더하고, `ConsumerInfoStreams`면
+    `XINFO CONSUMERS`의 소비자별 pending·idle을 `consumer_details`로 싣는다.
+    """
     info: dict[str, Any] = {"group_found": False}
     for g in streams.xinfo_groups(key):
         norm = {_s(k): v for k, v in g.items()}
@@ -334,6 +414,11 @@ def _group_info(streams: ReadOnlyStreams, key: str, group: str) -> dict[str, Any
         pend = {_s(k): v for k, v in streams.xpending(key, group).items()}
         info["xpending_count"] = int(pend.get("pending") or 0)
         info["xpending_consumers"] = len(pend.get("consumers") or [])
+        lo, hi = pend.get("min"), pend.get("max")
+        info["xpending_min_id"] = _s(lo) if lo is not None else None
+        info["xpending_max_id"] = _s(hi) if hi is not None else None
+        if isinstance(streams, ConsumerInfoStreams):
+            info["consumer_details"] = _consumer_details(streams, key, group)
         break
     return info
 
@@ -631,6 +716,10 @@ class PageEvent:
     r6_decidable: bool
     alarm_id: str = ""
     decision: NotificationDecision | None = None
+    # (§12.5 T6) 제니퍼 출처(해소 이벤트가 없는 출처 — F4 무소식 닫힘 대상) · W5 재판정 결과
+    # (티어 · `unreproducible` · 대상 아님 None).
+    silent: bool = False
+    apm_sev3: str | None = None
 
 
 def _host_key(d: Decision) -> tuple[str, str]:
@@ -673,6 +762,61 @@ def _as_notification(d: Decision) -> NotificationDecision:
         stage=d.stage or "",
         evidence=dict(d.evidence),
     )
+
+
+def _record_event(d: Decision) -> AlarmEvent:
+    """판정 레코드만으로 만든 최소 이벤트(원문 없음 — 출처 판별·도메인 재판정 입력)."""
+    rec = d.rec
+    severity = _int(d.signals.get("severity"), 0)
+    return AlarmEvent(
+        db_id=str(rec.get("db_id") or ""), server_name=str(rec.get("server_name") or ""),
+        hostname="", ip_address="", resource_ancestry="",
+        alarm_id=str(rec.get("alarm_id") or ""), severity=severity, alarm_status="",
+        resource_type="", resource_name=str(rec.get("resource_name") or ""),
+        alarm_name=str(rec.get("alarm_name") or ""), alarm_time=d.ts, conditions="",
+        condition_log="", is_clear=(severity == 0),
+    )
+
+
+def is_jennifer_decision(d: Decision) -> bool:
+    """판정 레코드의 출처가 제니퍼(APM)인가 — 행 `source`와 같은 `is_apm_source`(db_id 기준)."""
+    return is_apm_source(_record_event(d))
+
+
+def apm_sev3_label(d: Decision, *, jennifer: bool) -> str | None:
+    """(§12.5 T6 · D-336) 제니퍼 sev3 단락 PAGE를 W5 플래그 on으로 다시 판정한 티어.
+
+    도메인 `decide_notification`(`apm_sev3_policy_enabled=True`)을 판정 레코드의 신호로 다시
+    부른다 — 정책 표 `notify`는 기록된 `signals.noti_policy`, 적용 행은 근거 `apm_policy`다. 정책
+    표 적재 실패 근거(`policy_error`·빈 `policy_row`)면 수집 실패 경로(단락 PAGE)로 넘긴다.
+    대상이 아니면 None, 근거 `apm_policy`가 없거나 재판정이 심각도3 단계로 끝나지 않으면
+    `unreproducible`이다.
+    """
+    if not (jennifer and d.is_page and d.stage == STAGE_SEVERITY3):
+        return None
+    apm = d.evidence.get("apm_policy")
+    if not isinstance(apm, dict):
+        return APM_SEV3_UNREPRODUCIBLE
+    sig = d.signals
+    noise_ctx: dict[str, Any]
+    if apm.get("policy_error") or not apm.get("policy_row"):
+        noise_ctx = {"source": "unavailable"}
+    else:
+        noise_ctx = {
+            "source": NOISE_SOURCE_APM_POLICY,
+            "importance_id": sig.get("importance"),
+            "maintenance": sig.get("maintenance"),
+            "noti_policy": sig.get("noti_policy"),
+        }
+    ai = sig.get("ai_severity")
+    analysis = SimpleNamespace(
+        ai_message_severity=ai if isinstance(ai, int) and not isinstance(ai, bool) else None
+    )
+    out = decide_notification(_record_event(d), None, analysis, noise_ctx, _APM_SEV3_CONFIG,
+                              apm_policy=dict(apm))
+    if out.stage != STAGE_SEVERITY3:
+        return APM_SEV3_UNREPRODUCIBLE
+    return str(out.tier)
 
 
 def _kst_date(ts: float) -> str:
@@ -823,7 +967,11 @@ def generation_tier(ev: PageEvent, rule: str) -> str | None:
 
     R4: 수집 실패 보수화 PAGE · 실효 심각도 <3 → 매트릭스(심각도, 보통).
     R5: sev3 단락 · 원 심각도 <3 · 상향 출처가 LLM·이상탐지 → 원 심각도 매트릭스.
+    APM_SEV3_POLICY(§12.5 T6): 제니퍼 sev3 단락 → 도메인 재판정 티어(`apm_sev3_label` 결과 ·
+    재현 불가면 None).
     """
+    if rule == RULE_APM_SEV3:
+        return ev.apm_sev3 if ev.apm_sev3 in TIERS else None
     if rule == "R4" and ev.stage == STAGE_COLLECTION_FAILED and ev.eff_sev < 3:
         return _matrix_tier(ev.eff_sev, "보통")
     if (
@@ -879,6 +1027,8 @@ class RunResult:
     links: dict[int, tuple[str, str]] = field(default_factory=dict)
     orphans: int = 0
     evictions: int = 0
+    # (§12.5 T6) APM_SEV3_POLICY 재판정 불가(정책 경로 근거 없음) 원 PAGE 번호.
+    unreproducible: set[int] = field(default_factory=set)
 
 
 def _clear_decision(fp: str) -> NotificationDecision:
@@ -890,39 +1040,60 @@ def _clear_decision(fp: str) -> NotificationDecision:
 
 
 def simulate(
-    events: list[PageEvent], clears: dict[str, list[float]], rules: tuple[str, ...]
+    events: list[PageEvent],
+    clears: dict[str, list[float]],
+    rules: tuple[str, ...],
+    *,
+    idle_close_minutes: int = 0,
+    touches: Iterable[tuple[float, str]] = (),
 ) -> RunResult:
     """원 PAGE를 시각 순으로 훑으며 규칙 묶음을 적용한다.
 
-    순서: 생성 경로(R4·R5) → 도메인 재판정(R1~R3 · `PageRegistry`) → R6. 강등된 건은 대표가 되지
-    않는다(enforce 가정 — 도메인 강등은 레지스트리에 반복으로만 남고, 생성 경로·R6 강등은
-    레지스트리에 알리지 않는다). 끝나면 `verify_orphans`로 고아를 행 단위로 다시 센다.
+    순서: 생성 경로(R4·R5 · APM_SEV3_POLICY) → 도메인 재판정(R1~R3 · `PageRegistry`) → R6. 강등된
+    건은 대표가 되지 않는다(enforce 가정 — 도메인 강등은 레지스트리에 반복으로만 남고, 생성 경로·R6
+    강등은 레지스트리에 알리지 않는다). 끝나면 `verify_orphans`로 고아를 행 단위로 다시 센다.
+
+    (§12.5 F4) `idle_close_minutes` > 0이면 도메인 무소식 닫힘을 켠다 — 제니퍼 PAGE는
+    `silent_source=True`로 알리고, 같은 지문의 비-PAGE 이벤트·재발 기록(`touches` — (시각, 지문))
+    과 생성 경로 강등 건은 `touch`로 「봤음」을 알린다. 0(기본)이면 현행과 같다(인자도 넘기지
+    않는다).
     """
     result = RunResult()
 
     def _evicted(_what: str, count: int) -> None:
         result.evictions += count
 
+    idle_kw: dict[str, Any] = (
+        {"idle_close_minutes": idle_close_minutes} if idle_close_minutes > 0 else {}
+    )
     registry = PageRegistry(
         host_window_minutes=_SIM_CONFIG.page_review_host_window_minutes,
         fanout_window_minutes=_SIM_CONFIG.page_review_fanout_window_minutes,
         reminder_hours=_SIM_CONFIG.page_review_reminder_hours,
         reopen_quiet_minutes=_SIM_CONFIG.page_review_reopen_quiet_minutes,
         on_evict=_evicted,
+        **idle_kw,
     )
     timeline: list[tuple[float, int, Any]] = [(ev.ts, 1, ev) for ev in events]
     timeline += [(ts, 0, fp) for fp, values in clears.items() for ts in values]
+    if idle_kw:
+        timeline += [(ts, 0, (fp,)) for ts, fp in touches]
     timeline.sort(key=lambda t: (t[0], t[1]))
     enabled = frozenset(r for r in rules if r in DOMAIN_RULES)
     for ts, kind, item in timeline:
         if kind == 0:
+            if isinstance(item, tuple):
+                registry.touch(item[0], ts)
+                continue
             registry.observe(_clear_decision(item), fingerprint=item, host_key=("", ""),
                              fanout_key=("", ""), alarm_id="", now=ts)
             continue
         ev: PageEvent = item
         demoted_by: str | None = None
         label = "keep"
-        for rule in (r for r in rules if r in GENERATION_RULES):
+        for rule in (r for r in rules if r in _GENERATION_LIKE):
+            if rule == RULE_APM_SEV3 and ev.apm_sev3 == APM_SEV3_UNREPRODUCIBLE:
+                result.unreproducible.add(ev.idx)
             tier = generation_tier(ev, rule)
             label = "n/a" if tier is None else ("keep" if tier == TIER_PAGE else "demote")
             if label == "demote" and ev.app_fatal > 0:
@@ -950,8 +1121,11 @@ def simulate(
         if demoted_by is not None:
             result.demoted_by[ev.idx] = demoted_by
         if reviewed is not None and demoted_by in (None, *DOMAIN_RULES):
+            observe_kw: dict[str, Any] = {"silent_source": ev.silent} if idle_kw else {}
             registry.observe(reviewed, fingerprint=ev.fp, host_key=ev.host, fanout_key=ev.defn,
-                             alarm_id=ev.alarm_id, now=ev.ts)
+                             alarm_id=ev.alarm_id, now=ev.ts, **observe_kw)
+        elif idle_kw:
+            registry.touch(ev.fp, ev.ts)
     result.orphans = verify_orphans(events, result)
     return result
 
@@ -1002,6 +1176,65 @@ def run_whatif(
     return runs, per_row
 
 
+def run_scenarios(
+    events: list[PageEvent],
+    clears: dict[str, list[float]],
+    *,
+    idle_close_minutes: Iterable[int] = (),
+    touches: Iterable[tuple[float, str]] = (),
+) -> dict[str, RunResult]:
+    """(§12.5 T6) 추가 시나리오 — `SCENARIOS` 3종 + 무소식 닫힘 값(>0)별 R1~R3 누적 2종.
+
+    무소식 닫힘 0(기본)은 위 3종이 그 값이다. 값별 시나리오 이름은 `<시나리오>@idle=<분>m`.
+    """
+    out = {name: simulate(events, clears, rules) for name, rules in SCENARIOS.items()}
+    touch_list = list(touches)
+    for minutes in sorted({int(v) for v in idle_close_minutes if int(v) > 0}):
+        for name in _IDLE_SCENARIOS:
+            out[f"{name}@idle={minutes}m"] = simulate(
+                events, clears, SCENARIOS[name], idle_close_minutes=minutes, touches=touch_list,
+            )
+    return out
+
+
+def jennifer_event_intervals(
+    decisions: list[Decision],
+    recurrences: list[tuple[datetime, dict[str, Any]]],
+    *,
+    jennifer: Mapping[int, bool],
+    start: datetime,
+) -> dict[str, Any]:
+    """(§12.5 T6 · F4 값 근거) 제니퍼 같은 지문 이벤트 간격 분포 — 긴 창 안 판정(해소 제외 · 티어
+    무관)과 그 지문의 재발 억제 기록(`type="recurrence"`)을 시각 순으로 이어 잰다(초)."""
+    times: dict[str, list[float]] = defaultdict(list)
+    for d in decisions:
+        if d.ts >= start and jennifer.get(d.idx) and not d.is_clear and d.fingerprint:
+            times[d.fingerprint].append(d.ts.timestamp())
+    jennifer_fps = {d.fingerprint for d in decisions if jennifer.get(d.idx) and d.fingerprint}
+    rec_used = 0
+    for ts, rec in recurrences:
+        fp = str(rec.get("fingerprint") or "")
+        if ts >= start and fp in jennifer_fps:
+            times[fp].append(ts.timestamp())
+            rec_used += 1
+    gaps: list[int] = []
+    for values in times.values():
+        values.sort()
+        gaps += [int(b - a) for a, b in zip(values, values[1:])]
+    return {
+        "fingerprints": len(times),
+        "events": sum(len(v) for v in times.values()),
+        "recurrences_included": rec_used,
+        "gaps": len(gaps),
+        "p50_s": _percentile(gaps, 50),
+        "p90_s": _percentile(gaps, 90),
+        "p95_s": _percentile(gaps, 95),
+        "p99_s": _percentile(gaps, 99),
+        "max_s": max(gaps) if gaps else None,
+        "histogram": _histogram(gaps),
+    }
+
+
 # ── 집계 ──────────────────────────────────────────────────────────────────────
 S8_NOTES: tuple[str, ...] = (
     "R1~R3은 도메인 page_review(PageRegistry + review_page · enforce 가정)를 그대로 부른다. "
@@ -1038,6 +1271,151 @@ _COUNT_EDGES: tuple[tuple[float, str], ...] = (
     (2, "1"), (3, "2"), (4, "3"), (6, "4-5"), (11, "6-10"),
 )
 _CLUSTER_EDGES: tuple[tuple[float, str], ...] = ((3, "2"), (6, "3-5"), (11, "6-10"))
+# (§12.5 T6) 같은 지문 이벤트 간격 구간 — F4 무소식 닫힘 값 고르기용(30분 기본값 앞뒤를 잘게).
+_GAP_EDGES: tuple[tuple[float, str], ...] = (
+    (60, "<1분"), (300, "1~5분"), (900, "5~15분"), (1800, "15~30분"), (3600, "30분~1시간"),
+    (7200, "1~2시간"), (14400, "2~4시간"), (86400, "4~24시간"),
+)
+_GAP_LAST = "24시간+"
+S8_SCENARIO_NOTES: tuple[str, ...] = (
+    "추가 시나리오(scenarios)는 기존 rules와 따로 센다 — orphans_total·registry_evictions는 "
+    "rules만의 합이다.",
+    "APM_SEV3_POLICY: 제니퍼 sev3 단락 PAGE를 도메인 decide_notification"
+    "(apm_sev3_policy_enabled=True)으로 다시 판정한다 — 정책 표 notify: page 유형만 PAGE, 그 밖 "
+    "TICKET(D-336). 판정 레코드에 정책 경로 근거(apm_policy)가 없으면 재현 불가(unreproducible)로 "
+    "세고 PAGE로 둔다.",
+    "R1~R3: 생성 경로·R6 없이 도메인 재판정만 누적한 값(기존 cumulative와 다르다).",
+    "@idle=<분>m: 무소식 닫힘(page_review_idle_close_minutes) — 제니퍼 지문은 마지막 이벤트"
+    "(비-PAGE 판정·재발 억제 포함) 뒤 그 시간 동안 소식이 없으면 닫힌 사건으로 본다.",
+)
+
+
+def _histogram(values: list[int]) -> dict[str, int]:
+    """간격(초) → 고정 구간 건수(빈 구간 포함 · 구간 순서)."""
+    counts = Counter(_bucket(v, _GAP_EDGES, _GAP_LAST) for v in values)
+    labels = [label for _, label in _GAP_EDGES] + [_GAP_LAST]
+    return {label: counts.get(label, 0) for label in labels}
+
+
+def _source_key(row: Mapping[str, Any]) -> str:
+    """집계 키용 출처 — 코드 열거(폴스타·제니퍼)만, 그 밖은 `<other>`."""
+    src = row.get("source")
+    return str(src) if src in (SOURCE_POLESTAR, SOURCE_JENNIFER) else OTHER
+
+
+def _hour_of(text: object) -> str | None:
+    """KST ISO 문자열 → `YYYY-MM-DDTHH`(KST)."""
+    parsed = _parse_ts(text)
+    return parsed.astimezone(KST).strftime("%Y-%m-%dT%H") if parsed is not None else None
+
+
+def _hourly_match(
+    received: list[dict[str, Any]], short: list[dict[str, Any]]
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """(§12.5 T4) 시간대별 맞대기 비율과 판정 공백 구간.
+
+    맞대기 = 수신 시각 시간대별 처분 `decided`+`dedup_fingerprint` / 수신. 공백 = 수신이 있는데 그
+    시간대에 판정·재발 기록(행의 판정 시각 기준 · 수신 없는 판정 포함)이 하나도 없는 연속 시간대.
+    """
+    recv: Counter[str] = Counter()
+    matched: Counter[str] = Counter()
+    for r in received:
+        hour = _hour_of(r.get("recv_ts"))
+        if hour is None:
+            continue
+        recv[hour] += 1
+        if r.get("disposition") in ("decided", "dedup_fingerprint"):
+            matched[hour] += 1
+    active = Counter(h for h in (_hour_of(r.get("decision_ts")) for r in short) if h)
+    hourly = {
+        h: {"received": recv[h], "decided_or_dedup": matched[h],
+            "ratio": round(matched[h] / recv[h], 3)}
+        for h in sorted(recv)
+    }
+    gaps: list[dict[str, Any]] = []
+    for h in sorted(recv):
+        if active.get(h):
+            continue
+        start = datetime.strptime(h, "%Y-%m-%dT%H").replace(tzinfo=KST)
+        last = gaps[-1] if gaps else None
+        if last is not None and last["_end"] == start:
+            last["_end"] = start + timedelta(hours=1)
+            last["hours"] += 1
+            last["received"] += recv[h]
+            continue
+        gaps.append({"_start": start, "_end": start + timedelta(hours=1), "hours": 1,
+                     "received": recv[h]})
+    return hourly, [
+        {"start": g["_start"].strftime("%Y-%m-%dT%H:00"),
+         "end": g["_end"].strftime("%Y-%m-%dT%H:00"), "hours": g["hours"],
+         "received": g["received"]}
+        for g in gaps
+    ]
+
+
+def _clear_dist(pages: list[dict[str, Any]]) -> dict[str, int]:
+    """PAGE 후 해소까지 구간 분포(미해소 포함)."""
+    return dict(Counter(
+        "미해소" if not isinstance(r.get("clear_after_s"), (int, float))
+        else _bucket(float(r["clear_after_s"]), _CLEAR_EDGES, "1시간+")
+        for r in pages
+    ))
+
+
+def _fp_stability(decided: list[dict[str, Any]]) -> dict[str, int]:
+    """S9 지문 안정성 4종(같은 호스트·알람명 다중 지문 · 정규화 알람명 병합)."""
+    fps_by_group: dict[tuple[str, str], set[str]] = defaultdict(set)
+    defs_by_norm: dict[str, set[str]] = defaultdict(set)
+    for r in decided:
+        if r.get("fp"):
+            fps_by_group[(str(r.get("host")), str(r.get("alarm_name_norm")))].add(str(r["fp"]))
+        if r.get("alarm_def"):
+            defs_by_norm[str(r.get("alarm_name_norm"))].add(str(r["alarm_def"]))
+    unstable = [v for v in fps_by_group.values() if len(v) >= 2]
+    merged = [v for v in defs_by_norm.values() if len(v) >= 2]
+    return {
+        "host_name_groups_multi_fp": len(unstable),
+        "fps_in_those_groups": sum(len(v) for v in unstable),
+        "norm_names_merging_defs": len(merged),
+        "alarm_defs_merged": sum(len(v) for v in merged),
+    }
+
+
+def _jennifer_fp_sources(decided: list[dict[str, Any]]) -> dict[str, int]:
+    """(§12.5 T3) 제니퍼 지문 원천(db_id·정규화 유형·인스턴스) 단위 지문 수.
+
+    유형은 근거 `apm_policy.event_type_norm`(없으면 `alarm_def`), 인스턴스는 `xs.inst`(`I-`)다.
+    같은 원천에 지문 2개 이상이면 호스트 쪽 값이 흔들린 것이다(H8). 같은 호스트·알람명 다중 지문
+    묶음 중 인스턴스 수가 지문 수 이상인 묶음은 인스턴스 단위 지문으로 설명된다.
+    """
+    by_source: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    by_host: dict[tuple[str, str], tuple[set[str], set[str]]] = defaultdict(lambda: (set(), set()))
+    no_inst = 0
+    for r in decided:
+        fp = r.get("fp")
+        if not fp:
+            continue
+        xs_val = r.get("xs")
+        inst = xs_val.get("inst") if isinstance(xs_val, dict) else None
+        apm = (r.get("evidence") or {}).get("apm_policy") or {}
+        etype = apm.get("event_type_norm") or r.get("alarm_def")
+        fps, insts = by_host[(str(r.get("host")), str(r.get("alarm_name_norm")))]
+        fps.add(str(fp))
+        if not inst:
+            no_inst += 1
+            continue
+        insts.add(str(inst))
+        by_source[(str(r.get("db_id")), str(etype), str(inst))].add(str(fp))
+    multi = [v for v in by_source.values() if len(v) >= 2]
+    return {
+        "fp_source_groups": len(by_source),
+        "fp_source_groups_multi_fp": len(multi),
+        "fps_in_those_groups": sum(len(v) for v in multi),
+        "rows_without_instance": no_inst,
+        "host_name_groups_multi_fp_explained_by_instances": sum(
+            1 for fps, insts in by_host.values() if len(fps) >= 2 and len(insts) >= len(fps)
+        ),
+    }
 
 
 def _percentile(values: list[int], pct: float) -> int | None:
@@ -1068,6 +1446,31 @@ def _sorted_counter(counter: Mapping[str, int]) -> dict[str, int]:
     return dict(sorted(counter.items(), key=lambda kv: (-kv[1], kv[0])))
 
 
+def _run_summary(
+    run: RunResult, row_of_idx: Mapping[int, dict[str, Any]], base_short: int,
+    long_days: int | None,
+) -> dict[str, Any]:
+    """규칙 묶음 1회 결과 → S8 한 줄(짧은 창 남는 PAGE · 강등 · 긴 창 일평균 · 판정 불가 · 고아)."""
+    kept_short = sum(1 for idx, r in row_of_idx.items()
+                     if r.get("in_hours_window") and idx not in run.demoted_by)
+    kept_long = sum(1 for idx in row_of_idx if idx not in run.demoted_by)
+    stages = Counter(
+        str(row_of_idx[idx].get("stage") or STAGE_UNKNOWN)
+        for idx in run.demoted_by
+        if idx in row_of_idx and row_of_idx[idx].get("in_hours_window")
+    )
+    return {
+        "pages_after": kept_short,
+        "demoted": base_short - kept_short,
+        "daily_avg_long": round(kept_long / long_days, 2) if long_days else None,
+        "demoted_origin_stage": _sorted_counter(stages),
+        "undecidable": sum(1 for idx, lab in run.labels.items()
+                           if lab == "undecidable" and idx in row_of_idx
+                           and row_of_idx[idx].get("in_hours_window")),
+        "orphans": run.orphans,
+    }
+
+
 def summarize(
     rows: list[dict[str, Any]],
     *,
@@ -1075,8 +1478,13 @@ def summarize(
     runs: dict[str, RunResult],
     page_idx_of_row: dict[int, int],
     stats: dict[str, Any],
+    scenarios: dict[str, RunResult] | None = None,
 ) -> dict[str, Any]:
-    """집계 S0~S10(§10.6). 비식별 행만 입력으로 쓴다(what-if 묶음 검증 수치는 시뮬레이션에서)."""
+    """집계 S0~S10(§10.6). 비식별 행만 입력으로 쓴다(what-if 묶음 검증 수치는 시뮬레이션에서).
+
+    (§12.5 W0-T) 기존 키는 그대로 두고 S1(소비 공백)·S6(출처별)·S8(추가 시나리오 · 제니퍼 간격)·
+    S9(출처별 · 제니퍼 지문 원천)·S10(이름 붙인 근거 키)에 키를 더한다.
+    """
     short = [r for r in rows if r.get("in_hours_window")]
     decided = [r for r in short if r.get("tier")]
     pages = [r for r in decided if _is_page(r)]
@@ -1106,6 +1514,11 @@ def summarize(
             stats.get("recurrence_without_raw", 0) if stream_read else None
         ),
     }
+    # (§12.5 T4) 소비 공백 — XPENDING 미판정 · 시간대별 맞대기 비율 · 판정 공백 구간.
+    hourly_match, gaps = _hourly_match(received, short)
+    s["S1"]["delivered_unacked"] = stats.get("delivered_unacked") if stream_read else None
+    s["S1"]["hourly_match"] = hourly_match if stream_read else None
+    s["S1"]["decision_gaps"] = gaps if stream_read else None
 
     # S2 티어×단계
     stage_names = [*STAGE_ORDER, STAGE_UNKNOWN]
@@ -1245,11 +1658,29 @@ def summarize(
                "bursts": bursts[:50]}
 
     # S6 해소
-    s["S6"] = {"clear_after_dist": dict(Counter(
-        "미해소" if not isinstance(r.get("clear_after_s"), (int, float))
-        else _bucket(float(r["clear_after_s"]), _CLEAR_EDGES, "1시간+")
-        for r in pages
-    ))}
+    s["S6"] = {"clear_after_dist": _clear_dist(pages)}
+    # (§12.5 T2) 출처별 — 해소 이벤트가 없는 출처(제니퍼)는 구조적으로 미해소다.
+    pages_by_src: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in pages:
+        pages_by_src[_source_key(r)].append(r)
+    seen_sources = sorted({_source_key(r) for r in rows if r.get("source")})
+    clears_by_src = Counter(
+        _source_key(r) for r in rows
+        if r.get("source") and (r.get("is_clear") or r.get("stage") in _CLEAR_STAGES)
+    )
+    s["S6"]["by_source"] = {
+        src: {
+            "pages": len(items),
+            "unresolved": sum(1 for r in items
+                              if not isinstance(r.get("clear_after_s"), (int, float))),
+            "clear_after_dist": _clear_dist(items),
+        }
+        for src, items in sorted(pages_by_src.items())
+    }
+    s["S6"]["clear_events_by_source_long"] = {src: clears_by_src.get(src, 0)
+                                              for src in seen_sources}
+    s["S6"]["sources_without_clear_events"] = [src for src in seen_sources
+                                               if not clears_by_src.get(src)]
 
     # S7 만성(긴 창)
     days_by_fp: dict[str, set[str]] = defaultdict(set)
@@ -1274,26 +1705,9 @@ def summarize(
     row_of_idx = {idx: rows[r_i] for r_i, idx in page_idx_of_row.items()}
     base_short = sum(1 for idx, r in row_of_idx.items() if r.get("in_hours_window"))
     base_long = len(row_of_idx)
-    what: dict[str, Any] = {}
-    for name, run in runs.items():
-        kept_short = sum(1 for idx, r in row_of_idx.items()
-                         if r.get("in_hours_window") and idx not in run.demoted_by)
-        kept_long = sum(1 for idx in row_of_idx if idx not in run.demoted_by)
-        stages = Counter(
-            str(row_of_idx[idx].get("stage") or STAGE_UNKNOWN)
-            for idx in run.demoted_by
-            if idx in row_of_idx and row_of_idx[idx].get("in_hours_window")
-        )
-        what[name] = {
-            "pages_after": kept_short,
-            "demoted": base_short - kept_short,
-            "daily_avg_long": round(kept_long / long_days, 2) if long_days else None,
-            "demoted_origin_stage": _sorted_counter(stages),
-            "undecidable": sum(1 for idx, lab in run.labels.items()
-                               if lab == "undecidable" and idx in row_of_idx
-                               and row_of_idx[idx].get("in_hours_window")),
-            "orphans": run.orphans,
-        }
+    what: dict[str, Any] = {
+        name: _run_summary(run, row_of_idx, base_short, long_days) for name, run in runs.items()
+    }
     s["S8"] = {
         "pages_before": base_short,
         "daily_avg_long_before": round(base_long / long_days, 2) if long_days else None,
@@ -1309,23 +1723,33 @@ def summarize(
         "r6_feedback_exclusion": "범위 밖(피드백 파일 미독)",
         "notes": list(S8_NOTES),
     }
+    # (§12.5 T6) 추가 시나리오 · 제니퍼 같은 지문 이벤트 간격(F4 근거).
+    s["S8"]["scenarios"] = {
+        name: {
+            **_run_summary(run, row_of_idx, base_short, long_days),
+            "unreproducible": sum(1 for idx in run.unreproducible
+                                  if idx in row_of_idx
+                                  and row_of_idx[idx].get("in_hours_window")),
+            "registry_evictions": run.evictions,
+        }
+        for name, run in (scenarios or {}).items()
+    }
+    s["S8"]["scenario_params"] = {
+        "idle_close_minutes": [0, *stats.get("idle_close_minutes", [])],
+        "apm_sev3_policy": "decide_notification(apm_sev3_policy_enabled=True)",
+    }
+    s["S8"]["jennifer_event_intervals"] = stats.get("jennifer_intervals")
+    s["S8"]["scenario_notes"] = list(S8_SCENARIO_NOTES)
 
     # S9 지문 안정성
-    fps_by_group: dict[tuple[str, str], set[str]] = defaultdict(set)
-    defs_by_norm: dict[str, set[str]] = defaultdict(set)
+    s["S9"] = _fp_stability(decided)
+    # (§12.5 T3) 출처별 · 제니퍼 지문 원천(유형·인스턴스) 단위.
+    decided_by_src: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in decided:
-        if r.get("fp"):
-            fps_by_group[(str(r.get("host")), str(r.get("alarm_name_norm")))].add(str(r["fp"]))
-        if r.get("alarm_def"):
-            defs_by_norm[str(r.get("alarm_name_norm"))].add(str(r["alarm_def"]))
-    unstable = [v for v in fps_by_group.values() if len(v) >= 2]
-    merged = [v for v in defs_by_norm.values() if len(v) >= 2]
-    s["S9"] = {
-        "host_name_groups_multi_fp": len(unstable),
-        "fps_in_those_groups": sum(len(v) for v in unstable),
-        "norm_names_merging_defs": len(merged),
-        "alarm_defs_merged": sum(len(v) for v in merged),
-    }
+        decided_by_src[_source_key(r)].append(r)
+    s["S9"]["by_source"] = {src: _fp_stability(items)
+                            for src, items in sorted(decided_by_src.items())}
+    s["S9"]["jennifer_fp_source"] = _jennifer_fp_sources(decided_by_src.get(SOURCE_JENNIFER, []))
 
     # S10 데이터 품질
     s["S10"] = {
@@ -1340,6 +1764,10 @@ def summarize(
             "polestar_db·cache는 감사 레코드로 가릴 수 없음(apm_policy·unavailable만)"
         ),
         "notes": list(S10_NOTES),
+    }
+    # (§12.5 T5) 이름 붙여 싣는 근거 키(가명 값) — 종전에는 `<unknown_key>`로 버려 셌다.
+    s["S10"]["named_evidence_keys"] = {
+        "episode_id": sum(1 for r in rows if "episode_id" in (r.get("evidence") or {})),
     }
     return s
 
@@ -1358,6 +1786,79 @@ def _md_counter(title: str, counter: Mapping[str, Any]) -> list[str]:
     if not counter:
         return [f"- {title}: 없음", ""]
     return [f"**{title}**", "", *_md_table(["항목", "건수"], counter.items()), ""]
+
+
+def _md_consumption(s1: Mapping[str, Any]) -> list[str]:
+    """(§12.5 T4) S1 소비 공백 — XPENDING 미판정 · 시간대별 맞대기 · 판정 공백 구간."""
+    if s1.get("hourly_match") is None:
+        return []
+    lines: list[str] = []
+    unacked = s1.get("delivered_unacked") or {}
+    in_range = unacked.get("unaccounted_in_pending_range")
+    lines += [f"- 전달 뒤 미판정(XPENDING · 그룹 전체) {unacked.get('xpending_total')}건 · 그중 "
+              f"이번 창 미설명 처분이 미판정 id 구간 안 {in_range}건", ""]
+    lines += ["**시간대별 맞대기(판정+재발 / 수신)**", ""]
+    lines += _md_table(["시간대(KST)", "수신", "판정+재발", "비율"], [
+        (h, v["received"], v["decided_or_dedup"], v["ratio"])
+        for h, v in s1["hourly_match"].items()
+    ]) + [""]
+    gaps = s1.get("decision_gaps") or []
+    if not gaps:
+        return lines + ["- 판정 공백 구간(수신 있고 판정·재발 0): 없음", ""]
+    lines += ["**판정 공백 구간(수신 있고 판정·재발 0인 연속 시간대)**", ""]
+    return lines + _md_table(["시작", "끝", "시간", "수신"], [
+        (g["start"], g["end"], g["hours"], g["received"]) for g in gaps
+    ]) + [""]
+
+
+def _md_s6_sources(s6: Mapping[str, Any]) -> list[str]:
+    """(§12.5 T2) S6 출처별 해소."""
+    if "by_source" not in s6:
+        return []
+    lines = _md_table(["출처", "PAGE", "미해소", "해소 분포"], [
+        (src, v["pages"], v["unresolved"],
+         ", ".join(f"{k}:{n}" for k, n in v["clear_after_dist"].items()))
+        for src, v in s6["by_source"].items()
+    ]) + [""]
+    lines += _md_counter("긴 창 해소 이벤트(출처별)", s6["clear_events_by_source_long"])
+    none = ", ".join(s6["sources_without_clear_events"]) or "없음"
+    return lines + [f"- 해소 이벤트 0건 출처(구조적 미해소): {none}", ""]
+
+
+def _md_s8_scenarios(s8: Mapping[str, Any]) -> list[str]:
+    """(§12.5 T6) S8 추가 시나리오 · 제니퍼 같은 지문 이벤트 간격."""
+    if "scenarios" not in s8:
+        return []
+    lines = ["**추가 시나리오(W0-T)**", ""]
+    lines += _md_table(
+        ["시나리오", "남는 PAGE", "강등", "긴 창 일평균", "재현 불가", "고아", "강등 원 단계"], [
+            (name, v["pages_after"], v["demoted"], v["daily_avg_long"], v["unreproducible"],
+             v["orphans"], ", ".join(f"{k}:{n}" for k, n in v["demoted_origin_stage"].items()))
+            for name, v in s8["scenarios"].items()
+        ]) + [""]
+    idle = ", ".join(str(v) for v in s8["scenario_params"]["idle_close_minutes"])
+    lines += [f"- 무소식 닫힘(분): {idle}", ""]
+    gaps = s8.get("jennifer_event_intervals")
+    if gaps:
+        lines += [f"- 제니퍼 같은 지문 이벤트 간격: 지문 {gaps['fingerprints']}개 · 이벤트 "
+                  f"{gaps['events']}건(재발 억제 {gaps['recurrences_included']}건 포함) · 간격 "
+                  f"{gaps['gaps']}개 · p50 {gaps['p50_s']}초 · p90 {gaps['p90_s']}초 · p95 "
+                  f"{gaps['p95_s']}초 · p99 {gaps['p99_s']}초 · 최대 {gaps['max_s']}초", ""]
+        lines += _md_counter("제니퍼 같은 지문 이벤트 간격 구간", gaps["histogram"])
+    return lines + [f"- 주: {note}" for note in s8["scenario_notes"]] + [""]
+
+
+def _md_s9_sources(s9: Mapping[str, Any]) -> list[str]:
+    """(§12.5 T3) S9 출처별 · 제니퍼 지문 원천."""
+    if "by_source" not in s9:
+        return []
+    keys = ["host_name_groups_multi_fp", "fps_in_those_groups", "norm_names_merging_defs",
+            "alarm_defs_merged"]
+    lines = _md_table(["출처", *keys], [
+        (src, *(v[k] for k in keys)) for src, v in s9["by_source"].items()
+    ]) + [""]
+    return lines + ["**제니퍼 지문 원천(유형·인스턴스) 단위**", "",
+                    *_md_table(["항목", "값"], s9["jennifer_fp_source"].items()), ""]
 
 
 def render_md(summary: dict[str, Any]) -> str:
@@ -1393,6 +1894,7 @@ def render_md(summary: dict[str, Any]) -> str:
     lines += _md_counter("심각도별", s1["by_severity"])
     lines += _md_counter("db_id별", s1["by_db_id"])
     lines += _md_counter("출처별", s1["by_source"])
+    lines += _md_consumption(s1)
     lines += ["## S2 티어×단계", ""]
     lines += _md_table(["단계", *TIERS], [
         (st, *(v[t] for t in TIERS)) for st, v in s2["tier_by_stage"].items() if any(v.values())
@@ -1427,6 +1929,7 @@ def render_md(summary: dict[str, Any]) -> str:
         (b["minute"], b["pages"], b["gap_before_s"]) for b in s5["bursts"]
     ]) + [""]
     lines += ["## S6 해소", "", *_md_counter("PAGE 후 해소까지", s6["clear_after_dist"])]
+    lines += _md_s6_sources(s6)
     lines += ["## S7 만성", "", f"- 긴 창 {s7['window_days']}일 · PAGE ≥{R6_CHRONIC_DAYS}일 지문 "
               f"{s7['chronic_fps']}개 · 그 PAGE {s7['chronic_pages']}건", ""]
     lines += _md_counter("지문별 PAGE 일수", s7["page_days_dist"])
@@ -1440,7 +1943,11 @@ def render_md(summary: dict[str, Any]) -> str:
         for name, v in s8["rules"].items()
     ]) + [""]
     lines += [f"- 주: {note}" for note in s8["notes"]] + [""]
-    lines += ["## S9 지문 안정성", "", *_md_table(["항목", "값"], s9.items()), ""]
+    lines += _md_s8_scenarios(s8)
+    lines += ["## S9 지문 안정성", "", *_md_table(
+        ["항목", "값"], [(k, v) for k, v in s9.items() if not isinstance(v, dict)]
+    ), ""]
+    lines += _md_s9_sources(s9)
     lines += ["## S10 데이터 품질", ""]
     lines += _md_table(["항목", "값"], [
         ("단계 라벨 없는 판정", s10["decisions_without_stage"]),
@@ -1449,6 +1956,8 @@ def render_md(summary: dict[str, Any]) -> str:
         ("noise_ctx 출처 한계", s10["noise_ctx_source_limit"]),
     ]) + [""]
     lines += _md_counter("버린 근거 키(이름만)", s10["dropped_evidence_keys"])
+    if s10.get("named_evidence_keys"):
+        lines += _md_counter("이름 붙여 싣는 근거 키(값은 가명)", s10["named_evidence_keys"])
     lines += _md_counter("기타 레코드 유형", s10["other_record_types"])
     excluded = ", ".join(s10["policy_excluded_fields"]) or "없음"
     lines += [f"- 정책 스냅샷 제외(민감 이름): {excluded}", ""]
@@ -1669,6 +2178,8 @@ def run_audit(
     key: bytes | None = None,
     sanitizer_cls: type[Sanitizer] = Sanitizer,
     max_stream_entries: int | None = DEFAULT_MAX_STREAM_ENTRIES,
+    idle_close_minutes: Iterable[int] = (),
+    policy_path: Path | None = None,
 ) -> AuditResult:
     """분석 로그 1회 실행 — 모든 산출물을 메모리에서 만든 뒤 누출 검사를 통과해야만 쓴다.
 
@@ -1683,6 +2194,9 @@ def run_audit(
         key: 가명 키(시험용 주입 · 기본 실행 단위 난수 — 어디에도 쓰지 않는다).
         sanitizer_cls: 허용 목록 변환기(누출 검사가 닫히는지 시험할 때만 바꾼다).
         max_stream_entries: 스트림별 읽기 상한(넘으면 `StreamLimitError`).
+        idle_close_minutes: (§12.5 F4) S8 추가 시나리오의 무소식 닫힘 값(분 · 0 초과만 · 0은 늘
+            포함).
+        policy_path: 제니퍼 유형 정책 표(기본 `config/apm_noise_policy.yaml` — T1 키 대조).
     """
     end = (now or datetime.now(UTC)).astimezone(UTC)
     long_hours = max(float(hours), float(days or 0) * 24.0)
@@ -1756,7 +2270,11 @@ def run_audit(
     xsource.collect_identifiers(idents, (r.payload for r in raws), (d.rec for d in audit.decisions),
                                 apm_sources=reg_apm_sources)
     pseudo = Pseudonymizer(key if key is not None else new_run_key())
-    sanitizer = sanitizer_cls(pseudo, idents, db_ids=reg_db_ids, apm_sources=reg_apm_sources)
+    policy_keys, policy_loaded = policy_table_keys(policy_path)
+    # (§12.5 T1) 정규화 유형 판정용 식별자 — 정적 어휘를 걸러 낸 사본(누출 검사 집합은 그대로).
+    type_idents = idents.without_vocabulary("\n".join(vocabulary_words()))
+    sanitizer = sanitizer_cls(pseudo, idents, db_ids=reg_db_ids, apm_sources=reg_apm_sources,
+                              policy_keys=policy_keys, type_identifiers=type_idents)
     zones: dict[str, str] = {}
 
     def zone_of(db_id: str) -> str:
@@ -1784,6 +2302,25 @@ def run_audit(
             ev.boost_origin = boost_origin(d, str(d.rec.get("condition_log") or "") or None)
 
     runs, whatif = run_whatif(events, clears)
+
+    # (§12.5 T6 · F4) 추가 시나리오 — 출처(제니퍼 = 해소 이벤트 없는 출처) · W5 도메인 재판정.
+    apm_db: dict[str, bool] = {}
+    jennifer: dict[int, bool] = {}
+    for d in audit.decisions:
+        db = str(d.rec.get("db_id") or "")
+        if db not in apm_db:
+            apm_db[db] = is_jennifer_decision(d)
+        jennifer[d.idx] = apm_db[db]
+    for ev in events:
+        d = audit.decisions[ev.idx]
+        ev.silent = jennifer[d.idx]
+        ev.apm_sev3 = apm_sev3_label(d, jennifer=jennifer[d.idx])
+    idle_values = sorted({int(v) for v in idle_close_minutes if int(v) > 0})
+    touches = [(d.ts.timestamp(), d.fingerprint) for d in audit.decisions
+               if jennifer[d.idx] and not d.is_page and not d.is_clear and d.fingerprint]
+    touches += [(ts.timestamp(), str(r.get("fingerprint") or "")) for ts, r in audit.recurrences
+                if r.get("fingerprint")]
+    scenarios = run_scenarios(events, clears, idle_close_minutes=idle_values, touches=touches)
     page_idx_of_row: dict[int, int] = {}
     for i, (ctx, m) in enumerate(zip(contexts, matched)):
         if m.decision is not None and m.decision.idx in whatif:
@@ -1792,9 +2329,32 @@ def run_audit(
 
     rows = [sanitizer.row(ctx) for ctx in contexts]
 
+    # (§11 W0-X) 폴스타↔APM 상관 진단 — 행 `xs` · S11~S14 · 정책 스냅샷 `cross_source`.
+    # (§12.5 T3) S9 제니퍼 지문 원천이 `xs.inst`를 읽으므로 집계 전에 붙인다.
+    xs_args: dict[str, Any] = {
+        "config": ng_cfg, "pseudo": pseudo, "stream_read": streams is not None,
+        "late_promotions": audit.late_promotions,
+        "window_seconds": (end - long_start).total_seconds(),
+        "dedup_window_seconds": float(
+            getattr(ng_cfg, "repeat_interval_seconds", DEDUP_WINDOW_DEFAULT_S)
+        ),
+    }
+    xs = xsource.analyze(
+        [xsource.XsItem(
+            event=m.raw.event if m.raw is not None else None,
+            rec=m.decision.rec if m.decision is not None else {},
+            ts=m.decision.ts if m.decision is not None else _when(m),
+            decided=m.decision is not None,
+        ) for m in matched],
+        recurrences=recs, **xs_args,
+    )
+    for row, xs_row in zip(rows, xs.rows, strict=True):
+        row["xs"] = xs_row
+
     snapshot = policy_snapshot(config)
     if group_info is not None:
         snapshot["stream"] = group_info
+    snapshot["apm_policy_table"] = {"loaded": policy_loaded, "type_keys": len(policy_keys)}
     inputs = {
         "audit_lines": audit.lines,
         "decisions": len(audit.decisions),
@@ -1836,29 +2396,14 @@ def run_audit(
         "policy_omitted": snapshot["omitted"],
         "bad_lines": audit.bad_lines,
         "other_types": _sorted_counter(_relabel(audit.other_types)),
-    }
-    summary = summarize(rows, meta=meta, runs=runs, page_idx_of_row=page_idx_of_row, stats=stats)
-
-    # (§11 W0-X) 폴스타↔APM 상관 진단 — 행 `xs` · S11~S14 · 정책 스냅샷 `cross_source`.
-    xs_args: dict[str, Any] = {
-        "config": ng_cfg, "pseudo": pseudo, "stream_read": streams is not None,
-        "late_promotions": audit.late_promotions,
-        "window_seconds": (end - long_start).total_seconds(),
-        "dedup_window_seconds": float(
-            getattr(ng_cfg, "repeat_interval_seconds", DEDUP_WINDOW_DEFAULT_S)
+        "delivered_unacked": _delivered_unacked(group_info, matched, hours_start),
+        "idle_close_minutes": idle_values,
+        "jennifer_intervals": jennifer_event_intervals(
+            audit.decisions, audit.recurrences, jennifer=jennifer, start=long_start
         ),
     }
-    xs = xsource.analyze(
-        [xsource.XsItem(
-            event=m.raw.event if m.raw is not None else None,
-            rec=m.decision.rec if m.decision is not None else {},
-            ts=m.decision.ts if m.decision is not None else _when(m),
-            decided=m.decision is not None,
-        ) for m in matched],
-        recurrences=recs, **xs_args,
-    )
-    for row, xs_row in zip(rows, xs.rows, strict=True):
-        row["xs"] = xs_row
+    summary = summarize(rows, meta=meta, runs=runs, page_idx_of_row=page_idx_of_row, stats=stats,
+                        scenarios=scenarios)
     snapshot["cross_source"] = xs.snapshot
     summary.update(xs.sections)
     if xs.v0_actual_mismatch:
@@ -1874,7 +2419,8 @@ def run_audit(
 
     # 코드가 내는 고정 어휘(빈 입력 산출물 · 라벨)와 같은 식별자는 출력과 구별할 수 없어 뺀다.
     # 규칙 표 해시는 제외 재료가 아니다(64 hex 안에 짧은 식별자가 우연히 들어 있을 수 있다).
-    empty = summarize([], meta=meta, runs={}, page_idx_of_row={}, stats=stats)
+    empty = summarize([], meta=meta, runs={}, page_idx_of_row={}, stats=stats,
+                      scenarios={name: RunResult() for name in scenarios})
     empty.update(xsource.without_rules_hash(xsource.analyze([], **xs_args).sections))
     snapshot_vocab = {**snapshot, "cross_source": xsource.without_rules_hash(xs.snapshot)}
     idents.exclude_vocabulary("\n".join([
@@ -1886,6 +2432,41 @@ def run_audit(
     leak = leak_check(files, idents, pseudo.emitted)
     out_dir = write_outputs(out_root, end, files, leak)
     return AuditResult(0 if leak["passed"] else 2, out_dir, leak)
+
+
+def policy_table_keys(path: Path | None = None) -> tuple[frozenset[str], bool]:
+    """제니퍼 유형 정책 표 키(정규화 유형 · `default` 포함)와 적재 성공 여부(§12.5 T1).
+
+    워커와 같은 적재 함수(`load_policy`)를 쓴다. 실패하면 빈 집합 — 모든 유형이 「표 밖」이다.
+    """
+    try:
+        policy = load_policy(path or DEFAULT_POLICY_PATH)
+    except Exception:  # noqa: BLE001 — 파일 없음·YAML·스키마 오류는 「적재 실패」로만 싣는다
+        return frozenset(), False
+    return frozenset(policy.types), True
+
+
+def _delivered_unacked(
+    group_info: Mapping[str, Any] | None, matched: list[Matched], hours_start: datetime
+) -> dict[str, Any] | None:
+    """(§12.5 T4) 전달 뒤 미판정 — XPENDING 그룹 전체 건수 · 짧은 창 미설명 처분 중 미판정 id
+    구간(최소~최대) 안 건수(처분은 바꾸지 않는다 — 상한 추정)."""
+    if group_info is None:
+        return None
+    if not group_info.get("group_found"):
+        return {"xpending_total": None, "unaccounted_in_pending_range": None}
+    total = group_info.get("xpending_count")
+    lo, hi = group_info.get("xpending_min_id"), group_info.get("xpending_max_id")
+    in_range = 0
+    if lo and hi:
+        lo_id, hi_id = _parse_stream_id(str(lo)), _parse_stream_id(str(hi))
+        in_range = sum(
+            1 for m in matched
+            if m.disposition == "unaccounted" and m.raw is not None
+            and m.raw.recv_ts >= hours_start
+            and lo_id <= _parse_stream_id(m.raw.stream_id) <= hi_id
+        )
+    return {"xpending_total": total, "unaccounted_in_pending_range": in_range}
 
 
 def _relabel(counter: Counter[str]) -> Counter[str]:
@@ -1948,6 +2529,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-stream-entries", type=int, default=DEFAULT_MAX_STREAM_ENTRIES,
                         help=f"스트림별 읽기 상한(기본 {DEFAULT_MAX_STREAM_ENTRIES:,}) — "
                              "넘으면 중단")
+    parser.add_argument("--idle-close-minutes", type=int, nargs="*", default=[],
+                        help="S8 추가 시나리오의 무소식 닫힘 값(분 · 여러 값 가능 · 기본 0만) — "
+                             "page_review_idle_close_minutes what-if(F4)")
     parser.add_argument("-v", "--verbose", action="store_true", help="오류 상세 출력")
     args = parser.parse_args(argv)
 
@@ -1965,6 +2549,7 @@ def main(argv: list[str] | None = None) -> int:
             config=config, decisions_path=decisions_path, out_root=args.out, hours=args.hours,
             days=args.days, streams=streams, summary_only=args.summary_only,
             max_stream_entries=args.max_stream_entries,
+            idle_close_minutes=args.idle_close_minutes,
         )
     except StreamLimitError:
         print(f"스트림 항목이 --max-stream-entries({args.max_stream_entries:,})를 넘어 멈췄다 — "

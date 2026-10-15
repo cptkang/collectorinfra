@@ -231,6 +231,15 @@ HolmesGPT는 SDK로 임포트돼 `sre_agent` 프로세스 안에서 ReAct 루프
 | R2 | 같은 서버에서 다른 사건이 `NOISE_PAGE_REVIEW_HOST_WINDOW_MINUTES` 안에 이미 PAGE됐다 | 먼저 통보된 PAGE |
 | R3 | `NOISE_PAGE_REVIEW_FANOUT_WINDOW_MINUTES` 안에 같은 알람이 여러 서버에서 떴고 대표(`NOISE_PAGE_REVIEW_FANOUT_PAGE_MAX`대) 밖이다 | 대표 PAGE |
 
+- **R1 해소 대용 — 해소 이벤트가 오지 않는 제니퍼 사건의 무소식 닫힘(plans/162 F4)**:
+  `NOISE_PAGE_REVIEW_IDLE_CLOSE_MINUTES`(분)에 값을 주면, 제니퍼 사건을 마지막으로 본 뒤(통보된 알람과
+  재통보 창에 걸려 버려진 재발 모두 포함) 그 시간 동안 소식이 없을 때 닫힌 것으로 보고 다음 PAGE를 새 사건으로
+  둔다. 기본 0 = 끔(종전과 같음 — 제니퍼 사건은 리마인더 시간까지 열려 있다). 재통보 창(`NOISE_REPEAT_INTERVAL_SECONDS`
+  · 심각도3은 `NOISE_SEV3_REPEAT_INTERVAL_SECONDS`, 마지막 통보 기준 고정창) 안의 재발은 판정까지 가지 않고 「봤음」만
+  남기므로 **재통보 창이 끝난 뒤의 재통보에만 효력**이 있다. R3(동시 발생)는 시간 창 규칙이라 무관하므로 값은 동시 발생
+  창보다 크게 둔다. `NOISE_RECURRENCE_AUDIT_EVERY_N`>1이면 재기동 복원이 실시간보다 일찍 닫힐 수 있다. 값은 내부망
+  2회차에서 제니퍼 알람의 재발 간격 분포를 재통보 창과 함께 본 뒤 정한다.
+
 - **내리는 곳은 TICKET이다 — 억제가 아니다.** 감사 기록·화면 표시는 그대로 남고, 묶인 대표 PAGE의
   드로어에 「묶인 알림 N건」이 붙는다.
 - **PAGE를 지키는 경우**: 심각도 상승 · 앱 영향 fatal · 미해소 리마인더(`NOISE_PAGE_REVIEW_REMINDER_HOURS`,

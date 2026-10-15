@@ -727,6 +727,36 @@ settings:
     recommendation: 기본 30분 유지.
     related: [NOISE_PAGE_REVIEW_MODE]
 
+  NOISE_PAGE_REVIEW_IDLE_CLOSE_MINUTES:
+    summary: 해소 이벤트가 오지 않는 출처(제니퍼)의 사건을 마지막으로 본 뒤 이 시간(분)이 지나면 닫힌 것으로 본다.
+    behavior: >-
+      제니퍼는 해소 이벤트를 보내지 않아 한 번 PAGE로 나간 사건이 닫히지 않는다. 그래서 같은 알람이 진짜로 다시
+      발생해도 리마인더 시간 동안 열린 사건 반복으로 보고 TICKET으로 내린다. 값을 주면 그 사건을 마지막으로 본 뒤
+      (통보된 알람과 중복으로 버려진 재발 모두 포함) 이 시간 동안 소식이 없을 때 닫힌 것으로 보고, 다음 PAGE를 새
+      사건으로 다룬다. 해소 이벤트가 오는 폴스타 알람에는 영향이 없다. 재기동 때도 판정 기록으로 같은 규칙을 적용한다.
+      재통보 창(NOISE_REPEAT_INTERVAL_SECONDS · 심각도3은 NOISE_SEV3_REPEAT_INTERVAL_SECONDS, 기본 4시간 — 마지막 통보
+      기준 고정창) 안의 재발은 판정까지 가지 않고 「봤음」만 남기므로, 이 값은 재통보 창이 끝난 뒤의 재통보에만
+      효력이 있다. 그래서 값은 재통보 창과 함께 본다.
+      R3(동시 발생)는 시간 창 규칙이라 무소식 닫힘과 무관하다 — 값은 동시 발생 창(NOISE_PAGE_REVIEW_FANOUT_WINDOW_MINUTES)보다
+      크게 둔다.
+      NOISE_RECURRENCE_AUDIT_EVERY_N이 1보다 크면 버려진 재발이 일부만 기록되므로, 재기동 복원에서는 실시간보다 일찍
+      닫힐 수 있다.
+    options:
+      - value: "0"
+        label: 기본
+        effect: 끔. 제니퍼 사건은 리마인더 시간까지 열린 것으로 본다. 지금과 같다.
+      - value: "60"
+        effect: 제니퍼 알람이 1시간 동안 오지 않다가 재통보 창이 끝난 뒤 다시 오면 새 사건의 첫 PAGE다.
+    example: >-
+      값이 60이고 재통보 창이 기본 4시간이면, 10:00에 PAGE로 나간 제니퍼 응답 지연 알람이 10:20까지 반복되다(재통보
+      창에 걸려 버려짐) 멈춘 뒤 14:30에 다시 울릴 때 PAGE다(끄면 같은 사건의 반복이라 TICKET). 10:00~14:00 사이의
+      재발은 이 값과 무관하게 재통보 창에 걸려 버려진다. 반복이 13:50까지 이어졌다면 14:30 재발은 아직 1시간이 안
+      지났으므로 TICKET이다.
+    performance: 추가 비용은 없다.
+    stability: 너무 짧으면 간헐적으로 반복되는 같은 장애가 매번 PAGE로 나간다. 너무 길면 진짜 재발을 늦게 안다.
+    recommendation: 기본 0. 값은 내부망 2회차에서 제니퍼 알람의 재발 간격 분포를 재통보 창과 함께 본 뒤 정한다.
+    related: [NOISE_PAGE_REVIEW_MODE, NOISE_PAGE_REVIEW_REOPEN_QUIET_MINUTES, NOISE_PAGE_REVIEW_REMINDER_HOURS, NOISE_REPEAT_INTERVAL_SECONDS]
+
   NOISE_PAGE_REVIEW_ALWAYS_PAGE_CSV:
     summary: 재판정과 무관하게 언제나 PAGE로 둘 알람명 글롭 목록(쉼표 구분).
     behavior: 알람명이 목록의 글롭(* · ? 사용)에 하나라도 맞으면 강등 규칙에 걸려도 PAGE로 둔다. 대소문자를 구분한다.

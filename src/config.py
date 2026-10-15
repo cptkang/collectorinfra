@@ -1217,6 +1217,11 @@ class NoiseGateConfig(BaseSettings):
     page_review_fanout_page_max: int = 1          # (plans/162 R3) 창 안 대표 PAGE 호스트 수
     page_review_reminder_hours: int = 24          # (plans/162 보존 4) 미해소 리마인더 간격(시)
     page_review_reopen_quiet_minutes: int = 30    # (plans/162 R1) 해소 뒤 재발 유예(분)
+    # (plans/162 F4 · D-330 R1 해소 대용) 해소 이벤트가 오지 않는 출처(제니퍼)의 사건을 마지막으로
+    # 본 뒤(판정·지문 중복 재발 포함) 이 시간(분)이 지나면 닫힌 것으로 본다 — 다음 PAGE는 새 사건.
+    # 0(기본) = 끔 = 비트 동일 · 음수는 0. 값은 내부망 2회차 재발 간격 분포로 정한다.
+    # 재통보 창(repeat_interval_seconds) 뒤 재통보에만 효력 · R3 창과 무관(값은 R3 창보다 크게).
+    page_review_idle_close_minutes: int = 0
     page_review_always_page_csv: str = ""         # (plans/162 보존 5) 항상 PAGE 알람명 글롭 CSV
     # (plans/162 R4 · D-330 ③) 신호 수집 실패 시 PAGE는 심각도3만 — 그 밖은 중요도 「보통」으로
     # 매트릭스를 탄다(sev2 → TICKET · D-048 「실패 시 보수적 PAGE」 개정). 기본 off = 현행 보수

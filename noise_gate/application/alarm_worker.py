@@ -65,7 +65,11 @@ from noise_gate.domain.notification_policy import (
     TIER_TICKET,
     compute_fingerprint,
 )
-from noise_gate.application.server_identity import attach_server_identity, is_apm_source
+from noise_gate.application.server_identity import (
+    attach_server_identity,
+    is_apm_db_id,
+    is_apm_source,
+)
 from noise_gate.domain.severity import coerce_severity
 from noise_gate.domain.severity_signatures import scan_signature_severity
 from noise_gate.infrastructure.apm_noise_context import (
@@ -404,6 +408,7 @@ class AlarmWorker:
             fanout_window_minutes=int(getattr(gate, "page_review_fanout_window_minutes", 10)),
             reminder_hours=int(getattr(gate, "page_review_reminder_hours", 24)),
             reopen_quiet_minutes=int(getattr(gate, "page_review_reopen_quiet_minutes", 30)),
+            idle_close_minutes=int(getattr(gate, "page_review_idle_close_minutes", 0)),
             on_evict=lambda what, n: logger.warning(
                 "PAGE 재판정 레지스트리 상한 초과(%s) — 오래된 %d건 정리", what, n
             ),
@@ -427,9 +432,15 @@ class AlarmWorker:
             logger.warning("PAGE 재판정 복원 생략 — 판정 기록 비활성(빈 상태로 시작)")
             return
         hours = int(getattr(self._config.noise_gate, "page_review_reminder_hours", 24))
+        idle = int(getattr(self._config.noise_gate, "page_review_idle_close_minutes", 0))
         try:
-            records = reader(PageRegistry.restore_window_seconds(hours))
-            applied = registry.restore(records, now)
+            window = PageRegistry.restore_window_seconds(hours)
+            # (plans/162 F4) 무소식 닫힘이 켜져 있을 때만 지문 중복 재발 레코드도 읽는다.
+            records = reader(window, include_recurrence=True) if idle > 0 else reader(window)
+            applied = registry.restore(
+                records, now,
+                silent_source=lambda rec: is_apm_db_id(str(rec.get("db_id") or "")),
+            )
         except Exception as exc:  # noqa: BLE001 — 복원 실패가 워커 기동을 막지 않는다
             self._page_registry = self._build_page_registry()
             logger.warning("PAGE 재판정 복원 실패 — 빈 상태로 시작: %s", exc)
@@ -452,6 +463,7 @@ class AlarmWorker:
             fanout_key=fanout_key_of(event.db_id, event.alarm_name),
             alarm_id=event.alarm_id,
             now=now,
+            silent_source=is_apm_source(event),
         )
 
     def _observe_episode(
@@ -1420,6 +1432,9 @@ class AlarmWorker:
                         self._record_recurrence(
                             fingerprint, event, rec_meta, signal=harvest_signal
                         )
+                        if self._page_registry is not None:
+                            # (plans/162 F4) 해소 없는 출처의 무소식 닫힘을 미룬다 — 봤음 통지.
+                            self._page_registry.touch(fingerprint, now)
                         await ack_message(r, stream_key, group, msg_id)
                         return
                     # 비중복(재통보) — 직전 창 재발 메타가 있으면 대표 알람 표기용으로 보관.

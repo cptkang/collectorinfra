@@ -111,16 +111,20 @@ def source_labels_for(db_id: str, zone_label: str = "", site_label: str = "") ->
     return label, detail
 
 
+def is_apm_db_id(db_id: str) -> bool:
+    """APM 게이트웨이 소스의 db_id인지 — `jennifer` · 다중 소스 `jennifer_<소스 id>`(plans/87 J8).
+
+    판정 레코드처럼 db_id만 남은 곳(PAGE 재판정 복원 · plans/162 F4)에서도 같은 규칙을 쓴다.
+    """
+    db_id = db_id or ""
+    return db_id == _APM_SOURCE_ID or db_id.startswith(_APM_SOURCE_ID + "_")
+
+
 def is_apm_source(event: AlarmEvent) -> bool:
-    """APM 게이트웨이가 발행한 이벤트인지 — `dbId`(`jennifer` · 다중 소스 `jennifer_<소스 id>` —
-    plans/87 J8) 또는 원문 `source`가 게이트웨이 상수다."""
+    """APM 게이트웨이가 발행한 이벤트인지 — `dbId`(`is_apm_db_id`) 또는 원문 `source`가 게이트웨이
+    상수다."""
     raw = event.raw_payload if isinstance(event.raw_payload, dict) else {}
-    db_id = event.db_id or ""
-    return (
-        db_id == _APM_SOURCE_ID
-        or db_id.startswith(_APM_SOURCE_ID + "_")
-        or raw.get("source") == _APM_SOURCE_ID
-    )
+    return is_apm_db_id(event.db_id or "") or raw.get("source") == _APM_SOURCE_ID
 
 
 def apm_source_labels(event: AlarmEvent, zone_label: str = "") -> tuple[str, str]:

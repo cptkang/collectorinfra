@@ -8,6 +8,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-15 | D-330 | 부기 — `plans/162` F4 무소식 닫힘(R1 해소 대용 · 해소 이벤트 없는 출처 · `NOISE_PAGE_REVIEW_IDLE_CLOSE_MINUTES` 기본 0 = 끔 · dedup 창 뒤 재통보에만 효력) · W0-T 분석 도구 보정 · `replay_noise.py --page-review-mode` 구현(부기 (e) 미구현 항목 해소) · 커밋 없음 |
 | 2026-10-15 | D-326 | 부기 — 폐쇄망 1회차 실행 반영: A2 삭제 · B군 대상 제니퍼 호스트 한정(`was_hosts`) · C1 폴스타/C2 자산관리 대화 분리(`plans/165` F5) · `maint_window` 6개월 |
 | 2026-10-15 | D-336 | 재부여 — 구 D-335(제니퍼 심각도3 유형 정책)를 D-336으로 옮김 · 원격 `apm_noise`가 D-335(`plans/155` 결과 값 판정)를 먼저 푸시해 로컬 미푸시 쪽을 옮겼다(D-321 선례) |
 | 2026-10-15 | D-336 | 구현 — `plans/162` W5: step 3 제니퍼 정책 경로 심각도3 = `notify: page`만 PAGE · 그 밖 TICKET(단계 severity3 · 근거 `apm_sev3_policy`) · `NOISE_APM_SEV3_POLICY_ENABLED` 기본 off · 설정 도움말·docs/28·매뉴얼 · 주의 부기(TICKET은 자동 조사·incident 미부착 · 재통보 간격 sev3 기준) · 커밋 없음 |

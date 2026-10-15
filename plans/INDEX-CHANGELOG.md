@@ -4,6 +4,7 @@
 
 ## 갱신 이력
 
+- 2026-10-15 — **162 외부망 잔여**: W0-T 분석 도구 보정(T1~T6) · F4 제니퍼 무소식 닫힘(`NOISE_PAGE_REVIEW_IDLE_CLOSE_MINUTES` 기본 0 · D-330 부기) · `replay_noise.py --page-review-mode` · 회귀 `--base 4073f7f` 신규 실패 0 · verifier·보안 Critical·High 0 · 커밋 없음
 - 2026-10-15 — **165 v1.1**: 폐쇄망 시연 실행에서 F5(자산관리만 지목해도 분류가 고른 폴스타 DB가 힌트 고정 뒤 잔존 · `pin_targets_to_hints` 규칙 3 비대칭) 추가 · 권장 1순위
 - 2026-10-15 — **162 W5**: 제니퍼 sev3 정책 경로 구현(D-336 · `NOISE_APM_SEV3_POLICY_ENABLED` 기본 off) — 정책 경로 sev3 `notify: page`만 PAGE · 그 밖 TICKET(단계 severity3) · 설정 도움말·docs/28·매뉴얼 · 테스트 31건 · 회귀 `--base 4073f7f` 신규 실패 0 · 커밋 없음
 - 2026-10-15 — **162 W0-X 구현**: 폴스타↔APM 상관 진단 `page_audit_xsource.py`(행 `xs` · S11~S14 · 시뮬레이션 V0~V3 · 판독표) · 비식별 `K-`·`I-`·`E-`·`S-` 가명·값 단위 열거·누출 식별자 확장 · 보안 감사 Medium 2·Low 4 교정 · 기존 S0~S10 비트 동일 · 커밋 없음

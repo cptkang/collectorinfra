@@ -9,6 +9,9 @@ int/float만, 코드형 값(db_id·규칙 id 등)은 `[A-Za-z0-9_.-]{1,40}`만 �
   (`H-` 호스트 · `R-` 자원 · `F-` 지문 · `N-` 알람명 원문 · §11 상관 진단 `K-` 소스 간 호스트 키 ·
   `I-` 제니퍼 인스턴스 · `E-` 사건 id · `S-` 미등록 APM 소스 id). 키·대응표는 어디에도 쓰지 않는다
   (D-321 전례) — 실행이 끝나면 가명을 되돌릴 수 없다.
+- (§12.5 W0-T) 제니퍼 정규화 유형(`apm_policy.event_type_norm`)은 게이트웨이 정규화 형식이고 이번
+  실행의 식별자를 담지 않으면 그대로 싣는다(정책 표 키 대조용 — 그 밖은 `N-`). 근거 최상위
+  `episode_id`는 `xs.episode`와 같은 `E-` 가명이다.
 - 이름 정규화: NFKC 뒤 주소·FQDN·경로·계정 값·식별자·식별자형 토큰·긴 숫자를 자리표시자로 바꾸고
   길이를 자른다.
 - 누출 검사: 출력 전체(NFKC + casefold)에 느슨한 주소형 정규식과 이번 실행에서 본 원문 식별자
@@ -233,6 +236,10 @@ _BOOL = "bool"
 _CODE = "code"
 # 운영자·외부 원천이 정하는 이름(코드 열거가 없는 값) — 원문 대신 `N-` 가명으로 싣는다.
 _PSEUDO_NAME = "pseudo_name"
+# (§12.5 T1) 제니퍼 정규화 유형 — 형식(`EVENT_TYPE_RE`)에 맞고 식별자가 없으면 그대로, 아니면 `N-`.
+_EVENT_TYPE = "event_type"
+# (W5) 정책 표 행 키 — 표 키이고 식별자가 없으면 그대로, 아니면 `N-`.
+_POLICY_KEY = "policy_key"
 _CODE_VALUE_RE = re.compile(r"[A-Za-z0-9_.-]{1,40}")
 _KEY_NAME_RE = re.compile(r"[A-Za-z0-9_.]{1,40}")
 ValueSpec = str | frozenset[str] | re.Pattern[str]
@@ -255,6 +262,12 @@ DEMOTE_REASONS = frozenset({
 SIGNATURE_LABELS = frozenset(label for _, label, _ in _SIGNATURE_RULES)
 BOOST_ORIGINS = frozenset({"unknown", "llm_or_anomaly"})
 _SIGNATURE_PREFIX = "signature:"
+# (§12.5 T1) 게이트웨이 정규화 유형 형식 — 대문자로 시작 · 대문자·숫자·`_` · 2~40자
+# (`apm_gateway` `normalize_event_type`: 대문자화 · `ERROR_`/`WARNING_` 접두 제거). 숫자만인 값은
+# 식별자(alarmId 등)일 수 있어 받지 않는다.
+EVENT_TYPE_RE = re.compile(r"[A-Z][A-Z0-9_]{1,39}")
+# (W5 · D-336) `apm_sev3_policy.notify` — 도메인이 싣는 값(page·ticket) + 정책 표 `notify` 열 값.
+APM_SEV3_NOTIFY = frozenset({"page", "ticket", "dashboard", "suppress"})
 
 
 def allow_value(value: Any, spec: ValueSpec) -> Any:
@@ -350,12 +363,19 @@ _EVIDENCE_SPECS: dict[str, ValueSpec] = {
 }
 _EVIDENCE_LIST_KEYS = frozenset({"promote", "demote", "markers"})
 # 중첩 근거 — 하위 허용 키와 값 규칙.
-# event_type_norm은 제니퍼 유형명 또는 알람명 정규화값(`apm_noise_context.event_type_norm`)이고
-# rule_id는 운영자 규칙 파일 값이라 코드 열거가 없다 — 같은 실행 안 묶음만 보이게 가명으로 싣는다.
+# event_type_norm은 제니퍼 유형명 또는 알람명 정규화값(`apm_noise_context.event_type_norm`)이다 —
+# 게이트웨이 정규화 형식이면 그대로(정책 표 대조 · §12.5 T1), 아니면 가명. rule_id는 운영자 규칙
+# 파일 값이라 코드 열거가 없다 — 같은 실행 안 묶음만 보이게 가명으로 싣는다.
 _EVIDENCE_NESTED: dict[str, dict[str, ValueSpec]] = {
-    "apm_policy": {"event_type_norm": _PSEUDO_NAME},
+    "apm_policy": {"event_type_norm": _EVENT_TYPE},
     "cross_source": {"rule_id": _PSEUDO_NAME, "lag_seconds": _NUM, "applied": _BOOL},
+    # (plans/162 W5 · D-336) 제니퍼 정책 경로 심각도3 근거.
+    "apm_sev3_policy": {"notify": APM_SEV3_NOTIFY, "policy_row": _POLICY_KEY},
 }
+# (§12.5 T1) 정규화 유형이 정책 표 키와 같은지 — `apm_policy` 아래 bool로 더한다.
+POLICY_TABLE_MATCH_KEY = "in_policy_table"
+# 근거 최상위의 가명 값 키 — 사건 id(크로스소스 · `xs.episode`와 같은 `E-` · §12.5 T5).
+_EVIDENCE_PSEUDO: dict[str, str] = {"episode_id": PREFIX_EPISODE}
 _PERSISTENCE_SPECS: dict[str, ValueSpec] = {
     "count": _NUM, "min_count": _NUM, "window_seconds": _NUM, "met": _BOOL, "reevaluated": _BOOL,
 }
@@ -499,6 +519,20 @@ class IdentifierSet:
                         bucket.discard(value)
                         self._vocabulary.add((kind, value))
         self._patterns.clear()
+
+    def without_vocabulary(self, vocabulary: str) -> IdentifierSet:
+        """사본에 `exclude_vocabulary`를 적용해 돌려준다(이 집합은 그대로 — 누출 검사 쪽 제외
+        재료·시점과 따로 쓸 때)."""
+        other = IdentifierSet()
+        for kind in _MIN_IDENT_LEN:
+            other._long[kind] = set(self._long[kind])
+            other._short[kind] = set(self._short[kind])
+        other._numeric = set(self._numeric)
+        other._symbolic = set(self._symbolic)
+        other._vocabulary = set(self._vocabulary)
+        other._pinned = set(self._pinned)
+        other.exclude_vocabulary(vocabulary)
+        return other
 
     @property
     def total(self) -> int:
@@ -717,13 +751,45 @@ def _evidence_value(name: str, value: Any, spec: ValueSpec) -> Any:
     return allow_value(value, spec)
 
 
+def _carries_identifier(text: str, identifiers: IdentifierSet | None) -> bool:
+    """문자열에 이번 실행의 원문 식별자가 들어 있는가(정규화 치환·누출 검사와 같은 일치 규칙).
+
+    식별자 집합을 모르면(None) 들어 있다고 본다(fail-closed — 가명으로 보낸다).
+    """
+    if identifiers is None:
+        return True
+    pattern = identifiers.pattern(tuple(_MIN_IDENT_LEN))
+    return bool(pattern is not None and pattern.search(strip_format(text)))
+
+
+def _plain_name(
+    value: object, allowed: bool, pseudo: Pseudonymizer, identifiers: IdentifierSet | None
+) -> str | None:
+    """허용 형식(`allowed`)이고 식별자가 없으면 원문, 아니면 `N-` 가명(문자열이 아니면 None)."""
+    if not isinstance(value, str):
+        return None
+    if allowed and not _carries_identifier(value, identifiers):
+        return value
+    return pseudo(PREFIX_NAME, value)
+
+
 def sanitize_evidence(
-    evidence: object, dropped: Counter[str], pseudo: Pseudonymizer
+    evidence: object,
+    dropped: Counter[str],
+    pseudo: Pseudonymizer,
+    *,
+    policy_keys: frozenset[str] = frozenset(),
+    identifiers: IdentifierSet | None = None,
 ) -> dict[str, Any]:
     """결정 단계 근거를 허용 키·값 규칙으로 옮긴다.
 
     버린 키는 이름(알려진 키만 · 그 밖은 `<unknown_key>`)을 `dropped`에 센다. 코드 열거가 없는
-    이름 값(`event_type_norm`·`rule_id`)은 `N-` 가명이다(문자열이 아니면 None).
+    이름 값(`rule_id`)은 `N-` 가명이다(문자열이 아니면 None). 제니퍼 정규화 유형
+    (`apm_policy.event_type_norm`)은 게이트웨이 정규화 형식이고 이번 실행 식별자(`identifiers`)를
+    담지 않으면 그대로 싣고, 정책 표 키(`policy_keys` — 비었으면 생략) 일치 여부를
+    `in_policy_table`로 더한다.
+    `apm_sev3_policy.policy_row`는 표 키면 그대로다. 최상위 `episode_id`는 `E-` 가명이다.
+    `identifiers`가 None이면 정규화 유형·적용 행은 늘 가명이다(fail-closed).
     """
     if not isinstance(evidence, Mapping):
         return {}
@@ -732,6 +798,8 @@ def sanitize_evidence(
         name = str(key)
         if name in _EVIDENCE_SPECS:
             out[name] = _evidence_value(name, value, _EVIDENCE_SPECS[name])
+        elif name in _EVIDENCE_PSEUDO:
+            out[name] = pseudo(_EVIDENCE_PSEUDO[name], value) if isinstance(value, str) else None
         elif name in _EVIDENCE_NESTED and isinstance(value, Mapping):
             specs = _EVIDENCE_NESTED[name]
             nested: dict[str, Any] = {}
@@ -747,6 +815,16 @@ def sanitize_evidence(
                     nested[sub] = (
                         pseudo(PREFIX_NAME, sub_value) if isinstance(sub_value, str) else None
                     )
+                elif specs.get(sub) == _EVENT_TYPE:
+                    form = isinstance(sub_value, str) and bool(EVENT_TYPE_RE.fullmatch(sub_value))
+                    nested[sub] = _plain_name(sub_value, form, pseudo, identifiers)
+                    if policy_keys:  # 표를 모르면(미적재) 대조 결과를 싣지 않는다
+                        nested[POLICY_TABLE_MATCH_KEY] = (
+                            isinstance(sub_value, str) and sub_value in policy_keys
+                        )
+                elif specs.get(sub) == _POLICY_KEY:
+                    in_table = isinstance(sub_value, str) and sub_value in policy_keys
+                    nested[sub] = _plain_name(sub_value, in_table, pseudo, identifiers)
                 elif sub in specs:
                     nested[sub] = allow_value(sub_value, specs[sub])
                 else:
@@ -901,16 +979,24 @@ class Sanitizer:
         *,
         db_ids: frozenset[str] | None = None,
         apm_sources: frozenset[str] = frozenset(),
+        policy_keys: frozenset[str] = frozenset(),
+        type_identifiers: IdentifierSet | None = None,
     ) -> None:
         """가명기·이번 실행 식별자 집합을 받는다. 버린 근거 키 이름은 `dropped_evidence_keys`에.
 
         `db_ids`·`apm_sources`는 레지스트리 등록 db_id·APM 소스 id다(`db_id_label`). `db_ids`가
         None이면(레지스트리를 주지 않은 직접 호출) db_id는 코드형 값 규칙만 거친다.
+        `policy_keys`는 제니퍼 유형 정책 표 키다(`sanitize_evidence` — 정규화 유형 대조).
+        `type_identifiers`는 정규화 유형·적용 행이 식별자를 담았는지 볼 집합이다 — 정적 어휘
+        (`vocabulary_words`)를 걸러 낸 사본을 준다(자원명 `Memory`가 `OUT_OF_MEMORY`를 가명으로
+        만들지 않게). None이면 `identifiers` 그대로(보수).
         """
         self.pseudo = pseudo
         self.identifiers = identifiers
         self.db_ids = db_ids
         self.apm_sources = apm_sources
+        self.policy_keys = policy_keys
+        self.type_identifiers = type_identifiers if type_identifiers is not None else identifiers
         self.dropped_evidence_keys: Counter[str] = Counter()
 
     def _norm(self, ctx: AlarmContext, text: str, max_len: int) -> str:
@@ -968,7 +1054,9 @@ class Sanitizer:
             "stage": allow_value(ctx.stage, STAGES),
             "signals": sanitize_signals(ctx.signals, p),
             "noise_ctx_source": ctx.noise_ctx_source,
-            "evidence": sanitize_evidence(ctx.evidence, self.dropped_evidence_keys, p),
+            "evidence": sanitize_evidence(ctx.evidence, self.dropped_evidence_keys, p,
+                                          policy_keys=self.policy_keys,
+                                          identifiers=self.type_identifiers),
             "fp": p(PREFIX_FP, ctx.fingerprint),
             "recurrence": sanitize_recurrence(ctx.recurrence),
             "correlation": sanitize_correlation(ctx.correlation_meta, p),
@@ -1240,7 +1328,10 @@ def vocabulary_words() -> list[str]:
                         *ACTIONABILITY, *DEPENDENCY_MODES, *PROMOTE_REASONS, *DEMOTE_REASONS,
                         *SIGNATURE_LABELS, *BOOST_ORIGINS, *_SIGNAL_SPECS, *_EVIDENCE_SPECS,
                         *_KNOWN_DROPPED_KEYS, *_KNOWN_RECORD_TYPES, *DERIVED_KEYS, *WHATIF_KEYS,
-                        *_VALID_IMPORTANCE, "keep", "demote", "n/a", "undecidable"]
+                        *_VALID_IMPORTANCE, "keep", "demote", "n/a", "undecidable",
+                        *_EVIDENCE_PSEUDO, *_EVIDENCE_NESTED,
+                        *(k for specs in _EVIDENCE_NESTED.values() for k in specs),
+                        POLICY_TABLE_MATCH_KEY]
     for kind, tokens in _ALARM_KINDS:
         words += [kind, *tokens]
     words += [label for _, label in _COND_LEN_BUCKETS]
