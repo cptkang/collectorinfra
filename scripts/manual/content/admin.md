@@ -2825,7 +2825,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 |---|---|---|---|---|
 | (워커) | — | 같은 지문(DB·서버·알람명·자원명)이 [[재통보 창]] 안에 다시 옴 | 판단 없이 재발 기록 | `NOISE_REPEAT_INTERVAL_SECONDS`=14400 · 심각도 3은 `NOISE_SEV3_REPEAT_INTERVAL_SECONDS` |
 | 0.5 | [[비운영 알람|0.5 비운영 알람 (non_alarm)]] | {{0.5 비운영 알람 (non_alarm)}} (알람 마커 없음 + 승인·안내·공지 마커 있음) | [[SUPPRESS|티어 SUPPRESS — 기록만]] | `NOISE_NON_ALARM_FILTER_ENABLED`(false) |
-| 3 | [[심각도3 단락|3 심각도3 단락 (severity3)]] | {{3 심각도3 단락 (severity3)}} (실효 심각도 3) | **[[PAGE|티어 PAGE — 즉시 통보]]** | 항상 |
+| 3 | [[심각도3 단락|3 심각도3 단락 (severity3)]] | {{3 심각도3 단락 (severity3)}} (실효 심각도 3) | **[[PAGE|티어 PAGE — 즉시 통보]]**. `NOISE_APM_SEV3_POLICY_ENABLED`를 켜면 제니퍼 유형 정책으로 판정하는 알람은 정책 표가 통보(page)로 둔 유형만 PAGE, 그 밖은 [[TICKET|티어 TICKET — 요약 큐 + 화면]] | 항상 · 제니퍼 경로만 `NOISE_APM_SEV3_POLICY_ENABLED`(false) |
 | 4 | [[자가복구 상관|4 자가복구 상관 (self_heal)]] · [[독립 해소|4 독립 해소 (resolved)]] | {{4 자가복구 상관 (self_heal)}} · {{4 독립 해소 (resolved)}} (해소 알람. 창 안에 짝 발생이 있으면 자가복구) | [[SUPPRESS|티어 SUPPRESS — 기록만]](독립 해소는 설정에 따라 [[DASHBOARD|티어 DASHBOARD — 화면에만]]) | `NOISE_SELF_HEAL_WINDOW_SECONDS`=300 · `NOISE_RESOLVED_TO_DASHBOARD`(false) |
 | 5 | [[수집 실패 보수화|5 수집 실패 보수화 (collection_failed)]] | {{5 수집 실패 보수화 (collection_failed)}} (중요도·유지보수 신호 수집 실패 + 심각도 ≥1) | **[[PAGE|티어 PAGE — 즉시 통보]]**. `NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY`를 켜면 이 단계를 건너뛰고 중요도 보통으로 다음 단계(심각도 2는 TICKET, 1은 DASHBOARD) | 항상 · 경로만 `NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY`(false) · 수집 실패율 경보 `NOISE_META_ALERT_COLLECTION_FAILED_RATIO`(0 = 끔) |
 | 6 | [[유지보수|6 유지보수 (maintenance)]] | {{6 유지보수 (maintenance)}} | [[SUPPRESS|티어 SUPPRESS — 기록만]] | 항상 |
@@ -2914,8 +2914,8 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 ##### 3 심각도3 단락 (`severity3`)
 - **보는 것**: 실효 심각도(수신 심각도와 AI 상향 후보 중 큰 값, `NOISE_ENABLE_AI_SEVERITY_BOOST`가 꺼져 있거나 해소 알람이면 수신 심각도).
 - **조건**: 실효 심각도가 정확히 3.
-- **결과**: PAGE. 뒤 단계를 평가하지 않는다.
-- **켜는 키**: 없음(항상).
+- **결과**: PAGE. 뒤 단계를 평가하지 않는다. `NOISE_APM_SEV3_POLICY_ENABLED`(false)를 켜면 제니퍼 유형 정책 표(`config/apm_noise_policy.yaml`)로 판정하는 알람(노이즈 컨텍스트 `source=apm_policy`)만 표를 본다 — 유형 행이 `notify: page`면 PAGE, 그 밖(표에 없는 유형·`default` 행)은 TICKET이다. 단계는 그대로 `severity3`이고 뒤 단계를 평가하지 않는다(DASHBOARD·SUPPRESS로 내려가지 않는다). 근거 `apm_sev3_policy`에 정책 티어(`notify`)와 적용 행(`policy_row`)이 남는다.
+- **켜는 키**: 없음(항상). 제니퍼 경로만 `NOISE_APM_SEV3_POLICY_ENABLED`로 바꾼다. 폴스타 알람과 정책 표를 못 읽은 제니퍼 알람(수집 실패)은 켜도 PAGE다.
 - **예외**: 해소 판정보다 앞이지만 해소(0) 알람에는 AI 상향을 적용하지 않는다. 조건 로그에 3급 장애 시그니처(예: `out of memory`)가 있거나 어느 원천(시그니처·LLM 해석·동적 baseline·agentic)이 후보를 내도 해소 알람의 실효 심각도는 0이라, 여기서 PAGE가 되지 않고 4단계(자가복구·독립 해소)로 간다.
 
 ##### 4 자가복구 상관 (`self_heal`)

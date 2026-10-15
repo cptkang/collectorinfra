@@ -2312,7 +2312,7 @@
     var STAGE_PROFILES = {
         non_alarm: { question: "알람이 아니라고 본 근거는", cols: ["reason", "evMarkers"] },
         severity3: {
-            question: "무엇이 억제 없이 곧바로 PAGE였나",
+            question: "무엇이 억제 없이 이 단계에서 확정됐나",
             cols: ["sevChain", "importance", "conditionLog"],
         },
         self_heal: {

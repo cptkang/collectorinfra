@@ -1223,6 +1223,11 @@ class NoiseGateConfig(BaseSettings):
     # PAGE와 비트 동일(D-048 원 문구는 on 전까지 운영 동작). off + page_review_mode=shadow면
     # 판정 불변으로 「했을 티어」만 감사에 남긴다. 기동 시 1회 해석.
     collection_failed_page_sev3_only: bool = False
+    # (plans/162 W5 · D-336) 제니퍼 정책 경로(노이즈 컨텍스트 출처 apm_policy)의 실효 심각도 3은
+    # 「심각도3 단락」에서 유형 정책 표(config/apm_noise_policy.yaml)를 본다 — `notify: page` 행만
+    # PAGE, 그 밖(표 밖 유형·default)은 TICKET(DASHBOARD 아래로 내리지 않음 · D-317 ①). 폴스타·
+    # 수집 실패는 현행 단락 PAGE. 기본 off = 비트 동일(D-035 원 문구가 운영 동작). 기동 시 1회 해석.
+    apm_sev3_policy_enabled: bool = False
 
     model_config = {"env_prefix": "NOISE_", "env_file": ".env", "extra": "ignore"}
 

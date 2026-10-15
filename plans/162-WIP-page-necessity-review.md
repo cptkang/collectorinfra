@@ -1,12 +1,12 @@
 # 162. 노이즈 게이트 PAGE 필요성 재판정 — 24시간 PAGE 170건을 10~20건으로
 
-> **작성일**: 2026-10-14 · **v1.1**(2026-10-14 — 게이트 권고안 확정 · W0 분석 스크립트 상세 계획 §10 추가)
-> **상태**: **WIP — W0~W3 구현 완료(2026-10-14 · 커밋 없음)** · W0 `noise_gate/scripts/page_audit.py`·`page_audit_sanitize.py`(비식별 허용 목록·HMAC 가명·누출 검사·what-if · R1~R3는 도메인 `review_page` 호출로 W1과 차등 0) · W1 `noise_gate/domain/page_review.py`+`page_review` 단계(`NOISE_PAGE_REVIEW_MODE` 기본 off = 비트 동일) · W2 R4 `NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY`(기본 off)·수집 실패율 메타경보 · W3 관제 화면·매뉴얼·docs/28 §4-C · **잔여**: W4 내부망 W0 실행 → shadow 24h → enforce 판정 · G-2(R6 만성)·G-5(R5) 결정 · `replay_noise.py --page-review-mode`(§8) 미구현 · shadow/enforce 화면 캡처 · 사용자 경로 대표 PAGE 포인터 마스킹(운영 alarm_id 형식 실측 뒤) · R6 보존 1·2·4 미적용 이탈(W0 시뮬 — G-2 때 부기)
-> **회귀 대상 파일**(D-303 · 계획 끝 1회 `regress.py --base 4073f7f`): `.env.example` · `config/settings_help/noise_gate_core.yaml`·`noise_gate_notify.yaml` · `noise_gate/application/alarm_worker.py`·`nodes/notification_gate.py` · `noise_gate/domain/notification_policy.py`·`stage_handling.py`·`page_review.py` · `noise_gate/infrastructure/decision_store.py` · `noise_gate/orchestration/alarm_graph.py` · `noise_gate/scripts/page_audit.py`·`page_audit_sanitize.py` · `src/config.py` · `src/api/routes/alarm.py`·`noise_dashboard.py` · `src/api/settings_catalog.py` · `src/static/{noise.html,admin/noise.html,css/noise-console.css,js/noise.js,js/noise-help.js}` · `scripts/manual/{features.yaml,content/admin.md,content/user.md}` · `src/static/manual/{admin.html,user.html,help_index.json}` · 테스트 `noise_gate/tests/test_{page_audit,page_audit_verify,page_review,page_review_verify,collection_failed_sev3_only,collection_failed_verify,decision_snapshot,decision_stage,plan153_w1_analysis_record}.py` · `tests/test_api/test_{noise_page_review_console,noise_page_review_console_verify,noise_health_collection_failed,noise_dashboard_api,plan153_w1_console_explain,settings_catalog}.py`
+> **작성일**: 2026-10-14 · **v1.1**(2026-10-14 — 게이트 권고안 확정 · W0 분석 스크립트 상세 계획 §10 추가) · **v1.2**(2026-10-15 — W0-X 폴스타↔APM 상관 진단 계획 §11 추가 · 게이트 G-7~G-9 신설(진단 뒤 결정)) · **v1.3**(2026-10-15 — 내부망 W0 1회차 결과 분석 · 수정 계획 §12 · 게이트 G-10~G-12 신설 · G-2·G-5 권고 갱신)
+> **상태**: **WIP — W0~W3 구현 완료(2026-10-14 · 커밋 `bc496a5`·`badb798`)** · **W0 1회차 내부망 실행(2026-10-15 · §12) — 24h PAGE 227 중 제니퍼 sev3 단락 203 · 현행 R1~R3로는 48(목표 밖) · G-10 (a) 확정(D-336) · G-2 미채택 · G-5 보류** · **W5 구현 완료(2026-10-15 · 커밋 없음 · `NOISE_APM_SEV3_POLICY_ENABLED` 기본 off = 비트 동일 · 정책 경로 sev3 `notify: page`만 PAGE · 그 밖 TICKET)** · **다음은 W0-T(W0-X 뒤) · W0-H 내부망 진단 · 2회차 F2 키 대조 뒤 W5 켜기 판단** · W0 `noise_gate/scripts/page_audit.py`·`page_audit_sanitize.py`(비식별 허용 목록·HMAC 가명·누출 검사·what-if · R1~R3는 도메인 `review_page` 호출로 W1과 차등 0) · W1 `noise_gate/domain/page_review.py`+`page_review` 단계(`NOISE_PAGE_REVIEW_MODE` 기본 off = 비트 동일) · W2 R4 `NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY`(기본 off)·수집 실패율 메타경보 · W3 관제 화면·매뉴얼·docs/28 §4-C · **잔여**: W4 내부망 W0 실행 → shadow 24h → enforce 판정 · G-2(R6 만성)·G-5(R5) 결정 · `replay_noise.py --page-review-mode`(§8) 미구현 · shadow/enforce 화면 캡처 · 사용자 경로 대표 PAGE 포인터 마스킹(운영 alarm_id 형식 실측 뒤) · R6 보존 1·2·4 미적용 이탈(W0 시뮬 — G-2 때 부기) · **W0-X 상관 진단 구현 완료(§11 · 2026-10-15 · 커밋 없음 · 기준 `9ccc44f`)** — `page_audit_xsource.py`(행 `xs` · S11~S14 · V0~V3 · 판독표 `xs_readout`) · 잔여: 내부망 2회차 실행으로 A/B/C 판독 → G-7~G-9 결정 · 판독 문턱은 해석값 상수 · ③ V0=replay는 기록 티어=재판정 티어 부분 집합에서만(§11.8 부기)
+> **회귀 대상 파일**(D-303 · 계획 끝 1회 `regress.py --base 4073f7f`): `.env.example` · `config/settings_help/noise_gate_core.yaml`·`noise_gate_notify.yaml` · `config/apm_noise_policy.yaml`(주석) · `noise_gate/application/alarm_worker.py`·`nodes/notification_gate.py` · `noise_gate/domain/notification_policy.py`·`stage_handling.py`·`page_review.py` · `noise_gate/infrastructure/decision_store.py` · `noise_gate/orchestration/alarm_graph.py` · `noise_gate/scripts/page_audit.py`·`page_audit_sanitize.py`·`page_audit_xsource.py` · `noise_gate/testdata/page_audit/xsource/` · `src/config.py` · `src/api/routes/alarm.py`·`noise_dashboard.py` · `src/api/settings_catalog.py` · `src/static/{noise.html,admin/noise.html,css/noise-console.css,js/noise.js,js/noise-help.js}` · `scripts/manual/{features.yaml,content/admin.md,content/user.md}` · `src/static/manual/{admin.html,user.html,help_index.json}` · 테스트 `noise_gate/tests/test_{page_audit,page_audit_verify,page_audit_xsource,page_audit_xsource_verify,page_review,page_review_verify,collection_failed_sev3_only,collection_failed_verify,decision_snapshot,decision_stage,plan153_w1_analysis_record,apm_sev3_policy,apm_sev3_policy_verify,plan144_apm_policy}.py` · `tests/test_api/test_{noise_page_review_console,noise_page_review_console_verify,noise_health_collection_failed,noise_dashboard_api,plan153_w1_console_explain,settings_catalog}.py`
 > **계획 시작 SHA**: `4073f7f`
-> **요청 원문(2026-10-14)**: *"노이즈 관제에서 아직도 너무 많은 page가 있다. 24시간동안 현재 170 정도인다. 10~20개 내외가 되어야 한다. page가 꼭 필요한지 다시 판단하도록 해야 한다. 현재 코드를 다시 분석하여 개선 계획을 수립하라."* → v1.1: *"권고에 맞게 정리하고 별도의 테스트 스크립트를 통해 현재 알람의 분류 정책을 로깅하여 분석할 수 있는 정보를 취합하는 코드 작성 계획을 정리하라. 로그 정보에는 ip 등의 중요 정보는 제외시키고 최대한 분석할 수 있는 정보 위주로 정리되어야한다."*
-> **관련 결정**: **D-035**·**D-048**(「심각도3 절대 PAGE」 · 수집 실패 보수 PAGE — **D-330으로 부분 개정 확정 · 효력은 W1·W2 구현 시**) · D-048.5(AI 상향 · 메시지형 한정) · D-318(`is_routine=False` 승격 제거 — 직전 감축) · D-320(dedup 심각도 상승 우회) · D-317(제니퍼·크로스소스) · D-049(incident) · D-247(관제 화면 근거) · D-255(매뉴얼 동반) · D-303(회귀)
-> **신규 결정**: **D-330**(확정 2026-10-14 — PAGE = 새 사건의 첫 알림 · `page_review` · 수집 실패 sev3만 PAGE · 리마인더 24h · 강등 목적지 TICKET · W0 분석 로그 비식별 규칙) · D-321(반출 값 치환·IPv4 잔존 검사 전례)
+> **요청 원문(2026-10-14)**: *"노이즈 관제에서 아직도 너무 많은 page가 있다. 24시간동안 현재 170 정도인다. 10~20개 내외가 되어야 한다. page가 꼭 필요한지 다시 판단하도록 해야 한다. 현재 코드를 다시 분석하여 개선 계획을 수립하라."* → v1.1: *"권고에 맞게 정리하고 별도의 테스트 스크립트를 통해 현재 알람의 분류 정책을 로깅하여 분석할 수 있는 정보를 취합하는 코드 작성 계획을 정리하라. 로그 정보에는 ip 등의 중요 정보는 제외시키고 최대한 분석할 수 있는 정보 위주로 정리되어야한다."* → v1.2(2026-10-15): *"현재 폴스타와 apm이 상관관계를 제대로 역지 못하는 것으로 보인다."* · *"진단 섹션 추가 계획을 162 에 추가 수립하라."*
+> **관련 결정**: **D-035**·**D-048**(「심각도3 절대 PAGE」 · 수집 실패 보수 PAGE — **D-330으로 부분 개정 확정 · 효력은 W1·W2 구현 시**) · D-048.5(AI 상향 · 메시지형 한정) · D-318(`is_routine=False` 승격 제거 — 직전 감축) · D-320(dedup 심각도 상승 우회) · D-317(제니퍼·크로스소스 — §11 진단 대상) · D-329(제니퍼 소스 id 운영 확정값 — §11 A2 대조) · D-049(incident) · D-247(관제 화면 근거) · D-255(매뉴얼 동반) · D-303(회귀)
+> **신규 결정**: **D-336**(확정 2026-10-15 — 제니퍼 심각도 3은 유형 정책 표 · `notify: page`만 PAGE · 그 밖 TICKET · G-10 (a)) · **D-330**(확정 2026-10-14 — PAGE = 새 사건의 첫 알림 · `page_review` · 수집 실패 sev3만 PAGE · 리마인더 24h · 강등 목적지 TICKET · W0 분석 로그 비식별 규칙) · D-321(반출 값 치환·IPv4 잔존 검사 전례)
 > **선행·접점 계획**: `plans/52`(게이트 정본) · `plans/60`(E1~E7) · `plans/112`(관제 드릴다운) · `plans/117`(ML 보조 신호 — 별개) · `plans/144`(모드 사다리 off→shadow→enforce 전례)
 
 ---
@@ -138,7 +138,11 @@ R4·R5는 D-048 판정 자체를 바꾸므로 별도 플래그 `NOISE_COLLECTION
 | **W1 재판정 도메인·워커** | `domain/page_review.py`(R1~R3·R6·보존 1~5) · `PageRegistry` + 기동 복원 · 게이트 노드 호출 · 단계 라벨·설명·사유 접두 · 설정 7종(`src/config.py` · `.env.example`) | 코드 + 테스트 | mode off에서 기존 스냅샷·정책 테스트 비트 동일 · 규칙·보존 단위 테스트 · 재기동 복원 테스트 |
 | **W2 생성 경로 정리** (G-3·G-5 확정분만) | R4 수집 실패 · R5 LLM 상향 · (H8 실측 시) 지문 정규화 | 코드 + 테스트 | 플래그 off 비트 동일 · on 시 기대 티어 |
 | **W3 관제 화면·매뉴얼** | KPI 「PAGE(재판정 후)」·「했을 PAGE」(shadow) · 퍼널 `page_review` 단계 · 드로어 근거(최초 PAGE 링크) · `src/static/js/noise-help.js` · 매뉴얼 admin(D-255) · `docs/28_noise_cancellation_operator_guide.md` | 화면 + 매뉴얼 | `pytest tests/test_manual` · 화면 캡처 |
-| **W4 내부망 shadow → enforce** | 24h shadow → 「했을 PAGE」 ≤ 20 · 강등 건 전수가 유지된 PAGE에 묶임(놓친 사건 0) 확인 → enforce | 운영 결과 반출 | 목표 달성 + 사용자 승인 |
+| **W0-X 상관 진단** (외부망 구현 → 내부망 실행 · **상세 §11**) | W0 스크립트에 폴스타↔APM 상관 진단 S11~S14 추가 — 끊긴 지점을 A 설정 · B 이름 정합 · C 구조로 가른다 · 도메인 사건 추적기 시뮬레이션 V0~V3 | `page_audit_xsource.py` + 테스트 + 픽스처 | §11.8 |
+| **W0-T 분석 도구 보정** (v1.3 · **상세 §12.5**) | 1회차 결과에서 드러난 `page_audit` 결함 6건(제니퍼 유형 가명화 · 해소·지문 안정성 소스 미분리 · 소비 공백 미표시 · 사건 id 미명명 · G-10 what-if 부재) | 스크립트 + 테스트 | §12.5 완료 기준 |
+| **W0-H 소비 경로 진단** (v1.3 · 내부망 · **상세 §12.4**) | 수신의 59.7%가 판정·재발 기록 없이 사라진다(H10) — 같은 소비자 이름(`worker-1`)을 쓰는 다른 프로세스 여부 · 04시~08시 공백 원인 확인 | 내부망 확인 결과 | 원인 확정 → G-11 |
+| **W5 제니퍼 sev3 정책 경로** (v1.3 · **G-10 확정 뒤** · **상세 §12.6**) | 제니퍼 심각도 3이 `apm_noise_policy.yaml` 유형 정책을 거치게 한다 — `notify: page` 유형만 PAGE, 그 밖은 TICKET 하한 · 정책 표 키 실측 정정 | 코드 + 테스트 + 정책 표 | 플래그 off 비트 동일 · on 시 기대 티어 · W0 what-if 대조 — **구현 완료(2026-10-15 · 커밋 없음 · D-336 · 키 정정·what-if 대조는 2회차 뒤)** |
+| **W4 내부망 shadow → enforce** | 24h shadow → 「했을 PAGE」 ≤ 20 · 강등 건 전수가 유지된 PAGE에 묶임(놓친 사건 0) 확인 → enforce · **(v1.3) 전제: W0-H로 단일 소비 확인** — 소비가 갈려 있으면 레지스트리·지문 dedup이 프로세스마다 반쪽이라 shadow 수치가 틀린다 | 운영 결과 반출 | 목표 달성 + 사용자 승인 |
 
 W0 결과로 규칙별 효과가 작으면 해당 규칙은 W1에서 뺀다(만들지 않는다).
 
@@ -149,6 +153,7 @@ W0 결과로 규칙별 효과가 작으면 해당 규칙은 W1에서 뺀다(만�
 - **D-330 등재 완료(2026-10-14 · 확정 — 구현 전)** — 「PAGE는 새 사건의 첫 알림」 원칙 · `page_review` 규칙·보존 규칙 · 모드 사다리 · 수집 실패 sev3만 PAGE · 리마인더 24h · 강등 목적지 TICKET · W0 분석 로그 비식별 규칙(§10.4).
 - **D-035 · D-048 부분 개정 부기 완료** — 원 문구는 이력으로 남기고, 효력은 W1(`page_review` enforce)·W2(R4) 구현 시점부터라고 적었다. 구현 시 각 파일에 「효력 발생」 부기를 한 줄 더 단다.
 - 남은 부기(구현 때): D-048.5(G-5가 R5 채택이면) · D-320(심각도 상승 우회 = 보존 규칙 2와 같은 원칙).
+- (v1.2) W0-X는 새 결정이 없다 — D-330 ⑥(분석 로그 비식별) 적용 범위를 상관 진단 필드(§11.4)로 넓힌다는 부기를 구현 때 단다. G-7~G-9가 정해지면 D-317에 부기하거나 새 D-번호로 등재한다.
 
 ---
 
@@ -157,11 +162,17 @@ W0 결과로 규칙별 효과가 작으면 해당 규칙은 W1에서 뺀다(만�
 | # | 질문 | 확정 |
 |---|---|---|
 | **G-1** | 「심각도3 절대 PAGE」(D-035·D-048)를 「새 사건의 첫 sev3만 PAGE, 같은 사건의 반복·같은 호스트·동시 다발은 TICKET으로 묶음」으로 개정하는가 | **개정 확정**(D-330 ①) — 이게 없으면 10~20건이 나오지 않는다(sev3 단락만 D-318 때 33건). 효력은 W1 enforce부터 |
-| **G-2** | 만성 알람(R6)도 강등하는가 | **W0 결과 뒤 결정**(권고 그대로) — W0 §10.6 S7·S8의 R6 단독 효과를 보고 정한다. 채택 시 운영자 「유효」 피드백 지문은 제외 |
+| **G-2** | 만성 알람(R6)도 강등하는가 | **W0 결과 뒤 결정**(권고 그대로) — W0 §10.6 S7·S8의 R6 단독 효과를 보고 정한다. 채택 시 운영자 「유효」 피드백 지문은 제외 · **미채택 확정(2026-10-15 · D-330 부기)** — 1회차 7일 창에서 5일 이상 PAGE 지문 0개 · R6 단독 강등 0건(§12.2) |
 | **G-3** | 수집 실패 보수 PAGE(R4)를 「sev3만 PAGE」로 바꾸는가 | **변경 확정**(D-330 ③) + 수집 실패율 메타경보 |
 | **G-4** | 미해소 리마인더 간격 | **24h 확정**(D-330 ②) |
-| **G-5** | LLM 해석만으로 오른 sev3(R5)를 단락에서 빼는가 | **W0 결과 뒤 결정**(권고 그대로) — W0 §10.6 S2의 상향 출처 분해(시그니처/LLM·이상탐지) 건수로 정한다 |
+| **G-5** | LLM 해석만으로 오른 sev3(R5)를 단락에서 빼는가 | **W0 결과 뒤 결정**(권고 그대로) — W0 §10.6 S2의 상향 출처 분해(시그니처/LLM·이상탐지) 건수로 정한다 · **보류 확정(2026-10-15 · D-330 부기)** — 1회차 24h 3건(1.3%)뿐이라 W2에 넣지 않는다. 2회차에서 10건 이상이면 다시 묻는다 |
 | **G-6** | 강등 목적지 | **TICKET 확정**(D-330 ④ · 일배치 요약 + 화면 실시간) · 첫 PAGE 카드에 「묶인 알림 N건」 표시 |
+| **G-7** | (W0-X 결과 B2) 호스트 키 정규화를 보강하는가(구분자·접미 차이) | **W0-X 결과 뒤 결정** — §11.6 S12 근접 불일치 건수로 정한다 · D-317 부기 대상 |
+| **G-8** | (W0-X 결과 C1) 지문 dedup에 걸린 반복 알람도 크로스소스 사건을 살려 두는가 | **W0-X 결과 뒤 결정** — §11.6 S13 V1 증가분으로 정한다 · plans/144 설계 변경 |
+| **G-9** | (W0-X 결과 C2·C3) 결합 조건을 시간 창 대신 「원인 미해소」 기준으로 바꾸는가 · 원인 티어 조건을 재검토하는가 | **W0-X 결과 뒤 결정** — §11.6 S13 V2·S14 지연 분포로 정한다 · plans/144 W6 §8.2 창 보정과 함께 |
+| **G-10** | (v1.3 · §12.3 F1) 제니퍼 심각도 3(레벨 FATAL·CRITICAL)도 「심각도3 단락」 대신 제니퍼 유형 정책 표를 따르게 하는가 · 표 밖 유형(AGENT_STOP·Metrics Event·SERVICE_EXCEPTION 등)의 목적지는 | **(a) 확정(2026-10-15 · D-336 — 「권고에 맞게 진행」)** · 권고 (a) 정책 표 `notify: page` 유형만 PAGE · 나머지 sev3는 **TICKET 하한**(DASHBOARD 이하로는 내리지 않음) · AGENT_STOP은 TICKET(근사 24h 20건) — 대안 (a′) AGENT_STOP만 운영 소스(`b0`·`cm_prd`)에서 PAGE(근사 28건) · (c) 현행 유지(48건 · 목표 밖). D-035·D-048(D-330 개정분)·D-317 ①에 걸리므로 확정 시 D-330 부기 또는 새 D-번호 |
+| **G-11** | (v1.3 · §12.4) 같은 Redis 소비자 그룹을 여러 프로세스가 읽고 있으면 어떻게 하는가 | **W0-H 진단 뒤 결정** — 진단이 다중 소비를 확인하면 선택지: 알람 워커는 한 프로세스만 켠다(`ALARM_ENABLED`·운영 절차) / 소비자 이름을 프로세스별로 바꾸고 판정 감사·레지스트리를 공유 저장소로 옮긴다(설계 변경) |
+| **G-12** | (v1.3 · §12.3 F3) 비운영 제니퍼 소스(`cm_stg` — 공동존 개발/스테이징)의 PAGE를 TICKET으로 상한하는가 | **만들지 않음 확정(2026-10-15 · G-10 (a))** — 효과 0. (c) 현행 유지를 고르면 권고 채택(근사 24h 34건). `polestar_cm_yd`는 DR을 포함해(D-271) 대상이 아니다 |
 
 ---
 
@@ -347,3 +358,243 @@ python -m noise_gate.scripts.page_audit --hours 24 --no-stream    # Redis 없이
 - 판정을 다시 계산해 감사 파일에 쓰지 않는다 — 결과는 스크립트 출력 폴더에만 남는다.
 - LLM으로 요약하지 않는다(실 LLM 0 · 과금 0).
 - 지문 dedup이 버린 알람을 다시 판정하지 않는다(처분 건수로만 센다).
+
+---
+
+## 11. W0-X 상세 — 폴스타↔APM 상관 진단 (`page_audit` S11~S14 · v1.2)
+
+> **요청 원문(2026-10-15)**: *"현재 폴스타와 apm이 상관관계를 제대로 역지 못하는 것으로 보인다."* → *"진단 섹션 추가 계획을 162 에 추가 수립하라."*
+> 운영 데이터가 없어 원인은 아직 모른다. 이 절은 원인을 **A 설정 · B 이름 정합 · C 구조** 가운데 어디인지 숫자로 가르는 진단을 W0 스크립트에 더하는 계획이다. 코드 앵커는 `badb798` 작업 트리에서 읽어 확인했다.
+
+### 11.1 연관이 끊길 수 있는 지점 (코드 실측)
+
+| # | 분류 | 지점 | 앵커 |
+|---|---|---|---|
+| A1 | 설정 | 사건 상관 `NOISE_CROSS_SOURCE_MODE`·앱 영향 조회 `app_impact_enabled` 기본 off · 규칙 표 적재 실패도 off와 같은 판정(경고 1줄) | `src/config.py:1177`·`:1194` · `infrastructure/cross_source_rules.py:189` |
+| A2 | 설정 | APM 알람 존은 dbId `jennifer_<소스 id>`를 레지스트리 `solutions[apm].sources`(`b0`·`cm_prd`·`cm_stg`)로 풀어 얻는다. 게이트웨이 소스 id가 다르거나 단일 설정(`jennifer`)이면 존이 비어 사건 키가 `|host`가 되어 폴스타 `gongjon|host`와 만나지 않는다 | `src/routing/registry.py:516` · `application/server_identity.py:53` |
+| B1 | 이름 정합 | 게이트웨이 정합 순서 `override` → 제니퍼 `hostName` → 인스턴스명 정규식 → `unresolved`(hostname 빈 값). 빈 값이면 사건에 아예 붙지 않는다 | `apm_gateway/.../resolver.py:354` · `domain/cross_source.py:530` |
+| B2 | 이름 정합 | 호스트 키 정규화는 소문자·FQDN 첫 라벨뿐이다. 폴스타 hostname과 제니퍼 `hostName`이 다른 이름(등록명 ≠ OS 호스트명, 구분자 차이, IP)이면 키가 다르다 | `domain/alarm.py:35` |
+| B3 | 이름 정합 | 정규식으로 맞춘 APM 키는 `weak`, 폴스타 hostname 2건 이상은 `none` — 강등에는 양쪽 `strong`이 필요하다(묶음은 된다) | `domain/alarm.py:138` |
+| C1 | 구조 | 지문 dedup(4h)에 걸린 반복 알람은 사건에 닿기 전에 ACK된다. 사건은 마지막 알람 뒤 900초에 닫힌다 → 이어지는 폴스타 경보도 첫 통보 15분 뒤에는 사건이 없다 | `application/alarm_worker.py:1398`·`:1534` · `src/config.py:1196` |
+| C2 | 구조 | 원인 발생이 증상보다 최대 600초 먼저인 것만 인정한다(규칙 `cause_before_seconds`) — 30분째 이어지는 원인은 창 밖 | `config/cross_source_rules.yaml` · `cross_source.py` `evaluate_link` |
+| C3 | 구조 | 강등에는 원인 최종 티어가 PAGE·TICKET이어야 한다 — 원인이 DASHBOARD로 내려가 있으면 묶음만 된다 | `cross_source.py:239` |
+| C4 | 구조 | 강등 규칙은 1행(`host_resource_to_was_latency` · was_kinds 3종)뿐 · 서버 다운 행 비활성 · 전 행 `enforce: false` | `config/cross_source_rules.yaml` |
+
+### 11.2 목적과 경계
+
+- **묻는 것**: 「폴스타와 APM이 같은 서버의 같은 사건으로 묶여야 했던 건이 몇 건이고, 각각 A·B·C 어느 지점에서 끊겼는가」. 운영 모드가 off여도 답한다 — 도메인 사건 추적기로 시뮬레이션한다.
+- **같은 스크립트 · 같은 실행** — §10의 `page_audit`에 섹션을 더한다. 가명 키·누출 검사·출력 폴더를 공유하므로 S1~S10과 같은 서버가 같은 실행 안에서 비교된다. 새 CLI 플래그 없음(APM 수신 0건이면 「APM 수신 0건」으로 끝난다).
+- **제품 코드 변경 0** · 읽기 전용(§10.1 그대로) · 게이트웨이·폴스타 DB·LLM 호출 0.
+- **호스트 우주는 「창 안에 알람을 낸 서버」뿐이다** — 게이트웨이 인벤토리·폴스타 서버 목록을 읽지 않으므로 「알람이 없던 짝」은 보이지 않는다. 그래서 짝 비율은 7일 창으로 본다.
+- 결과는 `plans/144` W6(§8.2 원인→증상 지연 분포·lift로 창 보정)의 재료도 된다.
+
+### 11.3 입력 — 새 입력원 없음, 읽는 필드만 늘린다
+
+| 원천 | 추가로 읽는 필드 | 쓰임 |
+|---|---|---|
+| `alarm:raw` APM 행 | `dbId` · `hostname` · `raw.apm.{source_id, match_reason, match_confidence, level, event_type_norm, was_signals[*].kind, instance_name, domain_name}` | 소스 id 등록 여부(A2) · 정합 사유(B1) · 인스턴스 단위 집계 · 규칙 선택자 |
+| `alarm:raw` 폴스타 행 | `dbId` · `hostname` · 해소(`severity 0`) | 호스트 키 · 원인 미해소 판정 |
+| 판정 레코드 | `stage_evidence.episode_id`(구현 실측 — `decision_store.record`에 최상위 인자가 없다 · 최상위도 함께 읽는다) · `evidence.cross_source.{rule_id, action, enforce, missing, applied, lag_seconds}` · `stage_evidence.app_impact_error`·`app_impact_fatal_events`·`app_impact_source` · 티어 | 실제 운영 기록(모드≠off일 때) · 원인 티어 |
+| `type=recurrence` · `type=resolution` · `type=late_promotion` | 시각 · 지문 | C1 변형(반복이 사건 유지) · 원인 해소 시점 · 사후 승격 수 |
+| 정책 스냅샷 | `cross_source_mode` · `app_impact_enabled` · `app_impact_window_minutes` · `app_impact_late_promotion_enabled` · `episode_idle_seconds` · `cross_source_rules_path` 적재 결과 | A1 |
+| 규칙 표 · 레지스트리 | 규칙 행별 id·enabled·enforce·action·창·선택자 수 · 파일 해시 / `solutions[apm].sources`의 id·존 | A1·A2 (설정 파일이라 식별 정보 아님 · 그대로 싣는다) |
+
+`--no-stream`이면 APM 정합 사유와 인스턴스 정보가 없다 — S12는 「모름」, S13은 판정 레코드에 남은 실제 기록만, S14는 판정 레코드의 시각으로만 계산한다.
+
+### 11.4 비식별 추가 규칙 (§10.4 허용 목록에 더함)
+
+| 원천 | 처리 | 출력 |
+|---|---|---|
+| `hostname`(양 소스) | `normalize_host_key`(도메인 함수 그대로) → 같은 실행 HMAC → `K-…` · **폴스타와 APM이 같은 함수라 같은 서버 = 같은 `K-`**. 기존 `host`(`H-`)는 등록 서버명 기준이고 APM 미정합 시 인스턴스명이라 소스 간 비교에 쓰지 않는다 | `xs.hk` |
+| `raw.apm.instance_name` | HMAC → `I-…` · 원문 버림 | `xs.inst` |
+| `episode_id` | HMAC → `E-…` | `xs.episode` |
+| `match_reason` · `match_confidence` | 닫힌 열거 {`override`·`host_name`·`regex`·`unresolved`·`ambiguous`}(게이트웨이 `resolver.reverse` 반환 어휘 + 소비측 `ambiguous`) / {`high`·`medium`·`none`} — 그 밖은 `<other>` | `xs.match_reason` · `xs.match_conf` |
+| APM 소스 id | 레지스트리 등록 id면 그대로 · 아니면 `S-…` 가명 + `registered: false` · 단일 설정 `jennifer`는 `default` | `xs.apm_source` |
+| `was_signals[*].kind` · `cross_source.missing` · `action` | 도메인 상수 어휘(`was_*` 게이트웨이 고정 어휘 · `MISSING_*` · `link`/`demote`) — 그 밖은 `<other>` | `xs.was_kinds` · `xs.actual` |
+| `app_impact_error` | `" — "` 앞 코드만 열거 — 소비측 3종(`gateway_unreachable`·`gateway_error`·`contract_violation`) + 게이트웨이 오류 어휘(`apm_gateway/domain/errors.py` `ERROR_CODES` 사본 · 패키지 경계상 import하지 않는다). 그 밖은 `<other>` · 뒤의 예외 문구(URL·호스트가 섞일 수 있다)는 버림. **`instance_unresolved`는 「폴스타 호스트에 맞는 제니퍼 인스턴스가 없다」는 뜻이라 S12에 따로 센다** | `xs.app_impact` |
+| 느슨한 키(영숫자만 남긴 키) · 포함 관계 | 값은 내보내지 않는다 — 일치 여부 bool만 | `xs.loose_peer` · `xs.contains_peer` |
+| `domain_name` · `application`(URL) · `ipAddress` | **버림** | — |
+
+- **누출 검사 식별자 목록에 더한다**: 인스턴스명 · 제니퍼 도메인명 · 정규화 전·후 호스트 키(4자 이상) · `application` URL.
+- 규칙 표·레지스트리 소스 표는 설정 파일 값이라 그대로 싣되, 규칙 `alarm_names`는 §10.4 알람명 정규화를 거친다.
+
+### 11.5 분석 로그 — `alarms.jsonl` 행에 `xs` 객체 추가
+
+```json
+"xs": {"hk": "K-3f2a…", "hk_strength": "strong", "zone": "gongjon", "zone_ok": true,
+       "apm_source": "cm_prd", "registered": true, "match_reason": "host_name", "match_conf": "high",
+       "inst": "I-81c0…", "was_kinds": ["was_service_queuing"],
+       "peer_7d": true, "loose_peer": false, "contains_peer": false,
+       "nearest_cause": {"lag_s": 1830, "kind": "cpu", "tier": "dashboard", "open": true},
+       "actual": {"episode": "E-0b9d…", "rule_id": "host_resource_to_was_latency",
+                  "action": "link", "missing": ["window", "cause_tier"], "applied": false},
+       "app_impact": null,
+       "sim": {"V0": "link:window,cause_tier", "V1": "link:cause_tier", "V2": "link:cause_tier", "V3": "demote"}}
+```
+
+- `peer_7d`: 같은 `K-`가 7일 창 안에 **다른 소스**에도 나타났는가 · `nearest_cause`: 같은 존·`K-`의 직전 폴스타 알람(규칙과 무관)과의 지연·kind·최종 티어·그 시점 미해소 여부.
+- 폴스타 행은 `match_reason`·`inst`·`apm_source`·`was_kinds` 없이 `hk`·`peer_7d`·`actual`·`sim`만 싣는다. 사건에 붙을 수 없는 행(키 빈 값)은 `hk: null`과 사유만 싣는다.
+
+### 11.6 집계 S11~S14
+
+| # | 섹션 | 내용 | 가르는 것 |
+|---|---|---|---|
+| S11 | 설정 판독 | 모드·앱 영향 플래그·idle 값 · 규칙 표 적재 성공 여부와 행별 enabled/enforce/action/창 · **수신 APM 소스 id × 레지스트리 등록 여부**(미등록·단일 설정 건수 = 존 빈 값 건수) · 앱 영향 조회 결과 분포(조회 대상 아님 / fatal 있음 / fatal 0 / 실패 코드별 — `instance_unresolved`는 S12로) · 사후 승격 건수 | A1 · A2 |
+| S12 | 이름 정합 | APM 알람·인스턴스 단위로 정합 사유 분포 · 키 신뢰도 분포 · 미정합 인스턴스 수와 그 알람 건수 · **짝 비율**: 정합된 APM 키 중 7일 안 폴스타에도 나타난 비율, 폴스타 키 중 APM에도 나타난 비율 · 근접 불일치(느슨한 키로만 일치 = 구분자·대소문자 밖 차이 / 한쪽이 다른 쪽을 포함 = 접미·접두) 건수 · **미정합 인스턴스명 안에 폴스타 키가 토큰으로 들어 있는 인스턴스 수**(= 정합 규칙·`overrides`로 풀 수 있는 후보) · 반대 방향: 앱 영향 조회가 `instance_unresolved`로 끝난 폴스타 키 수 | B1 · B2 · B3 |
+| S13 | 사건·결합 | **실제 기록**(모드≠off): 사건 수 · 두 소스 멤버 사건 수 · 링크 action별 · `missing` 라벨별(한 링크에 여러 개면 각각) · applied 수. **시뮬레이션**(모드와 무관): 도메인 `EpisodeTracker`를 판정 레코드 순으로 재생 — 변형 4종의 두 소스 사건 수·link·demote 후보·`missing` 분포·demote 후보 중 sev3 증상 0 확인 | C1~C4 |
+| S14 | 시간 관계 | 같은 존·`K-` 쌍의 폴스타→APM 최근접 지연 분포(음수 = APM 먼저 · 구간 <1분·<5분·<10분·<30분·<1시간·<4시간·그 이상) · 원인 kind × 증상 was_kind 상위 표 · 그 시점 원인 미해소 비율 · 원인 최종 티어 분포 · 규칙 행별 lift(원인 뒤 창 안 증상 비율 ÷ 기준 증상 비율) | C2 · C3 · plans/144 W6 |
+
+**시뮬레이션 변형** — 규칙 정의는 도메인 하나에서만 온다(`EpisodeTracker`·`evaluate_link`·`episode_alarm`·`load_rules` 호출 · `replay_noise._cross_source_signal`과 같은 조립 · §10.7의 R1~R3 재사용과 같은 원칙). 시계는 워커처럼 `now` = 판정 시각, 창은 발생 시각으로 잰다. 원인 티어는 판정 레코드 티어로 `record_tier`한다. 폴스타 서버 식별 모호(`ambiguous`)는 오프라인에서 알 수 없어 `strong`으로 두고 한계로 적는다.
+
+| 변형 | 바꾸는 것 | 보는 것 |
+|---|---|---|
+| V0 현행 | 없음(판정 레코드 알람만 · idle `episode_idle_seconds` · 규칙 표 그대로) | 운영이 off여도 「켰다면」의 결과 · 모드≠off면 실제 기록과 같아야 한다(대조 실패는 S10에 경고) |
+| V1 반복 유지 | `type=recurrence` 시각마다 같은 존·키의 열린 사건 `last_seen`을 갱신(스크립트 안 어댑터 · `episodes()`로 얻은 사건만 만진다) | C1 효과 |
+| V2 미해소 기준 | 규칙 `cause_before_seconds`를 dedup 창(`repeat_interval_seconds`)으로 넓힌 사본(`dataclasses.replace`) — 결합 조건 ④ 「원인 미해소」가 사실상 기준이 된다 | C2 효과 |
+| V3 | V1 + V2 | 구조 개선 상한 |
+
+### 11.7 판독표 — 결과 → 원인 → 다음 조치
+
+| 결과 | 원인 | 조치(이 계획 밖 · 결정 필요 여부) |
+|---|---|---|
+| 모드 off · 규칙 표 적재 실패 | A1 | 운영 `.env`·규칙 표 경로 정정 — 결정 불필요 |
+| 미등록 APM 소스 ≥1 · 존 빈 값 건수 >0 | A2 | 게이트웨이 `JENNIFER_SOURCES` id 또는 레지스트리 `sources` 정정 — 결정 불필요(D-329 확정값 대조) |
+| 미정합 비율이 높고 토큰 후보가 많다 | B1 | 게이트웨이 정합 파일 정규식·`overrides` 보강 — 결정 불필요 |
+| 정합됐는데 짝 비율이 낮고 근접 불일치가 많다 | B2 | 호스트 키 정규화 보강(코드 변경) — **G-7** |
+| 짝 비율은 높은데 V0 링크가 적고 V1에서 크게 는다 | C1 | dedup 반복이 사건을 살리게 — **G-8** |
+| V2에서 크게 늘고 S14 지연이 600초 밖에 몰린다 | C2 | 창 대신 「원인 미해소」 기준 또는 창 보정 — **G-9** (plans/144 W6 §8.2와 같이) |
+| `missing=cause_tier`가 다수 | C3 | 원인이 DASHBOARD로 내려간 설계 결과 — 강등 조건 재검토는 G-9에 포함 |
+| 링크는 충분한데 demote 0 | C4 | 규칙 행 `enforce` 전환 — plans/144 G-7 기준(shadow 2주 거짓 강등률 ≤2%) |
+
+G-7~G-9는 크로스소스 설계(plans/144 · D-317)를 바꾸는 결정이다. **진단 결과를 보고 사용자가 정한다** — 이 Wave에서는 아무것도 바꾸지 않는다.
+
+### 11.8 파일·테스트·완료 기준
+
+| 파일 | 변경 |
+|---|---|
+| `noise_gate/scripts/page_audit_xsource.py`(신규) | S11~S14 집계 · 변형 V0~V3 시뮬레이션 · `xs` 행 필드 계산 — `page_audit.py`(1,947줄)를 더 키우지 않으려고 나눈다 |
+| `noise_gate/scripts/page_audit.py` | `xs` 필드·섹션 호출 배선 · `summary.md` 렌더에 S11~S14 · 정책 스냅샷에 §11.3 필드 |
+| `noise_gate/scripts/page_audit_sanitize.py` | `K-`·`I-`·`E-`·`S-` 가명 · 열거 허용 목록 · 누출 식별자 추가 |
+| `noise_gate/testdata/page_audit/` | APM 행 추가(정합 사유 각 종 · 미등록 소스 · FQDN·구분자 근접 불일치 · 인스턴스명 토큰 후보 · dedup이 사건을 닫는 시퀀스 · 30분 지연 시퀀스 · 원인 DASHBOARD) — IP는 문서용 대역, 이름은 `fake-*` |
+| `noise_gate/tests/test_page_audit_xsource.py`(신규) | 아래 완료 기준 |
+
+1. **누출 0** — 인스턴스명·제니퍼 도메인명·`application` URL·`app_impact_error` 예외 문구·정규화 전후 호스트 키가 출력 5개 파일 어디에도 없다.
+2. **소스 간 같은 가명** — 폴스타 `FAKE-WEB01.example.test`와 APM `fake-web01`이 같은 `K-`.
+3. **도메인과 차등 0** — 같은 픽스처에서 V0의 사건·link·demote 수가 `replay_noise`의 `cross_source` 요약과 같다. *(구현 해석 2026-10-15: V0은 원인 티어를 판정 레코드에서, `replay_noise`는 재판정 티어를 쓰므로 「기록 티어 = 재판정 티어」인 부분 집합에서 같다 — 전체 픽스처는 원인 DASHBOARD 시나리오 1건만 link↔demote로 갈린다. 시계도 V0 = 판정 시각 · replay = 발생 시각이라 판정 지연이 idle을 넘으면 갈린다)*
+4. **변형 효과** — dedup이 사건을 닫는 시퀀스는 V0 link 0 → V1 link 1, 30분 지연 시퀀스는 V0 `missing=window` → V2 window 해소. demote 후보 중 sev3 증상 0.
+5. **판독표** — §11.7의 각 행을 만드는 픽스처가 기대 원인 분류를 낸다(미등록 소스 → A2 등).
+6. **`--no-stream`** — S12는 「모름」, 예외 없이 끝난다.
+7. **기존 출력 불변** — S0~S10과 기존 `alarms.jsonl` 필드는 비트 동일(`xs`·새 섹션만 추가). 기존 `test_page_audit*.py` 그대로 통과.
+8. **정적 게이트** — `regress.py --no-tests --files <위 파일>` 통과. 계획 끝 모듈 회귀는 `--base 4073f7f`(§0 · D-303).
+
+### 11.9 내부망 실행 · 반출
+
+- 명령은 §10.10과 같다 — `python -m noise_gate.scripts.page_audit --hours 24 --days 7`. 짝 비율은 7일 창이 있어야 의미가 있다.
+- Redis 스트림이 필요하다(정합 사유는 원문에만 있다). `--no-stream`은 S12를 비운다.
+- 반출 파일도 같다. 판단에 쓰는 표는 `summary.md`의 S11~S14다.
+
+### 11.10 하지 않는 것
+
+- 게이트웨이 인벤토리·폴스타 서버 목록을 조회하지 않는다(우주는 알람을 낸 서버뿐 — §11.2).
+- 규칙 표·정합 파일·정규화 코드를 자동으로 고치지 않는다 — 판독표의 조치는 사용자 결정 뒤 별도 작업.
+- 사건 상태를 운영 워커에 되돌려 쓰지 않는다.
+
+---
+
+## 12. W0 1회차 내부망 실행 결과와 수정 계획 (v1.3 · 2026-10-15)
+
+> **요청 원문(2026-10-15)**: *"20261015-082712 폴더에 162번 로그가 저장되어 있다. 분석하여 수정 계획을 162번 계획에 업데이트하라."*
+> **입력**: `results/page_audit/20261015-082712/`(git 추적 밖) — `summary.{md,json}` · `policy_snapshot.json` · `leak_check.json`(`passed: true` · 식별자 151,612개 대조 · 걸림 0) · `alarms.jsonl`(170,199행 · 163MB). 창 끝 2026-10-15 08:27 KST · 짧은 창 24h · 긴 창 7일. 내부망 코드 SHA `aa49653`(외부망 이력에 없음 — 반입 묶음 대조 기준이 따로 필요하다). **이 실행본에는 W0-X(S11~S14)가 없다.**
+> **증거 규칙**: §12.1~12.2는 요약 파일 그대로다. 「근사」라고 적은 수치는 `alarms.jsonl`을 외부망에서 간이 재생한 값이다(도메인 `review_page`가 아니라 같은 규칙을 단순화한 스크래치 계산 · R1~R3 근사 51 vs 스크립트 48로 오차 ±3). 운영 워커 로그·운영 `.env` 원문은 보지 못했다.
+
+### 12.1 사실 — 무엇이 PAGE를 만들었나
+
+| 항목 | 값 | 출처 |
+|---|---|---|
+| 24h 수신 | 19,997건 — **제니퍼 16,122(80.6%)** · 폴스타 3,875 · 심각도 2가 15,839 | S1 |
+| 24h PAGE | **227건**(사용자 보고 170보다 많다) — `severity3` 단락 223 · 매트릭스 4(제니퍼 `notify` 승격) · 수집 실패 0 | S2 |
+| PAGE 출처 | **제니퍼 207** = `jennifer_b0` 104 · `jennifer_cm_stg` 91 · `jennifer_cm_prd` 12 / 폴스타 20 = `polestar_cm_yd` 11 · `polestar_cm_gp` 9 | alarms.jsonl |
+| 제니퍼 PAGE 알람 | `cm_stg` AGENT_STOP **79**(84호스트) · `b0` Metrics Event 45 · `b0` DB_CONNECTION_FAIL 41 · `b0` AGENT_STOP 16 · `cm_stg` SERVICE_EXCEPTION 12 · `cm_prd` AGENT_STOP 7 · 기타 7 | alarms.jsonl |
+| 제니퍼 sev3의 원천 | 원 심각도 3이 202건 — 게이트웨이 레벨 매핑 `fatal: 3`·`critical: 3`(`apm_gateway/config/event_levels.yaml`). 제니퍼 정책 표(`config/apm_noise_policy.yaml`)는 AGENT_STOP·Metrics Event·SERVICE_EXCEPTION을 `default`(dashboard)로 두지만 **sev3는 step 3 단락이 정책 표보다 먼저라 표가 닿지 않는다** | alarms.jsonl · 코드 |
+| 제니퍼 sev2 | 정책 경로가 잘 듣는다 — 판정 1,328건 중 억제 706 · TICKET 617 · PAGE 5 | alarms.jsonl |
+| AI 상향(H6) | 3건(폴스타 2 · 제니퍼 1) | S2 |
+| 수집 실패(H5) | 24h 0건. 단 10-08에 제니퍼 `unavailable` 513건이 PAGE였다 → 그 뒤 `apm_noise_policy_enabled=true`로 해소된 것으로 보인다 | alarms.jsonl · 정책 스냅샷 |
+| 폭주(H4) | 10-14 17:57~18:53에 PAGE 114건(71호스트) — `b0` Metrics Event 45 · DB_CONNECTION_FAIL 37 · AGENT_STOP 13 … 한 사건의 여러 알람명. 같은 시간 처리 지연 p50 246초 · 최대 701초 | S5 · alarms.jsonl |
+| 반복(H1·H2) | 지문당 PAGE 1회가 207개 · dedup 창 안 재PAGE 1건 — **반복은 주원인이 아니다** | S3 |
+| 만성(H7) | 7일 중 5일 이상 PAGE 지문 0개 | S7 |
+| 해소 | PAGE 227 중 미해소 218 — **제니퍼 해소 이벤트가 7일 동안 0건**이라 구조적으로 미해소다 | S6 · alarms.jsonl |
+| 일별 PAGE | 10-12 142 · 10-13 188 · 10-14 226 · (10-10·10-11은 판정 0건) | alarms.jsonl |
+| 크로스소스 | `cross_source_mode=enforce`인데 7일간 사건 합류 5,487건 · **link·demote 0건**(근거에 `rule_id`·`action`이 한 번도 없다) — 사용자 관찰 「상관관계를 엮지 못한다」와 맞는다. 원인 가르기는 W0-X(§11) 재실행으로 | S10 · alarms.jsonl |
+
+### 12.2 what-if — 현행 규칙만으로는 목표에 못 닿는다
+
+| 시나리오 | 24h 남는 PAGE | 일별(10-12·13·14) | 출처 |
+|---|---|---|---|
+| 현행 | 227 | 142·188·226 | S8 |
+| R1 · R2 · R3 · R4 · R5 · R6 단독 강등 | 14 · 44 · **163** · 0 · 3 · 0 | — | S8 |
+| R1~R3 누적(W1 enforce 가정) | **48** — 남는 것: `cm_stg` AGENT_STOP 12 · `gp` 사용률(심각_평균) 5 · `b0` AGENT_STOP 5 · `yd` Server 가용성 5 · … | 7일 일평균 32.4 | S8 |
+| (근사) F1 제니퍼 sev3 정책 표 경로만 | 62 | 33·47·60 | 근사 |
+| (근사) **F1 + R1~R3** | **20** | 15·26·16 | 근사 |
+| (근사) F1′(AGENT_STOP 운영 소스만 PAGE) + R1~R3 | 28 | 21·33·25 | 근사 |
+| (근사) F3 `cm_stg` 상한 + R1~R3(F1 없이) | 34 | 27·35·31 | 근사 |
+| (근사) R3 묶음 키를 알람명 없이 db_id로 | 46 | 48·59·42 | 근사 — 효과 작아 택하지 않는다 |
+
+**F1 + R1~R3 뒤에 남는 20건**(근사): `b0` DB_CONNECTION_FAIL 5 · `gp` 사용률(심각_평균) 4 · `yd` Server 가용성 3 · `yd` 사용률 2 · `yd` Filesystem 사용률 2 · `gp` 사용률(경계) 2 · `b0` OUT_OF_MEMORY 1 · `gp` 사용률(심각_피크) 1 — 사람이 볼 만한 것만 남는다.
+
+### 12.3 수정 항목
+
+| # | 문제 | 수정 | 결정 | Wave |
+|---|---|---|---|---|
+| **F1** | 제니퍼 레벨 FATAL·CRITICAL이 폴스타 「심각」과 같은 sev3 단락을 탄다 — 제니퍼 정책 표가 sev3에 닿지 않아 PAGE의 89%(203/227)가 여기서 나온다 | 제니퍼 정책 경로(`apm_policy` 있음)의 sev3는 step 3 단락 대신 정책 표로 판정 — `notify: page` 유형은 PAGE, 그 밖은 **TICKET 하한**. 새 플래그 `NOISE_APM_SEV3_POLICY_ENABLED`(기본 off = 비트 동일). 폴스타 sev3 단락은 그대로 | **G-10** | W5 |
+| F2 | 정책 표 키와 실제 유형 이름이 어긋날 수 있다 — 표는 `OUTOFMEMORY`, 관측 알람명은 `OUT_OF_MEMORY`. 1회차는 `event_type_norm`이 가명화돼 대조가 안 된다(T1) | T1 반영 2회차에서 PAGE·TICKET 유형의 `event_type_norm`을 표 키와 전수 대조 → 다른 키는 표에 더하거나 고친다(데이터 정정) | 불필요 | W0-T → W5 |
+| F3 | 비운영 소스 `cm_stg`가 PAGE 91건 | G-10 (a)면 효과 0 → 만들지 않는다. (c)면 소스 단위 TICKET 상한 | **G-12** | (조건부) W5 |
+| F4 | 제니퍼는 해소가 없어 `PageRegistry`에서 사건이 닫히지 않는다 → R1이 같은 지문의 **진짜 재발**도 24h 동안 강등할 수 있다(보존 4 리마인더만 남는다) | 제니퍼 지문은 「마지막 이벤트(재발 억제 포함) 뒤 `reopen_quiet_minutes` 무소식이면 닫힘」으로 본다. 먼저 T6으로 같은 지문 이벤트 간격 분포를 재고 값을 정한다 | 불필요(D-330 R1 정의 안 — 해소 대용 규칙 부기만) | W0-T → W1 보강 |
+| F5 | 수신의 59.7%(11,942건)가 판정·재발 기록 없이 사라진다(H10) · 10-15 04:00~08:27은 수신 3,000여 건에 판정 0건인데 소비자 그룹 `last-delivered-id`는 08:26:58까지 와 있고 dead-letter 0 | §12.4 진단 → G-11 | **G-11** | W0-H |
+| F6 | R4·수집 실패율 메타경보가 꺼져 있다(`collection_failed_page_sev3_only=false` · `meta_alert_collection_failed_ratio=0.0`) — 24h 효과 0이지만 10-08 같은 정책 경로 장애(513 PAGE)를 막는 안전망이다 | W4 enforce 때 함께 켠다(D-330 ③ 확정 범위 — 새 결정 없음) | 불필요 | W4 |
+| F7 | 폭주 시 처리 지연(18시 p50 246초·최대 701초) — PAGE가 최대 12분 늦게 나간다 | 이 계획 범위 밖(워커 직렬 처리·LLM 호출 비용). 기록만 하고 별도 계획 후보로 둔다 | — | — |
+
+### 12.4 W0-H — 소비 경로 진단 (H10 · 내부망)
+
+**가설**: 워커 소비자 이름이 상수 `worker-1`(`noise_gate/application/alarm_worker.py:96`)이고 알람 워커는 `ALARM_ENABLED`인 앱 프로세스마다 하나씩 뜬다(`src/api/server.py:427`). 같은 Redis 그룹을 읽는 프로세스가 둘 이상이면 `XINFO`에는 소비자 1개로 보이면서 수신이 나뉘고, 판정 감사는 프로세스마다 제 파일에 쓴다. 1회차 정황 — 시간대마다 수신의 약 절반이 미집계 · 04:00~08:27 전부 미집계인데 소비 위치는 최신 · dead-letter 0 · 미판정 52건.
+
+| # | 확인 | 판독 |
+|---|---|---|
+| 1 | 같은 Redis를 쓰는 서버·컨테이너에서 `python -m src.main --server` 프로세스 수 · 각 `ALARM_ENABLED` · uvicorn worker 수 · 시험·벤치 인스턴스 | 2개 이상이면 다중 소비 확정 |
+| 2 | `XINFO CONSUMERS alarm:raw <group>`의 `idle`·`pending`을 수 분 간격 2회 | 한 이름이 서로 다른 곳에서 읽히면 idle이 계속 0 근처 |
+| 3 | 각 프로세스의 `NOISE_DECISION_STORE_PATH`(상대 경로면 작업 디렉터리 포함)와 파일 마지막 줄 시각 | 다른 파일에 04~08시 판정이 있으면 다중 소비 확정 |
+| 4 | 10-15 03~08시 워커 로그의 `알람 처리 시작`·`알람 처리 실패`·`알람 워커 종료` | 처리 시작이 있는데 감사가 없으면 감사 쓰기 실패(`decision_store` OSError 경고) |
+| 5 | 10-10·10-11(판정 0) 운영 이력 | 주말 정지인지 확인 |
+
+- **결과별 다음 조치**: 다중 소비 → G-11 · 감사 쓰기 실패 → 디스크·권한 정정(결정 불필요) · 단일 소비인데 공백 → 워커 로그로 새 원인 분리.
+- **W4와의 관계**: 소비가 나뉘면 지문 dedup·`PageRegistry`·크로스소스 사건이 모두 프로세스별 반쪽이다. 그 상태의 shadow 수치는 믿을 수 없으니 W4는 W0-H 뒤에 한다. 관제 화면의 PAGE 수도 화면을 띄운 프로세스의 감사 파일 기준이라, 사용자가 본 170과 1회차의 227이 다른 이유일 수 있다.
+
+### 12.5 W0-T — 분석 도구 보정 (`page_audit`)
+
+| # | 결함(1회차 실측) | 보정 |
+|---|---|---|
+| T1 | `evidence.apm_policy.event_type_norm`이 `N-…`로 가명화돼 정책 표 키와 대조가 안 된다(§10.4는 그대로 내보내기로 정했다) | 게이트웨이 정규화 결과(대문자·`_`·숫자 · 2~40자)면 그대로 · 아니면 가명. 정책 표 키 일치 여부 bool을 더한다 |
+| T2 | S6 미해소 218이 제니퍼(해소 이벤트가 없음)와 폴스타를 섞는다 | S6을 출처별로 나누고 「해소 이벤트 0건 출처」를 표시 |
+| T3 | S9 「같은 호스트·알람명에 지문 2개 이상」 168묶음이 제니퍼 인스턴스 단위 지문과 섞여 H8 판독이 안 된다 | 출처별로 나누고 제니퍼는 지문 원천(유형·인스턴스)으로 따로 센다 |
+| T4 | S1 처분이 소비 공백을 못 보여 준다 — 미판정(XPENDING) 52건이 `pending`에 안 들어가고, 시간대별 맞대기 비율이 없다 | `delivered_unacked` 건수 · 시간대별 `decided+dedup` 비율 · **판정 공백 구간**(수신 있고 판정·재발 0인 연속 시간) · `XINFO CONSUMERS`의 이름·idle·pending을 정책 스냅샷 `stream`에 싣는다 |
+| T5 | 판정 레코드 최상위 `episode_id`가 `<unknown_key>` 5,487건으로만 센다 | 이름을 붙여 센다(값은 W0-X `xs.episode` 가명 규칙) |
+| T6 | G-10·G-12·F4를 고를 what-if가 없다 | S8에 시나리오 추가 — `APM_SEV3_POLICY`(정책 표 `notify`로 판정 · 표 밖 TICKET) · `APM_SEV3_POLICY+AGENT_STOP_PRD` · `NONPROD_CAP`(`cm_stg`) · 각각 R1~R3 누적과 결합한 값. 제니퍼 같은 지문 이벤트 간격 분포(재발 억제 포함 · F4 근거). W5 구현 뒤에는 도메인 함수를 불러 차등 0으로 바꾼다(§10.7 원칙) |
+
+- **완료 기준**: 기존 `test_page_audit*.py` 그대로 통과 · T1~T6 각각 픽스처 테스트(T1은 가짜 유형 `FAKE_EVENT_TYPE`이 그대로 나오고 소문자·공백 섞인 값은 가명) · 누출 검사 통과 · `regress.py --no-tests --files <바꾼 파일>`.
+- **같은 파일을 W0-X가 고치는 중이다**(`page_audit.py`·`page_audit_sanitize.py` · 작업 트리 미커밋). W0-T는 W0-X가 끝난 뒤 그 위에서 한다 — 내부망 2회차는 W0-X·W0-T를 한 번에 반입해 S0~S14를 함께 낸다.
+
+### 12.6 W5 — 제니퍼 sev3 정책 경로 (G-10 확정 뒤)
+
+- **위치**: `decide_notification` step 3(`noise_gate/domain/notification_policy.py` 심각도3 단락) 앞에서, 플래그가 켜져 있고 `apm_policy`가 있으면(제니퍼 정책 경로) 단락하지 않는다. 정책 표 `notify`가 `page`면 PAGE(단계 `severity3` 유지 · 사유에 「제니퍼 유형 정책」), 아니면 매트릭스로 내려가되 결과가 TICKET보다 낮으면 **TICKET으로 올린다**(sev3를 DASHBOARD 이하로 내리지 않는다 — D-317 ① 「정책 사유만으로 DASHBOARD 아래 금지」와 같은 원칙).
+- **바뀌지 않는 것**: 폴스타 sev3 단락 · 크로스소스 강등 조건 ⓔ(증상 심각도 <3) · 앱 영향 승격 · `page_review` 재판정(F1 뒤에도 R1~R3가 DB_CONNECTION_FAIL 폭주 등을 묶는다).
+- **정책 표**: G-10에서 AGENT_STOP 목적지가 정해지면 표에 행을 더한다(`notify: ticket` 또는 소스별 — 소스별이면 표 문법 확장이 필요하다). F2 대조 결과로 키를 정정한다.
+- **테스트**: 플래그 off 비트 동일(기존 정책·스냅샷 테스트 그대로) · on에서 `notify: page` 유형 PAGE · 표 밖 유형 TICKET · 폴스타 sev3 불변 · 정책 경로 미가용(`unavailable`)이면 현행 단락.
+- **기록**: D-330 부기(제니퍼 sev3 예외) 또는 새 D-번호 · D-317 ① 부기 · `docs/28` §4-C · 관제 화면 사유 문구 · 매뉴얼 admin(D-255).
+- **구현 결과(2026-10-15 · 커밋 없음)**: D-336 ①대로 **step 3에서 끝낸다** — 위 「매트릭스로 내려가 TICKET 하한」 원안 대신 정책 경로(`source=apm_policy`) sev3는 `noti_policy=="notify"`면 PAGE, 그 밖은 TICKET(단계 `severity3` · 근거 `apm_sev3_policy`{notify, policy_row}). AGENT_STOP 행은 두지 않았다(표 밖 = TICKET · 정책 표는 주석만). 배선: `src/config.py` `apm_sev3_policy_enabled` · `.env.example` · 설정 도움말 · `settings_catalog`(「PAGE 재판정」 구획) · `stage_handling` ticket 안내 · `noise-help.js`(퍼널 설정·근거 라벨·요약 티어 중립) · `noise.js` 퍼널 질문 · `docs/28` §4-C · 매뉴얼 admin·user(캡처 없음 — 새 화면 없음). 테스트 31건(`test_apm_sev3_policy{,_verify}.py`). 회귀 `--base 4073f7f` 모듈 단위 신규 실패 0. **이탈·잔여**: shadow(「켰으면 TICKET」) 근거 없음 — 켜기 전 영향은 T6 what-if · F2 키 정정은 2회차 뒤 · TICKET sev3는 자동 조사·incident open·L1 보강 미부착 · 재통보 간격은 sev3 값 그대로(D-336 주의 부기) · `page_audit_sanitize` 허용 목록에 `apm_sev3_policy` 미추가(W0-T에서).
+
+### 12.7 다음 순서
+
+1. ~~사용자 결정 G-10~~ — **(a) 확정 2026-10-15(D-336)** · G-12 불필요 · AGENT_STOP TICKET.
+2. 내부망 **W0-H** 확인(§12.4 표 1~5) → G-11.
+3. 외부망 **W0-X 마무리 → W0-T**(같은 파일 순서) → 내부망 **2회차** `--hours 24 --days 7`(S0~S14 · T1~T6).
+4. ~~W5 구현~~ — **완료 2026-10-15(커밋 없음 · 기본 off)**. 2회차로 F2 키 대조(표 키 정정) · F4 값 · G-7~G-9 판독 → W5 켜기 판단(W4와 같이 · D-336 ④).
+5. **W4** shadow 24h(전제: W0-H 단일 소비 · R4·메타경보 함께 켬) → 「했을 PAGE」 ≤ 20 · 놓친 사건 0 → enforce.

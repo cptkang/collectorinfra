@@ -238,6 +238,14 @@ HolmesGPT는 SDK로 임포트돼 `sre_agent` 프로세스 안에서 ReAct 루프
 - **R4 — 수집 실패는 심각도3만 PAGE**: `NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY=true`면 신호 수집에
   실패한 알람은 심각도3만 PAGE이고, 그 밖은 중요도 「보통」으로 매트릭스를 탄다(심각도2 → TICKET).
   off(기본)는 종전 「수집 실패 → 보수적 PAGE」와 같다.
+- **제니퍼 심각도3은 유형 정책 표를 따른다(D-336)**: `NOISE_APM_SEV3_POLICY_ENABLED=true`면 제니퍼 유형
+  정책 표(`config/apm_noise_policy.yaml`)로 판정하는 알람의 심각도3은 「심각도3 단락」에서 표를 본다 —
+  `notify: page` 유형만 PAGE, 그 밖(표 밖 유형·`default`)은 TICKET(근거 `stage_evidence.apm_sev3_policy`).
+  폴스타 알람·정책 표를 못 읽은 제니퍼 알람은 종전처럼 PAGE다. 이 플래그는 shadow 기록이 없으므로,
+  켜기 전에 표의 유형 키가 실제 정규화 유형과 맞는지 대조한다. off(기본)는 종전과 같다.
+  TICKET이 된 제니퍼 심각도3에는 PAGE 전용 부수 경로(자동 조사 `investigation_trigger_min_tier=page` ·
+  incident open · L1 보강)가 붙지 않는다. 재통보 간격은 이벤트 심각도 기준이라
+  `NOISE_SEV3_REPEAT_INTERVAL_SECONDS`를 그대로 쓴다 — 이 값을 줄여 두었다면 TICKET도 그 주기로 다시 쌓인다.
 
 ### 4-C.1 켜는 순서 — off → shadow(24시간) → enforce
 

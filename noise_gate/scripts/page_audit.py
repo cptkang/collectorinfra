@@ -14,7 +14,8 @@
 - **정책 스냅샷**은 코드 기본값이 아니라 `AppConfig()` 실제 해석값이다(D-127).
 
 흐름: 읽기(감사 · 스트림 · dead) → alarm_id로 맞대기 → 처분 분류 → 파생 특징 → what-if 시뮬레이션
-→ 비식별 행 → 집계 S0~S10 → 누출 검사 → 파일 쓰기(`<out>/<YYYYMMDD-HHMMSS>/`).
+→ 비식별 행 → 집계 S0~S10 → 폴스타↔APM 상관 진단(행 `xs` · S11~S14 — `page_audit_xsource` · §11)
+→ 누출 검사 → 파일 쓰기(`<out>/<YYYYMMDD-HHMMSS>/`).
 
 what-if 재판정 R1~R3은 도메인 `noise_gate.domain.page_review`(`PageRegistry` + `review_page`,
 enforce 가정)를 그대로 부른다 — 규칙 정의의 출처가 하나다. 생성 경로 규칙(R4·R5)은
@@ -92,6 +93,7 @@ from noise_gate.domain.page_review import (
 )
 from noise_gate.domain.severity import coerce_severity
 from noise_gate.domain.severity_signatures import scan_signature_severity
+from noise_gate.scripts import page_audit_xsource as xsource
 from noise_gate.scripts.page_audit_sanitize import (
     IDENT_ALARM_ID,
     IDENT_HOST,
@@ -107,6 +109,7 @@ from noise_gate.scripts.page_audit_sanitize import (
     policy_snapshot,
     record_type_label,
     vocabulary_words,
+    xs_vocabulary,
 )
 
 REPO = Path(__file__).resolve().parents[2]
@@ -1450,6 +1453,11 @@ def render_md(summary: dict[str, Any]) -> str:
     excluded = ", ".join(s10["policy_excluded_fields"]) or "없음"
     lines += [f"- 정책 스냅샷 제외(민감 이름): {excluded}", ""]
     lines += [f"- 주: {note}" for note in s10["notes"]] + [""]
+    if s10.get("xs_v0_actual_mismatch"):
+        lines += [f"- 경고: 상관 시뮬레이션 V0 ≠ 실제 기록 {s10['xs_v0_actual_mismatch']}건(S13)",
+                  ""]
+    if "S11" in summary:
+        lines += xsource.render_md(summary)
     return "\n".join(lines)
 
 
@@ -1742,8 +1750,13 @@ def run_audit(
     # 비식별 준비
     idents = IdentifierSet()
     _collect_identifiers(idents, raws, audit.decisions, audit.recurrences)
+    # (§11.4 W0-X) 인스턴스명·제니퍼 도메인명·URL·정규화 전후 호스트 키·미등록 APM 소스 id — 행을
+    # 만들기 전에 더한다. 행 db_id는 레지스트리 등록 값만 원문으로 싣는다(`db_id_label`).
+    reg_db_ids, reg_apm_sources = xsource.registry_ids()
+    xsource.collect_identifiers(idents, (r.payload for r in raws), (d.rec for d in audit.decisions),
+                                apm_sources=reg_apm_sources)
     pseudo = Pseudonymizer(key if key is not None else new_run_key())
-    sanitizer = sanitizer_cls(pseudo, idents)
+    sanitizer = sanitizer_cls(pseudo, idents, db_ids=reg_db_ids, apm_sources=reg_apm_sources)
     zones: dict[str, str] = {}
 
     def zone_of(db_id: str) -> str:
@@ -1826,6 +1839,31 @@ def run_audit(
     }
     summary = summarize(rows, meta=meta, runs=runs, page_idx_of_row=page_idx_of_row, stats=stats)
 
+    # (§11 W0-X) 폴스타↔APM 상관 진단 — 행 `xs` · S11~S14 · 정책 스냅샷 `cross_source`.
+    xs_args: dict[str, Any] = {
+        "config": ng_cfg, "pseudo": pseudo, "stream_read": streams is not None,
+        "late_promotions": audit.late_promotions,
+        "window_seconds": (end - long_start).total_seconds(),
+        "dedup_window_seconds": float(
+            getattr(ng_cfg, "repeat_interval_seconds", DEDUP_WINDOW_DEFAULT_S)
+        ),
+    }
+    xs = xsource.analyze(
+        [xsource.XsItem(
+            event=m.raw.event if m.raw is not None else None,
+            rec=m.decision.rec if m.decision is not None else {},
+            ts=m.decision.ts if m.decision is not None else _when(m),
+            decided=m.decision is not None,
+        ) for m in matched],
+        recurrences=recs, **xs_args,
+    )
+    for row, xs_row in zip(rows, xs.rows, strict=True):
+        row["xs"] = xs_row
+    snapshot["cross_source"] = xs.snapshot
+    summary.update(xs.sections)
+    if xs.v0_actual_mismatch:
+        summary["S10"]["xs_v0_actual_mismatch"] = xs.v0_actual_mismatch
+
     files: dict[str, str] = {
         "summary.json": json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
         "summary.md": render_md(summary) + "\n",
@@ -1835,12 +1873,17 @@ def run_audit(
         files["alarms.jsonl"] = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
 
     # 코드가 내는 고정 어휘(빈 입력 산출물 · 라벨)와 같은 식별자는 출력과 구별할 수 없어 뺀다.
+    # 규칙 표 해시는 제외 재료가 아니다(64 hex 안에 짧은 식별자가 우연히 들어 있을 수 있다).
     empty = summarize([], meta=meta, runs={}, page_idx_of_row={}, stats=stats)
+    empty.update(xsource.without_rules_hash(xsource.analyze([], **xs_args).sections))
+    snapshot_vocab = {**snapshot, "cross_source": xsource.without_rules_hash(xs.snapshot)}
     idents.exclude_vocabulary("\n".join([
-        json.dumps(empty, ensure_ascii=False), render_md(empty), files["policy_snapshot.json"],
+        json.dumps(empty, ensure_ascii=False), render_md(empty),
+        json.dumps(snapshot_vocab, ensure_ascii=False),
         json.dumps(sanitizer.row(AlarmContext(seq=0)), ensure_ascii=False), *vocabulary_words(),
+        *xs_vocabulary(),
     ]))
-    leak = leak_check(files, idents)
+    leak = leak_check(files, idents, pseudo.emitted)
     out_dir = write_outputs(out_root, end, files, leak)
     return AuditResult(0 if leak["passed"] else 2, out_dir, leak)
 

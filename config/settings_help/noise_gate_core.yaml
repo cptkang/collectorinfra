@@ -764,3 +764,26 @@ settings:
       있다. 수집 실패율 메타경보(NOISE_META_ALERT_COLLECTION_FAILED_RATIO)를 함께 켜 원인을 고친다.
     recommendation: PAGE 재판정 shadow로 「켰으면 나왔을 티어」를 확인한 뒤 켠다(D-330 ③).
     related: [NOISE_META_ALERT_COLLECTION_FAILED_RATIO, NOISE_PAGE_REVIEW_MODE]
+
+  NOISE_APM_SEV3_POLICY_ENABLED:
+    summary: 제니퍼 알람이 심각도 3일 때도 제니퍼 유형 정책 표를 따를지.
+    behavior: >-
+      지금은 심각도 3이면 출처와 관계없이 「심각도3 단락」에서 곧바로 PAGE다. 켜면 제니퍼 유형 정책 표
+      (config/apm_noise_policy.yaml)로 판정하는 제니퍼 알람만 달라진다 — 표에서 notify가 page인 유형은 PAGE,
+      그 밖(표에 없는 유형·default 행)은 TICKET이다. 판정 단계는 그대로 「심각도3 단락」이고 뒤 억제 단계로는
+      가지 않는다(DASHBOARD·억제로 내려가지 않는다). 판정 기록 근거(apm_sev3_policy)에 정책 티어와 적용 행이 남는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 심각도 3은 출처와 관계없이 PAGE다. 지금과 같다.
+      - value: "true"
+        effect: 제니퍼 정책 경로의 심각도 3은 page 유형만 PAGE, 그 밖은 TICKET이다. 폴스타 알람과 정책 표를 못 읽은 제니퍼 알람은 지금처럼 PAGE다.
+    example: >-
+      제니퍼 FATAL로 들어온 표 밖 유형(심각도 3)은 꺼져 있으면 PAGE, 켜면 TICKET이다. 표에 notify page로 적힌
+      OUTOFMEMORY는 켜도 PAGE다.
+    performance: 추가 비용은 없다(이미 계산한 정책 신호만 읽는다).
+    stability: >-
+      정책 표의 유형 키가 실제 정규화 유형과 다르면 PAGE여야 할 유형이 TICKET이 된다. 켜기 전에 PAGE·TICKET으로
+      나뉠 유형 키를 표와 대조한다(D-336 주의). 제니퍼 유형 정책(NOISE_APM_NOISE_POLICY_ENABLED)이 꺼져 있으면 효과가 없다.
+    recommendation: PAGE 재판정을 shadow → enforce로 옮기는 시점에 함께 켠다(D-336 ④).
+    related: [NOISE_APM_NOISE_POLICY_ENABLED, NOISE_PAGE_REVIEW_MODE]

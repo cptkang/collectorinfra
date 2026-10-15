@@ -6,13 +6,14 @@
 int/float만, 코드형 값(db_id·규칙 id 등)은 `[A-Za-z0-9_.-]{1,40}`만 통과하고 나머지는 `<other>`다.
 
 - 가명: 실행 단위 무작위 키(`secrets.token_bytes(32)`)의 HMAC-SHA256 앞 8바이트 hex에 접두
-  (`H-` 호스트 · `R-` 자원 · `F-` 지문 · `N-` 알람명 원문). 키·대응표는 어디에도 쓰지 않는다
+  (`H-` 호스트 · `R-` 자원 · `F-` 지문 · `N-` 알람명 원문 · §11 상관 진단 `K-` 소스 간 호스트 키 ·
+  `I-` 제니퍼 인스턴스 · `E-` 사건 id · `S-` 미등록 APM 소스 id). 키·대응표는 어디에도 쓰지 않는다
   (D-321 전례) — 실행이 끝나면 가명을 되돌릴 수 없다.
 - 이름 정규화: NFKC 뒤 주소·FQDN·경로·계정 값·식별자·식별자형 토큰·긴 숫자를 자리표시자로 바꾸고
   길이를 자른다.
 - 누출 검사: 출력 전체(NFKC + casefold)에 느슨한 주소형 정규식과 이번 실행에서 본 원문 식별자
-  일치를 건다(긴 값은 부분 일치 · 짧은 값은 단어 경계 완전 일치). 결과에는 걸린 파일·종류·건수만
-  남기고 값은 남기지 않는다.
+  일치를 건다(긴 값은 부분 일치 · 짧은 값은 단어 경계 완전 일치). 검사 전에는 이번 실행의
+  가명기가 실제로 낸 가명만 지운다. 결과에는 걸린 파일·종류·건수만 남기고 값은 남기지 않는다.
 - 정책 스냅샷: 설정 그룹에서 bool·int·float·Literal과 지정 열거 문자열만 싣는다. 민감한 이름의
   필드는 값 없이 이름만 「제외」 목록에 둔다.
 
@@ -34,7 +35,31 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from noise_gate.domain.alarm import normalize_host_key
+from noise_gate.domain.alarm import (
+    HOST_KEY_NONE,
+    HOST_KEY_STRONG,
+    HOST_KEY_WEAK,
+    normalize_host_key,
+)
+from noise_gate.domain.cross_source import (
+    ACTION_DEMOTE,
+    ACTION_LINK,
+    MISSING_CAUSE_RESOLVED,
+    MISSING_CAUSE_TIER,
+    MISSING_DB_AMBIGUOUS,
+    MISSING_HOST_KEY,
+    MISSING_HOST_KEY_STRENGTH,
+    MISSING_SEVERITY,
+    MISSING_WINDOW,
+    MISSING_ZONE,
+    MODE_ANNOTATE,
+    MODE_ENFORCE,
+    MODE_OFF,
+    MODE_SHADOW,
+    POLESTAR_KINDS,
+    SOURCE_JENNIFER,
+    SOURCE_POLESTAR,
+)
 from noise_gate.domain.notification_policy import (
     _NON_ALARM_MARKERS,
     _PERSISTENCE_UNMET,
@@ -52,18 +77,31 @@ PREFIX_HOST = "H"
 PREFIX_RESOURCE = "R"
 PREFIX_FP = "F"
 PREFIX_NAME = "N"
+# (§11.4 W0-X) 소스 간 호스트 키 · 제니퍼 인스턴스 · 사건 id · 미등록 APM 소스 id.
+PREFIX_HOST_KEY = "K"
+PREFIX_INSTANCE = "I"
+PREFIX_EPISODE = "E"
+PREFIX_SOURCE = "S"
 
 # 가명 길이 — HMAC-SHA256 앞 8바이트(16 hex).
 _PSEUDONYM_BYTES = 8
-# 출력 안의 가명 — 누출 검사 전에 지운다(HMAC 출력이라 원문을 담지 않고, 16 hex가 짧은 식별자와
-# 우연히 겹치는 것을 막는다).
-_PSEUDONYM_RE = re.compile(r"(?<![0-9a-z])[hrfn]-[0-9a-f]{16}(?![0-9a-z])")
+# 출력 안의 가명 모양 후보 — 누출 검사 전에 **이번 실행의 가명기가 실제로 낸 가명**인 것만 지운다
+# (HMAC 출력이라 원문을 담지 않고, 16 hex가 짧은 식별자와 우연히 겹치는 것을 막는다). 모양만 보고
+# 지우면 `web-i-0123456789abcdef` 같은 원문 식별자가 검사를 빠져나간다.
+_PSEUDONYM_RE = re.compile(r"(?<![0-9a-z])[a-z]-[0-9a-f]{16}(?![0-9a-z])")
 
 # 식별자 종류(누출 검사 결과의 `kind` 어휘 — 값이 아니라 종류만 남긴다).
 IDENT_HOST = "host"
 IDENT_IP = "ip"
 IDENT_RESOURCE = "resource"
 IDENT_ALARM_ID = "alarm_id"
+# (§11.4) 제니퍼 인스턴스명 · 제니퍼 도메인명 · `application` URL · 레지스트리 미등록 APM 소스 id.
+IDENT_INSTANCE = "instance"
+IDENT_APM_DOMAIN = "apm_domain"
+IDENT_URL = "url"
+IDENT_APM_SOURCE = "apm_source"
+# 고정 어휘 제외(`exclude_vocabulary`)를 받지 않는 종류 — 어휘와 이름이 같아도 일치 대상에 남긴다.
+_PINNED_KINDS = frozenset({IDENT_INSTANCE, IDENT_APM_DOMAIN, IDENT_URL, IDENT_APM_SOURCE})
 
 # 부분 일치 검사의 최소 길이 — 자원명은 4자 이상(계획서 §10.4). 이보다 짧은 값은 일반 문자열과
 # 부분 일치로 겹치므로 **단어 경계 완전 일치**로만 검사한다(건너뛰지 않는다).
@@ -72,6 +110,10 @@ _MIN_IDENT_LEN: dict[str, int] = {
     IDENT_IP: 1,
     IDENT_RESOURCE: 4,
     IDENT_ALARM_ID: 4,
+    IDENT_INSTANCE: 4,
+    IDENT_APM_DOMAIN: 4,
+    IDENT_URL: 4,
+    IDENT_APM_SOURCE: 3,
 }
 _MAX_IDENT_LEN = 256
 
@@ -97,15 +139,15 @@ def fold(text: str) -> str:
     return strip_format(text).casefold()
 
 
-# 식별자 구분자 — `-`·`_`·`.`·공백을 같은 것으로 본다
-# (`fake-web-01` = `FAKE_WEB_01` = `fake.web 01`).
-_IDENT_SEP_RE = re.compile(r"[-_. ]")
+# 식별자 구분자 — `-`·`_`·`.`·공백·`/`를 같은 것으로 보고 연속 구분자는 하나로 접는다
+# (`fake-web-01` = `FAKE_WEB_01` = `fake.web 01` · `secinst--tomcat-9` = `secinst/tomcat/9`).
+_IDENT_SEP_RE = re.compile(r"[-_. /]+")
 _IDENT_SEP = "-"
-_IDENT_SEP_CLASS = r"[-_. ]"
+_IDENT_SEP_CLASS = r"[-_. /]+"
 
 
 def _sep_fold(text: str) -> str:
-    """식별자 구분자를 `-` 하나로 접는다."""
+    """연속 식별자 구분자를 `-` 하나로 접는다."""
     return _IDENT_SEP_RE.sub(_IDENT_SEP, text)
 
 
@@ -367,11 +409,12 @@ def new_run_key() -> bytes:
 class Pseudonymizer:
     """실행 단위 키로 HMAC-SHA256 가명을 만든다. 같은 실행 안에서 같은 값은 같은 가명이다."""
 
-    __slots__ = ("__key",)
+    __slots__ = ("__emitted", "__key")
 
     def __init__(self, key: bytes) -> None:
         """키를 받는다(속성 이름을 감춰 직렬화·repr에 실리지 않게 한다)."""
         self.__key = key
+        self.__emitted: set[str] = set()
 
     def __repr__(self) -> str:
         """키를 드러내지 않는 표현."""
@@ -385,7 +428,14 @@ class Pseudonymizer:
         if not text:
             return None
         digest = hmac.new(self.__key, text.encode("utf-8"), hashlib.sha256).digest()
-        return f"{prefix}-{digest[:_PSEUDONYM_BYTES].hex()}"
+        out = f"{prefix}-{digest[:_PSEUDONYM_BYTES].hex()}"
+        self.__emitted.add(out)
+        return out
+
+    @property
+    def emitted(self) -> frozenset[str]:
+        """이번 실행에서 낸 가명(누출 검사가 이것만 지운다 — 원문은 담지 않는다)."""
+        return frozenset(self.__emitted)
 
 
 class IdentifierSet:
@@ -395,7 +445,8 @@ class IdentifierSet:
     일치로 찾는다. 숫자로만 된 값(폴스타 alarmId 등)은 출력의 수치와 겹쳐 검사가 늘 닫히므로 일치
     대상에서 빼고 수만 센다(3자리 이상 숫자는 정규화가 `<N>`으로 지운다). 글자·숫자가 없는 값
     (자원명 `/` 등)도 같은 이유로 뺀다. 코드가 내는 고정 어휘와 같은 값은
-    `exclude_vocabulary`로 뺀다.
+    `exclude_vocabulary`로 뺀다 — 단 고정 종류(`_PINNED_KINDS`)와 `pin=True`로 더한 값은 빼지
+    않는다.
     """
 
     def __init__(self) -> None:
@@ -405,13 +456,21 @@ class IdentifierSet:
         self._numeric: set[tuple[str, str]] = set()
         self._symbolic: set[tuple[str, str]] = set()
         self._vocabulary: set[tuple[str, str]] = set()
+        self._pinned: set[tuple[str, str]] = set()
         self._patterns: dict[tuple[str, ...], re.Pattern[str] | None] = {}
 
-    def add(self, kind: str, value: object) -> None:
-        """식별자 하나를 더한다(빈 값은 무시 · 구분자 `-_. `는 하나로 접는다)."""
+    def add(self, kind: str, value: object, *, pin: bool | None = None) -> None:
+        """식별자 하나를 더한다(빈 값은 무시 · 연속 구분자 `-_. /`는 하나로 접는다).
+
+        `pin=True`면 고정 어휘 제외를 받지 않는다(정규화 호스트 키 등). None이면 종류로 정한다
+        (`_PINNED_KINDS`) · False면 고정 종류라도 제외를 받는다(URL 조각처럼 일반 낱말일 수 있는
+        값).
+        """
         text = _sep_fold(fold(str(value or "")).strip()[:_MAX_IDENT_LEN])
         if not text:
             return
+        if pin or (pin is None and kind in _PINNED_KINDS):
+            self._pinned.add((kind, text))
         if not any(c.isalnum() for c in text):
             self._symbolic.add((kind, text))
         elif text.isdigit():
@@ -423,21 +482,22 @@ class IdentifierSet:
         self._patterns.clear()
 
     def exclude_vocabulary(self, vocabulary: str) -> None:
-        """코드가 내는 고정 어휘(빈 실행 산출물·라벨)에 들어 있는 값을 일치 대상에서 뺀다.
+        """코드가 내는 고정 어휘(빈 실행 산출물·라벨)와 **단어 경계 완전 일치**하는 값을 일치
+        대상에서 뺀다(부분 문자열로는 빼지 않는다).
 
         예: 자원명 `Memory`·`CPU`는 알람 종류 라벨 `memory`·`cpu`와 구별할 수 없다 — 그대로 두면
-        모든 실행이 닫힌다. 뺀 수는 `leak_check.json`에 센다.
+        모든 실행이 닫힌다. 고정 종류·`pin=True` 값은 빼지 않는다. 뺀 수는 `leak_check.json`에
+        센다.
         """
         text = _sep_fold(fold(vocabulary))
         for kind in _MIN_IDENT_LEN:
-            for value in list(self._long[kind]):
-                if value in text:
-                    self._long[kind].discard(value)
-                    self._vocabulary.add((kind, value))
-            for value in list(self._short[kind]):
-                if re.search(rf"(?<!\w){_ident_escape(value)}(?!\w)", text):
-                    self._short[kind].discard(value)
-                    self._vocabulary.add((kind, value))
+            for bucket in (self._long[kind], self._short[kind]):
+                for value in list(bucket):
+                    if (kind, value) in self._pinned:
+                        continue
+                    if re.search(rf"(?<!\w){re.escape(value)}(?!\w)", text):
+                        bucket.discard(value)
+                        self._vocabulary.add((kind, value))
         self._patterns.clear()
 
     @property
@@ -484,11 +544,12 @@ class IdentifierSet:
             self._patterns[kinds] = re.compile(body, re.IGNORECASE) if body else None
         return self._patterns[kinds]
 
-    def count_hits(self, text: str) -> Counter[str]:
+    def count_hits(self, text: str, pseudonyms: Iterable[str] = ()) -> Counter[str]:
         """출력 문자열 안의 원문 식별자 일치 건수(종류별).
 
-        출력·식별자를 모두 NFKC + casefold로 접어 비교한다. 가명(`H-<16 hex>` 등)은 먼저 지운다.
-        패턴은 하나라 출력이 커도 한 번만 훑는다.
+        출력·식별자를 모두 NFKC + casefold로 접어 비교한다. 이번 실행이 낸 가명(`pseudonyms`)만
+        먼저 지운다 — 가명 모양이어도 낸 적 없는 문자열은 그대로 검사한다. 패턴은 하나라 출력이
+        커도 한 번만 훑는다.
         """
         hits: Counter[str] = Counter()
         body = self._regex_body(_MIN_IDENT_LEN)
@@ -498,14 +559,17 @@ class IdentifierSet:
         for kind in _MIN_IDENT_LEN:
             for value in (*self._long[kind], *self._short[kind]):
                 kind_of.setdefault(value, kind)
-        haystack = _PSEUDONYM_RE.sub(" ", fold(text))
+        emitted = {fold(p) for p in pseudonyms}
+        haystack = _PSEUDONYM_RE.sub(
+            lambda m: " " if m.group(0) in emitted else m.group(0), fold(text)
+        )
         for m in re.finditer(body, haystack):
             hits[kind_of.get(_sep_fold(m.group(0)), IDENT_HOST)] += 1
         return hits
 
 
 def _ident_escape(value: str) -> str:
-    """접힌 식별자 → 정규식(구분자 `-`는 `[-_. ]` 하나로 찾는다)."""
+    """접힌 식별자 → 정규식(구분자 `-`는 연속 `[-_. /]`로 찾는다)."""
     return "".join(_IDENT_SEP_CLASS if ch == _IDENT_SEP else re.escape(ch) for ch in value)
 
 
@@ -514,7 +578,7 @@ def _trie_regex(words: Iterable[str]) -> str:
 
     교대 분기가 글자 단위라 식별자가 많아도 한 번에 훑는다.
 
-    구분자 `-`는 `[-_. ]`로 찾는다(`_ident_escape`와 같은 규칙).
+    구분자 `-`는 연속 `[-_. /]`로 찾는다(`_ident_escape`와 같은 규칙).
     """
     trie: dict[str, Any] = {}
     for word in words:
@@ -539,6 +603,10 @@ _IDENT_PLACEHOLDERS: tuple[tuple[tuple[str, ...], str], ...] = (
     ((IDENT_HOST,), "<HOST>"),
     ((IDENT_RESOURCE,), "<RES>"),
     ((IDENT_ALARM_ID,), "<ID>"),
+    # (§11.4) 기존 4종 뒤에 둔다 — 앞 4종이 먼저 지운 자리는 그대로라 종전 정규화 결과가 같다.
+    ((IDENT_INSTANCE, IDENT_APM_DOMAIN), "<HOST>"),
+    ((IDENT_URL,), "<URL>"),
+    ((IDENT_APM_SOURCE,), "<ID>"),
 )
 # 코드가 내는 자리표시자(누출 검사 고정 어휘에 넣는다).
 PLACEHOLDERS: tuple[str, ...] = (
@@ -826,10 +894,23 @@ def _ancestry_depth(ancestry: str) -> int | None:
 class Sanitizer:
     """허용 목록 변환기 — `AlarmContext` → 출력 행. 목록에 없는 필드는 출력에 오지 않는다."""
 
-    def __init__(self, pseudo: Pseudonymizer, identifiers: IdentifierSet) -> None:
-        """가명기·이번 실행 식별자 집합을 받는다. 버린 근거 키 이름은 `dropped_evidence_keys`에."""
+    def __init__(
+        self,
+        pseudo: Pseudonymizer,
+        identifiers: IdentifierSet,
+        *,
+        db_ids: frozenset[str] | None = None,
+        apm_sources: frozenset[str] = frozenset(),
+    ) -> None:
+        """가명기·이번 실행 식별자 집합을 받는다. 버린 근거 키 이름은 `dropped_evidence_keys`에.
+
+        `db_ids`·`apm_sources`는 레지스트리 등록 db_id·APM 소스 id다(`db_id_label`). `db_ids`가
+        None이면(레지스트리를 주지 않은 직접 호출) db_id는 코드형 값 규칙만 거친다.
+        """
         self.pseudo = pseudo
         self.identifiers = identifiers
+        self.db_ids = db_ids
+        self.apm_sources = apm_sources
         self.dropped_evidence_keys: Counter[str] = Counter()
 
     def _norm(self, ctx: AlarmContext, text: str, max_len: int) -> str:
@@ -865,7 +946,8 @@ class Sanitizer:
             "decision_ts": _kst(ctx.decision_ts),
             "lag_ms": lag_ms,
             "in_hours_window": bool(ctx.in_hours_window),
-            "db_id": code_value(ctx.db_id),
+            "db_id": db_id_label(ctx.db_id, db_ids=self.db_ids, apm_sources=self.apm_sources,
+                                 pseudo=p),
             "zone": code_value(ctx.zone),
             "source": ctx.source or None,
             "host": p(PREFIX_HOST, normalize_host_key(ctx.host_raw)),
@@ -899,14 +981,224 @@ class Sanitizer:
         return out
 
 
+# ── 폴스타↔APM 상관 진단 `xs` (plans/162 §11.4·§11.5) ─────────────────────────
+# 값 단위 허용 목록 — 열거가 아니면 `<other>` · 수치가 아니면 None · 자유 문자열은 가명.
+MATCH_REASONS = frozenset({"override", "host_name", "regex", "unresolved", "ambiguous"})
+MATCH_CONFIDENCES = frozenset({"high", "medium", "none"})
+# 사본 — `apm_gateway/apm_gateway/domain/signals.py` `KINDS`(게이트웨이 고정 어휘). 패키지 경계상
+# import하지 않는다(D-139 · D-274). 바뀌면 같이 고친다(동기 확인: test_page_audit_xsource).
+WAS_KINDS = frozenset({
+    "was_service_queuing", "was_thread_pool_exhaustion", "was_db_pool_exhaustion",
+    "was_gc_stall", "was_heap_pressure", "was_slow_sql", "was_external_call_delay",
+    "was_error_burst",
+})
+# 사본 — `apm_gateway/apm_gateway/domain/errors.py` `ERROR_CODES`의 문자열 값
+# (import 금지 · 위와 같다).
+GATEWAY_ERROR_CODES = frozenset({
+    "not_configured", "invalid_argument", "instance_unresolved", "profile_ref_mismatch",
+    "source_unavailable", "contract_violation", "apm_quota_exceeded", "apm_api_error",
+    "rate_limited", "job_not_found", "job_not_ready",
+})
+# 소비측(게이트 노드 `_fetch_app_impact`)이 직접 붙이는 실패 코드.
+APP_IMPACT_CONSUMER_CODES = frozenset({
+    "gateway_unreachable", "gateway_error", "contract_violation",
+})
+APP_IMPACT_CODES = APP_IMPACT_CONSUMER_CODES | GATEWAY_ERROR_CODES
+APP_IMPACT_INSTANCE_UNRESOLVED = "instance_unresolved"
+APP_IMPACT_SOURCES = frozenset({"jennifer", "episode"})
+MISSING_LABELS = frozenset({
+    MISSING_ZONE, MISSING_HOST_KEY, MISSING_HOST_KEY_STRENGTH, MISSING_DB_AMBIGUOUS,
+    MISSING_WINDOW, MISSING_CAUSE_TIER, MISSING_CAUSE_RESOLVED, MISSING_SEVERITY,
+})
+XS_ACTIONS = frozenset({ACTION_LINK, ACTION_DEMOTE})
+XS_SOURCES = frozenset({SOURCE_POLESTAR, SOURCE_JENNIFER})
+HK_STRENGTHS = frozenset({HOST_KEY_STRONG, HOST_KEY_WEAK, HOST_KEY_NONE})
+# 키가 빈 행의 사유 — 폴스타 hostname 빈 값 · APM 정합 실패 · 원문 없음(기록된 키도 없음).
+HK_REASONS = frozenset({"no_hostname", "unresolved", "no_raw"})
+# 원인 kind — 도메인 인프라 kind 어휘 + 「분류 안 됨」.
+CAUSE_KINDS = frozenset({*POLESTAR_KINDS, "none"})
+APM_SOURCE_DEFAULT = "default"
+APM_DB_PREFIX = SOURCE_JENNIFER + "_"
+CROSS_SOURCE_MODES = frozenset({MODE_OFF, MODE_SHADOW, MODE_ANNOTATE, MODE_ENFORCE})
+# 시뮬레이션 행 라벨 — `<action>[:<missing>,…]` · 사건 멤버만 · 사건 밖 · 해소.
+SIM_LABELS = frozenset({"member", "no_episode", "clear"})
+SIM_VARIANTS: tuple[str, ...] = ("V0", "V1", "V2", "V3")
+_MISSING_ALT = "|".join(sorted(MISSING_LABELS))
+_SIM_VALUE_RE = re.compile(
+    rf"(?:link|demote)(?::(?:{_MISSING_ALT})(?:,(?:{_MISSING_ALT}))*)?|member|no_episode|clear"
+)
+XS_KEYS: tuple[str, ...] = (
+    "hk", "hk_reason", "hk_strength", "zone", "zone_ok", "apm_source", "registered",
+    "match_reason", "match_conf", "inst", "was_kinds", "peer_7d", "loose_peer", "contains_peer",
+    "nearest_cause", "lag_s", "kind", "open", "actual", "episode", "rule_id", "action", "missing",
+    "applied", "enforce", "app_impact", "code", "fatal_events", "source", "sim", *SIM_VARIANTS,
+)
+
+
+def app_impact_code(error: object) -> str | None:
+    """`app_impact_error` → `" — "` 앞 코드만 열거로(뒤 문구는 버린다 · 그 밖은 `<other>`)."""
+    if not isinstance(error, str) or not error.strip():
+        return None
+    code = error.partition(" — ")[0].strip()
+    return str(allow_value(code, APP_IMPACT_CODES))
+
+
+def db_id_label(
+    db_id: object,
+    *,
+    db_ids: frozenset[str] | None,
+    apm_sources: frozenset[str],
+    pseudo: Pseudonymizer,
+) -> str | None:
+    """행 `db_id` 출력값 — 레지스트리 등록 값만 원문으로 싣는다.
+
+    등록 db_id · 단일 설정 `jennifer` · 등록 소스 `jennifer_<id>`는 그대로, 미등록
+    `jennifer_<id>`는 `jennifer_<S- 가명>`(`xs.apm_source`와 같은 가명), 그 밖 미등록 값은
+    `<other>`다. `db_ids`가 None이면 코드형 값 규칙(`code_value`)만 거친다.
+    """
+    if db_id in (None, ""):
+        return None
+    text = str(db_id)
+    if db_ids is None or text in db_ids or text == SOURCE_JENNIFER:
+        return code_value(text)
+    if text.startswith(APM_DB_PREFIX):
+        source_id = text[len(APM_DB_PREFIX):]
+        if source_id in apm_sources:
+            return code_value(text)
+        return f"{APM_DB_PREFIX}{pseudo(PREFIX_SOURCE, source_id)}"
+    return OTHER
+
+
+def apm_source_label(
+    source_id: str, db_id: str, registered: frozenset[str], pseudo: Pseudonymizer
+) -> tuple[str | None, bool]:
+    """APM 소스 id → (출력 라벨, 레지스트리 등록 여부).
+
+    등록 id면 그대로 · 단일 설정(`jennifer` dbId · `default`)은 `default` · 그 밖은 `S-` 가명.
+    """
+    if source_id == APM_SOURCE_DEFAULT or db_id == SOURCE_JENNIFER:
+        return APM_SOURCE_DEFAULT, False
+    if source_id in registered:
+        return source_id, True
+    return pseudo(PREFIX_SOURCE, source_id or db_id), False
+
+
+def _xs_sim(sim: object) -> dict[str, Any] | None:
+    """변형별 시뮬레이션 라벨 — 고정 어휘만(그 밖은 `<other>`)."""
+    if not isinstance(sim, Mapping):
+        return None
+    return {v: allow_value(sim.get(v), _SIM_VALUE_RE) for v in SIM_VARIANTS if v in sim}
+
+
+def _xs_actual(actual: object, pseudo: Pseudonymizer, rule_ids: frozenset[str]) -> Any:
+    """실제 기록(판정 레코드 `cross_source`) — 규칙 id는 규칙 표 id만 그대로 · 사건 id는 `E-`."""
+    if not isinstance(actual, Mapping):
+        return None
+    episode = actual.get("episode_id")
+    rule_id = actual.get("rule_id")
+    return {
+        "episode": pseudo(PREFIX_EPISODE, episode) if isinstance(episode, str) else None,
+        "rule_id": None if rule_id in (None, "") else allow_value(rule_id, rule_ids),
+        "action": allow_value(actual.get("action"), XS_ACTIONS),
+        "missing": _allow_list(actual.get("missing"), MISSING_LABELS),
+        "applied": allow_value(actual.get("applied"), _BOOL),
+        "enforce": allow_value(actual.get("enforce"), _BOOL),
+        "lag_s": allow_value(actual.get("lag_seconds"), _NUM),
+    }
+
+
+def _xs_app_impact(app: object) -> dict[str, Any] | None:
+    """앱 영향 조회 결과 — 코드(열거) · fatal 건수(수치) · 출처(열거)."""
+    if not isinstance(app, Mapping):
+        return None
+    return {
+        "code": app_impact_code(app.get("error")),
+        "fatal_events": allow_value(app.get("fatal_events"), _NUM),
+        "source": allow_value(app.get("source") or None, APP_IMPACT_SOURCES),
+    }
+
+
+def sanitize_xs(
+    raw: object,
+    pseudo: Pseudonymizer,
+    *,
+    registered: frozenset[str],
+    rule_ids: frozenset[str],
+) -> dict[str, Any] | None:
+    """`page_audit_xsource`의 내부 맥락 → `xs` 출력 객체(§11.5 · 값 단위 허용 목록).
+
+    호스트 키는 `K-`, 인스턴스명은 `I-`, 사건 id는 `E-`, 미등록 소스 id는 `S-` 가명이다. 키가 빈
+    행은 `hk: null`과 사유(+ APM이면 정합 정보 · 앱 영향)만 싣는다. 도메인명·URL·IP는 받지도 않는다.
+    """
+    if not isinstance(raw, Mapping):
+        return None
+    hk = raw.get("host_key")
+    apm = raw.get("apm") if isinstance(raw.get("apm"), Mapping) else None
+    out: dict[str, Any] = {}
+    if isinstance(hk, str) and hk:
+        out["hk"] = pseudo(PREFIX_HOST_KEY, hk)
+        out["hk_strength"] = allow_value(raw.get("hk_strength"), HK_STRENGTHS)
+        zone = raw.get("zone")
+        out["zone"] = code_value(zone)
+        out["zone_ok"] = bool(zone)
+    else:
+        out["hk"] = None
+        out["hk_reason"] = allow_value(raw.get("hk_reason"), HK_REASONS)
+    if apm is not None:
+        label, registered_flag = apm_source_label(
+            str(apm.get("source_id") or ""), str(apm.get("db_id") or ""), registered, pseudo
+        )
+        inst = apm.get("instance_name")
+        kinds = apm.get("was_kinds")
+        out.update({
+            "apm_source": label,
+            "registered": registered_flag,
+            "match_reason": allow_value(apm.get("match_reason") or None, MATCH_REASONS),
+            "match_conf": allow_value(apm.get("match_conf") or None, MATCH_CONFIDENCES),
+            "inst": pseudo(PREFIX_INSTANCE, inst) if isinstance(inst, str) else None,
+            "was_kinds": _allow_list(kinds if isinstance(kinds, (list, tuple)) else [], WAS_KINDS),
+        })
+    if out["hk"] is not None:
+        out["peer_7d"] = allow_value(raw.get("peer_7d"), _BOOL)
+        out["loose_peer"] = allow_value(raw.get("loose_peer"), _BOOL)
+        out["contains_peer"] = allow_value(raw.get("contains_peer"), _BOOL)
+        if apm is not None:
+            cause = raw.get("nearest_cause")
+            out["nearest_cause"] = (
+                {
+                    "lag_s": allow_value(cause.get("lag_s"), _NUM),
+                    "kind": allow_value(cause.get("kind"), CAUSE_KINDS),
+                    "tier": allow_value(cause.get("tier"), TIERS),
+                    "open": allow_value(cause.get("open"), _BOOL),
+                }
+                if isinstance(cause, Mapping) else None
+            )
+        out["actual"] = _xs_actual(raw.get("actual"), pseudo, rule_ids)
+    out["app_impact"] = _xs_app_impact(raw.get("app_impact"))
+    if out["hk"] is not None:
+        out["sim"] = _xs_sim(raw.get("sim"))
+    return out
+
+
+def xs_vocabulary() -> list[str]:
+    """`xs`·S11~S14가 내는 고정 어휘(누출 검사 제외 재료)."""
+    return [*XS_KEYS, *MATCH_REASONS, *MATCH_CONFIDENCES, *WAS_KINDS, *APP_IMPACT_CODES,
+            *APP_IMPACT_SOURCES, *MISSING_LABELS, *XS_ACTIONS, *XS_SOURCES, *HK_STRENGTHS,
+            *HK_REASONS, *CAUSE_KINDS, *SIM_LABELS, *CROSS_SOURCE_MODES, APM_SOURCE_DEFAULT]
+
+
 # ── 누출 검사 ─────────────────────────────────────────────────────────────────
-def leak_check(files: Mapping[str, str], identifiers: IdentifierSet) -> dict[str, Any]:
+def leak_check(
+    files: Mapping[str, str], identifiers: IdentifierSet, pseudonyms: Iterable[str] = ()
+) -> dict[str, Any]:
     """출력 파일 전체 문자열을 검사한다 — 느슨한 주소형 정규식 + 원문 식별자 일치.
 
     출력은 NFKC · 서식 문자 제거로 접은 뒤 검사한다(전각 숫자·점 · ZWSP 우회 차단).
-    식별자는 구분자(`-_. `)를 같은 것으로 본다. 결과에는 파일 이름·종류·건수만
+    식별자는 연속 구분자(`-_. /`)를 하나로 본다. 식별자 일치 전에 이번 실행이 낸 가명
+    (`pseudonyms` — `Pseudonymizer.emitted`)만 지운다. 결과에는 파일 이름·종류·건수만
     담는다(걸린 값은 담지 않는다). `passed`가 False면 호출자는 분석 파일을 하나도 쓰지 않는다.
     """
+    emitted = frozenset(pseudonyms)
     hits: list[dict[str, Any]] = []
     for name in sorted(files):
         text = strip_format(files[name])
@@ -914,7 +1206,7 @@ def leak_check(files: Mapping[str, str], identifiers: IdentifierSet) -> dict[str
             n = _span_count(text, patterns)
             if n:
                 hits.append({"file": name, "kind": kind, "count": n})
-        for kind, n in sorted(identifiers.count_hits(text).items()):
+        for kind, n in sorted(identifiers.count_hits(text, emitted).items()):
             hits.append({"file": name, "kind": f"identifier:{kind}", "count": n})
     return {
         "passed": not hits,
