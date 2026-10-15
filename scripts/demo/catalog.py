@@ -176,6 +176,9 @@ def load_catalog(path: Path = SESSIONS_PATH) -> Catalog:
                 title=str(raw.get("title") or sid), shows=str(raw.get("shows") or ""),
                 core=bool(raw.get("core", False)), requires=requires, turns=turns,
             ))
+    if not catalog.sessions:
+        catalog.problems.append(
+            f"{path}: 세션이 하나도 없습니다 - 최상위 `groups:` 와 반입 파일이 잘리지 않았는지 확인하세요")
     return catalog
 
 
@@ -290,4 +293,6 @@ def select_sessions(
     unknown = wanted_ids - {s.id for s in catalog.sessions}
     for sid in sorted(unknown):
         skipped.append((Session(sid, "?", "?", sid, "", False, (), ()), "카탈로그에 없는 세션 id"))
+    for gid in sorted(wanted_groups - {s.group_id.upper() for s in catalog.sessions}):
+        skipped.append((Session(gid, gid, "?", gid, "", False, (), ()), "카탈로그에 없는 군 id"))
     return chosen, skipped

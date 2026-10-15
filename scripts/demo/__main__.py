@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sel = p.add_argument_group("선택")
     sel.add_argument("--core", action="store_true", help="핵심 세트(core: true)만")
-    sel.add_argument("--group", action="append", default=[], help="군 id (반복 가능 · 예: G1)")
+    sel.add_argument("--group", action="append", default=[], help="군 id (반복 가능 · 예: A)")
     sel.add_argument("--only", default=[], type=lambda v: v.split(","), help="세션 id 목록 (쉼표 구분)")
     sel.add_argument("--sessions", type=Path, default=SESSIONS_PATH, help="세션 카탈로그 YAML")
     sel.add_argument("--env-file", type=Path, default=DEFAULT_ENV_PATH,
@@ -91,7 +91,8 @@ def _load(args: argparse.Namespace) -> tuple[list[Session], list[tuple[Session, 
 
 
 def _print_plan(sessions: list[Session], skipped: list[tuple[Session, str]], env: Environment,
-                *, verbose: bool) -> None:
+                *, verbose: bool, catalog_path: Path) -> None:
+    print(f"카탈로그: {catalog_path}")
     print(f"환경: {env.name} ({env.path})")
     print(f"연동 소스: {', '.join(env.sources) or '(없음)'}")
     current = None
@@ -329,19 +330,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
 
     if args.list or args.check:
-        _print_plan(sessions, skipped, env, verbose=args.list)
+        _print_plan(sessions, skipped, env, verbose=args.list, catalog_path=args.sessions)
     if problems:
         print("\n문제:")
         for p in problems:
             print(f"  - {p}")
-        print("환경 값 파일의 values 를 채우세요 (docs/35_demo_script_guide.md 「실제 데이터 입력」)")
+        print("자리표 문제면 환경 값 파일의 values 를 채우세요 (docs/35_demo_script_guide.md 「실제 데이터 입력」)")
+        return 1
+    if not sessions:
+        print("\n실행할 세션이 없습니다 - --group·--only·--core 선택과 카탈로그 파일"
+              f"({args.sessions})을 확인하세요")
         return 1
     if args.list or args.check:
         print("\n점검 통과" if args.check else "")
         return 0
-    if not sessions:
-        print("실행할 세션이 없습니다 (--list 로 선택 결과를 확인하세요)")
-        return 1
     if not args.user and not args.client_id:
         print("! --user/--password 도 --client-id 도 없습니다 - 인증이 켜진 서버면 401, "
               "꺼진 서버면 웹 대화 목록에 나타나지 않습니다(소유 키 없음)")
