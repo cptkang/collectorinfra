@@ -477,6 +477,7 @@ _KEYS = {
     "page_review_reminder_hours": 24,
     "page_review_reopen_quiet_minutes": 30,
     "page_review_always_page_csv": "",
+    "page_review_idle_close_minutes": 0,
 }
 
 

@@ -2022,3 +2022,23 @@
 - **실수**: S1 implementer가 `validate_readonly`를 허용 목록으로 강화하면서 `mcp_server/tests`만 확인해, 본체 `tests/test_dbhub_integration.py`가 일부러 깨진 SQL(`SELEC …`)로 실행 단계 「syntax error」를 기대하던 테스트를 놓쳤다. S3 implementer는 `_audit_clarification(…, thread_id)` 인자를 `_pre_thread_id`로 바꾸면서 라우트 **소스 문자열 개수**를 단언하는 `test_v7_audit_and_estimate.py`를 놓쳤다. 둘 다 계획 끝 모듈 단위 회귀에서야 드러났다
 - **원인**: 「바꾼 모듈의 테스트」를 패키지 디렉터리·import 관계로만 골랐다. 실행 결과(오류 문구)나 소스 텍스트에 기대는 테스트는 import 경로로 잡히지 않는다
 - **방지책**: 검사기·오류 문구·인자 이름을 바꾸면 바뀌는 **문자열 자체**(`SELEC`·`syntax error`·바꾼 호출 문자열)를 저장소 전체 `tests/`·`*/tests/`에서 grep해 단언처를 찾는다(Known Mistakes 「상수·매트릭스 변경 시 그 값을 단언하는 테스트를 repo 전체 grep」의 적용 — 패키지 경계를 넘는 테스트 포함)
+
+### 2026-10-15 · apm_bench가 POSIX 전용 호출(`os.geteuid`·`os.kill(pid, 0)`·`O_NOFOLLOW`·`dir_fd`)에 기대어 내부망 Windows에서 첫 사전 점검부터 죽음
+- **실수**: plans/164 W2a·W2b가 로컬 파일·격리본 신뢰 검사(`os.geteuid`·권한 비트), run.log·run.pid 열기(`os.O_NOFOLLOW`·`O_NONBLOCK`), 격리본 쓰기(`dir_fd`·`fchmod`), PID 생존 확인(`os.kill(pid, 0)`)을 POSIX 전제로 짰다. 내부망 Windows PowerShell에서 `--run --env e2 --smoke`가 `AttributeError: module 'os' has no attribute 'geteuid'`로 중단됐다. `os.kill`은 Windows에서 대상 프로세스를 끝내므로 `--status`가 분리 run을 죽일 수 있었다
+- **원인**: 실행 환경을 맥·리눅스로만 가정했다. 같은 저장소의 `scripts/scenario/server.py`는 이미 `IS_WINDOWS` 분기를 두고 있었는데 대조하지 않았다. 테스트가 전부 맥에서만 돌았다
+- **방지책**: 내부망에서 도는 스크립트는 Windows 실행을 전제로 한다 — `os.geteuid`·`getuid`·`kill`·`killpg`·`O_NOFOLLOW`·`O_NONBLOCK`·`O_DIRECTORY`·`dir_fd`·`fchmod`·`start_new_session`을 쓰면 `IS_WINDOWS` 분기를 둔다(`os.kill(pid, 0)`은 Windows에서 금지 — 프로세스 핸들로 묻는다). 분기는 맥에서 `IS_WINDOWS`를 켜고 POSIX 함수를 지운 상태로 테스트한다(`tests/test_scripts/test_apm_bench_windows.py` 방식)
+
+### 2026-10-15 · 반출 진단 확장(plans/162 W0-X) 1차 구현이 집계 키의 값 허용 목록과 기존 필드의 가명 일관성을 빠뜨림
+- **실수**: 행 `xs` 값은 전부 값 단위 허용 목록으로 걸렀지만, 집계 S13 `actual.modes`(`code_value`만)·S14 `cause_tiers`(판정 레코드 `tier` 무검사)의 Counter **키**는 원문이 그대로 나갔다. 미등록 APM 소스 id는 `xs.apm_source`에서 `S-` 가명인데 같은 행 기존 `db_id`(`jennifer_<id>`)에는 원문이 실려 가명이 무력화됐다. 누출 검사 제외 어휘에 새 어휘를 부분 문자열 기준으로 더해 검사 사각을 넓혔다. 보안 감사(Medium 2·Low 4)와 verifier가 잡아 교정 1회로 닫았다.
+- **원인**: 2026-10-14 방지책(「키와 값 양쪽에 허용 목록」)을 행 필드에만 적용하고 집계 딕셔너리 키는 출력 값으로 보지 않았다. 새 가명을 도입하면서 같은 원문을 싣는 기존 필드를 찾지 않았다.
+- **방지책**: 반출 출력의 **집계 키(Counter·dict 키)도 값**으로 보고 열거 허용 목록을 거친다. 새 가명을 도입하면 같은 원문(또는 그 접미·접두)이 실리는 기존 필드를 출력 5개 파일에서 전수 grep해 같은 가명으로 맞춘다. 누출 검사 제외는 단어 경계 완전 일치로만 하고, 새 식별자 종류는 제외 대상에서 뺀다(pin).
+
+### 2026-10-15 · (plans/162 W5) INDEX 상태 칸을 세션 초 스냅샷으로 통째로 다시 써서 병행 세션(W0-X)이 넣은 문구를 지웠다
+- **실수**: `plans/INDEX.md` 162행 상태 칸을 새 문구로 셀 단위 치환했는데, 그사이 W0-X 세션이 같은 칸에 「W0-X 상관 진단 구현(10-15)」을 넣어 두어 그 문구가 사라졌다(치환 직전 출력으로 발견해 복원). 위임한 implementer도 「모듈 단위 회귀는 팀 리드가 돈다」는 지시와 달리 도구의 `[웨이브 회귀 필요]`를 보고 `--base 9ccc44f`로 한 번 더 돌렸다(중복 실행 · 판정 영향 없음).
+- **원인**: 병행 세션이 편집 중인 공유 기록 파일(INDEX·계획서 머리)을 셀/줄 전체 교체로 고쳤다. 위임 프롬프트에 「도구가 웨이브 회귀를 요구해도 돌리지 말고 보고만」을 명시하지 않았다.
+- **방지책**: 병행 세션이 있는 공유 기록 파일은 쓰기 직전에 다시 읽고 바꿀 구절만 부분 치환한다(셀 전체 교체 금지). 팀 리드가 회귀를 돌릴 계획이면 위임 프롬프트에 「`[웨이브 회귀 필요]`가 나와도 보고만 하라」고 적는다.
+
+### 2026-10-15 · (plans/162 F4) 위임 계약에 「복원 때 재발 기록을 touch」를 넣었는데 복원 reader가 `type` 레코드를 미리 거르는 것을 확인하지 않았다
+- **실수**: 팀 리드가 F4 API 계약을 정하면서 `PageRegistry.restore`가 `type=="recurrence"` 레코드를 받아 touch한다고 적었으나, 워커 복원 입력 `DecisionStore.recent_decisions`가 `type` 있는 레코드를 전부 버려 실제로는 한 건도 도달하지 않았다(implementer가 발견 → `include_recurrence` kwarg 교정). 같은 계약의 「기존 테스트 수정 금지」가 설정 필드 집합을 단언하는 `test_page_review_verify._KEYS`와 충돌해 교정 라운드가 하나 더 들었다.
+- **원인**: 도메인 함수 시그니처만 보고 호출부 입력(reader 필터)까지 따라가지 않았다. 새 설정 필드가 「필드 집합 단언」 테스트에 걸리는지 grep하지 않았다.
+- **방지책**: 위임 계약에 데이터 경로를 적을 때는 생산자(쓰기)→읽기 함수→소비자까지 필터를 실측한 뒤 적는다. 새 설정 필드를 위임할 때는 `grep -rn '<접두>_' tests noise_gate/tests`로 필드 집합 단언을 찾아 「그 단언 갱신은 허용」을 프롬프트에 미리 적는다.

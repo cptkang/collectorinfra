@@ -1,11 +1,11 @@
 # 166. 저장소 전반 코드 스멜 정리 — SOLID·SSOT·선별 패턴 적용 구조 리팩터링
 
 > **작성일**: 2026-10-14 · **v1.2**(단계별 진행 순서 §0.1 — 166·163·W3~W5를 단계 0~8로 정렬 · 구현 전)
-> **상태**: **WIP** — 단계 1 진행 중(2026-10-14 착수 · 166 W0 ∥ 163 W0). 제품 코드 0건. 스멜 48건 검출(H 15 · M 28 · L 5) · Wave 6개(W0~W5) · **사용자 결정 11건 확정(2026-10-14 · 사용자 위임 — 권고 채택 · §7)** · **진행은 §0.1 단계표가 정본** — 단계 0(커밋 지시 대기) → **단계 1(166 W0 ∥ 163 W0) 착수 가능**. 보안 성격 관찰 3건 + X6(LLM 클라이언트 env 폴백)은 `plans/163`으로 이관. 결정 등재: D-336(구조 리팩터 규약) · D-331(품질 게이트 조정) · D-139 부기(noise_gate 역방향 허용 목록). W3~W5는 착수 시 Wave별 별도 계획서(이 계획은 로드맵 — U-11).
+> **상태**: **WIP** — 단계 1 진행 중(2026-10-14 착수 · 166 W0 ∥ 163 W0). 제품 코드 0건. 스멜 48건 검출(H 15 · M 28 · L 5) · Wave 6개(W0~W5) · **사용자 결정 11건 확정(2026-10-14 · 사용자 위임 — 권고 채택 · §7)** · **진행은 §0.1 단계표가 정본** — 단계 0(커밋 지시 대기) → **단계 1(166 W0 ∥ 163 W0) 착수 가능**. 보안 성격 관찰 3건 + X6(LLM 클라이언트 env 폴백)은 `plans/163`으로 이관. 결정 등재: D-337(구조 리팩터 규약) · D-331(품질 게이트 조정) · D-139 부기(noise_gate 역방향 허용 목록). W3~W5는 착수 시 Wave별 별도 계획서(이 계획은 로드맵 — U-11).
 > **요청 원문(2026-10-14)**: *"전체적인 코드 리팩토링을 위해 코드 분석을 진행하고 코드 스멜을 검출하여 리팩토링 계획을 작성하라. 리팩토링시 디자인패턴, SOLID, SSOT 등이 적용될 수 있도록 계획이 수립되어야 한다."*
-> **성격**: **동작 불변 구조 리팩터링** 계획. 행동이 바뀌는 항목(보안 강화·기본값 통일·신호 통일)은 리팩터에 섞지 않는다(D-336 ⑥) — 보안은 `plans/163`, 나머지는 §8 범위 밖.
+> **성격**: **동작 불변 구조 리팩터링** 계획. 행동이 바뀌는 항목(보안 강화·기본값 통일·신호 통일)은 리팩터에 섞지 않는다(D-337 ⑥) — 보안은 `plans/163`, 나머지는 §8 범위 밖.
 > **상위·인접 계획**: `plans/69`(완결 · D-134 — 쿼리 생성 영역 **내부** 형상. 이미 처리한 것은 재제안하지 않는다) · `plans/70`(WIP — 실행 경로 사다리 명시화·플래그 감사·시맨틱 레이어 수렴·문서 아카이빙. **그 범위는 이 계획에서 다루지 않는다** — §8) · `plans/136`(회귀 도구 · D-303) · `plans/158`(기준선 「원래 실패」 18건 — 회귀 판독 시 참조)
-> **관련 결정**: **D-336(구조 리팩터 규약 — 이 계획의 공통 규약 §5.0)** · **D-331(품질 게이트 조정 — W1에서 구현)** · D-003(읽기 전용 3중 방어) · D-048·D-139(패키지 경계 · noise_gate in-process 예외 · 2026-10-14 부기 — 역방향 허용 목록) · D-066·D-067(단일/멀티 대칭 · 드리프트 가드) · D-088·D-089(공용 계층 DB-agnostic · 어댑터 레지스트리 · 과설계 금지 Plan 63 §9) · D-129(설정 카탈로그 SSOT = pydantic 인트로스펙션) · D-134(동작 불변 게이트 선례) · D-161(죽은 경로 판정 금지 · 폐기 전 4항 실측) · D-225→D-251(사다리 · 2단 기준) · D-274(apm_gateway 경계) · D-303(회귀 정책) · D-255(매뉴얼 동반 — 이 계획은 사용자 접점 변경 0이 목표)
+> **관련 결정**: **D-337(구조 리팩터 규약 — 이 계획의 공통 규약 §5.0)** · **D-331(품질 게이트 조정 — W1에서 구현)** · D-003(읽기 전용 3중 방어) · D-048·D-139(패키지 경계 · noise_gate in-process 예외 · 2026-10-14 부기 — 역방향 허용 목록) · D-066·D-067(단일/멀티 대칭 · 드리프트 가드) · D-088·D-089(공용 계층 DB-agnostic · 어댑터 레지스트리 · 과설계 금지 Plan 63 §9) · D-129(설정 카탈로그 SSOT = pydantic 인트로스펙션) · D-134(동작 불변 게이트 선례) · D-161(죽은 경로 판정 금지 · 폐기 전 4항 실측) · D-225→D-251(사다리 · 2단 기준) · D-274(apm_gateway 경계) · D-303(회귀 정책) · D-255(매뉴얼 동반 — 이 계획은 사용자 접점 변경 0이 목표)
 > **적용 스킬**: `.claude/skills/refactoring/` (D-332) — 위임 프롬프트에 「`refactoring` 스킬을 따른다」를 적는다.
 > **분석 기준 SHA**: `7ba5c96`(RCA · 트리 clean). `file:line`은 이 시점 값이다.
 > **계획 시작 SHA**: `08863d6`(RCA · 단계 0 커밋 · 2026-10-14 W0 착수 시 기록) · **회귀 대상 파일**: W0 — 새 테스트 `tests/**/test_plan166_w0_*.py` 7 · `noise_gate/tests/test_plan166_w0_decision_matrix.py` (apm_gateway 2파일은 루트 수집 밖 — 직접 실행) *(Wave마다 누적)*
@@ -33,7 +33,7 @@
 
 | 단계 | 계획 · Wave | 범위 | 선행(종료 게이트) | 단계 안 병렬 | 회귀(D-303) | 사용자 확인 | 상태 |
 |---:|---|---|---|---|---|---|---|
-| **0** | 준비 | 계획서 166·163 · 결정 D-336~D-332 · D-139 부기 · 스킬 2종 커밋 → 그 SHA를 166·163 머리 「계획 시작 SHA」로 적는다 | — | — | 없음 | **커밋 지시**(커밋은 사용자 지시 시만). 커밋 전에는 `isolation: worktree` 에이전트가 계획서·스킬을 보지 못한다 | 완료(2026-10-14 · 단계 0 커밋) |
+| **0** | 준비 | 계획서 166·163 · 결정 D-337(구 D-330)·D-331·D-332 · D-139 부기 · 스킬 2종 커밋 → 그 SHA를 166·163 머리 「계획 시작 SHA」로 적는다 | — | — | 없음 | **커밋 지시**(커밋은 사용자 지시 시만). 커밋 전에는 `isolation: worktree` 에이전트가 계획서·스킬을 보지 못한다 | 완료(2026-10-14 · 단계 0 커밋) |
 | **1** | 166 W0 ∥ 163 W0 | 특성화·스냅샷 테스트 · 파손 범위 실측표 · I4 판정(§5.2) / S1 고정 SQL 통과표·세션 읽기 전용 수단·S2·S3·X6 영향 실측(163 §2.1) | 단계 0 | 166 W0 4트랙(§5.2) + 163 W0 — 둘 다 테스트·문서 신규만이라 파일 겹침 0 | 자기 테스트만 | **163 S3 관리자 경로 문구 방침**(163 W0 끝에 묻는다 — 기본안 「예외 타입명 + 상관 ID」) | 완료(2026-10-14 · 커밋 전 — 기준 08863d6) |
 | **2** | 163 W1 | S1 · S2 · S3 · X6 (행동 변경 · security-auditor 동반) | 단계 1 전부 종료(166 W0 스냅샷이 먼저 있어야 163의 동작 변경이 스냅샷에서 「의도한 갱신」으로 구분된다) · S3 관리자 분만 방침 확정 뒤(나머지 트랙은 먼저 진행) | 4트랙(163 §4 — 파일 겹침 0) | **163 계획 끝 회귀 1회** + `mcp_server` 자체 테스트 | S3 화면 문구가 바뀌면 매뉴얼 대상 여부(D-255) | 완료(2026-10-14 · 단계 1·2 일괄 커밋 — 163 §2.1a 사용자 확정 5건 · 스냅샷 4종 재채록(163 §5) · 이후 스냅샷 갱신 금지) |
 | **3** | 166 W1 | 3a 게이트(D-331 ①②) → 3b SSOT 기계 치환(§5.3) | 단계 2 종료(163 완료 — S2 뒤에 A5, X6 뒤에 X5의 `fabrix_client` 분) | 3a는 팀 리드 단독 → 3b 3트랙(src / noise_gate / apm_gateway) | Wave 중간 규칙 | — | 대기 |
@@ -41,7 +41,7 @@
 | **5** | W3 별도 계획 3건 | 5a A1·A3(query 스트림 공통화) · 5b N1(a)·O6(쌍 경로 공통 함수) · 5c I1·X2·X5(`pii_filter` 분)(스키마 캐시 Facade·설정 주입) | 단계 4 종료 · 5c는 5b 뒤(`multi_db_executor.py` 겹침) | 5a ∥ 5b → 5c | 계획마다 끝 1회 | — | 대기 |
 | **6** | W4 별도 계획 6건 | 6a G1 · 6b O2 · 6c O3(배선)·O7·O8·O9 · 6d A4·N5·N7(체인)·I5 · 6e M1·M4 · 6f G3·G7 | 단계 5 종료 | 6a~6f 파일 겹침 없음 — **동시 진행은 2건까지 권고**(회귀 귀속·리뷰 부담) | 계획마다 끝 1회 | — | 대기 |
 | **7** | W5 별도 계획 5건 | 7a O1(선행 6b) · 7b A2(선행 5a) · 7c G2(선행 6f) · 7d M2(선행 6e) · 7e N6(선행 6c — `HandlerResult`) | 단계 6 종료 | 선행이 끝난 계획부터 · 동시 2건까지 | 계획마다 끝 1회 | — | 대기 |
-| **8** | 로드맵 종료 | §5.8 지표 재측정(`refactoring` 스킬 `smell_metrics.py`) · D-336 ③ 별칭 잔존 `grep -w` — 0이면 제거, 아니면 목록 기록 · shim 잔존 목록 · 166 파일명 상태 태그 정리 | 단계 7 종료 | — | 바꾼 파일만 모듈 단위 | 로드맵 종료 확인 | 대기 |
+| **8** | 로드맵 종료 | §5.8 지표 재측정(`refactoring` 스킬 `smell_metrics.py`) · D-337 ③ 별칭 잔존 `grep -w` — 0이면 제거, 아니면 목록 기록 · shim 잔존 목록 · 166 파일명 상태 태그 정리 | 단계 7 종료 | — | 바꾼 파일만 모듈 단위 | 로드맵 종료 확인 | 대기 |
 
 **의존 그래프**
 
@@ -57,7 +57,7 @@
 3. **단계가 끝나면** 이 표의 「상태」 칸을 `완료(YYYY-MM-DD · SHA)`로 고치고 `plans/INDEX.md` 행·`INDEX-CHANGELOG.md`를 갱신한다. 파일명 태그: 단계 1 착수 시 166·163을 `-WIP-`로, 163은 단계 2 완료 시 태그 제거, 166는 단계 4 완료 시 「로드맵」으로 태그 제거(INDEX 「파일명 상태 접미사」).
 4. **스냅샷 갱신 규칙**: 단계 1에서 만든 스냅샷은 **단계 2(163)만** 갱신할 수 있다 — 163이 바꾸는 동작(S3 오류 문구 등)이 스냅샷에 걸리면 163이 갱신하고 사유를 163 §5에 적는다. 단계 3 이후에는 어떤 스냅샷도 갱신하지 않는다(갱신이 필요하면 리팩터가 아니므로 되돌린다).
 5. **W3~W5 별도 계획서**(단계 5~7)는 착수할 때 `plans/INDEX.md` 최댓값+1로 채번하고, 이 표의 계획 ID(5a·6b 등)를 머리에 적는다. 범위·성공 기준은 §5.5~§5.7을 옮겨 쓴다.
-6. **사용자 확인 지점은 표의 「사용자 확인」 칸뿐이다.** 그 밖의 판단은 D-336·D-331과 §7 확정을 따른다.
+6. **사용자 확인 지점은 표의 「사용자 확인」 칸뿐이다.** 그 밖의 판단은 D-337·D-331과 §7 확정을 따른다.
 7. v1.1까지 어느 Wave에도 배정되지 않았던 스멜을 v1.2에서 배정했다: **A5·N4·X5(`pii_filter` 제외)·M6 → W1** · **A8 → W2** · **X5의 `pii_filter` 5곳 → W3(5c, X2와 같은 함수)** · G6은 D-139 부기로 해소 · X6은 163.
 
 ---
@@ -137,10 +137,10 @@
 
 | ID | 범주 | 위치 | 정량 근거 | 영향 | 심각도 | 처방 | 검증 |
 |---|---|---|---|---|---|---|---|
-| **O1** | God module · Divergent change | `apm_query.py` 3,998줄 — 책임 13구간(인자 220-470 · 창 473-785 · 대상 785-1075·2837-3165 · 호출 1079-1335 · 보기 선택 1355-1540 · 소스 사다리 1662-1900 · 참조 1897-2085 · run 2088-2521 · 첫 홉 2523-2835 · 작업·고지 3166-3430 · 수집·답 3426-3980) | 함수 144 · 상수 약 40 · 테스트 61파일이 언급 | 어떤 APM 계획이든 이 파일을 고침 · replanner·intent_planner가 지연 import | **H** | **SRP · Extract Module** — `src/orchestration/apm/`(window·args·targets·calls·selection·reference·first_hop·jobs_notices·collect·run) + `apm_query.py` **Facade 재노출**. 순수 함수부터 옮긴다. **seam 보존(U-3 확정 · D-336 ②)**: `run_apm_query`·`_SESSION_FACTORY`(215 정의 · 2280 `run_apm_query` 안에서만 읽힘 · 테스트 38파일 52곳 patch)와 테스트가 `apm_query`에서 patch하는 심볼(`link_business_names` 11 · `get_registry` 6 · `link_hostnames` 5 · `poll_job` 3 · `render_view_rows` 2)을 **호출하는 함수**는 `apm_query.py`에 남긴다 — 테스트 수정 0 · 순환 없음 | `test_plan134_*`·`test_plan147_w2_*`·`test_plan130_*`·`test_plan125_apm_active_path.py`·`test_plan132_source_selection.py`·`test_plan159_minute_consumers.py` |
+| **O1** | God module · Divergent change | `apm_query.py` 3,998줄 — 책임 13구간(인자 220-470 · 창 473-785 · 대상 785-1075·2837-3165 · 호출 1079-1335 · 보기 선택 1355-1540 · 소스 사다리 1662-1900 · 참조 1897-2085 · run 2088-2521 · 첫 홉 2523-2835 · 작업·고지 3166-3430 · 수집·답 3426-3980) | 함수 144 · 상수 약 40 · 테스트 61파일이 언급 | 어떤 APM 계획이든 이 파일을 고침 · replanner·intent_planner가 지연 import | **H** | **SRP · Extract Module** — `src/orchestration/apm/`(window·args·targets·calls·selection·reference·first_hop·jobs_notices·collect·run) + `apm_query.py` **Facade 재노출**. 순수 함수부터 옮긴다. **seam 보존(U-3 확정 · D-337 ②)**: `run_apm_query`·`_SESSION_FACTORY`(215 정의 · 2280 `run_apm_query` 안에서만 읽힘 · 테스트 38파일 52곳 patch)와 테스트가 `apm_query`에서 patch하는 심볼(`link_business_names` 11 · `get_registry` 6 · `link_hostnames` 5 · `poll_job` 3 · `render_view_rows` 2)을 **호출하는 함수**는 `apm_query.py`에 남긴다 — 테스트 수정 0 · 순환 없음 | `test_plan134_*`·`test_plan147_w2_*`·`test_plan130_*`·`test_plan125_apm_active_path.py`·`test_plan132_source_selection.py`·`test_plan159_minute_consumers.py` |
 | **O2** | Long method · Switch | `run_apm_query` 2088-2521(433줄 **cc184** · early return 19 · 지역 변수 25+) — 호출 구성 루프 2330-2400의 분기 축은 `ViewSpec.target` 5종(""·reference·named·fleet·optional) | 저장소 최대 cc | 수정마다 회귀 위험 · 부분 테스트 불가 | **H** | **Compose Method + 표 주도 dispatch** — `{target: _calls_xxx}` 함수 5개 dict · 단계 간 상태 `@dataclass _RunCtx` 1개 · 종단 판정 `_decide_outcome`(거부 코드 사슬 **순서 그대로**). Strategy 클래스는 과잉(어휘 5종 닫힘 · 공유 상태 6개) | O1 테스트 + 거부 코드(`apm_calls_failed`·`apm_target_unresolved`·`apm_not_queried`·`source_unavailable`…) 단언 전수 grep |
 | **O3** | SSOT 위반(판정↔배선) · Long method | `graph.py` `build_graph` 505-975(470줄 cc39) — `not use_deep_agent and not config.enable_intent_orchestration` 3회 반복 · `observability/ladder.py:72 resolve_ladder_tier`는 배선 뒤 로그용으로만 호출되고 docstring(75-76)이 「build_graph 순서와 일치해야 한다」는 **수동 동기화 계약** · 주석 523-531 「기준 3단」(D-251과 불일치) | — | 사다리 판정이 두 곳에 정의 | M | **SSOT** — 선두에서 `resolve_ladder_tier()` 1회 계산 → 배선은 그 결과만 읽음 · 단별 `_wire_tier1/2/3/legacy` + `_wire_shared_front`·`_wire_single_db_tail` 함수 분할. Strategy/Factory 클래스 미도입(단 4개 닫힘 · 공유 상태 3개). **단·플래그 분기는 하나도 제거하지 않는다**(D-161·D-251). 낡은 주석 정정 | **(W0) 플래그 매트릭스별 그래프 노드·엣지 집합 스냅샷** + `test_graph_orchestration.py`·`test_deep_agent_wiring.py`·`test_plan103_tier3_plan_loop.py`·`test_ladder_startup_log.py`·`test_graph_routing_gaps.py` |
-| **O4** | God module · Inappropriate intimacy | `subagents.py` 2,346줄 — `SubAgentSpec`(148) · DB 대상 정책 300-940(약 640줄) · 격리 입력 1173-1630(약 460줄) · `run_data_query_pipeline` 1721(327줄 cc66) · `_pack_pipeline_result` 2099 / `_make_isolated_input`을 `agent_orchestrator.py:458`·`deepagents_tools.py:384`·`tier3_plan.py:258`이 **`_` 접두 이름으로** import | 1·2·3단 공용 부품이 「private」 | 2·3단 전체 파급 · `SubAgentSpec`만 필요한 모듈이 subagents 전체를 import → 순환 | **H** | **SRP · Extract Module** — `agent_spec.py`(leaf · `SubAgentSpec`) · `db_targeting.py` · `isolated_input.py`(공개 이름 + 옛 이름 별칭 1사이클 — U-2 확정 · D-336 ③) · subagents에는 레지스트리·파이프라인만 | `tests/test_orchestration/`(97파일 언급) · `arch_check` · import 스모크 |
+| **O4** | God module · Inappropriate intimacy | `subagents.py` 2,346줄 — `SubAgentSpec`(148) · DB 대상 정책 300-940(약 640줄) · 격리 입력 1173-1630(약 460줄) · `run_data_query_pipeline` 1721(327줄 cc66) · `_pack_pipeline_result` 2099 / `_make_isolated_input`을 `agent_orchestrator.py:458`·`deepagents_tools.py:384`·`tier3_plan.py:258`이 **`_` 접두 이름으로** import | 1·2·3단 공용 부품이 「private」 | 2·3단 전체 파급 · `SubAgentSpec`만 필요한 모듈이 subagents 전체를 import → 순환 | **H** | **SRP · Extract Module** — `agent_spec.py`(leaf · `SubAgentSpec`) · `db_targeting.py` · `isolated_input.py`(공개 이름 + 옛 이름 별칭 1사이클 — U-2 확정 · D-337 ③) · subagents에는 레지스트리·파이프라인만 | `tests/test_orchestration/`(97파일 언급) · `arch_check` · import 스모크 |
 | **O5** | 순환 회피 지연 import | `replanner.py:581` · `intent_planner.py:1404` · `deep_agent.py:475` + SCC 7개(orchestration 7모듈 · apm_gateway.interface 4 · noise_gate.infrastructure 3 · `scope_tools`↔`tools` · `drm.decryptor`↔`scsl` · `api.routes.admin`↔`api.server`) | 함수 내부 import 623건 중 순환 회피 의심 고유 엣지 11 | 숨은 결합 · patch 경로 취약 | M | **ADP(비순환 의존)** — O4의 leaf 분리로 orchestration SCC 해소 후 상단 import로 | `arch_check` · `python -c "import src.graph"` |
 | **O6** | 2·3단 사이 같은 판정 중복 | 존 역질문 꼬리 `subagents.py:328-424` ↔ `semantic_router.py:712-774`(약 25줄 동일) — **앞단 비발동 신호는 서로 다름**(`_has_new_location_db_signal` vs `ZONE_SKIP_SIGNAL_TERMS`) | — | 한쪽만 고치면 단 간 동작이 갈라짐 | M | **SSOT** — 공통 꼬리만 `zone_clarification_for_targets(...)`로 추출(동작 불변). 신호 함수 통일은 행동 변경 → **U-1 확정: 하지 않음(현행 유지 · 별건)** | `tests/test_semantic_routing/`·존 역질문 단언 grep — 양 단 모두 통과 |
 | **O7** | Long method · Primitive obsession | `replanner` 82-383(301줄 cc66 — 조기 종료 가드 11종 + 신규 task 필터 8종) · 핸들러 결과 dict 암묵 스키마(읽는 distinct 키 subagents 130 · result_aggregator 105 · apm_query 231) · `result_aggregator` 1,892줄(`_merge_task_results_by_identity` cc45 · `_finalize_task` 약 140줄 · `_build_output_state` 약 110줄) | — | 키 오타·누락이 런타임에만 드러남 | **H**(replanner) | **순서 있는 규칙 표**(`GUARDS`·`FILTERS` 함수 튜플 — Chain of Responsibility의 함수형) · 핸들러 출력 `TypedDict HandlerResult` 선언(런타임 불변). pydantic 전면 이행은 미도입(체크포인터 직렬화·`**extra` 병합과 충돌) | `test_replanner.py`·plan119·plan121 계열 · mypy |
@@ -176,7 +176,7 @@
 | **G1** | Long method · 규칙 if 사슬 | `noise_gate/domain/notification_policy.py` `decide_notification` 394(540줄 **cc98** · 키워드 인자 약 25 · 플래그 10개 읽음) — 단계 번호 0.5·3·4·5·6·6.2·6.4·6.5·6(중복)·7·7.5·7.6·8·9·9.5 · 7.6 블록이 매트릭스 함수 정의 **뒤에** 물리 배치 | 저장소 2위 cc | 번호 사이 삽입 반복으로 체계 붕괴 · 규칙 추가 시 회귀 위험 | **H** | **순서 있는 규칙 표**(조기 종결 단계 0.5~7.5를 `RULES` 튜플 + for 루프 — Chain of Responsibility의 함수형) · 입력은 `frozen dataclass GateInputs` · step 9 누적 조정은 체인이 아닌 함수로 유지. 규칙별 클래스 계층 미도입. **심각도3 절대 PAGE·보수적 PAGE(D-048) 순서 보존** | **(W0) 골든 특성화**(플래그 조합 × 심각도 × 해소·유지보수·침묵 → 티어·reason 덤프) + `test_notification_policy.py`(32건)·`test_gate_off_regression.py`·`test_plan60_flags_off_regression.py`·`test_plan144_apm_policy.py`·`test_flapping_gate.py`·`test_min_severity_gate_handoff.py` |
 | **G2** | God class | `alarm_worker.py` `AlarmWorker` 152(2,310줄 · 58메서드) — `_build_*` 18종 약 700줄 · episode·late-promotion 약 20메서드 · 신호 탐지(inhibition·flapping·storm·correlation) · dedup · `_process` 1182(410줄 cc44 · 플래그 8개) | — | — | **H** | **SRP · Extract Class(합성)** — ① 와이어링 `worker_wiring.py`(기계적) → ② `EpisodeCoordinator` → ③ 신호 탐지·`DedupService`. `_process` 분할과 클래스 분할을 **같은 Wave에 하지 않음**. 이벤트 버스 미도입 | `test_noise_gate_graph_integration`·`test_gate_off_regression`·`test_plan60_flags_off_regression` · `worker._xxx` 접근 테스트는 위임 shim으로 보존((W0) 접근 수 측정) |
 | **G3** | Long method | `investigation_trigger_node` 57(244줄 cc46) · `notification_gate_node` 45(cc39) · `alarm_context_enricher_node` 449(215줄) · `polestar_noise_context.fetch` 449(188줄) · `alarm_notifier.py` 1,437줄 · `decision_store.py` 1,044줄 | — | — | M | 가드 절 Extract Function. 대분할은 G1·G2 이후 재평가 | 노드별 기존 테스트 |
-| **G4** | 노드 간 의존 · private import | `alarm_context_enricher.py:35`→`server_identity.is_apm_source`(arch 경고) · 같은 파일 57행 `polestar_noise_context._unavailable` | arch 경고 1 | — | L | `is_apm_source` → `noise_gate/domain` · `_unavailable` 공개명 승격(옛 이름 별칭 1사이클 — D-336 ③). 경고는 D-331 ①로 규칙상 먼저 사라지지만(대상이 노드가 아님) 처방은 유지 | `test_server_identity.py` · import grep |
+| **G4** | 노드 간 의존 · private import | `alarm_context_enricher.py:35`→`server_identity.is_apm_source`(arch 경고) · 같은 파일 57행 `polestar_noise_context._unavailable` | arch 경고 1 | — | L | `is_apm_source` → `noise_gate/domain` · `_unavailable` 공개명 승격(옛 이름 별칭 1사이클 — D-337 ③). 경고는 D-331 ①로 규칙상 먼저 사라지지만(대상이 노드가 아님) 처방은 유지 | `test_server_identity.py` · import grep |
 | **G5** | 매직 값 분산 | `alarm:` 접두 Redis 키 리터럴 비테스트 8파일(cross_source · enricher · redis_queue · polestar_metric_baseline · alarm_worker · incident_events · polestar_noise_context · apm_noise_context) · `notification_gate.py:250`이 `APP_IMPACT_LEVELS` 재선언 | — | 키 오타 시 침묵 단절 | M | **SSOT** — `noise_gate/domain/keys.py` 키 빌더 1곳(티어 상수는 이미 SSOT 양호) | 키 문자열 동치 단언 + grep |
 | **G6** | 경계 허용 범위 초과 | `noise_gate` → `src.observability.investigation_metrics` · `src.domain.host_availability` · `src.domain.host_authz`(D-139 ② 역방향 최소 범위는 config/llm/utils/routing) | 3건 | 경계 침식 | M | **U-5 확정: D-139 부기로 허용 목록 확장(코드 이동 없음)** — 세 모듈 모두 stdlib만 쓰는 순수 모듈(154·234·206줄)이고 src 쪽 소비처가 각 2~4곳이라 `noise_gate`로 옮기면 `src → noise_gate` 의존이 새로 늘어난다 | 허용 목록 밖 신규 역방향 import 0(import grep) |
 | **G7** | 문구 조립 if 사슬 | `sre_agent/application/briefing_builder.py` `build_briefing` 272(150줄 cc48) | — | — | L | 근거 상태 판정과 렌더 분리(패턴 불필요). `InvestigationDispatcher`(530줄)는 분할 시기 아님 | `sre_agent` briefing 테스트 23건(자체 venv) |
@@ -186,7 +186,7 @@
 | ID | 범주 | 위치 | 정량 근거 | 영향 | 심각도 | 처방 | 검증 |
 |---|---|---|---|---|---|---|---|
 | **M1** | Long method · 위임 보일러플레이트 | `apm_gateway/interface/server.py` `register_tools` 331-1266(935줄 · 도구 18) — 본문은 `targeted(...)` + 9줄 `run_data(...)` 14회 반복 · 도구 이름 4회씩 · 공통 인자 재선언 | 저장소 최장 함수 · 그중 약 303줄은 시그니처·docstring(외부 계약) | — | **H** | `targeted`+`run_data` → `dispatch` 헬퍼 1개 · 공통 인자 `Annotated` 별칭 · 도구군별 함수 분할. **동적 시그니처 생성 Registry는 미도입**(도구 스키마 = 외부 계약이 바뀔 위험) · 도구 이름·스키마 변경 금지 | **(W0) `await mcp.list_tools()` name·inputSchema·description JSON 스냅샷** + `test_tools_contract.py`·`test_boundary.py` |
-| **M2** | God class | `application/tools.py` `ApmTools` 691-3579(2,889줄 · 66메서드) · fleet·scope·manage가 `_Limits`·`_check_n`·`_given` 등 `_` 접두 심볼을 import · `core._at` 8 · `core._all_failed` 7 · `core._reason_tail` 5 | — | — | **H** | **Facade + Composition 완결** — fleet·scope·manage가 이미 `core`를 받는 형태 → 공유 코어(719-1170)를 `ApmCore`로 분리, 나머지 도구군을 `core` 기반 클래스로, `ApmTools`는 Facade 유지. `_` 심볼 공용 모듈 승격(U-2 확정 · D-336 ③) | `apm_gateway/tests` 전체(`../.venv/bin/python -m pytest`) |
+| **M2** | God class | `application/tools.py` `ApmTools` 691-3579(2,889줄 · 66메서드) · fleet·scope·manage가 `_Limits`·`_check_n`·`_given` 등 `_` 접두 심볼을 import · `core._at` 8 · `core._all_failed` 7 · `core._reason_tail` 5 | — | — | **H** | **Facade + Composition 완결** — fleet·scope·manage가 이미 `core`를 받는 형태 → 공유 코어(719-1170)를 `ApmCore`로 분리, 나머지 도구군을 `core` 기반 클래스로, `ApmTools`는 Facade 유지. `_` 심볼 공용 모듈 승격(U-2 확정 · D-337 ③) | `apm_gateway/tests` 전체(`../.venv/bin/python -m pytest`) |
 | **M3** | 복붙 실패 처리 관용구 | `except ApmError: if e.code == CONTRACT_VIOLATION: raise` + 「[한계] … 조회 실패」 32회(tools 22 · scope 5 · fleet 3 · manage 1 · poller 1) | 32 | 한 사본이 재발생을 빠뜨리면 계약 위반이 한계 고지로 강등 | M | 그 규칙만 담은 작은 헬퍼 1개(데코레이터 미도입) | 오류 경로 테스트 + 계약 위반 전파 단위 테스트 신규 |
 | **M4** | Long method | `_period_ranking`(185줄 cc42) · `_event_rules`(145줄 cc48~55) · `_business_search`(140줄 cc47) · `apm_status_stats`(150줄 cc41) · `ranking`(152줄 cc43) · 순수 함수 `_period_stats`·`_sum_stats`·`_stats_delta`(tools.py:3320-3375) | — | — | M | Extract Function · 순수 함수 모듈 이동 | 출력 JSON 골든(sort_keys) — 없으면 (W0) |
 | **M5** | Duplicated code | `mcp_server` `_now_iso`·`_err`·`_ok`·`_audit`가 `polestar_tools`·`promql_tools`·`openmetrics_tools` 3벌 · 폴스타 도구 9종 공통 서두(엔진 해석→max_rows→SQL→실행→감싸기) · `polestar_tools.py`(빌더 83-650 + 등록 402줄) · `tools.py`(도구 + 엔진별 스키마 SQL 약 290줄) | 클론 5.4%(패키지 최고) | — | M | 공용 응답 헬퍼 1모듈 · `_run_fixed_sql` 헬퍼(약 -90줄) · 빌더/등록 파일 분리. 응답 필드 배치는 도구군별로 다르므로 유지. **분리한 빌더 파일은 overfit EXCLUDE 대칭 필요**(polestar_tools.py가 EXCLUDE — 새 파일명이면 스캔에 걸림, §5.0) | `mcp_server/tests/test_polestar_tools.py`·`test_promql_tools.py`·`test_openmetrics_tools.py`·`test_tool_gates.py` |
@@ -194,7 +194,7 @@
 
 ### 3.8 보안 성격 관찰 — `plans/163`으로 이관(U-6 확정)
 
-이 절의 세 건과 X6은 **행동 변경**이라 리팩터와 분리하고(D-336 ⑥) 별도 보안 계획 `plans/163-security-hardening-separated.md`(security-auditor 동반)에서 처리한다. 2026-10-14 재확인한 코드 근거와 성공 기준은 163에 있다. 이 계획은 아래 「리팩터 중 처리」만 한다.
+이 절의 세 건과 X6은 **행동 변경**이라 리팩터와 분리하고(D-337 ⑥) 별도 보안 계획 `plans/163-security-hardening-separated.md`(security-auditor 동반)에서 처리한다. 2026-10-14 재확인한 코드 근거와 성공 기준은 163에 있다. 이 계획은 아래 「리팩터 중 처리」만 한다.
 
 | ID | 관찰(요지) | 리팩터 중 처리 |
 |---|---|---|
@@ -250,11 +250,11 @@
 
 ## 5. Wave 분할
 
-### 5.0 전 Wave 공통 규약 (D-336으로 고정 — 2026-10-14)
+### 5.0 전 Wave 공통 규약 (D-337으로 고정 — 2026-10-14)
 
 1. **동작 불변이 기본**이다. 행동이 바뀌는 처방은 이 계획에서 하지 않는다(§7 확정 — 보안·X6은 `plans/163`, 신호·기본값 통일은 §8). 사용자 접점 변경 0 → 매뉴얼 갱신 대상 아님(D-255 — 보고에 「매뉴얼 미반영: 사용자 접점 변경 없음」 명시).
-2. **이동은 재노출 shim과 함께** — 함수·클래스를 옮기면 원 모듈에서 같은 이름을 재노출해 테스트의 import·`monkeypatch.setattr(<원 모듈>, …)` 경로를 1사이클 보존한다. **주의**: 이동한 함수가 원 모듈 전역(예: `apm_query._SESSION_FACTORY`)을 읽는 경우 재노출만으로는 patch가 닿지 않는다 — 이동 전 해당 심볼의 patch 지점을 grep하고, **원 모듈 전역을 읽거나 원 모듈에서 patch되는 심볼을 호출하는 함수는 원 모듈(Facade)에 남긴다**(D-336 ② · U-3 확정 — 테스트 수정 0이 기준).
-2a. **모듈 밖에서 import되는 `_` 접두 함수·클래스는 공개명으로 승격하고 옛 이름을 별칭으로 1사이클 둔다**(D-336 ③ · U-2 확정). 별칭 제거는 그 영역의 다음 계획에서 `grep -w <옛 이름>` 0을 확인한 뒤.
+2. **이동은 재노출 shim과 함께** — 함수·클래스를 옮기면 원 모듈에서 같은 이름을 재노출해 테스트의 import·`monkeypatch.setattr(<원 모듈>, …)` 경로를 1사이클 보존한다. **주의**: 이동한 함수가 원 모듈 전역(예: `apm_query._SESSION_FACTORY`)을 읽는 경우 재노출만으로는 patch가 닿지 않는다 — 이동 전 해당 심볼의 patch 지점을 grep하고, **원 모듈 전역을 읽거나 원 모듈에서 patch되는 심볼을 호출하는 함수는 원 모듈(Facade)에 남긴다**(D-337 ② · U-3 확정 — 테스트 수정 0이 기준).
+2a. **모듈 밖에서 import되는 `_` 접두 함수·클래스는 공개명으로 승격하고 옛 이름을 별칭으로 1사이클 둔다**(D-337 ③ · U-2 확정). 별칭 제거는 그 영역의 다음 계획에서 `grep -w <옛 이름>` 0을 확인한 뒤.
 3. **overfit 기준선은 경로 키**다 — 리터럴이 있는 코드를 새 파일로 옮기면 새 경로가 「신규 유입」으로 걸린다. 자기 이동분만 기준선 항목을 새 경로로 옮기고(원 경로 항목 삭제), `--update-baseline` 전면 재생성은 하지 않는다(CLAUDE.md 품질 게이트 · 2026-08-28·09-28 Known Mistakes). `mcp_server/polestar_tools.py`·`polestar_exporter.py`처럼 **EXCLUDE 대상 파일을 쪼개면 새 파일도 EXCLUDE에 대칭 추가**해야 한다(`scripts/overfit_check.py:75-85`).
 4. **arch_check 계층 매핑은 최장 prefix**(`arch_check.py:124`) — 새 하위 패키지(`src/api/query/`·`src/orchestration/apm/`·`src/config/`)는 부모 prefix로 자동 매핑된다. 다른 계층으로 내리는 이동은 `MODULE_LAYER_MAP` 확인 필수.
 5. **커밋 단위 = 스멜 ID 하나**(되돌리기 비용 최소). 순수 이동 커밋과 로직 분해 커밋을 섞지 않는다.
@@ -276,7 +276,7 @@
 | **W4** | 6 | 거대 함수 분해 — 규칙 표·dispatch | G1·O2·O7·O3(배선)·O8·O9·A4·N5·N7(체인)·I5·M1·M4·G3·G7 | 높음 | 6a~6f · 동시 2건까지 | **별도 계획서 6건**(G1·O2는 단독 계획) |
 | **W5** | 7 | God class·God module 분할 | O1·A2·G2·M2·N6(선언) | 높음 | 7a~7e(각 선행 충족 순) | **별도 계획서 5건**(각각 단독 계획) |
 
-**U-11 확정**: 이 계획서는 W0~W2를 직접 진행하고, W3~W5는 **착수 시 Wave마다(규모가 크면 스멜 단위로) 별도 계획서**를 만든다. 이 계획서는 W3~W5의 「상위 로드맵」이다 — 새 계획서는 §5.5~§5.7의 범위·성공 기준을 옮겨 쓰고, W0 스냅샷과 D-336 규약을 그대로 따르며, 자기 「계획 시작 SHA」를 따로 적는다. 새 계획서 착수 전제는 이 계획 W2 완료다(W2의 shim·모듈 경계 위에서 분해한다).
+**U-11 확정**: 이 계획서는 W0~W2를 직접 진행하고, W3~W5는 **착수 시 Wave마다(규모가 크면 스멜 단위로) 별도 계획서**를 만든다. 이 계획서는 W3~W5의 「상위 로드맵」이다 — 새 계획서는 §5.5~§5.7의 범위·성공 기준을 옮겨 쓰고, W0 스냅샷과 D-337 규약을 그대로 따르며, 자기 「계획 시작 SHA」를 따로 적는다. 새 계획서 착수 전제는 이 계획 W2 완료다(W2의 shim·모듈 경계 위에서 분해한다).
 
 ### 5.2 W0 — 안전망 (제품 코드 0건)
 
@@ -356,7 +356,7 @@
 **I4 착수 판정(U-10) — 「착수」(W2 4c 포함) · 단 경로 결합 4곳 동반**
 - 근거 ① `settings_catalog.field_index()`는 `AppConfig.model_fields`와 그 annotation 클래스만 순회한다 — `src.config` 모듈 열거·`__module__` 비교·파일 경로 의존 없음. `.env.example` 경로는 `settings_catalog.py`의 `__file__` 기준이라 무관. `env_file`은 cwd 상대(`.env`)라 패키지 위치와 무관.
 - 근거 ② 실험(스크래치 worktree · 원복): `src/config.py` → `src/config/_core.py` + `__init__.py` 재노출 33심볼로 바꿔 `field_index()` 409키 sha256 앞 16자 `56ecee3f0187d317`이 기준선과 **동일** · `catalog_diff.py --ci` 총 차이 0 · `import src.config, src.graph, src.api.server` 성공 · `test_settings_catalog*`·`test_synonym_semantic`·`test_config_env_reload` 통과(.env 부재 2건은 worktree 산물).
-- **동반 조건(4c 범위에 넣는다)**: 경로 문자열 `src/config.py`에 묶인 4곳 — `scripts/regress.py:53` `WAVE_REGRESS_FILES`(패키지화 후 `src/config/` 접두로 바꾸지 않으면 `[웨이브 회귀 필요]`가 안 뜬다) · `scripts/bench/axes.py:269` `NON_CONSUMER_MODULES` · `scripts/rag_hyde_repeat.py:103` 루트 탐지 · **`tests/test_composite/test_sufficiency.py:149`가 `Path("src/config.py").read_text()`로 실패**(실험에서 재현). 마지막은 테스트 파일 수정 1건이 불가피하다 — D-336 ②의 「테스트 수정 0」은 patch seam 기준이고 이 건은 경로 리터럴이라, 4c 착수 시 이탈로 명시하고 수정한다(되돌리는 비용: 1줄). `load_config`는 테스트 25지점이 `src.config.load_config`로 patch하므로 `__init__.py`(Facade)에 남긴다.
+- **동반 조건(4c 범위에 넣는다)**: 경로 문자열 `src/config.py`에 묶인 4곳 — `scripts/regress.py:53` `WAVE_REGRESS_FILES`(패키지화 후 `src/config/` 접두로 바꾸지 않으면 `[웨이브 회귀 필요]`가 안 뜬다) · `scripts/bench/axes.py:269` `NON_CONSUMER_MODULES` · `scripts/rag_hyde_repeat.py:103` 루트 탐지 · **`tests/test_composite/test_sufficiency.py:149`가 `Path("src/config.py").read_text()`로 실패**(실험에서 재현). 마지막은 테스트 파일 수정 1건이 불가피하다 — D-337 ②의 「테스트 수정 0」은 patch seam 기준이고 이 건은 경로 리터럴이라, 4c 착수 시 이탈로 명시하고 수정한다(되돌리는 비용: 1줄). `load_config`는 테스트 25지점이 `src.config.load_config`로 patch하므로 `__init__.py`(Facade)에 남긴다.
 
 **발견한 이상 — 고치지 않음(현행 고정 · 후속 판단용)**
 1. `entity_locator`·`sequential_runner`가 그래프에 등록되지만 `_STREAM_KNOWN_NODES`에 없어 SSE 진행 이벤트가 나가지 않는다(A6 정합 테스트가 차집합으로 고정).
@@ -378,7 +378,7 @@
 | **D-331 ①** | `scripts/arch_check.py:231-243`(application→application 경고를 「노드 패키지 간」 — `src.nodes.*`↔`src.nodes.*`·`noise_gate.application.nodes.*`↔같은 패키지 — 으로 한정) · `tests/test_orchestration/test_arch.py`에 규칙 단언 추가 | 경고 117 → 43(2026-10-14 실측: 노드↔노드 38 + prompts 직접 참조 5) · error 0 유지 · 경고 문구에서 「그래프 라우팅으로 해결」 대신 「순수 헬퍼는 비노드 application 모듈로」 |
 | **D-331 ②** | 신규 `scripts/config_fallback_check.py`(AST — `getattr(<설정 객체>, "필드", 기본)`의 기본값을 `src/config.py` 필드 기본값과 대조) · `regress.py` 정적 게이트에 편입 | W1 시작 시 보고 모드로 현재 수(약 80)를 기록 → X1 치환 뒤 0 → `--ci`(위반 시 종료 코드 1)로 전환. 판정 불가(동적 이름·비설정 객체)는 건너뛰고 수만 보고 |
 | A6 | 신규 `src/api/sse_events.py` · `query.py` · `thread_history.py` · `stream_failure.py` | SSE type 리터럴 0(프런트 제외) · W0 done 스냅샷 불변 |
-| G4·G5 | `alarm_context_enricher.py` · `server_identity.py` · 신규 `noise_gate/domain/keys.py` + 8파일 | 키 단언 · `_unavailable` 별칭 1사이클(D-336 ③) · (arch 경고는 D-331 ①로 먼저 소거) |
+| G4·G5 | `alarm_context_enricher.py` · `server_identity.py` · 신규 `noise_gate/domain/keys.py` + 8파일 | 키 단언 · `_unavailable` 별칭 1사이클(D-337 ③) · (arch 경고는 D-331 ①로 먼저 소거) |
 | N1(b) | `query_generator.py` · `multi_db_executor.py` | 복붙 래퍼 7쌍 → import · `prompt_render_diff.py --ci` 0 · 렌더 매트릭스 12키 무갱신 |
 | O3(주석) | `graph.py:523-531` | D-251 문구 정정(코드 무변경) |
 | M3 | `apm_gateway/application/{tools,scope_tools,fleet_tools,manage_tools}.py` · `poller.py` | 관용구 32 → 헬퍼 1 · 계약 위반 전파 테스트 신규 |
@@ -406,7 +406,7 @@
 
 | 스멜 | 이동 | 성공 기준 |
 |---|---|---|
-| O4·O5 | `subagents.py` → `agent_spec.py`(leaf) · `db_targeting.py` · `isolated_input.py` · 지연 import 3곳 상단화 | orchestration SCC 해소(재측정) · `_` 접두 공유 함수 공개명 + 옛 이름 별칭(U-2 확정 · D-336 ③) |
+| O4·O5 | `subagents.py` → `agent_spec.py`(leaf) · `db_targeting.py` · `isolated_input.py` · 지연 import 3곳 상단화 | orchestration SCC 해소(재측정) · `_` 접두 공유 함수 공개명 + 옛 이름 별칭(U-2 확정 · D-337 ③) |
 | N2 | `query_gen_common.py` → 7개 모듈 + shim | 소비 89파일 무수정 · 기준선 경로 이동 델타만 |
 | N3 | `column_deriver`·`table_selection`·`intent_frame_builder`·`candidate_*`·`key_bridge`·`prompt_blocks` → 비노드 application 하위 | arch 경고 43 → 17 이하(이동 대상 7모듈 26건 소거 · D-331 ①) · 이동 대상 소비처 테스트 |
 | I2·I3 | `field_mapper.py` 5분할 · `AdminServiceBase` → `admin_base.py` · asset_generation 보조 타입 분리 | 폼필 골든 불변 |
@@ -462,7 +462,7 @@
 
 | 스멜 | 내용 | 성공 기준 |
 |---|---|---|
-| O1 | `src/orchestration/apm/` 순수 모듈 + `apm_query.py` Facade. `run_apm_query`·`_SESSION_FACTORY`·patch 대상 심볼(`link_business_names`·`get_registry`·`link_hostnames`·`poll_job`·`render_view_rows`)을 호출하는 함수는 **Facade에 남긴다**(U-3 확정 · D-336 ②) | apm 테스트 61파일 언급분 통과 · **테스트 파일 수정 0** · 순환 import 0 |
+| O1 | `src/orchestration/apm/` 순수 모듈 + `apm_query.py` Facade. `run_apm_query`·`_SESSION_FACTORY`·patch 대상 심볼(`link_business_names`·`get_registry`·`link_hostnames`·`poll_job`·`render_view_rows`)을 호출하는 함수는 **Facade에 남긴다**(U-3 확정 · D-337 ②) | apm 테스트 61파일 언급분 통과 · **테스트 파일 수정 0** · 순환 import 0 |
 | A2 | `src/api/query/` + application 판정 모듈 + `query.py` 재노출 | 70개 테스트 파일 무수정 통과 |
 | G2 | ① 와이어링 → ② EpisodeCoordinator → ③ 신호 탐지·DedupService(각각 별 커밋) | noise_gate 테스트 · 플래그 off 비트 동일 테스트 |
 | M2 | `ApmCore` + 도구군 클래스 + `ApmTools` Facade | apm_gateway 테스트 · W0 도구 스냅샷 |
@@ -499,14 +499,14 @@
 | D-129 | 설정 카탈로그 SSOT = pydantic 인트로스펙션 | I4(config 패키지화)가 `field_index()` 결과를 바꾸면 위배 → W0 실측 + `catalog_diff` 0 조건 | 조건부(U-10 확정 — W0 판정 · `catalog_diff` 0) |
 | D-179 | (본문) 설정 UI 경계 — 별도 패키지 설정을 본체 UI에서 쓰지 않음 | A7 `.env` I/O 이동은 본체 `.env`만 다룸 — 경계 불변. *참고: CLAUDE.md 품질 게이트 절이 「독스트링의 스키마 리터럴도 걸린다(D-179)」로 인용하나 D-179 본문은 설정 UI 경계다. overfit 기준선 규정의 출처는 D-088 · CLAUDE.md 「품질 게이트」 — 인용 번호 불일치를 실측했다(이 계획에서 고치지 않음)* | 충돌 없음 |
 | D-274 | apm_gateway 독립 패키지 · 양방향 import 0 · 제니퍼 토큰 격리 | M6은 공유 라이브러리 대신 계약 스냅샷 테스트 · M1의 도구 이름·스키마 불변 | 충돌 없음 |
-| D-134 | 동작 불변 게이트 4종(프롬프트 sha256 · 실패 집합 기준선 · arch/overfit · 골든 바이트) | 이 계획의 검증 방식으로 **재사용** · 저장소 전반 규약으로 일반화한 것이 D-336 | 정합 |
+| D-134 | 동작 불변 게이트 4종(프롬프트 sha256 · 실패 집합 기준선 · arch/overfit · 골든 바이트) | 이 계획의 검증 방식으로 **재사용** · 저장소 전반 규약으로 일반화한 것이 D-337 | 정합 |
 | D-070 | 사용자/운영자 JWT 시크릿 분리 | A5는 관리자 `type` 검증만 공용 함수로 옮김 · 사용자 `type` 검증 추가(S2)는 `plans/163` | 정합 |
-| **D-336**(신규) | 구조 리팩터 규약 — shim 1사이클 · seam 보존 · `_` 공개명+별칭 · overfit 경로 델타 · 특성화 선행 · 행동 변경 분리 · 커밋 단위 | §5.0이 이 결정의 적용 | 정합 |
+| **D-337**(신규) | 구조 리팩터 규약 — shim 1사이클 · seam 보존 · `_` 공개명+별칭 · overfit 경로 델타 · 특성화 선행 · 행동 변경 분리 · 커밋 단위 | §5.0이 이 결정의 적용 | 정합 |
 | **D-331**(신규) | 품질 게이트 조정 — arch 노드 간 경고 범위 한정 · 설정 폴백 린트 CI | W1에서 구현 | 정합 |
 | D-303 | 회귀 정책 | §5.0-6 | 정합 |
 | D-255 | 매뉴얼 동반 | 사용자 접점 변경 0이 목표 — 보고에 미반영 사유 명시 | 정합 |
 
-**결정 등재(2026-10-14 · §7 확정 반영)**: D-336(구조 리팩터 규약 — D-134를 저장소 전반으로 일반화 · U-2·U-3·U-6 원칙 포함) · D-331(품질 게이트 조정 — U-4·U-7) · D-139 부기(U-5). U-1·U-8·U-9·U-10·U-11은 이 계획 내부 처리 방침이라 D-번호를 달지 않았다.
+**결정 등재(2026-10-14 · §7 확정 반영)**: D-337(구조 리팩터 규약 — D-134를 저장소 전반으로 일반화 · U-2·U-3·U-6 원칙 포함) · D-331(품질 게이트 조정 — U-4·U-7) · D-139 부기(U-5). U-1·U-8·U-9·U-10·U-11은 이 계획 내부 처리 방침이라 D-번호를 달지 않았다.
 
 ---
 
@@ -517,11 +517,11 @@
 | # | 항목 | 결정 | 근거(한 줄) | 기록 |
 |---|---|---|---|---|
 | **U-1** | 존 역질문 「안 묻는」 신호 2단(`_has_new_location_db_signal`)↔3단(`ZONE_SKIP_SIGNAL_TERMS`) 차이(O6) · `_zone_label` 3벌(X4) | **① 공통 꼬리만 추출, 신호 차이는 유지.** `_zone_label`은 W0 특성화에서 전 db_id 출력이 같을 때만 합치고 하나라도 다르면 현행 유지. 신호 통일(②)은 별건 | 통일은 3단 응답을 바꾸는 행동 변경이고, 3단은 2단 대비 비교 arm(D-251)이라 기준을 맞추는 일은 성능 비교 계획에서 정할 문제 | 계획서 내부 |
-| **U-2** | 모듈 밖에서 쓰는 `_` 접두 함수(`_make_isolated_input`·`_pack_pipeline_result`·`_Limits`·`_check_n`·`_given` 등) | **① 공개명 승격 + 옛 이름 별칭 1사이클** | 이름이 사용 범위를 거짓으로 알리는 상태를 이동 시점에 함께 바로잡고, 별칭으로 테스트·피어 브랜치 파손 0 | **D-336 ③** |
-| **U-3** | `apm_query._SESSION_FACTORY` 테스트 seam(O1) | **① seam을 Facade(`apm_query.py`)에 남긴다** — `run_apm_query`·`_SESSION_FACTORY`·patch 대상 심볼을 호출하는 함수는 Facade 잔류, 순수 모듈만 `orchestration/apm/`로 | 실측: `_SESSION_FACTORY`는 `run_apm_query` 안(2280)에서만 읽히고 테스트 38파일이 52곳 patch · 다른 patch 심볼 5종 27곳 — 남기면 테스트 수정 0·순환 없음 | **D-336 ②**(일반 원칙) · O1 범위는 계획서 |
+| **U-2** | 모듈 밖에서 쓰는 `_` 접두 함수(`_make_isolated_input`·`_pack_pipeline_result`·`_Limits`·`_check_n`·`_given` 등) | **① 공개명 승격 + 옛 이름 별칭 1사이클** | 이름이 사용 범위를 거짓으로 알리는 상태를 이동 시점에 함께 바로잡고, 별칭으로 테스트·피어 브랜치 파손 0 | **D-337 ③** |
+| **U-3** | `apm_query._SESSION_FACTORY` 테스트 seam(O1) | **① seam을 Facade(`apm_query.py`)에 남긴다** — `run_apm_query`·`_SESSION_FACTORY`·patch 대상 심볼을 호출하는 함수는 Facade 잔류, 순수 모듈만 `orchestration/apm/`로 | 실측: `_SESSION_FACTORY`는 `run_apm_query` 안(2280)에서만 읽히고 테스트 38파일이 52곳 patch · 다른 patch 심볼 5종 27곳 — 남기면 테스트 수정 0·순환 없음 | **D-337 ②**(일반 원칙) · O1 범위는 계획서 |
 | **U-4** | arch_check 「노드 간 직접 의존」 경고 범위 | **① 노드 패키지 간(`src.nodes.*`↔`src.nodes.*` · `noise_gate.application.nodes.*`↔같은 패키지)으로 한정** | 실측: 경고 117 중 112가 이 규칙이고 그중 74건은 한쪽 이상이 노드 패키지 밖 application 모듈(어댑터·semantic·tools 내부 · 노드→비노드 헬퍼 등) — 한정하면 43, 이후 N3 이동 효과가 경고 수로 보인다 | **D-331 ①** · 구현 W1 |
 | **U-5** | `noise_gate`가 역방향 허용 범위 밖 `src` 모듈 3개 import(G6) | **① 허용 목록 부기(코드 이동 없음)** — stdlib만 쓰는 `src.domain.*` 순수 모듈 · `src.observability.investigation_metrics` | 실측: 3모듈 모두 stdlib만 import(154·234·206줄) · src 쪽 소비처 2~4곳씩 — `noise_gate`로 옮기면 `src → noise_gate` 의존이 새로 생긴다. 허용 목록 원문이 D-139 ②라 D-048이 아니라 D-139에 부기 | **D-139 부기** |
-| **U-6** | 보안 성격 행동 변경 — S1(mcp_server 읽기 전용 단일 초크포인트·PG 세션 read-only) · S2(사용자 토큰 `type`) · S3(예외 문자열 노출) · X6(LLM 클라이언트 env 폴백) | **① 별도 보안 계획 `plans/163`**(security-auditor 동반) · 이 계획에서는 현 위치·문구 그대로 | 리팩터의 게이트(스냅샷 불변)와 보안 강화(응답·차단 동작 변경)는 성공 기준이 정반대라 한 커밋·한 계획에 섞으면 둘 다 검증할 수 없다 | **D-336 ⑥**(원칙) · `plans/163` |
+| **U-6** | 보안 성격 행동 변경 — S1(mcp_server 읽기 전용 단일 초크포인트·PG 세션 read-only) · S2(사용자 토큰 `type`) · S3(예외 문자열 노출) · X6(LLM 클라이언트 env 폴백) | **① 별도 보안 계획 `plans/163`**(security-auditor 동반) · 이 계획에서는 현 위치·문구 그대로 | 리팩터의 게이트(스냅샷 불변)와 보안 강화(응답·차단 동작 변경)는 성공 기준이 정반대라 한 커밋·한 계획에 섞으면 둘 다 검증할 수 없다 | **D-337 ⑥**(원칙) · `plans/163` |
 | **U-7** | X1 치환 시 `SimpleNamespace` 설정 테스트 파손 | **① 실 `AppConfig`(검증 대상 필드 명시)로 교정 + 폴백 린트를 CI 게이트로** | Known Mistakes 2026-09-17(getattr가 속성명 오류를 삼킴)와 CLAUDE.md 「테스트 config는 검증 대상 필드를 명시」와 같은 방향 — 보고 전용 린트는 재유입을 막지 못한다 | **D-331 ②** · 구현 W1 |
 | **U-8** | 문서(xlsx/docx) 경로에 텍스트 경로의 노트 4종이 없음(N7) | **리팩터는 현행 구성·순서를 그대로 보존**(`DOC_NOTES` = 현 문서 경로 목록). 누락 여부 확인은 별건 후속(§8) | 실측: 4종은 `2d485af`(2026-09-08 · D-197·D-198)와 `f4501b2`(2026-09-29 · plans/123 · D-279)가 텍스트 경로에만 넣었고, 문서 경로 제외 의도는 어디에도 기록이 없다 — 의도가 불명확한 동작을 리팩터에서 바꾸지 않는다 | 계획서 내부 |
 | **U-9** | `TEXT2SQL_MULTI_FULL_VALIDATION` 기본 OFF(단일/멀티 검증 비대칭 · N1) | **범위 밖 유지** | 기본 ON은 행동 변경 · N1 공통화는 이 플래그와 독립으로 가능 | 계획서 내부(§8) |
@@ -562,6 +562,7 @@
 ## 9. 이력
 
 - 2026-10-14 v1.0 — 최초 작성. 분석 기준 `7ba5c96`. 패키지·관심사별 병렬 분석 7건(api · orchestration/routing · nodes/db_adapters · infra/schema_cache/config · noise_gate/sre_agent · mcp_server/apm_gateway · 횡단 정량) + 팀 리드 정량 측정(ast 길이·cc · arch_check) + 핵심 주장 재확인. 코드 변경 0건.
-- 2026-10-14 v1.1 — §7 사용자 결정 11건을 권고안으로 확정(사용자 위임 「결정사항은 권고에 맞게 정리하라」). U-5·U-8은 코드 실측으로 선택(U-5: 3모듈 stdlib-only → D-139 부기 / U-8: 4종 도입 커밋 2건이 텍스트 경로만 수정·의도 기록 없음 → 현행 보존 + §8 후속 확인). 결정 등재 D-336(구조 리팩터 규약)·D-331(품질 게이트 조정)·D-139 부기. 보안 3건 + X6을 `plans/163-security-hardening-separated.md`로 이관(X6 호출부 실측 완료 — 빈 `fabrix_base_url` 폴백·ollama env 우선은 행동 변경). §5: W1에 D-331 게이트 구현 추가·X6 삭제 · arch 경고 목표 117→43→17 이하(재측정) · O1 seam Facade 잔류 · 이 계획의 마지막 Wave = W2(계획 끝 회귀) · W3~W5 별도 계획서. W0 선행 조건 해제(착수 가능). 코드 변경 0건.
+- 2026-10-14 v1.1 — §7 사용자 결정 11건을 권고안으로 확정(사용자 위임 「결정사항은 권고에 맞게 정리하라」). U-5·U-8은 코드 실측으로 선택(U-5: 3모듈 stdlib-only → D-139 부기 / U-8: 4종 도입 커밋 2건이 텍스트 경로만 수정·의도 기록 없음 → 현행 보존 + §8 후속 확인). 결정 등재 D-337(구조 리팩터 규약)·D-331(품질 게이트 조정)·D-139 부기. 보안 3건 + X6을 `plans/163-security-hardening-separated.md`로 이관(X6 호출부 실측 완료 — 빈 `fabrix_base_url` 폴백·ollama env 우선은 행동 변경). §5: W1에 D-331 게이트 구현 추가·X6 삭제 · arch 경고 목표 117→43→17 이하(재측정) · O1 seam Facade 잔류 · 이 계획의 마지막 Wave = W2(계획 끝 회귀) · W3~W5 별도 계획서. W0 선행 조건 해제(착수 가능). 코드 변경 0건.
 - 2026-10-14 v1.2 — 사용자 지시 「계획을 단계적으로 진행하도록 계획을 정리하라」. §0.1 단계별 진행 순서(단계 0~8 — 166 W0~W2 · 163 · W3~W5 별도 계획 14건을 한 줄로 정렬 · 단계별 선행·병렬·회귀·사용자 확인 지점 · 운영 규칙 7항) 신설. 163 위치를 「W1 전 또는 W1·W2 사이」에서 **단계 2(166 W1 전)로 확정**. 어느 Wave에도 없던 스멜 배정: A5·N4·X5(`pii_filter` 제외)·M6 → W1, A8 → W2, X5 `pii_filter` → W3(5c). S1 읽기 전용 통과표를 163 W0 단독 소유로(중복 제거). §5.1에 단계 칸 · §5.2~§5.4에 하위 단계 순서표·종료 게이트 · §5.5~§5.7에 별도 계획 ID(5a~7e)와 선행. 코드 변경 0건.
 - 2026-10-14 W0(단계 1) — 계획 시작 SHA `08863d6` 기록. 특성화·스냅샷 테스트 10파일 + 스냅샷 9파일 추가(SSE done 34케이스 · 노드명 정합 · 그래프 위상 53조합 · 노트 순서 3경로 · `_zone_label` 9입력 · 폼필 피벗 입력 4케이스 · Redis 키 24 · `decide_notification` 512케이스 · MCP 도구 25종 · APM 출력 골든 18). 제품 코드 diff 0 · verifier Critical 0(Major 1 `.env` 누수 교정). §5.2 아래 「W0 실측 부록」 — 파손 범위 실측표 · **I4 판정 「착수」(경로 결합 4곳 동반)** · U-1 결과(3벌 상이 → `_zone_label` 통합 안 함) · 이상 8건(미수정).
+- 2026-10-15 — main 재병합: main이 D-336(제니퍼 심각도 3 유형 정책)을 먼저 푸시해 이 계획의 구조 리팩터 규약을 **D-337**로 재채번(구 D-330 → D-336 → D-337). 본문·단계표·스킬 2종·W0 테스트의 참조를 함께 고쳤다. 계획서 번호 166은 그대로. 코드 변경 0.

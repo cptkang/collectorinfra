@@ -735,7 +735,9 @@ class DecisionStore:
             records.append(rec)
         return records
 
-    def recent_decisions(self, window_seconds: int) -> list[dict[str, Any]]:
+    def recent_decisions(
+        self, window_seconds: int, *, include_recurrence: bool = False
+    ) -> list[dict[str, Any]]:
         """최근 `window_seconds` 안의 결정 레코드를 시간순으로 돌려준다(읽기 전용).
 
         (plans/162 §4.5) 워커 PAGE 레지스트리의 기동 복원 재료다. 관제 조회(`_tail_records`)와
@@ -743,6 +745,10 @@ class DecisionStore:
         짧아지기 때문이다. 파일을 순차 스트리밍해 시간 창 안의 결정 레코드만 메모리에 남긴다
         (`aggregate`와 같은 전량 스캔). 비-decision 레코드·손상된 줄은 제외하고, 파일 부재·비활성
         이면 빈 목록이다.
+
+        `include_recurrence`(plans/162 F4)가 True면 지문 중복 재발 레코드(`type="recurrence"`)도
+        같은 시간 창 규칙으로 함께 돌려준다(그 밖의 `type` 레코드는 계속 제외). 기본 False는 종전과
+        같다. 주의: 재발 레코드는 `recurrence_audit_every_n` 샘플링을 따른다(N>1이면 일부만 남는다).
         """
         if not self.enabled or not self.path.exists():
             return []
@@ -758,7 +764,10 @@ class DecisionStore:
                         rec = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if not isinstance(rec, dict) or rec.get("type"):
+                    if not isinstance(rec, dict):
+                        continue
+                    rec_type = rec.get("type")
+                    if rec_type and not (include_recurrence and rec_type == "recurrence"):
                         continue
                     if not self._within_window(rec, cutoff_ts):
                         continue

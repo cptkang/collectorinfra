@@ -1,0 +1,27 @@
+{
+  "xpending": {
+    "pending": 2,
+    "min": "1792044000000-0",
+    "max": "1792044600000-0",
+    "consumers": [
+      {
+        "name": "fake-w0t-host01-worker",
+        "pending": 2
+      }
+    ]
+  },
+  "xinfo_consumers": [
+    {
+      "name": "worker-1",
+      "pending": 0,
+      "idle": 1200,
+      "inactive": 1500
+    },
+    {
+      "name": "fake-w0t-host01-worker",
+      "pending": 2,
+      "idle": 3600000,
+      "inactive": 3700000
+    }
+  ]
+}

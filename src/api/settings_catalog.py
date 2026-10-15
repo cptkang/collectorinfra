@@ -237,9 +237,12 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_PAGE_REVIEW_FANOUT_PAGE_MAX": "PAGE 재판정",
     "NOISE_PAGE_REVIEW_REMINDER_HOURS": "PAGE 재판정",
     "NOISE_PAGE_REVIEW_REOPEN_QUIET_MINUTES": "PAGE 재판정",
+    "NOISE_PAGE_REVIEW_IDLE_CLOSE_MINUTES": "PAGE 재판정",
     "NOISE_PAGE_REVIEW_ALWAYS_PAGE_CSV": "PAGE 재판정",
     # (plans/162 R4 · D-330 ③) 수집 실패 PAGE 범위 — 정의 순서상 재판정 직후(구획 연속)
     "NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY": "PAGE 재판정",
+    # (plans/162 W5 · D-336) 제니퍼 심각도3 유형 정책 — 정의 순서상 수집 실패 범위 직후(구획 연속)
+    "NOISE_APM_SEV3_POLICY_ENABLED": "PAGE 재판정",
 }
 
 #: `.encenv.example` 파싱 외에 수동으로 시크릿 취급하는 키.

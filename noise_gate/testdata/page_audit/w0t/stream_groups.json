@@ -1,0 +1,11 @@
+{
+  "alarm:raw": [
+    {
+      "name": "alarm-workers",
+      "consumers": 2,
+      "pending": 2,
+      "last-delivered-id": "1792044600000-0",
+      "lag": 0
+    }
+  ]
+}

@@ -32,6 +32,11 @@ STAGE_HANDLING: dict[str, dict[str, str]] = {
     },
     "severity3": {
         HANDLING_DEFAULT: "즉시 확인 대상입니다 — 심각도 3은 억제되지 않습니다.",
+        # (plans/162 W5 · D-336) 제니퍼 유형 정책이 즉시 호출 유형으로 두지 않은 심각도 3.
+        "ticket": (
+            "대기열에서 근무 시간 안에 확인하세요 — 제니퍼 유형 정책이 즉시 호출 유형으로 "
+            "두지 않은 심각도 3입니다."
+        ),
     },
     "self_heal": {
         HANDLING_DEFAULT: (

@@ -241,3 +241,19 @@ def test_stop_mode_leaves_question_for_presenter(tmp_path: Path) -> None:
 def test_cli_offline_modes_pass_on_sandbox(argv: list[str], capsys: pytest.CaptureFixture[str]) -> None:
     assert demo_main.main(argv) == 0
     assert "실행 대상" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("argv", [["--check", "--group", "G1"], ["--check", "--core", "--group", "ZZ"]])
+def test_cli_check_fails_when_nothing_is_selected(argv: list[str], capsys: pytest.CaptureFixture[str]) -> None:
+    """선택 결과가 0세션이면 「점검 통과」가 아니다 — 옛 군 id(G1)·없는 군은 사유로 드러난다."""
+    assert demo_main.main(argv) == 1
+    out = capsys.readouterr().out
+    assert "점검 통과" not in out and "카탈로그에 없는 군 id" in out
+
+
+def test_empty_catalog_is_a_problem(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """반입 중 잘린·빈 카탈로그를 조용히 0세션으로 통과시키지 않는다."""
+    empty = tmp_path / "sessions.yaml"
+    empty.write_text("version: 1\n", encoding="utf-8")
+    assert demo_main.main(["--check", "--sessions", str(empty)]) == 1
+    assert "세션이 하나도 없습니다" in capsys.readouterr().out

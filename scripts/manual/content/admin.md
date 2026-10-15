@@ -2827,7 +2827,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 |---|---|---|---|---|
 | (워커) | — | 같은 지문(DB·서버·알람명·자원명)이 [[재통보 창]] 안에 다시 옴 | 판단 없이 재발 기록 | `NOISE_REPEAT_INTERVAL_SECONDS`=14400 · 심각도 3은 `NOISE_SEV3_REPEAT_INTERVAL_SECONDS` |
 | 0.5 | [[비운영 알람|0.5 비운영 알람 (non_alarm)]] | {{0.5 비운영 알람 (non_alarm)}} (알람 마커 없음 + 승인·안내·공지 마커 있음) | [[SUPPRESS|티어 SUPPRESS — 기록만]] | `NOISE_NON_ALARM_FILTER_ENABLED`(false) |
-| 3 | [[심각도3 단락|3 심각도3 단락 (severity3)]] | {{3 심각도3 단락 (severity3)}} (실효 심각도 3) | **[[PAGE|티어 PAGE — 즉시 통보]]** | 항상 |
+| 3 | [[심각도3 단락|3 심각도3 단락 (severity3)]] | {{3 심각도3 단락 (severity3)}} (실효 심각도 3) | **[[PAGE|티어 PAGE — 즉시 통보]]**. `NOISE_APM_SEV3_POLICY_ENABLED`를 켜면 제니퍼 유형 정책으로 판정하는 알람은 정책 표가 통보(page)로 둔 유형만 PAGE, 그 밖은 [[TICKET|티어 TICKET — 요약 큐 + 화면]] | 항상 · 제니퍼 경로만 `NOISE_APM_SEV3_POLICY_ENABLED`(false) |
 | 4 | [[자가복구 상관|4 자가복구 상관 (self_heal)]] · [[독립 해소|4 독립 해소 (resolved)]] | {{4 자가복구 상관 (self_heal)}} · {{4 독립 해소 (resolved)}} (해소 알람. 창 안에 짝 발생이 있으면 자가복구) | [[SUPPRESS|티어 SUPPRESS — 기록만]](독립 해소는 설정에 따라 [[DASHBOARD|티어 DASHBOARD — 화면에만]]) | `NOISE_SELF_HEAL_WINDOW_SECONDS`=300 · `NOISE_RESOLVED_TO_DASHBOARD`(false) |
 | 5 | [[수집 실패 보수화|5 수집 실패 보수화 (collection_failed)]] | {{5 수집 실패 보수화 (collection_failed)}} (중요도·유지보수 신호 수집 실패 + 심각도 ≥1) | **[[PAGE|티어 PAGE — 즉시 통보]]**. `NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY`를 켜면 이 단계를 건너뛰고 중요도 보통으로 다음 단계(심각도 2는 TICKET, 1은 DASHBOARD) | 항상 · 경로만 `NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY`(false) · 수집 실패율 경보 `NOISE_META_ALERT_COLLECTION_FAILED_RATIO`(0 = 끔) |
 | 6 | [[유지보수|6 유지보수 (maintenance)]] | {{6 유지보수 (maintenance)}} | [[SUPPRESS|티어 SUPPRESS — 기록만]] | 항상 |
@@ -2916,8 +2916,8 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 ##### 3 심각도3 단락 (`severity3`)
 - **보는 것**: 실효 심각도(수신 심각도와 AI 상향 후보 중 큰 값, `NOISE_ENABLE_AI_SEVERITY_BOOST`가 꺼져 있거나 해소 알람이면 수신 심각도).
 - **조건**: 실효 심각도가 정확히 3.
-- **결과**: PAGE. 뒤 단계를 평가하지 않는다.
-- **켜는 키**: 없음(항상).
+- **결과**: PAGE. 뒤 단계를 평가하지 않는다. `NOISE_APM_SEV3_POLICY_ENABLED`(false)를 켜면 제니퍼 유형 정책 표(`config/apm_noise_policy.yaml`)로 판정하는 알람(노이즈 컨텍스트 `source=apm_policy`)만 표를 본다 — 유형 행이 `notify: page`면 PAGE, 그 밖(표에 없는 유형·`default` 행)은 TICKET이다. 단계는 그대로 `severity3`이고 뒤 단계를 평가하지 않는다(DASHBOARD·SUPPRESS로 내려가지 않는다). 근거 `apm_sev3_policy`에 정책 티어(`notify`)와 적용 행(`policy_row`)이 남는다.
+- **켜는 키**: 없음(항상). 제니퍼 경로만 `NOISE_APM_SEV3_POLICY_ENABLED`로 바꾼다. 폴스타 알람과 정책 표를 못 읽은 제니퍼 알람(수집 실패)은 켜도 PAGE다.
 - **예외**: 해소 판정보다 앞이지만 해소(0) 알람에는 AI 상향을 적용하지 않는다. 조건 로그에 3급 장애 시그니처(예: `out of memory`)가 있거나 어느 원천(시그니처·LLM 해석·동적 baseline·agentic)이 후보를 내도 해소 알람의 실효 심각도는 0이라, 여기서 PAGE가 되지 않고 4단계(자가복구·독립 해소)로 간다.
 
 ##### 4 자가복구 상관 (`self_heal`)
@@ -3035,6 +3035,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 ##### 10 PAGE 재판정 (`page_review`)
 - **보는 것**: 앞 단계(앱 영향 승격 포함)의 최종 판단이 PAGE인 것만. 워커가 메모리에 둔 진행 중 대표 PAGE(지문·서버·존+알람명별)와 비교한다. LLM은 쓰지 않는다.
 - **강등 규칙**(첫 적중): R1 같은 지문의 열린 사건 반복(마지막 대표 PAGE로부터 `NOISE_PAGE_REVIEW_REMINDER_HOURS` 24시간 미만, 해소 뒤 `NOISE_PAGE_REVIEW_REOPEN_QUIET_MINUTES` 30분 안 재발 포함) · R2 같은 서버의 다른 사건 PAGE가 `NOISE_PAGE_REVIEW_HOST_WINDOW_MINUTES`(30분) 안에 있고 미해소이며 이번 심각도가 그 이하 · R3 같은 존·같은 알람명이 `NOISE_PAGE_REVIEW_FANOUT_WINDOW_MINUTES`(10분) 안에 대표 PAGE `NOISE_PAGE_REVIEW_FANOUT_PAGE_MAX`(1)대 이상이고 이번 서버는 대표가 아님.
+- **해소 대용**(R1 · 제니퍼): 제니퍼는 해소 이벤트를 보내지 않아 사건이 닫히지 않으므로, 같은 알람이 진짜로 다시 나도 리마인더 시간 동안 R1로 TICKET이 된다. `NOISE_PAGE_REVIEW_IDLE_CLOSE_MINUTES`(코드 기본값 0 = 끔 · 지금과 같음)에 분을 주면, 그 사건을 마지막으로 본 뒤(통보된 알람과 재통보 창에 걸려 버려진 재발 모두 포함) 그 시간 동안 소식이 없을 때 닫힌 것으로 보고 다음 PAGE를 새 사건으로 둔다. 폴스타처럼 해소 이벤트가 오는 알람에는 영향이 없고, 재시작 때 판정 기록 복원에도 같은 규칙이 적용된다. 반영 시점은 재시작이다. 재통보 창(`NOISE_REPEAT_INTERVAL_SECONDS` · 심각도3은 `NOISE_SEV3_REPEAT_INTERVAL_SECONDS`, 기본 4시간 — 마지막 통보 기준 고정창) 안의 재발은 판단까지 가지 않고 「봤음」만 남기므로, 이 값은 재통보 창이 끝난 뒤의 재통보에만 효력이 있다. R3(동시 발생)는 시간 창 규칙이라 이 값과 무관하므로 값은 동시 발생 창보다 크게 둔다. `NOISE_RECURRENCE_AUDIT_EVERY_N`이 1보다 크면 버려진 재발이 일부만 기록돼 재기동 복원에서 실시간보다 일찍 닫힐 수 있다. 값은 내부망 2회차에서 제니퍼 알람의 재발 간격 분포를 재통보 창과 함께 본 뒤 정한다.
 - **보존**(강등보다 우선): 새 사건의 첫 PAGE · 심각도 상승 · 앱 영향(APM fatal) · 미해소 리마인더(24시간 경과) · 운영자 지정 알람명(`NOISE_PAGE_REVIEW_ALWAYS_PAGE_CSV` 글롭).
 - **결과**: 강제(`enforce`)면 TICKET, 결정 단계 `page_review`, 사유 「PAGE 재판정 — …」. 원 단계·사유는 근거 `original_stage`·`original_reason`에 남는다. 기록만(`shadow`)이면 티어·단계·사유는 그대로이고 근거 `page_review` 블록(`mode`·`rule`·`would_demote`·`keep` · 규칙별 최초 PAGE 시각·반복 수·대표 PAGE 알람)만 붙는다. off면 블록도 없다.
 - **켜는 키**: `NOISE_PAGE_REVIEW_MODE`(off). 순서는 off → shadow(24시간 판독 — 관제 「했을 PAGE」와 강등 건이 전부 유지된 PAGE에 묶였는지) → enforce다.

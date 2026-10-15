@@ -16,6 +16,10 @@ LLM은 쓰지 않는다.
 규칙의 대표 심각도 초과) · 앱 영향 fatal · 미해소 리마인더(리마인더 시간 경과) · 운영자 지정
 항상 PAGE(알람명 글롭).
 
+해소 대용 규칙(R1 안 · 기본 꺼짐): 해소 이벤트가 오지 않는 출처의 사건은 레지스트리가 「무소식
+닫힘」으로 닫는다 — 그 지문을 마지막으로 본 뒤(판정·지문 중복 재발 포함) 무소식 시간이 지나면
+그 항목은 없는 것과 같다(닫혔고 재발 유예도 지난 상태). 그래서 다음 PAGE는 새 사건이다.
+
 모드: off(평가 안 함 — 같은 객체를 그대로 돌려준다) · shadow(판정 불변, 근거 `page_review` 블록만) ·
 enforce(TICKET으로 강등). 레지스트리 갱신은 shadow에서도 「했을 결과」 기준이다 — 그래야 shadow의
 「했을 PAGE 수」가 enforce와 같다.
@@ -283,6 +287,9 @@ class _PageEntry:
     resolved_ts: float | None = None
     repeat_count: int = 0
     last_alarm_id: str = ""
+    # 해소 대용 규칙 — 해소 이벤트가 오지 않는 출처 표시 · 그 지문을 마지막으로 본 시각.
+    silent: bool = False
+    last_seen_ts: float = 0.0
 
 
 class PageRegistry:
@@ -294,6 +301,9 @@ class PageRegistry:
 
     창 밖 항목은 주기적으로 정리하고(`_SWEEP_INTERVAL_SECONDS`), 키 수가 상한을 넘으면 오래된 것부터
     버린다(`on_evict(무엇, 건수)` 경고 콜백).
+
+    `idle_close_minutes` > 0이면 해소 이벤트가 오지 않는 출처로 표시된 지문을 마지막으로 본 뒤
+    그 시간이 지난 항목을 없는 것으로 본다(무소식 닫힘). 0(기본)이면 현행과 같다.
     """
 
     def __init__(
@@ -303,12 +313,14 @@ class PageRegistry:
         fanout_window_minutes: int = 10,
         reminder_hours: int = 24,
         reopen_quiet_minutes: int = 30,
+        idle_close_minutes: int = 0,
         max_keys: int = _REGISTRY_MAX_KEYS,
         on_evict: Callable[[str, int], None] | None = None,
     ) -> None:
         self._host_window_s = max(int(host_window_minutes), 0) * 60
         self._fanout_window_s = max(int(fanout_window_minutes), 0) * 60
         self._quiet_s = max(int(reopen_quiet_minutes), 0) * 60
+        self._idle_close_s = max(int(idle_close_minutes), 0) * 60
         self._retention_s = 2 * max(int(reminder_hours), _MIN_RETENTION_HOURS) * 3600
         self._max_keys = max(int(max_keys), 1)
         self._on_evict = on_evict
@@ -334,7 +346,7 @@ class PageRegistry:
         self._maybe_sweep(now)
         entry = self._pages.get(fingerprint)
         fp_page = None
-        if entry is not None:
+        if entry is not None and not self._idle_closed(entry, now):
             fp_page = {
                 "first_page_ts": entry.first_page_ts,
                 "last_page_ts": entry.last_page_ts,
@@ -348,7 +360,12 @@ class PageRegistry:
         if host_key[1]:
             for fp in self._by_host.get(host_key, {}):
                 other = self._pages.get(fp)
-                if fp == fingerprint or other is None or other.resolved_ts is not None:
+                if (
+                    fp == fingerprint
+                    or other is None
+                    or other.resolved_ts is not None
+                    or self._idle_closed(other, now)
+                ):
                     continue
                 host_pages.append({  # 그 사건의 최신 PAGE(id·시각 같은 기준)
                     "alarm_id": other.last_alarm_id,
@@ -378,11 +395,14 @@ class PageRegistry:
         fanout_key: FanoutKey,
         alarm_id: str,
         now: float,
+        silent_source: bool = False,
     ) -> None:
         """그래프가 낸 최종 판정을 반영한다.
 
         해소 결정이면 그 지문의 사건을 닫는다. 「했을 결과」가 PAGE면 대표로 등록·갱신하고, 강등
         (enforce의 `page_review` 단계 또는 shadow의 `would_demote`)이면 대표의 반복 수만 올린다.
+        티어와 무관하게 그 지문 항목의 마지막 관측 시각을 올리고, `silent_source`면 그 항목을 해소
+        이벤트가 오지 않는 출처로 표시한다.
         """
         self._apply(
             tier=str(decision.tier),
@@ -394,10 +414,27 @@ class PageRegistry:
             fanout_key=fanout_key,
             alarm_id=alarm_id,
             now=now,
+            silent=silent_source,
         )
         self._maybe_sweep(now)
 
-    def restore(self, records: Iterable[dict[str, Any]], now: float) -> int:
+    def touch(self, fingerprint: str, now: float) -> None:
+        """지문 중복으로 버려진 재발을 「봤음」으로 통지한다 — 기존 항목의 마지막 관측 시각만
+        올린다.
+
+        항목이 없거나 이미 무소식 닫힘이면 아무것도 하지 않는다.
+        """
+        entry = self._pages.get(fingerprint)
+        if entry is not None and not self._idle_closed(entry, now):
+            entry.last_seen_ts = max(entry.last_seen_ts, float(now))
+
+    def restore(
+        self,
+        records: Iterable[dict[str, Any]],
+        now: float,
+        *,
+        silent_source: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> int:
         """판정 레코드(dict, 시간순) 꼬리로 레지스트리를 다시 채운다(기동 시 1회).
 
         `observe`와 같은 규칙을 쓴다 — `tier=="page"`이면서
@@ -405,16 +442,27 @@ class PageRegistry:
         would_demote는 대표의 반복 수만, 해소 결정은 닫힘.
         복원 창(`restore_window_seconds`) 밖·시각 불명 레코드는 건너뛴다.
 
+        무소식 닫힘이 켜져 있으면(`idle_close_minutes` > 0) `silent_source(레코드)`로 해소 이벤트가
+        오지 않는 출처를 판정하고, `type=="recurrence"` 레코드(지문 중복 재발)는 같은 창 규칙으로
+        `touch`한다. 그 밖의 `type` 레코드는 건너뛴다. 꺼져 있으면 현행과 같다.
+
         Returns:
             반영한 레코드 수.
         """
         horizon = now - self._retention_s
         applied = 0
         for rec in records:
-            if not isinstance(rec, dict) or rec.get("type"):
+            if not isinstance(rec, dict):
+                continue
+            rec_type = rec.get("type")
+            if rec_type and not (rec_type == "recurrence" and self._idle_close_s > 0):
                 continue
             ts = _record_epoch(rec.get("ts"))
             if ts is None or ts < horizon or ts > now:
+                continue
+            if rec_type:
+                self.touch(str(rec.get("fingerprint") or ""), ts)
+                applied += 1
                 continue
             db_id = str(rec.get("db_id") or "")
             self._apply(
@@ -429,6 +477,7 @@ class PageRegistry:
                 fanout_key=fanout_key_of(db_id, str(rec.get("alarm_name") or "")),
                 alarm_id=str(rec.get("alarm_id") or ""),
                 now=ts,
+                silent=bool(silent_source(rec)) if silent_source is not None else False,
             )
             applied += 1
         self._sweep(now)
@@ -446,9 +495,39 @@ class PageRegistry:
         fanout_key: FanoutKey,
         alarm_id: str,
         now: float,
+        silent: bool = False,
     ) -> None:
         if not fingerprint:
             return
+        entry = self._pages.get(fingerprint)
+        if entry is not None and self._idle_closed(entry, now):
+            # 무소식 닫힘 — 없는 항목과 같으므로 지우고 새로 판단한다.
+            del self._pages[fingerprint]
+            self._unlink_host(fingerprint, entry.host_key)
+        self._apply_decision(
+            tier=tier, stage=stage, signals=signals, evidence=evidence,
+            fingerprint=fingerprint, host_key=host_key, fanout_key=fanout_key,
+            alarm_id=alarm_id, now=now,
+        )
+        entry = self._pages.get(fingerprint)
+        if entry is not None:
+            entry.last_seen_ts = max(entry.last_seen_ts, float(now))
+            if silent:
+                entry.silent = True
+
+    def _apply_decision(
+        self,
+        *,
+        tier: str,
+        stage: str,
+        signals: dict[str, Any] | None,
+        evidence: dict[str, Any] | None,
+        fingerprint: str,
+        host_key: HostKey,
+        fanout_key: FanoutKey,
+        alarm_id: str,
+        now: float,
+    ) -> None:
         if is_resolution(signals, stage):
             entry = self._pages.get(fingerprint)
             if entry is not None and entry.resolved_ts is None:
@@ -538,20 +617,29 @@ class PageRegistry:
         if not fps:
             del self._by_host[host_key]
 
+    def _idle_closed(self, entry: _PageEntry, now: float) -> bool:
+        """무소식 닫힘인가 — 켜져 있고, 해소 이벤트가 오지 않는 출처이며, 마지막 관측 뒤 시간
+        초과."""
+        return (
+            self._idle_close_s > 0
+            and entry.silent
+            and now - entry.last_seen_ts > self._idle_close_s
+        )
+
     def _maybe_sweep(self, now: float) -> None:
         if now - self._swept_at >= _SWEEP_INTERVAL_SECONDS:
             self._sweep(now)
 
     def _sweep(self, now: float) -> None:
         """창 밖 항목을 지운다 — 해소 뒤 재발 유예가 지난 지문 · 보존 시간이 지난 미해소 지문 ·
-        호스트 창이 지난 호스트 연결 · 동시발생 창이 지난 호스트."""
+        무소식 닫힘 지문 · 호스트 창이 지난 호스트 연결 · 동시발생 창이 지난 호스트."""
         self._swept_at = now
         for fp, entry in list(self._pages.items()):
             stale = (
                 now - entry.resolved_ts > self._quiet_s
                 if entry.resolved_ts is not None
                 else now - entry.last_page_ts > self._retention_s
-            )
+            ) or self._idle_closed(entry, now)
             if stale:
                 del self._pages[fp]
                 self._unlink_host(fp, entry.host_key)
@@ -574,10 +662,19 @@ class PageRegistry:
                 del self._fanout[fkey]
 
     def _cap(self) -> None:
-        """키 상한 — 지문은 마지막 PAGE가, 동시발생 키는 최근 기록이 가장 이른 것부터 버린다."""
+        """키 상한 — 지문은 마지막 PAGE가, 동시발생 키는 최근 기록이 가장 이른 것부터 버린다.
+
+        무소식 닫힘이 켜져 있으면 지문은 마지막 PAGE와 마지막 관측 중 늦은 시각으로 잰다.
+        """
         overflow = len(self._pages) - self._max_keys
         if overflow > 0:
-            for fp in sorted(self._pages, key=lambda k: self._pages[k].last_page_ts)[:overflow]:
+            def _recency(k: str) -> float:
+                entry = self._pages[k]
+                if self._idle_close_s > 0:  # 무소식 닫힘이 켜져 있으면 마지막 관측도 최근성이다
+                    return max(entry.last_page_ts, entry.last_seen_ts)
+                return entry.last_page_ts
+
+            for fp in sorted(self._pages, key=_recency)[:overflow]:
                 entry = self._pages.pop(fp)
                 self._unlink_host(fp, entry.host_key)
             if self._on_evict is not None:

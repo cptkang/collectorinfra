@@ -23,11 +23,22 @@ noise_ctx는 **주입 가능한 공급 함수**(`NoiseCtxProvider`)로 받는다
 링크 ≥1 · 통보 멤버 ≥1 · 사건당 1회)이 처음 성립한 알람 행에 `episode_investigation: true`를 달고
 요약 `cross_source.episode_investigations`에 발주 수를 센다(조사 서비스는 부르지 않는다).
 
+`--page-review-mode`(plans/162 §8 · 기본 off)를 주면 워커와 **같은 도메인 레지스트리·재판정 함수**
+(`PageRegistry` · `review_page`)로 입력 순서대로 PAGE 필요성을 다시 본다(발생 시각을 시계로 쓴다 ·
+해소 결정도 반영해 사건을 닫는다 · 레지스트리 설정은 정책 설정의 `page_review_*`, 없으면 도메인
+기본). 행에 근거 `page_review` 블록을, 요약에 `page_review`(재판정 수 · 강등/했을 강등 수 · 규칙별 ·
+보존 사유별 · 재판정 후 PAGE 수)를 더한다. enforce면 행 티어·단계는 강등 결과다. off면 출력이
+종전과 같다.
+무소식 닫힘(`page_review_idle_close_minutes` > 0 · 해소가 오지 않는 APM 출처)도 워커처럼
+적용한다 — 단 판정 감사 입력은 dedup을 이미 거친 레코드라 버려진 재발의 `touch`가 없어 워커보다
+일찍 닫힐 수 있다.
+
 사용:
     python -m noise_gate.scripts.replay_noise noise_gate/testdata/cross_source/mock_events.jsonl
     python -m noise_gate.scripts.replay_noise logs/alarm_decisions.jsonl --out /tmp/replay.json
     python -m noise_gate.scripts.replay_noise noise_gate/testdata/cross_source/mock_events.jsonl \
         --cross-source-mode shadow
+    python -m noise_gate.scripts.replay_noise logs/alarm_decisions.jsonl --page-review-mode shadow
 """
 
 from __future__ import annotations
@@ -54,11 +65,21 @@ from noise_gate.domain.cross_source import (
 from noise_gate.domain.notification_policy import (
     STAGE_COLLECTION_FAILED,
     STAGE_CROSS_SOURCE,
+    STAGE_PAGE_REVIEW,
     TIER_PAGE,
     TIER_TICKET,
+    NotificationDecision,
     compute_fingerprint,
     decide_notification,
     stage_from_reason,
+)
+from noise_gate.domain.page_review import EVIDENCE_KEY as PAGE_REVIEW_KEY
+from noise_gate.domain.page_review import MODE_OFF as PAGE_REVIEW_OFF
+from noise_gate.domain.page_review import (
+    PageRegistry,
+    fanout_key_of,
+    host_key_of,
+    review_page,
 )
 from noise_gate.domain.severity import coerce_severity
 from noise_gate.infrastructure.apm_noise_context import event_type_norm
@@ -84,6 +105,25 @@ _WORKER_FLAGS = ("self_heal", "flapping", "storm", "correlated")
 DEFAULT_CROSS_SOURCE_RULES = "config/cross_source_rules.yaml"
 # 사건 idle 종료(설정 `episode_idle_seconds` 기본값과 같다).
 DEFAULT_EPISODE_IDLE_SECONDS = 900
+
+# (plans/162 §8) 재판정 함수가 읽는 설정 필드 — 정책 설정에 있으면 그 값, 없으면 도메인 기본.
+_PAGE_REVIEW_FIELDS = (
+    "page_review_reminder_hours",
+    "page_review_reopen_quiet_minutes",
+    "page_review_host_window_minutes",
+    "page_review_fanout_window_minutes",
+    "page_review_fanout_page_max",
+    "page_review_always_page_globs",
+    "page_review_idle_close_minutes",
+)
+# 레지스트리 생성 인자 ← 설정 필드(워커 `_build_page_registry`와 같은 대응).
+_PAGE_REGISTRY_ARGS = {
+    "host_window_minutes": "page_review_host_window_minutes",
+    "fanout_window_minutes": "page_review_fanout_window_minutes",
+    "reminder_hours": "page_review_reminder_hours",
+    "reopen_quiet_minutes": "page_review_reopen_quiet_minutes",
+    "idle_close_minutes": "page_review_idle_close_minutes",
+}
 
 
 def current_noise_ctx(event: AlarmEvent, recorded: NoiseCtx | None) -> NoiseCtx | None:
@@ -166,6 +206,13 @@ def _from_decision(
     return event, recorded, flags, analysis
 
 
+def _fingerprint(event: AlarmEvent) -> str:
+    """워커 지문 — APM이면 정규화 유형을 알람 키로 쓴다(해소 짝맞춤 · plans/144 §4.3)."""
+    return compute_fingerprint(
+        event, alarm_key=event_type_norm(event) if is_apm_source(event) else None
+    )
+
+
 def _cross_source_signal(
     tracker: EpisodeTracker, event: AlarmEvent
 ) -> dict[str, Any] | None:
@@ -176,8 +223,7 @@ def _cross_source_signal(
         event.server_identity = ServerIdentity(
             hostname=event.hostname, zone=zone, zone_label=zone_label
         )
-    fingerprint = compute_fingerprint(event, alarm_key=event_type_norm(event) if apm else None)
-    alarm = episode_alarm(event, fingerprint=fingerprint, is_apm=apm)
+    alarm = episode_alarm(event, fingerprint=_fingerprint(event), is_apm=apm)
     if event.is_clear:
         tracker.resolve(alarm, alarm.occurred_at)
         return None
@@ -192,19 +238,69 @@ def build_tracker(mode: str, rules_path: str = DEFAULT_CROSS_SOURCE_RULES) -> Ep
     return EpisodeTracker(rules, mode=mode, idle_seconds=DEFAULT_EPISODE_IDLE_SECONDS)
 
 
+def page_review_config(config: Any, mode: str) -> SimpleNamespace:
+    """재판정 설정 — 정책 설정의 `page_review_*`(없는 필드는 도메인 기본) + CLI 모드."""
+    values = {f: getattr(config, f) for f in _PAGE_REVIEW_FIELDS if hasattr(config, f)}
+    return SimpleNamespace(**values, page_review_mode=mode)
+
+
+def build_page_registry(config: Any) -> PageRegistry:
+    """리플레이용 PAGE 레지스트리 — 설정에 있는 `page_review_*`만 넘기고 나머지는 도메인 기본."""
+    kwargs: dict[str, Any] = {
+        arg: int(getattr(config, f)) for arg, f in _PAGE_REGISTRY_ARGS.items() if hasattr(config, f)
+    }
+    return PageRegistry(**kwargs)
+
+
+def _review_page(
+    registry: PageRegistry, review_cfg: Any, event: AlarmEvent, decision: NotificationDecision
+) -> NotificationDecision:
+    """워커와 같은 순서로 재판정하고 레지스트리에 반영한다(시계 = 발생 시각).
+
+    비해소면 `signals_for` → `review_page`(PAGE가 아니면 같은 객체), 그 뒤 해소를 포함한 모든
+    판정을 `observe`한다(해소는 사건을 닫는다 — 도메인 `is_resolution` · APM은 해소가 오지 않는
+    출처로 표시 — 워커 `_observe_page`와 같다).
+    """
+    fingerprint = _fingerprint(event)
+    host_key = host_key_of(event.db_id, event.server_name or event.hostname)
+    fanout_key = fanout_key_of(event.db_id, event.alarm_name)
+    now = event.alarm_time.timestamp()
+    if not event.is_clear:
+        signals = dict(registry.signals_for(fingerprint, host_key, fanout_key, now))
+        decision = review_page(decision, signals, review_cfg)
+    registry.observe(
+        decision,
+        fingerprint=str(decision.fingerprint or fingerprint),
+        host_key=host_key,
+        fanout_key=fanout_key,
+        alarm_id=event.alarm_id,
+        now=now,
+        silent_source=is_apm_source(event),
+    )
+    return decision
+
+
 def replay(
     lines: Iterable[dict[str, Any]],
     *,
     provider: NoiseCtxProvider = current_noise_ctx,
     config: Any = DEFAULT_POLICY_CONFIG,
     tracker: EpisodeTracker | None = None,
+    page_review_mode: str = PAGE_REVIEW_OFF,
 ) -> tuple[list[dict[str, Any]], int]:
     """레코드를 정책에 다시 통과시킨다 → (이벤트별 행, 건너뛴 줄 수).
 
     tracker(plans/144 W3)가 있으면 사건 신호를 정책에 넘기고 행에 `cross_source`를 더한다.
+    page_review_mode(plans/162 §8)가 off가 아니면 PAGE 재판정을 거치고 행에 `page_review`
+    (근거 블록 · PAGE가 아니었으면 None)를 더한다 — enforce면 행 티어·단계가 강등 결과다.
     """
     rows: list[dict[str, Any]] = []
     skipped = 0
+    registry: PageRegistry | None = None
+    review_cfg: SimpleNamespace | None = None
+    if page_review_mode != PAGE_REVIEW_OFF:
+        review_cfg = page_review_config(config, page_review_mode)
+        registry = build_page_registry(review_cfg)
     for line in lines:
         flags: dict[str, Any] = {}
         recorded: NoiseCtx | None
@@ -224,6 +320,8 @@ def replay(
         decision = decide_notification(
             event, None, analysis, provider(event, recorded), config, **flags
         )
+        if registry is not None:
+            decision = _review_page(registry, review_cfg, event, decision)
         row = {
             "alarm_id": event.alarm_id,
             "scenario": line.get("scenario", ""),
@@ -232,6 +330,8 @@ def replay(
             "tier": decision.tier,
             "stage": decision.stage,
         }
+        if registry is not None:
+            row["page_review"] = (decision.evidence or {}).get(PAGE_REVIEW_KEY)
         if tracker is not None:
             row["cross_source"] = cross_source
             if cross_source is not None:
@@ -265,7 +365,32 @@ def summarize_cross_source(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def summarize(rows: list[dict[str, Any]], skipped: int = 0) -> dict[str, Any]:
+def summarize_page_review(rows: list[dict[str, Any]], mode: str) -> dict[str, Any]:
+    """PAGE 재판정 지표 — 재판정 수 · 강등/했을 강등 수 · 규칙별 · 보존 사유별 · 재판정 후 PAGE 수.
+
+    `would_demote`는 shadow·enforce 공통(「했을 강등」 — 도메인이 두 모드에서 같게 센다),
+    `demoted`는 실제 강등(`stage=page_review` 행 · shadow면 0)이다. `pages_after`는 「했을」
+    결과 기준 PAGE 수다(shadow면 했을 강등을 뺀다).
+    """
+    blocks = [r["page_review"] for r in rows if r.get("page_review")]
+    demoting = [b for b in blocks if b.get("would_demote")]
+    return {
+        "mode": mode,
+        "reviewed": len(blocks),
+        "would_demote": len(demoting),
+        "demoted": sum(1 for r in rows if r["stage"] == STAGE_PAGE_REVIEW),
+        "by_rule": dict(Counter(str(b["rule"]) for b in demoting)),
+        "by_keep": dict(Counter(str(b["keep"]) for b in blocks if b.get("keep"))),
+        "pages_after": sum(
+            1 for r in rows
+            if r["tier"] == TIER_PAGE and not (r.get("page_review") or {}).get("would_demote")
+        ),
+    }
+
+
+def summarize(
+    rows: list[dict[str, Any]], skipped: int = 0, *, page_review_mode: str = PAGE_REVIEW_OFF
+) -> dict[str, Any]:
     """행 목록 → 소스·티어·단계별 건수와 PAGE+TICKET 건수."""
     by_source_tier: dict[str, Counter[str]] = {}
     by_source_stage: dict[str, Counter[str]] = {}
@@ -287,6 +412,8 @@ def summarize(rows: list[dict[str, Any]], skipped: int = 0) -> dict[str, Any]:
     }
     if any("cross_source" in r for r in rows):  # (plans/144 W3) 모드 on일 때만 — off면 종전 모양
         summary["cross_source"] = summarize_cross_source(rows)
+    if page_review_mode != PAGE_REVIEW_OFF:  # (plans/162 §8) 모드 on일 때만 — off면 종전 모양
+        summary["page_review"] = summarize_page_review(rows, page_review_mode)
     return summary
 
 
@@ -314,11 +441,18 @@ def main(argv: list[str] | None = None) -> int:
         default=MODE_OFF,
         help="크로스소스 사건 상관 모드(plans/144 W3 · 기본 off = 종전 출력)",
     )
+    parser.add_argument(
+        "--page-review-mode",
+        choices=("off", "shadow", "enforce"),
+        default=PAGE_REVIEW_OFF,
+        help="PAGE 필요성 재판정 모드(plans/162 §8 · 기본 off = 종전 출력)",
+    )
     args = parser.parse_args(argv)
     lines = [rec for path in args.inputs for rec in load_jsonl(path)]
     tracker = build_tracker(args.cross_source_mode) if args.cross_source_mode != MODE_OFF else None
-    rows, skipped = replay(lines, tracker=tracker)
-    text = json.dumps(summarize(rows, skipped), ensure_ascii=False, indent=2, sort_keys=True)
+    rows, skipped = replay(lines, tracker=tracker, page_review_mode=args.page_review_mode)
+    summary = summarize(rows, skipped, page_review_mode=args.page_review_mode)
+    text = json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True)
     if args.out:
         Path(args.out).write_text(text + "\n", encoding="utf-8")
     else:

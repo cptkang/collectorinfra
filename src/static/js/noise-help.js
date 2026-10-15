@@ -217,6 +217,8 @@ window.NOISE_HELP = {
         page_review: ["NOISE_PAGE_REVIEW_REMINDER_HOURS", "NOISE_PAGE_REVIEW_HOST_WINDOW_MINUTES",
             "NOISE_PAGE_REVIEW_FANOUT_WINDOW_MINUTES", "NOISE_PAGE_REVIEW_ALWAYS_PAGE_CSV"],
         collection_failed: ["NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY"],
+        // plans/162 W5 · D-336 — 제니퍼 정책 경로 심각도3은 유형 정책 표(page 유형만 PAGE)
+        severity3: ["NOISE_APM_SEV3_POLICY_ENABLED"],
     },
 
     // 결정 추적 드로어 "신호 스냅샷" 16키 — 영문 키 옆에 한국어 이름·설명을 붙인다.
@@ -344,6 +346,10 @@ window.NOISE_HELP = {
         collection_failed_sev3_only: "수집 실패 심각도3만 PAGE(기록만)",
         "collection_failed_sev3_only.mode": "수집 실패 sev3만 — 모드",
         "collection_failed_sev3_only.would_tier": "수집 실패 sev3만 — 켰다면 티어",
+        // plans/162 W5 · D-336 — 제니퍼 심각도3 유형 정책
+        apm_sev3_policy: "제니퍼 심각도3 유형 정책",
+        "apm_sev3_policy.notify": "제니퍼 심각도3 — 정책 티어(page·ticket)",
+        "apm_sev3_policy.policy_row": "제니퍼 심각도3 — 적용 정책 행",
     },
 
     // plans/153 W1 — 드로어 머리 사유 요약 1문단(§4.8). 결정적 템플릿이다(LLM 서술 아님).
@@ -357,7 +363,8 @@ window.NOISE_HELP = {
         stages: {
             non_alarm: "알람 표지 없이 승인·안내성 문구만 있어 알람이 아닌 메시지로 분류했습니다"
                 + "[(걸린 표지 단어: {markers})].",
-            severity3: "실효 심각도 3이라 억제 단계를 거치지 않고 곧바로 통보했습니다.",
+            severity3: "실효 심각도 3이라 억제 단계를 거치지 않고 이 단계에서 확정했습니다"
+                + "[(제니퍼 유형 정책 적용 행: {apm_sev3_policy.policy_row})].",
             self_heal: "같은 알람의 발생과 짝지어진 해소라 스스로 복구된 것으로 봤습니다"
                 + "[(발생→해소 {heal_seconds})].",
             resolved: "짝지을 발생이 없는 해소 이벤트입니다.",

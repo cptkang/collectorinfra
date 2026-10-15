@@ -8,14 +8,21 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
-| 2026-10-15 | D-336 · D-330 | 번호 변경 — RCA 브랜치의 D-330(구조 리팩터 규약 · 코드 스멜 계획)을 main 병합 시 main D-330(노이즈 PAGE · `plans/162`)과 충돌해 **D-336**으로 재부여 · 본문 `D-336.md` · 계획서 `plans/162`(코드 스멜) → **`plans/166`** · D-331·D-332 예약 행을 본문 행으로 교체 · 아래 RCA 행의 번호도 새 번호로 고침 |
+| 2026-10-15 | D-337 · D-336 | 번호 변경 — RCA의 D-336(구조 리팩터 규약 · 구 D-330)을 main 병합 시 main D-336(제니퍼 심각도 3 유형 정책)과 충돌해 **D-337**로 재부여 · 본문 `D-337.md` · 스킬 2종·`plans/163`·`plans/166`·D-331·D-332·166 W0 테스트 참조 갱신 · 아래 RCA 행의 번호도 새 번호로 고침 |
+| 2026-10-15 | D-330 | 부기 — `plans/162` F4 무소식 닫힘(R1 해소 대용 · 해소 이벤트 없는 출처 · `NOISE_PAGE_REVIEW_IDLE_CLOSE_MINUTES` 기본 0 = 끔 · dedup 창 뒤 재통보에만 효력) · W0-T 분석 도구 보정 · `replay_noise.py --page-review-mode` 구현(부기 (e) 미구현 항목 해소) · 커밋 없음 |
+| 2026-10-15 | D-326 | 부기 — 폐쇄망 1회차 실행 반영: A2 삭제 · B군 대상 제니퍼 호스트 한정(`was_hosts`) · C1 폴스타/C2 자산관리 대화 분리(`plans/165` F5) · `maint_window` 6개월 |
+| 2026-10-15 | D-336 | 재부여 — 구 D-335(제니퍼 심각도3 유형 정책)를 D-336으로 옮김 · 원격 `apm_noise`가 D-335(`plans/155` 결과 값 판정)를 먼저 푸시해 로컬 미푸시 쪽을 옮겼다(D-321 선례) |
+| 2026-10-15 | D-336 | 구현 — `plans/162` W5: step 3 제니퍼 정책 경로 심각도3 = `notify: page`만 PAGE · 그 밖 TICKET(단계 severity3 · 근거 `apm_sev3_policy`) · `NOISE_APM_SEV3_POLICY_ENABLED` 기본 off · 설정 도움말·docs/28·매뉴얼 · 주의 부기(TICKET은 자동 조사·incident 미부착 · 재통보 간격 sev3 기준) · 커밋 없음 |
+| 2026-10-15 | D-330 | 부기 — ⑥ 비식별 적용 범위를 `plans/162` W0-X 폴스타↔APM 상관 진단 필드(`xs`·S11~S14 · `K-`·`I-`·`E-`·`S-` 가명 · 값 단위 열거 허용 목록 · 누출 검사 식별자 확장)로 넓힘 |
+| 2026-10-15 | D-336 · D-035 · D-048 · D-317 · D-330 | 신규 D-336 — 제니퍼 심각도 3은 유형 정책 표를 따른다(`notify: page`만 PAGE · 그 밖 TICKET · AGENT_STOP TICKET · 플래그 기본 off · `plans/162` G-10 (a)) · D-035·D-048·D-317 ① 부기 · D-330 부기(G-2 미채택 · G-5 보류) |
+| 2026-10-15 | D-336 · D-330 | 번호 변경 — RCA 브랜치의 D-330(구조 리팩터 규약 · 코드 스멜 계획)을 main 병합 시 main D-330(노이즈 PAGE · `plans/162`)과 충돌해 **D-336**으로 재부여(이후 D-337로 재변경 — 위 행) · 본문 `D-336.md` · 계획서 `plans/162`(코드 스멜) → **`plans/166`** · D-331·D-332 예약 행을 본문 행으로 교체 · 아래 RCA 행의 번호도 새 번호로 고침 |
 | 2026-10-15 | D-335 · D-330 | 번호 변경 — `apm_noise` 브랜치의 D-330(결과 값 판정 · `plans/155`)을 main 병합 시 `plans/162` D-330(노이즈 PAGE)과 충돌해 D-335로 재부여 · 본문 `D-335.md` · `plans/155`·INDEX 참조 갱신 |
 | 2026-10-14 | D-153 | 부기 — 후속2 산출 발췌 화면 노출 유지 · 같은 각주·작업 카드의 예외 원문만 머리말로 축약(`db_error_text` · plans/163 S3+ · 사용자 확정 (a)) |
 | 2026-10-14 | D-003 · D-294 · D-316 | 부기 — D-003: MCP 서버 읽기 전용 강화(허용 목록 검사기 · `DBPoolManager.execute` 단일 지점 · PG·MariaDB 세션 RO · 스키마 헬퍼 주입 수정) · D-294: `asset_drafts`·`ddl_comments` 관리자 자산 보존 · D-316: `invalidate(db_id)`도 `knowledge_seeded` 삭제·재적재(`plans/163` W1) |
 | 2026-10-14 | D-332 | 부기 — 사내망 구간은 TLS 불요(사용자 확정): FabriX·폴스타 REST 클라이언트 `verify=False`는 의도 · `plans/163` 미편입 · 스킬 D절 반영 |
-| 2026-10-14 | D-332 | 신규 — 프로젝트 스킬 2종: `refactoring`(D-336·D-331 절차 · 스멜 카탈로그 · 문헌 · `smell_metrics.py`) · `secure-coding`(영역 A~F 규칙 · ASVS v5.0.0·Top 10:2025·LLM Top 10 2025·CWE·RFC 8725 · `secure_scan.py`) — 스킬은 절차서, 정본은 D-번호·계획서 |
+| 2026-10-14 | D-332 | 신규 — 프로젝트 스킬 2종: `refactoring`(D-337·D-331 절차 · 스멜 카탈로그 · 문헌 · `smell_metrics.py`) · `secure-coding`(영역 A~F 규칙 · ASVS v5.0.0·Top 10:2025·LLM Top 10 2025·CWE·RFC 8725 · `secure_scan.py`) — 스킬은 절차서, 정본은 D-번호·계획서 |
 | 2026-10-14 | D-331 | 신규 — 품질 게이트 조정: ① arch_check 「노드 간 직접 의존」 경고를 노드 패키지 간(`src.nodes.*`↔`src.nodes.*` · `noise_gate.application.nodes.*`)으로 한정(경고 117→43 기준선) ② 설정 `getattr` 폴백≠필드 기본 AST 린트 신설 · X1 치환 후 CI 게이트 (`plans/166` U-4·U-7 · 구현 W1) |
-| 2026-10-14 | D-336 | 신규 — 구조 리팩터 규약(D-134 일반화): 재노출 shim 1사이클 · patch seam 보존(Facade 잔류) · `_` 공유 함수 공개명+별칭 · overfit 기준선 자기 이동 델타 · 특성화 선행 · 행동 변경 분리 · 커밋 단위 (`plans/166` U-2·U-3·U-6 · 보안 4건은 `plans/163`) |
+| 2026-10-14 | D-337 | 신규 — 구조 리팩터 규약(D-134 일반화): 재노출 shim 1사이클 · patch seam 보존(Facade 잔류) · `_` 공유 함수 공개명+별칭 · overfit 기준선 자기 이동 델타 · 특성화 선행 · 행동 변경 분리 · 커밋 단위 (`plans/166` U-2·U-3·U-6 · 보안 4건은 `plans/163`) |
 | 2026-10-14 | D-139 | 부기 — ② 역방향 허용 목록에 stdlib-only `src.domain.*` 순수 모듈 · `src.observability.investigation_metrics` 추가(실측 3건 `host_authz`·`host_availability`·`investigation_metrics` — 이동 대신 허용 · `plans/166` U-5) |
 | 2026-10-14 | D-326 | 부기 — 시연 카탈로그를 기능 둘러보기(8군 37세션)에서 장애 대응 시스템 연계(A 제니퍼→폴스타 · B 폴스타→제니퍼 · C 장애 서버→자산관리 · D EOS·유지보수 만료 · E 한 서버 종합 · 5군 8세션 · 은행존 기준)로 교체 · 소스 이름 자리표화 |
 | 2026-10-14 | D-330 · D-035 · D-048 | 부기 — `plans/162` W0~W3 구현(`page_audit` 비식별 분석 · `page_review` R1~R3 · R4 수집 실패 sev3만·수집 실패율 메타경보 · 관제 화면·매뉴얼) · 플래그 기본 off라 효력은 내부망 enforce 시 · 구현 해석 부기(보존 1 해석·shadow 레지스트리 「했을 결과」·퍼널 원 단계 계수) · R6·R5·H8 미구현 |

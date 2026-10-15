@@ -2,7 +2,7 @@
 단계 3 이후 갱신 금지(갱신이 필요하면 리팩터가 아니다).
 
 질의 라우트 네 진입점(`src/api/routes/query.py`)의 응답 **키 집합**을 고정한다(스멜 A1·A2·A3·A6).
-기대값은 「맞는 값」이 아니라 「지금 값」이다(D-336 ⑤) — 진입점 사이 비대칭도 그대로 적는다.
+기대값은 「맞는 값」이 아니라 「지금 값」이다(D-337 ⑤) — 진입점 사이 비대칭도 그대로 적는다.
 
 - 스트림(`/query/stream` · `/query/file/stream`): 마지막 이벤트(`done` 또는 `error`)의 키 집합 +
   이벤트 `type` 순서(처음 나온 순서 · 중복 제거).
@@ -388,5 +388,5 @@ def test_payload_keys_match_snapshot(
     expected = _load_snapshot()[key]
     got = _record(kind, route, case, app_config, monkeypatch)
     assert got == expected, (
-        f"{key} 키 집합이 바뀌었다 — 리팩터는 응답 키를 바꾸지 않는다(D-336 ⑤)"
+        f"{key} 키 집합이 바뀌었다 — 리팩터는 응답 키를 바꾸지 않는다(D-337 ⑤)"
     )

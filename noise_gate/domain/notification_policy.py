@@ -162,7 +162,8 @@ STAGE_DESCRIPTIONS: dict[str, str] = {
         "실효 심각도(수신 심각도와, 켜져 있을 때 AI 상향 등급 중 큰 값)가 3이면 뒤 단계를 "
         "거치지 않고 PAGE입니다. 침묵 규칙·억제 단계 어느 것으로도 억제되지 않습니다"
         "(앞 단계인 비운영 알람 판정에 걸린 메시지만 예외). 해소 알람에는 AI 상향을 적용하지 "
-        "않습니다."
+        "않습니다. 제니퍼 정책 심각도3 설정을 켜면 제니퍼 유형 정책 표를 쓰는 알람은 통보(page) "
+        "유형만 PAGE이고 그 밖 유형은 TICKET입니다(이 단계에서 끝납니다)."
     ),
     STAGE_SELF_HEAL: (
         "해소 이벤트가 자가복구 창 안의 같은 알람 발생(억제 상한 이하 심각도)과 짝지어지면 "
@@ -416,6 +417,9 @@ def _priority(tier: str, effective_severity: int, importance: str) -> int:
 # 「플래그 on이었으면 나왔을 티어」를 싣는다(판정 불변).
 EVIDENCE_COLLECTION_FAILED = "collection_failed"
 EVIDENCE_COLLECTION_FAILED_SHADOW = "collection_failed_sev3_only"
+# (plans/162 W5 · D-336) 제니퍼 정책 경로 심각도3 근거 키 — 플래그 on일 때 step 3이 유형 정책 표로
+# 판정한 건에만 {"notify": "page"|"ticket", "policy_row": 적용 행 키}를 싣는다(감사·W0 스크립트용).
+EVIDENCE_APM_SEV3_POLICY = "apm_sev3_policy"
 _PAGE_REVIEW_SHADOW = "shadow"  # page_review.MODE_SHADOW와 같은 값(page_review가 이 모듈을 import)
 
 
@@ -544,6 +548,13 @@ def decide_notification(
           카운트는 워커가 계산한다 — 이 모듈은 bool·숫자만 소비한다(D-109 sig_label 전례).
         - evidence["apm_policy"]에 정규화 유형·적용 행·지속 조건 카운트를 싣는다(감사 전용).
 
+    plans/162 W5 · D-336 제니퍼 심각도3(apm_sev3_policy_enabled 뒤 — 기본 False면 단락 PAGE 그대로):
+        - on이고 noise_ctx["source"]=="apm_policy"면 step 3이 유형 정책 표를 본다 —
+          noti_policy=="notify"(표 `notify: page` 행)면 PAGE, 그 밖(표 밖 유형·default)은 TICKET.
+          단계는 severity3 그대로이고 뒤 억제 단계로 가지 않는다. evidence에
+          EVIDENCE_APM_SEV3_POLICY({notify, policy_row})를 싣는다.
+        - 폴스타·수집 실패(None·unavailable)는 현행 단락 PAGE.
+
     plans/144 W3 크로스소스 사건 상관(step 7.6 — cross_source_mode≠off일 때 워커가 사건에 붙은
     알람에만 cross_source를 넘긴다. None(기본·off)이면 아래 전부 미평가로 비트동일):
         - cross_source는 워커가 사건 추적기(cross_source.py)로 산출한 신호다 — 이 모듈은 값만
@@ -575,6 +586,8 @@ def decide_notification(
     collection_failed_sev3_only = bool(
         getattr(config, "collection_failed_page_sev3_only", False)
     )
+    # (plans/162 W5 · D-336) 옵트인 — 기본 off면 제니퍼 정책 경로 심각도3도 단락 PAGE(비트 동일).
+    apm_sev3_policy_enabled = bool(getattr(config, "apm_sev3_policy_enabled", False))
 
     # ── step 1: 실효 심각도 (E3 — AI 메시지 심각도 상향 전용 보강) ──
     # 실효심각도 = max(폴스타 severity, AI 상향등급). max()가 하향 불가를 보장한다(상향 전용·R-10).
@@ -719,6 +732,34 @@ def decide_notification(
 
     # ── step 3: 심각도 3 → 즉시 PAGE(단락, 억제 금지 D-035) ──
     if effective_severity == 3:
+        # (plans/162 W5 · D-336) 플래그 on + 제니퍼 정책 경로면 유형 정책 표를 본다 — 통보(page)
+        # 유형만 PAGE, 그 밖(표 밖 유형·default 행)은 TICKET. 어느 쪽이든 여기서 끝난다(뒤 억제
+        # 단계 미경유 · DASHBOARD 아래로 내리지 않는다 D-317 ①). 수집 실패·폴스타는 현행 단락.
+        if (
+            apm_sev3_policy_enabled
+            and noise_ctx is not None
+            and noise_ctx.get("source") == NOISE_SOURCE_APM_POLICY
+        ):
+            policy_page = noti_policy == "notify"
+            sev3_evidence = {
+                EVIDENCE_APM_SEV3_POLICY: {
+                    "notify": "page" if policy_page else "ticket",
+                    "policy_row": (apm_policy or {}).get("policy_row"),
+                }
+            }
+            if policy_page:
+                return _decision(
+                    TIER_PAGE,
+                    "심각도3 — 제니퍼 유형 정책(PAGE 유형) · 항상 통보",
+                    STAGE_SEVERITY3,
+                    sev3_evidence,
+                )
+            return _decision(
+                TIER_TICKET,
+                "심각도3 — 제니퍼 유형 정책(비PAGE 유형) · TICKET",
+                STAGE_SEVERITY3,
+                sev3_evidence,
+            )
         return _decision(
             TIER_PAGE, "심각도3 — 항상 통보(억제 단계 미경유)", STAGE_SEVERITY3
         )
