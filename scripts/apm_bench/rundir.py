@@ -59,6 +59,24 @@ EXPORT_FAILED: tuple[str, ...] = ("leak_check.json", "summary_safe.json", LOG_FI
                                   "run_meta.json")
 
 
+#: Windows 에는 POSIX 소유자(uid)·권한 비트가 없다(NTFS ACL — `os.geteuid` 없음 · `st_mode`
+#: 권한은 읽기 전용 여부만 반영). 소유·권한 검사는 POSIX 에서만 하고, 심볼릭 링크 거부는 둘 다 한다.
+IS_WINDOWS = os.name == "nt"
+#: Windows 에 없는 열기 플래그는 0(심볼릭 링크 거부는 열기 전 `is_symlink` 검사가 대신한다).
+O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+
+
+def owned_by_me(info: os.stat_result) -> bool:
+    """현재 계정 소유인가 — Windows 는 판정하지 않는다(True)."""
+    return IS_WINDOWS or info.st_uid == os.getuid()
+
+
+def private_bits(info: os.stat_result) -> int:
+    """그룹·기타 권한 비트(`0o077`) — Windows 는 0(권한 비트 없음)."""
+    return 0 if IS_WINDOWS else stat.S_IMODE(info.st_mode) & 0o077
+
+
 class QuarantineError(ValueError):
     """격리 경로·권한 거부(고정 문구 — 경로를 싣지 않는다)."""
 
@@ -100,7 +118,7 @@ def _check_private_dir(path: Path) -> None:
     except FileNotFoundError:
         return
     if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
-            or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077):
+            or not owned_by_me(info) or private_bits(info)):
         raise QuarantineError("격리 기준 경로가 심볼릭 링크이거나 현재 계정 전용(700)이 아니다 — "
                               "전용 디렉터리를 지정하거나 chmod 700 한다")
 
@@ -137,12 +155,15 @@ def _make_private_dirs(path: Path) -> None:
         os.chmod(directory, 0o700)
 
 
-def _write_private(dir_fd: int, name: str, body: str) -> None:
-    """디렉터리 핸들 아래 새 파일을 600 으로 만든다(이미 있거나 심볼릭 링크면 실패)."""
-    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
-                 dir_fd=dir_fd)
+def _write_private(dir_fd: int | None, name: str, body: str) -> None:
+    """디렉터리 핸들 아래 새 파일을 600 으로 만든다(이미 있거나 심볼릭 링크면 실패). Windows 는
+    핸들 대신 경로(`dir_fd` None → `name`이 전체 경로)로 만든다 — `dir_fd`·`fchmod` 미지원."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_NOFOLLOW
+    fd = os.open(name, flags, 0o600) if dir_fd is None else os.open(name, flags, 0o600,
+                                                                   dir_fd=dir_fd)
     with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-        os.fchmod(handle.fileno(), 0o600)
+        if not IS_WINDOWS:
+            os.fchmod(handle.fileno(), 0o600)
         handle.write(body)
 
 
@@ -168,6 +189,12 @@ def write_quarantine(base: Path, run_dir: Path, run_id: str,
         final.mkdir(mode=0o700)
     except FileExistsError as exc:
         raise QuarantineError("격리본이 이미 있다 — 덮어쓰지 않는다") from exc
+    if IS_WINDOWS:
+        for name, value in payload.items():
+            _write_private(None, str(final / name),
+                           json.dumps(value, ensure_ascii=False, default=str))
+        _write_private(None, str(final / SCENARIO_COPY), scenario_text)
+        return final
     dir_fd = os.open(final, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         os.fchmod(dir_fd, 0o700)
@@ -194,12 +221,12 @@ def check_trusted(path: Path) -> Path:
     if not stat.S_ISDIR(info.st_mode):
         raise QuarantineError("격리본이 디렉터리가 아니다")
     resolved = given.resolve()
-    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+    if not IS_WINDOWS and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700):
         raise QuarantineError("격리본 소유자·권한이 맞지 않다(현재 계정 소유 · 700 만 읽는다)")
     for child in resolved.iterdir():
         child_info = child.lstat()
-        if (not stat.S_ISREG(child_info.st_mode) or child_info.st_uid != os.getuid()
-                or stat.S_IMODE(child_info.st_mode) & 0o077):
+        if (not stat.S_ISREG(child_info.st_mode) or not owned_by_me(child_info)
+                or private_bits(child_info)):
             raise QuarantineError("격리본 파일 소유자·권한이 맞지 않다(현재 계정 소유 · 600)")
     return resolved
 
@@ -281,7 +308,7 @@ def claim_pid(run_dir: Path, run_id: str, started: float) -> bool:
         if pid_alive(read_pid(run_dir)) is not False:
             return False
         path.unlink()
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_NOFOLLOW
     try:
         fd = os.open(path, flags, 0o600)
     except FileExistsError:
@@ -299,7 +326,9 @@ def remove_pid(run_dir: Path) -> None:
 @contextlib.contextmanager
 def opened_log(run_dir: Path, *, append: bool = False) -> Iterator[IO[str]]:
     """`run.log` 손잡이(덧붙이기 · 새로 쓰기) — 심볼릭 링크면 거부(`O_NOFOLLOW`)."""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | (os.O_APPEND if append else os.O_TRUNC)
+    flags = os.O_WRONLY | os.O_CREAT | O_NOFOLLOW | (os.O_APPEND if append else os.O_TRUNC)
+    if (run_dir / LOG_FILE).is_symlink():  # O_NOFOLLOW 없는 플랫폼(Windows) 대비
+        raise QuarantineError("run.log 를 열지 못했다(심볼릭 링크 거부)")
     try:
         fd = os.open(run_dir / LOG_FILE, flags, 0o644)
     except OSError as exc:  # 심볼릭 링크(ELOOP) 등 — 경로 미출력
@@ -407,9 +436,12 @@ def read_pid(run_dir: Path) -> int | None:
 
 def pid_alive(pid: int | None) -> bool | None:
     """프로세스가 살아 있는가(신호 0) — 다른 계정 프로세스(EPERM)면 None(확인 불가 · 낡은
-    `run.pid`가 재사용된 PID 를 가리킬 수 있다)."""
+    `run.pid`가 재사용된 PID 를 가리킬 수 있다). Windows 는 `os.kill`이 프로세스를 끝내므로 쓰지
+    않고 프로세스 핸들로 묻는다(`_windows_pid_alive`)."""
     if pid is None or pid <= 0:
         return False
+    if IS_WINDOWS:
+        return _windows_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -417,6 +449,26 @@ def pid_alive(pid: int | None) -> bool | None:
     except PermissionError:
         return None
     return True
+
+
+def _windows_pid_alive(pid: int) -> bool | None:
+    """Windows 프로세스 생존 — `OpenProcess`(조회 권한) → `GetExitCodeProcess` == STILL_ACTIVE.
+
+    접근 거부(다른 계정 · 권한 상승 프로세스)면 None(확인 불가), 없는 PID 면 False.
+    """
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None if ctypes.get_last_error() == 5 else False  # type: ignore[attr-defined]
+    try:
+        code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return None
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 #: `pid_state` 값 — 파일 없음 · 실행 중 · 프로세스 없음 · 확인 불가(다른 계정) · 다른 run 의 PID.
@@ -559,15 +611,17 @@ def last_log_line(run_dir: Path, known_ids: Collection[str] | None = None) -> st
     끝 `LOG_TAIL_BYTES`만 읽는다(`O_NOFOLLOW` · 큰 파일·FIFO 를 통째로 읽지 않는다).
     """
     path = run_dir / LOG_FILE
+    if path.is_symlink():  # O_NOFOLLOW 없는 플랫폼(Windows) 대비
+        return LOG_UNVERIFIED
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(path, os.O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
     except FileNotFoundError:
         return None
     except OSError:  # 심볼릭 링크(ELOOP) 등
         return LOG_UNVERIFIED
     with os.fdopen(fd, "rb") as handle:
         info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+        if not stat.S_ISREG(info.st_mode) or not (IS_WINDOWS or info.st_uid == os.geteuid()):
             return LOG_UNVERIFIED
         start = max(0, info.st_size - LOG_TAIL_BYTES)
         handle.seek(start)

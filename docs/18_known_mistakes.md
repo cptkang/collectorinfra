@@ -2007,3 +2007,8 @@
 - **실수**: (plans/157 계획 끝 회귀 · 통합 team-lead) `regress.py --base 4073f7f --files …`가 고른 `test_apm_bench_w2b.py` 2건이 「새 테스트 실패」로 나왔다. 회귀 도중 메인 세션이 164 W2b implementer에 직접 교정(`--bg` env 허용 목록 제거)을 지시해 같은 테스트·`__main__.py`를 고치고 있었다 — 실패 단언 메시지(`ZZ_SHELL_SECRET`)가 디스크의 현재 단언(`pw-x`)과 달랐다. 단독 재실행·164 재회귀에서는 통과했다.
 - **원인**: 위임한 서브에이전트가 끝났다고 보고 회귀를 돌렸지만, 메인이 같은 에이전트를 `SendMessage`로 재개할 수 있다는 점을 확인하지 않았다. hand-back이 팀 리드에게 오지 않는 환경이라 재개 사실을 알림으로 받지 못했다.
 - **방지책**: 계획 끝 회귀 직전에 서브에이전트 기록(`subagents/agent-*.jsonl`) 수정 시각과 대상 파일 mtime을 확인해 진행 중인 편집이 없는지 본다. 실패 단언 메시지가 디스크의 테스트 코드와 맞지 않으면 회귀 중 편집 경합으로 보고, 편집이 끝난 뒤 그 테스트와 모듈 선택분만 다시 돌린다.
+
+### 2026-10-15 · apm_bench가 POSIX 전용 호출(`os.geteuid`·`os.kill(pid, 0)`·`O_NOFOLLOW`·`dir_fd`)에 기대어 내부망 Windows에서 첫 사전 점검부터 죽음
+- **실수**: plans/164 W2a·W2b가 로컬 파일·격리본 신뢰 검사(`os.geteuid`·권한 비트), run.log·run.pid 열기(`os.O_NOFOLLOW`·`O_NONBLOCK`), 격리본 쓰기(`dir_fd`·`fchmod`), PID 생존 확인(`os.kill(pid, 0)`)을 POSIX 전제로 짰다. 내부망 Windows PowerShell에서 `--run --env e2 --smoke`가 `AttributeError: module 'os' has no attribute 'geteuid'`로 중단됐다. `os.kill`은 Windows에서 대상 프로세스를 끝내므로 `--status`가 분리 run을 죽일 수 있었다
+- **원인**: 실행 환경을 맥·리눅스로만 가정했다. 같은 저장소의 `scripts/scenario/server.py`는 이미 `IS_WINDOWS` 분기를 두고 있었는데 대조하지 않았다. 테스트가 전부 맥에서만 돌았다
+- **방지책**: 내부망에서 도는 스크립트는 Windows 실행을 전제로 한다 — `os.geteuid`·`getuid`·`kill`·`killpg`·`O_NOFOLLOW`·`O_NONBLOCK`·`O_DIRECTORY`·`dir_fd`·`fchmod`·`start_new_session`을 쓰면 `IS_WINDOWS` 분기를 둔다(`os.kill(pid, 0)`은 Windows에서 금지 — 프로세스 핸들로 묻는다). 분기는 맥에서 `IS_WINDOWS`를 켜고 POSIX 함수를 지운 상태로 테스트한다(`tests/test_scripts/test_apm_bench_windows.py` 방식)

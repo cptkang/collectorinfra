@@ -310,8 +310,11 @@ def untrusted_reason(path: Path, *, directory: bool = False) -> str | None:
     """E2 로컬 입력 파일·디렉터리 신뢰 검사(plans/164 W2b 감사 M1) → 위반 사유(없으면 None).
 
     없는 경로는 None — 「없음」은 호출 측이 따로 안내한다. 심볼릭 링크는 따라가지 않는다(lstat).
+    Windows 는 소유·권한 검사를 하지 않는다(`rundir.IS_WINDOWS`).
     """
     import stat
+
+    from . import rundir as rd
 
     try:
         info = path.lstat()
@@ -323,6 +326,8 @@ def untrusted_reason(path: Path, *, directory: bool = False) -> str | None:
         return "심볼릭 링크다"
     if directory != stat.S_ISDIR(info.st_mode) or not (directory or stat.S_ISREG(info.st_mode)):
         return "디렉터리가 아니다" if directory else "일반 파일이 아니다"
+    if rd.IS_WINDOWS:  # 소유자·권한 비트 없음(NTFS ACL) — 심볼릭 링크·종류만 본다
+        return None
     if info.st_uid != os.geteuid():
         return "현재 계정 소유가 아니다"
     if info.st_mode & 0o022:
@@ -1111,10 +1116,15 @@ def _spawn_bg(args: argparse.Namespace, prep: RunPrep,
     env[BG_ARGV_ENV] = json.dumps(argv, ensure_ascii=False)
     if prep.password:
         env[PASSWORD_ENV] = prep.password  # 부모는 이미 꺼냈다 — 자식에게만 넘긴다
+    detach: dict[str, Any] = {"start_new_session": True}
+    if rd.IS_WINDOWS:  # 새 세션 대신 콘솔 분리 · 새 프로세스 그룹(터미널을 닫아도 계속 ·
+        # Ctrl+C 미전파)
+        detach = {"creationflags": getattr(subprocess, "DETACHED_PROCESS", 0)
+                  | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
     proc = (popen or subprocess.Popen)(
         [sys.executable, "-m", "scripts.apm_bench", "--run-id", prep.run_id],
         cwd=os.getcwd(), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, start_new_session=True)
+        stderr=subprocess.DEVNULL, **detach)
     deadline = time.monotonic() + BG_WAIT_SEC
     while (time.monotonic() < deadline and proc.poll() is None
            and rd.read_pid(prep.out_dir) != proc.pid):
