@@ -478,7 +478,7 @@ async def _resolve_target_state(cfg, event, first) -> Optional[dict]:  # noqa: A
         `HostAvailability.to_dict()` 또는 None
     """
     comp = getattr(cfg, "composite", None)
-    if comp is None or not getattr(comp, "availability_precheck_enabled", False):
+    if comp is None or not comp.availability_precheck_enabled:
         return None
     if is_availability_alarm(event):
         logger.debug(

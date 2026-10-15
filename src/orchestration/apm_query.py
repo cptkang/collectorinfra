@@ -125,6 +125,9 @@ from src.utils.json_extract import extract_json_from_response
 from src.utils.prior_dependency import NOTE_BRIDGE, NOTE_TRACE
 from src.utils.prior_targets import TargetRef, resolve_targets
 from src.utils.query_gen_common import refers_to_demonstrative_server
+# 거부·실패 사유 키 · 표시용 행 축약 표지 — 정본 1곳(plans/166 X3) · 이 모듈 이름으로 재노출한다.
+from src.utils.task_result_keys import DEGRADED_KEY as DEGRADED_KEY
+from src.utils.task_result_keys import DISPLAY_CUT_KEY as DISPLAY_CUT_KEY
 from src.utils.user_error import request_id
 
 logger = logging.getLogger(__name__)
@@ -141,8 +144,6 @@ INSTANCES_VIEW = "apm.instances"
 #: (`resolve_targets`)의 상한 인자에 넘기는 값이다(폴스타 쪽 공유 설정 `composite.max_targets`는
 #: 그대로).
 _NO_CAP = sys.maxsize
-#: 거부·실패 사유 키(host_inspect 와 같은 이름 — 감사가 같은 키를 읽는다).
-DEGRADED_KEY = "degraded_reason"
 #: 결과 메타(감사·계획 요약·후속 조합이 읽는다).
 META_KEY = "apm_query"
 #: 대상 미지정 첫 홉의 부하 순위 보기(plans/134 W6 ④ — 현재 부하 상위 N개만 대상).
@@ -200,9 +201,6 @@ _NOTICE_TEXT = {
 }
 #: 채팅 표·LLM 입력에 싣는 셀 문자열 상한(자) — 전문은 CSV(`query_results`)·결과 파일에 남는다.
 DISPLAY_CELL_MAX = 300
-#: 표시용 행(`organized_data.rows`)을 줄였다는 결과 표지 — 집계기가 병합 표의 CSV 원천을
-#: `query_results`(전문)로 만든다(`result_aggregator._DISPLAY_CUT_KEY`와 같은 값).
-DISPLAY_CUT_KEY = "display_rows_cut"
 #: 일반 현황 영역 — 보기를 고르지 않아도 기본 보기로 답한다(D-293 · SPEC §6.4 ③).
 GENERAL_AREAS = frozenset({"was_performance", "was_instance"})
 #: 선택 재시도 미해결 시 되물을 후보 보기 수(SPEC §6.4 ②).

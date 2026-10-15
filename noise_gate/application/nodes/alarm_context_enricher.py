@@ -32,12 +32,12 @@ from typing import Any, Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from noise_gate.application.server_identity import is_apm_source
 from noise_gate.domain.alarm import (
     AlarmEvent,
     AlarmHistoryStats,
     MessageEnrichment,
     ProcessSnapshot,
+    is_apm_source,
 )
 from noise_gate.domain.alarm_pattern import (
     compute_history_stats,
@@ -54,7 +54,7 @@ from noise_gate.domain.process_rank import (
     select_top_processes,
 )
 from noise_gate.infrastructure.embedding_provider import build_event_text
-from noise_gate.infrastructure.polestar_noise_context import _unavailable
+from noise_gate.infrastructure.polestar_noise_context import unavailable_noise_ctx
 
 logger = logging.getLogger(__name__)
 
@@ -73,10 +73,10 @@ def _noise_unavailable() -> dict[str, Any]:
     """노이즈 컨텍스트 수집 불가 시 보수 dict (모든 신호 None, source='unavailable').
 
     정책 계층(decide_notification)이 source=='unavailable'을 보수적 PAGE로 처리한다(§6.3).
-    계약 키는 polestar_noise_context._unavailable(_NOISE_CTX_KEYS 단일 출처, §7.2)에
-    위임하여 세 구성점(여기·repo._unavailable·정상 fetch)이 키 불일치 없이 공유한다.
+    계약 키는 polestar_noise_context.unavailable_noise_ctx(_NOISE_CTX_KEYS 단일 출처, §7.2)에
+    위임하여 세 구성점(여기·repo.unavailable_noise_ctx·정상 fetch)이 키 불일치 없이 공유한다.
     """
-    return _unavailable()
+    return unavailable_noise_ctx()
 
 
 def _compute_root_notified(

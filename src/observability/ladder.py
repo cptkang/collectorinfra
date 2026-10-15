@@ -100,9 +100,9 @@ def resolve_ladder_tier(
             else _REASON_PACKAGE_MISSING
         )
 
-    if getattr(config, "enable_intent_orchestration", False):
+    if config.enable_intent_orchestration:
         return LadderTier.INTENT_ORCHESTRATION, optin_failure or _REASON_INTENT_FLAG_ON
-    if getattr(config, "enable_semantic_routing", False):
+    if config.enable_semantic_routing:
         return LadderTier.SEMANTIC_ROUTER, optin_failure or _REASON_NONE
     return LadderTier.LEGACY, optin_failure or _REASON_SEMANTIC_ROUTING_OFF
 

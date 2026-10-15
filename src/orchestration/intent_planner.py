@@ -40,6 +40,7 @@ from src.routing.db_scope import ZONE_GROUP_ONLY, ZONE_SELECTION_SCOPE_KEY
 from src.routing.registry import get_registry
 from src.routing.capability_ownership import (
     active_owner_system_count,
+    capability_ownership_on,
     known_capability_codes,
     render_ownership_rows,
     sanitize_capability_code,
@@ -67,6 +68,9 @@ from src.utils.synonym_set_parser import parse_synonym_set
 from src.utils.usage_query import is_usage_query
 
 logger = logging.getLogger(__name__)
+
+#: 옛 이름 별칭 1사이클(plans/166 X4 · D-337 ③) — `scripts/eval_routing.py`가 모듈 속성으로 읽는다.
+_capability_ownership_on = capability_ownership_on
 
 # process_query 결정적 가드 키워드 (D-041/D-046 정합).
 # 프로세스 신호 — 있으면 실시간 프로세스 조회 후보.
@@ -1277,7 +1281,7 @@ async def _llm_decompose(
     result = await _decompose_once(llm, messages, user_query, app_config, fallback)
     # 분해 계약(D-203 · plans/88 §4.2-b·§4.8): DAG 검증·순차 표지 — 플래그 off면 no-op(바이트 동일).
     result = await _enforce_plan_contract(llm, messages, user_query, app_config, fallback, result)
-    if _capability_ownership_on(app_config):
+    if capability_ownership_on(app_config):
         _sanitize_task_capabilities(result)
     _sanitize_task_areas(result)
     if _task_frame_on(app_config):
@@ -1380,18 +1384,13 @@ def _apply_task_frames(
     return result
 
 
-def _capability_ownership_on(app_config: AppConfig) -> bool:
-    """답변 영역 소유 플래그(plans/102 X-7) — 호출부가 넘긴 설정에서 읽는다(기동 시 1회 해석)."""
-    return bool(getattr(getattr(app_config, "router", None), "capability_ownership_enabled", False))
-
-
 def _planner_system_prompt(app_config: AppConfig) -> str:
     """분해 시스템 프롬프트.
 
     off면 기본 템플릿 그대로(바이트 동일), on이면 소유표·교차 예시 삽입본이다. 환경어 자리는
     마지막에 레지스트리 정본으로 채운다(plans/121 TP-11.2 — 종전 사본과 바이트 동일).
     """
-    if not _capability_ownership_on(app_config):
+    if not capability_ownership_on(app_config):
         base = INTENT_PLANNER_SYSTEM_TEMPLATE
     else:
         base = _render_planner_ownership_prompt(tuple(app_config.multi_db.get_active_db_ids()))
@@ -1646,9 +1645,8 @@ async def _enforce_plan_contract(
     불가하면 단일 폴백 + `degraded` 사유(침묵 폴백 금지). 표지가 있는데 여전히 단일이면 실행은
     하되 `sequential_not_applied`를 남긴다.
     """
-    cfg = getattr(app_config, "composite", None)
-    dag_on = bool(getattr(cfg, "plan_dag_validation_enabled", False))
-    replan_on = bool(getattr(cfg, "sequential_replan_enabled", False))
+    dag_on = bool(app_config.composite.plan_dag_validation_enabled)
+    replan_on = bool(app_config.composite.sequential_replan_enabled)
     if not replan_on:
         # off 관측(plans/88 §11 · 게이트의 `관측(off)` 로그와 대칭) — 표지가 있는데 순차 배선이 없으면 로그만.
         plain = list(result.get("tasks") or [])
@@ -1719,7 +1717,7 @@ async def _decompose_once(
     # 구조화 출력 경로 (E-3a · D-169). 플래그 off면 None을 돌려받아 기존 파싱으로 내려간다 —
     # 기존 경로를 지우지 않는다(off가 상시 존재한다).
     parsed: dict | None = None
-    ownership_on = _capability_ownership_on(app_config)
+    ownership_on = capability_ownership_on(app_config)
     extra_agents = _nonsql_agents(app_config)
     plan_model: type[DecomposedPlan] = (
         # 소유 플래그 on이면 `capability` 필드가 있는 서브클래스 — off 스키마는 종전 그대로. task

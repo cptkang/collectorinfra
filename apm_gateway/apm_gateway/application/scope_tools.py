@@ -41,13 +41,14 @@ from apm_gateway.application.tools import (
     _fresh,
     _Limits,
     _nonneg_int,
+    limit_notice,
     normalize_name,
     search_names,
     search_query,
     suggest_names,
 )
 from apm_gateway.domain.call_context import expect_calls
-from apm_gateway.domain.errors import CONTRACT_VIOLATION, INVALID_ARGUMENT, ApmError
+from apm_gateway.domain.errors import INVALID_ARGUMENT, ApmError
 
 SERVICE_TOOL = "apm_service_status"
 BUSINESS_TOOL = "apm_business"
@@ -336,14 +337,12 @@ class ScopeTools:
             try:
                 records = await src.api.realtime_domains(did)
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
+                notice = limit_notice(
+                    e, "실시간 도메인", self._at(sid, did), core._reason_tail(e)
+                )
                 failures.append((core.sources.where(sid, did), e))
                 failed.setdefault(sid, e)
-                limits.fail(
-                    f"[한계] 실시간 도메인 조회 실패{self._at(sid, did)}: {e.code}"
-                    + core._reason_tail(e)
-                )
+                limits.fail(notice)
                 continue
             answered.add(sid)
             for rec in records:
@@ -568,14 +567,12 @@ class ScopeTools:
             try:
                 records = await u.source.api.realtime_business(u.domain_id)
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
+                notice = limit_notice(
+                    e, "실시간 업무", self._at(sid, u.domain_id), core._reason_tail(e)
+                )
                 failures.append((core.sources.where(sid, u.domain_id), e))
                 failed.setdefault(sid, e)
-                scope.limits.fail(
-                    f"[한계] 실시간 업무 조회 실패{self._at(sid, u.domain_id)}: {e.code}"
-                    + core._reason_tail(e)
-                )
+                scope.limits.fail(notice)
                 continue
             answered.add(sid)
             rows += [self._business_row(u, rec) for rec in records]
@@ -602,13 +599,10 @@ class ScopeTools:
             try:
                 records = await u.source.api.realtime_business(u.domain_id, t.business_id)
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
+                notice = limit_notice(e, "실시간 업무", f"({label})", core._reason_tail(e))
                 failures.append((label, e))
                 failed.setdefault(sid, e)
-                scope.limits.fail(
-                    f"[한계] 실시간 업무 조회 실패({label}): {e.code}" + core._reason_tail(e)
-                )
+                scope.limits.fail(notice)
                 continue
             answered.add(sid)
             rec = next((r for r in records if r.get("business_id") == t.business_id), None)
@@ -721,13 +715,11 @@ class ScopeTools:
                             window.end_ms,
                         )
                 except ApmError as e:
-                    if e.code == CONTRACT_VIOLATION:
-                        raise
-                    failures.append((f"{label} 지표 {metric_id}", e))
-                    limits.fail(
-                        f"[한계] 지표 {metric_id} 조회 실패({label}): {e.code}"
-                        + core._reason_tail(e)
+                    notice = limit_notice(
+                        e, f"지표 {metric_id}", f"({label})", core._reason_tail(e)
                     )
+                    failures.append((f"{label} 지표 {metric_id}", e))
+                    limits.fail(notice)
                     continue
                 if not points:
                     empty.append(f"{label}:{metric_id}")
@@ -804,11 +796,13 @@ class ScopeTools:
             try:
                 entry = await core._catalog(sid)
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
                 limits.fail(
-                    f"[한계] 지표 카탈로그 조회 실패{self._at(sid)}: {e.code} — 기본 지표를"
-                    " 검증하지 못하고 그대로 조회했다"
+                    limit_notice(
+                        e,
+                        "지표 카탈로그",
+                        self._at(sid),
+                        " — 기본 지표를 검증하지 못하고 그대로 조회했다",
+                    )
                 )
                 plan[sid] = list(defaults)
                 continue

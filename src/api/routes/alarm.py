@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from src.api.dependencies import (
     alarm_zones_for_user,
+    is_admin as is_admin_user,
     require_admin_user,
     require_user,
     resolve_stream_user,
@@ -1114,9 +1115,7 @@ async def alarm_notifications_stream(
     # 전 존 허용(관리자/개발 모드)이면 db_id 필터를 건너뛴다.
     deliver_all = allowed_zones >= set(all_zones())
     # (Plan 83 T10) SUPPRESS 수신 권한 — 개발 모드는 종전 진입성을 보존한다.
-    is_admin = (not config.auth.enabled) or (
-        bool(user) and user.get("role") == "admin"
-    )
+    is_admin = (not config.auth.enabled) or is_admin_user(user)
 
     def _visible(event: dict) -> bool:
         return event_visible_to(
@@ -1623,7 +1622,7 @@ async def alarm_capabilities(
         # plans/153 W2: 조사가 실제로 돌 수 있는 조합일 때만 — 카드가 조사 섹션을 지연 로드할지.
         investigation_enabled=gate_on
         and bool(getattr(ng, "investigation_trigger_enabled", False))
-        and bool(getattr(ng, "investigation_service_url", "")),
+        and bool(ng.investigation_service_url),
         investigation_followup_timeout_seconds=float(
             getattr(ng, "investigation_followup_timeout_seconds", 300.0)
         ),
@@ -1647,9 +1646,7 @@ _INVESTIGATION_POLL_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
 
 def _is_alarm_operator(config: Any, current_user: dict[str, Any]) -> bool:
     """운영자 뷰 여부 — SSE 스트림의 SUPPRESS 수신 판정과 같은 식(개발 모드는 운영자)."""
-    return bool(not config.auth.enabled) or (
-        bool(current_user) and current_user.get("role") == "admin"
-    )
+    return bool(not config.auth.enabled) or is_admin_user(current_user)
 
 
 def _investigation_mask_fn(config: Any) -> Callable[[str], str]:
@@ -1672,7 +1669,7 @@ def _investigation_store(config: Any) -> InvestigationStore | None:
     from noise_gate.infrastructure.investigation_store import InvestigationStore
 
     ng = config.noise_gate
-    path = getattr(ng, "investigation_store_path", "")
+    path = ng.investigation_store_path
     if not path:
         return None
     return InvestigationStore(path, int(getattr(ng, "investigation_store_max_lines", 2000)))

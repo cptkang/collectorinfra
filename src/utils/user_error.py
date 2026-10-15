@@ -27,6 +27,9 @@ from typing import Any
 
 import structlog
 
+# 처리기 거부·실패 결과의 구조화 사유 키(정본 1곳 — plans/166 X3).
+from src.utils.task_result_keys import DEGRADED_KEY
+
 #: 보일 수 없는 사유 대신 쓰는 고정 문구.
 GENERIC_TASK_ERROR = "작업 처리 중 오류가 발생했습니다"
 
@@ -47,8 +50,6 @@ _PREFIX_REASONS: tuple[str, ...] = (
     "DB 스키마 조회 실패",  # schema_analyzer — 뒤에 예외
 )
 
-#: 처리기 거부·실패 결과의 구조화 사유 키(`apm_query`·`host_inspect`·`doc_query`·`portal_help`).
-_DEGRADED_KEY = "degraded_reason"
 #: 선행 0건 미실행 결과 표지(`prior_dependency.skip_result`).
 _SKIPPED_KEY = "skipped"
 
@@ -84,7 +85,7 @@ def user_error_text(raw: Any, *, result: Mapping[str, Any] | None = None) -> str
         result: 그 사유를 낸 작업 결과(있으면 처리기가 지은 사용자 문구인지 본다)
     """
     if raw and isinstance(result, Mapping) and (
-        result.get(_DEGRADED_KEY) or result.get(_SKIPPED_KEY)
+        result.get(DEGRADED_KEY) or result.get(_SKIPPED_KEY)
     ):
         return str(raw)
     return safe_error_text(raw) or GENERIC_TASK_ERROR

@@ -215,6 +215,19 @@ class CheckResult:
     allowed_imports: int = 0
 
 
+# 「노드 간 직접 의존」 경고 대상 노드 패키지(D-331 ①) — 양쪽이 같은 노드 패키지일 때만 경고한다.
+NODE_PACKAGES: tuple[str, ...] = ("src.nodes", "noise_gate.application.nodes")
+
+
+def _same_node_package(from_module: str, to_module: str) -> bool:
+    """두 모듈이 같은 노드 패키지(`NODE_PACKAGES`) 안에 있는지."""
+    for pkg in NODE_PACKAGES:
+        prefix = pkg + "."
+        if from_module.startswith(prefix) and (to_module == pkg or to_module.startswith(prefix)):
+            return True
+    return False
+
+
 def check_file(file_path: Path, project_root: Path) -> list[Violation]:
     """단일 파일의 의존성 규칙 위반을 검사한다."""
     from_module = file_to_module(file_path, project_root)
@@ -228,9 +241,13 @@ def check_file(file_path: Path, project_root: Path) -> list[Violation]:
         if to_layer is None:
             continue
 
-        # 자기 자신 계층 참조: application → application 은 노드 간 직접 의존 금지
+        # 자기 자신 계층 참조: application → application 은 노드 패키지 간 직접 의존만 경고(D-331 ①)
         if from_layer == "application" and to_layer == "application":
-            if from_module != imp.module and not imp.module.endswith("__init__"):
+            if (
+                from_module != imp.module
+                and not imp.module.endswith("__init__")
+                and _same_node_package(from_module, imp.module)
+            ):
                 violations.append(Violation(
                     file=str(file_path.relative_to(project_root)),
                     line=imp.line,
@@ -240,7 +257,7 @@ def check_file(file_path: Path, project_root: Path) -> list[Violation]:
                     to_module=imp.module,
                     statement=imp.statement,
                     severity="warning",
-                    reason="노드 간 직접 의존 금지 (그래프 라우팅으로 해결)",
+                    reason="노드 간 직접 의존 금지 (순수 헬퍼는 비노드 application 모듈로)",
                 ))
             continue
 

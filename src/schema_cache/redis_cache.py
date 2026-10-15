@@ -105,7 +105,7 @@ class RedisSchemaCache:
             try:
                 await self._redis.aclose()
             except Exception:
-                pass
+                logger.warning("Redis 연결 종료 실패", exc_info=True)
             self._redis = None
             self._connected = False
 
@@ -120,7 +120,9 @@ class RedisSchemaCache:
         try:
             await self._redis.ping()
             return True
-        except Exception:
+        except Exception as e:
+            # 유휴 끊김 감지는 정상 재연결 경로라 스택 없이 한 줄만 남긴다.
+            logger.warning("Redis health check 실패 — 연결 끊김으로 표시: %s", type(e).__name__)
             self._connected = False
             return False
 
@@ -209,7 +211,9 @@ class RedisSchemaCache:
             from src.config import load_config
 
             return bool(load_config().synonym.governance)
-        except Exception:
+        except Exception as e:
+            # 설정 검증 오류 본문에 원값이 실릴 수 있어 예외 종류만 남긴다.
+            logger.warning("유사어 거버넌스 설정 조회 실패 — OFF로 간주: %s", type(e).__name__)
             return False
 
     def _ensure_meta(self, entry: dict, now: float) -> None:
@@ -602,6 +606,7 @@ class RedisSchemaCache:
                 self._key(db_id, "descriptions"), table_column
             )
         except Exception:
+            logger.warning("Redis 컬럼 설명 조회 실패 (db_id=%s)", db_id, exc_info=True)
             return None
 
     # === DB 설명 ===
@@ -700,6 +705,7 @@ class RedisSchemaCache:
         try:
             return await self._redis.hget(self.DB_DESCRIPTIONS_KEY, db_id)
         except Exception:
+            logger.warning("Redis DB 설명 조회 실패 (db_id=%s)", db_id, exc_info=True)
             return None
 
     async def delete_db_description(self, db_id: str) -> bool:
@@ -1510,6 +1516,9 @@ class RedisSchemaCache:
                 return parsed.get("description")
             return None
         except Exception:
+            logger.warning(
+                "글로벌 사전 컬럼 설명 조회 실패 (column=%s)", column_name, exc_info=True
+            )
             return None
 
     async def list_global_column_names(self) -> list[str]:
@@ -1525,6 +1534,7 @@ class RedisSchemaCache:
             keys = await self._redis.hkeys(self.GLOBAL_SYNONYMS_KEY)
             return sorted(keys)
         except Exception:
+            logger.warning("글로벌 사전 컬럼명 목록 조회 실패", exc_info=True)
             return []
 
     async def remove_global_synonym(

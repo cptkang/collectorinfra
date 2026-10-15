@@ -394,6 +394,7 @@ def test_바인딩_해제는_다른_컨텍스트에서도_예외를_내지_않�
     class _Cfg:
         class server:  # noqa: N801 — 설정 대역
             answer_reserve_sec = 3
+            stream_delivery_grace_sec = 0
 
     token = _bind_deadline({"request_deadline": 123.0}, _Cfg, stream=True)
     assert bound_deadline() == (123.0, 3.0)

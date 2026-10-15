@@ -300,7 +300,7 @@ async def _run_output_generator(
                         or state.get("user_query", ""),
                         app_config,
                     )
-                    _ttl_days = getattr(app_config.query, "form_memory_ttl_days", 0)
+                    _ttl_days = app_config.query.form_memory_ttl_days
                     if _saved:
                         result["final_response"] += (
                             f"\n\n**[기억 저장]** '{_saved}'에 {len(_remember)}개 항목을 "

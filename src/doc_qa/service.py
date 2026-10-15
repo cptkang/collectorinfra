@@ -202,7 +202,7 @@ async def _retry_if_all_empty(
     Returns:
         (최종 outcomes, 실제로 다시 한 횟수)
     """
-    limit = getattr(rag, "empty_retries", 0)
+    limit = rag.empty_retries
     limit = limit if isinstance(limit, int) and limit > 0 else 0
     retries = 0
     while (retries < limit and outcomes
@@ -342,7 +342,7 @@ async def _answer_impl(
         )
 
     read_to, total_to = timeouts_from_config(rag)
-    ttl = int(getattr(rag, "cache_ttl", 0) or 0)
+    ttl = int(rag.cache_ttl or 0)
 
     # 4) 캐시 조회
     cached = await _load_cached(cache if ttl > 0 else None, usable, text)

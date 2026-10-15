@@ -203,7 +203,7 @@ def check_investigation_readiness(app_config: Any) -> tuple[bool, str]:
         return False, "조사 서비스 설정이 없습니다(noise_gate 미구성)"
     if not getattr(gate, "fault_diagnosis_enabled", False):
         return False, "장애 진단 경로가 비활성(fault_diagnosis_enabled=false)입니다"
-    if not (getattr(gate, "investigation_service_url", "") or "").strip():
+    if not (gate.investigation_service_url or "").strip():
         return False, "조사 서비스 URL이 설정되지 않았습니다"
     return True, ""
 

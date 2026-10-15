@@ -38,7 +38,6 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +45,7 @@ import yaml  # type: ignore[import-untyped]
 
 from src.domain.profile_merge import profile_field_diff
 from src.schema_cache.redis_cache import RedisSchemaCache
+from src.utils.clock import now_iso as _now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +90,6 @@ def validate_db_id(db_id: str) -> str:
     if not isinstance(db_id, str) or not _DB_ID_RE.fullmatch(db_id):
         raise ValueError(f"허용되지 않는 db_id 형식: {db_id!r}")
     return db_id
-
-
-def _now_iso() -> str:
-    """현재 시각(로컬 시간대 오프셋 포함 ISO 8601, 초 단위)."""
-    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def _sha256_text(text: str) -> str:

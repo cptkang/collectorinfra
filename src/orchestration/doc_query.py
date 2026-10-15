@@ -41,6 +41,7 @@ from src.orchestration.db_access import access_denied_result
 from src.orchestration.subagents import SubAgentSpec
 from src.routing.db_authz import SOURCE_ACCESS_DENIED_MESSAGE, is_source_allowed
 from src.routing.registry import get_registry
+from src.utils.task_result_keys import DEGRADED_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,6 @@ DOC_QUERY_AGENT = "doc_query"
 DOC_SYSTEM = "doc"
 #: 보기 id 접두 — 보기 id = `doc.<문서군 id>`.
 VIEW_PREFIX = "doc."
-#: 거부·실패 사유 키(apm_query·host_inspect 와 같은 이름).
-DEGRADED_KEY = "degraded_reason"
 #: 결과 메타(계획 요약·후속 조합이 읽는다).
 META_KEY = "doc_query"
 #: 엔진 status 중 실패(사용자에게는 엔진의 사유 문구가 그대로 간다).

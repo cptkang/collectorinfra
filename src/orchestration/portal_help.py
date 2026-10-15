@@ -46,6 +46,7 @@ from src.utils.help_question import (
     has_data_request_cue,
     is_method_or_concept_question,
 )
+from src.utils.task_result_keys import DEGRADED_KEY
 from src.utils.usage_query import is_usage_query
 
 logger = logging.getLogger(__name__)
@@ -58,9 +59,8 @@ PORTAL_TOOL_NAME = "answer_portal_help"
 #: 계획 경로 표지(`intent_planner` 계획 요약·로그) — 명시 명령 ③.9 · 분해 출구 되돌림(G-5).
 PORTAL_COMMAND_PATH = "portal_command"
 PORTAL_REDIRECT_PATH = "portal_redirect"
-#: 결과 메타 키 · 실패 사유 키(doc_query·apm_query 와 같은 이름).
+#: 결과 메타 키(실패 사유 키 `DEGRADED_KEY`는 `src.utils.task_result_keys` 정본).
 META_KEY = "portal_help"
-DEGRADED_KEY = "degraded_reason"
 #: 되돌림 대상 담당(G-5 (b) — W0 실측: 문항 1은 분해가 `cache_management`로 보냈다).
 REDIRECTABLE_AGENTS = frozenset({"general_inference", "cache_management"})
 #: 명시 명령 동사 어간(③.9 — 설명·검색). 「조회」는 넣지 않는다 — 데이터 조회 명령과 겹친다.

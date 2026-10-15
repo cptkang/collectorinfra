@@ -29,6 +29,7 @@ from src.config import AppConfig
 from src.db import get_db_client
 from src.orchestration.db_access import access_denied_result, authorize_targets
 from src.utils.prior_targets import TargetRef
+from src.utils.task_result_keys import DEGRADED_KEY as DEGRADED_KEY
 from src.utils.user_error import request_id
 
 logger = logging.getLogger(__name__)
@@ -36,8 +37,6 @@ logger = logging.getLogger(__name__)
 #: SUBAGENT_REGISTRY 키 — `_TOOL_NAMES` 동사+목적어 관례(W3-4).
 HOST_INSPECT_AGENT = "host_inspect"
 
-#: 거부·실패 사유 키. 침묵 폴백 금지 — 호출자가 이 키를 보고 다음 행동을 고른다.
-DEGRADED_KEY = "degraded_reason"
 
 # ── 프로파일 판정 (W3-2) ────────────────────────────────────────────────
 #

@@ -77,6 +77,7 @@ from src.routing.capability_ownership import (
     REASON_LLM_ERROR,
     REASON_NO_CLASSIFICATION,
     _corrected_note,
+    capability_ownership_on,
     owner_inactive_note,
     resolve_capability_owner,
     restrict_targets_to_owner,
@@ -121,6 +122,7 @@ from src.utils.query_gen_common import (
     refers_to_demonstrative_server,
     resolve_query_limit,
 )
+from src.utils.task_result_keys import DEGRADED_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -297,11 +299,6 @@ async def classify_dbs(
 _ROUTING_FALLBACK_KEY = "routing_fallback"
 
 
-def _capability_ownership_on(app_config: AppConfig) -> bool:
-    """답변 영역 소유 플래그(plans/102 X-7) — 호출부가 넘긴 설정에서 읽는다(기동 시 1회 해석)."""
-    return bool(getattr(getattr(app_config, "router", None), "capability_ownership_enabled", False))
-
-
 def _has_new_location_db_signal(text: str) -> bool:
     """이번 턴 질의에 새 위치/DB 신호가 있는지 표면 검사한다 (M2 — 승계 차단 조건).
 
@@ -412,7 +409,7 @@ def _zone_clarification_or_none_task(
         zone_ids, original_query,
         # 존 그룹 상호배타(D-143 후속3) — 라우트 pre-gate와 동일 UI 규칙
         group_exclusive=bool(
-            getattr(app_config.multi_db, "zone_group_exclusive", True)
+            app_config.multi_db.zone_group_exclusive
         ),
     )
     if payload:
@@ -679,7 +676,7 @@ def _explicit_source_notice(
     return {
         "final_response": source_notice_text(
             [m.hint for m in scoped], unsupported_path=unsupported),
-        "degraded_reason": reason,
+        DEGRADED_KEY: reason,
         "query_results": [],
     }
 
@@ -742,7 +739,7 @@ def _utilization_source_guard(
         return [], {
             "final_response": utilization_notice_text(
                 [m.hint for m in named], kind=utilization_kind(sub_query)),
-            "degraded_reason": REASON_SOURCE_NOT_CANONICAL,
+            DEGRADED_KEY: REASON_SOURCE_NOT_CANONICAL,
             "query_results": [],
         }, []
     if non_owner:
@@ -1224,8 +1221,7 @@ def _extract_identity_rows(rows: list[dict]) -> list[dict]:
 
 def _prior_scope_by_db_enabled() -> bool:
     """`COMPOSITE_PRIOR_SCOPE_BY_DB_ENABLED` — 기동 시 1회 해석(load_config 캐시)."""
-    cfg = getattr(load_config(), "composite", None)
-    return bool(getattr(cfg, "prior_scope_by_db_enabled", False))
+    return bool(load_config().composite.prior_scope_by_db_enabled)
 
 
 def _history_for_agent(task: dict, state: dict) -> list:
@@ -1765,7 +1761,7 @@ async def run_data_query_pipeline(
     ownership_notes: list[dict[str, Any]] = []
     task_owner = None
     if (
-        _capability_ownership_on(app_config)
+        capability_ownership_on(app_config)
         and task.get("capability")
         and not task.get("db_ids")
         and not isolated.get("selected_db_ids")
@@ -1825,7 +1821,7 @@ async def run_data_query_pipeline(
                     cause=str(_mark.get("cause") or ""),
                     task_id=task.get("task_id"),
                 )
-                if _capability_ownership_on(app_config):
+                if capability_ownership_on(app_config):
                     ownership_notes.append(_fallback_note)
                 else:
                     pending_fallback_note = _fallback_note
@@ -1834,7 +1830,7 @@ async def run_data_query_pipeline(
         targets, db_pinned = _apply_turn_hint_pinning(
             targets, isolated, sub_query, app_config.multi_db.get_active_db_ids(),
             zone_group_exclusive=(
-                getattr(app_config.multi_db, "zone_group_exclusive", True) is True
+                app_config.multi_db.zone_group_exclusive is True
             ),
         )
         if not db_pinned:
@@ -1845,7 +1841,7 @@ async def run_data_query_pipeline(
                 app_config.multi_db.get_active_db_ids(),
                 # 존 동시 조회 개방(D-206)이면 직전 DB 집합 전체를 승계한다
                 inherit_all=(
-                    getattr(app_config.multi_db, "zone_group_exclusive", True) is False
+                    app_config.multi_db.zone_group_exclusive is False
                 ),
             )
         # 요청 소스 불가 사유(plans/121 TP-1.11a) — 원문 힌트가 등록·비활성 소스만 가리키면

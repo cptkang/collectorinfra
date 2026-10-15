@@ -17,7 +17,7 @@ from src.utils.json_extract import coerce_content_text
 from src.utils.llm_compat import is_kbgenai
 from src.config import AppConfig, load_config
 from src.db import get_db_client
-from src.db_adapters import get_adapter
+from src.db_adapters import get_adapter_for
 from src.domain.empty_answer import (
     SINGLE_GROUP,
     EntityCheck,
@@ -434,11 +434,10 @@ async def _check_entities(
             len(db_ids), len(values), k_max,
         )
         return None
-    polestar_ids = app_config.get_polestar_db_ids() or None
     groups: list[str] = []
     found: dict[str, list[str]] = {v: [] for v in values}
     for db_id in db_ids:
-        adapter = get_adapter(db_id, polestar_ids)
+        adapter = get_adapter_for(db_id, app_config)
         build = getattr(adapter, "entity_probe_sql", None) if adapter else None
         if not callable(build):
             logger.warning(

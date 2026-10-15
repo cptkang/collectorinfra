@@ -118,7 +118,7 @@ class FabriXAPIClient(BaseChatModel):
                 if hasattr(inp, "model_json_schema"):
                     return inp.model_json_schema()
             except Exception:
-                pass
+                logger.warning("도구 input_schema 추출 실패 — 빈 스키마로 대체", exc_info=True)
         return {"type": "object", "properties": {}}
 
     def _build_payload(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:

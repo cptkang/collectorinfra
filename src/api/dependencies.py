@@ -7,7 +7,7 @@ AUTH_ENABLED=false일 때는 anonymous 사용자를 반환한다.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 import jwt
 from fastapi import Header, HTTPException, Request
@@ -28,7 +28,55 @@ ANONYMOUS_USER: dict = {
 }
 
 
-def _verify_user_token(token: str, secret: str) -> dict:
+def is_admin(user: dict[str, Any] | None) -> bool:
+    """관리자 역할 사용자인지 판정한다(D-069 통합 RBAC · 인가 판정 단일 술어).
+
+    None·빈 dict·role 누락은 관리자가 아니다. 개발 모드(auth 비활성) 우회는 이 술어가 아니라
+    호출처가 판단한다.
+    """
+    if not user:
+        return False
+    return user.get("role") == UserRole.ADMIN.value
+
+
+#: 토큰 종류(`type` 클레임)별 불일치 거부 문구 — 사용자(plans/163 S2) · 운영자(D-070 ①).
+_TOKEN_TYPE_MISMATCH_DETAIL: dict[str, str] = {
+    "user": "사용자 토큰이 아닙니다.",
+    "admin": "관리자 토큰이 아닙니다.",
+}
+
+
+def decode_typed_token(token: str, secret: str, expected_type: str) -> dict[str, Any]:
+    """JWT 서명·만료를 검증하고 `type` 클레임이 ``expected_type``인 payload를 반환한다.
+
+    서명 통과 ≠ 해당 종류 토큰이다 — 시크릿이 같게 설정돼도 사용자/운영자 토큰의 종류 교차
+    통과를 막는다(plans/163 S2 · D-070 ①). `sub` 검사는 종류마다 기준이 달라 호출처가 한다.
+
+    Args:
+        token: JWT 토큰 문자열
+        secret: JWT 시크릿(사용자/운영자 시크릿은 호출처가 고른다)
+        expected_type: 기대하는 `type` 클레임(``"user"`` 또는 ``"admin"``)
+
+    Returns:
+        토큰 payload dict
+
+    Raises:
+        HTTPException: 만료·서명 불일치·종류 불일치(모두 401)
+    """
+    try:
+        payload = jwt.decode(token, secret, algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="토큰이 만료되었습니다.")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
+    if payload.get("type") != expected_type:
+        raise HTTPException(
+            status_code=401, detail=_TOKEN_TYPE_MISMATCH_DETAIL[expected_type]
+        )
+    return payload
+
+
+def _verify_user_token(token: str, secret: str) -> dict[str, Any]:
     """사용자 JWT 토큰을 검증하고 payload를 반환한다.
 
     Args:
@@ -41,20 +89,13 @@ def _verify_user_token(token: str, secret: str) -> dict:
     Raises:
         HTTPException: 토큰이 유효하지 않을 때(사용자 토큰이 아닌 경우 포함)
     """
-    try:
-        payload = jwt.decode(token, secret, algorithms=["HS256"])
-        # 서명 통과 ≠ 사용자 토큰(plans/163 S2): 운영자 쪽(verify_admin_token)과 대칭으로
-        # type=="user"가 아니면 거부한다 — 시크릿이 같게 설정돼도 종류 교차 통과를 막는다.
-        if payload.get("type") != "user":
-            raise HTTPException(status_code=401, detail="사용자 토큰이 아닙니다.")
-        sub = payload.get("sub")
-        if not sub:
-            raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
-        return payload
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="토큰이 만료되었습니다.")
-    except jwt.InvalidTokenError:
+    # 서명 통과 ≠ 사용자 토큰(plans/163 S2): 운영자 쪽(verify_admin_token)과 대칭으로
+    # type=="user"가 아니면 거부한다 — 시크릿이 같게 설정돼도 종류 교차 통과를 막는다.
+    payload = decode_typed_token(token, secret, "user")
+    sub = payload.get("sub")
+    if not sub:
         raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
+    return payload
 
 
 async def get_current_user(
@@ -188,7 +229,7 @@ def alarm_zones_for_user(user: Optional[dict], auth_enabled: bool) -> set[str]:
         return set(all_zones())
     if not user:
         return set()
-    if user.get("role") == UserRole.ADMIN.value:
+    if is_admin(user):
         return set(all_zones())
     return set(normalize_zones(user.get("alarm_zones")))
 
@@ -218,7 +259,7 @@ async def require_admin_user(
 
     # 일반 경로: 사용자 토큰 검증 + 실시간 role 확인
     user = await require_user(request, authorization)
-    if user.get("role") != UserRole.ADMIN.value:
+    if not is_admin(user):
         raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다.")
     return user
 

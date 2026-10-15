@@ -1,0 +1,21 @@
+{
+  "about": "apm_gateway 소비자 계약 스냅샷 (plans/166 M6 · spec/SPEC-apm-gateway.md §3.6). 정본 대조 = apm_gateway/tests/test_plan166_w1_contract_snapshot.py · 소비측 대조 = tests/test_plan166_w1_apm_contract_consumers.py (파일 경로로 읽기만 — 양방향 import 0, D-274). 값을 바꾸면 계약 변경이다.",
+  "error_codes": [
+    "apm_api_error",
+    "apm_quota_exceeded",
+    "contract_violation",
+    "instance_unresolved",
+    "invalid_argument",
+    "job_not_found",
+    "job_not_ready",
+    "not_configured",
+    "profile_ref_mismatch",
+    "rate_limited",
+    "source_unavailable"
+  ],
+  "error_envelope_keys": ["error", "reason", "source", "source_kind", "tool"],
+  "ok_envelope_required_keys": ["limits", "queried_at", "row_count", "rows", "source", "source_kind", "tool"],
+  "source_kind": "apm_api",
+  "source": "jennifer",
+  "job_tools": ["apm_job_cancel", "apm_job_read", "apm_job_status"]
+}

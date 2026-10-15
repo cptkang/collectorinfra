@@ -58,6 +58,7 @@ from src.utils.empty_antecedent import (
 )
 from src.utils.prior_dependency import REASON_PRIOR_EMPTY, render_dependency_notes
 from src.utils.progress_events import emit_answer_prefix
+from src.utils.task_result_keys import DISPLAY_CUT_KEY
 from src.utils.user_error import (
     GENERIC_TASK_ERROR,
     request_id,
@@ -183,7 +184,7 @@ async def result_aggregator(
             # 표시용으로 셀을 줄인 원천이 있으면 CSV 원천은 전문 행으로 다시 병합한다(plans/134 W2)
             csv_rows = (
                 _merge_task_results_by_identity(ordered_tasks, task_results, full=True)
-                if any(r.get(_DISPLAY_CUT_KEY) for r in task_results.values()
+                if any(r.get(DISPLAY_CUT_KEY) for r in task_results.values()
                        if isinstance(r, dict))
                 else None
             )
@@ -307,17 +308,12 @@ def _identity_key(value: Any) -> str:
     return _IDENTITY_KEY_NOISE.sub("", str(value).strip().lower())
 
 
-#: 처리기가 표시용 행(`organized_data.rows`)의 긴 셀을 줄였다는 표지(plans/134 W2 —
-#: `apm_query.DISPLAY_CUT_KEY`와 같은 값). 병합 표의 CSV 원천은 그 task의 `query_results`(전문)다.
-_DISPLAY_CUT_KEY = "display_rows_cut"
-
-
 def _extract_result_rows(res: dict, *, full: bool = False) -> list[dict]:
     """task 결과에서 행 리스트를 추출한다(organized_data.rows 우선, query_results 폴백).
 
-    `full`이면 표시용으로 셀을 줄인 결과(`_DISPLAY_CUT_KEY`)만 `query_results`(전문)를 쓴다.
+    `full`이면 표시용으로 셀을 줄인 결과(`DISPLAY_CUT_KEY`)만 `query_results`(전문)를 쓴다.
     """
-    full_rows = res.get("query_results") if full and res.get(_DISPLAY_CUT_KEY) else None
+    full_rows = res.get("query_results") if full and res.get(DISPLAY_CUT_KEY) else None
     if isinstance(full_rows, list):
         return full_rows
     organized = res.get("organized_data") or {}

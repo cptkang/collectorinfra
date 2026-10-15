@@ -33,7 +33,6 @@ import logging
 import re
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import yaml  # type: ignore[import-untyped]
@@ -70,6 +69,7 @@ from src.schema_cache.structure_store import (
 from src.schema_cache.value_index import _extract_value, build_distinct_values_sql
 from src.security.sql_guard import SQLGuard
 from src.utils.sql_dialect import is_db2
+from src.utils.clock import now_iso as _now_iso
 
 if TYPE_CHECKING:
     from src.config import AppConfig
@@ -115,11 +115,6 @@ class DraftNotApprovable(ValueError):  # noqa: N818 - 계약 확정 이름
     def __init__(self, code: str, message: str) -> None:
         self.code = code
         super().__init__(message)
-
-
-def _now_iso() -> str:
-    """현재 시각(로컬 시간대 오프셋 포함 ISO 8601, 초 단위)."""
-    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def _norm(value: Any) -> str:

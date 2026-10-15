@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 
-from src.api.dependencies import require_user
+from src.api.dependencies import is_admin, require_user
 from src.api.error_detail import current_request_id, user_error_detail
 from src.api.result_chart_view import (
     chart_carry,
@@ -35,6 +35,16 @@ from src.api.result_chart_view import (
     viz_store_fields,
 )
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
+from src.api.sse_events import (
+    SSE_DONE,
+    SSE_ERROR,
+    SSE_HEARTBEAT,
+    SSE_META,
+    SSE_NODE_COMPLETE,
+    SSE_NODE_START,
+    SSE_PROGRESS,
+    SSE_TOKEN,
+)
 from src.api.stream_failure import (
     CUT_HARD_CAP,
     CUT_PROCESSING,
@@ -50,7 +60,6 @@ from src.domain.partial_result import (
     extract_partial_answer,
     render_partial_text,
 )
-from src.domain.user import UserRole
 from src.llm import USER_RESPONSE_TAG
 from src.security.data_masker import DataMasker
 from src.utils.deadline import bind_request_deadline, unbind_request_deadline
@@ -196,7 +205,7 @@ def _owned_result(
         raise HTTPException(status_code=404, detail=not_found)
     if not request.app.state.config.auth.enabled:
         return stored
-    if allow_admin and current_user.get("role") == UserRole.ADMIN.value:
+    if allow_admin and is_admin(current_user):
         return stored
     owner = stored.get("owner_sub")
     if not owner or owner != current_user.get("sub"):
@@ -391,7 +400,7 @@ def _heartbeat_sse_payload(start_time: float, hb: dict) -> dict:
     elapsed_ms = (time.time() - start_time) * 1000
     idle_ms = float(hb.get("idle_ms", 0.0))
     return {
-        "type": "heartbeat",
+        "type": SSE_HEARTBEAT,
         "elapsed_ms": elapsed_ms,
         "last_activity_ms": max(0.0, elapsed_ms - idle_ms),
     }
@@ -413,7 +422,7 @@ def _stream_error_payload(
     ``timeline``은 단계 경계 시각이다(plans/119 T-0 — 있을 때만 싣는다).
     """
     payload = {
-        "type": "error",
+        "type": SSE_ERROR,
         "message": message,
         **trace.failure_fields(
             code=code, elapsed_ms=(time.time() - start_time) * 1000, limit_sec=limit_sec
@@ -439,7 +448,7 @@ def _progress_sse_payload(event: dict, current_node: str | None, start_time: flo
     if kind not in ("on_tool_start", "on_tool_end", "on_custom_event"):
         return None
     base = {
-        "type": "progress",
+        "type": SSE_PROGRESS,
         "name": name,
         "node": current_node or "",
         "timestamp_ms": (time.time() - start_time) * 1000,
@@ -1782,7 +1791,7 @@ def _scope_select_or_none(
             "zone_clarification_allowed": True,  # 텍스트 라우트만 이 함수를 부른다
             "original_query": query,
         },
-        enabled=getattr(config.composite, "scope_select_enabled", False),
+        enabled=config.composite.scope_select_enabled,
         samples=min((s["sample_size"] for s in stats), default=0),
     )
 
@@ -1918,12 +1927,12 @@ def _file_zone_clarification_or_none(
             "양식을 채울 대상 존이 지정되지 않았습니다. 아래에서 대상 존을 선택해 주세요. "
             + (
                 "(은행존과 공동존은 동시 선택 불가 — 공동존은 김포/여의도 복수 선택 가능)"
-                if getattr(config.multi_db, "zone_group_exclusive", True)
+                if config.multi_db.zone_group_exclusive
                 else "(복수 선택 가능 — 전체는 모두 선택. 함께 선택하면 은행존을 먼저 조회한 뒤 공동존을 조회합니다)"
             )
         ),
         has_file=True,
-        group_exclusive=getattr(config.multi_db, "zone_group_exclusive", True),
+        group_exclusive=config.multi_db.zone_group_exclusive,
     )
 
 
@@ -1947,8 +1956,7 @@ def _zone_group_exclusive_or_none(
     ②혼합 텍스트 지정("은행존과 공동존 김포…")을 결정적으로 감지해, 에러 대신
     기존 존 선택 UI로 재선택을 요청한다(막다른 에러·침묵 강등 금지). 턴 유형 무관 발동.
     """
-    # getattr 폴백: 폐쇄망 부분 배포(구버전 config.py)에서도 기본 on으로 동작
-    if not getattr(config.multi_db, "zone_group_exclusive", True):
+    if not config.multi_db.zone_group_exclusive:
         return None
     if selected_db_ids:
         if not mixed_zone_groups(selected_db_ids):
@@ -1994,7 +2002,7 @@ def _unregistered_zone_clarification_or_none(
         return None
     named = ", ".join(f"'{t}'" for t in unknown)
     logger.info("미등록 존 지목 감지(plans/108 CU-B2): %s — 존 선택 역질문 발행", named)
-    exclusive = getattr(config.multi_db, "zone_group_exclusive", True)
+    exclusive = config.multi_db.zone_group_exclusive
     return _authorized_zone_clarification(
         config,
         current_user,
@@ -2233,7 +2241,7 @@ def _zone_clarification_or_none(
         config,
         current_user,
         query,
-        group_exclusive=getattr(config.multi_db, "zone_group_exclusive", True),
+        group_exclusive=config.multi_db.zone_group_exclusive,
     )
 
 
@@ -2280,10 +2288,10 @@ def _bind_deadline(state: Mapping[str, Any], config: Any, *, stream: bool) -> To
     """
     return bind_request_deadline(
         state.get("request_deadline"),
-        _sec_or(getattr(config.server, "answer_reserve_sec", 0), 0),
+        _sec_or(config.server.answer_reserve_sec, 0),
         # 전달 연장은 스트림만 — 최종 응답 스트림의 호출 상한이 처리 마감 + 이 값까지다(G-7).
         # 비스트림은 첫 답변 개념이 없어 처리 상한이 곧 전체 상한이다.
-        _sec_or(getattr(config.server, "stream_delivery_grace_sec", 0), 0) if stream else 0.0,
+        _sec_or(config.server.stream_delivery_grace_sec, 0) if stream else 0.0,
     )
 
 
@@ -2405,7 +2413,7 @@ async def _timeout_sse_event(
             **data, "query_results": partial.rows,
             **viz_store_fields(chart, user_query=user_query, tables=None),
         }, owner=owner)
-        event = {"type": "done", **_PARTIAL_DONE_DEFAULTS, **data}
+        event = {"type": SSE_DONE, **_PARTIAL_DONE_DEFAULTS, **data}
         if timeline is not None:
             event["timeline"] = timeline
         return _sse_event(event)
@@ -2459,7 +2467,7 @@ async def _delivery_cut_sse_event(
         **data, "query_results": rows,
         **viz_store_fields(chart, user_query=user_query, tables=None),
     }, owner=owner)
-    return _sse_event({"type": "done", **_PARTIAL_DONE_DEFAULTS, **data, "timeline": timeline})
+    return _sse_event({"type": SSE_DONE, **_PARTIAL_DONE_DEFAULTS, **data, "timeline": timeline})
 
 
 async def _stream_cut_sse_event(
@@ -2757,7 +2765,7 @@ async def process_query_stream(
     if _selection_denied:
         async def selection_denied_generator() -> AsyncGenerator[str, None]:
             yield _sse_event({
-                "type": "done",
+                "type": SSE_DONE,
                 "response": SELECTION_DENIED_MESSAGE,
                 "query_id": query_id,
                 "thread_id": thread_id,
@@ -2780,7 +2788,7 @@ async def process_query_stream(
 
         async def clarification_generator() -> AsyncGenerator[str, None]:
             yield _sse_event({
-                "type": "done",
+                "type": SSE_DONE,
                 "response": clarification["question"],
                 "query_id": query_id,
                 "thread_id": thread_id,
@@ -2802,7 +2810,7 @@ async def process_query_stream(
     if mem_delete:
         async def mem_delete_generator() -> AsyncGenerator[str, None]:
             yield _sse_event({
-                "type": "done",
+                "type": SSE_DONE,
                 "response": mem_delete["response"],
                 "query_id": query_id,
                 "thread_id": thread_id,
@@ -2859,7 +2867,10 @@ async def process_query_stream(
                     # wait_for(__anext__) 재호출 금지. plans/119 T-5: 무이벤트 안전 상한은 전체
                     # 상한(처리 상한 + 전달 연장)이고, 상한 판정은 `wake_at` tick으로 제때 한다.
                     _progress_on = bool(getattr(config.server, "sse_progress_events", True))
-                    _hb = float(getattr(config.server, "sse_heartbeat_interval_sec", 0) or 0) if _progress_on else 0.0
+                    _hb = (
+                        float(config.server.sse_heartbeat_interval_sec or 0)
+                        if _progress_on else 0.0
+                    )
                     async with contextlib.aclosing(_graph_event_stream(
                         graph, input_state, thread_config,
                         idle_timeout=_watch.caps.hard_cap_sec, heartbeat_interval=_hb,
@@ -2900,7 +2911,7 @@ async def process_query_stream(
                                 if _prefix:
                                     streamed_any_token = True
                                     _watch.answer_sent(_prefix, prefix=True)
-                                    yield _sse_event({"type": "token", "content": _prefix})
+                                    yield _sse_event({"type": SSE_TOKEN, "content": _prefix})
                                 continue
 
                             # 도구·커스텀 이벤트 → progress (plans/89 T3)
@@ -2920,7 +2931,7 @@ async def process_query_stream(
                                     _seen_nodes.add(name)
                                     _current_node = name
                                     yield _sse_event({
-                                        "type": "node_start",
+                                        "type": SSE_NODE_START,
                                         "node": name,
                                         "timestamp_ms": (time.time() - start_time) * 1000,
                                     })
@@ -2943,7 +2954,7 @@ async def process_query_stream(
                                     # (plans/120 V-6: 3단 multi_db_executor·result_merger 는
                                     # 추출 분기가 없어 완료 이벤트가 0건 → 하네스가 구간을 잃었다).
                                     yield _sse_event({
-                                        "type": "node_complete",
+                                        "type": SSE_NODE_COMPLETE,
                                         "node": name,
                                         "data": progress_data or {},
                                         "timestamp_ms": (time.time() - start_time) * 1000,
@@ -2970,7 +2981,7 @@ async def process_query_stream(
                                         streamed_any_token = True
                                         _watch.answer_sent(token_text)   # 첫 답변·idle 시계(T-5)
                                         yield _sse_event({
-                                            "type": "token",
+                                            "type": SSE_TOKEN,
                                             "content": token_text,
                                         })
 
@@ -2984,7 +2995,7 @@ async def process_query_stream(
                                             output.get("final_response", ""), final=True
                                         )
                                         yield _sse_event({
-                                            "type": "token",
+                                            "type": SSE_TOKEN,
                                             "content": output.get("final_response", ""),
                                         })
 
@@ -2993,7 +3004,7 @@ async def process_query_stream(
                                     _final_row_count = len(output.get("query_results", [])) or _tracked_row_count
 
                                     yield _sse_event({
-                                        "type": "meta",
+                                        "type": SSE_META,
                                         "executed_sql": _executed_sql(_sql_state),
                                         "row_count": _final_row_count,
                                     })
@@ -3051,7 +3062,7 @@ async def process_query_stream(
                                     }, owner=current_user.get("sub"))
 
                                     yield _sse_event({
-                                        "type": "done",
+                                        "type": SSE_DONE,
                                         "response": response_data["response"],
                                         "query_id": query_id,
                                         "thread_id": thread_id,
@@ -3106,13 +3117,13 @@ async def process_query_stream(
 
             final_response = result.get("final_response", "")
             _watch.answer_sent(final_response, final=True)
-            yield _sse_event({"type": "token", "content": final_response})
+            yield _sse_event({"type": SSE_TOKEN, "content": final_response})
             # 기간 되묻기(plans/122 T-3·T-4) — 조회하지 않은 턴이라 직전 턴 SQL·행을 싣지 않는다(D5)
             _time_clar = _time_clarification(result)
             _turn_fields = _clarify_turn_fields(_time_clar)
 
             yield _sse_event({
-                "type": "meta",
+                "type": SSE_META,
                 "executed_sql": _executed_sql(result),
                 "row_count": len(result.get("query_results", [])),
                 **{k: v for k, v in _turn_fields.items() if k in ("executed_sql", "row_count")},
@@ -3169,7 +3180,7 @@ async def process_query_stream(
             }, owner=current_user.get("sub"))
 
             yield _sse_event({
-                "type": "done",
+                "type": SSE_DONE,
                 "response": response_data["response"],
                 "query_id": query_id,
                 "thread_id": thread_id,
@@ -3598,7 +3609,7 @@ async def process_file_query_stream(
 
         async def selection_denied_file_generator() -> AsyncGenerator[str, None]:
             yield _sse_event({
-                "type": "done",
+                "type": SSE_DONE,
                 "response": SELECTION_DENIED_MESSAGE,
                 "query_id": query_id,
                 "thread_id": actual_thread_id,
@@ -3621,7 +3632,7 @@ async def process_file_query_stream(
 
         async def file_clarification_generator() -> AsyncGenerator[str, None]:
             yield _sse_event({
-                "type": "done",
+                "type": SSE_DONE,
                 "response": clarification["question"],
                 "query_id": query_id,
                 "thread_id": actual_thread_id,
@@ -3726,7 +3737,10 @@ async def process_file_query_stream(
                     # wait_for(__anext__) 재호출 금지. plans/119 T-5: 무이벤트 안전 상한은 전체
                     # 상한(처리 상한 + 전달 연장)이고, 상한 판정은 `wake_at` tick으로 제때 한다.
                     _progress_on = bool(getattr(config.server, "sse_progress_events", True))
-                    _hb = float(getattr(config.server, "sse_heartbeat_interval_sec", 0) or 0) if _progress_on else 0.0
+                    _hb = (
+                        float(config.server.sse_heartbeat_interval_sec or 0)
+                        if _progress_on else 0.0
+                    )
                     async with contextlib.aclosing(_graph_event_stream(
                         graph, initial_state, thread_config,
                         idle_timeout=_watch.caps.hard_cap_sec, heartbeat_interval=_hb,
@@ -3767,7 +3781,7 @@ async def process_file_query_stream(
                                 if _prefix:
                                     streamed_any_token = True
                                     _watch.answer_sent(_prefix, prefix=True)
-                                    yield _sse_event({"type": "token", "content": _prefix})
+                                    yield _sse_event({"type": SSE_TOKEN, "content": _prefix})
                                 continue
 
                             # 도구·커스텀 이벤트 → progress (plans/89 T3)
@@ -3786,7 +3800,7 @@ async def process_file_query_stream(
                                     _seen_nodes.add(name)
                                     _current_node = name
                                     yield _sse_event({
-                                        "type": "node_start",
+                                        "type": SSE_NODE_START,
                                         "node": name,
                                         "timestamp_ms": (time.time() - start_time) * 1000,
                                     })
@@ -3805,7 +3819,7 @@ async def process_file_query_stream(
                                     )
                                     # 진행 데이터 없어도 완료 알림(plans/120 V-6)
                                     yield _sse_event({
-                                        "type": "node_complete",
+                                        "type": SSE_NODE_COMPLETE,
                                         "node": name,
                                         "data": progress_data or {},
                                         "timestamp_ms": (time.time() - start_time) * 1000,
@@ -3831,7 +3845,7 @@ async def process_file_query_stream(
                                         streamed_any_token = True
                                         _watch.answer_sent(token_text)   # 첫 답변·idle 시계(T-5)
                                         yield _sse_event({
-                                            "type": "token",
+                                            "type": SSE_TOKEN,
                                             "content": token_text,
                                         })
 
@@ -3845,14 +3859,14 @@ async def process_file_query_stream(
                                             output.get("final_response", ""), final=True
                                         )
                                         yield _sse_event({
-                                            "type": "token",
+                                            "type": SSE_TOKEN,
                                             "content": output.get("final_response", ""),
                                         })
 
                                     _final_row_count = len(output.get("query_results", [])) or _tracked_row_count
 
                                     yield _sse_event({
-                                        "type": "meta",
+                                        "type": SSE_META,
                                         "executed_sql": _executed_sql(_sql_state),
                                         "row_count": _final_row_count,
                                     })
@@ -3910,7 +3924,7 @@ async def process_file_query_stream(
                                     }, owner=current_user.get("sub"))
 
                                     yield _sse_event({
-                                        "type": "done",
+                                        "type": SSE_DONE,
                                         "response": response_data["response"],
                                         "query_id": query_id,
                                         "thread_id": actual_thread_id,
@@ -3954,13 +3968,13 @@ async def process_file_query_stream(
             elapsed_ms = (time.time() - start_time) * 1000
             final_response = result.get("final_response", "")
             _watch.answer_sent(final_response, final=True)
-            yield _sse_event({"type": "token", "content": final_response})
+            yield _sse_event({"type": SSE_TOKEN, "content": final_response})
             _final_row_count = len(result.get("query_results", []))
             # 기간 되묻기(plans/122 T-3·T-4) — 조회하지 않은 턴이라 직전 턴 SQL·행을 싣지 않는다(D5)
             _time_clar = _time_clarification(result)
             _turn_fields = _clarify_turn_fields(_time_clar)
             yield _sse_event({
-                "type": "meta",
+                "type": SSE_META,
                 "executed_sql": _executed_sql(result),
                 "row_count": _final_row_count,
                 **{k: v for k, v in _turn_fields.items() if k in ("executed_sql", "row_count")},
@@ -4013,7 +4027,7 @@ async def process_file_query_stream(
                 **viz_store_fields(response_data["chart"], user_query=query, tables=_tables),
             }, owner=current_user.get("sub"))
             yield _sse_event({
-                "type": "done",
+                "type": SSE_DONE,
                 "response": response_data["response"],
                 "query_id": query_id,
                 "thread_id": actual_thread_id,

@@ -317,6 +317,20 @@ business_map:
 - **`expect_calls`**: 업무 정의(캐시 밖만) + 카탈로그 + 대상 × 지표 수를 신고한다.
 - 인자 섞임 거부는 §3.2.
 
+### 3.6 계약 스냅샷 · 소비측 사본 (`plans/166` M6)
+
+게이트웨이와 소비자는 서로 import하지 않는다(D-139·D-274 — `apm_gateway/tests/test_boundary.py`). 공유 라이브러리 대신 아래 값을 JSON 스냅샷 한 벌 `apm_gateway/tests/snapshots/plan166_w1/apm_contract.json`에 두고, 양쪽 테스트가 같은 파일을 대조한다 — 정본 쪽 `apm_gateway/tests/test_plan166_w1_contract_snapshot.py` · 소비측 `tests/test_plan166_w1_apm_contract_consumers.py`(파일 경로로 읽기만). 값을 바꾸면 계약 변경이다 — 스냅샷·이 절·§3.2·소비측 사본을 함께 고친다.
+
+| 항목 | 값(정본) | 정본 위치 |
+|---|---|---|
+| 오류 코드 | `not_configured` · `invalid_argument` · `instance_unresolved` · `profile_ref_mismatch` · `source_unavailable` · `contract_violation` · `apm_quota_exceeded` · `apm_api_error` · `rate_limited` · `job_not_found` · `job_not_ready`(뜻은 §3.2 표) | `domain/errors.py` `ERROR_CODES` |
+| 오류 봉투 키 | `error` · `reason` · `source_kind` · `source` · `tool`(정확히 이 다섯) | `ApmTools.err` |
+| 정상 봉투 필수 키 | `rows` · `row_count` · `queried_at` · `source_kind` · `source` · `tool` · `limits`(나머지는 §3.1의 조건부 키) | `ApmTools.ok` |
+| `source_kind` · `source` | `apm_api` · `jennifer` | `application/tools.py` `SOURCE_KIND` · `adapters/jennifer/fields.py` `SOURCE` |
+| 작업 도구 이름 | `apm_job_status` · `apm_job_cancel` · `apm_job_read`(등록 도구와 일치) | `interface/server.py` `JOB_TOOLS` |
+
+소비측 사본(테스트가 계약 집합 안인지 본다): `src/orchestration/apm_query.py` `_GUIDANCE_CODES`·`instance_unresolved` 비교 · `src/orchestration/apm_jobs.py` `JOB_NOT_FOUND`·`JOB_NOT_READY`·작업 도구 이름 3종 · `noise_gate/scripts/page_audit_sanitize.py` `GATEWAY_ERROR_CODES`(전체 사본 — 같아야 한다)·`APP_IMPACT_INSTANCE_UNRESOLVED` · `noise_gate/application/nodes/notification_gate.py` 사유 머리 `invalid_argument —`·`contract_violation —` · `sre_agent/sre_agent/domain/investigation_limits.py` `APM_UNAVAILABLE_CODES` · `sre_agent/sre_agent/domain/severity_signatures.py` `APM_SOURCE_KIND` · `sre_agent/scripts/investigation_bench/world_server.py` 가짜 봉투. 같은 철자의 본체 어휘(`NOTE_SOURCE_UNAVAILABLE` 노트 종류 · `apm_query` 강등 사유 `source_unavailable`)는 이 계약이 아니다.
+
 ## 4. `was_signals` 항목 (소비자 계약 ②)
 
 ```json

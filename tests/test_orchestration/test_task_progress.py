@@ -141,7 +141,10 @@ def test_orchestrator_level_loop_emits_in_order(monkeypatch, captured):
         ],
         "task_results": {},
     }
-    cfg = SimpleNamespace(composite=SimpleNamespace(sequential_gate_enabled=False))
+    cfg = SimpleNamespace(
+        composite=SimpleNamespace(sequential_gate_enabled=False, scope_postcheck_enabled=False),
+        server=SimpleNamespace(answer_reserve_sec=0),
+    )
     node = getattr(ao, "agent_orchestrator", None) or getattr(ao, "run")
     sig = inspect.signature(node)
     kwargs = {"app_config": cfg}

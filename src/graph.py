@@ -566,7 +566,7 @@ def build_graph(config: AppConfig, checkpointer=None):
     # 노드 파일은 수정하지 않는다. off면 원본 함수를 그대로 등록해 비트동일하게 동작한다.
     graph = TracedGraph(
         StateGraph(AgentState),
-        enabled=bool(getattr(getattr(config, "observability", None), "trace_enabled", False)),
+        enabled=bool(config.observability.trace_enabled),
     )
 
     # --- 노드 등록 ---
@@ -680,7 +680,7 @@ def build_graph(config: AppConfig, checkpointer=None):
         and not use_deep_agent
         and not config.enable_intent_orchestration
     )
-    trace_on = bool(getattr(getattr(config, "observability", None), "trace_enabled", False))
+    trace_on = bool(config.observability.trace_enabled)
     if plan_loop_tier:
         graph.add_node("plan", partial(plan_node, llm=llm, app_config=config))
         graph.add_node("normalize", partial(plan_normalize, app_config=config))
@@ -705,7 +705,7 @@ def build_graph(config: AppConfig, checkpointer=None):
     # (1단은 도구 루프, 2단은 task DAG가 이미 순차를 갖는다). 플래그 off면 등록도 하지 않는다.
     # 3단 계획 루프가 등록되면 같은 질의를 루프가 맡으므로 등록하지 않는다(4단은 그대로).
     sequential_tier = (
-        bool(getattr(getattr(config, "composite", None), "sequential_fallback_tiers_enabled", False))
+        bool(config.composite.sequential_fallback_tiers_enabled)
         and not use_deep_agent
         and not config.enable_intent_orchestration
         and not plan_loop_tier
@@ -977,8 +977,9 @@ def build_graph(config: AppConfig, checkpointer=None):
     if plan_loop_tier:
         logger.info("3단 계획 루프 등록(TIER3_PLAN_LOOP_ENABLED · plans/103 P2 · 111 C-4·C-5)")
 
-    # 확정된 사다리 단과 그 사유를 기록한다(D-161 / plans/70 P0-1 · D-225 기준 개정).
-    # 경로 4종은 병존이 아니라 한 단만 확정되는 사다리(기준 3단 · 1단 부가)이며,
+    # 확정된 사다리 단과 그 사유를 기록한다(D-161 / plans/70 P0-1 · D-251 기준 개정).
+    # 경로 4종은 병존이 아니라 한 단만 확정되는 사다리(기준 2단 intent_orchestration ·
+    # 3단 semantic_router는 비교 arm · 1단 부가)이며,
     # 확정은 여기서 1회 일어난다.
     # 이 로그가 "레거시 4단이 실제로 쓰이는가"를 판정하는 유일한 근거다.
     _tier, _reason = resolve_ladder_tier(config, backend=_backend, buildable=_buildable)

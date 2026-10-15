@@ -252,6 +252,17 @@ class _Limits(list[str]):
             self.unresolved.append(text)
 
 
+def limit_notice(
+    e: ApmError, subject: str, where: str = "", tail: str = "", *, detail: str | None = None
+) -> str:
+    """조회 실패 한 건의 `[한계]` 고지 — `[한계] {subject} 조회 실패{where}: {detail}{tail}`
+    (`detail`을 비우면 오류 코드). 계약 위반(`contract_violation` — 게이트웨이 버그)은 고지로
+    강등하지 않고 그대로 다시 던진다(plans/166 M3 — 사본마다 쓰던 재발생 규칙의 단일 출처)."""
+    if e.code == CONTRACT_VIOLATION:
+        raise e
+    return f"[한계] {subject} 조회 실패{where}: {e.code if detail is None else detail}{tail}"
+
+
 def _positive_int(value: Any, name: str, default: int) -> int:
     """양의 정수 인자(비면 기본값) — 1 미만·정수 아님은 `invalid_argument`."""
     if value is None:
@@ -861,11 +872,7 @@ class ApmTools:
                     if _key(rec) in wanted:
                         out[_key(rec)] = rec
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
-                limits.fail(
-                    f"[한계] 실시간 조회 실패({self.sources.where(sid, domain_id)}): {e.code}"
-                )
+                limits.fail(limit_notice(e, "실시간", f"({self.sources.where(sid, domain_id)})"))
         missing = wanted - set(out)
         if missing:
             limits.append(f"[한계] 실시간 데이터 없는 인스턴스: {self._ids_text(missing)}")
@@ -891,10 +898,8 @@ class ApmTools:
                     batch = await self._api(sid).transactions(domain_id, ids, t, query_end)
                     any_ok = True
                 except ApmError as e:
-                    if e.code == CONTRACT_VIOLATION:
-                        raise
                     limits.fail(
-                        f"[한계] 트랜잭션 조회 실패({self.sources.where(sid, domain_id)}): {e.code}"
+                        limit_notice(e, "트랜잭션", f"({self.sources.where(sid, domain_id)})")
                     )
                     break
                 for tx in _tag(batch, sid, domain_id):
@@ -938,10 +943,8 @@ class ApmTools:
                     _tag(await self._api(sid).application_status(domain_id, ids, start, end), sid)
                 )
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
                 limits.fail(
-                    f"[한계] 시 단위 통계 조회 실패({self.sources.where(sid, domain_id)}): {e.code}"
+                    limit_notice(e, "시 단위 통계", f"({self.sources.where(sid, domain_id)})")
                 )
         if not rows:
             return None
@@ -1100,11 +1103,13 @@ class ApmTools:
             try:
                 entry = await self._catalog(sid)
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
                 limits.fail(
-                    f"[한계] 지표 카탈로그 조회 실패{self._where(sid)}: {e.code} — 지표 이름을"
-                    " 검증하지 못하고 그대로 조회했다"
+                    limit_notice(
+                        e,
+                        "지표 카탈로그",
+                        self._where(sid),
+                        " — 지표 이름을 검증하지 못하고 그대로 조회했다",
+                    )
                 )
                 known[sid] = None
                 continue
@@ -1534,14 +1539,12 @@ class ApmTools:
         try:
             defs = await src.api.businesses(domain_id)
         except ApmError as e:
-            if e.code == CONTRACT_VIOLATION:
-                raise
+            notice = limit_notice(
+                e, "업무 목록", f"({self.sources.where(src.source_id, domain_id)})"
+            )
             if failures is not None:
                 failures.append((self.sources.where(src.source_id, domain_id), e))
-            limits.fail(
-                f"[한계] 업무 목록 조회 실패({self.sources.where(src.source_id, domain_id)}):"
-                f" {e.code}"
-            )
+            limits.fail(notice)
             return None
         self._business_defs[key] = (now, defs)
         return defs
@@ -1570,10 +1573,9 @@ class ApmTools:
         try:
             note(await src.api.active_services(domain_id, None))
         except ApmError as e:
-            if e.code == CONTRACT_VIOLATION:
-                raise
+            notice = limit_notice(e, "업무 역추적 — 액티브 서비스", f"({where})")
             complete = False
-            limits.fail(f"[한계] 업무 역추적 — 액티브 서비스 조회 실패({where}): {e.code}")
+            limits.fail(notice)
         end_ms = int(now * 1000)
         t = end_ms - BUSINESS_TRACE_MINUTES * 60_000
         while t < end_ms:
@@ -1582,10 +1584,9 @@ class ApmTools:
             try:
                 note(await src.api.transactions(domain_id, None, t, query_end))
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
+                notice = limit_notice(e, "업무 역추적 — 트랜잭션", f"({where})")
                 complete = False
-                limits.fail(f"[한계] 업무 역추적 — 트랜잭션 조회 실패({where}): {e.code}")
+                limits.fail(notice)
                 break
             t = chunk_end
         if complete:
@@ -1747,12 +1748,13 @@ class ApmTools:
                             window.end_ms,
                         )
                     except ApmError as e:
-                        if e.code == CONTRACT_VIOLATION:
-                            raise
                         limits.fail(
-                            f"[한계] 추세 {label} 조회 실패"
-                            f"(인스턴스 {self._inst_label(_key(inst))}): {e.code}"
-                            + self._reason_tail(e)
+                            limit_notice(
+                                e,
+                                f"추세 {label}",
+                                f"(인스턴스 {self._inst_label(_key(inst))})",
+                                self._reason_tail(e),
+                            )
                         )
                 if trend:
                     trends[_key(inst)] = trend
@@ -1827,10 +1829,8 @@ class ApmTools:
                     services.setdefault(_key(svc), []).append(svc)
                 active_ok = True
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
                 where = self.sources.where(sid, domain_id)
-                limits.fail(f"[한계] 액티브 서비스 조회 실패({where}): {e.code}")
+                limits.fail(limit_notice(e, "액티브 서비스", f"({where})"))
         if not current and not active_ok:
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits))
         rows: list[dict[str, Any]] = []
@@ -1964,10 +1964,8 @@ class ApmTools:
                 ]
                 ok = True
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
                 where = self.sources.where(sid, domain_id)
-                limits.fail(f"[한계] 액티브 서비스 조회 실패({where}): {e.code}")
+                limits.fail(limit_notice(e, "액티브 서비스", f"({where})"))
         if not ok:
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits))
         ranked = sorted(services, key=lambda s: s.get("elapsed_ms") or 0, reverse=True)
@@ -2130,17 +2128,13 @@ class ApmTools:
                 events += [e for e in _tag(batch, sid, domain_id) if _key(e) in wanted]
                 events_ok = True
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
-                limits.fail(f"[한계] 이벤트 조회 실패({where}): {e.code}")
+                limits.fail(limit_notice(e, "이벤트", f"({where})"))
             try:
                 batch = await self._errors(api, domain_id, ids, window, etype, where, limits)
                 errors += [e for e in _tag(batch, sid, domain_id) if _key(e) in wanted]
                 errors_ok = True
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
-                limits.fail(f"[한계] 오류 기록 조회 실패({where}): {e.code}")
+                limits.fail(limit_notice(e, "오류 기록", f"({where})"))
         if (rec == "event" and not events_ok) or (rec == "error" and not errors_ok):
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits))
         events = self._filter_events(events, lvl, mode, etype)
@@ -2386,9 +2380,7 @@ class ApmTools:
             detail = await api.transaction_detail(d, tx_id, t_ms)
             ok = True
         except ApmError as e:
-            if e.code == CONTRACT_VIOLATION:
-                raise
-            limits.fail(f"[한계] 트랜잭션 상세 조회 실패: {e.code}")
+            limits.fail(limit_notice(e, "트랜잭션 상세"))
         try:
             text = await api.profile_text(d, tx_id, t_ms)
             lines = text.splitlines()
@@ -2405,9 +2397,7 @@ class ApmTools:
                 )
             ok = True
         except ApmError as e:
-            if e.code == CONTRACT_VIOLATION:
-                raise
-            limits.fail(f"[한계] 프로파일 텍스트 조회 실패: {e.code}")
+            limits.fail(limit_notice(e, "프로파일 텍스트"))
         try:
             raw_sqls = await api.transaction_sqls(
                 d, tx_id, t_ms, k, profile_no=pno, include_param_key=include_param_key
@@ -2425,9 +2415,7 @@ class ApmTools:
                 )
             ok = True
         except ApmError as e:
-            if e.code == CONTRACT_VIOLATION:
-                raise
-            limits.fail(f"[한계] SQL 조회 실패: {e.code}")
+            limits.fail(limit_notice(e, "SQL"))
         if not ok:
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits))
         transaction = _tx_fields(detail) if detail else None
@@ -2571,12 +2559,9 @@ class ApmTools:
                     )
                     refused.append((where, e))
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
+                notice = limit_notice(e, f"{kind} 통계", f"({where})", self._reason_tail(e))
                 failures.append((where, e))
-                limits.fail(
-                    f"[한계] {kind} 통계 조회 실패({where}): {e.code}" + self._reason_tail(e)
-                )
+                limits.fail(notice)
                 continue
             received.append([{"source_id": sid, "domain_id": domain_id, **r} for r in batch])
         if failures and len(failures) == len(groups):
@@ -2750,13 +2735,11 @@ class ApmTools:
                         window.end_ms,
                     )
                 except ApmError as e:
-                    if e.code == CONTRACT_VIOLATION:
-                        raise
-                    failures.append((f"인스턴스 {label} 지표 {metric_id}", e))
-                    limits.fail(
-                        f"[한계] 지표 {metric_id} 조회 실패(인스턴스 {label}): {e.code}"
-                        + self._reason_tail(e)
+                    notice = limit_notice(
+                        e, f"지표 {metric_id}", f"(인스턴스 {label})", self._reason_tail(e)
                     )
+                    failures.append((f"인스턴스 {label} 지표 {metric_id}", e))
+                    limits.fail(notice)
                     continue
                 if not points:
                     empty.append(f"{label}:{metric_id}")
@@ -2798,8 +2781,9 @@ class ApmTools:
             try:
                 entry = await self._catalog(src.source_id)
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
+                notice = limit_notice(
+                    e, "지표 카탈로그", self._where(src.source_id), self._reason_tail(e)
+                )
                 failures.append((self.sources.where(src.source_id), e))
                 statuses.append(
                     {
@@ -2808,10 +2792,7 @@ class ApmTools:
                         "reason": f"{e.code}: {e.reason}",
                     }
                 )
-                limits.fail(
-                    f"[한계] 지표 카탈로그 조회 실패{self._where(src.source_id)}: {e.code}"
-                    + self._reason_tail(e)
-                )
+                limits.fail(notice)
                 continue
             statuses.append({"source_id": src.source_id, "status": STATUS_OK, "reason": ""})
             if entry.change_note:
@@ -2883,15 +2864,16 @@ class ApmTools:
                 try:
                     batch = await self._api(sid).source_changes(domain_id, t, chunk_end)
                 except ApmError as e:
-                    if e.code == CONTRACT_VIOLATION:
-                        raise
                     where = self.sources.where(sid, domain_id)
+                    notice = limit_notice(
+                        e,
+                        "변경 이력",
+                        f"({where} · 조각 {done + 1}/{chunks}부터 — 남은 조각 생략)",
+                        self._reason_tail(e),
+                    )
                     if not done:  # 받은 조각이 없으면 묶음 실패(전부 실패면 오류)
                         failures.append((where, e))
-                    limits.fail(
-                        f"[한계] 변경 이력 조회 실패({where} · 조각 {done + 1}/{chunks}부터 —"
-                        f" 남은 조각 생략): {e.code}" + self._reason_tail(e)
-                    )
+                    limits.fail(notice)
                     # 받은 조각의 행은 남긴다(partial · W2V-G1). 남은 조각은 같은 원인으로
                     # 실패할 가능성이 커 부르지 않는다(X-View 조각과 같은 처리).
                     break
@@ -3024,10 +3006,9 @@ class ApmTools:
                     domain_id, gid, window.start_ms, window.end_ms
                 )
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
+                notice = limit_notice(e, "GUID 거래", f"({where})", self._reason_tail(e))
                 failures.append((where, e))
-                limits.fail(f"[한계] GUID 거래 조회 실패({where}): {e.code}" + self._reason_tail(e))
+                limits.fail(notice)
                 continue
             for tx in _tag(batch, sid, domain_id):
                 if tx.get("guid") and tx["guid"] != gid:
@@ -3154,12 +3135,9 @@ class ApmTools:
                 self._api(sid), domain_id, [inst["instance_id"]], win, None, where, limits
             )
         except ApmError as e:
-            if e.code == CONTRACT_VIOLATION:
-                raise
+            notice = limit_notice(e, f"{what} 오류 기록", f"({where})", self._reason_tail(e))
             fails += 1
-            limits.fail(
-                f"[한계] {what} 오류 기록 조회 실패({where}): {e.code}" + self._reason_tail(e)
-            )
+            limits.fail(notice)
             side.update(error_records=None, errors_by_type=None)
         else:
             mine = [r for r in _tag(records, sid, domain_id) if _key(r) == _key(inst)]
@@ -3443,14 +3421,15 @@ class ApmTools:
                         inst["domain_id"], [inst["instance_id"]], start, end
                     )
                 except ApmError as e:
-                    if e.code == CONTRACT_VIOLATION:
-                        raise
+                    notice = limit_notice(
+                        e,
+                        f"{_PERIOD_LABELS[period]} 구간 통계",
+                        f"(인스턴스 {label})",
+                        self._reason_tail(e),
+                    )
                     failures.append((f"인스턴스 {label} {_PERIOD_LABELS[period]} 구간", e))
                     failed[period].append(label)
-                    limits.fail(
-                        f"[한계] {_PERIOD_LABELS[period]} 구간 통계 조회 실패(인스턴스 {label}):"
-                        f" {e.code}" + self._reason_tail(e)
-                    )
+                    limits.fail(notice)
                     stats[(_key(inst), period)] = None
                     continue
                 if not app_rows:

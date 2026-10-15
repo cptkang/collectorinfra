@@ -257,9 +257,9 @@ async def _check_target_availability(
         `HostAvailability` 또는 None(판정 비활성·대상 미식별·차단 비활성)
     """
     cfg = getattr(app_config, "composite", None)
-    if cfg is None or not getattr(cfg, "availability_precheck_enabled", False):
+    if cfg is None or not cfg.availability_precheck_enabled:
         return None
-    if not getattr(cfg, "availability_block_on_unavailable", False):
+    if not cfg.availability_block_on_unavailable:
         # 관찰 모드 — 조사 경로는 표시할 표가 없으므로 판정만 하고 진행한다(문구 미사용).
         return None
     target = hostname or server_name
@@ -319,7 +319,7 @@ def _build_client(gate_cfg):  # noqa: ANN001, ANN201 — NoiseGateConfig → Sre
     try:
         from noise_gate.infrastructure.sre_agent_client import SreAgentClient
 
-        url = getattr(gate_cfg, "investigation_service_url", "")
+        url = gate_cfg.investigation_service_url
         if not url:
             return None
         token = getattr(gate_cfg, "investigation_service_token", None)

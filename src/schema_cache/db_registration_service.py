@@ -55,6 +55,7 @@ from src.schema_cache.structure_analysis import split_fk_groups
 from src.schema_cache.structure_store import StructureStoreUnavailable, validate_db_id
 from src.schema_cache.value_index import derive_value_specs
 from src.security.sql_guard import INJECTION_PATTERNS, SQLGuard
+from src.utils.sql_dialect import engine_key
 
 if TYPE_CHECKING:
     from src.schema_cache.admin_jobs import JobContext
@@ -98,15 +99,8 @@ SERVER_VARIABLE_SQL: Mapping[str, str] = {
         "@@collation_server AS collation_server"
     ),
 }
-_ENGINE_ALIASES: Mapping[str, str] = {"postgres": "postgresql", "mysql": "mariadb"}
 # 서버 변수 조회는 시스템 변수 읽기가 목적이라 이 패턴만 예외로 둔다(나머지 안전성 검사는 그대로)
 _SYSTEM_VARIABLE_PATTERN = r"@@\w+"
-
-
-def _engine_key(engine: str | None) -> str:
-    """엔진 이름 정규화(별칭 흡수)."""
-    text = str(engine or "").strip().lower()
-    return _ENGINE_ALIASES.get(text, text)
 
 
 _HANGUL_CHAR_RE = re.compile(r"[가-힣]")
@@ -421,10 +415,10 @@ class DBRegistrationService(AdminServiceBase):
             )
         else:
             detail["engine_match"] = (
-                _engine_key(mcp_type) == _engine_key(registry_engine) if mcp_type else None
+                engine_key(mcp_type) == engine_key(registry_engine) if mcp_type else None
             )
         engine = mcp_type or registry_engine
-        detail["engine_supported"] = _engine_key(engine) in SUPPORTED_ENGINES if engine else None
+        detail["engine_supported"] = engine_key(engine) in SUPPORTED_ENGINES if engine else None
         detail["server_variables"] = await self._server_variables(client, engine)
 
         if not health.get("healthy"):
@@ -442,7 +436,7 @@ class DBRegistrationService(AdminServiceBase):
     @staticmethod
     async def _server_variables(client: Any, engine: str | None) -> dict[str, Any]:
         """엔진별 서버 변수(방언 판단 근거) — 실패는 "확인 못 함"."""
-        sql = SERVER_VARIABLE_SQL.get(_engine_key(engine))
+        sql = SERVER_VARIABLE_SQL.get(engine_key(engine))
         if sql is None:
             return {"engine": engine, "sql": None, "values": None,
                     "error": f"확인 못 함 — 서버 변수 조회를 모르는 엔진: {engine or '(미상)'}"}
@@ -943,7 +937,7 @@ class DBRegistrationService(AdminServiceBase):
         """
         source_engine, parsed, schema_dict, snapshot = await self._parse_ddl(source, engine, text)
         warnings = list(parsed.warnings)
-        if source_engine and _engine_key(source_engine) != engine:
+        if source_engine and engine_key(source_engine) != engine:
             warnings.insert(0, (
                 f"선택한 엔진({engine})이 소스 엔진({source_engine})과 다릅니다 — 식별자 대소문자·"
                 "타입 표기가 MCP 수집과 달라져 이후 변경 점검에 차이로 보일 수 있습니다"
@@ -1150,7 +1144,7 @@ class DBRegistrationService(AdminServiceBase):
             notes.append(
                 "db_schema 후보를 찾지 못했습니다(스냅샷 없음) — 스키마 수집 뒤 다시 내려받으세요."
             )
-        if _engine_key(engine) == "db2" and not item["db_schema"]:
+        if engine_key(engine) == "db2" and not item["db_schema"]:
             notes.append("DB2는 db_schema가 필요합니다(대문자 스키마 한정 — C4).")
         if hangul_columns:
             notes.append(

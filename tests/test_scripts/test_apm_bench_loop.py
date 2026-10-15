@@ -298,7 +298,8 @@ def _stub_config() -> Any:
     return SimpleNamespace(
         router=SimpleNamespace(capability_ownership_enabled=True),
         multi_db=SimpleNamespace(get_active_db_ids=lambda: ["polestar_cm_gp"]),
-        composite=SimpleNamespace(task_frame_enabled=False),
+        composite=SimpleNamespace(task_frame_enabled=False, plan_dag_validation_enabled=False,
+                                  sequential_replan_enabled=False),
         dbhub=SimpleNamespace(source_endpoint=lambda system: None),
         rag=None,
     )

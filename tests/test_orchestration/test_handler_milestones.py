@@ -129,7 +129,10 @@ def test_schema_analyzer_node_calls_the_helper():
 
 
 def _cfg(max_retry: int = 3):
-    return SimpleNamespace(query=SimpleNamespace(max_retry_count=max_retry))
+    return SimpleNamespace(
+        query=SimpleNamespace(max_retry_count=max_retry),
+        server=SimpleNamespace(answer_reserve_sec=0),
+    )
 
 
 def _patch_pipeline(monkeypatch, *, validate_passes: list[bool], exec_errors: list[str | None]):

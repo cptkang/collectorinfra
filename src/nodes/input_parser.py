@@ -146,8 +146,8 @@ def _now() -> datetime:
 
 
 def _time_resolution_on(app_config: Any) -> bool:
-    """시간 해석 플래그(`QUERY_TIME_RESOLUTION_ENABLED` · D-309). 설정 대역에 필드가 없으면 off."""
-    return bool(getattr(getattr(app_config, "query", None), "time_resolution_enabled", False))
+    """시간 해석 플래그(`QUERY_TIME_RESOLUTION_ENABLED` · D-309)."""
+    return bool(app_config.query.time_resolution_enabled)
 
 
 def _time_slot_suffix(anchor_at: datetime | None) -> str:

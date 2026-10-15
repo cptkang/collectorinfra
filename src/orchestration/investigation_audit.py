@@ -47,7 +47,7 @@ BACKEND_APM = "apm_gateway"
 
 
 def _audit_enabled(app_config: Any) -> bool:
-    return getattr(getattr(app_config, "composite", None), "audit_enabled", False) is True
+    return app_config.composite.audit_enabled is True
 
 
 def _host_inspect_fields(result: dict[str, Any]) -> dict[str, Any]:

@@ -754,7 +754,10 @@ class TestMultiExecutor:
             state, llm=AsyncMock(),
             app_config=SimpleNamespace(
                 query=SimpleNamespace(default_limit=100),
-                text2sql=SimpleNamespace(multi_full_validation=False),
+                text2sql=SimpleNamespace(multi_full_validation=False, multi_relevant_gate=False),
+                multi_db=SimpleNamespace(zone_group_exclusive=True),
+                composite=SimpleNamespace(prior_scope_by_db_enabled=False),
+                server=SimpleNamespace(answer_reserve_sec=0),
             ),
         )
         assert generated == ["plain_db"], "선별 0개 DB는 SQL을 만들지 않는다"

@@ -1835,7 +1835,7 @@ class AlarmWorker:
             )
         else:
             ttl = repeat_ttl
-        bypass = bool(getattr(self._config.noise_gate, "dedup_severity_rise_bypass", False))
+        bypass = bool(self._config.noise_gate.dedup_severity_rise_bypass)
         rec = self._gate_dedup.get(fingerprint)
         # 억제 판정 — 반드시 last_notified(통보 시각) 기준(고정창). 갱신하지 않는다.
         if rec is not None and now - rec["last_notified"] < ttl:
@@ -2155,7 +2155,7 @@ class AlarmWorker:
         ttl = self._config.noise_gate.repeat_interval_seconds
         if rec is None or now - rec["last_notified"] >= ttl:
             return False
-        bypass = bool(getattr(self._config.noise_gate, "dedup_severity_rise_bypass", False))
+        bypass = bool(self._config.noise_gate.dedup_severity_rise_bypass)
         return not (bypass and _dedup_severity_rises(rec, 2))
 
     def _sweep_apm_persistence(self, now: float) -> None:
@@ -2520,9 +2520,7 @@ class AlarmWorker:
 
         # 위상 가중(E4 인접성) — graph·event_node 해소 성공 시에만 adjacent 산출(그 외 None).
         topo_enabled = getattr(cfg, "correlation_topology_weight_enabled", False)
-        topo_weight = (
-            getattr(cfg, "correlation_topology_weight", 0.0) if topo_enabled else 0.0
-        )
+        topo_weight = cfg.correlation_topology_weight if topo_enabled else 0.0
         event_node = graph.id_of(event.server_name) if graph is not None else None
         adjacent: Optional[list[bool]] = None
         if graph is not None and event_node is not None:

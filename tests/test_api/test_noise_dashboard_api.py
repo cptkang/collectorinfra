@@ -50,6 +50,7 @@ def _make_config(tmp_path, *, gate=True, suppress_cap=2, silence=True) -> Simple
             storm_grouping_enabled=False,
             cross_host_correlation_enabled=False,
             enable_llm_actionability=False,
+            investigation_store_path="",
         ),
     )
 

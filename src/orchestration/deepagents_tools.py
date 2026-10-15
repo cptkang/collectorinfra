@@ -334,7 +334,7 @@ async def _run_subagent_tool(
     if collector and agent_name in _SCOPE_CONSUMER_AGENTS:
         input_from, prior = _dependency_scope(
             sub_query, collector,
-            latest_only=bool(getattr(getattr(app_config, "composite", None), "prior_scope_latest_only", False)),
+            latest_only=bool(app_config.composite.prior_scope_latest_only),
         )
         # 관측(plans/88 §11.5 · 2026-09-10): 1단 순차 계약은 오케스트레이터 LLM이 재표현한 sub_query에
         # 의존한다(참조어 G2·순위어 G3) — 어떤 문구로 호출됐는지 로그가 없으면 게이트 미발동을 진단할 수 없다.
@@ -366,7 +366,7 @@ async def _run_subagent_tool(
         gate_ids, gate_prior = (input_from, prior) if input_from else _referenced_but_empty(sub_query, collector)
         if gate_ids:
             verdict = assess_prior_dependency({"input_from": gate_ids}, gate_prior)
-            gate_on = bool(getattr(getattr(app_config, "composite", None), "sequential_gate_enabled", False))
+            gate_on = bool(app_config.composite.sequential_gate_enabled)
             if verdict is not None and gate_on:
                 # 노트는 task에 실어 collector로 전달한다(ambient는 `or {}`로 복사될 수 있다).
                 task["dependency_note"] = verdict_note(verdict, task["task_id"])
@@ -388,7 +388,7 @@ async def _run_subagent_tool(
     )
     # 사후 대조(D-203 · plans/88 §4.3) — 2단 agent_orchestrator와 같은 함수.
     if verdict is not None and agent_name in POSTCHECK_AGENTS:
-        if bool(getattr(getattr(app_config, "composite", None), "scope_postcheck_enabled", False)):
+        if bool(app_config.composite.scope_postcheck_enabled):
             result = apply_scope_postcheck(verdict, result, task["task_id"])
         else:
             observe_scope_postcheck(verdict, result, task["task_id"])  # off = 로그만(결과 불변)

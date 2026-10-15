@@ -30,6 +30,7 @@ def _config(*, gate=True, budget=0, full_validation=False):
     """검증 대상 필드만 명시한 설정 대역(.env 누수 차단)."""
     return SimpleNamespace(
         query=SimpleNamespace(default_limit=100),
+        server=SimpleNamespace(answer_reserve_sec=0),
         text2sql=SimpleNamespace(
             multi_relevant_gate=gate,
             prompt_token_budget=budget,

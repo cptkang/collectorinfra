@@ -401,7 +401,7 @@ async def semantic_router(
     # 힌트 없음·해소 0건이면 targets를 그대로 돌려준다(종전과 동작·반환 동일).
     targets, hint_pinned = _pin_turn_location_hints(
         targets, parsed, user_query, active_db_ids,
-        zone_group_exclusive=bool(getattr(app_config.multi_db, "zone_group_exclusive", True)),
+        zone_group_exclusive=bool(app_config.multi_db.zone_group_exclusive),
     )
 
     # 결과가 없으면 기본 DB 사용
@@ -768,7 +768,7 @@ def _zone_clarification_or_none_router(
         allowed, user_query,
         # 존 그룹 상호배타(D-143 후속3) — 라우트 pre-gate와 동일 UI 규칙
         group_exclusive=bool(
-            getattr(app_config.multi_db, "zone_group_exclusive", True)
+            app_config.multi_db.zone_group_exclusive
         ),
     )
 

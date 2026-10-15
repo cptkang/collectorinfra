@@ -283,7 +283,7 @@ def _parse_resource_id(rows: list[dict[str, Any]]) -> Optional[str]:
 
 
 # ── noise_ctx 동결 계약 키 단일 출처(§7.2) ─────────────────────────
-# 세 구성점(_unavailable·정상 fetch dict·enricher)이 이 목록을 공유해 키 불일치를
+# 세 구성점(unavailable_noise_ctx·정상 fetch dict·enricher)이 이 목록을 공유해 키 불일치를
 # 원천 차단한다. Redis 캐시(alarm:noisectx:*)로 직렬화 왕복하므로 계약이 안정해야 한다.
 # root_notified는 **동적**이라 여기 포함하지 않는다 — enricher가 캐시 이후 신선 산출한다
 # (§6.2 하이브리드). 게이트는 noise_ctx.get()으로 소비하므로 구버전 캐시(신규 키 부재)와
@@ -306,11 +306,15 @@ def _empty_noise_ctx() -> dict[str, Any]:
     return {k: None for k in _NOISE_CTX_KEYS}
 
 
-def _unavailable() -> dict[str, Any]:
+def unavailable_noise_ctx() -> dict[str, Any]:
     """신호 수집 불가 시 반환하는 동결 dict (모든 신호 None, source='unavailable')."""
     ctx = _empty_noise_ctx()
     ctx["source"] = "unavailable"
     return ctx
+
+
+# plans/166 W1 G4 — 모듈 밖에서 import되는 옛 이름 별칭(D-337 ③ · 1사이클).
+_unavailable = unavailable_noise_ctx
 
 
 def _is_postgres_dialect(db_id: str) -> bool:
@@ -501,7 +505,7 @@ class PolestarNoiseContextRepository:
                 event.db_id,
                 event.alarm_id,
             )
-            return _unavailable()
+            return unavailable_noise_ctx()
 
         resource_sql = build_resource_signal_sql(event.db_id, event.server_name)
         noti_sql = build_noti_policy_sql(event.db_id, event.alarm_name)
@@ -606,11 +610,11 @@ class PolestarNoiseContextRepository:
                 "노이즈 컨텍스트 연결 실패 — db_id=%s alarm_id=%s: %s",
                 event.db_id, event.alarm_id, exc,
             )
-            return _unavailable()
+            return unavailable_noise_ctx()
 
         # 연결은 됐으나 모든 조회 실패 → 신호 없음 → 보수적 unavailable
         if not got_any:
-            return _unavailable()
+            return unavailable_noise_ctx()
         # 동결 계약 단일 출처(_NOISE_CTX_KEYS)로 dict를 구성한 뒤 신호를 채운다(§7.2).
         context = _empty_noise_ctx()
         context["importance_id"] = _parse_importance(resource_rows)

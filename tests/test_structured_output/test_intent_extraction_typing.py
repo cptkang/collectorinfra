@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import importlib
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -48,6 +49,9 @@ class _Cfg:
     def __init__(self, backend="instructor", retries=1):
         self.structured_output_backend = backend
         self.structured_output_max_retries = retries
+        self.composite = SimpleNamespace(
+            plan_dag_validation_enabled=False, sequential_replan_enabled=False,
+        )
 
 
 # ─────────────────── S2·S3 — 열거형 단일 출처 ───────────────────

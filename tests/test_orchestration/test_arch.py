@@ -67,3 +67,41 @@ def test_orchestration_layer_mapping():
     # 역방향: application/infrastructure는 orchestration을 의존하면 안 됨
     assert "orchestration" not in arch.ALLOWED_DEPS["application"]
     assert "orchestration" not in arch.ALLOWED_DEPS["infrastructure"]
+
+
+def _app_to_app_warnings(arch, tmp_path, from_rel: str, statement: str):
+    """tmp 프로젝트에 파일 하나를 두고 application→application 경고만 모은다."""
+    path = tmp_path / from_rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(statement + "\n", encoding="utf-8")
+    return [
+        v for v in arch.check_file(path, tmp_path)
+        if v.from_layer == "application" and v.to_layer == "application"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("from_rel", "statement", "warned"),
+    [
+        # 노드 패키지 ↔ 같은 노드 패키지 — 경고
+        ("src/nodes/a.py", "from src.nodes.b import x", True),
+        ("noise_gate/application/nodes/a.py", "from noise_gate.application.nodes.b import x", True),
+        # 노드 → 비노드 application 헬퍼 — 경고 없음
+        ("src/nodes/a.py", "from src.db_adapters.polestar import x", False),
+        ("noise_gate/application/nodes/a.py",
+         "from noise_gate.application.server_identity import x", False),
+        # 비노드 application 내부 — 경고 없음
+        ("src/db_adapters/a.py", "from src.semantic.b import x", False),
+        ("src/tools/a.py", "from src.nodes.b import x", False),
+        # 서로 다른 노드 패키지 — 경고 없음
+        ("src/nodes/a.py", "from noise_gate.application.nodes.b import x", False),
+    ],
+)
+def test_node_to_node_warning_scope(tmp_path, from_rel, statement, warned):
+    """D-331 ① — application→application 경고는 같은 노드 패키지 사이에서만 난다."""
+    arch = _load_arch_check()
+    found = _app_to_app_warnings(arch, tmp_path, from_rel, statement)
+    assert bool(found) is warned
+    for v in found:
+        assert v.severity == "warning"
+        assert "순수 헬퍼는 비노드 application 모듈로" in v.reason

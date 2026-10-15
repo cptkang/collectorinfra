@@ -180,6 +180,7 @@ def _worker(**gate) -> AlarmWorker:
     base = dict(
         enable_noise_gate=True,
         repeat_interval_seconds=14400,
+        dedup_severity_rise_bypass=False,
         suppress_max_severity=2,
         self_heal_window_seconds=300,
         inhibition_window_seconds=300,

@@ -188,11 +188,9 @@ def log_investigation_startup(app_config: Any) -> dict[str, Any]:
         ),
         "investigation_enabled": bool(getattr(composite, "investigation_enabled", False)),
         "audit_enabled": bool(getattr(composite, "audit_enabled", True)),
-        "max_targets": int(getattr(composite, "max_targets", 0) or 0),
-        "fanout_concurrency": int(getattr(composite, "fanout_concurrency", 0) or 0),
-        "host_authz_mode": str(
-            getattr(getattr(app_config, "host_authz", None), "mode", "") or ""
-        ),
+        "max_targets": int(app_config.composite.max_targets or 0),
+        "fanout_concurrency": int(app_config.composite.fanout_concurrency or 0),
+        "host_authz_mode": str(app_config.host_authz.mode or ""),
         # 조사 경로의 실제 가용성 — 플래그가 켜져 있어도 이 둘이 off면 조사는 일어나지 않는다.
         "fault_diagnosis_enabled": bool(getattr(gate, "fault_diagnosis_enabled", False)),
         "investigation_trigger_enabled": bool(

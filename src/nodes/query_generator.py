@@ -312,7 +312,7 @@ def _try_build_form_fill_pivot_sql(
         return None
     form_intent = bool(state.get("template_structure"))
     schema_info = state.get("schema_info") or {}
-    eav_pattern = _get_eav_pattern(schema_info)
+    eav_pattern = first_eav_pattern(schema_info)
     active_db_id = state.get("active_db_id") or ""
     # 서버명/서버이름류가 EAV Hostname으로 오매핑되면 등록명 컬럼으로 결정적 교정(프로필 확정 규칙).
     # state를 오염시키지 않도록 사본에 적용.
@@ -1693,16 +1693,10 @@ def _build_system_prompt(
     )
 
 
-def _get_eav_pattern(schema_info: Optional[dict]) -> Optional[dict]:
-    """_structure_meta에서 첫 번째 EAV 패턴을 반환한다.
-
-    Args:
-        schema_info: 스키마 정보 딕셔너리 (선택)
-
-    Returns:
-        EAV 패턴 딕셔너리 또는 None
-    """
-    return first_eav_pattern(schema_info)
+#: 옛 이름 별칭 1사이클(plans/166 N1 · D-337 ③) — 본문이
+#: `prompt_blocks.first_eav_pattern` 호출뿐인 래퍼(멀티 경로와 바이트 동일 사본)였다.
+#: 정본은 `first_eav_pattern`(테스트가 이 이름을 import).
+_get_eav_pattern = first_eav_pattern
 
 
 def _mapping_prompt_sections(
@@ -1754,7 +1748,7 @@ def _mapping_prompt_sections(
     )
     use_multi_resource_pivot = bool(child_eav)
     if use_multi_resource_pivot:
-        eav_pattern = _get_eav_pattern(schema_info) or {}
+        eav_pattern = first_eav_pattern(schema_info) or {}
         # 사용률 통계 필드는 통합 피벗에 접어 넣고 미매핑 목록에서 뺀다(블록 충돌·GROUP BY 위반 방지).
         metric_unmapped = [
             f for f in unmapped_fields
@@ -1776,7 +1770,7 @@ def _mapping_prompt_sections(
         # (테이블.컬럼 형식)이라 한글 alias 강제는 하지 않는다(§0.3-3 (e) 의도된 차이).
         parts.append(
             build_eav_pivot_block(
-                eav_entries, _get_eav_pattern(schema_info),
+                eav_entries, first_eav_pattern(schema_info),
                 hangul_alias=False,
                 host_attribute=_EAV_HOST_ATTRIBUTE,
                 link_column=_EAV_LINK_COLUMN,

@@ -283,16 +283,9 @@ def _check_row_limit_dialect(sql: str, db_engine: str | None) -> Optional[str]:
     )
 
 
-def _get_eav_pattern(schema_info: Optional[dict]) -> Optional[dict]:
-    """_structure_meta에서 첫 번째 EAV 패턴을 반환한다.
-
-    Args:
-        schema_info: 스키마 정보 딕셔너리 (선택)
-
-    Returns:
-        EAV 패턴 딕셔너리 또는 None
-    """
-    return first_eav_pattern(schema_info)
+#: 옛 이름 별칭 1사이클(plans/166 N1 · D-337 ③) — 단일 경로와 바이트 동일한
+#: `first_eav_pattern` 래퍼였다. 정본은 `prompt_blocks.first_eav_pattern`(테스트가 import).
+_get_eav_pattern = first_eav_pattern
 
 
 @dataclass
@@ -499,7 +492,7 @@ async def _prepare_multi_run(
     value_index = state.get("column_value_index")
     # DB별 스코프 분할(D-203) — `is True` 비교는 설정 대역(MagicMock)의 오발동 방지(multi_relevant_gate와 동일).
     prior_scope_by_db = None
-    if getattr(getattr(app_config, "composite", None), "prior_scope_by_db_enabled", False) is True:
+    if app_config.composite.prior_scope_by_db_enabled is True:
         prior_scope_by_db = prior_server_scope_by_db(state.get("prior_rows"))
 
     # 폼필 월 시리즈(D-146) — 양식 문맥·산출 out-param(단일 경로 extra_return과 대칭).
@@ -621,11 +614,11 @@ def _deterministic_alarm_sql_or_none(
         return None
     if run.state.get("routing_intent") != "alarm_query":
         return None
-    from src.db_adapters import get_adapter
+    from src.db_adapters import get_adapter_for
 
     # 알람 조립을 소유한 어댑터(폴스타)만 — 다른 어댑터(생성 템플릿 · D-294)가 담당하는 DB에는
     # 붙이지 않는다
-    adapter = get_adapter(db_id, run.app_config.get_polestar_db_ids() or None)
+    adapter = get_adapter_for(db_id, run.app_config)
     if getattr(adapter, "deterministic_alarm", False) is not True:
         return None
     from src.db_adapters.polestar.assembler import try_deterministic_alarm_sql
@@ -1114,8 +1107,9 @@ def _group_preview(rows: list[dict], app_config: AppConfig | None) -> dict | Non
     화면으로 나가므로 **같은 `DataMasker`를 여기서 먼저 적용**한다. 설정이 없거나(테스트 대역)
     상한이 0이면 행을 싣지 않는다 — 행 없이 건수만 나가는 것이 안전한 기본이다.
     """
-    server = getattr(app_config, "server", None)
-    limit = getattr(server, "sse_group_preview_rows", 0)
+    if app_config is None:
+        return None
+    limit = app_config.server.sse_group_preview_rows
     security = getattr(app_config, "security", None)
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0 or not rows:
         return None
@@ -1299,8 +1293,9 @@ async def _run_groups(
 def _zone_group_exclusive(app_config: AppConfig | None) -> bool:
     """존 그룹 상호배타 플래그(D-143 후속3). 설정 부재·테스트 대역(MagicMock)은 **배타(on)**로 본다 —
     개방은 명시 `ZONE_GROUP_EXCLUSIVE=false`에서만 일어나야 회귀가 0이다."""
-    multi = getattr(app_config, "multi_db", None)
-    value = getattr(multi, "zone_group_exclusive", True)
+    if app_config is None:
+        return True
+    value = app_config.multi_db.zone_group_exclusive
     return value if isinstance(value, bool) else True
 
 
@@ -1521,8 +1516,7 @@ def _gate_schema_tables(
     """
     # `is True` 비교는 의도적 — 설정 대역(MagicMock/SimpleNamespace)의 미정의 속성이
     # 게이트를 오발동시키지 않게 한다(path_parity_enabled와 같은 이유).
-    _flag = getattr(getattr(app_config, "text2sql", None), "multi_relevant_gate", False)
-    if _flag is not True:
+    if app_config is None or app_config.text2sql.multi_relevant_gate is not True:
         return schema_dict
     if routing_intent == "alarm_query":
         return schema_dict
@@ -2252,7 +2246,7 @@ def _multi_resource_pivot_result(
     pivot_metric_fields = [
         f for f in pivot_metric_fields if f not in (applied_overrides or set())
     ]
-    eav_pattern_mr = _get_eav_pattern(schema_info) or {}
+    eav_pattern_mr = first_eav_pattern(schema_info) or {}
     if error_context and path_parity_enabled(app_config):
         # 경로 대칭 (c): 재시도(결정적 SQL이 이미 실패)면 단일 경로처럼 LLM 폴백에
         # 피벗 지침 블록을 주고 에러를 반영하게 한다 — 종전 멀티는 재시도에도 같은
@@ -2400,7 +2394,7 @@ def _split_mapping_for_prompt(
     # (프로필 확정 규칙, 단일 경로 _try_build_form_fill_pivot_sql와 동등). db_mapping을
     # 직접 변형하지 않도록 사본에 적용.
     column_mapping = dict(column_mapping)
-    _sn_eav = _get_eav_pattern(schema_info)
+    _sn_eav = first_eav_pattern(schema_info)
     if _sn_eav:
         correct_servername_hostname_mapping(column_mapping, _sn_eav.get("entity_table", ""))
 
@@ -2455,7 +2449,7 @@ def _build_mapping_user_parts(
         (user_parts에 이어 붙일 섹션들, 결정적 SQL 또는 None, 갱신된 unmapped_fields)
     """
     parts: list[str] = []
-    _sn_eav = _get_eav_pattern(schema_info)
+    _sn_eav = first_eav_pattern(schema_info)
     column_mapping = dict(column_mapping or {})
 
     # 폼필에서 llm_inferred 매핑은 채움에 쓰지 않는다(D-149, 단일 경로와 대칭) —
@@ -2629,7 +2623,7 @@ def _build_mapping_user_parts(
         # 결과 alias를 한글 양식 필드명으로 강제한다(§0.3-3 (e) 의도된 차이 — 통일 금지).
         parts.append(
             build_eav_pivot_block(
-                eav_entries, _get_eav_pattern(schema_info),
+                eav_entries, first_eav_pattern(schema_info),
                 hangul_alias=True,
                 host_attribute=_EAV_HOST_ATTRIBUTE,
                 link_column=_EAV_LINK_COLUMN,
@@ -3011,10 +3005,10 @@ def _validate_sql(
             return reason, None
         # 기본 경로에도 행 상한을 건다(CU-16) — `multi_full_validation` 기본값은 그대로다.
         return None, _auto_limit_or_none(sql, db_engine, limit_text, app_config)
-    from src.db_adapters import get_adapter
+    from src.db_adapters import get_adapter_for
     from src.nodes.query_validator import validate_sql
 
-    adapter = get_adapter(db_id, app_config.get_polestar_db_ids() or None)
+    adapter = get_adapter_for(db_id, app_config)
     adapter_checks = (
         adapter.validator_checks(user_query=user_query, time_resolution=time_resolution)
         if adapter is not None else []

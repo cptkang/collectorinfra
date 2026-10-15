@@ -29,7 +29,6 @@ import logging
 import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 
 import structlog
@@ -39,6 +38,7 @@ from src.domain.user import UserRole
 from src.infrastructure.apm_job_store import ApmJobStore, get_apm_job_store, is_job_id
 from src.security.data_masker import DataMasker
 from src.utils.deadline import bound_deadline, retrieval_deadline
+from src.utils.clock import now_iso as _now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -245,10 +245,6 @@ def _public_job_error(job_id: Any, error: Any) -> Any:
 def store_for(app_config: Any) -> ApmJobStore:
     """작업 장부(서버 Redis 캐시 · 없으면 메모리)."""
     return get_apm_job_store(app_config)
-
-
-def _now_iso() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 async def register(

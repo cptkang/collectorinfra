@@ -22,6 +22,7 @@ from typing import Any
 from fastapi import Request
 
 from src.api.dependencies import ANONYMOUS_USER
+from src.api.sse_events import SSE_DONE
 
 logger = logging.getLogger(__name__)
 
@@ -60,13 +61,13 @@ def _turn_status(payload: dict[str, Any]) -> str:
 
 def _done_payload(chunk: Any) -> dict[str, Any] | None:
     """SSE 청크가 `done` 이벤트면 본문을 돌려준다."""
-    if not isinstance(chunk, str) or not chunk.startswith("data: ") or '"done"' not in chunk:
+    if not isinstance(chunk, str) or not chunk.startswith("data: ") or f'"{SSE_DONE}"' not in chunk:
         return None
     try:
         payload = json.loads(chunk[len("data: "):])
     except ValueError:
         return None
-    if isinstance(payload, dict) and payload.get("type") == "done":
+    if isinstance(payload, dict) and payload.get("type") == SSE_DONE:
         return payload
     return None
 

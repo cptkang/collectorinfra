@@ -176,6 +176,7 @@ def _worker(resolver=None) -> tuple[AlarmWorker, _FakeGraph]:
         noise_gate=SimpleNamespace(
             enable_noise_gate=True,
             repeat_interval_seconds=14400,
+            dedup_severity_rise_bypass=False,
             suppress_max_severity=2,
             self_heal_window_seconds=300,
         ),
@@ -289,7 +290,9 @@ def _trigger_cfg(store=None, client=None) -> dict:
                     investigation_total_timeout_seconds=5.0,
                 ),
                 host_authz=SimpleNamespace(mode="admin_only"),
-                composite=SimpleNamespace(prior_targets_enabled=False),
+                composite=SimpleNamespace(
+                    prior_targets_enabled=False, availability_precheck_enabled=False
+                ),
             ),
             "sre_agent_client": client,
             "decision_store": store,

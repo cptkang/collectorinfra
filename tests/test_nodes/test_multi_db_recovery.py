@@ -54,7 +54,12 @@ class _FakeRegistry:
 
 
 def _app_config():
-    return SimpleNamespace(query=SimpleNamespace(default_limit=1000))
+    return SimpleNamespace(
+        query=SimpleNamespace(default_limit=1000),
+        multi_db=SimpleNamespace(zone_group_exclusive=True),
+        composite=SimpleNamespace(prior_scope_by_db_enabled=False),
+        server=SimpleNamespace(answer_reserve_sec=0),
+    )
 
 
 def _state(targets):

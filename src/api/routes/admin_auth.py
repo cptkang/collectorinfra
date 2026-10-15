@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 import jwt
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from src.api.dependencies import decode_typed_token
 from src.config import AdminConfig
 
 logger = logging.getLogger(__name__)
@@ -90,20 +90,13 @@ def verify_admin_token(
     Raises:
         HTTPException: 토큰이 유효하지 않을 때
     """
-    try:
-        payload = jwt.decode(token, secret, algorithms=["HS256"])
-        # 권한 상승 차단(Plan 59 §8.1 / D-026 원 의도 강제): 사용자 토큰(type="user")이
-        # 운영자 시크릿과 우연히 검증되더라도 admin 토큰이 아니면 거부한다.
-        if payload.get("type") != "admin":
-            raise HTTPException(status_code=401, detail="관리자 토큰이 아닙니다.")
-        username: Optional[str] = payload.get("sub")
-        if username is None:
-            raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
-        return username
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="토큰이 만료되었습니다.")
-    except jwt.InvalidTokenError:
+    # 권한 상승 차단(Plan 59 §8.1 / D-026 원 의도 강제): 사용자 토큰(type="user")이
+    # 운영자 시크릿과 우연히 검증되더라도 admin 토큰이 아니면 거부한다.
+    payload = decode_typed_token(token, secret, "admin")
+    username: str | None = payload.get("sub")
+    if username is None:
         raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
+    return username
 
 
 async def require_admin(

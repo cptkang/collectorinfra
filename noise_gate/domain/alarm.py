@@ -15,9 +15,9 @@ from datetime import datetime
 from typing import Optional
 
 # --- 공통 호스트 키 (plans/144 §5.5) ---
-# APM 게이트웨이 이벤트 판정 — `application/server_identity.is_apm_source`와 같은 기준(dbId·원문
-# `source`)에 `process_rank.is_apm_event`의 resourceType 기준을 더한다. domain은 application을
-# import할 수 없고, process_rank는 이 모듈을 import하므로(순환) 최소 상수로 둔다.
+# APM 게이트웨이 이벤트 판정 — 아래 `is_apm_source`와 같은 기준(dbId·원문 `source`)에
+# `process_rank.is_apm_event`의 resourceType 기준을 더한다. process_rank는 이 모듈을
+# import하므로(순환) 최소 상수로 둔다.
 _APM_SOURCE_ID = "jennifer"
 _APM_RESOURCE_TYPE = "apm.instance"
 # 게이트웨이 `resolver.reverse`가 `raw.apm.match_reason`에 싣는 어휘 중 강한 정합
@@ -154,6 +154,22 @@ class AlarmEvent:
         if reason == _AMBIGUOUS_REASON:
             return HOST_KEY_NONE
         return HOST_KEY_STRONG if reason in _STRONG_MATCH_REASONS else HOST_KEY_WEAK
+
+
+def is_apm_db_id(db_id: str) -> bool:
+    """APM 게이트웨이 소스의 db_id인지 — `jennifer` · 다중 소스 `jennifer_<소스 id>`(plans/87 J8).
+
+    판정 레코드처럼 db_id만 남은 곳(PAGE 재판정 복원 · plans/162 F4)에서도 같은 규칙을 쓴다.
+    """
+    db_id = db_id or ""
+    return db_id == _APM_SOURCE_ID or db_id.startswith(_APM_SOURCE_ID + "_")
+
+
+def is_apm_source(event: AlarmEvent) -> bool:
+    """APM 게이트웨이가 발행한 이벤트인지 — `dbId`(`is_apm_db_id`) 또는 원문 `source`가 게이트웨이
+    상수다."""
+    raw = event.raw_payload if isinstance(event.raw_payload, dict) else {}
+    return is_apm_db_id(event.db_id or "") or raw.get("source") == _APM_SOURCE_ID
 
 
 @dataclass

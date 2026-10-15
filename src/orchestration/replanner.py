@@ -40,6 +40,7 @@ from src.state import AgentState
 from src.utils.deadline import retrieval_remaining
 from src.utils.json_extract import extract_json_from_response
 from src.utils.query_gen_common import term_in_text
+from src.utils.task_result_keys import DEGRADED_KEY
 from src.utils.user_error import safe_error_text
 from src.utils.prior_dependency import (
     NOTE_DECOMPOSE,
@@ -408,8 +409,7 @@ def _validate_replanned_tasks(
     tasks = [close_agent_vocabulary(t, extra) for t in new_tasks]
     if not (state.get("template_structure") or state.get("uploaded_file")):
         tasks = _coerce_alarm_intent(_coerce_process_intent(tasks))
-    cfg = getattr(app_config, "composite", None)
-    if not bool(getattr(cfg, "plan_dag_validation_enabled", False)):
+    if not bool(app_config.composite.plan_dag_validation_enabled):
         return tasks, []
     if validate_plan_dag(list(existing))[1]:
         return tasks, []  # 기존 계획이 이미 위반이면 신규 task에 책임을 돌릴 수 없다
@@ -792,9 +792,9 @@ def _deadline_stop_notice(
     )
 
 
-def _answer_reserve_sec(app_config: object) -> float:
+def _answer_reserve_sec(app_config: AppConfig) -> float:
     """서술 예약 초(`ServerConfig.answer_reserve_sec`) — 테스트 대역 설정에서는 0(종전 동작)."""
-    value = getattr(getattr(app_config, "server", None), "answer_reserve_sec", 0)
+    value = app_config.server.answer_reserve_sec
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0
     return max(0.0, float(value))
@@ -806,7 +806,7 @@ def _budget_prompt_on(app_config: object) -> bool:
 
 
 def _budget_block(
-    state: AgentState, app_config: object, replan_count: int, reserve_sec: float,
+    state: AgentState, app_config: AppConfig, replan_count: int, reserve_sec: float,
 ) -> str:
     """재계획 평가 입력 말미에 붙일 예산 블록(plans/119 T-6 · 문헌 L-9).
 
@@ -818,7 +818,7 @@ def _budget_block(
     time_line = "" if left is None else REPLANNER_BUDGET_TIME_LINE_TEMPLATE.format(
         remaining_sec=int(max(0.0, left)), reserve_sec=int(reserve_sec),
     )
-    max_replan = getattr(app_config, "max_replan", 0)
+    max_replan = app_config.max_replan
     if isinstance(max_replan, bool) or not isinstance(max_replan, int):
         max_replan = 0
     return REPLANNER_BUDGET_BLOCK_TEMPLATE.format(
@@ -1056,7 +1056,7 @@ def _terminal_source_task_ids(
             continue
         elif task.get("agent") in _NONSQL_AGENTS and (res.get("error") or res.get("accepted_jobs")):
             out.add(tid)
-        elif res.get("degraded_reason") in _SOURCE_NOTICE_REASONS:
+        elif res.get(DEGRADED_KEY) in _SOURCE_NOTICE_REASONS:
             out.add(tid)
     return out
 

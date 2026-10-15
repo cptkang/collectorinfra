@@ -216,9 +216,9 @@ async def agent_orchestrator(
 _DONE_STATUSES = ("completed", "failed", "skipped")
 
 
-def _answer_reserve_sec(app_config: object) -> float:
+def _answer_reserve_sec(app_config: AppConfig) -> float:
     """서술 예약 초(`ServerConfig.answer_reserve_sec`) — 테스트 대역 설정에서는 0(종전 동작)."""
-    value = getattr(getattr(app_config, "server", None), "answer_reserve_sec", 0)
+    value = app_config.server.answer_reserve_sec
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0
     return max(0.0, float(value))
@@ -246,16 +246,14 @@ def _not_started_notice(not_started: list[dict[str, Any]], reserve_sec: float) -
     )
 
 
-def _sequential_gate_on(app_config: object) -> bool:
-    """`COMPOSITE_SEQUENTIAL_GATE_ENABLED` — 테스트 더미 설정(`composite` 없음)에서도 off로 읽는다."""
-    composite = getattr(app_config, "composite", None)
-    return bool(getattr(composite, "sequential_gate_enabled", False))
+def _sequential_gate_on(app_config: AppConfig) -> bool:
+    """`COMPOSITE_SEQUENTIAL_GATE_ENABLED`."""
+    return bool(app_config.composite.sequential_gate_enabled)
 
 
-def _scope_postcheck_on(app_config: object) -> bool:
-    """`COMPOSITE_SCOPE_POSTCHECK_ENABLED` — 위와 같은 방어적 읽기."""
-    composite = getattr(app_config, "composite", None)
-    return bool(getattr(composite, "scope_postcheck_enabled", False))
+def _scope_postcheck_on(app_config: AppConfig) -> bool:
+    """`COMPOSITE_SCOPE_POSTCHECK_ENABLED`."""
+    return bool(app_config.composite.scope_postcheck_enabled)
 
 
 def _postcheck_result(

@@ -56,11 +56,11 @@ from apm_gateway.application.tools import (
     _Limits,
     _positive_int,
     _target_text,
+    limit_notice,
 )
 from apm_gateway.domain.call_context import expect_calls
 from apm_gateway.domain.errors import (
     API_ERROR,
-    CONTRACT_VIOLATION,
     INVALID_ARGUMENT,
     PROFILE_REF_MISMATCH,
     ApmError,
@@ -281,10 +281,9 @@ class ManageTools:
             try:
                 done.append((unit, await call(unit)))
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
+                notice = limit_notice(e, what, where(unit), detail=self._why(e, v2=v2))
                 failed.append((unit, e))
-                limits.fail(f"[한계] {what} 조회 실패{where(unit)}: {self._why(e, v2=v2)}")
+                limits.fail(notice)
         if units and len(failed) == len(units):
             raise self.core._all_failed([(where(u).strip("()"), e) for u, e in failed])
         return done, failed

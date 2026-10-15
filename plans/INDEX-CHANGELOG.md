@@ -4,6 +4,7 @@
 
 ## 갱신 이력
 
+- 2026-10-15 — **166 단계 3(W1 SSOT 기계 치환) 완료 · 커밋 전**: D-331 게이트 구현(arch 경고 117→43 · `config_fallback_check.py` 62→0 · regress `--ci` 편입) · X1 60지점 · X3·X4·N4·N1(b)·A5·A6·X5·O3·G4·M3·M6 · G5 해당 없음 · 166 행 상태 칸 갱신 · 다음 단계 4(166 W2)
 - 2026-10-15 — **main 재병합 · 결정 재채번**: main이 D-336(제니퍼 심각도 3 유형 정책 · 162 W5)을 먼저 푸시해 RCA의 D-336(구조 리팩터 규약)을 **D-337**로 옮김 · 166·163·스킬 2종·166 W0 테스트 참조 갱신 · 계획서 번호(163·166)는 충돌 없음
 - 2026-10-15 — **main 병합 · 계획서 재채번**: RCA 브랜치의 `162-WIP-codebase-smell-refactoring.md`가 main `162-WIP-page-necessity-review.md`와 번호 충돌 → **166**(`166-WIP-codebase-smell-refactoring.md`)으로 · 결정 D-330(구조 리팩터 규약) → **D-336**(이후 D-337 — 위 줄) · 아래 RCA 줄의 162는 새 번호로 고침 · 163은 그대로
 - 2026-10-15 — **162 외부망 잔여**: W0-T 분석 도구 보정(T1~T6) · F4 제니퍼 무소식 닫힘(`NOISE_PAGE_REVIEW_IDLE_CLOSE_MINUTES` 기본 0 · D-330 부기) · `replay_noise.py --page-review-mode` · 회귀 `--base 4073f7f` 신규 실패 0 · verifier·보안 Critical·High 0 · 커밋 없음
