@@ -936,22 +936,22 @@ async def schema_analyzer(
 
             if cache_mgr and cache_mgr.redis_available:
                 try:
-                    resource_type_synonyms = await cache_mgr._redis_cache.load_resource_type_synonyms()
-                    eav_name_synonyms = await cache_mgr._redis_cache.load_eav_name_synonyms()
+                    resource_type_synonyms = await cache_mgr.load_resource_type_synonyms()
+                    eav_name_synonyms = await cache_mgr.load_eav_name_synonyms()
                 except Exception as e:
                     logger.warning("resource_type/eav_name 유사단어 로드 실패: %s", e)
 
             # 글로벌 유사단어 파일 자동 로드 (첫 실행 시)
             if cache_mgr and cache_mgr.redis_available:
                 try:
-                    existing_global = await cache_mgr._redis_cache.load_global_synonyms()
+                    existing_global = await cache_mgr.load_global_synonyms()
                     if not existing_global:
                         # 글로벌 사전이 비어있으면 파일에서 자동 로드
                         from src.schema_cache.synonym_loader import SynonymLoader
 
                         synonym_file = "config/global_synonyms.yaml"
                         if os.path.exists(synonym_file):
-                            loader = SynonymLoader(redis_cache=cache_mgr._redis_cache)
+                            loader = SynonymLoader(redis_cache=cache_mgr.redis_cache)
                             result = await loader.load_auto(synonym_file)
                             logger.info("글로벌 유사단어 자동 로드: %s", result.message)
                 except Exception as e:
@@ -970,7 +970,7 @@ async def schema_analyzer(
                     if _dom is not None:
                         _engine = getattr(_dom, "db_engine", "") or ""
                     _redis = (
-                        cache_mgr._redis_cache
+                        cache_mgr.redis_cache
                         if cache_mgr and cache_mgr.redis_available else None
                     )
                     column_value_index = await load_or_build_value_index(

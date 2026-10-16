@@ -61,6 +61,7 @@ from src.routing.location_hints import pin_targets_to_hints
 from src.routing.registry import get_registry
 from src.state import AgentState
 from src.clients.instructor_adapter import StructuredOutputError, try_structured_call
+from src.routing.zone_clarification import zone_clarification_for_targets
 from src.routing.schemas import (
     DatabaseSelection,
     IntentDecision,
@@ -72,10 +73,7 @@ from src.routing.schemas import (
 )
 from src.utils.json_extract import extract_json_from_response
 from src.utils.query_gen_common import (
-    ZONE_CLARIFY_OPTIONS,
     ZONE_SKIP_SIGNAL_TERMS,
-    build_zone_clarification,
-    has_host_identifier_filter,
     term_in_text,
 )
 
@@ -743,33 +741,13 @@ def _zone_clarification_or_none_router(
     lowered = user_query.lower()
     if any(term_in_text(t.lower(), lowered) for t in ZONE_SKIP_SIGNAL_TERMS):
         return None
-    parsed = state.get("parsed_requirements") or {}
-    # 서버명 지목 질의는 존이 결과에 영향 없음(§4.2 ⓐ)
-    if has_host_identifier_filter(parsed):
-        return None
-    # 조회 대상 필드가 파싱되지 않은 질의는 비발동(과잉 역질문 방지)
-    if not parsed.get("query_targets"):
-        return None
-    # 대상이 전부 폴스타 존일 때만
-    polestar_ids = app_config.get_polestar_db_ids() or set()
-    target_ids = [t.get("db_id") for t in targets if t.get("db_id")]
-    if not target_ids or not all(d in polestar_ids for d in target_ids):
-        return None
-    # 선택지는 사용자 조회 권한(D-232)으로 거른다 — 라우트 pre-gate
-    # (`_authorized_zone_clarification`)와 같은 규칙(plans/116 §10.3). 빈 목록을 넘기면
-    # build_zone_clarification이 "제한 없음"으로 읽으므로 권한 0이면 묻지 않는다.
-    allowed = authorized_db_ids(
-        app_config.multi_db.get_active_db_ids() or [o["db_id"] for o in ZONE_CLARIFY_OPTIONS],
-        state.get("allowed_db_ids"), state.get("user_role"),
-    )
-    if not allowed:
-        return None
-    return build_zone_clarification(
-        allowed, user_query,
-        # 존 그룹 상호배타(D-143 후속3) — 라우트 pre-gate와 동일 UI 규칙
-        group_exclusive=bool(
-            app_config.multi_db.zone_group_exclusive
-        ),
+    # 공통 꼬리(서버 식별 → 조회 대상 → 전부 폴스타 → 권한 거른 존 → 페이로드)
+    # — 2단과 공유(plans/169 O6)
+    return zone_clarification_for_targets(
+        state.get("parsed_requirements") or {}, targets, user_query,
+        allowed_db_ids=state.get("allowed_db_ids"),
+        user_role=state.get("user_role"),
+        app_config=app_config,
     )
 
 

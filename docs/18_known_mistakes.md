@@ -2062,3 +2062,18 @@
 - **실수**: 166 W0의 I4 판정은 `src/config.py` 경로 결합을 4곳으로 적었으나, W2 4c 실측에서 같은 계열이 더 나왔다 — ① `scripts/config_fallback_check.py`가 `inspect.getmembers(src.config)` 뒤 `cls.__module__ != "src.config"`로 클래스를 걸러, 클래스를 하위 모듈로 옮기면 필드를 읽지 못해 **린트가 조용히 무력화**된다(AppConfig 48필드만 남음 · 실측) ② `tests/test_scripts/test_bench_sweep.py`·`test_bench_report.py`가 `src/config.py`의 `stat()`을 읽는다 ③ `scripts/bench/optimize.py`가 `config.py` 파일명으로 정의 파일을 참조 수에서 뺀다. 4c에서 모두 고쳤다(테스트 경로 리터럴 3줄).
 - **원인**: 경로 결합을 `src/config.py` 문자열 grep과 import 스모크로만 찾고, 모듈 이름 비교(`__module__`)·파일명 비교로 묶인 코드는 찾지 않았다.
 - **방지책**: 모듈을 패키지로 바꾸거나 클래스를 하위 모듈로 옮기기 전에 `__module__`·`getmembers`·`vars(<모듈>)`·파일명(`path.name ==`) 비교까지 grep하고, 그 모듈을 읽는 게이트(린트·카탈로그)는 이동 전후 **출력 수치가 같은지** 대조한다(수치가 0으로 줄면 무력화).
+
+### 2026-10-16 · (plans/169 · 팀 리드) patch seam 목록을 `patch`/`setattr` grep으로만 뽑아 직접 대입 seam을 놓쳤다
+- **실수**: 169 N1(a) 위임 프롬프트에 노드 네임스페이스 seam을 `build_form_fill_pivot_sql`·`recognize_month_series`·`get_domain_by_id` 3개로 적었다. `tests/test_nodes/test_r3_surface_fallback.py`는 `qg.resolve_stat_month_range = fake`처럼 **모듈 속성에 직접 대입**해 바꿔 끼우는데(5곳), 팀 리드 grep(`patch\|setattr`)에 걸리지 않았다. 구현자가 공용 함수로 옮겼다가 테스트 실패로 발견해 되돌렸다(피해 없음).
+- **원인**: seam 탐색을 `monkeypatch.setattr`·`patch(...)` 형태로만 가정했다.
+- **방지책**: 이동 전 seam grep에 직접 대입 형태(`<모듈 별칭>\.<이름> = `)와 `patch.object(<모듈>, "<이름>"`을 함께 넣는다 — 예: `grep -rnE "\b(qg|mdb|mod|module)\.<이름>\s*=|setattr\(.*<이름>|patch.*<이름>" tests`. 위임 프롬프트의 seam 목록은 「팀 리드 grep 기준 — 직접 다시 확인」으로 적는다.
+
+### 2026-10-16 · (plans/168 · 팀 리드) 공통화 전 소스 계수 가드를 경로 문자열 grep으로만 찾아 `route.__file__`로 읽는 가드를 놓쳤고, 헬퍼 래핑이 AST 가드를 공허하게 만든 것은 verifier가 찾았다
+- **실수**: `query.py` 사전 게이트를 `_run_*_pre_gates`로 모으면서 역질문 감사 호출 리터럴이 4곳→2곳이 됐다. `tests/test_scope_select/test_v7_audit_and_estimate.py`가 `Path(route.__file__).read_text()`로 그 리터럴을 4개 세는데, 위임 전 가드 목록을 `grep 'routes/query.py'`로만 만들어 이 파일이 빠졌다(계획 끝 회귀에서 발견 · 교정). 또 `StreamingResponse` 호출을 `_sse_response(...)`로 감싸자 `test_thread_history.py::test_entry_points_wrap_every_exit`(핸들러 안 `StreamingResponse` 첫 인자 검사)가 검사 대상이 0이 되어 공허하게 통과했다 — 조기 반환 5곳은 지키는 테스트가 없어졌다(verifier Major).
+- **원인**: 소스 텍스트·AST를 읽는 가드는 경로 리터럴 말고도 `module.__file__`·`inspect.getsource(module)`·`importlib` 경로로 파일을 읽는다. 또 「호출 이름」을 찾는 AST 가드는 그 호출을 헬퍼로 감싸면 실패가 아니라 **공허 통과**한다 — 테스트 통과만으로는 안 보인다.
+- **방지책**: 공통화·래핑 전에 대상 모듈을 읽는 가드를 `grep -rln '<모듈 경로>\|<모듈 별칭>.__file__\|getsource(' tests`로 모두 모으고, 출현 횟수를 스크립트로 전후 비교한다. 호출을 헬퍼로 감싸는 변경은 그 호출 이름을 찾는 AST 가드를 grep(`func.id == "<이름>"`·`getattr(n.func, "id"`)해 공허화 여부를 위임 프롬프트의 검증 항목에 넣는다(변이 1건으로 확인).
+
+### 2026-10-16 · (plans/170 · 팀 리드) Facade 우회 집계를 `._redis_cache.` grep으로만 해 `getattr(…, "_redis_cache")` 5곳을 놓쳤고, 위임 이동 전 `getsource` 가드를 위임 프롬프트에 넣지 않아 가드가 공허해졌다
+- **실수**: ① 166 I1 「Facade 우회 10곳」을 그대로 옮기며 재실측 grep을 `\._redis_cache\b`로만 해 `getattr(cache_mgr, "_redis_cache", None)` 형태 5곳(`cache_management.py:1042` · `mapping_feedback.py:168` · `redis_registration.py:214,341,361`)이 범위에서 빠졌다(verifier 발견 · 범위 밖으로 기록). ② `RedisSchemaCache` 유사어 메서드를 하위 객체로 옮기는 위임 프롬프트에 「소스를 읽는 가드」 확인을 넣지 않았다 — `test_synonym_set_routing.py:146-150`의 `inspect.getsource(RedisSchemaCache.add_global_synonym)` 키 상수 단언이 위임 독스트링으로 공허 통과했다(implementer 보고 · verifier 변이로 확인 · 새 검증 테스트로 보강). 168에서 같은 계열 교훈이 이미 기록돼 있었다.
+- **원인**: 접근 형태를 속성 접근 한 가지로 가정했고, 직전 계획의 교훈(소스·AST 가드는 래핑·위임 뒤 공허 통과)을 위임 체크리스트로 옮기지 않았다.
+- **방지책**: private 멤버 우회 집계는 `grep -rnE '\._x\b|getattr\([^)]*"_x"'` 두 형태로 센다. 메서드 본문을 옮기거나 위임으로 바꾸는 위임 프롬프트에는 `grep -rn 'getsource(\|__file__\|read_text()' tests`로 대상 클래스·모듈을 읽는 가드 목록을 넣고, 위임 뒤에도 가드가 실효인지(변이 1개) 확인하게 한다.

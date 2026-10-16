@@ -17,9 +17,11 @@ import re
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextvars import Token
+from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Optional
+from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -1796,7 +1798,7 @@ def _scope_select_or_none(
     )
 
 async def _form_memory_delete_or_none(
-    body, checkpoint_state: dict, config
+    body, checkpoint_state: dict[str, Any] | None, config
 ) -> dict | None:
     """저장 값 패널의 삭제 버튼 요청(form_memory_delete)을 파이프라인 없이 결정적으로 처리한다(D-187).
 
@@ -2507,6 +2509,348 @@ async def _stream_cut_sse_event(
     )
 
 
+def _sse_response(
+    gen: AsyncIterator[str], *, accel_buffering: bool = True
+) -> StreamingResponse:
+    """SSE 스트림 응답 — 네 스트림 진입의 헤더 단일 출처(plans/168 A1).
+
+    `accel_buffering=False`는 텍스트 스트림 선택 거부 응답의 현행 헤더(`X-Accel-Buffering`
+    없음)를 보존하기 위한 것이다 — 헤더 차이는 바이트 불변 대상이다.
+    """
+    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    if accel_buffering:
+        headers["X-Accel-Buffering"] = "no"
+    return StreamingResponse(gen, media_type="text/event-stream", headers=headers)
+
+
+@dataclass
+class PreGateResult:
+    """사전 게이트 조기 반환 판정(plans/168 A3).
+
+    `payload`: `clarification` = 역질문 dict · `memory_delete` = `_form_memory_delete_or_none`
+    결과 dict. 선택 거부 반환·역질문 감사·응답 렌더는 네 진입에 남는다 — 진입별 배선을
+    정적으로 세는 가드(`test_plan104_db_authz.TestFourEntryPointsShareTheGate` ·
+    `test_plan121_plan_summary.test_route_wiring_counts` ·
+    `test_v7_audit_and_estimate.TestR6ClarificationAudit.test_every_pre_gate_entry_point_records_the_fire`)
+    가 진입마다 한 벌을 요구한다. 파일 두 진입은 존 역질문 하나뿐이라 인라인으로 둔다.
+    """
+
+    kind: Literal["clarification", "memory_delete"]
+    payload: dict[str, Any]
+
+
+async def _run_text_pre_gates(
+    body: QueryRequest,
+    checkpoint_state: dict[str, Any] | None,
+    config: Any,
+    current_user: dict[str, Any],
+) -> PreGateResult | None:
+    """텍스트 두 경로(`/query`·`/query/stream`)의 인가 뒤 사전 게이트 — 조기 반환 판정 또는 None.
+
+    순서(현행 보존): 존 역질문(Plan 75 §4 — 결정적 게이트, 서버측 보류 상태 없음) →
+    (없으면) 범위 사전 선택(**모호성 해소 다음** — 2연속 질문 금지, D-176 후속4) →
+    (역질문이 없을 때만) 저장 값 패널 삭제(D-187 — 파이프라인·LLM 미경유).
+    역질문 감사는 호출자가 반환 직전에 한다. 게이트 함수는 호출 시점에 모듈 전역에서
+    찾는다(patch seam).
+    """
+    clarification = _zone_clarification_or_none(body, checkpoint_state, config, current_user)
+    if not clarification:
+        clarification = _scope_select_or_none(
+            body, checkpoint_state, config, current_user
+        )
+    if clarification:
+        return PreGateResult("clarification", clarification)
+    mem_delete = await _form_memory_delete_or_none(body, checkpoint_state, config)
+    if mem_delete:
+        return PreGateResult("memory_delete", mem_delete)
+    return None
+
+
+async def _single_done_stream(payload: dict[str, Any]) -> AsyncGenerator[str, None]:
+    """done 이벤트 1건만 내는 SSE 스트림 — 네 스트림 진입의 조기 반환 공유(plans/168 A3)."""
+    yield _sse_event(payload)
+
+
+async def _stream_graph_turn(
+    request: Request,
+    graph: Any,
+    config: Any,
+    graph_input: Any,
+    thread_config: dict[str, Any],
+    *,
+    scope_seed: dict[str, Any],
+    limit_sec: float,
+    query_id: str,
+    thread_id: str,
+    current_user: dict[str, Any],
+    user_query: str,
+    fallback_timeout_message: str,
+    stream_done: Callable[..., tuple[dict[str, Any], bool]],
+    fallback_done: Callable[..., dict[str, Any]],
+) -> AsyncGenerator[str, None]:
+    """두 스트림 진입(`/query/stream`·`/query/file/stream`)의 SSE 본문 공유(plans/168 A1).
+
+    astream 루프(상한 절단·heartbeat·진행·노드 시작/완료·토큰) → 최종 출력의 토큰 보충·META →
+    `stream_done` → done. astream 이 출력 없이 끝나거나 미지원이면 ainvoke 폴백 → 토큰·META →
+    `fallback_done` → done. 경로마다 다른 응답·저장·done 페이로드 조립은 두 빌더(호출자 클로저)가
+    맡는다 — 진입별 배선을 정적으로 세는 가드가 경로마다 한 벌을 요구한다.
+
+    - `stream_done(output, *, elapsed_ms, _final_row_count, _sql_state, _scope_state,
+      _tracked_query_results, _watch)` → `(done 페이로드, 그래프 끝까지 받을지)`.
+    - `fallback_done(result, *, final_response, elapsed_ms, _time_clar, _turn_fields, _watch)`
+      → done 페이로드.
+
+    빌더는 이 함수의 `try` 안에서 불린다 — 빌더 예외도 종전대로 폴백·오류 이벤트로 간다.
+    `scope_seed`(db_scope 누적 상태의 시작값)는 노드 델타가 덮어쓰므로 호출자가 새 dict로 넘긴다.
+    """
+    start_time = time.time()
+    streamed_any_token = False
+    _seen_nodes: set[str] = set()
+    _current_node: str | None = None
+    _tracked_row_count: int = 0
+    _tracked_query_results: list[dict[str, Any]] = []
+    _sql_state: dict[str, Any] = {}   # 실행 SQL 출처 누적(plans/116 §10.3)
+    # db_scope 입력 — 시작값 + 노드 델타 누적(plans/120 S-1 · ainvoke 결과와 같은 값)
+    _scope_state: dict[str, Any] = scope_seed
+    _trace = StreamTrace()   # 실패 시 경위(D-242)
+    # 상한 세 시계(T-5) + 단계 타임라인(T-0) — plans/119 · D-267 ⑦
+    _watch = _stream_watch(config, limit_sec, start_time)
+    # 마감 바인딩(T-1) — 생산자 태스크·폴백 ainvoke 가 만들어지기 전에 묶는다
+    _deadline_token = _bind_deadline(graph_input, config, stream=True)
+
+    try:
+        if hasattr(graph, "astream_events"):
+            try:
+                # 이벤트 fetch마다 타임아웃을 건다(D-066 후속). 노드 내부 LLM 호출이
+                # 응답 없이 멈추면 astream_events가 다음 이벤트를 영영 못 내놓아 SSE가
+                # 무한 hang된다(healthcheck만 도는 증상). wait_for로 stuck fetch를 끊는다.
+                # plans/89 §3.2-④ · D-204: 생산자 태스크 + 큐. 그 사이 heartbeat를 낸다.
+                # wait_for(__anext__) 재호출 금지. plans/119 T-5: 무이벤트 안전 상한은 전체
+                # 상한(처리 상한 + 전달 연장)이고, 상한 판정은 `wake_at` tick으로 제때 한다.
+                _progress_on = bool(getattr(config.server, "sse_progress_events", True))
+                _hb = (
+                    float(config.server.sse_heartbeat_interval_sec or 0)
+                    if _progress_on else 0.0
+                )
+                _ev_payload: Any   # kind 별 페이로드 — "event"·"heartbeat"는 dict(D-204)
+                async with contextlib.aclosing(_graph_event_stream(
+                    graph, graph_input, thread_config,
+                    idle_timeout=_watch.caps.hard_cap_sec, heartbeat_interval=_hb,
+                    wake_at=_watch.next_check_at,
+                )) as _events:
+                    async for _ev_kind, _ev_payload in _events:
+                        # 상한 세 시계(plans/119 T-5 · G-7) — 첫 답변 전 처리 상한 ·
+                        # 첫 답변 뒤 토큰 간 idle · 전체 상한(CU-11 hang 방지).
+                        # heartbeat는 시계를 되돌리지 않는다.
+                        _cut = _watch.cut()
+                        if _cut is None and _ev_kind == "timeout":
+                            _cut = CUT_HARD_CAP if _watch.caps.answered else CUT_PROCESSING
+                        if _cut is not None:
+                            yield await _stream_cut_sse_event(
+                                graph, thread_config,
+                                watch=_watch, kind=_cut,
+                                tracked_rows=_tracked_query_results,
+                                query_id=query_id, thread_id=thread_id,
+                                trace=_trace,
+                                message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+                                owner=current_user.get("sub"),
+                                config=config, user_query=user_query,   # plans/160 A-2
+                            )
+                            return
+                        if _ev_kind == "tick":
+                            continue
+                        if _ev_kind == "heartbeat":
+                            yield _sse_event(_heartbeat_sse_payload(start_time, _ev_payload))
+                            continue
+                        event = _ev_payload
+                        kind = event.get("event", "")
+                        name = event.get("name", "")
+                        _watch.observe(event, root=not _is_subgraph_event(event))
+
+                        # 응답 선행 본문(코드 렌더 표 · plans/119 N-1) — 답변 토큰이다
+                        if kind == "on_custom_event" and name == ANSWER_PREFIX_EVENT:
+                            _prefix = _answer_prefix_text(event)
+                            if _prefix:
+                                streamed_any_token = True
+                                _watch.answer_sent(_prefix, prefix=True)
+                                yield _sse_event({"type": SSE_TOKEN, "content": _prefix})
+                            continue
+
+                        # 도구·커스텀 이벤트 → progress (plans/89 T3)
+                        _prog = _progress_sse_payload(event, _current_node, start_time)
+                        if _prog is not None:
+                            _trace.observe_progress(_prog)
+                            if _progress_on:
+                                yield _sse_event(_prog)
+                                continue
+
+                        # 노드 시작 이벤트 감지
+                        if kind == "on_chain_start" and name in _STREAM_KNOWN_NODES:
+                            _trace.node_started(name, (time.time() - start_time) * 1000)
+                        if kind == "on_chain_start" and name and name not in _seen_nodes:
+                            _known_nodes = _STREAM_KNOWN_NODES
+                            if name in _known_nodes:
+                                _seen_nodes.add(name)
+                                _current_node = name
+                                yield _sse_event({
+                                    "type": SSE_NODE_START,
+                                    "node": name,
+                                    "timestamp_ms": (time.time() - start_time) * 1000,
+                                })
+
+                        # 노드 완료 이벤트
+                        if kind == "on_chain_end" and name:
+                            node_output = event.get("data", {}).get("output", {})
+                            if isinstance(node_output, dict) and name in _seen_nodes:
+                                _trace.node_ended(
+                                    name, node_output, (time.time() - start_time) * 1000
+                                )
+                                # query_results를 반환하는 노드에서 추적
+                                if name in ("query_executor", "multi_db_executor", "result_merger"):
+                                    node_qr = node_output.get("query_results")
+                                    if isinstance(node_qr, list):
+                                        _tracked_row_count = len(node_qr)
+                                        _tracked_query_results = node_qr
+                                progress_data = _extract_node_progress(
+                                    name, node_output, security=config.security
+                                )
+                                # 진행 데이터가 없어도 완료를 알린다 — 노드 시간 경계다
+                                # (plans/120 V-6: 3단 multi_db_executor·result_merger 는
+                                # 추출 분기가 없어 완료 이벤트가 0건 → 하네스가 구간을 잃었다).
+                                yield _sse_event({
+                                    "type": SSE_NODE_COMPLETE,
+                                    "node": name,
+                                    "data": progress_data or {},
+                                    "timestamp_ms": (time.time() - start_time) * 1000,
+                                })
+
+                        # LLM 토큰 스트리밍 (output_generator, general_inference 노드)
+                        # 종료 노드 출력엔 SQL 이 없어 앞 노드 출력에서 모은다(plans/116 §10.3)
+                        if kind == "on_chain_end" and not _is_subgraph_event(event):
+                            _root_out = event.get("data", {}).get("output")
+                            _track_sql_state(_sql_state, _root_out)
+                            _merge_node_delta(_scope_state, _root_out)   # plans/120 S-1
+
+                        if kind == "on_chat_model_stream":
+                            # 최종 사용자 응답(USER_RESPONSE_TAG)으로 태깅된 LLM 호출의
+                            # 토큰만 전달한다. orchestration 경로에서는 SQL 생성·DB 분류 등
+                            # 중간 LLM 호출이 같은 노드(agent_orchestrator)에서 일어나므로
+                            # 노드명이 아닌 태그로 구분해야 토큰이 새지 않는다.
+                            _tags = event.get("tags", []) or []
+                            _event_node = event.get("metadata", {}).get(
+                                "langgraph_node", _current_node or ""
+                            )
+                            if USER_RESPONSE_TAG in _tags or _event_node in (
+                                "output_generator", "general_inference"
+                            ):
+                                chunk = event.get("data", {}).get("chunk")
+                                token_text = _token_text(chunk) if chunk else ""
+                                if token_text:
+                                    streamed_any_token = True
+                                    _watch.answer_sent(token_text)   # 첫 답변·idle 시계(T-5)
+                                    yield _sse_event({
+                                        "type": SSE_TOKEN,
+                                        "content": token_text,
+                                    })
+
+                        elif kind == "on_chain_end" and not _is_subgraph_event(event):
+                            output = event.get("data", {}).get("output", {})
+                            if isinstance(output, dict) and "final_response" in output:
+                                elapsed_ms = (time.time() - start_time) * 1000
+
+                                if not streamed_any_token:
+                                    _watch.answer_sent(
+                                        output.get("final_response", ""), final=True
+                                    )
+                                    yield _sse_event({
+                                        "type": SSE_TOKEN,
+                                        "content": output.get("final_response", ""),
+                                    })
+
+                                # output_generator 노드 출력에는 query_results가 없으므로
+                                # 이전 노드에서 추적한 _tracked_row_count 사용
+                                _final_row_count = (
+                                    len(output.get("query_results", [])) or _tracked_row_count
+                                )
+
+                                yield _sse_event({
+                                    "type": SSE_META,
+                                    "executed_sql": _executed_sql(_sql_state),
+                                    "row_count": _final_row_count,
+                                })
+
+                                _done, _drain = stream_done(
+                                    output, elapsed_ms=elapsed_ms,
+                                    _final_row_count=_final_row_count,
+                                    _sql_state=_sql_state, _scope_state=_scope_state,
+                                    _tracked_query_results=_tracked_query_results,
+                                    _watch=_watch,
+                                )
+                                yield _sse_event(_done)
+                                if _drain:
+                                    # 제니퍼 소스 되묻기 대기·승계(plans/147)는 종료
+                                    # 노드가 쓰는 스레드 칸이다 — 바로 끝내면 생산자가
+                                    # 취소돼 그 노드의 체크포인트 쓰기가 사라진다
+                                    # (LangGraph 실측). 이 턴만 그래프 끝까지 받는다.
+                                    async for _ in _events:
+                                        pass
+                                return
+
+                if not streamed_any_token:
+                    raise AttributeError("astream_events did not produce output")
+
+            except (AttributeError, TypeError, NotImplementedError):
+                pass
+
+        # Fallback: ainvoke
+        result = await asyncio.wait_for(
+            graph.ainvoke(graph_input, thread_config),
+            timeout=limit_sec,
+        )
+
+        elapsed_ms = (time.time() - start_time) * 1000
+
+        final_response = result.get("final_response", "")
+        _watch.answer_sent(final_response, final=True)
+        yield _sse_event({"type": SSE_TOKEN, "content": final_response})
+        # 기간 되묻기(plans/122 T-3·T-4) — 조회하지 않은 턴이라 직전 턴 SQL·행을 싣지 않는다(D5)
+        _time_clar = _time_clarification(result)
+        _turn_fields = _clarify_turn_fields(_time_clar)
+
+        yield _sse_event({
+            "type": SSE_META,
+            "executed_sql": _executed_sql(result),
+            "row_count": len(result.get("query_results", [])),
+            **{k: v for k, v in _turn_fields.items() if k in ("executed_sql", "row_count")},
+        })
+
+        yield _sse_event(fallback_done(
+            result, final_response=final_response, elapsed_ms=elapsed_ms,
+            _time_clar=_time_clar, _turn_fields=_turn_fields, _watch=_watch,
+        ))
+
+    except TimeoutError:  # asyncio.TimeoutError 와 같은 클래스(3.11+)
+        # 폴백 ainvoke 는 첫 답변 개념이 없다 — 처리 상한 그대로(plans/119 T-5)
+        yield await _stream_cut_sse_event(
+            graph, thread_config,
+            watch=_watch, kind=CUT_PROCESSING,
+            tracked_rows=_tracked_query_results,
+            query_id=query_id, thread_id=thread_id,
+            trace=_trace,
+            message=fallback_timeout_message,
+            owner=current_user.get("sub"),
+            config=config, user_query=user_query,   # plans/160 A-2
+        )
+    except Exception as e:
+        yield _sse_event(_stream_error_payload(
+            user_error_detail(_GRAPH_ERROR_MESSAGE, e, logger, request),   # plans/163 S3
+            _trace, code="exception", start_time=start_time, limit_sec=limit_sec,
+            timeline=_finish_timeline(_watch, query_id),
+        ))
+    finally:
+        _unbind_deadline(_deadline_token)
+
+
 @router.post(
     "/query",
     response_model=QueryResponse,
@@ -2569,14 +2913,11 @@ async def process_query(
             thread_id=thread_id,
         ))
 
-    # Plan 75 §4: 존 모호 시 파이프라인 실행 전에 역질문 반환(결정적 게이트, 서버측 보류 상태 없음)
-    clarification = _zone_clarification_or_none(body, checkpoint_state, config, current_user)
-    # 범위 사전 선택은 **모호성 해소 다음**이다(2연속 질문 금지 — D-176 후속4).
-    if not clarification:
-        clarification = _scope_select_or_none(
-            body, checkpoint_state, config, current_user
-        )
-    if clarification:
+    # 사전 게이트(존 역질문·범위 사전 선택 → 저장 값 패널 삭제) — 파이프라인 실행 전
+    # 결정적 조기 반환(/query/stream과 대칭 · plans/168 A3)
+    gate = await _run_text_pre_gates(body, checkpoint_state, config, current_user)
+    if gate is not None and gate.kind == "clarification":
+        clarification = gate.payload
         await _audit_clarification(clarification, current_user, thread_id)
         return await turn.response(QueryResponse(
             query_id=query_id,
@@ -2586,15 +2927,13 @@ async def process_query(
             clarification=clarification,
             **_pre_gate_plan_summary(),  # plans/121 TP-0.1
         ))
-    # D-187: 저장 값 패널 삭제 버튼 — 파이프라인·LLM 없이 결정적 처리(/query/stream과 대칭)
-    mem_delete = await _form_memory_delete_or_none(body, checkpoint_state, config)
-    if mem_delete:
+    if gate is not None:
         return await turn.response(QueryResponse(
             query_id=query_id,
             status="success",
-            response=mem_delete["response"],
+            response=gate.payload["response"],
             thread_id=thread_id,
-            form_memory_panel=mem_delete["form_memory_panel"],
+            form_memory_panel=gate.payload["form_memory_panel"],
         ))
 
     # 승인 의사 해소는 async(LLM 보조 옵트인)라 동기 조립 헬퍼 밖에서 수행한다 — 두 텍스트
@@ -2763,68 +3102,35 @@ async def process_query_stream(
     body.selected_apm_source_ids = apply_apm_source_selection_authorization(
         body.selected_apm_source_ids, current_user)
     if _selection_denied:
-        async def selection_denied_generator() -> AsyncGenerator[str, None]:
-            yield _sse_event({
-                "type": SSE_DONE,
-                "response": SELECTION_DENIED_MESSAGE,
-                "query_id": query_id,
-                "thread_id": thread_id,
-            })
-        return StreamingResponse(
-            turn.stream(selection_denied_generator()),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-        )
+        # 이 응답만 현행대로 `X-Accel-Buffering` 헤더가 없다(바이트 불변 보존)
+        return _sse_response(turn.stream(_single_done_stream({
+            "type": SSE_DONE,
+            "response": SELECTION_DENIED_MESSAGE,
+            "query_id": query_id,
+            "thread_id": thread_id,
+        })), accel_buffering=False)
 
-    # Plan 75 §4: 존 모호 시 파이프라인 실행 전에 역질문 반환 — /query와 대칭
-    clarification = _zone_clarification_or_none(body, checkpoint_state, config, current_user)
-    # 범위 사전 선택은 **모호성 해소 다음**이다(2연속 질문 금지 — D-176 후속4).
-    if not clarification:
-        clarification = _scope_select_or_none(
-            body, checkpoint_state, config, current_user
-        )
-    if clarification:
+    # 사전 게이트(존 역질문·범위 사전 선택 → 저장 값 패널 삭제) — /query와 대칭(plans/168 A3)
+    gate = await _run_text_pre_gates(body, checkpoint_state, config, current_user)
+    if gate is not None and gate.kind == "clarification":
+        clarification = gate.payload
         await _audit_clarification(clarification, current_user, thread_id)
-
-        async def clarification_generator() -> AsyncGenerator[str, None]:
-            yield _sse_event({
-                "type": SSE_DONE,
-                "response": clarification["question"],
-                "query_id": query_id,
-                "thread_id": thread_id,
-                "clarification": clarification,
-                **_pre_gate_plan_summary(),  # plans/121 TP-0.1
-            })
-        return StreamingResponse(
-            turn.stream(clarification_generator()),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
-    # D-187: 저장 값 패널 삭제 버튼 — /query와 대칭(파이프라인·LLM 미경유, done 이벤트 즉시)
-    mem_delete = await _form_memory_delete_or_none(body, checkpoint_state, config)
-    if mem_delete:
-        async def mem_delete_generator() -> AsyncGenerator[str, None]:
-            yield _sse_event({
-                "type": SSE_DONE,
-                "response": mem_delete["response"],
-                "query_id": query_id,
-                "thread_id": thread_id,
-                "form_memory_panel": mem_delete["form_memory_panel"],
-            })
-        return StreamingResponse(
-            turn.stream(mem_delete_generator()),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
+        return _sse_response(turn.stream(_single_done_stream({
+            "type": SSE_DONE,
+            "response": clarification["question"],
+            "query_id": query_id,
+            "thread_id": thread_id,
+            "clarification": clarification,
+            **_pre_gate_plan_summary(),  # plans/121 TP-0.1
+        })))
+    if gate is not None:
+        return _sse_response(turn.stream(_single_done_stream({
+            "type": SSE_DONE,
+            "response": gate.payload["response"],
+            "query_id": query_id,
+            "thread_id": thread_id,
+            "form_memory_panel": gate.payload["form_memory_panel"],
+        })))
 
     # /query와 동일 조립(단일 출처) — SSE 경로에만 D-064 초기화가 빠졌던 비대칭 재발 방지
     approval = await _resolve_turn_approval(body, checkpoint_state, config)
@@ -2840,406 +3146,195 @@ async def process_query_stream(
     )
     input_state["request_deadline"] = _request_deadline(effective_timeout)   # plans/118 P-1
 
-    async def event_generator() -> AsyncGenerator[str, None]:
-        """SSE 이벤트를 생성하는 비동기 제너레이터."""
-        start_time = time.time()
-        streamed_any_token = False
-        _seen_nodes: set[str] = set()
-        _current_node: str | None = None
-        _tracked_row_count: int = 0
-        _tracked_query_results: list[dict] = []
-        _sql_state: dict = {}   # 실행 SQL 출처 누적(plans/116 §10.3)
+    def _stream_done(
+        output: dict[str, Any], *, elapsed_ms: float, _final_row_count: int,
+        _sql_state: dict[str, Any], _scope_state: dict[str, Any],
+        _tracked_query_results: list[dict[str, Any]], _watch: StreamWatch,
+    ) -> tuple[dict[str, Any], bool]:
+        """astream 최종 출력 → 응답·저장·done 페이로드(plans/168 A1).
+
+        둘째 값 = 그래프 끝까지 받을지(제니퍼 소스 되묻기 대기·승계 — plans/147).
+        """
+        status = "awaiting_approval" if output.get("awaiting_approval") else "completed"
+        # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 shape
+        # 기간 되묻기(plans/122 T-3·T-4) — 누적 상태에서 판정
+        _zone_clar = (output.get("zone_clarification")
+                      or _time_clarification(_scope_state))
+        if _zone_clar:
+            status = "clarification"
+        turn_count = _count_human_messages(output.get("messages", []))
+
+        response_data = {
+            "query_id": query_id,
+            "status": status,
+            "response": output.get("final_response", ""),
+            "thread_id": thread_id,
+            "has_file": output.get("output_file") is not None,
+            "file_name": output.get("output_file_name"),
+            "executed_sql": _executed_sql(_sql_state),
+            "row_count": _final_row_count,
+            "processing_time_ms": elapsed_ms,
+            "turn_count": turn_count,
+            "has_mapping_report": output.get("mapping_report_md") is not None,
+            # HITL 폼필(D-151): 역질문 패널 컨텍스트
+            "form_fill_clarification": output.get("form_fill_clarification"),
+            "form_memory_panel": output.get("form_memory_panel"),  # D-187 저장 값 패널
+            # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
+            # 종료 노드 델타가 아니라 누적 상태로(plans/120 S-1)
+            "db_scope": build_db_scope(_scope_state, selected_db_ids=body.selected_db_ids),
+            **_dependency_notes_field(_scope_state),  # TP-11.8
+            **_disclosures_field(_scope_state),  # plans/123 W-8
+            **_time_resolution_field(_scope_state),  # plans/122 T-4
+            **_scope_reexpand_field(_scope_state),  # plans/123 W-2 ②
+            **_plan_summary_field(_scope_state),  # TP-0.1
+            "clarification": _zone_clar,
+            # 「다른 소스로 보기」(plans/132 W5) — 계획
+            # 노드가 쓰는 키라 누적 상태에서 읽는다
+            "source_switch": _scope_state.get("source_switch"),
+            **_apm_source_fields(_scope_state),  # plans/147
+        }
+        _rows = output.get("query_results") or _tracked_query_results
+        # 그래프 보기 신호(plans/160 A-2) — 표 경계는 누적 상태에서
+        _tables = result_tables_of(_scope_state)
+        response_data["chart"] = chart_field(
+            config, _rows, _tables, status=response_data["status"])
+        _store_result(query_id, {
+            **response_data,
+            "output_file": output.get("output_file"),
+            "mapping_report_md": output.get("mapping_report_md"),
+            "query_results": _rows,
+            **viz_store_fields(response_data["chart"],
+                               user_query=body.query, tables=_tables),
+        }, owner=current_user.get("sub"))
+
+        return {
+            "type": SSE_DONE,
+            "response": response_data["response"],
+            "query_id": query_id,
+            "thread_id": thread_id,
+            "processing_time_ms": elapsed_ms,
+            "row_count": response_data["row_count"],
+            "executed_sql": response_data["executed_sql"],
+            "has_file": response_data["has_file"],
+            "file_name": response_data.get("file_name"),
+            "awaiting_approval": output.get("awaiting_approval", False),
+            "turn_count": turn_count,
+            "has_mapping_report": response_data.get("has_mapping_report", False),
+            "form_fill_clarification": response_data.get("form_fill_clarification"),
+            "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
+            "db_scope": response_data.get("db_scope"),  # D-205
+            **_dependency_notes_field(response_data),  # TP-11.8
+            **_disclosures_field(response_data),  # plans/123 W-8
+            **_time_resolution_field(response_data),  # plans/122 T-4
+            **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
+            **_plan_summary_carry(response_data),  # TP-0.1
+            # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
+            "clarification": response_data.get("clarification"),
+            "source_switch": response_data.get("source_switch"),
+            **_apm_source_fields(response_data),  # plans/147
+            **chart_carry(response_data["chart"]),  # plans/160 A-2
+            **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
+            # 단계 타임라인(plans/119 T-0)
+            "timeline": _finish_timeline(_watch, query_id, done=True),
+        }, bool(output.get("apm_source_pending") or output.get("apm_source_scope"))
+
+    def _fallback_done(
+        result: dict[str, Any], *, final_response: str, elapsed_ms: float,
+        _time_clar: dict[str, Any] | None, _turn_fields: dict[str, Any], _watch: StreamWatch,
+    ) -> dict[str, Any]:
+        """ainvoke 폴백 결과 → 응답·저장·done 페이로드(plans/168 A1)."""
+        status = "awaiting_approval" if result.get("awaiting_approval") else "completed"
+        # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 shape
+        _zone_clar = result.get("zone_clarification") or _time_clar
+        if _zone_clar:
+            status = "clarification"
+        turn_count = _count_human_messages(result.get("messages", []))
+
+        response_data = {
+            "query_id": query_id,
+            "status": status,
+            "response": final_response,
+            "thread_id": thread_id,
+            "has_file": result.get("output_file") is not None,
+            "file_name": result.get("output_file_name"),
+            "executed_sql": _executed_sql(result),
+            "row_count": len(result.get("query_results", [])),
+            "processing_time_ms": elapsed_ms,
+            "turn_count": turn_count,
+            "has_mapping_report": result.get("mapping_report_md") is not None,
+            # HITL 폼필(D-151): 역질문 패널 컨텍스트
+            "form_fill_clarification": result.get("form_fill_clarification"),
+            "form_memory_panel": result.get("form_memory_panel"),  # D-187 저장 값 패널
+            # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
+            "db_scope": build_db_scope(result, selected_db_ids=body.selected_db_ids),
+            "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
+            **_disclosures_field(result),  # plans/123 W-8
+            **_time_resolution_field(result),  # plans/122 T-4
+            **_scope_reexpand_field(result),  # plans/123 W-2 ②
+            **_plan_summary_field(result),  # TP-0.1
+            "clarification": _zone_clar,
+            "source_switch": result.get("source_switch"),  # plans/132 W5
+            **_apm_source_fields(result),  # plans/147
+            **_turn_fields,  # 기간 되묻기 턴(D5)
+        }
+        _store_data = {
+            **response_data,
+            "output_file": result.get("output_file"),
+            "mapping_report_md": result.get("mapping_report_md"),
+            "query_results": result.get("query_results", []),
+            **_clarify_store_fields(_time_clar),
+        }
+        # 그래프 보기 신호(plans/160 A-2) — 저장하는 행 그대로로 판정한다
+        _tables = result_tables_of(result)
+        response_data["chart"] = chart_field(
+            config, _store_data["query_results"], _tables, status=response_data["status"])
+        _store_result(query_id, {
+            **_store_data,
+            **viz_store_fields(response_data["chart"], user_query=body.query, tables=_tables),
+        }, owner=current_user.get("sub"))
+
+        return {
+            "type": SSE_DONE,
+            "response": response_data["response"],
+            "query_id": query_id,
+            "thread_id": thread_id,
+            "processing_time_ms": elapsed_ms,
+            "row_count": response_data["row_count"],
+            "executed_sql": response_data["executed_sql"],
+            "has_file": response_data["has_file"],
+            "file_name": response_data.get("file_name"),
+            # astream 경로와 같은 키(plans/163 D6) — 폴백에서만 빠져 있었다
+            "awaiting_approval": result.get("awaiting_approval", False),
+            "turn_count": turn_count,
+            "has_mapping_report": response_data.get("has_mapping_report", False),
+            "form_fill_clarification": response_data.get("form_fill_clarification"),
+            "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
+            "db_scope": response_data.get("db_scope"),  # D-205
+            **_dependency_notes_field(response_data),  # TP-11.8
+            **_disclosures_field(response_data),  # plans/123 W-8
+            **_time_resolution_field(response_data),  # plans/122 T-4
+            **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
+            **_plan_summary_carry(response_data),  # TP-0.1
+            # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
+            "clarification": response_data.get("clarification"),
+            "source_switch": response_data.get("source_switch"),  # plans/132 W5
+            **_apm_source_fields(response_data),  # plans/147
+            **chart_carry(response_data["chart"]),  # plans/160 A-2
+            **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
+            "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0
+        }
+
+    # 공통 SSE 본문(plans/168 A1) — 응답·저장·done 조립만 위 두 빌더가 경로별로 맡는다
+    return _sse_response(turn.stream(_stream_graph_turn(
+        request, graph, config, input_state, thread_config,
         # db_scope 입력 — 체크포인트 + 입력 + 노드 델타 누적(plans/120 S-1 · ainvoke 결과와 같은 값)
-        _scope_state: dict[str, Any] = {**(checkpoint_state or {}), **input_state}
-        _trace = StreamTrace()   # 실패 시 경위(D-242)
-        # 상한 세 시계(T-5) + 단계 타임라인(T-0) — plans/119 · D-267 ⑦
-        _watch = _stream_watch(config, effective_timeout, start_time)
-        # 마감 바인딩(T-1) — 생산자 태스크·폴백 ainvoke 가 만들어지기 전에 묶는다
-        _deadline_token = _bind_deadline(input_state, config, stream=True)
-
-        try:
-            if hasattr(graph, "astream_events"):
-                try:
-                    # 이벤트 fetch마다 타임아웃을 건다(D-066 후속). 노드 내부 LLM 호출이
-                    # 응답 없이 멈추면 astream_events가 다음 이벤트를 영영 못 내놓아 SSE가
-                    # 무한 hang된다(healthcheck만 도는 증상). wait_for로 stuck fetch를 끊는다.
-                    # plans/89 §3.2-④ · D-204: 생산자 태스크 + 큐. 그 사이 heartbeat를 낸다.
-                    # wait_for(__anext__) 재호출 금지. plans/119 T-5: 무이벤트 안전 상한은 전체
-                    # 상한(처리 상한 + 전달 연장)이고, 상한 판정은 `wake_at` tick으로 제때 한다.
-                    _progress_on = bool(getattr(config.server, "sse_progress_events", True))
-                    _hb = (
-                        float(config.server.sse_heartbeat_interval_sec or 0)
-                        if _progress_on else 0.0
-                    )
-                    async with contextlib.aclosing(_graph_event_stream(
-                        graph, input_state, thread_config,
-                        idle_timeout=_watch.caps.hard_cap_sec, heartbeat_interval=_hb,
-                        wake_at=_watch.next_check_at,
-                    )) as _events:
-                        async for _ev_kind, _ev_payload in _events:
-                            # 상한 세 시계(plans/119 T-5 · G-7) — 첫 답변 전 처리 상한 ·
-                            # 첫 답변 뒤 토큰 간 idle · 전체 상한(CU-11 hang 방지).
-                            # heartbeat는 시계를 되돌리지 않는다.
-                            _cut = _watch.cut()
-                            if _cut is None and _ev_kind == "timeout":
-                                _cut = CUT_HARD_CAP if _watch.caps.answered else CUT_PROCESSING
-                            if _cut is not None:
-                                yield await _stream_cut_sse_event(
-                                    graph, thread_config,
-                                    watch=_watch, kind=_cut,
-                                    tracked_rows=_tracked_query_results,
-                                    query_id=query_id, thread_id=thread_id,
-                                    trace=_trace,
-                                    message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-                                    owner=current_user.get("sub"),
-                                    config=config, user_query=body.query,   # plans/160 A-2
-                                )
-                                return
-                            if _ev_kind == "tick":
-                                continue
-                            if _ev_kind == "heartbeat":
-                                yield _sse_event(_heartbeat_sse_payload(start_time, _ev_payload))
-                                continue
-                            event = _ev_payload
-                            kind = event.get("event", "")
-                            name = event.get("name", "")
-                            _watch.observe(event, root=not _is_subgraph_event(event))
-
-                            # 응답 선행 본문(코드 렌더 표 · plans/119 N-1) — 답변 토큰이다
-                            if kind == "on_custom_event" and name == ANSWER_PREFIX_EVENT:
-                                _prefix = _answer_prefix_text(event)
-                                if _prefix:
-                                    streamed_any_token = True
-                                    _watch.answer_sent(_prefix, prefix=True)
-                                    yield _sse_event({"type": SSE_TOKEN, "content": _prefix})
-                                continue
-
-                            # 도구·커스텀 이벤트 → progress (plans/89 T3)
-                            _prog = _progress_sse_payload(event, _current_node, start_time)
-                            if _prog is not None:
-                                _trace.observe_progress(_prog)
-                                if _progress_on:
-                                    yield _sse_event(_prog)
-                                    continue
-
-                            # 노드 시작 이벤트 감지
-                            if kind == "on_chain_start" and name in _STREAM_KNOWN_NODES:
-                                _trace.node_started(name, (time.time() - start_time) * 1000)
-                            if kind == "on_chain_start" and name and name not in _seen_nodes:
-                                _known_nodes = _STREAM_KNOWN_NODES
-                                if name in _known_nodes:
-                                    _seen_nodes.add(name)
-                                    _current_node = name
-                                    yield _sse_event({
-                                        "type": SSE_NODE_START,
-                                        "node": name,
-                                        "timestamp_ms": (time.time() - start_time) * 1000,
-                                    })
-
-                            # 노드 완료 이벤트
-                            if kind == "on_chain_end" and name:
-                                node_output = event.get("data", {}).get("output", {})
-                                if isinstance(node_output, dict) and name in _seen_nodes:
-                                    _trace.node_ended(name, node_output, (time.time() - start_time) * 1000)
-                                    # query_results를 반환하는 노드에서 추적
-                                    if name in ("query_executor", "multi_db_executor", "result_merger"):
-                                        node_qr = node_output.get("query_results")
-                                        if isinstance(node_qr, list):
-                                            _tracked_row_count = len(node_qr)
-                                            _tracked_query_results = node_qr
-                                    progress_data = _extract_node_progress(
-                                        name, node_output, security=config.security
-                                    )
-                                    # 진행 데이터가 없어도 완료를 알린다 — 노드 시간 경계다
-                                    # (plans/120 V-6: 3단 multi_db_executor·result_merger 는
-                                    # 추출 분기가 없어 완료 이벤트가 0건 → 하네스가 구간을 잃었다).
-                                    yield _sse_event({
-                                        "type": SSE_NODE_COMPLETE,
-                                        "node": name,
-                                        "data": progress_data or {},
-                                        "timestamp_ms": (time.time() - start_time) * 1000,
-                                    })
-
-                            # LLM 토큰 스트리밍 (output_generator, general_inference 노드)
-                            # 종료 노드 출력엔 SQL 이 없어 앞 노드 출력에서 모은다(plans/116 §10.3)
-                            if kind == "on_chain_end" and not _is_subgraph_event(event):
-                                _root_out = event.get("data", {}).get("output")
-                                _track_sql_state(_sql_state, _root_out)
-                                _merge_node_delta(_scope_state, _root_out)   # plans/120 S-1
-
-                            if kind == "on_chat_model_stream":
-                                # 최종 사용자 응답(USER_RESPONSE_TAG)으로 태깅된 LLM 호출의
-                                # 토큰만 전달한다. orchestration 경로에서는 SQL 생성·DB 분류 등
-                                # 중간 LLM 호출이 같은 노드(agent_orchestrator)에서 일어나므로
-                                # 노드명이 아닌 태그로 구분해야 토큰이 새지 않는다.
-                                _tags = event.get("tags", []) or []
-                                _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
-                                if USER_RESPONSE_TAG in _tags or _event_node in ("output_generator", "general_inference"):
-                                    chunk = event.get("data", {}).get("chunk")
-                                    token_text = _token_text(chunk) if chunk else ""
-                                    if token_text:
-                                        streamed_any_token = True
-                                        _watch.answer_sent(token_text)   # 첫 답변·idle 시계(T-5)
-                                        yield _sse_event({
-                                            "type": SSE_TOKEN,
-                                            "content": token_text,
-                                        })
-
-                            elif kind == "on_chain_end" and not _is_subgraph_event(event):
-                                output = event.get("data", {}).get("output", {})
-                                if isinstance(output, dict) and "final_response" in output:
-                                    elapsed_ms = (time.time() - start_time) * 1000
-
-                                    if not streamed_any_token:
-                                        _watch.answer_sent(
-                                            output.get("final_response", ""), final=True
-                                        )
-                                        yield _sse_event({
-                                            "type": SSE_TOKEN,
-                                            "content": output.get("final_response", ""),
-                                        })
-
-                                    # output_generator 노드 출력에는 query_results가 없으므로
-                                    # 이전 노드에서 추적한 _tracked_row_count 사용
-                                    _final_row_count = len(output.get("query_results", [])) or _tracked_row_count
-
-                                    yield _sse_event({
-                                        "type": SSE_META,
-                                        "executed_sql": _executed_sql(_sql_state),
-                                        "row_count": _final_row_count,
-                                    })
-
-                                    status = "awaiting_approval" if output.get("awaiting_approval") else "completed"
-                                    # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 shape
-                                    # 기간 되묻기(plans/122 T-3·T-4) — 누적 상태에서 판정
-                                    _zone_clar = (output.get("zone_clarification")
-                                                  or _time_clarification(_scope_state))
-                                    if _zone_clar:
-                                        status = "clarification"
-                                    turn_count = _count_human_messages(output.get("messages", []))
-
-                                    response_data = {
-                                        "query_id": query_id,
-                                        "status": status,
-                                        "response": output.get("final_response", ""),
-                                        "thread_id": thread_id,
-                                        "has_file": output.get("output_file") is not None,
-                                        "file_name": output.get("output_file_name"),
-                                        "executed_sql": _executed_sql(_sql_state),
-                                        "row_count": _final_row_count,
-                                        "processing_time_ms": elapsed_ms,
-                                        "turn_count": turn_count,
-                                        "has_mapping_report": output.get("mapping_report_md") is not None,
-                                        # HITL 폼필(D-151): 역질문 패널 컨텍스트
-                                        "form_fill_clarification": output.get("form_fill_clarification"),
-                                        "form_memory_panel": output.get("form_memory_panel"),  # D-187 저장 값 패널
-                                        # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
-                                        # 종료 노드 델타가 아니라 누적 상태로(plans/120 S-1)
-                                        "db_scope": build_db_scope(_scope_state, selected_db_ids=body.selected_db_ids),
-                                        **_dependency_notes_field(_scope_state),  # TP-11.8
-                                        **_disclosures_field(_scope_state),  # plans/123 W-8
-                                        **_time_resolution_field(_scope_state),  # plans/122 T-4
-                                        **_scope_reexpand_field(_scope_state),  # plans/123 W-2 ②
-                                        **_plan_summary_field(_scope_state),  # TP-0.1
-                                        "clarification": _zone_clar,
-                                        # 「다른 소스로 보기」(plans/132 W5) — 계획
-                                        # 노드가 쓰는 키라 누적 상태에서 읽는다
-                                        "source_switch": _scope_state.get("source_switch"),
-                                        **_apm_source_fields(_scope_state),  # plans/147
-                                    }
-                                    _rows = output.get("query_results") or _tracked_query_results
-                                    # 그래프 보기 신호(plans/160 A-2) — 표 경계는 누적 상태에서
-                                    _tables = result_tables_of(_scope_state)
-                                    response_data["chart"] = chart_field(
-                                        config, _rows, _tables, status=response_data["status"])
-                                    _store_result(query_id, {
-                                        **response_data,
-                                        "output_file": output.get("output_file"),
-                                        "mapping_report_md": output.get("mapping_report_md"),
-                                        "query_results": _rows,
-                                        **viz_store_fields(response_data["chart"],
-                                                           user_query=body.query, tables=_tables),
-                                    }, owner=current_user.get("sub"))
-
-                                    yield _sse_event({
-                                        "type": SSE_DONE,
-                                        "response": response_data["response"],
-                                        "query_id": query_id,
-                                        "thread_id": thread_id,
-                                        "processing_time_ms": elapsed_ms,
-                                        "row_count": response_data["row_count"],
-                                        "executed_sql": response_data["executed_sql"],
-                                        "has_file": response_data["has_file"],
-                                        "file_name": response_data.get("file_name"),
-                                        "awaiting_approval": output.get("awaiting_approval", False),
-                                        "turn_count": turn_count,
-                                        "has_mapping_report": response_data.get("has_mapping_report", False),
-                                        "form_fill_clarification": response_data.get("form_fill_clarification"),
-                                        "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
-                                        "db_scope": response_data.get("db_scope"),  # D-205
-                                        **_dependency_notes_field(response_data),  # TP-11.8
-                                        **_disclosures_field(response_data),  # plans/123 W-8
-                                        **_time_resolution_field(response_data),  # plans/122 T-4
-                                        **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
-                                        **_plan_summary_carry(response_data),  # TP-0.1
-                                        # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
-                                        "clarification": response_data.get("clarification"),
-                                        "source_switch": response_data.get("source_switch"),
-                                        **_apm_source_fields(response_data),  # plans/147
-                                        **chart_carry(response_data["chart"]),  # plans/160 A-2
-                                        **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
-                                        # 단계 타임라인(plans/119 T-0)
-                                        "timeline": _finish_timeline(_watch, query_id, done=True),
-                                    })
-                                    if (output.get("apm_source_pending")
-                                            or output.get("apm_source_scope")):
-                                        # 제니퍼 소스 되묻기 대기·승계(plans/147)는 종료
-                                        # 노드가 쓰는 스레드 칸이다 — 바로 끝내면 생산자가
-                                        # 취소돼 그 노드의 체크포인트 쓰기가 사라진다
-                                        # (LangGraph 실측). 이 턴만 그래프 끝까지 받는다.
-                                        async for _ in _events:
-                                            pass
-                                    return
-
-                    if not streamed_any_token:
-                        raise AttributeError("astream_events did not produce output")
-
-                except (AttributeError, TypeError, NotImplementedError):
-                    pass
-
-            # Fallback: ainvoke
-            result = await asyncio.wait_for(
-                graph.ainvoke(input_state, thread_config),
-                timeout=effective_timeout,
-            )
-
-            elapsed_ms = (time.time() - start_time) * 1000
-
-            final_response = result.get("final_response", "")
-            _watch.answer_sent(final_response, final=True)
-            yield _sse_event({"type": SSE_TOKEN, "content": final_response})
-            # 기간 되묻기(plans/122 T-3·T-4) — 조회하지 않은 턴이라 직전 턴 SQL·행을 싣지 않는다(D5)
-            _time_clar = _time_clarification(result)
-            _turn_fields = _clarify_turn_fields(_time_clar)
-
-            yield _sse_event({
-                "type": SSE_META,
-                "executed_sql": _executed_sql(result),
-                "row_count": len(result.get("query_results", [])),
-                **{k: v for k, v in _turn_fields.items() if k in ("executed_sql", "row_count")},
-            })
-
-            status = "awaiting_approval" if result.get("awaiting_approval") else "completed"
-            # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 shape
-            _zone_clar = result.get("zone_clarification") or _time_clar
-            if _zone_clar:
-                status = "clarification"
-            turn_count = _count_human_messages(result.get("messages", []))
-
-            response_data = {
-                "query_id": query_id,
-                "status": status,
-                "response": final_response,
-                "thread_id": thread_id,
-                "has_file": result.get("output_file") is not None,
-                "file_name": result.get("output_file_name"),
-                "executed_sql": _executed_sql(result),
-                "row_count": len(result.get("query_results", [])),
-                "processing_time_ms": elapsed_ms,
-                "turn_count": turn_count,
-                "has_mapping_report": result.get("mapping_report_md") is not None,
-                # HITL 폼필(D-151): 역질문 패널 컨텍스트
-                "form_fill_clarification": result.get("form_fill_clarification"),
-                "form_memory_panel": result.get("form_memory_panel"),  # D-187 저장 값 패널
-                # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
-                "db_scope": build_db_scope(result, selected_db_ids=body.selected_db_ids),
-                "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
-                **_disclosures_field(result),  # plans/123 W-8
-                **_time_resolution_field(result),  # plans/122 T-4
-                **_scope_reexpand_field(result),  # plans/123 W-2 ②
-                **_plan_summary_field(result),  # TP-0.1
-                "clarification": _zone_clar,
-                "source_switch": result.get("source_switch"),  # plans/132 W5
-                **_apm_source_fields(result),  # plans/147
-                **_turn_fields,  # 기간 되묻기 턴(D5)
-            }
-            _store_data = {
-                **response_data,
-                "output_file": result.get("output_file"),
-                "mapping_report_md": result.get("mapping_report_md"),
-                "query_results": result.get("query_results", []),
-                **_clarify_store_fields(_time_clar),
-            }
-            # 그래프 보기 신호(plans/160 A-2) — 저장하는 행 그대로로 판정한다
-            _tables = result_tables_of(result)
-            response_data["chart"] = chart_field(
-                config, _store_data["query_results"], _tables, status=response_data["status"])
-            _store_result(query_id, {
-                **_store_data,
-                **viz_store_fields(response_data["chart"], user_query=body.query, tables=_tables),
-            }, owner=current_user.get("sub"))
-
-            yield _sse_event({
-                "type": SSE_DONE,
-                "response": response_data["response"],
-                "query_id": query_id,
-                "thread_id": thread_id,
-                "processing_time_ms": elapsed_ms,
-                "row_count": response_data["row_count"],
-                "executed_sql": response_data["executed_sql"],
-                "has_file": response_data["has_file"],
-                "file_name": response_data.get("file_name"),
-                # astream 경로와 같은 키(plans/163 D6) — 폴백에서만 빠져 있었다
-                "awaiting_approval": result.get("awaiting_approval", False),
-                "turn_count": turn_count,
-                "has_mapping_report": response_data.get("has_mapping_report", False),
-                "form_fill_clarification": response_data.get("form_fill_clarification"),
-                "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
-                "db_scope": response_data.get("db_scope"),  # D-205
-                **_dependency_notes_field(response_data),  # TP-11.8
-                **_disclosures_field(response_data),  # plans/123 W-8
-                **_time_resolution_field(response_data),  # plans/122 T-4
-                **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
-                **_plan_summary_carry(response_data),  # TP-0.1
-                # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
-                "clarification": response_data.get("clarification"),
-                "source_switch": response_data.get("source_switch"),  # plans/132 W5
-                **_apm_source_fields(response_data),  # plans/147
-                **chart_carry(response_data["chart"]),  # plans/160 A-2
-                **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
-                "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0
-            })
-
-        except asyncio.TimeoutError:
-            # 폴백 ainvoke 는 첫 답변 개념이 없다 — 처리 상한 그대로(plans/119 T-5)
-            yield await _stream_cut_sse_event(
-                graph, thread_config,
-                watch=_watch, kind=CUT_PROCESSING,
-                tracked_rows=_tracked_query_results,
-                query_id=query_id, thread_id=thread_id,
-                trace=_trace,
-                message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-                owner=current_user.get("sub"),
-                config=config, user_query=body.query,   # plans/160 A-2
-            )
-        except Exception as e:
-            yield _sse_event(_stream_error_payload(
-                user_error_detail(_GRAPH_ERROR_MESSAGE, e, logger, request),   # plans/163 S3
-                _trace, code="exception", start_time=start_time, limit_sec=effective_timeout,
-                timeline=_finish_timeline(_watch, query_id),
-            ))
-        finally:
-            _unbind_deadline(_deadline_token)
-
-    return StreamingResponse(
-        turn.stream(event_generator()),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+        scope_seed={**(checkpoint_state or {}), **input_state},
+        limit_sec=effective_timeout,
+        query_id=query_id, thread_id=thread_id,
+        current_user=current_user, user_query=body.query,
+        fallback_timeout_message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
+        stream_done=_stream_done, fallback_done=_fallback_done,
+    )))
 
 
 @router.post(
@@ -3606,48 +3701,25 @@ async def process_file_query_stream(
         selected_list, current_user
     )
     if _selection_denied:
-
-        async def selection_denied_file_generator() -> AsyncGenerator[str, None]:
-            yield _sse_event({
-                "type": SSE_DONE,
-                "response": SELECTION_DENIED_MESSAGE,
-                "query_id": query_id,
-                "thread_id": actual_thread_id,
-            })
-
-        return StreamingResponse(
-            turn.stream(selection_denied_file_generator()),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
+        return _sse_response(turn.stream(_single_done_stream({
+            "type": SSE_DONE,
+            "response": SELECTION_DENIED_MESSAGE,
+            "query_id": query_id,
+            "thread_id": actual_thread_id,
+        })))
     clarification = _file_zone_clarification_or_none(
         query, selected_list, request.app.state.config, current_user
     )
     if clarification:
         await _audit_clarification(clarification, current_user, actual_thread_id)
-
-        async def file_clarification_generator() -> AsyncGenerator[str, None]:
-            yield _sse_event({
-                "type": SSE_DONE,
-                "response": clarification["question"],
-                "query_id": query_id,
-                "thread_id": actual_thread_id,
-                "clarification": clarification,
-                **_pre_gate_plan_summary(),  # plans/121 TP-0.1
-            })
-        return StreamingResponse(
-            turn.stream(file_clarification_generator()),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
+        return _sse_response(turn.stream(_single_done_stream({
+            "type": SSE_DONE,
+            "response": clarification["question"],
+            "query_id": query_id,
+            "thread_id": actual_thread_id,
+            "clarification": clarification,
+            **_pre_gate_plan_summary(),  # plans/121 TP-0.1
+        })))
 
     file_bytes = await file.read()
     if len(file_bytes) > 10 * 1024 * 1024:
@@ -3712,381 +3784,188 @@ async def process_file_query_stream(
 
     thread_config = {"configurable": {"thread_id": actual_thread_id}}
 
-    async def event_generator() -> AsyncGenerator[str, None]:
-        start_time = time.time()
-        streamed_any_token = False
-        _seen_nodes: set[str] = set()
-        _current_node: str | None = None
-        _tracked_row_count: int = 0
-        _tracked_query_results: list[dict] = []
-        _sql_state: dict = {}   # 실행 SQL 출처 누적(plans/116 §10.3)
+    def _stream_done(
+        output: dict[str, Any], *, elapsed_ms: float, _final_row_count: int,
+        _sql_state: dict[str, Any], _scope_state: dict[str, Any],
+        _tracked_query_results: list[dict[str, Any]], _watch: StreamWatch,
+    ) -> tuple[dict[str, Any], bool]:
+        """astream 최종 출력 → 응답·저장·done 페이로드(plans/168 A1). 둘째 값은 항상 False."""
+        turn_count = _count_human_messages(output.get("messages", []))
+        # 기간 되묻기(plans/122 T-3·T-4) — 누적 상태에서 판정
+        _time_clar = _time_clarification(_scope_state)
+        response_data = {
+            "query_id": query_id,
+            "status": "clarification" if _time_clar else "completed",
+            "response": output.get("final_response", ""),
+            "thread_id": actual_thread_id,
+            "has_file": output.get("output_file") is not None,
+            "file_name": output.get("output_file_name"),
+            "executed_sql": _executed_sql(_sql_state),
+            "row_count": _final_row_count,
+            "processing_time_ms": elapsed_ms,
+            "turn_count": turn_count,
+            "has_mapping_report": output.get("mapping_report_md") is not None,
+            # HITL 폼필(D-151): 역질문 패널 컨텍스트
+            "form_fill_clarification": output.get("form_fill_clarification"),
+            "form_memory_panel": output.get("form_memory_panel"),  # D-187 저장 값 패널
+            # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
+            # 종료 노드 델타가 아니라 누적 상태로(plans/120 S-1)
+            "db_scope": build_db_scope(_scope_state, selected_db_ids=selected_list),
+            **_dependency_notes_field(_scope_state),  # TP-11.8
+            **_disclosures_field(_scope_state),  # plans/123 W-8
+            **_time_resolution_field(_scope_state),  # plans/122 T-4
+            **_scope_reexpand_field(_scope_state),  # plans/123 W-2 ②
+            **_plan_summary_field(_scope_state),  # TP-0.1
+            # 기간 되묻기(plans/122 T-4) — 파일 경로의 역질문은
+            # 이것뿐이다(후단 존 게이트는 텍스트 채널만 · D-143 후속2)
+            "clarification": _time_clar,
+            # 텍스트 경로와 같은 키 · 값은 항상 null — 파일 경로는
+            # 소스 전환 미지원(plans/163 D6)
+            "source_switch": None,
+        }
+        _rows = output.get("query_results") or _tracked_query_results
+        # 그래프 보기 신호(plans/160 A-2) — 표 경계는 누적 상태에서
+        _tables = result_tables_of(_scope_state)
+        response_data["chart"] = chart_field(
+            config, _rows, _tables, status=response_data["status"])
+        _store_result(query_id, {
+            **response_data,
+            "output_file": output.get("output_file"),
+            "mapping_report_md": output.get("mapping_report_md"),
+            "query_results": _rows,
+            **viz_store_fields(response_data["chart"],
+                               user_query=query, tables=_tables),
+            # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관.
+            # TODO(§14.5): 인메모리 dict — 원본 누적 시 메모리 증가/다중 워커 유실 가능.
+            #   TTL/공유 스토리지 도입 검토.
+            "uploaded_file": file_bytes,
+            "uploaded_file_name": file.filename,
+        }, owner=current_user.get("sub"))
+
+        return {
+            "type": SSE_DONE,
+            "response": response_data["response"],
+            "query_id": query_id,
+            "thread_id": actual_thread_id,
+            "processing_time_ms": elapsed_ms,
+            "row_count": response_data["row_count"],
+            "executed_sql": response_data["executed_sql"],
+            "has_file": response_data["has_file"],
+            "file_name": response_data.get("file_name"),
+            "awaiting_approval": False,
+            "turn_count": turn_count,
+            "has_mapping_report": response_data.get("has_mapping_report", False),
+            "form_fill_clarification": response_data.get("form_fill_clarification"),
+            "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
+            "db_scope": response_data.get("db_scope"),  # D-205
+            **_dependency_notes_field(response_data),  # TP-11.8
+            **_disclosures_field(response_data),  # plans/123 W-8
+            **_time_resolution_field(response_data),  # plans/122 T-4
+            **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
+            **_plan_summary_carry(response_data),  # TP-0.1
+            # 텍스트 경로와 같은 키 — 값이 없어도 null(plans/163 D6)
+            "clarification": response_data.get("clarification"),
+            "source_switch": response_data.get("source_switch"),
+            **chart_carry(response_data["chart"]),  # plans/160 A-2
+            **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
+            # 단계 타임라인(plans/119 T-0)
+            "timeline": _finish_timeline(_watch, query_id, done=True),
+        }, False
+
+    def _fallback_done(
+        result: dict[str, Any], *, final_response: str, elapsed_ms: float,
+        _time_clar: dict[str, Any] | None, _turn_fields: dict[str, Any], _watch: StreamWatch,
+    ) -> dict[str, Any]:
+        """ainvoke 폴백 결과 → 응답·저장·done 페이로드(plans/168 A1)."""
+        _final_row_count = len(result.get("query_results", []))
+        turn_count = _count_human_messages(result.get("messages", []))
+        response_data = {
+            "query_id": query_id,
+            "status": "clarification" if _time_clar else "completed",
+            "response": final_response,
+            "thread_id": actual_thread_id,
+            "has_file": result.get("output_file") is not None,
+            "file_name": result.get("output_file_name"),
+            "executed_sql": _executed_sql(result),
+            "row_count": _final_row_count,
+            "processing_time_ms": elapsed_ms,
+            "turn_count": turn_count,
+            "has_mapping_report": result.get("mapping_report_md") is not None,
+            # HITL 폼필(D-151): 역질문 패널 컨텍스트
+            "form_fill_clarification": result.get("form_fill_clarification"),
+            "form_memory_panel": result.get("form_memory_panel"),  # D-187 저장 값 패널
+            # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
+            "db_scope": build_db_scope(result, selected_db_ids=selected_list),
+            "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
+            **_disclosures_field(result),  # plans/123 W-8
+            **_time_resolution_field(result),  # plans/122 T-4
+            **_scope_reexpand_field(result),  # plans/123 W-2 ②
+            **_plan_summary_field(result),  # TP-0.1
+            "clarification": _time_clar,  # plans/122 T-4
+            # 텍스트와 같은 키 · 값은 항상 null — 파일 경로는 소스 전환 미지원(plans/163 D6)
+            "source_switch": None,
+            **_turn_fields,  # 기간 되묻기 턴(D5)
+        }
+        _store_data = {
+            **response_data,
+            "output_file": result.get("output_file"),
+            "mapping_report_md": result.get("mapping_report_md"),
+            "query_results": result.get("query_results", []),
+            **_clarify_store_fields(_time_clar),
+            # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관.
+            # TODO(§14.5): 인메모리 dict — 원본 누적 시 메모리 증가/다중 워커 유실 가능.
+            "uploaded_file": file_bytes,
+            "uploaded_file_name": file.filename,
+        }
+        # 그래프 보기 신호(plans/160 A-2) — 저장하는 행 그대로로 판정한다
+        _tables = result_tables_of(result)
+        response_data["chart"] = chart_field(
+            config, _store_data["query_results"], _tables, status=response_data["status"])
+        _store_result(query_id, {
+            **_store_data,
+            **viz_store_fields(response_data["chart"], user_query=query, tables=_tables),
+        }, owner=current_user.get("sub"))
+        return {
+            "type": SSE_DONE,
+            "response": response_data["response"],
+            "query_id": query_id,
+            "thread_id": actual_thread_id,
+            "processing_time_ms": elapsed_ms,
+            "row_count": response_data["row_count"],
+            "executed_sql": response_data["executed_sql"],
+            "has_file": response_data["has_file"],
+            "file_name": response_data.get("file_name"),
+            # astream 경로와 같은 키(plans/163 D6) — 파일 경로는 승인 대기를 내지 않는다
+            "awaiting_approval": False,
+            "turn_count": turn_count,
+            "has_mapping_report": response_data.get("has_mapping_report", False),
+            "form_fill_clarification": response_data.get("form_fill_clarification"),
+            "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
+            "db_scope": response_data.get("db_scope"),  # D-205
+            **_dependency_notes_field(response_data),  # TP-11.8
+            **_disclosures_field(response_data),  # plans/123 W-8
+            **_time_resolution_field(response_data),  # plans/122 T-4
+            **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
+            **_plan_summary_carry(response_data),  # TP-0.1
+            # 텍스트 경로와 같은 키 — 값이 없어도 null로 싣는다(plans/163 D6)
+            "clarification": response_data.get("clarification"),
+            "source_switch": response_data.get("source_switch"),
+            **chart_carry(response_data["chart"]),  # plans/160 A-2
+            **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
+            "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0
+        }
+
+    # 공통 SSE 본문(plans/168 A1) — 응답·저장·done 조립만 위 두 빌더가 경로별로 맡는다
+    return _sse_response(turn.stream(_stream_graph_turn(
+        request, graph, config, initial_state, thread_config,
         # db_scope 입력 — 전체 초기 상태 + 노드 델타 누적(plans/120 S-1 · 텍스트 스트림과 대칭)
-        _scope_state: dict[str, Any] = dict(initial_state)
-        _trace = StreamTrace()   # 실패 시 경위(D-242)
-        # 상한 세 시계(T-5) + 단계 타임라인(T-0) — plans/119 · D-267 ⑦ (텍스트 스트림과 대칭)
-        _watch = _stream_watch(config, limit_sec, start_time)
-        # 마감 바인딩(T-1) — 생산자 태스크·폴백 ainvoke 가 만들어지기 전에 묶는다
-        _deadline_token = _bind_deadline(initial_state, config, stream=True)
-
-        try:
-            if hasattr(graph, "astream_events"):
-                try:
-                    # 이벤트 fetch마다 타임아웃(D-066 후속). 노드 내부 LLM 호출이 응답 없이
-                    # 멈추면 SSE가 무한 hang되므로 stuck fetch를 wait_for로 끊는다.
-                    # plans/89 §3.2-④ · D-204: 생산자 태스크 + 큐. 그 사이 heartbeat를 낸다.
-                    # wait_for(__anext__) 재호출 금지. plans/119 T-5: 무이벤트 안전 상한은 전체
-                    # 상한(처리 상한 + 전달 연장)이고, 상한 판정은 `wake_at` tick으로 제때 한다.
-                    _progress_on = bool(getattr(config.server, "sse_progress_events", True))
-                    _hb = (
-                        float(config.server.sse_heartbeat_interval_sec or 0)
-                        if _progress_on else 0.0
-                    )
-                    async with contextlib.aclosing(_graph_event_stream(
-                        graph, initial_state, thread_config,
-                        idle_timeout=_watch.caps.hard_cap_sec, heartbeat_interval=_hb,
-                        wake_at=_watch.next_check_at,
-                    )) as _events:
-                        async for _ev_kind, _ev_payload in _events:
-                            # 상한 세 시계(plans/119 T-5 · G-7) — 첫 답변 전 처리 상한 ·
-                            # 첫 답변 뒤 토큰 간 idle · 전체 상한(CU-11 hang 방지).
-                            # heartbeat는 시계를 되돌리지 않는다.
-                            _cut = _watch.cut()
-                            if _cut is None and _ev_kind == "timeout":
-                                _cut = CUT_HARD_CAP if _watch.caps.answered else CUT_PROCESSING
-                            if _cut is not None:
-                                yield await _stream_cut_sse_event(
-                                    graph, thread_config,
-                                    watch=_watch, kind=_cut,
-                                    tracked_rows=_tracked_query_results,
-                                    query_id=query_id, thread_id=actual_thread_id,
-                                    trace=_trace,
-                                    message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-                                    owner=current_user.get("sub"),
-                                    config=config, user_query=query,   # plans/160 A-2
-                                )
-                                return
-                            if _ev_kind == "tick":
-                                continue
-                            if _ev_kind == "heartbeat":
-                                yield _sse_event(_heartbeat_sse_payload(start_time, _ev_payload))
-                                continue
-                            event = _ev_payload
-                            kind = event.get("event", "")
-                            name = event.get("name", "")
-                            _watch.observe(event, root=not _is_subgraph_event(event))
-
-                            # 응답 선행 본문(코드 렌더 표 · plans/119 N-1) — 답변 토큰이다
-                            if kind == "on_custom_event" and name == ANSWER_PREFIX_EVENT:
-                                _prefix = _answer_prefix_text(event)
-                                if _prefix:
-                                    streamed_any_token = True
-                                    _watch.answer_sent(_prefix, prefix=True)
-                                    yield _sse_event({"type": SSE_TOKEN, "content": _prefix})
-                                continue
-
-                            # 도구·커스텀 이벤트 → progress (plans/89 T3)
-                            _prog = _progress_sse_payload(event, _current_node, start_time)
-                            if _prog is not None:
-                                _trace.observe_progress(_prog)
-                                if _progress_on:
-                                    yield _sse_event(_prog)
-                                    continue
-
-                            if kind == "on_chain_start" and name in _STREAM_KNOWN_NODES:
-                                _trace.node_started(name, (time.time() - start_time) * 1000)
-                            if kind == "on_chain_start" and name and name not in _seen_nodes:
-                                _known_nodes = _STREAM_KNOWN_NODES
-                                if name in _known_nodes:
-                                    _seen_nodes.add(name)
-                                    _current_node = name
-                                    yield _sse_event({
-                                        "type": SSE_NODE_START,
-                                        "node": name,
-                                        "timestamp_ms": (time.time() - start_time) * 1000,
-                                    })
-
-                            if kind == "on_chain_end" and name:
-                                node_output = event.get("data", {}).get("output", {})
-                                if isinstance(node_output, dict) and name in _seen_nodes:
-                                    _trace.node_ended(name, node_output, (time.time() - start_time) * 1000)
-                                    if name in ("query_executor", "multi_db_executor", "result_merger"):
-                                        node_qr = node_output.get("query_results")
-                                        if isinstance(node_qr, list):
-                                            _tracked_row_count = len(node_qr)
-                                            _tracked_query_results = node_qr
-                                    progress_data = _extract_node_progress(
-                                        name, node_output, security=config.security
-                                    )
-                                    # 진행 데이터 없어도 완료 알림(plans/120 V-6)
-                                    yield _sse_event({
-                                        "type": SSE_NODE_COMPLETE,
-                                        "node": name,
-                                        "data": progress_data or {},
-                                        "timestamp_ms": (time.time() - start_time) * 1000,
-                                    })
-
-                            # 종료 노드 출력엔 SQL 이 없어 앞 노드 출력에서 모은다(plans/116 §10.3)
-                            if kind == "on_chain_end" and not _is_subgraph_event(event):
-                                _root_out = event.get("data", {}).get("output")
-                                _track_sql_state(_sql_state, _root_out)
-                                _merge_node_delta(_scope_state, _root_out)   # plans/120 S-1
-
-                            if kind == "on_chat_model_stream":
-                                # 최종 사용자 응답(USER_RESPONSE_TAG)으로 태깅된 LLM 호출의
-                                # 토큰만 전달한다. orchestration 경로에서는 SQL 생성·DB 분류 등
-                                # 중간 LLM 호출이 같은 노드(agent_orchestrator)에서 일어나므로
-                                # 노드명이 아닌 태그로 구분해야 토큰이 새지 않는다.
-                                _tags = event.get("tags", []) or []
-                                _event_node = event.get("metadata", {}).get("langgraph_node", _current_node or "")
-                                if USER_RESPONSE_TAG in _tags or _event_node in ("output_generator", "general_inference"):
-                                    chunk = event.get("data", {}).get("chunk")
-                                    token_text = _token_text(chunk) if chunk else ""
-                                    if token_text:
-                                        streamed_any_token = True
-                                        _watch.answer_sent(token_text)   # 첫 답변·idle 시계(T-5)
-                                        yield _sse_event({
-                                            "type": SSE_TOKEN,
-                                            "content": token_text,
-                                        })
-
-                            elif kind == "on_chain_end" and not _is_subgraph_event(event):
-                                output = event.get("data", {}).get("output", {})
-                                if isinstance(output, dict) and "final_response" in output:
-                                    elapsed_ms = (time.time() - start_time) * 1000
-
-                                    if not streamed_any_token:
-                                        _watch.answer_sent(
-                                            output.get("final_response", ""), final=True
-                                        )
-                                        yield _sse_event({
-                                            "type": SSE_TOKEN,
-                                            "content": output.get("final_response", ""),
-                                        })
-
-                                    _final_row_count = len(output.get("query_results", [])) or _tracked_row_count
-
-                                    yield _sse_event({
-                                        "type": SSE_META,
-                                        "executed_sql": _executed_sql(_sql_state),
-                                        "row_count": _final_row_count,
-                                    })
-
-                                    turn_count = _count_human_messages(output.get("messages", []))
-                                    # 기간 되묻기(plans/122 T-3·T-4) — 누적 상태에서 판정
-                                    _time_clar = _time_clarification(_scope_state)
-                                    response_data = {
-                                        "query_id": query_id,
-                                        "status": "clarification" if _time_clar else "completed",
-                                        "response": output.get("final_response", ""),
-                                        "thread_id": actual_thread_id,
-                                        "has_file": output.get("output_file") is not None,
-                                        "file_name": output.get("output_file_name"),
-                                        "executed_sql": _executed_sql(_sql_state),
-                                        "row_count": _final_row_count,
-                                        "processing_time_ms": elapsed_ms,
-                                        "turn_count": turn_count,
-                                        "has_mapping_report": output.get("mapping_report_md") is not None,
-                                        # HITL 폼필(D-151): 역질문 패널 컨텍스트
-                                        "form_fill_clarification": output.get("form_fill_clarification"),
-                                        "form_memory_panel": output.get("form_memory_panel"),  # D-187 저장 값 패널
-                                        # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
-                                        # 종료 노드 델타가 아니라 누적 상태로(plans/120 S-1)
-                                        "db_scope": build_db_scope(_scope_state, selected_db_ids=selected_list),
-                                        **_dependency_notes_field(_scope_state),  # TP-11.8
-                                        **_disclosures_field(_scope_state),  # plans/123 W-8
-                                        **_time_resolution_field(_scope_state),  # plans/122 T-4
-                                        **_scope_reexpand_field(_scope_state),  # plans/123 W-2 ②
-                                        **_plan_summary_field(_scope_state),  # TP-0.1
-                                        # 기간 되묻기(plans/122 T-4) — 파일 경로의 역질문은
-                                        # 이것뿐이다(후단 존 게이트는 텍스트 채널만 · D-143 후속2)
-                                        "clarification": _time_clar,
-                                        # 텍스트 경로와 같은 키 · 값은 항상 null — 파일 경로는
-                                        # 소스 전환 미지원(plans/163 D6)
-                                        "source_switch": None,
-                                    }
-                                    _rows = output.get("query_results") or _tracked_query_results
-                                    # 그래프 보기 신호(plans/160 A-2) — 표 경계는 누적 상태에서
-                                    _tables = result_tables_of(_scope_state)
-                                    response_data["chart"] = chart_field(
-                                        config, _rows, _tables, status=response_data["status"])
-                                    _store_result(query_id, {
-                                        **response_data,
-                                        "output_file": output.get("output_file"),
-                                        "mapping_report_md": output.get("mapping_report_md"),
-                                        "query_results": _rows,
-                                        **viz_store_fields(response_data["chart"],
-                                                           user_query=query, tables=_tables),
-                                        # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관.
-                                        # TODO(§14.5): 인메모리 dict — 원본 누적 시 메모리 증가/다중 워커 유실 가능.
-                                        #   TTL/공유 스토리지 도입 검토.
-                                        "uploaded_file": file_bytes,
-                                        "uploaded_file_name": file.filename,
-                                    }, owner=current_user.get("sub"))
-
-                                    yield _sse_event({
-                                        "type": SSE_DONE,
-                                        "response": response_data["response"],
-                                        "query_id": query_id,
-                                        "thread_id": actual_thread_id,
-                                        "processing_time_ms": elapsed_ms,
-                                        "row_count": response_data["row_count"],
-                                        "executed_sql": response_data["executed_sql"],
-                                        "has_file": response_data["has_file"],
-                                        "file_name": response_data.get("file_name"),
-                                        "awaiting_approval": False,
-                                        "turn_count": turn_count,
-                                        "has_mapping_report": response_data.get("has_mapping_report", False),
-                                        "form_fill_clarification": response_data.get("form_fill_clarification"),
-                                        "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
-                                        "db_scope": response_data.get("db_scope"),  # D-205
-                                        **_dependency_notes_field(response_data),  # TP-11.8
-                                        **_disclosures_field(response_data),  # plans/123 W-8
-                                        **_time_resolution_field(response_data),  # plans/122 T-4
-                                        **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
-                                        **_plan_summary_carry(response_data),  # TP-0.1
-                                        # 텍스트 경로와 같은 키 — 값이 없어도 null(plans/163 D6)
-                                        "clarification": response_data.get("clarification"),
-                                        "source_switch": response_data.get("source_switch"),
-                                        **chart_carry(response_data["chart"]),  # plans/160 A-2
-                                        **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
-                                        # 단계 타임라인(plans/119 T-0)
-                                        "timeline": _finish_timeline(_watch, query_id, done=True),
-                                    })
-                                    return
-
-                    if not streamed_any_token:
-                        raise AttributeError("astream_events did not produce output")
-
-                except (AttributeError, TypeError, NotImplementedError):
-                    pass
-
-            # Fallback: ainvoke
-            result = await asyncio.wait_for(
-                graph.ainvoke(initial_state, thread_config),
-                timeout=limit_sec,
-            )
-            elapsed_ms = (time.time() - start_time) * 1000
-            final_response = result.get("final_response", "")
-            _watch.answer_sent(final_response, final=True)
-            yield _sse_event({"type": SSE_TOKEN, "content": final_response})
-            _final_row_count = len(result.get("query_results", []))
-            # 기간 되묻기(plans/122 T-3·T-4) — 조회하지 않은 턴이라 직전 턴 SQL·행을 싣지 않는다(D5)
-            _time_clar = _time_clarification(result)
-            _turn_fields = _clarify_turn_fields(_time_clar)
-            yield _sse_event({
-                "type": SSE_META,
-                "executed_sql": _executed_sql(result),
-                "row_count": _final_row_count,
-                **{k: v for k, v in _turn_fields.items() if k in ("executed_sql", "row_count")},
-            })
-            turn_count = _count_human_messages(result.get("messages", []))
-            response_data = {
-                "query_id": query_id,
-                "status": "clarification" if _time_clar else "completed",
-                "response": final_response,
-                "thread_id": actual_thread_id,
-                "has_file": result.get("output_file") is not None,
-                "file_name": result.get("output_file_name"),
-                "executed_sql": _executed_sql(result),
-                "row_count": _final_row_count,
-                "processing_time_ms": elapsed_ms,
-                "turn_count": turn_count,
-                "has_mapping_report": result.get("mapping_report_md") is not None,
-                # HITL 폼필(D-151): 역질문 패널 컨텍스트
-                "form_fill_clarification": result.get("form_fill_clarification"),
-                "form_memory_panel": result.get("form_memory_panel"),  # D-187 저장 값 패널
-                # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
-                "db_scope": build_db_scope(result, selected_db_ids=selected_list),
-                "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
-                **_disclosures_field(result),  # plans/123 W-8
-                **_time_resolution_field(result),  # plans/122 T-4
-                **_scope_reexpand_field(result),  # plans/123 W-2 ②
-                **_plan_summary_field(result),  # TP-0.1
-                "clarification": _time_clar,  # plans/122 T-4
-                # 텍스트와 같은 키 · 값은 항상 null — 파일 경로는 소스 전환 미지원(plans/163 D6)
-                "source_switch": None,
-                **_turn_fields,  # 기간 되묻기 턴(D5)
-            }
-            _store_data = {
-                **response_data,
-                "output_file": result.get("output_file"),
-                "mapping_report_md": result.get("mapping_report_md"),
-                "query_results": result.get("query_results", []),
-                **_clarify_store_fields(_time_clar),
-                # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관.
-                # TODO(§14.5): 인메모리 dict — 원본 누적 시 메모리 증가/다중 워커 유실 가능.
-                "uploaded_file": file_bytes,
-                "uploaded_file_name": file.filename,
-            }
-            # 그래프 보기 신호(plans/160 A-2) — 저장하는 행 그대로로 판정한다
-            _tables = result_tables_of(result)
-            response_data["chart"] = chart_field(
-                config, _store_data["query_results"], _tables, status=response_data["status"])
-            _store_result(query_id, {
-                **_store_data,
-                **viz_store_fields(response_data["chart"], user_query=query, tables=_tables),
-            }, owner=current_user.get("sub"))
-            yield _sse_event({
-                "type": SSE_DONE,
-                "response": response_data["response"],
-                "query_id": query_id,
-                "thread_id": actual_thread_id,
-                "processing_time_ms": elapsed_ms,
-                "row_count": response_data["row_count"],
-                "executed_sql": response_data["executed_sql"],
-                "has_file": response_data["has_file"],
-                "file_name": response_data.get("file_name"),
-                # astream 경로와 같은 키(plans/163 D6) — 파일 경로는 승인 대기를 내지 않는다
-                "awaiting_approval": False,
-                "turn_count": turn_count,
-                "has_mapping_report": response_data.get("has_mapping_report", False),
-                "form_fill_clarification": response_data.get("form_fill_clarification"),
-                "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
-                "db_scope": response_data.get("db_scope"),  # D-205
-                **_dependency_notes_field(response_data),  # TP-11.8
-                **_disclosures_field(response_data),  # plans/123 W-8
-                **_time_resolution_field(response_data),  # plans/122 T-4
-                **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
-                **_plan_summary_carry(response_data),  # TP-0.1
-                # 텍스트 경로와 같은 키 — 값이 없어도 null로 싣는다(plans/163 D6)
-                "clarification": response_data.get("clarification"),
-                "source_switch": response_data.get("source_switch"),
-                **chart_carry(response_data["chart"]),  # plans/160 A-2
-                **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
-                "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0
-            })
-
-        except asyncio.TimeoutError:
-            # 폴백 ainvoke 는 첫 답변 개념이 없다 — 처리 상한 그대로(plans/119 T-5)
-            yield await _stream_cut_sse_event(
-                graph, thread_config,
-                watch=_watch, kind=CUT_PROCESSING,
-                tracked_rows=_tracked_query_results,
-                query_id=query_id, thread_id=actual_thread_id,
-                trace=_trace,
-                message="처리 시간이 초과되었습니다.",
-                owner=current_user.get("sub"),
-                config=config, user_query=query,   # plans/160 A-2
-            )
-        except Exception as e:
-            yield _sse_event(_stream_error_payload(
-                user_error_detail(_GRAPH_ERROR_MESSAGE, e, logger, request),   # plans/163 S3
-                _trace, code="exception", start_time=start_time,
-                limit_sec=limit_sec,
-                timeline=_finish_timeline(_watch, query_id),
-            ))
-        finally:
-            _unbind_deadline(_deadline_token)
-
-    return StreamingResponse(
-        turn.stream(event_generator()),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+        scope_seed=dict(initial_state),
+        limit_sec=limit_sec,
+        query_id=query_id, thread_id=actual_thread_id,
+        current_user=current_user, user_query=query,
+        fallback_timeout_message="처리 시간이 초과되었습니다.",
+        stream_done=_stream_done, fallback_done=_fallback_done,
+    )))
 
 
 @router.get(

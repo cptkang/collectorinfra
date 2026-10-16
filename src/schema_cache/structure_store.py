@@ -44,7 +44,7 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 
 from src.domain.profile_merge import profile_field_diff
-from src.schema_cache.redis_cache import RedisSchemaCache
+from src.schema_cache.redis_cache import RedisSchemaCache, schema_key
 from src.utils.clock import now_iso as _now_iso
 
 logger = logging.getLogger(__name__)
@@ -176,7 +176,7 @@ class StructureStore:
 
     @staticmethod
     def _key(db_id: str, suffix: str) -> str:
-        return f"schema:{db_id}:{suffix}"
+        return schema_key(db_id, suffix)
 
     async def _ready(self) -> bool:
         if self._redis_cache is None:

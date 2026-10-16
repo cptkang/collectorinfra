@@ -306,6 +306,7 @@ def test_entry_points_wrap_every_exit() -> None:
         "process_file_query_stream",
     ):
         fn = funcs[name]
+        sse_exits = 0
         for node in ast.walk(fn):
             if (
                 isinstance(node, ast.Return)
@@ -313,7 +314,11 @@ def test_entry_points_wrap_every_exit() -> None:
                 and getattr(node.value.func, "id", None) == "QueryResponse"
             ):
                 pytest.fail(f"{name}:{node.lineno} — QueryResponse를 turn.response() 없이 반환")
-            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "StreamingResponse":
+            # SSE 출구는 공용 헬퍼 `_sse_response(gen)`로도 나간다(plans/168 A1) — 같은 검사
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) in (
+                "StreamingResponse", "_sse_response",
+            ):
+                sse_exits += 1
                 first = node.args[0]
                 ok = (
                     isinstance(first, ast.Call)
@@ -324,6 +329,9 @@ def test_entry_points_wrap_every_exit() -> None:
                 assert ok, (
                     f"{name}:{node.lineno} — StreamingResponse가 turn.stream()으로 감싸지지 않았다"
                 )
+        # 검사 대상이 0이면 공허 통과다 — 스트림 진입의 SSE 출구 수 하한(plans/168)
+        min_exits = {"process_query_stream": 4, "process_file_query_stream": 3}.get(name, 0)
+        assert sse_exits >= min_exits, f"{name} — SSE 출구 {sse_exits}개를 찾았다(≥{min_exits})"
 
 
 # ---------------------------------------------------------------------------

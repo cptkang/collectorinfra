@@ -26,7 +26,6 @@ from src.orchestration.process_query import (
     resolve_investigation_targets,
 )
 from src.routing.capability_ownership import _corrected_note
-from src.routing.db_authz import authorized_db_ids
 from src.routing.location_hints import (
     inactive_hinted_sources,
     pin_targets_to_hints,
@@ -44,14 +43,12 @@ from src.routing.source_hints import (
     source_notice_text,
     utilization_notice_text,
 )
+from src.routing.zone_clarification import zone_clarification_for_targets
 from src.utils.prior_dependency import NOTE_SOURCE_UNAVAILABLE
 from src.utils.query_gen_common import (
     HOST_IDENTIFIER_FIELDS as _HOST_FIELDS,  # 종전 경유처 process_query._HOST_FIELDS와 같은 객체
 )
 from src.utils.query_gen_common import (
-    ZONE_CLARIFY_OPTIONS,
-    build_zone_clarification,
-    has_host_identifier_filter,
     refers_to_demonstrative_server,
     term_in_text,
 )
@@ -152,35 +149,16 @@ def _zone_clarification_or_none_task(
         task.get("sub_query", "")
     ):
         return None
-    parsed = isolated.get("parsed_requirements") or {}
-    # 서버명 지목 질의는 존이 결과에 영향 없음(§4.2 ⓐ) — hostname으로 어차피 특정됨
-    if has_host_identifier_filter(parsed):
-        return None
-    # 조회 대상 필드가 파싱되지 않은 질의(잡담성 오분류 등)는 비발동 — 과잉 역질문 방지
-    if not parsed.get("query_targets"):
-        return None
-    # 대상이 전부 폴스타 존일 때만(비폴스타 대상은 존 선택이 무의미)
-    polestar_ids = app_config.get_polestar_db_ids() or set()
-    target_ids = [t.get("db_id") for t in targets if t.get("db_id")]
-    if not target_ids or not all(d in polestar_ids for d in target_ids):
-        return None
-    # 선택지는 사용자 조회 권한(D-232)으로 거른다 — 3단 라우터·라우트 사전 게이트와 같은 규칙
-    # (plans/116 §10.3). 빈 목록을 넘기면 build_zone_clarification이 "제한 없음"으로 읽으므로
-    # 권한 내 존이 없으면 묻지 않는다(뒤이은 인가 필터가 사유를 알린다).
-    zone_ids = authorized_db_ids(
-        app_config.multi_db.get_active_db_ids() or [o["db_id"] for o in ZONE_CLARIFY_OPTIONS],
-        isolated.get("allowed_db_ids"), isolated.get("user_role"),
-    )
-    if not zone_ids:
-        return None
-    payload = build_zone_clarification(
-        zone_ids, original_query,
-        # 존 그룹 상호배타(D-143 후속3) — 라우트 pre-gate와 동일 UI 규칙
-        group_exclusive=bool(
-            app_config.multi_db.zone_group_exclusive
-        ),
+    # 공통 꼬리(서버 식별 → 조회 대상 → 전부 폴스타 → 권한 거른 존 → 페이로드)
+    # — 3단과 공유(plans/169 O6)
+    payload = zone_clarification_for_targets(
+        isolated.get("parsed_requirements") or {}, targets, original_query,
+        allowed_db_ids=isolated.get("allowed_db_ids"),
+        user_role=isolated.get("user_role"),
+        app_config=app_config,
     )
     if payload:
+        target_ids = [t.get("db_id") for t in targets if t.get("db_id")]
         logger.info(
             "존 역질문 후단 게이트 발동(D-143 후속2): 위치어·서버 식별·승계 신호 없음 — "
             "LLM 임의 팬아웃(%s) 대신 존 선택 요청", target_ids,

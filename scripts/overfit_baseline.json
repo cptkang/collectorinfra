@@ -21,16 +21,11 @@
       "cmm_metric_stat_d",
       "cmm_metric_stat_h",
       "cmm_metric_stat_m",
-      "cmm_resource",
-      "configuration_id",
       "server.Cpus",
-      "server.Memory",
-      "server.Server"
+      "server.Memory"
     ],
     "src/nodes/query_generator.py": [
-      "cmm_metric_stat",
       "cmm_resource",
-      "configuration_id",
       "server.Server"
     ],
     "src/nodes/realtime_usage.py": [
@@ -61,7 +56,7 @@
       "cmm_resource",
       "cmm_resource_hostname"
     ],
-    "src/schema_cache/redis_cache.py": [
+    "src/schema_cache/redis_synonyms.py": [
       "server.Cpu"
     ],
     "src/schema_cache/value_index.py": [

@@ -443,6 +443,7 @@ async def _load_db_cache_data(
 
             # EAV name synonyms + global synonyms 로드
             try:
+                # seam(D-337 ②) — 테스트 대역 매니저가 _redis_cache만 심어 둔다(plans/170 I1-a)
                 eav_name_synonyms = await cache_mgr._redis_cache.load_eav_name_synonyms()
             except Exception as e:
                 logger.debug("eav_name_synonyms 로드 실패: %s", e)
