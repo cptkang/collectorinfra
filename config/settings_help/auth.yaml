@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 사용자 인증 · 운영자 인증 · 호스트 조사 인가 (D-191)
-# 근거: src/config.py AuthConfig/AdminConfig/HostAuthzConfig
+# 근거: src/config/security.py AuthConfig/AdminConfig/HostAuthzConfig
 #       docs/02_decision.md (D-070 시크릿 분리 · D-071 기본 크레덴셜 제거 · D-083 · D-189)
 
 version: 1

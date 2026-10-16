@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 노이즈 게이트: 통보 · 메타경보 · 피드백 · 사건 계측 (D-191)
-# 근거: src/config.py NoiseGateConfig (Plan 60 E3/E6 · D-048.9 · D-049 · Plan 83)
+# 근거: src/config/alarm.py NoiseGateConfig (Plan 60 E3/E6 · D-048.9 · D-049 · Plan 83)
 #       docs/28_noise_cancellation_operator_guide.md
 
 version: 1

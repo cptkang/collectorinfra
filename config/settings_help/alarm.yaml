@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 알람 (D-191)
-# 근거: src/config.py AlarmConfig 주석 · docs/28_noise_cancellation_operator_guide.md
+# 근거: src/config/alarm.py AlarmConfig 주석 · docs/28_noise_cancellation_operator_guide.md
 #       docs/02_decision.md (D-184 dead-letter · D-188 서버 식별 · D-131 ⑤ 미소비 등재)
 
 version: 1

@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — Text2SQL (D-191)
-# 근거: src/config.py Text2SQLConfig 주석 · plans/61 · plans/67 · plans/69 · plans/82
+# 근거: src/config/text2sql.py Text2SQLConfig 주석 · plans/61 · plans/67 · plans/69 · plans/82
 # 이 그룹은 대부분 기본 off(켜기 전에는 기존 SQL 생성 경로가 무변경)지만, 세 개는
 # 예외적으로 기본 on이다 — 관련 테이블 게이트 · 0건 진단 · 급증 조건 조립.
 

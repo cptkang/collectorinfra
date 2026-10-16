@@ -3,7 +3,7 @@
 # 이 파일은 운영자 화면 오른쪽 설명 패널의 내용이다. 여기 없는 키는 카탈로그 메타에서
 # 자동 파생된 일반 설명이 대신 표시된다(설명이 비지는 않는다).
 #
-# 근거: src/config.py 필드 주석 · docs/21_orchestration_ladder.md · docs/02_decision.md
+# 근거: src/config/ 필드 주석 · docs/21_orchestration_ladder.md · docs/02_decision.md
 # 반영 시점·오버라이드 경고는 여기 적지 않는다 — 카탈로그 실측으로 자동 생성된다.
 
 version: 1

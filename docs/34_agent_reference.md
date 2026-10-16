@@ -84,7 +84,7 @@
 
 ### 설정과 정본 파일
 
-설정은 `pydantic-settings` 계층 구조다 — `AppConfig`(`src/config.py`, 23개 nested config)가
+설정은 `pydantic-settings` 계층 구조다 — `AppConfig`(`src/config/` 패키지, 23개 nested config)가
 `.env`/`.encenv`에서 읽는다. 접근은 `cfg.<그룹>.<필드>` (예: `cfg.composite.max_targets`).
 
 | 정본 | 내용 | 신규 편입 시 |
@@ -146,7 +146,7 @@
 | 패키지 | 담당 | 실행 형태 | 경계 |
 |---|---|---|---|
 | `src/` | text2sql 파이프라인·API 조립 | 본체 프로세스 | — |
-| `noise_gate/` | 알람 노이즈 캔슬링·분석·통보 + TCP 수신부(`alarm_server/`) | 게이트·워커는 **본체와 같은 프로세스·같은 venv**, 수신부는 독립 프로세스 | `src/ → noise_gate` 의존 잔존(D-048 워커 in-process 기동). 역방향은 config/llm/utils/routing 최소 |
+| `noise_gate/` | 알람 노이즈 캔슬링·분석·통보 + TCP 수신부(`alarm_server/`) | 게이트·워커는 **본체와 같은 프로세스·같은 venv**, 수신부는 독립 프로세스 | `src/ → noise_gate` 의존 잔존(D-048 워커 in-process 기동). 역방향은 config/llm/utils/routing 최소 + stdlib 전용 `src.domain.*`·`src.observability.investigation_metrics`(D-139 부기) |
 | `sre_agent/` | HolmesGPT 장애 조사 | 별도 venv·별도 프로세스 | 양방향 import 0 (MCP 계약만) |
 | `mcp_server/` | 관측 데이터 읽기 경계 | 별도 프로세스·별도 cwd (**자체 venv 없음 — 루트 공유**) | 양방향 import 0 |
 | `apm_gateway/` | 제니퍼 APM 연동 — Open API GET 허용목록 조회·`apm_*` 8종·WAS 판정(`was_signals`)·이벤트 폴러(`alarm:raw` 생산) · 제니퍼 뷰 서버 N개(소스 — 소스↔존은 루트 레지스트리 `solutions[apm].sources` · D-287) | 별도 프로세스·별도 cwd (**자체 venv 없음 — 루트 공유** · 제니퍼가 있는 환경에만 배포) | 양방향 import 0 (MCP · `alarm:raw` 계약만 — `tests/test_boundary.py`) · 제니퍼 토큰은 여기에만(D-274 · D-195) |
@@ -297,7 +297,7 @@ RUN_LOCAL_LLM=1 pytest tests/test_pipeline.py -m live_llm   # 로컬 MLX 실 LLM
 
 구현·교정 뒤 회귀는 **바꾼 모듈 단위**로 돌린다. **전체 회귀는 사용자가 요청할 때만** 돌린다. 도구는 `scripts/regress.py`이고 근거·실측은 `plans/136`에 있다.
 
-> **실행 시점 (D-303 부기 2026-10-07)** — 모듈 단위 회귀는 **계획서 하나가 끝날 때(마지막 Wave) 팀 리드가 1회** `--base <계획 시작 SHA> --files <계획서 머리 회귀 대상 파일…>`로 돌린다. Wave 중간에는 implementer가 자기 테스트(`pytest <파일>`)와 `--no-tests`(정적 게이트만)만 돌리고, verifier는 팀 리드의 결과를 받아 쓴다. 도구가 `[웨이브 회귀 필요]`(공개 시그니처·`src/config.py`·`src/state.py`·테스트 기반 파일 변경)를 내면 그 Wave 끝에 모듈 단위 회귀를 돌린다. 아래 원문의 「구현·교정 뒤」는 이 시점으로 읽는다.
+> **실행 시점 (D-303 부기 2026-10-07)** — 모듈 단위 회귀는 **계획서 하나가 끝날 때(마지막 Wave) 팀 리드가 1회** `--base <계획 시작 SHA> --files <계획서 머리 회귀 대상 파일…>`로 돌린다. Wave 중간에는 implementer가 자기 테스트(`pytest <파일>`)와 `--no-tests`(정적 게이트만)만 돌리고, verifier는 팀 리드의 결과를 받아 쓴다. 도구가 `[웨이브 회귀 필요]`(공개 시그니처·`src/config/`·`src/state.py`·테스트 기반 파일 변경)를 내면 그 Wave 끝에 모듈 단위 회귀를 돌린다. 아래 원문의 「구현·교정 뒤」는 이 시점으로 읽는다.
 
 ```bash
 python scripts/regress.py --base <세션 시작 SHA>                 # 기본 — 모듈 단위 · 병렬 · 정적 게이트 · 실패 귀속
@@ -318,7 +318,7 @@ python scripts/regress.py --full                                  # 사용자가
    - 저장소 전역 가드(`@pytest.mark.repo_guard` — 소스 트리 전체를 훑는 테스트)
 2. **전체는 요청 시만** — 계획 완료·Wave 종료·커밋 전에도 자동으로 돌리지 않는다. 도구가 출력 끝에 `[전체 회귀 권고]` 블록을 내면 **그 블록을 사용자 보고에 그대로 옮기고**, 전체 회귀는 스스로 돌리지 않는다. 권고는 실패가 아니라 종료 코드에 영향이 없다. 권고 조건(결정적):
    - 테스트 기반 파일 변경 — `pyproject.toml`·`uv.lock`·pytest 설정·루트 conftest
-   - 허브 모듈 변경 — 전이 import가 테스트의 85% 이상에 닿는 모듈(예: `src/config.py`)
+   - 허브 모듈 변경 — 전이 import가 테스트의 85% 이상에 닿는 모듈(예: `src/config/`)
    - 공개 함수·클래스의 시그니처·반환 형태를 깨는 변경 — 이때는 `--wide`도 자동 적용된다
    - Python 모듈 이동·삭제
    - 직접 import 선택이 테스트의 40% 이상

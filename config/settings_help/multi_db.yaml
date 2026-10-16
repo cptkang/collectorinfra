@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 멀티 DB (D-191)
-# 근거(코드 실측): src/config.py MultiDBConfig · src/api/routes/query.py
+# 근거(코드 실측): src/config/data_access.py MultiDBConfig · src/api/routes/query.py
 #   (_zone_group_exclusive_or_none · _zone_clarification_or_none · _scope_narrowed_or_none)
 #   src/utils/query_gen_common.py(ZONE_CLARIFY_OPTIONS·ZONE_GROUP_EXCLUSIVE_QUESTION)
 #   src/routing/execution_groups.py(partition_execution_groups) · src/domain/scope_select.py

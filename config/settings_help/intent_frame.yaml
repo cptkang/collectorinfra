@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 의도 프레임·정규 질의 (D-191)
-# 근거: src/config.py IntentFrameConfig 주석 · plans/107 §4·§5.1
+# 근거: src/config/text2sql.py IntentFrameConfig 주석 · plans/107 §4·§5.1
 # ⚠ 전부 기본 off이고 off일 때 현행과 비트 단위로 같다. 소비자 프롬프트를 바꾸는 것은
 #   CANONICAL_QUERY_MODE=augment + CANONICAL_QUERY_CONSUMERS에 이름을 올린 소비자뿐이다.
 

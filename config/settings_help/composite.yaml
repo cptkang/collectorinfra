@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 복합 질의·호스트 조사 (D-191)
-# 근거: src/config.py CompositeConfig 주석 · plans/78 §6.2 · plans/81 · plans/82
+# 근거: src/config/text2sql.py CompositeConfig 주석 · plans/78 §6.2 · plans/81 · plans/82
 # 주의: 이 그룹은 대부분 기본 off지만 네 개(가용성 사전 판정·차단·존 순회·범위 역질문)는
 #       명시적 예외로 기본 on이다 — 아래 각 항목의 「권장 설정」에 근거를 적었다.
 

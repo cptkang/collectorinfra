@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — LLM (D-191)
-# 근거: src/config.py LLMConfig · docs/02_decision.md (D-127 과금 승인 게이트)
+# 근거: src/config/llm.py LLMConfig · docs/02_decision.md (D-127 과금 승인 게이트)
 
 version: 1
 group: llm
