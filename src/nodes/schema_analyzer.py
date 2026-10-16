@@ -29,7 +29,7 @@ from src.dbhub.models import SchemaInfo, schema_to_dict
 from src.llm import create_llm
 from src.routing.registry import hangul_identifiers_allowed
 from src.schema_cache.cache_manager import get_cache_manager
-from src.nodes.table_selection import (
+from src.pipeline.table_selection import (
     TableSelection,
     catalog_columns,
     load_db_description,

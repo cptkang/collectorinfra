@@ -29,13 +29,15 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Optional
 
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
 from mcp_server.config import AppServerConfig, PrometheusConfig
+from mcp_server.tool_response import err as _err
+from mcp_server.tool_response import now_iso as _now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -118,11 +120,6 @@ def parse_duration_seconds(text: str) -> int:
 # =====================================================================
 
 
-def _now_iso() -> str:
-    """queried_at용 UTC ISO 타임스탬프를 반환한다."""
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _result_count(data: Any) -> int:
     """Prometheus data에서 행/시리즈 수를 최선 추정한다(감사·result_count용)."""
     if isinstance(data, dict) and isinstance(data.get("result"), list):
@@ -146,11 +143,6 @@ def _ok(data: Any, query: str, endpoint: str, **extra: Any) -> str:
     }
     payload.update(extra)
     return json.dumps(payload, ensure_ascii=False, default=str)
-
-
-def _err(message: str) -> str:
-    """오류 반환 JSON 문자열을 만든다({error})."""
-    return json.dumps({"error": message}, ensure_ascii=False)
 
 
 def _audit(

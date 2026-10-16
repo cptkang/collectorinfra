@@ -26,7 +26,7 @@ from src.observability.group_metrics import record_group
 from src.utils.sql_dialect import is_db2
 from src.config import AppConfig, load_config
 from src.llm import create_llm
-from src.nodes.candidate_generator import classify_complexity
+from src.pipeline.candidate_generator import classify_complexity
 from src.nodes.query_validator import (
     NON_SQL_RETRY_BUDGET,
     REGEN_STOP_BACKEND_LIMIT,
@@ -40,7 +40,7 @@ from src.nodes.query_validator import (
     retrieval_reserve_sec,
 )
 from src.nodes.semantic_compiler import compile_from_nl
-from src.nodes.table_selection import (
+from src.pipeline.table_selection import (
     SOURCE_NONE,
     catalog_columns,
     definitions_of,
@@ -73,7 +73,7 @@ from src.utils.prior_dependency import (
     scope_db_note,
     structure_missing_note,
 )
-from src.nodes.key_bridge import bridge_prior_rows_block, key_bridge_enabled
+from src.pipeline.key_bridge import bridge_prior_rows_block, key_bridge_enabled
 from src.utils.query_gen_common import (
     build_generic_period_hint,
     build_prior_rows_block,
@@ -90,10 +90,10 @@ from src.utils.query_gen_common import (
     surface_query_for_judgment,
     template_context_text,
 )
-from src.nodes.intent_frame_builder import CONSUMER_MULTI_DB, observe_rewrite
+from src.pipeline.intent_frame_builder import CONSUMER_MULTI_DB, observe_rewrite
 # 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
-from src.nodes.prompt_blocks import (
+from src.pipeline.prompt_blocks import (
     build_profile_rules_block,
     profile_rule_tables,
     CRITERIA_AND_GRAIN_RULE_BLOCK,
@@ -167,7 +167,7 @@ from src.schema_cache.form_memory import load_form_memory_answers
 from src.utils.schema_utils import attach_profile_relationships, safe_sample_preview
 
 if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 플래그 ON 경로에서만 수행한다.
-    from src.nodes.column_deriver import StepwiseDeps
+    from src.pipeline.column_deriver import StepwiseDeps
 
 logger = logging.getLogger(__name__)
 
@@ -1836,7 +1836,7 @@ async def _invoke_llm_for_sql(
              ) == "complex")
     )
     if use_multi:
-        from src.nodes.candidate_selector import run_candidate_pipeline
+        from src.pipeline.candidate_selector import run_candidate_pipeline
 
         async def _validate(sql: str):
             # `run_candidate_pipeline`의 validate 계약은 Optional[str](에러)다 — 보정본은

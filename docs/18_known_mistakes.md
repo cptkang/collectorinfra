@@ -2052,3 +2052,13 @@
 - **실수**: 166 G5가 「`alarm:` 접두 Redis 키 리터럴 비테스트 8파일」을 SSOT 위반으로 올렸으나, W1 실측에서 그중 5파일은 `alarm: EpisodeAlarm` 같은 타입 주석과 주석·독스트링이었고 실제 키는 모두 제품 코드 1곳에서만 만들어졌다(사본은 테스트 리터럴뿐) — G5는 처방 대상이 아니었다.
 - **원인**: 문자열 접두를 정규식 grep으로만 세고 문자열 리터럴(AST `Constant`·f-string) 안인지 확인하지 않았다.
 - **방지책**: 리터럴 사본 수는 AST로 문자열 상수·f-string 조각만 세고, 「사본」은 같은 키를 **만드는** 제품 코드 위치가 2곳 이상일 때만 올린다.
+
+### 2026-10-15 · (plans/166 W2 · 팀 리드) `isolation: worktree` 구현자의 worktree가 HEAD가 아니라 `main`(384f97ff)에서 만들어졌다
+- **실수**: W2 4a에서 구현자 7명을 `isolation: worktree`로 띄웠는데, worktree가 현재 브랜치 HEAD(`73851bef` · RCA)가 아니라 `main`의 `384f97ff`(7커밋 전)에서 만들어졌다. 구현자들이 `git log -1`로 알아채고 트리가 깨끗한 상태에서 `git switch --detach 73851bef`로 맞춘 뒤 작업해 피해는 없었다. 그대로 작업했다면 패치가 W1 변경을 되돌리는 차분을 담았을 것이다.
+- **원인**: worktree 격리의 기준점이 「세션 HEAD」라고 가정하고 위임 프롬프트에 기준점 확인 단계를 넣지 않았다.
+- **방지책**: worktree 구현자 위임에는 「시작하자마자 `git log --oneline -1`이 세션 시작 SHA인지 확인 · 아니면 깨끗한 상태에서 `git switch --detach <SHA>`」를 넣고, 패치는 `git diff --cached --binary <SHA>`로 SHA 기준으로 뜨게 한다. 병합 전 `git apply --check`로 확인한다.
+
+### 2026-10-15 · (plans/166 W0 분석) I4 경로 결합 목록이 `__module__` 비교·`stat()` 가드를 놓쳤다
+- **실수**: 166 W0의 I4 판정은 `src/config.py` 경로 결합을 4곳으로 적었으나, W2 4c 실측에서 같은 계열이 더 나왔다 — ① `scripts/config_fallback_check.py`가 `inspect.getmembers(src.config)` 뒤 `cls.__module__ != "src.config"`로 클래스를 걸러, 클래스를 하위 모듈로 옮기면 필드를 읽지 못해 **린트가 조용히 무력화**된다(AppConfig 48필드만 남음 · 실측) ② `tests/test_scripts/test_bench_sweep.py`·`test_bench_report.py`가 `src/config.py`의 `stat()`을 읽는다 ③ `scripts/bench/optimize.py`가 `config.py` 파일명으로 정의 파일을 참조 수에서 뺀다. 4c에서 모두 고쳤다(테스트 경로 리터럴 3줄).
+- **원인**: 경로 결합을 `src/config.py` 문자열 grep과 import 스모크로만 찾고, 모듈 이름 비교(`__module__`)·파일명 비교로 묶인 코드는 찾지 않았다.
+- **방지책**: 모듈을 패키지로 바꾸거나 클래스를 하위 모듈로 옮기기 전에 `__module__`·`getmembers`·`vars(<모듈>)`·파일명(`path.name ==`) 비교까지 grep하고, 그 모듈을 읽는 게이트(린트·카탈로그)는 이동 전후 **출력 수치가 같은지** 대조한다(수치가 0으로 줄면 무력화).

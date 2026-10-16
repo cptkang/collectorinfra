@@ -22,8 +22,8 @@ import structlog
 
 from src.config import AppConfig, load_config
 from src.db_adapters import get_adapter_for
-from src.nodes.prompt_blocks import PROMPT_BUDGET_EXCEEDED
-from src.nodes.table_selection import (
+from src.pipeline.prompt_blocks import PROMPT_BUDGET_EXCEEDED
+from src.pipeline.table_selection import (
     definitions_of,
     selection_none_active,
     selection_none_guidance,

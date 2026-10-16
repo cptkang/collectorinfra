@@ -73,6 +73,9 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     # 시맨틱 IR·커버리지 판정 계층(Plan 69 P5-1) — nodes에서 분리해 tools가 nodes를 거치지
     # 않고 참조하게 한 조각. nodes·tools와 동일 계층.
     "src.semantic":                  "application",
+    # 단일 DB 파이프라인 노드가 공유하는 순수 헬퍼(plans/166 W2 N3 — src/nodes에서 이동).
+    # 그래프 노드가 아니라 노드 간 경고(D-331 ①) 대상이 아니다. nodes와 같은 높이.
+    "src.pipeline":                  "application",
     # SQL 검증 코어(Plan 69 후속 2단계) — 노드와 도구가 공유하는 상태 비결합 순수 함수.
     # tools에 두면 그 계층의 DB-agnostic 테스트 가드에 걸려 독립 모듈로 분리했다.
     "src.sql_validation":            "application",

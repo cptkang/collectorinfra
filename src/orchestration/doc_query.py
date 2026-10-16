@@ -37,8 +37,8 @@ from src.infrastructure.doc_sources import (
     routing_active,
     routing_collections,
 )
+from src.orchestration.agent_spec import SubAgentSpec
 from src.orchestration.db_access import access_denied_result
-from src.orchestration.subagents import SubAgentSpec
 from src.routing.db_authz import SOURCE_ACCESS_DENIED_MESSAGE, is_source_allowed
 from src.routing.registry import get_registry
 from src.utils.task_result_keys import DEGRADED_KEY

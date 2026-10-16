@@ -100,6 +100,7 @@ from src.domain.time_spec import (
 )
 from src.observability import run_capture
 from src.orchestration import apm_jobs as jobs
+from src.orchestration.agent_spec import SubAgentSpec
 from src.orchestration.db_access import access_denied_result
 from src.orchestration.entity_link import (
     AMBIGUOUS,
@@ -113,7 +114,6 @@ from src.orchestration.entity_link import (
     link_hostnames,
 )
 from src.orchestration.investigation_audit import BACKEND_APM, audited_investigation
-from src.orchestration.subagents import SubAgentSpec
 from src.routing.db_authz import (
     SOURCE_ACCESS_DENIED_MESSAGE,
     authorized_db_ids,

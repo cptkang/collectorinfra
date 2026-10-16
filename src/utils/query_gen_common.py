@@ -9,17 +9,114 @@
 from __future__ import annotations
 
 import functools
-import logging
 import re
-import warnings
 from collections.abc import Mapping
-from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
-from src.utils.json_extract import coerce_content_text
+# ──────────────────────────────────────────────
+# 분할 모듈 재노출 (plans/166 N2 · D-337 ① — shim 1사이클)
+# ──────────────────────────────────────────────
+# 관심사별 모듈로 옮긴 이름을 `_` 이름까지 전부 다시 노출해 기존 import 경로를 유지한다.
+# 이 모듈에 남긴 것(Facade): `date.today()`를 읽는 기간 진입 함수(테스트가 이 모듈의 `date`를
+# 고정 — D-337 ②), 위치 표면어 값 사본과 그것을 읽는 용어 매칭·존 역질문·생략형 승계 진입
+# 함수(위치 표면어 단일 정의 가드가 이 파일만 허용), 프롬프트 블록·폴스타 규약(계층 이동 보류).
+# `X as X`는 mypy strict(no_implicit_reexport)용 명시 재노출이다 — isort는 `as` 임포트를
+# 이름마다 한 문장으로 쪼개므로 이 블록만 정렬에서 뺀다.
+# isort: off
+from src.utils.limit_policy import (
+    FALLBACK_ALL_SCOPE_REJECT as FALLBACK_ALL_SCOPE_REJECT,
+    FALLBACK_LIMIT_LLM as FALLBACK_LIMIT_LLM,
+    FALLBACK_TIME_RANGE_LLM as FALLBACK_TIME_RANGE_LLM,
+    _ALL_QUERY_KEYWORDS as _ALL_QUERY_KEYWORDS,
+    _ALL_QUERY_LIMIT as _ALL_QUERY_LIMIT,
+    _ALL_SCOPE_DERIV_SUFFIXES as _ALL_SCOPE_DERIV_SUFFIXES,
+    _EXPLICIT_COUNT_RE as _EXPLICIT_COUNT_RE,
+    _FALLBACK_COUNTERS as _FALLBACK_COUNTERS,
+    _FULL_SCOPE_REQUEST_KEYWORDS as _FULL_SCOPE_REQUEST_KEYWORDS,
+    _GENERIC_EXAMPLE_CAP as _GENERIC_EXAMPLE_CAP,
+    _LEGACY_DEFAULT_CAP as _LEGACY_DEFAULT_CAP,
+    _TOP_N_RE as _TOP_N_RE,
+    _TRAILING_LIMIT_RE as _TRAILING_LIMIT_RE,
+    _has_scope_term as _has_scope_term,
+    enforce_all_query_limit as enforce_all_query_limit,
+    explicit_row_count as explicit_row_count,
+    fallback_counters as fallback_counters,
+    has_all_scope_keyword as has_all_scope_keyword,
+    has_full_scope_request as has_full_scope_request,
+    is_full_scan_query as is_full_scan_query,
+    note_fallback as note_fallback,
+    reset_fallback_counters as reset_fallback_counters,
+    resolve_effective_limit as resolve_effective_limit,
+    resolve_query_limit as resolve_query_limit,
+)
+from src.utils.llm_sql_extract import (
+    _SQL_COMMENT_RE as _SQL_COMMENT_RE,
+    _SQL_FENCE_RE as _SQL_FENCE_RE,
+    _SQL_SEMI_RE as _SQL_SEMI_RE,
+    _SQL_TAIL_RE as _SQL_TAIL_RE,
+    extract_sql_from_llm_response as extract_sql_from_llm_response,
+    extract_sql_from_response as extract_sql_from_response,
+    looks_like_readonly_sql as looks_like_readonly_sql,
+)
+from src.utils.period_resolution import (
+    _HALF_YEAR_RE as _HALF_YEAR_RE,
+    _MONTH_RANGE_RE as _MONTH_RANGE_RE,
+    BlockedComparison as BlockedComparison,
+    ComparisonPeriods as ComparisonPeriods,
+    StatMonth as StatMonth,
+    _infer_year_not_future as _infer_year_not_future,
+    _iso_to_month as _iso_to_month,
+    _month_shift as _month_shift,
+    _months_from_parsed_time_range as _months_from_parsed_time_range,
+    _resolve_half_year_expr as _resolve_half_year_expr,
+    _resolve_month_range_expr as _resolve_month_range_expr,
+    normalize_stat_month as normalize_stat_month,
+    previous_month as previous_month,
+)
+from src.utils.prior_turn_succession import (
+    DEMONSTRATIVE_NOUNS as DEMONSTRATIVE_NOUNS,
+    DEMONSTRATIVE_PREFIXES as DEMONSTRATIVE_PREFIXES,
+    ELLIPTICAL_DISCOURSE_MARKERS as ELLIPTICAL_DISCOURSE_MARKERS,
+    ELLIPTICAL_SUCCESSION_KEY as ELLIPTICAL_SUCCESSION_KEY,
+    HOST_IDENTIFIER_FIELDS as HOST_IDENTIFIER_FIELDS,
+    _BY_SUFFIX as _BY_SUFFIX,
+    _DO_ENDING_NON_ADDITIVE as _DO_ENDING_NON_ADDITIVE,
+    _DO_ENDING_NOUNS as _DO_ENDING_NOUNS,
+    _HOSTNAME_KIND_FIELDS as _HOSTNAME_KIND_FIELDS,
+    _IP_IDENTIFIER_FIELDS as _IP_IDENTIFIER_FIELDS,
+    _NEW_IDENTIFIER_TOKEN as _NEW_IDENTIFIER_TOKEN,
+    _PER_ENTITY_AGGREGATIONS as _PER_ENTITY_AGGREGATIONS,
+    _SET_SELECTION_PREFIXES as _SET_SELECTION_PREFIXES,
+    _SET_SELECTION_WORDS as _SET_SELECTION_WORDS,
+    _TIME_BUCKET_STEMS as _TIME_BUCKET_STEMS,
+    _WORD_TOKEN as _WORD_TOKEN,
+    _has_additive_marker as _has_additive_marker,
+    _has_new_identifier as _has_new_identifier,
+    _selects_server_set as _selects_server_set,
+    _single_previous_entity as _single_previous_entity,
+    has_host_identifier_filter as has_host_identifier_filter,
+    is_demonstrative_identifier as is_demonstrative_identifier,
+    looks_like_process_rows as looks_like_process_rows,
+    refers_to_demonstrative_server as refers_to_demonstrative_server,
+    render_elliptical_succession_note as render_elliptical_succession_note,
+)
+from src.utils.sql_rewrite_eav import (
+    _EAV_INT_CAST_TYPES as _EAV_INT_CAST_TYPES,
+    _EAV_UNIT_CAST_TYPES as _EAV_UNIT_CAST_TYPES,
+    _UNIT_GUARD_MARKER as _UNIT_GUARD_MARKER,
+    _UNIT_PROBES as _UNIT_PROBES,
+    _matching_paren as _matching_paren,
+    _matching_paren_backward as _matching_paren_backward,
+    _regex_strips_unit as _regex_strips_unit,
+    _unit_normalized_expr as _unit_normalized_expr,
+    _unwrap_llm_unit_replace as _unwrap_llm_unit_replace,
+    eav_value_cast_columns as eav_value_cast_columns,
+    normalize_eav_numeric_casts as normalize_eav_numeric_casts,
+    normalize_eav_unit_casts as normalize_eav_unit_casts,
+)
+# isort: on
 
-logger = logging.getLogger(__name__)
 
 _PREV_MONTH_SIGNALS: tuple[str, ...] = (
     "지난달", "지난 달", "전월", "저번달", "저번 달", "지난1개월", "지난 1개월",
@@ -31,167 +128,6 @@ _CUR_MONTH_SIGNALS: tuple[str, ...] = ("이번달", "이번 달", "당월", "금
 _ABS_MONTH_RE = re.compile(r"(\d{4})\s*(?:년\s*|[-/])\s*(\d{1,2})\s*월?")
 # "지난/최근/과거 N개월(간)" — 직전 완결 월부터 N개월 범위(진행 중인 달 제외, D-076 후속4 원칙 유지)
 _N_MONTHS_RE = re.compile(r"(?:지난|최근|과거|last)\s*(\d{1,2})\s*(?:개\s*월|months?)")
-# 절대 월 **범위** 표현(D-185): "1월부터 6월까지" / "2026년 1월~6월" / "1월에서 6월" / "2026-01~2026-06".
-# 연도는 양끝 모두 선택. 오탐 차단: 각 끝점은 '월' 접미 또는 연도 중 하나를 반드시 가진다("1-6" 무매칭).
-# 금감원 감사자료 폼필 실측(2026-08-25): "1월부터 6월까지"가 어느 정규식에도 안 잡혀 기준월이
-# 기본값(지난달=M+5 → 2~7월)으로 침묵 폴백했다. 정규식 1순위 원칙(Known Mistakes)으로 결정적 해석.
-_MONTH_RANGE_RE = re.compile(
-    r"(?:(?P<y1>\d{4})\s*(?:년\s*|[-/.]))?(?<![\d.])(?P<m1>\d{1,2})\s*(?P<w1>월)?\s*"
-    r"(?:부터|에서|~|∼|〜|-|–|—)\s*"
-    r"(?:(?P<y2>\d{4})\s*(?:년\s*|[-/.]))?(?<![\d.])(?P<m2>\d{1,2})\s*(?P<w2>월)?"
-)
-# 반기 표현(D-185): "(2026년|올해|작년) 상반기/하반기" — 연도 미상은 "미래가 아닌 가장 최근 반기".
-_HALF_YEAR_RE = re.compile(
-    r"(?:(?P<y>\d{4})\s*년\s*|(?P<rel>올해|금년|당해|작년|전년|지난해)\s*)?(?P<half>상반기|하반기)"
-)
-
-# 기간 필터 표현: 단일 월 "YYYYMM" 또는 (시작월, 끝월) 범위. None이면 기간 표현 없음.
-StatMonth = str | tuple[str, str] | None
-
-
-# ──────────────────────────────────────────────
-# 표면어 해석 폴백 계측 (Plan 67 R3 — 정규식 미커버율 실측 재료)
-# ──────────────────────────────────────────────
-
-#: 이름 → 누적 발동 횟수. 정규식 1순위가 미매칭이라 LLM 산출물(parsed_requirements) 폴백이
-#: 발동한 횟수와, 스코프 표면어 경계 판정이 오탐을 걸러낸 횟수를 계측한다. utils 계층은
-#: `nodes.semantic_compiler.note_guard`를 참조할 수 없어(역방향 금지) 같은 로그 스타일의
-#: 독립 카운터를 둔다. **계측만** 하고 정규식은 제거하지 않는다(검토 §4.3 되돌림 이력).
-_FALLBACK_COUNTERS: dict[str, int] = {}
-
-FALLBACK_TIME_RANGE_LLM = "interpret.time_range_llm_fallback"  # 기간 표현 미매칭 → LLM 산출물 채택
-FALLBACK_LIMIT_LLM = "interpret.limit_llm_fallback"            # 건수 표현 미매칭 → LLM 산출물 채택
-FALLBACK_ALL_SCOPE_REJECT = "interpret.all_scope_boundary_reject"  # 전체 스코프 표면어 오탐 차단
-
-
-def note_fallback(name: str, detail: str = "") -> None:
-    """표면어 해석 폴백·경계 판정의 발동을 계측한다(R3/R4 — 미커버율 비교 재료).
-
-    Args:
-        name: 폴백 식별자(``FALLBACK_*`` 상수)
-        detail: 로그에 남길 부가 사유(선택)
-    """
-    _FALLBACK_COUNTERS[name] = _FALLBACK_COUNTERS.get(name, 0) + 1
-    logger.info(
-        "[가드계측] %s 발동(누적 %d)%s",
-        name, _FALLBACK_COUNTERS[name], f" — {detail}" if detail else "",
-    )
-
-
-def fallback_counters() -> dict[str, int]:
-    """폴백 발동 누적 카운터의 사본을 반환한다."""
-    return dict(_FALLBACK_COUNTERS)
-
-
-def reset_fallback_counters() -> None:
-    """폴백 발동 카운터를 초기화한다(계측 구간 분리·테스트용)."""
-    _FALLBACK_COUNTERS.clear()
-
-
-def _months_from_parsed_time_range(
-    parsed_time_range: dict | None, ref: date
-) -> tuple[str, str] | None:
-    """input_parser LLM 산출물 ``time_range``를 통계 월 범위로 환산한다(R3 2단 폴백).
-
-    shape는 `{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}`(둘 다 ISO 8601, 미지정 시 None)로
-    `src/prompts/input_parser.py`가 규정하고 `input_parser`가 `parsed_requirements`에 세팅한다.
-    한쪽만 있으면 그 달 단일 범위로 본다.
-
-    끝 월은 **직전 완결 월까지로 절단**한다 — 진행 중인 달의 월 통계는 미완결이고, LLM이
-    진행 중인 달까지 포함하는 기간을 재계산해 서버가 중복·왜곡됐던 실측(D-076 후속4)이
-    폴백 경로로 되살아나는 것을 막는다. 시작 월이 당월이면(당월만 요구) 절단하지 않는다.
-    """
-    if not isinstance(parsed_time_range, dict):
-        return None
-    start_ym = _iso_to_month(parsed_time_range.get("start"))
-    end_ym = _iso_to_month(parsed_time_range.get("end"))
-    if not start_ym and not end_ym:
-        return None
-    start_ym = start_ym or end_ym
-    end_ym = end_ym or start_ym
-    if start_ym > end_ym:
-        start_ym, end_ym = end_ym, start_ym
-    last_closed = _month_shift(ref, -1)
-    end_ym = max(min(end_ym, last_closed), start_ym)
-    return (start_ym, end_ym)
-
-
-def _iso_to_month(value: object) -> str | None:
-    """ISO 8601 날짜/월 문자열("2026-06-15"·"2026-06")을 YYYYMM으로 바꾼다(형식 불일치 시 None)."""
-    if not isinstance(value, str):
-        return None
-    m = re.match(r"\s*(\d{4})-(\d{1,2})", value)
-    if not m:
-        return None
-    month = int(m.group(2))
-    if not 1 <= month <= 12:
-        return None
-    return f"{m.group(1)}{month:02d}"
-
-
-def _month_shift(ref: date, delta: int) -> str:
-    """ref 기준 delta개월 이동한 월을 YYYYMM 문자열로 반환한다(delta<0이면 과거)."""
-    total = ref.year * 12 + (ref.month - 1) + delta
-    return f"{total // 12}{total % 12 + 1:02d}"
-
-
-def _infer_year_not_future(month: int, ref: date) -> int:
-    """연도 미상 월의 연도를 "미래가 아닌 가장 최근 발생"으로 보정한다(당월 포함).
-
-    "1월부터 6월까지"를 8월에 물으면 올해 1~6월, "11월부터 2월까지"를 8월에 물으면
-    작년 11월~올해 2월이 된다(끝 월 기준). 진행 중인 당월은 명시 요청이므로 허용
-    (`_CUR_MONTH_SIGNALS`와 동형 — 완결 월 절단은 상대 표현에만 적용).
-    """
-    return ref.year if month <= ref.month else ref.year - 1
-
-
-def _resolve_month_range_expr(text: str, ref: date) -> tuple[str, str] | None:
-    """절대 월 범위 표현("1월부터 6월까지"·"2026년 1월~6월"·"2026-01~2026-06")을 해석한다(D-185).
-
-    각 끝점은 '월' 접미 또는 연도를 가져야 한다("1-6"·"3-5개" 등 숫자 범위 오탐 차단).
-    연도 규칙: 끝 월 연도 미상이면 시작 월 연도(있으면) 또는 미래가 아닌 최근 발생;
-    시작 월 연도 미상이면 끝 월 연도, 단 시작>끝이면 전년(연말→연초 범위).
-    시작>끝으로 남으면(예: "2026년 6월부터 2025년 1월") 정렬해 반환한다.
-    """
-    for m in _MONTH_RANGE_RE.finditer(text):
-        g = m.groupdict()
-        if not (g["w1"] or g["y1"]) or not (g["w2"] or g["y2"]):
-            continue
-        m1, m2 = int(g["m1"]), int(g["m2"])
-        if not (1 <= m1 <= 12 and 1 <= m2 <= 12):
-            continue
-        y2 = int(g["y2"]) if g["y2"] else None
-        y1 = int(g["y1"]) if g["y1"] else None
-        if y2 is None:
-            if y1 is not None:
-                y2 = y1 + 1 if m2 < m1 else y1
-            else:
-                y2 = _infer_year_not_future(m2, ref)
-        if y1 is None:
-            y1 = y2 - 1 if m1 > m2 else y2
-        start, end = f"{y1}{m1:02d}", f"{y2}{m2:02d}"
-        if start > end:
-            start, end = end, start
-        return (start, end)
-    return None
-
-
-def _resolve_half_year_expr(text: str, ref: date) -> tuple[str, str] | None:
-    """반기 표현("2026년 상반기"·"작년 하반기"·"상반기")을 (시작, 끝) 월 범위로 해석한다(D-185)."""
-    m = _HALF_YEAR_RE.search(text)
-    if not m:
-        return None
-    start_m, end_m = (1, 6) if m.group("half") == "상반기" else (7, 12)
-    if m.group("y"):
-        year = int(m.group("y"))
-    elif m.group("rel") in ("작년", "전년", "지난해"):
-        year = ref.year - 1
-    elif m.group("rel"):
-        year = ref.year
-    else:
-        # 연도 미상: 아직 시작하지 않은 반기면 전년 것으로 본다(미래 기간 조회 방지)
-        year = ref.year if start_m <= ref.month else ref.year - 1
-    return (f"{year}{start_m:02d}", f"{year}{end_m:02d}")
 
 
 def resolve_stat_month_range(
@@ -264,33 +200,6 @@ _WEEK_COMPARISON_SIGNALS: tuple[str, ...] = (
 )
 
 
-@dataclass(frozen=True)
-class ComparisonPeriods:
-    """비교 기간 쌍 — (기준 월, 비교 월). 둘 다 YYYYMM."""
-
-    base_month: str
-    cur_month: str
-
-
-@dataclass(frozen=True)
-class BlockedComparison:
-    """열려 있지 않은 비교 요청. **사유와 대체 제안을 반드시 응답에 표기**한다.
-
-    약속하고 조용히 누락시키는 것이 최악이다 — 지원하지 않는다고 말하면 사용자가
-    다른 방법을 찾지만, 침묵하면 틀린 답을 믿는다(§6.12 ③).
-    """
-
-    reason: str
-    suggestion: str
-
-
-def previous_month(stat_month: str) -> str:
-    """YYYYMM 문자열의 직전 월을 돌려준다(연 경계 처리)."""
-    year, month = int(stat_month[:4]), int(stat_month[4:6])
-    total = year * 12 + (month - 1) - 1
-    return f"{total // 12}{total % 12 + 1:02d}"
-
-
 def resolve_comparison_periods(
     user_query: str | None, today: date | None = None
 ) -> ComparisonPeriods | BlockedComparison | None:
@@ -330,16 +239,6 @@ def resolve_comparison_periods(
         )
 
     return None
-
-
-def normalize_stat_month(stat_month: StatMonth) -> tuple[str, str] | None:
-    """stat_month 인자(단일 월 문자열 또는 범위 튜플)를 (시작, 끝) 범위로 정규화한다."""
-    if not stat_month:
-        return None
-    if isinstance(stat_month, str):
-        return (stat_month, stat_month)
-    start, end = stat_month
-    return (start, end)
 
 
 def current_month_daily_range(
@@ -438,184 +337,6 @@ def build_generic_period_hint(stat_month: StatMonth) -> str:
     )
 
 
-# "전체/모든/모두" 조회는 기본 LIMIT(default_limit)로 절단하면 안 되므로 상향한다.
-# 2026-07-24 실측 확장: "서버별 CPU/메모리 사용률 평균을 … 보여줘"처럼 **"모든" 없이도
-# 전 서버 나열을 의도하는 표면어**("서버별"/"서버들"/"각 서버")가 기본 LIMIT(1000)에
-# 절단되고 존 역질문 게이트도 비발동(침묵 전 존 폴백)했다 — 두 게이트가 공유하는 이
-# 집합을 실사용 표현으로 확장한다. 명시 건수("100건"/"상위 N")는 여전히 우선.
-_ALL_QUERY_KEYWORDS: tuple[str, ...] = (
-    "모든", "전체", "모두", "서버별", "서버 별", "서버들", "각 서버",
-)
-_ALL_QUERY_LIMIT: int = 10_000  # spec.md '최대 반환 행 수 10,000행' 정합(Plan 69 §0.3-5 —
-# 감사 이력 5,372건 실측 최대 1,000행, 초과 실적 0 확인 후 하향. 2026-08-04)
-
-# 스코프 표면어 뒤에 붙으면 낱말의 품사가 바뀌어 "전체 조회" 의미가 아닌 파생 접미사.
-# "**전체**적으로 CPU 높은 서버"가 LIMIT 100000으로 상향되던 오탐(검토 §4.2 A6) 차단용.
-# 조사(전체를/전체의)·합성(전체서버)은 정상 스코프 지시라 그대로 인정한다 — 표면어 자체를
-# 제거하지 않고 경계만 좁힌다(Plan 67 R3-(iii): 제거 금지, R4 계측 대상 유지).
-_ALL_SCOPE_DERIV_SUFFIXES: tuple[str, ...] = ("적", "화")
-
-
-def has_all_scope_keyword(text: str | None) -> bool:
-    """질의가 "전체/모든/모두" 스코프 지시를 담고 있는지 조사·파생 경계까지 보고 판정한다.
-
-    LIMIT 상향(`resolve_query_limit`)과 검증기의 행 제한 **상향**(`query_validator`·멀티 경로
-    `_auto_limit_or_none`)이 같은 판정을 공유하도록 단일 출처로 둔다(종전에는 두 곳이 각자
-    부분문자열 매칭 튜플을 들고 있었다). **「스킵」이 아니라 「상향」이다** — 종전 검증기는
-    전체 조회에서 자동 추가를 통째로 건너뛰어 두 경로가 반대로 말했다(plans/98 CU-2).
-
-    Args:
-        text: 사용자 원문 질의
-
-    Returns:
-        전체 스코프 지시가 있으면 True
-    """
-    return _has_scope_term(text, _ALL_QUERY_KEYWORDS, instrument=True)
-
-
-# 고지용 「전체」 표면어 — D-279 ⑦ 문구(전체·모든·모두) 그대로다. LIMIT 상향용
-# `_ALL_QUERY_KEYWORDS`의 「서버별」·「서버들」·「각 서버」는 전 서버 **나열** 의도일 뿐
-# 「조회 가능 존 전체」 요청이 아니다 — 고지에 쓰면 거짓 「전체가 아니라 …」가 붙는다(plans/151 F3).
-_FULL_SCOPE_REQUEST_KEYWORDS: tuple[str, ...] = ("모든", "전체", "모두")
-
-
-def has_full_scope_request(text: str | None) -> bool:
-    """질의가 「전체·모든·모두」로 범위 전체를 요청했는지 판정한다 — 범위 고지 전용(plans/151 W3).
-
-    「전체가 아니라 …」 고지(`render_narrowed_note`·`scope_partial_text`)의 발동 판정이다.
-    파생 접미 거름(「전체적」)은 `has_all_scope_keyword`와 같다. 계측 카운터는 LIMIT 판정만
-    남긴다(같은 질의를 두 번 세지 않게).
-
-    Args:
-        text: 사용자 원문 질의
-
-    Returns:
-        「전체·모든·모두」 지시가 있으면 True
-    """
-    return _has_scope_term(text, _FULL_SCOPE_REQUEST_KEYWORDS, instrument=False)
-
-
-def _has_scope_term(
-    text: str | None, keywords: tuple[str, ...], *, instrument: bool
-) -> bool:
-    """표면어가 파생 접미(`_ALL_SCOPE_DERIV_SUFFIXES`) 없이 한 번이라도 나오는지 본다."""
-    body = text or ""
-    for kw in keywords:
-        start = body.find(kw)
-        while start != -1:
-            tail = body[start + len(kw):]
-            if not tail.startswith(_ALL_SCOPE_DERIV_SUFFIXES):
-                return True
-            if instrument:
-                note_fallback(FALLBACK_ALL_SCOPE_REJECT, f"{kw}{tail[:2]}")
-            start = body.find(kw, start + 1)
-    return False
-
-
-def is_full_scan_query(user_query: str | None) -> bool:
-    """질의가 전량 나열 의도(대량 조회 표면어 포함)인지 결정적으로 판정한다.
-
-    resolve_query_limit의 LIMIT 상향과 존 역질문 게이트(Plan 75 §4)가 같은 판정을
-    공유한다 — 한쪽만 넓히는 비대칭 방지(D-066 계열).
-    """
-    text = user_query or ""
-    return any(k in text for k in _ALL_QUERY_KEYWORDS)
-
-# 명시 건수 표현("100건", "상위 10개") — "건"은 레코드 수 전용 조사라 안전. 단독 "개"는
-# "개월"·"4개인 서버" 등 수량 한정과 혼동되므로 "상위 N(개)" 꼴에서만 인정한다.
-# 「N건 이상·이하·초과·미만·넘는」은 **조건**이지 결과 건수가 아니다(plans/123 W-0 — 「알람 3건
-# 이상 발생한 서버」가 LIMIT 3으로 읽혀 격리 입력 `resolved_limit`으로 모든 task에 승격됐다
-# · R1-08).
-_EXPLICIT_COUNT_RE = re.compile(
-    r"(\d{1,6})\s*건(?!\s*(?:을|를|이|가)?\s*(?:이상|이하|초과|미만|넘|보다|까지|부터))"
-)
-_TOP_N_RE = re.compile(r"상위\s*(\d{1,6})")
-
-
-def explicit_row_count(user_query: str | None) -> int | None:
-    """질의가 명시한 결과 건수("100건"·"상위 10") — 없으면 None (plans/123 W-0·W-1 ②).
-
-    `resolve_query_limit`의 첫 판정과 같은 규칙이다. 상한 절단 고지(`output_generator`)가 이 값과
-    같은 상한이면 「요청한 만큼 가져온 것」이라 절단으로 말하지 않는다.
-    """
-    text = user_query or ""
-    m = _EXPLICIT_COUNT_RE.search(text) or _TOP_N_RE.search(text)
-    if not m:
-        return None
-    n = int(m.group(1))
-    return n if n > 0 else None
-
-
-def resolve_query_limit(
-    user_query: str | None,
-    default_limit: int,
-    *,
-    parsed_limit: object = None,
-) -> int:
-    """질의의 명시 건수("100건"/"상위 10")를 최우선 반영하고, "전체/모든/모두"면 상향, 아니면 기본값.
-
-    단일 DB 경로(query_generator)와 동일한 규칙을 멀티 DB 경로에도 적용하기 위한 공용 함수.
-    실측(2026-07-21 yd-006): "…100건 조회해줘"가 기본 LIMIT(1000)로 나가 골드(100행)와 행수
-    불일치 — 명시 건수는 결정적으로 파싱한다.
-
-    Args:
-        user_query: 사용자 원문 질의
-        default_limit: 일반 조회 기본 LIMIT
-        parsed_limit: `parsed_requirements["limit"]`(input_parser LLM 산출물). **결정적 판정이
-            전부 미매칭일 때만** 2단 폴백으로 사용한다 — "100개만"·"백 건"·"10줄"처럼 정규식이
-            못 잡는 표현이 기본 LIMIT으로 흐르던 것을 회복한다(Plan 67 R3-(i)).
-            미지정(None)이면 종전 동작 그대로.
-
-    Returns:
-        적용할 LIMIT 값
-    """
-    text = user_query or ""
-    n = explicit_row_count(text)
-    if n is not None:
-        return min(n, _ALL_QUERY_LIMIT)
-    if has_all_scope_keyword(text):
-        return _ALL_QUERY_LIMIT
-    # 2단 폴백(R3-(i)): 표면어 미매칭 → 이미 계산돼 있던 LLM 건수 산출물을 채택한다.
-    if isinstance(parsed_limit, bool) or not isinstance(parsed_limit, int):
-        return default_limit
-    if parsed_limit <= 0:
-        return default_limit
-    limit = min(parsed_limit, _ALL_QUERY_LIMIT)
-    note_fallback(FALLBACK_LIMIT_LLM, f"limit={limit}")
-    return limit
-
-
-def resolve_effective_limit(
-    state: dict,
-    user_query: str | None,
-    default_limit: int,
-    parsed_limit: object = None,
-) -> int:
-    """state에 승격된 원문 기준 limit(resolved_limit)을 우선하고, 없으면 표면어로 계산한다.
-
-    폐쇄망 실측(2026-07-24, Plan 75 §3): 오케스트레이션 단일 DB 경로는 user_query를
-    semantic_router 정제 질의(sub_query_context)로 교체하는데, 이 정제(문장 압축)가
-    "모든" 등 수량 한정어까지 탈락시켜 resolve_query_limit이 기본 1,000으로 떨어졌다
-    (은행존 2,328대 중 1,328대 절단 — 멀티 경로는 sub_query 유지로 미발현, 구조적 비대칭).
-    limit 신호는 문자열이 아니라 state(resolved_limit)로 운반해 상류의 어떤 문자열
-    훼손과도 무관하게 보존한다. 단일/멀티 두 소비 경로가 이 함수를 공유한다(D-066).
-
-    Args:
-        state: 에이전트 상태 (resolved_limit이 승격돼 있으면 그 값을 신뢰)
-        user_query: 폴백 계산용 질의 문자열 (그래프 직행 경로에선 원문)
-        default_limit: 일반 조회 기본 LIMIT
-
-    Returns:
-        적용할 LIMIT 값
-    """
-    promoted = state.get("resolved_limit")
-    if isinstance(promoted, int) and promoted > 0:
-        return promoted
-    # 표면어 미매칭이면 input_parser LLM 산출물(parsed_limit)로 2단 폴백(Plan 67 R3-(i)) —
-    # 단일/멀티 경로 동일 규칙(한쪽만 폴백하는 비대칭 금지).
-    return resolve_query_limit(user_query, default_limit, parsed_limit=parsed_limit)
-
-
 def surface_query_for_judgment(state: Mapping[str, Any], current: str | None = None) -> str:
     """표면어 결정적 판정(순위·최상급·급증·비교기간·파일시스템·절대임계)에 쓸 질의 문자열.
 
@@ -703,384 +424,6 @@ def is_realtime_usage_query(user_query: str | None) -> bool:
     if resolve_stat_month_range(text) is not None:
         return False
     return True
-
-
-# 프로필 few-shot 예시(config/db_profiles/*.yaml)가 말미에 일반 캡(FETCH FIRST 100 /
-# LIMIT 100)을 달고 있어, LLM이 프롬프트의 LIMIT 지시 대신 예시 캡을 모방하는 사례가
-# 실측됐다(2026-07-24: b0 "모든 서버 CPU 사용률" — 지시 limit 100,000인데 SQL은
-# FETCH FIRST 100 → 2,328대 중 100행). 지시 vs few-shot 경쟁은 비결정적(OS 질의는
-# 지시를 따름)이라 프롬프트 강화로는 부족 — 결정적 후처리로 교정한다(Known Mistakes).
-_TRAILING_LIMIT_RE = re.compile(
-    r"(?is)(LIMIT\s+(\d+)|FETCH\s+FIRST\s+(\d+)\s+ROWS?\s+ONLY)(\s*;)?\s*$"
-)
-_GENERIC_EXAMPLE_CAP = 100  # 프로필 query_examples 말미의 관례적 캡
-# 역대 기본 LIMIT(1000) — 프로필 예시·LLM 학습 관례에 굳어 있어, 운영이
-# QUERY_DEFAULT_LIMIT을 상향(예: 10,000)해도 LLM은 말미 캡 1000을 계속 모방한다.
-# config_default만 캡 집합에 넣으면 설정 변경 순간 1000이 교정 집합에서 빠져
-# 전량 질의가 1,000건에 절단된다(2026-08-05 라이브 실측: "서버들…조회" 1,000건).
-_LEGACY_DEFAULT_CAP = 1000
-
-
-def enforce_all_query_limit(sql: str, effective_limit: int, config_default_limit: int) -> str:
-    """"모든/전체" 상향 질의의 생성 SQL 말미가 일반 캡이면 상향값으로 결정적 교정한다.
-
-    좁은 가드만 적용한다(오교정 방지):
-    - effective_limit이 "모든/전체" 상향값(_ALL_QUERY_LIMIT)일 때만 발동 — 명시 건수·기본
-      질의는 건드리지 않는다.
-    - SQL **말미**의 LIMIT/FETCH FIRST 절만 대상 — 서브쿼리의 `FETCH FIRST 1 ROW ONLY`
-      (최신값 조회 패턴)는 보존된다.
-    - 말미 값이 일반 캡(예시 관례 100, 설정 기본 LIMIT)일 때만 교체 — `LIMIT 1`(최상위 1건)
-      같은 의도적 TOP-N은 캡 집합 밖이라 보존된다.
-
-    Args:
-        sql: LLM이 생성한 SQL
-        effective_limit: resolve_effective_limit 결과 (원문 기준 확정 LIMIT)
-        config_default_limit: 설정상 기본 LIMIT (일반 캡 판정용)
-
-    Returns:
-        교정된(또는 원본 그대로의) SQL
-    """
-    if not sql or effective_limit != _ALL_QUERY_LIMIT:
-        return sql
-    m = _TRAILING_LIMIT_RE.search(sql)
-    if not m:
-        return sql
-    n = int(m.group(2) or m.group(3))
-    if n == effective_limit or n not in {
-        _GENERIC_EXAMPLE_CAP, _LEGACY_DEFAULT_CAP, config_default_limit,
-    }:
-        return sql
-    clause = (
-        f"LIMIT {effective_limit}" if m.group(2)
-        else f"FETCH FIRST {effective_limit} ROWS ONLY"
-    )
-    return sql[: m.start(1)] + clause + (m.group(4) or "")
-
-
-# EAV 값 컬럼에 걸린 정수 캐스트 타입(교정 대상). NUMERIC은 PostgreSQL·DB2 공통 유효
-# (DB2에서 DECIMAL 동의어)라 방언 분기가 필요 없다. 긴 이름을 앞에 둔다(INT가 INTEGER를
-# 부분 선점하지 않도록 — 대안 순서 의존).
-_EAV_INT_CAST_TYPES = r"(?:BIGINT|INTEGER|SMALLINT|INT8|INT4|INT2|INT)"
-
-
-def eav_value_cast_columns(eav_pattern: dict | None) -> tuple[str, ...]:
-    """eav_pattern 선언에서 숫자 캐스트 교정 대상 값 컬럼 패밀리를 도출한다 (D-160).
-
-    ``value_column``과 그 단축/전문 변형(``_short`` 접미 유무 쌍)을 함께 반환한다 —
-    컬럼 리터럴은 코드가 아니라 구조 메타 선언(프로필)에서만 온다(D-088: 공용 계층
-    DB-agnostic). eav_pattern이 없는 DB는 빈 튜플 → 교정 자체가 스킵돼 동작 불변.
-    """
-    base = (eav_pattern or {}).get("value_column") or ""
-    if not base:
-        return ()
-    if base.endswith("_short"):
-        return (base[: -len("_short")], base)
-    return (base, base + "_short")
-
-
-def normalize_eav_numeric_casts(sql: str, value_columns: tuple[str, ...] | list[str]) -> str:
-    """EAV 값 컬럼에 걸린 정수 캐스트를 NUMERIC으로 결정적 교정한다 (D-160).
-
-    폐쇄망 실측(2026-08-21 공동존): LLM이 "vcore 수" 집계에
-    ``SUM(CAST(<EAV 값 컬럼> AS BIGINT))``를 생성 — EAV 값은 부동소수 표기
-    문자열('4.0')이라 PostgreSQL이 ``invalid input syntax for type bigint``로 거부.
-    캐스트 선택은 LLM 비결정 영역이라 프롬프트 규칙(프로필 query_guide)만으로는
-    재발을 막을 수 없어 후처리로 교정한다(Known Mistakes: 결정적 가드 원칙,
-    enforce_all_query_limit·correct_servername_hostname_mapping과 동일 계열).
-
-    좁은 스코프(오교정 방지):
-    - **값 컬럼이 포함된** 캐스트만 대상 — ``CAST(r.id AS BIGINT)`` 같은 정당한 정수
-      캐스트는 불변.
-    - CAST 인자·괄호식은 균형 괄호 스캔으로 식별(``CAST(COALESCE(col,'0') AS INT)``
-      같은 임의 깊이 중첩 커버). 괄호 불균형·형태 미상은 무변경(하방 안전 —
-      교정 실패는 현행 실패 유지일 뿐 악화 없음).
-    - 문자열 리터럴 내부는 구분하지 않는다 — LLM SQL의 리터럴에 캐스트 구문이 들어갈
-      확률은 사실상 0이고, 오매칭해도 결과는 여전히 유효 SQL이다.
-
-    Args:
-        sql: LLM이 생성한 SQL
-        value_columns: 교정 대상 값 컬럼명들 (``eav_value_cast_columns`` 산출)
-
-    Returns:
-        교정된(또는 원본 그대로의) SQL — 교정 발생 시 INFO 로그
-    """
-    if not sql or not value_columns:
-        return sql
-    cols_re = r"\b(?:" + "|".join(re.escape(c) for c in value_columns if c) + r")\b"
-    if cols_re == r"\b(?:)\b":
-        return sql
-
-    # 교체 대상 타입 토큰의 (시작, 끝) 스팬을 모은 뒤 오른쪽부터 NUMERIC으로 치환한다.
-    spans: list[tuple[int, int]] = []
-
-    # 형태 1: CAST(<값 컬럼 포함 식> AS 정수형) — 인자를 균형 스캔으로 확정
-    for m in re.finditer(r"CAST\s*\(", sql, flags=re.IGNORECASE):
-        open_pos = m.end() - 1
-        close_pos = _matching_paren(sql, open_pos)
-        if close_pos is None:
-            continue
-        inner = sql[open_pos + 1: close_pos]
-        tm = re.search(rf"\s+AS\s+({_EAV_INT_CAST_TYPES})\s*$", inner, flags=re.IGNORECASE)
-        if not tm:
-            continue
-        if not re.search(cols_re, inner[: tm.start()], flags=re.IGNORECASE):
-            continue
-        spans.append((open_pos + 1 + tm.start(1), open_pos + 1 + tm.end(1)))
-
-    # 형태 2: PostgreSQL 축약 캐스트 — <값 컬럼>::정수형
-    for m in re.finditer(
-        rf"(?:\w+\.)?{cols_re}\s*::\s*({_EAV_INT_CAST_TYPES})\b", sql, flags=re.IGNORECASE
-    ):
-        spans.append((m.start(1), m.end(1)))
-
-    # 형태 3: (…값 컬럼…)::정수형 — 닫는 괄호에서 역방향 균형 스캔으로 괄호식 확정
-    for m in re.finditer(rf"\)\s*::\s*({_EAV_INT_CAST_TYPES})\b", sql, flags=re.IGNORECASE):
-        open_pos = _matching_paren_backward(sql, m.start())
-        if open_pos is None:
-            continue
-        if re.search(cols_re, sql[open_pos: m.start() + 1], flags=re.IGNORECASE):
-            spans.append((m.start(1), m.end(1)))
-
-    if not spans:
-        return sql
-    result = sql
-    for start, end in sorted(set(spans), reverse=True):
-        result = result[:start] + "NUMERIC" + result[end:]
-    logger.info(
-        "[EAV캐스트] 값 컬럼 정수 캐스트 → NUMERIC 교정 %d건 (cols=%s)",
-        len(set(spans)), list(value_columns),
-    )
-    return result
-
-
-# 단위 정규화 대상 숫자 캐스트 타입(D-199). D-160과 달리 여기는 "이미 숫자 캐스트인데
-# 값에 단위 접미('14.9 GB')가 붙어 실행이 깨지는" 케이스라 NUMERIC/DECIMAL이 대상이다.
-_EAV_UNIT_CAST_TYPES = r"(?:NUMERIC|DECIMAL|DEC)"
-# 이 가드가 생성하는 캐스트 피연산자의 공통 접두(단위 분기·ELSE 분기 양쪽) —
-# 재적용(이중 래핑) 방지용 마커. LLM이 자발적으로 NULLIF(TRIM(…))을 쓴 경우도
-# 스킵되지만, 그건 이미 정규화 시도가 있는 식이라 추가 래핑 실익이 없다.
-_UNIT_GUARD_MARKER = "NULLIF(TRIM("
-
-
-# 단위 접미 표본(D-199 실측 단위 TB/GB/MB/KB) — LLM 정규식 삭제가 단위를 지우는지 판정한다.
-_UNIT_PROBES = ("1.5 TB", "14.9 GB", "965.5 MB", "512 KB")
-
-
-def _regex_strips_unit(pattern_literal: str, flags_literal: str = "") -> bool:
-    """정규식 삭제(``REGEXP_REPLACE(X, '<패턴>', '')``)가 값의 단위 접미를 지우는가.
-
-    패턴은 파이썬 ``re``로 표본에 적용해 본다 — 컴파일되지 않으면(POSIX 전용 문법 등)
-    지우지 않는 것으로 본다(무변경 쪽이 하방 안전).
-    """
-    pattern = pattern_literal.strip()[1:-1]
-    rx_flags = re.IGNORECASE if "i" in flags_literal.lower() else 0
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")  # 「[[:alpha:]]」 같은 중첩 집합 경고
-            rx = re.compile(pattern, rx_flags)
-    except re.error:
-        return False
-    return any(p.split()[1] not in rx.sub("", p) for p in _UNIT_PROBES)
-
-
-def _unwrap_llm_unit_replace(operand: str) -> str:
-    """LLM이 만든 단위 제거 임기응변을 벗긴다(D-199 후속).
-
-    - ``REPLACE(<식>, '<단위>', '')`` — REPLACE는 sql_guard 금지 키워드(MySQL
-      ``REPLACE INTO`` 차단)라 검증기가 SQL 전체를 거부한다(2026-09-07 폐쇄망 실측 —
-      B0/GP/YD 전부 재생성 루프 유발).
-    - ``REGEXP_REPLACE(<식>, '<패턴>', ''[, '<플래그>'])`` 중 패턴이 단위를 지우는 것
-      (예 ``'[^0-9\\.]'``) — 벗기지 않으면 CASE가 단위를 못 봐 전부 ELSE(GB 가정)로
-      떨어진다. run ``20260923-103638`` R4-10: 「965.5 MB」가 965.5 GB로 읽혀 「64GB 넘는
-      서버」가 198건이 됐다(원값으로 판정한 반복은 197건 — plans/123 S-1b).
-
-    피연산자가 정확히 그 호출 하나면 X만 남긴다 — 단위 처리는 이 가드의 CASE가 원값
-    기준으로 대신한다. 형태가 다르면 무변경.
-    """
-    m = re.match(r"\s*(REGEXP_REPLACE|REPLACE)\s*\(", operand, flags=re.IGNORECASE)
-    if not m:
-        return operand
-    open_pos = m.end() - 1
-    close_pos = _matching_paren(operand, open_pos)
-    if close_pos is None or operand[close_pos + 1:].strip():
-        return operand  # 호출이 피연산자 전체가 아니면 보수적으로 무변경
-    # 최상위 콤마로 인자 분해
-    inner = operand[open_pos + 1: close_pos]
-    args: list[str] = []
-    depth = 0
-    last = 0
-    for i, ch in enumerate(inner):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        elif ch == "," and depth == 0:
-            args.append(inner[last:i])
-            last = i + 1
-    args.append(inner[last:])
-
-    def literal(arg: str) -> bool:
-        return re.fullmatch(r"\s*'[^']*'\s*", arg) is not None
-
-    if len(args) < 3 or not re.fullmatch(r"\s*'\s*'\s*", args[2]) or not literal(args[1]):
-        return operand
-    if m.group(1).upper() == "REPLACE":
-        return args[0].strip() if len(args) == 3 else operand
-    flags = args[3] if len(args) == 4 else "''"
-    if len(args) > 4 or not literal(flags) or not _regex_strips_unit(args[1], flags):
-        return operand
-    return args[0].strip()
-
-
-def _unit_normalized_expr(operand: str) -> str:
-    """단위 접미 문자열을 GB 기준 숫자로 정규화하는 방언 중립 SQL 식을 만든다(D-199).
-
-    CASE·LIKE·SUBSTR·LENGTH·TRIM·NULLIF·UPPER·CAST만 사용 — PostgreSQL과 DB2에서
-    동일 구문이며 **sql_guard 금지 키워드와 겹치지 않는다**(REPLACE는 금지 키워드,
-    regexp_replace는 PG 'g' 플래그·DB2 인자 차이, TRANSLATE는 인자 순서가 방언마다
-    달라 전부 배제 — 2026-09-07 폐쇄망 검증기 거부 실측 후 위치 기반으로 확정).
-    단위 제거는 "값 끝의 2글자 단위" 위치 기반(SUBSTR)이라 대소문자 무관하다.
-    단위가 없는 값('4.0' 등)은 ELSE에서 있는 그대로 캐스트한다(스케일 불변).
-    """
-    x = _unwrap_llm_unit_replace(operand.strip())
-    y = f"TRIM({x})"
-    strip_cast = (
-        f"CAST(NULLIF(TRIM(SUBSTR({y}, 1, LENGTH({y}) - 2)), '')"
-        " AS DECIMAL(31, 6))"
-    )
-    return (
-        "CASE"
-        f" WHEN UPPER({x}) LIKE '%TB%' THEN {strip_cast} * 1024"
-        f" WHEN UPPER({x}) LIKE '%GB%' THEN {strip_cast}"
-        f" WHEN UPPER({x}) LIKE '%MB%' THEN {strip_cast} / 1024.0"
-        f" WHEN UPPER({x}) LIKE '%KB%' THEN {strip_cast} / 1048576.0"
-        f" ELSE CAST(NULLIF(TRIM({x}), '') AS DECIMAL(31, 6)) END"
-    )
-
-
-def normalize_eav_unit_casts(sql: str, value_columns: tuple[str, ...] | list[str]) -> str:
-    """EAV 값 컬럼의 숫자 캐스트를 단위 인지 정규화 식으로 교체한다 (D-199).
-
-    폐쇄망 실측(2026-09-07 B-11): 메모리 크기 EAV 값이 ``"14.9 GB"`` 단위 문자열이라
-    ``CAST(… AS NUMERIC)``이 ``invalid input syntax for type numeric``으로 거부됐다.
-    LLM은 ``REPLACE(…, 'GB', '')`` 임기응변을 만들기도 하는데 GB만 처리해 TB 값에서
-    깨진다. 실측 단위 분포는 세 존 모두 TB/GB/MB 혼재(B0: TB 26,073·GB 21,783·MB 21 /
-    GP: GB 10,449·TB 1,455·MB 43 / YD: GB 4,796·TB 743·MB 1)라 **단위 제거만으로는
-    900 MB > 14.9 GB로 정렬되는 침묵 오류**가 되므로 GB 기준 환산 CASE로 교체한다.
-
-    스코프·안전:
-    - 값 컬럼이 포함된 NUMERIC/DECIMAL 캐스트만 대상(D-160과 동일 탐지 골격).
-      ``CAST(r.id AS NUMERIC)`` 같은 무관 캐스트는 불변.
-    - 단위 없는 값('4.0' vcore 등)은 ELSE 분기에서 스케일 불변 — vcore 합계류(D-160
-      계열) 결과에 영향 없음.
-    - LLM의 ``REPLACE(…, 'GB', '')`` 임기응변 위에 겹쳐 적용돼도 정합(GB는 이미
-      제거돼 ELSE=GB 기준, 잔존 TB/MB는 해당 분기에서 환산).
-    - 이 가드가 만든 식은 재적용 시 스킵(마커 검사) — 이중 래핑 방지.
-    - 괄호 불균형·형태 미상은 무변경(하방 안전, D-160과 동일).
-
-    Args:
-        sql: LLM이 생성한(그리고 D-160 교정을 거친) SQL
-        value_columns: 교정 대상 값 컬럼명들 (``eav_value_cast_columns`` 산출)
-
-    Returns:
-        교정된(또는 원본 그대로의) SQL — 교정 발생 시 INFO 로그
-    """
-    if not sql or not value_columns:
-        return sql
-    cols_re = r"\b(?:" + "|".join(re.escape(c) for c in value_columns if c) + r")\b"
-    if cols_re == r"\b(?:)\b":
-        return sql
-
-    # (치환 시작, 치환 끝, 피연산자) — 오른쪽부터 치환해 앞쪽 오프셋을 보존한다.
-    repls: list[tuple[int, int, str]] = []
-
-    # 형태 1: CAST(<값 컬럼 포함 식> AS NUMERIC|DECIMAL[(p[,s])]) — 균형 스캔
-    for m in re.finditer(r"CAST\s*\(", sql, flags=re.IGNORECASE):
-        open_pos = m.end() - 1
-        close_pos = _matching_paren(sql, open_pos)
-        if close_pos is None:
-            continue
-        inner = sql[open_pos + 1: close_pos]
-        tm = re.search(
-            rf"\s+AS\s+{_EAV_UNIT_CAST_TYPES}\s*(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?\s*$",
-            inner, flags=re.IGNORECASE,
-        )
-        if not tm:
-            continue
-        operand = inner[: tm.start()]
-        if not re.search(cols_re, operand, flags=re.IGNORECASE):
-            continue
-        if _UNIT_GUARD_MARKER in operand:  # 이미 이 가드가 만든 식 — 재래핑 금지
-            continue
-        repls.append((m.start(), close_pos + 1, operand))
-
-    # 형태 2: PostgreSQL 축약 캐스트 — <값 컬럼>::numeric[(p,s)]
-    for m in re.finditer(
-        rf"((?:\w+\.)?{cols_re})\s*::\s*{_EAV_UNIT_CAST_TYPES}"
-        r"(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?\b",
-        sql, flags=re.IGNORECASE,
-    ):
-        repls.append((m.start(), m.end(), m.group(1)))
-
-    # 형태 3: (…값 컬럼…)::numeric — 닫는 괄호 역방향 균형 스캔
-    for m in re.finditer(
-        rf"\)\s*::\s*{_EAV_UNIT_CAST_TYPES}(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?\b",
-        sql, flags=re.IGNORECASE,
-    ):
-        open_pos = _matching_paren_backward(sql, m.start())
-        if open_pos is None:
-            continue
-        operand = sql[open_pos: m.start() + 1]
-        if not re.search(cols_re, operand, flags=re.IGNORECASE):
-            continue
-        if _UNIT_GUARD_MARKER in operand:
-            continue
-        repls.append((open_pos, m.end(), operand))
-
-    if not repls:
-        return sql
-    # 중첩 스팬 제거(바깥 CAST가 안쪽 :: 캐스트를 포함하는 경우 바깥 우선)
-    repls.sort(key=lambda r: (r[0], -r[1]))
-    picked: list[tuple[int, int, str]] = []
-    last_end = -1
-    for start, end, operand in repls:
-        if start >= last_end:
-            picked.append((start, end, operand))
-            last_end = end
-    result = sql
-    for start, end, operand in sorted(picked, reverse=True):
-        result = result[:start] + _unit_normalized_expr(operand) + result[end:]
-    logger.info(
-        "[EAV단위캐스트] 값 컬럼 숫자 캐스트 → 단위 정규화(GB 기준) 교정 %d건 (cols=%s)",
-        len(picked), list(value_columns),
-    )
-    return result
-
-
-def _matching_paren(sql: str, open_pos: int) -> int | None:
-    """``open_pos``의 여는 괄호와 짝이 되는 닫는 괄호 위치를 찾는다(불균형은 None)."""
-    depth = 0
-    for i in range(open_pos, len(sql)):
-        if sql[i] == "(":
-            depth += 1
-        elif sql[i] == ")":
-            depth -= 1
-            if depth == 0:
-                return i
-    return None
-
-
-def _matching_paren_backward(sql: str, close_pos: int) -> int | None:
-    """``close_pos``의 닫는 괄호와 짝이 되는 여는 괄호 위치를 찾는다(불균형은 None)."""
-    depth = 0
-    for i in range(close_pos, -1, -1):
-        if sql[i] == ")":
-            depth += 1
-        elif sql[i] == "(":
-            depth -= 1
-            if depth == 0:
-                return i
-    return None
 
 
 # 헤더/필드명이 사용률 지표(명사+집계어)인지 **표면어로만** 판정한다 — DB 스키마 리터럴
@@ -1580,23 +923,6 @@ def _render_prior_scope_block(col: str, values: list[str]) -> str:
     )
 
 
-def extract_sql_from_response(content: str | list) -> str:
-    """LLM 응답에서 SQL 쿼리를 추출한다.
-
-    단일 DB 경로(query_generator)와 멀티 DB 경로(multi_db_executor)가 동일 추출
-    규칙을 쓰도록 단일 출처로 공유한다(D-066). 추출 엔진은 강화판
-    `extract_sql_from_llm_response`(펜스 태그 변형·세미콜론 생략·WITH 지원, D-153)에
-    위임하고, 여기서는 실 모델의 콘텐츠 블록 리스트 정규화만 얹는다(json_extract와 대칭).
-
-    Args:
-        content: LLM 응답 텍스트(콘텐츠 블록 리스트 허용)
-
-    Returns:
-        추출된 SQL 문자열
-    """
-    return extract_sql_from_llm_response(coerce_content_text(content))
-
-
 # 하위호환 별칭 — 교차 임포트 공개화(Plan 69 P2). 신규 코드는 공개명을 쓴다.
 _normalize_stat_month = normalize_stat_month
 _utilization_guard = utilization_guard
@@ -1660,75 +986,6 @@ def is_form_memory_shortcut(text: str) -> bool:
     """'?'만 입력한 저장 값 조회 단축키인지(D-186) — 안내 문구 분기용."""
     stripped = (text or "").strip()
     return bool(stripped) and all(ch in _FORM_MEMORY_SHORTCUT_CHARS for ch in stripped)
-
-
-# ── LLM 응답 SQL 추출 (D-153 — 단일/멀티 경로 2벌 중복 해소, D-067 취지) ─────────
-# 폐쇄망 실측(2026-08-04): 추출 실패 시 응답 전문(산문)이 SQL로 흘러 간이 검증
-# "SELECT 문이 아닙니다"로 떨어졌고, 멀티 경로에서는 동일 스키마 SQL 캐시(D-066 후속6)
-# 구조상 첫 번째 DB(공동존 gp)만 간헐 누락됐다. LLM 출력 형식(펜스 태그 대소문자·
-# 언어 태그 변형·세미콜론 생략)의 비결정성은 프롬프트 강제가 아니라 결정적 후처리로
-# 흡수한다(Known Mistakes 원칙).
-_SQL_FENCE_RE = re.compile(
-    r"```[ \t]*[A-Za-z0-9_+-]*[ \t]*\r?\n?(.*?)```", re.DOTALL
-)
-# 세미콜론 종결 SQL(서두 산문 허용). WITH는 영어 산문("with the ...")과의 오탐을 막기 위해
-# CTE 형태(WITH <이름> AS ()만 인정한다.
-_SQL_SEMI_RE = re.compile(
-    r'((?:SELECT\s+|WITH\s+[\w"]+\s+AS\s*\().*?;)', re.IGNORECASE | re.DOTALL
-)
-# 세미콜론 생략 SQL — SELECT/WITH부터 말미까지(닫는 펜스 잔재는 호출부에서 제거).
-_SQL_TAIL_RE = re.compile(
-    r'((?:SELECT\s+|WITH\s+[\w"]+\s+AS\s*\().*)', re.IGNORECASE | re.DOTALL
-)
-_SQL_COMMENT_RE = re.compile(r"(?:--[^\n]*\n?|/\*.*?\*/)", re.DOTALL)
-
-
-def looks_like_readonly_sql(text: str) -> bool:
-    """주석 제거 후 SELECT/WITH로 시작하는 읽기 전용 SQL 형태인지 판정한다."""
-    cleaned = _SQL_COMMENT_RE.sub("", text or "").strip()
-    return cleaned.upper().startswith(("SELECT", "WITH"))
-
-
-def extract_sql_from_llm_response(content: str) -> str:
-    """LLM 응답에서 SQL을 추출한다 (query_generator·multi_db_executor 공용 단일 출처).
-
-    흡수하는 실패 형태(종전 구현은 전부 응답 전문 폴백 → 검증 실패):
-    ① 펜스 언어 태그 변형: ```SQL / ```postgresql / 무태그 — 태그 불문 매칭 후
-       블록 내용이 SQL 형태(SELECT/WITH 시작)인지로 판정.
-    ② 세미콜론 생략: SELECT/WITH부터 말미까지 추출(닫는 펜스 잔재 제거).
-    ③ 서두 산문 + 펜스 없는 SQL(세미콜론 유무 불문).
-
-    말미 산문이 딸려 들어가는 과추출은 후단 검증(_find_bare_hangul_tokens·실행 에러
-    재시도)이 잡는다 — 종전의 "확정 추출 실패"보다 항상 좁거나 같은 실패면이다.
-
-    Args:
-        content: LLM 응답 텍스트
-
-    Returns:
-        추출된 SQL 문자열 (추출 불가 시 전문 반환 — 기존 폴백 시맨틱 유지)
-    """
-    text = content or ""
-
-    # 1) 코드 펜스(언어 태그·대소문자 불문) 중 SQL 형태인 첫 블록
-    for m in _SQL_FENCE_RE.finditer(text):
-        block = m.group(1).strip()
-        if block and looks_like_readonly_sql(block):
-            return block
-
-    # 2) 세미콜론 종결 SQL (서두 산문 허용)
-    m = _SQL_SEMI_RE.search(text)
-    if m:
-        return m.group(1).strip()
-
-    # 3) 세미콜론 생략 SQL — SELECT/WITH부터 말미까지, 닫는 펜스·백틱 잔재 제거
-    m = _SQL_TAIL_RE.search(text)
-    if m:
-        tail = m.group(1).split("```", 1)[0].strip().strip("`").strip()
-        if tail:
-            return tail
-
-    # 4) 최후 수단: 전문 반환 (후단 검증이 거른다 — 기존 동작 유지)
-    return text.strip()
 
 
 # ── 존 역질문 공용 판정·페이로드 (Plan 75 §4 / D-143 후속2) ──────────────────────
@@ -1811,245 +1068,10 @@ def remove_term(text: str, term: str, repl: str = " ") -> str:
     return text.replace(term, repl)
 
 
-# 서버 식별자로 인정할 filter_conditions field (종전 canonical: process_query._HOST_FIELDS —
-# 존 게이트가 routing 계층에서도 필요해 utils로 내림, process_query가 re-export).
-HOST_IDENTIFIER_FIELDS: tuple[str, ...] = (
-    "hostname", "host_name", "server_name", "name", "host", "device_name",
-    "서버명", "서버이름", "장비명", "호스트명", "서버", "장비",
-)
-# 지시어(demonstrative) 접두/명사 — 실제 서버명이 아니라 직전 대상을 가리키는 표현.
-DEMONSTRATIVE_PREFIXES: tuple[str, ...] = ("해당", "그", "이", "저", "위", "방금", "앞서", "직전", "이전")
-DEMONSTRATIVE_NOUNS: tuple[str, ...] = ("서버", "장비", "호스트명", "호스트", "인스턴스", "노드", "머신", "시스템")
-
-
-def is_demonstrative_identifier(value: object) -> bool:
-    """서버 식별자 값이 실제 이름이 아니라 지시어/플레이스홀더인지 판정한다.
-
-    (process_query._is_demonstrative_value의 단일 출처 이동분 — 동작 동일.)
-    """
-    if value is None:
-        return True
-    v = str(value).strip()
-    if not v:
-        return True
-    compact = v.lower().replace(" ", "").replace("_", "").replace("-", "")
-    if ("previous" in compact or compact.startswith("prev")) and (
-        "server" in compact or "host" in compact
-    ):
-        return True
-    body = v
-    for noun in DEMONSTRATIVE_NOUNS:
-        if body.endswith(noun):
-            body = body[: -len(noun)].strip()
-            break
-    return body in DEMONSTRATIVE_PREFIXES
-
-
-def looks_like_process_rows(rows: list[dict] | None) -> bool:
-    """결과 행이 프로세스 조회 결과인지 판별한다 (엔티티·조사 대상 오수집 방지용).
-
-    프로세스 조회 결과 행은 `pid`를 갖는다(process_query._process_to_dict:
-    {name, pid, user, cpu_pct, mem_pct, rss, args}). `name`은 프로세스명, `pid`는 서버가
-    아니므로 이런 행에서 서버 식별 엔티티를 수집하면 안 된다. 서버 조회 결과 행에는 `pid`가 없다.
-
-    (context_resolver._looks_like_process_rows의 단일 출처 이동분 — 동작 동일.
-    utils로 내린 이유: 조사 대상 해소(prior_targets)가 application 계층을 import할 수 없다.)
-
-    Args:
-        rows: 결과 행 목록
-
-    Returns:
-        첫 행이 `pid` 키를 가지면 True(프로세스 행으로 간주)
-    """
-    if not rows:
-        return False
-    first = rows[0]
-    if not isinstance(first, dict):
-        return False
-    keys = {str(k).lower() for k in first.keys()}
-    return "pid" in keys
-
-
-def refers_to_demonstrative_server(text: str) -> bool:
-    """질의가 지시어("해당/그/위 … 서버")로 특정 서버를 가리키는지 판정한다.
-
-    "전체/모든/모두" 전역 조회 신호가 있으면 False(서버 스코프 강제 금지).
-    지시어 접두 + (선택 공백) + 서버 명사 인접 구문만 인정 — 단순 부분매칭은 단일 문자
-    접두("이"/"그"/"위")가 "이상"/"그래서" 등에 오탐하므로 금지.
-    (subagents._refers_to_specific_server의 단일 출처 이동분 — 동작 동일.)
-    """
-    if not text:
-        return False
-    if any(k in text for k in ("전체", "모든", "모두")):
-        return False
-    for p in DEMONSTRATIVE_PREFIXES:
-        for n in DEMONSTRATIVE_NOUNS:
-            if f"{p}{n}" in text or f"{p} {n}" in text:
-                return True
-    return False
-
-
-def has_host_identifier_filter(parsed_requirements: dict | None) -> bool:
-    """이번 턴 filter_conditions에 실제 서버 식별자(지시어 제외)가 있는지 판정한다.
-
-    존 역질문 비발동 조건 ⓐ(D-143 §4.2 — 서버명 지목 질의는 존이 결과에 영향 없음)의
-    결정적 판정. 라우트 레벨 표면어 게이트는 이 정보가 없어 판정할 수 없었다(후속2 동기).
-    """
-    parsed = parsed_requirements or {}
-    for cond in parsed.get("filter_conditions") or []:
-        if not isinstance(cond, dict):
-            continue
-        if str(cond.get("field", "")).lower() in HOST_IDENTIFIER_FIELDS:
-            value = cond.get("value")
-            if value and not is_demonstrative_identifier(value):
-                return True
-    return False
-
-
-# ── 생략형 후속 턴 승계 (plans/120 PL-1 · G-4 (a)) ────────────────────────────────
-# 지시어("해당·그 서버") 없이 첨가 표지만 있는 후속 턴("네 그럼 메모리도 보여줘")은 종전에
-# 승계되지 않아 전 서버를 조회했다(run 20260923-140539 G-01 t3). 직전 턴이 서버 1대로 좁혀져
-# 있었을 때만 그 서버를 잇는다. 지시어 없는 턴에 엔티티 표본을 넣으면 대량 후속이 표본으로
-# 축소되므로(2026-08-04 실측) 아래 조건을 **전부** 충족할 때만 발동하고, 응답에 고지를 싣는다.
-
-#: parsed_requirements에 승계 사실을 남기는 키 — output_generator가 이 값으로 고지를 붙인다.
-#: 2단은 `_build_output_state`가 parsed_requirements를 넘기므로 같은 키가 그대로 닿는다.
-ELLIPTICAL_SUCCESSION_KEY = "elliptical_succession"
-#: 담화 표지 — 앞 턴을 이어받는 말(낱말 단위 일치).
-ELLIPTICAL_DISCOURSE_MARKERS: tuple[str, ...] = ("그럼", "그러면")
-#: '도'로 끝나지만 첨가 조사가 아닌 명사 — 한자어 '-도(度)' 계열 등(오탐 방지).
-_DO_ENDING_NOUNS: tuple[str, ...] = (
-    "온도", "속도", "정도", "빈도", "용도", "한도", "각도", "강도", "밀도", "습도", "농도",
-    "고도", "경도", "위도", "지도", "제도", "시도", "진도", "척도", "태도",
-    "심각도", "중요도", "난이도", "만족도", "신뢰도", "정확도", "유사도", "포화도",
-    "혼잡도", "가용도", "민감도", "활용도", "완성도", "기여도",
-)
-#: '도'로 끝나는 비첨가 형태 — 연결어미("-어도·-아도·-라도")와 부정 극어("아무도").
-_DO_ENDING_NON_ADDITIVE: tuple[str, ...] = (
-    "어도", "아도", "여도", "해도", "봐도", "줘도", "돼도", "되도", "워도", "져도",
-    "라도", "래도", "아무도", "누구도", "어디도", "하나도", "조금도",
-)
+# ── 생략형 후속 턴 승계 진입 (plans/120 PL-1) — 보조 판정은 `prior_turn_succession` ──────
+# 위치 표면어(`LOCATION_HINT_TERMS`·`term_in_text`)를 읽어 이 모듈에 남긴다(plans/166 N2).
 #: 전역 조회 신호 — `refers_to_demonstrative_server`와 같은 어휘.
 _GLOBAL_SCOPE_TERMS: tuple[str, ...] = ("전체", "모든", "모두")
-#: filter_conditions에서 새 식별자로 보는 IP 계열 field(서버 식별 field 밖).
-_IP_IDENTIFIER_FIELDS: tuple[str, ...] = ("ip", "ip_address", "ipaddress")
-#: hostname 종류 field — 나머지 서버 식별 field는 서버명 종류다(`prior_targets`와 같은 구분).
-_HOSTNAME_KIND_FIELDS: frozenset[str] = frozenset({"hostname", "host_name", "호스트명"})
-#: 원문의 새 식별자 표면형 — IPv4 · 구분자가 든 영문 이름(`app-01`) · 영문+숫자(`db01`).
-#: 파서가 식별 필터로 못 뽑았을 때 직전 서버로 덮어쓰지 않기 위한 보강이다.
-_NEW_IDENTIFIER_TOKEN = re.compile(
-    r"(?<![0-9A-Za-z])(?:\d{1,3}(?:\.\d{1,3}){3}"
-    r"|[A-Za-z][A-Za-z0-9]*[-_][A-Za-z0-9][A-Za-z0-9_-]*"
-    r"|[A-Za-z]+\d[A-Za-z0-9]*)"
-)
-_WORD_TOKEN = re.compile(r"[0-9A-Za-z가-힣]+")
-#: 서버 집합을 고르거나 나누는 낱말(접두 일치) — 순위·목록·나머지 등. `top`은 소문자로 비교한다.
-_SET_SELECTION_PREFIXES: tuple[str, ...] = (
-    "상위", "하위", "top", "순위", "정렬", "목록", "리스트", "나머지", "다른",
-)
-_SET_SELECTION_WORDS: frozenset[str] = frozenset({"각", "각각"})
-#: '~별' 앞말 — 이 앞말이면 한 서버 안의 시간 구간이라 집합 분할이 아니다("일별도 보여줘").
-_TIME_BUCKET_STEMS: frozenset[str] = frozenset({
-    "일", "일자", "날짜", "요일", "주", "월", "년", "연", "연도", "분기", "시간", "분",
-})
-_BY_SUFFIX = re.compile(r"(.+?)별")
-#: 한 서버 안의 흐름으로 읽히는 집계(파서 `aggregation` 값). 나머지(top_n·group_by 등)는
-#: 서버 집합에 대한 연산이다.
-_PER_ENTITY_AGGREGATIONS: frozenset[str] = frozenset({"time_series"})
-
-
-def _selects_server_set(text: str, parsed: Mapping[str, Any]) -> bool:
-    """이번 턴이 서버 집합을 스스로 지목하거나 고르는가 — 그러면 생략형이 아니다(ⓕ·ⓖ).
-
-    ⓕ 서버 계열 명사(`DEMONSTRATIVE_NOUNS`)가 원문에 있다 — 생략형은 대상 명사 자체가 빠진
-       턴이다("그럼 메모리도 보여줘"). "다른 서버도"·"WAS 서버도"는 새 집합을 지목한다.
-    ⓖ 선택·집계 신호 — 식별 필드 밖 `filter_conditions`(임계·OS 등) · `limit` · 시계열 밖
-       `aggregation` · 원문의 순위·집합어(상위·목록·나머지·~별·각 등).
-    """
-    if any(noun in text for noun in DEMONSTRATIVE_NOUNS):
-        return True
-    if parsed.get("limit") is not None:
-        return True
-    aggregation = parsed.get("aggregation")
-    if aggregation and str(aggregation).strip().lower() not in _PER_ENTITY_AGGREGATIONS:
-        return True
-    for cond in parsed.get("filter_conditions") or []:
-        if not isinstance(cond, dict):
-            return True
-        field = str(cond.get("field", "")).lower()
-        if field in HOST_IDENTIFIER_FIELDS or field in _IP_IDENTIFIER_FIELDS:
-            continue  # 식별 필터는 ⓑ가 본다(지시어 값은 선택이 아니다)
-        return True
-    for token in _WORD_TOKEN.findall(text):
-        if token.lower().startswith(_SET_SELECTION_PREFIXES) or token in _SET_SELECTION_WORDS:
-            return True
-        by = _BY_SUFFIX.search(token)
-        if by and by.group(1) not in _TIME_BUCKET_STEMS:
-            return True
-    return False
-
-
-def _has_additive_marker(text: str) -> bool:
-    """첨가 표지 — 담화 표지("그럼"·"그러면") 또는 낱말에 붙은 첨가 조사 '도'("메모리도")."""
-    for token in _WORD_TOKEN.findall(text):
-        if token in ELLIPTICAL_DISCOURSE_MARKERS:
-            return True
-        if len(token) < 2 or not token.endswith("도"):
-            continue
-        if token[:-1].isdigit():  # "30도" — 수치 단위
-            continue
-        if token.endswith(_DO_ENDING_NOUNS) or token.endswith(_DO_ENDING_NON_ADDITIVE):
-            continue
-        return True
-    return False
-
-
-def _has_new_identifier(text: str, parsed: Mapping[str, Any]) -> bool:
-    """이번 턴이 새 대상을 지목했는가 — 서버·IP 식별 필터 또는 원문의 식별자 표면형."""
-    if has_host_identifier_filter(dict(parsed)):
-        return True
-    for cond in parsed.get("filter_conditions") or []:
-        if (
-            isinstance(cond, dict)
-            and str(cond.get("field", "")).lower() in _IP_IDENTIFIER_FIELDS
-            and cond.get("value")
-        ):
-            return True
-    return bool(_NEW_IDENTIFIER_TOKEN.search(text))
-
-
-def _single_previous_entity(
-    conversation_context: Mapping[str, Any] | None,
-) -> tuple[str, str] | None:
-    """직전 턴이 서버 1대로 좁혀졌으면 (주입 field, 값), 아니면 None.
-
-    `previous_entities_complete`(context_resolver)는 엔티티가 직전 턴 결과 **전체**를 담는다는
-    표지다 — sticky 승계분이거나 행 상한 표본이면 발동하지 않는다. 해소 규칙은 지시어 경로
-    (`prior_targets.resolve_targets` ③)와 같다 — 같은 종류의 값이 둘이면 서로 다른 서버이고,
-    hostname·서버명 한 쌍은 한 서버의 두 표기다. 주입 field는 해소된 식별자 종류를 따른다 —
-    hostname이 있으면 hostname, 서버명뿐이면 name(D-148 · D-046).
-    """
-    ctx = conversation_context or {}
-    if not ctx.get("previous_entities_complete"):
-        return None
-    hostnames: list[str] = []
-    names: list[str] = []
-    for entity in ctx.get("previous_entities") or []:
-        if not isinstance(entity, Mapping):
-            continue
-        field = str(entity.get("field", "")).strip().lower()
-        if field not in HOST_IDENTIFIER_FIELDS:
-            continue
-        value = entity.get("value")
-        if is_demonstrative_identifier(value):
-            continue
-        bucket = hostnames if field in _HOSTNAME_KIND_FIELDS else names
-        text = str(value).strip()
-        if text not in bucket:
-            bucket.append(text)
-    if len(hostnames) > 1 or len(names) > 1 or not (hostnames or names):
-        return None
-    return ("hostname", hostnames[0]) if hostnames else ("name", names[0])
 
 
 def elliptical_succession_filter(
@@ -2098,16 +1120,6 @@ def elliptical_succession_filter(
         return None
     field, value = entity
     return {"field": field, "op": "=", "value": value}
-
-
-def render_elliptical_succession_note(marker: Any) -> str:
-    """생략형 승계 고지(침묵 승계 금지 · plans/120 PL-1). 승계가 없으면 빈 문자열."""
-    if not isinstance(marker, Mapping) or not marker.get("value"):
-        return ""
-    return (
-        f"**[직전 서버 기준]** 직전 서버 `{marker['value']}` 기준으로 조회했습니다 — "
-        "전체 서버는 '전체 서버 …'로 다시 요청하세요."
-    )
 
 
 # 존 선택지 — DB 라우팅 입도와 일치(D-143 §4.4). group은 존 그룹 상호배타(D-143 후속3):

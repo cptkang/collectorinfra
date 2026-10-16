@@ -8,6 +8,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-15 | D-331 | 부기 — `plans/166` W2: `arch_check` `MODULE_LAYER_MAP`에 `src.pipeline` = application(N3 노드 헬퍼 이동 · 경고 43→17) · `overfit_check` `PUBLIC_LAYER_DIRS` 대칭 · 폴백 린트를 `src/config/` 패키지(I4)에 맞춤(`__module__` 하위 모듈 포함 · 스캔 제외 확대 · `ALLOWED` 새 경로 키) · 커밋 없음 |
 | 2026-10-15 | D-331 | 구현 완료 — `plans/166` W1: arch_check 경고를 같은 노드 패키지 간으로 한정(117→43) · `scripts/config_fallback_check.py` 신설(62지점 → X1 치환 뒤 0) · `regress.py` 정적 게이트에 `--ci` 편입 · 허용 목록 2건(대역 방어가 함수 계약인 곳) · 커밋 없음 |
 | 2026-10-15 | D-337 · D-336 | 번호 변경 — RCA의 D-336(구조 리팩터 규약 · 구 D-330)을 main 병합 시 main D-336(제니퍼 심각도 3 유형 정책)과 충돌해 **D-337**로 재부여 · 본문 `D-337.md` · 스킬 2종·`plans/163`·`plans/166`·D-331·D-332·166 W0 테스트 참조 갱신 · 아래 RCA 행의 번호도 새 번호로 고침 |
 | 2026-10-15 | D-330 | 부기 — `plans/162` F4 무소식 닫힘(R1 해소 대용 · 해소 이벤트 없는 출처 · `NOISE_PAGE_REVIEW_IDLE_CLOSE_MINUTES` 기본 0 = 끔 · dedup 창 뒤 재통보에만 효력) · W0-T 분석 도구 보정 · `replay_noise.py --page-review-mode` 구현(부기 (e) 미구현 항목 해소) · 커밋 없음 |

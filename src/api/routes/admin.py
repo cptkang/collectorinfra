@@ -1,6 +1,14 @@
 """운영자 설정 관련 라우트.
 
 환경변수 설정 조회/수정, DB 연결 설정 조회/수정/테스트 엔드포인트를 제공한다.
+
+책임별 하위 라우터(plans/166 A7)를 `router`가 원래 선언 위치에 포함한다 — 경로·이름·OpenAPI·
+매칭 순서 불변: 설정 리로드 `admin_settings_reload` · 감사 로그 조회 `admin_audit_logs` ·
+DRM 진단 `admin_drm`. `.env` 파일 I/O 본문은 `src.infrastructure.env_file_store`에 있고 이 모듈은
+`_ENV_FILE`을 넘기는 얇은 함수만 둔다. 테스트가 이 모듈에서 patch하는 심볼(`_ENV_FILE` ·
+`_atomic_write_env` · `_build_connection_string` · `build_catalog` ·
+`_READINESS_TIMEOUT_SECONDS` · `get_registry` · `check_apm_sources` · `_audit_admin_action`)을
+부르는 핸들러는 여기 남는다(D-337 ②).
 """
 
 from __future__ import annotations
@@ -12,7 +20,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from src.api.admin_audit import log_admin_event as _log_settings_event
@@ -22,7 +30,6 @@ from src.api.settings_catalog import (
     FieldError,
     SettingsSchemaResponse,
     build_catalog,
-    diff_effective_keys,
     dry_run_updates,
     field_index,
     mask_value,
@@ -38,6 +45,34 @@ from src.api.schemas import (
     UpdateSourcePermissionsRequest,
     UpdateUserRequest,
     UserInfoResponse,
+)
+from src.api.routes.admin_audit_logs import (
+    AuditLogFilterParams as AuditLogFilterParams,
+)
+from src.api.routes.admin_audit_logs import (
+    AuditLogPageResponse as AuditLogPageResponse,
+)
+from src.api.routes.admin_audit_logs import get_audit_logs as get_audit_logs
+from src.api.routes.admin_audit_logs import (
+    get_audit_logs_paginated as get_audit_logs_paginated,
+)
+from src.api.routes.admin_audit_logs import get_audit_stats as get_audit_stats
+from src.api.routes.admin_audit_logs import get_security_alerts as get_security_alerts
+from src.api.routes.admin_audit_logs import get_user_activity as get_user_activity
+from src.api.routes.admin_audit_logs import router as _audit_logs_router
+from src.api.routes.admin_drm import get_drm_status as get_drm_status
+from src.api.routes.admin_drm import router as _drm_router
+from src.api.routes.admin_drm import verify_drm_sample as verify_drm_sample
+from src.api.routes.admin_settings_reload import (
+    SettingsReloadResponse as SettingsReloadResponse,
+)
+from src.api.routes.admin_settings_reload import reload_settings as reload_settings
+from src.api.routes.admin_settings_reload import router as _settings_reload_router
+from src.infrastructure.env_file_store import (
+    atomic_write_env,
+    compose_env_content,
+    read_env_file,
+    write_env_file,
 )
 
 logger = logging.getLogger(__name__)
@@ -117,21 +152,6 @@ class EnvUpdateResponse(BaseModel):
     )
 
 
-class SettingsReloadResponse(BaseModel):
-    """설정 리로드(`POST /admin/settings/reload`) 응답."""
-
-    reloaded: bool
-    changed_keys: list[str] = Field(
-        default_factory=list, description="리로드로 실효값이 바뀐 키(값은 노출하지 않음)"
-    )
-    restart_only_keys: list[str] = Field(
-        default_factory=list,
-        description="실효값은 바뀌었으나 소비처가 기동 캡처라 재시작해야 반영되는 키",
-    )
-    graph_rebuilt: bool = False
-    message: str
-
-
 class DbConfigResponse(BaseModel):
     """DB 연결 설정 응답."""
 
@@ -180,30 +200,6 @@ class DbTestResponse(BaseModel):
     details: Optional[str] = None
 
 
-class AuditLogFilterParams(BaseModel):
-    """감사 로그 조회 필터."""
-
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-    user_id: Optional[str] = None
-    event_type: Optional[str] = None
-    target_db: Optional[str] = None
-    success: Optional[bool] = None
-    keyword: Optional[str] = None
-    page: int = 1
-    page_size: int = 50
-
-
-class AuditLogPageResponse(BaseModel):
-    """페이지네이션 감사 로그 응답."""
-
-    logs: list[dict]
-    total: int
-    page: int
-    page_size: int
-    total_pages: int
-
-
 # --- 유틸리티 ---
 
 
@@ -228,67 +224,21 @@ def _has_url_credentials(value: str) -> bool:
 
 
 def _read_env_file() -> dict[str, str]:
-    """환경변수 파일을 파싱한다.
+    """환경변수 파일을 파싱한다(`_ENV_FILE` — 본문은 `env_file_store.read_env_file`).
 
     Returns:
         키-값 딕셔너리
     """
-    if not _ENV_FILE.exists():
-        return {}
-
-    settings: dict[str, str] = {}
-    with open(_ENV_FILE, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip()
-            # 따옴표 제거
-            if (value.startswith('"') and value.endswith('"')) or (
-                value.startswith("'") and value.endswith("'")
-            ):
-                value = value[1:-1]
-            settings[key] = value
-    return settings
+    return read_env_file(_ENV_FILE)
 
 
 def _write_env_file(settings: dict[str, str]) -> None:
-    """환경변수 파일을 작성한다.
-
-    기존 파일의 주석과 빈 줄을 보존하면서 값을 업데이트한다.
+    """환경변수 파일을 작성한다(`_ENV_FILE` — 본문은 `env_file_store.write_env_file`).
 
     Args:
         settings: 업데이트할 키-값 딕셔너리
     """
-    existing_lines: list[str] = []
-    updated_keys: set[str] = set()
-
-    if _ENV_FILE.exists():
-        with open(_ENV_FILE, encoding="utf-8") as f:
-            existing_lines = f.readlines()
-
-    new_lines: list[str] = []
-    for line in existing_lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            key = stripped.split("=", 1)[0].strip()
-            if key in settings:
-                new_lines.append(f"{key}={settings[key]}\n")
-                updated_keys.add(key)
-                continue
-        new_lines.append(line)
-
-    # 새로운 키 추가
-    for key, value in settings.items():
-        if key not in updated_keys:
-            new_lines.append(f"{key}={value}\n")
-
-    with open(_ENV_FILE, "w", encoding="utf-8") as f:
-        f.writelines(new_lines)
+    write_env_file(_ENV_FILE, settings)
 
 
 def _field_error(key: str, message: str) -> FieldError:
@@ -308,10 +258,7 @@ def _compose_env_content(
     updates: dict[str, str],
     reset_keys: set[str],
 ) -> str:
-    """`.env` 새 내용을 만든다 (주석·순서 보존 + 중복 키 정리 + reset 줄 제거).
-
-    중복 등재된 키는 **첫 줄 위치에 마지막 유효값**을 남기고 이후 줄을 제거한다
-    (`_read_env_file`이 마지막 값을 채택하므로 실효값이 바뀌지 않는다).
+    """`.env` 새 내용을 만든다(`_ENV_FILE` — 본문은 `env_file_store.compose_env_content`).
 
     Args:
         updates: 새로 기록할 키-값
@@ -320,53 +267,12 @@ def _compose_env_content(
     Returns:
         새 파일 전체 내용
     """
-    existing_lines: list[str] = []
-    if _ENV_FILE.exists():
-        with open(_ENV_FILE, encoding="utf-8") as f:
-            existing_lines = f.readlines()
-
-    resolved = _read_env_file()  # 중복 키는 마지막 값이 실효값
-    occurrences: dict[str, int] = {}
-    for line in existing_lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            key = stripped.split("=", 1)[0].strip()
-            occurrences[key] = occurrences.get(key, 0) + 1
-
-    new_lines: list[str] = []
-    written: set[str] = set()
-    for line in existing_lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            new_lines.append(line)
-            continue
-
-        key = stripped.split("=", 1)[0].strip()
-        if key in reset_keys:
-            continue
-        if key in written:
-            continue  # 중복 등재 — 첫 줄에 이미 기록했다
-        written.add(key)
-
-        if key in updates:
-            new_lines.append(f"{key}={updates[key]}\n")
-        elif occurrences.get(key, 0) > 1:
-            new_lines.append(f"{key}={resolved.get(key, '')}\n")
-        else:
-            new_lines.append(line)
-
-    if new_lines and not new_lines[-1].endswith("\n"):
-        new_lines[-1] += "\n"
-
-    for key, value in updates.items():
-        if key not in written:
-            new_lines.append(f"{key}={value}\n")
-
-    return "".join(new_lines)
+    return compose_env_content(_ENV_FILE, updates, reset_keys)
 
 
 def _atomic_write_env(content: str) -> None:
-    """백업 → 임시 파일 → 원자 교체로 `.env`를 저장한다(실패 시 롤백).
+    """백업 → 임시 파일 → 원자 교체로 `.env`를 저장한다(`_ENV_FILE` — 본문은
+    `env_file_store.atomic_write_env`).
 
     Args:
         content: 새 파일 전체 내용
@@ -374,21 +280,7 @@ def _atomic_write_env(content: str) -> None:
     Raises:
         OSError: 파일 기록 실패 시(롤백 후 재전파)
     """
-    original: Optional[str] = None
-    if _ENV_FILE.exists():
-        original = _ENV_FILE.read_text(encoding="utf-8")
-        backup = _ENV_FILE.parent / (_ENV_FILE.name + ".bak")
-        backup.write_text(original, encoding="utf-8")
-
-    tmp_file = _ENV_FILE.parent / (_ENV_FILE.name + ".tmp")
-    try:
-        tmp_file.write_text(content, encoding="utf-8")
-        os.replace(tmp_file, _ENV_FILE)
-    except Exception:
-        if original is not None:
-            _ENV_FILE.write_text(original, encoding="utf-8")  # 롤백
-        tmp_file.unlink(missing_ok=True)
-        raise
+    atomic_write_env(_ENV_FILE, content)
 
 
 async def _log_settings_update(
@@ -848,177 +740,8 @@ async def update_settings(
     )
 
 
-@router.post(
-    "/admin/settings/reload",
-    response_model=SettingsReloadResponse,
-)
-async def reload_settings(
-    request: Request,
-    _admin: dict = Depends(require_admin_user),
-) -> SettingsReloadResponse:
-    """저장된 설정을 서버 재시작 없이 반영한다 (Plan 68 §6 Phase 4).
-
-    처리 순서:
-    1. fresh `AppConfig` 로드(실패 시 400 — 기존 상태 유지)
-    2. 실효값 diff(키 이름만 — 값 미노출)
-    3. 로그 레벨 변경 시 `setup_logging` 재적용
-    4. 그래프 재빌드(기동 시 체크포인터 재사용 — 대화 이력 보존, 실패 시 500·기존 유지)
-    5. 스키마 캐시·임베더 싱글톤 리셋(+ redis 백엔드면 재연결)
-    6. `app.state.graph`/`app.state.config` 원자 교체 — 처리 중 요청은 옛 객체로 완주
-    7. 감사 로그(SETTINGS_RELOAD)
-
-    빌드 시점 외부 호출은 deepagents 경로 활성 시 vLLM `/models` health GET 1회뿐
-    (로컬·비과금 — D-127 저촉 없음). AlarmWorker 등 기동 캡처 소비처는 반영되지 않으며
-    해당 키는 `restart_only_keys`로 응답에 명시한다.
-    """
-    from fastapi.concurrency import run_in_threadpool
-
-    from src.config import load_config
-    from src.graph import build_graph
-    from src.security.audit_logger import setup_logging
-
-    old_config = request.app.state.config
-    index = field_index()
-
-    load_config.cache_clear()
-    try:
-        fresh = load_config()
-    except Exception as e:
-        raise HTTPException(
-            status_code=400,
-            detail=admin_error_detail("설정 로드", e, logger, request)
-            + " · 기존 설정이 유지됩니다",
-        )
-
-    # 개발 모드(JWT 시크릿 미설정)에서는 AppConfig 재생성이 시크릿을 재추첨해 기존 발급
-    # 토큰이 전량 무효화된다(리로드 직후 운영자 세션 즉시 로그아웃). 명시 설정이 아니면
-    # 실행 중이던 시크릿을 승계한다(운영 모드는 .encenv 고정이라 영향 없음).
-    if not fresh.admin._jwt_secret_explicit and old_config.admin.jwt_secret:
-        fresh.admin.jwt_secret = old_config.admin.jwt_secret
-    if not fresh.auth._jwt_secret_explicit and old_config.auth.jwt_secret:
-        fresh.auth.jwt_secret = old_config.auth.jwt_secret
-
-    # 기동 시 필수 크레덴셜 게이트(D-071)를 리로드 시점에도 동일하게 강제한다 —
-    # 게이트를 통과하지 못하는 설정이 재시작 없이 실서비스에 적용되는 것을 차단.
-    from src.api.server import _validate_production_secrets
-
-    try:
-        _validate_production_secrets(fresh)
-    except RuntimeError as e:
-        logger.error("설정 리로드 거부(운영 게이트) — 기존 설정 유지: %s", e)
-        raise HTTPException(
-            status_code=400,
-            detail=f"운영 모드 필수 설정 검증에 실패했습니다 — 기존 설정이 유지됩니다: {e}",
-        )
-
-    changed_keys = diff_effective_keys(old_config, fresh)
-    restart_only_keys = [
-        key for key in changed_keys
-        if (spec := index.get(key)) is not None and spec.apply_mode == "restart"
-    ]
-
-    if old_config.log_level != fresh.log_level:
-        setup_logging(fresh.log_level)
-
-    # 그래프 재빌드 — 동기 빌드이므로 스레드풀에서 실행(이벤트 루프 블로킹 방지).
-    # 체크포인터를 넘기지 않으면 build_graph가 동기 SqliteSaver를 새로 만들므로 반드시 재사용한다.
-    checkpointer = getattr(request.app.state, "checkpointer", None)
-    if checkpointer is None:
-        checkpointer = getattr(request.app.state.graph, "checkpointer", None)
-    try:
-        new_graph = await run_in_threadpool(
-            build_graph, fresh, checkpointer=checkpointer
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=admin_error_detail("그래프 재빌드", e, logger, request)
-            + " · 기존 설정이 유지됩니다",
-        )
-
-    # 싱글톤 리셋 — 옛 redis 연결은 닫고(자원 누수 방지), 다음 접근부터 fresh 설정으로 재생성.
-    from src.schema_cache import cache_manager as cache_manager_module
-    from src.schema_cache import query_history as query_history_module
-    from src.schema_cache.synonym_semantic import reset_embedder_state
-
-    old_manager = cache_manager_module._cache_manager
-    if old_manager is not None:
-        try:
-            await old_manager.disconnect()
-        except Exception as e:
-            logger.warning("리로드 중 기존 스키마 캐시 연결 종료 실패(계속 진행): %s", e)
-    cache_manager_module.reset_cache_manager()
-
-    old_history_store = query_history_module._store
-    if old_history_store is not None:
-        try:
-            await old_history_store.disconnect()
-        except Exception as e:
-            logger.warning("리로드 중 기존 질의 이력 연결 종료 실패(계속 진행): %s", e)
-    query_history_module.reset_query_history_store()
-
-    reset_embedder_state()
-
-    # 원자 교체(참조 대입) — 이 시점 이후의 요청부터 새 설정·그래프를 본다.
-    request.app.state.graph = new_graph
-    request.app.state.config = fresh
-
-    # lifespan과 동일하게 redis 백엔드는 즉시 연결을 확인한다(실패 시 파일 캐시 폴백).
-    if fresh.schema_cache.backend == "redis":
-        try:
-            await cache_manager_module.get_cache_manager(fresh).ensure_redis_connected()
-        except Exception as e:
-            logger.warning("리로드 후 Redis 스키마 캐시 연결 실패 (파일 캐시 폴백): %s", e)
-
-    from src.domain.audit import AuditEvent
-
-    audit_ok = await _log_settings_event(
-        request,
-        _admin.get("sub"),
-        AuditEvent.SETTINGS_RELOAD.value,
-        {
-            "changed_keys": changed_keys,
-            "restart_only_keys": restart_only_keys,
-            "graph_rebuilt": True,
-        },
-    )
-
-    logger.info(
-        "설정 리로드 완료: 변경 %d건(재시작 필요 %d건) (by %s)",
-        len(changed_keys), len(restart_only_keys), _admin.get("sub"),
-    )
-
-    applied = len(changed_keys) - len(restart_only_keys)
-    if not changed_keys:
-        message = "설정을 리로드했습니다 — 실효값 변경은 없습니다."
-    elif restart_only_keys:
-        message = (
-            f"설정을 리로드했습니다 — {applied}건 반영, "
-            f"{len(restart_only_keys)}건은 서버 재시작이 필요합니다."
-        )
-    else:
-        message = f"설정을 리로드했습니다 — {applied}건이 반영되었습니다."
-    # 알람 워커는 기동 캡처 config로 동작한다(§6.2 비대칭) — 워커가 함께 소비하는
-    # 키가 바뀐 경우 질의 경로만 반영됐음을 명시한다(침묵 금지).
-    worker_shared_changed = [
-        key for key in changed_keys
-        if key.startswith(("LLM_", "DBHUB_")) or key == "ACTIVE_DB_IDS"
-    ]
-    if fresh.alarm.enabled and worker_shared_changed:
-        message += (
-            " 알람 워커는 재시작 전까지 이전 LLM/DB 설정으로 동작합니다: "
-            + ", ".join(worker_shared_changed)
-        )
-    if not audit_ok:
-        message += " (감사 기록 불가 — 감사 저장소 미구성)"
-
-    return SettingsReloadResponse(
-        reloaded=True,
-        changed_keys=changed_keys,
-        restart_only_keys=restart_only_keys,
-        graph_rebuilt=True,
-        message=message,
-    )
+# 설정 리로드 — `admin_settings_reload.py`(plans/166 A7). 포함 위치가 라우트 매칭 순서다.
+router.include_router(_settings_reload_router)
 
 
 # --- 엔드포인트: DB 연결 설정 ---
@@ -1653,225 +1376,8 @@ async def update_user_source_permissions(
     )
 
 
-@router.get(
-    "/admin/audit-logs",
-)
-async def get_audit_logs(
-    request: Request,
-    user_id: Optional[str] = None,
-    event_type: Optional[str] = None,
-    limit: int = 100,
-    _admin: dict = Depends(require_admin_user),
-) -> list[dict]:
-    """감사 로그를 조회한다.
-
-    Args:
-        request: FastAPI Request
-        user_id: 필터: 사용자 ID
-        event_type: 필터: 이벤트 타입
-        limit: 최대 조회 수
-        _username: 인증된 관리자 (의존성 주입)
-
-    Returns:
-        감사 로그 목록
-    """
-    audit_repo = getattr(request.app.state, "audit_repo", None)
-    if not audit_repo:
-        return []
-
-    return await audit_repo.query_logs(
-        user_id=user_id,
-        event_type=event_type,
-        limit=min(limit, 1000),
-    )
-
-
-# --- 엔드포인트: 감사 로그 확장 ---
-
-
-@router.get(
-    "/admin/audit/logs",
-    response_model=AuditLogPageResponse,
-)
-async def get_audit_logs_paginated(
-    request: Request,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    user_id: Optional[str] = None,
-    event_type: Optional[str] = None,
-    target_db: Optional[str] = None,
-    success: Optional[bool] = None,
-    keyword: Optional[str] = None,
-    page: int = 1,
-    page_size: int = 50,
-    _admin: dict = Depends(require_admin_user),
-) -> AuditLogPageResponse:
-    """확장된 감사 로그 조회 (페이지네이션, 필터).
-
-    Args:
-        request: FastAPI Request
-        start_date: 시작 날짜 (ISO 형식)
-        end_date: 종료 날짜 (ISO 형식)
-        user_id: 필터: 사용자 ID
-        event_type: 필터: 이벤트 타입
-        target_db: 필터: 대상 DB
-        success: 필터: 성공 여부
-        keyword: 키워드 검색
-        page: 페이지 번호
-        page_size: 페이지 크기
-        _username: 인증된 관리자 (의존성 주입)
-
-    Returns:
-        페이지네이션된 감사 로그 응답
-    """
-    audit_repo = getattr(request.app.state, "audit_repo", None)
-    if not audit_repo:
-        return AuditLogPageResponse(
-            logs=[], total=0, page=page, page_size=page_size, total_pages=0,
-        )
-
-    page_size = min(page_size, 200)  # 최대 200
-
-    try:
-        logs, total = await audit_repo.query_logs_paginated(
-            start_date=start_date,
-            end_date=end_date,
-            user_id=user_id,
-            event_type=event_type,
-            target_db=target_db,
-            success=success,
-            keyword=keyword,
-            page=page,
-            page_size=page_size,
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=admin_error_detail(
-                "감사 로그 날짜 해석", e, logger, request, input_error=True
-            ),
-        ) from e
-    except AttributeError:
-        # query_logs_paginated 미구현 시 기존 메서드 폴백
-        logs = await audit_repo.query_logs(
-            user_id=user_id, event_type=event_type, limit=page_size,
-        )
-        total = len(logs)
-
-    total_pages = (total + page_size - 1) // page_size if page_size > 0 else 0
-
-    return AuditLogPageResponse(
-        logs=logs,
-        total=total,
-        page=page,
-        page_size=page_size,
-        total_pages=total_pages,
-    )
-
-
-@router.get(
-    "/admin/audit/stats",
-)
-async def get_audit_stats(
-    request: Request,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    _admin: dict = Depends(require_admin_user),
-) -> dict:
-    """감사 통계를 반환한다.
-
-    Args:
-        request: FastAPI Request
-        start_date: 통계 시작 날짜 (ISO 형식)
-        end_date: 통계 종료 날짜 (ISO 형식)
-        _username: 인증된 관리자 (의존성 주입)
-
-    Returns:
-        감사 통계 딕셔너리
-    """
-    audit_repo = getattr(request.app.state, "audit_repo", None)
-    if not audit_repo:
-        return {"error": "감사 서비스를 사용할 수 없습니다."}
-
-    try:
-        return await audit_repo.get_stats(
-            start_date=start_date,
-            end_date=end_date,
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=admin_error_detail(
-                "감사 통계 날짜 해석", e, logger, request, input_error=True
-            ),
-        ) from e
-    except AttributeError:
-        return {"error": "통계 기능이 지원되지 않습니다."}
-
-
-@router.get(
-    "/admin/audit/users/{user_id}/activity",
-)
-async def get_user_activity(
-    request: Request,
-    user_id: str,
-    limit: int = 100,
-    _admin: dict = Depends(require_admin_user),
-) -> list[dict]:
-    """특정 사용자의 활동 이력을 반환한다.
-
-    Args:
-        request: FastAPI Request
-        user_id: 대상 사용자 ID
-        limit: 최대 조회 수
-        _username: 인증된 관리자 (의존성 주입)
-
-    Returns:
-        사용자 활동 이력 목록
-    """
-    audit_repo = getattr(request.app.state, "audit_repo", None)
-    if not audit_repo:
-        return []
-
-    try:
-        return await audit_repo.get_user_activity(
-            user_id=user_id,
-            limit=min(limit, 500),
-        )
-    except AttributeError:
-        return await audit_repo.query_logs(
-            user_id=user_id, limit=min(limit, 500),
-        )
-
-
-@router.get(
-    "/admin/audit/alerts",
-)
-async def get_security_alerts(
-    request: Request,
-    limit: int = 100,
-    _admin: dict = Depends(require_admin_user),
-) -> list[dict]:
-    """보안 경고 목록을 반환한다.
-
-    Args:
-        request: FastAPI Request
-        limit: 최대 조회 수
-        _username: 인증된 관리자 (의존성 주입)
-
-    Returns:
-        보안 경고 목록
-    """
-    audit_repo = getattr(request.app.state, "audit_repo", None)
-    if not audit_repo:
-        return []
-
-    try:
-        return await audit_repo.get_alerts(limit=min(limit, 500))
-    except AttributeError:
-        return await audit_repo.query_logs(
-            event_type="security_alert", limit=min(limit, 500),
-        )
+# 감사 로그 조회 — `admin_audit_logs.py`(plans/166 A7). 포함 위치가 라우트 매칭 순서다.
+router.include_router(_audit_logs_router)
 
 
 @router.post(
@@ -1910,82 +1416,8 @@ async def cleanup_audit_logs(
     return {"deleted": deleted, "retention_days": days}
 
 
-# --- 엔드포인트: DRM 연동 진단 (Plan 74 §4.2) ---
-#
-# 실기 환경이 운영계뿐이므로 셸 없이 연동 상태를 점검할 수 있게 한다.
-# 복호화 결과 파일은 반환하지 않는다 — 진단 정보만 돌려주므로 반복 호출로도
-# 문서 내용이 복원되지 않는다(복호화 오라클 방지, 계획서 §7 비범위).
-
-
-@router.get("/admin/drm/status")
-async def get_drm_status(
-    request: Request,
-    _admin: dict = Depends(require_admin_user),
-) -> dict:
-    """DRM 연동 환경 상태를 점검한다 (파일 업로드 없음).
-
-    설정 경로 4종·키 파일 갱신 시각·java 런타임·작업 디렉터리를 확인한다.
-    키 파일 mtime은 KeyManager 생존 신호다(24시간 주기 갱신).
-    """
-    from src.infrastructure.drm.diagnostics import check_environment
-
-    return check_environment(request.app.state.config.drm)
-
-
-@router.post("/admin/drm/verify")
-async def verify_drm_sample(
-    request: Request,
-    file: UploadFile = File(...),
-    _admin: dict = Depends(require_admin_user),
-) -> dict:
-    """암호화 샘플을 복호화해 **진단 결과만** 반환한다 (평문 파일 미반환).
-
-    실패도 200 + 구조화된 결과로 반환한다 — 실패가 곧 진단 데이터이며,
-    화면이 에러로 깨지면 정작 필요한 ret 값을 볼 수 없다.
-    """
-    from src.infrastructure.drm.diagnostics import verify_sample
-    from src.security.audit_logger import log_drm_decrypt
-
-    filename = file.filename or "sample"
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if ext not in ("xlsx", "docx"):
-        return {
-            "file_name": filename,
-            "detected": None,
-            "success": False,
-            "message": (
-                f"지원하지 않는 형식입니다: .{ext or '(없음)'}. "
-                "폼필 대상과 동일하게 .xlsx 또는 .docx만 진단합니다."
-            ),
-        }
-
-    file_bytes = await file.read()
-    if len(file_bytes) > 10 * 1024 * 1024:
-        return {
-            "file_name": filename,
-            "detected": None,
-            "success": False,
-            "message": "파일 크기가 10MB를 초과합니다.",
-        }
-
-    result = await verify_sample(request.app.state.config.drm, file_bytes, filename)
-
-    await log_drm_decrypt(
-        file_name=filename,
-        file_size_bytes=len(file_bytes),
-        success=bool(result.get("success")),
-        error=None if result.get("success") else result.get("message"),
-        ret_code=result.get("ret"),
-        elapsed_ms=result.get("elapsed_ms"),
-        user_id=_admin.get("sub"),
-        mode="admin_verify",
-    )
-    logger.info(
-        "DRM 진단 실행: file=%s detected=%s ret=%s success=%s (by %s)",
-        filename, result.get("detected"), result.get("ret"),
-        result.get("success"), _admin.get("sub"),
-    )
-    return result
+# DRM 연동 진단 — `admin_drm.py`(plans/166 A7). 포함 위치가 라우트 매칭 순서다.
+router.include_router(_drm_router)
 
 
 # ──────────────────────────────────────────────

@@ -38,8 +38,8 @@ from src.doc_qa.portal_help import (
     strip_screen_terms,
 )
 from src.llm import create_llm
+from src.orchestration.agent_spec import SubAgentSpec
 from src.orchestration.doc_command import parse_designated_command
-from src.orchestration.subagents import SubAgentSpec
 from src.routing.registry import get_registry
 from src.utils.help_question import (
     compact_text,

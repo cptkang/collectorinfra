@@ -76,12 +76,12 @@ from src.utils.query_gen_common import (
     surface_query_for_judgment,
     template_context_text,
 )
-from src.nodes.intent_frame_builder import (
+from src.pipeline.intent_frame_builder import (
     CONSUMER_QUERY_GENERATOR,
     get_prompt_query,
     observe_rewrite,
 )
-from src.nodes.key_bridge import (
+from src.pipeline.key_bridge import (
     bridge_prior_rows_block,
     compile_skip_note,
     key_bridge_enabled,
@@ -89,7 +89,7 @@ from src.nodes.key_bridge import (
 )
 # 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
-from src.nodes.prompt_blocks import (
+from src.pipeline.prompt_blocks import (
     build_profile_rules_block,
     profile_rule_tables,
     CRITERIA_AND_GRAIN_RULE_BLOCK,
@@ -121,7 +121,7 @@ from src.nodes.prompt_blocks import (
     split_eav_by_resource_type,
     split_mapping_entries,
 )
-from src.nodes.table_selection import selection_none_active
+from src.pipeline.table_selection import selection_none_active
 # 폴스타 EAV/피벗 결정적 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트.
 # 아래 4종은 `DBAdapter` 훅 표면(owns/system_template/validator_checks/classify_metric_field)에
 # 대응하는 훅이 없어 직접 임포트로 남긴다. 새 훅 신설은 두 번째 어댑터가 생기기 전까지 금지
@@ -148,7 +148,7 @@ from src.db_adapters.polestar.validators import (
     ensure_eav_value_order,
     ensure_ranking_nulls_last,
 )
-from src.nodes.candidate_generator import classify_complexity
+from src.pipeline.candidate_generator import classify_complexity
 from src.nodes.semantic_compiler import compile_from_nl
 # 지표 필드 분류는 어댑터 레지스트리 경유 도구를 쓴다(D-089). 검증 코어가 도구 계층으로
 # 내려가 tools→nodes 역참조가 사라졌으므로 모듈 수준 임포트가 안전하다(후속 2단계).
@@ -158,7 +158,7 @@ from src.utils.schema_utils import safe_sample_preview
 from src.utils.synonym_usage import extract_synonym_usage
 
 if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 플래그 ON 경로에서만 수행한다.
-    from src.nodes.column_deriver import StepwiseDeps
+    from src.pipeline.column_deriver import StepwiseDeps
 
 logger = logging.getLogger(__name__)
 
@@ -1501,9 +1501,9 @@ async def _run_multi_candidate_single_db(
     """
     from src.db import get_db_client
     from src.dbhub.models import QueryExecutionError, QueryTimeoutError
-    from src.nodes.candidate_generator import generate_candidates
-    from src.nodes.candidate_selector import run_candidate_pipeline
     from src.nodes.query_validator import query_validator
+    from src.pipeline.candidate_generator import generate_candidates
+    from src.pipeline.candidate_selector import run_candidate_pipeline
 
     t2 = app_config.text2sql
     is_kbgenai_llm = is_kbgenai(llm)

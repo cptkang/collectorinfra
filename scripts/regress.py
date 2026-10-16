@@ -51,6 +51,9 @@ TEST_INFRA_FILES = ROOT_CONFTESTS | {
 }
 # 웨이브 중간(--no-tests)이라도 그 웨이브 끝에 모듈 단위 회귀를 돌려야 하는 공유 파일(D-303 부기)
 WAVE_REGRESS_FILES = TEST_INFRA_FILES | {"src/config.py", "src/state.py"}
+# 같은 이유의 접두 — `src/config.py`는 plans/166 W2 I4에서 `src/config/` 패키지가 됐다
+# (옛 파일 경로는 합성 저장소 테스트가 쓰므로 위 집합에 남긴다).
+WAVE_REGRESS_PREFIXES = ("src/config/",)
 # 정적 게이트 스크립트 → 인자(D-331 ② — config_fallback_check는 plans/166 W1 X1 치환 뒤 `--ci`).
 GATE_SCRIPTS: dict[str, tuple[str, ...]] = {
     "arch_check": ("--ci",),
@@ -1378,7 +1381,8 @@ def _main(args: argparse.Namespace, root: Path, out: Printer) -> int:
     elif args.no_tests:
         sel = Selection([], [], [], set(), True, False)
         wide = signature_breaks(root, base, changes) + sorted(
-            c.path for c in changes if c.path in WAVE_REGRESS_FILES)
+            c.path for c in changes
+            if c.path in WAVE_REGRESS_FILES or c.path.startswith(WAVE_REGRESS_PREFIXES))
         if wide:
             out("[웨이브 회귀 필요] 공개 시그니처·공유 파일 변경 — 이 웨이브 끝에 --no-tests 없이 "
                 "모듈 단위 회귀를 돌린다(D-303 부기): " + ", ".join(wide))

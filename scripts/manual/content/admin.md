@@ -2812,7 +2812,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - `docs/16_plan52_noise_gate_test_guide.md` §6은 시나리오 주입으로 수신부부터 통보까지 흐름 전체를 재현하는 절차를 담고 있다.
 
 ##### 코드 위치
-- 수신부 `noise_gate/alarm_server/`, 워커 사전 처리 `noise_gate/application/alarm_worker.py`의 `_process`, 그래프 배선 `noise_gate/orchestration/alarm_graph.py`, 노드 `noise_gate/application/nodes/`, 발송 판단 `noise_gate/domain/notification_policy.py`, 설정 기본값 `src/config.py`다.
+- 수신부 `noise_gate/alarm_server/`, 워커 사전 처리 `noise_gate/application/alarm_worker.py`의 `_process`, 그래프 배선 `noise_gate/orchestration/alarm_graph.py`, 노드 `noise_gate/application/nodes/`, 발송 판단 `noise_gate/domain/notification_policy.py`, 설정 기본값 `src/config/alarm.py`다.
 :::
 ::: related
 - [A-60 결정 단계와 우선순위 매트릭스](#a-60)
@@ -4132,7 +4132,7 @@ Prometheus 지표를 PromQL로 조회하는 연동이다. MCP 서버의 도구�
 
 **설정 리로드가 실패한다**
 
-리로드는 실패하면 **기존 설정과 실행 그래프를 그대로 유지**한다(`src/api/routes/admin.py` `reload_settings`). 실패 알림은 5초 뒤 사라지므로 바로 읽는다. 화면에는 예외 종류와 요청 번호만 나오고 원문 사유는 서버 로그에만 남는다 — 서버 로그에서 `요청 (번호)`로 검색한다(같은 번호가 응답 헤더 `X-Request-ID`에 실린다).
+리로드는 실패하면 **기존 설정과 실행 그래프를 그대로 유지**한다(`src/api/routes/admin_settings_reload.py` `reload_settings`). 실패 알림은 5초 뒤 사라지므로 바로 읽는다. 화면에는 예외 종류와 요청 번호만 나오고 원문 사유는 서버 로그에만 남는다 — 서버 로그에서 `요청 (번호)`로 검색한다(같은 번호가 응답 헤더 `X-Request-ID`에 실린다).
 
 | 표시 문구 | 원인 | 대응 |
 |---|---|---|

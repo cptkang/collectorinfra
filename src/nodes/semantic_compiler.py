@@ -138,7 +138,7 @@ from src.semantic.taxonomy import (
 
 if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 진입 분기 안에서 지연 수행한다.
     from src.config import AppConfig
-    from src.nodes.column_deriver import StepwiseDeps
+    from src.pipeline.column_deriver import StepwiseDeps
 
 logger = logging.getLogger(__name__)
 
@@ -1110,7 +1110,7 @@ async def _select_smq_stepwise(
     Returns:
         (smq, cov) — smq가 None이면 cov.reason이 폴백 사유다.
     """
-    from src.nodes.column_deriver import StepwiseDeps, StepwiseLimits, derive_smq
+    from src.pipeline.column_deriver import StepwiseDeps, StepwiseLimits, derive_smq
     from src.prompts.semantic_compiler import SEMANTIC_SMQ_SCOPE_NOTE
 
     deps = stepwise_deps if stepwise_deps is not None else StepwiseDeps()

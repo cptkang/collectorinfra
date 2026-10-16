@@ -156,7 +156,7 @@ def test_retry_limit_is_a_constant_not_a_setting():
     assert MAX_SUFFICIENCY_RETRIES == 1
     import pathlib
 
-    cfg = pathlib.Path("src/config.py").read_text()
+    cfg = "".join(p.read_text() for p in sorted(pathlib.Path("src/config").glob("*.py")))
     assert "sufficiency_retries" not in cfg and "SUFFICIENCY_RETRIES" not in cfg
 
 

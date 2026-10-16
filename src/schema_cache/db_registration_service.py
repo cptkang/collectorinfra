@@ -40,13 +40,12 @@ import yaml  # type: ignore[import-untyped]
 
 from src.domain.db_readiness import ReadinessReport
 from src.domain.schema_snapshot import bare_name, build_snapshot, diff_snapshots
+from src.schema_cache.admin_base import AdminServiceBase, resolve_table
 from src.schema_cache.db_structure_service import (
     LOCAL_SANDBOX_HEADER,
-    AdminServiceBase,
     DraftNotApprovable,
     _now_iso,
     collect_code_values,
-    resolve_table,
     schema_dict_from_full_schema,
     schema_dict_from_snapshot,
 )

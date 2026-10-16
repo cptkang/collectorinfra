@@ -86,7 +86,10 @@ LATENCY_RATIO_MAX = 1.5
 # ── 루트 찾기 ─────────────────────────────────────────────────────────────────
 
 def _is_root(path: Path) -> bool:
-    return (path / "src" / "config.py").is_file() and (path / "config").is_dir()
+    # `src/config.py`는 plans/166 W2 I4에서 `src/config/` 패키지가 됐다 — 둘 다 받는다.
+    has_config = ((path / "src" / "config.py").is_file()
+                  or (path / "src" / "config" / "__init__.py").is_file())
+    return has_config and (path / "config").is_dir()
 
 
 def resolve_root(cli_root: str | None, *, script_path: Path | None = None,

@@ -16,8 +16,8 @@ task_run 서브그래프: task_prompt → [schema_analyzer → query_generator �
 **새 판단 로직은 없다** — 2단 부품을 노드로 옮긴 것이다(D-053 사본 금지 · 103 §3.3):
 계획 본체 `_plan_turn` · 단일 출구 교정 `_normalize_plan_exit`·`_coerce_host_inspect_intent` ·
 조각 계약 `_apply_task_frames` · 선행 결과 게이트 `_gate_level`·`_task_verdict` ·
-사후 대조 `_postcheck_result` · 격리 입력 `_make_isolated_input` · 결과 접기
-`_pack_pipeline_result` · 재계획 `replanner`(무익 재시도 차단 포함) · 합성 `result_aggregator`.
+사후 대조 `_postcheck_result` · 격리 입력 `make_isolated_input` · 결과 접기
+`pack_pipeline_result` · 재계획 `replanner`(무익 재시도 차단 포함) · 합성 `result_aggregator`.
 이 모듈이 더하는 것은 plans/111 델타의 배선뿐이다.
 
 - **D-1 `normalize`** — 계획의 모든 분기(사전 처리 조기 반환 포함)가 지나는 단일 출구.
@@ -58,6 +58,7 @@ from src.orchestration.agent_orchestrator import (
     _task_verdict,
     topological_levels,
 )
+from src.orchestration.db_targeting import normalize_targets
 from src.orchestration.intent_planner import (
     _apply_task_frames,
     _build_context_block,
@@ -66,15 +67,13 @@ from src.orchestration.intent_planner import (
     _plan_turn,
     _task_frame_on,
 )
+from src.orchestration.isolated_input import request_query_text, scope_time_resolution
 from src.orchestration.replanner import _assign_ids, _extract_rows, replanner
 from src.orchestration.subagents import (
     SUBAGENT_REGISTRY,
+    make_isolated_input,
+    pack_pipeline_result,
     resolve_subagent,
-    _make_isolated_input,
-    _normalize_targets,
-    _pack_pipeline_result,
-    _request_query_text,
-    _scope_time_resolution,
 )
 from src.orchestration.task_progress import emit_task_progress
 from src.routing.location_hints import pin_targets_to_hints
@@ -255,15 +254,15 @@ def task_payload(
     시간 해석은 원문 해석을 그대로 싣는다 — task 범위로 좁히는 것은 task 문장을 확정하는
     `task_prompt`다(plans/122 T-4).
     """
-    payload = _make_isolated_input(task, dict(state), prior, scope_time=False)
-    payload["request_query"] = _request_query_text(dict(state))
+    payload = make_isolated_input(task, dict(state), prior, scope_time=False)
+    payload["request_query"] = request_query_text(dict(state))
     payload["user_query"] = task.get("sub_query") or state.get("user_query", "")
     payload["current_task"] = dict(task)
     payload["task_total"] = total
     if task.get("agent") in DATA_AGENTS:
         if task.get("db_ids"):
             # 사전 처리가 DB를 고정한 task(존 선택 재진입 등) — 2단 핸들러와 같은 정규화
-            targets = _normalize_targets(list(task["db_ids"]), payload["user_query"])
+            targets = normalize_targets(list(task["db_ids"]), payload["user_query"])
             payload.update({
                 "target_databases": targets, "is_multi_db": len(targets) > 1,
                 "active_db_id": targets[0]["db_id"] if targets else None,
@@ -347,7 +346,7 @@ async def task_prompt(state: TaskRunState) -> dict[str, Any]:
         # 시간 해석도 task 범위로(plans/122 §10.3 「2단 task」 — 2단 격리 입력과 같은 함수 · D-309).
         # 입력은 원문 해석이다(`task_payload`가 좁히지 않고 넘긴다). 원문 대조는 서브그래프 밖에서
         # 잡은 요청 원문으로 한다 — 없으면(빈 문자열) task별 해석을 하지 않는다.
-        "time_resolution": _scope_time_resolution(
+        "time_resolution": scope_time_resolution(
             dict(state), task, text, original=str(state.get("request_query") or ""),
         ),
     }
@@ -414,7 +413,7 @@ def pack_outcome(state: TaskRunState) -> dict[str, Any]:
             origin = "selected" if state.get("selected_db_ids") else "planned"
         else:
             origin = state.get("db_scope_source") or "classified"
-        result = _pack_pipeline_result(
+        result = pack_pipeline_result(
             dict(state), list(state.get("target_databases") or []), state.get("error_message"),
             ownership_notes=[], db_origin=origin, db_succeeded=False, db_pinned=False,
         )

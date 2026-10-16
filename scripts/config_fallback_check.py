@@ -38,12 +38,20 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCAN_DIRS: tuple[str, ...] = ("src", "noise_gate")
 CONFIG_FILE = "src/config.py"
+# plans/166 W2 I4 — 설정 클래스가 `src/config/` 패키지 하위 모듈로 나뉘었다. 옛 단일 파일 경로
+# (`CONFIG_FILE`)는 합성 저장소 테스트가 쓰므로 함께 제외한다.
+CONFIG_PACKAGE_DIR = "src/config/"
 
 # 의도된 폴백 허용 목록 (파일, 필드) → 사유. 설정 대역(MagicMock·SimpleNamespace)에서
 # 필드가 없으면 기능을 끄는 방어가 함수 계약(docstring)이고 테스트가 그것을 단언하는 곳만 둔다.
 # 늘릴 때는 사유와 단언 테스트를 함께 적는다(plans/166 W1 · D-331 부기).
 ALLOWED: dict[tuple[str, str], str] = {
     ("src/nodes/prompt_blocks.py", "prompt_token_budget"):
+        "resolve_prompt_token_budget — 대역의 미정의 속성은 가드 비활성"
+        "(test_multi_gate_token_budget::test_budget_absent_or_invalid_disables)",
+    # plans/166 W2 N3 이동 뒤 실제 위치.
+    # 옛 키는 test_config_fallback_check가 합성 경로로 단언해 남긴다.
+    ("src/pipeline/prompt_blocks.py", "prompt_token_budget"):
         "resolve_prompt_token_budget — 대역의 미정의 속성은 가드 비활성"
         "(test_multi_gate_token_budget::test_budget_absent_or_invalid_disables)",
     ("src/db_adapters/template_assembler.py", "template_assembly"):
@@ -74,7 +82,7 @@ class Report:
 
 
 def field_defaults() -> dict[str, list[Any]]:
-    """`src/config.py` 설정 클래스의 필드명 → 서로 다른 기본값 목록."""
+    """`src.config` 패키지 설정 클래스의 필드명 → 서로 다른 기본값 목록."""
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from pydantic import BaseModel
@@ -82,8 +90,11 @@ def field_defaults() -> dict[str, list[Any]]:
     import src.config as config_module
 
     out: dict[str, list[Any]] = {}
+    package = config_module.__name__
     for _, cls in inspect.getmembers(config_module, inspect.isclass):
-        if cls.__module__ != config_module.__name__ or not issubclass(cls, BaseModel):
+        # 하위 모듈(`src.config.llm` 등)에 정의돼 패키지가 재노출한 클래스도 읽는다(plans/166 I4).
+        in_package = cls.__module__ == package or cls.__module__.startswith(package + ".")
+        if not in_package or not issubclass(cls, BaseModel):
             continue
         for name, info in cls.model_fields.items():
             if info.default_factory is not None:
@@ -117,7 +128,8 @@ def iter_files(root: Path) -> list[Path]:
     for d in SCAN_DIRS:
         for p in sorted((root / d).rglob("*.py")):
             rel = p.relative_to(root).as_posix()
-            if "/tests/" in f"/{rel}" or "/scripts/" in f"/{rel}" or rel == CONFIG_FILE:
+            if ("/tests/" in f"/{rel}" or "/scripts/" in f"/{rel}" or rel == CONFIG_FILE
+                    or rel.startswith(CONFIG_PACKAGE_DIR)):
                 continue
             files.append(p)
     return files

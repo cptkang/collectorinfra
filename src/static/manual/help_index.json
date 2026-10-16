@@ -1,6 +1,6 @@
 {
  "version": 1,
- "source_hash": "4d2465d4f3f5e7fe929d5725d87c7c2cba388a3439874c54cab6ba452c1c8241",
+ "source_hash": "24cc3e089bad46bbe57ff99c4af81a6f2aa5885ece22c910665e031c4d472dad",
  "chunks": [
   {
    "id": "user:U-01",
@@ -8227,7 +8227,7 @@
    "chapter": "9. 노이즈 캔슬링 관제(관리자)",
    "item": "코드 위치",
    "anchor": "a-59-d-5-3",
-   "text": "수신부 noise_gate/alarm_server/, 워커 사전 처리 noise_gate/application/alarm_worker.py의 _process, 그래프 배선 noise_gate/orchestration/alarm_graph.py, 노드 noise_gate/application/nodes/, 발송 판단 noise_gate/domain/notification_policy.py, 설정 기본값 src/config.py다.",
+   "text": "수신부 noise_gate/alarm_server/, 워커 사전 처리 noise_gate/application/alarm_worker.py의 _process, 그래프 배선 noise_gate/orchestration/alarm_graph.py, 노드 noise_gate/application/nodes/, 발송 판단 noise_gate/domain/notification_policy.py, 설정 기본값 src/config/alarm.py다.",
    "aliases": [],
    "examples": [],
    "input_forms": []

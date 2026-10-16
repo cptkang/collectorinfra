@@ -63,6 +63,8 @@ PUBLIC_LAYER_DIRS: tuple[str, ...] = (
     "src/tools",
     # P5-1(Plan 69)로 semantic_compiler에서 분리된 IR 계층 — 이동 전과 동일하게 감시
     "src/semantic",
+    # plans/166 W2 N3 — src/nodes에서 옮긴 순수 헬퍼 7모듈(이동 전과 동일하게 감시)
+    "src/pipeline",
     # Plan 69 후속 2단계로 query_validator에서 분리된 SQL 검증 코어(단일 파일) —
     # 이동 전과 동일하게 감시(리터럴의 어댑터 이관은 별건 D-088 작업)
     "src/sql_validation.py",
@@ -75,6 +77,8 @@ PUBLIC_LAYER_DIRS: tuple[str, ...] = (
 EXCLUDE_DIRS: tuple[str, ...] = (
     "src/db_adapters",
     "mcp_server/mcp_server/polestar_tools.py",
+    # plans/166 M5 — polestar_tools에서 옮긴 순수 헬퍼(방언·사건 구간·마스킹, 대칭).
+    "mcp_server/mcp_server/polestar_helpers.py",
     # plans/92 §4.5 — 폴스타 → OpenMetrics 브리지(SQL·패밀리 정의 전용, polestar_tools와 대칭).
     # 벤더 중립 노출 기계 om_exposition.py는 스캔 대상에 남긴다.
     "mcp_server/mcp_server/polestar_exporter.py",

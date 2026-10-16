@@ -23,6 +23,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
+from src.orchestration.apm_query import APM_QUERY_AGENT, sanitize_sources, sanitize_targets
 from src.orchestration.db_access import is_access_denied_result
 from src.orchestration.intent_planner import (
     REASON_DECOMPOSE_FALLBACK,
@@ -579,12 +580,6 @@ def _assign_ids(new_tasks: list[dict], *, existing: list[dict]) -> list[dict]:
     Returns:
         task_id/order/status가 부여된 신규 task 목록
     """
-    from src.orchestration.apm_query import (  # 지연 — 순환 방지
-        APM_QUERY_AGENT,
-        sanitize_sources,
-        sanitize_targets,
-    )
-
     existing_ids = {t.get("task_id") for t in existing if t.get("task_id")}
 
     # 기존 t번호 최대값 → 신규 id 시작점

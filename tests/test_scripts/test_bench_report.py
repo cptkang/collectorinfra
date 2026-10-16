@@ -158,10 +158,10 @@ def test_write_report_creates_three_files(tmp_path):
 
 def test_write_report_does_not_touch_repo_config(tmp_path):
     """★ V5 — 어떤 경로로도 `.env`·`config.py`를 쓰지 않는다."""
-    env, cfg = _ROOT / ".env", _ROOT / "src" / "config.py"
-    before = (env.stat().st_mtime if env.exists() else None, cfg.stat().st_mtime)
+    env, cfg = _ROOT / ".env", sorted((_ROOT / "src" / "config").glob("*.py"))
+    before = (env.stat().st_mtime if env.exists() else None, [p.stat().st_mtime for p in cfg])
     rp.write_report(_report(ledger=rp.build_ledger([_knob()])), tmp_path / "run")
-    after = (env.stat().st_mtime if env.exists() else None, cfg.stat().st_mtime)
+    after = (env.stat().st_mtime if env.exists() else None, [p.stat().st_mtime for p in cfg])
     assert before == after
 
 

@@ -34,8 +34,8 @@ from src.utils.prior_dependency import (
 from src.orchestration.subagents import (
     SUBAGENT_REGISTRY,
     SubAgentSpec,
-    _extract_identity_rows,
-    _make_isolated_input,
+    extract_identity_rows,
+    make_isolated_input,
 )
 
 logger = logging.getLogger(__name__)
@@ -178,7 +178,7 @@ _SCOPE_CONSUMER_AGENTS: tuple[str, ...] = _SCOPE_PRODUCER_AGENTS
 def _matched_values(rows: list, low: str) -> set[str]:
     """선행 결과 행의 식별 값 중 sub_query에 그대로 등장하는 값 집합(G1 값 일치 · 소문자)."""
     out: set[str] = set()
-    for row in _extract_identity_rows(rows):
+    for row in extract_identity_rows(rows):
         if not isinstance(row, dict):
             continue
         for v in row.values():
@@ -381,7 +381,7 @@ async def _run_subagent_tool(
                     return _serialize_for_tool(result, app_config)
             elif verdict is not None and not verdict.ok:
                 logger.info("deepagents 순차 게이트 관측(off) reason=%s", verdict.reason)
-    isolated = _make_isolated_input(task, ambient_state, prior=prior)
+    isolated = make_isolated_input(task, ambient_state, prior=prior)
     isolated["user_query"] = sub_query
     result = await spec.handler(
         task, isolated, llm=spec.model or worker_llm, app_config=app_config

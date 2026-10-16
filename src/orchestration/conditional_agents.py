@@ -40,7 +40,7 @@ from src.domain.clarification_policy import (
     decide_source_slot,
 )
 from src.orchestration import apm_query, doc_query, portal_help
-from src.orchestration.subagents import SubAgentSpec
+from src.orchestration.agent_spec import SubAgentSpec
 from src.routing.db_authz import authorized_db_ids, is_source_allowed
 from src.routing.registry import get_registry
 from src.routing.source_hints import (
