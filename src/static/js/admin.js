@@ -42,6 +42,13 @@
                 window.location.href = "/";
                 return;
             }
+            if (response.status === 503) {
+                // 인증 저장소 장애(plans/186 L4) — 토큰을 지우고 로그인으로 보내면 재로그인도 503이고,
+                // break-glass 운영자 토큰까지 지워진다. 토큰은 두고 안내 문구만 보인다.
+                var body = await response.json().catch(function () { return {}; });
+                showError(body.detail || "인증 서비스를 사용할 수 없습니다.");
+                return;
+            }
             if (!response.ok) {
                 redirectUnauthenticated();
             }

@@ -70,7 +70,7 @@ from src.utils.task_result_keys import DISPLAY_CUT_KEY
 from src.utils.user_error import (
     GENERIC_TASK_ERROR,
     request_id,
-    safe_error_text,
+    safe_stop_detail_text,
     user_error_text,
 )
 
@@ -1682,9 +1682,9 @@ def _failure_disclosure(task: dict[str, Any], res: dict[str, Any]) -> disc.Discl
         kind = disc.QUERY_FAILED
     # 고지 본문의 「(마지막 사유: …)」에는 고정 사유만 싣는다 — 실행 예외·검증 사유(생성 SQL
     # 조각)가 보간된 원문은 버린다(plans/163 S3+ · kind 문구가 실패 종류를 이미 말한다).
-    # kind 판정은 원문으로 한다.
+    # kind 판정은 원문으로 한다. 멀티 DB의 「db_id: 사유」 이음은 조각마다 거른다(plans/186 M7).
     text = disc.failure_text(
-        kind, subject=str(task.get("sub_query") or ""), detail=safe_error_text(detail),
+        kind, subject=str(task.get("sub_query") or ""), detail=safe_stop_detail_text(detail),
     )
     return disc.make(kind, text, source=f"task:{task.get('task_id')}")
 

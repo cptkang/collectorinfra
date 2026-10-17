@@ -425,7 +425,8 @@ async def test_auth_db_failure_keeps_state_when_auth_enabled(
 async def test_auth_db_pool_failure_keeps_old_warning(
     enabled: bool, monkeypatch, caplog
 ) -> None:
-    """풀 생성 전 실패 — 대입한 값이 없어 인증 활성 여부와 무관하게 종전 문구 · 닫을 풀도 없다."""
+    """풀 생성 전 실패 — 대입한 값이 없어 닫을 풀도 없다. 인증 활성이면 503 거부를 알리는
+    문구(plans/186 L4), 비활성이면 종전 문구."""
     import asyncpg
 
     from src.api import server
@@ -441,9 +442,12 @@ async def test_auth_db_pool_failure_keeps_old_warning(
         await server._init_auth_db(app, _auth_config(enabled=enabled))  # type: ignore[arg-type]
     assert {name: getattr(app.state, name) for name in _AUTH_STATE} == dict.fromkeys(_AUTH_STATE)
     assert h.closed == []
-    assert [r.getMessage() for r in caplog.records if r.name == "src.api.server"] == [
-        "인증 DB 초기화 실패 (인증 기능 비활성): connect refused"
-    ]
+    expected = (
+        "인증 DB 초기화 실패 — 인증 활성이라 사용자 요청은 503으로 거부됩니다"
+        "(운영자 break-glass만 진입): connect refused"
+        if enabled else "인증 DB 초기화 실패 (인증 기능 비활성): connect refused"
+    )
+    assert [r.getMessage() for r in caplog.records if r.name == "src.api.server"] == [expected]
 
 
 async def test_auth_db_success_keeps_state(monkeypatch) -> None:

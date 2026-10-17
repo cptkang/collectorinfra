@@ -978,8 +978,18 @@ def _user_token(role: str) -> str:
     return _jwt(_USER_SECRET, sub="u-" + role, name=role, role=role, type="user")
 
 
+class _StreamUsers:
+    """`user_repo` 대역 — 인증 활성이면 저장소가 필수다(plans/186 L4). `u-admin`만 관리자."""
+
+    async def get_by_user_id(self, user_id: str):  # noqa: ANN201
+        from src.domain.user import User, UserRole
+
+        role = UserRole.ADMIN if user_id == "u-admin" else UserRole.USER
+        return User(user_id=user_id, username=user_id, hashed_password="x", role=role)
+
+
 def _stream_client(tmp_path) -> TestClient:
-    """실제 인증 의존성으로 스트림만 판정하는 클라이언트(`user_repo` 없음 = 토큰 payload 판정)."""
+    """실제 인증 의존성으로 스트림만 판정하는 클라이언트(사용자 역할은 `user_repo` 대역이 판정)."""
     config = _make_config(tmp_path)
     config.auth.jwt_secret = _USER_SECRET
     config.admin = SimpleNamespace(jwt_secret=_ADMIN_SECRET)
@@ -987,6 +997,7 @@ def _stream_client(tmp_path) -> TestClient:
     app.include_router(noise_routes.router, prefix="/api/v1")
     app.state.config = config
     app.state.alarm_bus = _AuthorizedOnlyBus()
+    app.state.user_repo = _StreamUsers()
     return TestClient(app)
 
 

@@ -8,6 +8,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-17 | D-338 | 신규 — `plans/186` L4: 인증 활성인데 사용자 저장소(`user_repo`)가 없으면 사용자 토큰 의존성 3곳이 payload만으로 통과(전 DB 허용)시키던 것을 503 고정 문구로 fail-closed · break-glass 유지 · 프론트 503 루프 방지 · 커밋 없음 |
 | 2026-10-17 | D-066 | 부기 보강 — `plans/185` W2: 병합 마감 `_finalize_merged_rows`가 원본 매핑 대신 Layer 1 `build_resolved_mapping` 결과 키 매핑으로 양식을 채움(공유 통계 칼럼 오채움 해소 · 사용자 결정) · Word 병합 마감은 alias 칸도 채워짐 · 커밋 없음 |
 | 2026-10-17 | D-153 | 부기 — `plans/184` S1·S4·S6: 「고정 문구 + 요청 번호」 규약 확대 — DRM 설정 키·java 경로 사유(`user_visible=False`) · APM 선택 재시도 메타·게이트웨이 연결 실패 `source_status` · `degraded_reason` 처리기 규칙(secure-coding 스킬) · APM 호출 단위 예외 사유 · 커밋 없음 |
 | 2026-10-17 | D-070 | 부기 — `plans/184` S2: `verify_admin_token` 빈 `sub` 거부(`not sub`) — 사용자·break-glass와 기준 통일 · 커밋 없음 |

@@ -794,7 +794,8 @@ class TestMultiExecutor:
         )
         assert len(calls) == 1
         assert run.regen_stops["gp"]["reason"] == "backend_limit"
-        assert run.regen_stops["gp"]["detail"] == error
+        # detail은 「SQL 검증 실패: …」 머리말 꼴(plans/186 M7)
+        assert run.regen_stops["gp"]["detail"] == f"SQL 검증 실패: {error}"
 
 
 # ──────────────────────────────────────────────

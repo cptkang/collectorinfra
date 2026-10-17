@@ -523,6 +523,8 @@ class TestPipelineConnection:
         mock_config = MagicMock()
         active_ids = ["polestar"]
         mock_config.multi_db.get_active_db_ids.return_value = active_ids
+        # MagicMock 속성은 참이라 소유 판정이 on으로 잡힌다 — off 명시(plans/186 J4)
+        mock_config.router.capability_ownership_enabled = False
 
         mock_llm = AsyncMock()
         mock_llm.ainvoke.return_value = MagicMock(

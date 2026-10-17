@@ -111,6 +111,16 @@ class _Audit:
         })
 
 
+class _Users:
+    """`user_repo` 대역 — 인증 활성이면 저장소가 필수다(plans/186 L4 fail-closed). root만 관리자."""
+
+    async def get_by_user_id(self, user_id: str):
+        from src.domain.user import User, UserRole
+
+        role = UserRole.ADMIN if user_id == "root" else UserRole.USER
+        return User(user_id=user_id, username=user_id, hashed_password="x", role=role)
+
+
 def _config(*, auth_enabled: bool):
     os.environ.setdefault("SCHEMA_CACHE_ENABLED", "false")
     from src.config import AppConfig, AuthConfig, SecurityConfig, ServerConfig
@@ -139,6 +149,7 @@ def _client(
     app = FastAPI()
     app.state.config = _config(auth_enabled=auth_enabled)
     app.state.graph = graph or _Graph()
+    app.state.user_repo = _Users()
     if audit is not None:
         app.state.audit_service = audit
     app.include_router(query_routes.router, prefix="/api/v1")

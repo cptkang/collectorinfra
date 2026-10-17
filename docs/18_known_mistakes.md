@@ -2129,3 +2129,8 @@
 - **실수**: 「부하 순위를 받지 못해(api_error (요청 rid))」를 단언하는 기존 테스트를 grep으로 찾아 1건만 고쳤고, `tests/test_orchestration/test_plan134_w34_apm.py`의 2건(`"…받지"` / `" 못해(api_error (요청 -)) …"`로 암묵 연결된 리터럴)은 계획 끝 회귀에서야 실패로 드러났다.
 - **원인**: 검색어를 문구 전체(「부하 순위를 받지 못해(」)로 잡아, 리터럴이 줄 사이에서 끊긴 곳이 걸리지 않았다.
 - **방지책**: 문구 변경의 옛 단언 검색은 바뀌는 **최소 조각**(예: `(요청 [^)]*))`처럼 실제로 달라지는 부분)으로 grep하고, Wave 중간에 바꾼 제품 파일을 직접 import하는 테스트 모듈 중 문구를 단언하는 모듈은 자기 테스트에 포함해 돌린다.
+
+### 2026-10-17 · (plans/186 J4 · 팀 리드) 전역 설정 읽기를 넘긴 설정 읽기로 바꾸면서 `MagicMock` 설정 대역의 참 속성 때문에 기존 테스트 2건이 소유 on 경로로 조용히 바뀐 것을 위임 범위에 넣지 않았다
+- **실수**: `_ownership_enabled()`(전역 `load_config()`)를 `capability_ownership_on(app_config)`로 바꾸자, `app_config=MagicMock()`을 넘기던 `test_semantic_router_mapping`·`test_xls_plan_integration`이 `bool(mock.router.capability_ownership_enabled)` = True로 소유 on 경로를 탔다. 테스트는 통과해 off 경로 검증이 사라진 것을 verifier가 Minor로 잡았다. 또 위임 프롬프트에 「3단 소유 판정만」이라 적어 2단 기준 경로 `subagents.classify_dbs`의 같은 전역 읽기도 처음엔 빠졌다.
+- **원인**: 「load_config를 patch하던 테스트」만 찾게 했고, 설정을 `MagicMock`으로 넘기던 테스트가 새 판정 함수에서 어떤 값을 읽게 되는지는 보지 않았다. 판정 함수의 호출부(`_llm_classify`)를 공유하는 다른 단 경로도 grep하지 않았다.
+- **방지책**: 전역 설정 읽기를 넘긴 설정 읽기로 바꿀 때는 ① 바뀐 함수의 호출부를 `grep -rn "<함수>("`로 전수 확인해 모든 단·경로에 설정을 넘기고 ② 그 경로를 타는 테스트 중 설정을 `MagicMock()`으로 만드는 곳(`grep -rn "MagicMock()" tests | grep -i config`)을 찾아 플래그 필드를 명시하게 위임 프롬프트에 넣는다. `bool(getattr(...))` 판정은 MagicMock에서 늘 참이다.

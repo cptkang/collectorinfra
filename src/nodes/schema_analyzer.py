@@ -13,11 +13,13 @@ parsed_requirements를 기반으로 LLM이 필요한 테이블과 컬럼을 선�
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 import re
 import time
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -363,12 +365,41 @@ async def _collect_live_samples(
     logger.info("라이브 샘플 수집 완료: %.1fs 소요 (db_id=%s)", elapsed, db_id)
 
 
+#: 수동 프로필 파싱 캐시(plans/186 P3) — 절대 경로 → ((mtime_ns, 크기), 파싱 결과). 경로마다
+#: 마지막 판만 둔다(관리자 흐름이 프로필을 고치면 mtime·크기가 바뀌어 다시 읽는다).
+_MANUAL_PROFILE_CACHE: dict[str, tuple[tuple[int, int], Any]] = {}
+
+
+def _clear_manual_profile_cache() -> None:
+    """수동 프로필 파싱 캐시를 비운다(테스트 격리용)."""
+    _MANUAL_PROFILE_CACHE.clear()
+
+
+def _parse_profile_file(path: str, loader: Callable[[Any], Any]) -> Any:
+    """프로필 파일을 파싱한다 — 경로·mtime·크기가 같으면 캐시 사본을 준다(plans/186 P3).
+
+    반환은 늘 깊은 복사라 호출자 변형이 캐시에 새지 않는다. 읽기·파싱 예외는 캐시하지 않고
+    그대로 올린다(호출부가 경고 후 폴백하고, 다음 호출이 다시 읽는다).
+    """
+    st = os.stat(path)
+    key = os.path.abspath(path)
+    stamp = (st.st_mtime_ns, st.st_size)
+    hit = _MANUAL_PROFILE_CACHE.get(key)
+    if hit is not None and hit[0] == stamp:
+        return copy.deepcopy(hit[1])
+    with open(path, encoding="utf-8") as f:
+        data = loader(f)
+    _MANUAL_PROFILE_CACHE[key] = (stamp, data)
+    return copy.deepcopy(data)
+
+
 def _load_manual_profile(db_id: str) -> Optional[dict]:
     """수동 프로필(source: manual)을 YAML/JSON 파일에서 로드한다.
 
     config/db_profiles/{db_id}.yaml 파일을 읽어서 source 필드가
     "manual"이면 내용을 dict로 반환한다.
-    YAML이 없으면 JSON fallback({db_id}.json)도 시도한다.
+    YAML이 없으면 JSON fallback({db_id}.json)도 시도한다. 파싱 결과는 파일 mtime·크기 기준으로
+    캐시한다(`_parse_profile_file` · plans/186 P3).
 
     known_attributes가 객체 리스트([ {name, description, synonyms} ])일 경우,
     다운스트림 호환을 위해 문자열 리스트 버전도 각 패턴에 추가한다:
@@ -392,8 +423,7 @@ def _load_manual_profile(db_id: str) -> Optional[dict]:
         import yaml
 
         if os.path.exists(yaml_path):
-            with open(yaml_path, "r", encoding="utf-8") as f:
-                profile_data = yaml.safe_load(f)
+            profile_data = _parse_profile_file(yaml_path, yaml.safe_load)
     except ImportError:
         pass  # PyYAML 없으면 JSON fallback
     except Exception as e:
@@ -404,8 +434,7 @@ def _load_manual_profile(db_id: str) -> Optional[dict]:
         json_path = os.path.join(profiles_dir, f"{db_id}.json")
         if os.path.exists(json_path):
             try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    profile_data = json.load(f)
+                profile_data = _parse_profile_file(json_path, json.load)
             except Exception as e:
                 logger.warning("수동 프로필 JSON 읽기 실패 (%s): %s", json_path, e)
 

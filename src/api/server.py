@@ -579,10 +579,16 @@ async def _init_auth_db(app: FastAPI, config: AppConfig) -> None:
             logger.info("인증 DB 초기화 완료")
         except Exception as e:
             # 이 블록의 app.state 대입은 모두 풀 생성 뒤라 풀이 없으면 되돌릴 것도 없다
-            if auth_pool is None:
+            if auth_pool is None and config.auth.enabled:
+                # 사용자 저장소가 없으면 사용자 토큰 요청은 503으로 거부된다(plans/186 L4)
+                logger.warning(
+                    "인증 DB 초기화 실패 — 인증 활성이라 사용자 요청은 503으로 거부됩니다"
+                    "(운영자 break-glass만 진입): %s", e,
+                )
+            elif auth_pool is None:
                 logger.warning("인증 DB 초기화 실패 (인증 기능 비활성): %s", e)
             elif config.auth.enabled:
-                # 원복하면 get_current_user가 토큰 payload만으로 통과시킨다(전 DB 허용 · fail-open)
+                # 원복하면 사용자 요청이 전부 503이 된다(plans/186 L4) — 조회 연결을 남긴다
                 logger.warning(
                     "인증 DB 초기화 일부 실패 — 인증 활성이라 사용자 조회 연결은 유지합니다: %s", e
                 )

@@ -9,6 +9,9 @@
   남긴다.
 - 그 밖은 보일 수 없다 — 호출부가 고정 문구(`GENERIC_TASK_ERROR`)로 바꾸고 원문은 서버 로그에 둔다.
 
+재생성 중단 detail(`regen_stop.detail`)은 멀티 DB면 「{db_id}: {사유}」가 「 / 」로 이어져 있어
+`safe_stop_detail_text`가 조각마다 같은 판별을 한다(plans/186 M7).
+
 멀티 DB의 DB별 사유(`db_errors` — 존 커버리지 각주·작업 카드·전 DB 실패 요약)는 `db_error_text`가
 따로 판별한다: 「DB '…' 실행 에러: {예외}」의 예외 보간부만 떼고, 검증 사유·비-SQL 산출 발췌
 (「| LLM 산출 발췌: '…'」 — D-153 후속2 폐쇄망 자가 진단)·조회 마감 문구·고정 문구는 남긴다.
@@ -75,6 +78,51 @@ def safe_error_text(raw: Any) -> str | None:
         if text == head or text.startswith(f"{head}:"):
             return head
     return None
+
+
+#: SQL 검증 실패 사유의 머리말(`_PREFIX_REASONS` 첫 항목 — query_validator `error_message` 꼴).
+VALIDATION_FAILURE_HEAD = "SQL 검증 실패"
+
+#: 멀티 DB 재생성 중단 detail의 DB별 이음(`subagents._task_regen_stop` — 「{db_id}: {detail}」).
+_STOP_DETAIL_JOIN = " / "
+_STOP_DB_PREFIX_RE = re.compile(r"[A-Za-z0-9_.-]+: ")
+
+
+def with_validation_head(reason: str) -> str:
+    """검증 사유를 「SQL 검증 실패: {사유}」 꼴로 만든다 — 이미 머리말이면 그대로(plans/186 M7).
+
+    재생성 중단 detail(`regen_stop.detail`)이 단일 경로 `error_message`와 같은 꼴이어야 고지가
+    머리말을 싣는다(`safe_stop_detail_text`). 단일·멀티 SQL 루프가 함께 쓴다.
+    """
+    if reason == VALIDATION_FAILURE_HEAD or reason.startswith(f"{VALIDATION_FAILURE_HEAD}:"):
+        return reason
+    return f"{VALIDATION_FAILURE_HEAD}: {reason}"
+
+
+def safe_stop_detail_text(raw: Any) -> str | None:
+    """재생성 중단 detail 중 화면에 보일 수 있는 부분 — 없으면 None(plans/186 M7).
+
+    멀티 DB는 DB별 detail을 「{db_id}: {detail}」로 붙여 「 / 」로 잇는다(`_task_regen_stop`).
+    통째로 `safe_error_text`를 통과하면 그 값, 아니면 조각마다 db_id 접두를 떼고 `safe_error_text`를
+    적용해 통과한 고정 사유·머리말만 첫 등장 순서로 중복 없이 「 · 」로 잇는다. 접두가 없거나
+    머리말이 없는 조각은 버린다(원문 미노출 — 163 S3+).
+
+    Args:
+        raw: `regen_stop.detail`(또는 그 대신 쓰는 작업 실패 사유)
+    """
+    whole = safe_error_text(raw)
+    if whole is not None:
+        return whole
+    shown: list[str] = []
+    for part in str(raw or "").split(_STOP_DETAIL_JOIN):
+        part = part.strip()
+        prefix = _STOP_DB_PREFIX_RE.match(part)
+        if not prefix:
+            continue
+        piece = safe_error_text(part[prefix.end():])
+        if piece and piece not in shown:
+            shown.append(piece)
+    return " · ".join(shown) or None
 
 
 def user_error_text(raw: Any, *, result: Mapping[str, Any] | None = None) -> str:

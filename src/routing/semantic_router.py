@@ -50,6 +50,7 @@ from src.routing.capability_ownership import (
     REASON_LLM_ERROR,
     REASON_NO_CLASSIFICATION,
     active_owner_system_count,
+    capability_ownership_on,
     enforce_target_ownership,
     known_capability_codes,
     render_ownership_rows,
@@ -335,7 +336,7 @@ async def _route_by_llm(ctx: _RouteContext) -> dict[str, Any] | _LlmRouting:
         app_config, active_db_ids
     )
     # (plans/102 X-7) 답변 영역 소유 — off면 아래 소유 분기가 전부 건너뛰어져 반환이 종전과 같다.
-    ownership_on = _ownership_enabled()
+    ownership_on = capability_ownership_on(app_config)
     ownership_notes: list[dict[str, Any]] = []
     # 소유 플래그 off의 분류 폴백 (사유 코드, 예외 클래스명) — 확정 대상을 본 뒤 노트로 싣는다
     # (plans/121 TP-1.6 · `_fallback_notes_off`).
@@ -353,6 +354,7 @@ async def _route_by_llm(ctx: _RouteContext) -> dict[str, Any] | _LlmRouting:
             db_descriptions=db_descriptions,
             fault_diagnosis_enabled=fault_dx_on,
             **({"plan_signal": True} if plan_signal_on else {}),
+            app_config=app_config,
         )
     except Exception as e:
         logger.error("LLM 라우팅 분류 실패: %s", e)
@@ -597,14 +599,6 @@ def _plan_signal_enabled(app_config: AppConfig) -> bool:
     return getattr(app_config, "tier3_plan_loop_enabled", False) is True
 
 
-def _ownership_enabled() -> bool:
-    """답변 영역 소유 플래그(plans/102 X-7). `load_config` 캐시라 기동 시 1회 해석된다."""
-    try:
-        return bool(getattr(load_config().router, "capability_ownership_enabled", False))
-    except Exception:  # noqa: BLE001 — 설정 부재가 라우팅을 막으면 안 된다(off = 현행)
-        return False
-
-
 def _fallback_notes_off(
     state: AgentState,
     mark: tuple[str, str],
@@ -724,6 +718,7 @@ async def _keep_zoneless_targets(
             llm, user_query, domains,
             db_descriptions=db_descriptions,
             fault_diagnosis_enabled=fault_dx_on,
+            app_config=app_config,
         )
     except Exception as e:  # noqa: BLE001 — 보존 판정 실패가 선택 존 조회를 막지 않는다
         logger.warning(
@@ -905,6 +900,7 @@ async def _llm_classify(
     db_descriptions: dict[str, str] | None = None,
     fault_diagnosis_enabled: bool = False,
     plan_signal: bool = False,
+    app_config: AppConfig | None = None,
 ) -> dict[str, Any]:
     """LLM을 사용하여 질의의 대상 DB를 분류한다.
 
@@ -917,6 +913,8 @@ async def _llm_classify(
         db_descriptions: Redis 캐시에서 로드한 DB 설명 (선택)
         fault_diagnosis_enabled: 장애 진단 pull 위임 옵트인 (CW-B). True일 때만
             프롬프트에 fault_diagnosis 의도 섹션을 노출한다(off면 비트동일).
+        app_config: 소유 플래그를 읽을 설정. 미지정이면 `load_config()`(plans/186 J4 —
+            라우터 노드는 자기 설정을 넘긴다).
 
     Returns:
         분류 결과 dict — `{intent, databases, dropped}`. 답변 영역 소유 플래그
@@ -932,13 +930,16 @@ async def _llm_classify(
             llm, query, domains,
             db_descriptions=db_descriptions,
             fault_diagnosis_enabled=fault_diagnosis_enabled,
+            app_config=app_config,
         )
 
-    ownership_on = _ownership_enabled()
+    app_config = app_config if app_config is not None else load_config()
+    ownership_on = capability_ownership_on(app_config)
     system_prompt = _build_router_prompt(
         domains,
         db_descriptions=db_descriptions,
         fault_diagnosis_enabled=fault_diagnosis_enabled,
+        app_config=app_config,
     )
     if plan_signal:
         system_prompt += SEMANTIC_ROUTER_PLAN_SIGNAL_SECTION
@@ -1192,6 +1193,7 @@ async def _llm_classify_two_stage(
     *,
     db_descriptions: dict[str, str] | None = None,
     fault_diagnosis_enabled: bool = False,
+    app_config: AppConfig | None = None,
 ) -> dict:
     """intent와 DB를 **두 번의 호출**로 분리해 분류한다 (Plan 79 트랙 B).
 
@@ -1211,6 +1213,8 @@ async def _llm_classify_two_stage(
         domains: 활성 DB 도메인 목록
         db_descriptions: Redis 캐시 DB 설명 (선택)
         fault_diagnosis_enabled: 장애 진단 옵트인 (계약 C-A)
+        app_config: 소유 플래그를 읽을 설정. 미지정이면 `load_config()`(plans/186 J4 —
+            라우터 노드는 자기 설정을 넘긴다).
 
     Returns:
         `_llm_classify`와 **동일 형태** — {intent, databases, dropped, (+ two_stage 메타)}.
@@ -1269,7 +1273,8 @@ async def _llm_classify_two_stage(
     }
     # (plans/102 X-7) 답변 영역 소유 — 단일 호출 경로와 같은 반환 계약
     # (DB 선택이 없으면 chain도 빈 목록).
-    ownership_on = _ownership_enabled()
+    app_config = app_config if app_config is not None else load_config()
+    ownership_on = capability_ownership_on(app_config)
     if ownership_on:
         meta["chain"] = []
 
@@ -1311,7 +1316,7 @@ async def _llm_classify_two_stage(
             SEMANTIC_ROUTER_UNKNOWN_EXAMPLE if cfg.unknown_enabled else ""
         ),
         # (plans/102 X-8) 단일 호출 템플릿과 같은 슬롯·같은 렌더(대칭) — off면 전부 빈 문자열.
-        **_ownership_prompt_slots(domains),
+        **_ownership_prompt_slots(domains, app_config=app_config),
     )
     messages2: list[BaseMessage] = [SystemMessage(content=stage2_prompt)]
     if isinstance(llm, KBGenAIChat):
@@ -1414,14 +1419,17 @@ def _description_locked(db_id: str) -> bool:
     return bool(entry is not None and entry.description_locked)
 
 
-def _ownership_prompt_slots(domains: list[DBDomainConfig]) -> dict[str, str]:
+def _ownership_prompt_slots(
+    domains: list[DBDomainConfig], *, app_config: AppConfig | None = None,
+) -> dict[str, str]:
     """라우터 프롬프트의 답변 영역 소유 슬롯 4개(plans/102 X-8).
 
     off면 전부 빈 문자열 — 렌더가 종전과 바이트 동일하다. on이면 프롬프트에 실리는 DB(=활성 도메인)
     기준으로 레지스트리에서 렌더한 값을 준다. 렌더는 DB 목록 단위로 캐시한다(기동 시 1회 — 요청마다
-    흔들리면 프롬프트 접두 KV 캐시가 무효화된다).
+    흔들리면 프롬프트 접두 KV 캐시가 무효화된다). 플래그는 넘긴 설정에서 읽는다(미지정이면
+    `load_config()` · plans/186 J4).
     """
-    if not _ownership_enabled():
+    if not capability_ownership_on(app_config if app_config is not None else load_config()):
         return {
             "capability_ownership_section": "",
             "capability_chain_line": "",
@@ -1466,6 +1474,7 @@ def _build_router_prompt(
     *,
     db_descriptions: dict[str, str] | None = None,
     fault_diagnosis_enabled: bool = False,
+    app_config: AppConfig | None = None,
 ) -> str:
     """활성 도메인 기반으로 라우팅 프롬프트를 동적 생성한다.
 
@@ -1477,6 +1486,7 @@ def _build_router_prompt(
         db_descriptions: Redis 캐시에서 로드한 DB 설명 매핑 (선택)
         fault_diagnosis_enabled: True일 때만 fault_diagnosis 의도 섹션을 덧붙인다 (CW-B).
             off면 프롬프트가 기존과 비트동일하여 LLM이 fault_diagnosis를 산출하지 않는다.
+        app_config: 소유 슬롯 플래그를 읽을 설정. 미지정이면 `load_config()`(plans/186 J4).
 
     Returns:
         완성된 시스템 프롬프트 문자열
@@ -1503,7 +1513,7 @@ def _build_router_prompt(
         unknown_class_line=SEMANTIC_ROUTER_UNKNOWN_CLASS_LINE if unknown_on else "",
         unknown_example=SEMANTIC_ROUTER_UNKNOWN_EXAMPLE if unknown_on else "",
         # (plans/102 X-8) 답변 영역 소유 — off면 네 슬롯 모두 빈 문자열(바이트 동일).
-        **_ownership_prompt_slots(domains),
+        **_ownership_prompt_slots(domains, app_config=app_config),
     )
 
 

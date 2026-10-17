@@ -189,7 +189,8 @@ class TestSingleNonSqlBudget:
         out = await sub._run_single_db_pipeline(_single_isolated(), MagicMock(), _cfg())
         assert calls["gen"] == 2 and calls["exec"] == 0
         assert out["regen_stop"]["reason"] == qv.REGEN_STOP_NON_SQL
-        assert out["regen_stop"]["detail"].startswith("SELECT 문만 허용됩니다")
+        # detail은 「SQL 검증 실패」 머리말 꼴(plans/186 M7 — 멀티 루프와 대칭)
+        assert out["regen_stop"]["detail"].startswith("SQL 검증 실패: SELECT 문만 허용됩니다")
         assert out["error_message"]
 
     @pytest.mark.asyncio
@@ -464,8 +465,10 @@ class TestMultiDeadline:
         _sql, err = await _gen_validated(run)
         assert len(calls) == 1
         assert run.regen_stops["gp"]["reason"] == qv.REGEN_STOP_DEADLINE
-        # detail은 마지막 검증 사유 그대로(사용자 문구는 반환 오류 쪽)
-        assert run.regen_stops["gp"]["detail"].startswith("테이블을 하나도 조회하지 않는")
+        # detail은 머리말 붙은 마지막 검증 사유(plans/186 M7 · 사용자 문구는 반환 오류 쪽)
+        assert run.regen_stops["gp"]["detail"].startswith(
+            "SQL 검증 실패: 테이블을 하나도 조회하지 않는"
+        )
         assert "10초 < 직전 SQL 생성 20초" in err and "마지막 실패 사유: SQL 검증 실패" in err
         # 검증 사유 원문은 사용자 문구에 싣지 않는다(plans/163 S3+)
         assert "테이블을 하나도" not in err

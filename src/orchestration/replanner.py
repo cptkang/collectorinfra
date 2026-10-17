@@ -46,7 +46,7 @@ from src.utils.deadline import retrieval_remaining
 from src.utils.json_extract import extract_json_from_response
 from src.utils.query_gen_common import term_in_text
 from src.utils.task_result_keys import DEGRADED_KEY
-from src.utils.user_error import safe_error_text
+from src.utils.user_error import safe_stop_detail_text
 from src.utils.prior_dependency import (
     NOTE_DECOMPOSE,
     NOTE_DESCRIPTIONS_MISSING,
@@ -190,7 +190,14 @@ class _ReplanCtx:
         return _answer_reserve_sec(self.app_config)
 
     def stop(self, **extra: Any) -> dict[str, Any]:
-        """루프 종료 반환 — 공통 세 키 뒤에 사유 키를 잇는다."""
+        """루프 종료 반환 — 공통 세 키 뒤에 사유 키를 잇는다.
+
+        계획 검증이 노트를 남겼으면(`plan_notes`) 뒤 필터가 끝내도 그 노트를 싣는다(plans/186 K5 —
+        종전에는 증분 추가에만 실렸다). 호출부가 `dependency_notes`를 넘기면 그 값을 그대로 쓴다.
+        계획 검증 앞 단계에서는 `plan_notes`가 비어 있어 반환이 종전과 같다.
+        """
+        if self.plan_notes and "dependency_notes" not in extra:
+            extra["dependency_notes"] = self.replan_notes
         return {
             "needs_replan": False, "replan_history": self.replan_history,
             "current_node": "replanner", **extra,
@@ -418,9 +425,7 @@ def _filter_plan_validation(ctx: _ReplanCtx) -> dict[str, Any] | None:
     ctx.replan_notes = list(ctx.state.get("dependency_notes") or []) + ctx.plan_notes
     if ctx.new_tasks:
         return None
-    if ctx.plan_notes:
-        return ctx.stop(dependency_notes=ctx.replan_notes)
-    return ctx.stop()
+    return ctx.stop()  # 노트가 있으면 `stop`이 싣는다(plans/186 K5)
 
 
 def _filter_futile(ctx: _ReplanCtx) -> dict[str, Any] | None:
@@ -573,8 +578,8 @@ DECISION_GUARDS: tuple[tuple[str, _Step], ...] = (
 )
 
 #: 신규 task 필터 — **평가 순서가 의미다**. 계획 검증은 무익 재시도 필터들보다 앞(교정된 담당으로
-#: 비교한다 · plans/121 TP-1.3). 계획 검증 노트는 마지막 증분 추가에만 실린다(뒤 필터 종료 반환은
-#: 종전대로 노트 없음).
+#: 비교한다 · plans/121 TP-1.3). 계획 검증 노트는 증분 추가와 뒤 필터 종료 반환 양쪽에 실린다
+#: (`_ReplanCtx.stop` · plans/186 K5).
 FILTERS: tuple[tuple[str, _Step], ...] = (
     ("terminal_substitutes", _filter_terminal_substitutes),  # plans/132 G-4
     ("plan_validation", _filter_plan_validation),  # plans/121 TP-1.3 · N-5
@@ -1406,8 +1411,9 @@ def _regen_stop_notice(stopped: list[tuple[dict[str, Any], dict[str, Any]]]) -> 
         )
         query = " ".join(str(prior.get("sub_query") or "").split())[:_MAX_NOTICE_QUERY_CHARS]
         # 마지막 사유는 고정 사유·머리말만 싣는다 — 실행 예외·검증 사유(생성 SQL 조각)가 보간된
-        # 원문은 버린다(plans/163 S3+ · 원문은 SQL 루프·검증 노드 로그에 남는다)
-        detail = (safe_error_text(stop.get("detail")) or "")[:_MAX_NOTICE_DETAIL_CHARS]
+        # 원문은 버린다(plans/163 S3+ · 원문은 SQL 루프·검증 노드 로그에 남는다). 멀티 DB의
+        # 「db_id: 사유」 이음은 조각마다 거른다(plans/186 M7).
+        detail = (safe_stop_detail_text(stop.get("detail")) or "")[:_MAX_NOTICE_DETAIL_CHARS]
         line = (
             f"「{query}」 조회는 {reason}. "
             "같은 조회를 다시 맡기지 않고 지금까지의 결과로 답했습니다"

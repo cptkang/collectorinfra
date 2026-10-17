@@ -12,7 +12,7 @@ from typing import Any, Optional
 import jwt
 from fastapi import Header, HTTPException, Request
 
-from src.domain.user import UserRole
+from src.domain.user import UserRepository, UserRole
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,24 @@ def decode_typed_token(token: str, secret: str, expected_type: str) -> dict[str,
     return payload
 
 
+#: 인증 활성인데 사용자 저장소(`app.state.user_repo`)가 없을 때의 고정 응답 문구(plans/186 L4).
+AUTH_STORE_UNAVAILABLE_DETAIL = "인증 서비스를 사용할 수 없습니다. 관리자에게 문의하세요."
+
+
+def _auth_store_unavailable(request: Request) -> HTTPException:
+    """인증 활성 + 사용자 저장소 부재를 fail-closed(503)로 거부할 예외를 만든다(plans/186 L4).
+
+    저장소가 없으면 활성 여부·DB 권한(`allowed_db_ids` 등)을 확인할 수 없다 — 토큰 payload만
+    믿고 통과시키면 전 DB 허용으로 인가가 강등된다(docs/18 2026-10-17). 토큰·sub는 로그에
+    남기지 않고 요청 경로만 남긴다(`%r` — 제어문자 인코딩).
+    """
+    logger.warning(
+        "인증 활성인데 사용자 저장소가 없어 요청을 거부합니다(503): path=%r",
+        request.url.path,
+    )
+    return HTTPException(status_code=503, detail=AUTH_STORE_UNAVAILABLE_DETAIL)
+
+
 def _verify_user_token(token: str, secret: str) -> dict[str, Any]:
     """사용자 JWT 토큰을 검증하고 payload를 반환한다.
 
@@ -113,6 +131,9 @@ async def get_current_user(
 
     Returns:
         사용자 정보 dict 또는 None
+
+    Raises:
+        HTTPException: 토큰 무효(401) · 유효 토큰인데 사용자 저장소 부재(503 · plans/186 L4)
     """
     config = request.app.state.config
     if not config.auth.enabled:
@@ -124,23 +145,14 @@ async def get_current_user(
     token = authorization[7:]
     payload = _verify_user_token(token, config.auth.jwt_secret)
 
-    # DB에서 최신 사용자 정보 조회 (권한 실시간 반영)
-    user_repo = getattr(request.app.state, "user_repo", None)
-    if user_repo:
-        user = await user_repo.get_by_user_id(payload["sub"])
-        if user and user.is_active:
-            return user.to_auth_dict()
-        return None
-
-    # user_repo가 없으면 토큰 payload만으로 반환
-    return {
-        "sub": payload.get("sub"),
-        "name": payload.get("name", ""),
-        "role": payload.get("role", "user"),
-        "department": None,
-        "allowed_db_ids": None,
-        "allowed_sources": None,
-    }
+    # DB에서 최신 사용자 정보 조회 (권한 실시간 반영) — 저장소가 없으면 fail-closed(plans/186 L4)
+    user_repo: UserRepository | None = getattr(request.app.state, "user_repo", None)
+    if not user_repo:
+        raise _auth_store_unavailable(request)
+    user = await user_repo.get_by_user_id(payload["sub"])
+    if user and user.is_active:
+        return user.to_auth_dict()
+    return None
 
 
 def _try_break_glass_admin(request: Request, authorization: Optional[str]) -> Optional[dict]:
@@ -183,6 +195,9 @@ async def resolve_stream_user(
 
     Returns:
         사용자 dict(개발 모드는 ANONYMOUS_USER), 또는 인증 실패 시 None.
+
+    Raises:
+        HTTPException: 토큰 무효(401) · 유효 토큰인데 사용자 저장소 부재(503 · plans/186 L4)
     """
     config = request.app.state.config
     if not config.auth.enabled:
@@ -199,21 +214,13 @@ async def resolve_stream_user(
         return None
 
     payload = _verify_user_token(token, config.auth.jwt_secret)
-    user_repo = getattr(request.app.state, "user_repo", None)
-    if user_repo:
-        user = await user_repo.get_by_user_id(payload["sub"])
-        if user and user.is_active:
-            return user.to_auth_dict()
-        return None
-    return {
-        "sub": payload.get("sub"),
-        "name": payload.get("name", ""),
-        "role": payload.get("role", "user"),
-        "department": None,
-        "allowed_db_ids": None,
-        "allowed_sources": None,
-        "alarm_zones": payload.get("alarm_zones"),
-    }
+    user_repo: UserRepository | None = getattr(request.app.state, "user_repo", None)
+    if not user_repo:
+        raise _auth_store_unavailable(request)
+    user = await user_repo.get_by_user_id(payload["sub"])
+    if user and user.is_active:
+        return user.to_auth_dict()
+    return None
 
 
 def alarm_zones_for_user(user: Optional[dict], auth_enabled: bool) -> set[str]:
@@ -281,7 +288,7 @@ async def require_user(
         사용자 정보 dict
 
     Raises:
-        HTTPException: 인증 실패 시
+        HTTPException: 인증 실패(401) · 유효 토큰인데 사용자 저장소 부재(503 · plans/186 L4)
     """
     config = request.app.state.config
     if not config.auth.enabled:
@@ -293,20 +300,11 @@ async def require_user(
     token = authorization[7:]
     payload = _verify_user_token(token, config.auth.jwt_secret)
 
-    # DB에서 최신 사용자 정보 조회
-    user_repo = getattr(request.app.state, "user_repo", None)
-    if user_repo:
-        user = await user_repo.get_by_user_id(payload["sub"])
-        if not user or not user.is_active:
-            raise HTTPException(status_code=401, detail="비활성 사용자입니다.")
-        return user.to_auth_dict()
-
-    # user_repo가 없으면 토큰 payload만으로 반환
-    return {
-        "sub": payload.get("sub"),
-        "name": payload.get("name", ""),
-        "role": payload.get("role", "user"),
-        "department": None,
-        "allowed_db_ids": None,
-        "allowed_sources": None,
-    }
+    # DB에서 최신 사용자 정보 조회 — 저장소가 없으면 fail-closed(plans/186 L4)
+    user_repo: UserRepository | None = getattr(request.app.state, "user_repo", None)
+    if not user_repo:
+        raise _auth_store_unavailable(request)
+    user = await user_repo.get_by_user_id(payload["sub"])
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="비활성 사용자입니다.")
+    return user.to_auth_dict()

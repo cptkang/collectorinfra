@@ -816,9 +816,10 @@ async def _route_zone(state: dict[str, Any]) -> dict[str, Any]:
     config.multi_db.zone_group_exclusive = True
     config.enable_semantic_routing = True
     config.tier3_plan_loop_enabled = False
+    # 소유 판정은 넘긴 설정에서 읽는다(plans/186 J4) — MagicMock 속성은 참이라 명시한다
+    config.router.capability_ownership_enabled = False
     zone_q = {"question": "어느 존?", "options": []}
     with patch("src.routing.semantic_router._llm_classify", AsyncMock(return_value=rows)), \
-            patch("src.routing.semantic_router._ownership_enabled", return_value=False), \
             patch("src.routing.semantic_router._zone_clarification_or_none_router",
                   return_value=zone_q):
         return await semantic_router(state, llm=AsyncMock(), app_config=config)

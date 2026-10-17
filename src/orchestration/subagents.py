@@ -122,6 +122,7 @@ from src.utils.query_gen_common import (
     is_server_identity_col,
     resolve_query_limit,
 )
+from src.utils.user_error import with_validation_head
 
 # 옛 `_` 이름 별칭(D-337 ③ · plans/166 O4 — 1사이클) — 모듈 밖 소비처가 쓰던 이름. 이 모듈
 # 정의분(`extract_identity_rows`·`make_isolated_input`·`pack_pipeline_result`)은 정의 뒤에 둔다.
@@ -192,7 +193,8 @@ async def classify_dbs(
     llm_error: str | None = None
     try:
         classified = await _llm_classify(
-            llm, sub_query, active_domains, db_descriptions=db_descriptions
+            llm, sub_query, active_domains, db_descriptions=db_descriptions,
+            app_config=app_config,
         )
     except Exception as e:
         logger.error("classify_dbs LLM 분류 실패, 첫 활성 DB 폴백: %s", e)
@@ -460,8 +462,9 @@ async def _run_single_db_pipeline(
                     "단일 DB 파이프라인 산문 조기 종결(plans/119 N-5): retry=%s",
                     state.get("retry_count", 0),
                 )
+                # detail은 「SQL 검증 실패: …」 머리말 꼴 — 멀티 SQL 루프와 같다(plans/186 M7)
                 _stop_regen(
-                    state, REGEN_STOP_NON_SQL, _reason,
+                    state, REGEN_STOP_NON_SQL, with_validation_head(_reason),
                     response=non_sql_prose_response(state.get("generated_sql") or ""),
                 )
                 break
@@ -469,7 +472,7 @@ async def _run_single_db_pipeline(
                 # 검증 실패 + 재시도 초과 → 에러 종료
                 if not state.get("error_message"):
                     state["error_message"] = _reason
-                _stop_regen(state, REGEN_STOP_VALIDATION_BUDGET, _reason)
+                _stop_regen(state, REGEN_STOP_VALIDATION_BUDGET, with_validation_head(_reason))
                 break
             # 재시도 가능 → query_generator 재진입
             continue

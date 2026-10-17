@@ -179,6 +179,7 @@ from src.domain.query_time import QueryTime
 from src.tools.metrics import classify_metric_field
 from src.schema_cache.form_memory import load_form_memory_answers
 from src.utils.schema_utils import attach_profile_relationships, safe_sample_preview
+from src.utils.user_error import with_validation_head
 
 if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 플래그 ON 경로에서만 수행한다.
     from src.pipeline.column_deriver import StepwiseDeps
@@ -764,7 +765,8 @@ async def _generate_validated_sql(
     # 보정본(행 상한 자동 추가)이 오면 갈아탄다 — 버리면 검증이 "통과만" 하고 끝난다(CU-16).
     sql = _fixed or sql
     # 유효 SQL 없이 끝날 때의 종결 사유(plans/119) — 아래 루프가 정하고 반환 직전에 기록한다.
-    # detail은 마지막 검증 사유다(시간 종결이면 사용자 문구로 바뀌기 전 값 — Q-3 계약).
+    # detail은 마지막 검증 사유다(시간 종결이면 사용자 문구로 바뀌기 전 값 — Q-3 계약 · 기록은
+    # 「SQL 검증 실패: …」 머리말 꼴 — plans/186 M7).
     _stop_reason = REGEN_STOP_VALIDATION_BUDGET
     _stop_detail: str | None = None
     for _retry in range(1, 3):
@@ -859,7 +861,11 @@ async def _generate_validated_sql(
         # (plans/119 Q-3).
         # PII 차단 중단도 "재생성이 무익해 멈춘 검증 실패"라 검증 소진으로 본다. 토큰 한도 중단은
         # `backend_limit`이다(plans/139 W1 잔여 — 단일 경로와 같은 사유).
-        _record_regen_stop(run, db_id, _stop_reason, _stop_detail or validation_error)
+        # detail은 단일 경로와 같은 「SQL 검증 실패: …」 머리말 꼴로 남긴다(plans/186 M7) — 고지는
+        # 머리말만 싣는다(원문 미노출 163 S3+ · kind 판정은 원문 조각으로 그대로).
+        _record_regen_stop(
+            run, db_id, _stop_reason, with_validation_head(_stop_detail or validation_error),
+        )
     return sql, validation_error
 
 
@@ -1015,7 +1021,10 @@ async def _run_single_target(target: dict, run: _MultiRun) -> None:
                 if _blocked:
                     await _record_failure(run, db_id, sql, exec_exc, exec_start)
                     run.db_errors[db_id] = f"DB '{db_id}' 실행 에러: {_first_error} | {_blocked}"
-                    _record_regen_stop(run, db_id, REGEN_STOP_DEADLINE, _first_error)
+                    # detail은 「SQL 실행 에러: …」 머리말 꼴(plans/186 — 고지는 머리말만 싣는다)
+                    _record_regen_stop(
+                        run, db_id, REGEN_STOP_DEADLINE, f"SQL 실행 에러: {_first_error}",
+                    )
                     logger.warning("DB '%s' 실행 오류 재생성 생략: %s", db_id, _blocked)
                     return
                 sql, _regen_validation_error = await _generate_validated_sql(
@@ -2229,6 +2238,7 @@ def _multi_resource_pivot_result(
     concat_eav: list[tuple[str, str, str]] | None = None,
     dropped_inferred: list[str] | None = None,
     applied_overrides: set[str] | None = None,
+    schema_dropped_metric: list[str] | None = None,
     form_intent: bool = False,
     form_fill_out: dict | None = None,
     query_time: QueryTime | None = None,
@@ -2256,10 +2266,12 @@ def _multi_resource_pivot_result(
     # llm_inferred 강등 필드 중 사용률류는 필드명 기반 결정적 피벗으로 회수(D-149) —
     # 매핑 값은 버리되 채움 능력은 유지(전역 unmapped_fields에 없어 _um이 못 받는 몫).
     # 적용된 답변 오버라이드(공란/직접입력 포함)는 metric 회수보다 우선(D-151).
-    # 단일 경로와 같은 함수·규칙(plans/185).
+    # 단일 경로와 같은 함수·규칙(plans/185). 스키마 필터에서 빠진 성능지표 매핑 필드도 같은
+    # 규칙으로 회수한다 — 단일 경로는 필터 전 매핑을 가른다(plans/186 J7).
     pivot_metric_fields = select_metric_recovery_fields(
         _um,
         [field for field, _ in metric_entries],
+        schema_dropped_metric or [],
         dropped_inferred or [],
         exclude=_month_fields | concat_fields | (applied_overrides or set()),
         is_metric=_is_metric,
@@ -2383,22 +2395,31 @@ def _metric_fields_section(metric_entries: list[tuple[str, str]]) -> str:
 
 def _split_mapping_for_prompt(
     column_mapping: dict[str, str], schema_info: dict,
-) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
+) -> tuple[
+    list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]], list[str],
+]:
     """양식 매핑을 프롬프트 섹션별 묶음(정규/EAV/성능지표)으로 가른다.
 
     성능 지표 매핑을 왜 갈라내는지는 아래 분리 지점 주석 참조.
 
     Returns:
-        (정규 매핑, EAV 매핑, 성능지표 매핑)
+        (정규 매핑, EAV 매핑, 성능지표 매핑, 스키마 필터에서 빠진 성능지표 매핑의 필드명)
     """
     # 수정 A 적용: schema_info에 존재하지 않는 테이블의 매핑을 필터링.
     # 로그에 대조 테이블 목록을 부기해 0건 원인 추적을 돕고(W-7 — 경로 구분 접두는 유지),
     # `db_id:` 접두 표기도 단일 경로처럼 떼고 판정한다(S-1 — 외부 힌트 유입 시 침묵 폐기 방지).
+    _unfiltered = column_mapping
     column_mapping = filter_mapping_by_schema(
         column_mapping, schema_info,
         log_label="multi_db column_mapping 필터링",
         log_schema_tables=True,
         strip_db_prefix=True,
+    )
+    # per-DB 스키마에 사용률 통계 테이블이 없어 빠진 성능지표 매핑은 필드명 피벗 회수 후보로
+    # 따로 넘긴다 — 단일 경로는 스키마 필터 전 매핑으로 가르므로 회수한다(plans/186 J7 · 185 §4).
+    # 판정은 아래와 같은 `split_pivot_mapping`의 성능지표 묶음이다. 정규·EAV는 그대로 버린다.
+    _, _, _schema_dropped_metric = split_pivot_mapping(
+        {f: c for f, c in _unfiltered.items() if f not in column_mapping}
     )
 
     # 서버명/서버이름류가 EAV Hostname으로 오매핑되면 등록명 컬럼으로 결정적 교정
@@ -2415,7 +2436,11 @@ def _split_mapping_for_prompt(
     # 조인을 만든다. 이 항목은 강제 대신 쿼리 예시의 cmm_metric_stat_m 피벗 패턴을 따르도록
     # 안내로 넘긴다. EAV config 테이블과 entity 테이블이 다를 수 있으므로 정규 컬럼 필터링은
     # 하지 않고 LLM이 schema_info를 보고 적절한 JOIN을 결정하도록 남긴다(Plan 37: 수정 3-2).
-    return split_pivot_mapping(column_mapping)
+    regular_entries, eav_entries, metric_entries = split_pivot_mapping(column_mapping)
+    return (
+        regular_entries, eav_entries, metric_entries,
+        [field for field, _ in _schema_dropped_metric],
+    )
 
 
 def _build_mapping_user_parts(
@@ -2544,8 +2569,8 @@ def _build_mapping_user_parts(
             "candidates", build_form_fill_candidates(schema_info, _sn_eav)
         )
 
-    regular_entries, eav_entries, metric_entries = _split_mapping_for_prompt(
-        column_mapping, schema_info,
+    regular_entries, eav_entries, metric_entries, schema_dropped_metric = (
+        _split_mapping_for_prompt(column_mapping, schema_info)
     )
 
     # 자식 리소스(server.Cpus/Memory 등) EAV 속성이 섞이면 서버 행 브릿지 조인으로는
@@ -2585,6 +2610,7 @@ def _build_mapping_user_parts(
             error_context=error_context, app_config=app_config,
             month_series=month_series, concat_eav=concat_eav,
             dropped_inferred=_dropped_inferred, applied_overrides=_applied_ov,
+            schema_dropped_metric=schema_dropped_metric,
             form_intent=form_intent, form_fill_out=form_fill_out,
             query_time=query_time,
         )

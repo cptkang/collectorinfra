@@ -113,11 +113,21 @@ def factory(monkeypatch: pytest.MonkeyPatch):
     result_explainer.clear_caches()
 
 
+class _Users:
+    """`user_repo` 대역 — 인증 활성이면 저장소가 필수다(plans/186 L4 fail-closed). 관리자 없음."""
+
+    async def get_by_user_id(self, user_id: str):  # noqa: ANN201
+        from src.domain.user import User
+
+        return User(user_id=user_id, username=user_id, hashed_password="x")
+
+
 def _viz_client(*, audit: _Audit | None = None, **cfg: Any) -> TestClient:
     from src.api.routes import result_viz
 
     app = FastAPI()
     app.state.config = _config(**cfg)
+    app.state.user_repo = _Users()
     if audit is not None:
         app.state.audit_service = audit
     app.include_router(result_viz.router, prefix="/api/v1")

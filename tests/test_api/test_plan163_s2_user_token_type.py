@@ -42,12 +42,12 @@ def _token(type_: str | None, secret: str = AUTH_SECRET, sub: str = "u1") -> str
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
-def _request(cookie_token: str | None = None):
+def _request(cookie_token: str | None = None, user_repo=None):
     config = SimpleNamespace(
         auth=SimpleNamespace(enabled=True, jwt_secret=AUTH_SECRET),
         admin=SimpleNamespace(jwt_secret=ADMIN_SECRET),
     )
-    state = SimpleNamespace(config=config, user_repo=None)
+    state = SimpleNamespace(config=config, user_repo=user_repo)
     return SimpleNamespace(
         app=SimpleNamespace(state=state),
         cookies={"user_token": cookie_token} if cookie_token else {},
@@ -97,10 +97,19 @@ async def test_require_user_rejects_non_user_type(bad_type):
 
 
 async def test_user_token_passes_all_three_call_sites():
+    # 저장소 부재는 503(plans/186 L4) — 통과 경로는 저장소 조회로 확인한다
+    from unittest.mock import AsyncMock
+
+    from src.domain.user import User
+
+    repo = SimpleNamespace(
+        get_by_user_id=AsyncMock(return_value=User(user_id="u1", username="U", hashed_password="x"))
+    )
     token = _token("user")
-    assert (await get_current_user(_request(), f"Bearer {token}"))["sub"] == "u1"
-    assert (await resolve_stream_user(_request(cookie_token=token)))["sub"] == "u1"
-    assert (await require_user(_request(), f"Bearer {token}"))["sub"] == "u1"
+    assert (await get_current_user(_request(user_repo=repo), f"Bearer {token}"))["sub"] == "u1"
+    req = _request(cookie_token=token, user_repo=repo)
+    assert (await resolve_stream_user(req))["sub"] == "u1"
+    assert (await require_user(_request(user_repo=repo), f"Bearer {token}"))["sub"] == "u1"
 
 
 # --- 두 시크릿이 같을 때 기동 경고 (선택 항목) ---
