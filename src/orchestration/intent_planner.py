@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from functools import lru_cache
 from typing import Any, Optional
 
@@ -645,7 +646,7 @@ async def _plan_turn(
     """계획 본체 — 사전 처리(계층 A) 후 LLM 분해(계층 B).
 
     계층 A pre-check(멀티턴 pending 결합 보존)를 먼저 수행하고, 해당하지 않으면
-    계층 B LLM 분해를 수행한다.
+    계층 B LLM 분해를 수행한다. 계층 A는 순서 표 `_PRECHECK_STEPS`의 첫 성립 단락이다.
 
     Args:
         state: 현재 에이전트 상태
@@ -666,29 +667,57 @@ async def _plan_turn(
 
     user_query = state["user_query"]
 
-    # [계층 A] deterministic pre-check — semantic_router 우선순위 ①~③ 이식
-    # ① pending_synonym_reuse → cache_management 강제
+    # [계층 A] deterministic pre-check — semantic_router 우선순위 ①~③ 이식.
+    # 표의 순서가 곧 우선순위다(각 단계 주석의 번호는 도입 순서라 표 순서와 다를 수 있다).
+    for step in _PRECHECK_STEPS:
+        plan = await step(state, app_config, user_query)
+        if plan is not None:
+            return plan
+
+    return await _llm_plan(state, llm, app_config, user_query)
+
+
+async def _pre_synonym_reuse(
+    state: AgentState, app_config: AppConfig, user_query: str
+) -> dict[str, Any] | None:
+    """① pending_synonym_reuse → cache_management 강제."""
     if state.get("pending_synonym_reuse"):
         logger.info("intent_planner: pending_synonym_reuse 감지, cache_management 단일 task")
         return _on_path(_single_task_plan("cache_management", user_query), "pending_synonym_reuse")
+    return None
 
-    # ② 명시적 유사어 등록 요청 (멀티턴 두 번째 요청)
+
+async def _pre_synonym_registration(
+    state: AgentState, app_config: AppConfig, user_query: str
+) -> dict[str, Any] | None:
+    """② 명시적 유사어 등록 요청 (멀티턴 두 번째 요청)."""
     parsed = state.get("parsed_requirements", {})
     if parsed.get("synonym_registration") and state.get("pending_synonym_registrations"):
         logger.info("intent_planner: 유사어 등록 요청 감지, synonym_registration 단일 task")
         return _on_path(
             _single_task_plan("synonym_registration", user_query), "synonym_registration"
         )
+    return None
 
-    # ②.3 앵커 없는 동의어 집합 선언(D-142) — 3단 pre-gate(semantic_router 우선순위 ③)와
+
+async def _pre_synonym_set(
+    state: AgentState, app_config: AppConfig, user_query: str
+) -> dict[str, Any] | None:
+    """②.3 앵커 없는 동의어 집합 선언(D-142)."""
+    # 3단 pre-gate(semantic_router 우선순위 ③)와
     # 대칭. 트랙 A에는 이 분기가 없어 신규 셋 선언이 LLM 분해에서 synonym_registration
     # (pending 답변 턴 전용)으로 오분류되거나 field_mapper 전단에 가로채였다(2026-09-01
     # 라이브 실측 A-10). cache_management 노드가 같은 파서로 결정적 등록한다.
     if parse_synonym_set(user_query):
         logger.info("intent_planner: 동의어 집합 선언 감지(D-142), cache_management 단일 task")
         return _on_path(_single_task_plan("cache_management", user_query), "synonym_set")
+    return None
 
-    # ②.7 폼필 확인 이력 조회·삭제 (Plan 73 Phase 3, D-151 — FIX-21).
+
+async def _pre_form_memory(
+    state: AgentState, app_config: AppConfig, user_query: str
+) -> dict[str, Any] | None:
+    """②.7 폼필 확인 이력 조회·삭제 (Plan 73 Phase 3, D-151 — FIX-21)."""
     # 반드시 ②.5(selected_db_ids)·③(mapped_db_ids)보다 먼저 판정해야 한다 —
     # 양식 업로드 턴은 field_mapper가 항상 mapped_db_ids를 세팅하므로 ③이 조기
     # 반환하면 이력 명령이 채우기(data_query)로 오탈취된다(라이브 실측
@@ -730,35 +759,55 @@ async def _plan_turn(
         if _sig:
             plan["last_form_signature"] = _sig  # 직전 양식 컨텍스트 갱신(멀티턴 보존)
         return _on_path(plan, "form_memory")
+    return None
 
-    # ②.8 소스 선택 기억 보기·삭제 명령(plans/132 W5) — 양식 기억 명령(②.7)과 같은 결정적 단락.
+
+async def _pre_source_memory(
+    state: AgentState, app_config: AppConfig, user_query: str
+) -> dict[str, Any] | None:
+    """②.8 소스 선택 기억 보기·삭제 명령(plans/132 W5) — 양식 기억 명령(②.7)과 같은 결정적 단락."""
     if _is_source_memory_command(user_query):
         return _on_path(
             await _source_memory_command_plan(state, app_config, user_query), "source_memory",
         )
+    return None
 
-    # ②.9 문서 검색 명령(plans/138 W1 · D-307) — 「RAG에서 … 검색해줘」처럼 등록 문서 소스 이름으로
+
+async def _pre_doc_command(
+    state: AgentState, app_config: AppConfig, user_query: str
+) -> dict[str, Any] | None:
+    """②.9 문서 검색 명령(plans/138 W1 · D-307)."""
+    # 「RAG에서 … 검색해줘」처럼 등록 문서 소스 이름으로
     # 지목하고 검색을 명령하면 LLM 분해 없이 doc_query 단일 task로 고정한다(D-004 부기 — 등록 이름
     # 인식 · 내용어 판정 아님). 다른 소스 지목이 함께 있으면 판정하지 않는다(복합 질의는 종전 분해).
-    doc_plan = _doc_command_plan(state, app_config, user_query)
-    if doc_plan is not None:
-        return doc_plan
+    return _doc_command_plan(state, app_config, user_query)
 
-    # ③.9 포탈 도움말 명령(plans/142 §5 · D-315) — 「AIOps 포탈에서 수신 알람을 설명해줘」처럼 등록
+
+async def _pre_portal_command(
+    state: AgentState, app_config: AppConfig, user_query: str
+) -> dict[str, Any] | None:
+    """③.9 포탈 도움말 명령(plans/142 §5 · D-315)."""
+    # 「AIOps 포탈에서 수신 알람을 설명해줘」처럼 등록
     # 포탈 별칭(레지스트리 `solutions[portal]`)으로 지목하고 설명·검색을 명령하면 LLM 분해 없이
     # portal_help 단일 task로 고정한다(②.9와 같은 판정 함수 · 데이터 요청 표지가 있으면 보류).
-    portal_plan = _portal_command_plan(state, app_config, user_query)
-    if portal_plan is not None:
-        return portal_plan
+    return _portal_command_plan(state, app_config, user_query)
 
-    # ②.4 소스 선택 칩 답변 턴(plans/132 N-10) — 비DB 소스를 골랐으면 LLM 분해 없이 그 처리기로
+
+async def _pre_source_reentry(
+    state: AgentState, app_config: AppConfig, user_query: str
+) -> dict[str, Any] | None:
+    """②.4 소스 선택 칩 답변 턴(plans/132 N-10)."""
+    # 비DB 소스를 골랐으면 LLM 분해 없이 그 처리기로
     # 결정적 고정한다(존 선택 ②.5와 같은 모양). DB 소스를 골랐으면 칩이 DB 선택지를 함께 보냈으므로
     # 아래 ②.5가 그대로 처리한다.
-    source_plan = _source_reentry_plan(state, app_config, user_query)
-    if source_plan is not None:
-        return source_plan
+    return _source_reentry_plan(state, app_config, user_query)
 
-    # ②.5 존 역질문에서 사용자가 체크박스로 확정한 DB (Plan 75 §4) — LLM 분해를 건너뛰어
+
+async def _pre_zone_reentry(
+    state: AgentState, app_config: AppConfig, user_query: str
+) -> dict[str, Any] | None:
+    """②.5 존 역질문에서 사용자가 체크박스로 확정한 DB (Plan 75 §4)."""
+    # LLM 분해를 건너뛰어
     # 자연어 재조합 없이 결정적 고정(mapped_db_ids 선례 동형). task.db_ids는 하류
     # run_data_query_pipeline이 classify_dbs를 우회하는 기존 배관을 그대로 탄다.
     selected_db_ids = state.get("selected_db_ids")
@@ -780,16 +829,26 @@ async def _plan_turn(
             _single_task_plan("data_query", user_query, db_ids=list(selected_db_ids)),
             state,
         ), "zone_reentry")
+    return None
 
-    # ③ field_mapper가 이미 대상 DB를 결정한 경우 (양식 업로드 시)
+
+async def _pre_mapped_db_ids(
+    state: AgentState, app_config: AppConfig, user_query: str
+) -> dict[str, Any] | None:
+    """③ field_mapper가 이미 대상 DB를 결정한 경우 (양식 업로드 시)."""
     mapped_db_ids = state.get("mapped_db_ids")
     if mapped_db_ids:
         logger.info("intent_planner: mapped_db_ids 감지, data_query 단일 task (DB 고정=%s)", mapped_db_ids)
         return _on_path(_with_form_signature(
             _single_task_plan("data_query", user_query, db_ids=mapped_db_ids), state,
         ), "mapped_db_ids")
+    return None
 
-    # ③.5 양식 업로드(template_structure) → 폼필 단일 task 고정 (Plan 73 D-150).
+
+async def _pre_form_fill(
+    state: AgentState, app_config: AppConfig, user_query: str
+) -> dict[str, Any] | None:
+    """③.5 양식 업로드(template_structure) → 폼필 단일 task 고정 (Plan 73 D-150)."""
     # 양식 채우기는 의미상 단일 파이프라인 작업 — LLM 복합 분해가 서버정보/월지표를
     # 별도 task로 쪼개면 결과 병합이 2배 행이 된다(라이브 실측 2026-07-30 B0).
     # mapped_db_ids 미성립 턴(③ 미발동)도 결정적으로 단일화한다.
@@ -798,8 +857,13 @@ async def _plan_turn(
         return _on_path(
             _with_form_signature(_single_task_plan("data_query", user_query), state), "form_fill"
         )
+    return None
 
-    # ③.6 파일 없는 폼필 요청 → 안내 응답으로 단락 (Plan 73 D-150).
+
+async def _pre_form_no_file(
+    state: AgentState, app_config: AppConfig, user_query: str
+) -> dict[str, Any] | None:
+    """③.6 파일 없는 폼필 요청 → 안내 응답으로 단락 (Plan 73 D-150)."""
     # template_structure 없이 "양식 채워줘"류가 LLM 분해로 가면 data_query가 존재하지
     # 않는 양식을 환각 처리한다(라이브 실측 2026-07-30 7차). 고정 안내문은 LLM을
     # 통과시키지 않고 direct_response로 결정적 반환한다(LLM 실패 시 일반 오류 강등 방지).
@@ -809,8 +873,13 @@ async def _plan_turn(
         plan = _single_task_plan("general_inference", user_query)
         plan["task_plan"][0]["direct_response"] = _FORM_FILL_NO_FILE_GUIDANCE
         return _on_path(plan, "form_no_file")
+    return None
 
-    # ③.7 '가동률' 질의 → 미지원 지표 안내 단락 (D-200, D-150 동형).
+
+async def _pre_uptime_rate(
+    state: AgentState, app_config: AppConfig, user_query: str
+) -> dict[str, Any] | None:
+    """③.7 '가동률' 질의 → 미지원 지표 안내 단락 (D-200, D-150 동형)."""
     # 가동 시간 비율(uptime) 지표는 폴스타 3존 모두 미집계(2026-09-07 전수 실측) —
     # LLM 분해로 가면 CPU 사용률 임의 해석(공동존 오답) 또는 재계획 폭주(은행존 C-08)가
     # 된다. 고정 안내문을 direct_response로 결정적 반환한다(LLM 미통과).
@@ -819,15 +888,51 @@ async def _plan_turn(
         plan = _single_task_plan("general_inference", user_query)
         plan["task_plan"][0]["direct_response"] = _UPTIME_RATE_GUIDANCE
         return _on_path(plan, "uptime_guidance")
+    return None
 
-    # ③.8 사용법·지원 소스 문의 → general_inference 단일 task (plans/116 §10.3, D-038).
+
+async def _pre_usage_help(
+    state: AgentState, app_config: AppConfig, user_query: str
+) -> dict[str, Any] | None:
+    """③.8 사용법·지원 소스 문의 → general_inference 단일 task (plans/116 §10.3, D-038)."""
     # LLM 분해에 맡기면 분류가 흔들린다(분해 실패 시 data_query 폴백). 안내문은 노드가
     # 사용자 권한(allowed_db_ids)을 반영해 결정적으로 조립하므로 direct_response 는 두지 않는다.
     if is_usage_query(user_query):
         logger.info("intent_planner: 사용법 문의 감지 — general_inference 단일 task(plans/116)")
         return _on_path(_single_task_plan("general_inference", user_query), "usage_help")
+    return None
 
-    # [계층 B] LLM 복합 분해 — 후속 턴이면 압축 맥락(M3 보존 신호)을 주입한다(M1).
+
+#: 계층 A 사전 처리 순서 표(plans/174 T3) — 앞에서부터 평가해 처음 계획을 낸 단계에서 끝난다.
+#: 순서가 의미다: 폼필 이력 명령(②.7)은 존 선택(②.5)·양식 매핑(③)보다 앞이어야 하고(FIX-21),
+#: 문서·포탈 명령(②.9·③.9)과 소스 칩 답변(②.4)이 존 선택보다 앞이다. 단계를 끼울 때 자리를 지킨다.
+#: 단계 함수 **안에서** 부르는 모듈 전역(`_decompose_once` 등)은 호출 시점에 조회하므로 모듈 속성
+#: 대입이 먹는다. 단계 함수 자체는 import 시점에 이 표에 담기므로,
+#: 단계를 바꿔 끼우려면 표를 patch한다.
+_PRECHECK_STEPS: tuple[
+    Callable[[AgentState, AppConfig, str], Awaitable[dict[str, Any] | None]], ...
+] = (
+    _pre_synonym_reuse,
+    _pre_synonym_registration,
+    _pre_synonym_set,
+    _pre_form_memory,
+    _pre_source_memory,
+    _pre_doc_command,
+    _pre_portal_command,
+    _pre_source_reentry,
+    _pre_zone_reentry,
+    _pre_mapped_db_ids,
+    _pre_form_fill,
+    _pre_form_no_file,
+    _pre_uptime_rate,
+    _pre_usage_help,
+)
+
+
+async def _llm_plan(
+    state: AgentState, llm: BaseChatModel, app_config: AppConfig, user_query: str
+) -> dict[str, Any]:
+    """[계층 B] LLM 복합 분해 — 후속 턴이면 압축 맥락(M3 보존 신호)을 주입한다(M1)."""
     conversation_context = state.get("conversation_context")
     decomposed = await _llm_decompose(
         llm, user_query, app_config, conversation_context=conversation_context

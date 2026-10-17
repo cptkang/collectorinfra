@@ -13,6 +13,7 @@ v2 변경:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Optional
 
@@ -93,6 +94,33 @@ logger = logging.getLogger(__name__)
 MIN_RELEVANCE_SCORE = 0.3
 
 
+@dataclass
+class _RouteContext:
+    """`semantic_router` 단계 사이에 넘기는 요청 재료(plans/174 T3 — 단계 분할용 묶음)."""
+
+    state: AgentState
+    llm: BaseChatModel
+    app_config: AppConfig
+    user_query: str
+    active_db_ids: list[str]
+    parsed: Any
+
+
+@dataclass
+class _LlmRouting:
+    """LLM 분류 단계의 결과 — 대상 확정 단계(`_finalize_targets`)의 입력."""
+
+    intent: str
+    # `_llm_classify`는 dict를 돌려주지만 실패 분기가 같은 자리에 목록을 넣는다(종전 구조 유지).
+    llm_results: Any
+    capability_chain: list[str]
+    needs_plan: bool
+    ownership_on: bool
+    ownership_notes: list[dict[str, Any]]
+    fallback_mark: tuple[str, str] | None
+    plan_signal_on: bool
+
+
 async def semantic_router(
     state: AgentState,
     *,
@@ -103,6 +131,9 @@ async def semantic_router(
 
     LLM 기반으로만 라우팅을 수행한다.
     사용자가 프롬프트에서 직접 DB를 지정한 경우도 LLM이 감지한다.
+
+    단계: 결정적 게이트(`_deterministic_gates`) → LLM 분류·의도 분기(`_route_by_llm`) →
+    대상 확정(`_finalize_targets`). 앞 단계가 반환 dict를 내면 그대로 끝난다.
 
     Args:
         state: 현재 에이전트 상태
@@ -122,8 +153,28 @@ async def semantic_router(
     if llm is None:
         llm = create_llm(app_config)
 
-    user_query = state["user_query"]
-    active_db_ids = app_config.multi_db.get_active_db_ids()
+    ctx = _RouteContext(
+        state=state,
+        llm=llm,
+        app_config=app_config,
+        user_query=state["user_query"],
+        active_db_ids=app_config.multi_db.get_active_db_ids(),
+        parsed=state.get("parsed_requirements", {}),
+    )
+    gated = await _deterministic_gates(ctx)
+    if gated is not None:
+        return gated
+    routing = await _route_by_llm(ctx)
+    if isinstance(routing, dict):
+        return routing
+    return _finalize_targets(ctx, routing)
+
+
+async def _deterministic_gates(ctx: _RouteContext) -> dict[str, Any] | None:
+    """LLM 분류 전 결정적 게이트(우선순위 1~4.5 · 활성 DB 없음) — 걸리면 반환 dict, 아니면 None."""
+    state = ctx.state
+    user_query = ctx.user_query
+    active_db_ids = ctx.active_db_ids
 
     # [우선순위 1] pending_synonym_reuse → cache_management 강제 라우팅
     pending_reuse = state.get("pending_synonym_reuse")
@@ -141,7 +192,7 @@ async def semantic_router(
     # [우선순위 2] 명시적 유사어 등록 요청 → synonym_registration 라우팅
     # parsed_requirements에 synonym_registration이 있을 때만 (멀티턴 두 번째 요청)
     # 첫 번째 요청에서 field_mapper가 생성한 pending은 쿼리 파이프라인 완료 후 안내만 표시
-    parsed = state.get("parsed_requirements", {})
+    parsed = ctx.parsed
     synonym_reg = parsed.get("synonym_registration")
     if synonym_reg:
         pending_regs = state.get("pending_synonym_registrations")
@@ -181,7 +232,7 @@ async def semantic_router(
             # 선택으로 좁힌다는 말이 성립하지 않는 대상이라 사유 없이 빼지 않는다. 후보가
             # 없으면 아래 호출은 분류 없이 빈 목록이고 반환도 종전과 같다.
             targets += await _keep_zoneless_targets(
-                llm, user_query, active_db_ids, selected, app_config
+                ctx.llm, user_query, active_db_ids, selected, ctx.app_config
             )
             return {
                 "target_databases": targets,
@@ -269,6 +320,14 @@ async def semantic_router(
             "user_specified_db": None,
             "current_node": "semantic_router",
         }
+    return None
+
+
+async def _route_by_llm(ctx: _RouteContext) -> dict[str, Any] | _LlmRouting:
+    """LLM 분류와 의도별 분기 — DB 미접근 의도면 반환 dict, 데이터 조회면 분류 결과."""
+    user_query = ctx.user_query
+    active_db_ids = ctx.active_db_ids
+    app_config = ctx.app_config
 
     # 활성 도메인 · DB 설명(Redis) · 장애 진단 옵트인(Plan 64 CW-B) — 존 선택 재개 턴의
     # 보존 판정(`_keep_zoneless_targets`)도 같은 재료를 써야 프롬프트가 갈리지 않는다(W-10).
@@ -290,7 +349,7 @@ async def semantic_router(
     plan_signal_on = _plan_signal_enabled(app_config)
     try:
         llm_results = await _llm_classify(
-            llm, user_query, active_domains,
+            ctx.llm, user_query, active_domains,
             db_descriptions=db_descriptions,
             fault_diagnosis_enabled=fault_dx_on,
             **({"plan_signal": True} if plan_signal_on else {}),
@@ -386,9 +445,32 @@ async def semantic_router(
             "current_node": "semantic_router",
         }
 
+    return _LlmRouting(
+        intent=intent,
+        llm_results=llm_results,
+        capability_chain=capability_chain,
+        needs_plan=needs_plan,
+        ownership_on=ownership_on,
+        ownership_notes=ownership_notes,
+        fallback_mark=fallback_mark,
+        plan_signal_on=plan_signal_on,
+    )
+
+
+def _finalize_targets(ctx: _RouteContext, routing: _LlmRouting) -> dict[str, Any]:
+    """분류 결과로 대상을 확정한다 — 관련도 필터·위치 힌트 고정·폴백·소유 검증·존 역질문."""
+    state = ctx.state
+    user_query = ctx.user_query
+    active_db_ids = ctx.active_db_ids
+    app_config = ctx.app_config
+    ownership_on = routing.ownership_on
+    ownership_notes = routing.ownership_notes
+    fallback_mark = routing.fallback_mark
+    capability_chain = routing.capability_chain
+
     # 최소 관련도 필터링 및 정렬
     targets = [
-        r for r in llm_results
+        r for r in routing.llm_results
         if r["relevance_score"] >= MIN_RELEVANCE_SCORE
     ]
     targets.sort(key=lambda x: x["relevance_score"], reverse=True)
@@ -398,7 +480,7 @@ async def semantic_router(
     # 존 역질문 게이트보다 앞이다 — 두 게이트가 고정된 집합 위에서 동작한다(1·2단 순서와 같다).
     # 힌트 없음·해소 0건이면 targets를 그대로 돌려준다(종전과 동작·반환 동일).
     targets, hint_pinned = _pin_turn_location_hints(
-        targets, parsed, user_query, active_db_ids,
+        targets, ctx.parsed, user_query, active_db_ids,
         zone_group_exclusive=bool(app_config.multi_db.zone_group_exclusive),
     )
 
@@ -487,7 +569,7 @@ async def semantic_router(
         "is_multi_db": is_multi_db,
         "active_db_id": active_db_id,
         "user_specified_db": user_specified_db,
-        "routing_intent": intent,
+        "routing_intent": routing.intent,
         # D-205 스코프 출처 — 사용자가 원문에서 DB를 지목했거나 위치 힌트로 고정했으면 hint,
         # 아니면 LLM 분류.
         "db_scope_source": "hint" if (user_specified_db or hint_pinned) else "classified",
@@ -504,9 +586,9 @@ async def semantic_router(
             routed["dependency_notes"] = (
                 list(state.get("dependency_notes") or []) + fallback_notes
             )
-    if plan_signal_on:
+    if routing.plan_signal_on:
         # plans/102 교차 체인(`chain`)이 있으면 계획 필요로 본다(103 §3.2).
-        routed["needs_plan"] = needs_plan or bool(capability_chain)
+        routed["needs_plan"] = routing.needs_plan or bool(capability_chain)
     return routed
 
 

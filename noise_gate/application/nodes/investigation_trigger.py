@@ -81,10 +81,7 @@ async def investigation_trigger_node(
     if gate_cfg is None or not getattr(gate_cfg, "investigation_trigger_enabled", False):
         return {}  # 안전장치 — off면 트리거하지 않음(회귀 0)
 
-    # 티어 게이트 — enrichment_min_tier와 동일 규칙(대소문자 무시).
-    min_tier = getattr(gate_cfg, "investigation_trigger_min_tier", TIER_PAGE)
-    min_rank = _TIER_RANK.get((min_tier or TIER_PAGE).lower(), _TIER_RANK[TIER_PAGE])
-    if _TIER_RANK.get(decision.tier, _TIER_RANK[TIER_PAGE]) < min_rank:
+    if not _meets_min_tier(gate_cfg, decision):
         return {}  # 티어 미달 — 트리거하지 않음
 
     client = configurable.get("sre_agent_client")
@@ -100,52 +97,126 @@ async def investigation_trigger_node(
     inv_store = configurable.get("investigation_store")
     followup = bool(getattr(gate_cfg, "investigation_followup_enabled", False))
     source = "followup" if followup else "inline"
+    decision_store = configurable.get("decision_store")
 
-    # (plans/144 §4.5) APM 알람발 조사는 사건당 1회 — 같은 사건에서 APM 알람이 이미 제출한 조사가
-    # 있으면(워커가 `episode_investigation`으로 넘긴다) 다시 제출하지 않고 기존 조사 id를 감사에
-    # 남긴다. 인프라 알람의 조사 트리거는 이 분기에 들어오지 않는다(현행 그대로).
+    if _reused_episode_investigation(
+        state, event, decision, decision_store, inv_store, source, episode_id
+    ):
+        return {}
+    if _skipped_unresolved_apm_host(event, decision, decision_store, inv_store, source):
+        return {}
+    blocked, first = _resolve_first_target(cfg, event, decision, decision_store, inv_store, source)
+    if blocked:
+        return {}
+    if _authz_denied(cfg, event, first, decision, decision_store, inv_store, source):
+        return {}
+    if await _service_unreachable(client, event, decision, decision_store, inv_store, source):
+        return {}
+
+    # ★ 가용성 사전 판정 (Plan 81 · D-175). 판정 결과를 페이로드에 실어 보내면
+    # `sre_agent`가 조사 예산을 쓰기 전에 거부한다(같은 요구, 다른 수단 — `docs/25` L-5).
+    # **여기서 트리거를 취소하지 않는다** — 거부 사유가 담긴 브리핑이 통보에 첨부되는 편이
+    # 침묵보다 낫다(침묵 폴백 금지).
+    target_state = await _resolve_target_state(cfg, event, first)
+    payload = _build_payload(state, gate_cfg, event, decision, target_state, episode_id)
+
+    # (Plan 66 3-E) 후속 모드 — submit까지만 하고 통보를 즉시 내보낸다(브리핑 미첨부).
+    # poll·후속 발송은 notifier가 즉시 통보 **후** 백그라운드로 수행한다(순서 보장).
+    if followup:
+        return await _submit_only(
+            client, payload, event, decision, decision_store,
+            episode_id=episode_id, inv_store=inv_store,
+        )
+    return await _run_inline(
+        client, payload, gate_cfg, event, decision, decision_store, inv_store, source,
+        episode_id,
+    )
+
+
+def _meets_min_tier(gate_cfg: Any, decision: Any) -> bool:
+    """티어 게이트 — enrichment_min_tier와 동일 규칙(대소문자 무시)."""
+    min_tier = getattr(gate_cfg, "investigation_trigger_min_tier", TIER_PAGE)
+    min_rank = _TIER_RANK.get((min_tier or TIER_PAGE).lower(), _TIER_RANK[TIER_PAGE])
+    return _TIER_RANK.get(decision.tier, _TIER_RANK[TIER_PAGE]) >= min_rank
+
+
+def _reused_episode_investigation(
+    state: dict[str, Any],
+    event: Any,
+    decision: Any,
+    decision_store: Any,
+    inv_store: Any,
+    source: str,
+    episode_id: str | None,
+) -> bool:
+    """같은 사건의 기존 조사를 재사용했으면 True(감사·저장 후 — 노드는 빈 dict로 끝난다).
+
+    (plans/144 §4.5) APM 알람발 조사는 사건당 1회 — 같은 사건에서 APM 알람이 이미 제출한 조사가
+    있으면(워커가 `episode_investigation`으로 넘긴다) 다시 제출하지 않고 기존 조사 id를 감사에
+    남긴다. 인프라 알람의 조사 트리거는 이 분기에 들어오지 않는다(현행 그대로).
+    """
     existing = state.get("episode_investigation")
-    if is_apm_event(event) and isinstance(existing, dict) and existing.get("investigation_id"):
-        logger.info(
-            "조사 생략 — 같은 사건의 기존 조사 재사용: alarm_id=%s episode=%s inv=%s",
-            getattr(event, "alarm_id", ""), existing.get("episode_id"),
-            existing.get("investigation_id"),
-        )
-        _audit(
-            configurable.get("decision_store"), event, decision,
-            str(existing["investigation_id"]), "episode_existing", None,
-            episode_id=str(existing.get("episode_id") or episode_id or "") or None,
-        )
-        _store(
-            inv_store, event, str(existing["investigation_id"]), "episode_existing",
-            source=source,
-            episode_id=str(existing.get("episode_id") or episode_id or "") or None,
-        )
-        return {}
+    if not (
+        is_apm_event(event)
+        and isinstance(existing, dict)
+        and existing.get("investigation_id")
+    ):
+        return False
+    logger.info(
+        "조사 생략 — 같은 사건의 기존 조사 재사용: alarm_id=%s episode=%s inv=%s",
+        getattr(event, "alarm_id", ""), existing.get("episode_id"),
+        existing.get("investigation_id"),
+    )
+    _audit(
+        decision_store, event, decision,
+        str(existing["investigation_id"]), "episode_existing", None,
+        episode_id=str(existing.get("episode_id") or episode_id or "") or None,
+    )
+    _store(
+        inv_store, event, str(existing["investigation_id"]), "episode_existing",
+        source=source,
+        episode_id=str(existing.get("episode_id") or episode_id or "") or None,
+    )
+    return True
 
-    # plans/87 J4: 게이트웨이가 인스턴스↔hostname 정합에 실패한 APM 이벤트는 `hostname=""`로 온다
-    # (SPEC-apm-gateway §5). 조사 계약 필수 필드(serverName·hostname·severity)를 채우지 못하므로
-    # 보내지 않고 사유를 남긴다 — 보내 봐야 조사 서비스가 rejected로 되돌릴 뿐이다(왕복 제거 ·
-    # 침묵 금지).
-    # 폴스타 이벤트는 이 분기에 들어오지 않는다(판정은 resourceType 기준).
-    if is_apm_event(event) and not str(getattr(event, "hostname", "") or "").strip():
-        reason = "APM 인스턴스 hostname 미해소 — 조사 필수 필드(hostname) 결측으로 조사 생략"
-        logger.warning(
-            "조사 트리거 생략: alarm_id=%s 사유=%s", getattr(event, "alarm_id", ""), reason
-        )
-        _audit(
-            configurable.get("decision_store"), event, decision,
-            None, "target_unresolved", reason,
-        )
-        _store(inv_store, event, None, "target_unresolved", source=source, reason=reason)
-        return {}
 
-    # 조사 대상 확정 — **채팅 경로와 같은 공통 모듈**을 쓴다 (Plan 78 W1-4 · G5 대칭).
-    # 이벤트 경로는 알람 페이로드가 1순위이므로 그것만 넘긴다. 종전에는 hostname이
-    # 플레이스홀더("해당 서버" 등)여도 그대로 submit해 sre_agent가 rejected로 되돌렸다 —
-    # 결정적 가드를 진입부에 두어 왕복을 없앤다.
-    #
-    # **플래그 off면 판정만 하고 막지 않는다**(회귀 0 — Plan 80 §5.4-③).
+def _skipped_unresolved_apm_host(
+    event: Any, decision: Any, decision_store: Any, inv_store: Any, source: str
+) -> bool:
+    """hostname 미해소 APM 이벤트면 사유를 남기고 True(조사 생략).
+
+    plans/87 J4: 게이트웨이가 인스턴스↔hostname 정합에 실패한 APM 이벤트는 `hostname=""`로 온다
+    (SPEC-apm-gateway §5). 조사 계약 필수 필드(serverName·hostname·severity)를 채우지 못하므로
+    보내지 않고 사유를 남긴다 — 보내 봐야 조사 서비스가 rejected로 되돌릴 뿐이다(왕복 제거 ·
+    침묵 금지).
+    폴스타 이벤트는 이 분기에 들어오지 않는다(판정은 resourceType 기준).
+    """
+    if not (is_apm_event(event) and not str(getattr(event, "hostname", "") or "").strip()):
+        return False
+    reason = "APM 인스턴스 hostname 미해소 — 조사 필수 필드(hostname) 결측으로 조사 생략"
+    logger.warning(
+        "조사 트리거 생략: alarm_id=%s 사유=%s", getattr(event, "alarm_id", ""), reason
+    )
+    _audit(
+        decision_store, event, decision,
+        None, "target_unresolved", reason,
+    )
+    _store(inv_store, event, None, "target_unresolved", source=source, reason=reason)
+    return True
+
+
+def _resolve_first_target(
+    cfg: Any, event: Any, decision: Any, decision_store: Any, inv_store: Any, source: str
+) -> tuple[bool, Any]:
+    """조사 대상을 확정한다 — (차단 여부, 해소된 첫 대상 또는 None).
+
+    조사 대상 확정 — **채팅 경로와 같은 공통 모듈**을 쓴다 (Plan 78 W1-4 · G5 대칭).
+    이벤트 경로는 알람 페이로드가 1순위이므로 그것만 넘긴다. 종전에는 hostname이
+    플레이스홀더("해당 서버" 등)여도 그대로 submit해 sre_agent가 rejected로 되돌렸다 —
+    결정적 가드를 진입부에 두어 왕복을 없앤다.
+
+    **플래그 off면 판정만 하고 막지 않는다**(회귀 0 — Plan 80 §5.4-③).
+    """
     target_resolution = resolve_targets(
         alarm_payload={
             "server_name": getattr(event, "server_name", None),
@@ -162,64 +233,91 @@ async def investigation_trigger_node(
         )
         if getattr(getattr(cfg, "composite", None), "prior_targets_enabled", False):
             _audit(
-                configurable.get("decision_store"), event, decision,
+                decision_store, event, decision,
                 None, "target_unresolved", None,
             )
             _store(inv_store, event, None, "target_unresolved", source=source)
-            return {}
+            return True, None
+    return False, target_resolution.targets[0] if target_resolution.resolved else None
 
-    # ★ 호스트 인가 게이트 — **채팅 경로와 같은 모듈**을 호출한다 (Plan 78 W3-5 · G5 대칭).
-    # 한쪽만 적용되는 비대칭이 이 저장소의 반복 실수다. 이벤트 경로에는 사용자가 없으므로
-    # `system` 주체를 쓰고, 허용되더라도 **판정 결과를 감사에 남긴다**(W6-5).
-    first = target_resolution.targets[0] if target_resolution.resolved else None
+
+def _authz_denied(
+    cfg: Any,
+    event: Any,
+    first: Any,
+    decision: Any,
+    decision_store: Any,
+    inv_store: Any,
+    source: str,
+) -> bool:
+    """호스트 인가가 거부됐으면 사유를 남기고 True(조사 생략).
+
+    ★ 호스트 인가 게이트 — **채팅 경로와 같은 모듈**을 호출한다 (Plan 78 W3-5 · G5 대칭).
+    한쪽만 적용되는 비대칭이 이 저장소의 반복 실수다. 이벤트 경로에는 사용자가 없으므로
+    `system` 주체를 쓰고, 허용되더라도 **판정 결과를 감사에 남긴다**(W6-5).
+    """
     authz = authorize_host_investigation(
         mode=getattr(getattr(cfg, "host_authz", None), "mode", None),
         principal=Principal.system(),
         hostname=(first.hostname or first.server_name) if first else None,
         db_id=getattr(event, "db_id", None),
     )
-    if not authz.allowed:
-        logger.warning(
-            "조사 트리거 인가 거부: alarm_id=%s %s",
-            getattr(event, "alarm_id", ""), authz.as_audit(),
-        )
-        record_investigation(denied_reason=authz.reason)
-        _audit(
-            configurable.get("decision_store"), event, decision,
-            None, "authz_denied", None,
-        )
-        _store(
-            inv_store, event, None, "authz_denied", source=source,
-            reason=f"호스트 인가 거부({authz.reason})" if authz.reason else None,
-        )
-        return {}
+    if authz.allowed:
+        return False
+    logger.warning(
+        "조사 트리거 인가 거부: alarm_id=%s %s",
+        getattr(event, "alarm_id", ""), authz.as_audit(),
+    )
+    record_investigation(denied_reason=authz.reason)
+    _audit(
+        decision_store, event, decision,
+        None, "authz_denied", None,
+    )
+    _store(
+        inv_store, event, None, "authz_denied", source=source,
+        reason=f"호스트 인가 거부({authz.reason})" if authz.reason else None,
+    )
+    return True
 
-    # ★ 조사 서비스 사전 도달성 확인 (D-243). 서비스가 없으면 SSE 연결 타임아웃·traceback
-    # 대신 한 줄 경고로 조사를 생략한다(통보는 그대로 진행). 확인 메서드가 없는 대역은 생략.
+
+async def _service_unreachable(
+    client: Any, event: Any, decision: Any, decision_store: Any, inv_store: Any, source: str
+) -> bool:
+    """조사 서비스가 미가용이면 사유를 남기고 True(조사 생략 · 통보는 진행).
+
+    ★ 조사 서비스 사전 도달성 확인 (D-243). 서비스가 없으면 SSE 연결 타임아웃·traceback
+    대신 한 줄 경고로 조사를 생략한다(통보는 그대로 진행). 확인 메서드가 없는 대역은 생략.
+    """
     probe = getattr(client, "unreachable_reason", None)
-    if probe is not None:
-        unreachable = await probe()
-        if unreachable:
-            logger.warning(
-                "조사 서비스 미가용 — 조사 생략(통보는 진행): alarm_id=%s 사유=%s",
-                getattr(event, "alarm_id", ""), unreachable,
-            )
-            _audit(configurable.get("decision_store"), event, decision, None, "down", None)
-            _store(
-                inv_store, event, None, "down", source=source,
-                reason=f"조사 서비스 미가용: {unreachable}",
-            )
-            return {}
+    if probe is None:
+        return False
+    unreachable = await probe()
+    if not unreachable:
+        return False
+    logger.warning(
+        "조사 서비스 미가용 — 조사 생략(통보는 진행): alarm_id=%s 사유=%s",
+        getattr(event, "alarm_id", ""), unreachable,
+    )
+    _audit(decision_store, event, decision, None, "down", None)
+    _store(
+        inv_store, event, None, "down", source=source,
+        reason=f"조사 서비스 미가용: {unreachable}",
+    )
+    return True
 
-    # ★ 가용성 사전 판정 (Plan 81 · D-175). 판정 결과를 페이로드에 실어 보내면
-    # `sre_agent`가 조사 예산을 쓰기 전에 거부한다(같은 요구, 다른 수단 — `docs/25` L-5).
-    # **여기서 트리거를 취소하지 않는다** — 거부 사유가 담긴 브리핑이 통보에 첨부되는 편이
-    # 침묵보다 낫다(침묵 폴백 금지).
-    target_state = await _resolve_target_state(cfg, event, first)
 
+def _build_payload(
+    state: dict[str, Any],
+    gate_cfg: Any,
+    event: Any,
+    decision: Any,
+    target_state: dict[str, Any] | None,
+    episode_id: str | None,
+) -> dict[str, Any]:
+    """단일 알람 조사 트리거 페이로드를 만든다(사건 맥락은 플래그 on일 때만)."""
     signals = getattr(decision, "signals", None) or {}
     episode_meta, cross_source_meta = _episode_context(state, gate_cfg, event, decision)
-    payload = build_trigger_payload(
+    return build_trigger_payload(
         event,
         decision,
         recurrence=state.get("recurrence"),
@@ -233,14 +331,19 @@ async def investigation_trigger_node(
         cross_source=cross_source_meta,
     )
 
-    # (Plan 66 3-E) 후속 모드 — submit까지만 하고 통보를 즉시 내보낸다(브리핑 미첨부).
-    # poll·후속 발송은 notifier가 즉시 통보 **후** 백그라운드로 수행한다(순서 보장).
-    if followup:
-        return await _submit_only(
-            client, payload, event, decision, configurable.get("decision_store"),
-            episode_id=episode_id, inv_store=inv_store,
-        )
 
+async def _run_inline(
+    client: Any,
+    payload: dict[str, Any],
+    gate_cfg: Any,
+    event: Any,
+    decision: Any,
+    decision_store: Any,
+    inv_store: Any,
+    source: str,
+    episode_id: str | None,
+) -> dict[str, Any]:
+    """인라인 모드 — 전체 타임아웃 안에서 submit+poll하고 감사·저장 뒤 반환 dict를 만든다."""
     total_timeout = float(
         getattr(gate_cfg, "investigation_total_timeout_seconds", 45.0)
     )
@@ -266,7 +369,7 @@ async def investigation_trigger_node(
         )
 
     _audit(
-        configurable.get("decision_store"), event, decision, investigation_id, status, verdict,
+        decision_store, event, decision, investigation_id, status, verdict,
         episode_id=episode_id,
     )
     # (plans/153 W2) 인라인 종결 — 상태·사유·verdict·브리핑을 웹 조회용으로 남긴다. rejected의
@@ -283,7 +386,17 @@ async def investigation_trigger_node(
         verdict=None if status == "rejected" else verdict,
         briefing=briefing, episode_id=episode_id,
     )
+    return _inline_result(gate_cfg, briefing, status, investigation_id, verdict)
 
+
+def _inline_result(
+    gate_cfg: Any,
+    briefing: dict[str, Any] | None,
+    status: str,
+    investigation_id: str | None,
+    verdict: Any,
+) -> dict[str, Any]:
+    """인라인 종결의 노드 반환 dict — 값이 있는 키만 싣는다."""
     result: dict[str, Any] = {}
     if briefing is not None:
         result["investigation_briefing"] = briefing

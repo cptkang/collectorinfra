@@ -1076,16 +1076,55 @@ class DBRegistrationService(AdminServiceBase):
         db_description_detail = (registration.get("db_description") or {}).get("detail") or {}
         draft_text = db_description_detail.get("draft_text")
 
+        schema_candidate = self._snippet_schema_candidate(snapshot_record)
+        engine = probe_detail.get("mcp_type") or (entry.engine if entry is not None else None)
+        description = draft_text or (entry.description if entry is not None else "")
+        item = self._snippet_item(
+            source, entry, description=description, engine=engine,
+            schema_candidate=schema_candidate,
+        )
+        # 한글 컬럼이 있으면 한글 식별자 허용을 제안한다(plans/137 W8 · 결정적 · LLM 0).
+        # 없으면 키를 싣지 않는다.
+        hangul_columns = _hangul_column_count(snapshot_record)
+        if hangul_columns or (entry is not None and entry.allow_hangul_identifiers):
+            item["allow_hangul_identifiers"] = True
+
+        body = self._snippet_body(item, draft_text=draft_text, hangul_columns=hangul_columns)
+        header = self._snippet_header(source)
+        notes = self._snippet_notes(
+            source, item, draft_text=draft_text, description=description,
+            schema_candidate=schema_candidate, engine=engine, hangul_columns=hangul_columns,
+        )
+        return {
+            "source": source,
+            "registry_yaml": "\n".join([*header, *body]) + "\n",
+            "local_sandbox": self.local_sandbox,
+            "entry": item,
+            "notes": notes,
+        }
+
+    @staticmethod
+    def _snippet_schema_candidate(snapshot_record: Mapping[str, Any] | None) -> str | None:
+        """스냅샷 테이블들의 스키마 중 가장 많은 것(없으면 None) — `db_schema` 후보."""
         schemas = [
             str(t.get("schema")) for t in (
                 ((snapshot_record or {}).get("snapshot") or {}).get("tables") or {}
             ).values()
             if isinstance(t, Mapping) and t.get("schema")
         ]
-        schema_candidate = Counter(schemas).most_common(1)[0][0] if schemas else None
-        engine = probe_detail.get("mcp_type") or (entry.engine if entry is not None else None)
-        description = draft_text or (entry.description if entry is not None else "")
-        item = {
+        return Counter(schemas).most_common(1)[0][0] if schemas else None
+
+    @staticmethod
+    def _snippet_item(
+        source: str,
+        entry: Any,
+        *,
+        description: str | None,
+        engine: str | None,
+        schema_candidate: str | None,
+    ) -> dict[str, Any]:
+        """레지스트리 항목 dict — 수집 결과(엔진·스키마 후보·초안)가 현행 항목 값보다 앞선다."""
+        return {
             "db_id": source,
             "enabled": True,
             "display_name": entry.display_name if entry is not None else "",
@@ -1095,11 +1134,12 @@ class DBRegistrationService(AdminServiceBase):
             "db_schema": schema_candidate or (entry.db_schema if entry is not None else ""),
             "zone": entry.zone if entry is not None else "",
         }
-        # 한글 컬럼이 있으면 한글 식별자 허용을 제안한다(plans/137 W8 · 결정적 · LLM 0). 없으면 키를 싣지 않는다.
-        hangul_columns = _hangul_column_count(snapshot_record)
-        if hangul_columns or (entry is not None and entry.allow_hangul_identifiers):
-            item["allow_hangul_identifiers"] = True
 
+    @staticmethod
+    def _snippet_body(
+        item: dict[str, Any], *, draft_text: str | None, hangul_columns: int
+    ) -> list[str]:
+        """항목 YAML 줄 목록 — `description`·`allow_hangul_identifiers` 줄 앞에 검토 주석."""
         dumped = yaml.safe_dump({"databases": [item]}, allow_unicode=True, sort_keys=False)
         body: list[str] = []
         for line in dumped.splitlines():
@@ -1117,6 +1157,10 @@ class DBRegistrationService(AdminServiceBase):
                     if hangul_columns else "  # 현행 레지스트리 값 유지(plans/137)"
                 )
             body.append(line)
+        return body
+
+    def _snippet_header(self, source: str) -> list[str]:
+        """조각 머리 주석(로컬 샌드박스면 경고 머리말이 맨 앞)."""
         header: list[str] = []
         if self.local_sandbox:
             header.append(LOCAL_SANDBOX_HEADER)
@@ -1126,7 +1170,20 @@ class DBRegistrationService(AdminServiceBase):
             f"# 생성={_now_iso()} · 소스={source} · env={self.env}",
             "# 반영 뒤: 앱 재기동(레지스트리는 기동 시 1회 읽는다) → 준비도 재판정",
         ])
+        return header
 
+    def _snippet_notes(
+        self,
+        source: str,
+        item: dict[str, Any],
+        *,
+        draft_text: str | None,
+        description: str | None,
+        schema_candidate: str | None,
+        engine: str | None,
+        hangul_columns: int,
+    ) -> list[str]:
+        """관리자 안내문 — 고정 3줄 뒤에 설명·스키마·DB2·한글·샌드박스 안내를 이 순서로."""
         notes = [
             "레지스트리 항목 조각만 제공합니다 — 구조 프로필은 승인 시 "
             f"config/db_profiles/{source}.yaml에 직접 기록됩니다(G-2).",
@@ -1152,10 +1209,4 @@ class DBRegistrationService(AdminServiceBase):
             )
         if self.local_sandbox:
             notes.append("로컬 샌드박스에서 만든 조각입니다 — 운영 정본 재료로 쓰지 마세요.")
-        return {
-            "source": source,
-            "registry_yaml": "\n".join([*header, *body]) + "\n",
-            "local_sandbox": self.local_sandbox,
-            "entry": item,
-            "notes": notes,
-        }
+        return notes

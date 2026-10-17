@@ -446,6 +446,193 @@ async def build_message_enrichment(
     )
 
 
+async def _collect_history(
+    event: AlarmEvent,
+    cfg: Any,
+    repo: Any,
+    redis_client: Any,
+) -> AlarmHistoryStats | None:
+    """이력 통계 수집 — 게이팅·실패 시 None (독립 degradation)."""
+    if not cfg.alarm.history_enabled or repo is None:
+        return None
+    if event.is_clear:
+        logger.debug("해소 알람 — 이력 조회 건너뜀: alarm_id=%s", event.alarm_id)
+        return None
+    if not repo.is_db_registered(event.db_id):
+        logger.warning(
+            "알람 이력 조회 건너뜀 — 미등록 db_id: %s (alarm_id=%s)",
+            event.db_id,
+            event.alarm_id,
+        )
+        return None
+    try:
+        stats = await enrich_history(event, cfg.alarm, repo, redis_client)
+        logger.info(
+            "알람 이력 통계 계산 완료: alarm_id=%s 분류=%s 발생=%d건 source=%s",
+            event.alarm_id,
+            stats.pre_classification,
+            stats.total_count,
+            stats.source,
+        )
+        return stats
+    except Exception:
+        logger.exception(
+            "알람 이력 조회 실패 — 이력 없이 분석 진행: alarm_id=%s", event.alarm_id
+        )
+        return None
+
+
+async def _collect_processes(
+    event: AlarmEvent,
+    cfg: Any,
+    process_client: Any,
+) -> ProcessSnapshot | None:
+    """영향 프로세스 수집 — 게이팅·실패 시 None (독립 degradation)."""
+    try:
+        snapshot = await enrich_processes(event, cfg.alarm, process_client)
+        if snapshot is not None:
+            logger.info(
+                "영향 프로세스 조회 완료: alarm_id=%s kind=%s top=%d/%d",
+                event.alarm_id,
+                snapshot.alarm_kind,
+                len(snapshot.top),
+                snapshot.total_count,
+            )
+        return snapshot
+    except Exception:
+        logger.exception(
+            "영향 프로세스 조회 실패 — 프로세스 없이 분석 진행: alarm_id=%s",
+            event.alarm_id,
+        )
+        return None
+
+
+async def _collect_noise_context(
+    event: AlarmEvent,
+    gate_cfg: Any,
+    gate_on: bool,
+    noise_repo: Any,
+    apm_noise_ctx: Any,
+    redis_client: Any,
+    active_firings: Any,
+    embedding_provider: Any,
+) -> dict[str, Any] | None:
+    """노이즈 컨텍스트 수집 — 게이트 비활성/repo 미주입 시 None, 실패 시 unavailable.
+
+    예외를 전파하지 않는다(보수적 처리). 수집 실패(unavailable)는 정책 계층이
+    보수적 PAGE로 처리하므로 안전하다(§6.3). 게이트 off면 호출되지 않는다.
+    """
+    if not gate_on:
+        return None
+    # (plans/144 §4.1) 제니퍼 알람은 정책 표 공급자(메모리 조회 · 캐시 불필요). 적재 실패면
+    # 공급자가 unavailable을 돌려준다(현행 PAGE). 폴스타 알람은 아래 기존 경로 그대로.
+    if apm_noise_ctx is not None and is_apm_source(event):
+        try:
+            apm_ctx: dict[str, Any] = apm_noise_ctx.fetch(event)
+            return apm_ctx
+        except Exception:
+            logger.exception(
+                "APM 노이즈 컨텍스트 조회 실패 — 보수적 처리로 진행: alarm_id=%s",
+                event.alarm_id,
+            )
+            return _noise_unavailable()
+    if noise_repo is None:
+        return None  # APM 공급자만 주입된 경우의 폴스타 알람 — 수집 없음(정책이 보수 PAGE)
+    # E2 §3.6: dependency_suppression=True일 때만 의존성 SQL 실행(기본 off → E1 무변경).
+    dep = bool(getattr(gate_cfg, "dependency_suppression", False))
+    # E4 §6.2: 다홉은 의존성 억제의 상위 모드 —
+    # dependency_suppression AND multi_hop_cascade_enabled.
+    multi_hop = dep and bool(getattr(gate_cfg, "multi_hop_cascade_enabled", False))
+    # E5 §7.2: 변경 상관은 독립 옵트인(기본 off → 변경 피드 미조회·noise_ctx 키 None, 회귀 0).
+    change_corr = bool(getattr(gate_cfg, "change_correlation_enabled", False))
+    try:
+        return await enrich_noise_context(
+            event,
+            gate_cfg,
+            noise_repo,
+            redis_client,
+            collect_dependency=dep,
+            multi_hop=multi_hop,
+            change_correlation=change_corr,
+            active_firings=active_firings,
+            embedding_provider=embedding_provider,
+        )
+    except Exception:
+        logger.exception(
+            "노이즈 컨텍스트 조회 실패 — 보수적 처리로 진행: alarm_id=%s", event.alarm_id
+        )
+        return _noise_unavailable()
+
+
+async def _collect_message_enrichment(
+    event: AlarmEvent,
+    cfg: Any,
+    gate_cfg: Any,
+    process_client: Any,
+) -> MessageEnrichment | None:
+    """메시지 기반 L1 보강 조립 — 실패 시 None (독립 degradation, E6 §16.3)."""
+    try:
+        return await build_message_enrichment(
+            event, cfg.alarm, gate_cfg, process_client
+        )
+    except Exception:
+        logger.exception(
+            "메시지 보강 조립 실패 — 보강 없이 진행: alarm_id=%s", event.alarm_id
+        )
+        return None
+
+
+async def _collect_anomaly_baseline(
+    event: AlarmEvent,
+    gate_cfg: Any,
+    metric_baseline: Any,
+    redis_client: Any,
+) -> int | None:
+    """동적 baseline 이상탐지 — 상향 후보 심각도 산출, 실패 시 None (독립 degradation, E3 §5.2).
+
+    어댑터 미주입(테스트 API 경로 등) 시 None. 게이팅(kind 화이트리스트·해소·미등록 db_id)과
+    시계열 조회·적합·캐시는 어댑터가 담당한다. 자체 try/except로 실패가 분석을 막지 않는다.
+    """
+    if metric_baseline is None:
+        return None
+    try:
+        severity: int | None = await metric_baseline.compute_severity(
+            event, gate_cfg, redis_client
+        )
+        return severity
+    except Exception:
+        logger.exception(
+            "동적 baseline 이상탐지 실패 — 상향 없이 진행: alarm_id=%s", event.alarm_id
+        )
+        return None
+
+
+async def _gather_with_timeout(
+    event: AlarmEvent,
+    cfg: Any,
+    tasks: list[Any],
+    keys: list[str],
+) -> dict[str, Any]:
+    """수집 태스크를 enrich_timeout_seconds 상한으로 동시 실행해 키별 결과 dict를 만든다.
+
+    타임아웃이면 모든 키를 None으로 채운다(Plan 47-1 §3.2).
+    """
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(*tasks), timeout=cfg.alarm.enrich_timeout_seconds
+        )
+    except TimeoutError:
+        logger.warning(
+            "알람 컨텍스트 보강 타임아웃 (%ds) — 컨텍스트 없이 분석 진행: alarm_id=%s",
+            cfg.alarm.enrich_timeout_seconds,
+            event.alarm_id,
+        )
+        # 각 키 None — noise_context=None은 정책 계층이 보수적 PAGE로 처리(§6.3).
+        return {k: None for k in keys}
+
+    return dict(zip(keys, results))
+
+
 async def alarm_context_enricher_node(
     state: dict[str, Any], config: RunnableConfig
 ) -> dict[str, Any]:
@@ -499,165 +686,47 @@ async def alarm_context_enricher_node(
         noise_repo is not None or (apm_noise_ctx is not None and is_apm_source(event))
     )
 
-    async def _history() -> Optional[AlarmHistoryStats]:
-        """이력 통계 수집 — 게이팅·실패 시 None (독립 degradation)."""
-        if not cfg.alarm.history_enabled or repo is None:
-            return None
-        if event.is_clear:
-            logger.debug("해소 알람 — 이력 조회 건너뜀: alarm_id=%s", event.alarm_id)
-            return None
-        if not repo.is_db_registered(event.db_id):
-            logger.warning(
-                "알람 이력 조회 건너뜀 — 미등록 db_id: %s (alarm_id=%s)",
-                event.db_id,
-                event.alarm_id,
-            )
-            return None
-        try:
-            stats = await enrich_history(event, cfg.alarm, repo, redis_client)
-            logger.info(
-                "알람 이력 통계 계산 완료: alarm_id=%s 분류=%s 발생=%d건 source=%s",
-                event.alarm_id,
-                stats.pre_classification,
-                stats.total_count,
-                stats.source,
-            )
-            return stats
-        except Exception:
-            logger.exception(
-                "알람 이력 조회 실패 — 이력 없이 분석 진행: alarm_id=%s", event.alarm_id
-            )
-            return None
-
-    async def _processes() -> Optional[ProcessSnapshot]:
-        """영향 프로세스 수집 — 게이팅·실패 시 None (독립 degradation)."""
-        try:
-            snapshot = await enrich_processes(event, cfg.alarm, process_client)
-            if snapshot is not None:
-                logger.info(
-                    "영향 프로세스 조회 완료: alarm_id=%s kind=%s top=%d/%d",
-                    event.alarm_id,
-                    snapshot.alarm_kind,
-                    len(snapshot.top),
-                    snapshot.total_count,
-                )
-            return snapshot
-        except Exception:
-            logger.exception(
-                "영향 프로세스 조회 실패 — 프로세스 없이 분석 진행: alarm_id=%s",
-                event.alarm_id,
-            )
-            return None
-
-    async def _noise_context() -> Optional[dict[str, Any]]:
-        """노이즈 컨텍스트 수집 — 게이트 비활성/repo 미주입 시 None, 실패 시 unavailable.
-
-        예외를 전파하지 않는다(보수적 처리). 수집 실패(unavailable)는 정책 계층이
-        보수적 PAGE로 처리하므로 안전하다(§6.3). 게이트 off면 호출되지 않는다.
-        """
-        if not gate_on:
-            return None
-        # (plans/144 §4.1) 제니퍼 알람은 정책 표 공급자(메모리 조회 · 캐시 불필요). 적재 실패면
-        # 공급자가 unavailable을 돌려준다(현행 PAGE). 폴스타 알람은 아래 기존 경로 그대로.
-        if apm_noise_ctx is not None and is_apm_source(event):
-            try:
-                apm_ctx: dict[str, Any] = apm_noise_ctx.fetch(event)
-                return apm_ctx
-            except Exception:
-                logger.exception(
-                    "APM 노이즈 컨텍스트 조회 실패 — 보수적 처리로 진행: alarm_id=%s",
-                    event.alarm_id,
-                )
-                return _noise_unavailable()
-        if noise_repo is None:
-            return None  # APM 공급자만 주입된 경우의 폴스타 알람 — 수집 없음(정책이 보수 PAGE)
-        # E2 §3.6: dependency_suppression=True일 때만 의존성 SQL 실행(기본 off → E1 무변경).
-        dep = bool(getattr(gate_cfg, "dependency_suppression", False))
-        # E4 §6.2: 다홉은 의존성 억제의 상위 모드 — dependency_suppression AND multi_hop_cascade_enabled.
-        multi_hop = dep and bool(getattr(gate_cfg, "multi_hop_cascade_enabled", False))
-        # E5 §7.2: 변경 상관은 독립 옵트인(기본 off → 변경 피드 미조회·noise_ctx 키 None, 회귀 0).
-        change_corr = bool(getattr(gate_cfg, "change_correlation_enabled", False))
-        try:
-            return await enrich_noise_context(
-                event,
-                gate_cfg,
-                noise_repo,
-                redis_client,
-                collect_dependency=dep,
-                multi_hop=multi_hop,
-                change_correlation=change_corr,
-                active_firings=active_firings,
-                embedding_provider=embedding_provider,
-            )
-        except Exception:
-            logger.exception(
-                "노이즈 컨텍스트 조회 실패 — 보수적 처리로 진행: alarm_id=%s", event.alarm_id
-            )
-            return _noise_unavailable()
-
     # (Plan 60 E6) message_enrichment_enabled 뒤에서만 신규 kind 보강 수집(기본 off → 회귀 0).
     message_on = bool(getattr(gate_cfg, "message_enrichment_enabled", False))
 
-    async def _message_enrichment() -> Optional[MessageEnrichment]:
-        """메시지 기반 L1 보강 조립 — 실패 시 None (독립 degradation, E6 §16.3)."""
-        try:
-            return await build_message_enrichment(
-                event, cfg.alarm, gate_cfg, process_client
-            )
-        except Exception:
-            logger.exception(
-                "메시지 보강 조립 실패 — 보강 없이 진행: alarm_id=%s", event.alarm_id
-            )
-            return None
-
     # (Plan 60 E3) gate_on AND dynamic_baseline_enabled일 때만 이상탐지 태스크·키 추가
-    # (off면 키셋 불변·회귀 0 — E6 _message_enrichment 패턴과 동일). anomaly_severity만 산출.
+    # (off면 키셋 불변·회귀 0 — E6 _collect_message_enrichment 패턴과 동일).
+    # anomaly_severity만 산출.
     dynamic_baseline_on = gate_on and bool(
         getattr(gate_cfg, "dynamic_baseline_enabled", False)
     )
 
-    async def _anomaly_baseline() -> Optional[int]:
-        """동적 baseline 이상탐지 — 상향 후보 심각도 산출, 실패 시 None (독립 degradation, E3 §5.2).
-
-        어댑터 미주입(테스트 API 경로 등) 시 None. 게이팅(kind 화이트리스트·해소·미등록 db_id)과
-        시계열 조회·적합·캐시는 어댑터가 담당한다. 자체 try/except로 실패가 분석을 막지 않는다.
-        """
-        if metric_baseline is None:
-            return None
-        try:
-            return await metric_baseline.compute_severity(event, gate_cfg, redis_client)
-        except Exception:
-            logger.exception(
-                "동적 baseline 이상탐지 실패 — 상향 없이 진행: alarm_id=%s", event.alarm_id
-            )
-            return None
-
     # 수집 태스크·반환 키를 동적 구성한다. gate off·message off면 키셋은 기존 2키
     # ({history_stats, process_snapshot})로 **비트 동일**(회귀 0). gate_on → noise_context,
     # message_on → enrichment 키를 추가한다. gather 순서·값은 기존과 동일하다.
-    tasks = [_history(), _processes()]
+    tasks: list[Any] = [
+        _collect_history(event, cfg, repo, redis_client),
+        _collect_processes(event, cfg, process_client),
+    ]
     keys = ["history_stats", "process_snapshot"]
     if gate_on:
-        tasks.append(_noise_context())
+        tasks.append(
+            _collect_noise_context(
+                event,
+                gate_cfg,
+                gate_on,
+                noise_repo,
+                apm_noise_ctx,
+                redis_client,
+                active_firings,
+                embedding_provider,
+            )
+        )
         keys.append("noise_context")
     if message_on:
-        tasks.append(_message_enrichment())
+        tasks.append(
+            _collect_message_enrichment(event, cfg, gate_cfg, process_client)
+        )
         keys.append("enrichment")
     if dynamic_baseline_on:
-        tasks.append(_anomaly_baseline())
+        tasks.append(
+            _collect_anomaly_baseline(event, gate_cfg, metric_baseline, redis_client)
+        )
         keys.append("anomaly_severity")
 
-    try:
-        results = await asyncio.wait_for(
-            asyncio.gather(*tasks), timeout=cfg.alarm.enrich_timeout_seconds
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "알람 컨텍스트 보강 타임아웃 (%ds) — 컨텍스트 없이 분석 진행: alarm_id=%s",
-            cfg.alarm.enrich_timeout_seconds,
-            event.alarm_id,
-        )
-        # 각 키 None — noise_context=None은 정책 계층이 보수적 PAGE로 처리(§6.3).
-        return {k: None for k in keys}
-
-    return dict(zip(keys, results))
+    return await _gather_with_timeout(event, cfg, tasks, keys)

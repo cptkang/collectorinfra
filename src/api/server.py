@@ -9,7 +9,8 @@ import logging
 import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
+from typing import Any, Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -325,6 +326,114 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     _validate_production_secrets(config)
     _warn_shared_jwt_secret(config)
 
+    _init_file_logs(config)
+
+    checkpointer = await _build_agent_graph(app, config)
+
+    from noise_gate.infrastructure.notification_bus import AlarmNotificationBus
+    app.state.alarm_bus = AlarmNotificationBus()
+
+    await _init_auth_db(app, config)
+
+    audit_retention_task = _start_audit_retention(app, config)
+    file_log_retention_task = _start_file_log_retention(config)
+
+    await _connect_schema_cache_redis(config)
+
+    # 제니퍼 소스 정합 점검(plans/147 W4 · D-322 ⑥) — APM 활성 ∧ 소스 ≥2일 때만 1회 ·
+    # 실패해도 기동 계속
+    app.state.apm_source_report = await _check_apm_sources(config)
+
+    alarm_worker_task = _start_alarm_worker(config)
+    sse_bridge_task, sse_bridge_redis, sse_bridge_stop = _start_sse_bridge(app, config)
+    (
+        incident_pool,
+        incident_redis,
+        incident_sub_task,
+        incident_sub_stop,
+    ) = await _start_incident_tracking(app, config)
+
+    yield
+
+    # 종료 시: 취소한 태스크를 기다릴 때 CancelledError(BaseException)도 삼킨다 — 처리 도중 취소되면
+    # 그대로 새어 나와 「Application shutdown failed」로 아래 정리 단계를 건너뛰었다.
+    import asyncio as _asyncio
+
+    # 종료 시: 알람 워커 정리
+    if alarm_worker_task:
+        alarm_worker_task.cancel()
+        try:
+            await alarm_worker_task
+        except (Exception, _asyncio.CancelledError):
+            pass
+
+    # 종료 시: SSE 브리지 구독 task·Redis 연결 정리
+    if sse_bridge_task:
+        if sse_bridge_stop is not None:
+            sse_bridge_stop.set()
+        sse_bridge_task.cancel()
+        try:
+            await sse_bridge_task
+        except (Exception, _asyncio.CancelledError):
+            pass
+    if sse_bridge_redis is not None:
+        await _close_quietly(sse_bridge_redis, "aclose")
+
+    # 종료 시: incident 계측 구독 task·Redis 연결·전용 PG 풀 정리 (D-049)
+    if incident_sub_task:
+        if incident_sub_stop is not None:
+            incident_sub_stop.set()
+        incident_sub_task.cancel()
+        try:
+            await incident_sub_task
+        except (Exception, _asyncio.CancelledError):
+            pass
+    if incident_redis is not None:
+        await _close_quietly(incident_redis, "aclose")
+    if incident_pool is not None:
+        await _close_quietly(incident_pool)
+
+    # 종료 시: 감사 로그 로테이션 주기 태스크 정리
+    if audit_retention_task:
+        audit_retention_task.cancel()
+        try:
+            await audit_retention_task
+        except (Exception, _asyncio.CancelledError):
+            pass
+
+    # 종료 시: 파일 로그 정리 주기 태스크 정리 (D-140/D-141)
+    if file_log_retention_task:
+        file_log_retention_task.cancel()
+        try:
+            await file_log_retention_task
+        except (Exception, _asyncio.CancelledError):
+            pass
+
+    # 종료 시: 인증 DB 풀 정리 — 그 전에 조회 경로가 띄워 둔 쿼리 실행 감사 DB 쓰기를
+    # 마친다(D-261 부기)
+    if app.state.auth_pool:
+        try:
+            from src.security.audit_logger import wait_pending_db_mirrors
+
+            await wait_pending_db_mirrors()
+        except Exception:
+            logger.warning("쿼리 실행 감사 DB 쓰기 종료 대기 실패(무시)", exc_info=True)
+        await _close_quietly(app.state.auth_pool)
+
+    # 종료 시: 체크포인터 연결 정리
+    if hasattr(checkpointer, "conn") and hasattr(checkpointer.conn, "close"):
+        await _close_quietly(checkpointer.conn)
+
+    if config.schema_cache.backend == "redis":
+        from src.schema_cache.cache_manager import get_cache_manager
+        cache_mgr = get_cache_manager(config)
+        await cache_mgr.disconnect()
+
+    logger.info("서버 종료")
+
+
+def _init_file_logs(config: AppConfig) -> None:
+    """기동 단계 — SQL 파일 로거 초기화와 파일 로그 보존 정리 1회(D-140/D-141)."""
     # SQL 파일 로거 초기화 (logs/sql/ — D-140)
     from src.utils.sql_file_logger import init_sql_file_logger
     init_sql_file_logger(enabled=config.observability.sql_log_enabled)
@@ -338,6 +447,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         config.observability.trace_retention_days,
     )
 
+
+async def _build_agent_graph(app: FastAPI, config: AppConfig) -> Any:
+    """기동 단계 — 체크포인터를 만들고 에이전트 그래프를 빌드해 app.state에 둔다.
+
+    Returns:
+        체크포인터(종료 단계에서 연결을 닫는다).
+    """
     from src.graph import _create_checkpointer_async
 
     checkpointer = await _create_checkpointer_async(config)
@@ -346,11 +462,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # 설정 리로드(POST /admin/settings/reload) 시 그래프 재빌드에 재사용한다(Plan 68 §6).
     app.state.checkpointer = checkpointer
     logger.info("에이전트 그래프 빌드 완료")
+    return checkpointer
 
-    from noise_gate.infrastructure.notification_bus import AlarmNotificationBus
-    app.state.alarm_bus = AlarmNotificationBus()
 
-    # 인증 DB 초기화 (AUTH_ENABLED 여부와 무관하게 테이블은 생성)
+async def _init_auth_db(app: FastAPI, config: AppConfig) -> None:
+    """기동 단계 — 인증 DB 초기화 (AUTH_ENABLED 여부와 무관하게 테이블은 생성).
+
+    실패는 warning 후 계속한다(인증 기능 비활성). 실패 전에 대입한 app.state 값은 그대로 남는다.
+    """
     auth_db_url = config.auth.auth_db_url or config.db_connection_string
     app.state.auth_pool = None
     app.state.user_repo = None
@@ -399,7 +518,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         except Exception as e:
             logger.warning("인증 DB 초기화 실패 (인증 기능 비활성): %s", e)
 
-    # 감사 로그 로테이션 주기 태스크(하루 1회). audit_repo가 있고 retention_days>0일 때만.
+
+def _start_audit_retention(app: FastAPI, config: AppConfig) -> Any:
+    """기동 단계 — 감사 로그 로테이션 주기 태스크(하루 1회).
+
+    audit_repo가 있고 retention_days>0일 때만 시작한다.
+
+    Returns:
+        시작한 태스크 또는 None.
+    """
     audit_retention_task = None
     if getattr(app.state, "audit_repo", None) and config.audit.retention_days > 0:
         import asyncio as _asyncio
@@ -407,8 +534,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             _run_audit_retention_loop(app.state.audit_repo, config.audit.retention_days)
         )
         logger.info("감사 로그 로테이션 주기 태스크 시작 (보관 %s일)", config.audit.retention_days)
+    return audit_retention_task
 
-    # 파일 로그 정리 주기 태스크(하루 1회). DB 무관하게 항상 기동한다.
+
+def _start_file_log_retention(config: AppConfig) -> Any:
+    """기동 단계 — 파일 로그 정리 주기 태스크(하루 1회). DB 무관하게 항상 기동한다.
+
+    Returns:
+        시작한 태스크 또는 None(보존 일수가 둘 다 양수가 아닐 때).
+    """
     file_log_retention_task = None
     if _positive_days(config.observability.sql_log_retention_days) or _positive_days(
         config.observability.trace_retention_days
@@ -425,8 +559,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             config.observability.sql_log_retention_days,
             config.observability.trace_retention_days,
         )
+    return file_log_retention_task
 
-    # Redis 연결 (스키마 캐시)
+
+async def _connect_schema_cache_redis(config: AppConfig) -> None:
+    """기동 단계 — Redis 연결 (스키마 캐시). 실패는 warning 후 파일 캐시로 폴백한다."""
     if config.schema_cache.backend == "redis":
         from src.schema_cache.cache_manager import get_cache_manager
         cache_mgr = get_cache_manager(config)
@@ -436,11 +573,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         except Exception as e:
             logger.warning("Redis 연결 실패 (파일 캐시로 폴백): %s", e)
 
-    # 제니퍼 소스 정합 점검(plans/147 W4 · D-322 ⑥) — APM 활성 ∧ 소스 ≥2일 때만 1회 ·
-    # 실패해도 기동 계속
-    app.state.apm_source_report = await _check_apm_sources(config)
 
-    # 알람 분석 워커 시작 (ALARM_ENABLED=true인 경우에만)
+def _start_alarm_worker(config: AppConfig) -> Any:
+    """기동 단계 — 알람 분석 워커 시작 (ALARM_ENABLED=true인 경우에만).
+
+    Returns:
+        워커 태스크 또는 None.
+    """
     alarm_worker_task = None
     if config.alarm.enabled:
         import asyncio as _asyncio
@@ -449,11 +588,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.info(
             "알람 분석 워커 시작 (stream=%s)", config.alarm.redis_stream_key
         )
+    return alarm_worker_task
 
-    # 알람 SSE Redis pub/sub 브리지 구독 (워커→UI 실시간 SSE — D-048.9 해소).
-    # 워커는 cross-process라 in-memory alarm_bus를 공유 못 하므로 Redis로 중계받는다.
-    # 게이트 활성 + NOISE_SSE_BRIDGE_ENABLED=true일 때만 기동(기본 off → E3 무변경, 회귀 0).
-    # Redis 연결 실패는 warning 후 폴백 — 서버 기동을 막지 않는다.
+
+def _start_sse_bridge(app: FastAPI, config: AppConfig) -> tuple[Any, Any, Any]:
+    """기동 단계 — 알람 SSE Redis pub/sub 브리지 구독 (워커→UI 실시간 SSE — D-048.9 해소).
+
+    워커는 cross-process라 in-memory alarm_bus를 공유 못 하므로 Redis로 중계받는다.
+    게이트 활성 + NOISE_SSE_BRIDGE_ENABLED=true일 때만 기동(기본 off → E3 무변경, 회귀 0).
+    Redis 연결 실패는 warning 후 폴백 — 서버 기동을 막지 않는다.
+
+    Returns:
+        (구독 태스크, Redis 연결, stop 이벤트) — 실패 전까지 만든 것만 채워진다(나머지 None).
+    """
     sse_bridge_task = None
     sse_bridge_redis = None
     sse_bridge_stop = None
@@ -484,11 +631,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             )
         except Exception as e:
             logger.warning("알람 SSE 브리지 구독 시작 실패 (실시간 SSE 비활성): %s", e)
+    return sse_bridge_task, sse_bridge_redis, sse_bridge_stop
 
-    # ── D-049: ack/incident 라이프사이클 계측 (PostgreSQL 단일 저장소) ──
-    # incident_tracking_enabled=true일 때만 기동(기본 off → /alarm/metrics 기존 null 동작, 회귀 0).
-    # 전용 PG 풀(auth 독립, DSN 재사용) + 단일 라이터(Redis 구독 subscriber)를 기동한다.
-    # 어떤 단계가 실패해도 서버 기동을 막지 않는다(graceful — warning 후 트래커 비활성).
+
+async def _start_incident_tracking(app: FastAPI, config: AppConfig) -> tuple[Any, Any, Any, Any]:
+    """기동 단계 — D-049: ack/incident 라이프사이클 계측 (PostgreSQL 단일 저장소).
+
+    incident_tracking_enabled=true일 때만 기동(기본 off → /alarm/metrics 기존 null 동작, 회귀 0).
+    전용 PG 풀(auth 독립, DSN 재사용) + 단일 라이터(Redis 구독 subscriber)를 기동한다.
+    어떤 단계가 실패해도 서버 기동을 막지 않는다(graceful — warning 후 트래커 비활성).
+
+    Returns:
+        (전용 PG 풀, Redis 연결, 구독 태스크, stop 이벤트) — 실패 전까지 만든 것만 채워진다
+        (종료 단계가 만든 자원을 닫는다).
+    """
     app.state.incident_store = None
     app.state.incident_publisher = None
     incident_pool = None
@@ -548,98 +704,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             logger.warning("incident 계측 시작 실패 (계측 비활성): %s", e)
             app.state.incident_store = None
             app.state.incident_publisher = None
+    return incident_pool, incident_redis, incident_sub_task, incident_sub_stop
 
-    yield
 
-    # 종료 시: 취소한 태스크를 기다릴 때 CancelledError(BaseException)도 삼킨다 — 처리 도중 취소되면
-    # 그대로 새어 나와 「Application shutdown failed」로 아래 정리 단계를 건너뛰었다.
-    import asyncio as _asyncio
-
-    # 종료 시: 알람 워커 정리
-    if alarm_worker_task:
-        alarm_worker_task.cancel()
-        try:
-            await alarm_worker_task
-        except (Exception, _asyncio.CancelledError):
-            pass
-
-    # 종료 시: SSE 브리지 구독 task·Redis 연결 정리
-    if sse_bridge_task:
-        if sse_bridge_stop is not None:
-            sse_bridge_stop.set()
-        sse_bridge_task.cancel()
-        try:
-            await sse_bridge_task
-        except (Exception, _asyncio.CancelledError):
-            pass
-    if sse_bridge_redis is not None:
-        try:
-            await sse_bridge_redis.aclose()
-        except Exception:
-            pass
-
-    # 종료 시: incident 계측 구독 task·Redis 연결·전용 PG 풀 정리 (D-049)
-    if incident_sub_task:
-        if incident_sub_stop is not None:
-            incident_sub_stop.set()
-        incident_sub_task.cancel()
-        try:
-            await incident_sub_task
-        except (Exception, _asyncio.CancelledError):
-            pass
-    if incident_redis is not None:
-        try:
-            await incident_redis.aclose()
-        except Exception:
-            pass
-    if incident_pool is not None:
-        try:
-            await incident_pool.close()
-        except Exception:
-            pass
-
-    # 종료 시: 감사 로그 로테이션 주기 태스크 정리
-    if audit_retention_task:
-        audit_retention_task.cancel()
-        try:
-            await audit_retention_task
-        except (Exception, _asyncio.CancelledError):
-            pass
-
-    # 종료 시: 파일 로그 정리 주기 태스크 정리 (D-140/D-141)
-    if file_log_retention_task:
-        file_log_retention_task.cancel()
-        try:
-            await file_log_retention_task
-        except (Exception, _asyncio.CancelledError):
-            pass
-
-    # 종료 시: 인증 DB 풀 정리 — 그 전에 조회 경로가 띄워 둔 쿼리 실행 감사 DB 쓰기를 마친다(D-261 부기)
-    if app.state.auth_pool:
-        try:
-            from src.security.audit_logger import wait_pending_db_mirrors
-
-            await wait_pending_db_mirrors()
-        except Exception:
-            logger.warning("쿼리 실행 감사 DB 쓰기 종료 대기 실패(무시)", exc_info=True)
-        try:
-            await app.state.auth_pool.close()
-        except Exception:
-            pass
-
-    # 종료 시: 체크포인터 연결 정리
-    if hasattr(checkpointer, "conn") and hasattr(checkpointer.conn, "close"):
-        try:
-            await checkpointer.conn.close()
-        except Exception:
-            pass
-
-    if config.schema_cache.backend == "redis":
-        from src.schema_cache.cache_manager import get_cache_manager
-        cache_mgr = get_cache_manager(config)
-        await cache_mgr.disconnect()
-
-    logger.info("서버 종료")
+async def _close_quietly(resource: Any, method: str = "close") -> None:
+    """종료 단계 — 연결·풀의 닫기 메서드를 부르고 예외는 삼킨다(다음 정리 단계를 계속한다)."""
+    try:
+        await getattr(resource, method)()
+    except Exception:
+        pass
 
 
 def _metrics_endpoint_enabled(config: object) -> bool:

@@ -509,102 +509,20 @@ class PolestarNoiseContextRepository:
 
         resource_sql = build_resource_signal_sql(event.db_id, event.server_name)
         noti_sql = build_noti_policy_sql(event.db_id, event.alarm_name)
-        resource_rows: list[dict[str, Any]] = []
-        noti_rows: list[dict[str, Any]] = []
-        dependency_rows: list[dict[str, Any]] = []
-        # (Plan 60 E4) 다홉 산출값 — 미산출(1홉 폴백)이면 None 유지.
-        cascaded: Optional[bool] = None
-        root_resource: Optional[str] = None
-        root_resource_name: Optional[str] = None
-        # (Plan 60 E5) 변경 상관 산출값 — 미산출(off·비PostgreSQL·실패)이면 None 유지.
-        change_nearby: Optional[bool] = None
-        change_candidates: Optional[list] = None
-        got_any = False
         try:
             async with self._registry.get_client(event.db_id) as client:
-                # resource 신호(중요도/유지보수)와 알림정책을 **독립 수집** — 한쪽 실패
-                # (테이블 부재·권한 등)가 다른 쪽 신호를 손실시키지 않는다
-                # (§5 부분 실패 허용·graceful degradation, Plan 47 enricher 계승).
-                try:
-                    resource_result = await client.execute_sql(resource_sql)
-                    resource_rows = list(getattr(resource_result, "rows", []) or [])
-                    got_any = True
-                except Exception as exc:  # noqa: BLE001 — resource만 실패, noti는 계속
-                    logger.warning(
-                        "노이즈 컨텍스트 resource 조회 실패 — db_id=%s alarm_id=%s: %s",
-                        event.db_id, event.alarm_id, exc,
-                    )
-                try:
-                    noti_result = await client.execute_sql(noti_sql)
-                    noti_rows = list(getattr(noti_result, "rows", []) or [])
-                    got_any = True
-                except Exception as exc:  # noqa: BLE001 — noti만 실패, resource는 보존
-                    logger.warning(
-                        "노이즈 컨텍스트 noti 조회 실패 — db_id=%s alarm_id=%s: %s",
-                        event.db_id, event.alarm_id, exc,
-                    )
-                # 의존성/부모 상태(E2, §3.6)는 **게이팅(collect_dependency)** 뒤에서만,
-                # 그리고 resource/noti와 **독립된 별도 try/except**로 수집한다 — 의존성
-                # 조회 실패가 importance/maintenance/noti_policy 신호를 절대 손실시키지
-                # 않는다(D-048 graceful degradation 계승). 기본(False)이면 SQL 미실행.
-                if collect_dependency:
-                    dependency_sql = build_dependency_sql(
-                        event.db_id, event.server_name
-                    )
-                    try:
-                        dependency_result = await client.execute_sql(dependency_sql)
-                        dependency_rows = list(
-                            getattr(dependency_result, "rows", []) or []
-                        )
-                        got_any = True
-                    except Exception as exc:  # noqa: BLE001 — 의존성만 실패, 타 신호 보존
-                        logger.warning(
-                            "노이즈 컨텍스트 dependency 조회 실패 — db_id=%s alarm_id=%s: %s",
-                            event.db_id, event.alarm_id, exc,
-                        )
-                # 다홉 토폴로지 연쇄(E4, §6.2)는 **게이팅(multi_hop)** 뒤에서만, PostgreSQL
-                # (gp/yd)일 때만, 그리고 **독립된 별도 try/except**로 산출한다 — 다홉 조회
-                # 실패가 타 신호를 손실시키지 않고 미산출(None → 게이트 1홉 폴백)로 강등된다.
-                if multi_hop and _is_postgres_dialect(event.db_id):
-                    try:
-                        cascaded, root_resource, root_resource_name = (
-                            await self._compute_multi_hop_cascade(
-                                client,
-                                event.db_id,
-                                _parse_resource_id(resource_rows),
-                                topology_max_hops=topology_max_hops,
-                                topology_cache_ttl_seconds=topology_cache_ttl_seconds,
-                            )
-                        )
-                        got_any = True
-                    except Exception as exc:  # noqa: BLE001 — 다홉만 실패, 타 신호 보존
-                        logger.warning(
-                            "노이즈 컨텍스트 다홉 연쇄 산출 실패 — 1홉 폴백: "
-                            "db_id=%s alarm_id=%s: %s",
-                            event.db_id, event.alarm_id, exc,
-                        )
-                        cascaded = root_resource = root_resource_name = None
-                # 변경 상관(E5, §7.2)은 **게이팅(change_correlation)** 뒤에서만, PostgreSQL
-                # (gp/yd)일 때만, 그리고 **독립된 별도 try/except**로 산출한다 — 변경 피드 조회
-                # 실패가 타 신호를 손실시키지 않고 미산출(None → 게이트 미보강)로 강등된다.
-                if change_correlation and _is_postgres_dialect(event.db_id):
-                    try:
-                        change_nearby, change_candidates = (
-                            await self._compute_change_correlation(
-                                client,
-                                event,
-                                _parse_resource_id(resource_rows),
-                                change_window_seconds=change_window_seconds,
-                            )
-                        )
-                        got_any = True
-                    except Exception as exc:  # noqa: BLE001 — 변경 상관만 실패, 타 신호 보존
-                        logger.warning(
-                            "노이즈 컨텍스트 변경 상관 산출 실패 — 미보강: "
-                            "db_id=%s alarm_id=%s: %s",
-                            event.db_id, event.alarm_id, exc,
-                        )
-                        change_nearby = change_candidates = None
+                signals = await self._collect_signals(
+                    client,
+                    event,
+                    resource_sql,
+                    noti_sql,
+                    collect_dependency=collect_dependency,
+                    multi_hop=multi_hop,
+                    topology_max_hops=topology_max_hops,
+                    topology_cache_ttl_seconds=topology_cache_ttl_seconds,
+                    change_correlation=change_correlation,
+                    change_window_seconds=change_window_seconds,
+                )
         except Exception as exc:  # noqa: BLE001 — 연결 자체 실패는 unavailable
             logger.warning(
                 "노이즈 컨텍스트 연결 실패 — db_id=%s alarm_id=%s: %s",
@@ -612,29 +530,206 @@ class PolestarNoiseContextRepository:
             )
             return unavailable_noise_ctx()
 
+        got_any, resource_rows, noti_rows, dependency_rows, hop, change = signals
         # 연결은 됐으나 모든 조회 실패 → 신호 없음 → 보수적 unavailable
         if not got_any:
             return unavailable_noise_ctx()
-        # 동결 계약 단일 출처(_NOISE_CTX_KEYS)로 dict를 구성한 뒤 신호를 채운다(§7.2).
-        context = _empty_noise_ctx()
-        context["importance_id"] = _parse_importance(resource_rows)
-        context["maintenance"] = _parse_maintenance(resource_rows)
-        context["noti_policy"] = _parse_noti_policy(noti_rows)
-        # collect_dependency=False면 dependency_rows=[] → None(E1 동작 동결).
-        context["parent_avail_status"] = _parse_parent_avail_status(dependency_rows)
-        # (E4) 다홉 산출값 — multi_hop off·비PostgreSQL·실패면 None(1홉 폴백).
-        context["cascaded"] = cascaded
-        context["root_resource"] = root_resource
-        context["root_resource_name"] = root_resource_name
-        # (E5) 변경 상관 산출값 — change_correlation off·비PostgreSQL·실패면 None(미보강).
-        context["change_nearby"] = change_nearby
-        context["change_candidates"] = change_candidates
-        context["source"] = "polestar_db"
-        logger.debug(
-            "노이즈 컨텍스트 조회 완료: db_id=%s server=%s alarm=%s ctx=%r",
-            event.db_id,
-            event.server_name,
-            event.alarm_name,
-            context,
+        return _assemble_noise_ctx(
+            event, resource_rows, noti_rows, dependency_rows, hop, change
         )
-        return context
+
+    async def _collect_signals(
+        self,
+        client: Any,  # DBClient (execute_sql)
+        event: AlarmEvent,
+        resource_sql: str,
+        noti_sql: str,
+        *,
+        collect_dependency: bool,
+        multi_hop: bool,
+        topology_max_hops: int,
+        topology_cache_ttl_seconds: int,
+        change_correlation: bool,
+        change_window_seconds: int,
+    ) -> tuple[
+        bool,
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        tuple[bool | None, str | None, str | None],
+        tuple[bool | None, list[Any] | None],
+    ]:
+        """열린 client로 신호를 단계별로 수집한다 — 각 단계는 독립 실패 허용(타 신호 보존).
+
+        반환: (got_any, resource_rows, noti_rows, dependency_rows,
+        (cascaded, root_resource, root_resource_name), (change_nearby, change_candidates)).
+        미수집·실패 단계는 빈 행 리스트 또는 None 튜플로 남는다.
+        """
+        resource_rows: list[dict[str, Any]] = []
+        noti_rows: list[dict[str, Any]] = []
+        dependency_rows: list[dict[str, Any]] = []
+        # (Plan 60 E4) 다홉 산출값 — 미산출(1홉 폴백)이면 None 유지.
+        hop: tuple[bool | None, str | None, str | None] = (None, None, None)
+        # (Plan 60 E5) 변경 상관 산출값 — 미산출(off·비PostgreSQL·실패)이면 None 유지.
+        change: tuple[bool | None, list[Any] | None] = (None, None)
+        got_any = False
+        # resource 신호(중요도/유지보수)와 알림정책을 **독립 수집** — 한쪽 실패
+        # (테이블 부재·권한 등)가 다른 쪽 신호를 손실시키지 않는다
+        # (§5 부분 실패 허용·graceful degradation, Plan 47 enricher 계승).
+        rows = await _query_rows(
+            client, resource_sql, event,
+            "노이즈 컨텍스트 resource 조회 실패 — db_id=%s alarm_id=%s: %s",
+        )
+        if rows is not None:
+            resource_rows, got_any = rows, True
+        rows = await _query_rows(
+            client, noti_sql, event,
+            "노이즈 컨텍스트 noti 조회 실패 — db_id=%s alarm_id=%s: %s",
+        )
+        if rows is not None:
+            noti_rows, got_any = rows, True
+        # 의존성/부모 상태(E2, §3.6)는 **게이팅(collect_dependency)** 뒤에서만,
+        # 그리고 resource/noti와 **독립된 별도 try/except**로 수집한다 — 의존성
+        # 조회 실패가 importance/maintenance/noti_policy 신호를 절대 손실시키지
+        # 않는다(D-048 graceful degradation 계승). 기본(False)이면 SQL 미실행.
+        if collect_dependency:
+            dependency_sql = build_dependency_sql(event.db_id, event.server_name)
+            rows = await _query_rows(
+                client, dependency_sql, event,
+                "노이즈 컨텍스트 dependency 조회 실패 — db_id=%s alarm_id=%s: %s",
+            )
+            if rows is not None:
+                dependency_rows, got_any = rows, True
+        # 다홉 토폴로지 연쇄(E4, §6.2)는 **게이팅(multi_hop)** 뒤에서만, PostgreSQL
+        # (gp/yd)일 때만, 그리고 **독립된 별도 try/except**로 산출한다 — 다홉 조회
+        # 실패가 타 신호를 손실시키지 않고 미산출(None → 게이트 1홉 폴백)로 강등된다.
+        if multi_hop and _is_postgres_dialect(event.db_id):
+            hop_result = await self._try_multi_hop_cascade(
+                client,
+                event,
+                resource_rows,
+                topology_max_hops=topology_max_hops,
+                topology_cache_ttl_seconds=topology_cache_ttl_seconds,
+            )
+            if hop_result is not None:
+                hop, got_any = hop_result, True
+        # 변경 상관(E5, §7.2)은 **게이팅(change_correlation)** 뒤에서만, PostgreSQL
+        # (gp/yd)일 때만, 그리고 **독립된 별도 try/except**로 산출한다 — 변경 피드 조회
+        # 실패가 타 신호를 손실시키지 않고 미산출(None → 게이트 미보강)로 강등된다.
+        if change_correlation and _is_postgres_dialect(event.db_id):
+            change_result = await self._try_change_correlation(
+                client,
+                event,
+                resource_rows,
+                change_window_seconds=change_window_seconds,
+            )
+            if change_result is not None:
+                change, got_any = change_result, True
+        return got_any, resource_rows, noti_rows, dependency_rows, hop, change
+
+    async def _try_multi_hop_cascade(
+        self,
+        client: Any,  # DBClient (execute_sql)
+        event: AlarmEvent,
+        resource_rows: list[dict[str, Any]],
+        *,
+        topology_max_hops: int,
+        topology_cache_ttl_seconds: int,
+    ) -> tuple[bool | None, str | None, str | None] | None:
+        """다홉 연쇄를 산출한다 — 실패 시 경고 로그 후 None(1홉 폴백·타 신호 보존)."""
+        try:
+            cascaded, root_resource, root_resource_name = (
+                await self._compute_multi_hop_cascade(
+                    client,
+                    event.db_id,
+                    _parse_resource_id(resource_rows),
+                    topology_max_hops=topology_max_hops,
+                    topology_cache_ttl_seconds=topology_cache_ttl_seconds,
+                )
+            )
+            return cascaded, root_resource, root_resource_name
+        except Exception as exc:  # noqa: BLE001 — 다홉만 실패, 타 신호 보존
+            logger.warning(
+                "노이즈 컨텍스트 다홉 연쇄 산출 실패 — 1홉 폴백: "
+                "db_id=%s alarm_id=%s: %s",
+                event.db_id, event.alarm_id, exc,
+            )
+            return None
+
+    async def _try_change_correlation(
+        self,
+        client: Any,  # DBClient (execute_sql)
+        event: AlarmEvent,
+        resource_rows: list[dict[str, Any]],
+        *,
+        change_window_seconds: int,
+    ) -> tuple[bool | None, list[Any] | None] | None:
+        """변경 상관을 산출한다 — 실패 시 경고 로그 후 None(미보강·타 신호 보존)."""
+        try:
+            change_nearby, change_candidates = (
+                await self._compute_change_correlation(
+                    client,
+                    event,
+                    _parse_resource_id(resource_rows),
+                    change_window_seconds=change_window_seconds,
+                )
+            )
+            return change_nearby, change_candidates
+        except Exception as exc:  # noqa: BLE001 — 변경 상관만 실패, 타 신호 보존
+            logger.warning(
+                "노이즈 컨텍스트 변경 상관 산출 실패 — 미보강: "
+                "db_id=%s alarm_id=%s: %s",
+                event.db_id, event.alarm_id, exc,
+            )
+            return None
+
+
+async def _query_rows(
+    client: Any,  # DBClient (execute_sql)
+    sql: str,
+    event: AlarmEvent,
+    fail_message: str,
+) -> list[dict[str, Any]] | None:
+    """고정 SQL 1건을 실행해 행 리스트를 반환한다 — 실패 시 경고 로그 후 None(타 신호 보존)."""
+    try:
+        result = await client.execute_sql(sql)
+        return list(getattr(result, "rows", []) or [])
+    except Exception as exc:  # noqa: BLE001 — 해당 조회만 실패, 타 신호 보존
+        logger.warning(fail_message, event.db_id, event.alarm_id, exc)
+        return None
+
+
+def _assemble_noise_ctx(
+    event: AlarmEvent,
+    resource_rows: list[dict[str, Any]],
+    noti_rows: list[dict[str, Any]],
+    dependency_rows: list[dict[str, Any]],
+    hop: tuple[bool | None, str | None, str | None],
+    change: tuple[bool | None, list[Any] | None],
+) -> dict[str, Any]:
+    """수집 결과로 동결 계약 dict(source="polestar_db")를 조립한다(§7.2)."""
+    cascaded, root_resource, root_resource_name = hop
+    change_nearby, change_candidates = change
+    # 동결 계약 단일 출처(_NOISE_CTX_KEYS)로 dict를 구성한 뒤 신호를 채운다(§7.2).
+    context = _empty_noise_ctx()
+    context["importance_id"] = _parse_importance(resource_rows)
+    context["maintenance"] = _parse_maintenance(resource_rows)
+    context["noti_policy"] = _parse_noti_policy(noti_rows)
+    # collect_dependency=False면 dependency_rows=[] → None(E1 동작 동결).
+    context["parent_avail_status"] = _parse_parent_avail_status(dependency_rows)
+    # (E4) 다홉 산출값 — multi_hop off·비PostgreSQL·실패면 None(1홉 폴백).
+    context["cascaded"] = cascaded
+    context["root_resource"] = root_resource
+    context["root_resource_name"] = root_resource_name
+    # (E5) 변경 상관 산출값 — change_correlation off·비PostgreSQL·실패면 None(미보강).
+    context["change_nearby"] = change_nearby
+    context["change_candidates"] = change_candidates
+    context["source"] = "polestar_db"
+    logger.debug(
+        "노이즈 컨텍스트 조회 완료: db_id=%s server=%s alarm=%s ctx=%r",
+        event.db_id,
+        event.server_name,
+        event.alarm_name,
+        context,
+    )
+    return context

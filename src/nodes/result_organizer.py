@@ -43,6 +43,169 @@ from src.utils.query_gen_common import HOST_IDENTIFIER_FIELDS, is_demonstrative_
 logger = logging.getLogger(__name__)
 
 
+async def _judge_sufficiency(
+    state: AgentState,
+    masked_results: list[dict[str, Any]],
+    parsed: dict[str, Any],
+    template: dict[str, Any] | None,
+    *,
+    llm: BaseChatModel | None,
+    app_config: AppConfig,
+) -> bool:
+    """2. 데이터 충분성 판정 — 판정 후 폼필 결정적 결과면 부족 판정을 무시한다.
+
+    폼필 결정적 조립(D-146/D-149)이 발동해 행이 반환됐으면 부족 판정을 무시한다.
+    라이브 실측(2026-07-28 yd): 미수집 항목(구분/용도 등) 때문에 부족으로 판정 →
+    재시도에서 LLM 폴백이 **올바른 결정적 결과를 동일값 SQL로 덮어씀**. 이 쿼리는
+    well-defined라 재생성이 개선을 만들 수 없고(D-068 원리), 미채움 필드는 미수집
+    항목이라 재조회 무의미 — 사유는 D-147 미작성 안내가 노출한다.
+    D-149 확장(라이브 실측 2026-07-30 서버목록 양식 3존): 월 시리즈 없는 폼필도
+    의도적 공란(정책 필드) 다수가 부족으로 판정 → 재시도 턴이 결정적 조립을 스킵해
+    LLM 폴백이 계약(공란·등록명 규칙)을 덮었다. 양식 턴 + 행 존재면 동일하게 억제한다.
+    """
+    state_column_mapping = state.get("column_mapping")
+    is_sufficient = await _check_data_sufficiency(
+        masked_results,
+        parsed,
+        template,
+        column_mapping=state_column_mapping,
+        llm=llm,
+        app_config=app_config,
+    )
+
+    if not is_sufficient and masked_results and (
+        state.get("form_month_anchor") or state.get("template_structure")
+    ):
+        logger.info(
+            "폼필 결정적 결과(D-146/D-149) %d행 — 부족 판정 무시(재시도 억제)",
+            len(masked_results),
+        )
+        is_sufficient = True
+    return is_sufficient
+
+
+async def _empty_diagnosis(
+    state: AgentState, parsed: dict[str, Any], app_config: AppConfig,
+) -> tuple[dict[str, Any], bool]:
+    """0건 원인 진단 — (응답 델타, 재생성 중단 여부)를 돌려준다(진단 없음이면 빈 델타)."""
+    diagnosis = await _diagnose_empty_result(state, parsed, app_config)
+    if diagnosis is None:
+        return {}, False
+    diagnosis_delta = {"empty_diagnosis": as_payload(diagnosis)}
+    if not diagnosis.regenerable:
+        # G-5: 상위 단계에는 데이터가 있다 = SQL은 정상 동작했다. 재생성은 토큰만 쓴다.
+        logger.info("0건 진단 — 재생성 중단(퍼널 상위 단계에 데이터 존재)")
+        return diagnosis_delta, True
+    return diagnosis_delta, False
+
+
+async def _template_column_mapping(
+    state: AgentState,
+    template: dict[str, Any] | None,
+    output_format: str,
+    formatted_results: list[dict[str, Any]],
+    *,
+    llm: BaseChatModel | None,
+    app_config: AppConfig,
+) -> tuple[dict[str, Any] | None, list[SheetMappingResult] | None]:
+    """4. 양식 매핑 — (column_mapping, sheet_mappings)를 돌려준다.
+
+    field_mapper 노드에서 이미 column_mapping이 생성된 경우 그대로 사용
+    (Single Source of Truth 원칙).
+    """
+    column_mapping: dict[str, Any] | None = state.get("column_mapping")
+    sheet_mappings: list[SheetMappingResult] | None = None
+
+    if template and output_format in ("xlsx", "docx"):
+        if column_mapping:
+            # field_mapper에서 이미 매핑 완료 - 중복 LLM 호출 없음
+            logger.info("field_mapper 매핑 사용 (LLM 재호출 스킵)")
+        else:
+            # field_mapper가 스킵된 경우 (레거시 폴백)
+            target_sheets = state.get("target_sheets")
+            has_multiple_sheets = len(template.get("sheets", [])) > 1
+
+            if output_format == "xlsx" and has_multiple_sheets:
+                sheet_mappings = await _perform_per_sheet_field_mapping(
+                    llm=llm,
+                    app_config=app_config,
+                    template=template,
+                    schema_info=state.get("schema_info", {}),
+                    target_sheets=target_sheets,
+                    rows=formatted_results,
+                )
+                if sheet_mappings:
+                    column_mapping = sheet_mappings[0].get("column_mapping")
+            else:
+                column_mapping = await _perform_field_mapping(
+                    llm=llm,
+                    app_config=app_config,
+                    template=template,
+                    schema_info=state.get("schema_info", {}),
+                )
+    return column_mapping, sheet_mappings
+
+
+async def _resolve_mapping_to_result_keys(
+    column_mapping: dict[str, Any] | None,
+    formatted_results: list[dict[str, Any]],
+    *,
+    llm: BaseChatModel | None,
+    app_config: AppConfig,
+) -> dict[str, Any] | None:
+    """4.5 미매칭 필드 해석 — resolved_mapping 생성 (3계층 하이브리드 Layer 1 + Layer 2)."""
+    resolved_mapping: dict[str, Any] | None = None
+    if column_mapping and formatted_results:
+        result_keys = set(formatted_results[0].keys())
+
+        # Layer 1: 규칙 기반 매칭
+        from src.utils.column_matcher import build_resolved_mapping
+        resolved_mapping, unresolved_fields = build_resolved_mapping(
+            column_mapping, result_keys,
+        )
+        logger.info(
+            "Layer 1 규칙 기반 resolved_mapping: %d건 해석, %d건 미해결",
+            len(resolved_mapping) - len(unresolved_fields),
+            len(unresolved_fields),
+        )
+
+        # Layer 2: 미해결 항목에 대해 LLM 유사성 판단
+        if unresolved_fields:
+            llm_resolved = await _resolve_unmatched_via_llm(
+                llm=llm,
+                column_mapping=column_mapping,
+                unresolved_fields=unresolved_fields,
+                result_keys=result_keys,
+                app_config=app_config,
+            )
+            if llm_resolved:
+                for field, resolved_key in llm_resolved.items():
+                    resolved_mapping[field] = resolved_key
+                logger.info(
+                    "Layer 2 LLM 유사성 판단으로 %d건 추가 해석: %s",
+                    len(llm_resolved), llm_resolved,
+                )
+    return resolved_mapping
+
+
+def _attach_merge_context(
+    organized: OrganizedData,
+    state: AgentState,
+    ranking: dict[str, Any] | None,
+    summary: str,
+    shown: int,
+) -> None:
+    """정리 결과 조립 — 멀티 DB 전역 재정렬 경과·집계 종합을 organized에 싣는다."""
+    if ranking:
+        # 행과 함께 경과를 운반한다(1·2·3단 공통 — organized_data는 모든 경로가 전달한다).
+        organized["merge_ranking"] = {k: v for k, v in ranking.items() if k != "rows"}
+        if ranking.get("applied"):
+            organized["summary"] = _ranking_summary(ranking, shown) + summary
+    aggregates = _current_merge_aggregates(state)
+    if aggregates:
+        organized["merge_aggregates"] = dict(aggregates)
+
+
 async def result_organizer(
     state: AgentState,
     *,
@@ -84,33 +247,10 @@ async def result_organizer(
     masker = DataMasker(app_config.security)
     masked_results = masker.mask_rows(query_results)
 
-    # 2. 데이터 충분성 판단
-    state_column_mapping = state.get("column_mapping")
-    is_sufficient = await _check_data_sufficiency(
-        masked_results,
-        parsed,
-        template,
-        column_mapping=state_column_mapping,
-        llm=llm,
-        app_config=app_config,
+    # 2. 데이터 충분성 판단 (폼필 결정적 결과면 부족 판정 무시 — D-146/D-149)
+    is_sufficient = await _judge_sufficiency(
+        state, masked_results, parsed, template, llm=llm, app_config=app_config,
     )
-
-    # 폼필 결정적 조립(D-146/D-149)이 발동해 행이 반환됐으면 부족 판정을 무시한다.
-    # 라이브 실측(2026-07-28 yd): 미수집 항목(구분/용도 등) 때문에 부족으로 판정 →
-    # 재시도에서 LLM 폴백이 **올바른 결정적 결과를 동일값 SQL로 덮어씀**. 이 쿼리는
-    # well-defined라 재생성이 개선을 만들 수 없고(D-068 원리), 미채움 필드는 미수집
-    # 항목이라 재조회 무의미 — 사유는 D-147 미작성 안내가 노출한다.
-    # D-149 확장(라이브 실측 2026-07-30 서버목록 양식 3존): 월 시리즈 없는 폼필도
-    # 의도적 공란(정책 필드) 다수가 부족으로 판정 → 재시도 턴이 결정적 조립을 스킵해
-    # LLM 폴백이 계약(공란·등록명 규칙)을 덮었다. 양식 턴 + 행 존재면 동일하게 억제한다.
-    if not is_sufficient and masked_results and (
-        state.get("form_month_anchor") or state.get("template_structure")
-    ):
-        logger.info(
-            "폼필 결정적 결과(D-146/D-149) %d행 — 부족 판정 무시(재시도 억제)",
-            len(masked_results),
-        )
-        is_sufficient = True
 
     # 이름 칸 등호 0행(plans/149 W3 · G-4 (b)) — 설명 정본이 부분 일치로 표시한 칸에 등호·IN을
     # 걸어 0행이면 힌트를 재시도 사유로 실어 1회 재생성한다(`route_after_organization` →
@@ -141,13 +281,9 @@ async def result_organizer(
     # 정상 경로 비용이 0이고, 플래그 OFF면 진단 자체가 없다(응답 문구 바이트 무변경).
     diagnosis_delta: dict = {}
     if not masked_results:
-        diagnosis = await _diagnose_empty_result(state, parsed, app_config)
-        if diagnosis is not None:
-            diagnosis_delta = {"empty_diagnosis": as_payload(diagnosis)}
-            if not diagnosis.regenerable:
-                # G-5: 상위 단계에는 데이터가 있다 = SQL은 정상 동작했다. 재생성은 토큰만 쓴다.
-                logger.info("0건 진단 — 재생성 중단(퍼널 상위 단계에 데이터 존재)")
-                is_sufficient = True
+        diagnosis_delta, stop_regeneration = await _empty_diagnosis(state, parsed, app_config)
+        if stop_regeneration:
+            is_sufficient = True
 
     if not is_sufficient and state.get("retry_count", 0) < app_config.query.max_retry_count:
         logger.info("데이터 부족으로 재시도 요청")
@@ -172,71 +308,14 @@ async def result_organizer(
         formatted_results = masked_results
 
     # 4. 양식 매핑
-    # field_mapper 노드에서 이미 column_mapping이 생성된 경우 그대로 사용
-    # (Single Source of Truth 원칙)
-    column_mapping: Optional[dict[str, str]] = state.get("column_mapping")
-    sheet_mappings: Optional[list[SheetMappingResult]] = None
-
-    if template and output_format in ("xlsx", "docx"):
-        if column_mapping:
-            # field_mapper에서 이미 매핑 완료 - 중복 LLM 호출 없음
-            logger.info("field_mapper 매핑 사용 (LLM 재호출 스킵)")
-        else:
-            # field_mapper가 스킵된 경우 (레거시 폴백)
-            target_sheets = state.get("target_sheets")
-            has_multiple_sheets = len(template.get("sheets", [])) > 1
-
-            if output_format == "xlsx" and has_multiple_sheets:
-                sheet_mappings = await _perform_per_sheet_field_mapping(
-                    llm=llm,
-                    app_config=app_config,
-                    template=template,
-                    schema_info=state.get("schema_info", {}),
-                    target_sheets=target_sheets,
-                    rows=formatted_results,
-                )
-                if sheet_mappings:
-                    column_mapping = sheet_mappings[0].get("column_mapping")
-            else:
-                column_mapping = await _perform_field_mapping(
-                    llm=llm,
-                    app_config=app_config,
-                    template=template,
-                    schema_info=state.get("schema_info", {}),
-                )
+    column_mapping, sheet_mappings = await _template_column_mapping(
+        state, template, output_format, formatted_results, llm=llm, app_config=app_config,
+    )
 
     # 4.5 resolved_mapping 생성 (3계층 하이브리드 Layer 1 + Layer 2)
-    resolved_mapping: Optional[dict[str, str]] = None
-    if column_mapping and formatted_results:
-        result_keys = set(formatted_results[0].keys())
-
-        # Layer 1: 규칙 기반 매칭
-        from src.utils.column_matcher import build_resolved_mapping
-        resolved_mapping, unresolved_fields = build_resolved_mapping(
-            column_mapping, result_keys,
-        )
-        logger.info(
-            "Layer 1 규칙 기반 resolved_mapping: %d건 해석, %d건 미해결",
-            len(resolved_mapping) - len(unresolved_fields),
-            len(unresolved_fields),
-        )
-
-        # Layer 2: 미해결 항목에 대해 LLM 유사성 판단
-        if unresolved_fields:
-            llm_resolved = await _resolve_unmatched_via_llm(
-                llm=llm,
-                column_mapping=column_mapping,
-                unresolved_fields=unresolved_fields,
-                result_keys=result_keys,
-                app_config=app_config,
-            )
-            if llm_resolved:
-                for field, resolved_key in llm_resolved.items():
-                    resolved_mapping[field] = resolved_key
-                logger.info(
-                    "Layer 2 LLM 유사성 판단으로 %d건 추가 해석: %s",
-                    len(llm_resolved), llm_resolved,
-                )
+    resolved_mapping = await _resolve_mapping_to_result_keys(
+        column_mapping, formatted_results, llm=llm, app_config=app_config,
+    )
 
     # 5. 요약 생성
     summary = _generate_summary(formatted_results, parsed)
@@ -251,14 +330,7 @@ async def result_organizer(
         is_sufficient=True,
         sheet_mappings=sheet_mappings,
     )
-    if ranking:
-        # 행과 함께 경과를 운반한다(1·2·3단 공통 — organized_data는 모든 경로가 전달한다).
-        organized["merge_ranking"] = {k: v for k, v in ranking.items() if k != "rows"}
-        if ranking.get("applied"):
-            organized["summary"] = _ranking_summary(ranking, len(formatted_results)) + summary
-    aggregates = _current_merge_aggregates(state)
-    if aggregates:
-        organized["merge_aggregates"] = dict(aggregates)
+    _attach_merge_context(organized, state, ranking, summary, len(formatted_results))
     return {
         "organized_data": organized,
         "error_message": None,

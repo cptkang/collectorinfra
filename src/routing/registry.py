@@ -848,43 +848,45 @@ def _parse_source_terms(value: Any, *, where: str) -> tuple[str, ...]:
     return tuple(terms)
 
 
-def parse_registry(data: dict[str, Any]) -> DBRegistry:
-    """레지스트리 dict(YAML 파싱 결과)를 DBRegistry로 변환한다.
-
-    Args:
-        data: `config/db_registry.yaml`을 파싱한 딕셔너리
-
-    Returns:
-        DBRegistry 인스턴스
-
-    Raises:
-        RegistryError: 필수 필드(db_id) 누락 · 솔루션 `sources` 검증 실패(plans/87 J8) 등 구조 오류
-    """
-    if not isinstance(data, dict):
-        raise RegistryError("레지스트리 최상위 구조가 매핑이 아닙니다.")
-
-    zones = tuple(
+def _parse_zones(value: Any) -> tuple[ZoneSpec, ...]:
+    """`zones:` 목록 → ZoneSpec 튜플(code 없는 항목은 버린다)."""
+    return tuple(
         ZoneSpec(code=str(z["code"]), label=str(z.get("label", "")))
-        for z in (data.get("zones") or [])
+        for z in (value or [])
         if isinstance(z, dict) and z.get("code")
     )
-    families = tuple(
+
+
+def _parse_families(value: Any) -> tuple[FamilySpec, ...]:
+    """`families:` 목록 → FamilySpec 튜플(name 없는 항목은 버린다)."""
+    return tuple(
         FamilySpec(
             name=str(f["name"]),
             product_terms=_as_str_tuple(f.get("product_terms")),
             signal_terms=_as_str_tuple(f.get("signal_terms")),
         )
-        for f in (data.get("families") or [])
+        for f in (value or [])
         if isinstance(f, dict) and f.get("name")
     )
-    locations = tuple(
+
+
+def _parse_locations(value: Any) -> tuple[LocationSpec, ...]:
+    """`locations:` 목록 → LocationSpec 튜플(term 없는 항목은 버린다)."""
+    return tuple(
         LocationSpec(term=str(loc["term"]), db_ids=_as_str_tuple(loc.get("db_ids")))
-        for loc in (data.get("locations") or [])
+        for loc in (value or [])
         if isinstance(loc, dict) and loc.get("term")
     )
 
-    zone_code_set = {z.code for z in zones}
-    solutions = tuple(
+
+def _parse_solutions(value: Any, *, declared_zones: set[str]) -> tuple[SolutionSpec, ...]:
+    """`solutions:` 목록 → SolutionSpec 튜플(code 없는 항목은 버린다).
+
+    Raises:
+        RegistryError: 솔루션 `sources` 검증 실패(plans/87 J8)
+        ValueError: 보기(`views`) 형식 위반
+    """
+    return tuple(
         SolutionSpec(
             code=str(raw["code"]),
             label=str(raw.get("label", "")),
@@ -895,17 +897,21 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
             requires=_as_str_tuple(raw.get("requires")),
             views=_parse_views(raw.get("views")),
             sources=_parse_sources(
-                raw.get("sources"), solution=str(raw["code"]), declared_zones=zone_code_set
+                raw.get("sources"), solution=str(raw["code"]), declared_zones=declared_zones
             ),
             aliases=_as_str_tuple(raw.get("aliases")),
             # 따옴표 친 "false"·"no"·"0"도 거짓 — bool("false")는 참이다(plans/142 V-8)
             data_source=str(raw.get("data_source", True)).strip().lower()
             not in {"false", "no", "0", "off", "none", ""},
         )
-        for raw in data.get("solutions") or []
+        for raw in value or []
         if isinstance(raw, dict) and raw.get("code")
     )
-    zone_groups = tuple(
+
+
+def _parse_zone_groups(value: Any) -> tuple[ZoneGroupSpec, ...]:
+    """`zone_groups:` 목록 → ZoneGroupSpec 튜플(code 없는 항목은 버린다)."""
+    return tuple(
         ZoneGroupSpec(
             code=str(raw["code"]),
             label=str(raw.get("label", "")),
@@ -913,12 +919,19 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
             zones=_as_str_tuple(raw.get("zones")),
             query_order=int(raw.get("query_order", 0)),
         )
-        for raw in data.get("zone_groups") or []
+        for raw in value or []
         if isinstance(raw, dict) and raw.get("code")
     )
 
+
+def _parse_databases(value: Any) -> tuple[DBEntry, ...]:
+    """`databases:` 목록 → 활성 DBEntry 튜플(매핑 아닌 항목·`enabled: false`는 버린다).
+
+    Raises:
+        RegistryError: db_id 누락
+    """
     databases: list[DBEntry] = []
-    for raw in data.get("databases") or []:
+    for raw in value or []:
         if not isinstance(raw, dict):
             continue
         db_id = raw.get("db_id")
@@ -945,48 +958,26 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
                 label_null_group_keys=bool(raw.get("label_null_group_keys", False)),
             )
         )
+    return tuple(databases)
 
-    registered = {e.db_id for e in databases}
-    for loc in locations:
-        for db_id in loc.db_ids:
-            if db_id not in registered:
-                logger.warning(
-                    "레지스트리 위치 '%s'가 미등록 db_id '%s'를 참조합니다.", loc.term, db_id
-                )
-    declared_solutions = {s.code for s in solutions}
-    for group in zone_groups:
-        if group.solution and group.solution not in declared_solutions:
-            logger.warning(
-                "레지스트리 존 그룹 '%s'가 미선언 솔루션 '%s'를 참조합니다.",
-                group.code, group.solution,
-            )
-        for zcode in group.zones:
-            if zcode not in {z.code for z in zones}:
-                logger.warning(
-                    "레지스트리 존 그룹 '%s'가 미선언 존 '%s'를 참조합니다.",
-                    group.code, zcode,
-                )
 
-    capability_specs = tuple(
+def _parse_capability_specs(value: Any) -> tuple[CapabilitySpec, ...]:
+    """`capabilities:` 목록 → CapabilitySpec 튜플(code 없는 항목은 버린다)."""
+    return tuple(
         CapabilitySpec(
             code=str(raw["code"]),
             label=str(raw.get("label", "")),
             ambiguous_owner=bool(raw.get("ambiguous_owner", False)),
             active_only=bool(raw.get("active_only", False)),
         )
-        for raw in data.get("capabilities") or []
+        for raw in value or []
         if isinstance(raw, dict) and raw.get("code")
     )
 
-    declared_zones = {z.code for z in zones}
-    for entry in databases:
-        if entry.zone and entry.zone not in declared_zones:
-            logger.warning(
-                "레지스트리 DB '%s'가 미선언 존 '%s'를 참조합니다(zones에 추가 필요).",
-                entry.db_id, entry.zone,
-            )
 
-    entity_edges = tuple(
+def _parse_entity_edges(value: Any) -> tuple[EdgeSpec, ...]:
+    """`entity_edges:` 목록 → EdgeSpec 튜플(id·from·to 중 하나라도 없으면 버린다)."""
+    return tuple(
         EdgeSpec(
             id=str(raw["id"]),
             from_facet=str(raw.get("from", "")),
@@ -995,9 +986,86 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
             via=str(raw.get("via", "")),
             grades=_as_str_tuple(raw.get("grades")),
         )
-        for raw in data.get("entity_edges") or []
+        for raw in value or []
         if isinstance(raw, dict) and raw.get("id") and raw.get("from") and raw.get("to")
     )
+
+
+def _warn_dangling_refs(
+    locations: tuple[LocationSpec, ...],
+    zone_groups: tuple[ZoneGroupSpec, ...],
+    *,
+    registered_dbs: set[str],
+    declared_solutions: set[str],
+    declared_zones: set[str],
+) -> None:
+    """위치·존 그룹의 미등록 db_id·미선언 솔루션·미선언 존 참조를 경고한다(오류 아님)."""
+    for loc in locations:
+        for db_id in loc.db_ids:
+            if db_id not in registered_dbs:
+                logger.warning(
+                    "레지스트리 위치 '%s'가 미등록 db_id '%s'를 참조합니다.", loc.term, db_id
+                )
+    for group in zone_groups:
+        if group.solution and group.solution not in declared_solutions:
+            logger.warning(
+                "레지스트리 존 그룹 '%s'가 미선언 솔루션 '%s'를 참조합니다.",
+                group.code, group.solution,
+            )
+        for zcode in group.zones:
+            if zcode not in declared_zones:
+                logger.warning(
+                    "레지스트리 존 그룹 '%s'가 미선언 존 '%s'를 참조합니다.",
+                    group.code, zcode,
+                )
+
+
+def _warn_undeclared_db_zones(
+    databases: tuple[DBEntry, ...], *, declared_zones: set[str]
+) -> None:
+    """DB 항목의 미선언 존 참조를 경고한다(오류 아님)."""
+    for entry in databases:
+        if entry.zone and entry.zone not in declared_zones:
+            logger.warning(
+                "레지스트리 DB '%s'가 미선언 존 '%s'를 참조합니다(zones에 추가 필요).",
+                entry.db_id, entry.zone,
+            )
+
+
+def parse_registry(data: dict[str, Any]) -> DBRegistry:
+    """레지스트리 dict(YAML 파싱 결과)를 DBRegistry로 변환한다.
+
+    섹션 파싱·경고 순서는 종전 그대로다 — 능력 표(`capabilities`) 파싱이 두 경고 묶음 사이에 온다.
+
+    Args:
+        data: `config/db_registry.yaml`을 파싱한 딕셔너리
+
+    Returns:
+        DBRegistry 인스턴스
+
+    Raises:
+        RegistryError: 필수 필드(db_id) 누락 · 솔루션 `sources` 검증 실패(plans/87 J8) 등 구조 오류
+    """
+    if not isinstance(data, dict):
+        raise RegistryError("레지스트리 최상위 구조가 매핑이 아닙니다.")
+
+    zones = _parse_zones(data.get("zones"))
+    families = _parse_families(data.get("families"))
+    locations = _parse_locations(data.get("locations"))
+    declared_zones = {z.code for z in zones}
+    solutions = _parse_solutions(data.get("solutions"), declared_zones=declared_zones)
+    zone_groups = _parse_zone_groups(data.get("zone_groups"))
+    databases = _parse_databases(data.get("databases"))
+
+    _warn_dangling_refs(
+        locations, zone_groups,
+        registered_dbs={e.db_id for e in databases},
+        declared_solutions={s.code for s in solutions},
+        declared_zones=declared_zones,
+    )
+    capability_specs = _parse_capability_specs(data.get("capabilities"))
+    _warn_undeclared_db_zones(databases, declared_zones=declared_zones)
+    entity_edges = _parse_entity_edges(data.get("entity_edges"))
 
     return DBRegistry(
         version=int(data.get("version", 1)),
@@ -1007,7 +1075,7 @@ def parse_registry(data: dict[str, Any]) -> DBRegistry:
         families=families,
         environment_terms=_as_str_tuple(data.get("environment_terms")),
         locations=locations,
-        databases=tuple(databases),
+        databases=databases,
         capabilities_=capability_specs,
         entity_edges_=entity_edges,
     )

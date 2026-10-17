@@ -60,6 +60,227 @@ def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
     }
 
 
+# --- 감사 통계(get_stats) 단계 — SQL 문자열은 발행 바이트를 그대로 둔다(plans/173 T8) ---
+
+
+def _stats_filter(
+    start_date: str | None, end_date: str | None
+) -> tuple[list[str], list[Any]]:
+    """기간 필터 — `created_at` 조건 목록과 바인딩 인자(`$n` 순서와 같다)."""
+    conditions: list[str] = []
+    params: list[Any] = []
+    idx = 1
+
+    if start_date:
+        conditions.append(f"created_at >= ${idx}")
+        params.append(_to_bound(start_date, end=False))
+        idx += 1
+
+    if end_date:
+        conditions.append(f"created_at <= ${idx}")
+        params.append(_to_bound(end_date, end=True))
+        idx += 1
+
+    return conditions, params
+
+
+async def _fetch_overview(
+    conn: Any, conditions: list[str], where_clause: str, params: list[Any]
+) -> tuple[Any, Any]:
+    """기본 통계(요청 수·사용자 수)와 쿼리 실행 성공률·평균 실행 시간 — 행 2개."""
+    # 기본 통계
+    basic_row = await conn.fetchrow(
+        f"""
+                    SELECT
+                        COUNT(*) AS total_requests,
+                        COUNT(DISTINCT user_id) AS unique_users
+                    FROM audit_logs
+                    {where_clause}
+                    """,
+        *params,
+    )
+
+    # 쿼리 실행 성공률 및 평균 실행 시간
+    qe_conditions = list(conditions)
+    qe_conditions.append("event_type = 'query_execution'")
+    qe_where = "WHERE " + " AND ".join(qe_conditions)
+
+    qe_row = await conn.fetchrow(
+        f"""
+                    SELECT
+                        AVG(CASE WHEN detail->>'success' = 'true' THEN 1 ELSE 0 END)
+                            AS success_rate,
+                        AVG((detail->>'execution_time_ms')::float)
+                            AS avg_execution_time_ms
+                    FROM audit_logs
+                    {qe_where}
+                    """,
+        *params,
+    )
+    return basic_row, qe_row
+
+
+async def _fetch_top_users(conn: Any, where_clause: str, params: list[Any]) -> Any:
+    """Top 사용자 10명."""
+    return await conn.fetch(
+        f"""
+                    SELECT user_id, COUNT(*) AS count
+                    FROM audit_logs
+                    {where_clause}
+                    AND user_id IS NOT NULL
+                    GROUP BY user_id
+                    ORDER BY count DESC
+                    LIMIT 10
+                    """,
+        *params,
+    ) if where_clause else await conn.fetch(
+        """
+                    SELECT user_id, COUNT(*) AS count
+                    FROM audit_logs
+                    WHERE user_id IS NOT NULL
+                    GROUP BY user_id
+                    ORDER BY count DESC
+                    LIMIT 10
+                    """,
+    )
+
+
+async def _fetch_top_tables(
+    conn: Any, where_clause: str, params: list[Any]
+) -> list[asyncpg.Record]:
+    """Top 테이블 10개(detail->'target_tables' 배열 unnest) — 실패하면 빈 목록(경고 로그)."""
+    top_tables_rows: list[asyncpg.Record] = []
+    try:
+        top_tables_rows = await conn.fetch(
+            f"""
+                        SELECT tbl, COUNT(*) AS count
+                        FROM audit_logs,
+                             jsonb_array_elements_text(
+                                 CASE
+                                     WHEN detail ? 'target_tables'
+                                          AND jsonb_typeof(detail->'target_tables') = 'array'
+                                     THEN detail->'target_tables'
+                                     ELSE '[]'::jsonb
+                                 END
+                             ) AS tbl
+                        {where_clause}
+                        GROUP BY tbl
+                        ORDER BY count DESC
+                        LIMIT 10
+                        """,
+            *params,
+        ) if where_clause else await conn.fetch(
+            """
+                        SELECT tbl, COUNT(*) AS count
+                        FROM audit_logs,
+                             jsonb_array_elements_text(
+                                 CASE
+                                     WHEN detail ? 'target_tables'
+                                          AND jsonb_typeof(detail->'target_tables') = 'array'
+                                     THEN detail->'target_tables'
+                                     ELSE '[]'::jsonb
+                                 END
+                             ) AS tbl
+                        GROUP BY tbl
+                        ORDER BY count DESC
+                        LIMIT 10
+                        """,
+        )
+    except Exception as e:
+        logger.warning("Top 테이블 집계 실패 (빈 리스트 반환): %s", e)
+    return top_tables_rows
+
+
+async def _fetch_daily(conn: Any, where_clause: str, params: list[Any]) -> Any:
+    """일별 통계(최근 30일)."""
+    return await conn.fetch(
+        f"""
+                    SELECT
+                        DATE(created_at) AS date,
+                        COUNT(*) AS count,
+                        COUNT(DISTINCT user_id) AS unique_users
+                    FROM audit_logs
+                    {where_clause}
+                    GROUP BY DATE(created_at)
+                    ORDER BY date DESC
+                    LIMIT 30
+                    """,
+        *params,
+    )
+
+
+async def _count_with(
+    conn: Any, conditions: list[str], event_condition: str, params: list[Any]
+) -> Any:
+    """기간 조건에 이벤트 조건 1개를 더한 건수(`event_condition`은 호출부의 고정 리터럴)."""
+    extra_conditions = list(conditions)
+    extra_conditions.append(event_condition)
+    extra_where = "WHERE " + " AND ".join(extra_conditions)
+    return await conn.fetchval(
+        f"SELECT COUNT(*) FROM audit_logs {extra_where}",
+        *params,
+    )
+
+
+def _stats_result(
+    basic_row: Any,
+    qe_row: Any,
+    top_users_rows: Any,
+    top_tables_rows: Any,
+    daily_rows: Any,
+    security_alerts_count: Any,
+    failed_login_count: Any,
+) -> dict[str, Any]:
+    """조회 결과 행들을 통계 응답 dict로 조립한다."""
+    return {
+        "total_requests": basic_row["total_requests"] if basic_row else 0,
+        "unique_users": basic_row["unique_users"] if basic_row else 0,
+        "success_rate": (
+            round(float(qe_row["success_rate"]), 4)
+            if qe_row and qe_row["success_rate"] is not None
+            else None
+        ),
+        "avg_execution_time_ms": (
+            round(float(qe_row["avg_execution_time_ms"]), 2)
+            if qe_row and qe_row["avg_execution_time_ms"] is not None
+            else None
+        ),
+        "top_users": [
+            {"user_id": r["user_id"], "count": r["count"]}
+            for r in top_users_rows
+        ],
+        "top_tables": [
+            {"table": r["tbl"], "count": r["count"]}
+            for r in top_tables_rows
+        ],
+        "daily_counts": [
+            {
+                "date": r["date"].isoformat() if r["date"] else None,
+                "count": r["count"],
+                "unique_users": r["unique_users"],
+            }
+            for r in daily_rows
+        ],
+        "security_alerts_count": security_alerts_count or 0,
+        "failed_login_count": failed_login_count or 0,
+    }
+
+
+def _empty_stats() -> dict[str, Any]:
+    """조회 실패 시의 빈 통계(호출마다 새 dict)."""
+    return {
+        "total_requests": 0,
+        "unique_users": 0,
+        "success_rate": None,
+        "avg_execution_time_ms": None,
+        "top_users": [],
+        "top_tables": [],
+        "daily_counts": [],
+        "security_alerts_count": 0,
+        "failed_login_count": 0,
+    }
+
+
 class PostgresAuditRepository(AuditRepository):
     """PostgreSQL 기반 감사 로그 저장소."""
 
@@ -240,19 +461,7 @@ class PostgresAuditRepository(AuditRepository):
         Returns:
             통계 딕셔너리 (total_requests, unique_users, success_rate 등)
         """
-        conditions: list[str] = []
-        params: list[Any] = []
-        idx = 1
-
-        if start_date:
-            conditions.append(f"created_at >= ${idx}")
-            params.append(_to_bound(start_date, end=False))
-            idx += 1
-
-        if end_date:
-            conditions.append(f"created_at <= ${idx}")
-            params.append(_to_bound(end_date, end=True))
-            idx += 1
+        conditions, params = _stats_filter(start_date, end_date)
 
         where_clause = ""
         if conditions:
@@ -260,180 +469,27 @@ class PostgresAuditRepository(AuditRepository):
 
         try:
             async with self._pool.acquire() as conn:
-                # 기본 통계
-                basic_row = await conn.fetchrow(
-                    f"""
-                    SELECT
-                        COUNT(*) AS total_requests,
-                        COUNT(DISTINCT user_id) AS unique_users
-                    FROM audit_logs
-                    {where_clause}
-                    """,
-                    *params,
-                )
-
-                # 쿼리 실행 성공률 및 평균 실행 시간
-                qe_conditions = list(conditions)
-                qe_conditions.append("event_type = 'query_execution'")
-                qe_where = "WHERE " + " AND ".join(qe_conditions)
-
-                qe_row = await conn.fetchrow(
-                    f"""
-                    SELECT
-                        AVG(CASE WHEN detail->>'success' = 'true' THEN 1 ELSE 0 END)
-                            AS success_rate,
-                        AVG((detail->>'execution_time_ms')::float)
-                            AS avg_execution_time_ms
-                    FROM audit_logs
-                    {qe_where}
-                    """,
-                    *params,
-                )
-
-                # Top 사용자
-                top_users_rows = await conn.fetch(
-                    f"""
-                    SELECT user_id, COUNT(*) AS count
-                    FROM audit_logs
-                    {where_clause}
-                    AND user_id IS NOT NULL
-                    GROUP BY user_id
-                    ORDER BY count DESC
-                    LIMIT 10
-                    """,
-                    *params,
-                ) if where_clause else await conn.fetch(
-                    """
-                    SELECT user_id, COUNT(*) AS count
-                    FROM audit_logs
-                    WHERE user_id IS NOT NULL
-                    GROUP BY user_id
-                    ORDER BY count DESC
-                    LIMIT 10
-                    """,
-                )
-
-                # Top 테이블 (detail->'target_tables' 배열 unnest)
-                top_tables_rows: list[asyncpg.Record] = []
-                try:
-                    top_tables_rows = await conn.fetch(
-                        f"""
-                        SELECT tbl, COUNT(*) AS count
-                        FROM audit_logs,
-                             jsonb_array_elements_text(
-                                 CASE
-                                     WHEN detail ? 'target_tables'
-                                          AND jsonb_typeof(detail->'target_tables') = 'array'
-                                     THEN detail->'target_tables'
-                                     ELSE '[]'::jsonb
-                                 END
-                             ) AS tbl
-                        {where_clause}
-                        GROUP BY tbl
-                        ORDER BY count DESC
-                        LIMIT 10
-                        """,
-                        *params,
-                    ) if where_clause else await conn.fetch(
-                        """
-                        SELECT tbl, COUNT(*) AS count
-                        FROM audit_logs,
-                             jsonb_array_elements_text(
-                                 CASE
-                                     WHEN detail ? 'target_tables'
-                                          AND jsonb_typeof(detail->'target_tables') = 'array'
-                                     THEN detail->'target_tables'
-                                     ELSE '[]'::jsonb
-                                 END
-                             ) AS tbl
-                        GROUP BY tbl
-                        ORDER BY count DESC
-                        LIMIT 10
-                        """,
-                    )
-                except Exception as e:
-                    logger.warning("Top 테이블 집계 실패 (빈 리스트 반환): %s", e)
-
-                # 일별 통계
-                daily_rows = await conn.fetch(
-                    f"""
-                    SELECT
-                        DATE(created_at) AS date,
-                        COUNT(*) AS count,
-                        COUNT(DISTINCT user_id) AS unique_users
-                    FROM audit_logs
-                    {where_clause}
-                    GROUP BY DATE(created_at)
-                    ORDER BY date DESC
-                    LIMIT 30
-                    """,
-                    *params,
-                )
-
+                basic_row, qe_row = await _fetch_overview(conn, conditions, where_clause, params)
+                top_users_rows = await _fetch_top_users(conn, where_clause, params)
+                top_tables_rows = await _fetch_top_tables(conn, where_clause, params)
+                daily_rows = await _fetch_daily(conn, where_clause, params)
                 # 보안 경고 건수
-                sa_conditions = list(conditions)
-                sa_conditions.append("event_type = 'security_alert'")
-                sa_where = "WHERE " + " AND ".join(sa_conditions)
-                security_alerts_count = await conn.fetchval(
-                    f"SELECT COUNT(*) FROM audit_logs {sa_where}",
-                    *params,
+                security_alerts_count = await _count_with(
+                    conn, conditions, "event_type = 'security_alert'", params
                 )
-
                 # 로그인 실패 건수
-                lf_conditions = list(conditions)
-                lf_conditions.append("event_type = 'login_fail'")
-                lf_where = "WHERE " + " AND ".join(lf_conditions)
-                failed_login_count = await conn.fetchval(
-                    f"SELECT COUNT(*) FROM audit_logs {lf_where}",
-                    *params,
+                failed_login_count = await _count_with(
+                    conn, conditions, "event_type = 'login_fail'", params
                 )
 
-            return {
-                "total_requests": basic_row["total_requests"] if basic_row else 0,
-                "unique_users": basic_row["unique_users"] if basic_row else 0,
-                "success_rate": (
-                    round(float(qe_row["success_rate"]), 4)
-                    if qe_row and qe_row["success_rate"] is not None
-                    else None
-                ),
-                "avg_execution_time_ms": (
-                    round(float(qe_row["avg_execution_time_ms"]), 2)
-                    if qe_row and qe_row["avg_execution_time_ms"] is not None
-                    else None
-                ),
-                "top_users": [
-                    {"user_id": r["user_id"], "count": r["count"]}
-                    for r in top_users_rows
-                ],
-                "top_tables": [
-                    {"table": r["tbl"], "count": r["count"]}
-                    for r in top_tables_rows
-                ],
-                "daily_counts": [
-                    {
-                        "date": r["date"].isoformat() if r["date"] else None,
-                        "count": r["count"],
-                        "unique_users": r["unique_users"],
-                    }
-                    for r in daily_rows
-                ],
-                "security_alerts_count": security_alerts_count or 0,
-                "failed_login_count": failed_login_count or 0,
-            }
+            return _stats_result(
+                basic_row, qe_row, top_users_rows, top_tables_rows, daily_rows,
+                security_alerts_count, failed_login_count,
+            )
 
         except Exception as e:
             logger.error("감사 통계 조회 실패: %s", e)
-            return {
-                "total_requests": 0,
-                "unique_users": 0,
-                "success_rate": None,
-                "avg_execution_time_ms": None,
-                "top_users": [],
-                "top_tables": [],
-                "daily_counts": [],
-                "security_alerts_count": 0,
-                "failed_login_count": 0,
-            }
+            return _empty_stats()
 
     async def get_user_activity(
         self,

@@ -75,18 +75,23 @@ task 단위로 고정**한다(task 질의가 가리키는 원문 힌트 부분�
 노드 등록 자체가 배타적이다 (`src/graph.py`):
 
 ```python
-if use_deep_agent:                                              # 1단 (부가 경로 opt-in)
-    graph.add_node("deep_agent", ...)
-if config.enable_intent_orchestration and not use_deep_agent:   # 2단 (기준 경로 · D-251)
-    graph.add_node("intent_planner", ...); ...
-# 3·4단 빌드에서만 참 — 1·2단 빌드에는 아래 노드를 등록하지 않는다(plans/163 D1)
-single_db_tail = not use_deep_agent and not config.enable_intent_orchestration
-if config.enable_semantic_routing and single_db_tail:           # 3단 (비교 arm)
-    graph.add_node("semantic_router", ...); ...
-if single_db_tail:                                              # 3·4단 공용 단일 DB 꼬리
-    graph.add_node("schema_analyzer", ...); ...                 # … output_generator · error_response
-    if config.enable_sql_approval:
-        graph.add_node("approval_gate", approval_gate)
+# 선두에서 1회 확정 — 기동 로그(record_ladder_resolution)와 배선이 같은 판정을 읽는다(plans/174 T1)
+_tier, _reason = resolve_ladder_tier(config, backend=_backend, buildable=_buildable)
+# 3·4단 빌드에서만 참 — 1·2단 빌드에는 꼬리 노드를 등록하지 않는다(plans/163 D1)
+single_db_tail = _tier in (LadderTier.SEMANTIC_ROUTER, LadderTier.LEGACY)
+
+_wire_shared_front(graph, config, llm)        # context_resolver → input_parser → field_mapper
+if _tier is LadderTier.DEEP_AGENT:            # 1단 (부가 경로 opt-in)
+    _wire_tier1(graph, config, llm)           #   deep_agent
+elif _tier is LadderTier.INTENT_ORCHESTRATION:  # 2단 (기준 경로 · D-251)
+    _wire_tier2(graph, config, llm)           #   intent_planner … result_aggregator
+elif _tier is LadderTier.SEMANTIC_ROUTER:     # 3단 (비교 arm)
+    _wire_tier3(graph, config, llm, ...)      #   semantic_router … (옵트인 분기는 플래그대로)
+else:                                         # 4단
+    _wire_legacy(graph, config, llm, ...)
+if single_db_tail:                            # 3·4단 공용 단일 DB 꼬리
+    _wire_single_db_tail(graph, config, llm)  #   schema_analyzer … output_generator · error_response
+                                              #   (enable_sql_approval이면 approval_gate 포함)
 ```
 
 1·2단 빌드에는 3단 노드·단일 DB 꼬리(schema_analyzer … output_generator·error_response)·
@@ -131,7 +136,7 @@ _deep_agent_buildable(config, llm)          # ② 실제 조립 시도(폐쇄망
 | `package_missing` | 2·3·4단 | 백엔드는 1단을 골랐으나 deepagents 조립 실패 | 폐쇄망 wheel 반입 |
 
 - **opt-in 실패 사유(`orchestrator_unavailable`·`package_missing`)가 하위 단 사유보다 먼저다.** 1단을
-  켰는데 못 올라갔으면 3단(기준)에 떨어져도 의도한 경로가 아니다. 시나리오 러너는 이 두 사유로
+  켰는데 못 올라갔으면 2단(기준 · D-251)에 떨어져도 의도한 경로가 아니다. 시나리오 러너는 이 두 사유로
   확정된 프로파일을 INVALID로 본다(`scripts/scenario/server.py` `UNINTENDED_DEGRADATION` =
   `ladder.py` `OPTIN_FAILURE_REASONS`).
 - **`flag_off`는 D-225로 폐기했다.** 종전에는 "1단 플래그 off"를 뜻했는데, 1단 off가 기준 상태가

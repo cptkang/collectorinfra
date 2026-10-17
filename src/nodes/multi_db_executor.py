@@ -293,12 +293,11 @@ def _check_row_limit_dialect(sql: str, db_engine: str | None) -> Optional[str]:
 _get_eav_pattern = first_eav_pattern
 
 
-@dataclass
-class _MultiRun:
-    """대상 DB 루프가 공유하는 입력과 누적 수집기 (Plan 69 P5-2).
+@dataclass(kw_only=True)
+class _MultiRunInputs:
+    """`_MultiRun`의 읽기 전용 입력 — `_prepare_multi_run`이 루프 전에 채우고 루프는 읽기만 한다.
 
-    per-DB 처리를 ``_run_single_target``으로 떼어내면서, 루프 밖에서 만들어 여러 DB가
-    함께 채우는 값(결과·에러·시도 이력·SQL 캐시)을 한 묶음으로 전달한다.
+    대입을 막지 않는다(frozen 아님) — 테스트 대역이 평면 속성을 바꿔 끼운다.
     """
 
     state: AgentState
@@ -311,6 +310,23 @@ class _MultiRun:
     prior_block: str | None
     prior_scope: tuple[str, list[str]] | None
     value_index: dict[str, list[str]] | None
+    # 폼필 번들(D-146/D-149/D-151) — 양식 문맥·의도·매핑 출처·답변.
+    form_context: str
+    form_intent: bool
+    mapping_sources: dict[str, str]
+    form_fill_answers: dict[str, dict[str, Any]] | None
+    # D-203 (plans/88 §4.9) — prior_rows의 `_source_db`로 나눈 DB별 선행 스코프.
+    # None이면 현행(전 DB에 같은 prior_block/prior_scope). 플래그 off면 항상 None.
+    prior_scope_by_db: dict[str, tuple[str, list[str]]] | None = None
+    # 요청 시간 해석(state `time_resolution` · plans/122 T-4). None이면(플래그 off) 모든 기간
+    # 소비 지점이 종전 경로(원문·sub_query_context·LLM time_range 해석)를 탄다.
+    query_time: QueryTime | None = None
+
+
+@dataclass(kw_only=True)
+class _MultiRunAccum:
+    """`_MultiRun`의 가변 누적 — 대상 DB들이 함께 채우고 `_run_groups`가 그룹 간에 합친다."""
+
     db_results: dict[str, list[dict]]
     db_schemas: dict[str, dict]
     db_errors: dict[str, str]
@@ -321,15 +337,8 @@ class _MultiRun:
     # 생성·검증 실패 DB의 스키마 키 — 루프 종료 후 동일 스키마의 검증 통과 SQL로 소급
     # 재실행한다(D-153). 연결/실행 에러는 대상이 아니다(SQL 재사용으로 해소 불가).
     validation_failed: dict[str, tuple]
-    # 폼필 번들(D-146/D-149/D-151) — 양식 문맥·의도·매핑 출처·답변, 산출 out-param.
-    form_context: str
-    form_intent: bool
-    mapping_sources: dict
-    form_fill_answers: dict | None
+    # 폼필 번들(D-146/D-149/D-151)의 산출 out-param.
     form_fill_out: dict
-    # D-203 (plans/88 §4.9) — prior_rows의 `_source_db`로 나눈 DB별 선행 스코프.
-    # None이면 현행(전 DB에 같은 prior_block/prior_scope). 플래그 off면 항상 None.
-    prior_scope_by_db: dict[str, tuple[str, list[str]]] | None = None
     # 분할 결과 선별 서버가 없어 미조회한 DB와 그 경과 노트(응답에 결정적으로 표기).
     skipped_dbs: list[str] = field(default_factory=list)
     dependency_notes: list[dict] = field(default_factory=list)
@@ -349,9 +358,17 @@ class _MultiRun:
     # 조회 템플릿 조립 표지(plans/143 W6) — `{db_id: TemplateOutcome.as_state()}`. 템플릿 파일이
     # 있는 DB만 싣고 반환 시 state `template_assembly`로 올린다(단일 경로와 같은 모양).
     template_assembly: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # 요청 시간 해석(state `time_resolution` · plans/122 T-4). None이면(플래그 off) 모든 기간
-    # 소비 지점이 종전 경로(원문·sub_query_context·LLM time_range 해석)를 탄다.
-    query_time: QueryTime | None = None
+
+
+@dataclass(kw_only=True)
+class _MultiRun(_MultiRunAccum, _MultiRunInputs):
+    """대상 DB 루프가 공유하는 입력과 누적 수집기 (Plan 69 P5-2).
+
+    per-DB 처리를 ``_run_single_target``으로 떼어내면서, 루프 밖에서 만들어 여러 DB가
+    함께 채우는 값(결과·에러·시도 이력·SQL 캐시)을 한 묶음으로 전달한다.
+    선언은 읽기 전용 입력(`_MultiRunInputs`)과 가변 누적(`_MultiRunAccum`)으로 나누되,
+    생성은 평면 키워드·접근은 평면 속성 그대로다(plans/173 T7 — 대역 run이 평면 속성을 단다).
+    """
 
 
 def _run_query_time(run: Any) -> QueryTime | None:

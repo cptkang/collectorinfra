@@ -36,20 +36,21 @@ from typing import Any
 from apm_gateway.adapters.jennifer.fields import METRIC_FIELDS, REALTIME_EXTRA_FIELDS
 from apm_gateway.application.event_buffer import EventBuffer, buffer_row, merge_key
 from apm_gateway.application.masking import mask_text
+from apm_gateway.application.period_stats import period_stats
 from apm_gateway.application.resolver import Inventory
 from apm_gateway.application.scope_tools import ScopeTools, ServiceScope
 from apm_gateway.application.sources import STATUS_NO_MATCH, STATUS_OK, JenniferSource
-from apm_gateway.application.tools import (
+from apm_gateway.application.tool_common import (
+    ABSOLUTE_MAX_MS,
     EVENTS_DEFAULT_MINUTES,
     FILE_ONLY_COLUMNS,
-    VISIT_HIT_NOTE,
-    _ABSOLUTE_MAX_MS,
-    ApmTools,
+    Limits,
     Window,
-    _check_n,
-    _hour_ceil,
-    _hour_floor,
+    check_n,
+    hour_ceil,
+    hour_floor,
 )
+from apm_gateway.application.tools import VISIT_HIT_NOTE, ApmTools
 from apm_gateway.domain.call_context import expect_calls
 from apm_gateway.domain.errors import (
     API_ERROR,
@@ -91,6 +92,88 @@ def _shown(items: list[str]) -> str:
     return ", ".join(items[:_FAILED_SHOWN]) + more
 
 
+def _ranking_metric(metric: str | None, period: bool) -> str:
+    """순위 지표 이름 검증 — 기간 전용 지표는 기간 인자가 있을 때만."""
+    name = str(metric or DEFAULT_RANKING_METRIC).strip()
+    if name not in RANKING_METRICS and not (period and name in PERIOD_RANKING_METRICS):
+        if name in PERIOD_RANKING_METRICS:
+            raise ApmError(
+                INVALID_ARGUMENT,
+                f"metric {name}은 기간 순위 전용이다 — reference_time·lookback_minutes(기간)를"
+                " 함께 주어야 한다",
+            )
+        raise ApmError(
+            INVALID_ARGUMENT,
+            f"metric은 실시간 인스턴스 지표 중 하나여야 한다: {metric!r}"
+            f"(허용값: {', '.join(RANKING_METRICS)}"
+            + (f" · 기간 순위: {', '.join(PERIOD_RANKING_METRICS)}" if period else "")
+            + ")",
+        )
+    return name
+
+
+def _current_limits(
+    limits: Limits, name: str, window: Window | None, ignored: tuple[str, ...]
+) -> None:
+    """실시간 순위 앞머리 `[한계]` — 현재값 전용(맨 앞) · 기간 통계 없는 지표 · 안 쓴 인자."""
+    limits.insert(0, _CURRENT_ONLY)
+    if window is not None:  # 기간을 받았지만 이 지표는 기간 통계가 없다 — 침묵 대체 금지
+        requested = window.as_dict()
+        limits.insert(
+            1,
+            f"[한계] 지표 {name}는 기간 통계가 없어 현재값 순위다 — 요청 기간의 값이 아니다"
+            f"(요청 {requested['start']}~{requested['end']})",
+        )
+    if ignored:
+        limits.append(
+            f"[한계] mode ranking은 인자 {'·'.join(ignored)}를 쓰지 않는다 — 빼고 조회했다"
+        )
+
+
+def _period_tail_limits(
+    limits: Limits,
+    name: str,
+    has_rows: bool,
+    seconds: float,
+    unweighted: list[str],
+    no_rows: list[str],
+    valueless: list[str],
+) -> None:
+    """기간 순위 뒷부분 `[한계]` — 기간 tps 정의 · 가중 평균 불가 · 통계 행 없음 · 지표 값 없음."""
+    if has_rows:
+        limits.append(
+            f"[한계] 기간 tps = 조회 구간 호출 수 ÷ 조회 구간 초({seconds:g}초 · 시 경계로"
+            " 넓힌 구간) — 실시간 tps(현재 처리량)와 정의가 다르다"
+        )
+    if unweighted:
+        limits.append(
+            f"[한계] 평균 응답시간 계산 불가 인스턴스 {len(unweighted)}개 — 총 응답시간 칸이"
+            f" 없는 통계 행이 있다(가중 평균 재료 없음 · {_shown(unweighted)})"
+        )
+    if no_rows:
+        limits.append(
+            f"[한계] 통계 행이 없는 인스턴스 {len(no_rows)}개는 순위 밖이다 — 0으로 채우지"
+            f" 않았다({_shown(no_rows)})"
+        )
+    if valueless:
+        limits.append(
+            f"[한계] 지표 {name} 값을 낼 수 없는 인스턴스 {len(valueless)}개는 순위 밖이다"
+            f"(호출 0 또는 가중치 없음 · {_shown(valueless)})"
+        )
+
+
+def _unranked_notice(domains: list[str], instances: list[str], down: list[str]) -> str:
+    """잠정 순위 고지 — 조회 실패 도메인 · 인스턴스 · 소스(있는 것만 이 순서로)."""
+    parts = []
+    if domains:
+        parts.append(f"도메인 {len(domains)}곳({_shown(domains)})")
+    if instances:
+        parts.append(f"인스턴스 {len(instances)}개({_shown(instances)})")
+    if down:
+        parts.append(f"소스 {len(down)}개({', '.join(down)})")
+    return f"[한계] 잠정 순위 — 조회 실패 {' · '.join(parts)}은 순위에 없습니다"
+
+
 class FleetTools:
     """`apm_fleet` 코어 — 도구 코어(`ApmTools`)의 소스·창·봉투·이벤트 행 규칙을 그대로 쓴다."""
 
@@ -130,7 +213,7 @@ class FleetTools:
         return scope, groups, down
 
     def _all_failed(self, failures: list[tuple[str, ApmError]]) -> ApmError:
-        return self.core._all_failed(failures)
+        return self.core.all_failed(failures)
 
     # ── ranking ─────────────────────────────────────────────
 
@@ -153,41 +236,13 @@ class FleetTools:
         `service`·`domain_id`로 도메인을 좁힌다(`_groups` — 두 모드 같음). `ignored`는 이 모드가
         쓰지 않는데 받은 인자 이름이다."""
         tool = "apm_fleet"
-        name = str(metric or DEFAULT_RANKING_METRIC).strip()
         period = reference_time is not None or lookback_minutes is not None
-        if name not in RANKING_METRICS and not (period and name in PERIOD_RANKING_METRICS):
-            if name in PERIOD_RANKING_METRICS:
-                raise ApmError(
-                    INVALID_ARGUMENT,
-                    f"metric {name}은 기간 순위 전용이다 — reference_time·lookback_minutes(기간)를"
-                    " 함께 주어야 한다",
-                )
-            raise ApmError(
-                INVALID_ARGUMENT,
-                f"metric은 실시간 인스턴스 지표 중 하나여야 한다: {metric!r}"
-                f"(허용값: {', '.join(RANKING_METRICS)}"
-                + (f" · 기간 순위: {', '.join(PERIOD_RANKING_METRICS)}" if period else "")
-                + ")",
-            )
+        name = _ranking_metric(metric, period)
         direction = str(order or "desc").strip().lower()
         if direction not in ORDERS:
             raise ApmError(INVALID_ARGUMENT, f"order는 desc·asc 중 하나여야 한다: {order!r}")
-        top_n = _check_n(n, default=RANKING_DEFAULT_N)
-        window = (
-            self.core.window(
-                reference_time, lookback_minutes, default_minutes=EVENTS_DEFAULT_MINUTES
-            )
-            if period
-            else None
-        )
-        # 시 경계로 넓힌 뒤에도 시각으로 나타낼 수 있는 범위만(`apm_period_compare`와 같은 상한 —
-        # 9999-12-31 근처는 올림·표시에서 넘친다 · 내부 오류 대신 인자 오류 · HTTP 0 · V6-7)
-        if window is not None and not 0 <= window.start_ms <= window.end_ms < _ABSOLUTE_MAX_MS:
-            raise ApmError(
-                INVALID_ARGUMENT,
-                "reference_time·lookback_minutes 구간은 1970~9998년 범위여야 한다:"
-                f" {str(reference_time)[:64]!r}",
-            )
+        top_n = check_n(n, default=RANKING_DEFAULT_N)
+        window = self._ranking_window(reference_time, lookback_minutes) if period else None
         self.core.sources.require_configured()
         scope, groups, down = await self._groups(service, domain_id, source_ids)
         if window is not None and name in PERIOD_RANKING_METRICS:
@@ -195,19 +250,67 @@ class FleetTools:
                 name, direction, top_n, full, window, scope, groups, down, ignored
             )
         limits = scope.limits
-        limits.insert(0, _CURRENT_ONLY)
-        if window is not None:  # 기간을 받았지만 이 지표는 기간 통계가 없다 — 침묵 대체 금지
-            requested = window.as_dict()
-            limits.insert(
-                1,
-                f"[한계] 지표 {name}는 기간 통계가 없어 현재값 순위다 — 요청 기간의 값이 아니다"
-                f"(요청 {requested['start']}~{requested['end']})",
-            )
-        if ignored:
-            limits.append(
-                f"[한계] mode ranking은 인자 {'·'.join(ignored)}를 쓰지 않는다 — 빼고 조회했다"
-            )
+        _current_limits(limits, name, window, ignored)
         expect_calls(len(groups))  # 좁혔는데 0곳(scope.blocked)이면 0 — 데이터 API를 부르지 않는다
+        records, failures = await self._realtime_records(groups)
+        if failures and len(failures) == len(groups):
+            raise self._all_failed(failures)
+        ranked, total, unranked = self._rank_realtime(records, name, direction)
+        selected = ranked if full or top_n is None else ranked[:top_n]
+        rows = [
+            self._ranking_row(position, group, rec, name)
+            for position, (group, rec) in enumerate(selected, 1)
+        ]
+        provisional = bool(failures or down)
+        if provisional:
+            limits.fail(_unranked_notice([w for w, _ in failures], [], down))
+        if rows:  # 행마다 실시간 전 칸(방문·호출 수 포함)을 싣는다
+            limits.append(VISIT_HIT_NOTE)
+        summary = {
+            "metric": name,
+            "order": direction,
+            "domains_total": len(groups),
+            "domains_ok": len(groups) - len(failures),
+            "domains_failed": len(failures),
+            "instances_total": total,
+            "instances_ranked": len(ranked),
+            "instances_unranked": unranked,
+        }
+        if window is not None:  # 기간 인자가 없는 종전 호출에는 이 칸을 싣지 않는다(바이트 동일)
+            summary["window_mode"] = "current"
+            summary["requested"] = window.as_dict()
+        return self._scope.envelope(  # 못 찾은 서비스 이름이 있으면 suggestions(같은 모양)
+            tool,
+            rows,
+            scope,
+            file_only=FILE_ONLY_COLUMNS,
+            mode="ranking",
+            provisional=provisional,
+            summary=summary,
+        )
+
+    def _ranking_window(
+        self, reference_time: str | None, lookback_minutes: int | None
+    ) -> Window | None:
+        """기간 순위 창(`events`와 같은 해석) — 범위 밖이면 인자 오류."""
+        window = self.core.window(
+            reference_time, lookback_minutes, default_minutes=EVENTS_DEFAULT_MINUTES
+        )
+        # 시 경계로 넓힌 뒤에도 시각으로 나타낼 수 있는 범위만(`apm_period_compare`와 같은 상한 —
+        # 9999-12-31 근처는 올림·표시에서 넘친다 · 내부 오류 대신 인자 오류 · HTTP 0 · V6-7)
+        if window is not None and not 0 <= window.start_ms <= window.end_ms < ABSOLUTE_MAX_MS:
+            raise ApmError(
+                INVALID_ARGUMENT,
+                "reference_time·lookback_minutes 구간은 1970~9998년 범위여야 한다:"
+                f" {str(reference_time)[:64]!r}",
+            )
+        return window
+
+    async def _realtime_records(
+        self, groups: list[Group]
+    ) -> tuple[list[tuple[Group, dict[str, Any]]], list[tuple[str, ApmError]]]:
+        """(소스, 도메인)마다 실시간 인스턴스 1호출(묶음 순서대로) → (받은 인스턴스, 실패
+        도메인)."""
         failures: list[tuple[str, ApmError]] = []
         records: list[tuple[Group, dict[str, Any]]] = []
         for group in groups:
@@ -224,8 +327,12 @@ class FleetTools:
                 if rec.get("domain_id") is None:
                     rec = {**rec, "domain_id": did}
                 records.append((group, rec))
-        if failures and len(failures) == len(groups):
-            raise self._all_failed(failures)
+        return records, failures
+
+    def _rank_realtime(
+        self, records: list[tuple[Group, dict[str, Any]]], name: str, direction: str
+    ) -> tuple[list[tuple[Group, dict[str, Any]]], int, int]:
+        """실시간 인스턴스 → (지표로 정렬한 순위 대상, 중복 뺀 인스턴스 수, 지표 값 없는 수)."""
         rank_of = {sid: i for i, sid in enumerate(self.core.sources.ids)}
         seen: set[tuple[str, Any, Any]] = set()
         ranked: list[tuple[Group, dict[str, Any]]] = []
@@ -249,43 +356,7 @@ class FleetTools:
                 gr[1].get("instance_id") or 0,
             )
         )
-        selected = ranked if full or top_n is None else ranked[:top_n]
-        rows = [
-            self._ranking_row(position, group, rec, name)
-            for position, (group, rec) in enumerate(selected, 1)
-        ]
-        provisional = bool(failures or down)
-        if provisional:
-            parts = []
-            if failures:
-                parts.append(f"도메인 {len(failures)}곳({_shown([w for w, _ in failures])})")
-            if down:
-                parts.append(f"소스 {len(down)}개({', '.join(down)})")
-            limits.fail(f"[한계] 잠정 순위 — 조회 실패 {' · '.join(parts)}은 순위에 없습니다")
-        if rows:  # 행마다 실시간 전 칸(방문·호출 수 포함)을 싣는다
-            limits.append(VISIT_HIT_NOTE)
-        summary = {
-            "metric": name,
-            "order": direction,
-            "domains_total": len(groups),
-            "domains_ok": len(groups) - len(failures),
-            "domains_failed": len(failures),
-            "instances_total": len(seen),
-            "instances_ranked": len(ranked),
-            "instances_unranked": unranked,
-        }
-        if window is not None:  # 기간 인자가 없는 종전 호출에는 이 칸을 싣지 않는다(바이트 동일)
-            summary["window_mode"] = "current"
-            summary["requested"] = window.as_dict()
-        return self._scope.envelope(  # 못 찾은 서비스 이름이 있으면 suggestions(같은 모양)
-            tool,
-            rows,
-            scope,
-            file_only=FILE_ONLY_COLUMNS,
-            mode="ranking",
-            provisional=provisional,
-            summary=summary,
-        )
+        return ranked, len(seen), unranked
 
     async def _period_ranking(
         self,
@@ -307,13 +378,72 @@ class FleetTools:
         core = self.core
         limits = scope.limits
         start, end = window.start_ms, window.end_ms
-        lo, hi = _hour_floor(start), _hour_ceil(end)
-        span = f"{core._at(lo)}~{core._at(hi)}"
+        lo, hi = hour_floor(start), hour_ceil(end)
+        self._period_head_limits(limits, start, end, lo, hi, ignored)
+        # failures = 도메인 전체 실패 + 인스턴스 실패(인스턴스 쪽은 `_period_records`가 덧붙인다)
+        plans, failures, domains_failed = self._period_plans(groups)
+        # 통계 행은 애플리케이션별이고 인스턴스 칸이 없다 — 인스턴스마다 1호출
+        expect_calls(sum(len(insts) for _, insts in plans))
+        seconds = (hi - lo) / 1000
+        records, inst_failed, no_rows, unweighted = await self._period_records(
+            plans, lo, hi, seconds, failures, domains_failed
+        )
+        if failures and len(domains_failed) == len(groups):
+            raise self._all_failed(failures)
+        order_of = {core.sources.where(g[0].source_id, g[2]["domain_id"]): i
+                    for i, g in enumerate(groups)}
+        domains_failed.sort(key=lambda w: order_of.get(w, len(order_of)))  # 범위 순서로
+        ranked, valueless = self._rank_period(records, name, direction)
+        selected = ranked if full or top_n is None else ranked[:top_n]
+        rows = [
+            self._period_row(position, group, inst, values, name)
+            for position, (group, inst, values) in enumerate(selected, 1)
+        ]
+        _period_tail_limits(limits, name, bool(rows), seconds, unweighted, no_rows, valueless)
+        provisional = bool(failures or down)
+        if provisional:
+            limits.fail(_unranked_notice(domains_failed, inst_failed, down))
+        summary = {
+            "metric": name,
+            "order": direction,
+            "window_mode": "period",
+            "requested": {"start": core.at(start), "end": core.at(end)},
+            "queried": {"start": core.at(lo), "end": core.at(hi), "seconds": seconds},
+            "domains_total": len(groups),
+            "domains_ok": len(groups) - len(domains_failed),
+            "domains_failed": len(domains_failed),
+            "instances_total": len(no_rows) + len(records),
+            "instances_ranked": len(ranked),
+            "instances_unranked": len(no_rows) + len(valueless),
+            "instances_failed": len(inst_failed),
+        }
+        return self._scope.envelope(
+            tool,
+            rows,
+            scope,
+            window=window,
+            mode="ranking",
+            provisional=provisional,
+            summary=summary,
+        )
+
+    def _period_head_limits(
+        self,
+        limits: Limits,
+        start: int,
+        end: int,
+        lo: int,
+        hi: int,
+        ignored: tuple[str, ...],
+    ) -> None:
+        """기간 순위 앞머리 `[한계]` — 시 경계 맞춤(맨 앞) · 안 쓴 인자 · 통계 행 수 · 대상 명단."""
+        core = self.core
+        span = f"{core.at(lo)}~{core.at(hi)}"
         limits.insert(
             0,
             "[한계] 시 단위 통계 — 기간 순위 구간을 시 경계로 맞췄다"
             + (
-                f"(요청 {core._at(start)}~{core._at(end)} → 조회 {span})"
+                f"(요청 {core.at(start)}~{core.at(end)} → 조회 {span})"
                 if (lo, hi) != (start, end)
                 else f"({span})"
             ),
@@ -330,7 +460,14 @@ class FleetTools:
             "[한계] 대상 인스턴스는 현재 인스턴스 목록 기준이다 — 기간 중 없어진 인스턴스는 순위에"
             " 없다"
         )
-        failures: list[tuple[str, ApmError]] = []  # 도메인 전체 실패 + 인스턴스 실패
+
+    def _period_plans(
+        self, groups: list[Group]
+    ) -> tuple[list[tuple[Group, list[dict[str, Any]]]], list[tuple[str, ApmError]], list[str]]:
+        """묶음 → (도메인별 대상 인스턴스, 실패, 실패 도메인) — 인스턴스 목록을 못 받은 도메인은
+        0개가 아니라 실패다."""
+        core = self.core
+        failures: list[tuple[str, ApmError]] = []
         plans: list[tuple[Group, list[dict[str, Any]]]] = []
         domains_failed: list[str] = []
         for group in groups:
@@ -351,9 +488,23 @@ class FleetTools:
                 domains_failed.append(where)
                 continue
             plans.append((group, [i for i in inv.instances if i.get("domain_id") == did]))
-        # 통계 행은 애플리케이션별이고 인스턴스 칸이 없다 — 인스턴스마다 1호출
-        expect_calls(sum(len(insts) for _, insts in plans))
-        seconds = (hi - lo) / 1000
+        return plans, failures, domains_failed
+
+    async def _period_records(
+        self,
+        plans: list[tuple[Group, list[dict[str, Any]]]],
+        lo: int,
+        hi: int,
+        seconds: float,
+        failures: list[tuple[str, ApmError]],
+        domains_failed: list[str],
+    ) -> tuple[
+        list[tuple[Group, dict[str, Any], dict[str, Any]]], list[str], list[str], list[str]
+    ]:
+        """인스턴스마다 시 단위 통계 1호출(명단 순서대로) → (지표 값, 실패 인스턴스, 통계 행 없음,
+        가중 평균 불가). 인스턴스 오류는 `failures`에, 전부 실패한 도메인은 `domains_failed`에
+        덧붙인다."""
+        core = self.core
         records: list[tuple[Group, dict[str, Any], dict[str, Any]]] = []
         seen: set[tuple[str, Any, Any]] = set()
         inst_failed: list[str] = []
@@ -383,7 +534,7 @@ class FleetTools:
                 if not app_rows:
                     no_rows.append(label)
                     continue
-                stat, missing = core._period_stats(app_rows)
+                stat, missing = period_stats(app_rows)
                 if missing:
                     unweighted.append(label)
                 records.append((group, inst, self._period_values(stat, seconds)))
@@ -392,11 +543,16 @@ class FleetTools:
                 domains_failed.append(where)
             else:
                 inst_failed += [label for label, _ in errors]
-        if failures and len(domains_failed) == len(groups):
-            raise self._all_failed(failures)
-        order_of = {core.sources.where(g[0].source_id, g[2]["domain_id"]): i
-                    for i, g in enumerate(groups)}
-        domains_failed.sort(key=lambda w: order_of.get(w, len(order_of)))  # 범위 순서로
+        return records, inst_failed, no_rows, unweighted
+
+    def _rank_period(
+        self,
+        records: list[tuple[Group, dict[str, Any], dict[str, Any]]],
+        name: str,
+        direction: str,
+    ) -> tuple[list[tuple[Group, dict[str, Any], dict[str, Any]]], list[str]]:
+        """기간 지표 값 → (지표로 정렬한 순위 대상, 지표 값을 낼 수 없는 인스턴스 표기)."""
+        core = self.core
         rank_of = {sid: i for i, sid in enumerate(core.sources.ids)}
         ranked = [rec for rec in records if rec[2][name] is not None]
         valueless = [
@@ -414,68 +570,11 @@ class FleetTools:
                 r[1].get("instance_id") or 0,
             )
         )
-        selected = ranked if full or top_n is None else ranked[:top_n]
-        rows = [
-            self._period_row(position, group, inst, values, name)
-            for position, (group, inst, values) in enumerate(selected, 1)
-        ]
-        if rows:
-            limits.append(
-                f"[한계] 기간 tps = 조회 구간 호출 수 ÷ 조회 구간 초({seconds:g}초 · 시 경계로"
-                " 넓힌 구간) — 실시간 tps(현재 처리량)와 정의가 다르다"
-            )
-        if unweighted:
-            limits.append(
-                f"[한계] 평균 응답시간 계산 불가 인스턴스 {len(unweighted)}개 — 총 응답시간 칸이"
-                f" 없는 통계 행이 있다(가중 평균 재료 없음 · {_shown(unweighted)})"
-            )
-        if no_rows:
-            limits.append(
-                f"[한계] 통계 행이 없는 인스턴스 {len(no_rows)}개는 순위 밖이다 — 0으로 채우지"
-                f" 않았다({_shown(no_rows)})"
-            )
-        if valueless:
-            limits.append(
-                f"[한계] 지표 {name} 값을 낼 수 없는 인스턴스 {len(valueless)}개는 순위 밖이다"
-                f"(호출 0 또는 가중치 없음 · {_shown(valueless)})"
-            )
-        provisional = bool(failures or down)
-        if provisional:
-            parts = []
-            if domains_failed:
-                parts.append(f"도메인 {len(domains_failed)}곳({_shown(domains_failed)})")
-            if inst_failed:
-                parts.append(f"인스턴스 {len(inst_failed)}개({_shown(inst_failed)})")
-            if down:
-                parts.append(f"소스 {len(down)}개({', '.join(down)})")
-            limits.fail(f"[한계] 잠정 순위 — 조회 실패 {' · '.join(parts)}은 순위에 없습니다")
-        summary = {
-            "metric": name,
-            "order": direction,
-            "window_mode": "period",
-            "requested": {"start": core._at(start), "end": core._at(end)},
-            "queried": {"start": core._at(lo), "end": core._at(hi), "seconds": seconds},
-            "domains_total": len(groups),
-            "domains_ok": len(groups) - len(domains_failed),
-            "domains_failed": len(domains_failed),
-            "instances_total": len(no_rows) + len(records),
-            "instances_ranked": len(ranked),
-            "instances_unranked": len(no_rows) + len(valueless),
-            "instances_failed": len(inst_failed),
-        }
-        return self._scope.envelope(
-            tool,
-            rows,
-            scope,
-            window=window,
-            mode="ranking",
-            provisional=provisional,
-            summary=summary,
-        )
+        return ranked, valueless
 
     @staticmethod
     def _period_values(stat: dict[str, Any], seconds: float) -> dict[str, Any]:
-        """구간 합계(`ApmTools._period_stats`) → 기간 순위 지표 값(`PERIOD_RANKING_METRICS`)."""
+        """구간 합계(`period_stats.period_stats`) → 기간 순위 지표 값(`PERIOD_RANKING_METRICS`)."""
         return {
             "response_time_avg_ms": stat["avg_response_ms"],
             "tps": stat["calls"] / seconds,
@@ -556,8 +655,8 @@ class FleetTools:
         `domain_id`로 도메인을 좁힌다(버퍼·API 경로 모두 그 도메인만)."""
         tool = "apm_fleet"
         core = self.core
-        lvl, mode, etype, _ = core._event_options(level, level_mode, error_type, None)
-        top_n = _check_n(n, default=None)
+        lvl, mode, etype, _ = core.event_options(level, level_mode, error_type, None)
+        top_n = check_n(n, default=None)
         window = core.window(
             reference_time, lookback_minutes, default_minutes=EVENTS_DEFAULT_MINUTES
         )
@@ -623,7 +722,7 @@ class FleetTools:
             rows += [self._event_row(src, inv, d, r) for r in got]
         if failures and len(failures) == len(groups):
             raise self._all_failed(failures)
-        events = core._filter_events(rows, lvl, mode, etype)
+        events = core.filter_events(rows, lvl, mode, etype)
         rank_of = {sid: i for i, sid in enumerate(core.sources.ids)}
         events.sort(
             key=lambda r: (

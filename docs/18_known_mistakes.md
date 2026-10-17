@@ -2077,3 +2077,39 @@
 - **실수**: ① 166 I1 「Facade 우회 10곳」을 그대로 옮기며 재실측 grep을 `\._redis_cache\b`로만 해 `getattr(cache_mgr, "_redis_cache", None)` 형태 5곳(`cache_management.py:1042` · `mapping_feedback.py:168` · `redis_registration.py:214,341,361`)이 범위에서 빠졌다(verifier 발견 · 범위 밖으로 기록). ② `RedisSchemaCache` 유사어 메서드를 하위 객체로 옮기는 위임 프롬프트에 「소스를 읽는 가드」 확인을 넣지 않았다 — `test_synonym_set_routing.py:146-150`의 `inspect.getsource(RedisSchemaCache.add_global_synonym)` 키 상수 단언이 위임 독스트링으로 공허 통과했다(implementer 보고 · verifier 변이로 확인 · 새 검증 테스트로 보강). 168에서 같은 계열 교훈이 이미 기록돼 있었다.
 - **원인**: 접근 형태를 속성 접근 한 가지로 가정했고, 직전 계획의 교훈(소스·AST 가드는 래핑·위임 뒤 공허 통과)을 위임 체크리스트로 옮기지 않았다.
 - **방지책**: private 멤버 우회 집계는 `grep -rnE '\._x\b|getattr\([^)]*"_x"'` 두 형태로 센다. 메서드 본문을 옮기거나 위임으로 바꾸는 위임 프롬프트에는 `grep -rn 'getsource(\|__file__\|read_text()' tests`로 대상 클래스·모듈을 읽는 가드 목록을 넣고, 위임 뒤에도 가드가 실효인지(변이 1개) 확인하게 한다.
+
+### 2026-10-16 · (plans/173 · 팀 리드·T1) 소스 가드 리터럴 「출현 수 전후 동일」만 확인해, 호출이 헬퍼 정의 안으로 옮겨져 가드가 공허해진 것을 놓쳤다
+- **실수**: A4 `lifespan` 분해에서 SQL 파일 로거·파일 로그 정리 1회 호출을 `_init_file_logs` 헬퍼로 옮겼다. `tests/test_utils/test_log_retention.py::test_cleanup_is_actually_wired`는 `server.py` 텍스트의 `cleanup_file_logs(` 출현이 2회 이상인지만 보는데, 호출이 헬퍼 정의 안에 남아 출현 수는 2→2로 같았다. 그래서 `lifespan`에서 `_init_file_logs(config)` 호출 줄을 지워도 이 가드는 통과한다. 위임 프롬프트에 「공허 통과 금지 · 출현 수 전후 비교」를 넣었지만 구현자는 출현 수만 비교했고, verifier가 변이 1건으로 찾았다(실효 공백 없음 — 새 특성화 `test_plan173_t1_lifespan_order.py`가 같은 변이를 6건 실패로 잡음).
+- **원인**: 파일 단위 문자열 가드는 「그 리터럴이 어느 함수 경로에 있는가」를 보지 않는다. 출현 수가 같다는 것은 가드가 지키던 **호출 경로**가 유지됐다는 증거가 아니다.
+- **방지책**: 소스 가드 대상 리터럴이 있는 코드를 헬퍼로 옮기면, 출현 수 비교와 함께 **원래 호출 지점을 지우는 변이 1건**을 사본에서 돌려 그 가드(또는 대체 테스트)가 실패하는지 확인한다. 위임 프롬프트의 소스 가드 항목에 「출현 수 + 변이 1건」을 함께 적는다.
+
+### 2026-10-16 · (plans/176 · 팀 리드·T2) 「실 DB를 요구하면 skip 상태 그대로 둔다」고만 써서 통합 테스트가 떠 있던 로컬 PG에 픽스처를 적용했다
+- **실수**: T2 위임 프롬프트의 자기 테스트 목록에 `noise_gate/tests/test_polestar_noise_context_integration.py`를 「구동 중인 PG를 요구하면 skip 상태 그대로 둔다」로 적었다. 이 테스트는 PG가 떠 있으면 skip하지 않고 붙는다 — 로컬 샌드박스 PG(5434)가 떠 있어 2회 실행됐고 그때마다 `testdata/pg/init/06_plan52_noise_fixtures.sql`(멱등)을 그 DB에 적용했다. 같은 프롬프트의 「실 DB 접근 금지」와 어긋났다(피해 확인 안 됨 — 멱등 픽스처). 팀 리드의 계획 끝 `regress.py`도 이 파일을 ② 직접 import로 선택해(건너뜀 0) 같은 PG에 한 번 더 붙었다.
+- **원인**: 실 서버 의존 테스트를 「skip될 것」으로 전제했다. skip 조건은 「서버가 꺼져 있음」이지 「금지됨」이 아니다.
+- **방지책**: 실 DB·실 서버에 붙을 수 있는 통합 테스트는 위임 프롬프트에서 **실행 대상에서 명시 제외**한다(`--deselect`·파일 미지정 · 「돌리지 말 것」). skip 조건에 기대지 않는다. `regress.py`는 이런 파일을 거르지 않으므로, 로컬 서버가 떠 있는 동안의 회귀는 실서버 통합 테스트도 함께 돈다는 것을 보고에 적는다(도구 측 제외 옵션은 후속 후보).
+- **후속 조치(2026-10-16 · 사용자 결정 「옵트인 환경변수로 전환」)**: 픽스처를 쓰는 noise_gate 통합 테스트 2파일(`test_polestar_noise_context_integration.py`·`test_noise_gate_graph_integration.py` — 후자도 같은 픽스처를 적용한다)에 `RUN_DOCKER_IT=1` 옵트인 `pytestmark`를 달았다(mcp_server 실연결 테스트와 같은 변수). 기본 실행·`regress.py`에서는 skip된다.
+
+### 2026-10-16 · (plans/178 · 팀 리드·W3) 메서드를 합성 도구군 클래스로 옮기는 위임 프롬프트에 「`self`를 다른 객체에 넘기는 곳」 점검을 넣지 않았다
+- **실수**: `ApmTools`의 `apm_metrics`를 `StatsTools`로 옮기자 본문의 `ScopeTools(self)`가 Facade 대신 도구군을 넘겨 테스트 20건이 `'StatsTools' object has no attribute 'cfg'`로 실패했다. 위임 프롬프트는 `self.X` → `self.core.X` 치환만 적었고, implementer의 정규화 본문 비교(토큰 동일)도 이 유형을 잡지 못한다. 패키지 테스트가 잡아 `ScopeTools(self.core)`로 교정했다(피해 없음).
+- **원인**: 메서드 이동 시 `self`의 정체가 바뀌는 지점을 속성 접근(`self.X`)으로만 가정했다. `self`를 인자·콜백·생성자로 그대로 넘기는 형태는 치환 규칙 밖이다.
+- **방지책**: 클래스 메서드를 다른 클래스로 옮기는(Composition·Facade) 위임 프롬프트에 `grep -nE '\(self[,)]|, self[,)]|=self\b'`(옮길 본문 대상)로 `self` 전달 지점을 먼저 뽑아 목록으로 넣고, 각 지점의 수신 객체가 이동 뒤에도 같은지 확인하게 한다. 정규화 본문 비교는 이 유형의 증거가 아니다.
+
+### 2026-10-16 · (plans/177 · 팀 리드) 실 DB 통합 테스트를 지시받은 1파일만 제외해, 같은 픽스처를 쓰는 다른 파일을 자기 테스트 목록에 넣었다
+- **실수**: 위임 프롬프트에 `test_polestar_noise_context_integration.py`만 `--ignore`로 빼고, W1·W2 자기 테스트 목록에는 `test_noise_gate_graph_integration.py`를 넣었다. 이 파일도 로컬 PG(5434)가 떠 있으면 `testdata/pg/init/06_plan52_noise_fixtures.sql`(멱등 DELETE/INSERT)을 적용한다. W1이 작업 트리·기준 사본에서 각 1회(16:34~16:41 — `RUN_DOCKER_IT` 가드가 붙은 16:50 이전 · 801 통과 건너뜀 0), W2가 기준 사본에서 1회(사본은 가드 이전 rsync) 실행해 픽스처가 3회 적용됐다(피해 확인 안 됨 — 멱등 픽스처). W2 implementer가 보고해 알았고, 이후 팀 리드가 가드를 기준 사본의 두 테스트 파일에 복사하고 W3·verifier 프롬프트는 두 파일을 모두 `--ignore`했다.
+- **원인**: 「실서버에 붙는 테스트」를 지시문에 이름이 나온 파일로만 한정했고, 자기 테스트 목록을 `alarm_worker` 언급 grep으로 뽑으며 그 파일의 DB 접속 여부를 보지 않았다. 또 rsync 기준 사본은 이후 작업 트리에 추가된 안전 가드를 받지 못한다.
+- **방지책**: 자기 테스트 목록을 넘기기 전에 `grep -lE 'asyncpg|testdata/pg|5434|RUN_DOCKER_IT|importorskip\("asyncpg"\)'`로 실 DB에 붙을 수 있는 파일을 걸러 목록에서 빼고 `--ignore`를 함께 적는다. 기준 사본(rsync)에서도 테스트를 돌리게 할 때는 작업 트리에 나중에 생긴 테스트 안전 가드를 사본에 동기화하거나, 해당 파일을 명시 제외한다.
+
+### 2026-10-16 · (plans/179 · 팀 리드·W1a) 계수 가드를 AST로 전환하며 종전 가드의 「대입문 위치」 검사가 빠졌고, 구현자 변이 19건이 그 성질을 겨누지 않아 verifier가 찾았다
+- **실수**: 사용자 결정(계수 가드 → 공유 헬퍼 호출 확인)에 따라 `test_plan104_db_authz.py::test_gate_precedes_state_assembly`를 「사전 게이트 호출이 상태 조립보다 앞」 순서 검사로 바꿨다. 종전 가드는 `selected_list, _selection_denied = …` **대입문**의 위치를 봐서 「인가 결과를 받아 쓴다」까지 지켰는데, 전환 뒤에는 대입 대상을 보지 않았다. 파일 진입이 인가 결과를 버리고 요청 원문 선택으로 상태를 조립하는 변이가 기존 81파일에서 살아남았다(verifier Major · 하류 `allowed_db_ids` 필터가 있어 즉시 우회는 아님 · 새 `test_plan179_verify.py`로 메움). 구현자 변이 M1~M19는 「호출 제거·키 제거」 위주라 이 성질을 겨누지 않았다.
+- **원인**: 위임 프롬프트에 「보호 강도를 낮추지 않는다 · 변이 1건 이상」만 적고, 종전 가드가 지키던 **성질 목록**(호출 존재·순서·반환값 사용·인자 값)을 뽑아 전환 후 단언과 1:1 대조하라고 하지 않았다. 계수·위치 리터럴 가드는 리터럴 안에 「반환값을 무엇에 대입하는가」 같은 성질이 숨어 있다.
+- **방지책**: 소스 가드를 다른 형태로 전환하는 위임 프롬프트에는 「종전 단언 각각이 지키던 성질을 표로 뽑고(리터럴 안의 대입 대상·인자·키워드 포함), 전환 후 대응 단언과 그 성질을 깨는 변이를 1:1로 적는다」를 넣는다. 인가 경로는 「인가 결과를 버리는 변이」(반환값 미사용·원문 값 사용)를 필수 변이로 지정한다.
+
+### 2026-10-16 · (plans/174 T3 · implementer) 순서 표 주석에 「모듈 속성 대입이 그대로 먹는다」고 적었는데 표에 담긴 단계 함수 자체는 import 시점에 캡처된다
+- **실수**: `intent_planner._PRECHECK_STEPS`(단계 함수 14개 튜플) 주석이 「각 단계는 호출 시점에 모듈 전역을 조회한다(모듈 속성 대입이 그대로 먹는다)」였다. 단계 함수 **안에서** 부르는 전역(`_decompose_once`)은 맞지만, 표에 담긴 `_pre_*` 함수 자체를 모듈 속성으로 바꿔 끼우면 표가 옛 함수를 계속 부른다. verifier Minor로 발견 · 팀 리드가 주석 정정(현재 그런 patch 테스트는 없어 동작 피해 없음). 같은 계열이 replanner `GUARDS`·`FILTERS`·apm_query `_COERCERS`·6b `_CALL_BUILDERS`에도 있다.
+- **원인**: seam 보존을 「표 안 함수가 부르는 전역」 기준으로만 확인하고, 표 원소 자체의 patch 가능성을 주석에서 구분하지 않았다.
+- **방지책**: 순서 표·dispatch 표를 만들면 주석에 「단계 내부 전역은 호출 시점 조회 · 단계 함수 교체는 표 patch」를 구분해 적고, 위임 프롬프트의 seam 항목에 「표 원소 자체가 patch 대상인지」를 따로 넣는다.
+
+### 2026-10-16 · (plans/180 · implementer·W1) 「패키지가 Facade를 import하지 않는다」 AST 가드가 절대 import만 보아 상대 import·`import_module` 문자열이 빠져나갔다
+- **실수**: `apm/` 모듈 → `src.orchestration.apm_query` 순환 금지 가드를 `ast.Import`·`ast.ImportFrom.module`만 모아 만들었다. `from .. import apm_query`(level>0 — `module`이 `None`이라 건너뜀)와 `importlib.import_module("src.orchestration.apm_query")`를 넣는 변이가 살아남았고, 파일 목록도 `glob("*.py")`라 하위 패키지를 보지 않았다(verifier Minor · 변이 D4·D5 · 교정).
+- **원인**: import 가드를 「저장소 관례(절대 import)」 형태로만 가정했다. 구현자 변이 4건은 절대 import 형태만 겨눴다.
+- **방지책**: import 금지 가드는 level>0 `ImportFrom`을 파일 경로 기준 절대 이름으로 풀고, `import_module`/`__import__` 문자열 인자를 함께 수집하며, 대상 파일은 `rglob`으로 모은다. 변이에 상대 import 1건·동적 import 1건을 반드시 넣는다.

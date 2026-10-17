@@ -13,7 +13,7 @@ import math
 import re
 from bisect import bisect_left, bisect_right
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import date
 from decimal import Decimal
 from typing import Any, NamedTuple, Optional
@@ -170,71 +170,14 @@ async def _run_output_generator(
     """
     if app_config is None:
         app_config = load_config()
-    organized = state["organized_data"]
-    parsed = state["parsed_requirements"]
-    output_format = parsed.get("output_format", "text")
-
-    # 양식 없이 파일 형식만 요청("…을 엑셀로 만들어줘", plans/116 §10.3). 파일 산출은 첨부 양식을
-    # 채우는 방식뿐이라 만들 파일이 없다 — 첨부하지 않은 양식을 "채우지 못했다"고 하지 않고
-    # 실제 동작(텍스트 응답 + CSV)을 알린다. 첨부했는데 양식이 전파되지 않은 경우(file_type 있음)는
-    # 아래 파일 분기가 D-059 사유를 그대로 노출한다.
-    no_template_notice: str | None = None
-    if (
-        output_format in ("xlsx", "docx")
-        and not state.get("template_structure")
-        and not state.get("uploaded_file")
-        and not state.get("file_type")
-    ):
-        no_template_notice = _no_template_file_notice(
-            output_format, bool((organized or {}).get("rows"))
-        )
-        logger.info("양식 없는 %s 요청 — 파일 없이 텍스트 응답으로 처리", output_format)
-        output_format = "text"
-        parsed = {**parsed, "output_format": "text"}
-        state = {**state, "parsed_requirements": parsed}
+    state, output_format, no_template_notice = _demote_templateless_file_request(state)
 
     if output_format == "text":
-        # 앞 턴 0행 지시어 승계(plans/146 W3) — 3·4단 그래프 경로(1·2단은 집계기가 같은 규칙).
-        sql_outcome = _graph_sql_outcome(state)
-        executed, row_count = sql_outcome if sql_outcome else ([], -1)
-        antecedent = (
-            (state.get("conversation_context") or {}).get(EMPTY_ANTECEDENT_KEY)
-            if sql_outcome else None
-        )
-        # 조건 없이 넓힘 — 행은 그대로 보이고 맨 앞에 안내를 싣는다
-        # (교정 1 · 판정이 근사라 숨기지 않음)
-        widened = bool(
-            antecedent and row_count > 0 and widened_beyond_antecedent(antecedent, executed)
-        )
-        if widened:
-            logger.info(
-                "앞 턴 0행 지시어 — 이번 조회 %d행이 앞 턴 조건을 잇지 않아 맨 앞에 안내"
-                "(plans/146 W3)", row_count,
-            )
-        # 표본 앞 턴 승계(plans/150 W1) — 2단 집계기와 같은 규칙(D-066)
-        sampled_note = sampled_antecedent_outcome(
-            (state.get("conversation_context") or {}).get(SAMPLED_ANTECEDENT_KEY)
-            if sql_outcome else None,
-            executed, row_count,
-        )
-        if sampled_note:
-            logger.info("표본 앞 턴 지시어 — 이번 조회 %d행에 맨 앞 안내(plans/150 W1)", row_count)
+        executed, row_count, antecedent, widened, sampled_note = _text_succession(state)
         response = await _generate_text_response(
             app_config, state, llm=llm, stream_user_response=stream_user_response
         )
-        response = _append_query_period_note(response, state)
-        response = _append_inferred_mapping_info(response, state)
-        response = _append_spike_notes(response, state)
-        response = _append_scope_note(response, state)
-        response = _append_elliptical_succession_note(response, state)
-        response = _append_zone_coverage_notes(response, state)
-        response = _append_current_month_partial_note(response, state)
-        response = _append_unavailable_metric_notes(response, state)
-        response = _append_limit_truncation_note(response, state)
-        response = _append_generator_notes(response, state)
-        response = _append_condition_changes(response, state)
-        response = append_structure_missing_note(response, state)
-        response = _append_cross_system_notes(response, state)
+        response = _apply_note_chain(response, state, TEXT_NOTES)
         response = _append_turn_notices(response, state)
         zero_rows = row_count == 0
         if antecedent and zero_rows:
@@ -281,15 +224,7 @@ async def _run_output_generator(
                 # 역질문 없이 끝나는 폼필 턴만 요약한다 — 채운 열 목록을 요약 입력에(plans/120 F-6)
                 form_fill_stats=None if clarification else file_result.get("fill_stats"),
             )
-            text_response = _append_query_period_note(text_response, state)
-            text_response = _append_inferred_mapping_info(text_response, state)
-            text_response = _append_spike_notes(text_response, state)
-            text_response = _append_scope_note(text_response, state)
-            text_response = _append_elliptical_succession_note(text_response, state)
-            text_response = _append_zone_coverage_notes(text_response, state)
-            text_response = _append_unavailable_metric_notes(text_response, state)
-            text_response = append_structure_missing_note(text_response, state)
-            text_response = _append_cross_system_notes(text_response, state)
+            text_response = _apply_note_chain(text_response, state, DOC_NOTES)
             # 폼필 기준월 명시(§2.4) + 미작성 항목 사유(D-147) — 감사자료 오기재·침묵 공란 방지.
             # 판정은 매핑 유무가 아니라 writer의 실제 채움 통계(fill_stats) 기반(라이브 실측 교정).
             text_response = _append_form_fill_notes(
@@ -317,47 +252,11 @@ async def _run_output_generator(
                 "error_message": None,
                 "disclosures": collect_disclosures(state, text_response),  # plans/123 W-8
             }
-            # 확인 이력 저장(D-151 Phase 3) — 옵트인(기억 체크) + 검증 통과 + 이번 턴
-            # 답변(origin=answer)만. LLM 산출물·이력 재적용분은 저장하지 않는다(C3).
+            # 확인 이력 저장(D-151 Phase 3) — 옵트인(기억 체크) 턴만
             if state.get("form_fill_remember"):
-                _remember = {
-                    f: {"action": o.get("action"), "value": o.get("value")}
-                    for f, o in (state.get("form_fill_overrides") or {}).items()
-                    if o.get("applied") and o.get("origin") != "memory"
-                }
-                if _remember:
-                    _saved = await save_form_memory_entries(
-                        state.get("template_structure"), _remember,
-                        state.get("parsed_requirements", {}).get("original_query", "")
-                        or state.get("user_query", ""),
-                        app_config,
-                    )
-                    _ttl_days = app_config.query.form_memory_ttl_days
-                    if _saved:
-                        result["final_response"] += (
-                            f"\n\n**[기억 저장]** '{_saved}'에 {len(_remember)}개 항목을 "
-                            f"기억했습니다 (유효 {_ttl_days}일, 사용할 때마다 연장). "
-                            "다음부터 이 양식에 자동 반영됩니다."
-                        )
-                    else:
-                        # 침묵 강등 금지 — 저장 실패(기능 OFF·Redis 불가)를 명시
-                        result["final_response"] += (
-                            "\n\n**[기억 저장 안 됨]** 저장소를 사용할 수 없거나 기억 기능이 "
-                            "꺼져 있어(form_memory_ttl_days=0) 이번 답변은 이번 실행에만 "
-                            "적용되었습니다."
-                        )
-
-            # HITL 폼필(D-151): 미해결 필드 역질문 페이로드 + 대기 상태(위에서 서술 전에 판정).
-            # 미해결 0이면 pending=None으로 자기정리(답변 적용 완료 턴 포함).
-            if state.get("template_structure"):
-                result["pending_form_fill"] = pending
-                if clarification:
-                    result["form_fill_clarification"] = clarification
-                    logger.info(
-                        "폼필 역질문 발행(D-151): 미해결 %d건 — %s",
-                        len(clarification["fields"]),
-                        [f["name"] for f in clarification["fields"]][:10],
-                    )
+                result["final_response"] += await _form_fill_memory_notice(state, app_config)
+            # HITL 폼필(D-151) 역질문 페이로드 + 대기 상태(위에서 서술 전에 판정)
+            _attach_form_fill_hitl(result, state, clarification, pending)
             return result
         else:
             # 파일 생성 실패: 사유를 사용자에게 노출하고 텍스트/CSV로 폴백 (D-059 — 침묵적 강등 금지)
@@ -388,6 +287,136 @@ async def _run_output_generator(
             "current_node": "output_generator",
             "error_message": None,
         }
+
+
+def _demote_templateless_file_request(
+    state: AgentState,
+) -> tuple[AgentState, str, str | None]:
+    """출력 형식을 정하고, 양식 없는 파일 요청이면 텍스트로 강등한다 — (state, 형식, 안내).
+
+    양식 없이 파일 형식만 요청("…을 엑셀로 만들어줘", plans/116 §10.3). 파일 산출은 첨부 양식을
+    채우는 방식뿐이라 만들 파일이 없다 — 첨부하지 않은 양식을 "채우지 못했다"고 하지 않고
+    실제 동작(텍스트 응답 + CSV)을 알린다. 첨부했는데 양식이 전파되지 않은 경우(file_type 있음)는
+    파일 분기가 D-059 사유를 그대로 노출한다. 강등하면 `parsed_requirements`를 바꾼 새 state를
+    돌려준다(원 state는 그대로).
+    """
+    organized = state["organized_data"]
+    parsed = state["parsed_requirements"]
+    output_format = parsed.get("output_format", "text")
+    if (
+        output_format in ("xlsx", "docx")
+        and not state.get("template_structure")
+        and not state.get("uploaded_file")
+        and not state.get("file_type")
+    ):
+        no_template_notice = _no_template_file_notice(
+            output_format, bool((organized or {}).get("rows"))
+        )
+        logger.info("양식 없는 %s 요청 — 파일 없이 텍스트 응답으로 처리", output_format)
+        parsed = {**parsed, "output_format": "text"}
+        return {**state, "parsed_requirements": parsed}, "text", no_template_notice
+    return state, output_format, None
+
+
+class _TextSuccession(NamedTuple):
+    """텍스트 경로의 앞 턴 승계 판정 결과(plans/146 W3 · plans/150 W1)."""
+
+    executed: list[str]
+    row_count: int
+    antecedent: Mapping[str, Any] | None
+    widened: bool
+    sampled_note: str | None
+
+
+def _text_succession(state: AgentState) -> _TextSuccession:
+    """앞 턴 0행 지시어·넓힘·표본 승계를 판정한다 — 텍스트 경로 앞부분.
+
+    3·4단 그래프 경로 전용(1·2단은 집계기가 같은 규칙). 이번 턴 SQL 조회 결과가 없으면
+    실행 SQL `[]`·행 수 -1로 보고 승계 입력을 읽지 않는다.
+    """
+    # 앞 턴 0행 지시어 승계(plans/146 W3) — 3·4단 그래프 경로(1·2단은 집계기가 같은 규칙).
+    sql_outcome = _graph_sql_outcome(state)
+    executed, row_count = sql_outcome if sql_outcome else ([], -1)
+    antecedent = (
+        (state.get("conversation_context") or {}).get(EMPTY_ANTECEDENT_KEY)
+        if sql_outcome else None
+    )
+    # 조건 없이 넓힘 — 행은 그대로 보이고 맨 앞에 안내를 싣는다
+    # (교정 1 · 판정이 근사라 숨기지 않음)
+    widened = bool(
+        antecedent and row_count > 0 and widened_beyond_antecedent(antecedent, executed)
+    )
+    if widened:
+        logger.info(
+            "앞 턴 0행 지시어 — 이번 조회 %d행이 앞 턴 조건을 잇지 않아 맨 앞에 안내"
+            "(plans/146 W3)", row_count,
+        )
+    # 표본 앞 턴 승계(plans/150 W1) — 2단 집계기와 같은 규칙(D-066)
+    sampled_note = sampled_antecedent_outcome(
+        (state.get("conversation_context") or {}).get(SAMPLED_ANTECEDENT_KEY)
+        if sql_outcome else None,
+        executed, row_count,
+    )
+    if sampled_note:
+        logger.info("표본 앞 턴 지시어 — 이번 조회 %d행에 맨 앞 안내(plans/150 W1)", row_count)
+    return _TextSuccession(executed, row_count, antecedent, widened, sampled_note)
+
+
+async def _form_fill_memory_notice(state: AgentState, app_config: AppConfig) -> str:
+    """폼필 확인 이력을 저장하고 응답 끝에 붙일 안내를 돌려준다(저장할 항목이 없으면 빈 문자열).
+
+    확인 이력 저장(D-151 Phase 3) — 옵트인(기억 체크) + 검증 통과 + 이번 턴
+    답변(origin=answer)만. LLM 산출물·이력 재적용분은 저장하지 않는다(C3).
+    옵트인 판정(`form_fill_remember`)은 호출부가 한다.
+    """
+    _remember = {
+        f: {"action": o.get("action"), "value": o.get("value")}
+        for f, o in (state.get("form_fill_overrides") or {}).items()
+        if o.get("applied") and o.get("origin") != "memory"
+    }
+    if not _remember:
+        return ""
+    _saved = await save_form_memory_entries(
+        state.get("template_structure"), _remember,
+        state.get("parsed_requirements", {}).get("original_query", "")
+        or state.get("user_query", ""),
+        app_config,
+    )
+    _ttl_days = app_config.query.form_memory_ttl_days
+    if _saved:
+        return (
+            f"\n\n**[기억 저장]** '{_saved}'에 {len(_remember)}개 항목을 "
+            f"기억했습니다 (유효 {_ttl_days}일, 사용할 때마다 연장). "
+            "다음부터 이 양식에 자동 반영됩니다."
+        )
+    # 침묵 강등 금지 — 저장 실패(기능 OFF·Redis 불가)를 명시
+    return (
+        "\n\n**[기억 저장 안 됨]** 저장소를 사용할 수 없거나 기억 기능이 "
+        "꺼져 있어(form_memory_ttl_days=0) 이번 답변은 이번 실행에만 "
+        "적용되었습니다."
+    )
+
+
+def _attach_form_fill_hitl(
+    result: dict[str, Any],
+    state: AgentState,
+    clarification: dict[str, Any] | None,
+    pending: dict[str, Any] | None,
+) -> None:
+    """HITL 폼필(D-151) 역질문 페이로드 + 대기 상태를 결과에 싣는다(서술 전에 판정한 값).
+
+    양식 구조가 없으면 아무것도 싣지 않는다. 미해결 0이면 pending=None으로
+    자기정리(답변 적용 완료 턴 포함).
+    """
+    if state.get("template_structure"):
+        result["pending_form_fill"] = pending
+        if clarification:
+            result["form_fill_clarification"] = clarification
+            logger.info(
+                "폼필 역질문 발행(D-151): 미해결 %d건 — %s",
+                len(clarification["fields"]),
+                [f["name"] for f in clarification["fields"]][:10],
+            )
 
 
 def _graph_sql_outcome(state: Mapping[str, Any]) -> tuple[list[str], int] | None:
@@ -1789,6 +1818,53 @@ def _append_zone_coverage_notes(response: str, state: AgentState) -> str:
     if not lines:
         return response
     return (response or "") + "\n\n" + "\n".join(lines)
+
+
+_NoteFn = Callable[[str, AgentState], str]
+
+#: 응답 본문 노트 체인 — `_run_output_generator`가 순서대로 덧붙인다(plans/173 N7).
+#: 원소는 `(response, state) -> str`이고 튜플 순서가 곧 본문 배치 순서다. 인자가 다르거나
+#: 사이에 다른 처리가 끼는 호출(`_append_form_fill_notes`·`_append_turn_notices`·앞머리 안내)은
+#: 호출부에 둔다. 함수 객체를 담으므로 이 모듈 속성을 patch해도 체인에는 닿지 않는다
+#: (착수 시 노트 함수 patch 0건 — 바꿔 끼워야 하면 튜플 자체를 patch한다).
+#: 텍스트 경로 노트(`_append_zone_coverage_notes` 정의 뒤에 둔다 — 이 모듈 정의 함수를 담는다).
+TEXT_NOTES: tuple[_NoteFn, ...] = (
+    _append_query_period_note,
+    _append_inferred_mapping_info,
+    _append_spike_notes,
+    _append_scope_note,
+    _append_elliptical_succession_note,
+    _append_zone_coverage_notes,
+    _append_current_month_partial_note,
+    _append_unavailable_metric_notes,
+    _append_limit_truncation_note,
+    _append_generator_notes,
+    _append_condition_changes,
+    append_structure_missing_note,
+    _append_cross_system_notes,
+)
+#: 문서(xlsx/docx) 경로 노트 — 텍스트 경로의 `current_month_partial`·`limit_truncation`·
+#: `generator_notes`·`condition_changes` 4종이 없는 현행 구성 그대로다(U-8 — plans/166 §8 후속).
+DOC_NOTES: tuple[_NoteFn, ...] = (
+    _append_query_period_note,
+    _append_inferred_mapping_info,
+    _append_spike_notes,
+    _append_scope_note,
+    _append_elliptical_succession_note,
+    _append_zone_coverage_notes,
+    _append_unavailable_metric_notes,
+    append_structure_missing_note,
+    _append_cross_system_notes,
+)
+
+
+def _apply_note_chain(
+    response: str, state: AgentState, notes: tuple[_NoteFn, ...],
+) -> str:
+    """노트 함수를 튜플 순서대로 응답에 적용한다."""
+    for note in notes:
+        response = note(response, state)
+    return response
 
 
 def _aggregate_skip_clause(state: AgentState) -> str:

@@ -5,14 +5,15 @@
    (존 재진입 = `zone_reentry`).
 ② 개수·코드만 싣는다(sub_query 등 문장·값 없음 · D-219 반출).
 ③ 계획이 없는 단(1·3단)은 키를 싣지 않는다(바이트 불변) · 사전 게이트 턴은 2단일 때만 `pre_gate`.
-④ 그래프 경로 응답 조립 6곳(비스트림 2 · 스트림 폴백 2 · astream 2)과 `done` 4곳이 같은 필드를
-   싣는다.
+④ 그래프 경로 응답 조립 6경로(비스트림 2 · 스트림 폴백 2 · astream 2)와 `done` 4경로가 같은 필드를
+   싣는다 — 네 진입이 공유 빌더 한 벌을 부른다(plans/179 W1a).
 ⑤ 하네스가 `done.plan_summary`를 raw 행으로 옮긴다.
 LLM·DB 0.
 """
 
 from __future__ import annotations
 
+import ast
 import importlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -89,12 +90,64 @@ def test_query_response_declares_field():
     assert QueryResponse(query_id="1", status="completed", response="").plan_summary is None
 
 
-def test_route_wiring_counts():
-    text = _QUERY_PY.read_text(encoding="utf-8")
-    assert text.count("**_plan_summary_field(result),") == 4
-    assert text.count("**_plan_summary_field(_scope_state),") == 2
-    assert text.count("**_plan_summary_carry(response_data),") == 4
-    assert text.count("**_pre_gate_plan_summary(),") == 4
+def _func(tree: ast.Module, name: str) -> ast.AST:
+    return next(
+        n for n in tree.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name
+    )
+
+
+def _calls(tree: ast.Module, caller: str, callee: str) -> list[ast.Call]:
+    return [
+        n for n in ast.walk(_func(tree, caller))
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == callee
+    ]
+
+
+#: 진입 → 공유 헬퍼 직접 호출(진입마다 1회) — 사전 게이트 판정·렌더 + 그래프 턴 응답 조립
+_ENTRY_CALLS = {
+    "process_query": ("_run_pre_gates", "_pre_gate_response", "_build_turn_response"),
+    "process_file_query": ("_run_pre_gates", "_pre_gate_response", "_build_turn_response"),
+    "process_query_stream": ("_run_pre_gates", "_pre_gate_done", "_stream_graph_turn"),
+    "process_file_query_stream": ("_run_pre_gates", "_pre_gate_done", "_stream_graph_turn"),
+}
+
+
+def test_route_wiring_through_shared_builders():
+    """네 진입이 공유 헬퍼를 부르고 공유 헬퍼가 계획 요약 칸을 싣는다(plans/179 W1a).
+
+    종전 소스 계수(응답 조립 6곳 · done 4곳 · 사전 게이트 4곳)의 전환 — 리터럴이 한 벌이 됐다.
+    ① 진입마다: 비스트림은 `_build_turn_response`, 스트림은 `_stream_graph_turn`(astream
+    `_build_stream_turn_response` + 폴백 `_build_turn_response` → done `_turn_done_payload` 2곳)을
+    부른다. 사전 게이트는 `_run_pre_gates` → 렌더(`_pre_gate_response`/`_pre_gate_done`).
+    ② 공유 헬퍼: 응답 dict는 `_plan_summary_field(state)`(astream은 누적 상태) · done은
+    `_plan_summary_carry(response_data)` · 사전 게이트 역질문은 `_pre_gate_plan_summary()`.
+    """
+    tree = ast.parse(_QUERY_PY.read_text(encoding="utf-8"))
+    for entry, callees in _ENTRY_CALLS.items():
+        for callee in callees:
+            assert len(_calls(tree, entry, callee)) == 1, f"{entry} → {callee}"
+    assert len(_calls(tree, "_stream_graph_turn", "_build_stream_turn_response")) == 1
+    assert len(_calls(tree, "_stream_graph_turn", "_build_turn_response")) == 1
+    assert len(_calls(tree, "_stream_graph_turn", "_turn_done_payload")) == 2
+    for builder in ("_build_turn_response", "_build_stream_turn_response"):
+        assert len(_calls(tree, builder, "_turn_response_data")) == 1, builder
+    # astream 응답은 종료 노드 델타가 아니라 누적 상태(`_scope_state`)로 만든다
+    (astream,) = _calls(tree, "_stream_graph_turn", "_build_stream_turn_response")
+    assert ast.unparse(astream.args[3]) == "_scope_state"
+    (data_call,) = _calls(tree, "_build_stream_turn_response", "_turn_response_data")
+    assert ast.unparse(data_call.args[2]) == "scope_state"
+
+    src = {
+        name: ast.unparse(_func(tree, name))
+        for name in ("_turn_response_data", "_turn_done_payload", "_run_pre_gates",
+                     "_pre_gate_response", "_pre_gate_done")
+    }
+    assert src["_turn_response_data"].count("**_plan_summary_field(state)") == 1
+    assert src["_turn_done_payload"].count("**_plan_summary_carry(response_data)") == 1
+    assert src["_run_pre_gates"].count("**_pre_gate_plan_summary()") == 1
+    assert "**gate.extra" in src["_pre_gate_response"]
+    assert "**gate.extra" in src["_pre_gate_done"]
 
 
 @pytest.mark.asyncio

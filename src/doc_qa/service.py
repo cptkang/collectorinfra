@@ -255,49 +255,14 @@ async def _audit(
         logger.warning("문서 조회 감사 기록 실패", exc_info=True)
 
 
-async def _answer_impl(
-    query: str,
+def _select_collections(
     collection_ids: Sequence[str],
-    *,
-    llm: Any = None,
-    app_config: Any,
-    cache: Any = None,
-    include_raw: bool = False,
-    search_only: bool = False,
-    allowed_collection_ids: Sequence[str] | None = None,
-    collections_path: str | None = None,
-    audit_context: dict[str, Any] | None = None,
-) -> DocAnswer:
-    """문서군을 검색해 근거 기반 답변을 만든다.
-
-    Args:
-        query: 질의 문장. **받은 그대로** 보낸다(용어·조항 번호 보존 · §4.5 질의 규칙 1).
-            머리에 붙은 컬렉션 표면어만 결정적으로 떼어낸다(규칙 3).
-        collection_ids: 조회할 문서군 id 목록. **비어 있으면 오류**다 — 암묵적 전체 검색은
-            암묵적 라우팅이고, 라우팅은 이 계획의 범위가 아니다(§4.6).
-        llm: 서술용 LLM. `search_only=True`면 쓰지 않는다.
-        app_config: `AppConfig`(`.rag` 그룹을 읽는다).
-        cache: `get(key)`/`set(key, value, ttl)` 을 가진 캐시(없으면 캐시 미사용).
-        include_raw: 원시 응답을 담을지(관리자 진단용).
-        search_only: 검색만 하고 서술하지 않는다(진단 · LLM 호출 0).
-        allowed_collection_ids: 호출자 신원의 허용 목록(None이면 인가 판정 생략).
-        collections_path: 정본 경로 override(테스트용).
-        audit_context: `{"user_id":…, "thread_id":…, "source":…}`. 주면 감사 로그를 남긴다
-            (진입점마다 흩어지지 않게 **기록은 이 함수 한 곳**에서 한다 · D-261 정합).
-    """
-    started = time.monotonic()
-    rag = getattr(app_config, "rag", None)
-    if rag is None or not getattr(rag, "enabled", False):
-        return DocAnswer(MSG_DISABLED, status=STATUS_DISABLED,
-                         reason="RAG_ENABLED=false 또는 rag 설정 부재")
-
-    all_cols = resolve_collections(rag, path=collections_path)
+    all_cols: Sequence[DocCollection],
+    rag: Any,
+    allowed_collection_ids: Sequence[str] | None,
+) -> list[DocCollection] | DocAnswer:
+    """2) 컬렉션 확정 · 3) 인가 — 검색할 수 있는 문서군 목록, 또는 조기 반환할 `DocAnswer`."""
     registry = {c.id: c for c in all_cols}
-
-    # 1) 질의 확정 — 표면어 접두만 제거하고 나머지는 건드리지 않는다.
-    text = strip_surface_prefix(query, all_cols)
-    if not text:
-        return DocAnswer("질문 내용이 비어 있습니다.", status=STATUS_ERROR, reason="빈 질의")
 
     # 2) 컬렉션 확정 — 호출자가 명시한다(미지정은 오류).
     if not collection_ids:
@@ -340,7 +305,22 @@ async def _answer_impl(
             MSG_DISABLED, status=STATUS_DISABLED,
             reason="; ".join(f"{c.id}: {c.disabled_reason}" for c in unusable),
         )
+    return usable
 
+
+async def _search_with_cache(
+    usable: list[DocCollection],
+    text: str,
+    *,
+    rag: Any,
+    cache: Any,
+    include_raw: bool,
+    started: float,
+) -> tuple[list[RetrievalOutcome], dict[str, list[DocHit]], int]:
+    """4) 캐시 조회 · 5) 검색 — `(outcomes, 캐시 재사용분, 재시도 횟수)`.
+
+    캐시 재사용분은 검색 결과 **뒤에** `캐시 재사용` 사유를 단 outcome으로 덧붙인다.
+    """
     read_to, total_to = timeouts_from_config(rag)
     ttl = int(rag.cache_ttl or 0)
 
@@ -368,25 +348,31 @@ async def _answer_impl(
     for cid, hits in cached.items():
         outcomes.append(RetrievalOutcome(cid, STATUS_OK, hits=list(hits),
                                          reason="캐시 재사용"))
+    return outcomes, cached, retries
 
-    # 6) 후처리 — 문자 예산만(점수·건수 절단 없음)
-    hits: list[DocHit] = [h for o in outcomes for h in o.hits]
-    titles = _titles(all_cols)
-    evidence = build_evidence(
-        hits,
-        collection_titles=titles,
-        max_doc_chars=int(getattr(rag, "max_doc_chars", 4000) or 0),
-        max_context_chars=int(getattr(rag, "max_context_chars", 24000) or 0),
-        doc_url_base=str(getattr(rag, "doc_url_base", "") or ""),
-    )
 
+def _stale_notes(outcomes: Sequence[RetrievalOutcome], titles: dict[str, str]) -> list[str]:
+    """6) 후처리 — 색인이 갱신돼 제외된 문서군 안내(답변 뒤 출처 블록에 붙는다)."""
     stale = [o.collection_id for o in outcomes if o.status == STATUS_STALE_ID]
     notes: list[str] = []
     if stale:
         notes.append(MSG_PARTIAL_STALE.format(
             names=" · ".join(f"「{titles.get(c, c)}」" for c in stale)))
+    return notes
 
-    diagnostics = {
+
+def _search_diagnostics(
+    outcomes: Sequence[RetrievalOutcome],
+    hits: Sequence[DocHit],
+    evidence: EvidenceSet,
+    *,
+    text: str,
+    cached: dict[str, list[DocHit]],
+    retries: int,
+    started: float,
+) -> dict[str, Any]:
+    """6) 후처리 — 검색 진단(건수·상태·점수 범위·HyDE·절단·캐시·재시도·검색 소요)."""
+    return {
         "counts": {o.collection_id: len(o.hits) for o in outcomes},
         "statuses": {o.collection_id: o.status for o in outcomes},
         "score_min": min((h.rank_score for h in hits), default=None),
@@ -401,44 +387,63 @@ async def _answer_impl(
         "recovered_by_retry": bool(retries) and bool(hits),
         "search_ms": int((time.monotonic() - started) * 1000),
     }
-    raw = None
-    if include_raw:
-        raw = {o.collection_id: o.raw for o in outcomes if o.raw is not None}
 
-    # 7-b) 근거 없음 — **LLM 호출 없이** 결정적 안내
-    if evidence.is_empty:
-        status, reason = _aggregate_status(outcomes)
-        if status == STATUS_STALE_ID:
-            answer = MSG_STALE
-        elif status == STATUS_BLOCKED_PII:
-            answer = MSG_BLOCKED
-        elif status in (STATUS_TIMEOUT, STATUS_ERROR):
-            answer = MSG_FAILED.format(reason=reason or "사유 미상")
-        elif status == STATUS_DISABLED:
-            answer = MSG_DISABLED
-        else:
-            status = STATUS_EMPTY
-            answer = MSG_EMPTY.format(names=_names(usable))
-        diagnostics["llm_calls"] = 0
-        logger.info("문서 질의 종료(근거 0건) status=%s · LLM 호출 0회", status)
-        return DocAnswer(answer, status=status, reason=reason,
-                         diagnostics=diagnostics, raw=raw)
 
-    # 7-a) 서술 — LLM 1회(검색 전용 모드면 0회)
-    block = render_evidence_block(evidence, collection_titles=titles)
-    if search_only or llm is None:
-        diagnostics["llm_calls"] = 0
-        summary = "\n".join(
-            f"- {c.collection_title} — {c.title}"
-            + (f" `{c.subtitle}`" if c.subtitle else "")
-            for c in evidence.citations
-        )
-        return DocAnswer(
-            f"검색만 수행했습니다(서술 생략). 찾은 근거 {len(evidence.hits)}건:\n{summary}",
-            citations=list(evidence.citations), status=STATUS_OK,
-            diagnostics=diagnostics, raw=raw,
-        )
+def _no_evidence_answer(
+    outcomes: Sequence[RetrievalOutcome],
+    usable: Sequence[DocCollection],
+    diagnostics: dict[str, Any],
+    raw: dict[str, Any] | None,
+) -> DocAnswer:
+    """7-b) 근거 없음 — **LLM 호출 없이** 결정적 안내."""
+    status, reason = _aggregate_status(outcomes)
+    if status == STATUS_STALE_ID:
+        answer = MSG_STALE
+    elif status == STATUS_BLOCKED_PII:
+        answer = MSG_BLOCKED
+    elif status in (STATUS_TIMEOUT, STATUS_ERROR):
+        answer = MSG_FAILED.format(reason=reason or "사유 미상")
+    elif status == STATUS_DISABLED:
+        answer = MSG_DISABLED
+    else:
+        status = STATUS_EMPTY
+        answer = MSG_EMPTY.format(names=_names(usable))
+    diagnostics["llm_calls"] = 0
+    logger.info("문서 질의 종료(근거 0건) status=%s · LLM 호출 0회", status)
+    return DocAnswer(answer, status=status, reason=reason,
+                     diagnostics=diagnostics, raw=raw)
 
+
+def _search_only_answer(
+    evidence: EvidenceSet, diagnostics: dict[str, Any], raw: dict[str, Any] | None,
+) -> DocAnswer:
+    """7-a) 검색 전용(또는 LLM 없음) — 서술 없이 찾은 근거 목록만 돌려준다(LLM 0회)."""
+    diagnostics["llm_calls"] = 0
+    summary = "\n".join(
+        f"- {c.collection_title} — {c.title}"
+        + (f" `{c.subtitle}`" if c.subtitle else "")
+        for c in evidence.citations
+    )
+    return DocAnswer(
+        f"검색만 수행했습니다(서술 생략). 찾은 근거 {len(evidence.hits)}건:\n{summary}",
+        citations=list(evidence.citations), status=STATUS_OK,
+        diagnostics=diagnostics, raw=raw,
+    )
+
+
+async def _narrate(
+    llm: Any,
+    *,
+    rag: Any,
+    text: str,
+    block: str,
+    evidence: EvidenceSet,
+    notes: Sequence[str],
+    diagnostics: dict[str, Any],
+    raw: dict[str, Any] | None,
+    started: float,
+) -> DocAnswer:
+    """7-a) 서술 LLM 1회 → 8) 인용 조립. 서술이 실패해도 근거 목록은 돌려준다(D-236)."""
     max_chars = int(getattr(rag, "answer_max_chars", 1200) or 1200)
     messages = [
         SystemMessage(content=render_system(max_chars=max_chars)),
@@ -472,6 +477,94 @@ async def _answer_impl(
     )
     return DocAnswer(answer, citations=list(evidence.citations), status=STATUS_OK,
                      diagnostics=diagnostics, raw=raw)
+
+
+async def _answer_impl(
+    query: str,
+    collection_ids: Sequence[str],
+    *,
+    llm: Any = None,
+    app_config: Any,
+    cache: Any = None,
+    include_raw: bool = False,
+    search_only: bool = False,
+    allowed_collection_ids: Sequence[str] | None = None,
+    collections_path: str | None = None,
+    audit_context: dict[str, Any] | None = None,
+) -> DocAnswer:
+    """문서군을 검색해 근거 기반 답변을 만든다.
+
+    Args:
+        query: 질의 문장. **받은 그대로** 보낸다(용어·조항 번호 보존 · §4.5 질의 규칙 1).
+            머리에 붙은 컬렉션 표면어만 결정적으로 떼어낸다(규칙 3).
+        collection_ids: 조회할 문서군 id 목록. **비어 있으면 오류**다 — 암묵적 전체 검색은
+            암묵적 라우팅이고, 라우팅은 이 계획의 범위가 아니다(§4.6).
+        llm: 서술용 LLM. `search_only=True`면 쓰지 않는다.
+        app_config: `AppConfig`(`.rag` 그룹을 읽는다).
+        cache: `get(key)`/`set(key, value, ttl)` 을 가진 캐시(없으면 캐시 미사용).
+        include_raw: 원시 응답을 담을지(관리자 진단용).
+        search_only: 검색만 하고 서술하지 않는다(진단 · LLM 호출 0).
+        allowed_collection_ids: 호출자 신원의 허용 목록(None이면 인가 판정 생략).
+        collections_path: 정본 경로 override(테스트용).
+        audit_context: `{"user_id":…, "thread_id":…, "source":…}`. 주면 감사 로그를 남긴다
+            (진입점마다 흩어지지 않게 **기록은 이 함수 한 곳**에서 한다 · D-261 정합).
+    """
+    started = time.monotonic()
+    rag = getattr(app_config, "rag", None)
+    if rag is None or not getattr(rag, "enabled", False):
+        return DocAnswer(MSG_DISABLED, status=STATUS_DISABLED,
+                         reason="RAG_ENABLED=false 또는 rag 설정 부재")
+
+    all_cols = resolve_collections(rag, path=collections_path)
+
+    # 1) 질의 확정 — 표면어 접두만 제거하고 나머지는 건드리지 않는다.
+    text = strip_surface_prefix(query, all_cols)
+    if not text:
+        return DocAnswer("질문 내용이 비어 있습니다.", status=STATUS_ERROR, reason="빈 질의")
+
+    # 2) 컬렉션 확정 · 3) 인가
+    selected = _select_collections(collection_ids, all_cols, rag, allowed_collection_ids)
+    if isinstance(selected, DocAnswer):
+        return selected
+    usable = selected
+
+    # 4) 캐시 조회 · 5) 검색
+    outcomes, cached, retries = await _search_with_cache(
+        usable, text, rag=rag, cache=cache, include_raw=include_raw, started=started,
+    )
+
+    # 6) 후처리 — 문자 예산만(점수·건수 절단 없음)
+    hits: list[DocHit] = [h for o in outcomes for h in o.hits]
+    titles = _titles(all_cols)
+    evidence = build_evidence(
+        hits,
+        collection_titles=titles,
+        max_doc_chars=int(getattr(rag, "max_doc_chars", 4000) or 0),
+        max_context_chars=int(getattr(rag, "max_context_chars", 24000) or 0),
+        doc_url_base=str(getattr(rag, "doc_url_base", "") or ""),
+    )
+    notes = _stale_notes(outcomes, titles)
+    diagnostics = _search_diagnostics(
+        outcomes, hits, evidence, text=text, cached=cached, retries=retries, started=started,
+    )
+    raw = None
+    if include_raw:
+        raw = {o.collection_id: o.raw for o in outcomes if o.raw is not None}
+
+    # 7-b) 근거 없음 — **LLM 호출 없이** 결정적 안내
+    if evidence.is_empty:
+        return _no_evidence_answer(outcomes, usable, diagnostics, raw)
+
+    # 7-a) 서술 — LLM 1회(검색 전용 모드면 0회)
+    block = render_evidence_block(evidence, collection_titles=titles)
+    if search_only or llm is None:
+        return _search_only_answer(evidence, diagnostics, raw)
+
+    # 7-a) 서술 → 8) 인용 조립
+    return await _narrate(
+        llm, rag=rag, text=text, block=block, evidence=evidence, notes=notes,
+        diagnostics=diagnostics, raw=raw, started=started,
+    )
 
 
 async def answer_from_documents(

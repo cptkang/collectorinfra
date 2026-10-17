@@ -13,6 +13,7 @@
 사전 조건:
   - polestar_pg 컨테이너 실행: cd testdata/pg && docker compose up -d
   - 전체 스키마/픽스처 적용(04~06 init). 미가용 시 테스트는 skip(CI 안전).
+  - `RUN_DOCKER_IT=1` 옵트인 — 픽스처를 DB에 쓰므로 기본은 skip.
 
 repo 계약은 덕 타이핑(execute_sql→.rows dict)이므로, asyncpg 연결을 얇게 감싼 어댑터를
 주입한다 — PostgresClient의 정수→float 강제변환을 거치지 않아 DB 네이티브 타입을 보존한다
@@ -31,6 +32,14 @@ import pytest
 import pytest_asyncio
 
 asyncpg = pytest.importorskip("asyncpg")
+
+# 이 테스트는 로컬 샌드박스 polestar_pg에 Plan 52 픽스처(DELETE/INSERT)를 적용한다 —
+# PG가 떠 있다는 이유만으로 쓰지 않도록 `RUN_DOCKER_IT=1` 옵트인일 때만 돈다
+# (2026-10-16 사용자 결정).
+pytestmark = pytest.mark.skipif(
+    os.environ.get("RUN_DOCKER_IT") != "1",
+    reason="샌드박스 DB에 픽스처를 쓰는 통합 테스트 — RUN_DOCKER_IT=1로 옵트인",
+)
 
 from noise_gate.domain.alarm import AlarmEvent
 from noise_gate.domain.notification_policy import (

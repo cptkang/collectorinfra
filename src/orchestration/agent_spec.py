@@ -3,15 +3,67 @@
 leaf 모듈이다 — orchestration 모듈을 import하지 않는다. 조건부 처리기 모듈(`apm_query`·`doc_query`·
 `portal_help`·`conditional_agents`)이 레지스트리(`subagents`)를 거치지 않고 정의 스키마만 쓰도록
 떼어 냈다. 종전 이름(`subagents.SubAgentSpec`)은 재노출로 유지한다.
+
+처리기 출력(task 결과 dict)의 키 선언 `HandlerResult`도 여기 둔다(plans/174 O7 — 순환 회피).
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 from langchain_core.language_models import BaseChatModel
+
+
+class HandlerResult(TypedDict, total=False):
+    """처리기가 돌려주는 task 결과 dict(`task_results[task_id]`)의 키 선언(plans/174 O7).
+
+    **선언만이다** — 런타임 객체는 그대로 dict이고 검사·변환을 하지 않는다(체크포인터 직렬화와
+    처리기의 `**extra` 병합을 그대로 둔다 · pydantic 미도입). 키는 소비처 `replanner`·
+    `result_aggregator`가 task 결과에서 실제로 읽는 것만 모았다(2026-10-16 grep). 값 모양이
+    처리기마다 다르면 `Any`다. 새 키를 읽기 시작하면 여기에 더한다. 상수로 읽는 키는 그 상수
+    정의처를 적었다.
+    """
+
+    # 조회 행·서술
+    query_results: Any
+    organized_data: Any
+    final_response: Any
+    display_rows_cut: Any  # `task_result_keys.DISPLAY_CUT_KEY`
+    answer_lines: Any  # `apm_query.ANSWER_LINES_KEY`
+    # 실패·미완 표지
+    error: Any
+    regen_stop: Any
+    skipped: Any
+    skip_reason: Any
+    skipped_dbs: Any
+    db_errors: Any
+    degraded_reason: Any  # `task_result_keys.DEGRADED_KEY`
+    routing_intent: Any  # `db_access.is_access_denied_result`
+    accepted_jobs: Any
+    zone_clarification: Any
+    # 조회 대상·실행 기록
+    source: Any
+    target_db_ids: Any
+    db_origin: Any
+    db_result_summary: Any
+    executed_sqls: Any
+    spike_notes: Any
+    empty_diagnosis: Any
+    time_resolution: Any
+    # 경과 노트·고지
+    dependency_notes: Any
+    disclosures: Any
+    # 양식 채우기(D-146/D-151 · D-187)
+    form_month_anchor: Any
+    form_fill_candidates: Any
+    form_fill_overrides: Any
+    form_fill_literals: Any
+    form_memory_panel: Any
+    # APM 처리기(`apm_query.META_KEY` · `apm_query.SOURCE_CLARIFICATION_KEY`)
+    apm_query: Any
+    apm_source_clarification: Any
 
 
 @dataclass(frozen=True)

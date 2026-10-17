@@ -21,7 +21,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextvars import Token
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Optional
-from typing import Literal
+from typing import Literal, cast
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -89,6 +89,151 @@ from src.utils.query_gen_common import (
 # 어긋나 캡 모방 교정이 침묵 무력화된다(병합 검증 실측).
 from src.utils.query_gen_common import _ALL_QUERY_LIMIT
 
+# plans/179 W2 재노출 shim(D-337 ①) — 다음 계획에서 grep 0 확인 후 제거.
+# 옮긴 정의를 옛 이름 그대로 다시 노출한다(patch seam·`from src.api.routes.query import …`).
+from src.api.query.store import (  # noqa: F401
+    _attachment_disposition as _attachment_disposition,
+    _audit_file_download as _audit_file_download,
+    _MAX_RESULTS_STORE_SIZE as _MAX_RESULTS_STORE_SIZE,
+    _owned_result as _owned_result,
+    _results_store as _results_store,
+    _store_result as _store_result,
+)
+from src.api.query.sse import (  # noqa: F401
+    _graph_event_stream as _graph_event_stream,
+    _heartbeat_sse_payload as _heartbeat_sse_payload,
+    _is_subgraph_event as _is_subgraph_event,
+    _next_event_or_timeout as _next_event_or_timeout,
+    _PRODUCER_CANCEL_GRACE_SEC as _PRODUCER_CANCEL_GRACE_SEC,
+    _progress_sse_payload as _progress_sse_payload,
+    _single_done_stream as _single_done_stream,
+    _sse_event as _sse_event,
+    _sse_response as _sse_response,
+    _stream_error_payload as _stream_error_payload,
+    _STREAM_KNOWN_NODES as _STREAM_KNOWN_NODES,
+    _token_text as _token_text,
+)
+from src.api.query.turn_input import (  # noqa: F401
+    _get_checkpoint_state as _get_checkpoint_state,
+    _resolve_turn_approval as _resolve_turn_approval,
+    _source_selection_meta as _source_selection_meta,
+    _zone_answer_parse_reuse as _zone_answer_parse_reuse,
+    _zone_answer_plan_reuse as _zone_answer_plan_reuse,
+)
+from src.pipeline.turn.approval import (  # noqa: F401
+    _APPROVAL_CORROBORATION_TOKENS as _APPROVAL_CORROBORATION_TOKENS,
+    _APPROVE_WORDS as _APPROVE_WORDS,
+    _deterministic_approval as _deterministic_approval,
+    _has_approval_token as _has_approval_token,
+    _INTENT_TAIL as _INTENT_TAIL,
+    _is_legacy_structure_hitl_thread as _is_legacy_structure_hitl_thread,
+    _log_approval_decision as _log_approval_decision,
+    _matches_intent as _matches_intent,
+    _parse_approval as _parse_approval,
+    _REJECT_WORDS as _REJECT_WORDS,
+    _release_legacy_structure_hitl as _release_legacy_structure_hitl,
+    resolve_approval_action as resolve_approval_action,
+)
+from src.pipeline.turn.selection import (  # noqa: F401
+    _APM_ANSWER_MAX as _APM_ANSWER_MAX,
+    _APM_ANSWER_TAIL as _APM_ANSWER_TAIL,
+    _APM_ID_MAX_LEN as _APM_ID_MAX_LEN,
+    _APM_IDS_MAX as _APM_IDS_MAX,
+    _apm_ids_preview as _apm_ids_preview,
+    _apm_source_text_answer as _apm_source_text_answer,
+    apply_apm_source_selection_authorization as apply_apm_source_selection_authorization,
+    apply_selection_authorization as apply_selection_authorization,
+    apply_source_selection_authorization as apply_source_selection_authorization,
+    _parse_selected_db_ids_form as _parse_selected_db_ids_form,
+    _with_current_identity as _with_current_identity,
+)
+from src.api.query.fields import (  # noqa: F401
+    _apm_source_fields as _apm_source_fields,
+    _clarify_store_fields as _clarify_store_fields,
+    _clarify_turn_fields as _clarify_turn_fields,
+    _count_human_messages as _count_human_messages,
+    _dependency_notes_field as _dependency_notes_field,
+    _disclosures_field as _disclosures_field,
+    _executed_sql as _executed_sql,
+    _nonsql_task_summary as _nonsql_task_summary,
+    _PARTIAL_DONE_DEFAULTS as _PARTIAL_DONE_DEFAULTS,
+    _partial_response_data as _partial_response_data,
+    _plan_summary_carry as _plan_summary_carry,
+    _plan_summary_field as _plan_summary_field,
+    _pre_gate_plan_summary as _pre_gate_plan_summary,
+    _rewrite_trace_fields as _rewrite_trace_fields,
+    _scope_reexpand_field as _scope_reexpand_field,
+    _time_clarification as _time_clarification,
+    TIME_CLARIFY_KIND as TIME_CLARIFY_KIND,
+    _time_resolution_field as _time_resolution_field,
+)
+from src.api.query.progress import (  # noqa: F401
+    _extract_node_progress as _extract_node_progress,
+    _merge_node_delta as _merge_node_delta,
+    _NODE_PROGRESS_SUMMARIZERS as _NODE_PROGRESS_SUMMARIZERS,
+    _progress_agent_orchestrator as _progress_agent_orchestrator,
+    _progress_aggregate_done as _progress_aggregate_done,
+    _progress_answer_done as _progress_answer_done,
+    _progress_approval_gate as _progress_approval_gate,
+    _progress_context_resolver as _progress_context_resolver,
+    _progress_deep_agent as _progress_deep_agent,
+    _progress_error_response as _progress_error_response,
+    _progress_field_mapper as _progress_field_mapper,
+    _progress_input_parser as _progress_input_parser,
+    _progress_intent_planner as _progress_intent_planner,
+    _progress_query_executor as _progress_query_executor,
+    _progress_query_generator as _progress_query_generator,
+    _progress_query_validator as _progress_query_validator,
+    _progress_replanner as _progress_replanner,
+    _progress_result_organizer as _progress_result_organizer,
+    _progress_schema_analyzer as _progress_schema_analyzer,
+    _progress_semantic_router as _progress_semantic_router,
+    _SQL_STATE_KEYS as _SQL_STATE_KEYS,
+    _summarize_tasks as _summarize_tasks,
+    _track_sql_state as _track_sql_state,
+)
+from src.pipeline.turn.zone import (  # noqa: F401
+    _authorized_zone_clarification as _authorized_zone_clarification,
+    build_scope_reexpand as build_scope_reexpand,
+    _replace_unregistered_zones as _replace_unregistered_zones,
+    _scope_narrowed_or_none as _scope_narrowed_or_none,
+    _substitute_zone_placeholder as _substitute_zone_placeholder,
+    _unregistered_zone_clarification_or_none as _unregistered_zone_clarification_or_none,
+    _zone_display_label as _zone_display_label,
+    _zone_group_exclusive_or_none as _zone_group_exclusive_or_none,
+    _ZONE_LABEL_BY_ID as _ZONE_LABEL_BY_ID,
+    _ZONE_OPTIONS as _ZONE_OPTIONS,
+    _ZONE_PLACEHOLDER as _ZONE_PLACEHOLDER,
+)
+from src.pipeline.turn.intake import (  # noqa: F401
+    _raw_query_seed as _raw_query_seed,
+    _shadow_input_guard as _shadow_input_guard,
+    _turn_disclosures as _turn_disclosures,
+)
+from src.api.query.gates import (  # noqa: F401
+    _audit_clarification as _audit_clarification,
+    _audit_scope_narrowed as _audit_scope_narrowed,
+    _file_zone_clarification_or_none as _file_zone_clarification_or_none,
+    _form_memory_delete_or_none as _form_memory_delete_or_none,
+    _scope_select_or_none as _scope_select_or_none,
+    _zone_clarification_or_none as _zone_clarification_or_none,
+    _zone_gate_deferred_to_tasks as _zone_gate_deferred_to_tasks,
+)
+from src.api.query.deadline import (  # noqa: F401
+    _answer_prefix_text as _answer_prefix_text,
+    _bind_deadline as _bind_deadline,
+    _finish_timeline as _finish_timeline,
+    _processing_limit as _processing_limit,
+    _request_deadline as _request_deadline,
+    _sec_or as _sec_or,
+    _stream_watch as _stream_watch,
+    _unbind_deadline as _unbind_deadline,
+)
+from src.api.query.upload import (  # noqa: F401
+    _get_file_extension as _get_file_extension,
+    _resolve_uploaded_bytes as _resolve_uploaded_bytes,
+)
+
 _FORM_FILL_DEFAULT_LIMIT = _ALL_QUERY_LIMIT
 # 존 선택 재개 턴 기본 LIMIT (D-153 후속1) — 존 역질문은 존 단위 전량 조회에서만
 # 발동하므로 재개 턴은 전량 상향이 기본(명시 건수는 resolve_query_limit이 우선 반영).
@@ -102,39 +247,6 @@ router = APIRouter()
 #: 그래프 실행 예외의 사용자 문구(plans/163 S3) — 원문은 `user_error_detail`이 서버 로그에 남기고
 #: 응답에는 이 문구 + 「(요청 {번호})」만 싣는다.
 _GRAPH_ERROR_MESSAGE = "처리 중 오류가 발생했습니다"
-
-# 비동기 결과 저장소
-_MAX_RESULTS_STORE_SIZE = 1000
-_results_store: OrderedDict[str, dict] = OrderedDict()
-
-
-async def _next_event_or_timeout(event_iter, timeout: float) -> tuple[object, bool]:
-    """SSE 이벤트 fetch를 대기하되, 타임아웃 **검출**과 내부 **취소 완료**를 분리한다(D-198).
-
-    종전의 ``asyncio.wait_for``는 타임아웃 발화 후 내부 태스크의 취소가 **완료될
-    때까지** 기다린다 — LLM 호출이 취소에 반응하지 않으면(FabriX 미귀환,
-    2026-09-07 task_dump 실측: event_generator가 wait_for에 8분+ 고정) TimeoutError가
-    영영 raise되지 않아 가드 자체가 무력화된다. ``asyncio.wait``는 타임아웃 시
-    태스크를 건드리지 않고 반환하므로, 취소는 걸어두되 완료는 기다리지 않는다.
-    잔여(유령) 태스크의 수명은 FabriX 클라이언트 총상한(D-198 F1)이 보장한다.
-
-    Returns:
-        (event, False) 정상 수신 / (None, True) 타임아웃.
-
-    Raises:
-        StopAsyncIteration: 이터레이터 소진 (호출부 break 용 — 종전과 동일).
-    """
-    fetch = asyncio.ensure_future(event_iter.__anext__())
-    done, _pending = await asyncio.wait({fetch}, timeout=timeout)
-    if not done:
-        fetch.cancel()
-        logger.warning(
-            "SSE 이벤트 대기 %.0fs 초과 — 내부 실행에 취소만 걸고 응답을 종료한다 "
-            "(취소 완료 대기 없음, 잔여 태스크는 FabriX 총상한에서 정리 — D-198)",
-            timeout,
-        )
-        return None, True
-    return fetch.result(), False
 
 
 async def _audit_user_request(
@@ -170,1114 +282,6 @@ async def _audit_user_request(
         )
     except Exception as e:
         logger.warning("사용자 질의 감사 기록 실패: %s", e)
-
-
-def _store_result(query_id: str, data: dict, *, owner: str | None) -> None:
-    """결과를 저장하고, 최대 크기를 초과하면 오래된 항목을 제거한다.
-
-    ``owner``는 질의한 사용자의 ``sub``다 — 결과·파일 조회 라우트가 소유자 확인에 쓴다
-    (`_owned_result`). 키워드 필수로 둬 저장 지점이 소유자를 빠뜨리지 못하게 한다.
-    """
-    _results_store[query_id] = {**data, "owner_sub": owner}
-    while len(_results_store) > _MAX_RESULTS_STORE_SIZE:
-        _results_store.popitem(last=False)
-
-
-def _owned_result(
-    request: Request,
-    query_id: str,
-    current_user: dict[str, Any],
-    *,
-    not_found: str = "결과를 찾을 수 없습니다.",
-    allow_admin: bool = True,
-    denied: str = "이 결과는 질의한 사용자만 받을 수 있습니다.",
-) -> dict[str, Any]:
-    """저장된 결과를 돌려주되, 요청자가 질의한 사람(또는 관리자)이 아니면 403.
-
-    - 없는 query_id는 404(종전 문구 유지).
-    - 인증 비활성(`AUTH_ENABLED=false`)은 종전 동작 그대로 통과한다 — 전원이 `anonymous`
-      한 명이라 소유자를 가를 수 없다.
-    - 관리자(`role == admin`, DB 실시간 값)는 통과한다(D-069 통합 RBAC). 단 ``allow_admin=False``
-      (첨부 원본)는 관리자도 소유자여야 한다 — DRM 해제된 평문 원본이라 관리자 복호화
-      다운로드(D-156 후속1 「승인 전 범위 밖」)와 같은 효과가 되기 때문이다.
-    - 소유자가 없는 결과는 일반 사용자에게 내주지 않는다(fail-closed).
-    """
-    stored = _results_store.get(query_id)
-    if stored is None:
-        raise HTTPException(status_code=404, detail=not_found)
-    if not request.app.state.config.auth.enabled:
-        return stored
-    if allow_admin and is_admin(current_user):
-        return stored
-    owner = stored.get("owner_sub")
-    if not owner or owner != current_user.get("sub"):
-        logger.warning(
-            "질의 결과 접근 거부: query_id=%s 요청자=%s (소유자 아님)",
-            query_id[:8], current_user.get("sub"),
-        )
-        raise HTTPException(status_code=403, detail=denied)
-    return stored
-
-
-def _attachment_disposition(file_name: str) -> str:
-    """다운로드 `Content-Disposition` 값을 만든다(RFC 6266 · RFC 5987).
-
-    헤더는 latin-1로만 나가므로 한글 파일명을 그대로 넣으면 응답 생성이 500으로 끝난다.
-    원래 이름은 `filename*=UTF-8''<퍼센트 인코딩>`으로 싣고, `filename=`에는 인쇄 가능한
-    ASCII만 남긴 대체 이름을 둔다(따옴표·역슬래시·제어 문자도 `_`). 대체할 것이 없는 ASCII
-    이름은 종전 헤더 그대로다.
-    """
-    fallback = "".join(
-        c if " " <= c <= "~" and c not in '"\\' else "_" for c in file_name
-    )
-    if fallback == file_name:
-        return f'attachment; filename="{file_name}"'
-    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(file_name, safe='')}"
-
-
-async def _audit_file_download(
-    request: Request,
-    current_user: dict[str, Any],
-    *,
-    file_name: str,
-    file_type: str,
-    file_size: int,
-) -> None:
-    """파일 다운로드를 감사에 기록한다(`AuditService.log_file_download`).
-
-    감사 실패는 다운로드를 막지 않는다 — 다만 삼키지 않고 경고로 남긴다
-    (`_audit_user_request`와 같다).
-    """
-    audit_service = getattr(request.app.state, "audit_service", None)
-    if not audit_service:
-        return
-    try:
-        await audit_service.log_file_download(
-            user_id=current_user.get("sub") if current_user else None,
-            file_name=file_name,
-            file_type=file_type,
-            file_size=file_size,
-            client_ip=getattr(request.state, "client_ip", None)
-            or (request.client.host if request.client else None),
-            request_id=getattr(request.state, "request_id", None),
-        )
-    except Exception as e:
-        logger.warning("파일 다운로드 감사 기록 실패: %s", e)
-
-
-def _sse_event(data: dict) -> str:
-    """SSE 이벤트 문자열을 생성한다."""
-    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
-# 처리 현황 표시 대상 노드(SSE node_start/node_complete 화이트리스트 · D-039).
-# D-204(plans/89 T1): 사다리 1단 `deep_agent`(부가 경로 · D-225 ②)와 옵트인 노드가 빠져 있어
-# 그 경로에서 field_mapper 이후 최종 토큰까지 이벤트가 0건이던 것을 정정한다.
-_STREAM_KNOWN_NODES: frozenset[str] = frozenset({
-    "context_resolver", "input_parser",
-    "semantic_router", "schema_analyzer",
-    "field_mapper",
-    "query_generator", "query_validator",
-    "approval_gate", "query_executor",
-    "result_organizer", "output_generator",
-    "multi_db_executor", "result_merger",
-    "synonym_registrar", "general_inference", "error_response",
-    # Plan 48/49: 다중 의도 오케스트레이션 노드 (처리 현황 표시)
-    "intent_planner", "agent_orchestrator",
-    "replanner", "result_aggregator",
-    # plans/89 · D-204: 사다리 1단(부가 경로) + 옵트인 노드
-    "deep_agent", "fault_diagnosis", "cache_management",
-    # plans/103 P2 · plans/111 C-4·C-5: 3단 계획 루프(`TIER3_PLAN_LOOP_ENABLED`)
-    "plan", "normalize", "dispatch", "task_run", "join", "replan", "finalize",
-    # plans/163 D5: 그래프가 등록하는데 빠져 있던 3·4단 옵트인 노드 — 식별자 소재 프로브
-    # (`cross_system_probe_enabled`) · 순차 2-pass(`composite.sequential_fallback_tiers_enabled`)
-    "entity_locator", "sequential_runner",
-})
-
-
-def _is_subgraph_event(event: Any) -> bool:
-    """서브그래프 **안**에서 난 이벤트인가 (plans/103 K-3).
-
-    ``astream_events(v2)``의 ``parent_ids``는 루트 실행 0개 · 루트 직속 노드 1개이고, 노드 안에서
-    도는 그래프(3단 `task_run` 서브그래프 · 1단 deep_agent 내부 그래프)의 이벤트는 2개 이상이다
-    (2026-09-22 langgraph 1.2.11 토이 그래프 실측). 종료 판정은 루트 직속까지만 본다 — 서브그래프
-    노드가 ``final_response``를 내도 스트림이 부분 답으로 닫히지 않게 한다. 키가 없으면(테스트 대역)
-    루트로 본다(종전 동작).
-    """
-    return len(event.get("parent_ids") or ()) > 1
-
-
-_PRODUCER_CANCEL_GRACE_SEC = 1.0   # 생산자 취소 완료를 기다리는 상한(D-198 F2 정합)
-
-
-async def _graph_event_stream(
-    graph,
-    input_state: dict,
-    thread_config: dict,
-    *,
-    idle_timeout: float | None,
-    heartbeat_interval: float,
-    wake_at: Callable[[], float | None] | None = None,
-) -> AsyncGenerator[tuple[str, object], None]:
-    """astream_events를 생산자 태스크로 돌리고 (kind, payload)를 낸다 (plans/89 §3.2-④ · D-204).
-
-    kind: ``"event"``(LangGraph 이벤트) · ``"heartbeat"``(``{"idle_ms"}``) · ``"tick"``(상한 판정
-    시각 — 페이로드 없음) · ``"timeout"``.
-
-    - 무이벤트 연속 시간이 ``idle_timeout``을 넘으면 ``timeout``을 내고 끝낸다 — D-066 후속의
-      "이벤트 fetch당 타임아웃"(무한 hang 방지 안전 상한)이다. None·0 이하면 없음. 라우트는 전체
-      상한(처리 상한 + 전달 연장)을 넘긴다 — 상한 판정 자체는 라우트가 한다(plans/119 T-5).
-    - ``wake_at``은 다음 상한 판정 시각(``time.monotonic()``)을 돌려준다. 그 시각까지
-      이벤트가 없으면 ``tick``을 내서 라우트가 판정하게 한다 — heartbeat가 꺼져 있어도(0)
-      판정이 이벤트 도착에 묶이지 않는다(종전에는 heartbeat off면 이벤트가 올 때만 전체
-      상한을 쟀다).
-    - ``heartbeat_interval``(초) 동안 이벤트가 없으면 ``heartbeat``를 낸다. 0 이하면 하트비트 없음.
-      heartbeat는 상한 시계를 되돌리지 않는다.
-    - **``wait_for(__anext__)``를 재호출하지 않는다** — 취소된 ``__anext__``는 비동기 제너레이터를
-      깨뜨린다. 대신 큐를 기다린다(``Queue.get`` 취소는 안전).
-    - 생산자 예외는 소비자에게 재전달한다(기존 ``except (AttributeError, …)`` 폴백 경로 유지).
-    - 소비자가 어떤 경로로 끝나든 ``finally``에서 생산자를 취소한다(클라이언트 단절 포함).
-    """
-    queue: asyncio.Queue = asyncio.Queue()
-
-    async def _produce() -> None:
-        try:
-            async for ev in graph.astream_events(input_state, thread_config, version="v2"):
-                await queue.put(("event", ev))
-        except asyncio.CancelledError:
-            raise
-        except BaseException as exc:  # noqa: BLE001 — 소비자 측 폴백 판정에 그대로 넘긴다
-            await queue.put(("error", exc))
-        finally:
-            await queue.put(("done", None))
-
-    producer = asyncio.create_task(_produce())
-    idle_cap = idle_timeout if idle_timeout and idle_timeout > 0 else None
-    beat = heartbeat_interval if heartbeat_interval and heartbeat_interval > 0 else None
-    last_activity = time.monotonic()
-    last_signal = last_activity   # 마지막 이벤트 또는 heartbeat
-    try:
-        while True:
-            marks: list[float] = []
-            if idle_cap is not None:
-                marks.append(last_activity + idle_cap)
-            if beat is not None:
-                marks.append(last_signal + beat)
-            check_at = wake_at() if wake_at is not None else None
-            if check_at is not None:
-                marks.append(check_at)
-            wait = max(0.0, min(marks) - time.monotonic()) if marks else None
-            try:
-                kind, payload = await asyncio.wait_for(queue.get(), timeout=wait)
-            except asyncio.TimeoutError:
-                now = time.monotonic()
-                idle = now - last_activity
-                if idle_cap is not None and idle >= idle_cap:
-                    yield ("timeout", None)
-                    return
-                if beat is not None and now - last_signal >= beat:
-                    last_signal = now
-                    yield ("heartbeat", {"idle_ms": idle * 1000})
-                else:
-                    yield ("tick", None)
-                continue
-            if kind == "done":
-                return
-            if kind == "error":
-                raise payload  # type: ignore[misc]
-            last_activity = last_signal = time.monotonic()
-            yield ("event", payload)
-    finally:
-        if not producer.done():
-            # D-198 F2(검출·취소 분리): 취소는 걸되 완료를 무한정 기다리지 않는다 — 취소에
-            # 반응하지 않는 LLM 호출(FabriX 미귀환 실측)이 있으면 종전 wait_for처럼 여기서
-            # 갇힌다. 유한 대기 뒤 남는 유령 태스크의 수명은 FabriX 총상한(F1)이 보장한다.
-            producer.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await asyncio.wait({producer}, timeout=_PRODUCER_CANCEL_GRACE_SEC)
-
-
-def _heartbeat_sse_payload(start_time: float, hb: dict) -> dict:
-    """heartbeat SSE 페이로드 — 경과와 마지막 활동 시점(ms)."""
-    elapsed_ms = (time.time() - start_time) * 1000
-    idle_ms = float(hb.get("idle_ms", 0.0))
-    return {
-        "type": SSE_HEARTBEAT,
-        "elapsed_ms": elapsed_ms,
-        "last_activity_ms": max(0.0, elapsed_ms - idle_ms),
-    }
-
-
-def _stream_error_payload(
-    message: str,
-    trace: StreamTrace,
-    *,
-    code: str,
-    start_time: float,
-    limit_sec: float | None,
-    timeline: dict[str, Any] | None = None,
-) -> dict:
-    """SSE ``error`` 이벤트 — 문구(``message``)는 그대로 두고 실패 경위를 덧붙인다 (D-242).
-
-    경위(어느 단계에서·얼마나 걸려·앞서 무슨 실패가 있었는지)는 화면이 그대로 보여 주고,
-    다시 시도할지는 사용자가 정한다. 문구를 바꾸지 않는 이유: 하네스가 문구로 실패 유형을 가른다.
-    ``timeline``은 단계 경계 시각이다(plans/119 T-0 — 있을 때만 싣는다).
-    """
-    payload = {
-        "type": SSE_ERROR,
-        "message": message,
-        **trace.failure_fields(
-            code=code, elapsed_ms=(time.time() - start_time) * 1000, limit_sec=limit_sec
-        ),
-    }
-    if timeline is not None:
-        payload["timeline"] = timeline
-    return payload
-
-
-def _progress_sse_payload(event: dict, current_node: str | None, start_time: float) -> dict | None:
-    """도구·커스텀 이벤트를 SSE ``progress``로 변환한다 (plans/89 §3.1 · D-204).
-
-    - ``on_tool_start``/``on_tool_end`` → ``kind:"tool"``(``name``=도구명, 시작 시 ``sub_query``를 label로)
-    - ``on_custom_event`` name ``"task"`` → ``kind:"task"`` + ``task`` 페이로드(plans/88 verdict 필드명 동일)
-    - ``on_custom_event`` name ``"group"`` → ``kind:"group"`` + ``group`` 페이로드 — 존 그룹 시작·완료와
-      peer 그룹의 **마스킹된** 행 미리보기(plans/82 v7 R-2 · D-249 — D-204 "라벨만" 원칙의 명시 예외)
-    - 그 외 ``on_custom_event`` → ``kind:"step"``
-    라벨은 클라이언트가 붙인다 — 서버는 원시 이름만 낸다.
-    """
-    kind = event.get("event", "")
-    name = event.get("name", "") or ""
-    if kind not in ("on_tool_start", "on_tool_end", "on_custom_event"):
-        return None
-    base = {
-        "type": SSE_PROGRESS,
-        "name": name,
-        "node": current_node or "",
-        "timestamp_ms": (time.time() - start_time) * 1000,
-    }
-    if kind in ("on_tool_start", "on_tool_end"):
-        base["kind"] = "tool"
-        base["phase"] = "start" if kind == "on_tool_start" else "end"
-        if kind == "on_tool_start":
-            inp = (event.get("data") or {}).get("input")
-            if isinstance(inp, dict) and isinstance(inp.get("sub_query"), str):
-                base["label"] = inp["sub_query"][:200]
-        return base
-    data = event.get("data")
-    if not isinstance(data, dict):
-        data = {}
-    base["phase"] = data.get("phase") or "start"
-    if name == "task":
-        base["kind"] = "task"
-        base["task"] = data
-    elif name == "group":
-        base["kind"] = "group"
-        base["group"] = data.get("group") if isinstance(data.get("group"), dict) else {}
-    else:
-        base["kind"] = "step"
-        if data.get("label"):
-            base["label"] = str(data["label"])[:200]
-        if data.get("detail"):  # 단계 실패 사유(D-242) — 있을 때만 싣는다
-            # 예외 원문(「SQL 실행 에러: {e}」 등)은 SSE 본문에 싣지 않는다 — 고정 사유만 보이고
-            # 나머지는 고정 문구로 바꾼다(plans/163 S3+). 원문은 여기서 로그로 남긴다.
-            shown = user_error_text(data["detail"])
-            if shown != data["detail"]:
-                logger.warning(
-                    "진행 단계 실패 사유 (요청 %s · %s): %r",
-                    current_request_id(), name, data["detail"],
-                )
-            base["detail"] = shown[:300]
-    return base
-
-
-def _token_text(chunk: object) -> str:
-    """스트리밍 청크의 content를 텍스트로 정규화한다.
-
-    Gemini 3.x thinking 계열은 content를 블록 리스트로 반환하는데, 이를 그대로
-    SSE에 실으면 프론트가 배열을 문자열에 더해(`accumulatedText += event.content`)
-    `[object Object]`가 되어 마크다운 표가 렌더되지 않는다.
-    """
-    return coerce_content_text(getattr(chunk, "content", ""))
-
-
-async def _get_checkpoint_state(graph, thread_config: dict) -> dict | None:
-    """체크포인트에서 이전 State를 조회한다.
-
-    Args:
-        graph: 컴파일된 LangGraph 그래프
-        thread_config: thread_id가 포함된 설정
-
-    Returns:
-        이전 State 딕셔너리 또는 None (체크포인트 없음)
-    """
-    try:
-        state_snapshot = await asyncio.to_thread(
-            graph.get_state, thread_config
-        )
-        if state_snapshot and state_snapshot.values:
-            return state_snapshot.values
-    except Exception as e:
-        logger.debug("체크포인트 조회 실패 (첫 턴으로 진행): %s", e)
-    return None
-
-
-# 승인·거부 표현. 이 표현 하나만으로 이루어진 입력일 때만 의도가 확정된다.
-_APPROVE_WORDS = ("실행", "approve", "승인", "확인", "네", "yes", "ㅇㅇ", "ok")
-_REJECT_WORDS = ("취소", "reject", "거부", "아니", "no", "cancel")
-
-# 승인·거부 표현 뒤에 붙어도 의미가 바뀌지 않는 어미·문장부호만 허용한다.
-# 이 꼬리에 해당하지 않는 말이 이어지면("확인해보고 알려줘") 의도 불명으로 본다.
-_INTENT_TAIL = (
-    r"(?:\s*(?:해|하)?\s*"
-    r"(?:줘|주세요|주십시오|세요|요|합니다|하겠습니다|할게요|할게|please)?)?"
-    r"[\s.!?~,]*$"
-)
-
-
-def _matches_intent(text: str, words: tuple[str, ...]) -> bool:
-    """입력이 승인·거부 표현 하나로만 이루어졌는지 판정한다(어미·문장부호는 허용)."""
-    return any(re.match(re.escape(w) + _INTENT_TAIL, text) for w in words)
-
-
-# LLM 승인 판정을 인정하기 위해 원문에 최소 1개 있어야 하는 **결정적 보강 신호**(R3-(ii)).
-# LLM의 approve 하나만으로는 실행하지 않는다 — 승인 어휘가 전무한 입력(예: "결과를 엑셀로
-# 정리해줘")은 LLM이 approve를 환각해도 실행되지 않는다. 승인 의사 표현의 변형("네 실행해주세요
-# 감사합니다"·"그대로 진행해줘")은 이 신호를 갖고 있어 회복 대상은 그대로 남는다.
-# "해줘"류 범용 어미는 넣지 않는다(비승인 지시문까지 보강 통과시킴).
-_APPROVAL_CORROBORATION_TOKENS: tuple[str, ...] = (
-    "실행", "진행", "승인", "허가", "확인", "네", "예", "좋아", "맞아", "그대로", "ㅇㅇ",
-    "approve", "yes", "ok", "go",
-)
-
-
-def _has_approval_token(query: str) -> bool:
-    """원문에 승인 어휘가 하나라도 있는지 판정한다(LLM 승인 판정의 결정적 보강 조건)."""
-    text = (query or "").lower()
-    return any(token in text for token in _APPROVAL_CORROBORATION_TOKENS)
-
-
-def _deterministic_approval(query: str) -> tuple[str, str] | None:
-    """승인 의도를 결정적으로 확정한다(확정 불가면 None).
-
-    **fail-closed**: 명확한 승인 표현이 아니면 승인하지 않는다. 과거에는 기본값이
-    "approve"이고 승인어를 prefix로 매칭해, "확인해보고 알려줘" 같은 입력이 승인으로
-    오탐되어 사용자가 승인하지 않은 SQL이 실행됐다(D-130).
-    """
-    q = query.strip().lower()
-
-    if _matches_intent(q, _APPROVE_WORDS):
-        return ("approve", "")
-
-    if _matches_intent(q, _REJECT_WORDS):
-        return ("reject", "")
-
-    # SQL이 포함된 경우 modify로 판단
-    if re.search(r"\bSELECT\b", query, re.IGNORECASE):
-        return ("modify", query.strip())
-
-    return None
-
-
-def _parse_approval(query: str) -> tuple[str, str]:
-    """사용자 입력에서 승인 의도를 파싱한다(결정적 판정 전용 — fail-closed).
-
-    Args:
-        query: 사용자 입력
-
-    Returns:
-        (action, modified_sql) 튜플
-        - action: "approve" | "reject" | "modify"
-        - modified_sql: modify 시 수정된 SQL
-    """
-    resolved = _deterministic_approval(query)
-    if resolved is not None:
-        return resolved
-
-    # 의도 불명 — 실행하지 않는다(미승인 SQL 실행 방지)
-    logger.warning("승인 의도를 확정하지 못해 실행을 취소한다: %r", query.strip()[:80])
-    return ("reject", "")
-
-
-def _log_approval_decision(
-    action: str, query: str, *, basis: str, confidence: float | None = None, note: str = ""
-) -> None:
-    """승인 판정 근거를 감사 가능한 단일 라인으로 남긴다(결정적/LLM·확신도·보강 신호).
-
-    승인은 사용자가 보지 못한 SQL을 실행시키는 게이트라, 어떤 근거로 통과·차단됐는지 사후에
-    추적할 수 있어야 한다(D-011·D-130). approve만 INFO, 나머지는 WARNING으로 남긴다.
-    """
-    conf = "-" if confidence is None else f"{confidence:.2f}"
-    line = "[승인판정] action=%s basis=%s confidence=%s%s query=%r"
-    args = (action, basis, conf, f" note={note}" if note else "", query.strip()[:80])
-    if action == "approve":
-        logger.info(line, *args)
-    else:
-        logger.warning(line, *args)
-
-
-async def resolve_approval_action(query: str, config) -> tuple[str, str]:
-    """승인 의도를 결정적 판정 1순위 + (옵트인) LLM 보조로 해소한다 (Plan 67 R3-(ii) / A12).
-
-    결정적 판정이 확정한 입력은 LLM을 거치지 않는다(동작 불변). 확정 불가일 때만 LLM 분류를
-    시도하며, **fail-closed는 불변**이다(D-130). LLM 승인은 두 조건을 **모두** 만족해야 인정한다:
-    ①확신도 ≥ `APPROVAL_MIN_CONFIDENCE`(코드 상수) ②원문에 결정적 승인 어휘 존재
-    (`_has_approval_token`) — LLM 판정 하나만으로는 실행하지 않는다.
-    `QUERY_INTENT_LLM_ASSIST`가 꺼져 있거나 LLM 호출이 실패하면 종전 결정적 판정 결과(거부)를
-    그대로 쓴다. 모든 경로가 판정 근거를 로그로 남긴다.
-
-    Args:
-        query: 사용자 입력
-        config: 앱 설정(`request.app.state.config`)
-
-    Returns:
-        (action, modified_sql) 튜플
-    """
-    resolved = _deterministic_approval(query)
-    if resolved is not None:
-        _log_approval_decision(resolved[0], query, basis="deterministic")
-        return resolved
-
-    if not getattr(getattr(config, "query", None), "intent_llm_assist", False):
-        _log_approval_decision(
-            "reject", query, basis="deterministic", note="의도불명·LLM보조_OFF"
-        )
-        return ("reject", "")
-
-    classified: tuple[str, float] | None = None
-    try:
-        from src.llm import create_llm
-        from src.routing.intent_confirm import classify_approval_intent
-
-        classified = await classify_approval_intent(create_llm(config), query)
-    except Exception as e:
-        logger.warning("승인 의사 LLM 분류 실패 — 거부 유지(fail-closed): %s", e)
-
-    if classified is None:
-        _log_approval_decision("reject", query, basis="llm", note="판정불가")
-        return ("reject", "")
-
-    intent, confidence = classified
-    if intent == "approve":
-        # LLM 단독 승인 금지 — 결정적 보강 신호가 없으면 실행하지 않는다.
-        if not _has_approval_token(query):
-            _log_approval_decision(
-                "reject", query, basis="llm", confidence=confidence,
-                note="승인어휘_부재(LLM_단독_승인_불허)",
-            )
-            return ("reject", "")
-        _log_approval_decision(
-            "approve", query, basis="llm", confidence=confidence, note="승인어휘_확인"
-        )
-        return ("approve", "")
-
-    if intent == "modify":
-        _log_approval_decision("modify", query, basis="llm", confidence=confidence)
-        return ("modify", query.strip())
-
-    _log_approval_decision("reject", query, basis="llm", confidence=confidence)
-    return ("reject", "")
-
-
-def _is_legacy_structure_hitl_thread(checkpoint_state: dict[str, Any] | None) -> bool:
-    """구조 분석 승인 대기로 멈춘 **구 스레드**인지 판정한다 (plans/104 · D-135 ①).
-
-    질의 경로의 구조 승인 게이트는 plans/104(D-227)에서 노드째 삭제됐다. 그 게이트 앞에서 멈춘
-    체크포인트(`awaiting_approval` + `approval_context.type == "structure_analysis"`)는 재개할
-    노드가 없으므로 승인 턴으로 보지 않는다 — 다음 턴은 일반 질의로 처리하고 승인 상태를 해제한다.
-    해제하지 않으면 체크포인터가 델타만 병합해 `awaiting_approval`이 매 턴 남는다(실측).
-    """
-    if not checkpoint_state or not checkpoint_state.get("awaiting_approval"):
-        return False
-    ctx = checkpoint_state.get("approval_context") or {}
-    return isinstance(ctx, dict) and ctx.get("type") == "structure_analysis"
-
-
-def _release_legacy_structure_hitl(
-    delta: dict[str, Any], checkpoint_state: dict[str, Any] | None
-) -> dict[str, Any]:
-    """구 구조 승인 대기 스레드면 이번 턴 델타에 승인 상태 해제를 싣는다(아니면 그대로)."""
-    if _is_legacy_structure_hitl_thread(checkpoint_state):
-        logger.info("구조 승인 대기 구 스레드 — 일반 질의 턴으로 처리하고 승인 상태 해제")
-        delta["awaiting_approval"] = False
-        delta["approval_context"] = None
-        delta["approval_action"] = None
-    return delta
-
-
-def _with_current_identity(
-    delta: dict[str, Any], current_user: dict[str, Any]
-) -> dict[str, Any]:
-    """후속·승인 턴 델타에 **이번 요청 토큰의 인가 정보**를 다시 싣는다(plans/104 C-2).
-
-    체크포인터는 델타만 병합하므로, 재주입이 없으면 스레드 첫 턴의 `user_role`·
-    `allowed_db_ids`가 그대로 승계된다 — 관리자에서 강등된 사용자가 기존 스레드에서는
-    계속 관리자 전용 동작(채팅 캐시 생성·무효화 — plans/104 S2)을 할 수 있었다.
-    권한은 매 요청 DB에서 최신값을 읽으므로(D-069 `require_admin_user`·`require_user`)
-    그 값을 턴마다 덮어쓰면 강등·권한 변경이 즉시 반영된다.
-    """
-    delta["user_role"] = current_user.get("role")
-    delta["allowed_db_ids"] = current_user.get("allowed_db_ids")
-    delta["allowed_sources"] = current_user.get("allowed_sources")  # plans/125 A-7
-    return delta
-
-
-async def _resolve_turn_approval(
-    body: QueryRequest, checkpoint_state: dict | None, config
-) -> tuple[str, str] | None:
-    """승인 대기 턴이면 승인 의사를 해소해 반환한다(그 외 턴은 None).
-
-    두 텍스트 라우트가 공유한다 — 한쪽만 LLM 보조를 받는 비대칭을 만들지 않는다(D-066).
-    구조 승인 대기 구 스레드는 승인 턴이 아니다(plans/104 — `_is_legacy_structure_hitl_thread`).
-    """
-    if not checkpoint_state or not checkpoint_state.get("awaiting_approval"):
-        return None
-    if _is_legacy_structure_hitl_thread(checkpoint_state):
-        return None
-    return await resolve_approval_action(body.query, config)
-
-
-def _count_human_messages(messages: list) -> int:
-    """메시지 목록에서 HumanMessage 수를 반환한다."""
-    return len([m for m in messages if isinstance(m, HumanMessage)])
-
-
-def _summarize_tasks(tasks: list[dict], results: dict | None = None) -> list[dict]:
-    """task_plan을 처리 현황 표시용 경량 항목으로 요약한다 (order 정렬, 표시 필드만).
-
-    results(task_results)가 주어지면 task별 생성 SQL·대상 DB·행수·DB 에러를 함께
-    포함한다. orchestration 경로에서는 query_generator가 그래프 노드가 아니어서
-    생성 SQL이 따로 노출되지 않으므로, 어떤 SQL이 어느 DB로 실행됐는지 보이게 한다.
-    """
-    ordered = sorted(tasks, key=lambda t: t.get("order", 0))
-    summarized: list[dict] = []
-    for i, t in enumerate(ordered):
-        item: dict = {
-            "order": t.get("order", i + 1),
-            "agent": t.get("agent", ""),
-            "sub_query": t.get("sub_query", ""),
-            "status": t.get("status", "pending"),
-        }
-        res = results.get(t.get("task_id")) if isinstance(results, dict) else None
-        if isinstance(res, dict):
-            # 실행 경로 표식(Plan 71): realtime_api면 처리 현황 라벨을 "실시간 API 조회"로
-            # 표시한다 — data_query 고정 라벨("DB 조회")이 실제 경로와 다르게 보이는 문제.
-            if res.get("source"):
-                item["source"] = res.get("source")
-            sql = res.get("generated_sql")
-            if sql:
-                item["generated_sql"] = sql
-            # 존 순차 실행 경과(D-206) — 그룹별 행수·소요를 처리현황에 그대로 노출
-            if res.get("group_results"):
-                item["group_results"] = res.get("group_results")
-            db_ids = res.get("target_db_ids")
-            if db_ids:
-                item["target_db_ids"] = db_ids
-            rows = res.get("query_results")
-            if isinstance(rows, list):
-                item["row_count"] = len(rows)
-            # 실패 사유는 화면(파이프라인 상세)에 고정 사유만 보인다 — 예외 원문은 고정 문구로
-            # 바꾼다(plans/163 S3+). 원문은 task 진행 이벤트(`emit_task_progress`)가 로그로 남긴다.
-            # DB별 사유는 예외 보간부만 떼고 산출 발췌(D-153 후속2)·마감 문구는 남긴다
-            # (원문은 실행기 로그).
-            db_errors = res.get("db_errors")
-            if db_errors:
-                item["db_errors"] = (
-                    {k: db_error_text(v) for k, v in db_errors.items()}
-                    if isinstance(db_errors, dict) else db_error_text(db_errors)
-                )
-            elif res.get("error"):
-                item["error"] = user_error_text(res.get("error"), result=res)
-            # 제니퍼 소스 되묻기(plans/147)는 오류가 아니다 — `error`는 재계획 종결 판정용으로
-            # 남기고 처리 현황은 이 표지로 「확인 필요」를 보인다(미연결 안내는 표지 없음 —
-            # 종전 표시)
-            if res.get("apm_source_clarification"):
-                item["clarification"] = True
-        summarized.append(item)
-    return summarized
-
-
-_SQL_STATE_KEYS = ("generated_sql", "task_plan", "task_results", "db_executed_sqls")
-
-
-def _track_sql_state(tracked: dict, output: Any) -> None:
-    """루트 직속 노드 출력에서 실행 SQL 출처 키를 누적한다 (plans/116 §10.3).
-
-    스트림은 `final_response`를 낸 첫 노드 출력(2단 result_aggregator · 3단 output_generator)에서
-    닫히는데 그 출력에는 SQL이 없다. 앞 노드들이 낸 값을 모아 두었다가 `_executed_sql`로 조립한다.
-    빈 값은 덮어쓰지 않는다.
-    """
-    if not isinstance(output, dict):
-        return
-    for key in _SQL_STATE_KEYS:
-        if output.get(key):
-            tracked[key] = output[key]
-
-
-def _merge_node_delta(state: dict[str, Any], output: Any) -> None:
-    """루트 직속 노드 델타를 스트림의 누적 상태에 덮어쓴다 (plans/120 S-1 · D-205 4경로 대칭).
-
-    스트림은 `final_response`를 낸 첫 노드에서 닫혀 그 노드의 델타만 손에 쥔다. 비스트림 `ainvoke`는
-    체크포인트 복원값 + 입력 + 전 노드 델타가 병합된 전체 상태를 돌려준다. 3단 `output_generator`
-    델타에는 대상 DB 키가 없어 스트림 `done.db_scope`만 비었다. 리듀서 채널(messages 등)은
-    덮어쓰기로 근사되므로 이 누적본은 `build_db_scope` 입력으로만 쓴다.
-    """
-    if isinstance(output, dict):
-        state.update(output)
-
-
-def _dependency_notes_field(state: dict[str, Any]) -> dict[str, Any]:
-    """순차 처리 경과 노트를 스트림 응답에 싣는 필드 — 노트가 없으면 키를 싣지 않는다(바이트 불변).
-
-    비스트림 두 경로와 스트림 폴백(`ainvoke`)의 응답 조립에만 있던 키를 스트림 `done`과 astream
-    `response_data`에도 싣는다(plans/121 TP-11.8 · 4경로 대칭 D-205·D-066) — 측정 정본인 스트림
-    하네스가 게이트·브리지 경과를 구조로 받는다. astream 입력은 종료 노드 델타가 아니라 누적 상태다.
-    """
-    notes = state.get("dependency_notes")
-    return {"dependency_notes": notes} if notes else {}
-
-
-def _disclosures_field(state: dict[str, Any]) -> dict[str, Any]:
-    """결정적 고지의 구조화본(plans/123 W-8) — 네 진입점 응답·`done`에 같은 모양으로 싣는다.
-
-    고지가 없으면 키를 싣지 않는다(바이트 불변). astream 입력은 누적 상태(`_scope_state`)다.
-    """
-    items = state.get("disclosures")
-    return {"disclosures": items} if items else {}
-
-
-def _apm_source_fields(state: Mapping[str, Any]) -> dict[str, Any]:
-    """제니퍼 소스 되묻기·승계(plans/147) — 네 응답 지점(JSON · 스트림 응답·done · 폴백 응답·done)에
-    같은 모양으로 싣는다. 값이 없으면 키를 싣지 않는다(소스 <2 배포 스트림 바이트 불변).
-
-    스트림 입력은 누적 상태(`_scope_state`)다 — 승계 값은 체크포인트에서, 되묻기는 집계기 델타에서
-    온다. 승계 값의 `last_targets`(plans/157 W3 — 인스턴스 이름)는 다음 턴 처리기만 읽는 내부
-    승계 재료라 빼고 싣는다(체크포인트 값은 그대로).
-    """
-    out: dict[str, Any] = {}
-    for key in ("apm_source_clarification", "apm_source_scope"):
-        value = state.get(key)
-        if value and key == "apm_source_scope" and isinstance(value, dict):
-            value = {k: v for k, v in value.items() if k != "last_targets"}
-        if value:
-            out[key] = value
-    return out
-
-
-def _time_resolution_field(state: Mapping[str, Any]) -> dict[str, Any]:
-    """요청 시간 해석(plans/122 T-4 · D-309) — 네 진입점 응답·`done`에 같은 모양으로 싣는다.
-
-    값은 state `time_resolution` 그대로(`QueryTime.to_state()` 모양 — 하네스가 실행 SQL과 대조할
-    기준 `[start, end)`). 없으면(플래그 off · 해석 전 종료) 키를 싣지 않는다(바이트 불변).
-    astream 입력은 누적 상태(`_scope_state`)다 — 해석은 `input_parser` 델타에만 있다.
-    """
-    value = state.get("time_resolution")
-    return {"time_resolution": value} if isinstance(value, dict) else {}
-
-
-#: 기간 되묻기 역질문 kind — 존 역질문(`zone_select`)과 같은 채널이되 선택지가 없다(문구만).
-TIME_CLARIFY_KIND = "time_period"
-
-
-def _time_clarification(state: Mapping[str, Any]) -> dict[str, Any] | None:
-    """기간 해석 불가로 끝난 턴의 역질문 페이로드 — 아니면 None (plans/122 T-3·T-4 · D-309).
-
-    `input_parser`는 해석 불가(`time_resolution.clarify`)면 그래프를 끝내고 `final_response`에
-    되묻기 문구를 싣는다. 라우트는 이 턴을 존 역질문과 같은 채널(status="clarification" +
-    `clarification`)로 낸다 — 스트림 `done`에는 status 키가 없어 하네스·화면이 `clarification`
-    키로 역질문을 가린다. 선택지가 없어(`options=[]`) 화면은 체크박스 없이 문구만 보인다.
-    """
-    value = state.get("time_resolution")
-    if not isinstance(value, dict) or not value.get("clarify"):
-        return None
-    return {
-        "kind": TIME_CLARIFY_KIND,
-        "question": str(state.get("final_response") or ""),
-        "options": [],
-        "original_query": str(state.get("user_query") or ""),
-        "reason": str(value["clarify"]),
-    }
-
-
-def _clarify_turn_fields(clarification: Mapping[str, Any] | None) -> dict[str, Any]:
-    """기간 되묻기 턴 응답의 결과 칸 — 조회하지 않은 턴이다(plans/122 T-4 · D5).
-
-    후속 턴 입력(`create_followup_input`)은 지시어 승계용으로 `generated_sql`·`query_results`·
-    `output_file`을 비우지 않는다. 그래프가 `input_parser`에서 끝나면 `ainvoke` 결과에 직전 턴
-    값이 그대로 남아, 되묻기 응답에 직전 턴 SQL·행 수·파일이 실렸다. 되묻기 턴이면 그 칸을
-    비운 값으로 덮는다(응답 조립본 끝에 펼친다). 아니면 빈 dict(종전 그대로).
-    """
-    if not clarification:
-        return {}
-    return {
-        "executed_sql": None, "row_count": 0, "has_file": False, "file_name": None,
-        "has_mapping_report": False,
-    }
-
-
-def _clarify_store_fields(clarification: Mapping[str, Any] | None) -> dict[str, Any]:
-    """기간 되묻기 턴의 결과 저장 칸(D5) — 직전 턴 행·파일을 `/query/{id}/…`로 내주지 않는다."""
-    if not clarification:
-        return {}
-    return {"query_results": [], "output_file": None, "mapping_report_md": None}
-
-
-def _scope_reexpand_field(state: dict[str, Any]) -> dict[str, Any]:
-    """범위 재확장 패널을 스트림 `done`에도 싣는다(plans/123 W-2 ② — 비스트림과 대칭).
-
-    응답 조립본(`response_data`)에 이미 있으면 그것을, 없으면 누적 상태의 좁힌 범위 기록으로
-    만든다. 좁히지 않은 턴은 키를 싣지 않는다(바이트 불변).
-    """
-    panel = state.get("scope_reexpand") or build_scope_reexpand(
-        state.get("scope_narrowed"), state.get("user_query", "")
-    )
-    return {"scope_reexpand": panel} if panel else {}
-
-
-def _nonsql_task_summary(task: dict[str, Any], res: dict[str, Any]) -> dict[str, Any]:
-    """비SQL 처리기 task 의 계획 요약 칸(plans/125 M-4) — 코드·개수만 · 없으면 키를 싣지 않는다.
-
-    보기(`views`) · 삽입한 단계(첫 홉 보기 id · 변환 간선 id) · 연결 장부 패싯별 건수 · 소스
-    상태 코드. SQL 처리기 task 는 이 칸이 없다(바이트 불변).
-    """
-    out: dict[str, Any] = {}
-    if task.get("views"):
-        out["views"] = [str(v) for v in task["views"]]
-    meta = res.get("apm_query") if isinstance(res.get("apm_query"), dict) else None
-    if meta:
-        steps = [s.get("edge") or s.get("view") for s in meta.get("inserted_steps") or []
-                 if isinstance(s, dict)]
-        if steps:
-            out["inserted_steps"] = steps
-        if meta.get("link_summary"):
-            out["link"] = meta["link_summary"]
-    # 시스템 행만 — 제니퍼 소스별 행(plans/147 §4.5 · `source_id` 있음)은 요약 코드에 싣지 않는다
-    statuses = [s for s in res.get("source_status") or []
-                if isinstance(s, dict) and "source_id" not in s]
-    if statuses:
-        out["source_status"] = [f"{s.get('system')}:{s.get('status')}" for s in statuses]
-    return out
-
-
-def _plan_summary_field(state: dict[str, Any]) -> dict[str, Any]:
-    """2단 계획 요약(plans/121 TP-0.1) — 계획이 없는 단(1·3단)은 키를 싣지 않는다(바이트 불변).
-
-    **개수·코드만** 싣는다(값·문장 없음 · D-219 반출): 계획 경로 코드 · task별 담당·상태·간선·
-    조회 DB · 재계획 횟수 · 닫힌 어휘 폴백 건수(TP-1.7) · 경과 노트 종류별 건수 · 키 브리지
-    등급 건수 · 분해 폴백 원인 코드(TP-1.6 — 폴백한 턴만). 상태는 이번 턴 값이다 — 후속 턴 입력이
-    계획 키를 비운다(TP-1.1).
-    """
-    from src.orchestration.intent_planner import DECOMPOSE_FALLBACK_KEY, PLAN_PATH_KEY
-    from src.orchestration.schemas import AGENT_FALLBACK_KEY
-
-    path = state.get(PLAN_PATH_KEY)
-    plan = [t for t in (state.get("task_plan") or []) if isinstance(t, dict)]
-    if not path or not plan:
-        return {}
-    results = state.get("task_results") or {}
-    notes = list(state.get("dependency_notes") or [])
-    tasks = []
-    for task in sorted(plan, key=lambda t: t.get("order", 0)):
-        res = results.get(task.get("task_id")) if isinstance(results, dict) else None
-        res = res if isinstance(res, dict) else {}
-        notes.extend(res.get("dependency_notes") or [])
-        tasks.append({
-            "id": task.get("task_id"),
-            "agent": task.get("agent"),
-            "status": task.get("status"),
-            "depends_on": list(task.get("depends_on") or []),
-            "input_from": list(task.get("input_from") or []),
-            "db_ids": list(res.get("target_db_ids") or []),
-            "db_origin": res.get("db_origin"),
-            **_nonsql_task_summary(task, res),
-        })
-    seen: set[tuple[Any, ...]] = set()
-    kinds: dict[str, int] = {}
-    bridge: list[dict[str, Any]] = []
-    for note in notes:
-        if not isinstance(note, dict):
-            continue
-        key = (note.get("kind"), note.get("task_id"), note.get("detail"))
-        if key in seen:
-            continue
-        seen.add(key)
-        kind = str(note.get("kind"))
-        kinds[kind] = kinds.get(kind, 0) + 1
-        if kind == "bridge" and isinstance(note.get("counts"), dict):
-            bridge.append({"task_id": note.get("task_id"), **note["counts"]})
-    summary: dict[str, Any] = {
-        "plan_path": path,
-        "task_count": len(plan),
-        "tasks": tasks,
-        "replan_count": int(state.get("replan_count") or 0),
-        "agent_fallback": sum(1 for t in plan if t.get(AGENT_FALLBACK_KEY)),
-        "note_kinds": kinds,
-    }
-    if bridge:
-        summary["bridge"] = bridge
-    decompose_fallback = state.get(DECOMPOSE_FALLBACK_KEY)
-    if decompose_fallback:
-        summary["decompose_fallback"] = str(decompose_fallback)
-    return {"plan_summary": summary}
-
-
-def _plan_summary_carry(response_data: dict[str, Any]) -> dict[str, Any]:
-    """응답 본문에 실린 계획 요약을 `done` 이벤트로 옮긴다 — 없으면 키 없음(TP-0.1)."""
-    summary = response_data.get("plan_summary")
-    return {"plan_summary": summary} if summary else {}
-
-
-def _pre_gate_plan_summary() -> dict[str, Any]:
-    """그래프 밖 사전 게이트(존 역질문 등)로 끝난 턴의 계획 요약 — 2단 확정일 때만(TP-0.1)."""
-    from src.observability.ladder import current_ladder
-
-    if (current_ladder() or {}).get("tier") != "intent_orchestration":
-        return {}
-    return {"plan_summary": {"plan_path": "pre_gate", "task_count": 0}}
-
-
-def _executed_sql(state: dict) -> str | None:
-    """「실행된 SQL 보기」에 보일 SQL 문자열 (plans/116 §10.3).
-
-    출처 우선순위: ①top-level `generated_sql`(3단 단일 DB) ②`task_results`의 작업별
-    `generated_sql`(2단 — top-level 은 빈 문자열이다) ③`db_executed_sqls`(멀티 DB).
-    프론트(app.js)는 문자열 하나를 `<pre>`로 그리므로 여러 건은 머리 주석을 달아 잇는다.
-    """
-    sql = state.get("generated_sql")
-    if sql:
-        return sql
-    parts: list[tuple[str, str]] = []
-    results = state.get("task_results")
-    if isinstance(results, dict) and results:
-        plan = state.get("task_plan") or []
-        order = [t.get("task_id") for t in sorted(plan, key=lambda t: t.get("order", 0))]
-        order += [tid for tid in results if tid not in order]
-        for tid in order:
-            res = results.get(tid)
-            if isinstance(res, dict) and res.get("generated_sql"):
-                parts.append((str(tid), res["generated_sql"]))
-    if not parts:
-        db_sqls = state.get("db_executed_sqls")
-        if isinstance(db_sqls, dict):
-            parts = [(str(k), v) for k, v in db_sqls.items() if v]
-    if not parts:
-        return None
-    if len(parts) == 1:
-        return parts[0][1]
-    return "\n\n".join(f"-- [{label}]\n{body}" for label, body in parts)
-
-
-def _extract_node_progress(
-    node_name: str, output: dict, *, security: SecurityConfig
-) -> dict | None:
-    """노드 완료 시 오른쪽 패널에 표시할 진행 데이터를 추출한다.
-
-    ``security``는 미리보기 행을 화면 답·CSV와 같은 `DataMasker` 규칙으로 가리는 데 쓴다 —
-    가리기 전 행을 브라우저로 보내지 않는다(D-249 원칙).
-    """
-    try:
-        if node_name == "input_parser":
-            parsed = output.get("parsed_requirements", {})
-            template = output.get("template_structure")
-            data: dict = {}
-            if parsed:
-                data["parsed_requirements"] = parsed
-            if template:
-                data["template_structure"] = template
-            return data if data else None
-
-        elif node_name == "schema_analyzer":
-            tables = output.get("relevant_tables", [])
-            data = {}
-            cache_source = output.get("schema_cache_source")
-            if cache_source:
-                data["cache_source"] = cache_source
-            if tables:
-                data["relevant_tables"] = tables
-            return data if data else None
-
-        elif node_name == "query_generator":
-            sql = output.get("generated_sql", "")
-            data = {}
-            if sql:
-                data["generated_sql"] = sql
-            usage = output.get("synonym_usage")
-            if isinstance(usage, dict) and (
-                usage.get("mappings") or usage.get("unregistered")
-            ):
-                data["synonym_usage"] = usage
-            return data if data else None
-
-        elif node_name == "query_validator":
-            result = output.get("validation_result", {})
-            return {
-                "passed": result.get("passed", False),
-                # 파서 예외·백엔드 응답 원문은 떼고 보인다(plans/163 S3+ · 원문은 노드 로그)
-                "reason": validation_reason_text(result.get("reason", "")),
-            }
-
-        elif node_name == "query_executor":
-            results = output.get("query_results", [])
-            error = output.get("error_message")
-            data = {
-                "row_count": len(results),
-                "preview_rows": DataMasker(security).mask_rows(
-                    [r for r in results[:10] if isinstance(r, dict)]
-                ),
-            }
-            if error:
-                # 실행 에러 원문(「DB 연결 에러: {e}」)은 머리말만 보인다(plans/163 S3+ · 원문은
-                # 노드 로그와 스트림 단계 기록에 남는다)
-                data["error"] = user_error_text(error)
-            return data
-
-        elif node_name == "result_organizer":
-            organized = output.get("organized_data", {})
-            data = {}
-            if organized:
-                data["summary"] = organized.get("summary", "")
-                data["is_sufficient"] = organized.get("is_sufficient", False)
-                rows = organized.get("rows", [])
-                data["row_count"] = len(rows)
-                mapping = organized.get("column_mapping")
-                if mapping:
-                    data["column_mapping"] = mapping
-            return data if data else None
-
-        elif node_name == "output_generator":
-            return {"status": "응답 생성 완료"}
-
-        elif node_name == "error_response":
-            return {"error": output.get("final_response", "")}
-
-        elif node_name == "context_resolver":
-            ctx = output.get("conversation_context")
-            turn = ctx.get("turn_count", 1) if ctx else 1
-            return {"turn": turn}
-
-        elif node_name == "field_mapper":
-            if "column_mapping" not in output:
-                return {"skipped": True}
-            mapping = output.get("column_mapping") or {}
-            sources = output.get("mapping_sources") or {}
-            has_report = output.get("mapping_report_md") is not None
-            data: dict = {
-                "mapped_count": sum(1 for v in mapping.values() if v is not None),
-                "total_count": len(mapping),
-                "has_mapping_report": has_report,
-            }
-            if sources:
-                data["sources"] = {
-                    "hint": sum(1 for s in sources.values() if s == "hint"),
-                    "synonym": sum(1 for s in sources.values() if s == "synonym"),
-                    "eav_synonym": sum(1 for s in sources.values() if s == "eav_synonym"),
-                    "llm_inferred": sum(1 for s in sources.values() if s == "llm_inferred"),
-                }
-            return data
-
-        elif node_name == "semantic_router":
-            intent = output.get("routing_intent", "")
-            active_db = output.get("active_db_id")
-            is_multi = output.get("is_multi_db", False)
-            targets = output.get("target_databases", [])
-            data = {"routing_intent": intent}
-            if active_db:
-                data["active_db_id"] = active_db
-            if is_multi:
-                data["is_multi_db"] = True
-            if targets:
-                data["targets"] = [
-                    {"db_id": t.get("db_id"), "reason": t.get("reason", "")}
-                    for t in targets[:3]
-                ]
-            return data
-
-        elif node_name == "general_inference":
-            return {"status": "응답 생성 완료"}
-
-        elif node_name == "approval_gate":
-            if output.get("awaiting_approval"):
-                return {"awaiting_approval": True, "sql": output.get("approval_context", {}).get("sql", "")}
-            return None
-
-        elif node_name in ("intent_planner", "plan", "normalize"):
-            tasks = output.get("task_plan", [])
-            if not tasks:
-                return None
-            return {
-                "task_count": len(tasks),
-                "is_composite": output.get("is_composite", False),
-                "tasks": _summarize_tasks(tasks),
-            }
-
-        elif node_name in ("agent_orchestrator", "join"):
-            tasks = output.get("task_plan", [])
-            if not tasks:
-                return None
-            return {
-                "task_count": len(tasks),
-                "tasks": _summarize_tasks(tasks, results=output.get("task_results")),
-            }
-
-        elif node_name in ("replanner", "replan"):
-            needs = output.get("needs_replan", False)
-            history = output.get("replan_history") or []
-            data: dict = {"needs_replan": needs}
-            if history:
-                data["replan_history"] = history
-            if needs:
-                data["replan_count"] = output.get("replan_count", 0)
-            return data
-
-        elif node_name in ("result_aggregator", "finalize"):
-            return {"status": "응답 통합 완료"}
-
-        elif node_name == "deep_agent":
-            # plans/89 T1: 1단(부가 경로) 노드 — 도구 단위 진행은 progress 이벤트가 나른다.
-            return {"status": "에이전트 실행 완료"}
-
-    except Exception as e:
-        logger.debug(f"노드 진행 데이터 추출 실패 ({node_name}): {e}")
-    return None
-
-
-def _zone_answer_parse_reuse(
-    body: QueryRequest, checkpoint_state: dict[str, Any]
-) -> dict[str, Any] | None:
-    """존 역질문 답변 턴이면 직전 턴 `parsed_requirements`를, 아니면 None (plans/119 Q-2).
-
-    조건(전부): 직전 턴이 후단 게이트로 존을 되물었고(체크포인트 `zone_clarification`) · 이번 턴이
-    존을 골랐고(`selected_db_ids` — 소스 선택 칩이면 `selected_sources` · plans/132 N-10) · 이번 턴
-    질의가 역질문의 원 질의와 같고 · 직전 파싱본이 있다.
-    이 턴은 **대상 DB만 바꾸는** 턴이라 다시 파싱할 내용이 없다(`plans/111` C-6의 좁은 조각 —
-    C-6이 오면 흡수된다). 앞단 게이트(파이프라인 미실행)는 체크포인트가 없어 해당하지 않는다.
-    """
-    if not (body.selected_db_ids or getattr(body, "selected_sources", None)):
-        return None
-    zone_q = checkpoint_state.get("zone_clarification")
-    parsed = checkpoint_state.get("parsed_requirements")
-    if not isinstance(zone_q, dict) or not isinstance(parsed, dict) or not parsed:
-        return None
-    original = str(zone_q.get("original_query") or "").strip()
-    if not original or original != (body.query or "").strip():
-        return None
-    return dict(parsed)
-
-
-def _zone_answer_plan_reuse(
-    body: QueryRequest, checkpoint_state: dict[str, Any]
-) -> dict[str, Any] | None:
-    """존 역질문 답변 턴이면 직전 턴 계획 스냅샷을, 아니면 None (plans/121 TP-1.2 · G-30 · D-272 ⑪).
-
-    조건은 Q-2 파싱 재사용과 같다(`_zone_answer_parse_reuse`가 값을 낼 때만). 스냅샷
-    (`zone_reentry_plan`)은 2단 집계기가 존 역질문 턴의 **복합 계획**일 때만 남긴다. 앞단 게이트
-    (그래프 미실행)는 스냅샷이 없어 해당하지 않는다(G-30 (b) — 범위 밖).
-    """
-    if _zone_answer_parse_reuse(body, checkpoint_state) is None:
-        return None
-    snapshot = checkpoint_state.get("zone_reentry_plan")
-    if not isinstance(snapshot, dict) or not snapshot.get("tasks"):
-        return None
-    return dict(snapshot)
 
 
 def _build_turn_input_state(
@@ -1458,878 +462,6 @@ def _build_turn_input_state(
     }
 
 
-# ── 존 모호성 역질문 (Plan 75 §4 — clarification 배선) ─────────────────────────
-# 결정적 게이트(D-035): LLM(clarification_needed) 방출에 의존하지 않는다.
-# 발동 = (존 단위 대량 조회 의도 — is_full_scan_query, LIMIT 상향 게이트와 동일 판정 공유)
-# AND (존 식별 불가), 또는 "ㅇㅇ존" 리터럴(버튼 프리필 무수정 전송 — 항상 모호).
-# 후속 턴은 직전 존 승계가 우선이므로 비발동(§4.2), 단 "ㅇㅇ존" 리터럴은 턴과 무관하게
-# 발동. selected_db_ids가 이미 오면 비발동(재개 턴).
-_ZONE_PLACEHOLDER = "ㅇㅇ존"
-# 선택지 입도는 DB 라우팅 입도와 일치(§4.4 확정 — 체크박스 3개 단독, 단축 버튼 없음).
-# canonical은 utils.query_gen_common.ZONE_CLARIFY_OPTIONS(D-153 — 후단 게이트와 공유,
-# 계층 규칙상 utils로 이동). 여기서는 기존 이름으로 alias만 유지.
-_ZONE_OPTIONS: tuple[dict, ...] = ZONE_CLARIFY_OPTIONS
-
-
-_ZONE_LABEL_BY_ID: dict[str, str] = {o["db_id"]: o["label"] for o in _ZONE_OPTIONS}
-
-
-def _zone_display_label(db_id: str) -> str:
-    """존 선택지 라벨 → 레지스트리 표시명 → db_id 순으로 사용자 표기를 고른다."""
-    if db_id in _ZONE_LABEL_BY_ID:
-        return _ZONE_LABEL_BY_ID[db_id]
-    from src.routing.domain_config import get_domain_by_id
-
-    domain = get_domain_by_id(db_id)
-    return domain.display_name if domain else db_id
-
-
-def _substitute_zone_placeholder(query: str, selected_db_ids: list[str] | None) -> str:
-    """존 선택 재개 턴에서 존 표기를 선택 존 라벨로 치환한다.
-
-    결정적 문자열 치환(LLM 재해석 아님 — 라우팅은 selected_db_ids가 이미 고정).
-    ① 'ㅇㅇ존' 플레이스홀더 치환: 미치환 시 sub_query·처리 현황·응답 서술에 'ㅇㅇ존'이
-       그대로 남는다(2026-07-24 폐쇄망 실측: 데이터는 정상인데 화면 표기가 전부 'ㅇㅇ존').
-    ② 혼합 존 열거 재작성(D-154): 상호배타 재선택 후 원문("은행존 및 공동존 여의도…")이
-       그대로 흐르면 처리 현황에 미선택 존이 남고, 미선택 존 위치어가 SQL WHERE로
-       누출된다(2026-08-05 실측). 미선택 그룹 표면어를 포함한 열거만 선택 라벨로 치환.
-    """
-    if not selected_db_ids:
-        return query
-    if _ZONE_PLACEHOLDER in (query or ""):
-        labels = [_ZONE_LABEL_BY_ID.get(d, d) for d in selected_db_ids]
-        return query.replace(_ZONE_PLACEHOLDER, ", ".join(labels))
-    return _replace_unregistered_zones(
-        rewrite_zone_mentions_for_selection(query, selected_db_ids), selected_db_ids
-    )
-
-
-def _replace_unregistered_zones(query: str, selected_db_ids: list[str]) -> str:
-    """③ 등록되지 않은 존 표기를 선택 존 라벨로 치환한다(plans/123 W-4).
-
-    존 선택 답변 턴(미등록 존 역질문 → 사용자가 존을 골라 재전송)에서 원문의 「판교존」이 그대로
-    흐르면 sub_query·SQL 주석·응답 서술에 없는 존 이름이 남고(run `20260923-103638` R3-03 —
-    「전체 1690건의 판교존 서버」), 생성기가 그 표기를 조건으로 오인한다. 라우팅은 이미
-    `selected_db_ids`가 정했으므로 텍스트만 바꾼다. 바꾼 사실은 `_turn_disclosures`가 알린다.
-    """
-    from src.routing.db_scope import find_unregistered_zone_terms
-
-    unknown = find_unregistered_zone_terms(query)
-    if not unknown:
-        return query
-    labels = ", ".join(_zone_display_label(d) for d in selected_db_ids)
-    for token in unknown:
-        query = query.replace(token, labels)
-    return query
-
-
-def _turn_disclosures(
-    query: str, selected_db_ids: list[str] | None
-) -> list[Any] | None:
-    """원문만으로 정해지는 턴 단위 고지(plans/123 W-4 · S-1) — 없으면 None.
-
-    - W-4: 선택 존으로 조회하는 턴에 원문이 등록되지 않은 존을 지목했으면 바꿔 조회한 사실.
-      역질문 턴에는 붙지 않는다(이 값은 파이프라인을 탄 턴에서만 렌더된다).
-    - S-1: 사용자 값의 단위가 지표에 비해 이상하면(「메모리 64MB 이상」) 알린다. 조회는 요청
-      그대로 한다(D-264 ⑤ — 사용자 값은 고치지 않는다).
-    렌더는 집계기(1·2단 — 턴당 한 번)와 3단 `output_generator`가 한다(W-9).
-    """
-    from src.domain import disclosure as disc
-    from src.domain.input_guard import render_unit_suspect, unit_suspects
-    from src.routing.db_scope import find_unregistered_zone_terms
-
-    items: list[Any] = []  # `disclosure.Disclosure` 목록
-    if selected_db_ids:
-        unknown = find_unregistered_zone_terms(query)
-        if unknown:
-            named = ", ".join(f"'{t}'" for t in unknown)
-            labels = ", ".join(_zone_display_label(d) for d in selected_db_ids)
-            items.append(disc.make(
-                disc.UNREGISTERED_ZONE,
-                f"{named}은(는) 등록된 존이 아니어서 선택하신 {labels}(으)로 조회했습니다.",
-            ))
-    for suspect in unit_suspects(query):
-        items.append(disc.make(disc.UNIT_SUSPECT, render_unit_suspect(suspect)))
-    return items or None
-
-
-def _shadow_input_guard(query: str, thread_id: str | None) -> None:
-    """비조회 입력 판정 섀도(plans/123 S-2 · 123·G-8 (c)) — **응답은 바꾸지 않고 로그만** 남긴다.
-
-    붙여넣은 SQL · 쓰기 요청 · 지시 무시 · 계정 요구 · 빈 입력을 좁은 결정적 규칙으로 판정한다.
-    판정 위치는 존 앞단 게이트보다 앞(라우트 진입)이다 — on 전환 때 단락할 자리와 같다. 대조군
-    과잉 판정 0을 run으로 확인한 뒤(run R5′) 안내 단락으로 켠다. 판정 실패는 질의를 막지 않는다.
-    """
-    try:
-        from src.domain.input_guard import classify_non_query_input
-
-        verdict = classify_non_query_input(query)
-    except Exception as e:  # noqa: BLE001 — 섀도 판정은 질의 경로를 막지 않는다
-        logger.warning("S-2 섀도 판정 실패(plans/123): %s", e)
-        return
-    if verdict is not None:
-        logger.info(
-            "S-2 섀도(plans/123): 비조회 입력 kind=%s matched=%r thread=%s — 응답 불변",
-            verdict.kind, verdict.matched, thread_id,
-        )
-
-
-def _raw_query_seed(query: str, config) -> str | None:
-    """라우트 진입 원문을 상태에 실을지 정한다(plans/107 P-2 · G-7).
-
-    ``INTENT_FRAME_ENABLED``일 때만 원문을 돌려준다 — 꺼져 있으면 None이라 상태·체크포인트에
-    원문·표시문이 실리지 않는다(현행과 비트 동일). ``user_query``는 종전대로 존 표기 치환본이다.
-    """
-    ifc = getattr(config, "intent_frame", None)
-    return query if ifc is not None and ifc.enabled is True else None
-
-
-def _rewrite_trace_fields(thread_id: str | None) -> dict:
-    """완료 ``done`` 이벤트에 붙일 재작성 감사(plans/107 §4.9 → plans/94 §19 O-e).
-
-    이번 턴에 SQL 생성 노드들이 남긴 레코드를 꺼낸다(1·2단 격리 파이프라인 것도 포함).
-    레코드가 없으면(기능 꺼짐 포함) **키 자체를 싣지 않는다** — done 페이로드 바이트 불변.
-    """
-    from src.nodes.intent_frame_builder import pop_rewrite_traces
-
-    traces = pop_rewrite_traces(thread_id)
-    return {"rewrite_trace": traces} if traces else {}
-
-
-def _scope_narrowed_or_none(body, config, current_user: dict | None) -> dict | None:
-    """이번 턴이 범위를 **좁혔는지** 판정하고 기록을 만든다 (D-176 후속4 · §5.3 불변식 6).
-
-    범위 축소는 정보 손실이 복구되지 않는 절단이라, 무엇을 보지 않았는지가 응답과 감사
-    로그 양쪽에 남아야 한다. 전부 선택했으면 절단이 아니므로 None.
-    """
-    if not body.selected_db_ids:
-        return None
-    from src.domain.scope_select import narrowed_record
-    from src.routing.execution_groups import partition_execution_groups
-
-    allowed = (current_user or {}).get("allowed_db_ids")
-    active = config.multi_db.get_active_db_ids() or []
-    # 권한 밖 존은 미조회 목록에도 싣지 않는다(D-264 ② · plans/123 W-2 ④ — 대상이 활성 ∩ 허용)
-    targets = [d for d in active if allowed is None or d in set(allowed)]
-    record = narrowed_record(
-        partition_execution_groups(targets),
-        body.selected_db_ids,
-        # 그룹 안 일부 선택도 좁힌 것이다 — 미조회 DB를 존 이름으로 적는다(plans/123 W-2 ③)
-        db_labels={d: _zone_display_label(d) for d in targets},
-    )
-    if record:
-        record["all_db_ids"] = targets
-    return record
-
-
-async def _audit_clarification(
-    clarification: dict, current_user: dict | None, thread_id: str | None
-) -> None:
-    """파이프라인 전 역질문의 발동을 감사에 남긴다 — 발동률 관측 (plans/82 v7 R-6 · D-249).
-
-    범위 선택은 시간 임계 없이 묻기로 했고(U11) 그 대가인 습관화를 **발동률로** 통제한다.
-    분모는 같은 감사 파일의 `user_request`다. 4개 진입점이 모두 부른다(경로 대칭).
-    기록 실패는 질의를 막지 않는다.
-    """
-    from src.security.audit_logger import log_clarification
-
-    try:
-        await log_clarification(
-            kind=str(clarification.get("kind") or ""),
-            axis=clarification.get("axis"),
-            option_count=len(clarification.get("options") or []),
-            user_id=(current_user or {}).get("sub"),
-            thread_id=thread_id,
-        )
-    except Exception as e:  # noqa: BLE001 — 감사 실패는 경고로 남기고 진행한다
-        logger.warning("역질문 발동 감사 기록 실패: %s", e)
-
-
-async def _audit_scope_narrowed(
-    input_state: dict, current_user: dict | None, thread_id: str | None
-) -> None:
-    """범위를 좁힌 턴을 감사에 남긴다 — §5.3 불변식 6의 감사 쪽 (plans/82 v7 R-6 · D-249).
-
-    응답 쪽(미조회 범위 문구)은 `output_generator`가 붙인다. 좁히지 않은 턴은 기록하지 않는다.
-    """
-    record = input_state.get("scope_narrowed")
-    if not record:
-        return
-    from src.security.audit_logger import log_scope_narrowed
-
-    try:
-        await log_scope_narrowed(
-            selected=list(record.get("selected") or []),
-            skipped=list(record.get("skipped") or []),
-            skipped_db_ids=list(record.get("skipped_db_ids") or []),
-            user_id=(current_user or {}).get("sub"),
-            thread_id=thread_id,
-        )
-    except Exception as e:  # noqa: BLE001 — 감사 실패는 경고로 남기고 진행한다
-        logger.warning("범위 축소 감사 기록 실패: %s", e)
-
-
-def build_scope_reexpand(record: dict | None, original_query: str) -> dict | None:
-    """미조회 범위를 되돌릴 **사후 패널**을 만든다(폼필 역질문 패널과 동형).
-
-    이것이 없으면 §5.3 불변식 6의 절반(기록)만 지켜진다 — 사용자가 "아, 은행존도 봐야겠다"
-    고 생각했을 때 원문을 다시 타이핑해야 한다면 좁히기의 비용이 이득을 넘는다.
-    """
-    if not record or not record.get("skipped_db_ids"):
-        return None
-    return {
-        "kind": "scope_reexpand",
-        "question": (
-            f"{', '.join(record.get('skipped') or [])}은(는) 조회하지 않았습니다. "
-            "전체 범위로 다시 조회할까요?"
-        ),
-        "options": [{
-            "key": "__all__",
-            "label": "전체 범위로 다시 조회",
-            "db_ids": list(record.get("all_db_ids") or []),
-            "default": True,
-        }],
-        "original_query": original_query or "",
-        "multi": False,
-    }
-
-
-def _zone_gate_deferred_to_tasks(config: Any, gate: str) -> bool:
-    """2단 다중 시스템 배포면 라우트 존 게이트를 task 단위 게이트에 미룬다(plans/132 v1.5 후속 ①).
-
-    소스 지목이 없는 「…서버들 담당 부서」 같은 질문은 라우트 시점에 어느 시스템인지 모른다 —
-    여기서 폴스타 존을 물으면 ITAM 질문에 오답 되물음이 된다. 2단(`intent_orchestration`)은
-    분류 뒤 task 게이트(`_zone_clarification_or_none_task`)가 대상이 전부 폴스타 존일 때만
-    묻는다. 활성 시스템이 하나뿐이거나 2단이 아니면(확정 전 포함) 종전대로 라우트가 판정한다.
-
-    활성 시스템 = 활성 DB의 소유 시스템(`registry.systems_of` — 분류 경로 `_multiple_systems_active`
-    와 같은 재료 · 선언 없는·미등록 DB 제외) ∪ **서버 엔터티를 가진** 활성 비DB 시스템(엔터티 간선
-    `owner`로 등장하는 시스템 — 간선이 없는 문서 검색은 서버 질문의 대상이 아니라 세지 않는다).
-    """
-    from src.observability.ladder import current_ladder
-
-    if (current_ladder() or {}).get("tier") != "intent_orchestration":
-        return False
-    from src.orchestration.conditional_agents import active_conditional_systems
-    from src.routing.registry import get_registry
-
-    registry = get_registry()
-    owners = {e.owner for e in registry.entity_edges()}
-    systems = set(registry.systems_of(config.multi_db.get_active_db_ids() or []))
-    systems |= {s for s in active_conditional_systems(config) if s in owners}
-    if len(systems) < 2:
-        return False
-    logger.info(
-        "라우트 %s 생략(plans/132 v1.5): 2단 · 활성 시스템 %s — task 단위 존 게이트에 위임",
-        gate, sorted(systems),
-    )
-    return True
-
-
-def _scope_select_or_none(
-    body, checkpoint_state: dict | None, config, current_user: dict | None
-) -> dict | None:
-    """범위 사전 선택 역질문 (D-176 후속4 · plans/82 §5.3~§5.5).
-
-    **모호성 해소(`_zone_clarification_or_none`) 다음 순위**로만 호출된다 — 두 질문이 한 턴에
-    겹치면 사용자를 두 번 붙잡고, 성격이 다른 질문(진행 불가 vs 성능 최적화)을 같은 것으로
-    학습시킨다.
-
-    발동 형태를 **전량 조회 질의로 좁힌다**: 비용은 존당 SQL(~50ms)이 아니라 **스키마
-    분석(존당 ≤20s) + LLM 생성**에 있고(§5.1 실측), 그 비용이 실제로 배가되는 형태가
-    전량 조회다. 서버 식별자 하나를 찾는 질의는 탐색(D-176 후속3)이 ~150ms에 끝내므로
-    여기서 사용자를 붙잡는 것은 **순손실**이다(§5.2).
-
-    Args:
-        body: 요청 본문
-        checkpoint_state: 체크포인트(후속 턴이면 not None)
-        config: 앱 설정
-        current_user: 인증 주체(인가 존 필터)
-
-    Returns:
-        clarification 페이로드 또는 None.
-    """
-    from src.domain.scope_select import scope_question_or_none
-    from src.routing.execution_groups import partition_execution_groups
-
-    if body.selected_db_ids:
-        return None  # 재개 턴
-    query = body.query or ""
-    # 후속 턴은 직전 존 승계가 우선이다(§4.2 비발동 — zone_select와 같은 규칙).
-    # 스코프 해제 턴(D-205)은 zone_select와 같이 첫 턴 규칙으로 본다.
-    if checkpoint_state is not None and not getattr(body, "reset_db_scope", False):
-        return None
-    if not is_full_scan_query(query):
-        return None
-    # 위치어가 있으면 D-065가 결정적으로 좁힌다 — 이미 정해진 것을 되묻지 않는다.
-    from src.utils.query_gen_common import LOCATION_HINT_TERMS, term_in_text
-    if any(term_in_text(t, query) for t in LOCATION_HINT_TERMS):
-        return None
-    # 존 없는 소스만 지목한 질의는 존 게이트와 같이 묻지 않는다(plans/132 N-10 — 대칭).
-    from src.routing.db_scope import names_only_zoneless_sources
-    if names_only_zoneless_sources(query):
-        return None
-    # 2단 다중 시스템이면 존 게이트와 같이 묻지 않는다(plans/132 v1.5 — 대칭).
-    if _zone_gate_deferred_to_tasks(config, "범위 사전 선택"):
-        return None
-
-    allowed = (current_user or {}).get("allowed_db_ids")
-    active = config.multi_db.get_active_db_ids() or []
-    targets = [d for d in active if allowed is None or d in set(allowed)]
-    groups = partition_execution_groups(targets)
-
-    # 예상 시간 문구의 재료(§5.5 S-C · plans/82 v7 R-7) — 그룹 유형별 실측 분포를 싣는다.
-    # 표본이 가장 적은 그룹이 기준이다: 한 그룹이라도 표본 미달이면 합계 추정이 근거를 잃어
-    # 문구를 내지 않는다(scope_question_or_none이 samples < 20이면 생략).
-    from src.observability.group_metrics import group_stats
-
-    stats = [group_stats(g) for g in groups]
-    groups = [
-        {**g, "p50_ms": s["p50_ms"], "p90_ms": s["p90_ms"]} for g, s in zip(groups, stats)
-    ]
-    return scope_question_or_none(
-        groups=groups,
-        ctx={
-            "zone_clarification_allowed": True,  # 텍스트 라우트만 이 함수를 부른다
-            "original_query": query,
-        },
-        enabled=config.composite.scope_select_enabled,
-        samples=min((s["sample_size"] for s in stats), default=0),
-    )
-
-async def _form_memory_delete_or_none(
-    body, checkpoint_state: dict[str, Any] | None, config
-) -> dict | None:
-    """저장 값 패널의 삭제 버튼 요청(form_memory_delete)을 파이프라인 없이 결정적으로 처리한다(D-187).
-
-    - 파이프라인·LLM 미경유(FIX-23의 "삭제했다" 환각 경로 원천 차단).
-    - signature는 이 세션이 마지막으로 조회·채운 양식(`last_form_signature`)과 일치해야
-      수행한다 — 클라이언트가 임의 시그니처를 보내 다른 양식의 이력을 지우는 것을 막는다.
-    - 삭제 후 남은 항목으로 패널을 다시 만들어 돌려준다(진부화 방지). 0건이면 패널 없음.
-
-    Returns:
-        {"response": str, "form_memory_panel": dict | None} 또는 None(요청 아님).
-    """
-    req = getattr(body, "form_memory_delete", None)
-    if not isinstance(req, dict):
-        return None
-    from src.orchestration.intent_planner import build_form_memory_panel
-    from src.schema_cache.form_memory import (
-        delete_form_memory_entries,
-        load_form_memory_answers,
-    )
-
-    signature = str(req.get("signature") or "")
-    session_sig = (checkpoint_state or {}).get("last_form_signature")
-    if not signature or signature != session_sig:
-        logger.warning(
-            "form_memory_delete 거부(D-187): 요청 signature=%r ≠ 세션 signature=%r",
-            signature[:16], (session_sig or "")[:16],
-        )
-        return {
-            "response": (
-                "삭제 요청의 양식이 이 세션에서 조회한 양식과 일치하지 않아 처리하지 않았습니다. "
-                "양식을 다시 첨부하고 '?'로 저장 값을 조회한 뒤 삭제해 주세요."
-            ),
-            "form_memory_panel": None,
-        }
-    fields = None if req.get("all") else [str(f) for f in (req.get("fields") or []) if f]
-    if fields is not None and not fields:
-        return {"response": "삭제할 항목을 선택해 주세요.", "form_memory_panel": None}
-    removed, display = await delete_form_memory_entries(
-        None, config, fields, signature=signature,
-    )
-    _sig, remaining, meta = await load_form_memory_answers(
-        None, config, touch=False, signature=signature,
-    )
-    panel = build_form_memory_panel(signature, remaining, meta)
-    name = display or "이 양식"
-    if removed == 0:
-        text = f"'{name}'에서 삭제할 항목이 없었습니다(이미 삭제됐거나 만료됨)."
-    elif fields is None:
-        text = f"'{name}'의 기억 {removed}건을 모두 삭제했습니다."
-    else:
-        text = (
-            f"'{name}'의 기억 {removed}건을 삭제했습니다: "
-            + ", ".join(f.replace("|", " > ") for f in fields)
-        )
-    if panel:
-        text += f"\n\n남은 항목 {len(panel['entries'])}건은 아래 패널에서 계속 관리할 수 있습니다."
-    else:
-        text += "\n\n남은 저장 값이 없습니다."
-    logger.info("form_memory_delete 처리(D-187): removed=%d, fields=%s", removed, fields)
-    return {"response": text, "form_memory_panel": panel}
-
-
-def _authorized_zone_clarification(
-    config, current_user: dict | None, query: str, **kwargs
-) -> dict | None:
-    """존 선택 역질문 — 선택지를 사용자 조회 권한(D-232)으로 거른다 (plans/116 §10.3).
-
-    종전에는 활성 DB 전체로 선택지를 만들어, 샌드박스 권한만 있는 사용자에게도 은행존·공동존을
-    물었다(고르면 요청 경계 인가가 「권한 없음」으로 막는 막다른 길). 선택지 수 규칙은 종전과
-    같다 — 권한 내 존이 0이면 묻지 않고(`build_zone_clarification`의 "존 전부 비활성" 폴백과 같은
-    처리 · 인가 0이면 파이프라인이 D-232 ③ 사유를 알린다), 1이상이면 묻는다.
-
-    Args:
-        config: AppConfig
-        current_user: 요청 사용자(`allowed_db_ids`·`role`). None이면 거르지 않는다(종전 동작)
-        query: 원문 질의
-        **kwargs: `build_zone_clarification` 인자(question·has_file·group_exclusive)
-    """
-    active = config.multi_db.get_active_db_ids() or [o["db_id"] for o in ZONE_CLARIFY_OPTIONS]
-    user = current_user or {}
-    ids = authorized_db_ids(active, user.get("allowed_db_ids"), user.get("role"))
-    if not ids:
-        # 빈 목록을 넘기면 build_zone_clarification은 "제한 없음"으로 읽어 전 존을 낸다
-        logger.info("존 역질문 생략 — 조회 권한 내 DB 0개(D-232)")
-        return None
-    return build_zone_clarification(ids, query, **kwargs)
-
-
-def _file_zone_clarification_or_none(
-    query: str, selected_db_ids: list[str] | None, config, current_user: dict | None = None
-) -> dict | None:
-    """파일(폼필) 경로 존 역질문 (Plan 75 §4 확장, 2026-07-24 실측 요구).
-
-    폼필은 본질적으로 존 단위 대량 조회이므로, 텍스트 경로와 달리 "모든/전체" 표면어
-    조건 없이 **위치어 미해소면 발동**한다(미발동 시 임의 존(b0 등)으로 오라우팅되는
-    실측 사례). has_file=True로 표기해 프론트가 보관한 파일과 함께 재전송하게 한다.
-    """
-    q = query or ""
-    # FIX-20(라이브 실측 2026-08-03): 확인 이력 조회·삭제는 DB 조회가 없어 존 선택이
-    # 불필요 — 존 역질문이 가로채면 ③.45(결정적 단락)에 도달하지 못한다.
-    from src.orchestration.intent_planner import is_form_memory_command
-    if is_form_memory_command(q):
-        return None
-    # 존 그룹 상호배타(D-143 후속3) — 텍스트 경로와 대칭(혼합 선택·혼합 텍스트)
-    exclusive = _zone_group_exclusive_or_none(
-        q, selected_db_ids, config, has_file=True, current_user=current_user
-    )
-    if exclusive:
-        return exclusive
-    if selected_db_ids:
-        return None  # 선택 재개 턴
-    # 미등록 존 지목(plans/108 CU-B2 · G-3) — 텍스트 경로와 대칭. 종전에도 위치어 미해소라
-    # 역질문은 떴지만 "그 존이 없다"는 사실은 전달되지 않았다.
-    unregistered = _unregistered_zone_clarification_or_none(
-        q, config, has_file=True, current_user=current_user
-    )
-    if unregistered:
-        return unregistered
-    if _ZONE_PLACEHOLDER not in q:
-        from src.utils.query_gen_common import LOCATION_HINT_TERMS, term_in_text
-        if any(term_in_text(t, q) for t in LOCATION_HINT_TERMS):
-            return None  # 위치어 해소 — D-065 결정적 보강이 처리
-    return _authorized_zone_clarification(
-        config,
-        current_user,
-        q,
-        question=(
-            "양식을 채울 대상 존이 지정되지 않았습니다. 아래에서 대상 존을 선택해 주세요. "
-            + (
-                "(은행존과 공동존은 동시 선택 불가 — 공동존은 김포/여의도 복수 선택 가능)"
-                if config.multi_db.zone_group_exclusive
-                else "(복수 선택 가능 — 전체는 모두 선택. 함께 선택하면 은행존을 먼저 조회한 뒤 공동존을 조회합니다)"
-            )
-        ),
-        has_file=True,
-        group_exclusive=config.multi_db.zone_group_exclusive,
-    )
-
-
-def _parse_selected_db_ids_form(raw: str | None) -> list[str] | None:
-    """multipart Form의 selected_db_ids(CSV)를 목록으로 변환한다."""
-    if not raw:
-        return None
-    ids = [s.strip() for s in raw.split(",") if s.strip()]
-    return ids or None
-
-
-def _zone_group_exclusive_or_none(
-    query: str, selected_db_ids: list[str] | None, config, *, has_file: bool = False,
-    current_user: dict | None = None,
-) -> dict | None:
-    """존 그룹 상호배타 위반이면 안내 문구를 붙인 존 선택 clarification을 반환한다.
-
-    (D-143 후속3) 은행존(b0)과 공동존(gp/yd)은 동시 조회 불가 — 담당 조직 분리(존 조합
-    실수요 없음, 사용자 확정 2026-08-05) + b0+gp 조합의 FabriX PII 필터 차단(미종결) 회피.
-    ①혼합 selected_db_ids(프론트 우회·API 직접 호출 포함 — UI 게이트 ≠ 검증)와
-    ②혼합 텍스트 지정("은행존과 공동존 김포…")을 결정적으로 감지해, 에러 대신
-    기존 존 선택 UI로 재선택을 요청한다(막다른 에러·침묵 강등 금지). 턴 유형 무관 발동.
-    """
-    if not config.multi_db.zone_group_exclusive:
-        return None
-    if selected_db_ids:
-        if not mixed_zone_groups(selected_db_ids):
-            return None  # 단일 그룹 선택 — 정상 재개
-    elif not has_mixed_zone_group_terms(query or ""):
-        return None
-    return _authorized_zone_clarification(
-        config,
-        current_user,
-        query or "",
-        question=ZONE_GROUP_EXCLUSIVE_QUESTION,
-        has_file=has_file,
-        group_exclusive=True,
-    )
-
-
-def _unregistered_zone_clarification_or_none(
-    query: str, config, *, has_file: bool = False, current_user: dict | None = None
-) -> dict | None:
-    """원문이 **등록되지 않은 존**을 지목하면 존 선택 역질문을 돌려준다 (plans/108 CU-B2 · G-3).
-
-    run `20260918-182507` R3-03(3회 전건 동일): "판교존 서버 목록"에 대해 생성 SQL이
-    `-- 판교존(지역 힌트는 스키마에 없으므로 무시)` 주석을 달고 전 서버 1,690건을 반환했다.
-    사용자가 지목한 스코프를 **조용히 버린** 것이라 「침묵적 폴백 금지」 위반이다.
-
-    탐지는 `find_unregistered_zone_terms`가 좁게 판정한다(레지스트리 어휘 화이트리스트 +
-    `…존` 일반 낱말 접미 배제). 오탐의 대가는 존 선택창 재표시라 막다른 에러가 아니지만,
-    정상 질의를 가로채지 않는 것이 우선이라 미탐 쪽으로 기운 규칙이다.
-
-    Args:
-        query: 사용자 원문 질의
-        config: AppConfig (활성 DB·존 그룹 배타 설정)
-        has_file: 파일(폼필) 경로 여부 — 프론트가 보관 파일과 함께 재전송한다
-        current_user: 요청 사용자 — 선택지를 조회 권한으로 거른다(plans/116 §10.3)
-
-    Returns:
-        clarification 페이로드 dict. 미등록 존이 없으면 None.
-    """
-    from src.routing.db_scope import find_unregistered_zone_terms
-
-    unknown = find_unregistered_zone_terms(query)
-    if not unknown:
-        return None
-    named = ", ".join(f"'{t}'" for t in unknown)
-    logger.info("미등록 존 지목 감지(plans/108 CU-B2): %s — 존 선택 역질문 발행", named)
-    exclusive = config.multi_db.zone_group_exclusive
-    return _authorized_zone_clarification(
-        config,
-        current_user,
-        query or "",
-        question=(
-            f"{named}은(는) 등록되지 않은 존입니다. 조회할 수 있는 존은 아래 목록뿐입니다. "
-            + (
-                "(은행존과 공동존은 동시 선택 불가 — 공동존은 김포/여의도 복수 선택 가능)"
-                if exclusive
-                else "(복수 선택 가능 — 전체 조회는 모두 선택)"
-            )
-        ),
-        has_file=has_file,
-        group_exclusive=exclusive,
-    )
-
-
-def apply_selection_authorization(
-    selected_db_ids: list[str] | None, current_user: dict[str, Any]
-) -> tuple[list[str] | None, bool]:
-    """요청이 지정한 DB 선택에 인가를 적용한다(plans/104 C-4 · D-232 — 요청 경계 단일 지점).
-
-    선택 값은 **외부 입력**이라 라우터 반환값 필터로는 막히지 않는다. 그대로 상태에 실리면
-    존 선택 재개 턴의 task 고정이 그 DB로 조회를 확정한다(순차 러너는 3단 기본 경로에서도
-    도달한다). 네 진입(텍스트·스트림·파일 2종)이 모두 이 함수를 지난다.
-
-    Returns:
-        `(상태에 실을 선택, 전부 비인가 여부)` — 전부 비인가면 호출부가 사유를 응답하고 멈춘다.
-    """
-    authorized, dropped = filter_selected_db_ids(
-        selected_db_ids, current_user.get("allowed_db_ids"), current_user.get("role")
-    )
-    if dropped and not authorized:
-        logger.info("DB 선택 전량 비인가 — 조회하지 않고 사유 반환: %s", dropped)
-        return None, True
-    return authorized, False
-
-
-def _source_selection_meta(
-    body: QueryRequest, checkpoint_state: dict[str, Any]
-) -> dict[str, Any] | None:
-    """이번 턴 소스 선택이 직전 턴 칩의 응답이면 그 표지, 아니면 None(plans/132 W5 — 쓰기 게이트).
-
-    직전 턴이 소스 선택 칩(`zone_clarification.kind == "source_select"`)을 냈으면 `user_choice`,
-    기억을 써서 답하고 「다른 소스로 보기」(`source_switch`)를 냈으면 `feedback`(정정)이다. 그 밖의
-    `selected_sources`(API 직접 호출 등)는 확인된 선택으로 보지 않는다 — 기억에 쓰지 않는다.
-    """
-    if not getattr(body, "selected_sources", None):
-        return None
-    chip = checkpoint_state.get("zone_clarification")
-    if isinstance(chip, dict) and chip.get("kind") == "source_select":
-        return {"origin": "user_choice", "areas": list(chip.get("areas") or [])}
-    switch = checkpoint_state.get("source_switch")
-    if isinstance(switch, dict) and switch.get("correction"):
-        return {"origin": "feedback", "areas": list(switch.get("areas") or [])}
-    return None
-
-
-def apply_source_selection_authorization(
-    selected_sources: list[str] | None, current_user: dict[str, Any]
-) -> list[str] | None:
-    """소스 선택 칩 답변(plans/132 N-10)에 인가를 적용한다 — 외부 입력이라 요청 경계에서 거른다.
-
-    레지스트리에 없는 코드는 버린다. 비DB 소스는 관측 소스 인가(`allowed_sources` · D-264 ②)를
-    지나야 한다. DB 소스는 함께 오는 `selected_db_ids`가 DB 인가
-    (`apply_selection_authorization`)를 지난다. 전부 걸러지면 None(선택 없음 — 종전 턴 규칙)이다.
-    """
-    if not selected_sources:
-        return None
-    from src.routing.db_authz import is_source_allowed
-    from src.routing.registry import get_registry
-
-    reg = get_registry()
-    known = {spec.code for spec in reg.solutions()} | {reg.system_of(d) or d for d in reg.db_ids()}
-    kept = [
-        s for s in dict.fromkeys(str(x) for x in selected_sources if x)
-        if s in known and (
-            not reg.is_non_db_system(s)
-            or is_source_allowed(s, current_user.get("allowed_sources"), current_user.get("role"))
-        )
-    ]
-    if len(kept) != len(selected_sources):
-        logger.info("소스 선택 인가·검증으로 제외: %s → %s", selected_sources, kept)
-    return kept or None
-
-
-def apply_apm_source_selection_authorization(
-    selected: list[str] | None, current_user: dict[str, Any]
-) -> list[str] | None:
-    """제니퍼 소스 선택(plans/147 · D-322)을 요청 경계에서 거른다 — 외부 입력이다.
-
-    레지스트리 소스(`solutions[apm].sources`) ∩ 사용 가능 소스(기동 정합 점검 · 없으면 전부)만
-    남기고
-    「전체」(`ALL_SOURCES`)는 허용한다. 소스 단위 권한은 없다 — 관측 소스 `apm` 권한이 없으면 전부
-    버린다(D-287 ⑤ · 처리기도 실행 경계에서 거부한다). 전부 걸러지면 None(선택 없음 — 사다리가
-    다음 단으로 정한다).
-    """
-    if not selected:
-        return None
-    from src.routing.apm_source_select import ALL_SOURCES, get_available_apm_sources
-    from src.routing.db_authz import is_source_allowed
-    from src.routing.registry import get_registry
-
-    if not is_source_allowed("apm", current_user.get("allowed_sources"), current_user.get("role")):
-        logger.info("제니퍼 소스 선택 제외(관측 소스 권한 없음): %d건 %s", len(selected),
-                    _apm_ids_preview(selected))
-        return None
-    available = get_available_apm_sources()
-    known = {
-        spec.id for spec in get_registry().sources_of("apm")
-        if available is None or spec.id in available
-    }
-    # 상한(심층 방어) — 넘는 개수·긴 항목은 거부(422)하지 않고 버린다(선택 칸 관례: 거르기)
-    given = list(dict.fromkeys(
-        s for s in (str(x) for x in selected[:_APM_IDS_MAX] if x) if len(s) <= _APM_ID_MAX_LEN))
-    kept = [s for s in given if s == ALL_SOURCES or s in known]
-    if len(kept) != len(selected):
-        logger.info("제니퍼 소스 선택 검증으로 제외: %d건 %s → %s", len(selected),
-                    _apm_ids_preview(selected), kept)
-    return kept or None
-
-
-#: 제니퍼 소스 선택 상한 — 개수 · 항목 길이(레지스트리 소스 id는 짧은 슬러그다)
-_APM_IDS_MAX = 32
-_APM_ID_MAX_LEN = 64
-
-
-def _apm_ids_preview(ids: list[Any], head: int = 3, width: int = 20) -> list[str]:
-    """로그용 — 외부 입력 목록의 앞 몇 개만, 각 항목은 잘라서."""
-    return [str(x)[:width] for x in ids[:head]]
-
-
-#: 소스 되묻기 글 답에 붙어도 되는 꼬리(plans/147 — 조사·맺음말·문장부호만 · 좁은 목록).
-#: 이 밖의 말이 섞이면 새 질문이다.
-_APM_ANSWER_TAIL = re.compile(
-    r"(?:조회해\s*주세요|조회해\s*줘|조회해요|조회|해\s*주세요|해\s*줘|해요|부탁해요|부탁합니다"
-    r"|부탁해|주세요|제니퍼|으로요|으로|로요|로|이요|만요|만|요|은|는|이|가|을|를|도|과|와|랑"
-    r"|[\s.,!?~·/])*"
-)
-#: 글 답 길이 상한 — 소스 단어 몇 개 + 꼬리를 넘는 문장은 새 질문으로 본다.
-_APM_ANSWER_MAX = 40
-
-
-def _apm_source_text_answer(
-    query: str, pending: Any, current_user: dict[str, Any]
-) -> tuple[list[str] | None, str | None] | None:
-    """직전 턴 소스 되묻기에 글로 답했으면 (선택 id, 다시 물을 답 문구), 아니면 None(plans/147).
-
-    조건: 체크포인트에 되묻기 대기(`apm_source_pending`)가 있고, 이번 턴 원문이 소스 단어·「전체」와
-    좁은 꼬리(`_APM_ANSWER_TAIL`)뿐이다(결정적 · 존 역질문 Q-2 「같은 원 질의 + 선택뿐」과 같은 결).
-    - 「전체」 단독 → `[ALL_SOURCES]` — 소스 단어가 함께 있으면(「공동존 전체」) 「전체」는
-      「그 소스 전부」로 읽고 무시한다(전 소스로 넓히지 않는다 · D-290 ⑥)
-    - 걸린 소스 1개 → `[그 id]`
-    - 2개 이상(「은행존」) → `(None, 원문)` — 사다리가 이 답 문구만 단어로 보고 다시 되묻는다.
-    관측 소스 `apm` 권한이 없으면 None(새 질문 — 처리기가 거부한다). 미연결 여부는 사다리가
-    판정한다.
-    """
-    from src.routing.apm_source_select import ALL_LABEL, ALL_SOURCES, match_source_terms
-    from src.routing.db_authz import is_source_allowed
-    from src.routing.registry import get_registry
-    from src.utils.query_gen_common import term_spans
-
-    if not isinstance(pending, dict) or not pending.get("query"):
-        return None
-    text = (query or "").strip()
-    if not text or len(text) > _APM_ANSWER_MAX:
-        return None
-    if not is_source_allowed("apm", current_user.get("allowed_sources"), current_user.get("role")):
-        return None
-    specs = get_registry().sources_of("apm")
-    spans = sorted(
-        span for term in {*(t for spec in specs for t in spec.terms), ALL_LABEL}
-        for span in term_spans(term, text)
-    )
-    if not spans:
-        return None
-    pieces, cursor = [], 0
-    for start, end in spans:
-        if start > cursor:
-            pieces.append(text[cursor:start])
-        cursor = max(cursor, end)
-    pieces.append(text[cursor:])
-    if not all(_APM_ANSWER_TAIL.fullmatch(p) for p in pieces):
-        return None
-    matched = match_source_terms(text, specs).source_ids
-    if not matched:
-        return ([ALL_SOURCES], None) if term_spans(ALL_LABEL, text) else None
-    if len(matched) == 1:
-        return [matched[0]], None
-    return None, text
-
-
-def _zone_clarification_or_none(
-    body: QueryRequest, checkpoint_state: dict | None, config, current_user: dict | None = None
-) -> dict | None:
-    """존 선택 역질문이 필요하면 clarification 컨텍스트를, 아니면 None을 반환한다."""
-    # 존 그룹 상호배타(D-143 후속3) — 혼합 선택·혼합 텍스트는 턴 유형 무관 최우선 발동
-    exclusive = _zone_group_exclusive_or_none(
-        body.query or "", body.selected_db_ids, config, current_user=current_user
-    )
-    if exclusive:
-        return exclusive
-    if body.selected_db_ids:
-        return None  # 선택 재개 턴 — 게이트 통과
-    query = body.query or ""
-    # 미등록 존 지목(plans/108 CU-B2 · G-3)은 아래 좁히기 조건("모든/전체"·"서버"·위치어 해소)
-    # 보다 **앞선다** — "판교존 서버 목록"은 대량 조회 표현이 아니라 종전 규칙에 걸리지 않았고,
-    # 그 결과 지목이 조용히 버려졌다. 지목이 틀렸다는 사실 자체가 되물을 이유다.
-    unregistered = _unregistered_zone_clarification_or_none(
-        query, config, current_user=current_user
-    )
-    if unregistered:
-        return unregistered
-    placeholder = _ZONE_PLACEHOLDER in query
-    if not placeholder:
-        # 후속 턴: previous_entities/DB 승계 우선(§4.2 비발동). 단 스코프 칩 "해제"(reset_db_scope,
-        # D-205)는 승계를 끊는 턴이므로 첫 턴 규칙으로 되돌린다 — 해제했는데 조용히 직전 존으로
-        # 가면 해제가 거짓말이 된다. 자연 소진(스코프 없는 후속 턴)은 현행 유지(SPEC Open Q1).
-        if checkpoint_state is not None and not getattr(body, "reset_db_scope", False):
-            return None
-        if not is_full_scan_query(query) or "서버" not in query:
-            return None  # 존 단위 대량 조회 의도 아님 — 과잉 역질문 방지
-        # 위치 표면어가 하나라도 해소되면 비발동 (D-065 결정적 보강이 처리)
-        from src.utils.query_gen_common import LOCATION_HINT_TERMS, term_in_text
-        if any(term_in_text(t, query) for t in LOCATION_HINT_TERMS):
-            return None
-        # 존 없는 소스만 이름으로 지목했으면 비발동(plans/132 N-10) — 그 소스에는 고를 존이 없다.
-        from src.routing.db_scope import names_only_zoneless_sources
-        if names_only_zoneless_sources(query):
-            return None
-        # 2단 다중 시스템이면 분류 뒤 task 게이트가 판정한다(plans/132 v1.5 후속 ①).
-        if _zone_gate_deferred_to_tasks(config, "존 게이트"):
-            return None
-    # 페이로드 조립은 공용 헬퍼로(D-143 후속3 — 상호배타 시 안내 문구·그룹 렌더 일원화)
-    return _authorized_zone_clarification(
-        config,
-        current_user,
-        query,
-        group_exclusive=config.multi_db.zone_group_exclusive,
-    )
-
-
-def _request_deadline(limit_sec: float) -> float | None:
-    """이 요청의 마감 시각(`time.monotonic()` 기준 초) — 그래프 입력 상태에 싣는다(plans/118 P-1).
-
-    재계획기가 남은 시간이 직전 한 바퀴보다 짧으면 후속을 붙이지 않는다. **요청 스코프 값이라
-    매 턴 라우트가 명시 초기화한다**(체크포인터는 델타만 병합한다 — CLAUDE.md Known Mistakes).
-    상한이 0 이하(상한 없음)면 None 이다 — 재계획기는 종전 동작이다.
-    """
-    return time.monotonic() + float(limit_sec) if limit_sec and limit_sec > 0 else None
-
-
-def _processing_limit(config: AppConfig, *, file_turn: bool) -> float:
-    """처리 상한(초) — 요청 후 **첫 답변(표 또는 첫 토큰)까지** (plans/119 T-5 · D-267 ⑦ G-7).
-
-    네 진입점이 이 함수 하나로 정한다(D-066). 파일 턴 — 양식 업로드와 폼필 답변 턴(FIX-18: 양식
-    재채움 전체 파이프라인이라 파일 런과 부하가 같다) — 은 `API_FILE_QUERY_TIMEOUT`, 나머지는
-    `API_QUERY_TIMEOUT`. 비스트림 경로는 첫 답변 개념이 없어 이 값이 곧 전체 상한이다(종전과
-    같다). 스트림 경로는 첫 답변 뒤 토큰 간 idle·전달 연장 상한으로 넘어간다(`StreamCaps`).
-    """
-    return config.server.file_query_timeout if file_turn else config.server.query_timeout
-
-
-def _sec_or(value: Any, default: float) -> float:
-    """초 단위 설정값 — 숫자가 아니면 기본값(테스트 대역·구 설정 호환).
-
-    필드명은 호출부가 `getattr(config.server, "필드", 기본)` 처럼 **상수로** 읽는다 — 이름을
-    변수로 넘기면 벤치 소비처 색인(`scripts/bench/axes.py`)이 동적 접근으로 보고 판정을 보류한다.
-    """
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
-
-
-def _bind_deadline(state: Mapping[str, Any], config: Any, *, stream: bool) -> Token[Any]:
-    """그래프 실행 구간에 요청 마감을 묶는다 (plans/119 T-1 · D-267 ⑥).
-
-    LLM 클라이언트는 그래프 상태를 받지 않으므로 같은 마감(`request_deadline`)과 서술 예약
-    (`API_ANSWER_RESERVE_SEC`)을 ContextVar로 묶는다(`src/utils/deadline.py`). asyncio 태스크는
-    **생성 시** 컨텍스트를 복사하므로 그래프 실행(비스트림 `wait_for` · 스트림 생산자 태스크)을
-    시작하기 **전에** 불러야 노드·서브에이전트 태스크까지 보인다. 네 진입점이 공유한다(D-066).
-    """
-    return bind_request_deadline(
-        state.get("request_deadline"),
-        _sec_or(config.server.answer_reserve_sec, 0),
-        # 전달 연장은 스트림만 — 최종 응답 스트림의 호출 상한이 처리 마감 + 이 값까지다(G-7).
-        # 비스트림은 첫 답변 개념이 없어 처리 상한이 곧 전체 상한이다.
-        _sec_or(config.server.stream_delivery_grace_sec, 0) if stream else 0.0,
-    )
-
-
-def _unbind_deadline(token: Token[Any]) -> None:
-    """`_bind_deadline` 해제. 스트림 제너레이터가 다른 컨텍스트에서 닫히면(비정상 종료 뒤 GC
-    정리) reset 이 거부된다 — 그 컨텍스트는 요청과 함께 사라지므로 무시한다."""
-    with contextlib.suppress(ValueError):
-        unbind_request_deadline(token)
-
-
-def _stream_watch(config: Any, limit_sec: float, start_time: float) -> StreamWatch:
-    """스트림 요청 한 건의 상한·타임라인 — 두 스트림 라우트가 같은 조립을 쓴다(D-066)."""
-    return StreamWatch(
-        limit_sec=limit_sec,
-        idle_sec=_sec_or(getattr(config.server, "stream_idle_timeout_sec", 30), 30),
-        grace_sec=_sec_or(getattr(config.server, "stream_delivery_grace_sec", 60), 60),
-        start_time=start_time,
-    )
-
-
-def _answer_prefix_text(event: Any) -> str:
-    """`answer_prefix` custom event 의 본문(코드 렌더 표 · plans/119 N-1). 없으면 빈 문자열."""
-    data = event.get("data")
-    text = data.get("text") if isinstance(data, dict) else None
-    return text if isinstance(text, str) else ""
-
-
-def _finish_timeline(
-    watch: StreamWatch, query_id: str, *, timeout_kind: str | None = None, done: bool = False
-) -> dict[str, Any]:
-    """단계 타임라인을 확정하고 서버 로그 한 줄로 남긴다 (plans/119 T-0 — 하네스 수집 대상)."""
-    timeline = watch.timeline_payload(timeout_kind=timeout_kind, done=done)
-    logger.info("[timeline] query_id=%s %s", query_id, json.dumps(timeline, ensure_ascii=False))
-    return timeline
-
-
 async def _partial_on_timeout(
     graph, thread_config: dict, tracked_rows: list[dict] | None = None
 ) -> PartialAnswer | None:
@@ -2350,35 +482,6 @@ async def _partial_on_timeout(
         await _get_checkpoint_state(graph, thread_config),
         task_scoped=isinstance(nodes, dict) and "intent_planner" in nodes,
     )
-
-
-#: 처리 상한 부분 결과 `done`을 정상 `done`과 같은 키 집합으로 맞추는 빈 값(plans/163 D6) — 값은
-#: 비스트림 부분 결과 응답(`QueryResponse` 기본값)과 같다. 화면은 이 키들을 참·거짓으로만 읽어
-#: (`if (!ctx) return` 등) 없는 키와 null이 같게 동작한다.
-_PARTIAL_DONE_DEFAULTS: dict[str, Any] = {
-    "executed_sql": None, "has_file": False, "file_name": None, "awaiting_approval": False,
-    "turn_count": None, "has_mapping_report": False, "form_fill_clarification": None,
-    "form_memory_panel": None, "db_scope": None, "clarification": None, "source_switch": None,
-}
-
-
-def _partial_response_data(
-    answer: PartialAnswer,
-    *,
-    query_id: str,
-    thread_id: str | None,
-    start_time: float,
-    limit_sec: float,
-) -> dict:
-    """부분 결과 응답 본문. 비스트림 반환과 스트림 `done` 이 **같은 값**을 쓴다(D-066)."""
-    return {
-        "query_id": query_id,
-        "status": PARTIAL_STATUS,
-        "response": render_partial_text(answer, limit_sec=limit_sec),
-        "thread_id": thread_id,
-        "row_count": len(answer.rows),
-        "processing_time_ms": (time.time() - start_time) * 1000,
-    }
 
 
 async def _timeout_sse_event(
@@ -2509,66 +612,352 @@ async def _stream_cut_sse_event(
     )
 
 
-def _sse_response(
-    gen: AsyncIterator[str], *, accel_buffering: bool = True
-) -> StreamingResponse:
-    """SSE 스트림 응답 — 네 스트림 진입의 헤더 단일 출처(plans/168 A1).
-
-    `accel_buffering=False`는 텍스트 스트림 선택 거부 응답의 현행 헤더(`X-Accel-Buffering`
-    없음)를 보존하기 위한 것이다 — 헤더 차이는 바이트 불변 대상이다.
-    """
-    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
-    if accel_buffering:
-        headers["X-Accel-Buffering"] = "no"
-    return StreamingResponse(gen, media_type="text/event-stream", headers=headers)
-
-
 @dataclass
 class PreGateResult:
-    """사전 게이트 조기 반환 판정(plans/168 A3).
+    """사전 게이트 조기 반환(plans/168 A3 · plans/179 W1a) — 네 진입이 같은 모양으로 렌더한다.
 
-    `payload`: `clarification` = 역질문 dict · `memory_delete` = `_form_memory_delete_or_none`
-    결과 dict. 선택 거부 반환·역질문 감사·응답 렌더는 네 진입에 남는다 — 진입별 배선을
-    정적으로 세는 가드(`test_plan104_db_authz.TestFourEntryPointsShareTheGate` ·
-    `test_plan121_plan_summary.test_route_wiring_counts` ·
-    `test_v7_audit_and_estimate.TestR6ClarificationAudit.test_every_pre_gate_entry_point_records_the_fire`)
-    가 진입마다 한 벌을 요구한다. 파일 두 진입은 존 역질문 하나뿐이라 인라인으로 둔다.
+    비스트림은 `QueryResponse(query_id, status, response, thread_id, **extra)`
+    (`_pre_gate_response`), 스트림은 done 1건 `{type, response, query_id, thread_id, **extra}`
+    (`_pre_gate_done`)이다.
+    `extra` 키 순서가 done JSON 키 순서다.
     """
 
-    kind: Literal["clarification", "memory_delete"]
-    payload: dict[str, Any]
+    kind: Literal["selection_denied", "clarification", "memory_delete"]
+    status: str
+    response: str
+    extra: dict[str, Any]
 
 
-async def _run_text_pre_gates(
-    body: QueryRequest,
-    checkpoint_state: dict[str, Any] | None,
-    config: Any,
+async def _run_pre_gates(
+    selected_db_ids: list[str] | None,
     current_user: dict[str, Any],
-) -> PreGateResult | None:
-    """텍스트 두 경로(`/query`·`/query/stream`)의 인가 뒤 사전 게이트 — 조기 반환 판정 또는 None.
+    config: Any,
+    *,
+    thread_id: str,
+    body: QueryRequest | None = None,
+    checkpoint_state: dict[str, Any] | None = None,
+    file_query: str = "",
+) -> tuple[list[str] | None, PreGateResult | None]:
+    """네 진입 공유 사전 게이트 — (인가한 DB 선택, 조기 반환 또는 None) (plans/179 W1a).
 
-    순서(현행 보존): 존 역질문(Plan 75 §4 — 결정적 게이트, 서버측 보류 상태 없음) →
-    (없으면) 범위 사전 선택(**모호성 해소 다음** — 2연속 질문 금지, D-176 후속4) →
-    (역질문이 없을 때만) 저장 값 패널 삭제(D-187 — 파이프라인·LLM 미경유).
-    역질문 감사는 호출자가 반환 직전에 한다. 게이트 함수는 호출 시점에 모듈 전역에서
-    찾는다(patch seam).
+    순서(현행 보존): DB 선택 인가(plans/104 C-4 · D-232 — 존 게이트보다 먼저) → 텍스트 진입만
+    소스 선택 인가(plans/132 N-10 · plans/147) → 거부면 사유를 싣고 반환(침묵 강등 금지) →
+    역질문 — 텍스트는 존 역질문(Plan 75 §4 — 결정적 게이트, 서버측 보류 상태 없음) → (없으면)
+    범위 사전 선택(**모호성 해소 다음** — 2연속 질문 금지, D-176 후속4), 파일은 파일 존 역질문
+    (Plan 75 §4 확장) → 역질문이면 발동 감사(plans/82 v7 R-6) 뒤 반환 → 텍스트만 (역질문이 없을 때)
+    저장 값 패널 삭제(D-187 — 파이프라인·LLM 미경유).
+
+    텍스트 진입(`body`)은 인가한 선택을 요청 본문에도 바로 적는다 — 뒤 게이트가 본문을 읽는다.
+    인가·게이트·감사 함수는 호출 시점에 모듈 전역에서 찾는다(patch seam).
     """
-    clarification = _zone_clarification_or_none(body, checkpoint_state, config, current_user)
-    if not clarification:
-        clarification = _scope_select_or_none(
-            body, checkpoint_state, config, current_user
+    selected_db_ids, denied = apply_selection_authorization(selected_db_ids, current_user)
+    if body is not None:
+        body.selected_db_ids = selected_db_ids
+        body.selected_sources = apply_source_selection_authorization(
+            body.selected_sources, current_user)
+        body.selected_apm_source_ids = apply_apm_source_selection_authorization(
+            body.selected_apm_source_ids, current_user)
+    if denied:
+        return selected_db_ids, PreGateResult(
+            "selection_denied", "success", SELECTION_DENIED_MESSAGE, {}
+        )
+    if body is not None:
+        clarification = _zone_clarification_or_none(body, checkpoint_state, config, current_user)
+        if not clarification:
+            clarification = _scope_select_or_none(
+                body, checkpoint_state, config, current_user
+            )
+    else:
+        clarification = _file_zone_clarification_or_none(
+            file_query, selected_db_ids, config, current_user
         )
     if clarification:
-        return PreGateResult("clarification", clarification)
-    mem_delete = await _form_memory_delete_or_none(body, checkpoint_state, config)
-    if mem_delete:
-        return PreGateResult("memory_delete", mem_delete)
-    return None
+        await _audit_clarification(clarification, current_user, thread_id)
+        return selected_db_ids, PreGateResult(
+            "clarification", "clarification", clarification["question"],
+            {"clarification": clarification, **_pre_gate_plan_summary()},  # plans/121 TP-0.1
+        )
+    if body is not None:
+        mem_delete = await _form_memory_delete_or_none(body, checkpoint_state, config)
+        if mem_delete:
+            return selected_db_ids, PreGateResult(
+                "memory_delete", "success", mem_delete["response"],
+                {"form_memory_panel": mem_delete["form_memory_panel"]},
+            )
+    return selected_db_ids, None
 
 
-async def _single_done_stream(payload: dict[str, Any]) -> AsyncGenerator[str, None]:
-    """done 이벤트 1건만 내는 SSE 스트림 — 네 스트림 진입의 조기 반환 공유(plans/168 A3)."""
-    yield _sse_event(payload)
+def _pre_gate_response(gate: PreGateResult, *, query_id: str, thread_id: str) -> QueryResponse:
+    """사전 게이트 조기 반환의 비스트림 응답(plans/179 W1a)."""
+    return QueryResponse(
+        query_id=query_id,
+        status=gate.status,
+        response=gate.response,
+        thread_id=thread_id,
+        **gate.extra,
+    )
+
+
+def _pre_gate_done(gate: PreGateResult, *, query_id: str, thread_id: str) -> dict[str, Any]:
+    """사전 게이트 조기 반환의 스트림 done 페이로드(plans/179 W1a) — 키 순서 = 현행."""
+    return {
+        "type": SSE_DONE,
+        "response": gate.response,
+        "query_id": query_id,
+        "thread_id": thread_id,
+        **gate.extra,
+    }
+
+
+@dataclass(frozen=True)
+class TurnContext:
+    """그래프 턴의 응답·저장·done 조립 입력(plans/179 W1a) — 네 진입의 차이를 값으로 받는다.
+
+    - `text_entry`: 텍스트 진입(`/query`·`/query/stream`) — 승인 대기 · 후단 존 역질문
+      (D-143 후속2) · 소스 전환(plans/132 W5) · 제니퍼 소스 칸(plans/147)을 싣는다. 파일 진입은
+      역질문이 기간 되묻기뿐이고 `source_switch`는 항상 null · done `awaiting_approval`은 항상
+      False다(plans/163 D6).
+    - `selected_db_ids`: 인가를 지난 DB 선택(`db_scope` 입력) · `user_query`: 질문 원문(저장 ·
+      스트림 절단 부분 결과) · `owner`: 결과 소유자(`current_user["sub"]`).
+    - `upload`: 파일 진입의 저장 추가 키(`uploaded_file`·`uploaded_file_name` — §14 첨부 원본 보관).
+      TODO(§14.5): `_results_store`는 인메모리 dict라 원본 누적 시 메모리 증가 · 다중 워커 유실
+      가능 — TTL/공유 스토리지 도입을 검토할 것.
+    """
+
+    query_id: str
+    thread_id: str
+    user_query: str
+    selected_db_ids: list[str] | None
+    owner: str | None
+    text_entry: bool
+    upload: dict[str, Any] | None = None
+
+
+def _turn_response_data(
+    ctx: TurnContext,
+    output: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    mode: Literal["json", "fallback", "astream"],
+    elapsed_ms: float,
+    executed_sql: str | None,
+    row_count: int,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """질의 응답 dict 한 벌(plans/179 W1a) + 기간 되묻기 페이로드(없으면 None).
+
+    `mode`: `json`(비스트림) · `fallback`(스트림 ainvoke 폴백) · `astream`(스트림 최종 출력).
+    `output`은 최종 출력(astream = 종료 노드 델타 · 그 밖 = ainvoke 결과), `state`는 누적 상태
+    (astream = 체크포인트+입력+노드 델타 누적 — plans/120 S-1 · 그 밖 = `output`)다.
+    키 순서는 진입·경로별 현행 그대로다(저장 dict 순서·SSE JSON 바이트에 들어간다):
+    - `/query`만: `awaiting_approval`·`approval_context`(HITL) · `scope_reexpand`를
+      `form_fill_clarification` 바로 뒤에 항상 싣는다(그 밖은 좁혔을 때만 · plans/123 W-2 ②).
+    - `/query/file`만: `clarification`은 값이 있을 때만 싣는다.
+    - astream: `dependency_notes`는 있을 때만(TP-11.8) · 기간 되묻기 결과 칸(D5) 덮어쓰기 없음.
+    """
+    query_json = mode == "json" and ctx.text_entry
+    file_json = mode == "json" and not ctx.text_entry
+    # 기간 되묻기(plans/122 T-3·T-4) — `input_parser → END`로 끝난 턴(누적 상태에서 판정)
+    time_clar = _time_clarification(state)
+    if ctx.text_entry:
+        status = "awaiting_approval" if output.get("awaiting_approval") else "completed"
+        # 존 역질문 후단 게이트(D-143 후속2): 파이프라인이 존 선택 요청으로 종결한 턴 —
+        # pre-gate와 동일 shape(status="clarification" + clarification)로 프론트 UI 재사용.
+        clarification = output.get("zone_clarification") or time_clar
+    else:
+        # 파일 경로의 역질문은 기간 되묻기뿐이다(후단 존 게이트는 텍스트 채널만 · D-143 후속2)
+        status = "completed"
+        clarification = time_clar
+    if clarification:
+        status = "clarification"
+    return {
+        "query_id": ctx.query_id,
+        "status": status,
+        "response": output.get("final_response", ""),
+        "thread_id": ctx.thread_id,
+        **({
+            "awaiting_approval": output.get("awaiting_approval", False),
+            "approval_context": output.get("approval_context"),
+        } if query_json else {}),
+        "has_file": output.get("output_file") is not None,
+        "file_name": output.get("output_file_name"),
+        "executed_sql": executed_sql,
+        "row_count": row_count,
+        "processing_time_ms": elapsed_ms,
+        "turn_count": _count_human_messages(output.get("messages", [])),
+        "has_mapping_report": output.get("mapping_report_md") is not None,
+        # HITL 폼필(D-151): 미해결 필드 역질문 패널 컨텍스트(결과와 함께 첨부)
+        "form_fill_clarification": output.get("form_fill_clarification"),
+        # 범위 재확장(D-176 후속4): 좁혀 조회했을 때만 붙는 사후 패널 — 폼필 패널과 동형.
+        # 기록만 남기고 되돌릴 길을 안 주면 좁히기의 비용이 이득을 넘는다(§5.3 불변식 6).
+        **({"scope_reexpand": build_scope_reexpand(
+            state.get("scope_narrowed"), state.get("user_query", "")
+        )} if query_json else {}),
+        "form_memory_panel": output.get("form_memory_panel"),  # D-187 저장 값 패널
+        # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
+        "db_scope": build_db_scope(state, selected_db_ids=ctx.selected_db_ids),
+        # 순차 처리 경과 노트(plans/88 · D-203) — astream은 있을 때만(TP-11.8)
+        **(_dependency_notes_field(state) if mode == "astream"
+           else {"dependency_notes": state.get("dependency_notes")}),
+        **_disclosures_field(state),  # plans/123 W-8
+        **_time_resolution_field(state),  # plans/122 T-4
+        **({} if query_json else _scope_reexpand_field(state)),  # plans/123 W-2 ②
+        **_plan_summary_field(state),  # TP-0.1
+        # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 키로 프론트 렌더
+        **({"clarification": clarification} if clarification or not file_json else {}),
+        # 소스 선택 기억을 쓴 턴의 「다른 소스로 보기」 칩(plans/132 W5) — 계획 노드가 쓰는 키라
+        # 누적 상태에서 읽는다. 파일 경로는 키만 같게 두고 값은 항상 null(소스 전환 미지원 —
+        # 칩이 양식 파일 없이 텍스트 경로로 재질의한다 · plans/163 D6)
+        "source_switch": state.get("source_switch") if ctx.text_entry else None,
+        **(_apm_source_fields(state) if ctx.text_entry else {}),  # plans/147 제니퍼 소스
+        # 기간 되묻기 턴 — 직전 턴 SQL·행·파일 미탑재(D5)
+        **({} if mode == "astream" else _clarify_turn_fields(time_clar)),
+    }, time_clar
+
+
+def _build_turn_response(
+    ctx: TurnContext,
+    config: Any,
+    result: dict[str, Any],
+    *,
+    mode: Literal["json", "fallback"],
+    elapsed_ms: float,
+) -> dict[str, Any]:
+    """ainvoke 결과 → 응답 dict(`chart` 포함) + 결과 저장.
+
+    비스트림·스트림 폴백이 공유한다(plans/179 W1a).
+    """
+    response_data, time_clar = _turn_response_data(
+        ctx, result, result, mode=mode, elapsed_ms=elapsed_ms,
+        executed_sql=_executed_sql(result), row_count=len(result.get("query_results", [])),
+    )
+    store_data = {
+        **response_data,
+        "output_file": result.get("output_file"),
+        "mapping_report_md": result.get("mapping_report_md"),
+        "query_results": result.get("query_results", []),
+        **_clarify_store_fields(time_clar),
+        **(ctx.upload or {}),  # §14 첨부 원본(파일 진입)
+    }
+    # 그래프 보기 신호(plans/160 A-2) — 저장하는 행 그대로로 판정한다(되묻기 턴은 빈 행)
+    tables = result_tables_of(result)
+    response_data["chart"] = chart_field(
+        config, store_data["query_results"], tables, status=response_data["status"])
+    _store_result(ctx.query_id, {
+        **store_data,
+        **viz_store_fields(response_data["chart"], user_query=ctx.user_query, tables=tables),
+    }, owner=ctx.owner)
+    return response_data
+
+
+def _build_stream_turn_response(
+    ctx: TurnContext,
+    config: Any,
+    output: dict[str, Any],
+    scope_state: dict[str, Any],
+    *,
+    elapsed_ms: float,
+    executed_sql: str | None,
+    row_count: int,
+    tracked_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """astream 최종 출력 → 응답 dict(`chart` 포함) + 결과 저장 — 두 스트림 진입 공유(plans/179 W1a).
+
+    응답 칸은 종료 노드 델타가 아니라 누적 상태(`scope_state`)에서 읽는다(plans/120 S-1).
+    저장 행은 최종 출력 행, 없으면 앞 노드에서 추적한 행(`tracked_rows`)이다.
+    """
+    response_data, _ = _turn_response_data(
+        ctx, output, scope_state, mode="astream", elapsed_ms=elapsed_ms,
+        executed_sql=executed_sql, row_count=row_count,
+    )
+    rows = output.get("query_results") or tracked_rows
+    # 그래프 보기 신호(plans/160 A-2) — 표 경계는 누적 상태에서
+    tables = result_tables_of(scope_state)
+    response_data["chart"] = chart_field(config, rows, tables, status=response_data["status"])
+    _store_result(ctx.query_id, {
+        **response_data,
+        "output_file": output.get("output_file"),
+        "mapping_report_md": output.get("mapping_report_md"),
+        "query_results": rows,
+        **viz_store_fields(response_data["chart"], user_query=ctx.user_query, tables=tables),
+        **(ctx.upload or {}),  # §14 첨부 원본(파일 진입)
+    }, owner=ctx.owner)
+    return response_data
+
+
+def _turn_done_payload(
+    ctx: TurnContext,
+    response_data: dict[str, Any],
+    output: dict[str, Any],
+    *,
+    elapsed_ms: float,
+    watch: StreamWatch,
+) -> dict[str, Any]:
+    """응답 dict → SSE done 페이로드 — 두 스트림 진입 × astream·폴백 공유(plans/179 W1a).
+
+    `output`은 승인 대기 판정 입력(astream 최종 출력 · 폴백 ainvoke 결과)이다 — 파일 진입은 승인
+    대기를 내지 않는다(astream·폴백 같은 키 · plans/163 D6).
+    """
+    return {
+        "type": SSE_DONE,
+        "response": response_data["response"],
+        "query_id": ctx.query_id,
+        "thread_id": ctx.thread_id,
+        "processing_time_ms": elapsed_ms,
+        "row_count": response_data["row_count"],
+        "executed_sql": response_data["executed_sql"],
+        "has_file": response_data["has_file"],
+        "file_name": response_data.get("file_name"),
+        "awaiting_approval": (
+            output.get("awaiting_approval", False) if ctx.text_entry else False
+        ),
+        "turn_count": response_data["turn_count"],
+        "has_mapping_report": response_data.get("has_mapping_report", False),
+        "form_fill_clarification": response_data.get("form_fill_clarification"),
+        "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
+        "db_scope": response_data.get("db_scope"),  # D-205
+        **_dependency_notes_field(response_data),  # TP-11.8
+        **_disclosures_field(response_data),  # plans/123 W-8
+        **_time_resolution_field(response_data),  # plans/122 T-4
+        **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
+        **_plan_summary_carry(response_data),  # TP-0.1
+        # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키(값이 없어도 null)
+        "clarification": response_data.get("clarification"),
+        "source_switch": response_data.get("source_switch"),  # plans/132 W5
+        **(_apm_source_fields(response_data) if ctx.text_entry else {}),  # plans/147
+        **chart_carry(response_data["chart"]),  # plans/160 A-2
+        **_rewrite_trace_fields(ctx.thread_id),  # plans/107 §4.9
+        "timeline": _finish_timeline(watch, ctx.query_id, done=True),  # plans/119 T-0 단계 타임라인
+    }
+
+
+async def _partial_timeout_response(
+    ctx: TurnContext,
+    config: Any,
+    graph: Any,
+    thread_config: dict[str, Any],
+    *,
+    start_time: float,
+    limit_sec: float,
+) -> dict[str, Any] | None:
+    """비스트림 처리 상한 초과 턴의 부분 결과 본문 + 저장 — 행이 없으면 None(호출자가 504).
+
+    G-E(plans/114 P-2): 조회까지 끝내고 서술에서 상한을 넘긴 턴은 행을 버리지 않는다 — 양식은
+    못 채웠어도 조회한 행은 준다. 두 비스트림 진입 공유(plans/179 W1a).
+    """
+    partial = await _partial_on_timeout(graph, thread_config)
+    if partial is None:
+        return None
+    data = _partial_response_data(
+        partial, query_id=ctx.query_id, thread_id=ctx.thread_id,
+        start_time=start_time, limit_sec=limit_sec,
+    )
+    chart = chart_field(config, partial.rows, None)   # plans/160 A-2
+    data.update(chart_carry(chart))
+    _store_result(ctx.query_id, {
+        **data, "query_results": partial.rows,
+        **viz_store_fields(chart, user_query=ctx.user_query, tables=None),
+    }, owner=ctx.owner)
+    return data
 
 
 async def _stream_graph_turn(
@@ -2578,27 +967,17 @@ async def _stream_graph_turn(
     graph_input: Any,
     thread_config: dict[str, Any],
     *,
+    ctx: TurnContext,
     scope_seed: dict[str, Any],
     limit_sec: float,
-    query_id: str,
-    thread_id: str,
-    current_user: dict[str, Any],
-    user_query: str,
     fallback_timeout_message: str,
-    stream_done: Callable[..., tuple[dict[str, Any], bool]],
-    fallback_done: Callable[..., dict[str, Any]],
 ) -> AsyncGenerator[str, None]:
     """두 스트림 진입(`/query/stream`·`/query/file/stream`)의 SSE 본문 공유(plans/168 A1).
 
     astream 루프(상한 절단·heartbeat·진행·노드 시작/완료·토큰) → 최종 출력의 토큰 보충·META →
-    `stream_done` → done. astream 이 출력 없이 끝나거나 미지원이면 ainvoke 폴백 → 토큰·META →
-    `fallback_done` → done. 경로마다 다른 응답·저장·done 페이로드 조립은 두 빌더(호출자 클로저)가
-    맡는다 — 진입별 배선을 정적으로 세는 가드가 경로마다 한 벌을 요구한다.
-
-    - `stream_done(output, *, elapsed_ms, _final_row_count, _sql_state, _scope_state,
-      _tracked_query_results, _watch)` → `(done 페이로드, 그래프 끝까지 받을지)`.
-    - `fallback_done(result, *, final_response, elapsed_ms, _time_clar, _turn_fields, _watch)`
-      → done 페이로드.
+    응답·저장(`_build_stream_turn_response`) → done. astream 이 출력 없이 끝나거나 미지원이면
+    ainvoke 폴백 → 토큰·META → 응답·저장(`_build_turn_response`) → done. done 페이로드는
+    `_turn_done_payload` 한 벌이다 — 진입별 차이는 `ctx`(`TurnContext`)가 싣는다(plans/179 W1a).
 
     빌더는 이 함수의 `try` 안에서 불린다 — 빌더 예외도 종전대로 폴백·오류 이벤트로 간다.
     `scope_seed`(db_scope 누적 상태의 시작값)는 노드 델타가 덮어쓰므로 호출자가 새 dict로 넘긴다.
@@ -2650,11 +1029,11 @@ async def _stream_graph_turn(
                                 graph, thread_config,
                                 watch=_watch, kind=_cut,
                                 tracked_rows=_tracked_query_results,
-                                query_id=query_id, thread_id=thread_id,
+                                query_id=ctx.query_id, thread_id=ctx.thread_id,
                                 trace=_trace,
                                 message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-                                owner=current_user.get("sub"),
-                                config=config, user_query=user_query,   # plans/160 A-2
+                                owner=ctx.owner,
+                                config=config, user_query=ctx.user_query,   # plans/160 A-2
                             )
                             return
                         if _ev_kind == "tick":
@@ -2779,19 +1158,28 @@ async def _stream_graph_turn(
                                     "row_count": _final_row_count,
                                 })
 
-                                _done, _drain = stream_done(
-                                    output, elapsed_ms=elapsed_ms,
-                                    _final_row_count=_final_row_count,
-                                    _sql_state=_sql_state, _scope_state=_scope_state,
-                                    _tracked_query_results=_tracked_query_results,
-                                    _watch=_watch,
+                                _response = _build_stream_turn_response(
+                                    ctx, config, output, _scope_state,
+                                    elapsed_ms=elapsed_ms,
+                                    executed_sql=_executed_sql(_sql_state),
+                                    row_count=_final_row_count,
+                                    tracked_rows=_tracked_query_results,
+                                )
+                                _done = _turn_done_payload(
+                                    ctx, _response, output,
+                                    elapsed_ms=elapsed_ms, watch=_watch,
+                                )
+                                _drain = ctx.text_entry and bool(
+                                    output.get("apm_source_pending")
+                                    or output.get("apm_source_scope")
                                 )
                                 yield _sse_event(_done)
                                 if _drain:
                                     # 제니퍼 소스 되묻기 대기·승계(plans/147)는 종료
                                     # 노드가 쓰는 스레드 칸이다 — 바로 끝내면 생산자가
                                     # 취소돼 그 노드의 체크포인트 쓰기가 사라진다
-                                    # (LangGraph 실측). 이 턴만 그래프 끝까지 받는다.
+                                    # (LangGraph 실측). 이 턴만 그래프 끝까지 받는다
+                                    # (텍스트 진입만 — 파일 진입은 제니퍼 소스 칸이 없다).
                                     async for _ in _events:
                                         pass
                                 return
@@ -2824,9 +1212,11 @@ async def _stream_graph_turn(
             **{k: v for k, v in _turn_fields.items() if k in ("executed_sql", "row_count")},
         })
 
-        yield _sse_event(fallback_done(
-            result, final_response=final_response, elapsed_ms=elapsed_ms,
-            _time_clar=_time_clar, _turn_fields=_turn_fields, _watch=_watch,
+        _response = _build_turn_response(
+            ctx, config, result, mode="fallback", elapsed_ms=elapsed_ms,
+        )
+        yield _sse_event(_turn_done_payload(
+            ctx, _response, result, elapsed_ms=elapsed_ms, watch=_watch,
         ))
 
     except TimeoutError:  # asyncio.TimeoutError 와 같은 클래스(3.11+)
@@ -2835,17 +1225,17 @@ async def _stream_graph_turn(
             graph, thread_config,
             watch=_watch, kind=CUT_PROCESSING,
             tracked_rows=_tracked_query_results,
-            query_id=query_id, thread_id=thread_id,
+            query_id=ctx.query_id, thread_id=ctx.thread_id,
             trace=_trace,
             message=fallback_timeout_message,
-            owner=current_user.get("sub"),
-            config=config, user_query=user_query,   # plans/160 A-2
+            owner=ctx.owner,
+            config=config, user_query=ctx.user_query,   # plans/160 A-2
         )
     except Exception as e:
         yield _sse_event(_stream_error_payload(
             user_error_detail(_GRAPH_ERROR_MESSAGE, e, logger, request),   # plans/163 S3
             _trace, code="exception", start_time=start_time, limit_sec=limit_sec,
-            timeline=_finish_timeline(_watch, query_id),
+            timeline=_finish_timeline(_watch, ctx.query_id),
         ))
     finally:
         _unbind_deadline(_deadline_token)
@@ -2897,43 +1287,16 @@ async def process_query(
     # 체크포인트에서 이전 State 확인
     checkpoint_state = await _get_checkpoint_state(graph, thread_config)
 
-    # 요청이 지정한 DB 선택의 인가(plans/104 C-4) — 존 게이트보다 먼저 건다.
-    body.selected_db_ids, _selection_denied = apply_selection_authorization(
-        body.selected_db_ids, current_user
+    # DB·소스 선택 인가(plans/104 C-4 — 존 게이트보다 먼저) → 거부 반환 → 사전 게이트(존 역질문·
+    # 범위 사전 선택 → 저장 값 패널 삭제) — 파이프라인 실행 전 결정적 조기 반환(네 진입 공유 ·
+    # plans/179 W1a)
+    body.selected_db_ids, gate = await _run_pre_gates(
+        body.selected_db_ids, current_user, config, thread_id=thread_id,
+        body=body, checkpoint_state=checkpoint_state,
     )
-    body.selected_sources = apply_source_selection_authorization(
-        body.selected_sources, current_user)
-    body.selected_apm_source_ids = apply_apm_source_selection_authorization(
-        body.selected_apm_source_ids, current_user)
-    if _selection_denied:
-        return await turn.response(QueryResponse(
-            query_id=query_id,
-            status="success",
-            response=SELECTION_DENIED_MESSAGE,
-            thread_id=thread_id,
-        ))
-
-    # 사전 게이트(존 역질문·범위 사전 선택 → 저장 값 패널 삭제) — 파이프라인 실행 전
-    # 결정적 조기 반환(/query/stream과 대칭 · plans/168 A3)
-    gate = await _run_text_pre_gates(body, checkpoint_state, config, current_user)
-    if gate is not None and gate.kind == "clarification":
-        clarification = gate.payload
-        await _audit_clarification(clarification, current_user, thread_id)
-        return await turn.response(QueryResponse(
-            query_id=query_id,
-            status="clarification",
-            response=clarification["question"],
-            thread_id=thread_id,
-            clarification=clarification,
-            **_pre_gate_plan_summary(),  # plans/121 TP-0.1
-        ))
     if gate is not None:
-        return await turn.response(QueryResponse(
-            query_id=query_id,
-            status="success",
-            response=gate.payload["response"],
-            thread_id=thread_id,
-            form_memory_panel=gate.payload["form_memory_panel"],
+        return cast(QueryResponse, await turn.response(
+            _pre_gate_response(gate, query_id=query_id, thread_id=thread_id)
         ))
 
     # 승인 의사 해소는 async(LLM 보조 옵트인)라 동기 조립 헬퍼 밖에서 수행한다 — 두 텍스트
@@ -2952,6 +1315,10 @@ async def process_query(
         config, file_turn=bool(input_state.get("form_fill_answers"))
     )
     input_state["request_deadline"] = _request_deadline(effective_timeout)   # plans/118 P-1
+    ctx = TurnContext(
+        query_id=query_id, thread_id=thread_id, user_query=body.query,
+        selected_db_ids=body.selected_db_ids, owner=current_user.get("sub"), text_entry=True,
+    )
 
     _deadline_token = _bind_deadline(input_state, config, stream=False)   # plans/119 T-1 — wait_for 전에 묶는다
     try:
@@ -2960,21 +1327,13 @@ async def process_query(
             timeout=effective_timeout,
         )
     except asyncio.TimeoutError:
-        # G-E(plans/114 P-2): 조회까지 끝내고 서술에서 상한을 넘긴 턴은 행을 버리지 않는다.
-        # 행이 없으면 종전 504 그대로다.
-        partial = await _partial_on_timeout(graph, thread_config)
+        # G-E(plans/114 P-2) — 행이 있으면 부분 결과, 없으면 종전 504 그대로다.
+        partial = await _partial_timeout_response(
+            ctx, config, graph, thread_config,
+            start_time=start_time, limit_sec=effective_timeout,
+        )
         if partial is not None:
-            data = _partial_response_data(
-                partial, query_id=query_id, thread_id=thread_id,
-                start_time=start_time, limit_sec=effective_timeout,
-            )
-            chart = chart_field(config, partial.rows, None)   # plans/160 A-2
-            data.update(chart_carry(chart))
-            _store_result(query_id, {
-                **data, "query_results": partial.rows,
-                **viz_store_fields(chart, user_query=body.query, tables=None),
-            }, owner=current_user.get("sub"))
-            return await turn.response(QueryResponse(**data))
+            return cast(QueryResponse, await turn.response(QueryResponse(**partial)))
         raise HTTPException(
             status_code=504,
             detail="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
@@ -2989,71 +1348,11 @@ async def process_query(
         _unbind_deadline(_deadline_token)
 
     elapsed_ms = (time.time() - start_time) * 1000
-
-    # 응답 구성
-    status = "awaiting_approval" if result.get("awaiting_approval") else "completed"
-    # 존 역질문 후단 게이트(D-143 후속2): 파이프라인이 존 선택 요청으로 종결한 턴 —
-    # pre-gate와 동일 shape(status="clarification" + clarification)로 프론트 UI 재사용.
-    # 기간 되묻기(plans/122 T-3·T-4)도 같은 채널이다 — `input_parser → END`로 끝난 턴
-    time_clar = _time_clarification(result)
-    zone_clarification = result.get("zone_clarification") or time_clar
-    if zone_clarification:
-        status = "clarification"
-    turn_count = _count_human_messages(result.get("messages", []))
-
-    response_data = {
-        "query_id": query_id,
-        "status": status,
-        "response": result.get("final_response", ""),
-        "thread_id": thread_id,
-        "awaiting_approval": result.get("awaiting_approval", False),
-        "approval_context": result.get("approval_context"),
-        "has_file": result.get("output_file") is not None,
-        "file_name": result.get("output_file_name"),
-        "executed_sql": _executed_sql(result),
-        "row_count": len(result.get("query_results", [])),
-        "processing_time_ms": elapsed_ms,
-        "turn_count": turn_count,
-        "has_mapping_report": result.get("mapping_report_md") is not None,
-        # HITL 폼필(D-151): 미해결 필드 역질문 패널 컨텍스트(결과와 함께 첨부)
-        "form_fill_clarification": result.get("form_fill_clarification"),
-        # 범위 재확장(D-176 후속4): 좁혀 조회했을 때만 붙는 사후 패널 — 폼필 패널과 동형.
-        # 기록만 남기고 되돌릴 길을 안 주면 좁히기의 비용이 이득을 넘는다(§5.3 불변식 6).
-        "scope_reexpand": build_scope_reexpand(
-            result.get("scope_narrowed"), result.get("user_query", "")
-        ),
-        "form_memory_panel": result.get("form_memory_panel"),  # D-187 저장 값 패널
-        # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
-        "db_scope": build_db_scope(result, selected_db_ids=body.selected_db_ids),
-        # 순차 처리 경과 노트(plans/88 · D-203) — 본문 블록의 구조화본
-        "dependency_notes": result.get("dependency_notes"),
-        **_disclosures_field(result),  # plans/123 W-8
-        **_time_resolution_field(result),  # plans/122 T-4
-        **_plan_summary_field(result),  # TP-0.1
-        # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 키로 프론트 렌더
-        "clarification": zone_clarification,
-        # 소스 선택 기억을 쓴 턴의 「다른 소스로 보기」 칩(plans/132 W5)
-        "source_switch": result.get("source_switch"),
-        **_apm_source_fields(result),  # plans/147 제니퍼 소스 되묻기·승계
-        **_clarify_turn_fields(time_clar),  # 기간 되묻기 턴 — 직전 턴 SQL·행·파일 미탑재(D5)
-    }
-    store_data = {
-        **response_data,
-        "output_file": result.get("output_file"),
-        "mapping_report_md": result.get("mapping_report_md"),
-        "query_results": result.get("query_results", []),
-        **_clarify_store_fields(time_clar),
-    }
-    # 그래프 보기 신호(plans/160 A-2) — 저장하는 행 그대로로 판정한다(되묻기 턴은 빈 행)
-    tables = result_tables_of(result)
-    response_data["chart"] = chart_field(
-        config, store_data["query_results"], tables, status=response_data["status"])
-    _store_result(query_id, {
-        **store_data,
-        **viz_store_fields(response_data["chart"], user_query=body.query, tables=tables),
-    }, owner=current_user.get("sub"))
-
-    return await turn.response(QueryResponse(**response_data))
+    # 응답 구성·결과 저장 — 네 진입 공유(plans/179 W1a)
+    response_data = _build_turn_response(
+        ctx, config, result, mode="json", elapsed_ms=elapsed_ms
+    )
+    return cast(QueryResponse, await turn.response(QueryResponse(**response_data)))
 
 
 @router.post(
@@ -3093,44 +1392,19 @@ async def process_query_stream(
     # 체크포인트에서 이전 State 확인
     checkpoint_state = await _get_checkpoint_state(graph, thread_config)
 
-    # 요청이 지정한 DB 선택의 인가(plans/104 C-4) — /query와 대칭
-    body.selected_db_ids, _selection_denied = apply_selection_authorization(
-        body.selected_db_ids, current_user
+    # 선택 인가 → 거부 반환 → 사전 게이트 — /query와 대칭(네 진입 공유 · plans/179 W1a)
+    body.selected_db_ids, gate = await _run_pre_gates(
+        body.selected_db_ids, current_user, config, thread_id=thread_id,
+        body=body, checkpoint_state=checkpoint_state,
     )
-    body.selected_sources = apply_source_selection_authorization(
-        body.selected_sources, current_user)
-    body.selected_apm_source_ids = apply_apm_source_selection_authorization(
-        body.selected_apm_source_ids, current_user)
-    if _selection_denied:
-        # 이 응답만 현행대로 `X-Accel-Buffering` 헤더가 없다(바이트 불변 보존)
-        return _sse_response(turn.stream(_single_done_stream({
-            "type": SSE_DONE,
-            "response": SELECTION_DENIED_MESSAGE,
-            "query_id": query_id,
-            "thread_id": thread_id,
-        })), accel_buffering=False)
-
-    # 사전 게이트(존 역질문·범위 사전 선택 → 저장 값 패널 삭제) — /query와 대칭(plans/168 A3)
-    gate = await _run_text_pre_gates(body, checkpoint_state, config, current_user)
-    if gate is not None and gate.kind == "clarification":
-        clarification = gate.payload
-        await _audit_clarification(clarification, current_user, thread_id)
-        return _sse_response(turn.stream(_single_done_stream({
-            "type": SSE_DONE,
-            "response": clarification["question"],
-            "query_id": query_id,
-            "thread_id": thread_id,
-            "clarification": clarification,
-            **_pre_gate_plan_summary(),  # plans/121 TP-0.1
-        })))
     if gate is not None:
-        return _sse_response(turn.stream(_single_done_stream({
-            "type": SSE_DONE,
-            "response": gate.payload["response"],
-            "query_id": query_id,
-            "thread_id": thread_id,
-            "form_memory_panel": gate.payload["form_memory_panel"],
-        })))
+        # 선택 거부 응답만 현행대로 `X-Accel-Buffering` 헤더가 없다(바이트 불변 보존)
+        return _sse_response(
+            turn.stream(_single_done_stream(
+                _pre_gate_done(gate, query_id=query_id, thread_id=thread_id)
+            )),
+            accel_buffering=gate.kind != "selection_denied",
+        )
 
     # /query와 동일 조립(단일 출처) — SSE 경로에만 D-064 초기화가 빠졌던 비대칭 재발 방지
     approval = await _resolve_turn_approval(body, checkpoint_state, config)
@@ -3145,195 +1419,19 @@ async def process_query_stream(
         config, file_turn=bool(input_state.get("form_fill_answers"))
     )
     input_state["request_deadline"] = _request_deadline(effective_timeout)   # plans/118 P-1
+    ctx = TurnContext(
+        query_id=query_id, thread_id=thread_id, user_query=body.query,
+        selected_db_ids=body.selected_db_ids, owner=current_user.get("sub"), text_entry=True,
+    )
 
-    def _stream_done(
-        output: dict[str, Any], *, elapsed_ms: float, _final_row_count: int,
-        _sql_state: dict[str, Any], _scope_state: dict[str, Any],
-        _tracked_query_results: list[dict[str, Any]], _watch: StreamWatch,
-    ) -> tuple[dict[str, Any], bool]:
-        """astream 최종 출력 → 응답·저장·done 페이로드(plans/168 A1).
-
-        둘째 값 = 그래프 끝까지 받을지(제니퍼 소스 되묻기 대기·승계 — plans/147).
-        """
-        status = "awaiting_approval" if output.get("awaiting_approval") else "completed"
-        # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 shape
-        # 기간 되묻기(plans/122 T-3·T-4) — 누적 상태에서 판정
-        _zone_clar = (output.get("zone_clarification")
-                      or _time_clarification(_scope_state))
-        if _zone_clar:
-            status = "clarification"
-        turn_count = _count_human_messages(output.get("messages", []))
-
-        response_data = {
-            "query_id": query_id,
-            "status": status,
-            "response": output.get("final_response", ""),
-            "thread_id": thread_id,
-            "has_file": output.get("output_file") is not None,
-            "file_name": output.get("output_file_name"),
-            "executed_sql": _executed_sql(_sql_state),
-            "row_count": _final_row_count,
-            "processing_time_ms": elapsed_ms,
-            "turn_count": turn_count,
-            "has_mapping_report": output.get("mapping_report_md") is not None,
-            # HITL 폼필(D-151): 역질문 패널 컨텍스트
-            "form_fill_clarification": output.get("form_fill_clarification"),
-            "form_memory_panel": output.get("form_memory_panel"),  # D-187 저장 값 패널
-            # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
-            # 종료 노드 델타가 아니라 누적 상태로(plans/120 S-1)
-            "db_scope": build_db_scope(_scope_state, selected_db_ids=body.selected_db_ids),
-            **_dependency_notes_field(_scope_state),  # TP-11.8
-            **_disclosures_field(_scope_state),  # plans/123 W-8
-            **_time_resolution_field(_scope_state),  # plans/122 T-4
-            **_scope_reexpand_field(_scope_state),  # plans/123 W-2 ②
-            **_plan_summary_field(_scope_state),  # TP-0.1
-            "clarification": _zone_clar,
-            # 「다른 소스로 보기」(plans/132 W5) — 계획
-            # 노드가 쓰는 키라 누적 상태에서 읽는다
-            "source_switch": _scope_state.get("source_switch"),
-            **_apm_source_fields(_scope_state),  # plans/147
-        }
-        _rows = output.get("query_results") or _tracked_query_results
-        # 그래프 보기 신호(plans/160 A-2) — 표 경계는 누적 상태에서
-        _tables = result_tables_of(_scope_state)
-        response_data["chart"] = chart_field(
-            config, _rows, _tables, status=response_data["status"])
-        _store_result(query_id, {
-            **response_data,
-            "output_file": output.get("output_file"),
-            "mapping_report_md": output.get("mapping_report_md"),
-            "query_results": _rows,
-            **viz_store_fields(response_data["chart"],
-                               user_query=body.query, tables=_tables),
-        }, owner=current_user.get("sub"))
-
-        return {
-            "type": SSE_DONE,
-            "response": response_data["response"],
-            "query_id": query_id,
-            "thread_id": thread_id,
-            "processing_time_ms": elapsed_ms,
-            "row_count": response_data["row_count"],
-            "executed_sql": response_data["executed_sql"],
-            "has_file": response_data["has_file"],
-            "file_name": response_data.get("file_name"),
-            "awaiting_approval": output.get("awaiting_approval", False),
-            "turn_count": turn_count,
-            "has_mapping_report": response_data.get("has_mapping_report", False),
-            "form_fill_clarification": response_data.get("form_fill_clarification"),
-            "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
-            "db_scope": response_data.get("db_scope"),  # D-205
-            **_dependency_notes_field(response_data),  # TP-11.8
-            **_disclosures_field(response_data),  # plans/123 W-8
-            **_time_resolution_field(response_data),  # plans/122 T-4
-            **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
-            **_plan_summary_carry(response_data),  # TP-0.1
-            # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
-            "clarification": response_data.get("clarification"),
-            "source_switch": response_data.get("source_switch"),
-            **_apm_source_fields(response_data),  # plans/147
-            **chart_carry(response_data["chart"]),  # plans/160 A-2
-            **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
-            # 단계 타임라인(plans/119 T-0)
-            "timeline": _finish_timeline(_watch, query_id, done=True),
-        }, bool(output.get("apm_source_pending") or output.get("apm_source_scope"))
-
-    def _fallback_done(
-        result: dict[str, Any], *, final_response: str, elapsed_ms: float,
-        _time_clar: dict[str, Any] | None, _turn_fields: dict[str, Any], _watch: StreamWatch,
-    ) -> dict[str, Any]:
-        """ainvoke 폴백 결과 → 응답·저장·done 페이로드(plans/168 A1)."""
-        status = "awaiting_approval" if result.get("awaiting_approval") else "completed"
-        # 존 역질문 후단 게이트(D-143 후속2) — pre-gate와 동일 shape
-        _zone_clar = result.get("zone_clarification") or _time_clar
-        if _zone_clar:
-            status = "clarification"
-        turn_count = _count_human_messages(result.get("messages", []))
-
-        response_data = {
-            "query_id": query_id,
-            "status": status,
-            "response": final_response,
-            "thread_id": thread_id,
-            "has_file": result.get("output_file") is not None,
-            "file_name": result.get("output_file_name"),
-            "executed_sql": _executed_sql(result),
-            "row_count": len(result.get("query_results", [])),
-            "processing_time_ms": elapsed_ms,
-            "turn_count": turn_count,
-            "has_mapping_report": result.get("mapping_report_md") is not None,
-            # HITL 폼필(D-151): 역질문 패널 컨텍스트
-            "form_fill_clarification": result.get("form_fill_clarification"),
-            "form_memory_panel": result.get("form_memory_panel"),  # D-187 저장 값 패널
-            # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
-            "db_scope": build_db_scope(result, selected_db_ids=body.selected_db_ids),
-            "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
-            **_disclosures_field(result),  # plans/123 W-8
-            **_time_resolution_field(result),  # plans/122 T-4
-            **_scope_reexpand_field(result),  # plans/123 W-2 ②
-            **_plan_summary_field(result),  # TP-0.1
-            "clarification": _zone_clar,
-            "source_switch": result.get("source_switch"),  # plans/132 W5
-            **_apm_source_fields(result),  # plans/147
-            **_turn_fields,  # 기간 되묻기 턴(D5)
-        }
-        _store_data = {
-            **response_data,
-            "output_file": result.get("output_file"),
-            "mapping_report_md": result.get("mapping_report_md"),
-            "query_results": result.get("query_results", []),
-            **_clarify_store_fields(_time_clar),
-        }
-        # 그래프 보기 신호(plans/160 A-2) — 저장하는 행 그대로로 판정한다
-        _tables = result_tables_of(result)
-        response_data["chart"] = chart_field(
-            config, _store_data["query_results"], _tables, status=response_data["status"])
-        _store_result(query_id, {
-            **_store_data,
-            **viz_store_fields(response_data["chart"], user_query=body.query, tables=_tables),
-        }, owner=current_user.get("sub"))
-
-        return {
-            "type": SSE_DONE,
-            "response": response_data["response"],
-            "query_id": query_id,
-            "thread_id": thread_id,
-            "processing_time_ms": elapsed_ms,
-            "row_count": response_data["row_count"],
-            "executed_sql": response_data["executed_sql"],
-            "has_file": response_data["has_file"],
-            "file_name": response_data.get("file_name"),
-            # astream 경로와 같은 키(plans/163 D6) — 폴백에서만 빠져 있었다
-            "awaiting_approval": result.get("awaiting_approval", False),
-            "turn_count": turn_count,
-            "has_mapping_report": response_data.get("has_mapping_report", False),
-            "form_fill_clarification": response_data.get("form_fill_clarification"),
-            "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
-            "db_scope": response_data.get("db_scope"),  # D-205
-            **_dependency_notes_field(response_data),  # TP-11.8
-            **_disclosures_field(response_data),  # plans/123 W-8
-            **_time_resolution_field(response_data),  # plans/122 T-4
-            **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
-            **_plan_summary_carry(response_data),  # TP-0.1
-            # 존 역질문 후단 게이트(D-143 후속2) — pre-gate done 이벤트와 동일 키
-            "clarification": response_data.get("clarification"),
-            "source_switch": response_data.get("source_switch"),  # plans/132 W5
-            **_apm_source_fields(response_data),  # plans/147
-            **chart_carry(response_data["chart"]),  # plans/160 A-2
-            **_rewrite_trace_fields(thread_id),  # plans/107 §4.9
-            "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0
-        }
-
-    # 공통 SSE 본문(plans/168 A1) — 응답·저장·done 조립만 위 두 빌더가 경로별로 맡는다
+    # 공통 SSE 본문(plans/168 A1) — 응답·저장·done 조립도 공유 빌더 한 벌(plans/179 W1a)
     return _sse_response(turn.stream(_stream_graph_turn(
         request, graph, config, input_state, thread_config,
+        ctx=ctx,
         # db_scope 입력 — 체크포인트 + 입력 + 노드 델타 누적(plans/120 S-1 · ainvoke 결과와 같은 값)
         scope_seed={**(checkpoint_state or {}), **input_state},
         limit_sec=effective_timeout,
-        query_id=query_id, thread_id=thread_id,
-        current_user=current_user, user_query=body.query,
         fallback_timeout_message="처리 시간이 초과되었습니다. 질의를 단순화해주세요.",
-        stream_done=_stream_done, fallback_done=_fallback_done,
     )))
 
 
@@ -3382,29 +1480,15 @@ async def process_file_query(
 
     # 1.5 존 역질문 게이트 (Plan 75 §4 파일 경로 확장) — 무거운 처리 전에 조기 반환
     selected_list = _parse_selected_db_ids_form(selected_db_ids)
-    # 요청이 지정한 DB 선택의 인가(plans/104 C-4 · D-232) — 텍스트 경로와 대칭
-    selected_list, _selection_denied = apply_selection_authorization(
-        selected_list, current_user
+    # 요청이 지정한 DB 선택의 인가(plans/104 C-4 · D-232) → 거부 반환 → 파일 존 역질문 —
+    # 텍스트 경로와 대칭(네 진입 공유 · plans/179 W1a)
+    selected_list, gate = await _run_pre_gates(
+        selected_list, current_user, request.app.state.config,
+        thread_id=actual_thread_id, file_query=query,
     )
-    if _selection_denied:
-        return await turn.response(QueryResponse(
-            query_id=query_id,
-            status="success",
-            response=SELECTION_DENIED_MESSAGE,
-            thread_id=actual_thread_id,
-        ))
-    clarification = _file_zone_clarification_or_none(
-        query, selected_list, request.app.state.config, current_user
-    )
-    if clarification:
-        await _audit_clarification(clarification, current_user, actual_thread_id)
-        return await turn.response(QueryResponse(
-            query_id=query_id,
-            status="clarification",
-            response=clarification["question"],
-            thread_id=actual_thread_id,
-            clarification=clarification,
-            **_pre_gate_plan_summary(),  # plans/121 TP-0.1
+    if gate is not None:
+        return cast(QueryResponse, await turn.response(
+            _pre_gate_response(gate, query_id=query_id, thread_id=actual_thread_id)
         ))
 
     # 2. 파일 크기 검증 (최대 10MB)
@@ -3469,6 +1553,11 @@ async def process_file_query(
     initial_state["request_deadline"] = _request_deadline(limit_sec)
 
     thread_config = {"configurable": {"thread_id": actual_thread_id}}
+    ctx = TurnContext(
+        query_id=query_id, thread_id=actual_thread_id, user_query=query,
+        selected_db_ids=selected_list, owner=current_user.get("sub"), text_entry=False,
+        upload={"uploaded_file": file_bytes, "uploaded_file_name": file.filename},
+    )
 
     # 5. 그래프 실행
     _deadline_token = _bind_deadline(initial_state, config, stream=False)   # plans/119 T-1 — wait_for 전에 묶는다
@@ -3479,19 +1568,11 @@ async def process_file_query(
         )
     except asyncio.TimeoutError:
         # G-E(plans/114 P-2) — 텍스트 경로와 대칭. 양식은 못 채웠어도 조회한 행은 준다.
-        partial = await _partial_on_timeout(graph, thread_config)
+        partial = await _partial_timeout_response(
+            ctx, config, graph, thread_config, start_time=start_time, limit_sec=limit_sec,
+        )
         if partial is not None:
-            data = _partial_response_data(
-                partial, query_id=query_id, thread_id=actual_thread_id,
-                start_time=start_time, limit_sec=limit_sec,
-            )
-            chart = chart_field(config, partial.rows, None)   # plans/160 A-2
-            data.update(chart_carry(chart))
-            _store_result(query_id, {
-                **data, "query_results": partial.rows,
-                **viz_store_fields(chart, user_query=query, tables=None),
-            }, owner=current_user.get("sub"))
-            return await turn.response(QueryResponse(**data))
+            return cast(QueryResponse, await turn.response(QueryResponse(**partial)))
         raise HTTPException(status_code=504, detail="처리 시간이 초과되었습니다.")
     except Exception as e:
         # 예외 원문은 서버 로그에만 — 응답은 고정 문구 + 요청 번호(plans/163 S3)
@@ -3503,159 +1584,11 @@ async def process_file_query(
         _unbind_deadline(_deadline_token)
 
     elapsed_ms = (time.time() - start_time) * 1000
-    turn_count = _count_human_messages(result.get("messages", []))
-    # 기간 되묻기(plans/122 T-3·T-4) — 텍스트 경로와 같은 채널(파일 경로는 그 밖엔 역질문 없음)
-    time_clar = _time_clarification(result)
-
-    response_data = {
-        "query_id": query_id,
-        "status": "clarification" if time_clar else "completed",
-        "response": result.get("final_response", ""),
-        "thread_id": actual_thread_id,
-        "has_file": result.get("output_file") is not None,
-        "file_name": result.get("output_file_name"),
-        "executed_sql": _executed_sql(result),
-        "row_count": len(result.get("query_results", [])),
-        "processing_time_ms": elapsed_ms,
-        "turn_count": turn_count,
-        "has_mapping_report": result.get("mapping_report_md") is not None,
-        # HITL 폼필(D-151): 미해결 필드 역질문 패널 컨텍스트(결과와 함께 첨부)
-        "form_fill_clarification": result.get("form_fill_clarification"),
-        "form_memory_panel": result.get("form_memory_panel"),  # D-187 저장 값 패널
-        # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
-        "db_scope": build_db_scope(result, selected_db_ids=selected_list),
-        "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
-        **_disclosures_field(result),  # plans/123 W-8
-        **_time_resolution_field(result),  # plans/122 T-4
-        **_scope_reexpand_field(result),  # plans/123 W-2 ②
-        **_plan_summary_field(result),  # TP-0.1
-        **({"clarification": time_clar} if time_clar else {}),  # plans/122 T-4
-        # 키는 텍스트 경로와 같게 두되 값은 항상 null — 파일 경로는 소스 전환을 지원하지 않는다
-        # (칩이 양식 파일 없이 텍스트 경로로 재질의한다 · plans/163 D6)
-        "source_switch": None,
-        **_clarify_turn_fields(time_clar),  # 기간 되묻기 턴 — 직전 턴 SQL·행·파일 미탑재(D5)
-    }
-    store_data = {
-        **response_data,
-        "output_file": result.get("output_file"),
-        "mapping_report_md": result.get("mapping_report_md"),
-        "query_results": result.get("query_results", []),
-        **_clarify_store_fields(time_clar),
-        # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관한다.
-        # TODO(§14.5): _results_store는 인메모리 dict이므로 원본 바이트 누적 시 메모리가 커진다.
-        #   다중 워커 환경에서는 워커 간 유실 가능 — TTL/공유 스토리지 도입을 검토할 것.
-        "uploaded_file": file_bytes,
-        "uploaded_file_name": file.filename,
-    }
-    # 그래프 보기 신호(plans/160 A-2) — 저장하는 행 그대로로 판정한다
-    tables = result_tables_of(result)
-    response_data["chart"] = chart_field(
-        config, store_data["query_results"], tables, status=response_data["status"])
-    _store_result(query_id, {
-        **store_data,
-        **viz_store_fields(response_data["chart"], user_query=query, tables=tables),
-    }, owner=current_user.get("sub"))
-
-    return await turn.response(QueryResponse(**response_data))
-
-
-def _get_file_extension(filename: str | None) -> str:
-    """파일 확장자를 추출한다."""
-    if not filename:
-        return ""
-    return filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-
-
-async def _resolve_uploaded_bytes(
-    file_bytes: bytes,
-    file_ext: str,
-    filename: str | None,
-    config,
-    user_id: str | None = None,
-) -> bytes:
-    """업로드 바이트를 평문으로 정규화한다 (Plan 74 DRM 해제 / D-156).
-
-    평문(ZIP)은 그대로 반환하고, Softcamp DRM 암호문(SCDS)은 복호화해 반환한다.
-    실패는 침묵 폴백 없이 명확한 HTTP 에러로 노출한다 — /query/file과
-    /query/file/stream 양쪽에 동일하게 배선할 것(대칭 유지).
-    """
-    from src.infrastructure.drm import (
-        DrmDecryptError,
-        detect_file_kind,
-        get_decryptor,
-        header_hex,
+    # 응답 구성·결과 저장(업로드 원본 보관 포함) — 네 진입 공유(plans/179 W1a)
+    response_data = _build_turn_response(
+        ctx, config, result, mode="json", elapsed_ms=elapsed_ms
     )
-    from src.security.audit_logger import log_drm_decrypt
-
-    kind = detect_file_kind(file_bytes)
-    if kind == "plain":
-        return file_bytes
-
-    if kind == "unknown":
-        logger.warning(
-            "업로드 파일 형식 불명: file=%s ext=%s head=%s",
-            filename, file_ext, header_hex(file_bytes),
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f".{file_ext} 파일이 손상되었거나 지원하지 않는 형식입니다. "
-                "파일을 다시 저장한 뒤 업로드해 주세요."
-            ),
-        )
-
-    # kind == "drm"
-    drm_cfg = config.drm
-    if not drm_cfg.enabled:
-        await log_drm_decrypt(
-            file_name=filename,
-            file_size_bytes=len(file_bytes),
-            success=False,
-            error="drm_disabled",
-            user_id=user_id,
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "DRM 암호화 파일입니다. 이 서버는 DRM 해제가 비활성화되어 있어 "
-                "처리할 수 없습니다. 평문 파일로 다시 업로드하거나 관리자에게 "
-                "문의하세요."
-            ),
-        )
-
-    decryptor = get_decryptor(drm_cfg)
-    start = time.time()
-    try:
-        plain_bytes = await decryptor.decrypt(
-            file_bytes, filename or f"upload.{file_ext}"
-        )
-    except DrmDecryptError as e:
-        await log_drm_decrypt(
-            file_name=filename,
-            file_size_bytes=len(file_bytes),
-            success=False,
-            error=str(e),
-            ret_code=e.ret_code,
-            elapsed_ms=(time.time() - start) * 1000,
-            user_id=user_id,
-        )
-        logger.error(
-            "DRM 복호화 실패: file=%s reason=%s ret=%s detail=%s",
-            filename, e.reason, e.ret_code, e.detail,
-        )
-        raise HTTPException(
-            status_code=502,
-            detail=f"DRM 암호화 파일로 확인되나 복호화에 실패했습니다: {e.reason}",
-        )
-
-    await log_drm_decrypt(
-        file_name=filename,
-        file_size_bytes=len(file_bytes),
-        success=True,
-        elapsed_ms=(time.time() - start) * 1000,
-        user_id=user_id,
-    )
-    return plain_bytes
+    return cast(QueryResponse, await turn.response(QueryResponse(**response_data)))
 
 
 @router.post("/query/file/stream")
@@ -3696,30 +1629,16 @@ async def process_file_query_stream(
 
     # 존 역질문 게이트 (Plan 75 §4 파일 경로 확장) — /query/file과 대칭
     selected_list = _parse_selected_db_ids_form(selected_db_ids)
-    # 요청이 지정한 DB 선택의 인가(plans/104 C-4 · D-232) — 네 진입 모두 같은 게이트를 지난다
-    selected_list, _selection_denied = apply_selection_authorization(
-        selected_list, current_user
+    # 요청이 지정한 DB 선택의 인가(plans/104 C-4 · D-232) → 거부 반환 → 파일 존 역질문 —
+    # 네 진입 모두 같은 게이트를 지난다(plans/179 W1a)
+    selected_list, gate = await _run_pre_gates(
+        selected_list, current_user, request.app.state.config,
+        thread_id=actual_thread_id, file_query=query,
     )
-    if _selection_denied:
-        return _sse_response(turn.stream(_single_done_stream({
-            "type": SSE_DONE,
-            "response": SELECTION_DENIED_MESSAGE,
-            "query_id": query_id,
-            "thread_id": actual_thread_id,
-        })))
-    clarification = _file_zone_clarification_or_none(
-        query, selected_list, request.app.state.config, current_user
-    )
-    if clarification:
-        await _audit_clarification(clarification, current_user, actual_thread_id)
-        return _sse_response(turn.stream(_single_done_stream({
-            "type": SSE_DONE,
-            "response": clarification["question"],
-            "query_id": query_id,
-            "thread_id": actual_thread_id,
-            "clarification": clarification,
-            **_pre_gate_plan_summary(),  # plans/121 TP-0.1
-        })))
+    if gate is not None:
+        return _sse_response(turn.stream(_single_done_stream(
+            _pre_gate_done(gate, query_id=query_id, thread_id=actual_thread_id)
+        )))
 
     file_bytes = await file.read()
     if len(file_bytes) > 10 * 1024 * 1024:
@@ -3783,188 +1702,20 @@ async def process_file_query_stream(
     initial_state["request_deadline"] = _request_deadline(limit_sec)
 
     thread_config = {"configurable": {"thread_id": actual_thread_id}}
+    ctx = TurnContext(
+        query_id=query_id, thread_id=actual_thread_id, user_query=query,
+        selected_db_ids=selected_list, owner=current_user.get("sub"), text_entry=False,
+        upload={"uploaded_file": file_bytes, "uploaded_file_name": file.filename},
+    )
 
-    def _stream_done(
-        output: dict[str, Any], *, elapsed_ms: float, _final_row_count: int,
-        _sql_state: dict[str, Any], _scope_state: dict[str, Any],
-        _tracked_query_results: list[dict[str, Any]], _watch: StreamWatch,
-    ) -> tuple[dict[str, Any], bool]:
-        """astream 최종 출력 → 응답·저장·done 페이로드(plans/168 A1). 둘째 값은 항상 False."""
-        turn_count = _count_human_messages(output.get("messages", []))
-        # 기간 되묻기(plans/122 T-3·T-4) — 누적 상태에서 판정
-        _time_clar = _time_clarification(_scope_state)
-        response_data = {
-            "query_id": query_id,
-            "status": "clarification" if _time_clar else "completed",
-            "response": output.get("final_response", ""),
-            "thread_id": actual_thread_id,
-            "has_file": output.get("output_file") is not None,
-            "file_name": output.get("output_file_name"),
-            "executed_sql": _executed_sql(_sql_state),
-            "row_count": _final_row_count,
-            "processing_time_ms": elapsed_ms,
-            "turn_count": turn_count,
-            "has_mapping_report": output.get("mapping_report_md") is not None,
-            # HITL 폼필(D-151): 역질문 패널 컨텍스트
-            "form_fill_clarification": output.get("form_fill_clarification"),
-            "form_memory_panel": output.get("form_memory_panel"),  # D-187 저장 값 패널
-            # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
-            # 종료 노드 델타가 아니라 누적 상태로(plans/120 S-1)
-            "db_scope": build_db_scope(_scope_state, selected_db_ids=selected_list),
-            **_dependency_notes_field(_scope_state),  # TP-11.8
-            **_disclosures_field(_scope_state),  # plans/123 W-8
-            **_time_resolution_field(_scope_state),  # plans/122 T-4
-            **_scope_reexpand_field(_scope_state),  # plans/123 W-2 ②
-            **_plan_summary_field(_scope_state),  # TP-0.1
-            # 기간 되묻기(plans/122 T-4) — 파일 경로의 역질문은
-            # 이것뿐이다(후단 존 게이트는 텍스트 채널만 · D-143 후속2)
-            "clarification": _time_clar,
-            # 텍스트 경로와 같은 키 · 값은 항상 null — 파일 경로는
-            # 소스 전환 미지원(plans/163 D6)
-            "source_switch": None,
-        }
-        _rows = output.get("query_results") or _tracked_query_results
-        # 그래프 보기 신호(plans/160 A-2) — 표 경계는 누적 상태에서
-        _tables = result_tables_of(_scope_state)
-        response_data["chart"] = chart_field(
-            config, _rows, _tables, status=response_data["status"])
-        _store_result(query_id, {
-            **response_data,
-            "output_file": output.get("output_file"),
-            "mapping_report_md": output.get("mapping_report_md"),
-            "query_results": _rows,
-            **viz_store_fields(response_data["chart"],
-                               user_query=query, tables=_tables),
-            # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관.
-            # TODO(§14.5): 인메모리 dict — 원본 누적 시 메모리 증가/다중 워커 유실 가능.
-            #   TTL/공유 스토리지 도입 검토.
-            "uploaded_file": file_bytes,
-            "uploaded_file_name": file.filename,
-        }, owner=current_user.get("sub"))
-
-        return {
-            "type": SSE_DONE,
-            "response": response_data["response"],
-            "query_id": query_id,
-            "thread_id": actual_thread_id,
-            "processing_time_ms": elapsed_ms,
-            "row_count": response_data["row_count"],
-            "executed_sql": response_data["executed_sql"],
-            "has_file": response_data["has_file"],
-            "file_name": response_data.get("file_name"),
-            "awaiting_approval": False,
-            "turn_count": turn_count,
-            "has_mapping_report": response_data.get("has_mapping_report", False),
-            "form_fill_clarification": response_data.get("form_fill_clarification"),
-            "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
-            "db_scope": response_data.get("db_scope"),  # D-205
-            **_dependency_notes_field(response_data),  # TP-11.8
-            **_disclosures_field(response_data),  # plans/123 W-8
-            **_time_resolution_field(response_data),  # plans/122 T-4
-            **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
-            **_plan_summary_carry(response_data),  # TP-0.1
-            # 텍스트 경로와 같은 키 — 값이 없어도 null(plans/163 D6)
-            "clarification": response_data.get("clarification"),
-            "source_switch": response_data.get("source_switch"),
-            **chart_carry(response_data["chart"]),  # plans/160 A-2
-            **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
-            # 단계 타임라인(plans/119 T-0)
-            "timeline": _finish_timeline(_watch, query_id, done=True),
-        }, False
-
-    def _fallback_done(
-        result: dict[str, Any], *, final_response: str, elapsed_ms: float,
-        _time_clar: dict[str, Any] | None, _turn_fields: dict[str, Any], _watch: StreamWatch,
-    ) -> dict[str, Any]:
-        """ainvoke 폴백 결과 → 응답·저장·done 페이로드(plans/168 A1)."""
-        _final_row_count = len(result.get("query_results", []))
-        turn_count = _count_human_messages(result.get("messages", []))
-        response_data = {
-            "query_id": query_id,
-            "status": "clarification" if _time_clar else "completed",
-            "response": final_response,
-            "thread_id": actual_thread_id,
-            "has_file": result.get("output_file") is not None,
-            "file_name": result.get("output_file_name"),
-            "executed_sql": _executed_sql(result),
-            "row_count": _final_row_count,
-            "processing_time_ms": elapsed_ms,
-            "turn_count": turn_count,
-            "has_mapping_report": result.get("mapping_report_md") is not None,
-            # HITL 폼필(D-151): 역질문 패널 컨텍스트
-            "form_fill_clarification": result.get("form_fill_clarification"),
-            "form_memory_panel": result.get("form_memory_panel"),  # D-187 저장 값 패널
-            # 스레드 DB 스코프(plans/90 · D-205) — 다음 턴 승계 집합을 축 구조로 보고(4경로 대칭)
-            "db_scope": build_db_scope(result, selected_db_ids=selected_list),
-            "dependency_notes": result.get("dependency_notes"),  # plans/88 · D-203
-            **_disclosures_field(result),  # plans/123 W-8
-            **_time_resolution_field(result),  # plans/122 T-4
-            **_scope_reexpand_field(result),  # plans/123 W-2 ②
-            **_plan_summary_field(result),  # TP-0.1
-            "clarification": _time_clar,  # plans/122 T-4
-            # 텍스트와 같은 키 · 값은 항상 null — 파일 경로는 소스 전환 미지원(plans/163 D6)
-            "source_switch": None,
-            **_turn_fields,  # 기간 되묻기 턴(D5)
-        }
-        _store_data = {
-            **response_data,
-            "output_file": result.get("output_file"),
-            "mapping_report_md": result.get("mapping_report_md"),
-            "query_results": result.get("query_results", []),
-            **_clarify_store_fields(_time_clar),
-            # §14: 첨부 파일 카드 클릭 시 원본 양식을 되돌려주기 위해 업로드 원본을 보관.
-            # TODO(§14.5): 인메모리 dict — 원본 누적 시 메모리 증가/다중 워커 유실 가능.
-            "uploaded_file": file_bytes,
-            "uploaded_file_name": file.filename,
-        }
-        # 그래프 보기 신호(plans/160 A-2) — 저장하는 행 그대로로 판정한다
-        _tables = result_tables_of(result)
-        response_data["chart"] = chart_field(
-            config, _store_data["query_results"], _tables, status=response_data["status"])
-        _store_result(query_id, {
-            **_store_data,
-            **viz_store_fields(response_data["chart"], user_query=query, tables=_tables),
-        }, owner=current_user.get("sub"))
-        return {
-            "type": SSE_DONE,
-            "response": response_data["response"],
-            "query_id": query_id,
-            "thread_id": actual_thread_id,
-            "processing_time_ms": elapsed_ms,
-            "row_count": response_data["row_count"],
-            "executed_sql": response_data["executed_sql"],
-            "has_file": response_data["has_file"],
-            "file_name": response_data.get("file_name"),
-            # astream 경로와 같은 키(plans/163 D6) — 파일 경로는 승인 대기를 내지 않는다
-            "awaiting_approval": False,
-            "turn_count": turn_count,
-            "has_mapping_report": response_data.get("has_mapping_report", False),
-            "form_fill_clarification": response_data.get("form_fill_clarification"),
-            "form_memory_panel": response_data.get("form_memory_panel"),  # D-187 저장 값 패널
-            "db_scope": response_data.get("db_scope"),  # D-205
-            **_dependency_notes_field(response_data),  # TP-11.8
-            **_disclosures_field(response_data),  # plans/123 W-8
-            **_time_resolution_field(response_data),  # plans/122 T-4
-            **_scope_reexpand_field(response_data),  # plans/123 W-2 ②
-            **_plan_summary_carry(response_data),  # TP-0.1
-            # 텍스트 경로와 같은 키 — 값이 없어도 null로 싣는다(plans/163 D6)
-            "clarification": response_data.get("clarification"),
-            "source_switch": response_data.get("source_switch"),
-            **chart_carry(response_data["chart"]),  # plans/160 A-2
-            **_rewrite_trace_fields(actual_thread_id),  # plans/107 §4.9
-            "timeline": _finish_timeline(_watch, query_id, done=True),  # plans/119 T-0
-        }
-
-    # 공통 SSE 본문(plans/168 A1) — 응답·저장·done 조립만 위 두 빌더가 경로별로 맡는다
+    # 공통 SSE 본문(plans/168 A1) — 응답·저장·done 조립도 공유 빌더 한 벌(plans/179 W1a)
     return _sse_response(turn.stream(_stream_graph_turn(
         request, graph, config, initial_state, thread_config,
+        ctx=ctx,
         # db_scope 입력 — 전체 초기 상태 + 노드 델타 누적(plans/120 S-1 · 텍스트 스트림과 대칭)
         scope_seed=dict(initial_state),
         limit_sec=limit_sec,
-        query_id=query_id, thread_id=actual_thread_id,
-        current_user=current_user, user_query=query,
         fallback_timeout_message="처리 시간이 초과되었습니다.",
-        stream_done=_stream_done, fallback_done=_fallback_done,
     )))
 
 

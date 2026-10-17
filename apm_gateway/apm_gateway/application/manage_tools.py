@@ -49,15 +49,15 @@ from apm_gateway.application.masking import (
 )
 from apm_gateway.application.resolver import Resolution
 from apm_gateway.application.sources import STATUS_OK, STATUS_UNAVAILABLE
-from apm_gateway.application.tools import (
+from apm_gateway.application.tool_common import (
     IDENTIFIER_FIELDS,
-    ApmTools,
-    _given,
-    _Limits,
-    _positive_int,
-    _target_text,
+    Limits,
+    is_given,
     limit_notice,
+    positive_int,
+    target_text,
 )
+from apm_gateway.application.tools import ApmTools
 from apm_gateway.domain.call_context import expect_calls
 from apm_gateway.domain.errors import (
     API_ERROR,
@@ -114,6 +114,8 @@ _ID_FIELDS = frozenset(f.replace("_", "") for f in (*IDENTIFIER_FIELDS, "id"))
 _ID_KEY = re.compile(r"(?:[a-z0-9]Id|ID|[_.\-](?i:id))$")
 _PERSON_KEY = re.compile(r"(?i:name$|^nickname|^emp)")
 _IGNORED_HOSTNAME = "소스 단위 설정이라 hostname으로 좁히지 않았다(고른 소스 전부)"
+# 이벤트 룰 호출 단위 (소스, 도메인, 도메인 이름, 룰 종류, 대상, 인스턴스)
+_RuleCall = tuple[str, int, str, str, str | None, dict[str, Any] | None]
 
 
 @dataclass
@@ -244,6 +246,38 @@ def _extra_note(rows: list[dict[str, Any]], what: str) -> str | None:
     )
 
 
+def _rule_args(
+    rule_type: str | None, target: str | None, error_type: str | None
+) -> tuple[str, str, str | None]:
+    """이벤트 룰 인자 검증 → (룰 종류, 대상, 오류 유형) — 비면 빈 문자열·None."""
+    rtype = str(rule_type).strip().lower() if rule_type is not None else ""
+    if rtype and rtype not in RULE_TYPES:
+        raise ApmError(
+            INVALID_ARGUMENT,
+            f"rule_type은 {'·'.join(RULE_TYPES)} 중 하나여야 한다: {rule_type!r}",
+        )
+    tgt = str(target).strip().lower() if target is not None else ""
+    all_targets = RULE_TARGETS["metric"]
+    if tgt and tgt not in all_targets:
+        raise ApmError(
+            INVALID_ARGUMENT, f"target은 {'·'.join(all_targets)} 중 하나여야 한다: {target!r}"
+        )
+    if rtype == "compare" and tgt and tgt not in RULE_TARGETS["compare"]:
+        raise ApmError(
+            INVALID_ARGUMENT,
+            f"compare 룰 대상은 {'·'.join(RULE_TARGETS['compare'])} 중 하나다: {target!r}",
+        )
+    etype = None
+    if error_type is not None and str(error_type).strip():
+        etype = str(error_type).strip().upper()
+        if not JenniferManageApi.is_error_type(etype):
+            raise ApmError(
+                INVALID_ARGUMENT,
+                f"error_type은 영문 대문자·숫자·밑줄 64자 이하여야 한다: {error_type!r}",
+            )
+    return rtype, tgt, etype
+
+
 class ManageTools:
     """관리·민감 조회 도구 코어 — 인스턴스 하나를 프로세스에서 공유한다(상태 없음)."""
 
@@ -257,7 +291,7 @@ class ManageTools:
         """실패 사유 꼬리 — v2 경로의 404·405는 버전 미지원 가능(E-28) · 그 밖은 서버 거부 사유."""
         if v2 and e.status in (404, 405):
             return f"{e.code} — HTTP {e.status}: {_V2_UNSUPPORTED}"
-        return e.code + self.core._reason_tail(e)
+        return e.code + self.core.reason_tail(e)
 
     def _at(self, source_id: str, domain_id: int | None = None) -> str:
         where = self.core.sources.where(source_id, domain_id)
@@ -269,7 +303,7 @@ class ManageTools:
         call: Callable[[U], Awaitable[T]],
         where: Callable[[U], str],
         what: str,
-        limits: _Limits,
+        limits: Limits,
         *,
         v2: bool = True,
     ) -> tuple[list[tuple[U, T]], list[tuple[U, ApmError]]]:
@@ -285,20 +319,20 @@ class ManageTools:
                 failed.append((unit, e))
                 limits.fail(notice)
         if units and len(failed) == len(units):
-            raise self.core._all_failed([(where(u).strip("()"), e) for u, e in failed])
+            raise self.core.all_failed([(where(u).strip("()"), e) for u, e in failed])
         return done, failed
 
     async def _domains(
         self,
         hostname: str | None,
         source_ids: list[str] | None,
-        limits: _Limits,
+        limits: Limits,
         instance_name: str | None = None,
     ) -> _Scope:
         """도메인 범위 — `hostname`(·`instance_name` 정확 일치 · plans/130 N-3)이 있으면 정합된
         (소스, 도메인) · 없으면 고른 소스의 전 도메인."""
-        if _given(hostname) or _given(instance_name):
-            res = await self.core._resolve(hostname, None, source_ids, instance_name)
+        if is_given(hostname) or is_given(instance_name):
+            res = await self.core.resolve(hostname, None, source_ids, instance_name)
             units: dict[tuple[str, int], str] = {}
             names: dict[tuple[str, int, int], str] = {}
             for inst in res.instances:
@@ -362,10 +396,10 @@ class ManageTools:
         name = str(kind or "").strip().lower()
         if name not in KINDS:
             raise ApmError(INVALID_ARGUMENT, f"kind는 {'·'.join(KINDS)} 중 하나여야 한다: {kind!r}")
-        limits = _Limits()
+        limits = Limits()
         given = {
             "hostname": hostname is not None and bool(str(hostname).strip()),
-            "instance_name": _given(instance_name),
+            "instance_name": is_given(instance_name),
             "rule_type": rule_type is not None and bool(str(rule_type).strip()),
             "target": target is not None and bool(str(target).strip()),
             "error_type": error_type is not None and bool(str(error_type).strip()),
@@ -408,34 +442,44 @@ class ManageTools:
         rule_type: str | None,
         target: str | None,
         error_type: str | None,
-        limits: _Limits,
+        limits: Limits,
         instance_name: str | None = None,
     ) -> dict[str, Any]:
-        rtype = str(rule_type).strip().lower() if rule_type is not None else ""
-        if rtype and rtype not in RULE_TYPES:
-            raise ApmError(
-                INVALID_ARGUMENT,
-                f"rule_type은 {'·'.join(RULE_TYPES)} 중 하나여야 한다: {rule_type!r}",
+        rtype, tgt, etype = _rule_args(rule_type, target, error_type)
+        types, etype = self._rule_types(rtype, tgt, etype, limits)
+        scope = await self._domains(hostname, source_ids, limits, instance_name)
+        res = scope.resolution
+        calls = self._rule_calls(scope, types, tgt, etype)
+        expect_calls(len(calls))
+        spellings: set[str] = set()
+        done, _ = await self._run(
+            calls,
+            lambda c: self._fetch_rule(c, etype, spellings),
+            self._rule_where,
+            "이벤트 룰",
+            limits,
+        )
+        if etype and res is None:
+            limits.append(
+                "[한계] 인스턴스별 개별 설정(individual-setting)은 hostname을 줄 때만 조회한다"
             )
-        tgt = str(target).strip().lower() if target is not None else ""
-        all_targets = RULE_TARGETS["metric"]
-        if tgt and tgt not in all_targets:
-            raise ApmError(
-                INVALID_ARGUMENT, f"target은 {'·'.join(all_targets)} 중 하나여야 한다: {target!r}"
-            )
-        if rtype == "compare" and tgt and tgt not in RULE_TARGETS["compare"]:
-            raise ApmError(
-                INVALID_ARGUMENT,
-                f"compare 룰 대상은 {'·'.join(RULE_TARGETS['compare'])} 중 하나다: {target!r}",
-            )
-        etype = None
-        if error_type is not None and str(error_type).strip():
-            etype = str(error_type).strip().upper()
-            if not JenniferManageApi.is_error_type(etype):
-                raise ApmError(
-                    INVALID_ARGUMENT,
-                    f"error_type은 영문 대문자·숫자·밑줄 64자 이하여야 한다: {error_type!r}",
-                )
+        rows = self._rule_rows(done, etype)
+        self._rule_notes(rows, spellings, limits)
+        return self.core.ok(
+            tool,
+            rows,
+            resolution=res,
+            limits=limits,
+            sources=scope.statuses,
+            partial=limits.partial,
+            kind="event_rules",
+        )
+
+    @staticmethod
+    def _rule_types(
+        rtype: str, tgt: str, etype: str | None, limits: Limits
+    ) -> tuple[list[str], str | None]:
+        """조회할 룰 종류와 실제로 쓸 오류 유형 — 쓰지 않는 인자 조합은 `[한계]`로 알린다."""
         types = [rtype] if rtype else list(RULE_TYPES)
         if etype and "error" not in types:
             limits.append(f"[한계] rule_type {rtype}에는 error_type을 쓰지 않는다 — 빼고 조회했다")
@@ -444,10 +488,16 @@ class ManageTools:
             limits.append("[한계] ERROR 룰은 대상 종류가 없어 target과 무관하게 실었다")
         if not rtype and tgt and tgt not in RULE_TARGETS["compare"]:
             limits.append(f"[한계] compare 룰에는 {tgt} 대상이 없어 비교 룰은 조회하지 않았다")
-        scope = await self._domains(hostname, source_ids, limits, instance_name)
+        return types, etype
+
+    @staticmethod
+    def _rule_calls(
+        scope: _Scope, types: list[str], tgt: str, etype: str | None
+    ) -> list[_RuleCall]:
+        """호출 단위 (소스, 도메인, 도메인 이름, 룰 종류, 대상, 인스턴스) — 도메인마다 룰 종류·대상
+        순서로, 오류 유형이 있으면 적용 여부와 정합된 인스턴스별 개별 설정을 덧붙인다."""
         res = scope.resolution
-        # 호출 단위 (소스, 도메인, 도메인 이름, 룰 종류, 대상, 인스턴스)
-        calls: list[tuple[str, int, str, str, str | None, dict[str, Any] | None]] = []
+        calls: list[_RuleCall] = []
         for sid, did, dname in scope.units:
             if "error" in types:
                 calls.append((sid, did, dname, "error", None, None))
@@ -461,41 +511,40 @@ class ManageTools:
                 for inst in res.instances if res is not None else []:
                     if (inst["source_id"], inst["domain_id"]) == (sid, did):
                         calls.append((sid, did, dname, "error_individual", None, inst))
-        expect_calls(len(calls))
-        spellings: set[str] = set()
+        return calls
 
-        async def fetch(c: tuple[str, int, str, str, str | None, dict[str, Any] | None]) -> Any:
-            sid, did, _, kind, t, inst = c
-            api = self._api(sid)
-            if kind == "error":
-                return await api.error_rules(did)
-            if kind == "metric":
-                assert t is not None
-                return await api.metric_rules(did, t)
-            if kind == "compare":
-                assert t is not None
-                found, spelled = await api.compare_rules(did, t)
-                if spelled != COMPARE_SPELLINGS[0]:
-                    spellings.add(sid)
-                return found
-            assert etype is not None
-            if kind == "error_applied":
-                return await api.error_rule_applied(did, etype)
-            assert inst is not None
-            return await api.error_rule_individual(did, etype, inst["instance_id"])
+    async def _fetch_rule(self, c: _RuleCall, etype: str | None, spellings: set[str]) -> Any:
+        """호출 단위 하나의 룰 조회 — 비교 룰이 두 번째 경로 표기로 답하면 `spellings`에 소스를
+        적는다."""
+        sid, did, _, kind, t, inst = c
+        api = self._api(sid)
+        if kind == "error":
+            return await api.error_rules(did)
+        if kind == "metric":
+            assert t is not None
+            return await api.metric_rules(did, t)
+        if kind == "compare":
+            assert t is not None
+            found, spelled = await api.compare_rules(did, t)
+            if spelled != COMPARE_SPELLINGS[0]:
+                spellings.add(sid)
+            return found
+        assert etype is not None
+        if kind == "error_applied":
+            return await api.error_rule_applied(did, etype)
+        assert inst is not None
+        return await api.error_rule_individual(did, etype, inst["instance_id"])
 
-        def where(c: tuple[str, int, str, str, str | None, dict[str, Any] | None]) -> str:
-            sid, did, _, kind, t, inst = c
-            parts = [self.core.sources.where(sid, did), kind + (f"/{t}" if t else "")]
-            if inst is not None:
-                parts.append(f"인스턴스 {inst['instance_id']}")
-            return "(" + " · ".join(p for p in parts if p) + ")"
+    def _rule_where(self, c: _RuleCall) -> str:
+        sid, did, _, kind, t, inst = c
+        parts = [self.core.sources.where(sid, did), kind + (f"/{t}" if t else "")]
+        if inst is not None:
+            parts.append(f"인스턴스 {inst['instance_id']}")
+        return "(" + " · ".join(p for p in parts if p) + ")"
 
-        done, _ = await self._run(calls, fetch, where, "이벤트 룰", limits)
-        if etype and res is None:
-            limits.append(
-                "[한계] 인스턴스별 개별 설정(individual-setting)은 hostname을 줄 때만 조회한다"
-            )
+    @staticmethod
+    def _rule_rows(done: list[tuple[_RuleCall, Any]], etype: str | None) -> list[dict[str, Any]]:
+        """성공한 호출 단위의 응답 → 이벤트 룰 행(적용 여부·개별 설정은 단위당 1행)."""
         rows: list[dict[str, Any]] = []
         for (sid, did, dname, rule_kind, target_type, instance), result in done:
             base = {
@@ -522,7 +571,13 @@ class ManageTools:
                 )
             else:
                 for rec in result:
-                    rows.append(self._rule_row(base, rec))
+                    rows.append(ManageTools._rule_row(base, rec))
+        return rows
+
+    def _rule_notes(
+        self, rows: list[dict[str, Any]], spellings: set[str], limits: Limits
+    ) -> None:
+        """이벤트 룰 응답 고지 — 비교 룰 경로 표기 재시도 · 개별 설정 없음 · 표 밖 키."""
         for sid in sorted(spellings):
             limits.append(
                 f"[한계] 비교 룰 경로 표기{self._at(sid)} — {COMPARE_SPELLINGS[0]}가 HTTP 404라"
@@ -536,15 +591,6 @@ class ManageTools:
         note = _extra_note(rows, "이벤트 룰")
         if note:
             limits.append(note)
-        return self.core.ok(
-            tool,
-            rows,
-            resolution=res,
-            limits=limits,
-            sources=scope.statuses,
-            partial=limits.partial,
-            kind="event_rules",
-        )
 
     @staticmethod
     def _rule_row(base: dict[str, Any], rec: dict[str, Any]) -> dict[str, Any]:
@@ -561,7 +607,7 @@ class ManageTools:
         per_source: int,
         call: Callable[[str], Awaitable[T]],
         what: str,
-        limits: _Limits,
+        limits: Limits,
         *,
         v2: bool = True,
     ) -> tuple[list[tuple[str, T]], list[dict[str, Any]]]:
@@ -572,7 +618,7 @@ class ManageTools:
         return done, self._source_statuses(selected, {sid for sid, _ in done}, failed)
 
     async def _color_boundary(
-        self, tool: str, source_ids: list[str] | None, limits: _Limits
+        self, tool: str, source_ids: list[str] | None, limits: Limits
     ) -> dict[str, Any]:
         done, statuses = await self._per_source(
             source_ids, 1, lambda sid: self._api(sid).color_boundaries(), "색상 경계", limits
@@ -606,11 +652,11 @@ class ManageTools:
         process_id: int | None,
         hostname: str | None,
         source_ids: list[str] | None,
-        limits: _Limits,
+        limits: Limits,
     ) -> dict[str, Any]:
         if process_id is None:
             raise ApmError(INVALID_ARGUMENT, "kind process_instance에는 process_id가 필요하다")
-        pid = _positive_int(process_id, "process_id", 0)
+        pid = positive_int(process_id, "process_id", 0)
         host = _text(hostname, "hostname")
         limits.append(_PROCESS_VERSION)
         done, statuses = await self._per_source(
@@ -658,7 +704,7 @@ class ManageTools:
         )
 
     async def _data_server(
-        self, tool: str, source_ids: list[str] | None, limits: _Limits
+        self, tool: str, source_ids: list[str] | None, limits: Limits
     ) -> dict[str, Any]:
         selected = [s.source_id for s in self.core.sources.select(source_ids)]
         sections = ("domains", "resource", "system_properties")
@@ -718,7 +764,7 @@ class ManageTools:
         tool: str,
         hostname: str | None,
         source_ids: list[str] | None,
-        limits: _Limits,
+        limits: Limits,
         instance_name: str | None = None,
     ) -> dict[str, Any]:
         scope = await self._domains(hostname, source_ids, limits, instance_name)
@@ -759,15 +805,15 @@ class ManageTools:
         hostname: str | None,
         source_ids: list[str] | None,
         search: str | None,
-        limits: _Limits,
+        limits: Limits,
         instance_name: str | None = None,
     ) -> dict[str, Any]:
-        if not (_given(hostname) or _given(instance_name)):
+        if not (is_given(hostname) or is_given(instance_name)):
             raise ApmError(
                 INVALID_ARGUMENT, "kind loaded_classes에는 hostname 또는 instance_name이 필요하다"
             )
         text = _text(search, "search")
-        res = await self.core._resolve(hostname, None, source_ids, instance_name)
+        res = await self.core.resolve(hostname, None, source_ids, instance_name)
         expect_calls(len(res.instances))
         try:
             done, failed = await self._run(
@@ -775,7 +821,7 @@ class ManageTools:
                 lambda i: self._api(i["source_id"]).loaded_classes(
                     i["domain_id"], i["instance_id"], text
                 ),
-                lambda i: f"(인스턴스 {self.core._inst_label((i['source_id'], i['instance_id']))})",
+                lambda i: f"(인스턴스 {self.core.inst_label((i['source_id'], i['instance_id']))})",
                 "로드된 클래스",
                 limits,
             )
@@ -810,7 +856,7 @@ class ManageTools:
         )
 
     async def _rdb_export(
-        self, tool: str, source_ids: list[str] | None, limits: _Limits
+        self, tool: str, source_ids: list[str] | None, limits: Limits
     ) -> dict[str, Any]:
         done, statuses = await self._per_source(
             source_ids, 1, lambda sid: self._api(sid).rdb_exports(), "수동 RDB Export", limits
@@ -851,7 +897,7 @@ class ManageTools:
                 INVALID_ARGUMENT, f"scope는 {'·'.join(ENV_SCOPES)} 중 하나여야 한다: {scope!r}"
             )
         needle = _text(key, "key")
-        limits = _Limits()
+        limits = Limits()
         dom = await self._domains(hostname, source_ids, limits, instance_name)
         wanted = set(dom.names) if dom.resolution is not None else None
         expect_calls(len(dom.units))
@@ -898,7 +944,7 @@ class ManageTools:
                 ident for ident in wanted - seen if (ident[0], ident[1]) in ok_domains
             )
             if missing:
-                labels = ", ".join(self.core._inst_label((s, i)) for s, _, i in missing)
+                labels = ", ".join(self.core.inst_label((s, i)) for s, _, i in missing)
                 limits.append(f"[한계] 환경변수 응답에 없는 인스턴스: {labels}")
         if other_scopes and not wanted_scope:
             limits.append(
@@ -934,7 +980,7 @@ class ManageTools:
             problem = JenniferManageApi.account_id_error(uid)
             if problem:
                 raise ApmError(INVALID_ARGUMENT, problem)
-        limits = _Limits()
+        limits = Limits()
         shown_id = mask_identifier(uid) if uid else ""
         origins = ("account",) if uid else ("user_list", "accounts")
         selected = [s.source_id for s in self.core.sources.select(source_ids)]
@@ -1051,17 +1097,17 @@ class ManageTools:
             source_id = self.core.sources.ids[0]
         sid = self.core.sources.select([str(source_id).strip()])[0].source_id
         res = None
-        if _given(hostname) or _given(instance_name):
-            res = await self.core._resolve(hostname, None, [sid], instance_name)
+        if is_given(hostname) or is_given(instance_name):
+            res = await self.core.resolve(hostname, None, [sid], instance_name)
             if (sid, did) not in res.source_domains:
                 raise ApmError(
                     PROFILE_REF_MISMATCH,
-                    f"active_ref의 domain_id {did}는 {_target_text(hostname, instance_name)}의"
+                    f"active_ref의 domain_id {did}는 {target_text(hostname, instance_name)}의"
                     " 정합 도메인"
                     f" {sorted(d for _, d in res.source_domains)}이 아니다"
                     + (f"(소스 {sid})" if len(self.core.sources) > 1 else ""),
                 )
-        limits = _Limits([_CURRENT_ONLY])
+        limits = Limits([_CURRENT_ONLY])
         if session is None or thread is None:
             limits.append(
                 "[한계] session_id·thread_hash 중 받지 못한 값은 보내지 않았다 — 필수 여부 미기재"
