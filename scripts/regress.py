@@ -891,11 +891,16 @@ def _probe_ok(cmd: list[str]) -> bool:
 
 
 def diff_lines(root: Path, base: str, files: list[str]) -> dict[str, set[int] | None]:
-    """파일별 이번 diff 줄 번호(기준 커밋에 없던 파일은 None = 전 줄)."""
+    """파일별 이번 diff 줄 번호(기준 커밋에 없던 파일은 None = 전 줄).
+
+    histogram 고정 — 기본(myers)은 대량 이동 뒤 손대지 않은 줄을 바뀐 줄로 잡아
+    기존 ruff·mypy 위반을 이번 diff로 오인한다(plans/179 · 사용자 결정 2026-10-17).
+    """
     out: dict[str, set[int] | None] = {}
     if not files:
         return out
-    text = _git(root, "diff", "-U0", "--no-color", "--no-ext-diff", base, "--", *files)
+    text = _git(root, "diff", "-U0", "--no-color", "--no-ext-diff", "--diff-algorithm=histogram",
+                base, "--", *files)
     current = None
     for line in text.splitlines():
         if line.startswith("+++ "):

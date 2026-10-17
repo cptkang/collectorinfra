@@ -554,7 +554,7 @@
 
 | 남은 것 | 이유 | 후보 |
 |---|---|---|
-| orchestration SCC 8 | `apm_jobs.py:374`의 `apm_query` 지연 import가 `apm/`→`apm_jobs`→`apm_query`→`apm/` 고리를 닫는다 | `apm_jobs`가 쓰는 `apm_query` 기능을 주입 또는 `apm/`로 이동해 지연 import 제거(다음 APM 계획 — 180 §후속 shim 제거와 함께) |
+| orchestration SCC 8 | `apm_jobs.py:374`의 `apm_query` 지연 import가 `apm/`→`apm_jobs`→`apm_query`→`apm/` 고리를 닫는다 | `apm_jobs`가 쓰는 `apm_query` 기능을 주입 또는 `apm/`로 이동해 지연 import 제거(다음 APM 계획 — 180 §후속 shim 제거와 함께) → **plans/183 해소**(2026-10-17 · SCC 8→0 · `apm.common` 직접 import + 세션 공장 공급자 훅) |
 | `apm_query.py` 2,233줄 | seam 소유 정의(`_SESSION_FACTORY`·단계 함수 중 seam 호출자)·소스 가드 고정 15가 Facade에 남음(D-337 ②) | 테스트 seam을 `apm/`로 옮기는 계획(테스트 수정 동반 — D-337 주의 ②) |
 | `multi_db_executor.py` 3,294줄 · `_build_mapping_user_parts` cc54 · `_run_single_target` cc34 · `_multi_resource_pivot_result` cc33 | 166이 Wave에 배정하지 않았다(5b·5c는 쌍 경로 공통화·Facade만) | 멀티 DB 실행기 긴 함수 분해 계획 |
 | `AlarmWorker._process` cc51 · 442줄 | 7c(177)가 협력자 분할만 하고 `_process` 본문은 후속으로 남김 | 177 §후속 `_process` 단계 분해 |

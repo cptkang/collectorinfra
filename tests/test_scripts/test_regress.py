@@ -318,6 +318,24 @@ def test_diff_lines_marks_changed_and_new_files(tmp_path: Path) -> None:
     assert rg.diff_lines(root, "HEAD", ["a.py", "new.py"]) == {"a.py": {2, 4}, "new.py": None}
 
 
+def test_diff_lines_uses_histogram_regardless_of_git_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_repo(tmp_path / "r", {"a.py": "1\n2\n3\n"})
+    _write(root, {"a.py": "1\nX\n3\n"})
+    calls: list[tuple[str, ...]] = []
+    real_git = rg._git
+
+    def spy(r: Path, *args: str, check: bool = True) -> str:
+        calls.append(args)
+        return real_git(r, *args, check=check)
+
+    monkeypatch.setattr(rg, "_git", spy)
+    assert rg.diff_lines(root, "HEAD", ["a.py"]) == {"a.py": {2}}
+    diff_calls = [a for a in calls if a[:1] == ("diff",)]
+    assert diff_calls and all("--diff-algorithm=histogram" in a for a in diff_calls)
+
+
 def test_parse_junit_node_ids(tmp_path: Path) -> None:
     xml = tmp_path / "j.xml"
     xml.write_text(

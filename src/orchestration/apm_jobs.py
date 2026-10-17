@@ -27,15 +27,16 @@ import io
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 import structlog
 
-from src.clients.source_mcp_client import SourceMcpError, open_source_session
+from src.clients.source_mcp_client import SessionFactory, SourceMcpError, open_source_session
 from src.domain.user import UserRole
 from src.infrastructure.apm_job_store import ApmJobStore, get_apm_job_store, is_job_id
+from src.orchestration.apm.common import APM_SYSTEM, apm_endpoint
 from src.security.data_masker import DataMasker
 from src.utils.deadline import bound_deadline, retrieval_deadline
 from src.utils.clock import now_iso as _now_iso
@@ -66,6 +67,16 @@ _MEDIA_TYPES = {
     "jsonl": "application/x-ndjson; charset=utf-8",
     "txt": "text/plain; charset=utf-8",
 }
+
+
+def _no_session_factory() -> SessionFactory | None:
+    """기본 공급자 — `apm_query`가 적재되지 않았으면 실 세션(`_SESSION_FACTORY` 기본값과 같다)."""
+    return None
+
+
+#: `_call`의 세션 공장 공급자. seam 정본은 `apm_query._SESSION_FACTORY` — 그 모듈이 적재될 때
+#: 호출 시점 값을 읽는 공급자를 등록한다(역방향 import 순환 회피 · plans/183).
+session_factory_provider: Callable[[], SessionFactory | None] = _no_session_factory
 
 
 # ── 호출 인자 · 마감 ──────────────────────────────────────────────────────────
@@ -371,20 +382,19 @@ class ApmJobService:
 
         다운로드 응답 본문을 흘려보내는 동안 세션을 잡고 있지 않는다(청크마다 새로 연다).
         """
-        from src.orchestration import apm_query as aq  # 지연 — apm_query가 이 모듈을 쓴다
         from src.routing.registry import get_registry
 
-        endpoint = aq.apm_endpoint(self._config)
+        endpoint = apm_endpoint(self._config)
         if endpoint is None:
             raise JobUnavailableError("APM 게이트웨이가 연결되어 있지 않습니다.")
         url, token = endpoint
         timeout = getattr(getattr(self._config, "dbhub", None), "source_call_timeout", 10.0)
-        label = get_registry().system_label(aq.APM_SYSTEM)
+        label = get_registry().system_label(APM_SYSTEM)
         try:
             async with open_source_session(
                 url, token,
                 call_timeout=float(timeout) if isinstance(timeout, (int, float)) else 10.0,
-                label=label, session_factory=aq._SESSION_FACTORY,
+                label=label, session_factory=session_factory_provider(),
             ) as session:
                 envelope = await session.call_tool(tool, args)
         except SourceMcpError as e:

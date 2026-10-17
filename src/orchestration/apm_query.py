@@ -256,6 +256,8 @@ logger = logging.getLogger(__name__)
 
 #: 테스트가 모의 세션 공장을 끼운다(이 호스트 루트 파이썬에는 `mcp` 가 없다).
 _SESSION_FACTORY: SessionFactory | None = None
+#: `apm_jobs._call`도 이 값을 호출 시점에 읽는다(전역 이름 조회 — monkeypatch 반영 · plans/183).
+jobs.session_factory_provider = lambda: _SESSION_FACTORY
 
 
 # ── 활성 · 어휘 ──────────────────────────────────────────────────────────────
