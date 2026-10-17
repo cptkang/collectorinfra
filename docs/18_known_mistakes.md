@@ -2119,3 +2119,13 @@
 - **원인**: 로드맵 지표(§5.8)를 마지막 단계에서만 재고, 모듈을 새로 만드는 단계(5~7)의 수용 기준에 「SCC 증가 0」을 넣지 않았다. 직접 import 금지 가드는 간접(중계 모듈 경유) 고리를 보지 못한다.
 - **방지책**: 모듈을 새로 만들거나 쪼개는 리팩터 계획은 수용 기준에 「`src/orchestration/`(또는 해당 패키지) 지연 import 포함 SCC 모듈 수 전후 증가 0」을 넣고 Wave 끝에 잰다(측정 정의: 모듈 간 import 그래프 · 함수 안 지연 import 포함 · `__init__` 제외 · 크기≥2 강연결 요소). import 금지 가드만으로 순환 부재를 결론 내지 않는다.
 - **후속**: plans/183(2026-10-17)이 역간선 `apm_jobs`→`apm_query`를 의존 역전으로 끊어 SCC 8→0 · 가드 `tests/test_orchestration/test_plan183_import_scc.py`가 orchestration SCC 0을 고정한다.
+
+### 2026-10-17 · (plans/184 W1 · implementer) 인증 DB 중간 실패 시 `app.state` 원복(L1)이 `get_current_user`의 payload-only 폴백으로 인가를 강등시키는 것을 놓쳤다
+- **실수**: 「반쯤 켜진 인증 상태」를 없애려고 풀 생성 뒤 실패에서 `user_repo` 등을 None으로 되돌렸다. `src/api/dependencies.py` `get_current_user`는 AUTH_ENABLED=true인데 `user_repo`가 None이면 토큰 payload만 믿고 `allowed_db_ids=None`(전 DB 허용)·is_active 미조회로 통과시키므로, 종전엔 DB 조회로 돌던 사용자별 인가가 오히려 풀렸다. security-auditor가 Medium으로 잡았다.
+- **원인**: 상태 정리(수명주기) 관점으로만 보고, 그 state를 읽는 인가 소비처가 None일 때 어떤 폴백을 타는지 확인하지 않았다.
+- **방지책**: 인증·인가 관련 `app.state`(user_repo·audit_repo·auth_provider 등)를 바꾸는 변경은 그 키를 읽는 의존성(`src/api/dependencies.py`)의 None 분기를 먼저 읽고, None이 fail-open 폴백이면 원복하지 않거나 fail-closed를 함께 정한다(사용자 결정 사항).
+
+### 2026-10-17 · (plans/184 W2a · implementer) 문구 변경(M1 이중 괄호)의 옛 단언을 repo grep으로 찾다가 줄바꿈으로 쪼개진 문자열 리터럴 2건을 놓쳤다
+- **실수**: 「부하 순위를 받지 못해(api_error (요청 rid))」를 단언하는 기존 테스트를 grep으로 찾아 1건만 고쳤고, `tests/test_orchestration/test_plan134_w34_apm.py`의 2건(`"…받지"` / `" 못해(api_error (요청 -)) …"`로 암묵 연결된 리터럴)은 계획 끝 회귀에서야 실패로 드러났다.
+- **원인**: 검색어를 문구 전체(「부하 순위를 받지 못해(」)로 잡아, 리터럴이 줄 사이에서 끊긴 곳이 걸리지 않았다.
+- **방지책**: 문구 변경의 옛 단언 검색은 바뀌는 **최소 조각**(예: `(요청 [^)]*))`처럼 실제로 달라지는 부분)으로 grep하고, Wave 중간에 바꾼 제품 파일을 직접 import하는 테스트 모듈 중 문구를 단언하는 모듈은 자기 테스트에 포함해 돌린다.

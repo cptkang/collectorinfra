@@ -2,9 +2,10 @@
 
 단일 경로(`query_generator._try_build_form_fill_pivot_sql`)와 멀티 경로
 (`multi_db_executor._build_mapping_user_parts`·`_split_mapping_for_prompt`·
-`_multi_resource_pivot_result`)가 **같은 결과를 내던 단계만** 모은다. 경로마다 다른 것 —
-게이트(재시도·EAV 패턴 유무)·입력 모양(멀티는 미매핑 필드를 따로 받는다)·지표 필드 수집·
-로그 문구(`DB '%s'` 접두)·state 반영(반환 dict vs `form_fill_out`)·조립기 호출 — 은 호출부에 남긴다.
+`_multi_resource_pivot_result`)가 **같은 결과를 내던 단계만** 모은다(지표 필드 선택 규칙은
+plans/185에서 멀티에 맞춰 합쳤다). 경로마다 다른 것 — 게이트(재시도·EAV 패턴 유무)·입력
+모양(멀티는 미매핑 필드를 따로 받는다 — 지표 후보 묶음도 호출부가 만든다)·로그 문구
+(`DB '%s'` 접두)·state 반영(반환 dict vs `form_fill_out`)·조립기 호출 — 은 호출부에 남긴다.
 
 조립기 `build_form_fill_pivot_sql`·월 시리즈 인식 `recognize_month_series`·`get_domain_by_id`·
 기간 해석 `resolve_stat_month_range`는 여기서 부르지 않는다 — 테스트가 노드 모듈
@@ -14,7 +15,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -147,6 +148,36 @@ def split_pivot_mapping(
     metric = [(f, c) for f, c in regular if _METRIC_STAT_TABLE in c.lower()]
     regular = [(f, c) for f, c in regular if _METRIC_STAT_TABLE not in c.lower()]
     return regular, eav, metric
+
+
+def select_metric_recovery_fields(
+    *candidate_groups: Iterable[str],
+    exclude: Collection[str],
+    is_metric: Callable[[str], bool],
+) -> list[str]:
+    """폼필 피벗이 필드명으로 회수할 사용률 필드를 고른다(D-066 · D-149 · D-151 · plans/185).
+
+    후보 묶음을 순서대로 훑어 제외 집합에 없고 사용률로 판정되는 필드를 첫 등장 순서로 모은다
+    (중복 제거 — 같은 alias가 두 번 SELECT되지 않게). 후보는 미매핑(None) 필드 · 사용률 통계
+    칼럼 매핑 필드(`split_pivot_mapping`의 성능지표 묶음 — 단일 칼럼으로는 못 얻어 필드명
+    피벗으로 회수) · llm_inferred 강등 필드(멀티는 따로 받는다)다.
+
+    Args:
+        candidate_groups: 후보 필드명 묶음(앞 묶음이 먼저)
+        exclude: 뺄 필드 — 월 시리즈·Vendor+Model 결합(각자 담당 파티션)·적용된 답변 오버라이드
+            (사용자 층 우선)
+        is_metric: 사용률 필드 판정(`classify_metric_field`를 DB·어댑터에 바인딩한 술어)
+
+    Returns:
+        회수 대상 필드명 목록(첫 등장 순서)
+    """
+    selected: list[str] = []
+    for group in candidate_groups:
+        for field in group:
+            if field in exclude or field in selected or not is_metric(field):
+                continue
+            selected.append(field)
+    return selected
 
 
 @dataclass(frozen=True)

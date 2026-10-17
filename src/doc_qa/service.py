@@ -506,8 +506,9 @@ async def _answer_impl(
         search_only: 검색만 하고 서술하지 않는다(진단 · LLM 호출 0).
         allowed_collection_ids: 호출자 신원의 허용 목록(None이면 인가 판정 생략).
         collections_path: 정본 경로 override(테스트용).
-        audit_context: `{"user_id":…, "thread_id":…, "source":…}`. 주면 감사 로그를 남긴다
-            (진입점마다 흩어지지 않게 **기록은 이 함수 한 곳**에서 한다 · D-261 정합).
+        audit_context: `{"user_id":…, "thread_id":…, "source":…}`. **이 함수는 쓰지 않는다** —
+            감사 기록은 래퍼 `answer_from_documents`가 한 곳에서 남긴다(진입점마다 흩어지지
+            않게 · D-261 정합). 래퍼는 이 인자를 넘기지 않는다.
     """
     started = time.monotonic()
     rag = getattr(app_config, "rag", None)

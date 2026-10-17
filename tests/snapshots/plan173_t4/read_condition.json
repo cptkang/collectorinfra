@@ -789,7 +789,7 @@
       "now_functions": [
         "CURRENT_TIMESTAMP"
       ],
-      "reason": "column"
+      "reason": "expression"
     }
   ],
   "quoted_ident": [

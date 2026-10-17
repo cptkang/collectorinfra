@@ -94,7 +94,8 @@ def verify_admin_token(
     # 운영자 시크릿과 우연히 검증되더라도 admin 토큰이 아니면 거부한다.
     payload = decode_typed_token(token, secret, "admin")
     username: str | None = payload.get("sub")
-    if username is None:
+    # 빈 문자열 sub도 거부 — 사용자 토큰·break-glass 경로와 같은 `not sub` 기준(plans/184 S2)
+    if not username:
         raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
     return username
 

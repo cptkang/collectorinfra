@@ -8,6 +8,10 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-17 | D-066 | 부기 보강 — `plans/185` W2: 병합 마감 `_finalize_merged_rows`가 원본 매핑 대신 Layer 1 `build_resolved_mapping` 결과 키 매핑으로 양식을 채움(공유 통계 칼럼 오채움 해소 · 사용자 결정) · Word 병합 마감은 alias 칸도 채워짐 · 커밋 없음 |
+| 2026-10-17 | D-153 | 부기 — `plans/184` S1·S4·S6: 「고정 문구 + 요청 번호」 규약 확대 — DRM 설정 키·java 경로 사유(`user_visible=False`) · APM 선택 재시도 메타·게이트웨이 연결 실패 `source_status` · `degraded_reason` 처리기 규칙(secure-coding 스킬) · APM 호출 단위 예외 사유 · 커밋 없음 |
+| 2026-10-17 | D-070 | 부기 — `plans/184` S2: `verify_admin_token` 빈 `sub` 거부(`not sub`) — 사용자·break-glass와 기준 통일 · 커밋 없음 |
+| 2026-10-17 | D-066 | 부기 — `plans/185`(182 J1): 단일 폼필이 `cmm_metric_stat` 칼럼 매핑 사용률 필드를 버리던 것을 멀티에 맞춰 회수 · 공통 함수 `select_metric_recovery_fields`로 두 경로 일원화 · 멀티 산출 불변 · 잔여 병합 마감 공유 칼럼 오채움(종전부터 멀티) · 커밋 없음 |
 | 2026-10-17 | D-337 | 상태 「적용 전」→「적용 완료」 · 부기 — `plans/166` 단계 8 제거 사이클: shim 경로 사용처 0인 재노출·별칭·보존용 import 388 제거(19파일) · 남은 426은 166 §5.9 표 · 「grep -w 0」을 shim 경로 경유 사용으로 판정한다는 운용 해석 · 커밋 없음 |
 | 2026-10-15 | D-331 | 부기 — `plans/166` W2: `arch_check` `MODULE_LAYER_MAP`에 `src.pipeline` = application(N3 노드 헬퍼 이동 · 경고 43→17) · `overfit_check` `PUBLIC_LAYER_DIRS` 대칭 · 폴백 린트를 `src/config/` 패키지(I4)에 맞춤(`__module__` 하위 모듈 포함 · 스캔 제외 확대 · `ALLOWED` 새 경로 키) · 커밋 없음 |
 | 2026-10-15 | D-331 | 구현 완료 — `plans/166` W1: arch_check 경고를 같은 노드 패키지 간으로 한정(117→43) · `scripts/config_fallback_check.py` 신설(62지점 → X1 치환 뒤 0) · `regress.py` 정적 게이트에 `--ci` 편입 · 허용 목록 2건(대역 방어가 함수 계약인 곳) · 커밋 없음 |

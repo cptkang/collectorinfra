@@ -154,6 +154,7 @@ from src.db_adapters.polestar.form_fill_plan import (
     month_series_rule_updates,
     plan_form_fill_pivot,
     resolve_answer_overrides,
+    select_metric_recovery_fields,
     split_pivot_mapping,
 )
 # 순위 정렬 NULLS LAST 결정적 교정(D-202 2차) — 검증기와 같은 판정을 공유해 드리프트 방지.
@@ -2252,22 +2253,17 @@ def _multi_resource_pivot_result(
         f for f in (unmapped_fields or [])
         if f not in _month_fields and f not in concat_fields
     ]
-    pivot_metric_fields = [f for f in _um if _is_metric(f)]
-    pivot_metric_fields += [
-        field for field, _ in metric_entries
-        if field not in _month_fields and _is_metric(field)
-    ]
     # llm_inferred 강등 필드 중 사용률류는 필드명 기반 결정적 피벗으로 회수(D-149) —
     # 매핑 값은 버리되 채움 능력은 유지(전역 unmapped_fields에 없어 _um이 못 받는 몫).
-    pivot_metric_fields += [
-        f for f in (dropped_inferred or [])
-        if f not in _month_fields and f not in concat_fields
-        and f not in pivot_metric_fields and _is_metric(f)
-    ]
-    # 적용된 답변 오버라이드(공란/직접입력 포함)는 metric 회수보다 우선(D-151)
-    pivot_metric_fields = [
-        f for f in pivot_metric_fields if f not in (applied_overrides or set())
-    ]
+    # 적용된 답변 오버라이드(공란/직접입력 포함)는 metric 회수보다 우선(D-151).
+    # 단일 경로와 같은 함수·규칙(plans/185).
+    pivot_metric_fields = select_metric_recovery_fields(
+        _um,
+        [field for field, _ in metric_entries],
+        dropped_inferred or [],
+        exclude=_month_fields | concat_fields | (applied_overrides or set()),
+        is_metric=_is_metric,
+    )
     eav_pattern_mr = first_eav_pattern(schema_info) or {}
     if error_context and path_parity_enabled(app_config):
         # 경로 대칭 (c): 재시도(결정적 SQL이 이미 실패)면 단일 경로처럼 LLM 폴백에

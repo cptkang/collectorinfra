@@ -12,6 +12,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from src.api.error_detail import current_request_id
+
 # 테스트·운영 로그가 이 이름으로 잡는다(이동 전 로거 이름 유지 — plans/179 W2)
 logger = logging.getLogger("src.api.routes.query")
 
@@ -96,14 +98,21 @@ async def _resolve_uploaded_bytes(
             elapsed_ms=(time.time() - start) * 1000,
             user_id=user_id,
         )
+        # 실패 로그는 이 1줄뿐이다 — 원문(파일·사유·ret·상세)과 요청 번호(plans/184 S1 교정)
+        rid = current_request_id()
         logger.error(
-            "DRM 복호화 실패: file=%s reason=%s ret=%s detail=%s",
-            filename, e.reason, e.ret_code, e.detail,
+            "DRM 복호화 실패 (요청 %s): file=%s reason=%s ret=%s detail=%s",
+            rid, filename, e.reason, e.ret_code, e.detail,
         )
-        raise HTTPException(
-            status_code=502,
-            detail=f"DRM 암호화 파일로 확인되나 복호화에 실패했습니다: {e.reason}",
-        )
+        if e.user_visible:
+            detail = f"DRM 암호화 파일로 확인되나 복호화에 실패했습니다: {e.reason}"
+        else:
+            # 설정 키 이름·경로가 담긴 사유는 화면에 싣지 않는다 — 원문은 위 로그(plans/184 S1)
+            detail = (
+                "DRM 암호화 파일로 확인되나 복호화에 실패했습니다: "
+                f"서버 DRM 설정 오류 — 관리자에게 문의하세요 (요청 {rid})"
+            )
+        raise HTTPException(status_code=502, detail=detail)
 
     await log_drm_decrypt(
         file_name=filename,

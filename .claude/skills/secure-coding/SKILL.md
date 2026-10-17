@@ -45,6 +45,7 @@ description: 이 저장소(LLM 생성 SQL·MCP DB 접근·JWT 사용자/운영�
 
 - 사용자 응답에는 **고정 문구 + 상관 ID**. 예외 원문(`str(e)`·`{e}`)은 `logger.exception`으로 서버 로그에만 — DSN·SQL·경로·외부 API 응답이 섞인다. 현행: `query.py`·`apm_jobs.py`·`conversation.py`·`admin.py` 등(`plans/163` S3).
 - 사용자에게 보여 줄 메시지가 필요하면 **안전 문구만 담는 도메인 예외**를 정의하고 그 메시지만 내보낸다(`JobNotFound` 등은 허용 사례).
+- `degraded_reason`을 붙이는 처리기의 `error`·`final_response`는 **고정 문구 + 요청 번호**, 원문은 로그에만 — `src/utils/user_error.py`가 `degraded_reason` 붙은 결과 문구를 처리기 문구로 믿고 화면에 그대로 낸다(plans/184 S6).
 - **실패 시 닫힌다**(fail-closed): 검증·인가 단계의 예외를 삼키고 계속 진행하지 않는다. 침묵 폴백 금지 — 실패 사유를 구조화해 응답에 노출하고 원문은 로그로(CLAUDE.md).
 
 ### D. 설정·시크릿·외부 연결 (근거: CWE-1188·CWE-636 · ASVS v5.0.0-13.2.3·13.2.4·13.3.1·16.5.3 · NIST SSDF PW.9 · Saltzer & Schroeder fail-safe defaults)

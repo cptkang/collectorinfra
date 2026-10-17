@@ -59,7 +59,10 @@ def _calls(fn: ast.AST, callee: str) -> list[ast.Call]:
     ("process_file_query_stream", "selected_list"),
 ])
 def test_entry_reassigns_authorized_selection(entry: str, selection: str) -> None:
-    """`<선택>, gate = await _run_pre_gates(<선택>, …)` — 인가 결과를 같은 이름에 되쓴다."""
+    """`<선택>, gate = await _run_pre_gates(<선택>, …)` — 인가 결과를 같은 이름에 되쓴다.
+
+    텍스트 진입은 게이트가 본문에 직접 적으므로 반환값을 버린다(`_, gate = …` · plans/184 K7).
+    """
     fn = _func(ast.parse(_QUERY_PY.read_text(encoding="utf-8")), entry)
     assigns = [
         n for n in ast.walk(fn)
@@ -70,7 +73,8 @@ def test_entry_reassigns_authorized_selection(entry: str, selection: str) -> Non
     assert len(assigns) == 1, f"{entry}: _run_pre_gates 대입문 {len(assigns)}개"
     (target,) = assigns[0].targets
     assert isinstance(target, ast.Tuple) and len(target.elts) == 2
-    assert ast.unparse(target.elts[0]) == selection, ast.unparse(assigns[0])
+    expected = "_" if selection.startswith("body.") else selection
+    assert ast.unparse(target.elts[0]) == expected, ast.unparse(assigns[0])
     assert ast.unparse(target.elts[1]) == "gate"
     assert ast.unparse(assigns[0].value.value.args[0]) == selection
     if selection == "selected_list":

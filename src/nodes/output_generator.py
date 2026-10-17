@@ -1833,8 +1833,8 @@ TEXT_NOTES: tuple[_NoteFn, ...] = (
     append_structure_missing_note,
     _append_cross_system_notes,
 )
-#: 문서(xlsx/docx) 경로 노트 — 텍스트 경로의 `current_month_partial`·`limit_truncation`·
-#: `generator_notes`·`condition_changes` 4종이 없는 현행 구성 그대로다(U-8 — plans/166 §8 후속).
+#: 문서(xlsx/docx) 경로 노트 — 텍스트 경로와 같은 구성·순서다. 당월 부분·LIMIT 절단·생성기 메모·
+#: 조건 변경 4종도 문서 답에 싣는다(plans/184 K8 · 2026-10-17 사용자 결정 — 종전 U-8 누락 해소).
 DOC_NOTES: tuple[_NoteFn, ...] = (
     _append_query_period_note,
     _append_inferred_mapping_info,
@@ -1842,7 +1842,11 @@ DOC_NOTES: tuple[_NoteFn, ...] = (
     _append_scope_note,
     _append_elliptical_succession_note,
     _append_zone_coverage_notes,
+    _append_current_month_partial_note,
     _append_unavailable_metric_notes,
+    _append_limit_truncation_note,
+    _append_generator_notes,
+    _append_condition_changes,
     append_structure_missing_note,
     _append_cross_system_notes,
 )

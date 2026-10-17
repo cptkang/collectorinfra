@@ -61,6 +61,7 @@ class _RecordingState:
 def _config(
     *,
     auth_db_url: str = "",
+    auth_enabled: bool = False,
     db_url: str = "",
     retention_days: int = 0,
     sql_days: int = 0,
@@ -74,7 +75,7 @@ def _config(
     return SimpleNamespace(
         log_level="INFO",
         db_connection_string=db_url,
-        auth=SimpleNamespace(auth_db_url=auth_db_url),
+        auth=SimpleNamespace(auth_db_url=auth_db_url, enabled=auth_enabled),
         audit=SimpleNamespace(retention_days=retention_days),
         observability=SimpleNamespace(
             sql_log_enabled=True,
@@ -560,12 +561,14 @@ async def test_start_failures_are_swallowed(monkeypatch, caplog) -> None:
     ]
 
 
-# ─── 5. 기동 중간 실패 — 인증 DDL 실패(앞서 둔 state 유지) · incident 구독 실패(자원은 종료 때)
+# ─── 5. 기동 중간 실패 — 인증 DDL 실패 · incident 구독 실패(자원은 종료 때)
+#        인증 활성이면 앞서 둔 state 유지 · 비활성이면 원복·풀 닫기·감사 로테이션 미시작
+#        (plans/184 L1)
 
 
 async def test_mid_start_failures_keep_partial_state(monkeypatch, caplog) -> None:
     events, logs = await _drive(
-        monkeypatch, caplog, _config(**_ALL_ON),
+        monkeypatch, caplog, _config(**{**_ALL_ON, "auth_enabled": True}),
         frozenset({"ensure_auth_tables", "incident_subscriber"}),
     )
     assert events == [
@@ -592,8 +595,49 @@ async def test_mid_start_failures_keep_partial_state(monkeypatch, caplog) -> Non
     ]
     assert logs == [
         _LOG_BUILD,
-        ("WARNING", "인증 DB 초기화 실패 (인증 기능 비활성): ensure_auth_tables 실패"),
+        ("WARNING", "인증 DB 초기화 일부 실패 — 인증 활성이라 사용자 조회 연결은 유지합니다: "
+                    "ensure_auth_tables 실패"),
         _LOG_AUDIT_LOOP, _LOG_FILE_LOOP, _LOG_CACHE_OK, _LOG_ALARM, _LOG_SSE_OK,
+        ("WARNING", "incident 계측 시작 실패 (계측 비활성): incident_subscriber 실패"),
+        _LOG_END,
+    ]
+
+
+async def test_mid_start_failures_revert_auth_state(monkeypatch, caplog) -> None:
+    events, logs = await _drive(
+        monkeypatch, caplog, _config(**_ALL_ON),
+        frozenset({"ensure_auth_tables", "incident_subscriber"}),
+    )
+    assert events == [
+        *_pre_auth(7, 3),
+        *_AUTH_UNTIL_TABLES,
+        "state.auth_pool=None",
+        "state.user_repo=None",
+        "state.audit_repo=None",
+        "state.auth_provider=None",
+        "state.audit_service=None",
+        "state.thread_repo=None",
+        "auth_pool.close",
+        *[e for e in _RETENTION_CACHE_APM_ALARM if e != "audit_retention_loop(30)"],
+        *_SSE_OK,
+        *_INCIDENT_OK,
+        "state.incident_store=None",
+        "state.incident_publisher=None",
+        "--- yield ---",
+        "alarm_worker_task:cancelled",
+        "sse_bridge_task:cancelled stop=True",
+        "redis#1.aclose",
+        "redis#2.aclose",
+        "incident_pool.close",
+        "file_log_retention_task:cancelled",
+        "checkpointer.conn.close",
+        "get_cache_manager",
+        "cache.disconnect",
+    ]
+    assert logs == [
+        _LOG_BUILD,
+        ("WARNING", "인증 DB 초기화 실패 (인증 기능 비활성): ensure_auth_tables 실패"),
+        _LOG_FILE_LOOP, _LOG_CACHE_OK, _LOG_ALARM, _LOG_SSE_OK,
         ("WARNING", "incident 계측 시작 실패 (계측 비활성): incident_subscriber 실패"),
         _LOG_END,
     ]

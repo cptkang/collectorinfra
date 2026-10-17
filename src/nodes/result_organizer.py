@@ -294,6 +294,7 @@ async def result_organizer(
                 column_mapping=None,
                 resolved_mapping=None,
                 is_sufficient=False,
+                sheet_mappings=None,
             ),
             "error_message": "data_insufficient",
             "current_node": "result_organizer",

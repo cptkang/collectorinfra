@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from typing import Any, Optional
 
 from fastapi import FastAPI
@@ -124,6 +126,55 @@ def _warn_shared_jwt_secret(config: AppConfig) -> None:
         logger.warning(
             "AUTH_JWT_SECRET과 ADMIN_JWT_SECRET이 같은 값입니다 — 사용자/운영자 토큰 시크릿을 "
             "서로 다른 값으로 설정하세요(D-070)."
+        )
+
+
+def _detect_worker_count(argv: Sequence[str], environ: Mapping[str, str]) -> int:
+    """기동 인자·환경변수로 uvicorn 워커 프로세스 수를 추정한다(plans/184 S3).
+
+    uvicorn 0.52 실측: 다중 워커는 spawn 자식 프로세스라 부모의 `sys.argv`·`os.environ`을 그대로
+    물려받는다. CLI `--workers`가 우선이고, 없으면 `WEB_CONCURRENCY`, 둘 다 없으면 1이다
+    (`uvicorn/config.py`). `WEB_CONCURRENCY`는 uvicorn이 `os.environ`에서 직접 읽으므로 여기서도
+    `os.environ`이 맞는 출처다(앱 설정이 아님). 해석할 수 없는 값은 1로 본다.
+    `--reload`가 있으면 1이다 — reload 모드는 `workers`를 무시하고 단일 서버 프로세스만 띄운다
+    (`uvicorn/config.py` 「"workers" flag is ignored when reloading is enabled.」 · `main.py`
+    `ChangeReload` 분기가 `Multiprocess`보다 앞선다).
+    """
+    if any(arg == "--reload" or arg.startswith("--reload=") for arg in argv):
+        return 1
+    for i, arg in enumerate(argv):
+        value: str | None = None
+        if arg == "--workers" and i + 1 < len(argv):
+            value = argv[i + 1]
+        elif arg.startswith("--workers="):
+            value = arg.split("=", 1)[1]
+        if value is not None:
+            try:
+                return int(value)
+            except ValueError:
+                return 1
+    try:
+        return int(environ.get("WEB_CONCURRENCY", "1"))
+    except ValueError:
+        return 1
+
+
+def _warn_multi_worker(
+    argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = None
+) -> None:
+    """워커가 2개 이상으로 뜬 것으로 보이면 경고 1줄을 남긴다(plans/184 S3 — 워커 1개 운영 전제).
+
+    질의 결과 저장소(`src/api/query/store.py` `_results_store`)는 프로세스 메모리라 다른 워커가 받은
+    결과·파일 조회 요청은 결과를 찾지 못한다. 워커 1개(기본)이면 아무것도 남기지 않는다.
+    """
+    workers = _detect_worker_count(
+        sys.argv if argv is None else argv, os.environ if environ is None else environ
+    )
+    if workers > 1:
+        logger.warning(
+            "워커 프로세스 %d개로 기동된 것으로 보입니다 — 질의 결과 저장소가 프로세스 메모리라 "
+            "다른 워커로 간 결과·파일 조회 요청은 결과를 찾지 못합니다. 워커 1개로 운영하세요.",
+            workers,
         )
 
 
@@ -325,6 +376,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # D-071: 운영 모드 필수 크레덴셜·시크릿 검증(미설정 시 기동 거부)
     _validate_production_secrets(config)
     _warn_shared_jwt_secret(config)
+    _warn_multi_worker()
 
     _init_file_logs(config)
 
@@ -427,7 +479,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     if config.schema_cache.backend == "redis":
         from src.schema_cache.cache_manager import get_cache_manager
         cache_mgr = get_cache_manager(config)
-        await cache_mgr.disconnect()
+        try:
+            await cache_mgr.disconnect()
+        except Exception:
+            # 다른 정리 단계처럼 삼킨다 — 종료 로그를 남기고 예외를 lifespan 밖으로 내지 않는다
+            logger.warning("Redis 스키마 캐시 연결 종료 실패(무시)", exc_info=True)
 
     logger.info("서버 종료")
 
@@ -468,7 +524,12 @@ async def _build_agent_graph(app: FastAPI, config: AppConfig) -> Any:
 async def _init_auth_db(app: FastAPI, config: AppConfig) -> None:
     """기동 단계 — 인증 DB 초기화 (AUTH_ENABLED 여부와 무관하게 테이블은 생성).
 
-    실패는 warning 후 계속한다(인증 기능 비활성). 실패 전에 대입한 app.state 값은 그대로 남는다.
+    실패는 warning 후 계속한다. 풀 생성 뒤 실패하면 인증 활성 여부로 갈린다(plans/184 L1).
+    - 인증 비활성: 이 블록이 대입한 app.state 값을 모두 None으로 되돌리고 연 풀을 닫는다 —
+      감사 로그 로테이션도 시작되지 않는다.
+    - 인증 활성: 되돌리지 않는다 — 대입한 state·풀을 그대로 두고(사용자 조회 연결 유지),
+      감사 로그 로테이션도 audit_repo가 있으면 종전대로 시작된다.
+    풀 생성 전 실패는 대입한 값이 없어 두 경우 모두 그대로 계속한다(인증 기능 비활성).
     """
     auth_db_url = config.auth.auth_db_url or config.db_connection_string
     app.state.auth_pool = None
@@ -479,6 +540,7 @@ async def _init_auth_db(app: FastAPI, config: AppConfig) -> None:
     app.state.thread_repo = None  # 질의응답 스레드 이력(D-248) — 앱 DB 풀이 있을 때만
 
     if auth_db_url:
+        auth_pool = None
         try:
             import asyncpg
 
@@ -516,7 +578,26 @@ async def _init_auth_db(app: FastAPI, config: AppConfig) -> None:
             await _cleanup_audit_once(app.state.audit_repo, config.audit.retention_days)
             logger.info("인증 DB 초기화 완료")
         except Exception as e:
-            logger.warning("인증 DB 초기화 실패 (인증 기능 비활성): %s", e)
+            # 이 블록의 app.state 대입은 모두 풀 생성 뒤라 풀이 없으면 되돌릴 것도 없다
+            if auth_pool is None:
+                logger.warning("인증 DB 초기화 실패 (인증 기능 비활성): %s", e)
+            elif config.auth.enabled:
+                # 원복하면 get_current_user가 토큰 payload만으로 통과시킨다(전 DB 허용 · fail-open)
+                logger.warning(
+                    "인증 DB 초기화 일부 실패 — 인증 활성이라 사용자 조회 연결은 유지합니다: %s", e
+                )
+            else:
+                logger.warning("인증 DB 초기화 실패 (인증 기능 비활성): %s", e)
+                for name in (
+                    "auth_pool",
+                    "user_repo",
+                    "audit_repo",
+                    "auth_provider",
+                    "audit_service",
+                    "thread_repo",
+                ):
+                    setattr(app.state, name, None)
+                await _close_quietly(auth_pool)
 
 
 def _start_audit_retention(app: FastAPI, config: AppConfig) -> Any:

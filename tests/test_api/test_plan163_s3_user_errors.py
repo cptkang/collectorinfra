@@ -843,7 +843,7 @@ async def test_apm_rank_failure_reason_hidden_in_first_hop_notice(monkeypatch, b
     with caplog.at_level(logging.WARNING):
         res = await w2._run(["apm.app_health"])
     assert SECRET not in json.dumps(res, ensure_ascii=False, default=str)
-    assert f"부하 순위를 받지 못해(apm_api_error (요청 {bound_rid}))" in (
+    assert f"부하 순위를 받지 못해(apm_api_error · 요청 {bound_rid})" in (
         res["organized_data"]["summary"])
     assert SECRET in caplog.text and bound_rid in caplog.text
 

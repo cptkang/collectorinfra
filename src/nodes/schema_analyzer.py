@@ -689,7 +689,9 @@ async def _apply_allowed_tables(
         # `rep_document`·`core_schema_ver`), 그 테이블의 샘플 수집이 예산을 태웠다
         # (§2.8-②⑤). 유사어 테이블은 **허용만** 한다 — 멀티 게이트
         # (`multi_db_executor._scope_multi_schema`)가 필터만 하고 보충하지 않는 것과 같다.
-        _supplement_bare = set(_allowed)
+        # 보충 순서는 프로필 기재 순서로 고정한다 — set 순회는 해시 시드마다 달라
+        # relevant·프롬프트 접두가 재기동마다 바뀐다(plans/184 J3).
+        _supplement_bare = list(dict.fromkeys(t.lower() for t in _manual_prof["allowed_tables"]))
         # 매핑 피드백(synonyms)에 등록된 테이블을 allowed_tables에 동적 보완하되,
         # **이번 질의 용어와 매칭된 유사어의 테이블만** 추가한다(D-051). 전량 추가하면
         # 누적 유사어 전 테이블이 _allowed로 유입되어 relevant·프롬프트 토큰이 폭증한다
@@ -750,7 +752,8 @@ def _apply_alarm_tables(
 ) -> list[str]:
     """alarm_query: 알람 전용 테이블로 거르고(또는 core로 제한) 핵심 알람 테이블을 보충한다."""
     _all_tables_map = {t.rsplit(".", 1)[-1].lower(): t for t in full_schema.tables.keys()}
-    _alarm_core_set = {"cmm_alarm", "cmm_alarm_def", "cmm_alarm_active"}
+    # 순회 순서가 relevant 순서가 되므로 튜플로 고정한다(plans/184 J3 — set은 해시 시드마다 다르다).
+    _alarm_core_set = ("cmm_alarm", "cmm_alarm_def", "cmm_alarm_active")
 
     # [Fix C-1] alarm_allowed_tables 명시 필터링
     # LLM 폴백(전체 또는 과다 선택) 감지: 전체 테이블의 50% 초과 or 10개 초과

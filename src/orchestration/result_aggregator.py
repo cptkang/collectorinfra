@@ -50,6 +50,7 @@ from src.state import (
     OutputTaskResultInputs,
     OutputZoneScopeInputs,
 )
+from src.utils.column_matcher import build_resolved_mapping
 from src.utils.deadline import MIN_CALL_TIMEOUT_SEC
 from src.utils.empty_antecedent import (
     EMPTY_ANTECEDENT_KEY,
@@ -793,6 +794,24 @@ def _merged_source_state(
     }
 
 
+def _merged_resolved_mapping(
+    column_mapping: dict[str, Any] | None, merged_rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """병합 행의 결과 키로 양식 매핑을 해석한다(plans/185 W2 — 결과 정리 Layer 1과 같은 규칙).
+
+    원본 매핑을 그대로 writer에 넘기면 같은 칼럼(예: 두 사용률 필드 → 같은 통계 칼럼)을 공유한
+    필드의 역매핑이 마지막 필드로 덮여 다른 필드 값이 채워진다. 결과 키는 모든 행 키의 합집합이다 —
+    병합 행은 컬럼 순서로 펼쳐 모든 행이 같은 키를 가져(`_merged_rows_in_order`) 첫 행 키와 같고,
+    키가 다른 행이 와도 뒤 행에만 있는 키를 놓치지 않는다. Layer 2(LLM)는 부르지 않는다 — 못 푼
+    필드는 원본 값 유지라 writer의 종전 폴백을 탄다. 매핑·행이 없으면 None(종전).
+    """
+    if not column_mapping or not merged_rows:
+        return None
+    result_keys = {k for row in merged_rows if isinstance(row, dict) for k in row}
+    resolved, _unresolved = build_resolved_mapping(column_mapping, result_keys)
+    return resolved
+
+
 async def _finalize_merged_rows(
     merged_rows: list[dict],
     state: AgentState,
@@ -820,7 +839,7 @@ async def _finalize_merged_rows(
         "summary": f"총 {len(merged_rows)}건의 통합 결과입니다.",
         "rows": merged_rows,
         "column_mapping": None,
-        "resolved_mapping": None,
+        "resolved_mapping": _merged_resolved_mapping(state.get("column_mapping"), merged_rows),
         "is_sufficient": True,
         "sheet_mappings": None,
     }

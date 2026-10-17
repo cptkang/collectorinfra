@@ -20,6 +20,7 @@ from src.orchestration.apm.common import APM_QUERY_AGENT, APM_SYSTEM, META_KEY
 from src.orchestration.apm.window import WindowPlan
 from src.routing.registry import ViewSpec
 from src.utils.task_result_keys import DEGRADED_KEY
+from src.utils.user_error import request_id
 
 logger = logging.getLogger("src.orchestration.apm_query")
 
@@ -79,8 +80,9 @@ def _envelope_error(envelope: dict[str, Any]) -> str | None:
 #: 「instance_unresolved: …」의 머리).
 #: 「코드: 사유」 꼴만 코드로 본다 — 「postgresql://…」 같은 원문의 스킴을 코드로 읽지 않는다.
 _GATEWAY_CODE_RE = re.compile(r"([a-z][a-z0-9_]*): ")
-#: 예외 종류 이름 머리(「RuntimeError: …」 — `_lookup` 의 호출 예외) — 종류 이름만 보인다.
-_EXC_TYPE_RE = re.compile(r"([A-Z][A-Za-z0-9]*(?:Error|Exception)): ")
+#: 예외 종류 이름 머리(「RuntimeError: …」 · 호출 예외 사유 「SourceMcpError (요청 rid)」 —
+#: `_exception_error`) — 종류 이름만 보인다(요청 번호는 소비처가 한 번만 붙인다).
+_EXC_TYPE_RE = re.compile(r"([A-Z][A-Za-z0-9]*(?:Error|Exception))(?:: | \(요청 [^()]+\)$)")
 #: 첫 홉 목록 작업이 마감을 넘긴 사유 — 코드가 지은 고정 문장이라 그대로 보인다.
 _FIRST_HOP_TIMEOUT_ERROR = ("인스턴스 목록 조회가 처리 시간 안에 끝나지 않아 대상 서버를 고르지 "
                             "못했습니다(목록 작업은 취소했습니다)")
@@ -90,6 +92,25 @@ _CODE_PHRASE_RE = re.compile(
     r"[^\n:]{1,60} (?:도구 호출 시간 초과\([a-z][a-z0-9_]*, \d+(?:\.\d+)?초\)"
     r"|세션이 중단됐습니다|연결·호출 실패: [A-Za-z][A-Za-z0-9_]*)"
 )
+
+
+def _exception_error(e: Exception, where: str) -> str:
+    """호출 예외의 사유 — 「예외종류 (요청 rid)」, 원문은 warning 로그(plans/184 S4b).
+
+    사유는 `meta["failures"]`·`source_status.reason`·장부에 그대로 실리므로 예외 원문을 담지
+    않는다. 소스 MCP 세션이 원문 없이 지은 사유(`_CODE_PHRASE_RE` — 시간 초과 등)는 그대로 둔다.
+
+    Args:
+        e: 호출 예외
+        where: 로그에 남길 단계 이름
+    """
+    text = str(e)
+    if _CODE_PHRASE_RE.fullmatch(text):
+        return text
+    rid = request_id()
+    logger.warning("%s %s 호출 예외 (요청 %s): %s: %s", APM_QUERY_AGENT, where, rid,
+                   type(e).__name__, text)
+    return f"{type(e).__name__} (요청 {rid})"
 
 
 async def _run_calls(session: Any, calls: list[_Call], concurrency: int,
@@ -104,7 +125,7 @@ async def _run_calls(session: Any, calls: list[_Call], concurrency: int,
             try:
                 call.envelope = await session.call_tool(call.view.tool, call.args)
             except SourceMcpError as e:
-                call.error = str(e)
+                call.error = _exception_error(e, call.view.tool)
                 return
             call.error = _envelope_error(call.envelope)
 

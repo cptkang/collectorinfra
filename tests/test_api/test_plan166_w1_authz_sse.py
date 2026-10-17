@@ -80,11 +80,13 @@ def test_expired_and_bad_signature_detail(expected_type: str) -> None:
 
 
 def test_sub_rules_stay_per_kind() -> None:
-    """`sub` 기준은 종류마다 그대로다 — 사용자는 falsy 거부, 운영자는 None만 거부."""
+    """`sub` 기준 — 사용자·운영자 모두 falsy 거부(plans/184 S2 — 운영자도 빈 문자열 거부)."""
     with pytest.raises(HTTPException) as ei:
         _verify_user_token(_token({"sub": "", "type": "user"}), SECRET)
     assert ei.value.detail == "유효하지 않은 토큰입니다."
-    assert verify_admin_token(_token({"sub": "", "type": "admin"}), SECRET) == ""
+    with pytest.raises(HTTPException) as ei:
+        verify_admin_token(_token({"sub": "", "type": "admin"}), SECRET)
+    assert ei.value.detail == "유효하지 않은 토큰입니다."
     with pytest.raises(HTTPException) as ei:
         verify_admin_token(_token({"type": "admin"}), SECRET)
     assert ei.value.detail == "유효하지 않은 토큰입니다."

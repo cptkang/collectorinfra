@@ -14,9 +14,15 @@ from typing import Any
 
 from src.domain import disclosure as disc
 from src.orchestration import apm_jobs as jobs
-from src.orchestration.apm.calls import _Call, _call_args, _JobScope, _run_calls, _status
+from src.orchestration.apm.calls import (
+    _Call,
+    _call_args,
+    _exception_error,
+    _JobScope,
+    _run_calls,
+    _status,
+)
 from src.orchestration.apm.common import (
-    APM_QUERY_AGENT,
     APM_SYSTEM,
     DEFAULT_VIEW,
     INSTANCES_VIEW,
@@ -506,10 +512,11 @@ async def _lookup(session: Any, calls: list[_Call], concurrency: int, scope: _Jo
         if live:
             await asyncio.gather(*(_await_first_hop(session, c, scope) for c in live))
     except Exception as e:  # noqa: BLE001 — 근거 하나의 실패가 다른 근거를 막지 않는다
-        logger.warning("%s 대상 해석 조회 실패: %s", APM_QUERY_AGENT, type(e).__name__)
+        # 사유는 「예외종류 (요청 rid)」, 원문은 로그 1줄(plans/184 S4b)
+        reason = _exception_error(e, "대상 해석")
         for call in calls:  # 답이 없거나 아직 작업 핸들뿐인 호출은 실패다(행 0건으로 읽지 않는다)
             if call.error is None and (call.envelope is None or jobs.is_live(call.envelope)):
-                call.error = f"{type(e).__name__}: {str(e)[:120]}"
+                call.error = reason
 
 
 def _search_args(scope: _JobScope, domain_id: Any, **target: Any) -> dict[str, Any]:

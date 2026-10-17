@@ -152,6 +152,7 @@ from src.db_adapters.polestar.form_fill_plan import (
     month_series_rule_updates,
     plan_form_fill_pivot,
     resolve_answer_overrides,
+    select_metric_recovery_fields,
     split_pivot_mapping,
 )
 # 순위 정렬 NULLS LAST 결정적 교정(D-202 2차) — 검증기와 같은 판정을 공유해 드리프트 방지.
@@ -397,8 +398,8 @@ def _try_build_form_fill_pivot_sql(
         mapping_updates.update(_ov_map)
         concat_fields = {c[0] for c in concat_eav}
 
-    # 직접 컬럼(server.Server) — 사용률 통계 컬럼은 제외(미매핑으로 접힘). 결합 필드는 제외.
-    regular_entries, eav_entries, _metric_entries = split_pivot_mapping(
+    # 직접 컬럼(server.Server) — 사용률 통계 컬럼은 제외(아래 metric 회수로 접힘). 결합 필드는 제외.
+    regular_entries, eav_entries, metric_entries = split_pivot_mapping(
         column_mapping, exclude_fields=concat_fields,
     )
     child_eav, server_eav = split_eav_by_resource_type(
@@ -432,13 +433,17 @@ def _try_build_form_fill_pivot_sql(
     month_fields = set(month_series.fields) if month_series else set()
     # 적용된 오버라이드(공란/직접입력 포함)는 metric 회수 대상에서 제외 — 사용자 층 우선
     _applied_ov = {f for f, o in overrides_out.items() if o.get("applied")}
-    metric_fields = [
-        f for f, c in column_mapping.items()
-        if c is None and f not in month_fields and f not in concat_fields
-        and f not in _applied_ov and classify_metric_field(
+    # 사용률 회수 대상 = 미매핑(llm_inferred 강등 포함) + 사용률 통계 칼럼 매핑 필드 — 멀티
+    # 경로와 같은 함수·규칙(plans/185). 통계 칼럼 매핑은 강제 SELECT에서 빠지므로(RC2) 여기서
+    # 회수하지 않으면 빈칸이 된다.
+    metric_fields = select_metric_recovery_fields(
+        [f for f, c in column_mapping.items() if c is None],
+        [f for f, _c in metric_entries],
+        exclude=month_fields | concat_fields | _applied_ov,
+        is_metric=lambda f: bool(classify_metric_field(
             f, db_id=active_db_id, adapter_db_ids=adapter_db_ids
-        )
-    ]
+        )),
+    )
     domain = get_domain_by_id(active_db_id)
     db_schema = domain.db_schema if domain else ""
     sql = build_form_fill_pivot_sql(

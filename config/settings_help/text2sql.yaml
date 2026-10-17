@@ -1,7 +1,7 @@
 # 설정 옵션 상세 설명 — Text2SQL (D-191)
 # 근거: src/config/text2sql.py Text2SQLConfig 주석 · plans/61 · plans/67 · plans/69 · plans/82
-# 이 그룹은 대부분 기본 off(켜기 전에는 기존 SQL 생성 경로가 무변경)지만, 세 개는
-# 예외적으로 기본 on이다 — 관련 테이블 게이트 · 0건 진단 · 급증 조건 조립.
+# 이 그룹은 대부분 기본 off(켜기 전에는 기존 SQL 생성 경로가 무변경)지만, 네 개는
+# 예외적으로 기본 on이다 — 관련 테이블 게이트 · 0건 진단 · 급증 조건 조립 · 조회 템플릿 조립.
 
 version: 1
 group: text2sql
@@ -620,3 +620,34 @@ settings:
     related: [TEXT2SQL_MULTI_FULL_VALIDATION]
     references:
       - docs/02_decision.md (D-068)
+
+  TEXT2SQL_TEMPLATE_ASSEMBLY:
+    summary: 조회 템플릿 파일이 있는 DB에서 SQL을 검증된 템플릿으로 조립할지 — 기본 on이다.
+    behavior: >-
+      DB의 config/knowledge/{db_id}/query_templates.yaml에 검증된 SQL 템플릿이 있으면,
+      LLM은 템플릿 ID와 슬롯 값만 JSON으로 고르고 코드가 슬롯 형식을 검증·바인딩해 SQL을
+      조립한다. 조립 SQL은 기존 SQL 안전 검증과 초안 검증을 그대로 거친다. 고르지 못하거나
+      슬롯이 거절되거나 검증에 실패하면 사유를 남기고 기존 LLM SQL 생성으로 돌아간다.
+      단일·멀티 DB 경로가 같은 조립기를 쓴다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: >-
+          템플릿 파일이 있는 DB(ITAM 등)는 템플릿에 맞는 질의를 항상 같은 SQL로 답한다.
+          템플릿 파일이 없는 DB(폴스타 등)는 LLM 호출이 추가되지 않고 동작이 끈 상태와 같다.
+      - value: "false"
+        effect: 템플릿 파일이 있어도 쓰지 않고 모든 질의를 기존 LLM SQL 생성으로 처리한다.
+    example: >-
+      ITAM처럼 템플릿 파일이 있는 DB에서 등록된 템플릿과 같은 형태의 질문이 오면, LLM이 SQL을
+      새로 쓰지 않고 템플릿 SQL에 슬롯만 채워 실행하므로 매번 같은 조인과 조건으로 조회된다.
+      꺼 두면 같은 질문도 턴마다 LLM이 만든 SQL로 조회돼 조인·조건이 달라질 수 있다.
+    performance: >-
+      템플릿 파일이 있는 DB에서는 SQL 생성 대신 템플릿 선택 LLM 호출 1회가 들어가며, 조립에
+      성공하면 SQL 생성 LLM 호출과 그 재시도가 사라진다. 파일이 없는 DB는 추가 비용이 없다.
+    stability: >-
+      템플릿이 질의에 잘못 맞으면 그럴듯한 오답이 나올 수 있다 — 템플릿 목록에 「범위 밖」
+      선택지와 필수 슬롯을 두어 줄이고, 조립 실패는 사유를 남기고 LLM 생성으로 폴백한다.
+    recommendation: 켠 채로 둔다. 이 값의 기본 on은 발동이 템플릿 파일 존재에 묶인 의도된 예외다.
+    related: [TEXT2SQL_SEMANTIC_COMPOSE]
+    references:
+      - docs/decisions/D-316.md (③)

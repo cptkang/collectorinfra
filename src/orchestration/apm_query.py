@@ -71,6 +71,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import datetime
 from typing import Any
@@ -481,6 +482,11 @@ def _public_call_error(err: str, *, where: str) -> str:
     return f"{shown} (요청 {rid})" if shown else f"호출 실패 (요청 {rid})"
 
 
+#: `_public_call_error` 꼬리 「 (요청 rid)」 — 괄호 안에 다시 넣을 때 「 · 요청 rid」로
+#: 편다(plans/184 M1).
+_RID_TAIL_RE = re.compile(r" \((요청 [^()]+)\)$")
+
+
 def _failed_targets_text(label: str, failed: list[tuple[str, str]]) -> str:
     """「조회하지 못한 대상 N건」 줄 — 대상(오류 코드)과 요청 번호만, 원문은 로그(plans/163 S3+).
 
@@ -535,7 +541,11 @@ async def _retry_selection(
                                       HumanMessage(content=question)])
         parsed = extract_json_from_response(getattr(response, "content", response))
     except Exception as e:  # noqa: BLE001 — 재시도 실패는 미해결로 끝낸다(사유는 메타·로그)
-        return [], {}, f"{type(e).__name__}: {str(e)[:120]}"
+        # 메타에는 예외 종류와 요청 번호만, 원문은 로그(plans/184 S4 — `_public_call_error` 꼴)
+        rid = request_id()
+        logger.warning("%s 보기 선택 재시도 실패 (요청 %s): %s: %s", APM_QUERY_AGENT, rid,
+                       type(e).__name__, e)
+        return [], {}, f"{type(e).__name__} (요청 {rid})"
     run_capture.emit("apm_view_reselect",
                      {"parsed": parsed, "areas": areas, "thread_id": isolated.get("thread_id")})
     if not isinstance(parsed, dict):
@@ -1263,10 +1273,11 @@ async def _session_step(ctx: _RunCtx, endpoint: tuple[str, str | None]) -> dict[
         # 연결 예외 원문은 답 본문에 싣지 않는다 — 요청 번호만, 원문은 로그(plans/163 S3+)
         rid = request_id()
         logger.warning("APM 게이트웨이 연결 실패 (요청 %s · %s): %s", rid, label, e)
-        ctx.meta["source_status"] = _status(label, "unavailable", 0, str(e))
+        ctx.meta["source_status"] = _status(label, "unavailable", 0,
+                                            f"{type(e).__name__} (요청 {rid})")
         return _refusal(f"{label}에 연결하지 못해 조회하지 않았습니다(요청 {rid}). "
                         "다른 소스의 값으로 대신 답하지 않았습니다.",
-                        "source_unavailable", ctx.meta, ctx.notices)
+                        "source_unavailable", ctx.meta, disc.dedupe(ctx.notices))
     ctx.calls = calls
     return None
 
@@ -1506,7 +1517,8 @@ async def _untargeted_step(
     hosts, hostless, step = await _insert_instances_step(session, scope,
                                                          by_id.get(INSTANCES_VIEW), limit=top_n)
     step["mode"] = "list"
-    step["rank_error"] = str(why)[:120]
+    # 고지가 괄호로 감싸므로 요청 번호 괄호를 「 · 요청 rid」로 편다(plans/184 M1 — 이중 괄호)
+    step["rank_error"] = _RID_TAIL_RE.sub(r" · \1", str(why))[:120]
     return hosts, hostless, step
 
 

@@ -35,7 +35,8 @@
     "rows": [],
     "column_mapping": null,
     "resolved_mapping": null,
-    "is_sufficient": false
+    "is_sufficient": false,
+    "sheet_mappings": null
    },
    "error_message": "data_insufficient",
    "current_node": "result_organizer",
@@ -126,7 +127,8 @@
     "rows": [],
     "column_mapping": null,
     "resolved_mapping": null,
-    "is_sufficient": false
+    "is_sufficient": false,
+    "sheet_mappings": null
    },
    "error_message": "data_insufficient",
    "current_node": "result_organizer"

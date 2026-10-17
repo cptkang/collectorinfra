@@ -382,7 +382,7 @@ def _check_references(
         ))
     else:
         if unknown_tables and available_tables:
-            errors.append(f"존재하지 않는 테이블 참조: {', '.join(unknown_tables)}")
+            errors.append(f"존재하지 않는 테이블 참조: {', '.join(sorted(unknown_tables))}")
 
         # 6. 참조 컬럼 존재 여부
         if not unknown_tables and available_tables:

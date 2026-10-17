@@ -5,8 +5,9 @@ plans/166 W0 특성화 스냅샷 — 단계 2(plans/163)만 갱신 가능, 단�
 
 `output_generator` 노드의 텍스트 경로와 문서(xlsx/docx) 경로가 응답 본문에 노트를 덧붙이는
 `_append_*`·`append_structure_missing_note` **호출 목록과 순서**를 현행 그대로 고정한다.
-문서 경로에 텍스트 경로의 4종(`current_month_partial`·`limit_truncation`·`generator_notes`·
-`condition_changes`)이 없는 현 상태도 그대로 단언한다(U-8 — 누락 여부 확인은 별건 · 고치지 않는다).
+문서 경로에도 텍스트 경로의 4종(`current_month_partial`·`limit_truncation`·`generator_notes`·
+`condition_changes`)이 같은 순서로 붙는다(plans/184 K8 행동 변경으로 갱신 — 종전 U-8 「없음」
+단언 교체).
 
 방법(실행 기반): `sys.setprofile`로 노드 1회 구동 중의 파이썬 함수 호출을 관찰해, 아래 두 목록에
 든 **노트 함수 이름**(`NOTE_FUNCTIONS`)의 호출을 기록한다. 기록 대상 호출마다 중첩 깊이 카운터를
@@ -56,7 +57,7 @@ TEXT_PATH_NOTES: list[str] = [
     "_append_turn_notices",
 ]
 
-#: 문서 경로 — `output_format in ("xlsx", "docx")` 분기 · 파일 생성 성공 시(현행 순서)
+#: 문서 경로 — `output_format in ("xlsx", "docx")` 분기 · 파일 생성 성공 시(plans/184 K8 이후 순서)
 DOC_PATH_NOTES: list[str] = [
     "_append_query_period_note",
     "_append_inferred_mapping_info",
@@ -64,14 +65,18 @@ DOC_PATH_NOTES: list[str] = [
     "_append_scope_note",
     "_append_elliptical_succession_note",
     "_append_zone_coverage_notes",
+    "_append_current_month_partial_note",
     "_append_unavailable_metric_notes",
+    "_append_limit_truncation_note",
+    "_append_generator_notes",
+    "_append_condition_changes",
     "append_structure_missing_note",
     "_append_cross_system_notes",
     "_append_form_fill_notes",
     "_append_turn_notices",
 ]
 
-#: U-8 — 텍스트 경로에만 있는 4종(문서 경로에는 없다는 현 상태를 고정)
+#: U-8 — 종전 텍스트 경로에만 있던 4종(plans/184 K8부터 문서 경로에도 붙는다)
 TEXT_ONLY_NOTES: frozenset[str] = frozenset(
     {
         "_append_current_month_partial_note",
@@ -170,18 +175,17 @@ async def test_text_path_note_order() -> None:
 async def test_document_path_note_order(
     monkeypatch: pytest.MonkeyPatch, output_format: str
 ) -> None:
-    """문서 경로의 노트 호출 목록·순서가 현행과 같다(텍스트 전용 4종 없음 — U-8)."""
+    """문서 경로의 노트 호출 목록·순서가 현행과 같다(4종 포함 — plans/184 K8)."""
     assert await _document_path_calls(monkeypatch, output_format) == DOC_PATH_NOTES
 
 
 async def test_text_only_notes_absent_from_document_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """U-8 현 상태(실행 기록 대조): 텍스트 전용 4종은 텍스트 경로에서만 호출되고, 나머지 공통 노트는
-    두 경로에서 같은 상대 순서다(문서 경로는 `_append_form_fill_notes`가 더해질 뿐)."""
+    """plans/184 K8(실행 기록 대조): 종전 텍스트 전용 4종이 문서 경로에서도 호출되고, 두 경로의
+    노트는 같은 순서다(문서 경로는 `_append_form_fill_notes`가 더해질 뿐)."""
     text_calls = await _text_path_calls()
     doc_calls = await _document_path_calls(monkeypatch, "xlsx")
     assert TEXT_ONLY_NOTES <= set(text_calls)
-    assert TEXT_ONLY_NOTES.isdisjoint(doc_calls)
-    shared_text_order = [n for n in text_calls if n not in TEXT_ONLY_NOTES]
-    assert [n for n in doc_calls if n != "_append_form_fill_notes"] == shared_text_order
+    assert TEXT_ONLY_NOTES <= set(doc_calls)
+    assert [n for n in doc_calls if n != "_append_form_fill_notes"] == text_calls

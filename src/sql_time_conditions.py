@@ -360,8 +360,14 @@ def _read_literal(
 
 
 def _is_plain_column(toks: Sequence[_Tok], a: int, b: int) -> bool:
-    """[a, b) 토큰이 `x` 또는 `a.b.x` 형태의 식별자 하나인가."""
+    """[a, b) 토큰이 `x` 또는 `a.b.x` 형태의 식별자 하나인가.
+
+    괄호 없는 현재시각 낱말(`CURRENT_TIMESTAMP`·`SYSDATE` 등)은 식별자가 아니라 식이다 — `NOW()`와
+    같이 다룬다(plans/184 J2). 큰따옴표 식별자(`"CURRENT_DATE"`)·접두 붙은 이름은 그대로 컬럼이다.
+    """
     if b <= a or (b - a) % 2 == 0:
+        return False
+    if b - a == 1 and _NOW_FUNCTION_RE.fullmatch(toks[a].text):
         return False
     return all(
         toks[k].kind == ("word" if (k - a) % 2 == 0 else "dot") for k in range(a, b)

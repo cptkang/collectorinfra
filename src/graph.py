@@ -955,16 +955,18 @@ def build_graph(config: AppConfig, checkpointer: Any = None) -> Any:
     # 실패하면 플래그로 성립하는 다음 단(2·3·4단)으로 안전 폴백한다(그래프 크래시 방지).
     _backend = select_orchestration_backend(config)
     _buildable = _deep_agent_buildable(config, llm) if _backend == "deep_agent" else False
-    if _backend == "deep_agent" and not _buildable:
-        logger.warning(
-            "Track B 선택(deep_agent)이나 deepagents 패키지 조립 불가 → "
-            "semantic_router 경로로 폴백합니다(폐쇄망 wheel 반입 필요). "
-            "degraded_reason=package_missing"
-        )
 
     # 확정 단은 여기서 1회만 판정하고, 아래 배선 판정은 모두 이 값을 읽는다 — 기동 로그
     # (record_ladder_resolution)와 실제 배선이 같은 판정에서 나오므로 어긋날 수 없다.
     _tier, _reason = resolve_ladder_tier(config, backend=_backend, buildable=_buildable)
+    if _backend == "deep_agent" and not _buildable:
+        # 폴백 대상은 확정 단이다 — 2단 플래그가 켜져 있으면 semantic_router가 아니다(plans/184 M3)
+        logger.warning(
+            "Track B 선택(deep_agent)이나 deepagents 패키지 조립 불가 → "
+            "%s 경로로 폴백합니다(폐쇄망 wheel 반입 필요). "
+            "degraded_reason=package_missing",
+            _tier.value,
+        )
 
     # 3·4단 빌드에서만 등록하는 단일 DB 꼬리(schema_analyzer … output_generator·error_response).
     # 1단은 도구 루프, 2단은 서브에이전트가 노드 함수를 직접 호출하므로 그래프 노드로는

@@ -17,17 +17,25 @@ if TYPE_CHECKING:
 
 
 class DrmDecryptError(Exception):
-    """DRM 복호화 실패 — 사유를 구조화해 사용자 응답·로그에 노출한다."""
+    """DRM 복호화 실패 — 사유를 구조화해 사용자 응답·로그에 노출한다.
+
+    `user_visible=False`는 사유에 서버 설정 키 이름·파일 경로가 담겨 사용자 화면에
+    싣지 않는다는 표지다 — 업로드 경로는 고정 문구 + 요청 번호만 응답하고 원문은
+    서버 로그에 남긴다(plans/184 S1).
+    """
 
     def __init__(
         self,
         reason: str,
         ret_code: Optional[int] = None,
         detail: Optional[str] = None,
+        *,
+        user_visible: bool = True,
     ) -> None:
         self.reason = reason
         self.ret_code = ret_code
         self.detail = detail
+        self.user_visible = user_visible
         super().__init__(reason)
 
     def __str__(self) -> str:

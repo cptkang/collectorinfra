@@ -563,10 +563,11 @@ def _decide_single(plan: ProbePlan, ctx: _DecisionContext) -> SystemDecision:
         # 권고 K: 다른 시스템의 근거가 보조 컬럼(등록명 등)뿐이면 "거기 있다"가 아니다 —
         # 브리지 키가 아닌 컬럼으로 맞은 것이라 ②의 반대 증거가 성립하지 않는다.
         # 조회를 막지 않고(KEEP) 무엇을 보고 그렇게 판단했는지만 남긴다.
-        weak = found[0]
+        # 보조 컬럼 표기는 시스템마다 다르다 — 겹침 없이 시스템 순서로 모두 적는다(plans/184 M6).
+        weak_labels = ", ".join(dict.fromkeys(p.weak_label for p in found))
         return verdict(ACTION_KEEP, ROW_WEAK_ELSEWHERE, message=_join(
             f"{owner.label}에서 찾지 못했습니다: {_sample(owner.missing(), sample)}.",
-            f"{_labels(found)}에서는 {weak.weak_label} 일치만 있어 "
+            f"{_labels(found)}에서는 {weak_labels} 일치만 있어 "
             "호스트명 기준 등록으로 보지 않았습니다 — 조회를 막지 않습니다.",
             unverified_note,
         ))

@@ -105,7 +105,9 @@ class ScslCliDecryptor:
             if not value
         ]
         if missing:
-            raise DrmDecryptError(f"DRM 설정 누락: {', '.join(missing)}")
+            raise DrmDecryptError(
+                f"DRM 설정 누락: {', '.join(missing)}", user_visible=False
+            )
 
     async def decrypt(self, file_bytes: bytes, filename: str) -> bytes:
         plain, _ret = await self.decrypt_detailed(file_bytes, filename)
@@ -149,7 +151,10 @@ class ScslCliDecryptor:
             except asyncio.TimeoutError:
                 raise DrmDecryptError(f"복호화 타임아웃({cfg.timeout_sec}s)")
             except FileNotFoundError:
-                raise DrmDecryptError(f"java 실행 파일을 찾을 수 없음: {cfg.java_bin}")
+                raise DrmDecryptError(
+                    f"java 실행 파일을 찾을 수 없음: {cfg.java_bin}",
+                    user_visible=False,
+                )
 
             ret = self._parse_ret(stdout)
             if ret is None:

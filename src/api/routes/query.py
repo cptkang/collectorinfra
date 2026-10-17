@@ -1229,7 +1229,8 @@ async def process_query(
     # DB·소스 선택 인가(plans/104 C-4 — 존 게이트보다 먼저) → 거부 반환 → 사전 게이트(존 역질문·
     # 범위 사전 선택 → 저장 값 패널 삭제) — 파이프라인 실행 전 결정적 조기 반환(네 진입 공유 ·
     # plans/179 W1a)
-    body.selected_db_ids, gate = await _run_pre_gates(
+    # 인가한 선택은 게이트가 본문(`body.selected_db_ids`)에 직접 적는다 — 반환값은 버린다
+    _, gate = await _run_pre_gates(
         body.selected_db_ids, current_user, config, thread_id=thread_id,
         body=body, checkpoint_state=checkpoint_state,
     )
@@ -1332,7 +1333,8 @@ async def process_query_stream(
     checkpoint_state = await _get_checkpoint_state(graph, thread_config)
 
     # 선택 인가 → 거부 반환 → 사전 게이트 — /query와 대칭(네 진입 공유 · plans/179 W1a)
-    body.selected_db_ids, gate = await _run_pre_gates(
+    # 인가한 선택은 게이트가 본문(`body.selected_db_ids`)에 직접 적는다 — 반환값은 버린다
+    _, gate = await _run_pre_gates(
         body.selected_db_ids, current_user, config, thread_id=thread_id,
         body=body, checkpoint_state=checkpoint_state,
     )

@@ -138,8 +138,10 @@ def _period_tail_limits(
     unweighted: list[str],
     no_rows: list[str],
     valueless: list[str],
+    no_id: list[str],
 ) -> None:
-    """기간 순위 뒷부분 `[한계]` — 기간 tps 정의 · 가중 평균 불가 · 통계 행 없음 · 지표 값 없음."""
+    """기간 순위 뒷부분 `[한계]` — 기간 tps 정의 · 가중 평균 불가 · 통계 행 없음 · 지표 값 없음 ·
+    인스턴스 id 없음."""
     if has_rows:
         limits.append(
             f"[한계] 기간 tps = 조회 구간 호출 수 ÷ 조회 구간 초({seconds:g}초 · 시 경계로"
@@ -159,6 +161,11 @@ def _period_tail_limits(
         limits.append(
             f"[한계] 지표 {name} 값을 낼 수 없는 인스턴스 {len(valueless)}개는 순위 밖이다"
             f"(호출 0 또는 가중치 없음 · {_shown(valueless)})"
+        )
+    if no_id:
+        limits.append(
+            f"[한계] 인스턴스 id가 없는 인스턴스 {len(no_id)}개는 통계를 조회하지 않아 순위 밖이다"
+            f"({_shown(no_id)})"
         )
 
 
@@ -383,9 +390,11 @@ class FleetTools:
         # failures = 도메인 전체 실패 + 인스턴스 실패(인스턴스 쪽은 `_period_records`가 덧붙인다)
         plans, failures, domains_failed = self._period_plans(groups)
         # 통계 행은 애플리케이션별이고 인스턴스 칸이 없다 — 인스턴스마다 1호출
-        expect_calls(sum(len(insts) for _, insts in plans))
+        expect_calls(
+            sum(1 for _, insts in plans for i in insts if i.get("instance_id") is not None)
+        )
         seconds = (hi - lo) / 1000
-        records, inst_failed, no_rows, unweighted = await self._period_records(
+        records, inst_failed, no_rows, unweighted, no_id = await self._period_records(
             plans, lo, hi, seconds, failures, domains_failed
         )
         if failures and len(domains_failed) == len(groups):
@@ -399,7 +408,9 @@ class FleetTools:
             self._period_row(position, group, inst, values, name)
             for position, (group, inst, values) in enumerate(selected, 1)
         ]
-        _period_tail_limits(limits, name, bool(rows), seconds, unweighted, no_rows, valueless)
+        _period_tail_limits(
+            limits, name, bool(rows), seconds, unweighted, no_rows, valueless, no_id
+        )
         provisional = bool(failures or down)
         if provisional:
             limits.fail(_unranked_notice(domains_failed, inst_failed, down))
@@ -412,9 +423,9 @@ class FleetTools:
             "domains_total": len(groups),
             "domains_ok": len(groups) - len(domains_failed),
             "domains_failed": len(domains_failed),
-            "instances_total": len(no_rows) + len(records),
+            "instances_total": len(no_rows) + len(records) + len(no_id),
             "instances_ranked": len(ranked),
-            "instances_unranked": len(no_rows) + len(valueless),
+            "instances_unranked": len(no_rows) + len(valueless) + len(no_id),
             "instances_failed": len(inst_failed),
         }
         return self._scope.envelope(
@@ -499,17 +510,23 @@ class FleetTools:
         failures: list[tuple[str, ApmError]],
         domains_failed: list[str],
     ) -> tuple[
-        list[tuple[Group, dict[str, Any], dict[str, Any]]], list[str], list[str], list[str]
+        list[tuple[Group, dict[str, Any], dict[str, Any]]],
+        list[str],
+        list[str],
+        list[str],
+        list[str],
     ]:
         """인스턴스마다 시 단위 통계 1호출(명단 순서대로) → (지표 값, 실패 인스턴스, 통계 행 없음,
-        가중 평균 불가). 인스턴스 오류는 `failures`에, 전부 실패한 도메인은 `domains_failed`에
-        덧붙인다."""
+        가중 평균 불가, 인스턴스 id 없음). 인스턴스 오류는 `failures`에, 전부 실패한 도메인은
+        `domains_failed`에 덧붙인다. 인스턴스 id가 없는 인스턴스는 호출하지 않는다(실패가 아니라
+        순위 밖 — 호출자가 `[한계]`로 알린다)."""
         core = self.core
         records: list[tuple[Group, dict[str, Any], dict[str, Any]]] = []
         seen: set[tuple[str, Any, Any]] = set()
         inst_failed: list[str] = []
         no_rows: list[str] = []
         unweighted: list[str] = []
+        no_id: list[str] = []
         for group, insts in plans:
             src, _inv, d = group
             sid, did = src.source_id, d["domain_id"]
@@ -518,6 +535,11 @@ class FleetTools:
             errors: list[tuple[str, ApmError]] = []
             for inst in insts:
                 iid = inst.get("instance_id")
+                if iid is None:  # id 없이는 인스턴스 1개로 좁혀 물을 수 없다 — 묻지 않는다
+                    no_id.append(
+                        f"{where} 인스턴스 {inst.get('instance_name') or '(이름 없음)'}".strip()
+                    )
+                    continue
                 ident = (sid, did, iid)
                 if ident in seen:  # 같은 인스턴스가 명단에 두 번 — 한 번만 묻는다
                     continue
@@ -543,7 +565,7 @@ class FleetTools:
                 domains_failed.append(where)
             else:
                 inst_failed += [label for label, _ in errors]
-        return records, inst_failed, no_rows, unweighted
+        return records, inst_failed, no_rows, unweighted, no_id
 
     def _rank_period(
         self,
