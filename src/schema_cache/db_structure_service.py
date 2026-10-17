@@ -50,14 +50,7 @@ from src.domain.schema_snapshot import (
 # `X as X`는 mypy strict(no_implicit_reexport)용 명시 재노출이다 — 이 블록만 정렬에서 뺀다.
 # isort: off
 from src.schema_cache.admin_base import (
-    APPROVED_VERSION_KINDS as APPROVED_VERSION_KINDS,
-    HEALTH_TIMEOUT_SECONDS as HEALTH_TIMEOUT_SECONDS,
     AdminServiceBase as AdminServiceBase,
-    ClientFactory as ClientFactory,
-    LLMFactory as LLMFactory,
-    RegistryGetter as RegistryGetter,
-    _DB_ID_RE as _DB_ID_RE,
-    _default_registry as _default_registry,
     _is_valid_source as _is_valid_source,
     _legacy_meta_summary as _legacy_meta_summary,
     resolve_table as resolve_table,

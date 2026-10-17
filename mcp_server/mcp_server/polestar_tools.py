@@ -40,14 +40,9 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp_server.config import AppServerConfig
 from mcp_server.db import DBPoolManager
 from mcp_server.polestar_helpers import (
-    _CONN_STRING_RE as _CONN_STRING_RE,
     _DB2_SCHEMA as _DB2_SCHEMA,
-    _GRANULARITY_MINUTES as _GRANULARITY_MINUTES,
-    _MASK as _MASK,
     _MAX_LOOKBACK_MINUTES as _MAX_LOOKBACK_MINUTES,
     _PG_SCHEMA as _PG_SCHEMA,
-    _SENSITIVE_KEY as _SENSITIVE_KEY,
-    _SENSITIVE_RE as _SENSITIVE_RE,
     _STAT_DATE_FMT as _STAT_DATE_FMT,
     _clamp as _clamp,
     _ctime_window_clause as _ctime_window_clause,
@@ -56,14 +51,8 @@ from mcp_server.polestar_helpers import (
     _q as _q,
     _rank_processes as _rank_processes,
     _row_limit as _row_limit,
-    _shift_months as _shift_months,
-    _shift_periods as _shift_periods,
-    _sort_key as _sort_key,
     _sql_literal as _sql_literal,
     _time_floor as _time_floor,
-    _to_float as _to_float,
-    _ts_literal as _ts_literal,
-    _wall_clock as _wall_clock,
     incident_window as incident_window,
     parse_reference_time as parse_reference_time,
 )

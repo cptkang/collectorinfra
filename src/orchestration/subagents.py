@@ -60,16 +60,9 @@ from src.nodes.schema_analyzer import schema_analyzer
 from src.nodes.synonym_registrar import synonym_registrar
 from src.observability import run_capture
 from src.orchestration.agent_spec import SubAgentSpec
-from src.orchestration.process_query import (
-    _DEMONSTRATIVE_NOUNS,
-    _DEMONSTRATIVE_PREFIXES,
-    run_process_query,
-)
+from src.orchestration.process_query import run_process_query
 from src.orchestration.db_access import access_denied_result, authorize_targets, denied_for_all
 from src.orchestration.db_targeting import (
-    _LOCATION_DB_SIGNALS,  # noqa: F401 — 재노출
-    _UTILIZATION_CAPABILITY,  # noqa: F401 — 재노출
-    _ZONE_SCOPED_AGENTS,  # noqa: F401 — 재노출
     REASON_SOURCE_INACTIVE,  # noqa: F401 — 재노출
     REASON_SOURCE_NOT_CANONICAL,  # noqa: F401 — 재노출
     REASON_SOURCE_UNSUPPORTED,  # noqa: F401 — 재노출
@@ -80,7 +73,6 @@ from src.orchestration.db_targeting import (
     _has_new_location_db_signal,  # noqa: F401 — 재노출
     _inject_demonstrative_hostname,
     _multiple_systems_active,
-    _owner_named,  # noqa: F401 — 재노출
     _refers_to_specific_server,  # noqa: F401 — 재노출
     _source_unavailable_notes,
     _strip_location_terms,  # noqa: F401 — 재노출
@@ -102,7 +94,6 @@ from src.orchestration.isolated_input import (
     _prior_result_rows,
     _row_ref_dependencies,
     _scope_parsed_requirements,
-    request_query_text,
     scope_time_resolution,
 )
 from src.routing.capability_ownership import (
@@ -135,8 +126,6 @@ from src.utils.query_gen_common import (
 # 옛 `_` 이름 별칭(D-337 ③ · plans/166 O4 — 1사이클) — 모듈 밖 소비처가 쓰던 이름. 이 모듈
 # 정의분(`extract_identity_rows`·`make_isolated_input`·`pack_pipeline_result`)은 정의 뒤에 둔다.
 _normalize_targets = normalize_targets
-_request_query_text = request_query_text
-_scope_time_resolution = scope_time_resolution
 
 logger = logging.getLogger(__name__)
 

@@ -17,7 +17,8 @@ from typing import Any
 # ──────────────────────────────────────────────
 # 분할 모듈 재노출 (plans/166 N2 · D-337 ① — shim 1사이클)
 # ──────────────────────────────────────────────
-# 관심사별 모듈로 옮긴 이름을 `_` 이름까지 전부 다시 노출해 기존 import 경로를 유지한다.
+# 관심사별 모듈로 옮긴 이름 중 이 모듈에서 쓰거나 이 경로로 import·patch되는 것만 다시 노출한다
+# (사용처 0인 재노출은 plans/166 단계 8에서 뺐다).
 # 이 모듈에 남긴 것(Facade): `date.today()`를 읽는 기간 진입 함수(테스트가 이 모듈의 `date`를
 # 고정 — D-337 ②), 위치 표면어 값 사본과 그것을 읽는 용어 매칭·존 역질문·생략형 승계 진입
 # 함수(위치 표면어 단일 정의 가드가 이 파일만 허용), 프롬프트 블록·폴스타 규약(계층 이동 보류).
@@ -25,20 +26,8 @@ from typing import Any
 # 이름마다 한 문장으로 쪼개므로 이 블록만 정렬에서 뺀다.
 # isort: off
 from src.utils.limit_policy import (
-    FALLBACK_ALL_SCOPE_REJECT as FALLBACK_ALL_SCOPE_REJECT,
-    FALLBACK_LIMIT_LLM as FALLBACK_LIMIT_LLM,
     FALLBACK_TIME_RANGE_LLM as FALLBACK_TIME_RANGE_LLM,
-    _ALL_QUERY_KEYWORDS as _ALL_QUERY_KEYWORDS,
     _ALL_QUERY_LIMIT as _ALL_QUERY_LIMIT,
-    _ALL_SCOPE_DERIV_SUFFIXES as _ALL_SCOPE_DERIV_SUFFIXES,
-    _EXPLICIT_COUNT_RE as _EXPLICIT_COUNT_RE,
-    _FALLBACK_COUNTERS as _FALLBACK_COUNTERS,
-    _FULL_SCOPE_REQUEST_KEYWORDS as _FULL_SCOPE_REQUEST_KEYWORDS,
-    _GENERIC_EXAMPLE_CAP as _GENERIC_EXAMPLE_CAP,
-    _LEGACY_DEFAULT_CAP as _LEGACY_DEFAULT_CAP,
-    _TOP_N_RE as _TOP_N_RE,
-    _TRAILING_LIMIT_RE as _TRAILING_LIMIT_RE,
-    _has_scope_term as _has_scope_term,
     enforce_all_query_limit as enforce_all_query_limit,
     explicit_row_count as explicit_row_count,
     fallback_counters as fallback_counters,
@@ -51,22 +40,13 @@ from src.utils.limit_policy import (
     resolve_query_limit as resolve_query_limit,
 )
 from src.utils.llm_sql_extract import (
-    _SQL_COMMENT_RE as _SQL_COMMENT_RE,
-    _SQL_FENCE_RE as _SQL_FENCE_RE,
-    _SQL_SEMI_RE as _SQL_SEMI_RE,
-    _SQL_TAIL_RE as _SQL_TAIL_RE,
     extract_sql_from_llm_response as extract_sql_from_llm_response,
     extract_sql_from_response as extract_sql_from_response,
-    looks_like_readonly_sql as looks_like_readonly_sql,
 )
 from src.utils.period_resolution import (
-    _HALF_YEAR_RE as _HALF_YEAR_RE,
-    _MONTH_RANGE_RE as _MONTH_RANGE_RE,
     BlockedComparison as BlockedComparison,
     ComparisonPeriods as ComparisonPeriods,
     StatMonth as StatMonth,
-    _infer_year_not_future as _infer_year_not_future,
-    _iso_to_month as _iso_to_month,
     _month_shift as _month_shift,
     _months_from_parsed_time_range as _months_from_parsed_time_range,
     _resolve_half_year_expr as _resolve_half_year_expr,
@@ -77,20 +57,8 @@ from src.utils.period_resolution import (
 from src.utils.prior_turn_succession import (
     DEMONSTRATIVE_NOUNS as DEMONSTRATIVE_NOUNS,
     DEMONSTRATIVE_PREFIXES as DEMONSTRATIVE_PREFIXES,
-    ELLIPTICAL_DISCOURSE_MARKERS as ELLIPTICAL_DISCOURSE_MARKERS,
     ELLIPTICAL_SUCCESSION_KEY as ELLIPTICAL_SUCCESSION_KEY,
     HOST_IDENTIFIER_FIELDS as HOST_IDENTIFIER_FIELDS,
-    _BY_SUFFIX as _BY_SUFFIX,
-    _DO_ENDING_NON_ADDITIVE as _DO_ENDING_NON_ADDITIVE,
-    _DO_ENDING_NOUNS as _DO_ENDING_NOUNS,
-    _HOSTNAME_KIND_FIELDS as _HOSTNAME_KIND_FIELDS,
-    _IP_IDENTIFIER_FIELDS as _IP_IDENTIFIER_FIELDS,
-    _NEW_IDENTIFIER_TOKEN as _NEW_IDENTIFIER_TOKEN,
-    _PER_ENTITY_AGGREGATIONS as _PER_ENTITY_AGGREGATIONS,
-    _SET_SELECTION_PREFIXES as _SET_SELECTION_PREFIXES,
-    _SET_SELECTION_WORDS as _SET_SELECTION_WORDS,
-    _TIME_BUCKET_STEMS as _TIME_BUCKET_STEMS,
-    _WORD_TOKEN as _WORD_TOKEN,
     _has_additive_marker as _has_additive_marker,
     _has_new_identifier as _has_new_identifier,
     _selects_server_set as _selects_server_set,
@@ -102,15 +70,7 @@ from src.utils.prior_turn_succession import (
     render_elliptical_succession_note as render_elliptical_succession_note,
 )
 from src.utils.sql_rewrite_eav import (
-    _EAV_INT_CAST_TYPES as _EAV_INT_CAST_TYPES,
-    _EAV_UNIT_CAST_TYPES as _EAV_UNIT_CAST_TYPES,
-    _UNIT_GUARD_MARKER as _UNIT_GUARD_MARKER,
-    _UNIT_PROBES as _UNIT_PROBES,
-    _matching_paren as _matching_paren,
-    _matching_paren_backward as _matching_paren_backward,
-    _regex_strips_unit as _regex_strips_unit,
     _unit_normalized_expr as _unit_normalized_expr,
-    _unwrap_llm_unit_replace as _unwrap_llm_unit_replace,
     eav_value_cast_columns as eav_value_cast_columns,
     normalize_eav_numeric_casts as normalize_eav_numeric_casts,
     normalize_eav_unit_casts as normalize_eav_unit_casts,
@@ -925,7 +885,6 @@ def _render_prior_scope_block(col: str, values: list[str]) -> str:
 
 # 하위호환 별칭 — 교차 임포트 공개화(Plan 69 P2). 신규 코드는 공개명을 쓴다.
 _normalize_stat_month = normalize_stat_month
-_utilization_guard = utilization_guard
 _collect_prior_identity_values = collect_prior_identity_values
 
 # ── 폼필 확인 이력 명령 판정 (Plan 73 Phase 3, D-151 — 단일 출처) ────────────────

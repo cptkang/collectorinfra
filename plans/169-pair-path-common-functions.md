@@ -60,6 +60,8 @@
 
 **행동 변경 후보(기록만 — D-337 ⑥)**: 단일 경로는 `cmm_metric_stat` 칼럼에 매핑된 필드를 metric_fields로 회수하지 않고 버리지만 멀티는 metric_entries로 회수한다(현행 비대칭).
 
+→ plans/182 #J1
+
 **검증**
 - 게이트: `prompt_render_diff --ci` 0 · `catalog_diff --ci` 0 · arch error 0 · 경고 17(유지) · overfit 통과(기준선 자기 델타 5항목 삭제) · config_fallback 통과 · ruff·mypy 이번 diff 줄 0 · import 스모크(`src.graph`·`src.api.server`) · W0 스냅샷·렌더 매트릭스 무갱신.
 - verifier: Critical 0 · Major 0 · Minor 4(멀티 주석 위치 — 반영 · `split_mapping_entries` 가드 실효 — 위 shim으로 기록 · 단일 `metric_period` 2회 평가(같은 객체 · 유지) · 계획서 판정 기록 — 반영). 기준선 worktree 차분 하네스로 단일 22건·멀티 44건(반환·조립기 입력·SQL·`form_fill_out` 순서·로그) · O6 2단/3단 각 2,880조합 **바이트 동일**. 변이 9개 중 등가 1개 제외 8개 검출(검증 테스트 2파일 25건 추가).

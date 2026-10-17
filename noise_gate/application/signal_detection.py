@@ -36,7 +36,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("noise_gate.application.alarm_worker")
 
 # 위상 가중 그래프 로드 실패 시 음성 캐시 TTL(초) — 재시도 허용하되 hot-path 폭주 방지.
-# `alarm_worker`가 같은 이름으로 재노출한다(patch 지점 없음 · plans/177).
 _TOPOLOGY_NEGATIVE_TTL_SECONDS = 60
 
 

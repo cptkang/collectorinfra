@@ -73,6 +73,7 @@
 - (Minor) `server.py`의 `RunData`는 `TYPE_CHECKING` 전용 import라 `typing.get_type_hints(_Dispatch.__init__)`가 `NameError`를 낸다. 런타임 영향 0(FastMCP는 도구 함수 주석만 읽는다 · 도구 목록 스냅샷 동일). 순환(`manage_server` ↔ `server`)을 푸는 시점에 함께 정리.
 - (Minor) `fleet_tools.py`가 `_Limits`(tools.py 비공개)를 타입 주석용으로 새로 import한다 — 기존 `_check_n`·`_hour_floor` 등과 같은 결. M2(`plans/166` 7d — `_` 심볼 공용 모듈 승격)에서 공개명으로 함께 옮긴다.
 - (행동 변경 후보 · 미수정) `fleet_tools`의 인스턴스 id가 None이어도 `application_status`를 그대로 부른다 — mypy list-item 1건이 가리키는 지점(기준선부터 있음). 고치면 호출이 줄어 동작이 바뀌므로 별건.
+- → plans/182 #J5
 - `ruff format --check`가 `server.py` `apm_transaction_profile`의 `top_k` 인자 한 줄을 합치라고 한다(기준선부터) — 도구 시그니처 원문이라 손대지 않았다.
 - 검증 못 한 것: 실 네트워크 전송(인증 포함) · `apm_service_status`·`apm_business` 성공 경로(오류 응답만 차분) · 작업 승격은 `wait_seconds=0` 1흐름 · 동시 호출.
 

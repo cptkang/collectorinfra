@@ -49,6 +49,7 @@
 ## 5. 후속
 
 - **행동 변경 후보(미수정)**: ① `build_graph` 경고 「deepagents 조립 불가 → semantic_router 경로로 폴백」은 2단 on이면 실제로 intent_orchestration으로 간다(문구 부정확 — 로그 문구 변경이라 별건) ② replanner `plan_validation`이 남긴 `replan_task_invalid` 노트는 뒤 필터 6종이 루프를 끝내면 반환에서 사라진다(종전 동작) ③ getattr 폴백 잔존(D-331 ② 유형) — `graph.py` `cross_system_probe_enabled`·fault_diagnosis 체인 · `semantic_router.py` `_plan_signal_enabled`·`_ownership_enabled`·`_router_prompt_context`.
+- → plans/182 #M3(①) · #K5(②) · #L3(③)
 - **남긴 대상**: `_finalize_targets` cc23 · `_parse_view_args` cc31 · `result_aggregator` 본체 cc28·`_apply_empty_antecedent` 27 · `ladder.py` 모듈 독스트링의 「and not use_deep_agent」 서술 · 순서 표 명명 불일치(replanner 공개 `GUARDS`/`FILTERS` vs `_PRECHECK_STEPS`·`_COERCERS` 비공개).
 - **주의(seam)**: `GUARDS`·`DECISION_GUARDS`·`FILTERS`·`_PRECHECK_STEPS`·`_COERCERS`는 단계 함수를 import 시점에 담는다 — 단계 함수 자체를 바꿔 끼우려면 표를 patch해야 한다(현재 그런 테스트 없음).
 - **7e N6**: `HandlerResult`(agent_spec.py) 재사용 · aggregator 읽기 지점 어노테이션.

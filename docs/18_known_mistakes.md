@@ -2113,3 +2113,8 @@
 - **실수**: `apm/` 모듈 → `src.orchestration.apm_query` 순환 금지 가드를 `ast.Import`·`ast.ImportFrom.module`만 모아 만들었다. `from .. import apm_query`(level>0 — `module`이 `None`이라 건너뜀)와 `importlib.import_module("src.orchestration.apm_query")`를 넣는 변이가 살아남았고, 파일 목록도 `glob("*.py")`라 하위 패키지를 보지 않았다(verifier Minor · 변이 D4·D5 · 교정).
 - **원인**: import 가드를 「저장소 관례(절대 import)」 형태로만 가정했다. 구현자 변이 4건은 절대 import 형태만 겨눴다.
 - **방지책**: import 금지 가드는 level>0 `ImportFrom`을 파일 경로 기준 절대 이름으로 풀고, `import_module`/`__import__` 문자열 인자를 함께 수집하며, 대상 파일은 `rglob`으로 모은다. 변이에 상대 import 1건·동적 import 1건을 반드시 넣는다.
+
+### 2026-10-17 · (plans/166 단계 8 · 팀 리드 판독 — 원인은 plans/180 7a) 「`apm/`이 Facade를 import하지 않는다」만 가드해, `apm/`→`apm_jobs`→(지연)`apm_query` 우회 고리로 orchestration SCC가 2→8로 커진 것을 로드맵 끝 재측정에서야 찾았다
+- **실수**: 7a는 `apm/` 모듈의 `apm_query` 직접 import를 가드로 막았지만, `apm/calls`·`jobs_notices`·`targets`가 `apm_jobs`를 최상위 import하고 `apm_jobs.py:374`가 `apm_query`를 지연 import해 고리가 그대로 닫혔다. W2(O4)에서 7→2로 줄였던 §5.8 「orchestration 지연 import SCC」(목표 0)가 단계 8 재측정에서 8모듈(7ba5c96 7보다 악화)로 나왔다.
+- **원인**: 로드맵 지표(§5.8)를 마지막 단계에서만 재고, 모듈을 새로 만드는 단계(5~7)의 수용 기준에 「SCC 증가 0」을 넣지 않았다. 직접 import 금지 가드는 간접(중계 모듈 경유) 고리를 보지 못한다.
+- **방지책**: 모듈을 새로 만들거나 쪼개는 리팩터 계획은 수용 기준에 「`src/orchestration/`(또는 해당 패키지) 지연 import 포함 SCC 모듈 수 전후 증가 0」을 넣고 Wave 끝에 잰다(측정 정의: 모듈 간 import 그래프 · 함수 안 지연 import 포함 · `__init__` 제외 · 크기≥2 강연결 요소). import 금지 가드만으로 순환 부재를 결론 내지 않는다.

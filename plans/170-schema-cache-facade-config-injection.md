@@ -72,6 +72,7 @@ Wave 중간 회귀: 트랙마다 자기 테스트 + `python scripts/regress.py -
 5. **schema_analyzer 교체 지점 기존 테스트 공백**(verifier Minor · 이번 diff가 만든 것 아님): 단일 경로 노드의 5지점 결과를 단언하는 기존 테스트가 없다(`except`가 삼킴). 후속에서 단일·멀티 대칭 테스트 권고.
 6. **타입 주석 정밀화**(이탈): 이동 본문의 `dict`→`dict[str, Any]` 14곳·`Optional[str]`→`str | None` 1곳 — 새 파일 전 줄이 diff 줄로 잡혀 mypy·ruff 신규 위반이 되기 때문. 런타임 무영향(`from __future__ import annotations`). 되돌리는 비용: 해당 줄 원복 + 게이트 예외 처리.
 7. **경고 반복**(정보): `pii_filter` 경고는 설정 로드가 실패하는 동안 호출마다 나간다(질의당 여러 번). 1회 경고로 바꾸는 것은 행동 변경 — 필요하면 별도 계획.
+   → plans/182 #M4
 8. shim·별칭: 없음(원 메서드가 위임으로 남아 공개 API 동일). 매뉴얼 미반영: 사용자 접점 변경 없음(D-255).
 
 ## 5. 변경 이력

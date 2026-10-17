@@ -94,6 +94,7 @@
 - (Minor) `tools.py`의 `logger`는 더 쓰이지 않는다 — 기준 모듈 수준 이름 재노출 완결성 때문에 남겼다. 별칭 정리 때 함께 지운다.
 - (D-337 ③ 별칭 정리 — 다음 사이클) tools.py W1 별칭 블록·옮긴 이름 재노출 · `ApmCore` 옛 이름 별칭 11 · Facade `_guid`·`_period_stats`·`_sum_stats`·`_stats_delta`. 제거 조건은 `grep -w <옛 이름>` 0(테스트가 `ApmTools._guid`·`_period_stats` 등을 아직 쓴다 — 지우려면 테스트 수정을 같은 계획에서).
 - (6e 이월 · 행동 변경 후보 · 미수정) `fleet_tools`의 인스턴스 id None 경로(mypy list-item 1건).
+- → plans/182 #J5
 - `apm_app_health`가 Facade에 남은 것은 소스 가드(`test_visit_hit_note_has_one_definition` — 노트 정의 파일명 `tools.py` 고정) 때문이다. 가드를 「정의 1곳」으로 바꾸면(테스트 수정) `HealthTools`로 옮길 수 있다.
 - 검증 못 한 것: 실 제니퍼 종단(모의 HTTP만) · EventBuffer 적중 경로(픽스처상 0건).
 

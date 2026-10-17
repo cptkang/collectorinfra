@@ -127,6 +127,8 @@
 10. `time_spec.resolve` 도달 불가 분기 3(last `rolling` 참 쪽 · between `start > now` 참 쪽 · since `precision=="hour"` 참 쪽) — 정리 후보(D-161 — 제거는 별건).
 11. U-8(문서 경로 노트 4종 누락)은 166 §8 후속 그대로.
 
+→ plans/182 #L1·#L2·#J2·#M5·#J3·#P3·#K6·#M6·#M9·#J6 · U-8은 #K8
+
 ### 5.3 남긴 shim·별칭
 
 없음(같은 모듈 안 Extract · 이름 변경 0).

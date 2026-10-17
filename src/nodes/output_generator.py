@@ -32,11 +32,6 @@ from src.domain.time_spec import Subject, TimeResolution
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
 from src.pipeline.intent_frame_builder import CONSUMER_OUTPUT_GENERATOR, get_prompt_query
 from src.pipeline.output_notes import (
-    _CROSS_SYSTEM_NOTES_TITLE,  # noqa: F401 — 재노출(plans/166 N7 · D-337 ①)
-    _CURRENT_MONTH_NOTE_METRIC_TERMS,  # noqa: F401 — 재노출(plans/166 N7 · D-337 ①)
-    _DB_UNAVAILABLE_METRIC_NOTES,  # noqa: F401 — 재노출(plans/166 N7 · D-337 ①)
-    _REQUESTED_COUNT_EXTRA_RES,  # noqa: F401 — 재노출(plans/166 N7 · D-337 ①)
-    _ROW_LIMIT_PATTERNS,  # noqa: F401 — 재노출(plans/166 N7 · D-337 ①)
     _append_condition_changes,
     _append_cross_system_notes,
     _append_current_month_partial_note,
@@ -55,13 +50,8 @@ from src.pipeline.output_notes import (
     _form_month_fields,
     _format_ym,
     _generator_note_texts,
-    _has_month_series_anchor,  # noqa: F401 — 재노출(plans/166 N7 · D-337 ①)
-    _involved_db_ids,  # noqa: F401 — 재노출(plans/166 N7 · D-337 ①)
-    _limit_truncation_text_one,  # noqa: F401 — 재노출(plans/166 N7 · D-337 ①)
     _limit_truncation_texts,
     _month_to_date_period,
-    _query_period_text_one,  # noqa: F401 — 재노출(plans/166 N7 · D-337 ①)
-    _requested_row_counts,  # noqa: F401 — 재노출(plans/166 N7 · D-337 ①)
     _turn_query,
     append_structure_missing_note,
     applied_period,

@@ -11,25 +11,19 @@ import asyncio
 import contextlib
 import csv
 import io
-import json
 import logging
-import re
 import time
 import uuid
-from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable, Mapping
-from contextvars import Token
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Optional
 from typing import Literal, cast
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 
-from src.api.dependencies import is_admin, require_user
-from src.api.error_detail import current_request_id, user_error_detail
+from src.api.dependencies import require_user
+from src.api.error_detail import user_error_detail
 from src.api.result_chart_view import (
     chart_carry,
     chart_field,
@@ -39,12 +33,9 @@ from src.api.result_chart_view import (
 from src.api.schemas import ErrorResponse, QueryRequest, QueryResponse
 from src.api.sse_events import (
     SSE_DONE,
-    SSE_ERROR,
-    SSE_HEARTBEAT,
     SSE_META,
     SSE_NODE_COMPLETE,
     SSE_NODE_START,
-    SSE_PROGRESS,
     SSE_TOKEN,
 )
 from src.api.stream_failure import (
@@ -55,7 +46,6 @@ from src.api.stream_failure import (
     delivery_cut_notice,
 )
 from src.api.thread_history import TurnRecorder
-from src.config import AppConfig, SecurityConfig
 from src.domain.partial_result import (
     PARTIAL_STATUS,
     PartialAnswer,
@@ -64,23 +54,11 @@ from src.domain.partial_result import (
 )
 from src.llm import USER_RESPONSE_TAG
 from src.security.data_masker import DataMasker
-from src.utils.deadline import bind_request_deadline, unbind_request_deadline
-from src.utils.json_extract import coerce_content_text
 from src.utils.progress_events import ANSWER_PREFIX_EVENT
-from src.utils.user_error import db_error_text, user_error_text, validation_reason_text
-from src.routing.db_authz import SELECTION_DENIED_MESSAGE, authorized_db_ids, filter_selected_db_ids
+from src.routing.db_authz import SELECTION_DENIED_MESSAGE, filter_selected_db_ids
 from src.state import create_followup_input, create_initial_state
 from src.routing.db_scope import build_db_scope
-from src.utils.query_gen_common import (
-    ZONE_CLARIFY_OPTIONS,
-    ZONE_GROUP_EXCLUSIVE_QUESTION,
-    build_zone_clarification,
-    has_mixed_zone_group_terms,
-    is_full_scan_query,
-    mixed_zone_groups,
-    resolve_query_limit,
-    rewrite_zone_mentions_for_selection,
-)
+from src.utils.query_gen_common import resolve_query_limit
 
 # 폼필(파일 업로드) 기본 LIMIT — 전량 채움이 기본(전량 상향값과 동일).
 # 실행 상한은 db 클라이언트 max_rows(10,000)가 안전망(D-066 후속7 계열).
@@ -91,10 +69,11 @@ from src.utils.query_gen_common import _ALL_QUERY_LIMIT
 
 # plans/179 W2 재노출 shim(D-337 ①) — 다음 계획에서 grep 0 확인 후 제거.
 # 옮긴 정의를 옛 이름 그대로 다시 노출한다(patch seam·`from src.api.routes.query import …`).
+# plans/166 단계 8: 이 경로 사용처 0인 이름은 제거했다 — 남은 이름은 이 모듈 안에서 쓰이거나
+# 테스트·코드가 이 경로로 import·patch한다.
 from src.api.query.store import (  # noqa: F401
     _attachment_disposition as _attachment_disposition,
     _audit_file_download as _audit_file_download,
-    _MAX_RESULTS_STORE_SIZE as _MAX_RESULTS_STORE_SIZE,
     _owned_result as _owned_result,
     _results_store as _results_store,
     _store_result as _store_result,
@@ -104,7 +83,6 @@ from src.api.query.sse import (  # noqa: F401
     _heartbeat_sse_payload as _heartbeat_sse_payload,
     _is_subgraph_event as _is_subgraph_event,
     _next_event_or_timeout as _next_event_or_timeout,
-    _PRODUCER_CANCEL_GRACE_SEC as _PRODUCER_CANCEL_GRACE_SEC,
     _progress_sse_payload as _progress_sse_payload,
     _single_done_stream as _single_done_stream,
     _sse_event as _sse_event,
@@ -121,25 +99,12 @@ from src.api.query.turn_input import (  # noqa: F401
     _zone_answer_plan_reuse as _zone_answer_plan_reuse,
 )
 from src.pipeline.turn.approval import (  # noqa: F401
-    _APPROVAL_CORROBORATION_TOKENS as _APPROVAL_CORROBORATION_TOKENS,
-    _APPROVE_WORDS as _APPROVE_WORDS,
-    _deterministic_approval as _deterministic_approval,
-    _has_approval_token as _has_approval_token,
-    _INTENT_TAIL as _INTENT_TAIL,
     _is_legacy_structure_hitl_thread as _is_legacy_structure_hitl_thread,
-    _log_approval_decision as _log_approval_decision,
-    _matches_intent as _matches_intent,
     _parse_approval as _parse_approval,
-    _REJECT_WORDS as _REJECT_WORDS,
     _release_legacy_structure_hitl as _release_legacy_structure_hitl,
     resolve_approval_action as resolve_approval_action,
 )
 from src.pipeline.turn.selection import (  # noqa: F401
-    _APM_ANSWER_MAX as _APM_ANSWER_MAX,
-    _APM_ANSWER_TAIL as _APM_ANSWER_TAIL,
-    _APM_ID_MAX_LEN as _APM_ID_MAX_LEN,
-    _APM_IDS_MAX as _APM_IDS_MAX,
-    _apm_ids_preview as _apm_ids_preview,
     _apm_source_text_answer as _apm_source_text_answer,
     apply_apm_source_selection_authorization as apply_apm_source_selection_authorization,
     apply_selection_authorization as apply_selection_authorization,
@@ -164,46 +129,21 @@ from src.api.query.fields import (  # noqa: F401
     _rewrite_trace_fields as _rewrite_trace_fields,
     _scope_reexpand_field as _scope_reexpand_field,
     _time_clarification as _time_clarification,
-    TIME_CLARIFY_KIND as TIME_CLARIFY_KIND,
     _time_resolution_field as _time_resolution_field,
 )
 from src.api.query.progress import (  # noqa: F401
     _extract_node_progress as _extract_node_progress,
     _merge_node_delta as _merge_node_delta,
-    _NODE_PROGRESS_SUMMARIZERS as _NODE_PROGRESS_SUMMARIZERS,
-    _progress_agent_orchestrator as _progress_agent_orchestrator,
-    _progress_aggregate_done as _progress_aggregate_done,
-    _progress_answer_done as _progress_answer_done,
-    _progress_approval_gate as _progress_approval_gate,
-    _progress_context_resolver as _progress_context_resolver,
-    _progress_deep_agent as _progress_deep_agent,
-    _progress_error_response as _progress_error_response,
-    _progress_field_mapper as _progress_field_mapper,
-    _progress_input_parser as _progress_input_parser,
-    _progress_intent_planner as _progress_intent_planner,
-    _progress_query_executor as _progress_query_executor,
-    _progress_query_generator as _progress_query_generator,
-    _progress_query_validator as _progress_query_validator,
-    _progress_replanner as _progress_replanner,
-    _progress_result_organizer as _progress_result_organizer,
-    _progress_schema_analyzer as _progress_schema_analyzer,
-    _progress_semantic_router as _progress_semantic_router,
-    _SQL_STATE_KEYS as _SQL_STATE_KEYS,
     _summarize_tasks as _summarize_tasks,
     _track_sql_state as _track_sql_state,
 )
 from src.pipeline.turn.zone import (  # noqa: F401
-    _authorized_zone_clarification as _authorized_zone_clarification,
     build_scope_reexpand as build_scope_reexpand,
-    _replace_unregistered_zones as _replace_unregistered_zones,
     _scope_narrowed_or_none as _scope_narrowed_or_none,
     _substitute_zone_placeholder as _substitute_zone_placeholder,
     _unregistered_zone_clarification_or_none as _unregistered_zone_clarification_or_none,
     _zone_display_label as _zone_display_label,
     _zone_group_exclusive_or_none as _zone_group_exclusive_or_none,
-    _ZONE_LABEL_BY_ID as _ZONE_LABEL_BY_ID,
-    _ZONE_OPTIONS as _ZONE_OPTIONS,
-    _ZONE_PLACEHOLDER as _ZONE_PLACEHOLDER,
 )
 from src.pipeline.turn.intake import (  # noqa: F401
     _raw_query_seed as _raw_query_seed,
@@ -225,7 +165,6 @@ from src.api.query.deadline import (  # noqa: F401
     _finish_timeline as _finish_timeline,
     _processing_limit as _processing_limit,
     _request_deadline as _request_deadline,
-    _sec_or as _sec_or,
     _stream_watch as _stream_watch,
     _unbind_deadline as _unbind_deadline,
 )

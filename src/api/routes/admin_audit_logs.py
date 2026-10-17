@@ -3,7 +3,8 @@
 
 `admin.router`가 이 라우터를 원래 선언 위치에 포함한다(경로·이름·OpenAPI 불변). 감사 로그 정리
 (`POST /admin/audit/cleanup`)는 `_audit_admin_action`(테스트 patch 대상)을 부르므로 `admin.py`에
-남는다(D-337 ②). 옛 경로 `src.api.routes.admin`에서 이 모듈의 이름을 재노출한다(D-337 ①).
+남는다(D-337 ②). 옛 경로 `src.api.routes.admin`에서
+`get_audit_logs_paginated`·`get_audit_stats`를 재노출한다(D-337 ① · 테스트가 그 경로로 import).
 """
 
 from __future__ import annotations

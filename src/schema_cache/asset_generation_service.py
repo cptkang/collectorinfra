@@ -76,18 +76,12 @@ from src.utils.sql_dialect import row_limit_clause
 # 분할 모듈 재노출 (plans/166 I3 · D-337 ① — shim 1사이클)
 # ──────────────────────────────────────────────
 # 조립·요약(`asset_generation_assembly`)과 테이블 정의·LLM 보조 검증(`asset_generation_llm`)으로
-# 옮긴 이름을 `_` 이름까지 다시 노출한다. 이 모듈에 남긴 것(Facade): 테스트가 이 모듈에서 바꾸는
+# 옮긴 이름 중 이 모듈에서 쓰거나 이 경로로 import·patch되는 것만 다시 노출한다(사용처 0인 재노출은
+# plans/166 단계 8에서 뺐다). 이 모듈에 남긴 것(Facade): 테스트가 이 모듈에서 바꾸는
 # 상한(`NAME_MATCH_*` · 조회 예산 · `MAX_DEFINED_CODE_PAIRS`)을 읽는 함수(D-337 ②).
 # `X as X`는 mypy strict(no_implicit_reexport)용 명시 재노출이다 — 이 블록만 정렬에서 뺀다.
 # isort: off
 from src.schema_cache.asset_generation_assembly import (
-    MIN_TABLES_FOR_COMMON as MIN_TABLES_FOR_COMMON,
-    CODE_TABLE_COVERAGE as CODE_TABLE_COVERAGE,
-    SUMMARY_MAX_CHARS as SUMMARY_MAX_CHARS,
-    _STRING_TYPE_RE as _STRING_TYPE_RE,
-    _INTEGER_TYPE_RE as _INTEGER_TYPE_RE,
-    _DATE_HINT_RE as _DATE_HINT_RE,
-    _HOST_IP_HINT_RE as _HOST_IP_HINT_RE,
     _scope_tables as _scope_tables,
     _relation_item as _relation_item,
     _relation_candidates as _relation_candidates,
@@ -96,7 +90,6 @@ from src.schema_cache.asset_generation_assembly import (
     _column_candidates as _column_candidates,
     _column_evidence as _column_evidence,
     _assemble as _assemble,
-    _best_code_table as _best_code_table,
     _asset_summary as _asset_summary,
     _draft_comments as _draft_comments,
     build_asset_summary as build_asset_summary,
@@ -107,27 +100,19 @@ from src.schema_cache.asset_generation_llm import (
     SECTION_MAX_CHARS as SECTION_MAX_CHARS,
     SQL_CHECK_LIMIT as SQL_CHECK_LIMIT,
     DEFINITION_BATCH_SIZE as DEFINITION_BATCH_SIZE,
-    DEFINITION_DESCRIPTION_MAX_CHARS as DEFINITION_DESCRIPTION_MAX_CHARS,
-    DEFINITION_LABELS_MAX as DEFINITION_LABELS_MAX,
     _FENCE_RE as _FENCE_RE,
-    MAX_SECTION_SQL_BLOCKS as MAX_SECTION_SQL_BLOCKS,
     _SIDE_EFFECT_FUNC_RE as _SIDE_EFFECT_FUNC_RE,
-    _SQL_WORDS as _SQL_WORDS,
     _DefinitionPlan as _DefinitionPlan,
     _DefinitionContext as _DefinitionContext,
     _str_list as _str_list,
     _row_origin as _row_origin,
     _table_columns as _table_columns,
-    _NoAliasSafeLoader as _NoAliasSafeLoader,
     load_import_yaml as load_import_yaml,
-    _display_text as _display_text,
     _display_row as _display_row,
     _definition_rows as _definition_rows,
     _definition_summary as _definition_summary,
     definition_batches as definition_batches,
-    _render_definition_input as _render_definition_input,
     _definition_batch as _definition_batch,
-    _cap_llm_key_columns as _cap_llm_key_columns,
     _merge_definition_batch as _merge_definition_batch,
     _approvable_definitions as _approvable_definitions,
     _ask as _ask,

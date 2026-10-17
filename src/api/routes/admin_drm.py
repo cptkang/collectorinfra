@@ -1,7 +1,7 @@
 """DRM 연동 진단 라우트 — `/admin/drm/{status,verify}` (plans/166 A7 — `admin.py`에서 이동).
 
 `admin.router`가 이 라우터를 원래 선언 위치에 포함한다(경로·이름·OpenAPI 불변). 옛 경로
-`src.api.routes.admin`에서 이 모듈의 핸들러를 재노출한다(D-337 ①).
+재노출은 사용처 0이라 제거했다(plans/166 단계 8).
 """
 
 from __future__ import annotations

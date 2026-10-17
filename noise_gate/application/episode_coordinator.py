@@ -39,7 +39,6 @@ logger = logging.getLogger("noise_gate.application.alarm_worker")
 
 # 후보 전수 sweep(사건 종료·해소·승격 정리) 최소 간격(초) — 메모리 위생용이라 정확성과 무관하다
 # (대상 판정은 late_promotion_targets가 멤버 상태로 다시 거른다). 상한 검사는 매번 한다.
-# `alarm_worker`가 같은 이름으로 재노출한다(patch 지점 없음 · plans/177).
 _LATE_PROMOTION_SWEEP_SECONDS = 60.0
 # 후속 알람을 묶지 않는 종합 조사 저장 상태(조사 저장소 `normalize_status` 결과 — 종결 실패).
 _EPISODE_INV_UNUSABLE = frozenset({"rejected", "failed", "timeout"})

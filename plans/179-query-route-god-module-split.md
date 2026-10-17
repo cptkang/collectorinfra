@@ -81,6 +81,7 @@ W1a·W1b는 같은 파일의 겹치지 않는 영역이라 병렬로 돌렸다(W
 - 매뉴얼 `scripts/manual/content/admin.md:4130`의 근거 위치 `src/api/routes/query.py` `_owned_result` — 재노출로 여전히 유효하나 정의는 `src/api/query/store.py`. 매뉴얼 개정 때 함께.
 - `regress.py` 변경 줄 판정이 git 기본 diff 알고리즘에 의존한다(대량 이동 뒤 오탐) — 도구 측 `--histogram` 기본화는 별건 후보.
 - 행동 변경 후보(별도 계획): DRM 복호화 실패 사유 원문의 502 detail 노출을 고정 문구로(plans/163 계열) · 텍스트 호출자의 `body.selected_db_ids` 재대입 중복(게이트 안에서 이미 기록 — 구조 정리 후보).
+- → plans/182 #S1(DRM 사유) · #K7(`selected_db_ids` 재대입) · auditor Low 결과 저장소 #S3 · W1b debug 로그 #M8
 
 ## 6. 이력
 

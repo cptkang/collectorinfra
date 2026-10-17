@@ -31,157 +31,68 @@ W1·W2 — W2에서 통계·지표·변경 감지 3종 · W5·W6에서 GUID 추�
 구조(plans/178 W2·W3 · D-337): 공유 상태·봉투·해석·소스 호출 공용은 코어 `ApmCore`(`apm_core`)이고,
 도구군 5개(`InstanceTools`·`HealthTools`·`TransactionTools`·`StatsTools`·`CompareTools`)는 코어를
 받아 합성한다. `ApmTools`는 코어를 이어받은 Facade로 도구군 메서드를 형식 그대로 위임하고
-(`_Forward`), 도구군으로 옮긴 모듈 수준 이름은 옛 이름으로 다시 노출한다. `apm_app_health`는
-방문·호출 수 노트의 정의가 이 파일 하나에만 있어야 하므로(소스 가드 seam) Facade에 남는다.
+(`_Forward`), 도구군으로 옮긴 모듈 수준 이름 중 테스트가 이 경로로 쓰는 것만 옛 이름으로 다시
+노출한다. `apm_app_health`는 방문·호출 수 노트의 정의가 이 파일 하나에만 있어야 하므로(소스 가드
+seam) Facade에 남는다.
 """
 
 from __future__ import annotations
 
-import logging
 import time
 from collections.abc import Callable
 from typing import Any, Concatenate, Generic, ParamSpec, TypeVar, overload
 
-from apm_gateway.application.apm_core import _ERROR_TYPE as _ERROR_TYPE
-from apm_gateway.application.apm_core import _METRIC_SUGGESTIONS as _METRIC_SUGGESTIONS
-from apm_gateway.application.apm_core import HOURLY_TOP_APPLICATIONS as HOURLY_TOP_APPLICATIONS
-from apm_gateway.application.apm_core import LEVEL_MODES as LEVEL_MODES
-from apm_gateway.application.apm_core import LEVELS as LEVELS
-from apm_gateway.application.apm_core import RECORDS as RECORDS
 from apm_gateway.application.apm_core import SOURCE_KIND as SOURCE_KIND
 from apm_gateway.application.apm_core import ApmCore
-from apm_gateway.application.business_map import BUSINESS_CACHE_SECONDS as BUSINESS_CACHE_SECONDS
-from apm_gateway.application.business_map import BusinessHit, business_key, cache_fresh
-from apm_gateway.application.business_map import BusinessMapping as BusinessMapping
-from apm_gateway.application.business_map import _business_entry as _business_entry
-from apm_gateway.application.business_map import _names as _names
-from apm_gateway.application.business_map import parse_business_map as parse_business_map
-from apm_gateway.application.compare_tools import _IMPACT_METRICS as _IMPACT_METRICS
-from apm_gateway.application.compare_tools import _PERIOD_LABELS as _PERIOD_LABELS
-from apm_gateway.application.compare_tools import _XVIEW_SIDE_METRICS as _XVIEW_SIDE_METRICS
-from apm_gateway.application.compare_tools import CHANGE_DETECTION_NOTE as CHANGE_DETECTION_NOTE
-from apm_gateway.application.compare_tools import CHANGE_WIDTH_MINUTES as CHANGE_WIDTH_MINUTES
-from apm_gateway.application.compare_tools import CHANGES_DEFAULT_MINUTES as CHANGES_DEFAULT_MINUTES
-from apm_gateway.application.compare_tools import GUID_MAX as GUID_MAX
-from apm_gateway.application.compare_tools import TRACE_AROUND_MINUTES as TRACE_AROUND_MINUTES
-from apm_gateway.application.compare_tools import TRACE_DEFAULT_MINUTES as TRACE_DEFAULT_MINUTES
+from apm_gateway.application.business_map import cache_fresh
 from apm_gateway.application.compare_tools import CompareTools
-from apm_gateway.application.health_tools import _HEALTH_CACHE_SECONDS as _HEALTH_CACHE_SECONDS
-from apm_gateway.application.health_tools import DEFAULT_TREND_METRICS as DEFAULT_TREND_METRICS
 from apm_gateway.application.health_tools import HealthTools
-from apm_gateway.application.instance_tools import _SEARCH_CONFIDENCE as _SEARCH_CONFIDENCE
-from apm_gateway.application.instance_tools import BUSINESS_KINDS as BUSINESS_KINDS
-from apm_gateway.application.instance_tools import BUSINESS_TRACE_MINUTES as BUSINESS_TRACE_MINUTES
 from apm_gateway.application.instance_tools import InstanceTools
 from apm_gateway.application.masking import mask_text
-from apm_gateway.application.name_search import _NAME_SEPARATORS as _NAME_SEPARATORS
-from apm_gateway.application.name_search import CONTAINS_MIN as CONTAINS_MIN
 from apm_gateway.application.name_search import QUERY_MAX as QUERY_MAX
-from apm_gateway.application.name_search import SEARCH_TIERS as SEARCH_TIERS
-from apm_gateway.application.name_search import SUGGEST_MAX as SUGGEST_MAX
-from apm_gateway.application.name_search import SUGGEST_RATIO as SUGGEST_RATIO
-from apm_gateway.application.name_search import Hit as Hit
-from apm_gateway.application.name_search import InstanceSearch as InstanceSearch
-from apm_gateway.application.name_search import _is_separator as _is_separator
-from apm_gateway.application.name_search import _suggest as _suggest
-from apm_gateway.application.name_search import domain_order, same_name
-from apm_gateway.application.name_search import name_tier as name_tier
-from apm_gateway.application.name_search import normalize_name as normalize_name
-from apm_gateway.application.name_search import search_instances as search_instances
-from apm_gateway.application.name_search import search_names as search_names
+from apm_gateway.application.name_search import domain_order
 from apm_gateway.application.name_search import search_query as search_query
-from apm_gateway.application.name_search import suggest_names as suggest_names
 from apm_gateway.application.period_stats import period_stats, stats_delta, sum_stats
 from apm_gateway.application.sources import SourceSet
-from apm_gateway.application.stats_tools import METRIC_MODES as METRIC_MODES
-from apm_gateway.application.stats_tools import METRIC_SCOPES as METRIC_SCOPES
-from apm_gateway.application.stats_tools import SERIES_SCOPES as SERIES_SCOPES
-from apm_gateway.application.stats_tools import STATUS_DEFAULT_MINUTES as STATUS_DEFAULT_MINUTES
 from apm_gateway.application.stats_tools import StatsTools
-from apm_gateway.application.tool_common import _IDENT as _IDENT
 from apm_gateway.application.tool_common import (
     ABSOLUTE_MAX_MS,
     FILE_ONLY_COLUMNS,
     HOURLY_AFTER_MINUTES,
-    Catalog,
     InstKey,
     Limits,
-    catalog_fingerprint,
     check_n,
-    group_by_domain,
     hour_ceil,
     hour_floor,
-    identifier_arg,
-    identifier_fields,
     inst_key,
     inst_meta,
     is_given,
-    masked_full_text,
     nonneg_int,
-    now_iso,
     positive_int,
-    profile_ref_of,
-    select_rows,
     tag_records,
     target_text,
-    tx_fields,
-    with_hostnames,
 )
-from apm_gateway.application.tool_common import DEFAULT_N as DEFAULT_N
-from apm_gateway.application.tool_common import EVENTS_DEFAULT_MINUTES as EVENTS_DEFAULT_MINUTES
-from apm_gateway.application.tool_common import HEALTH_DEFAULT_LOOKBACK as HEALTH_DEFAULT_LOOKBACK
-from apm_gateway.application.tool_common import IDENTIFIER_FIELDS as IDENTIFIER_FIELDS
-from apm_gateway.application.tool_common import SERIES_DEFAULT_MINUTES as SERIES_DEFAULT_MINUTES
-from apm_gateway.application.tool_common import SERIES_INTERVAL_NOTE as SERIES_INTERVAL_NOTE
-from apm_gateway.application.tool_common import TREND_INTERVAL_MINUTE as TREND_INTERVAL_MINUTE
 from apm_gateway.application.tool_common import Window as Window
 from apm_gateway.application.tool_common import limit_notice as limit_notice
-from apm_gateway.application.transaction_tools import _PROFILE_BUDGET_TTL as _PROFILE_BUDGET_TTL
-from apm_gateway.application.transaction_tools import _UNSPECIFIED as _UNSPECIFIED
 from apm_gateway.application.transaction_tools import CHAT_PRINCIPAL as CHAT_PRINCIPAL
 from apm_gateway.application.transaction_tools import KEY_ARG_NOTE as KEY_ARG_NOTE
-from apm_gateway.application.transaction_tools import PROFILE_EXCERPT_CHARS as PROFILE_EXCERPT_CHARS
-from apm_gateway.application.transaction_tools import PROFILE_EXCERPT_LINES as PROFILE_EXCERPT_LINES
-from apm_gateway.application.transaction_tools import PROFILE_FILE_ONLY as PROFILE_FILE_ONLY
-from apm_gateway.application.transaction_tools import (
-    SLOW_TX_DEFAULT_MINUTES as SLOW_TX_DEFAULT_MINUTES,
-)
 from apm_gateway.application.transaction_tools import TransactionTools
 from apm_gateway.config import GatewayConfig
 from apm_gateway.domain import signals as sig
 from apm_gateway.domain.errors import SOURCE_UNAVAILABLE, ApmError
 
-logger = logging.getLogger(__name__)
-
-# 옛 이름 별칭 — D-337 ③ 1사이클(plans/178)
+# 옛 이름 별칭 — D-337 ③ 1사이클(plans/178) · 테스트가 이 경로로 쓰는 것만 남긴다(plans/166 단계 8)
 _ABSOLUTE_MAX_MS = ABSOLUTE_MAX_MS
-_Catalog = Catalog
-_now_iso = now_iso
 _Limits = Limits
 _positive_int = positive_int
 _nonneg_int = nonneg_int
-_identifier = identifier_arg
-_fingerprint = catalog_fingerprint
 _check_n = check_n
-_select = select_rows
-_key = inst_key
-_group = group_by_domain
-_tag = tag_records
-_inst_meta = inst_meta
 _hour_floor = hour_floor
 _hour_ceil = hour_ceil
-_full_text = masked_full_text
-_tx_fields = tx_fields
-_identifier_fields = identifier_fields
-_profile_ref = profile_ref_of
 _given = is_given
 _target_text = target_text
-_with_hostnames = with_hostnames
 _domain_order = domain_order
-_same_name = same_name
-_business_key = business_key
 _fresh = cache_fresh
-_BusinessHit = BusinessHit
 
 P = ParamSpec("P")
 R = TypeVar("R")

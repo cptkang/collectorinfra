@@ -66,6 +66,7 @@
 | `multi_db_executor` · `regen_stops` | 그래프 경로에서 버려진다 — 반환부 주석에 의도 명시(plans/119) | 의도된 폐기 · 사용자 사유는 `db_errors`가 운반 |
 
 - W1-A 대략 grep(미확정 — 일부는 단일 경로 전용으로 의도일 수 있음): `output_generator.py`가 `OutputState` 밖 키를 읽는다 — `active_db_id`·`allowed_db_ids`·`conversation_context`·`csv_sheet_data`·`db_results`·`db_scope_source`·`error_message`·`generated_sql`·`is_multi_db`·`scope_narrowed`·`turn_disclosures` · `output_notes.py` — `active_db_id`·`db_executed_sqls`·`dependency_notes`·`resolved_limit`·`scope_narrowed`. 2단·1단 출구에서는 늘 비어 있다(docs/18 2026-10-06 계열). 키별로 단일 경로 전용인지 확인하는 것은 후속 계획 몫이다.
+- → plans/182 #K1·#K2·#K3(위 표) · #K4(`OutputState` 밖 키)
 - 추출기 한계(V2·V3 생존): 반환 이름이 아닌 dict의 첨자 대입 · 다른 모듈 헬퍼 · 4단계 이상 헬퍼 · 제자리 수정 헬퍼 · 루프로 부르는 단계 함수 — 테스트 독스트링에 적었다.
 - `output_generator(state: AgentState)`를 `AgentState | OutputState`로 넓히는 것은 범위 밖(`.get` 미선언 키를 mypy가 잡지 않아 이득이 작고, 소비처 수십 곳의 타입 좁히기가 필요).
 

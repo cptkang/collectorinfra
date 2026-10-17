@@ -47,25 +47,11 @@ from src.api.schemas import (
     UserInfoResponse,
 )
 from src.api.routes.admin_audit_logs import (
-    AuditLogFilterParams as AuditLogFilterParams,
-)
-from src.api.routes.admin_audit_logs import (
-    AuditLogPageResponse as AuditLogPageResponse,
-)
-from src.api.routes.admin_audit_logs import get_audit_logs as get_audit_logs
-from src.api.routes.admin_audit_logs import (
     get_audit_logs_paginated as get_audit_logs_paginated,
 )
 from src.api.routes.admin_audit_logs import get_audit_stats as get_audit_stats
-from src.api.routes.admin_audit_logs import get_security_alerts as get_security_alerts
-from src.api.routes.admin_audit_logs import get_user_activity as get_user_activity
 from src.api.routes.admin_audit_logs import router as _audit_logs_router
-from src.api.routes.admin_drm import get_drm_status as get_drm_status
 from src.api.routes.admin_drm import router as _drm_router
-from src.api.routes.admin_drm import verify_drm_sample as verify_drm_sample
-from src.api.routes.admin_settings_reload import (
-    SettingsReloadResponse as SettingsReloadResponse,
-)
 from src.api.routes.admin_settings_reload import reload_settings as reload_settings
 from src.api.routes.admin_settings_reload import router as _settings_reload_router
 from src.infrastructure.env_file_store import (

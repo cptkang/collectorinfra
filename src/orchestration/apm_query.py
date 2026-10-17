@@ -72,8 +72,7 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass, field  # noqa: F401
-from datetime import datetime, timedelta  # noqa: F401
+from datetime import datetime
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -83,26 +82,13 @@ from src.clients.source_mcp_client import SessionFactory, SourceMcpError, open_s
 from src.config import AppConfig
 from src.domain import disclosure as disc
 from src.domain.query_time import QueryTime
-from src.domain.result_refs import TABLE_LABELS_KEY, extract_result_refs, ref_label, ref_time_ms  # noqa: F401
-from src.domain.time_expr import recognize  # noqa: F401
-from src.domain.time_spec import (
-    KST,  # noqa: F401
-    NOTE_MULTIPLE_PERIODS,  # noqa: F401
-    UNITS,  # noqa: F401
-    TimeSpec,  # noqa: F401
-    TimeSpecError,  # noqa: F401
-    floor_to_unit,  # noqa: F401
-    resolve,  # noqa: F401
-    shift_unit,  # noqa: F401
-)
+from src.domain.result_refs import TABLE_LABELS_KEY, extract_result_refs, ref_label
 from src.observability import run_capture
 from src.orchestration import apm_jobs as jobs
 from src.orchestration.agent_spec import SubAgentSpec
 from src.orchestration.db_access import access_denied_result
 from src.orchestration.entity_link import (
-    AMBIGUOUS,  # noqa: F401
     LINKED,
-    NOT_QUERIED,  # noqa: F401
     UNLINKED,
     LinkEntry,
     ledger_line,
@@ -113,24 +99,21 @@ from src.orchestration.entity_link import (
 from src.orchestration.investigation_audit import BACKEND_APM, audited_investigation
 from src.routing.db_authz import (
     SOURCE_ACCESS_DENIED_MESSAGE,
-    authorized_db_ids,  # noqa: F401
     is_source_allowed,
 )
 from src.routing import apm_source_select as source_select
-from src.routing.registry import SourceSpec, ViewArgSpec, ViewSpec, get_registry  # noqa: F401
+from src.routing.registry import ViewSpec, get_registry
 from src.utils.json_extract import extract_json_from_response
 from src.utils.prior_dependency import NOTE_BRIDGE, NOTE_TRACE
-from src.utils.prior_targets import TargetRef, resolve_targets  # noqa: F401
-from src.utils.query_gen_common import refers_to_demonstrative_server  # noqa: F401
+from src.utils.prior_targets import TargetRef
 # 거부·실패 사유 키 · 표시용 행 축약 표지 — 정본 1곳(plans/166 X3) · 이 모듈 이름으로 재노출한다.
 from src.utils.task_result_keys import DEGRADED_KEY as DEGRADED_KEY
 from src.utils.task_result_keys import DISPLAY_CUT_KEY as DISPLAY_CUT_KEY
 from src.utils.user_error import request_id
 
-# plans/180 W1 재노출 shim(D-337 ①) — 다음 계획에서 grep 0 확인 후 제거.
-# 옮긴 정의를 옛 이름 그대로 다시 노출한다(`aq.<이름>` 읽기·`from … apm_query import …`).
-# 옮긴 정의만 쓰던 위 import 이름도 F401 예외 표시로 남긴다(모듈 이름 집합 불변 — stdlib
-# 모듈 객체 `re`·`sys`·`unicodedata`만 뺐다).
+# plans/180 W1에서 `apm/`로 옮긴 정의 — 이 모듈 본문이 쓰는 이름과, 테스트·스크립트가
+# 옛 이름으로 읽는 재노출(`aq.<이름>`·`from … apm_query import …`)만 남겼다
+# (plans/166 단계 8 — D-337 ① 제거 사이클).
 from src.orchestration.apm.common import (  # noqa: F401
     _AGGREGATE_KEYS as _AGGREGATE_KEYS,
     _NOTICE_TEXT as _NOTICE_TEXT,
@@ -141,13 +124,10 @@ from src.orchestration.apm.common import (  # noqa: F401
     COMPARE_ASK_NOTE as COMPARE_ASK_NOTE,
     COMPARE_ELAPSED_NOTE as COMPARE_ELAPSED_NOTE,
     COMPARE_OVERLAP_NOTE as COMPARE_OVERLAP_NOTE,
-    CURRENT_ONLY_NOTE as CURRENT_ONLY_NOTE,
     DEFAULT_VIEW as DEFAULT_VIEW,
     DISPLAY_CELL_MAX as DISPLAY_CELL_MAX,
     EMPTY_PERIOD_NOTE as EMPTY_PERIOD_NOTE,
     FLAT_VIEW_ARGS_KEY as FLAT_VIEW_ARGS_KEY,
-    GENERAL_AREAS as GENERAL_AREAS,
-    HOURLY_NOTE as HOURLY_NOTE,
     INSTANCES_VIEW as INSTANCES_VIEW,
     MAX_SELECTION_CANDIDATES as MAX_SELECTION_CANDIDATES,
     META_KEY as META_KEY,
@@ -157,46 +137,16 @@ from src.orchestration.apm.common import (  # noqa: F401
     sanitize_sources as sanitize_sources,
 )
 from src.orchestration.apm.args import (  # noqa: F401
-    _ACCOUNT as _ACCOUNT,
     _arg_text as _arg_text,
-    _coerce_account as _coerce_account,
-    _coerce_arg as _coerce_arg,
-    _coerce_bool as _coerce_bool,
-    _coerce_enum as _coerce_enum,
-    _coerce_ident as _coerce_ident,
-    _coerce_int as _coerce_int,
-    _coerce_opaque as _coerce_opaque,
-    _coerce_str_list as _coerce_str_list,
-    _coerce_text as _coerce_text,
-    _coerce_token as _coerce_token,
     _COERCERS as _COERCERS,
-    _IDENT as _IDENT,
     _missing_required as _missing_required,
     _NAMED_NOUN as _NAMED_NOUN,
-    _OPAQUE_MAX as _OPAQUE_MAX,
     _target_text as _target_text,
-    _TEXT_REJECT_CATEGORIES as _TEXT_REJECT_CATEGORIES,
-    _TOKEN as _TOKEN,
     _WINDOW_TEXT as _WINDOW_TEXT,
     validate_view_args as validate_view_args,
 )
 from src.orchestration.apm.window import (  # noqa: F401
-    _AUTO_INTERVAL_AFTER_MINUTES as _AUTO_INTERVAL_AFTER_MINUTES,
-    _AUTO_INTERVAL_POINTS as _AUTO_INTERVAL_POINTS,
-    _hour_stats_period as _hour_stats_period,
-    _IN_PROGRESS as _IN_PROGRESS,
-    _INTERVAL_ARG as _INTERVAL_ARG,
-    _is_hour_rolling as _is_hour_rolling,
-    _legacy_bounds as _legacy_bounds,
-    _MINUTE_WIDENED_RULE as _MINUTE_WIDENED_RULE,
-    _parse_bound as _parse_bound,
-    _PAST as _PAST,
-    _Period as _Period,
-    _period_kind as _period_kind,
     _period_list as _period_list,
-    _resolved_bounds as _resolved_bounds,
-    _ROLLING as _ROLLING,
-    _stamp as _stamp,
     auto_interval as auto_interval,
     plan_compare_window as plan_compare_window,
     plan_window as plan_window,
@@ -213,26 +163,19 @@ from src.orchestration.apm.selection import (  # noqa: F401
     SOURCE_LABEL_KEY as SOURCE_LABEL_KEY,
 )
 from src.orchestration.apm.calls import (  # noqa: F401
-    _BATCH_ITEM_META as _BATCH_ITEM_META,
     _batch_parents as _batch_parents,
-    _BATCH_SHARED as _BATCH_SHARED,
     _batched as _batched,
     _blocked_refusal as _blocked_refusal,
     _Call as _Call,
-    _call_args as _call_args,
     _CODE_PHRASE_RE as _CODE_PHRASE_RE,
     _envelope_error as _envelope_error,
     _EXC_TYPE_RE as _EXC_TYPE_RE,
     _FIRST_HOP_TIMEOUT_ERROR as _FIRST_HOP_TIMEOUT_ERROR,
     _GATEWAY_CODE_RE as _GATEWAY_CODE_RE,
-    _host_calls as _host_calls,
     _JobScope as _JobScope,
     _refusal as _refusal,
-    _restore_members as _restore_members,
     _run_calls as _run_calls,
     _status as _status,
-    _TARGET_ARGS as _TARGET_ARGS,
-    _target_item as _target_item,
     _unbatched as _unbatched,
     ROWS_IN_FILE_KEY as ROWS_IN_FILE_KEY,
 )
@@ -244,31 +187,24 @@ from src.orchestration.apm.jobs_notices import (  # noqa: F401
     _progress_text as _progress_text,
 )
 from src.orchestration.apm.targets import (  # noqa: F401
-    _answer_call as _answer_call,
     _authorized_db_ids as _authorized_db_ids,
     _demonstrative as _demonstrative,
     _EVIDENCE_TEXT as _EVIDENCE_TEXT,
     _Found as _Found,
     _inherited_notice as _inherited_notice,
-    _instance_calls as _instance_calls,
     _int_setting as _int_setting,
     _last_targets as _last_targets,
     _lookup as _lookup,
     _merged_instances as _merged_instances,
     _named_texts as _named_texts,
-    _NO_CAP as _NO_CAP,
     _per_target_views as _per_target_views,
-    _same_sources as _same_sources,
     _search_args as _search_args,
-    _service_names as _service_names,
     _service_scoped as _service_scoped,
     _shown as _shown,
     _source_failure_codes as _source_failure_codes,
     _source_status_rows as _source_status_rows,
     _suggestion_names as _suggestion_names,
-    _target_ref as _target_ref,
     _target_texts as _target_texts,
-    _targeted as _targeted,
     _targets_meta as _targets_meta,
     _TargetText as _TargetText,
     _too_long as _too_long,
@@ -286,9 +222,7 @@ from src.orchestration.apm.targets import (  # noqa: F401
     TARGET_TEXT_MAX as TARGET_TEXT_MAX,
 )
 from src.orchestration.apm.reference import (  # noqa: F401
-    _AROUND_KEY as _AROUND_KEY,
     _choose_text as _choose_text,
-    _numbered as _numbered,
     _REF_TEXT as _REF_TEXT,
     _RefPick as _RefPick,
     _TABLE_LABEL_MAX as _TABLE_LABEL_MAX,
@@ -299,7 +233,6 @@ from src.orchestration.apm.first_hop import (  # noqa: F401
     _first_hop_kind as _first_hop_kind,
     _first_hop_text as _first_hop_text,
     _host_sources as _host_sources,
-    _NAME_TARGET_TAIL as _NAME_TARGET_TAIL,
     _queried_instances as _queried_instances,
     _step_call as _step_call,
     _target_rows as _target_rows,
@@ -310,28 +243,12 @@ from src.orchestration.apm.context import (  # noqa: F401
 from src.orchestration.apm.builders import (  # noqa: F401
     _build_calls as _build_calls,
     _CALL_BUILDERS as _CALL_BUILDERS,
-    _calls_host as _calls_host,
-    _calls_named as _calls_named,
-    _calls_none as _calls_none,
-    _calls_optional as _calls_optional,
-    _calls_reference as _calls_reference,
 )
 from src.orchestration.apm.collect import (  # noqa: F401
     _answer_lines as _answer_lines,
-    _CATEGORY_RANK as _CATEGORY_RANK,
-    _change_line as _change_line,
-    _clock_text as _clock_text,
-    _compare_line as _compare_line,
     _dedupe_signals as _dedupe_signals,
-    _fleet_lines as _fleet_lines,
-    _hourly_text as _hourly_text,
-    _LEVEL_RANK as _LEVEL_RANK,
     _num as _num,
-    _ORDER_TEXT as _ORDER_TEXT,
-    _span_text as _span_text,
-    _stats_text as _stats_text,
     _TRACE_DEFAULT_WINDOW_MARK as _TRACE_DEFAULT_WINDOW_MARK,
-    _trace_line as _trace_line,
     display_rows as display_rows,
 )
 

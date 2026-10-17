@@ -71,3 +71,4 @@
 - (7a O1) `_CALL_BUILDERS` 키 집합 = `registry.VIEW_TARGETS` 단언 가드 테스트 — 이번은 저장소 새 파일 0 원칙으로 미작성. 7a에서 `src/orchestration/apm/` 분할 시 `run`·`calls` 경계는 `_RunCtx`·단계 함수 단위로 자를 수 있다(seam 소유 함수 `_session_step`·`_hosts_of`·`_new_run_ctx`·`_source_rows_step`는 D-337 ② — Facade 잔류 후보).
 - (동작 변경 후보 · 별도 계획) `SourceMcpError` 거부만 `notices`를 `disc.dedupe` 없이 넘긴다 — 다른 거부는 모두 dedupe. 통일은 동작 변경.
 - (동작 변경 후보 · D-331 ② 유형) `_call_scope_step`의 `getattr(getattr(app_config, "dbhub", None), "source_call_timeout", 10.0)` + `isinstance` 폴백 — 종전 코드 그대로 이동. 직접 접근 전환은 테스트 config 형태에 따라 동작이 달라질 수 있어 별도 판단.
+- → plans/182 #M2(SourceMcpError dedupe) · #L3(getattr 폴백)

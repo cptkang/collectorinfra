@@ -44,9 +44,6 @@ from src.config.services import PortalHelpConfig as PortalHelpConfig
 from src.config.services import RagConfig as RagConfig
 from src.config.services import ResultVizConfig as ResultVizConfig
 from src.config.services import ServerConfig as ServerConfig
-from src.config.text2sql import CANONICAL_QUERY_MODES as CANONICAL_QUERY_MODES
-from src.config.text2sql import REWRITE_GATE_MODES as REWRITE_GATE_MODES
-from src.config.text2sql import REWRITE_VERIFY_MODES as REWRITE_VERIFY_MODES
 from src.config.text2sql import CompositeConfig as CompositeConfig
 from src.config.text2sql import IntentFrameConfig as IntentFrameConfig
 from src.config.text2sql import RouterConfig as RouterConfig

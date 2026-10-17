@@ -71,5 +71,6 @@
 - **[Minor · verifier] 모듈 이름공간 축소**: `alarm_worker`에서 import 이름 23개(`load_rules`·`late_promotion_targets`·`episode_snapshot`·`update_flap_state`·`match_cluster` 등)가 빠졌다 — `monkeypatch.setattr(worker_mod, "<이름>")`는 이제 효과가 없다. 저장소 사용처 0. 병행 브랜치가 이 이름을 patch하면 조용히 무효화되니 병합 시 확인.
 - **가드 범위**: `test_plan144_verify.py:378` `_NOISE_GATE_CHANGED`(apm_gateway import 금지)가 새 모듈 4개를 덮지 않는다 — 테스트 수정이라 이 계획에서 하지 않았다(현재 새 모듈의 apm_gateway import 0).
 - **(선택) 성능**: shim 호출마다 host+서비스 객체 2개 생성 — 알람 1건당 수십 회 수준으로 무시 가능하나 성능 측정 계획이 생기면 확인 대상.
+- → plans/182 #P4
 - **차분 하네스 보존**: `scratchpad/p177_harness/`는 세션 임시 경로다 — 후속 계획이 재사용하려면 `noise_gate/tests/` 특성화로 옮기는 별건 필요.
 - 행동 변경 후보: 0(이동 중 발견한 결함 없음).

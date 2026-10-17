@@ -4,6 +4,8 @@
 
 ## 갱신 이력
 
+- 2026-10-17 — **182 신규(TODO · 기록만 · 코드 0)**: 166 로드맵(168~181)·163 잔여·166 §5.2·§5.8·§5.9·§8의 행동 변경 후보 38건을 7묶음으로 모음(위치는 작업 트리에서 재측정 · 해소됨 2 표시) · 원 계획서 후보 절에 「→ plans/182 #ID」 역참조 1줄씩 — 사용자 결정 「한 계획서로 기록」
+- 2026-10-17 — **166 로드맵 완료 · 커밋 전**(단계 8): §5.8 지표 재측정 「결과」 칸(getattr 폴백 0 · X3 2 · X4 7 · cc>50 17→6 · 2,000줄 초과 14→5 · SCC 7→8 미달 · arch 경고 17 · overfit 신규 0 · W0 스냅샷 무갱신) + 미달 후보 표 · §5.9 D-337 ①③ 제거 사이클(사용처 0만 388 제거 · 19파일 · 남김 426 표 · verifier Minor 3 교정 · `src/config` 전체 회귀 권고) · 계획 끝 회귀 원래 실패 2만(모듈 단위) · verifier Critical 0 · 파일명 태그: 163·168~181 이미 무표기 · 167 TODO 유지
 - 2026-10-16 — **180 신규·완료 · 커밋 전**(166 단계 7a · O1): `apm_query.py` 4,472→2,315줄 · 새 `src/orchestration/apm/` 13모듈(179정의 순수 이동 · DAG · 로거 이름 유지) + 재노출 shim · seam(D-337 ②) 55 + 소스 가드 고정 15 Facade 잔류 · 새 가드 테스트(`apm/` 유사어 0 · `_CALL_BUILDERS`=`VIEW_TARGETS` · Facade import 0) · 계획 끝 회귀 실패 0(모듈 단위) · verifier 차분 0 · 166 §0.1 단계 7 상태 「7a 완료」
 - 2026-10-16 — **181 신규·완료 · 커밋 전**(166 단계 7e · N6 — 선언만): `OutputState` TypedDict(구간 4개 상속 · 39키 · 비AgentState 8키) + `_build_output_state`·구간 함수 반환 어노테이션(mypy 키 추가·누락 검출) · `create_initial_state` 초기값 표 `_INITIAL_STATE_DEFAULTS` · 노드 반환 키 ⊆ 그래프 상태 정합 테스트(위반 3 `KNOWN_UNDECLARED`) · 계획 끝 회귀 실패 0(모듈 단위) · verifier 차분 0 · 166 §0.1 단계 7 상태 「7e 완료」
 - 2026-10-16 — **174 신규·완료 · 커밋 전**(166 단계 6c · O3·O7·O8·O9): `build_graph` 사다리 배선 SSOT(선두 `resolve_ladder_tier` 1회 · 단별 `_wire_*`) · replanner `GUARDS`·`DECISION_GUARDS`·`FILTERS` + `HandlerResult` TypedDict · semantic_router 3단 분할 · `_plan_turn` `_PRECHECK_STEPS` · `parse_registry` 파서 추출 · `_coerce_arg` `_COERCERS` · 계획 끝 회귀 실패 0(모듈 단위) · verifier 차분 0 · 166 §0.1 단계 6 상태 「6c 완료」

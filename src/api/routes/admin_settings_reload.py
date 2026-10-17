@@ -1,7 +1,7 @@
 """설정 리로드 라우트 — `POST /admin/settings/reload` (plans/166 A7 — `admin.py`에서 이동).
 
 `admin.router`가 이 라우터를 원래 선언 위치에 포함한다(경로·이름·OpenAPI 불변). 옛 경로
-`src.api.routes.admin`에서 `reload_settings`·`SettingsReloadResponse`를 재노출한다(D-337 ①).
+`src.api.routes.admin`에서 `reload_settings`를 재노출한다(D-337 ① · 테스트가 그 경로로 import).
 """
 
 from __future__ import annotations

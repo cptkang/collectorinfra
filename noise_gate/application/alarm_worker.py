@@ -35,7 +35,7 @@ from noise_gate.domain.annotation_signal import (
     extract_annotation_signal,
 )
 from noise_gate.domain.correlation import ClusterState
-from noise_gate.domain.cross_source import Episode, EpisodeTracker
+from noise_gate.domain.cross_source import EpisodeTracker
 from noise_gate.domain.page_review import PageRegistry, fanout_key_of, host_key_of
 from noise_gate.domain.notification_policy import (
     STAGE_FLAPPING,
@@ -46,24 +46,16 @@ from noise_gate.domain.notification_policy import (
 )
 from noise_gate.application import worker_wiring
 from noise_gate.application.dedup_service import DedupService
-# (plans/177 W3) dedup 서비스·신호 탐지기로 옮긴 상수·순수 함수의 같은 이름 재노출(D-337 ①) — patch
-# 지점이 없어 정본은 그쪽이다.
-from noise_gate.application.dedup_service import _DEDUP_SEVERITY_KEY  # noqa: F401
+# (plans/177 W3) dedup 서비스로 옮긴 상수의 같은 이름 재노출(D-337 ①) — 테스트가 이 경로로
+# import한다.
 from noise_gate.application.dedup_service import _RECENT_TEXTS_MAX_PER_SCOPE  # noqa: F401
-from noise_gate.application.dedup_service import _dedup_meta  # noqa: F401
-from noise_gate.application.dedup_service import _dedup_severity_rises  # noqa: F401
 from noise_gate.application.episode_coordinator import EpisodeCoordinator
-# (plans/177 W2) 코디네이터로 옮긴 상수의 같은 이름 재노출(D-337 ①) — patch 지점이 없어 정본은
-# 그쪽이다.
-from noise_gate.application.episode_coordinator import _EPISODE_INV_UNUSABLE  # noqa: F401
-from noise_gate.application.episode_coordinator import _LATE_PROMOTION_SWEEP_SECONDS  # noqa: F401
 from noise_gate.application.server_identity import (
     attach_server_identity,
     is_apm_db_id,
     is_apm_source,
 )
 from noise_gate.application.signal_detection import SignalDetector
-from noise_gate.application.signal_detection import _TOPOLOGY_NEGATIVE_TTL_SECONDS  # noqa: F401
 from noise_gate.domain.severity import coerce_severity
 from noise_gate.infrastructure.apm_noise_context import (
     EVENT_KIND_METRIC,
@@ -90,8 +82,7 @@ logger = logging.getLogger(__name__)
 _CONSUMER_NAME = "worker-1"
 
 # 위상 가중 그래프 음성 캐시 TTL `_TOPOLOGY_NEGATIVE_TTL_SECONDS`는 signal_detection이, 스코프별
-# 최근 이벤트 텍스트 상한 `_RECENT_TEXTS_MAX_PER_SCOPE`는 dedup_service가 정본이다(위에서 재노출 ·
-# plans/177 W3).
+# 최근 이벤트 텍스트 상한 `_RECENT_TEXTS_MAX_PER_SCOPE`는 dedup_service가 정본이다(plans/177 W3).
 
 # (plans/144 §4.2) 제니퍼 지속 조건 카운터·재판정 보류·보낸 심각도의 지문 키 상한 — 넘치면
 # 가장 오래된 지문부터 버린다(경고 로그). 창 밖 타임스탬프 정리·키 만료 sweep과 병행하는
@@ -99,7 +90,7 @@ _CONSUMER_NAME = "worker-1"
 _APM_PERSIST_MAX_KEYS = 10000
 
 # 지문 dedup 레코드의 마지막 통보 심각도 키 `_DEDUP_SEVERITY_KEY`와 순수 함수
-# `_dedup_severity_rises`·`_dedup_meta`는 dedup_service가 정본이다(재노출 · plans/177 W3).
+# `_dedup_severity_rises`·`_dedup_meta`는 dedup_service가 정본이다(plans/177 W3).
 
 # (plans/144 W4 §5.6 · G-6) 사후 승격 후보(원 판정 결과 보관) 상한 — 넘치면 가장 오래된 것부터
 # 버린다(경고 로그). 사건 종료·멤버 해소 시 정리하는 sweep과 병행하는 메모리 가드다.
@@ -107,14 +98,14 @@ _LATE_PROMOTION_MAX = 2000
 # 트리거 1건이 순차 발송하는 사후 승격 상한 — 대상 N건 × workb 타임아웃만큼 처리 루프가 밀리지
 # 않게 한다. 넘친 대상은 표시하지 않고 후보로 남겨 같은 사건의 다음 심각 이벤트에 기회를 준다.
 _LATE_PROMOTION_PER_TRIGGER_MAX = 5
-# 후보 전수 sweep 최소 간격 `_LATE_PROMOTION_SWEEP_SECONDS`는 episode_coordinator가 정본이다(위에서
-# 재노출 · plans/177 W2).
+# 후보 전수 sweep 최소 간격 `_LATE_PROMOTION_SWEEP_SECONDS`는 episode_coordinator가 정본이다
+# (plans/177 W2).
 
 # (plans/153 W4 §4.5) 종합 조사 대표 알람 후보(멤버의 분석 결과·판정 보관) 상한 — 넘치면 닫힌 사건의
 # 것부터, 그래도 넘치면 가장 오래된 것부터 버린다. 종합 조사 제출 뒤에는 그 사건 몫을 지운다.
 _EPISODE_CTX_MAX = 2000
 # 후속 알람을 묶지 않는 종합 조사 저장 상태 `_EPISODE_INV_UNUSABLE`도 episode_coordinator가
-# 정본이다(재노출).
+# 정본이다.
 
 
 def _evict_oldest(store: dict[str, Any], last_ts: Callable[[Any], float], label: str) -> None:
@@ -584,14 +575,6 @@ class AlarmWorker:
         """`EpisodeCoordinator.record_episode_tier` 위임 — 테스트·`_process` seam(plans/177)."""
         _episode_coordinator(self).record_episode_tier(cross_source, event, result)
 
-    def _episode_of(self, cross_source: dict[str, Any] | None) -> Episode | None:
-        """`EpisodeCoordinator.episode_of` 위임 — 테스트·`_process` seam(plans/177)."""
-        return _episode_coordinator(self).episode_of(cross_source)
-
-    def _late_promotion_on(self) -> bool:
-        """`EpisodeCoordinator.late_promotion_on` 위임 — 테스트·`_process` seam(plans/177)."""
-        return _episode_coordinator(self).late_promotion_on()
-
     def _episode_app_impact(
         self, cross_source: dict[str, Any] | None, event: AlarmEvent
     ) -> dict[str, Any] | None:
@@ -608,14 +591,6 @@ class AlarmWorker:
         """`EpisodeCoordinator.episode_investigation` 위임 — 테스트·`_process` seam(plans/177)."""
         return _episode_coordinator(self).episode_investigation(cross_source, event)
 
-    def _usable_episode_investigation(self, ep: Episode) -> str:
-        """`EpisodeCoordinator.usable_episode_investigation` 위임 — 테스트 seam(plans/177)."""
-        return _episode_coordinator(self).usable_episode_investigation(ep)
-
-    def _episode_context_on(self) -> bool:
-        """`EpisodeCoordinator.episode_context_on` 위임 — 테스트·`_process` seam(plans/177)."""
-        return _episode_coordinator(self).episode_context_on()
-
     def _episode_snapshot(self, cross_source: dict[str, Any] | None) -> dict[str, Any] | None:
         """`EpisodeCoordinator.episode_snapshot` 위임 — 테스트·`_process` seam(plans/177)."""
         return _episode_coordinator(self).episode_snapshot(cross_source)
@@ -625,34 +600,6 @@ class AlarmWorker:
     ) -> None:
         """`EpisodeCoordinator.remember_episode_ctx` 위임 — 테스트·`_process` seam(plans/177)."""
         _episode_coordinator(self).remember_episode_ctx(cross_source, event, result, now)
-
-    async def _maybe_episode_investigation(
-        self, cross_source: dict[str, Any], event: AlarmEvent
-    ) -> None:
-        """`EpisodeCoordinator.maybe_episode_investigation` 위임 — 테스트 seam(plans/177)."""
-        await _episode_coordinator(self).maybe_episode_investigation(cross_source, event)
-
-    def _record_apm_investigation(
-        self, cross_source: dict[str, Any], event: AlarmEvent, result: Any
-    ) -> None:
-        """`EpisodeCoordinator.record_apm_investigation` 위임 — 테스트 seam(plans/177)."""
-        _episode_coordinator(self).record_apm_investigation(cross_source, event, result)
-
-    def _remember_late_candidate(
-        self, cross_source: dict[str, Any], event: AlarmEvent, result: Any, now: float
-    ) -> None:
-        """`EpisodeCoordinator.remember_late_candidate` 위임 — 테스트 seam(plans/177)."""
-        _episode_coordinator(self).remember_late_candidate(cross_source, event, result, now)
-
-    def _sweep_late_promotion(self, now: float) -> None:
-        """`EpisodeCoordinator.sweep_late_promotion` 위임 — 테스트 seam(plans/177)."""
-        _episode_coordinator(self).sweep_late_promotion(now)
-
-    async def _late_promote(
-        self, cross_source: dict[str, Any], event: AlarmEvent, now: float
-    ) -> None:
-        """`EpisodeCoordinator.late_promote` 위임 — 테스트 seam(plans/177)."""
-        await _episode_coordinator(self).late_promote(cross_source, event, now)
 
     async def _after_episode_graph(
         self, cross_source: dict[str, Any], event: AlarmEvent, result: Any, now: float
@@ -1462,17 +1409,6 @@ class AlarmWorker:
     def _detect_storm(self, event: AlarmEvent, now: float) -> bool:
         """`SignalDetector.detect_storm` 위임 — 테스트·`_process` seam(plans/177)."""
         return _signal_detector(self).detect_storm(event, now)
-
-    def _sweep_correlation_clusters(self, now: float, window_sec: int) -> None:
-        """`SignalDetector.sweep_correlation_clusters` 위임 — 테스트 seam(plans/177)."""
-        _signal_detector(self).sweep_correlation_clusters(now, window_sec)
-
-    @staticmethod
-    def _prune_expired(
-        clusters: list[ClusterState], now: float, window_sec: int
-    ) -> list[ClusterState]:
-        """`SignalDetector.prune_expired` 위임 — 테스트 seam(plans/177)."""
-        return SignalDetector.prune_expired(clusters, now, window_sec)
 
     async def _load_topology_graph(
         self, db_id: str, now: float

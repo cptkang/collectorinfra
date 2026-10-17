@@ -25,10 +25,6 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from src.clients.fabrix_kbgenai import KBGenAIChat
-from src.document.llm_mapping import (
-    _apply_llm_mapping,
-    _invoke_llm_mapping_multi_db,
-)
 from src.document.llm_mapping import build_eav_mapping_guide as _build_eav_mapping_guide
 from src.document.llm_mapping import (
     format_field_names_with_examples as _format_field_names_with_examples,
@@ -38,11 +34,7 @@ from src.document.llm_mapping import invoke_llm_mapping as _invoke_llm_mapping
 from src.document.llm_mapping import validate_mapping as _validate_mapping
 from src.document.mapping_feedback import analyze_md_diff, apply_mapping_feedback_to_redis
 from src.document.mapping_steps import (
-    _METRIC_USAGE_AGG_TERMS,
-    _METRIC_USAGE_NOUNS,
     MappingResult,
-    _find_db_for_column,
-    _structure_patterns,
     extract_field_names,
 )
 from src.document.mapping_steps import apply_hint_mapping as _apply_hint_mapping
@@ -53,26 +45,10 @@ from src.document.mapping_steps import resolve_fallback_db_id as _resolve_fallba
 from src.document.mapping_steps import schema_uses_eav_metric_pivot as _schema_uses_eav_metric_pivot
 from src.document.mapping_steps import sub_table_scope as _sub_table_scope
 from src.document.redis_registration import (
-    _AUTHORITY_UNKNOWN_REASON,
-    _DB_SCOPE_EAV_SKIPPED_LOG,
-    _DB_SCOPE_REGISTERED_LOG,
-    _NO_STRUCTURE_REASON,
-    _NO_TARGET_DB_LOG,
-    _register_llm_mapping_to_db_scope,
-    _registration_blocked,
-    _structure_authority,
-)
-from src.document.redis_registration import (
     register_llm_mappings_to_redis as _register_llm_mappings_to_redis,
 )
 from src.document.redis_registration import (
     register_llm_synonym_discoveries_to_redis as _register_llm_synonym_discoveries_to_redis,
-)
-from src.document.synonym_matching import (
-    _apply_fuzzy_synonym_fallback,
-    _apply_semantic_synonym_fallback,
-    _scope_synonyms,
-    _synonym_key_table,
 )
 from src.document.synonym_matching import apply_eav_synonym_mapping as _apply_eav_synonym_mapping
 from src.document.synonym_matching import apply_synonym_mapping as _apply_synonym_mapping
@@ -98,11 +74,8 @@ __all__ = [
     "_apply_llm_synonym_discovery",
     "_apply_llm_mapping_with_synonyms",
     # mapping_steps
-    "_METRIC_USAGE_NOUNS",
-    "_METRIC_USAGE_AGG_TERMS",
     "_is_metric_usage_field",
     "_load_structure_declarations",
-    "_structure_patterns",
     "_core_entity_tables",
     "_schema_uses_eav_metric_pivot",
     "_sub_table_scope",
@@ -110,29 +83,14 @@ __all__ = [
     "_resolve_fallback_db_id",
     "extract_field_names",
     "_apply_hint_mapping",
-    "_find_db_for_column",
     # synonym_matching
-    "_scope_synonyms",
-    "_synonym_key_table",
     "_apply_synonym_mapping",
-    "_apply_fuzzy_synonym_fallback",
-    "_apply_semantic_synonym_fallback",
     "_synonym_match",
     "_apply_eav_synonym_mapping",
     # redis_registration
-    "_NO_STRUCTURE_REASON",
-    "_AUTHORITY_UNKNOWN_REASON",
-    "_DB_SCOPE_REGISTERED_LOG",
-    "_DB_SCOPE_EAV_SKIPPED_LOG",
-    "_NO_TARGET_DB_LOG",
-    "_structure_authority",
-    "_registration_blocked",
-    "_register_llm_mapping_to_db_scope",
     "_register_llm_synonym_discoveries_to_redis",
     "_register_llm_mappings_to_redis",
     # llm_mapping
-    "_apply_llm_mapping",
-    "_invoke_llm_mapping_multi_db",
     "_invoke_llm_mapping",
     "_build_eav_mapping_guide",
     "_format_field_names_with_examples",

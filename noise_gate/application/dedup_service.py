@@ -31,7 +31,7 @@ logger = logging.getLogger("noise_gate.application.alarm_worker")
 _RECENT_TEXTS_MAX_PER_SCOPE = 50
 
 # (plans/144 Q-4) 지문 dedup 레코드의 마지막 통보 심각도 키 — dedup_severity_rise_bypass가 켜져
-# 있을 때만 기록한다(off면 레코드 모양이 종전과 같다). `alarm_worker`가 재노출한다.
+# 있을 때만 기록한다(off면 레코드 모양이 종전과 같다).
 _DEDUP_SEVERITY_KEY = "notified_severity"
 
 
