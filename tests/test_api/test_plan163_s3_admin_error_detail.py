@@ -57,8 +57,11 @@ def _assert_masked(text: str, exc_type: str, action: str, rid: str = _RID) -> No
 
 
 def _assert_logged(caplog: pytest.LogCaptureFixture) -> None:
-    """원문은 서버 로그(스택 포함)에 남는다."""
-    assert _SECRET in caplog.text
+    """원문은 서버 로그(스택 포함)에 남는다.
+
+    비밀번호는 가려지므로(plans/167) 사용자명·호스트로 본다.
+    """
+    assert "dsn=secret://admin:" in caplog.text and "@10.0.0.9" in caplog.text
 
 
 def _request(config: Any = None, audit: Any = None, audit_repo: Any = None) -> SimpleNamespace:

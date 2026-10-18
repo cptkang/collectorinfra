@@ -31,6 +31,8 @@ from src.api.dependencies import require_user
 
 #: 예외 원문 대역 — DSN·SQL·내부 주소가 섞인 문자열(응답에 나오면 안 된다).
 SECRET = "postgresql://svc:pw-9x@10.1.2.3/pdb · SELECT secret_col FROM t_hidden"
+#: 로그 단언용 — 비밀번호 뒤(호스트·DB·본문)만. 서버 로그에서 DSN 비밀번호는 가려진다(plans/167).
+SECRET_LOGGED = SECRET.split("@", 1)[1]
 ROUTES = ("text", "file")
 
 
@@ -150,7 +152,9 @@ def test_nonstream_500_hides_exception_text(app_config, route, caplog) -> None:
     rid = r.headers["X-Request-ID"]
     assert SECRET not in r.text
     assert r.json()["detail"] == f"처리 중 오류가 발생했습니다 (요청 {rid})"
-    assert SECRET in caplog.text and rid in caplog.text, "원문은 요청 번호와 함께 서버 로그로"
+    assert SECRET_LOGGED in caplog.text and rid in caplog.text, (
+        "원문은 요청 번호와 함께 서버 로그로"
+    )
 
 
 @pytest.mark.parametrize("route", ROUTES)
@@ -165,7 +169,7 @@ def test_stream_error_hides_exception_text(app_config, route, caplog) -> None:
     assert SECRET not in r.text
     assert err["message"] == f"처리 중 오류가 발생했습니다 (요청 {rid})"
     assert err["stage"]["name"] == "query_generator", "비밀 아닌 경위(단계 이름)는 유지"
-    assert SECRET in caplog.text and rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and rid in caplog.text
 
 
 @pytest.mark.parametrize("route", ROUTES)
@@ -186,7 +190,7 @@ def test_stream_failure_trace_hides_step_error_text(app_config, route, caplog) -
     assert [s["name"] for s in failed] == ["query_validator"], "실패 표시는 유지"
     assert failed[0]["detail"] and err["last_error"]
     assert "query_validator" in err["last_error"], "비밀 아닌 단계 이름은 남긴다"
-    assert SECRET in caplog.text, "원문은 서버 로그로"
+    assert SECRET_LOGGED in caplog.text, "원문은 서버 로그로"
 
 
 def test_stream_trace_unit_keeps_status_drops_text(caplog) -> None:
@@ -207,7 +211,7 @@ def test_stream_trace_unit_keeps_status_drops_text(caplog) -> None:
         ("query_validator", "failed"), ("pipeline.execute", "failed"), ("t1", "skipped")]
     assert f["steps"][2]["detail"] == "선행 결과 없음", "건너뜀 사유(실패 원문 아님)는 유지"
     assert "pipeline.execute" in f["last_error"]
-    assert caplog.text.count(SECRET) == 2
+    assert caplog.text.count(SECRET_LOGGED) == 2
 
 
 # ── 대화 조회 ────────────────────────────────────────────────────────────
@@ -220,7 +224,7 @@ def test_conversation_500_hides_exception_text(app_config, caplog) -> None:
     rid = r.headers["X-Request-ID"]
     assert SECRET not in r.text
     assert r.json()["detail"] == f"대화 기록을 불러오지 못했습니다 (요청 {rid})"
-    assert SECRET in caplog.text
+    assert SECRET_LOGGED in caplog.text
 
 
 # ── APM 작업 API ─────────────────────────────────────────────────────────
@@ -236,7 +240,7 @@ def test_apm_gateway_error_502_hides_exception_text(caplog) -> None:
     assert exc.status_code == 502
     assert SECRET not in exc.detail
     assert exc.detail == "작업 정보를 가져오지 못했습니다 (요청 ab12cd34)"
-    assert SECRET in caplog.text and "ab12cd34" in caplog.text
+    assert SECRET_LOGGED in caplog.text and "ab12cd34" in caplog.text
 
 
 @pytest.mark.parametrize("cls_name", ["JobNotFoundError", "JobForbiddenError"])
@@ -271,7 +275,7 @@ async def test_aggregator_text_task_error_hides_raw(bound_rid, caplog) -> None:
     assert SECRET not in out["text"]
     assert out["text"] == f"작업 처리 중 오류가 발생했습니다 (요청 {bound_rid})"
     assert out["error"], "실패 여부(task 요약)는 유지"
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 @pytest.mark.asyncio
@@ -292,7 +296,7 @@ async def test_aggregator_output_generator_exception_hides_raw(bound_rid, caplog
     assert SECRET not in out["text"] and SECRET not in str(out["error"])
     assert out["text"] == f"결과 생성 중 오류가 발생했습니다 (요청 {bound_rid})"
     assert out["error"], "실패 여부는 유지"
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 # ── S3+ 교정: 고정 도메인 사유는 살리고 예외 원문만 가린다 ──────────────────
@@ -408,7 +412,7 @@ async def test_cache_management_exception_hides_raw(bound_rid, caplog) -> None:
         out = await cm.cache_management(state, llm=AsyncMock(), app_config=SimpleNamespace())
     assert SECRET not in out["final_response"]
     assert out["final_response"] == f"캐시 관리 중 오류가 발생했습니다 (요청 {bound_rid})"
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 # ── S3+ 교정: APM 작업 상태 조회 ─────────────────────────────────────────
@@ -451,7 +455,7 @@ async def test_apm_refresh_logs_gateway_reason_once(caplog) -> None:
     with caplog.at_level(logging.WARNING):
         await svc._refresh({"job_id": job_id, "error": None}, envelope)
         await svc._refresh({"job_id": job_id, "error": dict(error)}, envelope)
-    assert caplog.text.count(SECRET) == 1
+    assert caplog.text.count(SECRET_LOGGED) == 1
 
 
 # ── S3+ 교정 2차: 답 본문·단계 배지에 남던 원문 경로 ─────────────────────────
@@ -476,7 +480,7 @@ async def test_apm_gateway_down_answer_hides_exception(monkeypatch, bound_rid, c
     assert res["degraded_reason"] == "source_unavailable"
     assert SECRET not in res["final_response"]
     assert f"연결하지 못해 조회하지 않았습니다(요청 {bound_rid})" in res["final_response"]
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 @pytest.mark.parametrize(("last_reason", "tail"), [
@@ -607,7 +611,7 @@ async def test_apm_all_calls_failed_answer_hides_reason(monkeypatch, bound_rid, 
     assert SECRET not in res["final_response"]
     shown = f"web01: apm_api_error (요청 {bound_rid} · 상세 사유는 서버 로그)"
     assert shown in res["final_response"]
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 # ── S3+ 교정 4차: 3·4단 그래프 오류 응답 노드 ─────────────────────────────
@@ -627,7 +631,7 @@ def test_graph_error_response_hides_raw_with_request_id(bound_rid, caplog) -> No
         response = _error_response(SECRET)
     assert SECRET not in response
     assert f"에러 내용: 작업 처리 중 오류가 발생했습니다 (요청 {bound_rid})" in response
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 @pytest.mark.parametrize(("raw", "shown"), [
@@ -664,7 +668,7 @@ async def test_host_inspect_failure_hides_client_exception(monkeypatch, bound_ri
     assert res[DEGRADED_KEY] == "inspect_failed"
     for text in (res["error"], res["final_response"], user_error_text(res["error"], result=res)):
         assert SECRET not in text and f"요청 {bound_rid}" in text
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 @pytest.mark.asyncio
@@ -683,7 +687,7 @@ async def test_host_inspect_kind_failure_summary_hides_reason(monkeypatch, bound
     summary = res["organized_data"]["summary"]
     assert SECRET not in summary
     assert f"메모리 추세는 조회하지 못했습니다(요청 {bound_rid})." in summary
-    assert SECRET in caplog.text
+    assert SECRET_LOGGED in caplog.text
 
 
 @pytest.mark.asyncio
@@ -702,7 +706,7 @@ async def test_merged_rows_output_failure_hides_exception(bound_rid, caplog) -> 
     assert SECRET not in out["final_response"]
     assert out["final_response"] == (
         f"통합 결과 1건을 정리하는 중 오류가 발생했습니다 (요청 {bound_rid})")
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 def _raise_cache_manager(monkeypatch) -> None:
@@ -731,7 +735,7 @@ async def test_field_mapper_synonym_registration_hides_exception(monkeypatch, bo
         out = await _handle_synonym_registration(state, {"mode": "all"}, SimpleNamespace())
     assert out is not None
     assert out["final_response"] == f"유사어 등록 중 오류가 발생했습니다 (요청 {bound_rid})"
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 @pytest.mark.asyncio
@@ -746,7 +750,7 @@ async def test_synonym_registrar_hides_exception(monkeypatch, bound_rid, caplog)
         out = await synonym_registrar(state, app_config=SimpleNamespace())
     assert out["final_response"] == f"유사어 등록 중 오류가 발생했습니다 (요청 {bound_rid})"
     assert SECRET not in str(out.get("error_message"))
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 def test_form_fill_exception_reason_hides_exception(monkeypatch, bound_rid, caplog) -> None:
@@ -762,7 +766,7 @@ def test_form_fill_exception_reason_hides_exception(monkeypatch, bound_rid, capl
     with caplog.at_level(logging.ERROR):
         out = _generate_document_file(state, "xlsx")
     assert out == {"reason": f"양식 채우기 중 오류가 발생했습니다 (요청 {bound_rid})"}
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 def _apm_failed_meta() -> dict:
@@ -782,7 +786,7 @@ def test_apm_accepted_answer_hides_failure_reason(bound_rid, caplog) -> None:
     assert SECRET not in res["final_response"]
     assert ("조회하지 못한 대상 2건: web01(source_unavailable), web02 "
             f"(요청 {bound_rid} · 상세 사유는 서버 로그)") in res["final_response"]
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 def test_apm_summary_hides_failure_reason(bound_rid) -> None:
@@ -845,7 +849,7 @@ async def test_apm_rank_failure_reason_hidden_in_first_hop_notice(monkeypatch, b
     assert SECRET not in json.dumps(res, ensure_ascii=False, default=str)
     assert f"부하 순위를 받지 못해(apm_api_error · 요청 {bound_rid})" in (
         res["organized_data"]["summary"])
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 @pytest.mark.asyncio
@@ -887,7 +891,7 @@ async def test_apm_result_file_read_failure_hides_reason(bound_rid, caplog) -> N
                                                  [{"a": 1}], 10)
     assert rows == [{"a": 1}]
     assert short == f"결과 파일 청크 1/1 읽기 실패 — 호출 실패 (요청 {bound_rid})"
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 def _apm_err(tool: str, code: str) -> dict:

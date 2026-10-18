@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-17 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
+> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-18 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -209,7 +209,7 @@
 | 164 | [`164-WIP-apm-bench-e2-round1.md`](./164-WIP-apm-bench-e2-round1.md) | 164. 제니퍼 APM 벤치 E2 1회차 후속 — 누출 관문 실패로 반출 0 · 판정 집계 왜곡(gw_error 대표화) 교정 · 실패해도 진단 가능한 반출 · 폐쇄망 재실행 | **WIP** · v1.4 · **W0~W5 완료**(D-323 부기) · 관문 교정·안전 요약·격리 보관 `--regate` · 집계 교정 · 키트·var 검사 · 명령 간소화(`results/apm_bench/<run_id>/` · `--bg`·`--status`) · 모듈 회귀 rc 0 · 잔여 W6 폐쇄망 재실행 | 2026-10-14 |
 | 165 | [`165-TODO-demo-found-defects.md`](./165-TODO-demo-found-defects.md) | 165. 시연 카탈로그 설계·실행 중 발견한 제품 결함 5건 기록 — 알람 결정적 조립 서버 무시 · MCP 조사 도구 b0 0건 · 제니퍼→폴스타 hostname 정확 일치 · 직전 엔티티 상한 잠식 · 자산관리 지목 시 폴스타 DB 잔존 | **TODO** · v1.1 · 기록만(사용자 지시) · 시연은 질의 원칙·세션 분리로 회피(D-326 부기) · 권장 순서 F5·F2①→F3→F4①②→F1(a) | 2026-10-15 |
 | 166 | [`166-codebase-smell-refactoring.md`](./166-codebase-smell-refactoring.md) | 166. 저장소 전반 코드 스멜 정리 — SOLID·SSOT·선별 패턴 적용 구조 리팩터링 | **로드맵 완료**(2026-10-17 · 커밋 전) · 단계 0~8 완료 · 단계 8: 지표 재측정(cc>50 17→6 · 2,000줄 초과 14→5 · arch 경고 117→17 · SCC 7→8 미달) · shim·별칭 388 제거(사용처 0만)·426 남김 표 · 회귀 원래 실패 2만 *(상세: 계획서 §5.8·§5.9)* | 2026-10-17 |
-| 167 | [`167-TODO-log-secret-masking.md`](./167-TODO-log-secret-masking.md) | 167. 로그 비밀값 가림 필터 — 로그 출력 단계에서 자격증명·토큰을 가린다(163 auditor Low 권고 분리) | **TODO** · 기록만(사용자 지시 · 코드 0) · 실측: 로깅 진입점 4곳 · 기존 필터 0 · 비밀값 직접 로그 0 · 위험은 로그에 남는 예외 원문(DSN·Bearer) · 착수 전 결정 3건(§4) | 2026-10-16 |
+| 167 | [`167-log-secret-masking.md`](./167-log-secret-masking.md) | 167. 로그 비밀값 가림 필터 — 로그 출력 단계에서 자격증명·토큰을 가린다(163 auditor Low 권고 분리) | **완료 · 커밋 전**(2026-10-18 · D-339): 레코드 팩토리 전역 가림 + structlog 프로세서 · 진입점 7곳 · 정본 `src/utils/log_masking.py` + 사본 4(mcp·apm·sre·fabrix) 바이트 일치 · 회귀 실패 0(모듈 단위) · 장기 실행 프로세스 재기동해야 반영 | 2026-10-18 |
 | 168 | [`168-query-stream-dedup.md`](./168-query-stream-dedup.md) | 168. query 라우트 스트림·응답·사전 게이트 공통화 — A1·A3 (166 단계 5a) | **완료**(2026-10-16 · 커밋 전) · `query.py` 4,377→4,256 · `_stream_graph_turn`·`_sse_response`·`_run_text_pre_gates` · 차분 87케이스 동일 · 회귀 원래 실패 1만 · 턴 기록 가드 보강 · 계수 가드 전환은 7b 전 결정 | 2026-10-16 |
 | 169 | [`169-pair-path-common-functions.md`](./169-pair-path-common-functions.md) | 169. 쌍 경로 공통 함수 — 폼필 피벗 계획(N1(a)) · 존 역질문 공통 꼬리(O6) | 완료(2026-10-16 · 커밋 전 · 166 단계 5b) · 어댑터 `form_fill_plan.py`(단계 함수 4 + `FormFillPivotPlan`) · `routing/zone_clarification.py` · N1(b) 리터럴 5종 처리·5쌍 유지 · 회귀 실패 0(모듈 단위) · 5c 착수 가능 | 2026-10-16 |
 | 170 | [`170-schema-cache-facade-config-injection.md`](./170-schema-cache-facade-config-injection.md) | 170. 스키마 캐시 Facade 완결(I1) · `pii_filter` 설정 읽기 통합·침묵 예외 정리(X2·X5) | 완료(2026-10-16 · 커밋 전 · 166 단계 5c) · Facade 우회 7곳 교체·3곳 seam 잔류 · `_prefer_redis` 38곳 · 유사어 27메서드 `RedisSynonymStore` 합성 · 키 빌더 `schema_key` · `pii_filter` `_flag`+실패 경고 · 회귀 실패 0(모듈 단위) | 2026-10-16 |

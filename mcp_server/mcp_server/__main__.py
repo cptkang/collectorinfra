@@ -23,6 +23,9 @@ def main() -> None:
         stream=sys.stderr,
         force=True,
     )
+    from mcp_server.log_masking import install_log_record_factory
+
+    install_log_record_factory()  # 로그 비밀값 가림(plans/167)
     logger = logging.getLogger("mcp_server")
 
     logger.info(

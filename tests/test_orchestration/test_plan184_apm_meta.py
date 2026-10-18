@@ -24,6 +24,8 @@ from tests.test_orchestration import test_plan134_w2_verify as w2
 
 #: 예외 원문 대역 — DSN·내부 주소가 섞인 문자열(메타에 남으면 안 된다).
 SECRET = "postgresql://svc:pw-9x@10.1.2.3/pdb · 내부 응답 원문"
+#: 로그 단언용 — 비밀번호 뒤(호스트·DB·본문)만. 서버 로그에서 DSN 비밀번호는 가려진다(plans/167).
+SECRET_LOGGED = SECRET.split("@", 1)[1]
 
 
 @pytest.fixture
@@ -68,7 +70,7 @@ async def test_retry_selection_error_keeps_kind_and_request_id_only(exc, bound_r
     assert (views, args) == ([], {})
     assert error == f"{type(exc).__name__} (요청 {bound_rid})"
     assert SECRET not in error
-    assert SECRET in caplog.text and bound_rid in caplog.text, "원문은 로그에 남는다"
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text, "원문은 로그에 남는다"
 
 
 @pytest.mark.asyncio
@@ -95,7 +97,7 @@ async def test_gateway_down_source_status_reason_hides_exception(monkeypatch, bo
     assert status["status"] == "unavailable"
     assert status["reason"] == f"SourceMcpError (요청 {bound_rid})"
     assert SECRET not in str(res["source_status"]) and SECRET not in str(res[aq.META_KEY])
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 @pytest.mark.asyncio
@@ -185,7 +187,7 @@ async def test_view_call_exception_meta_failures_keep_kind_and_request_id(
     # 답 문구에는 종류가 보이고 요청 번호는 한 번만 붙는다
     assert "web01: SourceMcpError" in res["final_response"]
     assert res["final_response"].count(bound_rid) == 1
-    assert SECRET in caplog.text and bound_rid in caplog.text
+    assert SECRET_LOGGED in caplog.text and bound_rid in caplog.text
 
 
 @pytest.mark.asyncio
@@ -202,7 +204,7 @@ async def test_lookup_exception_reason_has_no_exception_text(bound_rid, caplog) 
     with caplog.at_level(logging.WARNING):
         await _lookup(_Raising(), calls, 2, scope)
     assert [c.error for c in calls] == [f"RuntimeError (요청 {bound_rid})"] * 2
-    assert caplog.text.count(SECRET) == 1
+    assert caplog.text.count(SECRET_LOGGED) == 1
 
 
 def test_call_exception_code_phrase_stays_visible(bound_rid) -> None:

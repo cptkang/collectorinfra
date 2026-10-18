@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+import logging
 from pathlib import Path
 
 import pytest
@@ -63,7 +65,12 @@ def test_main_bad_value_reports_field_without_value(
     assert "secretish" not in err
 
 
-def test_main_starts_with_cli_override(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_starts_with_cli_override(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    # main()이 로그 가림 팩토리를 전역 설치한다(plans/167) — 끝나면 원래 팩토리로 되돌린다
+    original = logging.getLogRecordFactory()
+    request.addfinalizer(functools.partial(logging.setLogRecordFactory, original))
     monkeypatch.setitem(ProxySettings.model_config, "env_file", None)
     monkeypatch.setenv("FABRIX_PROXY_TOKEN", "tok")
     seen: dict = {}

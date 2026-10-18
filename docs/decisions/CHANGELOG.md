@@ -8,6 +8,8 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-17 | D-339 | 신규 — `plans/167`: 로그 레코드 생성 시점(`setLogRecordFactory`)에 DSN 비밀번호·Bearer·민감 키 값·JWT·Google API 키를 `***`로 가림 · structlog 프로세서 · 진입점 7곳 · 사본 4(mcp_server·apm_gateway·sre_agent·fabrix_proxy) 바이트 일치 테스트 · 커밋 없음 |
+| 2026-10-17 | D-139 | 부기 — `plans/167`: `noise_gate/alarm_server`가 `src.utils.log_masking`을 import(② 역방향 허용 `utils` 안) · 2차 적용 「`src.` import 0 자립 모듈」 서술 갱신 |
 | 2026-10-17 | D-338 | 신규 — `plans/186` L4: 인증 활성인데 사용자 저장소(`user_repo`)가 없으면 사용자 토큰 의존성 3곳이 payload만으로 통과(전 DB 허용)시키던 것을 503 고정 문구로 fail-closed · break-glass 유지 · 프론트 503 루프 방지 · 커밋 없음 |
 | 2026-10-17 | D-066 | 부기 보강 — `plans/185` W2: 병합 마감 `_finalize_merged_rows`가 원본 매핑 대신 Layer 1 `build_resolved_mapping` 결과 키 매핑으로 양식을 채움(공유 통계 칼럼 오채움 해소 · 사용자 결정) · Word 병합 마감은 alias 칸도 채워짐 · 커밋 없음 |
 | 2026-10-17 | D-153 | 부기 — `plans/184` S1·S4·S6: 「고정 문구 + 요청 번호」 규약 확대 — DRM 설정 키·java 경로 사유(`user_visible=False`) · APM 선택 재시도 메타·게이트웨이 연결 실패 `source_status` · `degraded_reason` 처리기 규칙(secure-coding 스킬) · APM 호출 단위 예외 사유 · 커밋 없음 |

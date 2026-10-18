@@ -23,6 +23,7 @@ from src.config import load_config
 from src.graph import build_graph
 from src.security.audit_logger import setup_logging
 from src.state import create_initial_state
+from src.utils.log_masking import install_log_record_factory  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,8 @@ def main() -> None:
     --query 옵션: CLI 질의 모드
     옵션 없이 실행: 대화형 CLI 모드
     """
+    # 로그 비밀값 가림(plans/167) — 설정 로드·uvicorn reload 부모 프로세스 로그보다 먼저 설치한다
+    install_log_record_factory()
     parser = argparse.ArgumentParser(
         description="인프라 데이터 조회 에이전트",
     )
