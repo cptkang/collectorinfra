@@ -37,7 +37,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .record import INSTANCE_UNRESOLVED, TurnRecord, Verdict
-from .scenarios import ANY_VALUE, PLACEHOLDER_RE, CoverageReport, RegistryInfo, Scenario
+from .scenarios import (
+    ANY_VALUE,
+    PLACEHOLDER_RE,
+    CoverageReport,
+    RegistryInfo,
+    Scenario,
+    absent_or_contains,
+)
 
 AXES: tuple[str, ...] = ("source", "views", "target", "window", "args")
 PASS, FAIL, NA = "pass", "fail", "na"
@@ -821,6 +828,16 @@ def _value_match(expected: Any, observed: Any) -> bool:
 
 def _find_arg(args_by_view: Mapping[str, Mapping[str, Any]], name: str,
               expected: Any) -> tuple[bool, Any]:
+    names = absent_or_contains(expected)
+    if names is not None:  # 안 붙였으면 통과 · 붙였으면 이름 중 하나 이상 포함(plans/164 W7-A)
+        wanted = {norm_value(n) for n in names}
+        attached = [cond[name] for cond in args_by_view.values()
+                    if name in cond and cond[name] is not None]
+        for value in attached:
+            items = value if isinstance(value, (list, tuple)) else [value]
+            if wanted & {norm_value(v) for v in items if isinstance(v, (str, int, float))}:
+                return True, value
+        return not attached, attached[-1] if attached else None
     seen: Any = None
     for cond in args_by_view.values():
         if name in cond:
@@ -882,7 +899,9 @@ def judge_args(expect: Any, eff: Mapping[str, Any], raw_args: Mapping[str, Mappi
             continue
         entry = {"view": _arg_owner(name, views_for_owner, registry), "arg": name,
                  "expected": want, "observed": seen}
-        if _find_arg(raw_args, name, want)[0]:
+        raw_ok, raw_seen = _find_arg(raw_args, name, want)
+        # 「안 붙였으면 통과」형은 원출력에 붙인 값이 맞았을 때만 정제가 버린 것이다
+        if raw_ok and (raw_seen is not None or absent_or_contains(want) is None):
             dropped.append(entry)
         else:
             missing.append(entry)

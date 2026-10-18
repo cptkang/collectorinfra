@@ -436,7 +436,7 @@ async def test_promoted_batch_estimate_covers_all_targets(tmp_path):
         )
         job = handle["job"]
         # 첫 하위 호출 계획(1분 조각 3개) × 대상 12 = 36 — 단위는 API 호출 · 속도 5회/초
-        assert job["estimate"] == {"api_calls": 36, "seconds": 7.2}
+        assert job["estimate"] == {"api_calls": 36, "seconds": 7.2, "basis": "rate_only"}
         assert job["progress"]["total"] == 36 and job["progress"]["unit"] == "api_calls"
         gate.set()
         for _ in range(500):

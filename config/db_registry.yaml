@@ -101,7 +101,9 @@ solutions:
           - {name: domain_id, type: int, min: 0, label: "이 APM 도메인 ID(숫자)의 인스턴스만"}
         examples:
           - "「도메인 ID 1000인 인스턴스 목록」 → domain_id=1000"
-      - {id: apm.app_health, label: "WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절",
+      # plans/164 W7-A · G-9 (a) — app_health는 현재·구간 합계만. 시간별·간격별 추세는 아래
+      # apm.instance_trend(목록 끝 — 앞 보기 순서 불변).
+      - {id: apm.app_health, label: "WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절 — 현재·구간 합계",
          capability: was_performance, tool: apm_app_health, required_input: hostname,
          window: range}
       - id: apm.runtime
@@ -494,6 +496,23 @@ solutions:
         examples:
           - "「web01 지난주 대비 처리량」"
           - "「web01 어제와 오늘 응답시간 비교」"
+      # plans/164 W7-A · G-9 (a) — WAS 인스턴스 시계열(`apm_metrics` instance — (인스턴스 × 지표)마다
+      # 1호출 · 지표 미지정 = 게이트웨이 기본 지표 + 고지). 시간별·간격별 추세 질문을 app_health
+      # (1분 분할 · 시간별 행 없음)가 끌어가지 않게 한다.
+      - id: apm.instance_trend
+        label: "WAS 인스턴스 응답시간·TPS 추세(시간별·간격별)"
+        capability: was_performance
+        tool: apm_metrics
+        required_input: hostname
+        window: range
+        fixed_args: {mode: series, scope: instance}
+        limit: "기간 미지정 = 최근 60분 · 간격 미지정 = 5분"
+        args:
+          - {name: metrics, type: str_list, catalog: instance,
+             label: "추세로 볼 인스턴스 지표 이름들(지표 목록 보기의 이름 · 미지정 = 기본 지표)"}
+          - {name: interval_minute, type: int, min: 1, label: "추세 간격(분)"}
+        examples:
+          - "「web01 지난 12시간 응답시간 추이 1시간 단위로」 → interval_minute=60"
     # plans/87 J8 · D-287 ④ — 제니퍼 소스 ↔ 존 정본(위 `sources` 설명). 단일 설정(게이트웨이
     # `JENNIFER_API_URL`만 · 소스 `default` · dbId `jennifer`)은 이 표에 없고 존 없음으로 다룬다.
     # plans/147 · D-322 — `terms` = 그 소스를 고르는 사전 정의 단어(제니퍼는 이 목록만 본다 · `locations`

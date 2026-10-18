@@ -22,7 +22,7 @@ from apm_gateway.application import scope_tools, tools
 from apm_gateway.application.event_buffer import EventBuffer
 from apm_gateway.application.fleet_tools import RANKING_METRICS, FleetTools
 from apm_gateway.application.poller import EventPoller
-from apm_gateway.domain.errors import INVALID_ARGUMENT, ApmError
+from apm_gateway.domain.errors import INVALID_ARGUMENT
 from conftest import NOW_MS, NOW_S, synthetic_handler
 from fleet_fake import Clock, FakeFleet, event
 from test_plan134_w3_fleet import _iso
@@ -107,12 +107,8 @@ async def test_series_defaults_without_catalog_are_unverified_and_partial(tmp_pa
 async def test_instance_series_rules_are_unchanged(tmp_path):
     _mcp, core, jobs = _server(tmp_path, synthetic_handler())
     await jobs.aclose()
-    with pytest.raises(ApmError) as exc:
-        await core.apm_metrics("series", "instance", hostname="was-host01")
-    assert exc.value.code == INVALID_ARGUMENT and "metrics" in exc.value.reason
-    with pytest.raises(ApmError) as exc:
-        await core.apm_metrics("series", None, hostname="was-host01", metrics=["no_such_x"])
-    assert exc.value.code == INVALID_ARGUMENT  # 인스턴스 시계열은 전부 모르면 종전대로 오류
+    # plans/164 W7-A — 미지정·전부 모름은 도메인·업무처럼 기본 지표(오류 아님 · 고지) —
+    # tests/test_plan164_w7a_instance_trend.py. 일부 모름은 종전 그대로다.
     partly = await core.apm_metrics(
         "series", "instance", hostname="was-host01", metrics=["heap_used_mb", "no_such_x"]
     )
@@ -124,7 +120,8 @@ def test_default_series_metric_names():
 
     assert JenniferApi.default_series_metrics("domain") == DEFAULTS
     assert JenniferApi.default_series_metrics("business") == DEFAULTS
-    assert JenniferApi.default_series_metrics("instance") == []
+    assert JenniferApi.default_series_metrics("instance") == ["service_time", "service_count"]
+    assert JenniferApi.default_series_metrics("application") == []
 
 
 # ── G-2 버퍼 기록 도중 예외 ──────────────────────────────────────

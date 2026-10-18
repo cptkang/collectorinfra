@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -57,6 +57,12 @@ class QueryRequest(BaseModel):
     selected_apm_source_ids: list[str] | None = Field(
         default=None,
         description="제니퍼 소스 선택 — 조회할 APM 소스 id 목록(`*` = 전체 · 결정적 고정)",
+    )
+    # plans/164 W7-C · G-10 (a): 긴 X-View 사전 확인 답 — `trend`(시 단위 추세) | `full`(거래 원본
+    # 전부). 되묻기 버튼이 같은 원 질문과 함께 보낸다. 요청 스코프.
+    apm_xview_choice: Literal["trend", "full"] | None = Field(
+        default=None,
+        description="제니퍼 거래 원본 사전 확인 답 — trend(시 단위 추세) | full(거래 원본 전부)",
     )
     # Plan 73 §11 (D-151): 폼필 역질문 패널의 구조화 답변 — 자연어 재조합·LLM 파싱 없이
     # 이 필드로만 전달되어 결정적 검증(존재성)·적용을 거친다.
@@ -137,6 +143,13 @@ class QueryResponse(BaseModel):
     apm_source_clarification: dict[str, Any] | None = Field(
         default=None,
         description="제니퍼 소스 되묻기 — 선택지(키 = 소스 id · `*` = 전체)와 원 질문(plans/147)",
+    )
+    # plans/164 W7-C: 긴 X-View 사전 확인(답 말풍선 뒤 버튼 2개)
+    # {question, options: [{key: trend|full, label}], expected_xview_calls, estimate,
+    #  original_query}
+    apm_xview_confirmation: dict[str, Any] | None = Field(
+        default=None,
+        description="제니퍼 거래 원본 사전 확인 — 추세·전부 선택지와 견적·원 질문(plans/164 W7-C)",
     )
     # plans/147: 현재 대화의 제니퍼 소스 승계 {ids, basis, last_target_sources} — 스코프 칩이 그린다
     # (내부 승계 재료 `last_targets`(plans/157 W3)는 라우트가 빼고 싣는다)

@@ -755,7 +755,7 @@ def _summarize_tasks(tasks: list[dict], results: dict | None = None) -> list[dic
             # 제니퍼 소스 되묻기(plans/147)는 오류가 아니다 — `error`는 재계획 종결 판정용으로
             # 남기고 처리 현황은 이 표지로 「확인 필요」를 보인다(미연결 안내는 표지 없음 —
             # 종전 표시)
-            if res.get("apm_source_clarification"):
+            if res.get("apm_source_clarification") or res.get("apm_xview_confirmation"):
                 item["clarification"] = True
         summarized.append(item)
     return summarized
@@ -811,15 +811,16 @@ def _disclosures_field(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apm_source_fields(state: Mapping[str, Any]) -> dict[str, Any]:
-    """제니퍼 소스 되묻기·승계(plans/147) — 네 응답 지점(JSON · 스트림 응답·done · 폴백 응답·done)에
-    같은 모양으로 싣는다. 값이 없으면 키를 싣지 않는다(소스 <2 배포 스트림 바이트 불변).
+    """제니퍼 소스 되묻기·승계(plans/147) · 긴 X-View 사전 확인(plans/164 W7-C) — 네 응답
+    지점(JSON · 스트림 응답·done · 폴백 응답·done)에 같은 모양으로 싣는다. 값이 없으면 키를 싣지
+    않는다(소스 <2 배포 스트림 바이트 불변).
 
     스트림 입력은 누적 상태(`_scope_state`)다 — 승계 값은 체크포인트에서, 되묻기는 집계기 델타에서
     온다. 승계 값의 `last_targets`(plans/157 W3 — 인스턴스 이름)는 다음 턴 처리기만 읽는 내부
     승계 재료라 빼고 싣는다(체크포인트 값은 그대로).
     """
     out: dict[str, Any] = {}
-    for key in ("apm_source_clarification", "apm_source_scope"):
+    for key in ("apm_source_clarification", "apm_source_scope", "apm_xview_confirmation"):
         value = state.get(key)
         if value and key == "apm_source_scope" and isinstance(value, dict):
             value = {k: v for k, v in value.items() if k != "last_targets"}
@@ -1375,6 +1376,8 @@ def _build_turn_input_state(
             selected_apm_source_ids=apm_ids,
             apm_source_basis=apm_basis,
             apm_source_answer_text=apm_answer,
+            # 긴 X-View 사전 확인 답(plans/164 W7-C) — 버튼이 같은 원 질문과 함께 보낸다
+            apm_xview_choice=getattr(body, "apm_xview_choice", None),
         )
         if turn_query != body.query:
             delta["messages"] = [HumanMessage(content=body.query)]
@@ -1411,6 +1414,7 @@ def _build_turn_input_state(
         selected_sources=getattr(body, "selected_sources", None),
         # 제니퍼 소스 화면 선택(plans/147) — 첫 턴은 되묻기 대기가 없어 근거가 늘 `selected`다
         selected_apm_source_ids=getattr(body, "selected_apm_source_ids", None),
+        apm_xview_choice=getattr(body, "apm_xview_choice", None),  # plans/164 W7-C
         allow_zone_clarification=True,
         # 존 선택 재개 턴(pre-gate는 파이프라인 미실행이라 첫 턴으로 도착)도 전량 상향
         resolved_limit=(

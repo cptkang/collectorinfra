@@ -1421,6 +1421,9 @@ def _make_isolated_input(
         "apm_source_basis": state.get("apm_source_basis"),
         "apm_source_answer_text": state.get("apm_source_answer_text"),
         "apm_source_scope": state.get("apm_source_scope"),
+        # 긴 X-View 사전 확인 답(plans/164 W7-C — `trend`|`full` · 요청 스코프) — `apm_query`만
+        # 읽는다.
+        "apm_xview_choice": state.get("apm_xview_choice"),
         # 실시간 사용률 의도(Plan 71, B안 게이트)는 **원문 기준**으로 판정해 승격 —
         # sub_query/sub_query_context 재작성으로 "실시간" 표면어가 탈락해도 유지
         # (resolved_limit과 동일 원리, D-066 후속7).

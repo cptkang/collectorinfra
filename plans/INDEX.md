@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-15 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
+> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-17 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -205,7 +205,7 @@
 | 160 | [`160-result-chart-and-field-explain.md`](./160-result-chart-and-field-explain.md) | 160. 조회 결과 그래프 보기 · 칼럼 용어 사전 · 값 해석 링크 · 표 넓게 보기 | **완료** · W0~W6 + §8 개정(답 본문 표 해설 · YYYYMM 시간 축) · **D-327** · 결정적 차트 판정 · `/chart`·`/glossary`·`/interpret`(플래그 기본 off) · 용어 사전 28키 · 표 넓게 보기 · 매뉴얼 U-58~60·A-74~75 · 회귀 원래 실패 66(새 0) · 잔여 §7.4 *(상세: 계획서 §7)* | 2026-10-13 |
 | 161 | [`161-WIP-apm-sources-production-ids.md`](./161-WIP-apm-sources-production-ids.md) | 161. 저장소 제니퍼(APM) 소스 구성을 폐쇄망 운영 구성으로 일치 | **WIP** · **D-329** · `bank`·`common`·`legacy` → `b0`·`cm_prd`·`cm_stg`(terms 확정) · 테스트·픽스처·벤치 시나리오·매뉴얼 갱신 · 잔여: 캡처 4장 · 복합 단어 제외 꼬리 결정 *(상세: 계획서 머리)* | 2026-10-13 |
 | 162 | [`162-WIP-page-necessity-review.md`](./162-WIP-page-necessity-review.md) | 162. 노이즈 게이트 PAGE 필요성 재판정 — 24시간 PAGE 170건을 10~20건으로 | **WIP — W0~W3(`bc496a5`)·W5(D-336 · 커밋 없음 · 기본 off) 구현** · W0 1회차: 24h PAGE 227 중 제니퍼 sev3 203 · W5로 정책 경로 sev3는 `notify: page`만 PAGE · W0-X 상관 진단(`52361d9`)·W0-T·F4 무소식 닫힘·replay 재판정 구현(10-15) · 잔여: W0-H 진단 · 2회차(F2·F4 값) · W4 *(상세: §12)* | 2026-10-15 |
-| 164 | [`164-WIP-apm-bench-e2-round1.md`](./164-WIP-apm-bench-e2-round1.md) | 164. 제니퍼 APM 벤치 E2 1회차 후속 — 누출 관문 실패로 반출 0 · 판정 집계 왜곡(gw_error 대표화) 교정 · 실패해도 진단 가능한 반출 · 폐쇄망 재실행 | **WIP** · v1.4 · **W0~W5 완료**(D-323 부기) · 관문 교정·안전 요약·격리 보관 `--regate` · 집계 교정 · 키트·var 검사 · 명령 간소화(`results/apm_bench/<run_id>/` · `--bg`·`--status`) · 모듈 회귀 rc 0 · 잔여 W6 폐쇄망 재실행 | 2026-10-14 |
+| 164 | [`164-WIP-apm-bench-e2-round1.md`](./164-WIP-apm-bench-e2-round1.md) | 164. 제니퍼 APM 벤치 E2 1회차 후속 — 누출 관문 실패로 반출 0 · 판정 집계 왜곡(gw_error 대표화) 교정 · 실패해도 진단 가능한 반출 · 폐쇄망 재실행 | **WIP** · v1.6 · **W0~W5 완료**(D-323 부기) · **W7-A·B·C 완료**(2026-10-17 · 시간별 추세 보기 `apm.instance_trend` · 실측 기반 예상 시간 · 긴 X-View 사전 확인 · D-296 부기 · 커밋 없음) · 잔여 W6 폐쇄망 재실행 · W7-0 로그 실측(사용자) | 2026-10-17 |
 | 165 | [`165-TODO-demo-found-defects.md`](./165-TODO-demo-found-defects.md) | 165. 시연 카탈로그 설계·실행 중 발견한 제품 결함 5건 기록 — 알람 결정적 조립 서버 무시 · MCP 조사 도구 b0 0건 · 제니퍼→폴스타 hostname 정확 일치 · 직전 엔티티 상한 잠식 · 자산관리 지목 시 폴스타 DB 잔존 | **TODO** · v1.1 · 기록만(사용자 지시) · 시연은 질의 원칙·세션 분리로 회피(D-326 부기) · 권장 순서 F5·F2①→F3→F4①②→F1(a) | 2026-10-15 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |

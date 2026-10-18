@@ -408,11 +408,15 @@ async def test_metric_series_long_rows_and_args(synth):
 @pytest.mark.asyncio
 async def test_metric_series_unknown_metric_has_candidates(synth):
     _, tools = synth
-    with pytest.raises(ApmError) as exc:
-        await tools.apm_metrics("series", hostname="was-host01", metrics=["heap_usd"])
-    assert exc.value.code == INVALID_ARGUMENT
-    candidates = exc.value.reason.split("후보: ")[1].split(")")[0].split(", ")
+    # plans/164 W7-A — 전부 모르면 오류 대신 기본 지표로 조회하고 후보를 `[한계]`에 싣는다
+    out = await tools.apm_metrics("series", hostname="was-host01", metrics=["heap_usd"])
+    (note,) = [x for x in out["limits"] if "카탈로그에 없는 지표" in x]
+    candidates = note.split("후보: ")[1].split(")")[0].split(", ")
     assert "heap_used" in candidates and 1 <= len(candidates) <= 3
+    assert out["partial"] is True and {r["metric"] for r in out["rows"]} <= {
+        "service_time",
+        "service_count",
+    }
 
 
 @pytest.mark.asyncio
@@ -435,7 +439,6 @@ async def test_metric_argument_validation(synth):
             "scope domain·business 시계열에서만",
         ),
         ({"mode": "series", "scope": "sql", "metrics": ["count"]}, "apm_status_stats"),
-        ({"mode": "series", "hostname": "was-host01"}, "metrics"),
         ({"mode": "series", "hostname": "was-host01", "metrics": ["a b"]}, ""),
         (
             {

@@ -327,7 +327,8 @@ async def test_promoted_batch_is_one_accepted_job_with_estimate_and_progress(
     assert res["source_status"][0]["status"] == "accepted"
     assert res["accepted_jobs"] == [JOB]
     (line,) = _kinds(res, disc.APM_JOB_ACCEPTED)
-    assert "대상 12개" in line and "예상 약 5분(API 호출 120회) · 진행 12/120 API 호출" in line
+    assert "대상 12개" in line
+    assert "예상 약 5분(API 호출 120회 · 호출 지연 미반영) · 진행 12/120 API 호출" in line
     assert "작업으로 접수했습니다 — 아직 조회 결과가 아닙니다" in res["final_response"]
     assert res["apm_query"]["batches"] == [{"view": "apm.app_health", "tool": "apm_app_health",
                                             "targets": 12, "job_id": JOB, "accepted": True}]

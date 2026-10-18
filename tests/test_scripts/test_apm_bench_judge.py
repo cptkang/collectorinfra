@@ -118,6 +118,8 @@ def synth(scenario: sc.Scenario, idx: int, registry: sc.RegistryInfo) -> dict[st
     args_by_view: dict[str, dict[str, Any]] = {}
     for name, value in e.args.items():
         owner = jd._arg_owner(name, e.views, registry) or e.views[0]
+        if sc.absent_or_contains(value) is not None:
+            continue  # 「안 붙였으면 통과」형 — 기대값 그대로의 관측 = 붙이지 않음
         if value == sc.ANY_VALUE:
             value = ["x"]
         elif isinstance(value, str):
@@ -172,9 +174,9 @@ def _judge(scenario: sc.Scenario, record: dict[str, Any], registry: sc.RegistryI
 
 
 def test_all_registry_examples_parse(registry, examples) -> None:
-    """레지스트리 F1 예문 49개 전부가 파싱되고, 인자 키는 그 보기 선언에 있다."""
-    assert sum(len(v) for v in examples.values()) == 49
-    assert sum(1 for v in examples.values() if v) == 27
+    """레지스트리 F1 예문 50개 전부가 파싱되고, 인자 키는 그 보기 선언에 있다."""
+    assert sum(len(v) for v in examples.values()) == 50  # plans/164 W7-A instance_trend 1
+    assert sum(1 for v in examples.values() if v) == 28
     for view_id, exs in examples.items():
         names = {a.name for a in registry.views[view_id].args}
         for ex in exs:

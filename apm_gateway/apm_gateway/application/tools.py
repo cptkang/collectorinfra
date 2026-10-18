@@ -52,6 +52,7 @@ from apm_gateway.adapters.jennifer.api import (
     CHANGES_WINDOW_MS,
     SOURCE,
     STATUS_KINDS,
+    XVIEW_PATH,
     XVIEW_WINDOW_MS,
     JenniferApi,
 )
@@ -102,6 +103,10 @@ SLOW_TX_DEFAULT_MINUTES = 10
 HEALTH_DEFAULT_LOOKBACK = 30
 # 창이 이보다 길면 시 단위 애플리케이션 통계를 함께 싣는다(맥락 — 조회 상한이 아니다).
 HOURLY_AFTER_MINUTES = 10
+# `apm_app_health` 사전 확인(옵트인 `xview_confirm_over` · plans/164 W7-C) — 예상 X-View 호출이
+# 기준을 넘으면 데이터를 부르지 않고 견적만 돌려주는 봉투의 `status`(범위는 줄이지 않는다 ·
+# D-296 ④ — 고르는 것은 호출자다)
+CONFIRM_REQUIRED = "confirm_required"
 TREND_INTERVAL_MINUTE = 5
 DEFAULT_N = 10
 # 화면용 발췌 — 전문은 결과 파일(`artifact.text_parts` profile)
@@ -1592,6 +1597,63 @@ class ApmTools:
             self._business_seen[key] = (now, seen)
         return seen
 
+    async def app_health_preflight(
+        self,
+        targets: list[tuple[str | None, int | None, list[str] | None, str | None]],
+        reference_time: str | None,
+        lookback_minutes: int | None,
+        confirm_over: Any,
+        estimate: Callable[[int, set[str], str], dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """`apm_app_health` 사전 확인(plans/164 W7-C · G-10 (a)) — 예상 X-View 호출이
+        `confirm_over`를 넘으면 **데이터 호출 없이** 견적 봉투(`status = confirm_required`)를,
+        아니면 None(그대로 조회)을 돌려준다.
+
+        `targets`는 대상마다 (hostname, instance_id, source_ids, instance_name)이다. 대상 해석
+        (인스턴스 명단 적재 · 캐시)만 하고 실시간·X-View·시 단위 통계는 부르지 않는다. 해석에
+        실패한 대상은 세지 않는다(본 호출이 그 사유를 그대로 낸다). 호출 수 산정은 `_xview`·
+        `_realtime`·`_hourly`가 신고하는 계획과 같다. `estimate`는 (호출 수, 소스 id, 경로 군) →
+        견적(작업 관리자 `estimate_calls` · 경로 군은 X-View — 그 표본이 없으면 지연 미반영)."""
+        tool = "apm_app_health"
+        threshold = _nonneg_int(confirm_over, "xview_confirm_over")
+        window = self.window(reference_time, lookback_minutes, default_minutes=None)
+        if window is None:  # 현재값만 — X-View를 부르지 않는다
+            return None
+        chunks = math.ceil((window.end_ms - window.start_ms) / XVIEW_WINDOW_MS)
+        xview = api_calls = instances = 0
+        source_ids: set[str] = set()
+        for hostname, instance_id, sources, instance_name in targets:
+            try:
+                res = await self._resolve(hostname, instance_id, sources, instance_name)
+            except ApmError:
+                continue
+            groups = len(_group(res))
+            xview += chunks * groups
+            api_calls += chunks * groups
+            api_calls += groups if window.end_is_now else 0
+            api_calls += groups if window.minutes > HOURLY_AFTER_MINUTES else 0
+            instances += len(res.instances)
+            source_ids |= {i["source_id"] for i in res.instances}
+        if xview <= threshold:
+            return None
+        return self.ok(
+            tool,
+            [],
+            window=window,
+            limits=[
+                f"[한계] 사전 확인 — 예상 X-View 호출 {xview:,}회가 기준 {threshold:,}회를 넘어"
+                " 데이터를 조회하지 않았다(범위는 줄이지 않았다 · xview_confirm_over 없이 다시"
+                " 부르면 창 전체를 1분 조각으로 모은다 · 시 단위 추세는 apm_metrics series"
+                " instance)"
+            ],
+            status=CONFIRM_REQUIRED,
+            expected_xview_calls=xview,
+            expected_api_calls=api_calls,
+            xview_confirm_over=threshold,
+            instance_count=instances,
+            estimate=estimate(api_calls, source_ids, XVIEW_PATH),
+        )
+
     async def apm_app_health(
         self,
         hostname: str | None = None,
@@ -2667,8 +2729,9 @@ class ApmTools:
     ) -> dict[str, Any]:
         """지표 카탈로그·시계열(plans/134 N-6). 도메인(서비스)·업무 시계열(W3·W4)은 scope_tools
         모듈이 같은 지표 검증(`_metric_plan`)으로 조회한다 — 대상은 `service`·`domain_id`(업무는
-        `business` 또는 `business_id`+`domain_id`). 인스턴스 시계열은 `metrics`가 필요하고,
-        도메인·업무 시계열은 비우면 군별 기본 지표로 조회한다(그 모듈)."""
+        `business` 또는 `business_id`+`domain_id`). 세 군 모두 `metrics`를 비우거나 전부 모르면
+        군별 기본 지표로 조회하고 그 사실을 고지한다(그 모듈 `_series_plan` · 인스턴스는 plans/164
+        W7-A)."""
         tool = "apm_metrics"
         mode = str(mode or "catalog").strip().lower()
         if mode not in METRIC_MODES:
@@ -2680,6 +2743,9 @@ class ApmTools:
             )
         if mode == "catalog":
             return await self._metric_catalog(tool, scope_name, source_ids)
+        # 그 모듈이 이 모듈을 쓴다 — 순환 import를 피해 여기서 불러온다
+        from apm_gateway.application.scope_tools import ScopeTools
+
         scope_name = scope_name or "instance"
         if scope_name not in SERIES_SCOPES:
             raise ApmError(
@@ -2687,8 +2753,6 @@ class ApmTools:
                 f"scope {scope_name} 지표는 시계열이 아니다 — apm_status_stats(kind {scope_name})",
             )
         requested = self._metric_names(metrics)
-        if not requested and scope_name == "instance":
-            raise ApmError(INVALID_ARGUMENT, "series에는 metrics(지표 이름 목록)가 필요하다")
         interval = _positive_int(interval_minute, "interval_minute", TREND_INTERVAL_MINUTE)
         if scope_name != "instance":
             if _given(hostname) or _given(instance_name) or instance_id is not None:
@@ -2697,9 +2761,6 @@ class ApmTools:
                     f"scope {scope_name} 시계열은 hostname·instance_name·instance_id를 쓰지 않는다"
                     " — service·domain_id(업무는 business 또는 business_id+domain_id)로 정한다",
                 )
-            # 그 모듈이 이 모듈을 쓴다 — 순환 import를 피해 여기서 불러온다
-            from apm_gateway.application.scope_tools import ScopeTools
-
             return await ScopeTools(self).metric_series(
                 scope_name,
                 requested,
@@ -2723,14 +2784,32 @@ class ApmTools:
         )
         assert window is not None
         limits = _Limits([SERIES_INTERVAL_NOTE])
-        plan = await self._metric_plan(
-            sorted({i["source_id"] for i in res.instances}),
-            requested,
-            "instance",
-            limits,
-            all_unknown_raises=True,
-        )
-        assert plan is not None  # 전부 모르면 위에서 invalid_argument
+        source_list = sorted({i["source_id"] for i in res.instances})
+        plan = None
+        if requested:
+            plan = await self._metric_plan(
+                source_list, requested, "instance", limits, all_unknown_raises=False
+            )
+            if plan is not None and limits.unresolved:  # 일부를 빼고 조회 — 지표가 빠진 결과
+                limits.partial = True
+        if plan is None:  # 미지정·전부 모름 — 도메인·업무 시계열처럼 기본 지표 + 고지(plans/164)
+            plan, used = await ScopeTools(self)._default_series_plan(
+                source_list, "instance", limits
+            )
+            shown = ", ".join(used) or "없음"
+            if requested:
+                limits.unresolve(
+                    f"요청한 지표 {', '.join(requested)}를 지표 목록에서 찾지 못해 기본 지표"
+                    f"({shown})로 조회했습니다"
+                )
+                limits.partial = True
+            else:
+                limits.append(f"[한계] 지표 미지정 — 기본 지표({shown})로 조회")
+            if not used:
+                limits.fail(
+                    "[한계] instance 기본 지표가 지표 카탈로그에 없어 조회하지 못했다 —"
+                    " apm_metrics(mode catalog)로 지표를 고른다"
+                )
         rows: list[dict[str, Any]] = []
         empty: list[str] = []
         failures: list[tuple[str, ApmError]] = []

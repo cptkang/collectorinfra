@@ -240,6 +240,9 @@ class JenniferClient:
                 SOURCE_UNAVAILABLE, self.redact(f"APM API 연결 실패: {shown} ({type(e).__name__})")
             ) from e
         elapsed_ms = (time.monotonic() - started) * 1000
+        # 실 호출 소요(속도 제어 대기 뒤 ~ 본문 수신 끝 · 응답을 받은 호출만) — 남은 예상 시간 ·
+        # 경로 군은 경로 템플릿(계정 ID 원값 없음)
+        scope.after_call(self._cfg.source_id, elapsed_ms / 1000, group=template)
         logger.debug(
             "apm http: path=%s keys=%s status=%s elapsed_ms=%.1f",
             shown,

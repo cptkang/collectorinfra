@@ -15,7 +15,10 @@ SPEC-apm-question-coverage §3.2~§3.5·§3.7 · D-299 ④).
 - 호출 맥락(`domain.call_context`): 작업이 맥락이다 — 어댑터가 호출마다 `before_call`로 슬롯 대기 ·
   `api_calls`·`updated_at`(임대)을 올리고, 승격되면 이후 호출 우선순위가 `background`가 된다.
 - 비용 예측: 도구가 신고한 호출 계획(`expect_calls`)으로 `progress.total`·`estimate.api_calls`를
-  채우고 `estimate.seconds = api_calls / 속도`. 신고가 없으면 `total = null`(호출 수만 센다).
+  채운다. 신고가 없으면 `total = null`(호출 수만 센다). 이 작업이 쓴 소스의 실 호출 소요 표본이
+  있으면 `estimate.seconds = 남은 호출 × max(1/속도, 소스별 소요 이동 평균)`(`basis = measured` ·
+  상태 조회마다 다시 계산), 없으면 종전 `api_calls / 속도`(`basis = rate_only` — 호출 지연
+  미반영)다(plans/164 W7-B — 순차 호출이라 응답 지연이 속도 간격보다 길면 그쪽이 지배한다).
 - 취소 시 스풀 조각을 지운다(취소한 결과를 전체로 오인하지 않게). 정체 감시 · 재기동 스캔 · 보관
   만료 정리를 한다. 작업 도구는 같은 주체 + 같은 `owner`일 때만 응답한다(아니면 `job_not_found`).
 - 기록에는 인자 원문·토큰·자격증명을 싣지 않는다(대상은 마스킹 요약 · `owner`는 불투명 문자열).
@@ -71,6 +74,12 @@ UNRESOLVED_KIND = "apm_unresolved_condition"
 _MASKED_NAMES_SHOWN = 20
 PROGRESS_UNIT = "api_calls"
 PROGRESS_LABEL = "API 호출"
+# 예상 시간 근거(`estimate.basis`) — 실측 소요 반영 / 속도 간격만(호출 지연 미반영)
+BASIS_MEASURED = "measured"
+BASIS_RATE_ONLY = "rate_only"
+# 소스별 호출 소요 지수 이동 평균의 새 표본 가중치 — 몇 호출 안에 실측으로 수렴하되 1회 튐에
+# 크게 흔들리지 않는 값(설정 아님 — 표시 정확도 보정)
+_CALL_SECONDS_ALPHA = 0.3
 INTERRUPTED_REASON = "게이트웨이 재기동으로 중단 — 다시 요청해야 합니다"
 _PERSIST_EVERY = 1.0  # 진행 기록 쓰기 최소 간격(초) — 상태 전이는 즉시 쓴다
 _CANCEL_WAIT = 5.0
@@ -237,6 +246,8 @@ class Job(CallScope):
         self.limits: list[str] = []
         self.error: dict[str, str] | None = None
         self.persisted_at = 0.0
+        # 이 작업이 직접 부른 호출에서 소요를 잰 (소스, 경로 군) — 공유 적재(인스턴스 명단)는 뺀다
+        self.timed_sources: set[tuple[str, str]] = set()
 
     # ── 호출 맥락 훅(어댑터가 부른다) ─────────────────────
     async def before_call(self, source_id: str = "") -> None:
@@ -255,6 +266,15 @@ class Job(CallScope):
         if self.finished_at is None:  # 끝난 뒤 공유 적재가 센 호출은 기록을 다시 쓰지 않는다
             self.updated_at = self._manager.now()
             self._manager.persist(self)
+
+    def after_call(
+        self, source_id: str, seconds: float, *, group: str = "", shared: bool = False
+    ) -> None:
+        # 공유 적재(빠른 인스턴스 명단) 표본은 이동 평균에만 넣는다 — 작업 견적을 실측으로 바꾸면
+        # 느린 X-View의 남은 시간을 그 값으로 잡는다(plans/164 W7-C 교정)
+        if not shared:
+            self.timed_sources.add((source_id, group))
+        self._manager.observe_call(source_id, seconds, group=group)
 
     def expect_calls(self, count: int) -> None:
         self.expected_calls += int(count)
@@ -281,10 +301,29 @@ class Job(CallScope):
         }
 
     def estimate(self) -> dict[str, Any]:
+        """비용 예측 — 실측 소요가 있으면 남은 호출 × 호출당 소요, 없으면 종전 식(`basis`로 구분 ·
+        예상 시간이 없으면 `basis = null`)."""
         calls = self.expected_calls or None
         rate = self._manager.rate_per_sec
+        measured = [
+            s
+            for s in (self._manager.call_seconds(src, grp) for src, grp in self.timed_sources)
+            if s is not None
+        ]
+        if calls and measured:
+            per_call = max(1.0 / rate if rate > 0 else 0.0, max(measured))
+            remaining = max(0, calls - self.api_calls)
+            return {
+                "api_calls": calls,
+                "seconds": round(remaining * per_call, 1),
+                "basis": BASIS_MEASURED,
+            }
         seconds = round(calls / rate, 1) if calls and rate > 0 else None
-        return {"api_calls": calls, "seconds": seconds}
+        return {
+            "api_calls": calls,
+            "seconds": seconds,
+            "basis": BASIS_RATE_ONLY if seconds is not None else None,
+        }
 
     def record(self) -> dict[str, Any]:
         """작업 기록(SPEC §3.3) — 인자 원문·토큰·자격증명 없음."""
@@ -355,6 +394,8 @@ class JobManager:
         self._clock = clock
         self.on_finish = on_finish
         self._slots = _Slots(cfg.max_concurrent)
+        # (소스, 경로 군)별 실 호출 소요 이동 평균(초 · 프로세스 수명)
+        self._call_seconds: dict[tuple[str, str], float] = {}
         self._live: dict[str, Job] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._maintainer: asyncio.Task[None] | None = None
@@ -512,6 +553,55 @@ class JobManager:
 
     def now(self) -> float:
         return self._clock()
+
+    def observe_call(self, source_id: str, seconds: float, *, group: str = "") -> None:
+        """실 호출 소요 표본 1개(속도 제어 대기 제외) — (소스, 경로 군)별 지수 이동 평균에
+        넣는다."""
+        if not (math.isfinite(seconds) and seconds >= 0):
+            return
+        key = (source_id, group)
+        prev = self._call_seconds.get(key)
+        self._call_seconds[key] = (
+            seconds if prev is None else prev + _CALL_SECONDS_ALPHA * (seconds - prev)
+        )
+
+    def call_seconds(
+        self, source_id: str | None = None, group: str | None = None
+    ) -> float | None:
+        """실 호출 소요 이동 평균(초) — 표본이 없으면 None. `source_id`·`group`이 None이면 그 축은
+        가리지 않고 잰 값 중 가장 느린 값(작업 없이 실행 전 견적에도 쓴다)."""
+        return max(
+            (
+                v
+                for (src, grp), v in self._call_seconds.items()
+                if (source_id is None or src == source_id) and (group is None or grp == group)
+            ),
+            default=None,
+        )
+
+    def estimate_calls(
+        self, calls: int, source_ids: Iterable[str] = (), group: str | None = None
+    ) -> dict[str, Any]:
+        """실행 전 견적(plans/164 W7-C) — 작업 `estimate`와 같은 식으로 호출 `calls`회 전부를 잰다.
+        표본은 그 소스들의 `group`(부를 경로 군) 이동 평균(소스를 모르면 잰 소스 중 가장 느린 값)
+        이고, 없으면 속도 간격만 본 값(`basis = rate_only` — 호출 지연 미반영)이다. 다른 경로 군
+        (빠른 인스턴스 명단 등) 표본으로 실측이라 하지 않는다."""
+        ids = list(source_ids) or [None]
+        measured = [s for s in (self.call_seconds(i, group) for i in ids) if s is not None]
+        rate = self.rate_per_sec
+        if calls and measured:
+            per_call = max(1.0 / rate if rate > 0 else 0.0, max(measured))
+            return {
+                "api_calls": calls,
+                "seconds": round(calls * per_call, 1),
+                "basis": BASIS_MEASURED,
+            }
+        seconds = round(calls / rate, 1) if calls and rate > 0 else None
+        return {
+            "api_calls": calls or None,
+            "seconds": seconds,
+            "basis": BASIS_RATE_ONLY if seconds is not None else None,
+        }
 
     def persist(self, job: Job) -> None:
         """진행 기록(최소 간격 `_PERSIST_EVERY`)."""

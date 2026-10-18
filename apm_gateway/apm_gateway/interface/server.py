@@ -35,7 +35,12 @@ from starlette.applications import Starlette
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from apm_gateway.adapters.jennifer.allowlist import NotAllowedError
-from apm_gateway.application.batch import HOSTNAME_KEYS, TARGET_KEYS_WITH_ID, targeted
+from apm_gateway.application.batch import (
+    HOSTNAME_KEYS,
+    TARGET_KEYS_WITH_ID,
+    parse_targets,
+    targeted,
+)
 from apm_gateway.application.event_buffer import EventBuffer
 from apm_gateway.application.jobs import Job, JobManager
 from apm_gateway.application.masking import mask_text
@@ -89,6 +94,14 @@ TargetsArg = Annotated[
         " 없음). 항목 = {hostname 또는 instance_name(둘 다 = AND) · source_id(선택) ·"
         " instance_id(이 도구가 받을 때만)}. 최상위 hostname·instance_name·instance_id와 함께 줄"
         " 수 없다. 행에 target_index, 대상별 요약·실패는 batch"
+    ),
+]
+
+XviewConfirmArg = Annotated[
+    int | None,
+    Field(
+        description="옵트인 사전 확인(0 이상 정수) — 예상 X-View 호출이 이 수를 넘으면 데이터를"
+        " 부르지 않고 status=confirm_required 견적만 돌려준다. 비우면 종전 그대로 조회"
     ),
 ]
 
@@ -328,6 +341,47 @@ def audit_job_finished(job: Job) -> None:
     )
 
 
+def _xview_confirmed(
+    tools: ApmTools,
+    jobs: JobManager,
+    call: Callable[[], Awaitable[dict[str, Any]]],
+    *,
+    targets: Any,
+    hostname: str | None,
+    instance_name: str | None,
+    instance_id: int | None,
+    source_ids: list[str] | None,
+    reference_time: str | None,
+    lookback_minutes: int | None,
+    confirm_over: Any,
+) -> Callable[[], Awaitable[dict[str, Any]]]:
+    """`apm_app_health` 사전 확인을 앞에 붙인 코어 호출(plans/164 W7-C) — `targets`면 전 대상
+    합으로 한 번 판정한다(일부 대상만 조회하고 나머지를 묻지 않게). 기준 이하면 종전 호출 그대로."""
+
+    async def run() -> dict[str, Any]:
+        if targets is None:
+            items = [(hostname, instance_id, source_ids, instance_name)]
+        else:
+            items = [
+                (t.hostname, t.instance_id, t.sources(source_ids), t.instance_name)
+                for _, t in parse_targets(
+                    tools,
+                    targets,
+                    keys=TARGET_KEYS_WITH_ID,
+                    hostname=hostname,
+                    instance_name=instance_name,
+                    instance_id=instance_id,
+                    source_ids=source_ids,
+                )
+            ]
+        confirm = await tools.app_health_preflight(
+            items, reference_time, lookback_minutes, confirm_over, jobs.estimate_calls
+        )
+        return confirm if confirm is not None else await call()
+
+    return run
+
+
 def register_tools(
     mcp: FastMCP,
     tools: ApmTools,
@@ -425,11 +479,16 @@ def register_tools(
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
         targets: TargetsArg = None,
+        xview_confirm_over: XviewConfirmArg = None,
     ) -> str:
         """WAS 골든 시그널 — 평균 응답시간·TPS·액티브 서비스·PLC 거절률·방문·호출 수·액티브 구간
         4칸(현재) + 구간 p50/p95·에러율(1분 조각으로 창 전체) + 긴 창은 시 단위 합계 + 판정.
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
-        apm_instance_map(query=…)로 먼저 찾는다."""
+        apm_instance_map(query=…)로 먼저 찾는다.
+        xview_confirm_over를 주면(옵트인) 예상 X-View 호출(1분 조각 × 소스·도메인 · targets 전체
+        합)이 그 수를 넘을 때 데이터를 부르지 않고 status=confirm_required ·
+        expected_xview_calls · expected_api_calls · estimate{api_calls, seconds, basis}만 돌려준다
+        (범위는 줄이지 않는다 — 빼고 다시 부르면 전수 조회). 주지 않으면 종전 그대로."""
         label, call = targeted(
             tools,
             "apm_app_health",
@@ -449,6 +508,20 @@ def register_tools(
             instance_id=instance_id,
             source_ids=source_ids,
         )
+        if xview_confirm_over is not None:
+            call = _xview_confirmed(
+                tools,
+                manager,
+                call,
+                targets=targets,
+                hostname=hostname,
+                instance_name=instance_name,
+                instance_id=instance_id,
+                source_ids=source_ids,
+                reference_time=reference_time,
+                lookback_minutes=lookback_minutes,
+                confirm_over=xview_confirm_over,
+            )
         return await run_data(
             "apm_app_health",
             label,
@@ -904,7 +977,9 @@ def register_tools(
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다. scope domain(서비스)·business(업무) 시계열은
         hostname 대신 service·business·domain_id로 정하고, 비우면 고른 범위 전부다 — metrics를
-        비우면 기본 지표(응답시간·호출 수·오류 수)로 조회한다. targets는 instance 시계열에서만."""
+        비우면 기본 지표(응답시간·호출 수·오류 수)로 조회한다. instance 시계열도 metrics를 비우거나
+        전부 모르면 기본 지표(응답시간·호출 수)로 조회하고 고지한다. targets는 instance 시계열
+        에서만."""
         mode_name = str(mode or "catalog").strip().lower()
         scope_name = str(scope or "").strip().lower() or "instance"
         label, call = targeted(

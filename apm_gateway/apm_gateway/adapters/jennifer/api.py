@@ -18,6 +18,8 @@ SOURCE = jf.SOURCE
 SOURCE_LABEL = jf.SOURCE_LABEL
 # X-View 기본 데이터 조회 창(1분) — 서버가 구간을 1분 단위로 나눠 부른다(§5.2(c)).
 XVIEW_WINDOW_MS = 60_000
+# X-View 경로 — 호출 소요 이동 평균의 경로 군 키이기도 하다(사전 확인 견적 · plans/164 W7-C).
+XVIEW_PATH = "/api/transaction/time"
 # 소스 변경 이력 1회 조회 창 상한(25시간 이하 — v2 매뉴얼 `deploy.md`) — 호출자가 조각으로 나눈다.
 CHANGES_WINDOW_MS = 25 * 3_600_000
 # 통계 종류(중립) → 경로(plans/134 W2 N-5)
@@ -95,7 +97,7 @@ class JenniferApi:
         self, domain_id: int, instance_ids: list[int] | None, start_ms: int, end_ms: int
     ) -> list[dict[str, Any]]:
         body = await self.client.get_json(
-            "/api/transaction/time",
+            XVIEW_PATH,
             {
                 "domain_id": domain_id,
                 "start_time": start_ms,
@@ -173,7 +175,8 @@ class JenniferApi:
 
     @staticmethod
     def default_series_metrics(scope: str) -> list[str]:
-        """도메인·업무 시계열의 기본 지표 식별자(지표 미지정·전부 모름 — 그 군 밖은 빈 목록)."""
+        """도메인·업무·인스턴스 시계열의 기본 지표 식별자(지표 미지정·전부 모름 — 그 군 밖은 빈
+        목록)."""
         return list(jf.SERIES_DEFAULT_METRICS.get(scope, ()))
 
     @staticmethod

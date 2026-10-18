@@ -1,7 +1,7 @@
 # 164. 제니퍼 APM 벤치 E2 1회차 후속 — 누출 관문 실패로 반출 0 · 판정 집계 왜곡(gw_error 대표화) 교정 · 실패해도 진단 가능한 반출 · 폐쇄망 재실행
 
-> **작성일**: 2026-10-14 · **v1.0**(최초 · 코드 0) · **v1.1**(2026-10-14 — 독립 검토(verifier) High 4·Medium 7·Low 7 · 보안 검토(security-auditor) High 3·Medium 5·Low 3 반영) · **v1.2**(2026-10-14 — W0a 감사 로그 진단표 추가·구현)
-> **상태**: **WIP** — **W0~W5 완료**(2026-10-14 · 커밋 없음 · 게이트 권고안 일괄 채택 · D-323 부기 ⓐ~ⓖ) · E1 전체 관문 통과 129/129 · 관문 실패 강제 e2e 통과 · 계획 끝 모듈 회귀 rc 0 · **잔여 W6 폐쇄망 재실행(사용자 — §5)** · 열린 질문 G-8 일부(§11)
+> **작성일**: 2026-10-14 · **v1.0**(최초 · 코드 0) · **v1.1**(2026-10-14 — 독립 검토(verifier) High 4·Medium 7·Low 7 · 보안 검토(security-auditor) High 3·Medium 5·Low 3 반영) · **v1.2**(2026-10-14 — W0a 감사 로그 진단표 추가·구현) · **v1.5**(2026-10-17 — W7 APM 장기 창 질의 지연 교정 추가 · 코드 0) · **v1.6**(2026-10-17 — W7-A·B·C 구현 · 벤치 시나리오 2건 · D-296 부기)
+> **상태**: **WIP** — **W0~W5 완료**(2026-10-14 · 커밋 없음 · 게이트 권고안 일괄 채택 · D-323 부기 ⓐ~ⓖ) · E1 전체 관문 통과 129/129 · 관문 실패 강제 e2e 통과 · 계획 끝 모듈 회귀 rc 0 · **잔여 W6 폐쇄망 재실행(사용자 — §5)** · **W7-A·B·C 구현 완료**(2026-10-17 · 커밋 없음 · G-9~G-11 권고안 적용 · D-296 부기 · 검증 High 2·Medium 1 교정) · 잔여 W7-0 폐쇄망 로그 실측(사용자) · W7-D 미진행(D-296 ④) · 열린 질문 G-8 일부(§11)
 > **요청 원문(2026-10-14)**: 「`plans/152`의 폐쇄망 E2 실행 결과를 분석해 후속 계획서를 수립하고 검토까지 마친다 — 계획 수립·검토만」
 > **근거 run**: 폐쇄망 `20261013_1827`(E2 · 운영 뷰 서버 5.6.5.11 · FabriX · 2단 `intent_orchestration`). 외부망이 받은 것은 **실행 요약 로그 1개와 `leak_check.json` 1개뿐**이다(`/Users/cptkang/AIOps/collectorinfra/results/apm_bench/` — 저장소 밖). `trace.jsonl`·`report.md`·`run.json`·`coverage.md`·`probe.jsonl`은 누출 관문 실패로 **디스크에 쓰이지 않았다**(폐쇄망 `/root/apm_bench_result/20261013_1827/`에도 `leak_check.json`만 있다 — `write_gated` 동작). 벤치 세션 임시 디렉터리(`server.log`·`gateway.log`·`capture.jsonl`)는 run 끝에 지워진다(`scripts/apm_bench/driver.py:1019-1022`).
 > **성격**: 반출 실패 원인 분석 + 측정 도구 교정 + 재실행 절차. **few-shot 교정 회차 계획이 아니다** — 턴별 근거가 없어 152 §3.9 루프를 돌 수 없다. 이 계획을 마친 뒤 재실행 반출본으로 `plans/NN-TODO-apm-bench-round1.md`(152 A.8)를 연다.
@@ -10,6 +10,7 @@
 > **실측 기준**: 2026-10-14 `apm_noise` HEAD `4073f7f`. `scripts/apm_bench/`·`testdata/apm_bench/`·`apm_gateway/apm_gateway/`·`src/orchestration/`는 형제 체크아웃 `collectorinfra`(main `7ba5c96`)와 `diff -rq` 차이 0. `file:line`은 이 시점 값이다 — W0에서 다시 대조한다.
 > **계획 시작 SHA**: `4073f7f`(2026-10-14 착수 확정 · 152·156·157 통합 진행과 같은 base)
 > **회귀 대상 파일**(확정 — W0a~W5): `scripts/apm_bench/{__init__,__main__,audit_digest,driver,gateway,guard,hygiene,judge,kit,record,rundir,safe_summary,scenarios}.py` · 테스트 `tests/test_scripts/test_apm_bench_{audit_digest,audit_digest_verify,cli,driver,driver_parse,driver_parse_verify,hygiene,judge_w3,kit,leak_e2,verify,w164_verify,w2a,w2a_verify,w2b,w2b_verify}.py` · **본체(`src/`)·게이트웨이(`apm_gateway/`)·`scripts/itam_bench/redact.py` 변경 0**(G-5 (a))
+> **W7 회귀 기준**: 시작 SHA `384f97f`(2026-10-17) · **회귀 대상 파일(W7)**: `config/db_registry.yaml` · `apm_gateway/apm_gateway/{adapters/jennifer/{api,client,fields},application/{batch,jobs,tools},domain/call_context,interface/server}.py` · `scripts/apm_bench/{fake_llm,judge,scenarios}.py` · `testdata/apm_bench/scenarios.yaml` · `src/{state.py,api/routes/query.py,api/schemas.py,orchestration/{apm_query,deep_agent,result_aggregator,subagents}.py,static/js/app.js}` · 매뉴얼 `scripts/manual/{features.yaml,content/user.md,content/admin.md}`(+ 생성물) · `spec/SPEC-apm-{gateway,question-coverage}.md` · 테스트(신규 `test_plan164_w7{a_instance_trend,b_estimate,c_xview_confirm,_verify}.py`·`test_apm_bench_absent_or_contains.py` · 갱신 12)
 > **번호 주의**: 이 저장소 `plans/` 최댓값은 161이지만 형제 체크아웃 `collectorinfra`에 미커밋 `162-TODO-codebase-smell-refactoring.md`·`163-TODO-security-hardening-separated.md`가 있어 164로 잡았다(병합 시 충돌 회피). 결정도 형제 체크아웃에 미커밋 D-330~D-332가 있다(이 체크아웃은 D-330 untracked) — 등재 직전 양쪽 `ls docs/decisions/ | tail -3`.
 
 ---
@@ -290,6 +291,31 @@ E1은 가짜 LLM이 정답 계획을 넣어 args·views가 100%였다(152 §9). 
 
 §5 절차.
 
+### 4.7 W7 — APM 장기 창 질의 지연 교정 (사용자 *"검토한 내용에 대해 164번 계획에 추가하라"* 2026-10-17)
+
+**증상(폐쇄망 · 사용자 보고)** — 「intt1 의 오늘 시간당 응답시간 보여줘」가 화면에 「예상 약 3.6분」으로 떴는데, 10분이 넘도록 진행은 `48/1073 API 호출`이었다. 실측 속도는 호출당 약 12.5초다. 이 속도면 끝까지 약 3.7시간이 걸리고, 다 끝나도 결과는 「시간별」이 아니다(R-1).
+
+**원인(코드 실측 · 확신도)**
+
+| # | 원인 | 근거 |
+|---|---|---|
+| R-1 | **보기 선택**(상) — 「응답시간」이 들어간 인스턴스 보기는 `apm.app_health`(「WAS 응답시간(평균·p95)·TPS·에러율」 · 창 `range`)뿐이다. 시간별 추세를 1회 호출로 내는 instance 지표 시계열(`service_time` — `/api/dbmetrics/instance`)은 `apm.runtime`(라벨 「JVM 힙·GC·CPU·스레드 추세」)에만 있어 응답시간 질문과 이어지지 않는다. `apm_app_health`는 창 전체 통계(`_window_stats`)와 시 단위 **합계** 한 줄(`_hourly`)만 낸다 — 시간별 행이 없다 | `config/db_registry.yaml:104-106·107-119` · `apm_gateway/apm_gateway/application/tools.py:1595-1674·926-980` |
+| R-2 | **X-View 전수 조회**(상) — `_xview`가 `/api/transaction/time`을 **1분 창**(`XVIEW_WINDOW_MS = 60_000`)으로 나눠 **순차**로 부른다. 오늘 00:00~약 17:53이면 1073분 × 묶음 1 = 1073회다. 창이 10분(`HOURLY_AFTER_MINUTES`)을 넘으면 `_hourly`가 따로 1회 불리므로, 긴 창에서 X-View가 더 보태는 것은 p50·p95·최대 정도다. 상한은 D-296 ④ 「자체 상한 없음」(SPEC-apm-question-coverage §1 #4 · 표 `apm_app_health` 「X-View 10분 상한 제거(긴 창은 작업)」)으로 의도해 없앴다 | `tools.py:874-910` · `adapters/jennifer/api.py:20·94-106` |
+| R-3 | **예상 시간이 호출 지연을 무시**(상) — `estimate.seconds = expected_calls ÷ rate_per_sec`다. 1073 ÷ 5/s(`JENNIFER_RATE_LIMIT_PER_SEC` 기본) = 214.6초 = 3.6분. throttle 간격(0.2초)만 보고 순차 실행과 실제 응답 지연(약 12.5초)은 보지 않는다. 화면(`app.js` `apmJobProgressText`)도 이 고정값을 그대로 보여 주고, 진행 중 실측으로 다시 계산하지 않는다 | `apm_gateway/apm_gateway/application/jobs.py:283-287` · `config.py:352` · `src/static/js/app.js:3236-3254` |
+| R-4 | **호출당 12.5초의 원인 — 미확인**. 후보: 바쁜 인스턴스 1분치 거래 응답이 크다(파싱·중복 제거·메모리 적재) · 작업 슬롯(`APM_JOB_MAX_CONCURRENT`)·폴러 우선순위 대기. 로컬에는 해당 실행 기록이 없다 | W7-0에서 확정 |
+
+**조치**
+
+- **W7-0 실측(사용자 · 폐쇄망)** — 게이트웨이 로그에서 이 작업의 호출당 소요·응답 크기·슬롯 대기를 확인한다(R-4 확정). 지금 돌고 있는 작업은 결과가 질문에 맞지 않으므로(R-1) 취소해도 잃을 것이 없다.
+- **W7-A 라우팅 교정(R-1 · D-296 무충돌)** — 인스턴스 응답시간·TPS **추세** 보기를 둔다(G-9). 「시간당·시간별·추세」 + 응답시간 질문은 `apm_metrics` `mode=series·scope=instance`(`metrics=[service_time]` · `interval_minute=60`)로 간다 → 1073회가 **지표 수만큼(1~2회)**으로 준다. `apm.app_health` 라벨은 「현재·구간 합계」로 좁혀 시간별 질문을 끌어가지 않게 한다. 보기 표는 레지스트리에서 렌더되므로 프롬프트 렌더 회귀(`scripts/prompt_render_diff.py`)를 확인하고, MLX는 바뀐 선택 경로만 대표 소수로 1회 돌린다(D-240).
+- **W7-B 예상 시간 보정(R-3)** — 게이트웨이가 소스별 **실측 호출 소요**(완료 호출 지수 이동 평균)를 들고, `estimate.seconds = 남은 호출 × max(1/rate, 실측 소요)`로 낸다. 실측 표본이 없으면 종전 식을 쓰되 「호출 지연 미반영」을 표시한다. 진행 중 상태 조회마다 다시 계산해 화면(`apm_job_status` → `app.js`)이 그대로 받게 한다(JS 변경은 문구만).
+- **W7-C 긴 X-View 사전 확인(R-2 · 재발 방지)** — 예상 X-View 호출이 임계(G-10)를 넘으면 실행 전에 되묻는다: 「시 단위 통계·추세로 볼까요(수 초), 거래 원본을 전부 모을까요(약 N분 — W7-B 실측 기준)?」. 범위를 코드가 줄이지 않고 사용자가 고르므로 D-296 ④와 충돌하지 않는 것으로 본다. 본체 범위 사전 선택 장치(`src/observability/group_metrics.py` · `src/api/routes/query.py:1749` 부근)와 같은 결을 재사용하는지는 W7 착수 때 실측한다.
+- **W7-D(대안 · 기본 미채택)** — `apm_app_health`가 긴 창이면 X-View를 건너뛰고 시 단위 통계·시계열만 쓴다. 가장 확실하지만 p95가 사라지고 코드가 조회 범위를 줄이는 셈이라 **D-296 ④ 개정이 필요**하다 → G-10 (b)를 골랐을 때만 진행한다.
+- **벤치 편입** — `apm_bench` 시나리오에 「<host> 오늘 시간당 응답시간」(기대 보기 = W7-A 추세 보기 · `metrics ∋ service_time` · `interval_minute=60` · 기대 호출 수 ≤ 2)을 추가해 W6 재실행에서 함께 잰다.
+- **매뉴얼(D-255)** — 사용자 질의 예시·화면 문구(예상 시간 표기)가 바뀌면 `scripts/manual/` 원천을 같은 Wave에서 갱신한다. 완료 보고에 반영 여부를 적는다.
+
+**대상 파일(예상)**: `config/db_registry.yaml` · `apm_gateway/apm_gateway/application/{tools,jobs}.py`(W7-A에서 instance 기본 지표를 둘 때 · W7-B) · `apm_gateway/apm_gateway/adapters/throttle.py`(W7-B 실측 소요를 여기서 잴 때) · `src/orchestration/apm_query.py`(W7-C 되묻기) · `src/static/js/app.js`(문구) · `scripts/apm_bench/` 시나리오 · 각 테스트.
+
 ---
 
 ## 5. 폐쇄망 재실행 절차와 반출 조건
@@ -363,6 +389,7 @@ python -m scripts.apm_bench --status          # 생략 = 최근 run · 상태·P
 | **W4** 실행 위생 | §4.4 1~2 | 사전 존재 `var/`에서 경고 없음 · 새 파일이 생기면 경고 · root 실행 exit 2(G-3 (a)) · `regress.py --no-tests` 통과 |
 | **W5** 외부망 검증 · 키트 · 기록 | §4.5 · 152 부록 A·§10.7 갱신 · `docs/18` 항목(관문 키 이름 변경 · 관문/치환기 비대칭 · `SKIP_KEYS` 이름 면제 · 존재 기반 경고) · D-323 부기(G 확정분) · **계획 끝 `regress.py --base <계획 시작 SHA> --files <회귀 대상 파일>` 1회**(D-303 — 도구 마지막 범위 줄을 보고에 옮긴다) | E1 관문 통과 · 관문 실패 강제 E1 통과 · 회귀 신규 실패 0 |
 | **W6** 폐쇄망 재실행(사용자) | §5 스모크 → 전체 | 반출 6종 + 안전 요약 · 받은 뒤 round1 계획(152 A.8) 개시 |
+| **W7** APM 장기 창 질의 지연(2026-10-17 추가) | §4.7 — W7-0 실측(사용자) · W7-A 추세 보기 라우팅 · W7-B 실측 기반 예상 시간 · W7-C 긴 X-View 사전 확인 · 벤치 시나리오 1건 · (W7-D는 G-10 (b)일 때만) | §7-8~11 · 자기 테스트 통과 · `regress.py --no-tests` 통과 · `prompt_render_diff` 변화가 추세 보기 행에 한정 · 끝에 W7 대상 파일로 모듈 회귀 1회(D-303) |
 
 **착수 순서(157과 파일 겹침)**: 157은 `driver.py`(파싱 답)·`judge.py`(필요 시)를, 164는 `driver.py`(`build_observed`·키트 검사)·`judge.py`(집계)를 고친다. 권고: **157 W1(드라이버) → 164 W1~W4 → 157 W2~W4** 또는 두 계획을 같은 세션 순서로 직렬화한다. 병렬이면 `driver.py`·`judge.py`는 한쪽만 편집하고 다른 쪽은 그 커밋 뒤에 시작한다. 164 W6(폐쇄망 재실행)은 157 교정이 들어간 SHA로 돌리는 편이 재실행 1회로 둘을 함께 재는 데 유리하다(사용자 판단).
 
@@ -377,10 +404,16 @@ python -m scripts.apm_bench --status          # 생략 = 최근 run · 상태·P
 5. 폐쇄망 재실행이 반출본(관문 통과 6종 또는 최소 안전 요약)을 낸다 — **근거 0으로 끝나는 run이 다시 나오지 않는다**.
 6. 계획 끝 `regress.py --base <계획 시작 SHA> --files <회귀 대상 파일>` 종료 코드 0(원래 실패만) · arch_check error 0 · overfit_check 통과.
 7. (W0a) `audit_digest.json`의 모든 문자열 잎·키가 화이트리스트 어휘이고(자기 점검 · 자유 문장 사유의 호스트 이름·`targets`·`commands`·`detail`·`user_id`·`thread_id`·시각 원값 미출력), 외부망 E1 정답 대조에서 틀린 `exact` 대응이 0이다.
+8. (W7-A) 「<host> 오늘 시간당 응답시간」이 추세 보기(`apm_metrics` series·instance · `service_time` · 60분 간격)로 가서 **시간별 행**을 내고 게이트웨이 호출이 2회 이하다(가짜 LLM 정답 계획 E1 + MLX 대표 1회). 「<host> 응답시간 p95」·「지금 응답시간」은 종전 `apm.app_health`로 간다(회귀 없음).
+9. (W7-B) 호출당 소요를 12초로 흉내 낸 가짜 어댑터에서 1073회 작업의 `estimate.seconds`가 첫 몇 호출 뒤 실측 기준(약 3.6시간 범위)으로 바뀌고, 남은 호출에 따라 줄어든다. 실측 표본이 없으면 종전 값 + 「호출 지연 미반영」 표시.
+10. (W7-C) 예상 X-View 호출이 임계를 넘으면 조회 없이(게이트웨이 데이터 호출 0) 되묻고, 사용자가 「전부」를 고르면 종전과 같은 전수 조회를 한다(범위 축소 0 — D-296 ④).
+11. (W7) 기능 플래그를 두면 기본 off = 현행 비트 동일, 플래그 없이 바꾸면 그 근거를 config 주석과 D 부기에 둔다.
 
 ---
 
 ## 8. 사용자 확정 게이트 (권고 = 첫 항)
+
+> **G-9~G-11: 권고안 적용 — 사용자 구현 지시 2026-10-17 · 별도 확정 없음**(「164번을 구현하라」). 이탈: G-9 기본 지표 `tps` → `service_count`(instance 카탈로그에 `tps` 식별자 없음).
 
 > **확정 2026-10-14 · 사용자 *권고안 일괄 채택*** — G-1 (a)(부속: 인스턴스 수·소스별 호출 수 그대로) · G-2 (a) **단 보관 위치는 `<out>.quarantine/`이 아니라 저장소 밖 고정 경로**(사용자 확정 — 산출 기본 위치가 저장소 안 `results/apm_bench/<run_id>/`로 정리되므로 · 저장소·run 디렉터리 하위 거부 유지) · G-3 (a) · G-4 (a) · G-5 (a) · G-6 (a) · G-7 (a) D-323 부기. **G-8**: 1회차 SHA는 **미상으로 확정**(사용자 *"1회차 SHA는 모른다. 경고 내고 HEAD로 진행하라."*) — 나머지 항목(`--probe`·`--term-policy` 사용 · 실행 계정 · `ACTIVE_DB_IDS` · `by_placeholder` 범위 · 실행 호스트 감시 대상 여부)은 열린 질문으로 남고 구현을 막지 않는다.
 
@@ -393,6 +426,9 @@ python -m scripts.apm_bench --status          # 생략 = 최근 run · 상태·P
 | **G-5** | 해석·보기 호출 구분을 `failures` 맞추기로 못 하면? | **(a) 모호하면 보수적으로 `gw_error` 유지 — 본체 변경 0** | (b) 본체 emit 1지점 추가(호출 단계 표지 — D-323 ⑦ 「최대 3지점」 초과 → 부기) |
 | **G-6** | 재실행 범위 | **(a) 스모크(`--only` 약 10시나리오) → 통과 시 전체 `--skip-heavy` 1회** | (b) 바로 전체 · (c) 전체 + 무거운 등급 |
 | **G-7** | 대표 분류 새 키·`resolve_miss`·안전 요약을 D-323에 어떻게 남길까? | **(a) D-323 부기**(턴 통과 5축·분모 불변 · 집계·표기·반출 범위만 변경) | (b) 신규 D-번호 |
+| **G-9** (W7 · (a) 적용) | 시간별 응답시간 보기를 어떻게 둘까? | **(a) 신규 보기 `apm.instance_trend`**(`apm_metrics` `fixed_args {mode: series, scope: instance}` · 비우면 기본 지표 `service_time`·`tps` — `apm.service_trend`·`apm.business_trend`와 대칭 · LLM이 `metrics`를 빠뜨려도 결정적으로 동작) | (b) `apm.runtime` 라벨·예시에 응답시간 추가만(변경 최소 · `metrics`를 LLM이 채워야 함 · 런타임 보기와 의미 혼재) |
+| **G-10** (W7 · (a) 적용) | 긴 창 X-View를 어떻게 막을까? | **(a) W7-C 사전 확인 · 임계 = 예상 X-View 60회(1시간)** — D-296 ④ 유지 | (b) W7-D 긴 창 X-View 생략(D-296 ④ 개정 부기 필요 · p95 손실) · (c) 현행(라우팅·예상만 교정) |
+| **G-11** (W7 · (a) 적용) | 예상 시간 산정 | **(a) 소스별 실측 호출 소요 이동 평균 · 표본 없으면 종전 식 + 미반영 표시** | (b) 설정값 「호출당 평균 소요」 고정(환경마다 다름) |
 | **G-8** | 폐쇄망 1회차 실행 조건 확인 | 사용자 확인: 체크아웃 SHA·작업 트리 변경 · `--probe`·`--term-policy` 사용 여부(P층 0회의 원인) · 실행 계정 · 본체 `ACTIVE_DB_IDS` · 로컬 자리표 `sources.by_placeholder` 범위 · 벤치 실행 호스트가 제니퍼 감시 대상인지 · 157 교정을 재실행 SHA에 넣을지 | — |
 
 결정 등재: G-1·G-2·G-3·G-7은 반출·위생·집계 계약(D-323 ④⑤ · D-219 ②)을 넓히거나 바꾸므로 **확정 뒤 D-323 부기**로 남긴다. 신규 D가 필요하면 그때 색인 최댓값+1 — 등재 직전 이 체크아웃과 형제 체크아웃 양쪽 `ls docs/decisions/ | tail -3`(형제에 미커밋 D-330~D-332).
@@ -418,6 +454,7 @@ python -m scripts.apm_bench --status          # 생략 = 최근 run · 상태·P
 - 유지: D-323 ①(5축 · 턴 통과 정의 · 분모) · ③(허용 범위 — 재실행도 같은 가드) · ④(근거 묶음 — 관문 통과 시에만 반출) · ⑤(위생 · 관문 규칙 완화 없음) · ⑦(본체 emit 최대 3지점 — G-5 (a)면 변경 0) · D-321(형식 보존 치환) · D-301 ④(사용자 정보) · D-219 ②③ · D-274(벤치는 게이트웨이 import 0 — 감사 줄·도구 응답만 읽고, 오류 코드·도구 이름은 벤치 쪽 상수 사본) · D-003(읽기 전용 — 제니퍼 쓰기 경로 없음 · `--regate`는 파일 읽기·치환만) · D-303(회귀는 계획 끝 1회) · D-127·D-240(실 LLM 미사용 · MLX 미실행).
 - **개정(부기 필수)**: G-2 — 현행 「E2는 원본을 디스크에 쓰지 않는다」(`__main__.py:412-414` · 152 §10.7)를 관문 실패 시에 한해 바꾼다(D-219 ② 선례).
 - 확장(부기 대상): D-323 ④⑤ — 안전 요약·실행 로그 직렬화(G-1) · 실행 계정(G-3) · 대표 분류 새 키·`resolve_miss`(G-7).
+- W7: D-296 ④(자체 상한 없음)·D-274(게이트웨이 경계 — 본체는 MCP 계약만)·D-003 유지. G-10 (a)는 사용자가 범위를 고르므로 무충돌로 보고, **(b)를 고르면 D-296 ④ 개정 부기**가 필요하다. 신규 보기·되묻기 계약이 생기면 D-번호 신설 여부를 W7 끝에 판단한다(등재 직전 `ls docs/decisions/ | tail -3`).
 - 충돌 가능: G-4 (b)·G-5 (b) 선택 시 각각 실행 차단 규칙 추가·D-323 ⑦ 개정. G-4에서 「여럿」을 분모에서 빼는 안은 D-323 ① 분모 변경이라 채택하지 않았다.
 
 ## 11. 진행 기록
@@ -443,6 +480,16 @@ python -m scripts.apm_bench --status          # 생략 = 최근 run · 상태·P
 - 2026-10-14 — **`--init-local`**(사용자 지시 「이런 파일들 니가 다 만들어 놔. 값 바꾸는 방법을 가이드하고.」 — E2 `--run --bg`가 「E2 로컬 파일이 없다」로 멈춘 뒤): `python -m scripts.apm_bench --init-local`이 `~/apm_bench_local/`(700)에 양식 3개(600)를 만든다 — 원본 `testdata/apm_bench/local_templates/{placeholders.e2,bench.local}.yaml`(운영 값 없음 · 머리 주석 「바꾸는 법」)·`term_policy.yaml` · 카나리아 임의 토큰 · 있는 파일은 덮어쓰지 않음. 값이 `CHANGE_ME`인 칸이 남으면 E2 `--run`이 드라이버 전에 파일별 칸 수만 안내하고 exit 2(주석은 세지 않는다). 없음 안내 끝에 `--init-local` 한 줄 추가. 테스트 `test_apm_bench_w2b.py` ⑨ 2건 · MODES 단언 갱신.
 - 2026-10-14 — **로컬 파일 기본 위치 이동**(사용자 지시 「기본 위치는 testdata 폴더 밑을 찾도록 수정하라.」 · 확인 질문에 「testdata + 보호선」 선택 · D-323 부기): E2 기본 위치를 `~/apm_bench_local/` → 저장소 `testdata/apm_bench/local/`(`LOCAL_DIR` · 표기 `LOCAL_LABEL`)로 옮겼다. `.gitignore`에 `testdata/apm_bench/local/` 보호선 · 무시 여부 단언 테스트(`test_local_dir_is_git_ignored`). 신뢰 조건(소유·심링크·go-w)·`CHANGE_ME` 가드·`--init-local`·명시 인자 우선은 그대로. 콘솔 표기는 저장소 상대 경로. 저장소째 반출할 때 이 폴더를 뺀다.
 - 2026-10-15 — **Windows 실행 교정**(내부망 Windows PowerShell에서 `--run --env e2 --smoke`가 `AttributeError: module 'os' has no attribute 'geteuid'`로 중단 — 사용자 화면): `rundir.IS_WINDOWS` 분기 — 로컬 파일·격리본 신뢰 검사는 Windows에서 심볼릭 링크·종류만 본다(소유자·권한 비트 없음 · NTFS ACL) · `O_NOFOLLOW`·`O_NONBLOCK` 없으면 0 + 열기 전 `is_symlink` 거부 · 격리본은 `dir_fd` 대신 경로로 생성 · **`pid_alive`는 `os.kill(pid, 0)` 대신 `OpenProcess`/`GetExitCodeProcess`**(Windows `os.kill`은 대상 프로세스를 끝낸다 — `--status`가 분리 run을 죽일 뻔) · `--bg`는 `start_new_session` 대신 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`. 테스트 `test_apm_bench_windows.py`(맥에서 `IS_WINDOWS` 흉내 — `os.geteuid`·`os.getuid`·`os.kill` 제거 상태로 E2 사전 점검·전체 run·`--status`·격리본·`--bg`) 7건 + 실 Win32 1건(Windows에서만). Windows에서는 700/600 권한 보호가 없으므로 `testdata/apm_bench/local/`·`~/apm_bench_quarantine/`은 실행 계정만 접근하는 위치(사용자 프로필 아래 · 공유 폴더 아님)에 둔다.
+- 2026-10-17 — **W7 추가(v1.5 · 코드 0)** — 사용자 보고(「intt1 의 오늘 시간당 응답시간 보여줘」 → 예상 3.6분 · 10분 넘게 48/1073 API 호출)를 코드로 분석하고, 사용자 *"검토한 내용에 대해 164번 계획에 추가하라"*에 따라 §4.7로 편입했다. 원인 R-1 보기 선택 · R-2 X-View 1분 창 순차 전수 · R-3 예상 = 호출 수 ÷ 속도 · R-4 호출당 12.5초 원인 미확인(폐쇄망 로그 필요). 게이트 G-9~G-11 미확정. 이 체크아웃 `logs/`·`apm_gateway/var`에는 해당 실행 기록이 없다.
+- 2026-10-17 — **W7-A·B·C 구현(v1.6)** — 사용자 「164번을 구현하라」. **G-9~G-11: 권고안 적용 — 사용자 구현 지시 2026-10-17 · 별도 확정 없음**. 시작 SHA `384f97f`.
+  - **W7-A**: 신규 보기 `apm.instance_trend`(레지스트리 끝 · `apm_metrics` series·instance · hostname 필수 · `window: range`) · `apm.app_health` 라벨 「— 현재·구간 합계」 · 게이트웨이 instance 시계열 지표 미지정·전부 모름 = 기본 지표 + 고지(종전 `invalid_argument` — 계약 변경 · D-296 부기 ⓒ). 이탈 ①: 기본 지표 `tps` → `service_count`(instance 카탈로그 녹화본에 `tps` 없음 · 시험 고정) ② 예시를 「web01 지난 12시간 응답시간 추이 1시간 단위로」로(시나리오와 거의 같아 `--fewshot-check` 위반 — docs/18) ③ 시나리오 2건(`APM-INSTTREND-hourly` dev · `APM-INSTTREND-metrics` holdout — 1건이면 보기 인자 커버리지 `uncovered == 0` 실패) · 121→123 · 판정 새 형 `{absent_or_contains: [service_time, response_time_avg_ms]}`(기존 판정 비트 동일). E1 가짜 LLM 3/3 — hourly는 `apm_metrics` 1회 · 제니퍼 호출 인스턴스당 2(기본 지표 2) + 카탈로그 1. 보기 표 렌더 차이는 app_health 라벨·instance_trend 3줄뿐(`prompt_render_diff.py`는 보기 표를 렌더하지 않아 `render_view_rows()` 직접 대조 · 폴스타 프롬프트 바이트 동일).
+  - **W7-B**: `JenniferClient._get` 실 호출 소요(속도 제어 대기 제외 · 응답 받은 호출만) → `CallScope.after_call` → `JobManager` (소스, 경로 군)별 EMA(α 0.3 · 공유 명단 적재는 작업 표본 제외). `estimate = {api_calls, seconds, basis}` — measured = 남은 호출 × max(1/rate, EMA) · rate_only = 종전 식. 화면 「남은 예상 약 N시간/분/초」 · 「예상 약 …(호출 지연 미반영)」. 12초 가짜 어댑터 1073회: 3호출 뒤 12,840초(종전 214.6초) → 803호출 뒤 3,240초.
+  - **W7-C**: 게이트웨이 `apm_app_health` 옵트인 `xview_confirm_over`(넘으면 데이터 호출 0 · `status: confirm_required` 견적 · 없으면 비트 동일) · 본체 `XVIEW_CONFIRM_OVER = 60`(기간 있는 app_health · 답 없는 턴만) · 버튼 「시 단위 추세로 보기」/「거래 원본 전부 모으기」 · 요청 `apm_xview_choice: trend|full` · 응답 `apm_xview_confirmation` · 상태 키 2개 요청 스코프 초기화. 본체 범위 사전 선택(`group_metrics`)은 DB 실행 그룹 관문이라 재사용 불가 — APM 소스 되묻기 패턴 재사용. 플래그 없음(수용 11 — D-296 부기 ⓓ).
+  - **검증(verifier · 보안 합본)**: Critical 0 · High 2 = 사전 확인 호출 작업 승격 시 되묻기 누락 · 1단 `deep_agent` `_AMBIENT_KEYS`에 선택 키 없음 → 교정(gated 호출 먼저 확정 후 결과 봉투 `status`로 판정 · 1단 키 배선 · 3단은 app_health 미호출로 해당 없음) · Medium 1 = 명단 적재 표본으로 X-View 표본 없이 `measured` 표시 → (소스, 경로 군) EMA로 교정 · Low = 추세 보기 부재 시 되묻기 반복 → 교정. 나머지 Low는 잔여. strict xfail 3건 해제 통과.
+  - **MLX**(두 평면 mlx 확인 · 대표 1회 · verifier): 「<host> 오늘 시간당 응답시간」에서 LLM이 `apm.app_health`를 골랐다(view_wrong) — W7-C 안전망이 데이터 0으로 되물었다(「1,344회 …」). 「30분 p95」는 보기 정답 · `interval_minute` 환각(처리기가 빼고 고지). 수용 8은 **부분**(배선·E1 충족 · MLX 선택 미달 — 폐쇄망 W6에서 FabriX로 잰다). W7-A 중간 MLX 1회(옛 예시 상태)는 instance_trend를 골랐다.
+  - **매뉴얼(D-255)**: `scripts/manual/content/user.md` U-50·U-51(질의 예시 2행 · how 8 사전 확인)·U-54 · `admin.md` A-69 · `features.yaml` 앵커 · 빌드 · `pytest tests/test_manual` 619 passed · 캡처 없음(로컬 제니퍼 데이터 없음). SPEC 2종 부기.
+  - **계획 끝 모듈 회귀**(`regress.py --base 384f97f --files <W7 49파일>`): rc 1 — 본체 실패 50건 전부 `[원래 실패]` · 정적 게이트 arch·overfit 통과 · ruff·mypy 이번 diff 줄 0 · `! apm_gateway TIMEOUT(1200초)` — `apm_gateway/tests/test_plan134_w0b_verify.py::test_disconnect_before_promotion_cancels_job` 행(기준 SHA worktree에서도 동일 — 기존 결함) · 보완: 그 파일만 뺀 게이트웨이 전체 1,522 passed · 4 skipped · 8 xfailed · 권고 블록 없음 · `범위: 모듈 단위 — 전체 미실행` · 산출물 `logs/regress/20261017-223258-76708`.
+  - **잔여**: W7-0 폐쇄망 로그 실측(R-4 · 사용자) · W6 재실행에서 새 시나리오 2건 측정 · MLX 보기 선택 미달(라벨·few-shot은 round1 계획 몫) · 타이핑한 「전부」 미인식 · 앞 홉 경계 · 동시 작업 과소 추정 · `escapeHtml` 따옴표 · 승격된 사전 확인이 조회 마감까지 안 끝나면 접수 고지로 감 · 추세 행 `time_ms` epoch 표시 · `service_rate` 의미 확인 시 기본 지표 교체 · w0b 행 테스트(별도 작업).
 - **위험·잔여**: 구분자 변형(`z_bench`) 미치환 · 원이름 토큰이 코드 어휘 낱말과 같으면 치환·대조 안 함(보호 범위 넓어짐 — 원이름 전체 대조는 유지) · 레지스트리 밖 소스 라벨이 자유 문장에 섞이면 못 막음 · NFKC로 전각·호환 문자가 바뀐 모양으로 실림 · 짧은 호스트명이 흔한 낱말이면 E2 정지(→ 전용 실행 호스트·계정) · N-2가 넓게 멈춤 · 「없음」 턴도 송신됨 · trace/report `placeholder_missing:host_1`의 host 토큰 치환 · `--bg` 크래시 traceback 미보존 · 경로 목록 방식 `--audit-digest`는 skip-heavy 기본 off · 같은 계정 PID 재사용 판별 불가 · `ps eww`로 `APM_BENCH_BG_ARGV`가 같은 계정에 보임 · `--bg` 자식이 부모 셸 export를 모두 받음(의도) · E2에서 `--term-policy`·로컬 파일 모두 없으면 exit 2(의도) · `--status`·거부 문구는 벤치 CLI라 매뉴얼 대상 아님.
 - **열린 질문(G-8 — 사용자)**: 1회차 체크아웃 SHA는 「모른다」로 확정(경고 내고 HEAD 시나리오) · 나머지(작업 트리 변경 · `--probe`·`--term-policy` 사용 여부 · 실행 계정 · 본체 `ACTIVE_DB_IDS` · `sources.by_placeholder` 범위 · 실행 호스트가 제니퍼 감시 대상인지 · 157 교정을 재실행 SHA에 넣을지)는 W6 재실행 전 확인 — 권고 없는 판단은 현행 비트 동일로 두었다.
 
@@ -450,6 +497,8 @@ python -m scripts.apm_bench --status          # 생략 = 최근 run · 상태·P
 
 | 일자 | 버전 | 내용 |
 |---|---|---|
+| 2026-10-17 | v1.6 | W7-A·B·C 구현 · 벤치 시나리오 2건 · G-9~G-11 권고안 적용(사용자 구현 지시 · 별도 확정 없음) · 검증 High 2·Medium 1 교정 · D-296 부기 · 매뉴얼 갱신 · 계획 끝 모듈 회귀(게이트웨이 기존 행 TIMEOUT) |
+| 2026-10-17 | v1.5 | W7 추가(§4.7 · §6 · §7-8~11 · §8 G-9~G-11 · §10) — APM 장기 창 질의 지연(보기 선택 · X-View 1분 창 전수 · 예상 시간 산식) · 코드 0 |
 | 2026-10-14 | v1.4 | W1~W5 구현 완료 기록(§11) · 상태 갱신 · 회귀 대상 확정 · 메인 직접 교정(W1 4라운드 · W2b 2라운드) 반영 |
 | 2026-10-14 | v1.3 | 실행 명령 간소화(W2b) — results/apm_bench/<run_id>/ 자동 · E2 한 줄 · --smoke·--bg·--status · audit-digest run_id 모드(§5 W0a 1~6 · 사전 · 1·2단계 · 반출 조건) |
 | 2026-10-14 | v1.2 | W0a 감사 로그 진단표 추가·구현(§4.0 · §5 W0a · §6 · §7-7 · 권고 ⓪) — 사용자 「방안 1로 진행해서 164에 W0a 추가하라」 · 파일명 TODO → WIP |
