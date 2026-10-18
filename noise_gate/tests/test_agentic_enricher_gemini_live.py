@@ -1,7 +1,7 @@
 """E5 Advisory Enricher — Gemini API 기반 트랙 B live 통합 테스트 (Plan 52 E5, D-048.7).
 
 vLLM 인프라 없이 **Gemini 네이티브 tool-calling**으로 agentic 경로(트랙 B)를 실제로 검증한다.
-`ORCHESTRATOR_PROVIDER=gemini` + gemini API 키(`LLM_GEMINI_API_KEY`/`GOOGLE_API_KEY` 또는
+`ORCHESTRATOR_PROVIDER=gemini` + gemini API 키(`LLM_GEMINI_API_KEY` 또는
 `ORCHESTRATOR_API_KEY`)가 설정된 환경에서만 동작하고, 키가 없으면 **모듈 전체 skip**한다(CI 안전).
 
 검증 대상:

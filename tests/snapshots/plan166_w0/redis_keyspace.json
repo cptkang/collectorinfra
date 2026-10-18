@@ -1,0 +1,551 @@
+{
+  "default": {
+    "after_writes": {
+      "csv_cache:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+        "json": {
+          "Sheet1": {
+            "csv_text": "a,b",
+            "sheet_name": "Sheet1"
+          }
+        },
+        "ttl": 604800,
+        "type": "string"
+      },
+      "formfill:memory:sig-1": {
+        "json": {
+          "answers": {
+            "구분": "직접입력"
+          }
+        },
+        "ttl": 900,
+        "type": "string"
+      },
+      "schema:db_a:asset_drafts": {
+        "json": [
+          {
+            "created_at": "<volatile:iso>",
+            "draft_id": "<volatile:hex12>",
+            "kind": "catalog",
+            "status": "pending"
+          }
+        ],
+        "ttl": -1,
+        "type": "string"
+      },
+      "schema:db_a:check_result": {
+        "json": {
+          "changed": false,
+          "summary": "변경 없음"
+        },
+        "ttl": -1,
+        "type": "string"
+      },
+      "schema:db_a:ddl_comments": {
+        "json": {
+          "cmm_resource": "자원 테이블"
+        },
+        "ttl": -1,
+        "type": "string"
+      },
+      "schema:db_a:description_drafts": {
+        "json": [
+          {
+            "created_at": "<volatile:iso>",
+            "descriptions": {
+              "cmm_resource.name": "초안"
+            },
+            "draft_id": "<volatile:hex12>",
+            "status": "pending"
+          }
+        ],
+        "ttl": -1,
+        "type": "string"
+      },
+      "schema:db_a:descriptions": {
+        "fields": {
+          "cmm_alarm.id": {
+            "raw": "알람 ID"
+          },
+          "cmm_resource.hostname": {
+            "raw": "호스트명"
+          },
+          "cmm_resource.name": {
+            "raw": "서버 등록명"
+          }
+        },
+        "ttl": -1,
+        "type": "hash"
+      },
+      "schema:db_a:fingerprint_checked_at": {
+        "raw": "<volatile:epoch>",
+        "ttl": -1,
+        "type": "string"
+      },
+      "schema:db_a:knowledge_seeded": {
+        "members": [
+          "cmm_alarm.id"
+        ],
+        "ttl": -1,
+        "type": "set"
+      },
+      "schema:db_a:meta": {
+        "fields": {
+          "cache_version": {
+            "json": 1
+          },
+          "cached_at": {
+            "raw": "<volatile:iso>"
+          },
+          "description_status": {
+            "raw": "complete"
+          },
+          "fingerprint": {
+            "raw": "fp-001"
+          },
+          "table_count": {
+            "json": 2
+          },
+          "total_column_count": {
+            "json": 3
+          }
+        },
+        "ttl": -1,
+        "type": "hash"
+      },
+      "schema:db_a:registration": {
+        "json": {
+          "snapshot": {
+            "at": "<volatile:iso>",
+            "by": "admin",
+            "count": 2,
+            "detail": null,
+            "env": "local",
+            "provider": null,
+            "status": "done"
+          }
+        },
+        "ttl": -1,
+        "type": "string"
+      },
+      "schema:db_a:relationships": {
+        "json": [
+          {
+            "from": "cmm_alarm.resource_id",
+            "to": "cmm_resource.id"
+          }
+        ],
+        "ttl": -1,
+        "type": "string"
+      },
+      "schema:db_a:schema_snapshot": {
+        "json": {
+          "by": "admin",
+          "env": "local",
+          "hash": "h1",
+          "snapshot": {
+            "tables": 2
+          },
+          "taken_at": "T0"
+        },
+        "ttl": -1,
+        "type": "string"
+      },
+      "schema:db_a:structure_drafts": {
+        "json": [
+          {
+            "by": "admin",
+            "created_at": "<volatile:iso>",
+            "draft_id": "<volatile:hex12>",
+            "profile": {
+              "tables": {}
+            },
+            "status": "approved"
+          }
+        ],
+        "ttl": -1,
+        "type": "string"
+      },
+      "schema:db_a:structure_meta": {
+        "json": {
+          "patterns": [
+            {
+              "type": "eav"
+            }
+          ]
+        },
+        "ttl": -1,
+        "type": "string"
+      },
+      "schema:db_a:synonyms": {
+        "fields": {
+          "cmm_alarm.id": {
+            "json": {
+              "sources": {
+                "알람번호": "operator"
+              },
+              "words": [
+                "알람번호"
+              ]
+            }
+          },
+          "cmm_resource.hostname": {
+            "json": {
+              "sources": {
+                "호스트": "llm"
+              },
+              "words": [
+                "호스트"
+              ]
+            }
+          },
+          "cmm_resource.name": {
+            "json": {
+              "sources": {
+                "등록명": "operator",
+                "서버이름": "llm"
+              },
+              "words": [
+                "등록명",
+                "서버이름"
+              ]
+            }
+          }
+        },
+        "ttl": -1,
+        "type": "hash"
+      },
+      "schema:db_a:tables": {
+        "fields": {
+          "cmm_alarm": {
+            "json": {
+              "columns": [
+                {
+                  "name": "id",
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          "cmm_resource": {
+            "json": {
+              "columns": [
+                {
+                  "name": "name",
+                  "type": "varchar"
+                },
+                {
+                  "name": "hostname",
+                  "type": "varchar"
+                }
+              ],
+              "description": "자원"
+            }
+          }
+        },
+        "ttl": -1,
+        "type": "hash"
+      },
+      "schema:db_b:column_value_index": {
+        "json": {
+          "eav_name": [
+            "OSType"
+          ]
+        },
+        "ttl": 120,
+        "type": "string"
+      },
+      "schema:db_description_origin": {
+        "fields": {
+          "db_a": {
+            "raw": "manual"
+          },
+          "db_b": {
+            "raw": "llm"
+          }
+        },
+        "ttl": -1,
+        "type": "hash"
+      },
+      "schema:db_descriptions": {
+        "fields": {
+          "db_a": {
+            "raw": "테스트 DB A"
+          },
+          "db_b": {
+            "raw": "LLM 설명 B"
+          }
+        },
+        "ttl": -1,
+        "type": "hash"
+      },
+      "synonyms:column_values": {
+        "fields": {
+          "AVAIL_STATUS": {
+            "json": {
+              "비정상": {
+                "op": "!=",
+                "value": 0
+              }
+            }
+          }
+        },
+        "ttl": -1,
+        "type": "hash"
+      },
+      "synonyms:eav_names": {
+        "fields": {
+          "OSType": {
+            "json": [
+              "운영체제",
+              "OS"
+            ]
+          },
+          "Vendor": {
+            "json": [
+              "제조사"
+            ]
+          }
+        },
+        "ttl": -1,
+        "type": "hash"
+      },
+      "synonyms:global": {
+        "fields": {
+          "hostname": {
+            "json": {
+              "description": "호스트 이름",
+              "words": [
+                "호스트명",
+                "서버 호스트"
+              ]
+            }
+          },
+          "name": {
+            "json": {
+              "description": "등록명",
+              "words": [
+                "이름"
+              ]
+            }
+          }
+        },
+        "ttl": -1,
+        "type": "hash"
+      },
+      "synonyms:resource_types": {
+        "fields": {
+          "server.Cpus": {
+            "json": [
+              "CPU",
+              "씨피유"
+            ]
+          }
+        },
+        "ttl": -1,
+        "type": "hash"
+      }
+    },
+    "keys_after_invalidate_all": [
+      "csv_cache:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "formfill:memory:sig-1",
+      "schema:db_a:asset_drafts",
+      "schema:db_a:check_result",
+      "schema:db_a:ddl_comments",
+      "schema:db_a:description_drafts",
+      "schema:db_a:registration",
+      "schema:db_a:schema_snapshot",
+      "schema:db_a:structure_drafts",
+      "schema:db_description_origin",
+      "schema:db_descriptions",
+      "synonyms:column_values",
+      "synonyms:eav_names",
+      "synonyms:global",
+      "synonyms:resource_types"
+    ],
+    "keys_after_invalidate_db_a": [
+      "csv_cache:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "formfill:memory:sig-1",
+      "schema:db_a:asset_drafts",
+      "schema:db_a:check_result",
+      "schema:db_a:ddl_comments",
+      "schema:db_a:description_drafts",
+      "schema:db_a:registration",
+      "schema:db_a:schema_snapshot",
+      "schema:db_a:structure_drafts",
+      "schema:db_b:column_value_index",
+      "schema:db_description_origin",
+      "schema:db_descriptions",
+      "synonyms:column_values",
+      "synonyms:eav_names",
+      "synonyms:global",
+      "synonyms:resource_types"
+    ],
+    "reads": {
+      "mgr.get_db_description_origin": "manual",
+      "mgr.get_db_descriptions": {
+        "db_a": "테스트 DB A",
+        "db_b": "LLM 설명 B"
+      },
+      "mgr.get_descriptions": {
+        "cmm_alarm.id": "알람 ID",
+        "cmm_resource.hostname": "호스트명",
+        "cmm_resource.name": "서버 등록명"
+      },
+      "mgr.get_fingerprint": "fp-001",
+      "mgr.get_structure_meta": {
+        "patterns": [
+          {
+            "type": "eav"
+          }
+        ]
+      },
+      "mgr.get_synonyms": {
+        "cmm_alarm.id": [
+          "알람번호"
+        ],
+        "cmm_resource.hostname": [
+          "호스트"
+        ],
+        "cmm_resource.name": [
+          "등록명",
+          "서버이름"
+        ]
+      },
+      "rc.load_column_value_index.db_a": null,
+      "rc.load_column_value_index.db_b": {
+        "eav_name": [
+          "OSType"
+        ]
+      },
+      "rc.load_csv_cache": {
+        "Sheet1": {
+          "csv_text": "a,b",
+          "sheet_name": "Sheet1"
+        }
+      },
+      "rc.load_eav_name_synonyms": {
+        "OSType": [
+          "운영체제",
+          "OS"
+        ],
+        "Vendor": [
+          "제조사"
+        ]
+      },
+      "rc.load_form_memory": {
+        "answers": {
+          "구분": "직접입력"
+        }
+      },
+      "rc.load_global_synonyms": {
+        "hostname": [
+          "호스트명",
+          "서버 호스트"
+        ],
+        "name": [
+          "이름"
+        ]
+      },
+      "rc.load_resource_type_synonyms": {
+        "server.Cpus": [
+          "CPU",
+          "씨피유"
+        ]
+      },
+      "rc.load_synonyms_with_sources": {
+        "cmm_alarm.id": {
+          "sources": {
+            "알람번호": "operator"
+          },
+          "words": [
+            "알람번호"
+          ]
+        },
+        "cmm_resource.hostname": {
+          "sources": {
+            "호스트": "llm"
+          },
+          "words": [
+            "호스트"
+          ]
+        },
+        "cmm_resource.name": {
+          "sources": {
+            "등록명": "operator",
+            "서버이름": "llm"
+          },
+          "words": [
+            "등록명",
+            "서버이름"
+          ]
+        }
+      }
+    }
+  },
+  "governance_on": {
+    "after_increment": {
+      "schema:db_a:synonyms": {
+        "fields": {
+          "cmm_resource.name": {
+            "json": {
+              "meta": {
+                "등록명": {
+                  "confidence": 0.0,
+                  "last_used_ts": "<volatile:epoch>",
+                  "usage_count": 0
+                },
+                "서버명": {
+                  "confidence": 0.8,
+                  "last_used_ts": "<volatile:epoch>",
+                  "usage_count": 1
+                }
+              },
+              "sources": {
+                "등록명": "operator",
+                "서버명": "llm"
+              },
+              "words": [
+                "서버명",
+                "등록명"
+              ]
+            }
+          }
+        },
+        "ttl": -1,
+        "type": "hash"
+      }
+    },
+    "after_writes": {
+      "schema:db_a:synonyms": {
+        "fields": {
+          "cmm_resource.name": {
+            "json": {
+              "meta": {
+                "등록명": {
+                  "confidence": 0.0,
+                  "last_used_ts": "<volatile:epoch>",
+                  "usage_count": 0
+                },
+                "서버이름": {
+                  "confidence": 0.0,
+                  "last_used_ts": "<volatile:epoch>",
+                  "usage_count": 0
+                }
+              },
+              "sources": {
+                "등록명": "operator",
+                "서버이름": "llm"
+              },
+              "words": [
+                "등록명",
+                "서버이름"
+              ]
+            }
+          }
+        },
+        "ttl": -1,
+        "type": "hash"
+      }
+    }
+  }
+}

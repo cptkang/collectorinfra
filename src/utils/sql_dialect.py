@@ -11,6 +11,17 @@ engine 실값은 "db2"/"postgresql"/"mariadb" 정확 문자열이므로 정규�
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
+#: 엔진 이름 별칭 — 정본 1곳(plans/166 X4 · 구조 탐침·DB 등록 서비스 사본 2벌을 모음).
+_ENGINE_ALIASES: Mapping[str, str] = {"postgres": "postgresql", "mysql": "mariadb"}
+
+
+def engine_key(engine: str | None) -> str:
+    """엔진 이름 정규화(별칭 흡수 · 소문자)."""
+    text = str(engine or "").strip().lower()
+    return _ENGINE_ALIASES.get(text, text)
+
 
 def is_db2(engine: str | None) -> bool:
     """DB2 엔진 여부 — 방언 분기의 유일한 판정식."""

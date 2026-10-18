@@ -94,6 +94,209 @@ def _zone_label(db_id: str) -> str:
     return domain.display_name if domain else db_id
 
 
+async def _fetch_zone_servers(
+    registry: DBRegistry, db_id: str, label: str, notes: list[str],
+) -> list[dict[str, Any]] | None:
+    """① 대상 서버 해석 — 존의 활성 서버 목록을 결정적 SQL로 읽는다(실패면 노트 + None)."""
+    try:
+        async with registry.get_client(db_id) as db:
+            result = await db.execute_sql(_server_list_sql(db_id))
+            return list(result.rows or [])
+    except Exception as e:  # noqa: BLE001 — 존 단위 graceful (부분 반환 보장)
+        logger.warning("realtime_usage 서버 목록 실패: db_id=%s %s", db_id, e)
+        notes.append(f"{label}: 서버 목록 조회 실패")
+        return None
+
+
+def _filter_by_host_tokens(
+    servers: list[dict[str, Any]], tokens: list[str],
+) -> list[dict[str, Any]]:
+    """서버명 지목 질의면 결정적 필터 (매칭 0이면 존 전체 유지)."""
+    if tokens:
+        filtered = [
+            s for s in servers
+            if any(
+                t in str(_row_get(s, "name") or "").lower()
+                or t in str(_row_get(s, "hostname") or "").lower()
+                for t in tokens
+            )
+        ]
+        if filtered:
+            return filtered
+    return servers
+
+
+def _server_ids(servers: list[dict[str, Any]]) -> list[int]:
+    """서버 행에서 정수 리소스 ID만 뽑는다(변환 불가 행은 건너뜀)."""
+    ids: list[int] = []
+    for s in servers:
+        rid = _row_get(s, "id")
+        try:
+            ids.append(int(rid))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def _note_duplicate_names(servers: list[dict[str, Any]], label: str, notes: list[str]) -> None:
+    """동일 서버명 중복 등록을 탐지해 노트로 경고한다.
+
+    2026-07-24 실측 가설: 재등록된 구행(dtime IS NULL 잔존)의 id는 measurement에 데이터가
+    없어 '미수집'으로 보인다 — 단건 수동 호출(살아있는 id)은 정상인데 파이프라인만 미수집인
+    증상의 유력 원인. 중복이 있으면 명시 경고.
+    """
+    name_counts = Counter(
+        str(_row_get(s, "name") or "").strip() for s in servers
+    )
+    dup_names = [n for n, c in name_counts.items() if n and c > 1]
+    if dup_names:
+        notes.append(
+            f"{label}: 동일 서버명 중복 등록 {len(dup_names)}건 감지"
+            f"(예: {', '.join(dup_names[:5])}) — 구등록 행은 '미수집'으로 표시될 수 있음, "
+            "'리소스 ID' 컬럼으로 대조 필요"
+        )
+
+
+async def _fetch_metrics(
+    client: PolestarMeasurementClient, db_id: str, ids: list[int], metrics: list[str],
+) -> tuple[dict[str, Any], str | None]:
+    """② 측정 클라이언트 호출 — 지표별 1콜 세트(첫 실패 지표에서 멈추고 그 이름을 돌려준다)."""
+    per_metric: dict[str, Any] = {}
+    failed_metric: str | None = None
+    for metric in metrics:
+        mres = await client.fetch_zone(db_id, ids, metric)
+        if mres is None:
+            failed_metric = metric
+            break
+        per_metric[metric] = mres
+    return per_metric, failed_metric
+
+
+async def _audit_measurement(
+    db_id: str,
+    ids: list[int],
+    metrics: list[str],
+    failed_metric: str | None,
+    started: float,
+    user_id: str | None,
+    thread_id: str | None,
+) -> None:
+    """measurement 호출을 감사 로그에 남긴다(감사 실패가 조회를 막지 않음)."""
+    elapsed_ms = (time.time() - started) * 1000
+    try:
+        await log_query_execution(
+            sql=f"[REALTIME-API] measurement db_id={db_id} servers={len(ids)} metrics={metrics}",
+            row_count=0 if failed_metric else len(ids),
+            execution_time_ms=elapsed_ms,
+            success=failed_metric is None,
+            error=f"metric={failed_metric} 실패" if failed_metric else None,
+            user_id=user_id,
+            thread_id=thread_id,
+            source_name=db_id,
+        )
+    except Exception:  # noqa: BLE001 — 감사 실패가 조회를 막지 않도록
+        logger.debug("realtime_usage 감사로깅 실패 (무시)", exc_info=True)
+
+
+def _merge_zone_rows(
+    servers: list[dict[str, Any]],
+    per_metric: dict[str, Any],
+    metrics: list[str],
+    label: str,
+    now_ms: float,
+    stale_ms: float,
+    notes: list[str],
+) -> list[dict[str, Any]]:
+    """③ 행 정규화 — 미수집·수집 지연·조회 실패 표기 (Plan 75 §1.3-2 파서 주의 ①③).
+
+    "조회 실패"(API 청크 실패 — 재시도하면 나올 수 있음)와 "미수집"(응답에 없음 =
+    measurement에 최근 수집값 부재: 수집 중단·모니터링 미등록 등)을 구분한다.
+    """
+    rows: list[dict[str, Any]] = []
+    failed_ids: set[int] = set()
+    for m in per_metric.values():
+        failed_ids |= set(m.failed_ids)
+    partial = sum(m.failed_chunks for m in per_metric.values())
+    if partial:
+        notes.append(
+            f"{label}: 일부 구간({partial}청크, 서버 {len(failed_ids)}대) API 실패 — "
+            "'조회 실패' 표기"
+        )
+    for s in servers:
+        try:
+            rid = int(_row_get(s, "id"))
+        except (TypeError, ValueError):
+            continue
+        # 가용성(avail_status: 0=정상, 그 외=비정상 — Known Mistakes 값 규약).
+        # 미수집 원인(Power off/에이전트 통신 이슈, 2026-07-24 실측)을 행에서 바로 판독.
+        _avail = _row_get(s, "avail_status")
+        try:
+            avail_label = "정상" if int(_avail) == 0 else "비정상(중지/통신이상)"
+        except (TypeError, ValueError):
+            avail_label = "-"
+        row: dict[str, Any] = {
+            "존": label,
+            "서버명": _row_get(s, "name"),
+            "hostname": _row_get(s, "hostname"),
+            # 진단 대조용(2026-07-24): 미수집 행의 ID를 수동 API 호출·콘솔 ID와 바로
+            # 대조할 수 있게 노출 — ID 불일치(중복 등록 구행) 판별의 핵심 단서.
+            "리소스 ID": rid,
+            "가용성": avail_label,
+        }
+        collected_ms: int | None = None
+        missing = False
+        for metric in metrics:
+            mrow = per_metric[metric].rows.get(rid)
+            if mrow is None or mrow.avg is None:
+                row[_METRIC_COLUMNS[metric]] = None
+                missing = True
+            else:
+                row[_METRIC_COLUMNS[metric]] = round(mrow.avg, 2)
+                if mrow.collected_at_ms:
+                    collected_ms = max(collected_ms or 0, mrow.collected_at_ms)
+        if collected_ms:
+            row["수집 시각"] = datetime.fromtimestamp(
+                collected_ms / 1000, tz=_KST
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            row["상태"] = (
+                "수집 지연" if (now_ms - collected_ms) > stale_ms else "정상"
+            )
+        else:
+            row["수집 시각"] = None
+            if rid in failed_ids:
+                row["상태"] = "조회 실패"
+            else:
+                row["상태"] = "미수집" if missing else "정상"
+        if missing and row["상태"] == "정상":
+            row["상태"] = "일부 미수집"
+        rows.append(row)
+    return rows
+
+
+def _build_summary(rows_out: list[dict[str, Any]], metrics: list[str], notes: list[str]) -> str:
+    """반환 조립 — 상태별 집계·미수집/조회 실패 안내·존 노트를 요약 문장으로 만든다."""
+    metric_label = "·".join(_METRIC_COLUMNS[m] for m in metrics)
+    status_counts = Counter(r.get("상태") for r in rows_out)
+    status_text = ", ".join(f"{k} {v}대" for k, v in status_counts.most_common())
+    summary = (
+        f"실시간 사용률 조회(폴스타 measurement API, {metric_label}): "
+        f"서버 {len(rows_out)}대 ({status_text}). "
+        "값은 마지막 수집 시점 기준이며 '수집 시각' 컬럼 참조."
+    )
+    if status_counts.get("미수집"):
+        summary += (
+            " '미수집'은 폴스타 measurement에 최근 수집값이 없는 서버입니다"
+            "(실측 확인: 대부분 Power off 또는 에이전트 통신 이슈 — '가용성' 컬럼으로 판독 가능). "
+            "단, 가용성이 '정상'인 미수집은 수집 주기와 조회 시점의 경합으로 생기는 "
+            "일시 상태일 수 있습니다(2026-07-24 실측: 재조회 시 값 반환됨 — 재질의로 해소)."
+        )
+    if status_counts.get("조회 실패"):
+        summary += " '조회 실패'는 API 구간 오류입니다 — 재질의 시 해소될 수 있습니다."
+    if notes:
+        summary += " [주의] " + " / ".join(notes)
+    return summary
+
+
 async def realtime_usage_lookup(
     db_ids: list[str],
     user_query: str,
@@ -122,7 +325,7 @@ async def realtime_usage_lookup(
     stale_ms = cfg.stale_after_minutes * 60 * 1000
     now_ms = time.time() * 1000
 
-    rows_out: list[dict] = []
+    rows_out: list[dict[str, Any]] = []
     notes: list[str] = []
     any_success = False
 
@@ -132,144 +335,32 @@ async def realtime_usage_lookup(
             notes.append(f"{label}: 실시간 API 미설정 — 제외")
             continue
 
-        # ① 서버 목록 (결정적 SQL)
+        # ① 대상 서버 해석 (결정적 SQL → 서버명 지목 필터 → ID 추출 → 중복 등록 경고)
         started = time.time()
-        try:
-            async with registry.get_client(db_id) as db:
-                result = await db.execute_sql(_server_list_sql(db_id))
-                servers = list(result.rows or [])
-        except Exception as e:  # noqa: BLE001 — 존 단위 graceful (부분 반환 보장)
-            logger.warning("realtime_usage 서버 목록 실패: db_id=%s %s", db_id, e)
-            notes.append(f"{label}: 서버 목록 조회 실패")
+        fetched = await _fetch_zone_servers(registry, db_id, label, notes)
+        if fetched is None:
             continue
-
-        # 서버명 지목 질의면 결정적 필터 (매칭 0이면 존 전체 유지)
-        if tokens:
-            filtered = [
-                s for s in servers
-                if any(
-                    t in str(_row_get(s, "name") or "").lower()
-                    or t in str(_row_get(s, "hostname") or "").lower()
-                    for t in tokens
-                )
-            ]
-            if filtered:
-                servers = filtered
-
-        ids: list[int] = []
-        for s in servers:
-            rid = _row_get(s, "id")
-            try:
-                ids.append(int(rid))
-            except (TypeError, ValueError):
-                continue
+        servers = _filter_by_host_tokens(fetched, tokens)
+        ids = _server_ids(servers)
         if not ids:
             notes.append(f"{label}: 대상 서버 없음")
             continue
+        _note_duplicate_names(servers, label, notes)
 
-        # 동일 서버명 중복 등록 탐지(2026-07-24 실측 가설): 재등록된 구행(dtime IS NULL 잔존)의
-        # id는 measurement에 데이터가 없어 '미수집'으로 보인다 — 단건 수동 호출(살아있는 id)은
-        # 정상인데 파이프라인만 미수집인 증상의 유력 원인. 중복이 있으면 명시 경고.
-        name_counts = Counter(
-            str(_row_get(s, "name") or "").strip() for s in servers
+        # ② 측정 클라이언트 호출 (지표별 1콜 세트) + 감사로깅
+        per_metric, failed_metric = await _fetch_metrics(client, db_id, ids, metrics)
+        await _audit_measurement(
+            db_id, ids, metrics, failed_metric, started, user_id, thread_id,
         )
-        dup_names = [n for n, c in name_counts.items() if n and c > 1]
-        if dup_names:
-            notes.append(
-                f"{label}: 동일 서버명 중복 등록 {len(dup_names)}건 감지"
-                f"(예: {', '.join(dup_names[:5])}) — 구등록 행은 '미수집'으로 표시될 수 있음, "
-                "'리소스 ID' 컬럼으로 대조 필요"
-            )
-
-        # ② measurement API (지표별 1콜 세트)
-        per_metric: dict[str, Any] = {}
-        failed_metric: Optional[str] = None
-        for metric in metrics:
-            mres = await client.fetch_zone(db_id, ids, metric)
-            if mres is None:
-                failed_metric = metric
-                break
-            per_metric[metric] = mres
-
-        elapsed_ms = (time.time() - started) * 1000
-        try:
-            await log_query_execution(
-                sql=f"[REALTIME-API] measurement db_id={db_id} servers={len(ids)} metrics={metrics}",
-                row_count=0 if failed_metric else len(ids),
-                execution_time_ms=elapsed_ms,
-                success=failed_metric is None,
-                error=f"metric={failed_metric} 실패" if failed_metric else None,
-                user_id=user_id,
-                thread_id=thread_id,
-                source_name=db_id,
-            )
-        except Exception:  # noqa: BLE001 — 감사 실패가 조회를 막지 않도록
-            logger.debug("realtime_usage 감사로깅 실패 (무시)", exc_info=True)
-
         if failed_metric:
             notes.append(f"{label}: 실시간 조회 실패({failed_metric}) — DB 경로로 재질의 필요")
             continue
         any_success = True
 
-        # ③ 병합 — 미수집·수집 지연·조회 실패 표기 (Plan 75 §1.3-2 파서 주의 ①③)
-        # "조회 실패"(API 청크 실패 — 재시도하면 나올 수 있음)와 "미수집"(응답에 없음 =
-        # measurement에 최근 수집값 부재: 수집 중단·모니터링 미등록 등)을 구분한다.
-        failed_ids: set[int] = set()
-        for m in per_metric.values():
-            failed_ids |= set(m.failed_ids)
-        partial = sum(m.failed_chunks for m in per_metric.values())
-        if partial:
-            notes.append(
-                f"{label}: 일부 구간({partial}청크, 서버 {len(failed_ids)}대) API 실패 — '조회 실패' 표기"
-            )
-        for s in servers:
-            try:
-                rid = int(_row_get(s, "id"))
-            except (TypeError, ValueError):
-                continue
-            # 가용성(avail_status: 0=정상, 그 외=비정상 — Known Mistakes 값 규약).
-            # 미수집 원인(Power off/에이전트 통신 이슈, 2026-07-24 실측)을 행에서 바로 판독.
-            _avail = _row_get(s, "avail_status")
-            try:
-                avail_label = "정상" if int(_avail) == 0 else "비정상(중지/통신이상)"
-            except (TypeError, ValueError):
-                avail_label = "-"
-            row: dict[str, Any] = {
-                "존": label,
-                "서버명": _row_get(s, "name"),
-                "hostname": _row_get(s, "hostname"),
-                # 진단 대조용(2026-07-24): 미수집 행의 ID를 수동 API 호출·콘솔 ID와 바로
-                # 대조할 수 있게 노출 — ID 불일치(중복 등록 구행) 판별의 핵심 단서.
-                "리소스 ID": rid,
-                "가용성": avail_label,
-            }
-            collected_ms: Optional[int] = None
-            missing = False
-            for metric in metrics:
-                mrow = per_metric[metric].rows.get(rid)
-                if mrow is None or mrow.avg is None:
-                    row[_METRIC_COLUMNS[metric]] = None
-                    missing = True
-                else:
-                    row[_METRIC_COLUMNS[metric]] = round(mrow.avg, 2)
-                    if mrow.collected_at_ms:
-                        collected_ms = max(collected_ms or 0, mrow.collected_at_ms)
-            if collected_ms:
-                row["수집 시각"] = datetime.fromtimestamp(
-                    collected_ms / 1000, tz=_KST
-                ).strftime("%Y-%m-%d %H:%M:%S")
-                row["상태"] = (
-                    "수집 지연" if (now_ms - collected_ms) > stale_ms else "정상"
-                )
-            else:
-                row["수집 시각"] = None
-                if rid in failed_ids:
-                    row["상태"] = "조회 실패"
-                else:
-                    row["상태"] = "미수집" if missing else "정상"
-            if missing and row["상태"] == "정상":
-                row["상태"] = "일부 미수집"
-            rows_out.append(row)
+        # ③ 행 정규화 (병합)
+        rows_out.extend(
+            _merge_zone_rows(servers, per_metric, metrics, label, now_ms, stale_ms, notes)
+        )
 
     if not any_success or not rows_out:
         logger.warning(
@@ -284,26 +375,8 @@ async def realtime_usage_lookup(
     primary = _METRIC_COLUMNS[metrics[0]]
     rows_out.sort(key=lambda r: (r.get(primary) is None, -(r.get(primary) or 0.0)))
 
-    metric_label = "·".join(_METRIC_COLUMNS[m] for m in metrics)
-    status_counts = Counter(r.get("상태") for r in rows_out)
-    status_text = ", ".join(f"{k} {v}대" for k, v in status_counts.most_common())
-    summary = (
-        f"실시간 사용률 조회(폴스타 measurement API, {metric_label}): "
-        f"서버 {len(rows_out)}대 ({status_text}). "
-        "값은 마지막 수집 시점 기준이며 '수집 시각' 컬럼 참조."
-    )
-    if status_counts.get("미수집"):
-        summary += (
-            " '미수집'은 폴스타 measurement에 최근 수집값이 없는 서버입니다"
-            "(실측 확인: 대부분 Power off 또는 에이전트 통신 이슈 — '가용성' 컬럼으로 판독 가능). "
-            "단, 가용성이 '정상'인 미수집은 수집 주기와 조회 시점의 경합으로 생기는 "
-            "일시 상태일 수 있습니다(2026-07-24 실측: 재조회 시 값 반환됨 — 재질의로 해소)."
-        )
-    if status_counts.get("조회 실패"):
-        summary += " '조회 실패'는 API 구간 오류입니다 — 재질의 시 해소될 수 있습니다."
-    if notes:
-        summary += " [주의] " + " / ".join(notes)
-
+    # ④ 반환 조립
+    summary = _build_summary(rows_out, metrics, notes)
     return {
         "organized_data": {
             "summary": summary,

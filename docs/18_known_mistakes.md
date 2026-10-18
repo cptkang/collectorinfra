@@ -2008,6 +2008,21 @@
 - **원인**: 위임한 서브에이전트가 끝났다고 보고 회귀를 돌렸지만, 메인이 같은 에이전트를 `SendMessage`로 재개할 수 있다는 점을 확인하지 않았다. hand-back이 팀 리드에게 오지 않는 환경이라 재개 사실을 알림으로 받지 못했다.
 - **방지책**: 계획 끝 회귀 직전에 서브에이전트 기록(`subagents/agent-*.jsonl`) 수정 시각과 대상 파일 mtime을 확인해 진행 중인 편집이 없는지 본다. 실패 단언 메시지가 디스크의 테스트 코드와 맞지 않으면 회귀 중 편집 경합으로 보고, 편집이 끝난 뒤 그 테스트와 모듈 선택분만 다시 돌린다.
 
+### 2026-10-14 · (plans/166 분석) 노드의 어댑터 모듈 직접 import를 결정 본문 확인 없이 「D-089 위반」으로 분류했다
+- **실수**: 코드 스멜 분석 위임(nodes·db_adapters)이 `src/nodes`의 `db_adapters.polestar.assembler`·`validators` 등 직접 import 13건을 「D-089 위반(M~H)」으로 보고했다. D-089 본문은 「조립기는 훅이 아니라 어댑터 모듈 직접 임포트(application→application)」와 「두 번째 어댑터 전까지 훅 확대 금지」를 명시 허용한다. 팀 리드 검토에서 걸러 계획서에는 「허용 범위 — 처방 대상 아님」으로 실었다
+- **원인**: 위임 프롬프트에 결정 요지를 한 줄(「DB별 SQL 특화 로직은 db_adapters에만」)로만 넣어, 결정의 허용 조항이 분석자에게 전달되지 않았다. 분석자는 요지 문장만으로 위반을 단정했다
+- **방지책**: 스멜·위반 판정을 위임할 때는 관련 결정의 **허용·예외 조항까지** 프롬프트에 넣는다. 「결정 위반」 분류는 결정 본문(`docs/decisions/D-NNN.md`)의 결정·구현 절을 읽고 근거 줄을 인용한 경우에만 쓰고, 그렇지 않으면 「결정 확인 필요」로 표시한다
+
+### 2026-10-14 · (plans/163 분석·W0) 도구 인자가 보간되는 스키마 헬퍼 SQL을 「고정 SQL」로 분류해 위험을 낮게 판정했다
+- **실수**: plans/163 §0 S1이 `mcp_server` 실행 경로를 「고정 SQL 빌더 출력이라 즉시 위험은 낮다」로 판정했고, W0 implementer도 `tools.py`의 `_pg_get_*`·`_db2_get_*`를 고정 SQL 통과표에 넣었다. 실제로는 `get_table_schema` 도구 인자 `table_name`을 이스케이프 없이 SQL 리터럴에 보간해 주입이 된다(MariaDB만 `_mariadb_literal`). W0 verifier가 로컬 PG에서 SELECT만으로 재현했다
+- **원인**: 「코드가 조립한 SQL = 고정 SQL」로 보고, 조립에 들어가는 값이 어디서 오는지(MCP 도구 인자 = 외부 입력)를 추적하지 않았다. 통과표는 무해한 대표 인자만 넣어 주입을 드러낼 수 없었다
+- **방지책**: SQL 위험 판정에서 「고정」은 **보간되는 모든 값이 코드 상수이거나 허용 목록 검증을 거친 것**일 때만 쓴다. 도구·API 인자가 들어가면 「입력 보간 SQL」로 분류하고 인용·이스케이프 함수(또는 파라미터 바인딩)를 줄 단위로 확인한다. 통과표 테스트는 기준선일 뿐이며 주입 거부 테스트를 따로 둔다
+
+### 2026-10-14 · (plans/163 W1) 검사기·문자열을 바꾸면서 그 동작에 기대는 기존 테스트를 패키지 밖·소스 문자열 단언까지 찾지 않았다
+- **실수**: S1 implementer가 `validate_readonly`를 허용 목록으로 강화하면서 `mcp_server/tests`만 확인해, 본체 `tests/test_dbhub_integration.py`가 일부러 깨진 SQL(`SELEC …`)로 실행 단계 「syntax error」를 기대하던 테스트를 놓쳤다. S3 implementer는 `_audit_clarification(…, thread_id)` 인자를 `_pre_thread_id`로 바꾸면서 라우트 **소스 문자열 개수**를 단언하는 `test_v7_audit_and_estimate.py`를 놓쳤다. 둘 다 계획 끝 모듈 단위 회귀에서야 드러났다
+- **원인**: 「바꾼 모듈의 테스트」를 패키지 디렉터리·import 관계로만 골랐다. 실행 결과(오류 문구)나 소스 텍스트에 기대는 테스트는 import 경로로 잡히지 않는다
+- **방지책**: 검사기·오류 문구·인자 이름을 바꾸면 바뀌는 **문자열 자체**(`SELEC`·`syntax error`·바꾼 호출 문자열)를 저장소 전체 `tests/`·`*/tests/`에서 grep해 단언처를 찾는다(Known Mistakes 「상수·매트릭스 변경 시 그 값을 단언하는 테스트를 repo 전체 grep」의 적용 — 패키지 경계를 넘는 테스트 포함)
+
 ### 2026-10-15 · apm_bench가 POSIX 전용 호출(`os.geteuid`·`os.kill(pid, 0)`·`O_NOFOLLOW`·`dir_fd`)에 기대어 내부망 Windows에서 첫 사전 점검부터 죽음
 - **실수**: plans/164 W2a·W2b가 로컬 파일·격리본 신뢰 검사(`os.geteuid`·권한 비트), run.log·run.pid 열기(`os.O_NOFOLLOW`·`O_NONBLOCK`), 격리본 쓰기(`dir_fd`·`fchmod`), PID 생존 확인(`os.kill(pid, 0)`)을 POSIX 전제로 짰다. 내부망 Windows PowerShell에서 `--run --env e2 --smoke`가 `AttributeError: module 'os' has no attribute 'geteuid'`로 중단됐다. `os.kill`은 Windows에서 대상 프로세스를 끝내므로 `--status`가 분리 run을 죽일 수 있었다
 - **원인**: 실행 환경을 맥·리눅스로만 가정했다. 같은 저장소의 `scripts/scenario/server.py`는 이미 `IS_WINDOWS` 분기를 두고 있었는데 대조하지 않았다. 테스트가 전부 맥에서만 돌았다
@@ -2028,6 +2043,107 @@
 - **원인**: 도메인 함수 시그니처만 보고 호출부 입력(reader 필터)까지 따라가지 않았다. 새 설정 필드가 「필드 집합 단언」 테스트에 걸리는지 grep하지 않았다.
 - **방지책**: 위임 계약에 데이터 경로를 적을 때는 생산자(쓰기)→읽기 함수→소비자까지 필터를 실측한 뒤 적는다. 새 설정 필드를 위임할 때는 `grep -rn '<접두>_' tests noise_gate/tests`로 필드 집합 단언을 찾아 「그 단언 갱신은 허용」을 프롬프트에 미리 적는다.
 
+### 2026-10-15 · (plans/166 W1) implementer가 치환을 되돌리면서 금지된 `git checkout -- <파일>`을 썼다
+- **실수**: X1 implementer가 `src/nodes/prompt_blocks.py` 치환을 되돌릴 때 위임 프롬프트가 금지한 `git checkout -- <파일>`을 1회 썼다. 그 파일의 변경은 자기 것뿐이라 결과는 HEAD 복원과 같았지만, 병행 implementer 3명이 같은 작업 트리를 쓰는 중이었다.
+- **원인**: 위임 프롬프트의 금지 목록에 `stash/reset/checkout/merge/pull`만 적고 「되돌릴 때는 손으로 Edit」 대안을 적지 않았다. 되돌리기가 필요해진 순간 가장 짧은 명령을 골랐다.
+- **방지책**: 병행 작업 트리 위임에는 금지 목록에 `restore`를 더하고 「되돌릴 때는 Edit로 원문을 복원하고 `git diff <SHA> -- <파일>`이 비었는지 확인」을 대안으로 함께 적는다(이 계획 W1 2차 위임부터 적용).
+
+### 2026-10-15 · (plans/166 분석) `alarm:` 키 리터럴 군집을 grep 개수로 세어 타입 주석·독스트링까지 「8파일 사본」으로 잡았다
+- **실수**: 166 G5가 「`alarm:` 접두 Redis 키 리터럴 비테스트 8파일」을 SSOT 위반으로 올렸으나, W1 실측에서 그중 5파일은 `alarm: EpisodeAlarm` 같은 타입 주석과 주석·독스트링이었고 실제 키는 모두 제품 코드 1곳에서만 만들어졌다(사본은 테스트 리터럴뿐) — G5는 처방 대상이 아니었다.
+- **원인**: 문자열 접두를 정규식 grep으로만 세고 문자열 리터럴(AST `Constant`·f-string) 안인지 확인하지 않았다.
+- **방지책**: 리터럴 사본 수는 AST로 문자열 상수·f-string 조각만 세고, 「사본」은 같은 키를 **만드는** 제품 코드 위치가 2곳 이상일 때만 올린다.
+
+### 2026-10-15 · (plans/166 W2 · 팀 리드) `isolation: worktree` 구현자의 worktree가 HEAD가 아니라 `main`(384f97ff)에서 만들어졌다
+- **실수**: W2 4a에서 구현자 7명을 `isolation: worktree`로 띄웠는데, worktree가 현재 브랜치 HEAD(`73851bef` · RCA)가 아니라 `main`의 `384f97ff`(7커밋 전)에서 만들어졌다. 구현자들이 `git log -1`로 알아채고 트리가 깨끗한 상태에서 `git switch --detach 73851bef`로 맞춘 뒤 작업해 피해는 없었다. 그대로 작업했다면 패치가 W1 변경을 되돌리는 차분을 담았을 것이다.
+- **원인**: worktree 격리의 기준점이 「세션 HEAD」라고 가정하고 위임 프롬프트에 기준점 확인 단계를 넣지 않았다.
+- **방지책**: worktree 구현자 위임에는 「시작하자마자 `git log --oneline -1`이 세션 시작 SHA인지 확인 · 아니면 깨끗한 상태에서 `git switch --detach <SHA>`」를 넣고, 패치는 `git diff --cached --binary <SHA>`로 SHA 기준으로 뜨게 한다. 병합 전 `git apply --check`로 확인한다.
+
+### 2026-10-15 · (plans/166 W0 분석) I4 경로 결합 목록이 `__module__` 비교·`stat()` 가드를 놓쳤다
+- **실수**: 166 W0의 I4 판정은 `src/config.py` 경로 결합을 4곳으로 적었으나, W2 4c 실측에서 같은 계열이 더 나왔다 — ① `scripts/config_fallback_check.py`가 `inspect.getmembers(src.config)` 뒤 `cls.__module__ != "src.config"`로 클래스를 걸러, 클래스를 하위 모듈로 옮기면 필드를 읽지 못해 **린트가 조용히 무력화**된다(AppConfig 48필드만 남음 · 실측) ② `tests/test_scripts/test_bench_sweep.py`·`test_bench_report.py`가 `src/config.py`의 `stat()`을 읽는다 ③ `scripts/bench/optimize.py`가 `config.py` 파일명으로 정의 파일을 참조 수에서 뺀다. 4c에서 모두 고쳤다(테스트 경로 리터럴 3줄).
+- **원인**: 경로 결합을 `src/config.py` 문자열 grep과 import 스모크로만 찾고, 모듈 이름 비교(`__module__`)·파일명 비교로 묶인 코드는 찾지 않았다.
+- **방지책**: 모듈을 패키지로 바꾸거나 클래스를 하위 모듈로 옮기기 전에 `__module__`·`getmembers`·`vars(<모듈>)`·파일명(`path.name ==`) 비교까지 grep하고, 그 모듈을 읽는 게이트(린트·카탈로그)는 이동 전후 **출력 수치가 같은지** 대조한다(수치가 0으로 줄면 무력화).
+
+### 2026-10-16 · (plans/169 · 팀 리드) patch seam 목록을 `patch`/`setattr` grep으로만 뽑아 직접 대입 seam을 놓쳤다
+- **실수**: 169 N1(a) 위임 프롬프트에 노드 네임스페이스 seam을 `build_form_fill_pivot_sql`·`recognize_month_series`·`get_domain_by_id` 3개로 적었다. `tests/test_nodes/test_r3_surface_fallback.py`는 `qg.resolve_stat_month_range = fake`처럼 **모듈 속성에 직접 대입**해 바꿔 끼우는데(5곳), 팀 리드 grep(`patch\|setattr`)에 걸리지 않았다. 구현자가 공용 함수로 옮겼다가 테스트 실패로 발견해 되돌렸다(피해 없음).
+- **원인**: seam 탐색을 `monkeypatch.setattr`·`patch(...)` 형태로만 가정했다.
+- **방지책**: 이동 전 seam grep에 직접 대입 형태(`<모듈 별칭>\.<이름> = `)와 `patch.object(<모듈>, "<이름>"`을 함께 넣는다 — 예: `grep -rnE "\b(qg|mdb|mod|module)\.<이름>\s*=|setattr\(.*<이름>|patch.*<이름>" tests`. 위임 프롬프트의 seam 목록은 「팀 리드 grep 기준 — 직접 다시 확인」으로 적는다.
+
+### 2026-10-16 · (plans/168 · 팀 리드) 공통화 전 소스 계수 가드를 경로 문자열 grep으로만 찾아 `route.__file__`로 읽는 가드를 놓쳤고, 헬퍼 래핑이 AST 가드를 공허하게 만든 것은 verifier가 찾았다
+- **실수**: `query.py` 사전 게이트를 `_run_*_pre_gates`로 모으면서 역질문 감사 호출 리터럴이 4곳→2곳이 됐다. `tests/test_scope_select/test_v7_audit_and_estimate.py`가 `Path(route.__file__).read_text()`로 그 리터럴을 4개 세는데, 위임 전 가드 목록을 `grep 'routes/query.py'`로만 만들어 이 파일이 빠졌다(계획 끝 회귀에서 발견 · 교정). 또 `StreamingResponse` 호출을 `_sse_response(...)`로 감싸자 `test_thread_history.py::test_entry_points_wrap_every_exit`(핸들러 안 `StreamingResponse` 첫 인자 검사)가 검사 대상이 0이 되어 공허하게 통과했다 — 조기 반환 5곳은 지키는 테스트가 없어졌다(verifier Major).
+- **원인**: 소스 텍스트·AST를 읽는 가드는 경로 리터럴 말고도 `module.__file__`·`inspect.getsource(module)`·`importlib` 경로로 파일을 읽는다. 또 「호출 이름」을 찾는 AST 가드는 그 호출을 헬퍼로 감싸면 실패가 아니라 **공허 통과**한다 — 테스트 통과만으로는 안 보인다.
+- **방지책**: 공통화·래핑 전에 대상 모듈을 읽는 가드를 `grep -rln '<모듈 경로>\|<모듈 별칭>.__file__\|getsource(' tests`로 모두 모으고, 출현 횟수를 스크립트로 전후 비교한다. 호출을 헬퍼로 감싸는 변경은 그 호출 이름을 찾는 AST 가드를 grep(`func.id == "<이름>"`·`getattr(n.func, "id"`)해 공허화 여부를 위임 프롬프트의 검증 항목에 넣는다(변이 1건으로 확인).
+
+### 2026-10-16 · (plans/170 · 팀 리드) Facade 우회 집계를 `._redis_cache.` grep으로만 해 `getattr(…, "_redis_cache")` 5곳을 놓쳤고, 위임 이동 전 `getsource` 가드를 위임 프롬프트에 넣지 않아 가드가 공허해졌다
+- **실수**: ① 166 I1 「Facade 우회 10곳」을 그대로 옮기며 재실측 grep을 `\._redis_cache\b`로만 해 `getattr(cache_mgr, "_redis_cache", None)` 형태 5곳(`cache_management.py:1042` · `mapping_feedback.py:168` · `redis_registration.py:214,341,361`)이 범위에서 빠졌다(verifier 발견 · 범위 밖으로 기록). ② `RedisSchemaCache` 유사어 메서드를 하위 객체로 옮기는 위임 프롬프트에 「소스를 읽는 가드」 확인을 넣지 않았다 — `test_synonym_set_routing.py:146-150`의 `inspect.getsource(RedisSchemaCache.add_global_synonym)` 키 상수 단언이 위임 독스트링으로 공허 통과했다(implementer 보고 · verifier 변이로 확인 · 새 검증 테스트로 보강). 168에서 같은 계열 교훈이 이미 기록돼 있었다.
+- **원인**: 접근 형태를 속성 접근 한 가지로 가정했고, 직전 계획의 교훈(소스·AST 가드는 래핑·위임 뒤 공허 통과)을 위임 체크리스트로 옮기지 않았다.
+- **방지책**: private 멤버 우회 집계는 `grep -rnE '\._x\b|getattr\([^)]*"_x"'` 두 형태로 센다. 메서드 본문을 옮기거나 위임으로 바꾸는 위임 프롬프트에는 `grep -rn 'getsource(\|__file__\|read_text()' tests`로 대상 클래스·모듈을 읽는 가드 목록을 넣고, 위임 뒤에도 가드가 실효인지(변이 1개) 확인하게 한다.
+
+### 2026-10-16 · (plans/173 · 팀 리드·T1) 소스 가드 리터럴 「출현 수 전후 동일」만 확인해, 호출이 헬퍼 정의 안으로 옮겨져 가드가 공허해진 것을 놓쳤다
+- **실수**: A4 `lifespan` 분해에서 SQL 파일 로거·파일 로그 정리 1회 호출을 `_init_file_logs` 헬퍼로 옮겼다. `tests/test_utils/test_log_retention.py::test_cleanup_is_actually_wired`는 `server.py` 텍스트의 `cleanup_file_logs(` 출현이 2회 이상인지만 보는데, 호출이 헬퍼 정의 안에 남아 출현 수는 2→2로 같았다. 그래서 `lifespan`에서 `_init_file_logs(config)` 호출 줄을 지워도 이 가드는 통과한다. 위임 프롬프트에 「공허 통과 금지 · 출현 수 전후 비교」를 넣었지만 구현자는 출현 수만 비교했고, verifier가 변이 1건으로 찾았다(실효 공백 없음 — 새 특성화 `test_plan173_t1_lifespan_order.py`가 같은 변이를 6건 실패로 잡음).
+- **원인**: 파일 단위 문자열 가드는 「그 리터럴이 어느 함수 경로에 있는가」를 보지 않는다. 출현 수가 같다는 것은 가드가 지키던 **호출 경로**가 유지됐다는 증거가 아니다.
+- **방지책**: 소스 가드 대상 리터럴이 있는 코드를 헬퍼로 옮기면, 출현 수 비교와 함께 **원래 호출 지점을 지우는 변이 1건**을 사본에서 돌려 그 가드(또는 대체 테스트)가 실패하는지 확인한다. 위임 프롬프트의 소스 가드 항목에 「출현 수 + 변이 1건」을 함께 적는다.
+
+### 2026-10-16 · (plans/176 · 팀 리드·T2) 「실 DB를 요구하면 skip 상태 그대로 둔다」고만 써서 통합 테스트가 떠 있던 로컬 PG에 픽스처를 적용했다
+- **실수**: T2 위임 프롬프트의 자기 테스트 목록에 `noise_gate/tests/test_polestar_noise_context_integration.py`를 「구동 중인 PG를 요구하면 skip 상태 그대로 둔다」로 적었다. 이 테스트는 PG가 떠 있으면 skip하지 않고 붙는다 — 로컬 샌드박스 PG(5434)가 떠 있어 2회 실행됐고 그때마다 `testdata/pg/init/06_plan52_noise_fixtures.sql`(멱등)을 그 DB에 적용했다. 같은 프롬프트의 「실 DB 접근 금지」와 어긋났다(피해 확인 안 됨 — 멱등 픽스처). 팀 리드의 계획 끝 `regress.py`도 이 파일을 ② 직접 import로 선택해(건너뜀 0) 같은 PG에 한 번 더 붙었다.
+- **원인**: 실 서버 의존 테스트를 「skip될 것」으로 전제했다. skip 조건은 「서버가 꺼져 있음」이지 「금지됨」이 아니다.
+- **방지책**: 실 DB·실 서버에 붙을 수 있는 통합 테스트는 위임 프롬프트에서 **실행 대상에서 명시 제외**한다(`--deselect`·파일 미지정 · 「돌리지 말 것」). skip 조건에 기대지 않는다. `regress.py`는 이런 파일을 거르지 않으므로, 로컬 서버가 떠 있는 동안의 회귀는 실서버 통합 테스트도 함께 돈다는 것을 보고에 적는다(도구 측 제외 옵션은 후속 후보).
+- **후속 조치(2026-10-16 · 사용자 결정 「옵트인 환경변수로 전환」)**: 픽스처를 쓰는 noise_gate 통합 테스트 2파일(`test_polestar_noise_context_integration.py`·`test_noise_gate_graph_integration.py` — 후자도 같은 픽스처를 적용한다)에 `RUN_DOCKER_IT=1` 옵트인 `pytestmark`를 달았다(mcp_server 실연결 테스트와 같은 변수). 기본 실행·`regress.py`에서는 skip된다.
+
+### 2026-10-16 · (plans/178 · 팀 리드·W3) 메서드를 합성 도구군 클래스로 옮기는 위임 프롬프트에 「`self`를 다른 객체에 넘기는 곳」 점검을 넣지 않았다
+- **실수**: `ApmTools`의 `apm_metrics`를 `StatsTools`로 옮기자 본문의 `ScopeTools(self)`가 Facade 대신 도구군을 넘겨 테스트 20건이 `'StatsTools' object has no attribute 'cfg'`로 실패했다. 위임 프롬프트는 `self.X` → `self.core.X` 치환만 적었고, implementer의 정규화 본문 비교(토큰 동일)도 이 유형을 잡지 못한다. 패키지 테스트가 잡아 `ScopeTools(self.core)`로 교정했다(피해 없음).
+- **원인**: 메서드 이동 시 `self`의 정체가 바뀌는 지점을 속성 접근(`self.X`)으로만 가정했다. `self`를 인자·콜백·생성자로 그대로 넘기는 형태는 치환 규칙 밖이다.
+- **방지책**: 클래스 메서드를 다른 클래스로 옮기는(Composition·Facade) 위임 프롬프트에 `grep -nE '\(self[,)]|, self[,)]|=self\b'`(옮길 본문 대상)로 `self` 전달 지점을 먼저 뽑아 목록으로 넣고, 각 지점의 수신 객체가 이동 뒤에도 같은지 확인하게 한다. 정규화 본문 비교는 이 유형의 증거가 아니다.
+
+### 2026-10-16 · (plans/177 · 팀 리드) 실 DB 통합 테스트를 지시받은 1파일만 제외해, 같은 픽스처를 쓰는 다른 파일을 자기 테스트 목록에 넣었다
+- **실수**: 위임 프롬프트에 `test_polestar_noise_context_integration.py`만 `--ignore`로 빼고, W1·W2 자기 테스트 목록에는 `test_noise_gate_graph_integration.py`를 넣었다. 이 파일도 로컬 PG(5434)가 떠 있으면 `testdata/pg/init/06_plan52_noise_fixtures.sql`(멱등 DELETE/INSERT)을 적용한다. W1이 작업 트리·기준 사본에서 각 1회(16:34~16:41 — `RUN_DOCKER_IT` 가드가 붙은 16:50 이전 · 801 통과 건너뜀 0), W2가 기준 사본에서 1회(사본은 가드 이전 rsync) 실행해 픽스처가 3회 적용됐다(피해 확인 안 됨 — 멱등 픽스처). W2 implementer가 보고해 알았고, 이후 팀 리드가 가드를 기준 사본의 두 테스트 파일에 복사하고 W3·verifier 프롬프트는 두 파일을 모두 `--ignore`했다.
+- **원인**: 「실서버에 붙는 테스트」를 지시문에 이름이 나온 파일로만 한정했고, 자기 테스트 목록을 `alarm_worker` 언급 grep으로 뽑으며 그 파일의 DB 접속 여부를 보지 않았다. 또 rsync 기준 사본은 이후 작업 트리에 추가된 안전 가드를 받지 못한다.
+- **방지책**: 자기 테스트 목록을 넘기기 전에 `grep -lE 'asyncpg|testdata/pg|5434|RUN_DOCKER_IT|importorskip\("asyncpg"\)'`로 실 DB에 붙을 수 있는 파일을 걸러 목록에서 빼고 `--ignore`를 함께 적는다. 기준 사본(rsync)에서도 테스트를 돌리게 할 때는 작업 트리에 나중에 생긴 테스트 안전 가드를 사본에 동기화하거나, 해당 파일을 명시 제외한다.
+
+### 2026-10-16 · (plans/179 · 팀 리드·W1a) 계수 가드를 AST로 전환하며 종전 가드의 「대입문 위치」 검사가 빠졌고, 구현자 변이 19건이 그 성질을 겨누지 않아 verifier가 찾았다
+- **실수**: 사용자 결정(계수 가드 → 공유 헬퍼 호출 확인)에 따라 `test_plan104_db_authz.py::test_gate_precedes_state_assembly`를 「사전 게이트 호출이 상태 조립보다 앞」 순서 검사로 바꿨다. 종전 가드는 `selected_list, _selection_denied = …` **대입문**의 위치를 봐서 「인가 결과를 받아 쓴다」까지 지켰는데, 전환 뒤에는 대입 대상을 보지 않았다. 파일 진입이 인가 결과를 버리고 요청 원문 선택으로 상태를 조립하는 변이가 기존 81파일에서 살아남았다(verifier Major · 하류 `allowed_db_ids` 필터가 있어 즉시 우회는 아님 · 새 `test_plan179_verify.py`로 메움). 구현자 변이 M1~M19는 「호출 제거·키 제거」 위주라 이 성질을 겨누지 않았다.
+- **원인**: 위임 프롬프트에 「보호 강도를 낮추지 않는다 · 변이 1건 이상」만 적고, 종전 가드가 지키던 **성질 목록**(호출 존재·순서·반환값 사용·인자 값)을 뽑아 전환 후 단언과 1:1 대조하라고 하지 않았다. 계수·위치 리터럴 가드는 리터럴 안에 「반환값을 무엇에 대입하는가」 같은 성질이 숨어 있다.
+- **방지책**: 소스 가드를 다른 형태로 전환하는 위임 프롬프트에는 「종전 단언 각각이 지키던 성질을 표로 뽑고(리터럴 안의 대입 대상·인자·키워드 포함), 전환 후 대응 단언과 그 성질을 깨는 변이를 1:1로 적는다」를 넣는다. 인가 경로는 「인가 결과를 버리는 변이」(반환값 미사용·원문 값 사용)를 필수 변이로 지정한다.
+
+### 2026-10-16 · (plans/174 T3 · implementer) 순서 표 주석에 「모듈 속성 대입이 그대로 먹는다」고 적었는데 표에 담긴 단계 함수 자체는 import 시점에 캡처된다
+- **실수**: `intent_planner._PRECHECK_STEPS`(단계 함수 14개 튜플) 주석이 「각 단계는 호출 시점에 모듈 전역을 조회한다(모듈 속성 대입이 그대로 먹는다)」였다. 단계 함수 **안에서** 부르는 전역(`_decompose_once`)은 맞지만, 표에 담긴 `_pre_*` 함수 자체를 모듈 속성으로 바꿔 끼우면 표가 옛 함수를 계속 부른다. verifier Minor로 발견 · 팀 리드가 주석 정정(현재 그런 patch 테스트는 없어 동작 피해 없음). 같은 계열이 replanner `GUARDS`·`FILTERS`·apm_query `_COERCERS`·6b `_CALL_BUILDERS`에도 있다.
+- **원인**: seam 보존을 「표 안 함수가 부르는 전역」 기준으로만 확인하고, 표 원소 자체의 patch 가능성을 주석에서 구분하지 않았다.
+- **방지책**: 순서 표·dispatch 표를 만들면 주석에 「단계 내부 전역은 호출 시점 조회 · 단계 함수 교체는 표 patch」를 구분해 적고, 위임 프롬프트의 seam 항목에 「표 원소 자체가 patch 대상인지」를 따로 넣는다.
+
+### 2026-10-16 · (plans/180 · implementer·W1) 「패키지가 Facade를 import하지 않는다」 AST 가드가 절대 import만 보아 상대 import·`import_module` 문자열이 빠져나갔다
+- **실수**: `apm/` 모듈 → `src.orchestration.apm_query` 순환 금지 가드를 `ast.Import`·`ast.ImportFrom.module`만 모아 만들었다. `from .. import apm_query`(level>0 — `module`이 `None`이라 건너뜀)와 `importlib.import_module("src.orchestration.apm_query")`를 넣는 변이가 살아남았고, 파일 목록도 `glob("*.py")`라 하위 패키지를 보지 않았다(verifier Minor · 변이 D4·D5 · 교정).
+- **원인**: import 가드를 「저장소 관례(절대 import)」 형태로만 가정했다. 구현자 변이 4건은 절대 import 형태만 겨눴다.
+- **방지책**: import 금지 가드는 level>0 `ImportFrom`을 파일 경로 기준 절대 이름으로 풀고, `import_module`/`__import__` 문자열 인자를 함께 수집하며, 대상 파일은 `rglob`으로 모은다. 변이에 상대 import 1건·동적 import 1건을 반드시 넣는다.
+
+### 2026-10-17 · (plans/166 단계 8 · 팀 리드 판독 — 원인은 plans/180 7a) 「`apm/`이 Facade를 import하지 않는다」만 가드해, `apm/`→`apm_jobs`→(지연)`apm_query` 우회 고리로 orchestration SCC가 2→8로 커진 것을 로드맵 끝 재측정에서야 찾았다
+- **실수**: 7a는 `apm/` 모듈의 `apm_query` 직접 import를 가드로 막았지만, `apm/calls`·`jobs_notices`·`targets`가 `apm_jobs`를 최상위 import하고 `apm_jobs.py:374`가 `apm_query`를 지연 import해 고리가 그대로 닫혔다. W2(O4)에서 7→2로 줄였던 §5.8 「orchestration 지연 import SCC」(목표 0)가 단계 8 재측정에서 8모듈(7ba5c96 7보다 악화)로 나왔다.
+- **원인**: 로드맵 지표(§5.8)를 마지막 단계에서만 재고, 모듈을 새로 만드는 단계(5~7)의 수용 기준에 「SCC 증가 0」을 넣지 않았다. 직접 import 금지 가드는 간접(중계 모듈 경유) 고리를 보지 못한다.
+- **방지책**: 모듈을 새로 만들거나 쪼개는 리팩터 계획은 수용 기준에 「`src/orchestration/`(또는 해당 패키지) 지연 import 포함 SCC 모듈 수 전후 증가 0」을 넣고 Wave 끝에 잰다(측정 정의: 모듈 간 import 그래프 · 함수 안 지연 import 포함 · `__init__` 제외 · 크기≥2 강연결 요소). import 금지 가드만으로 순환 부재를 결론 내지 않는다.
+- **후속**: plans/183(2026-10-17)이 역간선 `apm_jobs`→`apm_query`를 의존 역전으로 끊어 SCC 8→0 · 가드 `tests/test_orchestration/test_plan183_import_scc.py`가 orchestration SCC 0을 고정한다.
+
+### 2026-10-17 · (plans/184 W1 · implementer) 인증 DB 중간 실패 시 `app.state` 원복(L1)이 `get_current_user`의 payload-only 폴백으로 인가를 강등시키는 것을 놓쳤다
+- **실수**: 「반쯤 켜진 인증 상태」를 없애려고 풀 생성 뒤 실패에서 `user_repo` 등을 None으로 되돌렸다. `src/api/dependencies.py` `get_current_user`는 AUTH_ENABLED=true인데 `user_repo`가 None이면 토큰 payload만 믿고 `allowed_db_ids=None`(전 DB 허용)·is_active 미조회로 통과시키므로, 종전엔 DB 조회로 돌던 사용자별 인가가 오히려 풀렸다. security-auditor가 Medium으로 잡았다.
+- **원인**: 상태 정리(수명주기) 관점으로만 보고, 그 state를 읽는 인가 소비처가 None일 때 어떤 폴백을 타는지 확인하지 않았다.
+- **방지책**: 인증·인가 관련 `app.state`(user_repo·audit_repo·auth_provider 등)를 바꾸는 변경은 그 키를 읽는 의존성(`src/api/dependencies.py`)의 None 분기를 먼저 읽고, None이 fail-open 폴백이면 원복하지 않거나 fail-closed를 함께 정한다(사용자 결정 사항).
+
+### 2026-10-17 · (plans/184 W2a · implementer) 문구 변경(M1 이중 괄호)의 옛 단언을 repo grep으로 찾다가 줄바꿈으로 쪼개진 문자열 리터럴 2건을 놓쳤다
+- **실수**: 「부하 순위를 받지 못해(api_error (요청 rid))」를 단언하는 기존 테스트를 grep으로 찾아 1건만 고쳤고, `tests/test_orchestration/test_plan134_w34_apm.py`의 2건(`"…받지"` / `" 못해(api_error (요청 -)) …"`로 암묵 연결된 리터럴)은 계획 끝 회귀에서야 실패로 드러났다.
+- **원인**: 검색어를 문구 전체(「부하 순위를 받지 못해(」)로 잡아, 리터럴이 줄 사이에서 끊긴 곳이 걸리지 않았다.
+- **방지책**: 문구 변경의 옛 단언 검색은 바뀌는 **최소 조각**(예: `(요청 [^)]*))`처럼 실제로 달라지는 부분)으로 grep하고, Wave 중간에 바꾼 제품 파일을 직접 import하는 테스트 모듈 중 문구를 단언하는 모듈은 자기 테스트에 포함해 돌린다.
+
+### 2026-10-17 · (plans/186 J4 · 팀 리드) 전역 설정 읽기를 넘긴 설정 읽기로 바꾸면서 `MagicMock` 설정 대역의 참 속성 때문에 기존 테스트 2건이 소유 on 경로로 조용히 바뀐 것을 위임 범위에 넣지 않았다
+- **실수**: `_ownership_enabled()`(전역 `load_config()`)를 `capability_ownership_on(app_config)`로 바꾸자, `app_config=MagicMock()`을 넘기던 `test_semantic_router_mapping`·`test_xls_plan_integration`이 `bool(mock.router.capability_ownership_enabled)` = True로 소유 on 경로를 탔다. 테스트는 통과해 off 경로 검증이 사라진 것을 verifier가 Minor로 잡았다. 또 위임 프롬프트에 「3단 소유 판정만」이라 적어 2단 기준 경로 `subagents.classify_dbs`의 같은 전역 읽기도 처음엔 빠졌다.
+- **원인**: 「load_config를 patch하던 테스트」만 찾게 했고, 설정을 `MagicMock`으로 넘기던 테스트가 새 판정 함수에서 어떤 값을 읽게 되는지는 보지 않았다. 판정 함수의 호출부(`_llm_classify`)를 공유하는 다른 단 경로도 grep하지 않았다.
+- **방지책**: 전역 설정 읽기를 넘긴 설정 읽기로 바꿀 때는 ① 바뀐 함수의 호출부를 `grep -rn "<함수>("`로 전수 확인해 모든 단·경로에 설정을 넘기고 ② 그 경로를 타는 테스트 중 설정을 `MagicMock()`으로 만드는 곳(`grep -rn "MagicMock()" tests | grep -i config`)을 찾아 플래그 필드를 명시하게 위임 프롬프트에 넣는다. `bool(getattr(...))` 판정은 MagicMock에서 늘 참이다.
+
+### 2026-10-17 · (plans/167 W1 · implementer — 팀 리드 기록) 로그 가림 정규식이 값 경계를 넘어 uvicorn 접근 로그 줄을 지우고, `[…]*secret[…]*` 갈래가 이차 역추적으로 이벤트 루프를 멈출 수 있었다
+- **실수**: 첫 구현에서는 민감 키 규칙의 `[:=]\s*`와 `bearer\s+`가 값 없이 다음 낱말로 넘어갔다. 그래서 `/auth/bearer HTTP/1.1` 같은 요청 줄 전체를 가렸고, 인자만 가린 렌더와 결과가 달라 `args=None` 폴백이 일어났다. uvicorn `AccessFormatter`는 `record.args` 5-튜플을 풀어 쓰므로 언팩 예외가 나고 접근 로그 줄이 사라졌다. 인증 없는 요청 하나로 유발된다. 또 `[A-Za-z0-9_.\-]*secret[A-Za-z0-9_.\-]*`와 `\b[A-Za-z][…]*://`는 `"secret-"*n`·`"a-"*n` 입력에서 이차 시간이 걸렸다(16KB 경로 0.6s · 64KB 9.7s — 로깅은 이벤트 루프에서 동기 실행된다). 적용 순서(Bearer → 민감 키) 때문에 `Bearer token=abc` → `***abc`로 비밀이 새기도 했다. verifier·security-auditor 한 라운드에서 모두 잡혀 교정했다.
+- **원인**: 「비밀이 있으면 메시지 전체를 가려 `args=None`」을 일반 규칙으로 두면서, `args`를 직접 소비하는 포매터가 있는지 실측하지 않았다. 정규식은 양성·음성 문자열만 테스트하고 적대 입력 시간과 규칙 간 순서 상호작용은 재지 않았다.
+- **방지책**: 로그 레코드를 고치는 코드는 ① `record.args`를 직접 쓰는 포매터(uvicorn `AccessFormatter` 등)에는 `args` 튜플 구조를 유지하고 ② 값 패턴이 공백을 건너 다음 낱말을 먹지 않게 연산자 뒤 공백 규칙을 명시한다. ③ 식별자는 한 번만 잡고 판정은 콜백에서 하며 소유 수량자를 쓴다. ④ 64KB 적대 입력의 시간 상한 테스트를 둔다. ⑤ 여러 치환 규칙은 「구체(키·값) → 일반(Bearer)」 순서로 적용하고, 교차 입력 테스트로 순서를 고정한다.
+
+### 2026-10-19 · (plans/158 · 팀 리드) 테스트·벤치가 개발자 로컬 상태(`.env`·선택 extra·라이브러리 버전·정본 데이터 개수·editable 설치·실시간 시계)에 기대 기준 워크트리 회귀에서 73건이 「원래 실패」로 상주했다
+- **실수**: 테스트 config가 `multi_db`·사다리 플래그를 명시하지 않아 `.env`의 `ACTIVE_DB_IDS`로 파일 경로 존 역질문 발동 여부가 갈렸고(14건), eval_routing 서브프로세스는 `os.environ` 상속으로 미입력 플래그 경고·활성 DB 0에 걸렸다(2건). 그 밖에 `instructor` 설치 가정(2), FastAPI 0.141의 `app.routes` 비평탄화(1), 운영 정본 `config/db_profiles/` 예시 개수 단언(2), sre_agent venv의 editable 설치 가정 — 벤치 러너가 자식 `PYTHONPATH`에 scripts만 넣음(51), 감사 `elapsed_s` 실시간 비교(1). `.env` 있는 개발 맥에서는 대부분 통과해 기준 워크트리(`.env` 없음)에서만 드러났고, 플래키 1건은 `[이번 변경 탓]`으로 잘못 귀속됐다.
+- **원인**: 테스트를 쓴 환경에서 통과하는지만 보고, `.env`·선택 패키지·설치 상태가 없는 체크아웃에서 같은 결과인지 확인하지 않았다. 「`.env` 누수 차단」을 검증 대상 필드에만 적용하고, 분기를 바꾸는 간접 필드(활성 DB·사다리 플래그)는 빠뜨렸다.
+- **방지책**: ① `AppConfig(...)` fixture는 검증 분기를 바꾸는 간접 필드(`multi_db`·사다리 플래그)까지 명시하고, 서브프로세스 테스트는 `_ENV`에 같은 키를 고정한다(전역 conftest autouse 금지 — G-2). ② 새 테스트는 `git worktree add --detach <dir> <SHA>`(`.env` 미복사)에서 한 번 돌려 본다. ③ 선택 extra는 제품과 같은 가용성 판정 함수로 사유 명시 skip, 프레임워크 내부 표현(`app.routes`) 대신 공개 계약(`app.openapi()`)을 단언, 운영 정본 데이터 개수 대신 `tmp_path` 고정 입력. ④ 자식 프로세스를 띄우는 러너는 import 경로를 스스로 구성한다(editable 설치 가정 금지). ⑤ 비트 동일 비교에 시각 계측이 섞이면 주입 시계로 고정한다(`serial`로 가리지 않음).
 ### 2026-10-17 · (plans/164 W7 · 팀 리드) 레지스트리 예시를 벤치 시나리오 프롬프트와 같은 문장으로 지시해 few-shot 유사 예문 관문에 걸렸다
 - **실수**: 신규 보기 `apm.instance_trend`의 레지스트리 예시를 「web01 오늘 시간당 응답시간」으로, 같은 Wave의 벤치 시나리오를 「<host> 오늘 시간당 응답시간」으로 함께 지시했다. 예시가 시나리오와 거의 같아 `--fewshot-check` 유사 예문 위반이 났고, 그 예시로 돌린 첫 MLX 결과는 예문 복사 효과가 섞여 다시 돌려야 했다(재실행에서는 보기를 잘못 골랐다)
 - **원인**: 프롬프트 예시와 측정 시나리오를 같은 문장에서 만들면 측정이 오염된다는 벤치 규칙(D-323 위생)을 위임 프롬프트를 쓸 때 대조하지 않았다

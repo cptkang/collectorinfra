@@ -20,6 +20,9 @@ def _fake_config():
     return SimpleNamespace(
         query=SimpleNamespace(default_limit=100),
         text2sql=SimpleNamespace(multi_full_validation=False),
+        multi_db=SimpleNamespace(zone_group_exclusive=True),
+        composite=SimpleNamespace(prior_scope_by_db_enabled=False),
+        server=SimpleNamespace(answer_reserve_sec=0),
         get_polestar_db_ids=lambda: set(),
     )
 

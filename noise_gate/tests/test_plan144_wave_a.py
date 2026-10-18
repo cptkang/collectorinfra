@@ -121,7 +121,11 @@ def _polestar_record(alarm_id: str, severity: int = 2, server: str = "srv-1") ->
 
 
 def _dedup_worker(**ng) -> AlarmWorker:
-    base = dict(repeat_interval_seconds=100, sev3_repeat_interval_seconds=100)
+    base = dict(
+        repeat_interval_seconds=100,
+        sev3_repeat_interval_seconds=100,
+        dedup_severity_rise_bypass=False,
+    )
     base.update(ng)
     return AlarmWorker(SimpleNamespace(noise_gate=SimpleNamespace(**base)))
 

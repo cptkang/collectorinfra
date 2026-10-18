@@ -306,6 +306,8 @@ def test_entry_points_wrap_every_exit() -> None:
         "process_file_query_stream",
     ):
         fn = funcs[name]
+        sse_exits = 0
+        json_exits = 0
         for node in ast.walk(fn):
             if (
                 isinstance(node, ast.Return)
@@ -313,7 +315,32 @@ def test_entry_points_wrap_every_exit() -> None:
                 and getattr(node.value.func, "id", None) == "QueryResponse"
             ):
                 pytest.fail(f"{name}:{node.lineno} — QueryResponse를 turn.response() 없이 반환")
-            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "StreamingResponse":
+            # 비스트림 진입은 출구가 전부 `await turn.response(...)`다 — 응답을 만드는 공유 헬퍼
+            # (`_pre_gate_response` 등 · plans/179 W1a)를 그대로 반환해 기록기를 건너뛰지 않는다
+            if name in ("process_query", "process_file_query") and isinstance(node, ast.Return):
+                value = node.value
+                # mypy용 `cast(QueryResponse, await turn.response(...))`는 벗겨서 본다
+                if (
+                    isinstance(value, ast.Call)
+                    and getattr(value.func, "id", None) == "cast"
+                    and len(value.args) == 2
+                    and getattr(value.args[0], "id", None) == "QueryResponse"
+                ):
+                    value = value.args[1]
+                wrapped = (
+                    isinstance(value, ast.Await)
+                    and isinstance(value.value, ast.Call)
+                    and isinstance(value.value.func, ast.Attribute)
+                    and value.value.func.attr == "response"
+                    and getattr(value.value.func.value, "id", None) == "turn"
+                )
+                assert wrapped, f"{name}:{node.lineno} — turn.response() 없이 반환"
+                json_exits += 1
+            # SSE 출구는 공용 헬퍼 `_sse_response(gen)`로도 나간다(plans/168 A1) — 같은 검사
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) in (
+                "StreamingResponse", "_sse_response",
+            ):
+                sse_exits += 1
                 first = node.args[0]
                 ok = (
                     isinstance(first, ast.Call)
@@ -324,6 +351,13 @@ def test_entry_points_wrap_every_exit() -> None:
                 assert ok, (
                     f"{name}:{node.lineno} — StreamingResponse가 turn.stream()으로 감싸지지 않았다"
                 )
+        # 검사 대상이 0이면 공허 통과다 — 진입별 출구 수 하한(plans/168). plans/179 W1a: 사전 게이트
+        # 조기 반환(선택 거부·역질문·저장 값 삭제)이 공유 판정 + 출구 1곳으로 합쳐졌다 — 스트림은
+        # 사전 게이트 1 + 그래프 턴 1, 비스트림은 사전 게이트 1 + 상한 부분 결과 1 + 그래프 턴 1.
+        min_exits = {"process_query_stream": 2, "process_file_query_stream": 2}.get(name, 0)
+        assert sse_exits >= min_exits, f"{name} — SSE 출구 {sse_exits}개를 찾았다(≥{min_exits})"
+        min_json = {"process_query": 3, "process_file_query": 3}.get(name, 0)
+        assert json_exits >= min_json, f"{name} — 응답 출구 {json_exits}개를 찾았다(≥{min_json})"
 
 
 # ---------------------------------------------------------------------------

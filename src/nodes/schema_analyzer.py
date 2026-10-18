@@ -13,11 +13,14 @@ parsed_requirements를 기반으로 LLM이 필요한 테이블과 컬럼을 선�
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 import re
 import time
 import unicodedata
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -29,7 +32,7 @@ from src.dbhub.models import SchemaInfo, schema_to_dict
 from src.llm import create_llm
 from src.routing.registry import hangul_identifiers_allowed
 from src.schema_cache.cache_manager import get_cache_manager
-from src.nodes.table_selection import (
+from src.pipeline.table_selection import (
     TableSelection,
     catalog_columns,
     load_db_description,
@@ -362,12 +365,41 @@ async def _collect_live_samples(
     logger.info("라이브 샘플 수집 완료: %.1fs 소요 (db_id=%s)", elapsed, db_id)
 
 
+#: 수동 프로필 파싱 캐시(plans/186 P3) — 절대 경로 → ((mtime_ns, 크기), 파싱 결과). 경로마다
+#: 마지막 판만 둔다(관리자 흐름이 프로필을 고치면 mtime·크기가 바뀌어 다시 읽는다).
+_MANUAL_PROFILE_CACHE: dict[str, tuple[tuple[int, int], Any]] = {}
+
+
+def _clear_manual_profile_cache() -> None:
+    """수동 프로필 파싱 캐시를 비운다(테스트 격리용)."""
+    _MANUAL_PROFILE_CACHE.clear()
+
+
+def _parse_profile_file(path: str, loader: Callable[[Any], Any]) -> Any:
+    """프로필 파일을 파싱한다 — 경로·mtime·크기가 같으면 캐시 사본을 준다(plans/186 P3).
+
+    반환은 늘 깊은 복사라 호출자 변형이 캐시에 새지 않는다. 읽기·파싱 예외는 캐시하지 않고
+    그대로 올린다(호출부가 경고 후 폴백하고, 다음 호출이 다시 읽는다).
+    """
+    st = os.stat(path)
+    key = os.path.abspath(path)
+    stamp = (st.st_mtime_ns, st.st_size)
+    hit = _MANUAL_PROFILE_CACHE.get(key)
+    if hit is not None and hit[0] == stamp:
+        return copy.deepcopy(hit[1])
+    with open(path, encoding="utf-8") as f:
+        data = loader(f)
+    _MANUAL_PROFILE_CACHE[key] = (stamp, data)
+    return copy.deepcopy(data)
+
+
 def _load_manual_profile(db_id: str) -> Optional[dict]:
     """수동 프로필(source: manual)을 YAML/JSON 파일에서 로드한다.
 
     config/db_profiles/{db_id}.yaml 파일을 읽어서 source 필드가
     "manual"이면 내용을 dict로 반환한다.
-    YAML이 없으면 JSON fallback({db_id}.json)도 시도한다.
+    YAML이 없으면 JSON fallback({db_id}.json)도 시도한다. 파싱 결과는 파일 mtime·크기 기준으로
+    캐시한다(`_parse_profile_file` · plans/186 P3).
 
     known_attributes가 객체 리스트([ {name, description, synonyms} ])일 경우,
     다운스트림 호환을 위해 문자열 리스트 버전도 각 패턴에 추가한다:
@@ -391,8 +423,7 @@ def _load_manual_profile(db_id: str) -> Optional[dict]:
         import yaml
 
         if os.path.exists(yaml_path):
-            with open(yaml_path, "r", encoding="utf-8") as f:
-                profile_data = yaml.safe_load(f)
+            profile_data = _parse_profile_file(yaml_path, yaml.safe_load)
     except ImportError:
         pass  # PyYAML 없으면 JSON fallback
     except Exception as e:
@@ -403,8 +434,7 @@ def _load_manual_profile(db_id: str) -> Optional[dict]:
         json_path = os.path.join(profiles_dir, f"{db_id}.json")
         if os.path.exists(json_path):
             try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    profile_data = json.load(f)
+                profile_data = _parse_profile_file(json_path, json.load)
             except Exception as e:
                 logger.warning("수동 프로필 JSON 읽기 실패 (%s): %s", json_path, e)
 
@@ -579,6 +609,422 @@ def _reconstruct_schema_info(schema_dict: dict) -> SchemaInfo:
     return schema
 
 
+@dataclass
+class _AnalyzeContext:
+    """`schema_analyzer` 단계 함수가 함께 읽는 요청 스코프 값(plans/173 T5 · 이 모듈 전용)."""
+
+    state: AgentState
+    parsed: dict[str, Any]
+    query_targets: list[str]
+    db_id: str
+    llm: BaseChatModel
+    app_config: AppConfig
+    cache_mgr: Any
+
+
+@dataclass
+class _TableChoice:
+    """관련 테이블 사전 선택(2단계 앞부분) 결과 — 뒤 단계가 이어 읽는 값.
+
+    ``relevant``가 None이면 정의 기반 선별·Q-5 생략이 모두 불성립이라 노드가 LLM 선택을 부른다.
+    """
+
+    relevant: list[str] | None
+    table_selection: TableSelection | None
+    definition_profile: dict[str, Any] | None
+    query_syn_tables: set[str] | None
+
+
+async def _preselect_tables(ctx: _AnalyzeContext, full_schema: SchemaInfo) -> _TableChoice:
+    """2. LLM 선택 전에 관련 테이블을 정한다 — 2-0 정의 기반 선별 → Q-5 생략 판정 순서.
+
+    둘 다 불성립이면 ``relevant=None``을 돌려주고 LLM 선택은 노드가 부른다(그 호출의
+    레지스트리 게이트 인자를 노드 본문에 두는 소스 가드 — plans/137 W10).
+    """
+    parsed, db_id = ctx.parsed, ctx.db_id
+    # 2. LLM 기반 관련 테이블 선택
+    # plans/119 Q-5(플래그 기본 off): 질의의 유사어 테이블 신호가 프로필 선언 집합
+    # (`allowed_tables`) 안이면 LLM을 부르지 않는다 — 아래 2-2 필터·보충의 결과가 그때는
+    # LLM 출력과 무관하게 선언 집합이다. 신호는 2-2에서 재사용한다(중복 조회·로그 방지).
+    _query_syn_tables: set[str] | None = None
+    relevant: list[str] | None = None
+    _intent = ctx.state.get("routing_intent")
+    # 2-0. 정의 기반 선별(plans/139 W4 · D-308 G-1) — 프로필에 테이블 정의가 있고
+    # 알람 의도가 아니면 공용 선별(`select_tables` — 멀티 경로와 같은 함수) 결과를
+    # 그대로 쓴다. 그때는 아래 Q-5 생략·LLM 선택·EAV 보충·허용 목록 필터/강제 보충·
+    # 유사어 동적 보완을 모두 건너뛴다. 정의가 없는 DB는 종전 경로 그대로다.
+    table_selection: TableSelection | None = None
+    _def_prof = _load_manual_profile(db_id)
+    if _def_prof is not None and uses_definition_selection(_def_prof, _intent):
+        table_selection = await select_tables(
+            llm=ctx.llm,
+            question=parsed.get("original_query", "") or "",
+            sub_query_context=None,
+            db_id=db_id,
+            db_description=await load_db_description(ctx.cache_mgr, db_id),
+            schema_tables=full_schema.tables,
+            profile=_def_prof,
+            app_config=ctx.app_config,
+            relationships=full_schema.relationships,
+        )
+        relevant = list(table_selection.selected)
+    if (
+        relevant is None
+        and _table_select_skip_enabled(ctx.app_config) and _intent != "alarm_query"
+    ):
+        _skip_prof = _load_manual_profile(db_id)
+        if _skip_prof and "allowed_tables" in _skip_prof:
+            try:
+                _query_syn_tables = await _query_synonym_tables(
+                    ctx.cache_mgr, db_id, parsed, ctx.query_targets, ctx.app_config,
+                )
+            except Exception as e:
+                logger.warning(
+                    "테이블 선택 생략 판정 불가(유사어 조회 실패) — LLM 선택: %s", e,
+                )
+            else:
+                relevant = _declared_tables_if_signal_inside(
+                    _skip_prof, full_schema, _query_syn_tables,
+                )
+    return _TableChoice(relevant, table_selection, _def_prof, _query_syn_tables)
+
+
+async def _apply_allowed_tables(
+    ctx: _AnalyzeContext,
+    full_schema: SchemaInfo,
+    relevant: list[str],
+    choice: _TableChoice,
+    _manual_prof: dict[str, Any] | None,
+    _routing_intent: str | None,
+) -> list[str]:
+    """2-2. 수동 프로필 `allowed_tables`로 걸러 내고 LLM이 빠뜨린 프로필 테이블을 보충한다."""
+    db_id = ctx.db_id
+    _query_syn_tables = choice.query_syn_tables
+    # 2-2. allowed_tables 필터링 + 보충 (수동 프로필에 허용 테이블이 정의된 경우)
+    # allowed_tables가 정의되면:
+    #   1) LLM이 선택한 테이블 중 allowed_tables에 없는 것을 제거
+    #   2) allowed_tables에 있지만 LLM이 선택하지 않은 테이블을 보충
+    #      (LLM 환각으로 누락되는 문제 방지)
+    if (
+        _manual_prof and "allowed_tables" in _manual_prof
+        and _routing_intent != "alarm_query"
+        and choice.table_selection is None  # 정의 기반 선별은 후보 단계에서 이미 걸렀다(W4)
+    ):
+        _allowed = {t.lower() for t in _manual_prof["allowed_tables"]}
+        # 강제 보충 대상은 **수동 프로필에 적힌 테이블만**이다(plans/114 P-4①).
+        # 아래에서 `_allowed` 에 유사어 매칭 테이블이 합쳐지는데, 그것까지 보충하면
+        # LLM 이 고르지 않은 잡음 테이블이 relevant 로 들어온다 — 폐쇄망 실측에서
+        # 보충 557회 중 61회가 화이트리스트 밖 테이블이었고(`sms_*_file_info`·
+        # `rep_document`·`core_schema_ver`), 그 테이블의 샘플 수집이 예산을 태웠다
+        # (§2.8-②⑤). 유사어 테이블은 **허용만** 한다 — 멀티 게이트
+        # (`multi_db_executor._scope_multi_schema`)가 필터만 하고 보충하지 않는 것과 같다.
+        # 보충 순서는 프로필 기재 순서로 고정한다 — set 순회는 해시 시드마다 달라
+        # relevant·프롬프트 접두가 재기동마다 바뀐다(plans/184 J3).
+        _supplement_bare = list(dict.fromkeys(t.lower() for t in _manual_prof["allowed_tables"]))
+        # 매핑 피드백(synonyms)에 등록된 테이블을 allowed_tables에 동적 보완하되,
+        # **이번 질의 용어와 매칭된 유사어의 테이블만** 추가한다(D-051). 전량 추가하면
+        # 누적 유사어 전 테이블이 _allowed로 유입되어 relevant·프롬프트 토큰이 폭증한다
+        # (실측: b0 _allowed 5→407, relevant 400, system_prompt 104K > 95K 한도).
+        try:
+            if _query_syn_tables is None:
+                _query_syn_tables = await _query_synonym_tables(
+                    ctx.cache_mgr, db_id, ctx.parsed, ctx.query_targets, ctx.app_config,
+                )
+            _allowed |= _query_syn_tables
+        except Exception as e:
+            logger.warning("synonyms 테이블 allowed_tables 동적 보완 실패: %s", e)
+        # ★ DEBUG[4]: 필터링 조건 확인
+        logger.debug("DEBUG[4] db_id=%s, allowed_tables=%s", db_id, _allowed)
+        logger.debug("DEBUG[4] relevant before filter: %s", relevant)
+        logger.debug("DEBUG[4] bare names: %s", [t.rsplit('.', 1)[-1].lower() for t in relevant])
+
+        # Step 1: LLM 선택 중 allowed_tables에 있는 것만 남김
+        _filtered = [
+            t for t in relevant
+            if t.rsplit(".", 1)[-1].lower() in _allowed
+        ]
+
+        # Step 2: allowed_tables에 있지만 LLM이 선택하지 않은 테이블을 보충
+        # full_schema에서 실제 존재하는 테이블명(schema.table 형식)으로 매핑
+        _filtered_bare = {t.rsplit(".", 1)[-1].lower() for t in _filtered}
+        _all_tables_map: dict[str, str] = {}  # bare_lower -> full_name
+        for t in full_schema.tables.keys():
+            _all_tables_map[t.rsplit(".", 1)[-1].lower()] = t
+
+        for allowed_bare in _supplement_bare:
+            if allowed_bare not in _filtered_bare:
+                full_name = _all_tables_map.get(allowed_bare)
+                if full_name:
+                    _filtered.append(full_name)
+                    logger.info(
+                        "allowed_tables 보충: LLM 미선택 테이블 추가 '%s'",
+                        full_name,
+                    )
+
+        # ★ DEBUG[4]: 필터링+보충 결과
+        logger.debug("DEBUG[4] filtered+supplemented result: %s", _filtered)
+        if _filtered:
+            _removed = set(relevant) - set(_filtered)
+            if _removed:
+                logger.info(
+                    "allowed_tables 필터링: 제거=%s, 유지=%s",
+                    _removed, [t for t in _filtered],
+                )
+            relevant = _filtered
+    return relevant
+
+
+def _apply_alarm_tables(
+    full_schema: SchemaInfo,
+    relevant: list[str],
+    _manual_prof: dict[str, Any] | None,
+) -> list[str]:
+    """alarm_query: 알람 전용 테이블로 거르고(또는 core로 제한) 핵심 알람 테이블을 보충한다."""
+    _all_tables_map = {t.rsplit(".", 1)[-1].lower(): t for t in full_schema.tables.keys()}
+    # 순회 순서가 relevant 순서가 되므로 튜플로 고정한다(plans/184 J3 — set은 해시 시드마다 다르다).
+    _alarm_core_set = ("cmm_alarm", "cmm_alarm_def", "cmm_alarm_active")
+
+    # [Fix C-1] alarm_allowed_tables 명시 필터링
+    # LLM 폴백(전체 또는 과다 선택) 감지: 전체 테이블의 50% 초과 or 10개 초과
+    _total_count = len(full_schema.tables)
+    _is_llm_fallback = len(relevant) > max(int(_total_count * 0.5), 10)
+
+    _alarm_allowed: set[str] | None = None
+    if _manual_prof and "alarm_allowed_tables" in _manual_prof:
+        _alarm_allowed = {t.lower() for t in _manual_prof["alarm_allowed_tables"]}
+
+    if _alarm_allowed:
+        # 명시적 alarm_allowed_tables 기반 필터
+        _filtered_alarm = [
+            t for t in relevant
+            if t.rsplit(".", 1)[-1].lower() in _alarm_allowed
+        ]
+        if _filtered_alarm:
+            relevant = _filtered_alarm
+            logger.info(
+                "alarm_query: alarm_allowed_tables 필터 적용: %d → %d개",
+                len(full_schema.tables), len(relevant),
+            )
+        else:
+            # 필터 후 빈 경우 core 테이블만 유지
+            relevant = [
+                _all_tables_map[b] for b in _alarm_core_set
+                if b in _all_tables_map
+            ]
+            logger.warning(
+                "alarm_query: alarm_allowed_tables 필터 후 빈 결과, core 테이블로 복원: %s",
+                relevant,
+            )
+    elif _is_llm_fallback:
+        # [Fix C-2] alarm_allowed_tables 미정의 + LLM 폴백: core 테이블 하드캡
+        relevant = [
+            _all_tables_map[b] for b in _alarm_core_set
+            if b in _all_tables_map
+        ]
+        logger.warning(
+            "alarm_query: LLM 폴백 감지 (%d개), core 테이블로 제한: %s",
+            _total_count, relevant,
+        )
+
+    # [Fix C-3] 핵심 알람 테이블 누락 보충
+    _relevant_bare = {t.rsplit(".", 1)[-1].lower() for t in relevant}
+    for _alarm_bare in _alarm_core_set:
+        if _alarm_bare not in _relevant_bare:
+            _full_name = _all_tables_map.get(_alarm_bare)
+            if _full_name:
+                relevant.append(_full_name)
+                logger.info("alarm_query: 알람 핵심 테이블 보충: %s", _full_name)
+    return relevant
+
+
+def _build_schema_dict(
+    state: AgentState,
+    full_schema: SchemaInfo,
+    full_schema_dict: dict[str, Any],
+    relevant: list[str],
+    choice: _TableChoice,
+) -> dict[str, Any]:
+    """3. 관련 테이블만 담은 schema_dict를 만들고 카탈로그·캐시 샘플을 붙인다(4단계 앞부분)."""
+    # 3. 스키마를 딕셔너리로 변환 (관련 테이블만 추출)
+    schema_dict = schema_to_dict(full_schema, relevant)
+    # 조회 대상 전체 카탈로그(plans/146 W1 · G-1 (b)) — 정의 기반 선별이고 검증기가
+    # 읽는 엔진(`active_db_engine` 백틱 엔진 · 1·2단)일 때만 싣는다. 검증기는 같은
+    # 상태 값으로 엔진을 정하므로(없으면 postgresql) 읽지 않을 카탈로그를 남기지 않는다.
+    if (
+        choice.table_selection is not None and choice.definition_profile is not None
+        and _uses_backtick_quotes(state.get("active_db_engine"))
+    ):
+        schema_dict[CATALOG_COLUMNS_KEY] = catalog_columns(
+            full_schema.tables, choice.definition_profile
+        )
+    # ★ DEBUG[5]: 최종 schema_dict의 테이블 키 확인
+    logger.debug(
+        "DEBUG[5] final schema_dict tables: %s", list(schema_dict.get("tables", {}).keys())
+    )
+
+    # 4. 샘플 데이터 수집 (관련 테이블만)
+    # 캐시에서 로드한 경우 샘플 데이터가 있을 수 있음 — 부착 시점에 값 절단
+    # (CLOB성 대형 값의 상태·체크포인트·PII 스크럽 무상한 유입 차단, D-154)
+    if full_schema_dict:
+        for table_name in relevant:
+            cached_table = full_schema_dict.get("tables", {}).get(table_name, {})
+            if cached_table.get("sample_data"):
+                schema_dict["tables"][table_name]["sample_data"] = cap_sample_rows(
+                    cached_table["sample_data"]
+                )
+    return schema_dict
+
+
+async def _load_structure_meta(cache_mgr: Any, db_id: str) -> dict[str, Any] | None:
+    """구조 정보를 읽는다 — ①수동 프로필 ②관리자 승인 적용본 (없으면 None · plans/104 R1·R3)."""
+    # 구조 정보: ①수동 프로필 ②관리자 승인 적용본 ③없음 (plans/104 §3.3 R3 · D-227).
+    # 질의 경로는 구조를 분석하지 않고 읽기만 한다(R1) — LLM 구조 분석·승인 대기·
+    # 프로필 파일 기록은 관리자 「DB 구조」 탭으로 옮겨졌다.
+    structure_meta: dict[str, Any] | None = None
+
+    # 1차: 수동 프로필 (승인본보다 우선 — 승인본은 수동 프로필을 덮지 않는다)
+    manual_profile = _load_manual_profile(db_id)
+    if manual_profile is not None:
+        # source 필드는 메타데이터이므로 structure_meta에서 제거
+        structure_meta = {
+            k: v for k, v in manual_profile.items() if k != "source"
+        }
+        # Redis 캐시에도 저장 (성능 최적화)
+        try:
+            await cache_mgr.save_structure_meta(db_id, structure_meta)
+        except Exception as e:
+            logger.warning(
+                "수동 프로필 Redis 캐시 저장 실패: %s", e
+            )
+
+        # known_attributes_detail → Redis eav_name_synonyms 동기화
+        for pattern in structure_meta.get("patterns", []):
+            detail = pattern.get("known_attributes_detail")
+            if detail:
+                try:
+                    synced = await cache_mgr.sync_known_attributes_to_eav_synonyms(
+                        detail
+                    )
+                    if synced > 0:
+                        logger.info(
+                            "known_attributes → eav_name_synonyms 동기화: %d개 (db_id=%s)",
+                            synced, db_id,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "known_attributes → eav_name_synonyms 동기화 실패: %s", e
+                    )
+
+    # 2차: 관리자가 승인한 적용본 (Redis → 없으면 파일 백업에서 복원)
+    if structure_meta is None:
+        try:
+            applied = await cache_mgr.get_applied_structure_meta(db_id)
+            if applied:
+                structure_meta = applied
+                logger.info("구조 정보 적용본 사용: db_id=%s", db_id)
+        except Exception as e:
+            logger.warning("구조 정보 적용본 조회 실패: %s", e)
+    return structure_meta
+
+
+def _attach_structure_meta(
+    state: AgentState,
+    schema_dict: dict[str, Any],
+    structure_meta: dict[str, Any] | None,
+    descriptions: dict[str, str],
+    db_id: str,
+) -> list[dict[str, Any]] | None:
+    """구조 정보를 schema_dict에 붙이고, 구조·컬럼 설명이 없으면 사유 노트를 돌려준다."""
+    # 3차: 없음 — 멈추지 않고 구조 안내 없이 진행하되 사유를 남긴다
+    # (G-1 (a) · 침묵 강등 금지)
+    asset_notes: list[dict[str, Any]] | None = None
+    if structure_meta:
+        schema_dict["_structure_meta"] = structure_meta
+        # D-294 — 프로필 관계(추론·확인)를 관련 테이블 사이 관계에 더한다(멀티 경로와 대칭)
+        attach_profile_relationships(schema_dict, structure_meta)
+    else:
+        logger.warning(
+            "구조 정보 없음(수동 프로필·승인본) — 구조 안내 없이 진행: db_id=%s", db_id
+        )
+        asset_notes = list(state.get("dependency_notes") or [])
+        add_db_note(asset_notes, structure_missing_note(db_id))
+
+    # 컬럼 설명은 질의 경로에서 LLM으로 만들지 않는다(plans/104 B-6 · G-9 (a)). 백업 복원
+    # 뒤에도 비었으면 구조 정보 없음과 같이 질의마다 사유를 남긴다 — 캐시가 데워진 뒤 조용히
+    # 품질이 떨어지지 않게(침묵 강등 금지). 한 응답 안에서는 DB당 1건.
+    if not descriptions:
+        if asset_notes is None:
+            asset_notes = list(state.get("dependency_notes") or [])
+        add_db_note(asset_notes, descriptions_missing_note(db_id))
+    return asset_notes
+
+
+async def _load_lookup_synonyms(
+    cache_mgr: Any,
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """resource_type/eav_name 유사단어를 읽고, 글로벌 사전이 비었으면 파일에서 자동 적재한다."""
+    # resource_type/eav_name 유사단어 로드
+    resource_type_synonyms: dict[str, list[str]] = {}
+    eav_name_synonyms: dict[str, list[str]] = {}
+
+    if cache_mgr and cache_mgr.redis_available:
+        try:
+            resource_type_synonyms = await cache_mgr.load_resource_type_synonyms()
+            eav_name_synonyms = await cache_mgr.load_eav_name_synonyms()
+        except Exception as e:
+            logger.warning("resource_type/eav_name 유사단어 로드 실패: %s", e)
+
+    # 글로벌 유사단어 파일 자동 로드 (첫 실행 시)
+    if cache_mgr and cache_mgr.redis_available:
+        try:
+            existing_global = await cache_mgr.load_global_synonyms()
+            if not existing_global:
+                # 글로벌 사전이 비어있으면 파일에서 자동 로드
+                from src.schema_cache.synonym_loader import SynonymLoader
+
+                synonym_file = "config/global_synonyms.yaml"
+                if os.path.exists(synonym_file):
+                    loader = SynonymLoader(redis_cache=cache_mgr.redis_cache)
+                    result = await loader.load_auto(synonym_file)
+                    logger.info("글로벌 유사단어 자동 로드: %s", result.message)
+        except Exception as e:
+            logger.warning("글로벌 유사단어 자동 로드 실패: %s", e)
+    return resource_type_synonyms, eav_name_synonyms
+
+
+async def _load_column_value_index(
+    app_config: AppConfig,
+    cache_mgr: Any,
+    db_id: str,
+    schema_dict: dict[str, Any],
+    client: Any,
+) -> dict[str, Any] | None:
+    """E5-2 값 검색 인덱스를 적재한다 — `value_retrieval` off면 None(회귀 0)."""
+    # E5-2 값 검색 인덱스 런타임 적재 (Plan 61 §12.3-3, D-075). value_retrieval OFF면
+    # 미진입(state에 None → 주입 no-op, 회귀 0). load 우선·없으면 best-effort build.
+    column_value_index: dict[str, Any] | None = None
+    if app_config.synonym.value_retrieval:
+        try:
+            from src.routing.domain_config import get_domain_by_id
+            from src.schema_cache.value_index import load_or_build_value_index
+
+            _engine = ""
+            _dom = get_domain_by_id(db_id) if db_id else None
+            if _dom is not None:
+                _engine = getattr(_dom, "db_engine", "") or ""
+            _redis = (
+                cache_mgr.redis_cache
+                if cache_mgr and cache_mgr.redis_available else None
+            )
+            column_value_index = await load_or_build_value_index(
+                db_id or "", schema_dict.get("_structure_meta"),
+                client, _engine, redis_cache=_redis,
+            )
+        except Exception as e:  # noqa: BLE001 — 값 인덱스 실패는 무시(회귀 0)
+            logger.warning("값 인덱스 적재 실패(무시): %s", e)
+    return column_value_index
+
+
 async def schema_analyzer(
     state: AgentState,
     *,
@@ -596,6 +1042,11 @@ async def schema_analyzer(
        질의 중 LLM 구조 분석·승인 대기·프로필 파일 기록은 하지 않는다. 없으면 멈추지 않고
        `dependency_notes`에 사유를 남긴다(G-1 (a)).
     5. 컬럼 설명도 읽기만 한다 — 캐시 미스에서 비었으면 사유만 남긴다(plans/104 B-6 · G-9 (a)).
+
+    단계 본문은 같은 모듈의 단계 함수(`_preselect_tables` → `_apply_allowed_tables` →
+    `_apply_alarm_tables` → `_build_schema_dict` → `_load_structure_meta` →
+    `_attach_structure_meta` → `_load_lookup_synonyms` → `_load_column_value_index`)에 있다
+    (plans/173 T5 — 동작 불변 분해).
 
     Args:
         state: 현재 에이전트 상태
@@ -623,6 +1074,7 @@ async def schema_analyzer(
 
     try:
         cache_mgr = get_cache_manager(app_config)
+        ctx = _AnalyzeContext(state, parsed, query_targets, db_id, llm, app_config, cache_mgr)
 
         async with get_db_client(app_config, db_id=db_id if db_id not in ("_default", "default") else None) as client:
             # 캐시 매니저를 활용한 스키마 조회 (통합 메서드)
@@ -632,50 +1084,10 @@ async def schema_analyzer(
             # ★ DEBUG[1]: 캐시에서 로드된 전체 테이블 확인
             logger.debug("DEBUG[1] db_id=%s, full_schema tables: %s", db_id, list(full_schema.tables.keys()))
 
-            # 2. LLM 기반 관련 테이블 선택
-            # plans/119 Q-5(플래그 기본 off): 질의의 유사어 테이블 신호가 프로필 선언 집합
-            # (`allowed_tables`) 안이면 LLM을 부르지 않는다 — 아래 2-2 필터·보충의 결과가 그때는
-            # LLM 출력과 무관하게 선언 집합이다. 신호는 2-2에서 재사용한다(중복 조회·로그 방지).
-            _query_syn_tables: set[str] | None = None
-            relevant: list[str] | None = None
-            _intent = state.get("routing_intent")
-            # 2-0. 정의 기반 선별(plans/139 W4 · D-308 G-1) — 프로필에 테이블 정의가 있고
-            # 알람 의도가 아니면 공용 선별(`select_tables` — 멀티 경로와 같은 함수) 결과를
-            # 그대로 쓴다. 그때는 아래 Q-5 생략·LLM 선택·EAV 보충·허용 목록 필터/강제 보충·
-            # 유사어 동적 보완을 모두 건너뛴다. 정의가 없는 DB는 종전 경로 그대로다.
-            table_selection: TableSelection | None = None
-            _def_prof = _load_manual_profile(db_id)
-            if _def_prof is not None and uses_definition_selection(_def_prof, _intent):
-                table_selection = await select_tables(
-                    llm=llm,
-                    question=parsed.get("original_query", "") or "",
-                    sub_query_context=None,
-                    db_id=db_id,
-                    db_description=await load_db_description(cache_mgr, db_id),
-                    schema_tables=full_schema.tables,
-                    profile=_def_prof,
-                    app_config=app_config,
-                    relationships=full_schema.relationships,
-                )
-                relevant = list(table_selection.selected)
-            if (
-                relevant is None
-                and _table_select_skip_enabled(app_config) and _intent != "alarm_query"
-            ):
-                _skip_prof = _load_manual_profile(db_id)
-                if _skip_prof and "allowed_tables" in _skip_prof:
-                    try:
-                        _query_syn_tables = await _query_synonym_tables(
-                            cache_mgr, db_id, parsed, query_targets, app_config,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "테이블 선택 생략 판정 불가(유사어 조회 실패) — LLM 선택: %s", e,
-                        )
-                    else:
-                        relevant = _declared_tables_if_signal_inside(
-                            _skip_prof, full_schema, _query_syn_tables,
-                        )
+            # 2. 관련 테이블 선택 (2-0 정의 기반 선별 · Q-5 생략 → 둘 다 불성립이면 LLM 선택)
+            choice = await _preselect_tables(ctx, full_schema)
+            table_selection = choice.table_selection
+            relevant = choice.relevant
             if relevant is None:
                 relevant = await _llm_select_relevant_tables(
                     llm,
@@ -699,230 +1111,30 @@ async def schema_analyzer(
             # ★ DEBUG[3]: EAV 보충 후 테이블 확인
             logger.debug("DEBUG[3] after EAV supplement: %s", relevant)
 
-            # 2-2. allowed_tables 필터링 + 보충 (수동 프로필에 허용 테이블이 정의된 경우)
-            # allowed_tables가 정의되면:
-            #   1) LLM이 선택한 테이블 중 allowed_tables에 없는 것을 제거
-            #   2) allowed_tables에 있지만 LLM이 선택하지 않은 테이블을 보충
-            #      (LLM 환각으로 누락되는 문제 방지)
+            # 2-2. allowed_tables 필터링 + 보충
             _manual_prof = _load_manual_profile(db_id)
             _routing_intent = state.get("routing_intent")
-            if (
-                _manual_prof and "allowed_tables" in _manual_prof
-                and _routing_intent != "alarm_query"
-                and table_selection is None  # 정의 기반 선별은 후보 단계에서 이미 걸렀다(W4)
-            ):
-                _allowed = {t.lower() for t in _manual_prof["allowed_tables"]}
-                # 강제 보충 대상은 **수동 프로필에 적힌 테이블만**이다(plans/114 P-4①).
-                # 아래에서 `_allowed` 에 유사어 매칭 테이블이 합쳐지는데, 그것까지 보충하면
-                # LLM 이 고르지 않은 잡음 테이블이 relevant 로 들어온다 — 폐쇄망 실측에서
-                # 보충 557회 중 61회가 화이트리스트 밖 테이블이었고(`sms_*_file_info`·
-                # `rep_document`·`core_schema_ver`), 그 테이블의 샘플 수집이 예산을 태웠다
-                # (§2.8-②⑤). 유사어 테이블은 **허용만** 한다 — 멀티 게이트
-                # (`multi_db_executor._scope_multi_schema`)가 필터만 하고 보충하지 않는 것과 같다.
-                _supplement_bare = set(_allowed)
-                # 매핑 피드백(synonyms)에 등록된 테이블을 allowed_tables에 동적 보완하되,
-                # **이번 질의 용어와 매칭된 유사어의 테이블만** 추가한다(D-051). 전량 추가하면
-                # 누적 유사어 전 테이블이 _allowed로 유입되어 relevant·프롬프트 토큰이 폭증한다
-                # (실측: b0 _allowed 5→407, relevant 400, system_prompt 104K > 95K 한도).
-                try:
-                    if _query_syn_tables is None:
-                        _query_syn_tables = await _query_synonym_tables(
-                            cache_mgr, db_id, parsed, query_targets, app_config,
-                        )
-                    _allowed |= _query_syn_tables
-                except Exception as e:
-                    logger.warning("synonyms 테이블 allowed_tables 동적 보완 실패: %s", e)
-                # ★ DEBUG[4]: 필터링 조건 확인
-                logger.debug("DEBUG[4] db_id=%s, allowed_tables=%s", db_id, _allowed)
-                logger.debug("DEBUG[4] relevant before filter: %s", relevant)
-                logger.debug("DEBUG[4] bare names: %s", [t.rsplit('.', 1)[-1].lower() for t in relevant])
-
-                # Step 1: LLM 선택 중 allowed_tables에 있는 것만 남김
-                _filtered = [
-                    t for t in relevant
-                    if t.rsplit(".", 1)[-1].lower() in _allowed
-                ]
-
-                # Step 2: allowed_tables에 있지만 LLM이 선택하지 않은 테이블을 보충
-                # full_schema에서 실제 존재하는 테이블명(schema.table 형식)으로 매핑
-                _filtered_bare = {t.rsplit(".", 1)[-1].lower() for t in _filtered}
-                _all_tables_map: dict[str, str] = {}  # bare_lower -> full_name
-                for t in full_schema.tables.keys():
-                    _all_tables_map[t.rsplit(".", 1)[-1].lower()] = t
-
-                for allowed_bare in _supplement_bare:
-                    if allowed_bare not in _filtered_bare:
-                        full_name = _all_tables_map.get(allowed_bare)
-                        if full_name:
-                            _filtered.append(full_name)
-                            logger.info(
-                                "allowed_tables 보충: LLM 미선택 테이블 추가 '%s'",
-                                full_name,
-                            )
-
-                # ★ DEBUG[4]: 필터링+보충 결과
-                logger.debug("DEBUG[4] filtered+supplemented result: %s", _filtered)
-                if _filtered:
-                    _removed = set(relevant) - set(_filtered)
-                    if _removed:
-                        logger.info(
-                            "allowed_tables 필터링: 제거=%s, 유지=%s",
-                            _removed, [t for t in _filtered],
-                        )
-                    relevant = _filtered
+            relevant = await _apply_allowed_tables(
+                ctx, full_schema, relevant, choice, _manual_prof, _routing_intent,
+            )
 
             # alarm_query: 알람 전용 테이블 필터링 + 핵심 테이블 보충
             if _routing_intent == "alarm_query":
-                _all_tables_map = {t.rsplit(".", 1)[-1].lower(): t for t in full_schema.tables.keys()}
-                _alarm_core_set = {"cmm_alarm", "cmm_alarm_def", "cmm_alarm_active"}
+                relevant = _apply_alarm_tables(full_schema, relevant, _manual_prof)
 
-                # [Fix C-1] alarm_allowed_tables 명시 필터링
-                # LLM 폴백(전체 또는 과다 선택) 감지: 전체 테이블의 50% 초과 or 10개 초과
-                _total_count = len(full_schema.tables)
-                _is_llm_fallback = len(relevant) > max(int(_total_count * 0.5), 10)
-
-                _alarm_allowed: set[str] | None = None
-                if _manual_prof and "alarm_allowed_tables" in _manual_prof:
-                    _alarm_allowed = {t.lower() for t in _manual_prof["alarm_allowed_tables"]}
-
-                if _alarm_allowed:
-                    # 명시적 alarm_allowed_tables 기반 필터
-                    _filtered_alarm = [
-                        t for t in relevant
-                        if t.rsplit(".", 1)[-1].lower() in _alarm_allowed
-                    ]
-                    if _filtered_alarm:
-                        relevant = _filtered_alarm
-                        logger.info(
-                            "alarm_query: alarm_allowed_tables 필터 적용: %d → %d개",
-                            len(full_schema.tables), len(relevant),
-                        )
-                    else:
-                        # 필터 후 빈 경우 core 테이블만 유지
-                        relevant = [
-                            _all_tables_map[b] for b in _alarm_core_set
-                            if b in _all_tables_map
-                        ]
-                        logger.warning(
-                            "alarm_query: alarm_allowed_tables 필터 후 빈 결과, core 테이블로 복원: %s",
-                            relevant,
-                        )
-                elif _is_llm_fallback:
-                    # [Fix C-2] alarm_allowed_tables 미정의 + LLM 폴백: core 테이블 하드캡
-                    relevant = [
-                        _all_tables_map[b] for b in _alarm_core_set
-                        if b in _all_tables_map
-                    ]
-                    logger.warning(
-                        "alarm_query: LLM 폴백 감지 (%d개), core 테이블로 제한: %s",
-                        _total_count, relevant,
-                    )
-
-                # [Fix C-3] 핵심 알람 테이블 누락 보충
-                _relevant_bare = {t.rsplit(".", 1)[-1].lower() for t in relevant}
-                for _alarm_bare in _alarm_core_set:
-                    if _alarm_bare not in _relevant_bare:
-                        _full_name = _all_tables_map.get(_alarm_bare)
-                        if _full_name:
-                            relevant.append(_full_name)
-                            logger.info("alarm_query: 알람 핵심 테이블 보충: %s", _full_name)
-
-            # 3. 스키마를 딕셔너리로 변환 (관련 테이블만 추출)
-            schema_dict = schema_to_dict(full_schema, relevant)
-            # 조회 대상 전체 카탈로그(plans/146 W1 · G-1 (b)) — 정의 기반 선별이고 검증기가
-            # 읽는 엔진(`active_db_engine` 백틱 엔진 · 1·2단)일 때만 싣는다. 검증기는 같은
-            # 상태 값으로 엔진을 정하므로(없으면 postgresql) 읽지 않을 카탈로그를 남기지 않는다.
-            if (
-                table_selection is not None and _def_prof is not None
-                and _uses_backtick_quotes(state.get("active_db_engine"))
-            ):
-                schema_dict[CATALOG_COLUMNS_KEY] = catalog_columns(full_schema.tables, _def_prof)
-            # ★ DEBUG[5]: 최종 schema_dict의 테이블 키 확인
-            logger.debug("DEBUG[5] final schema_dict tables: %s", list(schema_dict.get("tables", {}).keys()))
-
-            # 4. 샘플 데이터 수집 (관련 테이블만)
-            # 캐시에서 로드한 경우 샘플 데이터가 있을 수 있음 — 부착 시점에 값 절단
-            # (CLOB성 대형 값의 상태·체크포인트·PII 스크럽 무상한 유입 차단, D-154)
-            if full_schema_dict:
-                for table_name in relevant:
-                    cached_table = full_schema_dict.get("tables", {}).get(table_name, {})
-                    if cached_table.get("sample_data"):
-                        schema_dict["tables"][table_name]["sample_data"] = cap_sample_rows(
-                            cached_table["sample_data"]
-                        )
+            # 3·4. 관련 테이블 schema_dict + 캐시 샘플 부착
+            schema_dict = _build_schema_dict(
+                state, full_schema, full_schema_dict, relevant, choice,
+            )
 
             # 라이브 샘플 수집 — 호출당·총량 타임박스로 bound (D-154, 상수 주석 참조).
             await _collect_live_samples(client, schema_dict, relevant, db_id)
 
-            # 구조 정보: ①수동 프로필 ②관리자 승인 적용본 ③없음 (plans/104 §3.3 R3 · D-227).
-            # 질의 경로는 구조를 분석하지 않고 읽기만 한다(R1) — LLM 구조 분석·승인 대기·
-            # 프로필 파일 기록은 관리자 「DB 구조」 탭으로 옮겨졌다.
-            structure_meta: Optional[dict] = None
-
-            # 1차: 수동 프로필 (승인본보다 우선 — 승인본은 수동 프로필을 덮지 않는다)
-            manual_profile = _load_manual_profile(db_id)
-            if manual_profile is not None:
-                # source 필드는 메타데이터이므로 structure_meta에서 제거
-                structure_meta = {
-                    k: v for k, v in manual_profile.items() if k != "source"
-                }
-                # Redis 캐시에도 저장 (성능 최적화)
-                try:
-                    await cache_mgr.save_structure_meta(db_id, structure_meta)
-                except Exception as e:
-                    logger.warning(
-                        "수동 프로필 Redis 캐시 저장 실패: %s", e
-                    )
-
-                # known_attributes_detail → Redis eav_name_synonyms 동기화
-                for pattern in structure_meta.get("patterns", []):
-                    detail = pattern.get("known_attributes_detail")
-                    if detail:
-                        try:
-                            synced = await cache_mgr.sync_known_attributes_to_eav_synonyms(
-                                detail
-                            )
-                            if synced > 0:
-                                logger.info(
-                                    "known_attributes → eav_name_synonyms 동기화: %d개 (db_id=%s)",
-                                    synced, db_id,
-                                )
-                        except Exception as e:
-                            logger.warning(
-                                "known_attributes → eav_name_synonyms 동기화 실패: %s", e
-                            )
-
-            # 2차: 관리자가 승인한 적용본 (Redis → 없으면 파일 백업에서 복원)
-            if structure_meta is None:
-                try:
-                    applied = await cache_mgr.get_applied_structure_meta(db_id)
-                    if applied:
-                        structure_meta = applied
-                        logger.info("구조 정보 적용본 사용: db_id=%s", db_id)
-                except Exception as e:
-                    logger.warning("구조 정보 적용본 조회 실패: %s", e)
-
-            # 3차: 없음 — 멈추지 않고 구조 안내 없이 진행하되 사유를 남긴다
-            # (G-1 (a) · 침묵 강등 금지)
-            asset_notes: list[dict[str, Any]] | None = None
-            if structure_meta:
-                schema_dict["_structure_meta"] = structure_meta
-                # D-294 — 프로필 관계(추론·확인)를 관련 테이블 사이 관계에 더한다(멀티 경로와 대칭)
-                attach_profile_relationships(schema_dict, structure_meta)
-            else:
-                logger.warning(
-                    "구조 정보 없음(수동 프로필·승인본) — 구조 안내 없이 진행: db_id=%s", db_id
-                )
-                asset_notes = list(state.get("dependency_notes") or [])
-                add_db_note(asset_notes, structure_missing_note(db_id))
-
-            # 컬럼 설명은 질의 경로에서 LLM으로 만들지 않는다(plans/104 B-6 · G-9 (a)). 백업 복원
-            # 뒤에도 비었으면 구조 정보 없음과 같이 질의마다 사유를 남긴다 — 캐시가 데워진 뒤 조용히
-            # 품질이 떨어지지 않게(침묵 강등 금지). 한 응답 안에서는 DB당 1건.
-            if not descriptions:
-                if asset_notes is None:
-                    asset_notes = list(state.get("dependency_notes") or [])
-                add_db_note(asset_notes, descriptions_missing_note(db_id))
+            # 구조 정보 읽기(①수동 프로필 ②승인 적용본) → 부착 · 없으면 사유 노트
+            structure_meta = await _load_structure_meta(cache_mgr, db_id)
+            asset_notes = _attach_structure_meta(
+                state, schema_dict, structure_meta, descriptions, db_id,
+            )
 
             # 5. 캐시 미스였던 경우에만 저장 (cache_hit=True면 이미 저장됨)
             # get_schema_or_fetch 내부에서 이미 save_schema를 호출하므로
@@ -930,55 +1142,11 @@ async def schema_analyzer(
 
             logger.info(f"관련 테이블: {relevant}")
 
-            # resource_type/eav_name 유사단어 로드
-            resource_type_synonyms: dict[str, list[str]] = {}
-            eav_name_synonyms: dict[str, list[str]] = {}
+            resource_type_synonyms, eav_name_synonyms = await _load_lookup_synonyms(cache_mgr)
 
-            if cache_mgr and cache_mgr.redis_available:
-                try:
-                    resource_type_synonyms = await cache_mgr._redis_cache.load_resource_type_synonyms()
-                    eav_name_synonyms = await cache_mgr._redis_cache.load_eav_name_synonyms()
-                except Exception as e:
-                    logger.warning("resource_type/eav_name 유사단어 로드 실패: %s", e)
-
-            # 글로벌 유사단어 파일 자동 로드 (첫 실행 시)
-            if cache_mgr and cache_mgr.redis_available:
-                try:
-                    existing_global = await cache_mgr._redis_cache.load_global_synonyms()
-                    if not existing_global:
-                        # 글로벌 사전이 비어있으면 파일에서 자동 로드
-                        from src.schema_cache.synonym_loader import SynonymLoader
-
-                        synonym_file = "config/global_synonyms.yaml"
-                        if os.path.exists(synonym_file):
-                            loader = SynonymLoader(redis_cache=cache_mgr._redis_cache)
-                            result = await loader.load_auto(synonym_file)
-                            logger.info("글로벌 유사단어 자동 로드: %s", result.message)
-                except Exception as e:
-                    logger.warning("글로벌 유사단어 자동 로드 실패: %s", e)
-
-            # E5-2 값 검색 인덱스 런타임 적재 (Plan 61 §12.3-3, D-075). value_retrieval OFF면
-            # 미진입(state에 None → 주입 no-op, 회귀 0). load 우선·없으면 best-effort build.
-            column_value_index: dict | None = None
-            if app_config.synonym.value_retrieval:
-                try:
-                    from src.routing.domain_config import get_domain_by_id
-                    from src.schema_cache.value_index import load_or_build_value_index
-
-                    _engine = ""
-                    _dom = get_domain_by_id(db_id) if db_id else None
-                    if _dom is not None:
-                        _engine = getattr(_dom, "db_engine", "") or ""
-                    _redis = (
-                        cache_mgr._redis_cache
-                        if cache_mgr and cache_mgr.redis_available else None
-                    )
-                    column_value_index = await load_or_build_value_index(
-                        db_id or "", schema_dict.get("_structure_meta"),
-                        client, _engine, redis_cache=_redis,
-                    )
-                except Exception as e:  # noqa: BLE001 — 값 인덱스 실패는 무시(회귀 0)
-                    logger.warning("값 인덱스 적재 실패(무시): %s", e)
+            column_value_index = await _load_column_value_index(
+                app_config, cache_mgr, db_id, schema_dict, client,
+            )
 
             return {
                 "relevant_tables": relevant,

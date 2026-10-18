@@ -222,17 +222,29 @@ _SUSPECT_DATE_RE = re.compile(
 _SUSPECT_MIN_LINE_DIGITS = 10  # 라인 총 숫자 자릿수가 이 이상일 때만 의심 보고
 
 
+def _flag(name: str, default: bool) -> bool:
+    """``load_config().security.<name>``을 bool로 읽는다. 설정 로드 실패 시 ``default``.
+
+    호출 시점마다 지연 import한다 — 테스트가 ``src.config.load_config``를 patch하는 seam.
+    실패 경고에는 예외 종류만 남긴다(설정 검증 오류 본문에 원값·시크릿이 실릴 수 있음).
+    """
+    try:
+        from src.config import load_config
+
+        return bool(getattr(load_config().security, name))
+    except Exception as e:
+        logger.warning(
+            "PII 설정 조회 실패(%s) — %s로 간주: %s", name, default, type(e).__name__
+        )
+        return default
+
+
 def is_scrub_suspect_dates_enabled() -> bool:
     """날짜·타임스탬프 무해화 스크럽 on/off (``SECURITY_PII_SCRUB_SUSPECT_DATES``, 기본 OFF).
 
     설정 로드 실패 시 OFF(현행 유지) — 의심 형태 확정 전에는 값 변형을 하지 않는다.
     """
-    try:
-        from src.config import load_config
-
-        return bool(load_config().security.pii_scrub_suspect_dates)
-    except Exception:
-        return False
+    return _flag("pii_scrub_suspect_dates", False)
 
 
 def _defang_date(matched: str) -> str:
@@ -287,12 +299,7 @@ def is_detection_enabled() -> bool:
 
     설정 로드 실패 시 안전하게 ON으로 간주한다(진단 로깅 유지).
     """
-    try:
-        from src.config import load_config
-
-        return bool(load_config().security.pii_filter_log_enabled)
-    except Exception:
-        return True
+    return _flag("pii_filter_log_enabled", True)
 
 
 def is_unmask_enabled() -> bool:
@@ -300,12 +307,7 @@ def is_unmask_enabled() -> bool:
 
     설정 로드 실패 시 안전하게 OFF(마스킹)로 간주한다.
     """
-    try:
-        from src.config import load_config
-
-        return bool(load_config().security.pii_filter_log_unmask)
-    except Exception:
-        return False
+    return _flag("pii_filter_log_unmask", False)
 
 
 def is_scrub_samples_enabled() -> bool:
@@ -313,12 +315,7 @@ def is_scrub_samples_enabled() -> bool:
 
     설정 로드 실패 시 안전하게 ON으로 간주한다(FabriX 필터 차단 예방 우선).
     """
-    try:
-        from src.config import load_config
-
-        return bool(load_config().security.pii_scrub_samples)
-    except Exception:
-        return True
+    return _flag("pii_scrub_samples", True)
 
 
 def is_block_dump_enabled() -> bool:
@@ -326,12 +323,7 @@ def is_block_dump_enabled() -> bool:
 
     설정 로드 실패 시 안전하게 ON으로 간주한다(원인 특정이 우선 — D-155 후속1).
     """
-    try:
-        from src.config import load_config
-
-        return bool(load_config().security.pii_block_dump_enabled)
-    except Exception:
-        return True
+    return _flag("pii_block_dump_enabled", True)
 
 
 # ---------------------------------------------------------------------------

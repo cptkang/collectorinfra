@@ -1,0 +1,333 @@
+{
+  "backend_error": {
+    "errors": [
+      "LLM 백엔드 입력 토큰 한도 초과 응답(비-SQL) — 프롬프트가 데이터 평면 한도를 초과함(스키마 스코프·재료 축소 필요) | 응답 원문: 'Error from orchestrator: Input tokens must be <= 95232. Given: 96858'"
+    ],
+    "warnings": [],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": {
+      "kind": "token_limit",
+      "message": "LLM 백엔드 입력 토큰 한도 초과 응답(비-SQL) — 프롬프트가 데이터 평면 한도를 초과함(스키마 스코프·재료 축소 필요) | 응답 원문: 'Error from orchestrator: Input tokens must be <= 95232. Given: 96858'",
+      "given": 96858,
+      "limit": 95232
+    },
+    "_logs": []
+  },
+  "empty": {
+    "errors": [
+      "SQL을 파싱할 수 없습니다.",
+      "SELECT 문만 허용됩니다. 감지된 타입: UNKNOWN"
+    ],
+    "warnings": [
+      "LIMIT 절이 없어 자동으로 LIMIT 100을 추가했습니다.",
+      "WHERE 절이 없습니다. 전체 테이블 스캔이 발생할 수 있습니다."
+    ],
+    "auto_fixed_sql": "\nLIMIT 100;",
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "non_select": {
+    "errors": [
+      "SELECT 문만 허용됩니다. 감지된 타입: DELETE",
+      "금지된 키워드가 포함되어 있습니다: DELETE"
+    ],
+    "warnings": [
+      "LIMIT 절이 없어 자동으로 LIMIT 100을 추가했습니다."
+    ],
+    "auto_fixed_sql": "DELETE FROM app.cmm_resource WHERE dtime IS NULL\nLIMIT 100;",
+    "forbidden_keywords": [
+      "DELETE"
+    ],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "tableless": {
+    "errors": [
+      "테이블을 하나도 조회하지 않는 상수 SELECT입니다(FROM 절 없음) - 결과가 DB 데이터가 아니라 SQL에 적은 상수가 됩니다. 스키마의 테이블을 FROM 절로 조회하는 SQL로 다시 작성하세요."
+    ],
+    "warnings": [
+      "LIMIT 절이 없어 자동으로 LIMIT 100을 추가했습니다.",
+      "WHERE 절이 없습니다. 전체 테이블 스캔이 발생할 수 있습니다."
+    ],
+    "auto_fixed_sql": "SELECT 1\nLIMIT 100;",
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "forbidden_injection": {
+    "errors": [
+      "금지된 키워드가 포함되어 있습니다: DROP",
+      "SQL 인젝션 위험 패턴이 감지되었습니다: 1건"
+    ],
+    "warnings": [
+      "LIMIT 절이 없어 자동으로 LIMIT 100을 추가했습니다.",
+      "WHERE 절이 없습니다. 전체 테이블 스캔이 발생할 수 있습니다."
+    ],
+    "auto_fixed_sql": "SELECT id FROM app.vendor; DROP TABLE app.vendor\nLIMIT 100;",
+    "forbidden_keywords": [
+      "DROP"
+    ],
+    "injection_count": 1,
+    "backend_error": null,
+    "_logs": []
+  },
+  "union_injection": {
+    "errors": [
+      "SQL 인젝션 위험 패턴이 감지되었습니다: 1건"
+    ],
+    "warnings": [
+      "LIMIT 절이 없어 자동으로 LIMIT 100을 추가했습니다."
+    ],
+    "auto_fixed_sql": "SELECT id FROM app.vendor WHERE 1=1 OR 'a'='a' UNION SELECT id FROM app.vendor\nLIMIT 100;",
+    "forbidden_keywords": [],
+    "injection_count": 1,
+    "backend_error": null,
+    "_logs": []
+  },
+  "hangul_token": {
+    "errors": [
+      "SQL 구조에 자연어(한글) 토큰이 남아 있습니다: 해당 - 따옴표 안 별칭/문자열 리터럴 외의 한글은 모두 제거하고 완전한 SQL로 다시 작성하세요."
+    ],
+    "warnings": [
+      "WHERE 절이 없습니다. 전체 테이블 스캔이 발생할 수 있습니다."
+    ],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "hangul_allowed": {
+    "errors": [
+      "SQL 구조에 자연어(한글) 토큰이 남아 있습니다: 이름 - 스키마에 없는 한글입니다. 실제 테이블/컬럼명과 AS로 선언한 별칭 외의 한글(자연어 조각)은 제거하고 완전한 SQL로 다시 작성하세요."
+    ],
+    "warnings": [
+      "WHERE 절이 없습니다. 전체 테이블 스캔이 발생할 수 있습니다."
+    ],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "mariadb_double_quote": {
+    "errors": [
+      "MariaDB에서 큰따옴표는 문자열입니다: \"label\" - 컬럼/테이블명은 따옴표 없이 쓰거나 백틱(`)으로 감싸세요. 큰따옴표는 AS 뒤 결과 별칭에만 쓸 수 있습니다."
+    ],
+    "warnings": [
+      "WHERE 절이 없습니다. 전체 테이블 스캔이 발생할 수 있습니다."
+    ],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "mariadb_backtick_unknown": {
+    "errors": [
+      "테이블 'vendor'에 컬럼 'nope'이 존재하지 않습니다. 'vendor'의 실제 컬럼(2개): id, label - 이 목록의 컬럼만 쓰거나, 그 정보가 있는 다른 테이블을 조인하세요."
+    ],
+    "warnings": [
+      "WHERE 절이 없습니다. 전체 테이블 스캔이 발생할 수 있습니다."
+    ],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "mariadb_backtick_ok": {
+    "errors": [],
+    "warnings": [],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "missing_dtime": {
+    "errors": [
+      "cmm_resource 조회에 dtime IS NULL(삭제 리소스 제외) 필터가 없습니다 - 삭제된 서버/리소스가 결과에 섞입니다. WHERE에 dtime IS NULL 조건을 추가해 다시 작성하세요."
+    ],
+    "warnings": [
+      "WHERE 절이 없습니다. 전체 테이블 스캔이 발생할 수 있습니다."
+    ],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "unknown_table": {
+    "errors": [
+      "존재하지 않는 테이블 참조: app.nowhere"
+    ],
+    "warnings": [
+      "WHERE 절이 없습니다. 전체 테이블 스캔이 발생할 수 있습니다."
+    ],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "unknown_column": {
+    "errors": [
+      "테이블 'app.vendor'에 컬럼 'nope'이 존재하지 않습니다."
+    ],
+    "warnings": [],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "bare_name_fallback": {
+    "errors": [],
+    "warnings": [],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "cte_excluded": {
+    "errors": [],
+    "warnings": [],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "forbidden_join_direct": {
+    "errors": [
+      "금지된 조인 감지: cmm_resource.id = cfg_prop.cfg_id 직접 조인은 ID 체계가 달라 잘못된 결과를 반환합니다. 반드시 hostname 기반 브릿지 조인을 사용하세요: cfg_prop.name='Hostname' AND cfg_prop.sval = cmm_resource.hostname 으로 브릿지한 후, cfg_id로 다른 속성을 조인하세요."
+    ],
+    "warnings": [],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "excluded_join_cols": {
+    "errors": [
+      "금지된 조인 감지: cmm_resource.conf_id이 cfg_prop과의 조인에 사용되었습니다. 사유: NULL 다수. 반드시 hostname 기반 브릿지 조인을 사용하세요: cfg_prop.name='Hostname' AND cfg_prop.sval = cmm_resource.hostname 으로 브릿지한 후, cfg_id로 다른 속성을 조인하세요.",
+      "금지된 조인 감지: cmm_resource.vendor_id이 JOIN ON 절에 사용되었습니다. 사유: NULL"
+    ],
+    "warnings": [
+      "JOIN 금지 컬럼 'app.cmm_resource.conf_id'이 ON 절에 사용되었습니다. 사유: NULL 다수. hostname 값 기반 브릿지 조인을 사용하세요.",
+      "JOIN 금지 컬럼 'cmm_resource.vendor_id'이 ON 절에 사용되었습니다. 사유: NULL. hostname 값 기반 브릿지 조인을 사용하세요."
+    ],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "left_join_demotion": {
+    "errors": [
+      "금지된 조인 감지: cmm_resource.vendor_id이 JOIN ON 절에 사용되었습니다. 사유: NULL",
+      "LEFT JOIN 강등 감지: LEFT JOIN 테이블 'app.vendor'(참조명 'v')의 컬럼(label)이 WHERE 절에서 필터로 사용되었습니다. outer 조인 테이블의 필터가 WHERE에 있으면 미매칭 행이 모두 제거되어 LEFT JOIN이 INNER JOIN으로 강등되고, 피벗 패턴에서는 기준 행(예: 피벗 기준 엔터티 행)이 탈락해 해당 컬럼이 NULL로 나옵니다. 해당 조건을 그 LEFT JOIN의 ON 절로 이동하세요. 행 자체를 걸러내려는 의도라면 LEFT JOIN 대신 JOIN(INNER)을 사용하세요. (IS NULL / IS NOT NULL 검사는 WHERE에 두어도 됩니다)"
+    ],
+    "warnings": [
+      "JOIN 금지 컬럼 'cmm_resource.vendor_id'이 ON 절에 사용되었습니다. 사유: NULL. hostname 값 기반 브릿지 조인을 사용하세요."
+    ],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "no_limit_pg": {
+    "errors": [],
+    "warnings": [
+      "LIMIT 절이 없어 자동으로 LIMIT 100을 추가했습니다."
+    ],
+    "auto_fixed_sql": "SELECT label FROM app.vendor WHERE id = 1\nLIMIT 100;",
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "no_limit_db2": {
+    "errors": [],
+    "warnings": [
+      "행 제한 절이 없어 자동으로 FETCH FIRST 100 ROWS ONLY를 추가했습니다."
+    ],
+    "auto_fixed_sql": "SELECT label FROM app.vendor WHERE id = 1\nFETCH FIRST 100 ROWS ONLY;",
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "no_limit_all_pg": {
+    "errors": [],
+    "warnings": [
+      "LIMIT 절이 없어 전체 조회 상한으로 LIMIT 10000을 자동 추가했습니다(기본 상한 50에서 상향)."
+    ],
+    "auto_fixed_sql": "SELECT label FROM app.vendor WHERE id = 1\nLIMIT 10000;",
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": [
+      "모든/전체 결과 조회 질의라 행 제한을 기본 50 → 10000로 상향해 자동 추가합니다."
+    ]
+  },
+  "no_limit_all_db2": {
+    "errors": [],
+    "warnings": [
+      "행 제한 절이 없어 전체 조회 상한으로 FETCH FIRST 10000 ROWS ONLY를 자동 추가했습니다(기본 상한 100에서 상향)."
+    ],
+    "auto_fixed_sql": "SELECT label FROM app.vendor WHERE id = 1\nFETCH FIRST 10000 ROWS ONLY;",
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": [
+      "모든/전체 결과 조회 질의라 행 제한을 기본 100 → 10000로 상향해 자동 추가합니다."
+    ]
+  },
+  "db2_fetch_first": {
+    "errors": [],
+    "warnings": [],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "select_star_large": {
+    "errors": [
+      "cmm_resource 조회에 dtime IS NULL(삭제 리소스 제외) 필터가 없습니다 - 삭제된 서버/리소스가 결과에 섞입니다. WHERE에 dtime IS NULL 조건을 추가해 다시 작성하세요."
+    ],
+    "warnings": [
+      "대형 테이블 'app.cmm_resource'(500,000행)에 SELECT * 사용 주의",
+      "WHERE 절이 없습니다. 전체 테이블 스캔이 발생할 수 있습니다."
+    ],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  },
+  "adapter_checks": {
+    "errors": [
+      "A1",
+      "B1",
+      "B2"
+    ],
+    "warnings": [],
+    "auto_fixed_sql": null,
+    "forbidden_keywords": [],
+    "injection_count": 0,
+    "backend_error": null,
+    "_logs": []
+  }
+}

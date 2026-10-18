@@ -14,6 +14,8 @@ HolmesGPT의 서술(`answer`)과 severity_judge 판정(`ImportanceVerdict`)을 *
 
 from __future__ import annotations
 
+from typing import Any, NamedTuple
+
 from sre_agent.domain.cross_source_episode import (
     APM_TOOLS_NOT_CONNECTED_LIMIT,
     KIND_APM_MEMBER,
@@ -269,6 +271,153 @@ def evidence_source_label(line: str, tool_names: list[str]) -> str:
     return INFRA_SOURCE_LABEL
 
 
+class _CitationState(NamedTuple):
+    """서술 인용 판정 결과(렌더 전 근거 상태) — `build_briefing`의 판정 단계 산출."""
+
+    claims: list[str]
+    cited: list[str]
+    uncited: list[str]
+    verified: bool  # 도구 출력이 하나라도 있고 인용된 단정이 존재해야 "검증됨"
+
+
+def _judge_citations(answer: str, tool_names: list[str]) -> _CitationState:
+    """서술을 단정으로 쪼개 인용/비인용으로 가르고 검증 여부를 판정한다."""
+    claims = _claim_lines(answer)
+    cited = [c for c in claims if _is_cited(c, tool_names)]
+    uncited = [c for c in claims if not _is_cited(c, tool_names)]
+    return _CitationState(claims, cited, uncited, bool(tool_names) and bool(cited))
+
+
+def _render_summary(claims: list[str], tool_names: list[str], unresolved: bool) -> str:
+    """요약: 첫 단정. 검증 불가(인용 결여)면 가설 강등 표기, 미결이면 `[미결] ` 접두."""
+    head = claims[0] if claims else "조사 서술 없음"
+    summary = head if _is_cited(head, tool_names) and tool_names else HYPOTHESIS_PREFIX + head
+    if unresolved:
+        summary = UNRESOLVED_PREFIX + summary
+    return summary
+
+
+def _render_llm_cause(claims: list[str], cited: list[str]) -> str:
+    """원인: 인용된 단정이 있으면 그중 마지막, 없으면 서술 말미를 가설로."""
+    if cited:
+        return cited[-1]
+    if claims:
+        return HYPOTHESIS_PREFIX + claims[-1]
+    return HYPOTHESIS_PREFIX + "원인 미확정"
+
+
+def _corr_pairs(
+    correlation: dict[str, Any] | None, cross_source: EpisodeContext | None
+) -> list[tuple[str, str]]:
+    """상관 타임라인 `(kind, 줄)` — 상관이 없고 사건이 있으면 사건 멤버를 편입한다."""
+    corr_pairs = _timeline_pairs(correlation) if correlation else []
+    if cross_source is not None and not correlation:
+        corr_pairs = _timeline_pairs({"timeline": [
+            {"t_offset_min": t.t_offset_min, "kind": t.kind, "detail": t.detail}
+            for t in episode_timeline(cross_source)
+        ]})
+    return corr_pairs
+
+
+def _render_timeline(
+    corr_pairs: list[tuple[str, str]],
+    cited: list[str],
+    tool_names: list[str],
+    correlation: dict[str, Any] | None,
+    source_labels: bool,
+) -> tuple[list[str], list[str]]:
+    """`(상관 줄, 타임라인)` — 상관 타임라인(상대시각 · 주입값) 먼저, 인용 라인은 근거로 뒤에.
+
+    둘 다 없으면 안내 문구 1줄.
+    """
+    corr_lines = [ln for _, ln in corr_pairs]
+    cited_lines = list(cited)
+    if source_labels:
+        corr_lines = [
+            f"[{APM_SOURCE_LABEL if kind == KIND_APM_MEMBER else INFRA_SOURCE_LABEL}] {ln}"
+            for kind, ln in corr_pairs
+        ]
+        cited_lines = [f"[{evidence_source_label(c, tool_names)}] {c}" for c in cited_lines]
+    if correlation or corr_lines:
+        timeline = corr_lines + cited_lines
+        timeline = timeline or ["타임라인 근거 없음(상관 타임라인·도구 출력 인용 모두 결여)"]
+    else:
+        timeline = cited_lines or ["타임라인 근거 없음(도구 출력 인용 결여)"]
+    return corr_lines, timeline
+
+
+def _merge_rule_hypotheses(
+    hypotheses_ranked: list[dict[str, Any]],
+    cross_source: EpisodeContext,
+    corr_lines: list[str],
+    supported: bool | None,
+    cited: list[str],
+    llm_cause: str,
+    citations_verified: bool,
+) -> list[dict[str, Any]]:
+    """규칙 가설은 결정적 상관 가설 뒤 · LLM 인용 원인 앞(LLM 항목은 항상 마지막) — rank 재부여."""
+    corr_hyps = hypotheses_ranked[:-1] if hypotheses_ranked else []
+    rules = cross_source_hypotheses(cross_source, corr_lines, supported, cited)
+    merged = corr_hyps + rules + [_llm_hypothesis(0, llm_cause, citations_verified)]
+    return [{**h, "rank": i} for i, h in enumerate(merged, start=1)]
+
+
+def _render_bottleneck(verdict: ImportanceVerdict) -> str:
+    """병목: 매칭된 시그니처 라벨에서 도출(없으면 미확정)."""
+    if verdict.signals:
+        return "; ".join(s.label for s in verdict.signals)
+    return "미확정(시그니처 매칭 없음)"
+
+
+def _render_recommendation(remediation: list[str] | None) -> dict[str, Any]:
+    """권고: 제공된 조치 후보 + human-gated 안내 강제(실행 경로 없음)."""
+    rec_items = list(remediation or [])
+    if not rec_items:
+        rec_items = ["조치 권고 없음(remediation_recommender off 또는 근거 시그니처 무매칭)"]
+    return {"items": rec_items, "note": HUMAN_GATED_NOTE}
+
+
+def _render_limitations(
+    limitations: list[str] | None,
+    verdict: ImportanceVerdict,
+    citations_verified: bool,
+    correlation: dict[str, Any] | None,
+    cross_source: EpisodeContext | None,
+    apm_tools_connected: bool,
+) -> list[str]:
+    """한계: 제공된 한계 + 자동 부가(단면 데이터·증거 불충분·미검증 인용·상관·크로스소스)."""
+    limits = list(limitations or [])
+    limits.append("프로세스·자원 스냅샷은 조사 시점 단면일 수 있음")
+    if verdict.evidence_insufficient:
+        limits.append("증거 불충분 — 원격 배치에서 로그·대체 카운터 무매칭(상향 보류)")
+    if not citations_verified:
+        limits.append("도구 출력 인용이 결여돼 서술을 가설로 강등함(글래스박스 검증 불가)")
+    if correlation:
+        limits.extend(str(n) for n in (correlation.get("notes") or []))
+        limits.append(CORRELATION_NOT_CAUSATION_NOTE)
+    if cross_source is not None:
+        if not apm_tools_connected:
+            limits.append(APM_TOOLS_NOT_CONNECTED_LIMIT)
+        limits.append(STRONG_ONLY_NOTE)
+        limits.extend(cross_source.excluded_link_notes())
+        limits.extend(cross_source.notes)
+        if cross_source.valid_links and CORRELATION_NOT_CAUSATION_NOTE not in limits:
+            limits.append(CORRELATION_NOT_CAUSATION_NOTE)
+    return limits
+
+
+def _render_severity(verdict: ImportanceVerdict, gate_tier: str | None) -> dict[str, Any]:
+    """중요도 헤더: severity_judge 판정 + 게이트 근거."""
+    return {
+        "level": verdict.level,
+        "confidence": verdict.confidence,
+        "escalate": verdict.escalate,
+        "gate_tier": gate_tier,
+        "signals": [s.name for s in verdict.signals],
+        "evidence_insufficient": verdict.evidence_insufficient,
+    }
+
+
 def build_briefing(
     *,
     answer: str,
@@ -294,7 +443,8 @@ def build_briefing(
 
     `source_labels`(plans/87 J3 — apm_guidance_enabled): 타임라인 증거 앞에 `[애플리케이션(APM)]`
     (호출된 apm_* 인용) · `[인프라]`(그 밖 · 상관 타임라인) 라벨을 붙인다. `unresolved`(정체 가드):
-    요약 앞에 `[미결] `을 붙인다(사유는 호출자가 `limitations`에 싣는다). 둘 다 기본 False — 종전과 같다.
+    요약 앞에 `[미결] `을 붙인다(사유는 호출자가 `limitations`에 싣는다).
+    둘 다 기본 False — 종전과 같다.
 
     `cross_source`(plans/153 §4.6·§4.7 — 두 소스 멤버가 있는 사건만 dispatcher가 넘긴다):
     상관 타임라인이 없으면 사건 멤버를 타임라인에 편입하고(있으면 사전수집이 이미 편입),
@@ -303,115 +453,37 @@ def build_briefing(
     강제하고 선택 키 `cross_source`를 더한다. None이면 종전과 같다.
     """
     tool_names = tool_names or []
-    claims = _claim_lines(answer)
-    cited = [c for c in claims if _is_cited(c, tool_names)]
-    uncited = [c for c in claims if not _is_cited(c, tool_names)]
+    st = _judge_citations(answer, tool_names)
+    summary = _render_summary(st.claims, tool_names, unresolved)
+    llm_cause = _render_llm_cause(st.claims, st.cited)
+    corr_lines, timeline = _render_timeline(
+        _corr_pairs(correlation, cross_source), st.cited, tool_names, correlation, source_labels
+    )
 
-    # 도구 출력이 하나라도 있고, 인용된 단정이 존재해야 "검증됨"으로 본다.
-    citations_verified = bool(tool_names) and bool(cited)
-
-    # 요약: 첫 단정. 검증 불가(인용 결여)면 가설 강등 표기.
-    head = claims[0] if claims else "조사 서술 없음"
-    summary = head if _is_cited(head, tool_names) and tool_names else HYPOTHESIS_PREFIX + head
-    if unresolved:
-        summary = UNRESOLVED_PREFIX + summary
-
-    # 원인: 인용된 단정이 있으면 그중 마지막, 없으면 서술 말미를 가설로.
-    if cited:
-        cause = cited[-1]
-    elif claims:
-        cause = HYPOTHESIS_PREFIX + claims[-1]
-    else:
-        cause = HYPOTHESIS_PREFIX + "원인 미확정"
-
-    # 타임라인: 상관 타임라인(상대시각 · 주입값) 먼저, 인용 라인은 근거로 뒤에(없으면 안내).
-    cited_lines = [c for c in claims if _is_cited(c, tool_names)]
-    raw_cited = list(cited_lines)
-    corr_pairs = _timeline_pairs(correlation) if correlation else []
-    if cross_source is not None and not correlation:
-        corr_pairs = _timeline_pairs({"timeline": [
-            {"t_offset_min": t.t_offset_min, "kind": t.kind, "detail": t.detail}
-            for t in episode_timeline(cross_source)
-        ]})
-    corr_lines = [ln for _, ln in corr_pairs]
-    if source_labels:
-        corr_lines = [
-            f"[{APM_SOURCE_LABEL if kind == KIND_APM_MEMBER else INFRA_SOURCE_LABEL}] {ln}"
-            for kind, ln in corr_pairs
-        ]
-        cited_lines = [f"[{evidence_source_label(c, tool_names)}] {c}" for c in cited_lines]
-    if correlation or corr_lines:
-        timeline = corr_lines + cited_lines
-        timeline = timeline or ["타임라인 근거 없음(상관 타임라인·도구 출력 인용 모두 결여)"]
-    else:
-        timeline = cited_lines or ["타임라인 근거 없음(도구 출력 인용 결여)"]
-
-    # 원인 가설(§7.2): 결정적 상관에서 먼저, LLM 인용 원인은 마지막. rank 1이 `cause` 문자열이 된다.
-    llm_cause = cause
-    hypotheses_ranked = root_cause_hypotheses(correlation, llm_cause, citations_verified)
-    if correlation and hypotheses_ranked:
-        cause = hypotheses_ranked[0]["cause"]
-    supported = _supported_by_tools(raw_cited, tool_names) if cross_source is not None else None
+    # 원인 가설(§7.2): 결정적 상관에서 먼저, LLM 인용 원인은 마지막.
+    # rank 1이 `cause` 문자열이 된다.
+    hypotheses_ranked = root_cause_hypotheses(correlation, llm_cause, st.verified)
+    cause = hypotheses_ranked[0]["cause"] if correlation and hypotheses_ranked else llm_cause
+    supported = _supported_by_tools(st.cited, tool_names) if cross_source is not None else None
     if cross_source is not None and cross_source.valid_links:
-        # 규칙 가설은 결정적 상관 가설 뒤 · LLM 인용 원인 앞(LLM 항목은 항상 마지막).
         # `cause`는 그대로 둔다.
-        corr_hyps = hypotheses_ranked[:-1] if hypotheses_ranked else []
-        rules = cross_source_hypotheses(cross_source, corr_lines, supported, raw_cited)
-        merged = corr_hyps + rules + [_llm_hypothesis(0, llm_cause, citations_verified)]
-        hypotheses_ranked = [{**h, "rank": i} for i, h in enumerate(merged, start=1)]
-
-    # 병목: 매칭된 시그니처 라벨에서 도출(없으면 미확정).
-    if verdict.signals:
-        bottleneck = "; ".join(s.label for s in verdict.signals)
-    else:
-        bottleneck = "미확정(시그니처 매칭 없음)"
-
-    # 권고: 제공된 조치 후보 + human-gated 안내 강제(실행 경로 없음).
-    rec_items = list(remediation or [])
-    if not rec_items:
-        rec_items = ["조치 권고 없음(remediation_recommender off 또는 근거 시그니처 무매칭)"]
-    recommendation = {"items": rec_items, "note": HUMAN_GATED_NOTE}
-
-    # 한계: 제공된 한계 + 자동 부가(단면 데이터·증거 불충분·미검증 인용).
-    limits = list(limitations or [])
-    limits.append("프로세스·자원 스냅샷은 조사 시점 단면일 수 있음")
-    if verdict.evidence_insufficient:
-        limits.append("증거 불충분 — 원격 배치에서 로그·대체 카운터 무매칭(상향 보류)")
-    if not citations_verified:
-        limits.append("도구 출력 인용이 결여돼 서술을 가설로 강등함(글래스박스 검증 불가)")
-    if correlation:
-        limits.extend(str(n) for n in (correlation.get("notes") or []))
-        limits.append(CORRELATION_NOT_CAUSATION_NOTE)
-    if cross_source is not None:
-        if not apm_tools_connected:
-            limits.append(APM_TOOLS_NOT_CONNECTED_LIMIT)
-        limits.append(STRONG_ONLY_NOTE)
-        limits.extend(cross_source.excluded_link_notes())
-        limits.extend(cross_source.notes)
-        if cross_source.valid_links and CORRELATION_NOT_CAUSATION_NOTE not in limits:
-            limits.append(CORRELATION_NOT_CAUSATION_NOTE)
-
-    # 중요도 헤더: severity_judge 판정 + 게이트 근거.
-    severity = {
-        "level": verdict.level,
-        "confidence": verdict.confidence,
-        "escalate": verdict.escalate,
-        "gate_tier": gate_tier,
-        "signals": [s.name for s in verdict.signals],
-        "evidence_insufficient": verdict.evidence_insufficient,
-    }
+        hypotheses_ranked = _merge_rule_hypotheses(
+            hypotheses_ranked, cross_source, corr_lines, supported, st.cited, llm_cause, st.verified
+        )
 
     briefing = {
-        "severity": severity,
+        "severity": _render_severity(verdict, gate_tier),
         "summary": summary,
         "timeline": timeline,
-        "bottleneck": bottleneck,
+        "bottleneck": _render_bottleneck(verdict),
         "cause": cause,
         "root_cause_hypotheses": hypotheses_ranked,
-        "recommendation": recommendation,
-        "limitations": limits,
-        "citations_verified": citations_verified,
-        "hypotheses": uncited,
+        "recommendation": _render_recommendation(remediation),
+        "limitations": _render_limitations(
+            limitations, verdict, st.verified, correlation, cross_source, apm_tools_connected
+        ),
+        "citations_verified": st.verified,
+        "hypotheses": st.uncited,
     }
     if cross_source is not None:
         briefing["cross_source"] = _cross_source_block(

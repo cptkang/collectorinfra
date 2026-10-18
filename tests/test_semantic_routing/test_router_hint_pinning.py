@@ -45,18 +45,22 @@ def _state(query: str, hints: list[str] | None = None, **extra) -> dict:
     return state
 
 
-def _config(active: list[str], *, plan_loop: bool = False, exclusive: bool = True):
+def _config(
+    active: list[str], *, plan_loop: bool = False, exclusive: bool = True,
+    ownership: bool = False,
+):
     config = MagicMock()
     config.multi_db.get_active_db_ids.return_value = active
     config.multi_db.zone_group_exclusive = exclusive
     config.enable_semantic_routing = True
     config.tier3_plan_loop_enabled = plan_loop
+    # 소유 판정은 넘긴 설정에서 읽는다(plans/186 J4) — MagicMock 속성은 참이라 명시한다
+    config.router.capability_ownership_enabled = ownership
     return config
 
 
 async def _route(state: dict, classify, active: list[str] | None = None, **cfg) -> dict:
-    with patch("src.routing.semantic_router._llm_classify", classify), \
-            patch("src.routing.semantic_router._ownership_enabled", return_value=False):
+    with patch("src.routing.semantic_router._llm_classify", classify):
         return await semantic_router(
             state, llm=AsyncMock(), app_config=_config(active or _ZONED, **cfg)
         )
@@ -218,11 +222,10 @@ class TestPinnedTargetsStillPassDownstreamGates:
 
         with patch("src.routing.semantic_router._llm_classify",
                    AsyncMock(return_value=[_row(_GP)])), \
-                patch("src.routing.semantic_router._ownership_enabled", return_value=True), \
                 patch("src.routing.semantic_router.enforce_target_ownership", _spy), \
                 patch("src.routing.semantic_router._ownership_state_fields", return_value={}):
             out = await semantic_router(
-                _state(_QUERY), llm=AsyncMock(), app_config=_config(_ZONED)
+                _state(_QUERY), llm=AsyncMock(), app_config=_config(_ZONED, ownership=True)
             )
         assert [t["db_id"] for t in seen[0]] == [_GP, _YD]
         assert seen[0][0]["user_specified"] is False  # 분류 항목 — 교정 대상으로 남는다

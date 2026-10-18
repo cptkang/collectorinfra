@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 보안 마스킹 (D-191)
-# 근거: src/config.py SecurityConfig 주석 · docs/pii_filtering_rules.md
+# 근거: src/config/security.py SecurityConfig 주석 · docs/pii_filtering_rules.md
 
 version: 1
 group: security

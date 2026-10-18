@@ -307,11 +307,11 @@ def test_migration_pin_explains_why_it_comes_first():
 
 def test_write_proposals_does_not_touch_repo_config(tmp_path):
     """★ V5 — 제안기는 파일을 고치지 않는다."""
-    env, cfg = _ROOT / ".env", _ROOT / "src" / "config.py"
-    before = (env.stat().st_mtime if env.exists() else None, cfg.stat().st_mtime)
+    env, cfg = _ROOT / ".env", sorted((_ROOT / "src" / "config").glob("*.py"))
+    before = (env.stat().st_mtime if env.exists() else None, [p.stat().st_mtime for p in cfg])
     optimize.write_proposals([optimize.Disposition("K", optimize.KEEP, "9", "r")],
                              [], {}, tmp_path / "p")
-    after = (env.stat().st_mtime if env.exists() else None, cfg.stat().st_mtime)
+    after = (env.stat().st_mtime if env.exists() else None, [p.stat().st_mtime for p in cfg])
     assert before == after
 
 

@@ -13,6 +13,7 @@ v2 변경:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Optional
 
@@ -49,6 +50,7 @@ from src.routing.capability_ownership import (
     REASON_LLM_ERROR,
     REASON_NO_CLASSIFICATION,
     active_owner_system_count,
+    capability_ownership_on,
     enforce_target_ownership,
     known_capability_codes,
     render_ownership_rows,
@@ -61,6 +63,7 @@ from src.routing.location_hints import pin_targets_to_hints
 from src.routing.registry import get_registry
 from src.state import AgentState
 from src.clients.instructor_adapter import StructuredOutputError, try_structured_call
+from src.routing.zone_clarification import zone_clarification_for_targets
 from src.routing.schemas import (
     DatabaseSelection,
     IntentDecision,
@@ -72,10 +75,7 @@ from src.routing.schemas import (
 )
 from src.utils.json_extract import extract_json_from_response
 from src.utils.query_gen_common import (
-    ZONE_CLARIFY_OPTIONS,
     ZONE_SKIP_SIGNAL_TERMS,
-    build_zone_clarification,
-    has_host_identifier_filter,
     term_in_text,
 )
 
@@ -95,6 +95,33 @@ logger = logging.getLogger(__name__)
 MIN_RELEVANCE_SCORE = 0.3
 
 
+@dataclass
+class _RouteContext:
+    """`semantic_router` 단계 사이에 넘기는 요청 재료(plans/174 T3 — 단계 분할용 묶음)."""
+
+    state: AgentState
+    llm: BaseChatModel
+    app_config: AppConfig
+    user_query: str
+    active_db_ids: list[str]
+    parsed: Any
+
+
+@dataclass
+class _LlmRouting:
+    """LLM 분류 단계의 결과 — 대상 확정 단계(`_finalize_targets`)의 입력."""
+
+    intent: str
+    # `_llm_classify`는 dict를 돌려주지만 실패 분기가 같은 자리에 목록을 넣는다(종전 구조 유지).
+    llm_results: Any
+    capability_chain: list[str]
+    needs_plan: bool
+    ownership_on: bool
+    ownership_notes: list[dict[str, Any]]
+    fallback_mark: tuple[str, str] | None
+    plan_signal_on: bool
+
+
 async def semantic_router(
     state: AgentState,
     *,
@@ -105,6 +132,9 @@ async def semantic_router(
 
     LLM 기반으로만 라우팅을 수행한다.
     사용자가 프롬프트에서 직접 DB를 지정한 경우도 LLM이 감지한다.
+
+    단계: 결정적 게이트(`_deterministic_gates`) → LLM 분류·의도 분기(`_route_by_llm`) →
+    대상 확정(`_finalize_targets`). 앞 단계가 반환 dict를 내면 그대로 끝난다.
 
     Args:
         state: 현재 에이전트 상태
@@ -124,8 +154,28 @@ async def semantic_router(
     if llm is None:
         llm = create_llm(app_config)
 
-    user_query = state["user_query"]
-    active_db_ids = app_config.multi_db.get_active_db_ids()
+    ctx = _RouteContext(
+        state=state,
+        llm=llm,
+        app_config=app_config,
+        user_query=state["user_query"],
+        active_db_ids=app_config.multi_db.get_active_db_ids(),
+        parsed=state.get("parsed_requirements", {}),
+    )
+    gated = await _deterministic_gates(ctx)
+    if gated is not None:
+        return gated
+    routing = await _route_by_llm(ctx)
+    if isinstance(routing, dict):
+        return routing
+    return _finalize_targets(ctx, routing)
+
+
+async def _deterministic_gates(ctx: _RouteContext) -> dict[str, Any] | None:
+    """LLM 분류 전 결정적 게이트(우선순위 1~4.5 · 활성 DB 없음) — 걸리면 반환 dict, 아니면 None."""
+    state = ctx.state
+    user_query = ctx.user_query
+    active_db_ids = ctx.active_db_ids
 
     # [우선순위 1] pending_synonym_reuse → cache_management 강제 라우팅
     pending_reuse = state.get("pending_synonym_reuse")
@@ -143,7 +193,7 @@ async def semantic_router(
     # [우선순위 2] 명시적 유사어 등록 요청 → synonym_registration 라우팅
     # parsed_requirements에 synonym_registration이 있을 때만 (멀티턴 두 번째 요청)
     # 첫 번째 요청에서 field_mapper가 생성한 pending은 쿼리 파이프라인 완료 후 안내만 표시
-    parsed = state.get("parsed_requirements", {})
+    parsed = ctx.parsed
     synonym_reg = parsed.get("synonym_registration")
     if synonym_reg:
         pending_regs = state.get("pending_synonym_registrations")
@@ -183,7 +233,7 @@ async def semantic_router(
             # 선택으로 좁힌다는 말이 성립하지 않는 대상이라 사유 없이 빼지 않는다. 후보가
             # 없으면 아래 호출은 분류 없이 빈 목록이고 반환도 종전과 같다.
             targets += await _keep_zoneless_targets(
-                llm, user_query, active_db_ids, selected, app_config
+                ctx.llm, user_query, active_db_ids, selected, ctx.app_config
             )
             return {
                 "target_databases": targets,
@@ -271,6 +321,14 @@ async def semantic_router(
             "user_specified_db": None,
             "current_node": "semantic_router",
         }
+    return None
+
+
+async def _route_by_llm(ctx: _RouteContext) -> dict[str, Any] | _LlmRouting:
+    """LLM 분류와 의도별 분기 — DB 미접근 의도면 반환 dict, 데이터 조회면 분류 결과."""
+    user_query = ctx.user_query
+    active_db_ids = ctx.active_db_ids
+    app_config = ctx.app_config
 
     # 활성 도메인 · DB 설명(Redis) · 장애 진단 옵트인(Plan 64 CW-B) — 존 선택 재개 턴의
     # 보존 판정(`_keep_zoneless_targets`)도 같은 재료를 써야 프롬프트가 갈리지 않는다(W-10).
@@ -278,7 +336,7 @@ async def semantic_router(
         app_config, active_db_ids
     )
     # (plans/102 X-7) 답변 영역 소유 — off면 아래 소유 분기가 전부 건너뛰어져 반환이 종전과 같다.
-    ownership_on = _ownership_enabled()
+    ownership_on = capability_ownership_on(app_config)
     ownership_notes: list[dict[str, Any]] = []
     # 소유 플래그 off의 분류 폴백 (사유 코드, 예외 클래스명) — 확정 대상을 본 뒤 노트로 싣는다
     # (plans/121 TP-1.6 · `_fallback_notes_off`).
@@ -292,10 +350,11 @@ async def semantic_router(
     plan_signal_on = _plan_signal_enabled(app_config)
     try:
         llm_results = await _llm_classify(
-            llm, user_query, active_domains,
+            ctx.llm, user_query, active_domains,
             db_descriptions=db_descriptions,
             fault_diagnosis_enabled=fault_dx_on,
             **({"plan_signal": True} if plan_signal_on else {}),
+            app_config=app_config,
         )
     except Exception as e:
         logger.error("LLM 라우팅 분류 실패: %s", e)
@@ -388,9 +447,32 @@ async def semantic_router(
             "current_node": "semantic_router",
         }
 
+    return _LlmRouting(
+        intent=intent,
+        llm_results=llm_results,
+        capability_chain=capability_chain,
+        needs_plan=needs_plan,
+        ownership_on=ownership_on,
+        ownership_notes=ownership_notes,
+        fallback_mark=fallback_mark,
+        plan_signal_on=plan_signal_on,
+    )
+
+
+def _finalize_targets(ctx: _RouteContext, routing: _LlmRouting) -> dict[str, Any]:
+    """분류 결과로 대상을 확정한다 — 관련도 필터·위치 힌트 고정·폴백·소유 검증·존 역질문."""
+    state = ctx.state
+    user_query = ctx.user_query
+    active_db_ids = ctx.active_db_ids
+    app_config = ctx.app_config
+    ownership_on = routing.ownership_on
+    ownership_notes = routing.ownership_notes
+    fallback_mark = routing.fallback_mark
+    capability_chain = routing.capability_chain
+
     # 최소 관련도 필터링 및 정렬
     targets = [
-        r for r in llm_results
+        r for r in routing.llm_results
         if r["relevance_score"] >= MIN_RELEVANCE_SCORE
     ]
     targets.sort(key=lambda x: x["relevance_score"], reverse=True)
@@ -400,8 +482,8 @@ async def semantic_router(
     # 존 역질문 게이트보다 앞이다 — 두 게이트가 고정된 집합 위에서 동작한다(1·2단 순서와 같다).
     # 힌트 없음·해소 0건이면 targets를 그대로 돌려준다(종전과 동작·반환 동일).
     targets, hint_pinned = _pin_turn_location_hints(
-        targets, parsed, user_query, active_db_ids,
-        zone_group_exclusive=bool(getattr(app_config.multi_db, "zone_group_exclusive", True)),
+        targets, ctx.parsed, user_query, active_db_ids,
+        zone_group_exclusive=bool(app_config.multi_db.zone_group_exclusive),
     )
 
     # 결과가 없으면 기본 DB 사용
@@ -489,7 +571,7 @@ async def semantic_router(
         "is_multi_db": is_multi_db,
         "active_db_id": active_db_id,
         "user_specified_db": user_specified_db,
-        "routing_intent": intent,
+        "routing_intent": routing.intent,
         # D-205 스코프 출처 — 사용자가 원문에서 DB를 지목했거나 위치 힌트로 고정했으면 hint,
         # 아니면 LLM 분류.
         "db_scope_source": "hint" if (user_specified_db or hint_pinned) else "classified",
@@ -506,23 +588,15 @@ async def semantic_router(
             routed["dependency_notes"] = (
                 list(state.get("dependency_notes") or []) + fallback_notes
             )
-    if plan_signal_on:
+    if routing.plan_signal_on:
         # plans/102 교차 체인(`chain`)이 있으면 계획 필요로 본다(103 §3.2).
-        routed["needs_plan"] = needs_plan or bool(capability_chain)
+        routed["needs_plan"] = routing.needs_plan or bool(capability_chain)
     return routed
 
 
 def _plan_signal_enabled(app_config: AppConfig) -> bool:
     """3단 계획 루프 플래그 — 호출부 설정에서 읽는다(기동 시 1회 해석 · `is True` 판정)."""
     return getattr(app_config, "tier3_plan_loop_enabled", False) is True
-
-
-def _ownership_enabled() -> bool:
-    """답변 영역 소유 플래그(plans/102 X-7). `load_config` 캐시라 기동 시 1회 해석된다."""
-    try:
-        return bool(getattr(load_config().router, "capability_ownership_enabled", False))
-    except Exception:  # noqa: BLE001 — 설정 부재가 라우팅을 막으면 안 된다(off = 현행)
-        return False
 
 
 def _fallback_notes_off(
@@ -644,6 +718,7 @@ async def _keep_zoneless_targets(
             llm, user_query, domains,
             db_descriptions=db_descriptions,
             fault_diagnosis_enabled=fault_dx_on,
+            app_config=app_config,
         )
     except Exception as e:  # noqa: BLE001 — 보존 판정 실패가 선택 존 조회를 막지 않는다
         logger.warning(
@@ -743,33 +818,13 @@ def _zone_clarification_or_none_router(
     lowered = user_query.lower()
     if any(term_in_text(t.lower(), lowered) for t in ZONE_SKIP_SIGNAL_TERMS):
         return None
-    parsed = state.get("parsed_requirements") or {}
-    # 서버명 지목 질의는 존이 결과에 영향 없음(§4.2 ⓐ)
-    if has_host_identifier_filter(parsed):
-        return None
-    # 조회 대상 필드가 파싱되지 않은 질의는 비발동(과잉 역질문 방지)
-    if not parsed.get("query_targets"):
-        return None
-    # 대상이 전부 폴스타 존일 때만
-    polestar_ids = app_config.get_polestar_db_ids() or set()
-    target_ids = [t.get("db_id") for t in targets if t.get("db_id")]
-    if not target_ids or not all(d in polestar_ids for d in target_ids):
-        return None
-    # 선택지는 사용자 조회 권한(D-232)으로 거른다 — 라우트 pre-gate
-    # (`_authorized_zone_clarification`)와 같은 규칙(plans/116 §10.3). 빈 목록을 넘기면
-    # build_zone_clarification이 "제한 없음"으로 읽으므로 권한 0이면 묻지 않는다.
-    allowed = authorized_db_ids(
-        app_config.multi_db.get_active_db_ids() or [o["db_id"] for o in ZONE_CLARIFY_OPTIONS],
-        state.get("allowed_db_ids"), state.get("user_role"),
-    )
-    if not allowed:
-        return None
-    return build_zone_clarification(
-        allowed, user_query,
-        # 존 그룹 상호배타(D-143 후속3) — 라우트 pre-gate와 동일 UI 규칙
-        group_exclusive=bool(
-            getattr(app_config.multi_db, "zone_group_exclusive", True)
-        ),
+    # 공통 꼬리(서버 식별 → 조회 대상 → 전부 폴스타 → 권한 거른 존 → 페이로드)
+    # — 2단과 공유(plans/169 O6)
+    return zone_clarification_for_targets(
+        state.get("parsed_requirements") or {}, targets, user_query,
+        allowed_db_ids=state.get("allowed_db_ids"),
+        user_role=state.get("user_role"),
+        app_config=app_config,
     )
 
 
@@ -845,6 +900,7 @@ async def _llm_classify(
     db_descriptions: dict[str, str] | None = None,
     fault_diagnosis_enabled: bool = False,
     plan_signal: bool = False,
+    app_config: AppConfig | None = None,
 ) -> dict[str, Any]:
     """LLM을 사용하여 질의의 대상 DB를 분류한다.
 
@@ -857,6 +913,8 @@ async def _llm_classify(
         db_descriptions: Redis 캐시에서 로드한 DB 설명 (선택)
         fault_diagnosis_enabled: 장애 진단 pull 위임 옵트인 (CW-B). True일 때만
             프롬프트에 fault_diagnosis 의도 섹션을 노출한다(off면 비트동일).
+        app_config: 소유 플래그를 읽을 설정. 미지정이면 `load_config()`(plans/186 J4 —
+            라우터 노드는 자기 설정을 넘긴다).
 
     Returns:
         분류 결과 dict — `{intent, databases, dropped}`. 답변 영역 소유 플래그
@@ -872,13 +930,16 @@ async def _llm_classify(
             llm, query, domains,
             db_descriptions=db_descriptions,
             fault_diagnosis_enabled=fault_diagnosis_enabled,
+            app_config=app_config,
         )
 
-    ownership_on = _ownership_enabled()
+    app_config = app_config if app_config is not None else load_config()
+    ownership_on = capability_ownership_on(app_config)
     system_prompt = _build_router_prompt(
         domains,
         db_descriptions=db_descriptions,
         fault_diagnosis_enabled=fault_diagnosis_enabled,
+        app_config=app_config,
     )
     if plan_signal:
         system_prompt += SEMANTIC_ROUTER_PLAN_SIGNAL_SECTION
@@ -1132,6 +1193,7 @@ async def _llm_classify_two_stage(
     *,
     db_descriptions: dict[str, str] | None = None,
     fault_diagnosis_enabled: bool = False,
+    app_config: AppConfig | None = None,
 ) -> dict:
     """intent와 DB를 **두 번의 호출**로 분리해 분류한다 (Plan 79 트랙 B).
 
@@ -1151,6 +1213,8 @@ async def _llm_classify_two_stage(
         domains: 활성 DB 도메인 목록
         db_descriptions: Redis 캐시 DB 설명 (선택)
         fault_diagnosis_enabled: 장애 진단 옵트인 (계약 C-A)
+        app_config: 소유 플래그를 읽을 설정. 미지정이면 `load_config()`(plans/186 J4 —
+            라우터 노드는 자기 설정을 넘긴다).
 
     Returns:
         `_llm_classify`와 **동일 형태** — {intent, databases, dropped, (+ two_stage 메타)}.
@@ -1209,7 +1273,8 @@ async def _llm_classify_two_stage(
     }
     # (plans/102 X-7) 답변 영역 소유 — 단일 호출 경로와 같은 반환 계약
     # (DB 선택이 없으면 chain도 빈 목록).
-    ownership_on = _ownership_enabled()
+    app_config = app_config if app_config is not None else load_config()
+    ownership_on = capability_ownership_on(app_config)
     if ownership_on:
         meta["chain"] = []
 
@@ -1251,7 +1316,7 @@ async def _llm_classify_two_stage(
             SEMANTIC_ROUTER_UNKNOWN_EXAMPLE if cfg.unknown_enabled else ""
         ),
         # (plans/102 X-8) 단일 호출 템플릿과 같은 슬롯·같은 렌더(대칭) — off면 전부 빈 문자열.
-        **_ownership_prompt_slots(domains),
+        **_ownership_prompt_slots(domains, app_config=app_config),
     )
     messages2: list[BaseMessage] = [SystemMessage(content=stage2_prompt)]
     if isinstance(llm, KBGenAIChat):
@@ -1354,14 +1419,17 @@ def _description_locked(db_id: str) -> bool:
     return bool(entry is not None and entry.description_locked)
 
 
-def _ownership_prompt_slots(domains: list[DBDomainConfig]) -> dict[str, str]:
+def _ownership_prompt_slots(
+    domains: list[DBDomainConfig], *, app_config: AppConfig | None = None,
+) -> dict[str, str]:
     """라우터 프롬프트의 답변 영역 소유 슬롯 4개(plans/102 X-8).
 
     off면 전부 빈 문자열 — 렌더가 종전과 바이트 동일하다. on이면 프롬프트에 실리는 DB(=활성 도메인)
     기준으로 레지스트리에서 렌더한 값을 준다. 렌더는 DB 목록 단위로 캐시한다(기동 시 1회 — 요청마다
-    흔들리면 프롬프트 접두 KV 캐시가 무효화된다).
+    흔들리면 프롬프트 접두 KV 캐시가 무효화된다). 플래그는 넘긴 설정에서 읽는다(미지정이면
+    `load_config()` · plans/186 J4).
     """
-    if not _ownership_enabled():
+    if not capability_ownership_on(app_config if app_config is not None else load_config()):
         return {
             "capability_ownership_section": "",
             "capability_chain_line": "",
@@ -1406,6 +1474,7 @@ def _build_router_prompt(
     *,
     db_descriptions: dict[str, str] | None = None,
     fault_diagnosis_enabled: bool = False,
+    app_config: AppConfig | None = None,
 ) -> str:
     """활성 도메인 기반으로 라우팅 프롬프트를 동적 생성한다.
 
@@ -1417,6 +1486,7 @@ def _build_router_prompt(
         db_descriptions: Redis 캐시에서 로드한 DB 설명 매핑 (선택)
         fault_diagnosis_enabled: True일 때만 fault_diagnosis 의도 섹션을 덧붙인다 (CW-B).
             off면 프롬프트가 기존과 비트동일하여 LLM이 fault_diagnosis를 산출하지 않는다.
+        app_config: 소유 슬롯 플래그를 읽을 설정. 미지정이면 `load_config()`(plans/186 J4).
 
     Returns:
         완성된 시스템 프롬프트 문자열
@@ -1443,7 +1513,7 @@ def _build_router_prompt(
         unknown_class_line=SEMANTIC_ROUTER_UNKNOWN_CLASS_LINE if unknown_on else "",
         unknown_example=SEMANTIC_ROUTER_UNKNOWN_EXAMPLE if unknown_on else "",
         # (plans/102 X-8) 답변 영역 소유 — off면 네 슬롯 모두 빈 문자열(바이트 동일).
-        **_ownership_prompt_slots(domains),
+        **_ownership_prompt_slots(domains, app_config=app_config),
     )
 
 

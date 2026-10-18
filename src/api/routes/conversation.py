@@ -14,6 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from src.api.dependencies import require_user
+from src.api.error_detail import user_error_detail
 from src.api.thread_history import history_owner
 
 logger = logging.getLogger(__name__)
@@ -67,8 +68,11 @@ async def get_conversation(
             graph.get_state, thread_config
         )
     except Exception as e:
-        logger.error("대화 세션 조회 실패: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        # 예외 원문은 서버 로그에만 — 응답은 고정 문구 + 요청 번호(plans/163 S3)
+        raise HTTPException(
+            status_code=500,
+            detail=user_error_detail("대화 기록을 불러오지 못했습니다", e, logger, request),
+        )
 
     if not state_snapshot or not state_snapshot.values:
         raise HTTPException(status_code=404, detail="대화 세션을 찾을 수 없습니다.")

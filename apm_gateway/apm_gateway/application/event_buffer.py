@@ -32,7 +32,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from apm_gateway.application.tools import ApmTools
+from apm_gateway.application.apm_core import ApmCore
 from apm_gateway.domain.events import idempotency_key
 
 DomainKey = tuple[str, int]
@@ -49,7 +49,7 @@ def buffer_row(source_id: str, domain_id: int, event: dict[str, Any]) -> dict[st
         "source_id": source_id,
         "domain_id": event.get("domain_id") if event.get("domain_id") is not None else domain_id,
     }
-    return ApmTools._event_row(tagged)
+    return ApmCore.event_row(tagged)
 
 
 def row_key(row: dict[str, Any]) -> str:

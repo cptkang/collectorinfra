@@ -325,7 +325,10 @@ def build_sre_agent_client(gate_cfg) -> Optional["SreAgentClient"]:  # noqa: ANN
         SreAgentClient 또는 None(url 미설정·생성 실패 — 호출부가 graceful 처리).
     """
     try:
-        url = getattr(gate_cfg, "investigation_service_url", "")
+        # 알림 노드는 설정에 noise_gate가 없으면 None을 넘긴다 — 현행대로 클라이언트 없음.
+        if gate_cfg is None:
+            return None
+        url = gate_cfg.investigation_service_url
         if not url:
             return None
         token = getattr(gate_cfg, "investigation_service_token", None)

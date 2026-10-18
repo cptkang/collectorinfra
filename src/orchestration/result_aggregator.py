@@ -43,7 +43,15 @@ from src.orchestration.apm_query import (
 from src.orchestration.apm_query import META_KEY as APM_META_KEY
 from src.orchestration.host_inspect import HOST_INSPECT_AGENT
 from src.prompts.result_synthesizer import RESULT_SYNTHESIZER_SYSTEM_PROMPT
-from src.state import AgentState
+from src.state import (
+    AgentState,
+    OutputDisclosureInputs,
+    OutputFormInputs,
+    OutputState,
+    OutputTaskResultInputs,
+    OutputZoneScopeInputs,
+)
+from src.utils.column_matcher import build_resolved_mapping
 from src.utils.deadline import MIN_CALL_TIMEOUT_SEC
 from src.utils.empty_antecedent import (
     EMPTY_ANTECEDENT_KEY,
@@ -59,6 +67,13 @@ from src.utils.empty_antecedent import (
 )
 from src.utils.prior_dependency import REASON_PRIOR_EMPTY, render_dependency_notes
 from src.utils.progress_events import emit_answer_prefix
+from src.utils.task_result_keys import DISPLAY_CUT_KEY
+from src.utils.user_error import (
+    GENERIC_TASK_ERROR,
+    request_id,
+    safe_stop_detail_text,
+    user_error_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +193,7 @@ async def result_aggregator(
             # 표시용으로 셀을 줄인 원천이 있으면 CSV 원천은 전문 행으로 다시 병합한다(plans/134 W2)
             csv_rows = (
                 _merge_task_results_by_identity(ordered_tasks, task_results, full=True)
-                if any(r.get(_DISPLAY_CUT_KEY) for r in task_results.values()
+                if any(r.get(DISPLAY_CUT_KEY) for r in task_results.values()
                        if isinstance(r, dict))
                 else None
             )
@@ -302,17 +317,12 @@ def _identity_key(value: Any) -> str:
     return _IDENTITY_KEY_NOISE.sub("", str(value).strip().lower())
 
 
-#: 처리기가 표시용 행(`organized_data.rows`)의 긴 셀을 줄였다는 표지(plans/134 W2 —
-#: `apm_query.DISPLAY_CUT_KEY`와 같은 값). 병합 표의 CSV 원천은 그 task의 `query_results`(전문)다.
-_DISPLAY_CUT_KEY = "display_rows_cut"
-
-
 def _extract_result_rows(res: dict, *, full: bool = False) -> list[dict]:
     """task 결과에서 행 리스트를 추출한다(organized_data.rows 우선, query_results 폴백).
 
-    `full`이면 표시용으로 셀을 줄인 결과(`_DISPLAY_CUT_KEY`)만 `query_results`(전문)를 쓴다.
+    `full`이면 표시용으로 셀을 줄인 결과(`DISPLAY_CUT_KEY`)만 `query_results`(전문)를 쓴다.
     """
-    full_rows = res.get("query_results") if full and res.get(_DISPLAY_CUT_KEY) else None
+    full_rows = res.get("query_results") if full and res.get(DISPLAY_CUT_KEY) else None
     if isinstance(full_rows, list):
         return full_rows
     organized = res.get("organized_data") or {}
@@ -374,24 +384,65 @@ def _merge_task_results_by_identity(
     Returns:
         병합된 행 목록(canonical 식별 컬럼 우선). 병합 불가 시 None.
     """
-    sources: list[tuple[list[dict], str]] = []
-    source_tasks: list[dict] = []
+    collected = _collect_identity_sources(ordered_tasks, task_results, full=full)
+    if collected is None:
+        return None  # 식별 컬럼 없는 조회가 있으면 결정적 병합 불가 → 합성 폴백
+    sources, source_tasks = collected
+    if len(sources) < 2:
+        return None
+    if _has_per_row_apm_source(source_tasks, sources):
+        return None
+    key_sets = [{_identity_key(r.get(idc)) for r in rows if isinstance(r, dict)} - {""}
+                for rows, idc in sources]
+    if not _shares_any_server(key_sets, len(sources)):
+        return None
+
+    id_cols = {idc for _, idc in sources}
+    canonical = "server_name" if "server_name" in id_cols else sources[0][1]
+    merged, col_order, row_sources, dropped, keyless = _outer_join_by_identity(
+        sources, id_cols, canonical,
+    )
+    if not merged:
+        return None
+    merged = _scope_to_base_servers(
+        merged, sources, key_sets, source_tasks, ordered_tasks, task_results,
+    )
+    _log_merge_losses(canonical, keyless, dropped)
+    return _merged_rows_in_order(merged, col_order, row_sources)
+
+
+#: 병합 원천 — (행 목록, 식별 컬럼) 쌍
+_IdentitySource = tuple[list[dict[str, Any]], str]
+
+
+def _collect_identity_sources(
+    ordered_tasks: list[dict[str, Any]], task_results: dict[str, dict[str, Any]], *, full: bool,
+) -> tuple[list[_IdentitySource], list[dict[str, Any]]] | None:
+    """행이 있는 조회와 그 식별 컬럼을 모은다 — 식별 컬럼 없는 조회가 하나라도 있으면 None."""
+    sources: list[_IdentitySource] = []
+    source_tasks: list[dict[str, Any]] = []
     for t in ordered_tasks:
         rows = _extract_result_rows(task_results.get(t.get("task_id"), {}), full=full)
         if not rows:
             continue
         idc = _find_identity_col(rows)
         if idc is None:
-            return None  # 식별 컬럼 없는 조회가 있으면 결정적 병합 불가 → 합성 폴백
+            return None
         sources.append((rows, idc))
         source_tasks.append(t)
-    if len(sources) < 2:
-        return None
-    # APM 처리기 행은 거래·요청 단위 관측이다 — 서버 키당 여러 행을 서버 단위로 접으면 다른 거래의
-    # 상세가 첫 행에 붙고 나머지 행이 사라진다(plans/134 V-1). 앞 결과 행 참조 보기(프로파일·요청
-    # 상세)는 서버당 1행이어도 base 좁히기가 목록의 다른 서버 행을 지운다. 둘 다 병합하지 않고
-    # 단계별 답으로 넘긴다. 그 밖 서버당 1행인 APM 결과의 병합(폴스타 결과와의 서버 키 병합 포함)은
-    # 종전대로다.
+    return sources, source_tasks
+
+
+def _has_per_row_apm_source(
+    source_tasks: list[dict[str, Any]], sources: list[_IdentitySource],
+) -> bool:
+    """서버 단위로 접으면 안 되는 APM 처리기 결과가 있는가(plans/134 V-1 — 있으면 병합 취소).
+
+    APM 처리기 행은 거래·요청 단위 관측이다 — 서버 키당 여러 행을 서버 단위로 접으면 다른 거래의
+    상세가 첫 행에 붙고 나머지 행이 사라진다. 앞 결과 행 참조 보기(프로파일·요청 상세)는 서버당
+    1행이어도 base 좁히기가 목록의 다른 서버 행을 지운다. 둘 다 병합하지 않고 단계별 답으로
+    넘긴다. 그 밖 서버당 1행인 APM 결과의 병합(폴스타 결과와의 서버 키 병합 포함)은 종전대로다.
+    """
     per_row = [str(t.get("task_id")) for t, (rows, idc) in zip(source_tasks, sources)
                if t.get("agent") == APM_QUERY_AGENT
                and (_repeats_identity(rows, idc) or reference_views_only(t))]
@@ -402,25 +453,39 @@ def _merge_task_results_by_identity(
             "(plans/134 V-1)",
             ", ".join(per_row),
         )
-        return None
+        return True
+    return False
 
-    # 공통 서버가 하나도 없으면 결정적 병합은 뜻이 없다 — 각 조회가 서로 다른 서버를
-    # 가리키는 독립 조회(예: CPU 상위 3 + 메모리 상위 3)이므로 outer join 표는 절반이
-    # 빈 칸이 되고, 이어지는 base 절단이 한쪽을 통째로 지운다. LLM 합성으로 넘긴다.
-    key_sets = [{_identity_key(r.get(idc)) for r in rows if isinstance(r, dict)} - {""}
-                for rows, idc in sources]
+
+def _shares_any_server(key_sets: list[set[str]], n_sources: int) -> bool:
+    """두 조회 이상이 공유하는 서버가 하나라도 있는가(없으면 병합 취소).
+
+    공통 서버가 하나도 없으면 결정적 병합은 뜻이 없다 — 각 조회가 서로 다른 서버를 가리키는 독립
+    조회(예: CPU 상위 3 + 메모리 상위 3)이므로 outer join 표는 절반이 빈 칸이 되고, 이어지는 base
+    절단이 한쪽을 통째로 지운다. LLM 합성으로 넘긴다.
+    """
     shared = {k for k in set().union(*key_sets) if sum(k in s for s in key_sets) >= 2}
     if not shared:
         logger.info(
             "result_aggregator 병합 취소: 조회 %d건이 공통 서버를 하나도 공유하지 않음 "
-            "— LLM 합성으로 폴백", len(sources),
+            "— LLM 합성으로 폴백", n_sources,
         )
-        return None
+        return False
+    return True
 
-    id_cols = {idc for _, idc in sources}
-    canonical = "server_name" if "server_name" in id_cols else sources[0][1]
 
-    merged: dict[str, dict] = {}
+def _outer_join_by_identity(
+    sources: list[_IdentitySource], id_cols: set[str], canonical: str,
+) -> tuple[dict[str, dict[str, Any]], list[str], dict[str, list[str]], int, int]:
+    """서버 키로 outer join한다.
+
+    서버 키당 1행(대표)으로 접는다 — 먼저 채워진 값을 유지한다. 모든 식별 컬럼은 canonical
+    컬럼 하나로 흡수한다(name/server_name 중복 제거).
+
+    Returns:
+        (병합 행, 컬럼 순서, 행별 출처 원천, 흡수 못 한 값 수, 키 없는 행 수)
+    """
+    merged: dict[str, dict[str, Any]] = {}
     col_order: list[str] = [canonical]
     # 병합 행의 출처 원천 목록(등장 순서) — 첫 원천 값만 남기면 "출처"가 오표기된다(TP-11.3).
     row_sources: dict[str, list[str]] = {}
@@ -454,11 +519,21 @@ def _merge_task_results_by_identity(
                     dropped += 1  # 서버당 다건 — 대표값 유지, 흡수 안 된 값 카운트
                 if col not in col_order:
                     col_order.append(col)
-    if not merged:
-        return None
+    return merged, col_order, row_sources, dropped, keyless
 
-    # 기준 서버 집합: 행수가 가장 적은 조회(가장 좁게 스코프됨)의 키만 남긴다.
-    # tie(각 1행)면 min이 첫 인덱스=선행 조회를 고른다(선별 기준 우선).
+
+def _scope_to_base_servers(
+    merged: dict[str, dict[str, Any]],
+    sources: list[_IdentitySource],
+    key_sets: list[set[str]],
+    source_tasks: list[dict[str, Any]],
+    ordered_tasks: list[dict[str, Any]],
+    task_results: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """기준 서버 집합(행수가 가장 적은 조회)으로 좁힌다 — 좁히기가 아니면 병합 행 그대로.
+
+    tie(각 1행)면 min이 첫 인덱스=선행 조회를 고른다(선별 기준 우선).
+    """
     base_idx = min(range(len(sources)), key=lambda i: len(sources[i][0]))
     base_keys = key_sets[base_idx]
     # 절단은 **좁히기일 때만** 한다 — base 집합이 다른 조회들의 집합 안에 온전히 들어갈 때.
@@ -487,8 +562,12 @@ def _merge_task_results_by_identity(
                 "result_aggregator 병합: 최소 행수 조회(%d행) 기준 스코프로 %d→%d행 축소",
                 len(sources[base_idx][0]), len(merged), len(scoped),
             )
-        merged = scoped
+        return scoped
+    return merged
 
+
+def _log_merge_losses(canonical: str, keyless: int, dropped: int) -> None:
+    """병합 표에 반영되지 않은 행·값을 로그로 알린다(침묵 절단 방지)."""
     if keyless:
         logger.info(
             "result_aggregator 병합: 식별키(%s) 없는 행 %d건 제외 — 전역 COUNT류 "
@@ -500,6 +579,12 @@ def _merge_task_results_by_identity(
             "result_aggregator 병합: 서버당 다건으로 %d개 값이 대표행에 흡수되지 않음(대표 유지)",
             dropped,
         )
+
+
+def _merged_rows_in_order(
+    merged: dict[str, dict[str, Any]], col_order: list[str], row_sources: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    """병합 행을 컬럼 순서대로 펼친다 — 원천이 둘 이상이면 출처 칸에 모두 적는다."""
     out_rows: list[dict[str, Any]] = []
     for key, slot in merged.items():
         if row_sources.get(key):
@@ -710,6 +795,24 @@ def _merged_source_state(
     }
 
 
+def _merged_resolved_mapping(
+    column_mapping: dict[str, Any] | None, merged_rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """병합 행의 결과 키로 양식 매핑을 해석한다(plans/185 W2 — 결과 정리 Layer 1과 같은 규칙).
+
+    원본 매핑을 그대로 writer에 넘기면 같은 칼럼(예: 두 사용률 필드 → 같은 통계 칼럼)을 공유한
+    필드의 역매핑이 마지막 필드로 덮여 다른 필드 값이 채워진다. 결과 키는 모든 행 키의 합집합이다 —
+    병합 행은 컬럼 순서로 펼쳐 모든 행이 같은 키를 가져(`_merged_rows_in_order`) 첫 행 키와 같고,
+    키가 다른 행이 와도 뒤 행에만 있는 키를 놓치지 않는다. Layer 2(LLM)는 부르지 않는다 — 못 푼
+    필드는 원본 값 유지라 writer의 종전 폴백을 탄다. 매핑·행이 없으면 None(종전).
+    """
+    if not column_mapping or not merged_rows:
+        return None
+    result_keys = {k for row in merged_rows if isinstance(row, dict) for k in row}
+    resolved, _unresolved = build_resolved_mapping(column_mapping, result_keys)
+    return resolved
+
+
 async def _finalize_merged_rows(
     merged_rows: list[dict],
     state: AgentState,
@@ -737,7 +840,7 @@ async def _finalize_merged_rows(
         "summary": f"총 {len(merged_rows)}건의 통합 결과입니다.",
         "rows": merged_rows,
         "column_mapping": None,
-        "resolved_mapping": None,
+        "resolved_mapping": _merged_resolved_mapping(state.get("column_mapping"), merged_rows),
         "is_sufficient": True,
         "sheet_mappings": None,
     }
@@ -766,8 +869,10 @@ async def _finalize_merged_rows(
         out = await output_generator(out_state, llm=llm, app_config=app_config)
         text = out.get("final_response", "")
     except Exception as e:  # noqa: BLE001 — 표 생성 실패는 로그 후 최소 안내
-        logger.error("result_aggregator 병합 표 생성 실패: %s", e)
-        text = f"통합 결과 {len(merged_rows)}건을 정리하는 중 오류가 발생했습니다: {e}"
+        # 예외 원문은 답 본문에 싣지 않는다 — 요청 번호만, 원문은 로그(plans/163 S3+)
+        rid = request_id()
+        logger.error("result_aggregator 병합 표 생성 실패 (요청 %s): %s", rid, e)
+        text = f"통합 결과 {len(merged_rows)}건을 정리하는 중 오류가 발생했습니다 (요청 {rid})"
     result: dict[str, Any] = {
         "final_response": text,
         "current_node": "result_aggregator",
@@ -1346,44 +1451,15 @@ async def _finalize_task(
         {"order", "agent", "text", "output_file", "output_file_name", "error"} dict
     """
     agent = task.get("agent", "")
-    base: dict = {
-        "order": task.get("order", 0),
-        "agent": agent,
-        "text": "",
-        "output_file": None,
-        "output_file_name": None,
-        "error": res.get("error"),
-        # CSV 다운로드/row_count용 원시 결과를 보존한다(orchestration 경로에서 query_results를
-        # top-level state로 승격하기 위함 — process_query 전체 프로세스 CSV 등, D-047).
-        "query_results": res.get("query_results") or [],
-    }
-    # 존 역질문(D-143 후속2): 페이로드를 최종 응답까지 운반(form_fill_clarification 동형).
-    if "zone_clarification" in res:
-        base["zone_clarification"] = res["zone_clarification"]
-    # 저장 값 삭제 패널(D-187): 이력 조회 단락(direct_response)의 구조화 컨텍스트 운반
-    if res.get("form_memory_panel"):
-        base["form_memory_panel"] = res["form_memory_panel"]
+    base = _finalize_base(task, res, agent)
 
     # 조회 실패를 「데이터 없음」으로 바꾸지 않는다(plans/123 W-6) — 실패 + 0행이면 결과 정리·출력
     # 생성의 빈 결과 문구(「조건에 해당하는 … 데이터가 없습니다」)가 아니라 사유가 있는 실패 안내로
     # 끝낸다.
     failure = _failure_disclosure(task, res)
     organized = res.get("organized_data")
-    if (
-        failure is not None
-        and organized is not None
-        and not _extract_result_rows(res)
-        # 결정적 조사 처리기는 0행 원인 진단 요약을 스스로 낸다(Plan 50 M4 · D-046) — 그대로 둔다
-        and agent not in ("process_query", HOST_INSPECT_AGENT)
-    ):
-        base["text"] = failure["text"]
-        base["disclosures"] = [failure]
-        logger.info(
-            "result_aggregator: task %s 실패를 빈 결과가 아니라 실패 안내로 마감"
-            "(kind=%s · plans/123 W-6)",
-            task.get("task_id"), failure["kind"],
-        )
-        return base
+    if failure is not None and _ends_as_failure(agent, res, organized):
+        return _close_as_failure(task, base, failure)
 
     # data 계열: organized_data가 있으면 output_generator로 최종화
     if organized is not None:
@@ -1410,41 +1486,116 @@ async def _finalize_task(
                 s, llm=llm, app_config=app_config,
                 stream_user_response=stream_user_response,
             )
-            handler = _handler_disclosures(res)
-            base["text"] = _with_handler_notices(_with_answer_lines(
-                out.get("final_response", ""), _handler_answer_lines(res)), handler)
-            base["output_file"] = out.get("output_file")
-            base["output_file_name"] = out.get("output_file_name")
-            # task 단위 결정적 고지의 구조화본(plans/123 W-8) — 집계기가 턴 단위로 모은다
-            if out.get("disclosures"):
-                base["disclosures"] = list(out["disclosures"])
-            if handler:
-                base["disclosures"] = disc.dedupe([*(base.get("disclosures") or []), *handler])
-            # HITL 폼필(D-151): 역질문 페이로드·대기 상태를 최종 응답까지 운반.
-            # pending_form_fill은 None(해소·자기정리)도 유의미한 델타이므로 키 존재로 판별.
-            if "form_fill_clarification" in out:
-                base["form_fill_clarification"] = out["form_fill_clarification"]
-            if "pending_form_fill" in out:
-                base["pending_form_fill"] = out["pending_form_fill"]
+            _apply_generated(base, out, res)
         except Exception as e:
             # exc_info 필수 — 라이브에서 "'NoneType' object has no attribute 'get'"만
             # 남아 발생 지점을 특정할 수 없었다(2026-07-30 B0 CPU 양식 실측).
+            # 답 본문·task 요약에는 원문 대신 고정 문구 + 요청 번호(plans/163 S3) — 원문은
+            # 이 로그에만.
+            rid = request_id()
             logger.error(
-                "result_aggregator output_generator 실패 (task=%s): %s",
-                task.get("task_id"), e, exc_info=True,
+                "result_aggregator output_generator 실패 (task=%s · 요청 %s): %s",
+                task.get("task_id"), rid, e, exc_info=True,
             )
-            base["text"] = f"결과 생성 중 오류가 발생했습니다: {e}"
-            base["error"] = base["error"] or str(e)
+            base["text"] = f"결과 생성 중 오류가 발생했습니다 (요청 {rid})"
+            base["error"] = base["error"] or "결과 생성 실패"
         return base
 
     # 텍스트 계열: final_response 직접 사용
+    return _finalize_text_result(res, base, failure)
+
+
+def _finalize_base(task: dict[str, Any], res: dict[str, Any], agent: Any) -> dict[str, Any]:
+    """task 마감 결과의 기본 틀 — 표시용 오류 · 원시 행 · 역질문/패널 운반 키."""
+    # task 실패 사유는 화면에 고정 사유만 보인다 — 예외 원문은 고정 문구로 바꾸고 원문은 로그에만
+    # 둔다(plans/163 S3+). 부분 실패 안내(`_merge_finalized`)·합성 입력이 이 값을 쓴다.
+    raw_error = res.get("error")
+    shown_error = user_error_text(raw_error, result=res) if raw_error else raw_error
+    if raw_error and shown_error != raw_error:
+        logger.warning(
+            "result_aggregator task 오류 (task=%s · 요청 %s): %r",
+            task.get("task_id"), request_id(), raw_error,
+        )
+    base: dict[str, Any] = {
+        "order": task.get("order", 0),
+        "agent": agent,
+        "text": "",
+        "output_file": None,
+        "output_file_name": None,
+        "error": shown_error,
+        # CSV 다운로드/row_count용 원시 결과를 보존한다(orchestration 경로에서 query_results를
+        # top-level state로 승격하기 위함 — process_query 전체 프로세스 CSV 등, D-047).
+        "query_results": res.get("query_results") or [],
+    }
+    # 존 역질문(D-143 후속2): 페이로드를 최종 응답까지 운반(form_fill_clarification 동형).
+    if "zone_clarification" in res:
+        base["zone_clarification"] = res["zone_clarification"]
+    # 저장 값 삭제 패널(D-187): 이력 조회 단락(direct_response)의 구조화 컨텍스트 운반
+    if res.get("form_memory_panel"):
+        base["form_memory_panel"] = res["form_memory_panel"]
+    return base
+
+
+def _ends_as_failure(agent: Any, res: dict[str, Any], organized: Any) -> bool:
+    """실패 고지가 있는 task를 빈 결과가 아니라 실패 안내로 마감할지(plans/123 W-6)."""
+    return (
+        organized is not None
+        and not _extract_result_rows(res)
+        # 결정적 조사 처리기는 0행 원인 진단 요약을 스스로 낸다(Plan 50 M4 · D-046) — 그대로 둔다
+        and agent not in ("process_query", HOST_INSPECT_AGENT)
+    )
+
+
+def _close_as_failure(
+    task: dict[str, Any], base: dict[str, Any], failure: disc.Disclosure,
+) -> dict[str, Any]:
+    """실패 + 0행 task를 사유가 있는 실패 안내로 마감한다(plans/123 W-6)."""
+    base["text"] = failure["text"]
+    base["disclosures"] = [failure]
+    logger.info(
+        "result_aggregator: task %s 실패를 빈 결과가 아니라 실패 안내로 마감"
+        "(kind=%s · plans/123 W-6)",
+        task.get("task_id"), failure["kind"],
+    )
+    return base
+
+
+def _apply_generated(base: dict[str, Any], out: dict[str, Any], res: dict[str, Any]) -> None:
+    """output_generator 산출을 task 마감 결과에 옮긴다(본문 · 파일 · 고지 · 폼필 HITL 운반)."""
+    handler = _handler_disclosures(res)
+    base["text"] = _with_handler_notices(_with_answer_lines(
+        out.get("final_response", ""), _handler_answer_lines(res)), handler)
+    base["output_file"] = out.get("output_file")
+    base["output_file_name"] = out.get("output_file_name")
+    # task 단위 결정적 고지의 구조화본(plans/123 W-8) — 집계기가 턴 단위로 모은다
+    if out.get("disclosures"):
+        base["disclosures"] = list(out["disclosures"])
+    if handler:
+        base["disclosures"] = disc.dedupe([*(base.get("disclosures") or []), *handler])
+    # HITL 폼필(D-151): 역질문 페이로드·대기 상태를 최종 응답까지 운반.
+    # pending_form_fill은 None(해소·자기정리)도 유의미한 델타이므로 키 존재로 판별.
+    if "form_fill_clarification" in out:
+        base["form_fill_clarification"] = out["form_fill_clarification"]
+    if "pending_form_fill" in out:
+        base["pending_form_fill"] = out["pending_form_fill"]
+
+
+def _finalize_text_result(
+    res: dict[str, Any], base: dict[str, Any], failure: disc.Disclosure | None,
+) -> dict[str, Any]:
+    """텍스트 계열(cache/synonym/general 등) task 마감 — final_response를 그대로 쓴다."""
     text = res.get("final_response")
     handler = _handler_disclosures(res)
     if text:
         base["text"] = _with_handler_notices(
             _with_answer_lines(text, _handler_answer_lines(res)), handler)
-    elif res.get("error"):
-        base["text"] = f"작업 처리 중 오류가 발생했습니다: {res['error']}"
+    elif base["error"]:
+        # 고정 사유(「모든 DB 쿼리가 실패했습니다.」 등)는 그대로 보이고, 예외 원문은 고정 문구 +
+        # 요청 번호로 바꾼다(plans/163 S3+ — 원문은 위에서 로그로 남겼다).
+        if base["error"] == GENERIC_TASK_ERROR:
+            base["text"] = f"{GENERIC_TASK_ERROR} (요청 {request_id()})"
+        else:
+            base["text"] = f"{GENERIC_TASK_ERROR}: {base['error']}"
     else:
         base["text"] = "처리 결과가 없습니다."
     # SQL 루프가 사유 문구로 끝낸 조회(산문 조기 종결 · 조회 마감 — plans/119 N-5·T-3)도 kind를
@@ -1537,7 +1688,12 @@ def _failure_disclosure(task: dict[str, Any], res: dict[str, Any]) -> disc.Discl
         kind = str(stop["reason"])
     else:
         kind = disc.QUERY_FAILED
-    text = disc.failure_text(kind, subject=str(task.get("sub_query") or ""), detail=detail)
+    # 고지 본문의 「(마지막 사유: …)」에는 고정 사유만 싣는다 — 실행 예외·검증 사유(생성 SQL
+    # 조각)가 보간된 원문은 버린다(plans/163 S3+ · kind 문구가 실패 종류를 이미 말한다).
+    # kind 판정은 원문으로 한다. 멀티 DB의 「db_id: 사유」 이음은 조각마다 거른다(plans/186 M7).
+    text = disc.failure_text(
+        kind, subject=str(task.get("sub_query") or ""), detail=safe_stop_detail_text(detail),
+    )
     return disc.make(kind, text, source=f"task:{task.get('task_id')}")
 
 
@@ -1549,7 +1705,7 @@ def _build_output_state(
     condition_check: bool = False,
     limit_sources: list[dict[str, Any]] | None = None,
     period_sources: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
+) -> OutputState:
     """output_generator 호출용 입력 state를 구성한다.
 
     output_generator는 organized_data, parsed_requirements, mapping_sources 등을 읽는다.
@@ -1563,7 +1719,7 @@ def _build_output_state(
         period_sources: 병합 경로의 원천 task별 조회 기간 고지 입력(plans/122 T-8)
 
     Returns:
-        output_generator 입력 state dict
+        output_generator 입력 state dict(키 선언 `OutputState` — 허용목록)
     """
     # per-task 최종화 스코프(D-092): output_generator의 응답 프롬프트는
     # parsed_requirements["original_query"]를 "사용자 질의"로 사용한다. 전체 질의를
@@ -1573,9 +1729,30 @@ def _build_output_state(
     parsed = dict(state.get("parsed_requirements", {}) or {})
     if sub_query:
         parsed["original_query"] = sub_query
+    # 키 순서는 종전 단일 dict 리터럴과 같다(구간 함수가 연속 구간을 그 순서로 돌려준다).
     return {
         "user_query": sub_query,
         "parsed_requirements": parsed,
+        **_task_result_inputs(res),
+        **_form_inputs(state, res),
+        **_zone_scope_inputs(state, res),
+        **_disclosure_inputs(state, task, res, condition_check, limit_sources),
+        # ── 시간 해석(plans/122 T-4·T-8 · D-309) ─────────────────────────────────────
+        # 허용목록이라 싣지 않으면 2단 출구에서 사라진다(D-186 사례) — 기준 정보(오늘·조회 기간)와
+        # `[조회 기간]` 고지가 이 값과 위 실행 SQL로 정해진다. task 문장에 명시 기간이 있어 task별로
+        # 해석했으면(`resolve_task_time`) task 결과의 값이 우선이다. 플래그 off면 둘 다 None.
+        "time_resolution": res.get("time_resolution") or state.get("time_resolution"),
+        # 병합 경로의 원천 task별 기간 고지 입력 — 원천마다 해석이 다를 수 있다
+        "period_sources": period_sources,
+        "final_response": "",
+        "output_file": None,
+        "output_file_name": None,
+    }
+
+
+def _task_result_inputs(res: dict[str, Any]) -> OutputTaskResultInputs:
+    """output_generator 입력 중 task 결과 구간(행 · 존 커버리지 · 0건 진단)."""
+    return {
         "organized_data": res.get("organized_data"),
         "query_results": res.get("query_results", []),
         # 존 커버리지 각주(D-159 계열 침묵 강등 금지) — 부분 실패·0행 존 명시용
@@ -1583,6 +1760,12 @@ def _build_output_state(
         "db_result_summary": res.get("db_result_summary"),
         # 0건 원인 진단(plans/121 TP-11.5) — 없으면 None이라 빈 결과 문구가 종전과 바이트 동일하다.
         "empty_diagnosis": res.get("empty_diagnosis"),
+    }
+
+
+def _form_inputs(state: AgentState, res: dict[str, Any]) -> OutputFormInputs:
+    """output_generator 입력 중 양식·매핑·폼필 구간."""
+    return {
         "template_structure": state.get("template_structure"),
         # uploaded_file(원본 파일 바이너리)이 없으면 output_generator가 양식을 채우지 못하고
         # CSV로만 강등된다(비대칭 전파 방지, D-053 계열).
@@ -1602,20 +1785,39 @@ def _build_output_state(
         "form_fill_answers": state.get("form_fill_answers"),
         "form_fill_remember": state.get("form_fill_remember"),
         "pending_form_fill": state.get("pending_form_fill"),
-        # 존 보존(D-157/FIX-26 → D-186 실효화): `_build_form_fill_hitl`이 pending.db_ids를
-        # selected_db_ids > target_databases > db_results 순으로 읽는데, 이 dict에는 셋 다
-        # 없어 오케스트레이션(존 체크박스 런의 유일한 경로)에서 항상 None → 답변 턴이
-        # 기본 DB(b0=은행존)로 침묵 전환됐다(라이브 실측 2026-08-25). 체크박스 선택과
-        # 이 task가 실제 실행한 DB(subagents가 res로 승격)를 함께 싣는다.
+    }
+
+
+def _zone_scope_inputs(state: AgentState, res: dict[str, Any]) -> OutputZoneScopeInputs:
+    """output_generator 입력 중 존 보존 구간(D-157/FIX-26 → D-186 실효화).
+
+    `_build_form_fill_hitl`이 pending.db_ids를 selected_db_ids > target_databases > db_results
+    순으로 읽는데, 입력 dict에 셋 다 없어 오케스트레이션(존 체크박스 런의 유일한 경로)에서 항상
+    None → 답변 턴이 기본 DB(b0=은행존)로 침묵 전환됐다(라이브 실측 2026-08-25). 체크박스 선택과
+    이 task가 실제 실행한 DB(subagents가 res로 승격)를 함께 싣는다.
+    """
+    return {
         "selected_db_ids": state.get("selected_db_ids"),
         "target_databases": (
             [{"db_id": d} for d in (res.get("target_db_ids") or []) if d]
             or state.get("target_databases")
         ),
-        # ── 2단 결정적 고지 입력(plans/123 W-1·W-3) ──────────────────────────────
-        # 종전 허용목록에 없어 상한 절단·급증 한계·알람 헤드라인·당월 각주 알람 제외가 2단에서
-        # no-op였다(10,000행 도달 17턴 고지 0 — run `20260923-103638`). 없으면 각 덧붙임이
-        # no-op이다.
+    }
+
+
+def _disclosure_inputs(
+    state: AgentState,
+    task: dict[str, Any],
+    res: dict[str, Any],
+    condition_check: bool,
+    limit_sources: list[dict[str, Any]] | None,
+) -> OutputDisclosureInputs:
+    """output_generator 입력 중 2단 결정적 고지 구간(plans/123 W-1·W-3).
+
+    종전 허용목록에 없어 상한 절단·급증 한계·알람 헤드라인·당월 각주 알람 제외가 2단에서
+    no-op였다(10,000행 도달 17턴 고지 0 — run `20260923-103638`). 없으면 각 덧붙임이 no-op이다.
+    """
+    return {
         # 실행 SQL은 task가 실제로 실행한 DB별 마지막 1건이다(`resolved_limit`은 넘기지 않는다 —
         # 격리 입력은 늘 값이 있어 「요청 상한」과 「실제 적용 상한」을 가르지 못한다 · W-1 ⑥).
         "executed_sqls": res.get("executed_sqls") or [],
@@ -1637,16 +1839,6 @@ def _build_output_state(
         "condition_check": condition_check,
         # 병합 경로의 원천 task별 상한 판정 입력(W-1 ③) — 병합 표 행 수는 표시용이라 쓰지 않는다
         "limit_sources": limit_sources,
-        # ── 시간 해석(plans/122 T-4·T-8 · D-309) ─────────────────────────────────────
-        # 허용목록이라 싣지 않으면 2단 출구에서 사라진다(D-186 사례) — 기준 정보(오늘·조회 기간)와
-        # `[조회 기간]` 고지가 이 값과 위 실행 SQL로 정해진다. task 문장에 명시 기간이 있어 task별로
-        # 해석했으면(`resolve_task_time`) task 결과의 값이 우선이다. 플래그 off면 둘 다 None.
-        "time_resolution": res.get("time_resolution") or state.get("time_resolution"),
-        # 병합 경로의 원천 task별 기간 고지 입력 — 원천마다 해석이 다를 수 있다
-        "period_sources": period_sources,
-        "final_response": "",
-        "output_file": None,
-        "output_file_name": None,
     }
 
 

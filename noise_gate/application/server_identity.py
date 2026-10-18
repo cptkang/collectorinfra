@@ -34,6 +34,10 @@ from typing import Any, Optional
 
 from noise_gate.domain.alarm import AlarmEvent, ServerIdentity
 
+# plans/166 W1 G4 — 순수 판정은 domain으로 옮겼다. 기존 import 경로 재노출(D-337 ① · 1사이클).
+from noise_gate.domain.alarm import is_apm_db_id as is_apm_db_id
+from noise_gate.domain.alarm import is_apm_source as is_apm_source
+
 logger = logging.getLogger(__name__)
 
 # v2: os_version 필드 추가(D-188 부기) — 구 캐시 dict(필드 부재)가 TTL 동안 툴팁을 비우지 않도록 키 세대 분리
@@ -111,22 +115,6 @@ def source_labels_for(db_id: str, zone_label: str = "", site_label: str = "") ->
     return label, detail
 
 
-def is_apm_db_id(db_id: str) -> bool:
-    """APM 게이트웨이 소스의 db_id인지 — `jennifer` · 다중 소스 `jennifer_<소스 id>`(plans/87 J8).
-
-    판정 레코드처럼 db_id만 남은 곳(PAGE 재판정 복원 · plans/162 F4)에서도 같은 규칙을 쓴다.
-    """
-    db_id = db_id or ""
-    return db_id == _APM_SOURCE_ID or db_id.startswith(_APM_SOURCE_ID + "_")
-
-
-def is_apm_source(event: AlarmEvent) -> bool:
-    """APM 게이트웨이가 발행한 이벤트인지 — `dbId`(`is_apm_db_id`) 또는 원문 `source`가 게이트웨이
-    상수다."""
-    raw = event.raw_payload if isinstance(event.raw_payload, dict) else {}
-    return is_apm_db_id(event.db_id or "") or raw.get("source") == _APM_SOURCE_ID
-
-
 def apm_source_labels(event: AlarmEvent, zone_label: str = "") -> tuple[str, str]:
     """APM 이벤트의 (소스 배지 라벨, 툴팁 상세) — 배지는 이벤트를 **보낸 소스**다.
 
@@ -162,6 +150,7 @@ async def _cache_get(redis, key: str) -> Optional[dict[str, Any]]:  # noqa: ANN0
     try:
         raw = await redis.get(key)
     except Exception:  # noqa: BLE001 — 캐시 실패는 DB 조회로 진행
+        logger.warning("서버 식별 캐시 조회 실패 — DB 조회로 진행: key=%s", key, exc_info=True)
         return None
     if not raw:
         return None
@@ -170,7 +159,8 @@ async def _cache_get(redis, key: str) -> Optional[dict[str, Any]]:  # noqa: ANN0
             raw = bytes(raw).decode("utf-8", errors="replace")
         data = json.loads(raw)
         return data if isinstance(data, dict) else None
-    except Exception:  # noqa: BLE001 — 손상 캐시는 무시
+    except Exception:  # noqa: BLE001 — 손상 캐시는 무시(DB 조회 후 덮어쓴다)
+        logger.warning("서버 식별 캐시 손상 — 무시하고 DB 조회: key=%s", key, exc_info=True)
         return None
 
 

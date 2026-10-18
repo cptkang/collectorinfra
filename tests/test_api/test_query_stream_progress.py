@@ -345,8 +345,8 @@ def test_timeout_error_carries_failure_trace(route, app_config):
     assert err["elapsed_ms"] >= 400
     # 멈춘 곳: 가장 안쪽의 진행 중 단계
     assert err["stage"]["label"] == "SQL 재생성 1회차" and err["stage"]["status"] == "running"
-    # 앞서 난 실패와 단계 목록
-    assert "검증 실패" in err["last_error"]
+    # 앞서 난 실패와 단계 목록 — 실패 사유 원문은 경위에 싣지 않고 단계 이름만(plans/163 S3+)
+    assert "검증 실패" not in err["last_error"] and "pipeline.validate" in err["last_error"]
     by_label = {(s["label"], s["status"]) for s in err["steps"]}
     assert ("스키마 분석", "done") in by_label and ("SQL 검증", "failed") in by_label
     assert [s["kind"] for s in err["steps"]][:2] == ["node", "task"]   # deep_agent → 작업
@@ -359,23 +359,28 @@ def test_timeout_error_carries_failure_trace(route, app_config):
 
 
 @pytest.mark.parametrize("route", ROUTES)
-def test_exception_error_carries_failure_trace(route, app_config):
+def test_exception_error_carries_failure_trace(route, app_config, caplog):
     class _Boom(_Graph):
         async def astream_events(self, input_state, config, version="v2"):
             yield {"event": "on_chain_start", "name": "query_generator", "data": {}}
             raise RuntimeError("DB 연결 끊김")
 
-    got = _post(_client(_Boom([]), app_config), route)
+    with caplog.at_level("ERROR"):
+        got = _post(_client(_Boom([]), app_config), route)
     err = got[-1]
     assert err["type"] == "error" and err["code"] == "exception"
-    assert "DB 연결 끊김" in err["message"]
+    # 예외 원문은 응답에 없고 서버 로그에만 있다 — 응답은 고정 문구 + 요청 번호(plans/163 S3)
+    assert "DB 연결 끊김" not in err["message"]
+    assert err["message"].startswith("처리 중 오류가 발생했습니다 (요청 ")
+    assert "DB 연결 끊김" in caplog.text
     assert err["stage"]["name"] == "query_generator"
 
 
-def test_trace_node_retry_and_step_cap():
+def test_trace_node_retry_and_step_cap(caplog):
     """3단 경로: node_start SSE는 노드당 1회지만 경위는 재시도마다 남는다.
 
-    노드 출력의 error_message는 그 단계의 실패로 본다.
+    노드 출력의 error_message는 그 단계의 실패로 본다 — 원문은 경위가 아니라 서버 로그로
+    (plans/163 S3+).
     """
     from src.api.stream_failure import StreamTrace
 
@@ -383,13 +388,15 @@ def test_trace_node_retry_and_step_cap():
     t.node_started("query_generator", 0)
     t.node_ended("query_generator", {"generated_sql": "SELECT 1"}, 10)
     t.node_started("query_validator", 10)
-    t.node_ended("query_validator", {"error_message": "SQL 검증 실패: X"}, 11)
+    with caplog.at_level("WARNING"):
+        t.node_ended("query_validator", {"error_message": "SQL 검증 실패: X"}, 11)
     t.node_started("query_generator", 11)
     f = t.failure_fields(code="timeout", elapsed_ms=50, limit_sec=120)
     assert [(s["name"], s["status"]) for s in f["steps"]] == [
         ("query_generator", "done"), ("query_validator", "failed"), ("query_generator", "running")]
     assert f["stage"]["name"] == "query_generator" and f["stage"]["ms"] == 39
-    assert f["last_error"] == "SQL 검증 실패: X"
+    assert "SQL 검증 실패: X" not in f["last_error"] and "query_validator" in f["last_error"]
+    assert "SQL 검증 실패: X" in caplog.text
 
     capped = StreamTrace()
     for i in range(40):

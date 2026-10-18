@@ -138,6 +138,7 @@ class _Graph:
 def _gate(tmp_path: Path, *, on: bool, mode: str) -> SimpleNamespace:
     return SimpleNamespace(
         enable_noise_gate=True, repeat_interval_seconds=14400, suppress_max_severity=2,
+        dedup_severity_rise_bypass=False,
         importance_value_map={"1": "낮음", "2": "보통", "3": "높음"},
         resolved_to_dashboard=False, self_heal_window_seconds=300,
         cross_source_mode=mode, cross_source_rules_path=str(SHIPPED_RULES),
@@ -160,7 +161,7 @@ def _worker(tmp_path: Path, *, on: bool = True, mode: str = "shadow"):
         noise_gate=_gate(tmp_path, on=on, mode=mode),
         alarm=SimpleNamespace(min_severity=1, dedup_ttl_seconds=300),
         host_authz=SimpleNamespace(mode="admin_only"),
-        composite=SimpleNamespace(prior_targets_enabled=False),
+        composite=SimpleNamespace(prior_targets_enabled=False, availability_precheck_enabled=False),
         workb=SimpleNamespace(),
     )
     node_cfg = {"configurable": {

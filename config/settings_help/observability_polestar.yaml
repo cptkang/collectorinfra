@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 실행 로그·트레이스 · 폴스타 REST(실시간) (D-191)
-# 근거: src/config.py ObservabilityConfig(D-140/D-141) · PolestarRestConfig(Plan 71 / Plan 75 §1)
+# 근거: src/config/{data_access,services}.py ObservabilityConfig(D-140/D-141) · PolestarRestConfig(Plan 71 / Plan 75 §1)
 
 version: 1
 group: observability

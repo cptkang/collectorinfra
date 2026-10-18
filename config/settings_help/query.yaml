@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 쿼리 정책 (D-191)
-# 근거: src/config.py QueryConfig
+# 근거: src/config/data_access.py QueryConfig
 # DB 레벨 제한(타임아웃·최대 행수)은 MCP 서버 소관이며 여기서 다루지 않는다.
 
 version: 1

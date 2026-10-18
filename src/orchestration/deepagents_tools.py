@@ -34,8 +34,8 @@ from src.utils.prior_dependency import (
 from src.orchestration.subagents import (
     SUBAGENT_REGISTRY,
     SubAgentSpec,
-    _extract_identity_rows,
-    _make_isolated_input,
+    extract_identity_rows,
+    make_isolated_input,
 )
 
 logger = logging.getLogger(__name__)
@@ -178,7 +178,7 @@ _SCOPE_CONSUMER_AGENTS: tuple[str, ...] = _SCOPE_PRODUCER_AGENTS
 def _matched_values(rows: list, low: str) -> set[str]:
     """선행 결과 행의 식별 값 중 sub_query에 그대로 등장하는 값 집합(G1 값 일치 · 소문자)."""
     out: set[str] = set()
-    for row in _extract_identity_rows(rows):
+    for row in extract_identity_rows(rows):
         if not isinstance(row, dict):
             continue
         for v in row.values():
@@ -334,7 +334,7 @@ async def _run_subagent_tool(
     if collector and agent_name in _SCOPE_CONSUMER_AGENTS:
         input_from, prior = _dependency_scope(
             sub_query, collector,
-            latest_only=bool(getattr(getattr(app_config, "composite", None), "prior_scope_latest_only", False)),
+            latest_only=bool(app_config.composite.prior_scope_latest_only),
         )
         # 관측(plans/88 §11.5 · 2026-09-10): 1단 순차 계약은 오케스트레이터 LLM이 재표현한 sub_query에
         # 의존한다(참조어 G2·순위어 G3) — 어떤 문구로 호출됐는지 로그가 없으면 게이트 미발동을 진단할 수 없다.
@@ -366,7 +366,7 @@ async def _run_subagent_tool(
         gate_ids, gate_prior = (input_from, prior) if input_from else _referenced_but_empty(sub_query, collector)
         if gate_ids:
             verdict = assess_prior_dependency({"input_from": gate_ids}, gate_prior)
-            gate_on = bool(getattr(getattr(app_config, "composite", None), "sequential_gate_enabled", False))
+            gate_on = bool(app_config.composite.sequential_gate_enabled)
             if verdict is not None and gate_on:
                 # 노트는 task에 실어 collector로 전달한다(ambient는 `or {}`로 복사될 수 있다).
                 task["dependency_note"] = verdict_note(verdict, task["task_id"])
@@ -381,14 +381,14 @@ async def _run_subagent_tool(
                     return _serialize_for_tool(result, app_config)
             elif verdict is not None and not verdict.ok:
                 logger.info("deepagents 순차 게이트 관측(off) reason=%s", verdict.reason)
-    isolated = _make_isolated_input(task, ambient_state, prior=prior)
+    isolated = make_isolated_input(task, ambient_state, prior=prior)
     isolated["user_query"] = sub_query
     result = await spec.handler(
         task, isolated, llm=spec.model or worker_llm, app_config=app_config
     )
     # 사후 대조(D-203 · plans/88 §4.3) — 2단 agent_orchestrator와 같은 함수.
     if verdict is not None and agent_name in POSTCHECK_AGENTS:
-        if bool(getattr(getattr(app_config, "composite", None), "scope_postcheck_enabled", False)):
+        if bool(app_config.composite.scope_postcheck_enabled):
             result = apply_scope_postcheck(verdict, result, task["task_id"])
         else:
             observe_scope_postcheck(verdict, result, task["task_id"])  # off = 로그만(결과 불변)

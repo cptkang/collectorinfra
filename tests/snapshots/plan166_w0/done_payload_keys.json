@@ -1,0 +1,1015 @@
+{
+  "post.file.graph_exception": {
+    "keys": [
+      "detail"
+    ],
+    "non_null_keys": [
+      "detail"
+    ],
+    "status_code": 500
+  },
+  "post.file.normal": {
+    "keys": [
+      "apm_source_clarification",
+      "apm_source_scope",
+      "apm_xview_confirmation",
+      "approval_context",
+      "awaiting_approval",
+      "chart",
+      "clarification",
+      "db_scope",
+      "dependency_notes",
+      "disclosures",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "plan_summary",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "scope_reexpand",
+      "source_switch",
+      "status",
+      "thread_id",
+      "time_resolution",
+      "turn_count"
+    ],
+    "non_null_keys": [
+      "awaiting_approval",
+      "db_scope",
+      "executed_sql",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "status",
+      "thread_id",
+      "turn_count"
+    ],
+    "status_code": 200
+  },
+  "post.file.time_clarification": {
+    "keys": [
+      "apm_source_clarification",
+      "apm_source_scope",
+      "apm_xview_confirmation",
+      "approval_context",
+      "awaiting_approval",
+      "chart",
+      "clarification",
+      "db_scope",
+      "dependency_notes",
+      "disclosures",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "plan_summary",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "scope_reexpand",
+      "source_switch",
+      "status",
+      "thread_id",
+      "time_resolution",
+      "turn_count"
+    ],
+    "non_null_keys": [
+      "awaiting_approval",
+      "clarification",
+      "db_scope",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "status",
+      "thread_id",
+      "time_resolution",
+      "turn_count"
+    ],
+    "status_code": 200
+  },
+  "post.file.timeout_no_rows": {
+    "keys": [
+      "detail"
+    ],
+    "non_null_keys": [
+      "detail"
+    ],
+    "status_code": 504
+  },
+  "post.file.timeout_partial": {
+    "keys": [
+      "apm_source_clarification",
+      "apm_source_scope",
+      "apm_xview_confirmation",
+      "approval_context",
+      "awaiting_approval",
+      "chart",
+      "clarification",
+      "db_scope",
+      "dependency_notes",
+      "disclosures",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "plan_summary",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "scope_reexpand",
+      "source_switch",
+      "status",
+      "thread_id",
+      "time_resolution",
+      "turn_count"
+    ],
+    "non_null_keys": [
+      "awaiting_approval",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "status",
+      "thread_id"
+    ],
+    "status_code": 200
+  },
+  "post.file.zone_clarification_post": {
+    "keys": [
+      "apm_source_clarification",
+      "apm_source_scope",
+      "apm_xview_confirmation",
+      "approval_context",
+      "awaiting_approval",
+      "chart",
+      "clarification",
+      "db_scope",
+      "dependency_notes",
+      "disclosures",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "plan_summary",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "scope_reexpand",
+      "source_switch",
+      "status",
+      "thread_id",
+      "time_resolution",
+      "turn_count"
+    ],
+    "non_null_keys": [
+      "awaiting_approval",
+      "db_scope",
+      "executed_sql",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "status",
+      "thread_id",
+      "turn_count"
+    ],
+    "status_code": 200
+  },
+  "post.file.zone_clarification_pre": {
+    "keys": [
+      "apm_source_clarification",
+      "apm_source_scope",
+      "apm_xview_confirmation",
+      "approval_context",
+      "awaiting_approval",
+      "chart",
+      "clarification",
+      "db_scope",
+      "dependency_notes",
+      "disclosures",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "plan_summary",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "scope_reexpand",
+      "source_switch",
+      "status",
+      "thread_id",
+      "time_resolution",
+      "turn_count"
+    ],
+    "non_null_keys": [
+      "awaiting_approval",
+      "clarification",
+      "has_file",
+      "has_mapping_report",
+      "query_id",
+      "response",
+      "status",
+      "thread_id"
+    ],
+    "status_code": 200
+  },
+  "post.file.zone_clarification_pre_tier2": {
+    "keys": [
+      "apm_source_clarification",
+      "apm_source_scope",
+      "apm_xview_confirmation",
+      "approval_context",
+      "awaiting_approval",
+      "chart",
+      "clarification",
+      "db_scope",
+      "dependency_notes",
+      "disclosures",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "plan_summary",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "scope_reexpand",
+      "source_switch",
+      "status",
+      "thread_id",
+      "time_resolution",
+      "turn_count"
+    ],
+    "non_null_keys": [
+      "awaiting_approval",
+      "clarification",
+      "has_file",
+      "has_mapping_report",
+      "plan_summary",
+      "query_id",
+      "response",
+      "status",
+      "thread_id"
+    ],
+    "status_code": 200
+  },
+  "post.text.graph_exception": {
+    "keys": [
+      "detail"
+    ],
+    "non_null_keys": [
+      "detail"
+    ],
+    "status_code": 500
+  },
+  "post.text.normal": {
+    "keys": [
+      "apm_source_clarification",
+      "apm_source_scope",
+      "apm_xview_confirmation",
+      "approval_context",
+      "awaiting_approval",
+      "chart",
+      "clarification",
+      "db_scope",
+      "dependency_notes",
+      "disclosures",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "plan_summary",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "scope_reexpand",
+      "source_switch",
+      "status",
+      "thread_id",
+      "time_resolution",
+      "turn_count"
+    ],
+    "non_null_keys": [
+      "awaiting_approval",
+      "db_scope",
+      "executed_sql",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "status",
+      "thread_id",
+      "turn_count"
+    ],
+    "status_code": 200
+  },
+  "post.text.time_clarification": {
+    "keys": [
+      "apm_source_clarification",
+      "apm_source_scope",
+      "apm_xview_confirmation",
+      "approval_context",
+      "awaiting_approval",
+      "chart",
+      "clarification",
+      "db_scope",
+      "dependency_notes",
+      "disclosures",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "plan_summary",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "scope_reexpand",
+      "source_switch",
+      "status",
+      "thread_id",
+      "time_resolution",
+      "turn_count"
+    ],
+    "non_null_keys": [
+      "awaiting_approval",
+      "clarification",
+      "db_scope",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "status",
+      "thread_id",
+      "time_resolution",
+      "turn_count"
+    ],
+    "status_code": 200
+  },
+  "post.text.timeout_no_rows": {
+    "keys": [
+      "detail"
+    ],
+    "non_null_keys": [
+      "detail"
+    ],
+    "status_code": 504
+  },
+  "post.text.timeout_partial": {
+    "keys": [
+      "apm_source_clarification",
+      "apm_source_scope",
+      "apm_xview_confirmation",
+      "approval_context",
+      "awaiting_approval",
+      "chart",
+      "clarification",
+      "db_scope",
+      "dependency_notes",
+      "disclosures",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "plan_summary",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "scope_reexpand",
+      "source_switch",
+      "status",
+      "thread_id",
+      "time_resolution",
+      "turn_count"
+    ],
+    "non_null_keys": [
+      "awaiting_approval",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "status",
+      "thread_id"
+    ],
+    "status_code": 200
+  },
+  "post.text.zone_clarification_post": {
+    "keys": [
+      "apm_source_clarification",
+      "apm_source_scope",
+      "apm_xview_confirmation",
+      "approval_context",
+      "awaiting_approval",
+      "chart",
+      "clarification",
+      "db_scope",
+      "dependency_notes",
+      "disclosures",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "plan_summary",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "scope_reexpand",
+      "source_switch",
+      "status",
+      "thread_id",
+      "time_resolution",
+      "turn_count"
+    ],
+    "non_null_keys": [
+      "awaiting_approval",
+      "clarification",
+      "db_scope",
+      "executed_sql",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "status",
+      "thread_id",
+      "turn_count"
+    ],
+    "status_code": 200
+  },
+  "post.text.zone_clarification_pre": {
+    "keys": [
+      "apm_source_clarification",
+      "apm_source_scope",
+      "apm_xview_confirmation",
+      "approval_context",
+      "awaiting_approval",
+      "chart",
+      "clarification",
+      "db_scope",
+      "dependency_notes",
+      "disclosures",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "plan_summary",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "scope_reexpand",
+      "source_switch",
+      "status",
+      "thread_id",
+      "time_resolution",
+      "turn_count"
+    ],
+    "non_null_keys": [
+      "awaiting_approval",
+      "clarification",
+      "has_file",
+      "has_mapping_report",
+      "query_id",
+      "response",
+      "status",
+      "thread_id"
+    ],
+    "status_code": 200
+  },
+  "post.text.zone_clarification_pre_tier2": {
+    "keys": [
+      "apm_source_clarification",
+      "apm_source_scope",
+      "apm_xview_confirmation",
+      "approval_context",
+      "awaiting_approval",
+      "chart",
+      "clarification",
+      "db_scope",
+      "dependency_notes",
+      "disclosures",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "plan_summary",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "scope_reexpand",
+      "source_switch",
+      "status",
+      "thread_id",
+      "time_resolution",
+      "turn_count"
+    ],
+    "non_null_keys": [
+      "awaiting_approval",
+      "clarification",
+      "has_file",
+      "has_mapping_report",
+      "plan_summary",
+      "query_id",
+      "response",
+      "status",
+      "thread_id"
+    ],
+    "status_code": 200
+  },
+  "stream.file.fallback_ainvoke": {
+    "event_types": [
+      "token",
+      "meta",
+      "done"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "awaiting_approval",
+      "clarification",
+      "db_scope",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "source_switch",
+      "thread_id",
+      "timeline",
+      "turn_count",
+      "type"
+    ],
+    "terminal_type": "done"
+  },
+  "stream.file.graph_exception": {
+    "event_types": [
+      "node_start",
+      "error"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "code",
+      "elapsed_ms",
+      "last_error",
+      "limit_sec",
+      "message",
+      "stage",
+      "steps",
+      "steps_dropped",
+      "timeline",
+      "type"
+    ],
+    "terminal_type": "error"
+  },
+  "stream.file.normal": {
+    "event_types": [
+      "node_start",
+      "node_complete",
+      "token",
+      "meta",
+      "done"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "awaiting_approval",
+      "clarification",
+      "db_scope",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "source_switch",
+      "thread_id",
+      "timeline",
+      "turn_count",
+      "type"
+    ],
+    "terminal_type": "done"
+  },
+  "stream.file.time_clarification": {
+    "event_types": [
+      "node_start",
+      "node_complete",
+      "token",
+      "meta",
+      "done"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "awaiting_approval",
+      "clarification",
+      "db_scope",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "source_switch",
+      "thread_id",
+      "time_resolution",
+      "timeline",
+      "turn_count",
+      "type"
+    ],
+    "terminal_type": "done"
+  },
+  "stream.file.timeout_no_rows": {
+    "event_types": [
+      "node_start",
+      "error"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "code",
+      "elapsed_ms",
+      "last_error",
+      "limit_sec",
+      "message",
+      "stage",
+      "steps",
+      "steps_dropped",
+      "timeline",
+      "type"
+    ],
+    "terminal_type": "error"
+  },
+  "stream.file.timeout_partial": {
+    "event_types": [
+      "node_start",
+      "node_complete",
+      "done"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "awaiting_approval",
+      "clarification",
+      "db_scope",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "source_switch",
+      "status",
+      "thread_id",
+      "timeline",
+      "turn_count",
+      "type"
+    ],
+    "terminal_type": "done"
+  },
+  "stream.file.zone_clarification_post": {
+    "event_types": [
+      "node_start",
+      "token",
+      "meta",
+      "done"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "awaiting_approval",
+      "clarification",
+      "db_scope",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "source_switch",
+      "thread_id",
+      "timeline",
+      "turn_count",
+      "type"
+    ],
+    "terminal_type": "done"
+  },
+  "stream.file.zone_clarification_pre": {
+    "event_types": [
+      "done"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "clarification",
+      "query_id",
+      "response",
+      "thread_id",
+      "type"
+    ],
+    "terminal_type": "done"
+  },
+  "stream.file.zone_clarification_pre_tier2": {
+    "event_types": [
+      "done"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "clarification",
+      "plan_summary",
+      "query_id",
+      "response",
+      "thread_id",
+      "type"
+    ],
+    "terminal_type": "done"
+  },
+  "stream.text.fallback_ainvoke": {
+    "event_types": [
+      "token",
+      "meta",
+      "done"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "awaiting_approval",
+      "clarification",
+      "db_scope",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "source_switch",
+      "thread_id",
+      "timeline",
+      "turn_count",
+      "type"
+    ],
+    "terminal_type": "done"
+  },
+  "stream.text.graph_exception": {
+    "event_types": [
+      "node_start",
+      "error"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "code",
+      "elapsed_ms",
+      "last_error",
+      "limit_sec",
+      "message",
+      "stage",
+      "steps",
+      "steps_dropped",
+      "timeline",
+      "type"
+    ],
+    "terminal_type": "error"
+  },
+  "stream.text.normal": {
+    "event_types": [
+      "node_start",
+      "node_complete",
+      "token",
+      "meta",
+      "done"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "awaiting_approval",
+      "clarification",
+      "db_scope",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "source_switch",
+      "thread_id",
+      "timeline",
+      "turn_count",
+      "type"
+    ],
+    "terminal_type": "done"
+  },
+  "stream.text.time_clarification": {
+    "event_types": [
+      "node_start",
+      "node_complete",
+      "token",
+      "meta",
+      "done"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "awaiting_approval",
+      "clarification",
+      "db_scope",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "source_switch",
+      "thread_id",
+      "time_resolution",
+      "timeline",
+      "turn_count",
+      "type"
+    ],
+    "terminal_type": "done"
+  },
+  "stream.text.timeout_no_rows": {
+    "event_types": [
+      "node_start",
+      "error"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "code",
+      "elapsed_ms",
+      "last_error",
+      "limit_sec",
+      "message",
+      "stage",
+      "steps",
+      "steps_dropped",
+      "timeline",
+      "type"
+    ],
+    "terminal_type": "error"
+  },
+  "stream.text.timeout_partial": {
+    "event_types": [
+      "node_start",
+      "node_complete",
+      "done"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "awaiting_approval",
+      "clarification",
+      "db_scope",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "source_switch",
+      "status",
+      "thread_id",
+      "timeline",
+      "turn_count",
+      "type"
+    ],
+    "terminal_type": "done"
+  },
+  "stream.text.zone_clarification_post": {
+    "event_types": [
+      "node_start",
+      "token",
+      "meta",
+      "done"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "awaiting_approval",
+      "clarification",
+      "db_scope",
+      "executed_sql",
+      "file_name",
+      "form_fill_clarification",
+      "form_memory_panel",
+      "has_file",
+      "has_mapping_report",
+      "processing_time_ms",
+      "query_id",
+      "response",
+      "row_count",
+      "source_switch",
+      "thread_id",
+      "timeline",
+      "turn_count",
+      "type"
+    ],
+    "terminal_type": "done"
+  },
+  "stream.text.zone_clarification_pre": {
+    "event_types": [
+      "done"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "clarification",
+      "query_id",
+      "response",
+      "thread_id",
+      "type"
+    ],
+    "terminal_type": "done"
+  },
+  "stream.text.zone_clarification_pre_tier2": {
+    "event_types": [
+      "done"
+    ],
+    "status_code": 200,
+    "terminal_keys": [
+      "clarification",
+      "plan_summary",
+      "query_id",
+      "response",
+      "thread_id",
+      "type"
+    ],
+    "terminal_type": "done"
+  }
+}

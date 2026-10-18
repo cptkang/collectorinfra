@@ -245,6 +245,7 @@ async def excel_to_csv_cached(
     file_hash = _compute_file_hash(file_data)
 
     # 1. Redis 캐시 조회
+    # seam(D-337 ②) — 아래 두 곳은 테스트 대역 매니저가 _redis_cache만 심어 둔다(plans/170 I1-a)
     if cache_manager and cache_manager.redis_available:
         try:
             cached = await cache_manager._redis_cache.load_csv_cache(file_hash)

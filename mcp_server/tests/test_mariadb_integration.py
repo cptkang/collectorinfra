@@ -131,7 +131,8 @@ class TestMariadbDockerIntegration:
 
     def test_readonly_account_denied_at_db_layer(self):
         """단언 3 — MCP `readonly` 검증을 거치지 않는 드라이버 직접 경로에서도
-        쓰기가 DB 권한으로 막힌다."""
+        쓰기가 DB 권한으로 막힌다(검사가 `execute`로 옮겨져 엔진 러너를 직접 부른다 —
+        plans/163 S1)."""
 
         async def _call(pool, tools, ctx):
             codes = []
@@ -142,11 +143,14 @@ class TestMariadbDockerIntegration:
                 "CREATE TABLE probe_write (a INT)",
             ):
                 with pytest.raises(pymysql.err.OperationalError) as exc:
-                    await pool.execute(_SOURCE, sql)
+                    await pool._execute_mariadb(_SOURCE, sql)
                 codes.append(exc.value.args[0])
             return codes
 
-        assert _run(_call) == [1142, 1142]  # ER_TABLEACCESS_DENIED_ERROR
+        # INSERT는 권한 검사가 먼저(1142 ER_TABLEACCESS_DENIED_ERROR), CREATE는 세션 읽기 전용
+        # (`transaction_read_only=1` — plans/163 S1)이 먼저 막는다
+        # (1792 ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION).
+        assert _run(_call) == [1142, 1792]
 
     def test_lowercase_table_name_is_not_found(self):
         """단언 4 — `lower_case_table_names=0`이 실제로 걸려 테이블명 대소문자를 구분한다(§3.4-b).

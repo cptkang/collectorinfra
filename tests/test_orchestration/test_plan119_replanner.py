@@ -220,7 +220,19 @@ def test_q3_blocks_same_family_followup_with_reason() -> None:
 
     assert kept == []
     assert "「김포 서버 CPU 상위 10건」 조회는 SQL을 재시도 한도까지 다시 만들었지만" in notice
-    assert "마지막 사유: 허용 목록 밖 테이블 참조: core_config_prop" in notice
+    # 보간 사유(생성 SQL 조각)는 답 본문에 싣지 않는다(plans/163 S3+)
+    assert "마지막 사유" not in notice and "core_config_prop" not in notice
+
+
+def test_q3_reason_keeps_prefix_only() -> None:
+    """「머리말: 예외 원문」 사유는 머리말만 싣는다(plans/163 S3+)."""
+    prior, res = _failed(stop={
+        "reason": "validation_budget",
+        "detail": "SQL 실행 에러: relation \"polestar.secret\" does not exist",
+    })
+    _, notice = _filter_regen_stopped([_new()], [prior], {"t1": res})
+    assert "(마지막 사유: SQL 실행 에러)." in notice
+    assert "does not exist" not in notice
 
 
 @pytest.mark.parametrize(("reason", "phrase"), [
@@ -230,9 +242,10 @@ def test_q3_blocks_same_family_followup_with_reason() -> None:
 ])
 def test_q3_user_message_per_reason(reason, phrase) -> None:
     """사유별 사용자 문구."""
-    prior, res = _failed(stop={"reason": reason, "detail": "  여러   줄\n설명  "})
+    prior, res = _failed(stop={"reason": reason, "detail": "  SQL 검증 실패:  여러   줄\n설명  "})
     _, notice = _filter_regen_stopped([_new()], [prior], {"t1": res})
-    assert phrase in notice and "마지막 사유: 여러 줄 설명" in notice
+    assert phrase in notice and "마지막 사유: SQL 검증 실패)" in notice
+    assert "여러" not in notice
 
 
 def test_q3_same_entity_literal_is_same_family() -> None:

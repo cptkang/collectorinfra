@@ -425,7 +425,7 @@ def _investigation_block(request: Request, alarm_id: str) -> dict[str, Any] | No
     )
 
     ng = _gate_cfg(request)
-    path = getattr(ng, "investigation_store_path", "")
+    path = ng.investigation_store_path
     if not path:
         return None
     rec = InvestigationStore(
@@ -835,8 +835,7 @@ async def noise_stream(
     세팅하지 않으므로 화면(`noise.js`)은 EventSource 대신 fetch 스트림으로 헤더를 싣는다.
     쿼리 토큰으로는 받지 않는다 — URL은 접근 로그·프록시에 남는다.
     """
-    from src.api.dependencies import _try_break_glass_admin, resolve_stream_user
-    from src.domain.user import UserRole
+    from src.api.dependencies import _try_break_glass_admin, is_admin, resolve_stream_user
 
     config = request.app.state.config
     user = None
@@ -847,7 +846,7 @@ async def noise_stream(
     if config.auth.enabled:
         if user is None:
             raise HTTPException(status_code=401, detail="인증이 필요합니다.")
-        if user.get("role") != UserRole.ADMIN.value:
+        if not is_admin(user):
             raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다.")
 
     bus = request.app.state.alarm_bus

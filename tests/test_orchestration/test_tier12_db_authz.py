@@ -199,7 +199,7 @@ _ZONES = ["polestar_b0", "polestar_cm_gp", "polestar_cm_yd"]
 def _zone_gate(allowed, role=USER):
     """1·2단 존 역질문 후단 게이트 — 위치어 없는 첫 턴이 폴스타 3존으로 팬아웃된 상황."""
     config = SimpleNamespace(
-        multi_db=SimpleNamespace(get_active_db_ids=lambda: list(_ZONES)),
+        multi_db=SimpleNamespace(get_active_db_ids=lambda: list(_ZONES), zone_group_exclusive=True),
         get_polestar_db_ids=lambda: set(_ZONES),
     )
     isolated = {

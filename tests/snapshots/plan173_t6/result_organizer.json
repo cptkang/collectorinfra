@@ -1,0 +1,727 @@
+{
+ "hint": {
+  "result": {
+   "organized_data": {
+    "summary": "이름 칸을 부분 일치로 다시 조회합니다.",
+    "rows": [],
+    "column_mapping": null,
+    "resolved_mapping": null,
+    "is_sufficient": false,
+    "sheet_mappings": null
+   },
+   "error_message": "HINT-X",
+   "current_node": "result_organizer"
+  },
+  "events": [
+   [
+    "sufficiency",
+    0,
+    false,
+    null,
+    true
+   ],
+   [
+    "hint",
+    3,
+    2
+   ]
+  ],
+  "logs": []
+ },
+ "insufficient_diag": {
+  "result": {
+   "organized_data": {
+    "summary": "데이터가 부족합니다.",
+    "rows": [],
+    "column_mapping": null,
+    "resolved_mapping": null,
+    "is_sufficient": false,
+    "sheet_mappings": null
+   },
+   "error_message": "data_insufficient",
+   "current_node": "result_organizer",
+   "empty_diagnosis": {
+    "regenerable": true
+   }
+  },
+  "events": [
+   [
+    "sufficiency",
+    0,
+    false,
+    null,
+    true
+   ],
+   [
+    "hint",
+    3,
+    2
+   ],
+   [
+    "diagnose"
+   ],
+   [
+    "as_payload",
+    true
+   ]
+  ],
+  "logs": [
+   [
+    "INFO",
+    "데이터 부족으로 재시도 요청"
+   ]
+  ]
+ },
+ "diag_not_regenerable": {
+  "result": {
+   "organized_data": {
+    "summary": "조건에 해당하는 데이터가 없습니다.",
+    "rows": [],
+    "column_mapping": null,
+    "resolved_mapping": null,
+    "is_sufficient": true,
+    "sheet_mappings": null
+   },
+   "error_message": null,
+   "current_node": "result_organizer",
+   "empty_diagnosis": {
+    "regenerable": false
+   }
+  },
+  "events": [
+   [
+    "sufficiency",
+    0,
+    false,
+    null,
+    true
+   ],
+   [
+    "hint",
+    3,
+    2
+   ],
+   [
+    "diagnose"
+   ],
+   [
+    "as_payload",
+    false
+   ]
+  ],
+  "logs": [
+   [
+    "INFO",
+    "0건 진단 — 재생성 중단(퍼널 상위 단계에 데이터 존재)"
+   ],
+   [
+    "INFO",
+    "결과 정리 완료: 0건"
+   ]
+  ]
+ },
+ "insufficient_no_diag": {
+  "result": {
+   "organized_data": {
+    "summary": "데이터가 부족합니다.",
+    "rows": [],
+    "column_mapping": null,
+    "resolved_mapping": null,
+    "is_sufficient": false,
+    "sheet_mappings": null
+   },
+   "error_message": "data_insufficient",
+   "current_node": "result_organizer"
+  },
+  "events": [
+   [
+    "sufficiency",
+    0,
+    false,
+    null,
+    true
+   ],
+   [
+    "hint",
+    3,
+    2
+   ],
+   [
+    "diagnose"
+   ]
+  ],
+  "logs": [
+   [
+    "INFO",
+    "데이터 부족으로 재시도 요청"
+   ]
+  ]
+ },
+ "budget_exhausted": {
+  "result": {
+   "organized_data": {
+    "summary": "총 2건의 데이터를 조회했습니다. 조회 대상: 서버, CPU.",
+    "rows": [
+     {
+      "hostname": "web-01",
+      "usage_pct": "85.2%",
+      "total_gb": "1,234.5 GB",
+      "password": "***MASKED***",
+      "cnt": 7
+     },
+     {
+      "hostname": "web-02",
+      "usage_pct": "92.1%",
+      "total_gb": "64.0 GB",
+      "password": "***MASKED***",
+      "cnt": 3
+     }
+    ],
+    "column_mapping": null,
+    "resolved_mapping": null,
+    "is_sufficient": true,
+    "sheet_mappings": null
+   },
+   "error_message": null,
+   "current_node": "result_organizer"
+  },
+  "events": [
+   [
+    "sufficiency",
+    2,
+    false,
+    null,
+    true
+   ]
+  ],
+  "logs": [
+   [
+    "INFO",
+    "결과 정리 완료: 2건"
+   ]
+  ]
+ },
+ "form_suppress_mapping": {
+  "result": {
+   "organized_data": {
+    "summary": "총 2건의 데이터를 조회했습니다. 조회 대상: 서버, CPU.",
+    "rows": [
+     {
+      "hostname": "web-01",
+      "usage_pct": 85.25,
+      "total_gb": 1234.5,
+      "password": "***MASKED***",
+      "cnt": 7
+     },
+     {
+      "hostname": "web-02",
+      "usage_pct": 92.1,
+      "total_gb": 64,
+      "password": "***MASKED***",
+      "cnt": 3
+     }
+    ],
+    "column_mapping": {
+     "호스트": "hostname",
+     "사용률": "cpu_usage",
+     "비고": "memo"
+    },
+    "resolved_mapping": {
+     "호스트": "hostname",
+     "사용률": "usage_pct",
+     "비고": "memo"
+    },
+    "is_sufficient": true,
+    "sheet_mappings": null
+   },
+   "error_message": null,
+   "current_node": "result_organizer"
+  },
+  "events": [
+   [
+    "sufficiency",
+    2,
+    true,
+    {
+     "호스트": "hostname",
+     "사용률": "cpu_usage",
+     "비고": "memo"
+    },
+    true
+   ],
+   [
+    "layer2",
+    true,
+    [
+     "사용률",
+     "비고"
+    ],
+    [
+     "cnt",
+     "hostname",
+     "password",
+     "total_gb",
+     "usage_pct"
+    ]
+   ]
+  ],
+  "logs": [
+   [
+    "INFO",
+    "폼필 결정적 결과(D-146/D-149) 2행 — 부족 판정 무시(재시도 억제)"
+   ],
+   [
+    "INFO",
+    "field_mapper 매핑 사용 (LLM 재호출 스킵)"
+   ],
+   [
+    "INFO",
+    "Layer 1 규칙 기반 resolved_mapping: 1건 해석, 2건 미해결"
+   ],
+   [
+    "INFO",
+    "Layer 2 LLM 유사성 판단으로 1건 추가 해석: {'사용률': 'usage_pct'}"
+   ],
+   [
+    "INFO",
+    "결과 정리 완료: 2건"
+   ]
+  ]
+ },
+ "form_anchor_layer2_empty": {
+  "result": {
+   "organized_data": {
+    "summary": "총 2건의 데이터를 조회했습니다. 조회 대상: 서버, CPU.",
+    "rows": [
+     {
+      "hostname": "web-01",
+      "usage_pct": "85.2%",
+      "total_gb": "1,234.5 GB",
+      "password": "***MASKED***",
+      "cnt": 7
+     },
+     {
+      "hostname": "web-02",
+      "usage_pct": "92.1%",
+      "total_gb": "64.0 GB",
+      "password": "***MASKED***",
+      "cnt": 3
+     }
+    ],
+    "column_mapping": {
+     "호스트": "hostname",
+     "x": "nope"
+    },
+    "resolved_mapping": {
+     "호스트": "hostname",
+     "x": "nope"
+    },
+    "is_sufficient": true,
+    "sheet_mappings": null
+   },
+   "error_message": null,
+   "current_node": "result_organizer"
+  },
+  "events": [
+   [
+    "sufficiency",
+    2,
+    false,
+    {
+     "호스트": "hostname",
+     "x": "nope"
+    },
+    true
+   ],
+   [
+    "layer2",
+    true,
+    [
+     "x"
+    ],
+    [
+     "cnt",
+     "hostname",
+     "password",
+     "total_gb",
+     "usage_pct"
+    ]
+   ]
+  ],
+  "logs": [
+   [
+    "INFO",
+    "폼필 결정적 결과(D-146/D-149) 2행 — 부족 판정 무시(재시도 억제)"
+   ],
+   [
+    "INFO",
+    "Layer 1 규칙 기반 resolved_mapping: 1건 해석, 1건 미해결"
+   ],
+   [
+    "INFO",
+    "결과 정리 완료: 2건"
+   ]
+  ]
+ },
+ "legacy_per_sheet": {
+  "result": {
+   "organized_data": {
+    "summary": "총 2건의 데이터를 조회했습니다. 조회 대상: 서버, CPU.",
+    "rows": [
+     {
+      "hostname": "web-01",
+      "usage_pct": 85.25,
+      "total_gb": 1234.5,
+      "password": "***MASKED***",
+      "cnt": 7
+     },
+     {
+      "hostname": "web-02",
+      "usage_pct": 92.1,
+      "total_gb": 64,
+      "password": "***MASKED***",
+      "cnt": 3
+     }
+    ],
+    "column_mapping": {
+     "호스트": "hostname",
+     "용량": "disk"
+    },
+    "resolved_mapping": {
+     "호스트": "hostname",
+     "용량": "total_gb"
+    },
+    "is_sufficient": true,
+    "sheet_mappings": [
+     {
+      "sheet_name": "S1",
+      "column_mapping": {
+       "호스트": "hostname",
+       "용량": "disk"
+      },
+      "resolved_mapping": null,
+      "rows": []
+     },
+     {
+      "sheet_name": "S2",
+      "column_mapping": {},
+      "resolved_mapping": null,
+      "rows": []
+     }
+    ]
+   },
+   "error_message": null,
+   "current_node": "result_organizer"
+  },
+  "events": [
+   [
+    "sufficiency",
+    2,
+    true,
+    null,
+    true
+   ],
+   [
+    "per_sheet",
+    true,
+    2,
+    [
+     "S1"
+    ],
+    2
+   ],
+   [
+    "layer2",
+    true,
+    [
+     "용량"
+    ],
+    [
+     "cnt",
+     "hostname",
+     "password",
+     "total_gb",
+     "usage_pct"
+    ]
+   ]
+  ],
+  "logs": [
+   [
+    "INFO",
+    "Layer 1 규칙 기반 resolved_mapping: 1건 해석, 1건 미해결"
+   ],
+   [
+    "INFO",
+    "Layer 2 LLM 유사성 판단으로 1건 추가 해석: {'용량': 'total_gb'}"
+   ],
+   [
+    "INFO",
+    "결과 정리 완료: 2건"
+   ]
+  ]
+ },
+ "legacy_per_sheet_none": {
+  "result": {
+   "organized_data": {
+    "summary": "총 2건의 데이터를 조회했습니다. 조회 대상: 서버, CPU.",
+    "rows": [
+     {
+      "hostname": "web-01",
+      "usage_pct": 85.25,
+      "total_gb": 1234.5,
+      "password": "***MASKED***",
+      "cnt": 7
+     },
+     {
+      "hostname": "web-02",
+      "usage_pct": 92.1,
+      "total_gb": 64,
+      "password": "***MASKED***",
+      "cnt": 3
+     }
+    ],
+    "column_mapping": null,
+    "resolved_mapping": null,
+    "is_sufficient": true,
+    "sheet_mappings": null
+   },
+   "error_message": null,
+   "current_node": "result_organizer"
+  },
+  "events": [
+   [
+    "sufficiency",
+    2,
+    true,
+    null,
+    true
+   ],
+   [
+    "per_sheet",
+    true,
+    2,
+    null,
+    2
+   ]
+  ],
+  "logs": [
+   [
+    "INFO",
+    "결과 정리 완료: 2건"
+   ]
+  ]
+ },
+ "legacy_single": {
+  "result": {
+   "organized_data": {
+    "summary": "총 2건의 데이터를 조회했습니다. 조회 대상: 서버, CPU.",
+    "rows": [
+     {
+      "hostname": "web-01",
+      "usage_pct": 85.25,
+      "total_gb": 1234.5,
+      "password": "***MASKED***",
+      "cnt": 7
+     },
+     {
+      "hostname": "web-02",
+      "usage_pct": 92.1,
+      "total_gb": 64,
+      "password": "***MASKED***",
+      "cnt": 3
+     }
+    ],
+    "column_mapping": {
+     "호스트": "hostname",
+     "사용률": "usage_pct"
+    },
+    "resolved_mapping": {
+     "호스트": "hostname",
+     "사용률": "usage_pct"
+    },
+    "is_sufficient": true,
+    "sheet_mappings": null
+   },
+   "error_message": null,
+   "current_node": "result_organizer"
+  },
+  "events": [
+   [
+    "sufficiency",
+    2,
+    true,
+    null,
+    true
+   ],
+   [
+    "single",
+    true,
+    1,
+    [
+     "tables"
+    ]
+   ]
+  ],
+  "logs": [
+   [
+    "INFO",
+    "Layer 1 규칙 기반 resolved_mapping: 2건 해석, 0건 미해결"
+   ],
+   [
+    "INFO",
+    "결과 정리 완료: 2건"
+   ]
+  ]
+ },
+ "template_text_output": {
+  "result": {
+   "organized_data": {
+    "summary": "총 2건의 데이터를 조회했습니다. 조회 대상: 서버, CPU.",
+    "rows": [
+     {
+      "hostname": "web-01",
+      "usage_pct": "85.2%",
+      "total_gb": "1,234.5 GB",
+      "password": "***MASKED***",
+      "cnt": 7
+     },
+     {
+      "hostname": "web-02",
+      "usage_pct": "92.1%",
+      "total_gb": "64.0 GB",
+      "password": "***MASKED***",
+      "cnt": 3
+     }
+    ],
+    "column_mapping": null,
+    "resolved_mapping": null,
+    "is_sufficient": true,
+    "sheet_mappings": null
+   },
+   "error_message": null,
+   "current_node": "result_organizer"
+  },
+  "events": [
+   [
+    "sufficiency",
+    2,
+    true,
+    null,
+    true
+   ]
+  ],
+  "logs": [
+   [
+    "INFO",
+    "결과 정리 완료: 2건"
+   ]
+  ]
+ },
+ "ranking_applied": {
+  "result": {
+   "organized_data": {
+    "summary": "2개 DB에서 각각 상위 2건씩 조회한 3건을 'cpu_pct' 값이 큰 순으로 다시 정렬해 전체 기준 상위 2건만 남겼습니다. 총 2건의 데이터를 조회했습니다. 조회 대상: 서버, CPU.",
+    "rows": [
+     {
+      "_source_db": "db_a",
+      "hostname": "a1",
+      "cpu_pct": "91.0%"
+     },
+     {
+      "_source_db": "db_b",
+      "hostname": "b1",
+      "cpu_pct": "75.5%"
+     }
+    ],
+    "column_mapping": null,
+    "resolved_mapping": null,
+    "is_sufficient": true,
+    "sheet_mappings": null,
+    "merge_ranking": {
+     "applied": true,
+     "db_ids": [
+      "db_a",
+      "db_b"
+     ],
+     "limit": 2,
+     "source_row_count": 3,
+     "key": "cpu_pct",
+     "descending": true
+    },
+    "merge_aggregates": {
+     "applied": true,
+     "source_row_count": 3,
+     "per_db": {
+      "db_a": 2
+     }
+    }
+   },
+   "error_message": null,
+   "current_node": "result_organizer"
+  },
+  "events": [
+   [
+    "sufficiency",
+    2,
+    false,
+    null,
+    true
+   ]
+  ],
+  "logs": [
+   [
+    "INFO",
+    "결과 정리 완료: 2건"
+   ]
+  ]
+ },
+ "ranking_not_applied": {
+  "result": {
+   "organized_data": {
+    "summary": "총 3건의 데이터를 조회했습니다. 조회 대상: 서버, CPU.",
+    "rows": [
+     {
+      "_source_db": "db_a",
+      "hostname": "a1",
+      "cpu_pct": "91.0%"
+     },
+     {
+      "_source_db": "db_b",
+      "hostname": "b1",
+      "cpu_pct": "75.5%"
+     },
+     {
+      "_source_db": "db_a",
+      "hostname": "a2",
+      "cpu_pct": "40.0%"
+     }
+    ],
+    "column_mapping": null,
+    "resolved_mapping": null,
+    "is_sufficient": true,
+    "sheet_mappings": null,
+    "merge_ranking": {
+     "applied": false,
+     "reason": "no_order"
+    }
+   },
+   "error_message": null,
+   "current_node": "result_organizer"
+  },
+  "events": [
+   [
+    "sufficiency",
+    3,
+    false,
+    null,
+    true
+   ]
+  ],
+  "logs": [
+   [
+    "INFO",
+    "결과 정리 완료: 3건"
+   ]
+  ]
+ }
+}

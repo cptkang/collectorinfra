@@ -19,6 +19,7 @@ from src.document.field_mapper import extract_field_names, perform_3step_mapping
 from src.llm import create_llm
 from src.routing.location_hints import resolve_priority_db_ids as resolve_priority_db_ids
 from src.state import AgentState
+from src.utils.user_error import request_id
 
 logger = logging.getLogger(__name__)
 
@@ -442,6 +443,7 @@ async def _load_db_cache_data(
 
             # EAV name synonyms + global synonyms 로드
             try:
+                # seam(D-337 ②) — 테스트 대역 매니저가 _redis_cache만 심어 둔다(plans/170 I1-a)
                 eav_name_synonyms = await cache_mgr._redis_cache.load_eav_name_synonyms()
             except Exception as e:
                 logger.debug("eav_name_synonyms 로드 실패: %s", e)
@@ -562,9 +564,11 @@ async def _handle_synonym_registration(
                 logger.warning("유사어 등록 실패 (%s.%s): %s", db_id, column, e)
 
     except Exception as e:
-        logger.error("유사어 등록 중 오류: %s", e)
+        # 예외 원문은 응답에 싣지 않는다 — 요청 번호만, 원문은 로그(plans/163 S3+)
+        rid = request_id()
+        logger.error("유사어 등록 중 오류 (요청 %s): %s", rid, e)
         return {
-            "final_response": f"유사어 등록 중 오류가 발생했습니다: {e}",
+            "final_response": f"유사어 등록 중 오류가 발생했습니다 (요청 {rid})",
             "current_node": "field_mapper",
         }
 

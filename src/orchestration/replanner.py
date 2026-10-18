@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -23,6 +26,8 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from src.clients.fabrix_kbgenai import KBGenAIChat
 from src.config import AppConfig, load_config
 from src.llm import create_llm
+from src.orchestration.agent_spec import HandlerResult
+from src.orchestration.apm_query import APM_QUERY_AGENT, sanitize_sources, sanitize_targets
 from src.orchestration.db_access import is_access_denied_result
 from src.orchestration.intent_planner import (
     REASON_DECOMPOSE_FALLBACK,
@@ -40,6 +45,8 @@ from src.state import AgentState
 from src.utils.deadline import retrieval_remaining
 from src.utils.json_extract import extract_json_from_response
 from src.utils.query_gen_common import term_in_text
+from src.utils.task_result_keys import DEGRADED_KEY
+from src.utils.user_error import safe_stop_detail_text
 from src.utils.prior_dependency import (
     NOTE_DECOMPOSE,
     NOTE_DESCRIPTIONS_MISSING,
@@ -87,6 +94,10 @@ async def replanner(
 ) -> dict:
     """1차 실행 결과를 평가하여 후속 task 추가 여부를 결정한다.
 
+    판정 순서의 정본은 모듈 수준 표다(plans/174 O7) — 결정적 조기 종료 `GUARDS` → 평가 LLM →
+    평가 결과 종료 `DECISION_GUARDS` → 신규 task id 부여 → 신규 task 필터 `FILTERS` → 증분 추가.
+    각 단계는 종료 반환(dict)을 돌려주면 그 자리에서 끝나고, None이면 다음 단계로 넘어간다.
+
     Args:
         state: 현재 에이전트 상태 (task_plan, task_results, replan_count 포함)
         llm: LLM 인스턴스 (외부 주입, 없으면 내부 생성)
@@ -103,135 +114,19 @@ async def replanner(
     if llm is None:
         llm = create_llm(app_config)
 
-    replan_count = state.get("replan_count", 0)
+    ctx = _ReplanCtx(
+        state=state,
+        app_config=app_config,
+        replan_count=state.get("replan_count", 0),
+        # 처리 현황 표시용 누적 이력 (루프 종료 시에도 보존되도록 항상 그대로 carry forward)
+        replan_history=list(state.get("replan_history", [])),
+        tasks_now=state.get("task_plan", []),
+    )
+    stop = _first_stop(GUARDS, ctx)
+    if stop is not None:
+        return stop
 
-    # 처리 현황 표시용 누적 이력 (루프 종료 시에도 보존되도록 항상 그대로 carry forward)
-    replan_history = list(state.get("replan_history", []))
-
-    # 결정적 direct_response(고정 안내·확인 이력 조회/삭제 등)는 정의상 **최종 응답** —
-    # LLM 재평가에 넘기면 "내용이 제공되지 않았다"로 오판해 데이터 조회 후속(B0 등)을
-    # 만들어 이력 조회가 채우기로 회귀한다(라이브 실측 2026-08-03, FIX-22).
-    # 전 task가 direct_response면 재계획 없이 종료(LLM 호출 자체를 생략).
-    _tasks_now = state.get("task_plan", [])
-    if _tasks_now and all(t.get("direct_response") for t in _tasks_now):
-        logger.info("replanner: 전 task가 결정적 direct_response — 재계획 스킵(D-150/D-151)")
-        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
-
-    # 존 역질문(D-143 후속2)은 정의상 이번 턴의 최종 응답(사용자 존 선택 대기) — LLM
-    # 재평가에 넘기면 빈 결과로 오판해 데이터 조회 후속을 만들어 역질문을 덮어쓴다
-    # (FIX-22 direct_response와 동형 위험). 결정적으로 종료한다.
-    # 판정은 **이번 계획의 task 결과**로만 한다(plans/121 TP-1.1 · K-5) — 앞 턴 결과가 남아 있으면
-    # 그 역질문·거부로 이번 턴 재계획을 건너뛰었다(존 역질문 대기 스킵 7구간 실측).
-    _plan_ids = {str(t.get("task_id")) for t in _tasks_now if isinstance(t, dict)}
-    _results_now = {
-        k: v for k, v in (state.get("task_results", {}) or {}).items() if str(k) in _plan_ids
-    }
-    if any(
-        isinstance(r, dict) and r.get("zone_clarification")
-        for r in _results_now.values()
-    ):
-        logger.info("replanner: 존 역질문 대기 — 재계획 스킵(D-143 후속2)")
-        zone_out: dict[str, Any] = {
-            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
-        }
-        # 역질문 본문에는 분해 폴백 노트를 붙이지 않는다(plans/121 §12.4 — 집계기가 경과 노트를
-        # 역질문 말미에도 붙인다). 뺄 것이 없으면 키를 싣지 않는다(종전 반환과 같다).
-        kept_notes = _without_zone_turn_notes(state.get("dependency_notes"))
-        if kept_notes is not None:
-            zone_out["dependency_notes"] = kept_notes
-        return zone_out
-
-    # 조회 권한 거부(D-232)는 결정적이다 — 다시 계획해도 같은 거부가 나온다. 전 task가 거부면
-    # LLM 재평가 없이 종료해 3단 `access_denied` 종결과 같은 응답을 남긴다(plans/116 §10.3 결함 ②).
-    # 일부만 거부된 복합 계획은 부분 실패처럼 종전대로 LLM이 평가한다(D-251 ⑤).
-    if _results_now and all(is_access_denied_result(r) for r in _results_now.values()):
-        logger.info("replanner: 전 task 조회 권한 없음(D-232) — 재계획 스킵")
-        return {
-            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
-        }
-
-    # 소스 불가 종결(plans/132 N-3 · G-4 · D-293 — 플래그 없음): 비SQL 처리기 실패·명시 소스
-    # 안내는 다시 계획해도 같거나, 다른 소스로 바꾸면 침묵 대체가 된다(125 §4.6 — 실측: 제니퍼 0건
-    # 뒤 재계획이 폴스타 대체 task를 4/4 추가). 나머지 task가 없거나 전부 성공이면 평가 LLM 없이
-    # 끝낸다. 권한 거부는 대상이 아니다(D-251 ⑤ — 일부 거부는 종전대로 평가).
-    _terminal = _terminal_source_task_ids(_tasks_now, _results_now)
-    if _terminal:
-        _rest = [t for t in _tasks_now if str(t.get("task_id")) not in _terminal]
-        if not _rest or _all_tasks_succeeded({**state, "task_plan": _rest}):
-            logger.info("replanner: 소스 불가 종결 %s — 재계획 스킵(plans/132 G-4)",
-                        sorted(_terminal))
-            return {
-                "needs_replan": False, "replan_history": replan_history,
-                "current_node": "replanner",
-            }
-
-    # 결정적 성공 종료(D-251 ⑤ · CU-4 · plans/119 N-2 — 플래그 없음): 전 task 성공 · 조회 행 ≥1 ·
-    # 미완 표지 없음이면 평가 LLM이 더할 판단이 없다. 0건·부분 실패·순차 의존(D-203) 경로는 아래
-    # LLM 평가를 그대로 탄다(같은 컨텍스트 — 비트 동일). 판정 기준은 `_all_tasks_succeeded`.
-    if _all_tasks_succeeded(state):
-        logger.info("replanner: 전 task 성공·행 반환·미완 표지 없음 — LLM 평가 없이 종료(D-251 ⑤)")
-        return {
-            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
-        }
-
-    # 문서 전용 계획(plans/127 G-12 (a) — 플래그 없음 · 문서 task 가 있는 계획에서만 발동):
-    # 문서 답은 완결이다. 재계획이 붙일 수 있는 후속은 같은 문서 재검색(0건 재시도는 엔진이 이미
-    # 한다 — plans/141 W2 · D-314 · 색인 폐기는 다시 물어도 같다)이거나 일반 안내 보충뿐이라 평가
-    # LLM 을 생략한다.
-    if _tasks_now and all(
-        isinstance(t, dict) and t.get("agent") == _DOC_AGENT for t in _tasks_now
-    ) and all(isinstance(_results_now.get(str(t.get("task_id"))), dict) for t in _tasks_now):
-        logger.info("replanner: 문서 전용 계획 완료 — LLM 평가 없이 종료(plans/127 G-12)")
-        return {
-            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
-        }
-
-    # 포탈 전용 계획(plans/142 · D-315 — 문서 전용 계획과 같은 규칙): 매뉴얼 답은 완결이다
-    # (실패도 사유와 관련 절 링크를 들고 온다). 재계획이 붙일 후속은 같은 매뉴얼 재검색이거나 일반
-    # 안내 보충뿐이라 평가 LLM 을 생략한다. 계획은 portal_help task 와 결정적 안내
-    # (`direct_response`) task 로만 이뤄지고 portal_help 가 하나 이상이어야 한다.
-    if _tasks_now and all(
-        isinstance(t, dict) and (t.get("agent") == _PORTAL_AGENT or t.get("direct_response"))
-        for t in _tasks_now
-    ) and any(t.get("agent") == _PORTAL_AGENT for t in _tasks_now) and all(
-        isinstance(_results_now.get(str(t.get("task_id"))), dict) for t in _tasks_now
-    ):
-        logger.info("replanner: 포탈 전용 계획 완료 — LLM 평가 없이 종료(plans/142)")
-        return {
-            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
-        }
-
-    # 상한 가드(R-A3): 재계획 반복 상한 초과 시 현재 결과로 종료. 위 결정적 종료(direct_response ·
-    # 존 역질문 · 권한 거부 · 성공)는 상한과 같은 반환이라 뒤로 옮겨도 결과가 같다 — 여기 닿으면
-    # 상한이 평가를 실제로 끊은 것이므로 사유를 경과 노트로 남긴다(plans/121 TP-1.6 · 3단
-    # `tier3_plan.replan`과 같은 종류·사유·문구 · 첫 바퀴 전 상한(0회)은 노트 없음).
-    if replan_count >= app_config.max_replan:
-        logger.info("replanner: 재계획 상한(%d) 도달, 현재 결과로 종료", app_config.max_replan)
-        cap_out: dict[str, Any] = {
-            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
-        }
-        if replan_count:
-            cap_out["dependency_notes"] = list(state.get("dependency_notes") or []) + [
-                _replan_cap_note(app_config.max_replan)
-            ]
-        return cap_out
-
-    # 시간 예산(plans/118 P-1 · G-2 — 플래그 없음): 남은 시간이 직전 한 바퀴 소요보다 짧으면
-    # 후속을 붙여도 그 턴은 상한에 걸려 **이미 얻은 결과까지** 버린다. LLM 평가 전에 끊는다.
-    # 남은 시간은 **조회 마감**(처리 마감 − 서술 예약) 기준이다(plans/119 T-2 · D-267 ⑥).
-    reserve_sec = _answer_reserve_sec(app_config)
-    deadline_notice = _deadline_stop_notice(state, reserve_sec=reserve_sec)
-    if deadline_notice:
-        return {
-            "needs_replan": False, "replan_history": replan_history,
-            "current_node": "replanner",
-            # 오케스트레이터가 조회 마감을 넘겨 후속을 시작하지 않았으면(T-2) 그 사유가 더
-            # 구체적이다 — 이 노드 진입 시점의 사유는 그 한 곳에서만 온다(요청 스코프 · 라우트가
-            # 매 턴 비운다).
-            "replan_stop_notice": state.get("replan_stop_notice") or deadline_notice,
-        }
-
-    decision = await _llm_evaluate(
+    ctx.decision = await _llm_evaluate(
         llm,
         state.get("user_query", ""),
         state.get("task_plan", []),
@@ -239,147 +134,462 @@ async def replanner(
         app_config,
         # 예산 인지 블록(plans/119 T-6) — 플래그 off면 None이라 입력이 종전과 바이트 동일하다.
         budget_block=(
-            _budget_block(state, app_config, replan_count, reserve_sec)
+            _budget_block(state, app_config, ctx.replan_count, ctx.reserve_sec)
             if _budget_prompt_on(app_config) else None
         ),
     )
+    stop = _first_stop(DECISION_GUARDS, ctx)
+    if stop is not None:
+        return stop
 
-    # 평가 LLM 호출·응답 실패 — 보수적 종료는 종전과 같고, 사유를 경과 노트로 남긴다
-    # (plans/121 TP-1.6 · N-7 — 종전에는 로그만 남았다). 원인은 예외 클래스명만.
-    if _EVAL_FAILURE_KEY in decision:
+    ctx.new_tasks = _assign_ids(ctx.decision["new_tasks"], existing=state.get("task_plan", []))
+    stop = _first_stop(FILTERS, ctx)
+    if stop is not None:
+        return stop
+    return _append_followups(ctx)
+
+
+@dataclass
+class _ReplanCtx:
+    """재계획 판정 단계(`GUARDS`·`DECISION_GUARDS`·`FILTERS`)가 함께 읽고 쓰는 값(plans/174 O7).
+
+    지연 값(`results_now`·`terminal`·`reserve_sec`)은 처음 읽는 단계에서 한 번만 계산한다 — 종전
+    본문이 그 값을 계산하던 자리(존 역질문 가드 · 소스 불가 종결 가드 · 시간 예산 가드)와 같다.
+    """
+
+    state: AgentState
+    app_config: AppConfig
+    replan_count: int
+    replan_history: list[dict[str, Any]]
+    tasks_now: list[dict[str, Any]]
+    #: 평가 LLM 판정(`_llm_evaluate` 반환) — `DECISION_GUARDS`부터 읽는다
+    decision: dict[str, Any] = field(default_factory=dict)
+    #: id를 부여한 신규 task — `FILTERS`가 차례로 줄인다
+    new_tasks: list[dict[str, Any]] = field(default_factory=list)
+    #: 계획 검증이 남긴 경과 노트와, 그것을 기존 노트 뒤에 이은 목록
+    plan_notes: list[dict[str, Any]] = field(default_factory=list)
+    replan_notes: list[dict[str, Any]] = field(default_factory=list)
+
+    @cached_property
+    def results_now(self) -> dict[str, Any]:
+        """이번 계획의 task 결과만(plans/121 TP-1.1 · K-5) — 앞 턴 결과는 판정에 넣지 않는다."""
+        plan_ids = {str(t.get("task_id")) for t in self.tasks_now if isinstance(t, dict)}
         return {
-            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
-            "dependency_notes": list(state.get("dependency_notes") or []) + [
-                _eval_failure_note(str(decision.get(_EVAL_FAILURE_KEY) or ""))
-            ],
+            k: v for k, v in (self.state.get("task_results", {}) or {}).items()
+            if str(k) in plan_ids
         }
 
-    # 보수적 종료(R-A1/R-A4): 후속 불필요·빈 task·파싱 실패 시 루프 종료
+    @cached_property
+    def terminal(self) -> set[str]:
+        """이번 계획에서 소스 불가로 종결된 task id(plans/132 G-4)."""
+        return _terminal_source_task_ids(self.tasks_now, self.results_now)
+
+    @cached_property
+    def reserve_sec(self) -> float:
+        """서술 예약 초(plans/119 T-2) — 시간 예산 가드와 예산 블록이 같은 값을 쓴다."""
+        return _answer_reserve_sec(self.app_config)
+
+    def stop(self, **extra: Any) -> dict[str, Any]:
+        """루프 종료 반환 — 공통 세 키 뒤에 사유 키를 잇는다.
+
+        계획 검증이 노트를 남겼으면(`plan_notes`) 뒤 필터가 끝내도 그 노트를 싣는다(plans/186 K5 —
+        종전에는 증분 추가에만 실렸다). 호출부가 `dependency_notes`를 넘기면 그 값을 그대로 쓴다.
+        계획 검증 앞 단계에서는 `plan_notes`가 비어 있어 반환이 종전과 같다.
+        """
+        if self.plan_notes and "dependency_notes" not in extra:
+            extra["dependency_notes"] = self.replan_notes
+        return {
+            "needs_replan": False, "replan_history": self.replan_history,
+            "current_node": "replanner", **extra,
+        }
+
+
+#: 판정 단계 — 종료 반환(dict)이면 그 자리에서 끝, None이면 다음 단계.
+_Step = Callable[[_ReplanCtx], "dict[str, Any] | None"]
+
+
+def _first_stop(steps: tuple[tuple[str, _Step], ...], ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """표의 단계를 순서대로 평가해 첫 종료 반환을 돌려준다(전부 통과면 None)."""
+    for _name, step in steps:
+        out = step(ctx)
+        if out is not None:
+            return out
+    return None
+
+
+# ── 결정적 조기 종료(평가 LLM 전) — 평가 순서는 아래 `GUARDS` 표가 정한다 ──────────────────
+
+
+def _guard_direct_response(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """전 task가 결정적 direct_response면 종료(D-150/D-151 · FIX-22).
+
+    결정적 direct_response(고정 안내·확인 이력 조회/삭제 등)는 정의상 **최종 응답** —
+    LLM 재평가에 넘기면 "내용이 제공되지 않았다"로 오판해 데이터 조회 후속(B0 등)을
+    만들어 이력 조회가 채우기로 회귀한다(라이브 실측 2026-08-03, FIX-22).
+    전 task가 direct_response면 재계획 없이 종료(LLM 호출 자체를 생략).
+    """
+    tasks = ctx.tasks_now
+    if tasks and all(t.get("direct_response") for t in tasks):
+        logger.info("replanner: 전 task가 결정적 direct_response — 재계획 스킵(D-150/D-151)")
+        return ctx.stop()
+    return None
+
+
+def _guard_zone_clarification(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """존 역질문 대기면 종료(D-143 후속2).
+
+    존 역질문은 정의상 이번 턴의 최종 응답(사용자 존 선택 대기) — LLM 재평가에 넘기면 빈 결과로
+    오판해 데이터 조회 후속을 만들어 역질문을 덮어쓴다(FIX-22 direct_response와 동형 위험).
+    판정은 **이번 계획의 task 결과**로만 한다(plans/121 TP-1.1 · K-5) — 앞 턴 결과가 남아 있으면
+    그 역질문·거부로 이번 턴 재계획을 건너뛰었다(존 역질문 대기 스킵 7구간 실측).
+    """
+    results: dict[str, HandlerResult] = ctx.results_now
+    if not any(
+        isinstance(r, dict) and r.get("zone_clarification")
+        for r in results.values()
+    ):
+        return None
+    logger.info("replanner: 존 역질문 대기 — 재계획 스킵(D-143 후속2)")
+    # 역질문 본문에는 분해 폴백 노트를 붙이지 않는다(plans/121 §12.4 — 집계기가 경과 노트를
+    # 역질문 말미에도 붙인다). 뺄 것이 없으면 키를 싣지 않는다(종전 반환과 같다).
+    kept_notes = _without_zone_turn_notes(ctx.state.get("dependency_notes"))
+    if kept_notes is not None:
+        return ctx.stop(dependency_notes=kept_notes)
+    return ctx.stop()
+
+
+def _guard_access_denied(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """전 task가 조회 권한 거부(D-232)면 종료.
+
+    다시 계획해도 같은 거부가 나온다 — 3단 `access_denied` 종결과 같은 응답을 남긴다(plans/116
+    §10.3 결함 ②). 일부만 거부된 복합 계획은 부분 실패처럼 종전대로 LLM이 평가한다(D-251 ⑤).
+    """
+    results = ctx.results_now
+    if results and all(is_access_denied_result(r) for r in results.values()):
+        logger.info("replanner: 전 task 조회 권한 없음(D-232) — 재계획 스킵")
+        return ctx.stop()
+    return None
+
+
+def _guard_terminal_source(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """소스 불가 종결 뒤 나머지가 없거나 전부 성공이면 종료(plans/132 N-3 · G-4 · D-293).
+
+    비SQL 처리기 실패·명시 소스 안내는 다시 계획해도 같거나, 다른 소스로 바꾸면 침묵 대체가 된다
+    (125 §4.6 — 실측: 제니퍼 0건 뒤 재계획이 폴스타 대체 task를 4/4 추가). 권한 거부는 대상이
+    아니다(D-251 ⑤ — 일부 거부는 종전대로 평가). 플래그 없음.
+    """
+    terminal = ctx.terminal
+    if not terminal:
+        return None
+    rest = [t for t in ctx.tasks_now if str(t.get("task_id")) not in terminal]
+    if not rest or _all_tasks_succeeded({**ctx.state, "task_plan": rest}):
+        logger.info("replanner: 소스 불가 종결 %s — 재계획 스킵(plans/132 G-4)",
+                    sorted(terminal))
+        return ctx.stop()
+    return None
+
+
+def _guard_all_succeeded(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """결정적 성공 종료(D-251 ⑤ · CU-4 · plans/119 N-2 — 플래그 없음).
+
+    전 task 성공 · 조회 행 ≥1 · 미완 표지 없음이면 평가 LLM이 더할 판단이 없다. 0건·부분 실패·
+    순차 의존(D-203) 경로는 LLM 평가를 그대로 탄다(같은 컨텍스트 — 비트 동일). 판정 기준은
+    `_all_tasks_succeeded`.
+    """
+    if _all_tasks_succeeded(ctx.state):
+        logger.info("replanner: 전 task 성공·행 반환·미완 표지 없음 — LLM 평가 없이 종료(D-251 ⑤)")
+        return ctx.stop()
+    return None
+
+
+def _guard_doc_only(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """문서 전용 계획 완료면 종료(plans/127 G-12 (a) — 플래그 없음 · 문서 task가 있을 때만).
+
+    문서 답은 완결이다. 재계획이 붙일 수 있는 후속은 같은 문서 재검색(0건 재시도는 엔진이 이미
+    한다 — plans/141 W2 · D-314 · 색인 폐기는 다시 물어도 같다)이거나 일반 안내 보충뿐이라 평가
+    LLM 을 생략한다.
+    """
+    tasks, results = ctx.tasks_now, ctx.results_now
+    if tasks and all(
+        isinstance(t, dict) and t.get("agent") == _DOC_AGENT for t in tasks
+    ) and all(isinstance(results.get(str(t.get("task_id"))), dict) for t in tasks):
+        logger.info("replanner: 문서 전용 계획 완료 — LLM 평가 없이 종료(plans/127 G-12)")
+        return ctx.stop()
+    return None
+
+
+def _guard_portal_only(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """포탈 전용 계획 완료면 종료(plans/142 · D-315 — 문서 전용 계획과 같은 규칙).
+
+    매뉴얼 답은 완결이다(실패도 사유와 관련 절 링크를 들고 온다). 재계획이 붙일 후속은 같은 매뉴얼
+    재검색이거나 일반 안내 보충뿐이라 평가 LLM 을 생략한다. 계획은 portal_help task 와 결정적 안내
+    (`direct_response`) task 로만 이뤄지고 portal_help 가 하나 이상이어야 한다.
+    """
+    tasks, results = ctx.tasks_now, ctx.results_now
+    if tasks and all(
+        isinstance(t, dict) and (t.get("agent") == _PORTAL_AGENT or t.get("direct_response"))
+        for t in tasks
+    ) and any(t.get("agent") == _PORTAL_AGENT for t in tasks) and all(
+        isinstance(results.get(str(t.get("task_id"))), dict) for t in tasks
+    ):
+        logger.info("replanner: 포탈 전용 계획 완료 — LLM 평가 없이 종료(plans/142)")
+        return ctx.stop()
+    return None
+
+
+def _guard_replan_cap(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """재계획 반복 상한(R-A3) 초과면 현재 결과로 종료.
+
+    앞의 결정적 종료(direct_response · 존 역질문 · 권한 거부 · 성공)는 상한과 같은 반환이라 뒤로
+    옮겨도 결과가 같다 — 여기 닿으면 상한이 평가를 실제로 끊은 것이므로 사유를 경과 노트로 남긴다
+    (plans/121 TP-1.6 · 3단 `tier3_plan.replan`과 같은 종류·사유·문구 · 첫 바퀴 전 상한(0회)은
+    노트 없음).
+    """
+    max_replan = ctx.app_config.max_replan
+    if ctx.replan_count < max_replan:
+        return None
+    logger.info("replanner: 재계획 상한(%d) 도달, 현재 결과로 종료", max_replan)
+    if ctx.replan_count:
+        return ctx.stop(dependency_notes=list(ctx.state.get("dependency_notes") or []) + [
+            _replan_cap_note(max_replan)
+        ])
+    return ctx.stop()
+
+
+def _guard_deadline(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """시간 예산(plans/118 P-1 · G-2 — 플래그 없음)이 부족하면 평가 LLM 전에 끊는다.
+
+    남은 시간이 직전 한 바퀴 소요보다 짧으면 후속을 붙여도 그 턴은 상한에 걸려 **이미 얻은
+    결과까지** 버린다. 남은 시간은 **조회 마감**(처리 마감 − 서술 예약) 기준이다(plans/119 T-2 ·
+    D-267 ⑥).
+    """
+    deadline_notice = _deadline_stop_notice(ctx.state, reserve_sec=ctx.reserve_sec)
+    if not deadline_notice:
+        return None
+    # 오케스트레이터가 조회 마감을 넘겨 후속을 시작하지 않았으면(T-2) 그 사유가 더 구체적이다 —
+    # 이 노드 진입 시점의 사유는 그 한 곳에서만 온다(요청 스코프 · 라우트가 매 턴 비운다).
+    return ctx.stop(replan_stop_notice=ctx.state.get("replan_stop_notice") or deadline_notice)
+
+
+# ── 평가 결과 종료(평가 LLM 뒤) ──────────────────────────────────────────────────────────
+
+
+def _guard_eval_failure(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """평가 LLM 호출·응답 실패면 보수적 종료하고 사유를 경과 노트로 남긴다.
+
+    plans/121 TP-1.6 · N-7 — 종전에는 로그만 남았다. 원인은 예외 클래스명만.
+    """
+    if _EVAL_FAILURE_KEY not in ctx.decision:
+        return None
+    return ctx.stop(dependency_notes=list(ctx.state.get("dependency_notes") or []) + [
+        _eval_failure_note(str(ctx.decision.get(_EVAL_FAILURE_KEY) or ""))
+    ])
+
+
+def _guard_no_followup(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """보수적 종료(R-A1/R-A4): 후속 불필요·빈 task·파싱 실패 시 루프 종료."""
+    decision = ctx.decision
     if not decision.get("needs_followup") or not decision.get("new_tasks"):
         logger.debug("replanner: 후속 불필요, 종료 (reason=%s)", decision.get("reason"))
-        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
+        return ctx.stop()
+    return None
 
-    new_tasks = _assign_ids(decision["new_tasks"], existing=state.get("task_plan", []))
-    # 소스 불가 종결 task를 대신하거나 그 결과에 기대는 후속은 뺀다(plans/132 G-4 — 침묵 대체 차단).
-    if _terminal:
-        new_tasks = _drop_terminal_substitutes(new_tasks, _terminal)
-        if not new_tasks:
-            logger.info("replanner: 소스 불가 종결 task의 대체 후속 전부 제거 → 종료"
-                        "(plans/132 G-4)")
-            return {
-                "needs_replan": False, "replan_history": replan_history,
-                "current_node": "replanner",
-            }
-    # 신규 task도 분해와 같은 계획 검증을 지난다(plans/121 TP-1.3 · N-5) — 담당 교정 + DAG만,
-    # 무익 재시도 필터들보다 **앞**(교정된 담당으로 비교한다). 위반 task만 빼고 사유를 남긴다.
-    new_tasks, plan_notes = _validate_replanned_tasks(
-        new_tasks, state.get("task_plan", []), state, app_config,
-    )
-    replan_notes = list(state.get("dependency_notes") or []) + plan_notes
-    if not new_tasks:
-        # 유효 신규 task가 없으면 보수적 종료
-        out: dict[str, Any] = {
-            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
-        }
-        if plan_notes:
-            out["dependency_notes"] = replan_notes
-        return out
 
-    # 무의미 재시도 차단(D-063): 엔티티를 이미 찾은(>0행) 조회를 같은 방식으로 다시 묻는
-    # 후속을 제거한다. 행은 찾았으나 일부 요청 필드가 null인 것은 "데이터에 그 속성이
-    # 없음"이지 쿼리 오류가 아니므로, 재조회해도 채워지지 않고 max_replan까지 헛돈다.
-    new_tasks = _filter_futile_retries(
-        new_tasks, state.get("task_plan", []), state.get("task_results", {})
+# ── 신규 task 필터 — `ctx.new_tasks`를 줄이고, 남은 것이 없으면 종료 반환 ─────────────────
+
+
+def _filter_terminal_substitutes(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """소스 불가 종결 task를 대신하거나 그 결과에 기대는 후속은 뺀다(plans/132 G-4).
+
+    침묵 대체 차단 — 남은 것이 없으면 종료.
+    """
+    if not ctx.terminal:
+        return None
+    ctx.new_tasks = _drop_terminal_substitutes(ctx.new_tasks, ctx.terminal)
+    if not ctx.new_tasks:
+        logger.info("replanner: 소스 불가 종결 task의 대체 후속 전부 제거 → 종료"
+                    "(plans/132 G-4)")
+        return ctx.stop()
+    return None
+
+
+def _filter_plan_validation(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """신규 task도 분해와 같은 계획 검증을 지난다(plans/121 TP-1.3 · N-5).
+
+    담당 교정 + DAG만, 무익 재시도 필터들보다 **앞**(교정된 담당으로 비교한다). 위반 task만 빼고
+    사유를 남긴다. 유효 신규 task가 없으면 보수적 종료.
+    """
+    ctx.new_tasks, ctx.plan_notes = _validate_replanned_tasks(
+        ctx.new_tasks, ctx.state.get("task_plan", []), ctx.state, ctx.app_config,
     )
-    if not new_tasks:
+    ctx.replan_notes = list(ctx.state.get("dependency_notes") or []) + ctx.plan_notes
+    if ctx.new_tasks:
+        return None
+    return ctx.stop()  # 노트가 있으면 `stop`이 싣는다(plans/186 K5)
+
+
+def _filter_futile(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """무의미 재시도 차단(D-063).
+
+    엔티티를 이미 찾은(>0행) 조회를 같은 방식으로 다시 묻는 후속을 제거한다. 행은 찾았으나 일부
+    요청 필드가 null인 것은 "데이터에 그 속성이 없음"이지 쿼리 오류가 아니므로, 재조회해도 채워지지
+    않고 max_replan까지 헛돈다.
+    """
+    ctx.new_tasks = _filter_futile_retries(
+        ctx.new_tasks, ctx.state.get("task_plan", []), ctx.state.get("task_results", {})
+    )
+    if not ctx.new_tasks:
         logger.info(
             "replanner: 엔티티를 이미 확보한 무의미 재시도 전부 제거 → 종료 (reason=%s)",
-            decision.get("reason"),
+            ctx.decision.get("reason"),
         )
-        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
+        return ctx.stop()
+    return None
 
-    # 재생성 위임 제거(plans/119 Q-3 · D-063 확장): 내부 루프가 재생성을 멈춘(`regen_stop` — 검증
-    # 예산 소진·산문·조회 마감) 조회를 같은 담당·같은 대상 DB·같은 식별 리터럴로 다시 시키는 후속은
-    # 같은 프롬프트·같은 스키마로 같은 결과를 낸다. 제거로 끝나면 마지막 사유를 응답에 싣는다.
-    new_tasks, regen_notice = _filter_regen_stopped(
-        new_tasks, state.get("task_plan", []), state.get("task_results", {}),
+
+def _filter_regen(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """재생성 위임 제거(plans/119 Q-3 · D-063 확장).
+
+    내부 루프가 재생성을 멈춘(`regen_stop` — 검증 예산 소진·산문·조회 마감) 조회를 같은 담당·같은
+    대상 DB·같은 식별 리터럴로 다시 시키는 후속은 같은 프롬프트·같은 스키마로 같은 결과를 낸다.
+    제거로 끝나면 마지막 사유를 응답에 싣는다.
+    """
+    ctx.new_tasks, regen_notice = _filter_regen_stopped(
+        ctx.new_tasks, ctx.state.get("task_plan", []), ctx.state.get("task_results", {}),
     )
-    if not new_tasks:
+    if not ctx.new_tasks:
         logger.info("replanner: 재생성을 멈춘 조회의 재위임 후속 전부 제거 → 종료")
-        return {
-            "needs_replan": False, "replan_history": replan_history,
-            "current_node": "replanner", "replan_stop_notice": regen_notice,
-        }
+        return ctx.stop(replan_stop_notice=regen_notice)
+    return None
 
-    # 반복 0건 중단(plans/118 P-2 · D-063 개정 G-3): 직전 두 바퀴가 모두 대상 DB 전부 0건이고
-    # 새 후속이 같은 엔티티를 또 찾으면 제거한다. 첫 0건 뒤 한 번의 재조회는 그대로 둔다.
-    new_tasks, empty_notice = _filter_repeated_empty(
-        new_tasks, state.get("task_plan", []), state.get("task_results", {}), replan_history,
+
+def _filter_empty_repeat(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """반복 0건 중단(plans/118 P-2 · D-063 개정 G-3).
+
+    직전 두 바퀴가 모두 대상 DB 전부 0건이고 새 후속이 같은 엔티티를 또 찾으면 제거한다. 첫 0건 뒤
+    한 번의 재조회는 그대로 둔다.
+    """
+    ctx.new_tasks, empty_notice = _filter_repeated_empty(
+        ctx.new_tasks, ctx.state.get("task_plan", []), ctx.state.get("task_results", {}),
+        ctx.replan_history,
     )
-    if not new_tasks:
+    if not ctx.new_tasks:
         logger.info("replanner: 전 DB 연속 0건 대상의 재조회 전부 제거 → 종료")
-        return {
-            "needs_replan": False, "replan_history": replan_history,
-            "current_node": "replanner", "replan_stop_notice": empty_notice,
-        }
+        return ctx.stop(replan_stop_notice=empty_notice)
+    return None
 
-    # 관리 작업 강등 차단: 순수 관리 요청(캐시/유사어)의 후속으로 DB 조회를 붙이면
-    # 관리 실패가 무관한 조회 결과로 종결된다(침묵 강등 금지, D-059 계열).
-    new_tasks = _filter_management_demotion(new_tasks, state.get("task_plan", []))
-    if not new_tasks:
+
+def _filter_management(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """관리 작업 강등 차단(D-059 계열 — 침묵 강등 금지).
+
+    순수 관리 요청(캐시/유사어)의 후속으로 DB 조회를 붙이면 관리 실패가 무관한 조회 결과로
+    종결된다.
+    """
+    ctx.new_tasks = _filter_management_demotion(ctx.new_tasks, ctx.state.get("task_plan", []))
+    if not ctx.new_tasks:
         logger.info(
             "replanner: 관리 작업 계획의 조회 강등 후속 전부 제거 → 종료 (reason=%s)",
-            decision.get("reason"),
+            ctx.decision.get("reason"),
         )
-        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
+        return ctx.stop()
+    return None
 
-    # 중복 재답변 방지(R-A4 강화): 후속이 모두 general_inference(일반 안내)면
-    # 데이터 기반 후속이 아니라 같은 주제를 다시 답변하는 패턴이다. general_inference는
-    # 자체 완결적 안내 답변(사용법·지원 소스·조회 가능 데이터 등)이므로, 여기에 또
-    # general_inference를 붙이면 동일 내용이 중복 출력된다. 추가하지 않고 종료한다.
-    if all(t.get("agent") == "general_inference" for t in new_tasks):
+
+def _filter_general_repeat(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """중복 재답변 방지(R-A4 강화): 후속이 모두 general_inference(일반 안내)면 종료.
+
+    데이터 기반 후속이 아니라 같은 주제를 다시 답변하는 패턴이다. general_inference는 자체 완결적
+    안내 답변(사용법·지원 소스·조회 가능 데이터 등)이므로, 여기에 또 general_inference를 붙이면
+    동일 내용이 중복 출력된다. 추가하지 않고 종료한다.
+    """
+    if all(t.get("agent") == "general_inference" for t in ctx.new_tasks):
         logger.info(
             "replanner: 후속이 모두 general_inference → 중복 재답변 방지로 종료 (reason=%s)",
-            decision.get("reason"),
+            ctx.decision.get("reason"),
         )
-        return {"needs_replan": False, "replan_history": replan_history, "current_node": "replanner"}
-    # 같은 규칙을 문서 답에도(plans/127 §4.8): 이미 문서를 찾은 계획에 문서 재검색만 붙이면
-    # 같은 답이 되풀이된다(플래그 없음 · 문서 task 가 있을 때만 발동).
-    if all(t.get("agent") == _DOC_AGENT for t in new_tasks) and any(
+        return ctx.stop()
+    return None
+
+
+def _filter_doc_repeat(ctx: _ReplanCtx) -> dict[str, Any] | None:
+    """같은 규칙을 문서 답에도(plans/127 §4.8).
+
+    이미 문서를 찾은 계획에 문서 재검색만 붙이면 같은 답이 되풀이된다(플래그 없음 · 문서 task 가
+    있을 때만 발동).
+    """
+    if all(t.get("agent") == _DOC_AGENT for t in ctx.new_tasks) and any(
         isinstance(t, dict) and t.get("agent") == _DOC_AGENT
-        for t in state.get("task_plan", []) or []
+        for t in ctx.state.get("task_plan", []) or []
     ):
         logger.info(
             "replanner: 후속이 모두 문서 재검색 → 중복 재답변 방지로 종료 (reason=%s)",
-            decision.get("reason"),
+            ctx.decision.get("reason"),
         )
-        return {
-            "needs_replan": False, "replan_history": replan_history, "current_node": "replanner",
-        }
+        return ctx.stop()
+    return None
 
+
+def _append_followups(ctx: _ReplanCtx) -> dict[str, Any]:
+    """증분 추가(R-A1): 기존 task_plan 보존 + 신규만 append (전체 교체 금지)."""
     logger.info(
         "replanner: 후속 task %d개 추가 (replan_count=%d, reason=%s)",
-        len(new_tasks), replan_count + 1, decision.get("reason"),
+        len(ctx.new_tasks), ctx.replan_count + 1, ctx.decision.get("reason"),
     )
 
     # 처리 현황용 이력 누적 (이번 재계획 회차의 사유·추가 개수)
-    replan_history.append({
-        "count": replan_count + 1,
-        "reason": decision.get("reason") or "",
-        "added": len(new_tasks),
+    ctx.replan_history.append({
+        "count": ctx.replan_count + 1,
+        "reason": ctx.decision.get("reason") or "",
+        "added": len(ctx.new_tasks),
     })
 
-    # 증분 추가(R-A1): 기존 task_plan 보존 + 신규만 append (전체 교체 금지)
     added: dict[str, Any] = {
-        "task_plan": state.get("task_plan", []) + new_tasks,
+        "task_plan": ctx.state.get("task_plan", []) + ctx.new_tasks,
         "needs_replan": True,
-        "replan_count": replan_count + 1,
-        "replan_history": replan_history,
+        "replan_count": ctx.replan_count + 1,
+        "replan_history": ctx.replan_history,
         "current_node": "replanner",
     }
-    if plan_notes:
-        added["dependency_notes"] = replan_notes
+    if ctx.plan_notes:
+        added["dependency_notes"] = ctx.replan_notes
     return added
+
+
+#: 결정적 조기 종료 — **평가 순서가 의미다**(앞 단계가 성립하면 뒤 단계는 보지 않는다 ·
+#: plans/174 O7). 상한(`replan_cap`)은 앞 결정적 종료들과 같은 반환이라 그 뒤에 두고, 시간 예산은
+#: 평가 LLM 직전이다.
+GUARDS: tuple[tuple[str, _Step], ...] = (
+    ("direct_response", _guard_direct_response),  # D-150/D-151 · FIX-22
+    ("zone_clarification", _guard_zone_clarification),  # D-143 후속2
+    ("access_denied", _guard_access_denied),  # D-232
+    ("terminal_source", _guard_terminal_source),  # plans/132 G-4
+    ("all_succeeded", _guard_all_succeeded),  # D-251 ⑤ · plans/119 N-2
+    ("doc_only", _guard_doc_only),  # plans/127 G-12
+    ("portal_only", _guard_portal_only),  # plans/142
+    ("replan_cap", _guard_replan_cap),  # R-A3 · plans/121 TP-1.6
+    ("deadline", _guard_deadline),  # plans/118 P-1 · plans/119 T-2
+)
+
+#: 평가 LLM 판정으로 끝나는 종료 — 실패 표지가 「후속 불필요」보다 앞이다(실패 표지 dict에는
+#: `needs_followup`이 없다).
+DECISION_GUARDS: tuple[tuple[str, _Step], ...] = (
+    ("eval_failure", _guard_eval_failure),  # plans/121 TP-1.6 · N-7
+    ("no_followup", _guard_no_followup),  # R-A1/R-A4
+)
+
+#: 신규 task 필터 — **평가 순서가 의미다**. 계획 검증은 무익 재시도 필터들보다 앞(교정된 담당으로
+#: 비교한다 · plans/121 TP-1.3). 계획 검증 노트는 증분 추가와 뒤 필터 종료 반환 양쪽에 실린다
+#: (`_ReplanCtx.stop` · plans/186 K5).
+FILTERS: tuple[tuple[str, _Step], ...] = (
+    ("terminal_substitutes", _filter_terminal_substitutes),  # plans/132 G-4
+    ("plan_validation", _filter_plan_validation),  # plans/121 TP-1.3 · N-5
+    ("futile_retries", _filter_futile),  # D-063
+    ("regen_stopped", _filter_regen),  # plans/119 Q-3
+    ("repeated_empty", _filter_empty_repeat),  # plans/118 P-2
+    ("management_demotion", _filter_management),  # D-059 계열
+    ("general_repeat", _filter_general_repeat),  # R-A4
+    ("doc_repeat", _filter_doc_repeat),  # plans/127 §4.8
+)
 
 
 def _validate_replanned_tasks(
@@ -407,8 +617,7 @@ def _validate_replanned_tasks(
     tasks = [close_agent_vocabulary(t, extra) for t in new_tasks]
     if not (state.get("template_structure") or state.get("uploaded_file")):
         tasks = _coerce_alarm_intent(_coerce_process_intent(tasks))
-    cfg = getattr(app_config, "composite", None)
-    if not bool(getattr(cfg, "plan_dag_validation_enabled", False)):
+    if not bool(app_config.composite.plan_dag_validation_enabled):
         return tasks, []
     if validate_plan_dag(list(existing))[1]:
         return tasks, []  # 기존 계획이 이미 위반이면 신규 task에 책임을 돌릴 수 없다
@@ -578,12 +787,6 @@ def _assign_ids(new_tasks: list[dict], *, existing: list[dict]) -> list[dict]:
     Returns:
         task_id/order/status가 부여된 신규 task 목록
     """
-    from src.orchestration.apm_query import (  # 지연 — 순환 방지
-        APM_QUERY_AGENT,
-        sanitize_sources,
-        sanitize_targets,
-    )
-
     existing_ids = {t.get("task_id") for t in existing if t.get("task_id")}
 
     # 기존 t번호 최대값 → 신규 id 시작점
@@ -791,9 +994,9 @@ def _deadline_stop_notice(
     )
 
 
-def _answer_reserve_sec(app_config: object) -> float:
+def _answer_reserve_sec(app_config: AppConfig) -> float:
     """서술 예약 초(`ServerConfig.answer_reserve_sec`) — 테스트 대역 설정에서는 0(종전 동작)."""
-    value = getattr(getattr(app_config, "server", None), "answer_reserve_sec", 0)
+    value = app_config.server.answer_reserve_sec
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0
     return max(0.0, float(value))
@@ -805,7 +1008,7 @@ def _budget_prompt_on(app_config: object) -> bool:
 
 
 def _budget_block(
-    state: AgentState, app_config: object, replan_count: int, reserve_sec: float,
+    state: AgentState, app_config: AppConfig, replan_count: int, reserve_sec: float,
 ) -> str:
     """재계획 평가 입력 말미에 붙일 예산 블록(plans/119 T-6 · 문헌 L-9).
 
@@ -817,7 +1020,7 @@ def _budget_block(
     time_line = "" if left is None else REPLANNER_BUDGET_TIME_LINE_TEMPLATE.format(
         remaining_sec=int(max(0.0, left)), reserve_sec=int(reserve_sec),
     )
-    max_replan = getattr(app_config, "max_replan", 0)
+    max_replan = app_config.max_replan
     if isinstance(max_replan, bool) or not isinstance(max_replan, int):
         max_replan = 0
     return REPLANNER_BUDGET_BLOCK_TEMPLATE.format(
@@ -1048,14 +1251,14 @@ def _terminal_source_task_ids(
         if not isinstance(task, dict):
             continue
         tid = str(task.get("task_id"))
-        res = results.get(tid)
+        res: HandlerResult | None = results.get(tid)
         if task.get(_SOURCE_NOTICE_KEY):
             out.add(tid)
         elif not isinstance(res, dict) or is_access_denied_result(res):
             continue
         elif task.get("agent") in _NONSQL_AGENTS and (res.get("error") or res.get("accepted_jobs")):
             out.add(tid)
-        elif res.get("degraded_reason") in _SOURCE_NOTICE_REASONS:
+        elif res.get(DEGRADED_KEY) in _SOURCE_NOTICE_REASONS:
             out.add(tid)
     return out
 
@@ -1207,7 +1410,10 @@ def _regen_stop_notice(stopped: list[tuple[dict[str, Any], dict[str, Any]]]) -> 
             str(stop.get("reason") or ""), _REGEN_STOP_FALLBACK_TEXT,
         )
         query = " ".join(str(prior.get("sub_query") or "").split())[:_MAX_NOTICE_QUERY_CHARS]
-        detail = " ".join(str(stop.get("detail") or "").split())[:_MAX_NOTICE_DETAIL_CHARS]
+        # 마지막 사유는 고정 사유·머리말만 싣는다 — 실행 예외·검증 사유(생성 SQL 조각)가 보간된
+        # 원문은 버린다(plans/163 S3+ · 원문은 SQL 루프·검증 노드 로그에 남는다). 멀티 DB의
+        # 「db_id: 사유」 이음은 조각마다 거른다(plans/186 M7).
+        detail = (safe_stop_detail_text(stop.get("detail")) or "")[:_MAX_NOTICE_DETAIL_CHARS]
         line = (
             f"「{query}」 조회는 {reason}. "
             "같은 조회를 다시 맡기지 않고 지금까지의 결과로 답했습니다"

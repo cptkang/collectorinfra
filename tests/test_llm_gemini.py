@@ -47,7 +47,7 @@ class TestLLMConfigGemini:
 
         `.env`의 `LLM_GEMINI_MODEL`·`.encenv`의 `LLM_GEMINI_API_KEY`가 새어 들어와
         기본값 테스트가 개발 PC에서 늘 실패했다(2026-09-17 귀속 실측 — 파일이 없으면 통과).
-        `GOOGLE_API_KEY`는 `model_post_init`이 `os.getenv`로 폴백해 읽으므로 함께 지운다.
+        `GOOGLE_API_KEY`는 plans/163 X6+ 이후 읽히지 않지만 셸 값 누수 방지로 함께 지운다.
         """
         for key in ("LLM_GEMINI_API_KEY", "LLM_GEMINI_MODEL", "GOOGLE_API_KEY"):
             monkeypatch.delenv(key, raising=False)
@@ -74,18 +74,18 @@ class TestLLMConfigGemini:
 
 
 # ──────────────────────────────────────────────
-# 2. model_post_init: GOOGLE_API_KEY fallback
+# 2. GOOGLE_API_KEY 폴백 제거 (plans/163 X6+)
 # ──────────────────────────────────────────────
 
 
 class TestGeminiApiKeyFallback:
-    """model_post_init에서 GOOGLE_API_KEY 환경변수 fallback 검증."""
+    """접두 없는 GOOGLE_API_KEY 셸 env를 더 이상 읽지 않는다(plans/163 X6+ — 종전 폴백 제거)."""
 
     @patch.dict("os.environ", {"GOOGLE_API_KEY": "fallback-key-from-env"}, clear=False)
-    def test_google_api_key_fallback_when_gemini_key_empty(self):
-        """gemini_api_key가 비어있으면 GOOGLE_API_KEY 환경변수를 사용해야 한다."""
+    def test_google_api_key_not_read_when_gemini_key_empty(self):
+        """gemini_api_key가 비어 있어도 GOOGLE_API_KEY 환경변수로 채우지 않는다."""
         cfg = LLMConfig(provider="gemini", gemini_api_key="")
-        assert cfg.gemini_api_key == "fallback-key-from-env"
+        assert cfg.gemini_api_key == ""
 
     @patch.dict("os.environ", {"GOOGLE_API_KEY": "should-not-use"}, clear=False)
     def test_google_api_key_not_used_when_gemini_key_set(self):
@@ -187,7 +187,7 @@ class TestCreateGeminiValidation:
         """gemini_api_key가 비어있으면 ValueError가 발생해야 한다."""
         from src.llm import _create_gemini
 
-        # 빈 키를 명시해도 model_post_init이 셸 GOOGLE_API_KEY로 폴백한다 — 셸 값 누수 차단
+        # 셸 GOOGLE_API_KEY는 plans/163 X6+ 이후 읽히지 않는다 — 셸 값 누수 방지로 지운다
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
         config = AppConfig(

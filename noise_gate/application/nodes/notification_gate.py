@@ -76,94 +76,12 @@ async def notification_gate_node(
         return {}  # 안전장치 — 게이트 off면 결정하지 않음 (회귀 0)
 
     event = state["alarm_event"]
-
-    def _decide(noise_ctx):  # noqa: ANN001, ANN202 — 같은 입력으로 한 번 더 판정하기 위한 묶음
-        return decide_notification(
-            event,
-            state.get("history_stats"),
-            result,
-            noise_ctx,
-            gate_cfg,
-            self_heal=bool(state.get("self_heal", False)),
-            inhibited=bool(state.get("inhibited", False)),
-            flapping=bool(state.get("flapping", False)),
-            storm=bool(state.get("storm", False)),
-            correlated=bool(state.get("correlated", False)),
-            # (Plan 60 E7-a) 워커가 산출한 계획-무해 코로보레이션 게이팅용 주석 신호
-            # (off/없으면 None).
-            annotation=state.get("annotation"),
-            # (Plan 54 모듈 4) 워커가 읽어 넘긴 활성 침묵 규칙(off/없으면 빈 목록 → 단계 미평가).
-            silence_rules=state.get("silence_rules"),
-            # (plans/144 §4.2·4.3) 워커가 제니퍼 알람에 산출한 정규화 유형·정책 행·지속 조건
-            # (apm_noise_policy_enabled off·폴스타 알람이면 None → 비트 동일).
-            apm_policy=state.get("apm_policy"),
-            # (plans/144 W3) 워커 사건 추적기의 크로스소스 신호(cross_source_mode off·사건
-            # 미소속이면 None → 비트 동일).
-            cross_source=state.get("cross_source"),
-        )
-
     noise_ctx = state.get("noise_context")
-    decision = _decide(noise_ctx)
+    decision = _decide(state, event, result, noise_ctx, gate_cfg)
 
-    # (plans/87 J4 · R-7) app_impact 승격 — 매트릭스 결과가 DASHBOARD·TICKET인 폴스타 알람만
-    # 게이트웨이에 묻는다(PAGE·억제 결과는 바뀔 수 없으니 부르지 않는다 — 부하·지연 절약). fatal
-    # 이벤트가 있으면 예약키 app_impact를 채워 같은 입력으로 다시 판정한다(도메인 step 9.5가 PAGE로
-    # 올린다). 실패는 판정 그대로 두고 사유를 로그·감사에 남긴다. off(기본)면 이 블록에 들어오지
-    # 않아 비트 동일.
-    # (plans/144 W4 §5.6) 워커가 사건 저장소에서 미리 산출한 앱 영향(`episode_app_impact` —
-    # cross_source_mode annotate·enforce에서만 실린다)에 fatal 이벤트가 있으면 게이트웨이를 부르지
-    # 않고 그 값으로 승격한다. 없으면 현행 게이트웨이 조회 그대로다(폴러가 꺼진 환경 호환).
-    # (plans/144 W4 §5.7) 정상 강등 shadow 후보(CPU·메모리 경고)면 PAGE 판정이어도 한 번 조회해
-    # 「창 안 이벤트 0건」이면 표지만 남긴다 — 판정·사유는 바꾸지 않는다.
-    app_impact_audit: dict[str, Any] = {}
-    updated_ctx: dict[str, Any] | None = None
-    impact_applicable = _app_impact_applicable(gate_cfg, event, decision, noise_ctx)
-    shadow_candidate = _healthy_shadow_applicable(gate_cfg, event, decision, noise_ctx)
-    if impact_applicable or shadow_candidate:
-        episode_impact = state.get("episode_app_impact")
-        if not isinstance(episode_impact, dict):
-            episode_impact = {}
-        episode_app_impact = episode_impact.get("app_impact")
-        episode_events = int(episode_impact.get("window_events") or 0)
-        client = configurable.get("apm_client")
-        app_impact: dict[str, Any] | None = None
-        if impact_applicable and isinstance(episode_app_impact, dict):
-            app_impact = episode_app_impact  # 사건 저장소 판정 — 게이트웨이 호출 없음
-        elif episode_events and not impact_applicable:
-            pass  # shadow 전용 조회인데 사건에 이미 APM 이벤트가 있다 — 정상 아님, 조회 불필요
-        elif client is None:
-            logger.debug(
-                "app_impact 조회 생략 — 게이트웨이 클라이언트 없음: alarm_id=%s", event.alarm_id
-            )
-        else:
-            # shadow 후보면 레벨을 낮춰(normal 이상 = 전 레벨) 한 번에 묻는다 — fatal 판정은 아래
-            # 같은 레벨 필터를 거치므로 승격 결과는 fatal 조회와 같다.
-            fetched, failure, total_rows = await _fetch_app_impact(
-                client, event, gate_cfg, level="normal" if shadow_candidate else "fatal"
-            )
-            if impact_applicable:
-                app_impact = fetched
-            if failure:
-                app_impact_audit["app_impact_error"] = failure
-            elif shadow_candidate and total_rows == 0 and not episode_events:
-                app_impact_audit["apm_healthy_shadow"] = {
-                    "would_demote": True,
-                    "window_minutes": int(getattr(gate_cfg, "app_impact_window_minutes", 10)),
-                    "source": "mcp",
-                }
-                logger.info(
-                    "제니퍼 정상 강등 shadow(판정 불변): alarm_id=%s tier=%s",
-                    event.alarm_id, decision.tier,
-                )
-        if app_impact is not None:
-            updated_ctx = {**(noise_ctx or {}), "app_impact": app_impact}
-            promoted: NotificationDecision = _decide(updated_ctx)  # type: ignore[no-untyped-call]
-            logger.info(
-                "app_impact 승격: alarm_id=%s %s→%s fatal=%d types=%s source=%s",
-                event.alarm_id, decision.tier, promoted.tier,
-                app_impact["fatal_events"], app_impact["event_types"], app_impact["source"],
-            )
-            decision = promoted
+    decision, updated_ctx, app_impact_audit = await _promote_by_app_impact(
+        state, configurable, gate_cfg, event, result, decision, noise_ctx
+    )
 
     # (plans/162 · D-330) 마지막 관문 — PAGE 필요성 재판정. 워커 레지스트리 신호가 있을 때만 부른다.
     page_signals = state.get("page_review_signals")
@@ -172,55 +90,7 @@ async def notification_gate_node(
 
     store = configurable.get("decision_store")
     if store is not None:
-        try:
-            # (plans/112 S6) 결정 단계의 근거만 모은다 — 도메인이 아는 것(decision.evidence) +
-            # 워커 탐지가 아는 것(detection_evidence[결정 단계]). 다른 단계의 탐지값은 싣지 않는다
-            # (예: 스톰이 탐지됐어도 인히비션이 먼저 결정했다면 스톰 창은 이 판단의 근거가 아니다).
-            detected = state.get("detection_evidence") or {}
-            # (plans/162) 재판정 강등이면 탐지 근거는 원 단계 기준으로 고른다.
-            evidence_stage = getattr(decision, "stage", "")
-            if evidence_stage == STAGE_PAGE_REVIEW:
-                evidence_stage = (decision.evidence or {}).get("original_stage", "")
-            stage_evidence = {
-                **(getattr(decision, "evidence", None) or {}),
-                **(detected.get(evidence_stage) or {}),
-                # (plans/87 J4) 게이트웨이 조회 실패 사유 — 판정은 바뀌지 않았다(없으면 키 없음).
-                **app_impact_audit,
-            }
-            # AI 분석이 실패해 원문 알람으로 판단한 건 — 결정 추적에서 구별되게 남긴다
-            if getattr(result, "error", None):
-                stage_evidence["analysis"] = "AI 분석 실패 — 원문 알람으로 판단"
-            # (Plan 60 E1) 재통보 시 직전 창 재발 메타를 최상위 recurrence 필드로 첨부.
-            # (Plan 60 E2) 상관 억제 시 클러스터 메타를 최상위 correlation_meta 필드로 첨부.
-            # (Plan 60 B-7 L-2 · §15.4 D-035) 의미적 근접중복 후보 주석을 최상위
-            # semantic_annotation 필드로 첨부 — **감사·관측 전용**이며 위 decision(tier/reason/
-            # priority)은 이 값과 무관하게 이미 산출됐다(주석은 판정에 영향 0). off/None이면 미첨부.
-            store.record(
-                decision,
-                alarm_id=event.alarm_id,
-                # (Plan 54) 관제 화면의 "무엇이 억제됐는가" — 지문 해시로는 역인용이 안 된다.
-                alarm_name=str(getattr(event, "alarm_name", "") or ""),
-                server_name=str(
-                    getattr(event, "server_name", "") or getattr(event, "hostname", "") or ""
-                ),
-                recurrence=state.get("recurrence"),
-                correlation_meta=state.get("correlation_meta"),
-                semantic_annotation=state.get("semantic_annotation"),
-                # (plans/112 S6 · G-2) 결정 단계 근거 + 식별 필드 — 빈 값이면 키를 넣지 않는다.
-                stage_evidence=stage_evidence or None,
-                db_id=str(getattr(event, "db_id", "") or ""),
-                resource_name=str(getattr(event, "resource_name", "") or ""),
-                condition_log=str(getattr(event, "condition_log", "") or ""),
-                # (plans/153 W1) AI 분석 서술 — 플래그 off면 인자 자체를 넘기지 않는다
-                # (호출·레코드 모두 현행과 비트 동일).
-                **(
-                    {"analysis": analysis_text(result)}
-                    if getattr(gate_cfg, "decision_analysis_text_enabled", False)
-                    else {}
-                ),
-            )
-        except Exception:  # noqa: BLE001 — 기록 실패가 발송을 막지 않는다
-            logger.warning("발송 판단 감사 기록 실패(무시): alarm_id=%s", event.alarm_id)
+        _record_decision(store, decision, event, result, state, gate_cfg, app_impact_audit)
 
     logger.info(
         "발송 판단: alarm_id=%s tier=%s reason=%s",
@@ -232,6 +102,204 @@ async def notification_gate_node(
     if updated_ctx is not None:
         out["noise_context"] = updated_ctx  # 예약키 app_impact를 채운 컨텍스트(승격했을 때만)
     return out
+
+
+def _decide(
+    state: dict[str, Any], event: Any, result: Any, noise_ctx: Any, gate_cfg: Any
+) -> NotificationDecision:
+    """같은 입력으로 판정한다 — 최초 판정과 app_impact 승격 재판정이 함께 쓴다."""
+    return decide_notification(
+        event,
+        state.get("history_stats"),
+        result,
+        noise_ctx,
+        gate_cfg,
+        self_heal=bool(state.get("self_heal", False)),
+        inhibited=bool(state.get("inhibited", False)),
+        flapping=bool(state.get("flapping", False)),
+        storm=bool(state.get("storm", False)),
+        correlated=bool(state.get("correlated", False)),
+        # (Plan 60 E7-a) 워커가 산출한 계획-무해 코로보레이션 게이팅용 주석 신호
+        # (off/없으면 None).
+        annotation=state.get("annotation"),
+        # (Plan 54 모듈 4) 워커가 읽어 넘긴 활성 침묵 규칙(off/없으면 빈 목록 → 단계 미평가).
+        silence_rules=state.get("silence_rules"),
+        # (plans/144 §4.2·4.3) 워커가 제니퍼 알람에 산출한 정규화 유형·정책 행·지속 조건
+        # (apm_noise_policy_enabled off·폴스타 알람이면 None → 비트 동일).
+        apm_policy=state.get("apm_policy"),
+        # (plans/144 W3) 워커 사건 추적기의 크로스소스 신호(cross_source_mode off·사건
+        # 미소속이면 None → 비트 동일).
+        cross_source=state.get("cross_source"),
+    )
+
+
+async def _promote_by_app_impact(
+    state: dict[str, Any],
+    configurable: dict[str, Any],
+    gate_cfg: Any,
+    event: Any,
+    result: Any,
+    decision: NotificationDecision,
+    noise_ctx: Any,
+) -> tuple[NotificationDecision, dict[str, Any] | None, dict[str, Any]]:
+    """app_impact 승격 단계 — (판정, 승격 컨텍스트 또는 None, 감사용 근거)를 돌려준다.
+
+    (plans/87 J4 · R-7) app_impact 승격 — 매트릭스 결과가 DASHBOARD·TICKET인 폴스타 알람만
+    게이트웨이에 묻는다(PAGE·억제 결과는 바뀔 수 없으니 부르지 않는다 — 부하·지연 절약). fatal
+    이벤트가 있으면 예약키 app_impact를 채워 같은 입력으로 다시 판정한다(도메인 step 9.5가 PAGE로
+    올린다). 실패는 판정 그대로 두고 사유를 로그·감사에 남긴다. off(기본)면 이 블록에 들어오지
+    않아 비트 동일.
+    (plans/144 W4 §5.6) 워커가 사건 저장소에서 미리 산출한 앱 영향(`episode_app_impact` —
+    cross_source_mode annotate·enforce에서만 실린다)에 fatal 이벤트가 있으면 게이트웨이를 부르지
+    않고 그 값으로 승격한다. 없으면 현행 게이트웨이 조회 그대로다(폴러가 꺼진 환경 호환).
+    (plans/144 W4 §5.7) 정상 강등 shadow 후보(CPU·메모리 경고)면 PAGE 판정이어도 한 번 조회해
+    「창 안 이벤트 0건」이면 표지만 남긴다 — 판정·사유는 바꾸지 않는다.
+    """
+    app_impact_audit: dict[str, Any] = {}
+    updated_ctx: dict[str, Any] | None = None
+    impact_applicable = _app_impact_applicable(gate_cfg, event, decision, noise_ctx)
+    shadow_candidate = _healthy_shadow_applicable(gate_cfg, event, decision, noise_ctx)
+    if impact_applicable or shadow_candidate:
+        app_impact = await _lookup_app_impact(
+            state, configurable, gate_cfg, event, decision,
+            impact_applicable, shadow_candidate, app_impact_audit,
+        )
+        if app_impact is not None:
+            updated_ctx = {**(noise_ctx or {}), "app_impact": app_impact}
+            promoted = _decide(state, event, result, updated_ctx, gate_cfg)
+            logger.info(
+                "app_impact 승격: alarm_id=%s %s→%s fatal=%d types=%s source=%s",
+                event.alarm_id, decision.tier, promoted.tier,
+                app_impact["fatal_events"], app_impact["event_types"], app_impact["source"],
+            )
+            decision = promoted
+    return decision, updated_ctx, app_impact_audit
+
+
+async def _lookup_app_impact(
+    state: dict[str, Any],
+    configurable: dict[str, Any],
+    gate_cfg: Any,
+    event: Any,
+    decision: NotificationDecision,
+    impact_applicable: bool,
+    shadow_candidate: bool,
+    app_impact_audit: dict[str, Any],
+) -> dict[str, Any] | None:
+    """승격 근거 app_impact를 사건 저장소 판정 또는 게이트웨이 조회로 구한다(없으면 None).
+
+    조회 실패 사유·정상 강등 shadow 표지는 `app_impact_audit`에 채운다.
+    """
+    episode_impact = state.get("episode_app_impact")
+    if not isinstance(episode_impact, dict):
+        episode_impact = {}
+    episode_app_impact = episode_impact.get("app_impact")
+    episode_events = int(episode_impact.get("window_events") or 0)
+    client = configurable.get("apm_client")
+    app_impact: dict[str, Any] | None = None
+    if impact_applicable and isinstance(episode_app_impact, dict):
+        app_impact = episode_app_impact  # 사건 저장소 판정 — 게이트웨이 호출 없음
+    elif episode_events and not impact_applicable:
+        pass  # shadow 전용 조회인데 사건에 이미 APM 이벤트가 있다 — 정상 아님, 조회 불필요
+    elif client is None:
+        logger.debug(
+            "app_impact 조회 생략 — 게이트웨이 클라이언트 없음: alarm_id=%s", event.alarm_id
+        )
+    else:
+        # shadow 후보면 레벨을 낮춰(normal 이상 = 전 레벨) 한 번에 묻는다 — fatal 판정은 아래
+        # 같은 레벨 필터를 거치므로 승격 결과는 fatal 조회와 같다.
+        fetched, failure, total_rows = await _fetch_app_impact(
+            client, event, gate_cfg, level="normal" if shadow_candidate else "fatal"
+        )
+        if impact_applicable:
+            app_impact = fetched
+        if failure:
+            app_impact_audit["app_impact_error"] = failure
+        elif shadow_candidate and total_rows == 0 and not episode_events:
+            app_impact_audit["apm_healthy_shadow"] = {
+                "would_demote": True,
+                "window_minutes": int(getattr(gate_cfg, "app_impact_window_minutes", 10)),
+                "source": "mcp",
+            }
+            logger.info(
+                "제니퍼 정상 강등 shadow(판정 불변): alarm_id=%s tier=%s",
+                event.alarm_id, decision.tier,
+            )
+    return app_impact
+
+
+def _record_decision(
+    store: Any,
+    decision: NotificationDecision,
+    event: Any,
+    result: Any,
+    state: dict[str, Any],
+    gate_cfg: Any,
+    app_impact_audit: dict[str, Any],
+) -> None:
+    """감사 기록 단계 — 최종 판정을 decision_store에 남긴다(실패는 warning 후 무시)."""
+    try:
+        stage_evidence = _stage_evidence(decision, result, state, app_impact_audit)
+        # (Plan 60 E1) 재통보 시 직전 창 재발 메타를 최상위 recurrence 필드로 첨부.
+        # (Plan 60 E2) 상관 억제 시 클러스터 메타를 최상위 correlation_meta 필드로 첨부.
+        # (Plan 60 B-7 L-2 · §15.4 D-035) 의미적 근접중복 후보 주석을 최상위
+        # semantic_annotation 필드로 첨부 — **감사·관측 전용**이며 위 decision(tier/reason/
+        # priority)은 이 값과 무관하게 이미 산출됐다(주석은 판정에 영향 0). off/None이면 미첨부.
+        store.record(
+            decision,
+            alarm_id=event.alarm_id,
+            # (Plan 54) 관제 화면의 "무엇이 억제됐는가" — 지문 해시로는 역인용이 안 된다.
+            alarm_name=str(getattr(event, "alarm_name", "") or ""),
+            server_name=str(
+                getattr(event, "server_name", "") or getattr(event, "hostname", "") or ""
+            ),
+            recurrence=state.get("recurrence"),
+            correlation_meta=state.get("correlation_meta"),
+            semantic_annotation=state.get("semantic_annotation"),
+            # (plans/112 S6 · G-2) 결정 단계 근거 + 식별 필드 — 빈 값이면 키를 넣지 않는다.
+            stage_evidence=stage_evidence or None,
+            db_id=str(getattr(event, "db_id", "") or ""),
+            resource_name=str(getattr(event, "resource_name", "") or ""),
+            condition_log=str(getattr(event, "condition_log", "") or ""),
+            # (plans/153 W1) AI 분석 서술 — 플래그 off면 인자 자체를 넘기지 않는다
+            # (호출·레코드 모두 현행과 비트 동일).
+            **(
+                {"analysis": analysis_text(result)}
+                if getattr(gate_cfg, "decision_analysis_text_enabled", False)
+                else {}
+            ),
+        )
+    except Exception:  # noqa: BLE001 — 기록 실패가 발송을 막지 않는다
+        logger.warning("발송 판단 감사 기록 실패(무시): alarm_id=%s", event.alarm_id)
+
+
+def _stage_evidence(
+    decision: NotificationDecision,
+    result: Any,
+    state: dict[str, Any],
+    app_impact_audit: dict[str, Any],
+) -> dict[str, Any]:
+    """감사 레코드의 `stage_evidence` — 결정 단계 근거만 모은다(plans/112 S6).
+
+    도메인이 아는 것(decision.evidence) + 워커 탐지가 아는 것(detection_evidence[결정 단계]).
+    다른 단계의 탐지값은 싣지 않는다(예: 스톰이 탐지됐어도 인히비션이 먼저 결정했다면 스톰 창은
+    이 판단의 근거가 아니다).
+    """
+    detected = state.get("detection_evidence") or {}
+    # (plans/162) 재판정 강등이면 탐지 근거는 원 단계 기준으로 고른다.
+    evidence_stage = getattr(decision, "stage", "")
+    if evidence_stage == STAGE_PAGE_REVIEW:
+        evidence_stage = (decision.evidence or {}).get("original_stage", "")
+    stage_evidence = {
+        **(getattr(decision, "evidence", None) or {}),
+        **(detected.get(evidence_stage) or {}),
+        # (plans/87 J4) 게이트웨이 조회 실패 사유 — 판정은 바뀌지 않았다(없으면 키 없음).
+        **app_impact_audit,
+    }
+    # AI 분석이 실패해 원문 알람으로 판단한 건 — 결정 추적에서 구별되게 남긴다
+    if getattr(result, "error", None):
+        stage_evidence["analysis"] = "AI 분석 실패 — 원문 알람으로 판단"
+    return stage_evidence
 
 
 # ── plans/153 W1: 판정 레코드 AI 분석 서술(G-7 (a)) ──────────────────────────

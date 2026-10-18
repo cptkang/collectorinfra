@@ -105,7 +105,7 @@ def test_chartjs_and_cache_busting_versions(index_html: str) -> None:
     viz = index_html.find('src="/static/js/result-viz.js?v=4"')
     assert chart != -1 and viz != -1 and chart < viz
     assert 'href="/static/css/style.css?v=28"' in index_html
-    assert 'src="/static/js/app.js?v=25"' in index_html
+    assert 'src="/static/js/app.js?v=26"' in index_html
 
 
 def test_app_calls_attach_at_two_render_points(app_js: str) -> None:

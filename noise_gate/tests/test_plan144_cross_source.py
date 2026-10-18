@@ -651,6 +651,7 @@ def _worker(mode: str, rules_path: Path | str = SHIPPED_RULES, *, gate: bool = T
     cfg = SimpleNamespace(
         noise_gate=SimpleNamespace(
             enable_noise_gate=gate, repeat_interval_seconds=14400, suppress_max_severity=2,
+            dedup_severity_rise_bypass=False,
             self_heal_window_seconds=300, cross_source_mode=mode,
             cross_source_rules_path=str(rules_path), episode_idle_seconds=900,
         ),

@@ -20,7 +20,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from src.config import AppConfig, load_config
 from src.infrastructure.doc_sources import routing_active, routing_collections
 from src.llm import USER_RESPONSE_TAG, astream_text, create_llm
-from src.nodes.intent_frame_builder import CONSUMER_GENERAL_INFERENCE, get_prompt_query
+from src.pipeline.intent_frame_builder import CONSUMER_GENERAL_INFERENCE, get_prompt_query
 from src.routing.db_authz import ACCESS_DENIED_MESSAGE, authorized_db_ids, is_source_allowed
 from src.routing.domain_config import get_domain_by_id
 from src.routing.registry import get_registry

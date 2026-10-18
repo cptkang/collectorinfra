@@ -30,7 +30,7 @@ async def get_scope_options(
     payload = scope_axes_options(
         config.multi_db.get_active_db_ids(),
         allowed_db_ids=allowed,
-        group_exclusive=getattr(config.multi_db, "zone_group_exclusive", True),
+        group_exclusive=config.multi_db.zone_group_exclusive,
     )
     apm_axis = _apm_source_axis(config, current_user or {})
     if apm_axis is not None:

@@ -196,7 +196,9 @@ async def test_metric_trend_partial_kind_failure_is_reported(monkeypatch):
     )
     assert res["kinds"] == ["cpu"] and res["kind_errors"] == {"memory": "통계 테이블 없음"}
     summary = res["organized_data"]["summary"]
-    assert "메모리 추세는 조회하지 못했습니다(통계 테이블 없음)." in summary
+    # 실패 사유 원문은 요약(답 본문)에 싣지 않는다 — 요청 번호만(plans/163 S3+ · 원문은 로그)
+    assert "메모리 추세는 조회하지 못했습니다(요청 " in summary
+    assert "통계 테이블 없음" not in summary
 
 
 def test_client_metric_kinds_match_server_map():

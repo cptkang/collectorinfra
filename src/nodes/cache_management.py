@@ -23,6 +23,7 @@ from src.schema_cache.cache_manager import get_cache_manager
 from src.state import AgentState
 from src.utils.json_extract import extract_json_from_response
 from src.utils.synonym_set_parser import parse_synonym_set
+from src.utils.user_error import request_id
 
 logger = logging.getLogger(__name__)
 
@@ -194,9 +195,12 @@ async def cache_management(
         }
 
     except Exception as e:
-        logger.error("캐시 관리 실패: %s", e)
+        # 예외 원문은 사용자 답에 싣지 않는다 — 고정 문구 + 요청 번호, 원문은 로그에만
+        # (plans/163 S3+)
+        rid = request_id()
+        logger.error("캐시 관리 실패 (요청 %s): %s", rid, e, exc_info=True)
         return {
-            "final_response": f"캐시 관리 중 오류가 발생했습니다: {str(e)}",
+            "final_response": f"캐시 관리 중 오류가 발생했습니다 (요청 {rid})",
             "current_node": "cache_management",
             "error_message": str(e),
         }
@@ -484,7 +488,10 @@ async def _handle_generate(
                     f"fingerprint: {result.fingerprint[:16]}...)"
                 )
         except Exception as e:
-            results.append(f"- {did}: 오류 ({e})")
+            # DB 접속 예외 원문(DSN·호스트가 섞인다)은 답에 싣지 않는다(plans/163 S3+)
+            rid = request_id()
+            logger.warning("캐시 생성/갱신 실패 (요청 %s · db=%s): %s", rid, did, e)
+            results.append(f"- {did}: 오류 (요청 {rid} — 상세는 서버 로그)")
 
     return "캐시 생성/갱신 결과:\n" + "\n".join(results)
 

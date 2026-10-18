@@ -152,8 +152,16 @@ async def test_resolve_stream_user_cookie_token():
         "auth-secret",
         algorithm="HS256",
     )
-    # user_repo 없이 payload 폴백 경로
-    req = _fake_request(auth_enabled=True, cookies={"user_token": token}, user_repo=None)
+    # 쿠키 토큰 → 저장소 조회 경로(저장소 부재는 503 — plans/186 L4)
+    from unittest.mock import AsyncMock
+
+    from src.domain.user import User
+
+    repo = SimpleNamespace(
+        get_by_user_id=AsyncMock(return_value=User(user_id="u1", username="U", hashed_password="x"))
+    )
+    req = _fake_request(auth_enabled=True, cookies={"user_token": token}, user_repo=repo)
     result = await resolve_stream_user(req)
     assert result is not None
     assert result["sub"] == "u1"
+    repo.get_by_user_id.assert_awaited_once_with("u1")

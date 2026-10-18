@@ -2,7 +2,7 @@
 (plans/134 W3 N-9 · W4 N-12 · SPEC-apm-question-coverage §3 · D-290 ④⑥ · D-296 ④ · D-287).
 
 - 서비스 = APM 도메인. 서비스 이름은 캐시된 인벤토리의 도메인 이름에서, 업무 이름은 업무
-  정의(`ApmTools._business_defs_of` 캐시)의 업무 이름에서 plans/130 단계 검색(`search_names` —
+  정의(`ApmCore.business_defs_of` 캐시)의 업무 이름에서 plans/130 단계 검색(`search_names` —
   exact → normalized → prefix → contains · 가장 앞 단계만)으로 찾는다. 못 찾은 이름은 사용자용
   고지(`_unresolved`)와 유사 이름 후보(`suggestions` — 이름마다 ≤3 · 자동 채택 안 함)를 남긴다.
 - **명시 대상 미해결을 다른 대상으로 대신하지 않는다**(D-290 ⑥) — 이름·도메인 ID를 줬는데
@@ -12,7 +12,7 @@
   자체 상한 없음(D-296 ④) — 큰 결과는 작업·결과 파일이 맡는다.
 - 식별은 (`source_id`, `domain_id`[, `business_id`]) — 소스마다 id를 따로 매겨 겹칠 수 있다(D-287).
 - 단위 조회 실패는 `[한계]` + `partial`, 전부 실패는 오류(0건으로 세지 않는다).
-- 시계열의 지표 검증은 인스턴스 시계열과 같은 코드(`ApmTools._metric_plan`)다. 지표를 비우면 군별
+- 시계열의 지표 검증은 인스턴스 시계열과 같은 코드(`ApmCore.metric_plan`)다. 지표를 비우면 군별
   기본 지표(응답시간·호출 수·오류 수 — 카탈로그에 있는 것)로 조회하고 `[한계]`에 적는다. 모르는
   지표는 빼고(일부) 또는 기본 지표로(전부) 조회하고 후보(≤3)를 미해결 고지에 싣는다 — 선택 조건
   하나가 보기 전체를 실패시키지 않는다(plans/134 V34-1 · W2 런타임 추세와 같은 계열).
@@ -25,29 +25,32 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from apm_gateway.adapters.jennifer.api import JenniferApi
+from apm_gateway.application.apm_core import ApmCore
+from apm_gateway.application.business_map import cache_fresh
 from apm_gateway.application.masking import mask_text, mask_url
+from apm_gateway.application.name_search import (
+    domain_order,
+    normalize_name,
+    search_names,
+    search_query,
+    suggest_names,
+)
 from apm_gateway.application.sources import (
     STATUS_NO_MATCH,
     STATUS_OK,
     STATUS_UNAVAILABLE,
     JenniferSource,
 )
-from apm_gateway.application.tools import (
+from apm_gateway.application.tool_common import (
     SERIES_DEFAULT_MINUTES,
     SERIES_INTERVAL_NOTE,
-    VISIT_HIT_NOTE,
-    ApmTools,
-    _domain_order,
-    _fresh,
-    _Limits,
-    _nonneg_int,
-    normalize_name,
-    search_names,
-    search_query,
-    suggest_names,
+    Limits,
+    limit_notice,
+    nonneg_int,
 )
+from apm_gateway.application.tools import VISIT_HIT_NOTE
 from apm_gateway.domain.call_context import expect_calls
-from apm_gateway.domain.errors import CONTRACT_VIOLATION, INVALID_ARGUMENT, ApmError
+from apm_gateway.domain.errors import INVALID_ARGUMENT, ApmError
 
 SERVICE_TOOL = "apm_service_status"
 BUSINESS_TOOL = "apm_business"
@@ -145,7 +148,7 @@ class ServiceScope:
     units: list[ServiceUnit]
     sources: list[JenniferSource]
     statuses: list[dict[str, Any]]
-    limits: _Limits
+    limits: Limits
     narrowed: bool
     missing: list[str] = field(default_factory=list)  # 못 찾은 이름(마스킹본)
     suggestions: list[dict[str, Any]] = field(default_factory=list)
@@ -171,7 +174,7 @@ class ScopeTools:
     """서비스·업무 도구 코어 — 코어(`ApmTools`)의 봉투·소스 묶음·업무 정의 캐시·지표 검증을 쓴다
     (상태 없음 · 호출마다 만들어도 된다)."""
 
-    def __init__(self, core: ApmTools) -> None:
+    def __init__(self, core: ApmCore) -> None:
         self.core = core
         self._filters = {s.source_id: frozenset(s.domain_ids) for s in core.cfg.sources}
 
@@ -196,10 +199,10 @@ class ScopeTools:
         (소스, 도메인)(둘 다 주면 AND), 없으면 고른 소스의 전 도메인. 이름은 캐시된 인벤토리의
         도메인 이름에서 찾는다(새 HTTP 없음 — 인벤토리 적재 제외)."""
         names = name_list(service, "service")
-        domain = None if domain_id is None else _nonneg_int(domain_id, "domain_id")
+        domain = None if domain_id is None else nonneg_int(domain_id, "domain_id")
         core = self.core
         usable, statuses, notes = await core.sources.available(core.sources.select(source_ids))
-        limits = _Limits(notes)
+        limits = Limits(notes)
         if any(row["status"] != STATUS_OK for row in statuses):
             limits.partial = True  # 고른 소스 중 빠진 소스가 있다(사유는 notes에)
         scope = ServiceScope(
@@ -241,7 +244,7 @@ class ScopeTools:
                         normalize_name(text),
                         (
                             (
-                                (rank, _domain_order(u.domain_id)),
+                                (rank, domain_order(u.domain_id)),
                                 u.domain_name,
                                 {
                                     "domain_name": u.domain_name,
@@ -257,7 +260,7 @@ class ScopeTools:
             ordered = [
                 u
                 for _, u in sorted(
-                    hits, key=lambda h: (h[0], _domain_order(h[1].domain_id), h[1].domain_name)
+                    hits, key=lambda h: (h[0], domain_order(h[1].domain_id), h[1].domain_name)
                 )
             ]
             if len(ordered) > 1:
@@ -336,14 +339,12 @@ class ScopeTools:
             try:
                 records = await src.api.realtime_domains(did)
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
+                notice = limit_notice(
+                    e, "실시간 도메인", self._at(sid, did), core.reason_tail(e)
+                )
                 failures.append((core.sources.where(sid, did), e))
                 failed.setdefault(sid, e)
-                limits.fail(
-                    f"[한계] 실시간 도메인 조회 실패{self._at(sid, did)}: {e.code}"
-                    + core._reason_tail(e)
-                )
+                limits.fail(notice)
                 continue
             answered.add(sid)
             for rec in records:
@@ -352,7 +353,7 @@ class ScopeTools:
                     continue
                 got.setdefault((sid, rid), rec)
         if failures and len(failures) == len(calls):
-            raise core._all_failed(failures)
+            raise core.all_failed(failures)
         self._mark_failed_sources(scope, failed, answered)
         rows: list[dict[str, Any]] = []
         missing: list[str] = []
@@ -404,17 +405,17 @@ class ScopeTools:
             sum(
                 1
                 for u in scope.units
-                if not _fresh(core._business_defs.get((u.source.source_id, u.domain_id)), now)
+                if not cache_fresh(core._business_defs.get((u.source.source_id, u.domain_id)), now)
             )
         )
         out: list[tuple[ServiceUnit, list[dict[str, Any]]]] = []
         failures: list[tuple[str, ApmError]] = []
         for u in scope.units:
-            defs = await core._business_defs_of(u.source, u.domain_id, now, scope.limits, failures)
+            defs = await core.business_defs_of(u.source, u.domain_id, now, scope.limits, failures)
             if defs is not None:
                 out.append((u, defs))
         if scope.units and len(failures) == len(scope.units):
-            raise core._all_failed(failures)
+            raise core.all_failed(failures)
         return out
 
     async def _resolve_businesses(
@@ -568,19 +569,17 @@ class ScopeTools:
             try:
                 records = await u.source.api.realtime_business(u.domain_id)
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
+                notice = limit_notice(
+                    e, "실시간 업무", self._at(sid, u.domain_id), core.reason_tail(e)
+                )
                 failures.append((core.sources.where(sid, u.domain_id), e))
                 failed.setdefault(sid, e)
-                scope.limits.fail(
-                    f"[한계] 실시간 업무 조회 실패{self._at(sid, u.domain_id)}: {e.code}"
-                    + core._reason_tail(e)
-                )
+                scope.limits.fail(notice)
                 continue
             answered.add(sid)
             rows += [self._business_row(u, rec) for rec in records]
         if failures and len(failures) == len(scope.units):
-            raise core._all_failed(failures)
+            raise core.all_failed(failures)
         self._mark_failed_sources(scope, failed, answered)
         return rows
 
@@ -602,13 +601,10 @@ class ScopeTools:
             try:
                 records = await u.source.api.realtime_business(u.domain_id, t.business_id)
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
+                notice = limit_notice(e, "실시간 업무", f"({label})", core.reason_tail(e))
                 failures.append((label, e))
                 failed.setdefault(sid, e)
-                scope.limits.fail(
-                    f"[한계] 실시간 업무 조회 실패({label}): {e.code}" + core._reason_tail(e)
-                )
+                scope.limits.fail(notice)
                 continue
             answered.add(sid)
             rec = next((r for r in records if r.get("business_id") == t.business_id), None)
@@ -617,7 +613,7 @@ class ScopeTools:
                 continue
             rows.append(self._business_row(u, rec, t))
         if failures and len(failures) == len(targets):
-            raise core._all_failed(failures)
+            raise core.all_failed(failures)
         self._mark_failed_sources(scope, failed, answered)
         if missing:
             scope.limits.append(f"[한계] 실시간 데이터 없는 업무: {', '.join(missing)}")
@@ -648,7 +644,7 @@ class ScopeTools:
                 INVALID_ARGUMENT, "business·business_id는 scope business 시계열에서만 쓴다"
             )
         names = name_list(business, "business")
-        bid = None if business_id is None else _nonneg_int(business_id, "business_id")
+        bid = None if business_id is None else nonneg_int(business_id, "business_id")
         if bid is not None and names is not None:
             raise ApmError(INVALID_ARGUMENT, "business와 business_id는 함께 줄 수 없다")
         if bid is not None and domain_id is None:
@@ -721,13 +717,11 @@ class ScopeTools:
                             window.end_ms,
                         )
                 except ApmError as e:
-                    if e.code == CONTRACT_VIOLATION:
-                        raise
-                    failures.append((f"{label} 지표 {metric_id}", e))
-                    limits.fail(
-                        f"[한계] 지표 {metric_id} 조회 실패({label}): {e.code}"
-                        + core._reason_tail(e)
+                    notice = limit_notice(
+                        e, f"지표 {metric_id}", f"({label})", core.reason_tail(e)
                     )
+                    failures.append((f"{label} 지표 {metric_id}", e))
+                    limits.fail(notice)
                     continue
                 if not points:
                     empty.append(f"{label}:{metric_id}")
@@ -736,14 +730,14 @@ class ScopeTools:
                     for p in points
                 ]
         if attempted and len(failures) == attempted:
-            raise core._all_failed(failures)
+            raise core.all_failed(failures)
         if empty:
             what = "도메인" if scope_name == "domain" else "업무"
             limits.append(f"[한계] 데이터 점이 없는 ({what}:지표): {', '.join(empty)}")
         return self.envelope(METRICS_TOOL, rows, scope, **extra)
 
     async def _series_plan(
-        self, source_ids: list[str], requested: list[str], scope_name: str, limits: _Limits
+        self, source_ids: list[str], requested: list[str], scope_name: str, limits: Limits
     ) -> dict[str, list[tuple[str, str]]]:
         """도메인·업무 시계열 지표 → 소스별 `[(식별자, 표시 이름)]`.
 
@@ -755,7 +749,7 @@ class ScopeTools:
         core = self.core
         candidates: dict[str, list[str]] = {}
         if requested:
-            plan = await core._metric_plan(
+            plan = await core.metric_plan(
                 source_ids,
                 requested,
                 scope_name,
@@ -789,7 +783,7 @@ class ScopeTools:
         return plan
 
     async def _default_series_plan(
-        self, source_ids: list[str], scope_name: str, limits: _Limits
+        self, source_ids: list[str], scope_name: str, limits: Limits
     ) -> tuple[dict[str, list[tuple[str, str]]], list[str]]:
         """군별 기본 지표 중 카탈로그(그 군)에 있는 것 → (소스별 계획, 쓴 표시 이름 — 중립 이름이
         있으면 중립 이름). 카탈로그를 읽지 못했거나 그 군이 모양 위반인 소스는 검증 없이 기본 지표
@@ -802,13 +796,15 @@ class ScopeTools:
         plan: dict[str, list[tuple[str, str]]] = {}
         for sid in source_ids:
             try:
-                entry = await core._catalog(sid)
+                entry = await core.catalog(sid)
             except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
                 limits.fail(
-                    f"[한계] 지표 카탈로그 조회 실패{self._at(sid)}: {e.code} — 기본 지표를"
-                    " 검증하지 못하고 그대로 조회했다"
+                    limit_notice(
+                        e,
+                        "지표 카탈로그",
+                        self._at(sid),
+                        " — 기본 지표를 검증하지 못하고 그대로 조회했다",
+                    )
                 )
                 plan[sid] = list(defaults)
                 continue
@@ -836,12 +832,12 @@ class ScopeTools:
             sum(
                 1
                 for u in scope.units
-                if not _fresh(core._business_defs.get((u.source.source_id, u.domain_id)), now)
+                if not cache_fresh(core._business_defs.get((u.source.source_id, u.domain_id)), now)
             )
         )
         out: list[BusinessUnit] = []
         for u in scope.units:
-            defs = await core._business_defs_of(u.source, u.domain_id, now, scope.limits)
+            defs = await core.business_defs_of(u.source, u.domain_id, now, scope.limits)
             if defs is None:
                 out.append(BusinessUnit(u, business_id, "", None))
                 continue

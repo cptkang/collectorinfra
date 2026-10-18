@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 포탈 도움말 (plans/142 · D-315)
-# 근거: src/config.py PortalHelpConfig · src/orchestration/portal_help.py
+# 근거: src/config/services.py PortalHelpConfig · src/orchestration/portal_help.py
 
 version: 1
 group: portal_help

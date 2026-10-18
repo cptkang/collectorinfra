@@ -28,7 +28,14 @@ class TestGraphBuild:
         assert graph is not None
 
     def test_graph_has_all_nodes(self, mock_config):
-        """그래프에 spec에 정의된 7개 노드 + error_response가 등록되어 있다."""
+        """그래프에 spec에 정의된 7개 노드 + error_response가 등록되어 있다.
+
+        단일 DB 꼬리는 3·4단 빌드에서만 등록된다(plans/163 D1) — 사다리 플래그를 명시해
+        4단(legacy)으로 빌드한다(미입력이면 2단이 확정된다 · D-251).
+        """
+        mock_config.enable_deepagents_package = False
+        mock_config.enable_intent_orchestration = False
+        mock_config.enable_semantic_routing = False
         with patch("src.graph.create_llm") as mock_llm:
             mock_llm.return_value = MagicMock()
             graph = build_graph(mock_config)
@@ -147,12 +154,13 @@ class TestErrorResponseNode:
     """error_response 노드 상세 검증."""
 
     def test_error_message_included(self):
-        """에러 메시지가 응답에 포함된다."""
+        """실패 사유는 고정 사유·머리말만 응답에 포함된다(plans/163 S3+ — 원문은 서버 로그)."""
         state = create_initial_state(user_query="test")
-        state["error_message"] = "SQL 인젝션 패턴 감지"
+        state["error_message"] = "SQL 실행 에러: SQL 인젝션 패턴 감지"
         state["retry_count"] = 3
         result = _error_response_node(state)
-        assert "SQL 인젝션 패턴 감지" in result["final_response"]
+        assert "에러 내용: SQL 실행 에러\n" in result["final_response"]
+        assert "SQL 인젝션 패턴 감지" not in result["final_response"]
 
     def test_retry_count_included(self):
         """재시도 횟수가 응답에 포함된다."""

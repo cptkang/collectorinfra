@@ -16,7 +16,7 @@
     - `noti_policy` — 유형 행 `notify: page` → `"notify"`, 그 밖 → None. `"notify"`를 기본값으로
       두지 않는다(step 9 승격 우선 규칙이 지속 조건 강등을 무시하게 된다).
     - 나머지(`parent_avail_status`·`cascaded`·`change_*` 등) — None.
-    - `source` — `"apm_policy"`. 정책 파일 적재 실패면 `_unavailable()` 그대로(현행 PAGE).
+    - `source` — `"apm_policy"`. 정책 파일 적재 실패면 `unavailable_noise_ctx()` 그대로(현행 PAGE).
 
 WAS 판정(유형 → was_signals kind)은 게이트웨이 소관이다(D-195 ② · D-274 ⑤). 표의 `kind` 열은
 정보용 메타데이터이며 이 모듈은 판정에 쓰지 않는다. `raw.apm.was_signals`는 정책 판정에 읽지
@@ -43,7 +43,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from noise_gate.domain.alarm import AlarmEvent
 from noise_gate.domain.notification_policy import NOISE_SOURCE_APM_POLICY
-from noise_gate.infrastructure.polestar_noise_context import _NOISE_CTX_KEYS, _unavailable
+from noise_gate.infrastructure.polestar_noise_context import (
+    _NOISE_CTX_KEYS,
+    unavailable_noise_ctx,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -276,9 +279,12 @@ class ApmNoiseContext:
         return ApmPolicyMatch(event_type_norm=norm, row_key=key, row=types[key])
 
     def fetch(self, event: AlarmEvent) -> dict[str, Any]:
-        """노이즈 컨텍스트(`_NOISE_CTX_KEYS` + source)를 돌려준다. 적재 실패면 `_unavailable()`."""
+        """노이즈 컨텍스트(`_NOISE_CTX_KEYS` + source)를 돌려준다.
+
+        적재 실패면 `unavailable_noise_ctx()`.
+        """
         if self._policy is None:
-            return _unavailable()
+            return unavailable_noise_ctx()
         m = self.match(event)
         row = m.row
         instance = str(apm_payload(event).get("instance_name") or event.resource_name or "")

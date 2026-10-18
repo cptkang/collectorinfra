@@ -78,6 +78,7 @@ async def _serve() -> list[int]:
     import uvicorn
 
     from apm_gateway.adapters.jennifer.allowlist import ALLOWED
+    from apm_gateway.adapters.log_masking import install_log_record_factory
     from apm_gateway.application.event_buffer import EventBuffer
     from apm_gateway.application.jobs import JobManager
     from apm_gateway.application.poller import EventPoller
@@ -97,6 +98,7 @@ async def _serve() -> list[int]:
         stream=sys.stderr,
         force=True,
     )
+    install_log_record_factory()  # 로그 비밀값 가림(plans/167)
     quiet_http_loggers()
     logger = logging.getLogger("apm_gateway")
 

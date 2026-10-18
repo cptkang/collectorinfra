@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 def _ttl_seconds(app_config: AppConfig) -> int:
-    days = getattr(app_config.query, "form_memory_ttl_days", 0) or 0
+    days = app_config.query.form_memory_ttl_days or 0
     return int(days) * 86400
 
 

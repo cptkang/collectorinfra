@@ -19,7 +19,7 @@ import json
 import logging
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -34,52 +34,35 @@ from noise_gate.domain.annotation_signal import (
     AnnotationSignal,
     extract_annotation_signal,
 )
-from noise_gate.domain.correlation import (
-    ClusterState,
-    extract_site_token,
-    match_cluster,
-    signature_tokens,
-)
-from noise_gate.domain.cross_source import (
-    MODE_ANNOTATE,
-    MODE_ENFORCE,
-    MODE_OFF,
-    Episode,
-    EpisodeTracker,
-    apm_alarms_in_window,
-    app_impact_from_alarms,
-    episode_investigation_due,
-    episode_snapshot,
-    late_promotion_targets,
-)
-from noise_gate.domain.flapping import MAX_STATES, flap_percent, update_flap_state
-from noise_gate.domain.page_review import MODE_OFF as PAGE_REVIEW_OFF
+from noise_gate.domain.correlation import ClusterState
+from noise_gate.domain.cross_source import EpisodeTracker
 from noise_gate.domain.page_review import PageRegistry, fanout_key_of, host_key_of
 from noise_gate.domain.notification_policy import (
     STAGE_FLAPPING,
     STAGE_INHIBITION,
-    STAGE_MATRIX,
     STAGE_SELF_HEAL,
     STAGE_STORM,
-    TIER_DASHBOARD,
-    TIER_TICKET,
     compute_fingerprint,
 )
+from noise_gate.application import worker_wiring
+from noise_gate.application.dedup_service import DedupService
+# (plans/177 W3) dedup 서비스로 옮긴 상수의 같은 이름 재노출(D-337 ①) — 테스트가 이 경로로
+# import한다.
+from noise_gate.application.dedup_service import _RECENT_TEXTS_MAX_PER_SCOPE  # noqa: F401
+from noise_gate.application.episode_coordinator import EpisodeCoordinator
 from noise_gate.application.server_identity import (
     attach_server_identity,
     is_apm_db_id,
     is_apm_source,
 )
+from noise_gate.application.signal_detection import SignalDetector
 from noise_gate.domain.severity import coerce_severity
-from noise_gate.domain.severity_signatures import scan_signature_severity
 from noise_gate.infrastructure.apm_noise_context import (
     EVENT_KIND_METRIC,
     ApmNoiseContext,
     ApmPolicyMatch,
-    correlation_extra,
     event_kind,
 )
-from noise_gate.infrastructure.cross_source_rules import episode_alarm, load_rules
 from noise_gate.infrastructure.redis_queue import (
     ack_message,
     dead_letter_message,
@@ -87,7 +70,6 @@ from noise_gate.infrastructure.redis_queue import (
     read_messages,
 )
 from noise_gate.application.nodes.alarm_notifier import (
-    late_promotion_reason,
     send_late_promotion,
     spawn_episode_investigation_followup,
 )
@@ -99,21 +81,16 @@ logger = logging.getLogger(__name__)
 
 _CONSUMER_NAME = "worker-1"
 
-# 위상 가중 그래프 로드 실패 시 음성 캐시 TTL(초) — 재시도 허용하되 hot-path 폭주 방지.
-_TOPOLOGY_NEGATIVE_TTL_SECONDS = 60
-
-# (Plan 60 B-7 L-2) db_id 스코프별 최근 이벤트 텍스트 deque 상한 — 근접중복 후보 비교 대상
-# 개수(maxlen). 스코프별 in-memory 성장 차단(Known Mistakes 키·값 bound). 만료 sweep과 병행.
-_RECENT_TEXTS_MAX_PER_SCOPE = 50
+# 위상 가중 그래프 음성 캐시 TTL `_TOPOLOGY_NEGATIVE_TTL_SECONDS`는 signal_detection이, 스코프별
+# 최근 이벤트 텍스트 상한 `_RECENT_TEXTS_MAX_PER_SCOPE`는 dedup_service가 정본이다(plans/177 W3).
 
 # (plans/144 §4.2) 제니퍼 지속 조건 카운터·재판정 보류·보낸 심각도의 지문 키 상한 — 넘치면
 # 가장 오래된 지문부터 버린다(경고 로그). 창 밖 타임스탬프 정리·키 만료 sweep과 병행하는
 # 메모리 가드다.
 _APM_PERSIST_MAX_KEYS = 10000
 
-# (plans/144 Q-4) 지문 dedup 레코드의 마지막 통보 심각도 키 — dedup_severity_rise_bypass가 켜져
-# 있을 때만 기록한다(off면 레코드 모양이 종전과 같다).
-_DEDUP_SEVERITY_KEY = "notified_severity"
+# 지문 dedup 레코드의 마지막 통보 심각도 키 `_DEDUP_SEVERITY_KEY`와 순수 함수
+# `_dedup_severity_rises`·`_dedup_meta`는 dedup_service가 정본이다(plans/177 W3).
 
 # (plans/144 W4 §5.6 · G-6) 사후 승격 후보(원 판정 결과 보관) 상한 — 넘치면 가장 오래된 것부터
 # 버린다(경고 로그). 사건 종료·멤버 해소 시 정리하는 sweep과 병행하는 메모리 가드다.
@@ -121,26 +98,14 @@ _LATE_PROMOTION_MAX = 2000
 # 트리거 1건이 순차 발송하는 사후 승격 상한 — 대상 N건 × workb 타임아웃만큼 처리 루프가 밀리지
 # 않게 한다. 넘친 대상은 표시하지 않고 후보로 남겨 같은 사건의 다음 심각 이벤트에 기회를 준다.
 _LATE_PROMOTION_PER_TRIGGER_MAX = 5
-# 후보 전수 sweep(사건 종료·해소·승격 정리) 최소 간격(초) — 메모리 위생용이라 정확성과 무관하다
-# (대상 판정은 late_promotion_targets가 멤버 상태로 다시 거른다). 상한 검사는 매번 한다.
-_LATE_PROMOTION_SWEEP_SECONDS = 60.0
+# 후보 전수 sweep 최소 간격 `_LATE_PROMOTION_SWEEP_SECONDS`는 episode_coordinator가 정본이다
+# (plans/177 W2).
 
 # (plans/153 W4 §4.5) 종합 조사 대표 알람 후보(멤버의 분석 결과·판정 보관) 상한 — 넘치면 닫힌 사건의
 # 것부터, 그래도 넘치면 가장 오래된 것부터 버린다. 종합 조사 제출 뒤에는 그 사건 몫을 지운다.
 _EPISODE_CTX_MAX = 2000
-# 후속 알람을 묶지 않는 종합 조사 저장 상태(조사 저장소 `normalize_status` 결과 — 종결 실패).
-_EPISODE_INV_UNUSABLE = frozenset({"rejected", "failed", "timeout"})
-
-
-def _dedup_severity_rises(rec: dict[str, Any], severity: int) -> bool:
-    """들어온 심각도가 레코드의 마지막 통보 심각도보다 높은가. 키 없는 구 레코드는 False."""
-    notified = rec.get(_DEDUP_SEVERITY_KEY)
-    return notified is not None and severity > notified
-
-
-def _dedup_meta(rec: dict[str, Any]) -> dict[str, Any]:
-    """dedup 레코드의 재발생 메타 스냅샷 — 심각도 키는 빼서 recurrence 메타 모양을 종전대로 둔다."""
-    return {k: v for k, v in rec.items() if k != _DEDUP_SEVERITY_KEY}
+# 후속 알람을 묶지 않는 종합 조사 저장 상태 `_EPISODE_INV_UNUSABLE`도 episode_coordinator가
+# 정본이다.
 
 
 def _evict_oldest(store: dict[str, Any], last_ts: Callable[[Any], float], label: str) -> None:
@@ -153,6 +118,245 @@ def _evict_oldest(store: dict[str, Any], last_ts: Callable[[Any], float], label:
     logger.warning(
         "제니퍼 %s 상한(%d) 초과 — 오래된 지문 %d건 정리", label, _APM_PERSIST_MAX_KEYS, overflow
     )
+
+
+class _WorkerEpisodeHost:
+    """`EpisodeHost` 구현 — 워커 속성과 이 모듈 전역을 **접근 시점**에 읽는다(plans/177 W2).
+
+    테스트·하네스가 생성 뒤 워커 속성(`w._episodes`·`w._decision_store` 등)과 모듈 전역
+    (`_LATE_PROMOTION_MAX`·`send_late_promotion` 등)을 바꿔 끼우므로 값을 붙잡지 않는다.
+    """
+
+    __slots__ = ("_w",)
+
+    def __init__(self, worker: AlarmWorker) -> None:
+        self._w = worker
+
+    @property
+    def episodes(self) -> EpisodeTracker | None:
+        return self._w._episodes
+
+    @property
+    def episode_ctx(self) -> dict[str, tuple[str, Any, Any, float]]:
+        return self._w._episode_ctx
+
+    @property
+    def late_promotion(self) -> dict[str, tuple[str, Any, Any, float]]:
+        return self._w._late_promotion
+
+    @property
+    def late_promotion_swept_at(self) -> float:
+        return self._w._late_promotion_swept_at
+
+    @late_promotion_swept_at.setter
+    def late_promotion_swept_at(self, value: float) -> None:
+        self._w._late_promotion_swept_at = value
+
+    @property
+    def config(self) -> Any:
+        return self._w._config
+
+    @property
+    def decision_store(self) -> Any:
+        return self._w._decision_store
+
+    @property
+    def investigation_store(self) -> Any:
+        return self._w._investigation_store
+
+    @property
+    def sre_agent_client(self) -> Any:
+        return self._w._sre_agent_client
+
+    @property
+    def incident_publisher(self) -> Any:
+        return self._w._incident_publisher
+
+    @property
+    def late_promotion_max(self) -> int:
+        return _LATE_PROMOTION_MAX
+
+    @property
+    def late_promotion_per_trigger_max(self) -> int:
+        return _LATE_PROMOTION_PER_TRIGGER_MAX
+
+    @property
+    def episode_ctx_max(self) -> int:
+        return _EPISODE_CTX_MAX
+
+    @property
+    def send_late_promotion(self) -> Callable[..., Awaitable[dict[str, bool]]]:
+        return send_late_promotion
+
+    @property
+    def submit_episode_investigation(self) -> Callable[..., Awaitable[dict[str, Any]]]:
+        return submit_episode_investigation
+
+    @property
+    def spawn_episode_investigation_followup(self) -> Callable[..., Any]:
+        return spawn_episode_investigation_followup
+
+
+def _episode_coordinator(worker: AlarmWorker) -> EpisodeCoordinator:
+    """호출마다 만드는 사건 코디네이터 — 상태는 워커가 소유하므로 만드는 비용만 든다(plans/177 W2).
+
+    워커에 인스턴스 속성·메서드를 더하지 않는다 — `__init__`을 거치지 않은 인스턴스(테스트의
+    `object.__new__`)도 그대로 위임되게 하고, 클래스 표면(메서드 목록)을 바꾸지 않기 위해서다.
+    """
+    return EpisodeCoordinator(_WorkerEpisodeHost(worker))
+
+
+class _WorkerSignalHost:
+    """`SignalHost` 구현 — 워커 탐지 상태·근거를 **접근 시점**에 읽고 쓴다(plans/177 W3).
+
+    테스트·하네스가 생성 뒤 워커 속성(`w._config`·`w._correlation_clusters` 등)을 바꿔 끼우므로
+    값을 붙잡지 않는다. 직전 탐지 근거는 `_process`가 워커 속성으로 읽으므로 setter로 되쓴다.
+    """
+
+    __slots__ = ("_w",)
+
+    def __init__(self, worker: AlarmWorker) -> None:
+        self._w = worker
+
+    @property
+    def config(self) -> Any:
+        return self._w._config
+
+    @property
+    def apm_noise_ctx(self) -> ApmNoiseContext | None:
+        return self._w._apm_noise_ctx
+
+    @property
+    def firing_registry(self) -> dict[str, tuple[float, int]]:
+        return self._w._firing_registry
+
+    @property
+    def active_firings(self) -> dict[str, tuple[int, float, str]]:
+        return self._w._active_firings
+
+    @property
+    def flap_states(self) -> dict[str, deque[bool]]:
+        return self._w._flap_states
+
+    @property
+    def flap_flag(self) -> dict[str, bool]:
+        return self._w._flap_flag
+
+    @property
+    def flap_last_seen(self) -> dict[str, float]:
+        return self._w._flap_last_seen
+
+    @property
+    def storm_window(self) -> dict[str, deque[float]]:
+        return self._w._storm_window
+
+    @property
+    def correlation_clusters(self) -> dict[str, list[ClusterState]]:
+        return self._w._correlation_clusters
+
+    @property
+    def topology_graph_cache(self) -> dict[str, tuple[float, DependencyGraph | None]]:
+        return self._w._topology_graph_cache
+
+    @property
+    def last_self_heal_duration(self) -> float | None:
+        return self._w._last_self_heal_duration
+
+    @last_self_heal_duration.setter
+    def last_self_heal_duration(self, value: float | None) -> None:
+        self._w._last_self_heal_duration = value
+
+    @property
+    def last_self_heal_evidence(self) -> dict[str, Any] | None:
+        return self._w._last_self_heal_evidence
+
+    @last_self_heal_evidence.setter
+    def last_self_heal_evidence(self, value: dict[str, Any] | None) -> None:
+        self._w._last_self_heal_evidence = value
+
+    @property
+    def last_inhibition_evidence(self) -> dict[str, Any] | None:
+        return self._w._last_inhibition_evidence
+
+    @last_inhibition_evidence.setter
+    def last_inhibition_evidence(self, value: dict[str, Any] | None) -> None:
+        self._w._last_inhibition_evidence = value
+
+    @property
+    def last_flapping_evidence(self) -> dict[str, Any] | None:
+        return self._w._last_flapping_evidence
+
+    @last_flapping_evidence.setter
+    def last_flapping_evidence(self, value: dict[str, Any] | None) -> None:
+        self._w._last_flapping_evidence = value
+
+    @property
+    def last_storm_evidence(self) -> dict[str, Any] | None:
+        return self._w._last_storm_evidence
+
+    @last_storm_evidence.setter
+    def last_storm_evidence(self, value: dict[str, Any] | None) -> None:
+        self._w._last_storm_evidence = value
+
+
+def _signal_detector(worker: AlarmWorker) -> SignalDetector:
+    """호출마다 만드는 신호 탐지기 — 상태는 워커가 소유한다(plans/177 W3 · W2와 같은 방식)."""
+    return SignalDetector(_WorkerSignalHost(worker))
+
+
+class _WorkerDedupHost:
+    """`DedupHost` 구현 — 워커 dedup 상태·협력자와 모듈 전역을 **접근 시점**에 읽는다(plans/177 W3).
+
+    테스트가 생성 뒤 워커 속성(`w._gate_dedup`·`w._embedding_provider` 등)과 모듈 전역
+    (`_APM_PERSIST_MAX_KEYS` — `_evict_oldest`가 호출 시점에 읽는다)을 바꿔 끼우므로 값을
+    붙잡지 않는다.
+    """
+
+    __slots__ = ("_w",)
+
+    def __init__(self, worker: AlarmWorker) -> None:
+        self._w = worker
+
+    @property
+    def config(self) -> Any:
+        return self._w._config
+
+    @property
+    def gate_dedup(self) -> dict[str, dict[str, Any]]:
+        return self._w._gate_dedup
+
+    @property
+    def decision_store(self) -> Any:
+        return self._w._decision_store
+
+    @property
+    def embedding_provider(self) -> Any:
+        return self._w._embedding_provider
+
+    @property
+    def recent_event_texts(self) -> dict[str, deque[tuple[str, str, float]]]:
+        return self._w._recent_event_texts
+
+    @property
+    def apm_persist(self) -> dict[str, tuple[int, deque[float]]]:
+        return self._w._apm_persist
+
+    @property
+    def apm_persist_pending(self) -> dict[str, float]:
+        return self._w._apm_persist_pending
+
+    @property
+    def apm_sent_severity(self) -> dict[str, tuple[int, float]]:
+        return self._w._apm_sent_severity
+
+    @property
+    def evict_oldest(self) -> Callable[[dict[str, Any], Callable[[Any], float], str], None]:
+        return _evict_oldest
+
+
+def _dedup_service(worker: AlarmWorker) -> DedupService:
+    """호출마다 만드는 dedup 서비스 — 상태는 워커가 소유한다(plans/177 W3 · W2와 같은 방식)."""
+    return DedupService(_WorkerDedupHost(worker))
 
 
 class AlarmWorker:
@@ -280,139 +484,32 @@ class AlarmWorker:
         self._page_registry: PageRegistry | None = None
 
     def _build_history_repo(self):  # noqa: ANN202
-        """이력 조회 리포지토리를 생성한다 (Plan 47).
-
-        history_enabled=False이거나 생성 실패 시 None을 반환한다 —
-        패턴 분석만 생략되고 알람 분석·발송은 정상 진행된다 (graceful degradation).
-        """
-        if not self._config.alarm.history_enabled:
-            return None
-        try:
-            from noise_gate.infrastructure.polestar_history import (
-                PolestarAlarmHistoryRepository,
-            )
-            from src.routing.db_registry import DBRegistry
-
-            return PolestarAlarmHistoryRepository(
-                DBRegistry(self._config), self._config.alarm
-            )
-        except Exception:
-            logger.exception("알람 이력 리포지토리 생성 실패 — 패턴 분석 비활성으로 진행")
-            return None
+        """`worker_wiring.build_history_repo` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_history_repo(self._config)
 
     def _build_identity_resolver(self):  # noqa: ANN202
-        """서버 식별 역조회 리졸버를 생성한다 (D-188 · _build_history_repo 미러).
-
-        상시 동작(끄는 플래그 없음 — D-162 §6 플래그 부채 원칙). 생성 실패 시 None — 식별 정보는
-        존 라벨만 붙고(source=event) server_name·ip 승격이 생략된다(graceful, 알람 처리 정상 진행).
-        """
-        try:
-            from noise_gate.infrastructure.polestar_hostname_resolver import (
-                PolestarHostnameResolver,
-            )
-            from src.routing.db_registry import DBRegistry
-
-            return PolestarHostnameResolver(DBRegistry(self._config))
-        except Exception:
-            logger.exception("서버 식별 리졸버 생성 실패 — 역조회 없이 진행")
-            return None
+        """`worker_wiring.build_identity_resolver` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_identity_resolver(self._config)
 
     def _build_process_client(self):  # noqa: ANN202
-        """영향 프로세스 API 클라이언트를 생성한다 (Plan 47-1).
-
-        process_enrich_enabled=False이거나 생성 실패 시 None을 반환한다 —
-        프로세스 보강만 생략되고 알람 분석·발송은 정상 진행된다 (graceful degradation).
-        """
-        if not self._config.alarm.process_enrich_enabled:
-            return None
-        try:
-            from noise_gate.infrastructure.polestar_process_api import (
-                PolestarProcessApiClient,
-            )
-
-            return PolestarProcessApiClient(self._config.alarm)
-        except Exception:
-            logger.exception("영향 프로세스 클라이언트 생성 실패 — 프로세스 보강 비활성으로 진행")
-            return None
+        """`worker_wiring.build_process_client` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_process_client(self._config)
 
     def _build_noise_repo(self):  # noqa: ANN202
-        """노이즈 컨텍스트 리포지토리를 생성한다 (Plan 52).
-
-        enable_noise_gate=False이거나 생성 실패 시 None을 반환한다 —
-        노이즈 컨텍스트 수집만 생략되고(정책 계층이 보수적 PAGE 처리) 발송은 진행된다.
-        """
-        if not self._config.noise_gate.enable_noise_gate:
-            return None
-        try:
-            from noise_gate.infrastructure.polestar_noise_context import (
-                PolestarNoiseContextRepository,
-            )
-            from src.routing.db_registry import DBRegistry
-
-            return PolestarNoiseContextRepository(
-                DBRegistry(self._config), self._config.alarm
-            )
-        except Exception:
-            logger.exception("노이즈 컨텍스트 리포지토리 생성 실패 — 보수적(수집 없이) 진행")
-            return None
+        """`worker_wiring.build_noise_repo` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_noise_repo(self._config)
 
     def _build_apm_noise_ctx(self) -> ApmNoiseContext | None:
-        """제니퍼 유형 정책 공급자를 생성한다 (plans/144 §4.1 · 기동 시 1회).
-
-        enable_noise_gate AND apm_noise_policy_enabled일 때만 만든다(기본 off → None → 현행
-        비트 동일). 정책 파일 적재 실패는 공급자 안에서 경고 1줄 후 unavailable 공급자가 된다
-        (제니퍼 = 보수 PAGE).
-        """
-        gate = self._config.noise_gate
-        if not gate.enable_noise_gate or not getattr(gate, "apm_noise_policy_enabled", False):
-            return None
-        return ApmNoiseContext.load()
+        """`worker_wiring.build_apm_noise_ctx` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_apm_noise_ctx(self._config)
 
     def _build_episode_tracker(self) -> EpisodeTracker | None:
-        """크로스소스 사건 추적기를 생성한다 (plans/144 W3 · 기동 시 1회).
-
-        enable_noise_gate AND cross_source_mode≠off일 때만 만든다(기본 off → None → 비트 동일).
-        규칙 표 적재 실패는 적재기가 경고 1줄을 남기고 None — 사건 상관 전체가 꺼진다.
-        """
-        gate = self._config.noise_gate
-        mode = str(getattr(gate, "cross_source_mode", MODE_OFF) or MODE_OFF)
-        if not gate.enable_noise_gate or mode == MODE_OFF:
-            return None
-        rules = load_rules(
-            getattr(gate, "cross_source_rules_path", "config/cross_source_rules.yaml")
-        )
-        if rules is None:
-            return None
-        logger.info("크로스소스 사건 상관 활성: mode=%s 규칙=%d", mode, len(rules))
-        return EpisodeTracker(
-            rules,
-            mode=mode,
-            idle_seconds=float(getattr(gate, "episode_idle_seconds", 900)),
-            on_evict=lambda what, n: logger.warning(
-                "크로스소스 사건 상한 초과(%s) — 오래된 %d건 정리", what, n
-            ),
-        )
+        """`worker_wiring.build_episode_tracker` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_episode_tracker(self._config)
 
     def _build_page_registry(self) -> PageRegistry | None:
-        """PAGE 필요성 재판정 레지스트리를 생성한다 (plans/162 §4.5 · 기동 시 1회).
-
-        enable_noise_gate AND page_review_mode≠off일 때만 만든다(기본 off → None → 비트 동일).
-        """
-        gate = self._config.noise_gate
-        mode = str(getattr(gate, "page_review_mode", PAGE_REVIEW_OFF) or PAGE_REVIEW_OFF)
-        if not gate.enable_noise_gate or mode == PAGE_REVIEW_OFF:
-            return None
-        logger.info("PAGE 필요성 재판정 활성: mode=%s", mode)
-        return PageRegistry(
-            host_window_minutes=int(getattr(gate, "page_review_host_window_minutes", 30)),
-            fanout_window_minutes=int(getattr(gate, "page_review_fanout_window_minutes", 10)),
-            reminder_hours=int(getattr(gate, "page_review_reminder_hours", 24)),
-            reopen_quiet_minutes=int(getattr(gate, "page_review_reopen_quiet_minutes", 30)),
-            idle_close_minutes=int(getattr(gate, "page_review_idle_close_minutes", 0)),
-            on_evict=lambda what, n: logger.warning(
-                "PAGE 재판정 레지스트리 상한 초과(%s) — 오래된 %d건 정리", what, n
-            ),
-        )
+        """`worker_wiring.build_page_registry` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_page_registry(self._config)
 
     def _restore_page_registry(self, now: float) -> None:
         """판정 기록 꼬리(최근 max(reminder_hours, 24)시간)로 레지스트리를 다시 채운다.
@@ -469,489 +566,62 @@ class AlarmWorker:
     def _observe_episode(
         self, event: AlarmEvent, fingerprint: str, now: float
     ) -> dict[str, Any] | None:
-        """게이트로 가는 알람을 사건에 반영한다 — 해소는 멤버 해소 처리, 그 밖은 크로스소스 신호."""
-        if self._episodes is None:
-            return None
-        alarm = episode_alarm(event, fingerprint=fingerprint, is_apm=is_apm_source(event))
-        if event.is_clear:
-            self._episodes.resolve(alarm, now)
-            return None
-        return self._episodes.observe(alarm, now)
+        """`EpisodeCoordinator.observe_episode` 위임 — 테스트·`_process` seam(plans/177)."""
+        return _episode_coordinator(self).observe_episode(event, fingerprint, now)
 
     def _record_episode_tier(
         self, cross_source: dict[str, Any], event: AlarmEvent, result: Any
     ) -> None:
-        """그래프 반환값의 최종 티어를 사건 멤버에 기록한다(원인 조건 ④ 재료)."""
-        if self._episodes is None:
-            return
-        decision = result.get("notification_decision") if isinstance(result, dict) else None
-        self._episodes.record_tier(
-            str(cross_source.get("episode_id") or ""),
-            event.alarm_id,
-            getattr(decision, "tier", None),
-        )
-
-    def _episode_of(self, cross_source: dict[str, Any] | None) -> Episode | None:
-        """크로스소스 신호의 사건(열려 있지 않으면 None)."""
-        if self._episodes is None or not cross_source:
-            return None
-        return self._episodes.get(str(cross_source.get("episode_id") or ""))
-
-    def _late_promotion_on(self) -> bool:
-        """사후 승격 활성 — 플래그 AND app_impact_enabled AND 모드 ∈ {annotate, enforce}.
-
-        shadow는 판정·통보 불변이 원칙이라 재통보(PAGE)를 내지 않는다 — 사건 저장소 우선 조회와
-        같은 모드 범위다.
-        """
-        gate = self._config.noise_gate
-        return (
-            self._episodes is not None
-            and self._episodes.mode in (MODE_ANNOTATE, MODE_ENFORCE)
-            and bool(getattr(gate, "app_impact_late_promotion_enabled", False))
-            and bool(getattr(gate, "app_impact_enabled", False))
-        )
+        """`EpisodeCoordinator.record_episode_tier` 위임 — 테스트·`_process` seam(plans/177)."""
+        _episode_coordinator(self).record_episode_tier(cross_source, event, result)
 
     def _episode_app_impact(
         self, cross_source: dict[str, Any] | None, event: AlarmEvent
     ) -> dict[str, Any] | None:
-        """폴스타 알람의 앱 영향을 사건 저장소에서 미리 산출한다 (plans/144 W4 §5.6).
-
-        cross_source_mode ∈ {annotate, enforce} AND app_impact_enabled이고 사건에 붙은 폴스타
-        알람일 때만 `{app_impact, window_events, window_minutes}`를 돌려준다. shadow·off는 None —
-        게이트 노드가 현행 게이트웨이 조회만 한다(판정 비트 동일 · 사건 저장소가 더 승격하지
-        않는다).
-        """
-        gate = self._config.noise_gate
-        if (
-            self._episodes is None
-            or self._episodes.mode not in (MODE_ANNOTATE, MODE_ENFORCE)
-            or not getattr(gate, "app_impact_enabled", False)
-            or is_apm_source(event)
-        ):
-            return None
-        ep = self._episode_of(cross_source)
-        member = ep.member(event.alarm_id) if ep is not None else None
-        if ep is None or member is None:
-            return None
-        window = int(getattr(gate, "app_impact_window_minutes", 10))
-        alarms = apm_alarms_in_window(ep, member.alarm.occurred_at, window * 60)
-        return {
-            "app_impact": app_impact_from_alarms(alarms),
-            "window_events": len(alarms),
-            "window_minutes": window,
-        }
+        """`EpisodeCoordinator.episode_app_impact` 위임 — 테스트·`_process` seam(plans/177)."""
+        return _episode_coordinator(self).episode_app_impact(cross_source, event)
 
     def _episode_summary(self, cross_source: dict[str, Any] | None) -> dict[str, Any] | None:
-        """통보문 사건 묶음 표시용 요약 `{episode_id, member_count}` (plans/144 W5 · §5.4).
-
-        annotate·enforce에서 사건에 붙은 알람일 때만 만든다(off·shadow는 None → 통보 본문 비트
-        동일). member_count는 이 알람을 포함한 현재 멤버 수다(멤버 상한으로 잘린 만큼은 빠진다).
-        판정에는 쓰지 않는다 — notifier가 표시에만 쓴다.
-        """
-        if self._episodes is None or self._episodes.mode not in (MODE_ANNOTATE, MODE_ENFORCE):
-            return None
-        ep = self._episode_of(cross_source)
-        if ep is None:
-            return None
-        return {"episode_id": ep.id, "member_count": len(ep.members)}
+        """`EpisodeCoordinator.episode_summary` 위임 — 테스트·`_process` seam(plans/177)."""
+        return _episode_coordinator(self).episode_summary(cross_source)
 
     def _episode_investigation(
         self, cross_source: dict[str, Any] | None, event: AlarmEvent
     ) -> dict[str, Any] | None:
-        """같은 사건에서 APM 알람이 이미 제출한 조사(plans/144 §4.5) — APM 알람에만.
-
-        (plans/153 §4.5) 사건 종합 조사가 실제로 제출돼 조사 id가 있고 종결 실패가 아니면 그 id가
-        우선한다 — 제니퍼 후속 알람은 종합 조사로 연결된다(`episode_existing`). 종합 조사 시도가
-        실패했으면(id 없음 · 저장소상 거부·실패·타임아웃) 종전 동작(사건의 기존 단독 조사 id, 없으면
-        제출)으로 돌아간다. 종합 조사는 플래그 on에서만 생기므로 off면 종전과 같다.
-        """
-        if not is_apm_source(event):
-            return None
-        ep = self._episode_of(cross_source)
-        if ep is None:
-            return None
-        inv = self._usable_episode_investigation(ep) or ep.apm_investigation_id
-        if not inv:
-            return None
-        return {"episode_id": ep.id, "investigation_id": inv}
-
-    def _usable_episode_investigation(self, ep: Episode) -> str:
-        """연결해도 되는 사건 종합 조사 id — 제출 성공(id 있음)이고 저장소상 종결 실패가 아닐 때만.
-
-        submit은 받았지만 조사 서비스가 뒤에 거부·실패·타임아웃으로 끝낸 조사(후속 poll이 저장소에
-        남긴 상태)에는 후속 알람을 묶지 않는다 — 묶으면 그 알람은 아무 조사도 받지 못한다.
-        """
-        inv = ep.episode_investigation_id
-        if not inv or ep.episode_investigation_status != "submitted":
-            return ""
-        store = self._investigation_store
-        if store is None:
-            return inv
-        try:
-            rec = store.get_by_investigation(inv)
-        except Exception:  # noqa: BLE001 — 조회 실패는 제출 성공 사실로 판단한다
-            logger.warning("종합 조사 상태 조회 실패(연결 유지): inv=%s", inv, exc_info=True)
-            return inv
-        status = str((rec or {}).get("status") or "")
-        return "" if status in _EPISODE_INV_UNUSABLE else inv
-
-    def _episode_context_on(self) -> bool:
-        """사건 맥락 활성 — 플래그 AND 조사 트리거 AND 추적기(cross_source_mode≠off · §4.4)."""
-        gate = self._config.noise_gate
-        return (
-            self._episodes is not None
-            and bool(getattr(gate, "investigation_episode_context_enabled", False))
-            and bool(getattr(gate, "investigation_trigger_enabled", False))
-        )
+        """`EpisodeCoordinator.episode_investigation` 위임 — 테스트·`_process` seam(plans/177)."""
+        return _episode_coordinator(self).episode_investigation(cross_source, event)
 
     def _episode_snapshot(self, cross_source: dict[str, Any] | None) -> dict[str, Any] | None:
-        """조사 페이로드용 제출 시점 사건 스냅샷(사본) — 사건 맥락 off·사건 미소속이면 None."""
-        if not self._episode_context_on() or self._episodes is None:
-            return None
-        ep = self._episode_of(cross_source)
-        return episode_snapshot(ep, self._episodes.rules) if ep is not None else None
+        """`EpisodeCoordinator.episode_snapshot` 위임 — 테스트·`_process` seam(plans/177)."""
+        return _episode_coordinator(self).episode_snapshot(cross_source)
 
     def _remember_episode_ctx(
         self, cross_source: dict[str, Any], event: AlarmEvent, result: Any, now: float
     ) -> None:
-        """이 알람의 분석 결과·판정을 종합 조사 대표 후보로 보관한다(§4.5 · 상한 가드)."""
-        if not isinstance(result, dict):
-            return
-        decision = result.get("notification_decision")
-        analysis = result.get("analysis_result")
-        if decision is None or analysis is None:
-            return
-        self._episode_ctx[event.alarm_id] = (
-            str(cross_source.get("episode_id") or ""), analysis, decision, now
-        )
-        if len(self._episode_ctx) <= _EPISODE_CTX_MAX or self._episodes is None:
-            return
-        for alarm_id, (episode_id, *_rest) in list(self._episode_ctx.items()):
-            if self._episodes.get(episode_id) is None:
-                del self._episode_ctx[alarm_id]
-        overflow = len(self._episode_ctx) - _EPISODE_CTX_MAX
-        if overflow > 0:
-            oldest = sorted(self._episode_ctx, key=lambda k: self._episode_ctx[k][3])
-            for alarm_id in oldest[:overflow]:
-                del self._episode_ctx[alarm_id]
-            logger.warning(
-                "종합 조사 대표 후보 상한(%d) 초과 — 오래된 %d건 정리", _EPISODE_CTX_MAX, overflow
-            )
-
-    async def _maybe_episode_investigation(
-        self, cross_source: dict[str, Any], event: AlarmEvent
-    ) -> None:
-        """사건 종합 조사를 조건이 처음 성립할 때 1회 제출한다 (plans/153 §4.5 · G-6 (a)).
-
-        조건은 `episode_investigation_due`(두 소스 멤버 · 링크 ≥1 · 통보 멤버 ≥1 · 미시도). 대표
-        알람은 사건의 대표(먼저 쓰인 원인) — 그 알람의 결과가 보관돼 있지 않으면 지금 알람이다.
-        시도는 성패와 무관하게 사건당 1회다(재시도 폭주 방지 · 사유는 감사·저장소). 판정은 바꾸지
-        않는다.
-        """
-        ep = self._episode_of(cross_source)
-        if ep is None or not episode_investigation_due(ep):
-            return
-        client = self._sre_agent_client
-        if client is None or self._episodes is None:
-            return
-        rep_id = ep.representative_id
-        ctx = self._episode_ctx.get(rep_id)
-        if ctx is None or ctx[0] != ep.id:
-            rep_id = event.alarm_id
-            ctx = self._episode_ctx.get(rep_id)
-        if ctx is None:
-            return
-        _, analysis, decision, _ = ctx
-        ep.episode_investigation_status = "attempted"
-        alarm_ids = [rep_id] + [
-            m.alarm.alarm_id for m in ep.members if m.alarm.alarm_id != rep_id
-        ]
-        outcome = await submit_episode_investigation(
-            client, analysis.alarm_event, decision,
-            episode_snapshot(ep, self._episodes.rules), alarm_ids,
-            cfg=self._config, decision_store=self._decision_store,
-            inv_store=self._investigation_store,
-        )
-        ep.episode_investigation_status = str(outcome.get("status") or "attempted")
-        if outcome.get("investigation_id") and outcome.get("status") == "submitted":
-            ep.episode_investigation_id = str(outcome["investigation_id"])
-        for alarm_id in [k for k, v in self._episode_ctx.items() if v[0] == ep.id]:
-            del self._episode_ctx[alarm_id]
-        pending = outcome.get("pending")
-        if pending:
-            spawn_episode_investigation_followup(
-                pending, analysis, self._config, self._config.noise_gate,
-                self._decision_store, self._investigation_store,
-            )
-
-    def _record_apm_investigation(
-        self, cross_source: dict[str, Any], event: AlarmEvent, result: Any
-    ) -> None:
-        """APM 알람이 제출한 조사 id를 사건에 기록한다 — 사건당 1회 제출의 기준(§4.5)."""
-        if not is_apm_source(event) or not isinstance(result, dict):
-            return
-        pending = result.get("investigation_pending")
-        inv = result.get("investigation_id") or (
-            pending.get("investigation_id") if isinstance(pending, dict) else None
-        )
-        ep = self._episode_of(cross_source)
-        if inv and ep is not None and not ep.apm_investigation_id:
-            ep.apm_investigation_id = str(inv)
-
-    def _remember_late_candidate(
-        self, cross_source: dict[str, Any], event: AlarmEvent, result: Any, now: float
-    ) -> None:
-        """매트릭스 DASHBOARD·TICKET 폴스타 판정을 사후 승격 후보로 보관한다(§5.6 · G-6)."""
-        if is_apm_source(event) or not isinstance(result, dict) or event.severity >= 3:
-            return
-        decision = result.get("notification_decision")
-        analysis = result.get("analysis_result")
-        if (
-            decision is None
-            or analysis is None
-            or getattr(decision, "stage", "") != STAGE_MATRIX
-            or getattr(decision, "tier", "") not in (TIER_DASHBOARD, TIER_TICKET)
-        ):
-            return
-        self._late_promotion[event.alarm_id] = (
-            str(cross_source.get("episode_id") or ""), analysis, decision, now
-        )
-        self._sweep_late_promotion(now)
-
-    def _sweep_late_promotion(self, now: float) -> None:
-        """사건이 닫혔거나 멤버가 해소·승격된 후보를 지우고 상한을 지킨다.
-
-        전수 순회는 `_LATE_PROMOTION_SWEEP_SECONDS`마다 1회만 한다(후보 추가마다 돌지 않는다).
-        상한 검사는 매번 한다.
-        """
-        if self._episodes is None:
-            self._late_promotion.clear()
-            return
-        if now - self._late_promotion_swept_at >= _LATE_PROMOTION_SWEEP_SECONDS:
-            self._late_promotion_swept_at = now
-            for alarm_id, (episode_id, *_rest) in list(self._late_promotion.items()):
-                ep = self._episodes.get(episode_id)
-                member = ep.member(alarm_id) if ep is not None else None
-                if member is None or member.resolved or member.late_promoted:
-                    del self._late_promotion[alarm_id]
-        overflow = len(self._late_promotion) - _LATE_PROMOTION_MAX
-        if overflow > 0:
-            oldest = sorted(self._late_promotion, key=lambda k: self._late_promotion[k][3])
-            for alarm_id in oldest[:overflow]:
-                del self._late_promotion[alarm_id]
-            logger.warning(
-                "사후 승격 후보 상한(%d) 초과 — 오래된 %d건 정리", _LATE_PROMOTION_MAX, overflow
-            )
-
-    async def _late_promote(
-        self, cross_source: dict[str, Any], event: AlarmEvent, now: float
-    ) -> None:
-        """APM 심각 이벤트가 붙은 사건의 낮게 판정된 폴스타 알람을 PAGE로 다시 통보한다.
-
-        plans/144 W4 §5.6 · G-6 (a) — 알람당 1회(멤버 `late_promoted`) · 사건이 열려 있을 때만 ·
-        원 판정 감사 레코드는 고치지 않고 `type="late_promotion"` 레코드를 따로 남긴다.
-        트리거 1건당 `_LATE_PROMOTION_PER_TRIGGER_MAX`건까지만 보낸다 — 넘친 대상은 표시하지 않고
-        후보로 남긴다(알람당 최대 1회는 그대로 · 다음 트리거에 기회).
-        """
-        if not is_apm_source(event):
-            return
-        ep = self._episode_of(cross_source)
-        trigger = ep.member(event.alarm_id) if ep is not None else None
-        if ep is None or trigger is None:
-            return
-        self._sweep_late_promotion(now)
-        window = int(getattr(self._config.noise_gate, "app_impact_window_minutes", 10)) * 60
-        promoted = skipped = 0
-        for member in late_promotion_targets(ep, trigger.alarm, window):
-            alarm_id = member.alarm.alarm_id
-            cand = self._late_promotion.get(alarm_id)
-            if cand is None or cand[0] != ep.id:
-                continue  # 매트릭스 판정이 아니었거나 결과가 없다 — 대상 아님
-            if promoted >= _LATE_PROMOTION_PER_TRIGGER_MAX:
-                skipped += 1  # 표시하지 않는다 — 후보로 남아 다음 트리거에 기회
-                continue
-            del self._late_promotion[alarm_id]
-            promoted += 1
-            _, analysis, decision, _ = cand
-            member.late_promoted = True  # 발송 성패와 무관하게 1회 — 재시도 폭주 방지
-            reason = late_promotion_reason(trigger.alarm.alarm_name, ep.id)
-            promotion = {
-                "episode_id": ep.id,
-                "trigger_alarm_id": trigger.alarm.alarm_id,
-                "trigger_event_type": trigger.alarm.alarm_name,
-                "trigger_level": trigger.alarm.level,
-                "from_tier": str(getattr(decision, "tier", "")),
-                "reason": reason,
-            }
-            try:
-                sent = await send_late_promotion(
-                    analysis, decision, promotion, self._config, self._incident_publisher
-                )
-            except Exception:  # noqa: BLE001 — 사후 통보 실패가 다음 알람 처리를 막지 않는다
-                logger.warning("사후 승격 통보 실패: alarm_id=%s", alarm_id, exc_info=True)
-                sent = {}
-            logger.info(
-                "사후 승격 통보: alarm_id=%s %s→page episode=%s trigger=%s sent=%s",
-                alarm_id, promotion["from_tier"], ep.id, trigger.alarm.alarm_id, sent,
-            )
-            if self._decision_store is not None:
-                try:
-                    self._decision_store.record_late_promotion(
-                        alarm_id=alarm_id,
-                        fingerprint=str(getattr(decision, "fingerprint", "") or ""),
-                        episode_id=ep.id,
-                        trigger_alarm_id=trigger.alarm.alarm_id,
-                        trigger_event_type=trigger.alarm.alarm_name,
-                        trigger_level=trigger.alarm.level,
-                        from_tier=promotion["from_tier"],
-                        reason=reason,
-                        sent=sent,
-                    )
-                except Exception:  # noqa: BLE001 — 감사 실패는 무시(통보는 이미 나갔다)
-                    logger.warning("사후 승격 감사 기록 실패(무시): alarm_id=%s", alarm_id)
-        if skipped:
-            logger.warning(
-                "사후 승격 트리거당 상한(%d) 초과 — %d건 건너뜀(후보 유지 · 다음 트리거에 재시도): "
-                "episode=%s trigger=%s",
-                _LATE_PROMOTION_PER_TRIGGER_MAX, skipped, ep.id, trigger.alarm.alarm_id,
-            )
+        """`EpisodeCoordinator.remember_episode_ctx` 위임 — 테스트·`_process` seam(plans/177)."""
+        _episode_coordinator(self).remember_episode_ctx(cross_source, event, result, now)
 
     async def _after_episode_graph(
         self, cross_source: dict[str, Any], event: AlarmEvent, result: Any, now: float
     ) -> None:
-        """그래프 뒤 사건 후처리(W4) — 조사 id 기록 · 사후 승격 후보 보관 · 사후 승격 통보.
-
-        각 신호는 독립이라 개별 try/except로 감싼다 — 하나의 실패가 다른 것을 막지 않고, 이미 끝난
-        알람 처리를 dead-letter로 돌리지 않는다(사유는 경고 로그).
-        """
-        try:
-            self._record_apm_investigation(cross_source, event, result)
-        except Exception:  # noqa: BLE001
-            logger.warning("사건 조사 id 기록 실패: alarm_id=%s", event.alarm_id, exc_info=True)
-        # (plans/153 W4 §4.5) 사건 종합 조사 — 플래그 off면 진입하지 않는다(비트 동일).
-        if self._episode_context_on():
-            try:
-                self._remember_episode_ctx(cross_source, event, result, now)
-                await self._maybe_episode_investigation(cross_source, event)
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "사건 종합 조사 처리 실패: alarm_id=%s", event.alarm_id, exc_info=True
-                )
-        if not self._late_promotion_on():
-            return
-        try:
-            self._remember_late_candidate(cross_source, event, result, now)
-        except Exception:  # noqa: BLE001
-            logger.warning("사후 승격 후보 보관 실패: alarm_id=%s", event.alarm_id, exc_info=True)
-        try:
-            await self._late_promote(cross_source, event, now)
-        except Exception:  # noqa: BLE001
-            logger.warning("사후 승격 처리 실패: alarm_id=%s", event.alarm_id, exc_info=True)
+        """`EpisodeCoordinator.after_episode_graph` 위임 — 테스트·`_process` seam(plans/177)."""
+        await _episode_coordinator(self).after_episode_graph(cross_source, event, result, now)
 
     def _build_metric_baseline(self):  # noqa: ANN202
-        """동적 baseline 이상탐지 어댑터를 생성한다 (Plan 60 E3 · D-079).
-
-        enable_noise_gate=False 또는 dynamic_baseline_enabled=False이면 None을 반환한다 —
-        이상탐지만 생략되고(anomaly_severity 미산출) 분석·발송은 정상 진행된다(회귀 0·graceful).
-        """
-        if not self._config.noise_gate.enable_noise_gate:
-            return None
-        if not getattr(self._config.noise_gate, "dynamic_baseline_enabled", False):
-            return None
-        try:
-            from noise_gate.infrastructure.polestar_metric_baseline import (
-                PolestarMetricBaselineAdapter,
-                parse_metric_source_map,
-            )
-            from src.routing.db_registry import DBRegistry
-
-            # (Plan 67 R3-(v) 인접) kind→메트릭 소스 매핑을 설정에서 주입한다(미설정 시 None →
-            # 어댑터 기본 매핑). 벤더 스키마 상수는 domain이 아니라 설정·어댑터에 둔다.
-            return PolestarMetricBaselineAdapter(
-                DBRegistry(self._config),
-                self._config.alarm,
-                metric_source_map=parse_metric_source_map(
-                    getattr(
-                        self._config.noise_gate, "anomaly_metric_source_map_csv", ""
-                    )
-                ),
-            )
-        except Exception:
-            logger.exception("메트릭 baseline 어댑터 생성 실패 — 이상탐지 없이 진행")
-            return None
+        """`worker_wiring.build_metric_baseline` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_metric_baseline(self._config)
 
     def _build_embedding_provider(self):  # noqa: ANN202
-        """알람 로컬 임베딩 provider를 생성한다 (Plan 60 B-7 L-2/L-4 · §15.4 D-035 경계 · 주석 전용).
-
-        semantic_dedup_annotation_enabled(L-2)·topology_text_fusion_enabled(L-4)가 **모두
-        False**면 None을 반환한다(주석 경로 미진입·configurable 미주입 → 워커/enricher 비트동일·
-        회귀 0). 하나라도 활성이면 로컬 모델 경로로 provider를 생성한다 — 모델 미가용(미설치·경로
-        부재·로드 실패)이면 provider가 inert(모든 조회 None)이라 앱을 크래시시키지 않는다(graceful).
-
-        임베딩 출력은 감사·주석 필드에만 실리며 결정적 게이트 판정·억제 지문·상관 군집을 절대
-        바꾸지 않는다(§15.4 D-035 불변식). _build_metric_baseline과 동일한 옵트인·graceful 패턴.
-        """
-        gate = getattr(self._config, "noise_gate", None)
-        if gate is None:
-            return None
-        l2 = bool(getattr(gate, "semantic_dedup_annotation_enabled", False))
-        l4 = bool(getattr(gate, "topology_text_fusion_enabled", False))
-        if not (l2 or l4):
-            return None
-        try:
-            from noise_gate.infrastructure.embedding_provider import (
-                AlarmEmbeddingProvider,
-            )
-
-            return AlarmEmbeddingProvider(
-                getattr(gate, "embedding_model_path", ""),
-                timeout_seconds=float(
-                    getattr(gate, "embedding_timeout_seconds", 2.0)
-                ),
-            )
-        except Exception:
-            logger.exception("알람 임베딩 provider 생성 실패 — 임베딩 주석 없이 진행")
-            return None
+        """`worker_wiring.build_embedding_provider` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_embedding_provider(self._config)
 
     def _build_decision_store(self):  # noqa: ANN202
-        """발송 판단 감사 저장소를 생성한다 (Plan 52 §8.3).
-
-        enable_noise_gate=False이거나 생성 실패 시 None을 반환한다 —
-        감사 적재만 생략되고 발송 판단·발송은 정상 진행된다 (graceful degradation).
-        """
-        if not self._config.noise_gate.enable_noise_gate:
-            return None
-        try:
-            from noise_gate.infrastructure.decision_store import DecisionStore
-
-            return DecisionStore(
-                self._config.noise_gate.decision_store_path,
-                self._config.noise_gate.decision_store_enabled,
-            )
-        except Exception:
-            logger.exception("발송 판단 감사 저장소 생성 실패 — 감사 없이 진행")
-            return None
+        """`worker_wiring.build_decision_store` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_decision_store(self._config)
 
     def _build_investigation_store(self) -> InvestigationStore | None:
-        """조사 저장소를 생성한다 (plans/153 W2 · D-325 G-1 (a)).
-
-        게이트 off·조사 트리거 off·생성 실패 시 None — 트리거·후속 태스크의 저장 호출이 전부
-        no-op이라 통보 경로가 현행과 비트 동일하고 파일도 만들지 않는다
-        (생성자는 파일을 열지 않는다).
-        """
-        ng = self._config.noise_gate
-        if not ng.enable_noise_gate or not getattr(ng, "investigation_trigger_enabled", False):
-            return None
-        try:
-            from noise_gate.infrastructure.investigation_store import InvestigationStore
-
-            return InvestigationStore(
-                getattr(ng, "investigation_store_path", "logs/alarm_investigations.jsonl"),
-                int(getattr(ng, "investigation_store_max_lines", 2000)),
-            )
-        except Exception:
-            logger.exception("조사 저장소 생성 실패 — 웹 조회용 조사 기록 없이 진행")
-            return None
+        """`worker_wiring.build_investigation_store` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_investigation_store(self._config)
 
     def _active_silence_rules(self, now: float) -> list:
         """활성 침묵 규칙을 TTL 캐시로 돌려준다 (Plan 54 모듈 4).
@@ -981,196 +651,36 @@ class AlarmWorker:
         return rules
 
     def _build_silence_store(self):  # noqa: ANN202
-        """침묵 규칙 저장소를 생성한다 (Plan 54 모듈 4).
-
-        게이트 off·silence_enabled off·생성 실패 시 None을 반환한다 — 침묵 판정만 생략되고
-        나머지 파이프라인은 그대로 돈다(graceful degradation · 기본 off면 회귀 0).
-        """
-        gate_cfg = self._config.noise_gate
-        if not gate_cfg.enable_noise_gate or not getattr(gate_cfg, "silence_enabled", False):
-            return None
-        try:
-            from noise_gate.infrastructure.silence_store import SilenceStore
-
-            return SilenceStore(
-                getattr(gate_cfg, "silence_store_path", "logs/alarm_silences.jsonl"),
-                True,
-            )
-        except Exception:
-            logger.exception("침묵 규칙 저장소 생성 실패 — 침묵 없이 진행")
-            return None
+        """`worker_wiring.build_silence_store` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_silence_store(self._config)
 
     def _build_ticket_queue(self):  # noqa: ANN202
-        """TICKET 티어 일배치 요약 큐를 생성한다 (Plan 52 §7 · Phase E3).
-
-        enable_noise_gate=False이거나 ticket_batch_queue_enabled=False이면 None을 반환한다 —
-        큐 적재만 생략되고 발송 판단·발송은 정상 진행된다 (graceful degradation).
-        """
-        if not self._config.noise_gate.enable_noise_gate:
-            return None
-        if not self._config.noise_gate.ticket_batch_queue_enabled:
-            return None
-        try:
-            from noise_gate.infrastructure.ticket_queue import TicketBatchQueue
-
-            return TicketBatchQueue(
-                self._config.noise_gate.ticket_batch_queue_path,
-                self._config.noise_gate.ticket_batch_queue_enabled,
-            )
-        except Exception:
-            logger.exception("TICKET 일배치 큐 생성 실패 — 큐 없이 진행")
-            return None
+        """`worker_wiring.build_ticket_queue` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_ticket_queue(self._config)
 
     def _build_feedback_store(self):  # noqa: ANN202
-        """운영자 피드백 few-shot 저장소를 생성한다 (Plan 52 Phase E4).
-
-        enable_noise_gate=False이거나 enable_llm_actionability=False이면 None을 반환한다 —
-        few-shot 조회만 생략되고(analyzer가 피드백 섹션 없이 진행) 발송은 정상 진행된다
-        (graceful degradation·회귀 0).
-        """
-        if not self._config.noise_gate.enable_noise_gate:
-            return None
-        if not getattr(self._config.noise_gate, "enable_llm_actionability", False):
-            return None
-        try:
-            from noise_gate.infrastructure.feedback_store import FeedbackStore
-
-            return FeedbackStore(
-                self._config.noise_gate.feedback_store_path,
-                self._config.noise_gate.feedback_store_enabled,
-                getattr(self._config.noise_gate, "feedback_store_max_lines", 20000),
-            )
-        except Exception:
-            logger.exception("피드백 저장소 생성 실패 — few-shot 없이 진행")
-            return None
+        """`worker_wiring.build_feedback_store` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_feedback_store(self._config)
 
     def _build_sse_publisher(self):  # noqa: ANN202
-        """워커→UI 실시간 SSE Redis pub/sub 발행기를 생성한다 (E3 후속 · D-048.9 해소).
-
-        enable_noise_gate=False·sse_bridge_enabled=False·Redis 클라이언트 부재 시 None을
-        반환한다 — 티어 SSE는 로그 폴백(E3 무변경)으로 진행된다 (graceful degradation).
-        self._redis가 설정된 이후(run() 내)에 호출해야 한다.
-        """
-        if not self._config.noise_gate.enable_noise_gate:
-            return None
-        if not getattr(self._config.noise_gate, "sse_bridge_enabled", False):
-            return None
-        if self._redis is None:
-            return None
-        try:
-            from noise_gate.infrastructure.sse_bridge import RedisSseBridgePublisher
-
-            return RedisSseBridgePublisher(
-                self._redis, self._config.noise_gate.sse_bridge_channel
-            )
-        except Exception:
-            logger.exception("SSE 브리지 발행기 생성 실패 — 로그 폴백으로 진행")
-            return None
+        """`worker_wiring.build_sse_publisher` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_sse_publisher(self._config, self._redis)
 
     def _build_incident_publisher(self):  # noqa: ANN202
-        """incident 이벤트 Redis pub/sub 발행기를 생성한다 (D-049 · _build_sse_publisher 미러).
-
-        enable_noise_gate=False·incident_tracking_enabled=False·Redis 클라이언트 부재 시
-        None을 반환한다 — incident 발행은 스킵되고 발송은 정상 진행된다(회귀 0).
-        self._redis가 설정된 이후(run() 내)에 호출해야 한다.
-        """
-        if not self._config.noise_gate.enable_noise_gate:
-            return None
-        if not getattr(self._config.noise_gate, "incident_tracking_enabled", False):
-            return None
-        if self._redis is None:
-            return None
-        try:
-            from noise_gate.infrastructure.incident_events import RedisIncidentPublisher
-
-            return RedisIncidentPublisher(
-                self._redis, self._config.noise_gate.incident_event_channel
-            )
-        except Exception:
-            logger.exception("incident 발행기 생성 실패 — incident 계측 없이 진행")
-            return None
+        """`worker_wiring.build_incident_publisher` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_incident_publisher(self._config, self._redis)
 
     def _build_sre_agent_client(self):  # noqa: ANN202
-        """sre_agent 조사 서비스 MCP 클라이언트를 생성한다 (Plan 64 CW-A · _build_* 미러).
-
-        enable_noise_gate=False·investigation_trigger_enabled=False·생성 실패 시 None을 반환한다 —
-        트리거 노드는 클라이언트 미주입 시 no-op(브리핑 미생성)이라 게이트 통보·판정은 정상
-        진행된다(회귀 0·graceful). sre_agent 패키지는 import하지 않고 MCP(SSE)로만 통신한다.
-        """
-        if not self._config.noise_gate.enable_noise_gate:
-            return None
-        if not getattr(
-            self._config.noise_gate, "investigation_trigger_enabled", False
-        ):
-            return None
-        try:
-            from noise_gate.infrastructure.sre_agent_client import SreAgentClient
-
-            ng = self._config.noise_gate
-            token = getattr(ng, "investigation_service_token", None)
-            # SecretStr(.get_secret_value) 또는 평문 문자열(테스트 SimpleNamespace) 모두 수용.
-            token_val = (
-                token.get_secret_value()
-                if hasattr(token, "get_secret_value")
-                else (token or "")
-            )
-            return SreAgentClient(
-                server_url=ng.investigation_service_url,
-                bearer_token=token_val or None,
-                mcp_call_timeout=float(
-                    getattr(ng, "investigation_mcp_call_timeout_seconds", 10.0)
-                ),
-            )
-        except Exception:
-            logger.exception("sre_agent 조사 클라이언트 생성 실패 — 조사 트리거 없이 진행")
-            return None
+        """`worker_wiring.build_sre_agent_client` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_sre_agent_client(self._config)
 
     def _build_apm_gateway_client(self):  # noqa: ANN202
-        """APM 게이트웨이 MCP 클라이언트를 만든다 (plans/87 J4 · _build_sre_agent_client 미러).
-
-        enable_noise_gate·app_impact_enabled 중 하나라도 off면 None(회귀 0 — 게이트 노드가 조회하지
-        않는다). 켰는데 URL이 비었거나 생성에 실패하면 경고를 남기고 None이다(침묵 금지 — 승격 없이
-        진행). `apm_gateway` 패키지는 import하지 않고 MCP(SSE)로만 통신한다(D-274 ③).
-        """
-        ng = getattr(self._config, "noise_gate", None)
-        if ng is None or not getattr(ng, "enable_noise_gate", False):
-            return None
-        if not getattr(ng, "app_impact_enabled", False):
-            return None
-        from noise_gate.infrastructure.apm_gateway_client import build_apm_gateway_client
-
-        client = build_apm_gateway_client(ng)
-        if client is None:
-            logger.warning(
-                "NOISE_APP_IMPACT_ENABLED=true지만 게이트웨이 클라이언트가 없다"
-                "(NOISE_APM_MCP_URL 비었거나 생성 실패) — app_impact 승격 없이 진행"
-            )
-        else:
-            logger.info("app_impact 승격 활성: 게이트웨이=%s", ng.apm_mcp_url)
-        return client
+        """`worker_wiring.build_apm_gateway_client` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_apm_gateway_client(self._config)
 
     def _build_annotation_classifier(self):  # noqa: ANN202
-        """운영자 주석 LLM 분류기를 생성한다 (Plan 67 R3-(v) · D-132 · _build_* 미러).
-
-        enable_noise_gate=False 또는 annotation_llm_classification_enabled=False(기본)이면
-        None을 반환한다 — 주석 신호는 기존 정규식 추출로 산출되어 현행과 비트동일하다(회귀 0).
-        생성 실패도 None으로 흡수한다(정규식 분류로 진행). LLM 인스턴스 자체는 분류기가 첫
-        분류 시점에 지연 획득하므로 여기서 과금 호출이 발생하지 않는다.
-        """
-        gate = getattr(self._config, "noise_gate", None)
-        if gate is None or not getattr(gate, "enable_noise_gate", False):
-            return None
-        if not getattr(gate, "annotation_llm_classification_enabled", False):
-            return None
-        try:
-            from noise_gate.application.annotation_classifier import (
-                AnnotationClassifier,
-            )
-
-            return AnnotationClassifier(self._config)
-        except Exception:
-            logger.exception("주석 LLM 분류기 생성 실패 — 정규식 주석 분류로 진행")
-            return None
+        """`worker_wiring.build_annotation_classifier` 위임 — 테스트·`run()` seam(plans/177)."""
+        return worker_wiring.build_annotation_classifier(self._config)
 
     async def _annotation_signal(self, event: AlarmEvent) -> AnnotationSignal:
         """이벤트 텍스트에서 주석 신호(계획작업/해소/운영자인지)를 산출한다 (D-132).
@@ -1761,119 +1271,16 @@ class AlarmWorker:
         await self._incident_publisher.publish(payload)
 
     def _is_duplicate(self, event: AlarmEvent, dedup: dict[str, float]) -> bool:
-        """중복 알람 여부를 확인하고 dedup 딕셔너리를 갱신한다.
-
-        동일 alarm_id가 dedup_ttl_seconds 내에 이미 처리된 경우 True를 반환한다.
-        만료된 항목은 함께 정리한다.
-
-        Args:
-            event: 확인할 알람 이벤트
-            dedup: alarm_id → 마지막 처리 시각 딕셔너리 (in-memory)
-
-        Returns:
-            True이면 중복 (처리 건너뜀), False이면 신규 처리
-        """
-        now = time.time()
-        ttl = self._config.alarm.dedup_ttl_seconds
-        last = dedup.get(event.alarm_id)
-        if last is not None and now - last < ttl:
-            return True
-        dedup[event.alarm_id] = now
-        # 만료 항목 정리 (메모리 누수 방지)
-        expired = [k for k, v in dedup.items() if now - v >= ttl]
-        for k in expired:
-            del dedup[k]
-        return False
+        """`DedupService.is_duplicate` 위임 — 테스트·`_process` seam(plans/177)."""
+        return _dedup_service(self).is_duplicate(event, dedup)
 
     def _is_duplicate_fingerprint(
         self, fingerprint: str, now: float, severity: int, *, alarm_id: str = ""
     ) -> tuple[bool, Optional[dict]]:
-        """게이트 활성 시 핑거프린트 기반 재발생 dedup + count 집계 (Plan 52 §6.1 · Plan 60 E1).
-
-        동일 핑거프린트(db_id+server+alarm_name+resource)가 재통보 간격(TTL) 내에
-        이미 처리되었으면 (True, 재발생 메타)를 반환한다(재통보 억제). 만료 항목은
-        함께 정리한다. alarm_id dedup(_is_duplicate)과 완전히 별개 경로다(_gate_dedup).
-
-        **억제 판정 로직(TTL·심각도 분기)은 현행과 비트 동일**하다 — 집계(count/first_seen/
-        last_seen)만 추가했다. TTL 비교 기준은 반드시 `last_notified`(마지막 *통보* 시각,
-        중복 판정 시 갱신하지 않음 → 고정창 유지)다. `last_seen`(중복마다 갱신)으로 비교하면
-        슬라이딩 창으로 변질되어 지속 재발 알람이 영원히 재통보되지 않는 회귀가 발생한다(§3.3).
-
-        TTL은 심각도별로 분리한다(§6.1):
-            - severity==3 → sev3_repeat_interval_seconds (미해결 sev3 재통보 단축용)
-            - 그 외        → repeat_interval_seconds (기본 4h)
-            기본값은 둘 다 14400(동일)이라 무변경(회귀 0). 운영 시 sev3만 단축 가능.
-            (최초 발생 sev3는 항상 PAGE — 이 dedup은 *이미 PAGE한 같은 알람의 반복 빈도*
-            조절이지 발송 판단 억제가 아니다, §4.8/§6.1.)
-
-        심각도 상승 우회(plans/144 Q-4 · `dedup_severity_rise_bypass`): 켜져 있으면 레코드에 마지막
-        통보 심각도를 기록하고, TTL 안이라도 들어온 심각도가 그보다 **높으면** 비중복 경로(레코드
-        리셋 · 새 심각도 기록)로 보낸다 — 같은 지문 sev2 통보 뒤의 sev3가 버려져 D-048 「심각도3
-        절대 PAGE」가 깨지지 않게 한다. 같거나 낮은 심각도는 종전대로 버리므로 창당 추가 통과는
-        최대 2회(1→2→3)다. 심각도 키가 없는 레코드(플래그 off 때 만든 것)는 우회하지 않는다.
-        플래그 off(경량 설정 포함)면 레코드에 키를 두지 않아 종전과 비트 동일하다.
-
-        Args:
-            fingerprint: compute_fingerprint(event) 결과
-            now: 현재 시각(time.time())
-            severity: 알람 심각도 (TTL 분기 · 심각도 상승 우회용)
-            alarm_id: 심각도 상승 우회 로그용 알람 id
-
-        Returns:
-            (is_dup, meta) 튜플.
-            - is_dup=True(재발생 중복): meta=현재 창의 집계 스냅샷(count 포함).
-            - is_dup=False(신규/재통보): meta=리셋 직전 창 메타(직전 창 count>1일 때만,
-              그 외 None). 대표 알람 "직전 재발 후 재통보" 표기용.
-        """
-        repeat_ttl = self._config.noise_gate.repeat_interval_seconds
-        if severity == 3:
-            # getattr 가드 — 경량 설정(테스트 SimpleNamespace 등)은 공통 간격으로 폴백(무변경).
-            ttl = getattr(
-                self._config.noise_gate,
-                "sev3_repeat_interval_seconds",
-                repeat_ttl,
-            )
-        else:
-            ttl = repeat_ttl
-        bypass = bool(getattr(self._config.noise_gate, "dedup_severity_rise_bypass", False))
-        rec = self._gate_dedup.get(fingerprint)
-        # 억제 판정 — 반드시 last_notified(통보 시각) 기준(고정창). 갱신하지 않는다.
-        if rec is not None and now - rec["last_notified"] < ttl:
-            if bypass and _dedup_severity_rises(rec, severity):
-                logger.info(
-                    "심각도 상승 — 지문 dedup 우회: fingerprint=%s %d→%d alarm_id=%s",
-                    fingerprint,
-                    rec[_DEDUP_SEVERITY_KEY],
-                    severity,
-                    alarm_id,
-                )
-            else:
-                # 억제(중복) — 통보 시각은 고정, 집계(count)·정리(last_seen)만 갱신.
-                rec["count"] += 1
-                rec["last_seen"] = now
-                return True, _dedup_meta(rec)
-        # 신규(비중복 · TTL 만료 후 재통보 · 심각도 상승 우회) — 리셋 직전 창 메타를 prev로 캡처.
-        # prev는 직전 창 count>1(억제 이력 있음)일 때만 의미 있다(대표 알람 표기용).
-        prev: Optional[dict] = None
-        if rec is not None and rec["count"] > 1:
-            prev = _dedup_meta(rec)
-        new_rec: dict[str, Any] = {
-            "first_seen": now,
-            "last_notified": now,
-            "last_seen": now,
-            "count": 1,
-        }
-        if bypass:
-            new_rec[_DEDUP_SEVERITY_KEY] = severity
-        self._gate_dedup[fingerprint] = new_rec
-        # 만료 sweep은 last_seen 기준(연속 재발 레코드의 count 보존) — 현행(통보시각 기준)보다
-        # 레코드 수명이 길어지는 메모리 의미 변화(§3.3). 판정(last_notified)과 정리(last_seen) 상이.
-        expired = [
-            k for k, v in self._gate_dedup.items() if now - v["last_seen"] >= ttl
-        ]
-        for k in expired:
-            del self._gate_dedup[k]
-        return False, prev
+        """`DedupService.is_duplicate_fingerprint` 위임 — 테스트·`_process` seam(plans/177)."""
+        return _dedup_service(self).is_duplicate_fingerprint(
+            fingerprint, now, severity, alarm_id=alarm_id
+        )
 
     def _record_recurrence(
         self,
@@ -1883,188 +1290,20 @@ class AlarmWorker:
         *,
         signal: Optional[AnnotationSignal] = None,
     ) -> None:
-        """재발생 억제를 decision_store에 감사 적재한다 (Plan 60 E1 · E7-a · graceful).
-
-        억제된 재발생은 그래프에 진입하지 않아 gate 감사 사각지대였다(§3.1). 워커가 직접
-        type="recurrence" 레코드를 적재해 "억제≠삭제"를 강화한다. decision_store 미주입
-        (게이트 off/생성 실패)이거나 메타가 없으면 스킵한다(회귀 0). recurrence_audit_every_n
-        샘플링으로 적재 빈도를 조절한다(기본 1=매번, count % N == 0일 때만).
-
-        (Plan 60 E7-a §17.3) annotation_harvest_enabled면 ACK 이전에 event 텍스트에서
-        계획작업/해소/운영자접수 주석을 결정적으로 추출(extract_annotation_signal)해
-        annotation 필드로 적재한다 — 재발신이 실어 온 텍스트 신호를 재통보 없이 원 인시던트에
-        보존한다. (§17.6 E7-d) 재발 억제는 ISA-18.2 'repeating' chattering으로 감사 라벨링한다
-        (판정 무변경·관측성). 두 확장 모두 annotation_harvest_enabled=False면 미적용(비트동일).
-
-        (Plan 67 R3-(v) · D-132) 호출부가 `signal=`로 이미 산출한 신호를 넘기면 그 값을 쓴다
-        (LLM 분류는 async라 sync인 이 메서드에서 수행할 수 없다). 미지정이면 기존대로 정규식
-        추출을 수행한다 — 분류기 미주입 경로·직접 호출과 비트동일.
-        """
-        if self._decision_store is None or rec_meta is None:
-            return
-        every_n = getattr(self._config.noise_gate, "recurrence_audit_every_n", 1)
-        if every_n < 1:
-            every_n = 1
-        count = rec_meta.get("count", 0)
-        if count % every_n != 0:
-            return
-        # (E7-a·E7-d) 주석 하베스팅 + chattering 라벨. annotation_harvest_enabled=False(기본)면
-        # 아래 kwargs에 annotation을 넣지 않아 record_recurrence 호출이 현행과 **비트동일**(회귀 0).
-        kwargs: dict = {
-            "fingerprint": fingerprint,
-            "count": count,
-            "first_seen_ts": rec_meta.get("first_seen"),
-            "alarm_id": event.alarm_id,
-        }
-        if getattr(self._config.noise_gate, "annotation_harvest_enabled", False):
-            sig = signal
-            if sig is None:
-                sig = extract_annotation_signal(
-                    getattr(event, "condition_log", "")
-                    or getattr(event, "description", "")
-                    or ""
-                )
-            harvested = sig.to_dict() if sig.has_signal() else {}
-            # ISA-18.2 repeating(복구 후 재발) 감사 라벨(§17.6) — 판정 무변경·관측성만.
-            harvested["chattering"] = "repeating"
-            kwargs["annotation"] = harvested
-        self._decision_store.record_recurrence(**kwargs)
+        """`DedupService.record_recurrence` 위임 — 테스트·`_process` seam(plans/177)."""
+        _dedup_service(self).record_recurrence(fingerprint, event, rec_meta, signal=signal)
 
     def _annotate_semantic_dedup(
         self, event: AlarmEvent, fingerprint: str, now: float
     ) -> Optional[dict]:
-        """의미적 근접중복 **후보 주석**을 산출한다 (Plan 60 B-7 L-2 · §15.4 D-035 경계).
-
-        SHA1 지문이 다르지만 의미적으로 유사한(메시지 표현만 다른) 재발을 로컬 임베딩 유사도로
-        감지해 "재발 count 병합 후보(검토용)" 주석을 만든다(GPTrace 패턴). **결정적 dedup 판정
-        (compute_fingerprint)은 불변** — 이 주석은 판정에 영향을 주지 않는 병렬 관측이며 감사·설명
-        전용이다(억제/티어 판정과 무관, D-035 불변식).
-
-        동작(옵트인·hot-path 저비용):
-            - provider 미주입(두 플래그 off/생성 실패)·inert(모델 미가용)이면 즉시 None 반환하고
-              최근 텍스트 상태도 건드리지 않는다(비용 0·회귀 0).
-            - 현재 이벤트 텍스트(build_event_text)와 db_id 스코프의 최근 이벤트 텍스트들 중 최고
-              유사 후보를 provider.most_similar로 찾고, 유사도가 임계(embedding_similarity_threshold)
-              이상이고 매칭 후보의 지문이 **다르면** 주석 dict를 만든다.
-            - 판정 후 현재 (fingerprint, text, ts)를 스코프 deque에 추가하고, 만료 항목 popleft·빈
-              스코프 키 삭제로 sweep한다(상한은 deque maxlen).
-
-        Args:
-            event: 현재(비-fingerprint-dup, 비해소) 알람 이벤트.
-            fingerprint: compute_fingerprint(event) 결과(현재 이벤트 지문).
-            now: 현재 시각(time.time()).
-
-        Returns:
-            근접중복 후보 주석 dict `{"semantic_near_dup": {matched_fp, similarity, hint}}`
-            또는 조건 미충족 시 None(임계 미만·동일 지문·후보 없음·provider 미가용).
-        """
-        provider = self._embedding_provider
-        # provider 미주입(off/생성 실패) 또는 inert(모델 미가용) → 즉시 skip(비용 0, 상태 무변경).
-        if provider is None or not provider.is_available():
-            return None
-
-        from noise_gate.infrastructure.embedding_provider import build_event_text
-
-        current_text = build_event_text(
-            event.alarm_name, event.resource_type, event.condition_log
-        )
-        if not current_text:
-            return None
-
-        scope = event.db_id or ""
-        # 근접중복 판정 창(TTL) — 재발 dedup과 동일한 재통보 간격을 재사용(그 창 밖 텍스트는
-        # 근접중복 후보 의미가 없음). getattr 가드로 경량 설정(테스트)도 안전.
-        ttl = float(getattr(self._config.noise_gate, "repeat_interval_seconds", 14400))
-
-        annotation: Optional[dict] = None
-        dq = self._recent_event_texts.get(scope)
-        if dq:
-            # 만료·현재와 동일 텍스트가 아닌 후보만 비교 대상으로 스냅샷(원본 인덱스 정렬 유지).
-            entries = [e for e in dq if now - e[2] < ttl]
-            if entries:
-                best = provider.most_similar(
-                    current_text, [text for _fp, text, _ts in entries]
-                )
-                if best is not None:
-                    best_idx, score = best
-                    matched_fp, _matched_text, _matched_ts = entries[best_idx]
-                    threshold = float(
-                        getattr(
-                            self._config.noise_gate,
-                            "embedding_similarity_threshold",
-                            0.87,
-                        )
-                    )
-                    # 임계 이상 + **다른 지문**일 때만 후보 주석(동일 지문은 결정적 dedup이 처리).
-                    if score >= threshold and matched_fp != fingerprint:
-                        annotation = {
-                            "semantic_near_dup": {
-                                "matched_fp": matched_fp,
-                                "similarity": round(score, 4),
-                                "hint": "의미적 근접중복 — 재발 count 병합 후보(검토용)",
-                            }
-                        }
-
-        # 현재 이벤트를 최근 텍스트에 추가(자기 자신과 매칭 방지를 위해 판정 후 추가).
-        if dq is None:
-            dq = deque(maxlen=_RECENT_TEXTS_MAX_PER_SCOPE)
-            self._recent_event_texts[scope] = dq
-        dq.append((fingerprint, current_text, now))
-
-        # 만료 sweep — 전 스코프의 좌측(오래된) 만료 항목 popleft + 빈 스코프 키 삭제(형제 상태
-        # _flap_last_seen·_gate_dedup 정리 루프와 일관, Known Mistakes 키 만료 sweep 의무).
-        for other in self._recent_event_texts.values():
-            while other and now - other[0][2] >= ttl:
-                other.popleft()
-        empty = [k for k, d in self._recent_event_texts.items() if not d]
-        for k in empty:
-            del self._recent_event_texts[k]
-
-        return annotation
+        """`DedupService.annotate_semantic_dedup` 위임 — 테스트·`_process` seam(plans/177)."""
+        return _dedup_service(self).annotate_semantic_dedup(event, fingerprint, now)
 
     def _update_firing_registry(
         self, event: AlarmEvent, fingerprint: str, now: float
     ) -> bool:
-        """자가복구 상관용 발생 레지스트리를 갱신하고 self_heal 매칭 여부를 반환한다 (§3.7).
-
-        - 발생 이벤트(not is_clear)이고 저심각도(1 <= severity <= suppress_max_severity)면
-          (now, severity)를 기록한다.
-        - 해소 이벤트(is_clear)면 동일 핑거프린트가 self_heal_window_seconds 내에 저심각도로
-          발생했는지 확인하여 매칭되면 True를 반환한다(매칭 항목은 1회성 제거).
-        - 심각도 3은 자가복구 후보에서 제외한다(해소가 와도 발생 PAGE 보존, §3.7).
-        - 만료 항목은 정리한다(메모리 누수 방지).
-
-        Returns:
-            self_heal 매칭 여부 (해소 이벤트에서만 True 가능)
-        """
-        suppress_max = self._config.noise_gate.suppress_max_severity
-        window = self._config.noise_gate.self_heal_window_seconds
-        self_heal = False
-        # (D-049) 직전 self-heal 소요시간 리셋 — 매칭 시에만 채운다(호출부가 기록).
-        self._last_self_heal_duration = None
-        # (plans/112 S6) 근거도 같이 리셋 — 매칭 시에만 채운다.
-        self._last_self_heal_evidence = None
-        if event.is_clear:
-            rec = self._firing_registry.pop(fingerprint, None)
-            if rec is not None:
-                fired_ts, fired_sev = rec
-                if now - fired_ts <= window and 1 <= fired_sev <= suppress_max:
-                    self_heal = True
-                    self._last_self_heal_duration = now - fired_ts
-                    self._last_self_heal_evidence = {
-                        "heal_seconds": round(now - fired_ts, 3),
-                        "fired_severity": fired_sev,
-                    }
-        elif 1 <= event.severity <= suppress_max:
-            self._firing_registry[fingerprint] = (now, event.severity)
-
-        # 만료 항목 정리
-        expired = [
-            k for k, (ts, _) in self._firing_registry.items() if now - ts > window
-        ]
-        for k in expired:
-            del self._firing_registry[k]
-        return self_heal
+        """`SignalDetector.update_firing_registry` 위임 — 테스트·`_process` seam(plans/177)."""
+        return _signal_detector(self).update_firing_registry(event, fingerprint, now)
 
     def _apm_policy_signal(
         self, event: AlarmEvent, fingerprint: str, match: ApmPolicyMatch, now: float
@@ -2146,286 +1385,36 @@ class AlarmWorker:
         return signal
 
     def _apm_dedup_active(self, fingerprint: str, now: float) -> bool:
-        """심각도 2 이벤트가 지문 dedup에 버려질지 미리 본다(상태 변경 없음).
-
-        `_is_duplicate_fingerprint`의 비-sev3 판정(last_notified 고정창 · repeat_interval ·
-        심각도 상승 우회)과 같다.
-        """
-        rec = self._gate_dedup.get(fingerprint)
-        ttl = self._config.noise_gate.repeat_interval_seconds
-        if rec is None or now - rec["last_notified"] >= ttl:
-            return False
-        bypass = bool(getattr(self._config.noise_gate, "dedup_severity_rise_bypass", False))
-        return not (bypass and _dedup_severity_rises(rec, 2))
+        """`DedupService.apm_dedup_active` 위임 — 테스트·`_apm_policy_signal` seam(plans/177)."""
+        return _dedup_service(self).apm_dedup_active(fingerprint, now)
 
     def _sweep_apm_persistence(self, now: float) -> None:
-        """지속 조건 카운터·보류 지문·보낸 심각도의 만료 키를 정리한다 (Known Mistakes — 데몬 dict).
-
-        카운터는 마지막 발생이 자기 창 밖이면 키째 지우고, 보류 지문·보낸 심각도는
-        repeat_interval_seconds(그 뒤엔 dedup이 어차피 풀린다) 밖이면 지운다.
-        """
-        expired = [
-            k for k, (window, win) in self._apm_persist.items() if not win or now - win[-1] > window
-        ]
-        for k in expired:
-            del self._apm_persist[k]
-        ttl = getattr(self._config.noise_gate, "repeat_interval_seconds", 14400)
-        stale = [k for k, ts in self._apm_persist_pending.items() if now - ts >= ttl]
-        for k in stale:
-            del self._apm_persist_pending[k]
-        stale = [k for k, (_, ts) in self._apm_sent_severity.items() if now - ts >= ttl]
-        for k in stale:
-            del self._apm_sent_severity[k]
+        """`DedupService.sweep_apm_persistence` 위임 — `_apm_policy_signal` seam(plans/177)."""
+        _dedup_service(self).sweep_apm_persistence(now)
 
     def _cap_apm_persistence(self) -> None:
-        """카운터·보류 지문·보낸 심각도 키가 상한을 넘으면 가장 오래된 지문부터 버린다(경고)."""
-        _evict_oldest(self._apm_persist, lambda v: v[1][-1], "지속 조건 카운터")
-        _evict_oldest(self._apm_persist_pending, lambda v: v, "재판정 보류 지문")
-        _evict_oldest(self._apm_sent_severity, lambda v: v[1], "보낸 심각도 기록")
+        """`DedupService.cap_apm_persistence` 위임 — 테스트·`_process` seam(plans/177)."""
+        _dedup_service(self).cap_apm_persistence()
 
     def _detect_inhibition(self, event: AlarmEvent, now: float) -> bool:
-        """인히비션(§3.4·E2): 동일 서버 상위 심각도 발생 중인지 결정적으로 탐지한다.
-
-        스코프(db_id|server)별로 현재 활성 **최고 심각도 인히비터**를
-        `(severity, 발생시각, alarm_key)`로 유지한다. 발생 이벤트가 도착하면:
-
-        - 같은 스코프에 **더 높은 심각도**가 inhibition_window_seconds 내 활성이고
-          그 인히비터가 **다른 알람**(self-inhibition 금지 — alarm_key 비교)이면 inhibited=True.
-        - 활성 기록 갱신: 기존 기록이 없거나 만료됐거나 현재 발생이 같거나 더 높은 심각도면
-          현재 발생으로 교체(스코프별 최고 심각도 인히비터 유지). 만료 스코프는 정리한다.
-        - 해소 이벤트(is_clear)·무효 심각도는 인히비션 대상 아님(False) — 해당 스코프 기록은
-          window 만료로 자연 정리된다(§3.4 해소는 detection 비대상).
-
-        alarm_key는 alarm_name(없으면 fingerprint)으로, 동일 알람의 자기억제를 방지한다.
-        inhibition_enabled일 때만 호출된다(_process 게이트 경로) — off면 detection 미수행.
-
-        Returns:
-            inhibited 여부(상위 심각도 다른 알람이 활성이면 True).
-            (plans/112 S6) True일 때 누른 상위 알람을 `_last_inhibition_evidence`에 남긴다.
-        """
-        self._last_inhibition_evidence = None
-        if event.is_clear or event.severity <= 0:
-            return False
-
-        scope = f"{event.db_id}|{event.server_name}"
-        window = self._config.noise_gate.inhibition_window_seconds
-        alarm_key = event.alarm_name or compute_fingerprint(event)
-
-        inhibited = False
-        rec = self._active_firings.get(scope)
-        if rec is not None:
-            rec_sev, rec_ts, rec_key = rec
-            if (
-                now - rec_ts <= window
-                and rec_sev > event.severity
-                and rec_key != alarm_key
-            ):
-                inhibited = True
-                self._last_inhibition_evidence = {
-                    "inhibitor": rec_key,
-                    "inhibitor_severity": rec_sev,
-                    "age_seconds": round(now - rec_ts, 3),
-                    "window_seconds": window,
-                }
-
-        # 활성 기록 갱신 — 스코프별 최고 심각도 인히비터 유지(만료·동급/상위 발생 시 교체).
-        if rec is None or now - rec[1] > window or event.severity >= rec[0]:
-            self._active_firings[scope] = (event.severity, now, alarm_key)
-
-        # 만료 스코프 정리(메모리 누수 방지)
-        expired = [
-            s for s, (_, ts, _) in self._active_firings.items() if now - ts > window
-        ]
-        for s in expired:
-            del self._active_firings[s]
-        return inhibited
+        """`SignalDetector.detect_inhibition` 위임 — 테스트·`_process` seam(plans/177)."""
+        return _signal_detector(self).detect_inhibition(event, now)
 
     def _detect_flapping(
         self, fingerprint: str, event: AlarmEvent, now: float
     ) -> bool:
-        """플래핑(§3.7·E2): 핑거프린트별 상태 진동을 Nagios 알고리즘으로 탐지한다.
-
-        핑거프린트별 최근 상태 시퀀스(firing=not is_clear)를 maxlen=MAX_STATES(21) deque로
-        유지하고, 도메인 순수함수로 가중 %-state-change(`flap_percent`)와 히스테리시스
-        (`update_flap_state`, high/low 임계)를 적용하여 플래핑 여부를 산출한다.
-
-        - 발생·해소 모두 상태 전이의 한 점이므로 시퀀스에 append한다(is_clear 제외하지 않음).
-        - 직전 플래핑 상태(self._flap_flag)를 히스테리시스 입력으로 사용하고 갱신한다.
-        - 상태가 표본 하한(MIN_STATES=5) 미만이면 플래핑이 아니다(발생→해소→재발생 한 번 억제 방지).
-        - flapping_enabled일 때만 호출된다(_process 게이트 경로) — off면 detection 미수행(회귀 0).
-
-        만료 키 정리(메모리 일관성): 핑거프린트별 마지막 갱신 시각(self._flap_last_seen)을
-        추적하여, repeat_interval_seconds(기본 4h, 관대) 동안 재등장하지 않은 핑거프린트의
-        상태를 _flap_states/_flap_flag/_flap_last_seen 세 dict에서 함께 제거한다.
-        ttl이 관대하므로 활성 플래핑 상태(짧은 간격 재등장)는 보존되어 산출값이 불변이다.
-
-        Returns:
-            갱신된 플래핑 상태(True=플래핑 중 → 게이트에서 억제 대상).
-            (plans/112 S6) True일 때 변화율·임계·표본 수를 `_last_flapping_evidence`에 남긴다.
-        """
-        self._last_flapping_evidence = None
-        states = self._flap_states.get(fingerprint)
-        if states is None:
-            states = deque(maxlen=MAX_STATES)
-            self._flap_states[fingerprint] = states
-        states.append(not event.is_clear)
-
-        percent = flap_percent(list(states))
-        prev = self._flap_flag.get(fingerprint, False)
-        cfg = self._config.noise_gate
-        new = update_flap_state(
-            prev, percent, cfg.flap_high_threshold, cfg.flap_low_threshold,
-            samples=len(states),
-        )
-        self._flap_flag[fingerprint] = new
-        self._flap_last_seen[fingerprint] = now
-        if new:
-            self._last_flapping_evidence = {
-                "flap_percent": round(percent, 2),
-                "high": cfg.flap_high_threshold,
-                "low": cfg.flap_low_threshold,
-                "samples": len(states),
-            }
-
-        # 만료 핑거프린트 정리(메모리 누수 방지) — ttl은 재통보 간격 재사용(관대한 4h).
-        # getattr 가드 — 경량 설정(테스트 SimpleNamespace 등)은 기본 4h로 폴백(무변경).
-        ttl = getattr(cfg, "repeat_interval_seconds", 14400)
-        expired = [
-            k for k, ts in self._flap_last_seen.items() if now - ts > ttl
-        ]
-        for k in expired:
-            del self._flap_last_seen[k]
-            self._flap_states.pop(k, None)
-            self._flap_flag.pop(k, None)
-        return new
+        """`SignalDetector.detect_flapping` 위임 — 테스트·`_process` seam(plans/177)."""
+        return _signal_detector(self).detect_flapping(fingerprint, event, now)
 
     def _detect_storm(self, event: AlarmEvent, now: float) -> bool:
-        """스톰(§3.8·E2): 동일 서버 사건창 내 발생 다발 여부를 탐지한다.
-
-        스코프(db_id|server)별 사건창 deque에 **발생 이벤트만** now를 append하고
-        (해소 이벤트는 카운트 제외 — 발생 다발만 스톰으로 본다), storm_window_seconds 밖
-        타임스탬프를 제거한다. 창 크기가 storm_threshold를 **초과**하면 storm=True.
-
-        경계 규칙(대표/억제):
-            - 창에 threshold개 이하가 쌓이는 동안(첫 threshold건)은 storm=False → 통보(대표).
-            - 이번 건을 더해 창 크기 > threshold이면 storm=True → 억제(대표 외 다발).
-            예) threshold=5 → 1~5번째 발생은 통보, 6번째부터 억제. 경계는 테스트로 고정.
-
-        - storm_grouping_enabled일 때만 호출된다(_process 게이트 경로) — off면 미수행(회귀 0).
-
-        만료 키 정리(메모리 일관성): window 밖 타임스탬프를 popleft한 뒤 해당 scope의 deque가
-        비면 scope 키를 dict에서 제거한다(빈 deque 미보관). 각 scope는 자체 발생 이벤트로
-        다시 트리거되므로 현재 처리 중 scope만 정리해도 단조 증가를 막을 수 있다.
-
-        Returns:
-            storm 여부(창 크기가 임계를 초과하면 True).
-            (plans/112 S6) True일 때 창 내 발생 수·임계·창 길이를 `_last_storm_evidence`에 남긴다.
-        """
-        self._last_storm_evidence = None
-        if event.is_clear:
-            return False
-
-        scope = f"{event.db_id}|{event.server_name}"
-        window_sec = self._config.noise_gate.storm_window_seconds
-        threshold = self._config.noise_gate.storm_threshold
-
-        win = self._storm_window.get(scope)
-        if win is None:
-            win = deque()
-            self._storm_window[scope] = win
-        win.append(now)
-        # 창 밖(window_seconds 초과) 항목 제거(가장 오래된 쪽부터)
-        while win and now - win[0] > window_sec:
-            win.popleft()
-        # 빈 deque scope 키 제거(메모리 누수 방지) — append 직후라 보통 1건 이상이나,
-        # window_sec<=0 등 경계에서 모두 만료되면 빈 키를 남기지 않는다.
-        if not win:
-            del self._storm_window[scope]
-        storm = len(win) > threshold
-        if storm:
-            self._last_storm_evidence = {
-                "window_count": len(win),
-                "threshold": threshold,
-                "window_seconds": window_sec,
-            }
-        return storm
-
-    def _sweep_correlation_clusters(self, now: float, window_sec: int) -> None:
-        """만료된 상관 클러스터를 제거하고 빈 스코프 키를 정리한다 (Plan 60 E2·§10).
-
-        전 스코프(db_id 존)를 순회하여 last_ts가 window_sec 밖인 클러스터를 제거하고,
-        클러스터가 모두 사라진 스코프 키를 dict에서 삭제한다. 스코프 수는 존 개수로
-        자연 유한하므로 전수 순회가 저렴하며, 형제 상태(_flap_last_seen·_gate_dedup)의
-        전-키 정리 루프와 일관되게 조용한 존의 클러스터도 만료시킨다(단조 증가 방지).
-        """
-        empty_scopes = [
-            scope
-            for scope, clusters in self._correlation_clusters.items()
-            if not self._prune_expired(clusters, now, window_sec)
-        ]
-        for scope in empty_scopes:
-            del self._correlation_clusters[scope]
-
-    @staticmethod
-    def _prune_expired(
-        clusters: list[ClusterState], now: float, window_sec: int
-    ) -> list[ClusterState]:
-        """window_sec 밖 클러스터를 in-place 제거하고 남은 리스트를 반환한다."""
-        clusters[:] = [c for c in clusters if now - c.last_ts <= window_sec]
-        return clusters
+        """`SignalDetector.detect_storm` 위임 — 테스트·`_process` seam(plans/177)."""
+        return _signal_detector(self).detect_storm(event, now)
 
     async def _load_topology_graph(
         self, db_id: str, now: float
     ) -> Optional[DependencyGraph]:
-        """위상 가중용 정적 의존 그래프를 로드한다(워커 캐시 — hot-path 클라이언트 open 회피).
-
-        correlation_topology_weight_enabled일 때만 _process(async)가 호출한다. cold/만료
-        시에만 registry 클라이언트를 열어 TopologyLoader().load_graph로 로드하고, db_id별로
-        (만료 epoch, graph)를 캐시한다. 실패(미등록·비PostgreSQL·조회 실패)는 None을 짧은
-        음성 TTL(_TOPOLOGY_NEGATIVE_TTL_SECONDS)로 캐시해 재시도를 허용하되 hot-path 폭주를
-        막는다(graceful — 보너스 없이 Jaccard로 진행).
-
-        registry 접근은 _build_metric_baseline 패턴(DBRegistry(self._config))을 재사용한다.
-        그래프는 event.db_id(존)로 로드하므로 인접성도 존 내에서만 계산된다(B-6 불변).
-
-        Args:
-            db_id: 대상 폴스타 DB(존).
-            now: 캐시 만료 판정 기준 시각(time.time()).
-
-        Returns:
-            DependencyGraph 또는 None(실패·미지원).
-        """
-        cached = self._topology_graph_cache.get(db_id)
-        if cached is not None and now < cached[0]:
-            return cached[1]
-
-        cfg = self._config.noise_gate
-        ttl = getattr(cfg, "topology_cache_ttl_seconds", 86400)
-        max_hops = getattr(cfg, "topology_max_hops", 5)
-        graph: Optional[DependencyGraph] = None
-        try:
-            from noise_gate.infrastructure.topology_loader import TopologyLoader
-            from src.routing.db_registry import DBRegistry
-
-            registry = DBRegistry(self._config)
-            if registry.is_registered(db_id):
-                async with registry.get_client(db_id) as client:
-                    graph = await TopologyLoader().load_graph(
-                        client,
-                        db_id,
-                        cache_ttl_seconds=ttl,
-                        max_hops=max_hops,
-                    )
-        except Exception:
-            logger.exception(
-                "위상 가중 그래프 로드 실패 — 보너스 없이 진행: db_id=%s", db_id
-            )
-            graph = None
-
-        # 성공=장기 TTL, 실패(None)=짧은 음성 TTL(재시도 허용·폭주 방지).
-        expiry = now + (ttl if graph is not None else _TOPOLOGY_NEGATIVE_TTL_SECONDS)
-        self._topology_graph_cache[db_id] = (expiry, graph)
-        return graph
+        """`SignalDetector.load_topology_graph` 위임 — 테스트·`_process` seam(plans/177)."""
+        return await _signal_detector(self).load_topology_graph(db_id, now)
 
     def _detect_correlated_storm(
         self,
@@ -2434,146 +1423,5 @@ class AlarmWorker:
         *,
         graph: Optional[DependencyGraph] = None,
     ) -> tuple[bool, Optional[dict]]:
-        """크로스-호스트 상관(§4·E2): db_id(존) 스코프 온라인 그리디 군집을 탐지한다.
-
-        서버 경계를 넘어 필드 유사도(Jaccard)·시간 근접으로 사건을 군집한다. 첫 도착
-        이벤트가 클러스터 **대표**(통보)이고, 이후 유사 이벤트가 correlation_min_cluster_size
-        번째 멤버부터 억제(correlated=True)된다(소급 선출 없음 — 앞선 판정 불변).
-
-        절차:
-            - 해소(is_clear) 이벤트는 군집/카운트에서 제외한다(_detect_storm 동일).
-            - ① 만료 sweep: last_ts가 correlation_window_seconds 밖인 클러스터를 전 스코프에서
-              제거하고 빈 스코프 키를 삭제한다(§10 — 키 만료 sweep 의무).
-            - ② 버퍼 상한: 스코프의 활성 클러스터가 correlation_buffer_max 이상이면 oldest
-              (first_ts 최소)부터 제거해 append 여지를 확보하고 warning을 남긴다(침묵 금지).
-            - sig_label은 워커가 domain scan_signature_severity(event.condition_log)로 사전
-              산출한다(정책 순수성 — correlation.py는 값만 소비). signature_tokens는 server_name을
-              제외한 정규화 토큰을 만든다.
-            - **위상 가중(E4 인접성)**: graph가 주어지고 event_node(=graph.id_of(server_name))
-              해소에 성공하면, 각 클러스터의 대표 노드와의 is_related(max_hops)로 adjacent bool
-              리스트를 산출해 match_cluster에 주입한다(인접 클러스터에 보너스). graph 미주어짐/
-              이름 해소 실패(엣지 미보유 root 등) → adjacent=None(보너스 없음·Jaccard 폴백·graceful).
-            - match_cluster로 최고 유사도 클러스터를 찾는다(보너스 반영 후 점수, 동점 시 first_ts
-              오름차순). 매칭되면 member_count+1·last_ts=now 후 member_count>=min_cluster_size면
-              억제하고 **클러스터 메타**(대표 지문·멤버 순번·유사도)를 반환한다. 미매칭이면 대표
-              (첫 도착) 클러스터를 append(대표 노드 저장)하고 (False, None)을 반환한다.
-
-        cross_host_correlation_enabled일 때만 호출된다(_process 게이트 경로) — off면 미수행(회귀 0).
-
-        Args:
-            event: 알람 이벤트.
-            now: 현재 시각(time.time()).
-            graph: 위상 가중용 DependencyGraph(위상 가중 off·로드 실패면 None → Jaccard 폴백).
-
-        Returns:
-            (correlated, cluster_meta) 튜플. 억제(correlated=True)일 때만 메타
-            (`{representative_fp, member_seq, similarity}`)를 싣고, 그 외에는 (…, None).
-        """
-        if event.is_clear:
-            return False, None
-
-        cfg = self._config.noise_gate
-        window_sec = cfg.correlation_window_seconds
-
-        # ① 만료 sweep — 전 스코프의 window 밖 클러스터 제거 + 빈 스코프 키 삭제.
-        self._sweep_correlation_clusters(now, window_sec)
-
-        scope = event.db_id  # db_id(존) 스코프 — 존 경계는 넘지 않는다(§8 B-6).
-        clusters = self._correlation_clusters.get(scope)
-        if clusters is None:
-            clusters = []
-            self._correlation_clusters[scope] = clusters
-
-        # ② 버퍼 상한 — 초과 시 oldest(first_ts 최소)부터 제거 + warning(침묵 금지).
-        buffer_max = cfg.correlation_buffer_max
-        if len(clusters) >= buffer_max:
-            clusters.sort(key=lambda c: c.first_ts)
-            overflow = len(clusters) - buffer_max + 1  # append 여지 1건 확보
-            del clusters[:overflow]
-            logger.warning(
-                "상관 버퍼 상한 초과 — oldest %d건 제거: scope=%s max=%s",
-                overflow,
-                scope,
-                buffer_max,
-            )
-
-        # sig_label은 domain 순수함수로 사전 산출(policy 순수성 — infra 미의존).
-        hit = scan_signature_severity(getattr(event, "condition_log", "") or "")
-        sig_label = hit[1] if hit else ""
-        # (Plan 60 E7-d §17.6) 사이트/위치 토큰을 선택적 가중 차원으로 주입 — 워커가 domain 순수
-        # 헬퍼로 산출해 signature_tokens의 extra로 넘긴다(correlation.py는 값만 소비·순수성 유지).
-        # off(기본)면 extra="" → 현행 필드 Jaccard와 비트동일(회귀 0). 존 경계(B-6)는 scope로 불변.
-        site_extra = ""
-        if getattr(cfg, "correlation_site_dimension_enabled", False):
-            site_extra = extract_site_token(
-                getattr(event, "server_name", "") or "",
-                getattr(event, "resource_name", "") or "",
-            )
-        # (plans/144 §4.4 · D-195 ② 개정) 제니퍼 정책 경로면 게이트웨이가 실어 보낸 was kind·
-        # domain_id 값을 토큰으로 더한다 — 같은 도메인·같은 kind의 인스턴스 폭풍을 묶는다. 스코프는
-        # 그대로 db_id(B-6). 폴스타·정책 off면 site_extra 그대로(비트 동일).
-        if self._apm_noise_ctx is not None and is_apm_source(event):
-            site_extra = " ".join(t for t in (site_extra, correlation_extra(event)) if t)
-        tokens = signature_tokens(
-            event.alarm_name, event.resource_type, sig_label, extra=site_extra
-        )
-
-        # 위상 가중(E4 인접성) — graph·event_node 해소 성공 시에만 adjacent 산출(그 외 None).
-        topo_enabled = getattr(cfg, "correlation_topology_weight_enabled", False)
-        topo_weight = (
-            getattr(cfg, "correlation_topology_weight", 0.0) if topo_enabled else 0.0
-        )
-        event_node = graph.id_of(event.server_name) if graph is not None else None
-        adjacent: Optional[list[bool]] = None
-        if graph is not None and event_node is not None:
-            max_hops = getattr(cfg, "topology_max_hops", 5)
-            adjacent = [
-                bool(
-                    c.representative_node
-                    and graph.is_related(
-                        event_node, c.representative_node, max_hops=max_hops
-                    )
-                )
-                for c in clusters
-            ]
-
-        idx, score = match_cluster(
-            clusters,
-            tokens,
-            sim_threshold=cfg.correlation_sim_threshold,
-            adjacent=adjacent,
-            topo_weight=topo_weight,
-        )
-        if idx is not None:
-            c = clusters[idx]
-            c.member_count += 1
-            c.last_ts = now
-            correlated = c.member_count >= cfg.correlation_min_cluster_size
-            if correlated:
-                logger.debug(
-                    "크로스-호스트 상관 억제: scope=%s 대표=%s member=%s sim=%.4f",
-                    scope,
-                    c.representative_fp,
-                    c.member_count,
-                    score,
-                )
-                # 감사 메타(decision_store 최상위 필드) — signals 동결 스키마 미훼손(§10,
-                # E1 recurrence 전례). similarity는 위상 보너스 반영 후 최종 점수다.
-                meta = {
-                    "representative_fp": c.representative_fp,
-                    "member_seq": c.member_count,
-                    "similarity": round(score, 4),
-                }
-                return True, meta
-            return False, None
-        # 첫 도착 = 대표 → 통보(소급 선출 없음). 대표 노드(resource_id)를 해소해 저장.
-        clusters.append(
-            ClusterState(
-                compute_fingerprint(event),
-                tokens,
-                now,
-                now,
-                representative_node=event_node,
-            )
-        )
-        return False, None
+        """`SignalDetector.detect_correlated_storm` 위임 — 테스트·`_process` seam(plans/177)."""
+        return _signal_detector(self).detect_correlated_storm(event, now, graph=graph)

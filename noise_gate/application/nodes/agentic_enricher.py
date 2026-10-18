@@ -41,7 +41,7 @@ from noise_gate.infrastructure.noise_signal_tools import (
     run_signal_react_loop,
     vllm_healthy,
 )
-from noise_gate.infrastructure.polestar_noise_context import _unavailable
+from noise_gate.infrastructure.polestar_noise_context import unavailable_noise_ctx
 from noise_gate.prompts.agentic_enricher import (
     AGENTIC_ENRICHER_CLASSIFY_PROMPT,
     AGENTIC_ENRICHER_SYSTEM_PROMPT,
@@ -275,7 +275,7 @@ def _apply_escalation(
     # 달고 확장한다. 빈 dict로 시작하면 게이트가 수집 성공으로 보고 보수 PAGE 대신 매트릭스를 돈다.
     existing = state.get("noise_context")
     if collector:
-        ctx = dict(existing) if isinstance(existing, dict) else _unavailable()
+        ctx = dict(existing) if isinstance(existing, dict) else unavailable_noise_ctx()
         ctx.setdefault("app_impact", None)  # (Plan 55 예약) APM 사용자 영향
         ctx.setdefault("db_impact", None)   # (Plan 55 예약) DPM DB 영향
         ctx["agentic"] = {

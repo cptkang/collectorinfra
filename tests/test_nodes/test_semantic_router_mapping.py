@@ -20,6 +20,8 @@ def _make_config():
     config = MagicMock()
     config.multi_db.get_active_db_ids.return_value = ["polestar", "cloud_portal"]
     config.enable_semantic_routing = True
+    # MagicMock 속성은 참이라 소유 판정이 on으로 잡힌다 — off 명시(plans/186 J4)
+    config.router.capability_ownership_enabled = False
     return config
 
 

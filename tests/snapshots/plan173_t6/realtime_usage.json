@@ -1,0 +1,392 @@
+{
+ "full": {
+  "result": {
+   "organized_data": {
+    "summary": "실시간 사용률 조회(폴스타 measurement API, CPU 사용률(%)·메모리 사용률(%)): 서버 7대 (정상 3대, 수집 지연 1대, 일부 미수집 1대, 미수집 1대, 조회 실패 1대). 값은 마지막 수집 시점 기준이며 '수집 시각' 컬럼 참조. '미수집'은 폴스타 measurement에 최근 수집값이 없는 서버입니다(실측 확인: 대부분 Power off 또는 에이전트 통신 이슈 — '가용성' 컬럼으로 판독 가능). 단, 가용성이 '정상'인 미수집은 수집 주기와 조회 시점의 경합으로 생기는 일시 상태일 수 있습니다(2026-07-24 실측: 재조회 시 값 반환됨 — 재질의로 해소). '조회 실패'는 API 구간 오류입니다 — 재질의 시 해소될 수 있습니다. [주의] zone_nourl: 실시간 API 미설정 — 제외 / zone_fail: 서버 목록 조회 실패 / zone_noids: 대상 서버 없음 / 은행존: 동일 서버명 중복 등록 1건 감지(예: srv01-a) — 구등록 행은 '미수집'으로 표시될 수 있음, '리소스 ID' 컬럼으로 대조 필요 / 은행존: 일부 구간(1청크, 서버 1대) API 실패 — '조회 실패' 표기 / 공동존 김포: 실시간 조회 실패(memory) — DB 경로로 재질의 필요",
+    "rows": [
+     {
+      "존": "은행존",
+      "서버명": "srv01-a",
+      "hostname": "h12",
+      "리소스 ID": 12,
+      "가용성": "-",
+      "CPU 사용률(%)": 77.5,
+      "메모리 사용률(%)": 12.0,
+      "수집 시각": "2027-01-15 16:00:00",
+      "상태": "수집 지연"
+     },
+     {
+      "존": "은행존",
+      "서버명": "srv01-a",
+      "hostname": "h11",
+      "리소스 ID": 11,
+      "가용성": "정상",
+      "CPU 사용률(%)": 41.24,
+      "메모리 사용률(%)": 55.0,
+      "수집 시각": "2027-01-15 16:59:00",
+      "상태": "정상"
+     },
+     {
+      "존": "은행존",
+      "서버명": "srv01-c",
+      "hostname": "h15",
+      "리소스 ID": 15,
+      "가용성": "정상",
+      "CPU 사용률(%)": 10.0,
+      "메모리 사용률(%)": null,
+      "수집 시각": "2027-01-15 16:59:00",
+      "상태": "일부 미수집"
+     },
+     {
+      "존": "공동존 여의도",
+      "서버명": "yd2",
+      "hostname": "yd2",
+      "리소스 ID": 32,
+      "가용성": "정상",
+      "CPU 사용률(%)": 6.0,
+      "메모리 사용률(%)": 6.0,
+      "수집 시각": "2027-01-15 16:59:00",
+      "상태": "정상"
+     },
+     {
+      "존": "공동존 여의도",
+      "서버명": "yd1",
+      "hostname": "yd1",
+      "리소스 ID": 31,
+      "가용성": "정상",
+      "CPU 사용률(%)": 5.0,
+      "메모리 사용률(%)": 5.0,
+      "수집 시각": null,
+      "상태": "정상"
+     },
+     {
+      "존": "은행존",
+      "서버명": "other",
+      "hostname": "srv01-host",
+      "리소스 ID": 13,
+      "가용성": "비정상(중지/통신이상)",
+      "CPU 사용률(%)": null,
+      "메모리 사용률(%)": null,
+      "수집 시각": null,
+      "상태": "미수집"
+     },
+     {
+      "존": "은행존",
+      "서버명": "srv01-d",
+      "hostname": "h16",
+      "리소스 ID": 16,
+      "가용성": "-",
+      "CPU 사용률(%)": null,
+      "메모리 사용률(%)": null,
+      "수집 시각": null,
+      "상태": "조회 실패"
+     }
+    ],
+    "column_mapping": null,
+    "resolved_mapping": null,
+    "is_sufficient": true,
+    "sheet_mappings": null
+   },
+   "query_results": [
+    {
+     "존": "은행존",
+     "서버명": "srv01-a",
+     "hostname": "h12",
+     "리소스 ID": 12,
+     "가용성": "-",
+     "CPU 사용률(%)": 77.5,
+     "메모리 사용률(%)": 12.0,
+     "수집 시각": "2027-01-15 16:00:00",
+     "상태": "수집 지연"
+    },
+    {
+     "존": "은행존",
+     "서버명": "srv01-a",
+     "hostname": "h11",
+     "리소스 ID": 11,
+     "가용성": "정상",
+     "CPU 사용률(%)": 41.24,
+     "메모리 사용률(%)": 55.0,
+     "수집 시각": "2027-01-15 16:59:00",
+     "상태": "정상"
+    },
+    {
+     "존": "은행존",
+     "서버명": "srv01-c",
+     "hostname": "h15",
+     "리소스 ID": 15,
+     "가용성": "정상",
+     "CPU 사용률(%)": 10.0,
+     "메모리 사용률(%)": null,
+     "수집 시각": "2027-01-15 16:59:00",
+     "상태": "일부 미수집"
+    },
+    {
+     "존": "공동존 여의도",
+     "서버명": "yd2",
+     "hostname": "yd2",
+     "리소스 ID": 32,
+     "가용성": "정상",
+     "CPU 사용률(%)": 6.0,
+     "메모리 사용률(%)": 6.0,
+     "수집 시각": "2027-01-15 16:59:00",
+     "상태": "정상"
+    },
+    {
+     "존": "공동존 여의도",
+     "서버명": "yd1",
+     "hostname": "yd1",
+     "리소스 ID": 31,
+     "가용성": "정상",
+     "CPU 사용률(%)": 5.0,
+     "메모리 사용률(%)": 5.0,
+     "수집 시각": null,
+     "상태": "정상"
+    },
+    {
+     "존": "은행존",
+     "서버명": "other",
+     "hostname": "srv01-host",
+     "리소스 ID": 13,
+     "가용성": "비정상(중지/통신이상)",
+     "CPU 사용률(%)": null,
+     "메모리 사용률(%)": null,
+     "수집 시각": null,
+     "상태": "미수집"
+    },
+    {
+     "존": "은행존",
+     "서버명": "srv01-d",
+     "hostname": "h16",
+     "리소스 ID": 16,
+     "가용성": "-",
+     "CPU 사용률(%)": null,
+     "메모리 사용률(%)": null,
+     "수집 시각": null,
+     "상태": "조회 실패"
+    }
+   ],
+   "generated_sql": "",
+   "source": "realtime_api"
+  },
+  "events": [
+   [
+    "client_init"
+   ],
+   [
+    "registry_init"
+   ],
+   [
+    "get_client",
+    "zone_fail"
+   ],
+   [
+    "get_client",
+    "zone_noids"
+   ],
+   [
+    "execute_sql",
+    "zone_noids",
+    "SELECT id, name, hostname, avail_status FROM cmm_resource WHERE resource_type = 'server.Server' AND dtime IS NULL"
+   ],
+   [
+    "get_client",
+    "polestar_b0"
+   ],
+   [
+    "execute_sql",
+    "polestar_b0",
+    "SELECT id, name, hostname, avail_status FROM POLESTAR.cmm_resource WHERE resource_type = 'server.Server' AND dtime IS NULL"
+   ],
+   [
+    "fetch_zone",
+    "polestar_b0",
+    [
+     11,
+     12,
+     13,
+     15,
+     16
+    ],
+    "cpu"
+   ],
+   [
+    "fetch_zone",
+    "polestar_b0",
+    [
+     11,
+     12,
+     13,
+     15,
+     16
+    ],
+    "memory"
+   ],
+   [
+    "audit",
+    {
+     "sql": "[REALTIME-API] measurement db_id=polestar_b0 servers=5 metrics=['cpu', 'memory']",
+     "row_count": 5,
+     "execution_time_ms": 0.0,
+     "success": true,
+     "error": null,
+     "user_id": "u1",
+     "thread_id": "t1",
+     "source_name": "polestar_b0"
+    }
+   ],
+   [
+    "get_client",
+    "polestar_cm_gp"
+   ],
+   [
+    "execute_sql",
+    "polestar_cm_gp",
+    "SELECT id, name, hostname, avail_status FROM polestar.cmm_resource WHERE resource_type = 'server.Server' AND dtime IS NULL"
+   ],
+   [
+    "fetch_zone",
+    "polestar_cm_gp",
+    [
+     21
+    ],
+    "cpu"
+   ],
+   [
+    "fetch_zone",
+    "polestar_cm_gp",
+    [
+     21
+    ],
+    "memory"
+   ],
+   [
+    "audit",
+    {
+     "sql": "[REALTIME-API] measurement db_id=polestar_cm_gp servers=1 metrics=['cpu', 'memory']",
+     "row_count": 0,
+     "execution_time_ms": 0.0,
+     "success": false,
+     "error": "metric=memory 실패",
+     "user_id": "u1",
+     "thread_id": "t1",
+     "source_name": "polestar_cm_gp"
+    }
+   ],
+   [
+    "get_client",
+    "polestar_cm_yd"
+   ],
+   [
+    "execute_sql",
+    "polestar_cm_yd",
+    "SELECT id, name, hostname, avail_status FROM polestar.cmm_resource WHERE resource_type = 'server.Server' AND dtime IS NULL"
+   ],
+   [
+    "fetch_zone",
+    "polestar_cm_yd",
+    [
+     31,
+     32
+    ],
+    "cpu"
+   ],
+   [
+    "fetch_zone",
+    "polestar_cm_yd",
+    [
+     31,
+     32
+    ],
+    "memory"
+   ],
+   [
+    "audit",
+    {
+     "sql": "[REALTIME-API] measurement db_id=polestar_cm_yd servers=2 metrics=['cpu', 'memory']",
+     "row_count": 2,
+     "execution_time_ms": 0.0,
+     "success": true,
+     "error": null,
+     "user_id": "u1",
+     "thread_id": "t1",
+     "source_name": "polestar_cm_yd"
+    }
+   ]
+  ],
+  "logs": [
+   [
+    "WARNING",
+    "realtime_usage 서버 목록 실패: db_id=zone_fail boom"
+   ],
+   [
+    "DEBUG",
+    "realtime_usage 감사로깅 실패 (무시)"
+   ]
+  ]
+ },
+ "all_fail": {
+  "result": null,
+  "events": [
+   [
+    "client_init"
+   ],
+   [
+    "registry_init"
+   ],
+   [
+    "get_client",
+    "zone_fail"
+   ],
+   [
+    "get_client",
+    "zone_noids"
+   ],
+   [
+    "execute_sql",
+    "zone_noids",
+    "SELECT id, name, hostname, avail_status FROM cmm_resource WHERE resource_type = 'server.Server' AND dtime IS NULL"
+   ],
+   [
+    "get_client",
+    "polestar_cm_gp"
+   ],
+   [
+    "execute_sql",
+    "polestar_cm_gp",
+    "SELECT id, name, hostname, avail_status FROM polestar.cmm_resource WHERE resource_type = 'server.Server' AND dtime IS NULL"
+   ],
+   [
+    "fetch_zone",
+    "polestar_cm_gp",
+    [
+     21
+    ],
+    "memory"
+   ],
+   [
+    "audit",
+    {
+     "sql": "[REALTIME-API] measurement db_id=polestar_cm_gp servers=1 metrics=['memory']",
+     "row_count": 0,
+     "execution_time_ms": 0.0,
+     "success": false,
+     "error": "metric=memory 실패",
+     "user_id": null,
+     "thread_id": null,
+     "source_name": "polestar_cm_gp"
+    }
+   ]
+  ],
+  "logs": [
+   [
+    "WARNING",
+    "realtime_usage 서버 목록 실패: db_id=zone_fail boom"
+   ],
+   [
+    "WARNING",
+    "realtime_usage 전 존 실패/무데이터 — SQL 경로 폴백: db_ids=['zone_nourl', 'zone_fail', 'zone_noids', 'polestar_cm_gp'] notes=['zone_nourl: 실시간 API 미설정 — 제외', 'zone_fail: 서버 목록 조회 실패', 'zone_noids: 대상 서버 없음', '공동존 김포: 실시간 조회 실패(memory) — DB 경로로 재질의 필요']"
+   ]
+  ]
+ }
+}

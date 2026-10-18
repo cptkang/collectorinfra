@@ -43,6 +43,15 @@ def get_adapter(
     return None
 
 
+def get_adapter_for(db_id: str | None, app_config: Any) -> DBAdapter | None:
+    """설정의 담당 ID(`POLESTAR_DB_IDS`)로 db_id의 어댑터를 조회한다(plans/166 N4).
+
+    노드마다 반복되던 `get_adapter(db_id, app_config.get_polestar_db_ids() or None)` 조합을
+    묶을 뿐 판정은 `get_adapter`와 같다. 조회는 호출 시점의 모듈 속성 `get_adapter`를 쓴다.
+    """
+    return get_adapter(db_id, app_config.get_polestar_db_ids() or None)
+
+
 def registered_adapters() -> list[DBAdapter]:
     """등록된 어댑터 목록(배선 테스트용)."""
     return list(_REGISTRY)

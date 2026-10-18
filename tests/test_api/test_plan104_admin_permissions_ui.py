@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import jwt
 import pytest
@@ -22,6 +24,7 @@ from fastapi.testclient import TestClient
 
 from src.api.server import create_app
 from src.config import AdminConfig, AppConfig, AuthConfig
+from src.domain.user import User, UserRole
 
 _STATIC = Path(__file__).resolve().parents[2] / "src" / "static"
 _ADMIN_JS = _STATIC / "js" / "admin.js"
@@ -174,7 +177,16 @@ def test_permissions_endpoint_requires_login(client: TestClient) -> None:
     assert client.put(PERM_PATH, json={"allowed_db_ids": ["polestar"]}).status_code == 401
 
 
-def test_permissions_endpoint_rejects_non_admin(client: TestClient) -> None:
+def _users(role: UserRole) -> SimpleNamespace:
+    """`user_repo` 대역 — 인증 활성이면 저장소가 필수다(plans/186 L4 fail-closed). 역할은 DB 값."""
+    user = User(user_id="u1", username="U", hashed_password="x", role=role)
+    return SimpleNamespace(get_by_user_id=AsyncMock(return_value=user), update=AsyncMock())
+
+
+def test_permissions_endpoint_rejects_non_admin(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(client.app.state, "user_repo", _users(UserRole.USER), raising=False)
     response = client.put(
         PERM_PATH,
         json={"allowed_db_ids": ["polestar"]},
@@ -183,8 +195,23 @@ def test_permissions_endpoint_rejects_non_admin(client: TestClient) -> None:
     assert response.status_code == 403
 
 
-def test_permissions_endpoint_passes_admin_gate(client: TestClient) -> None:
-    """관리자 토큰은 RBAC를 통과한다(저장소 미기동이라 503 — 403/401이 아님)."""
+def test_permissions_endpoint_passes_admin_gate(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DB 역할이 관리자면 RBAC를 통과해 권한이 저장된다(403/401이 아님)."""
+    repo = _users(UserRole.ADMIN)
+    monkeypatch.setattr(client.app.state, "user_repo", repo, raising=False)
+    response = client.put(
+        PERM_PATH,
+        json={"allowed_db_ids": ["polestar"]},
+        headers={"Authorization": "Bearer " + _user_token("admin")},
+    )
+    assert response.status_code == 200, response.text
+    repo.update.assert_awaited_once()
+
+
+def test_permissions_endpoint_without_user_store_is_503(client: TestClient) -> None:
+    """저장소 미기동이면 role=admin 토큰도 payload만으로 통과하지 않는다(plans/186 L4)."""
     response = client.put(
         PERM_PATH,
         json={"allowed_db_ids": ["polestar"]},

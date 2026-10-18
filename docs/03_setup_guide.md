@@ -150,13 +150,13 @@ API 키, 비밀번호 등 민감 정보는 `.encenv` 파일에서 별도 관리�
 # .encenv 파일 생성 (gitignore에 포함됨)
 cat > .encenv << 'EOF'
 # Ollama Gateway API 키 (게이트웨이 사용 시)
-LLM_API_KEY=
+LLM_OLLAMA_API_KEY=
 
 # Gemini API 키 (LLM_PROVIDER=gemini 시)
 LLM_GEMINI_API_KEY=
 
 # FabriX 키 (LLM_PROVIDER=fabrix 시) — 반드시 LLM_ 접두
-# 접두 없는 FABRIX_API_KEY 는 OS 환경변수로만 읽혀, 이 파일에 적으면 무시된다
+# 접두 없는 FABRIX_API_KEY 는 어디서도 읽지 않는다(OS 환경변수 포함 · plans/163 X6+)
 LLM_FABRIX_API_KEY=
 LLM_FABRIX_CLIENT_KEY=
 
@@ -210,7 +210,8 @@ SECURITY_SENSITIVE_COLUMNS=password,secret,token
   지울 때: `Remove-Item Env:AUTH_ENABLED` (POSIX: `unset AUTH_ENABLED`).
 - **실제 적용값 확인**: 관리자 화면의 「환경변수 설정」 탭이 키마다 실효값과 출처(OS env·`.encenv` 덮어쓰기)를 표시한다.
 - 파일 값은 OS 환경변수에 주입되지 않는다. 그래서 **OS 환경변수로만 읽는 키**는 `.env`·`.encenv`에 적어도
-  효과가 없다 — 예: 접두 없는 `FABRIX_API_KEY`, 벤치 스위프의 `BENCH_USER_ID`/`BENCH_USER_PASSWORD`.
+  효과가 없다 — 예: 벤치 스위프의 `BENCH_USER_ID`/`BENCH_USER_PASSWORD`. LLM 키는 접두 있는
+  `LLM_*`만 읽는다 — 접두 없는 `FABRIX_*`·`GOOGLE_API_KEY`·`LLM_API_KEY`는 OS 환경변수로 줘도 무시된다(plans/163 X6+).
 
 ### 3.5 인증 설정 (AUTH_ENABLED)
 
@@ -845,15 +846,15 @@ pip install -e ".[gemini]"
 
 ```dotenv
 LLM_PROVIDER=fabrix
-FABRIX_BASE_URL=https://your-fabrix-endpoint
-FABRIX_CHAT_MODEL=model-name
+LLM_FABRIX_BASE_URL=https://your-fabrix-endpoint
+LLM_FABRIX_CHAT_MODEL=model-name
 ```
 
 `.encenv`에 키 설정:
 
 ```dotenv
-FABRIX_API_KEY=your-api-key
-FABRIX_CLIENT_KEY=your-client-key
+LLM_FABRIX_API_KEY=your-api-key
+LLM_FABRIX_CLIENT_KEY=your-client-key
 ```
 
 ---

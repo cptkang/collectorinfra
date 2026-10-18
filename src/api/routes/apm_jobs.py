@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from src.api.dependencies import require_user
+from src.api.error_detail import user_error_detail
 from src.api.routes.query import _attachment_disposition, _audit_file_download
 from src.orchestration.apm_jobs import (
     ApmJobService,
@@ -46,15 +47,22 @@ def _service(request: Request) -> ApmJobService:
     return ApmJobService(request.app.state.config)
 
 
-def _http_error(e: Exception) -> HTTPException:
+def _http_error(e: Exception, request: Request | None) -> HTTPException:
+    """서비스 예외 → HTTP 오류. 도메인 예외(404·403·409)는 안전 문구만 담아 그대로 낸다.
+
+    게이트웨이 오류(502)는 외부 응답 원문이 섞이므로 고정 문구 + 요청 번호만 낸다 — 원문은
+    서버 로그(plans/163 S3).
+    """
     if isinstance(e, JobNotFoundError):
         return HTTPException(status_code=404, detail=str(e))
     if isinstance(e, JobForbiddenError):
         return HTTPException(status_code=403, detail=str(e))
     if isinstance(e, JobConflictError):
         return HTTPException(status_code=409, detail=str(e))
-    logger.warning("APM 작업 API 게이트웨이 오류: %s", e)
-    return HTTPException(status_code=502, detail=f"작업 정보를 가져오지 못했습니다: {e}")
+    return HTTPException(
+        status_code=502,
+        detail=user_error_detail("작업 정보를 가져오지 못했습니다", e, logger, request),
+    )
 
 
 _ERRORS = (JobNotFoundError, JobForbiddenError, JobConflictError, JobUnavailableError)
@@ -79,7 +87,7 @@ async def get_apm_job(
     try:
         return await _service(request).status(job_id, current_user)
     except _ERRORS as e:
-        raise _http_error(e) from e
+        raise _http_error(e, request) from e
 
 
 @router.post("/apm/jobs/{job_id}/cancel")
@@ -92,7 +100,7 @@ async def cancel_apm_job(
     try:
         return await _service(request).cancel(job_id, current_user)
     except _ERRORS as e:
-        raise _http_error(e) from e
+        raise _http_error(e, request) from e
 
 
 @router.get("/apm/jobs/{job_id}/download")
@@ -106,7 +114,7 @@ async def download_apm_job(
     try:
         download = await _service(request).open_download(job_id, current_user, format)
     except _ERRORS as e:
-        raise _http_error(e) from e
+        raise _http_error(e, request) from e
 
     async def body() -> AsyncIterator[bytes]:
         sent = 0

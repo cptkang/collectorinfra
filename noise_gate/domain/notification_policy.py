@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timezone
 from typing import Any
 
@@ -151,7 +152,8 @@ STAGE_UNKNOWN = "unknown"
 
 # 단계 설명(관제 화면 (!) 팝오버 · plans/112 S4). 판정 순서·라벨과 같은 파일에 두어, 판정을
 # 고치는 사람이 설명을 함께 보게 한다. **판정에 관여하지 않는다**(관측 전용). 문구는 아래
-# decide_notification의 결정 지점과 대조해 썼다 — 판정을 바꾸면 이 표도 같이 고친다.
+# RULES 표의 규칙(_rule_*)·_matrix_decision의 결정 지점과 대조해 썼다 — 판정을 바꾸면
+# 이 표도 같이 고친다.
 STAGE_DESCRIPTIONS: dict[str, str] = {
     STAGE_NON_ALARM: (
         "알람 표지(가용성·사용률·임계·초과·장애·경고 등)가 하나도 없고 승인·요청·안내·공지·"
@@ -440,6 +442,793 @@ class _ConfigOverride:
         return getattr(self.__dict__.get("_base"), name)
 
 
+@dataclass(frozen=True)
+class GateInputs:
+    """`decide_notification` 한 번의 판정 입력 묶음(원 인자 + 읽은 플래그 + 사전 계산 파생값).
+
+    공개 시그니처는 그대로 두고 함수 안에서 `_gate_inputs`로 조립한다. 사전 계산은 어느 경로든
+    항상 계산되던 값(step 1 실효 심각도 · step 2 수집 실패 보수화 · 보조 입력)까지만이다 —
+    조건부로만 부르던 판정 함수(비알람 마커·침묵 매칭·매트릭스·앱 영향·지문)는 해당 규칙 안에서
+    부른다.
+    """
+
+    # ── 원 인자(step 5 shadow 재귀가 그대로 다시 넘긴다) ──
+    event: Any
+    history_stats: Any
+    analysis: Any
+    noise_ctx: Any
+    config: Any
+    self_heal: bool
+    inhibited: bool
+    flapping: bool
+    storm: bool
+    correlated: bool
+    annotation: dict[str, Any] | None
+    silence_rules: Any
+    now: datetime | None
+    apm_policy: dict[str, Any] | None
+    cross_source: dict[str, Any] | None
+    # ── config 플래그(getattr 안전 접근 — 기본값이면 현행 동작) ──
+    suppress_max_severity: int
+    resolved_to_dashboard: bool
+    dependency_suppression: bool
+    inhibition_enabled: bool
+    flapping_enabled: bool
+    storm_grouping_enabled: bool
+    cross_host_correlation_enabled: bool
+    non_alarm_filter_enabled: bool
+    annotation_planned_suppress: bool
+    collection_failed_sev3_only: bool
+    apm_sev3_policy_enabled: bool
+    # ── step 1·2 · 보조 입력 ──
+    severity: int
+    ai_severity: Any
+    effective_severity: int
+    collection_failed: bool
+    importance: str
+    maintenance: bool
+    noti_policy: Any
+    pattern: str
+    is_routine: Any
+    llm_actionability: Any
+    apm_alarm_key: str | None
+    cross_source_cap: bool
+    # (plans/162 R4) 수집 실패 표지 — 규칙 표 「표지」 열이 True인 행·매트릭스가 받는 보기에서만
+    # `collection_failed and effective_severity >= 1`이다(그 밖은 False).
+    mark_collection_failed: bool = False
+
+
+def _effective_severity(event: Any, analysis: Any, config: Any) -> tuple[int, Any, Any]:
+    """step 1 — (수신 심각도, AI 상향 등급, 실효 심각도)를 돌려준다.
+
+    실효심각도 = max(수신 severity, AI 상향등급). max()가 하향 불가를 보장한다(상향 전용·R-10).
+    보강 비활성(enable_ai_severity_boost=False)이면 AI 값을 무시한다(이중 안전·E2 회귀 0).
+    step3의 심각도3 단락은 effective_severity 기준이므로 AI가 2→3 상향 시에도 올바르게 PAGE 단락.
+    해소(is_clear) 알람에는 상향을 적용하지 않는다 — 조건 로그에 3급 시그니처가 남은 해소 알림이
+    심각도3 단락(PAGE)에 걸리면 안 되고 step4(해소·자가복구)로 가야 한다. 상향 원천(시그니처 스캔·
+    LLM 해석·동적 baseline·agentic 보강)이 모두 이 슬롯 하나로 들어오므로 여기서 한 번에 막는다.
+    """
+    severity = int(getattr(event, "severity", 0) or 0)
+    ai_severity = getattr(analysis, "ai_message_severity", None)
+    if not getattr(config, "enable_ai_severity_boost", False) or bool(
+        getattr(event, "is_clear", False)
+    ):
+        ai_severity = None
+    effective_severity = max(severity, ai_severity) if ai_severity is not None else severity
+    return severity, ai_severity, effective_severity
+
+
+def _context_signals(
+    noise_ctx: Any, importance_value_map: dict[str, str]
+) -> tuple[bool, str, bool, Any]:
+    """step 2 — (수집 실패, 중요도, 유지보수, 통보 정책)을 돌려준다(수집 실패 시 보수화)."""
+    collection_failed = noise_ctx is None or noise_ctx.get("source") == "unavailable"
+    if collection_failed:
+        return collection_failed, "보통", False, None
+    if noise_ctx.get("source") == NOISE_SOURCE_APM_POLICY:
+        # (plans/144 §4.1) 제니퍼 유형 정책 — importance_id가 이미 라벨이다(미지 값은 보통 보수).
+        label = noise_ctx.get("importance_id")
+        importance = label if label in _VALID_IMPORTANCE else "보통"
+    else:
+        importance = map_importance(noise_ctx.get("importance_id"), importance_value_map)
+    return (
+        collection_failed,
+        importance,
+        bool(noise_ctx.get("maintenance")),
+        noise_ctx.get("noti_policy"),
+    )
+
+
+def _gate_inputs(
+    event: Any,
+    history_stats: Any,
+    analysis: Any,
+    noise_ctx: Any,
+    config: Any,
+    *,
+    self_heal: bool,
+    inhibited: bool,
+    flapping: bool,
+    storm: bool,
+    correlated: bool,
+    annotation: dict[str, Any] | None,
+    silence_rules: Any,
+    now: datetime | None,
+    apm_policy: dict[str, Any] | None,
+    cross_source: dict[str, Any] | None,
+) -> GateInputs:
+    """원 인자에서 플래그를 읽고 step 1·2·보조 입력을 계산해 `GateInputs`를 만든다.
+
+    읽는 순서는 리팩터 전 `decide_notification` 본문과 같다.
+    """
+    suppress_max_severity = int(getattr(config, "suppress_max_severity", 2))
+    importance_value_map = getattr(config, "importance_value_map", {}) or {}
+    resolved_to_dashboard = bool(getattr(config, "resolved_to_dashboard", False))
+    dependency_suppression = bool(getattr(config, "dependency_suppression", False))
+    inhibition_enabled = bool(getattr(config, "inhibition_enabled", False))
+    flapping_enabled = bool(getattr(config, "flapping_enabled", False))
+    storm_grouping_enabled = bool(getattr(config, "storm_grouping_enabled", False))
+    cross_host_correlation_enabled = bool(
+        getattr(config, "cross_host_correlation_enabled", False)
+    )
+    # (Plan 60 E7) 옵트인 — 기본 off면 아래 신규 단계를 평가하지 않아 비트동일(회귀 0).
+    non_alarm_filter_enabled = bool(getattr(config, "non_alarm_filter_enabled", False))
+    annotation_planned_suppress = bool(
+        getattr(config, "annotation_planned_suppress", False)
+    )
+    # (plans/162 R4 · D-330 ③) 옵트인 — 기본 off면 step 5 보수 PAGE 그대로(비트 동일).
+    collection_failed_sev3_only = bool(
+        getattr(config, "collection_failed_page_sev3_only", False)
+    )
+    # (plans/162 W5 · D-336) 옵트인 — 기본 off면 제니퍼 정책 경로 심각도3도 단락 PAGE(비트 동일).
+    apm_sev3_policy_enabled = bool(getattr(config, "apm_sev3_policy_enabled", False))
+
+    # ── step 1: 실효 심각도 (E3 — AI 메시지 심각도 상향 전용 보강) ──
+    severity, ai_severity, effective_severity = _effective_severity(event, analysis, config)
+
+    # ── step 2: 신호 수집 실패 시 보수화 ─────────────────────
+    collection_failed, importance, maintenance, noti_policy = _context_signals(
+        noise_ctx, importance_value_map
+    )
+
+    # LLM 보조 입력(패턴·is_routine)은 수집 실패와 무관하게 해석에 사용
+    pattern = ""
+    if analysis is not None:
+        pattern = str(getattr(analysis, "pattern_type", "") or "")
+    if not pattern and history_stats is not None:
+        pattern = str(getattr(history_stats, "pre_classification", "") or "")
+    is_routine = getattr(analysis, "is_routine", None) if analysis is not None else None
+
+    # LLM 액션가능성(피드백 few-shot·E4) — 보조 신호일 뿐 판단은 결정적 규칙(step 9)이 내린다.
+    # enable off(기본)면 값을 읽지 않고 None으로 무시한다(E3 회귀 0). 심각도3은 step3에서 이미
+    # 단락되어 이 신호와 무관하다. _signals()가 모든 결정(sev3 포함)에서 참조하므로 미리 확정한다.
+    enable_actionability = bool(getattr(config, "enable_llm_actionability", False))
+    llm_actionability = (
+        getattr(analysis, "llm_actionability", None) if analysis is not None else None
+    )
+    if not enable_actionability:
+        llm_actionability = None
+
+    # (plans/144 §4.3) 제니퍼 정책 경로면 정규화 유형으로 지문을 만든다(None = 현행 alarm_name).
+    apm_alarm_key: str | None = None
+    if apm_policy and apm_policy.get("event_type_norm"):
+        apm_alarm_key = str(apm_policy["event_type_norm"])
+
+    # (plans/144 W3) 크로스소스 상한 조건 — 모드·결합 판정·규칙 단위 enforce가 모두 맞을 때만.
+    cross_source_cap = bool(
+        cross_source
+        and cross_source.get("mode") == MODE_ENFORCE
+        and cross_source.get("action") == ACTION_DEMOTE
+        and cross_source.get("enforce") is True
+    )
+
+    return GateInputs(
+        event=event,
+        history_stats=history_stats,
+        analysis=analysis,
+        noise_ctx=noise_ctx,
+        config=config,
+        self_heal=self_heal,
+        inhibited=inhibited,
+        flapping=flapping,
+        storm=storm,
+        correlated=correlated,
+        annotation=annotation,
+        silence_rules=silence_rules,
+        now=now,
+        apm_policy=apm_policy,
+        cross_source=cross_source,
+        suppress_max_severity=suppress_max_severity,
+        resolved_to_dashboard=resolved_to_dashboard,
+        dependency_suppression=dependency_suppression,
+        inhibition_enabled=inhibition_enabled,
+        flapping_enabled=flapping_enabled,
+        storm_grouping_enabled=storm_grouping_enabled,
+        cross_host_correlation_enabled=cross_host_correlation_enabled,
+        non_alarm_filter_enabled=non_alarm_filter_enabled,
+        annotation_planned_suppress=annotation_planned_suppress,
+        collection_failed_sev3_only=collection_failed_sev3_only,
+        apm_sev3_policy_enabled=apm_sev3_policy_enabled,
+        severity=severity,
+        ai_severity=ai_severity,
+        effective_severity=effective_severity,
+        collection_failed=collection_failed,
+        importance=importance,
+        maintenance=maintenance,
+        noti_policy=noti_policy,
+        pattern=pattern,
+        is_routine=is_routine,
+        llm_actionability=llm_actionability,
+        apm_alarm_key=apm_alarm_key,
+        cross_source_cap=cross_source_cap,
+    )
+
+
+def _signals(g: GateInputs) -> dict[str, Any]:
+    """§8.2 동결 스키마(모든 키 필수)로 신호 스냅샷을 구성한다."""
+    noise_ctx = g.noise_ctx
+    return {
+        "severity": g.severity,
+        "ai_severity": g.ai_severity,
+        "effective_severity": g.effective_severity,
+        "importance": g.importance,
+        "maintenance": g.maintenance,
+        # 수집 실패(noise_ctx None)·미수집(E1, collect_dependency=False)이면 None.
+        # E1(dependency_suppression=False)은 컬렉터가 항상 None을 반환하므로 무변경(회귀 0).
+        "parent_avail_status": (
+            noise_ctx.get("parent_avail_status") if noise_ctx else None
+        ),
+        "pattern": g.pattern,
+        "is_routine": g.is_routine,
+        "noti_policy": g.noti_policy,
+        "flapping": bool(g.flapping),
+        "self_heal": bool(g.self_heal),
+        "storm": bool(g.storm),
+        # E4: LLM 액션가능성 자문(actionable|noise|None). enable off면 None(무시).
+        "llm_actionability": g.llm_actionability,
+        # Plan 60 E4: 다홉 연쇄 신호(미산출·1홉 모드면 None).
+        "cascaded": (noise_ctx.get("cascaded") if noise_ctx else None),
+        "root_resource": (noise_ctx.get("root_resource") if noise_ctx else None),
+        # Plan 60 E2: 크로스-호스트 상관(워커 산출·step7.5 소비). off면 항상 False.
+        "correlated": bool(g.correlated),
+    }
+
+
+def _decision(
+    g: GateInputs,
+    tier: str,
+    reason: str,
+    stage: str,
+    evidence: dict[str, Any] | None = None,
+) -> NotificationDecision:
+    """티어·사유·**결정 단계**로 판단 결과를 만든다.
+
+    stage는 관측 전용(Plan 54 퍼널)이며 tier/reason/priority/signals 산출에 관여하지 않는다.
+    evidence(plans/112 S6)도 같다 — 결정 지점이 이미 계산한 값을 옮겨 담을 뿐이다.
+    evidence 키 순서: 전달 evidence → 수집 실패 표지 → apm_policy → episode_id → cross_source.
+    """
+    merged = dict(evidence or {})
+    if g.mark_collection_failed:
+        # (plans/162 R4) 수집 실패 표지 — 단계가 매트릭스 등으로 바뀌어도 셀 수 있게 싣는다.
+        merged[EVIDENCE_COLLECTION_FAILED] = True
+    if g.apm_policy:
+        # (plans/144 §6.2) 제니퍼 정책 근거 — 결정 단계와 무관하게 싣는다(감사 전용).
+        merged["apm_policy"] = dict(g.apm_policy)
+    cross_source = g.cross_source
+    if cross_source:
+        # (plans/144 §6.2 · W3) 사건 id와 크로스소스 근거 — 결정 단계와 무관하게 싣는다.
+        # applied는 이 판단에서 상한이 실제로 티어를 낮췄을 때만 True다.
+        if cross_source.get("episode_id"):
+            merged["episode_id"] = cross_source["episode_id"]
+        merged["cross_source"] = {
+            **{k: v for k, v in cross_source.items() if k != "episode_id"},
+            "applied": stage == STAGE_CROSS_SOURCE,
+        }
+    return NotificationDecision(
+        tier=tier,
+        reason=reason,
+        priority=_priority(tier, g.effective_severity, g.importance),
+        signals=_signals(g),
+        fingerprint=compute_fingerprint(g.event, alarm_key=g.apm_alarm_key),
+        stage=stage,
+        evidence=merged,
+    )
+
+
+# ── 조기 종결 규칙 — 각각 (GateInputs) -> 결정 | None(통과). 평가 순서는 아래 RULES 표가 정한다 ──
+
+
+def _rule_non_alarm(g: GateInputs) -> NotificationDecision | None:
+    """step 0.5(E7-b): 비알람 사전분류 — 승인/안내성 메시지 억제(§17.4).
+
+    non_alarm_filter_enabled=False(기본)면 평가하지 않아 심각도3 단락(step3) 포함 비트동일(회귀 0).
+    활성 시 심각도3 단락보다 앞이지만 — 비알람은 severity 신뢰 불가하므로 마커 판정을 우선한다
+    (§17.4). is_operational_alarm은 알람 마커 부재+비알람 마커 존재일 때만 False(애매하면 알람).
+    """
+    if g.non_alarm_filter_enabled and not is_operational_alarm(g.event):
+        return _decision(
+            g,
+            TIER_SUPPRESS,
+            "비운영 알람 — 승인/안내성 메시지(마커 기반 사전 억제)",
+            STAGE_NON_ALARM,
+            {"markers": non_alarm_markers(g.event)},
+        )
+    return None
+
+
+def _rule_severity3(g: GateInputs) -> NotificationDecision | None:
+    """step 3: 심각도 3 → 즉시 PAGE(단락, 억제 금지 D-035).
+
+    (plans/162 W5 · D-336) 플래그 on + 제니퍼 정책 경로면 유형 정책 표를 본다 — 통보(page)
+    유형만 PAGE, 그 밖(표 밖 유형·default 행)은 TICKET. 어느 쪽이든 여기서 끝난다(뒤 억제
+    단계 미경유 · DASHBOARD 아래로 내리지 않는다 D-317 ①). 수집 실패·폴스타는 현행 단락.
+    """
+    if g.effective_severity != 3:
+        return None
+    if (
+        g.apm_sev3_policy_enabled
+        and g.noise_ctx is not None
+        and g.noise_ctx.get("source") == NOISE_SOURCE_APM_POLICY
+    ):
+        policy_page = g.noti_policy == "notify"
+        sev3_evidence = {
+            EVIDENCE_APM_SEV3_POLICY: {
+                "notify": "page" if policy_page else "ticket",
+                "policy_row": (g.apm_policy or {}).get("policy_row"),
+            }
+        }
+        if policy_page:
+            return _decision(
+                g,
+                TIER_PAGE,
+                "심각도3 — 제니퍼 유형 정책(PAGE 유형) · 항상 통보",
+                STAGE_SEVERITY3,
+                sev3_evidence,
+            )
+        return _decision(
+            g,
+            TIER_TICKET,
+            "심각도3 — 제니퍼 유형 정책(비PAGE 유형) · TICKET",
+            STAGE_SEVERITY3,
+            sev3_evidence,
+        )
+    return _decision(
+        g, TIER_PAGE, "심각도3 — 항상 통보(억제 단계 미경유)", STAGE_SEVERITY3
+    )
+
+
+def _rule_clear(g: GateInputs) -> NotificationDecision | None:
+    """step 4: 해소(severity 0)/자가복구 상관(매트릭스 미경유)."""
+    if not bool(getattr(g.event, "is_clear", False)):
+        return None
+    if g.self_heal:
+        return _decision(
+            g,
+            TIER_SUPPRESS,
+            "자가복구 상관 — 발생 알람과 해소 매칭으로 억제",
+            STAGE_SELF_HEAL,
+        )
+    if g.resolved_to_dashboard:
+        return _decision(
+            g, TIER_DASHBOARD, "독립 해소 — 대시보드 표시(통보 없음)", STAGE_RESOLVED
+        )
+    return _decision(
+        g, TIER_SUPPRESS, "독립 해소 — 매칭 발생 없음, 감사 기록만", STAGE_RESOLVED
+    )
+
+
+def _rule_collection_failed(g: GateInputs) -> NotificationDecision | None:
+    """step 5: 수집 실패 보수 처리(심각도/해소 규칙 다음).
+
+    (plans/162 R4 · D-330 ③) 플래그 on이면 여기서 PAGE를 내지 않는다 — 심각도3은 step 3에서 이미
+    PAGE이고, 그 밖은 중요도 「보통」으로 뒤 단계를 그대로 탄다(이때 뒤 판정에 수집 실패 표지가
+    실린다 — RULES 「표지」 열).
+    """
+    if not (
+        g.collection_failed
+        and g.effective_severity >= 1
+        and not g.collection_failed_sev3_only
+    ):
+        return None
+    shadow_evidence: dict[str, Any] | None = None
+    if str(getattr(g.config, "page_review_mode", "off") or "off") == _PAGE_REVIEW_SHADOW:
+        # 같은 입력·같은 now로 플래그 on 판정을 한 번 더 계산한다(재귀는 on 경로라 1단계뿐).
+        would = decide_notification(
+            g.event,
+            g.history_stats,
+            g.analysis,
+            g.noise_ctx,
+            _ConfigOverride(g.config, collection_failed_page_sev3_only=True),
+            self_heal=g.self_heal,
+            inhibited=g.inhibited,
+            flapping=g.flapping,
+            storm=g.storm,
+            correlated=g.correlated,
+            annotation=g.annotation,
+            silence_rules=g.silence_rules,
+            now=g.now or datetime.now(UTC),
+            apm_policy=g.apm_policy,
+            cross_source=g.cross_source,
+        )
+        shadow_evidence = {
+            EVIDENCE_COLLECTION_FAILED_SHADOW: {
+                "mode": _PAGE_REVIEW_SHADOW,
+                "would_tier": would.tier,
+            }
+        }
+    return _decision(
+        g,
+        TIER_PAGE,
+        "신호 수집 실패 — 보수적 PAGE",
+        STAGE_COLLECTION_FAILED,
+        shadow_evidence,
+    )
+
+
+def _rule_maintenance(g: GateInputs) -> NotificationDecision | None:
+    """step 6: 유지보수 모드 → SUPPRESS(기록 유지)."""
+    if g.maintenance:
+        return _decision(
+            g, TIER_SUPPRESS, "유지보수 모드 — 신규 발송 억제(감사 기록)", STAGE_MAINTENANCE
+        )
+    return None
+
+
+def _rule_silence(g: GateInputs) -> NotificationDecision | None:
+    """step 6.2(Plan 54): 침묵 — 운영자가 건 규칙에 걸리면 억제(감사 기록 유지).
+
+    silence_enabled=False(기본)면 워커가 silenced를 산출하지 않아 평가 자체가 없다(회귀 0).
+    심각도3은 step3에서 이미 단락되어 이 단계에 도달하지 않는다 — 규칙으로 뚫을 수 없다.
+    """
+    if not g.silence_rules:
+        return None
+    matched_rule = match_rules(
+        g.silence_rules,
+        g.event,
+        effective_severity=g.effective_severity,
+        now=g.now or datetime.now(timezone.utc),  # noqa: UP017 — 리팩터 전 그대로(동작 불변)
+    )
+    if matched_rule is None:
+        return None
+    return _decision(
+        g,
+        TIER_SUPPRESS,
+        f"침묵 규칙({matched_rule.id}) — {matched_rule.reason or '운영자 지정 기간 억제'}",
+        STAGE_SILENCE,
+        _silence_evidence(matched_rule),
+    )
+
+
+def _rule_dependency(g: GateInputs) -> NotificationDecision | None:
+    """step 6.4(E2·E4): 의존성 억제 — 조상 비정상 시 자식 연쇄 노이즈(§3.6·§6.2).
+
+    dependency_suppression=False(기본)면 단계 자체를 평가하지 않아 E1 무변경.
+    """
+    if not g.dependency_suppression:
+        return None
+    noise_ctx = g.noise_ctx
+    # (plans/112 S6) 근본원인 자원명은 다홉 조상 탐색이 채울 때만 싣는다(1홉이면 보통 없음).
+    root_name = noise_ctx.get("root_resource_name") if noise_ctx else None
+    root_name_evidence = (
+        {"root_resource_name": root_name} if isinstance(root_name, str) and root_name else {}
+    )
+    # E4 다홉 하이브리드(§6.2): cascaded(다홉 조상 비정상)면 root 통보 여부로 억제 강도 분기.
+    # cascaded 미제공(1홉 모드·수집 실패)이면 아래 현행 parent_avail_status 판정으로 폴백.
+    if noise_ctx and noise_ctx.get("cascaded"):
+        root_notified = bool(noise_ctx.get("root_notified"))
+        multi_hop_evidence = {
+            "mode": "multi_hop",
+            "root_notified": root_notified,
+            **root_name_evidence,
+        }
+        if noise_ctx.get("root_notified"):
+            return _decision(
+                g,
+                TIER_SUPPRESS,
+                "의존성 억제(다홉) — 근본원인 노드 통보됨",
+                STAGE_DEPENDENCY,
+                multi_hop_evidence,
+            )
+        return _decision(
+            g,
+            TIER_DASHBOARD,
+            "의존성 연쇄(다홉) — 근본원인 미통보, 대시보드 강등",
+            STAGE_DEPENDENCY,
+            multi_hop_evidence,
+        )
+    # 1홉 폴백(현행 무변경): parent_avail_status 0=정상, ≠0=비정상, None=미수집(보수적 비억제·R-3).
+    parent_avail_status = noise_ctx.get("parent_avail_status") if noise_ctx else None
+    if parent_avail_status is not None and parent_avail_status != 0:
+        return _decision(
+            g,
+            TIER_SUPPRESS,
+            f"의존성 억제 — 부모 리소스 비정상(AVAIL_STATUS={parent_avail_status}),"
+            " 자식 연쇄 노이즈",
+            STAGE_DEPENDENCY,
+            {"mode": "one_hop", **root_name_evidence},
+        )
+    return None
+
+
+def _rule_inhibition(g: GateInputs) -> NotificationDecision | None:
+    """step 6.5(E2): 인히비션 — 동일 서버 상위 심각도 발생 중 하위 음소거(§3.4).
+
+    inhibited는 워커가 결정적으로 탐지(자기억제 금지·window)하여 인자로 전달.
+    inhibition_enabled=False(기본)면 평가하지 않아 E1 무변경.
+    """
+    if g.inhibition_enabled and g.inhibited:
+        return _decision(
+            g,
+            TIER_SUPPRESS,
+            "인히비션 — 동일 서버 상위 심각도 발생 중, 하위 음소거",
+            STAGE_INHIBITION,
+        )
+    return None
+
+
+def _rule_flapping(g: GateInputs) -> NotificationDecision | None:
+    """step 6(§6 파이프라인·E2): 플래핑 — 상태 진동 시 안정화까지 보류(§3.7).
+
+    flapping은 워커가 도메인 순수함수(flapping.py)로 산출하여 인자로 전달.
+    저심각도(effective_severity<=suppress_max_severity)만 억제 — 심각도3은 위에서 단락(불변).
+    flapping_enabled=False(기본)면 평가하지 않아 E1 무변경.
+    """
+    if (
+        g.flapping_enabled
+        and g.flapping
+        and g.effective_severity <= g.suppress_max_severity
+    ):
+        return _decision(
+            g,
+            TIER_SUPPRESS,
+            "플래핑 — 상태 진동(Nagios), 안정화까지 통보 보류",
+            STAGE_FLAPPING,
+        )
+    return None
+
+
+def _rule_storm(g: GateInputs) -> NotificationDecision | None:
+    """step 7(§6 파이프라인·E2): 스톰 — 동일 서버 다발 시 대표만 통보(§3.8).
+
+    storm은 워커가 사건창(동일 db_id|server) 카운트로 산출하여 인자로 전달.
+    storm_grouping_enabled=False(기본)면 평가하지 않아 E1 무변경.
+    """
+    if g.storm_grouping_enabled and g.storm:
+        return _decision(
+            g, TIER_SUPPRESS, "스톰 — 동일 서버 다발, 대표 1건만 통보", STAGE_STORM
+        )
+    return None
+
+
+def _rule_correlation(g: GateInputs) -> NotificationDecision | None:
+    """step 7.5(E2): 크로스-호스트 상관 — 클러스터 대표 외 억제(§4.2).
+
+    correlated는 워커가 온라인 그리디 군집(correlation.py)으로 산출하여 인자로 전달.
+    cross_host_correlation_enabled=False(기본)면 평가하지 않아 회귀 0. 심각도3은 step3에서
+    이미 단락되어 이 단계에 도달하지 않는다(군집돼도 각각 PAGE, 불변). storm(동일 서버 다발)과
+    사유를 구분한다 — storm 경로 재사용 시 "동일 서버 다발" 사유가 감사를 오도하기 때문.
+    """
+    if g.cross_host_correlation_enabled and g.correlated:
+        return _decision(
+            g, TIER_SUPPRESS, "크로스-호스트 상관 — 클러스터 대표 외 억제", STAGE_CORRELATION
+        )
+    return None
+
+
+def _rule_cross_source_cap(g: GateInputs) -> NotificationDecision | None:
+    """step 7.6(plans/144 W3): 크로스소스 사건 상관 — 증상 DASHBOARD 상한(§5.2 · G-2).
+
+    cross_source는 워커가 사건 추적기로 산출해 넘긴다(None·off면 미평가 → 비트동일). 상한은
+    강제 모드 + 결합 조건 전부 충족 + 규칙 단위 enforce일 때만 건다. **티어를 올리지 않는다** —
+    매트릭스 결과가 DASHBOARD보다 높을 때만 낮추고, 이미 DASHBOARD 이하면 통과(None)해 다음
+    단계(7.7·8)로 그대로 간다(7.7처럼 terminal DASHBOARD를 반환하면 매트릭스 SUPPRESS가
+    DASHBOARD로 올라간다). 앞 단계 억제가 우선이고 심각도3은 step3에서 이미 단락되어 이 단계에
+    도달하지 않는다. 매트릭스는 순수 계산이라 여기서 먼저 한 번 보고 끝에 다시 만들어도 같다.
+    """
+    if not g.cross_source_cap:
+        return None
+    matrix_decision = _matrix_decision(g)
+    if _TIER_RANK[matrix_decision.tier] > _TIER_RANK[TIER_DASHBOARD]:
+        cs = g.cross_source or {}
+        return _decision(
+            g,
+            TIER_DASHBOARD,
+            f"크로스소스 사건 상관 — 원인 {cs.get('cause_alarm_id', '')} 통보 중, 증상 "
+            f"대시보드 강등(규칙 {cs.get('rule_id', '')} · 호스트 {cs.get('host_key', '')} · "
+            f"시차 {cs.get('lag_seconds', '')}초 · 매트릭스 {matrix_decision.tier})",
+            STAGE_CROSS_SOURCE,
+            {"capped_from": matrix_decision.tier},
+        )
+    return None
+
+
+def _rule_annotation(g: GateInputs) -> NotificationDecision | None:
+    """step 7.7(E7-a·B-9): 계획-무해 주석 코로보레이션 게이팅 DASHBOARD 강등(§17.3).
+
+    텍스트 단독으로는 절대 억제강화 금지 — planned_work **AND** (resolution 또는 E2 클러스터
+    소속(correlated) 또는 E5 change_nearby)가 동시 충족될 때만 DASHBOARD 강등(SUPPRESS 아님·
+    E4 하이브리드 정합). 주석 단독(코로보레이션 없음)이면 강등하지 않고 통상 매트릭스로
+    진행(첨부만). annotation_planned_suppress=False(기본)면 평가하지 않아 비트동일(회귀 0).
+    심각도3은 step3에서 이미 단락되어 이 단계에 도달하지 않는다(불변). SUPPRESS는 위 단계가
+    우선(더 강한 억제 보존).
+    """
+    annotation = g.annotation
+    if not (g.annotation_planned_suppress and annotation and annotation.get("planned_work")):
+        return None
+    noise_ctx = g.noise_ctx
+    corroborated = (
+        bool(annotation.get("resolution"))
+        or bool(g.correlated)
+        or bool(noise_ctx and noise_ctx.get("change_nearby"))
+    )
+    if not corroborated:
+        return None
+    # (plans/112 S6) 강등을 뒷받침한 출처 — 위 corroborated와 같은 세 조건을 따로 적는다.
+    corroborated_by = [
+        source
+        for source, hit in (
+            ("resolution", bool(annotation.get("resolution"))),
+            ("correlation", bool(g.correlated)),
+            ("change_nearby", bool(noise_ctx and noise_ctx.get("change_nearby"))),
+        )
+        if hit
+    ]
+    return _decision(
+        g,
+        TIER_DASHBOARD,
+        "계획-무해 주석(코로보레이션) — 대시보드 강등(계획작업+해소/상관/변경근접)",
+        STAGE_ANNOTATION,
+        {"corroborated_by": corroborated_by},
+    )
+
+
+# ── step 8~9.5: 우선순위 매트릭스 · 보조 조정 · 앱 영향 승격(규칙 표를 모두 통과한 최종 관문) ──
+
+
+def _adjustment_signals(g: GateInputs) -> tuple[list[str], list[str]]:
+    """step 9 보조 조정 신호 — (승격 사유, 강등 사유) 목록을 수집한다."""
+    effective_severity = g.effective_severity
+    promote: list[str] = []
+    demote: list[str] = []
+    if g.noti_policy == "notify":
+        promote.append("폴스타 통보 정책(notify)")
+    if g.noti_policy == "suppress":
+        demote.append("폴스타 비통보 정책(suppress)")
+    if g.is_routine is True and effective_severity <= g.suppress_max_severity:
+        demote.append("일상 반복 패턴(is_routine)")
+    # (D-318) is_routine=False는 승격 근거가 아니다 — 분석 프롬프트가 이력 부재 시 false를
+    # 지시해 사실상 상시 참이고, 운영 24h 매트릭스 PAGE 66건 전부가 이 승격 하나로 났다.
+    # E4: LLM 액션가능성(피드백 few-shot) — 승격 비대칭(재현율 우선).
+    # actionable → promote(항상 안전). noise → demote(is_routine과 동일하게 SUPPRESS 하한 가드).
+    # 승격우선 기계(_adjusted_tier)가 promote 신호와 공존 시 noise demote를 무시한다.
+    if g.llm_actionability == "actionable":
+        promote.append("LLM 액션가능성(피드백)")
+    if g.llm_actionability == "noise" and effective_severity <= g.suppress_max_severity:
+        demote.append("LLM 노이즈 판단(피드백)")
+    # Plan 60 E5(§7.2): 변경 근접 알람은 **억제가 아니라 승격** — 원인성 판단·PAGE 근거 보강
+    # (재현율 우선). change_correlation off·미근접이면 change_nearby 키 부재/None → 무영향
+    # (회귀 0).
+    # 이 모듈은 change 모듈을 import하지 않고 noise_ctx의 bool만 소비한다(순수성).
+    if g.noise_ctx and g.noise_ctx.get("change_nearby"):
+        promote.append("변경 근접(원인성)")
+    # plans/144 §4.2: 제니퍼 지표형 경고가 지속 조건(창 안 반복)을 못 채우면 강등 후보. 워커가
+    # 지표형·정책 행 persistence 보유일 때만 persistence를 싣는다(off·폴스타면 None → 무영향).
+    persistence = g.apm_policy.get("persistence") if g.apm_policy else None
+    if (
+        isinstance(persistence, dict)
+        and persistence.get("met") is False
+        and effective_severity == 2
+    ):
+        demote.append(_PERSISTENCE_UNMET)
+    return promote, demote
+
+
+def _adjusted_tier(base_tier: str, promote: list[str], demote: list[str]) -> tuple[str, str]:
+    """step 9 누적 조정 — 1단계 이내·승격 우선 기계와 하한을 적용해 (티어, 사유 조각)을 돌려준다."""
+    if promote:  # 승격/강등 충돌 시 승격 우선(재현율 우선)
+        adjusted = min(_TIER_RANK[base_tier] + 1, _TIER_RANK[TIER_PAGE])
+        adjust_note = " · 승격: " + ", ".join(promote)
+        if demote:
+            adjust_note += f" (강등 신호 {', '.join(demote)}는 승격 우선으로 무시)"
+        return _RANK_TIER[adjusted], adjust_note
+    if demote:
+        # 지속 조건 미달만으로 내릴 때는 DASHBOARD가 하한이다(G-1 (b) — 완전 억제 미확정).
+        # 다른 강등 사유가 함께 있으면 현행 하한(SUPPRESS) 그대로다.
+        floor = TIER_DASHBOARD if set(demote) == {_PERSISTENCE_UNMET} else TIER_SUPPRESS
+        adjusted = max(_TIER_RANK[base_tier] - 1, _TIER_RANK[floor])
+        return _RANK_TIER[adjusted], " · 강등: " + ", ".join(demote)
+    return base_tier, ""
+
+
+def _app_impact_promotion(g: GateInputs, tier: str) -> tuple[str, str, dict[str, Any]]:
+    """step 9.5(plans/87 J4 · R-7 · D-195 ②): 앱 영향 승격 — **승격 전용 비대칭**.
+
+    noise_ctx["app_impact"](Plan 55 예약키)는 게이트 노드가 APM 게이트웨이 `apm_events`로
+    채운다(같은 hostname·사건창의 fatal 이벤트 1건 이상). 위 조정 결과가 DASHBOARD·TICKET일
+    때만 PAGE로 올린다 — SUPPRESS(강등 결과 포함)는 되살리지 않고 PAGE는 그대로다. 억제
+    단계와 심각도3 단락은 이 지점 앞에서 끝나므로 영향이 없다. 키 부재·None(off·미수집·
+    agentic 예약값)이면 무영향(회귀 0).
+    signals 동결 스키마는 확장하지 않는다(change_nearby 전례 — 근거는 reason·evidence).
+
+    Returns:
+        (최종 티어, 사유 조각, evidence 조각) — 승격이 없으면 (tier, "", {}).
+    """
+    app_impact: Any = g.noise_ctx.get("app_impact") if g.noise_ctx else None
+    fatal_events = _app_impact_fatal_events(app_impact)
+    if fatal_events and tier in (TIER_DASHBOARD, TIER_TICKET):
+        return (
+            TIER_PAGE,
+            f" · 앱 영향 승격: APM fatal {fatal_events}건",
+            {
+                "app_impact_fatal_events": fatal_events,
+                "app_impact_event_types": list(app_impact.get("event_types") or []),
+                "app_impact_was_signals": list(app_impact.get("was_signals") or []),
+                "app_impact_source": str(app_impact.get("source") or ""),
+            },
+        )
+    return tier, "", {}
+
+
+def _matrix_decision(g: GateInputs) -> NotificationDecision:
+    """step 8~9.5 결과(매트릭스 단계 판단)를 만든다.
+
+    순수 계산이라 호출 시점·횟수와 무관하게 같은 결과다(step 7.6이 먼저 한 번 본다).
+    """
+    # ── step 8: 우선순위 매트릭스(§3.2) ─────────────────────
+    base_tier = _matrix_tier(g.effective_severity, g.importance)
+    # ── step 9: 보조 조정(1단계 이내·보수적, 승격 우선) ──────
+    promote, demote = _adjustment_signals(g)
+    tier, adjust_note = _adjusted_tier(base_tier, promote, demote)
+    # ── step 9.5: 앱 영향 승격 ──
+    tier, app_impact_note, app_impact_evidence = _app_impact_promotion(g, tier)
+
+    reason = (
+        f"매트릭스(심각도{g.effective_severity}×중요도{g.importance}) → {base_tier}{adjust_note}"
+        f"{app_impact_note} → 최종 {tier}"
+    )
+    # (plans/112 S6) 사유 문자열에 합쳐 있던 산식 조각을 구조화해 함께 남긴다(판정 무관).
+    return _decision(
+        g,
+        tier,
+        reason,
+        STAGE_MATRIX,
+        {
+            "base_tier": base_tier,
+            "promote": list(promote),
+            "demote": list(demote),
+            **app_impact_evidence,
+        },
+    )
+
+
+_Rule = Callable[[GateInputs], NotificationDecision | None]
+
+# ── 판정 규칙 표 — 조기 종결 단계의 **평가 순서 단일 출처** ──────────────────
+# decide_notification은 이 표를 위에서부터 평가해 첫 결정(None이 아닌 값)을 돌려주고, 전부 통과하면
+# step 8~9.5 매트릭스(_matrix_decision)로 끝낸다. 첫째 열 단계 번호는 문서·결정이 참조하는 기존
+# 라벨 그대로다 — 번호의 크기가 아니라 **표의 행 순서**가 평가 순서다(예: 플래핑 「6」은 6.5 뒤).
+# 셋째 열 「표지」(plans/162 R4 · D-330 ③): True인 행과 끝의 매트릭스는 step 5를 통과한 뒤의
+# 판정이라, 수집 실패 · 실효 심각도>=1이면 evidence에 EVIDENCE_COLLECTION_FAILED=True를 싣는다
+# (off의 step 5 PAGE와 같은 모집단). False인 행(0.5·3·4·5)의 결정에는 싣지 않는다.
+# 관측용 단계 선언 순서(STAGE_ORDER)와는 별개다 — 이 표는 판정 평가 순서다.
+RULES: tuple[tuple[str, _Rule, bool], ...] = (
+    ("0.5", _rule_non_alarm, False),  # 비알람 사전분류 — 심각도3 단락보다 앞(§17.4)
+    ("3", _rule_severity3, False),  # 심각도3 단락(D-048 · D-336)
+    ("4", _rule_clear, False),  # 해소·자가복구
+    ("5", _rule_collection_failed, False),  # 수집 실패 보수적 PAGE(D-330 ③ on이면 통과)
+    ("6", _rule_maintenance, True),  # 유지보수
+    ("6.2", _rule_silence, True),  # 침묵 규칙
+    ("6.4", _rule_dependency, True),  # 의존성(다홉/1홉)
+    ("6.5", _rule_inhibition, True),  # 인히비션
+    # 플래핑 — 번호 「6」은 유지보수와 겹치는 옛 §6 파이프라인 번호다(문서·결정이 참조해 유지).
+    ("6", _rule_flapping, True),
+    ("7", _rule_storm, True),  # 스톰
+    ("7.5", _rule_correlation, True),  # 크로스-호스트 상관
+    ("7.6", _rule_cross_source_cap, True),  # 크로스소스 상한(매트릭스 > DASHBOARD일 때만)
+    ("7.7", _rule_annotation, True),  # 계획-무해 주석
+)
+
+
 def decide_notification(
     event,
     history_stats,
@@ -459,6 +1248,9 @@ def decide_notification(
     cross_source: dict[str, Any] | None = None,
 ) -> NotificationDecision:
     """E1 결정 파이프라인(순서형·결정적, 첫 종착 확정) + E2 의존성/인히비션/플래핑/스톰 단계.
+
+    평가 순서의 정본은 모듈 수준 `RULES` 표다(plans/171) — 입력을 `GateInputs`로 모아 표의 규칙을
+    차례로 평가하고, 첫 결정을 돌려준다. 전부 통과하면 step 8~9.5 매트릭스(`_matrix_decision`)다.
 
     심각도 3은 모든 억제 단계를 단락(short-circuit)하고 항상 PAGE.
     config 속성은 안전 접근(getattr 기본값)한다:
@@ -567,509 +1359,32 @@ def decide_notification(
         - 그 밖(shadow·annotate·enforce인데 규칙 enforce false·조건 미충족·link)은 판정 불변이다.
         - evidence에 결정 단계와 무관하게 episode_id·cross_source(applied=실제 상한 여부)를 싣는다.
     """
-    suppress_max_severity = int(getattr(config, "suppress_max_severity", 2))
-    importance_value_map = getattr(config, "importance_value_map", {}) or {}
-    resolved_to_dashboard = bool(getattr(config, "resolved_to_dashboard", False))
-    dependency_suppression = bool(getattr(config, "dependency_suppression", False))
-    inhibition_enabled = bool(getattr(config, "inhibition_enabled", False))
-    flapping_enabled = bool(getattr(config, "flapping_enabled", False))
-    storm_grouping_enabled = bool(getattr(config, "storm_grouping_enabled", False))
-    cross_host_correlation_enabled = bool(
-        getattr(config, "cross_host_correlation_enabled", False)
+    g = _gate_inputs(
+        event,
+        history_stats,
+        analysis,
+        noise_ctx,
+        config,
+        self_heal=self_heal,
+        inhibited=inhibited,
+        flapping=flapping,
+        storm=storm,
+        correlated=correlated,
+        annotation=annotation,
+        silence_rules=silence_rules,
+        now=now,
+        apm_policy=apm_policy,
+        cross_source=cross_source,
     )
-    # (Plan 60 E7) 옵트인 — 기본 off면 아래 신규 단계를 평가하지 않아 비트동일(회귀 0).
-    non_alarm_filter_enabled = bool(getattr(config, "non_alarm_filter_enabled", False))
-    annotation_planned_suppress = bool(
-        getattr(config, "annotation_planned_suppress", False)
+    # RULES 「표지」 열이 True인 행과 매트릭스가 받는 보기 — 그 행들은 step 5를 통과해야만 닿는다.
+    marked = replace(
+        g, mark_collection_failed=g.collection_failed and g.effective_severity >= 1
     )
-    # (plans/162 R4 · D-330 ③) 옵트인 — 기본 off면 step 5 보수 PAGE 그대로(비트 동일).
-    collection_failed_sev3_only = bool(
-        getattr(config, "collection_failed_page_sev3_only", False)
-    )
-    # (plans/162 W5 · D-336) 옵트인 — 기본 off면 제니퍼 정책 경로 심각도3도 단락 PAGE(비트 동일).
-    apm_sev3_policy_enabled = bool(getattr(config, "apm_sev3_policy_enabled", False))
-
-    # ── step 1: 실효 심각도 (E3 — AI 메시지 심각도 상향 전용 보강) ──
-    # 실효심각도 = max(폴스타 severity, AI 상향등급). max()가 하향 불가를 보장한다(상향 전용·R-10).
-    # 보강 비활성(enable_ai_severity_boost=False)이면 AI 값을 무시한다(이중 안전·E2 회귀 0).
-    # step3의 심각도3 단락은 effective_severity 기준이므로 AI가 2→3 상향 시에도 올바르게 PAGE 단락.
-    # 해소(is_clear) 알람에는 상향을 적용하지 않는다 — 조건 로그에 3급 시그니처가 남은 해소 알림이
-    # 심각도3 단락(PAGE)에 걸리면 안 되고 step4(해소·자가복구)로 가야 한다. 상향 원천(시그니처 스캔·
-    # LLM 해석·동적 baseline·agentic 보강)이 모두 이 슬롯 하나로 들어오므로 여기서 한 번에 막는다.
-    severity = int(getattr(event, "severity", 0) or 0)
-    ai_severity = getattr(analysis, "ai_message_severity", None)
-    if not getattr(config, "enable_ai_severity_boost", False) or bool(
-        getattr(event, "is_clear", False)
-    ):
-        ai_severity = None
-    effective_severity = max(severity, ai_severity) if ai_severity is not None else severity
-
-    # ── step 2: 신호 수집 실패 시 보수화 ─────────────────────
-    collection_failed = noise_ctx is None or noise_ctx.get("source") == "unavailable"
-    if collection_failed:
-        importance = "보통"
-        maintenance = False
-        noti_policy = None
-    elif noise_ctx.get("source") == NOISE_SOURCE_APM_POLICY:
-        # (plans/144 §4.1) 제니퍼 유형 정책 — importance_id가 이미 라벨이다(미지 값은 보통 보수).
-        label = noise_ctx.get("importance_id")
-        importance = label if label in _VALID_IMPORTANCE else "보통"
-        maintenance = bool(noise_ctx.get("maintenance"))
-        noti_policy = noise_ctx.get("noti_policy")
-    else:
-        importance = map_importance(noise_ctx.get("importance_id"), importance_value_map)
-        maintenance = bool(noise_ctx.get("maintenance"))
-        noti_policy = noise_ctx.get("noti_policy")
-
-    # LLM 보조 입력(패턴·is_routine)은 수집 실패와 무관하게 해석에 사용
-    pattern = ""
-    if analysis is not None:
-        pattern = str(getattr(analysis, "pattern_type", "") or "")
-    if not pattern and history_stats is not None:
-        pattern = str(getattr(history_stats, "pre_classification", "") or "")
-    is_routine = getattr(analysis, "is_routine", None) if analysis is not None else None
-
-    # LLM 액션가능성(피드백 few-shot·E4) — 보조 신호일 뿐 판단은 결정적 규칙(step 9)이 내린다.
-    # enable off(기본)면 값을 읽지 않고 None으로 무시한다(E3 회귀 0). 심각도3은 step3에서 이미
-    # 단락되어 이 신호와 무관하다. _signals()(sev3 포함 첫 _decision 경로)가 참조하므로
-    # 여기서(첫 _decision 이전) 확정해야 클로저 참조 시 NameError가 없다.
-    enable_actionability = bool(getattr(config, "enable_llm_actionability", False))
-    llm_actionability = (
-        getattr(analysis, "llm_actionability", None) if analysis is not None else None
-    )
-    if not enable_actionability:
-        llm_actionability = None
-
-    # (plans/144 §4.3) 제니퍼 정책 경로면 정규화 유형으로 지문을 만든다(None = 현행 alarm_name).
-    apm_alarm_key: str | None = None
-    if apm_policy and apm_policy.get("event_type_norm"):
-        apm_alarm_key = str(apm_policy["event_type_norm"])
-
-    def _signals() -> dict:
-        """§8.2 동결 스키마(모든 키 필수)로 신호 스냅샷을 구성한다."""
-        return {
-            "severity": severity,
-            "ai_severity": ai_severity,
-            "effective_severity": effective_severity,
-            "importance": importance,
-            "maintenance": maintenance,
-            # 수집 실패(noise_ctx None)·미수집(E1, collect_dependency=False)이면 None.
-            # E1(dependency_suppression=False)은 컬렉터가 항상 None을 반환하므로 무변경(회귀 0).
-            "parent_avail_status": (
-                noise_ctx.get("parent_avail_status") if noise_ctx else None
-            ),
-            "pattern": pattern,
-            "is_routine": is_routine,
-            "noti_policy": noti_policy,
-            "flapping": bool(flapping),
-            "self_heal": bool(self_heal),
-            "storm": bool(storm),
-            # E4: LLM 액션가능성 자문(actionable|noise|None). enable off면 None(무시).
-            "llm_actionability": llm_actionability,
-            # Plan 60 E4: 다홉 연쇄 신호(미산출·1홉 모드면 None).
-            "cascaded": (noise_ctx.get("cascaded") if noise_ctx else None),
-            "root_resource": (noise_ctx.get("root_resource") if noise_ctx else None),
-            # Plan 60 E2: 크로스-호스트 상관(워커 산출·step7.5 소비). off면 항상 False.
-            "correlated": bool(correlated),
-        }
-
-    # (plans/144 W3) 크로스소스 상한 조건 — 모드·결합 판정·규칙 단위 enforce가 모두 맞을 때만.
-    cross_source_cap = bool(
-        cross_source
-        and cross_source.get("mode") == MODE_ENFORCE
-        and cross_source.get("action") == ACTION_DEMOTE
-        and cross_source.get("enforce") is True
-    )
-
-    # (plans/162 R4) 수집 실패 표지 — step 5를 통과한 뒤에만 켠다(아래 step 5 참조).
-    mark_collection_failed = False
-
-    def _decision(
-        tier: str, reason: str, stage: str, evidence: dict[str, Any] | None = None
-    ) -> NotificationDecision:
-        """티어·사유·**결정 단계**로 판단 결과를 만든다.
-
-        stage는 관측 전용(Plan 54 퍼널)이며 tier/reason/priority/signals 산출에 관여하지 않는다.
-        evidence(plans/112 S6)도 같다 — 결정 지점이 이미 계산한 값을 옮겨 담을 뿐이다.
-        """
-        merged = dict(evidence or {})
-        if mark_collection_failed:
-            # (plans/162 R4) 수집 실패 표지 — 단계가 매트릭스 등으로 바뀌어도 셀 수 있게 싣는다.
-            merged[EVIDENCE_COLLECTION_FAILED] = True
-        if apm_policy:
-            # (plans/144 §6.2) 제니퍼 정책 근거 — 결정 단계와 무관하게 싣는다(감사 전용).
-            merged["apm_policy"] = dict(apm_policy)
-        if cross_source:
-            # (plans/144 §6.2 · W3) 사건 id와 크로스소스 근거 — 결정 단계와 무관하게 싣는다.
-            # applied는 이 판단에서 상한이 실제로 티어를 낮췄을 때만 True다.
-            if cross_source.get("episode_id"):
-                merged["episode_id"] = cross_source["episode_id"]
-            merged["cross_source"] = {
-                **{k: v for k, v in cross_source.items() if k != "episode_id"},
-                "applied": stage == STAGE_CROSS_SOURCE,
-            }
-        return NotificationDecision(
-            tier=tier,
-            reason=reason,
-            priority=_priority(tier, effective_severity, importance),
-            signals=_signals(),
-            fingerprint=compute_fingerprint(event, alarm_key=apm_alarm_key),
-            stage=stage,
-            evidence=merged,
-        )
-
-    # ── step 0.5(E7-b): 비알람 사전분류 — 승인/안내성 메시지 억제(§17.4) ──
-    # non_alarm_filter_enabled=False(기본)면 평가하지 않아 심각도3 단락(step3) 포함 비트동일(회귀 0).
-    # 활성 시 심각도3 단락보다 앞이지만 — 비알람은 severity 신뢰 불가하므로 마커 판정을 우선한다
-    # (§17.4). is_operational_alarm은 알람 마커 부재+비알람 마커 존재일 때만 False(애매하면 알람).
-    if non_alarm_filter_enabled and not is_operational_alarm(event):
-        return _decision(
-            TIER_SUPPRESS,
-            "비운영 알람 — 승인/안내성 메시지(마커 기반 사전 억제)",
-            STAGE_NON_ALARM,
-            {"markers": non_alarm_markers(event)},
-        )
-
-    # ── step 3: 심각도 3 → 즉시 PAGE(단락, 억제 금지 D-035) ──
-    if effective_severity == 3:
-        # (plans/162 W5 · D-336) 플래그 on + 제니퍼 정책 경로면 유형 정책 표를 본다 — 통보(page)
-        # 유형만 PAGE, 그 밖(표 밖 유형·default 행)은 TICKET. 어느 쪽이든 여기서 끝난다(뒤 억제
-        # 단계 미경유 · DASHBOARD 아래로 내리지 않는다 D-317 ①). 수집 실패·폴스타는 현행 단락.
-        if (
-            apm_sev3_policy_enabled
-            and noise_ctx is not None
-            and noise_ctx.get("source") == NOISE_SOURCE_APM_POLICY
-        ):
-            policy_page = noti_policy == "notify"
-            sev3_evidence = {
-                EVIDENCE_APM_SEV3_POLICY: {
-                    "notify": "page" if policy_page else "ticket",
-                    "policy_row": (apm_policy or {}).get("policy_row"),
-                }
-            }
-            if policy_page:
-                return _decision(
-                    TIER_PAGE,
-                    "심각도3 — 제니퍼 유형 정책(PAGE 유형) · 항상 통보",
-                    STAGE_SEVERITY3,
-                    sev3_evidence,
-                )
-            return _decision(
-                TIER_TICKET,
-                "심각도3 — 제니퍼 유형 정책(비PAGE 유형) · TICKET",
-                STAGE_SEVERITY3,
-                sev3_evidence,
-            )
-        return _decision(
-            TIER_PAGE, "심각도3 — 항상 통보(억제 단계 미경유)", STAGE_SEVERITY3
-        )
-
-    # ── step 4: 해소(severity 0)/자가복구 상관(매트릭스 미경유) ─
-    if bool(getattr(event, "is_clear", False)):
-        if self_heal:
-            return _decision(
-                TIER_SUPPRESS,
-                "자가복구 상관 — 발생 알람과 해소 매칭으로 억제",
-                STAGE_SELF_HEAL,
-            )
-        if resolved_to_dashboard:
-            return _decision(
-                TIER_DASHBOARD, "독립 해소 — 대시보드 표시(통보 없음)", STAGE_RESOLVED
-            )
-        return _decision(
-            TIER_SUPPRESS, "독립 해소 — 매칭 발생 없음, 감사 기록만", STAGE_RESOLVED
-        )
-
-    # ── step 5: 수집 실패 보수 처리(심각도/해소 규칙 다음) ────
-    # (plans/162 R4 · D-330 ③) 플래그 on이면 여기서 PAGE를 내지 않는다 — 심각도3은 step 3에서 이미
-    # PAGE이고, 그 밖은 중요도 「보통」으로 뒤 단계를 그대로 탄다.
-    if collection_failed and effective_severity >= 1 and not collection_failed_sev3_only:
-        shadow_evidence: dict[str, Any] | None = None
-        if str(getattr(config, "page_review_mode", "off") or "off") == _PAGE_REVIEW_SHADOW:
-            # 같은 입력·같은 now로 플래그 on 판정을 한 번 더 계산한다(재귀는 on 경로라 1단계뿐).
-            would = decide_notification(
-                event,
-                history_stats,
-                analysis,
-                noise_ctx,
-                _ConfigOverride(config, collection_failed_page_sev3_only=True),
-                self_heal=self_heal,
-                inhibited=inhibited,
-                flapping=flapping,
-                storm=storm,
-                correlated=correlated,
-                annotation=annotation,
-                silence_rules=silence_rules,
-                now=now or datetime.now(UTC),
-                apm_policy=apm_policy,
-                cross_source=cross_source,
-            )
-            shadow_evidence = {
-                EVIDENCE_COLLECTION_FAILED_SHADOW: {
-                    "mode": _PAGE_REVIEW_SHADOW,
-                    "would_tier": would.tier,
-                }
-            }
-        return _decision(
-            TIER_PAGE,
-            "신호 수집 실패 — 보수적 PAGE",
-            STAGE_COLLECTION_FAILED,
-            shadow_evidence,
-        )
-    # 플래그 on — off였으면 위에서 PAGE로 끝났을 판정에만 표지를 싣는다(off와 같은 모집단).
-    mark_collection_failed = collection_failed and effective_severity >= 1
-
-    # ── step 6: 유지보수 모드 → SUPPRESS(기록 유지) ──────────
-    if maintenance:
-        return _decision(
-            TIER_SUPPRESS, "유지보수 모드 — 신규 발송 억제(감사 기록)", STAGE_MAINTENANCE
-        )
-
-    # ── step 6.2(Plan 54): 침묵 — 운영자가 건 규칙에 걸리면 억제(감사 기록 유지) ──
-    # silence_enabled=False(기본)면 워커가 silenced를 산출하지 않아 평가 자체가 없다(회귀 0).
-    # 심각도3은 step3에서 이미 단락되어 이 단계에 도달하지 않는다 — 규칙으로 뚫을 수 없다.
-    if silence_rules:
-        matched_rule = match_rules(
-            silence_rules,
-            event,
-            effective_severity=effective_severity,
-            now=now or datetime.now(timezone.utc),
-        )
-        if matched_rule is not None:
-            return _decision(
-                TIER_SUPPRESS,
-                f"침묵 규칙({matched_rule.id}) — {matched_rule.reason or '운영자 지정 기간 억제'}",
-                STAGE_SILENCE,
-                _silence_evidence(matched_rule),
-            )
-
-    # ── step 6.4(E2·E4): 의존성 억제 — 조상 비정상 시 자식 연쇄 노이즈(§3.6·§6.2) ──
-    # dependency_suppression=False(기본)면 단계 자체를 평가하지 않아 E1 무변경.
-    if dependency_suppression:
-        # (plans/112 S6) 근본원인 자원명은 다홉 조상 탐색이 채울 때만 싣는다(1홉이면 보통 없음).
-        root_name = noise_ctx.get("root_resource_name") if noise_ctx else None
-        root_name_evidence = (
-            {"root_resource_name": root_name} if isinstance(root_name, str) and root_name else {}
-        )
-        # E4 다홉 하이브리드(§6.2): cascaded(다홉 조상 비정상)면 root 통보 여부로 억제 강도 분기.
-        # cascaded 미제공(1홉 모드·수집 실패)이면 아래 현행 parent_avail_status 판정으로 폴백.
-        if noise_ctx and noise_ctx.get("cascaded"):
-            root_notified = bool(noise_ctx.get("root_notified"))
-            multi_hop_evidence = {
-                "mode": "multi_hop",
-                "root_notified": root_notified,
-                **root_name_evidence,
-            }
-            if noise_ctx.get("root_notified"):
-                return _decision(
-                    TIER_SUPPRESS,
-                    "의존성 억제(다홉) — 근본원인 노드 통보됨",
-                    STAGE_DEPENDENCY,
-                    multi_hop_evidence,
-                )
-            return _decision(
-                TIER_DASHBOARD,
-                "의존성 연쇄(다홉) — 근본원인 미통보, 대시보드 강등",
-                STAGE_DEPENDENCY,
-                multi_hop_evidence,
-            )
-        # 1홉 폴백(현행 무변경): parent_avail_status 0=정상, ≠0=비정상, None=미수집(보수적 비억제·R-3).
-        parent_avail_status = noise_ctx.get("parent_avail_status") if noise_ctx else None
-        if parent_avail_status is not None and parent_avail_status != 0:
-            return _decision(
-                TIER_SUPPRESS,
-                f"의존성 억제 — 부모 리소스 비정상(AVAIL_STATUS={parent_avail_status}),"
-                " 자식 연쇄 노이즈",
-                STAGE_DEPENDENCY,
-                {"mode": "one_hop", **root_name_evidence},
-            )
-
-    # ── step 6.5(E2): 인히비션 — 동일 서버 상위 심각도 발생 중 하위 음소거(§3.4) ──
-    # inhibited는 워커가 결정적으로 탐지(자기억제 금지·window)하여 인자로 전달.
-    # inhibition_enabled=False(기본)면 평가하지 않아 E1 무변경.
-    if inhibition_enabled and inhibited:
-        return _decision(
-            TIER_SUPPRESS,
-            "인히비션 — 동일 서버 상위 심각도 발생 중, 하위 음소거",
-            STAGE_INHIBITION,
-        )
-
-    # ── step 6(§6 파이프라인·E2): 플래핑 — 상태 진동 시 안정화까지 보류(§3.7) ──
-    # flapping은 워커가 도메인 순수함수(flapping.py)로 산출하여 인자로 전달.
-    # 저심각도(effective_severity<=suppress_max_severity)만 억제 — 심각도3은 위에서 단락(불변).
-    # flapping_enabled=False(기본)면 평가하지 않아 E1 무변경.
-    if flapping_enabled and flapping and effective_severity <= suppress_max_severity:
-        return _decision(
-            TIER_SUPPRESS,
-            "플래핑 — 상태 진동(Nagios), 안정화까지 통보 보류",
-            STAGE_FLAPPING,
-        )
-
-    # ── step 7(§6 파이프라인·E2): 스톰 — 동일 서버 다발 시 대표만 통보(§3.8) ──
-    # storm은 워커가 사건창(동일 db_id|server) 카운트로 산출하여 인자로 전달.
-    # storm_grouping_enabled=False(기본)면 평가하지 않아 E1 무변경.
-    if storm_grouping_enabled and storm:
-        return _decision(
-            TIER_SUPPRESS, "스톰 — 동일 서버 다발, 대표 1건만 통보", STAGE_STORM
-        )
-
-    # ── step 7.5(E2): 크로스-호스트 상관 — 클러스터 대표 외 억제(§4.2) ──
-    # correlated는 워커가 온라인 그리디 군집(correlation.py)으로 산출하여 인자로 전달.
-    # cross_host_correlation_enabled=False(기본)면 평가하지 않아 회귀 0. 심각도3은 step3에서
-    # 이미 단락되어 이 단계에 도달하지 않는다(군집돼도 각각 PAGE, 불변). storm(동일 서버 다발)과
-    # 사유를 구분한다 — storm 경로 재사용 시 "동일 서버 다발" 사유가 감사를 오도하기 때문.
-    if cross_host_correlation_enabled and correlated:
-        return _decision(
-            TIER_SUPPRESS, "크로스-호스트 상관 — 클러스터 대표 외 억제", STAGE_CORRELATION
-        )
-
-    # ── step 8~9.5: 우선순위 매트릭스 · 보조 조정 · 앱 영향 승격 ──
-    # (plans/144 W3) step 7.6 상한이 매트릭스 결과를 봐야 하므로 함수로 묶는다. 순수 계산이라
-    # 호출 시점·횟수와 무관하게 같은 결과이며, 단계 순서(7.6 → 7.7 → 8)는 아래 호출 순서 그대로다.
-    def _matrix_decision() -> NotificationDecision:
-        """step 8~9.5 결과(매트릭스 단계 판단)를 만든다."""
-        # ── step 8: 우선순위 매트릭스(§3.2) ─────────────────────
-        base_tier = _matrix_tier(effective_severity, importance)
-
-        # ── step 9: 보조 조정(1단계 이내·보수적, 승격 우선) ──────
-        promote: list[str] = []
-        demote: list[str] = []
-        if noti_policy == "notify":
-            promote.append("폴스타 통보 정책(notify)")
-        if noti_policy == "suppress":
-            demote.append("폴스타 비통보 정책(suppress)")
-        if is_routine is True and effective_severity <= suppress_max_severity:
-            demote.append("일상 반복 패턴(is_routine)")
-        # (D-318) is_routine=False는 승격 근거가 아니다 — 분석 프롬프트가 이력 부재 시 false를
-        # 지시해 사실상 상시 참이고, 운영 24h 매트릭스 PAGE 66건 전부가 이 승격 하나로 났다.
-        # E4: LLM 액션가능성(피드백 few-shot) — 승격 비대칭(재현율 우선).
-        # actionable → promote(항상 안전). noise → demote(is_routine과 동일하게 SUPPRESS 하한 가드).
-        # 아래 승격우선 기계가 promote 신호와 공존 시 noise demote를 무시한다.
-        if llm_actionability == "actionable":
-            promote.append("LLM 액션가능성(피드백)")
-        if llm_actionability == "noise" and effective_severity <= suppress_max_severity:
-            demote.append("LLM 노이즈 판단(피드백)")
-        # Plan 60 E5(§7.2): 변경 근접 알람은 **억제가 아니라 승격** — 원인성 판단·PAGE 근거 보강
-        # (재현율 우선). change_correlation off·미근접이면 change_nearby 키 부재/None → 무영향
-        # (회귀 0).
-        # 이 모듈은 change 모듈을 import하지 않고 noise_ctx의 bool만 소비한다(순수성).
-        if noise_ctx and noise_ctx.get("change_nearby"):
-            promote.append("변경 근접(원인성)")
-        # plans/144 §4.2: 제니퍼 지표형 경고가 지속 조건(창 안 반복)을 못 채우면 강등 후보. 워커가
-        # 지표형·정책 행 persistence 보유일 때만 persistence를 싣는다(off·폴스타면 None → 무영향).
-        persistence = apm_policy.get("persistence") if apm_policy else None
-        if (
-            isinstance(persistence, dict)
-            and persistence.get("met") is False
-            and effective_severity == 2
-        ):
-            demote.append(_PERSISTENCE_UNMET)
-
-        tier = base_tier
-        adjust_note = ""
-        if promote:  # 승격/강등 충돌 시 승격 우선(재현율 우선)
-            adjusted = min(_TIER_RANK[base_tier] + 1, _TIER_RANK[TIER_PAGE])
-            tier = _RANK_TIER[adjusted]
-            adjust_note = " · 승격: " + ", ".join(promote)
-            if demote:
-                adjust_note += f" (강등 신호 {', '.join(demote)}는 승격 우선으로 무시)"
-        elif demote:
-            # 지속 조건 미달만으로 내릴 때는 DASHBOARD가 하한이다(G-1 (b) — 완전 억제 미확정).
-            # 다른 강등 사유가 함께 있으면 현행 하한(SUPPRESS) 그대로다.
-            floor = TIER_DASHBOARD if set(demote) == {_PERSISTENCE_UNMET} else TIER_SUPPRESS
-            adjusted = max(_TIER_RANK[base_tier] - 1, _TIER_RANK[floor])
-            tier = _RANK_TIER[adjusted]
-            adjust_note = " · 강등: " + ", ".join(demote)
-
-        # ── step 9.5(plans/87 J4 · R-7 · D-195 ②): 앱 영향 승격 — **승격 전용 비대칭** ──
-        # noise_ctx["app_impact"](Plan 55 예약키)는 게이트 노드가 APM 게이트웨이 `apm_events`로
-        # 채운다(같은 hostname·사건창의 fatal 이벤트 1건 이상). 위 조정 결과가 DASHBOARD·TICKET일
-        # 때만 PAGE로 올린다 — SUPPRESS(강등 결과 포함)는 되살리지 않고 PAGE는 그대로다. 억제
-        # 단계와 심각도3 단락은 이 지점 앞에서 끝나므로 영향이 없다. 키 부재·None(off·미수집·
-        # agentic 예약값)이면 무영향(회귀 0).
-        # signals 동결 스키마는 확장하지 않는다(change_nearby 전례 — 근거는 reason·evidence).
-        app_impact_note = ""
-        app_impact_evidence: dict[str, Any] = {}
-        app_impact: Any = noise_ctx.get("app_impact") if noise_ctx else None
-        fatal_events = _app_impact_fatal_events(app_impact)
-        if fatal_events and tier in (TIER_DASHBOARD, TIER_TICKET):
-            tier = TIER_PAGE
-            app_impact_note = f" · 앱 영향 승격: APM fatal {fatal_events}건"
-            app_impact_evidence = {
-                "app_impact_fatal_events": fatal_events,
-                "app_impact_event_types": list(app_impact.get("event_types") or []),
-                "app_impact_was_signals": list(app_impact.get("was_signals") or []),
-                "app_impact_source": str(app_impact.get("source") or ""),
-            }
-
-        reason = (
-            f"매트릭스(심각도{effective_severity}×중요도{importance}) → {base_tier}{adjust_note}"
-            f"{app_impact_note} → 최종 {tier}"
-        )
-        # (plans/112 S6) 사유 문자열에 합쳐 있던 산식 조각을 구조화해 함께 남긴다(판정 무관).
-        return _decision(
-            tier,
-            reason,
-            STAGE_MATRIX,
-            {
-                "base_tier": base_tier,
-                "promote": list(promote),
-                "demote": list(demote),
-                **app_impact_evidence,
-            },
-        )
-
-    # ── step 7.6(plans/144 W3): 크로스소스 사건 상관 — 증상 DASHBOARD 상한(§5.2 · G-2) ──
-    # cross_source는 워커가 사건 추적기로 산출해 넘긴다(None·off면 미평가 → 비트동일). 상한은
-    # 강제 모드 + 결합 조건 전부 충족 + 규칙 단위 enforce일 때만 건다. **티어를 올리지 않는다** —
-    # 매트릭스 결과가 DASHBOARD보다 높을 때만 낮추고, 이미 DASHBOARD 이하면 다음 단계(7.7·8)로
-    # 그대로 간다(7.7처럼 terminal DASHBOARD를 반환하면 매트릭스 SUPPRESS가 DASHBOARD로
-    # 올라간다). 앞 단계 억제가 우선이고 심각도3은 step3에서 이미 단락되어 이 단계에 도달하지
-    # 않는다.
-    if cross_source_cap:
-        matrix_decision = _matrix_decision()
-        if _TIER_RANK[matrix_decision.tier] > _TIER_RANK[TIER_DASHBOARD]:
-            cs = cross_source or {}
-            return _decision(
-                TIER_DASHBOARD,
-                f"크로스소스 사건 상관 — 원인 {cs.get('cause_alarm_id', '')} 통보 중, 증상 "
-                f"대시보드 강등(규칙 {cs.get('rule_id', '')} · 호스트 {cs.get('host_key', '')} · "
-                f"시차 {cs.get('lag_seconds', '')}초 · 매트릭스 {matrix_decision.tier})",
-                STAGE_CROSS_SOURCE,
-                {"capped_from": matrix_decision.tier},
-            )
-
-    # ── step 7.7(E7-a·B-9): 계획-무해 주석 코로보레이션 게이팅 DASHBOARD 강등(§17.3) ──
-    # 텍스트 단독으로는 절대 억제강화 금지 — planned_work **AND** (resolution 또는 E2 클러스터
-    # 소속(correlated) 또는 E5 change_nearby)가 동시 충족될 때만 DASHBOARD 강등(SUPPRESS 아님·
-    # E4 하이브리드 정합). 주석 단독(코로보레이션 없음)이면 강등하지 않고 통상 매트릭스로 진행(첨부만).
-    # annotation_planned_suppress=False(기본)면 평가하지 않아 비트동일(회귀 0). 심각도3은 step3에서
-    # 이미 단락되어 이 단계에 도달하지 않는다(불변). SUPPRESS는 위 단계가 우선(더 강한 억제 보존).
-    if annotation_planned_suppress and annotation and annotation.get("planned_work"):
-        corroborated = (
-            bool(annotation.get("resolution"))
-            or bool(correlated)
-            or bool(noise_ctx and noise_ctx.get("change_nearby"))
-        )
-        if corroborated:
-            # (plans/112 S6) 강등을 뒷받침한 출처 — 위 corroborated와 같은 세 조건을 따로 적는다.
-            corroborated_by = [
-                source
-                for source, hit in (
-                    ("resolution", bool(annotation.get("resolution"))),
-                    ("correlation", bool(correlated)),
-                    ("change_nearby", bool(noise_ctx and noise_ctx.get("change_nearby"))),
-                )
-                if hit
-            ]
-            return _decision(
-                TIER_DASHBOARD,
-                "계획-무해 주석(코로보레이션) — 대시보드 강등(계획작업+해소/상관/변경근접)",
-                STAGE_ANNOTATION,
-                {"corroborated_by": corroborated_by},
-            )
-
-    return _matrix_decision()
+    for _step, rule, mark in RULES:
+        decision = rule(marked if mark else g)
+        if decision is not None:
+            return decision
+    return _matrix_decision(marked)
 
 
 def _app_impact_fatal_events(app_impact: object) -> int:

@@ -22,6 +22,7 @@ import logging
 
 from noise_gate.alarm_server.config import AlarmServerConfig
 from noise_gate.alarm_server.tcp_receiver import TcpReceiver
+from src.utils.log_masking import install_log_record_factory
 
 
 def main() -> None:
@@ -31,6 +32,7 @@ def main() -> None:
         level=config.log_level,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+    install_log_record_factory()  # 로그 비밀값 가림(plans/167)
     logger = logging.getLogger(__name__)
     logger.info(
         "alarm_server 시작: stream_key=%s port=%s",

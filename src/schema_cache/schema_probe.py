@@ -35,6 +35,8 @@ from src.schema_cache.db_structure_service import (
 )
 from src.security.sql_guard import INJECTION_PATTERNS, SQLGuard
 from src.utils.sql_dialect import is_db2, row_limit_clause
+# 엔진 이름 정규화 정본은 `sql_dialect`(plans/166 X4) — 소비처용 재노출.
+from src.utils.sql_dialect import engine_key as engine_key
 
 logger = logging.getLogger(__name__)
 
@@ -86,13 +88,6 @@ CATALOG_SQL: Mapping[str, Mapping[str, str]] = {
         ),
     },
 }
-_ENGINE_ALIASES: Mapping[str, str] = {"postgres": "postgresql", "mysql": "mariadb"}
-
-
-def engine_key(engine: str | None) -> str:
-    """엔진 이름 정규화(별칭 흡수 · 소문자)."""
-    text = str(engine or "").strip().lower()
-    return _ENGINE_ALIASES.get(text, text)
 
 
 def assert_catalog_select(sql: str) -> None:

@@ -16,6 +16,7 @@ LLM·DB·Redis 0 — 전부 목이다.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -340,27 +341,72 @@ class TestRequestBoundaryGate:
 class TestFourEntryPointsShareTheGate:
     """진입이 하나라도 빠지면 우회가 남는다 — 정적으로 전수를 센다(배선 확인)."""
 
+    _ENTRIES = (
+        "process_query", "process_query_stream", "process_file_query", "process_file_query_stream",
+    )
+
     @pytest.fixture(scope="class")
-    def query_py(self) -> str:
-        return (
+    def tree(self) -> ast.Module:
+        return ast.parse((
             Path(__file__).resolve().parents[2] / "src" / "api" / "routes" / "query.py"
-        ).read_text(encoding="utf-8")
+        ).read_text(encoding="utf-8"))
 
-    def test_gate_is_applied_at_four_entries(self, query_py):
-        """/query · /query/stream · /query/file · /query/file/stream (정의 1 + 호출 4)."""
-        assert query_py.count("apply_selection_authorization(") == 5
+    @staticmethod
+    def _func(tree: ast.Module, name: str) -> ast.AST:
+        return next(
+            n for n in tree.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name
+        )
 
-    def test_every_entry_exposes_the_reason(self, query_py):
-        """침묵 강등 금지 — 네 진입 모두 사유 문구를 응답에 싣는다."""
-        assert query_py.count("SELECTION_DENIED_MESSAGE") == 5  # import 1 + 응답 4
+    def _calls(self, tree: ast.Module, caller: str, callee: str) -> list[ast.Call]:
+        return [
+            n for n in ast.walk(self._func(tree, caller))
+            if isinstance(n, ast.Call) and getattr(n.func, "id", None) == callee
+        ]
 
-    def test_gate_precedes_state_assembly(self, query_py):
-        """게이트는 상태 조립(`_build_turn_input_state`·`create_initial_state`)보다 앞이다."""
-        for entry, builder in (
-            ("body.selected_db_ids, _selection_denied", "input_state = _build_turn_input_state("),
-            ("selected_list, _selection_denied", "initial_state = create_initial_state("),
+    def test_gate_is_applied_at_four_entries(self, tree):
+        """/query · /query/stream · /query/file · /query/file/stream — 네 진입이 공유 사전 게이트를
+        부르고(진입마다 1회), 그 게이트가 선택 인가를 건다(plans/179 W1a — 종전 「정의 1 + 호출 4」
+        계수의 전환)."""
+        for entry in self._ENTRIES:
+            assert len(self._calls(tree, entry, "_run_pre_gates")) == 1, entry
+        (authz,) = self._calls(tree, "_run_pre_gates", "apply_selection_authorization")
+        assert [ast.unparse(a) for a in authz.args] == ["selected_db_ids", "current_user"]
+
+    def test_every_entry_exposes_the_reason(self, tree):
+        """침묵 강등 금지 — 거부면 사유 문구를 싣고 반환하고, 네 진입 모두 그 반환을
+        응답으로 낸다."""
+        gate_src = ast.unparse(self._func(tree, "_run_pre_gates"))
+        assert (
+            "if denied:\n        return (selected_db_ids, PreGateResult('selection_denied', "
+            "'success', SELECTION_DENIED_MESSAGE, {}))"
+        ) in gate_src
+        for render, field in (
+            ("_pre_gate_response", "response=gate.response"),
+            ("_pre_gate_done", "'response': gate.response"),
         ):
-            assert query_py.index(entry) < query_py.index(builder)
+            assert field in ast.unparse(self._func(tree, render)), render
+        for entry, render in (
+            ("process_query", "_pre_gate_response"),
+            ("process_file_query", "_pre_gate_response"),
+            ("process_query_stream", "_pre_gate_done"),
+            ("process_file_query_stream", "_pre_gate_done"),
+        ):
+            (call,) = self._calls(tree, entry, render)
+            assert ast.unparse(call.args[0]) == "gate", entry
+
+    def test_gate_precedes_state_assembly(self, tree):
+        """게이트는 상태 조립(`_build_turn_input_state`·`create_initial_state`)보다 앞이다
+        (진입마다)."""
+        for entry, builder in (
+            ("process_query", "_build_turn_input_state"),
+            ("process_query_stream", "_build_turn_input_state"),
+            ("process_file_query", "create_initial_state"),
+            ("process_file_query_stream", "create_initial_state"),
+        ):
+            (gate,) = self._calls(tree, entry, "_run_pre_gates")
+            (assembly,) = self._calls(tree, entry, builder)
+            assert gate.lineno < assembly.lineno, entry
 
 
 class TestRestoredSelection:

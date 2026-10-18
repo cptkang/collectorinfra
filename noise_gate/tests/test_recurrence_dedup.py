@@ -32,6 +32,7 @@ def _worker(repeat: int = 100, sev3: int = 100, every_n: int = 1) -> AlarmWorker
     cfg = SimpleNamespace(
         noise_gate=SimpleNamespace(
             repeat_interval_seconds=repeat,
+            dedup_severity_rise_bypass=False,
             sev3_repeat_interval_seconds=sev3,
             recurrence_audit_every_n=every_n,
         )

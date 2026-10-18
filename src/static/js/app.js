@@ -129,6 +129,15 @@
                     redirectToLogin();
                     return null;
                 }
+                // 인증 저장소 장애(503 · plans/186 L4)는 로그인으로 보내지 않는다 — 다시 로그인해도
+                // 같은 503이다. 토큰은 두고 안내 문구만 보이며, 알림 구독(재연결)도 시작하지 않는다.
+                if (res.status === 503) {
+                    return res.json().catch(function () { return {}; }).then(function (body) {
+                        revealApp();
+                        showError((body && body.detail) || "인증 서비스를 사용할 수 없습니다.");
+                        return null;
+                    });
+                }
                 return res.json();
             })
             .then(function(data) {
@@ -479,6 +488,9 @@
         cache_management: "캐시 관리",
         approval_gate: "SQL 승인 대기",
         synonym_registrar: "유사어 등록",
+        // plans/163 D5: 3·4단 옵트인 노드(서버 화이트리스트와 대칭)
+        entity_locator: "서버 소재 확인",
+        sequential_runner: "순차 실행",
     };
 
     // task agent 식별자 → 사용자용 라벨 (처리 현황 작업 목록 표시)

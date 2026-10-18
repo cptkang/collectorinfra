@@ -303,7 +303,11 @@ def test_admin_endpoints_require_admin() -> None:
                        auth=AuthConfig(_env_file=None, enabled=True, jwt_secret=secret),
                        admin=AdminConfig(_env_file=None,
                                          jwt_secret="plan125-src-perm-admin-secret-0123456789"))
-    client = TestClient(create_app(config))
+    app = create_app(config)
+    # 인증 활성이면 저장소가 필수다(plans/186 L4 fail-closed) — u1은 일반 사용자
+    app.state.user_repo = SimpleNamespace(get_by_user_id=AsyncMock(
+        return_value=User(user_id="u1", username="U", hashed_password="x")))
+    client = TestClient(app)
     token = jwt.encode({"sub": "u1", "name": "U", "role": "user", "type": "user",
                         "exp": int(time.time()) + 3600}, secret, algorithm="HS256")
     for method, path, body in (("get", "/api/v1/admin/sources", None),

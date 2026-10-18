@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 노이즈 게이트: 기본 동작 · 중복/연쇄 억제 (D-191)
-# 근거: src/config.py NoiseGateConfig 주석 · docs/28_noise_cancellation_operator_guide.md
+# 근거: src/config/alarm.py NoiseGateConfig 주석 · docs/28_noise_cancellation_operator_guide.md
 # 원칙: 전 기능 기본 비활성 — 켜기 전에는 기존 알람 발송 경로가 바이트 단위로 무변경이다.
 
 version: 1

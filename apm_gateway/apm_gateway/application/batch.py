@@ -38,7 +38,9 @@ from apm_gateway.application.jobs import (
     UNRESOLVED_KEY,
     settle_notices,
 )
-from apm_gateway.application.tools import QUERY_MAX, ApmTools, _given, search_query
+from apm_gateway.application.name_search import QUERY_MAX, search_query
+from apm_gateway.application.tool_common import is_given
+from apm_gateway.application.tools import ApmTools
 from apm_gateway.domain.call_context import CallScope, current_scope, use_scope
 from apm_gateway.domain.errors import API_ERROR, CONTRACT_VIOLATION, INVALID_ARGUMENT, ApmError
 
@@ -74,7 +76,7 @@ class Target:
         return self.source_id if self.source_id is not None else default
 
     def label(self) -> str:
-        names = [str(v).strip() for v in (self.hostname, self.instance_name) if _given(v)]
+        names = [str(v).strip() for v in (self.hostname, self.instance_name) if is_given(v)]
         text = "/".join(names) or "?"
         if self.instance_id is not None:
             text += f"#{self.instance_id}"
@@ -178,7 +180,7 @@ def parse_targets(
     source_ids: list[str] | None = None,
 ) -> list[tuple[dict[str, Any], Target]]:
     """`targets` 형식 검사(HTTP 전) → [(항목 그대로, 대상)]. 어긋나면 `invalid_argument`."""
-    if _given(hostname) or _given(instance_name) or instance_id is not None:
+    if is_given(hostname) or is_given(instance_name) or instance_id is not None:
         raise _bad("targets와 최상위 hostname·instance_name·instance_id는 함께 줄 수 없다")
     if not isinstance(targets, list) or not targets:
         raise _bad("targets는 대상 항목 1개 이상의 목록이어야 한다")

@@ -151,6 +151,7 @@ def _w4_worker(mode: str = "shadow", *, late: bool = True, impact: bool = True):
     cfg = SimpleNamespace(
         noise_gate=SimpleNamespace(
             enable_noise_gate=True, repeat_interval_seconds=14400, suppress_max_severity=2,
+            dedup_severity_rise_bypass=False,
             self_heal_window_seconds=300, cross_source_mode=mode,
             cross_source_rules_path=str(SHIPPED_RULES), episode_idle_seconds=900,
             app_impact_enabled=impact, app_impact_window_minutes=10,

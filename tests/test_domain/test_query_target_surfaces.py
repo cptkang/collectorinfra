@@ -86,6 +86,7 @@ async def test_node_output_carries_trigger_without_touching_parse() -> None:
 
     reused = {"query_targets": ["서버", "CPU"], "filter_conditions": []}
     state = {"user_query": "CP 높은 서버", "reuse_parsed_requirements": reused}
-    out = await input_parser(state, llm=SimpleNamespace(), app_config=SimpleNamespace())
+    cfg = SimpleNamespace(query=SimpleNamespace(time_resolution_enabled=False))
+    out = await input_parser(state, llm=SimpleNamespace(), app_config=cfg)
     assert out["unanchored_query_targets"] == ["CPU"]
     assert out["parsed_requirements"]["query_targets"] == ["서버", "CPU"]

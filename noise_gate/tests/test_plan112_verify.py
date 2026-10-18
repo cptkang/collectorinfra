@@ -53,6 +53,7 @@ def _graph():
 def _worker(store: DecisionStore) -> AlarmWorker:
     ng = SimpleNamespace(
         enable_noise_gate=True, repeat_interval_seconds=14400, suppress_max_severity=2,
+        dedup_severity_rise_bypass=False,
         self_heal_window_seconds=300, inhibition_window_seconds=300, inhibition_enabled=True,
         storm_grouping_enabled=True, storm_threshold=1, storm_window_seconds=300,
         flap_high_threshold=50.0, flap_low_threshold=25.0, importance_value_map=IMP_MAP,

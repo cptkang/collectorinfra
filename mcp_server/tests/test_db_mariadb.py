@@ -166,7 +166,10 @@ class TestMariadbPool:
         assert len(fake_aiomysql) == 1
         kw = fake_aiomysql[0].kwargs
         assert kw["autocommit"] is True  # 없으면 풀이 매 요청 재연결로 퇴화
-        assert kw["init_command"] == "SET SESSION max_statement_time=17"
+        # readonly 소스(기본)는 세션 읽기 전용을 같은 문장에 붙인다(plans/163 S1).
+        assert kw["init_command"] == (
+            "SET SESSION max_statement_time=17, SESSION transaction_read_only=1"
+        )
         assert kw["connect_timeout"] == 17
         assert (kw["minsize"], kw["maxsize"]) == (1, 3)
         assert (kw["host"], kw["port"], kw["user"], kw["db"]) == (

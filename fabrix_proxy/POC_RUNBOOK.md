@@ -84,8 +84,8 @@ echo "RUN_DIR=$RUN_DIR"
 | 프록시 키 | 파일 | 값 | 출처 |
 |---|---|---|---|
 | `FABRIX_PROXY_TOKEN` | `.encenv` | 64자 임의 값 | **새로 만든다** — `"$PY" -c "import secrets;print(secrets.token_hex(32))"` (3.3 블록이 자동 생성) |
-| `FABRIX_API_KEY` | `.encenv` | 본체와 같은 값 | 본체 `.encenv`의 `LLM_FABRIX_API_KEY` (본체가 셸 환경변수 `FABRIX_API_KEY`로 주고 있으면 그 값) |
-| `FABRIX_CLIENT_KEY` | `.encenv` | 본체와 같은 값 | 본체 `.encenv`의 `LLM_FABRIX_CLIENT_KEY` (셸 환경변수 `FABRIX_CLIENT_KEY`면 그 값) |
+| `FABRIX_API_KEY` | `.encenv` | 본체와 같은 값 | 본체 `.encenv`의 `LLM_FABRIX_API_KEY` |
+| `FABRIX_CLIENT_KEY` | `.encenv` | 본체와 같은 값 | 본체 `.encenv`의 `LLM_FABRIX_CLIENT_KEY` |
 | `FABRIX_BASE_URL` | `.env` | 본체와 같은 값 | 본체 `.env`의 `LLM_FABRIX_BASE_URL` |
 | `FABRIX_MODEL` | `.env` | 본체와 같은 값 | 본체 `.env`의 `LLM_FABRIX_CHAT_MODEL` — 비어 있으면 본체는 `LLM_MODEL`을 쓰므로 그 값 |
 | `FABRIX_TOTAL_TIMEOUT` | `.env` | `300` | 본체 `.env`의 `LLM_FABRIX_TOTAL_TIMEOUT`(기본 300) |

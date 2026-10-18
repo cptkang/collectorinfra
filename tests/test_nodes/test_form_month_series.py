@@ -1985,7 +1985,9 @@ class TestFormMemoryCommands:
         assert is_form_memory_command("도입일자 기억 삭제해줘")
         assert not is_form_memory_command("여의도 서버들에 대해 양식을 채우시오")
 
-        cfg = SimpleNamespace(multi_db=SimpleNamespace(get_active_db_ids=lambda: []))
+        cfg = SimpleNamespace(
+            multi_db=SimpleNamespace(get_active_db_ids=lambda: [], zone_group_exclusive=True),
+        )
         assert _file_zone_clarification_or_none("이 양식에 기억된 답 보여줘", None, cfg) is None
         assert _file_zone_clarification_or_none("기억 전부 삭제", None, cfg) is None
         # 일반 폼필(존 미지정)은 기존대로 역질문 발동
@@ -2011,7 +2013,9 @@ class TestFormMemoryCommands:
             assert not is_form_memory_command(q), q
         assert is_form_memory_shortcut("？？") and not is_form_memory_shortcut("CPU?")
 
-        cfg = SimpleNamespace(multi_db=SimpleNamespace(get_active_db_ids=lambda: []))
+        cfg = SimpleNamespace(
+            multi_db=SimpleNamespace(get_active_db_ids=lambda: [], zone_group_exclusive=True),
+        )
         assert _file_zone_clarification_or_none("?", None, cfg) is None
         assert _file_zone_clarification_or_none("이 양식에 저장된 내용은?", None, cfg) is None
 
@@ -2114,7 +2118,9 @@ class TestFormMemoryCommands:
         # 진짜 이력 명령은 여전히 판정
         assert is_form_memory_command("주기억장치 양식에 기억된 답 보여줘")
 
-        cfg = SimpleNamespace(multi_db=SimpleNamespace(get_active_db_ids=lambda: []))
+        cfg = SimpleNamespace(
+            multi_db=SimpleNamespace(get_active_db_ids=lambda: [], zone_group_exclusive=True),
+        )
         # 주기억장치 폼필(존 미지정)은 존 역질문이 정상 발동해야 한다
         assert _file_zone_clarification_or_none(
             "이 양식으로 주기억장치 사용현황 보여줘", None, cfg

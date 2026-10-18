@@ -1,0 +1,848 @@
+{
+  "eq_str": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [
+        "2026-01-01"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts = '2026-01-01'",
+      "now_functions": [],
+      "reason": ""
+    }
+  ],
+  "ge_num_and_lt": [
+    {
+      "qualifier": "x",
+      "op": ">=",
+      "values": [
+        "20260101"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts >= 20260101",
+      "now_functions": [],
+      "reason": ""
+    },
+    {
+      "qualifier": "x",
+      "op": "<",
+      "values": [
+        "20260201"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts < 20260201",
+      "now_functions": [],
+      "reason": ""
+    }
+  ],
+  "typed_literal": [
+    {
+      "qualifier": "",
+      "op": ">=",
+      "values": [
+        "2026-01-01 00:00:00"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "ts >= TIMESTAMP '2026-01-01 00:00:00'",
+      "now_functions": [],
+      "reason": ""
+    }
+  ],
+  "typed_call": [
+    {
+      "qualifier": "",
+      "op": "<",
+      "values": [
+        "2026-02-01"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "ts < DATE('2026-02-01')",
+      "now_functions": [],
+      "reason": ""
+    }
+  ],
+  "cast_literal": [
+    {
+      "qualifier": "",
+      "op": "=",
+      "values": [
+        "2026-01-01"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "ts = CAST('2026-01-01' AS DATE)",
+      "now_functions": [],
+      "reason": ""
+    }
+  ],
+  "pg_cast_suffix": [
+    {
+      "qualifier": "",
+      "op": "=",
+      "values": [
+        "2026-01-01"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "ts = '2026-01-01'::date",
+      "now_functions": [],
+      "reason": ""
+    }
+  ],
+  "literal_then_arith": [
+    {
+      "qualifier": "",
+      "op": "=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "ts = '2026-01-01' + 1",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "rhs_expression": [
+    {
+      "qualifier": "",
+      "op": ">=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "ts >= CURRENT_DATE - INTERVAL '7 days'",
+      "now_functions": [
+        "CURRENT_DATE",
+        "INTERVAL"
+      ],
+      "reason": "expression"
+    }
+  ],
+  "rhs_column": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts = p.m",
+      "now_functions": [],
+      "reason": "column"
+    }
+  ],
+  "rhs_column_wrapped": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "DATE(x.ts) = p.m",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "flipped_literal": [
+    {
+      "qualifier": "x",
+      "op": ">=",
+      "values": [
+        "2026-01-01"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "'2026-01-01' <= x.ts",
+      "now_functions": [],
+      "reason": ""
+    }
+  ],
+  "flipped_column": [
+    {
+      "qualifier": "x",
+      "op": "<",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "p.m > x.ts",
+      "now_functions": [],
+      "reason": "column"
+    }
+  ],
+  "flipped_expr": [
+    {
+      "qualifier": "x",
+      "op": ">=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "CURRENT_DATE - 1 DAY <= x.ts",
+      "now_functions": [
+        "CURRENT_DATE",
+        "- 1 DAY"
+      ],
+      "reason": "expression"
+    }
+  ],
+  "flipped_wrapped": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "'2026' = YEAR(x.ts)",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "between_lit": [
+    {
+      "qualifier": "x",
+      "op": "between",
+      "values": [
+        "2026-01-01",
+        "2026-01-31"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts BETWEEN '2026-01-01' AND '2026-01-31'",
+      "now_functions": [],
+      "reason": ""
+    }
+  ],
+  "between_expr": [
+    {
+      "qualifier": "x",
+      "op": "between",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts BETWEEN CURRENT_DATE - 7 AND CURRENT_DATE",
+      "now_functions": [
+        "CURRENT_DATE"
+      ],
+      "reason": "expression"
+    }
+  ],
+  "between_lo_only": [
+    {
+      "qualifier": "x",
+      "op": "between",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts BETWEEN '2026-01-01' AND CURRENT DATE",
+      "now_functions": [
+        "CURRENT DATE"
+      ],
+      "reason": "expression"
+    }
+  ],
+  "between_wrapped": [
+    {
+      "qualifier": "x",
+      "op": "between",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "DATE(x.ts) BETWEEN '2026-01-01' AND '2026-01-31'",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "in_lit": [
+    {
+      "qualifier": "x",
+      "op": "in",
+      "values": [
+        "2026-01-01",
+        "2026-01-02"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts IN ('2026-01-01', '2026-01-02')",
+      "now_functions": [],
+      "reason": ""
+    }
+  ],
+  "in_nonlit": [
+    {
+      "qualifier": "x",
+      "op": "in",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts IN ('2026-01-01', CURRENT_DATE)",
+      "now_functions": [
+        "CURRENT_DATE"
+      ],
+      "reason": "expression"
+    }
+  ],
+  "in_trailing_arith": [
+    {
+      "qualifier": "x",
+      "op": "in",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts IN ('2026-01-01' || 'x')",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "in_subquery": [
+    {
+      "qualifier": "x",
+      "op": "in",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts IN (SELECT m FROM p)",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "in_empty": [
+    {
+      "qualifier": "x",
+      "op": "in",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts IN ()",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "in_then_arith": [
+    {
+      "qualifier": "x",
+      "op": "in",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts IN ('a')",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "in_wrapped": [
+    {
+      "qualifier": "x",
+      "op": "in",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "DATE(x.ts) IN ('2026-01-01')",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "not_in": [
+    {
+      "qualifier": "x",
+      "op": "not in",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts NOT IN ('a')",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "not_between": [
+    {
+      "qualifier": "x",
+      "op": "not between",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts NOT BETWEEN '1' AND '2'",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "not_like": [
+    {
+      "qualifier": "x",
+      "op": "not like",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts NOT LIKE '2026%'",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "not_other": [],
+  "not_at_end": [],
+  "like": [
+    {
+      "qualifier": "x",
+      "op": "like",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts LIKE '2026%'",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "ilike": [
+    {
+      "qualifier": "x",
+      "op": "ilike",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts ILIKE '2026%'",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "is_null": [],
+  "bare_at_start": [],
+  "no_operator": [],
+  "func_wrapped_cmp": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "TO_CHAR(x.ts, 'YYYYMM') = '202601'",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "nested_func": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "SUBSTR(TO_CHAR(x.ts, 'YYYYMMDD'), 1, 6) = '202601'",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "arith_concat": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts || '01' = '20260101'",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "arith_paren": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts + (1) = 2",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "arith_dangling": [],
+  "pg_cast_col": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts::date = '2026-01-01'",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "pg_cast_col_args": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts::varchar(8) = '20260101'",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "pg_cast_col_bare": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts:: = 1",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "case_when": [],
+  "select_list_cmp": [],
+  "subquery_filter": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [
+        "1"
+      ],
+      "literal": true,
+      "scope": [
+        3,
+        0
+      ],
+      "text": "x.ts = '1'",
+      "now_functions": [],
+      "reason": ""
+    },
+    {
+      "qualifier": "s",
+      "op": ">",
+      "values": [
+        "0"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "s.ts > '0'",
+      "now_functions": [],
+      "reason": ""
+    }
+  ],
+  "or_joined": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts = '1'",
+      "now_functions": [],
+      "reason": "or"
+    }
+  ],
+  "or_paren": [
+    {
+      "qualifier": "x",
+      "op": ">=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts >= '1'",
+      "now_functions": [],
+      "reason": "or"
+    },
+    {
+      "qualifier": "x",
+      "op": "<",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts < '2'",
+      "now_functions": [],
+      "reason": "or"
+    }
+  ],
+  "or_paren_inner": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts = '1'",
+      "now_functions": [],
+      "reason": "or"
+    },
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts = '2'",
+      "now_functions": [],
+      "reason": "or"
+    }
+  ],
+  "union_scope": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [
+        "1"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts = '1'",
+      "now_functions": [],
+      "reason": ""
+    },
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [
+        "2"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        1
+      ],
+      "text": "x.ts = '2'",
+      "now_functions": [],
+      "reason": ""
+    }
+  ],
+  "having": [
+    {
+      "qualifier": "x",
+      "op": ">",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "MAX(x.ts) > '2026'",
+      "now_functions": [],
+      "reason": "expression"
+    }
+  ],
+  "now_function": [
+    {
+      "qualifier": "x",
+      "op": ">=",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts >= NOW() - INTERVAL '1 day'",
+      "now_functions": [
+        "NOW()",
+        "INTERVAL"
+      ],
+      "reason": "expression"
+    },
+    {
+      "qualifier": "x",
+      "op": "<",
+      "values": [],
+      "literal": false,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts < CURRENT_TIMESTAMP",
+      "now_functions": [
+        "CURRENT_TIMESTAMP"
+      ],
+      "reason": "expression"
+    }
+  ],
+  "quoted_ident": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [
+        "1"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.\"TS\" = '1'",
+      "now_functions": [],
+      "reason": ""
+    }
+  ],
+  "alias_decl": [
+    {
+      "qualifier": "x",
+      "op": "=",
+      "values": [
+        "1"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts = '1'",
+      "now_functions": [],
+      "reason": ""
+    }
+  ],
+  "unbalanced": null,
+  "unclosed_literal": null,
+  "on_clause": [
+    {
+      "qualifier": "x",
+      "op": ">=",
+      "values": [
+        "2026"
+      ],
+      "literal": true,
+      "scope": [
+        -1,
+        0
+      ],
+      "text": "x.ts >= '2026'",
+      "now_functions": [],
+      "reason": ""
+    }
+  ]
+}

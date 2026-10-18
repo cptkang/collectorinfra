@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 노이즈 게이트: 상관 분석 · 기준선 · 변경 · 임베딩 주석 (D-191)
-# 근거: src/config.py NoiseGateConfig (Plan 60 E2~E5 · B-7) · docs/02_decision.md (D-078~D-081 · D-114)
+# 근거: src/config/alarm.py NoiseGateConfig (Plan 60 E2~E5 · B-7) · docs/02_decision.md (D-078~D-081 · D-114)
 
 version: 1
 group: noise_gate

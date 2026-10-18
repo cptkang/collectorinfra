@@ -17,6 +17,7 @@ import logging
 from typing import Any, Optional
 
 from src.utils.progress_events import dispatch_progress_event, emit_step  # noqa: F401 — 재노출
+from src.utils.user_error import request_id, user_error_text
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,9 @@ def build_task_payload(
         if rows is not None:
             payload["row_count"] = len(rows)
         if result.get("error"):
-            payload["error"] = str(result["error"])[:_MAX_ERROR_CHARS]
+            # 예외 원문은 화면(진행 패널 「— 실패: …」)에 싣지 않는다 — 고정 사유만 보이고 나머지는
+            # 고정 문구로 바꾼다(plans/163 S3+). 원문은 `emit_task_progress`가 로그로 남긴다.
+            payload["error"] = user_error_text(result["error"], result=result)[:_MAX_ERROR_CHARS]
         if result.get("skipped"):
             payload["status"] = "skipped"
             if result.get("skip_reason"):
@@ -98,6 +101,11 @@ async def emit_task_progress(
 ) -> None:
     """task 단계 진행을 custom event로 낸다. 부모 run이 없으면 조용히 건너뛴다."""
     payload = build_task_payload(task, phase, result=result, verdict=verdict, total=total)
+    raw = result.get("error") if isinstance(result, dict) else None
+    if raw and user_error_text(raw, result=result) != raw:
+        logger.warning(
+            "task 실패 사유 (요청 %s · task=%s): %r", request_id(), payload.get("task_id"), raw,
+        )
     await _dispatch(TASK_EVENT, payload)
 
 

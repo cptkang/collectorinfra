@@ -76,12 +76,12 @@ from src.utils.query_gen_common import (
     surface_query_for_judgment,
     template_context_text,
 )
-from src.nodes.intent_frame_builder import (
+from src.pipeline.intent_frame_builder import (
     CONSUMER_QUERY_GENERATOR,
     get_prompt_query,
     observe_rewrite,
 )
-from src.nodes.key_bridge import (
+from src.pipeline.key_bridge import (
     bridge_prior_rows_block,
     compile_skip_note,
     key_bridge_enabled,
@@ -89,7 +89,7 @@ from src.nodes.key_bridge import (
 )
 # 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
-from src.nodes.prompt_blocks import (
+from src.pipeline.prompt_blocks import (
     build_profile_rules_block,
     profile_rule_tables,
     CRITERIA_AND_GRAIN_RULE_BLOCK,
@@ -121,7 +121,7 @@ from src.nodes.prompt_blocks import (
     split_eav_by_resource_type,
     split_mapping_entries,
 )
-from src.nodes.table_selection import selection_none_active
+from src.pipeline.table_selection import selection_none_active
 # 폴스타 EAV/피벗 결정적 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트.
 # 아래 4종은 `DBAdapter` 훅 표면(owns/system_template/validator_checks/classify_metric_field)에
 # 대응하는 훅이 없어 직접 임포트로 남긴다. 새 훅 신설은 두 번째 어댑터가 생기기 전까지 금지
@@ -129,26 +129,38 @@ from src.nodes.table_selection import selection_none_active
 from src.db_adapters.polestar.assembler import (
     METRIC_PIVOT_KEYS,
     METRIC_PIVOT_TABLE,
-    apply_capacity_scope_rule,
-    apply_remark_server_name_rule,
     build_form_fill_candidates,
     build_form_fill_pivot_sql,
     build_month_series_block,
     build_multi_resource_pivot_block,
     decimal_cast_example,
     eav_attr_resource_types,
-    filter_pivot_regular_entries,
     find_vendor_model_concat,
     recognize_month_series,
     month_anchor_payload,
-    resolve_form_fill_answers,
+)
+# 폼필 피벗 전처리는 멀티 경로와 같은 순수 함수를 쓴다(plans/169 N1(a) · D-066). 조립기
+# `build_form_fill_pivot_sql`·`recognize_month_series`는 이 모듈에서 부른다(테스트 patch seam).
+# 공유 빌더에 주입하는 DB 특화 리터럴도 어댑터가 정본이다(D-088·D-089 — plans/169 N1(b)).
+from src.db_adapters.polestar.form_fill_plan import (
+    EAV_HOST_ATTRIBUTE as _EAV_HOST_ATTRIBUTE,
+    EAV_LINK_COLUMN as _EAV_LINK_COLUMN,
+    ENTITY_RESOURCE_TYPE as _ENTITY_RESOURCE_TYPE,
+    FOREIGN_SCHEMA_PREFIX as _FOREIGN_SCHEMA_PREFIX,
+    SCHEMA_EXAMPLE_TABLE as _SCHEMA_EXAMPLE_TABLE,
+    drop_llm_inferred_mappings,
+    month_series_rule_updates,
+    plan_form_fill_pivot,
+    resolve_answer_overrides,
+    select_metric_recovery_fields,
+    split_pivot_mapping,
 )
 # 순위 정렬 NULLS LAST 결정적 교정(D-202 2차) — 검증기와 같은 판정을 공유해 드리프트 방지.
 from src.db_adapters.polestar.validators import (
     ensure_eav_value_order,
     ensure_ranking_nulls_last,
 )
-from src.nodes.candidate_generator import classify_complexity
+from src.pipeline.candidate_generator import classify_complexity
 from src.nodes.semantic_compiler import compile_from_nl
 # 지표 필드 분류는 어댑터 레지스트리 경유 도구를 쓴다(D-089). 검증 코어가 도구 계층으로
 # 내려가 tools→nodes 역참조가 사라졌으므로 모듈 수준 임포트가 안전하다(후속 2단계).
@@ -158,17 +170,10 @@ from src.utils.schema_utils import safe_sample_preview
 from src.utils.synonym_usage import extract_synonym_usage
 
 if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 플래그 ON 경로에서만 수행한다.
-    from src.nodes.column_deriver import StepwiseDeps
+    from src.pipeline.column_deriver import StepwiseDeps
 
 logger = logging.getLogger(__name__)
 
-# 공유 빌더에 주입하는 DB 특화 리터럴 — 공용 빌더(prompt_blocks)로 옮기지 않고 호출부인
-# 이 파일에 남긴다(D-088: 공용 계층 DB-agnostic, overfit_check 기준선은 파일 단위).
-_ENTITY_RESOURCE_TYPE = "server.Server"     # 엔티티(서버) 자신의 resource_type
-_EAV_HOST_ATTRIBUTE = "Hostname"            # 브릿지 조인 예시의 엔티티 식별 속성
-_EAV_LINK_COLUMN = "configuration_id"       # config 행끼리 잇는 컬럼
-_SCHEMA_EXAMPLE_TABLE = "cmm_resource"      # 스키마 한정 규칙 예시 테이블
-_FOREIGN_SCHEMA_PREFIX = "polestar."        # 붙이지 말아야 할 접두사 예시
 
 
 def _format_structure_guide(
@@ -312,7 +317,7 @@ def _try_build_form_fill_pivot_sql(
         return None
     form_intent = bool(state.get("template_structure"))
     schema_info = state.get("schema_info") or {}
-    eav_pattern = _get_eav_pattern(schema_info)
+    eav_pattern = first_eav_pattern(schema_info)
     active_db_id = state.get("active_db_id") or ""
     # 서버명/서버이름류가 EAV Hostname으로 오매핑되면 등록명 컬럼으로 결정적 교정(프로필 확정 규칙).
     # state를 오염시키지 않도록 사본에 적용.
@@ -326,13 +331,9 @@ def _try_build_form_fill_pivot_sql(
     # 공란+사유(역질문 후보). 키는 유지(월 시리즈 인식·결합 규칙이 필드명을 본다).
     _inferred_dropped: list[str] = []
     if form_intent:
-        _sources = state.get("mapping_sources") or {}
-        _inferred_dropped = [
-            f for f, c in column_mapping.items()
-            if c and _sources.get(f) == "llm_inferred"
-        ]
-        for f in _inferred_dropped:
-            column_mapping[f] = None
+        _inferred_dropped = drop_llm_inferred_mappings(
+            column_mapping, state.get("mapping_sources")
+        )
         if _inferred_dropped:
             logger.info(
                 "폼필 llm_inferred 매핑 %d건 채움 제외(D-149, 역질문 후보): %s",
@@ -360,22 +361,13 @@ def _try_build_form_fill_pivot_sql(
     # 이후 확정 규칙(_cap 등)이 같은 필드를 갱신하면 규칙이 우선한다(dict.update 순서).
     mapping_updates.update({f: None for f in _inferred_dropped})
     if month_series:
-        _cap = apply_capacity_scope_rule(
-            column_mapping, attr_rt, month_series.resource_type
+        # 처리능력 용량·비고 등록명 규칙(SQL은 등록명 SELECT — 사용자 확정). 월 시리즈·비고
+        # 필드는 state 매핑을 **강제 None**으로 갱신한다(writer가 필드명=행 키로 조회).
+        _rule_patch, _rule_updates = month_series_rule_updates(
+            column_mapping, attr_rt, eav_pattern, month_series
         )
-        _remark = apply_remark_server_name_rule(
-            column_mapping,
-            (eav_pattern or {}).get("entity_table", "cmm_resource"),
-        )
-        column_mapping.update(_cap)
-        column_mapping.update(_remark)  # SQL은 등록명 SELECT — 비고 규칙(사용자 확정)
-        mapping_updates.update(_cap)
-        # 월 시리즈·비고 필드는 state 매핑을 **강제 None**으로 갱신한다 — writer가 필드명
-        # (=SELECT alias=행 키)으로 조회하게 하기 위함. 라이브 실측(2026-07-28 3차):
-        # field_mapper가 월 필드 전부를 같은 칼럼(cmm_metric_stat_m.avg_val)으로 매핑해
-        # 두면 writer 역매핑(N:1의 마지막 필드)이 6칼럼에 동일값(M+5)을 복제한다.
-        mapping_updates.update({f: None for f in month_series.fields})
-        mapping_updates.update({f: None for f in _remark})
+        column_mapping.update(_rule_patch)
+        mapping_updates.update(_rule_updates)
 
     # 제조사(모델명)류는 Vendor+Model 결합으로 채운다(D-148 — 라이브 실측: 한쪽만 매핑돼
     # 반쪽 값). 결합 대상 필드는 단독 EAV/직접 컬럼 파티션에서 제외(중복 alias 방지).
@@ -392,9 +384,9 @@ def _try_build_form_fill_pivot_sql(
     literals_out: dict[str, str] = {}
     _answers = state.get("form_fill_answers") if form_intent else None
     if _answers:
-        _protected = set(month_series.fields) if month_series else set()
-        overrides_out, _ov_map, literals_out = resolve_form_fill_answers(
-            _answers, schema_info, eav_pattern, protected_fields=_protected,
+        # 오버라이드/직접입력 필드는 결합 규칙에서 제외(중복 alias·사용자 층 우선)
+        overrides_out, _ov_map, literals_out, concat_eav = resolve_answer_overrides(
+            _answers, schema_info, eav_pattern, month_series, concat_eav,
         )
         _applied = [f for f, o in overrides_out.items() if o.get("applied")]
         _rejected = [(f, o.get("reason")) for f, o in overrides_out.items() if not o.get("applied")]
@@ -404,20 +396,15 @@ def _try_build_form_fill_pivot_sql(
             logger.info("폼필 답변 오버라이드 거부(D-151): %s", _rejected)
         column_mapping.update(_ov_map)
         mapping_updates.update(_ov_map)
-        # 오버라이드/직접입력 필드는 결합 규칙에서 제외(중복 alias·사용자 층 우선)
-        _ov_fields = set(_ov_map.keys()) | set(literals_out.keys())
-        concat_eav = [c for c in concat_eav if c[0] not in _ov_fields]
         concat_fields = {c[0] for c in concat_eav}
 
-    eav_entries = [
-        (f, c[4:]) for f, c in column_mapping.items()
-        if c and c.startswith("EAV:") and f not in concat_fields
-    ]
-    child_eav = [
-        (f, a, attr_rt[a.upper()])
-        for f, a in eav_entries
-        if a.upper() in attr_rt and attr_rt[a.upper()] != _ENTITY_RESOURCE_TYPE
-    ]
+    # 직접 컬럼(server.Server) — 사용률 통계 컬럼은 제외(아래 metric 회수로 접힘). 결합 필드는 제외.
+    regular_entries, eav_entries, metric_entries = split_pivot_mapping(
+        column_mapping, exclude_fields=concat_fields,
+    )
+    child_eav, server_eav = split_eav_by_resource_type(
+        eav_entries, attr_rt, entity_resource_type=_ENTITY_RESOURCE_TYPE
+    )
     # D-149 게이트: 자식 EAV·월 시리즈 외에 양식 업로드(form_intent) 자체가 발동 조건.
     # eav_pattern 부재 DB(비폴스타)는 발동하지 않는다(현행 LLM 경로 유지).
     if not child_eav and not month_series and not form_intent:
@@ -428,52 +415,39 @@ def _try_build_form_fill_pivot_sql(
         logger.info(
             "폼필 결정적 계약 경로(D-149): 월시리즈·자식EAV 없음 — 게이트 확장으로 조립"
         )
-    server_eav = [
-        (f, a) for f, a in eav_entries
-        if a.upper() not in attr_rt or attr_rt[a.upper()] == _ENTITY_RESOURCE_TYPE
-    ]
-    # 직접 컬럼(server.Server) — 사용률 통계 컬럼은 제외(미매핑으로 접힘)
-    regular_entries = [
-        (f, c) for f, c in column_mapping.items()
-        if c and not c.startswith("EAV:") and "cmm_metric_stat" not in c.lower()
-        and f not in concat_fields
-    ]
-    # 환각 매핑 칼럼(스키마에 없는 칼럼)이 결정적 SELECT에 유입되면 쿼리 전체가 죽는다
-    # (라이브 실측: 구분→cmm_resource.category). 스키마 검증 + 검증 불가 시 entity
-    # 안전 화이트리스트로 결정적 차단(FIX-5/FIX-13).
-    regular_entries, _dropped = filter_pivot_regular_entries(
-        regular_entries, schema_info, eav_pattern.get("entity_table", "cmm_resource")
+    # 환각 매핑 칼럼 차단(FIX-5/FIX-13) + 서버 식별 컬럼 결정적 주입 — 멀티 경로와 같은 함수.
+    plan = plan_form_fill_pivot(
+        regular_entries, server_eav, child_eav, eav_pattern,
+        schema_info=schema_info, concat_eav=concat_eav, month_series=month_series,
+        form_intent=form_intent, query_time=query_time,
     )
-    if _dropped:
+    if plan.dropped:
         logger.warning(
             "폼필 결정적 피벗: 스키마에 없는 매핑 칼럼 %d건 제외(환각 매핑 차단) — %s",
-            len(_dropped), _dropped,
+            len(plan.dropped), plan.dropped,
         )
         # 불변식(FIX-25): SQL SELECT에서 제외된 필드는 state 매핑도 None — 낡은 매핑이
         # 남으면 writer의 유연 조회(부분 매칭 등)가 무관한 행 키(예: 'IP')로 오채움한다
         # (라이브 실측: 비고=IP값. 월/결합/llm_inferred 강제 None과 동일 패턴).
-        mapping_updates.update({f: None for f, _c in _dropped})
-    # 월 피벗/폼필인데 서버 식별 컬럼이 하나도 없으면 행 대조가 불가능 — 결정적 식별 컬럼 주입
-    # (alias는 양식 헤더와 무충돌인 라틴명 — writer가 무시하고 병합·진단에만 쓰임).
-    if (month_series or form_intent) and not regular_entries and not server_eav and not concat_eav:
-        entity = eav_pattern.get("entity_table", "cmm_resource")
-        regular_entries = [
-            ("server_name", f"{entity}.name"), ("hostname", f"{entity}.hostname"),
-        ]
+        mapping_updates.update({f: None for f, _c in plan.dropped})
     month_fields = set(month_series.fields) if month_series else set()
     # 적용된 오버라이드(공란/직접입력 포함)는 metric 회수 대상에서 제외 — 사용자 층 우선
     _applied_ov = {f for f, o in overrides_out.items() if o.get("applied")}
-    metric_fields = [
-        f for f, c in column_mapping.items()
-        if c is None and f not in month_fields and f not in concat_fields
-        and f not in _applied_ov and classify_metric_field(
+    # 사용률 회수 대상 = 미매핑(llm_inferred 강등 포함) + 사용률 통계 칼럼 매핑 필드 — 멀티
+    # 경로와 같은 함수·규칙(plans/185). 통계 칼럼 매핑은 강제 SELECT에서 빠지므로(RC2) 여기서
+    # 회수하지 않으면 빈칸이 된다.
+    metric_fields = select_metric_recovery_fields(
+        [f for f, c in column_mapping.items() if c is None],
+        [f for f, _c in metric_entries],
+        exclude=month_fields | concat_fields | _applied_ov,
+        is_metric=lambda f: bool(classify_metric_field(
             f, db_id=active_db_id, adapter_db_ids=adapter_db_ids
-        )
-    ]
+        )),
+    )
     domain = get_domain_by_id(active_db_id)
     db_schema = domain.db_schema if domain else ""
     sql = build_form_fill_pivot_sql(
-        regular_entries, server_eav, child_eav, eav_pattern,
+        plan.regular_entries, plan.server_eav, plan.child_eav, plan.eav_pattern,
         metric_fields=metric_fields,
         db_engine=state.get("active_db_engine"),
         db_schema=db_schema,
@@ -482,6 +456,7 @@ def _try_build_form_fill_pivot_sql(
         # "지난 반년 + 양식 첨부"처럼 표면어가 미매칭인 질의에서 stat_date 필터가 통째로 빠져
         # 전 기간 평균으로 침묵 왜곡된다(D-099 계열). 멀티 경로 폼필 피벗도 동형(D-066).
         # 요청 시간 해석이 있으면(plans/122 T-4) 그 해석이 단일 출처다 — stat_month는 호환 값.
+        # 기간 해석은 이 모듈 이름으로 부른다(테스트가 `resolve_stat_month_range`를 바꿔 끼운다).
         stat_month=(
             stat_month_compat(query_time) if query_time is not None
             else resolve_stat_month_range(
@@ -489,9 +464,9 @@ def _try_build_form_fill_pivot_sql(
                 parsed_time_range=(state.get("parsed_requirements") or {}).get("time_range"),
             )
         ),
-        month_measures=month_series.measures if month_series else None,
-        concat_eav=concat_eav or None,
-        period=_metric_period,
+        month_measures=plan.month_measures,
+        concat_eav=plan.concat_eav,
+        period=plan.period,
     )
     month_anchor = None
     if month_series:
@@ -1501,9 +1476,9 @@ async def _run_multi_candidate_single_db(
     """
     from src.db import get_db_client
     from src.dbhub.models import QueryExecutionError, QueryTimeoutError
-    from src.nodes.candidate_generator import generate_candidates
-    from src.nodes.candidate_selector import run_candidate_pipeline
     from src.nodes.query_validator import query_validator
+    from src.pipeline.candidate_generator import generate_candidates
+    from src.pipeline.candidate_selector import run_candidate_pipeline
 
     t2 = app_config.text2sql
     is_kbgenai_llm = is_kbgenai(llm)
@@ -1693,16 +1668,10 @@ def _build_system_prompt(
     )
 
 
-def _get_eav_pattern(schema_info: Optional[dict]) -> Optional[dict]:
-    """_structure_meta에서 첫 번째 EAV 패턴을 반환한다.
-
-    Args:
-        schema_info: 스키마 정보 딕셔너리 (선택)
-
-    Returns:
-        EAV 패턴 딕셔너리 또는 None
-    """
-    return first_eav_pattern(schema_info)
+#: 옛 이름 별칭 1사이클(plans/166 N1 · D-337 ③) — 본문이
+#: `prompt_blocks.first_eav_pattern` 호출뿐인 래퍼(멀티 경로와 바이트 동일 사본)였다.
+#: 정본은 `first_eav_pattern`(테스트가 이 이름을 import).
+_get_eav_pattern = first_eav_pattern
 
 
 def _mapping_prompt_sections(
@@ -1754,7 +1723,7 @@ def _mapping_prompt_sections(
     )
     use_multi_resource_pivot = bool(child_eav)
     if use_multi_resource_pivot:
-        eav_pattern = _get_eav_pattern(schema_info) or {}
+        eav_pattern = first_eav_pattern(schema_info) or {}
         # 사용률 통계 필드는 통합 피벗에 접어 넣고 미매핑 목록에서 뺀다(블록 충돌·GROUP BY 위반 방지).
         metric_unmapped = [
             f for f in unmapped_fields
@@ -1776,7 +1745,7 @@ def _mapping_prompt_sections(
         # (테이블.컬럼 형식)이라 한글 alias 강제는 하지 않는다(§0.3-3 (e) 의도된 차이).
         parts.append(
             build_eav_pivot_block(
-                eav_entries, _get_eav_pattern(schema_info),
+                eav_entries, first_eav_pattern(schema_info),
                 hangul_alias=False,
                 host_attribute=_EAV_HOST_ATTRIBUTE,
                 link_column=_EAV_LINK_COLUMN,
