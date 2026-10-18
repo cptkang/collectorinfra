@@ -856,6 +856,24 @@ FABRIX_API_KEY=your-api-key
 FABRIX_CLIENT_KEY=your-client-key
 ```
 
+### 7.5 vLLM (사내 vLLM을 워커로 — D-340)
+
+사내 vLLM 서버(OpenAI 호환 `/v1`)를 워커로 쓴다. 오케스트레이터 vLLM(`ORCHESTRATOR_*`)과는 **별개 설정**이라, 같은 서버를 쓰더라도 양쪽에 각각 적는다.
+
+```dotenv
+LLM_PROVIDER=vllm
+LLM_VLLM_BASE_URL=http://vllm-host:8000/v1
+LLM_VLLM_MODEL=Qwen3.5-9B
+# LLM_VLLM_TIMEOUT=300
+# LLM_VLLM_VERIFY_SSL=false   # 사설 인증서 (D-060)
+```
+
+- `LLM_VLLM_MODEL`은 서버 `--served-model-name`(= `GET /v1/models`의 `id`)과 같아야 한다. `LLM_VLLM_BASE_URL`·`LLM_VLLM_MODEL` 중 하나라도 비면 그래프 조립에서 기동이 실패한다.
+- 서버를 `--api-key`로 띄웠다면 `.encenv`에 `LLM_VLLM_API_KEY`를 둔다.
+- 모델명에 `qwen`이 들어가면 no-think 토글(`LLM_VLLM_ENABLE_THINKING`, 기본 false)을 보낸다. 다른 계열에는 보내지 않는다.
+- 클라이언트는 `ChatOpenAI` 그대로라 구조화 출력(`STRUCTURED_OUTPUT_BACKEND=instructor`)이 네이티브 tool-calling 모드로 간다. 강제 함수 지정(named `tool_choice`)이라 vLLM 기본 기동으로도 동작한다. 컬럼 파생 루프처럼 `tool_choice=auto`를 쓰는 경로는 서버를 `--enable-auto-tool-choice --tool-call-parser <모델 계열>`로 띄워야 한다.
+- **과금 경로가 아니다.** 워커 `vllm`은 비과금 집합에 들어 있어 시나리오·벤치 하네스가 승인 없이 실행한다(D-340). 오케스트레이터가 `gemini`면 종전대로 승인 대상이다.
+
 ---
 
 ## 8. 애플리케이션 실행

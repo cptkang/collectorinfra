@@ -247,11 +247,13 @@ SECTION_BY_KEY: dict[str, str] = {
 
 #: `.encenv.example` 파싱 외에 수동으로 시크릿 취급하는 키.
 #: - LLM_OLLAMA_API_KEY: `LLMConfig.model_post_init`가 `LLM_API_KEY`(.encenv)로 보정한다.
-#: - DBHUB_BEARER_TOKEN / ORCHESTRATOR_API_KEY: 전송 인증 크레덴셜(Plan 68 §1.1).
+#: - DBHUB_BEARER_TOKEN / ORCHESTRATOR_API_KEY / LLM_VLLM_API_KEY: 전송 인증 크레덴셜
+#:   (Plan 68 §1.1 · D-340).
 _MANUAL_SECRET_KEYS: frozenset[str] = frozenset({
     "LLM_OLLAMA_API_KEY",
     "DBHUB_BEARER_TOKEN",
     "ORCHESTRATOR_API_KEY",
+    "LLM_VLLM_API_KEY",
 })
 
 #: `.encenv.example`을 읽을 수 없을 때 쓰는 폴백(파일 부재로 시크릿이 편집 가능해지는 것을 막는다).
@@ -333,6 +335,11 @@ RELOADABLE_KEYS: frozenset[str] = frozenset({
     "LLM_MLX_MAX_TOKENS",
     "LLM_MLX_TIMEOUT",
     "LLM_MLX_ENABLE_THINKING",
+    "LLM_VLLM_BASE_URL",
+    "LLM_VLLM_MODEL",
+    "LLM_VLLM_TIMEOUT",
+    "LLM_VLLM_VERIFY_SSL",
+    "LLM_VLLM_ENABLE_THINKING",
     "LLM_GEMINI_MODEL",
     "LLM_FABRIX_BASE_URL",
     "LLM_FABRIX_CHAT_MODEL",

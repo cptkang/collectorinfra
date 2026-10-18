@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class LLMConfig(BaseSettings):
     """LLM 관련 설정."""
 
-    provider: Literal["ollama", "fabrix", "gemini", "mlx"] = "ollama"
+    provider: Literal["ollama", "fabrix", "gemini", "mlx", "vllm"] = "ollama"
     model: str = "llama3.1:8b"
 
     # Ollama 설정
@@ -42,6 +42,18 @@ class LLMConfig(BaseSettings):
     mlx_timeout: int = 600
     # 미전송이면 Qwen3.5가 생성 예산 전부를 reasoning에 쓰고 content가 빈다(plans/100 J-1 ②)
     mlx_enable_thinking: bool = False
+
+    # vLLM 설정 (D-340 — 워커를 사내 vLLM(OpenAI 호환 /v1)으로 부른다)
+    # provider가 vllm이 아니면 읽히지 않는다. 오케스트레이터 vLLM(ORCHESTRATOR_*)과는 별개 값이다.
+    vllm_base_url: str = ""       # vLLM /v1 엔드포인트 (예: http://vllm-host:8000/v1)
+    vllm_model: str = ""          # vLLM --served-model-name과 같은 값
+    vllm_api_key: str = ""        # vLLM --api-key를 켰을 때만 (보통 불필요)
+    vllm_timeout: int = 300       # 요청 1건 대기 상한(초). 스트리밍 청크 대기 상한도 이 값을 따른다
+    # SSL 인증서 검증(D-060 — 사설 인증서 vLLM이면 false)
+    vllm_verify_ssl: bool = True
+    # Qwen 계열 추론 모드(D-042 no-think). 모델명에 qwen이 있을 때만 보낸다
+    # (오케스트레이터 vLLM과 같은 가드)
+    vllm_enable_thinking: bool = False
 
     # Gemini 설정
     gemini_api_key: str = ""

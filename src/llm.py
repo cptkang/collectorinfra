@@ -188,6 +188,8 @@ def create_llm(
         return _create_gemini(config)
     elif provider == "mlx":
         return _create_mlx(config)
+    elif provider == "vllm":
+        return _create_vllm(config)
     else:
         raise ValueError(f"지원하지 않는 LLM 프로바이더: {provider}")
 
@@ -381,6 +383,64 @@ def _create_mlx(config: AppConfig) -> BaseChatModel:
             "chat_template_kwargs": {"enable_thinking": config.llm.mlx_enable_thinking}
         },
     )
+
+
+def _create_vllm(config: AppConfig) -> BaseChatModel:
+    """사내 vLLM(OpenAI 호환 `/v1`) 워커 LLM을 생성한다 (D-340).
+
+    오케스트레이터 vLLM 경로(`_create_orchestrator_vllm`)와 같은 규칙을 따른다 — `ChatOpenAI`
+    그대로(구조화 출력이 네이티브 tool-calling 모드로 간다 · D-169) · Qwen 계열만 no-think
+    부착(D-042) · `verify_ssl=false`면 httpx 검증 해제(D-060). 오케스트레이터와 달리
+    스트리밍 청크 대기 상한을 요청 상한에 맞춘다(워커는 SSE 토큰 스트리밍을 쓴다 ·
+    D-222 부기 결함 A).
+    """
+    llm_cfg = config.llm
+    if not llm_cfg.vllm_base_url or not llm_cfg.vllm_model:
+        raise ValueError(
+            "LLM_PROVIDER=vllm에는 LLM_VLLM_BASE_URL(vLLM /v1 엔드포인트)과 "
+            "LLM_VLLM_MODEL(--served-model-name)이 필요합니다. .env에 추가하세요."
+        )
+
+    try:
+        from langchain_openai import ChatOpenAI
+
+        from src.clients.mlx_client import stream_chunk_timeout_kwargs
+    except ImportError as e:
+        raise ValueError(
+            "LLM_PROVIDER=vllm에는 langchain-openai가 필요합니다. "
+            'pip install -e ".[deepagents]"로 설치하세요.'
+        ) from e
+
+    logger.info(
+        "vLLM 워커 LLM 초기화: base_url=%s, model=%s, enable_thinking=%s",
+        llm_cfg.vllm_base_url,
+        llm_cfg.vllm_model,
+        llm_cfg.vllm_enable_thinking,
+    )
+    kwargs: dict[str, Any] = {
+        "base_url": llm_cfg.vllm_base_url,
+        "api_key": SecretStr(llm_cfg.vllm_api_key or "EMPTY"),
+        "model": llm_cfg.vllm_model,
+        "temperature": 0.0,
+        "timeout": llm_cfg.vllm_timeout,
+        # openai SDK 기본 재시도 2회를 끈다(오케스트레이터와 같은 이유 · plans/119 · D-268 부기)
+        "max_retries": 0,
+        **stream_chunk_timeout_kwargs(llm_cfg.vllm_timeout),
+    }
+    if "qwen" in llm_cfg.vllm_model.lower():
+        kwargs["extra_body"] = {
+            "chat_template_kwargs": {"enable_thinking": llm_cfg.vllm_enable_thinking}
+        }
+    if not llm_cfg.vllm_verify_ssl:
+        import httpx
+
+        logger.warning(
+            "워커 vLLM SSL 검증 비활성화(LLM_VLLM_VERIFY_SSL=false, D-060): base_url=%s",
+            llm_cfg.vllm_base_url,
+        )
+        kwargs["http_client"] = httpx.Client(verify=False)
+        kwargs["http_async_client"] = httpx.AsyncClient(verify=False)
+    return ChatOpenAI(**kwargs)
 
 
 def _create_gemini(config: AppConfig) -> BaseChatModel:
