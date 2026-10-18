@@ -6,7 +6,7 @@
     python -m scripts.scenario --analyze        # (4) 분석/대안 수립 - 무과금
 
 **인자 없는 기본 동작은 LLM 프로바이더가 정한다**(D-216 - D-212 ⑨ 개정 · D-211 ⑪ 선례).
-`LLM_PROVIDER` 가 내부망·로컬(fabrix·ollama·mlx)**이고** `ORCHESTRATOR_PROVIDER` 가 vllm·mlx 면
+`LLM_PROVIDER` 가 내부망·로컬(fabrix·ollama·mlx·vllm)**이고** `ORCHESTRATOR_PROVIDER` 가 vllm·mlx 면
 옵션 없이 전 시나리오를 실제로 돌린다 - 외부 과금 API 가 아니고 데이터가 밖으로 나가지 않는다
 (D-120). 오케스트레이터는 1단 플래그와 무관하게 항상 본다(D-222). 둘 중 하나라도 외부면 종전대로
 카탈로그 검증 -> 모의 실행 -> 예상치만 수행하고, 실 LLM 경로는 `--run` + `RUN_E2E=1` + 승인
@@ -416,7 +416,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m scripts.scenario",
         description=(
             "기능/성능 시나리오 자동 실행 하네스 (plans/94). 인자 없는 기본 동작: "
-            "LLM_PROVIDER 가 내부망/로컬(fabrix/ollama/mlx)이고 ORCHESTRATOR_PROVIDER 가 "
+            "LLM_PROVIDER 가 내부망/로컬(fabrix/ollama/mlx/vllm)이고 ORCHESTRATOR_PROVIDER 가 "
             "vllm/mlx 면 전 시나리오 실 실행, 둘 중 하나라도 외부 프로바이더면 무과금 점검입니다."
         ),
     )

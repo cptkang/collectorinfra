@@ -8,6 +8,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-19 | D-340 · D-341 | 번호 변경 — `origin/main` 병합 시 원격 D-337(구조 리팩터 규약)·D-338(인증 저장소 fail-closed)·D-339(로그 비밀값 가림)와 충돌해 로컬 D-337(워커 vllm provider) → **D-340**, D-338(알람 조사 플레이북 · `plans/182`) → **D-341**(`plans/187`)로 재부여 |
 | 2026-10-17 | D-296 | 부기 — `plans/164` W7: 긴 창 X-View 사전 확인(게이트웨이 옵트인 `xview_confirm_over` · 본체 임계 60 · 사용자가 「추세」/「전부」 선택 · 범위 축소 0 — ④ 유지) · 실측 호출 소요 기반 예상 시간(`estimate.basis`) · 신규 보기 `apm.instance_trend` · instance 시계열 지표 미지정 = 기본 지표(계약 변경) · 플래그 없음 근거 · G-9~G-11 권고안 적용 · 커밋 없음 |
 | 2026-10-17 | D-339 | 신규 — `plans/167`: 로그 레코드 생성 시점(`setLogRecordFactory`)에 DSN 비밀번호·Bearer·민감 키 값·JWT·Google API 키를 `***`로 가림 · structlog 프로세서 · 진입점 7곳 · 사본 4(mcp_server·apm_gateway·sre_agent·fabrix_proxy) 바이트 일치 테스트 · 커밋 없음 |
 | 2026-10-17 | D-139 | 부기 — `plans/167`: `noise_gate/alarm_server`가 `src.utils.log_masking`을 import(② 역방향 허용 `utils` 안) · 2차 적용 「`src.` import 0 자립 모듈」 서술 갱신 |
@@ -20,6 +21,13 @@
 | 2026-10-15 | D-331 | 부기 — `plans/166` W2: `arch_check` `MODULE_LAYER_MAP`에 `src.pipeline` = application(N3 노드 헬퍼 이동 · 경고 43→17) · `overfit_check` `PUBLIC_LAYER_DIRS` 대칭 · 폴백 린트를 `src/config/` 패키지(I4)에 맞춤(`__module__` 하위 모듈 포함 · 스캔 제외 확대 · `ALLOWED` 새 경로 키) · 커밋 없음 |
 | 2026-10-15 | D-331 | 구현 완료 — `plans/166` W1: arch_check 경고를 같은 노드 패키지 간으로 한정(117→43) · `scripts/config_fallback_check.py` 신설(62지점 → X1 치환 뒤 0) · `regress.py` 정적 게이트에 `--ci` 편입 · 허용 목록 2건(대역 방어가 함수 계약인 곳) · 커밋 없음 |
 | 2026-10-15 | D-337 · D-336 | 번호 변경 — RCA의 D-336(구조 리팩터 규약 · 구 D-330)을 main 병합 시 main D-336(제니퍼 심각도 3 유형 정책)과 충돌해 **D-337**로 재부여 · 본문 `D-337.md` · 스킬 2종·`plans/163`·`plans/166`·D-331·D-332·166 W0 테스트 참조 갱신 · 아래 RCA 행의 번호도 새 번호로 고침 |
+| 2026-10-17 | D-341 | 부기 3 — ㉑ 알람 다시 분석(새 조사 · 원 조사 보존 · ⑦ 부분 개정) ㉒ 등급 무관 30일 · 채팅 「지난 알람」 검색 ㉓ 존 범위 사용자 ㉔ 상한 공유·10분 합류·통보 없음 ㉕ 증상 질의 결정적 라우팅(플레이북/HolmesGPT) ㉖ 비동기 조사 카드(`SRE_CHAT_INVESTIGATION_ENABLED` 기본 off) |
+| 2026-10-17 | D-325 | 부기 — ⑩ 「운영자 수동 조사 요청」 후속을 D-341 부기 3(㉑~㉔)이 맡음 |
+| 2026-10-17 | D-341 | 부기 2 — ⑮ 심층 조사 운영 모드(초기 parallel · 운영자 엔진 선택은 판정 불변) ⑯ episode 플레이북 ⑰ 사전수집 생략 ⑱ severity_judge 입력 합집합 ⑲ 잡 단위 도구 캐시 ⑳ 모드 전환 기준(권고 표시 · 수동 전환) |
+| 2026-10-17 | D-341 | 부기 — ⑪ 조사 대화(질의응답 새 대화 첫 고정 카드) ⑫ 문맥 승계 2단계 ⑬ 브리핑 질문 후속 ⑭ 추가 조사 요청(비동기 `sre_diagnose` · 보충 한 줄 허용 · admin_only · `prior_findings` 가산) |
+| 2026-10-17 | D-341 | 신규(예약 → 본문 등재) — `plans/187` G-1~G-17 권고안 확정: sre_agent 플레이북 모드 · 판정 결정적/LLM 소견 · 런북 블록 · 알려진 오류 결정적 일치 · KB 저장소 YAML · 매뉴얼 RAG 참고만 |
+| 2026-10-16 | D-340 | 신규 — 워커 `LLM_PROVIDER=vllm`(`ChatOpenAI` 그대로 · `LLM_VLLM_*` 6필드) · 워커 비과금 집합에 `vllm` 편입 |
+| 2026-10-16 | D-222 | 부기 — ③ 워커 비과금 집합에 `vllm` 추가(D-340) |
 | 2026-10-15 | D-330 | 부기 — `plans/162` F4 무소식 닫힘(R1 해소 대용 · 해소 이벤트 없는 출처 · `NOISE_PAGE_REVIEW_IDLE_CLOSE_MINUTES` 기본 0 = 끔 · dedup 창 뒤 재통보에만 효력) · W0-T 분석 도구 보정 · `replay_noise.py --page-review-mode` 구현(부기 (e) 미구현 항목 해소) · 커밋 없음 |
 | 2026-10-15 | D-326 | 부기 — 폐쇄망 1회차 실행 반영: A2 삭제 · B군 대상 제니퍼 호스트 한정(`was_hosts`) · C1 폴스타/C2 자산관리 대화 분리(`plans/165` F5) · `maint_window` 6개월 |
 | 2026-10-15 | D-336 | 재부여 — 구 D-335(제니퍼 심각도3 유형 정책)를 D-336으로 옮김 · 원격 `apm_noise`가 D-335(`plans/155` 결과 값 판정)를 먼저 푸시해 로컬 미푸시 쪽을 옮겼다(D-321 선례) |

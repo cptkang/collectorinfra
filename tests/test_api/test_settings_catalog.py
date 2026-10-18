@@ -216,7 +216,8 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     # plans/162 W2 NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY·META_ALERT_COLLECTION_FAILED_RATIO +2
     # plans/162 W5 NOISE_APM_SEV3_POLICY_ENABLED +1(noise_gate 기존 그룹 — 그룹 수 불변)
     # plans/162 F4 NOISE_PAGE_REVIEW_IDLE_CLOSE_MINUTES +1(noise_gate 기존 그룹 — 그룹 수 불변)
-    assert len(items) == 420
+    # D-340 LLM_VLLM_{BASE_URL,MODEL,API_KEY,TIMEOUT,VERIFY_SSL,ENABLE_THINKING} +6(llm 기존 그룹)
+    assert len(items) == 426
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -385,7 +386,8 @@ def test_t2_group_and_field_counts():
     # plans/162 W2 NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY·META_ALERT_COLLECTION_FAILED_RATIO +2
     # plans/162 W5 NOISE_APM_SEV3_POLICY_ENABLED +1(noise_gate 기존 그룹 — 그룹 수 불변)
     # plans/162 F4 NOISE_PAGE_REVIEW_IDLE_CLOSE_MINUTES +1(noise_gate 기존 그룹 — 그룹 수 불변)
-    assert len(index) == 420
+    # D-340 LLM_VLLM_{BASE_URL,MODEL,API_KEY,TIMEOUT,VERIFY_SSL,ENABLE_THINKING} +6(llm 기존 그룹)
+    assert len(index) == 426
     # plans/103 TIER3_PLAN_LOOP_ENABLED +1 · plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1
     assert len([s for s in index.values() if s.group_key == "general"]) == 21
 
@@ -427,7 +429,7 @@ def test_t2_type_detection():
     assert index["SECURITY_MASK_IP"].type == "bool"
     assert index["ENABLE_INTENT_ORCHESTRATION"].type == "tristate"
     assert index["LLM_PROVIDER"].type == "enum"
-    assert index["LLM_PROVIDER"].enum_choices == ["ollama", "fabrix", "gemini", "mlx"]
+    assert index["LLM_PROVIDER"].enum_choices == ["ollama", "fabrix", "gemini", "mlx", "vllm"]
     assert index["ORCHESTRATOR_PROVIDER"].enum_choices == ["vllm", "gemini", "mlx"]
     assert index["LOG_LEVEL"].enum_choices == ["DEBUG", "INFO", "WARNING", "ERROR"]
     assert index["SCHEMA_CACHE_BACKEND"].enum_choices == ["redis", "file"]  # 수동 choices 보강
@@ -449,7 +451,7 @@ def test_t2_secret_detection():
     assert secrets == {
         "ADMIN_JWT_SECRET", "ADMIN_PASSWORD", "AUTH_JWT_SECRET",
         "DBHUB_BEARER_TOKEN", "LLM_FABRIX_API_KEY", "LLM_FABRIX_CLIENT_KEY",
-        "LLM_GEMINI_API_KEY", "LLM_OLLAMA_API_KEY", "ORCHESTRATOR_API_KEY",
+        "LLM_GEMINI_API_KEY", "LLM_OLLAMA_API_KEY", "LLM_VLLM_API_KEY", "ORCHESTRATOR_API_KEY",
         "REDIS_PASSWORD", "WORKB_BEARER_TOKEN",
         "NOISE_INVESTIGATION_SERVICE_TOKEN",  # SecretStr 자동 판정
         "OBS_METRICS_BEARER_TOKEN",  # SecretStr 자동 판정(plans/92 O4)

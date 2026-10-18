@@ -42,7 +42,7 @@ _MARK = {VERDICT_OK: "[OK]", VERDICT_WARN: "[주의]", VERDICT_STOP: "[중단]",
 #: 워커만 보면 `LLM_PROVIDER=mlx` + `ORCHESTRATOR_PROVIDER=gemini` 가 승인 없이 Gemini 를 부른다
 #: (plans/100 3.4). 오케스트레이터는 `ENABLE_DEEPAGENTS_PACKAGE` 와 무관하게 **항상** 본다 -
 #: noise_gate enricher 트랙 B 도 같은 오케스트레이터를 쓴다. scenario·bench 판정은 전부 여기를 쓴다.
-WORKER_INTERNAL_PROVIDERS = frozenset({"fabrix", "ollama", "mlx"})
+WORKER_INTERNAL_PROVIDERS = frozenset({"fabrix", "ollama", "mlx", "vllm"})
 ORCHESTRATOR_INTERNAL_PROVIDERS = frozenset({"vllm", "mlx"})
 
 

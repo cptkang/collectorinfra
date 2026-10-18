@@ -1,6 +1,6 @@
 {
  "version": 1,
- "source_hash": "c00721042b14ee92bc566ed6c4eab314a8c4a04afd064eff437a63342a6f5942",
+ "source_hash": "ed0b5841e425ca4d596febd37cf5c35728c093c53ef4e7cc7ce8a5bc835f42c0",
  "chunks": [
   {
    "id": "user:U-01",
@@ -9853,7 +9853,7 @@
    "chapter": "11. 운영",
    "item": "",
    "anchor": "a-55",
-   "text": "LLM은 두 평면으로 나뉜다 — 응답·SQL을 만드는 워커(LLM_PROVIDER)와 계획을 세우는 오케스트레이터(ORCHESTRATOR_PROVIDER).\n운영 내부망은 워커 fabrix, 오케스트레이터 vllm을 쓴다.\n모델·주소·시간 초과는 환경변수 설정의 LLM·오케스트레이터 그룹에서 고친다.\n화면 캡처가 없다. A-06 그림이 LLM_PROVIDER의 상세 설명이다.\n외부 과금 API(gemini 등)는 외부로 데이터가 나가고 비용이 든다. 운영에서 쓰지 않는다.",
+   "text": "LLM은 두 평면으로 나뉜다 — 응답·SQL을 만드는 워커(LLM_PROVIDER)와 계획을 세우는 오케스트레이터(ORCHESTRATOR_PROVIDER).\n운영 내부망은 워커 fabrix, 오케스트레이터 vllm을 쓴다.\n워커도 사내 vLLM으로 돌리려면 LLM_PROVIDER를 vllm으로 두고 LLM_VLLM_BASE_URL·LLM_VLLM_MODEL을 채운다. 오케스트레이터 주소(ORCHESTRATOR_BASE_URL)와는 따로 적는다.\n모델·주소·시간 초과는 환경변수 설정의 LLM·오케스트레이터 그룹에서 고친다.\n화면 캡처가 없다. A-06 그림이 LLM_PROVIDER의 상세 설명이다.\n외부 과금 API(gemini 등)는 외부로 데이터가 나가고 비용이 든다. 운영에서 쓰지 않는다.\n워커 vllm의 주소나 모델 ID가 비어 있으면 서버가 기동하지 못한다. 모델 ID는 vLLM 서버의 GET /v1/models 응답에 나오는 값과 같아야 한다.",
    "aliases": [],
    "examples": [],
    "input_forms": []

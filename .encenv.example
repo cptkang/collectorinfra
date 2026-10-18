@@ -31,6 +31,9 @@ AUTH_JWT_SECRET=
 # gemini 테스트 모드에서 미설정이면 LLM_GEMINI_API_KEY로 폴백)
 ORCHESTRATOR_API_KEY=
 
+# 워커 vLLM(LLM_PROVIDER=vllm) API 키 (선택 — vLLM을 --api-key로 띄웠을 때만, D-340)
+LLM_VLLM_API_KEY=
+
 # Redis 비밀번호
 REDIS_PASSWORD=
 

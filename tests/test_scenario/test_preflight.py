@@ -110,12 +110,15 @@ def test_오케스트레이터_평면도_항상_판정한다(orchestrator: str, 
     ("mlx", "gemini", ["ORCHESTRATOR_PROVIDER=gemini"]),
     ("ollama", "gemini", ["ORCHESTRATOR_PROVIDER=gemini"]),
     ("gemini", "gemini", ["LLM_PROVIDER=gemini", "ORCHESTRATOR_PROVIDER=gemini"]),
-    ("vllm", "vllm", ["LLM_PROVIDER=vllm"]),
+    ("vllm", "vllm", []),  # D-340 사내 vLLM 워커
     ("unknown(ValidationError)", "unknown(ValidationError)",
      ["LLM_PROVIDER=unknown(ValidationError)", "ORCHESTRATOR_PROVIDER=unknown(ValidationError)"]),
 ])
 def test_과금_판정의_단일_정의(worker: str, orchestrator: str, external: list[str]) -> None:
-    """평면별 비과금 집합 - 워커 {fabrix, ollama, mlx} / 오케스트레이터 {vllm, mlx}(D-222)."""
+    """평면별 비과금 집합 - 워커 {fabrix, ollama, mlx, vllm} / 오케스트레이터 {vllm, mlx}.
+
+    D-222 · D-340.
+    """
     assert pf.external_planes(worker, orchestrator) == external
 
 
