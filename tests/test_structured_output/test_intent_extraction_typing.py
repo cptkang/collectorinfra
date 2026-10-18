@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.messages import AIMessage
 
+from src.clients.instructor_adapter import structured_backend_available
 from src.nodes.schemas import ParsedRequirements
 from src.orchestration.schemas import DecomposedPlan, TaskSpec, allowed_agents
 from src.orchestration.subagents import SUBAGENT_REGISTRY
@@ -39,6 +40,14 @@ class _FakeLLM:
         i = min(self.calls, len(self._c) - 1)
         self.calls += 1
         return AIMessage(content=self._c[i])
+
+
+# instructor는 optional extra(`structured`)다 — 미설치면 어댑터가 기존 파싱 경로로 강등해
+# 재질의 교정·강등 사유를 검증할 수 없다(plans/158 C-3 · G-1). 판정은 어댑터와 같은 함수로 한다.
+_needs_instructor = pytest.mark.skipif(
+    not structured_backend_available(),
+    reason="instructor 미설치 — pip install -e '.[structured]'",
+)
 
 
 def _md(body: str) -> str:
@@ -95,6 +104,7 @@ class TestDecomposeStructured:
         assert [t["agent"] for t in out["tasks"]] == ["data_query"]
         assert "degraded" not in out
 
+    @_needs_instructor
     @pytest.mark.asyncio
     async def test_bad_agent_is_repaired_by_reask(self):
         """S4 ★ — 오타 agent가 되먹임 재질의로 교정된다."""
@@ -109,6 +119,7 @@ class TestDecomposeStructured:
         assert llm.calls == 2, f"재질의가 일어나지 않았다({llm.calls}회)"
         assert out["tasks"][0]["status"] == "pending", "status 부여가 빠졌다"
 
+    @_needs_instructor
     @pytest.mark.asyncio
     async def test_exhaustion_reports_reason_and_keeps_fallback(self):
         """S5·S6 ★ — 침묵 폴백 금지(F4). 사유를 싣되 가용성은 유지한다."""

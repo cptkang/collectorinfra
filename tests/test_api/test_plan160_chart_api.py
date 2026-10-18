@@ -626,7 +626,9 @@ def test_create_app_registers_viz_routes_only_when_chart_enabled(chart: bool) ->
     from src.api.server import create_app
 
     app = create_app(_config(chart=chart, explain=True))
-    paths = {getattr(r, "path", "") for r in app.routes}
+    # 등록 경로는 OpenAPI 스키마에서 읽는다(plans/158) — `app.routes`는 FastAPI 0.141부터
+    # include_router한 라우터를 평탄화하지 않고 `_IncludedRouter`(path "")로 남긴다.
+    paths = set(app.openapi()["paths"])
     viz = {"/api/v1/query/{query_id}/chart", "/api/v1/query/{query_id}/glossary",
            "/api/v1/query/{query_id}/interpret"}
     assert (viz & paths) == (viz if chart else set())

@@ -3,6 +3,7 @@
 > `plans/INDEX.md` 머리의 갱신 이력과, 2026-10-06(D-304) 축약 전의 긴 「상태」 칸 원문을 보존한다. **새 갱신 이력은 아래 「갱신 이력」 목록 맨 위에 한 줄씩 추가한다.** INDEX 머리에는 최종 갱신 날짜만 둔다.
 
 ## 갱신 이력
+- 2026-10-19 — **158 TODO→완료 · 커밋 전**: v2.0 — 원래 실패 73건 분류·교정(C-1 존 역질문 `.env` 누수 14 · C-2 eval_routing 2 · C-3 instructor skip 2 · C-4 FastAPI `app.routes` 1 · C-5 정본 개수 부패 2 · C-6 sre_agent 벤치 자식 `PYTHONPATH` 51 · C-7 `elapsed_s` 플래키 1) · 제품 결함 0 · 회귀 실패 0(모듈 단위) · Known Mistakes 1
 
 - 2026-10-18 — **167 TODO→완료 · 커밋 전**: 로그 비밀값 가림(D-339) — `setLogRecordFactory` 감싸기로 레코드 생성 시점에 DSN 비밀번호·Bearer·민감 키 값·JWT·Google 키를 `***`로(uvicorn `propagate=False` 핸들러까지 덮음) · structlog 프로세서 · 진입점 7곳(본체·main·alarm_server·mcp·apm·sre·fabrix_proxy) · 사본 4 바이트 일치 테스트 · 163·184 caplog 단언 좁힘 27곳 · verifier 4회·auditor 2회(Critical 0) · 회귀 실패 0(모듈 단위) · D-139 부기 — 메인 결정 §4 (a)(a)(a)
 - 2026-10-17 — **186 신규·완료 · 커밋 전 · 182 WIP→완료**: 182 확인 필요 7 + L4·J7 — 재생성 중단 사유 머리말(출구 조각 필터) · 재계획 종료 노트 보존 · 소유 판정 넘긴 설정 · 수동 프로필 mtime 캐시 · 멀티 스키마 탈락 사용률 회수 · 인증 저장소 부재 503 fail-closed(D-338 · break-glass 유지) · 유지 S5·M4·K4 근거 · 매뉴얼 user·admin — 메인 판정(사용자 지시 「직접 확인하고 진행」)

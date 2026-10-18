@@ -632,12 +632,16 @@ class TestVerifierGraphPathFalsePositive:
 
 @pytest.fixture
 def _route_config(monkeypatch):
-    from src.config import AppConfig, ServerConfig
+    from src.config import AppConfig, MultiDBConfig, ServerConfig
 
     monkeypatch.setenv("SCHEMA_CACHE_ENABLED", "false")
+    # 활성 DB를 샌드박스 `polestar` 단일로 고정한다(plans/158 C-1) — 폴스타 존 3종이
+    # 선택지에서 빠져 파일 경로 존 역질문이 생략된다. 미지정이면 `.env`의
+    # ACTIVE_DB_IDS 유무에 따라 결과가 갈렸다.
     return AppConfig(
         db_backend="direct", db_connection_string="", log_level="WARNING",
         server=ServerConfig(query_timeout=60, file_query_timeout=120),
+        multi_db=MultiDBConfig(active_db_ids_csv="polestar"),
     )
 
 

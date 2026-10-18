@@ -43,6 +43,9 @@ from investigation_bench.worlds import World, load_worlds
 
 TOP = Path(__file__).resolve().parents[2]  # sre_agent/
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]  # sre_agent/scripts
+# 자식 프로세스 PYTHONPATH — 벤치 모듈(scripts) + sre_agent 프로젝트 루트(`_serve.py`가 import하는
+# `sre_agent` 패키지). editable 설치 유무와 무관하게 같은 체크아웃의 패키지를 쓰게 한다.
+CHILD_PYTHONPATH = os.pathsep.join((str(SCRIPTS_DIR), str(TOP)))
 REPO_ROOT = TOP.parent
 DEFAULT_OUT_ROOT = TOP / ".data" / "investigation_bench"
 DEFAULT_WORLDS_DIR = "testdata/investigation_bench/worlds"
@@ -277,7 +280,7 @@ def build_arm_env(
         env.update({str(k): _env_str(v) for k, v in values.items()})
     env.update(FIXED_ENV)
     env.update({
-        "PYTHONPATH": str(SCRIPTS_DIR),
+        "PYTHONPATH": CHILD_PYTHONPATH,
         "MODEL": str(llm.get("model") or ""),
         "API_BASE": api_base,
         "API_KEY": str(llm.get("api_key") or "dummy"),
@@ -1114,7 +1117,7 @@ def _run(opts: RunOptions) -> int:
         py = sys.executable
         # 세계 서버·가짜 LLM도 실험군과 같은 최소 환경만 물려받는다.
         base_env = {k: os.environ[k] for k in INHERITED_ENV_KEYS if k in os.environ}
-        base_env["PYTHONPATH"] = str(SCRIPTS_DIR)
+        base_env["PYTHONPATH"] = CHILD_PYTHONPATH
         worlds_dir = worlds_dir_of(spec)
         fake_url = None
         if use_fake:

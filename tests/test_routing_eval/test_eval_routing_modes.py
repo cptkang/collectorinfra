@@ -143,6 +143,10 @@ class TestLegacyModesUnchanged:
         "COMPOSITE_PLAN_DAG_VALIDATION_ENABLED": "true",
         "COMPOSITE_SEQUENTIAL_REPLAN_ENABLED": "true",
         "COMPOSITE_TASK_FRAME_ENABLED": "false", "COMPOSITE_INVESTIGATION_ENABLED": "false",
+        # 사다리 플래그 명시(plans/158 C-2) — 미입력이면 `src/config`가 자동 해석 경고 2줄을
+        # stderr에 더해(D-251) `.env` 없는 트리에서 바이트 비교가 깨진다. 값 조합 4종 모두
+        # stdout·stderr가 같음을 실측했고, 로컬 `.env`와 같은 true로 둔다.
+        "ENABLE_SEMANTIC_ROUTING": "true", "ENABLE_INTENT_ORCHESTRATION": "true",
     }
 
     def _cli(self, *args: str) -> subprocess.CompletedProcess:
@@ -619,14 +623,20 @@ class TestCli:
 
     @pytest.mark.parametrize("argv", [
         ("--decomposition", "--node"),
-        ("--runtime-prompt-conditions",),
+        # 활성 DB 주입(plans/158 C-2) — 없으면 「활성 DB가 없다」 조기 종료(return 1)로 가드에
+        # 닿지 못한다. `.env`의 ACTIVE_DB_IDS 유무에 결과가 묶이지 않게 인자로 고정한다.
+        ("--runtime-prompt-conditions", "--active-dbs", ",".join(_ZONE_SET)),
     ])
     def test_real_calls_stay_behind_optin_gate(self, monkeypatch, argv):
         """과금 게이트 — 목업·dry-run이 아니면 기존 `_require_optin`을 먼저 통과해야 한다."""
+        called: list[bool] = []
+
         def refuse():
+            called.append(True)
             raise SystemExit(2)
 
         monkeypatch.setattr(H, "_require_optin", refuse)
         with pytest.raises(SystemExit) as exc:
             self._main(monkeypatch, *argv)
         assert exc.value.code == 2
+        assert called, "SystemExit(2)가 옵트인 가드가 아닌 곳에서 났다"
