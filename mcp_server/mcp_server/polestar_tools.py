@@ -30,9 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
-from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -41,12 +39,27 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from mcp_server.config import AppServerConfig
 from mcp_server.db import DBPoolManager
+from mcp_server.polestar_helpers import (
+    _DB2_SCHEMA as _DB2_SCHEMA,
+    _MAX_LOOKBACK_MINUTES as _MAX_LOOKBACK_MINUTES,
+    _PG_SCHEMA as _PG_SCHEMA,
+    _STAT_DATE_FMT as _STAT_DATE_FMT,
+    _clamp as _clamp,
+    _ctime_window_clause as _ctime_window_clause,
+    _id_literal as _id_literal,
+    _mask_process_args as _mask_process_args,
+    _q as _q,
+    _rank_processes as _rank_processes,
+    _row_limit as _row_limit,
+    _sql_literal as _sql_literal,
+    _time_floor as _time_floor,
+    incident_window as incident_window,
+    parse_reference_time as parse_reference_time,
+)
+from mcp_server.tool_response import err as _err
+from mcp_server.tool_response import now_iso as _now_iso
 
 logger = logging.getLogger(__name__)
-
-# 스키마 한정자 (Known Mistakes 방언 규칙 — DB2는 대문자 POLESTAR).
-_PG_SCHEMA = "polestar"
-_DB2_SCHEMA = "POLESTAR"
 
 # metric kind → (resource_type, definition_name) 서버 상수
 # (noise_gate/domain/anomaly.py·src/db_adapters/polestar/prompts.py 실측 정합).
@@ -64,233 +77,6 @@ _METRIC_TABLE: dict[str, str] = {
 }
 
 _PROCESS_PATH = "/rest/server/process/listByhostname"
-
-# 프로세스 args 마스킹 패턴 (noise_gate/domain/process_rank.py 이식 — 값만 *** 치환).
-_SENSITIVE_KEY = (
-    r"(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|credential)"
-)
-_SENSITIVE_RE = re.compile(rf"({_SENSITIVE_KEY})(\s*[=:]\s*|\s+)(\S+)", re.IGNORECASE)
-# scheme://user:<password>@host 형태의 비밀번호만 치환한다.
-_CONN_STRING_RE = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s:/@]+:)([^\s@]+)(@)")
-_MASK = "***"
-
-
-# =====================================================================
-# 이스케이프 · 방언 유틸
-# =====================================================================
-
-
-def _sql_literal(value: str) -> str:
-    """문자열을 안전한 SQL 리터럴로 변환한다(널바이트 제거 + 작은따옴표 이중화).
-
-    MCP는 파라미터 바인딩이 없으므로 모든 외부 입력 문자열은 이 함수를 거쳐 보간한다
-    (§6-2 이스케이프 계약 — 단위 테스트로 고정).
-    """
-    cleaned = str(value).replace("\x00", "").replace("'", "''")
-    return f"'{cleaned}'"
-
-
-def _id_literal(value: Any) -> str:
-    """식별자(alarm_id 등)를 안전하게 보간한다.
-
-    순수 숫자면 바인딩 없이도 인젝션이 불가능하므로 정수 리터럴로, 그 외에는
-    ``_sql_literal``로 이스케이프한다(엔진 무관 — DB2의 문자열↔숫자 캐스트 회피).
-    """
-    s = str(value).strip()
-    if s.isdigit():
-        return s
-    return _sql_literal(s)
-
-
-def _q(is_db2: bool, table: str) -> str:
-    """엔진별 스키마로 한정된 테이블 참조를 반환한다."""
-    schema = _DB2_SCHEMA if is_db2 else _PG_SCHEMA
-    return f"{schema}.{table}"
-
-
-def _row_limit(is_db2: bool, n: int) -> str:
-    """엔진별 행 제한 절을 반환한다(DB2는 LIMIT 미지원 → FETCH FIRST)."""
-    n = int(n)
-    return f"FETCH FIRST {n} ROWS ONLY" if is_db2 else f"LIMIT {n}"
-
-
-def _time_floor(is_db2: bool, hours: int) -> str:
-    """엔진별 '지금으로부터 hours시간 전' 시각 표현을 반환한다."""
-    h = int(hours)
-    return f"CURRENT TIMESTAMP - {h} HOURS" if is_db2 else f"NOW() - INTERVAL '{h} hours'"
-
-
-def _now_iso() -> str:
-    """queried_at용 UTC ISO 타임스탬프를 반환한다."""
-    return datetime.now(timezone.utc).isoformat()
-
-
-# ---------------------------------------------------------------------
-# 사건 구간 앵커 (plans/50 G1·G2·G3 · SPEC-incident-window-tools · D-197)
-#
-# 조회 도구가 전부 now 앵커라 "어제 14시" 구간의 증거를 가져올 수 없었다(§3.4 "now() 금지").
-# 기준시각·구간 인자를 받아 경계를 **파이썬이 계산해 리터럴로** 보간한다 — 엔진별 interval
-# 산술을 SQL에 두지 않으며, 인자를 지정하지 않으면 종전 SQL과 문자열이 같다(회귀 0).
-# ---------------------------------------------------------------------
-
-# granularity → stat_date(varchar) 포맷·1단위 분(실측 db_profiles: h=YYYYMMDDHH · d=YYYYMMDD · m=YYYYMM).
-_STAT_DATE_FMT: dict[str, str] = {"h": "%Y%m%d%H", "d": "%Y%m%d", "m": "%Y%m"}
-_GRANULARITY_MINUTES: dict[str, int] = {"h": 60, "d": 1440, "m": 43200}
-# lookback 상한(분) — 30일. 구간 조회는 사건 전후이지 장기 추세가 아니다.
-_MAX_LOOKBACK_MINUTES = 60 * 24 * 30
-
-
-def parse_reference_time(value: Any) -> datetime:
-    """ISO 8601 기준시각을 파싱한다. 리터럴로 보간되므로 자유 문자열은 거부한다(ValueError).
-
-    반환은 파싱된 그대로다(오프셋이 있으면 tz-aware). 폴스타 SQL 경로는 벽시계 값만 쓴다
-    (`_wall_clock`), PromQL 경로는 epoch가 필요해 tz를 살린다.
-    """
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"reference_time은 ISO 8601 문자열이어야 함: {value!r}")
-    try:
-        return datetime.fromisoformat(value.strip())
-    except ValueError as e:
-        raise ValueError(f"reference_time은 ISO 8601 문자열이어야 함: {value!r}") from e
-
-
-def _wall_clock(dt: datetime) -> datetime:
-    """오프셋을 떼고 벽시계 값만 남긴다(변환하지 않는다 — 폴스타 DB tz는 서버가 모른다)."""
-    return dt.replace(tzinfo=None)
-
-
-def _ts_literal(is_db2: bool, dt: datetime) -> str:
-    """엔진별 timestamp 리터럴(초 해상도)."""
-    s = dt.strftime("%Y-%m-%d %H:%M:%S")
-    return f"TIMESTAMP('{s}')" if is_db2 else f"TIMESTAMP '{s}'"
-
-
-def _shift_months(dt: datetime, months: int) -> datetime:
-    """월 단위 이동(일자는 1일로 정규화 — YYYYMM 비교에만 쓴다)."""
-    idx = dt.year * 12 + (dt.month - 1) - int(months)
-    return dt.replace(year=idx // 12, month=idx % 12 + 1, day=1)
-
-
-def _shift_periods(dt: datetime, granularity: str, periods: int) -> datetime:
-    if granularity == "m":
-        return _shift_months(dt, periods)
-    return dt - timedelta(minutes=_GRANULARITY_MINUTES[granularity] * int(periods))
-
-
-def _ctime_window_clause(is_db2: bool, reference_time: str, lookback_minutes: int) -> str:
-    """`CA.CTIME`를 [기준시각 − lookback, 기준시각]으로 한정하는 WHERE 조각."""
-    ref = _wall_clock(parse_reference_time(reference_time))
-    lo = ref - timedelta(minutes=_clamp(lookback_minutes, 1, _MAX_LOOKBACK_MINUTES))
-    return (
-        f"  AND CA.CTIME >= {_ts_literal(is_db2, lo)}\n"
-        f"  AND CA.CTIME <= {_ts_literal(is_db2, ref)}\n"
-    )
-
-
-def incident_window(
-    reference_time: str,
-    lookback_minutes: Optional[int],
-    granularity: str,
-    baseline_periods: Optional[int],
-) -> dict[str, Any]:
-    """metric_trend 앵커 구간 메타 — SQL 경계와 응답 `window`가 같은 값을 쓴다.
-
-    - incident: [reference − lookback, reference]. lookback 미지정 시 granularity 1단위.
-    - baseline(G2): incident 직전 `baseline_periods` 단위. 소비자가 `stat_date_incident_from`으로 쪼갠다.
-    """
-    if granularity not in _STAT_DATE_FMT:
-        raise ValueError(
-            f"지원하지 않는 granularity: {granularity} (허용: {sorted(_STAT_DATE_FMT)})"
-        )
-    ref = _wall_clock(parse_reference_time(reference_time))
-    minutes = _GRANULARITY_MINUTES[granularity] if lookback_minutes is None else lookback_minutes
-    incident_from = ref - timedelta(minutes=_clamp(minutes, 1, _MAX_LOOKBACK_MINUTES))
-    baseline_from = (
-        _shift_periods(incident_from, granularity, baseline_periods)
-        if baseline_periods else None
-    )
-    fmt = _STAT_DATE_FMT[granularity]
-    lower = baseline_from or incident_from
-    return {
-        "reference_time": ref.isoformat(),
-        "incident_from": incident_from.isoformat(),
-        "baseline_from": baseline_from.isoformat() if baseline_from else None,
-        "stat_date_to": ref.strftime(fmt),
-        "stat_date_incident_from": incident_from.strftime(fmt),
-        "stat_date_from": lower.strftime(fmt),
-    }
-
-
-def _clamp(value: int, lo: int, hi: int) -> int:
-    """value를 [lo, hi] 범위로 제한한다."""
-    return max(lo, min(int(value), hi))
-
-
-# =====================================================================
-# 프로세스 마스킹 · 랭킹 (순수 함수 — 단위 테스트 대상)
-# =====================================================================
-
-
-def _mask_process_args(args: str, max_len: int = 120) -> str:
-    """프로세스 실행 인자에서 민감정보를 마스킹하고 길이를 제한한다.
-
-    마스킹 대상(대소문자 무시, 키는 보존하고 값만 *** 치환):
-        - password|passwd|pwd|secret|token|api_key|access_key|credential 의 값
-        - DB 접속 문자열(scheme://user:<password>@host)의 비밀번호 부분
-    """
-    if not args:
-        return ""
-    masked = _CONN_STRING_RE.sub(rf"\1{_MASK}\3", args)
-    masked = _SENSITIVE_RE.sub(rf"\1\2{_MASK}", masked)
-    if len(masked) > max_len:
-        masked = masked[:max_len].rstrip() + "…"
-    return masked
-
-
-def _to_float(value: Any) -> float:
-    """값을 float로 변환한다(실패 시 0.0)."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _sort_key(item: dict[str, Any], sort: str) -> float:
-    """정렬 지표를 반환한다(mem=pmem, cpu=p100cpu→pcpu 폴백)."""
-    if sort == "mem":
-        return _to_float(item.get("pmem"))
-    if item.get("p100cpu") is not None:
-        return _to_float(item.get("p100cpu"))
-    return _to_float(item.get("pcpu"))
-
-
-def _rank_processes(
-    raw_list: list[dict[str, Any]], sort: str, top_n: int
-) -> tuple[list[dict[str, Any]], int]:
-    """원시 프로세스 목록을 지표 내림차순 상위 N으로 선별하고 args를 마스킹한다.
-
-    Returns:
-        (마스킹된 상위 N 프로세스 목록, 전체 프로세스 건수)
-    """
-    items = [it for it in (raw_list or []) if isinstance(it, dict)]
-    total = len(items)
-    ranked = sorted(items, key=lambda it: _sort_key(it, sort), reverse=True)
-    top: list[dict[str, Any]] = []
-    for it in ranked[: max(0, int(top_n))]:
-        top.append(
-            {
-                "name": str(it.get("name", "") or ""),
-                "pid": it.get("pid"),
-                "ppid": it.get("ppid"),
-                "user": str(it.get("user", "") or ""),
-                "p100cpu": it.get("p100cpu"),
-                "pcpu": it.get("pcpu"),
-                "pmem": it.get("pmem"),
-                "rss": it.get("rss"),
-                "args": _mask_process_args(str(it.get("args", "") or "")),
-            }
-        )
-    return top, total
 
 
 # =====================================================================
@@ -666,11 +452,6 @@ def _ok(rows: list[dict[str, Any]], source: str, engine: str, **extra: Any) -> s
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-def _err(message: str) -> str:
-    """오류 반환 JSON 문자열을 만든다({error})."""
-    return json.dumps({"error": message}, ensure_ascii=False)
-
-
 # =====================================================================
 # 컨텍스트 접근 헬퍼
 # =====================================================================
@@ -882,8 +663,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         except ValueError as e:
             return _err(str(e))
         limit = pool.get_source_config(source).max_rows
-        sql = build_resource_status_sql(is_db2, server_name, limit)
         try:
+            sql = build_resource_status_sql(is_db2, server_name, limit)
             rows = await pool.execute(source, sql)
             return _ok(rows, source, engine)
         except Exception as e:
@@ -916,11 +697,11 @@ def register_polestar_tools(mcp: FastMCP) -> None:
             return _err(str(e))
         limit = pool.get_source_config(source).max_rows
         hops = _clamp(max_hops, 1, 10)
-        sql = build_topology_sql(is_db2, server_name, hops, limit)
         extra: dict[str, Any] = {}
         if is_db2:
             extra["note"] = "DB2(b0)는 1홉 폴백 — 다홉 토폴로지는 PostgreSQL만 지원"
         try:
+            sql = build_topology_sql(is_db2, server_name, hops, limit)
             rows = await pool.execute(source, sql)
             return _ok(rows, source, engine, **extra)
         except Exception as e:
@@ -1012,8 +793,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         except ValueError as e:
             return _err(str(e))
         limit = pool.get_source_config(source).max_rows
-        sql = build_os_config_sql(is_db2, hostname, limit)
         try:
+            sql = build_os_config_sql(is_db2, hostname, limit)
             rows = await pool.execute(source, sql)
             return _ok(rows, source, engine)
         except Exception as e:
@@ -1060,14 +841,19 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         if reference_time is not None:
             try:
                 cutoff_epoch, until_epoch = change_history_window_epochs(reference_time, lookback_minutes, hours=hours)
+                sql = build_change_history_sql(
+                    server_name, cutoff_epoch, limit, until_epoch=until_epoch
+                )
             except ValueError as e:
                 return _err(str(e))
             window = {"reference_time": parse_reference_time(reference_time).isoformat(),
                       "incident_from_epoch": cutoff_epoch, "reference_epoch": until_epoch}
-            sql = build_change_history_sql(server_name, cutoff_epoch, limit, until_epoch=until_epoch)
         else:
             cutoff_epoch = int(time.time()) - _clamp(hours, 1, 24 * 365) * 3600
-            sql = build_change_history_sql(server_name, cutoff_epoch, limit)
+            try:
+                sql = build_change_history_sql(server_name, cutoff_epoch, limit)
+            except ValueError as e:
+                return _err(str(e))
         try:
             rows = await pool.execute(source, sql)
             return _ok(rows, source, engine, window=window) if window else _ok(rows, source, engine)
@@ -1096,8 +882,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
             is_db2, engine = _resolve_engine(pool, source)
         except ValueError as e:
             return _err(str(e))
-        sql = build_condition_log_sql(is_db2, alarm_id)
         try:
+            sql = build_condition_log_sql(is_db2, alarm_id)
             rows = await pool.execute(source, sql)
             return _ok(rows, source, engine)
         except Exception as e:

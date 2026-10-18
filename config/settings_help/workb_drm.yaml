@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — worKB 발송 · DRM 복호화 (D-191)
-# 근거: src/config.py WorkbConfig(get_user_ids 심각도 분기) · DrmConfig(Plan 74 / D-156)
+# 근거: src/config/{alarm,services}.py WorkbConfig(get_user_ids 심각도 분기) · DrmConfig(Plan 74 / D-156)
 #       docs/22_drm_deployment_guide.md
 
 version: 1

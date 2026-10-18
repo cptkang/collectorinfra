@@ -9,6 +9,7 @@ DB·LLM 0(D-127).
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import re
 from pathlib import Path
@@ -91,9 +92,40 @@ class TestR6ClarificationAudit:
             asyncio.run(route._audit_clarification({"kind": "zone_select"}, None, None))
 
     def test_every_pre_gate_entry_point_records_the_fire(self):
-        """경로 대칭 — 텍스트 2 · 파일 2 진입점이 모두 발동을 기록한다(한쪽만 기록하면 발동률이 틀린다)."""
+        """경로 대칭 — 텍스트 2 · 파일 2 진입점이 모두 발동을 기록한다(한쪽만 기록하면
+        발동률이 틀린다).
+
+        plans/179 W1a: 감사 호출은 네 진입 공유 사전 게이트(`_run_pre_gates`)의 역질문 분기
+        한 곳이다(종전 진입별 4벌 계수의 전환) — 진입마다 그 게이트를 부르고, 게이트는
+        역질문이면 반환 직전에 감사한다.
+        """
         src = Path(route.__file__).read_text(encoding="utf-8")
-        assert src.count("await _audit_clarification(clarification, current_user, thread_id)") == 4
+        tree = ast.parse(src)
+        funcs = {n.name: n for n in tree.body
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+        def calls(caller: str, callee: str) -> list[ast.Call]:
+            return [n for n in ast.walk(funcs[caller])
+                    if isinstance(n, ast.Call) and getattr(n.func, "id", None) == callee]
+
+        # 파일 경로는 요청 수신 시점에 정한 `actual_thread_id`(= thread_id or query_id)를 넘긴다 —
+        # 텍스트 경로의 `thread_id`(= body.thread_id or query_id)와 같은 값이다(plans/163 D6).
+        fires = []
+        for entry in ("process_query", "process_query_stream",
+                      "process_file_query", "process_file_query_stream"):
+            (gate,) = calls(entry, "_run_pre_gates")
+            fires.append(ast.unparse({kw.arg: kw.value for kw in gate.keywords}["thread_id"]))
+        assert sorted(fires) == ["actual_thread_id", "actual_thread_id", "thread_id", "thread_id"]
+        # 게이트 안: 역질문이 있으면 감사(진입이 넘긴 thread_id 그대로) 뒤 역질문으로 반환한다
+        branch = next(
+            n for n in ast.walk(funcs["_run_pre_gates"])
+            if isinstance(n, ast.If) and ast.unparse(n.test) == "clarification"
+        )
+        assert ast.unparse(branch.body[0]) == (
+            "await _audit_clarification(clarification, current_user, thread_id)"
+        )
+        assert isinstance(branch.body[-1], ast.Return)
+        assert len(re.findall(r"await _audit_clarification\(", src)) == 1
         assert src.count("await _audit_scope_narrowed(input_state, current_user, thread_id)") == 2
 
 

@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 감사 로그 (D-191)
-# 근거: src/config.py AuditConfig · docs/02_decision.md (D-083 로테이션 배선)
+# 근거: src/config/security.py AuditConfig · docs/02_decision.md (D-083 로테이션 배선)
 
 version: 1
 group: audit

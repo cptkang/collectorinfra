@@ -279,7 +279,9 @@ def _node_cfg(episode_ctx: bool, client: _Client, audit: Any = None, inv_store: 
         "app_config": SimpleNamespace(
             noise_gate=_gate(episode_ctx),
             host_authz=SimpleNamespace(mode="admin_only"),
-            composite=SimpleNamespace(prior_targets_enabled=False),
+            composite=SimpleNamespace(
+                prior_targets_enabled=False, availability_precheck_enabled=False
+            ),
         ),
         "sre_agent_client": client, "decision_store": audit, "investigation_store": inv_store,
     }}
@@ -413,6 +415,7 @@ def _worker(tmp_path: Path, *, episode_ctx: bool = True, mode: str = "shadow",
     cfg = SimpleNamespace(
         noise_gate=SimpleNamespace(
             enable_noise_gate=True, repeat_interval_seconds=14400, suppress_max_severity=2,
+            dedup_severity_rise_bypass=False,
             self_heal_window_seconds=300, cross_source_mode=mode,
             cross_source_rules_path=str(SHIPPED_RULES), episode_idle_seconds=900,
             app_impact_enabled=False, app_impact_late_promotion_enabled=False,
@@ -423,7 +426,7 @@ def _worker(tmp_path: Path, *, episode_ctx: bool = True, mode: str = "shadow",
         ),
         alarm=SimpleNamespace(min_severity=1, dedup_ttl_seconds=300),
         host_authz=SimpleNamespace(mode="admin_only"),
-        composite=SimpleNamespace(prior_targets_enabled=False),
+        composite=SimpleNamespace(prior_targets_enabled=False, availability_precheck_enabled=False),
         workb=SimpleNamespace(),
     )
     w = AlarmWorker(cfg)

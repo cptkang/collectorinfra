@@ -196,6 +196,16 @@ def _config(*, chart: bool = True, explain: bool = False, auth: bool = True, tim
     )
 
 
+class _Users:
+    """`user_repo` 대역 — 인증 활성이면 저장소가 필수다(plans/186 L4 fail-closed). boss만 관리자."""
+
+    async def get_by_user_id(self, user_id: str):  # noqa: ANN201
+        from src.domain.user import User, UserRole
+
+        role = UserRole.ADMIN if user_id in {"boss"} else UserRole.USER
+        return User(user_id=user_id, username=user_id, hashed_password="x", role=role)
+
+
 def _client(graph: Any, *, audit: _Audit | None = None, repo: _FakeRepo | None = None,
             **cfg: Any) -> TestClient:
     from src.api.routes import conversation, query, result_viz
@@ -203,6 +213,7 @@ def _client(graph: Any, *, audit: _Audit | None = None, repo: _FakeRepo | None =
     app = FastAPI()
     app.state.config = _config(**cfg)
     app.state.graph = graph
+    app.state.user_repo = _Users()
     if audit is not None:
         app.state.audit_service = audit
     if repo is not None:
@@ -615,7 +626,9 @@ def test_create_app_registers_viz_routes_only_when_chart_enabled(chart: bool) ->
     from src.api.server import create_app
 
     app = create_app(_config(chart=chart, explain=True))
-    paths = {getattr(r, "path", "") for r in app.routes}
+    # 등록 경로는 OpenAPI 스키마에서 읽는다(plans/158) — `app.routes`는 FastAPI 0.141부터
+    # include_router한 라우터를 평탄화하지 않고 `_IncludedRouter`(path "")로 남긴다.
+    paths = set(app.openapi()["paths"])
     viz = {"/api/v1/query/{query_id}/chart", "/api/v1/query/{query_id}/glossary",
            "/api/v1/query/{query_id}/interpret"}
     assert (viz & paths) == (viz if chart else set())

@@ -681,6 +681,7 @@ def _worker_cfg(mode: str) -> SimpleNamespace:
     return SimpleNamespace(
         noise_gate=SimpleNamespace(
             enable_noise_gate=True, repeat_interval_seconds=60, suppress_max_severity=2,
+            dedup_severity_rise_bypass=False,
             self_heal_window_seconds=300, **vars(_cfg(mode)),
         ),
         alarm=SimpleNamespace(min_severity=1, dedup_ttl_seconds=300),

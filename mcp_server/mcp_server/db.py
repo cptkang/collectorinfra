@@ -2,6 +2,11 @@
 
 PostgreSQL(asyncpg 풀) · DB2(ibm_db, asyncio.to_thread 래핑) · MariaDB(aiomysql 풀)를
 통합 관리한다.
+
+읽기 전용(D-003 · plans/163 S1): readonly 소스는 모든 실행이 `DBPoolManager.execute`의
+`validate_readonly`를 거치고(완전 중재 — 도구·스키마 헬퍼·exporter·헬스체크 공통), 연결은 세션
+읽기 전용으로 연다(PostgreSQL·MariaDB). 세션 읽기 전용은 보조 수단이다 — 같은 세션에서 되돌릴 수
+있으므로 본질은 SELECT 권한만 가진 접속 계정이다.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from urllib.parse import unquote, urlsplit
 
 from mcp_server import sql_log
 from mcp_server.config import SourceConfig
+from mcp_server.security import validate_readonly
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +47,18 @@ class DBPoolManager:
                 try:
                     import asyncpg
 
+                    pg_kwargs: dict[str, Any] = {}
+                    if src.readonly:
+                        # 세션 기본 트랜잭션을 읽기 전용으로 — 풀 반납 시 RESET ALL로 원복된다.
+                        pg_kwargs["server_settings"] = {
+                            "default_transaction_read_only": "on"
+                        }
                     pool = await asyncpg.create_pool(
                         dsn=src.connection,
                         min_size=src.pool_min_size,
                         max_size=src.pool_max_size,
                         command_timeout=src.query_timeout,
+                        **pg_kwargs,
                     )
                     self._pg_pools[name] = pool
                     logger.info(
@@ -57,12 +70,21 @@ class DBPoolManager:
                 except Exception as e:
                     logger.error("PostgreSQL 풀 초기화 실패 (%s): %s", name, e)
             elif src.type == "db2":
+                # 세션 읽기 전용 미적용 — ibm_db가 루트 venv에 없어 연결 속성을 실측하지 못했다
+                # (plans/163 W0). DB2 쓰기 차단은 실행 지점 검사와 접속 계정 권한에 의존한다.
                 self._db2_configs[name] = src
                 logger.info("DB2 소스 등록: %s (요청별 연결)", name)
             elif src.type == "mariadb":
                 try:
                     import aiomysql
 
+                    # 문장 타임아웃을 서버가 강제한다(MariaDB 세션 변수 · 초 단위). readonly 소스는
+                    # 세션 읽기 전용을 같은 문장에 붙인다(init_command는 한 문장만 실행된다).
+                    # aiomysql은 CLIENT.MULTI_STATEMENTS를 항상 켠다(client_flag로 끌 수 없음 —
+                    # 0.3.2 실측) — 다중 문장 차단은 실행 지점 검사가 맡는다.
+                    init_command = f"SET SESSION max_statement_time={src.query_timeout}"
+                    if src.readonly:
+                        init_command += ", SESSION transaction_read_only=1"
                     pool = await aiomysql.create_pool(
                         minsize=src.pool_min_size,
                         maxsize=src.pool_max_size,
@@ -71,8 +93,7 @@ class DBPoolManager:
                         # 풀에 돌려받을 때 닫는다 — autocommit 없이는 풀이 매 요청 재연결로
                         # 퇴화한다.
                         autocommit=True,
-                        # 문장 타임아웃을 서버가 강제한다(MariaDB 세션 변수 · 초 단위).
-                        init_command=f"SET SESSION max_statement_time={src.query_timeout}",
+                        init_command=init_command,
                         **_mariadb_connect_kwargs(src.connection),
                     )
                     self._mariadb_pools[name] = pool
@@ -92,6 +113,7 @@ class DBPoolManager:
 
         실행된 SQL은 성공·실패 모두 `logs/sql/`에 기록한다(D-140). 엔진 분기가
         여기 한 곳으로 모이므로 로깅도 여기서 한 번만 건다(경로 대칭).
+        readonly 소스면 실행 전에 읽기 전용 검사를 건다(완전 중재 — 거부도 같은 로그에 남는다).
 
         Args:
             source_name: 데이터소스 이름
@@ -102,6 +124,7 @@ class DBPoolManager:
 
         Raises:
             ValueError: 알 수 없는 소스명
+            ReadOnlyViolationError: readonly 소스에 읽기 전용이 아닌 SQL
         """
         if source_name in self._pg_pools:
             runner = self._execute_pg
@@ -117,6 +140,7 @@ class DBPoolManager:
 
         started = time.perf_counter()
         try:
+            self._guard_readonly(source_name, sql)
             rows = await runner(source_name, sql)
         except Exception as e:
             sql_log.log_sql(
@@ -133,6 +157,15 @@ class DBPoolManager:
             row_count=len(rows),
         )
         return rows
+
+    def _guard_readonly(self, source_name: str, sql: str) -> None:
+        """readonly 소스면 `validate_readonly`를 건다. 설정이 없는 소스도 검사한다(실패 시 닫힘).
+
+        소스 `readonly=false` 스위치(`config.py`)는 현행 유지 — 그 소스만 검사를 건너뛴다.
+        """
+        src = self._sources.get(source_name)
+        if src is None or src.readonly:
+            validate_readonly(sql)
 
     async def _execute_pg(self, source_name: str, sql: str) -> list[dict[str, Any]]:
         """PostgreSQL 쿼리를 실행한다."""
@@ -202,18 +235,26 @@ class DBPoolManager:
         return source_name in self._sources
 
     async def health_check(self, source_name: str) -> bool:
-        """특정 소스의 연결 상태를 확인한다."""
+        """특정 소스의 연결 상태를 확인한다.
+
+        상수 SQL도 실행 지점과 같은 읽기 전용 검사를 받는다. `execute`를 거치지 않는 것은
+        헬스체크를 SQL 로그(`logs/sql/`)에 남기지 않기 위해서다.
+        """
         try:
             if source_name in self._pg_pools:
-                rows = await self._execute_pg(source_name, "SELECT 1 AS ok")
+                sql = "SELECT 1 AS ok"
+                self._guard_readonly(source_name, sql)
+                rows = await self._execute_pg(source_name, sql)
                 return len(rows) > 0
             elif source_name in self._db2_configs:
-                rows = await self._execute_db2(
-                    source_name, "SELECT 1 AS ok FROM SYSIBM.SYSDUMMY1"
-                )
+                sql = "SELECT 1 AS ok FROM SYSIBM.SYSDUMMY1"
+                self._guard_readonly(source_name, sql)
+                rows = await self._execute_db2(source_name, sql)
                 return len(rows) > 0
             elif source_name in self._mariadb_pools:
-                rows = await self._execute_mariadb(source_name, "SELECT 1 AS ok")
+                sql = "SELECT 1 AS ok"
+                self._guard_readonly(source_name, sql)
+                rows = await self._execute_mariadb(source_name, sql)
                 return len(rows) > 0
             return False
         except Exception as e:

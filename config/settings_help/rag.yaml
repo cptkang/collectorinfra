@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 문서 RAG (plans/126 · 교체 절차 docs/32_rag_retrieval_runbook.md)
-# 근거: src/config.py RagConfig · plans/126 §3.1a(플랫폼 파라미터) · §3.1b(자산 수명) · §4.1a(접속 세트)
+# 근거: src/config/services.py RagConfig · plans/126 §3.1a(플랫폼 파라미터) · §3.1b(자산 수명) · §4.1a(접속 세트)
 # ⚠ 검색 품질 파라미터(HyDE·top_k·유사도 임계·리랭크)는 **이 화면에 없다** — 사내 GenAI 플랫폼에서만
 #    바꿀 수 있고, 바꾸면 자산 ID가 새로 발급된다. 조정이 필요하면 플랫폼 담당자에게 요청한다.
 

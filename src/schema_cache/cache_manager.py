@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+import structlog
+
 from src.config import AppConfig
 from src.schema_cache.fingerprint import (
     FINGERPRINT_SQL,
@@ -217,6 +219,13 @@ class SchemaCacheManager:
             self._redis_available = False
             return False
 
+    async def _prefer_redis(self) -> bool:
+        """backend가 redis이고 연결이 보장되면 True — Redis 우선 분기의 공통 판정.
+
+        ``backend != "redis"``면 ``ensure_redis_connected()``를 부르지 않는다(단락 평가).
+        """
+        return self._backend == "redis" and await self.ensure_redis_connected()
+
     async def disconnect(self) -> None:
         """Redis 연결을 종료한다."""
         if self._redis_cache is not None:
@@ -240,7 +249,7 @@ class SchemaCacheManager:
             스키마 딕셔너리 또는 None
         """
         # Redis 시도
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             schema_dict = await self._redis_cache.load_schema(db_id)
             if schema_dict is not None:
                 logger.debug("Redis 캐시 히트: db_id=%s", db_id)
@@ -263,7 +272,7 @@ class SchemaCacheManager:
         Returns:
             fingerprint 문자열 또는 None
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             fp = await self._redis_cache.get_fingerprint(db_id)
             if fp is not None:
                 return fp
@@ -280,7 +289,7 @@ class SchemaCacheManager:
         Returns:
             변경되었으면 True
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             return await self._redis_cache.is_changed(db_id, current_fingerprint)
 
         return self._file_cache.is_changed(db_id, current_fingerprint)
@@ -296,7 +305,7 @@ class SchemaCacheManager:
         Returns:
             TTL 유효 시 True
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             ttl = self._config.schema_cache.fingerprint_ttl_seconds
             return await self._redis_cache.is_fingerprint_fresh(db_id, ttl)
         return False
@@ -307,7 +316,7 @@ class SchemaCacheManager:
         Args:
             db_id: DB 식별자
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             await self._redis_cache.refresh_fingerprint_checked_at(db_id)
 
     async def save_schema(
@@ -349,7 +358,7 @@ class SchemaCacheManager:
         saved = False
 
         # Redis 저장
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             if await self._redis_cache.save_schema(db_id, schema_dict, fingerprint):
                 saved = True
 
@@ -384,7 +393,7 @@ class SchemaCacheManager:
             )
             return False
 
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             return await self._redis_cache.save_structure_meta(
                 db_id, structure_meta
             )
@@ -403,7 +412,7 @@ class SchemaCacheManager:
         Returns:
             구조 분석 딕셔너리 또는 None
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             return await self._redis_cache.load_structure_meta(db_id)
         return None
 
@@ -470,7 +479,7 @@ class SchemaCacheManager:
         Returns:
             {db_id: description} 매핑
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             return await self._redis_cache.load_db_descriptions()
 
         # 파일 캐시 폴백: 각 DB 캐시 파일에서 db_description 필드 조회
@@ -491,7 +500,7 @@ class SchemaCacheManager:
         Returns:
             DB 설명 문자열 또는 None
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             return await self._redis_cache.get_db_description(db_id)
 
         # 파일 캐시 폴백
@@ -537,7 +546,7 @@ class SchemaCacheManager:
         saved = False
 
         # Redis 저장
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             if await self._redis_cache.save_db_description(
                 db_id, description, origin=origin
             ):
@@ -584,7 +593,7 @@ class SchemaCacheManager:
             삭제 성공 여부
         """
         success = False
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             if await self._redis_cache.delete_db_description(db_id):
                 success = True
         # 파일 캐시의 _db_description 필드(와 출처)도 삭제
@@ -606,7 +615,7 @@ class SchemaCacheManager:
         Returns:
             {table.column: description} 매핑
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             result = await self._redis_cache.load_descriptions(db_id)
             if result:
                 return result
@@ -638,7 +647,7 @@ class SchemaCacheManager:
             return False
 
         saved = False
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             if await self._redis_cache.save_descriptions(db_id, descriptions):
                 saved = True
         # 파일 캐시에도 저장 (폴백 보장)
@@ -659,7 +668,7 @@ class SchemaCacheManager:
         Returns:
             {table.column: [synonym, ...]} 매핑
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             result = await self._redis_cache.load_synonyms(db_id)
             if result:
                 return result
@@ -697,7 +706,7 @@ class SchemaCacheManager:
             return False
 
         saved = False
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             if await self._redis_cache.save_synonyms(
                 db_id, valid, source=source
             ):
@@ -729,7 +738,7 @@ class SchemaCacheManager:
         Returns:
             성공 여부
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             return await self._redis_cache.add_synonyms(
                 db_id, column, words, source=source
             )
@@ -751,7 +760,7 @@ class SchemaCacheManager:
         Returns:
             성공 여부
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             return await self._redis_cache.remove_synonyms(db_id, column, words)
         return False
 
@@ -763,7 +772,7 @@ class SchemaCacheManager:
         Returns:
             {column_name: [synonym, ...]} 매핑
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             res = await self._redis_cache.load_global_synonyms()
             if res:
                 return res
@@ -798,7 +807,7 @@ class SchemaCacheManager:
         Returns:
             저장 성공 여부
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             return await self._redis_cache.save_global_synonyms(synonyms)
         return False
 
@@ -816,7 +825,7 @@ class SchemaCacheManager:
         Returns:
             성공 여부
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             return await self._redis_cache.add_global_synonym(column_name, words)
         return False
 
@@ -834,7 +843,7 @@ class SchemaCacheManager:
         Returns:
             성공 여부
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             return await self._redis_cache.remove_global_synonym(column_name, words)
         return False
 
@@ -846,7 +855,7 @@ class SchemaCacheManager:
         Returns:
             {column_name: {"words": [...], "description": "..."}} 매핑
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             result = await self._redis_cache.load_global_synonyms_full()
             if result:
                 return result
@@ -886,7 +895,7 @@ class SchemaCacheManager:
         Returns:
             성공 여부
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             return await self._redis_cache.update_global_description(
                 column_name, description
             )
@@ -904,7 +913,7 @@ class SchemaCacheManager:
         Returns:
             설명 문자열 또는 None
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             return await self._redis_cache.get_global_description(column_name)
         return None
 
@@ -914,7 +923,7 @@ class SchemaCacheManager:
         Returns:
             컬럼명 목록 (정렬)
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             return await self._redis_cache.list_global_column_names()
         return []
 
@@ -964,7 +973,7 @@ class SchemaCacheManager:
                 words = list(dict.fromkeys(words + seed_words))
 
             # 기존 항목과 merge
-            if self._backend == "redis" and await self.ensure_redis_connected():
+            if await self._prefer_redis():
                 existing = await self._redis_cache.load_global_synonyms_full()
                 existing_entry = existing.get(column_name, {})
                 existing_words = existing_entry.get("words", [])
@@ -987,13 +996,12 @@ class SchemaCacheManager:
                 column_name, e,
             )
             # seed_words만이라도 저장
-            if seed_words and self._backend == "redis":
-                if await self.ensure_redis_connected():
-                    entry = {"words": seed_words}
-                    await self._redis_cache.save_global_synonyms(
-                        {column_name: entry}
-                    )
-                    return entry
+            if seed_words and await self._prefer_redis():
+                entry = {"words": seed_words}
+                await self._redis_cache.save_global_synonyms(  # type: ignore[union-attr]
+                    {column_name: entry}
+                )
+                return entry
             return {"words": seed_words or [], "description": ""}
 
     async def find_similar_global_columns(
@@ -1097,7 +1105,7 @@ class SchemaCacheManager:
                 "words": list(source_words),
                 "description": source_desc,
             }
-            if self._backend == "redis" and await self.ensure_redis_connected():
+            if await self._prefer_redis():
                 await self._redis_cache.save_global_synonyms(
                     {target_column: entry}
                 )
@@ -1115,7 +1123,7 @@ class SchemaCacheManager:
                 new_result.get("description") or source_desc
             )
             entry = {"words": merged_words, "description": merged_desc}
-            if self._backend == "redis" and await self.ensure_redis_connected():
+            if await self._prefer_redis():
                 await self._redis_cache.save_global_synonyms(
                     {target_column: entry}
                 )
@@ -1127,7 +1135,7 @@ class SchemaCacheManager:
                 "words": list(source_words),
                 "description": source_desc,
             }
-            if self._backend == "redis" and await self.ensure_redis_connected():
+            if await self._prefer_redis():
                 await self._redis_cache.save_global_synonyms(
                     {target_column: entry}
                 )
@@ -1548,7 +1556,8 @@ class SchemaCacheManager:
         self, db_id: str, schema_dict: dict[str, Any] | None, descriptions: dict[str, str]
     ) -> dict[str, str]:
         """설명 정본 파일(`config/knowledge/{db_id}/column_descriptions.yaml` · D-316 ④)에서
-        Redis에 없는 컬럼 설명만 채운다 — 스키마 로드 때 프로세스당 DB별 1회(설명 백업 복원 뒤).
+        Redis에 없는 컬럼 설명만 채운다 — 스키마 로드 때 프로세스당 DB별 1회(설명 백업 복원 뒤 ·
+        캐시 무효화 `invalidate`·`invalidate_all` 뒤에는 다시 1회).
 
         - 파일 없음(폴스타 등)·형식 오류: 무동작(Redis 쓰기 0).
         - 기존 설명(내부망 LLM·주석·관리자 적용·운영자 편집)은 HSETNX로 덮지 않는다. 컬럼 설명에는
@@ -1571,7 +1580,7 @@ class SchemaCacheManager:
             if not descriptions_path(self._knowledge_root, db_id).is_file():
                 self._knowledge_done.add(db_id)
                 return descriptions
-            if self._backend != "redis" or not await self.ensure_redis_connected():
+            if not await self._prefer_redis():
                 if self._backend != "redis":
                     self._knowledge_done.add(db_id)
                 if db_id not in self._knowledge_warned:
@@ -1794,11 +1803,17 @@ class SchemaCacheManager:
             )
 
         except Exception as e:
-            logger.error("캐시 갱신 실패 (db_id=%s): %s", db_id, e)
+            # 예외 원문(DB 연결 오류 — 호스트·계정이 섞임)은 로그에만, 결과 문구는 관리자
+            # 응답 A안 형식(plans/163 S3). 요청 번호는 감사 미들웨어가 바인딩한 structlog 값.
+            rid = structlog.contextvars.get_contextvars().get("request_id") or "-"
+            logger.error("캐시 갱신 실패 (db_id=%s · 요청 %s)", db_id, rid, exc_info=e)
             return CacheRefreshResult(
                 db_id=db_id,
                 status="error",
-                message=str(e),
+                message=(
+                    f"스키마 캐시 갱신 실패했습니다 ({type(e).__name__} · 요청 {rid})"
+                    " — 상세는 서버 로그"
+                ),
             )
 
     # === 관리 ===
@@ -1817,8 +1832,9 @@ class SchemaCacheManager:
             삭제 성공 여부
         """
         self._memory_cache.invalidate(db_id)
+        self._knowledge_done.discard(db_id)  # 설명 정본 파일 적재를 다음 로드에 다시(D-316 ④)
         success = False
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             if await self._redis_cache.invalidate(db_id):
                 success = True
         if self._file_cache.invalidate(db_id):
@@ -1834,8 +1850,9 @@ class SchemaCacheManager:
             삭제된 항목 수
         """
         self._memory_cache.invalidate()
+        self._knowledge_done.clear()  # 설명 정본 파일 적재를 다음 로드에 다시(D-316 ④)
         count = 0
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             count += await self._redis_cache.invalidate_all()
         count += self._file_cache.invalidate_all()
         return count
@@ -1850,7 +1867,7 @@ class SchemaCacheManager:
             캐시 상태 정보
         """
         # Redis 확인
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             status = await self._redis_cache.get_status(db_id)
             if status.get("exists"):
                 return CacheStatus(
@@ -1888,7 +1905,7 @@ class SchemaCacheManager:
         seen_db_ids: set[str] = set()
 
         # Redis 캐시 목록
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             redis_dbs = await self._redis_cache.list_cached_dbs()
             for db_info in redis_dbs:
                 db_id = db_info["db_id"]
@@ -1929,13 +1946,36 @@ class SchemaCacheManager:
         """Redis 연결 가능 여부."""
         return self._redis_available
 
+    # === Redis 직접 위임 (Facade 공개 경로 · 연결 확인·폴백 없음) ===
+    # 호출부가 ``redis_available``을 먼저 확인하고 부른다. 예외는 그대로 전파한다.
+
+    @property
+    def redis_cache(self) -> RedisSchemaCache | None:
+        """하위 Redis 저장소 객체(backend가 redis가 아니면 None) — 객체를 넘겨야 하는 소비처용."""
+        return self._redis_cache
+
+    async def load_resource_type_synonyms(self) -> dict[str, list[str]]:
+        """Redis의 resource_type 유사어 사전을 그대로 읽는다."""
+        return await self._redis_cache.load_resource_type_synonyms()  # type: ignore[union-attr]
+
+    async def load_eav_name_synonyms(self) -> dict[str, list[str]]:
+        """Redis의 EAV 속성명 유사어 사전을 그대로 읽는다."""
+        return await self._redis_cache.load_eav_name_synonyms()  # type: ignore[union-attr]
+
+    async def load_global_synonyms(self) -> dict[str, list[str]]:
+        """Redis의 글로벌 유사어 사전을 그대로 읽는다.
+
+        ``get_global_synonyms``와 달리 연결 확인·로컬 YAML 폴백이 없다.
+        """
+        return await self._redis_cache.load_global_synonyms()  # type: ignore[union-attr]
+
     async def get_column_value_synonyms(self) -> dict[str, dict[str, dict]]:
         """컬럼 값 유사단어를 로드한다.
 
         Returns:
             {column_name: {term: {op, value}}} 매핑
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             result = await self._redis_cache.load_column_value_synonyms()
             if result:
                 return result
@@ -1953,7 +1993,7 @@ class SchemaCacheManager:
         Returns:
             저장 성공 여부
         """
-        if self._backend == "redis" and await self.ensure_redis_connected():
+        if await self._prefer_redis():
             return await self._redis_cache.save_column_value_synonyms(synonyms)
         return False
 

@@ -31,6 +31,9 @@ def _cfg(**kw):
         multi_db=_multi_db(["polestar_cm_gp"]),
         db_backend="dbhub",
         enable_deepagents_package=False,
+        # plans/166 W1 X1 — ladder가 직접 접근으로 바뀌어 대역에 치환 전 폴백 값을 명시
+        enable_intent_orchestration=False,
+        enable_semantic_routing=False,
     )
     base.update(kw)
     return SimpleNamespace(**base)

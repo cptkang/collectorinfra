@@ -79,3 +79,6 @@ testdata/apm_bench/local/
 
 # 테스트가 MagicMock 객체를 경로로 넘겨 만드는 스키마 캐시 잔여물
 MagicMock/
+
+# 로컬 Claude 산출물 폴더 — 커밋 제외(사용자 지시 2026-10-17)
+/Claude outputs/

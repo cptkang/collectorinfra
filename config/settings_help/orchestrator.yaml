@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 오케스트레이터(제어 평면) (D-191)
-# 근거: src/config.py OrchestratorConfig 주석 · docs/21_orchestration_ladder.md
+# 근거: src/config/llm.py OrchestratorConfig 주석 · docs/21_orchestration_ladder.md
 #       deep_agent.select_orchestration_backend(가용성 분기) · deepagents_tools._max_chars
 
 version: 1

@@ -39,8 +39,7 @@ _DATA_INTENTS: tuple[Any, ...] = (None, "data_query", "alarm_query")
 
 def sequential_entry(state: dict, config: AppConfig) -> bool:
     """`sequential_runner` 진입 판정(plans/88 §4.7). 하나라도 불성립이면 False."""
-    composite = getattr(config, "composite", None)
-    if not bool(getattr(composite, "sequential_fallback_tiers_enabled", False)):
+    if not bool(config.composite.sequential_fallback_tiers_enabled):
         return False
     # HITL 우회 금지 — SQL 승인 플래그가 켜져 있으면 진입하지 않는다.
     if bool(getattr(config, "enable_sql_approval", False)):

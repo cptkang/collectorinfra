@@ -30,6 +30,8 @@ class AuditMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         """요청마다 request_id·client_ip를 바인딩하고, 실패 트레이스 수명을 관리한다.
 
+        request_id는 응답 헤더 `X-Request-ID`로도 돌려준다(plans/163 S3 — 오류 문구의 요청 번호).
+
         트레이스를 여기서 시작·종료하는 이유(D-141): 그래프 실행 진입점이 4곳
         (`ainvoke` 2 + `astream_events` 2)인데 각각 종료 지점이 달라, 라우트마다 배선하면
         한 곳만 빠져도 그 경로의 관측이 빈다. 모든 HTTP 요청이 이 미들웨어를 지나므로
@@ -60,6 +62,10 @@ class AuditMiddleware(BaseHTTPMiddleware):
 
         try:
             response = await call_next(request)
+            # 요청 번호를 응답 헤더로 돌려준다(plans/163 S3) — 오류 응답 본문의 「(요청 번호)」와
+            # 같은 값이라 운영자가 서버 로그의 원문을 찾는 열쇠가 된다. 스트림 응답도 본문 전송
+            # 전에 헤더가 나가므로 여기서 붙이면 된다.
+            response.headers["X-Request-ID"] = request_id
             return response
         finally:
             if obs.trace_enabled:

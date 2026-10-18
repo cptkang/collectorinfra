@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -116,7 +117,8 @@ def register_tools(
         pool_manager = _get_pool_manager(ctx)
         src_config = pool_manager.get_source_config(source)
 
-        # 읽기 전용 검증 (readonly 소스인 경우)
+        # 읽기 전용 검증 (readonly 소스인 경우). 실행 지점(`DBPoolManager.execute`)도 같은 검사를
+        # 하지만, 도메인 deny보다 먼저 읽기 전용 위반을 알리고 DB 계층에 닿기 전에 끊으려고 남긴다.
         if src_config.readonly:
             try:
                 validate_readonly(sql)
@@ -332,14 +334,54 @@ def register_tools(
         logger.info("execute_sql 도구 비노출 (기본) — 고수준 도구 사용")
 
 
+# --- 스키마 조회 입력 검증 ---
+#
+# get_table_schema의 table_name은 도구 입력이다(고정 SQL 아님). 바인딩이 없는 실행 경로라
+# 식별자 형태만 받고(점으로 이은 식별자 — 스키마 한정 허용), 리터럴은 따옴표 이중화로
+# 한 번 더 감싼다.
+_TABLE_NAME_RE = re.compile(r"[^\W\d][\w$#@]*(?:\.[^\W\d][\w$#@]*)*")
+
+
+def _check_table_name(table_name: str) -> None:
+    """table_name이 식별자 형태인지 검증한다.
+
+    Raises:
+        ValueError: 따옴표·백슬래시·공백·세미콜론 등 식별자 밖 문자가 있거나 비어 있을 때
+    """
+    if not _TABLE_NAME_RE.fullmatch(table_name or ""):
+        raise ValueError("허용되지 않는 테이블명 형식 — 식별자(스키마.테이블)만 허용")
+
+
+def _sql_str(value: str) -> str:
+    """표준 SQL 문자열 리터럴을 만든다(작은따옴표 이중화 — PostgreSQL·DB2 스키마 조회용)."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _check_search_pattern(pattern: str) -> None:
+    """search_objects 패턴(PostgreSQL·DB2)에 백슬래시가 없는지 검증한다.
+
+    두 헬퍼는 작은따옴표만 이중화한다. PostgreSQL 서버가 `standard_conforming_strings=off`면
+    백슬래시가 이스케이프 문자라 `\\'`로 리터럴을 탈출할 수 있어 백슬래시를 받지 않는다.
+
+    Raises:
+        ValueError: 백슬래시가 있을 때
+    """
+    if "\\" in pattern:
+        raise ValueError("검색 패턴에 백슬래시(\\)를 쓸 수 없습니다")
+
+
 # --- PostgreSQL 스키마 조회 SQL ---
 
 
 def _pg_split_table_name(table_name: str) -> tuple[str, str]:
-    """테이블명에서 스키마와 테이블을 분리한다.
+    """테이블명을 검증하고 스키마와 테이블을 분리한다.
 
     'schema.table' 형태면 분리하고, bare name이면 'public'을 기본으로 한다.
+
+    Raises:
+        ValueError: 식별자 형태가 아닐 때
     """
+    _check_table_name(table_name)
     if "." in table_name:
         schema, bare = table_name.split(".", 1)
         return schema, bare
@@ -350,7 +392,11 @@ def _pg_search_objects_sql(pattern: str, obj_type: str) -> str:
     """PostgreSQL 객체 검색 SQL을 생성한다.
 
     public 스키마의 테이블은 bare name, 그 외 스키마는 schema.table 형태로 반환한다.
+
+    Raises:
+        ValueError: pattern에 백슬래시가 있을 때(`_check_search_pattern`)
     """
+    _check_search_pattern(pattern)
     type_filter = "BASE TABLE" if obj_type == "table" else "VIEW"
     schema_exclude = (
         "table_schema NOT IN ('information_schema', 'pg_catalog', 'pg_toast')"
@@ -385,7 +431,7 @@ async def _pg_get_columns(
     sql = (
         "SELECT column_name, data_type, is_nullable, column_default "
         "FROM information_schema.columns "
-        f"WHERE table_schema = '{schema}' AND table_name = '{bare}' "
+        f"WHERE table_schema = {_sql_str(schema)} AND table_name = {_sql_str(bare)} "
         "ORDER BY ordinal_position"
     )
     return await pm.execute(source, sql)
@@ -402,7 +448,7 @@ async def _pg_get_primary_keys(
         "JOIN information_schema.key_column_usage kcu "
         "ON tc.constraint_name = kcu.constraint_name "
         "AND tc.table_schema = kcu.table_schema "
-        f"WHERE tc.table_schema = '{schema}' AND tc.table_name = '{bare}' "
+        f"WHERE tc.table_schema = {_sql_str(schema)} AND tc.table_name = {_sql_str(bare)} "
         "AND tc.constraint_type = 'PRIMARY KEY'"
     )
     return await pm.execute(source, sql)
@@ -425,7 +471,7 @@ async def _pg_get_foreign_keys(
         "JOIN information_schema.constraint_column_usage ccu "
         "ON tc.constraint_name = ccu.constraint_name "
         "AND tc.table_schema = ccu.table_schema "
-        f"WHERE tc.table_schema = '{schema}' AND tc.table_name = '{bare}' "
+        f"WHERE tc.table_schema = {_sql_str(schema)} AND tc.table_name = {_sql_str(bare)} "
         "AND tc.constraint_type = 'FOREIGN KEY'"
     )
     try:
@@ -437,8 +483,23 @@ async def _pg_get_foreign_keys(
 # --- DB2 스키마 조회 SQL ---
 
 
+def _db2_table_literal(table_name: str) -> str:
+    """테이블명을 검증하고 대문자 문자열 리터럴로 만든다(DB2 카탈로그는 대문자 저장).
+
+    Raises:
+        ValueError: 식별자 형태가 아닐 때
+    """
+    _check_table_name(table_name)
+    return _sql_str(table_name.upper())
+
+
 def _db2_search_objects_sql(pattern: str, obj_type: str) -> str:
-    """DB2 객체 검색 SQL을 생성한다."""
+    """DB2 객체 검색 SQL을 생성한다.
+
+    Raises:
+        ValueError: pattern에 백슬래시가 있을 때(`_check_search_pattern`)
+    """
+    _check_search_pattern(pattern)
     type_filter = "T" if obj_type == "table" else "V"
     if pattern == "*":
         return (
@@ -470,7 +531,7 @@ async def _db2_get_columns(
         "CASE WHEN NULLS = 'Y' THEN 'YES' ELSE 'NO' END AS is_nullable, "
         "DEFAULT AS column_default "
         "FROM SYSCAT.COLUMNS "
-        f"WHERE TABNAME = '{table_name.upper()}' "
+        f"WHERE TABNAME = {_db2_table_literal(table_name)} "
         "AND TABSCHEMA NOT LIKE 'SYS%' "
         "ORDER BY COLNO"
     )
@@ -486,7 +547,7 @@ async def _db2_get_primary_keys(
         "FROM SYSCAT.KEYCOLUSE kcu "
         "JOIN SYSCAT.TABCONST tc "
         "ON kcu.CONSTNAME = tc.CONSTNAME AND kcu.TABSCHEMA = tc.TABSCHEMA "
-        f"WHERE tc.TABNAME = '{table_name.upper()}' "
+        f"WHERE tc.TABNAME = {_db2_table_literal(table_name)} "
         "AND tc.TYPE = 'P' "
         "AND tc.TABSCHEMA NOT LIKE 'SYS%' "
         "ORDER BY kcu.COLSEQ"
@@ -508,7 +569,7 @@ async def _db2_get_foreign_keys(
         "JOIN SYSCAT.KEYCOLUSE pk "
         "ON ref.REFKEYNAME = pk.CONSTNAME AND ref.REFTABSCHEMA = pk.TABSCHEMA "
         "AND fk.COLSEQ = pk.COLSEQ "
-        f"WHERE ref.TABNAME = '{table_name.upper()}' "
+        f"WHERE ref.TABNAME = {_db2_table_literal(table_name)} "
         "AND ref.TABSCHEMA NOT LIKE 'SYS%'"
     )
     try:
@@ -539,7 +600,11 @@ def _mariadb_table_filter(table_name: str) -> str:
     """information_schema 조회용 스키마·테이블 조건을 만든다.
 
     'db.table' 형태면 분리하고, bare name이면 연결의 기본 database(`DATABASE()`)로 한정한다.
+
+    Raises:
+        ValueError: 식별자 형태가 아닐 때
     """
+    _check_table_name(table_name)
     if "." in table_name:
         schema, bare = table_name.split(".", 1)
         schema_expr = _mariadb_literal(schema)

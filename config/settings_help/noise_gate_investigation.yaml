@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 노이즈 게이트: 자동 조사 · 원인 보강 · ITSM 텍스트 신호 (D-191)
-# 근거: src/config.py NoiseGateConfig (Plan 64 CW-A/B/C · Plan 66 3-E · Plan 60 E5/E7 · D-132)
+# 근거: src/config/alarm.py NoiseGateConfig (Plan 64 CW-A/B/C · Plan 66 3-E · Plan 60 E5/E7 · D-132)
 
 version: 1
 group: noise_gate

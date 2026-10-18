@@ -152,8 +152,8 @@ def count_references(env_key: str, *, roots: Sequence[str] = ("src", "noise_gate
             parts = path.parts
             if ".venv" in parts or "tests" in parts or path.name.startswith("test_"):
                 continue
-            if path.name == "config.py" and root == "src":
-                continue   # 정의 자체는 참조가 아니다
+            if root == "src" and (path.name == "config.py" or path.parent == base / "config"):
+                continue   # 정의 자체는 참조가 아니다(plans/166 I4 — `src/config/` 패키지 포함)
             try:
                 text = path.read_text(encoding="utf-8", errors="ignore")
             except OSError:

@@ -22,7 +22,6 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import datetime
 from typing import Any
 
 from src.schema_cache.redis_cache import RedisSchemaCache
@@ -30,6 +29,7 @@ from src.schema_cache.structure_store import (
     StructureStoreUnavailable,
     validate_db_id,
 )
+from src.utils.clock import now_iso as _now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +46,6 @@ _RUNNING_TASKS: set[asyncio.Task[None]] = set()
 
 class JobConflictError(RuntimeError):
     """같은 db_id의 잡이 이미 진행 중이다."""
-
-
-def _now_iso() -> str:
-    """현재 시각(로컬 시간대 오프셋 포함 ISO 8601, 초 단위)."""
-    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def _job_key(job_id: str) -> str:

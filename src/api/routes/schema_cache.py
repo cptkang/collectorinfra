@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from src.api.admin_audit import log_admin_event
 from src.api.dependencies import require_admin_user
+from src.api.error_detail import admin_error_detail
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -181,7 +182,7 @@ async def generate_cache(
             results.append(CacheGenerateResultItem(
                 db_id=db_id,
                 status="error",
-                message=str(e),
+                message=admin_error_detail("스키마 캐시 생성", e, logger, request),
             ))
 
     audit_logged = await _audit_cache_operation(
@@ -239,7 +240,7 @@ async def generate_descriptions(
             results.append(CacheGenerateResultItem(
                 db_id=db_id,
                 status="error",
-                message=str(e),
+                message=admin_error_detail("컬럼 설명 생성", e, logger, request),
             ))
 
     audit_logged = await _audit_cache_operation(

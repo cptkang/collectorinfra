@@ -534,18 +534,41 @@ class TestExecuteSql:
     ) -> None:
         """SQL ?ㅽ뻾 ?먮윭 ???먮윭 JSON??諛섑솚?쒕떎."""
         mock_pool_manager.execute = AsyncMock(
-            side_effect=Exception("syntax error at or near 'SELEC'")
+            side_effect=Exception("syntax error at or near 'FRM'")
         )
 
+        # 읽기 전용 허용 목록(SELECT 시작)은 통과하고 실행 단계에서 DB가 거부하는 SQL
+        # (plans/163 S1 — 'SELEC …'은 이제 허용 목록에서 먼저 막힌다).
         result_json = await mcp_tools["execute_sql"](
             source="infra_db",
-            sql="SELEC * FROM servers",
+            sql="SELECT * FRM servers",
             ctx=mock_ctx,
         )
         result = json.loads(result_json)
 
         assert "error" in result
         assert "syntax error" in result["error"]
+
+    async def test_non_select_statement_rejected_before_execution(
+        self,
+        mcp_tools: dict,
+        mock_ctx: MagicMock,
+        mock_pool_manager: MagicMock,
+    ) -> None:
+        """SELECT·WITH로 시작하지 않는 문장은 실행 전에 읽기 전용 위반으로 거부된다.
+
+        plans/163 S1 허용 목록.
+        """
+        mock_pool_manager.execute = AsyncMock(return_value=[])
+
+        result = json.loads(
+            await mcp_tools["execute_sql"](
+                source="infra_db", sql="SELEC * FROM servers", ctx=mock_ctx
+            )
+        )
+
+        assert "읽기 전용 위반" in result["error"]
+        mock_pool_manager.execute.assert_not_called()
 
 
 # ============================================================================

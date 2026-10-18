@@ -8,6 +8,18 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-19 | D-340 · D-341 | 번호 변경 — `origin/main` 병합 시 원격 D-337(구조 리팩터 규약)·D-338(인증 저장소 fail-closed)·D-339(로그 비밀값 가림)와 충돌해 로컬 D-337(워커 vllm provider) → **D-340**, D-338(알람 조사 플레이북 · `plans/182`) → **D-341**(`plans/187`)로 재부여 |
+| 2026-10-17 | D-339 | 신규 — `plans/167`: 로그 레코드 생성 시점(`setLogRecordFactory`)에 DSN 비밀번호·Bearer·민감 키 값·JWT·Google API 키를 `***`로 가림 · structlog 프로세서 · 진입점 7곳 · 사본 4(mcp_server·apm_gateway·sre_agent·fabrix_proxy) 바이트 일치 테스트 · 커밋 없음 |
+| 2026-10-17 | D-139 | 부기 — `plans/167`: `noise_gate/alarm_server`가 `src.utils.log_masking`을 import(② 역방향 허용 `utils` 안) · 2차 적용 「`src.` import 0 자립 모듈」 서술 갱신 |
+| 2026-10-17 | D-338 | 신규 — `plans/186` L4: 인증 활성인데 사용자 저장소(`user_repo`)가 없으면 사용자 토큰 의존성 3곳이 payload만으로 통과(전 DB 허용)시키던 것을 503 고정 문구로 fail-closed · break-glass 유지 · 프론트 503 루프 방지 · 커밋 없음 |
+| 2026-10-17 | D-066 | 부기 보강 — `plans/185` W2: 병합 마감 `_finalize_merged_rows`가 원본 매핑 대신 Layer 1 `build_resolved_mapping` 결과 키 매핑으로 양식을 채움(공유 통계 칼럼 오채움 해소 · 사용자 결정) · Word 병합 마감은 alias 칸도 채워짐 · 커밋 없음 |
+| 2026-10-17 | D-153 | 부기 — `plans/184` S1·S4·S6: 「고정 문구 + 요청 번호」 규약 확대 — DRM 설정 키·java 경로 사유(`user_visible=False`) · APM 선택 재시도 메타·게이트웨이 연결 실패 `source_status` · `degraded_reason` 처리기 규칙(secure-coding 스킬) · APM 호출 단위 예외 사유 · 커밋 없음 |
+| 2026-10-17 | D-070 | 부기 — `plans/184` S2: `verify_admin_token` 빈 `sub` 거부(`not sub`) — 사용자·break-glass와 기준 통일 · 커밋 없음 |
+| 2026-10-17 | D-066 | 부기 — `plans/185`(182 J1): 단일 폼필이 `cmm_metric_stat` 칼럼 매핑 사용률 필드를 버리던 것을 멀티에 맞춰 회수 · 공통 함수 `select_metric_recovery_fields`로 두 경로 일원화 · 멀티 산출 불변 · 잔여 병합 마감 공유 칼럼 오채움(종전부터 멀티) · 커밋 없음 |
+| 2026-10-17 | D-337 | 상태 「적용 전」→「적용 완료」 · 부기 — `plans/166` 단계 8 제거 사이클: shim 경로 사용처 0인 재노출·별칭·보존용 import 388 제거(19파일) · 남은 426은 166 §5.9 표 · 「grep -w 0」을 shim 경로 경유 사용으로 판정한다는 운용 해석 · 커밋 없음 |
+| 2026-10-15 | D-331 | 부기 — `plans/166` W2: `arch_check` `MODULE_LAYER_MAP`에 `src.pipeline` = application(N3 노드 헬퍼 이동 · 경고 43→17) · `overfit_check` `PUBLIC_LAYER_DIRS` 대칭 · 폴백 린트를 `src/config/` 패키지(I4)에 맞춤(`__module__` 하위 모듈 포함 · 스캔 제외 확대 · `ALLOWED` 새 경로 키) · 커밋 없음 |
+| 2026-10-15 | D-331 | 구현 완료 — `plans/166` W1: arch_check 경고를 같은 노드 패키지 간으로 한정(117→43) · `scripts/config_fallback_check.py` 신설(62지점 → X1 치환 뒤 0) · `regress.py` 정적 게이트에 `--ci` 편입 · 허용 목록 2건(대역 방어가 함수 계약인 곳) · 커밋 없음 |
+| 2026-10-15 | D-337 · D-336 | 번호 변경 — RCA의 D-336(구조 리팩터 규약 · 구 D-330)을 main 병합 시 main D-336(제니퍼 심각도 3 유형 정책)과 충돌해 **D-337**로 재부여 · 본문 `D-337.md` · 스킬 2종·`plans/163`·`plans/166`·D-331·D-332·166 W0 테스트 참조 갱신 · 아래 RCA 행의 번호도 새 번호로 고침 |
 | 2026-10-17 | D-341 | 부기 3 — ㉑ 알람 다시 분석(새 조사 · 원 조사 보존 · ⑦ 부분 개정) ㉒ 등급 무관 30일 · 채팅 「지난 알람」 검색 ㉓ 존 범위 사용자 ㉔ 상한 공유·10분 합류·통보 없음 ㉕ 증상 질의 결정적 라우팅(플레이북/HolmesGPT) ㉖ 비동기 조사 카드(`SRE_CHAT_INVESTIGATION_ENABLED` 기본 off) |
 | 2026-10-17 | D-325 | 부기 — ⑩ 「운영자 수동 조사 요청」 후속을 D-341 부기 3(㉑~㉔)이 맡음 |
 | 2026-10-17 | D-341 | 부기 2 — ⑮ 심층 조사 운영 모드(초기 parallel · 운영자 엔진 선택은 판정 불변) ⑯ episode 플레이북 ⑰ 사전수집 생략 ⑱ severity_judge 입력 합집합 ⑲ 잡 단위 도구 캐시 ⑳ 모드 전환 기준(권고 표시 · 수동 전환) |
@@ -21,7 +33,15 @@
 | 2026-10-15 | D-336 | 구현 — `plans/162` W5: step 3 제니퍼 정책 경로 심각도3 = `notify: page`만 PAGE · 그 밖 TICKET(단계 severity3 · 근거 `apm_sev3_policy`) · `NOISE_APM_SEV3_POLICY_ENABLED` 기본 off · 설정 도움말·docs/28·매뉴얼 · 주의 부기(TICKET은 자동 조사·incident 미부착 · 재통보 간격 sev3 기준) · 커밋 없음 |
 | 2026-10-15 | D-330 | 부기 — ⑥ 비식별 적용 범위를 `plans/162` W0-X 폴스타↔APM 상관 진단 필드(`xs`·S11~S14 · `K-`·`I-`·`E-`·`S-` 가명 · 값 단위 열거 허용 목록 · 누출 검사 식별자 확장)로 넓힘 |
 | 2026-10-15 | D-336 · D-035 · D-048 · D-317 · D-330 | 신규 D-336 — 제니퍼 심각도 3은 유형 정책 표를 따른다(`notify: page`만 PAGE · 그 밖 TICKET · AGENT_STOP TICKET · 플래그 기본 off · `plans/162` G-10 (a)) · D-035·D-048·D-317 ① 부기 · D-330 부기(G-2 미채택 · G-5 보류) |
+| 2026-10-15 | D-336 · D-330 | 번호 변경 — RCA 브랜치의 D-330(구조 리팩터 규약 · 코드 스멜 계획)을 main 병합 시 main D-330(노이즈 PAGE · `plans/162`)과 충돌해 **D-336**으로 재부여(이후 D-337로 재변경 — 위 행) · 본문 `D-336.md` · 계획서 `plans/162`(코드 스멜) → **`plans/166`** · D-331·D-332 예약 행을 본문 행으로 교체 · 아래 RCA 행의 번호도 새 번호로 고침 |
 | 2026-10-15 | D-335 · D-330 | 번호 변경 — `apm_noise` 브랜치의 D-330(결과 값 판정 · `plans/155`)을 main 병합 시 `plans/162` D-330(노이즈 PAGE)과 충돌해 D-335로 재부여 · 본문 `D-335.md` · `plans/155`·INDEX 참조 갱신 |
+| 2026-10-14 | D-153 | 부기 — 후속2 산출 발췌 화면 노출 유지 · 같은 각주·작업 카드의 예외 원문만 머리말로 축약(`db_error_text` · plans/163 S3+ · 사용자 확정 (a)) |
+| 2026-10-14 | D-003 · D-294 · D-316 | 부기 — D-003: MCP 서버 읽기 전용 강화(허용 목록 검사기 · `DBPoolManager.execute` 단일 지점 · PG·MariaDB 세션 RO · 스키마 헬퍼 주입 수정) · D-294: `asset_drafts`·`ddl_comments` 관리자 자산 보존 · D-316: `invalidate(db_id)`도 `knowledge_seeded` 삭제·재적재(`plans/163` W1) |
+| 2026-10-14 | D-332 | 부기 — 사내망 구간은 TLS 불요(사용자 확정): FabriX·폴스타 REST 클라이언트 `verify=False`는 의도 · `plans/163` 미편입 · 스킬 D절 반영 |
+| 2026-10-14 | D-332 | 신규 — 프로젝트 스킬 2종: `refactoring`(D-337·D-331 절차 · 스멜 카탈로그 · 문헌 · `smell_metrics.py`) · `secure-coding`(영역 A~F 규칙 · ASVS v5.0.0·Top 10:2025·LLM Top 10 2025·CWE·RFC 8725 · `secure_scan.py`) — 스킬은 절차서, 정본은 D-번호·계획서 |
+| 2026-10-14 | D-331 | 신규 — 품질 게이트 조정: ① arch_check 「노드 간 직접 의존」 경고를 노드 패키지 간(`src.nodes.*`↔`src.nodes.*` · `noise_gate.application.nodes.*`)으로 한정(경고 117→43 기준선) ② 설정 `getattr` 폴백≠필드 기본 AST 린트 신설 · X1 치환 후 CI 게이트 (`plans/166` U-4·U-7 · 구현 W1) |
+| 2026-10-14 | D-337 | 신규 — 구조 리팩터 규약(D-134 일반화): 재노출 shim 1사이클 · patch seam 보존(Facade 잔류) · `_` 공유 함수 공개명+별칭 · overfit 기준선 자기 이동 델타 · 특성화 선행 · 행동 변경 분리 · 커밋 단위 (`plans/166` U-2·U-3·U-6 · 보안 4건은 `plans/163`) |
+| 2026-10-14 | D-139 | 부기 — ② 역방향 허용 목록에 stdlib-only `src.domain.*` 순수 모듈 · `src.observability.investigation_metrics` 추가(실측 3건 `host_authz`·`host_availability`·`investigation_metrics` — 이동 대신 허용 · `plans/166` U-5) |
 | 2026-10-14 | D-326 | 부기 — 시연 카탈로그를 기능 둘러보기(8군 37세션)에서 장애 대응 시스템 연계(A 제니퍼→폴스타 · B 폴스타→제니퍼 · C 장애 서버→자산관리 · D EOS·유지보수 만료 · E 한 서버 종합 · 5군 8세션 · 은행존 기준)로 교체 · 소스 이름 자리표화 |
 | 2026-10-14 | D-330 · D-035 · D-048 | 부기 — `plans/162` W0~W3 구현(`page_audit` 비식별 분석 · `page_review` R1~R3 · R4 수집 실패 sev3만·수집 실패율 메타경보 · 관제 화면·매뉴얼) · 플래그 기본 off라 효력은 내부망 enforce 시 · 구현 해석 부기(보존 1 해석·shadow 레지스트리 「했을 결과」·퍼널 원 단계 계수) · R6·R5·H8 미구현 |
 | 2026-10-14 | D-330 · D-035 · D-048 | 신규(예약 → 본문 등재) D-330 — 노이즈 PAGE = 새 사건의 첫 알림 · 마지막 관문 `page_review`(R1 반복·R2 동일 호스트·R3 동시 다발 → TICKET) · 보존 규칙 · 수집 실패 sev3만 PAGE · 리마인더 24h · 분석 로그 비식별(허용 목록·HMAC 가명·누출 검사) · D-035·D-048 부분 개정 부기(구현 시 효력 · `plans/162`) |

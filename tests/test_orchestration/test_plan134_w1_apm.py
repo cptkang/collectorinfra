@@ -50,7 +50,8 @@ def _cfg(*, active: bool = True) -> SimpleNamespace:
     return SimpleNamespace(
         dbhub=dbhub,
         composite=SimpleNamespace(max_targets=10, fanout_concurrency=2, audit_enabled=False,
-                                  task_frame_enabled=False, plan_dag_validation_enabled=False),
+                                  task_frame_enabled=False, plan_dag_validation_enabled=False,
+                                  sequential_replan_enabled=False),
         router=SimpleNamespace(capability_ownership_enabled=False),
         multi_db=SimpleNamespace(get_active_db_ids=lambda: ["polestar_cm_gp"]),
     )

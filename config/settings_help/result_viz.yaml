@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 조회 결과 그래프 보기 · 값 해석 (plans/160 · D-327)
-# 근거: src/config.py ResultVizConfig · src/api/routes/result_viz.py
+# 근거: src/config/services.py ResultVizConfig · src/api/routes/result_viz.py
 
 version: 1
 group: result_viz

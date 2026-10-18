@@ -754,7 +754,10 @@ class TestMultiExecutor:
             state, llm=AsyncMock(),
             app_config=SimpleNamespace(
                 query=SimpleNamespace(default_limit=100),
-                text2sql=SimpleNamespace(multi_full_validation=False),
+                text2sql=SimpleNamespace(multi_full_validation=False, multi_relevant_gate=False),
+                multi_db=SimpleNamespace(zone_group_exclusive=True),
+                composite=SimpleNamespace(prior_scope_by_db_enabled=False),
+                server=SimpleNamespace(answer_reserve_sec=0),
             ),
         )
         assert generated == ["plain_db"], "선별 0개 DB는 SQL을 만들지 않는다"
@@ -791,7 +794,8 @@ class TestMultiExecutor:
         )
         assert len(calls) == 1
         assert run.regen_stops["gp"]["reason"] == "backend_limit"
-        assert run.regen_stops["gp"]["detail"] == error
+        # detail은 「SQL 검증 실패: …」 머리말 꼴(plans/186 M7)
+        assert run.regen_stops["gp"]["detail"] == f"SQL 검증 실패: {error}"
 
 
 # ──────────────────────────────────────────────

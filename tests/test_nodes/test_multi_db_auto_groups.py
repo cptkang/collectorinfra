@@ -17,7 +17,10 @@ _B0, _GP, _YD = "polestar_b0", "polestar_cm_gp", "polestar_cm_yd"
 
 
 def _cfg(exclusive):
-    return SimpleNamespace(multi_db=SimpleNamespace(zone_group_exclusive=exclusive))
+    return SimpleNamespace(
+        multi_db=SimpleNamespace(zone_group_exclusive=exclusive),
+        server=SimpleNamespace(sse_group_preview_rows=0),
+    )
 
 
 def _run(state, app_config):

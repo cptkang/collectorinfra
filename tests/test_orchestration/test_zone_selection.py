@@ -18,7 +18,9 @@ _ACTIVE = ["polestar_b0", "polestar_cm_gp", "polestar_cm_yd"]
 
 
 def _config(active=_ACTIVE):
-    return SimpleNamespace(multi_db=SimpleNamespace(get_active_db_ids=lambda: active))
+    return SimpleNamespace(
+        multi_db=SimpleNamespace(get_active_db_ids=lambda: active, zone_group_exclusive=True),
+    )
 
 
 class TestZoneClarificationGate:

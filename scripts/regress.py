@@ -51,6 +51,15 @@ TEST_INFRA_FILES = ROOT_CONFTESTS | {
 }
 # 웨이브 중간(--no-tests)이라도 그 웨이브 끝에 모듈 단위 회귀를 돌려야 하는 공유 파일(D-303 부기)
 WAVE_REGRESS_FILES = TEST_INFRA_FILES | {"src/config.py", "src/state.py"}
+# 같은 이유의 접두 — `src/config.py`는 plans/166 W2 I4에서 `src/config/` 패키지가 됐다
+# (옛 파일 경로는 합성 저장소 테스트가 쓰므로 위 집합에 남긴다).
+WAVE_REGRESS_PREFIXES = ("src/config/",)
+# 정적 게이트 스크립트 → 인자(D-331 ② — config_fallback_check는 plans/166 W1 X1 치환 뒤 `--ci`).
+GATE_SCRIPTS: dict[str, tuple[str, ...]] = {
+    "arch_check": ("--ci",),
+    "overfit_check": ("--ci",),
+    "config_fallback_check": ("--ci",),
+}
 DOTTED = re.compile(r"^(src|noise_gate|scripts|tests)(\.[A-Za-z_]\w*)+$")
 
 MAX_WORKERS = 8
@@ -882,11 +891,16 @@ def _probe_ok(cmd: list[str]) -> bool:
 
 
 def diff_lines(root: Path, base: str, files: list[str]) -> dict[str, set[int] | None]:
-    """파일별 이번 diff 줄 번호(기준 커밋에 없던 파일은 None = 전 줄)."""
+    """파일별 이번 diff 줄 번호(기준 커밋에 없던 파일은 None = 전 줄).
+
+    histogram 고정 — 기본(myers)은 대량 이동 뒤 손대지 않은 줄을 바뀐 줄로 잡아
+    기존 ruff·mypy 위반을 이번 diff로 오인한다(plans/179 · 사용자 결정 2026-10-17).
+    """
     out: dict[str, set[int] | None] = {}
     if not files:
         return out
-    text = _git(root, "diff", "-U0", "--no-color", "--no-ext-diff", base, "--", *files)
+    text = _git(root, "diff", "-U0", "--no-color", "--no-ext-diff", "--diff-algorithm=histogram",
+                base, "--", *files)
     current = None
     for line in text.splitlines():
         if line.startswith("+++ "):
@@ -1231,11 +1245,11 @@ def build_jobs(root: Path, index: Index, sel: Selection, run_dir: Path, full: bo
         lanes.append([Job(pkg, _pytest(meta["python"], args, junit, workers, None), root / pkg,
                           run_dir / f"{pkg}.log", junit, timeout=timeout)])
         plan.append(f"  {pkg}: 패키지 전체 · " + (f"-n {workers}" if workers else "직렬"))
-    for script in ("arch_check", "overfit_check"):
+    for script, gate_args in GATE_SCRIPTS.items():
         if (root / "scripts" / f"{script}.py").is_file():
-            lanes.append([Job(script, [py, f"scripts/{script}.py", "--ci"], root,
+            lanes.append([Job(script, [py, f"scripts/{script}.py", *gate_args], root,
                               run_dir / f"{script}.log", timeout=300)])
-            plan.append(f"  {script} --ci")
+            plan.append(f"  {' '.join([script, *gate_args])}")
     existing = [p for p in changed_py if (root / p).is_file()]
     ruff = _find_tool("ruff") if existing else None
     if ruff:
@@ -1256,7 +1270,7 @@ def build_jobs(root: Path, index: Index, sel: Selection, run_dir: Path, full: bo
 def judge_gates(root: Path, base: str, jobs: dict[str, Job], changed_py: list[str]) -> list[Gate]:
     """③ 정적 게이트 판정 — ruff·mypy는 이번 diff 줄에 걸린 것만 신규로 센다."""
     gates: list[Gate] = []
-    for name in ("arch_check", "overfit_check"):
+    for name in GATE_SCRIPTS:
         job = jobs.get(name)
         if job is None:
             gates.append(Gate(name, "미실행", "스크립트 없음"))
@@ -1372,7 +1386,8 @@ def _main(args: argparse.Namespace, root: Path, out: Printer) -> int:
     elif args.no_tests:
         sel = Selection([], [], [], set(), True, False)
         wide = signature_breaks(root, base, changes) + sorted(
-            c.path for c in changes if c.path in WAVE_REGRESS_FILES)
+            c.path for c in changes
+            if c.path in WAVE_REGRESS_FILES or c.path.startswith(WAVE_REGRESS_PREFIXES))
         if wide:
             out("[웨이브 회귀 필요] 공개 시그니처·공유 파일 변경 — 이 웨이브 끝에 --no-tests 없이 "
                 "모듈 단위 회귀를 돌린다(D-303 부기): " + ", ".join(wide))

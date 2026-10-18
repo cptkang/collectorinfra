@@ -176,7 +176,7 @@ Gemini API 키가 없으면 모듈 전체 skip(CI 안전). LLM 응답이 비결�
 ```bash
 # 사전 조건: gemini extra 설치 + 키 설정
 pip install -e ".[gemini]"
-# .env 또는 환경변수: LLM_GEMINI_API_KEY(또는 GOOGLE_API_KEY, ORCHESTRATOR_API_KEY)
+# .env 또는 환경변수: LLM_GEMINI_API_KEY(또는 ORCHESTRATOR_API_KEY)
 
 pytest tests/test_alarm/test_agentic_enricher_gemini_live.py -q
 ```

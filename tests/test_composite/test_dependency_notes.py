@@ -23,6 +23,16 @@ from src.utils.prior_dependency import NOTE_SUFFICIENCY, render_dependency_notes
 ao = importlib.import_module("src.orchestration.agent_orchestrator")
 agg_mod = sys.modules["src.orchestration.result_aggregator"]
 
+
+def _orch_cfg():
+    """오케스트레이터가 읽는 설정 필드만 명시한 대역(게이트·사후 대조 off · 예약 0)."""
+    return SimpleNamespace(
+        composite=SimpleNamespace(
+            sequential_gate_enabled=False, scope_postcheck_enabled=False,
+        ),
+        server=SimpleNamespace(answer_reserve_sec=0),
+    )
+
 GATE_NOTE = {"kind": "gate", "task_id": "t2", "reason": "prior_empty",
              "detail": "선행 작업(t1)의 결과가 0건이라 이 단계를 실행하지 않았습니다."}
 
@@ -124,7 +134,7 @@ async def test_sufficiency_shortfall_reaches_dependency_notes(monkeypatch):
     out = await ao.agent_orchestrator(
         {"task_plan": [{"task_id": "t2", "agent": "process_query", "sub_query": "프로세스", "status": "pending"}],
          "task_results": {}},
-        llm=object(), app_config=SimpleNamespace(),
+        llm=object(), app_config=_orch_cfg(),
     )
     assert out["sufficiency_shortfalls"][0]["reason"] == REASON_TARGET_SHORTFALL  # 병기 유지
     notes = out["dependency_notes"]

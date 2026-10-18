@@ -1,6 +1,6 @@
 """plans/160 독립 검증(verifier) — 기존 plan160 테스트가 덮지 않는 대칭·인가·가드·시간대.
 
-- 통과 테스트: 저장 지점 10곳 정적 대칭 · 스트림 추적 행 폴백 대칭 ·
+- 통과 테스트: 저장 지점 정적 대칭(공유 빌더 5곳 · plans/179 W1a) · 스트림 추적 행 폴백 대칭 ·
   해석 캐시는 소유자 검증 뒤에만 ·
   값 해석 종단 마스킹(프롬프트·응답·감사) · 용어 생성 캐시 공유(현행 설계 기록).
 - `xfail(strict=True)` 테스트: 결함 재현 — 고치면 XPASS로 실패하므로 그때 xfail 표지를 지운다.
@@ -113,11 +113,21 @@ def factory(monkeypatch: pytest.MonkeyPatch):
     result_explainer.clear_caches()
 
 
+class _Users:
+    """`user_repo` 대역 — 인증 활성이면 저장소가 필수다(plans/186 L4 fail-closed). 관리자 없음."""
+
+    async def get_by_user_id(self, user_id: str):  # noqa: ANN201
+        from src.domain.user import User
+
+        return User(user_id=user_id, username=user_id, hashed_password="x")
+
+
 def _viz_client(*, audit: _Audit | None = None, **cfg: Any) -> TestClient:
     from src.api.routes import result_viz
 
     app = FastAPI()
     app.state.config = _config(**cfg)
+    app.state.user_repo = _Users()
     if audit is not None:
         app.state.audit_service = audit
     app.include_router(result_viz.router, prefix="/api/v1")
@@ -143,14 +153,52 @@ def _secret_rows() -> list[dict[str, Any]]:
 # ── 1. 저장 지점 대칭(정적) ─────────────────────────────────────────────
 
 
+def _store_wiring_ok(tree: ast.Module) -> None:
+    """네 진입이 저장 지점을 가진 공유 빌더를 부른다(plans/179 W1a — 종전 진입별 저장 리터럴 8벌).
+
+    비스트림 두 진입: 응답 조립 `_build_turn_response` · 상한 부분 결과 `_partial_timeout_response`.
+    스트림 두 진입: `_stream_graph_turn` → astream `_build_stream_turn_response` · 폴백
+    `_build_turn_response` · 상한 절단 `_stream_cut_sse_event`(→ `_timeout_sse_event`·
+    `_delivery_cut_sse_event`).
+    """
+    funcs = {
+        n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    def calls(caller: str, callee: str) -> int:
+        return sum(
+            1 for n in ast.walk(funcs[caller])
+            if isinstance(n, ast.Call) and getattr(n.func, "id", None) == callee
+        )
+
+    for entry in ("process_query", "process_file_query"):
+        assert calls(entry, "_build_turn_response") == 1, entry
+        assert calls(entry, "_partial_timeout_response") == 1, entry
+    for entry in ("process_query_stream", "process_file_query_stream"):
+        assert calls(entry, "_stream_graph_turn") == 1, entry
+    assert calls("_stream_graph_turn", "_build_stream_turn_response") == 1
+    assert calls("_stream_graph_turn", "_build_turn_response") == 1
+    assert calls("_stream_graph_turn", "_stream_cut_sse_event") == 2
+    assert calls("_stream_cut_sse_event", "_timeout_sse_event") == 1
+    assert calls("_stream_cut_sse_event", "_delivery_cut_sse_event") == 1
+    for holder in ("_build_turn_response", "_build_stream_turn_response",
+                   "_partial_timeout_response", "_timeout_sse_event", "_delivery_cut_sse_event"):
+        assert calls(holder, "_store_result") == 1, holder
+
+
 def test_every_store_point_carries_viz_fields() -> None:
-    """`_store_result` 호출 10곳이 모두 `viz_store_fields`를 싣는다(신호·질문·표 경계)."""
+    """`_store_result` 호출 5곳이 모두 `viz_store_fields`를 싣는다(신호·질문·표 경계).
+
+    plans/179 W1a: 진입별 저장 리터럴 8벌이 공유 빌더 3곳으로 줄었다(종전 10곳) — 네 진입이 그
+    빌더를 부르는지는 `_store_wiring_ok`가 본다.
+    """
     tree = ast.parse((_ROOT / "src/api/routes/query.py").read_text(encoding="utf-8"))
+    _store_wiring_ok(tree)
     calls = [
         n for n in ast.walk(tree)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_store_result"
     ]
-    assert len(calls) == 10
+    assert len(calls) == 5
     for call in calls:
         payload = call.args[1]
         assert isinstance(payload, ast.Dict), ast.unparse(call)[:120]

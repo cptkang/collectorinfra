@@ -75,13 +75,29 @@ task 단위로 고정**한다(task 질의가 가리키는 원문 힌트 부분�
 노드 등록 자체가 배타적이다 (`src/graph.py`):
 
 ```python
-if use_deep_agent:                                              # 1단 (부가 경로 opt-in)
-    graph.add_node("deep_agent", ...)
-if config.enable_intent_orchestration and not use_deep_agent:   # 2단 (배선 기본 off)
-    graph.add_node("intent_planner", ...); ...
-if config.enable_semantic_routing and not use_deep_agent:       # 3단 (기준 경로)
-    graph.add_node("semantic_router", ...)
+# 선두에서 1회 확정 — 기동 로그(record_ladder_resolution)와 배선이 같은 판정을 읽는다(plans/174 T1)
+_tier, _reason = resolve_ladder_tier(config, backend=_backend, buildable=_buildable)
+# 3·4단 빌드에서만 참 — 1·2단 빌드에는 꼬리 노드를 등록하지 않는다(plans/163 D1)
+single_db_tail = _tier in (LadderTier.SEMANTIC_ROUTER, LadderTier.LEGACY)
+
+_wire_shared_front(graph, config, llm)        # context_resolver → input_parser → field_mapper
+if _tier is LadderTier.DEEP_AGENT:            # 1단 (부가 경로 opt-in)
+    _wire_tier1(graph, config, llm)           #   deep_agent
+elif _tier is LadderTier.INTENT_ORCHESTRATION:  # 2단 (기준 경로 · D-251)
+    _wire_tier2(graph, config, llm)           #   intent_planner … result_aggregator
+elif _tier is LadderTier.SEMANTIC_ROUTER:     # 3단 (비교 arm)
+    _wire_tier3(graph, config, llm, ...)      #   semantic_router … (옵트인 분기는 플래그대로)
+else:                                         # 4단
+    _wire_legacy(graph, config, llm, ...)
+if single_db_tail:                            # 3·4단 공용 단일 DB 꼬리
+    _wire_single_db_tail(graph, config, llm)  #   schema_analyzer … output_generator · error_response
+                                              #   (enable_sql_approval이면 approval_gate 포함)
 ```
+
+1·2단 빌드에는 3단 노드·단일 DB 꼬리(schema_analyzer … output_generator·error_response)·
+`approval_gate`와 그 `interrupt_before`가 **등록되지 않는다**(plans/163 D1 — 종전에는 START에서
+닿지 않는 채로 등록돼 있었다). 1단은 도구 루프, 2단은 서브에이전트가 노드 **함수**를 직접 호출하므로
+그래프 노드 이름을 쓰지 않는다. 하위 단이 확정되는 구성에서는 그대로 등록된다.
 
 이어서 배선도 `if / elif / elif / else` 체인이다. 따라서:
 
@@ -120,7 +136,7 @@ _deep_agent_buildable(config, llm)          # ② 실제 조립 시도(폐쇄망
 | `package_missing` | 2·3·4단 | 백엔드는 1단을 골랐으나 deepagents 조립 실패 | 폐쇄망 wheel 반입 |
 
 - **opt-in 실패 사유(`orchestrator_unavailable`·`package_missing`)가 하위 단 사유보다 먼저다.** 1단을
-  켰는데 못 올라갔으면 3단(기준)에 떨어져도 의도한 경로가 아니다. 시나리오 러너는 이 두 사유로
+  켰는데 못 올라갔으면 2단(기준 · D-251)에 떨어져도 의도한 경로가 아니다. 시나리오 러너는 이 두 사유로
   확정된 프로파일을 INVALID로 본다(`scripts/scenario/server.py` `UNINTENDED_DEGRADATION` =
   `ladder.py` `OPTIN_FAILURE_REASONS`).
 - **`flag_off`는 D-225로 폐기했다.** 종전에는 "1단 플래그 off"를 뜻했는데, 1단 off가 기준 상태가
@@ -260,7 +276,7 @@ D-251은 **항상 on**(기준 단)으로 고정했다 — 어느 쪽이든 DB �
 
 보통은 OS env가 `.env`를 이기지만, **서로 다른 별칭**이면 그 규칙이 적용되지 않는다.
 구 키로 오버라이드하려던 의도가 조용히 사라지므로, 구 키가 설정돼 있으면 기동 시
-경고를 남긴다(`src/config.py` `model_post_init`). **두 키를 동시에 두지 말 것.**
+경고를 남긴다(`src/config/__init__.py` `AppConfig.model_post_init`). **두 키를 동시에 두지 말 것.**
 
 구 키는 설정 카탈로그(D-129)에 등재하지 않는다 — 관리자 화면은 신 키만 편집한다.
 다만 화면의 *실효값*은 `AppConfig`에서 읽으므로 구 키로 들어온 값도 정확히 표시된다.

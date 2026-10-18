@@ -1,0 +1,1902 @@
+{
+ "allowed_filter_full": {
+  "keys": [
+   "relevant_tables",
+   "schema_info",
+   "column_descriptions",
+   "column_synonyms",
+   "resource_type_synonyms",
+   "eav_name_synonyms",
+   "column_value_index",
+   "schema_cache_source",
+   "current_node",
+   "error_message",
+   "dependency_notes"
+  ],
+  "result": {
+   "relevant_tables": [
+    "extra",
+    "items",
+    "owners"
+   ],
+   "schema_info": {
+    "tables": {
+     "extra": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "t": "extra"
+       }
+      ]
+     },
+     "items": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "id": 1,
+        "name": "a"
+       }
+      ]
+     },
+     "owners": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "t": "owners"
+       }
+      ]
+     }
+    },
+    "relationships": [
+     {
+      "from": "items.id",
+      "to": "owners.id"
+     }
+    ],
+    "_structure_meta": {
+     "allowed_tables": [
+      "items",
+      "owners"
+     ],
+     "alarm_allowed_tables": [
+      "cmm_alarm",
+      "cmm_alarm_def",
+      "cmm_resource"
+     ],
+     "patterns": [
+      {
+       "type": "eav",
+       "entity_table": "items",
+       "config_table": "item_props",
+       "known_attributes": [
+        "OSType"
+       ],
+       "known_attributes_detail": [
+        {
+         "name": "OSType",
+         "synonyms": [
+          "운영체제"
+         ]
+        }
+       ]
+      }
+     ],
+     "query_guide": "가이드"
+    }
+   },
+   "column_descriptions": {},
+   "column_synonyms": {
+    "items.name": [
+     "이름"
+    ]
+   },
+   "resource_type_synonyms": {
+    "server": [
+     "서버"
+    ]
+   },
+   "eav_name_synonyms": {
+    "OSType": [
+     "운영체제"
+    ]
+   },
+   "column_value_index": {
+    "items.name": [
+     "a",
+     "b"
+    ]
+   },
+   "schema_cache_source": "DB 직접 조회",
+   "current_node": "schema_analyzer",
+   "error_message": null,
+   "dependency_notes": [
+    {
+     "kind": "기존",
+     "db_id": "other",
+     "text": "기존 노트"
+    },
+    {
+     "kind": "descriptions_missing",
+     "task_id": null,
+     "db_id": "t5_db",
+     "detail": "t5_db 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+    }
+   ]
+  },
+  "logs": [
+   [
+    "DEBUG",
+    "DEBUG[1] db_id=t5_db, full_schema tables: ['items', 'owners', 'item_props', 'extra', 't01']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[2] LLM selected relevant: ['extra', 'items'] (query_targets=['항목'])"
+   ],
+   [
+    "INFO",
+    "EAV 동반 테이블 자동 추가: item_props (entity: items)"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[3] after EAV supplement: ['extra', 'items', 'item_props']"
+   ],
+   [
+    "INFO",
+    "[동의어] 질의 테이블 보완 매칭 1건: '추가항목'→extra.col(정확)"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[4] db_id=t5_db, allowed_tables=['extra', 'items', 'owners']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[4] relevant before filter: ['extra', 'items', 'item_props']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[4] bare names: ['extra', 'items', 'item_props']"
+   ],
+   [
+    "INFO",
+    "allowed_tables 보충: LLM 미선택 테이블 추가 'owners'"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[4] filtered+supplemented result: ['extra', 'items', 'owners']"
+   ],
+   [
+    "INFO",
+    "allowed_tables 필터링: 제거=['item_props'], 유지=['extra', 'items', 'owners']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[5] final schema_dict tables: ['extra', 'items', 'owners']"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 시작: 2개 테이블 (db_id=t5_db)"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 완료: 0.0s 소요 (db_id=t5_db)"
+   ],
+   [
+    "INFO",
+    "known_attributes → eav_name_synonyms 동기화: 2개 (db_id=t5_db)"
+   ],
+   [
+    "INFO",
+    "관련 테이블: ['extra', 'items', 'owners']"
+   ],
+   [
+    "INFO",
+    "글로벌 유사단어 자동 로드: 3건 로드"
+   ]
+  ],
+  "calls": [
+   [
+    "get_cache_manager"
+   ],
+   [
+    "db_client",
+    "t5_db"
+   ],
+   [
+    "get_cache_manager"
+   ],
+   [
+    "cache",
+    "get_schema_or_fetch",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "llm",
+    1
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "get_synonyms",
+    "t5_db"
+   ],
+   [
+    "sample",
+    "extra",
+    5
+   ],
+   [
+    "sample",
+    "owners",
+    5
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "save_structure_meta",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "sync_known_attributes_to_eav_synonyms",
+    [
+     {
+      "name": "OSType",
+      "synonyms": [
+       "운영체제"
+      ]
+     }
+    ]
+   ],
+   [
+    "cache",
+    "load_resource_type_synonyms"
+   ],
+   [
+    "cache",
+    "load_eav_name_synonyms"
+   ],
+   [
+    "cache",
+    "load_global_synonyms"
+   ],
+   [
+    "loader.init",
+    "fake-redis"
+   ],
+   [
+    "loader.load_auto",
+    "config/global_synonyms.yaml"
+   ],
+   [
+    "get_domain_by_id",
+    "t5_db"
+   ],
+   [
+    "value_index",
+    "t5_db",
+    [
+     "alarm_allowed_tables",
+     "allowed_tables",
+     "patterns",
+     "query_guide"
+    ],
+    true,
+    "postgresql",
+    "fake-redis"
+   ]
+  ]
+ },
+ "failures_everywhere": {
+  "keys": [
+   "relevant_tables",
+   "schema_info",
+   "column_descriptions",
+   "column_synonyms",
+   "resource_type_synonyms",
+   "eav_name_synonyms",
+   "column_value_index",
+   "schema_cache_source",
+   "current_node",
+   "error_message"
+  ],
+  "result": {
+   "relevant_tables": [
+    "items",
+    "owners"
+   ],
+   "schema_info": {
+    "tables": {
+     "items": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "t": "items"
+       }
+      ]
+     },
+     "owners": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "t": "owners"
+       }
+      ]
+     }
+    },
+    "relationships": [
+     {
+      "from": "items.id",
+      "to": "owners.id"
+     }
+    ],
+    "_structure_meta": {
+     "allowed_tables": [
+      "items",
+      "owners"
+     ],
+     "alarm_allowed_tables": [
+      "cmm_alarm",
+      "cmm_alarm_def",
+      "cmm_resource"
+     ],
+     "patterns": [
+      {
+       "type": "eav",
+       "entity_table": "items",
+       "config_table": "item_props",
+       "known_attributes": [
+        "OSType"
+       ],
+       "known_attributes_detail": [
+        {
+         "name": "OSType",
+         "synonyms": [
+          "운영체제"
+         ]
+        }
+       ]
+      }
+     ],
+     "query_guide": "가이드"
+    }
+   },
+   "column_descriptions": {
+    "items.id": "식별자"
+   },
+   "column_synonyms": {},
+   "resource_type_synonyms": {},
+   "eav_name_synonyms": {},
+   "column_value_index": null,
+   "schema_cache_source": "DB 직접 조회",
+   "current_node": "schema_analyzer",
+   "error_message": null
+  },
+  "logs": [
+   [
+    "DEBUG",
+    "DEBUG[1] db_id=t5_db, full_schema tables: ['items', 'owners', 'item_props', 'extra', 't01']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[2] LLM selected relevant: ['extra', 'items', 't01'] (query_targets=['항목'])"
+   ],
+   [
+    "INFO",
+    "EAV 동반 테이블 자동 추가: item_props (entity: items)"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[3] after EAV supplement: ['extra', 'items', 't01', 'item_props']"
+   ],
+   [
+    "WARNING",
+    "synonyms 테이블 allowed_tables 동적 보완 실패: get_synonyms 실패"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[4] db_id=t5_db, allowed_tables=['items', 'owners']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[4] relevant before filter: ['extra', 'items', 't01', 'item_props']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[4] bare names: ['extra', 'items', 't01', 'item_props']"
+   ],
+   [
+    "INFO",
+    "allowed_tables 보충: LLM 미선택 테이블 추가 'owners'"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[4] filtered+supplemented result: ['items', 'owners']"
+   ],
+   [
+    "INFO",
+    "allowed_tables 필터링: 제거=['extra', 'item_props', 't01'], 유지=['items', 'owners']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[5] final schema_dict tables: ['items', 'owners']"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 시작: 2개 테이블 (db_id=t5_db)"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 완료: 0.0s 소요 (db_id=t5_db)"
+   ],
+   [
+    "WARNING",
+    "수동 프로필 Redis 캐시 저장 실패: save_structure_meta 실패"
+   ],
+   [
+    "WARNING",
+    "known_attributes → eav_name_synonyms 동기화 실패: sync_known_attributes_to_eav_synonyms 실패"
+   ],
+   [
+    "INFO",
+    "관련 테이블: ['items', 'owners']"
+   ],
+   [
+    "WARNING",
+    "resource_type/eav_name 유사단어 로드 실패: load_resource_type_synonyms 실패"
+   ],
+   [
+    "WARNING",
+    "글로벌 유사단어 자동 로드 실패: load_global_synonyms 실패"
+   ],
+   [
+    "WARNING",
+    "값 인덱스 적재 실패(무시): 도메인 조회 실패"
+   ]
+  ],
+  "calls": [
+   [
+    "get_cache_manager"
+   ],
+   [
+    "db_client",
+    "t5_db"
+   ],
+   [
+    "get_cache_manager"
+   ],
+   [
+    "cache",
+    "get_schema_or_fetch",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "llm",
+    1
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "get_synonyms",
+    "t5_db"
+   ],
+   [
+    "sample",
+    "items",
+    5
+   ],
+   [
+    "sample",
+    "owners",
+    5
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "save_structure_meta",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "sync_known_attributes_to_eav_synonyms",
+    [
+     {
+      "name": "OSType",
+      "synonyms": [
+       "운영체제"
+      ]
+     }
+    ]
+   ],
+   [
+    "cache",
+    "load_resource_type_synonyms"
+   ],
+   [
+    "cache",
+    "load_global_synonyms"
+   ],
+   [
+    "get_domain_by_id",
+    "t5_db"
+   ]
+  ]
+ },
+ "applied_meta_defaults": {
+  "keys": [
+   "relevant_tables",
+   "schema_info",
+   "column_descriptions",
+   "column_synonyms",
+   "resource_type_synonyms",
+   "eav_name_synonyms",
+   "column_value_index",
+   "schema_cache_source",
+   "current_node",
+   "error_message"
+  ],
+  "result": {
+   "relevant_tables": [
+    "items",
+    "owners"
+   ],
+   "schema_info": {
+    "tables": {
+     "items": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "t": "items"
+       }
+      ]
+     },
+     "owners": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "t": "owners"
+       }
+      ]
+     }
+    },
+    "relationships": [
+     {
+      "from": "items.id",
+      "to": "owners.id"
+     }
+    ],
+    "_structure_meta": {
+     "patterns": [],
+     "query_guide": "승인본"
+    }
+   },
+   "column_descriptions": {
+    "items.id": "식별자"
+   },
+   "column_synonyms": {},
+   "resource_type_synonyms": {
+    "server": [
+     "서버"
+    ]
+   },
+   "eav_name_synonyms": {
+    "OSType": [
+     "운영체제"
+    ]
+   },
+   "column_value_index": null,
+   "schema_cache_source": "DB 직접 조회",
+   "current_node": "schema_analyzer",
+   "error_message": null
+  },
+  "logs": [
+   [
+    "DEBUG",
+    "DEBUG[1] db_id=t5_db, full_schema tables: ['items', 'owners']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[2] LLM selected relevant: ['items', 'owners'] (query_targets=[])"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[3] after EAV supplement: ['items', 'owners']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[5] final schema_dict tables: ['items', 'owners']"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 시작: 2개 테이블 (db_id=t5_db)"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 완료: 0.0s 소요 (db_id=t5_db)"
+   ],
+   [
+    "INFO",
+    "구조 정보 적용본 사용: db_id=t5_db"
+   ],
+   [
+    "INFO",
+    "관련 테이블: ['items', 'owners']"
+   ]
+  ],
+  "calls": [
+   [
+    "get_cache_manager"
+   ],
+   [
+    "db_client",
+    "t5_db"
+   ],
+   [
+    "get_cache_manager"
+   ],
+   [
+    "cache",
+    "get_schema_or_fetch",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "sample",
+    "items",
+    5
+   ],
+   [
+    "sample",
+    "owners",
+    5
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "get_applied_structure_meta",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "load_resource_type_synonyms"
+   ],
+   [
+    "cache",
+    "load_eav_name_synonyms"
+   ],
+   [
+    "cache",
+    "load_global_synonyms"
+   ]
+  ]
+ },
+ "applied_meta_fails": {
+  "keys": [
+   "relevant_tables",
+   "schema_info",
+   "column_descriptions",
+   "column_synonyms",
+   "resource_type_synonyms",
+   "eav_name_synonyms",
+   "column_value_index",
+   "schema_cache_source",
+   "current_node",
+   "error_message",
+   "dependency_notes"
+  ],
+  "result": {
+   "relevant_tables": [
+    "items"
+   ],
+   "schema_info": {
+    "tables": {
+     "items": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "t": "items"
+       }
+      ]
+     }
+    },
+    "relationships": []
+   },
+   "column_descriptions": {},
+   "column_synonyms": {},
+   "resource_type_synonyms": {},
+   "eav_name_synonyms": {},
+   "column_value_index": null,
+   "schema_cache_source": "DB 직접 조회",
+   "current_node": "schema_analyzer",
+   "error_message": null,
+   "dependency_notes": [
+    {
+     "kind": "structure_missing",
+     "task_id": null,
+     "db_id": "t5_db",
+     "detail": "t5_db 구조 정보(수동 프로필·승인본)가 없어 구조 안내 없이 조회했습니다 — 관리자 「DB 구조」 탭에서 분석·승인이 필요합니다."
+    },
+    {
+     "kind": "descriptions_missing",
+     "task_id": null,
+     "db_id": "t5_db",
+     "detail": "t5_db 컬럼 설명 미등록 — 컬럼 설명 없이 조회했습니다. 관리자 「DB 구조」 탭에서 컬럼 설명 등록이 필요합니다."
+    }
+   ]
+  },
+  "logs": [
+   [
+    "DEBUG",
+    "DEBUG[1] db_id=t5_db, full_schema tables: ['items', 'owners']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[2] LLM selected relevant: ['items'] (query_targets=['항목'])"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[3] after EAV supplement: ['items']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[5] final schema_dict tables: ['items']"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 시작: 1개 테이블 (db_id=t5_db)"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 완료: 0.0s 소요 (db_id=t5_db)"
+   ],
+   [
+    "WARNING",
+    "구조 정보 적용본 조회 실패: get_applied_structure_meta 실패"
+   ],
+   [
+    "WARNING",
+    "구조 정보 없음(수동 프로필·승인본) — 구조 안내 없이 진행: db_id=t5_db"
+   ],
+   [
+    "INFO",
+    "관련 테이블: ['items']"
+   ]
+  ],
+  "calls": [
+   [
+    "get_cache_manager"
+   ],
+   [
+    "db_client",
+    "t5_db"
+   ],
+   [
+    "get_cache_manager"
+   ],
+   [
+    "cache",
+    "get_schema_or_fetch",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "llm",
+    1
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "sample",
+    "items",
+    5
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "get_applied_structure_meta",
+    "t5_db"
+   ]
+  ]
+ },
+ "alarm_allowed_filter": {
+  "keys": [
+   "relevant_tables",
+   "schema_info",
+   "column_descriptions",
+   "column_synonyms",
+   "resource_type_synonyms",
+   "eav_name_synonyms",
+   "column_value_index",
+   "schema_cache_source",
+   "current_node",
+   "error_message"
+  ],
+  "result": {
+   "relevant_tables": [
+    "cmm_alarm",
+    "cmm_alarm_def",
+    "cmm_resource",
+    "cmm_alarm_active"
+   ],
+   "schema_info": {
+    "tables": {
+     "cmm_alarm": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "t": "cmm_alarm"
+       }
+      ]
+     },
+     "cmm_alarm_def": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "t": "cmm_alarm_def"
+       }
+      ]
+     },
+     "cmm_resource": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "t": "cmm_resource"
+       }
+      ]
+     },
+     "cmm_alarm_active": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "t": "cmm_alarm_active"
+       }
+      ]
+     }
+    },
+    "relationships": [],
+    "_structure_meta": {
+     "allowed_tables": [
+      "items",
+      "owners"
+     ],
+     "alarm_allowed_tables": [
+      "cmm_alarm",
+      "cmm_alarm_def",
+      "cmm_resource"
+     ],
+     "patterns": [
+      {
+       "type": "eav",
+       "entity_table": "items",
+       "config_table": "item_props",
+       "known_attributes": [
+        "OSType"
+       ],
+       "known_attributes_detail": [
+        {
+         "name": "OSType",
+         "synonyms": [
+          "운영체제"
+         ]
+        }
+       ]
+      }
+     ],
+     "query_guide": "가이드"
+    }
+   },
+   "column_descriptions": {
+    "x.y": "z"
+   },
+   "column_synonyms": {},
+   "resource_type_synonyms": {},
+   "eav_name_synonyms": {},
+   "column_value_index": null,
+   "schema_cache_source": "DB 직접 조회",
+   "current_node": "schema_analyzer",
+   "error_message": null
+  },
+  "logs": [
+   [
+    "DEBUG",
+    "DEBUG[1] db_id=t5_db, full_schema tables: ['cmm_alarm', 'cmm_alarm_def', 'cmm_alarm_active', 'cmm_resource', 't01', 't02', 't03', 't04', 't05', 't06', 't07', 't08']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[2] LLM selected relevant: ['cmm_alarm', 'cmm_alarm_def', 'cmm_resource', 't01'] (query_targets=['알람'])"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[3] after EAV supplement: ['cmm_alarm', 'cmm_alarm_def', 'cmm_resource', 't01']"
+   ],
+   [
+    "INFO",
+    "alarm_query: alarm_allowed_tables 필터 적용: 12 → 3개"
+   ],
+   [
+    "INFO",
+    "alarm_query: 알람 핵심 테이블 보충: cmm_alarm_active"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[5] final schema_dict tables: ['cmm_alarm', 'cmm_alarm_def', 'cmm_resource', 'cmm_alarm_active']"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 시작: 4개 테이블 (db_id=t5_db)"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 완료: 0.0s 소요 (db_id=t5_db)"
+   ],
+   [
+    "INFO",
+    "관련 테이블: ['cmm_alarm', 'cmm_alarm_def', 'cmm_resource', 'cmm_alarm_active']"
+   ]
+  ],
+  "calls": [
+   [
+    "get_cache_manager"
+   ],
+   [
+    "db_client",
+    "t5_db"
+   ],
+   [
+    "get_cache_manager"
+   ],
+   [
+    "cache",
+    "get_schema_or_fetch",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "llm",
+    1
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "sample",
+    "cmm_alarm",
+    5
+   ],
+   [
+    "sample",
+    "cmm_alarm_def",
+    5
+   ],
+   [
+    "sample",
+    "cmm_resource",
+    5
+   ],
+   [
+    "sample",
+    "cmm_alarm_active",
+    5
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "save_structure_meta",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "sync_known_attributes_to_eav_synonyms",
+    [
+     {
+      "name": "OSType",
+      "synonyms": [
+       "운영체제"
+      ]
+     }
+    ]
+   ]
+  ]
+ },
+ "alarm_allowed_empty": {
+  "keys": [
+   "relevant_tables",
+   "schema_info",
+   "column_descriptions",
+   "column_synonyms",
+   "resource_type_synonyms",
+   "eav_name_synonyms",
+   "column_value_index",
+   "schema_cache_source",
+   "current_node",
+   "error_message"
+  ],
+  "result": {
+   "relevant_tables": [
+    "cmm_alarm"
+   ],
+   "schema_info": {
+    "tables": {
+     "cmm_alarm": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "t": "cmm_alarm"
+       }
+      ]
+     }
+    },
+    "relationships": [],
+    "_structure_meta": {
+     "allowed_tables": [
+      "items",
+      "owners"
+     ],
+     "alarm_allowed_tables": [
+      "cmm_alarm",
+      "cmm_alarm_def",
+      "cmm_resource"
+     ],
+     "patterns": [
+      {
+       "type": "eav",
+       "entity_table": "items",
+       "config_table": "item_props",
+       "known_attributes": [
+        "OSType"
+       ],
+       "known_attributes_detail": [
+        {
+         "name": "OSType",
+         "synonyms": [
+          "운영체제"
+         ]
+        }
+       ]
+      }
+     ],
+     "query_guide": "가이드"
+    }
+   },
+   "column_descriptions": {
+    "x.y": "z"
+   },
+   "column_synonyms": {},
+   "resource_type_synonyms": {},
+   "eav_name_synonyms": {},
+   "column_value_index": null,
+   "schema_cache_source": "DB 직접 조회",
+   "current_node": "schema_analyzer",
+   "error_message": null
+  },
+  "logs": [
+   [
+    "DEBUG",
+    "DEBUG[1] db_id=t5_db, full_schema tables: ['cmm_alarm', 'cmm_resource', 't01', 't02', 't03', 't04', 't05', 't06', 't07', 't08']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[2] LLM selected relevant: ['t01', 't02'] (query_targets=['알람'])"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[3] after EAV supplement: ['t01', 't02']"
+   ],
+   [
+    "WARNING",
+    "alarm_query: alarm_allowed_tables 필터 후 빈 결과, core 테이블로 복원: ['cmm_alarm']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[5] final schema_dict tables: ['cmm_alarm']"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 시작: 1개 테이블 (db_id=t5_db)"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 완료: 0.0s 소요 (db_id=t5_db)"
+   ],
+   [
+    "INFO",
+    "관련 테이블: ['cmm_alarm']"
+   ]
+  ],
+  "calls": [
+   [
+    "get_cache_manager"
+   ],
+   [
+    "db_client",
+    "t5_db"
+   ],
+   [
+    "get_cache_manager"
+   ],
+   [
+    "cache",
+    "get_schema_or_fetch",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "llm",
+    1
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "sample",
+    "cmm_alarm",
+    5
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "save_structure_meta",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "sync_known_attributes_to_eav_synonyms",
+    [
+     {
+      "name": "OSType",
+      "synonyms": [
+       "운영체제"
+      ]
+     }
+    ]
+   ]
+  ]
+ },
+ "alarm_llm_fallback": {
+  "keys": [
+   "relevant_tables",
+   "schema_info",
+   "column_descriptions",
+   "column_synonyms",
+   "resource_type_synonyms",
+   "eav_name_synonyms",
+   "column_value_index",
+   "schema_cache_source",
+   "current_node",
+   "error_message"
+  ],
+  "result": {
+   "relevant_tables": [
+    "cmm_alarm"
+   ],
+   "schema_info": {
+    "tables": {
+     "cmm_alarm": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "t": "cmm_alarm"
+       }
+      ]
+     }
+    },
+    "relationships": [],
+    "_structure_meta": {
+     "patterns": []
+    }
+   },
+   "column_descriptions": {
+    "x.y": "z"
+   },
+   "column_synonyms": {},
+   "resource_type_synonyms": {},
+   "eav_name_synonyms": {},
+   "column_value_index": null,
+   "schema_cache_source": "DB 직접 조회",
+   "current_node": "schema_analyzer",
+   "error_message": null
+  },
+  "logs": [
+   [
+    "DEBUG",
+    "DEBUG[1] db_id=t5_db, full_schema tables: ['cmm_alarm', 'cmm_resource', 't01', 't02', 't03', 't04', 't05', 't06', 't07', 't08', 't09', 't10']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[2] LLM selected relevant: ['cmm_alarm', 'cmm_resource', 't01', 't02', 't03', 't04', 't05', 't06', 't07', 't08', 't09', 't10'] (query_targets=[])"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[3] after EAV supplement: ['cmm_alarm', 'cmm_resource', 't01', 't02', 't03', 't04', 't05', 't06', 't07', 't08', 't09', 't10']"
+   ],
+   [
+    "WARNING",
+    "alarm_query: LLM 폴백 감지 (12개), core 테이블로 제한: ['cmm_alarm']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[5] final schema_dict tables: ['cmm_alarm']"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 시작: 1개 테이블 (db_id=t5_db)"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 완료: 0.0s 소요 (db_id=t5_db)"
+   ],
+   [
+    "INFO",
+    "관련 테이블: ['cmm_alarm']"
+   ]
+  ],
+  "calls": [
+   [
+    "get_cache_manager"
+   ],
+   [
+    "db_client",
+    "t5_db"
+   ],
+   [
+    "get_cache_manager"
+   ],
+   [
+    "cache",
+    "get_schema_or_fetch",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "sample",
+    "cmm_alarm",
+    5
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "save_structure_meta",
+    "t5_db"
+   ]
+  ]
+ },
+ "q5_skip_reuses_signal": {
+  "keys": [
+   "relevant_tables",
+   "schema_info",
+   "column_descriptions",
+   "column_synonyms",
+   "resource_type_synonyms",
+   "eav_name_synonyms",
+   "column_value_index",
+   "schema_cache_source",
+   "current_node",
+   "error_message"
+  ],
+  "result": {
+   "relevant_tables": [
+    "items",
+    "owners"
+   ],
+   "schema_info": {
+    "tables": {
+     "items": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "t": "items"
+       }
+      ]
+     },
+     "owners": {
+      "columns": [
+       {
+        "name": "id",
+        "type": "int",
+        "nullable": true,
+        "primary_key": true,
+        "foreign_key": false,
+        "references": null
+       },
+       {
+        "name": "name",
+        "type": "varchar",
+        "nullable": true,
+        "primary_key": false,
+        "foreign_key": false,
+        "references": null
+       }
+      ],
+      "row_count_estimate": null,
+      "sample_data": [
+       {
+        "t": "owners"
+       }
+      ]
+     }
+    },
+    "relationships": [
+     {
+      "from": "items.id",
+      "to": "owners.id"
+     }
+    ],
+    "_structure_meta": {
+     "allowed_tables": [
+      "items",
+      "owners"
+     ],
+     "alarm_allowed_tables": [
+      "cmm_alarm",
+      "cmm_alarm_def",
+      "cmm_resource"
+     ],
+     "patterns": [
+      {
+       "type": "eav",
+       "entity_table": "items",
+       "config_table": "item_props",
+       "known_attributes": [
+        "OSType"
+       ],
+       "known_attributes_detail": [
+        {
+         "name": "OSType",
+         "synonyms": [
+          "운영체제"
+         ]
+        }
+       ]
+      }
+     ],
+     "query_guide": "가이드"
+    }
+   },
+   "column_descriptions": {
+    "x.y": "z"
+   },
+   "column_synonyms": {},
+   "resource_type_synonyms": {},
+   "eav_name_synonyms": {},
+   "column_value_index": null,
+   "schema_cache_source": "DB 직접 조회",
+   "current_node": "schema_analyzer",
+   "error_message": null
+  },
+  "logs": [
+   [
+    "DEBUG",
+    "DEBUG[1] db_id=t5_db, full_schema tables: ['items', 'owners', 'item_props', 'extra', 't01']"
+   ],
+   [
+    "INFO",
+    "[동의어] 질의 테이블 보완 매칭 1건: '항목'→items.name(정확)"
+   ],
+   [
+    "INFO",
+    "테이블 선택 LLM 생략(plans/119 Q-5): 질의 신호가 선언 집합 안 — ['items', 'owners']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[2] LLM selected relevant: ['items', 'owners'] (query_targets=['항목'])"
+   ],
+   [
+    "INFO",
+    "EAV 동반 테이블 자동 추가: item_props (entity: items)"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[3] after EAV supplement: ['items', 'owners', 'item_props']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[4] db_id=t5_db, allowed_tables=['items', 'owners']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[4] relevant before filter: ['items', 'owners', 'item_props']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[4] bare names: ['items', 'owners', 'item_props']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[4] filtered+supplemented result: ['items', 'owners']"
+   ],
+   [
+    "INFO",
+    "allowed_tables 필터링: 제거=['item_props'], 유지=['items', 'owners']"
+   ],
+   [
+    "DEBUG",
+    "DEBUG[5] final schema_dict tables: ['items', 'owners']"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 시작: 2개 테이블 (db_id=t5_db)"
+   ],
+   [
+    "INFO",
+    "라이브 샘플 수집 완료: 0.0s 소요 (db_id=t5_db)"
+   ],
+   [
+    "INFO",
+    "관련 테이블: ['items', 'owners']"
+   ]
+  ],
+  "calls": [
+   [
+    "get_cache_manager"
+   ],
+   [
+    "db_client",
+    "t5_db"
+   ],
+   [
+    "get_cache_manager"
+   ],
+   [
+    "cache",
+    "get_schema_or_fetch",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "get_synonyms",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "sample",
+    "items",
+    5
+   ],
+   [
+    "sample",
+    "owners",
+    5
+   ],
+   [
+    "profile",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "save_structure_meta",
+    "t5_db"
+   ],
+   [
+    "cache",
+    "sync_known_attributes_to_eav_synonyms",
+    [
+     {
+      "name": "OSType",
+      "synonyms": [
+       "운영체제"
+      ]
+     }
+    ]
+   ]
+  ]
+ },
+ "schema_fetch_error": {
+  "keys": [
+   "relevant_tables",
+   "schema_info",
+   "column_descriptions",
+   "column_synonyms",
+   "resource_type_synonyms",
+   "eav_name_synonyms",
+   "current_node",
+   "error_message"
+  ],
+  "result": {
+   "relevant_tables": [],
+   "schema_info": {},
+   "column_descriptions": {},
+   "column_synonyms": {},
+   "resource_type_synonyms": {},
+   "eav_name_synonyms": {},
+   "current_node": "schema_analyzer",
+   "error_message": "DB 스키마 조회 실패: get_schema_or_fetch 실패"
+  },
+  "logs": [
+   [
+    "ERROR",
+    "스키마 분석 실패: get_schema_or_fetch 실패"
+   ]
+  ],
+  "calls": [
+   [
+    "get_cache_manager"
+   ],
+   [
+    "db_client",
+    "t5_db"
+   ],
+   [
+    "get_cache_manager"
+   ],
+   [
+    "cache",
+    "get_schema_or_fetch",
+    "t5_db"
+   ]
+  ]
+ }
+}

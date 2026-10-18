@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from fabrix_proxy.app import create_app
 from fabrix_proxy.config import ConfigError, ProxySettings
+from fabrix_proxy.log_masking import install_log_record_factory
 
 logger = logging.getLogger("fabrix_proxy")
 
@@ -35,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     level = getattr(logging, settings.fabrix_proxy_log_level.upper(), logging.INFO)
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    install_log_record_factory()  # 로그 비밀값 가림(plans/167)
     # httpx·httpcore 요청 URL 로그 억제는 create_app이 한다(fabrix_client.quiet_http_loggers).
 
     try:

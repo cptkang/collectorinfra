@@ -268,7 +268,7 @@ class TestCallSitesUseSharedExtractor:
     _SITES = (
         "src/nodes/cache_management.py",
         "src/nodes/semantic_compiler.py",
-        "src/nodes/candidate_selector.py",
+        "src/pipeline/candidate_selector.py",
         "src/nodes/schema_analyzer.py",
         "src/schema_cache/cache_manager.py",
         "noise_gate/application/nodes/alarm_analyzer.py",

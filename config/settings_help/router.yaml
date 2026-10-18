@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 시멘틱 라우터 (D-191)
-# 근거: src/config.py RouterConfig 주석 · plans/79 · SPEC-router-two-stage
+# 근거: src/config/text2sql.py RouterConfig 주석 · plans/79 · SPEC-router-two-stage
 # ⚠ 이 그룹은 구조만 세워졌고 이득/손해가 미검증이다 — 기본값이 곧 현행 동작이다.
 
 version: 1

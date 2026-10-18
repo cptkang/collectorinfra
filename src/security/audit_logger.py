@@ -18,6 +18,7 @@ from typing import Any, Optional
 import structlog
 
 from noise_gate.domain.process_rank import mask_args
+from src.utils.log_masking import install_log_record_factory, mask_event_dict
 
 logger = structlog.get_logger("audit")
 
@@ -657,6 +658,8 @@ def setup_logging(log_level: str = "INFO") -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         force=True,
     )
+    # 비밀번호·토큰·API 키 꼴 값을 레코드 생성 시점에 가린다(plans/167 — 재호출해도 한 번만 감싼다)
+    install_log_record_factory()
 
     # httpx는 성공한 모든 HTTP 요청을 INFO로 기록하여 노이즈가 큼 (헬스체크, MCP, LLM 호출 등)
     # 오류는 예외로 전파되어 앱 레벨에서 별도 로깅되므로 WARNING 이상만 출력
@@ -670,6 +673,7 @@ def setup_logging(log_level: str = "INFO") -> None:
             structlog.processors.StackInfoRenderer(),
             structlog.dev.set_exc_info,
             structlog.processors.TimeStamper(fmt="iso"),
+            mask_event_dict,
             structlog.processors.JSONRenderer(ensure_ascii=False),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),

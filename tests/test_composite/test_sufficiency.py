@@ -30,6 +30,16 @@ TASKS = [{"task_id": "t2", "agent": "process_query", "sub_query": "프로세스"
 THREE = [{"hostname": "h1"}, {"hostname": "h2"}, {"hostname": "h3"}]
 
 
+def _orch_cfg():
+    """오케스트레이터가 읽는 설정 필드만 명시한 대역(게이트·사후 대조 off · 예약 0)."""
+    return SimpleNamespace(
+        composite=SimpleNamespace(
+            sequential_gate_enabled=False, scope_postcheck_enabled=False,
+        ),
+        server=SimpleNamespace(answer_reserve_sec=0),
+    )
+
+
 def _result(succeeded, hostnames):
     return {
         "process_query": {"succeeded_count": succeeded},
@@ -146,7 +156,7 @@ def test_retry_limit_is_a_constant_not_a_setting():
     assert MAX_SUFFICIENCY_RETRIES == 1
     import pathlib
 
-    cfg = pathlib.Path("src/config.py").read_text()
+    cfg = "".join(p.read_text() for p in sorted(pathlib.Path("src/config").glob("*.py")))
     assert "sufficiency_retries" not in cfg and "SUFFICIENCY_RETRIES" not in cfg
 
 
@@ -164,7 +174,7 @@ async def test_orchestrator_retries_exactly_once(monkeypatch):
     monkeypatch.setattr(ao, "_run_agent", _fake_run)
     out = await ao.agent_orchestrator(
         {"task_plan": [dict(TASKS[0], status="pending")], "task_results": {}},
-        llm=object(), app_config=SimpleNamespace(),
+        llm=object(), app_config=_orch_cfg(),
     )
     assert runs["n"] == 2, "최초 1회 + 재시도 1회 = 2회여야 한다"
     assert out["sufficiency_shortfalls"][0]["reason"] == REASON_TARGET_SHORTFALL
@@ -184,7 +194,7 @@ async def test_orchestrator_stops_when_retry_fixes_it(monkeypatch):
     monkeypatch.setattr(ao, "_run_agent", _fake_run)
     out = await ao.agent_orchestrator(
         {"task_plan": [dict(TASKS[0], status="pending")], "task_results": {}},
-        llm=object(), app_config=SimpleNamespace(),
+        llm=object(), app_config=_orch_cfg(),
     )
     assert runs["n"] == 2
     assert "sufficiency_shortfalls" not in out
@@ -202,7 +212,7 @@ async def test_no_injected_targets_means_no_verification(monkeypatch):
     monkeypatch.setattr(ao, "_run_agent", _fake_run)
     out = await ao.agent_orchestrator(
         {"task_plan": [dict(TASKS[0], status="pending")], "task_results": {}},
-        llm=object(), app_config=SimpleNamespace(),
+        llm=object(), app_config=_orch_cfg(),
     )
     assert runs["n"] == 1
     assert "sufficiency_shortfalls" not in out
@@ -224,7 +234,7 @@ async def test_retry_failure_keeps_original_result(monkeypatch):
     monkeypatch.setattr(ao, "_run_agent", _fake_run)
     out = await ao.agent_orchestrator(
         {"task_plan": [dict(TASKS[0], status="pending")], "task_results": {}},
-        llm=object(), app_config=SimpleNamespace(),
+        llm=object(), app_config=_orch_cfg(),
     )
     assert out["task_results"]["t2"]["process_query"]["succeeded_count"] == 1
 

@@ -1,0 +1,26 @@
+{
+  "no_meta": [],
+  "no_eav": [],
+  "direct": [
+    "금지된 조인 감지: cmm_resource.id = cfg_prop.cfg_id 직접 조인은 ID 체계가 달라 잘못된 결과를 반환합니다. 반드시 hostname 기반 브릿지 조인을 사용하세요: cfg_prop.name='Hostname' AND cfg_prop.sval = cmm_resource.hostname 으로 브릿지한 후, cfg_id로 다른 속성을 조인하세요."
+  ],
+  "direct_rev": [
+    "금지된 조인 감지: cfg_prop.cfg_id = cmm_resource.id 직접 조인은 ID 체계가 달라 잘못된 결과를 반환합니다. 반드시 hostname 기반 브릿지 조인을 사용하세요: cfg_prop.name='Hostname' AND cfg_prop.sval = cmm_resource.hostname 으로 브릿지한 후, cfg_id로 다른 속성을 조인하세요."
+  ],
+  "excluded_both": [
+    "금지된 조인 감지: cmm_resource.conf_id이 cfg_prop과의 조인에 사용되었습니다. 사유: NULL 다수. 반드시 hostname 기반 브릿지 조인을 사용하세요: cfg_prop.name='Hostname' AND cfg_prop.sval = cmm_resource.hostname 으로 브릿지한 후, cfg_id로 다른 속성을 조인하세요.",
+    "금지된 조인 감지: cmm_resource.conf_id이 cfg_prop과의 조인에 사용되었습니다. 사유: NULL 다수. 반드시 hostname 기반 브릿지 조인을 사용하세요: cfg_prop.name='Hostname' AND cfg_prop.sval = cmm_resource.hostname 으로 브릿지한 후, cfg_id로 다른 속성을 조인하세요.",
+    "금지된 조인 감지: cmm_resource.vendor_id이 JOIN ON 절에 사용되었습니다. 사유: NULL",
+    "금지된 조인 감지: cmm_resource.vendor_id이 JOIN ON 절에 사용되었습니다. 사유: NULL"
+  ],
+  "unaliased": [
+    "금지된 조인 감지: cmm_resource.id = cfg_prop.cfg_id 직접 조인은 ID 체계가 달라 잘못된 결과를 반환합니다. 반드시 hostname 기반 브릿지 조인을 사용하세요: cfg_prop.name='Hostname' AND cfg_prop.sval = cmm_resource.hostname 으로 브릿지한 후, cfg_id로 다른 속성을 조인하세요."
+  ],
+  "no_on": [],
+  "no_config_column": [],
+  "no_bridge_hint": [
+    "금지된 조인 감지: cmm_resource.id = cfg_prop.cfg_id 직접 조인은 ID 체계가 달라 잘못된 결과를 반환합니다."
+  ],
+  "no_entity": [],
+  "no_excluded": []
+}

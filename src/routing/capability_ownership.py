@@ -22,7 +22,8 @@ task `capability`)만 본다.
 
 ## 켜짐 조건
 `ROUTER_CAPABILITY_OWNERSHIP_ENABLED`가 켜졌을 때만 호출된다. 판정은 호출부가 한다 —
-이 모듈은 설정을 읽지 않는다(기동 시 1회 해석 원칙).
+이 모듈은 설정을 읽지 않는다(기동 시 1회 해석 원칙). 켜짐 판정 `capability_ownership_on`도
+호출부가 넘긴 설정 객체만 본다(plans/166 X4 — 분해·처리기 사본 2벌의 정본).
 
 계층: infrastructure (`src.routing`).
 """
@@ -32,10 +33,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.routing.registry import DBRegistry, get_registry
 from src.utils.prior_dependency import NOTE_OWNERSHIP, NOTE_ROUTING_FALLBACK
+
+if TYPE_CHECKING:
+    from src.config import AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,11 @@ REASON_OWNER_INACTIVE = "owner_inactive"     # 정본 시스템이 비활성이�
 REASON_OWNER_USER_SPECIFIED = "owner_user_specified"
 REASON_LLM_ERROR = "llm_error"               # 분류 LLM 호출 실패 → 첫 활성 DB 폴백
 REASON_NO_CLASSIFICATION = "no_classification"  # 유효한 분류 결과 없음 → 첫 활성 DB 폴백
+
+
+def capability_ownership_on(app_config: AppConfig) -> bool:
+    """답변 영역 소유 플래그(plans/102 X-7) — 호출부가 넘긴 설정에서 읽는다(기동 시 1회 해석)."""
+    return bool(getattr(getattr(app_config, "router", None), "capability_ownership_enabled", False))
 
 
 # ──────────────────────────────────────────────

@@ -71,11 +71,45 @@ def test_gold_entries_preserve_smq():
     assert all("pattern" in e["smq"] for e in with_smq)
 
 
-def test_profile_entries_use_filename_stem_as_db_id():
+def _write_yaml(path: Path, data: dict) -> None:
+    import yaml
+
+    path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+
+
+def _fixture_sources(tmp_path: Path) -> tuple[Path, Path]:
+    """고정 원천(골드 3건 + 프로필 3건, 중복 없음)을 만든다.
+
+    운영 정본(`config/db_profiles/`)을 읽으면 정본 데이터가 늘 때마다 기대값이 부패한다
+    (aa69985f · 2026-10-08 `itam.yaml` query_examples 추가로 집합·합계가 어긋났다 — plans/158).
+    로직(파일명 stem = db_id · 예시 없는 프로필 제외 · 두 원천 병합)만 고정 입력으로 검증한다.
+    """
+    gold_dir = tmp_path / "gold"
+    profile_dir = tmp_path / "profiles"
+    gold_dir.mkdir()
+    profile_dir.mkdir()
+    # 골드 파일명(g)과 item 선언 db_id가 다르다 — db_id는 선언값을 따른다
+    _write_yaml(gold_dir / "g.yaml", {"items": [
+        {"id": "g-1", "db_id": "db_alpha", "query": "골드 질의 1", "gold_sql": "SELECT 1"},
+        {"id": "g-2", "db_id": "db_alpha", "query": "골드 질의 2", "gold_sql": "SELECT 2"},
+        {"id": "g-3", "db_id": "db_beta", "query": "골드 질의 3", "gold_sql": "SELECT 3"},
+    ]})
+    _write_yaml(profile_dir / "db_alpha.yaml", {"query_examples": [
+        {"question": "프로필 질의 1", "sql": "SELECT 11"},
+        {"question": "프로필 질의 2", "sql": "SELECT 12"},
+    ]})
+    _write_yaml(profile_dir / "db_gamma.yaml", {"query_examples": [
+        {"question": "프로필 질의 3", "sql": "SELECT 13"},
+    ]})
+    _write_yaml(profile_dir / "test_db.yaml", {"tables": {"t": {}}})  # query_examples 미보유
+    return gold_dir, profile_dir
+
+
+def test_profile_entries_use_filename_stem_as_db_id(tmp_path: Path):
     """프로필 db_id는 파일명 stem이며, 예시 없는 프로필은 제외된다."""
-    collected = _SEED.collect_profile_entries(verified_at=_FIXED_TS)
-    # 2026-09-10: 샌드박스 프로필 `polestar.yaml` 복원(plans/88 §11.5 B1) — cm_gp 복제라 query_examples를 보유한다
-    assert set(collected) == {"polestar_cm_gp", "polestar_cm_yd", "polestar_b0", "polestar"}
+    _, profile_dir = _fixture_sources(tmp_path)
+    collected = _SEED.collect_profile_entries(profile_dir, verified_at=_FIXED_TS)
+    assert set(collected) == {"db_alpha", "db_gamma"}
     assert "test_db" not in collected  # query_examples 미보유
     assert all(
         e["source"] == "profile_example"
@@ -83,14 +117,13 @@ def test_profile_entries_use_filename_stem_as_db_id():
     )
 
 
-def test_collect_entries_merges_both_sources():
-    """두 원천이 db_id별로 합쳐진다(실측 70건 = 골드 26 + 프로필 44).
-
-    2026-09-10 샌드박스 프로필 복원으로 69건 → 2026-09-16 plans/98 CU-1로 `polestar_b0`에
-    장비명 필터 예시 1건을 더해 70건. 수치는 프로필 예시 수를 그대로 따라간다.
-    """
-    merged = _SEED.collect_entries(verified_at=_FIXED_TS)
-    assert sum(len(v) for v in merged.values()) == 70
+def test_collect_entries_merges_both_sources(tmp_path: Path):
+    """두 원천이 db_id별로 합쳐진다(고정 입력 6건 = 골드 3 + 프로필 3)."""
+    gold_dir, profile_dir = _fixture_sources(tmp_path)
+    merged = _SEED.collect_entries(
+        gold_dir=gold_dir, profile_dir=profile_dir, verified_at=_FIXED_TS,
+    )
+    assert {db: len(v) for db, v in merged.items()} == {"db_alpha": 4, "db_beta": 1, "db_gamma": 1}
     sources = {e["source"] for entries in merged.values() for e in entries}
     assert sources == {"gold", "profile_example"}
 

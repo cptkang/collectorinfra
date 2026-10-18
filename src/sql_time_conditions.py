@@ -360,8 +360,14 @@ def _read_literal(
 
 
 def _is_plain_column(toks: Sequence[_Tok], a: int, b: int) -> bool:
-    """[a, b) 토큰이 `x` 또는 `a.b.x` 형태의 식별자 하나인가."""
+    """[a, b) 토큰이 `x` 또는 `a.b.x` 형태의 식별자 하나인가.
+
+    괄호 없는 현재시각 낱말(`CURRENT_TIMESTAMP`·`SYSDATE` 등)은 식별자가 아니라 식이다 — `NOW()`와
+    같이 다룬다(plans/184 J2). 큰따옴표 식별자(`"CURRENT_DATE"`)·접두 붙은 이름은 그대로 컬럼이다.
+    """
     if b <= a or (b - a) % 2 == 0:
+        return False
+    if b - a == 1 and _NOW_FUNCTION_RE.fullmatch(toks[a].text):
         return False
     return all(
         toks[k].kind == ("word" if (k - a) % 2 == 0 else "dot") for k in range(a, b)
@@ -443,11 +449,22 @@ def _or_joined(toks: Sequence[_Tok], st: _Structure, a: int, b: int) -> bool:
         a, b = lp, st.match[lp] + 1
 
 
-def _read_condition(
-    sql: str, masked: str, toks: Sequence[_Tok], st: _Structure, qs: int, qe: int,
-    qualifier: str,
-) -> ColumnCondition | None:
-    """컬럼 참조 [qs, qe) 하나 → 거르는 조건(조건이 아니거나 CASE WHEN 안이면 None)."""
+@dataclass(frozen=True)
+class _Pred:
+    """조건 하나를 연산자별로 읽은 중간 결과 — 피연산자 범위 [pstart, pend)와 리터럴 판정."""
+
+    op: str
+    pstart: int
+    pend: int
+    values: tuple[str, ...] = ()
+    literal: bool = False
+    column_ref: bool = False
+
+
+def _widen_operand(
+    toks: Sequence[_Tok], st: _Structure, qs: int, qe: int,
+) -> tuple[int, int, bool]:
+    """컬럼 참조 [qs, qe)를 감싼 함수 호출·뒤에 붙은 산술/형 변환까지 넓힌 (start, end, wrapped)."""
     n = len(toks)
     start, end, wrapped = qs, qe, False
     # 함수로 감싼 컬럼(`TO_CHAR(x.col, …)`) — 감싼 호출 전체를 피연산자로 본다
@@ -473,87 +490,134 @@ def _read_condition(
                     end = st.match[end] + 1
         else:
             break
+    return start, end, wrapped
 
-    op: str | None = None
-    values: tuple[str, ...] = ()
-    literal = column_ref = False
-    pstart, pend = start, end
+
+def _read_compare(
+    sql: str, toks: Sequence[_Tok], st: _Structure, start: int, end: int, wrapped: bool,
+) -> _Pred:
+    """`피연산자 <비교> …` — 오른쪽이 리터럴이면 값, 일반 컬럼이면 조인 키·CTE 컬럼으로 읽는다."""
+    op = toks[end].text
+    lit = None if wrapped else _read_literal(sql, toks, st, end + 1)
+    if lit is not None and _is_boundary(toks, lit[1]):
+        return _Pred(op, start, lit[1], values=(lit[0],), literal=True)
+    rhs_end = _scan(toks, st, end + 1, +1, _RIGHT_BOUNDARY_WORDS)
+    column_ref = False
+    if not wrapped and _is_plain_column(toks, end + 1, rhs_end):
+        column_ref = True  # 조인 키·CTE 컬럼(`s.col = p.m`) — 리터럴이 아니다
+    return _Pred(op, start, rhs_end, column_ref=column_ref)
+
+
+def _read_between(
+    sql: str, toks: Sequence[_Tok], st: _Structure, start: int, end: int, wrapped: bool,
+) -> _Pred:
+    """`피연산자 BETWEEN a AND b` — 양 끝이 모두 리터럴일 때만 값으로 읽는다."""
+    n = len(toks)
+    lo = None if wrapped else _read_literal(sql, toks, st, end + 1)
+    hi = None
+    if lo is not None and lo[1] < n and toks[lo[1]].upper == "AND":
+        hi = _read_literal(sql, toks, st, lo[1] + 1)
+    if lo is not None and hi is not None and _is_boundary(toks, hi[1]):
+        return _Pred("between", start, hi[1], values=(lo[0], hi[0]), literal=True)
+    pend = _scan(toks, st, end + 1, +1, _RIGHT_BOUNDARY_WORDS, skip_and=True)
+    return _Pred("between", start, pend)
+
+
+def _read_in_list(
+    sql: str, toks: Sequence[_Tok], st: _Structure, start: int, end: int, wrapped: bool,
+) -> _Pred:
+    """`피연산자 IN (…)` — 하위 질의가 아니고 항목이 전부 리터럴일 때만 값으로 읽는다."""
+    lp = end + 1
+    rp = st.match[lp]
+    pend = rp + 1
+    items: list[str] = []
+    k = lp + 1
+    ok = not wrapped and lp not in st.subquery and k < rp
+    while ok and k < rp:
+        lit = _read_literal(sql, toks, st, k)
+        if lit is None or (lit[1] != rp and toks[lit[1]].kind != "comma"):
+            ok = False
+            break
+        items.append(lit[0])
+        k = lit[1] + 1
+    if ok and _is_boundary(toks, pend):
+        return _Pred("in", start, pend, values=tuple(items), literal=True)
+    return _Pred("in", start, pend)
+
+
+def _read_negated_or_like(
+    toks: Sequence[_Tok], st: _Structure, start: int, end: int, nxt_word: str,
+) -> _Pred | None:
+    """`NOT BETWEEN·IN·LIKE·ILIKE` · `LIKE` · `ILIKE` — 값으로 읽지 않는다(그 밖의 NOT은 None)."""
+    n = len(toks)
+    if nxt_word == "NOT":
+        if end + 1 >= n or toks[end + 1].upper not in ("BETWEEN", "IN", "LIKE", "ILIKE"):
+            return None
+        op = "not " + toks[end + 1].text.lower()
+        pend = _scan(
+            toks, st, end + 2, +1, _RIGHT_BOUNDARY_WORDS, skip_and=op == "not between"
+        )
+    else:
+        op = nxt_word.lower()
+        pend = _scan(toks, st, end + 1, +1, _RIGHT_BOUNDARY_WORDS)
+    return _Pred(op, start, pend)
+
+
+def _read_flipped(
+    sql: str, toks: Sequence[_Tok], st: _Structure, start: int, end: int, wrapped: bool,
+) -> _Pred:
+    """뒤집힌 비교(`'…' <= x.col`) — 연산자를 뒤집고 왼쪽 피연산자를 읽는다."""
+    raw_op = toks[start - 1].text
+    op = _FLIP_OP[raw_op]
+    lhs_start = _scan(toks, st, start - 2, -1, _LEFT_BOUNDARY_WORDS)
+    lit = None if wrapped else _read_literal(sql, toks, st, lhs_start)
+    if lit is not None and lit[1] == start - 1:
+        return _Pred(op, lhs_start, end, values=(lit[0],), literal=True)
+    column_ref = False
+    if not wrapped and _is_plain_column(toks, lhs_start, start - 1):
+        column_ref = True  # 조인 키·CTE 컬럼
+    return _Pred(op, lhs_start, end, column_ref=column_ref)
+
+
+def _read_condition(
+    sql: str, masked: str, toks: Sequence[_Tok], st: _Structure, qs: int, qe: int,
+    qualifier: str,
+) -> ColumnCondition | None:
+    """컬럼 참조 [qs, qe) 하나 → 거르는 조건(조건이 아니거나 CASE WHEN 안이면 None)."""
+    n = len(toks)
+    start, end, wrapped = _widen_operand(toks, st, qs, qe)
+
+    pred: _Pred | None
     nxt_tok = toks[end] if end < n else None
     nxt_word = nxt_tok.upper if nxt_tok is not None and nxt_tok.kind == "word" else ""
     if nxt_tok is not None and nxt_tok.kind == "op" and nxt_tok.text in _CMP_OPS:
-        op = nxt_tok.text
-        lit = None if wrapped else _read_literal(sql, toks, st, end + 1)
-        if lit is not None and _is_boundary(toks, lit[1]):
-            values, literal, pend = (lit[0],), True, lit[1]
-        else:
-            rhs_end = _scan(toks, st, end + 1, +1, _RIGHT_BOUNDARY_WORDS)
-            if not wrapped and _is_plain_column(toks, end + 1, rhs_end):
-                column_ref = True  # 조인 키·CTE 컬럼(`s.col = p.m`) — 리터럴이 아니다
-            pend = rhs_end
+        pred = _read_compare(sql, toks, st, start, end, wrapped)
     elif nxt_word == "BETWEEN":
-        op = "between"
-        lo = None if wrapped else _read_literal(sql, toks, st, end + 1)
-        hi = None
-        if lo is not None and lo[1] < n and toks[lo[1]].upper == "AND":
-            hi = _read_literal(sql, toks, st, lo[1] + 1)
-        if lo is not None and hi is not None and _is_boundary(toks, hi[1]):
-            values, literal, pend = (lo[0], hi[0]), True, hi[1]
-        else:
-            pend = _scan(toks, st, end + 1, +1, _RIGHT_BOUNDARY_WORDS, skip_and=True)
+        pred = _read_between(sql, toks, st, start, end, wrapped)
     elif nxt_word == "IN" and end + 1 < n and toks[end + 1].kind == "lp":
-        op = "in"
-        lp = end + 1
-        rp = st.match[lp]
-        pend = rp + 1
-        items: list[str] = []
-        k = lp + 1
-        ok = not wrapped and lp not in st.subquery and k < rp
-        while ok and k < rp:
-            lit = _read_literal(sql, toks, st, k)
-            if lit is None or (lit[1] != rp and toks[lit[1]].kind != "comma"):
-                ok = False
-                break
-            items.append(lit[0])
-            k = lit[1] + 1
-        if ok and _is_boundary(toks, pend):
-            values, literal = tuple(items), True
+        pred = _read_in_list(sql, toks, st, start, end, wrapped)
     elif nxt_word in ("NOT", "LIKE", "ILIKE"):
-        if nxt_word == "NOT":
-            if end + 1 >= n or toks[end + 1].upper not in ("BETWEEN", "IN", "LIKE", "ILIKE"):
-                return None
-            op = "not " + toks[end + 1].text.lower()
-            pend = _scan(
-                toks, st, end + 2, +1, _RIGHT_BOUNDARY_WORDS, skip_and=op == "not between"
-            )
-        else:
-            op = nxt_word.lower()
-            pend = _scan(toks, st, end + 1, +1, _RIGHT_BOUNDARY_WORDS)
+        pred = _read_negated_or_like(toks, st, start, end, nxt_word)
+        if pred is None:
+            return None
     elif nxt_word == "IS" or start == 0:
         return None
     elif toks[start - 1].kind == "op" and toks[start - 1].text in _CMP_OPS:
-        # 뒤집힌 비교(`'…' <= x.col`)
-        raw_op = toks[start - 1].text
-        op = _FLIP_OP[raw_op]
-        lhs_start = _scan(toks, st, start - 2, -1, _LEFT_BOUNDARY_WORDS)
-        lit = None if wrapped else _read_literal(sql, toks, st, lhs_start)
-        if lit is not None and lit[1] == start - 1:
-            values, literal = (lit[0],), True
-        elif not wrapped and _is_plain_column(toks, lhs_start, start - 1):
-            column_ref = True  # 조인 키·CTE 컬럼
-        pstart = lhs_start
+        pred = _read_flipped(sql, toks, st, start, end, wrapped)
     else:
         return None
 
+    pstart, pend = pred.pstart, pred.pend
+    literal, values = pred.literal, pred.values
     if _clause_of(toks, st, pstart) != "filter":
         return None
-    reason = "" if literal else (REASON_COLUMN if column_ref else REASON_EXPRESSION)
+    reason = "" if literal else (REASON_COLUMN if pred.column_ref else REASON_EXPRESSION)
     if _or_joined(toks, st, pstart, pend):
         literal, values, reason = False, (), REASON_OR
-    assert op is not None  # 위 분기가 전부 정하거나 None을 돌려준다
     a, b = toks[pstart].start, toks[pend - 1].end
     return ColumnCondition(
         qualifier=qualifier,
-        op=op,
+        op=pred.op,
         values=values,
         literal=literal,
         scope=st.scope[pstart],

@@ -479,107 +479,158 @@ def decide_systems(
     것은 다른 시스템에서 찾았다는 증거가 있기 때문이다 — 그래서 그 증거가 **보조 컬럼뿐**이면
     ②′로 내려가 HALT하지 않는다(권고 K).
     """
-    def get(system: str) -> SystemProbe:
-        return probes.get(system) or _unprobed(system)
+    ctx = _decision_context(plan, probes, sample)
+    if plan.mode == MODE_SINGLE:
+        return _decide_single(plan, ctx)
+    if plan.mode == MODE_BOTH:
+        return _decide_both(plan, ctx)
+    # MODE_AMBIGUOUS
+    return _decide_ambiguous(plan, ctx)
 
-    checked = [get(s) for s in plan.required + plan.others if s in probes or s in plan.required]
-    unverified = tuple(p.system for p in checked if p.status == SYSTEM_UNVERIFIED)
-    unverified_probes = [p for p in checked if p.status == SYSTEM_UNVERIFIED]
-    unverified_note = _unverified_sentence(unverified_probes) if unverified_probes else ""
+
+@dataclass(frozen=True)
+class _DecisionContext:
+    """`decide_systems` 모드별 판정이 함께 쓰는 입력 — 확인 결과·샘플 개수·확인 실패 요약."""
+
+    probes: Mapping[str, SystemProbe]
+    sample: int
+    #: 확인하지 못한 시스템(계획 순서) — 판정과 별개로 `SystemDecision.unverified`에 항상 싣는다
+    unverified: tuple[str, ...]
+    unverified_probes: list[SystemProbe]
+    unverified_note: str
+
+    def get(self, system: str) -> SystemProbe:
+        """시스템 확인 결과 — 확인하지 않은 시스템은 미조회(UNVERIFIED) 대역."""
+        return self.probes.get(system) or _unprobed(system)
 
     def verdict(
-        action: str, row: str, chosen: Sequence[SystemProbe] = (), message: str = "",
+        self, action: str, row: str, chosen: Sequence[SystemProbe] = (), message: str = "",
     ) -> SystemDecision:
+        """판정 결과 조립 — QUERY일 때만 조회 시스템·DB 스코프를 채운다."""
         return SystemDecision(
             action=action,
             row=row,
             systems=tuple(p.system for p in chosen) if action == ACTION_QUERY else (),
             db_ids=_scope(chosen) if action == ACTION_QUERY else (),
             message=message,
-            unverified=unverified,
+            unverified=self.unverified,
         )
 
-    if plan.mode == MODE_SINGLE:
-        owner = get(plan.required[0])
-        if owner.status == SYSTEM_FOUND:
-            return verdict(ACTION_QUERY, ROW_OWNER_FOUND, [owner], _join(
-                f"{owner.label}에서 확인해 {owner.label}을(를) 조회합니다.",
-                _detail_sentences([owner], sample),
-            ))
-        if owner.status == SYSTEM_UNVERIFIED:
+
+def _decision_context(
+    plan: ProbePlan, probes: Mapping[str, SystemProbe], sample: int,
+) -> _DecisionContext:
+    """확인 실패 요약 — 필요한 시스템(미조회 포함)과 확인한 다른 시스템 중 UNVERIFIED만 모은다."""
+    checked = [
+        probes.get(s) or _unprobed(s)
+        for s in plan.required + plan.others
+        if s in probes or s in plan.required
+    ]
+    unverified = tuple(p.system for p in checked if p.status == SYSTEM_UNVERIFIED)
+    unverified_probes = [p for p in checked if p.status == SYSTEM_UNVERIFIED]
+    unverified_note = _unverified_sentence(unverified_probes) if unverified_probes else ""
+    return _DecisionContext(
+        probes=probes,
+        sample=sample,
+        unverified=unverified,
+        unverified_probes=unverified_probes,
+        unverified_note=unverified_note,
+    )
+
+
+def _decide_single(plan: ProbePlan, ctx: _DecisionContext) -> SystemDecision:
+    """SINGLE — 소유 시스템 우선(① · ② · ②′ · ⑦ · 표 밖 `none_found`)."""
+    get, verdict, sample = ctx.get, ctx.verdict, ctx.sample
+    unverified_note = ctx.unverified_note
+    owner = get(plan.required[0])
+    if owner.status == SYSTEM_FOUND:
+        return verdict(ACTION_QUERY, ROW_OWNER_FOUND, [owner], _join(
+            f"{owner.label}에서 확인해 {owner.label}을(를) 조회합니다.",
+            _detail_sentences([owner], sample),
+        ))
+    if owner.status == SYSTEM_UNVERIFIED:
+        return verdict(ACTION_KEEP, ROW_UNVERIFIED, message=unverified_note)
+    others = [get(s) for s in plan.others if s in ctx.probes]
+    found = [p for p in others if p.status == SYSTEM_FOUND]
+    strong = [p for p in found if p.strong_hits()]
+    if strong:
+        return verdict(ACTION_HALT, ROW_OWNER_MISSING_ELSEWHERE, message=_join(
+            f"{owner.label}에 등록되지 않은 서버입니다({_labels(strong)}에는 있음): "
+            f"{_sample(owner.missing(), sample)}.",
+            unverified_note,
+        ))
+    if found:
+        # 권고 K: 다른 시스템의 근거가 보조 컬럼(등록명 등)뿐이면 "거기 있다"가 아니다 —
+        # 브리지 키가 아닌 컬럼으로 맞은 것이라 ②의 반대 증거가 성립하지 않는다.
+        # 조회를 막지 않고(KEEP) 무엇을 보고 그렇게 판단했는지만 남긴다.
+        # 보조 컬럼 표기는 시스템마다 다르다 — 겹침 없이 시스템 순서로 모두 적는다(plans/184 M6).
+        weak_labels = ", ".join(dict.fromkeys(p.weak_label for p in found))
+        return verdict(ACTION_KEEP, ROW_WEAK_ELSEWHERE, message=_join(
+            f"{owner.label}에서 찾지 못했습니다: {_sample(owner.missing(), sample)}.",
+            f"{_labels(found)}에서는 {weak_labels} 일치만 있어 "
+            "호스트명 기준 등록으로 보지 않았습니다 — 조회를 막지 않습니다.",
+            unverified_note,
+        ))
+    if ctx.unverified_probes:
+        return verdict(ACTION_KEEP, ROW_UNVERIFIED, message=_join(
+            f"{owner.label}에서 찾지 못했습니다: {_sample(owner.missing(), sample)}.",
+            unverified_note,
+        ))
+    return verdict(ACTION_KEEP, ROW_NONE_FOUND, message=(
+        f"{_labels([owner] + others)}에서 찾지 못했습니다: {_sample(owner.missing(), sample)} "
+        "(서버명 철자와 조회 권한 범위를 확인해 주세요)."
+    ))
+
+
+def _decide_both(plan: ProbePlan, ctx: _DecisionContext) -> SystemDecision:
+    """BOTH — 필요한 시스템 전부를 비교한다(③ · ④ · ⑦ · 표 밖 `none_found`)."""
+    get, verdict, sample = ctx.get, ctx.verdict, ctx.sample
+    unverified_note = ctx.unverified_note
+    required = [get(s) for s in plan.required]
+    found = [p for p in required if p.status == SYSTEM_FOUND]
+    absent = [p for p in required if p.status == SYSTEM_NOT_FOUND]
+    failed = [p for p in required if p.status == SYSTEM_UNVERIFIED]
+    if not found:
+        if failed:
             return verdict(ACTION_KEEP, ROW_UNVERIFIED, message=unverified_note)
-        others = [get(s) for s in plan.others if s in probes]
-        found = [p for p in others if p.status == SYSTEM_FOUND]
-        strong = [p for p in found if p.strong_hits()]
-        if strong:
-            return verdict(ACTION_HALT, ROW_OWNER_MISSING_ELSEWHERE, message=_join(
-                f"{owner.label}에 등록되지 않은 서버입니다({_labels(strong)}에는 있음): "
-                f"{_sample(owner.missing(), sample)}.",
-                unverified_note,
-            ))
-        if found:
-            # 권고 K: 다른 시스템의 근거가 보조 컬럼(등록명 등)뿐이면 "거기 있다"가 아니다 —
-            # 브리지 키가 아닌 컬럼으로 맞은 것이라 ②의 반대 증거가 성립하지 않는다.
-            # 조회를 막지 않고(KEEP) 무엇을 보고 그렇게 판단했는지만 남긴다.
-            weak = found[0]
-            return verdict(ACTION_KEEP, ROW_WEAK_ELSEWHERE, message=_join(
-                f"{owner.label}에서 찾지 못했습니다: {_sample(owner.missing(), sample)}.",
-                f"{_labels(found)}에서는 {weak.weak_label} 일치만 있어 "
-                "호스트명 기준 등록으로 보지 않았습니다 — 조회를 막지 않습니다.",
-                unverified_note,
-            ))
-        if unverified_probes:
-            return verdict(ACTION_KEEP, ROW_UNVERIFIED, message=_join(
-                f"{owner.label}에서 찾지 못했습니다: {_sample(owner.missing(), sample)}.",
-                unverified_note,
-            ))
+        ids = sorted({i for p in absent for i in p.missing()})
         return verdict(ACTION_KEEP, ROW_NONE_FOUND, message=(
-            f"{_labels([owner] + others)}에서 찾지 못했습니다: {_sample(owner.missing(), sample)} "
+            f"{_labels(absent)}에서 찾지 못했습니다: {_sample(ids, sample)} "
             "(서버명 철자와 조회 권한 범위를 확인해 주세요)."
         ))
-
-    if plan.mode == MODE_BOTH:
-        required = [get(s) for s in plan.required]
-        found = [p for p in required if p.status == SYSTEM_FOUND]
-        absent = [p for p in required if p.status == SYSTEM_NOT_FOUND]
-        failed = [p for p in required if p.status == SYSTEM_UNVERIFIED]
-        if not found:
-            if failed:
-                return verdict(ACTION_KEEP, ROW_UNVERIFIED, message=unverified_note)
-            ids = sorted({i for p in absent for i in p.missing()})
-            return verdict(ACTION_KEEP, ROW_NONE_FOUND, message=(
-                f"{_labels(absent)}에서 찾지 못했습니다: {_sample(ids, sample)} "
-                "(서버명 철자와 조회 권한 범위를 확인해 주세요)."
-            ))
-        absent_ids = sorted({i for p in absent for i in p.missing()})
-        absent_note = (
-            f"{_labels(absent)}에 등록되지 않은 서버입니다({_labels(found)}에는 있음): "
-            f"{_sample(absent_ids, sample)}."
-            if absent else ""
-        )
-        if failed:
-            # 확인하지 못한 시스템을 빼면 "그곳에는 없다"고 판정한 셈이다 — 조회 대상에 남긴다.
-            chosen = [p for p in required if p.status != SYSTEM_NOT_FOUND]
-            return verdict(ACTION_QUERY, ROW_UNVERIFIED, chosen, _join(
-                f"{_labels(found)}에서 확인했습니다.", absent_note, unverified_note,
-                "확인하지 못한 시스템도 조회 대상에 남깁니다.",
-                _detail_sentences(found, sample),
-            ))
-        if absent:
-            return verdict(ACTION_QUERY, ROW_PARTIAL_FOUND, found, _join(
-                absent_note, f"{_labels(found)}만 조회합니다.",
-                _detail_sentences(found, sample),
-            ))
-        return verdict(ACTION_QUERY, ROW_ALL_FOUND, found, _join(
-            f"{_labels(found)} 모두에서 확인해 함께 조회합니다.",
+    absent_ids = sorted({i for p in absent for i in p.missing()})
+    absent_note = (
+        f"{_labels(absent)}에 등록되지 않은 서버입니다({_labels(found)}에는 있음): "
+        f"{_sample(absent_ids, sample)}."
+        if absent else ""
+    )
+    if failed:
+        # 확인하지 못한 시스템을 빼면 "그곳에는 없다"고 판정한 셈이다 — 조회 대상에 남긴다.
+        chosen = [p for p in required if p.status != SYSTEM_NOT_FOUND]
+        return verdict(ACTION_QUERY, ROW_UNVERIFIED, chosen, _join(
+            f"{_labels(found)}에서 확인했습니다.", absent_note, unverified_note,
+            "확인하지 못한 시스템도 조회 대상에 남깁니다.",
             _detail_sentences(found, sample),
         ))
+    if absent:
+        return verdict(ACTION_QUERY, ROW_PARTIAL_FOUND, found, _join(
+            absent_note, f"{_labels(found)}만 조회합니다.",
+            _detail_sentences(found, sample),
+        ))
+    return verdict(ACTION_QUERY, ROW_ALL_FOUND, found, _join(
+        f"{_labels(found)} 모두에서 확인해 함께 조회합니다.",
+        _detail_sentences(found, sample),
+    ))
 
-    # MODE_AMBIGUOUS
+
+def _decide_ambiguous(plan: ProbePlan, ctx: _DecisionContext) -> SystemDecision:
+    """AMBIGUOUS — 정본은 기본값일 뿐, 발견된 쪽을 조회한다(⑤ · ⑥ · ⑦ · 표 밖 `none_found`)."""
+    get, verdict, sample = ctx.get, ctx.verdict, ctx.sample
+    unverified_note = ctx.unverified_note
     canon = get(plan.required[0])
     if canon.status == SYSTEM_UNVERIFIED:
         return verdict(ACTION_KEEP, ROW_UNVERIFIED, message=unverified_note)
-    others = [get(s) for s in plan.others if s in probes]
+    others = [get(s) for s in plan.others if s in ctx.probes]
     found_others = [p for p in others if p.status == SYSTEM_FOUND]
     if canon.status == SYSTEM_FOUND:
         if found_others:
@@ -603,7 +654,7 @@ def decide_systems(
             unverified_note,
             _detail_sentences(found_others, sample),
         ))
-    if unverified_probes:
+    if ctx.unverified_probes:
         return verdict(ACTION_KEEP, ROW_UNVERIFIED, message=_join(
             f"{canon.label}에서 찾지 못했습니다: {_sample(canon.missing(), sample)}.",
             unverified_note,

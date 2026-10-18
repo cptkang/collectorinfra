@@ -36,7 +36,9 @@ def _authz_ns():
     """
     return {
         "host_authz": SimpleNamespace(mode="admin_only"),
-        "composite": SimpleNamespace(prior_targets_enabled=False),
+        "composite": SimpleNamespace(
+            prior_targets_enabled=False, availability_precheck_enabled=False
+        ),
     }
 
 def _event() -> AlarmEvent:

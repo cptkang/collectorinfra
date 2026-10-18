@@ -259,7 +259,8 @@ CONSUMER_ROOTS: tuple[str, ...] = ("src", "noise_gate")
 
 #: 필드명이 나와도 **소비처가 아닌** 모듈 — 저장소 루트 기준 경로.
 #:
-#: - `src/config.py` — 정의다.
+#: - `src/config.py` — 정의다(plans/166 W2 I4 뒤에는 `src/config/` 패키지 — 아래
+#:   `NON_CONSUMER_PREFIXES`. 옛 경로는 합성 저장소 테스트가 쓰므로 남긴다).
 #: - `src/observability/investigation_metrics.py` — 기동 로그 에코다(값을 읽지만 동작을 바꾸지
 #:   않는다 · 118 §1 ①의 오인 원천).
 #: - `src/api/settings_catalog.py` — 전 필드를 `getattr(holder, spec.field_name)` 로 **일괄**
@@ -270,6 +271,8 @@ NON_CONSUMER_MODULES: frozenset[str] = frozenset({
     "src/observability/investigation_metrics.py",
     "src/api/settings_catalog.py",
 })
+#: 같은 이유로 소비처가 아닌 패키지 접두 — 설정 정의 패키지(plans/166 W2 I4).
+NON_CONSUMER_PREFIXES: tuple[str, ...] = ("src/config/",)
 
 #: **단 전용 모듈** → 그 모듈이 도는 사다리 단(`ladder.LadderTier` 값). 짧은 명시 표다 —
 #: import 그래프로 추정하지 않는다(M-3 원칙: 모르는 것은 판정하지 않는다). 소비처가 **전부**
@@ -355,7 +358,8 @@ def scan_consumers(root: Optional[Any] = None,
         for path in sorted((base / package).rglob("*.py")):
             rel = path.relative_to(base).as_posix()
             parts = rel.split("/")
-            if "tests" in parts[1:] or "scripts" in parts[1:] or rel in NON_CONSUMER_MODULES:
+            if ("tests" in parts[1:] or "scripts" in parts[1:] or rel in NON_CONSUMER_MODULES
+                    or rel.startswith(NON_CONSUMER_PREFIXES)):
                 continue
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8"))

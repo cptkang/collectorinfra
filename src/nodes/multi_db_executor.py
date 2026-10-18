@@ -26,7 +26,7 @@ from src.observability.group_metrics import record_group
 from src.utils.sql_dialect import is_db2
 from src.config import AppConfig, load_config
 from src.llm import create_llm
-from src.nodes.candidate_generator import classify_complexity
+from src.pipeline.candidate_generator import classify_complexity
 from src.nodes.query_validator import (
     NON_SQL_RETRY_BUDGET,
     REGEN_STOP_BACKEND_LIMIT,
@@ -40,7 +40,7 @@ from src.nodes.query_validator import (
     retrieval_reserve_sec,
 )
 from src.nodes.semantic_compiler import compile_from_nl
-from src.nodes.table_selection import (
+from src.pipeline.table_selection import (
     SOURCE_NONE,
     catalog_columns,
     definitions_of,
@@ -73,7 +73,7 @@ from src.utils.prior_dependency import (
     scope_db_note,
     structure_missing_note,
 )
-from src.nodes.key_bridge import bridge_prior_rows_block, key_bridge_enabled
+from src.pipeline.key_bridge import bridge_prior_rows_block, key_bridge_enabled
 from src.utils.query_gen_common import (
     build_generic_period_hint,
     build_prior_rows_block,
@@ -90,10 +90,10 @@ from src.utils.query_gen_common import (
     surface_query_for_judgment,
     template_context_text,
 )
-from src.nodes.intent_frame_builder import CONSUMER_MULTI_DB, observe_rewrite
+from src.pipeline.intent_frame_builder import CONSUMER_MULTI_DB, observe_rewrite
 # 단일/멀티 경로 공유 프롬프트 블록 빌더(Plan 69 P3-1, D-066). 폴스타 스키마 리터럴은
 # 공용 빌더에 두지 않고 이 파일이 인자로 주입한다(D-088 — overfit 기준선은 호출부 기준).
-from src.nodes.prompt_blocks import (
+from src.pipeline.prompt_blocks import (
     build_profile_rules_block,
     profile_rule_tables,
     CRITERIA_AND_GRAIN_RULE_BLOCK,
@@ -120,7 +120,9 @@ from src.nodes.prompt_blocks import (
     prior_server_scope_by_db,
     select_history_fewshot,
     split_eav_by_resource_type,
-    split_mapping_entries,
+    # 직접 호출은 `split_pivot_mapping`(어댑터)로 옮겼다 — 경로 패리티 가드(D-067)가 이 이름의
+    # 객체 동일성을 단언하므로 재노출로 남긴다(plans/169 N1(a)).
+    split_mapping_entries,  # noqa: F401
 )
 # 폴스타 EAV/피벗 결정적 조립기는 어댑터로 이동(Plan 63 P2, D-089) — application 직접 임포트.
 # 아래 4종은 `DBAdapter` 훅 표면에 대응하는 훅이 없어 직접 임포트로 남긴다. 새 훅 신설은
@@ -129,19 +131,31 @@ from src.nodes.prompt_blocks import (
 from src.db_adapters.polestar.assembler import (
     METRIC_PIVOT_KEYS,
     METRIC_PIVOT_TABLE,
-    apply_capacity_scope_rule,
-    apply_remark_server_name_rule,
     build_form_fill_candidates,
     build_form_fill_pivot_sql,
     build_month_series_block,
     build_multi_resource_pivot_block,
     decimal_cast_example,
     eav_attr_resource_types,
-    filter_pivot_regular_entries,
     find_vendor_model_concat,
     recognize_month_series,
     month_anchor_payload,
-    resolve_form_fill_answers,
+)
+# 폼필 피벗 전처리는 단일 경로와 같은 순수 함수를 쓴다(plans/169 N1(a) · D-066). 조립기
+# `build_form_fill_pivot_sql`·`recognize_month_series`·`get_domain_by_id`는 이 모듈에서 부른다
+# (테스트 patch seam). 공유 빌더에 주입하는 DB 특화 리터럴도 어댑터가 정본이다(D-088·D-089).
+from src.db_adapters.polestar.form_fill_plan import (
+    EAV_HOST_ATTRIBUTE as _EAV_HOST_ATTRIBUTE,
+    EAV_LINK_COLUMN as _EAV_LINK_COLUMN,
+    ENTITY_RESOURCE_TYPE as _ENTITY_RESOURCE_TYPE,
+    FOREIGN_SCHEMA_PREFIX as _FOREIGN_SCHEMA_PREFIX,
+    SCHEMA_EXAMPLE_TABLE as _SCHEMA_EXAMPLE_TABLE,
+    drop_llm_inferred_mappings,
+    month_series_rule_updates,
+    plan_form_fill_pivot,
+    resolve_answer_overrides,
+    select_metric_recovery_fields,
+    split_pivot_mapping,
 )
 # 순위 정렬 NULLS LAST 결정적 교정(D-202 2차) — 검증기와 같은 판정을 공유해 드리프트 방지.
 from src.db_adapters.polestar.validators import (
@@ -165,19 +179,12 @@ from src.domain.query_time import QueryTime
 from src.tools.metrics import classify_metric_field
 from src.schema_cache.form_memory import load_form_memory_answers
 from src.utils.schema_utils import attach_profile_relationships, safe_sample_preview
+from src.utils.user_error import with_validation_head
 
 if TYPE_CHECKING:  # 타입 표기 전용 — 런타임 임포트는 플래그 ON 경로에서만 수행한다.
-    from src.nodes.column_deriver import StepwiseDeps
+    from src.pipeline.column_deriver import StepwiseDeps
 
 logger = logging.getLogger(__name__)
-
-# 공유 빌더에 주입하는 DB 특화 리터럴 — 공용 빌더(prompt_blocks)로 옮기지 않고 호출부인
-# 이 파일에 남긴다(D-088: 공용 계층 DB-agnostic, overfit_check 기준선은 파일 단위).
-_ENTITY_RESOURCE_TYPE = "server.Server"     # 엔티티(서버) 자신의 resource_type
-_EAV_HOST_ATTRIBUTE = "Hostname"            # 브릿지 조인 예시의 엔티티 식별 속성
-_EAV_LINK_COLUMN = "configuration_id"       # config 행끼리 잇는 컬럼
-_SCHEMA_EXAMPLE_TABLE = "cmm_resource"      # 스키마 한정 규칙 예시 테이블
-_FOREIGN_SCHEMA_PREFIX = "polestar."        # 붙이지 말아야 할 접두사 예시
 
 # 캐시 스키마 샘플 백필 시 턴당 최대 조회 테이블 수(순차 MCP 왕복 상한)
 _SAMPLE_BACKFILL_MAX = 50
@@ -283,24 +290,16 @@ def _check_row_limit_dialect(sql: str, db_engine: str | None) -> Optional[str]:
     )
 
 
-def _get_eav_pattern(schema_info: Optional[dict]) -> Optional[dict]:
-    """_structure_meta에서 첫 번째 EAV 패턴을 반환한다.
-
-    Args:
-        schema_info: 스키마 정보 딕셔너리 (선택)
-
-    Returns:
-        EAV 패턴 딕셔너리 또는 None
-    """
-    return first_eav_pattern(schema_info)
+#: 옛 이름 별칭 1사이클(plans/166 N1 · D-337 ③) — 단일 경로와 바이트 동일한
+#: `first_eav_pattern` 래퍼였다. 정본은 `prompt_blocks.first_eav_pattern`(테스트가 import).
+_get_eav_pattern = first_eav_pattern
 
 
-@dataclass
-class _MultiRun:
-    """대상 DB 루프가 공유하는 입력과 누적 수집기 (Plan 69 P5-2).
+@dataclass(kw_only=True)
+class _MultiRunInputs:
+    """`_MultiRun`의 읽기 전용 입력 — `_prepare_multi_run`이 루프 전에 채우고 루프는 읽기만 한다.
 
-    per-DB 처리를 ``_run_single_target``으로 떼어내면서, 루프 밖에서 만들어 여러 DB가
-    함께 채우는 값(결과·에러·시도 이력·SQL 캐시)을 한 묶음으로 전달한다.
+    대입을 막지 않는다(frozen 아님) — 테스트 대역이 평면 속성을 바꿔 끼운다.
     """
 
     state: AgentState
@@ -313,6 +312,23 @@ class _MultiRun:
     prior_block: str | None
     prior_scope: tuple[str, list[str]] | None
     value_index: dict[str, list[str]] | None
+    # 폼필 번들(D-146/D-149/D-151) — 양식 문맥·의도·매핑 출처·답변.
+    form_context: str
+    form_intent: bool
+    mapping_sources: dict[str, str]
+    form_fill_answers: dict[str, dict[str, Any]] | None
+    # D-203 (plans/88 §4.9) — prior_rows의 `_source_db`로 나눈 DB별 선행 스코프.
+    # None이면 현행(전 DB에 같은 prior_block/prior_scope). 플래그 off면 항상 None.
+    prior_scope_by_db: dict[str, tuple[str, list[str]]] | None = None
+    # 요청 시간 해석(state `time_resolution` · plans/122 T-4). None이면(플래그 off) 모든 기간
+    # 소비 지점이 종전 경로(원문·sub_query_context·LLM time_range 해석)를 탄다.
+    query_time: QueryTime | None = None
+
+
+@dataclass(kw_only=True)
+class _MultiRunAccum:
+    """`_MultiRun`의 가변 누적 — 대상 DB들이 함께 채우고 `_run_groups`가 그룹 간에 합친다."""
+
     db_results: dict[str, list[dict]]
     db_schemas: dict[str, dict]
     db_errors: dict[str, str]
@@ -323,15 +339,8 @@ class _MultiRun:
     # 생성·검증 실패 DB의 스키마 키 — 루프 종료 후 동일 스키마의 검증 통과 SQL로 소급
     # 재실행한다(D-153). 연결/실행 에러는 대상이 아니다(SQL 재사용으로 해소 불가).
     validation_failed: dict[str, tuple]
-    # 폼필 번들(D-146/D-149/D-151) — 양식 문맥·의도·매핑 출처·답변, 산출 out-param.
-    form_context: str
-    form_intent: bool
-    mapping_sources: dict
-    form_fill_answers: dict | None
+    # 폼필 번들(D-146/D-149/D-151)의 산출 out-param.
     form_fill_out: dict
-    # D-203 (plans/88 §4.9) — prior_rows의 `_source_db`로 나눈 DB별 선행 스코프.
-    # None이면 현행(전 DB에 같은 prior_block/prior_scope). 플래그 off면 항상 None.
-    prior_scope_by_db: dict[str, tuple[str, list[str]]] | None = None
     # 분할 결과 선별 서버가 없어 미조회한 DB와 그 경과 노트(응답에 결정적으로 표기).
     skipped_dbs: list[str] = field(default_factory=list)
     dependency_notes: list[dict] = field(default_factory=list)
@@ -351,9 +360,17 @@ class _MultiRun:
     # 조회 템플릿 조립 표지(plans/143 W6) — `{db_id: TemplateOutcome.as_state()}`. 템플릿 파일이
     # 있는 DB만 싣고 반환 시 state `template_assembly`로 올린다(단일 경로와 같은 모양).
     template_assembly: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # 요청 시간 해석(state `time_resolution` · plans/122 T-4). None이면(플래그 off) 모든 기간
-    # 소비 지점이 종전 경로(원문·sub_query_context·LLM time_range 해석)를 탄다.
-    query_time: QueryTime | None = None
+
+
+@dataclass(kw_only=True)
+class _MultiRun(_MultiRunAccum, _MultiRunInputs):
+    """대상 DB 루프가 공유하는 입력과 누적 수집기 (Plan 69 P5-2).
+
+    per-DB 처리를 ``_run_single_target``으로 떼어내면서, 루프 밖에서 만들어 여러 DB가
+    함께 채우는 값(결과·에러·시도 이력·SQL 캐시)을 한 묶음으로 전달한다.
+    선언은 읽기 전용 입력(`_MultiRunInputs`)과 가변 누적(`_MultiRunAccum`)으로 나누되,
+    생성은 평면 키워드·접근은 평면 속성 그대로다(plans/173 T7 — 대역 run이 평면 속성을 단다).
+    """
 
 
 def _run_query_time(run: Any) -> QueryTime | None:
@@ -499,7 +516,7 @@ async def _prepare_multi_run(
     value_index = state.get("column_value_index")
     # DB별 스코프 분할(D-203) — `is True` 비교는 설정 대역(MagicMock)의 오발동 방지(multi_relevant_gate와 동일).
     prior_scope_by_db = None
-    if getattr(getattr(app_config, "composite", None), "prior_scope_by_db_enabled", False) is True:
+    if app_config.composite.prior_scope_by_db_enabled is True:
         prior_scope_by_db = prior_server_scope_by_db(state.get("prior_rows"))
 
     # 폼필 월 시리즈(D-146) — 양식 문맥·산출 out-param(단일 경로 extra_return과 대칭).
@@ -621,11 +638,11 @@ def _deterministic_alarm_sql_or_none(
         return None
     if run.state.get("routing_intent") != "alarm_query":
         return None
-    from src.db_adapters import get_adapter
+    from src.db_adapters import get_adapter_for
 
     # 알람 조립을 소유한 어댑터(폴스타)만 — 다른 어댑터(생성 템플릿 · D-294)가 담당하는 DB에는
     # 붙이지 않는다
-    adapter = get_adapter(db_id, run.app_config.get_polestar_db_ids() or None)
+    adapter = get_adapter_for(db_id, run.app_config)
     if getattr(adapter, "deterministic_alarm", False) is not True:
         return None
     from src.db_adapters.polestar.assembler import try_deterministic_alarm_sql
@@ -748,7 +765,8 @@ async def _generate_validated_sql(
     # 보정본(행 상한 자동 추가)이 오면 갈아탄다 — 버리면 검증이 "통과만" 하고 끝난다(CU-16).
     sql = _fixed or sql
     # 유효 SQL 없이 끝날 때의 종결 사유(plans/119) — 아래 루프가 정하고 반환 직전에 기록한다.
-    # detail은 마지막 검증 사유다(시간 종결이면 사용자 문구로 바뀌기 전 값 — Q-3 계약).
+    # detail은 마지막 검증 사유다(시간 종결이면 사용자 문구로 바뀌기 전 값 — Q-3 계약 · 기록은
+    # 「SQL 검증 실패: …」 머리말 꼴 — plans/186 M7).
     _stop_reason = REGEN_STOP_VALIDATION_BUDGET
     _stop_detail: str | None = None
     for _retry in range(1, 3):
@@ -785,8 +803,10 @@ async def _generate_validated_sql(
             break
         # T-3: 재생성 직전 시간 게이트 — 조회 마감까지 남은 시간이 방금 잰 생성 소요보다
         # 짧으면 멈춘다.
+        # 마지막 사유는 단일 경로(「SQL 검증 실패: …」)와 같은 머리말로 넘긴다 — 사용자 문구에는
+        # 머리말만 실린다(plans/163 S3+ · 검증 사유 원문은 위 경고 로그)
         _blocked = _deadline_blocks(
-            run, _last_gen, stage="SQL 재생성", last_reason=validation_error,
+            run, _last_gen, stage="SQL 재생성", last_reason=f"SQL 검증 실패: {validation_error}",
         )
         if _blocked:
             logger.warning("DB '%s' %s", db_id, _blocked)
@@ -841,7 +861,11 @@ async def _generate_validated_sql(
         # (plans/119 Q-3).
         # PII 차단 중단도 "재생성이 무익해 멈춘 검증 실패"라 검증 소진으로 본다. 토큰 한도 중단은
         # `backend_limit`이다(plans/139 W1 잔여 — 단일 경로와 같은 사유).
-        _record_regen_stop(run, db_id, _stop_reason, _stop_detail or validation_error)
+        # detail은 단일 경로와 같은 「SQL 검증 실패: …」 머리말 꼴로 남긴다(plans/186 M7) — 고지는
+        # 머리말만 싣는다(원문 미노출 163 S3+ · kind 판정은 원문 조각으로 그대로).
+        _record_regen_stop(
+            run, db_id, _stop_reason, with_validation_head(_stop_detail or validation_error),
+        )
     return sql, validation_error
 
 
@@ -997,7 +1021,10 @@ async def _run_single_target(target: dict, run: _MultiRun) -> None:
                 if _blocked:
                     await _record_failure(run, db_id, sql, exec_exc, exec_start)
                     run.db_errors[db_id] = f"DB '{db_id}' 실행 에러: {_first_error} | {_blocked}"
-                    _record_regen_stop(run, db_id, REGEN_STOP_DEADLINE, _first_error)
+                    # detail은 「SQL 실행 에러: …」 머리말 꼴(plans/186 — 고지는 머리말만 싣는다)
+                    _record_regen_stop(
+                        run, db_id, REGEN_STOP_DEADLINE, f"SQL 실행 에러: {_first_error}",
+                    )
                     logger.warning("DB '%s' 실행 오류 재생성 생략: %s", db_id, _blocked)
                     return
                 sql, _regen_validation_error = await _generate_validated_sql(
@@ -1112,8 +1139,9 @@ def _group_preview(rows: list[dict], app_config: AppConfig | None) -> dict | Non
     화면으로 나가므로 **같은 `DataMasker`를 여기서 먼저 적용**한다. 설정이 없거나(테스트 대역)
     상한이 0이면 행을 싣지 않는다 — 행 없이 건수만 나가는 것이 안전한 기본이다.
     """
-    server = getattr(app_config, "server", None)
-    limit = getattr(server, "sse_group_preview_rows", 0)
+    if app_config is None:
+        return None
+    limit = app_config.server.sse_group_preview_rows
     security = getattr(app_config, "security", None)
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0 or not rows:
         return None
@@ -1297,8 +1325,9 @@ async def _run_groups(
 def _zone_group_exclusive(app_config: AppConfig | None) -> bool:
     """존 그룹 상호배타 플래그(D-143 후속3). 설정 부재·테스트 대역(MagicMock)은 **배타(on)**로 본다 —
     개방은 명시 `ZONE_GROUP_EXCLUSIVE=false`에서만 일어나야 회귀가 0이다."""
-    multi = getattr(app_config, "multi_db", None)
-    value = getattr(multi, "zone_group_exclusive", True)
+    if app_config is None:
+        return True
+    value = app_config.multi_db.zone_group_exclusive
     return value if isinstance(value, bool) else True
 
 
@@ -1519,8 +1548,7 @@ def _gate_schema_tables(
     """
     # `is True` 비교는 의도적 — 설정 대역(MagicMock/SimpleNamespace)의 미정의 속성이
     # 게이트를 오발동시키지 않게 한다(path_parity_enabled와 같은 이유).
-    _flag = getattr(getattr(app_config, "text2sql", None), "multi_relevant_gate", False)
-    if _flag is not True:
+    if app_config is None or app_config.text2sql.multi_relevant_gate is not True:
         return schema_dict
     if routing_intent == "alarm_query":
         return schema_dict
@@ -1840,7 +1868,7 @@ async def _invoke_llm_for_sql(
              ) == "complex")
     )
     if use_multi:
-        from src.nodes.candidate_selector import run_candidate_pipeline
+        from src.pipeline.candidate_selector import run_candidate_pipeline
 
         async def _validate(sql: str):
             # `run_candidate_pipeline`의 validate 계약은 Optional[str](에러)다 — 보정본은
@@ -2210,6 +2238,7 @@ def _multi_resource_pivot_result(
     concat_eav: list[tuple[str, str, str]] | None = None,
     dropped_inferred: list[str] | None = None,
     applied_overrides: set[str] | None = None,
+    schema_dropped_metric: list[str] | None = None,
     form_intent: bool = False,
     form_fill_out: dict | None = None,
     query_time: QueryTime | None = None,
@@ -2234,23 +2263,20 @@ def _multi_resource_pivot_result(
         f for f in (unmapped_fields or [])
         if f not in _month_fields and f not in concat_fields
     ]
-    pivot_metric_fields = [f for f in _um if _is_metric(f)]
-    pivot_metric_fields += [
-        field for field, _ in metric_entries
-        if field not in _month_fields and _is_metric(field)
-    ]
     # llm_inferred 강등 필드 중 사용률류는 필드명 기반 결정적 피벗으로 회수(D-149) —
     # 매핑 값은 버리되 채움 능력은 유지(전역 unmapped_fields에 없어 _um이 못 받는 몫).
-    pivot_metric_fields += [
-        f for f in (dropped_inferred or [])
-        if f not in _month_fields and f not in concat_fields
-        and f not in pivot_metric_fields and _is_metric(f)
-    ]
-    # 적용된 답변 오버라이드(공란/직접입력 포함)는 metric 회수보다 우선(D-151)
-    pivot_metric_fields = [
-        f for f in pivot_metric_fields if f not in (applied_overrides or set())
-    ]
-    eav_pattern_mr = _get_eav_pattern(schema_info) or {}
+    # 적용된 답변 오버라이드(공란/직접입력 포함)는 metric 회수보다 우선(D-151).
+    # 단일 경로와 같은 함수·규칙(plans/185). 스키마 필터에서 빠진 성능지표 매핑 필드도 같은
+    # 규칙으로 회수한다 — 단일 경로는 필터 전 매핑을 가른다(plans/186 J7).
+    pivot_metric_fields = select_metric_recovery_fields(
+        _um,
+        [field for field, _ in metric_entries],
+        schema_dropped_metric or [],
+        dropped_inferred or [],
+        exclude=_month_fields | concat_fields | (applied_overrides or set()),
+        is_metric=_is_metric,
+    )
+    eav_pattern_mr = first_eav_pattern(schema_info) or {}
     if error_context and path_parity_enabled(app_config):
         # 경로 대칭 (c): 재시도(결정적 SQL이 이미 실패)면 단일 경로처럼 LLM 폴백에
         # 피벗 지침 블록을 주고 에러를 반영하게 한다 — 종전 멀티는 재시도에도 같은
@@ -2275,33 +2301,25 @@ def _multi_resource_pivot_result(
     child_eav = [e for e in child_eav if e[0] not in concat_fields]
     server_eav = [e for e in server_eav if e[0] not in concat_fields]
 
-    # 환각 매핑 칼럼(스키마 부재)의 결정적 SELECT 유입 차단(FIX-5/FIX-13 —
-    # 라이브 실측 gp+yd: 구분→cmm_resource.category → column does not exist로
-    # 전체 실패. 캐시 스키마가 요약형이라 검증 불가하면 entity 안전 화이트리스트 적용).
-    regular_entries, _dropped = filter_pivot_regular_entries(
-        regular_entries, schema_info,
-        eav_pattern_mr.get("entity_table", "cmm_resource"),
+    # 환각 매핑 칼럼(스키마 부재)의 결정적 SELECT 유입 차단(FIX-5/FIX-13 — 라이브 실측 gp+yd:
+    # column does not exist로 전체 실패) + 서버 식별 컬럼 전무 시(per-DB 매핑 공백) 결정적 식별
+    # 컬럼 주입 — 단일 경로와 같은 함수(plans/169 N1(a)).
+    plan = plan_form_fill_pivot(
+        regular_entries, server_eav, child_eav, eav_pattern_mr,
+        schema_info=schema_info, concat_eav=concat_eav, month_series=month_series,
+        form_intent=form_intent, query_time=query_time,
     )
-    if _dropped:
+    if plan.dropped:
         logger.warning(
             "DB '%s' 폼필 결정적 피벗: 스키마에 없는 매핑 칼럼 %d건 제외 — %s",
-            db_id, len(_dropped), _dropped,
+            db_id, len(plan.dropped), plan.dropped,
         )
         # 불변식(FIX-25): SQL 제외 필드는 state 매핑도 None — writer 부분 매칭
         # 오채움 차단(비고=IP값 라이브 실측). 단일 경로와 대칭.
         if form_fill_out is not None:
             form_fill_out.setdefault("mapping_updates", {}).update(
-                {f: None for f, _c in _dropped}
+                {f: None for f, _c in plan.dropped}
             )
-
-    # 월 피벗/폼필인데 서버 식별 컬럼이 전무하면(per-DB 매핑 공백) 결정적 식별 컬럼 주입
-    # — alias는 양식 헤더와 무충돌 라틴명(병합·진단용). 단일 경로와 대칭.
-    if (month_series or form_intent) and not regular_entries and not server_eav and not concat_eav:
-        _entity = eav_pattern_mr.get("entity_table", "cmm_resource")
-        regular_entries = [
-            ("server_name", f"{_entity}.name"),
-            ("hostname", f"{_entity}.hostname"),
-        ]
 
     # 프롬프트로 "제안"하면 LLM이 프로필 few-shot(월별 GROUP BY 등)과 경쟁해 무시·변형
     # (서버 중복·config 누락)한다. 이 well-defined 폼필 쿼리는 코드가 직접 조립해 LLM을
@@ -2313,20 +2331,21 @@ def _multi_resource_pivot_result(
     # 단일 경로 `query_generator._try_build_form_fill_pivot_sql`와 동형(D-066).
     # 요청 시간 해석이 있으면 그 해석이 단일 출처다(plans/122 T-4 — stat_month는 호환 값).
     # 「현재·지금」+기간 미지정은 None(기본값 강제 안 함 — 단일 경로와 같은 `metric_period`)
-    _period = metric_period(query_time)
+    _period = plan.period
     if query_time is not None:
         stat_month = stat_month_compat(query_time)
     else:
+        # 기간 해석은 이 모듈 이름으로 부른다(테스트가 `resolve_stat_month_range`를 바꿔 끼운다).
         stat_month = resolve_stat_month_range(
             parsed_requirements.get("original_query", ""),
             parsed_time_range=parsed_requirements.get("time_range"),
         )
     deterministic_sql = build_form_fill_pivot_sql(
-        regular_entries, server_eav, child_eav, eav_pattern_mr,
+        plan.regular_entries, plan.server_eav, plan.child_eav, plan.eav_pattern,
         metric_fields=pivot_metric_fields, db_engine=db_engine,
         db_schema=db_schema, limit=default_limit, stat_month=stat_month,
-        month_measures=month_series.measures if month_series else None,
-        concat_eav=concat_eav or None,
+        month_measures=plan.month_measures,
+        concat_eav=plan.concat_eav,
         period=_period,
     )
     logger.info(
@@ -2335,7 +2354,7 @@ def _multi_resource_pivot_result(
         db_id, len(child_eav), len(pivot_metric_fields),
         _period.label() if _period is not None else "~".join(stat_month) if stat_month else "전체",
         len(month_series.fields) if month_series else 0,
-        regular_entries, [c[0] for c in concat_eav],
+        plan.regular_entries, [c[0] for c in concat_eav],
     )
     return None, deterministic_sql, unmapped_fields
 
@@ -2376,52 +2395,52 @@ def _metric_fields_section(metric_entries: list[tuple[str, str]]) -> str:
 
 def _split_mapping_for_prompt(
     column_mapping: dict[str, str], schema_info: dict,
-) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
+) -> tuple[
+    list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]], list[str],
+]:
     """양식 매핑을 프롬프트 섹션별 묶음(정규/EAV/성능지표)으로 가른다.
 
     성능 지표 매핑을 왜 갈라내는지는 아래 분리 지점 주석 참조.
 
     Returns:
-        (정규 매핑, EAV 매핑, 성능지표 매핑)
+        (정규 매핑, EAV 매핑, 성능지표 매핑, 스키마 필터에서 빠진 성능지표 매핑의 필드명)
     """
     # 수정 A 적용: schema_info에 존재하지 않는 테이블의 매핑을 필터링.
     # 로그에 대조 테이블 목록을 부기해 0건 원인 추적을 돕고(W-7 — 경로 구분 접두는 유지),
     # `db_id:` 접두 표기도 단일 경로처럼 떼고 판정한다(S-1 — 외부 힌트 유입 시 침묵 폐기 방지).
+    _unfiltered = column_mapping
     column_mapping = filter_mapping_by_schema(
         column_mapping, schema_info,
         log_label="multi_db column_mapping 필터링",
         log_schema_tables=True,
         strip_db_prefix=True,
     )
+    # per-DB 스키마에 사용률 통계 테이블이 없어 빠진 성능지표 매핑은 필드명 피벗 회수 후보로
+    # 따로 넘긴다 — 단일 경로는 스키마 필터 전 매핑으로 가르므로 회수한다(plans/186 J7 · 185 §4).
+    # 판정은 아래와 같은 `split_pivot_mapping`의 성능지표 묶음이다. 정규·EAV는 그대로 버린다.
+    _, _, _schema_dropped_metric = split_pivot_mapping(
+        {f: c for f, c in _unfiltered.items() if f not in column_mapping}
+    )
 
     # 서버명/서버이름류가 EAV Hostname으로 오매핑되면 등록명 컬럼으로 결정적 교정
     # (프로필 확정 규칙, 단일 경로 _try_build_form_fill_pivot_sql와 동등). db_mapping을
     # 직접 변형하지 않도록 사본에 적용.
     column_mapping = dict(column_mapping)
-    _sn_eav = _get_eav_pattern(schema_info)
+    _sn_eav = first_eav_pattern(schema_info)
     if _sn_eav:
         correct_servername_hostname_mapping(column_mapping, _sn_eav.get("entity_table", ""))
 
-    # 정규 매핑과 EAV 매핑 분리
-    regular_entries, eav_entries = split_mapping_entries(column_mapping)
-
-    # 성능 지표(사용률) 매핑은 강제 SELECT에서 제외한다(D-066 후속/RC2).
-    # CPU/메모리 사용률(평균/최고)은 cmm_metric_stat_[h,d,m]에서 resource_type +
-    # definition_name 피벗으로만 얻을 수 있어 단일 field→table.column 매핑이 불가능하다.
-    # field_mapper가 지어낸 컬럼(예: cmm_metric_stat_h.cpu_avg_val)을 "반드시 포함"으로
-    # 강제하면 LLM이 잘못된 테이블(_h)·조인을 만든다. 이 항목은 강제 대신 쿼리 예시의
-    # cmm_metric_stat_m 피벗 패턴을 따르도록 안내로 넘긴다.
-    metric_entries = [
-        (field, col) for field, col in regular_entries
-        if "cmm_metric_stat" in col.lower()
-    ]
-    regular_entries = [
-        (field, col) for field, col in regular_entries
-        if "cmm_metric_stat" not in col.lower()
-    ]
-    # EAV config 테이블과 entity 테이블이 다를 수 있으므로 정규 컬럼 필터링은 하지 않고
-    # LLM이 schema_info를 보고 적절한 JOIN을 결정하도록 남긴다(Plan 37: 수정 3-2).
-    return regular_entries, eav_entries, metric_entries
+    # 정규 매핑·EAV 매핑·성능 지표(사용률) 매핑 분리 — 단일 경로와 같은 함수(plans/169 N1(a)).
+    # 성능 지표 매핑은 강제 SELECT에서 제외한다(D-066 후속/RC2). field_mapper가 지어낸 컬럼
+    # (예: cmm_metric_stat_h.cpu_avg_val)을 "반드시 포함"으로 강제하면 LLM이 잘못된 테이블(_h)·
+    # 조인을 만든다. 이 항목은 강제 대신 쿼리 예시의 cmm_metric_stat_m 피벗 패턴을 따르도록
+    # 안내로 넘긴다. EAV config 테이블과 entity 테이블이 다를 수 있으므로 정규 컬럼 필터링은
+    # 하지 않고 LLM이 schema_info를 보고 적절한 JOIN을 결정하도록 남긴다(Plan 37: 수정 3-2).
+    regular_entries, eav_entries, metric_entries = split_pivot_mapping(column_mapping)
+    return (
+        regular_entries, eav_entries, metric_entries,
+        [field for field, _ in _schema_dropped_metric],
+    )
 
 
 def _build_mapping_user_parts(
@@ -2453,7 +2472,7 @@ def _build_mapping_user_parts(
         (user_parts에 이어 붙일 섹션들, 결정적 SQL 또는 None, 갱신된 unmapped_fields)
     """
     parts: list[str] = []
-    _sn_eav = _get_eav_pattern(schema_info)
+    _sn_eav = first_eav_pattern(schema_info)
     column_mapping = dict(column_mapping or {})
 
     # 폼필에서 llm_inferred 매핑은 채움에 쓰지 않는다(D-149, 단일 경로와 대칭) —
@@ -2463,13 +2482,7 @@ def _build_mapping_user_parts(
     # 피벗의 metric 회수가 필드명 기반으로 결정적 재해석하므로 손실 없음.
     _dropped_inferred: list[str] = []
     if form_intent and _sn_eav and not error_context:
-        _srcs = mapping_sources or {}
-        _dropped_inferred = [
-            f for f, c in column_mapping.items()
-            if c and _srcs.get(f) == "llm_inferred"
-        ]
-        for f in _dropped_inferred:
-            column_mapping[f] = None
+        _dropped_inferred = drop_llm_inferred_mappings(column_mapping, mapping_sources)
         if _dropped_inferred:
             logger.info(
                 "DB '%s' 폼필 llm_inferred 매핑 %d건 채움 제외(D-149, 역질문 후보): %s",
@@ -2507,24 +2520,15 @@ def _build_mapping_user_parts(
             month_series.anchor[1], len(month_series.fields),
             month_series.anchor_source, month_series.requested,
         )
-        _attr_rt_scope = eav_attr_resource_types(schema_info)
-        _scope_updates = apply_capacity_scope_rule(
-            _recog_mapping, _attr_rt_scope, month_series.resource_type
+        # 처리능력 용량·비고 등록명 규칙(SQL은 등록명 SELECT) — 단일 경로와 같은 함수.
+        # 월 시리즈·비고 필드는 state 매핑 강제 None — writer가 필드명(=행 키)으로 조회.
+        _rule_patch, _rule_updates = month_series_rule_updates(
+            _recog_mapping, eav_attr_resource_types(schema_info), _sn_eav, month_series
         )
-        _remark_updates = apply_remark_server_name_rule(
-            _recog_mapping,
-            (_sn_eav or {}).get("entity_table", "cmm_resource"),
-        )
-        column_mapping.update(_scope_updates)
-        column_mapping.update(_remark_updates)  # SQL은 등록명 SELECT(비고 규칙)
+        column_mapping.update(_rule_patch)
         if form_fill_out is not None:
             form_fill_out["month_anchor"] = month_anchor_payload(month_series)
-            _mu = form_fill_out.setdefault("mapping_updates", {})
-            _mu.update(_scope_updates)
-            # 월 시리즈·비고 필드는 state 매핑 강제 None — writer가 필드명(=행 키)으로
-            # 조회(라이브 실측: N:1 metric 매핑 → 역매핑이 6칼럼 동일값 복제). 단일 대칭.
-            _mu.update({f: None for f in month_series.fields})
-            _mu.update({f: None for f in _remark_updates})
+            form_fill_out.setdefault("mapping_updates", {}).update(_rule_updates)
 
     # 제조사(모델명)류 Vendor+Model 결합 규칙(D-148) — 단일 경로와 대칭.
     # 결합 필드 제외는 결정적 피벗 발동 시에만 적용한다(LLM 폴백 프롬프트의
@@ -2541,9 +2545,9 @@ def _build_mapping_user_parts(
     # 검증 탈락은 사유와 함께 form_fill_out으로 승격돼 응답에 노출된다.
     _applied_ov: set[str] = set()
     if form_fill_answers and form_intent and _sn_eav and not error_context:
-        _protected = set(month_series.fields) if month_series else set()
-        _ov_out, _ov_map, _ov_lit = resolve_form_fill_answers(
-            form_fill_answers, schema_info, _sn_eav, protected_fields=_protected,
+        # 오버라이드/직접입력 필드는 결합 규칙에서 제외(중복 alias·사용자 층 우선)
+        _ov_out, _ov_map, _ov_lit, concat_eav = resolve_answer_overrides(
+            form_fill_answers, schema_info, _sn_eav, month_series, concat_eav,
         )
         _applied_ov = {f for f, o in _ov_out.items() if o.get("applied")}
         if _applied_ov:
@@ -2552,8 +2556,6 @@ def _build_mapping_user_parts(
         if _ov_rejected:
             logger.info("DB '%s' 폼필 답변 오버라이드 거부(D-151): %s", db_id, _ov_rejected)
         column_mapping.update(_ov_map)
-        _ov_fields = set(_ov_map.keys()) | set(_ov_lit.keys())
-        concat_eav = [c for c in concat_eav if c[0] not in _ov_fields]
         concat_fields = {c[0] for c in concat_eav}
         if form_fill_out is not None:
             form_fill_out.setdefault("mapping_updates", {}).update(_ov_map)
@@ -2567,8 +2569,8 @@ def _build_mapping_user_parts(
             "candidates", build_form_fill_candidates(schema_info, _sn_eav)
         )
 
-    regular_entries, eav_entries, metric_entries = _split_mapping_for_prompt(
-        column_mapping, schema_info,
+    regular_entries, eav_entries, metric_entries, schema_dropped_metric = (
+        _split_mapping_for_prompt(column_mapping, schema_info)
     )
 
     # 자식 리소스(server.Cpus/Memory 등) EAV 속성이 섞이면 서버 행 브릿지 조인으로는
@@ -2608,6 +2610,7 @@ def _build_mapping_user_parts(
             error_context=error_context, app_config=app_config,
             month_series=month_series, concat_eav=concat_eav,
             dropped_inferred=_dropped_inferred, applied_overrides=_applied_ov,
+            schema_dropped_metric=schema_dropped_metric,
             form_intent=form_intent, form_fill_out=form_fill_out,
             query_time=query_time,
         )
@@ -2627,7 +2630,7 @@ def _build_mapping_user_parts(
         # 결과 alias를 한글 양식 필드명으로 강제한다(§0.3-3 (e) 의도된 차이 — 통일 금지).
         parts.append(
             build_eav_pivot_block(
-                eav_entries, _get_eav_pattern(schema_info),
+                eav_entries, first_eav_pattern(schema_info),
                 hangul_alias=True,
                 host_attribute=_EAV_HOST_ATTRIBUTE,
                 link_column=_EAV_LINK_COLUMN,
@@ -3009,10 +3012,10 @@ def _validate_sql(
             return reason, None
         # 기본 경로에도 행 상한을 건다(CU-16) — `multi_full_validation` 기본값은 그대로다.
         return None, _auto_limit_or_none(sql, db_engine, limit_text, app_config)
-    from src.db_adapters import get_adapter
+    from src.db_adapters import get_adapter_for
     from src.nodes.query_validator import validate_sql
 
-    adapter = get_adapter(db_id, app_config.get_polestar_db_ids() or None)
+    adapter = get_adapter_for(db_id, app_config)
     adapter_checks = (
         adapter.validator_checks(user_query=user_query, time_resolution=time_resolution)
         if adapter is not None else []
@@ -3215,13 +3218,13 @@ async def _load_schema_prompt_materials(
         return materials
     try:
         materials["resource_type_synonyms"] = (
-            await cache_mgr._redis_cache.load_resource_type_synonyms() or {}
+            await cache_mgr.load_resource_type_synonyms() or {}
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("DB '%s': resource_type 유사어 로드 실패(참조 섹션 생략): %s", db_id, e)
     try:
         materials["eav_name_synonyms"] = (
-            await cache_mgr._redis_cache.load_eav_name_synonyms() or {}
+            await cache_mgr.load_eav_name_synonyms() or {}
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("DB '%s': EAV 속성명 유사어 로드 실패(참조 섹션 생략): %s", db_id, e)

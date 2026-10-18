@@ -238,14 +238,26 @@ ENDPOINTS: list[tuple[str, str, Any]] = [
 ]
 
 
+class _Users:
+    """`user_repo` 대역 — 인증 활성이면 저장소가 필수다(plans/186 L4 fail-closed). `a`만 관리자."""
+
+    async def get_by_user_id(self, user_id: str):  # noqa: ANN201
+        from src.domain.user import User, UserRole
+
+        role = UserRole.ADMIN if user_id in {"a"} else UserRole.USER
+        return User(user_id=user_id, username=user_id, hashed_password="x", role=role)
+
+
 @pytest.fixture(scope="module")
 def auth_app():
     """인증 켠 앱(모듈당 1회) — lifespan은 띄우지 않는다."""
-    return create_app(AppConfig(
+    app = create_app(AppConfig(
         _env_file=None,
         auth=AuthConfig(_env_file=None, enabled=True, jwt_secret=AUTH_SECRET),
         admin=AdminConfig(_env_file=None, jwt_secret=ADMIN_SECRET),
     ))
+    app.state.user_repo = _Users()
+    return app
 
 
 @pytest.fixture

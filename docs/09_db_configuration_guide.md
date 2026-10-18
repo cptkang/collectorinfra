@@ -402,11 +402,11 @@ API 키, 비밀번호 등 민감 정보는 `.env`가 아닌 `.encenv` 파일에 
 LLM_GEMINI_API_KEY=
 
 # Ollama Gateway API 키 (게이트웨이 사용 시)
-LLM_API_KEY=
+LLM_OLLAMA_API_KEY=
 
-# FabriX API 키
-FABRIX_API_KEY=
-FABRIX_CLIENT_KEY=
+# FabriX API 키 (반드시 LLM_ 접두)
+LLM_FABRIX_API_KEY=
+LLM_FABRIX_CLIENT_KEY=
 
 # 운영자 비밀번호 (운영 시 반드시 변경)
 ADMIN_PASSWORD=admin123

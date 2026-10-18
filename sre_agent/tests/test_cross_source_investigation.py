@@ -451,8 +451,12 @@ def _dispatch(
     settings: AgentSettings, payload: dict, tmp_path: Path
 ) -> tuple[InvestigationJob, list[dict]]:
     audit = tmp_path / f"audit-{time.monotonic_ns()}.jsonl"
+    # 계측 시각(elapsed_s·prefetch_s)을 고정한다 — 실시간 monotonic이면 병렬 부하에서
+    # 두 실행의 감사가 0.001 단위로 갈려 비트 동일 비교가 흔들린다.
+    # 디스패처는 매번 새로 만들어 dedup은 비어 있다.
     disp = InvestigationDispatcher(
-        settings, diagnose_fn=_diagnose, briefing_fn=build_briefing, audit_path=audit
+        settings, diagnose_fn=_diagnose, briefing_fn=build_briefing, audit_path=audit,
+        clock=lambda: 0.0,
     )
     now = time.time()
     job = InvestigationJob(

@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — MCP 접속 · API 서버 · Redis · 스키마 캐시 (D-191)
-# 근거: src/config.py DBHubConfig/ServerConfig/RedisConfig/SchemaCacheConfig
+# 근거: src/config/{data_access,services}.py DBHubConfig/ServerConfig/RedisConfig/SchemaCacheConfig
 
 version: 1
 group: dbhub

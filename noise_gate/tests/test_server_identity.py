@@ -349,6 +349,7 @@ def _worker(resolver) -> tuple[AlarmWorker, _FakeGraph]:
     cfg = SimpleNamespace(
         noise_gate=SimpleNamespace(
             enable_noise_gate=True, repeat_interval_seconds=14400,
+            dedup_severity_rise_bypass=False,
             suppress_max_severity=2, self_heal_window_seconds=300,
         ),
         alarm=SimpleNamespace(min_severity=1, dedup_ttl_seconds=300),

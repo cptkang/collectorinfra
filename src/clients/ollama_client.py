@@ -5,7 +5,6 @@ NWAgent의 ollama_client.py를 기반으로 collectorinfra에 맞게 적용.
 """
 
 import json
-import os
 import requests
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -48,15 +47,19 @@ class LLMAPIClient(BaseChatModel):
         timeout: int = 180,
         **kwargs,
     ):
-        final_api_key = api_key or os.getenv("LLM_API_KEY")
-        final_base_url = os.getenv("LLM_OLLAMA_BASE_URL", base_url)
+        # 받은 인자만 쓴다(plans/163 X6) — 셸 env가 인자를 덮지 않는다. api_key는 게이트웨이
+        # 구성에서만 쓰는 선택 인자라 비어 있어도 된다.
+        if not base_url:
+            raise ValueError("Ollama base_url이 비어 있습니다 — LLM_OLLAMA_BASE_URL을 설정하세요.")
+        if not chat_model:
+            raise ValueError("Ollama chat_model이 비어 있습니다 — LLM_MODEL을 설정하세요.")
 
         super().__init__(
             api_endpoint=api_endpoint,
-            base_url=final_base_url,
+            base_url=base_url,
             chat_model=chat_model,
             embedding_model=embedding_model,
-            api_key=final_api_key,
+            api_key=api_key,
             timeout=timeout,
             temperature=temperature,
             **kwargs,

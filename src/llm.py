@@ -309,7 +309,7 @@ def _create_orchestrator_gemini(config: AppConfig) -> BaseChatModel:
     if not api_key:
         raise ValueError(
             "Gemini 오케스트레이터(테스트 모드) API 키가 없습니다. "
-            ".env(.encenv)에 ORCHESTRATOR_API_KEY 또는 LLM_GEMINI_API_KEY(GOOGLE_API_KEY)를 추가하세요."
+            ".env(.encenv)에 ORCHESTRATOR_API_KEY 또는 LLM_GEMINI_API_KEY를 추가하세요."
         )
 
     model = config.orchestrator.model
@@ -451,7 +451,7 @@ def _create_gemini(config: AppConfig) -> BaseChatModel:
     if not api_key:
         raise ValueError(
             "Gemini API 키가 설정되지 않았습니다. "
-            ".env에 LLM_GEMINI_API_KEY 또는 GOOGLE_API_KEY를 추가하세요."
+            ".encenv에 LLM_GEMINI_API_KEY를 추가하세요."
         )
 
     model = config.llm.gemini_model or config.llm.model
@@ -499,13 +499,13 @@ def _create_fabrix(config: AppConfig, purpose: str = "deterministic") -> BaseCha
     """
     if not config.llm.fabrix_base_url:
         raise ValueError(
-            "FABRIX_BASE_URL이 설정되지 않았습니다. "
-            ".env 파일에 FABRIX_BASE_URL을 추가하세요."
+            "LLM_FABRIX_BASE_URL이 설정되지 않았습니다. "
+            ".env 파일에 LLM_FABRIX_BASE_URL을 추가하세요."
         )
     if not config.llm.fabrix_api_key:
         raise ValueError(
-            "FABRIX_API_KEY가 설정되지 않았습니다. "
-            ".env 파일에 FABRIX_API_KEY를 추가하세요."
+            "LLM_FABRIX_API_KEY가 설정되지 않았습니다. "
+            ".encenv 파일에 LLM_FABRIX_API_KEY를 추가하세요."
         )
 
     model = config.llm.fabrix_chat_model or config.llm.model

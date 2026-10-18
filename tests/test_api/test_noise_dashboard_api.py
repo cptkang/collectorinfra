@@ -50,6 +50,7 @@ def _make_config(tmp_path, *, gate=True, suppress_cap=2, silence=True) -> Simple
             storm_grouping_enabled=False,
             cross_host_correlation_enabled=False,
             enable_llm_actionability=False,
+            investigation_store_path="",
         ),
     )
 
@@ -977,8 +978,18 @@ def _user_token(role: str) -> str:
     return _jwt(_USER_SECRET, sub="u-" + role, name=role, role=role, type="user")
 
 
+class _StreamUsers:
+    """`user_repo` 대역 — 인증 활성이면 저장소가 필수다(plans/186 L4). `u-admin`만 관리자."""
+
+    async def get_by_user_id(self, user_id: str):  # noqa: ANN201
+        from src.domain.user import User, UserRole
+
+        role = UserRole.ADMIN if user_id == "u-admin" else UserRole.USER
+        return User(user_id=user_id, username=user_id, hashed_password="x", role=role)
+
+
 def _stream_client(tmp_path) -> TestClient:
-    """실제 인증 의존성으로 스트림만 판정하는 클라이언트(`user_repo` 없음 = 토큰 payload 판정)."""
+    """실제 인증 의존성으로 스트림만 판정하는 클라이언트(사용자 역할은 `user_repo` 대역이 판정)."""
     config = _make_config(tmp_path)
     config.auth.jwt_secret = _USER_SECRET
     config.admin = SimpleNamespace(jwt_secret=_ADMIN_SECRET)
@@ -986,6 +997,7 @@ def _stream_client(tmp_path) -> TestClient:
     app.include_router(noise_routes.router, prefix="/api/v1")
     app.state.config = config
     app.state.alarm_bus = _AuthorizedOnlyBus()
+    app.state.user_repo = _StreamUsers()
     return TestClient(app)
 
 
@@ -1027,10 +1039,11 @@ def test_operator_path_checks_signature_type_and_sub(tmp_path, token):
 
 
 def test_admin_type_claim_signed_with_user_secret_is_not_operator(tmp_path):
-    # type=admin이어도 사용자 시크릿 서명이면 운영자가 아니다 — 사용자 경로에서 역할로 403.
+    # type=admin이어도 사용자 시크릿 서명이면 운영자가 아니다 — 사용자 경로도 type!="user"라
+    # 토큰 검증 단계에서 401(plans/163 S2 · 종전에는 역할 판정까지 가서 403).
     client = _stream_client(tmp_path)
     forged = _jwt(_USER_SECRET, sub="u1", type="admin", role="user")
-    assert client.get(_STREAM, headers=_bearer(forged)).status_code == 403
+    assert client.get(_STREAM, headers=_bearer(forged)).status_code == 401
 
 
 def test_operator_token_is_not_accepted_from_query(tmp_path):

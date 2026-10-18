@@ -48,7 +48,7 @@ from src.nodes.schema_analyzer import schema_analyzer
 from src.nodes.synonym_registrar import synonym_registrar
 from src.observability.graph_proxy import TracedGraph
 from src.observability.investigation_metrics import log_investigation_startup
-from src.observability.ladder import record_ladder_resolution, resolve_ladder_tier
+from src.observability.ladder import LadderTier, record_ladder_resolution, resolve_ladder_tier
 from src.orchestration import (
     agent_orchestrator,
     intent_planner,
@@ -84,6 +84,7 @@ from src.orchestration.tier3_plan import (
 from src.routing.db_authz import ACCESS_DENIED_INTENT, authorized_router
 from src.routing.semantic_router import semantic_router
 from src.state import AgentState
+from src.utils.user_error import GENERIC_TASK_ERROR, request_id, user_error_text
 
 logger = logging.getLogger(__name__)
 
@@ -390,7 +391,18 @@ def _error_response_node(state: AgentState) -> dict:
             "current_node": "error_response",
             "messages": [AIMessage(content=response)],
         }
-    error_msg = state.get("error_message") if state.get("error_message") is not None else "알 수 없는 에러가 발생했습니다."
+    raw_error = state.get("error_message")
+    if raw_error is None:
+        error_msg = "알 수 없는 에러가 발생했습니다."
+    else:
+        # 실패 사유 원문(「SQL 실행 에러: {e}」 등)은 고정 사유·머리말만 보이고, 보일 수 없으면
+        # 고정 문구 + 요청 번호 — 원문은 서버 로그(plans/163 S3+)
+        error_msg = user_error_text(raw_error)
+        if error_msg != raw_error:
+            rid = request_id()
+            logger.warning("오류 응답 실패 사유 원문 (요청 %s): %s", rid, raw_error)
+            if error_msg == GENERIC_TASK_ERROR:
+                error_msg = f"{error_msg} (요청 {rid})"
     response = (
         f"죄송합니다. 요청을 처리하는 중 문제가 발생했습니다.\n"
         f"에러 내용: {error_msg}\n"
@@ -480,7 +492,8 @@ def _deep_agent_buildable(config: AppConfig, worker_llm) -> bool:
 
     `build_deep_agent`는 deepagents 패키지 미설치(폐쇄망 wheel 미반입) 시 RuntimeError를
     던진다. 가용성 판정(select_orchestration_backend)이 통과해도 패키지가 없으면 그래프 빌드가
-    크래시하므로, 여기서 조립을 시도해보고 실패 시 False를 반환하여 semantic_router로 폴백한다.
+    크래시하므로, 여기서 조립을 시도해보고 실패 시 False를 반환하여 플래그로 성립하는 다음 단
+    (2·3·4단)으로 폴백한다(D-251 — 종전 「semantic_router로 폴백」은 3단 기준 시절 표현).
 
     Args:
         config: 앱 설정
@@ -502,63 +515,11 @@ def _deep_agent_buildable(config: AppConfig, worker_llm) -> bool:
         return False
 
 
-def build_graph(config: AppConfig, checkpointer=None):
-    """에이전트 그래프를 빌드한다.
+def _wire_shared_front(graph: TracedGraph, config: AppConfig, llm: BaseChatModel) -> None:
+    """사다리 전 단 공통 전단(context_resolver → input_parser → field_mapper)을 배선한다.
 
-    LLM 인스턴스를 한 번 생성하여 partial로 LLM을 사용하는 노드에 주입한다.
-
-    Args:
-        config: 애플리케이션 설정
-        checkpointer: 외부에서 주입할 체크포인터 (None이면 동기 SqliteSaver 사용)
-
-    Returns:
-        컴파일된 LangGraph 그래프
+    field_mapper 뒤의 배선은 확정된 단의 `_wire_*`가 맡는다.
     """
-    # 워커(데이터 평면) LLM. worker_provider_override가 설정되면(테스트 전용) 운영
-    # config.llm.provider(보통 fabrix) 대신 해당 provider로 강제 생성한다 — deepagent 경로
-    # 전체(input_parser/field_mapper + deep_agent 워커)를 gemini로 검증 (D-037 / Plan 49 §4.7).
-    llm = create_llm(config, provider_override=config.worker_provider_override)
-    if config.worker_provider_override:
-        logger.info(
-            "워커 provider override 활성(테스트): %s (운영 기본=%s)",
-            config.worker_provider_override, config.llm.provider,
-        )
-
-    # Plan 49 / D-037 트랙 B: deepagents 실제 패키지(vLLM 오케스트레이터 + FabriX 워커) 백엔드 선택.
-    # enable_deepagents_package=on + 오케스트레이터 가용 시 "deep_agent", 그 외 "semantic_router"(§4.6).
-    # 실행 경로 4종은 대등한 병존이 아니라 위에서부터 성립하는 한 단만 확정되는
-    # 사다리다 — 기준 경로는 3단 semantic_router, 1단 deep_agent는 부가 경로(opt-in)다
-    # (D-225). 구조·활성 조건·확정 사유·모듈 의존 방향은
-    # docs/21_orchestration_ladder.md가 단일 출처다.
-    # 특히 §7: 배선은 배타적이지만 모듈 의존은 아니다(1단이 2·3단 모듈을 재사용).
-    # 빌드 시 1회 가용성 판정으로 백엔드를 확정한다(결정적). 가용 판정이어도 deepagents 패키지
-    # 미설치(폐쇄망 wheel 미반입)면 RuntimeError가 발생하므로, 빌드 시점에 조립을 시도해보고
-    # 실패하면 기존 semantic_router 경로로 안전 폴백한다(그래프 크래시 방지 — 회귀 없음).
-    _backend = select_orchestration_backend(config)
-    _buildable = _deep_agent_buildable(config, llm) if _backend == "deep_agent" else False
-    use_deep_agent = _backend == "deep_agent" and _buildable
-    if _backend == "deep_agent" and not _buildable:
-        logger.warning(
-            "Track B 선택(deep_agent)이나 deepagents 패키지 조립 불가 → "
-            "semantic_router 경로로 폴백합니다(폐쇄망 wheel 반입 필요). "
-            "degraded_reason=package_missing"
-        )
-
-    # (Plan 64 CW-B) 장애 진단 pull 위임 옵트인. 시멘틱 라우팅 경로에서만·플래그 on일 때만
-    # fault_diagnosis 노드를 배선한다. off면 노드·엣지 미배선 → 라우팅 비트동일(회귀 0).
-    fault_dx_enabled = bool(
-        getattr(getattr(config, "noise_gate", None), "fault_diagnosis_enabled", False)
-    )
-
-    # 노드 트레이싱 프록시 (D-141). `add_node`만 가로채므로 조건부·신규 노드가 자동 편입되고,
-    # 노드 파일은 수정하지 않는다. off면 원본 함수를 그대로 등록해 비트동일하게 동작한다.
-    graph = TracedGraph(
-        StateGraph(AgentState),
-        enabled=bool(getattr(getattr(config, "observability", None), "trace_enabled", False)),
-    )
-
-    # --- 노드 등록 ---
-
     # Phase 3: context_resolver (첫 노드)
     graph.add_node(
         "context_resolver",
@@ -575,94 +536,152 @@ def build_graph(config: AppConfig, checkpointer=None):
         partial(field_mapper, llm=llm, app_config=config),
     )
 
-    # Plan 49 트랙 B: deepagents 실제 패키지 노드 (vLLM 오케스트레이터 + FabriX 워커).
-    # 가용 시 다른 모든 경로보다 우선하며, field_mapper -> deep_agent -> END로 배선한다.
-    if use_deep_agent:
-        graph.add_node(
-            "deep_agent",
-            partial(run_deep_agent, app_config=config, worker_llm=llm),
-        )
+    # Phase 3: START -> context_resolver -> input_parser
+    graph.add_edge(START, "context_resolver")
+    graph.add_edge("context_resolver", "input_parser")
 
-    # Plan 48: deepagents 의도 분해 오케스트레이션 노드 (semantic_routing보다 우선, 상호 배타)
-    # 트랙 B(deep_agent) 활성 시에는 트랙 A 노드를 등록하지 않는다(상호 배타, 죽은 노드 방지).
-    if config.enable_intent_orchestration and not use_deep_agent:
-        graph.add_node(
-            "intent_planner",
-            partial(intent_planner, llm=llm, app_config=config),
-        )
-        graph.add_node(
-            "agent_orchestrator",
-            partial(agent_orchestrator, llm=llm, app_config=config),
-        )
-        # synthesize=True: 다중 의도 분해/재계획으로 task가 여러 개면 deterministic
-        # 이어붙이기(_merge_finalized)는 "없음→있음" 모순·부분 결과를 한 말풍선에 그대로
-        # 나열한다. LLM 1회로 단일 일관 답변을 합성해 모순/중복을 해소한다(D-062).
-        # composite_answer="steps"(plans/121 TP-4.5 · G-7 ①): 병합 불성립 복합 턴은 합성 LLM 대신
-        # 단계별 표 + 요약을 잇고 모순은 결정적 숨김으로 막는다 — 2단만(1단·3단은 LLM 합성 유지).
-        graph.add_node(
-            "result_aggregator",
-            partial(
-                result_aggregator, llm=llm, app_config=config, synthesize=True,
-                composite_answer="steps",
-            ),
-        )
-        # Plan 49: 결과 기반 동적 재계획 노드 (orchestrator↔replanner 루프)
-        graph.add_node(
-            "replanner",
-            partial(replanner, llm=llm, app_config=config),
-        )
-
-    # 시멘틱 라우팅 노드 (멀티 DB 지원)
-    # 트랙 B(deep_agent) 활성 시에는 등록하지 않는다(상호 배타, 죽은 노드 방지).
-    if config.enable_semantic_routing and not use_deep_agent:
-        # 사용자별 DB 인가(plans/104 C-4 · D-232)는 라우터 노드 경계에서 한 번만 건다 —
-        # 라우터 본체는 반환 지점이 여러 곳이라 안에서 거르면 빠뜨린다.
-        graph.add_node(
-            "semantic_router",
-            partial(
-                authorized_router,
-                inner=partial(semantic_router, llm=llm, app_config=config),
-            ),
-        )
-        graph.add_node(
-            "multi_db_executor",
-            partial(multi_db_executor, llm=llm, app_config=config),
-        )
-        graph.add_node(
-            "result_merger",
-            partial(result_merger, app_config=config),
-        )
-        graph.add_node(
-            "cache_management",
-            partial(cache_management, llm=llm, app_config=config),
-        )
-        # Phase 3: synonym_registrar
-        graph.add_node(
-            "synonym_registrar",
-            partial(synonym_registrar, app_config=config),
-        )
-        # 일반 추론 노드 (DB 접근 없이 LLM 직접 응답)
-        graph.add_node(
-            "general_inference",
-            partial(general_inference_node, llm=llm, app_config=config),
-        )
-        # (Plan 64 CW-B · D-004 대칭 2/3) 장애 진단 pull 위임 노드 (옵트인 on일 때만).
-        if fault_dx_enabled:
-            graph.add_node(
-                "fault_diagnosis",
-                partial(fault_diagnosis_node, app_config=config),
-            )
-
-    # plans/103 P2 · plans/111 C-4·C-5: 3단 계획 루프 — 3단으로 확정되는 빌드 + 플래그 on일 때만
-    # 등록한다. off면 노드·엣지·분기 함수·라우터 프롬프트가 현행과 같다.
-    plan_loop_tier = (
-        plan_loop_on(config)
-        and bool(config.enable_semantic_routing)
-        and not use_deep_agent
-        and not config.enable_intent_orchestration
+    # input_parser -> field_mapper | END(조회 기간 되묻기 — plans/122 T-3 · 사다리 전 단 공통)
+    graph.add_conditional_edges(
+        "input_parser",
+        route_after_input_parser,
+        {"field_mapper": "field_mapper", END: END},
     )
-    trace_on = bool(getattr(getattr(config, "observability", None), "trace_enabled", False))
+
+
+def _wire_tier1(graph: TracedGraph, config: AppConfig, llm: BaseChatModel) -> None:
+    """1단(부가 경로 opt-in · D-251) `field_mapper → deep_agent → END`를 배선한다.
+
+    Plan 49 트랙 B: deepagents 실제 패키지 노드(vLLM 오케스트레이터 + FabriX 워커).
+    """
+    graph.add_node(
+        "deep_agent",
+        partial(run_deep_agent, app_config=config, worker_llm=llm),
+    )
+
+    # deepagents가 도구(=FabriX 파이프라인) 호출·동적 재계획·최종 응답 생성을 담당한다.
+    graph.add_edge("field_mapper", "deep_agent")
+    graph.add_edge("deep_agent", END)
+
+
+def _wire_tier2(graph: TracedGraph, config: AppConfig, llm: BaseChatModel) -> None:
+    """2단(기준 경로 · D-251) 의도 분해 오케스트레이션을 배선한다.
+
+    field_mapper → intent_planner → agent_orchestrator → [replanner 루프] →
+    result_aggregator → END (Plan 48/49).
+    """
+    graph.add_node(
+        "intent_planner",
+        partial(intent_planner, llm=llm, app_config=config),
+    )
+    graph.add_node(
+        "agent_orchestrator",
+        partial(agent_orchestrator, llm=llm, app_config=config),
+    )
+    # synthesize=True: 다중 의도 분해/재계획으로 task가 여러 개면 deterministic
+    # 이어붙이기(_merge_finalized)는 "없음→있음" 모순·부분 결과를 한 말풍선에 그대로
+    # 나열한다. LLM 1회로 단일 일관 답변을 합성해 모순/중복을 해소한다(D-062).
+    # composite_answer="steps"(plans/121 TP-4.5 · G-7 ①): 병합 불성립 복합 턴은 합성 LLM 대신
+    # 단계별 표 + 요약을 잇고 모순은 결정적 숨김으로 막는다 — 2단만(1단·3단은 LLM 합성 유지).
+    graph.add_node(
+        "result_aggregator",
+        partial(
+            result_aggregator, llm=llm, app_config=config, synthesize=True,
+            composite_answer="steps",
+        ),
+    )
+    # Plan 49: 결과 기반 동적 재계획 노드 (orchestrator↔replanner 루프)
+    graph.add_node(
+        "replanner",
+        partial(replanner, llm=llm, app_config=config),
+    )
+
+    graph.add_edge("field_mapper", "intent_planner")
+    graph.add_edge("intent_planner", "agent_orchestrator")
+    graph.add_conditional_edges(
+        "agent_orchestrator",
+        route_after_orchestrator,
+        {"replanner": "replanner"},
+    )
+    graph.add_conditional_edges(
+        "replanner",
+        route_after_replanner,
+        {
+            "agent_orchestrator": "agent_orchestrator",
+            "result_aggregator": "result_aggregator",
+        },
+    )
+    graph.add_edge("result_aggregator", END)
+
+
+def _add_sequential_runner_node(graph: TracedGraph, config: AppConfig, llm: BaseChatModel) -> None:
+    """D-203 순차 2-pass 노드를 등록한다 — 3단·4단 빌드가 같은 정의를 쓴다."""
+    graph.add_node(
+        "sequential_runner",
+        partial(sequential_runner, llm=llm, app_config=config),
+    )
+
+
+def _wire_tier3(
+    graph: TracedGraph,
+    config: AppConfig,
+    llm: BaseChatModel,
+    *,
+    plan_loop_tier: bool,
+    sequential_tier: bool,
+) -> None:
+    """3단(비교 arm · D-251) `field_mapper → semantic_router → 조건부 분기`를 배선한다.
+
+    단일 DB 꼬리(schema_analyzer …)는 `_wire_single_db_tail`이 이어서 배선한다.
+    3단 안의 옵트인 분기(fault_diagnosis·계획 루프·순차 러너·식별자 프로브)는 각 플래그대로 둔다.
+    """
+    # (Plan 64 CW-B) 장애 진단 pull 위임 옵트인. 시멘틱 라우팅 경로에서만·플래그 on일 때만
+    # fault_diagnosis 노드를 배선한다. off면 노드·엣지 미배선 → 라우팅 비트동일(회귀 0).
+    fault_dx_enabled = bool(
+        getattr(getattr(config, "noise_gate", None), "fault_diagnosis_enabled", False)
+    )
+
+    # 사용자별 DB 인가(plans/104 C-4 · D-232)는 라우터 노드 경계에서 한 번만 건다 —
+    # 라우터 본체는 반환 지점이 여러 곳이라 안에서 거르면 빠뜨린다.
+    graph.add_node(
+        "semantic_router",
+        partial(
+            authorized_router,
+            inner=partial(semantic_router, llm=llm, app_config=config),
+        ),
+    )
+    graph.add_node(
+        "multi_db_executor",
+        partial(multi_db_executor, llm=llm, app_config=config),
+    )
+    graph.add_node(
+        "result_merger",
+        partial(result_merger, app_config=config),
+    )
+    graph.add_node(
+        "cache_management",
+        partial(cache_management, llm=llm, app_config=config),
+    )
+    # Phase 3: synonym_registrar
+    graph.add_node(
+        "synonym_registrar",
+        partial(synonym_registrar, app_config=config),
+    )
+    # 일반 추론 노드 (DB 접근 없이 LLM 직접 응답)
+    graph.add_node(
+        "general_inference",
+        partial(general_inference_node, llm=llm, app_config=config),
+    )
+    # (Plan 64 CW-B · D-004 대칭 2/3) 장애 진단 pull 위임 노드 (옵트인 on일 때만).
+    if fault_dx_enabled:
+        graph.add_node(
+            "fault_diagnosis",
+            partial(fault_diagnosis_node, app_config=config),
+        )
+
+    # plans/103 P2 · plans/111 C-4·C-5: 3단 계획 루프 — 플래그 on일 때만 등록한다.
+    # off면 노드·엣지·분기 함수·라우터 프롬프트가 현행과 같다.
     if plan_loop_tier:
+        trace_on = bool(config.observability.trace_enabled)
         graph.add_node("plan", partial(plan_node, llm=llm, app_config=config))
         graph.add_node("normalize", partial(plan_normalize, app_config=config))
         graph.add_node("dispatch", partial(plan_dispatch, app_config=config))
@@ -682,35 +701,125 @@ def build_graph(config: AppConfig, checkpointer=None):
             partial(result_aggregator, llm=llm, app_config=config, synthesize=True),
         )
 
-    # D-203 (plans/88 §4.7): 3단·4단 빌드 전용 순차 2-pass 노드 — 1·2단 빌드에는 등록하지 않는다
-    # (1단은 도구 루프, 2단은 task DAG가 이미 순차를 갖는다). 플래그 off면 등록도 하지 않는다.
-    # 3단 계획 루프가 등록되면 같은 질의를 루프가 맡으므로 등록하지 않는다(4단은 그대로).
-    sequential_tier = (
-        bool(getattr(getattr(config, "composite", None), "sequential_fallback_tiers_enabled", False))
-        and not use_deep_agent
-        and not config.enable_intent_orchestration
-        and not plan_loop_tier
-    )
+    # D-203 (plans/88 §4.7): 순차 2-pass 노드 — 계획 루프가 등록되면 같은 질의를 루프가 맡으므로
+    # 등록하지 않는다(판정은 build_graph의 sequential_tier).
     if sequential_tier:
-        graph.add_node(
-            "sequential_runner",
-            partial(sequential_runner, llm=llm, app_config=config),
-        )
+        _add_sequential_runner_node(graph, config, llm)
 
     # plans/102 §3.4 (D-224 ⑤): 3단 전용 식별자 소재 프로브 — 플래그 on일 때만 등록한다(LLM 미주입).
-    # off거나 1·2·4단이면 노드·엣지·분기 함수가 현행과 같다.
-    probe_tier = (
-        bool(getattr(config, "cross_system_probe_enabled", False))
-        and config.enable_semantic_routing
-        and not use_deep_agent
-        and not config.enable_intent_orchestration
-    )
+    # off면 노드·엣지·분기 함수가 현행과 같다.
+    probe_tier = bool(getattr(config, "cross_system_probe_enabled", False))
     if probe_tier:
         graph.add_node(
             "entity_locator",
             partial(entity_locator, app_config=config),
         )
 
+    # field_mapper -> semantic_router -> 조건부
+    graph.add_edge("field_mapper", "semantic_router")
+
+    # (Plan 64 CW-B · D-004 대칭 3/3) fault_diagnosis 노드 배선 시에만 라우팅 대상에 추가.
+    # off면 대상 dict에 미포함 → route_after_semantic_router가 이 값을 반환하지 않는다
+    # (라우터가 fault_diagnosis 의도를 산출하지 않으므로 도달 불가). 비트동일(회귀 0).
+    _router_targets = {
+        "schema_analyzer": "schema_analyzer",
+        "multi_db_executor": "multi_db_executor",
+        "cache_management": "cache_management",
+        "synonym_registrar": "synonym_registrar",
+        "general_inference": "general_inference",
+        # 존 역질문 후단 게이트(D-143 후속2) — 역질문은 턴 종결
+        END: END,
+    }
+    if fault_dx_enabled:
+        _router_targets["fault_diagnosis"] = "fault_diagnosis"
+    _router_route: Callable[[AgentState], str]
+    if sequential_tier:
+        # D-203: 진입 조건이 성립할 때만 순차 러너로 — 불성립이면 현행 분기 함수 그대로 위임.
+        _router_targets["sequential_runner"] = "sequential_runner"
+        _router_route = partial(route_after_semantic_router_sequential, config=config)
+        graph.add_edge("sequential_runner", END)
+    else:
+        _router_route = route_after_semantic_router
+    if plan_loop_tier:
+        # plans/103 P2-1: 계획 필요 질의만 plan으로 — 불성립이면 위 분기 함수 그대로 위임.
+        _router_targets["plan"] = "plan"
+        _router_route = partial(
+            route_after_semantic_router_plan, app_config=config, delegate=_router_route,
+        )
+        graph.add_edge("plan", "normalize")
+        graph.add_edge("normalize", "dispatch")
+        graph.add_conditional_edges("dispatch", route_dispatch, [TASK_RUN_NODE, "join"])
+        graph.add_edge(TASK_RUN_NODE, "join")
+        graph.add_conditional_edges(
+            "join", route_after_join, {"dispatch": "dispatch", "replan": "replan"},
+        )
+        graph.add_conditional_edges(
+            "replan", route_after_replan, {"dispatch": "dispatch", "finalize": "finalize"},
+        )
+        graph.add_edge("finalize", END)
+    if probe_tier:
+        # plans/102 §3.4: semantic_router → entity_locator → (위 분기 함수 그대로).
+        # 사유 노출 행만 END(END는 이미 대상에 있다 — 존 역질문).
+        graph.add_edge("semantic_router", "entity_locator")
+        graph.add_conditional_edges(
+            "entity_locator",
+            partial(route_after_entity_locator, delegate=_router_route),
+            _router_targets,
+        )
+    else:
+        graph.add_conditional_edges(
+            "semantic_router",
+            _router_route,
+            _router_targets,
+        )
+
+    # 멀티 DB 경로
+    graph.add_edge("multi_db_executor", "result_merger")
+    graph.add_edge("result_merger", "result_organizer")
+
+    # 캐시 관리 경로
+    graph.add_edge("cache_management", END)
+
+    # 유사어 등록 경로
+    graph.add_edge("synonym_registrar", END)
+
+    # 일반 추론 경로
+    graph.add_edge("general_inference", END)
+
+    # (Plan 64 CW-B) 장애 진단 경로 (옵트인 on일 때만 노드가 존재)
+    if fault_dx_enabled:
+        graph.add_edge("fault_diagnosis", END)
+
+
+def _wire_legacy(
+    graph: TracedGraph,
+    config: AppConfig,
+    llm: BaseChatModel,
+    *,
+    sequential_tier: bool,
+) -> None:
+    """4단(레거시) `field_mapper → schema_analyzer` 직행을 배선한다.
+
+    순차 러너(D-203)가 켜져 있으면 진입 조건 성립 시에만 분기하고, 아니면 현행 직행이다.
+    """
+    if sequential_tier:
+        _add_sequential_runner_node(graph, config, llm)
+        graph.add_conditional_edges(
+            "field_mapper",
+            partial(route_after_field_mapper_legacy, config=config),
+            {"sequential_runner": "sequential_runner", "schema_analyzer": "schema_analyzer"},
+        )
+        graph.add_edge("sequential_runner", END)
+    else:
+        graph.add_edge("field_mapper", "schema_analyzer")
+
+
+def _wire_single_db_tail(graph: TracedGraph, config: AppConfig, llm: BaseChatModel) -> None:
+    """3·4단 공용 단일 DB 꼬리(schema_analyzer … output_generator·error_response)를 배선한다.
+
+    1단은 도구 루프, 2단은 서브에이전트가 노드 함수를 직접 호출하므로 그래프 노드로는
+    닿지 않는다 — 3·4단 빌드에서만 호출한다(plans/163 D1 · docs/21 §2 배타성은 빌드 타임).
+    """
     graph.add_node(
         "schema_analyzer",
         partial(schema_analyzer, llm=llm, app_config=config),
@@ -742,130 +851,6 @@ def build_graph(config: AppConfig, checkpointer=None):
     )
     graph.add_node("error_response", _error_response_node)
 
-    # --- 엣지 정의 ---
-
-    # Phase 3: START -> context_resolver -> input_parser
-    graph.add_edge(START, "context_resolver")
-    graph.add_edge("context_resolver", "input_parser")
-
-    # input_parser -> field_mapper | END(조회 기간 되묻기 — plans/122 T-3 · 사다리 전 단 공통)
-    graph.add_conditional_edges(
-        "input_parser",
-        route_after_input_parser,
-        {"field_mapper": "field_mapper", END: END},
-    )
-
-    if use_deep_agent:
-        # Plan 49 트랙 B: field_mapper -> deep_agent -> END (모든 경로 중 최우선)
-        # deepagents가 도구(=FabriX 파이프라인) 호출·동적 재계획·최종 응답 생성을 담당한다.
-        graph.add_edge("field_mapper", "deep_agent")
-        graph.add_edge("deep_agent", END)
-    elif config.enable_intent_orchestration:
-        # Plan 48/49: 의도 분해 오케스트레이션 경로 (semantic_routing보다 우선)
-        # field_mapper -> intent_planner -> agent_orchestrator -> [replanner 루프] -> result_aggregator -> END
-        graph.add_edge("field_mapper", "intent_planner")
-        graph.add_edge("intent_planner", "agent_orchestrator")
-        graph.add_conditional_edges(
-            "agent_orchestrator",
-            route_after_orchestrator,
-            {"replanner": "replanner"},
-        )
-        graph.add_conditional_edges(
-            "replanner",
-            route_after_replanner,
-            {
-                "agent_orchestrator": "agent_orchestrator",
-                "result_aggregator": "result_aggregator",
-            },
-        )
-        graph.add_edge("result_aggregator", END)
-    elif config.enable_semantic_routing:
-        # field_mapper -> semantic_router -> 조건부
-        graph.add_edge("field_mapper", "semantic_router")
-
-        # (Plan 64 CW-B · D-004 대칭 3/3) fault_diagnosis 노드 배선 시에만 라우팅 대상에 추가.
-        # off면 대상 dict에 미포함 → route_after_semantic_router가 이 값을 반환하지 않는다
-        # (라우터가 fault_diagnosis 의도를 산출하지 않으므로 도달 불가). 비트동일(회귀 0).
-        _router_targets = {
-            "schema_analyzer": "schema_analyzer",
-            "multi_db_executor": "multi_db_executor",
-            "cache_management": "cache_management",
-            "synonym_registrar": "synonym_registrar",
-            "general_inference": "general_inference",
-            # 존 역질문 후단 게이트(D-143 후속2) — 역질문은 턴 종결
-            END: END,
-        }
-        if fault_dx_enabled:
-            _router_targets["fault_diagnosis"] = "fault_diagnosis"
-        _router_route: Callable[[AgentState], str]
-        if sequential_tier:
-            # D-203: 진입 조건이 성립할 때만 순차 러너로 — 불성립이면 현행 분기 함수 그대로 위임.
-            _router_targets["sequential_runner"] = "sequential_runner"
-            _router_route = partial(route_after_semantic_router_sequential, config=config)
-            graph.add_edge("sequential_runner", END)
-        else:
-            _router_route = route_after_semantic_router
-        if plan_loop_tier:
-            # plans/103 P2-1: 계획 필요 질의만 plan으로 — 불성립이면 위 분기 함수 그대로 위임.
-            _router_targets["plan"] = "plan"
-            _router_route = partial(
-                route_after_semantic_router_plan, app_config=config, delegate=_router_route,
-            )
-            graph.add_edge("plan", "normalize")
-            graph.add_edge("normalize", "dispatch")
-            graph.add_conditional_edges("dispatch", route_dispatch, [TASK_RUN_NODE, "join"])
-            graph.add_edge(TASK_RUN_NODE, "join")
-            graph.add_conditional_edges(
-                "join", route_after_join, {"dispatch": "dispatch", "replan": "replan"},
-            )
-            graph.add_conditional_edges(
-                "replan", route_after_replan, {"dispatch": "dispatch", "finalize": "finalize"},
-            )
-            graph.add_edge("finalize", END)
-        if probe_tier:
-            # plans/102 §3.4: semantic_router → entity_locator → (위 분기 함수 그대로).
-            # 사유 노출 행만 END(END는 이미 대상에 있다 — 존 역질문).
-            graph.add_edge("semantic_router", "entity_locator")
-            graph.add_conditional_edges(
-                "entity_locator",
-                partial(route_after_entity_locator, delegate=_router_route),
-                _router_targets,
-            )
-        else:
-            graph.add_conditional_edges(
-                "semantic_router",
-                _router_route,
-                _router_targets,
-            )
-
-        # 멀티 DB 경로
-        graph.add_edge("multi_db_executor", "result_merger")
-        graph.add_edge("result_merger", "result_organizer")
-
-        # 캐시 관리 경로
-        graph.add_edge("cache_management", END)
-
-        # 유사어 등록 경로
-        graph.add_edge("synonym_registrar", END)
-
-        # 일반 추론 경로
-        graph.add_edge("general_inference", END)
-
-        # (Plan 64 CW-B) 장애 진단 경로 (옵트인 on일 때만 노드가 존재)
-        if fault_dx_enabled:
-            graph.add_edge("fault_diagnosis", END)
-    elif sequential_tier:
-        # 레거시 모드 + 순차 러너(D-203): 진입 조건 성립 시에만 분기, 아니면 현행 직행.
-        graph.add_conditional_edges(
-            "field_mapper",
-            partial(route_after_field_mapper_legacy, config=config),
-            {"sequential_runner": "sequential_runner", "schema_analyzer": "schema_analyzer"},
-        )
-        graph.add_edge("sequential_runner", END)
-    else:
-        # 레거시 모드
-        graph.add_edge("field_mapper", "schema_analyzer")
-
     # 단일 DB 경로: schema_analyzer -> query_generator 직행.
     # 구조 승인 HITL 게이트 노드는 plans/104(D-227)에서 삭제됐다 — 질의 경로는
     # 구조를 분석하지 않고 수동 프로필·관리자 승인본을 읽기만 한다(없으면 사유 노트).
@@ -877,7 +862,10 @@ def build_graph(config: AppConfig, checkpointer=None):
         # SQL 승인 활성화: validator -> approval_gate -> executor
         graph.add_conditional_edges(
             "query_validator",
-            partial(route_after_validation_with_approval, max_retry=config.query.max_retry_count),
+            partial(
+                route_after_validation_with_approval,
+                max_retry=config.query.max_retry_count,
+            ),
             {
                 "approval_gate": "approval_gate",
                 "query_generator": "query_generator",
@@ -929,13 +917,104 @@ def build_graph(config: AppConfig, checkpointer=None):
     graph.add_edge("output_generator", END)
     graph.add_edge("error_response", END)
 
+
+def build_graph(config: AppConfig, checkpointer: Any = None) -> Any:
+    """에이전트 그래프를 빌드한다.
+
+    LLM 인스턴스를 한 번 생성하여 partial로 LLM을 사용하는 노드에 주입한다.
+    사다리 단은 선두에서 `resolve_ladder_tier`로 1회 확정하고, 배선은 그 단의
+    `_wire_*` 하나만 호출한다(상위 단이 성립하면 하위 단 노드는 등록하지 않는다).
+
+    Args:
+        config: 애플리케이션 설정
+        checkpointer: 외부에서 주입할 체크포인터 (None이면 동기 SqliteSaver 사용)
+
+    Returns:
+        컴파일된 LangGraph 그래프
+    """
+    # 워커(데이터 평면) LLM. worker_provider_override가 설정되면(테스트 전용) 운영
+    # config.llm.provider(보통 fabrix) 대신 해당 provider로 강제 생성한다 — deepagent 경로
+    # 전체(input_parser/field_mapper + deep_agent 워커)를 gemini로 검증 (D-037 / Plan 49 §4.7).
+    llm = create_llm(config, provider_override=config.worker_provider_override)
+    if config.worker_provider_override:
+        logger.info(
+            "워커 provider override 활성(테스트): %s (운영 기본=%s)",
+            config.worker_provider_override, config.llm.provider,
+        )
+
+    # Plan 49 / D-037 트랙 B: deepagents 실제 패키지(vLLM 오케스트레이터 + FabriX 워커) 백엔드 선택.
+    # enable_deepagents_package=on + 오케스트레이터 가용 시 "deep_agent", 그 외 "semantic_router"
+    # (§4.6 — 백엔드 반환값 이름일 뿐 3단 확정이 아니다. 단 확정은 아래 resolve_ladder_tier).
+    # 실행 경로 4종은 대등한 병존이 아니라 위에서부터 성립하는 한 단만 확정되는
+    # 사다리다 — 기준 경로는 2단 intent_orchestration(3단 semantic_router는 비교 arm),
+    # 1단 deep_agent는 부가 경로(opt-in)다(D-251 · D-225 개정).
+    # 구조·활성 조건·확정 사유·모듈 의존 방향은 docs/21_orchestration_ladder.md가 단일 출처다.
+    # 특히 §7: 배선은 배타적이지만 모듈 의존은 아니다(1단이 2·3단 모듈을 재사용).
+    # 빌드 시 1회 가용성 판정으로 백엔드를 확정한다(결정적). 가용 판정이어도 deepagents 패키지
+    # 미설치(폐쇄망 wheel 미반입)면 RuntimeError가 발생하므로, 빌드 시점에 조립을 시도해보고
+    # 실패하면 플래그로 성립하는 다음 단(2·3·4단)으로 안전 폴백한다(그래프 크래시 방지).
+    _backend = select_orchestration_backend(config)
+    _buildable = _deep_agent_buildable(config, llm) if _backend == "deep_agent" else False
+
+    # 확정 단은 여기서 1회만 판정하고, 아래 배선 판정은 모두 이 값을 읽는다 — 기동 로그
+    # (record_ladder_resolution)와 실제 배선이 같은 판정에서 나오므로 어긋날 수 없다.
+    _tier, _reason = resolve_ladder_tier(config, backend=_backend, buildable=_buildable)
+    if _backend == "deep_agent" and not _buildable:
+        # 폴백 대상은 확정 단이다 — 2단 플래그가 켜져 있으면 semantic_router가 아니다(plans/184 M3)
+        logger.warning(
+            "Track B 선택(deep_agent)이나 deepagents 패키지 조립 불가 → "
+            "%s 경로로 폴백합니다(폐쇄망 wheel 반입 필요). "
+            "degraded_reason=package_missing",
+            _tier.value,
+        )
+
+    # 3·4단 빌드에서만 등록하는 단일 DB 꼬리(schema_analyzer … output_generator·error_response).
+    # 1단은 도구 루프, 2단은 서브에이전트가 노드 함수를 직접 호출하므로 그래프 노드로는
+    # 닿지 않는다 — 상위 단이 성립하면 하위 단 노드는 등록하지 않는다(plans/163 D1 ·
+    # docs/21 §2 배타성은 빌드 타임).
+    single_db_tail = _tier in (LadderTier.SEMANTIC_ROUTER, LadderTier.LEGACY)
+
+    # plans/103 P2 · plans/111 C-4·C-5: 3단 계획 루프 — 3단으로 확정되는 빌드 + 플래그 on일 때만.
+    plan_loop_tier = plan_loop_on(config) and _tier is LadderTier.SEMANTIC_ROUTER
+
+    # D-203 (plans/88 §4.7): 3단·4단 빌드 전용 순차 2-pass 노드 — 1·2단 빌드에는 등록하지 않는다
+    # (1단은 도구 루프, 2단은 task DAG가 이미 순차를 갖는다). 플래그 off면 등록도 하지 않는다.
+    # 3단 계획 루프가 등록되면 같은 질의를 루프가 맡으므로 등록하지 않는다(4단은 그대로).
+    sequential_tier = (
+        bool(config.composite.sequential_fallback_tiers_enabled)
+        and single_db_tail
+        and not plan_loop_tier
+    )
+
+    # 노드 트레이싱 프록시 (D-141). `add_node`만 가로채므로 조건부·신규 노드가 자동 편입되고,
+    # 노드 파일은 수정하지 않는다. off면 원본 함수를 그대로 등록해 비트동일하게 동작한다.
+    graph = TracedGraph(
+        StateGraph(AgentState),
+        enabled=bool(config.observability.trace_enabled),
+    )
+
+    # --- 배선: 공통 전단 → 확정 단 하나 → (3·4단만) 단일 DB 꼬리 ---
+    _wire_shared_front(graph, config, llm)
+    if _tier is LadderTier.DEEP_AGENT:
+        _wire_tier1(graph, config, llm)
+    elif _tier is LadderTier.INTENT_ORCHESTRATION:
+        _wire_tier2(graph, config, llm)
+    elif _tier is LadderTier.SEMANTIC_ROUTER:
+        _wire_tier3(
+            graph, config, llm, plan_loop_tier=plan_loop_tier, sequential_tier=sequential_tier,
+        )
+    else:
+        _wire_legacy(graph, config, llm, sequential_tier=sequential_tier)
+    if single_db_tail:
+        _wire_single_db_tail(graph, config, llm)
+
     # --- 체크포인트 ---
     if checkpointer is None:
         checkpointer = _create_checkpointer_simple(config)
 
     # Phase 3: HITL 승인 시 interrupt_before 설정
     interrupt_before = []
-    if config.enable_sql_approval:
+    if config.enable_sql_approval and single_db_tail:
         interrupt_before.append("approval_gate")
 
     compiled = graph.compile(
@@ -952,11 +1031,11 @@ def build_graph(config: AppConfig, checkpointer=None):
     if plan_loop_tier:
         logger.info("3단 계획 루프 등록(TIER3_PLAN_LOOP_ENABLED · plans/103 P2 · 111 C-4·C-5)")
 
-    # 확정된 사다리 단과 그 사유를 기록한다(D-161 / plans/70 P0-1 · D-225 기준 개정).
-    # 경로 4종은 병존이 아니라 한 단만 확정되는 사다리(기준 3단 · 1단 부가)이며,
-    # 확정은 여기서 1회 일어난다.
+    # 확정된 사다리 단과 그 사유를 기록한다(D-161 / plans/70 P0-1 · D-251 기준 개정).
+    # 경로 4종은 병존이 아니라 한 단만 확정되는 사다리(기준 2단 intent_orchestration ·
+    # 3단 semantic_router는 비교 arm · 1단 부가)이며,
+    # 확정은 선두의 resolve_ladder_tier 1회이고 기록은 컴파일 뒤 여기서 한다.
     # 이 로그가 "레거시 4단이 실제로 쓰이는가"를 판정하는 유일한 근거다.
-    _tier, _reason = resolve_ladder_tier(config, backend=_backend, buildable=_buildable)
     record_ladder_resolution(
         _tier, _reason,
         flag_origin=getattr(config, "_orchestration_resolved_by", "explicit_env"),

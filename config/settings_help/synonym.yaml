@@ -1,5 +1,5 @@
 # 설정 옵션 상세 설명 — 동의어 매칭 (D-191)
-# 근거: src/config.py SynonymMatchConfig 주석 · plans/61 트랙 B(D-075) · D-084
+# 근거: src/config/text2sql.py SynonymMatchConfig 주석 · plans/61 트랙 B(D-075) · D-084
 
 version: 1
 group: synonym

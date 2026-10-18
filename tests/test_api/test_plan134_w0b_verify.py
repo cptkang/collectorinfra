@@ -379,17 +379,21 @@ async def test_text_download_masks_whole_line_patterns(monkeypatch, store) -> No
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["queued", "running", "failed", "cancelled", "interrupted"])
 async def test_unfinished_or_failed_state_is_409_without_read_or_audit(monkeypatch, store,
-                                                                     state) -> None:
+                                                                     state, caplog) -> None:
     await _register(store)
     error = None if state in ("queued", "running") else {"code": state, "reason": f"사유-{state}"}
     gw, audit = _Gateway(state, error=error), _Audit()
     client = _client(monkeypatch, gw, ALICE, audit=audit)
     for fmt in ("csv", "jsonl", "txt"):
-        r = client.get(f"/api/v1/apm/jobs/{JOB}/download?format={fmt}")
+        with caplog.at_level("WARNING"):
+            r = client.get(f"/api/v1/apm/jobs/{JOB}/download?format={fmt}")
         assert r.status_code == 409, (fmt, r.text)
         assert state in r.json()["detail"]
         if error:
-            assert f"사유-{state}" in r.json()["detail"], "상태 사유를 함께 알린다"
+            # 게이트웨이 사유 원문은 응답이 아니라 서버 로그로(plans/163 S3) — 응답은 요청 번호만
+            assert f"사유-{state}" not in r.json()["detail"]
+            assert "(요청 " in r.json()["detail"]
+            assert f"사유-{state}" in caplog.text
     assert gw.named("apm_job_read") == [] and audit.downloads == []
 
 

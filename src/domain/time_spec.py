@@ -695,33 +695,9 @@ def resolve(spec: TimeSpec, now: datetime, *, subject: Subject = "metric") -> Ti
         assert spec.abs_start is not None  # TimeSpec 검증이 보장
         anchor_at, _ = _partial_start(spec.abs_start, now)
     rel = spec.relation
-    notes: list[str] = []
-    start: datetime | None
-    completeness: Completeness
 
     if rel == "none":
-        if spec.unbounded:
-            grain = _GRAIN_OF.get(spec.display_grain, "month")
-            return TimeResolution(
-                start=None, end=None, grain=grain, completeness="complete", source=spec.source,
-                anchor_at=now, span=spec.span, unbounded=True,
-            )
-        if event:
-            base_event = default_resolution(now, subject="event")
-            return TimeResolution(
-                start=None, end=None, grain=_GRAIN_OF.get(spec.display_grain, "month"),
-                completeness="complete", source="default", anchor_at=now, span=spec.span,
-                unbounded=True, notes=base_event.notes,
-            )
-        base = default_resolution(now)
-        assert base.end is not None
-        grain, gnotes = _select_grain(base.start, base.end, spec.display_grain, "month")
-        return TimeResolution(
-            start=base.start, end=base.end, grain=grain, completeness="complete",
-            source="default", anchor_at=now, span=spec.span,
-            notes=(NOTE_DEFAULT_PERIOD, *gnotes),
-        )
-
+        return _resolve_none(spec, now, event)
     if _clock_parts(spec):
         return _resolve_clock(spec, now, event)
     unit = spec.unit
@@ -733,87 +709,170 @@ def resolve(spec: TimeSpec, now: datetime, *, subject: Subject = "metric") -> Ti
     ):
         return _resolve_hour_rolling(spec, n, event, now, anchor_at)
     if rel == "last":
-        assert unit is not None
-        completeness = spec.completeness or ("rolling" if unit == "hour" else "complete")
-        cur = _floor(anchor_at, unit)
-        if completeness == "complete":
-            start, end = _shift(cur, unit, -n), cur
-            cap = _UNIT_GRAIN[unit]
-        elif completeness == "rolling":
-            end = _floor(anchor_at, "hour")
-            start = _shift(end, unit, -n)
-            cap = "hour"
-        else:  # to_date — 현재 칸을 포함한 N칸(현재 칸은 완결 경계까지)
-            start, end = _shift(cur, unit, -(n - 1)), _to_date_end(anchor_at, unit)
-            cap = _policy_cap(unit, completeness)
-    elif rel in ("this", "to_date"):
-        assert unit is not None
-        default = "to_date" if rel == "to_date" else _default_this_completeness(unit)
-        completeness = spec.completeness or default
-        start = _floor(anchor_at, unit)
-        if event:
-            # 사건 예외(D-291): 진행 중 기간은 기준 시각까지 — 완결 월·어제까지 절단은 통계 사정이다
-            completeness = "to_date"
-            end = max(anchor_at.replace(microsecond=0), start)
-            notes.append(NOTE_EVENT_TO_NOW)
-            return _finish(spec, start, end, completeness, "hour", notes, now, anchor_at)
-        if completeness == "complete":
-            end = _this_complete_end(anchor_at, unit)
-            if unit in ("year", "half", "quarter"):
-                notes.append(NOTE_CURRENT_MONTH_EXCLUDED)
-        elif completeness == "to_date":
-            end = _to_date_end(anchor_at, unit)
-        else:
-            end = _floor(anchor_at, "hour")
-        end = max(end, start)
-        cap = _policy_cap(unit, completeness)
-    elif rel == "next":
-        assert unit is not None
-        completeness = spec.completeness or "complete"
-        start = _shift(_floor(anchor_at, unit), unit, 1)
-        end = _shift(start, unit, n)
-        cap = _UNIT_GRAIN[unit]
-    elif rel == "ago":
-        assert unit is not None
-        completeness = spec.completeness or "complete"
-        start = _shift(_floor(anchor_at, unit), unit, -n)
-        end = _shift(start, unit, 1)
-        cap = _UNIT_GRAIN[unit]
-    elif rel == "absolute":
+        return _resolve_last(spec, n, now, anchor_at)
+    if rel in ("this", "to_date"):
+        return _resolve_this(spec, event, now, anchor_at)
+    if rel == "next":
+        return _resolve_next(spec, n, now, anchor_at)
+    if rel == "ago":
+        return _resolve_ago(spec, n, now, anchor_at)
+    if rel == "absolute":
         assert spec.abs_start is not None
         return _resolve_absolute(spec, now, subject=subject)
-    elif rel == "between":
-        assert spec.abs_start is not None and spec.abs_end is not None
-        start, end, inferred = _between_bounds(spec.abs_start, spec.abs_end, now)
-        _reject_future_explicit(start, now, spec.abs_start, spec.abs_end)
-        completeness = spec.completeness or "complete"
-        cap = _finer(_UNIT_GRAIN[spec.abs_start.precision], _UNIT_GRAIN[spec.abs_end.precision])
-        if inferred:
-            notes.append(NOTE_YEAR_INFERRED)
-        if start > now:
-            notes.append(NOTE_FUTURE_PERIOD)
-        elif end > _floor(now, "day"):
-            notes.append(NOTE_PERIOD_IN_PROGRESS)
-    elif rel == "since":
-        assert spec.abs_start is not None
-        start, inferred = _partial_start(spec.abs_start, now)
-        _reject_future_explicit(start, now, spec.abs_start)
-        completeness = spec.completeness or "to_date"
-        precision = spec.abs_start.precision
-        end = _floor(now, "hour") if precision == "hour" else _floor(now, "day")
-        end = max(end, start)
-        cap = _policy_cap(precision, completeness)
-        if inferred:
-            notes.append(NOTE_YEAR_INFERRED)
-    else:  # until
-        assert spec.abs_end is not None
-        e_start, inferred = _partial_start(spec.abs_end, now)
-        start, end = None, _shift(e_start, spec.abs_end.precision, 1)
-        completeness = spec.completeness or "complete"
-        cap = _UNIT_GRAIN[spec.abs_end.precision]
-        if inferred:
-            notes.append(NOTE_YEAR_INFERRED)
+    if rel == "between":
+        return _resolve_between(spec, now, anchor_at)
+    if rel == "since":
+        return _resolve_since(spec, now, anchor_at)
+    # until
+    return _resolve_until(spec, now, anchor_at)
 
+
+def _resolve_none(spec: TimeSpec, now: datetime, event: bool) -> TimeResolution:
+    """기간 없음 — 「~한 적이 있는」(unbounded) · 사건은 기간 조건 없음 · 통계는 직전 완결 월."""
+    if spec.unbounded:
+        grain = _GRAIN_OF.get(spec.display_grain, "month")
+        return TimeResolution(
+            start=None, end=None, grain=grain, completeness="complete", source=spec.source,
+            anchor_at=now, span=spec.span, unbounded=True,
+        )
+    if event:
+        base_event = default_resolution(now, subject="event")
+        return TimeResolution(
+            start=None, end=None, grain=_GRAIN_OF.get(spec.display_grain, "month"),
+            completeness="complete", source="default", anchor_at=now, span=spec.span,
+            unbounded=True, notes=base_event.notes,
+        )
+    base = default_resolution(now)
+    assert base.end is not None
+    grain, gnotes = _select_grain(base.start, base.end, spec.display_grain, "month")
+    return TimeResolution(
+        start=base.start, end=base.end, grain=grain, completeness="complete",
+        source="default", anchor_at=now, span=spec.span,
+        notes=(NOTE_DEFAULT_PERIOD, *gnotes),
+    )
+
+
+def _resolve_last(
+    spec: TimeSpec, n: int, now: datetime, anchor_at: datetime
+) -> TimeResolution:
+    """「지난·최근 N 단위」 — 완결 N칸 · 롤링(직전 정시까지) · 누적(현재 칸 포함 N칸)."""
+    unit = spec.unit
+    assert unit is not None
+    completeness: Completeness = (
+        spec.completeness or ("rolling" if unit == "hour" else "complete")
+    )
+    cur = _floor(anchor_at, unit)
+    if completeness == "complete":
+        start, end = _shift(cur, unit, -n), cur
+        cap = _UNIT_GRAIN[unit]
+    elif completeness == "rolling":
+        end = _floor(anchor_at, "hour")
+        start = _shift(end, unit, -n)
+        cap = "hour"
+    else:  # to_date — 현재 칸을 포함한 N칸(현재 칸은 완결 경계까지)
+        start, end = _shift(cur, unit, -(n - 1)), _to_date_end(anchor_at, unit)
+        cap = _policy_cap(unit, completeness)
+    return _finish(spec, start, end, completeness, cap, [], now, anchor_at)
+
+
+def _resolve_this(
+    spec: TimeSpec, event: bool, now: datetime, anchor_at: datetime
+) -> TimeResolution:
+    """「이번 단위」·「단위 누적」 — 진행 중 단위를 완결성 정책대로 자른다(사건은 기준 시각까지)."""
+    unit = spec.unit
+    assert unit is not None
+    notes: list[str] = []
+    default = "to_date" if spec.relation == "to_date" else _default_this_completeness(unit)
+    completeness: Completeness = spec.completeness or default
+    start = _floor(anchor_at, unit)
+    if event:
+        # 사건 예외(D-291): 진행 중 기간은 기준 시각까지 — 완결 월·어제까지 절단은 통계 사정이다
+        completeness = "to_date"
+        end = max(anchor_at.replace(microsecond=0), start)
+        notes.append(NOTE_EVENT_TO_NOW)
+        return _finish(spec, start, end, completeness, "hour", notes, now, anchor_at)
+    if completeness == "complete":
+        end = _this_complete_end(anchor_at, unit)
+        if unit in ("year", "half", "quarter"):
+            notes.append(NOTE_CURRENT_MONTH_EXCLUDED)
+    elif completeness == "to_date":
+        end = _to_date_end(anchor_at, unit)
+    else:
+        end = _floor(anchor_at, "hour")
+    end = max(end, start)
+    cap = _policy_cap(unit, completeness)
+    return _finish(spec, start, end, completeness, cap, notes, now, anchor_at)
+
+
+def _resolve_next(
+    spec: TimeSpec, n: int, now: datetime, anchor_at: datetime
+) -> TimeResolution:
+    """「다음 N 단위」 — 다음 칸부터 N칸."""
+    unit = spec.unit
+    assert unit is not None
+    completeness: Completeness = spec.completeness or "complete"
+    start = _shift(_floor(anchor_at, unit), unit, 1)
+    end = _shift(start, unit, n)
+    cap = _UNIT_GRAIN[unit]
+    return _finish(spec, start, end, completeness, cap, [], now, anchor_at)
+
+
+def _resolve_ago(
+    spec: TimeSpec, n: int, now: datetime, anchor_at: datetime
+) -> TimeResolution:
+    """「N 단위 전」 — N칸 앞의 한 칸(분·시 단위는 앞에서 롤링으로 처리했다)."""
+    unit = spec.unit
+    assert unit is not None
+    completeness: Completeness = spec.completeness or "complete"
+    start = _shift(_floor(anchor_at, unit), unit, -n)
+    end = _shift(start, unit, 1)
+    cap = _UNIT_GRAIN[unit]
+    return _finish(spec, start, end, completeness, cap, [], now, anchor_at)
+
+
+def _resolve_between(spec: TimeSpec, now: datetime, anchor_at: datetime) -> TimeResolution:
+    """「A~B」 날짜 범위 — 연도 규칙은 `_between_bounds`(D-185) · 미래·진행 중 고지."""
+    assert spec.abs_start is not None and spec.abs_end is not None
+    notes: list[str] = []
+    start, end, inferred = _between_bounds(spec.abs_start, spec.abs_end, now)
+    _reject_future_explicit(start, now, spec.abs_start, spec.abs_end)
+    completeness: Completeness = spec.completeness or "complete"
+    cap = _finer(_UNIT_GRAIN[spec.abs_start.precision], _UNIT_GRAIN[spec.abs_end.precision])
+    if inferred:
+        notes.append(NOTE_YEAR_INFERRED)
+    if start > now:
+        notes.append(NOTE_FUTURE_PERIOD)
+    elif end > _floor(now, "day"):
+        notes.append(NOTE_PERIOD_IN_PROGRESS)
+    return _finish(spec, start, end, completeness, cap, notes, now, anchor_at)
+
+
+def _resolve_since(spec: TimeSpec, now: datetime, anchor_at: datetime) -> TimeResolution:
+    """「A부터」 날짜 시작 — 끝은 어제까지(시 정밀이면 직전 정시)."""
+    assert spec.abs_start is not None
+    notes: list[str] = []
+    start, inferred = _partial_start(spec.abs_start, now)
+    _reject_future_explicit(start, now, spec.abs_start)
+    completeness: Completeness = spec.completeness or "to_date"
+    precision = spec.abs_start.precision
+    end = _floor(now, "hour") if precision == "hour" else _floor(now, "day")
+    end = max(end, start)
+    cap = _policy_cap(precision, completeness)
+    if inferred:
+        notes.append(NOTE_YEAR_INFERRED)
+    return _finish(spec, start, end, completeness, cap, notes, now, anchor_at)
+
+
+def _resolve_until(spec: TimeSpec, now: datetime, anchor_at: datetime) -> TimeResolution:
+    """「B까지」 — 왼쪽이 열린 구간(끝 = 끝 부분값 단위의 다음 칸)."""
+    assert spec.abs_end is not None
+    notes: list[str] = []
+    e_start, inferred = _partial_start(spec.abs_end, now)
+    start, end = None, _shift(e_start, spec.abs_end.precision, 1)
+    completeness: Completeness = spec.completeness or "complete"
+    cap = _UNIT_GRAIN[spec.abs_end.precision]
+    if inferred:
+        notes.append(NOTE_YEAR_INFERRED)
     return _finish(spec, start, end, completeness, cap, notes, now, anchor_at)
 
 

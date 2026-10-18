@@ -6,8 +6,9 @@ LangGraph 에이전트의 전역 상태(AgentState)와 관련 타입을 정의�
 
 from __future__ import annotations
 
+import copy
 import operator
-from typing import Annotated, Any, NotRequired, Optional, TypedDict
+from typing import Annotated, Any, NotRequired, Optional, TypedDict, cast
 
 from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph import add_messages
@@ -449,6 +450,89 @@ class AgentState(TypedDict):
     task_outcomes: Annotated[list[dict[str, Any]], operator.add]
 
 
+# === output_generator 입력 허용목록 (plans/181 · 166 단계 7e) ===
+# 2단 집계기(`result_aggregator._build_output_state`)가 구간 함수 4개를 펼쳐 조립하는 dict의
+# 키 선언이다. 구간마다 TypedDict를 두고 `OutputState`가 상속한다 — 펼침(`**`)을 mypy가 구간
+# 단위로 검사하게 하려는 것이다. **선언만이다**(런타임 객체는 그대로 dict).
+
+
+class OutputTaskResultInputs(TypedDict):
+    """`OutputState`의 task 결과 구간(`_task_result_inputs` — 행 · 존 커버리지 · 0건 진단)."""
+
+    organized_data: OrganizedData | None     # task 결과 값 그대로 — 없으면 None
+    query_results: list[dict[str, Any]]
+    db_errors: dict[str, str] | None
+    db_result_summary: dict[str, dict[str, Any]] | None
+    empty_diagnosis: dict[str, Any] | None
+
+
+class OutputFormInputs(TypedDict):
+    """`OutputState`의 양식·매핑·폼필 구간(`_form_inputs`)."""
+
+    template_structure: dict[str, Any] | None
+    uploaded_file: bytes | None
+    target_sheets: list[str] | None
+    file_type: str | None
+    mapping_sources: dict[str, str] | None
+    column_mapping: dict[str, str | None] | None
+    db_column_mapping: dict[str, dict[str, str]] | None
+    llm_inference_details: list[dict[str, Any]] | None
+    form_month_anchor: dict[str, Any] | None
+    form_fill_candidates: list[dict[str, Any]] | None
+    form_fill_overrides: dict[str, dict[str, Any]] | None
+    form_fill_literals: dict[str, str] | None
+    form_fill_answers: dict[str, dict[str, Any]] | None
+    form_fill_remember: bool | None
+    pending_form_fill: dict[str, Any] | None
+
+
+class OutputZoneScopeInputs(TypedDict):
+    """`OutputState`의 존 보존 구간(`_zone_scope_inputs` — D-186)."""
+
+    selected_db_ids: list[str] | None
+    target_databases: list[dict[str, Any]] | None  # 둘 다 없으면 None
+
+
+class OutputDisclosureInputs(TypedDict):
+    """`OutputState`의 2단 결정적 고지 구간(`_disclosure_inputs` — plans/123 W-1·W-3).
+
+    `query_attempts`만 `AgentState` 선언(`list[QueryAttempt]`)과 모양이 다르다 — 실제 값은
+    `{"sql": …}` 한 칸짜리 dict 목록이다.
+    """
+
+    executed_sqls: list[dict[str, Any]]      # AgentState 밖
+    query_attempts: list[dict[str, Any]]
+    spike_notes: list[str] | None
+    routing_intent: str | None
+    all_null_downgrade: bool                 # AgentState 밖
+    original_user_query: str                 # AgentState 밖
+    per_task_finalize: bool                  # AgentState 밖
+    task_id: str | None                      # AgentState 밖
+    condition_check: bool                    # AgentState 밖
+    limit_sources: list[dict[str, Any]] | None  # AgentState 밖
+
+
+class OutputState(
+    OutputTaskResultInputs, OutputFormInputs, OutputZoneScopeInputs, OutputDisclosureInputs,
+):
+    """output_generator가 2단·1단 최종 응답에서 받는 허용목록 state.
+
+    `result_aggregator._build_output_state`가 만드는 키 전부다 — **여기 없는 키는 그 경로의
+    output_generator에 닿지 않는다**(docs/18 2026-10-06 — 허용목록 밖 키를 읽는 게이트가 실배선에서
+    no-op). 키를 더하려면 구간 함수와 이 선언을 함께 고친다. `AgentState`에 없는 키 8종
+    (`executed_sqls` · `period_sources` · `limit_sources` · `condition_check` · `task_id` ·
+    `per_task_finalize` · `all_null_downgrade` · `original_user_query`)은 이 경로 전용 입력이다.
+    """
+
+    user_query: str                          # task의 sub_query(없으면 턴 질의)
+    parsed_requirements: dict[str, Any]
+    time_resolution: dict[str, Any] | None
+    period_sources: list[dict[str, Any]] | None  # AgentState 밖
+    final_response: str
+    output_file: bytes | None
+    output_file_name: str | None
+
+
 def create_followup_input(
     user_query: str,
     selected_db_ids: Optional[list[str]] = None,
@@ -609,6 +693,178 @@ def create_followup_input(
     return delta
 
 
+# `create_initial_state`의 초기값 표(plans/181 · 166 단계 7e) — 순서가 곧 반환 dict의 키 순서다
+# (종전 `AgentState(...)` 키워드 나열 순서 그대로). `_FROM_ARGS` 칸은 함수 인자에서 오는 값이라
+# 표에서는 순서 자리만 잡고 함수가 덮어쓴다(dict는 기존 키를 갱신해도 위치가 그대로다).
+# 가변 값(`[]` · `{}` · 중첩 dict)은 호출마다 깊은 복사한다 — 호출 사이에 객체를 공유하지 않는다.
+# 체크포인터는 델타만 병합하므로(D-064 · D-162) 요청 스코프 키는 여기서 빠지면 안 된다.
+_FROM_ARGS = None
+_INITIAL_STATE_DEFAULTS: tuple[tuple[str, Any], ...] = (
+    ("user_query", _FROM_ARGS),
+    ("uploaded_file", _FROM_ARGS),
+    ("file_type", _FROM_ARGS),
+    ("parsed_requirements", {}),
+    ("template_structure", None),
+    ("target_sheets", None),
+    ("csv_sheet_data", _FROM_ARGS),
+    ("relevant_tables", []),
+    ("schema_info", {}),
+    ("schema_cache_source", None),
+    ("table_selection", None),  # plans/139 W4 — 요청 스코프
+    ("column_mapping", None),
+    ("db_column_mapping", None),
+    ("mapping_sources", None),
+    ("mapped_db_ids", None),
+    ("pending_synonym_registrations", None),
+    ("llm_inference_details", None),
+    ("mapping_report_md", None),
+    ("form_month_anchor", None),
+    # HITL 폼필(D-151): answers는 라우트가 답변 턴에만 주입, pending은 멀티턴 보존
+    # (새 파일 업로드 턴은 output_generator가 새 미해결로 교체).
+    ("form_fill_answers", None),
+    ("form_fill_overrides", None),
+    ("form_fill_literals", None),
+    ("form_fill_candidates", None),
+    ("form_fill_clarification", None),
+    ("form_memory_panel", None),
+    ("form_fill_remember", None),
+    ("last_form_signature", None),
+    ("pending_form_fill", None),
+    ("pending_synonym_reuse", None),
+    ("column_descriptions", {}),
+    ("column_synonyms", {}),
+    ("resource_type_synonyms", {}),
+    ("eav_name_synonyms", {}),
+    ("generated_sql", ""),
+    ("sql_candidates", None),
+    ("text2sql_fallback", None),
+    ("smq_derivation", None),
+    ("column_value_index", None),
+    ("synonym_usage", None),
+    ("pii_block_diagnosis", None),
+    ("prompt_budget", None),  # plans/139 W2 — 요청 스코프
+    ("template_assembly", None),  # plans/143 W6 — 요청 스코프
+    ("validation_result", {"passed": False, "reason": "", "auto_fixed_sql": None}),
+    ("query_results", []),
+    ("organized_data", {
+        "summary": "",
+        "rows": [],
+        "column_mapping": None,
+        "resolved_mapping": None,
+        "is_sufficient": False,
+        "sheet_mappings": None,
+    }),
+    ("retry_count", 0),
+    ("error_message", None),
+    ("current_node", ""),
+    # 라우트가 원문 기준으로 승격한 LIMIT 확정값(D-066 후속7). 파일(폼필) 경로는
+    # 전량 채움이 기본이라 라우트가 상향값을 명시 전달한다(Plan 71 후속 — 폼필 1000 절단).
+    ("resolved_limit", _FROM_ARGS),
+    ("raw_user_query", _FROM_ARGS),
+    ("display_query", _FROM_ARGS),
+    ("intent_frame", None),
+    ("rewrite_trace", None),
+    ("query_attempts", []),
+    ("active_db_engine", None),
+    ("routing_intent", None),
+    ("target_databases", []),
+    ("active_db_id", None),
+    ("db_results", {}),
+    ("db_schemas", {}),
+    ("db_errors", {}),
+    ("is_multi_db", False),
+    ("user_specified_db", None),
+    ("selected_db_ids", _FROM_ARGS),
+    ("selected_sources", _FROM_ARGS),  # 요청 스코프(plans/132 N-10)
+    ("source_choice", None),  # 스레드 범위(plans/132 N-10) — 새 스레드는 비어 있다
+    ("turn_sources", None),  # 2단 계획 출구가 매 턴 쓴다(plans/132)
+    ("source_selection_meta", None),  # 요청 스코프(plans/132 W5)
+    ("source_switch", None),  # 요청 스코프(plans/132 W5)
+    # 제니퍼 소스 선택(plans/147) — 선택·근거·글 답·되묻기는 요청 스코프 ·
+    # 승계·대기는 스레드 범위
+    ("selected_apm_source_ids", _FROM_ARGS),
+    ("apm_source_basis", _FROM_ARGS),
+    ("apm_source_answer_text", None),
+    ("apm_source_clarification", None),
+    ("apm_source_scope", None),
+    ("apm_source_pending", None),
+    ("zone_clarification_allowed", _FROM_ARGS),
+    ("zone_clarification", None),
+    ("reuse_parsed_requirements", None),
+    ("zone_reentry_plan", None),  # 요청 스코프(plans/121 TP-1.2)
+    ("reuse_task_plan", None),  # 요청 스코프(plans/121 TP-1.2)
+    ("db_scope_source", None),
+    ("db_scope_reset", False),
+    # 교차 시스템 질의(plans/102) — 요청 스코프
+    ("required_capabilities", None),
+    ("capability_chain", None),
+    ("entity_probe", None),
+    # Phase 3: 멀티턴 대화
+    ("messages", _FROM_ARGS),
+    ("thread_id", _FROM_ARGS),
+    ("conversation_context", None),
+    # Phase 3: Human-in-the-loop
+    ("awaiting_approval", False),
+    ("approval_context", None),
+    ("approval_action", None),
+    ("approval_modified_sql", None),
+    # 사용자 컨텍스트
+    ("user_id", _FROM_ARGS),
+    ("user_department", _FROM_ARGS),
+    ("user_role", _FROM_ARGS),
+    ("allowed_db_ids", _FROM_ARGS),
+    ("allowed_sources", _FROM_ARGS),
+    # 감사 로깅
+    ("request_id", _FROM_ARGS),
+    ("client_ip", _FROM_ARGS),
+    ("accessed_tables", []),
+    # D-176 실행 그룹 — 요청 스코프(이전 턴 승계 차단)
+    ("execution_groups", None),
+    ("group_results", None),
+    ("group_packets", None),
+    ("db_result_summary", None),
+    ("db_executed_sqls", None),  # 요청 스코프(plans/113 S-1)
+    ("merged_ranking", None),  # 요청 스코프(plans/113 S-1)
+    ("merged_aggregates", None),  # 요청 스코프(plans/113 S-3)
+    ("empty_diagnosis", None),
+    ("spike_notes", None),
+    ("discovery_trace", None),
+    ("scope_narrowed", None),
+    ("disclosures", None),  # 요청 스코프(plans/123 W-8)
+    ("turn_disclosures", None),
+    ("demonstrative_without_antecedent", None),  # plans/123 S-7(b)
+    ("unanchored_query_targets", None),  # plans/123 S-7(a)
+    ("time_resolution", None),  # plans/122 T-4 — 요청 스코프
+    # 출력
+    ("final_response", ""),
+    ("output_file", None),
+    ("output_file_name", None),
+    # Plan 48: deepagents 오케스트레이션
+    ("task_plan", []),
+    ("task_results", {}),
+    ("is_composite", False),
+    ("prior_rows", None),  # 요청 스코프 — 명시 초기화로 이전 턴 승계 차단 (Plan 69 P0-⑥)
+    # 요청 스코프 — LangGraph 체크포인터는 델타만 병합하므로 명시 초기화가 없으면
+    # 이전 턴 대상이 승계돼 엉뚱한 호스트를 조사한다(Plan 78 W1-5).
+    ("prior_targets", None),
+    ("dependency_notes", None),  # 요청 스코프(D-203)
+    ("clarification_needed", None),  # 요청 스코프(plans/121 TP-1.4)
+    ("plan_path", None),  # 요청 스코프(plans/121 TP-0.1)
+    ("decompose_fallback", None),  # 요청 스코프(plans/121 TP-1.6)
+    # Plan 49: 동적 재계획
+    ("replan_count", 0),
+    ("needs_replan", False),
+    ("replan_history", []),
+    # plans/118 P-1·P-2(요청 스코프) — 마감은 라우트가 싣는다. 없으면 재계획기는 종전 동작.
+    ("request_deadline", None),
+    ("orchestrator_round_sec", None),
+    ("replan_stop_notice", None),
+    # plans/103 3단 계획 루프(요청 스코프)
+    ("needs_plan", None),
+    ("task_outcomes", []),
+)
+
+
 def create_initial_state(
     user_query: str,
     uploaded_file: Optional[bytes] = None,
@@ -653,167 +909,31 @@ def create_initial_state(
     Returns:
         초기화된 AgentState
     """
-    return AgentState(
+    # 키는 위 표에서 만든다 — 표 전체를 복사한 뒤 인자에서 오는 칸만 덮어쓴다. 키를 mypy가
+    # 아니라 표가 정하므로 `cast`로 돌려준다(키 집합 = AgentState 단언은
+    # tests/test_plan181_output_state.py).
+    state: dict[str, Any] = {k: copy.deepcopy(v) for k, v in _INITIAL_STATE_DEFAULTS}
+    state.update(
         user_query=user_query,
         uploaded_file=uploaded_file,
         file_type=file_type,
-        parsed_requirements={},
-        template_structure=None,
-        target_sheets=None,
         csv_sheet_data=csv_sheet_data,
-        relevant_tables=[],
-        schema_info={},
-        schema_cache_source=None,
-        table_selection=None,  # plans/139 W4 — 요청 스코프
-        column_mapping=None,
-        db_column_mapping=None,
-        mapping_sources=None,
-        mapped_db_ids=None,
-        pending_synonym_registrations=None,
-        llm_inference_details=None,
-        mapping_report_md=None,
-        form_month_anchor=None,
-        # HITL 폼필(D-151): answers는 라우트가 답변 턴에만 주입, pending은 멀티턴 보존
-        # (새 파일 업로드 턴은 output_generator가 새 미해결로 교체).
-        form_fill_answers=None,
-        form_fill_overrides=None,
-        form_fill_literals=None,
-        form_fill_candidates=None,
-        form_fill_clarification=None,
-        form_memory_panel=None,
-        form_fill_remember=None,
-        last_form_signature=None,
-        pending_form_fill=None,
-        pending_synonym_reuse=None,
-        column_descriptions={},
-        column_synonyms={},
-        resource_type_synonyms={},
-        eav_name_synonyms={},
-        generated_sql="",
-        sql_candidates=None,
-        text2sql_fallback=None,
-        smq_derivation=None,
-        column_value_index=None,
-        synonym_usage=None,
-        pii_block_diagnosis=None,
-        prompt_budget=None,  # plans/139 W2 — 요청 스코프
-        template_assembly=None,  # plans/143 W6 — 요청 스코프
-        validation_result={"passed": False, "reason": "", "auto_fixed_sql": None},
-        query_results=[],
-        organized_data={
-            "summary": "",
-            "rows": [],
-            "column_mapping": None,
-            "resolved_mapping": None,
-            "is_sufficient": False,
-            "sheet_mappings": None,
-        },
-        retry_count=0,
-        error_message=None,
-        current_node="",
-        # 라우트가 원문 기준으로 승격한 LIMIT 확정값(D-066 후속7). 파일(폼필) 경로는
-        # 전량 채움이 기본이라 라우트가 상향값을 명시 전달한다(Plan 71 후속 — 폼필 1000 절단).
         resolved_limit=resolved_limit,
         raw_user_query=raw_user_query,
         display_query=user_query if raw_user_query is not None else None,
-        intent_frame=None,
-        rewrite_trace=None,
-        query_attempts=[],
-        active_db_engine=None,
-        routing_intent=None,
-        target_databases=[],
-        active_db_id=None,
-        db_results={},
-        db_schemas={},
-        db_errors={},
-        is_multi_db=False,
-        user_specified_db=None,
         selected_db_ids=selected_db_ids,
-        selected_sources=selected_sources,  # 요청 스코프(plans/132 N-10)
-        source_choice=None,  # 스레드 범위(plans/132 N-10) — 새 스레드는 비어 있다
-        turn_sources=None,  # 2단 계획 출구가 매 턴 쓴다(plans/132)
-        source_selection_meta=None,  # 요청 스코프(plans/132 W5)
-        source_switch=None,  # 요청 스코프(plans/132 W5)
-        # 제니퍼 소스 선택(plans/147) — 선택·근거·글 답·되묻기는 요청 스코프 ·
-        # 승계·대기는 스레드 범위
+        selected_sources=selected_sources,
         selected_apm_source_ids=selected_apm_source_ids,
         apm_source_basis="selected" if selected_apm_source_ids else None,
-        apm_source_answer_text=None,
-        apm_source_clarification=None,
-        apm_source_scope=None,
-        apm_source_pending=None,
         zone_clarification_allowed=allow_zone_clarification,
-        zone_clarification=None,
-        reuse_parsed_requirements=None,
-        zone_reentry_plan=None,  # 요청 스코프(plans/121 TP-1.2)
-        reuse_task_plan=None,  # 요청 스코프(plans/121 TP-1.2)
-        db_scope_source=None,
-        db_scope_reset=False,
-        # 교차 시스템 질의(plans/102) — 요청 스코프
-        required_capabilities=None,
-        capability_chain=None,
-        entity_probe=None,
-        # Phase 3: 멀티턴 대화
         messages=[HumanMessage(content=user_query)],
         thread_id=thread_id,
-        conversation_context=None,
-        # Phase 3: Human-in-the-loop
-        awaiting_approval=False,
-        approval_context=None,
-        approval_action=None,
-        approval_modified_sql=None,
-        # 사용자 컨텍스트
         user_id=user_id,
         user_department=user_department,
         user_role=user_role,
         allowed_db_ids=allowed_db_ids,
         allowed_sources=allowed_sources,
-        # 감사 로깅
         request_id=request_id,
         client_ip=client_ip,
-        accessed_tables=[],
-        # D-176 실행 그룹 — 요청 스코프(이전 턴 승계 차단)
-        execution_groups=None,
-        group_results=None,
-        group_packets=None,
-        db_result_summary=None,
-        db_executed_sqls=None,  # 요청 스코프(plans/113 S-1)
-        merged_ranking=None,  # 요청 스코프(plans/113 S-1)
-        merged_aggregates=None,  # 요청 스코프(plans/113 S-3)
-        empty_diagnosis=None,
-        spike_notes=None,
-        discovery_trace=None,
-        scope_narrowed=None,
-        disclosures=None,  # 요청 스코프(plans/123 W-8)
-        turn_disclosures=None,
-        demonstrative_without_antecedent=None,  # plans/123 S-7(b)
-        unanchored_query_targets=None,  # plans/123 S-7(a)
-        time_resolution=None,  # plans/122 T-4 — 요청 스코프
-        # 출력
-        final_response="",
-        output_file=None,
-        output_file_name=None,
-        # Plan 48: deepagents 오케스트레이션
-        task_plan=[],
-        task_results={},
-        is_composite=False,
-        prior_rows=None,  # 요청 스코프 — 명시 초기화로 이전 턴 승계 차단 (Plan 69 P0-⑥)
-        # 요청 스코프 — LangGraph 체크포인터는 델타만 병합하므로 명시 초기화가 없으면
-        # 이전 턴 대상이 승계돼 엉뚱한 호스트를 조사한다(Plan 78 W1-5).
-        prior_targets=None,
-        dependency_notes=None,  # 요청 스코프(D-203)
-        clarification_needed=None,  # 요청 스코프(plans/121 TP-1.4)
-        plan_path=None,  # 요청 스코프(plans/121 TP-0.1)
-        decompose_fallback=None,  # 요청 스코프(plans/121 TP-1.6)
-        # Plan 49: 동적 재계획
-        replan_count=0,
-        needs_replan=False,
-        replan_history=[],
-        # plans/118 P-1·P-2(요청 스코프) — 마감은 라우트가 싣는다. 없으면 재계획기는 종전 동작.
-        request_deadline=None,
-        orchestrator_round_sec=None,
-        replan_stop_notice=None,
-        # plans/103 3단 계획 루프(요청 스코프)
-        needs_plan=None,
-        task_outcomes=[],
     )
+    return cast(AgentState, state)

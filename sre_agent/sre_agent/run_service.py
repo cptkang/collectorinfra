@@ -16,6 +16,7 @@ import signal
 
 import uvicorn
 
+from sre_agent.infrastructure.log_masking import install_log_record_factory
 from sre_agent.interface.mcp_service import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 def main() -> None:
     """조사 서비스를 기동한다."""
     logging.basicConfig(level=logging.INFO)
+    install_log_record_factory()  # 로그 비밀값 가림(plans/167)
 
     # D-213 진단: SIGUSR1 수신 시 **전 스레드 파이썬 스택**을 stderr(journald)로
     # 덤프한다 — 잡이 running에서 멈췄을 때 어느 코드 줄에 매달렸는지 실측하는 유일한

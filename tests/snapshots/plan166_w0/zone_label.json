@@ -1,0 +1,73 @@
+{
+  "differing_db_ids": [
+    "polestar",
+    "cloud_portal",
+    "itsm",
+    "itam"
+  ],
+  "inputs": [
+    "polestar_b0",
+    "polestar_cm_gp",
+    "polestar_cm_yd",
+    "polestar",
+    "cloud_portal",
+    "itsm",
+    "itam",
+    "nonexistent_db",
+    ""
+  ],
+  "labels": {
+    "": {
+      "host_sweep": "",
+      "query_route": "",
+      "realtime_usage": ""
+    },
+    "cloud_portal": {
+      "host_sweep": "cloud_portal",
+      "query_route": "Cloud Portal DB",
+      "realtime_usage": "Cloud Portal DB"
+    },
+    "itam": {
+      "host_sweep": "itam",
+      "query_route": "ITAM DB",
+      "realtime_usage": "ITAM DB"
+    },
+    "itsm": {
+      "host_sweep": "itsm",
+      "query_route": "ITSM DB",
+      "realtime_usage": "ITSM DB"
+    },
+    "nonexistent_db": {
+      "host_sweep": "nonexistent_db",
+      "query_route": "nonexistent_db",
+      "realtime_usage": "nonexistent_db"
+    },
+    "polestar": {
+      "host_sweep": "polestar",
+      "query_route": "로컬 개발 샌드박스 Polestar",
+      "realtime_usage": "로컬 개발 샌드박스 Polestar"
+    },
+    "polestar_b0": {
+      "host_sweep": "은행존",
+      "query_route": "은행존",
+      "realtime_usage": "은행존"
+    },
+    "polestar_cm_gp": {
+      "host_sweep": "공동존 김포",
+      "query_route": "공동존 김포",
+      "realtime_usage": "공동존 김포"
+    },
+    "polestar_cm_yd": {
+      "host_sweep": "공동존 여의도",
+      "query_route": "공동존 여의도",
+      "realtime_usage": "공동존 여의도"
+    }
+  },
+  "same_db_ids": [
+    "polestar_b0",
+    "polestar_cm_gp",
+    "polestar_cm_yd",
+    "nonexistent_db",
+    ""
+  ]
+}

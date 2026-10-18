@@ -112,7 +112,7 @@ RUN_LOCAL_LLM=1 pytest <파일> -m live_llm         # 로컬 MLX 실 LLM 테스�
 
 ## 설정과 정본 파일
 
-설정은 `pydantic-settings` 계층 구조다 — `AppConfig`(`src/config.py`, 23개 nested config)가
+설정은 `pydantic-settings` 계층 구조다 — `AppConfig`(`src/config/` 패키지, 23개 nested config)가
 `.env`/`.encenv`에서 읽는다. 접근은 `cfg.<그룹>.<필드>` (예: `cfg.composite.max_targets`).
 
 | 정본 | 내용 | 신규 편입 시 |
@@ -178,12 +178,12 @@ Excel·Word 양식 채우기(병합셀·수식·서식 보존) · 필드↔컬�
 | `regress.py` | 모듈 단위 회귀 + 위 두 게이트 + 바꾼 파일 ruff·mypy + 실패 귀속 (D-303) · `--no-tests` = 정적 게이트만(Wave 중간) |
 | `catalog_diff.py` · `prompt_render_diff.py` · `pii_probe.py`·`pii_regex_check.py` | 시맨틱 모델 사본 동등성 · 프롬프트 렌더 회귀 · PII 규칙 |
 
-`overfit_check` 기준선(`scripts/overfit_baseline.json`)은 **전면 재생성 금지** — 자기 델타만 소거한다. 스캔 대상에 `noise_gate/domain`·`mcp_server/mcp_server`가 포함되므로 **독스트링의 스키마 리터럴도 걸린다**(D-179). 위반 수정 패턴: `docs/34` §12
+`overfit_check` 기준선(`scripts/overfit_baseline.json`)은 **전면 재생성 금지** — 자기 델타만 소거한다. 스캔 대상에 `noise_gate/domain`·`mcp_server/mcp_server`가 포함되므로 **독스트링의 스키마 리터럴도 걸린다**(D-088). 위반 수정 패턴: `docs/34` §12
 
 ## 회귀 테스트 정책 (D-303)
 
 - **모듈 단위 회귀는 계획서 하나가 끝날 때 1회**(마지막 Wave · 계획서 없는 단건 작업은 작업 끝) — team-lead가 `python scripts/regress.py --base <계획 시작 SHA> --files <계획이 바꾼 파일…>`로 돌린다. `--base`를 생략하면 `HEAD` 기준이라 피어 커밋이 섞인다. 목록만 보려면 `--plan`.
-- **Wave 중간**은 implementer가 자기가 쓰거나 바꾼 테스트 파일만 `pytest`로 돌리고 `regress.py --no-tests --files …`(정적 게이트만)를 돌린다. verifier는 팀 리드의 회귀 결과를 받아 쓰고 자기 테스트만 돌린다. 예외: 도구가 `[웨이브 회귀 필요]`(공개 시그니처·`src/config.py`·`src/state.py`·테스트 기반 파일 변경)를 내면 그 Wave 끝에 모듈 단위 회귀를 돌린다. 계획서에 적힌 Wave별 회귀 문구는 이 규칙으로 읽는다(D-303 부기 2026-10-07).
+- **Wave 중간**은 implementer가 자기가 쓰거나 바꾼 테스트 파일만 `pytest`로 돌리고 `regress.py --no-tests --files …`(정적 게이트만)를 돌린다. verifier는 팀 리드의 회귀 결과를 받아 쓰고 자기 테스트만 돌린다. 예외: 도구가 `[웨이브 회귀 필요]`(공개 시그니처·`src/config/`·`src/state.py`·테스트 기반 파일 변경)를 내면 그 Wave 끝에 모듈 단위 회귀를 돌린다. 계획서에 적힌 Wave별 회귀 문구는 이 규칙으로 읽는다(D-303 부기 2026-10-07).
 - **전체 회귀(`--full`·맨 `pytest`)는 사용자가 요청할 때만** — 계획 완료·Wave 종료·커밋 전에도 스스로 돌리지 않는다. 도구가 `[전체 회귀 권고]` 블록을 내면 **그 블록을 보고에 그대로 옮긴다**.
 - 보고에는 도구 마지막 범위 줄(`범위: 모듈 단위 — 전체 미실행`)을 옮긴다. 모듈 단위 결과를 전체 무회귀처럼 쓰지 않는다. 교정 라운드에서는 실패했던 테스트와 그 모듈 선택분만 다시 돌린다.
 - 병렬로 못 도는 테스트는 원인(전역 상태 미원복 등)을 먼저 고치고, 그래도 안 되면 `serial` 마커. `addopts`에 `-n`을 넣지 않는다.
@@ -212,7 +212,7 @@ Excel·Word 양식 채우기(병합셀·수식·서식 보존) · 필드↔컬�
 
 | 패키지 | 실행 형태 | 경계 |
 |---|---|---|
-| `noise_gate/` | 게이트·워커는 본체와 같은 프로세스·venv, 수신부(`alarm_server/`)는 독립 프로세스 | `src → noise_gate` 의존 잔존(D-048). 역방향은 config/llm/utils/routing 최소 |
+| `noise_gate/` | 게이트·워커는 본체와 같은 프로세스·venv, 수신부(`alarm_server/`)는 독립 프로세스 | `src → noise_gate` 의존 잔존(D-048). 역방향은 config/llm/utils/routing 최소 + stdlib 전용 `src.domain.*`·`src.observability.investigation_metrics`(D-139 부기) |
 | `sre_agent/` | 별도 venv·별도 프로세스 | 양방향 import 0 (MCP 계약만) |
 | `mcp_server/` | 별도 프로세스·cwd (루트 venv 공유) | 양방향 import 0 |
 | `apm_gateway/` | 별도 프로세스·cwd (루트 venv 공유 · 제니퍼 환경에만 배포) | 양방향 import 0 (MCP · `alarm:raw` 계약만 — `tests/test_boundary.py`) · 제니퍼 토큰은 여기에만(D-274) |
@@ -229,9 +229,9 @@ domain → config/utils → prompts → infrastructure → application → orche
 ```
 
 `src/` 매핑(정본은 `arch_check.py`의 `MODULE_LAYER_MAP`): `state.py`·`domain/`=domain ·
-`config.py`=config · `utils/`=utils · `prompts/`=prompts · `llm.py`·`clients/`·`db/`·`dbhub/`·
+`config/`=config · `utils/`=utils · `prompts/`=prompts · `llm.py`·`clients/`·`db/`·`dbhub/`·
 `security/`·`schema_cache/`·`document/`·`routing/`·`infrastructure/`·`observability/`=infrastructure ·
-`nodes/`·`db_adapters/`·`semantic/`·`tools/`·`doc_qa/`·`sql_validation.py`·`sql_time_conditions.py`=**application** ·
+`nodes/`·`pipeline/`·`db_adapters/`·`semantic/`·`tools/`·`doc_qa/`·`sql_validation.py`·`sql_time_conditions.py`=**application** ·
 `orchestration/`·`graph.py`=orchestration · `api/`=interface · `main.py`=entry.
 
 `db_adapters/`·`tools/`·`semantic/`이 infrastructure가 아니라 application인 것에 주의한다 —

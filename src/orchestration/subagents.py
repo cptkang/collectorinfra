@@ -7,8 +7,13 @@
 - SubAgentSpec / SUBAGENT_REGISTRY: deepagents SubAgent dict 스키마에 정합하는 정의 테이블.
 - classify_dbs: 기존 semantic_router._llm_classify의 DB 분류부만 재사용.
 - _run_single_db_pipeline: 단일 DB 풀 검증·재시도 루프(graph.py 라우팅 로직 이식).
-- _make_isolated_input: subagent에 전달할 필터된 얇은 컨텍스트(S3 부분 격리).
+- make_isolated_input: subagent에 전달할 필터된 얇은 컨텍스트(S3 부분 격리).
 - run_* handler들: 기존 동명 노드를 sub_query 입력으로 호출.
+
+plans/166 O4로 정의 스키마(`agent_spec.SubAgentSpec`) · DB 대상 정책(`db_targeting`) · 격리 입력
+순수 조각(`isolated_input`)을 떼어 냈다. 옮긴 이름은 여기서 재노출한다. 테스트가 이 모듈에서
+바꿔 끼우는 이름(`classify_dbs`·`_run_single_db_pipeline`·노드 함수·`load_config` 등)을 부르는
+함수는 이 모듈(Facade)에 남겼다(D-337 ②).
 
 본 모듈은 tool-calling을 사용하지 않는다(handler 디스패치는 코드 기반).
 """
@@ -17,16 +22,12 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Collection
-from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
 from src.config import AppConfig, load_config
-from src.domain.knowledge_assets import mentions_utilization, utilization_kind
-from src.domain.query_time import QueryTime, resolve_task_time
 from src.nodes.cache_management import cache_management
 from src.nodes.general_inference import general_inference
 from src.nodes.multi_db_executor import multi_db_executor
@@ -58,69 +59,74 @@ from src.nodes.result_organizer import result_organizer
 from src.nodes.schema_analyzer import schema_analyzer
 from src.nodes.synonym_registrar import synonym_registrar
 from src.observability import run_capture
-from src.orchestration.process_query import (
-    _DEMONSTRATIVE_NOUNS,
-    _DEMONSTRATIVE_PREFIXES,
-    _HOST_FIELDS,
-    _is_demonstrative_value,
-    resolve_investigation_targets,
-    run_process_query,
-)
+from src.orchestration.agent_spec import SubAgentSpec
+from src.orchestration.process_query import run_process_query
 from src.orchestration.db_access import access_denied_result, authorize_targets, denied_for_all
+from src.orchestration.db_targeting import (
+    REASON_SOURCE_INACTIVE,  # noqa: F401 — 재노출
+    REASON_SOURCE_NOT_CANONICAL,  # noqa: F401 — 재노출
+    REASON_SOURCE_UNSUPPORTED,  # noqa: F401 — 재노출
+    _apply_db_succession,
+    _apply_selection_to_zone_groups,
+    _apply_turn_hint_pinning,
+    _explicit_source_notice,
+    _has_new_location_db_signal,  # noqa: F401 — 재노출
+    _inject_demonstrative_hostname,
+    _multiple_systems_active,
+    _refers_to_specific_server,  # noqa: F401 — 재노출
+    _source_unavailable_notes,
+    _strip_location_terms,  # noqa: F401 — 재노출
+    _utilization_correction_note,
+    _utilization_source_guard,
+    _zone_clarification_or_none_task,
+    _zone_clarification_result,
+    normalize_targets,
+)
 from src.orchestration.host_inspect import HOST_INSPECT_AGENT, run_host_inspect
 from src.orchestration.investigation_audit import (
     BACKEND_MCP,
     BACKEND_PROCESS_API,
     audited_investigation,
 )
+from src.orchestration.isolated_input import (
+    _ROW_REF_CONSUMER_AGENTS,
+    _TARGET_CONSUMER_AGENTS,
+    _prior_result_rows,
+    _row_ref_dependencies,
+    _scope_parsed_requirements,
+    scope_time_resolution,
+)
 from src.routing.capability_ownership import (
     REASON_LLM_ERROR,
     REASON_NO_CLASSIFICATION,
-    _corrected_note,
+    capability_ownership_on,
     owner_inactive_note,
     resolve_capability_owner,
     restrict_targets_to_owner,
     routing_fallback_note,
 )
-from src.routing.db_authz import authorized_db_ids
 from src.routing.db_scope import (
     ZONE_GROUP_ONLY,
     ZONE_SELECTION_SCOPE_KEY,
     zone_selection_db_ids,
 )
 from src.routing.domain_config import DB_DOMAINS, get_domain_by_id
-from src.routing.location_hints import (
-    inactive_hinted_sources,
-    pin_targets_to_hints,
-    strip_location_terms,
-)
+from src.routing.location_hints import pin_targets_to_hints  # noqa: F401 — 재노출(plans/166 O4)
 from src.routing.registry import get_registry
 from src.routing.semantic_router import MIN_RELEVANCE_SCORE, _llm_classify
-from src.routing.source_hints import (
-    KIND_DB,
-    KIND_NON_DB,
-    SourceMention,
-    is_mention_active,
-    mention_in_text,
-    mentions_for_task,
-    resolve_source_mentions,
-    source_notice_text,
-    utilization_notice_text,
-)
 from src.utils.deadline import has_time_for, retrieval_remaining
-from src.utils.prior_dependency import NOTE_SOURCE_UNAVAILABLE
 from src.utils.prior_targets import SOURCE_DB_KEY, build_prior_targets
 from src.utils.progress_events import emit_step
 from src.utils.query_gen_common import (
-    ZONE_CLARIFY_OPTIONS,
-    term_in_text,
-    build_zone_clarification,
-    has_host_identifier_filter,
     is_realtime_usage_query,
     is_server_identity_col,
-    refers_to_demonstrative_server,
     resolve_query_limit,
 )
+from src.utils.user_error import with_validation_head
+
+# 옛 `_` 이름 별칭(D-337 ③ · plans/166 O4 — 1사이클) — 모듈 밖 소비처가 쓰던 이름. 이 모듈
+# 정의분(`extract_identity_rows`·`make_isolated_input`·`pack_pipeline_result`)은 정의 뒤에 둔다.
+_normalize_targets = normalize_targets
 
 logger = logging.getLogger(__name__)
 
@@ -133,77 +139,6 @@ _MAX_PRIOR_ROWS = 100
 _MAX_HISTORY_MESSAGES = 10
 # 식별 키 컬럼 추출 우선순위 (보수적: 식별성 높은 컬럼 우선)
 # 서버 식별 컬럼 판정은 query_gen_common.is_server_identity_col로 공용화(D-100).
-# 이번 턴 질의에서 "새 위치/DB 신호"로 인정할 키워드 (M2 — DB 승계 차단 조건).
-# 사용자가 이번 턴에 아래 신호를 명시하면 직전 DB를 승계하지 않고 분류 결과를 따른다.
-# 정본은 `config/db_registry.yaml`(locations + environment_terms + 제품/DB signal_terms)
-# — Plan 67 R2, 사본 금지. D-004 경계: 의도 분류가 아니라 승계 차단 판정에만 쓴다.
-_LOCATION_DB_SIGNALS = get_registry().new_db_signal_terms()
-
-
-# ──────────────────────────────────────────────
-# SubAgent 정의
-# ──────────────────────────────────────────────
-
-@dataclass(frozen=True)
-class SubAgentSpec:
-    """subagent 정의 (deepagents SubAgent dict와 1:1 대응).
-
-    Attributes:
-        name: task() 호출 시 식별자
-        description: planner 위임 분류 근거 (SubAgent S2)
-        handler: 실행 진입점 (기존 노드/파이프라인 래퍼)
-        model: per-agent 모델 슬롯 — Phase 7 예약 (None=메인 LLM 사용)
-        prompt: per-agent 프롬프트 슬롯 — Phase 7 예약
-        fallback: general-purpose(미분류 시 기본) 여부
-        needs_history: 이전 대화 이력(messages)을 격리 입력에 전달할지 여부(①).
-            추론/판단형 응답(general_inference)은 직전 턴 답변을 근거로 삼아야 하므로 True.
-            데이터 조회 agent(data_query/process_query)는 이력이 SQL 생성에 불필요·토큰
-            부담·오염 위험이 있어 False(격리 유지).
-
-    처리기 계약(plans/121 §4.4 · TP-2.1a) — 값은 현행 코드 실측이다. **이번 단계 소비처 0**:
-    `description`·분해/재계획/1단 프롬프트는 바이트 그대로이고 목록 렌더 교체는 TP-2.1b다.
-    모르는 값은 None(추정 금지). 슬롯 어휘는 §4.5 — `entity_set`(서버 식별 집합 — 현행
-    `prior_rows`·`prior_targets`·`filter_conditions` 식별 키) · `db_set`(`task.db_ids`·존 선택) ·
-    `time_window`(`parsed_requirements.time_range`).
-
-        purpose: 목적 1문장(TP-2.1b 목록 렌더 원천)
-        backend: 닿는 소스 종류 — `sql` · `mcp` · `rest` · `none`(None = 미선언)
-        input_slots: 받는 슬롯
-        required_inputs: 반드시 바인딩돼야 하는 슬롯(없으면 조회하지 않고 사유를 돌려준다)
-        output_type: `rows` · `entity_set` · `scalar` · `text` · `file`(None = 미선언)
-        key_facets_out: 결과 행에서 후속 단계가 뽑을 수 있는 키 패싯
-        self_filters: 처리기가 스스로 거는 필터 — `zone` · `time` · `host`
-        max_bind_values: 한 task가 받는 선행 키 값 상한(None = 설정값·상한 없음)
-        bind_block: 한 번 호출에 싣는 키 값 수(None = 배치 분할 없음)
-        side_effects: 관측 데이터 소스에 대한 쓰기 — 전부 `none`(D-003 읽기 전용). 앱 자체 저장소
-            (스키마 캐시·유사어) 쓰기는 이 필드의 대상이 아니다.
-        prerequisites: 선행 준비(없으면 조회하지 않거나 사유 노트로 끝난다)
-        latency_class: 지연 등급(None = 미측정 — TP-0.4 노드별 소요 뒤)
-        timeout_sec: 처리기 고정 호출 상한(None = 고정값 없음 — 요청 마감 파생 또는 설정값)
-        concurrency: 처리기 동시 호출 상한(None = 상한 없음 — 병렬은 task 레벨 · TP-10.7)
-    """
-
-    name: str
-    description: str
-    handler: Callable
-    model: Optional[BaseChatModel] = None
-    prompt: Optional[str] = None
-    fallback: bool = False
-    needs_history: bool = False
-    purpose: str = ""
-    backend: str | None = None
-    input_slots: tuple[str, ...] = ()
-    required_inputs: tuple[str, ...] = ()
-    output_type: str | None = None
-    key_facets_out: tuple[str, ...] = ()
-    self_filters: tuple[str, ...] = ()
-    max_bind_values: int | None = None
-    bind_block: int | None = None
-    side_effects: str = "none"
-    prerequisites: tuple[str, ...] = ()
-    latency_class: str | None = None
-    timeout_sec: float | None = None
-    concurrency: int | None = None
 
 
 # ──────────────────────────────────────────────
@@ -258,7 +193,8 @@ async def classify_dbs(
     llm_error: str | None = None
     try:
         classified = await _llm_classify(
-            llm, sub_query, active_domains, db_descriptions=db_descriptions
+            llm, sub_query, active_domains, db_descriptions=db_descriptions,
+            app_config=app_config,
         )
     except Exception as e:
         logger.error("classify_dbs LLM 분류 실패, 첫 활성 DB 폴백: %s", e)
@@ -295,132 +231,6 @@ async def classify_dbs(
 
 #: classify_dbs 폴백 표지 키(plans/102 X-T3) — 소유 플래그와 무관하게 붙는다(plans/121 TP-1.6).
 _ROUTING_FALLBACK_KEY = "routing_fallback"
-
-
-def _capability_ownership_on(app_config: AppConfig) -> bool:
-    """답변 영역 소유 플래그(plans/102 X-7) — 호출부가 넘긴 설정에서 읽는다(기동 시 1회 해석)."""
-    return bool(getattr(getattr(app_config, "router", None), "capability_ownership_enabled", False))
-
-
-def _has_new_location_db_signal(text: str) -> bool:
-    """이번 턴 질의에 새 위치/DB 신호가 있는지 표면 검사한다 (M2 — 승계 차단 조건).
-
-    사용자가 이번 턴에 위치(김포/여의도 등)·DB명(polestar 등)·환경을 명시하면
-    직전 DB를 승계하지 않고 이번 분류 결과를 따라야 한다(리스크 표: 새 의도를 덮어쓰지 않음).
-
-    Args:
-        text: 이번 턴 sub_query(또는 user_query)
-
-    Returns:
-        새 위치/DB 신호가 있으면 True
-    """
-    if not text:
-        return False
-    return any(term_in_text(sig.lower(), text.lower()) for sig in _LOCATION_DB_SIGNALS)
-
-
-#: 존 선택이 결과를 바꾸는 agent (G-3 확정 2026-09-16).
-#: 존 그룹별로 다른 DB 를 조회하는 SQL 계열만 넣는다 — 목록을 넓히기 전에 그 agent 가
-#: `targets` 로 폴스타 존을 받는지 먼저 확인할 것(게이트 후단이 그 조건을 다시 검사한다).
-_ZONE_SCOPED_AGENTS: frozenset[str] = frozenset({"data_query", "alarm_query"})
-
-
-def _zone_clarification_or_none_task(
-    task: dict,
-    isolated: dict,
-    targets: list[dict],
-    *,
-    db_pinned: bool,
-    db_succeeded: bool,
-    app_config: AppConfig,
-) -> Optional[dict]:
-    """존 역질문 후단 게이트 판정 (D-143 후속2 — 텍스트 경로 파이프라인 내 결정적 게이트).
-
-    라우트 pre-gate(표면어 "서버"+전량 조회 필수)가 놓치는 형태 — 위치어 없는 존 단위
-    조회("OS 버전 확인하시오" 등)가 LLM 임의 팬아웃(전 존/임의 존)으로 흐르는 것을,
-    파싱·분류가 끝난 시점의 실제 신호로 판정해 존 선택 역질문으로 전환한다.
-    §4.2 비발동 목록을 결정적 조건으로 옮긴 것: 서버명 지목·승계 가능·존 무관 질의는
-    비발동, 비대화 채널(zone_clarification_allowed=False)은 항상 비발동.
-
-    Args:
-        task: 현재 TaskSpec
-        isolated: 격리 입력(zone_clarification_allowed/parsed_requirements 포함)
-        targets: 분류·핀·승계가 끝난 대상 DB 목록
-        db_pinned: 이번 턴 위치 힌트 결정적 고정 여부
-        db_succeeded: 직전 턴 DB 승계 여부
-        app_config: 앱 설정
-
-    Returns:
-        발동 시 clarification 페이로드, 비발동이면 None
-    """
-    # 채널 게이트: 대화형 텍스트 라우트만 허용(§4.3-3 — 배치·평가·API 직접 호출 보호)
-    if not isolated.get("zone_clarification_allowed"):
-        return None
-    # 존 스코프가 결과를 바꾸는 agent 만 (G-3 확정 2026-09-16 — 종전 data_query 전용에서 확대).
-    #
-    # 알람 조회도 존 단위로 데이터가 갈리므로 "어느 존이냐"가 결과를 바꾼다. 종전에는
-    # `alarm_query` 가 게이트를 건너뛰어 LLM 임의 팬아웃(3개 존 전체)으로 흘렀다 —
-    # run 20260915-131903 실측: 유효 280턴 중 66턴(24%)이 역질문 없이 3-DB 팬아웃이고
-    # 팬아웃 턴 p50 131.5초 vs 단일 DB 59.9초(2.2배)다.
-    # **열거로 좁게 유지한다** — process_query(폴스타 REST)·direct_response 등은 SQL 존
-    # 스코프 개념이 달라 같은 역질문이 성립하지 않는다.
-    if task.get("agent", "data_query") not in _ZONE_SCOPED_AGENTS:
-        return None
-    # **복합 계획 제외는 풀었다**(G-3). 종전 주석의 우려 두 가지는 아래처럼 처리한다:
-    #   ① "중간 task 역질문은 UX 어색" → 한 턴의 task 들은 같은 원문·같은 존 신호를 보므로
-    #      **같은 페이로드**를 만든다. `result_aggregator` 가 그중 하나만 취해 턴당 1회로
-    #      묶고 나머지 task 결과를 버린다(`_zone_clarification_from_tasks`).
-    #   ② "전역 판정 부정확" → 역질문 턴은 `target_db_ids` 를 남기지 않아(아래 반환부)
-    #      `_collect_db_promotion` 이 빈 dict 를 돌려주므로 임의 분류 결과가 다음 턴
-    #      승계로 새지 않는다. 복합 경로도 db 승격을 붙이지 않는다.
-    # 위치 힌트 고정·승계가 발동했으면 존은 이미 결정적(§4.2 승계 우선)
-    if db_pinned or db_succeeded:
-        return None
-    # 첫 턴 한정: 직전 턴 DB가 있으면 승계 계열이 처리(분류가 직전 DB 1개로 수렴해
-    # db_succeeded=False로 남는 경우 포함 — previous_db_ids 존재 자체를 비발동 조건으로)
-    ctx = isolated.get("conversation_context") or {}
-    if ctx.get("previous_db_ids"):
-        return None
-    # 이번 턴 원문·sub_query에 위치/DB 신호가 있으면 비발동(D-065 결정적 보강이 처리)
-    original_query = isolated.get("original_user_query") or isolated.get("user_query", "")
-    if _has_new_location_db_signal(original_query) or _has_new_location_db_signal(
-        task.get("sub_query", "")
-    ):
-        return None
-    parsed = isolated.get("parsed_requirements") or {}
-    # 서버명 지목 질의는 존이 결과에 영향 없음(§4.2 ⓐ) — hostname으로 어차피 특정됨
-    if has_host_identifier_filter(parsed):
-        return None
-    # 조회 대상 필드가 파싱되지 않은 질의(잡담성 오분류 등)는 비발동 — 과잉 역질문 방지
-    if not parsed.get("query_targets"):
-        return None
-    # 대상이 전부 폴스타 존일 때만(비폴스타 대상은 존 선택이 무의미)
-    polestar_ids = app_config.get_polestar_db_ids() or set()
-    target_ids = [t.get("db_id") for t in targets if t.get("db_id")]
-    if not target_ids or not all(d in polestar_ids for d in target_ids):
-        return None
-    # 선택지는 사용자 조회 권한(D-232)으로 거른다 — 3단 라우터·라우트 사전 게이트와 같은 규칙
-    # (plans/116 §10.3). 빈 목록을 넘기면 build_zone_clarification이 "제한 없음"으로 읽으므로
-    # 권한 내 존이 없으면 묻지 않는다(뒤이은 인가 필터가 사유를 알린다).
-    zone_ids = authorized_db_ids(
-        app_config.multi_db.get_active_db_ids() or [o["db_id"] for o in ZONE_CLARIFY_OPTIONS],
-        isolated.get("allowed_db_ids"), isolated.get("user_role"),
-    )
-    if not zone_ids:
-        return None
-    payload = build_zone_clarification(
-        zone_ids, original_query,
-        # 존 그룹 상호배타(D-143 후속3) — 라우트 pre-gate와 동일 UI 규칙
-        group_exclusive=bool(
-            getattr(app_config.multi_db, "zone_group_exclusive", True)
-        ),
-    )
-    if payload:
-        logger.info(
-            "존 역질문 후단 게이트 발동(D-143 후속2): 위치어·서버 식별·승계 신호 없음 — "
-            "LLM 임의 팬아웃(%s) 대신 존 선택 요청", target_ids,
-        )
-    return payload
 
 
 def _zone_clarification_before_classify(
@@ -460,7 +270,7 @@ def _zone_clarification_before_classify(
     if isinstance(hints, list) and any(str(h).strip() for h in hints):
         return None
     payload = _zone_clarification_or_none_task(
-        task, isolated, _normalize_targets(active, sub_query),
+        task, isolated, normalize_targets(active, sub_query),
         db_pinned=False, db_succeeded=False, app_config=app_config,
     )
     if payload:
@@ -469,467 +279,6 @@ def _zone_clarification_before_classify(
             "DB 분류 LLM 생략", active,
         )
     return payload
-
-
-def _zone_clarification_result(zone_q: dict[str, Any]) -> dict[str, Any]:
-    """존 역질문 task 결과 — 조기 판정·후단 게이트가 같은 모양을 낸다."""
-    return {
-        "final_response": zone_q["question"],
-        "zone_clarification": zone_q,
-        "source": [],
-        # target_db_ids를 의도적으로 남기지 않는다 — result_aggregator의 DB 승격
-        # (_collect_db_promotion)이 임의 분류 결과를 previous_db_ids로 체크포인터에
-        # 남겨 재개·후속 턴 승계를 오염시키는 것을 차단(요청 스코프 원칙).
-    }
-
-
-def _refers_to_specific_server(text: str) -> bool:
-    """질의가 지시어로 특정 서버 하나를 가리키는지 판정한다 (전체 조회 방지 게이트).
-
-    "전체/모든/모두" 같은 전역 조회 신호가 있으면 False(서버 스코프 강제 금지).
-    "해당/그/이/저/위/직전 … 서버/장비/노드/…" 같은 지시어 서버 참조가 있으면 True.
-
-    Args:
-        text: 판정 대상 질의 텍스트(보통 original_query)
-
-    Returns:
-        지시어로 특정 서버를 지목하면 True
-    """
-    # 구현은 utils.query_gen_common으로 이동(D-153 후속1 단일 출처 — intent_planner
-    # 맥락 주입 게이트와 공유) — 동작 동일.
-    return refers_to_demonstrative_server(text)
-
-
-def _inject_demonstrative_hostname(isolated: dict) -> dict:
-    """지시어("해당 서버") data/alarm 조회에 직전 서버 hostname을 filter_conditions로 주입한다.
-
-    query_generator는 parsed_requirements(original_query + filter_conditions)로 SQL을
-    생성하며 intent_planner가 확장한 sub_query(state.user_query)는 프롬프트에 사용하지 않는다.
-    따라서 지시어 후속 질의는 filter_conditions가 비어(D-055) 서버 필터 없이 전체 조회
-    (전체 서버/전체 알람)로 빠진다. concrete "webdb01 서버 알람"과 동일하게 filter에 hostname을
-    채워, 이미 검증된 filter_conditions.hostname 경로로 서버 필터를 강제한다(D-056 후속).
-
-    주입 조건(모두 충족):
-    - 이번 턴 filter_conditions에 서버 식별 필터가 없음(concrete 질의면 그대로 둠).
-    - original_query가 지시어로 특정 서버를 가리킴(전체 조회 신호 없음).
-    - 직전 턴 서버(previous_entities)에서 지시어가 아닌 실제 서버가 **정확히 1대** 해소됨.
-      여러 대(「그 서버들」)면 첫 1대로 좁히지 않고 주입을 생략한다 — 노드의 지시어 스코프
-      (`prompt_blocks.demonstrative_entity_scope`)가 전체를 HAVING으로 승계한다(plans/116 §10.3).
-
-    필드는 해소된 식별자 종류를 따른다 — hostname이 있으면 hostname, 서버명뿐이면 name.
-    서버명을 hostname 필드로 붙이면 name≠hostname 서버(D-046)가 0건이 된다.
-
-    Args:
-        isolated: subagent 격리 입력(parsed_requirements/conversation_context 포함)
-
-    Returns:
-        (필요 시) hostname 필터가 추가된 parsed_requirements 사본, 아니면 원본 참조
-    """
-    parsed = isolated.get("parsed_requirements") or {}
-    filters = parsed.get("filter_conditions") or []
-    if any(
-        isinstance(c, dict) and str(c.get("field", "")).lower() in _HOST_FIELDS
-        for c in filters
-    ):
-        return parsed  # 이미 서버 식별 필터 있음(concrete 질의)
-    if not _refers_to_specific_server(str(parsed.get("original_query", ""))):
-        return parsed  # 특정 서버 지목 아님(전체 조회 등) — 스코프 강제 금지
-    resolution = resolve_investigation_targets(isolated)
-    if not resolution.resolved:
-        return parsed  # 직전 실제 서버 미해소
-    if len(resolution.targets) > 1:
-        logger.info(
-            "지시어 대상 %d대 — 단일 필터 주입 생략(노드 지시어 스코프가 승계)",
-            len(resolution.targets),
-        )
-        return parsed
-    target = resolution.targets[0]
-    field, value = (
-        ("hostname", target.hostname) if target.hostname
-        else ("name", target.server_name) if target.server_name
-        else ("hostname", target.ip)
-    )
-    if not value or _is_demonstrative_value(value):
-        return parsed
-    new_parsed = dict(parsed)
-    new_parsed["filter_conditions"] = [
-        *filters,
-        {"field": field, "op": "=", "value": value},
-    ]
-    logger.info(
-        "data_query 지시어 서버 해소: %s=%s 를 filter_conditions에 주입(전체 조회 방지)",
-        field, value,
-    )
-    return new_parsed
-
-
-# 핀 대체 target의 정제 질의 — 3단 라우터(plans/113 F-1)가 같은 규칙을 쓰도록 routing 계층으로
-# 옮겼다(사본 금지). 기존 이름은 소비처·테스트를 위해 유지한다.
-_strip_location_terms = strip_location_terms
-
-
-def _apply_turn_hint_pinning(
-    targets: list[dict],
-    isolated: dict,
-    sub_query: str,
-    active_db_ids: list[str],
-    *,
-    zone_group_exclusive: bool = False,
-) -> tuple[list[dict], bool]:
-    """이번 턴 원문 위치 힌트(target_db_hints)로 대상 DB 집합을 결정적으로 고정한다.
-
-    DB 선택 우선순위 "① 이번 턴 명시 위치 > ② db_ids 고정 > ③ 승계 > ④ fan-out"에서
-    ①의 판정이 종래 LLM 산출물(sub_query→classify_dbs)에 의존해, LLM이 직전 턴 위치를
-    병합해 sub_query를 오염시키면("은행존 알람"→"김포 은행 공동존…") 오라우팅됐다
-    (2026-07-16 실측). input_parser가 이번 턴 **원문**에서 결정적으로 추출한
-    parsed_requirements.target_db_hints를 폼필과 동일한 해소 로직(resolve_priority_db_ids,
-    D-065 계열)으로 DB 집합에 고정한다. classify_dbs 결과는 sub_query_context(위치 제거
-    정제 질의) 재사용을 위해 유지하고 **DB 집합 결정권만** 이 함수가 갖는다.
-
-    판정은 3단 라우터와 **같은 함수**(`routing.location_hints.pin_targets_to_hints` — plans/113
-    F-2 · D-066 대칭)다. 존 그룹이 없는 DB의 분류 결과는 보존한다(종전 전량 탈락 교정).
-
-    복합 계획(is_composite)은 종전에 고정을 통째로 껐다(전역 힌트가 task별 위치를 덮으므로 —
-    그 결과 task마다 LLM 분류가 DB를 골라 "공동존"이 김포/여의도로 갈라졌다, plans/113 A-3).
-    이제는 **task 단위로 고정**한다 — task 질의가 원문 힌트 중 일부만 가리키면 그 부분집합,
-    가리키지 않으면 원문 힌트 전체다(`task_hint_scope`). 원문에 없는 위치어는 task 질의에
-    있어도 무시한다(위 2026-07-16 방어 유지). 단일 task(1단 도구 호출 포함)는 종전대로 원문 힌트
-    전체다 — 재작성 질의가 위치어 하나를 빠뜨리면 조용히 좁혀지므로(누락) 과포함 쪽을 택한다.
-
-    Args:
-        targets: classify_dbs가 반환한 후보 목록
-        isolated: subagent 격리 입력(parsed_requirements/is_composite 포함)
-        sub_query: 이번 task 질의(합성 target의 정제 질의 원료 · 복합 계획의 task 범위 근거)
-        active_db_ids: 활성 DB 목록
-        zone_group_exclusive: 존 그룹 상호배타 설정(호출부가 설정에서 넘긴다 · 기본 False는
-            종전 동작 — 두 존 그룹 해소도 고정)
-
-    Returns:
-        (적용된 targets, 핀 적용 여부)
-    """
-    parsed = isolated.get("parsed_requirements") or {}
-    hints = parsed.get("target_db_hints") or []
-    return pin_targets_to_hints(
-        targets, hints if isinstance(hints, list) else [], active_db_ids,
-        fill_query=sub_query,
-        task_query=sub_query if isolated.get("is_composite") else None,
-        zone_group_exclusive=zone_group_exclusive,
-    )
-
-
-def _multiple_systems_active(app_config: AppConfig) -> bool:
-    """활성 DB의 소유 시스템(`registry.system_of` · None 제외)이 둘 이상인가(§12.6 ①)."""
-    return len(get_registry().systems_of(app_config.multi_db.get_active_db_ids())) >= 2
-
-
-def _apply_selection_to_zone_groups(
-    targets: list[dict[str, Any]], selected_db_ids: list[str], sub_query: str,
-) -> list[dict[str, Any]]:
-    """분류 대상 중 존 그룹 DB만 사용자가 고른 존으로 바꾼다(plans/121 TP-1.2).
-
-    존 없는 시스템 DB(자산 DB 등)는 그대로 둔다 — 복원된 교차 시스템 task가 폴스타 존으로 끌려가지
-    않게 한다. 대상에 존 그룹 DB가 없으면 입력 그대로다.
-    """
-    reg = get_registry()
-    kept = [t for t in targets if reg.zone_group_of(str(t.get("db_id") or "")) is None]
-    if len(kept) == len(targets):
-        return targets
-    return _normalize_targets(selected_db_ids, sub_query) + kept
-
-
-#: 명시 소스 안내 단락의 사유 코드(plans/132 · 재계획이 종결로 본다 — N-3).
-REASON_SOURCE_INACTIVE = "source_inactive"
-REASON_SOURCE_UNSUPPORTED = "source_unsupported"
-#: 사용률을 갖지 않은 소스에 사용률을 물어 조회하지 않은 결과의 사유 코드(D-308 ⑨ · plans/132).
-REASON_SOURCE_NOT_CANONICAL = "source_not_canonical"
-#: 사용률의 답변 영역 코드(레지스트리 `capabilities`) — 이 영역 소유 시스템이 사용률 정본이다.
-_UTILIZATION_CAPABILITY = "server_usage"
-
-
-def _explicit_source_notice(
-    sub_query: str, isolated: dict[str, Any], app_config: AppConfig,
-) -> dict[str, Any] | None:
-    """사용자가 이름으로 지목한 소스를 이 SQL 처리기가 조회할 수 없으면 안내 결과(plans/132 G-1).
-
-    task 질의에 이름이 남은 지목만 본다. 그중 **활성 DB 시스템**이 하나라도 있으면 None(종전 경로 —
-    비활성 지목은 아래 TP-1.11a 노트가 단다). 없으면 조회하지 않고 안내만 한다(「안내만」 — 다른
-    소스로 대신 답하지 않는다). 2단은 계획 출구(`conditional_agents.apply_explicit_sources`)가 먼저
-    바꾸므로 여기는 1단(부가 경로 — 비SQL 처리기 비노출 · G-5)·재계획 후속의 가드다. 지목한 비DB
-    시스템이 활성인데 SQL 처리기로 왔으면 「이 조회 경로에서 처리하지 않음」으로 안내한다.
-    """
-    hints = (isolated.get("parsed_requirements") or {}).get("target_db_hints")
-    mentions = resolve_source_mentions(hints if isinstance(hints, list) else [])
-    scoped = [m for m in mentions if mention_in_text(m, sub_query)]
-    if not scoped:
-        return None
-    from src.orchestration.conditional_agents import active_conditional_systems  # 지연 — 순환 방지
-
-    systems = active_conditional_systems(app_config)
-    active_db_ids = app_config.multi_db.get_active_db_ids()
-    if any(
-        m.kind == KIND_DB
-        and is_mention_active(m, active_db_ids=active_db_ids, active_non_db=systems)
-        for m in scoped
-    ):
-        return None
-    unsupported = any(m.kind == KIND_NON_DB and m.system in systems for m in scoped)
-    reason = REASON_SOURCE_UNSUPPORTED if unsupported else REASON_SOURCE_INACTIVE
-    logger.info("data_query 명시 소스 안내 단락(plans/132 G-1): 지목=%s 사유=%s",
-                [m.system for m in scoped], reason)
-    return {
-        "final_response": source_notice_text(
-            [m.hint for m in scoped], unsupported_path=unsupported),
-        "degraded_reason": reason,
-        "query_results": [],
-    }
-
-
-def _utilization_source_guard(
-    task: dict[str, Any], sub_query: str, isolated: dict[str, Any],
-    targets: list[dict[str, Any]], app_config: AppConfig,
-) -> tuple[list[dict[str, Any]], dict[str, Any] | None, list[dict[str, Any]]]:
-    """사용률 task 대상에서 사용률 정본이 아닌 DB 시스템을 결정적으로 뺀다(D-308 ⑨ · plans/132).
-
-    플래그를 두지 않는다 — D-308 ⑨ 확정 규칙의 구현이고, 사용률 비소유 DB가 없는 배포(관측
-    DB 전용)는 판정이 늘 불성립이라 종전과 바이트 동일하다. 표 선별 LLM이 비소유 DB의 수집
-    이력 표로 사용률을 지어내는 실패(ITAM-114)를 LLM 출력과 무관하게 막는다.
-
-    판정 텍스트는 task 질의다(복합 계획의 사용률 아닌 task는 건드리지 않는다). 비소유 = 선언된
-    소유 시스템(`system_of`)이 있고 사용률 영역(`server_usage`) 소유자가 아닌 DB — 선언 없는 DB는
-    판정 밖이다.
-
-    - 비소유 시스템을 사용자가 이름으로 지목했고(task 귀속 지목) 소유 시스템은 지목하지 않았으면
-      조회하지 않고 안내만 한다(다른 소스로 대신 답하지 않는다 — G-1). 대상 목록과 무관하게
-      판정한다 — 상류(소유 제한 등)가 지목된 DB를 먼저 뺐어도 안내만이다.
-    - 그 밖(분류·승계가 끌어온 경우)은 비소유 DB만 뺀다. 다 빠지면 안내만 한다. 교정 노트는
-      인가 뒤 확정 대상 기준으로 호출부가 만든다(`_utilization_correction_note` — D-264).
-    - 사용률 소유 시스템이 레지스트리에 없거나 활성 소유 DB가 없으면 아무것도 하지 않는다(로그만).
-
-    Returns:
-        (대상 목록, 안내 결과 또는 None, 뺀 비소유 대상 목록)
-    """
-    if not mentions_utilization(sub_query):
-        return targets, None, []
-    reg = get_registry()
-    owners = set(reg.capability_owners(_UTILIZATION_CAPABILITY))
-
-    def _non_owner_system(system: str | None) -> bool:
-        return system is not None and system not in owners
-
-    non_owner = [t for t in targets if _non_owner_system(reg.system_of(str(t.get("db_id") or "")))]
-    single = not isolated.get("is_composite")
-    hints = (isolated.get("parsed_requirements") or {}).get("target_db_hints")
-    mentions = [m for m in mentions_for_task(
-        resolve_source_mentions(hints if isinstance(hints, list) else []), sub_query,
-        single_task=single,
-    ) if m.kind == KIND_DB]
-    named = [m for m in mentions
-             if any(_non_owner_system(reg.system_of(d)) for d in m.db_ids)]
-    if not non_owner and not named:
-        return targets, None, []
-    active_owner = [
-        d for d in app_config.multi_db.get_active_db_ids() if reg.system_of(d) in owners
-    ]
-    if not active_owner:
-        logger.info("사용률 소스 가드 미적용(D-308): 활성 소유 DB 없음 (task=%s, targets=%s)",
-                    task.get("task_id"), [t.get("db_id") for t in targets])
-        return targets, None, []
-    kept = [t for t in targets if t not in non_owner]
-    if (named and not _owner_named(mentions, owners, isolated, sub_query, single)) or not kept:
-        logger.info("사용률 소스 가드 — 안내만(D-308): task=%s 지목=%s 대상=%s",
-                    task.get("task_id"), [m.system for m in named],
-                    [t.get("db_id") for t in targets])
-        return [], {
-            "final_response": utilization_notice_text(
-                [m.hint for m in named], kind=utilization_kind(sub_query)),
-            "degraded_reason": REASON_SOURCE_NOT_CANONICAL,
-            "query_results": [],
-        }, []
-    if non_owner:
-        logger.info("사용률 소스 가드 — 비소유 DB 제외(D-308): task=%s %s → %s",
-                    task.get("task_id"), [t.get("db_id") for t in non_owner],
-                    [t.get("db_id") for t in kept])
-    return kept, None, non_owner
-
-
-def _owner_named(
-    mentions: list[SourceMention], owners: set[str], isolated: dict[str, Any],
-    sub_query: str, single: bool,
-) -> bool:
-    """사용률 소유 시스템도 지목했는가 — 힌트 지목 ∪ 원문의 제품·DB 신호 표면어 스캔.
-
-    소유 시스템의 제품명은 입력 파서의 결정적 소스 보강 대상이 아니라 힌트에 없을 수 있다. 스캔
-    재료는 `db_scope.names_only_zoneless_sources`와 같은 레지스트리 접근자다(리터럴 0). 단일 task는
-    원문, 복합 계획은 task 질의를 본다(지목 귀속 규칙과 같다).
-    """
-    if any(m.system in owners for m in mentions):
-        return True
-    reg = get_registry()
-    text = (str(isolated.get("original_user_query") or "") or sub_query) if single else sub_query
-    signals = [t for t in (*reg.product_terms(), *reg.db_signal_terms()) if term_in_text(t, text)]
-    return any(m.kind == KIND_DB and m.system in owners for m in resolve_source_mentions(signals))
-
-
-def _utilization_correction_note(
-    task: dict[str, Any], removed: list[dict[str, Any]], targets: list[dict[str, Any]],
-    isolated: dict[str, Any], app_config: AppConfig,
-) -> dict[str, Any] | None:
-    """사용률 가드가 뺀 비소유 DB의 교정 노트 — 인가 뒤 확정 대상 기준(D-264 ② · TP-1.6 선례).
-
-    뺀 DB 중 인가 밖 DB는 이름을 싣지 않는다(어차피 조회되지 않았다). 남는 것이 없으면 None.
-    """
-    reg = get_registry()
-    shown = authorize_targets(removed, isolated) or []
-    if not shown or not targets:
-        return None
-    owners = reg.capability_owners(_UTILIZATION_CAPABILITY)
-    owner_system = next(
-        (reg.system_of(d) for d in app_config.multi_db.get_active_db_ids()
-         if reg.system_of(d) in owners),
-        None,
-    ) or owners[0]
-    return _corrected_note(
-        reg, _UTILIZATION_CAPABILITY, owner_system,
-        [str(t.get("db_id") or "") for t in shown],
-        [str(t.get("db_id") or "") for t in targets],
-        task.get("task_id"),
-    )
-
-
-def _source_unavailable_notes(
-    isolated: dict[str, Any], active_db_ids: list[str],
-    active_non_db: Collection[str] = (),
-) -> list[dict[str, Any]]:
-    """원문 힌트가 등록·비활성 소스만 가리키면 사유 노트를 만든다(plans/121 TP-1.11a · N-11).
-
-    대상 집합은 바꾸지 않는다 — 분류가 고른 활성 DB로 답하되, 요청한 소스를 조회하지 않았다는
-    사실을 숨기지 않는다. 문구에는 사용자가 쓴 표현만 싣는다(레지스트리 표시명 비노출 — D-264).
-    턴 단위 사실이라 `task_id`를 두지 않는다 — 여러 task에서 같은 노트가 나와도 집계기가
-    한 번만 싣는다. 비활성 **비DB 시스템**(제니퍼·문서·Prometheus — plans/132 N-1)을 함께 지목한
-    힌트도 같은 노트를 단다(활성 소스 지목과 섞여 조회가 진행되는 턴).
-    """
-    hints = (isolated.get("parsed_requirements") or {}).get("target_db_hints") or []
-    clean = hints if isinstance(hints, list) else []
-    inactive = list(inactive_hinted_sources(clean, active_db_ids))
-    for mention in resolve_source_mentions(clean):
-        if (
-            mention.kind == KIND_NON_DB and mention.system not in active_non_db
-            and mention.hint not in inactive
-        ):
-            inactive.append(mention.hint)
-    return [
-        {
-            "kind": NOTE_SOURCE_UNAVAILABLE,
-            "task_id": None,
-            "reason": "source_inactive",
-            "detail": (
-                f"요청하신 「{hint}」 데이터 소스는 현재 활성화되어 있지 않아 조회하지 않았습니다."
-            ),
-        }
-        for hint in inactive
-    ]
-
-
-def _apply_db_succession(
-    targets: list[dict],
-    sub_query: str,
-    conversation_context: Optional[dict],
-    active_db_ids: list[str],
-    *,
-    inherit_all: bool = False,
-) -> tuple[list[dict], bool]:
-    """이전 턴 DB를 우선 후보로 승계한다 (M2, Plan 50 §3.2).
-
-    `inherit_all`(D-206 — 존 동시 조회 개방 시): 직전 DB 집합 **전체**를 승계한다. 은행존+공동존을
-    함께 고른 스레드가 다음 턴에 첫 DB 하나로 좁혀지면 "선택된 폴스타로 계속"이 거짓이 된다.
-    상호배타(플래그 on)에서는 종전대로 첫 DB 1개 — 팬아웃 결과의 b0+gp 조합이 한 run에 섞이지 않게.
-
-    우선순위: ① 이번 턴 명시 위치/DB > ② mapped_db_ids(호출 전 db_ids 고정) >
-    ③ previous_db_ids(멀티턴 승계) > ④ 전체 후보 fan-out.
-
-    본 함수는 ①(이번 턴 신호)이 없고 직전 DB가 있을 때만 승계를 적용한다.
-    승계 조건:
-      - 이번 턴 sub_query에 새 위치/DB 신호가 **없음**.
-      - conversation_context.previous_db_ids 가 **활성 DB 중 1개 이상** 존재.
-    승계 시 직전 DB를 단일 우선 후보로 좁혀 fan-out(다중 폴스타 오선택)을 방지한다.
-
-    Args:
-        targets: classify_dbs가 반환한 target_databases 목록
-        sub_query: 이번 턴 SQL 생성 입력 질의
-        conversation_context: context_resolver 보존 맥락(없으면 첫 턴)
-        active_db_ids: 활성 DB 목록(승계 후보 유효성 검사용)
-
-    Returns:
-        (적용된 targets, 승계 적용 여부)
-    """
-    if not conversation_context:
-        return targets, False
-    prev_db_ids = conversation_context.get("previous_db_ids") or []
-    if not prev_db_ids:
-        return targets, False
-
-    # ① 이번 턴에 새 위치/DB 신호가 있으면 승계하지 않는다(사용자 새 의도 최우선).
-    if _has_new_location_db_signal(sub_query):
-        return targets, False
-
-    # 직전 DB 중 현재 활성인 것만 후보로 인정.
-    valid_prev = [d for d in prev_db_ids if not active_db_ids or d in active_db_ids]
-    if not valid_prev:
-        return targets, False
-
-    # 이미 분류 결과가 직전 DB 1개로 수렴했으면 승계 불필요(상호배타 규칙 — 개방이면 집합 비교로 판정).
-    current_ids = [t.get("db_id") for t in targets]
-    if not inherit_all and len(targets) == 1 and current_ids[0] in valid_prev:
-        return targets, False
-    succeed_ids = list(valid_prev) if inherit_all else [valid_prev[0]]
-    # 분류 결과가 승계 집합과 이미 같으면(순서 무관) 승계 불필요.
-    if inherit_all and set(current_ids) == set(succeed_ids):
-        return targets, False
-
-    # 승계: 직전 DB(상호배타면 우선순위 1개, 개방이면 전체)를 우선 후보로 사용.
-    succeeded = [{
-        "db_id": db_id,
-        "relevance_score": 1.0,
-        "sub_query_context": sub_query,
-        "user_specified": False,
-        "reason": f"이전 턴 DB 승계(멀티턴, previous_db_ids={valid_prev})",
-    } for db_id in succeed_ids]
-    logger.info(
-        "data_query DB 승계 적용: %s (분류 결과 %s → 직전 DB 우선, 전체 승계=%s)",
-        succeed_ids, current_ids, inherit_all,
-    )
-    return succeeded, True
-
-
-def _normalize_targets(targets: list, sub_query: str) -> list[dict]:
-    """db_ids(문자열 리스트) 또는 target dict 리스트를 target dict 형태로 정규화한다.
-
-    Args:
-        targets: 문자열 db_id 리스트 또는 target_databases dict 리스트
-        sub_query: sub_query_context 기본값
-
-    Returns:
-        target_databases 형태 dict 리스트
-    """
-    normalized: list[dict] = []
-    # 정제 질의(`sub_query_context` — 단일 DB SQL 생성 입력)는 위치어를 걷어낸다
-    # (plans/123 W-5 코드분).
-    # DB는 이미 정해졌다(선택·계획 고정). 위치어가 남으면 생성기·요약이 「김포」를 데이터 조건으로
-    # 읽어 「구분할 수 있는 컬럼이 없다」고 답하거나 WHERE로 누출한다(run `20260923-103638` R2-09C).
-    # `sub_query` 자체는 바꾸지 않는다(121 TP-11.2 · 113 F-2 위치어 보존 계약).
-    context = strip_location_terms(sub_query) or sub_query
-    for t in targets:
-        if isinstance(t, str):
-            normalized.append({
-                "db_id": t,
-                "relevance_score": 1.0,
-                "sub_query_context": context,
-                "user_specified": False,
-                "reason": "필드 매핑 결과에서 식별된 DB",
-            })
-        elif isinstance(t, dict):
-            normalized.append(t)
-    return normalized
 
 
 # ──────────────────────────────────────────────
@@ -947,7 +296,7 @@ def _stop_regen(
     """SQL 재생성 루프 종결 표지를 파이프라인 상태에 싣는다(plans/119 N-5·T-3·T-1ⓑ).
 
     - `regen_stop`(`{"reason", "detail"}`)은 실패 task 결과로 승격돼 재계획기가 소비한다
-      (`_pack_pipeline_result` · 계약 plans/119 Q-3).
+      (`pack_pipeline_result` · 계약 plans/119 Q-3).
     - `regen_stop_response`가 있으면 호출부가 결과 정리 대신 그 문구를 응답 본문으로 싣는다.
     - 앞선 실패 사유(`error_message`)가 없으면 detail을 실패 사유로 둔다 — task가 "0건 완료"로
       바뀌지 않게 한다(D-231 ②와 같은 이유).
@@ -1113,8 +462,9 @@ async def _run_single_db_pipeline(
                     "단일 DB 파이프라인 산문 조기 종결(plans/119 N-5): retry=%s",
                     state.get("retry_count", 0),
                 )
+                # detail은 「SQL 검증 실패: …」 머리말 꼴 — 멀티 SQL 루프와 같다(plans/186 M7)
                 _stop_regen(
-                    state, REGEN_STOP_NON_SQL, _reason,
+                    state, REGEN_STOP_NON_SQL, with_validation_head(_reason),
                     response=non_sql_prose_response(state.get("generated_sql") or ""),
                 )
                 break
@@ -1122,7 +472,7 @@ async def _run_single_db_pipeline(
                 # 검증 실패 + 재시도 초과 → 에러 종료
                 if not state.get("error_message"):
                     state["error_message"] = _reason
-                _stop_regen(state, REGEN_STOP_VALIDATION_BUDGET, _reason)
+                _stop_regen(state, REGEN_STOP_VALIDATION_BUDGET, with_validation_head(_reason))
                 break
             # 재시도 가능 → query_generator 재진입
             continue
@@ -1170,7 +520,7 @@ async def _run_single_db_pipeline(
 # 격리 입력 컨텍스트 (S3 부분 격리)
 # ──────────────────────────────────────────────
 
-def _extract_identity_rows(rows: list[dict]) -> list[dict]:
+def extract_identity_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """선행 결과 행에서 식별 키 컬럼만·행수 상한을 적용해 추린다 (R-12).
 
     식별 키 컬럼(hostname/name/id류)이 있으면 해당 컬럼만, 없으면 전체 컬럼을
@@ -1222,10 +572,13 @@ def _extract_identity_rows(rows: list[dict]) -> list[dict]:
     return [{col: row.get(col) for col in key_cols} for row in limited if isinstance(row, dict)]
 
 
+# 옛 `_` 이름 별칭(D-337 ③ · plans/166 O4 — 1사이클)
+_extract_identity_rows = extract_identity_rows
+
+
 def _prior_scope_by_db_enabled() -> bool:
     """`COMPOSITE_PRIOR_SCOPE_BY_DB_ENABLED` — 기동 시 1회 해석(load_config 캐시)."""
-    cfg = getattr(load_config(), "composite", None)
-    return bool(getattr(cfg, "prior_scope_by_db_enabled", False))
+    return bool(load_config().composite.prior_scope_by_db_enabled)
 
 
 def _history_for_agent(task: dict, state: dict) -> list:
@@ -1253,87 +606,7 @@ def _history_for_agent(task: dict, state: dict) -> list:
     return list(msgs[-_MAX_HISTORY_MESSAGES:])
 
 
-def _scope_parsed_requirements(state: dict, task: dict) -> dict:
-    """parsed_requirements를 sub-task 스코프로 좁힌 사본을 만든다 (D-094).
-
-    original_query만 task의 sub_query로 교체한다(사본 — 원본 state 비오염).
-    time_range/query_targets 등 구조화 필드는 전체 질의 파싱값을 그대로 유지한다
-    (SQL 생성 프롬프트의 보조 맥락 — 예: 기간 202606). 단일 task(sub_query==전체
-    질의)면 실질 변화가 없다.
-
-    Args:
-        state: 전체 에이전트 상태
-        task: 현재 TaskSpec
-
-    Returns:
-        스코프 적용된 parsed_requirements 사본
-    """
-    parsed = dict(state.get("parsed_requirements", {}) or {})
-    sub_query = task.get("sub_query")
-    if sub_query:
-        parsed["original_query"] = sub_query
-    return parsed
-
-
-def _request_query_text(state: dict[str, Any]) -> str:
-    """요청 원문 — 시간 해석이 읽은 사용자 문장(task 기간 원문 대조의 기준 · plans/122 T-4).
-
-    격리 입력의 `original_user_query`(교체 전 원문) → 그래프 `user_query`(그래프 노드는 원문을
-    덮지 않는다) → `parsed_requirements.original_query`(1단 ambient — `user_query`가 없다 ·
-    `input_parser`가 원문을 복사한다) 순. 없으면 빈 문자열.
-    """
-    parsed = state.get("parsed_requirements") or {}
-    return str(
-        state.get("original_user_query") or state.get("user_query")
-        or (parsed.get("original_query") if isinstance(parsed, dict) else None) or ""
-    )
-
-
-def _scope_time_resolution(
-    state: dict[str, Any], task: dict[str, Any], task_text: str | None = None,
-    *, original: str | None = None,
-) -> dict[str, Any] | None:
-    """요청 시간 해석을 task 범위로 좁힌 state 값을 만든다 (plans/122 §10.3 「2단 task」 · D-309).
-
-    원문 해석(state `time_resolution`)이 전역 기본이다. task 문장에 **명시 기간**이 있고 그 기간
-    표현이 **사용자 원문에도 있을 때만** 그 문장으로 다시 해석한다(기준 시각은 원문 해석과 같다 —
-    `resolve_task_time(original=)`). 분해 LLM이 원문에 없는 기간을 task 문장에 지어 넣으면 원문
-    해석을 유지한다 — 지어낸 기간이 명시 기간(엄격 검증)으로 승격되지 않게 한다(리뷰 상태 계약).
-    원문을 알 수 없으면(빈 문자열) task별 해석을 하지 않는다. 하류 노드는 task 재작성문
-    (`user_query`·`parsed_requirements.original_query`)을 다시 해석하지 않고 이 값을 읽는다 —
-    §10.2 ⑦ 「2단은 재작성문에서 해석」의 단일 출처 교정이다.
-
-    원문 해석이 없으면(플래그 off · 옛 체크포인트) None — 소비처는 종전 경로를 탄다.
-
-    Args:
-        state: 전체 에이전트 상태(원문 해석이 실린 상태)
-        task: 현재 TaskSpec
-        task_text: task 문장. 미지정이면 `task["sub_query"]`(3단은 조각으로 찍은 문장을 넘긴다)
-        original: 사용자 원문. 미지정이면 `_request_query_text(state)`(3단은 서브그래프 밖에서
-            잡아 둔 원문을 넘긴다 — 서브그래프의 `user_query`는 task 문장이다)
-    """
-    raw = state.get("time_resolution")
-    base = QueryTime.from_state(raw)
-    if base is None:
-        return None
-    text = str(task.get("sub_query") or "") if task_text is None else str(task_text)
-    source_text = _request_query_text(state) if original is None else str(original)
-    scoped = resolve_task_time(text, base, original=source_text) if text.strip() else base
-    # task 해석이 원문 해석과 같으면(원문 그대로인 단일 task 등) 원문 값을 그대로 쓴다 — 슬롯
-    # 처리 결과(`slot_status`)까지 원문 해석과 같은 값이 하류·하네스에 닿는다.
-    if scoped is not base and (scoped.metric, scoped.event) == (base.metric, base.event):
-        scoped = base
-    res = scoped.metric
-    logger.info(
-        "task 시간 해석(plans/122 T-4): task=%s scope=%s source=%s label=%s",
-        task.get("task_id"), "request" if scoped is base else "task",
-        res.source if res is not None else f"clarify:{scoped.clarify}",
-        res.label() if res is not None else "-",
-    )
-    return raw if scoped is base else scoped.to_state()
-
-
-def _make_isolated_input(
+def make_isolated_input(
     task: dict[str, Any], state: dict[str, Any], prior: dict[str, Any], *, scope_time: bool = True,
 ) -> dict[str, Any]:
     """subagent에 전달할 필터된 얇은 컨텍스트를 만든다 (SubAgent S3 부분 격리).
@@ -1385,7 +658,7 @@ def _make_isolated_input(
         # 안의 모든 소비처(SQL 생성·검증·결정적 조립·APM 창)가 None을 받아 종전 경로로 돈다.
         # task 문장에 명시 기간이 있을 때만 task별 해석이다(§10.3 「2단 task」).
         "time_resolution": (
-            _scope_time_resolution(state, task) if scope_time else state.get("time_resolution")
+            scope_time_resolution(state, task) if scope_time else state.get("time_resolution")
         ),
         "conversation_context": state.get("conversation_context"),
         "thread_id": state.get("thread_id"),
@@ -1501,7 +774,7 @@ def _make_isolated_input(
             if rows is None:
                 organized = res.get("organized_data") or {}
                 rows = organized.get("rows", [])
-            prior_rows[tid] = _extract_identity_rows(rows or [])
+            prior_rows[tid] = extract_identity_rows(rows or [])
         base["prior_rows"] = prior_rows
     # 앞 결과 행 참조(plans/134 M-6) — 식별 키만 남긴 prior_rows에는 행 참조 칸
     # (profile_ref 등)이 없다(실측: APM 행 → {hostname}). 참조 처리기는 LLM 0이라(행이
@@ -1538,29 +811,8 @@ def _make_isolated_input(
     return base
 
 
-# 선행 결과를 **조사 대상 집합**으로 소비하는 agent (Plan 78 W1-2).
-_TARGET_CONSUMER_AGENTS: tuple[str, ...] = ("process_query", "fault_diagnosis")
-# 선행 결과 행의 **참조 칸**(profile_ref·active_ref·guid)을 순번으로 고르는 agent(plans/134 M-6).
-_ROW_REF_CONSUMER_AGENTS: tuple[str, ...] = ("apm_query",)
-
-
-def _row_ref_dependencies(task: dict[str, Any], state: dict[str, Any]) -> list[str]:
-    """`depends_on`이 가리키는 선행 task 중 참조 칸 행을 내는 task(같은 처리기 — plans/134 V-5)."""
-    agents = {str(t.get("task_id")): t.get("agent")
-              for t in state.get("task_plan") or [] if isinstance(t, dict)}
-    return [str(d) for d in task.get("depends_on") or []
-            if agents.get(str(d)) in _ROW_REF_CONSUMER_AGENTS]
-
-
-def _prior_result_rows(res: dict) -> list[dict]:
-    """선행 task 결과에서 행 목록을 꺼낸다(결과 형태 3종 방어 — prior_rows 로직과 동일 규약)."""
-    rows = res.get("rows")
-    if rows is None:
-        rows = res.get("query_results")
-    if rows is None:
-        organized = res.get("organized_data") or {}
-        rows = organized.get("rows", [])
-    return rows or []
+# 옛 `_` 이름 별칭(D-337 ③ · plans/166 O4 — 1사이클)
+_make_isolated_input = make_isolated_input
 
 
 def _build_prior_targets_for_task(
@@ -1765,7 +1017,7 @@ async def run_data_query_pipeline(
     ownership_notes: list[dict[str, Any]] = []
     task_owner = None
     if (
-        _capability_ownership_on(app_config)
+        capability_ownership_on(app_config)
         and task.get("capability")
         and not task.get("db_ids")
         and not isolated.get("selected_db_ids")
@@ -1804,7 +1056,7 @@ async def run_data_query_pipeline(
     # 소유 플래그 off의 분류 폴백 노트(plans/121 TP-1.6) — 대상 확정·인가 뒤에 싣는다(아래).
     pending_fallback_note: dict[str, Any] | None = None
     if raw_targets:
-        targets = _normalize_targets(raw_targets, sub_query)
+        targets = normalize_targets(raw_targets, sub_query)
     else:
         # 존 역질문 조기 판정(plans/119 Q-1): 분류 결과와 무관하게 후단 게이트가 같은 답을
         # 내는 경우엔 DB 분류 LLM을 부르지 않고 여기서 되묻는다. 그 밖에는 None — 아래 종전
@@ -1825,7 +1077,7 @@ async def run_data_query_pipeline(
                     cause=str(_mark.get("cause") or ""),
                     task_id=task.get("task_id"),
                 )
-                if _capability_ownership_on(app_config):
+                if capability_ownership_on(app_config):
                     ownership_notes.append(_fallback_note)
                 else:
                     pending_fallback_note = _fallback_note
@@ -1834,7 +1086,7 @@ async def run_data_query_pipeline(
         targets, db_pinned = _apply_turn_hint_pinning(
             targets, isolated, sub_query, app_config.multi_db.get_active_db_ids(),
             zone_group_exclusive=(
-                getattr(app_config.multi_db, "zone_group_exclusive", True) is True
+                app_config.multi_db.zone_group_exclusive is True
             ),
         )
         if not db_pinned:
@@ -1845,7 +1097,7 @@ async def run_data_query_pipeline(
                 app_config.multi_db.get_active_db_ids(),
                 # 존 동시 조회 개방(D-206)이면 직전 DB 집합 전체를 승계한다
                 inherit_all=(
-                    getattr(app_config.multi_db, "zone_group_exclusive", True) is False
+                    app_config.multi_db.zone_group_exclusive is False
                 ),
             )
         # 요청 소스 불가 사유(plans/121 TP-1.11a) — 원문 힌트가 등록·비활성 소스만 가리키면
@@ -2028,7 +1280,7 @@ async def run_data_query_pipeline(
     # (`non_sql_prose_response` · 경로 대칭).
     stop_response = s.get("regen_stop_response") if pipeline_error else None
     if stop_response:
-        stopped = _pack_pipeline_result(
+        stopped = pack_pipeline_result(
             s, targets, pipeline_error,
             ownership_notes=ownership_notes, db_origin=db_origin,
             db_succeeded=db_succeeded, db_pinned=db_pinned,
@@ -2040,7 +1292,7 @@ async def run_data_query_pipeline(
     s.update(await result_organizer(s, llm=llm, app_config=app_config))
     await emit_step("pipeline.organize", "end")
 
-    return _pack_pipeline_result(
+    return pack_pipeline_result(
         s, targets, pipeline_error,
         ownership_notes=ownership_notes, db_origin=db_origin,
         db_succeeded=db_succeeded, db_pinned=db_pinned,
@@ -2096,7 +1348,7 @@ def _executed_sqls_by_db(
     return [{"db_id": db_id, "sql": str(last["sql"])}]
 
 
-def _pack_pipeline_result(
+def pack_pipeline_result(
     s: dict[str, Any],
     targets: list[dict[str, Any]],
     pipeline_error: str | None,
@@ -2221,6 +1473,10 @@ def _pack_pipeline_result(
     if isinstance(s.get("time_resolution"), dict):
         result["time_resolution"] = s["time_resolution"]
     return result
+
+
+# 옛 `_` 이름 별칭(D-337 ③ · plans/166 O4 — 1사이클)
+_pack_pipeline_result = pack_pipeline_result
 
 
 # ──────────────────────────────────────────────

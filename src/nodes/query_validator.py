@@ -21,9 +21,9 @@ from typing import Any
 import structlog
 
 from src.config import AppConfig, load_config
-from src.db_adapters import get_adapter
-from src.nodes.prompt_blocks import PROMPT_BUDGET_EXCEEDED
-from src.nodes.table_selection import (
+from src.db_adapters import get_adapter_for
+from src.pipeline.prompt_blocks import PROMPT_BUDGET_EXCEEDED
+from src.pipeline.table_selection import (
     definitions_of,
     selection_none_active,
     selection_none_guidance,
@@ -55,6 +55,7 @@ from src.sql_validation import (
     validate_sql,
 )
 from src.utils.query_gen_common import surface_query_for_judgment
+from src.utils.user_error import safe_error_text
 
 logger = logging.getLogger(__name__)
 _audit_logger = structlog.get_logger("audit")
@@ -182,10 +183,12 @@ def selection_none_hit(validation_result: Mapping[str, Any] | None) -> bool:
 def retrieval_reserve_sec(app_config: Any) -> float:
     """서술 예약 초(`ServerConfig.answer_reserve_sec`) — 조회 마감 = 처리 마감 − 이 값(D-267 ⑥).
 
-    설정 대역(SimpleNamespace·MagicMock)에서는 0이다. 마감(`request_deadline`)이 없는 상태에서는
+    설정이 없거나 설정 대역(MagicMock)이면 0이다. 마감(`request_deadline`)이 없는 상태에서는
     이 값과 무관하게 시간 게이트가 항상 통과한다(종전 동작).
     """
-    value = getattr(getattr(app_config, "server", None), "answer_reserve_sec", 0)
+    if app_config is None:
+        return 0.0
+    value = app_config.server.answer_reserve_sec
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0
     return max(0.0, float(value))
@@ -215,8 +218,11 @@ def deadline_stop_message(
     else:
         why = f"조회 마감까지 {max(0.0, remaining_sec):.0f}초 < 직전 SQL 생성 {need_sec:.0f}초"
     message = f"답변할 시간을 남기려고 {stage}을(를) 하지 않았습니다({why})."
-    if last_reason:
-        message += f" 마지막 실패 사유: {last_reason}"
+    # 마지막 실패 사유는 고정 사유·머리말만 싣는다 — 「SQL 실행 에러: {e}」의 예외 원문은 버린다
+    # (plans/163 S3+ · 원문은 실행·검증 노드 로그에 남는다)
+    shown = safe_error_text(last_reason)
+    if shown:
+        message += f" 마지막 실패 사유: {shown}"
     return message
 
 
@@ -319,7 +325,7 @@ async def query_validator(
 
     # DB 어댑터 전용 검증(폴스타 라우팅 필터 오용 등) — 담당 어댑터가 있으면 훅을 주입
     # (기존 _check_routing_filter_misuse를 폴스타 어댑터로 이동, Plan 63 P2/D-089).
-    adapter = get_adapter(state.get("active_db_id"), app_config.get_polestar_db_ids() or None)
+    adapter = get_adapter_for(state.get("active_db_id"), app_config)
     # 시간 해석(state `time_resolution` · plans/122 T-5b · D-309)을 넘기면 어댑터가 생성 SQL의
     # 시간 조건을 해석 결과와 대조한다. None(플래그 off)이면 종전 검사 목록 그대로다.
     adapter_checks = (

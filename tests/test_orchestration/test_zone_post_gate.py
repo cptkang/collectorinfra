@@ -22,7 +22,7 @@ _POLESTAR = set(_ACTIVE)
 def _post_gate_config(active=None):
     active = _ACTIVE if active is None else active
     return SimpleNamespace(
-        multi_db=SimpleNamespace(get_active_db_ids=lambda: active),
+        multi_db=SimpleNamespace(get_active_db_ids=lambda: active, zone_group_exclusive=True),
         get_polestar_db_ids=lambda: _POLESTAR,
     )
 

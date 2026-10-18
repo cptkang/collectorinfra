@@ -69,7 +69,8 @@ def _cfg(*, active: bool = True) -> SimpleNamespace:
     return SimpleNamespace(
         dbhub=dbhub,
         composite=SimpleNamespace(max_targets=10, fanout_concurrency=2, audit_enabled=False,
-                                  task_frame_enabled=False, plan_dag_validation_enabled=False),
+                                  task_frame_enabled=False, plan_dag_validation_enabled=False,
+                                  sequential_replan_enabled=False),
         router=SimpleNamespace(capability_ownership_enabled=False),
         multi_db=SimpleNamespace(get_active_db_ids=lambda: ["polestar_cm_gp"]),
     )
@@ -378,7 +379,7 @@ async def test_first_hop_takes_every_instance_including_hostless_ones(gateway) -
         "hosts": 1, "instances": 5, "hostless": 2, "unaddressed": 1}
     (notice,) = _kinds(res, NOTE_TRACE)
     assert notice == ("대상 서버 미지정 — 전체 인스턴스 5개(호스트 1대) 조회 — 부하 순위를 받지"
-                      " 못해(api_error: 순위 실패) 목록으로 골랐습니다 · 이름·소스가 없어"
+                      " 못해(api_error · 요청 -) 목록으로 골랐습니다 · 이름·소스가 없어"
                       " 부를 수 없는 인스턴스 1개는 빠졌습니다")
 
 
@@ -756,7 +757,7 @@ async def test_b2_first_hop_reads_the_whole_result_file(gateway) -> None:
     assert [t["hostname"] for t in batch["targets"]] == [f"h{i}" for i in range(1, 9)]
     (notice,) = _kinds(res, NOTE_TRACE)
     assert notice == ("대상 서버 미지정 — 전체 인스턴스 8개(호스트 8대) 조회 — 부하 순위를 받지"
-                      " 못해(api_error: 순위 실패) 목록으로 골랐습니다")
+                      " 못해(api_error · 요청 -) 목록으로 골랐습니다")
     assert res["source_status"][0]["status"] == "ok"
 
 

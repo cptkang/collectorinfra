@@ -121,6 +121,7 @@ def _worker(*, apm_on: bool, gate_on: bool = True) -> tuple[AlarmWorker, _Graph]
         noise_gate=SimpleNamespace(
             enable_noise_gate=gate_on,
             repeat_interval_seconds=14400,
+            dedup_severity_rise_bypass=False,
             suppress_max_severity=2,
             self_heal_window_seconds=300,
             apm_noise_policy_enabled=apm_on,

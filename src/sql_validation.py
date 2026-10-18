@@ -208,9 +208,6 @@ def validate_sql(
     guard = SQLGuard()
     errors: list[str] = []
     warnings: list[str] = []
-    auto_fixed_sql: Optional[str] = None
-    forbidden: list[str] = []
-    injection_count = 0
 
     # 1. SQL 파싱 가능 여부
     try:
@@ -220,6 +217,63 @@ def validate_sql(
     except Exception as e:
         errors.append(f"SQL 파싱 에러: {str(e)}")
         return SQLValidationOutcome(errors=errors)
+
+    # 2~4. 문장 종류·금지 키워드·인젝션 패턴
+    safety_errors, forbidden, injection_count = _check_statement_safety(sql, parsed, guard)
+    errors.extend(safety_errors)
+
+    # 4.5~4.6. 따옴표 밖 한글 토큰 · MariaDB 큰따옴표 식별자 · 삭제 리소스 필터 부재
+    surface_errors, surface_warnings = _check_surface_tokens(
+        sql, schema_info, db_engine=db_engine,
+        allow_hangul_identifiers=allow_hangul_identifiers,
+    )
+    errors.extend(surface_errors)
+    warnings.extend(surface_warnings)
+
+    # 5~6. 참조 테이블·컬럼 존재 여부
+    reference_errors, referenced_tables = _check_references(
+        sql, schema_info, db_engine=db_engine,
+        allow_hangul_identifiers=allow_hangul_identifiers,
+    )
+    errors.extend(reference_errors)
+
+    # 6.5~6.7. 조인 패턴(금지 JOIN 컬럼 · EAV 금지 조인 · LEFT JOIN 강등)
+    join_errors, join_warnings = _check_join_patterns(sql, schema_info)
+    warnings.extend(join_warnings)
+    errors.extend(join_errors)
+
+    # 7. LIMIT 절 존재 여부
+    auto_fixed_sql, limit_warnings = _apply_row_limit(
+        sql, db_engine=db_engine, user_query=user_query, default_limit=default_limit,
+    )
+    warnings.extend(limit_warnings)
+
+    # 8. 성능 위험 패턴
+    perf_warnings = _check_performance_risks(sql, schema_info, tables=referenced_tables)
+    warnings.extend(perf_warnings)
+
+    # 9. DB 어댑터 전용 검증(라우팅 필터 오용 등) — 호출부가 주입한 훅만 실행
+    for _check in adapter_checks:
+        errors.extend(_check(sql))
+
+    return SQLValidationOutcome(
+        errors=errors,
+        warnings=warnings,
+        auto_fixed_sql=auto_fixed_sql,
+        forbidden_keywords=forbidden,
+        injection_count=injection_count,
+    )
+
+
+def _check_statement_safety(
+    sql: str, parsed: Any, guard: SQLGuard,
+) -> tuple[list[str], list[str], int]:
+    """`validate_sql` 2~4단계 — 문장 종류·FROM 없는 상수 SELECT·금지 키워드·인젝션 패턴.
+
+    Returns:
+        (오류 목록, 감지된 금지 키워드, 인젝션 패턴 수)
+    """
+    errors: list[str] = []
 
     # 2. SELECT 문 여부 확인
     statement_type = _get_statement_type(sql, parsed=parsed)  # 파스 재사용(Plan 69 P4-5)
@@ -241,6 +295,23 @@ def validate_sql(
         errors.append(
             f"SQL 인젝션 위험 패턴이 감지되었습니다: {injection_count}건"
         )
+    return errors, forbidden, injection_count
+
+
+def _check_surface_tokens(
+    sql: str,
+    schema_info: dict[str, Any],
+    *,
+    db_engine: str,
+    allow_hangul_identifiers: bool,
+) -> tuple[list[str], list[str]]:
+    """`validate_sql` 4.5~4.6단계 — 한글 토큰 잔존 · MariaDB 큰따옴표 식별자 · dtime 필터 부재.
+
+    Returns:
+        (오류 목록, 경고 목록)
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
 
     # 4.5. 따옴표 밖 자연어(한글) 토큰 잔존 검출 — LLM이 "해당"/"현재" 같은 자연어 조각을
     # SQL 구조 영역에 남기면 DB 구문 오류로 실행이 실패한다(폐쇄망 실측 2026-07-20, 2회
@@ -264,6 +335,22 @@ def validate_sql(
     # 알람 뷰의 부모 조인 등 일부 별칭 무필터는 정당하므로 "SQL 전체에 한 번도 없음"만 차단한다.
     if missing_dtime_filter(sql):
         errors.append(MISSING_DTIME_ERROR)
+    return errors, warnings
+
+
+def _check_references(
+    sql: str,
+    schema_info: dict[str, Any],
+    *,
+    db_engine: str,
+    allow_hangul_identifiers: bool,
+) -> tuple[list[str], set[str]]:
+    """`validate_sql` 5~6단계 — 참조 테이블·컬럼 존재 여부.
+
+    Returns:
+        (오류 목록, CTE를 뺀 참조 테이블 — 8단계 성능 검사가 공유한다)
+    """
+    errors: list[str] = []
 
     # 5. 참조 테이블 존재 여부 (대소문자 무시 + bare name fallback)
     referenced_tables = _extract_table_names(sql)  # 이후 검사와 공유(1회 추출)
@@ -295,16 +382,27 @@ def validate_sql(
         ))
     else:
         if unknown_tables and available_tables:
-            errors.append(f"존재하지 않는 테이블 참조: {', '.join(unknown_tables)}")
+            errors.append(f"존재하지 않는 테이블 참조: {', '.join(sorted(unknown_tables))}")
 
         # 6. 참조 컬럼 존재 여부
         if not unknown_tables and available_tables:
             column_errors = _validate_columns(sql, schema_info, referenced_tables)
             errors.extend(column_errors)
+    return errors, referenced_tables
+
+
+def _check_join_patterns(
+    sql: str, schema_info: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    """`validate_sql` 6.5~6.7단계 — 금지 JOIN 컬럼(경고) · EAV 금지 조인 · LEFT JOIN 강등(오류).
+
+    Returns:
+        (오류 목록, 경고 목록)
+    """
+    errors: list[str] = []
 
     # 6.5. 금지 JOIN 컬럼 사용 감지 (warning)
     excluded_join_warnings = _check_excluded_join_columns(sql, schema_info)
-    warnings.extend(excluded_join_warnings)
 
     # 6.6. EAV 프로필 기반 금지 조인 패턴 감지 (error → 재시도 유도)
     forbidden_join_errors = _validate_forbidden_joins(sql, schema_info)
@@ -314,8 +412,24 @@ def validate_sql(
     # 6.7. LEFT JOIN 강등(outer 조인 테이블 필터의 WHERE 배치) 감지 (error → 재시도 유도, D-085)
     demotion_errors = _check_left_join_where_demotion(sql)
     errors.extend(demotion_errors)
+    return errors, excluded_join_warnings
 
-    # 7. LIMIT 절 존재 여부
+
+def _apply_row_limit(
+    sql: str,
+    *,
+    db_engine: str,
+    user_query: str,
+    default_limit: int,
+) -> tuple[str | None, list[str]]:
+    """`validate_sql` 7단계 — 행 제한 절이 없으면 방언에 맞춰 자동 추가한다.
+
+    Returns:
+        (자동 보정 SQL — 보정하지 않았으면 None, 경고 목록)
+    """
+    auto_fixed_sql: str | None = None
+    warnings: list[str] = []
+
     # LIMIT 상향(resolve_query_limit)과 동일한 경계 판정을 공유한다 — 종전 인라인 부분문자열
     # 튜플은 "전체적으로 …"를 전체 조회로 오탐해 LIMIT 자동 추가를 건너뛰었다(Plan 67 R3-(iii)).
     # 전체 조회 질의는 **생략이 아니라 상향**이다(plans/98 CU-2). 종전에는 자동 추가를 통째로
@@ -352,22 +466,7 @@ def validate_sql(
                 warnings.append(
                     f"LIMIT 절이 없어 자동으로 LIMIT {limit}을 추가했습니다."
                 )
-
-    # 8. 성능 위험 패턴
-    perf_warnings = _check_performance_risks(sql, schema_info, tables=referenced_tables)
-    warnings.extend(perf_warnings)
-
-    # 9. DB 어댑터 전용 검증(라우팅 필터 오용 등) — 호출부가 주입한 훅만 실행
-    for _check in adapter_checks:
-        errors.extend(_check(sql))
-
-    return SQLValidationOutcome(
-        errors=errors,
-        warnings=warnings,
-        auto_fixed_sql=auto_fixed_sql,
-        forbidden_keywords=forbidden,
-        injection_count=injection_count,
-    )
+    return auto_fixed_sql, warnings
 
 _HANGUL_RE = re.compile(r"[가-힣]+")
 #: 한글을 포함한 식별자 단위 토큰(`취득_금액2`를 한 토큰으로 — 스키마 대조용 · plans/137)
@@ -1234,15 +1333,34 @@ def _validate_forbidden_joins(sql: str, schema_info: dict) -> list[str]:
 
     errors: list[str] = []
     alias_map = _extract_alias_map(sql)
+    join_conditions = _on_clause_equalities(sql)
 
-    # 별칭→실제 테이블명 변환 (스키마 접두사 제거, 소문자)
-    def _resolve_table(ref: str) -> str:
-        """별칭이면 실제 테이블명으로 변환하고, 스키마 접두사를 제거하여 bare name을 반환한다."""
-        actual = alias_map.get(ref, ref)
-        # 스키마 접두사 제거 (예: polestar.cmm_resource → cmm_resource)
-        actual = actual.rsplit(".", 1)[-1]
-        return actual.lower()
+    for eav_pat in eav_patterns:
+        errors.extend(_eav_pattern_join_errors(eav_pat, join_conditions, alias_map))
 
+    return errors
+
+
+@dataclass(frozen=True)
+class _JoinEq:
+    """ON 절 등호 조건 하나를 실제 테이블(bare · 소문자)과 소문자 컬럼으로 푼 것."""
+
+    left_table: str
+    left_col: str
+    right_table: str
+    right_col: str
+
+
+def _resolve_join_table(alias_map: dict[str, str], ref: str) -> str:
+    """별칭이면 실제 테이블명으로 변환하고, 스키마 접두사를 제거하여 bare name을 반환한다."""
+    actual = alias_map.get(ref, ref)
+    # 스키마 접두사 제거 (예: polestar.cmm_resource → cmm_resource)
+    actual = actual.rsplit(".", 1)[-1]
+    return actual.lower()
+
+
+def _on_clause_equalities(sql: str) -> list[tuple[str, str, str, str]]:
+    """ON 절의 ``X.col = Y.col`` 등호 조건을 등장 순으로 뽑는다(AND 복합 조건 포함)."""
     # ON 절에서 조인 조건 추출: alias.column = alias.column
     on_clauses = re.findall(
         r"\bON\s+(.+?)(?:\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bLEFT\b|\bRIGHT\b|\bINNER\b|\bFULL\b|\bCROSS\b|\bJOIN\b|\bFETCH\b|;|$)",
@@ -1260,112 +1378,145 @@ def _validate_forbidden_joins(sql: str, schema_info: dict) -> list[str]:
             re.IGNORECASE,
         )
         join_conditions.extend(eq_matches)
+    return join_conditions
 
-    for eav_pat in eav_patterns:
-        entity_table = eav_pat.get("entity_table", "").lower()
-        config_table = eav_pat.get("config_table", "").lower()
+
+def _eav_pattern_join_errors(
+    eav_pat: dict[str, Any],
+    join_conditions: list[tuple[str, str, str, str]],
+    alias_map: dict[str, str],
+) -> list[str]:
+    """EAV 패턴 하나에 대해 조인 조건마다 금지 패턴 1(직접 조인)·2·3(제외 컬럼)을 판정한다."""
+    entity_table = eav_pat.get("entity_table", "").lower()
+    config_table = eav_pat.get("config_table", "").lower()
+    # 스키마 접두사 제거
+    entity_table = entity_table.rsplit(".", 1)[-1]
+    config_table = config_table.rsplit(".", 1)[-1]
+
+    if not entity_table or not config_table:
+        return []
+
+    excluded_join_columns = eav_pat.get("excluded_join_columns", [])
+    # 금지 조인 판정·안내에 쓰는 컬럼명은 전부 프로필 선언에서 읽는다(D-088).
+    # config 조인 컬럼 선언이 없으면 패턴 1(직접 조인)은 식별할 수 없어 건너뛴다.
+    config_column = (eav_pat.get("direct_join") or {}).get("config_column") or ""
+    bridge_hint = _eav_bridge_hint(eav_pat, entity_table, config_table)
+    hint_suffix = f" {bridge_hint}" if bridge_hint else ""
+
+    errors: list[str] = []
+    for left_ref, col_left, right_ref, col_right in join_conditions:
+        eq = _JoinEq(
+            left_table=_resolve_join_table(alias_map, left_ref),
+            left_col=col_left.lower(),
+            right_table=_resolve_join_table(alias_map, right_ref),
+            right_col=col_right.lower(),
+        )
+        errors.extend(
+            _direct_join_errors(eq, entity_table, config_table, config_column, hint_suffix)
+        )
+        errors.extend(
+            _excluded_column_join_errors(eq, excluded_join_columns, config_table, hint_suffix)
+        )
+    return errors
+
+
+def _direct_join_errors(
+    eq: _JoinEq, entity_table: str, config_table: str, config_column: str, hint_suffix: str,
+) -> list[str]:
+    """패턴 1 — entity_table.id ↔ config_table.<config 조인 컬럼> 직접 조인(정·역방향)."""
+    errors: list[str] = []
+    config_column_lower = config_column.lower()
+
+    # 패턴 1: entity_table.id = config_table.<config 조인 컬럼>
+    if (
+        config_column_lower
+        and eq.left_table == entity_table
+        and eq.left_col == "id"
+        and eq.right_table == config_table
+        and eq.right_col == config_column_lower
+    ):
+        errors.append(
+            f"금지된 조인 감지: {entity_table}.id = {config_table}.{config_column} 직접 조인은 "
+            f"ID 체계가 달라 잘못된 결과를 반환합니다.{hint_suffix}"
+        )
+
+    # 패턴 1 역방향: config_table.<config 조인 컬럼> = entity_table.id
+    if (
+        config_column_lower
+        and eq.left_table == config_table
+        and eq.left_col == config_column_lower
+        and eq.right_table == entity_table
+        and eq.right_col == "id"
+    ):
+        errors.append(
+            f"금지된 조인 감지: {config_table}.{config_column} = {entity_table}.id 직접 조인은 "
+            f"ID 체계가 달라 잘못된 결과를 반환합니다.{hint_suffix}"
+        )
+    return errors
+
+
+def _excluded_column_join_errors(
+    eq: _JoinEq,
+    excluded_join_columns: list[dict[str, Any]],
+    config_table: str,
+    hint_suffix: str,
+) -> list[str]:
+    """패턴 2·3 — 제외 컬럼이 config_table(2) 또는 임의 테이블(3)과의 조인에 쓰였다."""
+    errors: list[str] = []
+    for exc in excluded_join_columns:
+        exc_table = exc.get("table", "").lower()
+        exc_column = exc.get("column", "").lower()
+        exc_reason = exc.get("reason", "NULL")
         # 스키마 접두사 제거
-        entity_table = entity_table.rsplit(".", 1)[-1]
-        config_table = config_table.rsplit(".", 1)[-1]
+        exc_table = exc_table.rsplit(".", 1)[-1]
 
-        if not entity_table or not config_table:
+        if not exc_table or not exc_column:
             continue
 
-        excluded_join_columns = eav_pat.get("excluded_join_columns", [])
-        # 금지 조인 판정·안내에 쓰는 컬럼명은 전부 프로필 선언에서 읽는다(D-088).
-        # config 조인 컬럼 선언이 없으면 패턴 1(직접 조인)은 식별할 수 없어 건너뛴다.
-        config_column = (eav_pat.get("direct_join") or {}).get("config_column") or ""
-        config_column_lower = config_column.lower()
-        bridge_hint = _eav_bridge_hint(eav_pat, entity_table, config_table)
-        hint_suffix = f" {bridge_hint}" if bridge_hint else ""
+        # 패턴 2: excluded_join_columns에 정의된 컬럼이 config_table과의 조인에 사용
+        # 왼쪽이 excluded 컬럼, 오른쪽이 config_table
+        if (
+            eq.left_table == exc_table
+            and eq.left_col == exc_column
+            and eq.right_table == config_table
+        ):
+            errors.append(
+                f"금지된 조인 감지: {exc_table}.{exc_column}이 {config_table}과의 조인에 "
+                f"사용되었습니다. 사유: {exc_reason}.{hint_suffix}"
+            )
 
-        for left_ref, col_left, right_ref, col_right in join_conditions:
-            actual_left = _resolve_table(left_ref)
-            actual_right = _resolve_table(right_ref)
-            col_left_lower = col_left.lower()
-            col_right_lower = col_right.lower()
+        # 역방향: 오른쪽이 excluded 컬럼, 왼쪽이 config_table
+        if (
+            eq.right_table == exc_table
+            and eq.right_col == exc_column
+            and eq.left_table == config_table
+        ):
+            errors.append(
+                f"금지된 조인 감지: {exc_table}.{exc_column}이 {config_table}과의 조인에 "
+                f"사용되었습니다. 사유: {exc_reason}.{hint_suffix}"
+            )
 
-            # 패턴 1: entity_table.id = config_table.<config 조인 컬럼>
-            if (
-                config_column_lower
-                and actual_left == entity_table
-                and col_left_lower == "id"
-                and actual_right == config_table
-                and col_right_lower == config_column_lower
-            ):
-                errors.append(
-                    f"금지된 조인 감지: {entity_table}.id = {config_table}.{config_column} 직접 조인은 "
-                    f"ID 체계가 달라 잘못된 결과를 반환합니다.{hint_suffix}"
-                )
-
-            # 패턴 1 역방향: config_table.<config 조인 컬럼> = entity_table.id
-            if (
-                config_column_lower
-                and actual_left == config_table
-                and col_left_lower == config_column_lower
-                and actual_right == entity_table
-                and col_right_lower == "id"
-            ):
-                errors.append(
-                    f"금지된 조인 감지: {config_table}.{config_column} = {entity_table}.id 직접 조인은 "
-                    f"ID 체계가 달라 잘못된 결과를 반환합니다.{hint_suffix}"
-                )
-
-            # 패턴 2: excluded_join_columns에 정의된 컬럼이 config_table과의 조인에 사용
-            for exc in excluded_join_columns:
-                exc_table = exc.get("table", "").lower()
-                exc_column = exc.get("column", "").lower()
-                exc_reason = exc.get("reason", "NULL")
-                # 스키마 접두사 제거
-                exc_table = exc_table.rsplit(".", 1)[-1]
-
-                if not exc_table or not exc_column:
-                    continue
-
-                # 왼쪽이 excluded 컬럼, 오른쪽이 config_table
-                if (
-                    actual_left == exc_table
-                    and col_left_lower == exc_column
-                    and actual_right == config_table
-                ):
-                    errors.append(
-                        f"금지된 조인 감지: {exc_table}.{exc_column}이 {config_table}과의 조인에 사용되었습니다. "
-                        f"사유: {exc_reason}.{hint_suffix}"
-                    )
-
-                # 역방향: 오른쪽이 excluded 컬럼, 왼쪽이 config_table
-                if (
-                    actual_right == exc_table
-                    and col_right_lower == exc_column
-                    and actual_left == config_table
-                ):
-                    errors.append(
-                        f"금지된 조인 감지: {exc_table}.{exc_column}이 {config_table}과의 조인에 사용되었습니다. "
-                        f"사유: {exc_reason}.{hint_suffix}"
-                    )
-
-                # 패턴 3: excluded_join_columns 컬럼이 임의 테이블과의 조인에 사용
-                # config_table 대상이 아니더라도 차단 (cmm_vendor, cmm_os 등 레거시 lookup 테이블)
-                if (
-                    actual_left == exc_table
-                    and col_left_lower == exc_column
-                    and actual_right != config_table
-                ):
-                    errors.append(
-                        f"금지된 조인 감지: {exc_table}.{exc_column}이 JOIN ON 절에 사용되었습니다. "
-                        f"사유: {exc_reason}"
-                    )
-                # 패턴 3 역방향
-                if (
-                    actual_right == exc_table
-                    and col_right_lower == exc_column
-                    and actual_left != config_table
-                ):
-                    errors.append(
-                        f"금지된 조인 감지: {exc_table}.{exc_column}이 JOIN ON 절에 사용되었습니다. "
-                        f"사유: {exc_reason}"
-                    )
-
+        # 패턴 3: excluded_join_columns 컬럼이 임의 테이블과의 조인에 사용
+        # config_table 대상이 아니더라도 차단 (cmm_vendor, cmm_os 등 레거시 lookup 테이블)
+        if (
+            eq.left_table == exc_table
+            and eq.left_col == exc_column
+            and eq.right_table != config_table
+        ):
+            errors.append(
+                f"금지된 조인 감지: {exc_table}.{exc_column}이 JOIN ON 절에 사용되었습니다. "
+                f"사유: {exc_reason}"
+            )
+        # 패턴 3 역방향
+        if (
+            eq.right_table == exc_table
+            and eq.right_col == exc_column
+            and eq.left_table != config_table
+        ):
+            errors.append(
+                f"금지된 조인 감지: {exc_table}.{exc_column}이 JOIN ON 절에 사용되었습니다. "
+                f"사유: {exc_reason}"
+            )
     return errors
 
 

@@ -199,10 +199,22 @@ class _FakeRunner:
         return self.records.get(job_id)
 
 
+class _Users:
+    """`user_repo` 대역 — 인증 활성이면 저장소가 필수다(plans/186 L4). `admin-user`만 관리자."""
+
+    async def get_by_user_id(self, user_id: str):  # noqa: ANN201
+        from src.domain.user import User, UserRole
+
+        role = UserRole.ADMIN if user_id in {"admin-user"} else UserRole.USER
+        return User(user_id=user_id, username=user_id, hashed_password="x", role=role)
+
+
 @pytest.fixture(scope="module")
 def auth_app():
     """인증 켠 앱(모듈당 1회 생성 — AppConfig 구성 비용 절감). lifespan은 띄우지 않는다."""
-    return create_app(_config(auth_enabled=True))
+    app = create_app(_config(auth_enabled=True))
+    app.state.user_repo = _Users()
+    return app
 
 
 @pytest.fixture

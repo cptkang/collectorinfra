@@ -691,7 +691,9 @@ class TestMaxRetryExhaustion:
         result = _error_response_node(state)
         assert "재시도 횟수가 최대" in result["final_response"]
         assert "3" in result["final_response"]
-        assert "금지된 키워드" in result["final_response"]
+        # 검증 사유 원문은 싣지 않고 머리말만(plans/163 S3+)
+        assert "SQL 검증 실패" in result["final_response"]
+        assert "금지된 키워드" not in result["final_response"]
 
     def test_execution_error_at_max_retry(self):
         """실행 에러 + retry_count=3 → error_response."""

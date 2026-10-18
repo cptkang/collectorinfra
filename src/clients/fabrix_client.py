@@ -6,7 +6,6 @@ NWAgent의 fabrix_client.py를 기반으로 collectorinfra에 맞게 적용.
 
 import json
 import logging
-import os
 import requests
 from typing import Any, Dict, List, Optional
 
@@ -33,8 +32,8 @@ class FabriXAPIClient(BaseChatModel):
     Tool calling은 Few-shot 프롬프트 기반으로 처리한다.
     """
 
-    base_url: str = "http://localhost:8002/v1"
-    chat_model: str = "fabrix-chat-model"
+    base_url: str = ""
+    chat_model: str = ""
     api_key: Optional[str] = None
     timeout: int = 120
     temperature: float = 0.0
@@ -44,21 +43,26 @@ class FabriXAPIClient(BaseChatModel):
 
     def __init__(
         self,
-        base_url: str = "http://localhost:8002/v1",
-        chat_model: str = "fabrix-chat-model",
+        base_url: str = "",
+        chat_model: str = "",
         temperature: float = 0.0,
         api_key: Optional[str] = None,
         timeout: int = 120,
         **kwargs,
     ):
-        final_base_url = base_url or os.getenv("FABRIX_BASE_URL", "http://localhost:8002/v1")
-        final_api_key = api_key or os.getenv("FABRIX_API_KEY")
-        final_model = chat_model or os.getenv("FABRIX_CHAT_MODEL", "fabrix-chat-model")
+        # 받은 인자만 쓴다(plans/163 X6) — 셸 env·하드코딩 엔드포인트로 조용히 가지 않는다.
+        if not base_url:
+            raise ValueError("FabriX base_url이 비어 있습니다 — LLM_FABRIX_BASE_URL을 설정하세요.")
+        if not chat_model:
+            raise ValueError(
+                "FabriX chat_model이 비어 있습니다 — "
+                "LLM_FABRIX_CHAT_MODEL(또는 LLM_MODEL)을 설정하세요."
+            )
 
         super().__init__(
-            base_url=final_base_url,
-            chat_model=final_model,
-            api_key=final_api_key,
+            base_url=base_url,
+            chat_model=chat_model,
+            api_key=api_key,
             timeout=timeout,
             temperature=temperature,
             **kwargs,
@@ -114,7 +118,7 @@ class FabriXAPIClient(BaseChatModel):
                 if hasattr(inp, "model_json_schema"):
                     return inp.model_json_schema()
             except Exception:
-                pass
+                logger.warning("도구 input_schema 추출 실패 — 빈 스키마로 대체", exc_info=True)
         return {"type": "object", "properties": {}}
 
     def _build_payload(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
