@@ -171,7 +171,8 @@ async def test_long_tool_returns_handle_then_completes_after_120s(env):
         "expires_at",
     }
     assert job["progress"] == {"done": 2, "total": 4, "unit": "api_calls", "label": "API 호출"}
-    assert job["estimate"] == {"api_calls": 4, "seconds": 0.8}  # 4호출 ÷ 5회/초
+    # 4호출 ÷ 5회/초(표본 없음 — 호출 지연 미반영)
+    assert job["estimate"] == {"api_calls": 4, "seconds": 0.8, "basis": "rate_only"}
 
     st = await mgr.status(job["job_id"], principal="chat", owner="user:kim")
     assert st["job"]["state"] == "running" and st["rows"] == [] and "result_meta" not in st
@@ -494,6 +495,7 @@ async def test_unknown_plan_has_null_total_and_notes_join_limits(env):
     assert out["job"]["progress"]["total"] is None and out["job"]["estimate"] == {
         "api_calls": None,
         "seconds": None,
+        "basis": None,
     }
     await _settle(mgr)
     st = await mgr.status(out["job"]["job_id"], principal="chat")

@@ -1431,7 +1431,8 @@
     // 이벤트에는 되묻기 표지가 없으므로, 응답에 apm_source_clarification이 오면 그 질문으로 끝난
     // apm_query task의 실행 중 표시(상태줄 목록 · 처리 현황 하위 행)를 「확인 필요」 중립 표시로 고친다.
     function markApmClarifyTasks(meta) {
-        var clar = meta && meta.apm_source_clarification;
+        // plans/164 W7-C: 긴 X-View 사전 확인(apm_xview_confirmation)도 같은 규칙(되묻기 · 오류 아님)
+        var clar = meta && (meta.apm_source_clarification || meta.apm_xview_confirmation);
         if (!_streamStatus || !clar || !clar.question) return;
         _streamStatus.taskOrder.forEach(function (id) {
             var t = _streamStatus.tasks[id];
@@ -1719,6 +1720,10 @@
             if (apmScope && apmScope.reset) {
                 streamBody.reset_apm_source_scope = true;
             }
+            // plans/164 W7-C: 긴 X-View 사전 확인 답(apmScope.xview — trend|full · 구조화 필드)
+            if (apmScope && apmScope.xview) {
+                streamBody.apm_xview_choice = apmScope.xview;
+            }
             // D-187: 저장 값 패널 삭제 버튼 — 구조화 필드로만 전달(서버가 파이프라인 없이 결정적 삭제)
             if (formMemoryDelete) {
                 streamBody.form_memory_delete = formMemoryDelete;
@@ -1848,6 +1853,7 @@
             appendZoneClarificationToLastBubble(metaData.scope_reexpand);
             appendZoneClarificationToLastBubble(metaData.source_switch);   // plans/132 W5 「다른 소스로 보기」
             appendApmSourceClarificationToLastBubble(metaData.apm_source_clarification);   // plans/147
+            appendApmXviewConfirmationToLastBubble(metaData.apm_xview_confirmation);   // plans/164 W7-C
             // D-187: 저장 값 패널(항목별 삭제)
             appendFormMemoryPanelToLastBubble(metaData.form_memory_panel);
             setCurrentThread(metaData.thread_id);
@@ -2472,6 +2478,43 @@
         if (last) renderApmSourceClarification(last, clar);
     }
 
+    // ─── Jennifer X-View Confirmation (plans/164 W7-C · G-10 (a)) ───
+    // 응답 apm_xview_confirmation → 답 말풍선 뒤 버튼 2개(「추세」·「전부」 · 소스 되묻기와 같은 마크업).
+    // 누르면 같은 원 질문을 apm_xview_choice와 함께 다시 보낸다(자연어 재조합 없음 · 범위 그대로).
+    function renderApmXviewConfirmation(bubble, clar) {
+        var options = clar.options || [];
+        if (!options.length) return;
+        var boxId = "apmXviewConfirm-" + Date.now();
+        var buttonsHtml = options.map(function (o) {
+            return '<button class="zone-clarify-confirm" data-key="' + escapeHtml(o.key || "") + '">' +
+                escapeHtml(o.label || o.key || "") + '</button>';
+        }).join(" ");
+        bubble.insertAdjacentHTML("beforeend",
+            '<div class="zone-clarify apm-xview-confirm" id="' + boxId + '">' + buttonsHtml + '</div>');
+        var box = document.getElementById(boxId);
+        box.querySelectorAll("button").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                var key = btn.getAttribute("data-key");
+                if (!key) return;
+                box.classList.add("zone-clarify--done");
+                box.querySelectorAll("button").forEach(function (el) { el.disabled = true; });
+                // 선택 결과를 사용자 메시지로 에코(소스 되묻기와 같은 규칙) — 동작은 apm_xview_choice가 정한다
+                var echoMsg = { role: "user", content: "선택: " + btn.textContent, time: new Date(), file: null };
+                messages.push(echoMsg);
+                renderUserMessage(echoMsg);
+                executeStreamingQuery(clar.original_query || "", null, null, null, null, false, null, { xview: key });
+            });
+        });
+    }
+
+    function appendApmXviewConfirmationToLastBubble(clar) {
+        // 스트림·JSON 두 경로 공용 — 마지막 에이전트 말풍선에 버튼 블록 삽입
+        if (!clar) return;
+        var bubbles = document.querySelectorAll(".message--agent .message-bubble");
+        var last = bubbles.length ? bubbles[bubbles.length - 1] : null;
+        if (last) renderApmXviewConfirmation(last, clar);
+    }
+
     function disableZoneClarifyBlocks() {
         // 역질문에 답하지 않고 새 질의를 보내면 보류 블록을 비활성(자기정리 — §4.3-4)
         document.querySelectorAll(".zone-clarify:not(.zone-clarify--done)").forEach(function (box) {
@@ -2665,6 +2708,10 @@
             if (apmScope && apmScope.reset) {
                 queryBody.reset_apm_source_scope = true;
             }
+            // plans/164 W7-C: 긴 X-View 사전 확인 답(스트리밍 경로와 대칭)
+            if (apmScope && apmScope.xview) {
+                queryBody.apm_xview_choice = apmScope.xview;
+            }
             // D-187: 저장 값 패널 삭제 버튼(스트리밍 폴백 경로에서도 동일 구조화 필드)
             if (formMemoryDelete) {
                 queryBody.form_memory_delete = formMemoryDelete;
@@ -2698,6 +2745,7 @@
             appendZoneClarificationToLastBubble(data.scope_reexpand);
             appendZoneClarificationToLastBubble(data.source_switch);   // plans/132 W5 「다른 소스로 보기」
             appendApmSourceClarificationToLastBubble(data.apm_source_clarification);   // plans/147
+            appendApmXviewConfirmationToLastBubble(data.apm_xview_confirmation);   // plans/164 W7-C
             // D-187: 저장 값 패널(항목별 삭제)
             appendFormMemoryPanelToLastBubble(data.form_memory_panel);
 
@@ -3256,8 +3304,12 @@
         var e = job.estimate || {};
         if (APM_JOB_LIVE[job.state]) {   // 끝난 작업에는 예상 시간을 싣지 않는다
             if (typeof e.seconds === "number" && e.seconds > 0) {
-                parts.push(e.seconds >= 120 ? ("예상 약 " + (Math.round(e.seconds / 6) / 10) + "분")
-                                            : ("예상 약 " + e.seconds + "초"));
+                // 실측 기반(basis=measured)이면 남은 시간, 아니면 속도 간격만 본 값이라 지연 미반영을 적는다
+                var measured = e.basis === "measured";
+                parts.push((measured ? "남은 예상 약 " : "예상 약 ") +
+                           (e.seconds >= 3600 ? ((Math.round(e.seconds / 360) / 10) + "시간")
+                            : e.seconds >= 120 ? ((Math.round(e.seconds / 6) / 10) + "분") : (e.seconds + "초")) +
+                           (measured ? "" : "(호출 지연 미반영)"));
             } else {
                 parts.push("예상 시간 미정");
             }

@@ -36,6 +36,12 @@ settings:
           없고 토큰 단위 스트리밍이 실제로 흐른다. 9B급 로컬 모델이라 정확도·지연은 운영과
           다르다 — 기능 검증용이며 그 수치를 운영 기준선으로 쓰지 않는다. 서버가 떠 있지
           않으면 기동은 되고 질의에서 연결 오류가 난다.
+      - value: vllm
+        label: 사내 vLLM
+        effect: >-
+          사내에 띄운 vLLM 서버(OpenAI 호환 /v1)를 부른다. 망 안에서 처리되어 외부 유출도
+          과금도 없다. 오케스트레이터 vLLM과는 주소·모델을 따로 적는다(LLM_VLLM_*).
+          LLM_VLLM_BASE_URL·LLM_VLLM_MODEL이 비어 있으면 기동 시 그래프 조립에서 실패한다.
     example: >-
       운영 .env는 gemini다. 이 값을 ollama로 바꾸면 과금은 사라지지만 SQL 생성 정확도가
       떨어져 재시도가 늘고, 결과적으로 체감 응답이 더 느려지는 경우가 흔하다 — 모델 교체는
@@ -52,7 +58,7 @@ settings:
     caveats:
       - gemini·fabrix는 외부 과금 경로다. 테스트 실행도 승인 대상이다(D-127).
       - 알람 워커는 기동 시점의 설정을 붙들고 있어, 설정 리로드로는 질의 경로만 바뀌고 워커는 재시작까지 이전 공급자를 쓴다.
-    related: [LLM_MODEL, LLM_GEMINI_MODEL, LLM_FABRIX_CHAT_MODEL, LLM_OLLAMA_BASE_URL, LLM_MLX_BASE_URL, WORKER_PROVIDER_OVERRIDE]
+    related: [LLM_MODEL, LLM_GEMINI_MODEL, LLM_FABRIX_CHAT_MODEL, LLM_OLLAMA_BASE_URL, LLM_MLX_BASE_URL, LLM_VLLM_BASE_URL, WORKER_PROVIDER_OVERRIDE]
     references:
       - docs/02_decision.md (D-127)
       - docs/pii_filtering_rules.md
@@ -361,3 +367,90 @@ settings:
         effect: 생성 예산을 추론에 먼저 써서 응답 본문이 비거나 잘릴 수 있다.
     recommendation: false를 유지한다(D-042 no-think 방침과 같다).
     related: [LLM_MLX_MAX_TOKENS, ORCHESTRATOR_ENABLE_THINKING]
+
+  LLM_VLLM_BASE_URL:
+    summary: 워커로 쓸 사내 vLLM 서버의 /v1 주소.
+    behavior: >-
+      LLM_PROVIDER=vllm일 때 호출 대상이다. 다른 공급자를 쓰는 중이면 무시된다. 오케스트레이터가
+      쓰는 ORCHESTRATOR_BASE_URL과는 별개 값이라, 같은 서버를 쓰더라도 양쪽에 각각 적는다.
+    example: >-
+      vLLM을 http://vllm-host:8000에 띄웠다면 http://vllm-host:8000/v1로 적는다. /v1을 빼면
+      기동은 성공하고 첫 질의에서 404로 실패한다.
+    stability: 비어 있으면 LLM_PROVIDER=vllm 기동이 그래프 조립에서 실패한다.
+    related: [LLM_PROVIDER, LLM_VLLM_MODEL, ORCHESTRATOR_BASE_URL]
+
+  LLM_VLLM_MODEL:
+    summary: vLLM 서버에 요청할 모델 ID — 서버 --served-model-name과 같은 값으로 둔다.
+    behavior: >-
+      요청마다 이 이름을 보낸다. 서버의 서빙 이름과 다르면 첫 요청이 404로 실패한다.
+      이름에 qwen이 들어가면 추론 모드 토글(LLM_VLLM_ENABLE_THINKING)을 함께 보낸다.
+    example: >-
+      서버를 --served-model-name Qwen3.5-9B로 띄웠다면 Qwen3.5-9B로 적는다. 서버의
+      GET /v1/models 응답에 나오는 id와 같아야 한다.
+    stability: 비어 있으면 LLM_PROVIDER=vllm 기동이 그래프 조립에서 실패한다.
+    related: [LLM_VLLM_BASE_URL, LLM_VLLM_ENABLE_THINKING, ORCHESTRATOR_MODEL]
+
+  LLM_VLLM_API_KEY:
+    example: >-
+      vLLM을 인증 없는 내부망에 두었다면 비워 두는 것이 정상이다. 서버를 --api-key로 띄웠는데 이 값이
+      비어 있으면 첫 질의가 401로 실패한다.
+    summary: 워커 vLLM 인증 키 — .encenv에서 관리한다.
+    behavior: >-
+      vLLM을 --api-key로 띄웠을 때만 필요하다. 비우면 의미 없는 값(EMPTY)을 보낸다.
+      시크릿이라 이 화면에서 편집할 수 없다.
+    stability: 인증을 요구하는 게이트웨이 뒤에 vLLM을 두었다면 반드시 설정해야 한다.
+    related: [LLM_VLLM_BASE_URL, ORCHESTRATOR_API_KEY]
+
+  LLM_VLLM_TIMEOUT:
+    example: >-
+      30초로 줄이면 스키마를 포함한 긴 프롬프트가 붐비는 서버에서 첫 청크 전에 끊겨 SQL 생성이
+      재시도로 넘어가고, 결과적으로 응답이 더 늦어진다.
+    summary: 워커 vLLM 요청 1건을 얼마나 기다릴지(초).
+    behavior: >-
+      이 시간을 넘기면 요청이 실패한다. 스트리밍 응답의 청크 사이 대기 상한도 이 값을 따른다 —
+      긴 프롬프트는 앞부분 처리가 끝나야 첫 청크가 오기 때문이다.
+    options:
+      - value: "300"
+        label: 기본
+        effect: FabriX 호출 총상한(LLM_FABRIX_TOTAL_TIMEOUT)과 같은 수준이다.
+      - value: "60 이하"
+        effect: 서버가 붐빌 때 긴 스키마 질의가 정상 처리 중에 끊긴다.
+    stability: >-
+      첫 답변까지의 처리 상한 API_QUERY_TIMEOUT이 더 짧으면 그쪽이 먼저 끊는다.
+    related: [LLM_VLLM_BASE_URL, API_QUERY_TIMEOUT]
+
+  LLM_VLLM_VERIFY_SSL:
+    example: >-
+      폐쇄망 vLLM이 자체 서명 인증서로 443을 열어 두었다면, 이 값이 true인 동안 매 질의가 SSL 오류로
+      실패한다. false로 바꾸면 연결되지만 그만큼 검증을 포기하는 것이다.
+    summary: 워커 vLLM 접속 시 인증서를 검증할지.
+    behavior: >-
+      목적지 vLLM이 HTTPS를 쓰되 유효한 인증서가 없는 폐쇄망 구성에서 끄기 위한 값이다.
+      오케스트레이터 쪽 ORCHESTRATOR_VERIFY_SSL과는 따로 적용된다.
+    options:
+      - value: "true"
+        label: 기본
+        effect: 인증서를 검증한다. 사설 인증서면 첫 질의에서 SSL 오류로 실패한다.
+      - value: "false"
+        effect: 검증을 건너뛴다. 폐쇄망 사설 인증서 대응책이며, 그만큼 중간자 공격에 노출된다.
+    performance: 영향이 없다.
+    related: [LLM_VLLM_BASE_URL, ORCHESTRATOR_VERIFY_SSL]
+    references:
+      - docs/02_decision.md (D-060)
+
+  LLM_VLLM_ENABLE_THINKING:
+    example: >-
+      Qwen 계열은 추론 모드에서 답하기 전에 추론 토큰을 수백~수천 개 먼저 만든다. SQL 한 줄을 받는 데
+      그만큼 생성 시간이 더 든다.
+    summary: 워커 vLLM 모델(Qwen 계열)의 추론(thinking) 모드 켜기 여부.
+    behavior: >-
+      LLM_VLLM_MODEL 이름에 qwen이 들어갈 때만 chat_template_kwargs.enable_thinking으로 보낸다.
+      다른 계열 모델이면 보내지 않는다(모르는 템플릿 변수로 서버가 거부하는 것을 피한다).
+    options:
+      - value: "false"
+        label: 기본
+        effect: 추론 없이 바로 답한다. 응답이 빠르고 본문이 비지 않는다.
+      - value: "true"
+        effect: 답하기 전에 추론 토큰을 먼저 만든다. 응답이 느려지고 앱은 그 추론 텍스트를 읽지 않는다.
+    recommendation: false를 유지한다(D-042 no-think 방침과 같다).
+    related: [LLM_VLLM_MODEL, ORCHESTRATOR_ENABLE_THINKING]

@@ -147,6 +147,7 @@ from src.orchestration.apm.args import (  # noqa: F401
     validate_view_args as validate_view_args,
 )
 from src.orchestration.apm.window import (  # noqa: F401
+    _INTERVAL_ARG as _INTERVAL_ARG,
     _period_list as _period_list,
     auto_interval as auto_interval,
     plan_compare_window as plan_compare_window,
@@ -181,6 +182,9 @@ from src.orchestration.apm.calls import (  # noqa: F401
     ROWS_IN_FILE_KEY as ROWS_IN_FILE_KEY,
 )
 from src.orchestration.apm.jobs_notices import (  # noqa: F401
+    BASIS_MEASURED as BASIS_MEASURED,
+    BASIS_RATE_ONLY as BASIS_RATE_ONLY,
+    _eta_span as _eta_span,
     _await_first_hop as _await_first_hop,
     _await_job as _await_job,
     _gateway_disclosures as _gateway_disclosures,
@@ -856,6 +860,121 @@ async def _apply_source_decision(
     return out
 
 
+# ── 긴 X-View 사전 확인 (plans/164 W7-C · G-10 (a)) ───────────────────────────────
+
+#: 거래 원본(X-View)을 1분 조각으로 모으는 보기 — 게이트웨이 사전 확인 인자를 싣는다.
+HEALTH_VIEW = "apm.app_health"
+#: 「추세」 선택이 대신 부르는 보기(plans/164 W7-A — `apm_metrics` series · instance).
+TREND_VIEW = "apm.instance_trend"
+#: 게이트웨이 옵트인 인자(`apm_app_health(xview_confirm_over=…)`) · 사전 확인 봉투 `status`.
+XVIEW_CONFIRM_ARG = "xview_confirm_over"
+XVIEW_CONFIRM_STATUS = "confirm_required"
+#: 예상 X-View 호출이 이 수를 넘으면 실행 전에 되묻는다 — 1분 조각 60회 = 1시간 창(대상 1개 ·
+#: 도메인 1개 기준). G-10 (a) 사용자 값(2026-10-17). 범위는 줄이지 않는다(D-296 ④ — 고르는 것은
+#: 사용자다). 호출 수 산정은 게이트웨이 몫이다(D-274 ③ — 본체는 기준만 싣는다).
+XVIEW_CONFIRM_OVER = 60
+#: 되묻기 답(요청 본문 `apm_xview_choice` → 격리 입력) — 전부 모으기 · 추세로 보기.
+XVIEW_CHOICE_FULL = "full"
+XVIEW_CHOICE_TREND = "trend"
+XVIEW_CHOICES = (XVIEW_CHOICE_TREND, XVIEW_CHOICE_FULL)
+#: 되묻기 페이로드 — 처리기 결과 키 = 상태·응답 키(집계기가 상태로 옮긴다).
+XVIEW_CONFIRMATION_KEY = "apm_xview_confirmation"
+#: 「추세」 선택의 간격(분) — 질문이 간격을 말하지 않았으면 시 단위.
+TREND_DEFAULT_INTERVAL = 60
+#: 질문의 추세 간격 표현(「10분 간격」·「2시간 단위」·「30분마다」·「1시간별」).
+_INTERVAL_TEXT = re.compile(r"(\d{1,4})\s*(분|시간)\s*(?:간격|단위|마다|별)")
+
+
+def xview_choice(isolated: dict[str, Any]) -> str | None:
+    """격리 입력의 사전 확인 답 — 모르는 값은 None(답 없음과 같다)."""
+    value = isolated.get("apm_xview_choice")
+    return value if value in XVIEW_CHOICES else None
+
+
+def _trend_interval(given: Any, text: str) -> int:
+    """「추세」 선택의 간격 — 분해가 낸 값 → 질문의 간격 표현 → 시 단위."""
+    if isinstance(given, int) and not isinstance(given, bool) and given > 0:
+        return given
+    found = _INTERVAL_TEXT.search(text or "")
+    if found and int(found.group(1)) > 0:
+        return int(found.group(1)) * (60 if found.group(2) == "시간" else 1)
+    return TREND_DEFAULT_INTERVAL
+
+
+def _swap_to_trend(views: list[str], view_args: dict[str, Any], text: str,
+                   by_id: dict[str, ViewSpec]) -> tuple[list[str], dict[str, Any], int] | None:
+    """「추세」 선택 — `apm.app_health`를 같은 자리의 `apm.instance_trend`로 바꾼다(같은 대상·기간 ·
+    간격은 질문에서). 바꿀 것이 없으면 None."""
+    if HEALTH_VIEW not in views or TREND_VIEW not in by_id:
+        return None
+    given = (view_args.get(TREND_VIEW) or {}).get(_INTERVAL_ARG)
+    interval = _trend_interval(given, text)
+    swapped = list(dict.fromkeys(TREND_VIEW if v == HEALTH_VIEW else v for v in views))
+    args = {k: v for k, v in view_args.items() if k != HEALTH_VIEW}
+    args[TREND_VIEW] = {**(view_args.get(TREND_VIEW) or {}), _INTERVAL_ARG: interval}
+    return swapped, args, interval
+
+
+def _confirm_estimate(envelopes: list[dict[str, Any]]) -> dict[str, Any]:
+    """사전 확인 봉투(들)의 합산 견적 — 하나라도 실측(`measured`)이 아니면 지연 미반영으로 본다."""
+    parts: list[dict[str, Any]] = [e["estimate"] if isinstance(e.get("estimate"), dict) else {}
+                                   for e in envelopes]
+    seconds = [p["seconds"] for p in parts if isinstance(p.get("seconds"), (int, float))]
+    calls = sum(int(e.get("expected_api_calls") or 0) for e in envelopes)
+    if not seconds:
+        return {"api_calls": calls or None, "seconds": None, "basis": None}
+    measured = all(p.get("basis") == BASIS_MEASURED for p in parts)
+    return {"api_calls": calls or None, "seconds": round(sum(seconds), 1),
+            "basis": BASIS_MEASURED if measured else BASIS_RATE_ONLY}
+
+
+def _confirm_eta(estimate: dict[str, Any]) -> str:
+    """전수 조회 견적 문구 — 「예상 약 3.7시간 · API 호출 1,073회」(실측 표본이 없으면 「호출 지연
+    미반영」을 붙인다 · 시간을 모르면 「예상 시간 미정」)."""
+    seconds = estimate.get("seconds")
+    parts = []
+    if isinstance(seconds, (int, float)) and seconds > 0:
+        parts.append(f"예상 약 {_eta_span(seconds)}")
+        if estimate.get("basis") != BASIS_MEASURED:
+            parts.append("호출 지연 미반영")
+    else:
+        parts.append("예상 시간 미정")
+    if estimate.get("api_calls"):
+        parts.append(f"API 호출 {int(estimate['api_calls']):,}회")
+    return " · ".join(parts)
+
+
+def _xview_confirmation(asked: list[_Call], isolated: dict[str, Any], task: dict[str, Any],
+                        label: str, meta: dict[str, Any], notices: list[disc.Disclosure],
+                        source: str) -> dict[str, Any]:
+    """사전 확인 봉투 → 조회 0 되묻기 결과(선택지 = 추세 · 전부 — 답은 같은 원 질문을 다시
+    보낸다)."""
+    envelopes = [c.envelope or {} for c in asked]
+    estimate = _confirm_estimate(envelopes)
+    xview = sum(int(e.get("expected_xview_calls") or 0) for e in envelopes)
+    eta = _confirm_eta(estimate)
+    scope = " / ".join(_scope_text(c) for c in asked)
+    # 호출 수가 빠진 봉투(계약과 다른 게이트웨이)도 묻는다 — 0회로 쓰지 않고 모른다고 쓴다
+    count = f" {xview:,}회" if xview > 0 else " 많이(예상 호출 수 미상)"
+    question = (f"{scope}: 거래 원본(X-View)을 1분 조각으로 전부 모으려면 {label} API를{count}"
+                f" 불러야 합니다. 시 단위 추세로 볼까요(수 초), 거래 원본을 전부 모을까요({eta})?")
+    meta["xview_confirmation"] = {"expected_xview_calls": xview, "estimate": estimate,
+                                  "threshold": XVIEW_CONFIRM_OVER}
+    meta["source_status"] = _status(label, "not_queried", 0, "거래 원본 전수 조회 확인")
+    asked_notice = disc.make(disc.APM_UNRESOLVED_CONDITION, question, source=source)
+    out = _refusal(question, "apm_xview_confirm", meta, disc.dedupe([*notices, asked_notice]))
+    out[XVIEW_CONFIRMATION_KEY] = {
+        "question": question,
+        "options": [{"key": XVIEW_CHOICE_TREND, "label": "시 단위 추세로 보기(수 초)"},
+                    {"key": XVIEW_CHOICE_FULL, "label": f"거래 원본 전부 모으기({eta})"}],
+        "expected_xview_calls": xview,
+        "estimate": estimate,
+        # 버튼 답은 같은 원 질문을 선택과 함께 다시 보낸다(소스 되묻기와 같은 규칙)
+        "original_query": str(isolated.get("original_user_query") or task.get("sub_query") or ""),
+    }
+    return out
+
+
 # ── 앞 결과 행 참조 (plans/134 M-6 · 계약 §4.2) ──────────────────────────────────
 
 def reference_views_only(task: dict[str, Any]) -> bool:
@@ -1076,8 +1195,23 @@ async def _select_step(ctx: _RunCtx, llm: BaseChatModel) -> dict[str, Any] | Non
         notice = disc.make(disc.APM_UNRESOLVED_CONDITION, selection.unresolved, source=source)
         return _refusal(selection.unresolved, "apm_unresolved_selection", meta, [notice])
     ctx.views = selection.views
+    view_args_given = selection.view_args
+    # 긴 X-View 사전 확인 답(plans/164 W7-C) — 「추세」면 거래 원본 보기를 추세 보기로 바꾼다(같은
+    # 대상·기간 · 바꾼 사실은 고지) · 「전부」면 사전 확인 인자 없이 종전 전수 조회
+    choice = xview_choice(ctx.isolated)
+    if choice is not None:
+        meta["xview_choice"] = choice
+    swapped = (_swap_to_trend(ctx.views, view_args_given,
+                              str(ctx.isolated.get("original_user_query") or task.get("sub_query")
+                                  or ""), ctx.by_id)
+               if choice == XVIEW_CHOICE_TREND else None)
+    if swapped is not None:
+        ctx.views, view_args_given, interval = swapped
+        ctx.notices.append(disc.make(
+            NOTE_TRACE, f"선택에 따라 거래 원본(X-View) 대신 {_view_label(ctx.by_id[TREND_VIEW])}"
+            f"({interval}분 간격)로 조회했습니다", source=source))
     meta["views"] = ctx.views
-    ctx.task = {**task, "view_args": selection.view_args}
+    ctx.task = {**task, "view_args": view_args_given}
     if selection.uncovered:  # 덮은 보기는 조회하고 못 덮은 영역만 되묻는다(SPEC §6.4 ②)
         ctx.notices.append(disc.make(disc.APM_UNRESOLVED_CONDITION, selection.uncovered,
                                      source=source))
@@ -1263,10 +1397,36 @@ async def _session_step(ctx: _RunCtx, endpoint: tuple[str, str | None]) -> dict[
                 await _resolve_texts_step(ctx, session)
             await _first_hop_step(ctx, session)
             calls = _build_calls(ctx)
+            # 긴 X-View 사전 확인(plans/164 W7-C) — 답이 없는 턴만 구간이 있는 거래 원본 보기에
+            # 기준을 싣는다(넘으면 게이트웨이가 데이터 호출 없이 견적만 돌려준다 · 현재값만 보는
+            # 호출은 X-View를 부르지 않아 종전 인자 그대로). 「전부」와 추세 보기가 없어 바꾸지
+            # 못한 「추세」는 종전 전수 조회다(같은 질문을 되풀이해 묻지 않는다)
+            if xview_choice(ctx.isolated) is None:
+                for call in calls:
+                    if (call.view.id == HEALTH_VIEW and call.envelope is None
+                            and ("lookback_minutes" in call.args
+                                 or "reference_time" in call.args)):
+                        call.args[XVIEW_CONFIRM_ARG] = XVIEW_CONFIRM_OVER
             # 한 보기의 대상 2개 이상 = `targets` 배치 1호출(plans/134 M-5 · 계약 A-2) → 대상별 복원
             wire = _batched(calls, ctx.scope)
-            await _run_calls(session, wire, ctx.concurrency, ctx.scope)
-            await _settle_jobs(session, wire, ctx.scope)
+            gated = [c for c in wire if XVIEW_CONFIRM_ARG in c.args]
+            # 사전 확인 호출이 있으면 먼저 보낸다 — 되물으면 다른 보기도 부르지 않는다(조회 0)
+            first = gated or wire
+            await _run_calls(session, first, ctx.concurrency, ctx.scope)
+            if gated:
+                # 사전 확인 호출이 작업으로 승격됐으면(접수 봉투뿐) 끝날 때까지 기다려 결과 봉투의
+                # `status`로 판정한다 — 접수 봉투만 보고 다른 보기를 부르지 않는다
+                await _settle_jobs(session, gated, ctx.scope)
+            asked = [c for c in gated if c.error is None
+                     and (c.envelope or {}).get("status") == XVIEW_CONFIRM_STATUS]
+            if asked:
+                return _xview_confirmation(asked, ctx.isolated, ctx.task, label, ctx.meta,
+                                           ctx.notices, ctx.source)
+            settled = {id(c) for c in gated}
+            rest = [c for c in wire if id(c) not in {id(f) for f in first}]
+            if rest:
+                await _run_calls(session, rest, ctx.concurrency, ctx.scope)
+            await _settle_jobs(session, [c for c in wire if id(c) not in settled], ctx.scope)
             calls = _unbatched(wire, ctx.meta)
             calls += ctx.answers  # 게이트웨이에 다시 묻지 않는다(해석 검색이 이미 부른 행)
     except SourceMcpError as e:

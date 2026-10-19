@@ -133,6 +133,8 @@ class AdminServiceBase:
         provider = str(llm.provider)
         if provider == "mlx":
             model = llm.mlx_model or "default_model"
+        elif provider == "vllm":
+            model = llm.vllm_model
         elif provider == "gemini":
             model = llm.gemini_model or llm.model
         elif provider == "fabrix":

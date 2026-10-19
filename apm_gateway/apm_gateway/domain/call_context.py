@@ -7,6 +7,9 @@ SPEC-apm-question-coverage §3.4).
 - **훅**: 어댑터가 HTTP를 보내기 직전 `before_call(source_id)`를 부른다. 작업은 이 자리에서 동시
   실행 슬롯을 기다리고(승격 뒤) 소스별 호출 수·임대 시각(`api_calls`·`updated_at`)을 올린다(감사의
   `api_calls`·`sources`가 작업별 값이 된다).
+  응답을 받으면 `after_call(source_id, seconds, group=경로 템플릿)`로 실 호출 소요(속도 제어 대기
+  제외)를 넘긴다 — 작업이 (소스, 경로 군) 이동 평균으로 모아 남은 예상 시간에 쓴다(plans/164
+  W7-B · W7-C 교정: 빠른 인스턴스 명단 표본이 X-View 견적을 실측으로 바꾸지 않게).
 - **공유 적재**: 여러 요청이 함께 기다리는 적재(인스턴스 명단)는 `SharedLoadScope`로 돈다 —
   우선순위 `interactive` · 슬롯 대기 없음 · 호출 수와 메모는 적재를 시작한 요청에만 센다.
 - **호출 계획 · 메모**: 도구가 아는 호출 수(`expect_calls`)는 진행·비용 예측에, 자격증명 검사의
@@ -53,6 +56,13 @@ class CallScope:
         """호출 1회를 센다(작업만 기록한다). `shared`는 이 요청이 시작한 공유 적재의 호출이다."""
         return None
 
+    def after_call(
+        self, source_id: str, seconds: float, *, group: str = "", shared: bool = False
+    ) -> None:
+        """HTTP 1회 응답 수신 뒤 — 실 호출 소요(초 · 속도 제어 대기 제외) · 경로 군(`group`) ·
+        공유 적재 여부(`shared`). 작업만 기록한다."""
+        return None
+
     def expect_calls(self, count: int) -> None:
         """도구가 앞으로 부를 API 호출 수를 신고한다(누적)."""
         return None
@@ -76,6 +86,11 @@ class SharedLoadScope(CallScope):
 
     async def before_call(self, source_id: str = "") -> None:
         self._origin.count_call(source_id, shared=True)
+
+    def after_call(
+        self, source_id: str, seconds: float, *, group: str = "", shared: bool = False
+    ) -> None:
+        self._origin.after_call(source_id, seconds, group=group, shared=True)
 
     def note(self, text: str) -> None:
         self._origin.note(text)

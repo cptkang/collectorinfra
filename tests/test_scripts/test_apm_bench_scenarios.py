@@ -79,10 +79,10 @@ def _rules(issues: list[sc.Issue], level: str = "error") -> set[str]:
 
 def test_real_file_counts(real: list[sc.Scenario]) -> None:
     turns = [t for s in real for t in s.turns]
-    assert len(real) == 121
-    assert len(turns) == 135
-    assert sum(s.split == "dev" for s in real) == 85
-    assert sum(s.split == "holdout" for s in real) == 36
+    assert len(real) == 123  # plans/164 W7-A APM-INSTTREND-* 2개
+    assert len(turns) == 137
+    assert sum(s.split == "dev" for s in real) == 86
+    assert sum(s.split == "holdout" for s in real) == 37
     heavy = [s for s in real if s.heavy]
     assert len(heavy) == 5 and all(s.split == "dev" for s in heavy)
     was = [s for s in real if s.was_touch]
@@ -112,8 +112,8 @@ def test_real_file_full_coverage(
     assert sizes == {
         "표 A 경로": 40,
         "표 B 선택 인자": 26,
-        "레지스트리 보기": 29,
-        "레지스트리 보기 인자": 59,
+        "레지스트리 보기": 30,
+        "레지스트리 보기 인자": 61,
     }
     assert report.uncovered == 0
     excluded = dict(report.excluded_args)

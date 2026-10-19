@@ -273,6 +273,12 @@ class AgentState(TypedDict):
     apm_source_clarification: dict[str, Any] | None
     apm_source_scope: dict[str, Any] | None
     apm_source_pending: dict[str, Any] | None
+    # 긴 X-View 사전 확인(plans/164 W7-C · G-10 (a)) — APM task 안(`apm_query`)에서만 쓴다.
+    #   apm_xview_choice: 사전 확인 답 `trend`(시 단위 추세) | `full`(거래 원본 전부) — 버튼 답이
+    #     같은 원 질문과 함께 보낸다 · 요청 스코프.
+    #   apm_xview_confirmation: 사전 확인 되묻기 페이로드(응답 키 같음) — 요청 스코프.
+    apm_xview_choice: str | None
+    apm_xview_confirmation: dict[str, Any] | None
     # 존 역질문 후단 게이트 허용 채널 여부(D-143 후속2). 대화형 텍스트 라우트만 True로
     # 주입 — API 직접 호출·배치·평가 하네스는 역질문에 답할 수 없어 기존 폴백 유지
     # (§4.3-3 비대화 경로 분기). 요청 스코프 — 매 턴 라우트가 재공급.
@@ -544,6 +550,7 @@ def create_followup_input(
     apm_source_basis: str | None = None,
     apm_source_answer_text: str | None = None,
     reset_apm_source_scope: bool = False,
+    apm_xview_choice: str | None = None,
 ) -> dict:
     """후속(텍스트) 턴의 델타 입력을 생성한다 (D-064).
 
@@ -569,6 +576,7 @@ def create_followup_input(
         apm_source_answer_text: 여러 소스에 걸리는 단어만 쓴 글 답(plans/147 · 요청 스코프)
         reset_apm_source_scope: 제니퍼 소스 칩 "×"(plans/147 · D-322 ⑤). True면 제니퍼 승계
             (`apm_source_scope`)만 비운다 — DB 스코프는 그대로다(`reset_db_scope`는 둘 다 비운다).
+        apm_xview_choice: 긴 X-View 사전 확인 답 `trend` | `full`(plans/164 W7-C · 요청 스코프)
 
     Returns:
         graph.ainvoke에 전달할 델타 입력 dict
@@ -603,6 +611,9 @@ def create_followup_input(
         "apm_source_answer_text": apm_source_answer_text,
         "apm_source_clarification": None,
         "apm_source_pending": None,
+        # 긴 X-View 사전 확인(plans/164 W7-C) — 답·되묻기 모두 요청 스코프
+        "apm_xview_choice": apm_xview_choice,
+        "apm_xview_confirmation": None,
         # 존 역질문 후단 게이트(D-143 후속2) — 채널 플래그·발동 페이로드 모두 요청 스코프.
         # 직전 턴 발동 페이로드가 체크포인터로 승계돼 새 턴 응답을 오염시키지 않도록 초기화.
         "zone_clarification_allowed": allow_zone_clarification,
@@ -788,6 +799,8 @@ _INITIAL_STATE_DEFAULTS: tuple[tuple[str, Any], ...] = (
     ("apm_source_clarification", None),
     ("apm_source_scope", None),
     ("apm_source_pending", None),
+    ("apm_xview_choice", _FROM_ARGS),  # 요청 스코프(plans/164 W7-C)
+    ("apm_xview_confirmation", None),  # 요청 스코프(plans/164 W7-C)
     ("zone_clarification_allowed", _FROM_ARGS),
     ("zone_clarification", None),
     ("reuse_parsed_requirements", None),
@@ -884,6 +897,7 @@ def create_initial_state(
     raw_user_query: Optional[str] = None,
     selected_sources: list[str] | None = None,
     selected_apm_source_ids: list[str] | None = None,
+    apm_xview_choice: str | None = None,
 ) -> AgentState:
     """초기 State를 생성한다.
 
@@ -905,6 +919,7 @@ def create_initial_state(
         selected_sources: 소스 선택 칩 답변(plans/132 N-10 · 요청 스코프)
         selected_apm_source_ids: 제니퍼 소스 화면 선택(plans/147 · 요청 스코프 — 첫 턴은 되묻기
             답이 없어 근거가 늘 `selected`다)
+        apm_xview_choice: 긴 X-View 사전 확인 답 `trend` | `full`(plans/164 W7-C · 요청 스코프)
 
     Returns:
         초기화된 AgentState
@@ -925,6 +940,7 @@ def create_initial_state(
         selected_sources=selected_sources,
         selected_apm_source_ids=selected_apm_source_ids,
         apm_source_basis="selected" if selected_apm_source_ids else None,
+        apm_xview_choice=apm_xview_choice,  # 요청 스코프(plans/164 W7-C)
         zone_clarification_allowed=allow_zone_clarification,
         messages=[HumanMessage(content=user_query)],
         thread_id=thread_id,

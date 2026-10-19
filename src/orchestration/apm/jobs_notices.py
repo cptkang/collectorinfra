@@ -26,17 +26,39 @@ logger = logging.getLogger("src.orchestration.apm_query")
 
 # ── 장기 작업 (plans/134 W0-B · SPEC-apm-question-coverage §3.8) ───────────────
 
+#: 게이트웨이 견적 근거(`estimate.basis` — plans/164 W7-B): 실측 호출 소요 반영 · 속도 간격만
+#: (호출 지연 미반영).
+BASIS_MEASURED = "measured"
+BASIS_RATE_ONLY = "rate_only"
+
+
+def _eta_span(seconds: float) -> str:
+    """예상 시간 문구 — 1시간 이상은 시간, 2분 이상은 분(소수 1자리), 그 밖은 초(화면과 같은
+    규칙)."""
+    if seconds >= 3600:
+        return f"{round(seconds / 3600, 1):g}시간"
+    if seconds >= 120:
+        return f"{round(seconds / 60, 1):g}분"
+    return f"{seconds:g}초"
+
+
 def _progress_text(handle: dict[str, Any]) -> str:
-    """예상 시간 · 진행 — 게이트웨이 `estimate`·`progress` 그대로(모르면 모른다고 쓴다)."""
+    """예상 시간 · 진행 — 게이트웨이 `estimate`·`progress` 그대로(모르면 모른다고 쓴다).
+
+    실측 근거(`basis = measured` — plans/164 W7-B)면 「남은 예상 약 …」, 그 밖은 「예상 약 …」에
+    「호출 지연 미반영」을 붙인다(화면 작업 카드와 같은 규칙 · 1시간 이상은 시간 단위).
+    """
     raw_estimate, raw_progress = handle.get("estimate"), handle.get("progress")
     estimate: dict[str, Any] = raw_estimate if isinstance(raw_estimate, dict) else {}
     progress: dict[str, Any] = raw_progress if isinstance(raw_progress, dict) else {}
     seconds, api_calls = estimate.get("seconds"), estimate.get("api_calls")
     if isinstance(seconds, (int, float)) and seconds > 0:
-        eta = (f"예상 약 {round(seconds / 60, 1):g}분" if seconds >= 120
-               else f"예상 약 {seconds:g}초")
-        if api_calls:
-            eta += f"(API 호출 {api_calls}회)"
+        measured = estimate.get("basis") == BASIS_MEASURED
+        notes = [f"API 호출 {api_calls}회"] if api_calls else []
+        if not measured:
+            notes.append("호출 지연 미반영")
+        eta = (("남은 예상 약 " if measured else "예상 약 ") + _eta_span(seconds)
+               + (f"({' · '.join(notes)})" if notes else ""))
     else:
         eta = "예상 시간 미정"
     done, total = progress.get("done"), progress.get("total")

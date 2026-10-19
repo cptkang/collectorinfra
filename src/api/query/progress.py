@@ -69,7 +69,7 @@ def _summarize_tasks(
             # 제니퍼 소스 되묻기(plans/147)는 오류가 아니다 — `error`는 재계획 종결 판정용으로
             # 남기고 처리 현황은 이 표지로 「확인 필요」를 보인다(미연결 안내는 표지 없음 —
             # 종전 표시)
-            if res.get("apm_source_clarification"):
+            if res.get("apm_source_clarification") or res.get("apm_xview_confirmation"):
                 item["clarification"] = True
         summarized.append(item)
     return summarized

@@ -149,6 +149,11 @@ class _ItemScope(CallScope):
     def count_call(self, source_id: str = "", *, shared: bool = False) -> None:
         self._outer.count_call(source_id, shared=shared)
 
+    def after_call(
+        self, source_id: str, seconds: float, *, group: str = "", shared: bool = False
+    ) -> None:
+        self._outer.after_call(source_id, seconds, group=group, shared=shared)
+
     def expect_calls(self, count: int) -> None:
         self._plan.report(count)
 

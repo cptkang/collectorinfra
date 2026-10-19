@@ -350,6 +350,8 @@ def _build_turn_input_state(
             selected_apm_source_ids=apm_ids,
             apm_source_basis=apm_basis,
             apm_source_answer_text=apm_answer,
+            # 긴 X-View 사전 확인 답(plans/164 W7-C) — 버튼이 같은 원 질문과 함께 보낸다
+            apm_xview_choice=getattr(body, "apm_xview_choice", None),
         )
         if turn_query != body.query:
             delta["messages"] = [HumanMessage(content=body.query)]
@@ -386,6 +388,7 @@ def _build_turn_input_state(
         selected_sources=getattr(body, "selected_sources", None),
         # 제니퍼 소스 화면 선택(plans/147) — 첫 턴은 되묻기 대기가 없어 근거가 늘 `selected`다
         selected_apm_source_ids=getattr(body, "selected_apm_source_ids", None),
+        apm_xview_choice=getattr(body, "apm_xview_choice", None),  # plans/164 W7-C
         allow_zone_clarification=True,
         # 존 선택 재개 턴(pre-gate는 파이프라인 미실행이라 첫 턴으로 도착)도 전량 상향
         resolved_limit=(

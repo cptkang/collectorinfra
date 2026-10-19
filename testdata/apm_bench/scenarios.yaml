@@ -2,7 +2,7 @@
 #
 # 생성: 2026-10-12 · 원천 = spec/CAPABILITY-MAP-134.md 표 A(허용 GET 경로 40개) · 표 B(실제 전달하는 선택 인자 26개)
 #       + config/db_registry.yaml solutions[apm].views(보기 29개 · 보기 인자 59개)
-# 규모: 시나리오 121개 · 턴 135개 · holdout 36개(30%)
+# 규모: 시나리오 123개 · 턴 137개 · holdout 37개(30%) — plans/164 W7-A에서 2개 추가(APM-INSTTREND-*)
 #   분할 규칙(결정적): ① 표 A 경로마다 holdout 1개 확보(외부망 전용 변형 우선) ② 출현 순서로 30%까지 채움 — 경로의 dev가 사라지면 건너뜀 · heavy는 dev 고정
 # 커버리지(생성 시 대조): 표 A 미커버 0 · 표 B 미커버 0 · 보기 미커버 0 · 보기 인자 미커버 0
 #   경로별 분할: 표 A 40경로 모두 dev·holdout 양쪽 존재 — 단 holdout이 외부망 전용(e2_skip · WAS 접촉 1회 제한): COV-ACTIVE-DETAIL, COV-ENV, COV-LOADED-CLASS
@@ -20,6 +20,7 @@
 # - target: none(대상 없음) · untargeted(서버 미지정 = 상위 N · D-313) · host:N · inst:N(inst:c 공동존 · inst:b 은행존) · biz:N · svc:N · inst_w · ref(앞 턴 행 지목)
 # - window: default(말 안 함 = 보기 기본 창) · none · current · compare · range:<분> · hourly:today|yesterday|<분>
 # - args: 요구한 보기 인자만 적는다 — 적지 않은 인자가 붙으면 환각(arg_hallucination). "*" = 값은 지표 카탈로그 의존 · 존재만 판정
+#   {absent_or_contains: [이름…]} = 목록 인자를 안 붙였으면 통과 · 붙였으면 이름 중 하나 이상 포함해야 통과(plans/164 W7-A)
 # - apm_sources: 소스 지목 반영 · clarify: source|required_arg(되묻기가 정답) · refusal: unsupported|write_control(거절이 정답)
 #
 # 플래그(D-323 ③ 운영 뷰 서버 허용 범위)
@@ -170,6 +171,43 @@
       args:
         metrics: '*'
         interval_minute: 5
+- id: APM-INSTTREND-hourly
+  split: dev
+  covers:
+  - COV-DBM-INSTANCE
+  turns:
+  - prompt: '{{host_1}} 오늘 시간당 응답시간'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.instance_trend
+      target: host:1
+      window: hourly:today
+      args:
+        metrics:
+          absent_or_contains:
+          - service_time
+          - response_time_avg_ms
+        interval_minute: 60
+    note: plans/164 W7-A 수용 8 — 지표는 미지정이거나 응답시간(식별자 service_time · 중립 이름 response_time_avg_ms) 포함 — 인스턴스 시계열(지표 미지정 = 게이트웨이 기본 지표 · 인스턴스당 지표마다 1호출 = 2회) · 종전 app_health 1분 분할(1073회) 회귀 방지
+- id: APM-INSTTREND-metrics
+  split: holdout
+  covers:
+  - COV-DBM-INSTANCE
+  turns:
+  - prompt: '{{inst_1}} 오늘 응답시간이랑 호출 건수를 1시간 간격으로'
+    expect:
+      agents:
+      - apm_query
+      views:
+      - apm.instance_trend
+      target: inst:1
+      window: hourly:today
+      args:
+        metrics: '*'
+        interval_minute: 60
+    note: plans/164 W7-A — 인스턴스 추세 보기의 지표 지정(보기 인자 커버리지)
 - id: APM-POOL-inst
   split: dev
   covers:

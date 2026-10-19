@@ -84,6 +84,9 @@ async def main():
                 return ["x"]
             return "x"
         required = {k: dummy(schema["properties"][k]) for k in schema.get("required") or []}
+        # apm_metrics는 instance 시계열에서만 targets를 받는다(plans/164 W7-A apm.instance_trend)
+        if name == "apm_metrics":
+            required.update({"mode": "series", "scope": "instance"})
         out = await mcp.call_tool(name, {**required, "targets": [{"zz_probe": 1}]})
         content = out[0] if isinstance(out, tuple) else out
         text = content[0].text
@@ -338,7 +341,7 @@ async def test_every_view_argument_shape_matches_the_gateway(case, contract, mon
 
 def test_case_matrix_covers_every_view_and_every_choice() -> None:
     views = get_registry().views_of("apm")
-    assert len(views) == 29  # plans/134 W6 A-1 — apm.period_compare
+    assert len(views) == 30  # plans/134 W6 A-1 — apm.period_compare · plans/164 W7-A instance_trend
     covered = {c[1] for c in _CASES}
     assert covered == {v.id for v in views}
     for v in views:

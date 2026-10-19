@@ -980,7 +980,7 @@ def run(
     Raises:
         ValueError: 뷰 서버 버전 미달·미입력(E2) · E2 에 `out_dir` · E2 에 `llm="mlx"`
         LLMBlockedError: `llm="mlx"` 사전 점검 실패 · E2 본체 평면 중 하나라도 과금 평면
-            (`preflight.external_planes` — 워커 `fabrix·ollama·mlx` · 오케스트레이터 `vllm·mlx`
+            (`preflight.external_planes` — 워커 `fabrix·ollama·mlx·vllm` · 오케스트레이터 `vllm·mlx`
             밖 · 못 읽음 포함 · D-222). 아무것도 띄우지 않는다. 우회 옵션은 두지 않는다
         RunAbortError: 기동 검증·로그인 실패 · 포트 없음 · E2 인벤토리 이름 0 — 고정 문구와 오류
             코드만 싣는다(plans/164 W2a · 실행 로그에 원문이 남지 않게)
@@ -1021,7 +1021,7 @@ def run(
         billed = external_planes(_body_plane("llm"), _body_plane("orchestrator"))
         if billed:
             raise LLMBlockedError(f"E2 본체 과금 평면 {billed} — 실행하지 않는다(D-222 · 비과금 "
-                                  "워커 fabrix·ollama·mlx · 오케스트레이터 vllm·mlx)")
+                                  "워커 fabrix·ollama·mlx·vllm · 오케스트레이터 vllm·mlx)")
 
     started = time.monotonic()
     meta: dict[str, Any] = {"env": env, "started_at": now_kst(), "view_server_version":

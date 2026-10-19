@@ -578,17 +578,22 @@ def test_first_twelve_views_are_unchanged_from_baseline() -> None:
     new = apm_views_of((ROOT / "config/db_registry.yaml").read_text(encoding="utf-8"))
     assert len(old) == 12
     # plans/130 W1-D: apm.instances에 domain_id 조건(args·examples)만 더했다 — 나머지 칸은 그대로
+    # plans/164 W7-A: apm.app_health 라벨만 「현재·구간 합계」로 좁혔다(추세는 apm.instance_trend)
     head = [{k: v for k, v in view.items()
-             if not (view["id"] == "apm.instances" and k in ("args", "examples"))}
+             if not (view["id"] == "apm.instances" and k in ("args", "examples"))
+             and not (view["id"] == "apm.app_health" and k == "label")}
             for view in new[:12]]
-    assert head == old
+    assert head == [{k: v for k, v in view.items()
+                     if not (view["id"] == "apm.app_health" and k == "label")} for view in old]
     # plans/134 W3·W4 — 보기 6종을 뒤에 더했다(계약 B-1 · 앞 22개 선언은 그대로)
     assert [v["id"] for v in new[12:22]] == list(NEW_VIEWS)
     assert [v["id"] for v in new[22:]] == ["apm.service", "apm.service_trend", "apm.ranking",
                                           "apm.fleet_events", "apm.business",
                                           "apm.business_trend",
                                           # plans/134 W6 A-1 — 두 기간 비교(뒤에 덧붙임)
-                                          "apm.period_compare"]
+                                          "apm.period_compare",
+                                          # plans/164 W7-A — 인스턴스 추세(뒤에 덧붙임)
+                                          "apm.instance_trend"]
     for spec in aq.apm_views()[:12]:
         assert spec.target == "" and spec.reference == ""
 
