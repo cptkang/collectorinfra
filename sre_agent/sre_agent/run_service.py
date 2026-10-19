@@ -18,7 +18,6 @@ import uvicorn
 
 from sre_agent.infrastructure.log_masking import install_log_record_factory
 from sre_agent.interface.mcp_service import (
-    DEFAULT_HOST,
     DEFAULT_PORT,
     build_asgi_app,
     create_service,
@@ -60,12 +59,12 @@ def main() -> None:
 
     logger.info(
         "sre_agent 조사 서비스 기동: http://%s:%d/sse (인증=%s)",
-        DEFAULT_HOST,
+        settings.service_host,
         DEFAULT_PORT,
         "on" if token else "off",
     )
     # 3. uvicorn 서빙.
-    uvicorn.run(app, host=DEFAULT_HOST, port=DEFAULT_PORT)
+    uvicorn.run(app, host=settings.service_host, port=DEFAULT_PORT)
 
 
 if __name__ == "__main__":

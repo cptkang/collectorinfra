@@ -100,6 +100,10 @@ class AgentSettings(BaseSettings):
     # None이면 무인증(로컬/개발). SecretStr로 pydantic 필드로만 판정한다
     # (env: SERVICE_BEARER_TOKEN, os.getenv 금지). 협의 후 mTLS 승격 여지.
     service_bearer_token: SecretStr | None = None
+    # 조사 서비스 listen 호스트 (env: SERVICE_HOST). 기본 127.0.0.1 = 종전 동작.
+    # FastMCP Host 헤더 검사와 uvicorn 바인딩이 같은 값을 쓴다 — 0.0.0.0으로 열면
+    # service_bearer_token을 함께 설정할 것.
+    service_host: str = "127.0.0.1"
 
     # ── 조사 dispatcher 폭주 방지 가드 (Plan 02 §4·§10 — 전부 기본 off/보수값) ──
     # 스칼라 필드이므로 nested Field(default_factory=...)는 불요(중첩 모델 없음).

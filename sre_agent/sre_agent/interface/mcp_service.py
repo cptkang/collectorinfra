@@ -277,7 +277,7 @@ def create_service(
             settings, executor=_build_dispatcher(settings, audit_path), audit_path=audit_path
         )
 
-    mcp = FastMCP("sre-agent", host=DEFAULT_HOST, port=DEFAULT_PORT)
+    mcp = FastMCP("sre-agent", host=settings.service_host, port=DEFAULT_PORT)
 
     @mcp.tool()
     async def sre_investigate_alarm(payload: dict, wait_seconds: int = 0) -> str:
