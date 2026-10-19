@@ -8,6 +8,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-19 | D-003 | 부기 — MariaDB 10.x는 `transaction_read_only`가 없어(1193) 운영 itam 풀 초기화 실패 → `tx_read_only` 폴백(`mcp_server/db.py` `_create_mariadb_readonly_pool`) · 강등 없음 |
 | 2026-10-19 | D-343 | 신규 — `plans/188` W5: Gemma 4 도구 호출 마크업(`<\|tool_call>call:…<tool_call\|>`)을 `DefaultLLM.completion` 응답 후처리로 `tool_calls` 변환 · tools 있는 호출만 · 해석 실패면 원본(→ D-342 W4 종결) · `TOOL_CALL_MARKUP_PARSE_ENABLED` 기본 on 예외(만료 2027-04-19) · 커밋 없음 |
 | 2026-10-19 | D-342 | 부기 — `plans/188` W4: 조사 LLM 답에 도구 호출 마크업(vLLM `--tool-call-parser` 불일치)이 섞이면 원문 없이 `[미결] 조사 실패 — 조사 LLM 도구 호출 형식 불일치` 종결 · 감사 `answer_malformed` · `sre_health.last_answer_malformed` · 커밋 없음 |
 | 2026-10-19 | D-342 | 신규 — `plans/188`: 툴셋 재생성 1회 뒤에도 폴스타 MCP FAILED면 LLM 조사 생략 → 「조사 불가 — 관측 도구 연결 실패」 · `status=done`·`[미결]`·한계 1줄 · APM만 FAILED는 기존 폴백 · `sre_health.polestar_mcp_reachable` 실값 · 커밋 없음 |

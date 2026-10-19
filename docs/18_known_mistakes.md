@@ -2174,3 +2174,8 @@
 - **실수**: `plans/188` W5 Gemma 도구 호출 파싱 가드를 `DefaultLLM.completion` 응답 전부에 적용했다. holmes 컨텍스트 압축(`compaction.py:132`)·도구 출력 요약(`llm_summarize.py:156`)은 tools 없이 같은 관문을 지나 content만 읽으므로, 변환되면 요약이 사라지고 짝 없는 assistant `tool_calls`가 대화에 남는다(verifier Major · 커밋 전 교정).
 - **원인**: 「모든 LLM 호출이 `stream=False`로 이 관문을 지난다」는 조사 루프 기준 사실을 관문의 전 호출자로 일반화했다 — 호출자별 인자(tools·tool_choice·stream)를 grep하지 않았다.
 - **방지책**: 공용 경계에 몽키패치를 걸 때는 그 경계의 호출자를 전수 grep해 인자 형태별로 적용 여부를 정하고, 원 함수가 쓰는 조건(여기서는 `tools and tool_choice == "auto"`)과 같은 조건으로 좁힌다. 위치·키워드 인자 양쪽 판정을 테스트로 고정한다.
+
+### 2026-10-19 · MariaDB 세션 읽기 전용 변수를 로컬 11.4로만 검증해 운영 10.x에서 itam 풀 초기화가 실패했다
+- **실수**: `plans/163` S1이 MariaDB `init_command`에 `SESSION transaction_read_only=1`을 붙였다. 폐쇄망 ITAM(MariaDB 10.x)은 이 변수를 몰라 `(1193, "Unknown system variable 'transaction_read_only'")`로 풀 생성이 실패했고, 풀은 기동 시 1회만 만들므로 itam이 계속 offline이었다
+- **원인**: 로컬 샌드박스(`testdata/itam` `mariadb:11.4`) 한 버전으로만 실측했다. `transaction_read_only`는 MariaDB 11.1에서 생긴 이름이고 그 전은 `tx_read_only`다(MySQL 8.0은 반대로 `tx_read_only` 제거)
+- **방지책**: 세션 변수·SQL 함수처럼 버전마다 이름이 다른 서버 기능은 운영 버전을 확인한 뒤 쓰거나 이름 후보 폴백을 둔다(`_create_mariadb_readonly_pool`). 엔진 기능 실측 기록에는 검증한 서버 버전을 함께 적는다
