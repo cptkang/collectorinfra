@@ -14,13 +14,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from src.api.dependencies import (
     alarm_zones_for_user,
@@ -29,6 +32,8 @@ from src.api.dependencies import (
     require_user,
     resolve_stream_user,
 )
+from src.api import investigation_poll
+from src.infrastructure import investigation_request_limit
 from src.api.error_detail import admin_error_detail
 # plans/166 A8 — 스키마는 alarm_schemas로 이동 · 여기서 재노출(D-337 ①)
 from src.api.routes.alarm_schemas import (
@@ -70,6 +75,8 @@ from noise_gate.application.alarm_test_payload import (
 )
 
 if TYPE_CHECKING:
+    from contextlib import AbstractAsyncContextManager
+
     from noise_gate.infrastructure.investigation_store import InvestigationStore
 
 logger = logging.getLogger(__name__)
@@ -1090,17 +1097,15 @@ async def alarm_capabilities(
 
 # ─── 자동 조사 브리핑 조회 (plans/153 W2 · D-325 G-3 (a)) ──────────────────────
 
-# 아직 종결되지 않은 조사를 sre_agent에 다시 물을 때 종결로 보는 상태(submit/poll 계약 · D-123).
-_INVESTIGATION_TERMINAL_POLL: frozenset[str] = frozenset(
-    {"done", "failed", "timeout", "stub", "rejected", "not_found"}
-)
-
-#: 같은 조사의 지연 poll 최소 간격(초) — 카드 재조회·여러 사용자가 조사 서비스를 두드리지 않게.
-_INVESTIGATION_POLL_MIN_INTERVAL = 10.0
-#: 조사별 마지막 poll 시각(monotonic)과 동시성 1 잠금 — 키는 (저장소 경로, 조사 id).
-#: 간격이 지난 키는 다음 호출에서 sweep 한다(프로세스 in-memory dict는 키 만료 sweep 원칙).
-_INVESTIGATION_POLL_AT: dict[tuple[str, str], float] = {}
-_INVESTIGATION_POLL_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
+# plans/155 G-10 · plans/187 W10 — 지연 poll(잠금·간격·종결 규칙)은 공용 모듈로 옮겼다(동작 불변).
+# 옛 이름은 같은 객체로 재노출한다(테스트·호출부 호환 — dict는 공유되므로 변경이 그대로 보인다).
+_INVESTIGATION_TERMINAL_POLL = investigation_poll.TERMINAL_POLL_STATUSES
+_INVESTIGATION_POLL_MIN_INTERVAL = investigation_poll.POLL_MIN_INTERVAL
+_INVESTIGATION_POLL_AT = investigation_poll.POLL_AT
+_INVESTIGATION_POLL_LOCKS = investigation_poll.POLL_LOCKS
+_sweep_investigation_polls = investigation_poll.sweep_polls
+_refresh_investigation = investigation_poll.refresh_investigation
+_poll_investigation = investigation_poll.poll_investigation
 
 
 def _is_alarm_operator(config: Any, current_user: dict[str, Any]) -> bool:
@@ -1181,101 +1186,28 @@ def _assert_investigation_zone(
             )
 
 
-def _sweep_investigation_polls(now: float) -> None:
-    """간격이 지난 poll 시각·잠금을 지운다(진행 중인 잠금은 남긴다)."""
-    expired = [
-        key for key, at in _INVESTIGATION_POLL_AT.items()
-        if now - at >= _INVESTIGATION_POLL_MIN_INTERVAL
-    ]
-    for key in expired:
-        lock = _INVESTIGATION_POLL_LOCKS.get(key)
-        if lock is not None and lock.locked():
-            continue
-        _INVESTIGATION_POLL_AT.pop(key, None)
-        _INVESTIGATION_POLL_LOCKS.pop(key, None)
+def _attach_live_progress(
+    view: dict[str, Any], rec: dict[str, Any], mask_fn: Callable[[str], str] | None
+) -> None:
+    """지연 poll이 얹은 진척 키를 응답 최상위에 싣는다(plans/187 W5a · 저장 안 함).
 
-
-async def _refresh_investigation(
-    store: InvestigationStore, rec: dict[str, Any], ng: Any
-) -> tuple[dict[str, Any], str | None]:
-    """미종결 조사를 sre_agent에 poll해 종결이면 저장하고 최신 레코드를 돌려준다.
-
-    조사 id별로 동시에 1건만 poll하고(`asyncio.Lock`), 마지막 poll 뒤
-    `_INVESTIGATION_POLL_MIN_INTERVAL`초 안의 재요청은 poll 없이 저장소 상태로 응답한다.
-
-    Returns:
-        (레코드, 재조회 실패 사유 또는 None)
+    `progress`는 그대로(수치·단계 id), `partial_briefing`은 운영자면 원문, 사용자면
+    `playbook_user_view`로 마스킹한 표시 부분만 싣는다. 키가 없으면 응답은 종전과 같다.
     """
-    investigation_id = str(rec.get("investigation_id") or "")
-    if not investigation_id:
-        return rec, None
-    key = (str(store.path), investigation_id)
-    _sweep_investigation_polls(time.monotonic())
-    lock = _INVESTIGATION_POLL_LOCKS.setdefault(key, asyncio.Lock())
-    async with lock:
-        last = _INVESTIGATION_POLL_AT.get(key)
-        if last is not None and time.monotonic() - last < _INVESTIGATION_POLL_MIN_INTERVAL:
-            return store.get_by_investigation(investigation_id) or rec, None
-        _INVESTIGATION_POLL_AT[key] = time.monotonic()
-        return await _poll_investigation(store, rec, investigation_id, ng)
+    from noise_gate.infrastructure.investigation_store import playbook_user_view
 
-
-async def _poll_investigation(
-    store: InvestigationStore, rec: dict[str, Any], investigation_id: str, ng: Any
-) -> tuple[dict[str, Any], str | None]:
-    """조사 서비스에 1회 poll한다(`_refresh_investigation`의 잠금 안에서만 부른다).
-
-    요청마다 새 클라이언트를 쓴다(워커 공유 클라이언트와 세션이 섞이지 않게 — 후속 폴링과 같은
-    이유). 호출 전체를 `investigation_mcp_call_timeout_seconds`로 묶는다. 실패하면 저장소 상태를
-    그대로 두고 사유를 돌려준다(침묵 금지). 미종결(running)은 저장하지 않는다(재조회마다 행이
-    쌓이지 않게). 종결이어도 저장소에 이미 종결 행이 있으면(후속 폴링 등이 먼저 씀) 다시 쓰지
-    않는다.
-    실패·거부·타임아웃·스텁 응답의 `reason`·`error`는 레코드 사유로 남긴다.
-    """
-    from noise_gate.infrastructure.investigation_store import (
-        ACTIVE_STATUSES,
-        STATUS_RUNNING,
-        terminal_poll_reason,
-    )
-    from noise_gate.infrastructure.sre_agent_client import build_sre_agent_client
-
-    client = build_sre_agent_client(ng)
-    if client is None:
-        return rec, "조사 서비스 URL 미설정 — 진행 상태를 다시 조회할 수 없습니다"
-    timeout = float(getattr(ng, "investigation_mcp_call_timeout_seconds", 10.0))
-
-    async def _poll() -> dict[str, Any]:
-        await client.connect()
-        try:
-            return await client.poll(investigation_id)
-        finally:
-            await client.disconnect()
-
-    try:
-        res = await asyncio.wait_for(_poll(), timeout=timeout)
-    except TimeoutError:
-        return rec, f"조사 서비스 재조회 타임아웃({timeout:.0f}s 초과)"
-    except Exception as exc:  # noqa: BLE001 — 재조회 실패는 저장소 상태로 응답한다
-        logger.warning("조사 재조회 실패: inv=%s", investigation_id, exc_info=True)
-        return rec, f"조사 서비스 재조회 실패: {type(exc).__name__}"
-    status = str(res.get("status") or "")
-    if status not in _INVESTIGATION_TERMINAL_POLL:
-        return ({**rec, "status": STATUS_RUNNING} if status else rec), None
-    current = store.get_by_investigation(investigation_id)
-    if current is not None and current.get("status") not in ACTIVE_STATUSES:
-        return current, None
-    store.record(
-        investigation_id=investigation_id,
-        alarm_ids=list(rec.get("alarm_ids") or []),
-        kind=str(rec.get("kind") or "alarm"),
-        episode_id=rec.get("episode_id"),
-        status=status,
-        source="api_poll",
-        verdict=res.get("verdict"),
-        briefing=res.get("briefing") if isinstance(res.get("briefing"), dict) else None,
-        reason=terminal_poll_reason(res),
-    )
-    return store.get_by_investigation(investigation_id) or rec, None
+    progress = rec.get("progress")
+    if isinstance(progress, dict):
+        view["progress"] = progress
+    partial = rec.get("partial_briefing")
+    if not isinstance(partial, dict):
+        return
+    if mask_fn is None:
+        view["partial_briefing"] = partial
+        return
+    user_partial = playbook_user_view(partial, mask_fn)
+    if user_partial is not None:
+        view["partial_briefing"] = user_partial
 
 
 async def _investigation_response(
@@ -1305,7 +1237,66 @@ async def _investigation_response(
     )
     if poll_reason:
         view["reason"] = poll_reason
+    _attach_live_progress(view, rec, None if operator else _investigation_mask_fn(config))
+    # (plans/187 W9 · G-15) KB가 켜져 있으면 운영자 뷰 브리핑 **사본**에 참고 문서·KE 재발 신호를
+    # 붙인다. 꺼져 있거나 사용자 뷰(원 브리핑 없음)면 종전과 비트 동일하다. (plans/187 W5a) 사용자
+    # 뷰의 플레이북 표시 부분(`briefing`)에는 붙이지 않는다.
+    if (operator and _kb_enabled(config) and isinstance(view.get("briefing"), dict)
+            and rec.get("status") == "done"):
+        view["briefing"] = await _kb_briefing_extras(config, current_user, view["briefing"])
     return view
+
+
+#: 채팅 증상 질의 조사(plans/187 W12)의 저장 레코드 `origin`.
+_CHAT_REQUEST_ORIGIN = "chat"
+
+
+def _request_owner_view(
+    config: Any, current_user: dict[str, Any], rec: dict[str, Any] | None
+) -> bool:
+    """사용자 요청 조사의 소유자 열람인가(plans/187 W12 교정) — 참이면 존 검사를 건너뛴다.
+
+    `USER_REQUEST_KINDS` 레코드의 `owner_sub`가 요청자 `sub`와 같고, 그 레코드를 연 플래그가 켜져
+    있을 때만 참이다 — `origin=chat` → `sre_chat_investigation_enabled` · 그 밖의 `diagnosis` →
+    `investigation_additional_enabled` · `parent_alarm_id`가 있는 `manual` →
+    `investigation_manual_enabled`. 플래그가 꺼져 있거나 비소유자면 거짓(종전 판정 그대로).
+    """
+    from noise_gate.infrastructure.investigation_store import KIND_DIAGNOSIS, USER_REQUEST_KINDS
+
+    if rec is None or rec.get("kind") not in USER_REQUEST_KINDS:
+        return False
+    sub = current_user.get("sub")
+    if not sub or sub != rec.get("owner_sub"):
+        return False
+    if rec.get("origin") == _CHAT_REQUEST_ORIGIN:
+        return bool(getattr(config.noise_gate, "sre_chat_investigation_enabled", False))
+    if rec.get("kind") == KIND_DIAGNOSIS:
+        return _followup_enabled(config)
+    return bool(rec.get("parent_alarm_id")) and _manual_enabled(config)
+
+
+def _assert_unbound_request_owner(
+    config: Any, current_user: dict[str, Any], rec: dict[str, Any] | None
+) -> None:
+    """알람 없는 사용자 요청 조사 인가(plans/187 교정 H1) — 소유자 또는 운영자(관리자)만.
+
+    `USER_REQUEST_KINDS` 레코드 중 `alarm_ids`가 빈 것(채팅 조사 `origin=chat` 등)은 존으로 범위를
+    정할 수 없다 — 전 존을 부여받은 비관리자도 비소유자면 403이다(W10 `diagnosis`의
+    `_assert_diagnosis_owner`와 대칭). 알람이 걸린 레코드·자동 조사는 건드리지 않는다
+    (존 판정 그대로).
+
+    Raises:
+        HTTPException: 비소유·비운영자(403).
+    """
+    from noise_gate.infrastructure.investigation_store import USER_REQUEST_KINDS
+
+    if rec is None or rec.get("kind") not in USER_REQUEST_KINDS or rec.get("alarm_ids"):
+        return
+    if _is_alarm_operator(config, current_user):
+        return
+    sub = current_user.get("sub")
+    if not sub or sub != rec.get("owner_sub"):
+        raise HTTPException(status_code=403, detail="이 사용자 요청 조사를 볼 권한이 없습니다.")
 
 
 @router.get(
@@ -1313,7 +1304,9 @@ async def _investigation_response(
     summary="알람의 자동 조사 브리핑 조회",
     description=(
         "알람 1건에 걸린 자동 조사의 상태·브리핑을 반환합니다(없으면 status=none).<br/>"
-        "여러 건이면 종결된 종합 조사 → 그 알람의 단독 조사 → 최신 순으로 고릅니다.<br/>"
+        "여러 건이면 종결된 종합 조사 → 그 알람의 단독 조사 → (알람 다시 분석이 켜져 있으면) "
+        "사용자 요청 분석 → 최신 순으로 고릅니다. 켜져 있으면 응답에 "
+        "`previous`(나머지 조사 목록)를 더합니다.<br/>"
         "미종결이면 조사 서비스에 재조회합니다(조사마다 10초에 1회). 사용자 경로는 마스킹, "
         "관리자는 원문과 원 브리핑을 받습니다.<br/>"
         "존 권한은 이 알람과 조사에 걸린 알람 전부로 검사합니다 — 존 제한 사용자는 db_id를 "
@@ -1326,19 +1319,34 @@ async def get_alarm_investigation(
     request: Request,
     current_user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    """알람 id → 최신 조사(plans/153 §4.2)."""
+    """알람 id → 최신 조사(plans/153 §4.2).
+
+    (plans/187 W11) 알람 다시 분석이 켜져 있으면 사용자 요청 분석(`kind="manual"`)을 자기 단독 다음
+    우선순위로 보고, 고른 것 외의 조사를 `previous`(최신 먼저)로 더한다. 꺼져 있으면 종전과 같다.
+    """
     config = request.app.state.config
-    # 알람 수신 권한이 없는 사용자는 저장소를 읽기 전에 403.
-    _alarm_zone_scope(request, current_user)
     store = _investigation_store(config)
-    rec = store.get_by_alarm(alarm_id) if store is not None else None
-    member_ids = [a for a in (rec or {}).get("alarm_ids") or [] if a != alarm_id]
-    # 레코드가 없어도 이 알람의 존을 먼저 본다 — 권한 없는(또는 존을 모르는) 알람은 존재 여부와
-    # 무관하게 403이다.
-    _assert_investigation_zone(
-        request, current_user, [alarm_id, *member_ids], (rec or {}).get("alarm_db_ids")
-    )
-    return await _investigation_response(request, current_user, rec)
+    manual = _manual_enabled(config)
+    rec = store.get_by_alarm(alarm_id, include_manual=manual) if store is not None else None
+    # (plans/187 W12) 고른 레코드가 내 사용자 요청 조사면 존 검사 없이 연다(`_request_owner_view`).
+    # 그때는 이 알람의 다른 조사 목록(`previous`)을 붙이지 않는다 — 존 검사를 거치지 않았으므로.
+    owner_view = _request_owner_view(config, current_user, rec)
+    if not owner_view:
+        # 알람 수신 권한이 없는 사용자는 403.
+        _alarm_zone_scope(request, current_user)
+        _assert_unbound_request_owner(config, current_user, rec)
+        member_ids = [a for a in (rec or {}).get("alarm_ids") or [] if a != alarm_id]
+        # 레코드가 없어도 이 알람의 존을 먼저 본다 — 권한 없는(또는 존을 모르는) 알람은 존재
+        # 여부와 무관하게 403이다.
+        _assert_investigation_zone(
+            request, current_user, [alarm_id, *member_ids], (rec or {}).get("alarm_db_ids")
+        )
+    view = await _investigation_response(request, current_user, rec)
+    if manual and not owner_view:
+        view["previous"] = _previous_investigations(
+            request, current_user, store, alarm_id, (rec or {}).get("investigation_id")
+        )
+    return view
 
 
 @router.get(
@@ -1347,7 +1355,8 @@ async def get_alarm_investigation(
     description=(
         "조사 id의 최신 상태·브리핑을 반환합니다(없으면 status=none).<br/>"
         "존 권한은 조사에 걸린 알람 전부로 검사합니다 — 존 제한 사용자는 하나라도 타 존이거나 "
-        "db_id를 확인할 수 없으면 403입니다."
+        "db_id를 확인할 수 없으면 403입니다. 알람이 걸리지 않은 사용자 요청 조사(채팅 조사 등)는 "
+        "요청자 본인 또는 관리자만 엽니다."
     ),
     tags=["alarm"],
 )
@@ -1356,16 +1365,1323 @@ async def get_investigation(
     request: Request,
     current_user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    """조사 id → 최신 조사(plans/153 §4.2)."""
+    """조사 id → 최신 조사(plans/153 §4.2).
+
+    (plans/187 W10 · plans/155 G-7) 추가 조사가 켜져 있고 레코드가 `kind="diagnosis"`면 알람 존 판정
+    대신 **소유자 또는 관리자**만 허용한다. 꺼져 있으면 종전 판정 그대로다.
+    """
+    config = request.app.state.config
+    store = _investigation_store(config)
+    rec = store.get_by_investigation(investigation_id) if store is not None else None
+    # (plans/187 W12) 내 사용자 요청 조사는 존 검사 없이 연다(사용자 뷰 마스킹은 그대로).
+    if rec is not None and _request_owner_view(config, current_user, rec):
+        view = await _investigation_response(request, current_user, rec)
+        return _with_notice(view) if _followup_enabled(config) and _is_diagnosis(rec) else view
     # 알람 수신 권한이 없는 사용자는 레코드 유무와 무관하게 403.
     _alarm_zone_scope(request, current_user)
-    store = _investigation_store(request.app.state.config)
-    rec = store.get_by_investigation(investigation_id) if store is not None else None
+    # (교정 H1) 알람 없는 사용자 요청 조사는 소유자 또는 운영자만(전 존 사용자라도 비소유자는 403).
+    _assert_unbound_request_owner(config, current_user, rec)
+    if rec is not None and _followup_enabled(config) and _is_diagnosis(rec):
+        _assert_diagnosis_owner(config, current_user, rec)
+        return _with_notice(await _investigation_response(request, current_user, rec))
     if rec is not None:
         _assert_investigation_zone(
             request, current_user, list(rec.get("alarm_ids") or []), rec.get("alarm_db_ids")
         )
     return await _investigation_response(request, current_user, rec)
+
+
+# ─── 조사 대화의 「추가 조사 요청」 (plans/187 W10 · D-341 ⑭ · G-21 · plans/155 공용부) ───
+#
+# 부모 알람 조사에서 결정적 초점 + 보충 한 줄로 `sre_diagnose`를 비동기 접수한다.
+# 기본 off면 두 라우트가 404(미등록과 같은 응답 — 인증보다 먼저 판정)이고 저장소에
+# 아무것도 쓰지 않는다. 초점·대상·prior_findings는 `src/domain/investigation_followup.py`
+# (순수), 질문 문장은 `src/prompts/investigation_followup.py`.
+
+#: 감사·저장의 진입점 값(`log_investigation(entry_point=…)` — 문자열 제약 없음).
+_FOLLOWUP_ENTRY_POINT = "investigation_chat"
+#: 같은 (부모, 초점) 재접수를 새로 받는 종결 상태 — 실패한 것은 다시 요청할 수 있다.
+_FOLLOWUP_RETRYABLE: frozenset[str] = frozenset({"failed", "timeout", "rejected", "not_found"})
+
+
+class InvestigationFollowupRequest(BaseModel):
+    """추가 조사 접수 요청 본문."""
+
+    focus: str = Field(
+        ..., min_length=1, max_length=64, description="조사 초점 id(목록 API의 focuses[].id)"
+    )
+    note: str | None = Field(
+        None, max_length=2000,
+        description="보충 한 줄(선택 · 개행 제거 · 설정 상한 이내 · 마스킹)",
+    )
+
+
+def _followup_enabled(config: Any) -> bool:
+    """추가 조사 플래그(기동 시 설정값 — 요청마다 다시 해석하지 않는 설정 객체를 읽는다)."""
+    return bool(getattr(config.noise_gate, "investigation_additional_enabled", False))
+
+
+async def _require_followup_enabled(request: Request) -> None:
+    """플래그 off면 미등록 라우트와 같은 404 — 인증·저장소 접근보다 먼저 판정한다."""
+    if not _followup_enabled(request.app.state.config):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+def _is_diagnosis(rec: dict[str, Any]) -> bool:
+    from noise_gate.infrastructure.investigation_store import KIND_DIAGNOSIS
+
+    return rec.get("kind") == KIND_DIAGNOSIS
+
+
+def _assert_diagnosis_owner(config: Any, current_user: dict[str, Any], rec: dict[str, Any]) -> None:
+    """추가 조사 레코드 인가 — 소유자(`sub` = `owner_sub`) 또는 관리자(개발 모드 포함)만."""
+    if _is_alarm_operator(config, current_user):
+        return
+    sub = current_user.get("sub")
+    if not sub or sub != rec.get("owner_sub"):
+        raise HTTPException(status_code=403, detail="이 추가 조사를 볼 권한이 없습니다.")
+
+
+def _with_notice(view: dict[str, Any]) -> dict[str, Any]:
+    """추가 조사 응답의 고정 표기(「가설 · 참고용」)."""
+    from src.domain.investigation_followup import HYPOTHESIS_NOTICE
+
+    return {**view, "hypothesis_notice": HYPOTHESIS_NOTICE}
+
+
+def _followup_error(status_code: int, code: str, reason: str) -> HTTPException:
+    """추가 조사 라우트의 거부 — `detail = {code, reason}`(사유 노출 · 침묵 금지)."""
+    return HTTPException(status_code=status_code, detail={"code": code, "reason": reason})
+
+
+def _decision_alarm_info(config: Any, alarm_id: str) -> dict[str, Any]:
+    """판정 기록의 서버명·db_id·시각 — 부모 브리핑에 대상이 없을 때의 폴백(없으면 빈 dict)."""
+    from noise_gate.infrastructure.decision_store import DecisionStore
+
+    ng = config.noise_gate
+    decision = DecisionStore(
+        ng.decision_store_path,
+        bool(getattr(ng, "decision_store_enabled", True)),
+        int(getattr(ng, "decision_store_max_lines", 20000)),
+    ).get_decision(alarm_id)
+    return dict(decision or {})
+
+
+def _followup_parent(
+    request: Request, current_user: dict[str, Any], investigation_id: str
+) -> tuple[InvestigationStore, dict[str, Any]]:
+    """부모 알람 조사 레코드 — 알람 존 검사까지 끝낸 것만 돌려준다.
+
+    Raises:
+        HTTPException: 저장소 미설정 503 · 없음 404 · 부모가 추가 조사 400 · 존 권한 없음 403.
+    """
+    _alarm_zone_scope(request, current_user)
+    store = _investigation_store(request.app.state.config)
+    if store is None:
+        raise _followup_error(503, "store_unconfigured", "조사 저장소 경로가 설정되지 않았습니다.")
+    parent = store.get_by_investigation(investigation_id)
+    if parent is None:
+        raise _followup_error(404, "parent_not_found", "부모 조사를 찾지 못했습니다.")
+    if _is_diagnosis(parent):
+        raise _followup_error(
+            400, "parent_not_alarm", "추가 조사는 알람 조사에서만 요청할 수 있습니다."
+        )
+    _assert_investigation_zone(
+        request, current_user, list(parent.get("alarm_ids") or []), parent.get("alarm_db_ids")
+    )
+    return store, parent
+
+
+def _followup_target(config: Any, parent: dict[str, Any]) -> Any:
+    """대상·사건창 — 부모 브리핑 `playbook.scope`, 없으면 첫 알람의 판정 기록(결정적)."""
+    from src.domain.investigation_followup import resolve_target
+
+    alarm_ids = list(parent.get("alarm_ids") or [])
+    info = _decision_alarm_info(config, alarm_ids[0]) if alarm_ids else {}
+    db_id = (parent.get("alarm_db_ids") or {}).get(alarm_ids[0]) if alarm_ids else None
+    briefing = parent.get("briefing") if isinstance(parent.get("briefing"), dict) else None
+    return resolve_target(
+        briefing,
+        fallback_server_name=info.get("server_name"),
+        fallback_db_id=db_id or info.get("db_id"),
+        fallback_reference_time=info.get("ts"),
+    )
+
+
+async def _audit_followup(
+    current_user: dict[str, Any],
+    target: Any,
+    outcome: str,
+    *,
+    authz: dict[str, Any] | None = None,
+    degraded: list[dict[str, Any]] | None = None,
+    **extra: Any,
+) -> None:
+    """추가 조사 감사 1건(성공·거부·상한·실패 모두 · 실패해도 응답을 막지 않는다)."""
+    from src.security import audit_logger
+
+    targets = (
+        [{"server_name": target.server_name, "hostname": target.hostname, "db_id": target.db_id}]
+        if target is not None else None
+    )
+    try:
+        await audit_logger.log_investigation(
+            entry_point=_FOLLOWUP_ENTRY_POINT,
+            targets=targets,
+            outcome=outcome,
+            user_id=current_user.get("sub"),
+            backend="sre_agent",
+            authz=authz,
+            degraded=degraded,
+            **extra,
+        )
+    except Exception:  # noqa: BLE001 — 감사 기록 실패가 응답을 막지 않는다(사유는 로그)
+        logger.warning("추가 조사 감사 기록 실패", exc_info=True)
+
+
+def _submitted_epoch(rec: dict[str, Any]) -> float | None:
+    return investigation_request_limit.submitted_epoch(rec)
+
+
+def _user_request_slot(
+    store: InvestigationStore, ng: Any, sub: str
+) -> AbstractAsyncContextManager[tuple[str, str] | None]:
+    """사용자별 임계구역(plans/187 교정 · M1) — 「상한 검사 → 접수 레코드 기록」을 한 잠금 안에서.
+
+    `async with _user_request_slot(...) as limited:` 블록 안에서 거부하거나 접수·기록을 끝낸다.
+    `sub`가 비면 `owner_unknown`(fail-closed)을 내준다.
+    """
+    return investigation_request_limit.user_request_slot(
+        store, ng, sub, refresh=_refresh_investigation
+    )
+
+
+def _limit_status(code: str) -> int:
+    """상한 거부 코드 → HTTP 상태(요청자 식별 불가는 403 · 상한 초과는 429)."""
+    return 403 if code == investigation_request_limit.REASON_OWNER_UNKNOWN else 429
+
+
+@router.get(
+    "/alarm/investigations/{investigation_id}/followups",
+    summary="부모 조사의 추가 조사 목록·초점",
+    description=(
+        "알람 조사 1건(부모)의 추가 조사 목록과 선택 가능한 조사 초점을 반환합니다.<br/>"
+        "부모의 존 권한을 먼저 검사합니다. 일반 사용자는 자기 것만, 관리자는 전부 받습니다.<br/>"
+        "`NOISE_INVESTIGATION_ADDITIONAL_ENABLED`가 꺼져 있으면 404입니다."
+    ),
+    tags=["alarm"],
+    dependencies=[Depends(_require_followup_enabled)],
+)
+async def list_investigation_followups(
+    investigation_id: str,
+    request: Request,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """부모 조사 → `{parent_investigation_id, focuses[], items[], hypothesis_notice}`."""
+    from noise_gate.infrastructure.investigation_store import investigation_view
+    from src.domain.investigation_followup import HYPOTHESIS_NOTICE, focus_options
+
+    config = request.app.state.config
+    store, parent = _followup_parent(request, current_user, investigation_id)
+    operator = _is_alarm_operator(config, current_user)
+    owner = None if operator else str(current_user.get("sub") or "")
+    mask_fn = None if operator else _investigation_mask_fn(config)
+    items = [
+        investigation_view(rec, mask_fn=mask_fn, operator_view=operator)
+        | {"submitted_at": rec.get("submitted_at")}
+        for rec in store.list_diagnoses(owner_sub=owner, parent_investigation_id=investigation_id)
+    ]
+    briefing = parent.get("briefing") if isinstance(parent.get("briefing"), dict) else None
+    return {
+        "parent_investigation_id": investigation_id,
+        "focuses": focus_options(briefing),
+        "items": items,
+        "hypothesis_notice": HYPOTHESIS_NOTICE,
+    }
+
+
+@router.post(
+    "/alarm/investigations/{investigation_id}/followup",
+    summary="추가 조사 요청(조사 대화 · 비동기)",
+    description=(
+        "부모 알람 조사의 브리핑을 바탕으로 sre_agent 진단(`sre_diagnose`)을 "
+        "비동기로 접수합니다.<br/>"
+        "질문은 코드 템플릿 + 조사 초점 + 보충 한 줄(선택)이며, "
+        "이미 수집된 판정 요약(LLM 서술 제외)을 함께 넘깁니다. "
+        "결과는 「가설 · 참고용」이며 원 브리핑을 바꾸지 않습니다.<br/>"
+        "인가는 `HOST_AUTHZ_MODE`(기본 관리자만) · 사용자별 진행 중 1건 · 시간당 상한 · 같은 "
+        "(부모, 초점) 재접수는 기존 조사 id를 돌려줍니다."
+    ),
+    tags=["alarm"],
+    dependencies=[Depends(_require_followup_enabled)],
+)
+async def request_investigation_followup(
+    investigation_id: str,
+    body: InvestigationFollowupRequest,
+    request: Request,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """추가 조사 접수 → `{investigation_id, status, reused, reason?, hypothesis_notice}`."""
+    from noise_gate.infrastructure import sre_agent_client as sre_client_mod
+    from noise_gate.infrastructure.investigation_store import KIND_DIAGNOSIS
+    from src.domain.host_authz import Principal, authorize_host_investigation
+    from src.domain.investigation_followup import (
+        HYPOTHESIS_NOTICE,
+        ORIGIN_INVESTIGATION_CHAT,
+        build_prior_findings,
+        resolve_focus,
+        sanitize_note,
+    )
+    from src.prompts.investigation_followup import render_followup_question
+    from src.security.audit_logger import (
+        INVESTIGATION_DENIED,
+        INVESTIGATION_FAILED,
+        INVESTIGATION_OK,
+    )
+
+    config = request.app.state.config
+    ng = config.noise_gate
+    store, parent = _followup_parent(request, current_user, investigation_id)
+    briefing = parent.get("briefing") if isinstance(parent.get("briefing"), dict) else None
+    sub = str(current_user.get("sub") or "")
+
+    target = _followup_target(config, parent)
+    if target is None:
+        raise _followup_error(
+            400, "target_unresolved", "부모 조사에서 조사 대상 호스트를 찾지 못했습니다."
+        )
+
+    # 호스트 인가 — 위임 직전 실행 경계에서 role 클레임으로 판정한다(Plan 78 W3-5 · 거부도 감사).
+    decision = authorize_host_investigation(
+        mode=getattr(getattr(config, "host_authz", None), "mode", None),
+        principal=Principal(
+            role=current_user.get("role"),
+            user_id=sub or None,
+            allowed_db_ids=current_user.get("allowed_db_ids"),
+            entry_point=_FOLLOWUP_ENTRY_POINT,
+        ),
+        hostname=target.label,
+        db_id=target.db_id,
+    )
+    if not decision.allowed:
+        await _audit_followup(
+            current_user, target, INVESTIGATION_DENIED, authz=decision.as_audit(),
+            parent_investigation_id=investigation_id, focus=body.focus,
+        )
+        raise _followup_error(
+            403, "authz_denied", f"추가 조사를 요청할 권한이 없습니다(사유: {decision.reason})."
+        )
+
+    # (교정 L2) 초점·보충 검증 거부도 사유와 함께 감사한다(보충 원문은 싣지 않는다).
+    focus, focus_reason = resolve_focus(body.focus, briefing)
+    if focus is None:
+        await _audit_followup(
+            current_user, target, INVESTIGATION_DENIED, authz=decision.as_audit(),
+            degraded=[{"reason": "invalid_focus", "detail": str(focus_reason)}],
+            parent_investigation_id=investigation_id, focus=body.focus,
+        )
+        raise _followup_error(400, "invalid_focus", str(focus_reason))
+    note, note_reason = sanitize_note(
+        body.note,
+        int(getattr(ng, "investigation_additional_note_max_chars", 200)),
+        _investigation_mask_fn(config),
+    )
+    if note_reason:
+        await _audit_followup(
+            current_user, target, INVESTIGATION_DENIED, authz=decision.as_audit(),
+            degraded=[{"reason": "invalid_note", "detail": note_reason}],
+            parent_investigation_id=investigation_id, focus=focus.id,
+        )
+        raise _followup_error(400, "invalid_note", note_reason)
+
+    async def _deny(status_code: int, code: str, reason: str, outcome: str) -> HTTPException:
+        await _audit_followup(
+            current_user, target, outcome, authz=decision.as_audit(),
+            degraded=[{"reason": code, "detail": reason}],
+            parent_investigation_id=investigation_id, focus=focus.id,
+        )
+        return _followup_error(status_code, code, reason)
+
+    # 가용성 — 클라이언트 구성 · 포트 도달성(D-243).
+    client = sre_client_mod.build_sre_agent_client(ng)
+    if client is None:
+        raise await _deny(
+            503, "service_unconfigured", "조사 서비스 URL이 설정되지 않았습니다.",
+            INVESTIGATION_FAILED,
+        )
+    unreachable = await client.unreachable_reason()
+    if unreachable:
+        raise await _deny(
+            503, "service_unreachable", f"조사 서비스에 연결할 수 없습니다: {unreachable}",
+            INVESTIGATION_FAILED,
+        )
+
+    # 같은 (부모, 초점) 재접수 → 기존 id(실패한 것은 새로 받는다 · D-335 ⑥).
+    mine = store.list_diagnoses(owner_sub=sub)
+    for rec in mine:
+        if (
+            rec.get("parent_investigation_id") == investigation_id
+            and rec.get("focus") == focus.id
+            and rec.get("status") not in _FOLLOWUP_RETRYABLE
+        ):
+            return {
+                "investigation_id": rec.get("investigation_id"),
+                "status": rec.get("status"),
+                "reused": True,
+                "hypothesis_notice": HYPOTHESIS_NOTICE,
+            }
+
+    # 상한 — 진행 중 1건 · 시간당 N건(plans/187 W11: 알람 다시 분석과 같은 사용자별 카운터).
+    # (교정 M1) 상한 검사부터 접수 레코드 기록까지 사용자별 잠금 한 구간이다.
+    async with _user_request_slot(store, ng, sub) as limited:
+        if limited is not None:
+            raise await _deny(_limit_status(limited[0]), *limited, INVESTIGATION_DENIED)
+
+        question = render_followup_question(
+            focus_id=focus.id,
+            focus_label=focus.label,
+            target_label=target.label,
+            reference_time=target.reference_time,
+            lookback_minutes=target.lookback_minutes,
+            note=note,
+        )
+        prior_findings = build_prior_findings(parent, target)
+        timeout = float(getattr(ng, "investigation_mcp_call_timeout_seconds", 10.0))
+
+        async def _submit() -> dict[str, Any]:
+            await client.connect()
+            try:
+                return await client.diagnose(
+                    question,
+                    server_name=target.server_name,
+                    hostname=target.hostname,
+                    db_id=target.db_id,
+                    reference_time=target.reference_time,
+                    lookback_minutes=target.lookback_minutes,
+                    prior_findings=prior_findings,
+                )
+            finally:
+                await client.disconnect()
+
+        try:
+            res = await asyncio.wait_for(_submit(), timeout=timeout)
+        except TimeoutError:
+            raise await _deny(
+                502, "submit_failed", f"조사 서비스 접수 타임아웃({timeout:.0f}s 초과)",
+                INVESTIGATION_FAILED,
+            )
+        except Exception as exc:  # noqa: BLE001 — 접수 실패는 사유와 함께 거부한다(침묵 금지)
+            logger.warning("추가 조사 접수 실패: parent=%s", investigation_id, exc_info=True)
+            raise await _deny(
+                502, "submit_failed", f"조사 서비스 접수 실패: {type(exc).__name__}",
+                INVESTIGATION_FAILED,
+            )
+        new_id = str(res.get("investigation_id") or "")
+        if not new_id:
+            raise await _deny(
+                502, "submit_failed", "조사 서비스 응답에 조사 id가 없습니다.", INVESTIGATION_FAILED
+            )
+        service_status = str(res.get("status") or "")
+        rejected = service_status == "rejected"
+        reason = str(res.get("reason") or "") or None
+        subject = target.as_subject()
+        if note:
+            subject["note"] = note
+        store.record(
+            investigation_id=new_id,
+            alarm_ids=[],
+            kind=KIND_DIAGNOSIS,
+            status="rejected" if rejected else "submitted",
+            source=ORIGIN_INVESTIGATION_CHAT,
+            reason=reason if rejected else None,
+            owner_sub=sub or None,
+            parent_investigation_id=investigation_id,
+            focus=focus.id,
+            origin=ORIGIN_INVESTIGATION_CHAT,
+            subject=subject,
+        )
+    await _audit_followup(
+        current_user, target, INVESTIGATION_DENIED if rejected else INVESTIGATION_OK,
+        authz=decision.as_audit(),
+        degraded=[{"reason": "service_rejected", "detail": reason}] if rejected else None,
+        investigation_id=new_id, parent_investigation_id=investigation_id, focus=focus.id,
+    )
+    out: dict[str, Any] = {
+        "investigation_id": new_id,
+        "status": "rejected" if rejected else "submitted",
+        "reused": False,
+        "hypothesis_notice": HYPOTHESIS_NOTICE,
+    }
+    if rejected and reason:
+        out["reason"] = reason
+    return out
+
+
+# ─── 「이 알람 분석」 — 사용자 요청 알람 조사 (plans/187 W11 · D-341 ㉑~㉔ · G-28~G-31) ───
+#
+# 결정 저장소의 알람(등급 무관 · 30일)을 자동 조사와 같은 페이로드(`build_manual_payload` →
+# `build_trigger_payload`)로 `sre_investigate_alarm`에 제출하고, 새 레코드 `kind="manual"`로 남긴다.
+# 원 조사 레코드는 건드리지 않는다. 이 경로는 알람 그래프(notifier)를 거치지 않으므로 workb 후속
+# 통보(D-137 · 3-E)와 승격(CW-C)이 생기지 않는다 — 결과는 조회 라우트(지연 poll · 저장만)로만 본다.
+# 기본 off면 접수 라우트가 404이고 by-alarm 응답이 종전과 같다.
+
+#: 감사의 진입점 값.
+_MANUAL_ENTRY_POINT = "manual_alarm"
+#: 저장 레코드의 `origin`·`source`.
+_MANUAL_ORIGIN = "manual"
+#: 조사 서비스 지문 dedup이 원 조사 잡을 돌려주지 않게 하는 지문 접두(`episode:` 전례).
+_MANUAL_FINGERPRINT_PREFIX = "manual:"
+#: 다시 분석할 수 있는 알람의 범위(G-29 — 결정 저장소 보존 30일).
+_MANUAL_LOOKBACK_SECONDS = 30 * 86400
+
+
+def _manual_enabled(config: Any) -> bool:
+    """알람 다시 분석 플래그(기동 시 설정값)."""
+    return bool(getattr(config.noise_gate, "investigation_manual_enabled", False))
+
+
+async def _require_manual_enabled(request: Request) -> None:
+    """플래그 off면 미등록 라우트와 같은 404 — 인증·저장소 접근보다 먼저 판정한다."""
+    if not _manual_enabled(request.app.state.config):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+def _previous_investigations(
+    request: Request,
+    current_user: dict[str, Any],
+    store: InvestigationStore | None,
+    alarm_id: str,
+    selected_id: str | None,
+) -> list[dict[str, Any]]:
+    """by-alarm의 `previous` — 고른 조사 외의 이 알람 조사(최신 먼저 · id·kind·상태·접수 시각).
+
+    존 제한 사용자에게는 다른 멤버 알람이 하나라도 범위 밖(또는 존 미상)인 조사를 뺀다(fail-closed).
+    """
+    if store is None:
+        return []
+    out: list[dict[str, Any]] = []
+    for rec in store.list_by_alarm(alarm_id):
+        investigation_id = rec.get("investigation_id")
+        if not investigation_id or investigation_id == selected_id:
+            continue
+        members = [a for a in rec.get("alarm_ids") or [] if a != alarm_id]
+        if members:
+            try:
+                _assert_investigation_zone(
+                    request, current_user, members, rec.get("alarm_db_ids")
+                )
+            except HTTPException:
+                continue
+        out.append({
+            "investigation_id": investigation_id,
+            "kind": rec.get("kind") or "alarm",
+            "status": rec.get("status") or "",
+            "submitted_at": rec.get("submitted_at"),
+        })
+    return out
+
+
+def _manual_decision(config: Any, alarm_id: str) -> dict[str, Any] | None:
+    """알람의 최신 판정 기록 원본(운영자 뷰 · 마스킹 없음 — 페이로드 재료 · 응답에 싣지 않는다)."""
+    from noise_gate.infrastructure.decision_store import DecisionStore
+
+    ng = config.noise_gate
+    return DecisionStore(
+        ng.decision_store_path,
+        bool(getattr(ng, "decision_store_enabled", True)),
+        int(getattr(ng, "decision_store_max_lines", 20000)),
+    ).get_decision(alarm_id, operator_view=True)
+
+
+#: 기준 시각 출처 표기 — 원 알람 발생 시각(판정 기록 `alarm_time`) / 판정 시각 대체(구 기록).
+_REF_SOURCE_ALARM_TIME = "alarm_time"
+_REF_SOURCE_DECISION_TS = "decision_ts"
+
+
+def _local_naive(value: Any) -> Any:
+    """ISO 8601 문자열 → 서버 로컬 naive datetime(폴스타 alarmTime과 같은 기준). 못 읽으면 None."""
+    from datetime import datetime as _dt
+
+    try:
+        parsed = _dt.fromisoformat(str(value or ""))
+    except ValueError:
+        return None
+    return parsed.astimezone().replace(tzinfo=None) if parsed.tzinfo else parsed
+
+
+def _decision_alarm_time(decision: dict[str, Any]) -> Any:
+    """판정 시각(`ts`) → 서버 로컬 naive(보존 범위 30일 판정 · 구 기록의 기준 시각 대체)."""
+    return _local_naive(decision.get("ts"))
+
+
+def _manual_reference_time(decision: dict[str, Any]) -> tuple[Any, str]:
+    """조사 기준 시각과 그 출처.
+
+    판정 기록에 원 알람 `alarm_time`(plans/187 W11 — 플래그 on 이후 기록)이 있으면 그것, 없으면
+    판정 시각으로 대체하고 출처를 `decision_ts`로 표기한다(침묵 대체 금지).
+    """
+    alarm_time = _local_naive(decision.get("alarm_time")) if decision.get("alarm_time") else None
+    if alarm_time is not None:
+        return alarm_time, _REF_SOURCE_ALARM_TIME
+    return _decision_alarm_time(decision), _REF_SOURCE_DECISION_TS
+
+
+async def _manual_event(
+    config: Any, alarm_id: str, decision: dict[str, Any], alarm_time: Any
+) -> AlarmEvent | None:
+    """판정 기록으로 조사용 `AlarmEvent`를 다시 만든다(서버명 없으면 None).
+
+    hostname은 판정 기록의 원 알람 값(plans/187 W11)을 쓰고, 없으면(구 기록) 폴스타 등록 정보로
+    해소하며(D-046 `lookup_host`), 그것도 못 하면 서버명을 그대로 쓴다(D-046 원시 값 폴백).
+    `resource_type`도 기록에 있으면 싣는다(APM 알람 `meta.hints` 판정).
+    """
+    from noise_gate.infrastructure.polestar_hostname_resolver import lookup_host
+
+    server_name = str(decision.get("server_name") or "").strip()
+    if not server_name:
+        return None
+    db_id = str(decision.get("db_id") or "")
+    hostname = str(decision.get("hostname") or "").strip() or None
+    if hostname is None and db_id:
+        hostname = (await lookup_host(config, db_id, server_name)).hostname
+    raw_signals = decision.get("signals")
+    signals: dict[str, Any] = raw_signals if isinstance(raw_signals, dict) else {}
+    severity = signals.get("severity")
+    return AlarmEvent(
+        db_id=db_id,
+        server_name=server_name,
+        hostname=hostname or server_name,
+        ip_address="",
+        resource_ancestry="",
+        alarm_id=alarm_id,
+        severity=int(severity) if isinstance(severity, (int, float)) else 0,
+        alarm_status="",
+        resource_type=str(decision.get("resource_type") or ""),
+        resource_name=str(decision.get("resource_name") or ""),
+        alarm_name=str(decision.get("alarm_name") or ""),
+        alarm_time=alarm_time,
+        conditions="",
+        condition_log=str(decision.get("condition_log") or ""),
+    )
+
+
+async def _audit_manual(
+    current_user: dict[str, Any],
+    alarm_id: str,
+    outcome: str,
+    *,
+    event: AlarmEvent | None = None,
+    degraded: list[dict[str, Any]] | None = None,
+    **extra: Any,
+) -> None:
+    """알람 다시 분석 감사 1건(접수·합류·거부·실패 모두 · 실패해도 응답을 막지 않는다)."""
+    from src.security import audit_logger
+
+    targets = (
+        [{"server_name": event.server_name, "hostname": event.hostname, "db_id": event.db_id}]
+        if event is not None else None
+    )
+    try:
+        await audit_logger.log_investigation(
+            entry_point=_MANUAL_ENTRY_POINT,
+            targets=targets,
+            outcome=outcome,
+            user_id=current_user.get("sub"),
+            backend="sre_agent",
+            degraded=degraded,
+            alarm_id=alarm_id,
+            **extra,
+        )
+    except Exception:  # noqa: BLE001 — 감사 기록 실패가 응답을 막지 않는다(사유는 로그)
+        logger.warning("알람 다시 분석 감사 기록 실패", exc_info=True)
+
+
+async def _manual_join_target(
+    store: InvestigationStore, ng: Any, alarm_id: str
+) -> dict[str, Any] | None:
+    """합류할 사용자 요청 조사 — 같은 알람에 진행 중이거나 합류 창 안에 접수된 것.
+
+    실패·거부·타임아웃으로 끝난 것에는 합류하지 않는다(다시 요청할 수 있다).
+    """
+    from noise_gate.infrastructure.investigation_store import ACTIVE_STATUSES, KIND_MANUAL
+
+    window = 60.0 * max(0, int(getattr(ng, "investigation_manual_join_minutes", 10)))
+    now = time.time()
+    for rec in store.list_by_alarm(alarm_id):
+        if rec.get("kind") != KIND_MANUAL:
+            continue
+        current = rec
+        if rec.get("status") in ACTIVE_STATUSES:
+            current, _ = await _refresh_investigation(store, rec, ng)
+            if current.get("status") in ACTIVE_STATUSES:
+                return current
+        at = _submitted_epoch(rec)
+        if (
+            at is not None
+            and now - at < window
+            and current.get("status") not in _FOLLOWUP_RETRYABLE
+        ):
+            return current
+    return None
+
+
+@router.post(
+    "/alarm/{alarm_id}/investigations",
+    summary="이 알람 분석(사용자 요청 알람 조사 · 비동기)",
+    description=(
+        "결정 기록(30일) 안의 알람 1건을 자동 조사와 같은 방식으로 다시 조사하도록 접수합니다"
+        "(등급 무관). 원 조사는 바뀌지 않고 새 조사(kind=manual)가 생깁니다.<br/>"
+        "권한은 그 알람을 볼 수 있는 존 범위 사용자입니다(존 미상은 403). "
+        "같은 알람에 진행 중이거나 최근 합류 창 안의 요청이 있으면 새로 띄우지 않고 "
+        "그 조사 id를 돌려줍니다(joined=true). "
+        "사용자별 진행 중 1건 · 시간당 상한은 추가 조사와 함께 셉니다. 통보는 보내지 않습니다.<br/>"
+        "`NOISE_INVESTIGATION_MANUAL_ENABLED`가 꺼져 있으면 404입니다."
+    ),
+    tags=["alarm"],
+    dependencies=[Depends(_require_manual_enabled)],
+)
+async def request_manual_investigation(
+    alarm_id: str,
+    request: Request,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """알람 다시 분석 접수 → `{investigation_id, status, joined, reference_time_source?, reason?}`.
+
+    `reference_time_source`는 새로 접수했을 때만 싣는다(`alarm_time` | `decision_ts`).
+    """
+    from noise_gate.application.nodes.investigation_trigger import build_manual_payload
+    from noise_gate.infrastructure import sre_agent_client as sre_client_mod
+    from noise_gate.infrastructure.investigation_store import KIND_MANUAL
+    from src.security.audit_logger import (
+        INVESTIGATION_DENIED,
+        INVESTIGATION_FAILED,
+        INVESTIGATION_OK,
+    )
+
+    config = request.app.state.config
+    ng = config.noise_gate
+    sub = str(current_user.get("sub") or "")
+
+    # 존 검사(fail-closed) — 판정 기록의 db_id로 본다. 존 제한 사용자는 기록이 없거나 db_id를 모르는
+    # 알람도 403이다(존재 여부를 드러내지 않는다 · by-alarm과 같은 순서).
+    try:
+        scope = _alarm_zone_scope(request, current_user)
+        decision = _manual_decision(config, alarm_id)
+        db_id = str((decision or {}).get("db_id") or "")
+        if scope is not None and (not db_id or not _zone_permits(scope, db_id)):
+            raise HTTPException(status_code=403)
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        await _audit_manual(
+            current_user, alarm_id, INVESTIGATION_DENIED,
+            degraded=[{"reason": "zone_denied", "detail": None}],
+        )
+        raise _followup_error(
+            403, "zone_denied", "해당 존의 알람에 대한 권한이 없습니다."
+        ) from None
+    decided_at = _decision_alarm_time(decision or {})
+    epoch = decided_at.timestamp() if decided_at is not None else None
+    if decision is None or epoch is None or time.time() - epoch > _MANUAL_LOOKBACK_SECONDS:
+        raise _followup_error(
+            404, "alarm_not_found",
+            "결정 기록 보존 범위(30일) 안에서 이 알람을 찾지 못했습니다.",
+        )
+
+    store = _investigation_store(config)
+    if store is None:
+        raise _followup_error(503, "store_unconfigured", "조사 저장소 경로가 설정되지 않았습니다.")
+
+    # 합류 — 같은 알람의 진행 중·최근 요청(누가 요청했든)은 새로 띄우지 않는다(G-31).
+    joined = await _manual_join_target(store, ng, alarm_id)
+    if joined is not None:
+        await _audit_manual(
+            current_user, alarm_id, INVESTIGATION_OK,
+            investigation_id=joined.get("investigation_id"), joined=True,
+        )
+        return {
+            "investigation_id": joined.get("investigation_id"),
+            "status": joined.get("status"),
+            "joined": True,
+        }
+
+    alarm_time, reference_time_source = _manual_reference_time(decision)
+    event = await _manual_event(config, alarm_id, decision, alarm_time)
+    if event is None:
+        await _audit_manual(
+            current_user, alarm_id, INVESTIGATION_DENIED,
+            degraded=[{"reason": "target_unresolved", "detail": None}],
+        )
+        raise _followup_error(
+            400, "target_unresolved", "알람 기록에 서버명이 없어 조사 대상을 정하지 못했습니다."
+        )
+
+    async def _deny(status_code: int, code: str, reason: str, outcome: str) -> HTTPException:
+        await _audit_manual(
+            current_user, alarm_id, outcome, event=event,
+            degraded=[{"reason": code, "detail": reason}],
+        )
+        return _followup_error(status_code, code, reason)
+
+    # (교정 M1) 상한 검사부터 접수 레코드 기록까지 사용자별 잠금 한 구간이다.
+    async with _user_request_slot(store, ng, sub) as limited:
+        if limited is not None:
+            raise await _deny(_limit_status(limited[0]), *limited, INVESTIGATION_DENIED)
+
+        client = sre_client_mod.build_sre_agent_client(ng)
+        if client is None:
+            raise await _deny(
+                503, "service_unconfigured", "조사 서비스 URL이 설정되지 않았습니다.",
+                INVESTIGATION_FAILED,
+            )
+        unreachable = await client.unreachable_reason()
+        if unreachable:
+            raise await _deny(
+                503, "service_unreachable", f"조사 서비스에 연결할 수 없습니다: {unreachable}",
+                INVESTIGATION_FAILED,
+            )
+
+        previous = store.list_by_alarm(alarm_id)
+        parent_investigation_id = str(previous[0].get("investigation_id") or "") if previous else ""
+        payload = await build_manual_payload(
+            config,
+            event,
+            SimpleNamespace(
+                tier=str(decision.get("tier") or ""),
+                reason=str(decision.get("reason") or ""),
+                fingerprint=str(decision.get("fingerprint") or ""),
+                signals=(
+                    decision.get("signals") if isinstance(decision.get("signals"), dict) else {}
+                ),
+            ),
+            fingerprint=f"{_MANUAL_FINGERPRINT_PREFIX}{alarm_id}:{uuid.uuid4().hex[:12]}",
+            investigation_kind=KIND_MANUAL,
+        )
+        timeout = float(getattr(ng, "investigation_mcp_call_timeout_seconds", 10.0))
+
+        async def _submit() -> dict[str, Any]:
+            await client.connect()
+            try:
+                return await client.submit(payload)
+            finally:
+                await client.disconnect()
+
+        try:
+            res = await asyncio.wait_for(_submit(), timeout=timeout)
+        except TimeoutError:
+            raise await _deny(
+                502, "submit_failed", f"조사 서비스 접수 타임아웃({timeout:.0f}s 초과)",
+                INVESTIGATION_FAILED,
+            )
+        except Exception as exc:  # noqa: BLE001 — 접수 실패는 사유와 함께 거부한다(침묵 금지)
+            logger.warning("알람 다시 분석 접수 실패: alarm=%s", alarm_id, exc_info=True)
+            raise await _deny(
+                502, "submit_failed", f"조사 서비스 접수 실패: {type(exc).__name__}",
+                INVESTIGATION_FAILED,
+            )
+        new_id = str(res.get("investigation_id") or "")
+        if not new_id:
+            raise await _deny(
+                502, "submit_failed", "조사 서비스 응답에 조사 id가 없습니다.", INVESTIGATION_FAILED
+            )
+        existing = store.get_by_investigation(new_id)
+        if existing is not None and existing.get("kind") != KIND_MANUAL:
+            # 원 조사 레코드에 새 행을 섞지 않는다(원 조사 불변).
+            # 지문이 달라 정상 경로에서는 생기지 않는다.
+            raise await _deny(
+                502, "submit_conflict", "조사 서비스가 기존 조사 id를 돌려주었습니다.",
+                INVESTIGATION_FAILED,
+            )
+        rejected = str(res.get("status") or "") == "rejected"
+        reason = str(res.get("reason") or "") or None
+        store.record(
+            investigation_id=new_id,
+            alarm_ids=[alarm_id],
+            kind=KIND_MANUAL,
+            status="rejected" if rejected else "submitted",
+            source=_MANUAL_ORIGIN,
+            reason=reason if rejected else None,
+            alarm_db_ids={alarm_id: event.db_id} if event.db_id else None,
+            owner_sub=sub or None,
+            parent_investigation_id=parent_investigation_id or None,
+            origin=_MANUAL_ORIGIN,
+            parent_alarm_id=alarm_id,
+            subject={
+                "reference_time": alarm_time.isoformat() if alarm_time is not None else None,
+                "reference_time_source": reference_time_source,
+            },
+        )
+    await _audit_manual(
+        current_user, alarm_id, INVESTIGATION_DENIED if rejected else INVESTIGATION_OK,
+        event=event,
+        degraded=[{"reason": "service_rejected", "detail": reason}] if rejected else None,
+        investigation_id=new_id, joined=False, reference_time_source=reference_time_source,
+    )
+    out: dict[str, Any] = {
+        "investigation_id": new_id,
+        "status": "rejected" if rejected else "submitted",
+        "joined": False,
+        "reference_time_source": reference_time_source,
+    }
+    if rejected and reason:
+        out["reason"] = reason
+    return out
+
+
+# ─── 장애 대응 지식(KB) 쓰기·참조 측 (plans/187 W9 · D-341 ⑩⑮⑳ · G-14~G-16 · G-27) ───
+#
+# KB 초안(운영자만 · state=wip 고정 · LLM 0) · 포스트모템 내보내기(작성 기준 충족 건만) ·
+# 알려진 오류 사용 피드백 · 엔진 선택 기록. 기록은 본체 별도 JSONL(`IncidentKbStore`)에만 하고
+# sre_agent 로더 경로에는 쓰지 않는다. 선택·피드백은 판정·티어·통보를 바꾸지 않는다
+# (조사·결정 저장소에 쓰지 않는다). 기본 off면 네 라우트가 404(미등록과 같은 응답 — 인증보다
+# 먼저)이고 조회 응답에 아무것도 붙지 않는다.
+# 관리자 화면 API는 `admin_incident_kb.py`(조건부 등록). 순수 로직은 `src/domain/kb_draft.py`.
+
+#: 감사 진입점 값(`log_investigation(entry_point=…)`).
+_KB_ENTRY_POINT = "incident_kb"
+#: 매뉴얼 RAG 참고 인용 컬렉션(`config/rag_collections.yaml`).
+_KB_REFERENCE_COLLECTION = "incident_docs"
+
+
+def _kb_enabled(config: Any) -> bool:
+    """KB 쓰기·참조 측 플래그(기동 시 설정값)."""
+    return bool(getattr(config.noise_gate, "investigation_kb_enabled", False))
+
+
+async def _require_kb_enabled(request: Request) -> None:
+    """플래그 off면 미등록 라우트와 같은 404 — 인증·저장소 접근보다 먼저 판정한다."""
+    if not _kb_enabled(request.app.state.config):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+def _kb_store(config: Any) -> Any:
+    """KB 기록 저장소 — 경로 미설정·sre_agent 아래 경로면 503(쓰기 차단 사유 노출)."""
+    from noise_gate.infrastructure.incident_kb_store import ForbiddenKbPathError, IncidentKbStore
+
+    ng = config.noise_gate
+    path = str(ng.investigation_kb_store_path or "")
+    if not path:
+        raise _followup_error(503, "kb_store_unconfigured", "KB 기록 경로가 설정되지 않았습니다.")
+    try:
+        return IncidentKbStore(path, int(getattr(ng, "investigation_kb_store_max_lines", 20000)))
+    except ForbiddenKbPathError as exc:
+        logger.error("KB 기록 경로 거부: %s", exc)
+        raise _followup_error(
+            503, "kb_store_forbidden", "KB 기록 경로가 sre_agent 아래라 쓰지 않습니다."
+        ) from exc
+
+
+def _kb_scan_records(config: Any) -> list[dict[str, Any]]:
+    """KB 집계 재료 — 조사 저장소 끝 `investigation_kb_scan_max_lines`줄의 조사별 최신 행."""
+    from noise_gate.infrastructure.investigation_store import InvestigationStore
+
+    ng = config.noise_gate
+    path = ng.investigation_store_path
+    if not path:
+        return []
+    return InvestigationStore(
+        path, int(getattr(ng, "investigation_kb_scan_max_lines", 10000))
+    ).latest_records()
+
+
+async def _audit_kb(
+    current_user: dict[str, Any], outcome: str, action: str, **extra: Any
+) -> None:
+    """KB 감사 1건(쓰기·내보내기·거부 · 실패해도 응답을 막지 않는다)."""
+    from src.security import audit_logger
+
+    try:
+        await audit_logger.log_investigation(
+            entry_point=_KB_ENTRY_POINT,
+            outcome=outcome,
+            user_id=current_user.get("sub"),
+            backend="incident_kb",
+            action=action,
+            **extra,
+        )
+    except Exception:  # noqa: BLE001 — 감사 기록 실패가 응답을 막지 않는다(사유는 로그)
+        logger.warning("KB 감사 기록 실패", exc_info=True)
+
+
+def _kb_investigation(
+    request: Request, current_user: dict[str, Any], investigation_id: str
+) -> dict[str, Any]:
+    """KB 대상 조사 — 존 검사(조사에 걸린 알람 전부 · fail-closed)까지 끝낸 레코드.
+
+    Raises:
+        HTTPException: 저장소 미설정 503 · 없음 404 · 존 권한 없음 403.
+    """
+    _alarm_zone_scope(request, current_user)
+    store = _investigation_store(request.app.state.config)
+    if store is None:
+        raise _followup_error(503, "store_unconfigured", "조사 저장소 경로가 설정되지 않았습니다.")
+    rec = store.get_by_investigation(investigation_id)
+    if rec is None:
+        raise _followup_error(404, "investigation_not_found", "조사를 찾지 못했습니다.")
+    # (교정 H1) 알람 없는 사용자 요청 조사는 소유자 또는 운영자만.
+    _assert_unbound_request_owner(request.app.state.config, current_user, rec)
+    _assert_investigation_zone(
+        request, current_user, list(rec.get("alarm_ids") or []), rec.get("alarm_db_ids")
+    )
+    return rec
+
+
+def _kb_playbook_briefing(rec: dict[str, Any], *, require_done: bool) -> dict[str, Any]:
+    """플레이북 브리핑 — 종결 전 409 · 플레이북 블록 없음 400."""
+    from src.domain.kb_draft import playbook_of
+
+    if require_done and rec.get("status") != "done":
+        raise _followup_error(
+            409, "not_done", "조사가 끝나지 않았습니다 — 완료된 조사만 가능합니다."
+        )
+    briefing = rec.get("briefing")
+    if not isinstance(briefing, dict) or playbook_of(briefing) is None:
+        raise _followup_error(400, "no_playbook", "플레이북 조사 브리핑이 아닙니다.")
+    return briefing
+
+
+def _kb_alarm(config: Any, rec: dict[str, Any]) -> dict[str, Any]:
+    """조사 대표 알람(첫 알람)의 판정 기록 — 알람명·조건 원문·티어(없으면 알람 id만)."""
+    alarm_ids = list(rec.get("alarm_ids") or [])
+    if not alarm_ids:
+        return {}
+    return {**(_manual_decision(config, alarm_ids[0]) or {}), "alarm_id": alarm_ids[0]}
+
+
+async def _kb_references(
+    config: Any, current_user: dict[str, Any], briefing: dict[str, Any]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """매뉴얼 RAG 참고 인용(§5.7.4 · G-15) — `(references, {status, reason})`.
+
+    질의는 결정적(플레이북 id + 런북 references + 대상 솔루션명)이고 LLM을 부르지 않는다. 문서 RAG의
+    검색 함수(`retrieve_many`)·정렬(`sort_hits`)·인가(`allowed_collection_ids`)를 재사용한다 —
+    `answer_from_documents`는 발췌를 돌려주지 않아 쓰지 않는다. 실패는 빈 검색 결과 + 사유이며
+    런북 references(고정 문서)는 그래도 싣는다. 결과는 응답에만 붙고 sre_agent에는 가지 않는다.
+    """
+    from src.domain.kb_draft import merge_references, reference_query, runbook_references
+
+    pinned = runbook_references(briefing)
+    query = reference_query(briefing)
+    rag = getattr(config, "rag", None)
+    hits: list[dict[str, Any]] = []
+    if rag is None or not getattr(rag, "enabled", False):
+        return merge_references(pinned, hits), {
+            "status": "disabled", "reason": "문서 검색이 꺼져 있습니다(RAG_ENABLED=false)."
+        }
+    status: dict[str, Any] = {"status": "ok", "reason": ""}
+    started = time.monotonic()
+    try:
+        from src.clients.fabrix_retrieval import (
+            STATUS_EMPTY,
+            retrieve_many,
+            timeouts_from_config,
+        )
+        from src.doc_qa.authz import allowed_collection_ids
+        from src.doc_qa.evidence import sort_hits
+        from src.infrastructure.doc_sources import resolve_collections
+
+        cols = [c for c in resolve_collections(rag) if c.id == _KB_REFERENCE_COLLECTION]
+        allowed = set(allowed_collection_ids(cols, user=current_user, rag_config=rag))
+        usable = [c for c in cols if c.id in allowed and c.usable]
+        if not usable:
+            reason = (cols[0].disabled_reason or "인가되지 않은 문서군") if cols else (
+                f"문서군 {_KB_REFERENCE_COLLECTION} 정본 없음"
+            )
+            return merge_references(pinned, hits), {"status": "disabled", "reason": reason}
+        read_to, total_to = timeouts_from_config(rag)
+        outcomes = await retrieve_many(
+            usable, query, timeout_sec=read_to, total_timeout_sec=total_to
+        )
+        base = str(getattr(rag, "doc_url_base", "") or "")
+        for hit in sort_hits([h for o in outcomes for h in o.hits]):
+            href = f"{base.rstrip('/')}/{hit.url.lstrip('/')}" if base and hit.url else ""
+            hits.append({"title": hit.display_title, "section": hit.subtitle,
+                         "excerpt": hit.content, "href": href, "doc_id": hit.doc_id})
+        failed = [o for o in outcomes if not o.ok and o.status != STATUS_EMPTY]
+        if failed and not hits:
+            status = {"status": failed[0].status, "reason": failed[0].reason}
+        elif not hits:
+            status = {"status": STATUS_EMPTY, "reason": "검색 결과 0건"}
+    except Exception as exc:  # noqa: BLE001 — 참고 인용 실패가 조사 응답을 막지 않는다(사유 노출)
+        logger.warning("KB 참고 문서 검색 실패: %s", exc, exc_info=True)
+        status = {"status": "error", "reason": f"문서 검색 실패: {type(exc).__name__}"}
+    try:
+        from src.security.audit_logger import log_doc_retrieval
+        from src.security.pii_filter import scrub_pii
+
+        await log_doc_retrieval(
+            collection_ids=[_KB_REFERENCE_COLLECTION], status=str(status["status"]),
+            hit_count=len(hits), elapsed_ms=(time.monotonic() - started) * 1000,
+            query=scrub_pii(query), doc_ids=[h["doc_id"] for h in hits if h["doc_id"]][:5],
+            source=_KB_ENTRY_POINT, reason=status["reason"] or None,
+            user_id=current_user.get("sub"),
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("KB 참고 문서 감사 기록 실패", exc_info=True)
+    return merge_references(pinned, hits), status
+
+
+async def _kb_briefing_extras(
+    config: Any, current_user: dict[str, Any], briefing: dict[str, Any]
+) -> dict[str, Any]:
+    """운영자 뷰 브리핑 사본 + `playbook.references`·`references_status` ·
+    KE `recurrence`(§5.7.6).
+    """
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
+    from src.domain.kb_draft import (
+        ke_activity,
+        known_error_ids,
+        playbook_of,
+        recurrence_of,
+        with_kb_extras,
+    )
+
+    if playbook_of(briefing) is None:
+        return briefing
+    references, status = await _kb_references(config, current_user, briefing)
+    recurrence: dict[str, dict[str, Any]] = {}
+    if known_error_ids(briefing):
+        recurrence = recurrence_of(ke_activity(_kb_scan_records(config), now=_dt.now(_UTC)))
+    return with_kb_extras(
+        briefing, references=references, references_status=status, recurrence=recurrence
+    )
+
+
+#: 알려진 오류 id 형식(plans/187 교정 M6) — sre_agent `known_error._KE_ID_PATTERN`
+#: (`^KE-[A-Z0-9][A-Z0-9-]*$`)에 길이 상한 64를 더한 것. 경로 값이 이 밖이면 저장소를 읽기 전에 400.
+_KE_ID_RE = re.compile(r"^KE-[A-Z0-9][A-Z0-9-]{0,60}$")
+
+
+class KnownErrorFeedbackRequest(BaseModel):
+    """알려진 오류 사용 피드백 본문."""
+
+    verdict: str = Field(
+        ..., max_length=32,
+        description="correct(맞음) | incorrect(아님) | workaround_ineffective(우회 효과 없음)",
+    )
+
+
+class EngineChoiceRequest(BaseModel):
+    """엔진 선택 본문."""
+
+    choice: str = Field(..., max_length=32, description="playbook | holmesgpt | both | neither")
+
+
+@router.post(
+    "/alarm/investigations/{investigation_id}/kb-draft",
+    summary="KB 초안 만들기(운영자 · 결정적)",
+    description=(
+        "완료된 플레이북 조사의 브리핑으로 알려진 오류 레코드 초안(state=wip 고정)을 만들어 "
+        "본체 KB 기록에 남깁니다. 증상=알람 원문 · 환경=스코프·플레이북 · "
+        "match 후보=성립한 판독 enum · "
+        "원인=1순위 가설(미검증 · 엔진 선택이 있으면 그 결론) · cause_test·우회=빈 칸. "
+        "LLM을 쓰지 않고 sre_agent 파일에 쓰지 않습니다.<br/>"
+        "운영자(관리자)만 · 존 검사 · `NOISE_INVESTIGATION_KB_ENABLED`가 꺼져 있으면 404입니다."
+    ),
+    tags=["alarm"],
+    dependencies=[Depends(_require_kb_enabled)],
+)
+async def create_kb_draft(
+    investigation_id: str,
+    request: Request,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """조사 → `{draft_id, investigation_id, state, draft, yaml}`."""
+    import uuid as _uuid
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
+    from src.domain.kb_draft import DRAFT_STATE, build_draft, draft_to_yaml
+    from src.security.audit_logger import INVESTIGATION_DENIED, INVESTIGATION_OK
+
+    config = request.app.state.config
+    if not _is_alarm_operator(config, current_user):
+        await _audit_kb(current_user, INVESTIGATION_DENIED, "kb_draft",
+                        investigation_id=investigation_id, reason="operator_only")
+        raise _followup_error(403, "operator_only", "KB 초안은 운영자만 만들 수 있습니다.")
+    rec = _kb_investigation(request, current_user, investigation_id)
+    briefing = _kb_playbook_briefing(rec, require_done=True)
+    store = _kb_store(config)
+    sub = str(current_user.get("sub") or "")
+    now = _dt.now(_UTC)
+    draft = build_draft(
+        draft_id=_uuid.uuid4().hex[:12],
+        investigation_id=investigation_id,
+        briefing=briefing,
+        alarm=_kb_alarm(config, rec),
+        engine_choice=store.engine_choice_of(investigation_id, sub),
+        created_by=sub,
+        created_at=now.isoformat(),
+    )
+    if not store.record_draft(draft, ts=now):
+        raise _followup_error(503, "store_write_failed", "KB 초안 기록에 실패했습니다.")
+    await _audit_kb(current_user, INVESTIGATION_OK, "kb_draft", investigation_id=investigation_id,
+                    draft_id=draft["draft_id"], playbook_id=draft["playbook_id"])
+    return {
+        "draft_id": draft["draft_id"],
+        "investigation_id": investigation_id,
+        "state": DRAFT_STATE,
+        "draft": draft,
+        "yaml": draft_to_yaml(draft),
+    }
+
+
+@router.get(
+    "/alarm/investigations/{investigation_id}/postmortem",
+    summary="포스트모템 내보내기(작성 기준 충족 건만)",
+    description=(
+        "완료된 플레이북 조사를 PagerDuty 템플릿 절 Markdown으로 내보냅니다. "
+        "작성 기준(당직 호출 PAGE · 사용자 영향 판정 등급 — 전부 충족)을 못 채우면 "
+        "409와 미충족 기준을 돌려줍니다.<br/>"
+        "존 검사 · 사용자 경로는 값 마스킹 · "
+        "`NOISE_INVESTIGATION_KB_ENABLED`가 꺼져 있으면 404입니다."
+    ),
+    tags=["alarm"],
+    dependencies=[Depends(_require_kb_enabled)],
+)
+async def export_postmortem(
+    investigation_id: str,
+    request: Request,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """조사 → `{investigation_id, criteria[], markdown}` · 미충족 409 `{code, reason, criteria}`."""
+    from noise_gate.infrastructure.investigation_store import investigation_view
+    from src.domain.kb_draft import evaluate_postmortem, render_postmortem
+    from src.security.audit_logger import INVESTIGATION_DENIED, INVESTIGATION_OK
+
+    config = request.app.state.config
+    rec = _kb_investigation(request, current_user, investigation_id)
+    briefing = _kb_playbook_briefing(rec, require_done=True)
+    alarm = _kb_alarm(config, rec)
+    level = investigation_view(rec)["verdict_level"]
+    evaluation = evaluate_postmortem(tier=alarm.get("tier"), verdict_level=level)
+    if not evaluation["eligible"]:
+        await _audit_kb(current_user, INVESTIGATION_DENIED, "postmortem",
+                        investigation_id=investigation_id, reason="criteria_unmet")
+        raise HTTPException(status_code=409, detail={
+            "code": "criteria_unmet", "reason": evaluation["reason"],
+            "criteria": evaluation["criteria"],
+        })
+    operator = _is_alarm_operator(config, current_user)
+    markdown = render_postmortem(
+        investigation_id=investigation_id, briefing=briefing, alarm=alarm,
+        evaluation=evaluation, verdict_level=level,
+        mask_fn=None if operator else _investigation_mask_fn(config),
+    )
+    await _audit_kb(current_user, INVESTIGATION_OK, "postmortem", investigation_id=investigation_id)
+    return {
+        "investigation_id": investigation_id,
+        "criteria": evaluation["criteria"],
+        "markdown": markdown,
+    }
+
+
+@router.post(
+    "/alarm/investigations/{investigation_id}/known-errors/{ke_id}/feedback",
+    summary="알려진 오류 사용 피드백(맞음/아님/우회 효과 없음)",
+    description=(
+        "브리핑의 알려진 오류 카드 피드백을 KE별로 기록합니다(KCS Reuse is Review). "
+        "「아님」이 연속 N회면 관리자 검토 대상에 오릅니다"
+        "(자동 강등 없음 · 판정·가설 순위 불변).<br/>"
+        "그 조사 브리핑에 실린 KE만 받습니다 · 존 검사 · "
+        "`NOISE_INVESTIGATION_KB_ENABLED`가 꺼져 있으면 404입니다."
+    ),
+    tags=["alarm"],
+    dependencies=[Depends(_require_kb_enabled)],
+)
+async def record_known_error_feedback(
+    investigation_id: str,
+    ke_id: str,
+    body: KnownErrorFeedbackRequest,
+    request: Request,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """KE 피드백 1건 → `{recorded, investigation_id, ke_id, verdict, ts}`."""
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
+    from src.domain.kb_draft import KE_FEEDBACK_LABELS, known_error_ids, playbook_of
+    from src.security.audit_logger import INVESTIGATION_DENIED, INVESTIGATION_OK
+
+    # (교정 M6) 형식·값 검증 거부도 감사 1건(경로 값은 형식이 맞을 때만 싣는다).
+    if not _KE_ID_RE.match(ke_id):
+        await _audit_kb(current_user, INVESTIGATION_DENIED, "ke_feedback",
+                        investigation_id=investigation_id, reason="invalid_ke_id")
+        raise _followup_error(400, "invalid_ke_id", "알려진 오류 id 형식이 아닙니다(KE-...).")
+    if body.verdict not in KE_FEEDBACK_LABELS:
+        await _audit_kb(current_user, INVESTIGATION_DENIED, "ke_feedback",
+                        investigation_id=investigation_id, ke_id=ke_id, reason="invalid_verdict")
+        raise _followup_error(
+            400, "invalid_verdict", f"verdict는 {'·'.join(KE_FEEDBACK_LABELS)} 중 하나입니다."
+        )
+    config = request.app.state.config
+    rec = _kb_investigation(request, current_user, investigation_id)
+    briefing = _kb_playbook_briefing(rec, require_done=False)
+    if ke_id not in known_error_ids(briefing):
+        await _audit_kb(current_user, INVESTIGATION_DENIED, "ke_feedback",
+                        investigation_id=investigation_id, ke_id=ke_id, reason="ke_not_found")
+        raise _followup_error(404, "ke_not_found", "이 조사 브리핑에 그 알려진 오류가 없습니다.")
+    store = _kb_store(config)
+    now = _dt.now(_UTC)
+    playbook_id = str((playbook_of(briefing) or {}).get("id") or "")
+    if not store.record_ke_feedback(
+        ke_id=ke_id, investigation_id=investigation_id, verdict=body.verdict,
+        labeled_by=str(current_user.get("sub") or ""), playbook_id=playbook_id, ts=now,
+    ):
+        raise _followup_error(503, "store_write_failed", "피드백 기록에 실패했습니다.")
+    await _audit_kb(current_user, INVESTIGATION_OK, "ke_feedback",
+                    investigation_id=investigation_id, ke_id=ke_id, verdict=body.verdict)
+    return {"recorded": True, "investigation_id": investigation_id, "ke_id": ke_id,
+            "verdict": body.verdict, "ts": now.isoformat()}
+
+
+@router.post(
+    "/alarm/investigations/{investigation_id}/engine-choice",
+    summary="엔진 선택 기록(플레이북/HolmesGPT/둘 다/둘 다 아님)",
+    description=(
+        "「이 결론이 맞다」 선택을 조사·사용자별로 기록합니다(최신 1건이 유효). 판정·티어·통보는 "
+        "바뀌지 않습니다 — KB 초안 원인 기본값·유형별 적중 통계·모드 전환 권고에만 씁니다.<br/>"
+        "플레이북 조사만 · 존 검사 · `NOISE_INVESTIGATION_KB_ENABLED`가 꺼져 있으면 404입니다."
+    ),
+    tags=["alarm"],
+    dependencies=[Depends(_require_kb_enabled)],
+)
+async def record_engine_choice(
+    investigation_id: str,
+    body: EngineChoiceRequest,
+    request: Request,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """엔진 선택 1건 → `{recorded, investigation_id, choice, playbook_id, ts}`."""
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
+    from src.domain.kb_draft import ENGINE_CHOICES, playbook_of
+    from src.security.audit_logger import INVESTIGATION_DENIED, INVESTIGATION_OK
+
+    if body.choice not in ENGINE_CHOICES:
+        await _audit_kb(current_user, INVESTIGATION_DENIED, "engine_choice",
+                        investigation_id=investigation_id, reason="invalid_choice")
+        raise _followup_error(
+            400, "invalid_choice", f"choice는 {'·'.join(ENGINE_CHOICES)} 중 하나입니다."
+        )
+    config = request.app.state.config
+    rec = _kb_investigation(request, current_user, investigation_id)
+    briefing = _kb_playbook_briefing(rec, require_done=False)
+    playbook_id = str((playbook_of(briefing) or {}).get("id") or "")
+    store = _kb_store(config)
+    now = _dt.now(_UTC)
+    if not store.record_engine_choice(
+        investigation_id=investigation_id, choice=body.choice, playbook_id=playbook_id,
+        chosen_by=str(current_user.get("sub") or ""), ts=now,
+    ):
+        raise _followup_error(503, "store_write_failed", "엔진 선택 기록에 실패했습니다.")
+    await _audit_kb(current_user, INVESTIGATION_OK, "engine_choice",
+                    investigation_id=investigation_id, choice=body.choice, playbook_id=playbook_id)
+    return {"recorded": True, "investigation_id": investigation_id, "choice": body.choice,
+            "playbook_id": playbook_id, "ts": now.isoformat()}
 
 
 # ─── 폴스타 원문 메시지 분석 엔드포인트 ──────────────────────────────────────

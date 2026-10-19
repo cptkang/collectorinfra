@@ -1,7 +1,7 @@
 # 187. 알람 유형별 자동 조사 플레이북 — PAGE 알람마다 정해진 조사 단계를 결정적으로 일괄 수집하고, 단계별 LLM 소견과 종합 원인·대응 의견을 운영자에게 보인다
 
 > **작성일**: 2026-10-17 · **v1.0** · **v1.1**(같은 날 — 사용자 지시 *"문헌 조사를 인터넷으로 접속하여 직접 다시 조사하여 계획서에 반영하라"*: 제니퍼 공식 백서 2·사례 4 원문 확보(이미지 PDF는 OCR) · 출처 검증 수준 재표기 · Datadog 3상태 서술 정정 · 결정적 판독 규칙 §4.2 신설 · S0 범위 비교 · S3 커넥션 획득 분리 · S2 WAS/호스트 CPU 대조) · **v1.2**(같은 날 — 사용자 지시 *"장애 대응에 대한 지식 저장소나 Troubleshooting Guide, 런북/플레이북, 인시던트 대응 매뉴얼, 알려진 문제 및 우회 방법 등을 자세히 조사하여 계획을 업데이트하라"*: 지식 유형 문헌 §3.7 신설 · **장애 대응 지식 저장소(KB) 설계 §5.7** — 런북 블록·알려진 오류(KEDB, KCS 구조·상태) 결정적 일치·우회 표시·매뉴얼 RAG 참고·초안→승인 수명주기 · 요건 R-14~R-17 · Wave W8~W9 · 수용 기준 8~10 · 게이트 G-13~G-17)
-> **상태**: **TODO — 계획(코드 0건)** · **게이트 G-1~G-17 확정(2026-10-17 · 권고안 전부 · 사용자 「게이트 권고안대로 확정」)** · **G-18~G-21 확정(같은 날 · 권고안 · 사용자 「권고한데로 반영하라」)** · **G-22~G-27 확정(같은 날 · 권고안 · 사용자 「권고대로 정리하라」)** · **G-28~G-33 확정(같은 날 · 권고안 · 사용자 「권고안대로 확정하여 계획서에 반영하라」)** — 게이트 전건 확정 · **D-341 확정**
+> **상태**: **WIP — W0~W6·W8~W12 구현 완료(2026-10-19 · 미커밋) · 잔여: W7 내부망 shadow · R-D(게이트웨이 acquire/execute 구조화 필드 부재 → `db_split` n/a · 수용 기준 2·2′·9 부분) · G-26 HolmesGPT 도구 경로 캐시 공용 미구현 · 수용 기준 6(120s)·7 내부망 측정 · SME 자료(G-10) · 매뉴얼 캡처** · 모든 신규 플래그 기본 off(비트 동일 검증) · 검증·보안 감사 지적 교정 완료 · (구: TODO — 계획(코드 0건)) · **게이트 G-1~G-17 확정(2026-10-17 · 권고안 전부 · 사용자 「게이트 권고안대로 확정」)** · **G-18~G-21 확정(같은 날 · 권고안 · 사용자 「권고한데로 반영하라」)** · **G-22~G-27 확정(같은 날 · 권고안 · 사용자 「권고대로 정리하라」)** · **G-28~G-33 확정(같은 날 · 권고안 · 사용자 「권고안대로 확정하여 계획서에 반영하라」)** — 게이트 전건 확정 · **D-341 확정**
 > **v1.3**(같은 날): 게이트 확정 반영 · §5.6 화면 설계 상세화(요약형 카드·드로어 + 조사 상세 화면 + 관리자 「조사 지식」 탭) · W5·W9 산출물 보강 · G-18 신설
 > **v1.9**(같은 날): 사용자 제기 *"사용자는 이벤트 알람을 보거나 봤던 것을 찾아 알람에 대해 다시 분석을 진행할 수 있어야 한다. 알람이나 현상에 대해 사용자가 질의하면 플레이북이나 HolmesGPT로 조사를 해야 한다"* → 검토(현행: 지난 알람 검색은 노이즈 콘솔만 · 재분석 경로 없음 · 채팅 질의는 기본 off 동기 `fault_diagnosis`만) → 권고안 확정. §5.6.2 신설(「이 알람 분석」 버튼 · 채팅 「지난 알람」 검색 · 증상 질의 결정적 라우팅 · 비동기 조사 카드) · R-18·R-19 · §5.0 잡 경로 2행 · W11·W12 · 수용 기준 11~13 · G-28~G-33 · G-9 수동 재실행 부분 개정(D-325 ⑩ 후속 계획 = 이 계획) · D-341 부기 3 ㉑~㉖
 > **v1.8**(같은 날): G-22~G-27 권고안 확정 · §5.0.1 확정 표기 · W2(도구 캐시)·W4(엔진 모드·병렬)·W5(비교 화면·선택 기록)·W7(shadow = parallel) 반영 · G-27 문구 명확화 · D-341 부기 ⑮~⑳
@@ -16,6 +16,10 @@
 > **관련 결정**: **D-035**(결정적 = 판단 · LLM = 서술) · **D-118**·D-139(`sre_agent` 양방향 import 0 · MCP 계약만) · D-123(submit/poll) · D-124·D-137(트리거 배선 · 즉시통보+후속) · **D-195 ②·D-274 ⑤**(WAS 판정은 게이트웨이 domain 단일 정의 · 소비자 재구현 금지) · D-197(사전수집·지침) · D-317(크로스소스 사건) · **D-325**(조사 저장소·웹 브리핑) · **D-335**(값 판정 = 게이트웨이) · D-127·D-240(과금 게이트) · D-255(매뉴얼 동반) · D-303(회귀) · D-179(overfit 스캔 — 독스트링 리터럴)
 > **D-번호**: **D-341**(구 D-338 · 2026-10-19 원격 D-338·D-339와 충돌해 재채번 · 2026-10-17 예약 → 같은 날 본문 등재 `docs/decisions/D-341.md`)
 > **실측 기준**: `main` `384f97f`(2026-10-17). `file:line`은 이 시점 값이다 — W0에서 다시 대조한다.
+> **계획 시작 SHA**: `99ec1ea4`(2026-10-19 · 구현 착수 · 회귀 `--base`)
+> **회귀 대상 파일**: 131개 — 본체 `src/api/{investigation_poll.py,settings_catalog.py,routes/alarm.py,routes/admin_incident_kb.py,server.py,thread_history.py}` · `src/config/alarm.py` · `src/domain/{investigation_followup,kb_draft,symptom_router}.py` · `src/infrastructure/investigation_request_limit.py` · `src/nodes/fault_diagnosis.py` · `src/prompts/investigation_followup.py` · `src/static/{index.html,noise.html,admin/*.html,css/style.css,js/{app,briefing-view,noise,admin-incident-kb}.js,manual/*}` · `noise_gate/{application/nodes/{alarm_notifier,investigation_trigger,notification_gate}.py,infrastructure/{decision_store,investigation_store,incident_kb_store,sre_agent_client}.py}` · `config/{rag_collections.yaml,settings_help/noise_gate_investigation.yaml}` · `scripts/manual/**` · sre_agent `application/{briefing_builder,investigation_dispatcher,investigation_guidance,investigation_jobs,playbook_*}.py`·`domain/{playbook*,known_error,engine_agreement,source_adapter,remediation}.py`·`infrastructure/{playbook_loader,known_error_loader,tool_result_cache,mcp_tool_client}.py`·`interface/mcp_service.py`·`settings.py`·`config/{playbooks/*.yaml,known_errors/README.md}`·`scripts/{runbook_coverage.py,investigation_bench/*}` · 테스트(`tests/**/test_plan187_*` · `sre_agent/tests/test_plan187_*` · 픽스처) · 목록 정본: `git status` 미커밋 변경
+> **계획 끝 회귀(2026-10-19)**: `regress.py --base 99ec1ea4 --files <130>` — 본체 통과 4,314 · 원래 실패 6(TestProcessApiClient 2 · prometheus_client 부재 2 · settings_catalog `.env` 2) · sre_agent 통과 1,785 · 실패 0 · arch/overfit/config_fallback 통과 · ruff·mypy 이번 diff 줄 0 · 범위: 모듈 단위 — 전체 미실행 · `[전체 회귀 권고]` 허브 모듈 src.config.alarm 88% · 본체 레인은 plans/186 시각 의존 parametrize id의 xdist 수집 불일치로 직렬 실행(docs/18 2026-10-19)
+> **전체 회귀(2026-10-19 · 사용자 요청)**: `regress.py --full --base 99ec1ea4` — 본체 통과 23,483 · 실패 55 · 에러 7 · 건너뜀 93(xdist -n 7 수집 정상) → 귀속 원래 실패 67 · 이번 변경 탓 1(`test_every_noise_key_has_section` — plans/187 `NOISE_INVESTIGATION_*` 13키 `SECTION_BY_KEY` 미등재 → `src/api/settings_catalog.py`에 「자동 장애 조사」로 등재, 재실행 통과) · mcp_server 통과 204 · 에러 6(prometheus_client·pymysql 부재) · apm_gateway 도구 TIMEOUT(2400초 — `test_plan134_w0b_verify.py::test_disconnect_before_promotion_cancels_job` 기준에서도 무한 대기) → 그 1건 제외 별도 실행 통과 1,628 · 실패 2(tool_list snapshot — 기준에서도 실패) · sre_agent(도구 미실행 — 자체 venv 없음) 타 체크아웃 venv로 통과 1,785 · 정적 게이트 통과 · 범위: 전체(사용자 요청)
 
 ---
 
@@ -103,6 +107,88 @@ PAGE 알람이 오면 지금은 sre_agent(HolmesGPT)가 **LLM이 고르는 도�
 | DPM · ITSM | **없음** | 신설 어댑터 슬롯(§6) |
 
 **결론**: 사용자 예시 7단계 중 DPM·ITSM을 뺀 전부가 **현행 MCP 도구로 수집 가능**하다. 새로 필요한 것은 도구가 아니라 ① 단계를 정하는 카탈로그·플레이북 ② 결정적 실행기 ③ 단계별 서술 ④ 섹션형 브리핑 계약이다.
+
+### 2.3 W0 재대조 (2026-10-19 · 99ec1ea4)
+
+> §2.1·§2.2·§5.0·§5.3·§5.6·§5.6.1·§5.6.2·§8이 인용한 위치를 99ec1ea4에서 다시 확인했다. 본문 수치는 지우지 않고 이 표로 정정한다. sre_agent 경로는 안쪽 패키지 기준이다(`sre_agent/application/…` = 저장소 `sre_agent/sre_agent/application/…`). 상태: **변경** = 위치가 옮겨짐 · **소멸** = 그 이름의 실체가 없음 · **불변** = 그대로.
+
+| 계획서 표기 | 현재 위치(99ec1ea4) | 상태 |
+|---|---|---|
+| `src/config.py:1127-1134` (`investigation_trigger_enabled`·`_min_tier`) | `src/config/alarm.py:361-369` (config 패키지화) · `investigation_total_timeout_seconds` `:376` · `fault_diagnosis_enabled` `:409` · `decision_store_max_lines` `:270` | 변경 |
+| `noise_gate/application/nodes/investigation_trigger.py` | 같은 파일 · `investigation_trigger_node` `:57` · 티어 판정 `:136-138` | 불변 |
+| `investigation_dispatcher.py:1-30` (300s·예산) | 같은 위치 · 시간당 예산 `:348-350`(`hourly_budget_exceeded`) · 300s 정본 `settings.py:109` | 불변 |
+| `evidence_prefetch.py:1-60` | 같은 파일(282줄) · `BatchCaller` `:36` · `METRIC_KINDS` `:39` · `EvidenceScope` `:53` · `scope_from_job` `:69` · `build_calls` `:131` · `prefetch_and_correlate` `:224` | 불변 |
+| `evidence_prefetch.py:55` (`INFRA_SOURCE_UNKNOWN_NOTE`) | `:49` | 변경 |
+| `investigation_guidance.py:192-242` (`PLAYBOOK_NOTES`) | `:192-238` · `playbook_note` `:240` | 변경(끝줄) |
+| `investigation_guidance.py:341-365` (`APM_PLAYBOOK_NOTE`) | `:341-355` · `apm_playbook_note` `:360` · `apm_notes` `:368` · `build_guidance` `:473` | 변경(끝줄) |
+| `investigation_guidance.py:158` (`classify_alarm_kind`) | `:158` · 키워드 표 `_KIND_KEYWORDS` `:148` | 불변 |
+| `investigation_guidance.py:53-57` (변경 24h 탐색) | 주석 `:45-57` · `APM_ANCHORED_TOOLS` `:59` | 불변 |
+| `briefing_builder.py:272` (`build_briefing`) | `:421` · `BRIEFING_ELEMENTS` `:33` · `HUMAN_GATED_NOTE` `:49` · `stub_briefing` `:495` | 변경 |
+| `correlation.py` (z-score·절대 임계) | `sre_agent/domain/correlation.py` · `metric_finding` `:120` · `correlate` `:242` · `Z_THRESHOLD=3.0` | 불변 |
+| `severity_judge` (모듈) | 모듈 없음 — 플래그 `severity_judge_enabled`(`settings.py:152`)뿐 · 실체는 `sre_agent/domain/severity_signatures.py`(`ImportanceVerdict` `:81` · `judge` `:248` · `apm_payloads` `:196` · `was_signals_from_outputs` `:215`) | 소멸(이름) |
+| `remediation.py` | `sre_agent/domain/remediation.py` · `recommend` `:186` · `recommend_lines` `:231` | 불변 |
+| `mcp_tool_client.py` (두 MCP 클라이언트·배치 콜러블 — §5.1) | 95줄 · `make_batch_caller`는 **`polestar_mcp_url`만** 지원 · 배치는 한 SSE 세션 **순차** 호출 · 배선 `interface/mcp_service.py:223` · APM 배치 콜러블 **없음**(`apm_mcp_url`은 `settings.py:39`에만) | 변경(전제 절반) |
+| `settings.py:26` (`max_steps=40`) | `:26` | 불변 |
+| `investigation_store.py` · by-alarm | `noise_gate/infrastructure/investigation_store.py` · `get_by_alarm` `:368` · 등급 `_grade` `:412`(끝난 사건 2 > 그 알람 kind=alarm 1 > 기타 0) | 불변 |
+| `/alarm/investigations/*` | `src/api/routes/alarm.py` · by-alarm `:1312` · 단건 `:1345` | 불변 |
+| `src/api/routes/noise_dashboard.py` (`/noise/decisions`) | `/decisions` `:689` · `/decisions/{alarm_id}` `:735` · `get_by_alarm` 사용 `:433` | 불변 |
+| `noise_gate/infrastructure/decision_store.py` | `DecisionStore` `:110` (`max_lines=20000`) | 불변 |
+| `src/nodes/fault_diagnosis.py` · `authorize_host_investigation` | `fault_diagnosis` `:81` · 호출 `:119` · 정의 `src/domain/host_authz.py:99` · `HOST_AUTHZ_MODE` `src/config/security.py:154`(기본 admin_only) | 불변 |
+| `src/nodes/context_resolver.py:310` (`_extract_previous_entities`) | `:310` | 불변 |
+| `src/orchestration/intent_planner.py` | 존재 | 불변 |
+| `src/static/js/briefing-view.js` 367줄 | 367줄 | 불변 |
+| `app.js:5026` (알람 카드 브리핑) | `:4943` · `:5022` · `:5037-5065` (전체 5495줄) | 변경 |
+| `app.js:4767` (`startNewChat`) | `:4621` | 변경 |
+| `app.js:5167` (`stageAlarmPrompt`) | `:5179` | 변경 |
+| `app.js:3182` (`apm_job_id` 카드 복원) | `:3194-3209` (`apmJobRefs`) | 변경 |
+| (참고) D-192 알람 질의 칩 | `ALARM_PROMPT_AXES` `app.js:3975-3995` | — |
+| `noise.js:1849` (드로어 ⓒ) | `:1848-1849` (전체 3281줄) | 불변 |
+| `noise.js:1863` (break-glass 주석) | `:1867` | 변경 |
+| `style.css:1144` (max-width 920px) | `:1144` | 불변 |
+| `src/static/admin/dashboard.html` 탭 11종 | 11종(apmsources·auditlogs·dbconfig·dbstructure·drm·feedback·incidents·ragdocs·settings·sourcememory·users) | 불변 |
+| `src/api/thread_history.py` (disclosures) | 132줄 · `:109` | 불변 |
+| `apm_gateway` `ApmTools`(§5.3 도구명) | D-337로 `application/{apm_core,instance_tools,health_tools,transaction_tools,compare_tools,stats_tools,scope_tools,fleet_tools,manage_tools}.py` + `tools.py`(253줄) 분할 · MCP 등록 `interface/server.py`(`_Dispatch` 래핑 · 큰 결과는 아티팩트) · 도구 이름·인자는 불변 | 변경(내부) |
+| `apm_gateway/.../poller.py:225` (`resolver.reverse`) | `:225` | 불변 |
+
+**도구 모양 실측** (합성 Open API + `httpx.MockTransport` in-process 호출 · 망 호출 0 · 키 집합 사본은 `sre_agent/tests/test_plan187_w0_fixtures.py` 상수)
+
+| 도구 (server.py 줄) | 인자(공통 `investigation_id`·`thread_id`·`owner`·`wait_seconds`·`targets` 외) | 응답(공통 봉투 `rows`·`row_count`·`queried_at`·`source_kind="apm_api"`·`source`·`tool`·`limits`·`sources`·`total_row_count` 외) |
+|---|---|---|
+| `apm_instance_map` `:379` | `hostname` · `source_ids` · `domain_id` · `query` · `business` (`query`/`business`는 `hostname`과 배타) | 행: 인스턴스 메타 + `match_confidence`·`match_reason` · query면 `hostname`·`match_kind`·`match_tier`·`search_confidence` + 최상위 `search{tier,counts}` · business면 `business_names`·`match_kinds` + `business{counts}` · 미매칭 `suggestions`·`disclosures` |
+| `apm_app_health` `:416` | `hostname`\|`instance_name`\|`instance_id` · `reference_time` · `lookback_minutes` · `source_ids` | **과거 모드** 행 `window{calls,errors,error_rate,response_time_p50_ms,p95_ms,max_ms}` + 최상위 `hourly`·`window`·`was_signals` — **TPS·액티브 없음**(실시간 모드에만 `tps`·`active_services`·`reject_rate`…) |
+| `apm_period_compare` `:1073` | `current_start`·`current_end`·`baseline_start`·`baseline_end`(필수) · `hostname`\|`instance_name` · `source_ids` · `n` · `full` | 행 `current`·`baseline`·`delta{abs,pct}` (calls·failures·failure_rate·avg/max_response_ms) + `summary` · **p95 없음**(시 단위 통계 — `[한계]` 문구로 명시) |
+| `apm_runtime_health` `:457` | 위 + `metrics`(list) · `interval_minute` | 과거 모드 행 `trend{heap_used_mb,heap_committed_mb,gc_time_usage_pct:[{time_ms,value}]}`(5분) · `metrics=["proc_cpu","active_service"]`면 `process_cpu_pct`·`active_services` 추세 |
+| `apm_resource_pool` `:503` | `hostname`\|`instance_name`\|`instance_id` · `source_ids` | 현재값 전용 — `db_pool_active`·`db_pool_configured_avg`·`db_pool_idle_avg`·`db_pool_usage_ratio`·`active_services`·`active_by_running_mode`·`active_by_datasource`·`thread_current` |
+| `apm_slow_transactions` `:544` | `target`(hostname\|instance_name) · `reference_time` · `lookback_minutes` · `n` · `source_ids` · `full` | 행: `response_time_ms`·`cpu_ms`·`sql_ms`·`fetch_ms`·`external_ms`·`network_ms`·`frontend_ms`·건수 3종·`application`(서비스명 — 마스킹 URL)·`profile_ref{source_id,domain_id,txid,time_ms}` … + `summary{…,sql_fetch_share,external_share}` |
+| `apm_transaction_profile` `:695` | `hostname`\|`instance_name` · `domain_id` · `txid` · `time_ms` · `top_k` · `source_id` · `profile_no` · `include_param_key` (예산 있음) | 행 `transaction{…}`·`profile_excerpt`(마스킹 텍스트)·`profile_truncated`·`sqls[]` · `[한계] 프로파일 텍스트 형식 미검증(J0-L-b 녹화 전)` |
+| `apm_events` `:632` | `hostname`\|`instance_name` · `reference_time` · `lookback_minutes` · `level` · `level_mode` · `error_type` · `record`(event\|error) · `n` · `full` · `source_ids` | 이벤트 행 `time_ms`·`level`·`event_type`(원문 — `ERROR_` 접두 유지)·`event_kind`·`value`·`message`·`profile_ref` … · 오류 행 `error_type`·`txid`·`profile_index` · 최상위 `record`·`errors_by_type` |
+| `apm_active_services` `:590` | `target` · `n` · `source_ids` · `full` | 현재값 전용 · 31키(`elapsed_ms`·`cpu_ms`·`running_mode`·`running_text`·`active_ref` …) + `summary{total,by_running_mode,by_status}` |
+| `apm_source_changes` `:918` | `target` · `reference_time` · `lookback_minutes`(기본 1440) · `source_ids` | 행 `change_detected_at`·`change_detected_ms` + 인스턴스 키 |
+| `apm_change_impact` `:1023` | 위 + `width_minutes`(기본 60) · `n` · `full` | 행 + `before`/`after{calls,tx_errors,error_rate,avg_response_ms,p95_response_ms,…}`·`delta` + `summary` |
+| 게이트웨이 오류 | — | `{error: 코드, reason, source_kind, source, tool}` · 코드 not_configured·invalid_argument·instance_unresolved·profile_ref_mismatch·source_unavailable·contract_violation·apm_quota_exceeded·apm_api_error·rate_limited |
+| `polestar_metric_trend` (`mcp_server/polestar_tools.py:587`) | `source`·`server_name`·`kind`·`granularity`·`periods`·`reference_time`·`lookback_minutes`·`baseline_periods` | `_ok` 봉투(`source_kind="polestar_db"`·`engine`) + 행 `stat_date`·`avg_val`·`min_val`·`max_val` + `kind`·`granularity`·`window{…,stat_date_incident_from,…}` |
+| `polestar_incident_alarms` `:541` | `source`·`server_name`·`reference_time`·`lookback_minutes`·`alarm_name` | 행 `alarm_id`·`alarm_time`·`severity`·`alarm_status`·`resource_name`·`alarm_name`·`resource_type` + `window` |
+| `polestar_process_snapshot` `:712` | `hostname`·`top_n`·`sort`(cpu\|mem) | 행 `name`·`pid`·`ppid`·`user`·`p100cpu`·`pcpu`·`pmem`·`rss`·`args` + `total_processes`·`captured_at`·`source_kind="polestar_process_realtime"`·`note` |
+| `polestar_change_history` `:805` | `source`·`server_name`·`hours`·`reference_time`·`lookback_minutes` | 행 `id`·`resource_id`·`resource_type`·`lifecycle_type`·`description`·`event_time`(epoch) · DB2는 `unsupported=True` |
+| 폴스타 오류 | — | `{"error": 문장}` · 서버 매칭은 `SVR.NAME` 정확 일치 |
+
+**`was_signals` 어휘**: 항목 키 `kind`·`level`(CRITICAL\|WARNING)·`category`(strong\|medium)·`label`·`evidence`·`instance_id`·`source_tool`·`source_id`. kind = `was_service_queuing`·`was_db_pool_exhaustion`·`was_gc_stall`·`was_heap_pressure`·`was_external_call_delay`·`was_error_burst`·`was_slow_sql`·`was_thread_pool_exhaustion` 8종 — **응답시간·지연 kind는 없다**. 이벤트 매핑(`adapters/jennifer/fields.py:60` `EVENT_TYPE_SIGNALS`)에도 지연 이벤트가 없다.
+
+**W0 판정 결과**
+
+- **R-D(커넥션 획득 분리)**: 게이트웨이에 커넥션 획득·SQL 실행을 가르는 **구조화 필드가 없다**(GET-CONNECTION 계열 키 0). 남는 근거는 형식 미검증 `profile_excerpt` 텍스트뿐이다 → 지시대로 `db_split=n/a`로 픽스처를 고정하고 문헌 결론은 `case_conclusion`에 따로 둔다. §8 수용 기준 2·2′·9의 acquire/execute 기대와 충돌 — 팀 리드 판단 필요.
+- **plans/165 F3**: 미해결(계획서 TODO). `src/db_adapters/polestar/assembler.py` ~`:1152-1158` 정확 일치 `HAVING … IN (...)` 그대로 · `cross_system_key_bridge_enabled=False`(`src/config/__init__.py:158`). sre_agent 쪽에는 APM 호스트 → 폴스타 `source`·`server_name` 변환이 아예 없다(`scope_from_job`은 APM 트리거면 `meta.episode.infra_db_ids[0]`가 없을 때 폴스타 축 생략). S0의 폴스타 연결은 신규 구현 대상이다.
+- **추가 사실**: ① `apm_period_compare`에 p95가 없어 S1 기준선 p95는 기준 시각을 바꾼 `apm_app_health` 추가 호출로 얻는다 ② 과거 모드 `apm_app_health`에 TPS·액티브가 없어 TPS = `window.calls`/창 초, 액티브·WAS 프로세스 CPU는 `apm_runtime_health(metrics=[…])` 추세로 얻는다 ③ R-G 코어 수를 주는 도구가 없다(픽스처는 4코어 가정) ④ `apm_slow_transactions`에 서비스명 필드가 따로 없어 R-A `service_spread`는 `application`(마스킹 URL)으로 묶는다.
+
+**제안 칩 골든 대조(§5.6.1 4항)**
+
+| 칩 | text2sql_gold · routing_gold | 결과 |
+|---|---|---|
+| 「{host} 서버 최근 7일 CPU 사용률 추이」 | 7일 CPU 추이 항목 없음 — 가까운 것은 gp-009·yd-004·b0-004(지난 1개월 평균·최대 CPU — 기존 D-192 칩과 같은 축) · routing r-080(Prometheus 30분 CPU 추이 · 미채점) | 없음 → 그 칩은 내지 않음 |
+| 「{instance} 응답시간 지난주 같은 시간대와 비교」 | 없음 — 별도 세트 apm_bench `APM-COMPARE-day`·`APM-COMPARE-week`만 유사 | 없음 → 그 칩은 내지 않음 |
+| 「{host} 프로세스 CPU 상위 10」 | 없음 — routing r-081(실시간 프로세스 목록 · 미채점)만 유사 | 없음 → 그 칩은 내지 않음 |
+
+**산출물**: 골든 픽스처 9건·README·SME CSV 2종 `sre_agent/tests/fixtures/plan187/` · 모양 검사 `sre_agent/tests/test_plan187_w0_fixtures.py`.
 
 ---
 

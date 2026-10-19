@@ -1,0 +1,372 @@
+{
+ "_note": "수집 중 스냅숏(W4 summary — progress·partial_briefing)",
+ "progress": {
+  "done": 3,
+  "total": 10,
+  "current_step": "S5"
+ },
+ "partial_briefing": {
+  "partial": true,
+  "playbook": {
+   "id": "was.latency",
+   "version": 1,
+   "matched_by": "match:resource_type+any_kind",
+   "sections": [
+    {
+     "step": "S0",
+     "action": "scope.resolve_was_targets",
+     "title": "대상 확정 · 범위 비교",
+     "status": "ok",
+     "verdict": "degraded",
+     "verdict_source": "playbook_rule",
+     "table": {
+      "columns": [
+       "instance",
+       "host",
+       "tps",
+       "p95_ms",
+       "baseline_p95_ms",
+       "error_rate",
+       "verdict",
+       "verdict_source"
+      ],
+      "rows": [
+       [
+        "A1",
+        "wasdemo01",
+        9.792,
+        6200.0,
+        865.0,
+        0.000851063829787234,
+        "degraded",
+        "playbook_rule"
+       ],
+       [
+        "A2",
+        "wasdemo01",
+        9.583,
+        5600.0,
+        null,
+        0.0008695652173913044,
+        "degraded",
+        "playbook_rule"
+       ],
+       [
+        "B1",
+        "wasdemo02",
+        9.5,
+        5400.0,
+        null,
+        0.0008771929824561404,
+        "degraded",
+        "playbook_rule"
+       ]
+      ]
+     },
+     "badges": [],
+     "tools": [
+      "apm_instance_map",
+      "apm_app_health"
+     ],
+     "missing": [],
+     "reason": null,
+     "elapsed_ms": 0
+    },
+    {
+     "step": "S1",
+     "action": "apm.golden_signals",
+     "title": "WAS 골든 시그널",
+     "status": "ok",
+     "verdict": "degraded",
+     "verdict_source": "playbook_rule",
+     "table": {
+      "columns": [
+       "instance",
+       "metric",
+       "incident",
+       "prev_day",
+       "prev_week",
+       "change_pct_prev_day",
+       "change_pct_prev_week"
+      ],
+      "rows": [
+       [
+        "A1",
+        "p95_ms",
+        6200.0,
+        850.0,
+        880.0,
+        629.4,
+        604.5
+       ],
+       [
+        "A1",
+        "tps",
+        9.792,
+        10.0,
+        9.917,
+        -2.1,
+        -1.3
+       ],
+       [
+        "A1",
+        "error_rate",
+        0.000851063829787234,
+        0.0008333333333333334,
+        0.0008403361344537816,
+        2.1,
+        1.3
+       ],
+       [
+        "A1",
+        "calls",
+        23500,
+        24000,
+        23800,
+        -2.1,
+        -1.3
+       ],
+       [
+        "A1",
+        "avg_response_ms",
+        2400.0,
+        340.0,
+        330.0,
+        605.9,
+        627.3
+       ],
+       [
+        "A2",
+        "p95_ms",
+        5600.0,
+        null,
+        null,
+        null,
+        null
+       ],
+       [
+        "A2",
+        "tps",
+        9.583,
+        null,
+        null,
+        null,
+        null
+       ],
+       [
+        "A2",
+        "error_rate",
+        0.0008695652173913044,
+        null,
+        null,
+        null,
+        null
+       ],
+       [
+        "A2",
+        "calls",
+        23000,
+        null,
+        null,
+        null,
+        null
+       ],
+       [
+        "A2",
+        "avg_response_ms",
+        null,
+        null,
+        null,
+        null,
+        null
+       ],
+       [
+        "B1",
+        "p95_ms",
+        5400.0,
+        null,
+        null,
+        null,
+        null
+       ],
+       [
+        "B1",
+        "tps",
+        9.5,
+        null,
+        null,
+        null,
+        null
+       ],
+       [
+        "B1",
+        "error_rate",
+        0.0008771929824561404,
+        null,
+        null,
+        null,
+        null
+       ],
+       [
+        "B1",
+        "calls",
+        22800,
+        null,
+        null,
+        null,
+        null
+       ],
+       [
+        "B1",
+        "avg_response_ms",
+        null,
+        null,
+        null,
+        null,
+        null
+       ]
+      ]
+     },
+     "badges": [],
+     "tools": [
+      "apm_app_health",
+      "apm_period_compare"
+     ],
+     "missing": [
+      "apm_app_health",
+      "apm_period_compare"
+     ],
+     "reason": "A2: apm_app_health: 미녹화 · apm_app_health: 미녹화 · apm_period_compare: 미녹화 · apm_period_compare: 미녹화 · B1: apm_app_health: 미녹화 · apm_app_health: 미녹화 · apm_period_compare: 미녹화 · apm_period_compare: 미녹화",
+     "elapsed_ms": 0
+    },
+    {
+     "step": "S2",
+     "action": "apm.runtime_and_pool",
+     "title": "JVM 런타임 · DB 커넥션 풀",
+     "status": "ok",
+     "verdict": "normal",
+     "verdict_source": "apm_gateway",
+     "table": {
+      "columns": [
+       "instance",
+       "metric",
+       "min",
+       "max",
+       "last",
+       "note"
+      ],
+      "rows": [
+       [
+        "A1",
+        "heap_used_mb",
+        900.0,
+        980.0,
+        940.0,
+        "추세"
+       ],
+       [
+        "A1",
+        "heap_committed_mb",
+        2048.0,
+        2048.0,
+        2048.0,
+        "추세"
+       ],
+       [
+        "A1",
+        "gc_time_usage_pct",
+        0.9,
+        1.3,
+        1.0,
+        "추세"
+       ],
+       [
+        "A1",
+        "process_cpu_pct",
+        16.0,
+        16.0,
+        16.0,
+        "추세"
+       ],
+       [
+        "A1",
+        "active_services",
+        5.0,
+        24.0,
+        22.0,
+        "추세"
+       ],
+       [
+        "A1",
+        "db_pool_active",
+        null,
+        null,
+        22.0,
+        "현재값 · 알람 후 12분"
+       ],
+       [
+        "A1",
+        "db_pool_configured_avg",
+        null,
+        null,
+        30.0,
+        "현재값 · 알람 후 12분"
+       ],
+       [
+        "A1",
+        "db_pool_idle_avg",
+        null,
+        null,
+        8.0,
+        "현재값 · 알람 후 12분"
+       ],
+       [
+        "A1",
+        "db_pool_usage_ratio",
+        null,
+        null,
+        0.73,
+        "현재값 · 알람 후 12분"
+       ],
+       [
+        "A1",
+        "active_services",
+        null,
+        null,
+        21.0,
+        "현재값 · 알람 후 12분"
+       ],
+       [
+        "A1",
+        "thread_current",
+        null,
+        null,
+        180.0,
+        "현재값 · 알람 후 12분"
+       ]
+      ]
+     },
+     "badges": [
+      "현재값 · 알람 후 12분"
+     ],
+     "tools": [
+      "apm_runtime_health",
+      "apm_resource_pool"
+     ],
+     "missing": [
+      "apm_runtime_health",
+      "apm_resource_pool"
+     ],
+     "reason": "A2: apm_runtime_health: 미녹화 · apm_runtime_health: 미녹화 · apm_resource_pool: 미녹화 · B1: apm_runtime_health: 미녹화 · apm_runtime_health: 미녹화 · apm_resource_pool: 미녹화",
+     "elapsed_ms": 0
+    }
+   ]
+  },
+  "deep_dive": {
+   "status": "running",
+   "mode": "parallel",
+   "reason": null,
+   "label": "심층 조사(HolmesGPT · 가설)"
+  }
+ }
+}

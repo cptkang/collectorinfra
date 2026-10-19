@@ -869,6 +869,12 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     if config.result_viz.chart_enabled:
         application.include_router(result_viz.router, prefix="/api/v1", tags=["query"])
     application.include_router(alarm.router, prefix="/api/v1", tags=["alarm"])
+    # (plans/187 W9) 관리자 「조사 지식」 — NOISE_INVESTIGATION_KB_ENABLED 켰을 때만 등록
+    # (기동 시 1회).
+    if config.noise_gate.investigation_kb_enabled:
+        from src.api.routes import admin_incident_kb
+
+        application.include_router(admin_incident_kb.router, prefix="/api/v1", tags=["admin"])
     application.include_router(
         admin_auth.router, prefix="/api/v1", tags=["admin-auth"]
     )

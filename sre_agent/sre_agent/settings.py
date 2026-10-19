@@ -1,5 +1,7 @@
 """에이전트 설정 — .env 로딩은 pydantic-settings 필드로만 판정한다 (os.getenv 금지)."""
 
+from typing import Literal
+
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -203,3 +205,22 @@ class AgentSettings(BaseSettings):
     evidence_baseline_periods: int = 24
     # 사전수집 MCP 배치 타임아웃(초) — SSE 연결·호출 단위에 같이 적용.
     evidence_prefetch_timeout_seconds: float = 20.0
+
+    # ── 알람 유형별 조사 플레이북(plans/187 W4 · D-341 ①⑮~⑲) ──
+    # 기본 off = 현행 비트 동일. off면 아래 플레이북 설정(심층 모드·디렉토리·예산)을
+    # 코드가 읽지 않는다. on이면 알람 조사 잡(kind=alarm)이 플레이북 엔진(결정적 수집 →
+    # 판독 → 가설 → 단계 소견 → 종합)으로 돌고, HolmesGPT는 `sre_deep_dive_mode`에 따라
+    # 심층 조사로만 돈다. 사전수집(evidence_prefetch)은 생략하고 `job.correlation`은
+    # 플레이북 S4·S5 결과로 채운다(G-24). 진단 잡(sre_diagnose)은 그대로다.
+    sre_playbook_enabled: bool = False
+    # 심층 조사 운영 모드(G-22) — off(플레이북만) · conditional(1순위 판단 보류 ·
+    # 결손 ≥2 · fallback일 때만) · parallel(한 잡 안 두 엔진 동시 · HolmesGPT엔 정적
+    # 지시만). 도입 초기 parallel(§5.0.1). 유형별 YAML `deep_dive.mode`가 우선한다.
+    # fallback 플레이북은 모드와 무관하게 심층을 항상 돈다.
+    sre_deep_dive_mode: Literal["off", "conditional", "parallel"] = "parallel"
+    # 플레이북 YAML 디렉토리. None이면 패키지 기본(`sre_agent/config/playbooks/`).
+    # 기동 시 1회 읽는다.
+    sre_playbook_dir: str | None = None
+    # 플레이북 예산(초) — 수집 상한(§8 수용 기준 6). 조사 전체 타임아웃(300s) 안에서
+    # 쓰고, 수집 뒤 남은 시간을 소견기 타임아웃에 나눈다.
+    sre_playbook_budget_s: float = Field(default=120.0, gt=0)

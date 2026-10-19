@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings
 
 
@@ -383,6 +383,9 @@ class NoiseGateConfig(BaseSettings):
     investigation_followup_enabled: bool = False           # (3-E) 즉시통보+후속 브리핑 옵트인
     investigation_followup_timeout_seconds: float = 300.0  # (3-E) 후속 poll 전체 타임아웃(초·조사 서비스 dispatcher 상한 정렬)
     investigation_followup_max_inflight: int = 8           # (3-E) 동시 진행 후속 태스크 상한(알람 폭주 시 spawn 차단·사유 로그)
+    # (plans/187 W5a · §5.6 ④) 플레이북 후속 메시지의 조사 대화 링크 base(`<base>/?investigation=<id>`).
+    # 비면 링크 대신 「웹에서 확인」 문구만 싣는다. 플레이북 브리핑이 없으면 읽지 않는다(비트 동일).
+    investigation_web_base_url: str = ""
     # ── plans/153 W2 · D-325 G-1 (a): 조사 저장소 (브리핑 웹 조회용 별도 JSONL) ──
     # 조사 상태 전이(submitted → done/failed/timeout …)와 브리핑 원본(32KB 상한)을 1행씩 남긴다.
     # 판정 감사(`decision_store_path`)와 파일을 나눠 관제 tail 스캔에 큰 레코드가 끼지 않게 한다.
@@ -407,6 +410,44 @@ class NoiseGateConfig(BaseSettings):
     # 기본 off면 라우터 프롬프트에 fault_diagnosis 미노출·노드 미배선 → 라우팅 비트동일(회귀 0).
     # 서비스 다운/타임아웃/거부는 graceful — 침묵 폴백 없이 사유를 담은 자연어 응답을 돌려준다(D-003 읽기전용).
     fault_diagnosis_enabled: bool = False   # (CW-B) 장애 진단 pull 위임 옵트인
+    # (plans/187 W12 · D-341 ㉕㉖ · G-32·G-33) 채팅 증상 질의 조사 — on이면 fault_diagnosis가 동기 대기 대신
+    # 결정적 라우터(대상 1건 × 증상 유형 1건 → 플레이북 잡(가상 알람 맥락 · 저장 kind=manual·origin=chat),
+    # 아니면 비동기 sre_diagnose(kind=diagnosis))로 접수만 하고 조사 카드 ref를 돌려준다. 상한은 W10/W11
+    # 사용자별 카운터 공유. env 이름은 계획서 확정값(접두 없음). 기본 off = fault_diagnosis 비트 동일.
+    sre_chat_investigation_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("SRE_CHAT_INVESTIGATION_ENABLED", "sre_chat_investigation_enabled"),
+    )
+    # ── plans/187 W10 · D-341 ⑭ (G-21): 조사 대화의 「추가 조사 요청」 (plans/155 공용부 위) ──
+    # 알람 조사 1건(부모)에서 결정적 초점 + 보충 한 줄로 sre_diagnose를 비동기 접수하고, 부모 브리핑의
+    # 판정 요약(prior_findings — LLM 서술 제외)을 함께 넘긴다. 결과는 조사 저장소 kind=diagnosis.
+    # 인가는 HOST_AUTHZ_MODE(기본 admin_only). 기본 off면 접수·목록 라우트가 404(미등록과 같은 응답)이고
+    # 저장소에 신규 키를 쓰지 않는다(비트 동일). 이름은 3-E `investigation_followup_*`(후속 브리핑)와
+    # 겹치지 않게 `additional`로 둔다.
+    investigation_additional_enabled: bool = False          # (G-21) 추가 조사 요청 옵트인
+    investigation_additional_user_hourly_limit: int = 3     # (G-21 · D-335 ⑥) 사용자별 시간당 접수 상한
+    investigation_additional_note_max_chars: int = 200      # (G-21) 보충 한 줄 길이 상한(자)
+    # ── plans/187 W11 · D-341 ㉑~㉔ (G-28~G-31): 「이 알람 분석」 — 사용자 요청 알람 조사 ──
+    # 결정 저장소의 알람(등급 무관 · 30일)을 자동 조사와 같은 페이로드로 다시 조사한다(새 레코드
+    # kind=manual · 원 조사 불변 · 통보·승격 없음). 권한은 알람 존 범위 사용자(fail-closed). 상한은 위
+    # 추가 조사와 같은 사용자별 카운터(진행 1 · 시간당 investigation_additional_user_hourly_limit)를
+    # 공유한다. 같은 알람에 진행 중이거나 join_minutes 안의 사용자 요청 조사가 있으면 그 id로 합류한다.
+    # 기본 off면 접수 라우트가 404이고 by-alarm 응답이 종전과 비트 동일하다.
+    investigation_manual_enabled: bool = False              # (G-28) 사용자 요청 알람 분석 옵트인
+    investigation_manual_join_minutes: int = 10             # (G-31) 같은 알람 합류 창(분) [제안 값]
+    # ── plans/187 W9 · D-341 ⑩⑮⑳ (G-14~G-16 · G-27): 장애 대응 지식(KB) 쓰기·참조 측 ──
+    # 조사 완료 건의 KB 초안(state=wip 고정 · 결정적 채움 · LLM 0) · YAML 조각 내보내기 · 포스트모템
+    # 내보내기(기준 충족 건만) · 알려진 오류 사용 피드백 · 엔진 선택 기록·통계 · 관리자 검토 대상 목록 ·
+    # 조회 응답의 매뉴얼 RAG 참고 인용(참고 목록만 — 판정·종합 입력 아님). 기록은 본체 별도 JSONL
+    # (`investigation_kb_store_path`)에만 하고 sre_agent 로더 경로에는 쓰지 않는다(런타임 쓰기 0).
+    # 기본 off면 접수·조회 라우트가 404·관리자 라우터 미등록이고 조사 조회 응답이 종전과 비트 동일하다.
+    investigation_kb_enabled: bool = False                  # (W9) KB 쓰기·참조 측 옵트인
+    investigation_kb_store_path: str = "logs/alarm_incident_kb.jsonl"  # (W9) 초안·KE 피드백·엔진 선택 JSONL
+    investigation_kb_store_max_lines: int = 20000           # (W9) 회전 상한 = 조회 창(FeedbackStore 방식)
+    investigation_kb_scan_max_lines: int = 10000            # (W9) 관리자 집계가 조사 저장소 끝에서 되짚는 줄 수 [제안 값]
+    investigation_kb_incorrect_streak: int = 3              # (W9 · §5.7.5 3) 「아님」 연속 N회 → 재검토 대상 [제안 값]
+    investigation_kb_engine_min_samples: int = 30           # (G-27 · ⑳) 유형별 선택 표본 하한 [제안 값]
+    investigation_kb_engine_switch_ratio: float = 0.8       # (G-27 · ⑳) 「플레이북」+「둘 다」 비율 하한 [제안 값]
     # ── Plan 64 CW-C: escalate-only 후속 통보 승격 (poll verdict.escalate 소비) ──
     # investigation_trigger의 poll 결과 구조화 verdict(ImportanceVerdict: level/confidence/escalate/
     # signals — sre-agent/02 §6)에서 escalate=True면, 통보에 "중요도 상향(자동 조사)" 안내 블록을

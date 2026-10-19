@@ -27,6 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from sre_agent.application.investigation_guidance import clean_prior_findings
 from sre_agent.domain.cross_source_episode import episode_reference_time
 from sre_agent.domain.incident_scope import (
     DEFAULT_LOOKBACK_MINUTES,
@@ -86,11 +87,18 @@ class InvestigationJob:
     #       tool_calls[{name, args_digest, status}]
     # timeout·failed: elapsed_s·model·max_steps. 원시 도구 기록(ToolCallRecord)은 남기지 않는다.
     instrumentation: dict | None = None
+    # 플레이북 모드 진척(plans/187 W4 · G-9) — `SRE_PLAYBOOK_ENABLED` on이고
+    # 플레이북이 돈 잡만 채운다.
+    # progress: `{done, total, current_step}` · partial_briefing: 종결 전 부분 브리핑(종결 시 None).
+    # 둘 다 None이면 `summary()`에 키가 생기지 않는다(off = 종전 반환과 비트 동일).
+    progress: dict | None = None
+    partial_briefing: dict | None = None
 
     def summary(self) -> dict:
         """§3 `sre_get_investigation`/`sre_list_investigations` 반환 스키마.
 
         계측 가산 키(`instrumentation`)는 종전 키 뒤에 더한다 — 종전 키는 그대로다(R-8).
+        플레이북 진척 키(`progress`·`partial_briefing` — plans/187 W4)는 값이 있을 때만 더한다.
         """
         summary = {
             "investigation_id": self.investigation_id,
@@ -111,6 +119,10 @@ class InvestigationJob:
             "updated_at": self.updated_at,
         }
         summary.update(self.instrumentation or {})
+        if self.progress is not None:
+            summary["progress"] = self.progress
+        if self.partial_briefing is not None:
+            summary["partial_briefing"] = self.partial_briefing
         return summary
 
 
@@ -367,6 +379,7 @@ class JobStore:
         target_state: dict | None = None,
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
+        prior_findings: dict | None = None,
     ) -> dict:
         """pull형 자연어 진단 잡을 제출한다(§3 `sre_diagnose`). 계약 검증 불요.
 
@@ -375,6 +388,11 @@ class JobStore:
 
         `reference_time`(ISO 8601)·`lookback_minutes`(plans/50 A′-5)는 사건 좌표계다. 형식 오류는
         침묵 폴백 대신 **거부**한다(호출자가 결정적으로 만들어 넘기는 값이라 오류는 결함이다).
+
+        `prior_findings`(plans/187 W10 · 선택)는 부모 조사의 판정 요약이다. 화이트리스트로
+        다시 거른 값만 payload에 보관하고(서술 키 제거), 남는 것이 없거나 넘기지 않으면
+        payload 키를 만들지 않는다
+        (종전과 비트 동일). 지침 조립(`investigation_guidance`)이 이 값을 렌더한다.
 
         반환: {investigation_id, status: accepted|rejected, reason?}.
         """
@@ -405,6 +423,9 @@ class JobStore:
                 "db_id": db_id,
                 "target_state": target_state,
             }
+            cleaned = clean_prior_findings(prior_findings) if prior_findings is not None else None
+            if cleaned:
+                job.payload["prior_findings"] = cleaned
             self._jobs[job.investigation_id] = job
             self._audit(
                 {"investigation_id": job.investigation_id, "event": "accepted", "status": "accepted", "kind": "diagnosis"}

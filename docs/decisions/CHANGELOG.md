@@ -8,6 +8,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-19 | D-341 | 상태 「미구현」→「구현(잔여 있음)」 · 구현 경로 · 구현 부기(R-D 미충족 · G-26 HolmesGPT 캐시 공용 미구현 · W7 외부망만 · 3단 배선 · 보안 교정 · 예시 KE 픽스처 이동) — `plans/187` W0~W6·W8~W12 |
 | 2026-10-19 | D-340 · D-341 | 번호 변경 — `origin/main` 병합 시 원격 D-337(구조 리팩터 규약)·D-338(인증 저장소 fail-closed)·D-339(로그 비밀값 가림)와 충돌해 로컬 D-337(워커 vllm provider) → **D-340**, D-338(알람 조사 플레이북 · `plans/182`) → **D-341**(`plans/187`)로 재부여 |
 | 2026-10-17 | D-339 | 신규 — `plans/167`: 로그 레코드 생성 시점(`setLogRecordFactory`)에 DSN 비밀번호·Bearer·민감 키 값·JWT·Google API 키를 `***`로 가림 · structlog 프로세서 · 진입점 7곳 · 사본 4(mcp_server·apm_gateway·sre_agent·fabrix_proxy) 바이트 일치 테스트 · 커밋 없음 |
 | 2026-10-17 | D-139 | 부기 — `plans/167`: `noise_gate/alarm_server`가 `src.utils.log_masking`을 import(② 역방향 허용 `utils` 안) · 2차 적용 「`src.` import 0 자립 모듈」 서술 갱신 |

@@ -1852,6 +1852,7 @@
     // 불러 서버 쪽 poll을 태운다. 드로어를 닫거나 다른 판단을 열면 타이머를 멈춘다.
     var investigationPanel = null;
     var investigationSeq = 0;
+    var IS_BREAK_GLASS = tokenKey === "admin_token";   // 운영자(break-glass) 토큰 세션
 
     function stopInvestigation() {
         investigationSeq += 1;
@@ -1879,8 +1880,74 @@
         return stored;
     }
 
+    // ── 「이 알람 분석」(plans/187 FE-2 · W11) ──
+    // 사용자 토큰 세션만 — break-glass 운영자 토큰은 /alarm/* 가 401이다. 기능 켜짐은 기능 조회 응답에 없고
+    // by-alarm 응답의 `previous`로만 안다. 꺼짐을 확인하면(false) 행 버튼을 더 그리지 않는다.
+    var analyzeAvailable = null;
+    var analyzeAsked = false;
+
+    function alarmCall(path, method) {
+        return fetch(path, { method: method || "GET", headers: { "Authorization": "Bearer " + token } })
+            .then(window.BriefingView.responseOf);
+    }
+
+    function probeAnalyze(alarmId) {
+        return alarmCall("/api/v1/alarm/investigations/by-alarm/" + encodeURIComponent(alarmId)).then(function (res) {
+            if (res.ok) analyzeAvailable = Array.isArray(res.body && res.body.previous);
+            return res;
+        });
+    }
+
+    function analyzeOptions(alarmId) {
+        if (IS_BREAK_GLASS) return null;
+        return {
+            submit: function () { return alarmCall("/api/v1/alarm/" + encodeURIComponent(alarmId) + "/investigations", "POST"); },
+            loadById: function (id) {
+                return alarmCall("/api/v1/alarm/investigations/" + encodeURIComponent(id)).then(function (res) {
+                    if (!res.ok) throw new Error(window.BriefingView.reasonOf(res));
+                    return res.body;
+                });
+            },
+            probe: function () { return probeAnalyze(alarmId); },
+        };
+    }
+
+    // 조사 기록이 없는 판단 — 기능이 켜져 있으면 by-alarm 응답(조사 없음 + previous)으로 칸을 열어 「분석 요청」을 둔다.
+    function renderAnalyzeOnly(BV, seq, alarmId, asked) {
+        if (IS_BREAK_GLASS) return;
+        probeAnalyze(alarmId).then(function (res) {
+            if (seq !== investigationSeq) return;
+            if (res.ok && Array.isArray(res.body && res.body.previous)) {
+                investigationPanel = BV.attach(investigationBox(BV), {
+                    initial: res.body,
+                    load: function () { return reloadInvestigation({}, alarmId); },
+                    render: { mode: "summary", openConversation: true },
+                    onOpenConversation: function (investigationId) {
+                        window.open("/?investigation=" + encodeURIComponent(investigationId), "_blank", "noopener");
+                    },
+                    analyze: analyzeOptions(alarmId),
+                });
+                investigationPanel.open();
+                if (asked) scrollToCause();
+            } else if (asked) {
+                // 행 「이 알람 분석」으로 열었는데 꺼져 있으면 사유를 남긴다(침묵 금지)
+                investigationBox(BV).appendChild(el("p", "cause-text cell-muted",
+                    res.ok || BV.isFlagOff(res) ? BV.PB_TEXT.analyzeOff : BV.reasonOf(res)));
+            }
+        }).catch(function (err) {
+            if (seq !== investigationSeq || !asked) return;
+            investigationBox(BV).appendChild(el("p", "cause-text cell-muted", err && err.message ? err.message : String(err)));
+        });
+    }
+
+    function scrollToCause() {
+        if (drawerCause.scrollIntoView) drawerCause.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+
     function renderInvestigation(record) {
         stopInvestigation();
+        var asked = analyzeAsked;
+        analyzeAsked = false;
         var BV = window.BriefingView;
         if (!BV || !record || !record.alarm_id) return;
         var seq = investigationSeq;
@@ -1888,12 +1955,21 @@
         var first = record.investigation
             ? Promise.resolve(record.investigation) : decisionInvestigation(alarmId);
         first.then(function (block) {
-            if (seq !== investigationSeq || !block) return;   // 닫혔거나 다른 판단 · 기록 없음
+            if (seq !== investigationSeq) return;   // 닫혔거나 다른 판단
+            if (!block) { renderAnalyzeOnly(BV, seq, alarmId, asked); return; }   // 기록 없음
             investigationPanel = BV.attach(investigationBox(BV), {
                 initial: block,
                 load: function () { return reloadInvestigation(block, alarmId); },
+                // plans/187 W5b: 플레이북 브리핑이면 요약형 + 「조사 대화로 열기」(새 탭 — D-248 ①). break-glass
+                // 운영자 토큰은 질의응답 API를 못 쓰므로 드로어 안에서 상세형을 펼친다(§5.6.1 주의 1).
+                render: IS_BREAK_GLASS ? { mode: "detail" } : { mode: "summary", openConversation: true },
+                onOpenConversation: function (investigationId) {
+                    window.open("/?investigation=" + encodeURIComponent(investigationId), "_blank", "noopener");
+                },
+                analyze: analyzeOptions(alarmId),
             });
             investigationPanel.open();
+            if (asked) scrollToCause();
         }).catch(function (err) {
             if (seq !== investigationSeq) return;
             investigationBox(BV).innerHTML = BV.renderError(err && err.message);  // 침묵 금지
@@ -2948,6 +3024,18 @@
             openDrawerFromRecord(item, trace);
         });
         cell.appendChild(trace);
+        // (plans/187 FE-2) 「이 알람 분석」 — 드로어를 열고 조사 칸으로 내려간다. 꺼짐을 확인한 뒤에는 그리지 않는다.
+        if (!IS_BREAK_GLASS && item.alarm_id && analyzeAvailable !== false && window.BriefingView) {
+            var analyze = el("button", "mini-btn", "이 알람 분석");
+            analyze.type = "button";
+            analyze.setAttribute("aria-label", name + " 분석 요청 칸 열기");
+            analyze.addEventListener("click", function (e) {
+                e.stopPropagation();
+                analyzeAsked = true;
+                openDrawerFromRecord(item, analyze);
+            });
+            cell.appendChild(analyze);
+        }
         // 침묵은 운영자 화면에서만 · 심각도3 판단에는 주지 않는다(§2.2).
         if (IS_ADMIN && !isSev3(item)) {
             var silence = el("button", "mini-btn", "이 패턴 침묵");

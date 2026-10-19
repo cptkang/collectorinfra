@@ -1,0 +1,29 @@
+# plans/187 W7 — 플레이북 모드 vs HolmesGPT 단독(전 세계 × 3 실험군 × k=1 · 가짜 LLM · 테스트 전용 · --test 필요)
+# 실험군 = sre_agent 설정 오버라이드(같은 잡 경로 — `create_service` → `PlaybookWiring`):
+#   holmes            — 현행 기본(플레이북 off) = HolmesGPT 단독
+#   playbook_off      — 플레이북 단독(SRE_DEEP_DIVE_MODE=off · fallback 플레이북은 모드와 무관하게 심층을 돈다)
+#   playbook_parallel — 플레이북 + HolmesGPT 동시(parallel)
+# 비교표: `inv_bench.py --engine-compare <run_dir>` → <run_dir>/engine_compare.{json,md}
+# 주의: 가짜 LLM 대본은 HolmesGPT 대화(도구 호출 → 답)용이다. 플레이북 소견기 호출은 대본 첫 줄(대개 도구 호출)을
+#   받아 빈 서술이 되므로 소견은 결정적 종합만 남는다 — 가설 순위는 결정적이라 원인 적중 비교에는 영향이 없다.
+run:
+  site: local
+  splits: [dev, holdout]
+  worlds: all
+  k: 1
+  order: interleave
+  poll_interval_s: 0.2
+  per_run_timeout_s: 90
+  ports: {fake_llm: 19180, world: 19190, world_apm: 19191, arm_base: 19200}
+llm:
+  backend: fake
+  model: "openai/fake-bench"
+  api_key: dummy
+  script: model
+host:
+  gpu_sample_interval_s: 0
+base_env: {MAX_STEPS: 8, INVESTIGATION_TIMEOUT_SECONDS: 60}
+arms:
+  holmes: {}
+  playbook_off: {SRE_PLAYBOOK_ENABLED: "true", SRE_DEEP_DIVE_MODE: "off"}
+  playbook_parallel: {SRE_PLAYBOOK_ENABLED: "true", SRE_DEEP_DIVE_MODE: "parallel"}

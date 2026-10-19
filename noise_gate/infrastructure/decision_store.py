@@ -70,6 +70,7 @@ _PAGE_REVIEW_POINTER_KEYS: tuple[str, ...] = (
 _MASKED_TEXT_KEYS: tuple[str, ...] = (
     "alarm_name",
     "server_name",
+    "hostname",
     "reason",
     "resource_name",
     "condition_log",
@@ -141,6 +142,9 @@ class DecisionStore:
         resource_name: str = "",
         condition_log: str = "",
         analysis: dict[str, Any] | None = None,
+        alarm_time: str = "",
+        hostname: str = "",
+        resource_type: str = "",
     ) -> None:
         """결정을 JSONL 한 줄로 append 한다.
 
@@ -186,6 +190,11 @@ class DecisionStore:
         길이 상한·실패 처리는 호출부(게이트 노드)가 정한다 —
         여기서는 받은 dict를 그대로 싣는다. 판정과 무관한 감사 가산 필드이며, None이면 키를 넣지
         않아 기존 스냅샷과 비트 동일하다(플래그 off).
+
+        alarm_time·hostname·resource_type(plans/187 W11): 원 알람 발생 시각(ISO 8601 · 서버 로컬)·
+        호스트명·자원 유형이다. 사용자 요청 알람 분석이 자동 조사와 같은 기준 시각·대상으로 다시
+        조사하는 재료다. 호출부는 `investigation_manual_enabled`일 때만 넘긴다 — 빈 값이면 키를 넣지
+        않아 기존 스냅샷과 비트 동일하다.
         """
         if not self.enabled:
             return
@@ -225,6 +234,12 @@ class DecisionStore:
             record["stage_evidence"] = stage_evidence
         if analysis is not None:
             record["analysis"] = analysis
+        if alarm_time:
+            record["alarm_time"] = alarm_time
+        if hostname:
+            record["hostname"] = hostname
+        if resource_type:
+            record["resource_type"] = resource_type
         # (plans/92 O4) Prometheus 증가 카운터 — 파일 퍼널과 병존한다(값이 다르면 파일 퍼널이 정본).
         record_decision(stage=stage, reason=str(decision.reason or ""), tier=str(decision.tier))
         try:

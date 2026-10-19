@@ -1,0 +1,31 @@
+# 알려진 오류 예시 레코드 (plans/187 W8 §5.7.3) — 리터럴은 전부 가짜다(인스턴스 A*·W0 픽스처와 같은 가정).
+# 저장소 YAML + 리뷰로만 바뀐다(D-341 ⑨ · 런타임 쓰기 0). validated는 owner·last_reviewed 필수.
+#
+# 현 게이트웨이 한계(W0 실측): apm_transaction_profile에 커넥션 획득·SQL 실행을 가르는 구조화 필드가
+# 없어 판독 db_split은 n/a이고 S3.top1.acquire_ms도 결손이다 → 이 레코드는 「판단 보류」가 정상이다.
+# 게이트웨이가 구조화 필드를 주면 같은 조건이 그대로 「일치」/「불일치」를 가른다(코드 변경 없음).
+#
+# 경로 표기(실측): 풀 판정은 보조 사실 `S2.pool`(문자열 — §5.7.3 예시의 `S2.pool.verdict`가 아님),
+# 1위 느린 거래 수치는 `S3.top1.<칸>`(sql_ms 등 표 열 + 프로파일 구조화 acquire_ms·execute_ms).
+# solution은 알람 meta.hints.solution 값이다(APM 트리거 = apm).
+id: KE-EXAMPLE-001
+title: "온라인 업무 시간대 JDBC 커넥션 풀 점유로 응답 지연(예시)"
+state: validated
+governance: experience
+issue: "A1 등 온라인 WAS 응답 지연 알람 · 커넥션 획득 대기 누적"
+environment:
+  playbook: was.latency
+  targets: {solution: ["apm"], instance_glob: ["A*"]}
+  time_window: {weekday: [1-5], hours: ["09:00-18:00"]}
+match:
+  all: ["S2.pool == 'exhausted'", "db_split == 'acquire'"]
+cause: "동일 데이터소스 풀을 공유하는 장시간 트랜잭션이 커넥션을 점유"
+cause_test:
+  all: ["S3.top1.acquire_ms > S3.top1.sql_ms"]
+workaround:
+  - {action: "풀 점유 트랜잭션을 확인해 담당 업무팀에 동시 실행 축소 요청", risk: low,
+     verification: "풀 대기 해소 · p95 기준선 복귀", rollback: "해당 없음(요청만)"}
+permanent_fix: {status: open, problem_ref: "PRB-EXAMPLE-0001"}
+owner: "WAS운영팀(예시)"
+last_reviewed: 2026-10-19
+review_every_days: 90

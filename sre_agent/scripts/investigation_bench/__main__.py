@@ -100,6 +100,22 @@ def _export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _engine_compare(args: argparse.Namespace) -> int:
+    from investigation_bench import engine_compare
+
+    jp, mp = engine_compare.write(args.engine_compare)
+    print(f"엔진 비교: {jp} · {mp}")
+    return 0
+
+
+def _playbook_fixtures(args: argparse.Namespace) -> int:
+    from investigation_bench import playbook_fixture_eval
+
+    jp, mp = playbook_fixture_eval.write(args.playbook_fixtures)
+    print(f"플레이북 픽스처 평가: {jp} · {mp}")
+    return 0
+
+
 _ACTIONS: dict[str, Callable[[argparse.Namespace], int]] = {
     "schema_snapshot": _schema_snapshot,
     "lint": _lint,
@@ -112,6 +128,8 @@ _ACTIONS: dict[str, Callable[[argparse.Namespace], int]] = {
     "report": _report,
     "rejudge": _rejudge,
     "export": _export,
+    "engine_compare": _engine_compare,
+    "playbook_fixtures": _playbook_fixtures,
 }
 _NEEDS_SPEC = ("show_env", "preflight", "run")
 _DEFAULT_WORLDS_ROOT = runner.TOP / runner.DEFAULT_WORLDS_DIR
@@ -145,6 +163,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="현재 세계 YAML·채점기로 재채점(이전 판 보존)")
     action.add_argument("--export", type=Path, metavar="RUN_DIR",
                         help="반출 묶음 <run_dir>.bundle/ (가림 + 잔존 검사)")
+    action.add_argument("--engine-compare", type=Path, metavar="RUN_DIR",
+                        help="플레이북 vs HolmesGPT 엔진 비교표 <run>/engine_compare.{json,md}"
+                             "(plans/187 W7 · 실 LLM 0)")
+    action.add_argument("--playbook-fixtures", type=Path, metavar="OUT_DIR",
+                        help="plans/187 W0 녹화 픽스처로 플레이북 1순위 가설 적중표"
+                             "(오프라인 · 실 LLM·MCP 0 · plans/187 W7)")
     p.add_argument("--spec", type=Path, help="실행 명세 YAML(testdata/investigation_bench/specs/)")
     p.add_argument("--site", choices=("local", "closed"), default="local",
                    help="실행 위치 — 명세 run.site와 같아야 한다(기본 local)")

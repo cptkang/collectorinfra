@@ -28,6 +28,13 @@ logger = logging.getLogger(__name__)
 
 CLIENT_ID_HEADER = "X-Client-Id"
 _CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9-]{8,64}$")
+# 조사 대화(plans/187 W5b · D-341 ⑪): 브라우저가 새 대화의 첫 질의 턴에 조사 id를 싣는 헤더.
+# 그 턴의 `disclosures`에 `{ref: {investigation_id}}`를 덧붙여 사이드바 재열기 때 고정 카드를
+# 복원한다(D-300 `apm_job_id` 복원과 같은 경로). 형식이 틀리면 버린다 — 조회는 기존 조사 API의
+# 존 검사를 다시 탄다.
+INVESTIGATION_REF_HEADER = "X-Investigation-Ref"
+_INVESTIGATION_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+INVESTIGATION_REF_KIND = "investigation_ref"
 _RECORD_TIMEOUT_SEC = 3.0
 
 
@@ -59,6 +66,33 @@ def _turn_status(payload: dict[str, Any]) -> str:
     return "completed"
 
 
+def investigation_ref(request: Request) -> str | None:
+    """요청 헤더의 조사 id — 형식(영숫자·`._:-` · 128자 이하)이 맞을 때만 돌려준다."""
+    headers = getattr(request, "headers", None) or {}
+    value = headers.get(INVESTIGATION_REF_HEADER, "")
+    return value if _INVESTIGATION_ID_RE.match(value) else None
+
+
+def _with_investigation_ref(disclosures: Any, investigation_id: str | None) -> Any:
+    """`disclosures`에 조사 ref 항목을 덧붙인다. 조사 id가 없으면 원 값을 그대로 돌려준다."""
+    if not investigation_id:
+        return disclosures
+    items = list(disclosures) if isinstance(disclosures, list) else []
+    if any(
+        isinstance(d, dict) and (d.get("ref") or {}).get("investigation_id") == investigation_id
+        for d in items
+    ):
+        return items
+    items.append(
+        {
+            "kind": INVESTIGATION_REF_KIND,
+            "text": f"조사 대화 — 조사 {investigation_id}",
+            "ref": {"investigation_id": investigation_id},
+        }
+    )
+    return items
+
+
 def _done_payload(chunk: Any) -> dict[str, Any] | None:
     """SSE 청크가 `done` 이벤트면 본문을 돌려준다."""
     if not isinstance(chunk, str) or not chunk.startswith("data: ") or f'"{SSE_DONE}"' not in chunk:
@@ -87,6 +121,7 @@ class TurnRecorder:
         self._owner = history_owner(request, current_user) if self._repo else None
         self._user_query = user_query
         self._has_upload = has_upload
+        self._investigation_id = investigation_ref(request) if self._owner else None
 
     async def record(self, payload: dict[str, Any]) -> None:
         thread_id = payload.get("thread_id")
@@ -106,7 +141,9 @@ class TurnRecorder:
             "has_upload": self._has_upload,
             "db_scope": payload.get("db_scope"),
             # 응답 고지(plans/134 W0-B) — 대화를 다시 불러도 작업 카드(ref)를 복원한다
-            "disclosures": payload.get("disclosures"),
+            "disclosures": _with_investigation_ref(
+                payload.get("disclosures"), self._investigation_id
+            ),
             # 그래프 보기 신호(plans/160 A-2) — 복원한 대화에도 「그래프로 보기」 버튼을 띄운다
             "chart": payload.get("chart"),
         }

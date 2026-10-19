@@ -23,6 +23,7 @@ WAS 후보(plans/87 §5.4(c) · J3): 게이트웨이 `was_signals` kind별 후�
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from sre_agent.domain.severity_signatures import Signal
@@ -37,6 +38,28 @@ _CONFIDENCE_BY_CATEGORY: dict[str, str] = {"strong": "high", "medium": "medium"}
 
 # 고위험 조치를 정식 권고로 낼 수 있는 최소 신뢰도(그 미만이면 "검토 필요" 강등).
 _HIGH_RISK_MIN_CONFIDENCE = "high"
+
+#: 조치 문구에 둘 수 없는 변경 명령 형태(대소문자 무시) — 이 카탈로그의 경계 테스트와
+#: 알려진 오류 우회 항목 검증(plans/187 §5.7.1 — 같은 규칙)이 함께 쓴다.
+COMMAND_LITERAL_PATTERNS: tuple[str, ...] = (
+    r"systemctl\s+(restart|stop|start)",
+    r"\bkill\s+-9\b",
+    r"\brm\s+-rf\b",
+    r"dmesg\s+-C",
+)
+
+
+def find_command_literal(text: str) -> str | None:
+    """문구에 변경 명령 형태가 있으면 걸린 패턴을, 없으면 None을 돌려준다."""
+    for pattern in COMMAND_LITERAL_PATTERNS:
+        if re.search(pattern, text or "", re.I):
+            return pattern
+    return None
+
+
+def is_review_only(risk: str, confidence: str) -> bool:
+    """고위험 × 정식 권고 최소 신뢰도 미달이면 참 — 「검토 필요」로만 표기한다(§9)."""
+    return risk == RISK_HIGH and confidence != _HIGH_RISK_MIN_CONFIDENCE
 
 
 @dataclass(frozen=True)
@@ -216,9 +239,7 @@ def recommend(signals: list[Signal] | tuple[Signal, ...]) -> list[Remediation]:
                     confidence=confidence,
                     rationale=rationale,
                     # 고위험은 강 시그니처(high 신뢰도) 근거가 있을 때만 정식 권고.
-                    review_only=(
-                        risk == RISK_HIGH and confidence != _HIGH_RISK_MIN_CONFIDENCE
-                    ),
+                    review_only=is_review_only(risk, confidence),
                     verification=verification,
                     rollback=rollback,
                 )
@@ -234,10 +255,13 @@ def recommend_lines(signals: list[Signal] | tuple[Signal, ...]) -> list[str]:
 
 
 __all__ = [
+    "COMMAND_LITERAL_PATTERNS",
     "RISK_HIGH",
     "RISK_LOW",
     "RISK_MEDIUM",
     "Remediation",
+    "find_command_literal",
+    "is_review_only",
     "recommend",
     "recommend_lines",
 ]

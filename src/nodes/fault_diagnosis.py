@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import datetime
-from typing import Optional
+from types import SimpleNamespace
+from typing import Any, Optional
 
 from langchain_core.messages import AIMessage
 
@@ -40,10 +42,24 @@ from src.domain.host_authz import (
 )
 from src.domain.host_availability import describe as describe_availability
 from src.domain.incident_time import parse_incident_time
+from src.domain.symptom_router import (
+    INVESTIGATION_REF_KIND,
+    ROUTE_PLAYBOOK,
+    SymptomRoute,
+    route_symptom,
+    virtual_event_fields,
+)
+from src.infrastructure.investigation_request_limit import user_request_slot
 from src.observability.investigation_metrics import record_investigation
-from src.security.audit_logger import INVESTIGATION_DENIED, log_investigation
+from src.security.audit_logger import (
+    INVESTIGATION_DENIED,
+    INVESTIGATION_FAILED,
+    INVESTIGATION_OK,
+    log_investigation,
+)
 from src.utils.prior_targets import resolve_targets
 from noise_gate.domain.investigation_briefing import render_briefing_lines
+from noise_gate.domain.investigation_payload import build_trigger_payload
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +189,12 @@ async def fault_diagnosis(
             f"{notice} 조사를 수행하지 않았습니다. "
             "서버 상태를 확인한 뒤 다시 요청해 주세요."
         )
+
+    # ★ (plans/187 W12 · D-341 ㉕㉖) 채팅 증상 질의 조사 — on이면 동기 대기 대신 결정적 라우팅 후
+    # 접수만 하고 조사 카드 ref로 답한다. 인가·가용성 게이트는 위에서 이미 통과했다(종전과 같다).
+    # off면 이 블록을 건너뛰어 아래 동기 경로가 종전과 비트 동일하다.
+    if getattr(gate_cfg, "sre_chat_investigation_enabled", False):
+        return await _submit_chat_investigation(state, app_config, gate_cfg, question, decision)
 
     client = _build_client(gate_cfg)
     if client is None:
@@ -311,7 +333,7 @@ async def _diagnose_and_poll(
         await client.disconnect()
 
 
-def _build_client(gate_cfg):  # noqa: ANN001, ANN201 — NoiseGateConfig → SreAgentClient | None
+def _build_client(gate_cfg: Any) -> Any:  # NoiseGateConfig → SreAgentClient | None
     """noise_gate 설정으로 sre_agent 조사 서비스 클라이언트를 생성한다(CW-A 설정 재사용).
 
     생성 실패 시 None을 반환한다 — 노드는 사유를 담은 자연어 응답으로 graceful 처리한다.
@@ -386,6 +408,380 @@ def _extract_targets(
     return first.server_name, first.hostname, first.db_id or db_id
 
 
+# ── (plans/187 W12 · D-341 ㉕㉖ · G-32·G-33) 채팅 증상 질의 조사 — 비동기 접수 ──────
+#
+# 대상 1건 × 증상 유형 1건이 결정적으로 정해지면 플레이북 잡(가상 알람 맥락 →
+# `sre_investigate_alarm`), 아니면 비동기 `sre_diagnose`로 접수한다(`src.domain.symptom_router`).
+# 기록은 조사 저장소에만 한다 — 플레이북은 `kind=manual`, HolmesGPT는 `kind=diagnosis`,
+# 둘 다 `origin=chat`·`owner_sub`이고 `parent_alarm_id`가 없다. 가상 알람은 알람·결정 저장소·
+# 노이즈 게이트에 쓰지 않는다(알람 그래프를 거치지 않는다 → 통보·승격 없음).
+# 상한은 W10/W11 사용자별 카운터를 공유한다.
+
+#: 저장 레코드의 `origin`·`source`.
+_CHAT_ORIGIN = "chat"
+#: 조사 서비스 지문 dedup이 다른 잡과 섞이지 않게 하는 가상 알람 지문 접두.
+_CHAT_FINGERPRINT_PREFIX = "chat:"
+#: 엔진 표기(카드 ref `engine`).
+_ENGINE_LABELS: dict[str, str] = {ROUTE_PLAYBOOK: "플레이북", "holmesgpt": "HolmesGPT"}
+
+
+def _resolve_db_id(state: AgentState) -> str | None:
+    """대상 DB — active_db_id → 직전 대상 DB(`_extract_targets`와 같은 순서)."""
+    db_id = state.get("active_db_id") or None
+    if db_id is None:
+        prev = (state.get("conversation_context") or {}).get("previous_db_ids") or []
+        if prev:
+            db_id = prev[0]
+    return db_id
+
+
+def _explicit_targets(state: AgentState, app_config: AppConfig) -> list[dict[str, Any]]:
+    """이번 턴에 명시 식별된 대상만(지시어·직전 턴·선행 결과 승계 제외 — G-32).
+
+    「지시어는 식별자가 아니다」 — 승계 대상은 라우팅 입력에 넣지 않는다.
+
+    `resolve_targets`의 ① 단계(`filter_conditions`)만 쓴다 — 지시어 값은 그 안에서 탈락한다.
+    """
+    parsed = state.get("parsed_requirements") or {}
+    max_targets = int(getattr(getattr(app_config, "composite", None), "max_targets", 10) or 10)
+    resolution = resolve_targets(
+        filter_conditions=parsed.get("filter_conditions"),
+        db_id=_resolve_db_id(state),
+        max_targets=max_targets,
+    )
+    return [t.model_dump() for t in resolution.targets] if resolution.resolved else []
+
+
+def _investigation_store(gate_cfg: Any) -> Any:
+    """조사 저장소(`InvestigationStore`) — 경로 설정이 없으면 None."""
+    from noise_gate.infrastructure.investigation_store import InvestigationStore
+
+    path = getattr(gate_cfg, "investigation_store_path", None)
+    if not path:
+        return None
+    return InvestigationStore(path, int(getattr(gate_cfg, "investigation_store_max_lines", 2000)))
+
+
+async def _poll_status_only(
+    store: Any, rec: dict[str, Any], gate_cfg: Any
+) -> tuple[dict[str, Any], str | None]:
+    """상한 판정용 재조회 — poll 1회로 최신 상태만 얹고 **저장하지 않는다**.
+
+    종결 행 저장은 조회 라우트의 지연 poll(`src.api.investigation_poll`) 소관이다
+    (카드가 조회할 때 쓴다).
+    실패하면 저장소 상태 그대로 둔다(진행 중으로 본다 — 상한 쪽으로 안전).
+    """
+    investigation_id = str(rec.get("investigation_id") or "")
+    client = _build_client(gate_cfg)
+    if not investigation_id or client is None:
+        return rec, "조사 서비스 미구성 — 진행 상태를 다시 조회하지 못했습니다"
+    timeout = float(getattr(gate_cfg, "investigation_mcp_call_timeout_seconds", 10.0))
+
+    async def _poll() -> dict[str, Any]:
+        await client.connect()
+        try:
+            res: dict[str, Any] = await client.poll(investigation_id)
+            return res
+        finally:
+            await client.disconnect()
+
+    try:
+        res = await asyncio.wait_for(_poll(), timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 — 재조회 실패는 저장소 상태로 판정한다
+        return rec, f"조사 서비스 재조회 실패: {type(exc).__name__}"
+    status = str(res.get("status") or "")
+    if status in _TERMINAL_POLL_STATUSES:
+        return {**rec, "status": status}, None
+    return rec, None
+
+
+def _virtual_alarm_payload(route: SymptomRoute, reference: datetime) -> dict[str, Any]:
+    """가상 알람 맥락 → 조사 트리거 페이로드(계약 "1" · 자동 조사와 같은 조립 함수).
+
+    유형은 플레이북별 (resourceType, alarmName) 사본(`VIRTUAL_EVENTS`)으로 싣는다 — sre_agent의 기존
+    플레이북 선택이 그 플레이북을 고른다. 기준 시각은 질의 속 시각(없으면 현재)이다.
+    `meta.virtual`·`meta.playbook_hint`는 추적용 가산 키다(수신 측은 meta 추가 키를 허용한다).
+    """
+    from noise_gate.infrastructure.investigation_store import KIND_MANUAL
+
+    target = route.target or {}
+    resource_type, alarm_name = virtual_event_fields(str(route.playbook_hint))
+    server = target.get("server_name") or target.get("hostname") or ""
+    host = target.get("hostname") or target.get("server_name") or ""
+    event = SimpleNamespace(
+        db_id=target.get("db_id") or "",
+        server_name=server,
+        hostname=host,
+        alarm_id="",
+        severity=0,
+        alarm_name=alarm_name,
+        resource_type=resource_type,
+        resource_name=server,
+        alarm_time=reference,
+        conditions="",
+        condition_log="",
+    )
+    decision = SimpleNamespace(
+        tier="",
+        reason="chat_symptom",
+        fingerprint=f"{_CHAT_FINGERPRINT_PREFIX}{uuid.uuid4().hex[:12]}",
+        signals={},
+    )
+    payload = build_trigger_payload(event, decision, investigation_kind=KIND_MANUAL)
+    payload["meta"]["virtual"] = True
+    payload["meta"]["playbook_hint"] = route.playbook_hint
+    return payload
+
+
+def _chat_card_ref(route: SymptomRoute, investigation_id: str, status: str) -> dict[str, str]:
+    """조사 카드 ref — 문자열 키·값만(`src.domain.disclosure` `ref` 규칙)."""
+    ref = {
+        "investigation_id": investigation_id,
+        "status": status,
+        "route": route.route,
+        "engine": _ENGINE_LABELS.get(route.route, route.route),
+        "route_label": route.label,
+        "reason": route.reason,
+        "target": route.target_label,
+        "playbook": route.playbook_hint or "",
+        "alarm_kind": route.alarm_kind or "",
+    }
+    return {k: v for k, v in ref.items() if v}
+
+
+def _first_denied_target(
+    state: AgentState, app_config: AppConfig, targets: list[dict[str, Any]]
+) -> tuple[str, Any] | None:
+    """대상이 2개 이상이면 각 대상에 호스트 인가 — 처음 거부된 `(대상 표시명, 판정)`, 없으면 None.
+
+    대상이 1개 이하면 진입부 인가(같은 대상)로 충분하므로 판정하지 않는다.
+    """
+    if len(targets) < 2:
+        return None
+    mode = getattr(getattr(app_config, "host_authz", None), "mode", None)
+    principal = Principal(
+        role=state.get("user_role"),
+        user_id=state.get("user_id"),
+        allowed_db_ids=state.get("allowed_db_ids"),
+        entry_point="chat",
+    )
+    for target in targets:
+        host = str(target.get("hostname") or target.get("server_name") or "")
+        decision = authorize_host_investigation(
+            mode=mode,
+            principal=principal,
+            hostname=host or None,
+            db_id=target.get("db_id") or _resolve_db_id(state),
+        )
+        if not decision.allowed:
+            return host, decision
+    return None
+
+
+async def _submit_chat_investigation(
+    state: AgentState,
+    app_config: AppConfig,
+    gate_cfg: Any,
+    question: str,
+    decision: Any,
+) -> dict[str, Any]:
+    """채팅 증상 질의를 라우팅해 비동기로 접수하고 조사 카드 ref를 담아 즉시 응답한다.
+
+    상한 초과·저장소 미설정·서비스 미가용·접수 실패·거부는 모두 사유 응답이다(침묵 금지 · 감사 1건).
+    """
+    from noise_gate.infrastructure.investigation_store import KIND_DIAGNOSIS, KIND_MANUAL
+
+    sub = str(state.get("user_id") or "")
+    explicit = _explicit_targets(state, app_config)
+    route = route_symptom(question, explicit)
+    target = route.target or {}
+    audit_targets = [dict(target)] if target else None
+    logger.info(
+        "채팅 증상 질의 라우팅: route=%s reason=%s playbook=%s target=%s",
+        route.route, route.reason, route.playbook_hint, route.target_label,
+    )
+
+    async def _audit(
+        outcome: str,
+        *,
+        degraded: list[dict[str, Any]] | None = None,
+        authz: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        await log_investigation(
+            request_id=state.get("request_id"),
+            entry_point="chat",
+            targets=audit_targets,
+            outcome=outcome,
+            user_id=state.get("user_id"),
+            thread_id=state.get("thread_id"),
+            backend="sre_agent",
+            authz=authz or decision.as_audit(),
+            degraded=degraded,
+            route=route.route,
+            route_reason=route.reason,
+            playbook=route.playbook_hint,
+            **extra,
+        )
+
+    async def _deny(code: str, text: str, outcome: str) -> dict[str, Any]:
+        await _audit(outcome, degraded=[{"reason": code, "detail": text}])
+        return _respond(text)
+
+    # (교정 M4) 이번 턴 식별 대상이 2개 이상이면 **모든 대상**에 호스트 인가를 적용한다 — 진입부
+    # 인가는 첫 대상만 봤다. 하나라도 거부면 접수하지 않는다(사유 응답 · 감사).
+    denied = _first_denied_target(state, app_config, explicit)
+    if denied is not None:
+        host, target_decision = denied
+        logger.info("채팅 증상 조사 다중 대상 인가 거부: %s", target_decision.as_audit())
+        record_investigation(denied_reason=target_decision.reason)
+        await _audit(
+            INVESTIGATION_DENIED,
+            degraded=[{"reason": "target_authz_denied", "detail": target_decision.reason,
+                       "target": host}],
+            authz=target_decision.as_audit(),
+        )
+        return _respond(
+            _DENY_MESSAGES.get(target_decision.reason, _DENY_MESSAGES["_default"])
+        )
+
+    store = _investigation_store(gate_cfg)
+    if store is None:
+        return await _deny(
+            "store_unconfigured",
+            "조사 저장소 경로가 설정되지 않아 장애 조사를 접수하지 못했습니다. "
+            "관리자에게 문의해 주세요.",
+            INVESTIGATION_FAILED,
+        )
+    # (교정 M1) 상한 검사부터 접수 레코드 기록까지 사용자별 잠금 한 구간이다. `sub`가 비면
+    # `owner_unknown`으로 거부한다(fail-closed — 상한을 셀 수 없다).
+    async with user_request_slot(store, gate_cfg, sub, refresh=_poll_status_only) as limited:
+        if limited is not None:
+            code, why = limited
+            return await _deny(
+                code, f"장애 조사를 접수하지 않았습니다 — {why}", INVESTIGATION_DENIED
+            )
+
+        client = _build_client(gate_cfg)
+        if client is None:
+            return await _deny(
+                "service_unconfigured",
+                "장애 진단 서비스에 연결할 수 없어 조사를 접수하지 못했습니다. "
+                "잠시 후 다시 시도하시거나 관리자에게 문의해 주세요.",
+                INVESTIGATION_FAILED,
+            )
+        unreachable = await client.unreachable_reason()
+        if unreachable:
+            return await _deny(
+                "service_unreachable",
+                f"장애 진단 서비스에 연결할 수 없어 조사를 접수하지 못했습니다({unreachable}).",
+                INVESTIGATION_FAILED,
+            )
+
+        now = datetime.now()
+        scope = parse_incident_time(question, now)
+        reference = scope.anchor if scope else now
+        if route.route == ROUTE_PLAYBOOK:
+            payload = _virtual_alarm_payload(route, reference)
+
+            async def _call() -> dict[str, Any]:
+                res: dict[str, Any] = await client.submit(payload)
+                return res
+        else:
+            scope_kwargs: dict[str, Any] = (
+                {"reference_time": scope.reference_time, "lookback_minutes": scope.lookback_minutes}
+                if scope else {}
+            )
+
+            async def _call() -> dict[str, Any]:
+                # 질문 원문 · 이번 턴에 식별된 대상만(대상 미확정·복수면 인자 없이 — G-32 ④).
+                res: dict[str, Any] = await client.diagnose(
+                    question,
+                    server_name=target.get("server_name"),
+                    hostname=target.get("hostname"),
+                    db_id=target.get("db_id"),
+                    **scope_kwargs,
+                )
+                return res
+
+        async def _submit() -> dict[str, Any]:
+            await client.connect()
+            try:
+                return await _call()
+            finally:
+                await client.disconnect()
+
+        timeout = float(getattr(gate_cfg, "investigation_mcp_call_timeout_seconds", 10.0))
+        try:
+            res = await asyncio.wait_for(_submit(), timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 — 접수 실패도 사유를 노출(침묵 금지)
+            logger.warning("채팅 증상 조사 접수 실패: route=%s", route.route, exc_info=True)
+            detail = (
+                f"타임아웃({timeout:.0f}s 초과)" if isinstance(exc, TimeoutError)
+                else type(exc).__name__
+            )
+            return await _deny(
+                "submit_failed",
+                f"장애 조사 접수 중 오류가 발생했습니다({detail}). 잠시 후 다시 시도해 주세요.",
+                INVESTIGATION_FAILED,
+            )
+        investigation_id = str(res.get("investigation_id") or "")
+        rejected = str(res.get("status") or "") == "rejected"
+        reason: str | None = str(res.get("reason") or "") or None
+        if not investigation_id:
+            return await _deny(
+                "service_rejected" if rejected else "submit_failed",
+                f"조사 서비스가 접수하지 않았습니다(사유: {reason or '조사 id 없음'}).",
+                INVESTIGATION_DENIED if rejected else INVESTIGATION_FAILED,
+            )
+        status = "rejected" if rejected else "submitted"
+        subject = {
+            "route": route.route,
+            "route_label": route.label,
+            "route_reason": route.reason,
+            "playbook": route.playbook_hint,
+            "alarm_kind": route.alarm_kind,
+            "server_name": target.get("server_name"),
+            "hostname": target.get("hostname"),
+            "db_id": target.get("db_id"),
+            "reference_time": reference.isoformat(timespec="seconds"),
+        }
+        store.record(
+            investigation_id=investigation_id,
+            alarm_ids=[],
+            kind=KIND_MANUAL if route.route == ROUTE_PLAYBOOK else KIND_DIAGNOSIS,
+            status=status,
+            source=_CHAT_ORIGIN,
+            reason=reason if rejected else None,
+            owner_sub=sub or None,
+            origin=_CHAT_ORIGIN,
+            subject={k: v for k, v in subject.items() if v not in (None, "")},
+        )
+    await _audit(
+        INVESTIGATION_DENIED if rejected else INVESTIGATION_OK,
+        degraded=[{"reason": "service_rejected", "detail": reason}] if rejected else None,
+        investigation_id=investigation_id,
+    )
+    card = {
+        "kind": INVESTIGATION_REF_KIND,
+        "text": f"조사 {investigation_id} — {route.label}",
+        "source": "turn",
+        "ref": _chat_card_ref(route, investigation_id, status),
+    }
+    where = f" (대상 {route.target_label})" if route.target_label else ""
+    if rejected:
+        text = (
+            f"장애 조사 접수가 거부되었습니다 — {route.label}{where}. "
+            f"사유: {reason or '미상'}"
+        )
+    else:
+        text = (
+            f"장애 조사를 접수했습니다 — {route.label}{where}.\n"
+            "결과는 아래 조사 카드에서 이어서 확인하실 수 있습니다."
+        )
+    return _respond(text, [card])
+
+
 def _extract_diagnosis_text(poll_result: dict) -> str:
     """poll 결과에서 자연어 진단 텍스트를 추출한다(sre_diagnose 반환 방어적 처리).
 
@@ -455,10 +851,11 @@ def _briefing_to_text(briefing: dict) -> str:
     return "\n".join(f"[{label}] {val}" for label, val in render_briefing_lines(briefing)).strip()
 
 
-def _respond(text: str) -> dict:
+def _respond(text: str, disclosures: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """final_response·routing_intent·current_node·messages를 담은 노드 반환 dict를 만든다.
 
     답변을 대화 이력에 누적한다(멀티턴 후속 턴이 직전 진단을 인지하도록 — general_inference 정합).
+    `disclosures`(plans/187 W12 — 조사 카드 ref)는 주어졌을 때만 키를 싣는다(없으면 종전과 같다).
     """
     result: dict = {
         "final_response": text,
@@ -467,4 +864,6 @@ def _respond(text: str) -> dict:
     }
     if text and text.strip():
         result["messages"] = [AIMessage(content=text)]
+    if disclosures:
+        result["disclosures"] = disclosures
     return result

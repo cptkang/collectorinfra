@@ -1,0 +1,56 @@
+# WAS 힙·OOM·GC 과다 플레이북 (plans/187 §4.1 was.heap · §5.2 · §5.7.2 · D-341)
+# 액션 ID만 쓴다 — 도구명은 스텝 라이브러리(application)에만 둔다(§5.2).
+id: was.heap
+version: 1
+match:
+  resource_type: apm.Instance
+  any_kind: [was_heap_pressure, was_gc_stall, heap, gc, oom]
+  surface_terms: [힙, OOM, 가비지 컬렉션, GC 과다]
+  priority: 40
+window: {before_min: 30, after_min: 10, baseline: [prev_day, prev_week]}   # §4.0
+steps:
+  - id: S0
+    action: scope.resolve_was_targets
+    args: {max_instances: 3}
+    narrate: {focus: "힙 압박이 알람 인스턴스 한정인지 같은 업무 전체인지", max_sentences: 3}
+  - id: S2
+    action: apm.runtime_and_pool         # 힙 추세 — GC 후 바닥 우상향 여부(R-F) · 주기 판독용 12시간
+    for_each: targets
+    args: {lookback_minutes: 720, process_trend: false}
+    narrate: {focus: "GC 뒤 힙 바닥의 추세와 GC 비율", max_sentences: 4}
+  - id: S1
+    action: apm.golden_signals           # 트래픽 비례 여부
+    for_each: targets
+    args: {readings: []}                 # 표시·TPS 재료만 — R-B 부하형 판독은 이 유형에서 끈다
+    narrate: {focus: "힙 증가가 TPS와 비례하는지", max_sentences: 3}
+  - id: S7
+    action: change.recent
+    args: {lookback_hours: 24}
+    narrate: {focus: "사건창 직전 배포·설정 변경의 시간 근접순", max_sentences: 3}
+  - id: S4
+    action: host.usage_trend
+    args: {kinds: [cpu, memory, filesystem, disk_io]}
+    narrate: {focus: "호스트 메모리와 덤프 저장 공간의 여유", max_sentences: 3}
+  - id: S9
+    action: synthesize
+response_hints:
+  triage_first: "재기동 전에 힙 덤프를 확보한다"
+  leak_suspect: "GC 뒤 바닥이 계속 오르면 누수 의심 — 개발 담당 이관"
+  load_proportional: "트래픽에 비례하면 힙 과소 — 힙 증설 검토"
+  periodic: "주기적 급증이면 같은 주기의 배치·대량 조회 확인"
+runbook:
+  meaning: "WAS 인스턴스의 힙 사용·GC 시간이 높거나 메모리 부족 오류가 났다."
+  impact: "GC 정지로 응답 지연 · 메모리 부족 오류 시 인스턴스 중단"
+  mitigation:
+    - {action: "재기동 전에 힙 덤프를 확보", risk: low,
+       verification: "덤프 파일 확보 확인", rollback: "해당 없음"}
+    - {when: "heap_shape == 'leak_suspect'", action: "힙 덤프와 추세를 개발 담당에 전달해 누수 분석 요청", risk: low,
+       verification: "수정 배포 뒤 GC 후 바닥 평탄", rollback: "해당 없음"}
+    - {when: "heap_shape == 'load_proportional'", action: "힙 크기 증설을 WAS 담당과 검토", risk: medium,
+       verification: "증설 뒤 GC 비율·p95 기준선 복귀", rollback: "힙 설정을 변경 전 값으로 원복"}
+    - {action: "메모리 부족이 반복되면 인스턴스 재기동을 업무 담당과 검토(트래픽 배제 후)", risk: high,
+       verification: "재기동 뒤 힙·GC 비율 정상", rollback: "재기동은 되돌릴 수 없음 — 덤프를 먼저 확보"}
+  escalation: "WAS 담당 → 개발 담당"
+  owner: "WAS운영팀"
+  last_reviewed: 2026-10-19
+  review_every_days: 180

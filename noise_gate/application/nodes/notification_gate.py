@@ -268,9 +268,26 @@ def _record_decision(
                 if getattr(gate_cfg, "decision_analysis_text_enabled", False)
                 else {}
             ),
+            # (plans/187 W11) 원 알람 시각·호스트·자원 유형 — 알람 다시 분석의 재료. 플래그 off면
+            # 인자 자체를 넘기지 않는다(레코드 비트 동일).
+            **(
+                _manual_source_fields(event)
+                if getattr(gate_cfg, "investigation_manual_enabled", False)
+                else {}
+            ),
         )
     except Exception:  # noqa: BLE001 — 기록 실패가 발송을 막지 않는다
         logger.warning("발송 판단 감사 기록 실패(무시): alarm_id=%s", event.alarm_id)
+
+
+def _manual_source_fields(event: Any) -> dict[str, str]:
+    """원 알람 발생 시각(ISO 8601 · 서버 로컬 naive)·hostname·resource_type(plans/187 W11)."""
+    alarm_time = getattr(event, "alarm_time", None)
+    return {
+        "alarm_time": alarm_time.isoformat() if isinstance(alarm_time, datetime) else "",
+        "hostname": str(getattr(event, "hostname", "") or ""),
+        "resource_type": str(getattr(event, "resource_type", "") or ""),
+    }
 
 
 def _stage_evidence(

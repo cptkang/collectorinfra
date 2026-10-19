@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>운영자 대시보드 - KB AIOps 포탈</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css?v=22">
+    <link rel="stylesheet" href="/static/css/style.css?v=23">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
     <style>
@@ -95,6 +95,7 @@
                 <button class="tab" data-tab="ragdocs">문서 검색 시험</button>
                 <button class="tab" data-tab="sourcememory">소스 선택 기억</button>
                 <button class="tab" data-tab="apmsources">제니퍼 소스</button>
+                <button class="tab" data-tab="incidentkb">조사 지식</button>
             </div>
 
             <!-- 환경변수 설정 탭 -->
@@ -640,6 +641,70 @@
                 </div>
             </div>
 
+            <!-- 조사 지식 탭 (plans/187 FE-2 · W9) — 읽기·내려받기만. 저장소 반영은 사람이 검토해 PR로 한다 -->
+            <div class="tab-content" id="tab-incidentkb">
+                <div class="card">
+                    <div class="toolbar">
+                        <h2>조사 지식</h2>
+                        <button class="btn btn-secondary" id="refreshIncidentKbBtn" style="padding: 8px 18px; font-size: 0.8125rem;">새로고침</button>
+                    </div>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+                        알람 조사에서 만든 <strong>KB 초안</strong>·<strong>검토 대상</strong>(「아님」 연속 등)·<strong>엔진 선택 통계</strong>를 봅니다.
+                        초안 YAML은 보기·복사·내려받기만 합니다 — <strong>sre_agent 저장소 반영은 사람이 검토해 PR로</strong> 합니다.
+                        엔진 전환 권고는 표시만 하며 자동으로 바뀌지 않습니다.
+                        이 탭은 <code>NOISE_INVESTIGATION_KB_ENABLED</code>가 켜진 채 <strong>본체를 기동</strong>했을 때만 동작합니다.
+                    </p>
+                    <div id="incidentKbNotice" class="incident-kb-notice" style="display: none;"></div>
+                    <div id="incidentKbWindow" class="incident-kb-window"></div>
+                </div>
+
+                <div class="card" style="margin-top: 18px;">
+                    <div class="toolbar"><h2>KB 초안</h2></div>
+                    <table class="settings-table" id="incidentKbDraftTable">
+                        <thead>
+                            <tr>
+                                <th>초안</th>
+                                <th>제목 · 원인(미검증)</th>
+                                <th>플레이북</th>
+                                <th>엔진 선택</th>
+                                <th>만든 사람 · 시각</th>
+                                <th>YAML</th>
+                            </tr>
+                        </thead>
+                        <tbody id="incidentKbDraftBody"></tbody>
+                    </table>
+                    <div id="incidentKbYamlBox" class="incident-kb-yaml" style="display: none;">
+                        <div class="toolbar">
+                            <h2 id="incidentKbYamlTitle">초안 YAML</h2>
+                            <span>
+                                <button class="btn btn-secondary" id="incidentKbYamlCopyBtn" style="padding: 6px 14px; font-size: 0.75rem;">복사</button>
+                                <button class="btn btn-secondary" id="incidentKbYamlDownloadBtn" style="padding: 6px 14px; font-size: 0.75rem;">내려받기</button>
+                            </span>
+                        </div>
+                        <pre id="incidentKbYamlText"></pre>
+                        <div id="incidentKbYamlMsg" class="incident-kb-window"></div>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top: 18px;">
+                    <div class="toolbar"><h2>검토 대상</h2></div>
+                    <table class="settings-table" id="incidentKbReviewTable">
+                        <thead><tr><th>종류</th><th>대상</th><th>사유</th><th>담당</th></tr></thead>
+                        <tbody id="incidentKbReviewBody"></tbody>
+                    </table>
+                    <div id="incidentKbUnmatched" class="incident-kb-window"></div>
+                </div>
+
+                <div class="card" style="margin-top: 18px;">
+                    <div class="toolbar"><h2>엔진 선택 통계</h2></div>
+                    <div id="incidentKbEngineNote" class="incident-kb-window"></div>
+                    <table class="settings-table" id="incidentKbEngineTable">
+                        <thead><tr><th>플레이북</th><th>표본</th><th>플레이북</th><th>HolmesGPT</th><th>둘 다</th><th>둘 다 아님</th><th>플레이북 비율</th><th>권고</th></tr></thead>
+                        <tbody id="incidentKbEngineBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
             <!-- 문서 검색 시험 탭 (plans/126 W4 · T-3) -->
             <div class="tab-content" id="tab-ragdocs">
                 <div class="card">
@@ -717,5 +782,6 @@
     <script src="/static/js/admin.js?v=12"></script>
     <script src="/static/js/admin-db-structure.js?v=1"></script>
     <script src="/static/js/admin-rag-docs.js?v=3"></script>
+    <script src="/static/js/admin-incident-kb.js?v=1"></script>
 </body>
 </html>

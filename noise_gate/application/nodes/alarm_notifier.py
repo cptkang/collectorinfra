@@ -19,6 +19,7 @@ import html
 import logging
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from langchain_core.runnables import RunnableConfig
@@ -758,15 +759,24 @@ async def _deliver_investigation_followup(
         )
         return
 
+    # (plans/187 W5a) 플레이북 브리핑이면 링크용 조사 id·base를 넘긴다 — 아니면 호출이 종전과 같다.
+    link_kwargs: dict[str, Any] = (
+        {
+            "investigation_id": investigation_id,
+            "web_base_url": str(getattr(gate_cfg, "investigation_web_base_url", "") or ""),
+        }
+        if isinstance(briefing, dict) and isinstance(briefing.get("playbook"), dict)
+        else {}
+    )
     try:
         if pending.get("kind") == "episode":
             # (plans/153 W6) 종합 조사 후속만 표지를 단다 — 단독 조사 후속 호출은 종전과 같다.
             await _send_workb_followup(
                 cfg.workb, result, briefing, escalation,
-                episode_note=episode_followup_note(pending),
+                episode_note=episode_followup_note(pending), **link_kwargs,
             )
         else:
-            await _send_workb_followup(cfg.workb, result, briefing, escalation)
+            await _send_workb_followup(cfg.workb, result, briefing, escalation, **link_kwargs)
         logger.info(
             "후속 브리핑 발송 완료: alarm_id=%s inv=%s status=%s",
             alarm_id, investigation_id, status,
@@ -1277,6 +1287,78 @@ async def _send_workb_late_promotion(
         resp.raise_for_status()
 
 
+#: (plans/187 W5a · §5.6 ④) 플레이북 후속 요약의 줄당 글자 상한 — 가설 제목·대응 문장이 길어도
+#: 본문이 「종합 3줄 + 링크」 모양을 넘지 않게 자른다.
+PLAYBOOK_SUMMARY_LINE_MAX_CHARS = 160
+#: 링크 base가 없을 때의 안내 문구.
+PLAYBOOK_WEB_FALLBACK = "웹에서 확인 — 알람 카드 「조사 브리핑」에서 조사 대화로 열 수 있습니다"
+#: 링크로 쓸 수 있는 base 스킴(plans/187 교정 L4 — `javascript:` 등은 링크로 만들지 않는다).
+_WEB_BASE_SCHEMES: tuple[str, ...] = ("http://", "https://")
+#: 스킴이 맞지 않아 이미 warning을 남긴 base 값(값마다 1회 · 설정값이라 크기가 작다).
+_WARNED_WEB_BASES: set[str] = set()
+
+
+def _safe_web_base(web_base_url: str) -> str:
+    """링크 base — http(s) 스킴만 허용한다.
+
+    아니면 빈 문자열(호출부가 「웹에서 확인」 문구를 쓴다).
+    """
+    base = (web_base_url or "").strip().rstrip("/")
+    if not base or base.lower().startswith(_WEB_BASE_SCHEMES):
+        return base
+    if base not in _WARNED_WEB_BASES:
+        _WARNED_WEB_BASES.add(base)
+        logger.warning(
+            "조사 대화 링크 base가 http(s)가 아니라 링크 대신 안내 문구를 씁니다: %.40r", base
+        )
+    return ""
+
+
+def _clip_line(text: str, limit: int = PLAYBOOK_SUMMARY_LINE_MAX_CHARS) -> str:
+    """한 줄로 펴고 상한을 넘으면 말줄임으로 자른다."""
+    flat = " ".join(str(text).split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def playbook_summary_lines(briefing: dict[str, Any]) -> list[str]:
+    """플레이북 브리핑 → 종합 3줄(1순위 가설+상태 · 대응 1순위 · 엔진 일치 칩이 있으면 한 줄).
+
+    값은 브리핑의 결정적 칸(`playbook.synthesis`·`engine_agreement.label`)만 쓴다 — LLM 서술은
+    싣지 않는다.
+    """
+    playbook = briefing.get("playbook") or {}
+    synthesis = playbook.get("synthesis") or {}
+    hyps = [h for h in synthesis.get("hypotheses") or [] if isinstance(h, dict)]
+    if hyps:
+        top = hyps[0]
+        label = top.get("status_label") or top.get("status") or "상태 미상"
+        lines = [f"1순위 가설: {top.get('title') or '제목 없음'} [{label}]"]
+    else:
+        lines = ["1순위 가설 없음 — 판독 근거 부족"]
+    actions = [a for a in synthesis.get("actions") or [] if isinstance(a, dict) and a.get("text")]
+    if actions:
+        lines.append(f"대응(제안) 1순위: {actions[0]['text']}")
+    agreement = briefing.get("engine_agreement")
+    if isinstance(agreement, dict) and agreement.get("label"):
+        lines.append(f"HolmesGPT: {agreement['label']}")
+    return [_clip_line(line) for line in lines]
+
+
+def _playbook_followup_html(
+    briefing: dict[str, Any], investigation_id: str | None, web_base_url: str
+) -> str:
+    """플레이북 후속 블록(HTML) — 종합 3줄 + 조사 대화 링크(base 없으면 「웹에서 확인」 문구)."""
+    header = "<br><br><b>조사 브리핑 (플레이북 종합)</b>"
+    body = "<br>".join(html.escape(line) for line in playbook_summary_lines(briefing))
+    base = _safe_web_base(web_base_url)
+    if base and investigation_id:
+        url = f"{base}/?investigation={quote(str(investigation_id), safe='')}"
+        tail = f'<a href="{html.escape(url, quote=True)}">조사 대화로 열기</a>'
+    else:
+        tail = html.escape(PLAYBOOK_WEB_FALLBACK)
+    return f"{header}<br>{body}<br>{tail}"
+
+
 def episode_followup_note(pending: dict[str, Any]) -> str:
     """종합 조사 후속 메시지 머리 표지 1줄(plans/153 W6 · §4.5) — 사건 id·멤버 알람 수를 붙인다."""
     note = "같은 사건(폴스타×제니퍼) 종합 조사"
@@ -1296,6 +1378,8 @@ def build_followup_body(
     l3: Optional[dict] = None,
     *,
     episode_note: str | None = None,
+    investigation_id: str | None = None,
+    web_base_url: str = "",
 ) -> str:
     """후속 브리핑 메시지 본문(HTML)을 생성한다 (Plan 66 3-E).
 
@@ -1304,6 +1388,11 @@ def build_followup_body(
     블록 렌더는 인라인 첨부(CW-A/CW-C)와 **같은 함수**를 쓴다 — 두 모드의 표현이 갈리지 않는다.
 
     `episode_note`(plans/153 W6)는 사건 종합 조사 후속의 머리 표지 1줄이다 — None이면 종전과 같다.
+
+    (plans/187 W5a · §5.6 ④) 브리핑에 `playbook`이 있으면 브리핑 블록 대신 종합 3줄 + 조사 대화
+    링크(`<web_base_url>/?investigation=<investigation_id>` · base가 없으면 「웹에서 확인」 문구)를
+    싣는다.
+    `playbook`이 없으면 종전과 같다.
     """
     ev = result.alarm_event
     body = (
@@ -1313,7 +1402,9 @@ def build_followup_body(
         f"<b>서버:</b> {html.escape(ev.server_name)} ({html.escape(ev.hostname)})<br>"
         f"<b>알람 ID:</b> {html.escape(ev.alarm_id)}"
     )
-    if briefing is not None:
+    if briefing is not None and isinstance(briefing.get("playbook"), dict):
+        body += _playbook_followup_html(briefing, investigation_id, web_base_url)
+    elif briefing is not None:
         body += _investigation_briefing_html(briefing)
     if escalation is not None:
         body += _investigation_escalation_html(escalation)
@@ -1330,6 +1421,8 @@ async def _send_workb_followup(
     l3: Optional[dict] = None,
     *,
     episode_note: str | None = None,
+    investigation_id: str | None = None,
+    web_base_url: str = "",
 ) -> None:
     """후속 브리핑을 worKB 쪽지로 발송한다 (Plan 66 3-E · `_send_workb` 전송 규약 동형).
 
@@ -1345,7 +1438,10 @@ async def _send_workb_followup(
         "systemDiv": workb_cfg.system_div,
         "msgTitle": (f"[L3 진단] {ev.server_name} ({ev.hostname})" if (l3 is not None and briefing is None and escalation is None)
                      else f"[조사 결과] {ev.server_name} ({ev.hostname})"),
-        "msgBody": build_followup_body(result, briefing, escalation, l3, episode_note=episode_note),
+        "msgBody": build_followup_body(
+            result, briefing, escalation, l3, episode_note=episode_note,
+            investigation_id=investigation_id, web_base_url=web_base_url,
+        ),
         "sendId": workb_cfg.send_id,
         "userIds": workb_cfg.get_user_ids(ev.severity),
         "alias": workb_cfg.alias,

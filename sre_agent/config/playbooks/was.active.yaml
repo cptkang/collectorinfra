@@ -1,0 +1,55 @@
+# WAS 액티브 서비스 급증·행 플레이북 (plans/187 §4.1 was.active · §5.2 · §5.7.2 · D-341)
+# 액션 ID만 쓴다 — 도구명은 스텝 라이브러리(application)에만 둔다(§5.2).
+id: was.active
+version: 1
+match:
+  resource_type: apm.Instance
+  any_kind: [was_service_queuing, was_thread_pool_exhaustion, active, thread_stuck]
+  surface_terms: [액티브 서비스, 스레드 정체, 서비스 행]
+  priority: 30
+window: {before_min: 30, after_min: 10, baseline: [prev_day, prev_week]}   # §4.0
+steps:
+  - id: S0
+    action: scope.resolve_was_targets
+    args: {pick: degraded, max_instances: 3}
+    narrate: {focus: "액티브 급증이 알람 인스턴스 한정인지 같은 업무 전체인지", max_sentences: 3}
+  - id: S1
+    action: apm.golden_signals
+    for_each: targets
+    narrate: {focus: "TPS 대비 액티브·p95의 기준선 대비 변화", max_sentences: 4}
+  - id: S1a
+    action: apm.active_services          # 장시간 실행·같은 실행 텍스트 묶음(실시간 단면 — 배지)
+    args: {n: 10}
+    narrate: {focus: "장시간 실행 서비스와 같은 실행 위치에 몰린 건", max_sentences: 3}
+  - id: S2
+    action: apm.runtime_and_pool         # 풀 대기·GC
+    for_each: targets
+    narrate: {focus: "커넥션 풀 대기와 GC 비율", max_sentences: 3}
+  - id: S3
+    action: apm.slow_tx_breakdown
+    args: {n: 5, profile_top: 1}
+    narrate: {focus: "정체 트랜잭션의 지배 계층(DB·외부 호출)", max_sentences: 3}
+  - id: S5
+    action: xsource.related_alarms
+    narrate: {focus: "알람 전후 DB·외부 연계 알람", max_sentences: 3}
+  - id: S9
+    action: synthesize
+response_hints:
+  triage_first: "완화 먼저 — 재기동 전에 스레드 덤프를 확보한다"
+  external_dominant: "외부 연계 호출의 타임아웃 설정 여부 확인"
+  sql_dominant: "DB 락·대기 세션을 DBA에 확인 요청"
+  gc_dominant: "Full GC 반복 여부 확인 후 재기동 검토"
+runbook:
+  meaning: "WAS 인스턴스의 동시 처리 중 서비스(액티브)가 급증했거나 처리가 멈췄다."
+  impact: "신규 요청 대기·거절 · 스레드 고갈 시 해당 인스턴스 전 업무 중단"
+  mitigation:
+    - {action: "재기동 전에 스레드 덤프를 확보해 정체 위치를 기록", risk: low,
+       verification: "덤프 파일 확보 확인", rollback: "해당 없음"}
+    - {when: "dominant == 'external'", action: "외부 연계 담당에 대상 응답 확인 요청 · 호출 타임아웃 설정 점검", risk: low,
+       verification: "액티브 서비스 수 기준선 복귀", rollback: "해당 없음"}
+    - {action: "정체가 풀리지 않으면 인스턴스 재기동을 업무 담당과 검토(트래픽 배제 후 1개씩)", risk: high,
+       verification: "재기동 뒤 액티브·p95 기준선 복귀", rollback: "재기동은 되돌릴 수 없음 — 정체 건을 기록하고 재처리 여부 확인"}
+  escalation: "업무 담당 → WAS 담당 → DBA·연계 담당"
+  owner: "WAS운영팀"
+  last_reviewed: 2026-10-19
+  review_every_days: 180

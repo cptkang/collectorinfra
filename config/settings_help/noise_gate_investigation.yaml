@@ -305,6 +305,29 @@ settings:
     recommendation: 조사 서비스가 운영되고 인가 정책이 정해진 뒤에 켠다.
     related: [NOISE_INVESTIGATION_SERVICE_URL, HOST_AUTHZ_MODE, ENABLE_SEMANTIC_ROUTING]
 
+  SRE_CHAT_INVESTIGATION_ENABLED:
+    example: >-
+      켜면 'web01 CPU 사용률 원인 분석해줘'는 대상(web01)과 증상(CPU)이 하나씩 정해지므로 CPU 플레이북 조사로 접수되고,
+      '그 서버 왜 이래'처럼 대상이나 증상이 정해지지 않으면 HolmesGPT 진단으로 접수된다. 어느 쪽이든 답을 기다리지 않고
+      바로 조사 카드가 뜬다.
+    summary: 채팅의 장애 진단 질문을 기다리지 않고 조사로 접수해 대화 안 조사 카드로 보여줄지.
+    behavior: >-
+      장애 진단 질문에서 대상 서버 1대와 증상 유형 1개가 규칙으로 정해지면 그 유형의 플레이북으로,
+      하나라도 정해지지 않으면 HolmesGPT 진단으로 조사를 접수하고 곧바로 답한다. 카드 머리에 어느 엔진과
+      판정 경로로 갔는지 표시한다. 판정에 AI 분류를 쓰지 않는다. 가상 알람은 알람·결정 기록에 남기지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 지금처럼 진단이 끝날 때까지(최대 전체 제한 시간) 기다렸다가 결과 문장을 돌려준다.
+      - value: "true"
+        effect: 접수만 하고 바로 답한다. 결과는 조사 카드에서 이어서 본다.
+    performance: 채팅 응답은 빨라지지만 조사 서비스 호출 수는 같다. 추가 조사·알람 다시 분석과 같은 사용자별 상한을 공유한다.
+    stability: >-
+      NOISE_FAULT_DIAGNOSIS_ENABLED가 켜져 있어야 동작한다. 권한은 HOST_AUTHZ_MODE 그대로이고,
+      상한 초과·권한 거부·서비스 장애는 사유를 담은 응답으로 돌아온다.
+    recommendation: 조사 카드 화면이 준비되고 조사 서비스가 운영 중일 때 켠다.
+    related: [NOISE_FAULT_DIAGNOSIS_ENABLED, HOST_AUTHZ_MODE, NOISE_INVESTIGATION_ADDITIONAL_USER_HOURLY_LIMIT, NOISE_INVESTIGATION_STORE_PATH]
+
   NOISE_ENABLE_AGENTIC_ENRICHER:
     example: >-
       로그 기반 알람은 문장을 읽어야 의미를 알 수 있다. 보조 분석기가 도구를 써 가며 원인 후보를 찾아 신호로 보태지만, 판단 자체는 결정적 로직이 그대로 하므로 억제 동작이
@@ -771,3 +794,228 @@ settings:
     stability: 판정에 영향이 없다.
     recommendation: 측정이 필요할 때만 켠다.
     related: [NOISE_APP_IMPACT_ENABLED, NOISE_CROSS_SOURCE_MODE]
+
+  NOISE_INVESTIGATION_WEB_BASE_URL:
+    example: >-
+      값이 비어 있으면 후속 통보에 링크 대신 「웹에서 확인」 문구만 붙는다. 예를 들어 https://aiops.example.com 로 두면 통보 메시지의 링크가 https://aiops.example.com/?investigation=조사ID 형태가 되어 담당자가 바로 조사 대화를 연다.
+    summary: 후속 통보에 붙일 조사 대화 링크의 웹 주소(base URL).
+    behavior: >-
+      플레이북 방식 브리핑의 후속 메시지에 「<주소>/?investigation=<조사ID>」 링크를 붙인다.
+      비워 두면 링크 대신 「웹에서 확인」 문구만 싣는다. 플레이북 브리핑이 없으면 이 값을
+      읽지 않는다.
+    options:
+      - value: ""
+        label: 기본
+        effect: 링크 없이 「웹에서 확인」 문구만 싣는다.
+      - value: "https://aiops.example.com"
+        effect: 후속 통보에 조사 대화로 바로 가는 링크가 붙는다.
+    stability: 주소가 틀리면 링크가 열리지 않을 뿐 통보 자체에는 영향이 없다.
+    recommendation: 담당자가 웹 화면에 접속하는 실제 주소(끝에 슬래시 없이)를 넣는다.
+    related: [NOISE_INVESTIGATION_FOLLOWUP_ENABLED]
+
+  NOISE_INVESTIGATION_ADDITIONAL_ENABLED:
+    example: >-
+      켜면 조사 대화에서 사용자가 「추가 조사 요청」을 보낼 수 있다. 꺼 두면 해당 접수·목록 주소가 아예 없는 것처럼 404로 응답하고, 저장소에도 새 항목을 쓰지 않는다.
+    summary: 사용자의 「추가 조사 요청」 기능을 켤지.
+    behavior: >-
+      알람 조사 1건에서 초점과 보충 한 줄을 골라 추가 조사를 비동기로 접수한다. 이전 조사의
+      판정 요약(AI 서술 제외)을 함께 넘기며, 결과는 조사 저장소에 별도 항목으로 쌓인다.
+      권한은 호스트 인가 설정(기본 관리자 전용)을 따른다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 접수·목록 주소가 404로 응답한다. 기존 동작과 같다.
+      - value: "true"
+        effect: 추가 조사 요청을 받는다. 조사 서비스 부하가 늘 수 있다.
+    performance: 요청마다 조사 서비스 호출이 하나씩 늘어난다. 사용자별 시간당 상한으로 제한한다.
+    stability: 끄면 기존 동작과 완전히 같다. 조사 서비스가 내려가 있으면 접수가 실패로 기록된다.
+    recommendation: 조사 서비스가 운영 중이고 담당자가 후속 질문을 자주 할 때만 켠다.
+    related: [NOISE_INVESTIGATION_ADDITIONAL_USER_HOURLY_LIMIT, NOISE_INVESTIGATION_ADDITIONAL_NOTE_MAX_CHARS, NOISE_INVESTIGATION_MANUAL_ENABLED]
+
+  NOISE_INVESTIGATION_ADDITIONAL_USER_HOURLY_LIMIT:
+    example: >-
+      3으로 두면 한 사용자가 한 시간에 추가 조사를 3번까지 요청할 수 있고, 4번째부터는 거절된다. 이 횟수는 「이 알람 분석」 요청과 함께 센다.
+    summary: 사용자 한 명이 한 시간에 보낼 수 있는 추가 조사 요청 횟수.
+    behavior: >-
+      사용자별로 시간당 접수 수를 세어 넘으면 거절한다. 사용자 요청 알람 분석(「이 알람 분석」)
+      도 같은 카운터를 공유한다.
+    options:
+      - value: "3"
+        label: 기본
+        effect: 사용자당 시간당 3건까지 접수한다.
+      - value: "10 이상"
+        effect: 한 사람이 조사 서비스를 많이 쓸 수 있다. 부하가 커질 수 있다.
+    performance: 값이 클수록 조사 서비스의 동시 부하가 늘 수 있다.
+    stability: 너무 작으면 급한 상황에서도 요청이 거절된다.
+    recommendation: 기본 3 유지. 담당자 수와 조사 서비스 여력을 보고 조정한다.
+    related: [NOISE_INVESTIGATION_ADDITIONAL_ENABLED, NOISE_INVESTIGATION_MANUAL_ENABLED]
+
+  NOISE_INVESTIGATION_ADDITIONAL_NOTE_MAX_CHARS:
+    example: >-
+      200이면 보충 설명을 200자까지 받는다. 이보다 길면 거절되므로 사용자는 핵심만 적어야 한다.
+    summary: 추가 조사 요청의 보충 한 줄 최대 글자 수.
+    behavior: 사용자가 초점에 덧붙이는 보충 설명의 길이 상한이다. 넘으면 접수하지 않는다.
+    options:
+      - value: "200"
+        label: 기본
+        effect: 보충 설명을 200자까지 받는다.
+      - value: "500 이상"
+        effect: 긴 설명도 받지만 조사 입력에 불필요한 내용이 섞이기 쉽다.
+    stability: 길이만 제한한다 — 알람 처리에는 영향이 없다.
+    recommendation: 기본 200 유지.
+    related: [NOISE_INVESTIGATION_ADDITIONAL_ENABLED]
+
+  NOISE_INVESTIGATION_MANUAL_ENABLED:
+    example: >-
+      켜면 담당자가 결정 이력의 알람 하나에서 「이 알람 분석」을 눌러 자동 조사와 같은 방식으로 다시 조사시킬 수 있다. 꺼 두면 접수 주소가 404이고 기존 응답과 동일하다.
+    summary: 사용자 요청 「이 알람 분석」 기능을 켤지.
+    behavior: >-
+      결정 저장소의 알람(등급 무관, 최근 30일)을 자동 조사와 같은 입력으로 다시 조사한다.
+      새 조사 항목이 따로 생기고 원래 조사는 바뀌지 않는다. 통보나 등급 승격은 하지 않는다.
+      알람이 속한 존의 범위에 있는 사용자만 요청할 수 있다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 접수 주소가 404로 응답한다. 기존 동작과 같다.
+      - value: "true"
+        effect: 사용자가 원하는 알람을 직접 조사시킬 수 있다.
+    performance: 요청마다 조사 서비스 호출이 늘어난다. 추가 조사와 같은 사용자별 시간당 상한을 공유한다.
+    stability: 알람 존 권한이 확인되지 않으면 거절한다(안전 쪽). 끄면 기존 동작과 같다.
+    recommendation: 조사 서비스가 운영 중이고, 자동 조사 대상이 아닌 알람도 확인하고 싶을 때 켠다.
+    related: [NOISE_INVESTIGATION_MANUAL_JOIN_MINUTES, NOISE_INVESTIGATION_ADDITIONAL_USER_HOURLY_LIMIT, NOISE_INVESTIGATION_ADDITIONAL_ENABLED]
+
+  NOISE_INVESTIGATION_MANUAL_JOIN_MINUTES:
+    example: >-
+      10분으로 두면 같은 알람에 대해 10분 안에 사용자가 이미 요청한 조사가 있을 때 새로 만들지 않고 그 조사에 합류한다. 여러 명이 동시에 눌러도 조사는 한 번만 돈다.
+    summary: 같은 알람에 대한 사용자 요청 조사를 하나로 합치는 시간 창(분).
+    behavior: >-
+      같은 알람에 진행 중이거나 이 시간 안에 요청된 사용자 요청 조사가 있으면 새 접수 없이
+      그 조사 번호를 돌려준다.
+    options:
+      - value: "10"
+        label: 기본
+        effect: 10분 안의 중복 요청은 기존 조사에 합류한다.
+      - value: "60"
+        effect: 오래 합류하므로 조사 서비스 부하는 줄지만 최신 상태를 다시 보기 어렵다.
+    performance: 길수록 중복 조사가 줄어 조사 서비스 부하가 낮아진다.
+    stability: 너무 길면 상태가 바뀐 뒤에도 옛 조사 결과를 보게 된다.
+    recommendation: 기본 10분 유지.
+    related: [NOISE_INVESTIGATION_MANUAL_ENABLED]
+
+  NOISE_INVESTIGATION_KB_ENABLED:
+    example: >-
+      켜면 완료된 조사에서 장애 대응 지식 초안을 만들고, 알려진 오류 사용 피드백과 엔진 선택 기록을 쌓는다. 꺼 두면 관련 주소가 404이고 관리자 화면도 등록되지 않는다.
+    summary: 장애 대응 지식(KB) 초안·피드백·엔진 선택 기록 기능을 켤지.
+    behavior: >-
+      조사 완료 건에서 KB 초안(작성 중 상태, 규칙 기반 채움, AI 호출 없음)을 만들고,
+      알려진 오류에 대한 「맞다/아니다」 피드백과 엔진 선택 기록을 별도 파일에 남긴다.
+      관리자는 검토 대상 목록을 본다. 조회 응답에는 매뉴얼 참고 인용이 붙지만 판정에는
+      쓰이지 않는다. 운영 중에 조사 서비스의 런북·알려진 오류 파일은 절대 고치지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 접수·조회 주소가 404이고 관리자 라우터가 없다. 기존 동작과 같다.
+      - value: "true"
+        effect: KB 초안과 피드백 기록을 쌓는다. 별도 파일에 기록한다.
+    performance: 조사 완료 때 파일 기록이 조금 늘고, 관리자 집계는 조사 저장소 끝부분을 읽는다.
+    stability: 쓰기는 본체의 별도 파일에만 한다. 끄면 기존 동작과 같다.
+    recommendation: 운영 지식을 쌓을 담당자가 있을 때만 켠다.
+    related: [NOISE_INVESTIGATION_KB_STORE_PATH, NOISE_INVESTIGATION_KB_STORE_MAX_LINES, NOISE_INVESTIGATION_KB_SCAN_MAX_LINES, NOISE_INVESTIGATION_KB_INCORRECT_STREAK, NOISE_INVESTIGATION_KB_ENGINE_MIN_SAMPLES, NOISE_INVESTIGATION_KB_ENGINE_SWITCH_RATIO]
+
+  NOISE_INVESTIGATION_KB_STORE_PATH:
+    example: >-
+      기본 logs/alarm_incident_kb.jsonl 이면 KB 초안과 피드백이 이 파일에 한 줄씩 쌓인다. 판정 감사 파일이나 조사 저장소와는 별개다.
+    summary: KB 초안·알려진 오류 피드백·엔진 선택을 기록하는 파일 경로.
+    behavior: >-
+      본체 전용 기록 파일이다. 조사 서비스의 런북·알려진 오류 파일 경로에는 쓰지 않는다.
+      KB 기능이 꺼져 있으면 이 파일을 만들지 않는다.
+    options:
+      - value: "logs/alarm_incident_kb.jsonl"
+        label: 기본
+        effect: 로그 폴더에 기록한다.
+    stability: 쓰기 권한이 없으면 기록이 실패한다. 알람 처리에는 영향이 없다.
+    recommendation: 기본 유지. 디스크 정책상 필요할 때만 옮긴다.
+    related: [NOISE_INVESTIGATION_KB_ENABLED, NOISE_INVESTIGATION_KB_STORE_MAX_LINES]
+
+  NOISE_INVESTIGATION_KB_STORE_MAX_LINES:
+    example: >-
+      20000이면 기록이 2만 줄을 넘을 때 오래된 줄부터 정리된다. 조회도 이 범위 안의 최근 기록만 본다.
+    summary: KB 기록 파일의 최대 줄 수(회전 상한).
+    behavior: 이 줄 수를 넘으면 오래된 기록부터 지운다. 조회 범위도 이 줄 수와 같다.
+    options:
+      - value: "20000"
+        label: 기본
+        effect: 최근 2만 줄만 유지한다.
+      - value: "5000"
+        effect: 파일은 작지만 오래된 피드백 통계가 사라져 엔진 선택 통계가 흔들릴 수 있다.
+    performance: 클수록 파일이 커지고 읽는 시간이 늘어난다.
+    stability: 너무 작으면 오래된 피드백이 사라져 재검토 판단이 부정확해진다.
+    recommendation: 기본 20000 유지.
+    related: [NOISE_INVESTIGATION_KB_ENABLED, NOISE_INVESTIGATION_KB_STORE_PATH]
+
+  NOISE_INVESTIGATION_KB_SCAN_MAX_LINES:
+    example: >-
+      10000이면 관리자 집계가 조사 저장소 끝에서 최근 1만 줄까지만 되짚는다. 더 오래된 조사는 집계에서 빠진다.
+    summary: 관리자 집계가 조사 저장소 끝에서 되짚어 읽는 줄 수.
+    behavior: >-
+      KB 관리자 화면의 검토 대상 목록 등을 만들 때 조사 저장소를 끝에서부터 이 줄 수까지 읽는다.
+      기본값은 제안 값이다.
+    options:
+      - value: "10000"
+        label: 기본
+        effect: 최근 1만 줄 범위를 집계한다.
+    performance: 클수록 관리자 화면이 느려질 수 있다.
+    stability: 너무 작으면 집계에서 오래된 조사가 빠진다.
+    recommendation: 기본 유지. 조사량이 많아 목록이 비면 늘린다.
+    related: [NOISE_INVESTIGATION_KB_ENABLED, NOISE_INVESTIGATION_STORE_MAX_LINES]
+
+  NOISE_INVESTIGATION_KB_INCORRECT_STREAK:
+    example: >-
+      3이면 같은 알려진 오류에 대해 담당자가 「아님」을 연속 3번 누르면 관리자 검토 대상 목록에 오른다. 중간에 「맞음」이 있으면 연속이 끊긴다.
+    summary: 알려진 오류가 「아님」 판정을 연속 몇 번 받으면 재검토 대상으로 올릴지.
+    behavior: >-
+      알려진 오류 사용 피드백에서 「아님」이 이 횟수만큼 이어지면 관리자 재검토 목록에 올린다.
+      기본값은 제안 값이다.
+    options:
+      - value: "3"
+        label: 기본
+        effect: 연속 3회에서 재검토 대상이 된다.
+      - value: "1"
+        effect: 한 번만 「아님」이어도 올라 목록이 쉽게 넘친다.
+    stability: 알람 판정에는 영향이 없고 관리자 검토 목록에만 쓰인다.
+    recommendation: 기본 3 유지.
+    related: [NOISE_INVESTIGATION_KB_ENABLED]
+
+  NOISE_INVESTIGATION_KB_ENGINE_MIN_SAMPLES:
+    example: >-
+      30이면 장애 유형별 엔진 선택 기록이 30건 이상 쌓이기 전에는 엔진 전환 권고를 내지 않는다. 표본이 적을 때 잘못 판단하는 것을 막는다.
+    summary: 유형별 엔진 선택 통계를 믿기 위한 최소 표본 수.
+    behavior: >-
+      유형별 선택 기록이 이 건수에 못 미치면 통계를 판단 근거로 쓰지 않는다.
+      기본값은 제안 값이다.
+    options:
+      - value: "30"
+        label: 기본
+        effect: 30건 이상일 때부터 통계를 본다.
+      - value: "5"
+        effect: 적은 표본으로 판단해 우연한 쏠림에 흔들린다.
+    stability: 알람 판정에는 영향이 없고 엔진 선택 통계 해석에만 쓰인다.
+    recommendation: 기본 30 유지.
+    related: [NOISE_INVESTIGATION_KB_ENGINE_SWITCH_RATIO, NOISE_INVESTIGATION_KB_ENABLED]
+
+  NOISE_INVESTIGATION_KB_ENGINE_SWITCH_RATIO:
+    example: >-
+      0.8이면 「플레이북」과 「둘 다」를 고른 비율이 80% 이상일 때 그 유형을 플레이북 쪽으로 옮기는 것을 검토 대상으로 본다.
+    summary: 엔진 전환을 권고하는 「플레이북」+「둘 다」 선택 비율 하한(0~1).
+    behavior: >-
+      유형별 표본이 충분할 때 「플레이북」과 「둘 다」 선택의 합이 이 비율 이상이면 전환 검토
+      대상으로 표시한다. 기본값은 제안 값이다.
+    options:
+      - value: "0.8"
+        label: 기본
+        effect: 80% 이상일 때 전환을 검토한다.
+      - value: "0.5"
+        effect: 절반만 넘어도 권고가 나와 잦은 전환 검토가 생긴다.
+    stability: 자동으로 전환하지 않는다 — 관리자가 보는 참고 지표다.
+    recommendation: 기본 0.8 유지.
+    related: [NOISE_INVESTIGATION_KB_ENGINE_MIN_SAMPLES, NOISE_INVESTIGATION_KB_ENABLED]

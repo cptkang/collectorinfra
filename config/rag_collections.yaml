@@ -56,3 +56,19 @@ collections:
       top_k: 3
       rerank: BGE-M3 · threshold 0.5 · candidates 15
       hyde: enabled(Llama3.1)
+
+  # (plans/187 W9 · §5.7.4 · G-15) 장애 대응 매뉴얼·장비 매뉴얼·TSG — 조사 브리핑의 「참고 문서」 인용 전용.
+  # 조회는 본체가 조사 응답 시 결정적 질의(플레이북 id + 런북 references + 대상 솔루션명)로만 하고,
+  # 결과는 참고 목록일 뿐 판정·가설 순위·종합 입력에 넣지 않는다(sre_agent는 RAG를 부르지 않는다).
+  # 기본 비활성 — 접속 정보 설정 필드가 아직 없어(`doc_sources.CONNECTION_FIELD_MAP` 미등록) 켜도
+  # 「접속 정보 미입력」으로 강등된다. 색인 전 PII 마스킹은 plans/126 규칙을 따른다.
+  - id: incident_docs
+    title: 장애 대응 매뉴얼
+    enabled: false
+    answer_domains: [장애대응, 조치절차, 에스컬레이션, 장비매뉴얼]
+    description: |
+      알람 유형별 장애 대응 매뉴얼·장비 매뉴얼·기존 TSG(문제 해결 가이드). "이 알람이 나면 무엇을
+      확인하고 누구에게 넘기는가"에 답한다. 현재 수치·판정은 담고 있지 않다.
+    sibling_note: 규정·승인 절차는 본부 전산관리매뉴얼 소유다
+    # 채팅 문서 지목(doc_command)에 끼지 않게 표면어를 두지 않는다 — 조회는 조사 응답 경로 전용이다.
+    sensitive: false

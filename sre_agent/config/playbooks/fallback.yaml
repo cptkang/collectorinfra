@@ -1,0 +1,35 @@
+# 미매칭 알람 플레이북 (plans/187 §4.1 fallback · §5.7.2 · D-341)
+# 어떤 유형 플레이북에도 맞지 않을 때 고른다 — match 조건을 두지 않는다.
+id: fallback
+version: 1
+window: {before_min: 30, after_min: 10, baseline: [prev_day, prev_week]}   # §4.0
+steps:
+  - id: S4
+    action: host.usage_trend
+    args: {kinds: [cpu, memory, filesystem, disk_io], granularity: h}
+    narrate: {focus: "호스트 CPU·메모리·파일시스템·디스크 I/O의 기준선 대비 변화", max_sentences: 3}
+  - id: S5
+    action: xsource.related_alarms
+    narrate: {focus: "알람 전후 선행·동시·후행 알람", max_sentences: 3}
+  - id: S5a
+    action: host.alarm_history           # 재발 확인 — 같은 (호스트, 알람명) 최근 20일(§4.0)
+    args: {lookback_days: 20}
+    narrate: {focus: "같은 알람의 최근 재발 횟수와 간격", max_sentences: 2}
+  - id: S7
+    action: change.recent
+    args: {lookback_hours: 24}
+    narrate: {focus: "사건창 직전 변경의 시간 근접순", max_sentences: 3}
+  - id: S9
+    action: synthesize
+response_hints:
+  unclassified: "유형 미정 — 플레이북 추가 후보"
+runbook:
+  meaning: "등록된 알람 유형 플레이북에 맞지 않는 알람이다. 공통 수집 결과만 요약한다."
+  impact: "유형별 판독 규칙이 적용되지 않아 원인 가설의 근거가 제한적이다"
+  mitigation:
+    - {action: "수집 결과를 검토해 담당 조직에 이관하고 이 알람 유형의 플레이북 추가를 요청", risk: low,
+       verification: "담당 조직 접수 확인", rollback: "해당 없음"}
+  escalation: "관제 담당 → 해당 자원 담당"
+  owner: "관제운영팀"
+  last_reviewed: 2026-10-17
+  review_every_days: 180

@@ -1,0 +1,50 @@
+# 호스트 프로세스 다운 플레이북 (plans/187 §4.1 host.process · §5.2 · §5.7.2 · D-341)
+# 액션 ID만 쓴다 — 도구명은 스텝 라이브러리(application)에만 둔다(§5.2).
+id: host.process
+version: 1
+match:
+  alarm_kind: process
+  surface_terms: [프로세스 다운, 프로세스 중단, 프로세스 종료]
+  priority: 150
+window: {before_min: 30, after_min: 10, baseline: [prev_day, prev_week]}   # §4.0
+steps:
+  - id: S4r
+    action: host.resource_status         # 호스트 생존 · 프로세스만인지
+    narrate: {focus: "호스트 자체 생존 여부와 서브리소스 상태", max_sentences: 3}
+  - id: S5
+    action: xsource.related_alarms
+    narrate: {focus: "알람 전후 선행·동시·후행 알람", max_sentences: 3}
+  - id: S5a
+    action: host.alarm_history           # 재발 확인 — 같은 (호스트, 알람명) 최근 20일(§4.0)
+    args: {lookback_days: 20}
+    narrate: {focus: "같은 알람의 최근 재발 횟수와 간격", max_sentences: 2}
+  - id: S0r
+    action: scope.host_to_was            # WAS 프로세스면 인스턴스 영향 확인
+    narrate: {focus: "이 호스트 WAS 인스턴스의 이상 여부", max_sentences: 2}
+  - id: S1
+    action: apm.golden_signals
+    for_each: targets
+    when: "S0r.status == 'ok' and S0r.verdict == 'degraded'"
+    narrate: {focus: "이상 WAS 인스턴스의 p95·에러율 변화", max_sentences: 3}
+  - id: S7
+    action: change.recent
+    args: {lookback_hours: 24}
+    narrate: {focus: "사건창 직전 배포·재부팅 등 변경의 시간 근접순", max_sentences: 3}
+  - id: S9
+    action: synthesize
+response_hints:
+  host_vs_process: "호스트 전체가 내려갔는지 프로세스만 내려갔는지 먼저 구분"
+  oom: "메모리 부족 종료 이력 확인"
+  deploy: "배포 직후면 배포 담당에 확인"
+runbook:
+  meaning: "감시 대상 프로세스가 내려갔거나 응답하지 않는다."
+  impact: "해당 프로세스가 제공하는 서비스 중단"
+  mitigation:
+    - {action: "호스트 생존과 프로세스 상태를 구분해 프로세스만이면 담당과 재기동을 검토", risk: high,
+       verification: "재기동 뒤 프로세스 상태 정상 · 관련 알람 해소", rollback: "재기동은 되돌릴 수 없음 — 종료 원인 로그를 먼저 확보"}
+    - {action: "메모리 부족 종료·호스트 재부팅 이력을 시스템 담당에 확인 요청", risk: low,
+       verification: "종료 원인 확인", rollback: "해당 없음"}
+  escalation: "관제 담당 → 프로세스 담당 → 시스템 담당"
+  owner: "시스템운영팀"
+  last_reviewed: 2026-10-19
+  review_every_days: 180

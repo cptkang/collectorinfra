@@ -566,6 +566,45 @@ async def submit_episode_investigation(
     return result
 
 
+async def build_manual_payload(
+    cfg: Any,  # AppConfig (덕 타이핑)
+    event: Any,  # AlarmEvent (결정 기록으로 다시 만든 것)
+    decision: Any,  # NotificationDecision 대용(tier·reason·fingerprint·signals)
+    *,
+    fingerprint: str,
+    investigation_kind: str,
+) -> dict[str, Any]:
+    """사용자 요청 알람 분석 페이로드(plans/187 W11 · G-28) — 자동 트리거와 같은 조립 함수.
+
+    대상 확정(`resolve_targets`)·가용성 사전 판정(`_resolve_target_state`)을 자동 경로와 같게
+    거친 뒤 `build_trigger_payload`로 조립한다. 판정 지문만 `fingerprint`로 바꾼다 —
+    조사 서비스의 지문 dedup이 원 조사 잡 id를 돌려주면 원 조사 레코드에 새 행이 섞이기
+    때문이다(사건 종합 조사 `episode:` 지문과 같은 방식).
+    `meta.investigation_kind`는 기존 선택 키다(계약 "1" 불변).
+    재발·상관·사건 맥락은 알람 처리 시점 상태라 싣지 않는다.
+    자동 트리거 경로는 이 함수를 쓰지 않는다.
+    """
+    target_resolution = resolve_targets(
+        alarm_payload={
+            "server_name": getattr(event, "server_name", None),
+            "hostname": getattr(event, "hostname", None),
+            "db_id": getattr(event, "db_id", None),
+        }
+    )
+    first = target_resolution.targets[0] if target_resolution.resolved else None
+    target_state = await _resolve_target_state(cfg, event, first)
+    signals = getattr(decision, "signals", None) or {}
+    payload = build_trigger_payload(
+        event,
+        decision,
+        root_resource=signals.get("root_resource"),
+        target_state=target_state,
+        investigation_kind=investigation_kind,
+    )
+    payload["decision"]["fingerprint"] = fingerprint
+    return payload
+
+
 class _FingerprintOnly:
     """감사 기록용 판정 대용 — `_audit`가 읽는 `fingerprint`만 가진다(종합 조사 지문)."""
 

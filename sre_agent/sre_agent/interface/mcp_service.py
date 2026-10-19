@@ -22,7 +22,10 @@ from sre_agent import __version__
 from sre_agent.application.briefing_builder import build_briefing
 from sre_agent.application.evidence_prefetch import prefetch_and_correlate, scope_from_job
 from sre_agent.application.investigation_guidance import build_guidance
-from sre_agent.application.investigation_dispatcher import InvestigationDispatcher
+from sre_agent.application.investigation_dispatcher import (
+    InvestigationDispatcher,
+    PlaybookWiring,
+)
 from sre_agent.application.investigation_jobs import (
     CONTRACT_VERSION,
     JobStore,
@@ -35,7 +38,9 @@ from sre_agent.domain.cross_source_episode import (
     active_episode,
     prompt_text,
 )
-from sre_agent.infrastructure.mcp_tool_client import make_batch_caller
+from sre_agent.infrastructure.known_error_loader import DEFAULT_KNOWN_ERROR_DIR, load_known_errors
+from sre_agent.infrastructure.mcp_tool_client import make_apm_batch_caller, make_batch_caller
+from sre_agent.infrastructure.playbook_loader import DEFAULT_PLAYBOOK_DIR, load_playbooks
 from sre_agent.settings import AgentSettings
 from sre_agent.toolset_profiles import remote_vm_profile
 
@@ -180,7 +185,28 @@ def _build_mcp_servers(settings: AgentSettings) -> dict[str, dict] | None:
     return servers or None
 
 
-def _default_diagnose_fn(settings: AgentSettings):
+def _agent_getter(settings: AgentSettings):
+    """`DiagnosisAgent`를 지연 생성해 공유하는 getter.
+
+    조사 함수와 플레이북 소견기(plans/187 W4)가 같은 객체를 쓴다.
+    """
+    holder: dict[str, DiagnosisAgent] = {}
+
+    def _get() -> DiagnosisAgent:
+        agent = holder.get("agent")
+        if agent is None:
+            agent = DiagnosisAgent(
+                settings,
+                toolsets=remote_vm_profile(),
+                mcp_servers=_build_mcp_servers(settings),
+            )
+            holder["agent"] = agent
+        return agent
+
+    return _get
+
+
+def _default_diagnose_fn(settings: AgentSettings, agent_getter=None):  # noqa: ANN001
     """실 조사 함수(DiagnosisAgent)를 지연 생성해 반환한다 — dispatcher.diagnose_fn 주입용.
 
     LLM 키가 있을 때만 dispatcher가 호출하므로 agent는 최초 호출 시점에 1회 생성한다
@@ -190,17 +216,10 @@ def _default_diagnose_fn(settings: AgentSettings):
     (D-119). mcp_server는 조사 배치에서 execute_sql·raw_promql을 비노출로 두어야
     LLM이 raw SQL/PromQL 방언 오류로 step을 소진하지 않는다(D-122 — 배치 config 규약).
     """
-    holder: dict[str, DiagnosisAgent] = {}
+    get_agent = agent_getter or _agent_getter(settings)
 
     def _diagnose(job) -> DiagnosisResult:
-        agent = holder.get("agent")
-        if agent is None:
-            agent = DiagnosisAgent(
-                settings,
-                toolsets=remote_vm_profile(),
-                mcp_servers=_build_mcp_servers(settings),
-            )
-            holder["agent"] = agent
+        agent = get_agent()
         # 조사 지침 주입(plans/50 G5 · D-197): 원격 셸 안내 · 사건 구간 · 운영자 추가 지침.
         # 종전에는 additions를 넘기지 않아 REMOTE_VM_SHELL_NOTE조차 주입되지 않았다.
         return agent.ask(
@@ -237,6 +256,51 @@ def _default_prefetch_fn(settings: AgentSettings):
     return _prefetch
 
 
+def _default_playbook_wiring(
+    settings: AgentSettings, agent_getter  # noqa: ANN001 — `_agent_getter` 반환 콜러블
+) -> PlaybookWiring | None:
+    """플레이북 배선(plans/187 W4)을 기동 시 1회 만든다. `sre_playbook_enabled` off면 None.
+
+    off면 다른 플레이북 설정(디렉토리·모드·예산)을 읽지 않는다. on이면 플레이북 YAML을 적재하고,
+    거부된 파일·fallback 부재를 기동 경고로 남기고, 거부 파일명은 배선에 실어 브리핑 notes에도
+    드러낸다(조사는 막지 않는다 — 적재된 것만 쓴다).
+    소견기 LLM은 조사 에이전트와 같은 holmes LLM(같은 모델·토큰 예산)을 `temperature=0`으로 쓴다.
+    도구 호출은 폴스타·APM 배치 콜러블(URL 미설정이면 그 축 결손)이다.
+    """
+    if not settings.sre_playbook_enabled:
+        return None
+    directory = settings.sre_playbook_dir or DEFAULT_PLAYBOOK_DIR
+    loaded = load_playbooks(directory)
+    for name, reason in loaded.rejected:
+        logger.warning("플레이북 거부(기동 적재): %s — %s", name, reason)
+    if loaded.error:
+        logger.warning("플레이북 적재 오류(%s): %s", directory, loaded.error)
+    if loaded.fallback is None:
+        logger.warning(
+            "fallback 플레이북 미적재(%s) — 일치 없는 알람은 종전 HolmesGPT 조사로 간다", directory
+        )
+    logger.info("플레이북 %d개 적재(%s)", len(loaded.playbooks), directory)
+    # 알려진 오류(W8) — 기동 시 1회 · 읽기 전용 · 거부 파일은 기동 경고(조사는 막지 않는다).
+    known = load_known_errors(DEFAULT_KNOWN_ERROR_DIR)
+    for name, reason in known.rejected:
+        logger.warning("알려진 오류 거부(기동 적재): %s — %s", name, reason)
+    logger.info("알려진 오류 %d건 적재(%s)", len(known.known_errors), DEFAULT_KNOWN_ERROR_DIR)
+
+    def _llm(messages: list[dict[str, str]]) -> str:
+        response = agent_getter().llm.llm.completion(messages, temperature=0)
+        return response.choices[0].message.content or ""
+
+    return PlaybookWiring(
+        playbooks=tuple(loaded.playbooks),
+        polestar=make_batch_caller(settings),
+        apm=make_apm_batch_caller(settings),
+        llm=_llm,
+        known_errors=known.known_errors,
+        # 거부 파일명(플레이북 → KE 순) — 브리핑 notes 1줄로 드러낸다(비면 문구 없음 · 지적 9).
+        rejected_files=tuple(name for name, _ in (*loaded.rejected, *known.rejected)),
+    )
+
+
 def _build_dispatcher(
     settings: AgentSettings, audit_path: str | Path | None = None
 ) -> InvestigationDispatcher:
@@ -248,12 +312,14 @@ def _build_dispatcher(
     JobStore와 같은 파일을 써야 잡 한 건의 생애가 한 곳에서 읽히고, 재기동 복구도 완료된 잡을
     active로 오인하지 않는다.
     """
+    agent_getter = _agent_getter(settings)
     return InvestigationDispatcher(
         settings,
-        diagnose_fn=_default_diagnose_fn(settings),
+        diagnose_fn=_default_diagnose_fn(settings, agent_getter),
         briefing_fn=build_briefing,
         prefetch_fn=_default_prefetch_fn(settings),
         audit_path=audit_path if audit_path is not None else default_audit_path(),
+        playbook=_default_playbook_wiring(settings, agent_getter),
     )
 
 
@@ -310,6 +376,7 @@ def create_service(
         target_state: dict | None = None,
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
+        prior_findings: dict | None = None,
     ) -> str:
         """pull형 자연어 진단 잡을 제출한다(§3 — 챗 의도 위임용). 동일 잡 패턴.
 
@@ -319,11 +386,16 @@ def create_service(
 
         `reference_time`(ISO 8601)·`lookback_minutes`(plans/50 A′-5)는 사건 좌표계다 — 조사가
         "지금"이 아니라 그 구간의 증거를 쓰게 한다. 형식 오류는 `rejected`로 돌려준다.
+
+        `prior_findings`(plans/187 W10 · 선택)는 이미 수집된 판정 요약(판정·판독 enum·
+        사용 도구·사건창 — LLM 서술 제외)이다. 지침에 「이미 수집된 판정」 블록으로 렌더된다.
+        넘기지 않으면 종전과 같다.
         """
         return json.dumps(
             store.submit_diagnosis(
                 question, server_name, hostname, db_id, target_state,
                 reference_time=reference_time, lookback_minutes=lookback_minutes,
+                prior_findings=prior_findings,
             ),
             ensure_ascii=False,
         )

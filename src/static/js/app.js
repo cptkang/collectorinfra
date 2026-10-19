@@ -7,6 +7,12 @@
 (function () {
     "use strict";
 
+    // 서버가 준 값(조사·잡·태스크 id 등)을 CSS 속성 선택자에 넣을 때 쓴다(plans/187 교정 L3).
+    function cssEsc(value) {
+        var text = String(value);
+        return (window.CSS && CSS.escape) ? CSS.escape(text) : text.replace(/["\\]/g, "\\$&");
+    }
+
     // ─── DOM Elements ───
 
     var chatMessages = document.getElementById("chatMessages");
@@ -44,6 +50,12 @@
     var promptConfirmRun = document.getElementById("promptConfirmRun");
     var promptConfirmEdit = document.getElementById("promptConfirmEdit");
     var alarmScrollTopBtn = document.getElementById("alarmScrollTopBtn");
+    // 지난 알람 검색(plans/187 FE-2 · W11) — 판정 기록 조회 결과만 그리고 알람 목록에는 끼우지 않는다(D-182)
+    var alarmPastRange = document.getElementById("alarmPastRange");
+    var alarmPastQuery = document.getElementById("alarmPastQuery");
+    var alarmPastSearchBtn = document.getElementById("alarmPastSearchBtn");
+    var alarmPastStatus = document.getElementById("alarmPastStatus");
+    var alarmPastList = document.getElementById("alarmPastList");
     // 스코프 칩(Plan 90 · D-205) — 이 창이 다음 질의에서 볼 폴스타 존
     var dbScopeChip = document.getElementById("dbScopeChip");
     var dbScopeText = document.getElementById("dbScopeText");
@@ -172,6 +184,8 @@
                 }
                 // Plan 59 §17: 알림 존 권한을 확정한 뒤 구독을 시작한다(권한 없으면 미구독).
                 initAlarmSubscription(userInfo, data.auth_enabled);
+                // plans/187 W5b: `/?investigation=<id>` 진입 — 인증 확정 뒤에만 조사 기록을 읽는다
+                openInvestigationFromQuery();
                 // 로그아웃 버튼
                 var logoutBtn = document.getElementById("userLogoutBtn");
                 if (logoutBtn && data.auth_enabled) {
@@ -299,6 +313,11 @@
     var messages = []; // session message history
     var stageTimer = null;
     var currentThreadId = null;
+    // plans/187 W5b 조사 대화(§5.6.1 · D-341 ⑪) — 새 대화의 첫 질의 턴에 실을 조사 id(서버가 그 턴
+    // disclosures에 ref.investigation_id로 남겨 사이드바 재열기 때 고정 카드를 복원한다)와 고정 카드 패널.
+    var pendingInvestigationRef = null;
+    var investigationPinPanel = null;
+    var PROMPT_PLACEHOLDER = promptEl ? promptEl.placeholder : "";
     // 존 역질문(파일 경로) 재전송용 — 마지막 업로드 파일 참조 (Plan 75 §4 확장)
     var lastUploadedFile = null;
     // 스코프 칩 상태(Plan 90 · D-205). currentDbScope는 서버가 마지막 응답에 실은 db_scope(거울),
@@ -806,6 +825,8 @@
             sendBtn.innerHTML =
                 '<svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>';
         }
+        // plans/187 W5b: 답변 스트리밍 중에는 「조사 대화로 열기」를 막는다(진행 중 대화 보호)
+        if (window.BriefingView) window.BriefingView.setBusy(document, mode === "stop");
     }
 
     // §11: 진행 중 스트리밍 응답을 중단한다(클라이언트 abort → 서버 취소 전파).
@@ -1170,6 +1191,7 @@
                 '<div class="message-time">' + formatTime(data.time || new Date()) + '</div>' +
             '</div>';
         appendApmJobCards(el.querySelector(".message-bubble"), data.disclosures);   // plans/134 W0-B
+        appendChatInvestigationCards(el.querySelector(".message-bubble"), data.disclosures);   // plans/187 W12
 
         chatMessages.appendChild(el);
         if (window.ResultViz) ResultViz.enhanceTables(el);   // plans/160 D — 표 넓게 보기(넘침 판정은 DOM 부착 뒤)
@@ -1437,7 +1459,7 @@
             var t = _streamStatus.tasks[id];
             if (t.agent !== "apm_query" || t.status !== "failed" || !t.error || t.error.indexOf(clar.question) === -1) return;
             t.clarification = true;
-            var li = progressPipeline && progressPipeline.querySelector('li[data-key="task:' + (t.task_id || t.order) + '"]');
+            var li = progressPipeline && progressPipeline.querySelector('li[data-key="' + cssEsc("task:" + (t.task_id || t.order)) + '"]');
             var badge = li && li.querySelector(".step-data-badge");
             if (badge) {
                 badge.className = "step-data-badge step-data-badge--info";
@@ -1514,7 +1536,7 @@
         var isGroup = event.kind === "group" && event.group;  // 존 그룹 순차 조회(plans/82 v7 R-3)
         var key = event.kind + ":" + (isTask ? (event.task.task_id || event.task.order)
                                      : isGroup ? (event.group.group_key || "") : event.name);
-        var li = list.querySelector('li[data-key="' + key + '"]');
+        var li = list.querySelector('li[data-key="' + cssEsc(key) + '"]');
         if (!li) {
             li = document.createElement("li");
             li.setAttribute("data-key", key);
@@ -1733,7 +1755,7 @@
             }
             var response = await fetch("/api/v1/query/stream", {
                 method: "POST",
-                headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
+                headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders(), investigationRefHeader()),
                 body: JSON.stringify(streamBody),
                 signal: currentAbortController.signal,
             });
@@ -1990,6 +2012,8 @@
         // plans/134 W0-B: 제니퍼 장기 조회 작업 카드(disclosures[].ref.apm_job_id)
         var streamingMsgJob = document.getElementById("streamingMessage");
         if (streamingMsgJob) appendApmJobCards(streamingMsgJob.querySelector(".message-bubble"), meta.disclosures);
+        // plans/187 W12: 채팅 증상 질의 조사 카드(disclosures[].ref.route)
+        if (streamingMsgJob) appendChatInvestigationCards(streamingMsgJob.querySelector(".message-bubble"), meta.disclosures);
 
         // Remove streaming IDs to prevent conflicts
         var streamingMsg = document.getElementById("streamingMessage");
@@ -2671,7 +2695,7 @@
             }
             var response = await fetch("/api/v1/query", {
                 method: "POST",
-                headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
+                headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders(), investigationRefHeader()),
                 body: JSON.stringify(queryBody),
             });
 
@@ -2737,7 +2761,7 @@
             // SSE 스트리밍 시도
             var response = await fetch("/api/v1/query/file/stream", {
                 method: "POST",
-                headers: getAuthHeaders(),
+                headers: Object.assign(getAuthHeaders(), investigationRefHeader()),
                 body: formData,
                 signal: currentAbortController.signal,
             });
@@ -2887,7 +2911,7 @@
         try {
             var response = await fetch("/api/v1/query/file", {
                 method: "POST",
-                headers: getAuthHeaders(),
+                headers: Object.assign(getAuthHeaders(), investigationRefHeader()),
                 body: formData,
             });
             var data = await response.json();
@@ -3217,7 +3241,7 @@
     function appendApmJobCards(bubble, disclosures) {
         if (!bubble) return;
         apmJobRefs(disclosures).forEach(function (ref) {
-            if (bubble.querySelector('.apm-job-card[data-job-id="' + ref.id + '"]')) return;
+            if (bubble.querySelector('.apm-job-card[data-job-id="' + cssEsc(ref.id) + '"]')) return;
             var card = document.createElement("div");
             card.className = "apm-job-card";
             card.setAttribute("data-job-id", ref.id);
@@ -4576,8 +4600,12 @@
         if (isProcessing) return;
         hideError();
         hidePromptConfirm();
+        resetInvestigationConversation();
         Array.prototype.forEach.call(chatMessages.querySelectorAll(".message"), function (el) { el.remove(); });
         if (chatWelcome) chatWelcome.classList.toggle("hidden", turns.length > 0);
+        // plans/187 W5b: 조사 대화로 시작한 대화면 첫 고정 카드를 복원한다(D-300 작업 카드 복원과 같은 방식)
+        var pinnedInvestigation = investigationRefOf(turns);
+        if (pinnedInvestigation) renderInvestigationPin(pinnedInvestigation, { restored: true });
 
         var lastScope = null;
         turns.forEach(function (t) {
@@ -4625,6 +4653,7 @@
         }
         hideError();
         hidePromptConfirm();
+        resetInvestigationConversation();
         Array.prototype.forEach.call(chatMessages.querySelectorAll(".message"), function (el) { el.remove(); });
         if (chatWelcome) chatWelcome.classList.remove("hidden");
         messages = [];
@@ -4639,6 +4668,269 @@
         stickToBottom = true;
         renderHistoryList();   // 현재 대화 강조 해제
         if (promptEl) promptEl.focus();
+    }
+
+    // ─── 조사 대화 (plans/187 W5b · §5.6.1 1단계 · D-341 ⑪⑫) ───
+    // 조사 브리핑 상세형을 새 대화의 **첫 고정 카드**로 그린다. 이 카드는 LLM 대화 문맥이 아니다 —
+    // 파이프라인은 브리핑을 모르므로(1단계) 「이 서버」 같은 지시어는 풀리지 않는다고 안내한다.
+    // 추천 칩은 내지 않는다(W0 대조에서 골드셋 동형 문구 3종 모두 없음 — §2.3 · D-192).
+    var INVESTIGATION_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+    var INVESTIGATION_PROMPT_HINT = "추가 질의 — 「이 서버」·「그 시간대」 같은 지시어는 풀리지 않습니다. 서버·인스턴스 이름과 시각을 직접 적으세요.";
+
+    // 첫 질의 턴에만 조사 id를 헤더로 싣는다(서버 thread_history가 그 턴 disclosures에 ref로 남긴다)
+    function investigationRefHeader() {
+        return (pendingInvestigationRef && !currentThreadId) ? { "X-Investigation-Ref": pendingInvestigationRef } : {};
+    }
+
+    function investigationRefOf(turns) {
+        for (var i = 0; i < (turns || []).length; i++) {
+            var ds = (turns[i] && turns[i].disclosures) || [];
+            for (var j = 0; j < ds.length; j++) {
+                var ref = ds[j] && ds[j].ref;
+                // plans/187 W12 증상 질의 조사 카드(ref.route 있음)는 답변 아래 카드라 고정 카드가 아니다
+                if (!ref || ref.route) continue;
+                var id = ref.investigation_id;
+                if (id && INVESTIGATION_ID_RE.test(String(id))) return String(id);
+            }
+        }
+        return null;
+    }
+
+    function resetInvestigationConversation() {
+        if (investigationPinPanel) investigationPinPanel.close();
+        investigationPinPanel = null;
+        chatInvestigationPanels.forEach(function (p) { p.close(); });   // plans/187 W12 — 화면을 비우기 전에 재조회 정리
+        chatInvestigationPanels = [];
+        pendingInvestigationRef = null;
+        if (promptEl) promptEl.placeholder = PROMPT_PLACEHOLDER;
+    }
+
+    // 알람 카드 「조사 대화로 열기」 · `/?investigation=<id>` 진입 — 질의응답 탭으로 넘어가 새 대화를 연다.
+    function openInvestigationConversation(investigationId) {
+        if (!investigationId || !INVESTIGATION_ID_RE.test(String(investigationId))) return;
+        if (isProcessing) {
+            showError("답변이 끝난 뒤 조사 대화를 열 수 있습니다.");
+            return;
+        }
+        setActiveView("chat");
+        startNewChat();
+        pendingInvestigationRef = String(investigationId);
+        if (promptEl) promptEl.placeholder = INVESTIGATION_PROMPT_HINT;
+        renderInvestigationPin(pendingInvestigationRef, { restored: false });
+    }
+
+    function renderInvestigationPin(investigationId, opts) {
+        if (!window.BriefingView || !chatMessages) return;
+        if (chatWelcome) chatWelcome.classList.add("hidden");
+        var el = document.createElement("div");
+        el.className = "message message--agent investigation-pin";
+        el.innerHTML =
+            '<div class="message-content"><div class="message-bubble">' +
+                '<div class="investigation-pin-head">조사 대화 · 조사 브리핑</div>' +
+                '<div class="investigation-pin-body"></div>' +
+                '<div class="investigation-pin-foot">' +
+                    '<span>이 카드는 조사 기록을 보여 줄 뿐 질의의 맥락으로 쓰이지 않습니다. ' +
+                        '「이 서버」 같은 지시어는 풀리지 않으니 대상 이름을 적어 질의하세요.</span>' +
+                    (opts && opts.restored ? "" : '<span>질의 없이 닫으면 이 대화는 남지 않습니다.</span>') +
+                    '<span class="investigation-pin-scope" hidden></span>' +
+                '</div>' +
+            '</div></div>';
+        chatMessages.insertBefore(el, chatMessages.firstChild);
+        var scopeNote = el.querySelector(".investigation-pin-scope");
+        var scoped = !!(opts && opts.restored);   // 복원한 대화는 저장된 범위를 따른다
+        var path = "/api/v1/alarm/investigations/" + encodeURIComponent(investigationId);
+        var pinAlarmId = investigationAlarmIds[investigationId] || null;
+        investigationPinPanel = window.BriefingView.attach(el.querySelector(".investigation-pin-body"), {
+            limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
+            render: { mode: "detail" },
+            // plans/187 FE-2 — 추가 조사(W10) · 알려진 문제 피드백(W8) · KB 초안·포스트모템(W9).
+            // 기능이 꺼지면 서버가 404를 돌려주고 공용 렌더가 버튼을 숨기거나 막는다.
+            followup: {
+                list: function () { return bvRequest(path + "/followups"); },
+                submit: function (focus, note) {
+                    return bvRequest(path + "/followup", "POST", note ? { focus: focus, note: note } : { focus: focus });
+                },
+                loadById: loadInvestigationView,
+            },
+            keFeedback: function (keId, verdict) {
+                return bvRequest(path + "/known-errors/" + encodeURIComponent(keId) + "/feedback", "POST", { verdict: verdict });
+            },
+            kb: {
+                operator: alarmOperator,
+                draft: function () { return bvRequest(path + "/kb-draft", "POST"); },
+                postmortem: function () { return bvRequest(path + "/postmortem"); },
+            },
+            // 「이 알람 분석」은 알람 id를 아는 조사(알람 카드·지난 알람에서 연 대화)에서만 — 새 조사는 새 대화로 연다
+            analyze: pinAlarmId ? analyzeOptions(pinAlarmId, { follow: false, probe: true }) : null,
+            onOpenConversation: openInvestigationConversation,
+            load: async function () {
+                var resp = await fetch(path, { headers: getAuthHeaders() });
+                if (!resp.ok) {
+                    var detail = await resp.json().catch(function () { return {}; });
+                    throw new Error(detail.detail || ("HTTP " + resp.status));
+                }
+                return resp.json();
+            },
+            engineChoice: async function (choice) {
+                var resp = await fetch(path + "/engine-choice", {
+                    method: "POST",
+                    headers: Object.assign({ "Content-Type": "application/json" }, getAuthHeaders()),
+                    body: JSON.stringify({ choice: choice }),
+                });
+                var body = await resp.json().catch(function () { return {}; });
+                var detail = body && body.detail;
+                if (detail && typeof detail === "object") detail = detail.reason || detail.message || JSON.stringify(detail);
+                return { ok: resp.ok, status: resp.status, detail: detail };
+            },
+            onView: function (view) {
+                if (scoped) return;
+                var sc = window.BriefingView.playbookScope(view);
+                if (!sc) return;
+                scoped = true;
+                applyInvestigationScope(sc.polestar_source, scopeNote);
+            },
+        });
+        investigationPinPanel.open();
+    }
+
+    // ─── plans/187 FE-2 공용 호출 ───
+    // 조사 id → 알람 id(알람 카드·지난 알람 카드가 그린 조사만) — 조사 대화의 「이 알람 분석」 대상
+    var investigationAlarmIds = {};
+    // 조사 운영자(인증 꺼짐 또는 관리자) — 「KB 초안 만들기」 표시(서버도 operator_only로 막는다)
+    var alarmOperator = false;
+
+    function bvRequest(url, method, body) {
+        var init = { method: method || "GET", headers: getAuthHeaders() };
+        if (body !== undefined) {
+            init.headers = Object.assign({ "Content-Type": "application/json" }, init.headers);
+            init.body = JSON.stringify(body);
+        }
+        return fetch(url, init).then(window.BriefingView.responseOf);
+    }
+
+    async function loadInvestigationView(investigationId) {
+        var resp = await fetch("/api/v1/alarm/investigations/" + encodeURIComponent(investigationId), { headers: getAuthHeaders() });
+        if (!resp.ok) {
+            var detail = await resp.json().catch(function () { return {}; });
+            throw new Error(window.BriefingView.reasonOf({ status: resp.status, body: detail }));
+        }
+        return resp.json();
+    }
+
+    function rememberAlarmOf(alarmId, view) {
+        if (!alarmId || !view) return;
+        if (view.investigation_id) investigationAlarmIds[view.investigation_id] = alarmId;
+        (Array.isArray(view.previous) ? view.previous : []).forEach(function (p) {
+            if (p && p.investigation_id) investigationAlarmIds[p.investigation_id] = alarmId;
+        });
+    }
+
+    // 「이 알람 분석」(W11) — 사용자 요청 조사는 통보되지 않는다(공용 렌더가 안내문을 함께 그린다)
+    function analyzeOptions(alarmId, extra) {
+        var byAlarm = "/api/v1/alarm/investigations/by-alarm/" + encodeURIComponent(alarmId);
+        return {
+            submit: function () { return bvRequest("/api/v1/alarm/" + encodeURIComponent(alarmId) + "/investigations", "POST"); },
+            loadById: loadInvestigationView,
+            probe: extra && extra.probe ? function () { return bvRequest(byAlarm); } : null,
+            follow: !(extra && extra.follow === false),
+        };
+    }
+
+    // 범위 칩을 조사 대상의 폴스타 db_id로 맞춘다(결정적). 사용자 질의 범위 밖이면 맞추지 않고 사유를 보인다.
+    function applyInvestigationScope(dbId, noteEl) {
+        function note(text) {
+            if (!noteEl) return;
+            noteEl.textContent = text;
+            noteEl.hidden = false;
+        }
+        if (!dbId) { note("조사 대상의 폴스타 DB를 확정하지 못해 범위 칩을 맞추지 않았습니다."); return; }
+        loadScopeOptions().then(function (axes) {
+            if (currentThreadId || pendingInvestigationRef === null) return;   // 이미 질의를 시작했거나 닫은 대화
+            var opts = (axes && axes[0] && axes[0].options) || [];
+            if (!axes) { note("범위 선택지를 불러오지 못해 범위 칩을 맞추지 않았습니다."); return; }
+            var hit = opts.some(function (o) { return o.key === dbId; });
+            if (!hit) { note("조사 대상 DB(" + dbId + ")는 질의 가능한 범위 밖이라 범위 칩을 맞추지 않았습니다."); return; }
+            pendingDbIds = [dbId];
+            pendingReset = false;
+            updateDbScopeChip();
+        });
+    }
+
+    // `/?investigation=<id>`(관제 드로어 새 탭 · workb 링크) — 열고 나면 쿼리를 지워 새로고침 = 새 대화(D-248 ⑧)
+    function openInvestigationFromQuery() {
+        var params = new URLSearchParams(window.location.search);
+        var id = params.get("investigation");
+        if (id === null) return;
+        params.delete("investigation");
+        var rest = params.toString();
+        history.replaceState(null, "", window.location.pathname + (rest ? "?" + rest : "") + window.location.hash);
+        if (!INVESTIGATION_ID_RE.test(id)) { showError("조사 id 형식이 올바르지 않아 조사 대화를 열지 않았습니다."); return; }
+        openInvestigationConversation(id);
+    }
+
+    // ─── 채팅 증상 질의 조사 카드 (plans/187 W12 · §5.6.2 ③ · G-33) ───
+    // fault_diagnosis가 조사를 접수만 하고 곧바로 답하면 disclosures[]에 `{kind:"investigation_ref",
+    // ref:{investigation_id, status, route, engine, route_label, reason, target?, …}}`를 싣는다.
+    // `ref.route`가 있는 항목만 이 카드다 — W5b 조사 대화 첫 턴의 ref(`route` 없음)는 고정 카드가 맡는다.
+    // 카드 머리(엔진 · 판정 경로)는 서버 문자열 그대로다(화면이 다시 판정하지 않는다). 접수 거부면 다시
+    // 묻지 않고, 접수됐으면 공용 렌더(요약형)가 15초 간격으로 다시 묻는다(상한 = capabilities 또는 300초).
+    var CHAT_INVESTIGATION_KIND = "investigation_ref";
+    var chatInvestigationPanels = [];
+
+    function chatInvestigationRefs(disclosures) {
+        var seen = {};
+        var refs = [];
+        (Array.isArray(disclosures) ? disclosures : []).forEach(function (d) {
+            var ref = d && d.kind === CHAT_INVESTIGATION_KIND ? d.ref : null;
+            if (!ref || !ref.route) return;
+            var id = String(ref.investigation_id || "");
+            if (!INVESTIGATION_ID_RE.test(id) || seen[id]) return;
+            seen[id] = true;
+            refs.push(ref);
+        });
+        return refs;
+    }
+
+    function chatInvestigationCardHtml(ref) {
+        var rejected = ref.status === "rejected";
+        var head = String(ref.route_label || ref.engine || "");  // route_label이 엔진명으로 시작한다(W12) — 중복 표기 회피
+        return '<div class="chat-inv-head">' +
+                '<span class="chat-inv-title">' + escapeHtml(head || "장애 조사") + '</span>' +
+                '<span class="chat-inv-badge">' + (rejected ? "접수 거부" : "조사 접수") + '</span>' +
+            '</div>' +
+            (ref.target ? '<div class="chat-inv-meta">대상 ' + escapeHtml(ref.target) + '</div>' : "") +
+            '<div class="chat-inv-meta">조사 ' + escapeHtml(ref.investigation_id) + '</div>' +
+            (rejected
+                ? '<div class="chat-inv-note">조사 서비스가 접수를 거부했습니다 — 사유는 위 답변에 있습니다. 이 카드는 다시 확인하지 않습니다.</div>'
+                : '<div class="chat-inv-body"></div>' +
+                  '<div class="chat-inv-foot">' +
+                      '<button type="button" class="apm-job-btn apm-job-btn--primary chat-inv-open">조사 대화로 열기</button>' +
+                  '</div>');
+    }
+
+    function appendChatInvestigationCards(bubble, disclosures) {
+        if (!bubble || !window.BriefingView) return;
+        chatInvestigationRefs(disclosures).forEach(function (ref) {
+            var id = String(ref.investigation_id);
+            if (bubble.querySelector('.chat-inv-card[data-investigation-id="' + cssEsc(id) + '"]')) return;
+            var rejected = ref.status === "rejected";
+            var card = document.createElement("div");
+            card.className = "chat-inv-card";
+            card.setAttribute("data-investigation-id", id);
+            card.setAttribute("data-status", rejected ? "rejected" : "submitted");
+            card.innerHTML = chatInvestigationCardHtml(ref);
+            bubble.appendChild(card);
+            if (rejected) return;   // 거부 — 재조회 없음
+            // 진행 중에도 열 수 있다(조사 대화의 고정 카드가 이어서 다시 묻는다) · 답변 중이면 openInvestigationConversation이 사유를 보인다
+            card.querySelector(".chat-inv-open").addEventListener("click", function () { openInvestigationConversation(id); });
+            var panel = window.BriefingView.attach(card.querySelector(".chat-inv-body"), {
+                limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
+                render: { mode: "summary" },
+                load: function () { return loadInvestigationView(id); },
+            });
+            chatInvestigationPanels.push(panel);
+            panel.open();
+        });
     }
 
     function deleteThread(threadId) {
@@ -5064,6 +5356,9 @@
             : "/api/v1/alarm/investigations/" + encodeURIComponent(data.investigation_id);
         var panel = window.BriefingView.attach(body, {
             limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
+            // plans/187 W5b: 플레이북 브리핑이면 요약형 + 「조사 대화로 열기」(없으면 종전 렌더)
+            render: { mode: "summary", openConversation: true, busy: function () { return isProcessing; } },
+            onOpenConversation: openInvestigationConversation,
             load: async function () {
                 var resp = await fetch(path, { headers: getAuthHeaders() });
                 if (!resp.ok) {
@@ -5072,6 +5367,9 @@
                 }
                 return resp.json();
             },
+            // plans/187 FE-2 — by-alarm 응답에 `previous`가 실릴 때(기능 켜짐)만 「분석 요청/다시 분석」이 보인다
+            analyze: data.alarm_id ? analyzeOptions(data.alarm_id) : null,
+            onView: function (view) { rememberAlarmOf(data.alarm_id, view); },
         });
         toggle.addEventListener("click", function () {
             var open = section.classList.contains("alarm-briefing-section--collapsed");
@@ -5477,8 +5775,139 @@
         tip.innerHTML = html;
     }
 
+    // ─── 지난 알람 검색 (plans/187 FE-2 · W11 §5.6.2 ①) ───
+    // 판정 기록(`/api/v1/noise/decisions` — 사용자 경로)만 묻고, 결과는 이 칸에만 그린다.
+    // 실시간 알람 목록(alarmList)·미확인 배지에는 끼우지 않는다(D-182).
+    var alarmPastBound = false;
+    var alarmPastPanels = [];
+
+    function setupAlarmPastSearch() {
+        if (alarmPastBound || !alarmPastSearchBtn || !alarmPastList) return;
+        alarmPastBound = true;
+        alarmPastSearchBtn.addEventListener("click", searchPastAlarms);
+        if (alarmPastQuery) alarmPastQuery.addEventListener("keydown", function (e) {
+            if (e.key === "Enter") { e.preventDefault(); searchPastAlarms(); }
+        });
+    }
+
+    function setPastStatus(text) {
+        if (alarmPastStatus) alarmPastStatus.textContent = text || "";
+    }
+
+    function clearPastPanels() {
+        alarmPastPanels.forEach(function (p) { p.close(); });
+        alarmPastPanels = [];
+    }
+
+    async function searchPastAlarms() {
+        var params = new URLSearchParams();
+        params.set("range", (alarmPastRange && alarmPastRange.value) || "24h");
+        params.set("size", "30");
+        var q = alarmPastQuery ? alarmPastQuery.value.trim() : "";
+        if (q) params.set("q", q);
+        clearPastPanels();
+        alarmPastList.textContent = "";
+        setPastStatus("찾는 중…");
+        try {
+            var resp = await fetch("/api/v1/noise/decisions?" + params.toString(), { headers: getAuthHeaders() });
+            var body = await resp.json().catch(function () { return {}; });
+            if (!resp.ok) {
+                setPastStatus("지난 알람을 찾지 못했습니다 — " + window.BriefingView.reasonOf({ status: resp.status, body: body }));
+                return;
+            }
+            var items = Array.isArray(body.items) ? body.items : [];
+            setPastStatus(items.length
+                ? "판정 기록 " + (body.total || items.length) + "건 중 최근 " + items.length + "건"
+                : "조건에 맞는 지난 알람이 없습니다.");
+            items.forEach(function (item) { alarmPastList.appendChild(renderPastAlarmRow(item)); });
+        } catch (e) {
+            setPastStatus("지난 알람을 찾지 못했습니다 — " + (e && e.message ? e.message : e));
+        }
+    }
+
+    function pastText(tag, cls, text) {
+        var el = document.createElement(tag);
+        el.className = cls;
+        el.textContent = text || "";
+        return el;
+    }
+
+    function renderPastAlarmRow(item) {
+        var li = document.createElement("li");
+        li.className = "alarm-past-item";
+        var row = document.createElement("button");
+        row.type = "button";
+        row.className = "alarm-past-row";
+        row.setAttribute("aria-expanded", "false");
+        row.appendChild(pastText("span", "alarm-past-time", item.ts ? new Date(item.ts).toLocaleString("ko-KR", { hour12: false }) : ""));
+        row.appendChild(pastText("span", "alarm-past-server", item.server_name || "-"));
+        row.appendChild(pastText("span", "alarm-past-name", item.alarm_name || "-"));
+        row.appendChild(pastText("span", "alarm-past-stage", item.stage_label || item.tier || ""));
+        var card = document.createElement("div");
+        card.className = "alarm-past-card";
+        card.hidden = true;
+        li.appendChild(row);
+        li.appendChild(card);
+        var panel = null;
+        row.addEventListener("click", function () {
+            var open = card.hidden;
+            card.hidden = !open;
+            row.setAttribute("aria-expanded", open ? "true" : "false");
+            if (!open) { if (panel) panel.close(); return; }
+            if (!panel) panel = buildPastAlarmCard(card, item);
+            if (panel) panel.open();
+        });
+        return li;
+    }
+
+    // 고른 행의 카드 — 판정 요약 + (조사가 있으면) 조사 요약·「조사 대화로 열기」, 없으면 「분석 요청」
+    function buildPastAlarmCard(card, item) {
+        var summary = [item.tier, item.stage_label, item.reason].filter(Boolean).join(" · ");
+        card.appendChild(pastText("div", "alarm-past-summary", summary));
+        if (!item.alarm_id || !window.BriefingView) {
+            card.appendChild(pastText("div", "alarm-past-summary", "알람 id가 없는 판정 기록이라 조사 기록을 찾을 수 없습니다."));
+            return null;
+        }
+        var body = document.createElement("div");
+        body.className = "alarm-past-briefing";
+        card.appendChild(body);
+        var openBtn = document.createElement("button");
+        openBtn.type = "button";
+        openBtn.className = "alarm-past-open";
+        openBtn.textContent = "조사 대화로 열기";
+        openBtn.hidden = true;
+        card.appendChild(openBtn);
+        var shownId = null;
+        openBtn.addEventListener("click", function () { if (shownId) openInvestigationConversation(shownId); });
+        var path = "/api/v1/alarm/investigations/by-alarm/" + encodeURIComponent(item.alarm_id);
+        var panel = window.BriefingView.attach(body, {
+            limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
+            render: { mode: "summary", openConversation: true, busy: function () { return isProcessing; } },
+            onOpenConversation: openInvestigationConversation,
+            load: async function () {
+                var resp = await fetch(path, { headers: getAuthHeaders() });
+                if (!resp.ok) {
+                    var detail = await resp.json().catch(function () { return {}; });
+                    throw new Error(window.BriefingView.reasonOf({ status: resp.status, body: detail }));
+                }
+                return resp.json();
+            },
+            analyze: analyzeOptions(item.alarm_id),
+            onView: function (view) {
+                rememberAlarmOf(item.alarm_id, view);
+                // 플레이북 요약형은 자기 버튼이 있다 — 그 밖의 조사만 여기 버튼으로 연다
+                shownId = view && view.investigation_id && view.status !== "none" ? view.investigation_id : null;
+                openBtn.hidden = !shownId || window.BriefingView.hasPlaybook(view);
+            },
+        });
+        alarmPastPanels.push(panel);
+        return panel;
+    }
+
     // 구독 시작은 checkAuthOnLoad가 존 권한을 확정한 뒤 initAlarmSubscription()으로 트리거한다.
     function initAlarmSubscription(userInfo, authEnabled) {
+        alarmOperator = (!authEnabled) || !!(userInfo && userInfo.role === "admin");
+        setupAlarmPastSearch();
         alarmCanReceive = (!authEnabled) ||
             !!(userInfo && (userInfo.role === "admin" ||
                 (userInfo.alarm_zones && userInfo.alarm_zones.length > 0)));

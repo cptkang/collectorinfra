@@ -1,0 +1,55 @@
+# WAS 에러율 급증 플레이북 (plans/187 §4.1 was.error · §5.2 · §5.7.2 · D-341)
+# 액션 ID만 쓴다 — 도구명은 스텝 라이브러리(application)에만 둔다(§5.2).
+id: was.error
+version: 1
+match:
+  resource_type: apm.Instance
+  any_kind: [was_error_burst, error, exception]   # was_signals kind · 이벤트 유형 정규화 값
+  surface_terms: [에러율, 오류 급증, 예외 급증]       # 채팅 증상 질의 표면어(§5.6.2 ③ · W12)
+  priority: 20
+window: {before_min: 30, after_min: 10, baseline: [prev_day, prev_week]}   # §4.0
+steps:
+  - id: S0
+    action: scope.resolve_was_targets
+    args: {pick: degraded, max_instances: 3}
+    narrate: {focus: "오류가 알람 인스턴스에 편중됐는지 같은 업무 전체인지", max_sentences: 3}
+  - id: S1
+    action: apm.golden_signals
+    for_each: targets
+    narrate: {focus: "에러율·호출 수·p95의 기준선 대비 변화", max_sentences: 4}
+  - id: S1e
+    action: apm.events_errors            # 사건창 오류 유형 상위
+    args: {n: 10}
+    narrate: {focus: "사건창 오류 유형 상위와 그 비중", max_sentences: 3}
+  - id: S3
+    action: apm.slow_tx_breakdown
+    args: {n: 5, profile_top: 1}
+    narrate: {focus: "오류·지연 트랜잭션의 지배 계층", max_sentences: 3}
+  - id: S7
+    action: change.recent                # 배포 회귀 우선 확인(상관 후보로만 표기)
+    args: {lookback_hours: 24}
+    narrate: {focus: "사건창 직전 배포·설정 변경의 시간 근접순", max_sentences: 3}
+  - id: S5
+    action: xsource.related_alarms
+    narrate: {focus: "의존 시스템 알람의 선행·동시·후행", max_sentences: 3}
+  - id: S9
+    action: synthesize
+response_hints:                          # 대응 제안 문구(실행 아님 · 사람 승인) — §4.1
+  instance_skewed: "오류가 한 인스턴스에 편중되면 그 인스턴스를 서비스에서 격리하는 방안 검토"
+  fleet_wide: "전체 인스턴스면 공통 의존 시스템·코드 문제 확인"
+  recent_change: "배포 직후 발생이면 롤백 검토"
+  dependency: "의존 시스템 장애·설정·인증서 만료 여부 확인"
+runbook:
+  meaning: "WAS 인스턴스의 오류·예외 비율이 기준선 대비 급증했다."
+  impact: "해당 업무 요청 실패 · 전체 인스턴스에 퍼지면 업무 중단"
+  mitigation:
+    - {when: "scope == 'instance'", action: "오류가 몰린 인스턴스를 트래픽에서 배제하는 방안을 업무 담당과 검토", risk: medium,
+       verification: "나머지 인스턴스 에러율 기준선 유지", rollback: "인스턴스를 트래픽에 다시 편입"}
+    - {when: "scope == 'shared_dependency'", action: "공통 의존 시스템·인증서·설정 상태를 해당 담당에 확인 요청", risk: low,
+       verification: "에러율 기준선 복귀", rollback: "해당 없음"}
+    - {action: "직전 배포가 상관 후보로 보이면 롤백 여부를 개발·업무 담당과 검토", risk: high,
+       verification: "롤백 뒤 에러율 기준선 복귀", rollback: "롤백한 버전을 다시 배포"}
+  escalation: "업무 담당 → WAS 담당 → 개발 담당"
+  owner: "WAS운영팀"
+  last_reviewed: 2026-10-19
+  review_every_days: 180

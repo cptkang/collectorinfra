@@ -1,0 +1,47 @@
+# 호스트 메모리·스왑 플레이북 (plans/187 §4.1 host.memory · §5.2 · §5.7.2 · D-341)
+# 액션 ID만 쓴다 — 도구명은 스텝 라이브러리(application)에만 둔다(§5.2).
+id: host.memory
+version: 1
+match:
+  alarm_kind: memory
+  surface_terms: [메모리, 메모리 사용률, 메모리 부족]
+  priority: 120
+window: {before_min: 30, after_min: 10, baseline: [prev_day, prev_week]}   # §4.0
+steps:
+  - id: S4
+    action: host.usage_trend
+    args: {kinds: [memory], granularity: h}
+    narrate: {focus: "메모리 사용률의 기준선 대비 변화와 포화 여부", max_sentences: 3}
+  - id: S6
+    action: host.process_top
+    args: {top_n: 10, sort: mem}
+    narrate: {focus: "메모리 상위 프로세스와 그 비중", max_sentences: 3}
+  - id: S0r
+    action: scope.host_to_was            # JVM 힙이 원인인지 — 이 호스트의 WAS 인스턴스
+    narrate: {focus: "이 호스트 WAS 인스턴스의 이상 여부", max_sentences: 2}
+  - id: S2
+    action: apm.runtime_and_pool         # 이상 WAS 인스턴스의 힙 추세
+    for_each: targets
+    when: "S0r.status == 'ok' and S0r.verdict == 'degraded'"
+    narrate: {focus: "WAS 힙 사용 추세가 호스트 메모리 증가와 겹치는지", max_sentences: 3}
+  - id: S5
+    action: xsource.related_alarms
+    narrate: {focus: "알람 전후 선행·동시·후행 알람", max_sentences: 3}
+  - id: S9
+    action: synthesize
+response_hints:
+  oom_history: "메모리 부족으로 종료된 프로세스 이력 확인"
+  top_process: "메모리 상위 프로세스를 해당 담당에 이관"
+  jvm_heap: "JVM 힙 설정이 호스트 메모리에 비해 과대한지 확인"
+runbook:
+  meaning: "호스트 메모리 사용률이 임계를 넘었거나 스왑 사용이 늘었다."
+  impact: "스왑으로 응답 지연 · 메모리 부족 시 프로세스 강제 종료 가능"
+  mitigation:
+    - {action: "메모리 부족 종료 이력과 상위 프로세스를 확인해 해당 담당에 이관", risk: low,
+       verification: "메모리 사용률 기준선 복귀", rollback: "해당 없음"}
+    - {action: "JVM 힙 설정이 과대하면 힙 크기 조정을 WAS 담당과 검토", risk: medium,
+       verification: "조정 뒤 호스트 메모리 여유 확보 · WAS GC 비율 정상", rollback: "힙 설정을 변경 전 값으로 원복"}
+  escalation: "관제 담당 → 시스템 담당 → WAS 담당"
+  owner: "시스템운영팀"
+  last_reviewed: 2026-10-19
+  review_every_days: 180

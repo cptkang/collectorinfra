@@ -1,0 +1,51 @@
+# 호스트 CPU 과다 플레이북 (plans/187 §4.1 host.cpu · §5.2 · §5.7.2 · D-341)
+# 액션 ID만 쓴다 — 도구명은 스텝 라이브러리(application)에만 둔다(§5.2).
+id: host.cpu
+version: 1
+match:
+  alarm_kind: cpu                        # classify_alarm_kind 결과
+  surface_terms: [CPU, CPU 사용률, CPU 과다]
+  priority: 110
+window: {before_min: 30, after_min: 10, baseline: [prev_day, prev_week]}   # §4.0
+steps:
+  - id: S4
+    action: host.usage_trend
+    args: {kinds: [cpu], granularity: h}
+    narrate: {focus: "CPU 사용률의 기준선 대비 변화와 포화 여부", max_sentences: 3}
+  - id: S6
+    action: host.process_top
+    args: {top_n: 10, sort: cpu}
+    narrate: {focus: "CPU 상위 프로세스와 그 비중", max_sentences: 3}
+  - id: S5
+    action: xsource.related_alarms
+    narrate: {focus: "알람 전후 선행·동시·후행 알람", max_sentences: 3}
+  - id: S0r
+    action: scope.host_to_was            # 역방향 — 이 호스트의 WAS 인스턴스(제니퍼 미배포면 생략)
+    narrate: {focus: "이 호스트 WAS 인스턴스의 이상 여부", max_sentences: 2}
+  - id: S1
+    action: apm.golden_signals           # WAS 영향 확인 — 이상 인스턴스가 있을 때만
+    for_each: targets
+    when: "S0r.status == 'ok' and S0r.verdict == 'degraded'"
+    narrate: {focus: "이상 WAS 인스턴스의 p95·TPS 변화", max_sentences: 3}
+  - id: S7
+    action: change.recent
+    args: {lookback_hours: 24}
+    narrate: {focus: "사건창 직전 변경의 시간 근접순", max_sentences: 3}
+  - id: S9
+    action: synthesize
+response_hints:
+  runaway_process: "상위 프로세스를 확인해 해당 담당에 이관"
+  batch: "배치 작업 시간대와 겹치면 배치 일정 조정 검토"
+  traffic: "WAS 부하 증가와 함께 오르면 트래픽 증가로 보고 증설 검토"
+runbook:
+  meaning: "호스트 CPU 사용률이 임계를 넘었거나 기준선 대비 크게 올랐다."
+  impact: "호스트에서 도는 서비스 응답 지연 · 포화 지속 시 처리 정체"
+  mitigation:
+    - {action: "CPU 상위 프로세스를 확인해 해당 프로세스 담당에 이관", risk: low,
+       verification: "CPU 사용률 기준선 복귀", rollback: "해당 없음"}
+    - {action: "배치 작업이 원인이면 배치 일정 조정을 배치 담당과 검토", risk: low,
+       verification: "다음 배치 시간대 CPU 사용률 임계 이내", rollback: "배치 일정을 원래대로 복원"}
+  escalation: "관제 담당 → 시스템 담당 → 프로세스 담당"
+  owner: "시스템운영팀"
+  last_reviewed: 2026-10-19
+  review_every_days: 180

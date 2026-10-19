@@ -217,7 +217,9 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     # plans/162 W5 NOISE_APM_SEV3_POLICY_ENABLED +1(noise_gate 기존 그룹 — 그룹 수 불변)
     # plans/162 F4 NOISE_PAGE_REVIEW_IDLE_CLOSE_MINUTES +1(noise_gate 기존 그룹 — 그룹 수 불변)
     # D-340 LLM_VLLM_{BASE_URL,MODEL,API_KEY,TIMEOUT,VERIFY_SSL,ENABLE_THINKING} +6(llm 기존 그룹)
-    assert len(items) == 426
+    # plans/187 W10 NOISE_INVESTIGATION_ADDITIONAL_* +3 · W11 MANUAL_* +2 · W9 KB_* +7 ·
+    # W5a WEB_BASE_URL +1 · W12 SRE_CHAT_INVESTIGATION_ENABLED +1(noise_gate 기존 그룹)
+    assert len(items) == 440
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -387,7 +389,9 @@ def test_t2_group_and_field_counts():
     # plans/162 W5 NOISE_APM_SEV3_POLICY_ENABLED +1(noise_gate 기존 그룹 — 그룹 수 불변)
     # plans/162 F4 NOISE_PAGE_REVIEW_IDLE_CLOSE_MINUTES +1(noise_gate 기존 그룹 — 그룹 수 불변)
     # D-340 LLM_VLLM_{BASE_URL,MODEL,API_KEY,TIMEOUT,VERIFY_SSL,ENABLE_THINKING} +6(llm 기존 그룹)
-    assert len(index) == 426
+    # plans/187 W10 NOISE_INVESTIGATION_ADDITIONAL_* +3 · W11 MANUAL_* +2 · W9 KB_* +7 ·
+    # W5a WEB_BASE_URL +1 · W12 SRE_CHAT_INVESTIGATION_ENABLED +1(noise_gate 기존 그룹)
+    assert len(index) == 440
     # plans/103 TIER3_PLAN_LOOP_ENABLED +1 · plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1
     assert len([s for s in index.values() if s.group_key == "general"]) == 21
 

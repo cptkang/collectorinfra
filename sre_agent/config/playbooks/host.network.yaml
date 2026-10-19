@@ -1,0 +1,38 @@
+# 호스트 네트워크 도달 불가 플레이북 (plans/187 §4.1 host.network · §5.2 · §5.7.2 · D-341)
+# 액션 ID만 쓴다 — 도구명은 스텝 라이브러리(application)에만 둔다(§5.2).
+id: host.network
+version: 1
+match:
+  alarm_kind: network
+  surface_terms: [네트워크, 네트워크 단절, 네트워크 장애]
+  priority: 160
+window: {before_min: 30, after_min: 10, baseline: [prev_day, prev_week]}   # §4.0
+steps:
+  - id: S4r
+    action: host.resource_status         # 호스트 생존 상태
+    narrate: {focus: "호스트와 서브리소스의 가용 상태", max_sentences: 3}
+  - id: S4t
+    action: host.topology                # 같은 구간 다수인지
+    args: {max_hops: 3}
+    narrate: {focus: "같은 네트워크 구간의 다른 자원도 도달 불가인지", max_sentences: 3}
+  - id: S5
+    action: xsource.related_alarms
+    narrate: {focus: "알람 전후 같은 구간 알람의 선행·동시·후행", max_sentences: 3}
+  - id: S9
+    action: synthesize
+response_hints:
+  single_vs_segment: "단일 호스트인지 구간 전체인지 먼저 판별"
+  segment: "구간 전체면 네트워크 담당 이관"
+  host_down: "단일 호스트면 호스트 생존 여부 확인"
+runbook:
+  meaning: "호스트에 네트워크로 도달할 수 없다."
+  impact: "해당 호스트 서비스 접근 불가 · 구간 장애면 여러 업무 동시 영향"
+  mitigation:
+    - {action: "같은 구간 다수 자원이 도달 불가면 네트워크 담당에 구간 장애·장비 변경 확인 요청", risk: low,
+       verification: "구간 자원 도달 회복", rollback: "해당 없음"}
+    - {action: "단일 호스트면 호스트 생존 여부를 시스템 담당에 확인 요청", risk: low,
+       verification: "호스트 도달 회복", rollback: "해당 없음"}
+  escalation: "관제 담당 → 네트워크 담당 → 시스템 담당"
+  owner: "네트워크운영팀"
+  last_reviewed: 2026-10-19
+  review_every_days: 180

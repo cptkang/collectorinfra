@@ -1,0 +1,52 @@
+# WAS DB 커넥션 풀 고갈 플레이북 (plans/187 §4.1 was.pool · §5.2 · §5.7.2 · D-341)
+# 액션 ID만 쓴다 — 도구명은 스텝 라이브러리(application)에만 둔다(§5.2).
+id: was.pool
+version: 1
+match:
+  resource_type: apm.Instance
+  any_kind: [was_db_pool_exhaustion, pool, connection]
+  surface_terms: [커넥션 풀, DB 커넥션, 풀 고갈]
+  priority: 50
+window: {before_min: 30, after_min: 10, baseline: [prev_day, prev_week]}   # §4.0
+steps:
+  - id: S0
+    action: scope.resolve_was_targets
+    args: {pick: degraded, max_instances: 3}
+    narrate: {focus: "풀 고갈이 알람 인스턴스 한정인지 같은 업무 전체인지", max_sentences: 3}
+  - id: S2
+    action: apm.runtime_and_pool         # 풀 현재값(배지)
+    for_each: targets
+    narrate: {focus: "커넥션 풀 사용·대기와 액티브 서비스", max_sentences: 4}
+  - id: S3
+    action: apm.slow_tx_breakdown        # SQL 비중
+    args: {n: 5, profile_top: 1}
+    narrate: {focus: "Top5 트랜잭션의 SQL·fetch 비중", max_sentences: 3}
+  - id: S8
+    action: dpm.db_health                # DPM 세션·락 — 연동 전에는 skipped(not_connected)
+  - id: S1
+    action: apm.golden_signals
+    for_each: targets
+    narrate: {focus: "p95·TPS·에러율의 기준선 대비 변화", max_sentences: 3}
+  - id: S5
+    action: xsource.related_alarms
+    narrate: {focus: "알람 전후 DB 알람의 선행·동시·후행", max_sentences: 3}
+  - id: S9
+    action: synthesize
+response_hints:
+  sql_dominant: "슬로우 쿼리·락 해소를 DBA에 우선 요청"
+  connection_leak: "커넥션 미반환 의심 트랜잭션을 개발 담당에 전달"
+  pool_raise_caveat: "풀 상향은 근본 해결이 아니다 — 인스턴스 수 × 최대치가 DB 세션 상한을 넘는지 함께 확인"
+runbook:
+  meaning: "WAS 인스턴스의 DB 커넥션 풀 사용이 상한에 가깝거나 커넥션 획득이 실패했다."
+  impact: "DB를 쓰는 업무 요청 대기·실패 · 액티브 누적으로 인스턴스 정체"
+  mitigation:
+    - {when: "dominant == 'sql'", action: "DBA에 슬로우 쿼리·락 대기 확인과 해소 요청", risk: low,
+       verification: "풀 사용률·대기 기준선 복귀", rollback: "해당 없음"}
+    - {action: "커넥션 미반환 의심 트랜잭션을 개발 담당에 전달", risk: low,
+       verification: "풀 사용률 추이 평탄", rollback: "해당 없음"}
+    - {action: "풀 최대치 상향은 근본 해결이 아님을 명시하고 DB 세션 상한과 대조한 뒤 검토", risk: medium,
+       verification: "상향 뒤 풀 대기 0 · DB 세션 상한 이내", rollback: "풀 설정을 변경 전 값으로 원복"}
+  escalation: "WAS 담당 → DBA → 개발 담당"
+  owner: "WAS운영팀"
+  last_reviewed: 2026-10-19
+  review_every_days: 180

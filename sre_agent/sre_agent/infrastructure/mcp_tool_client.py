@@ -92,4 +92,28 @@ def make_batch_caller(settings) -> Callable[[Sequence[tuple[str, dict]]], list[s
     return _call
 
 
-__all__ = ["ToolCaller", "run_tool_batch_async", "run_tool_batch", "make_batch_caller"]
+def make_apm_batch_caller(settings) -> Callable[[Sequence[tuple[str, dict]]], list[str]] | None:  # noqa: ANN001 — AgentSettings
+    """APM 게이트웨이 배치 호출자(plans/187 W2). `apm_mcp_url` 미설정이면 None(APM 축 불가).
+
+    `make_batch_caller`와 같은 방식(SSE 세션 1개 · 순차 호출 · 호출별 오류 격리)이며 토큰은
+    `apm_mcp_token`을 쓴다.
+    """
+    url = getattr(settings, "apm_mcp_url", None)
+    if not url:
+        return None
+    headers: dict[str, str] | None = None
+    tok = getattr(settings, "apm_mcp_token", None)
+    if tok is not None and tok.get_secret_value():
+        headers = {"Authorization": f"Bearer {tok.get_secret_value()}"}
+    timeout = float(getattr(settings, "evidence_prefetch_timeout_seconds", 20.0))
+
+    def _call(calls: Sequence[tuple[str, dict]]) -> list[str]:
+        return run_tool_batch(url, headers, calls, timeout_seconds=timeout)
+
+    return _call
+
+
+__all__ = [
+    "ToolCaller", "run_tool_batch_async", "run_tool_batch", "make_batch_caller",
+    "make_apm_batch_caller",
+]

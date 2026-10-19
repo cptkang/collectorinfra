@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KB AIOps 포탈</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css?v=28">
+    <link rel="stylesheet" href="/static/css/style.css?v=31">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
 </head>
@@ -336,6 +336,26 @@
                 <button type="button" class="btn btn-secondary" id="alarmClearBtn"
                     style="font-size: 0.75rem; padding: 5px 12px;">모두 지우기</button>
             </div>
+            <!-- 지난 알람 검색(plans/187 FE-2) — 판정 기록을 찾아 이 칸에만 그린다.
+                 실시간 알람 목록에는 끼워 넣지 않는다(D-182). -->
+            <details class="alarm-past" id="alarmPast">
+                <summary>지난 알람 검색</summary>
+                <div class="alarm-past-form">
+                    <select class="alarm-past-range" id="alarmPastRange" aria-label="검색 기간">
+                        <option value="1h">최근 1시간</option>
+                        <option value="24h" selected>최근 24시간</option>
+                        <option value="7d">최근 7일</option>
+                        <option value="30d">최근 30일</option>
+                    </select>
+                    <input type="search" class="alarm-search alarm-past-query" id="alarmPastQuery"
+                        maxlength="100" placeholder="서버·알람명·사유"
+                        aria-label="지난 알람 검색어">
+                    <button type="button" class="btn btn-secondary alarm-past-search" id="alarmPastSearchBtn">찾기</button>
+                </div>
+                <div class="alarm-past-note">발송 판단 기록에서 찾습니다. 결과는 아래 목록에만 나오고 실시간 알람 목록·미확인 배지에는 더하지 않습니다.</div>
+                <div class="alarm-past-status" id="alarmPastStatus" aria-live="polite"></div>
+                <ul class="alarm-past-list" id="alarmPastList"></ul>
+            </details>
             <!-- 레벨 필터 + 키워드 찾아보기.
                  필터는 **표시만** 거른다 — 미확인 배지·수신 건수는 필터와 무관하게 유지된다
                  (필터에 가려진 알람을 못 본 알람으로 만들면 안 된다).
@@ -382,10 +402,10 @@
     <script src="/static/js/marked.min.js?v=1"></script>
     <!-- app.js 변경 시 v를 올려야 브라우저 캐시가 갱신된다(D-187: v=2 캐시로 저장 값 패널 미표시 실측) -->
     <!-- plans/153 W3: 조사 브리핑 공용 렌더(관제 드로어와 같은 파일) — app.js보다 먼저 -->
-    <script src="/static/js/briefing-view.js?v=2"></script>
+    <script src="/static/js/briefing-view.js?v=4"></script>
     <script src="/static/vendor/chartjs/chart.umd.min.js?v=1"></script>
     <script src="/static/js/result-viz.js?v=4"></script>
-    <script src="/static/js/app.js?v=26"></script>
+    <script src="/static/js/app.js?v=30"></script>
 </body>
 
 </html>

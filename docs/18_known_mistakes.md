@@ -2144,3 +2144,23 @@
 - **실수**: 테스트 config가 `multi_db`·사다리 플래그를 명시하지 않아 `.env`의 `ACTIVE_DB_IDS`로 파일 경로 존 역질문 발동 여부가 갈렸고(14건), eval_routing 서브프로세스는 `os.environ` 상속으로 미입력 플래그 경고·활성 DB 0에 걸렸다(2건). 그 밖에 `instructor` 설치 가정(2), FastAPI 0.141의 `app.routes` 비평탄화(1), 운영 정본 `config/db_profiles/` 예시 개수 단언(2), sre_agent venv의 editable 설치 가정 — 벤치 러너가 자식 `PYTHONPATH`에 scripts만 넣음(51), 감사 `elapsed_s` 실시간 비교(1). `.env` 있는 개발 맥에서는 대부분 통과해 기준 워크트리(`.env` 없음)에서만 드러났고, 플래키 1건은 `[이번 변경 탓]`으로 잘못 귀속됐다.
 - **원인**: 테스트를 쓴 환경에서 통과하는지만 보고, `.env`·선택 패키지·설치 상태가 없는 체크아웃에서 같은 결과인지 확인하지 않았다. 「`.env` 누수 차단」을 검증 대상 필드에만 적용하고, 분기를 바꾸는 간접 필드(활성 DB·사다리 플래그)는 빠뜨렸다.
 - **방지책**: ① `AppConfig(...)` fixture는 검증 분기를 바꾸는 간접 필드(`multi_db`·사다리 플래그)까지 명시하고, 서브프로세스 테스트는 `_ENV`에 같은 키를 고정한다(전역 conftest autouse 금지 — G-2). ② 새 테스트는 `git worktree add --detach <dir> <SHA>`(`.env` 미복사)에서 한 번 돌려 본다. ③ 선택 extra는 제품과 같은 가용성 판정 함수로 사유 명시 skip, 프레임워크 내부 표현(`app.routes`) 대신 공개 계약(`app.openapi()`)을 단언, 운영 정본 데이터 개수 대신 `tmp_path` 고정 입력. ④ 자식 프로세스를 띄우는 러너는 import 경로를 스스로 구성한다(editable 설치 가정 금지). ⑤ 비트 동일 비교에 시각 계측이 섞이면 주입 시계로 고정한다(`serial`로 가리지 않음).
+
+### 2026-10-19 · (plans/187 · 팀 리드) 저장 상한 축약(`clip_briefing`)이 넣지 못한 dict 키를 통째로 빼 새 브리핑 블록(`playbook`)이 저장 단계에서 조용히 사라질 뻔했다
+- **실수**: W5a까지 플레이북 브리핑을 응답·통보에 싣는 배선만 만들고, 저장 경로의 32KB 축약 규칙(문자열은 접두, 목록은 앞 항목, **그 밖의 값은 뺀다**)을 대조하지 않았다. 가짜 LLM 픽스처에서 이미 14~20KB였고, 실데이터(표 행·한국어 소견 3바이트/자·심층 6요소)면 상한을 넘어 `playbook` dict가 통째로 빠져 웹 카드·workb 3줄이 종전 표시로 침묵 강등됐을 것이다. 팀 리드 검토에서 픽스처 크기를 재서 발견해 단계적 축소(표 앞 5행 → 표·소견 제거 → 머리만, `synthesis` 끝까지 보존)로 교정했다.
+- **원인**: 새 중첩 블록을 기존 저장소에 실을 때 그 저장소의 크기 상한·축약 규칙이 dict를 어떻게 다루는지 실측하지 않았다. 테스트 픽스처가 상한보다 작아 통과했다.
+- **방지책**: 기존 저장소·전송 경로에 새 중첩 블록을 실으면 ① 그 경로의 크기 상한과 축약 규칙을 grep으로 확인하고 ② 대표 픽스처 크기를 재서 상한 대비 여유를 보고에 적으며 ③ 상한을 넘는 합성 입력(상한의 1.3배 이상)으로 「핵심 키 보존 + 잘림 표기」 테스트를 둔다.
+
+### 2026-10-19 · (plans/187 · 팀 리드) 플래그·접두사가 다른 사용자 요청 경로를 추가하면서 열람 인가를 경로마다 따로 써 「걸린 알람 없는 레코드 + 전 존 비관리자」 조합에서 타인 조사가 열렸다
+- **실수**: W10(diagnosis)은 「소유자 또는 관리자」, W11(manual)은 부모 알람 존 검사, W12(chat)는 소유자 열람만 추가했다. 그래서 `alarm_ids`가 빈 채팅 기원 레코드를 비소유자가 열 때 존 검사로 떨어졌고, 전 존 사용자는 scope=None으로 통과해 남의 조사(`owner_sub` 포함)를 id로 열 수 있었다. 검증자·보안 감사가 같은 라운드에서 각각 잡았다.
+- **원인**: 레코드 종류를 늘릴 때 「누가 이 레코드를 볼 수 있나」를 표 하나로 정하지 않고 Wave마다 라우트 분기를 덧붙였다. 존 검사의 「전 존 = 통과」가 「알람 없는 레코드」에도 적용된다는 것을 대조하지 않았다.
+- **방지책**: 새 레코드 종류(kind·origin)를 추가하는 Wave는 열람 인가를 「종류 × 사용자 유형(소유자·비소유자 제한 존·비소유자 전 존·관리자)」 표로 테스트한다. 걸린 대상(알람)이 없는 레코드는 존 검사로 판정하지 않고 소유자·관리자만 허용한다(fail-closed).
+
+### 2026-10-19 · (plans/187 · 팀 리드) 모듈 단위 회귀가 다른 계획의 시각 의존 parametrize id 때문에 xdist 수집 불일치로 본체 레인 전체가 0건 실행됐다
+- **실수**: `regress.py --files`의 본체 레인이 `-n 8`로 돌 때 `tests/test_api/test_plan186_auth_fail_closed.py::test_invalid_token_without_repo_stays_401`의 parametrize id에 수집 시각 기반 `exp`를 담은 JWT가 들어가, 워커마다 id가 달라 「Different tests were collected between gw0 and gwN」으로 본체 테스트가 하나도 돌지 않았다(3회 중 2회). 도구는 이를 `[새 테스트 실패] gwN — 사본에 파일 없음`으로 귀속해 이번 변경 탓처럼 보였다.
+- **원인**: 테스트가 수집 시점 시계로 만든 값을 parametrize id에 썼다(plans/186 소관). 회귀 도구는 워커 수집 불일치를 별도 유형으로 분류하지 않는다.
+- **방지책**: ① parametrize 값·id에 시계·난수 기반 값을 넣지 않는다(토큰은 픽스처 안에서 만들고 id는 고정 문자열 — `ids=[...]`). ② 회귀에서 `gwN — 사본에 파일 없음`이 나오면 body.log의 「Different tests were collected」를 먼저 확인하고, 원인 파일이 이번 변경 밖이면 `_pytest` 워커 수를 0으로 고정한 래퍼로 같은 선택분을 직렬로 1회 돌려 귀속을 확정한다(이번엔 직렬로 통과 4,314 · 원래 실패 6만). plans/186 담당에 id 고정을 넘긴다.
+
+### 2026-10-19 · (plans/187 · 팀 리드) 새 `NOISE_INVESTIGATION_*` 설정 13키를 추가하면서 관리자 설정 카탈로그 구획(`SECTION_BY_KEY`) 등재를 빠뜨렸고, 모듈 단위 회귀가 그 그물 테스트를 고르지 않아 전체 회귀에서야 드러났다
+- **실수**: `src/config/alarm.py`에 조사 화면 링크·추가 조사·사용자 요청 분석·KB 설정 13키를 넣고 `src/api/settings_catalog.py`의 `SECTION_BY_KEY`에 올리지 않아 `tests/test_api/test_settings_catalog_sections.py::test_every_noise_key_has_section`이 실패했다. 계획 끝 모듈 단위 회귀(`--files <130>`)는 `settings_catalog.py`를 바꾸지 않았으므로 이 테스트를 선택하지 않았다.
+- **원인**: 설정 필드 추가가 카탈로그 구획·도움말 등 소비처 등재를 함께 요구한다는 것을 위임 범위에 넣지 않았다. 회귀 선택은 import 그래프 기반이라 `field_index()`처럼 config를 동적으로 훑는 테스트는 config 변경만으로는 골라지지 않을 수 있다.
+- **방지책**: `src/config/` 에 `NOISE_` 등 새 필드를 넣으면 같은 작업에서 `SECTION_BY_KEY` 등재와 `pytest tests/test_api/test_settings_catalog_sections.py`를 자기 테스트로 돌린다. 전체 회귀에서 `apm_gateway`가 TIMEOUT으로 0건이면 무한 대기 테스트(`test_plan134_w0b_verify.py::test_disconnect_before_promotion_cancels_job` — 기준에서도 대기, SIGTERM 무시)를 `--deselect`해 패키지를 따로 돌리고 `timeout -s KILL`을 쓴다.

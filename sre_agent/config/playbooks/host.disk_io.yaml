@@ -1,0 +1,39 @@
+# 호스트 디스크 I/O 플레이북 (plans/187 §4.1 host.disk_io · §5.2 · §5.7.2 · D-341)
+# 액션 ID만 쓴다 — 도구명은 스텝 라이브러리(application)에만 둔다(§5.2).
+id: host.disk_io
+version: 1
+match:
+  alarm_kind: disk
+  any_kind: [disk_io]                    # 디스크 알람 중 I/O
+  surface_terms: [디스크 I/O, 디스크 IO, 디스크 대기]
+  priority: 140
+window: {before_min: 30, after_min: 10, baseline: [prev_day, prev_week]}   # §4.0
+steps:
+  - id: S4
+    action: host.usage_trend
+    args: {kinds: [disk_io], granularity: h}
+    narrate: {focus: "디스크 I/O의 기준선 대비 변화", max_sentences: 3}
+  - id: S6
+    action: host.process_top
+    args: {top_n: 10, sort: cpu}
+    narrate: {focus: "상위 프로세스 중 백업·배치 작업", max_sentences: 3}
+  - id: S5
+    action: xsource.related_alarms
+    narrate: {focus: "알람 전후 선행·동시·후행 알람", max_sentences: 3}
+  - id: S9
+    action: synthesize
+response_hints:
+  backup_batch: "백업·배치 작업 시간대와 겹치는지 확인"
+  storage: "디스크 장애 의심이면 스토리지 담당에 확인 요청"
+runbook:
+  meaning: "호스트 디스크 I/O 대기·사용률이 기준선 대비 크게 올랐다."
+  impact: "디스크를 쓰는 서비스 응답 지연 · 장애면 데이터 쓰기 실패"
+  mitigation:
+    - {action: "백업·배치 일정과 겹치면 일정 조정을 배치 담당과 검토", risk: low,
+       verification: "다음 배치 시간대 디스크 I/O 기준선 이내", rollback: "배치 일정을 원래대로 복원"}
+    - {action: "디스크 장애 이벤트 여부를 스토리지 담당에 확인 요청", risk: low,
+       verification: "스토리지 담당 점검 결과 접수", rollback: "해당 없음"}
+  escalation: "관제 담당 → 시스템 담당 → 스토리지 담당"
+  owner: "시스템운영팀"
+  last_reviewed: 2026-10-19
+  review_every_days: 180

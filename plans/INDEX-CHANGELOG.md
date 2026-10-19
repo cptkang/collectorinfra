@@ -3,6 +3,7 @@
 > `plans/INDEX.md` 머리의 갱신 이력과, 2026-10-06(D-304) 축약 전의 긴 「상태」 칸 원문을 보존한다. **새 갱신 이력은 아래 「갱신 이력」 목록 맨 위에 한 줄씩 추가한다.** INDEX 머리에는 최종 갱신 날짜만 둔다.
 
 ## 갱신 이력
+- 2026-10-19 — **187 TODO→WIP · 155 TODO→WIP · 커밋 전**: 알람 조사 플레이북(D-341) W0~W6·W8~W12 구현 — sre_agent 결정적 플레이북 엔진(YAML 12종·판독 R-A~R-H·가설 규칙·소견/종합 LLM ≤8회·가드)·HolmesGPT 심층 parallel/conditional·엔진 일치·런북/KEDB 읽기 · 본체 진척 전달·마스킹·workb 3줄+링크·추가 조사(diagnosis)·이 알람 분석(manual)·KB 초안·포스트모템·엔진 선택·채팅 증상 결정적 라우팅 · 웹 요약형/상세형·조사 대화·지난 알람 검색·관리자 「조사 지식」 탭·매뉴얼 U-62~U-69·A-77~A-80 · 155 공용부(지연 poll·kind=diagnosis·사용자별 상한)를 187 W10이 선행 구현 · 잔여 W7 내부망 shadow·R-D·G-26 캐시 공용
 - 2026-10-19 — **158 TODO→완료 · 커밋 전**: v2.0 — 원래 실패 73건 분류·교정(C-1 존 역질문 `.env` 누수 14 · C-2 eval_routing 2 · C-3 instructor skip 2 · C-4 FastAPI `app.routes` 1 · C-5 정본 개수 부패 2 · C-6 sre_agent 벤치 자식 `PYTHONPATH` 51 · C-7 `elapsed_s` 플래키 1) · 제품 결함 0 · 회귀 실패 0(모듈 단위) · Known Mistakes 1
 
 - 2026-10-19 — **main 병합 · 계획서·결정 재채번**: 로컬 `182-TODO-alarm-investigation-playbook.md`가 원격 182(리팩터 행동 변경 후보)~186과 번호 충돌 → **187**(`187-TODO-alarm-investigation-playbook.md`) · 결정 D-338 → D-341 · vllm provider D-337 → D-340

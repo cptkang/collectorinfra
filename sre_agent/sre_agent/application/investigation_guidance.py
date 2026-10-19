@@ -7,6 +7,7 @@
 구성(순서 고정): ① REMOTE_VM_SHELL_NOTE(원격 프로파일) ② 사건 구간 지침(잡의 reference_time —
 도구 호출에 앵커 인자를 쓰라는 지시) ③ 상관 결과 ③′ 크로스소스 사건
 (settings.cross_source_investigation_enabled이고 두 소스 멤버가 있을 때만 · plans/153 §4.6)
+③″ 이미 수집된 판정(진단 잡의 `prior_findings`가 있을 때만 · plans/187 W10 — 화이트리스트 재검증)
 ④ kind별 플레이북(plans/91 1-5 · plans/51 §6 —
 결정적 문구) ⑤ OpenMetrics 서술 노트(settings.openmetrics_guidance_enabled일 때만 ·
 plans/92 O3 · R-12) ⑥ APM 노트(settings.apm_guidance_enabled일 때만 · plans/87 J3)
@@ -17,6 +18,10 @@ plans/92 O3 · R-12) ⑥ APM 노트(settings.apm_guidance_enabled일 때만 · p
 """
 
 from __future__ import annotations
+
+import json
+import re
+from datetime import datetime
 
 from sre_agent.domain.correlation import format_offset, offset_minutes
 from sre_agent.domain.cross_source_episode import (
@@ -470,15 +475,220 @@ def cross_source_playbooks(job, ctx: EpisodeContext) -> list[str]:  # noqa: ANN0
     return notes
 
 
+# ---------------------------------------------------------------------
+# 이미 수집된 판정 (plans/187 W10 · D-341 ⑭ · G-21 — 결정적 문구, LLM 0)
+#
+# 본체의 「추가 조사 요청」이 `sre_diagnose(prior_findings=…)`로 부모 조사의 판정 요약을 넘긴다.
+# 본체가 화이트리스트로 만들었더라도 **여기서 다시 거른다** — 서술 키(opinion·synthesis 등)·
+# 문장 값은 버리고 공백 없는 짧은 토큰·숫자·불리언만 남긴 뒤 크기 상한을 둔다.
+# 없으면 종전 지침과 비트 동일하다.
+# ---------------------------------------------------------------------
+
+PRIOR_FINDINGS_HEADER = (
+    "이미 수집된 판정(부모 조사의 결정적 요약 — 서술이 아니며 다시 판정하지 않는다):"
+)
+PRIOR_FINDINGS_TOOLS_NOTE = (
+    "재조회 불필요 도구(부모 조사가 이미 같은 사건창으로 호출함): {tools} — "
+    "같은 인자로 다시 부르지 말고, 필요하면 다른 시각·대상으로만 부른다."
+)
+#: 정리 후 JSON 크기 상한(바이트) — 넘으면 섹션을 뒤에서부터 덜어 낸다.
+PRIOR_FINDINGS_MAX_BYTES = 4096
+_PF_TOKEN_RE = re.compile(r"^[0-9A-Za-z가-힣_.\-/]{1,48}$")
+_PF_ID_RE = re.compile(r"^[0-9A-Za-z_.:\-]{1,80}$")
+_PF_SECTION_KEYS: tuple[str, ...] = ("step", "status", "verdict", "verdict_source")
+_PF_MAX_SECTIONS, _PF_MAX_TOOLS, _PF_MAX_READINGS = 20, 40, 30
+
+
+def _pf_token(value: object) -> bool:
+    return isinstance(value, str) and bool(_PF_TOKEN_RE.match(value))
+
+
+def _pf_readings(raw: object) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict = {}
+    for key, value in raw.items():
+        if len(out) >= _PF_MAX_READINGS:
+            break
+        enum_like = value is None or isinstance(value, (bool, int, float)) or _pf_token(value)
+        if _pf_token(key) and enum_like:
+            out[key] = value
+    return out
+
+
+def _pf_tools(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return list(dict.fromkeys(t for t in raw if _pf_token(t)))[:_PF_MAX_TOOLS]
+
+
+def _pf_window(raw: object) -> dict | None:
+    if not isinstance(raw, dict) or not isinstance(raw.get("reference_time"), str):
+        return None
+    try:
+        reference_time = datetime.fromisoformat(raw["reference_time"].strip()).isoformat()
+    except ValueError:
+        return None
+    out: dict = {"reference_time": reference_time}
+    minutes = raw.get("lookback_minutes")
+    if isinstance(minutes, int) and not isinstance(minutes, bool) and minutes > 0:
+        out["lookback_minutes"] = minutes
+    return out
+
+
+def _pf_size(value: dict) -> int:
+    return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+
+def clean_prior_findings(raw: object) -> dict | None:
+    """`prior_findings`를 화이트리스트로 다시 거른다(없거나 남는 것이 없으면 None).
+
+    남는 키: version · source · parent_investigation_id · playbook_id · window{reference_time,
+    lookback_minutes} · verdict{level, confidence} · readings{토큰: enum} · sections[{step, status,
+    verdict, verdict_source, readings, tools}] · tools[]. 그 밖의 키(서술 포함)는 버린다.
+    """
+    if not isinstance(raw, dict):
+        return None
+    out: dict = {}
+    if isinstance(raw.get("version"), int) and not isinstance(raw.get("version"), bool):
+        out["version"] = raw["version"]
+    for key in ("source", "playbook_id"):
+        if _pf_token(raw.get(key)):
+            out[key] = raw[key]
+    parent = raw.get("parent_investigation_id")
+    if isinstance(parent, str) and _PF_ID_RE.match(parent):
+        out["parent_investigation_id"] = parent
+    window = _pf_window(raw.get("window"))
+    if window:
+        out["window"] = window
+    verdict = raw.get("verdict")
+    if isinstance(verdict, dict):
+        chip = {k: verdict[k] for k in ("level", "confidence") if _pf_token(verdict.get(k))}
+        if chip:
+            out["verdict"] = chip
+    readings = _pf_readings(raw.get("readings"))
+    if readings:
+        out["readings"] = readings
+    sections: list[dict] = []
+    for section in raw.get("sections") if isinstance(raw.get("sections"), list) else []:
+        if not isinstance(section, dict) or not _pf_token(section.get("step")):
+            continue
+        item = {k: section[k] for k in _PF_SECTION_KEYS if _pf_token(section.get(k))}
+        sec_readings = _pf_readings(section.get("readings"))
+        if sec_readings:
+            item["readings"] = sec_readings
+        sec_tools = _pf_tools(section.get("tools"))
+        if sec_tools:
+            item["tools"] = sec_tools
+        sections.append(item)
+    if sections:
+        out["sections"] = sections[:_PF_MAX_SECTIONS]
+    tools = _pf_tools(raw.get("tools"))
+    if tools:
+        out["tools"] = tools
+    while out.get("sections") and _pf_size(out) > PRIOR_FINDINGS_MAX_BYTES:
+        out["sections"].pop()
+    if not out.get("sections"):
+        out.pop("sections", None)
+    if _pf_size(out) > PRIOR_FINDINGS_MAX_BYTES:
+        out.pop("readings", None)
+        out.pop("tools", None)
+    meaningful = {k for k in out if k not in ("version", "source")}
+    return out if meaningful else None
+
+
+def _pf_pairs(readings: dict) -> str:
+    return " · ".join(f"{k}={'null' if v is None else v}" for k, v in readings.items())
+
+
+def prior_findings_note(raw: object) -> str | None:
+    """③″ 이미 수집된 판정 노트(다시 거른 값만 · 없으면 None)."""
+    pf = clean_prior_findings(raw)
+    if pf is None:
+        return None
+    lines = [PRIOR_FINDINGS_HEADER]
+    head = []
+    if pf.get("parent_investigation_id"):
+        head.append(f"부모 조사 {pf['parent_investigation_id']}")
+    if pf.get("playbook_id"):
+        head.append(f"플레이북 {pf['playbook_id']}")
+    if head:
+        lines.append("- " + " · ".join(head))
+    window = pf.get("window")
+    if window:
+        span = f" · 이전 {window['lookback_minutes']}분" if window.get("lookback_minutes") else ""
+        lines.append(f"- 사건창: 기준 {window['reference_time']}{span}")
+    verdict = pf.get("verdict")
+    if verdict:
+        lines.append("- 판정: " + " · ".join(f"{k}={v}" for k, v in verdict.items()))
+    if pf.get("readings"):
+        lines.append("- 판독: " + _pf_pairs(pf["readings"]))
+    for section in pf.get("sections") or []:
+        parts = [section["step"]]
+        parts.extend(
+            f"{k}={section[k]}" for k in ("status", "verdict", "verdict_source") if k in section
+        )
+        if section.get("readings"):
+            parts.append(_pf_pairs(section["readings"]))
+        lines.append("- 단계 " + " · ".join(parts))
+    section_tools = [t for s in pf.get("sections") or [] for t in s.get("tools", [])]
+    tools = pf.get("tools") or _pf_tools(section_tools)
+    if tools:
+        lines.append(PRIOR_FINDINGS_TOOLS_NOTE.format(tools=" · ".join(tools)))
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------
+# 심층 조사(HolmesGPT) 지시 — plans/187 W4 · §5.0.1
+#
+# `SRE_PLAYBOOK_ENABLED` on이고 플레이북이 고른 잡의 심층 조사에만 쓴다. dispatcher가 심층 잡
+# 사본에 `deep_dive_guidance`(이 함수의 결과)를 실으면 `build_guidance`는 ④ kind별 노트
+# (`PLAYBOOK_NOTES`·APM·크로스소스 플레이북) 대신 이것을 싣는다 — off 경로는 종전 그대로다.
+# `parallel`은 정적 지시(런북 의미·영향·`deep_dive.focus`)만, `conditional`·fallback은 플레이북
+# 판정 요약(`prior_findings` 형식 — 같은 화이트리스트로 다시 거른다)을 함께 넘긴다.
+# ---------------------------------------------------------------------
+
+DEEP_DIVE_HEADER = (
+    "심층 조사 지시(알람 유형 플레이북 `{playbook_id}`의 정적 지시 — 결정적 판정·가설 순위는 "
+    "플레이북 엔진이 내며, 이 조사는 독립된 두 번째 의견이다):"
+)
+
+
+def deep_dive_note(
+    playbook_id: str,
+    *,
+    meaning: str | None = None,
+    impact: str | None = None,
+    focus: str | None = None,
+    prior_findings: object = None,
+) -> str:
+    """심층 조사 지시 노트. `prior_findings`가 있으면 ③″ 노트를 뒤에 붙인다(다시 거른 값만)."""
+    lines = [DEEP_DIVE_HEADER.format(playbook_id=playbook_id)]
+    if meaning:
+        lines.append(f"- 알람 의미: {meaning.strip()}")
+    if impact:
+        lines.append(f"- 영향: {impact.strip()}")
+    if focus:
+        lines.append(f"- 심층 초점: {focus.strip()}")
+    prior = prior_findings_note(prior_findings) if prior_findings is not None else None
+    if prior:
+        lines.append(prior)
+    return "\n".join(lines)
+
+
 def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
     """조사 지침을 조립한다. 넣을 것이 없으면 None(`ask()`는 부하 가드만 붙인다).
 
-    순서: ① 원격 셸 ② 사건 구간 ③ 상관 결과 ④ **kind별 플레이북**(plans/91 1-5)
+    순서: ① 원격 셸 ② 사건 구간 ③ 상관 결과 [③″ 이미 수집된 판정 — 진단 잡 `prior_findings`]
+    ④ **kind별 플레이북**(plans/91 1-5)
     ⑤ **OpenMetrics 서술 노트**(`openmetrics_guidance_enabled`일 때만 · plans/92 O3)
     ⑥ **APM 노트**(`apm_guidance_enabled`일 때만 · plans/87 J3) ⑦ 운영자 자유 지침.
 
     `apm_guidance_enabled`면 ②에 apm_* 구간 도구를 더하고, ④는 apm 사건(kind `apm` 또는 트리거
     `meta.hints.solution == "apm"`)이면 OS 플레이북 대신 APM 플레이북 하나만 싣는다.
+
+    플레이북 모드 심층 조사(plans/187 W4)면 잡 사본의 `deep_dive_guidance`가 ④를 대신한다
+    (속성이 없는 잡은 종전과 비트 동일).
 
     `cross_source_investigation_enabled`이고 `meta.episode`에 두 소스 멤버가 있으면
     (plans/153 §4.6) ③ 뒤에 ③′ 크로스소스 사건 노트를 넣고, ④는 OS 플레이북과
@@ -498,14 +708,25 @@ def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa
     corr = correlation_note(getattr(job, "correlation", None))
     if corr:
         parts.append(corr)
+    if getattr(job, "kind", None) == "diagnosis":
+        prior = prior_findings_note((getattr(job, "payload", None) or {}).get("prior_findings"))
+        if prior:
+            parts.append(prior)
     xs = active_episode(
         getattr(job, "payload", None),
         bool(getattr(settings, "cross_source_investigation_enabled", False)),
         getattr(job, "reference_time", None),
     )
+    deep_dive = getattr(job, "deep_dive_guidance", None)
     if xs is not None:
         parts.append(cross_source_note(settings, xs))
-        parts.extend(cross_source_playbooks(job, xs))
+        if isinstance(deep_dive, str) and deep_dive:
+            parts.append(deep_dive)
+        else:
+            parts.extend(cross_source_playbooks(job, xs))
+    elif isinstance(deep_dive, str) and deep_dive:
+        # 플레이북 모드 심층 조사(plans/187 W4) — kind별 노트 대신 플레이북 정적 지시.
+        parts.append(deep_dive)
     else:
         # kind apm 또는 hints.solution == apm
         if apm_on and is_apm_trigger(getattr(job, "payload", None)):
@@ -530,4 +751,6 @@ __all__ = ["ANCHORED_TOOLS", "APM_ANCHORED_TOOLS", "INCIDENT_SCOPE_NOTE_TEMPLATE
            "incident_scope_note", "correlation_note", "classify_alarm_kind", "alarm_kind_from_job",
            "trigger_hints", "playbook_note", "apm_playbook_note", "apm_notes",
            "CROSS_SOURCE_NOTE_HEADER", "cross_source_note", "cross_source_playbooks",
-           "build_guidance"]
+           "PRIOR_FINDINGS_HEADER", "PRIOR_FINDINGS_TOOLS_NOTE", "PRIOR_FINDINGS_MAX_BYTES",
+           "clean_prior_findings", "prior_findings_note", "build_guidance",
+           "DEEP_DIVE_HEADER", "deep_dive_note"]

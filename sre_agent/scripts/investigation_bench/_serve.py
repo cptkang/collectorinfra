@@ -10,7 +10,8 @@
 - 설정은 OS 환경변수로만 받는다. 러너가 빈 디렉터리를 cwd로 주므로 설정의 `.env`·`.encenv`가 없고,
   `LITELLM_MODE=PRODUCTION`으로 litellm의 상위 `.env` 적재도 끈다. 그래도 섞였는지는 에코의
   `non_default_fields`(기본값과 다른 필드 이름)를 러너가 명세와 대조해 잡는다.
-- 이 파일은 sre_agent 패키지를 import하는 **유일한** 벤치 파일이다(실험군 프로세스 안에서만 돈다).
+- 이 파일은 sre_agent 패키지를 import하는 벤치 파일이다(실험군 프로세스 안에서만 돈다). 다른 하나는
+  오프라인 평가 `playbook_fixture_eval.py`(plans/187 W7 — sre_agent venv에서만 · 러너는 import 0).
 """
 
 from __future__ import annotations

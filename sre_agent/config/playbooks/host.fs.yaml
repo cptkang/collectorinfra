@@ -1,0 +1,43 @@
+# 호스트 파일시스템 풀 플레이북 (plans/187 §4.1 host.fs · §5.2 · §5.7.2 · D-341)
+# 액션 ID만 쓴다 — 도구명은 스텝 라이브러리(application)에만 둔다(§5.2).
+id: host.fs
+version: 1
+match:
+  alarm_kind: disk
+  any_kind: [filesystem, inode]          # 디스크 알람 중 파일시스템(용량·inode)
+  surface_terms: [디스크 용량, 디스크 사용률, filesystem]   # classify_alarm_kind 정합(「파일시스템」 단독은 disk로 분류되지 않는다)
+  priority: 130
+window: {before_min: 30, after_min: 10, baseline: [prev_day, prev_week]}   # §4.0
+steps:
+  - id: S4
+    action: host.usage_trend             # 증가율 → 고갈 예상 시각(R-G)
+    args: {kinds: [filesystem], granularity: h}
+    narrate: {focus: "파일시스템 사용률 증가율과 고갈 예상 시각", max_sentences: 3}
+  - id: S5
+    action: xsource.related_alarms
+    narrate: {focus: "알람 전후 선행·동시·후행 알람", max_sentences: 3}
+  - id: S7
+    action: change.recent
+    args: {lookback_hours: 24}
+    narrate: {focus: "사건창 직전 변경의 시간 근접순", max_sentences: 3}
+  - id: S9
+    action: synthesize
+response_hints:
+  log_growth: "로그 급증이면 로그 정리·로테이션 주기 확인"
+  dump_file: "덤프 파일이 쌓였으면 다른 저장 위치로 이동 검토"
+  deleted_open: "삭제됐으나 열린 파일이 공간을 잡고 있는지 확인"
+  inode: "inode 고갈이면 작은 파일 대량 생성 위치 확인"
+runbook:
+  meaning: "호스트 파일시스템 사용률이 임계를 넘었거나 빠르게 늘고 있다."
+  impact: "고갈 시 로그·데이터 쓰기 실패로 서비스 오류 · 파일시스템 읽기 전용 전환 가능"
+  mitigation:
+    - {when: "host_saturation == 'fs'", action: "증가 상위 디렉터리를 확인해 로그 정리·로테이션을 해당 담당에 요청", risk: low,
+       verification: "파일시스템 사용률 임계 이내 · 증가율 평탄", rollback: "해당 없음"}
+    - {action: "덤프 파일을 다른 저장 위치로 옮기는 방안을 담당과 검토", risk: low,
+       verification: "사용률 감소 확인", rollback: "옮긴 파일을 원래 위치로 복원"}
+    - {action: "파티션 확장을 스토리지 담당과 검토", risk: high,
+       verification: "확장 뒤 여유 공간 확보", rollback: "확장은 되돌리기 어려움 — 변경 계획 승인 후 진행"}
+  escalation: "관제 담당 → 시스템 담당 → 스토리지 담당"
+  owner: "시스템운영팀"
+  last_reviewed: 2026-10-19
+  review_every_days: 180

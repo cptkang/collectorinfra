@@ -26,6 +26,7 @@ from sre_agent.domain.cross_source_episode import (
     EpisodeLink,
     episode_timeline,
 )
+from sre_agent.domain.engine_agreement import DIFFERENT_LAYER, LAYER_UNKNOWN, playbook_layer
 from sre_agent.domain.severity_signatures import ImportanceVerdict
 
 # 브리핑 6요소(§7). 중요도([중요도])는 severity_judge 판정에서 오므로 별도 헤더로 조립하고,
@@ -492,6 +493,199 @@ def build_briefing(
     return briefing
 
 
+# ── 플레이북 모드 브리핑(plans/187 W4 · §5.0.1 5번 · §5.5) ────────────────────────────────
+#
+# `SRE_PLAYBOOK_ENABLED` on이고 플레이북이 돈 잡만 쓴다. 6요소는 **플레이북 종합**
+# (결정적 가설 순위 · 대응 · S5 타임라인 · 지배 계층 · 결손)으로 채우고, HolmesGPT 결과는
+# 선택 키 `deep_dive`에만 붙는다(가설 순위를 바꾸지 않는다 — D-035). off 경로는
+# `build_briefing`을 그대로 쓴다.
+
+#: 타임라인 스텝 액션(S5 연관 알람) — 상관 결과가 없을 때 이 섹션 표를 쓴다.
+_TIMELINE_ACTION = "xsource.related_alarms"
+_SYNTHESIZE_ACTION = "synthesize"
+SNAPSHOT_LIMIT = "프로세스·자원 스냅샷은 조사 시점 단면일 수 있음"
+REALTIME_BADGE_PREFIX = "현재값"
+DEEP_DIVE_SKIPPED_LIMIT = "심층 조사(HolmesGPT) 생략 — {reason}"
+ENGINE_DISAGREEMENT_LIMIT = (
+    "엔진 간 불일치 — {reason} (대략적 대조 · 판정·가설 순위는 플레이북 기준)"
+)
+
+
+def _pb_summary(playbook: dict, hyps: list[dict], verdict: ImportanceVerdict) -> str:
+    judged = f"판정 {verdict.level}(신뢰도 {verdict.confidence})"
+    head = f"[플레이북 {playbook.get('id') or '미상'}] "
+    if not hyps:
+        return head + f"1순위 가설 없음(판독 근거 부족) · {judged}"
+    top = hyps[0]
+    return head + f"1순위 가설: {top.get('title')}({top.get('status_label')}) · {judged}"
+
+
+def _pb_cause(hyps: list[dict]) -> str:
+    if not hyps:
+        return "원인 가설 없음 — 판독 근거 부족(결손은 한계 참조)"
+    lines = []
+    for h in hyps:
+        steps = "·".join(str(s) for s in h.get("evidence_steps") or [])
+        basis = f" (근거 {steps})" if steps else ""
+        lines.append(f"{h.get('rank')}위 {h.get('title')} — {h.get('status_label')}{basis}")
+    return "\n".join(lines)
+
+
+def _pb_hypotheses(hyps: list[dict]) -> list[dict]:
+    """`root_cause_hypotheses` 계약 키(rank·cause·confidence·evidence·reasoning)로 옮긴다.
+
+    `confidence` 자리에는 상태 라벨(지지·판단 보류·반박)을 싣는다 — 플레이북 가설은 신뢰도가 아니라
+    규칙 충족 상태로 순위를 매긴다.
+    """
+    return [
+        {
+            "rank": h.get("rank"),
+            "cause": h.get("title"),
+            "confidence": h.get("status_label"),
+            "status": h.get("status"),
+            "evidence": [str(s) for s in h.get("evidence_steps") or []],
+            "reasoning": h.get("rule_id"),
+        }
+        for h in hyps
+    ]
+
+
+def _pb_timeline(sections: list[dict], correlation: dict | None) -> list[str]:
+    """타임라인 = S5(연관 알람)로 다시 계산한 상관 타임라인, 없으면 S5 표 행."""
+    lines = correlation_timeline(correlation) if correlation else []
+    if lines:
+        return lines
+    s5 = next((s for s in sections if s.get("action") == _TIMELINE_ACTION), None)
+    if s5 is None:
+        return []
+    table = s5.get("table") or {}
+    rows = [" · ".join(str(c) for c in row) for row in table.get("rows") or []]
+    if rows:
+        return [f"[{s5.get('step')}] {r}" for r in rows]
+    return [f"[{s5.get('step')}] 연관 알람 없음({s5.get('status')}" + (
+        f" — {s5['reason']})" if s5.get("reason") else ")"
+    )]
+
+
+def _pb_bottleneck(readings: dict, verdict: ImportanceVerdict) -> str:
+    layer, basis = playbook_layer(readings)
+    if layer != LAYER_UNKNOWN:
+        return f"지배 계층 {layer} (판독 {', '.join(basis)})"
+    if verdict.signals:
+        return "; ".join(s.label for s in verdict.signals)
+    return "미확정(판독 근거·시그니처 매칭 없음)"
+
+
+def _pb_limitations(
+    playbook: dict,
+    limitations: list[str] | None,
+    verdict: ImportanceVerdict,
+    correlation: dict | None,
+    deep_dive: dict | None,
+    engine_agreement: dict | None,
+    cross_source: EpisodeContext | None,
+    apm_tools_connected: bool,
+) -> list[str]:
+    """한계 — 결손·생략 스텝 · 실시간 단면 · n/a 판독 · 플레이북 주석 · 심층 생략 · 엔진 불일치."""
+    limits = list(limitations or [])
+    for s in playbook.get("sections") or []:
+        if s.get("action") == _SYNTHESIZE_ACTION:
+            continue
+        status = s.get("status")
+        if status in ("missing", "skipped"):
+            word = "수집 결손" if status == "missing" else "생략"
+            reason = f" — {s['reason']}" if s.get("reason") else ""
+            limits.append(f"{s.get('step')} {s.get('title')}: {word}{reason}")
+        realtime = [b for b in s.get("badges") or [] if str(b).startswith(REALTIME_BADGE_PREFIX)]
+        if realtime:
+            limits.append(f"{s.get('step')} {s.get('title')}: {realtime[0]} — 사건 시점 값이 아님")
+    na = [k for k, v in (playbook.get("readings") or {}).items() if v == "n/a"]
+    if na:
+        limits.append("판독 불가(n/a — 근거 부족): " + ", ".join(na))
+    limits.extend(str(n) for n in playbook.get("notes") or [])
+    limits.append(SNAPSHOT_LIMIT)
+    if verdict.evidence_insufficient:
+        limits.append("증거 불충분 — 원격 배치에서 로그·대체 카운터 무매칭(상향 보류)")
+    if correlation:
+        limits.extend(str(n) for n in (correlation.get("notes") or []))
+        limits.append(CORRELATION_NOT_CAUSATION_NOTE)
+    if deep_dive and deep_dive.get("status") == "skipped":
+        limits.append(DEEP_DIVE_SKIPPED_LIMIT.format(reason=deep_dive.get("reason") or "사유 미상"))
+    if engine_agreement and engine_agreement.get("result") == DIFFERENT_LAYER:
+        limits.append(ENGINE_DISAGREEMENT_LIMIT.format(reason=engine_agreement.get("reason")))
+    if cross_source is not None:
+        if not apm_tools_connected:
+            limits.append(APM_TOOLS_NOT_CONNECTED_LIMIT)
+        limits.append(STRONG_ONLY_NOTE)
+        limits.extend(cross_source.excluded_link_notes())
+        limits.extend(cross_source.notes)
+    return list(dict.fromkeys(limits))
+
+
+def build_playbook_briefing(
+    *,
+    playbook: dict,
+    verdict: ImportanceVerdict,
+    gate_tier: str | None = None,
+    remediation: list[str] | None = None,
+    limitations: list[str] | None = None,
+    correlation: dict | None = None,
+    deep_dive: dict | None = None,
+    engine_agreement: dict | None = None,
+    cross_source: EpisodeContext | None = None,
+    apm_tools_connected: bool = False,
+    tool_names: list[str] | None = None,
+) -> dict:
+    """플레이북 종합으로 6요소 브리핑을 조립한다(결정적 — LLM 서술은 `playbook` 안에만).
+
+    playbook: dispatcher가 만든 `playbook` 블록(`PlaybookRun.to_briefing_dict()` + 평탄 `readings`).
+    6요소: 요약 = 1순위 가설 + 판정 · 원인 = 상태 라벨이 붙은 가설 순위 · 권고 = 플레이북 대응 제안
+    (알려진 오류 우회 > 런북 완화 > 응답 힌트 · W8) + 시그니처 조치 후보 · 타임라인 = S5 ·
+    병목 = 지배 계층 · 한계 = 결손·실시간 단면·n/a 등.
+    선택 키: `playbook` · `deep_dive`(있을 때) · `engine_agreement`(있을 때) · `cross_source`(사건 ·
+    `tool_names` = 두 엔진이 부른 도구 — APM 호출 수 집계).
+    결론이 다르면(`different_layer`) 두 결론을 그대로 두고 한계에 「엔진 간 불일치」를 싣는다.
+    """
+    synthesis = playbook.get("synthesis") or {}
+    hyps = list(synthesis.get("hypotheses") or [])
+    sections = list(playbook.get("sections") or [])
+    # 알려진 오류 우회(W8)는 remediation 형식 한 줄(`line` — 위험도·신뢰도·근거·검증·롤백)로 싣는다.
+    items = [
+        str(a.get("line") or a.get("text"))
+        for a in synthesis.get("actions") or []
+        if a.get("text")
+    ]
+    items += [r for r in remediation or [] if r not in items]
+    if not items:
+        items = ["조치 권고 없음(플레이북 대응 제안·근거 시그니처 없음)"]
+    briefing: dict[str, Any] = {
+        "severity": _render_severity(verdict, gate_tier),
+        "summary": _pb_summary(playbook, hyps, verdict),
+        "timeline": _pb_timeline(sections, correlation),
+        "bottleneck": _pb_bottleneck(playbook.get("readings") or {}, verdict),
+        "cause": _pb_cause(hyps),
+        "root_cause_hypotheses": _pb_hypotheses(hyps),
+        "recommendation": {"items": items, "note": HUMAN_GATED_NOTE},
+        "limitations": _pb_limitations(
+            playbook, limitations, verdict, correlation, deep_dive, engine_agreement,
+            cross_source, apm_tools_connected,
+        ),
+        "citations_verified": True,
+        "hypotheses": [],
+        "playbook": playbook,
+    }
+    if deep_dive is not None:
+        briefing["deep_dive"] = deep_dive
+    if engine_agreement is not None:
+        briefing["engine_agreement"] = engine_agreement
+    if cross_source is not None:
+        briefing["cross_source"] = _cross_source_block(
+            cross_source, list(cross_source.valid_links), None, list(tool_names or []),
+            apm_tools_connected,
+        )
+    return briefing
+
+
 def stub_briefing(message: str) -> dict:
     """조사 미실행(스텁) 시의 브리핑 표기 — 6요소 조립을 생략하고 사유만 노출한다."""
     return {"stub": True, "message": message, "elements": None}
@@ -512,5 +706,6 @@ __all__ = [
     "UNRESOLVED_PREFIX",
     "evidence_source_label",
     "build_briefing",
+    "build_playbook_briefing",
     "stub_briefing",
 ]
