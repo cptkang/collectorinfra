@@ -8,6 +8,8 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-19 | D-341 | 부기 4 구현 — `plans/187` W13~W15(실행 기록 · 허브·SSE · 장애 진단 탭) · 상태 칸 갱신 · 이탈(비밀값 꼴은 `activity_masking.py`) · 잔여(사용자 경로 2차 마스킹 실효 — 결정 대기) |
+| 2026-10-19 | D-341 · D-325 | D-341 부기 4 — `plans/187` v2.0 G-34~G-42 확정: 「장애 진단」 탭(진입 일원화 · 조사별 하위 탭 상한 없음) · sre_agent 실행 기록(`activity_since`) · 발췌 가림 후 사용자·관리자 모두 · AI 메모 관리자만 · 본체 허브 + SSE 1연결(상세는 열린 탭만) · 목록 관리자 전체/사용자 자기 채팅 조사 · 요약 JSONL · 코드 0건. D-325 부기 — ② 진단 탭 SSE 도입 · ③ 발췌 사용자 노출(마스킹) |
 | 2026-10-19 | D-341 | 상태 「미구현」→「구현(잔여 있음)」 · 구현 경로 · 구현 부기(R-D 미충족 · G-26 HolmesGPT 캐시 공용 미구현 · W7 외부망만 · 3단 배선 · 보안 교정 · 예시 KE 픽스처 이동) — `plans/187` W0~W6·W8~W12 |
 | 2026-10-19 | D-003 | 부기 — MariaDB 10.x는 `transaction_read_only`가 없어(1193) 운영 itam 풀 초기화 실패 → `tx_read_only` 폴백(`mcp_server/db.py` `_create_mariadb_readonly_pool`) · 강등 없음 |
 | 2026-10-19 | D-343 | 신규 — `plans/188` W5: Gemma 4 도구 호출 마크업(`<\|tool_call>call:…<tool_call\|>`)을 `DefaultLLM.completion` 응답 후처리로 `tool_calls` 변환 · tools 있는 호출만 · 해석 실패면 원본(→ D-342 W4 종결) · `TOOL_CALL_MARKUP_PARSE_ENABLED` 기본 on 예외(만료 2027-04-19) · 커밋 없음 |

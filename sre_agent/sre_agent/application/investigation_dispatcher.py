@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import dataclasses
+import functools
 import hashlib
 import json
 import logging
@@ -70,6 +71,7 @@ from sre_agent.application.playbook_steps import (
     StepFn,
     StepResult,
 )
+from sre_agent.domain.activity_log import ActivityLog, safe_append
 from sre_agent.domain.answer_markup import (
     ANSWER_MALFORMED_TOOL_CALL,
     MALFORMED_ANSWER_CAUSE,
@@ -164,6 +166,15 @@ def _add_limitations(briefing_kwargs: dict[str, Any], lines: list[str]) -> None:
     """
     if lines:
         briefing_kwargs["limitations"] = [*briefing_kwargs.get("limitations", []), *lines]
+
+
+def _activity(job: object) -> ActivityLog | None:
+    """잡의 실행 기록(plans/187 W13).
+
+    `SRE_ACTIVITY_LOG_ENABLED` off·구현체에 없으면 None(기록 0).
+    """
+    log = getattr(job, "activity", None)
+    return log if isinstance(log, ActivityLog) else None
 
 
 # ── 구조적 타입(Protocol) — application 세부에 직접 의존하지 않기 위함 ──
@@ -453,6 +464,8 @@ class InvestigationDispatcher:
         # 플레이북 모드 심층 조사 시작 시각들(최근 1시간) — 예산 강등 판정(plans/187 W4).
         self._deep_window: deque[float] = deque()
         self._workers: set[threading.Thread] = set()
+        # 동시 상한 대기 중인 잡의 실행 기록(대기 순번 — plans/187 W13). 기록이 있는 잡만 들어온다.
+        self._waiting: list[ActivityLog] = []
 
     # ── executor 진입점 ────────────────────────────────────────
 
@@ -589,10 +602,16 @@ class InvestigationDispatcher:
     def _worker(self, job: JobLike) -> None:
         started: float | None = None
         try:
-            with self._semaphore:  # 동시 상한
+            self._acquire_slot(job)  # 동시 상한
+            try:
                 # 계측 기준점 — 동시 상한 대기는 빼고 조사(사전수집 포함)부터 잰다.
                 started = self._clock()
+                log = _activity(job)
+                if log is not None:
+                    log.set_phase("collecting")
                 self._run_and_postprocess(job, started)
+            finally:
+                self._semaphore.release()
         except BaseException as exc:  # noqa: BLE001 — Exception만 잡으면 잡이 영구 running으로 남는다
             # ★ `Exception`이 아니라 `BaseException`이다 (D-213 근본원인 · 2026-09-11 스택 덤프 확정).
             # `asyncio.CancelledError`는 3.8+에서 **BaseException 파생**이라 `except Exception`을
@@ -601,6 +620,7 @@ class InvestigationDispatcher:
             # running으로 남는다(폐쇄망 실측: 스택 덤프에 조사 스레드가 아예 없었다 — 매달린 게
             # 아니라 죽은 것). 여기는 코루틴이 아니라 평범한 워커 스레드라 취소 의미론을 전파할
             # 상대가 없다 — 잡을 failed로 확정하는 것이 유일하게 옳은 처리다.
+            self._log_finalize(job, started, "failed")
             job.status = "failed"
             job.error = f"dispatcher 워커 예외: {type(exc).__name__}: {exc}"
             job.instrumentation = self._run_meta(started)
@@ -612,6 +632,77 @@ class InvestigationDispatcher:
             self._release_host(job)
             with self._lock:
                 self._workers.discard(threading.current_thread())
+
+    # ── 실행 기록(plans/187 W13 — 잡에 기록이 없으면 전부 무동작) ──────────────
+
+    def _acquire_slot(self, job: JobLike) -> None:
+        """동시 상한 슬롯을 얻는다. 기록이 있으면 대기·획득을 `queued`·`started`로 남긴다.
+
+        대기 순번은 기록이 있는 대기 잡 사이의 순서(1부터)다
+        — 세마포어는 엄밀한 FIFO가 아니라 근사다.
+        """
+        log = _activity(job)
+        if log is None:
+            self._semaphore.acquire()
+            return
+        if self._semaphore.acquire(blocking=False):
+            self._after_acquire(lambda: log.append("started", engine="system", label="조사 시작"))
+            return
+        with self._lock:
+            self._waiting.append(log)
+            self._renumber_waiting()
+        try:
+            safe_append(log, "queued", engine="system", status="waiting",
+                        label=f"동시 조사 상한 대기 — 대기 순번 {log.queue_position}")
+            waited_from = self._clock()
+            self._semaphore.acquire()
+        finally:
+            with self._lock:
+                self._waiting.remove(log)
+                self._renumber_waiting()
+        waited = self._clock() - waited_from
+        self._after_acquire(lambda: log.append(
+            "started", engine="system", elapsed_ms=int(waited * 1000),
+            label=f"동시 조사 상한 대기 종료(대기 {waited:.0f}초)",
+        ))
+
+    def _after_acquire(self, record: Callable[[], object]) -> None:
+        """슬롯 획득 직후 기록 — 예외면 슬롯을 돌려주고 다시 올린다(슬롯 누수 방지).
+
+        `_worker`의 release `try/finally`는 `_acquire_slot`이 반환된 뒤에 시작하므로, 그 사이의
+        기록 예외는 여기서 반환해야 한다(plans/187 v2 검증 Medium 1).
+        """
+        try:
+            record()
+        except BaseException:
+            self._semaphore.release()
+            raise
+
+    def _renumber_waiting(self) -> None:
+        """대기 순번을 다시 매긴다(lock 보유 전제)."""
+        for i, log in enumerate(self._waiting, 1):
+            log.set_phase("queued", i)
+
+    def _log_finalize(self, job: JobLike, started: float | None, status: str) -> None:
+        """종결 이벤트(`finalize` — 곧 대입할 종결 상태·조사 소요).
+
+        종결 상태 대입 **직전**에 부른다 — 종결을 본 직후 1회 읽기에 `finalize`가 실려야 한다
+        (plans/187 v2 검증 Low 2). 종결 경로라 best-effort다(기록 예외로 잡이 running에 남지 않게).
+        """
+        log = _activity(job)
+        if log is None:
+            return
+        elapsed = int((self._clock() - started) * 1000) if started is not None else None
+        safe_append(log, "finalize", engine="system", status=status, elapsed_ms=elapsed,
+                    label=f"브리핑 조립 — 종결({status})")
+
+    def _diagnose_for(self, job: JobLike) -> DiagnoseFn:
+        """HolmesGPT 조사 함수 — 기록이 있으면 선택 인자 `activity`를 묶는다(없으면 종전 호출)."""
+        assert self._diagnose_fn is not None
+        log = _activity(job)
+        if log is None:
+            return self._diagnose_fn
+        return functools.partial(self._diagnose_fn, activity=log)
 
     def _run_and_postprocess(self, job: JobLike, started: float) -> None:
         """전체 타임아웃 하에 조사를 실행하고 severity_judge·briefing으로 후처리한다.
@@ -636,10 +727,19 @@ class InvestigationDispatcher:
         prefetch_started = self._clock()
         job.correlation = self._prefetch(job)
         prefetch_s = round(self._clock() - prefetch_started, 3)
+        log = _activity(job)
+        if log is not None:
+            log.set_phase("deep_dive")
+            safe_append(log, "deep_start", engine="system", label="HolmesGPT 조사 시작")
+        investigate_started = self._clock()
         try:
             result = self._investigate_with_timeout(job)
         except asyncio.TimeoutError:
             # 전체 타임아웃 — 부분 결과 없이 사유를 구조화해 전달(침묵 실패 금지, §12-④).
+            safe_append(log, "deep_end", engine="system", status="timeout",
+                        elapsed_ms=int((self._clock() - investigate_started) * 1000),
+                        label="HolmesGPT 조사 타임아웃")
+            self._log_finalize(job, started, "timeout")
             job.status = "timeout"
             job.reason = "investigation_timeout"
             job.verdict = f"조사 타임아웃(미완주) — investigation_timeout_seconds({self._timeout}s) 초과"
@@ -655,6 +755,12 @@ class InvestigationDispatcher:
             return
 
         incomplete = bool(getattr(result, "incomplete", False))
+        if log is not None:
+            safe_append(log, "deep_end", engine="system",
+                        status="incomplete" if incomplete else "done",
+                        elapsed_ms=int((self._clock() - investigate_started) * 1000),
+                        label="HolmesGPT 조사 종료" + (" — 미완주" if incomplete else ""))
+            log.set_phase("finalizing")
         # 미완주면 판정·브리핑 입력은 답변만(종전 동작) — 부분 도구 기록은 계측 키에만 쓴다.
         basis: DiagnosisLike = _AnswerOnly(result.answer) if incomplete else result
         gate_severity, gate_tier = self._gate_context(job)
@@ -717,6 +823,7 @@ class InvestigationDispatcher:
             **briefing_kwargs,
         )
 
+        self._log_finalize(job, started, "done")
         job.status = "done"
         job.verdict = f"{verdict.level}(신뢰도 {verdict.confidence}) escalate={verdict.escalate}"
         job.briefing = briefing
@@ -770,12 +877,16 @@ class InvestigationDispatcher:
             return "conditional", DEEP_DEGRADE_BUDGET.format(budget=budget, runs=runs, deep=deep)
         return mode, None
 
-    def _start_deep(self, job: JobLike, deep_job: JobLike) -> _Background:
+    def _start_deep(self, job: JobLike, deep_job: JobLike, mode: str) -> _Background:
         assert self._diagnose_fn is not None
         with self._lock:
             self._deep_window.append(self._clock())
+        log = _activity(job)
+        if log is not None:
+            safe_append(log, "deep_start", engine="system",
+                        label=f"심층 조사(HolmesGPT) 시작 — {mode}")
         return _Background(
-            self._diagnose_fn, deep_job, f"sre-deep-{str(job.investigation_id)[:8]}"
+            self._diagnose_for(deep_job), deep_job, f"sre-deep-{str(job.investigation_id)[:8]}"
         )
 
     @staticmethod
@@ -856,6 +967,7 @@ class InvestigationDispatcher:
         total = len(pb.steps)
         done: dict[str, dict] = {}
         order = [st.id for st in pb.steps]
+        log = _activity(job)
 
         def publish(current: str | None) -> None:
             job.progress = {"done": len(done), "total": total, "current_step": current}
@@ -879,15 +991,28 @@ class InvestigationDispatcher:
                     ids = pending.get(action) or [action]
                     sid = ids.pop(0) if len(ids) > 1 else ids[0]
                     publish(sid)
+                label = f"{sid} {ACTION_TITLES.get(action, action)}"
+                t0 = self._clock()
+                if log is not None:
+                    ctx.activity, ctx.step_id = log, sid
+                    safe_append(log, "step_start", engine="playbook", step=sid, label=label)
+
+                def step_end(status: str) -> None:
+                    if log is not None:
+                        safe_append(log, "step_end", engine="playbook", step=sid, label=label,
+                                    status=status, elapsed_ms=int((self._clock() - t0) * 1000))
+
                 try:
                     res = fn(ctx)
                 except CacheClosedError as e:
                     stop.set()
                     logger.info("플레이북 수집 중단 %s(%s): %s", sid, action, e)
+                    step_end("missing")
                     return StepResult(
                         status="missing", reason=STEP_CACHE_CLOSED_REASON.format(error=e)
                     )
                 except Exception as e:  # noqa: BLE001 — 진척 기록 후 원예외 그대로(실행기가 격리)
+                    step_end("missing")
                     with lock:
                         done[sid] = {
                         "step": sid, "action": action,
@@ -897,6 +1022,7 @@ class InvestigationDispatcher:
                     }
                         publish(sid)
                     raise
+                step_end(str(res.status))
                 with lock:
                     done[sid] = {
                         **res.to_dict(include_data=False), "step": sid, "action": action,
@@ -911,8 +1037,13 @@ class InvestigationDispatcher:
             publish(None)
         return {action: wrap(action, fn) for action, fn in STEP_LIBRARY.items()}
 
-    def _narrator(self, remaining: float) -> tuple[PlaybookNarrator | None, str | None]:
-        """남은 시간으로 소견기 타임아웃을 줄인다. LLM 미배선이면 None(「소견기 미구성」)."""
+    def _narrator(
+        self, remaining: float, activity: ActivityLog | None = None
+    ) -> tuple[PlaybookNarrator | None, str | None]:
+        """남은 시간으로 소견기 타임아웃을 줄인다. LLM 미배선이면 None(「소견기 미구성」).
+
+        `activity`(plans/187 W13)는 소견기에 넘겨 LLM 호출·소견 초안을 기록하게 한다.
+        """
         wiring = self._playbook
         assert wiring is not None
         if wiring.llm is None:
@@ -926,7 +1057,7 @@ class InvestigationDispatcher:
             )
         else:
             limits = base
-        return PlaybookNarrator(wiring.llm, limits), None
+        return PlaybookNarrator(wiring.llm, limits, activity=activity), None
 
     def _collect_playbook(self, job: JobLike, pb: Playbook, matched_by: str,
                           cache: ToolResultCache, deadline: float,
@@ -950,7 +1081,10 @@ class InvestigationDispatcher:
             ))
         if stop.is_set():
             return run
-        narrator, note = self._narrator(deadline - self._clock())
+        log = _activity(job)
+        if log is not None:
+            log.set_phase("narrating")
+        narrator, note = self._narrator(deadline - self._clock(), log)
         if note:
             run.notes.append(note)
         return finalize_playbook_run(
@@ -1025,7 +1159,7 @@ class InvestigationDispatcher:
                             "label": DEEP_DIVE_LABEL}
         deep: _Background | None = None
         if mode == "parallel":
-            deep = self._start_deep(job, self._deep_job(job, pb, None))
+            deep = self._start_deep(job, self._deep_job(job, pb, None), mode)
             deep_state["status"] = "running"
         stop = threading.Event()
         library = self._progress_library(job, pb, matched_by, deep_state, stop)
@@ -1083,7 +1217,7 @@ class InvestigationDispatcher:
                                                floor=DEEP_MIN_REMAINING_S)
             else:
                 deep = self._start_deep(
-                    job, self._deep_job(job, pb, self._prior_findings(run, block))
+                    job, self._deep_job(job, pb, self._prior_findings(run, block)), mode
                 )
                 status = "running"
         if deep is not None and status == "running":
@@ -1105,6 +1239,9 @@ class InvestigationDispatcher:
                 ),
             }
             job.updated_at = self._wall_clock()
+            log = _activity(job)
+            if log is not None:
+                log.set_phase("deep_dive")
             if not deep.wait(deadline - self._clock()):
                 status, reason = "timeout", (
                     "심층 조사 타임아웃 — 전체 예산 "
@@ -1115,6 +1252,9 @@ class InvestigationDispatcher:
                 reason = f"심층 조사 실패 — {type(deep.error).__name__}: {deep.error}"
             else:
                 status = "done"
+            if log is not None:
+                safe_append(log, "deep_end", engine="system", status=status,
+                            label=f"심층 조사(HolmesGPT) 종료 — {status}")
         result = deep.result if (deep is not None and status == "done") else None
         self._finish_playbook(job, started, run, block, pb, mode, status, reason,
                               degrade, result, pb_outputs, cache, gate_severity, gate_tier)
@@ -1125,6 +1265,9 @@ class InvestigationDispatcher:
                          cache: ToolResultCache, gate_severity: int,
                          gate_tier: str | None) -> None:
         """판정(두 엔진 도구 출력 합집합 · G-25) → 플레이북 브리핑 → 잡 종결 · 감사."""
+        log = _activity(job)
+        if log is not None:
+            log.set_phase("finalizing")
         incomplete = bool(getattr(result, "incomplete", False)) if result is not None else False
         deep_outputs = list(result.tool_outputs) if (result is not None and not incomplete) else []
         verdict = self._run_severity_judge(
@@ -1148,6 +1291,7 @@ class InvestigationDispatcher:
             cross_source=xs, apm_tools_connected=bool(self._settings.apm_mcp_url),
             tool_names=tool_names,
         )
+        self._log_finalize(job, started, "done")
         job.status = "done"
         job.verdict = f"{verdict.level}(신뢰도 {verdict.confidence}) escalate={verdict.escalate}"
         job.briefing = briefing
@@ -1193,6 +1337,7 @@ class InvestigationDispatcher:
 
     def _finish_timeout(self, job: JobLike, started: float) -> None:
         """전체 타임아웃 확정(종전 경로와 같은 문구·감사)."""
+        self._log_finalize(job, started, "timeout")
         job.status = "timeout"
         job.reason = "investigation_timeout"
         job.verdict = (
@@ -1336,7 +1481,7 @@ class InvestigationDispatcher:
         남는다(2026-09-09 폐쇄망 실측: 300s 상한에 960s+ running·mcp_server 종료가 원인).
         """
         assert self._diagnose_fn is not None
-        return self._join_timebox(self._diagnose_fn, job, self._timeout, "sre-investigate")
+        return self._join_timebox(self._diagnose_for(job), job, self._timeout, "sre-investigate")
 
     @staticmethod
     def _tool_texts(result: DiagnosisLike) -> list[str]:

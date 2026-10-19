@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sre_agent.application.investigation_guidance import clean_prior_findings
+from sre_agent.domain.activity_log import ActivityLog
 from sre_agent.domain.cross_source_episode import episode_reference_time
 from sre_agent.domain.incident_scope import (
     DEFAULT_LOOKBACK_MINUTES,
@@ -35,6 +36,7 @@ from sre_agent.domain.incident_scope import (
     normalize_lookback,
     normalize_reference_time,
 )
+from sre_agent.infrastructure.activity_masking import mask_activity_text
 from sre_agent.settings import AgentSettings
 
 logger = logging.getLogger(__name__)
@@ -93,6 +95,10 @@ class InvestigationJob:
     # 둘 다 None이면 `summary()`에 키가 생기지 않는다(off = 종전 반환과 비트 동일).
     progress: dict | None = None
     partial_briefing: dict | None = None
+    # 실행 기록(plans/187 W13 · `SRE_ACTIVITY_LOG_ENABLED` on이고 접수된 잡만)
+    # — 잡 TTL과 함께 사라진다.
+    # `summary()`에는 나오지 않는다 — `live_view()`가 `activity_since ≥ 0` 조회에만 더한다.
+    activity: ActivityLog | None = None
 
     def summary(self) -> dict:
         """§3 `sre_get_investigation`/`sre_list_investigations` 반환 스키마.
@@ -124,6 +130,33 @@ class InvestigationJob:
         if self.partial_briefing is not None:
             summary["partial_briefing"] = self.partial_briefing
         return summary
+
+    def live_view(self, activity_since: int, now: float) -> dict:
+        """실행 기록 가산 키(plans/187 W13) — `activity`·`phase`·`queue_position`·`elapsed_s`.
+
+        `activity`는 `seq > activity_since`인 이벤트다(`next_seq`를 다음 커서로 쓴다).
+        기록이 없는 잡(거부·중복 등)은 빈 기록이다. `phase`·`queue_position`은
+        진행 중(D-123 `accepted`·`running`)일 때만 값이 있다 — 대기도 `status=running`이고
+        `phase=queued`로 구분한다. `elapsed_s`는 접수 시각부터(동시 상한 대기 포함)이며 종결 잡은
+        마지막 갱신 시각까지다 — 단 종결 잡에 계측 키 `elapsed_s`(동시 상한 통과부터 ·
+        plans/154 W1)가 이미 있으면 `get()`이 그 값을 둔다.
+        """
+        log = self.activity
+        active = self.status in ACTIVE_STATUSES
+        if log is None:
+            activity: dict = {"next_seq": 0, "truncated": False, "events": []}
+            phase, position = None, None
+        else:
+            activity = log.since(activity_since)
+            phase = log.phase if active else None
+            position = log.queue_position if active else None
+        end = now if active else self.updated_at
+        return {
+            "activity": activity,
+            "phase": phase,
+            "queue_position": position,
+            "elapsed_s": round(max(0.0, end - self.created_at), 3),
+        }
 
 
 # executor(dispatcher 인터페이스): 잡을 받아 in-place로 terminal 상태(및 briefing/verdict 등)를
@@ -433,17 +466,27 @@ class JobStore:
             self._dispatch(job)
             return {"investigation_id": job.investigation_id, "status": "accepted"}
 
-    def get(self, investigation_id: str) -> dict:
+    def get(self, investigation_id: str, activity_since: int = -1) -> dict:
         """조사 잡 상태를 조회한다(§3 `sre_get_investigation`).
 
         미존재 id는 침묵하지 않고 `not_found`로 정직하게 보고한다.
+        `activity_since ≥ 0`이고 `sre_activity_log_enabled`면 실행 기록 가산 키(`live_view`)를
+        더한다
+        (plans/187 W13). `-1`(기본)이거나 플래그 off면 종전 반환과 비트 동일하다.
         """
         with self._lock:
             self._sweep()
             job = self._jobs.get(investigation_id)
             if job is None:
                 return {"status": "not_found", "investigation_id": investigation_id, "error": "해당 investigation_id 없음"}
-            return job.summary()
+            summary = job.summary()
+            if activity_since >= 0 and self._settings.sre_activity_log_enabled:
+                live = job.live_view(activity_since, self._clock())
+                if "elapsed_s" in summary:
+                    # 종결 잡의 계측 키(plans/154 W1 — 슬롯 획득부터)는 뜻을 바꾸지 않는다.
+                    live.pop("elapsed_s")
+                summary.update(live)
+            return summary
 
     def list(self, limit: int = 20) -> dict:
         """최근 조사 잡 요약을 반환한다(§3 `sre_list_investigations`).
@@ -512,7 +555,7 @@ class JobStore:
         reason: str | None = None,
     ) -> InvestigationJob:
         now = self._clock()
-        return InvestigationJob(
+        job = InvestigationJob(
             investigation_id=uuid.uuid4().hex,
             kind=kind,
             status=status,
@@ -523,6 +566,10 @@ class JobStore:
             question=question,
             reason=reason,
         )
+        # 실행 기록(plans/187 W13) — 접수된 잡만. off면 만들지 않는다(기록 지점 전부 무동작).
+        if status == "accepted" and self._settings.sre_activity_log_enabled:
+            job.activity = ActivityLog(masker=mask_activity_text, clock=self._clock)
+        return job
 
 
 __all__ = [

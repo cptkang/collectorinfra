@@ -237,3 +237,11 @@ class AgentSettings(BaseSettings):
     # 플레이북 예산(초) — 수집 상한(§8 수용 기준 6). 조사 전체 타임아웃(300s) 안에서
     # 쓰고, 수집 뒤 남은 시간을 소견기 타임아웃에 나눈다.
     sre_playbook_budget_s: float = Field(default=120.0, gt=0)
+
+    # ── 조사 잡 실행 기록(plans/187 W13 · §5.6.3 ⓑ · D-341 부기 4 ㉘) ──
+    # 기본 off = 기록 자체를 하지 않고 `sre_get_investigation(activity_since=…)`를 무시해 응답이
+    # 비트 동일. 켜면 접수된 잡마다 메모리 링 버퍼(이벤트 300 · 발췌·AI 메모 1건 2KB · 잡당 256KB)에
+    # 동시 상한 대기·스텝·도구 호출·소견 LLM·HolmesGPT 스트림(도구·판단 회차·AI 메모)을 남기고,
+    # `activity_since ≥ 0` 조회에 `activity`·`phase`·`queue_position`·`elapsed_s`를 더한다.
+    # 한 줄·발췌·메모는 버퍼에 넣기 전에 비밀값을 가린다(G-36). 잡 TTL(1시간)과 함께 사라진다.
+    sre_activity_log_enabled: bool = False

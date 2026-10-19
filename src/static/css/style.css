@@ -470,6 +470,369 @@ body:has(.chat-layout.history-collapsed) {
     display: none !important;
 }
 
+/* 장애 진단 탭 배지 — 미확인 알람(빨강)이 아니라 진행 중 건수라 강조색을 쓴다 */
+.view-tab-badge--live.has-unread {
+    background: var(--accent);
+}
+
+/* ─── 장애 진단 뷰 (plans/187 W15 · §5.6.3 ⓓ) ─── */
+
+.diagnosis-view {
+    height: calc(100vh - var(--header-h) - var(--view-tabs-h));
+    overflow-y: auto;
+    padding: 16px 24px 24px;
+    position: relative;
+    z-index: 1;
+}
+
+.dv-head {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+}
+
+.dv-head h2 {
+    font-size: 1rem;
+    font-weight: 700;
+}
+
+.dv-conn {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.dv-conn--live { color: var(--success); }
+.dv-conn--reconnecting,
+.dv-conn--connecting { color: var(--text-muted); }
+.dv-conn--polling,
+.dv-conn--stopped,
+.dv-conn--idle { color: var(--warning); }
+
+.dv-readonly {
+    margin-left: auto;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.dv-tabbar {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+    margin: 10px 0;
+}
+
+/* 하위 탭 상한이 없다(G-40) — 줄은 가로로 스크롤하고 오른쪽 메뉴가 전체 목록을 준다 */
+.dv-tabs {
+    display: flex;
+    gap: 4px;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: thin;
+}
+
+.dv-subtab {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+}
+
+.dv-subtab.active,
+.dv-tab--list.active {
+    border-color: var(--accent);
+    box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.dv-subtab--done { opacity: 0.8; }
+
+.dv-tab,
+.dv-tab-close,
+.dv-menu-btn {
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: 0.8125rem;
+    padding: 6px 10px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.dv-tab--list {
+    flex: 0 0 auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    font-weight: 700;
+}
+
+.dv-tab-label {
+    display: inline-block;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
+}
+
+.dv-tab-state,
+.dv-tab-close {
+    color: var(--text-muted);
+}
+
+.dv-tab-close { padding: 6px 8px 6px 2px; }
+.dv-tab-close:hover { color: var(--error); }
+
+.dv-menu-btn {
+    flex: 0 0 auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+}
+
+.dv-menu {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    min-width: 240px;
+    max-height: 360px;
+    overflow-y: auto;
+    padding: 4px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow);
+}
+
+.dv-menu[hidden] { display: none; }
+
+.dv-menu-item {
+    text-align: left;
+    background: transparent;
+    border: none;
+    padding: 6px 8px;
+    color: var(--text);
+    font-size: 0.8125rem;
+    cursor: pointer;
+}
+
+.dv-menu-item:hover { background: var(--surface-hover); }
+.dv-menu-close { border-top: 1px solid var(--border); color: var(--text-secondary); }
+
+.dv-note {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    margin: 6px 0;
+}
+
+.dv-note:empty { display: none; }
+.dv-note--warn { color: var(--warning); }
+
+.dv-list {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8125rem;
+}
+
+.dv-list th,
+.dv-list td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--table-cell-border);
+    text-align: left;
+}
+
+.dv-list th {
+    color: var(--text-secondary);
+    border-bottom-color: var(--table-header-border);
+}
+
+.dv-list-row { cursor: pointer; }
+.dv-list-row:hover { background: var(--surface-hover); }
+
+.dv-tab-head {
+    margin-bottom: 8px;
+}
+
+.dv-tab-title {
+    font-weight: 700;
+}
+
+.dv-tab-meta {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+}
+
+.dv-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    gap: 12px;
+}
+
+@media (max-width: 1024px) {
+    .dv-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.dv-log,
+.dv-partial,
+.dv-final {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    padding: 8px 10px;
+    min-width: 0;
+}
+
+.dv-final { margin-top: 12px; }
+
+.dv-log-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.dv-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+}
+
+.dv-filters { display: inline-flex; gap: 8px; }
+.dv-log-bar > .dv-check:last-child { margin-left: auto; }
+
+.dv-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.dv-rows {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.dv-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    padding: 4px 2px;
+    border-bottom: 1px solid var(--table-cell-border);
+    font-size: 0.8125rem;
+}
+
+.dv-row--warn .dv-icon { color: var(--warning); }
+
+/* AI 메모(G-38 · D-035) — 결론처럼 읽히지 않게 다른 배경 + 「검증 전」 배지 */
+.dv-row--ai {
+    background: var(--info-bg);
+    font-style: italic;
+}
+
+.dv-ai-badge {
+    font-size: 0.6875rem;
+    font-style: normal;
+    font-weight: 700;
+    color: var(--tone-violet);
+    border: 1px solid var(--tone-violet);
+    border-radius: 4px;
+    padding: 0 4px;
+}
+
+.dv-time,
+.dv-meta {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.dv-engine {
+    font-size: 0.6875rem;
+    font-weight: 700;
+    padding: 0 5px;
+    border-radius: 4px;
+    background: var(--track);
+    color: var(--text-secondary);
+}
+
+.dv-engine--playbook { color: var(--accent); }
+.dv-engine--holmes { color: var(--tone-sky); }
+
+.dv-step {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+
+.dv-text {
+    flex: 1 1 200px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.dv-expand {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0 4px;
+}
+
+.dv-excerpt {
+    flex: 1 1 100%;
+    margin: 4px 0 2px;
+    padding: 6px 8px;
+    max-height: 240px;
+    overflow: auto;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: var(--bg);
+    border-radius: 4px;
+}
+
+.dv-partial-body,
+.dv-final-body {
+    font-size: 0.8125rem;
+    margin-top: 6px;
+}
+
+.dv-final-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+/* 알람 카드 [진행 보기] · 관제 드로어 「장애 진단에서 보기」(공용 렌더 밖 진입 버튼) */
+.diagnosis-open,
+.cause-live-open {
+    font-size: 0.72rem;
+    padding: 3px 10px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    border: 1px solid var(--accent-dim);
+    color: var(--accent);
+    background: var(--accent-glow);
+}
+
+.diagnosis-open {
+    margin-top: 6px;
+}
+
 /* ─── 이벤트 알람 뷰 ─── */
 
 .alarm-view {
@@ -1154,7 +1517,8 @@ button.alarm-prompt-trigger:hover {
 body.auth-pending > header,
 body.auth-pending > .view-tabs,
 body.auth-pending > .chat-layout,
-body.auth-pending > .alarm-view {
+body.auth-pending > .alarm-view,
+body.auth-pending > .diagnosis-view {
     visibility: hidden;
 }
 

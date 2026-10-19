@@ -47,7 +47,7 @@ POLL_LIVE: dict[tuple[str, str], dict[str, Any]] = {}
 LIVE_KEYS: tuple[str, ...] = ("progress", "partial_briefing")
 
 
-def _live_fields(res: dict[str, Any]) -> dict[str, Any]:
+def live_fields(res: dict[str, Any]) -> dict[str, Any]:
     """poll 응답의 진척 키 중 dict 값만 고른다(없으면 빈 dict)."""
     return {k: res[k] for k in LIVE_KEYS if isinstance(res.get(k), dict)}
 
@@ -95,61 +95,65 @@ async def refresh_investigation(
         return await poll_investigation(store, rec, investigation_id, ng)
 
 
-async def poll_investigation(
-    store: InvestigationStore, rec: dict[str, Any], investigation_id: str, ng: Any
-) -> tuple[dict[str, Any], str | None]:
-    """조사 서비스에 1회 poll한다(`refresh_investigation`의 잠금 안에서만 부른다).
+async def fetch_poll(
+    ng: Any, investigation_id: str, *, activity_since: int | None = None
+) -> tuple[dict[str, Any] | None, str | None]:
+    """조사 서비스에 `sre_get_investigation`을 1회 호출한다(연결·해제 포함 · 저장 안 함).
 
     요청마다 새 클라이언트를 쓴다(워커 공유 클라이언트와 세션이 섞이지 않게 — 후속 폴링과 같은
-    이유). 호출 전체를 `investigation_mcp_call_timeout_seconds`로 묶는다. 실패하면 저장소 상태를
-    그대로 두고 사유를 돌려준다(침묵 금지). 미종결(running)은 저장하지 않는다(재조회마다 행이
-    쌓이지 않게). 종결이어도 저장소에 이미 종결 행이 있으면(후속 폴링 등이 먼저 씀) 다시 쓰지
-    않는다.
-    실패·거부·타임아웃·스텁 응답의 `reason`·`error`는 레코드 사유로 남긴다.
+    이유). 호출 전체를 `investigation_mcp_call_timeout_seconds`로 묶는다. `activity_since`가
+    None이면 종전 호출 인자 그대로다(plans/187 W14 허브만 커서를 싣는다).
+
+    Returns:
+        (poll 응답 또는 None, 실패 사유 또는 None) — 실패면 응답이 None이고 사유를 돌려준다
+        (침묵 금지).
     """
-    from noise_gate.infrastructure.investigation_store import (
-        ACTIVE_STATUSES,
-        LINK_FIELDS,
-        STATUS_RUNNING,
-        terminal_poll_reason,
-    )
     from noise_gate.infrastructure.sre_agent_client import build_sre_agent_client
 
     client = build_sre_agent_client(ng)
     if client is None:
-        return rec, "조사 서비스 URL 미설정 — 진행 상태를 다시 조회할 수 없습니다"
+        return None, "조사 서비스 URL 미설정 — 진행 상태를 다시 조회할 수 없습니다"
     timeout = float(getattr(ng, "investigation_mcp_call_timeout_seconds", 10.0))
 
     async def _poll() -> dict[str, Any]:
         await client.connect()
         try:
-            return await client.poll(investigation_id)
+            if activity_since is None:
+                return await client.poll(investigation_id)
+            return await client.poll(investigation_id, activity_since=activity_since)
         finally:
             await client.disconnect()
 
     try:
-        res = await asyncio.wait_for(_poll(), timeout=timeout)
+        return await asyncio.wait_for(_poll(), timeout=timeout), None
     except TimeoutError:
-        return rec, f"조사 서비스 재조회 타임아웃({timeout:.0f}s 초과)"
+        return None, f"조사 서비스 재조회 타임아웃({timeout:.0f}s 초과)"
     except Exception as exc:  # noqa: BLE001 — 재조회 실패는 저장소 상태로 응답한다
         logger.warning("조사 재조회 실패: inv=%s", investigation_id, exc_info=True)
-        return rec, f"조사 서비스 재조회 실패: {type(exc).__name__}"
-    status = str(res.get("status") or "")
-    live = _live_fields(res)
-    key = (str(store.path), investigation_id)
-    if status not in TERMINAL_POLL_STATUSES:
-        if live:
-            POLL_LIVE[key] = live
-        else:
-            POLL_LIVE.pop(key, None)
-        base = {**rec, "status": STATUS_RUNNING} if status else rec
-        return ({**base, **live} if live else base), None
-    POLL_LIVE.pop(key, None)
-    # 종결 뒤에는 진척(`progress`)만 응답에 얹는다 — 부분 브리핑은 종결 브리핑으로 대체된다.
-    final_live = {"progress": live["progress"]} if "progress" in live else {}
+        return None, f"조사 서비스 재조회 실패: {type(exc).__name__}"
+
+
+def persist_terminal(
+    store: InvestigationStore,
+    rec: dict[str, Any],
+    investigation_id: str,
+    res: dict[str, Any],
+    status: str,
+) -> dict[str, Any]:
+    """종결 poll 응답을 저장소에 1행 남기고 저장된 레코드를 돌려준다.
+
+    저장소에 이미 종결 행이 있으면(후속 폴링 등이 먼저 씀) 다시 쓰지 않고 그 행을 돌려준다.
+    실패·거부·타임아웃·스텁 응답의 `reason`·`error`는 레코드 사유로 남긴다.
+    """
+    from noise_gate.infrastructure.investigation_store import (
+        ACTIVE_STATUSES,
+        LINK_FIELDS,
+        terminal_poll_reason,
+    )
+
     current = store.get_by_investigation(investigation_id)
     if current is not None and current.get("status") not in ACTIVE_STATUSES:
-        return ({**current, **final_live} if final_live else current), None
+        return current
     # 추가 조사 레코드의 연결 필드만 옮긴다(알람 레코드는 값이 없어 키를 쓰지 않는다).
     links = {k: rec[k] for k in LINK_FIELDS if rec.get(k)}
     store.record(
@@ -164,7 +168,37 @@ async def poll_investigation(
         reason=terminal_poll_reason(res),
         **links,
     )
-    stored = store.get_by_investigation(investigation_id) or rec
+    return store.get_by_investigation(investigation_id) or rec
+
+
+async def poll_investigation(
+    store: InvestigationStore, rec: dict[str, Any], investigation_id: str, ng: Any
+) -> tuple[dict[str, Any], str | None]:
+    """조사 서비스에 1회 poll한다(`refresh_investigation`의 잠금 안에서만 부른다).
+
+    호출은 `fetch_poll`, 종결 저장은 `persist_terminal`이 한다(plans/187 W14에서 허브와 나눠 쓰려고
+    나눴다 — 동작 불변). 실패하면 저장소 상태를 그대로 두고 사유를 돌려준다(침묵 금지).
+    미종결(running)은 저장하지 않는다(재조회마다 행이 쌓이지 않게).
+    """
+    from noise_gate.infrastructure.investigation_store import STATUS_RUNNING
+
+    res, reason = await fetch_poll(ng, investigation_id)
+    if res is None:
+        return rec, reason
+    status = str(res.get("status") or "")
+    live = live_fields(res)
+    key = (str(store.path), investigation_id)
+    if status not in TERMINAL_POLL_STATUSES:
+        if live:
+            POLL_LIVE[key] = live
+        else:
+            POLL_LIVE.pop(key, None)
+        base = {**rec, "status": STATUS_RUNNING} if status else rec
+        return ({**base, **live} if live else base), None
+    POLL_LIVE.pop(key, None)
+    # 종결 뒤에는 진척(`progress`)만 응답에 얹는다 — 부분 브리핑은 종결 브리핑으로 대체된다.
+    final_live = {"progress": live["progress"]} if "progress" in live else {}
+    stored = persist_terminal(store, rec, investigation_id, res, status)
     return ({**stored, **final_live} if final_live else stored), None
 
 
@@ -182,6 +216,9 @@ __all__ = [
     "POLL_LOCKS",
     "POLL_MIN_INTERVAL",
     "TERMINAL_POLL_STATUSES",
+    "fetch_poll",
+    "live_fields",
+    "persist_terminal",
     "poll_investigation",
     "refresh_investigation",
     "sweep_polls",

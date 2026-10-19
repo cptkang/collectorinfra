@@ -99,6 +99,12 @@ class ToolResultCache:
         with self._lock:
             return len(self._entries)
 
+    def contains(self, tool: str, args: Mapping[str, Any] | None) -> bool:
+        """같은 키가 이미 있는지(완료·진행 중) — 실행 기록의 캐시 적중 표시용(plans/187 W13)."""
+        key = cache_key(tool, args)
+        with self._lock:
+            return key in self._entries
+
     # ── 호출 ──
     def wrap(self, batch: BatchCaller) -> CachedBatchCaller:
         """배치 콜러블을 이 캐시로 감싼다."""
@@ -157,6 +163,10 @@ class CachedBatchCaller:
     def call(self, tool: str, args: dict) -> str:
         """단일 호출 — HolmesGPT 도구 경로처럼 한 건씩 부르는 쪽용."""
         return self._cache.fetch(self._batch, [(tool, args)])[0]
+
+    def cached(self, tool: str, args: dict) -> bool:
+        """이 호출이 캐시에서 나올지(호출 전 판정 — 실행 기록 `status=cached` · plans/187 W13)."""
+        return self._cache.contains(tool, args)
 
 
 __all__ = [

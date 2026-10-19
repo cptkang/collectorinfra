@@ -1,8 +1,9 @@
 # 187. 알람 유형별 자동 조사 플레이북 — PAGE 알람마다 정해진 조사 단계를 결정적으로 일괄 수집하고, 단계별 LLM 소견과 종합 원인·대응 의견을 운영자에게 보인다
 
 > **작성일**: 2026-10-17 · **v1.0** · **v1.1**(같은 날 — 사용자 지시 *"문헌 조사를 인터넷으로 접속하여 직접 다시 조사하여 계획서에 반영하라"*: 제니퍼 공식 백서 2·사례 4 원문 확보(이미지 PDF는 OCR) · 출처 검증 수준 재표기 · Datadog 3상태 서술 정정 · 결정적 판독 규칙 §4.2 신설 · S0 범위 비교 · S3 커넥션 획득 분리 · S2 WAS/호스트 CPU 대조) · **v1.2**(같은 날 — 사용자 지시 *"장애 대응에 대한 지식 저장소나 Troubleshooting Guide, 런북/플레이북, 인시던트 대응 매뉴얼, 알려진 문제 및 우회 방법 등을 자세히 조사하여 계획을 업데이트하라"*: 지식 유형 문헌 §3.7 신설 · **장애 대응 지식 저장소(KB) 설계 §5.7** — 런북 블록·알려진 오류(KEDB, KCS 구조·상태) 결정적 일치·우회 표시·매뉴얼 RAG 참고·초안→승인 수명주기 · 요건 R-14~R-17 · Wave W8~W9 · 수용 기준 8~10 · 게이트 G-13~G-17)
-> **상태**: **WIP — W0~W6·W8~W12 구현 완료(2026-10-19 · 미커밋) · 잔여: W7 내부망 shadow · R-D(게이트웨이 acquire/execute 구조화 필드 부재 → `db_split` n/a · 수용 기준 2·2′·9 부분) · G-26 HolmesGPT 도구 경로 캐시 공용 미구현 · 수용 기준 6(120s)·7 내부망 측정 · SME 자료(G-10) · 매뉴얼 캡처** · 모든 신규 플래그 기본 off(비트 동일 검증) · 검증·보안 감사 지적 교정 완료 · (구: TODO — 계획(코드 0건)) · **게이트 G-1~G-17 확정(2026-10-17 · 권고안 전부 · 사용자 「게이트 권고안대로 확정」)** · **G-18~G-21 확정(같은 날 · 권고안 · 사용자 「권고한데로 반영하라」)** · **G-22~G-27 확정(같은 날 · 권고안 · 사용자 「권고대로 정리하라」)** · **G-28~G-33 확정(같은 날 · 권고안 · 사용자 「권고안대로 확정하여 계획서에 반영하라」)** — 게이트 전건 확정 · **D-341 확정**
+> **상태**: **WIP — v2.0 W13~W15(장애 진단 탭 · 실행 기록 · SSE) 구현 완료(2026-10-19 · 미커밋 · 두 플래그 기본 off) · 잔여: 사용자 경로 2차 마스킹 실효(사용자 결정) · 실프로세스 종단 1회 · 매뉴얼 캡처 · 내부망 실 출력 가림 표본** · **W0~W6·W8~W12 구현 완료(2026-10-19 · 미커밋) · 잔여: W7 내부망 shadow · R-D(게이트웨이 acquire/execute 구조화 필드 부재 → `db_split` n/a · 수용 기준 2·2′·9 부분) · G-26 HolmesGPT 도구 경로 캐시 공용 미구현 · 수용 기준 6(120s)·7 내부망 측정 · SME 자료(G-10) · 매뉴얼 캡처** · 모든 신규 플래그 기본 off(비트 동일 검증) · 검증·보안 감사 지적 교정 완료 · (구: TODO — 계획(코드 0건)) · **게이트 G-1~G-17 확정(2026-10-17 · 권고안 전부 · 사용자 「게이트 권고안대로 확정」)** · **G-18~G-21 확정(같은 날 · 권고안 · 사용자 「권고한데로 반영하라」)** · **G-22~G-27 확정(같은 날 · 권고안 · 사용자 「권고대로 정리하라」)** · **G-28~G-33 확정(같은 날 · 권고안 · 사용자 「권고안대로 확정하여 계획서에 반영하라」)** — 게이트 전건 확정 · **D-341 확정**
 > **v1.3**(같은 날): 게이트 확정 반영 · §5.6 화면 설계 상세화(요약형 카드·드로어 + 조사 상세 화면 + 관리자 「조사 지식」 탭) · W5·W9 산출물 보강 · G-18 신설
+> **v2.0**(2026-10-19 · 검토안 → 같은 날 인터뷰로 확정): 사용자 제기 *"holmesgpt나 playbook 기반 조사시 시간이 오래 걸리고 다수의 조사가 진행되어 사용자가 진행상황을 못보고 멈춰있는 것으로 보인다. 알람이나 조사를 눌렀을경우 별도의 장애 진단 탭(이벤트 알람 탭 옆에)을 열어서 현재 진행중인 명령어나 api등을 보여주고 중간 단계을 조회내용도 볼 수 있도록 하라. 진행중에 새로운 이벤트를 조사하면 새로운 탭이 열리면서 조사가 진행되도록 하라."* → 실측(§5.6.3 ⓐ — 「멈춘 것처럼」 보이는 원인 5건: 화면 재조회 300초 상한 · 동시 상한 대기 비표시 · HolmesGPT 진행 무노출 · 플레이북 스텝 안 도구 호출 무노출 · 진행 중 조사 목록 없음) → §5.6.3 신설(「장애 진단」 뷰 탭 · 조사별 하위 탭 · 실행 기록(도구·명령 한 줄 · 상태 · 소요) · 중간 결과 · 대기 순번) · R-20~R-22 · W13~W15 · 수용 기준 14~20 · G-34~G-40 검토안 → **같은 날 인터뷰로 G-34~G-42 확정**(§9 — 권고와 다른 선택: G-36 발췌도 사용자에게·가림 후 모두 · G-38 AI 메모 관리자 표시 · G-39 SSE · G-40 상한 없음 · 추가 G-41 목록 범위 · G-42 상세 푸시 범위) → D-341 부기 4 · D-325 부기(② SSE 도입 · ③ 발췌 노출)
 > **v1.9**(같은 날): 사용자 제기 *"사용자는 이벤트 알람을 보거나 봤던 것을 찾아 알람에 대해 다시 분석을 진행할 수 있어야 한다. 알람이나 현상에 대해 사용자가 질의하면 플레이북이나 HolmesGPT로 조사를 해야 한다"* → 검토(현행: 지난 알람 검색은 노이즈 콘솔만 · 재분석 경로 없음 · 채팅 질의는 기본 off 동기 `fault_diagnosis`만) → 권고안 확정. §5.6.2 신설(「이 알람 분석」 버튼 · 채팅 「지난 알람」 검색 · 증상 질의 결정적 라우팅 · 비동기 조사 카드) · R-18·R-19 · §5.0 잡 경로 2행 · W11·W12 · 수용 기준 11~13 · G-28~G-33 · G-9 수동 재실행 부분 개정(D-325 ⑩ 후속 계획 = 이 계획) · D-341 부기 3 ㉑~㉖
 > **v1.8**(같은 날): G-22~G-27 권고안 확정 · §5.0.1 확정 표기 · W2(도구 캐시)·W4(엔진 모드·병렬)·W5(비교 화면·선택 기록)·W7(shadow = parallel) 반영 · G-27 문구 명확화 · D-341 부기 ⑮~⑳
 > **v1.7**(같은 날 · 검토안): 사용자 제기 *"플레이북 엔진과 HolmesGPT를 동시에 돌리고 운영자가 둘중에 적정한 것을 보고 판단"* → §5.0.1 병렬 비교 모드(`SRE_DEEP_DIVE_MODE=parallel` · 정적 지시만 공유 · 잡 단위 도구 캐시 · 같은 틀 나란히 비교 + 결정적 일치 표시 · 운영자 선택 기록) · G-22 권고 변경 · G-26·G-27 신설
@@ -21,6 +22,7 @@
 > **계획 끝 회귀(2026-10-19)**: `regress.py --base 99ec1ea4 --files <130>` — 본체 통과 4,314 · 원래 실패 6(TestProcessApiClient 2 · prometheus_client 부재 2 · settings_catalog `.env` 2) · sre_agent 통과 1,785 · 실패 0 · arch/overfit/config_fallback 통과 · ruff·mypy 이번 diff 줄 0 · 범위: 모듈 단위 — 전체 미실행 · `[전체 회귀 권고]` 허브 모듈 src.config.alarm 88% · 본체 레인은 plans/186 시각 의존 parametrize id의 xdist 수집 불일치로 직렬 실행(docs/18 2026-10-19)
 > **전체 회귀(2026-10-19 · 사용자 요청)**: `regress.py --full --base 99ec1ea4` — 본체 통과 23,483 · 실패 55 · 에러 7 · 건너뜀 93(xdist -n 7 수집 정상) → 귀속 원래 실패 67 · 이번 변경 탓 1(`test_every_noise_key_has_section` — plans/187 `NOISE_INVESTIGATION_*` 13키 `SECTION_BY_KEY` 미등재 → `src/api/settings_catalog.py`에 「자동 장애 조사」로 등재, 재실행 통과) · mcp_server 통과 204 · 에러 6(prometheus_client·pymysql 부재) · apm_gateway 도구 TIMEOUT(2400초 — `test_plan134_w0b_verify.py::test_disconnect_before_promotion_cancels_job` 기준에서도 무한 대기) → 그 1건 제외 별도 실행 통과 1,628 · 실패 2(tool_list snapshot — 기준에서도 실패) · sre_agent(도구 미실행 — 자체 venv 없음) 타 체크아웃 venv로 통과 1,785 · 정적 게이트 통과 · 범위: 전체(사용자 요청)
 > **origin/main 병합(2026-10-19 · plans/188 D-342·D-343과 통합)**: `_agent_getter`에 188 C1 재생성(툴셋 FAILED면 1회 새로 생성 · 잠금)을 합치고 `_default_diagnose_fn(settings, toolset_check, agent_getter)`로 두 배선 유지 · 플레이북 심층 결과도 188 A안·C7 기준(`tools_unavailable`·도구 호출 마크업)이면 서술 없이 `deep_dive.status=skipped`+사유(`_deep_skip_reason` · `sre_agent/tests/test_plan187_merge188_deep_skip.py`) · sre_agent 전체 2,059 통과
+> **v2.0 구현(2026-10-19 · W13~W15 · 계획 시작 SHA `a4514020`)**: W13 sre_agent `domain/activity_log.py`(신규 · 링 버퍼 300건/256KB · `safe_append` best-effort)·`infrastructure/activity_masking.py`(신규 — `mask_secrets` 뒤 명령행·설정 비밀값 꼴 추가 가림)·`application/{investigation_dispatcher,investigation_jobs,playbook_steps,playbook_narrator}.py`·`diagnosis.py`(`_StreamDrain` 훅)·`infrastructure/tool_result_cache.py`·`interface/mcp_service.py`(`activity_since=-1`)·`settings.py`(`SRE_ACTIVITY_LOG_ENABLED`)·`.env.example` · W14 본체 `src/api/investigation_live_hub.py`(신규)·`investigation_poll.py`·`routes/alarm.py`(`/alarm/investigations/{active,stream}` · `activity_since`)·`server.py`·`src/config/alarm.py`(`NOISE_INVESTIGATION_LIVE_VIEW_ENABLED`·`_LIVE_POLL_SECONDS`)·`settings_catalog.py`·`config/settings_help/noise_gate_investigation.yaml`·`noise_gate/infrastructure/{sre_agent_client,investigation_activity_store}.py` · W15 `src/static/js/diagnosis-view.js`(신규)·`index.html`·`app.js`·`noise.js`·`briefing-view.js`(`runningText` 옵션)·`css/style.css`·`noise.html`·`admin/noise.html` · 매뉴얼 U-70·A-81 · 테스트 `sre_agent/tests/test_plan187_{w13_activity,v2_verify_activity}.py`·`tests/test_api/test_plan187_{w14_live_api,w14_live_hub,v2_verify_live}.py`·`test_ui_plan187_w15_diagnosis.py` + 고정값 갱신 6파일. **계획 끝 회귀**: `regress.py --base a4514020 --files <45>` rc=0 — 본체 통과 9,773·실패 0 · sre_agent 2,095·실패 0 · arch/overfit/config_fallback 통과 · ruff·mypy 이번 diff 줄 0 · 범위: 모듈 단위 — 전체 미실행 · `[전체 회귀 권고]` 허브 모듈 src.config.alarm 88% · `SreAgentClient.poll` 시그니처. 이후 검증 교정 라운드는 실패 테스트·모듈 선택분 + `--no-tests`만. **실측**: poll당 MCP 새 연결 21.9ms vs 재사용 5.9ms(로컬 가짜 서버) · 본체는 uvicorn 단일 워커 전제(`alarm_bus`와 같음 — 다중 워커면 폴러 ×워커). **이탈**: 비밀값 꼴은 `log_masking.py`(정본 `src/utils/log_masking.py`의 바이트 사본 4개 일치 테스트)가 아니라 신규 `activity_masking.py`에 둠 · 스트림 최대 수명 3600초·watch 200개 방어 상한 · 사용자 경로 `denied` 사유 `unavailable` 통합 · 노이즈 드로어는 접수 직후 자동 새 탭 대신 「장애 진단에서 보기」 버튼(팝업 차단). **잔여**: 사용자 경로 2차 마스킹(D-325 ③ `_investigation_mask_fn`)이 줄 전체 일치라 한 줄 JSON 안의 키·토큰은 못 가림(별 결정) · 실프로세스 종단 1회 · 매뉴얼 캡처 · `/active`·summary에 엔진 키는 이벤트를 본 조사만 · 종결 잡 발췌 TTL까지 유지(최악 약 128MB · 전형 43MB).
 
 ---
 
@@ -59,6 +61,9 @@ PAGE 알람이 오면 지금은 sre_agent(HolmesGPT)가 **LLM이 고르는 도�
 | R-17 | 조사 결과를 지식으로 축적·갱신 (v1.2) | 조사 저장소(plans/153) → 초안 → 사람 승인 | 사람 승인(LLM 자동 등록 차단) | §5.7.5 |
 | R-18 | 지금 보거나 지난 알람을 찾아 다시 분석 (v1.9) | 노이즈 결정 저장소(`/noise/decisions` · 30일) · 알람 조사 잡(사용자 요청) | 결정적(유형 매칭 · 상한) | §5.6.2 ①② |
 | R-19 | 알람·현상 질의 → 플레이북 또는 HolmesGPT 조사 (v1.9) | 결정적 대상·증상 매핑 → 플레이북 잡 · 불성립 시 `sre_diagnose` | 결정적 라우팅(LLM 분류 미의존) | §5.6.2 ③ |
+| R-20 | 조사 진행 상황을 별도 「장애 진단」 탭(이벤트 알람 탭 옆)에서 실시간으로 본다 — 지금 실행 중인 도구·명령·API (v2.0) | sre_agent 잡 실행 기록(신규 · 메모리 링 버퍼) → `sre_get_investigation` 선택 인자 → 본체 중계 | 표시만(판정 무관) | §5.6.3 ⓑⓒ |
+| R-21 | 중간 단계의 조회 내용(끝난 단계 결과 · 도구 응답 발췌)을 진행 중에 본다 (v2.0) | 플레이북 `partial_briefing`(기존) + 실행 기록의 응답 발췌(신규 · 마스킹) | 표시만 | §5.6.3 ⓒⓓ |
+| R-22 | 진행 중에 다른 알람을 조사하면 새 탭이 열리고 기존 조사도 계속 진행·갱신된다 (v2.0) | 화면 하위 탭(조사 1건 = 탭 1개 · 상한 없음) · SSE 연결 1개 다중화(배경 탭 = 요약만) | — | §5.6.3 ⓓ |
 
 ### 1.3 범위 밖
 
@@ -678,6 +683,98 @@ response_hints:                         # 대응 제안 문구(실행 아님)
 
 **하지 않는 것**: 질의마다 무조건 조사를 띄우지 않는다(조회형 질의는 기존 text2sql 경로) · 가상 알람 맥락을 알람으로 저장하지 않는다 · 사용자 요청 조사로 통보·승격(CW-C)을 일으키지 않는다.
 
+#### 5.6.3 (v2.0 · **확정 2026-10-19 — G-34~G-42**) 「장애 진단」 탭 — 진행 중 조사의 실행 기록·중간 결과 실시간 표시
+
+사용자 제기(2026-10-19): *"조사시 시간이 오래 걸리고 다수의 조사가 진행되어 사용자가 진행상황을 못보고 멈춰있는 것으로 보인다. … 별도의 장애 진단 탭(이벤트 알람 탭 옆에)을 열어서 현재 진행중인 명령어나 api등을 보여주고 중간 단계의 조회내용도 볼 수 있도록 하라. 진행중에 새로운 이벤트를 조사하면 새로운 탭이 열리면서 조사가 진행되도록 하라."*
+
+**ⓐ 실측 — 「멈춘 것처럼」 보이는 원인 (2026-10-19 · `a4514020`)**
+
+| # | 원인 | 근거(`file:line`) | 결과 |
+|---|---|---|---|
+| F1 | **화면 재조회가 300초에서 멈춘다.** 상한은 카드를 연 시점부터 세는데, sre_agent 전체 타임아웃(300s)은 동시 상한 대기가 끝난 뒤부터 센다. 대기와 `parallel` 모드가 겹치면 조사가 끝나기 전에 화면이 갱신을 멈춘다 | `briefing-view.js:24`(`DEFAULT_LIMIT_S=300`) · `:1245~1262`(`createPoller` limited) · `src/config/alarm.py:384` · `sre_agent/settings.py:115` | 조사는 진행 중인데 화면은 정지 |
+| F2 | **동시 상한 대기가 보이지 않는다.** 접수 즉시 `status=running`으로 바뀌고 워커가 세마포어(기본 2)를 기다린다. 대기 중이라는 표지가 응답에 없다 | `investigation_dispatcher.py:479`(running 전이) · `:590`(`with self._semaphore`) · `settings.py:120` | 3번째부터는 「진행 중」인데 아무것도 안 바뀜 |
+| F3 | **HolmesGPT 진행이 밖으로 나가지 않는다.** `_StreamDrain`이 `call_stream`의 `START_TOOL`·`TOOL_RESULT`·`AI_MESSAGE`를 받지만 인스턴스에만 쌓고, 잡에는 종결 때 `tool_calls_summary`만 옮긴다. `progress`·`partial_briefing`은 플레이북 잡에만 있다 | `diagnosis.py:189~215` · `investigation_dispatcher.py:723` | 심층·진단 조사는 끝날 때까지 빈 화면 |
+| F4 | **플레이북은 단계 단위로만 보인다.** 스텝 안의 개별 도구 호출(도구명·인자·응답 크기·소요)과 소견·종합 LLM 호출은 진척에 없다 | `StepContext.call`(`playbook_steps.py:274`) · `_progress_library`(`investigation_dispatcher.py:844`) | S3 하나가 길면 그 동안 정지처럼 보임 |
+| F5 | **진행 중 조사 목록이 없다.** 카드·드로어는 알람 1건씩, 펼쳤을 때만 재조회한다. 여러 조사가 동시에 돌 때 무엇이 어디까지 왔는지 한 곳에서 볼 수 없다. `sre_list_investigations`는 있으나 화면 소비 0건 | `mcp_service.py:475` · `app.js:5397~5432`(펼칠 때만 `panel.open()`) | 「다수 조사」 상황 파악 불가 |
+
+이미 있는 것(재사용): 플레이북 `progress{done,total,current_step}`·`partial_briefing`(W4) · 본체 중계(`investigation_poll.py:47` `LIVE_KEYS` — 저장 안 함) · 사용자 경로 마스킹(`alarm.py:1189` `_attach_live_progress` · D-325 ③) · 비밀값 마스킹(`sre_agent/infrastructure/log_masking.py:173` `mask_secrets`) · holmes 도구 한 줄 표기(`ToolCallResult.description` = 도구별 `get_parameterized_one_liner` — MCP는 `<toolset>: <tool> {params}`, bash는 명령 앞 200자).
+
+**ⓑ sre_agent — 잡 실행 기록(activity)** (W13 · 플래그 `SRE_ACTIVITY_LOG_ENABLED` 기본 off)
+
+- 잡마다 **메모리 링 버퍼**를 둔다(domain 순수 · 스레드 안전 append · 단조 증가 `seq`). 상한은 이벤트 300건 · 발췌 1건 2KB · AI 메모 1건 2KB · 잡당 합계 256KB [제안 값]. 넘으면 오래된 것부터 버리고 `truncated=true`를 단다. 잡 TTL(1시간 · `investigation_jobs.py:55`)과 함께 사라진다.
+- 이벤트: `{seq, at, engine: playbook|holmes|system, kind, step?, tool?, label, status?, elapsed_ms?, rows?, excerpt?, note?}`
+
+  | kind | 기록 지점 | label 예 |
+  |---|---|---|
+  | `queued`·`started` | `_worker` 세마포어 획득 전후(`investigation_dispatcher.py:590`) · 대기 순번 = 대기 중 잡 수 | 「동시 조사 상한 대기 — 앞 1건」 |
+  | `step_start`·`step_end` | `_progress_library.wrap`(`:844~`) | 「S3 느린 트랜잭션 5건」 |
+  | `tool_start`·`tool_end` (playbook) | `StepContext.call`(`playbook_steps.py:274`) — 호출 전·후. 캐시 적중은 `status=cached` | `apm_slow_transactions {instance: A1, n: 5}` |
+  | `tool_start`·`tool_end` (holmes) | `_StreamDrain`의 `START_TOOL`(도구명만 옴) · `TOOL_RESULT`(`description` 한 줄 · `result.status`) | `polestar: polestar_metric_trend {...}` · `uptime` |
+  | `llm_start`·`llm_end` | 소견·종합 호출(`playbook_narrator.py`) · holmes 판단 회차 | 「S3 소견 작성」 · 「HolmesGPT 판단 2회차」 |
+  | `ai_note` | holmes `AI_MESSAGE` 본문 · 플레이북 단계 소견 초안 — `note`(2KB 상한) | **G-38 확정**: 운영자 전용 · 「AI 메모 — 검증 전」 배지 |
+  | `deep_start`·`deep_end`·`finalize` | 심층 시작·종결 · 브리핑 조립 | 「심층 조사(HolmesGPT) 시작 — parallel」 |
+
+- `label`·`excerpt`·`note`는 **버퍼에 넣기 전에** `mask_secrets`를 거친다. **G-36 확정(가림 처리 후 모두 보임)**: 액션 단위 발췌 제외 목록을 두지 않는다 — 프로세스 명령행·bash 출력도 가린 뒤 발췌로 남긴다. 대신 W13에서 `mask_secrets`가 명령행 비밀값 꼴(`--password=`·`--password <값>`·`-p<값>`(DB 클라이언트)·`token=`·`secret=`·`Authorization:`·URL 사용자정보 `user:pass@`·JDBC `password=`)을 가리는지 표본 테스트로 고정하고, 부족한 꼴은 `log_masking.py`에 더한다(D-339와 같은 모듈 — 로그·실행 기록 공용). 원시 도구 출력 전체는 남기지 않는다(D-324 ⑦ 「원시 도구 기록 미보관」과 같은 원칙 — 발췌만).
+- HolmesGPT 경로는 `diagnose_fn`에 선택 인자 `activity`(없으면 무동작)를 더해 `_StreamDrain`에 넘긴다. holmes 내부 코드는 바꾸지 않는다(스트림 소비자 쪽 훅만).
+- **계약**: `sre_get_investigation(investigation_id, activity_since: int = -1)` 선택 인자 가산. `-1`(기본·구버전 호출자)이면 응답이 종전과 비트 동일하다. `≥0`이면 `activity: {next_seq, truncated, events: [seq > activity_since]}` · `phase`(queued/collecting/narrating/deep_dive/finalizing) · `queue_position` · `elapsed_s`를 더한다. D-123 상태 어휘는 바꾸지 않는다(대기도 `running` — 구분은 `phase`로). sre_agent는 종전처럼 접수·조회(submit/poll)만 한다 — 브라우저로 미는 일은 본체가 맡는다(D-123 · D-118 경계 불변).
+
+**ⓒ 본체 — 실시간 허브·SSE·권한·보관** (W14 · 플래그 `NOISE_INVESTIGATION_LIVE_VIEW_ENABLED` 기본 off)
+
+- **실시간 허브(G-39 확정 — 서버 푸시)**: 본체 프로세스 안 `InvestigationLiveHub`(기존 `alarm_bus`와 같은 in-process 방식). 미종결 조사마다 폴러 1개가 sre_agent에 `NOISE_INVESTIGATION_LIVE_POLL_SECONDS`(기본 5 [제안]) 간격으로 **한 번만** 묻는다(보는 사람 수와 무관). 받은 이벤트는 조사별 누적 버퍼(ⓑ와 같은 상한)에 쌓고 구독자에게 나눠 보낸다. 기존 `POLL_LIVE`(`investigation_poll.py:47`)는 이 허브로 대체하고, 진행 화면이 아닌 경로의 `POLL_MIN_INTERVAL=10`은 그대로 둔다.
+  - 폴러 수명: 구독자(스트림 연결)가 1명 이상이고 조사가 미종결인 동안만 돈다. 종결을 보면 마지막 1회를 더 읽고 멈춘다. 구독자 0이 60초 이어지면 멈추고 버퍼는 10분 뒤 비운다(키 만료 sweep — Known Mistakes 「데몬 in-memory dict」). 폴러 예외는 개별 try/except로 그 조사에만 「갱신 실패 — 사유」 이벤트를 보내고 다음 주기에 다시 묻는다(침묵 정지 금지).
+  - 재기동하면 허브는 비어 있고, 다음 구독 때 조사 저장소의 미종결 레코드에서 폴러를 다시 띄운다(커서 0부터 — sre_agent 잡이 살아 있으면 이어서 보인다).
+- **SSE 경로**: `GET /api/v1/alarm/investigations/stream?watch=<id>:<seq>,…` 신설 — `/alarm/notifications/stream`(`alarm.py:550~612`)과 같은 틀(`resolve_stream_user` 쿠키 → Authorization 헤더 → 쿼리 토큰 · 25초 ping · `StreamingResponse(text/event-stream)`). 브라우저당 **연결 1개**로 다중화한다 — 하위 탭마다 EventSource를 열면 HTTP/1.1 출처당 동시 연결 6개 상한에 걸려 탭이 무제한(G-40)일 때 깨진다.
+  - `event: summary` — **목록 범위의 모든 미종결 조사**의 상태·`phase`·대기 순번·진척·경과(작음 · 바뀔 때만).
+  - `event: activity` — **`watch`에 든 조사(열린 하위 탭)만**의 실행 기록 이벤트(`seq` 이후). 탭을 열면 그 조사의 누적분을 한 번에 받아 채우고, 이후 새 이벤트만 받는다(G-42 확정 — 열린 탭의 조사만).
+  - `event: partial` — 열린 탭 조사의 `partial_briefing` 변경분 · `event: done` — 종결(최종 브리핑은 기존 `GET /investigations/{id}`로 다시 읽는다).
+  - 탭을 열고 닫으면 브라우저가 `watch`(조사별 마지막 `seq` 포함)를 바꿔 다시 연결한다 — 커서가 있어 빠지거나 겹치는 이벤트가 없다. `id:` 필드에 이벤트 키를 실어 EventSource 자동 재연결(`Last-Event-ID`)에도 이어 받는다.
+  - `watch`의 각 조사는 연결 때 권한을 검사하고, 권한 없는 id는 조용히 빼지 않고 `event: denied {id}`로 알린다.
+  - 노이즈 관제 페이지(break-glass 운영자 토큰 · 헤더 전용)는 기존 `noise_stream`처럼 fetch 스트림으로 같은 경로를 읽는다 — 다만 G-34에 따라 노이즈 쪽 진입은 본 화면 `/?diagnosis=<id>` 새 브라우저 탭이 기본이다.
+- **목록 범위(G-41 확정)**: **관리자**(`is_admin` — role admin 사용자 · break-glass 운영자 토큰) = **모든 미종결 조사**(자동·요청·채팅 · 존 무관). **사용자** = **내가 채팅으로 시작한 조사**(`owner_sub` = 나 · 채팅 기원 `kind=diagnosis`/증상 라우팅). 사용자가 알람 카드·분석 요청에서 직접 연 조사는 목록에는 없지만 그 하위 탭은 열린다(기존 존 검사 · D-325 ④ fail-closed) — 「목록에 안 보이는 것」과 「열 수 없는 것」을 구분한다.
+- **경로 보강**: 기존 `GET /api/v1/alarm/investigations/{id}`(및 `by-alarm`)에 `activity_since` 쿼리를 가산한다(SSE를 못 쓰는 환경·종결 뒤 재조회용 · 없으면 종전과 같다). `GET /api/v1/alarm/investigations/active` 신설 — 위 목록 범위 · 첫 화면과 SSE 끊김 대체에 쓴다. 저장소 미종결 레코드 + 허브 진척(sre_agent 추가 호출 0).
+- **노출 범위(G-36 확정)**: 한 줄·상태·소요·행 수 **와 응답 발췌** 모두 사용자·관리자에게 보인다. 사용자 경로는 sre_agent `mask_secrets` 뒤에 **D-325 ③ 텍스트 마스킹을 한 번 더** 거친다(`_investigation_mask_fn` 재사용 · 발췌 포함). **AI 메모(`ai_note`)는 관리자에게만**(G-38) — 사용자 경로에서는 키·이벤트 자체를 뺀다.
+- **보관(G-37 확정)**: 종결 시 실행 기록 요약(발췌·AI 메모 제외 — 한 줄·상태·소요·행 수)을 `logs/investigation_activity.jsonl`(회전 상한 · FeedbackStore 방식)에 1행으로 남긴다. sre_agent 잡이 TTL로 사라진 뒤에도 탭에서 「무엇을 조회했나」를 다시 볼 수 있다(발췌는 종결 뒤 잡 TTL까지만).
+
+**ⓓ 화면 — 「장애 진단」 뷰 탭** (W15 · `index.html` 뷰 탭 · 신규 `js/diagnosis-view.js` · `briefing-view.js` 상세형 재사용)
+
+```
+[질의응답] [이벤트 알람 ●3] [장애 진단 ⟳2]
+┌ 장애 진단 ───────────────────────────────────────────────────────────┐
+│ [진행 중 목록] [A1 응답 지연 ⟳ 2:14 ×] [SAE0011 CPU ✓ ×] [DB풀 ⏸대기 ×] … ▾열린 탭 11 │
+├──────────────────────────────────────────────────────────────────────┤
+│ A1 응답 지연 · 플레이북 was.latency + HolmesGPT(parallel) · 진행 S4/9 · 2분 14초 · ● 실시간 │
+│ 단계  S0✓ S1[이상] S2[이상] S3⟳ S4… S5… S6… S7… S8[미연동] │ 심층 ⟳ 판단 2회차 │
+├─ 실행 기록 ───────────────────────────── [자동 스크롤 ☑] ┬─ 중간 결과 ──────┤
+│ 14:02:11 플레이북 S3 ⟳ apm_slow_transactions {A1, n=5}      │ S1 골든 시그널 표   │
+│ 14:02:09 플레이북 S2 ✓ apm_resource_pool {A1} 1.2s 3행 ▸    │ S2 런타임 표        │
+│ 14:02:07 HolmesGPT [AI 메모 — 검증 전] 커넥션 대기 의심 ▸   │ (끝난 단계부터)     │  ← 관리자만
+│ 14:02:05 HolmesGPT  ✓ polestar_metric_trend {...} 2.8s ▸    │                    │
+│ 14:01:58 시스템     ✓ 동시 조사 상한 대기 종료(대기 41초)     │                    │
+└──────────────────────────────────────────────────────────────────────┘
+  끝나면: 상세형 브리핑 전체 + [조사 대화로 열기] [다시 분석]
+```
+
+- **진입(G-34 확정 — 항상 장애 진단 탭)**: 알람 카드 「조사 브리핑」의 [진행 보기] · [분석 요청]/[다시 분석] 접수 직후 · 채팅 조사 카드 · 노이즈 관제 드로어(다른 페이지라 새 브라우저 탭 `/?diagnosis=<id>` — D-248 ①) · workb 링크. 진행 중·종결 모두 「장애 진단」 탭으로 전환하고 그 조사의 하위 탭을 연다. 「조사 대화」는 종결 화면의 [조사 대화로 열기] 버튼으로 남는다(D-341 ⑪의 진입만 개정 — 대화 자체는 유지).
+- **새 조사 = 새 하위 탭(G-35 확정 — 장애 진단 화면 안 하위 탭)**: 이미 열린 조사를 다시 누르면 그 탭으로 이동만 한다(중복 0).
+- **하위 탭 상한 없음(G-40 확정)**: 자동으로 닫지 않는다. 탭 줄은 가로 스크롤하고 오른쪽 끝 「▾ 열린 탭 n」 메뉴로 전체 목록·「종결된 탭 모두 닫기」를 준다. 탭 하나의 화면 행은 실행 기록 상한(300건)을 넘지 않는다. 탭 수가 늘어도 상세 기록은 열린 탭만 받고(SSE `watch`) 배경 탭은 `summary`만 바뀐다.
+- **갱신(G-39 확정 — SSE)**: 연결 1개로 받는다. 종결되면 그 조사의 `watch`를 뺀다. 300초 상한(F1)과 안전 상한이 없다 — 종결이 곧 멈춤이다. 연결 상태를 머리에 보인다(● 실시간 / ◌ 재연결 중 n초 / ⚠ 끊김 — 사유). EventSource 자동 재연결이 3회 연속 실패하면 15초 커서 조회(`/investigations/{id}?activity_since=` · `/active`)로 내려가고 「실시간 연결 끊김 — 15초 간격 조회 중」을 보인다(침묵 강등 금지). 60초 동안 아무 이벤트·ping이 없으면 「마지막 수신 n초 전」을 보인다.
+- **실행 기록**: 최신이 위. 행 = 시각 · 엔진 칩 · 단계 · 상태 아이콘(⟳ 진행 / ✓ 성공 / ⚠ 실패 / ↺ 캐시 / ⏸ 대기) · 한 줄 · 소요 · 행 수. ▸를 누르면 발췌를 펼친다(사용자·관리자 모두 · 가림 처리분 · G-36). `parallel`이면 엔진 칩으로 두 엔진을 구분하고 상단에 엔진별 필터를 둔다. AI 메모 행은 관리자에게만, 다른 색 배경 + 「AI 메모 — 검증 전」 배지로 그리고 필터에서 끌 수 있다(G-38 · D-035 — 결론처럼 읽히지 않게).
+- **중간 결과**: `partial_briefing.sections`를 `briefing-view.js` 상세형 단계 렌더로 끝난 단계부터 그린다(W5 재사용 · 새 렌더 0). HolmesGPT 단독 조사는 중간 결과 칸에 「도구 결과 n건 수집 — 결론은 종결 후」를 보인다(관리자는 AI 메모가 실행 기록에 섞여 보인다).
+- **진행 중 목록**(맨 앞 고정 탭): ⓒ 목록 범위(관리자 전체 · 사용자 내 채팅 조사) 표 — 대상 · 유형 · 엔진 · 상태(대기 순번 포함) · 경과 · 기원(자동/요청/채팅 — 관리자 화면에는 요청자 표시). 행을 누르면 하위 탭을 연다. 뷰 탭 배지 = 목록의 진행 중 건수. 처음엔 `/active`로 그리고 이후 SSE `summary`로 갱신한다.
+- **새로고침 복원**: 열린 하위 탭 id 목록을 `sessionStorage`에 둔다(try/catch · 없으면 빈 상태로 시작). 서버 상태는 다시 읽는다.
+- **이벤트 알람 탭과의 관계**: 알람 카드 요약형은 그대로 둔다(D-182 — 알람은 대화에 섞지 않음). 진단 탭 = 진행 관찰, 조사 대화 = 끝난 뒤 추가 질의.
+
+**ⓔ 보안·비용**
+- 화면은 읽기만 한다. 탭에서 조사를 멈추거나 명령을 실행하는 버튼은 두지 않는다(D-003 · 자동 조치 범위 밖 유지).
+- 비밀값은 sre_agent 밖으로 나가기 전에 가린다(`mask_secrets` — 명령행 꼴 표본 테스트로 고정). 사용자 경로는 추가로 D-325 ③ 마스킹을 탄다(발췌 포함). AI 메모는 관리자 경로만. PII 필터는 LLM 전송 경로가 아니므로 대상이 아니다.
+- 권한은 SSE 연결 때만이 아니라 `watch` 추가(재연결) 때마다 조사별로 검사한다. 사용자 경로의 `summary`에는 목록 범위 밖 조사가 실리지 않는다(관리자 목록 누출 방지 테스트).
+- sre_agent 부하: 미종결 조사 1건당 5초에 MCP poll 1회(보는 사람·탭 수와 무관 — 허브). 현행(카드마다 15초 · 최소 10초 간격)과 같은 차수다. 각 poll이 MCP SSE 연결을 새로 여는 비용(`investigation_poll.py:123`)은 W14에서 측정하고, 크면 간격을 늘리거나 연결 재사용을 별 결정으로 다룬다.
+- 본체 부하: 브라우저당 SSE 연결 1개(+ 기존 알람 알림 스트림 1개). 상세 이벤트는 열린 탭 조사만 보낸다(G-42).
+- 다중 워커: 허브는 프로세스 메모리다. 본체를 uvicorn 다중 워커로 띄우면 워커마다 폴러가 생긴다(부하 ×워커 수 · 결과는 같다) — `alarm_bus`와 같은 전제(단일 프로세스)를 W14에서 확인해 계획서에 적는다.
+- 플래그 off(`SRE_ACTIVITY_LOG_ENABLED`·`NOISE_INVESTIGATION_LIVE_VIEW_ENABLED`)면 탭이 보이지 않고 SSE 경로는 404이며, MCP 응답·API 응답·카드 동작이 종전과 비트 동일하다.
+
+**하지 않는 것**: 프롬프트 원문 노출 · 사용자 경로의 AI 메모 노출(G-38) · 원시 도구 출력 전체 보관 · 조사 취소/재시도 버튼(재분석은 기존 「다시 분석」) · 하위 탭마다 별도 SSE 연결 · 동시 상한(2) 자체 상향(대기 가시화가 먼저 — 운영 측정 뒤 `INVESTIGATION_MAX_CONCURRENT`로 별도 판단).
+
 ### 5.7 (v1.2) 장애 대응 지식 저장소(KB) — 런북 · 알려진 오류 · 매뉴얼 참조 · 축적
 
 #### 5.7.1 구성과 원칙
@@ -798,6 +895,9 @@ review_every_days: 90
 | **W10** (v1.5) | 조사 대화의 「추가 조사 요청」(G-21) — 초점 목록(결정적) · 템플릿+초점+보충 한 줄(길이 상한·마스킹) 질문 조립 · 대상·사건창 = 브리핑 `scope` · `sre_diagnose` 선택 인자 `prior_findings`(판정·판독 enum·사용 도구·사건창 — LLM 서술 제외) · 비동기 접수 + 대화 안 조사 카드 · 저장 `kind=diagnosis`·`owner_sub`·`parent_investigation_id` · `disclosures` ref 복원 · 인가·가용성·상한(진행 1 · 시간당 3 · 동일 (부모, 초점) 재사용) · 매뉴얼 | `src/domain/`(질문 조립 · 순수) · `src/api/routes/`(접수) · `noise_gate/infrastructure/investigation_store.py` · sre_agent `interface/mcp_service.py`·`application/investigation_jobs.py`·`investigation_guidance.py`(`prior_findings` 소비) · `app.js` | `prior_findings` 없는 구버전 호출 비트 동일(sre_agent 기존 테스트) · 권한 없음 403+감사 · 상한 초과 거부 사유 · 재접수 id 재사용 · 보충 문장 마스킹·길이 · LLM 서술이 `prior_findings`에 섞이지 않음 단언 · 원 브리핑 불변 |
 | **W11** (v1.9) | 알람 다시 분석·지난 알람 찾기(§5.6.2 ①② · G-28~G-31) — 사용자 요청 알람 조사 접수 라우트(존 검사 fail-closed · 상한 공유 · 10분 합류) · 조사 레코드 `kind=manual`·`parent_alarm_id`·`owner_sub` · `by-alarm` 우선순위 가산 · 「이전 조사 N건」 · 노이즈 콘솔 행·드로어/채팅 알람 카드/조사 대화 버튼 · 채팅 알람 탭 「지난 알람」 검색(`/noise/decisions` 재사용) · 통보 미발행 · 매뉴얼(D-255) | `src/api/routes/alarm.py` · `noise_gate/infrastructure/investigation_store.py` · `noise_gate` 트리거 진입(사용자 요청) · `app.js`·`noise.js` · `scripts/manual/` | 존 밖 알람 403 · 상한 초과 거부 사유 · 같은 알람 연타 = 조사 1건 · 원 조사 불변 단언 · 통보 0건 · 플래그 off 비트 동일 |
 | **W12** (v1.9) | 채팅 증상 질의 조사(§5.6.2 ③ · G-32·G-33) — 결정적 라우터(대상 1건 확정 × 증상 유형 1건) · YAML `match.surface_terms` · 가상 알람 맥락(저장 0) · 플레이북 잡/비동기 `sre_diagnose` 분기 · 대화 안 조사 카드 경로 표기 · `SRE_CHAT_INVESTIGATION_ENABLED`(기본 off) · 매뉴얼 | `src/domain/`(라우터 · 순수) · `src/nodes/fault_diagnosis.py`(플래그 분기) · sre_agent `interface/mcp_service.py`(가상 맥락 입력) · `app.js` | 라우팅 표 테스트(대상 0·1·2 × 유형 0·1·2) · 지시어만 있는 질의 = HolmesGPT · 가상 맥락이 알람·결정 저장소에 쓰이지 않음 · 플래그 off에서 `fault_diagnosis` 기존 테스트 비트 동일 |
+| **W13** (v2.0) | sre_agent 잡 실행 기록(§5.6.3 ⓑ) — domain 링 버퍼(이벤트 스키마 · `seq` · 상한·`truncated`) · 기록 지점 배선(세마포어 대기·획득 · 스텝 시작/끝 · `StepContext.call` 도구 전후·캐시 적중 · 소견/종합 LLM 시작/끝 · `_StreamDrain` `START_TOOL`/`TOOL_RESULT`/`AI_MESSAGE` 훅 — `diagnose_fn` 선택 인자 `activity`) · `ai_note`(AI 메모 · G-38) · `mask_secrets` 선적용 + 명령행 비밀값 꼴 보강(G-36 — 발췌 제외 목록 없음) · `sre_get_investigation(activity_since=-1)` · `phase`·`queue_position`·`elapsed_s` · `SRE_ACTIVITY_LOG_ENABLED`(기본 off) · `.env.example` | `sre_agent/domain/activity_log.py`(신규) · `application/investigation_dispatcher.py`·`playbook_steps.py`·`playbook_narrator.py`·`investigation_jobs.py` · `diagnosis.py` · `infrastructure/log_masking.py` · `interface/mcp_service.py` · `settings.py` | `activity_since` 미지정 응답 비트 동일(기존 sre_agent 테스트) · 커서 단조·중복 0 · 상한 초과 `truncated` · 명령행 비밀값 표본(`--password=x`·`-pSecret`·`user:pw@host`·`token=`·JDBC) 발췌·한 줄·AI 메모 어디에도 미유출 · 동시 append 스레드 안전 · 가짜 holmes 스트림 → `tool_start`가 `tool_end`보다 먼저 보임 · `AI_MESSAGE` → `ai_note` 1건 · 동시 상한 2에 3건 접수 → 3번째 `phase=queued`·순번 1 |
+| **W14** (v2.0) | 본체 실시간 허브·SSE(§5.6.3 ⓒ · G-39·G-41·G-42) — `InvestigationLiveHub`(미종결 조사당 폴러 1개 · `NOISE_INVESTIGATION_LIVE_POLL_SECONDS` · 구독자 0 60초면 정지 · 버퍼 만료 sweep · 재기동 시 저장소 미종결에서 재개) · `GET /alarm/investigations/stream?watch=` 신설(`resolve_stream_user` · 25초 ping · `summary`=목록 범위 전체 · `activity`/`partial`/`done`=watch만 · `denied` · `id:` 재연결) · 목록 범위(관리자 전체 · 사용자 내 채팅 조사) · `GET /alarm/investigations/active` · 조사 조회 경로 `activity_since` 가산 · 사용자 경로 D-325 ③ 마스킹(발췌 포함)·`ai_note` 제거 · 종결 요약 JSONL(G-37) · `NOISE_INVESTIGATION_LIVE_VIEW_ENABLED`(기본 off) · `settings_catalog` 등재 · MCP 재연결 비용·다중 워커 전제 실측 | `src/api/investigation_poll.py` · (신규) `src/api/investigation_live_hub.py` · `src/api/routes/alarm.py`·`alarm_schemas.py` · `noise_gate/infrastructure/sre_agent_client.py`(`poll` 선택 인자) · (신규) `noise_gate/infrastructure/investigation_activity_store.py` · `src/config/alarm.py` · `src/api/settings_catalog.py` | 플래그 off 응답 비트 동일·stream 404 · 구독자 3명 동시 → sre_agent poll 1회/간격 · 구독자 0 → 폴러 정지 · 사용자 스트림 `summary`에 남의 채팅·자동 조사 0건 · 관리자 스트림 전체 · watch에 존 밖 id → `denied` · watch 밖 조사의 `activity` 0건 · 사용자 경로 발췌 마스킹 적용·`ai_note` 0건 / 관리자 경로 `ai_note` 있음 · 재연결 커서로 누락·중복 0 · 폴러 예외 → 그 조사만 실패 이벤트 · 종결 뒤(잡 TTL 경과) 요약 재조회 |
+| **W15** (v2.0) | 화면 「장애 진단」 뷰 탭(§5.6.3 ⓓ) — 뷰 탭·배지 · 진행 중 목록 고정 탭 · 조사별 하위 탭(중복 0 · **상한 없음** · 가로 스크롤 + 「▾ 열린 탭 n」 메뉴 · 종결 탭 모두 닫기 · `sessionStorage` 복원) · SSE 클라이언트(연결 1개 · 탭 열고 닫을 때 `watch` 재연결 · 연결 상태 표시 · 3회 실패 시 15초 조회 강등 표시) · 실행 기록(엔진 필터 · 자동 스크롤 · 발췌 펼침 · 관리자 AI 메모 배지 행) · 중간 결과(상세형 재사용) · 진입 재배선(카드·분석 요청·채팅 조사 카드·노이즈 드로어 `/?diagnosis=` · workb 링크 — 진행·종결 모두 진단 탭 · G-34) · 종결 화면 [조사 대화로 열기] · 매뉴얼(D-255 — 사용자 U-· 관리자 A- 신규 절) | `src/static/index.html` · (신규) `src/static/js/diagnosis-view.js` · `app.js`·`noise.js`(진입 배선) · `css/style.css` · `scripts/manual/` | 정적 UI 테스트(`tests/test_api/test_ui_*` 형식 — 탭 마크업 · 플래그 off 탭 숨김 · 같은 id 두 번 = 탭 1개 · 탭 20개 열어도 EventSource 1개) · `node --check` · 가짜 응답 렌더 스냅샷(사용자 화면 AI 메모 행 0) · `pytest tests/test_manual` · 실프로세스 종단 1회(가짜 LLM — 플레이북·HolmesGPT 각 1건 동시 · 두 탭 모두 종결까지 갱신 · 300초 넘는 조사 정지 0) |
 | **W7** | 평가 — `plans/154` 합성 장애 세계에서 「플레이북 모드 vs HolmesGPT 단독」 원인 적중·소요·LLM 호출 수 비교(MLX 대표 소수 · D-127) · 내부망 shadow(**`parallel` 모드** · 브리핑만 저장 · 통보 무변경 · 운영자 선택 수집 시작) | 결과 보고 | 수용 기준 §8 |
 
 회귀: Wave 중간은 자기 테스트 + `regress.py --no-tests --files …` · 계획 끝 `regress.py --base <계획 시작 SHA> --files …` 1회(D-303) · sre_agent는 자체 venv pytest.
@@ -819,6 +919,13 @@ review_every_days: 90
 11. (v1.9) 노이즈 콘솔·채팅 알람 탭에서 30일 안의 PAGE가 아닌 알람을 찾아 「분석 요청」하면 플레이북 조사가 새 레코드로 생기고, 원 알람의 기존 조사는 바뀌지 않는다.
 12. (v1.9) 「A1 응답 지연 원인 알려줘」처럼 대상·증상이 결정적으로 확정되는 질의는 `was.latency` 플레이북으로, 「그 서버 이상해」처럼 확정되지 않는 질의는 HolmesGPT로 간다 — 라우팅 판정에 LLM 호출 0회.
 13. (v1.9) 사용자 요청 조사는 D-335 ⑥ 상한을 자동 조사와 공유하고, 통보·승격을 일으키지 않는다.
+14. (v2.0) 플레이북 조사에서 각 도구 호출이 시작 후 폴러 한 주기(5초) + 푸시 지연 안에 실행 기록에 「진행」으로 나타나고, 끝나면 상태·소요·행 수로 바뀐다.
+15. (v2.0) HolmesGPT 조사(심층·진단)도 도구 호출마다 실행 기록이 쌓인다 — 종결 전 빈 화면 0. 관리자에게는 AI 메모가 「검증 전」 배지로, 사용자에게는 보이지 않는다.
+16. (v2.0) 동시 상한 2에서 조사 3건을 접수하면 3번째는 「대기 — 앞 n건」으로 보이고, 차례가 오면 진행으로 바뀐다.
+17. (v2.0) 조사 A 진행 중에 조사 B를 열면 하위 탭이 2개가 되고, A는 배경에서 상태를 이어 받아 종결까지 바뀐다. 같은 조사를 다시 누르면 탭이 늘지 않는다. 하위 탭이 몇 개든 브라우저의 조사 스트림 연결은 1개다.
+18. (v2.0) 조사가 300초를 넘어도(대기 포함) 화면 갱신이 종결 전에 멈추지 않는다. 연결 끊김·강등·60초 무수신은 사유와 함께 보인다.
+19. (v2.0) 비밀값(명령행 표본 포함)은 sre_agent 응답에 나오지 않고, 사용자 경로의 한 줄·발췌는 D-325 ③ 마스킹을 한 번 더 거친다. 사용자 진행 중 목록에는 자기 채팅 조사만, 관리자 목록에는 전부가 보인다.
+20. (v2.0) 두 플래그 off에서 MCP·API 응답과 화면이 종전과 비트 동일하고 조사 스트림 경로는 404다(기존 테스트).
 
 **위험**
 - **호스트 브리지**: 제니퍼 hostname ↔ 폴스타 서버명 정확 일치 결함(`plans/165` F3) — S4~S6이 0건이 될 수 있다. W0에서 F3 해결 여부 확인 · 미해결이면 S0가 「폴스타 서버 미확정」을 명시하고 폴스타 스텝을 결손 처리(침묵 0건 금지).
@@ -828,11 +935,17 @@ review_every_days: 90
 - 제니퍼 프로파일 예산 · 게이트웨이 부하 — S0 대상 상한 3 · 프로파일 1건.
 - (v1.2) **KB 신뢰 붕괴**: 낡은 Validated KE가 잘못 일치하면 운영자가 엉뚱한 우회를 따른다 — `cause_test` 필수 · 검토 기한 · 「아님」 피드백 재검토 · 일치 카드에 충족 조건을 그대로 노출(근거 없는 권고 금지).
 - (v1.2) **KB 공동화**: 쓰는 사람이 없으면 비어 있다(SRE Workbook — 런북은 운영 변화 속도로 낡는다) — 초안 생성을 한 번 클릭으로 낮추고, 커버리지·검토 대상 목록을 관리자 화면 기본 노출. 운영 책임자 지정은 G-17.
+- (v2.0) **명령·출력 노출**: HolmesGPT bash 명령 한 줄·도구 인자·발췌에 호스트·IP·SQL 조각·프로세스 명령행이 실리고, G-36 확정으로 **사용자에게도** 발췌가 보인다. 방어는 가림 두 겹(sre_agent `mask_secrets` → 본체 D-325 ③)뿐이라 **가림 규칙이 놓친 꼴은 그대로 노출된다** — W13 표본 테스트로 꼴을 고정하고, 운영 투입 전 내부망 실 출력 표본으로 한 번 더 확인한다[내부망 확인 필요]. 놓친 꼴이 나오면 `log_masking.py`에 더하는 것으로 대응한다(제외 목록 부활은 사용자 재결정 사항).
+- (v2.0) **AI 메모 오독**: 관리자에게 보이는 HolmesGPT 중간 서술이 결론처럼 읽힐 수 있다 — 배지·배경색·필터 끄기 · 브리핑·통보에는 쓰지 않는다(D-035).
+- (v2.0) **갱신 부하**: 미종결 조사 수 × (60/5) MCP poll/분(보는 사람·탭 수와 무관) — poll마다 MCP SSE 연결을 새로 연다. W14에서 측정하고 기준 초과 시 간격 상향 또는 연결 재사용(별 결정). 브라우저 쪽은 연결 1개.
+- (v2.0) **메모리**: 잡당 실행 기록 256KB × 보관 잡 500(`_DEFAULT_MAX_JOBS`) = 최대 약 128MB(sre_agent) + 본체 허브 같은 차수 — 종결 잡은 발췌·AI 메모를 버리고 요약만 남겨 상한을 낮춘다 [W13·W14에서 실측 후 확정]. 하위 탭 무제한은 브라우저 메모리 문제로 돌아온다 — 탭당 화면 행 300건 상한.
 - (v1.2) 사내 매뉴얼에 민감 정보(계정·IP) — RAG 색인 전 `pii_filter`·마스킹 경로 통과(plans/126 기존 규칙).
 
 ## 9. 사용자 확정 게이트
 
 > **확정(2026-10-17)**: 사용자 지시 *"게이트 권고안대로 확정"* — **G-1~G-17은 아래 표의 굵은 글씨(권고) 항목으로 확정**됐다(D-341). G-9의 수동 재실행 버튼은 D-325 ⑩에 따라 두지 않는다(**v1.9 G-28로 부분 개정** — 원 조사를 덮어쓰지 않는 새 조사로 허용). G-18은 v1.3에서 새로 생겨 확정 대기다.
+>
+> **확정(2026-10-19 · v2.0 · 인터뷰)**: 사용자 제기(「장애 진단」 탭 · 진행 중 명령·API·중간 결과 표시 · 조사마다 새 탭) → §5.6.3 검토안 G-34~G-40 → 사용자 *「결정해야될 사항의 인터뷰를 진행하라」* → 문항별 선택으로 확정하고, 인터뷰 중 드러난 두 문항(G-41 목록 범위 · G-42 상세 푸시 범위)을 추가 확정했다. 권고와 다른 선택 5건: G-36(발췌 사용자에게 · 가림 후 모두) · G-38(AI 메모 관리자 표시) · G-39(SSE) · G-40(상한 없음) · G-41(사용자 지정 범위). **기존 결정 개정**: D-341 ⑪ 진입(G-34) · D-325 ②(15초 재조회 · SSE 신규 없음 → 진단 탭은 SSE · 카드 재조회는 그대로) · D-325 ③(사용자 경로 텍스트 마스킹 유지 · 발췌도 마스킹 후 사용자에게) — D-341 부기 4 · D-325 부기로 등재. D-123 상태 어휘 불변(`phase` 가산).
 >
 > **추가 확정(2026-10-17 · v1.9)**: 사용자 지시 *"권고안대로 확정하여 계획서에 반영하라"* — **G-28~G-33 권고안 확정**(§5.6.2). 사용자 요청 알람 분석 허용(새 조사 · 원 조사 보존) · 등급 무관 30일 · 존 범위 사용자 · 상한 공유 · 증상 질의 결정적 라우팅(플레이북/HolmesGPT) · 비동기 조사 카드. D-325 ⑩(「후속 계획」)의 후속이 이 계획이다.
 
@@ -874,9 +987,20 @@ review_every_days: 90
 | G-31 (v1.9 · **확정**) | 결과 보관 · 비용 | **새 레코드 + 이전 조사 나열 · D-335 ⑥ 상한 공유 · 같은 알람 10분 합류 · 통보·승격 없음** [10분은 제안 값] |
 | G-32 (v1.9 · **확정**) | 증상 질의 라우팅 | **대상 1건 × 증상 유형 1건이 결정적으로 확정되면 플레이북(가상 알람 맥락 · 저장 0), 아니면 HolmesGPT(`sre_diagnose`) · LLM 분류 미의존** · 또는 전부 HolmesGPT(§5.0 v1.8) |
 | G-33 (v1.9 · **확정**) | 채팅 응답 방식 | **대화 안 비동기 조사 카드(W10 재사용) + 경로 표기 · `SRE_CHAT_INVESTIGATION_ENABLED` 기본 off(off = `fault_diagnosis` 비트 동일)** · 또는 동기 45초 유지 |
+| G-34 (v2.0 · **확정**) | 알람·조사를 눌렀을 때 여는 곳 | **항상 「장애 진단」 탭의 그 조사 하위 탭(진행 중·종결 모두) — 카드 [진행 보기] · 분석 접수 직후 · 채팅 조사 카드 · 노이즈 드로어(`/?diagnosis=` 새 브라우저 탭) · workb 링크. 「조사 대화」는 종결 화면 버튼**(권고안 · D-341 ⑪ 진입 부분 개정) · ~~진행 중일 때만 진단 탭~~ |
+| G-35 (v2.0 · **확정**) | 「새로운 탭」의 뜻 | **장애 진단 화면 안의 하위 탭**(권고안) · ~~브라우저 새 탭~~ |
+| G-36 (v2.0 · **확정**) | 실행 기록 노출 범위 | **한 줄·상태·소요·행 수·응답 발췌 모두 사용자·관리자에게 — 가림 처리 후 모두 보임(발췌 제외 목록 없음 · 사용자 경로는 D-325 ③ 마스킹 한 번 더)**(권고와 다름 — 권고는 발췌 운영자만) · ~~발췌 운영자만~~ · ~~발췌 없음~~ |
+| G-37 (v2.0 · **확정**) | 실행 기록 보관 | **종결 시 요약(발췌·AI 메모 제외)을 본체 JSONL에 1행**(권고안) · ~~보관 안 함~~ |
+| G-38 (v2.0 · **확정**) | LLM 중간 서술(HolmesGPT `AI_MESSAGE` · 소견 초안) | **관리자에게만 「AI 메모 — 검증 전」 배지로 표시 · 사용자 경로에는 없음 · 브리핑·통보에 쓰지 않음**(권고와 다름 — 권고는 표시 안 함) · ~~표시 안 함~~ |
+| G-39 (v2.0 · **확정**) | 갱신 방식 | **본체→브라우저 SSE 푸시 — 브라우저당 연결 1개 다중화 · 본체 허브가 조사당 sre_agent poll 1회/5초 · 300초·안전 상한 없이 종결로 멈춤 · 끊기면 15초 조회로 강등 표시**(권고와 다름 — 권고는 커서 poll · D-325 ② 부분 개정) · ~~커서 poll 5s/30s~~ |
+| G-40 (v2.0 · **확정**) | 하위 탭 상한·정리 | **상한 없음 · 자동 닫기 없음 · 「▾ 열린 탭 n」 메뉴 · 종결 탭 모두 닫기 · `sessionStorage` 복원**(권고와 다름 — 권고는 8개) · ~~8개~~ |
+| G-41 (v2.0 · **확정** · 인터뷰 추가) | 「진행 중 목록」 범위 | **관리자 = 모든 조사(자동·요청·채팅 · 존 무관) · 사용자 = 내가 채팅으로 시작한 조사**(사용자 지정 — 「관리자는 모든요청을 보여주고 사용자는 내 채팅 조사를 보여줘라」). 사용자가 알람에서 직접 연 조사는 목록에 없어도 하위 탭으로 열린다(존 검사) · ~~내 존 알람 조사 + 내 채팅 조사(권고)~~ · ~~내 존 모든 조사~~ · ~~내가 요청한 것만~~ |
+| G-42 (v2.0 · **확정** · 인터뷰 추가) | SSE 상세 기록 푸시 범위 | **열린 하위 탭의 조사만 — 탭을 열면 누적분을 한 번에 받고 이후 새 이벤트만 · 진행률·상태 요약은 목록 전체에 항상**(권고안) · ~~목록의 모든 조사~~ |
 | G-17 (v1.2) | KB 운영 책임 | 유형별 `owner` 팀 지정 · KE 승인권자(문제 관리 담당) · 검토 주기 기본값(런북 180일 · KE 90일 [제안]) |
 
 ## 10. 다음 단계
+
+(v2.0 · 2026-10-19 · **W13~W15 구현 완료**) 다음: ① 사용자 경로 2차 마스킹 강화 여부 사용자 결정(토큰 단위 대조 — D-325 ③ 범위 확대) ② 두 플래그를 켠 실프로세스 종단 1회(가짜 LLM · 플레이북·HolmesGPT 동시) + 매뉴얼 U-70·A-81 캡처 ③ 내부망 실 도구 출력 표본으로 가림 확인 후 투입 ④ W7 shadow. 이하 이전 기록: (v2.0 · 2026-10-19) **G-34~G-42 확정 · D-341 부기 4 · D-325 부기 등재 완료 → W13(sre_agent 실행 기록·가림 보강) → W14(본체 허브·SSE) → W15(장애 진단 탭·매뉴얼) 순서로 team-lead 위임.** W13은 다른 Wave와 독립이고, W15는 W14 뒤에 둔다. W7(shadow)은 W13~W15와 병행할 수 있으며 실행 기록이 shadow 관찰에도 쓰인다. 아래는 v1.9까지의 다음 단계다.
 
 G-1~G-33 전건 확정 · D-341 등재·부기 3건 완료(2026-10-17) → W0 착수(team-lead 위임 · 계획 시작 SHA 기록). W10은 `plans/155` 공용부(조사 저장소 `kind=diagnosis` · 접수·조회 라우트 · 지연 poll 공용 모듈)가 먼저 있어야 한다 — 155가 먼저 끝나지 않으면 W10에서 그 공용부를 155 설계 그대로 구현하고 155에 완료를 표기한다. G-19 2단계(결정적 문맥 시드)와 G-20(브리핑 질문)은 별 계획. W11은 W4(엔진 배선) 뒤, W12는 W10(비동기 `sre_diagnose`·조사 카드) 뒤에 둔다.
 

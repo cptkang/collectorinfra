@@ -1154,12 +1154,19 @@
             parts.push('<div class="bv-reason' + (chip.kind === "fail" ? " bv-reason--fail" : "") + '">' +
                 '사유: ' + escapeHtml(chip.reason) + '</div>');
         }
-        if (isActive(view)) parts.push('<div class="bv-note">' + escapeHtml(TEXT.runningText) + '</div>');
+        if (isActive(view)) parts.push(runningNoteHtml(extra));
         parts.push(extra.mode === "detail" ? renderPlaybookDetail(view, ctx, extra) : renderPlaybookSummary(view, ctx, extra));
         parts.push(analyzeBarHtml(view, extra));
         parts.push(followupHtml(view, extra));
         if (extra.note) parts.push('<div class="bv-note bv-note--warn">' + escapeHtml(extra.note) + '</div>');
         return '<div class="bv bv--playbook">' + parts.join("") + '</div>';
+    }
+
+    // 진행 중 안내 1줄. `extra.runningText`가 문자열이면 그 문구로 바꾸고 빈 문자열이면 줄을 뺀다
+    // (장애 진단 실시간 화면 — plans/187 W15). 미지정이면 종전 문구 그대로다(비트 동일).
+    function runningNoteHtml(extra) {
+        var text = typeof extra.runningText === "string" ? extra.runningText : TEXT.runningText;
+        return text ? '<div class="bv-note">' + escapeHtml(text) + '</div>' : "";
     }
 
     function renderHead(view, chip) {
@@ -1180,7 +1187,7 @@
      * @param {object} [extra]    `{note: 문자열}` — 재조회 상한 도달 등 화면 쪽 안내(이스케이프됨).
      *     (plans/187 W5b) 플레이북 브리핑일 때만 읽는 키: `mode`("summary"|"detail") ·
      *     `openConversation`(요약형 「조사 대화로 열기」 버튼) · `busy`(bool|함수 — 버튼 비활성) ·
-     *     `engineChoice`(상세형 4택 표시) · `ui`(4택 상태)
+     *     `engineChoice`(상세형 4택 표시) · `ui`(4택 상태) · `runningText`(진행 중 안내 대체 — 빈 문자열이면 생략)
      */
     function renderBody(view, extra) {
         view = view || { status: "none" };
@@ -1202,7 +1209,7 @@
         }
         var status = view.status || "none";
         if (status === "none") parts.push('<div class="bv-note">' + escapeHtml(TEXT.noneText) + '</div>');
-        if (isActive(view)) parts.push('<div class="bv-note">' + escapeHtml(TEXT.runningText) + '</div>');
+        if (isActive(view)) parts.push(runningNoteHtml(extra || {}));
         if (status === "episode_existing") {
             parts.push('<div class="bv-note">' + escapeHtml(TEXT.episodeText) +
                 (view.episode_id ? ' <span class="bv-mono">' + escapeHtml(view.episode_id) + '</span>' : "") +

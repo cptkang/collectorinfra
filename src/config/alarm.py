@@ -448,6 +448,14 @@ class NoiseGateConfig(BaseSettings):
     investigation_kb_incorrect_streak: int = 3              # (W9 · §5.7.5 3) 「아님」 연속 N회 → 재검토 대상 [제안 값]
     investigation_kb_engine_min_samples: int = 30           # (G-27 · ⑳) 유형별 선택 표본 하한 [제안 값]
     investigation_kb_engine_switch_ratio: float = 0.8       # (G-27 · ⑳) 「플레이북」+「둘 다」 비율 하한 [제안 값]
+    # ── plans/187 W14 · D-341 ㉙㉚㉛ (G-39·G-41·G-42): 조사 진행 실시간 허브·SSE ──
+    # 본체 in-process 허브(`alarm_bus`와 같은 단일 프로세스 전제)가 미종결 조사마다 폴러 1개로 sre_agent에
+    # `sre_get_investigation(activity_since)`를 묻고(보는 사람 수와 무관) 실행 기록을 SSE
+    # (`/alarm/investigations/stream`)로 나눠 보낸다. 종결 시 요약(발췌·AI 메모 제외)을 조사 저장소 옆
+    # `investigation_activity.jsonl`에 1행 남긴다. 기본 off면 stream·active 404 · 조회 경로의
+    # `activity_since`는 무시(종전 응답 · 종전 지연 poll 그대로 — 비트 동일).
+    investigation_live_view_enabled: bool = False           # (W14) 실시간 진행 화면 옵트인
+    investigation_live_poll_seconds: float = Field(default=5.0, ge=1.0)  # (W14) 조사당 poll 간격(초) [제안 값]
     # ── Plan 64 CW-C: escalate-only 후속 통보 승격 (poll verdict.escalate 소비) ──
     # investigation_trigger의 poll 결과 구조화 verdict(ImportanceVerdict: level/confidence/escalate/
     # signals — sre-agent/02 §6)에서 escalate=True면, 통보에 "중요도 상향(자동 조사)" 안내 블록을

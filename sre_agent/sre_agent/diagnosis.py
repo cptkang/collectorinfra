@@ -8,6 +8,7 @@ holmesgpt 0.36.0 실측 API 기준:
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 
 from holmes.config import Config
@@ -18,6 +19,7 @@ from holmes.core.tools import PrerequisiteCacheMode, ToolsetStatusEnum, ToolsetT
 from holmes.utils.colors import AI_COLOR
 from holmes.utils.stream import StreamEvents
 
+from sre_agent.domain.activity_log import ActivityLog, safe_append
 from sre_agent.infrastructure.bash_write_guard import install_bash_write_guard
 from sre_agent.infrastructure.llm_message_guard import install_system_message_guard
 from sre_agent.infrastructure.tool_call_markup_guard import install_tool_call_markup_guard
@@ -156,9 +158,15 @@ class _StreamDrain:
     정상 완주 결과는 `call()`과 필드 단위로 같다
     (`tests/test_plan154_w1_instrumentation.py` 동등성 테스트).
     sre_agent는 approval_callback을 쓰지 않으므로 `call(messages)` 기본 인자 경로만 옮긴다.
+
+    `activity`(plans/187 W13)가 있으면 스트림 소비자 쪽에서만 실행 기록을 남긴다
+    (holmes 내부 무수정):
+    판단 회차 `llm_start`(라운드 시작·도구 묶음 종료 뒤) → `llm_end`(AI 메시지·도구 시작·종결 중 첫
+    이벤트) · `START_TOOL` → `tool_start`(도구명만 옴) · `TOOL_RESULT` → `tool_end`(`description`
+    한 줄 · `result.status` · 발췌) · `AI_MESSAGE` 본문 → `ai_note`. 없으면 기록 0(결과 조립 불변).
     """
 
-    def __init__(self, llm: ToolCallingLLM) -> None:
+    def __init__(self, llm: ToolCallingLLM, activity: ActivityLog | None = None) -> None:
         self._llm = llm
         self.tool_calls: list[dict] = []
         self.num_llm_calls = 0
@@ -166,6 +174,68 @@ class _StreamDrain:
         self._stats = RequestStats()
         # 진행 중 라운드의 마지막 TOKEN_COUNT `costs`(그 라운드의 누적값)
         self._round_costs: dict = {}
+        # 실행 기록(plans/187 W13) — 판단 회차 번호·열린 회차 시작 시각·도구 시작 시각(id별)
+        self._activity = activity
+        self._judge_round = 0
+        self._judge_t0: float | None = None
+        self._tool_t0: dict[str, float] = {}
+
+    # ── 실행 기록 훅(plans/187 W13 — activity 없으면 무동작) ──
+
+    def _judge_start(self) -> None:
+        if self._activity is None:
+            return
+        self._judge_round += 1
+        self._judge_t0 = time.monotonic()
+        safe_append(self._activity, "llm_start", engine="holmes",
+                    label=f"HolmesGPT 판단 {self._judge_round}회차")
+
+    def _judge_end(self, status: str = "success") -> None:
+        if self._activity is None or self._judge_t0 is None:
+            return
+        elapsed = int((time.monotonic() - self._judge_t0) * 1000)
+        self._judge_t0 = None
+        safe_append(self._activity, "llm_end", engine="holmes", status=status,
+                    elapsed_ms=elapsed, label=f"HolmesGPT 판단 {self._judge_round}회차")
+
+    def _record(self, event) -> None:  # noqa: ANN001 — holmes StreamMessage
+        """스트림 이벤트 1건을 실행 기록으로 옮긴다 — best-effort(예외는 경고만 · 스트림 무영향)."""
+        if self._activity is None:
+            return
+        try:
+            self._record_event(event, self._activity)
+        except Exception as exc:  # noqa: BLE001 — 기록 실패가 조사를 실패시키지 않는다
+            logger.warning("실행 기록 실패(무시): %s: %s", type(exc).__name__, exc)
+
+    def _record_event(self, event, log: ActivityLog) -> None:  # noqa: ANN001
+        kind = event.event
+        if kind in (StreamEvents.AI_MESSAGE, StreamEvents.START_TOOL, StreamEvents.ANSWER_END,
+                    StreamEvents.APPROVAL_REQUIRED):
+            self._judge_end()
+        data = event.data if isinstance(event.data, dict) else {}
+        if kind == StreamEvents.START_TOOL:
+            name = str(data.get("tool_name") or "")
+            if data.get("id"):
+                self._tool_t0[str(data["id"])] = time.monotonic()
+            log.append("tool_start", engine="holmes", tool=name or None, label=name or "도구")
+        elif kind == StreamEvents.TOOL_RESULT:
+            result = data.get("result") if isinstance(data.get("result"), dict) else {}
+            status = result.get("status")
+            status = str(getattr(status, "value", status) or "unknown")
+            t0 = self._tool_t0.pop(str(data.get("tool_call_id") or ""), None)
+            name = str(data.get("tool_name") or data.get("name") or "")
+            text = result.get("data") or result.get("error")
+            log.append(
+                "tool_end", engine="holmes", tool=name or None,
+                label=str(data.get("description") or name or "도구"), status=status,
+                elapsed_ms=int((time.monotonic() - t0) * 1000) if t0 is not None else None,
+                excerpt=str(text) if text else None,
+            )
+        elif kind == StreamEvents.AI_MESSAGE:
+            content = data.get("content")
+            if isinstance(content, str) and content.strip():
+                log.append("ai_note", engine="holmes",
+                           label=f"HolmesGPT {self._judge_round}회차 메모", note=content)
 
     def run(self, messages: list[dict]) -> LLMResult:
         """`call(messages)`와 같은 결과를 돌려준다. 예외는 그대로 전파한다."""
@@ -184,11 +254,14 @@ class _StreamDrain:
             terminal_event = None
             start_tool_count = 0
             saw_tool_results = False
+            self._judge_start()
             for event in stream:
                 # 표시 로그는 `call()`과 같다(도구 묶음이 끝나면 빈 줄).
                 if saw_tool_results and event.event != StreamEvents.TOOL_RESULT:
                     display_logger.info("")
                     saw_tool_results = False
+                    self._judge_start()  # 도구 묶음이 끝났다 — 다음 판단 회차
+                self._record(event)
                 if event.event == StreamEvents.START_TOOL:
                     start_tool_count += 1
                 elif event.event == StreamEvents.TOOL_RESULT:
@@ -410,7 +483,8 @@ class DiagnosisAgent:
         """조사 LLM에 실제로 노출되는 도구 이름(plans/188 C2 — 지침 도구 이름 필터 입력)."""
         return frozenset(self.llm.tool_executor.tools_by_name)
 
-    def ask(self, question: str, system_prompt_additions: str | None = None) -> DiagnosisResult:
+    def ask(self, question: str, system_prompt_additions: str | None = None,
+            activity: ActivityLog | None = None) -> DiagnosisResult:
         """자연어 질문으로 장애 진단을 수행한다.
 
         holmes는 max_steps 상한 도달 시 전용 클래스 없이 plain `Exception("Too many LLM
@@ -429,10 +503,11 @@ class DiagnosisAgent:
             tool_executor=self.llm.tool_executor,
             system_prompt_additions=_with_load_guard_note(system_prompt_additions),
         )
-        drain = _StreamDrain(self.llm)
+        drain = _StreamDrain(self.llm, activity=activity)
         try:
             result = drain.run(messages)
         except Exception as exc:  # noqa: BLE001 — holmes는 전용 예외 클래스 없이 plain Exception
+            drain._judge_end("error")  # 열린 판단 회차가 있으면 실패로 닫는다(기록 없으면 무동작)
             msg = str(exc)
             if "max_steps" in msg or "Too many LLM calls" in msg:
                 partial = drain.partial(_steps_from_error(msg, self.settings.max_steps))

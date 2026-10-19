@@ -2199,3 +2199,8 @@
 - **실수**: `src/config/alarm.py`에 조사 화면 링크·추가 조사·사용자 요청 분석·KB 설정 13키를 넣고 `src/api/settings_catalog.py`의 `SECTION_BY_KEY`에 올리지 않아 `tests/test_api/test_settings_catalog_sections.py::test_every_noise_key_has_section`이 실패했다. 계획 끝 모듈 단위 회귀(`--files <130>`)는 `settings_catalog.py`를 바꾸지 않았으므로 이 테스트를 선택하지 않았다.
 - **원인**: 설정 필드 추가가 카탈로그 구획·도움말 등 소비처 등재를 함께 요구한다는 것을 위임 범위에 넣지 않았다. 회귀 선택은 import 그래프 기반이라 `field_index()`처럼 config를 동적으로 훑는 테스트는 config 변경만으로는 골라지지 않을 수 있다.
 - **방지책**: `src/config/` 에 `NOISE_` 등 새 필드를 넣으면 같은 작업에서 `SECTION_BY_KEY` 등재와 `pytest tests/test_api/test_settings_catalog_sections.py`를 자기 테스트로 돌린다. 전체 회귀에서 `apm_gateway`가 TIMEOUT으로 0건이면 무한 대기 테스트(`test_plan134_w0b_verify.py::test_disconnect_before_promotion_cancels_job` — 기준에서도 대기, SIGTERM 무시)를 `--deselect`해 패키지를 따로 돌리고 `timeout -s KILL`을 쓴다.
+
+### 2026-10-19 · (plans/187 v2.0 · 팀 리드) 계획서의 「`log_masking.py`에 더한다」를 그대로 위임했는데 그 파일은 정본의 바이트 사본이었다
+- **실수**: W13 위임에 「부족한 비밀값 꼴은 `sre_agent/.../log_masking.py`에 더한다」를 그대로 넣었다. 그 파일은 `src/utils/log_masking.py` 정본의 바이트 사본이고 `tests/test_utils/test_log_masking_copies.py`가 사본 4개 일치를 단언해, implementer가 신규 `activity_masking.py`로 이탈했다. 또 처음 표본(계획 목록)만 고정해 YAML `password:`·`sqlplus id/pw@` 등 7개 꼴이 검증에서 누출로 잡혔다.
+- **원인**: 계획서의 파일 지정을 위임 전에 실측(사본·정본 관계)하지 않았다. 가림 표본을 계획 목록으로 한정하고 운영에서 흔한 설정 파일 출력 꼴을 넣지 않았다.
+- **방지책**: 위임 프롬프트에 파일을 지정하기 전에 그 파일이 생성·복사본인지(`*_copies` 테스트·머리 주석) 확인한다. 사용자에게 보이는 가림은 계획 표본 + 설정 파일(YAML·properties·env)·CLI(`curl -u`·`sqlplus`·`IDENTIFIED BY`) 꼴과 오탐 표본(`-p 5432`·`pass: 3/5`)을 함께 고정한다.

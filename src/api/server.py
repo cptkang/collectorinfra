@@ -411,6 +411,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # 그대로 새어 나와 「Application shutdown failed」로 아래 정리 단계를 건너뛰었다.
     import asyncio as _asyncio
 
+    # 종료 시: 조사 실시간 허브 폴러 정리(plans/187 W14 — 첫 사용 때만 생긴다 · 꺼져 있으면 없음)
+    live_hub = getattr(app.state, "investigation_live_hub", None)
+    if live_hub is not None:
+        await live_hub.aclose()
+
     # 종료 시: 알람 워커 정리
     if alarm_worker_task:
         alarm_worker_task.cancel()

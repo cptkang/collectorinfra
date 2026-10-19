@@ -1891,6 +1891,40 @@
             .then(window.BriefingView.responseOf);
     }
 
+    // (plans/187 W15 · G-34) 장애 진단 실시간 화면이 켜져 있으면 드로어 진입은 본 화면 새 탭 `/?diagnosis=<id>`
+    // (D-248 ① — 관제 페이지 안에 진단 화면을 만들지 않는다). 켜짐은 페이지를 열 때 `/active` 1회로 본다 —
+    // 404(꺼짐)·401·403이면 종전 그대로(요약형 「조사 대화로 열기」 · 버튼 추가 0).
+    var liveViewOn = false;
+    if (window.BriefingView) {
+        alarmCall("/api/v1/alarm/investigations/active").then(function (res) { liveViewOn = !!res.ok; }, function () {
+            liveViewOn = false;
+        });
+    }
+
+    // 요약형 「조사 대화로 열기」는 켜져 있으면 감춘다(머리의 「장애 진단에서 보기」가 대신한다)
+    function liveEntryRender(render) {
+        return Object.defineProperty({ mode: render.mode }, "openConversation", {
+            enumerable: true,
+            get: function () { return !!render.openConversation && !liveViewOn; },
+        });
+    }
+
+    function liveEntryButton(view) {
+        var id = view && view.investigation_id && view.status !== "none" && view.status !== "rejected"
+            ? String(view.investigation_id) : "";
+        if (!liveViewOn || !id || !investigationHead) return;
+        var btn = investigationHead.querySelector(".cause-live-open");
+        if (!btn) {
+            btn = el("button", "cause-live-open", "장애 진단에서 보기");
+            btn.type = "button";
+            btn.addEventListener("click", function () {
+                window.open("/?diagnosis=" + encodeURIComponent(btn.getAttribute("data-investigation-id")), "_blank", "noopener");
+            });
+            investigationHead.appendChild(btn);
+        }
+        btn.setAttribute("data-investigation-id", id);
+    }
+
     function probeAnalyze(alarmId) {
         return alarmCall("/api/v1/alarm/investigations/by-alarm/" + encodeURIComponent(alarmId)).then(function (res) {
             if (res.ok) analyzeAvailable = Array.isArray(res.body && res.body.previous);
@@ -1921,11 +1955,12 @@
                 investigationPanel = BV.attach(investigationBox(BV), {
                     initial: res.body,
                     load: function () { return reloadInvestigation({}, alarmId); },
-                    render: { mode: "summary", openConversation: true },
+                    render: liveEntryRender({ mode: "summary", openConversation: true }),
                     onOpenConversation: function (investigationId) {
                         window.open("/?investigation=" + encodeURIComponent(investigationId), "_blank", "noopener");
                     },
                     analyze: analyzeOptions(alarmId),
+                    onView: liveEntryButton,
                 });
                 investigationPanel.open();
                 if (asked) scrollToCause();
@@ -1962,11 +1997,13 @@
                 load: function () { return reloadInvestigation(block, alarmId); },
                 // plans/187 W5b: 플레이북 브리핑이면 요약형 + 「조사 대화로 열기」(새 탭 — D-248 ①). break-glass
                 // 운영자 토큰은 질의응답 API를 못 쓰므로 드로어 안에서 상세형을 펼친다(§5.6.1 주의 1).
-                render: IS_BREAK_GLASS ? { mode: "detail" } : { mode: "summary", openConversation: true },
+                // (W15) 장애 진단이 켜져 있으면 머리에 「장애 진단에서 보기」(새 탭 `/?diagnosis=`)
+                render: IS_BREAK_GLASS ? { mode: "detail" } : liveEntryRender({ mode: "summary", openConversation: true }),
                 onOpenConversation: function (investigationId) {
                     window.open("/?investigation=" + encodeURIComponent(investigationId), "_blank", "noopener");
                 },
                 analyze: analyzeOptions(alarmId),
+                onView: liveEntryButton,
             });
             investigationPanel.open();
             if (asked) scrollToCause();
@@ -1977,11 +2014,14 @@
     }
 
     // ⓒ 칸 골격(제목 + 본문 자리)을 ⓐ·ⓑ 뒤에 붙이고 본문 자리를 돌려준다.
+    var investigationHead = null;   // (W15) 「장애 진단에서 보기」를 붙일 ⓒ 머리
+
     function investigationBox(BV) {
         var box = el("div", "cause-block cause-briefing");
         var head = el("div", "cause-head");
         head.appendChild(el("span", "cause-title", BV.TEXT.title));
         box.appendChild(head);
+        investigationHead = head;
         var body = el("div", "cause-briefing-body");
         box.appendChild(body);
         drawerCause.appendChild(box);

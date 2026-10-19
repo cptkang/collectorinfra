@@ -19,6 +19,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
@@ -36,6 +38,7 @@ from sre_agent.application.evidence_prefetch import (
     _series,
     build_calls,
 )
+from sre_agent.domain.activity_log import ActivityLog, safe_append
 from sre_agent.domain.correlation import EpisodePoint, MetricSeries, correlate
 from sre_agent.domain.source_adapter import (
     DEFAULT_REGISTRY,
@@ -45,6 +48,8 @@ from sre_agent.domain.source_adapter import (
     AdapterRegistry,
     fetch_or_not_connected,
 )
+
+logger = logging.getLogger(__name__)
 
 BatchCaller = Callable[[Sequence[tuple[str, dict]]], list[str]]
 Axis = Literal["apm", "polestar"]
@@ -265,6 +270,9 @@ class StepContext:
         self.tools: list[str] = []
         self.calls: list[tuple[str, dict]] = []
         self.outputs: list[str] = []
+        #: 실행 기록(plans/187 W13) — dispatcher가 스텝 실행 직전에 단다. None이면 기록 0.
+        self.activity: ActivityLog | None = None
+        self.step_id: str | None = None
 
     @property
     def event(self) -> Mapping[str, Any]:
@@ -272,30 +280,95 @@ class StepContext:
         return ev if isinstance(ev, Mapping) else {}
 
     def call(self, axis: Axis, calls: Sequence[tuple[str, dict]]) -> list[ToolResponse]:
-        """축의 배치 콜러블로 calls를 부른다. 콜러블이 없으면 전부 오류 응답(호출하지 않음)."""
+        """축의 배치 콜러블로 calls를 부른다. 콜러블이 없으면 전부 오류 응답(호출하지 않음).
+
+        실행 기록이 달려 있으면(plans/187 W13) 호출 전 `tool_start`, 후 `tool_end`(상태 ·
+        배치 소요 · 행 수 · 발췌)를 남긴다. 잡 캐시 적중은 `status=cached`다.
+        """
         if not calls:
             return []
         caller = self.apm if axis == "apm" else self.polestar
         if caller is None:
             msg = "APM 게이트웨이 미구성" if axis == "apm" else "폴스타 MCP 미구성"
-            return [ToolResponse(t, dict(a), None, msg) for t, a in calls]
+            out_missing = [ToolResponse(t, dict(a), None, msg) for t, a in calls]
+            for r in out_missing:
+                self._record_end(r, None, "error", None, msg)
+            return out_missing
+        cached = self._record_start(caller, calls)
+        t0 = time.monotonic()
         raws = list(caller(list(calls)))
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
         if len(raws) < len(calls):
             raws += [json.dumps({"error": "응답 누락"})] * (len(calls) - len(raws))
         out: list[ToolResponse] = []
-        for (tool, args), raw in zip(calls, raws):
+        for i, ((tool, args), raw) in enumerate(zip(calls, raws)):
             if tool not in self.tools:
                 self.tools.append(tool)
             self.calls.append((tool, dict(args)))
             self.outputs.append(raw)
-            out.append(parse_response(tool, dict(args), raw))
+            resp = parse_response(tool, dict(args), raw)
+            out.append(resp)
+            if self.activity is not None:
+                status = "cached" if cached[i] else ("success" if resp.ok else "error")
+                self._record_end(resp, elapsed_ms, status, _rows(resp.data), raw)
         return out
+
+    def _record_start(self, caller: BatchCaller, calls: Sequence[tuple[str, dict]]) -> list[bool]:
+        """`tool_start`를 남기고 호출 전 캐시 적중 여부를 돌려준다(기록이 없으면 전부 False)."""
+        if self.activity is None:
+            return [False] * len(calls)
+        probe = getattr(caller, "cached", None)
+        hits: list[bool] = []
+        for tool, args in calls:
+            try:
+                hits.append(bool(probe(tool, args)) if callable(probe) else False)
+                label = tool_label(tool, args)
+            except Exception as exc:  # noqa: BLE001 — 기록은 best-effort
+                logger.warning("실행 기록 실패(무시) tool=%s: %s: %s",
+                               tool, type(exc).__name__, exc)
+                hits.append(False)
+                continue
+            safe_append(self.activity, "tool_start", engine="playbook", step=self.step_id,
+                        tool=tool, label=label)
+        return hits
+
+    def _record_end(self, resp: ToolResponse, elapsed_ms: int | None, status: str,
+                    rows: int | None, excerpt: str) -> None:
+        if self.activity is None:
+            return
+        try:
+            label = tool_label(resp.tool, resp.args)
+        except Exception as exc:  # noqa: BLE001 — 기록은 best-effort
+            logger.warning("실행 기록 실패(무시) tool=%s: %s: %s",
+                           resp.tool, type(exc).__name__, exc)
+            return
+        safe_append(
+            self.activity, "tool_end", engine="playbook", step=self.step_id, tool=resp.tool,
+            label=label, status=status, elapsed_ms=elapsed_ms, rows=rows, excerpt=excerpt,
+        )
 
     def call_one(self, axis: Axis, tool: str, args: dict) -> ToolResponse:
         return self.call(axis, [(tool, args)])[0]
 
 
 StepFn = Callable[[StepContext], StepResult]
+
+
+def tool_label(tool: str, args: Mapping[str, Any]) -> str:
+    """실행 기록 한 줄 — `도구 {인자 JSON}`(인자가 없으면 도구명만 · plans/187 W13)."""
+    if not args:
+        return tool
+    return f"{tool} {json.dumps(dict(args), ensure_ascii=False, sort_keys=True, default=str)}"
+
+
+def _rows(data: Mapping[str, Any] | None) -> int | None:
+    """응답의 행 수 — 최상위에서 처음 만나는 목록 값의 길이(목록이 없으면 None)."""
+    if not isinstance(data, Mapping):
+        return None
+    for value in data.values():
+        if isinstance(value, list):
+            return len(value)
+    return None
 
 
 # ── 공용 도우미 ─────────────────────────────────────────────────────────────
@@ -1589,4 +1662,5 @@ __all__ = [
     "parse_response",
     "realtime_badge",
     "target_verdict",
+    "tool_label",
 ]

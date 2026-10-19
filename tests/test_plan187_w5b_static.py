@@ -418,7 +418,8 @@ def test_drawer_new_tab_and_break_glass_detail() -> None:
     assert 'var IS_BREAK_GLASS = tokenKey === "admin_token"' in src
     inv = _js_function_body(src, "renderInvestigation")
     assert (
-        'IS_BREAK_GLASS ? { mode: "detail" } : { mode: "summary", openConversation: true }' in inv
+        'IS_BREAK_GLASS ? { mode: "detail" } : '
+        'liveEntryRender({ mode: "summary", openConversation: true })' in inv
     )
     assert (
         'window.open("/?investigation=" + encodeURIComponent(investigationId), '
@@ -429,13 +430,13 @@ def test_drawer_new_tab_and_break_glass_detail() -> None:
 @pytest.mark.parametrize(
     "page, asset",
     [
-        ("index.html", "briefing-view.js?v=4"),
-        ("index.html", "app.js?v=30"),
-        ("index.html", "style.css?v=31"),
-        ("noise.html", "briefing-view.js?v=4"),
-        ("noise.html", "noise.js?v=15"),
-        ("admin/noise.html", "briefing-view.js?v=4"),
-        ("admin/noise.html", "noise.js?v=15"),
+        ("index.html", "briefing-view.js?v=5"),
+        ("index.html", "app.js?v=31"),
+        ("index.html", "style.css?v=32"),
+        ("noise.html", "briefing-view.js?v=5"),
+        ("noise.html", "noise.js?v=16"),
+        ("admin/noise.html", "briefing-view.js?v=5"),
+        ("admin/noise.html", "noise.js?v=16"),
     ],
 )
 def test_cache_versions_bumped(page: str, asset: str) -> None:
