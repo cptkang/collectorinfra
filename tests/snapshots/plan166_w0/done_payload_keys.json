@@ -12,6 +12,7 @@
     "keys": [
       "apm_source_clarification",
       "apm_source_scope",
+      "apm_xview_confirmation",
       "approval_context",
       "awaiting_approval",
       "chart",
@@ -57,6 +58,7 @@
     "keys": [
       "apm_source_clarification",
       "apm_source_scope",
+      "apm_xview_confirmation",
       "approval_context",
       "awaiting_approval",
       "chart",
@@ -112,6 +114,7 @@
     "keys": [
       "apm_source_clarification",
       "apm_source_scope",
+      "apm_xview_confirmation",
       "approval_context",
       "awaiting_approval",
       "chart",
@@ -154,6 +157,7 @@
     "keys": [
       "apm_source_clarification",
       "apm_source_scope",
+      "apm_xview_confirmation",
       "approval_context",
       "awaiting_approval",
       "chart",
@@ -199,6 +203,7 @@
     "keys": [
       "apm_source_clarification",
       "apm_source_scope",
+      "apm_xview_confirmation",
       "approval_context",
       "awaiting_approval",
       "chart",
@@ -240,6 +245,7 @@
     "keys": [
       "apm_source_clarification",
       "apm_source_scope",
+      "apm_xview_confirmation",
       "approval_context",
       "awaiting_approval",
       "chart",
@@ -291,6 +297,7 @@
     "keys": [
       "apm_source_clarification",
       "apm_source_scope",
+      "apm_xview_confirmation",
       "approval_context",
       "awaiting_approval",
       "chart",
@@ -336,6 +343,7 @@
     "keys": [
       "apm_source_clarification",
       "apm_source_scope",
+      "apm_xview_confirmation",
       "approval_context",
       "awaiting_approval",
       "chart",
@@ -391,6 +399,7 @@
     "keys": [
       "apm_source_clarification",
       "apm_source_scope",
+      "apm_xview_confirmation",
       "approval_context",
       "awaiting_approval",
       "chart",
@@ -433,6 +442,7 @@
     "keys": [
       "apm_source_clarification",
       "apm_source_scope",
+      "apm_xview_confirmation",
       "approval_context",
       "awaiting_approval",
       "chart",
@@ -479,6 +489,7 @@
     "keys": [
       "apm_source_clarification",
       "apm_source_scope",
+      "apm_xview_confirmation",
       "approval_context",
       "awaiting_approval",
       "chart",
@@ -520,6 +531,7 @@
     "keys": [
       "apm_source_clarification",
       "apm_source_scope",
+      "apm_xview_confirmation",
       "approval_context",
       "awaiting_approval",
       "chart",

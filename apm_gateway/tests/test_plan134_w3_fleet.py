@@ -191,7 +191,11 @@ async def test_ranking_promoted_estimate_is_domains_over_rate(big, tmp_path):
                     "apm_fleet", {"mode": "ranking", "wait_seconds": 0.05, "owner": "o"}
                 )
             )
-            assert handle["job"]["estimate"] == {"api_calls": 700, "seconds": 140.0}
+            assert handle["job"]["estimate"] == {
+                "api_calls": 700,
+                "seconds": 140.0,
+                "basis": "rate_only",
+            }
             assert handle["job"]["progress"]["total"] == 700
             big.gate.set()
             for _ in range(1000):

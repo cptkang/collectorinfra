@@ -38,10 +38,12 @@ seam) Facade에 남는다.
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from typing import Any, Concatenate, Generic, ParamSpec, TypeVar, overload
 
+from apm_gateway.adapters.jennifer.api import XVIEW_PATH, XVIEW_WINDOW_MS
 from apm_gateway.application.apm_core import SOURCE_KIND as SOURCE_KIND
 from apm_gateway.application.apm_core import ApmCore
 from apm_gateway.application.business_map import cache_fresh
@@ -62,6 +64,7 @@ from apm_gateway.application.tool_common import (
     InstKey,
     Limits,
     check_n,
+    group_by_domain,
     hour_ceil,
     hour_floor,
     inst_key,
@@ -118,6 +121,11 @@ class _Forward(Generic[P, R]):
         return getattr(getattr(obj, self.group), self.name)
 
 
+# `apm_app_health` 사전 확인(옵트인 `xview_confirm_over` · plans/164 W7-C) — 예상 X-View 호출이
+# 기준을 넘으면 데이터를 부르지 않고 견적만 돌려주는 봉투의 `status`(범위는 줄이지 않는다 ·
+# D-296 ④ — 고르는 것은 호출자다)
+CONFIRM_REQUIRED = "confirm_required"
+
 # 방문·호출 수 칸을 싣는 보기 공용(인스턴스 건강·서비스 현재값·전 대상 순위 — 사본 금지)
 VISIT_HIT_NOTE = (
     "[한계] 방문·호출 수(visit_day·visit_hour·hit_day·hit_hour)는 단위·「하루」 경계(자정 기준인지"
@@ -170,6 +178,63 @@ class ApmTools(ApmCore):
     _stats_delta = staticmethod(stats_delta)
 
     # ── 도구 8종(W1까지) ────────────────────────────────────
+
+    async def app_health_preflight(
+        self,
+        targets: list[tuple[str | None, int | None, list[str] | None, str | None]],
+        reference_time: str | None,
+        lookback_minutes: int | None,
+        confirm_over: Any,
+        estimate: Callable[[int, set[str], str], dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """`apm_app_health` 사전 확인(plans/164 W7-C · G-10 (a)) — 예상 X-View 호출이
+        `confirm_over`를 넘으면 **데이터 호출 없이** 견적 봉투(`status = confirm_required`)를,
+        아니면 None(그대로 조회)을 돌려준다.
+
+        `targets`는 대상마다 (hostname, instance_id, source_ids, instance_name)이다. 대상 해석
+        (인스턴스 명단 적재 · 캐시)만 하고 실시간·X-View·시 단위 통계는 부르지 않는다. 해석에
+        실패한 대상은 세지 않는다(본 호출이 그 사유를 그대로 낸다). 호출 수 산정은 `xview`·
+        `realtime`·`hourly`가 신고하는 계획과 같다. `estimate`는 (호출 수, 소스 id, 경로 군) →
+        견적(작업 관리자 `estimate_calls` · 경로 군은 X-View — 그 표본이 없으면 지연 미반영)."""
+        tool = "apm_app_health"
+        threshold = nonneg_int(confirm_over, "xview_confirm_over")
+        window = self.window(reference_time, lookback_minutes, default_minutes=None)
+        if window is None:  # 현재값만 — X-View를 부르지 않는다
+            return None
+        chunks = math.ceil((window.end_ms - window.start_ms) / XVIEW_WINDOW_MS)
+        xview = api_calls = instances = 0
+        source_ids: set[str] = set()
+        for hostname, instance_id, sources, instance_name in targets:
+            try:
+                res = await self.resolve(hostname, instance_id, sources, instance_name)
+            except ApmError:
+                continue
+            groups = len(group_by_domain(res))
+            xview += chunks * groups
+            api_calls += chunks * groups
+            api_calls += groups if window.end_is_now else 0
+            api_calls += groups if window.minutes > HOURLY_AFTER_MINUTES else 0
+            instances += len(res.instances)
+            source_ids |= {i["source_id"] for i in res.instances}
+        if xview <= threshold:
+            return None
+        return self.ok(
+            tool,
+            [],
+            window=window,
+            limits=[
+                f"[한계] 사전 확인 — 예상 X-View 호출 {xview:,}회가 기준 {threshold:,}회를 넘어"
+                " 데이터를 조회하지 않았다(범위는 줄이지 않았다 · xview_confirm_over 없이 다시"
+                " 부르면 창 전체를 1분 조각으로 모은다 · 시 단위 추세는 apm_metrics series"
+                " instance)"
+            ],
+            status=CONFIRM_REQUIRED,
+            expected_xview_calls=xview,
+            expected_api_calls=api_calls,
+            xview_confirm_over=threshold,
+            instance_count=instances,
+            estimate=estimate(api_calls, source_ids, XVIEW_PATH),
+        )
 
     async def apm_app_health(
         self,

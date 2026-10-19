@@ -4,9 +4,11 @@
 """
 
 import json
+import socket
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from sre_agent.infrastructure import mcp_tool_client as mc
@@ -63,7 +65,67 @@ def test_batch_uses_single_session_and_isolates_failures(monkeypatch):
 def test_session_failure_errors_every_call(monkeypatch):
     _install(monkeypatch, connect_error=ConnectionError("refused"))
     out = mc.run_tool_batch("http://mcp:9099/sse", None, [("a", {}), ("b", {})])
-    assert len(out) == 2 and all("MCP 세션 실패" in json.loads(o)["error"] for o in out)
+    # 그룹이 아닌 예외는 종전 문구 그대로(plans/188 C4)
+    assert len(out) == 2 and all(json.loads(o)["error"] == "MCP 세션 실패: refused" for o in out)
+
+
+def _free_port() -> int:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def test_closed_port_unwraps_task_group_to_connect_error():
+    """plans/188 C4 — 실 sse_client로 닫힌 포트에 붙으면 TaskGroup 문구 대신 연결 불가 + URL."""
+    url = f"http://127.0.0.1:{_free_port()}/sse"
+    out = mc.run_tool_batch(url, {"Authorization": "Bearer s3cret"}, [("a", {}), ("b", {})],
+                            timeout_seconds=3)
+    errs = [json.loads(o)["error"] for o in out]
+    assert errs[0] == errs[1]
+    assert errs[0] == ("MCP 세션 실패: 연결 불가(ConnectError: All connection attempts failed)"
+                       f" — POLESTAR_MCP_URL={url}")
+    assert "TaskGroup" not in errs[0] and "s3cret" not in errs[0]
+
+
+def _status_error(status):
+    req = httpx.Request("GET", "http://mcp:9099/sse")
+    resp = httpx.Response(status, request=req)
+    return httpx.HTTPStatusError(f"{status}", request=req, response=resp)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_auth_failure_in_group_names_token_setting_without_value(monkeypatch, status):
+    grp = ExceptionGroup("unhandled errors in a TaskGroup", [_status_error(status)])
+    _install(monkeypatch, connect_error=grp)
+    out = mc.run_tool_batch("http://mcp:9099/sse", {"Authorization": "Bearer s3cret"},
+                            [("a", {})])
+    err = json.loads(out[0])["error"]
+    assert err.startswith(f"MCP 세션 실패: HTTP {status} 인증 실패") and "POLESTAR_MCP_TOKEN" in err
+    assert "s3cret" not in err and "TaskGroup" not in err
+
+
+def test_other_http_status_and_nested_group(monkeypatch):
+    nested = ExceptionGroup("outer", [ExceptionGroup("inner", [_status_error(502)])])
+    _install(monkeypatch, connect_error=nested)
+    err = json.loads(mc.run_tool_batch("http://x/sse", None, [("a", {})])[0])["error"]
+    assert err == "MCP 세션 실패: HTTP 502"
+
+
+def test_connect_error_redacts_userinfo(monkeypatch):
+    grp = ExceptionGroup("tg", [httpx.ConnectError("All connection attempts failed")])
+    _install(monkeypatch, connect_error=grp)
+    out = mc.run_tool_batch("http://user:pw@mcp:9099/sse", None, [("a", {})])
+    err = json.loads(out[0])["error"]
+    assert err.endswith("POLESTAR_MCP_URL=http://***@mcp:9099/sse") and "pw" not in err
+
+
+def test_unknown_group_leaves_are_listed(monkeypatch):
+    grp = ExceptionGroup("tg", [RuntimeError("x"), ValueError("y")])
+    _install(monkeypatch, connect_error=grp)
+    err = json.loads(mc.run_tool_batch("http://x/sse", None, [("a", {})])[0])["error"]
+    assert err == "MCP 세션 실패: RuntimeError: x; ValueError: y"
 
 
 def test_text_of_without_text_content():

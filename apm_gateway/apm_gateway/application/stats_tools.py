@@ -297,8 +297,9 @@ class StatsTools:
     ) -> dict[str, Any]:
         """지표 카탈로그·시계열(plans/134 N-6). 도메인(서비스)·업무 시계열(W3·W4)은 scope_tools
         모듈이 같은 지표 검증(`_metric_plan`)으로 조회한다 — 대상은 `service`·`domain_id`(업무는
-        `business` 또는 `business_id`+`domain_id`). 인스턴스 시계열은 `metrics`가 필요하고,
-        도메인·업무 시계열은 비우면 군별 기본 지표로 조회한다(그 모듈)."""
+        `business` 또는 `business_id`+`domain_id`). 세 군 모두 `metrics`를 비우거나 전부 모르면
+        군별 기본 지표로 조회하고 그 사실을 고지한다(그 모듈 `_series_plan` · 인스턴스는 plans/164
+        W7-A)."""
         tool = "apm_metrics"
         mode = str(mode or "catalog").strip().lower()
         if mode not in METRIC_MODES:
@@ -310,6 +311,9 @@ class StatsTools:
             )
         if mode == "catalog":
             return await self._metric_catalog(tool, scope_name, source_ids)
+        # 그 모듈이 이 모듈을 쓴다 — 순환 import를 피해 여기서 불러온다
+        from apm_gateway.application.scope_tools import ScopeTools
+
         scope_name = scope_name or "instance"
         if scope_name not in SERIES_SCOPES:
             raise ApmError(
@@ -317,8 +321,6 @@ class StatsTools:
                 f"scope {scope_name} 지표는 시계열이 아니다 — apm_status_stats(kind {scope_name})",
             )
         requested = self.core.metric_names(metrics)
-        if not requested and scope_name == "instance":
-            raise ApmError(INVALID_ARGUMENT, "series에는 metrics(지표 이름 목록)가 필요하다")
         interval = positive_int(interval_minute, "interval_minute", TREND_INTERVAL_MINUTE)
         if scope_name != "instance":
             if is_given(hostname) or is_given(instance_name) or instance_id is not None:
@@ -327,9 +329,6 @@ class StatsTools:
                     f"scope {scope_name} 시계열은 hostname·instance_name·instance_id를 쓰지 않는다"
                     " — service·domain_id(업무는 business 또는 business_id+domain_id)로 정한다",
                 )
-            # 그 모듈이 이 모듈을 쓴다 — 순환 import를 피해 여기서 불러온다
-            from apm_gateway.application.scope_tools import ScopeTools
-
             return await ScopeTools(self.core).metric_series(
                 scope_name,
                 requested,
@@ -353,14 +352,32 @@ class StatsTools:
         )
         assert window is not None
         limits = Limits([SERIES_INTERVAL_NOTE])
-        plan = await self.core.metric_plan(
-            sorted({i["source_id"] for i in res.instances}),
-            requested,
-            "instance",
-            limits,
-            all_unknown_raises=True,
-        )
-        assert plan is not None  # 전부 모르면 위에서 invalid_argument
+        source_list = sorted({i["source_id"] for i in res.instances})
+        plan = None
+        if requested:
+            plan = await self.core.metric_plan(
+                source_list, requested, "instance", limits, all_unknown_raises=False
+            )
+            if plan is not None and limits.unresolved:  # 일부를 빼고 조회 — 지표가 빠진 결과
+                limits.partial = True
+        if plan is None:  # 미지정·전부 모름 — 도메인·업무 시계열처럼 기본 지표 + 고지(plans/164)
+            plan, used = await ScopeTools(self.core)._default_series_plan(
+                source_list, "instance", limits
+            )
+            shown = ", ".join(used) or "없음"
+            if requested:
+                limits.unresolve(
+                    f"요청한 지표 {', '.join(requested)}를 지표 목록에서 찾지 못해 기본 지표"
+                    f"({shown})로 조회했습니다"
+                )
+                limits.partial = True
+            else:
+                limits.append(f"[한계] 지표 미지정 — 기본 지표({shown})로 조회")
+            if not used:
+                limits.fail(
+                    "[한계] instance 기본 지표가 지표 카탈로그에 없어 조회하지 못했다 —"
+                    " apm_metrics(mode catalog)로 지표를 고른다"
+                )
         rows: list[dict[str, Any]] = []
         empty: list[str] = []
         failures: list[tuple[str, ApmError]] = []

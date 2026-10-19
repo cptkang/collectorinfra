@@ -49,10 +49,12 @@ RUNTIME_TREND_METRICS: tuple[str, ...] = ("heap_used_mb", "heap_committed_mb", "
 
 # 도메인·업무 시계열에서 지표를 지정하지 않았을 때의 기본 지표(dbmetrics 식별자 · plans/134
 # W3·W4 V34-1) — 응답시간(중립 이름 response_time_avg_ms)·호출 수·오류 수. 카탈로그 그 군에
-# 있는 것만 쓴다.
+# 있는 것만 쓴다. 인스턴스 시계열(plans/164 W7-A)은 응답시간·호출 수 — instance 카탈로그에
+# `tps` 식별자가 없다(`max_tps`는 최대값 · `service_rate`는 의미 미확인이라 쓰지 않는다).
 SERIES_DEFAULT_METRICS: dict[str, tuple[str, ...]] = {
     "domain": ("service_time", "service_count", "service_err_count"),
     "business": ("service_time", "service_count", "service_err_count"),
+    "instance": ("service_time", "service_count"),
 }
 
 # 이벤트 유형(접두 `ERROR_`·`WARNING_` 제거 후 대문자) → (시그니처 kind, level, category).

@@ -157,7 +157,9 @@ def test_health_tool_fields(tmp_path):
     assert health["status"] == "ok"
     assert health["contract_version"] == CONTRACT_VERSION
     assert health["holmes_ready"] is False  # 키 부재 → 조사 불가를 정직 보고
-    assert health["polestar_mcp_reachable"] is None  # 라이브 프로브 2-D 소관
+    # 주입 경로(job_store)는 툴셋을 검사하지 않는다 → null
+    # · 선택 키 polestar_mcp_error 없음(plans/188 C6)
+    assert health["polestar_mcp_reachable"] is None
 
 
 def test_health_holmes_ready_with_key(tmp_path):

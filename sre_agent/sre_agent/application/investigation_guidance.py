@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Collection
 from datetime import datetime
 
 from sre_agent.domain.correlation import format_offset, offset_minutes
@@ -343,6 +344,12 @@ APM_NOT_CONFIGURED_NOTE: str = (
     "그 사실을 한계에 적는다."
 )
 
+#: APM 게이트웨이는 설정됐는데 apm_* 도구가 하나도 로드되지 않았을 때(툴셋 FAILED · plans/188 C2).
+APM_TOOLS_UNLOADED_NOTE: str = (
+    "현재 APM 게이트웨이 도구가 로드되지 않았다(연결 실패) — "
+    "apm_* 도구가 없으므로 처음부터 위 폴백으로 조사하고, 그 사실을 한계에 적는다."
+)
+
 APM_PLAYBOOK_NOTE: str = (
     "장애 유형 플레이북 — WAS(APM) 사건(plans/87 §5.4):\n"
     "- 증거: 트리거 이벤트(event_type · instance_id · txid) · apm_events 선행 이벤트 · "
@@ -370,14 +377,65 @@ def apm_playbook_note(hints: dict) -> str:
     return f"{APM_PLAYBOOK_NOTE}\n- 트리거 힌트: " + " · ".join(shown)
 
 
-def apm_notes(settings, job) -> list[str]:  # noqa: ANN001 — AgentSettings · JobLike
-    """⑥ APM 노트(조사 순서 · 현재값 · 폴백 [· 미설정 사유]). `apm_guidance_enabled`일 때만 호출된다."""
+def apm_notes(settings, job, *, apm_loaded: bool | None = None) -> list[str]:  # noqa: ANN001 — AgentSettings · JobLike
+    """⑥ APM 노트(조사 순서 · 현재값 · 폴백 [· 미설정 사유]).
+
+    `apm_guidance_enabled`일 때만 호출된다. `apm_loaded=False`(plans/188 C2 — apm_* 도구가
+    하나도 로드되지 않음)면 조사 순서·현재값 노트 대신 폴백 노트와 미로드 사유만 싣는다.
+    None(미검사)이면 종전과 같다.
+    """
+    configured = bool(getattr(settings, "apm_mcp_url", ""))
+    if apm_loaded is False and configured:
+        return [APM_FALLBACK_NOTE, APM_TOOLS_UNLOADED_NOTE]
     iid = getattr(job, "investigation_id", None)
     iid_arg = f'investigation_id="{iid}"' if iid else "investigation_id(이 조사의 id)"
     notes = [APM_FOCUS_NOTE_TEMPLATE.format(investigation_id_arg=iid_arg), APM_REALTIME_NOTE, APM_FALLBACK_NOTE]
-    if not getattr(settings, "apm_mcp_url", ""):
+    if not configured:
         notes.append(APM_NOT_CONFIGURED_NOTE)
     return notes
+
+
+# ---------------------------------------------------------------------
+# 도구 이름 필터 (plans/188 C2 — 없는 도구 이름이 지침에 0건)
+#
+# 지침 문구는 mcp_server·게이트웨이 도구 이름을 박아 둔다. 툴셋이 FAILED거나 배치가 도구를 숨기면
+# LLM이 없는 이름을 불러 holmes 「Failed to find tool」이 난다. 실제 로드된 도구 이름을 받으면
+# 없는 이름을 지운다 — 「a · b」 나열에서는 그 항목만 빼고, 그렇게 뺄 수 없는 줄은 줄째 뺀다.
+# `apm_*`처럼 와일드카드 표기는 도구 이름이 아니라 걸리지 않는다.
+# ---------------------------------------------------------------------
+
+#: 지침에 등장하는 도구 이름 꼴(폴스타·PromQL·OpenMetrics·APM 게이트웨이 접두).
+#: `re.ASCII` — 이름 뒤에 한국어 조사가 붙어도(「prom_metric_range로」) 경계로 본다
+#: (유니코드 `\b`는 한글을 단어 문자로 친다).
+TOOL_NAME_RE = re.compile(r"\b(?:polestar|prom|om|apm)_[a-z0-9]+(?:_[a-z0-9]+)*\b", re.ASCII)
+_LIST_SEPARATORS = (r"\s*·\s*", r",\s*")
+
+
+def _drop_name(line: str, name: str) -> str:
+    """나열 구분자(「·」「,」)와 붙은 도구 이름 하나를 지운다. 구분자가 없으면 그대로 둔다."""
+    for sep in _LIST_SEPARATORS:
+        for pattern in (sep + rf"\b{name}\b", rf"\b{name}\b" + sep):
+            out, n = re.subn(pattern, "", line, count=1, flags=re.ASCII)
+            if n:
+                return out
+    return line
+
+
+def filter_tool_mentions(text: str, available: Collection[str]) -> str:
+    """지침 문자열에서 `available`에 없는 도구 이름을 지운다(줄 단위).
+
+    나열 항목이면 그 이름만 빼고, 빼고도 없는 이름이 남는 줄은 통째로 뺀다.
+    도구 이름이 없는 줄은 그대로다.
+    """
+    kept: list[str] = []
+    for line in text.split("\n"):
+        for name in dict.fromkeys(TOOL_NAME_RE.findall(line)):
+            if name not in available:
+                line = _drop_name(line, name)
+        if any(name not in available for name in TOOL_NAME_RE.findall(line)):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
 
 
 # ---------------------------------------------------------------------
@@ -410,10 +468,11 @@ def _lag_text(lag: float | None) -> str:
     return f"원인이 {int(lag)}초 선행" if lag >= 0 else f"원인이 {int(-lag)}초 후행(규칙 창 허용)"
 
 
-def cross_source_note(settings, ctx: EpisodeContext) -> str:  # noqa: ANN001 — AgentSettings
+def cross_source_note(settings, ctx: EpisodeContext, *, apm_loaded: bool | None = None) -> str:  # noqa: ANN001 — AgentSettings
     """③′ 크로스소스 사건 노트.
 
     멤버 표 · 규칙 창 · 링크(가설) · apm 구간 도구 · strong 매칭 고지 · 한계.
+    `apm_loaded=False`(plans/188 C2)면 게이트웨이 미설정과 같이 APM 도구 미연결 한계를 싣는다.
     """
     lines = [
         CROSS_SOURCE_NOTE_HEADER,
@@ -455,7 +514,7 @@ def cross_source_note(settings, ctx: EpisodeContext) -> str:  # noqa: ANN001 —
         "애플리케이션(APM) 구간 도구: " + " · ".join(APM_ANCHORED_TOOLS)
         + " — 사건 구간 인자(reference_time·lookback_minutes)를 함께 넘긴다."
     )
-    if not getattr(settings, "apm_mcp_url", ""):
+    if not getattr(settings, "apm_mcp_url", "") or apm_loaded is False:
         lines.append(f"{APM_TOOLS_NOT_CONNECTED_LIMIT}하고, 그 사실을 결론의 한계에 적는다.")
     return "\n".join(lines)
 
@@ -676,7 +735,9 @@ def deep_dive_note(
     return "\n".join(lines)
 
 
-def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
+def build_guidance(  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
+    settings, job, *, remote: bool = True, available_tools: Collection[str] | None = None
+) -> str | None:
     """조사 지침을 조립한다. 넣을 것이 없으면 None(`ask()`는 부하 가드만 붙인다).
 
     순서: ① 원격 셸 ② 사건 구간 ③ 상관 결과 [③″ 이미 수집된 판정 — 진단 잡 `prior_findings`]
@@ -693,16 +754,25 @@ def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa
     `cross_source_investigation_enabled`이고 `meta.episode`에 두 소스 멤버가 있으면
     (plans/153 §4.6) ③ 뒤에 ③′ 크로스소스 사건 노트를 넣고, ④는 OS 플레이북과
     APM 플레이북을 **병기**한다(대체 아님).
+
+    `available_tools`(plans/188 C2 — 조사 LLM에 실제 로드된 도구 이름)를 받으면 ①~⑥의 도구 이름을
+    그 목록으로 거른다(`filter_tool_mentions` — ⑦ 운영자 지침은 손대지 않는다). apm_* 도구가 하나도
+    없으면 APM 노트는 폴백·미로드 사유로 바뀐다. None이면 종전과 비트 동일하다.
     """
     apm_on = bool(getattr(settings, "apm_guidance_enabled", False))
+    apm_loaded = (None if available_tools is None
+                  else any(name.startswith("apm_") for name in available_tools))
     parts: list[str] = []
     if remote:
         parts.append(REMOTE_VM_SHELL_NOTE)
+    tools = ANCHORED_TOOLS + APM_ANCHORED_TOOLS if apm_on else ANCHORED_TOOLS
+    if available_tools is not None:
+        tools = tuple(name for name in tools if name in available_tools)
     scope = incident_scope_note(
         getattr(job, "reference_time", None),
         getattr(job, "lookback_minutes", None),
-        ANCHORED_TOOLS + APM_ANCHORED_TOOLS if apm_on else ANCHORED_TOOLS,
-    )
+        tools,
+    ) if tools else None
     if scope:
         parts.append(scope)
     corr = correlation_note(getattr(job, "correlation", None))
@@ -719,7 +789,7 @@ def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa
     )
     deep_dive = getattr(job, "deep_dive_guidance", None)
     if xs is not None:
-        parts.append(cross_source_note(settings, xs))
+        parts.append(cross_source_note(settings, xs, apm_loaded=apm_loaded))
         if isinstance(deep_dive, str) and deep_dive:
             parts.append(deep_dive)
         else:
@@ -738,7 +808,9 @@ def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa
     if getattr(settings, "openmetrics_guidance_enabled", False):
         parts.append(OPENMETRICS_NOTE)
     if apm_on:
-        parts.extend(apm_notes(settings, job))
+        parts.extend(apm_notes(settings, job, apm_loaded=apm_loaded))
+    if available_tools is not None:
+        parts = [kept for p in parts if (kept := filter_tool_mentions(p, available_tools)).strip()]
     extra = (getattr(settings, "investigation_guidance_extra", None) or "").strip()
     if extra:
         parts.append(extra)
@@ -747,7 +819,9 @@ def build_guidance(settings, job, *, remote: bool = True) -> str | None:  # noqa
 
 __all__ = ["ANCHORED_TOOLS", "APM_ANCHORED_TOOLS", "INCIDENT_SCOPE_NOTE_TEMPLATE", "PLAYBOOK_NOTES",
            "OPENMETRICS_NOTE", "APM_UNAVAILABLE_CODES", "APM_FOCUS_NOTE_TEMPLATE", "APM_REALTIME_NOTE",
-           "APM_FALLBACK_NOTE", "APM_NOT_CONFIGURED_NOTE", "APM_PLAYBOOK_NOTE",
+           "APM_FALLBACK_NOTE", "APM_NOT_CONFIGURED_NOTE", "APM_TOOLS_UNLOADED_NOTE",
+           "APM_PLAYBOOK_NOTE",
+           "TOOL_NAME_RE", "filter_tool_mentions",
            "incident_scope_note", "correlation_note", "classify_alarm_kind", "alarm_kind_from_job",
            "trigger_hints", "playbook_note", "apm_playbook_note", "apm_notes",
            "CROSS_SOURCE_NOTE_HEADER", "cross_source_note", "cross_source_playbooks",

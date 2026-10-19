@@ -102,6 +102,10 @@ class AgentSettings(BaseSettings):
     # None이면 무인증(로컬/개발). SecretStr로 pydantic 필드로만 판정한다
     # (env: SERVICE_BEARER_TOKEN, os.getenv 금지). 협의 후 mTLS 승격 여지.
     service_bearer_token: SecretStr | None = None
+    # 조사 서비스 listen 호스트 (env: SERVICE_HOST). 기본 127.0.0.1 = 종전 동작.
+    # FastMCP Host 헤더 검사와 uvicorn 바인딩이 같은 값을 쓴다 — 0.0.0.0으로 열면
+    # service_bearer_token을 함께 설정할 것.
+    service_host: str = "127.0.0.1"
 
     # ── 조사 dispatcher 폭주 방지 가드 (Plan 02 §4·§10 — 전부 기본 off/보수값) ──
     # 스칼라 필드이므로 nested Field(default_factory=...)는 불요(중첩 모델 없음).
@@ -141,6 +145,15 @@ class AgentSettings(BaseSettings):
     # 통과시키는 no-op이라 정상 경로가 비트 동일하고, off는 곧 "계속 실패"를 뜻한다.
     # **만료일 2027-03-11**(D-161 C1) — holmes 수정·모델 교체 시 유지/삭제를 그때 판정한다.
     system_message_position_fix: bool = True
+    # ── Gemma 도구 호출 마크업 클라이언트 측 파싱 (plans/188 C8) — **기본 on(명시적 예외)** ──
+    # 사내 vLLM(Gemma 4 계열)의 `--tool-call-parser`가 모델과 맞지 않으면 도구 호출이 `tool_calls`가
+    # 아니라 content 본문(`<|tool_call>call:이름{…}<tool_call|>`)으로 돌아와 조사가 1턴에서 끝난다
+    # (폐쇄망 실측 2026-10-19). 가드는 그 블록을 해석해 OpenAI 형식 tool_calls 사본으로 바꾼다.
+    # **기본 off가 아닌 이유**(plans/80 §5.4-③ 예외): 마크업이 없으면 원본 객체를 그대로 통과시키는
+    # no-op이라 정상 경로가 비트 동일하고, off는 곧 "파서 불일치 환경에서 조사 전건 실패"를 뜻한다.
+    # 해석 실패면 원본을 그대로 둬 W4 방어(미결 종결)가 작동한다.
+    # **만료일 2027-04-19**(D-161 C1) — vLLM 파서 교정·모델 교체 시 유지/삭제를 그때 판정한다.
+    tool_call_markup_parse_enabled: bool = True
     # ── bash 쓰기 형태 거부 가드 (D-235) — **기본 on(명시적 예외)** ──
     # holmes bash 허용목록은 prefix 매칭이라 `uptime`이 허용이면 `uptime > /tmp/x`도 통과한다(실측).
     # 설정으로 막을 수 없어(`allow`·`deny`·`builtin_allowlist`뿐 · deny도 prefix) 검증 경계에서 거부한다.

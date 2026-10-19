@@ -140,7 +140,7 @@
     "name": "apm_instance_map"
   },
   {
-    "description": "WAS 골든 시그널 — 평균 응답시간·TPS·액티브 서비스·PLC 거절률·방문·호출 수·액티브 구간\n        4칸(현재) + 구간 p50/p95·에러율(1분 조각으로 창 전체) + 긴 창은 시 단위 합계 + 판정.\n        hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은\n        apm_instance_map(query=…)로 먼저 찾는다.",
+    "description": "WAS 골든 시그널 — 평균 응답시간·TPS·액티브 서비스·PLC 거절률·방문·호출 수·액티브 구간\n        4칸(현재) + 구간 p50/p95·에러율(1분 조각으로 창 전체) + 긴 창은 시 단위 합계 + 판정.\n        hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은\n        apm_instance_map(query=…)로 먼저 찾는다.\n        xview_confirm_over를 주면(옵트인) 예상 X-View 호출(1분 조각 × 소스·도메인 · targets 전체\n        합)이 그 수를 넘을 때 데이터를 부르지 않고 status=confirm_required ·\n        expected_xview_calls · expected_api_calls · estimate{api_calls, seconds, basis}만 돌려준다\n        (범위는 줄이지 않는다 — 빼고 다시 부르면 전수 조회). 주지 않으면 종전 그대로.",
     "inputSchema": {
       "properties": {
         "hostname": {
@@ -284,6 +284,19 @@
           "default": null,
           "description": "이 초 안에 끝나지 않으면 작업 핸들(job)을 돌려주고 백그라운드로 계속한다(apm_job_status로 확인). 비우면 끝날 때까지 기다린다",
           "title": "Wait Seconds"
+        },
+        "xview_confirm_over": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "옵트인 사전 확인(0 이상 정수) — 예상 X-View 호출이 이 수를 넘으면 데이터를 부르지 않고 status=confirm_required 견적만 돌려준다. 비우면 종전 그대로 조회",
+          "title": "Xview Confirm Over"
         }
       },
       "title": "apm_app_healthArguments",
@@ -1523,7 +1536,7 @@
     "name": "apm_status_stats"
   },
   {
-    "description": "APM 지표 — catalog: 소스별 지표 이름 전부(행 = 소스·군·지표) · series: 지표 시계열\n        (행 = 인스턴스·지표·시각·값 · 지표 이름은 카탈로그로 검증).\n        hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은\n        apm_instance_map(query=…)로 먼저 찾는다. scope domain(서비스)·business(업무) 시계열은\n        hostname 대신 service·business·domain_id로 정하고, 비우면 고른 범위 전부다 — metrics를\n        비우면 기본 지표(응답시간·호출 수·오류 수)로 조회한다. targets는 instance 시계열에서만.",
+    "description": "APM 지표 — catalog: 소스별 지표 이름 전부(행 = 소스·군·지표) · series: 지표 시계열\n        (행 = 인스턴스·지표·시각·값 · 지표 이름은 카탈로그로 검증).\n        hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은\n        apm_instance_map(query=…)로 먼저 찾는다. scope domain(서비스)·business(업무) 시계열은\n        hostname 대신 service·business·domain_id로 정하고, 비우면 고른 범위 전부다 — metrics를\n        비우면 기본 지표(응답시간·호출 수·오류 수)로 조회한다. instance 시계열도 metrics를 비우거나\n        전부 모르면 기본 지표(응답시간·호출 수)로 조회하고 고지한다. targets는 instance 시계열\n        에서만.",
     "inputSchema": {
       "properties": {
         "business": {

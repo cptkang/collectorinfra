@@ -173,11 +173,19 @@ sre_agent/
 | `sre_get_investigation` | `investigation_id: str` | `{status, briefing?, verdict?, tool_calls_summary?, tokens?, cost?, error?, reason?}` |
 | `sre_diagnose` | `question`, `server_name?`, `hostname?`, `db_id?` | `{investigation_id, status: accepted\|rejected, reason?}` |
 | `sre_list_investigations` | `limit: int = 20` | `{count, investigations: [...]}` |
-| `sre_health` | — | `{status, version, contract_version, holmes_ready, polestar_mcp_reachable}` |
+| `sre_health` | — | `{status, version, contract_version, holmes_ready, polestar_mcp_reachable, polestar_mcp_error?, last_answer_malformed?}` |
 
 `sre_health`는 collectorinfra 클라이언트의 `health_check_tool` 지정 대상이다.
 `holmes_ready`는 **조사 LLM 게이트 통과 여부를 정직하게 반영**한다(D-230 — `INVESTIGATION_LLM_ENABLED` 미설정이면 LLM 키 유무,
 `true`면 키 없이 준비, `false`면 항상 스텁). 엔드포인트 도달성은 보지 않는다.
+`polestar_mcp_reachable`은 **마지막 조사 직전 폴스타 MCP 툴셋 검사 결과**다(plans/188 C6) — `true`/`false`,
+아직 조사 전(또는 `POLESTAR_MCP_URL` 미설정)이면 `null`. `false`면 선택 키 `polestar_mcp_error`(holmes 사유)를
+더한다. 헬스 호출마다 프로브하지 않는다(`contract_version` 불변).
+툴셋이 FAILED면 조사 직전 에이전트를 1회 다시 만들고(정상이면 재생성 0회), 그래도 `polestar`가 FAILED면 LLM을
+부르지 않고 「조사 불가 — 관측 도구 연결 실패」 브리핑으로 끝낸다(plans/188 A안 — `done` · 요약
+`[미결] 조사 불가 — 관측 도구 연결 실패` · 원인 「판단 불가(조사 생략)」 · 사유는 한계 1줄과 감사 `done` 레코드의
+선택 키 `tools_unavailable`에만). 사유는 첫 줄만 남기고 holmes 재시도 안내 꼬리를 떼며 URL userinfo를 `***@`로 가린다.
+APM 게이트웨이만 계속 다운이면 매 조사가 에이전트를 재생성한다(폴스타 재검사 포함 · 건당 최대 약 20초 · LLM 비용 0).
 
 **잡 상태 전이**
 
@@ -656,6 +664,8 @@ PY
 | `합격 — 호출: get_server_cpu_load …` | — | 다음 단계로 |
 | `불합격` + 본문이 **설명문** | `--enable-auto-tool-choice` 누락 | 플래그 추가 후 재기동 |
 | `불합격` + 본문에 **도구 JSON 조각** | `--tool-call-parser` 불일치 | 파서 값을 모델 계열에 맞게 교체 |
+| 브리핑 요약이 `[미결] 조사 실패 — 조사 LLM 도구 호출 형식 불일치` | `--tool-call-parser` 불일치 — 이 스크립트가 `불합격 — tool_calls 없음`을 내고 본문에 `<\|tool_call>`·`call:이름{` 같은 호출 원문이 보인다 | 파서 값을 모델 계열에 맞게 교체 후 vLLM 재기동(sre_agent 재기동 불필요) |
+| 본문이 Gemma 4 표기(`<\|tool_call>call:이름{…}<tool_call\|>`) | `--tool-call-parser` 불일치(Gemma 계열) — sre_agent가 **클라이언트 측에서 파싱**해 tool_calls로 바꾸고 조사를 진행한다(`TOOL_CALL_MARKUP_PARSE_ENABLED` 기본 on · plans/188 W5). 해석 실패면 원본 그대로 두어 위 행의 `[미결]` 종결(warning 로그 `도구 호출 마크업 해석 실패`) | 파서 교정이 여전히 근본 조치. 다음 턴 왕복(holmes가 싣는 assistant `tool_calls` + `role=tool`을 vLLM 템플릿이 렌더링하는지)은 로컬 실측 불가 — **첫 실조사에서 도구 호출이 2턴 이상 이어지는지**로 판정(이어지지 않으면 파서 교정이 유일한 해법) |
 | 연결 오류 | 방화벽·바인드 | §5.6.2부터 |
 
 #### 5.6.4 `sre_agent` 배선 — 필드 4개
@@ -976,8 +986,9 @@ memory 8GiB / oom_kills 3)을 조사 서술이 집어냈는지 **문자열로 �
 7. **LLM 비결정성** — 브리핑 서술은 인용 검증 후처리를 거치지만 여전히 LLM 산출물이다.
    판정·권고·가드는 전부 코드 소관이며, 이 분담을 흐리는 변경(예: LLM에 중요도 판정을 맡김)은
    D-035 위반이다.
-8. **잔여 한계** — L-4 호스트 키의 `hostname`/`serverName` 이원화(§3.5), `sre_health`의
-   `polestar_mcp_reachable` 라이브 프로브 미구현(항상 `None`).
+8. **잔여 한계** — L-4 호스트 키의 `hostname`/`serverName` 이원화(§3.5). `sre_health`의
+   `polestar_mcp_reachable`은 라이브 프로브가 아니라 마지막 조사 직전 툴셋 검사 결과다(plans/188 C6 —
+   조사 전에는 `null`, 조사 사이에 끊긴 연결은 다음 조사 전까지 반영되지 않는다).
 
 ---
 

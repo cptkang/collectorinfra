@@ -221,3 +221,79 @@ class TestMariadbPool:
 
         asyncio.run(_run())
         assert fake_aiomysql[0].closed and fake_aiomysql[0].wait_closed_called
+
+
+# =====================================================================
+# 세션 읽기 전용 변수명 폴백 — MariaDB 10.x는 `tx_read_only`만 안다(1193)
+# =====================================================================
+
+
+class _UnknownVar(Exception):
+    """pymysql OperationalError 모양 — args[0]이 오류 번호다."""
+
+
+def _rejecting_create_pool(reject: set[str], attempts: list[str], code: int = 1193):
+    async def _create(**kwargs):
+        attempts.append(kwargs["init_command"])
+        for var in reject:
+            if f"SESSION {var}=1" in kwargs["init_command"]:
+                raise _UnknownVar(code, f"Unknown system variable '{var}'")
+        return _FakePool(kwargs)
+
+    return _create
+
+
+class TestMariadbReadonlyVarFallback:
+    def _run(self, monkeypatch, create_pool):
+        monkeypatch.setitem(
+            sys.modules, "aiomysql",
+            SimpleNamespace(create_pool=create_pool, DictCursor=_FAKE_AIOMYSQL.DictCursor),
+        )
+        pm = DBPoolManager([_source()])
+        asyncio.run(pm.initialize())
+        return pm
+
+    def test_falls_back_to_tx_read_only_on_1193(self, monkeypatch):
+        attempts: list[str] = []
+        pm = self._run(monkeypatch, _rejecting_create_pool({"transaction_read_only"}, attempts))
+        assert attempts == [
+            "SET SESSION max_statement_time=17, SESSION transaction_read_only=1",
+            "SET SESSION max_statement_time=17, SESSION tx_read_only=1",
+        ]
+        assert "asset" in pm._mariadb_pools
+
+    def test_new_server_uses_first_name_only(self, monkeypatch):
+        attempts: list[str] = []
+        pm = self._run(monkeypatch, _rejecting_create_pool(set(), attempts))
+        assert attempts == ["SET SESSION max_statement_time=17, SESSION transaction_read_only=1"]
+        assert "asset" in pm._mariadb_pools
+
+    def test_both_unknown_leaves_pool_absent(self, monkeypatch):
+        """두 이름 모두 모르면 읽기 전용 없이 열지 않는다(강등 금지) — 풀 미생성."""
+        attempts: list[str] = []
+        pm = self._run(
+            monkeypatch,
+            _rejecting_create_pool({"transaction_read_only", "tx_read_only"}, attempts),
+        )
+        assert len(attempts) == 2
+        assert "asset" not in pm._mariadb_pools
+
+    def test_other_error_is_not_retried(self, monkeypatch):
+        attempts: list[str] = []
+        pm = self._run(
+            monkeypatch, _rejecting_create_pool({"transaction_read_only"}, attempts, code=1045)
+        )
+        assert len(attempts) == 1
+        assert "asset" not in pm._mariadb_pools
+
+    def test_non_readonly_source_has_no_session_var(self, monkeypatch):
+        attempts: list[str] = []
+        monkeypatch.setitem(
+            sys.modules, "aiomysql",
+            SimpleNamespace(
+                create_pool=_rejecting_create_pool(set(), attempts),
+                DictCursor=_FAKE_AIOMYSQL.DictCursor,
+            ),
+        )
+        asyncio.run(DBPoolManager([_source(readonly=False)]).initialize())
+        assert attempts == ["SET SESSION max_statement_time=17"]

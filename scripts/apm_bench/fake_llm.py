@@ -31,7 +31,14 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from .scenarios import ANY_VALUE, Expect, PlaceholderError, fill_placeholders, placeholders_of
+from .scenarios import (
+    ANY_VALUE,
+    Expect,
+    PlaceholderError,
+    absent_or_contains,
+    fill_placeholders,
+    placeholders_of,
+)
 
 #: 시스템 프롬프트 표지(정본 프롬프트의 첫 문장 일부) → 요청 종류.
 MARKERS: tuple[tuple[str, str], ...] = (
@@ -118,7 +125,8 @@ def plan_from_expect(
     """시나리오 기대값 → 분해 「정답 계획」 JSON(dict · 결정적).
 
     - 담당마다 task 하나(APM 아닌 담당은 `sub_query`만) · 거절 턴(담당 없음)은 `general_inference`
-    - APM task: `views` = 기대 보기 · `view_args` = 기대 인자(자리표 채움 · `"*"`는 `_any_value`) ·
+    - APM task: `views` = 기대 보기 · `view_args` = 기대 인자(자리표 채움 · `"*"`는 `_any_value` ·
+      `absent_or_contains`형은 붙이지 않음) ·
       `targets` = 대상 표기(인스턴스·업무·서비스만) · `sources` = 기대 소스 · `areas` = 보기 영역
 
     Args:
@@ -148,6 +156,8 @@ def plan_from_expect(
                     arg = next((a for a in spec.args if a.name == key), None)
                     if arg is None:
                         continue
+                    if absent_or_contains(value) is not None:
+                        break  # 「안 붙였으면 통과」형 — 정답 계획은 붙이지 않는다(보기 기본값)
                     filled = (_any_value(arg, any_values) if value == ANY_VALUE
                               else _fill_value(value, arg, mapping))
                     if filled is not None:

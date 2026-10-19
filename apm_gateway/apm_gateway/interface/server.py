@@ -38,6 +38,7 @@ from apm_gateway.adapters.jennifer.allowlist import NotAllowedError
 from apm_gateway.application.batch import (
     HOSTNAME_KEYS,
     TARGET_KEYS_WITH_ID,
+    parse_targets,
     Target,
     ToolResult,
     targeted,
@@ -98,6 +99,14 @@ TargetsArg = Annotated[
         " 없음). 항목 = {hostname 또는 instance_name(둘 다 = AND) · source_id(선택) ·"
         " instance_id(이 도구가 받을 때만)}. 최상위 hostname·instance_name·instance_id와 함께 줄"
         " 수 없다. 행에 target_index, 대상별 요약·실패는 batch"
+    ),
+]
+
+XviewConfirmArg = Annotated[
+    int | None,
+    Field(
+        description="옵트인 사전 확인(0 이상 정수) — 예상 X-View 호출이 이 수를 넘으면 데이터를"
+        " 부르지 않고 status=confirm_required 견적만 돌려준다. 비우면 종전 그대로 조회"
     ),
 ]
 
@@ -337,6 +346,50 @@ def audit_job_finished(job: Job) -> None:
     )
 
 
+CoreCall = Callable[[], Awaitable[dict[str, Any]]]
+
+
+def _xview_confirmed(
+    tools: ApmTools,
+    jobs: JobManager,
+    call: Callable[[], Awaitable[dict[str, Any]]],
+    *,
+    targets: Any,
+    hostname: str | None,
+    instance_name: str | None,
+    instance_id: int | None,
+    source_ids: list[str] | None,
+    reference_time: str | None,
+    lookback_minutes: int | None,
+    confirm_over: Any,
+) -> Callable[[], Awaitable[dict[str, Any]]]:
+    """`apm_app_health` 사전 확인을 앞에 붙인 코어 호출(plans/164 W7-C) — `targets`면 전 대상
+    합으로 한 번 판정한다(일부 대상만 조회하고 나머지를 묻지 않게). 기준 이하면 종전 호출 그대로."""
+
+    async def run() -> dict[str, Any]:
+        if targets is None:
+            items = [(hostname, instance_id, source_ids, instance_name)]
+        else:
+            items = [
+                (t.hostname, t.instance_id, t.sources(source_ids), t.instance_name)
+                for _, t in parse_targets(
+                    tools,
+                    targets,
+                    keys=TARGET_KEYS_WITH_ID,
+                    hostname=hostname,
+                    instance_name=instance_name,
+                    instance_id=instance_id,
+                    source_ids=source_ids,
+                )
+            ]
+        confirm = await tools.app_health_preflight(
+            items, reference_time, lookback_minutes, confirm_over, jobs.estimate_calls
+        )
+        return confirm if confirm is not None else await call()
+
+    return run
+
+
 class _Dispatch:
     """데이터 도구 1회의 공통 꼬리 — 대상 해석(`targeted` · 단건/다건 · 감사 대상 문구)과 작업 실행·
     감사(`run_data`)를 도구 이름 한 번으로 묶는다(plans/175 T1 · 스멜 M1). 나머지 키워드(`keys`·
@@ -357,9 +410,12 @@ class _Dispatch:
         wait_seconds: float | None,
         investigation_id: str | None,
         thread_id: str | None,
+        wrap: Callable[[CoreCall], CoreCall] | None = None,
         **target_args: Any,
     ) -> str:
         target, call = targeted(self._tools, tool, targets, core, label=label, **target_args)
+        if wrap is not None:  # 대상 해석 뒤 코어 호출 앞에 끼우는 단계(plans/164 W7-C 사전 확인)
+            call = wrap(call)
         return await self._run_data(
             tool,
             target,
@@ -371,7 +427,9 @@ class _Dispatch:
         )
 
 
-def _register_instance_tools(mcp: FastMCP, tools: ApmTools, dispatch: _Dispatch) -> list[str]:
+def _register_instance_tools(
+    mcp: FastMCP, tools: ApmTools, dispatch: _Dispatch, jobs: JobManager
+) -> list[str]:
     """인스턴스·헬스 4종 — `apm_instance_map`·`apm_app_health`·`apm_runtime_health`·
     `apm_resource_pool`."""
 
@@ -425,11 +483,16 @@ def _register_instance_tools(mcp: FastMCP, tools: ApmTools, dispatch: _Dispatch)
         owner: OwnerArg = None,
         wait_seconds: WaitArg = None,
         targets: TargetsArg = None,
+        xview_confirm_over: XviewConfirmArg = None,
     ) -> str:
         """WAS 골든 시그널 — 평균 응답시간·TPS·액티브 서비스·PLC 거절률·방문·호출 수·액티브 구간
         4칸(현재) + 구간 p50/p95·에러율(1분 조각으로 창 전체) + 긴 창은 시 단위 합계 + 판정.
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
-        apm_instance_map(query=…)로 먼저 찾는다."""
+        apm_instance_map(query=…)로 먼저 찾는다.
+        xview_confirm_over를 주면(옵트인) 예상 X-View 호출(1분 조각 × 소스·도메인 · targets 전체
+        합)이 그 수를 넘을 때 데이터를 부르지 않고 status=confirm_required ·
+        expected_xview_calls · expected_api_calls · estimate{api_calls, seconds, basis}만 돌려준다
+        (범위는 줄이지 않는다 — 빼고 다시 부르면 전수 조회). 주지 않으면 종전 그대로."""
         return await dispatch(
             "apm_app_health",
             targets,
@@ -451,6 +514,21 @@ def _register_instance_tools(mcp: FastMCP, tools: ApmTools, dispatch: _Dispatch)
             wait_seconds=wait_seconds,
             investigation_id=investigation_id,
             thread_id=thread_id,
+            wrap=None
+            if xview_confirm_over is None
+            else lambda call: _xview_confirmed(
+                tools,
+                jobs,
+                call,
+                targets=targets,
+                hostname=hostname,
+                instance_name=instance_name,
+                instance_id=instance_id,
+                source_ids=source_ids,
+                reference_time=reference_time,
+                lookback_minutes=lookback_minutes,
+                confirm_over=xview_confirm_over,
+            ),
         )
 
     @mcp.tool()
@@ -874,7 +952,9 @@ def _register_stats_tools(mcp: FastMCP, tools: ApmTools, dispatch: _Dispatch) ->
         hostname 대신 정확한 인스턴스 이름(instance_name)으로도 부를 수 있다 — 부분 이름은
         apm_instance_map(query=…)로 먼저 찾는다. scope domain(서비스)·business(업무) 시계열은
         hostname 대신 service·business·domain_id로 정하고, 비우면 고른 범위 전부다 — metrics를
-        비우면 기본 지표(응답시간·호출 수·오류 수)로 조회한다. targets는 instance 시계열에서만."""
+        비우면 기본 지표(응답시간·호출 수·오류 수)로 조회한다. instance 시계열도 metrics를 비우거나
+        전부 모르면 기본 지표(응답시간·호출 수)로 조회하고 고지한다. targets는 instance 시계열
+        에서만."""
         mode_name = str(mode or "catalog").strip().lower()
         scope_name = str(scope or "").strip().lower() or "instance"
         return await dispatch(
@@ -1257,7 +1337,7 @@ def register_tools(
     dispatch = _Dispatch(tools, run_data)
     # 등록 순서 = `list_tools()` 순서(스냅샷 고정) — 묶음 순서를 바꾸지 않는다
     return [
-        *_register_instance_tools(mcp, tools, dispatch),
+        *_register_instance_tools(mcp, tools, dispatch, manager),
         *_register_transaction_tools(mcp, tools, dispatch),
         *_register_stats_tools(mcp, tools, dispatch),
         *_register_compare_tools(mcp, tools, dispatch),

@@ -34,6 +34,10 @@ HOLDOUT_TOLERANCE = 0.03
 #: 무거운 등급 상한(D-323 ③).
 HEAVY_MAX = 5
 ANY_VALUE = "*"
+#: 기대 인자 값 `{absent_or_contains: [이름…]}`(plans/164 W7-A) — 목록 인자를 안 붙였으면 통과,
+#: 붙였으면 목록 이름 중 하나 이상을 포함해야 통과(이름 여럿 = 같은 지표의 별칭 — 예 식별자 ·
+#: 중립 이름). 그 밖 값은 종전 판정이다.
+ABSENT_OR_CONTAINS = "absent_or_contains"
 
 SCENARIO_KEYS: frozenset[str] = frozenset(
     {"id", "covers", "split", "heavy", "was_touch", "e2_skip", "sensitive", "turns"}
@@ -120,7 +124,8 @@ class Expect:
             `inst_w`·`ref`)
         window: 창 표기(`default`·`none`·`current`·`compare`·`range:<분>`·
             `hourly:<today|yesterday|분>`)
-        args: 요구한 보기 인자만(적지 않은 인자가 붙으면 환각) · 값 `"*"` = 존재만 판정
+        args: 요구한 보기 인자만(적지 않은 인자가 붙으면 환각) · 값 `"*"` = 존재만 판정 ·
+            `{absent_or_contains: [이름…]}` = 안 붙였거나 그 이름 중 하나를 포함(목록 인자)
         apm_sources: 소스 지목 반영(레지스트리 apm 소스 id)
         clarify: 되묻기가 정답인 턴(`source`·`required_arg`)
         refusal: 거절이 정답인 턴(`unsupported`·`write_control`)
@@ -504,8 +509,26 @@ def load_registry_info(path: Path | None = None) -> RegistryInfo:
                         source_labels=frozenset(s.label for s in specs if s.label))
 
 
+def absent_or_contains(value: Any) -> tuple[str, ...] | None:
+    """기대 값이 `{absent_or_contains: [이름…]}` 형이면 이름 튜플, 아니면 None(형이 깨져도 None —
+    `_value_issue`가 위반으로 잡는다)."""
+    if not (isinstance(value, dict) and set(value) == {ABSENT_OR_CONTAINS}):
+        return None
+    names = value[ABSENT_OR_CONTAINS]
+    if not (isinstance(names, list) and names
+            and all(isinstance(n, str) and n.strip() for n in names)):
+        return None
+    return tuple(names)
+
+
 def _value_issue(arg: Any, value: Any) -> str | None:
     if isinstance(value, str) and (value == ANY_VALUE or placeholders_of(value)):
+        return None
+    if isinstance(value, dict):
+        if absent_or_contains(value) is None:
+            return f"매핑 값은 {{{ABSENT_OR_CONTAINS}: [이름…]}}(비지 않은 문자열 목록)만 허용"
+        if arg.type != "str_list":
+            return f"{ABSENT_OR_CONTAINS}는 str_list 인자에만 쓴다"
         return None
     if arg.type == "enum":
         if value not in arg.choices:

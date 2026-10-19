@@ -4,11 +4,17 @@
 
 ## 갱신 이력
 - 2026-10-19 — **187 TODO→WIP · 155 TODO→WIP · 커밋 전**: 알람 조사 플레이북(D-341) W0~W6·W8~W12 구현 — sre_agent 결정적 플레이북 엔진(YAML 12종·판독 R-A~R-H·가설 규칙·소견/종합 LLM ≤8회·가드)·HolmesGPT 심층 parallel/conditional·엔진 일치·런북/KEDB 읽기 · 본체 진척 전달·마스킹·workb 3줄+링크·추가 조사(diagnosis)·이 알람 분석(manual)·KB 초안·포스트모템·엔진 선택·채팅 증상 결정적 라우팅 · 웹 요약형/상세형·조사 대화·지난 알람 검색·관리자 「조사 지식」 탭·매뉴얼 U-62~U-69·A-77~A-80 · 155 공용부(지연 poll·kind=diagnosis·사용자별 상한)를 187 W10이 선행 구현 · 잔여 W7 내부망 shadow·R-D·G-26 캐시 공용
+- 2026-10-19 — 188 W5(C8) 추가·완료: Gemma 4 도구 호출 마크업을 sre_agent가 `DefaultLLM.completion` 응답 후처리로 `tool_calls` 변환(tools 있는 호출만 · 실패면 원본 → W4) · D-343 · verifier Major 1·Minor 3 교정 · 회귀 실패 0(모듈 단위) · 매뉴얼 admin 25절 · 파일명 WIP→무표기
+- 2026-10-19 — 188 W4(C7) 추가·완료: 조사 LLM 답의 도구 호출 마크업(vLLM `--tool-call-parser` 불일치) 감지 → 원문 없이 `[미결] 조사 실패` 종결 · D-342 부기 · 매뉴얼 admin 25절 · 파일명 WIP→무표기 복귀
+- 2026-10-19 — **188 WIP→완료 · 커밋 전**: W1(C4·C4′·C5)·W2(C3)·W3(C1·C2·C6) · Q1=A → D-342(폴스타 MCP 끝내 FAILED면 LLM 생략 「조사 불가」 브리핑) · verifier Major 1·Minor 3 교정 · 회귀 실패 0(모듈 단위) · 매뉴얼 admin 25절 · 잔여 W0
+- 2026-10-19 — **188 신규(TODO)**: SRE 조사 폴스타 MCP 미가용 시 오동작 교정 — 증상 재현(닫힌 포트) · C1~C6 · Q1 결정 대기
 - 2026-10-19 — **158 TODO→완료 · 커밋 전**: v2.0 — 원래 실패 73건 분류·교정(C-1 존 역질문 `.env` 누수 14 · C-2 eval_routing 2 · C-3 instructor skip 2 · C-4 FastAPI `app.routes` 1 · C-5 정본 개수 부패 2 · C-6 sre_agent 벤치 자식 `PYTHONPATH` 51 · C-7 `elapsed_s` 플래키 1) · 제품 결함 0 · 회귀 실패 0(모듈 단위) · Known Mistakes 1
 
 - 2026-10-19 — **main 병합 · 계획서·결정 재채번**: 로컬 `182-TODO-alarm-investigation-playbook.md`가 원격 182(리팩터 행동 변경 후보)~186과 번호 충돌 → **187**(`187-TODO-alarm-investigation-playbook.md`) · 결정 D-338 → D-341 · vllm provider D-337 → D-340
 - 2026-10-18 — **167 TODO→완료 · 커밋 전**: 로그 비밀값 가림(D-339) — `setLogRecordFactory` 감싸기로 레코드 생성 시점에 DSN 비밀번호·Bearer·민감 키 값·JWT·Google 키를 `***`로(uvicorn `propagate=False` 핸들러까지 덮음) · structlog 프로세서 · 진입점 7곳(본체·main·alarm_server·mcp·apm·sre·fabrix_proxy) · 사본 4 바이트 일치 테스트 · 163·184 caplog 단언 좁힘 27곳 · verifier 4회·auditor 2회(Critical 0) · 회귀 실패 0(모듈 단위) · D-139 부기 — 메인 결정 §4 (a)(a)(a)
 - 2026-10-17 — **186 신규·완료 · 커밋 전 · 182 WIP→완료**: 182 확인 필요 7 + L4·J7 — 재생성 중단 사유 머리말(출구 조각 필터) · 재계획 종료 노트 보존 · 소유 판정 넘긴 설정 · 수동 프로필 mtime 캐시 · 멀티 스키마 탈락 사용률 회수 · 인증 저장소 부재 503 fail-closed(D-338 · break-glass 유지) · 유지 S5·M4·K4 근거 · 매뉴얼 user·admin — 메인 판정(사용자 지시 「직접 확인하고 진행」)
+- 2026-10-17 — 164 v1.6: W7-A·B·C 구현(시간별 추세 보기 `apm.instance_trend` · 실측 호출 소요 기반 예상 시간 · 긴 X-View 사전 확인 · 벤치 시나리오 2건 · G-9~G-11 권고안 적용 · D-296 부기 · 커밋 없음)
+- 2026-10-17 — 164 v1.5: W7 추가(APM 「오늘 시간당 응답시간」 지연 — 보기 선택·X-View 1분 창 전수·예상 시간 산식 · 코드 0)
 - 2026-10-17 — **185 W2 · 커밋 전**: 병합 마감 `result_aggregator._finalize_merged_rows`가 Layer 1 `build_resolved_mapping` 결과 키 매핑으로 양식을 채워 공유 통계 칼럼 오채움 해소(1단·2단 병합 공통) · 회귀 실패 0(모듈 단위) · verifier Critical·Major 0 — 사용자 결정 「커밋 전에 막는다」
 - 2026-10-17 — **184 신규·완료 · 커밋 전 · 182 TODO→WIP**: 182 1차 20건 — DRM 설정·경로 사유 가림 · 빈 `sub` 401 통일 · 다중 워커 기동 경고 · APM 메타 원문→종류+요청 번호 · 문서 답 노트 4종 · 현재시각 낱말 expression · 보충 테이블 순서 고정 · 인증 DB 실패 원복(인증 비활성만 — 활성은 인가 약화 방지로 유지 · 사용자 확정 안 A) · APM 호출 단위 예외 사유(S4b) 등 · D-070·D-153 부기 · 매뉴얼 U-27·U-33 — 사용자 결정 2026-10-17(182 §3.1)
 - 2026-10-17 — **185 신규·완료 · 커밋 전**: 182 J1 — 단일 DB 폼필이 `cmm_metric_stat` 칼럼 매핑 사용률 필드를 버리던 것을 멀티에 맞춰 회수(공통 함수 `select_metric_recovery_fields`) · 산출 대조 바뀐 칸=사용률 칸뿐 · 멀티 비트 동일 · 회귀 실패 0(모듈 단위) · D-066 부기 · 182 J1 행 「→ plans/185 처리」 — 사용자 결정 「멀티에 맞춤」

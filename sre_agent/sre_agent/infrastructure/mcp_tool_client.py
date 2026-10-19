@@ -16,6 +16,7 @@ import json
 import logging
 from collections.abc import Callable, Sequence
 from datetime import timedelta
+from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,49 @@ def _text_of(result) -> str:  # noqa: ANN001 — mcp.types.CallToolResult
         if isinstance(text, str):
             return text
     return _err("도구 응답에 텍스트 콘텐츠 없음")
+
+
+def _leaf_exceptions(exc: BaseException) -> list[BaseException]:
+    """예외 그룹을 끝 예외 목록으로 편다(그룹이 아니면 자기 자신)."""
+    if isinstance(exc, BaseExceptionGroup):
+        return [leaf for sub in exc.exceptions for leaf in _leaf_exceptions(sub)]
+    return [exc]
+
+
+def _redact_url(url: str) -> str:
+    """URL의 userinfo(user:pass@)를 가린다 — 진단 문구·로그에 자격증명이 실리지 않게."""
+    parts = urlsplit(url)
+    if "@" not in parts.netloc:
+        return url
+    return urlunsplit(parts._replace(netloc="***@" + parts.netloc.rsplit("@", 1)[1]))
+
+
+def _failure_detail(exc: BaseException, url: str) -> str:
+    """세션 실패 사유 — MCP SSE가 올리는 예외 그룹을 끝 예외로 풀어 싣는다(plans/188 C4).
+
+    `noise_gate/infrastructure/apm_gateway_client.py`의 `_failure_detail` 사본이다(D-139 — 패키지
+    간 import 금지). 연결 실패는 SDK가 `unhandled errors in a TaskGroup (1 sub-exception)`만
+    남겨 원인을 알 수 없었다. 그룹이 아니고 HTTP 상태·연결 오류도 아닌 예외는 종전 문구 그대로다.
+    토큰 값은 싣지 않고, URL은 userinfo를 가려 싣는다.
+    """
+    import httpx
+
+    leaves = _leaf_exceptions(exc)
+    for leaf in leaves:
+        status = getattr(getattr(leaf, "response", None), "status_code", None)
+        if isinstance(status, int):
+            if status in (401, 403):
+                return (
+                    f"HTTP {status} 인증 실패 — POLESTAR_MCP_TOKEN이 mcp_server의 "
+                    "MCP_BEARER_TOKEN과 같은지 확인"
+                )
+            return f"HTTP {status}"
+    for leaf in leaves:
+        if isinstance(leaf, httpx.ConnectError):
+            return f"연결 불가(ConnectError: {leaf}) — POLESTAR_MCP_URL={_redact_url(url)}"
+    if leaves == [exc]:
+        return str(exc)
+    return "; ".join(f"{type(leaf).__name__}: {leaf}" for leaf in leaves[:3])
 
 
 async def run_tool_batch_async(
@@ -62,8 +106,9 @@ async def run_tool_batch_async(
                         logger.warning("사전수집 도구 실패 %s: %s", name, e)
                         out.append(_err(f"{name} 호출 실패: {e}"))
     except Exception as e:  # noqa: BLE001 — 세션 실패는 전 호출 오류
-        logger.warning("사전수집 MCP 세션 실패 (%s): %s", url, e)
-        return [_err(f"MCP 세션 실패: {e}") for _ in calls]
+        detail = _failure_detail(e, url)
+        logger.warning("사전수집 MCP 세션 실패 (%s): %s", _redact_url(url), detail)
+        return [_err(f"MCP 세션 실패: {detail}") for _ in calls]
     return out
 
 

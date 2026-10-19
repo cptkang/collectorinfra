@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -31,7 +33,13 @@ from sre_agent.application.investigation_jobs import (
     JobStore,
     default_audit_path,
 )
-from sre_agent.diagnosis import DiagnosisAgent, DiagnosisResult
+from sre_agent.diagnosis import (
+    DiagnosisAgent,
+    DiagnosisResult,
+    clean_toolset_error,
+    tools_unavailable_result,
+)
+from sre_agent.domain.answer_markup import has_tool_call_markup
 from sre_agent.domain.cross_source_episode import (
     EpisodeContext,
     EpisodeMember,
@@ -52,6 +60,31 @@ DEFAULT_HOST = "127.0.0.1"
 
 # 테스트/run_service가 JobStore에 접근하기 위한 FastMCP 인스턴스 속성 키.
 _JOB_STORE_ATTR = "_sre_job_store"
+
+# `_build_mcp_servers`가 폴스타 MCP를 등록하는 서버 이름
+# — 이 툴셋이 FAILED면 조사를 생략한다(plans/188 C2).
+POLESTAR_SERVER = "polestar"
+
+
+@dataclass
+class ToolsetCheck:
+    """마지막 조사 직전 MCP 툴셋 검사 결과(plans/188 C6).
+
+    `sre_health`가 읽는다(헬스 호출마다 프로브하지 않음). `polestar_reachable`: None = 아직 검사 전
+    (또는 폴스타 URL 미설정) · True = 툴셋 정상 · False = FAILED(`polestar_error`에 holmes 사유).
+    `last_answer_malformed`(C7): LLM 답을 받은 마지막 조사의 답에 도구 호출 마크업이 섞였는지
+    — None = 아직 없음. 타임아웃으로 종결된 잡의 늦게 끝난 답도 반영될 수 있다.
+    """
+
+    polestar_reachable: bool | None = None
+    polestar_error: str | None = None
+    last_answer_malformed: bool | None = None
+
+    def record(self, unavailable: dict[str, str]) -> None:
+        """검사 결과를 기록한다."""
+        self.polestar_reachable = POLESTAR_SERVER not in unavailable
+        error = unavailable.get(POLESTAR_SERVER)
+        self.polestar_error = None if error is None else clean_toolset_error(error)
 
 
 class StaticBearerAuthMiddleware:
@@ -188,25 +221,34 @@ def _build_mcp_servers(settings: AgentSettings) -> dict[str, dict] | None:
 def _agent_getter(settings: AgentSettings):
     """`DiagnosisAgent`를 지연 생성해 공유하는 getter.
 
-    조사 함수와 플레이북 소견기(plans/187 W4)가 같은 객체를 쓴다.
+    조사 함수와 플레이북 소견기(plans/187 W4)가 같은 객체를 쓴다. 캐시된 agent에 FAILED MCP
+    툴셋이 있으면 **한 번** 새로 만든다(plans/188 C1 — holmes는 같은 agent 안에서 재검사하지 않는다).
     """
     holder: dict[str, DiagnosisAgent] = {}
+    lock = threading.Lock()
 
     def _get() -> DiagnosisAgent:
-        agent = holder.get("agent")
-        if agent is None:
-            agent = DiagnosisAgent(
-                settings,
-                toolsets=remote_vm_profile(),
-                mcp_servers=_build_mcp_servers(settings),
-            )
-            holder["agent"] = agent
-        return agent
+        with lock:
+            agent = holder.get("agent")
+            if agent is None or agent.mcp_unavailable():
+                if agent is not None:
+                    logger.info("MCP 툴셋 FAILED — 조사 에이전트 재생성(툴셋 재검사)")
+                agent = DiagnosisAgent(
+                    settings,
+                    toolsets=remote_vm_profile(),
+                    mcp_servers=_build_mcp_servers(settings),
+                )
+                holder["agent"] = agent
+            return agent
 
     return _get
 
 
-def _default_diagnose_fn(settings: AgentSettings, agent_getter=None):  # noqa: ANN001
+def _default_diagnose_fn(
+    settings: AgentSettings,
+    toolset_check: ToolsetCheck | None = None,
+    agent_getter=None,  # noqa: ANN001 — `_agent_getter` 반환 콜러블
+):
     """실 조사 함수(DiagnosisAgent)를 지연 생성해 반환한다 — dispatcher.diagnose_fn 주입용.
 
     LLM 키가 있을 때만 dispatcher가 호출하므로 agent는 최초 호출 시점에 1회 생성한다
@@ -215,17 +257,36 @@ def _default_diagnose_fn(settings: AgentSettings, agent_getter=None):  # noqa: A
     `mcp_servers`로 등록해 조사가 mcp_server 고수준 도구(폴스타 SQL·PromQL)를 소비한다
     (D-119). mcp_server는 조사 배치에서 execute_sql·raw_promql을 비노출로 두어야
     LLM이 raw SQL/PromQL 방언 오류로 step을 소진하지 않는다(D-122 — 배치 config 규약).
+
+    **툴셋 가용성**(plans/188 C1·C2): holmes는 FAILED MCP 툴셋을 같은 에이전트 안에서 다시 검사하지
+    않는다. 그래서 조사 직전 캐시된 agent에 FAILED MCP 툴셋이 있으면 agent를 **한 번** 새로 만든다
+    (정상이면 재생성 0회 — 비용 불변). 새로 만든 뒤에도 `polestar` 툴셋이 FAILED면 LLM을
+    부르지 않고 「조사 불가 — 관측 도구 연결 실패」 결과를 돌려준다(Q1 A안). APM 툴셋만
+    FAILED면 조사를 진행하되, 지침의 도구 이름은 실제 로드된 도구로 거른다.
+    검사 결과는 `toolset_check`에 남는다(C6).
     """
     get_agent = agent_getter or _agent_getter(settings)
 
     def _diagnose(job) -> DiagnosisResult:
         agent = get_agent()
+        unavailable = agent.mcp_unavailable()
+        if toolset_check is not None and settings.polestar_mcp_url:
+            toolset_check.record(unavailable)
+        if POLESTAR_SERVER in unavailable:
+            logger.warning("폴스타 MCP 툴셋 FAILED — LLM 조사 생략: %s",
+                           clean_toolset_error(unavailable[POLESTAR_SERVER]))
+            return tools_unavailable_result(unavailable)
         # 조사 지침 주입(plans/50 G5 · D-197): 원격 셸 안내 · 사건 구간 · 운영자 추가 지침.
         # 종전에는 additions를 넘기지 않아 REMOTE_VM_SHELL_NOTE조차 주입되지 않았다.
-        return agent.ask(
+        result = agent.ask(
             _job_to_question(job, settings),
-            system_prompt_additions=build_guidance(settings, job, remote=True),
+            system_prompt_additions=build_guidance(
+                settings, job, remote=True, available_tools=agent.tool_names()
+            ),
         )
+        if toolset_check is not None:
+            toolset_check.last_answer_malformed = has_tool_call_markup(result.answer)
+        return result
 
     return _diagnose
 
@@ -302,7 +363,9 @@ def _default_playbook_wiring(
 
 
 def _build_dispatcher(
-    settings: AgentSettings, audit_path: str | Path | None = None
+    settings: AgentSettings,
+    audit_path: str | Path | None = None,
+    toolset_check: ToolsetCheck | None = None,
 ) -> InvestigationDispatcher:
     """실 dispatcher를 조립한다(diagnose_fn·briefing_fn·prefetch_fn 주입). JobStore executor로 배선된다.
 
@@ -311,11 +374,14 @@ def _build_dispatcher(
     한 건도 남지 않는다**(폐쇄망 실측 2026-09-11: 204건 중 종결 0건 · restart_failed 169건).
     JobStore와 같은 파일을 써야 잡 한 건의 생애가 한 곳에서 읽히고, 재기동 복구도 완료된 잡을
     active로 오인하지 않는다.
+
+    `toolset_check`(plans/188 C6)는 조사 직전 툴셋 검사 결과를 받아 `sre_health`에 넘기는
+    기록함이다.
     """
     agent_getter = _agent_getter(settings)
     return InvestigationDispatcher(
         settings,
-        diagnose_fn=_default_diagnose_fn(settings, agent_getter),
+        diagnose_fn=_default_diagnose_fn(settings, toolset_check, agent_getter),
         briefing_fn=build_briefing,
         prefetch_fn=_default_prefetch_fn(settings),
         audit_path=audit_path if audit_path is not None else default_audit_path(),
@@ -334,16 +400,21 @@ def create_service(
     dispatcher(가드 5종·severity_judge·briefing 후처리)를 executor로 배선한다.
     """
     settings = settings or AgentSettings()
+    # 주입 경로(테스트)는 실 조사 함수가 없어 툴셋을 검사하지 않는다
+    # — `polestar_mcp_reachable`은 null.
+    toolset_check = ToolsetCheck()
     if job_store is not None:
         store = job_store
     else:
         # 감사 경로 분리(plans/154 W1) — None이면 두 생산자 모두 기본 경로(종전 그대로).
         audit_path = settings.investigation_audit_path
         store = JobStore(
-            settings, executor=_build_dispatcher(settings, audit_path), audit_path=audit_path
+            settings,
+            executor=_build_dispatcher(settings, audit_path, toolset_check),
+            audit_path=audit_path,
         )
 
-    mcp = FastMCP("sre-agent", host=DEFAULT_HOST, port=DEFAULT_PORT)
+    mcp = FastMCP("sre-agent", host=settings.service_host, port=DEFAULT_PORT)
 
     @mcp.tool()
     async def sre_investigate_alarm(payload: dict, wait_seconds: int = 0) -> str:
@@ -410,20 +481,26 @@ def create_service(
         """서비스 상태를 반환한다(§3 — collectorinfra health_check_tool 지정 대상).
 
         반환(JSON): {status, version, contract_version, holmes_ready,
-        polestar_mcp_reachable}. holmes_ready는 조사 실행 가능성(조사 LLM 게이트 통과 —
-        `investigation_llm_stub_reason() is None` · D-230)을 정직하게 반영한다. 엔드포인트 도달성은
-        보지 않는다. polestar_mcp_reachable 라이브 프로브는 2-D 소관 → 미확인(None).
+        polestar_mcp_reachable[, polestar_mcp_error][, last_answer_malformed]}.
+        holmes_ready는 조사 실행 가능성(조사 LLM 게이트 통과
+        — `investigation_llm_stub_reason() is None` · D-230)을 정직하게 반영한다.
+        polestar_mcp_reachable(plans/188 C6)은 **마지막 조사 직전 툴셋 검사 결과**다
+        — true/false, 아직 조사 전이면 null. false면 선택 키 polestar_mcp_error(holmes 사유)를
+        더한다. 헬스 호출마다 프로브하지 않는다. last_answer_malformed(C7)는 LLM 답을 받은 마지막
+        조사의 답에 도구 호출 마크업이 섞였는지(true/false) — 그런 조사가 없으면 키가 없다.
         """
-        return json.dumps(
-            {
-                "status": "ok",
-                "version": __version__,
-                "contract_version": CONTRACT_VERSION,
-                "holmes_ready": settings.investigation_llm_stub_reason() is None,
-                "polestar_mcp_reachable": None,
-            },
-            ensure_ascii=False,
-        )
+        health: dict[str, object] = {
+            "status": "ok",
+            "version": __version__,
+            "contract_version": CONTRACT_VERSION,
+            "holmes_ready": settings.investigation_llm_stub_reason() is None,
+            "polestar_mcp_reachable": toolset_check.polestar_reachable,
+        }
+        if toolset_check.polestar_reachable is False:
+            health["polestar_mcp_error"] = toolset_check.polestar_error or ""
+        if toolset_check.last_answer_malformed is not None:
+            health["last_answer_malformed"] = toolset_check.last_answer_malformed
+        return json.dumps(health, ensure_ascii=False)
 
     setattr(mcp, _JOB_STORE_ATTR, store)
     logger.info("sre_agent 조사 서비스 생성: 도구 5종 등록(port=%d)", DEFAULT_PORT)

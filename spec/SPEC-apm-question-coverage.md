@@ -80,7 +80,7 @@
 | `rows` · `row_count` | **화면용 행**(인라인) · 그 개수(종전 키 그대로 — `row_count = len(rows)`) |
 | `total_row_count` | 전체 행 수(인라인보다 많으면 나머지는 `artifact`) |
 | `artifact` | 전체 결과 파일 참조 `{job_id, total_rows, chunks: [{index, rows, bytes, sha256}], chunk_rows, columns, text_parts: [{name, bytes}]}` — 인라인보다 많거나 원문 텍스트(프로파일 전문 등)가 있을 때만 |
-| `job` | 작업 핸들 `{job_id, state, progress{done,total,unit,label}, estimate{api_calls,seconds}, created_at, updated_at, expires_at}` + 실패·취소·중단이면 `error{code, reason}`(code = 소스 오류 코드 · `stalled` · `cancelled` · `interrupted`) — `wait_seconds` 안에 끝나지 않았거나 `artifact`가 있을 때 |
+| `job` | 작업 핸들 `{job_id, state, progress{done,total,unit,label}, estimate{api_calls,seconds,basis}, created_at, updated_at, expires_at}` + 실패·취소·중단이면 `error{code, reason}`(code = 소스 오류 코드 · `stalled` · `cancelled` · `interrupted`) — `wait_seconds` 안에 끝나지 않았거나 `artifact`가 있을 때 · **[164 W7-B]** `basis` = `"measured"`(실측 호출 소요 반영) \| `"rate_only"`(속도 간격만 — 호출 지연 미반영) \| `null`(예상 시간 없음) — 산식 §3.4 |
 | `partial` | `true`면 일부 단위(소스·도메인·창 조각)가 실패했다 — 사유는 `limits`. 부분 결과를 전체 결과로 보이지 않게 소비자가 고지한다 |
 | `disclosures` | 게이트웨이가 아는 사실의 구조 고지(선택) `[{kind, text}]` — 본체 `disclosures[]` 어휘(§7.5)와 같은 kind만 쓴다 |
 
@@ -121,14 +121,14 @@
 
 - `partial` = 결과 봉투의 `partial: true`(일부 단위 실패). 행은 있으나 전체가 아니다.
 - 작업 기록 = `<APM_SPOOL_DIR>/<job_id>/job.json`(원자적 쓰기: 임시 파일 → rename) · 청크 `rows-00000.jsonl`… · 텍스트 `text-<part>.txt`.
-- 기록 칸: `job_id`(uuid4 hex — 서버 발급) · `tool` · `principal` · `owner` · `target`(마스킹된 대상 요약) · `state` · `created_at`·`started_at`·`updated_at`·`finished_at`·`expires_at` · `progress{done,total,unit,label}` · `estimate{api_calls,seconds}` · `api_calls`(실제) · `result_meta`(행 뺀 봉투) · `artifact{total_rows, chunks[{index,rows,bytes,sha256}], chunk_rows, columns, text_parts[{name,bytes}]}` · `limits[]` · `error{code,reason}`. 인자 원문·토큰·자격증명은 싣지 않는다.
+- 기록 칸: `job_id`(uuid4 hex — 서버 발급) · `tool` · `principal` · `owner` · `target`(마스킹된 대상 요약) · `state` · `created_at`·`started_at`·`updated_at`·`finished_at`·`expires_at` · `progress{done,total,unit,label}` · `estimate{api_calls,seconds,basis}`(**[164 W7-B]** `basis`) · `api_calls`(실제) · `result_meta`(행 뺀 봉투) · `artifact{total_rows, chunks[{index,rows,bytes,sha256}], chunk_rows, columns, text_parts[{name,bytes}]}` · `limits[]` · `error{code,reason}`. 인자 원문·토큰·자격증명은 싣지 않는다.
 
 ### 3.4 속도 · 동시 실행 · 우선순위 (N-14)
 
 - 소스별 호출 속도 `JENNIFER_RATE_LIMIT_PER_SEC`(기본 5 — G-12 협의 전 · D-296 ⑤)는 그대로다. 같은 토큰을 폴러·동기 호출·백그라운드 작업이 나눈다.
 - **우선순위 속도 제어**: 소스 클라이언트의 throttle이 대기열을 우선순위로 판다 — `poller`(폴러) > `interactive`(승격 전 호출) > `background`(승격된 작업). 기아 방지: 대기 `APM_PRIORITY_AGING_SECONDS`(기본 10초)를 넘긴 요청은 한 단계 올린다. 우선순위는 호출 시점의 컨텍스트 값이다(승격되면 이후 호출부터 background).
 - **동시 실행**: 승격된 작업의 동시 실행 수 `APM_JOB_MAX_CONCURRENT`(기본 4). 넘는 작업은 다음 API 호출 앞에서 슬롯을 기다린다(`state = queued` · FIFO). 동시 실행 수는 메모리·공정성 수단이고 총 조회량을 자르지 않는다.
-- **비용 예측**: 도구가 호출 계획(예: X-View 1분 조각 수 × (소스, 도메인) 묶음 · 도메인 수)을 알면 `progress.total`·`estimate.api_calls`를 채우고 `estimate.seconds = api_calls / 속도`로 둔다. 모르면 `total = null`(호출 수만 센다).
+- **비용 예측**: 도구가 호출 계획(예: X-View 1분 조각 수 × (소스, 도메인) 묶음 · 도메인 수)을 알면 `progress.total`·`estimate.api_calls`를 채우고 `estimate.seconds = api_calls / 속도`로 둔다. 모르면 `total = null`(호출 수만 센다). **[164 W7-B]** 게이트웨이가 소스별 실 호출 소요(응답을 받은 호출의 지수 이동 평균 EMA)를 재서, 작업이 부른 소스에 표본이 있으면 `estimate.seconds = 남은 호출 × max(1/rate, 소스별 소요 EMA)` · `basis = "measured"`(상태 조회마다 다시 계산), 표본이 없으면 종전 `expected/rate` · `basis = "rate_only"`(호출 지연 미반영), 예상 시간이 없으면 `seconds = null` · `basis = null`이다. 실행 전 견적(`apm_app_health` `xview_confirm_over` 사전 확인 — [164 W7-C] · `spec/SPEC-apm-gateway.md` §3 표)도 같은 식으로 호출 전부를 잰다.
 - 호출마다 작업 기록의 `api_calls`·`updated_at`(임대 갱신)을 올린다.
 
 ### 3.5 취소 · 정체 · 재기동 · 만료

@@ -36,6 +36,7 @@ from src.orchestration.apm_query import (
     APM_QUERY_AGENT,
     LAST_TARGETS_KEY,
     SOURCE_CLARIFICATION_KEY,
+    XVIEW_CONFIRMATION_KEY,
     reference_views_only,
     table_label,
 )
@@ -937,6 +938,8 @@ def _apply_apm_source_state(result: dict[str, Any], state: AgentState) -> dict[s
       APM task가 있었는데 승계 값을 내지 않은 턴(소스 되묻기·미연결·보기 미선택·인가 거부 등)은
       앞 턴 스코프에서 `last_targets`만 뺀다 — 대상별 조회가 아닌 턴을 건너 두 턴 전 대상을 잇지
       않게 한다(C-2). 뺄 것이 없으면 쓰지 않는다(종전 바이트 불변).
+    - 긴 X-View 사전 확인(`apm_xview_confirmation` — plans/164 W7-C): 첫 APM task 것 하나 — 응답
+      칸(요청 스코프)만 쓴다(답은 버튼이 원 질문과 함께 보낸다 · 대기 값 없음).
     존 역질문이 이 턴의 답이면(다른 task 결과를 버리는 단락) 아무것도 쓰지 않는다. 없으면 원본
     그대로다.
     """
@@ -944,6 +947,7 @@ def _apply_apm_source_state(result: dict[str, Any], state: AgentState) -> dict[s
         return result
     task_results = state.get("task_results") or {}
     ask: dict[str, Any] | None = None
+    confirm: dict[str, Any] | None = None
     scope: dict[str, Any] | None = None
     apm_planned = False
     for task in sorted(state.get("task_plan") or [], key=lambda t: t.get("order", 0)):
@@ -955,6 +959,8 @@ def _apply_apm_source_state(result: dict[str, Any], state: AgentState) -> dict[s
             continue
         if ask is None and isinstance(res.get(SOURCE_CLARIFICATION_KEY), dict):
             ask = res[SOURCE_CLARIFICATION_KEY]
+        if confirm is None and isinstance(res.get(XVIEW_CONFIRMATION_KEY), dict):
+            confirm = res[XVIEW_CONFIRMATION_KEY]
         picked = (res.get(APM_META_KEY) or {}).get("source_selection") or {}
         if isinstance(picked.get("scope"), dict):
             scope = {**picked["scope"],
@@ -964,9 +970,11 @@ def _apply_apm_source_state(result: dict[str, Any], state: AgentState) -> dict[s
     prev = state.get("apm_source_scope")
     if scope is None and apm_planned and isinstance(prev, dict) and LAST_TARGETS_KEY in prev:
         scope = {k: v for k, v in prev.items() if k != LAST_TARGETS_KEY}
-    if ask is None and scope is None:
+    if ask is None and scope is None and confirm is None:
         return result
     out = dict(result)
+    if confirm is not None:
+        out[XVIEW_CONFIRMATION_KEY] = confirm
     if ask is not None:
         out[SOURCE_CLARIFICATION_KEY] = ask
         out["apm_source_pending"] = {

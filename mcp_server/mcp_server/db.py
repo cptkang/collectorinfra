@@ -83,9 +83,7 @@ class DBPoolManager:
                     # aiomysql은 CLIENT.MULTI_STATEMENTS를 항상 켠다(client_flag로 끌 수 없음 —
                     # 0.3.2 실측) — 다중 문장 차단은 실행 지점 검사가 맡는다.
                     init_command = f"SET SESSION max_statement_time={src.query_timeout}"
-                    if src.readonly:
-                        init_command += ", SESSION transaction_read_only=1"
-                    pool = await aiomysql.create_pool(
+                    pool_kwargs = dict(
                         minsize=src.pool_min_size,
                         maxsize=src.pool_max_size,
                         connect_timeout=src.query_timeout,
@@ -93,9 +91,16 @@ class DBPoolManager:
                         # 풀에 돌려받을 때 닫는다 — autocommit 없이는 풀이 매 요청 재연결로
                         # 퇴화한다.
                         autocommit=True,
-                        init_command=init_command,
                         **_mariadb_connect_kwargs(src.connection),
                     )
+                    if src.readonly:
+                        pool = await _create_mariadb_readonly_pool(
+                            aiomysql, name, init_command, pool_kwargs
+                        )
+                    else:
+                        pool = await aiomysql.create_pool(
+                            init_command=init_command, **pool_kwargs
+                        )
                     self._mariadb_pools[name] = pool
                     logger.info(
                         "MariaDB 풀 초기화 성공: %s (풀 %d-%d)",
@@ -281,6 +286,36 @@ class DBPoolManager:
             except Exception as e:
                 logger.warning("MariaDB 풀 종료 실패 (%s): %s", name, e)
         self._mariadb_pools.clear()
+
+
+# 세션 읽기 전용 변수명 — MariaDB 11.1부터 `transaction_read_only`, 그 전(10.x)은 `tx_read_only`만
+# 있다. MySQL 8.0은 반대로 `tx_read_only`가 제거됐다. 앞에서부터 시도해 서버가 아는 이름을 쓴다.
+_MARIADB_READONLY_VARS = ("transaction_read_only", "tx_read_only")
+_ER_UNKNOWN_SYSTEM_VARIABLE = 1193
+
+
+async def _create_mariadb_readonly_pool(
+    aiomysql: Any, name: str, init_command: str, pool_kwargs: dict[str, Any]
+) -> Any:
+    """세션 읽기 전용 변수를 붙여 풀을 만든다 — 1193(변수 없음)이면 다음 변수명으로 다시 시도한다.
+
+    다른 오류이거나 마지막 후보까지 1193이면 그대로 올린다(읽기 전용 없이 여는 강등은 하지 않는다).
+    """
+    for i, var in enumerate(_MARIADB_READONLY_VARS):
+        try:
+            return await aiomysql.create_pool(
+                init_command=f"{init_command}, SESSION {var}=1", **pool_kwargs
+            )
+        except Exception as e:
+            args = getattr(e, "args", ())
+            unknown_var = bool(args) and args[0] == _ER_UNKNOWN_SYSTEM_VARIABLE
+            if not unknown_var or i == len(_MARIADB_READONLY_VARS) - 1:
+                raise
+            logger.warning(
+                "MariaDB 세션 읽기 전용 변수 %s 미지원 (%s) — %s로 재시도",
+                var, name, _MARIADB_READONLY_VARS[i + 1],
+            )
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def _mariadb_connect_kwargs(dsn: str) -> dict[str, Any]:
