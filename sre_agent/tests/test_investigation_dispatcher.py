@@ -552,3 +552,113 @@ def test_correlation_off_briefing_is_unchanged():
     assert job.correlation is None and b["root_cause_hypotheses"] == []
     assert not any(ln.startswith("T-") for ln in b["timeline"])
     assert CORRELATION_NOT_CAUSATION_NOTE not in b["limitations"]
+
+
+# ── plans/188 C3 — 실패한 도구 호출은 인용 근거가 아니다(행동 변경 · D-337 ⑥) ──
+
+_ERR_LOAD = "Failed to load mcp server polestar: All connection attempts failed"
+_ERR_FIND = "Failed to find tool prom_metric_range"
+
+
+def _err(name, msg):
+    return ToolCallRecord(name, f"{name} 호출", "error", "", error=msg)
+
+
+def _diagnose_with(answer, outputs):
+    def _fn(job):
+        return DiagnosisResult(answer=answer, tool_calls=[o.description for o in outputs],
+                               tool_outputs=outputs)
+
+    return _fn
+
+
+def _capturing_briefing(captured):
+    def _fn(**kwargs):
+        captured.append(kwargs)
+        return build_briefing(**kwargs)
+
+    return _fn
+
+
+def test_error_only_calls_render_as_hypothesis_with_failure_limitation():
+    """오류 호출만 → 요약·원인 `[가설]` · 타임라인 「근거 없음」.
+
+    원인 가설에 오류 문구 없음 · 실패 한계 1줄.
+    """
+    outputs = [_err("polestar_alarm_list", _ERR_LOAD), _err("prom_metric_range", _ERR_FIND),
+               _err("polestar_alarm_list", _ERR_LOAD)]
+    answer = f"원인: {_ERR_LOAD} ← polestar_alarm_list\n{_ERR_FIND} (prom_metric_range)"
+    captured: list[dict] = []
+    disp = InvestigationDispatcher(make_settings(), diagnose_fn=_diagnose_with(answer, outputs),
+                                   briefing_fn=_capturing_briefing(captured))
+    b = _run(disp, make_job(server="c3-err-only")).briefing
+    assert captured[0]["tool_names"] == []
+    assert b["summary"].startswith("[가설] ") and b["cause"].startswith("[가설] ")
+    assert b["timeline"] == ["타임라인 근거 없음(도구 출력 인용 결여)"]
+    assert b["citations_verified"] is False and b["root_cause_hypotheses"] == []
+    assert not any(_ERR_LOAD in h.get("cause", "") for h in b["root_cause_hypotheses"])
+    assert "도구 호출 실패 3건: polestar_alarm_list, prom_metric_range" in b["limitations"]
+
+
+def test_success_citation_unchanged_when_mixed_with_error_call():
+    """성공 호출 인용은 종전과 같고, 오류 호출 이름은 인용 근거로 세지 않는다."""
+    outputs = [ToolCallRecord("journalctl", "로그 조회", "success", OOM_RAW),
+               ToolCallRecord("prom_metric_range", "d", "no_data", ""),
+               _err("polestar_alarm_list", _ERR_LOAD)]
+    answer = f"OOM 발생 ← journalctl\n{_ERR_LOAD} (polestar_alarm_list)"
+    captured: list[dict] = []
+    disp = InvestigationDispatcher(make_settings(), diagnose_fn=_diagnose_with(answer, outputs),
+                                   briefing_fn=_capturing_briefing(captured))
+    b = _run(disp, make_job(server="c3-mixed")).briefing
+    assert captured[0]["tool_names"] == ["journalctl", "prom_metric_range"]
+    assert b["timeline"] == ["OOM 발생 ← journalctl"]
+    assert b["cause"] == "OOM 발생 ← journalctl"
+    assert any(_ERR_LOAD in h for h in b["hypotheses"])
+    assert "도구 호출 실패 1건: polestar_alarm_list" in b["limitations"]
+
+
+def test_no_error_call_with_guidance_off_passes_no_limitations_kwarg():
+    """오류 호출 없음 + apm_guidance off → `limitations` 인자를 넘기지 않는다(종전 호출 동일)."""
+    captured: list[dict] = []
+    disp = InvestigationDispatcher(make_settings(), diagnose_fn=fake_diagnose(),
+                                   briefing_fn=_capturing_briefing(captured))
+    _run(disp, make_job(server="c3-clean"))
+    assert "limitations" not in captured[0] and captured[0]["tool_names"] == ["journalctl"]
+
+
+def test_failure_limitation_merges_after_apm_limitations():
+    """apm_guidance on → 기존 APM 한계 뒤에 실패 한계 1줄을 합친다."""
+    outputs = [_err("prom_metric_range", _ERR_FIND)]
+    captured: list[dict] = []
+    disp = InvestigationDispatcher(make_settings(apm_guidance_enabled=True),
+                                   diagnose_fn=_diagnose_with("x", outputs),
+                                   briefing_fn=_capturing_briefing(captured))
+    _run(disp, make_job(server="c3-apm"))
+    lims = captured[0]["limitations"]
+    assert lims[-1] == "도구 호출 실패 1건: prom_metric_range" and lims.count(lims[-1]) == 1
+
+
+def test_severity_judge_input_keeps_error_calls():
+    """판정 경로 불변 — severity_judge는 오류 호출을 포함한 원시 기록을 그대로 받는다."""
+    outputs = [ToolCallRecord("journalctl", "로그 조회", "success", OOM_RAW),
+               _err("prom_metric_range", _ERR_FIND)]
+    seen = []
+    disp = InvestigationDispatcher(make_settings(),
+                                   diagnose_fn=_diagnose_with("x ← journalctl", outputs),
+                                   briefing_fn=build_briefing)
+    orig = disp._run_severity_judge
+    def _spy(gate, basis):
+        seen.append(list(basis.tool_outputs))
+        return orig(gate, basis)
+
+    disp._run_severity_judge = _spy
+    _run(disp, make_job(server="c3-judge"))
+    assert seen == [outputs]
+
+
+def test_failed_tool_limitation_dedups_names_in_order():
+    from sre_agent.application.investigation_dispatcher import failed_tool_limitation
+
+    assert failed_tool_limitation([ToolCallRecord("a", "d", "success", "ok")]) is None
+    line = failed_tool_limitation([_err("b", "x"), _err("a", "x"), _err("b", "x")])
+    assert line == "도구 호출 실패 3건: b, a"

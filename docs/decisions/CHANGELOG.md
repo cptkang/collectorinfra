@@ -8,6 +8,9 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-19 | D-343 | 신규 — `plans/188` W5: Gemma 4 도구 호출 마크업(`<\|tool_call>call:…<tool_call\|>`)을 `DefaultLLM.completion` 응답 후처리로 `tool_calls` 변환 · tools 있는 호출만 · 해석 실패면 원본(→ D-342 W4 종결) · `TOOL_CALL_MARKUP_PARSE_ENABLED` 기본 on 예외(만료 2027-04-19) · 커밋 없음 |
+| 2026-10-19 | D-342 | 부기 — `plans/188` W4: 조사 LLM 답에 도구 호출 마크업(vLLM `--tool-call-parser` 불일치)이 섞이면 원문 없이 `[미결] 조사 실패 — 조사 LLM 도구 호출 형식 불일치` 종결 · 감사 `answer_malformed` · `sre_health.last_answer_malformed` · 커밋 없음 |
+| 2026-10-19 | D-342 | 신규 — `plans/188`: 툴셋 재생성 1회 뒤에도 폴스타 MCP FAILED면 LLM 조사 생략 → 「조사 불가 — 관측 도구 연결 실패」 · `status=done`·`[미결]`·한계 1줄 · APM만 FAILED는 기존 폴백 · `sre_health.polestar_mcp_reachable` 실값 · 커밋 없음 |
 | 2026-10-17 | D-339 | 신규 — `plans/167`: 로그 레코드 생성 시점(`setLogRecordFactory`)에 DSN 비밀번호·Bearer·민감 키 값·JWT·Google API 키를 `***`로 가림 · structlog 프로세서 · 진입점 7곳 · 사본 4(mcp_server·apm_gateway·sre_agent·fabrix_proxy) 바이트 일치 테스트 · 커밋 없음 |
 | 2026-10-17 | D-139 | 부기 — `plans/167`: `noise_gate/alarm_server`가 `src.utils.log_masking`을 import(② 역방향 허용 `utils` 안) · 2차 적용 「`src.` import 0 자립 모듈」 서술 갱신 |
 | 2026-10-17 | D-338 | 신규 — `plans/186` L4: 인증 활성인데 사용자 저장소(`user_repo`)가 없으면 사용자 토큰 의존성 3곳이 payload만으로 통과(전 DB 허용)시키던 것을 503 고정 문구로 fail-closed · break-glass 유지 · 프론트 503 루프 방지 · 커밋 없음 |

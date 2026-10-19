@@ -42,8 +42,16 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
+from sre_agent.domain.answer_markup import (
+    ANSWER_MALFORMED_TOOL_CALL,
+    MALFORMED_ANSWER_CAUSE,
+    MALFORMED_ANSWER_LIMITATION,
+    MALFORMED_ANSWER_SUMMARY,
+    has_tool_call_markup,
+    markup_log_excerpt,
+)
 from sre_agent.domain.cross_source_episode import (
     INVESTIGATION_KIND_EPISODE,
     active_episode,
@@ -78,6 +86,39 @@ INSTRUMENTATION_KEYS: tuple[str, ...] = (
     "incomplete", "elapsed_s", "prefetch_s", "steps", "tool_calls_n", "model", "max_steps",
     "tool_calls",
 )
+
+
+#: 브리핑 인용 근거로 셀 도구 호출 status — plans/188 C3
+#: (holmes 0.36.0 `StructuredToolResultStatus` 실측값).
+#: `error`·`approval_required`·`frontend_pause`·`unknown`(결과 없음)은 근거가 아니다.
+_CITABLE_TOOL_STATUSES: frozenset[str] = frozenset({"success", "no_data"})
+_ERROR_TOOL_STATUS = "error"
+
+
+def _tool_status(to: object) -> str:
+    """도구 호출 레코드의 status 문자열(없으면 `unknown`)."""
+    return str(getattr(to, "status", None) or "unknown")
+
+
+def failed_tool_limitation(outputs: Sequence[object]) -> str | None:
+    """`error` 호출을 「도구 호출 실패 N건: a, b」 한계 1줄로(plans/188 C3). 없으면 None.
+
+    N은 실패 호출 수, 이름은 중복 제거·첫 등장 순서다.
+    """
+    failed = [getattr(to, "tool_name", "") for to in outputs
+              if _tool_status(to) == _ERROR_TOOL_STATUS]
+    if not failed:
+        return None
+    return f"도구 호출 실패 {len(failed)}건: {', '.join(dict.fromkeys(failed))}"
+
+
+def _add_limitations(briefing_kwargs: dict[str, Any], lines: list[str]) -> None:
+    """브리핑 `limitations` 인자에 줄을 합친다.
+
+    줄이 없으면 인자를 건드리지 않는다(종전 호출 동일).
+    """
+    if lines:
+        briefing_kwargs["limitations"] = [*briefing_kwargs.get("limitations", []), *lines]
 
 
 # ── 구조적 타입(Protocol) — application 세부에 직접 의존하지 않기 위함 ──
@@ -468,7 +509,20 @@ class InvestigationDispatcher:
         if getattr(job, "correlation", None):
             briefing_kwargs["correlation"] = job.correlation   # 없을 땐 인자 자체를 넘기지 않는다(종전 호출 동일)
         stalls: list[tuple[str, str, int]] = []
-        if self._settings.apm_guidance_enabled:
+        # plans/188 C2(Q1 A안) — 관측 도구 연결 실패로 LLM 조사를 생략한 결과의 사유 1줄
+        # (정상이면 None).
+        tools_unavailable = getattr(result, "tools_unavailable", None)
+        # plans/188 C7 — 답변에 도구 호출 마크업이 섞이면(vLLM tool-call-parser 불일치)
+        # 서술로 쓰지 않고 A안처럼 원문 없이 미결 종결한다. 판정 입력 `basis`는 불변.
+        malformed = not tools_unavailable and has_tool_call_markup(result.answer)
+        if malformed:
+            logger.warning("조사 LLM 답변에 도구 호출 마크업 — 원문 없이 미결 종결: "
+                           "investigation_id=%s 앞부분=%r",
+                           job.investigation_id, markup_log_excerpt(result.answer))
+        if self._settings.apm_guidance_enabled and (tools_unavailable or malformed):
+            # A안 — 조사가 없었으므로 APM 대체·정체 가드 한계는 싣지 않는다(소스 라벨만 유지).
+            briefing_kwargs["source_labels"] = True
+        elif self._settings.apm_guidance_enabled:
             # plans/87 J3 — APM 한계·소스 라벨·정체 가드(사후 판정). off면 인자를 넘기지 않는다(종전 호출 동일).
             stalls = repeated_calls(self._call_keys(basis))
             briefing_kwargs["limitations"] = apm_limitations(
@@ -479,6 +533,18 @@ class InvestigationDispatcher:
             ) + [stall_limitation(*s) for s in stalls]
             briefing_kwargs["source_labels"] = True
             briefing_kwargs["unresolved"] = bool(stalls)
+        # plans/188 C3 — 실패 호출은 인용 근거에서 빼고 한계 1줄로 알린다(판정 입력 `basis`는 불변).
+        failed_line = failed_tool_limitation(basis.tool_outputs)
+        _add_limitations(briefing_kwargs, [failed_line] if failed_line else [])
+        if tools_unavailable:
+            # A안 브리핑: 요약 `[미결] 조사 불가 …` · 원인 고정 문구 · 사유는 한계 1줄에만.
+            briefing_kwargs["investigation_skipped"] = True
+            _add_limitations(briefing_kwargs, [tools_unavailable])
+        elif malformed:
+            # C7 — 요약은 고정 문구(answer 자리), 원인은 전용 문구, 사유는 한계 1줄.
+            briefing_kwargs["investigation_skipped"] = True
+            briefing_kwargs["skipped_cause"] = MALFORMED_ANSWER_CAUSE
+            _add_limitations(briefing_kwargs, [MALFORMED_ANSWER_LIMITATION])
         xs = active_episode(job.payload, self._settings.cross_source_investigation_enabled,
                             getattr(job, "reference_time", None))
         if xs is not None:
@@ -487,9 +553,10 @@ class InvestigationDispatcher:
             briefing_kwargs["cross_source"] = xs
             briefing_kwargs["apm_tools_connected"] = bool(self._settings.apm_mcp_url)
         briefing = self._briefing_fn(
-            answer=result.answer,
+            answer=MALFORMED_ANSWER_SUMMARY if malformed else result.answer,
             verdict=verdict,
-            tool_names=[to.tool_name for to in basis.tool_outputs],
+            tool_names=[to.tool_name for to in basis.tool_outputs
+                        if _tool_status(to) in _CITABLE_TOOL_STATUSES],
             gate_tier=gate_tier,
             remediation=self._recommend_remediation(verdict),
             **briefing_kwargs,
@@ -515,6 +582,10 @@ class InvestigationDispatcher:
         }
         if stalls:
             record["unresolved"] = [f"{name} x{n}" for name, _args, n in stalls]  # 정체 가드(미결)만 추가 키
+        if tools_unavailable:
+            record["tools_unavailable"] = tools_unavailable   # A안만 추가 키(plans/188)
+        if malformed:
+            record["answer_malformed"] = ANSWER_MALFORMED_TOOL_CALL   # C7만 추가 키(plans/188)
         record.update(job.instrumentation)
         record.update(self._episode_audit(job))
         self._audit(record)

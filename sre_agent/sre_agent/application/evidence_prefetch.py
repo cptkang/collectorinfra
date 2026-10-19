@@ -34,6 +34,9 @@ from sre_agent.domain.investigation_limits import is_apm_trigger
 logger = logging.getLogger(__name__)
 
 BatchCaller = Callable[[Sequence[tuple[str, dict]]], list[str]]
+#: 세션 자체 실패 때 배치 호출자가 전 호출에 싣는 오류 문구의 머리
+#: (`infrastructure/mcp_tool_client`와 같은 값).
+SESSION_FAILURE_PREFIX = "MCP 세션 실패: "
 
 #: 지표 종류 → 절대 임계(사용률 %). None이면 z-score만(IO는 절대 기준이 없다).
 METRIC_KINDS: tuple[tuple[str, float | None], ...] = (
@@ -236,6 +239,15 @@ def prefetch_and_correlate(scope: EvidenceScope, call_batch: BatchCaller) -> Cor
     raws = call_batch(calls)
     if len(raws) != len(calls):
         raws = list(raws) + [json.dumps({"error": "응답 누락"})] * (len(calls) - len(raws))
+    # plans/188 C4′ — 전 호출이 같은 세션 실패면 축별 결손 대신 노트 1줄(사유는 하나다).
+    errs = {_load(raw)[1] for raw in raws}
+    if len(errs) == 1:
+        (only,) = errs
+        if only and only.startswith(SESSION_FAILURE_PREFIX):
+            return correlate(
+                scope.reference_time, [], [], [f"사전수집 {only}", *scope.episode_notes],
+                episode_points=list(scope.episode_points) or None, alarm_axis=False,
+            )
     notes: list[str] = []
 
     alarms_data, err = _load(raws[0])
@@ -275,6 +287,7 @@ def prefetch_and_correlate(scope: EvidenceScope, call_batch: BatchCaller) -> Cor
     return correlate(
         scope.reference_time, alarms, series, notes, changes=changes, related_alarms=related,
         episode_points=list(scope.episode_points) or None,
+        alarm_axis=alarms_data is not None,   # plans/188 C5 — 조회 실패는 「알람 0건」이 아니다
     )
 
 

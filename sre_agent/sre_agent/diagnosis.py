@@ -14,12 +14,13 @@ from holmes.config import Config
 from holmes.core.llm_usage import RequestStats
 from holmes.core.prompt import build_initial_ask_messages
 from holmes.core.tool_calling_llm import LLMResult, ToolCallingLLM
-from holmes.core.tools import PrerequisiteCacheMode, ToolsetTag
+from holmes.core.tools import PrerequisiteCacheMode, ToolsetStatusEnum, ToolsetTag, ToolsetType
 from holmes.utils.colors import AI_COLOR
 from holmes.utils.stream import StreamEvents
 
 from sre_agent.infrastructure.bash_write_guard import install_bash_write_guard
 from sre_agent.infrastructure.llm_message_guard import install_system_message_guard
+from sre_agent.infrastructure.tool_call_markup_guard import install_tool_call_markup_guard
 from sre_agent.settings import AgentSettings
 from sre_agent.toolset_profiles import LOAD_GUARD_NOTE, vm_profile
 
@@ -29,6 +30,25 @@ logger = logging.getLogger(__name__)
 
 # holmes step 상한 예외 문구 `Too many LLM calls - exceeded max_steps: i/N`의 i.
 _STEP_LIMIT_RE = re.compile(r"max_steps:\s*(\d+)\s*/")
+
+#: 관측 도구(MCP 툴셋) 연결 실패로 LLM 조사를 생략한 결과의 서술 머리(plans/188 C2 · Q1 A안).
+TOOLS_UNAVAILABLE_PREFIX = "조사 불가 — 관측 도구 연결 실패"
+
+# holmes 툴셋 사유 정리(plans/188 교정): 서버 모드 전용 재시도 안내 꼬리 · URL userinfo.
+_HOLMES_RETRY_TAIL_RE = re.compile(r"\.?\s*If the server is still starting up\b.*$")
+_URL_USERINFO_RE = re.compile(r"\b([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@'\"]+@")
+
+
+def clean_toolset_error(error: str | None) -> str:
+    """holmes 툴셋 사유를 브리핑·헬스·로그용 한 줄로 정리한다(plans/188 교정).
+
+    첫 줄만 남기고(httpx 401의 「For more information check: …」 줄 제거), holmes 서버 모드 전용
+    「If the server is still starting up, … retry automatically」 꼬리를 떼고, URL userinfo를
+    `***@`로 가린다.
+    """
+    lines = (error or "").strip().splitlines()
+    first = _HOLMES_RETRY_TAIL_RE.sub("", lines[0]) if lines else ""
+    return _URL_USERINFO_RE.sub(r"\1***@", first).strip()
 
 
 def to_tool_records(tool_calls: list | None) -> list["ToolCallRecord"]:
@@ -107,6 +127,23 @@ class DiagnosisResult:
     incomplete: bool = False
     # 조사 LLM 턴 수(holmes `LLMResult.num_llm_calls` · plans/154 W1). 상한 예외면 예외 문구의 i.
     steps: int | None = None
+    # 관측 도구 연결 실패로 LLM 조사를 생략했을 때의 사유 1줄(plans/188 C2 · Q1 A안).
+    # 값이 있으면 dispatcher가 요약을 `[미결] `로 표기하고 한계에 이 줄을 싣는다.
+    # None이면 종전과 같다.
+    tools_unavailable: str | None = None
+
+
+def tools_unavailable_result(errors: dict[str, str]) -> DiagnosisResult:
+    """MCP 툴셋 연결 실패로 LLM 조사를 생략한 결과(plans/188 C2 · Q1 A안 — LLM 호출 0).
+
+    서술은 「조사 불가 — 관측 도구 연결 실패」뿐이고(오류 원문 없음 — 요약에만 쓰인다), 사유는
+    `tools_unavailable` 한 줄 「…(이름: 정리된 사유; …)」에만 싣는다(브리핑 한계·감사).
+    """
+    reason = "; ".join(
+        f"{name}: {clean_toolset_error(err) or '사유 미상'}" for name, err in errors.items()
+    )
+    line = f"{TOOLS_UNAVAILABLE_PREFIX}({reason})"
+    return DiagnosisResult(answer=TOOLS_UNAVAILABLE_PREFIX, tools_unavailable=line)
 
 
 class _StreamDrain:
@@ -317,6 +354,11 @@ class DiagnosisAgent:
         # 전건 실패하는 것을 막는다. 교정할 것이 없으면 no-op이라 정상 경로는 비트 동일.
         if self.settings.system_message_position_fix:
             install_system_message_guard()
+        # plans/188 C8: vLLM 파서 불일치로 content에 실린 Gemma 도구 호출 표기를
+        # tool_calls로 바꾼다.
+        # 마크업이 없으면 no-op · 해석 실패면 원본 그대로(W4 방어가 미결로 종결).
+        if self.settings.tool_call_markup_parse_enabled:
+            install_tool_call_markup_guard()
         # bash를 켜는 프로파일(로컬 vm_profile·middleware_profile)이 파일을 만들지 못하게 한다(D-235).
         # 프로파일별 분기 없이 여기 한 곳에서 건다 — 단일 출처. 쓰기 형태가 없으면 no-op이다.
         if self.settings.bash_write_guard_enabled:
@@ -348,6 +390,25 @@ class DiagnosisAgent:
             )
             _apply_token_budget(self._llm.llm, self.settings)
         return self._llm
+
+    def mcp_unavailable(self) -> dict[str, str]:
+        """FAILED 상태인 MCP 툴셋의 이름→사유(plans/188 C1). 전부 정상이면 빈 dict.
+
+        holmes 0.36.0 실측: MCP 툴셋은 `create_toolcalling_llm` 안에서 **즉시**(지연 아님)
+        선행검사돼, 서버에 연결이 안 되면 생성 직후 `status=FAILED`·`error`가 찍히고 도구가 0개다.
+        한 번 FAILED면 같은 `ToolCallingLLM` 안에서는 다시 검사하지 않는다
+        — 회복하려면 에이전트를 새로 만든다.
+        첫 호출이면 LLM(툴셋 검사 포함)을 생성한다. 사유는 `clean_toolset_error`로 정리한다.
+        """
+        return {
+            ts.name: clean_toolset_error(ts.error)
+            for ts in self.llm.tool_executor.toolsets
+            if ts.type == ToolsetType.MCP and ts.status == ToolsetStatusEnum.FAILED
+        }
+
+    def tool_names(self) -> frozenset[str]:
+        """조사 LLM에 실제로 노출되는 도구 이름(plans/188 C2 — 지침 도구 이름 필터 입력)."""
+        return frozenset(self.llm.tool_executor.tools_by_name)
 
     def ask(self, question: str, system_prompt_additions: str | None = None) -> DiagnosisResult:
         """자연어 질문으로 장애 진단을 수행한다.

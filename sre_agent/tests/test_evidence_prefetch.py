@@ -89,13 +89,60 @@ def test_partial_failure_is_noted_not_fatal():
     assert "memory 축 결손" in notes and "JSON 파싱 실패" in notes
     assert "filesystem: 지표 행 해석 실패" in notes
     assert "disk_io: 사건 구간 데이터 없음" in notes
-    assert "알람 0건" in notes
+    assert "알람 0건" not in notes   # plans/188 C5 — 알람 축 조회 실패는 0건이 아니다
     assert "cpu" in r.metric_findings and r.leading_signal is None
 
 
 def test_short_batch_response_is_padded():
     r = prefetch_and_correlate(SCOPE, lambda calls: [])
     assert len([n for n in r.notes if "결손" in n]) == 5
+
+
+def test_alarm_axis_zero_rows_keeps_zero_alarm_note():
+    """plans/188 C5 — 정상 조회 0건은 종전대로 「알람 0건」 노트."""
+    responses = {TOOL_ALARMS: json.dumps({"rows": [], "row_count": 0})}
+    responses.update({k: _metric_rows(k, [10.0], [10.0] * 5) for k, _ in METRIC_KINDS})
+    r = prefetch_and_correlate(SCOPE, _batch(responses))
+    assert "사건 구간 내 알람 0건 — 알람 축 선후 판정 불가" in r.notes
+
+
+def test_whole_session_failure_collapses_to_single_note():
+    """plans/188 C4′ — 전 호출이 같은 세션 실패면 축별 결손 대신 노트 1줄."""
+    detail = "MCP 세션 실패: 연결 불가(ConnectError: All connection attempts failed)"
+    err = json.dumps({"error": detail})
+    r = prefetch_and_correlate(SCOPE, lambda calls: [err] * len(calls))
+    assert r.notes == (f"사전수집 {detail}",)
+    assert r.metric_findings == {} and r.alarm_summary["count"] == 0
+
+
+def test_partial_session_failure_stays_per_axis():
+    """plans/188 C4′ — 일부만 실패면 종전대로 축별 결손."""
+    responses = {TOOL_ALARMS: json.dumps({"error": "MCP 세션 실패: x"})}
+    responses.update({k: _metric_rows(k, [10.0], [10.0] * 5) for k, _ in METRIC_KINDS})
+    r = prefetch_and_correlate(SCOPE, _batch(responses))
+    assert "알람 축 결손: MCP 세션 실패: x" in r.notes
+    assert not any(n.startswith("사전수집 MCP 세션 실패") for n in r.notes)
+    assert set(r.metric_findings) == {k for k, _ in METRIC_KINDS}
+
+
+def test_session_failure_prefix_matches_batch_client(monkeypatch):
+    """prefetch가 판정하는 머리말과 배치 클라이언트가 싣는 문구가 같아야 1줄로 접힌다."""
+    from contextlib import asynccontextmanager
+
+    import mcp.client.sse
+    from sre_agent.application.evidence_prefetch import SESSION_FAILURE_PREFIX
+    from sre_agent.infrastructure import mcp_tool_client as mc
+
+    @asynccontextmanager
+    async def boom(*a, **kw):
+        raise ConnectionError("refused")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mcp.client.sse, "sse_client", boom)
+    out = mc.run_tool_batch("http://x/sse", None, build_calls(SCOPE))
+    assert json.loads(out[0])["error"].startswith(SESSION_FAILURE_PREFIX)
+    r = prefetch_and_correlate(SCOPE, lambda calls: out)
+    assert len(r.notes) == 1 and r.notes[0].startswith("사전수집 MCP 세션 실패: ")
 
 
 def test_scope_from_job_both_payload_shapes():

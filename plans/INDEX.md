@@ -229,6 +229,7 @@
 | 184 | [`184-behavior-change-small-batch.md`](./184-behavior-change-small-batch.md) | 184. 행동 변경 후보 1차 — 작은 고침 묶음 (182 S 크기 + 결정 항목) | **완료**(2026-10-17 · 커밋 전) · 21건(보안 S1·S2·S3·S4·S4b·S6 · 문구 M1·M2·M3·M5·M6·M9 · K6·K7·K8 · J2·J3·J5 · L1·L2 · H1) · 회귀 이번 변경 탓 0(교정 뒤 · 모듈 단위) · auditor Medium 2 교정(L1 안 A 사용자 확정) · 매뉴얼 user.md | 2026-10-17 |
 | 185 | [`185-single-form-fill-metric-recovery.md`](./185-single-form-fill-metric-recovery.md) | 185. 단일 DB 폼필 사용률 회수 — 멀티 경로에 맞춤 (182 J1) | **완료**(2026-10-17 · 커밋 전) · 단일이 `cmm_metric_stat` 매핑 사용률 필드 회수(공통 함수 `select_metric_recovery_fields` · 멀티 불변) · W2 병합 마감 결과 키 매핑으로 공유 칼럼 오채움 해소 · 회귀 실패 0(모듈 단위) | 2026-10-17 |
 | 186 | [`186-behavior-change-batch2.md`](./186-behavior-change-batch2.md) | 186. 행동 변경 후보 2차 — 확인 필요 항목 판정 처리 (182 잔여) | **완료**(2026-10-17 · 커밋 전) · 고침 M7·K5·J4·P3·J7·L4(인증 저장소 부재 fail-closed 503 · D-338) · 유지 S5·M4·K4 · 회귀 원래 실패 1만(모듈 단위) · auditor·verifier Critical 0 · 매뉴얼 user·admin | 2026-10-17 |
+| 188 | [`188-sre-mcp-toolset-availability.md`](./188-sre-mcp-toolset-availability.md) | 188. SRE 조사 — 폴스타 MCP 도구 미가용 시 오동작 교정 | 완료 · 커밋 전(2026-10-19) · W1~W3 툴셋 미가용 교정·「조사 불가」(D-342) · W4 마크업 답 미결 종결 · W5 Gemma 도구 호출 클라이언트 파싱(D-343) · 회귀 실패 0(모듈 단위) · 잔여 W0·W5 2턴 왕복 운영 확인 | 2026-10-19 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |

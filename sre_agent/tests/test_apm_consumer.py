@@ -35,6 +35,7 @@ from sre_agent.application.investigation_guidance import (
     APM_REALTIME_NOTE,
     OPENMETRICS_NOTE,
     PLAYBOOK_NOTES,
+    TOOL_NAME_RE,
     alarm_kind_from_job,
     build_guidance,
     classify_alarm_kind,
@@ -304,6 +305,12 @@ def test_default_diagnose_fn_wires_apm_server_and_notes(monkeypatch):
     class _FakeAgent:
         def __init__(self, settings, toolsets=None, mcp_servers=None):
             captured.append(("servers", mcp_servers))
+
+        def mcp_unavailable(self):   # plans/188 C1 — 툴셋 전부 정상
+            return {}
+
+        def tool_names(self):        # plans/188 C2 — 플레이북이 부르는 apm_* 도구가 로드됨
+            return frozenset(TOOL_NAME_RE.findall(APM_PLAYBOOK_NOTE))
 
         def ask(self, question, system_prompt_additions=None):
             captured.append(("guidance", system_prompt_additions))

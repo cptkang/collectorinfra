@@ -24,6 +24,20 @@ def _settings(**kw) -> AgentSettings:
     return AgentSettings(**kw)
 
 
+#: 가짜 에이전트가 「로드됐다」고 알리는 도구(plans/188 C2 — 지침 도구 이름 필터 입력).
+_LOADED_TOOLS = frozenset(ANCHORED_TOOLS) | {"om_metric_instant", "om_metric_catalog"}
+
+
+class _HealthyToolsets:
+    """plans/188 C1·C2 — 툴셋 전부 정상 · `_LOADED_TOOLS` 로드(가짜 에이전트 공통)."""
+
+    def mcp_unavailable(self):
+        return {}
+
+    def tool_names(self):
+        return _LOADED_TOOLS
+
+
 def _job(**kw) -> SimpleNamespace:
     base = {"kind": "diagnosis", "question": "web-01 원인", "payload": None,
             "reference_time": None, "lookback_minutes": None}
@@ -83,7 +97,7 @@ def test_default_diagnose_fn_passes_additions(monkeypatch):
     """★ 종전 0건이던 `system_prompt_additions` 전달을 고정한다."""
     captured: dict = {}
 
-    class _FakeAgent:
+    class _FakeAgent(_HealthyToolsets):
         def __init__(self, settings, toolsets=None, mcp_servers=None):
             captured["toolsets"] = toolsets
 
@@ -332,7 +346,7 @@ def test_default_diagnose_fn_carries_openmetrics_note_when_enabled(monkeypatch):
     """프로덕션 배선(`_default_diagnose_fn` → `ask`)에서도 설정대로 노트가 실린다/안 실린다."""
     captured: list = []
 
-    class _FakeAgent:
+    class _FakeAgent(_HealthyToolsets):
         def __init__(self, settings, toolsets=None, mcp_servers=None):
             pass
 

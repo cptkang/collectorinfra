@@ -56,6 +56,9 @@ _APM_TOOL_PREFIX = "apm_"
 # 정체 가드로 미결 판정된 조사의 요약 접두어(plans/87 P15 · J3).
 UNRESOLVED_PREFIX = "[미결] "
 
+# 관측 도구 연결 실패로 LLM 조사를 생략한 브리핑의 원인 고정 문구(plans/188 C2 · Q1 A안).
+SKIPPED_CAUSE = "판단 불가(조사 생략)"
+
 # 상관 ≠ 인과 — 결정적 상관에서 도출한 가설의 신뢰도 한계(plans/50 §6.3).
 CORRELATION_NOT_CAUSATION_NOTE = "상관 ≠ 인과 — 가설 신뢰도는 선행성·지속성(결정적 상관)에서 도출한 것이며 인과 확정이 아님"
 _KIND_LABEL = {"metric": "메트릭", "alarm": "알람", "change": "변경", KIND_APM_MEMBER: "이벤트"}
@@ -384,14 +387,20 @@ def _render_limitations(
     correlation: dict[str, Any] | None,
     cross_source: EpisodeContext | None,
     apm_tools_connected: bool,
+    skipped: bool = False,
 ) -> list[str]:
-    """한계: 제공된 한계 + 자동 부가(단면 데이터·증거 불충분·미검증 인용·상관·크로스소스)."""
+    """한계: 제공된 한계 + 자동 부가(단면 데이터·증거 불충분·미검증 인용·상관·크로스소스).
+
+    `skipped`(plans/188 A안 — LLM 조사 생략)면 조사 서술 전제의 세 줄(단면 데이터·증거 불충분·
+    인용 결여 강등)을 싣지 않는다. 상관·크로스소스 노트는 그대로다.
+    """
     limits = list(limitations or [])
-    limits.append("프로세스·자원 스냅샷은 조사 시점 단면일 수 있음")
-    if verdict.evidence_insufficient:
-        limits.append("증거 불충분 — 원격 배치에서 로그·대체 카운터 무매칭(상향 보류)")
-    if not citations_verified:
-        limits.append("도구 출력 인용이 결여돼 서술을 가설로 강등함(글래스박스 검증 불가)")
+    if not skipped:
+        limits.append("프로세스·자원 스냅샷은 조사 시점 단면일 수 있음")
+        if verdict.evidence_insufficient:
+            limits.append("증거 불충분 — 원격 배치에서 로그·대체 카운터 무매칭(상향 보류)")
+        if not citations_verified:
+            limits.append("도구 출력 인용이 결여돼 서술을 가설로 강등함(글래스박스 검증 불가)")
     if correlation:
         limits.extend(str(n) for n in (correlation.get("notes") or []))
         limits.append(CORRELATION_NOT_CAUSATION_NOTE)
@@ -431,6 +440,8 @@ def build_briefing(
     unresolved: bool = False,
     cross_source: EpisodeContext | None = None,
     apm_tools_connected: bool = False,
+    investigation_skipped: bool = False,
+    skipped_cause: str = SKIPPED_CAUSE,
 ) -> dict:
     """6요소 브리핑 dict를 결정적으로 조립한다.
 
@@ -451,7 +462,18 @@ def build_briefing(
     성립 링크마다 규칙 가설을 LLM 원인 앞에 넣는다(`cause`는 바꾸지 않는다 — 규칙은 가설).
     한계에 strong 매칭 고지·절단·제외 링크와 APM 도구 미연결(`apm_tools_connected=False`)을
     강제하고 선택 키 `cross_source`를 더한다. None이면 종전과 같다.
+
+    `investigation_skipped`(plans/188 C2 · Q1 A안 — 관측 도구 연결 실패로 LLM 조사 생략): 서술을
+    단정·가설로 다루지 않는다. 요약은 `[미결] ` + 서술 첫 줄(가설 표기 없음), 원인은
+    `SKIPPED_CAUSE`, `hypotheses`는 빈 목록, 원인 가설은 결정적 상관·규칙 가설만 남긴다.
+    생략 사유는 호출자가 `limitations`에 싣는다. 기본 False — 종전과 같다.
+    `skipped_cause`(plans/188 C7): 생략 브리핑의 원인 문구 — 조사 LLM 답변 형식 불일치 종결은
+    dispatcher가 고정 요약을 `answer`로, 전용 원인 문구를 여기로 넘긴다(원문은 넘기지 않는다).
     """
+    if investigation_skipped:
+        return _skipped_briefing(answer, verdict, gate_tier, remediation, limitations,
+                                 correlation, source_labels, cross_source, apm_tools_connected,
+                                 skipped_cause)
     tool_names = tool_names or []
     st = _judge_citations(answer, tool_names)
     summary = _render_summary(st.claims, tool_names, unresolved)
@@ -488,6 +510,50 @@ def build_briefing(
     if cross_source is not None:
         briefing["cross_source"] = _cross_source_block(
             cross_source, list(cross_source.valid_links), supported, tool_names, apm_tools_connected
+        )
+    return briefing
+
+
+def _skipped_briefing(
+    answer: str,
+    verdict: ImportanceVerdict,
+    gate_tier: str | None,
+    remediation: list[str] | None,
+    limitations: list[str] | None,
+    correlation: dict[str, Any] | None,
+    source_labels: bool,
+    cross_source: EpisodeContext | None,
+    apm_tools_connected: bool,
+    skipped_cause: str = SKIPPED_CAUSE,
+) -> dict[str, Any]:
+    """LLM 조사를 생략한 브리핑(plans/188 A안) — 서술은 요약에만, 오류 원문은 호출자 한계에만."""
+    claims = _claim_lines(answer)
+    corr_lines, timeline = _render_timeline(
+        _corr_pairs(correlation, cross_source), [], [], correlation, source_labels
+    )
+    hypotheses_ranked = root_cause_hypotheses(correlation, "", False)
+    if cross_source is not None and cross_source.valid_links:
+        rules = cross_source_hypotheses(cross_source, corr_lines, None, [])
+        hypotheses_ranked = [{**h, "rank": i}
+                             for i, h in enumerate(hypotheses_ranked + rules, start=1)]
+    briefing = {
+        "severity": _render_severity(verdict, gate_tier),
+        "summary": UNRESOLVED_PREFIX + (claims[0] if claims else "조사 생략"),
+        "timeline": timeline,
+        "bottleneck": _render_bottleneck(verdict),
+        "cause": skipped_cause,
+        "root_cause_hypotheses": hypotheses_ranked,
+        "recommendation": _render_recommendation(remediation),
+        "limitations": _render_limitations(
+            limitations, verdict, False, correlation, cross_source, apm_tools_connected,
+            skipped=True,
+        ),
+        "citations_verified": False,
+        "hypotheses": [],
+    }
+    if cross_source is not None:
+        briefing["cross_source"] = _cross_source_block(
+            cross_source, list(cross_source.valid_links), None, [], apm_tools_connected
         )
     return briefing
 
