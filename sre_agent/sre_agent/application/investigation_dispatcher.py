@@ -93,6 +93,7 @@ from sre_agent.domain.investigation_limits import (
     stall_limitation,
 )
 from sre_agent.domain.engine_agreement import compare_engines
+from sre_agent.domain.job_watchdog import STUCK_WATCHDOG_REASON, stuck_after_seconds
 from sre_agent.domain.known_error import KnownError
 from sre_agent.domain.playbook import Playbook, select_playbook
 from sre_agent.domain.remediation import recommend_lines
@@ -604,6 +605,8 @@ class InvestigationDispatcher:
         try:
             self._acquire_slot(job)  # 동시 상한
             try:
+                if self._skip_if_stale(job):
+                    return
                 # 계측 기준점 — 동시 상한 대기는 빼고 조사(사전수집 포함)부터 잰다.
                 started = self._clock()
                 log = _activity(job)
@@ -665,6 +668,37 @@ class InvestigationDispatcher:
             "started", engine="system", elapsed_ms=int(waited * 1000),
             label=f"동시 조사 상한 대기 종료(대기 {waited:.0f}초)",
         ))
+
+    def _skip_if_stale(self, job: JobLike) -> bool:
+        """슬롯을 얻은 직후 — 대기 중 이미 종결됐거나 워치독 임계를 넘긴 잡은 조사하지 않는다.
+
+        동시 상한 대기는 무기한이라, 과부하면 JobStore 워치독이 대기 중인 잡을 `failed(stuck_watchdog)`로
+        확정한다. 그 뒤 슬롯을 얻은 워커가 조사를 그대로 돌리면 결과를 받을 쪽이 없고(호출자는 종결을
+        보고 떠났다) 종결 상태가 뒤늦게 `done`/`timeout`으로 뒤집히며, 그 동안 뒤의 새 잡이 슬롯을
+        기다리다 다시 워치독에 걸린다. 워치독은 조회(submit/get/list)에 편승하므로 조회가 없어 아직
+        확정되지 않았으면 같은 임계(`stuck_after_seconds`)로 여기서 확정한다 — 사유·상태 어휘는 워치독과
+        같다(D-123 불변). 감사에 `status`를 실어 재기동 복구가 이 잡을 미종결로 오인하지 않게 한다.
+        """
+        now = self._wall_clock()
+        stuck_after = stuck_after_seconds(self._timeout)
+        if job.status == "running":
+            if (now - job.updated_at) <= stuck_after:
+                return False
+            job.status = "failed"
+            job.reason = STUCK_WATCHDOG_REASON
+            job.error = (
+                f"워치독 확정: active {stuck_after:.0f}s 초과 — "
+                "동시 조사 상한 대기 중 임계 도달(조사 미착수)"
+            )
+            job.updated_at = now
+        logger.warning("대기 중 종결된 잡 조사 생략: investigation_id=%s status=%s reason=%s",
+                       job.investigation_id, job.status, job.reason)
+        safe_append(_activity(job), "finalize", engine="system", status=job.status,
+                    label=f"동시 조사 상한 대기 중 종결({job.status}) — 조사 생략")
+        self._audit({"event": "skipped_stale", "investigation_id": job.investigation_id,
+                     "status": job.status, "reason": job.reason, "stuck_after_s": stuck_after,
+                     **self._episode_audit(job)})
+        return True
 
     def _after_acquire(self, record: Callable[[], object]) -> None:
         """슬롯 획득 직후 기록 — 예외면 슬롯을 돌려주고 다시 올린다(슬롯 누수 방지).

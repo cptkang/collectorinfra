@@ -36,6 +36,7 @@ from sre_agent.domain.incident_scope import (
     normalize_lookback,
     normalize_reference_time,
 )
+from sre_agent.domain.job_watchdog import STUCK_WATCHDOG_REASON, stuck_after_seconds
 from sre_agent.infrastructure.activity_masking import mask_activity_text
 from sre_agent.settings import AgentSettings
 
@@ -273,11 +274,13 @@ class JobStore:
         # 최소 600s)를 넘긴 active 잡을 failed로 확정한다(침묵 잔류 금지).
         # submit/get/list 경로에 편승 — 별도 스레드 없음. 매달린 워커가 훗날
         # 돌아와 덮어써도 감사 이력에는 두 이벤트가 모두 남는다.
-        stuck_after = max(600.0, 2.0 * float(self._settings.investigation_timeout_seconds))
+        # 동시 상한 대기 중에 확정된 잡은 dispatcher가 슬롯을 얻은 직후 같은 임계로 보고
+        # 조사하지 않는다(`_skip_if_stale` — 받을 쪽이 없는 조사로 슬롯을 쓰지 않게).
+        stuck_after = stuck_after_seconds(self._settings.investigation_timeout_seconds)
         for job in self._jobs.values():
             if job.status in ACTIVE_STATUSES and (now - job.updated_at) > stuck_after:
                 job.status = "failed"
-                job.reason = "stuck_watchdog"
+                job.reason = STUCK_WATCHDOG_REASON
                 job.error = (
                     f"워치독 확정: active {stuck_after:.0f}s 초과 — "
                     "dispatcher 타임아웃 미발화(wedge 의심). 스택은 SIGUSR1 덤프로 실측"
