@@ -1157,6 +1157,7 @@ class InvestigationDispatcher:
             job.payload or {}, pb, matched_by=matched_by,
             polestar=wiring.polestar, apm=wiring.apm, clock=self._clock,
             budget_s=budget, cache=cache, steps=library,
+            xview_confirm_over=self._settings.apm_xview_confirm_over,  # plans/190 W2
         )
         if wiring.rejected_files:
             run.notes.append(REJECTED_FILES_NOTE.format(

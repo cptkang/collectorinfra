@@ -244,6 +244,17 @@ class AgentSettings(BaseSettings):
     # 플레이북 예산(초) — 수집 상한(§8 수용 기준 6). 조사 전체 타임아웃(300s) 안에서
     # 쓰고, 수집 뒤 남은 시간을 소견기 타임아웃에 나눈다.
     sre_playbook_budget_s: float = Field(default=120.0, gt=0)
+    # ── 플레이북 APM 호출 지연 교정(plans/190 · D-344) ──
+    # X-View 사전 확인 상한(W2) — 기간 모드 `apm_app_health` 호출에 게이트웨이 옵트인 인자
+    # `xview_confirm_over`로 싣는다. 예상 X-View 호출(1분 조각 × 소스·도메인)이 이 수를 넘으면
+    # 게이트웨이는 데이터 호출 없이 `status: confirm_required`를 돌려주고, 플레이북은 시 단위 통계
+    # (`apm_period_compare`)로 대체한 뒤 `[한계]`로 노출한다(침묵 강등 금지).
+    # **기본 10 — 기본 off 원칙의 예외**: off면 폐쇄망에서 보고된 정체(도구 1건 8~11분 · 2026-10-20)가
+    # 그대로 남는다(D-296 부기 ⓓ 「플래그 없음」 선례). None 또는 0 이하 = 인자 미전송(종전 비트 동일).
+    apm_xview_confirm_over: int | None = 10
+    # APM 게이트웨이 도구 호출 상한(초 · W3). None = 종전대로 `evidence_prefetch_timeout_seconds`
+    # (비트 동일). 플레이북 수집 예산 `sre_playbook_budget_s` 안에서 쓰인다.
+    apm_tool_timeout_seconds: float | None = None
 
     # ── 조사 잡 실행 기록(plans/187 W13 · §5.6.3 ⓑ · D-341 부기 4 ㉘) ──
     # 기본 off = 기록 자체를 하지 않고 `sre_get_investigation(activity_since=…)`를 무시해 응답이

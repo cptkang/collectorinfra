@@ -137,11 +137,23 @@ def make_batch_caller(settings) -> Callable[[Sequence[tuple[str, dict]]], list[s
     return _call
 
 
+def _apm_timeout_seconds(settings) -> float:  # noqa: ANN001 — AgentSettings
+    """APM 도구 호출 1건당 상한(초 · plans/190 W3).
+
+    `apm_tool_timeout_seconds`가 양수면 그 값, None·0 이하면 종전대로
+    `evidence_prefetch_timeout_seconds`(기본 20s · 비트 동일)를 쓴다.
+    """
+    own = getattr(settings, "apm_tool_timeout_seconds", None)
+    if own is not None and float(own) > 0:
+        return float(own)
+    return float(getattr(settings, "evidence_prefetch_timeout_seconds", 20.0))
+
+
 def make_apm_batch_caller(settings) -> Callable[[Sequence[tuple[str, dict]]], list[str]] | None:  # noqa: ANN001 — AgentSettings
     """APM 게이트웨이 배치 호출자(plans/187 W2). `apm_mcp_url` 미설정이면 None(APM 축 불가).
 
     `make_batch_caller`와 같은 방식(SSE 세션 1개 · 순차 호출 · 호출별 오류 격리)이며 토큰은
-    `apm_mcp_token`을 쓴다.
+    `apm_mcp_token`을 쓴다. 호출 1건당 상한은 `_apm_timeout_seconds`가 정한다(plans/190 W3).
     """
     url = getattr(settings, "apm_mcp_url", None)
     if not url:
@@ -150,7 +162,7 @@ def make_apm_batch_caller(settings) -> Callable[[Sequence[tuple[str, dict]]], li
     tok = getattr(settings, "apm_mcp_token", None)
     if tok is not None and tok.get_secret_value():
         headers = {"Authorization": f"Bearer {tok.get_secret_value()}"}
-    timeout = float(getattr(settings, "evidence_prefetch_timeout_seconds", 20.0))
+    timeout = _apm_timeout_seconds(settings)
 
     def _call(calls: Sequence[tuple[str, dict]]) -> list[str]:
         return run_tool_batch(url, headers, calls, timeout_seconds=timeout)
